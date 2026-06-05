@@ -22,6 +22,17 @@
 
 ---
 
+## 0.bis Verdict Council & conditions (GO conditionnel ~7→8+/10)
+
+Plan jugé solide (anti-§7.6, OSS-first, DoD discipliné) ; **2 conditions de cadrage** à verrouiller (sans ré-architecturer ; Phase 1 lançable en parallèle) :
+
+- **C1 — Narratif « scaffold vs produit » (anti-auto-balle-GTM).** Le « ~300 LOC » prouve que le *dispatch* est facile ; il ne doit JAMAIS laisser croire que STOA = 300 lignes de glue (sinon la banque le recopie sans nous payer). `EVIDENCE.md` + pitch doivent séparer explicitement le **scaffold jetable du PoC** (`labctl`, démonstrateur) de la **valeur produit STOA** (Links maintenus vs N intégrations fragiles contre des admin APIs mouvantes, validation/drift des contrats, fédération credentials/policies multi-runtime, RBAC, audit, couche MCP/agent, support+SLA) — avec une réponse en une phrase à « pourquoi acheter STOA plutôt que recopier ce PoC ». → **livrable `POSITIONING.md`**.
+- **C2 — Mapping critères durs de l'étude.** Le PoC prouve le control plane mais reste muet sur des critères *éliminatoires/élevés* : **Reverse Invoke / zéro entrant en zone de confiance** (§0.2, §4.2 — *éliminatoire*, un comité BC peut bloquer seul), analytique transactionnelle par fournisseur via OpenSearch (§4.11, §0.6), streaming gros fichiers >500 Mo (§0.4). Ajouter une section « ce que ce jet prouve vs ce que les critères durs exigent encore », **RI nommé comme prochain must-prove**. → **livrable `HARD-CRITERIA-MAP.md`**.
+
+**Pièce maîtresse EVIDENCE :** la corrélation **`trace_id` de bout en bout à travers les 3 gateways hétérogènes jusqu'à Tempo** — *le* moment qui rend la fédération tangible. À mettre en avant, pas une capture parmi d'autres.
+
+---
+
 ## 1. Stack de briques OSS (composant → brique → rôle)
 
 | Couche | Brique OSS | Image (tag à confirmer Phase 1) | Rôle dans le PoC |
@@ -97,7 +108,7 @@ Chaîne identité : **Dex (Oracle master, mock) → Keycloak (broker, émetteur)
 2. `.env.example` — ports, domaines, placeholders (zéro secret en clair).
 
 **Orchestrateur de fédération (la pièce semi-custom)**
-3. `labctl/` (Go) — CLI `apply` + interface `GatewayAdapter` + boucle de dispatch.
+3. `labctl/` (Go) — CLI `apply` (publication) **et `subscribe`** (provisioning : client KC + consumers sur les 3 gw) + interface `GatewayAdapter` + boucle de dispatch. **CLI-first** : la logique de provisioning vit ici, Backstage ne fait que l'appeler (filet de sécurité démo + renforce le récit « orchestrateur mince »).
 4. `labctl/adapters/wso2.go` — Publish OpenAPI → WSO2 Publisher REST (create/publish).
 5. `labctl/adapters/apisix.go` — Publish OpenAPI → APISIX Admin API (route/service/upstream).
 6. `labctl/adapters/webmethods.go` — Publish OpenAPI → mock admin REST.
@@ -117,7 +128,7 @@ Chaîne identité : **Dex (Oracle master, mock) → Keycloak (broker, émetteur)
 **Catalogue / Portail (Backstage)**
 13. `backstage/` — app Backstage (catalog + scaffolder).
 14. `backstage/catalog/` — entités API/Component des 3 gateways.
-15. `backstage/plugins/subscribe/` (ou scaffolder action) — flux self-service : request → approve → provision consumer (3 gw) + client Keycloak.
+15. `backstage/plugins/subscribe/` (scaffolder action) — flux self-service : request → approve → **appelle `labctl subscribe`** (provisioning consumer 3 gw + client KC). Backstage déclenche, `labctl` exécute.
 
 **Observabilité**
 16. `observability/otel-collector-config.yaml` — receivers OTLP → exporters LGTM.
@@ -132,6 +143,8 @@ Chaîne identité : **Dex (Oracle master, mock) → Keycloak (broker, émetteur)
 23. `EVIDENCE.md` (Phase 4) + captures/exports.
 24. `README.md` du PoC (quickstart anonymisé).
 25. `memory.md` / `plan.md` du repo — tenus à jour avant tout `/clear`.
+26. **`POSITIONING.md`** (condition C1) — « scaffold PoC jetable vs valeur produit STOA » + one-liner « pourquoi acheter STOA ». À écrire AVANT la démo.
+27. **`HARD-CRITERIA-MAP.md`** (condition C2) — « ce que ce jet prouve vs critères durs de l'étude » (RI éliminatoire en tête, prochain must-prove). À écrire AVANT la démo.
 
 ---
 
@@ -164,7 +177,7 @@ Chaîne identité : **Dex (Oracle master, mock) → Keycloak (broker, émetteur)
 | # | Ticket | Claude time |
 |---|---|---|
 | T16 | Backstage : entités API des 3 gw + découverte/catalogue unifié | ~1 h |
-| T17 | Flux self-service (scaffolder/plugin) : request→approve→consumer(3 gw)+client KC | ~2 h 30 |
+| T17 | `labctl subscribe` (provisioning consumer 3 gw + client KC) **puis** scaffolder action Backstage qui l'appelle — CLI-first | ~2 h 30 |
 | T18 | Chaîne identité Dex(Oracle)→Keycloak broker→token consommé par 3 gw | ~2 h |
 | T19 | **DoD Phase 3** : appel authentifié e2e via chaque gateway (token Oracle-master) | ~1 h |
 
@@ -178,13 +191,13 @@ Chaîne identité : **Dex (Oracle master, mock) → Keycloak (broker, émetteur)
 
 ---
 
-## 6. Décisions ouvertes pour le Council (GO/NO-GO)
+## 6. Décisions VERROUILLÉES (Council)
 
-1. **Mock Oracle : Dex vs 2e realm Keycloak.** Reco : **Dex** (brique OSS dédiée, lisible comme « IdP tiers Oracle » ; meilleure démo de fédération multi-produit qu'un 2e realm KC).
-2. **Self-service Backstage : scaffolder action vs backend plugin custom.** Reco : **scaffolder action** + une action backend mince (création consumer + client KC) — plus léger qu'un plugin complet.
-3. **Grafana : `grafana/otel-lgtm` all-in-one vs LGTM en conteneurs séparés.** Reco : **all-in-one** pour le PoC (1 brique, OTLP-in/Grafana-out), séparable plus tard.
-4. **`labctl` : Go vs Python.** Reco : **Go** (binaire unique kubectl-style, fidèle à l'esprit `stoactl`, distribuable).
-5. **Empreinte ressources.** WSO2 APIM + APISIX + Backstage + LGTM ≈ poste de dev costaud (≥16 Go RAM). Profil « light » possible (désactiver WSO2 analytics). À trancher en Phase 1.
+1. **Mock Oracle → Dex.** ✅ Lit comme un vrai IdP tiers ; fédération multi-produit plus crédible qu'un KC-broke-KC circulaire.
+2. **Self-service → scaffolder action Backstage, provisioning dans `labctl`.** ✅ Backstage déclenche `labctl subscribe`. CLI-first = filet de sécurité démo (survit si Backstage déconne) + renforce « orchestrateur mince ».
+3. **Grafana → `grafana/otel-lgtm` all-in-one.** ✅ 1 brique OTLP-in/Grafana-out. **EVIDENCE doit préciser : image dev/démo, pas le design prod** (coupe court à l'objection).
+4. **`labctl` → Go.** ✅ Binaire unique kubectl-style fidèle à `stoactl` ; « lit produit » devant une banque mieux qu'un script Python.
+5. **Empreinte → profil `light` + backup vidéo = CONDITION, pas option.** WSO2 analytics off dès le départ (≥16 Go RAM sinon menace la démo live). Vidéo de backup conforme au DoD.
 
 ---
 
@@ -201,9 +214,13 @@ Chaîne identité : **Dex (Oracle master, mock) → Keycloak (broker, émetteur)
 
 ---
 
-## 8. ⛔ GATE — STOP
+## 8. GATE — GO CONDITIONNEL (Council ~7→8+/10)
 
-**Aucun composant n'est créé tant que ce plan n'est pas validé (Council 8/10, GO/NO-GO).**
-Prochaine action attendue : décision du Council sur les 5 points ouverts (§6), puis **GO** → démarrage Phase 1 (T1-T8).
+**GO conditionnel accordé.** Phase 1 (T1-T8) lançable **en parallèle** du verrouillage des conditions :
+- **C1** — `POSITIONING.md` (scaffold jetable vs valeur produit STOA) — à livrer avant la démo.
+- **C2** — `HARD-CRITERIA-MAP.md` (jet vs critères durs, RI = prochain must-prove) — à livrer avant la démo.
+- **Filet d'exécution** — provisioning dans `labctl` (T17 CLI-first) + profil `light` + backup vidéo (condition).
+
+5 décisions §6 verrouillées. **Passage à 8+/10 conditionné à C1 + C2 livrés.**
 
 _Phase 0 — repo cible `stoa-labs`. Choix de briques OSS ; tags d'images à confirmer en Phase 1 (per MEGA)._
