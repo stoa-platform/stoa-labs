@@ -1,0 +1,56 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+*~
+
+# Secrets / env
+.env
+.env.*
+*.pem
+*.key
+secrets/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# Node / JS
+node_modules/
+.npm/
+.pnpm-store/
+*.log
+npm-debug.log*
+yarn-debug.log*
+.next/
+.astro/
+
+# Rust
+target/
+**/*.rs.bk
+
+# Go
+bin/
+*.test
+*.out
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+
+# Misc
+coverage/
+.cache/
+tmp/
