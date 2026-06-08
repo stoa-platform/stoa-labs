@@ -17,20 +17,22 @@ import (
 // implements only the surface the adapter touches under /rest/apigateway/* and
 // records the requests it received so tests can assert paths/methods/bodies.
 type mockGateway struct {
-	mu       sync.Mutex
-	apis     map[string]apiRecord    // apiId -> record
-	subs     map[string]subscription // subId -> record
-	apiSeq   int
-	subSeq   int
-	requests []string // "METHOD path" log, in order
-	isAlive  bool
+	mu        sync.Mutex
+	apis      map[string]apiRecord    // apiId -> record
+	subs      map[string]subscription // subId -> record
+	apiSeq    int
+	subSeq    int
+	requests  []string // "METHOD path" log, in order
+	isAlive   bool
+	gatewayID string // identity reported in /is/health body + X-Gateway header
 }
 
 func newMockGateway() *mockGateway {
 	return &mockGateway{
-		apis:    map[string]apiRecord{},
-		subs:    map[string]subscription{},
-		isAlive: true,
+		apis:      map[string]apiRecord{},
+		subs:      map[string]subscription{},
+		isAlive:   true,
+		gatewayID: gatewayIdentity,
 	}
 }
 
@@ -50,7 +52,7 @@ func (m *mockGateway) handler() http.Handler {
 		m.mu.Lock()
 		m.requests = append(m.requests, r.Method+" "+r.URL.Path)
 		m.mu.Unlock()
-		w.Header().Set(gatewayHeaderKey, gatewayHeaderValue)
+		w.Header().Set("X-Gateway", m.gatewayID)
 		mux.ServeHTTP(w, r)
 	})
 }
@@ -62,7 +64,7 @@ func (m *mockGateway) writeJSON(w http.ResponseWriter, code int, v any) {
 }
 
 func (m *mockGateway) health(w http.ResponseWriter, _ *http.Request) {
-	m.writeJSON(w, http.StatusOK, healthResponse{IsAlive: m.isAlive, Gateway: gatewayHeaderValue})
+	m.writeJSON(w, http.StatusOK, healthResponse{IsAlive: m.isAlive, Gateway: m.gatewayID})
 }
 
 func (m *mockGateway) listAPIs(w http.ResponseWriter, _ *http.Request) {
@@ -446,6 +448,107 @@ func TestHealth_GatesOnIsAlive(t *testing.T) {
 	a, _ := newAdapter(t, srv)
 	if err := a.Health(context.Background()); err == nil {
 		t.Fatal("Health succeeded with isAlive=false, want error")
+	}
+}
+
+// A backend that is reachable and returns parsable JSON but reports a DIFFERENT
+// gateway identity is a misroute: Health must reject it instead of proceeding.
+func TestHealth_RejectsWrongGatewayIdentity(t *testing.T) {
+	mock := newMockGateway()
+	mock.gatewayID = "some-other-gateway" // misrouted/wrong backend, still alive
+	srv := httptest.NewServer(mock.handler())
+	defer srv.Close()
+
+	a, _ := newAdapter(t, srv)
+	err := a.Health(context.Background())
+	if err == nil {
+		t.Fatal("Health succeeded against a wrong gateway identity, want error")
+	}
+	if !strings.Contains(err.Error(), "some-other-gateway") || !strings.Contains(err.Error(), gatewayIdentity) {
+		t.Errorf("error %q should name both the got and wanted gateway identity", err.Error())
+	}
+}
+
+// An empty gateway identity (e.g. a generic JSON backend that happens to answer
+// 200 on /is/health) must also be rejected.
+func TestHealth_RejectsEmptyGatewayIdentity(t *testing.T) {
+	mock := newMockGateway()
+	mock.gatewayID = ""
+	srv := httptest.NewServer(mock.handler())
+	defer srv.Close()
+
+	a, _ := newAdapter(t, srv)
+	if err := a.Health(context.Background()); err == nil {
+		t.Fatal("Health succeeded against an empty gateway identity, want error")
+	}
+}
+
+// A version-only bump (same basePath + backendUrl, new apiVersion) is real drift:
+// the mock has no update endpoint, so the adapter must DELETE the stale record and
+// POST a fresh one carrying the new version.
+func TestPublish_VersionBumpTriggersRecreate(t *testing.T) {
+	mock := newMockGateway()
+	srv := httptest.NewServer(mock.handler())
+	defer srv.Close()
+
+	a, api := newAdapter(t, srv)
+	first, err := a.Publish(context.Background(), api)
+	if err != nil {
+		t.Fatalf("first Publish: %v", err)
+	}
+	if mock.apis[first.APIID].APIVersion != "1.0.0" {
+		t.Fatalf("first publish stored version = %q, want 1.0.0", mock.apis[first.APIID].APIVersion)
+	}
+
+	// Bump ONLY the version; path and backend are unchanged.
+	api.Version = "1.1.0"
+	res, err := a.Publish(context.Background(), api)
+	if err != nil {
+		t.Fatalf("version-bump Publish: %v", err)
+	}
+	if !res.Created {
+		t.Error("version-bump publish Created = false, want true (delete+recreate)")
+	}
+	if got := mock.countRequests("DELETE /rest/apigateway/apis/"); got != 1 {
+		t.Errorf("delete count = %d, want 1 on version bump", got)
+	}
+	if len(mock.apis) != 1 {
+		t.Fatalf("server holds %d apis after version bump, want 1", len(mock.apis))
+	}
+	if got := mock.apis[res.APIID].APIVersion; got != "1.1.0" {
+		t.Errorf("recreated apiVersion = %q, want 1.1.0 (gateway converged on intent)", got)
+	}
+}
+
+// The empty desired version is defaulted to the server's own default ("1.0.0"),
+// so re-applying an API whose intent omits the version must NOT be seen as drift.
+func TestPublish_EmptyVersionIsIdempotent(t *testing.T) {
+	mock := newMockGateway()
+	srv := httptest.NewServer(mock.handler())
+	defer srv.Close()
+
+	a, api := newAdapter(t, srv)
+	api.Version = "" // intent omits version; server stores its "1.0.0" default
+	first, err := a.Publish(context.Background(), api)
+	if err != nil {
+		t.Fatalf("first Publish: %v", err)
+	}
+
+	second, err := a.Publish(context.Background(), api)
+	if err != nil {
+		t.Fatalf("second Publish: %v", err)
+	}
+	if second.Created {
+		t.Error("second publish Created = true, want false (empty version must not look like drift)")
+	}
+	if second.APIID != first.APIID {
+		t.Errorf("apiId drifted on empty-version re-apply: %q -> %q", first.APIID, second.APIID)
+	}
+	if got := mock.countRequests("POST /rest/apigateway/apis"); got != 1 {
+		t.Errorf("create POST count = %d over two publishes, want 1 (no spurious drift)", got)
+	}
+	if got := mock.countRequests("DELETE /rest/apigateway/apis/"); got != 0 {
+		t.Errorf("delete count = %d, want 0 (no spurious drift on empty version)", got)
 	}
 }
 

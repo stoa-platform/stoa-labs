@@ -72,10 +72,27 @@ func Load(path, nameOverride, backendOverride string) (*adapter.NormalizedAPI, e
 		SpecPath:   path,
 	}
 	if api.BasePath == "" {
-		// Fall back to /<name>/v<major> so every gateway has a deterministic context.
-		api.BasePath = "/" + name
+		// Fall back to /<name>/v<major> so every gateway has a deterministic
+		// context, consistent with the normal path derived from servers[].url
+		// (e.g. "/accounts-read/v1") — otherwise two otherwise-identical APIs
+		// would get divergent public contexts purely on servers[] presence.
+		api.BasePath = "/" + name + "/v" + majorOf(api.Version)
 	}
 	return api, nil
+}
+
+// majorOf returns the leading numeric component of a semver-ish version,
+// defaulting to "1" when none is parseable (api.Version is itself defaulted to
+// "1.0.0" upstream, so this normally yields "1").
+func majorOf(v string) string {
+	v = strings.TrimSpace(v)
+	if i := strings.IndexByte(v, '.'); i >= 0 {
+		v = v[:i]
+	}
+	if v == "" {
+		return "1"
+	}
+	return v
 }
 
 func firstServerURL(servers []struct {

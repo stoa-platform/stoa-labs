@@ -38,12 +38,11 @@ const (
 	dataPrefix  = "/gateway"
 )
 
-// gatewayHeader is set on every mock response; asserting it catches a misrouted
-// request hitting the wrong backend instead of silently parsing junk.
-const (
-	gatewayHeaderKey   = "X-Gateway"
-	gatewayHeaderValue = "webmethods-mock"
-)
+// gatewayIdentity is the value the webMethods mock reports in the "gateway" field
+// of GET /is/health (and in the X-Gateway response header). Health asserts it so a
+// request misrouted to the wrong backend — which would return parsable JSON but a
+// different (or empty) identity — is caught instead of silently parsing junk.
+const gatewayIdentity = "webmethods-mock"
 
 func init() {
 	adapter.Register(gatewayName, New)
@@ -103,14 +102,20 @@ type healthResponse struct {
 	Gateway string `json:"gateway"`
 }
 
-// Health performs the liveness preflight: GET /rest/apigateway/is/health and
-// gate on isAlive==true. A reachable-but-not-alive gateway is treated as
-// unhealthy so `labctl apply` fails fast with a clear diagnostic.
+// Health performs the liveness preflight: GET /rest/apigateway/is/health, assert
+// the reported gateway identity, then gate on isAlive==true. Asserting the
+// "gateway" field catches a request misrouted to a different backend that returns
+// parsable JSON but is NOT the webMethods gateway. A reachable-but-not-alive
+// gateway is treated as unhealthy so `labctl apply` fails fast with a clear
+// diagnostic.
 func (a *Adapter) Health(ctx context.Context) error {
 	url := a.adminPath("/is/health")
 	var hr healthResponse
 	if _, err := httpx.JSON(ctx, a.http, http.MethodGet, url, a.authHeaders(), nil, &hr); err != nil {
 		return fmt.Errorf("webmethods health: %w", err)
+	}
+	if hr.Gateway != gatewayIdentity {
+		return fmt.Errorf("webmethods health: gateway identity %q, want %q (misrouted/wrong backend at %s)", hr.Gateway, gatewayIdentity, url)
 	}
 	if !hr.IsAlive {
 		return fmt.Errorf("webmethods health: gateway %q reports isAlive=false", url)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"regexp"
 
 	"github.com/stoa-platform/stoa-labs/poc/labctl/internal/adapter"
 	"github.com/stoa-platform/stoa-labs/poc/labctl/internal/httpx"
@@ -66,6 +67,7 @@ func (a *Adapter) Publish(ctx context.Context, api *adapter.NormalizedAPI) (*ada
 			Status:    1, // 1 = enabled (0 would create but serve no traffic)
 			ServiceID: upstreamID,
 			Plugins:   sharedPlugins(api.BasePath),
+			Labels:    routeLabels(api.Name, api.Version),
 		}
 		rURL := fmt.Sprintf("%s/apisix/admin/routes/%s-%d", a.adminURL, api.Name, i)
 		if _, err := httpx.JSON(ctx, a.client, http.MethodPut, rURL, a.adminHeaders(), route, nil); err != nil {
@@ -109,12 +111,29 @@ func sharedPlugins(basePath string) map[string]any {
 	return map[string]any{
 		"proxy-rewrite": map[string]any{
 			// ^<basePath>/(.*) -> /$1 : drop the public prefix for the backend.
-			"regex_uri": []string{"^" + basePath + "/(.*)", "/$1"},
+			// QuoteMeta the basePath so a legal path metachar (e.g. "/v1.0")
+			// is matched literally instead of as a regex wildcard (over-match).
+			"regex_uri": []string{"^" + regexp.QuoteMeta(basePath) + "/(.*)", "/$1"},
 		},
 		"opentelemetry": map[string]any{
 			"sampler": map[string]any{"name": "always_on"},
 		},
 	}
+}
+
+// routeLabels stamps the APISIX route with identifying labels so the
+// gateway-native List() can round-trip Name+Version (APISIX routes carry no
+// native API name/version). "version" is only set when non-empty so the label
+// map never PUTs a blank value.
+func routeLabels(name, version string) map[string]string {
+	labels := map[string]string{
+		"managed-by": "labctl",
+		"api":        name,
+	}
+	if version != "" {
+		labels["version"] = version
+	}
+	return labels
 }
 
 // --- Admin API request/response bodies ---
@@ -136,11 +155,12 @@ type serviceBody struct {
 // routeBody is the PUT body for /apisix/admin/routes/{id}. omitempty on methods
 // lets "all methods" be expressed by omitting the field.
 type routeBody struct {
-	URI       string         `json:"uri"`
-	Methods   []string       `json:"methods,omitempty"`
-	Status    int            `json:"status"`
-	ServiceID string         `json:"service_id,omitempty"`
-	Plugins   map[string]any `json:"plugins"`
+	URI       string            `json:"uri"`
+	Methods   []string          `json:"methods,omitempty"`
+	Status    int               `json:"status"`
+	ServiceID string            `json:"service_id,omitempty"`
+	Plugins   map[string]any    `json:"plugins"`
+	Labels    map[string]string `json:"labels,omitempty"`
 }
 
 // routeResponse mirrors GET /apisix/admin/routes/{id}: {"value":{"status":1,...}}.

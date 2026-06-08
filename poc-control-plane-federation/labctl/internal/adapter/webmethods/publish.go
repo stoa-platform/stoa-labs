@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/stoa-platform/stoa-labs/poc/labctl/internal/adapter"
 	"github.com/stoa-platform/stoa-labs/poc/labctl/internal/httpx"
@@ -116,12 +117,21 @@ func (a *Adapter) Publish(ctx context.Context, api *adapter.NormalizedAPI) (*ada
 }
 
 // sameAPI reports whether an existing record already matches the desired intent.
-// We compare the fields the adapter controls (basePath, backendUrl); apiId and
-// createdAt are server-assigned. basePath is compared on the server-normalized
-// value the gateway echoed, against the desired path normalized the same way.
+// We compare the fields the adapter controls (basePath, backendUrl, apiVersion);
+// apiId and createdAt are server-assigned. basePath is compared on the
+// server-normalized value the gateway echoed, against the desired path normalized
+// the same way. apiVersion is included so a version-only bump (same path/backend)
+// still triggers DELETE+POST and the gateway converges on the intended version;
+// an empty desired version is defaulted to "1.0.0" to mirror the server's own
+// default and avoid a spurious drift.
 func sameAPI(cur apiRecord, want *adapter.NormalizedAPI) bool {
+	wantVersion := want.Version
+	if strings.TrimSpace(wantVersion) == "" {
+		wantVersion = "1.0.0"
+	}
 	return cur.BasePath == normalizeBasePath(want.BasePath) &&
-		cur.BackendURL == want.BackendURL
+		cur.BackendURL == want.BackendURL &&
+		cur.APIVersion == wantVersion
 }
 
 // normalizeBasePath mirrors the server's normalization ("/"+Trim(slashes)) so

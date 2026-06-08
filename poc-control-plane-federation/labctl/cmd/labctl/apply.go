@@ -48,7 +48,16 @@ func runApply(cmd *cobra.Command, _ []string) error {
 	}
 
 	fmt.Fprintf(out, "Define Once → Expose Everywhere: %q v%s → %d gateways\n", api.Name, api.Version, len(tf.Targets))
-	fmt.Fprintf(out, "  contract: %s\n  backend:  %s\n\n", tf.Contract, api.BackendURL)
+	fmt.Fprintf(out, "  contract: %s\n  backend:  %s\n\n", tf.Contract, backendOrPlaceholder(api.BackendURL))
+
+	if api.BackendURL == "" {
+		// No upstream resolved from targets.yaml backendUrl nor an absolute
+		// servers[].url: gateways have nothing real to proxy to, so a "published"
+		// status here can be a synthetic false positive (routes exist but the
+		// data plane points nowhere). Surface it loudly.
+		fmt.Fprintf(out, "  %s no backendUrl resolved (targets.yaml backendUrl empty and no absolute servers[].url) —\n", cli.FAIL)
+		fmt.Fprintf(out, "    gateways have no real upstream to proxy to; a published status may be a synthetic false positive.\n\n")
+	}
 
 	// --- the dispatch loop: every target gets the SAME contract ---
 	outcomes := make([]publishOutcome, 0, len(tf.Targets))
@@ -114,18 +123,22 @@ func runApply(cmd *cobra.Command, _ []string) error {
 // itself is brought up in Phase 3, so registration failure is a SKIP, not an error.
 func writeBackstageEntity(cmd *cobra.Command, tf *targets.File, api *adapter.NormalizedAPI, endpoints map[string]string) {
 	out := cmd.OutOrStdout()
+
+	manifestDir := filepath.Dir(fileFlag)
+	specPath := backstageSpecPath(manifestDir, api.SpecPath)
+
 	entity, err := backstage.GenerateEntity(backstage.EntityInput{
 		Name:      api.Name,
 		Owner:     tf.Backstage.Owner,
 		System:    tf.Backstage.System,
-		SpecPath:  api.SpecPath,
+		SpecPath:  specPath,
 		Endpoints: endpoints,
 	})
 	if err != nil {
 		fmt.Fprintf(out, "\n%s backstage entity: %v\n", cli.SKIP, err)
 		return
 	}
-	dst := filepath.Join(filepath.Dir(fileFlag), "catalog-info.yaml")
+	dst := filepath.Join(manifestDir, "catalog-info.yaml")
 	if err := os.WriteFile(dst, entity, 0o644); err != nil {
 		fmt.Fprintf(out, "\n%s write %s: %v\n", cli.SKIP, dst, err)
 		return
@@ -141,4 +154,28 @@ func errStr(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+// backendOrPlaceholder renders the upstream URL, or an explicit "(none)" marker
+// when no backend was resolved, so the header line never shows a misleading
+// empty value next to "backend:".
+func backendOrPlaceholder(backend string) string {
+	if backend == "" {
+		return "(none)"
+	}
+	return backend
+}
+
+// backstageSpecPath re-expresses specPath relative to manifestDir, the directory
+// the catalog-info.yaml is written to. Backstage resolves definition.$text
+// RELATIVE TO THE ENTITY LOCATION, and specPath (api.SpecPath) is the
+// already-joined contract path (manifest-dir-relative or absolute), so passing
+// it raw would double the manifest dir (e.g. `deploy/deploy/apis/x.yaml`). If
+// Rel fails (e.g. an absolute contract on another volume) the original path is
+// kept rather than emitting a broken relative reference.
+func backstageSpecPath(manifestDir, specPath string) string {
+	if rel, err := filepath.Rel(manifestDir, specPath); err == nil {
+		return rel
+	}
+	return specPath
 }
