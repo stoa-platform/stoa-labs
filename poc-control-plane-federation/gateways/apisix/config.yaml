@@ -1,0 +1,42 @@
+# Apache APISIX — config PoC (mode traditional + etcd, publication dynamique
+# via Admin API par labctl en Phase 2). OTel natif vers otel-lgtm.
+apisix:
+  node_listen: 9080
+  enable_admin: true
+
+deployment:
+  role: traditional
+  role_traditional:
+    config_provider: etcd
+  admin:
+    # Clé admin PoC (placeholder — non secret réel).
+    admin_key:
+      - name: admin
+        key: poc-apisix-admin-key
+        role: admin
+    allow_admin:
+      - 0.0.0.0/0
+    admin_listen:
+      port: 9180
+  etcd:
+    host:
+      - "http://etcd:2379"
+    prefix: /apisix
+    timeout: 30
+
+plugins:
+  - opentelemetry
+  - proxy-rewrite
+  - prometheus
+
+plugin_attr:
+  opentelemetry:
+    # Export OTLP/HTTP des traces vers l'all-in-one otel-lgtm.
+    collector:
+      address: otel-lgtm:4318
+      request_timeout: 3
+    resource:
+      service.name: apisix
+    batch_span_processor:
+      max_export_batch_size: 256
+      inactive_timeout: 2

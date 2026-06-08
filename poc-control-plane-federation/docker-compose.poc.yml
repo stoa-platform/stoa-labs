@@ -1,0 +1,221 @@
+# =============================================================================
+# PoC Control Plane Fédération — socle OSS (Phase 1)
+#
+# Fédère 3 runtimes hétérogènes sous un control plane assemblé sur briques OSS :
+#   - WSO2 API Manager   (réel, OSS)        — gateway "neuf" souverain
+#   - Apache APISIX      (réel, OSS)        — gateway OSS additionnel
+#   - webMethods mock    (Go, local)        — legacy commercial (stand-in)
+# + identité (Keycloak broker + Dex=mock Oracle), observabilité (otel-lgtm),
+#   backend synthétique (Microcks).
+#
+# DoD Phase 1 : `docker compose -f docker-compose.poc.yml up -d` → tous healthy,
+# Grafana (otel-lgtm) voit les 3 gateways via service.name.
+#
+# Tags d'images : voir .env (à confirmer au premier `up`).
+# =============================================================================
+
+name: stoa-labs-poc
+
+networks:
+  poc:
+    driver: bridge
+
+volumes:
+  etcd-data:
+  mongo-data:
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # Gateway #1 — WSO2 API Manager (réel, OSS)
+  # ---------------------------------------------------------------------------
+  wso2am:
+    image: ${WSO2AM_IMAGE}
+    container_name: poc-wso2am
+    ports:
+      - "${PORT_WSO2_CONSOLE:-9443}:9443"   # Publisher / Devportal / Admin
+      - "${PORT_WSO2_GATEWAY:-8243}:8243"   # Gateway data-plane (https)
+    environment:
+      JAVA_OPTS: "-Xms512m -Xmx1536m"       # profil light (cf. Council #5)
+    healthcheck:
+      # WSO2 expose les services Carbon sur 9443 (TLS auto-signé).
+      test: ["CMD-SHELL", "curl -sk https://localhost:9443/services/Version || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 20
+      start_period: 180s
+    networks: [poc]
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Gateway #2 — Apache APISIX (réel, OSS) + etcd
+  # ---------------------------------------------------------------------------
+  etcd:
+    image: ${ETCD_IMAGE}
+    container_name: poc-etcd
+    environment:
+      ALLOW_NONE_AUTHENTICATION: "yes"
+      ETCD_ADVERTISE_CLIENT_URLS: "http://etcd:2379"
+      ETCD_LISTEN_CLIENT_URLS: "http://0.0.0.0:2379"
+    volumes:
+      - etcd-data:/bitnami/etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [poc]
+    restart: unless-stopped
+
+  apisix:
+    image: ${APISIX_IMAGE}
+    container_name: poc-apisix
+    depends_on:
+      etcd:
+        condition: service_healthy
+    ports:
+      - "${PORT_APISIX:-9080}:9080"          # data-plane
+      - "${PORT_APISIX_ADMIN:-9180}:9180"    # Admin API (labctl, Phase 2)
+    volumes:
+      - ./gateways/apisix/config.yaml:/usr/local/apisix/conf/config.yaml:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9080/apisix/status || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    networks: [poc]
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Gateway #3 — webMethods mock (Go, local) — legacy commercial stand-in
+  # ---------------------------------------------------------------------------
+  webmethods-mock:
+    build:
+      context: ./mocks/webmethods
+    image: stoa-labs/webmethods-mock:dev
+    container_name: poc-webmethods
+    ports:
+      - "${PORT_WEBMETHODS:-8090}:8080"
+    environment:
+      LISTEN_ADDR: ":8080"
+      OTEL_SERVICE_NAME: "webmethods-mock"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "${OTLP_ENDPOINT_HTTP:-otel-lgtm:4318}"
+    healthcheck:
+      test: ["CMD", "/webmethods-mock", "-healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks: [poc]
+    restart: unless-stopped
+    depends_on:
+      - otel-lgtm
+
+  # ---------------------------------------------------------------------------
+  # Identité — Dex (mock Oracle IdP, OIDC upstream)
+  # ---------------------------------------------------------------------------
+  dex:
+    image: ${DEX_IMAGE}
+    container_name: poc-dex
+    command: ["dex", "serve", "/etc/dex/config.yaml"]
+    ports:
+      - "${PORT_DEX:-5556}:5556"
+    volumes:
+      - ./identity/dex/config.yaml:/etc/dex/config.yaml:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:5556/dex/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [poc]
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Identité — Keycloak (broker : fédère Dex/Oracle, émet les tokens)
+  # ---------------------------------------------------------------------------
+  keycloak:
+    image: ${KEYCLOAK_IMAGE}
+    container_name: poc-keycloak
+    command: ["start-dev", "--import-realm"]
+    depends_on:
+      - dex
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: "${KEYCLOAK_ADMIN:-admin}"
+      KC_BOOTSTRAP_ADMIN_PASSWORD: "${KEYCLOAK_ADMIN_PASSWORD:-admin}"
+      KC_HEALTH_ENABLED: "true"
+      KC_HTTP_ENABLED: "true"
+      DEX_BROKER_CLIENT_SECRET: "${DEX_BROKER_CLIENT_SECRET:-keycloak-broker-secret-poc}"
+    ports:
+      - "${PORT_KEYCLOAK:-8081}:8080"
+    volumes:
+      - ./identity/keycloak/realm-stoa-lab.json:/opt/keycloak/data/import/realm-stoa-lab.json:ro
+    healthcheck:
+      # KC 26 expose /health sur le port management 9000.
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/9000; echo -e 'GET /health/ready HTTP/1.1\\nhost: localhost\\nConnection: close\\n\\n' >&3; cat <&3 | grep -q UP"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+    networks: [poc]
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Observabilité — Grafana LGTM all-in-one (embarque l'OTel Collector)
+  # ---------------------------------------------------------------------------
+  otel-lgtm:
+    image: ${OTEL_LGTM_IMAGE}
+    container_name: poc-otel-lgtm
+    ports:
+      - "${PORT_GRAFANA:-3000}:3000"        # Grafana
+      - "${PORT_OTLP_GRPC:-4317}:4317"      # OTLP gRPC
+      - "${PORT_OTLP_HTTP:-4318}:4318"      # OTLP HTTP
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:3000/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    networks: [poc]
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Backend synthétique — Microcks (mock depuis OpenAPI) + MongoDB
+  # ---------------------------------------------------------------------------
+  mongo:
+    image: ${MONGO_IMAGE}
+    container_name: poc-mongo
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.runCommand({ping:1}).ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [poc]
+    restart: unless-stopped
+
+  microcks:
+    image: ${MICROCKS_IMAGE}
+    container_name: poc-microcks
+    depends_on:
+      mongo:
+        condition: service_healthy
+    ports:
+      - "${PORT_MICROCKS:-8585}:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: "uber,uber-async-minion"
+      SPRING_DATA_MONGODB_URI: "mongodb://mongo:27017/microcks"
+      KEYCLOAK_ENABLED: "false"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:8080/api/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 40s
+    networks: [poc]
+    restart: unless-stopped
+
+# Note Phase 2/3 : Backstage (catalogue/portail/self-service) est ajouté via une
+# app buildée (RHDH ou create-app) — pas une simple image à puller — donc câblé
+# au moment où il est réellement utilisé (T7→T16/T17), pas dans ce socle.
