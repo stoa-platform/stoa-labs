@@ -16,7 +16,9 @@ echo "   for a headless proof we use the consumer's service-account token below 
 echo ""
 echo "════════ ONE Keycloak token (iss pinned to localhost:8480) ════════"
 echo "  Trying the Oracle-brokered login (alice@bc.example via Dex)…"
-TOK=$(./scripts/get-oracle-token.sh --quiet 2>/dev/null || true)
+# Log in through the broker as the MAPPED consumer client so azp matches the WSO2
+# key mapping and the Oracle-federated token validates on all 3 gateways.
+TOK=$(CLIENT_ID="$KC_CID" CLIENT_SECRET="$KC_SEC" ./scripts/get-oracle-token.sh --quiet 2>/dev/null || true)
 if [[ -n "$TOK" ]]; then
   echo "  ✓ Oracle-federated token obtained (identity sourced from Dex/Oracle)"
 else

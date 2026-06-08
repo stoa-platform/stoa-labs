@@ -29,6 +29,40 @@ wso2_token() { # scope...
   curl -sk -X POST "$WSO2/oauth2/token" -H "Authorization: Basic $(printf '%s:%s' "$cid" "$csec"|base64)" -d "grant_type=password&username=admin&password=admin&scope=$*" | python3 -c "import sys,json;print(json.load(sys.stdin).get('access_token',''))"
 }
 
+echo "═══ 0/3  Keycloak: prerequisites for the WSO2 KeyCloak connector ═══"
+# WSO2's KeyCloak connector (a) requests a token with scope=default, and (b)
+# calls Keycloak DCR to read the mapped client. So poc-gateways needs a 'default'
+# client scope AND the realm-management manage-clients/view-clients roles.
+# Idempotent — safe to re-run (e.g. after a Keycloak recreate wipes runtime state).
+AT=$(curl -s -d grant_type=password -d client_id=admin-cli -d username=admin -d password=admin "http://localhost:8480/realms/master/protocol/openid-connect/token" | python3 -c "import sys,json;print(json.load(sys.stdin).get('access_token',''))")
+KH="Authorization: Bearer $AT"; KR="http://localhost:8480/admin/realms/stoa-lab"
+sid=$(curl -s -H "$KH" "$KR/client-scopes" | python3 -c "import sys,json;print(next((s['id'] for s in json.load(sys.stdin) if s['name']=='default'),''))")
+if [[ -z "$sid" ]]; then
+  curl -s -H "$KH" -H "Content-Type: application/json" -X POST "$KR/client-scopes" -d '{"name":"default","protocol":"openid-connect","attributes":{"include.in.token.scope":"true","display.on.consent.screen":"false"}}' -o /dev/null
+  sid=$(curl -s -H "$KH" "$KR/client-scopes" | python3 -c "import sys,json;print(next((s['id'] for s in json.load(sys.stdin) if s['name']=='default'),''))")
+fi
+cid=$(curl -s -H "$KH" "$KR/clients?clientId=poc-gateways" | python3 -c "import sys,json;print(json.load(sys.stdin)[0]['id'])")
+curl -s -H "$KH" -X PUT "$KR/clients/$cid/default-client-scopes/$sid" -o /dev/null
+sauid=$(curl -s -H "$KH" "$KR/clients/$cid/service-account-user" | python3 -c "import sys,json;print(json.load(sys.stdin)['id'])")
+rmid=$(curl -s -H "$KH" "$KR/clients?clientId=realm-management" | python3 -c "import sys,json;print(json.load(sys.stdin)[0]['id'])")
+roles=$(curl -s -H "$KH" "$KR/clients/$rmid/roles" | python3 -c "import sys,json;print(json.dumps([{'id':r['id'],'name':r['name']} for r in json.load(sys.stdin) if r['name'] in ('manage-clients','view-clients')]))")
+curl -s -H "$KH" -H "Content-Type: application/json" -X POST "$KR/users/$sauid/role-mappings/clients/$rmid" -d "$roles" -o /dev/null
+# Headless Oracle broker login: skip KC26's first-login Review Profile + VERIFY_PROFILE.
+rid=$(curl -s -H "$KH" "$KR/authentication/flows/first%20broker%20login/executions" | python3 -c "import sys,json;print(next((e['id'] for e in json.load(sys.stdin) if 'review' in (e.get('providerId','')+e.get('displayName','')).lower()),''))")
+[[ -n "$rid" ]] && curl -s -H "$KH" -H "Content-Type: application/json" -X PUT "$KR/authentication/flows/first%20broker%20login/executions" -d "{\"id\":\"$rid\",\"requirement\":\"DISABLED\"}" -o /dev/null
+curl -s -H "$KH" "$KR/authentication/required-actions/VERIFY_PROFILE" -o /tmp/vp.json 2>/dev/null
+python3 -c "import json;d=json.load(open('/tmp/vp.json'));d['enabled']=False;d['defaultAction']=False;json.dump(d,open('/tmp/vp.json','w'))" 2>/dev/null && \
+  curl -s -H "$KH" -H "Content-Type: application/json" -X PUT "$KR/authentication/required-actions/VERIFY_PROFILE" -d @/tmp/vp.json -o /dev/null
+# Make the mapped consumer client usable for the broker login (azp must match the
+# WSO2 mapping so the Oracle-federated token validates on WSO2 too).
+acid=$(curl -s -H "$KH" "$KR/clients?clientId=accounts-read-consumer" | python3 -c "import sys,json;l=json.load(sys.stdin);print(l[0]['id'] if l else '')" 2>/dev/null)
+if [[ -n "$acid" ]]; then
+  curl -s -H "$KH" "$KR/clients/$acid" -o /tmp/ac.json
+  python3 -c "import json;d=json.load(open('/tmp/ac.json'));d['standardFlowEnabled']=True;d['redirectUris']=['http://localhost:8480/*','http://localhost:8480'];d['webOrigins']=['*'];json.dump(d,open('/tmp/ac.json','w'))"
+  curl -s -H "$KH" -H "Content-Type: application/json" -X PUT "$KR/clients/$acid" -d @/tmp/ac.json -o /dev/null
+fi
+echo "  ✓ default scope + manage-clients, broker login enabled (Review/Verify off, consumer client configured)"
+
 echo "═══ 1/3  WSO2: register the Keycloak Key Manager (idempotent) ═══"
 ATOK=$(wso2_token "apim:admin apim:keymanagers_manage")
 existing=$(curl -sk "$WSO2/api/am/admin/v4/key-managers" -H "Authorization: Bearer $ATOK" | python3 -c "import sys,json;print(next((k['id'] for k in json.load(sys.stdin).get('list',[]) if k['name']=='Keycloak'),''))")
