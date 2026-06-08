@@ -1,0 +1,83 @@
+{
+  "realm": "stoa-lab",
+  "enabled": true,
+  "displayName": "STOA Lab — Fédération PoC",
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "accessTokenLifespan": 300,
+  "identityProviders": [
+    {
+      "alias": "oracle",
+      "displayName": "Oracle (mock via Dex)",
+      "providerId": "oidc",
+      "enabled": true,
+      "trustEmail": true,
+      "storeToken": false,
+      "firstBrokerLoginFlowAlias": "first broker login",
+      "config": {
+        "clientId": "keycloak-broker",
+        "clientSecret": "keycloak-broker-secret-poc",
+        "clientAuthMethod": "client_secret_post",
+        "issuer": "http://dex:5556/dex",
+        "authorizationUrl": "http://localhost:5556/dex/auth",
+        "tokenUrl": "http://dex:5556/dex/token",
+        "jwksUrl": "http://dex:5556/dex/keys",
+        "userInfoUrl": "http://dex:5556/dex/userinfo",
+        "defaultScope": "openid profile email",
+        "validateSignature": "true",
+        "useJwksUrl": "true",
+        "syncMode": "FORCE"
+      }
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "stoa-portal",
+      "name": "STOA Portal / Backstage",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "redirectUris": ["*"],
+      "webOrigins": ["*"],
+      "attributes": { "post.logout.redirect.uris": "*" }
+    },
+    {
+      "clientId": "poc-gateways",
+      "name": "Gateways (WSO2 / APISIX / webMethods) — token audience",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "poc-gateways-secret",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "redirectUris": ["*"],
+      "webOrigins": ["*"],
+      "protocolMappers": [
+        {
+          "name": "gateways-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "poc-gateways",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "service-poc",
+      "enabled": true,
+      "email": "service-poc@bc.example",
+      "emailVerified": true,
+      "credentials": [
+        { "type": "password", "value": "password", "temporary": false }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+# Dex — mock de l'IdP Oracle (OIDC upstream). "Oracle reste master" : Keycloak
+# le broke et émet les tokens consommés par les 3 gateways.
+# Données synthétiques uniquement. Mot de passe des users de démo : "password".
+issuer: http://dex:5556/dex
+
+storage:
+  type: memory
+
+web:
+  http: 0.0.0.0:5556
+
+telemetry:
+  http: 0.0.0.0:5558
+
+oauth2:
+  skipApprovalScreen: true
+
+# Client confidentiel utilisé par Keycloak comme broker OIDC upstream.
+staticClients:
+  - id: keycloak-broker
+    name: "Keycloak Broker (STOA Lab)"
+    secret: keycloak-broker-secret-poc
+    redirectURIs:
+      # Endpoint broker Keycloak (port hôte mappé pour le flux navigateur).
+      - http://localhost:8081/realms/stoa-lab/broker/oracle/endpoint
+
+enablePasswordDB: true
+
+# bcrypt de "password" (hash d'exemple public Dex).
+staticPasswords:
+  - email: "alice@bc.example"
+    hash: "$2a$10$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4"
+    username: "alice"
+    userID: "oracle-alice-001"
+  - email: "bob@bc.example"
+    hash: "$2a$10$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4"
+    username: "bob"
+    userID: "oracle-bob-002"
