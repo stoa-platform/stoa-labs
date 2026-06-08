@@ -28,6 +28,11 @@ plugins:
   - opentelemetry
   - proxy-rewrite
   - prometheus
+  # Consumer auth (labctl subscribe). public-api exposes the jwt sign endpoint
+  # /apisix/plugin/jwt/sign (NOT enabled by default — required for jwt-auth).
+  - jwt-auth
+  - key-auth
+  - public-api
 
 plugin_attr:
   opentelemetry:
