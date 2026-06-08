@@ -51,14 +51,20 @@ services:
   # Gateway #2 — Apache APISIX (réel, OSS) + etcd
   # ---------------------------------------------------------------------------
   etcd:
-    image: ${ETCD_IMAGE}
+    # Pinned in-compose (not via .env ETCD_IMAGE): Bitnami removed the public
+    # bitnami/etcd:3.5 tag (2025 Broadcom change → bitnamilegacy). Official
+    # CoreOS etcd is durable/supported. Ignores any stale ETCD_IMAGE in .env.
+    image: quay.io/coreos/etcd:v3.5.21
     container_name: poc-etcd
+    # Official CoreOS etcd, single node, no auth (APISIX config store).
+    # Env-var config (entrypoint-agnostic); name/peer left at single-node defaults.
     environment:
-      ALLOW_NONE_AUTHENTICATION: "yes"
-      ETCD_ADVERTISE_CLIENT_URLS: "http://etcd:2379"
+      ETCD_DATA_DIR: /etcd-data
       ETCD_LISTEN_CLIENT_URLS: "http://0.0.0.0:2379"
+      ETCD_ADVERTISE_CLIENT_URLS: "http://etcd:2379"
+      ETCDCTL_API: "3"
     volumes:
-      - etcd-data:/bitnami/etcd
+      - etcd-data:/etcd-data
     healthcheck:
       test: ["CMD", "etcdctl", "endpoint", "health"]
       interval: 10s
