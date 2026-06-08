@@ -108,8 +108,8 @@ Question à trancher : **où investir la customisation pour qu'elle capitalise e
 
 ---
 
-## ⚠️ Point de réconciliation à trancher (signalé, non appliqué)
+## Point de réconciliation — TRANCHÉ (2026-06-08)
 
-Cet ADR décrit le PoC comme **« webMethods / APISIX / stand-in SAP »** (réf. ci-dessus), alors que le `PLAN.md` actuellement validé (GO conditionnel Council) liste **« WSO2 / APISIX / webMethods »**. Divergence réelle sur le 3ᵉ runtime : **WSO2 (gateway OSS « neuf »)** vs **stand-in SAP (cible future)**.
+**Décision : on garde WSO2 dans le PoC ; le stand-in SAP est différé.** SAP n'est pas pour tout de suite — l'amorçage (étape 4 « Adapter SAP stub ») reste planifié mais hors du jet courant.
 
-Adopter cet ADR implique vraisemblablement de **remplacer WSO2 par un stand-in SAP** dans le lineup du PoC (le récit devient « legacy en drain → custom cloud interim → pont SAP », pas « OSS remplace webMethods » — option #3 explicitement *rejetée* ici). **Non appliqué au PLAN tant que le Council n'a pas statué** sur cet ADR, pour ne pas défaire le plan déjà verrouillé.
+Cela ne contredit pas la règle des trois bacs : **WSO2 est un runtime commodity du Bac B (FÉDÈRE/RÉUTILISE)**, au même titre qu'APISIX ou, demain, SAP. Le « stand-in SAP » n'était qu'une illustration du 3ᵉ runtime ; la **couche possédée (Bac A) reste identique quel que soit le runtime fédéré**. Le PoC conserve donc le lineup validé **« WSO2 / APISIX / webMethods »** ; le `PLAN.md` est inchangé. Quand SAP deviendra la cible vivante, on **ajoute** l'adapter SAP (Bac B) sans toucher à la couche possédée — ce qui *est précisément* la thèse de cet ADR.
