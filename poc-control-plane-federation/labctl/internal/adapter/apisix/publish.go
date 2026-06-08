@@ -31,6 +31,7 @@ func (a *Adapter) Publish(ctx context.Context, api *adapter.NormalizedAPI) (*ada
 	if err != nil {
 		return nil, fmt.Errorf("apisix publish %s: %w", api.Name, err)
 	}
+	backendPath := backendBasePath(api.BackendURL)
 	upstream := upstreamBody{
 		Type:     "roundrobin",
 		Scheme:   scheme,
@@ -46,7 +47,7 @@ func (a *Adapter) Publish(ctx context.Context, api *adapter.NormalizedAPI) (*ada
 	//    routes stay thin. Routes reference it via service_id.
 	service := serviceBody{
 		UpstreamID: upstreamID,
-		Plugins:    sharedPlugins(api.BasePath),
+		Plugins:    sharedPlugins(api.BasePath, backendPath),
 	}
 	svcURL := a.adminURL + "/apisix/admin/services/" + upstreamID
 	if _, err := httpx.JSON(ctx, a.client, http.MethodPut, svcURL, a.adminHeaders(), service, nil); err != nil {
@@ -66,7 +67,7 @@ func (a *Adapter) Publish(ctx context.Context, api *adapter.NormalizedAPI) (*ada
 			Methods:   ep.Methods,
 			Status:    1, // 1 = enabled (0 would create but serve no traffic)
 			ServiceID: upstreamID,
-			Plugins:   sharedPlugins(api.BasePath),
+			Plugins:   sharedPlugins(api.BasePath, backendPath),
 			Labels:    routeLabels(api.Name, api.Version),
 		}
 		rURL := fmt.Sprintf("%s/apisix/admin/routes/%s-%d", a.adminURL, api.Name, i)
@@ -107,13 +108,20 @@ func (a *Adapter) routeExists(ctx context.Context, id string) bool {
 // an API: proxy-rewrite (strip the public basePath prefix before the backend)
 // and opentelemetry (always-on sampling). plugins is a JSON OBJECT keyed by
 // plugin name — never an array.
-func sharedPlugins(basePath string) map[string]any {
+func sharedPlugins(basePath, backendPath string) map[string]any {
+	// Rewrite the public basePath to the BACKEND base path so the upstream
+	// (host:port only) receives the full path it serves. e.g.
+	//   /accounts-read/v1/accounts -> /rest/Accounts+Read+API/1.0.0/accounts
+	// Without the backendPath prefix the backend gets "/accounts" and 404s.
+	rewrite := "/$1"
+	if backendPath != "" {
+		rewrite = backendPath + "/$1"
+	}
 	return map[string]any{
 		"proxy-rewrite": map[string]any{
-			// ^<basePath>/(.*) -> /$1 : drop the public prefix for the backend.
 			// QuoteMeta the basePath so a legal path metachar (e.g. "/v1.0")
 			// is matched literally instead of as a regex wildcard (over-match).
-			"regex_uri": []string{"^" + regexp.QuoteMeta(basePath) + "/(.*)", "/$1"},
+			"regex_uri": []string{"^" + regexp.QuoteMeta(basePath) + "/(.*)", rewrite},
 		},
 		"opentelemetry": map[string]any{
 			"sampler": map[string]any{"name": "always_on"},

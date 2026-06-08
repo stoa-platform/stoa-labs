@@ -227,8 +227,9 @@ func TestPublish_FullSequence(t *testing.T) {
 	if !res.Created {
 		t.Errorf("Created=false, want true for a freshly imported API")
 	}
-	if res.InvocationURL != "https://wso2am:8243/accounts-read/v1" {
-		t.Errorf("InvocationURL = %q", res.InvocationURL)
+	// WSO2 puts the version in the path: {gateway}/{context}/{version}.
+	if res.InvocationURL != "https://wso2am:8243/accounts-read/v1/v1" {
+		t.Errorf("InvocationURL = %q, want .../accounts-read/v1/v1", res.InvocationURL)
 	}
 
 	// deploy-revision: revisionId in QUERY, JSON ARRAY body with name+vhost.

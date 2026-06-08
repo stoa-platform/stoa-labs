@@ -105,7 +105,7 @@ func (a *Adapter) CreateConsumer(ctx context.Context, api *adapter.NormalizedAPI
 			Methods:   ep.Methods,
 			Status:    1,
 			ServiceID: api.Name,
-			Plugins:   pluginsWithAuth(api.BasePath, authType),
+			Plugins:   pluginsWithAuth(api.BasePath, backendBasePath(api.BackendURL), authType),
 			// Re-stamp labels: a PUT replaces the whole route object, so without
 			// these the publish-time Name/Version labels would be wiped here.
 			Labels: routeLabels(api.Name, api.Version),
@@ -148,8 +148,8 @@ func (a *Adapter) putConsumer(ctx context.Context, body consumerBody) error {
 // pluginsWithAuth returns the shared non-auth plugins with the requested auth
 // plugin enabled via an EMPTY object ({} merely turns the plugin on; the route
 // names no consumer — APISIX matches the incoming credential at request time).
-func pluginsWithAuth(basePath, authType string) map[string]any {
-	p := sharedPlugins(basePath)
+func pluginsWithAuth(basePath, backendPath, authType string) map[string]any {
+	p := sharedPlugins(basePath, backendPath)
 	p[authType] = map[string]any{}
 	return p
 }
