@@ -22,7 +22,8 @@ staticClients:
     secret: keycloak-broker-secret-poc
     redirectURIs:
       # Endpoint broker Keycloak (port hôte mappé pour le flux navigateur).
-      - http://localhost:8081/realms/stoa-lab/broker/oracle/endpoint
+      # Host port 8480 (8081 était pris par un autre stack local).
+      - http://localhost:8480/realms/stoa-lab/broker/oracle/endpoint
 
 enablePasswordDB: true
 
