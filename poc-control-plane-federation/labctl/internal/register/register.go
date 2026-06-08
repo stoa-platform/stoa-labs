@@ -3,8 +3,8 @@
 // package instead of each adapter, keeping cmd/ decoupled from concrete drivers.
 package register
 
-// Adapter imports are added here as each driver lands:
-//
-//	_ "github.com/stoa-platform/stoa-labs/poc/labctl/internal/adapter/wso2"
-//	_ "github.com/stoa-platform/stoa-labs/poc/labctl/internal/adapter/apisix"
-//	_ "github.com/stoa-platform/stoa-labs/poc/labctl/internal/adapter/webmethods"
+import (
+	_ "github.com/stoa-platform/stoa-labs/poc/labctl/internal/adapter/apisix"
+	_ "github.com/stoa-platform/stoa-labs/poc/labctl/internal/adapter/webmethods"
+	_ "github.com/stoa-platform/stoa-labs/poc/labctl/internal/adapter/wso2"
+)

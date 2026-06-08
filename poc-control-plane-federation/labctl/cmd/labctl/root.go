@@ -20,8 +20,9 @@ var rootCmd = &cobra.Command{
 		"gateways (WSO2, Apache APISIX, webMethods) from one targets.yaml, and " +
 		"provisions consumers with an out-of-band Keycloak OAuth client.\n\n" +
 		"This is a PoC demonstrator (scaffold), not a product — see POSITIONING.md.",
-	SilenceUsage:  true,
-	SilenceErrors: false,
+	SilenceUsage: true,
+	// main prints the error once on stderr; don't let cobra also print it.
+	SilenceErrors: true,
 }
 
 func init() {
