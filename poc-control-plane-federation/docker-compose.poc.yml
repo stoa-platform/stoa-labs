@@ -85,13 +85,14 @@ services:
     volumes:
       - ./gateways/apisix/config.yaml:/usr/local/apisix/conf/config.yaml:ro
     healthcheck:
-      # APISIX serves no /apisix/status on the data plane (9080). Probe the Admin
-      # API (9180) — proves the server is up AND connected to etcd.
-      test: ["CMD-SHELL", "curl -sf -o /dev/null -H 'X-API-KEY: poc-apisix-admin-key' http://127.0.0.1:9180/apisix/admin/routes || exit 1"]
+      # The apache/apisix:*-debian image ships NO curl/wget/nc, but it has bash.
+      # Probe the data-plane (9080) and admin (9180) listeners via bash /dev/tcp —
+      # tool-free liveness that proves APISIX is serving and its config plane is up.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9080 && exec 4<>/dev/tcp/127.0.0.1/9180"]
       interval: 10s
       timeout: 5s
       retries: 20
-      start_period: 20s
+      start_period: 15s
     networks: [poc]
     restart: unless-stopped
 
