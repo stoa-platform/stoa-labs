@@ -8,6 +8,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -421,6 +422,190 @@ func TestPublish_IdempotentReuse(t *testing.T) {
 	}
 	if !h.deployHit || !h.lifecycleHit {
 		t.Error("deploy + lifecycle must still run on idempotent reuse")
+	}
+}
+
+// TestPublish_RevisionCapRecovery proves that repeated apply against an API that
+// has hit WSO2's 5-revision cap does NOT crash: the adapter prunes the oldest
+// revision and retries, so a 6th (and Nth) apply still converges.
+func TestPublish_RevisionCapRecovery(t *testing.T) {
+	const cap = 5
+	var mu sync.Mutex
+	// revs models the API's revision store, oldest-first. Seed it at the cap so
+	// the very next apply must prune before it can create.
+	revs := []string{"rev-1", "rev-2", "rev-3", "rev-4", "rev-5"}
+	next := 6
+	createAttempts := 0
+	pruned := 0
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/client-registration/v0.17/register", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, map[string]string{"clientId": "c", "clientSecret": "s"})
+	})
+	mux.HandleFunc("/oauth2/token", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, map[string]any{"access_token": "t", "expires_in": 3600})
+	})
+	// Existing API: import must never be called.
+	mux.HandleFunc("/api/am/publisher/v4/apis/import-openapi", func(w http.ResponseWriter, r *http.Request) {
+		t.Error("import-openapi must NOT be called for an existing API")
+		writeJSON(w, 201, map[string]string{"id": "nope"})
+	})
+	// GET list -> revisions store; POST create -> enforce the cap of 5.
+	mux.HandleFunc("/api/am/publisher/v4/apis/existing-id/revisions", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch r.Method {
+		case http.MethodGet:
+			list := make([]map[string]any, 0, len(revs))
+			for _, id := range revs {
+				list = append(list, map[string]any{"id": id, "deploymentInfo": []any{}})
+			}
+			writeJSON(w, 200, map[string]any{"count": len(list), "list": list})
+		case http.MethodPost:
+			createAttempts++
+			if len(revs) >= cap {
+				// WSO2 900981: "Maximum number of revisions exceeded".
+				writeJSON(w, 500, map[string]any{"code": 900981, "message": "Maximum number of revisions exceeded"})
+				return
+			}
+			id := "rev-" + strconv.Itoa(next)
+			next++
+			revs = append(revs, id)
+			writeJSON(w, 201, map[string]string{"id": id})
+		default:
+			w.WriteHeader(405)
+		}
+	})
+	// DELETE oldest revision -> drop revs[0].
+	mux.HandleFunc("/api/am/publisher/v4/apis/existing-id/revisions/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			w.WriteHeader(405)
+			return
+		}
+		mu.Lock()
+		if len(revs) > 0 {
+			revs = revs[1:]
+			pruned++
+		}
+		mu.Unlock()
+		writeJSON(w, 200, map[string]string{})
+	})
+	mux.HandleFunc("/api/am/publisher/v4/apis/existing-id/deploy-revision", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, []map[string]any{{"status": "CREATED"}})
+	})
+	mux.HandleFunc("/api/am/publisher/v4/apis/change-lifecycle", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, map[string]string{"lifecycleState": "PUBLISHED"})
+	})
+	mux.HandleFunc("/api/am/publisher/v4/apis", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, map[string]any{"count": 1, "list": []map[string]string{
+			{"id": "existing-id", "name": "accounts-read", "version": "v1"},
+		}})
+	})
+	srv := httptest.NewTLSServer(mux)
+	defer srv.Close()
+
+	c := newTestAdapter(t, srv.URL)
+
+	// Each apply must succeed even though the store is permanently at the cap.
+	for i := 0; i < 3; i++ {
+		res, err := c.Publish(context.Background(), sampleAPI())
+		if err != nil {
+			t.Fatalf("apply #%d at revision cap failed (regression): %v", i+1, err)
+		}
+		if res.Created {
+			t.Errorf("apply #%d: Created=true, want false on reuse", i+1)
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	// Each apply hit the cap once, pruned once, then created — never crashed.
+	if pruned < 3 {
+		t.Errorf("pruned = %d, want >= 3 (one prune per capped apply)", pruned)
+	}
+	if len(revs) > cap {
+		t.Errorf("revision store grew past cap: %d > %d", len(revs), cap)
+	}
+}
+
+// TestCreateConsumer_SubscribeIdempotent proves that a second CreateConsumer on
+// the same (app, api) reuses the existing subscription via the GET probe instead
+// of POSTing a duplicate (which WSO2 answers with 409).
+func TestCreateConsumer_SubscribeIdempotent(t *testing.T) {
+	var mu sync.Mutex
+	subscribePosts := 0
+	subscribed := false // models the existing app+api subscription server-side.
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/client-registration/v0.17/register", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, map[string]string{"clientId": "c", "clientSecret": "s"})
+	})
+	mux.HandleFunc("/oauth2/token", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, map[string]any{"access_token": "t", "expires_in": 3600})
+	})
+	mux.HandleFunc("/api/am/devportal/v3/apis", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, map[string]any{"count": 1, "list": []map[string]string{
+			{"id": "dev-api-1", "name": "accounts-read", "version": "v1"},
+		}})
+	})
+	// Application already exists -> reused by name.
+	mux.HandleFunc("/api/am/devportal/v3/applications", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, map[string]any{"count": 1, "list": []map[string]string{
+			{"applicationId": "app-1", "name": "team-x"},
+		}})
+	})
+	mux.HandleFunc("/api/am/devportal/v3/subscriptions", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch r.Method {
+		case http.MethodGet:
+			list := []map[string]string{}
+			if subscribed {
+				list = append(list, map[string]string{
+					"subscriptionId": "sub-1", "apiId": "dev-api-1", "applicationId": "app-1",
+				})
+			}
+			writeJSON(w, 200, map[string]any{"count": len(list), "list": list})
+		case http.MethodPost:
+			subscribePosts++
+			if subscribed {
+				// A duplicate POST would be rejected by WSO2 with 409.
+				writeJSON(w, 409, map[string]any{"code": 409, "message": "already subscribed"})
+				return
+			}
+			subscribed = true
+			writeJSON(w, 201, map[string]string{
+				"subscriptionId": "sub-1", "apiId": "dev-api-1", "applicationId": "app-1",
+			})
+		}
+	})
+	mux.HandleFunc("/api/am/devportal/v3/applications/app-1/generate-keys", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, map[string]string{"consumerKey": "ck", "consumerSecret": "cs", "keyType": "PRODUCTION"})
+	})
+	srv := httptest.NewTLSServer(mux)
+	defer srv.Close()
+
+	c := newTestAdapter(t, srv.URL)
+	spec := &adapter.ConsumerSpec{Name: "team-x", ThrottlingPolicy: "Unlimited"}
+
+	res1, err := c.CreateConsumer(context.Background(), sampleAPI(), spec)
+	if err != nil {
+		t.Fatalf("first CreateConsumer: %v", err)
+	}
+	res2, err := c.CreateConsumer(context.Background(), sampleAPI(), spec)
+	if err != nil {
+		t.Fatalf("second CreateConsumer (idempotency regression): %v", err)
+	}
+	if res1.SubscriptionID != "sub-1" || res2.SubscriptionID != "sub-1" {
+		t.Errorf("subscriptionId = %q/%q, want sub-1 both times", res1.SubscriptionID, res2.SubscriptionID)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	// The subscription POST must have happened exactly once: the second apply
+	// reused the existing subscription via the GET probe.
+	if subscribePosts != 1 {
+		t.Errorf("subscribe POSTed %d times, want 1 (second apply must reuse)", subscribePosts)
 	}
 }
 

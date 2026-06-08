@@ -111,11 +111,19 @@ func (a *Adapter) List(ctx context.Context) ([]adapter.PublishedAPI, error) {
 	out := make([]adapter.PublishedAPI, 0, len(resp.List))
 	for _, item := range resp.List {
 		v := item.Value
+		// APISIX routes carry no native API name/version. labctl stamps them as
+		// route labels at publish; prefer those so `labctl get apis` reaches
+		// parity with the WSO2/webMethods adapters (which fill Name+Version).
+		name := v.Name
+		if l := v.Labels["api"]; l != "" {
+			name = l
+		}
 		out = append(out, adapter.PublishedAPI{
 			Gateway:  gatewayName,
 			APIID:    v.ID,
-			Name:     v.Name,
+			Name:     name,
 			BasePath: v.URI,
+			Version:  v.Labels["version"],
 		})
 	}
 	return out, nil
@@ -126,9 +134,10 @@ func (a *Adapter) List(ctx context.Context) ([]adapter.PublishedAPI, error) {
 type listRoutesResponse struct {
 	List []struct {
 		Value struct {
-			ID   string `json:"id"`
-			Name string `json:"name"`
-			URI  string `json:"uri"`
+			ID     string            `json:"id"`
+			Name   string            `json:"name"`
+			URI    string            `json:"uri"`
+			Labels map[string]string `json:"labels"`
 		} `json:"value"`
 	} `json:"list"`
 }

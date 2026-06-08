@@ -11,10 +11,28 @@ Démonstrateur : **un control plane assemblé sur briques OSS fédère 3 gateway
 | Phase | Contenu | État |
 |-------|---------|------|
 | 0 | Plan + cadrage ([`PLAN.md`](./PLAN.md)) | ✅ GO conditionnel Council |
-| **1** | **Socle OSS (docker-compose, 3 gateways + identité + obs)** | **🚧 en cours** |
-| 2 | `labctl` + Define Once (1 OpenAPI → 3 gateways) | ⏳ |
+| 1 | Socle OSS (docker-compose, 3 gateways + identité + obs) | ✅ écrit ; DoD live = `up` sur ton Docker |
+| **2** | **`labctl` + Define Once (1 OpenAPI → 3 gateways)** | **🚧 implémenté, 34 tests verts ; DoD live en attente du stack** |
 | 3 | Self-service Backstage + identité Oracle-master | ⏳ |
 | 4 | Evidence report (corrélation `trace_id` 3 gateways) | ⏳ |
+
+## labctl — l'orchestrateur de fédération (Phase 2)
+
+`labctl` est le scaffold mince qui prouve **« Define Once, Expose Everywhere »** : un
+seul contrat OpenAPI ([`apis/accounts-read.openapi.yaml`](./apis/accounts-read.openapi.yaml))
+publié sur 3 runtimes hétérogènes depuis un seul [`targets.yaml`](./targets.yaml).
+
+```bash
+( cd labctl && go build -o /tmp/labctl . )
+
+/tmp/labctl apply     -f targets.yaml   # publie le contrat sur WSO2 + APISIX + webMethods
+/tmp/labctl get apis  -f targets.yaml   # catalogue unifié des 3 gateways
+/tmp/labctl subscribe -f targets.yaml   # client Keycloak → consumer sur les 3 gateways
+```
+
+Adapters : `internal/adapter/{wso2,apisix,webmethods}` (un par runtime, derrière une
+interface commune `adapter.Adapter`). Le « moteur de fédération » est la boucle de
+dispatch dans `cmd/labctl/apply.go`. Tests : `( cd labctl && go test ./... )`.
 
 ## Quickstart (Phase 1)
 

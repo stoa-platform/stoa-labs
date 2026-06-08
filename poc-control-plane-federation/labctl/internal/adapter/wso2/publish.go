@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"mime/multipart"
+	"net/url"
 	"path/filepath"
 
 	"github.com/stoa-platform/stoa-labs/poc/labctl/internal/adapter"
@@ -36,10 +37,25 @@ type importResponse struct {
 	Context string `json:"context"`
 }
 
-// revisionResponse is returned by POST /apis/{id}/revisions.
+// revisionResponse is returned by POST /apis/{id}/revisions and is one element
+// of the GET /apis/{id}/revisions list. deploymentInfo is non-empty when the
+// revision is currently deployed onto a gateway (a deployed revision cannot be
+// deleted, so we must undeploy it first).
 type revisionResponse struct {
-	ID          string `json:"id"`
-	Description string `json:"description"`
+	ID             string           `json:"id"`
+	Description    string           `json:"description"`
+	DeploymentInfo []deploymentInfo `json:"deploymentInfo"`
+}
+
+// deploymentInfo describes where a revision is deployed (gateway env name).
+type deploymentInfo struct {
+	Name string `json:"name"`
+}
+
+// revisionList is the GET /apis/{id}/revisions response.
+type revisionList struct {
+	Count int                `json:"count"`
+	List  []revisionResponse `json:"list"`
 }
 
 // deployment is one element of the deploy-revision request/response array.
@@ -88,7 +104,11 @@ func (c *Client) Publish(ctx context.Context, api *adapter.NormalizedAPI) (*adap
 		return nil, err
 	}
 
-	// 2. Create a deployable revision (mandatory in 4.x).
+	// 2. Create a deployable revision (mandatory in 4.x). WSO2 4.x caps an API
+	//    at 5 revisions, so make room first to keep repeated apply convergent.
+	if err := c.ensureRevisionSlot(ctx, tok, apiID); err != nil {
+		return nil, err
+	}
 	revisionID, err := c.createRevision(ctx, tok, apiID)
 	if err != nil {
 		return nil, err
@@ -215,19 +235,103 @@ func buildImportMultipart(api *adapter.NormalizedAPI, propsJSON []byte) (*bytes.
 	return &buf, mw.FormDataContentType(), nil
 }
 
-// createRevision creates a deployable revision and returns its id.
+// revisionMax is WSO2 API-M 4.x's per-API revision cap. Exceeding it makes
+// POST /apis/{id}/revisions fail (900981 "Maximum number of revisions
+// exceeded"), which would break a repeated `labctl apply` of an unchanged API.
+const revisionMax = 5
+
+// createRevision creates a deployable revision and returns its id. On a POST
+// failure (typically the per-API revision cap of WSO2 4.x) it prunes the oldest
+// non-deployed revision and retries once, so re-apply stays convergent.
 func (c *Client) createRevision(ctx context.Context, tok, apiID string) (string, error) {
 	in := map[string]string{"description": "labctl revision"}
 	var out revisionResponse
 	code, err := httpx.JSON(ctx, c.hc, "POST",
-		c.adminURL+publisherBase+"/apis/"+apiID+"/revisions", bearer(tok), in, &out)
+		c.adminURL+publisherBase+"/apis/"+url.PathEscape(apiID)+"/revisions", bearer(tok), in, &out)
 	if err != nil {
-		return "", fmt.Errorf("wso2 publish: create revision (%d): %w", code, err)
+		// WSO2 4.x caps at 5 revisions: the 6th POST returns a non-2xx. Purge the
+		// oldest non-deployed revision and retry once before giving up.
+		if rErr := c.pruneOldestRevision(ctx, tok, apiID); rErr != nil {
+			return "", fmt.Errorf("wso2 publish: create revision (%d): %w; prune failed: %v", code, err, rErr)
+		}
+		code, err = httpx.JSON(ctx, c.hc, "POST",
+			c.adminURL+publisherBase+"/apis/"+url.PathEscape(apiID)+"/revisions", bearer(tok), in, &out)
+		if err != nil {
+			return "", fmt.Errorf("wso2 publish: create revision after prune (%d): %w", code, err)
+		}
 	}
 	if out.ID == "" {
 		return "", fmt.Errorf("wso2 publish: create revision returned empty id")
 	}
 	return out.ID, nil
+}
+
+// listRevisions returns the revisions currently held by the API (oldest-first).
+func (c *Client) listRevisions(ctx context.Context, tok, apiID string) ([]revisionResponse, error) {
+	var list revisionList
+	if _, err := httpx.JSON(ctx, c.hc, "GET",
+		c.adminURL+publisherBase+"/apis/"+url.PathEscape(apiID)+"/revisions",
+		bearer(tok), nil, &list); err != nil {
+		return nil, fmt.Errorf("wso2 publish: list revisions: %w", err)
+	}
+	return list.List, nil
+}
+
+// ensureRevisionSlot keeps the API under WSO2's per-API revision cap (default 5)
+// by pruning the oldest revision when the list is already full, so a repeated
+// apply of an unchanged contract stays convergent instead of failing at the cap.
+func (c *Client) ensureRevisionSlot(ctx context.Context, tok, apiID string) error {
+	list, err := c.listRevisions(ctx, tok, apiID)
+	if err != nil {
+		return err
+	}
+	if len(list) < revisionMax {
+		return nil // under the cap, there is room to create.
+	}
+	return c.pruneRevision(ctx, tok, apiID, list)
+}
+
+// pruneOldestRevision lists the revisions and deletes the oldest non-deployed
+// one (undeploying it first when needed). Used as the recovery path when a
+// create-revision POST is rejected at the cap.
+func (c *Client) pruneOldestRevision(ctx context.Context, tok, apiID string) error {
+	list, err := c.listRevisions(ctx, tok, apiID)
+	if err != nil {
+		return err
+	}
+	if len(list) == 0 {
+		return fmt.Errorf("wso2 publish: no revision to prune")
+	}
+	return c.pruneRevision(ctx, tok, apiID, list)
+}
+
+// pruneRevision picks the oldest non-deployed revision (falling back to the
+// oldest one, undeploying it first), and DELETEs it. list is oldest-first.
+func (c *Client) pruneRevision(ctx context.Context, tok, apiID string, list []revisionResponse) error {
+	// Prefer the oldest revision that is not currently deployed.
+	victim := list[0]
+	found := false
+	for _, r := range list {
+		if len(r.DeploymentInfo) == 0 {
+			victim = r
+			found = true
+			break
+		}
+	}
+	if !found {
+		// All revisions are deployed; undeploy the oldest before deleting it.
+		body := []deployment{{Name: c.gatewayEnv, Vhost: c.vhost}}
+		_, _ = httpx.JSON(ctx, c.hc, "POST",
+			c.adminURL+publisherBase+"/apis/"+url.PathEscape(apiID)+
+				"/undeploy-revision?revisionId="+queryEscape(victim.ID),
+			bearer(tok), body, nil)
+	}
+	if _, err := httpx.JSON(ctx, c.hc, "DELETE",
+		c.adminURL+publisherBase+"/apis/"+url.PathEscape(apiID)+"/revisions/"+url.PathEscape(victim.ID),
+		bearer(tok), nil, nil); err != nil {
+		return fmt.Errorf("wso2 publish: delete oldest revision: %w", err)
+	}
+	return nil
 }
 
 // deployRevision deploys the revision onto the gateway environment. The body is
@@ -239,10 +343,10 @@ func (c *Client) deployRevision(ctx context.Context, tok, apiID, revisionID stri
 		Vhost:              c.vhost,
 		DisplayOnDevportal: true,
 	}}
-	url := c.adminURL + publisherBase + "/apis/" + apiID +
+	deployURL := c.adminURL + publisherBase + "/apis/" + url.PathEscape(apiID) +
 		"/deploy-revision?revisionId=" + queryEscape(revisionID)
 
-	code, err := httpx.JSON(ctx, c.hc, "POST", url, bearer(tok), body, nil)
+	code, err := httpx.JSON(ctx, c.hc, "POST", deployURL, bearer(tok), body, nil)
 	if err != nil {
 		// httpx.JSON only errors on non-2xx/transport; surface the diagnostic.
 		return fmt.Errorf("wso2 publish: deploy-revision (404=>bad gatewayEnv/vhost): %w", err)
@@ -256,10 +360,10 @@ func (c *Client) deployRevision(ctx context.Context, tok, apiID, revisionID stri
 // changeLifecycle moves the API lifecycle (action passed as a QUERY param, no
 // body). Expects 200/202.
 func (c *Client) changeLifecycle(ctx context.Context, tok, apiID, action string) error {
-	url := c.adminURL + publisherBase + "/apis/change-lifecycle?apiId=" +
+	lcURL := c.adminURL + publisherBase + "/apis/change-lifecycle?apiId=" +
 		queryEscape(apiID) + "&action=" + queryEscape(action)
 
-	code, raw, err := httpx.Do(ctx, c.hc, "POST", url, bearer(tok), nil)
+	code, raw, err := httpx.Do(ctx, c.hc, "POST", lcURL, bearer(tok), nil)
 	if err != nil {
 		return fmt.Errorf("wso2 publish: change-lifecycle %s: %w", action, err)
 	}

@@ -55,9 +55,13 @@ func (a *Adapter) CreateConsumer(ctx context.Context, api *adapter.NormalizedAPI
 			return nil, fmt.Errorf("apisix consumer %s: %w", username, err)
 		}
 		res.ConsumerKey = key
+		// SECURITY: never interpolate the raw apikey into TokenHint — it is
+		// printed verbatim on stdout (subscribe.go) and would leak the secret to
+		// the terminal/CI logs/scrollback. Emit a TEMPLATE; the actual key is
+		// surfaced (truncated) via the CREDENTIAL column from res.ConsumerKey.
 		res.TokenHint = fmt.Sprintf(
-			"send header  apikey: %s  to %s%s (NO Bearer)",
-			key, a.gwURL, api.BasePath)
+			"send header  apikey: <key>  to %s%s (NO Bearer)",
+			a.gwURL, api.BasePath)
 
 	case "jwt-auth":
 		key := spec.Key
@@ -102,6 +106,9 @@ func (a *Adapter) CreateConsumer(ctx context.Context, api *adapter.NormalizedAPI
 			Status:    1,
 			ServiceID: api.Name,
 			Plugins:   pluginsWithAuth(api.BasePath, authType),
+			// Re-stamp labels: a PUT replaces the whole route object, so without
+			// these the publish-time Name/Version labels would be wiped here.
+			Labels: routeLabels(api.Name, api.Version),
 		}
 		rURL := fmt.Sprintf("%s/apisix/admin/routes/%s-%d", a.adminURL, api.Name, i)
 		if _, err := httpx.JSON(ctx, a.client, http.MethodPut, rURL, a.adminHeaders(), route, nil); err != nil {

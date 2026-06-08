@@ -3,6 +3,7 @@ package wso2
 import (
 	"context"
 	"fmt"
+	"net/url"
 
 	"github.com/stoa-platform/stoa-labs/poc/labctl/internal/adapter"
 	"github.com/stoa-platform/stoa-labs/poc/labctl/internal/httpx"
@@ -31,6 +32,13 @@ type subscriptionResponse struct {
 	SubscriptionID string `json:"subscriptionId"`
 	APIID          string `json:"apiId"`
 	ApplicationID  string `json:"applicationId"`
+}
+
+// subscriptionList is the GET /subscriptions response used to probe for an
+// existing (app, api) subscription before POSTing a new one.
+type subscriptionList struct {
+	Count int                    `json:"count"`
+	List  []subscriptionResponse `json:"list"`
 }
 
 // mapKeysRequest maps an externally-minted OAuth client (Keycloak) onto the
@@ -168,7 +176,22 @@ func (c *Client) findOrCreateApplication(ctx context.Context, tok string, spec *
 }
 
 // subscribe binds the application to the API and returns the subscription id.
+// Idempotent: an existing (app, api) subscription is reused instead of POSTing a
+// duplicate (which WSO2 DevPortal rejects with 409).
 func (c *Client) subscribe(ctx context.Context, tok, devAPIID, appID string, spec *adapter.ConsumerSpec) (string, error) {
+	// Idempotency probe: reuse an existing subscription for this app+api.
+	var existing subscriptionList
+	if _, err := httpx.JSON(ctx, c.hc, "GET",
+		c.adminURL+devportalBase+"/subscriptions?applicationId="+queryEscape(appID),
+		bearer(tok), nil, &existing); err != nil {
+		return "", fmt.Errorf("wso2 consumer: list subscriptions: %w", err)
+	}
+	for _, s := range existing.List {
+		if s.APIID == devAPIID && s.SubscriptionID != "" {
+			return s.SubscriptionID, nil
+		}
+	}
+
 	throttle := spec.ThrottlingPolicy
 	if throttle == "" {
 		throttle = defaultThrottle
@@ -182,6 +205,9 @@ func (c *Client) subscribe(ctx context.Context, tok, devAPIID, appID string, spe
 	if _, err := httpx.JSON(ctx, c.hc, "POST",
 		c.adminURL+devportalBase+"/subscriptions", bearer(tok), in, &out); err != nil {
 		return "", fmt.Errorf("wso2 consumer: subscribe: %w", err)
+	}
+	if out.SubscriptionID == "" {
+		return "", fmt.Errorf("wso2 consumer: subscribe returned empty subscriptionId")
 	}
 	return out.SubscriptionID, nil
 }
@@ -198,7 +224,7 @@ func (c *Client) wireKeys(ctx context.Context, tok, appID string, spec *adapter.
 			KeyManager:     residentKeyMgr,
 		}
 		if _, err := httpx.JSON(ctx, c.hc, "POST",
-			c.adminURL+devportalBase+"/applications/"+appID+"/map-keys",
+			c.adminURL+devportalBase+"/applications/"+url.PathEscape(appID)+"/map-keys",
 			bearer(tok), in, &out); err != nil {
 			return out, fmt.Errorf("wso2 consumer: map-keys: %w", err)
 		}
@@ -219,9 +245,12 @@ func (c *Client) wireKeys(ctx context.Context, tok, appID string, spec *adapter.
 		CallbackURL:             "https://localhost",
 	}
 	if _, err := httpx.JSON(ctx, c.hc, "POST",
-		c.adminURL+devportalBase+"/applications/"+appID+"/generate-keys",
+		c.adminURL+devportalBase+"/applications/"+url.PathEscape(appID)+"/generate-keys",
 		bearer(tok), in, &out); err != nil {
 		return out, fmt.Errorf("wso2 consumer: generate-keys: %w", err)
+	}
+	if out.ConsumerKey == "" {
+		return out, fmt.Errorf("wso2 consumer: generate-keys returned empty consumerKey")
 	}
 	return out, nil
 }
