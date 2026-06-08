@@ -22,6 +22,7 @@ KC_BASE="${KC_BASE:-http://localhost:8480}"
 REALM="${REALM:-stoa-lab}"
 DEX_BASE="${DEX_BASE:-http://localhost:5556}"
 CLIENT_ID="${CLIENT_ID:-stoa-portal}"        # public client, standardFlow + redirectUris '*'
+CLIENT_SECRET="${CLIENT_SECRET:-}"           # set for a CONFIDENTIAL login client (e.g. accounts-read-consumer)
 REDIRECT_URI="${REDIRECT_URI:-http://localhost:8480}"
 IDP_HINT="${IDP_HINT:-oracle}"
 DEX_USER="${DEX_USER:-alice@bc.example}"
@@ -63,6 +64,7 @@ log "      got authorization code: ${CODE:0:24}..."
 log "[3/4] Exchange code -> Keycloak token"
 TOK=$(curl -s -X POST "${KC}/protocol/openid-connect/token" \
   -d grant_type=authorization_code -d "client_id=${CLIENT_ID}" \
+  ${CLIENT_SECRET:+-d "client_secret=${CLIENT_SECRET}"} \
   -d "code=${CODE}" --data-urlencode "redirect_uri=${REDIRECT_URI}")
 ACCESS=$(printf '%s' "$TOK" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("access_token",""))')
 [ -n "$ACCESS" ] || { echo "ERROR token exchange:" >&2; echo "$TOK" >&2; exit 1; }
