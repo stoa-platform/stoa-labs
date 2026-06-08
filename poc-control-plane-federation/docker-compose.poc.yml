@@ -85,11 +85,13 @@ services:
     volumes:
       - ./gateways/apisix/config.yaml:/usr/local/apisix/conf/config.yaml:ro
     healthcheck:
-      test: ["CMD-SHELL", "curl -s http://localhost:9080/apisix/status || exit 1"]
+      # APISIX serves no /apisix/status on the data plane (9080). Probe the Admin
+      # API (9180) — proves the server is up AND connected to etcd.
+      test: ["CMD-SHELL", "curl -sf -o /dev/null -H 'X-API-KEY: poc-apisix-admin-key' http://127.0.0.1:9180/apisix/admin/routes || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 20
-      start_period: 30s
+      start_period: 20s
     networks: [poc]
     restart: unless-stopped
 
@@ -153,16 +155,17 @@ services:
       KC_HTTP_ENABLED: "true"
       DEX_BROKER_CLIENT_SECRET: "${DEX_BROKER_CLIENT_SECRET:-keycloak-broker-secret-poc}"
     ports:
-      - "${PORT_KEYCLOAK:-8081}:8080"
+      # Host 8081 is taken by another local stack (docker-compose-stoa-gateway).
+      # Pinned to 8480 (the .env PORT_KEYCLOAK can't override this hardcode).
+      # Internal port stays 8080 — that's what `labctl subscribe` calls over the
+      # compose network, so the host remap doesn't affect Phase 1/2.
+      - "8480:8080"
     volumes:
       - ./identity/keycloak/realm-stoa-lab.json:/opt/keycloak/data/import/realm-stoa-lab.json:ro
-    healthcheck:
-      # KC 26 expose /health sur le port management 9000.
-      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/9000; echo -e 'GET /health/ready HTTP/1.1\\nhost: localhost\\nConnection: close\\n\\n' >&3; cat <&3 | grep -q UP"]
-      interval: 15s
-      timeout: 5s
-      retries: 20
-      start_period: 60s
+    # No HEALTHCHECK: the Keycloak ubi9-micro image ships no shell/curl/wget for a
+    # reliable in-container probe. KC starts well before WSO2 (180s) is healthy, so
+    # `labctl subscribe` (Admin API over the compose network) finds it ready.
+    # Manual readiness: http://localhost:8480/health/ready (KC_HEALTH_ENABLED=true).
     networks: [poc]
     restart: unless-stopped
 
@@ -177,7 +180,8 @@ services:
       - "${PORT_OTLP_GRPC:-4317}:4317"      # OTLP gRPC
       - "${PORT_OTLP_HTTP:-4318}:4318"      # OTLP HTTP
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O- http://localhost:3000/api/health || exit 1"]
+      # The otel-lgtm image ships curl, not wget.
+      test: ["CMD-SHELL", "curl -sf -o /dev/null http://localhost:3000/api/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 20

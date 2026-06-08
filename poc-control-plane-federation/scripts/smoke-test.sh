@@ -21,7 +21,7 @@ echo "Smoke test — socle PoC fédération"
 check "webMethods mock"  "http://localhost:${PORT_WEBMETHODS:-8090}/rest/apigateway/is/health" 200
 check "APISIX status"    "http://localhost:${PORT_APISIX:-9080}/apisix/status" 200
 check "WSO2 (gateway)"   "https://localhost:${PORT_WSO2_CONSOLE:-9443}/services/Version" 200
-check "Keycloak realm"   "http://localhost:${PORT_KEYCLOAK:-8081}/realms/stoa-lab/.well-known/openid-configuration" 200
+check "Keycloak realm"   "http://localhost:8480/realms/stoa-lab/.well-known/openid-configuration" 200
 check "Dex (mock Oracle)" "http://localhost:${PORT_DEX:-5556}/dex/.well-known/openid-configuration" 200
 check "Grafana"          "http://localhost:${PORT_GRAFANA:-3000}/api/health" 200
 check "Microcks"         "http://localhost:${PORT_MICROCKS:-8585}/api/health" 200

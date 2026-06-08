@@ -37,7 +37,7 @@ PoC up. Accès :
   WSO2 Publisher/Devportal : https://localhost:${PORT_WSO2_CONSOLE:-9443}/publisher  (admin/admin)
   APISIX data-plane        : http://localhost:${PORT_APISIX:-9080}
   webMethods mock          : http://localhost:${PORT_WEBMETHODS:-8090}/rest/apigateway/is/health
-  Keycloak                 : http://localhost:${PORT_KEYCLOAK:-8081}  (admin/admin)
+  Keycloak                 : http://localhost:8480  (admin/admin)
   Dex (mock Oracle)        : http://localhost:${PORT_DEX:-5556}/dex/.well-known/openid-configuration
   Grafana (otel-lgtm)      : http://localhost:${PORT_GRAFANA:-3000}
   Microcks                 : http://localhost:${PORT_MICROCKS:-8585}
