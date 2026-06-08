@@ -37,20 +37,33 @@ if [[ -n "$existing" ]]; then
   echo "  WSO2 loads KMs into its runtime holder at STARTUP, so a re-registered KM"
   echo "  needs a 'docker restart poc-wso2am' before map-keys works)."
 else
-  # discover -> schema-correct base, then enable self-validation + azp claim
-  curl -sk -X POST "$WSO2/api/am/admin/v4/key-managers/discover" -H "Authorization: Bearer $ATOK" -F "url=$KC_WK" -F "type=default" -o /tmp/km_disc.json
+  # Use the dedicated WSO2 'KeyCloak' connector (NOT 'default'=WSO2-IS, which NPEs
+  # on a null keyManagerServiceUrl). Endpoints pinned to the internal keycloak:8080
+  # (reachable from WSO2); issuer = localhost:8480 to match the token's iss.
+  curl -sk -X POST "$WSO2/api/am/admin/v4/key-managers/discover" -H "Authorization: Bearer $ATOK" -F "url=$KC_WK" -F "type=KeyCloak" -o /tmp/km_disc.json
   python3 - <<'PY'
 import json
+KC="http://keycloak:8080/realms/stoa-lab"
 d=json.load(open('/tmp/km_disc.json')); v=d.get('value',d); v.pop('id',None)
-v.update({'name':'Keycloak','displayName':'Keycloak (stoa-lab)','enabled':True,
- 'enableSelfValidationJWT':True,'enableMapOAuthConsumerApps':True,'enableOAuthAppCreation':True,
- 'consumerKeyClaim':'azp','scopesClaim':'scope','tokenType':'DIRECT',
+v.update({'name':'Keycloak','displayName':'Keycloak (stoa-lab)','type':'KeyCloak','enabled':True,
+ 'issuer':'http://localhost:8480/realms/stoa-lab',
+ 'wellKnownEndpoint':KC+'/.well-known/openid-configuration',
+ 'tokenEndpoint':KC+'/protocol/openid-connect/token',
+ 'introspectionEndpoint':KC+'/protocol/openid-connect/token/introspect',
+ 'revokeEndpoint':KC+'/protocol/openid-connect/revoke',
+ 'userInfoEndpoint':KC+'/protocol/openid-connect/userinfo',
+ 'authorizeEndpoint':KC+'/protocol/openid-connect/auth',
+ 'clientRegistrationEndpoint':KC+'/clients-registrations/openid-connect',
+ 'scopeManagementEndpoint':KC+'/clients-registrations/openid-connect',
+ 'certificates':{'type':'JWKS','value':KC+'/protocol/openid-connect/certs'},
+ 'enableSelfValidationJWT':True,'enableMapOAuthConsumerApps':True,'enableOAuthAppCreation':False,
+ 'enableTokenGeneration':False,'consumerKeyClaim':'azp','scopesClaim':'scope','tokenType':'DIRECT',
  'tokenValidation':[{'id':1,'type':'JWT','value':{},'enable':True}],
- 'additionalProperties':{'self_validate_jwt':True}})
+ 'additionalProperties':{'client_id':'poc-gateways','client_secret':'poc-gateways-secret','self_validate_jwt':True}})
 json.dump(v,open('/tmp/km2.json','w'))
 PY
   code=$(curl -sk -X POST "$WSO2/api/am/admin/v4/key-managers" -H "Authorization: Bearer $ATOK" -H "Content-Type: application/json" -d @/tmp/km2.json -o /dev/null -w '%{http_code}')
-  echo "  register Keycloak KM -> HTTP $code"
+  echo "  register Keycloak KM (type=KeyCloak) -> HTTP $code"
   echo "  ⚠ NEXT: 'docker restart poc-wso2am' (wait ~3min) so the KM loads into the"
   echo "    runtime, THEN re-run this script — map-keys below will then succeed."
 fi
