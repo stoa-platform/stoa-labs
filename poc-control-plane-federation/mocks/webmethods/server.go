@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -61,6 +62,9 @@ type Server struct {
 	now      func() time.Time
 	dpCalls  metric.Int64Counter
 	dpErrors metric.Int64Counter
+	// auth, when non-nil, enforces Keycloak Bearer JWT validation on the
+	// data-plane (Phase 3). nil = no auth (Phase 1/2 + unit tests).
+	auth *Authenticator
 }
 
 func NewServer() *Server {
@@ -69,7 +73,13 @@ func NewServer() *Server {
 		metric.WithDescription("Data-plane requests handled by the webMethods mock"))
 	errs, _ := meter.Int64Counter("webmethods_dataplane_errors_total",
 		metric.WithDescription("Data-plane requests with no matching API"))
-	return &Server{store: NewStore(), now: time.Now, dpCalls: calls, dpErrors: errs}
+	return &Server{
+		store:    NewStore(),
+		now:      time.Now,
+		dpCalls:  calls,
+		dpErrors: errs,
+		auth:     NewAuthenticatorFromEnv(context.Background()),
+	}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -86,7 +96,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /rest/apigateway/transactionalEvents", s.events)
 
 	// --- Data-plane: everything under /gateway/<basePath>/... ---
-	mux.HandleFunc("/gateway/", s.dataPlane)
+	// Phase 3: when a Keycloak authenticator is configured, the data-plane
+	// requires a valid Bearer JWT (the admin surface above stays open, like a
+	// real gateway's management plane).
+	if s.auth != nil {
+		mux.Handle("/gateway/", s.auth.Middleware(http.HandlerFunc(s.dataPlane)))
+	} else {
+		mux.HandleFunc("/gateway/", s.dataPlane)
+	}
 
 	// Liveness for docker healthcheck (plain, no auth).
 	mux.HandleFunc("GET /health", s.health)
@@ -226,11 +243,11 @@ func (s *Server) dataPlane(w http.ResponseWriter, r *http.Request) {
 
 	// Synthetic response — zero real data.
 	writeJSON(w, http.StatusOK, map[string]any{
-		"gateway": "webmethods-mock",
-		"api":     api.Name,
-		"path":    path,
+		"gateway":   "webmethods-mock",
+		"api":       api.Name,
+		"path":      path,
 		"synthetic": true,
-		"data":    []any{},
+		"data":      []any{},
 	})
 }
 

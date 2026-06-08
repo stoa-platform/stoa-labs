@@ -110,6 +110,11 @@ services:
       LISTEN_ADDR: ":8080"
       OTEL_SERVICE_NAME: "webmethods-mock"
       OTEL_EXPORTER_OTLP_ENDPOINT: "${OTLP_ENDPOINT_HTTP:-otel-lgtm:4318}"
+      # Phase 3: enable Keycloak Bearer JWT validation on the data-plane. iss is
+      # the pinned KC_HOSTNAME (localhost:8480); JWKS is fetched over the compose
+      # network from keycloak:8080 (the host/container split).
+      JWT_ISSUER: "http://localhost:8480/realms/stoa-lab"
+      JWT_JWKS_URL: "http://keycloak:8080/realms/stoa-lab/protocol/openid-connect/certs"
     healthcheck:
       test: ["CMD", "/webmethods-mock", "-healthcheck"]
       interval: 10s
@@ -154,6 +159,12 @@ services:
       KC_BOOTSTRAP_ADMIN_PASSWORD: "${KEYCLOAK_ADMIN_PASSWORD:-admin}"
       KC_HEALTH_ENABLED: "true"
       KC_HTTP_ENABLED: "true"
+      # Phase 3: pin a deterministic issuer so EVERY token (service-account AND
+      # the Oracle-brokered login, which rides the host URL) carries
+      # iss=http://localhost:8480/realms/stoa-lab. BACKCHANNEL_DYNAMIC lets the
+      # gateways still fetch JWKS over the compose network (keycloak:8080).
+      KC_HOSTNAME: "http://localhost:8480"
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
       DEX_BROKER_CLIENT_SECRET: "${DEX_BROKER_CLIENT_SECRET:-keycloak-broker-secret-poc}"
     ports:
       # Host 8081 is taken by another local stack (docker-compose-stoa-gateway).

@@ -33,6 +33,9 @@ plugins:
   - jwt-auth
   - key-auth
   - public-api
+  # Phase 3: validate Keycloak-issued Bearer JWTs (bearer_only, JWKS). iss is
+  # NOT checked on bearer access tokens in APISIX 3.11 — signature/alg/exp only.
+  - openid-connect
 
 plugin_attr:
   opentelemetry:
