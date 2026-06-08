@@ -1,0 +1,115 @@
+openapi: 3.0.3
+info:
+  title: Accounts Read API
+  version: 1.0.0
+  description: >
+    API synthétique de lecture de comptes — le contrat "Define Once" du PoC de
+    fédération. Une seule définition OpenAPI, publiée par labctl sur les 3
+    gateways (WSO2, APISIX, webMethods). Données 100% fictives.
+    side_effects=read, safe_for_agents=true.
+  contact:
+    name: STOA Labs (PoC banque centrale Eurosystème — anonymisé)
+servers:
+  - url: /accounts-read/v1
+    description: Base path logique (réécrit par chaque gateway)
+tags:
+  - name: accounts
+    description: Lecture seule de comptes synthétiques
+paths:
+  /accounts:
+    get:
+      operationId: listAccounts
+      tags: [accounts]
+      summary: Liste les comptes (synthétiques)
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, default: 20, minimum: 1, maximum: 100 }
+      responses:
+        "200":
+          description: Liste de comptes
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountList"
+              examples:
+                two_accounts:
+                  summary: Deux comptes synthétiques
+                  value:
+                    count: 2
+                    items:
+                      - id: "ACC-1001"
+                        iban: "FR7630006000011234567890189"
+                        currency: "EUR"
+                        balance: 1542.37
+                        status: "active"
+                      - id: "ACC-1002"
+                        iban: "FR7630006000011234567890190"
+                        currency: "EUR"
+                        balance: 88210.00
+                        status: "active"
+  /accounts/{id}:
+    get:
+      operationId: getAccount
+      tags: [accounts]
+      summary: Détail d'un compte (synthétique)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          examples:
+            acc1001:
+              value: "ACC-1001"
+      responses:
+        "200":
+          description: Compte
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Account"
+              examples:
+                acc1001:
+                  summary: Compte ACC-1001
+                  value:
+                    id: "ACC-1001"
+                    iban: "FR7630006000011234567890189"
+                    currency: "EUR"
+                    balance: 1542.37
+                    status: "active"
+        "404":
+          description: Compte introuvable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                not_found:
+                  value:
+                    error: "account not found"
+components:
+  schemas:
+    Account:
+      type: object
+      required: [id, iban, currency, balance, status]
+      properties:
+        id: { type: string, example: "ACC-1001" }
+        iban: { type: string, example: "FR7630006000011234567890189" }
+        currency: { type: string, example: "EUR" }
+        balance: { type: number, format: double, example: 1542.37 }
+        status: { type: string, enum: [active, frozen, closed], example: "active" }
+    AccountList:
+      type: object
+      required: [count, items]
+      properties:
+        count: { type: integer, example: 2 }
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Account"
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
