@@ -3,7 +3,11 @@
 # `labctl subscribe -f targets.yaml` -> provisions a consumer on the 3 gateways
 #                                        + a Keycloak OAuth client (out-of-band).
 #
-# Hostnames are the docker-compose.poc.yml network names (network: poc).
+# Two URL perspectives (labctl runs on the HOST against the compose stack):
+#   - adminUrl/gatewayUrl/keycloak.url = localhost + host-mapped ports — that's
+#     how labctl (host) reaches each gateway's control/data plane.
+#   - backendUrl = the docker-INTERNAL name (microcks:8080) — that's how the
+#     gateway CONTAINERS reach the synthetic backend over the `poc` network.
 # Credentials are PoC placeholders only — no real secrets.
 
 apiVersion: labctl.stoa.io/v1
@@ -26,8 +30,8 @@ backendUrl: http://microcks:8080/rest/Accounts+Read+API/1.0.0
 targets:
   - name: wso2
     type: wso2
-    adminUrl: https://wso2am:9443        # Publisher/Devportal/DCR/token (TLS self-signed)
-    gatewayUrl: https://wso2am:8243      # data-plane (HTTPS); http://wso2am:8280 also exists
+    adminUrl: https://localhost:9443     # Publisher/Devportal/DCR/token (TLS self-signed)
+    gatewayUrl: https://localhost:8243   # data-plane (HTTPS); http://localhost:8280 also exists
     insecure: true                       # accept the self-signed cert (-k)
     gatewayEnv: Default                  # WSO2 gateway environment name
     vhost: localhost                     # required in 4.x deploy-revision
@@ -37,21 +41,23 @@ targets:
 
   - name: apisix
     type: apisix
-    adminUrl: http://apisix:9180         # Admin API (/apisix/admin), X-API-KEY
-    gatewayUrl: http://apisix:9080       # data-plane proxy
-    consumerAuth: jwt-auth               # jwt-auth | key-auth (data-plane consumer auth)
+    adminUrl: http://localhost:9180      # Admin API (/apisix/admin), X-API-KEY
+    gatewayUrl: http://localhost:9080    # data-plane proxy
+    consumerAuth: key-auth               # key-auth (header `apikey: <key>`) | jwt-auth
+                                         # (jwt-auth needs the public-api jwt-sign
+                                         # route, an APISIX-version-specific detail)
     credentials:
       adminKey: poc-apisix-admin-key     # PLACEHOLDER — matches gateways/apisix/config.yaml
 
   - name: webmethods
     type: webmethods
-    adminUrl: http://webmethods-mock:8080    # /rest/apigateway (mock: no auth)
-    gatewayUrl: http://webmethods-mock:8080  # data-plane under /gateway/<basePath>
+    adminUrl: http://localhost:8090      # /rest/apigateway (mock: no auth)
+    gatewayUrl: http://localhost:8090    # data-plane under /gateway/<basePath>
     credentials: {}                      # mock has NO auth; real apigateway:10.15 = HTTP Basic
 
 # --- subscribe: out-of-band OAuth client minted in Keycloak ------------------
 keycloak:
-  url: http://keycloak:8080              # internal compose port (host maps 8081->8080)
+  url: http://localhost:8480             # host-mapped (8480 -> container 8080)
   realm: stoa-lab
   admin:
     username: admin                      # PLACEHOLDER — KC_BOOTSTRAP_ADMIN_*

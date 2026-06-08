@@ -181,6 +181,19 @@ func backendNode(backendURL string) (node, scheme string, err error) {
 	return host + ":" + port, scheme, nil
 }
 
+// backendBasePath returns the PATH component of the backend URL, with no
+// trailing slash (e.g. "http://microcks:8080/rest/Accounts+Read+API/1.0.0" ->
+// "/rest/Accounts+Read+API/1.0.0"). The APISIX upstream only carries host:port,
+// so this prefix must be re-injected by proxy-rewrite, otherwise the gateway
+// strips the public basePath and hits the backend at "/" — a 404 at the backend.
+func backendBasePath(backendURL string) string {
+	u, err := url.Parse(backendURL)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimRight(u.Path, "/")
+}
+
 // routeURI converts an OpenAPI path template into an APISIX uri. APISIX's '*'
 // wildcard only matches a trailing segment, so a templated path like
 // "/accounts/{id}" becomes a prefix wildcard "<basePath>/accounts/*"; a static

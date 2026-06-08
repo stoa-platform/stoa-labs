@@ -144,9 +144,16 @@ func bearer(token string) map[string]string {
 }
 
 // invocationURL builds the live data-plane URL for an API, e.g.
-// https://wso2am:8243/accounts-read/v1.
-func (c *Client) invocationURL(basePath string) string {
-	return c.gatewayURL + "/" + strings.TrimLeft(basePath, "/")
+// https://localhost:8243/accounts-read/v1/1.0.0. WSO2's default version
+// strategy puts the version IN the path: {gateway}/{context}/{version}.
+// Verified against the live gateway — omitting the version 404s; including it
+// routes and enforces auth (401 without a token).
+func (c *Client) invocationURL(basePath, version string) string {
+	u := c.gatewayURL + "/" + strings.TrimLeft(basePath, "/")
+	if version != "" {
+		u += "/" + version
+	}
+	return u
 }
 
 // withDeadline returns ctx unchanged when it already has a deadline, else adds a

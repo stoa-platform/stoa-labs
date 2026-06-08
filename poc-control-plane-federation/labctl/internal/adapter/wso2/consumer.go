@@ -113,7 +113,7 @@ func (c *Client) CreateConsumer(ctx context.Context, api *adapter.NormalizedAPI,
 		TokenHint: fmt.Sprintf(
 			"POST %s%s Basic(consumerKey:consumerSecret) grant_type=client_credentials; "+
 				"then GET %s with Bearer <token>",
-			c.adminURL, tokenPath, c.invocationURL(api.BasePath)),
+			c.adminURL, tokenPath, c.invocationURL(api.BasePath, api.Version)),
 	}, nil
 }
 
@@ -215,7 +215,10 @@ func (c *Client) subscribe(ctx context.Context, tok, devAPIID, appID string, spe
 // wireKeys maps an externally-minted OAuth client (when spec.ClientID is set) or
 // self-issues a key pair via generate-keys.
 func (c *Client) wireKeys(ctx context.Context, tok, appID string, spec *adapter.ConsumerSpec) (keyResponse, error) {
-	var out keyResponse
+	// Prefer MAPPING the out-of-band Keycloak client — but that requires Keycloak
+	// to be configured as a WSO2 Key Manager (Phase 3 federation). When it isn't,
+	// WSO2's Resident KM rejects the external key; we fall back to self-issuing a
+	// working WSO2 credential so Phase 2 still yields a live data-plane token.
 	if spec.ClientID != "" {
 		in := mapKeysRequest{
 			ConsumerKey:    spec.ClientID,
@@ -223,21 +226,28 @@ func (c *Client) wireKeys(ctx context.Context, tok, appID string, spec *adapter.
 			KeyType:        "PRODUCTION",
 			KeyManager:     residentKeyMgr,
 		}
+		var out keyResponse
 		if _, err := httpx.JSON(ctx, c.hc, "POST",
 			c.adminURL+devportalBase+"/applications/"+url.PathEscape(appID)+"/map-keys",
-			bearer(tok), in, &out); err != nil {
-			return out, fmt.Errorf("wso2 consumer: map-keys: %w", err)
+			bearer(tok), in, &out); err == nil {
+			if out.ConsumerKey == "" {
+				out.ConsumerKey = spec.ClientID
+			}
+			if out.ConsumerSecret == "" {
+				out.ConsumerSecret = spec.ClientSecret
+			}
+			return out, nil
 		}
-		// map-keys may not echo the secret back; keep the supplied one.
-		if out.ConsumerKey == "" {
-			out.ConsumerKey = spec.ClientID
-		}
-		if out.ConsumerSecret == "" {
-			out.ConsumerSecret = spec.ClientSecret
-		}
-		return out, nil
+		// map-keys failed (no external KM configured) — self-issue instead.
 	}
+	return c.generateOrGetKeys(ctx, tok, appID)
+}
 
+// generateOrGetKeys self-issues WSO2 OAuth keys via the Resident KM, and is
+// idempotent: if keys already exist (a prior subscribe), it returns them rather
+// than failing.
+func (c *Client) generateOrGetKeys(ctx context.Context, tok, appID string) (keyResponse, error) {
+	var out keyResponse
 	in := generateKeysRequest{
 		KeyType:                 "PRODUCTION",
 		GrantTypesToBeSupported: []string{"client_credentials", "password", "refresh_token"},
@@ -247,10 +257,24 @@ func (c *Client) wireKeys(ctx context.Context, tok, appID string, spec *adapter.
 	if _, err := httpx.JSON(ctx, c.hc, "POST",
 		c.adminURL+devportalBase+"/applications/"+url.PathEscape(appID)+"/generate-keys",
 		bearer(tok), in, &out); err != nil {
+		// Likely "keys already generated" on a re-subscribe — fetch the existing.
+		if existing, gerr := c.getKeys(ctx, tok, appID, "PRODUCTION"); gerr == nil && existing.ConsumerKey != "" {
+			return existing, nil
+		}
 		return out, fmt.Errorf("wso2 consumer: generate-keys: %w", err)
 	}
 	if out.ConsumerKey == "" {
 		return out, fmt.Errorf("wso2 consumer: generate-keys returned empty consumerKey")
 	}
 	return out, nil
+}
+
+// getKeys returns the application's existing OAuth keys for keyType (used to keep
+// key provisioning idempotent across re-subscribes).
+func (c *Client) getKeys(ctx context.Context, tok, appID, keyType string) (keyResponse, error) {
+	var out keyResponse
+	_, err := httpx.JSON(ctx, c.hc, "GET",
+		c.adminURL+devportalBase+"/applications/"+url.PathEscape(appID)+"/keys/"+url.PathEscape(keyType),
+		bearer(tok), nil, &out)
+	return out, err
 }

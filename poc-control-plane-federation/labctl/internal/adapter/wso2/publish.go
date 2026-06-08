@@ -129,7 +129,7 @@ func (c *Client) Publish(ctx context.Context, api *adapter.NormalizedAPI) (*adap
 		Gateway:       "wso2",
 		APIID:         apiID,
 		RevisionID:    revisionID,
-		InvocationURL: c.invocationURL(api.BasePath),
+		InvocationURL: c.invocationURL(api.BasePath, api.Version),
 		Published:     true,
 		Created:       created,
 	}, nil
@@ -346,13 +346,12 @@ func (c *Client) deployRevision(ctx context.Context, tok, apiID, revisionID stri
 	deployURL := c.adminURL + publisherBase + "/apis/" + url.PathEscape(apiID) +
 		"/deploy-revision?revisionId=" + queryEscape(revisionID)
 
-	code, err := httpx.JSON(ctx, c.hc, "POST", deployURL, bearer(tok), body, nil)
-	if err != nil {
-		// httpx.JSON only errors on non-2xx/transport; surface the diagnostic.
+	// httpx.JSON already errors on any non-2xx, so a 2xx here IS success. Do NOT
+	// pin to ==200: the live WSO2 4.5.0 returns 201 on deploy-revision (older
+	// docs/verification said 200). Verified against the running gateway.
+	if _, err := httpx.JSON(ctx, c.hc, "POST", deployURL, bearer(tok), body, nil); err != nil {
+		// 404 here typically means a bad gatewayEnv/vhost.
 		return fmt.Errorf("wso2 publish: deploy-revision (404=>bad gatewayEnv/vhost): %w", err)
-	}
-	if code != 200 {
-		return fmt.Errorf("wso2 publish: deploy-revision -> %d (want 200)", code)
 	}
 	return nil
 }
@@ -360,6 +359,14 @@ func (c *Client) deployRevision(ctx context.Context, tok, apiID, revisionID stri
 // changeLifecycle moves the API lifecycle (action passed as a QUERY param, no
 // body). Expects 200/202.
 func (c *Client) changeLifecycle(ctx context.Context, tok, apiID, action string) error {
+	// Idempotency: a re-apply of an already-PUBLISHED API would 400
+	// ("Unsupported state change action"). Skip Publish when already published.
+	if action == "Publish" {
+		if st, err := c.lifecycleState(ctx, tok, apiID); err == nil && st == "PUBLISHED" {
+			return nil
+		}
+	}
+
 	lcURL := c.adminURL + publisherBase + "/apis/change-lifecycle?apiId=" +
 		queryEscape(apiID) + "&action=" + queryEscape(action)
 
@@ -372,6 +379,17 @@ func (c *Client) changeLifecycle(ctx context.Context, tok, apiID, action string)
 			action, code, string(raw))
 	}
 	return nil
+}
+
+// lifecycleState returns the API's current lifeCycleStatus (e.g. "CREATED",
+// "PUBLISHED"), used to keep change-lifecycle idempotent on re-apply.
+func (c *Client) lifecycleState(ctx context.Context, tok, apiID string) (string, error) {
+	var out struct {
+		LifeCycleStatus string `json:"lifeCycleStatus"`
+	}
+	_, err := httpx.JSON(ctx, c.hc, "GET",
+		c.adminURL+publisherBase+"/apis/"+url.PathEscape(apiID), bearer(tok), nil, &out)
+	return out.LifeCycleStatus, err
 }
 
 // unmarshalJSON is a tiny shared decode helper used where we read a raw body
