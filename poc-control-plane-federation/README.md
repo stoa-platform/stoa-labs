@@ -11,10 +11,25 @@ Démonstrateur : **un control plane assemblé sur briques OSS fédère 3 gateway
 | Phase | Contenu | État |
 |-------|---------|------|
 | 0 | Plan + cadrage ([`PLAN.md`](./PLAN.md)) | ✅ GO conditionnel Council |
-| 1 | Socle OSS (docker-compose, 3 gateways + identité + obs) | ✅ écrit ; DoD live = `up` sur ton Docker |
-| **2** | **`labctl` + Define Once (1 OpenAPI → 3 gateways)** | **🚧 implémenté, 34 tests verts ; DoD live en attente du stack** |
-| 3 | Self-service Backstage + identité Oracle-master | ⏳ |
+| 1 | Socle OSS (docker-compose, 3 gateways + identité + obs) | ✅ **validé live** (`up.sh` + `smoke-test.sh`) |
+| 2 | `labctl` + Define Once (1 OpenAPI → 3 gateways) | ✅ **validé live** (`demo.sh` : publish + catalogue + subscribe + appels authentifiés 200×3) |
+| **3** | **Identité Oracle-master (Dex → Keycloak → 3 gateways)** | ✅ **validé live** (`setup-identity.sh` + `phase3-identity-demo.sh`) |
 | 4 | Evidence report (corrélation `trace_id` 3 gateways) | ⏳ |
+
+### Phase 3 — un token Keycloak (fédéré depuis Oracle/Dex) validé par les 3 gateways
+
+```bash
+./scripts/setup-identity.sh         # WSO2 KeyCloak Key Manager + APISIX openid-connect + prérequis KC
+./scripts/phase3-identity-demo.sh   # alice@oracle (via Dex) → 1 token → 200 sur WSO2 + APISIX + webMethods
+```
+
+| Gateway | Validation du token Keycloak | Preuve |
+|---------|------------------------------|--------|
+| WSO2 (commercial) | Keycloak enregistré comme **Key Manager** (connecteur `KeyCloak`, self-validation JWT, claim `azp`) | 200 |
+| APISIX (OSS) | plugin **`openid-connect`** (bearer-only, JWKS) | 200 |
+| webMethods (mock legacy) | **go-oidc** JWKS sur le data-plane | 200 |
+
+Oracle reste master (login `alice@bc.example` via Dex), Keycloak émet le token, les 3 runtimes hétérogènes le consomment. Sans token → 401 partout. Détail WSO2 : le KM doit être (re)chargé au **démarrage** de WSO2 — `setup-identity.sh` enregistre le KM, puis `docker restart poc-wso2am`, puis re-run pour le mapping (le script est idempotent).
 
 ## labctl — l'orchestrateur de fédération (Phase 2)
 
