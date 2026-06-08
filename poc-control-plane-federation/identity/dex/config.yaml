@@ -30,10 +30,10 @@ enablePasswordDB: true
 # bcrypt de "password" (hash d'exemple public Dex).
 staticPasswords:
   - email: "alice@bc.example"
-    hash: "$2a$10$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4"
+    hash: "$2a$10$6EykdUs9Nj6.ibmWqAnDrugYK3mVYbDsqGXnatJagn8sTxrh8K.22"
     username: "alice"
     userID: "oracle-alice-001"
   - email: "bob@bc.example"
-    hash: "$2a$10$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4"
+    hash: "$2a$10$6EykdUs9Nj6.ibmWqAnDrugYK3mVYbDsqGXnatJagn8sTxrh8K.22"
     username: "bob"
     userID: "oracle-bob-002"

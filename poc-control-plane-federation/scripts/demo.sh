@@ -46,8 +46,11 @@ get() { awk -v sec="[$1]" -v k="$2" '
   f{p=index($0,"="); if(p){key=substr($0,1,p-1); gsub(/ /,"",key); if(key==k){v=substr($0,p+1); sub(/^ +/,"",v); print v; exit}}}
 ' labctl-credentials.txt; }
 
-echo "— webMethods (legacy mock, no auth):"
-curl -s --max-time 6 -w '\n  HTTP %{http_code}\n' \
+echo "— webMethods (mock): send a Keycloak Bearer (ignored pre-Phase-3, validated after):"
+KCID=$(get keycloak clientId); KSEC=$(get keycloak clientSecret)
+WMTOK=$(curl -s -d grant_type=client_credentials -d client_id="$KCID" -d client_secret="$KSEC" \
+  "http://localhost:8480/realms/stoa-lab/protocol/openid-connect/token" 2>/dev/null | python3 -c "import sys,json;print(json.load(sys.stdin).get('access_token',''))" 2>/dev/null)
+curl -s --max-time 6 -H "Authorization: Bearer $WMTOK" -w '\n  HTTP %{http_code}\n' \
   "http://localhost:${PORT_WEBMETHODS:-8090}/gateway/accounts-read/v1/accounts" | head -c 240
 
 echo "— APISIX (key-auth, native apikey header):"
