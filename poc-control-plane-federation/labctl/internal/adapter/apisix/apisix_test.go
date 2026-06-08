@@ -520,8 +520,10 @@ func TestList_RoundTripsNameAndVersionFromLabels(t *testing.T) {
 	if got.Gateway != "apisix" {
 		t.Errorf("Gateway = %q, want apisix", got.Gateway)
 	}
-	if got.APIID != "accounts-read-0" {
-		t.Errorf("APIID = %q, want accounts-read-0", got.APIID)
+	// One catalog row per API (deduped): APIID is the stable api name, BasePath
+	// comes from the 'basepath' label (not a per-route URI).
+	if got.APIID != "accounts-read" {
+		t.Errorf("APIID = %q, want accounts-read", got.APIID)
 	}
 	if got.Name != "accounts-read" {
 		t.Errorf("Name = %q, want accounts-read (from 'api' label)", got.Name)
@@ -529,8 +531,8 @@ func TestList_RoundTripsNameAndVersionFromLabels(t *testing.T) {
 	if got.Version != "1.0.0" {
 		t.Errorf("Version = %q, want 1.0.0 (from 'version' label)", got.Version)
 	}
-	if got.BasePath != "/accounts-read/v1/*" {
-		t.Errorf("BasePath = %q, want route uri /accounts-read/v1/*", got.BasePath)
+	if got.BasePath != "/accounts-read/v1" {
+		t.Errorf("BasePath = %q, want /accounts-read/v1 (from 'basepath' label)", got.BasePath)
 	}
 }
 

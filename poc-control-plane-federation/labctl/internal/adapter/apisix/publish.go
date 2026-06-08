@@ -68,7 +68,7 @@ func (a *Adapter) Publish(ctx context.Context, api *adapter.NormalizedAPI) (*ada
 			Status:    1, // 1 = enabled (0 would create but serve no traffic)
 			ServiceID: upstreamID,
 			Plugins:   sharedPlugins(api.BasePath, backendPath),
-			Labels:    routeLabels(api.Name, api.Version),
+			Labels:    routeLabels(api.Name, api.Version, api.BasePath),
 		}
 		rURL := fmt.Sprintf("%s/apisix/admin/routes/%s-%d", a.adminURL, api.Name, i)
 		if _, err := httpx.JSON(ctx, a.client, http.MethodPut, rURL, a.adminHeaders(), route, nil); err != nil {
@@ -133,10 +133,11 @@ func sharedPlugins(basePath, backendPath string) map[string]any {
 // gateway-native List() can round-trip Name+Version (APISIX routes carry no
 // native API name/version). "version" is only set when non-empty so the label
 // map never PUTs a blank value.
-func routeLabels(name, version string) map[string]string {
+func routeLabels(name, version, basePath string) map[string]string {
 	labels := map[string]string{
 		"managed-by": "labctl",
 		"api":        name,
+		"basepath":   basePath,
 	}
 	if version != "" {
 		labels["version"] = version

@@ -108,7 +108,7 @@ func (a *Adapter) CreateConsumer(ctx context.Context, api *adapter.NormalizedAPI
 			Plugins:   pluginsWithAuth(api.BasePath, backendBasePath(api.BackendURL), authType),
 			// Re-stamp labels: a PUT replaces the whole route object, so without
 			// these the publish-time Name/Version labels would be wiped here.
-			Labels: routeLabels(api.Name, api.Version),
+			Labels: routeLabels(api.Name, api.Version, api.BasePath),
 		}
 		rURL := fmt.Sprintf("%s/apisix/admin/routes/%s-%d", a.adminURL, api.Name, i)
 		if _, err := httpx.JSON(ctx, a.client, http.MethodPut, rURL, a.adminHeaders(), route, nil); err != nil {

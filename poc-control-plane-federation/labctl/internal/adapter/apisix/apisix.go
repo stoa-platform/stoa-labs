@@ -108,21 +108,28 @@ func (a *Adapter) List(ctx context.Context) ([]adapter.PublishedAPI, error) {
 	if _, err := httpx.JSON(ctx, a.client, http.MethodGet, u, a.adminHeaders(), nil, &resp); err != nil {
 		return nil, fmt.Errorf("apisix list routes: %w", err)
 	}
+	// APISIX has N routes per API (one per OpenAPI operation) plus internal
+	// helper routes (e.g. the public-api jwt-sign route). Report ONE catalog row
+	// per labctl-managed API — at parity with the WSO2/webMethods adapters —
+	// using the labels labctl stamps at publish, not the per-route URIs.
 	out := make([]adapter.PublishedAPI, 0, len(resp.List))
+	seen := map[string]bool{}
 	for _, item := range resp.List {
 		v := item.Value
-		// APISIX routes carry no native API name/version. labctl stamps them as
-		// route labels at publish; prefer those so `labctl get apis` reaches
-		// parity with the WSO2/webMethods adapters (which fill Name+Version).
-		name := v.Name
-		if l := v.Labels["api"]; l != "" {
-			name = l
+		if v.Labels["managed-by"] != "labctl" {
+			continue // skip non-labctl routes (internal helpers, other apps)
 		}
+		api := v.Labels["api"]
+		key := api + "|" + v.Labels["version"]
+		if api == "" || seen[key] {
+			continue // one row per (api, version)
+		}
+		seen[key] = true
 		out = append(out, adapter.PublishedAPI{
 			Gateway:  gatewayName,
-			APIID:    v.ID,
-			Name:     name,
-			BasePath: v.URI,
+			APIID:    api, // APISIX has no single API id; the stable name stands in
+			Name:     api,
+			BasePath: v.Labels["basepath"],
 			Version:  v.Labels["version"],
 		})
 	}
