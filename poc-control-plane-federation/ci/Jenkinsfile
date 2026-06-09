@@ -1,0 +1,37 @@
+// CI bank-réaliste : push Git -> webhook -> Jenkins -> labctl (Define Once).
+// Le build de labctl est AIR-GAPPED (vendor/ + GOPROXY=off) ; l'apply tape les
+// gateways par leurs noms docker INTERNES (zéro flux entrant depuis l'extérieur).
+pipeline {
+  agent any
+  options { timestamps() }
+  environment { GOPROXY = 'off'; GOFLAGS = '-mod=vendor'; GOSUMDB = 'off' }
+  stages {
+    stage('Build labctl (air-gapped, vendored)') {
+      steps {
+        dir('poc-control-plane-federation/labctl') {
+          sh 'go version'
+          sh 'go build -trimpath -o "$WORKSPACE/labctl" .'   // aucun accès réseau
+        }
+      }
+    }
+    stage('Apply — Define Once, Expose Everywhere') {
+      steps {
+        dir('poc-control-plane-federation') {
+          // GitOps : 1 contrat OpenAPI + targets.cluster.yaml en git -> fédéré sur les 3 gateways
+          sh '"$WORKSPACE/labctl" apply -f targets.cluster.yaml'
+        }
+      }
+    }
+    stage('Verify — catalogue unifié') {
+      steps {
+        dir('poc-control-plane-federation') {
+          sh '"$WORKSPACE/labctl" get apis -f targets.cluster.yaml'
+        }
+      }
+    }
+  }
+  post {
+    success { echo '✓ API fédérée sur WSO2 + APISIX + webMethods depuis 1 commit (offline build, in-zone apply).' }
+    failure { echo '✗ pipeline KO — voir le log de l’étape.' }
+  }
+}

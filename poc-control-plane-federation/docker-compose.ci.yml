@@ -1,0 +1,50 @@
+# CI bank-réaliste (séparé du socle pour ne pas l'alourdir) : Gitea (git +
+# webhooks, comme le SCM du client) + Jenkins+Go (comme le CI du client).
+# Rejoint le réseau du socle pour que le pipeline atteigne les gateways EN ZONE
+# (noms docker internes) — modèle GitOps pull, zéro flux entrant depuis l'extérieur.
+#
+#   docker compose -f docker-compose.poc.yml -f docker-compose.ci.yml up -d gitea jenkins
+#
+# Puis suivre ci/README.md (créer le repo Gitea, le webhook -> Jenkins, le job pipeline).
+name: stoa-labs-poc
+
+networks:
+  poc:
+    # réutilise le réseau du socle (docker-compose.poc.yml, project stoa-labs-poc)
+    external: false
+
+volumes:
+  gitea-data:
+  jenkins-data:
+
+services:
+  gitea:
+    image: gitea/gitea:1.22
+    container_name: poc-gitea
+    environment:
+      GITEA__server__ROOT_URL: "http://localhost:13000/"
+      GITEA__server__HTTP_PORT: "3000"
+      GITEA__security__INSTALL_LOCK: "true"
+      # autorise les webhooks vers le réseau interne (Jenkins)
+      GITEA__webhook__ALLOWED_HOST_LIST: "*"
+    ports:
+      - "13000:3000"     # UI Gitea (host)
+    volumes:
+      - gitea-data:/data
+    networks: [poc]
+    restart: unless-stopped
+
+  jenkins:
+    build:
+      context: ./ci/jenkins
+    image: stoa-labs/jenkins-go:dev
+    container_name: poc-jenkins
+    environment:
+      # pas d'assistant d'install (démo) ; en prod : JCasC + comptes maîtrisés
+      JAVA_OPTS: "-Djenkins.install.runSetupWizard=false"
+    ports:
+      - "18080:8080"     # UI Jenkins (host)
+    volumes:
+      - jenkins-data:/var/jenkins_home
+    networks: [poc]
+    restart: unless-stopped
