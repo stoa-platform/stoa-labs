@@ -25,7 +25,7 @@ Réponse en une phrase à *« pourquoi acheter STOA plutôt que recopier ce PoC 
 | Adapters | 3 adapters figés contre des admin APIs à un instant T | **STOA Links maintenus** : suivent les montées de version WSO2/APISIX/webMethods, testés en CI, garantis |
 | Contrats | OpenAPI publié, point | **Validation + détection de drift** : le contrat reste la source de vérité, alertes si une gw dérive |
 | Identité | Token KC consommé par 3 gw | **Fédération credentials/policies multi-runtime** : un changement de policy propagé partout, cohérent |
-| Sécurité | Démo, secrets en placeholder | **RBAC, audit trail, secrets vault, Reverse Invoke** (cf. `HARD-CRITERIA-MAP.md`) |
+| Sécurité | Démo, secrets en placeholder | **RBAC, audit trail, délégation des secrets à un PAM/Vault qualifié, management zéro-entrant** (STOA hors du chemin transactionnel — cf. [`../adr/adr-068-stoa-off-the-transaction-path.md`](../adr/adr-068-stoa-off-the-transaction-path.md)) |
 | Agents/IA | Hors PoC | **Couche MCP/agent** : exposition gouvernée aux agents (`safe_for_agents`, `requires_human_approval`) |
 | Run | `docker compose up` sur un poste | Déploiement HA, observabilité prod, on-call |
 | Coût réel pour la BC si « build-it-yourself » | 0 € le jour 1 | Le vrai coût est en **RUN sur 5 ans** : maintien des intégrations, sécurité, conformité, montées de version |
