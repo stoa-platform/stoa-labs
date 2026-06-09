@@ -14,7 +14,7 @@ Démonstrateur : **un control plane assemblé sur briques OSS fédère 3 gateway
 | 1 | Socle OSS (docker-compose, 3 gateways + identité + obs) | ✅ **validé live** (`up.sh` + `smoke-test.sh`) |
 | 2 | `labctl` + Define Once (1 OpenAPI → 3 gateways) | ✅ **validé live** (`demo.sh` : publish + catalogue + subscribe + appels authentifiés 200×3) |
 | **3** | **Identité Oracle-master (Dex → Keycloak → 3 gateways)** | ✅ **validé live** (`setup-identity.sh` + `phase3-identity-demo.sh`) |
-| 4 | Evidence report (corrélation `trace_id` 3 gateways) | ⏳ |
+| 4 | Evidence report + observabilité | ✅ [`EVIDENCE.md`](./EVIDENCE.md) (7 preuves, sorties live) + dashboard Grafana `stoa-fed-overview` (OTel : APISIX + webMethods ; WSO2 OTel en suivi) |
 
 ### Phase 3 — un token Keycloak (fédéré depuis Oracle/Dex) validé par les 3 gateways
 
