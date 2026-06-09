@@ -1,0 +1,72 @@
+# targets.yaml — labctl federation manifest (kubectl-style)
+# `labctl apply -f targets.yaml`     -> publishes the contract on the 3 gateways
+# `labctl subscribe -f targets.yaml` -> provisions a consumer on the 3 gateways
+#                                        + a Keycloak OAuth client (out-of-band).
+#
+# Two URL perspectives (labctl runs on the HOST against the compose stack):
+#   - adminUrl/gatewayUrl/keycloak.url = localhost + host-mapped ports — that's
+#     how labctl (host) reaches each gateway's control/data plane.
+#   - backendUrl = the docker-INTERNAL name (microcks:8080) — that's how the
+#     gateway CONTAINERS reach the synthetic backend over the `poc` network.
+# Credentials are PoC placeholders only — no real secrets.
+
+apiVersion: labctl.stoa.io/v1
+kind: FederationTarget
+
+# Stable API name across all gateways + Backstage (else slugged from the title,
+# which would give "accounts-read-api"). Keeps WSO2 context / APISIX ids aligned.
+name: accounts-read
+
+# --- Define Once: the single OpenAPI contract, published everywhere ----------
+contract: ./apis/accounts-read.openapi.yaml
+
+# Authoritative upstream the gateways proxy to (synthetic Microcks backend).
+# Overrides any absolute servers[].url in the contract.
+# NOTE: confirm the exact Microcks REST path after importing the contract
+# (depends on service name + version encoding, e.g. "Accounts+Read+API/1.0.0").
+backendUrl: http://microcks:8080/rest/Accounts+Read+API/1.0.0
+
+# --- Expose Everywhere: the N gateways ---------------------------------------
+targets:
+  - name: wso2
+    type: wso2
+    adminUrl: https://wso2am:9443     # Publisher/Devportal/DCR/token (TLS self-signed)
+    gatewayUrl: https://wso2am:8243   # data-plane (HTTPS); http://localhost:8280 also exists
+    insecure: true                       # accept the self-signed cert (-k)
+    gatewayEnv: Default                  # WSO2 gateway environment name
+    vhost: localhost                     # required in 4.x deploy-revision
+    credentials:
+      username: admin                    # PLACEHOLDER — default super-admin
+      password: admin
+
+  - name: apisix
+    type: apisix
+    adminUrl: http://apisix:9180      # Admin API (/apisix/admin), X-API-KEY
+    gatewayUrl: http://apisix:9080    # data-plane proxy
+    consumerAuth: key-auth               # key-auth (header `apikey: <key>`) | jwt-auth
+                                         # (jwt-auth needs the public-api jwt-sign
+                                         # route, an APISIX-version-specific detail)
+    credentials:
+      adminKey: poc-apisix-admin-key     # PLACEHOLDER — matches gateways/apisix/config.yaml
+
+  - name: webmethods
+    type: webmethods
+    adminUrl: http://webmethods-mock:8080      # /rest/apigateway (mock: no auth)
+    gatewayUrl: http://webmethods-mock:8080    # data-plane under /gateway/<basePath>
+    credentials: {}                      # mock has NO auth; real apigateway:10.15 = HTTP Basic
+
+# --- subscribe: out-of-band OAuth client minted in Keycloak ------------------
+keycloak:
+  url: http://keycloak:8080             # host-mapped (8480 -> container 8080)
+  realm: stoa-lab
+  admin:
+    username: admin                      # PLACEHOLDER — KC_BOOTSTRAP_ADMIN_*
+    password: admin
+  consumerClientId: accounts-read-consumer
+  # consumerClientSecret left empty -> labctl generates one and writes it back.
+
+# --- Backstage catalog registration (Phase 3) --------------------------------
+backstage:
+  url: http://backstage:7007
+  owner: accounts-team
+  system: accounts
