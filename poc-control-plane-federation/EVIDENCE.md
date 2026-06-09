@@ -191,8 +191,11 @@ managé tiers. C'est l'argument différenciant vs Axway Amplify (SaaS, hors zone
 
 ## Ce que ce jet ne prouve PAS encore
 
-Voir [`HARD-CRITERIA-MAP.md`](./HARD-CRITERIA-MAP.md) : le **Reverse Invoke / zéro
-entrant** (critère *éliminatoire* de l'étude) est le **prochain must-prove** — c'est
-de la topologie de déploiement (agent sortant-only), pas de la fédération, et un
-point fort natif de STOA (`stoa-connect`). Également différés : analytique
+Voir [`HARD-CRITERIA-MAP.md`](./HARD-CRITERIA-MAP.md) et [`../adr/adr-068-stoa-off-the-transaction-path.md`](../adr/adr-068-stoa-off-the-transaction-path.md) :
+le **Reverse Invoke / zéro entrant** (critère *éliminatoire*, §0.2/§4.2) est un pattern
+**data-plane / DMZ transactionnel** → **capacité des gateways qualifiées** (webMethods),
+**pas un livrable STOA**. Le must-prove de STOA est distinct et plus modeste : **orchestrer
+des gateways en topologie zéro-entrant sans réintroduire d'entrant, et garder son propre
+canal de management en zéro-entrant** (agent de config sortant-only **ou** pull GitOps) —
+STOA restant **hors du chemin transactionnel**. Également différés : analytique
 transactionnelle par fournisseur, streaming > 500 Mo.
