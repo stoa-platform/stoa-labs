@@ -21,7 +21,7 @@ note: "Hébergé dans stoa-labs (privé) — engagement client anonymisé + posi
 
 ## Décision (test « archi 40 ans / 30 secondes »)
 
-> **STOA ne traverse JAMAIS les transactions clients.** Le data-plane (les flux applicatifs) reste sur les **gateways qualifiées** (webMethods, WSO2, SAP). L'empreinte de STOA dans la zone de confiance se limite à un **agent de *contrôle* sortant-only** (sync de config, discovery, policy, injection de credentials rotatifs, santé) — **jamais un proxy de transactions**, et idéalement **remplaçable par un pull GitOps**.
+> **STOA ne traverse JAMAIS les transactions clients.** Le data-plane (les flux applicatifs) reste sur les **gateways qualifiées** (webMethods, WSO2, SAP). L'empreinte de STOA dans la zone de confiance se limite à un **agent de *contrôle* sortant-only** (sync de config, discovery, policy, **déclenchement de rotation de credentials *via un PAM/Vault qualifié* — STOA ne porte pas les secrets**, santé) — **jamais un proxy de transactions**, et idéalement **remplaçable par un pull GitOps**.
 > Corollaire : le **Reverse Invoke transactionnel** (zéro-entrant data-plane, critère *éliminatoire* de l'étude) est une **capacité des gateways**, **pas un livrable STOA**.
 
 ---
@@ -51,13 +51,16 @@ Le Reverse Invoke éliminatoire est **transactionnel** → c'est l'affaire des g
 ## Décision retenue
 
 1. **STOA ne traverse jamais les transactions.** Data-plane = gateways qualifiées. STOA est à côté, pas dedans. (Le PoC l'illustre déjà : `labctl` configure les gateways ; les appels data-plane ne passent jamais par STOA.)
-2. **Empreinte STOA en zone = agent control-plane sortant-only** : sync config, discovery, policy-as-code, injection de credentials rotatifs, heartbeat/santé. **Jamais un proxy.** Conçu pour être **remplaçable par un pull GitOps** → STOA n'est pas une dépendance runtime *dure* dans la zone. C'est « un bon deal » : valeur opérationnelle réelle (sync live, creds rotatifs) **sans toucher les flux**.
+2. **Empreinte STOA en zone = agent control-plane sortant-only** : sync config, discovery, policy-as-code, **orchestration de rotation de secrets *déléguée à un PAM/Vault qualifié* (STOA ne stocke/n'injecte pas de secret en propre)**, heartbeat/santé. **Jamais un proxy.** Conçu pour être **remplaçable par un pull GitOps** → STOA n'est pas une dépendance runtime *dure* dans la zone. C'est « un bon deal » : valeur opérationnelle réelle (sync live, rotation orchestrée) **sans toucher les flux ni porter les secrets**.
 3. **Reverse Invoke transactionnel = critère GATEWAY**, à vérifier **produit par produit** (webMethods ✓ ; WSO2 / APISIX / SAP Integration Suite à confirmer). **Pas un livrable STOA.**
 
-**Decision gate** (tout nouvel élément qu'on envisage de mettre en zone de confiance) :
-« Est-ce qu'il **voit passer une transaction** ? » → **Oui** = ce n'est PAS STOA (c'est la gateway qualifiée). **Non** = candidat control-plane, sous conditions (ci-dessous).
+**Decision gate** (tout nouvel élément qu'on envisage de mettre en zone de confiance) — **deux questions, pas une** (le simple « voit-il un flux ? » est insuffisant au sens DORA) :
+1. **« Voit-il / peut-il modifier une transaction ? »** (data-plane) → **Oui** = ce n'est PAS STOA, c'est la gateway qualifiée.
+2. **« Peut-il altérer la sécurité, l'intégrité ou la disponibilité d'une fonction importante ? »** (test DORA) → **Oui** = composant **sensible, in-scope DORA** même en control-plane (un agent qui pousse des policies ou déclenche des rotations de secrets l'est) → **traitement renforcé**, pas « barre basse » : signature/SBOM, **secrets délégués à un PAM/Vault déjà qualifié**, least-privilege, plan d'exit testé.
 
-**Conditions non négociables de l'agent control-plane** (si agent plutôt que pull) : sortant-only vers **un control plane auto-hébergé** (egress allow-listé, mTLS), **build signé + reproductible** (SBOM), image minimale non-root, least-privilege réseau, audit trail, inventorié DORA ICT.
+**Deux *non*** = candidat control-plane standard, sous conditions (ci-dessous).
+
+**Conditions non négociables de l'agent control-plane** (si agent plutôt que pull) : sortant-only vers **un control plane auto-hébergé** (egress allow-listé, mTLS), **build signé + reproductible** (SBOM), image minimale non-root, least-privilege réseau, audit trail, **secrets délégués à un PAM/Vault qualifié (l'agent ne stocke ni n'injecte de secret en propre — un éditeur inconnu portant l'injection de secrets en zone BC = NO-GO par défaut)**, inventorié DORA ICT comme composant pouvant altérer une fonction importante.
 
 ## STOA « must-prove » (corrigé)
 

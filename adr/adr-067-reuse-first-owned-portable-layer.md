@@ -21,7 +21,7 @@ note: "Hébergé dans stoa-labs (privé), PAS dans stoa-docs (public) — contie
 ## Décision (test « archi 40 ans / 30 secondes »)
 
 > On pointe le levier IA sur la **couche qu'on possède et qui survit au changement de runtime** (adapters, portail, orchestrateur, RBAC, self-service, contrats). On **fédère et réutilise** le commodity (runtimes, identité, observabilité). On **ne touche pas** la surface propriétaire de l'éditeur (jetée à la migration, lockée, insécure).
-> Règle de tri pour tout nouvel élément : **« Je le possède ? Il survit à la bascule SAP ? »** Deux *oui* → on build. Sinon → on réutilise, ou on ne le fait pas.
+> Règle de tri pour tout nouvel élément : **« Je le possède ? Son *contrat/intention* (OpenAPI, policy) survit-il à la bascule SAP — même si son *implémentation* est re-ciblée ? »** Deux *oui* → on build, mais on possède l'**intention**, pas l'implémentation jetable. Sinon → on réutilise, ou on ne le fait pas.
 
 ---
 
@@ -59,7 +59,9 @@ Question à trancher : **où investir la customisation pour qu'elle capitalise e
 | **B — FÉDÈRE / RÉUTILISE** | Commodity | Runtimes (webMethods → APISIX → SAP), Keycloak, OTel, OpenSearch | **Jamais reconstruit** |
 | **C — NE TOUCHE PAS** | Propriétaire (jeté + locké + insécure) | Web components webMethods, extensions BTP profondes, logique de médiation détournée en customisation | **Évité** |
 
-**Decision gate** (tout nouvel élément) : « Je le possède ? Il survit à la bascule SAP ? » → 2× *oui* = BUILD ; sinon RÉUTILISE ou ne fais pas.
+**Decision gate** (tout nouvel élément) : « Je le possède ? Son **contrat/intention** (OpenAPI, policy) survit-il à la bascule SAP — même si son **code** est re-ciblé ? » → 2× *oui* = BUILD.
+
+> **Précision sur les adapters (correctif Council).** Un adapter est **Bac A par son *contrat*** (l'intention captée — durable, porte sur SAP) mais **jetable par son *code*** (l'implémentation par-runtime : un adapter webMethods ≠ un adapter SAP). Ce qu'on possède et qui survit, c'est le **contrat + la policy**, pas le connecteur. La gate ne valide donc un BUILD que sur la **partie intention** ; le code de médiation reste explicitement re-ciblable (cf. ligne de partage ci-dessous). Corollaire de gouvernance : borner la masse de code custom des adapters et la couvrir par une **CI de contrat + détection de drift**, pour qu'elle reste « jetable maîtrisée » et non un moteur custom rampant (anti-§7.6).
 
 **Verrou anti-jetable** — standards portables partout : OpenAPI (contrats), OTel (observabilité), OIDC/Keycloak (identité), GitOps (déploiement). Le jour SAP : **on bascule la cible, on ne refait pas la gouvernance.**
 
