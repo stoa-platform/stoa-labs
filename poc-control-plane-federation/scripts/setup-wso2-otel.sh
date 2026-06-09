@@ -2,6 +2,14 @@
 # Phase 4 — wire WSO2's native OpenTelemetry exporter to the OTel collector so
 # WSO2 joins APISIX + webMethods in the unified trace plane (Tempo).
 #
+# ⚠ EXPERIMENTAL on wso2am:4.5.0: the naive `name="otlp"` -> otel-lgtm:4317
+#   config DESTABILISED the gateway startup in testing (9443/8243 refused). The
+#   OTLP exporter wiring (gRPC vs HTTP endpoint, exporter name) needs tuning for
+#   this image. Run only if you want to iterate on it; revert by deleting the
+#   [apim.open_telemetry.remote_tracer] block from deployment.toml + restart.
+#   APISIX + webMethods already prove unified observability across heterogeneous
+#   runtimes without it.
+#
 # WSO2 4.5 ships opentelemetry-all and reads [apim.open_telemetry.remote_tracer]
 # from deployment.toml (api-manager.xml.j2: <OpenTelemetry><RemoteTracer>). We
 # append it in-container (idempotent) and restart — `docker restart` preserves
