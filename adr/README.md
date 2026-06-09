@@ -7,6 +7,7 @@ Décisions d'architecture **internes / sensibles** (engagements clients anonymis
 | ADR | Titre | Statut | Date |
 |-----|-------|--------|------|
 | [ADR-067](./adr-067-reuse-first-owned-portable-layer.md) | Reuse-first — couche possédée portable, runtimes commodity fédérés | Proposé (Council 8/10) | 2026-06-07 |
+| [ADR-068](./adr-068-stoa-off-the-transaction-path.md) | STOA hors du chemin transactionnel — control plane sortant-only ; Reverse Invoke transactionnel = capacité gateway | Proposé (Council 8/10) | 2026-06-09 |
 
 ## Convention
 

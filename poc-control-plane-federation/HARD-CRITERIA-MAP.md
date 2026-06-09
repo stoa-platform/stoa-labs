@@ -12,10 +12,10 @@
 |---|---|---|---|
 | 1 | Fédération multi-runtime (3 gw hétérogènes, 1 control plane) | §4.8, §7 (le trou) | ✅ couvert |
 | 2 | UAC / Define Once, Expose Everywhere (1 OpenAPI → 3 gw) | §7 | ✅ couvert |
-| 3 | Catalogue unifié (Backstage, 3 gw) | — | ✅ couvert |
+| 3 | Catalogue unifié (`labctl get apis`, 3 gw ; Backstage différé) | — | ✅ couvert |
 | 4 | Self-service souscription (request→approve→creds) | — | ✅ couvert |
-| 5 | Identité Oracle-master (Dex→Keycloak broker→3 gw) | §4.x identité | ✅ couvert |
-| 6 | Observabilité unifiée OTel (`trace_id` 3 gw → Tempo/Loki/Prom) | §0.5 | ✅ couvert |
+| 5 | Identité Oracle-master (Dex→Keycloak broker→3 gw) | §4.x identité | ✅ couvert (live) |
+| 6 | Observabilité unifiée OTel (APISIX + webMethods → Tempo ; WSO2 OTel en suivi) | §0.5 | 🟡 2/3 runtimes |
 | 7 | Souveraineté (100 % local/self-hosted, 0 SaaS) | vs Axway Amplify | ✅ couvert |
 
 ---
@@ -24,34 +24,37 @@
 
 | Critère | Réf. étude | Sévérité | Couvert ? | Prochaine action |
 |---|---|---|---|---|
-| **Reverse Invoke / zéro flux entrant en zone de confiance** | §0.2, §4.2 | **🔴 ÉLIMINATOIRE** | ❌ NON | **PROCHAIN MUST-PROVE** — un comité BC peut bloquer seul là-dessus. C'est de la **topologie de déploiement** (le data-plane initie sortant vers le control plane), pas de la fédération → jet dédié `poc-reverse-invoke`. |
+| **Reverse Invoke / zéro entrant en zone de confiance** (DATA-PLANE) | §0.2, §4.2 | **🔴 ÉLIMINATOIRE** | n/a pour STOA | **Critère GATEWAY, pas un livrable STOA.** RI = pattern DMZ data-plane (le trafic externe atteint les APIs internes sans port entrant — cf. Reverse Gateway webMethods). C'est **transactionnel** → porté par la gateway qualifiée. À **vérifier produit par produit** (webMethods ✓ ; WSO2/APISIX/SAP à confirmer). Cf. [`../adr/adr-068-stoa-off-the-transaction-path.md`](../adr/adr-068-stoa-off-the-transaction-path.md). |
+| **Orchestration zéro-entrant (must-prove STOA)** | dérivé §0.2 | 🔴 Élevé | ❌ NON | Le vrai must-prove de STOA : fédérer/configurer des gateways en topologie reverse-invoke/DMZ **sans réintroduire** d'entrant, et **canal de management STOA lui-même zéro-entrant** (agent sortant-only **ou** pull GitOps). STOA reste **hors du chemin transactionnel**. |
 | **Analytique transactionnelle par fournisseur (OpenSearch)** | §4.11, §0.6 | 🟠 Élevé | ❌ NON | Le PoC fait de l'obs technique (traces/métriques/logs), pas l'analytique métier par fournisseur. Add-on : pipeline OTel → OpenSearch + dashboards par provider. |
 | **Streaming gros fichiers > 500 Mo** | §0.4 | 🟠 Élevé | ❌ NON (OUT du MEGA) | URL pré-signées / passthrough — explicitement hors scope premier jet. À chiffrer séparément. |
 | ESB / bus / BPM | MEGA OUT | — | ❌ NON (assumé) | Ajoutables ensuite (Camel, Artemis/Kafka) — hors scope. |
 
 ---
 
-## 3. Reverse Invoke — pourquoi c'est le prochain jet prioritaire
+## 3. Reverse Invoke — clarification (à ne PAS sur-vendre)
 
-- **Sévérité** : l'étude le pose en **éliminatoire** (§0.2, §4.2). Un produit qui exige un flux entrant vers la zone de confiance de la BC est écarté d'office, quel que soit le reste.
-- **Indépendant de la fédération** : RI est une question de **topologie réseau** (agent data-plane en zone sensible qui n'ouvre que du sortant vers le control plane), pas du « 1 contrat → N gw » prouvé ici. Les deux preuves se composent mais se démontrent séparément.
-- **Atout STOA** : l'architecture STOA prévoit déjà l'agent `stoa-connect` (sortant-only, heartbeat + SSE) — c'est précisément le pattern Reverse Invoke. Le jet `poc-reverse-invoke` réutiliserait ce mécanisme produit (≠ scaffold OSS jetable).
+> Correction d'une confusion initiale. Il y a **deux** « reverse invoke » distincts ; ne pas les mélanger devant le comité. Cf. [`../adr/adr-068-stoa-off-the-transaction-path.md`](../adr/adr-068-stoa-off-the-transaction-path.md).
 
-> **Message au comité** : « Ce jet prouve la fédération. Le Reverse Invoke — votre critère éliminatoire — est le prochain à démontrer, et c'est un point fort natif de STOA (agent sortant-only), pas une rustine. »
+- **Reverse Invoke transactionnel (celui de l'étude, éliminatoire)** = pattern **data-plane / DMZ** : le trafic externe atteint les APIs internes **sans port entrant** vers la zone (Reverse Gateway webMethods). **Il voit les transactions** → c'est une **capacité de la gateway qualifiée**, **pas de STOA**. STOA ne peut pas le « prouver » sans revendiquer une fonction data-plane qu'il **ne doit pas** avoir (un éditeur inconnu n'entre pas dans le transactionnel d'une BC).
+- **Ce que STOA prouve à la place** : (a) **orchestrer** des gateways en topologie reverse-invoke/DMZ **sans réintroduire** d'entrant ; (b) **son propre canal de management en zéro-entrant** (agent de *config* sortant-only — sync/discovery/policy/creds rotatifs, jamais un proxy — **ou** un pull GitOps). STOA reste **hors du chemin des transactions**.
+- **L'agent sortant-only « à côté de la gateway »** est un bon deal *control-plane* (valeur opérationnelle réelle sans toucher les flux), à condition d'être minimal/signé/auditable et **remplaçable par un pull GitOps** (pas de dépendance runtime dure en zone).
+
+> **Message au comité (corrigé)** : « Le Reverse Invoke de votre data-plane reste l'affaire de vos gateways qualifiées. STOA n'y touche pas : il orchestre **à côté**, en sortant-only, sans jamais voir vos transactions. »
 
 ---
 
 ## 4. Tableau de synthèse (1 slide)
 
 ```
-PROUVÉ (ce jet)              │  À PROUVER (must-prove)        │  HORS SCOPE (chiffré à part)
+PROUVÉ (ce jet)              │  À PROUVER côté STOA           │  HORS PÉRIMÈTRE STOA / chiffré
 ────────────────────────────┼───────────────────────────────┼──────────────────────────────
-Fédération 3 runtimes        │  🔴 Reverse Invoke (élimin.)   │  Streaming >500 Mo
-Define Once → 3 gw           │  🟠 Analytique par fournisseur │  ESB / bus / BPM
-Catalogue + self-service     │     (OpenSearch)               │
-Identité Oracle-master       │                               │
-trace_id 3 gw → Tempo        │                               │
+Fédération 3 runtimes        │  Orchestration zéro-entrant    │  🔴 Reverse Invoke data-plane
+Define Once → 3 gw           │  + management zéro-entrant     │     = capacité GATEWAY (webM ✓,
+Catalogue + self-service     │  🟠 Analytique par fournisseur │     WSO2/APISIX/SAP à vérifier)
+Identité Oracle-master       │     (OpenSearch)               │  Streaming >500 Mo · ESB/bus/BPM
+obs OTel (APISIX+webMethods) │                               │
 Souveraineté (0 SaaS)        │                               │
 ```
 
-_Ne jamais présenter la colonne 1 sans montrer les colonnes 2-3 : la crédibilité vient de l'honnêteté sur ce qui reste à prouver._
+_Ne jamais présenter la colonne 1 sans montrer les colonnes 2-3 : la crédibilité vient de l'honnêteté sur ce qui reste à prouver — et sur ce qui **n'est pas** à STOA de prouver (le Reverse Invoke transactionnel = gateway, pas STOA)._
