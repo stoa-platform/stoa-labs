@@ -1,0 +1,47 @@
+# envs/prod/targets.cluster.yaml — cible de convergence PROD (ADR-075),
+# perspective CI (Jenkins DANS le réseau poc : noms docker internes).
+# Même contenu que envs/prod/targets.yaml, seuls les hosts changent :
+# webmethods-real:5555 au lieu de localhost:5555.
+#
+# C'est le manifest que consomme ci/Jenkinsfile.prod APRÈS le gate Git-natif
+# (promotion approuvée 4-yeux + change ITSM approved + pv_ref + commit pinné).
+apiVersion: labctl.stoa.io/v1
+kind: FederationTarget
+name: accounts-read
+
+# Ignoré par apply-uac (contrat servi par le repo governance, UAC v1).
+contract: ../../apis/accounts-read.openapi.yaml
+
+backendUrl: http://microcks:8080/rest/Accounts+Read+API/1.0.0
+
+targets:
+  - name: webmethods
+    type: webmethods
+    adminUrl: http://webmethods-real:5555    # ADMIN DIRECT (wM réel) — pas de proxy en prod
+    gatewayUrl: http://webmethods-real:5555  # data-plane /gateway/accounts-read/1.0.0
+    routing:
+      endpointAlias:
+        name: accounts-read-backend
+        url: http://microcks:8080/rest/Accounts+Read+API/1.0.0
+      credentialAlias:
+        name: accounts-read-backend-cred
+    # Inbound JWT/OAuth2 — copie INTÉGRALE de targets.cluster.yaml (barrière
+    # data-plane complète ; audience fail-open sur le trial, LIVE FINDING).
+    inboundAuth:
+      issuer: http://localhost:8480/realms/stoa-lab
+      jwksUri: http://keycloak:8080/realms/stoa-lab/protocol/openid-connect/certs
+      aliasName: KeycloakStoaLab
+      audience: accounts-read
+      scope: accounts.read
+      clientId: accounts-read-consumer
+      introspectionEndpoint: http://keycloak:8080/realms/stoa-lab/protocol/openid-connect/token/introspect
+      introspectionClientId: poc-gateways
+      introspectionClientSecret: poc-gateways-secret
+      introspectionUser: Administrator
+    credentials:
+      # Basic admin — PLACEHOLDERS ; avec VAULT_ADDR (le stage prod le set),
+      # labctl les résout depuis secret/stoa/gateways/webmethods (ADR-074).
+      username: Administrator
+      password: manage
+      backendUsername: poc-backend-user      # placeholder, Vault en cible
+      backendPassword: poc-backend-secret    # placeholder, Vault en cible

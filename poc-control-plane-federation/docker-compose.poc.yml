@@ -27,6 +27,34 @@ volumes:
 services:
 
   # ---------------------------------------------------------------------------
+  # Secrets — HashiCorp Vault (dev-mode) — ADR-074, concrétise le gap (d) d'ADR-072
+  # Secrets centralisés, LUS À L'EXÉCUTION par labctl / onboarding-api / la CI
+  # (au lieu des placeholders targets.yaml / env / credentials Jenkins). Dev-mode
+  # = unsealed, KV v2 monté sous secret/, root token PoC JETABLE. Provisionné
+  # idempotemment par scripts/setup-vault.sh. En prod : AppRole + rotation.
+  # ---------------------------------------------------------------------------
+  vault:
+    image: ${VAULT_IMAGE:-hashicorp/vault:1.17}
+    container_name: poc-vault
+    ports:
+      - "${PORT_VAULT:-8200}:8200"
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_ROOT_TOKEN:-stoa-root-token}
+      VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+      VAULT_ADDR: http://127.0.0.1:8200
+    cap_add:
+      - IPC_LOCK
+    command: server -dev
+    healthcheck:
+      test: ["CMD", "vault", "status"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+    networks: [poc]
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
   # Gateway #1 — WSO2 API Manager (réel, OSS)
   # ---------------------------------------------------------------------------
   wso2am:
@@ -51,9 +79,12 @@ services:
   # Gateway #2 — Apache APISIX (réel, OSS) + etcd
   # ---------------------------------------------------------------------------
   etcd:
-    # Pinned in-compose (not via .env ETCD_IMAGE): Bitnami removed the public
-    # bitnami/etcd:3.5 tag (2025 Broadcom change → bitnamilegacy). Official
-    # CoreOS etcd is durable/supported. Ignores any stale ETCD_IMAGE in .env.
+    # Hardcoded to official CoreOS etcd (durable/supported). Bitnami removed the
+    # public bitnami/etcd:3.5 tag (Broadcom 2025 → bitnamilegacy). The .env files
+    # are permission-locked in this PoC and still carry a stale
+    # ETCD_IMAGE=bitnami/etcd:3.5 (non-pullable) — that value is INTENTIONALLY
+    # NOT referenced here so a fresh `up` always pulls a real image. Update the
+    # stale .env line to quay.io/coreos/etcd:v3.5.21 when the files are unlocked.
     image: quay.io/coreos/etcd:v3.5.21
     container_name: poc-etcd
     # Official CoreOS etcd, single node, no auth (APISIX config store).
@@ -93,6 +124,22 @@ services:
       timeout: 5s
       retries: 20
       start_period: 15s
+    networks: [poc]
+    restart: unless-stopped
+
+  # APISIX Dashboard (UI) — viewer/éditeur cliquable au-dessus du MÊME etcd.
+  # Pratique pour parcourir routes/plugins/consumers à la souris ; la source de
+  # vérité reste Git/UAC + labctl. Login PoC jetable admin/admin.
+  apisix-dashboard:
+    image: apache/apisix-dashboard:3.0.1-alpine
+    container_name: poc-apisix-dashboard
+    depends_on:
+      etcd:
+        condition: service_healthy
+    ports:
+      - "${PORT_APISIX_DASHBOARD:-9000}:9000"
+    volumes:
+      - ./gateways/apisix/dashboard-conf.yaml:/usr/local/apisix-dashboard/conf/conf.yaml:ro
     networks: [poc]
     restart: unless-stopped
 
@@ -167,8 +214,11 @@ services:
       KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
       DEX_BROKER_CLIENT_SECRET: "${DEX_BROKER_CLIENT_SECRET:-keycloak-broker-secret-poc}"
     ports:
-      # Host 8081 is taken by another local stack (docker-compose-stoa-gateway).
-      # Pinned to 8480 (the .env PORT_KEYCLOAK can't override this hardcode).
+      # Hardcoded host 8480 (NOT 8081 — taken by another local stack,
+      # docker-compose-stoa-gateway; and KC_HOSTNAME above pins iss to :8480).
+      # The .env files are permission-locked and still carry a stale
+      # PORT_KEYCLOAK=8081 — INTENTIONALLY NOT referenced here. Update that line
+      # to 8480 when the files are unlocked.
       # Internal port stays 8080 — that's what `labctl subscribe` calls over the
       # compose network, so the host remap doesn't affect Phase 1/2.
       - "8480:8080"
@@ -191,6 +241,20 @@ services:
       - "${PORT_GRAFANA:-3000}:3000"        # Grafana
       - "${PORT_OTLP_GRPC:-4317}:4317"      # OTLP gRPC
       - "${PORT_OTLP_HTTP:-4318}:4318"      # OTLP HTTP
+    volumes:
+      # Auto-provision the federation dashboard so /d/stoa-fed-overview exists on
+      # a FRESH `up` (the image already provisions prometheus/tempo/loki datasources
+      # with stable UIDs, which the dashboard JSON references). The provider yaml
+      # sits in the image's dashboards provisioning dir; the bare dashboard JSON is
+      # mounted into the sibling json/ dir the provider points at.
+      - ./observability/grafana/provisioning/dashboards/stoa.yaml:/otel-lgtm/grafana/conf/provisioning/dashboards/stoa.yaml:ro
+      - ./observability/grafana/dashboards:/otel-lgtm/grafana/conf/provisioning/dashboards/json:ro
+      # ADR-070 bridge: the OpenSearch-Txn datasource (plan GOUVERNANCE/AUDIT)
+      # referenced by dashboard stoa-fed-otel-txn. type=elasticsearch because the
+      # dedicated grafana-opensearch plugin is NOT bundled (air-gapped); OpenSearch
+      # 2.x is wire-compatible with ES 7.10. The trace<->transaction correlation
+      # (read-only Tempo source) is applied by provisioning/apply.sh, not a mount.
+      - ./observability/grafana/provisioning/datasources/opensearch-txn.yaml:/otel-lgtm/grafana/conf/provisioning/datasources/opensearch-txn.yaml:ro
     healthcheck:
       # The otel-lgtm image ships curl, not wget.
       test: ["CMD-SHELL", "curl -sf -o /dev/null http://localhost:3000/api/health || exit 1"]

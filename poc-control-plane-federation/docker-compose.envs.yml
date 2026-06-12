@@ -1,0 +1,143 @@
+# =============================================================================
+# PoC Control Plane Fédération — TOPOLOGIE MULTI-ENV (ADR-075)
+#
+# OVERRIDE du projet `stoa-labs-poc`. À EMPILER sur le socle ET l'overlay wM
+# (le service webmethods-real est défini dans docker-compose.wm.yml — ce
+# fichier ne fait que le ré-attacher au réseau nonprod) :
+#
+#   docker compose -p stoa-labs-poc \
+#     -f docker-compose.poc.yml -f docker-compose.wm.yml -f docker-compose.envs.yml \
+#     up -d --build wm-mock-dev wm-mock-rec wm-mock-int itsm-mock webmethods-real
+#
+# Topologie (la contrainte réseau EST la preuve) :
+#   - réseau `nonprod` INTERNE (internal: true) : les 3 mocks wM dev/rec/int y
+#     vivent SANS ports: publiés — injoignables du host ET de Jenkins/labctl.
+#   - le wM RÉEL (webmethods-real) est le SEUL pont [poc, nonprod] : trois APIs
+#     proxy sœurs wm-admin-{env} (allowlist + OAuth2 scope deploy:{env}) sont
+#     l'unique chemin d'administration vers les envs bas (ADR-075).
+#   - contre-épreuve démo : `docker exec poc-jenkins getent hosts wm-mock-dev`
+#     → échec réseau (Jenkins ne résout/atteint JAMAIS un mock directement).
+# =============================================================================
+
+name: stoa-labs-poc
+
+networks:
+  # Réutilise le réseau du socle (projet stoa-labs-poc → stoa-labs-poc_poc).
+  poc:
+    driver: bridge
+  # Réseau des environnements BAS (dev/rec/int) : INTERNE — aucun egress hôte,
+  # aucun port publié. Seul webmethods-real (ci-dessous) le ponte vers `poc`.
+  nonprod:
+    driver: bridge
+    internal: true
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # Pont control-plane : le wM réel rejoint AUSSI nonprod (réseaux [poc, nonprod]).
+  # ⚠ recreate requis : `docker compose ... up -d webmethods-real` recrée le
+  # conteneur pour attacher le 2e réseau (la config wM vit dans l'ES externe
+  # poc-wm-es → aucune perte, cf. docker-compose.wm.yml).
+  # ---------------------------------------------------------------------------
+  webmethods-real:
+    networks: [poc, nonprod]
+
+  # ---------------------------------------------------------------------------
+  # Mocks wM 10.15 par environnement bas — même image que le mock du socle
+  # (surface admin 10.15 : `labctl apply` passe contre lui ; data-plane probant,
+  # résout ${alias}). AUCUN ports: ; réseau [nonprod] UNIQUEMENT.
+  # ADMIN_USER/ADMIN_PASSWORD distincts par env — valeurs PoC en clair
+  # (placeholder, Vault en cible : secret/stoa/envs/{env}/wm-admin, cf.
+  # scripts/setup-vault-envs.sh — les MÊMES valeurs, pour que le credential
+  # alias projeté par setup-wm-admin-proxy.sh fonctionne sans drift).
+  # Pas de JWT_ISSUER : l'OAuth2 entrant est appliqué PAR LE PROXY wm-admin-{env}
+  # sur le wM réel, pas par le mock. Pas d'OTLP : nonprod est interne,
+  # otel-lgtm injoignable (le mock no-op proprement sans endpoint).
+  # ---------------------------------------------------------------------------
+  wm-mock-dev:
+    build:
+      context: ./mocks/webmethods
+    image: stoa-labs/webmethods-mock:dev
+    container_name: poc-wm-mock-dev
+    environment:
+      LISTEN_ADDR: ":8080"
+      ADMIN_USER: "wm-dev-admin"              # placeholder, Vault en cible
+      ADMIN_PASSWORD: "wm-dev-secret-poc"     # placeholder, Vault en cible
+    healthcheck:
+      test: ["CMD", "/webmethods-mock", "-healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks: [nonprod]
+    restart: unless-stopped
+
+  wm-mock-rec:
+    build:
+      context: ./mocks/webmethods
+    image: stoa-labs/webmethods-mock:dev
+    container_name: poc-wm-mock-rec
+    environment:
+      LISTEN_ADDR: ":8080"
+      ADMIN_USER: "wm-rec-admin"              # placeholder, Vault en cible
+      ADMIN_PASSWORD: "wm-rec-secret-poc"     # placeholder, Vault en cible
+    healthcheck:
+      test: ["CMD", "/webmethods-mock", "-healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks: [nonprod]
+    restart: unless-stopped
+
+  wm-mock-int:
+    build:
+      context: ./mocks/webmethods
+    image: stoa-labs/webmethods-mock:dev
+    container_name: poc-wm-mock-int
+    environment:
+      LISTEN_ADDR: ":8080"
+      ADMIN_USER: "wm-int-admin"              # placeholder, Vault en cible
+      ADMIN_PASSWORD: "wm-int-secret-poc"     # placeholder, Vault en cible
+    healthcheck:
+      test: ["CMD", "/webmethods-mock", "-healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks: [nonprod]
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # ITSM mock (change management) — gate int→prod de governance-api (ADR-075) :
+  # GET /changes/{id}, PUT /changes/{id}/status ; seed ITSM_SEED ; défauts
+  # CHG-0001 approved / CHG-0002 draft. Buildé depuis le module labctl
+  # (cmd/itsm-mock, deps vendorées → build AIR-GAPPED, GOPROXY=off) via un
+  # Dockerfile inline multistage — aucun Dockerfile ajouté au module.
+  # Réseau [poc] + port hôte 8788 : joignable par governance-api (host,
+  # ITSM_URL=http://localhost:8788) ET par Jenkins (http://itsm-mock:8788).
+  # ---------------------------------------------------------------------------
+  itsm-mock:
+    build:
+      context: ./labctl
+      dockerfile_inline: |
+        # syntax=docker/dockerfile:1
+        FROM golang:1.26-alpine AS build
+        WORKDIR /src
+        COPY . .
+        RUN CGO_ENABLED=0 GOPROXY=off GOFLAGS=-mod=vendor \
+            go build -trimpath -ldflags="-s -w" -o /out/itsm-mock ./cmd/itsm-mock
+        FROM gcr.io/distroless/static-debian12:nonroot
+        COPY --from=build /out/itsm-mock /itsm-mock
+        EXPOSE 8788
+        ENTRYPOINT ["/itsm-mock"]
+    image: stoa-labs/itsm-mock:dev
+    container_name: poc-itsm-mock
+    environment:
+      LISTEN_ADDR: ":8788"
+      # ITSM_SEED laissé vide → défauts du binaire (CHG-0001 approved /
+      # CHG-0002 draft) — les contre-épreuves de demo-multienv.sh s'y appuient.
+    ports:
+      - "8788:8788"
+    networks: [poc]
+    restart: unless-stopped

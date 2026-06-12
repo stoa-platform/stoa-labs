@@ -37,3 +37,12 @@ staticPasswords:
     hash: "$2a$10$6EykdUs9Nj6.ibmWqAnDrugYK3mVYbDsqGXnatJagn8sTxrh8K.22"
     username: "bob"
     userID: "oracle-bob-002"
+  # Console Light — auditeur (viewer) et admin plateforme (cpi-admin)
+  - email: "carol@bc.example"
+    hash: "$2a$10$6EykdUs9Nj6.ibmWqAnDrugYK3mVYbDsqGXnatJagn8sTxrh8K.22"
+    username: "carol"
+    userID: "oracle-carol-003"
+  - email: "dave@bc.example"
+    hash: "$2a$10$6EykdUs9Nj6.ibmWqAnDrugYK3mVYbDsqGXnatJagn8sTxrh8K.22"
+    username: "dave"
+    userID: "oracle-dave-004"

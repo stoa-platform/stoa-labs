@@ -1,0 +1,52 @@
+# envs/prod/targets.yaml — cible de convergence PROD (ADR-075), perspective HOST.
+#
+# PROD = le wM RÉEL en DIRECT (pas de proxy wm-admin-* : les proxies ne servent
+# que les envs bas ; il n'existe AUCUN scope deploy:prod sur ci-horsprod). Le
+# chemin prod est le pipeline ci/Jenkinsfile.prod, gated Git-natif (promotion
+# approuvée 4-yeux + change ITSM + pv_ref) — jamais un push automatique.
+#
+# Usage : apply-uac --env prod --tenant banking-demo -f envs/prod/targets.yaml
+apiVersion: labctl.stoa.io/v1
+kind: FederationTarget
+name: accounts-read
+
+# Ignoré par apply-uac (contrat servi par le repo governance, UAC v1).
+contract: ../../apis/accounts-read.openapi.yaml
+
+backendUrl: http://microcks:8080/rest/Accounts+Read+API/1.0.0
+
+targets:
+  - name: webmethods
+    type: webmethods
+    adminUrl: http://localhost:5555      # ADMIN DIRECT (wM réel) — pas de proxy en prod
+    gatewayUrl: http://localhost:5555    # data-plane /gateway/accounts-read/1.0.0
+    # Backend PROD = microcks (le backend « réel » du lab). Même mécanique
+    # ${alias} que les envs bas : seule la VALEUR diffère.
+    routing:
+      endpointAlias:
+        name: accounts-read-backend
+        url: http://microcks:8080/rest/Accounts+Read+API/1.0.0
+      credentialAlias:
+        name: accounts-read-backend-cred
+    # Inbound JWT/OAuth2 — copie INTÉGRALE de targets.yaml (le data-plane prod
+    # garde la barrière complète : signature + azp + scope ; audience fail-open
+    # sur le trial, cf. LIVE FINDING targets.yaml).
+    inboundAuth:
+      issuer: http://localhost:8480/realms/stoa-lab
+      jwksUri: http://keycloak:8080/realms/stoa-lab/protocol/openid-connect/certs
+      aliasName: KeycloakStoaLab
+      audience: accounts-read
+      scope: accounts.read
+      clientId: accounts-read-consumer
+      introspectionEndpoint: http://keycloak:8080/realms/stoa-lab/protocol/openid-connect/token/introspect
+      introspectionClientId: poc-gateways
+      introspectionClientSecret: poc-gateways-secret
+      introspectionUser: Administrator
+    credentials:
+      # Basic admin — PLACEHOLDERS ; avec VAULT_ADDR, labctl les résout depuis
+      # secret/stoa/gateways/webmethods (ADR-074), rotables sans rebuild.
+      username: Administrator
+      password: manage
+      # Valeurs du credential alias backend — placeholders PoC (Vault en cible).
+      backendUsername: poc-backend-user
+      backendPassword: poc-backend-secret

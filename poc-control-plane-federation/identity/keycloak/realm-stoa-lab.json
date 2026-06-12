@@ -31,7 +31,45 @@
       }
     }
   ],
+  "roles": {
+    "realm": [
+      { "name": "cpi-admin", "description": "Console Light — admin plateforme (tous tenants, tous droits)" },
+      { "name": "tenant-admin", "description": "Console Light — fournisseur d'API (édite/publie sur son tenant, approuve les souscriptions)" },
+      { "name": "devops", "description": "Console Light — approbateur (approuve les promotions, 4-yeux)" },
+      { "name": "viewer", "description": "Console Light — auditeur/lecture seule" }
+    ]
+  },
   "clients": [
+    {
+      "clientId": "console-light",
+      "name": "STOA Console Light (gouvernance)",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": ["http://localhost:5173/*"],
+      "webOrigins": ["http://localhost:5173"],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:5173/*"
+      },
+      "protocolMappers": [
+        {
+          "name": "tenant-attribute",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "tenant",
+            "claim.name": "tenant",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    },
     {
       "clientId": "stoa-portal",
       "name": "STOA Portal / Backstage",

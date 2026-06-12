@@ -1,0 +1,31 @@
+# envs/dev/targets.cluster.yaml — cible de convergence DEV (ADR-075),
+# perspective CI (Jenkins DANS le réseau poc : noms docker internes).
+# Même contenu que envs/dev/targets.yaml, seuls les hosts changent :
+# webmethods-real:5555 au lieu de localhost:5555.
+apiVersion: labctl.stoa.io/v1
+kind: FederationTarget
+name: accounts-read
+
+# Ignoré par apply-uac (contrat servi par le repo governance, UAC v1).
+contract: ../../apis/accounts-read.openapi.yaml
+
+backendUrl: http://poc-token-echo:8080/backend/dev
+
+targets:
+  - name: webmethods
+    type: webmethods
+    # Le proxy admin de l'env — Jenkins n'atteint JAMAIS wm-mock-dev directement
+    # (contre-épreuve : docker exec poc-jenkins getent hosts wm-mock-dev → KO).
+    adminUrl: http://webmethods-real:5555/gateway/wm-admin-dev/1.0
+    gatewayUrl: http://webmethods-real:5555/gateway/wm-admin-dev/1.0
+    routing:
+      endpointAlias:
+        name: accounts-read-backend
+        url: http://poc-token-echo:8080/backend/dev
+      credentialAlias:
+        name: accounts-read-backend-cred
+    credentials:
+      # Bearer ci-horsprod (scope deploy:dev), écrit 0600 par le stage Jenkins.
+      bearerTokenFile: /tmp/stoa-wm-admin-token
+      backendUsername: poc-backend-user      # placeholder, Vault en cible
+      backendPassword: poc-backend-secret    # placeholder, Vault en cible

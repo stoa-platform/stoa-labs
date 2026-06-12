@@ -1,0 +1,161 @@
+# webMethods API Gateway RÉEL (trial 10.15) — remplace le mock pour la
+# vérification complète du cheminement (Console → Git → CI → gateway).
+# Config portée de stoa/deploy/vps/webmethods/docker-compose.yml (le VPS
+# vps-wm détruit au shutdown), adaptée au réseau du PoC.
+#
+#   docker compose -f docker-compose.poc.yml -f docker-compose.wm.yml up -d otel-lgtm wm-elasticsearch webmethods-real wm-trace-bridge
+#
+# ⚠️ otel-lgtm DOIT être (re)créé avec LES DEUX -f pour que le mount
+# prometheus-wm.yaml prenne effet — et un `up` base seule (ex. scripts/up.sh)
+# le RECRÉE SANS l'overlay : scrape webMethods perdu + historique Tempo/Prom
+# effacé, sans erreur. Après un up.sh, relancer la commande ci-dessus.
+#
+# Admin : Administrator / manage
+#   data-plane (invocation enforced) : http://localhost:5555/gateway/{api}/{version}/...
+#   console UI (HTTP)  : http://localhost:19072/apigatewayui/
+#   console UI (HTTPS) : https://localhost:9073/apigatewayui/    (port identique, cert self-signed)
+# NB : la config (APIs, policies, alias auth-server) vit dans l'ES EXTERNE
+# (poc-wm-es, volume wm-es-data) → recreate de webmethods-real = aucune perte.
+# NB : image amd64 émulée sur arm64 (Apple Silicon) → boot lent/fragile (3-7 min).
+name: stoa-labs-poc
+
+volumes:
+  wm-es-data:
+
+services:
+  # Overlay du socle : Prometheus (dans otel-lgtm) scrape le /metrics du wM
+  # réel (sag_apigw_api_* — ADR-073 T3). L'image lance prometheus avec
+  # --config.file=/otel-lgtm/prometheus.yaml ; le mount remplace le fichier
+  # ENTIER, d'où la copie complète dans observability/prometheus/prometheus-wm.yaml.
+  otel-lgtm:
+    volumes:
+      - ./observability/prometheus/prometheus-wm.yaml:/otel-lgtm/prometheus.yaml:ro
+
+  wm-elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.13.4
+    container_name: poc-wm-es
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    volumes:
+      - wm-es-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    networks: [poc]
+    restart: unless-stopped
+
+  webmethods-real:
+    image: softwareag/apigateway-trial:10.15
+    container_name: poc-webmethods-real
+    depends_on:
+      wm-elasticsearch:
+        condition: service_healthy
+    ports:
+      # Topologie de ports webMethods API Gateway 10.15 (vérifiée in-situ 2026-06-11) :
+      #   5555 = Integration Server HTTP : admin REST (/rest/apigateway/*) ET
+      #          data-plane d'invocation (/gateway/{api}/{version}) — c'est ICI que
+      #          le moteur API Gateway applique les policies (le Caddyfile du VPS
+      #          source route d'ailleurs le trafic API vers localhost:5555).
+      #   9072 = console UI (HTTP)  ·  9073 = console UI (HTTPS).  PAS le data-plane.
+      - "5555:5555"     # IS : admin REST + invocation /gateway/... (data-plane enforced)
+      - "19072:9072"    # console UI (HTTP)  -> http://localhost:19072/apigatewayui/
+      - "9073:9073"     # console UI (HTTPS) -> https://localhost:9073/apigatewayui/ (port identique : l'UI
+                        #                       fait des redirects relatifs, donc 9073:9073 marche sans casse)
+    environment:
+      - apigw_elasticsearch_hosts=wm-elasticsearch:9200
+      - apigw_elasticsearch_http_username=
+      - apigw_elasticsearch_http_password=
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf -u Administrator:manage http://localhost:5555/rest/apigateway/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 30
+      start_period: 180s
+    networks: [poc]
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Pont traces — wm-trace-bridge (ADR-073)
+  # Le tracer natif 10.15 est inroutable (couplé API Data Store) ; le gateway
+  # publie ses transaction events (global policy Log Invocation → custom
+  # destination "StoaTraceBridge", config persistée dans l'ES EXTERNE) vers ce
+  # shim qui les convertit en spans OTLP (service.name=webmethods) → Tempo.
+  # Câblage gateway : ./scripts/wm-otel-setup.sh (idempotent). Destination +
+  # policy = ES externe → survivent restart ET recreate ; les watt.* (étape 4,
+  # server.cnf) survivent au restart seulement → relancer le script après un
+  # recreate de webmethods-real (sans impact corrélation Tempo : le bridge lit
+  # les headers stockés par la policy).
+  # ---------------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # Banc token-provider (gateways/webmethods/token-provider/poc-naming-convention)
+  # wm-token-echo   = token-endpoint + backend factices de l'API credspoc
+  #                   (logge ce qu'il reçoit : on VOIT si la substitution et le
+  #                   cache de jeton fonctionnent). container_name = poc-token-echo
+  #                   car les policies credspoc pointent http://poc-token-echo:8080.
+  # wm-token-seeder = trafic régulier sur credspoc : sonde nominale (vérifie le
+  #                   Bearer reçu par le backend, logge les rotations de jeton)
+  #                   + sonde d'erreur volontaire (1 cycle sur 5) pour exercer la
+  #                   chaîne de debug. Logs JSON : docker logs poc-wm-token-seeder.
+  # Debug côté gateway uniquement : events Transactional (global Log Invocation →
+  # StoaTraceBridge) → Tempo (service webmethods) + OpenSearch txn-* + UI Analytics.
+  # ---------------------------------------------------------------------------
+  wm-token-echo:
+    image: python:3.12-alpine
+    container_name: poc-token-echo
+    command: ["python", "/echo.py"]
+    volumes:
+      - ./gateways/webmethods/token-provider/poc-naming-convention/echo.py:/echo.py:ro
+    networks: [poc]
+    restart: unless-stopped
+
+  wm-token-seeder:
+    image: python:3.12-alpine
+    container_name: poc-wm-token-seeder
+    command: ["python", "/seeder.py"]
+    environment:
+      GATEWAY_URL: "http://poc-webmethods-real:5555"
+      API_PATH: "/gateway/credspoc/1.0/ping"
+      # /fail traverse TOUTE la chaîne (token compris) : backend simule un 500
+      # -> event Transactional FAILURE -> span Error dans Tempo. (Un 404 sur
+      # ressource inconnue ne produit qu'un errorevent ES, non pollé par le bridge.)
+      ERROR_PROBE_PATH: "/gateway/credspoc/1.0/fail"
+      INTERVAL_SECONDS: "60"
+      ERROR_PROBE_EVERY: "5"
+    volumes:
+      - ./gateways/webmethods/token-provider/poc-naming-convention/seeder/seeder.py:/seeder.py:ro
+    depends_on:
+      - wm-token-echo
+    networks: [poc]
+    restart: unless-stopped
+
+  wm-trace-bridge:
+    build: ./observability/wm-trace-bridge
+    container_name: poc-wm-trace-bridge
+    depends_on:
+      - otel-lgtm
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: "${OTLP_ENDPOINT_HTTP:-otel-lgtm:4318}"
+      OTEL_SERVICE_NAME: "webmethods"
+      # Y analytics (ADR-073) : JSON brut des events Transactional → Redpanda →
+      # Data Prepper (pipeline stoa-txn-webmethods) → OpenSearch txn-{tenant}.
+      # Redpanda vit dans l'overlay analytics : s'il est down, le bridge logge
+      # les échecs de publish et continue (traces non affectées). Vider la
+      # variable pour désactiver la branche.
+      WM_TXN_KAFKA_BROKERS: "redpanda:9092"
+      WM_TXN_KAFKA_TOPIC: "stoa.txn.webmethods"
+      # Angle mort 401 : le gateway ne dispatche pas les PolicyViolation vers
+      # les custom destinations → le bridge les lit dans l'ES du gateway
+      # (poll 30 s, curseur = boot) et émet des spans Error. Vide = off.
+      WM_PV_POLL_URL: "http://wm-elasticsearch:9200"
+    healthcheck:
+      test: ["CMD", "/wm-trace-bridge", "-healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks: [poc]
+    restart: unless-stopped
