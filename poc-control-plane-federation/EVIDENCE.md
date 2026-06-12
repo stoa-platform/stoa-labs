@@ -33,7 +33,9 @@ docker restart poc-wso2am       # charge le Key Manager dans le runtime WSO2, pu
 | webMethods (mock Go) | gateway legacy | http://localhost:8090 |
 | Keycloak | broker d'identité | http://localhost:8480 |
 | Dex | IdP Oracle (mock) | http://localhost:5556 |
-| Grafana + Tempo/Loki/Prometheus | observabilité OTel | http://localhost:3000 |
+| Grafana + Tempo/Loki/Prometheus | observabilité OTel (ops/SRE) | http://localhost:3000 |
+| OpenSearch + Dashboards | analytics transactionnelle / audit (ADR-070) | https://localhost:9201 · http://localhost:5601 |
+| Redpanda + Data Prepper | bus + collecteur normalisant/redactant (ADR-070) | (in-network) |
 | Microcks | backend synthétique | http://localhost:8585 |
 
 ---
@@ -143,9 +145,151 @@ Mécanismes de validation (par gateway) :
 
 ---
 
-## Preuve 6 — Observabilité unifiée OTel (1 plan pour 3 runtimes)
+## 2026-06-11 — Data-plane bout-en-bout : 3 gateways réelles, auth imposée
 
-Les gateways émettent en **OpenTelemetry natif** → un seul Grafana/Tempo/Prometheus.
+**Le mock webMethods sort de la preuve** : la cible est désormais le **vrai**
+webMethods API Gateway (`softwareag/apigateway-trial:10.15`, conteneur
+`poc-webmethods-real`, data-plane `http://localhost:5555/gateway/accounts-read/1.0.0/...`).
+`scripts/phase3-identity-demo.sh` est mis à jour en conséquence (`:8090` → `:5555`).
+
+**Chemin du token (inchangé)** : `alice@bc.example` se connecte chez Dex (Oracle),
+Keycloak (realm `stoa-lab`) fédère via le broker et émet un JWT RS256 avec
+`iss=http://localhost:8480/realms/stoa-lab`, `azp=accounts-read-consumer` — le
+**même** token est présenté aux 3 data-planes.
+
+**Ce qui a été corrigé aujourd'hui** :
+
+- **WSO2** : le Key Manager Keycloak est chargé dans le runtime (restart du
+  conteneur) — la validation self-JWT (claim `azp`) est effective ;
+- **APISIX** : route réécrite vers le backend Microcks `Accounts+Read+API`
+  (`proxy-rewrite`) + plugin `openid-connect` posé par `setup-identity.sh` ;
+- **webMethods réel** : auth entrante **projetée par le control plane** —
+  `labctl apply` crée l'alias auth-server `KeycloakStoaLab` (issuer
+  `localhost:8480`, JWKS `keycloak:8080` — deux horizons réseau) et attache
+  l'action IAM « Identify & Authorize » (`jwtClaims`, `allowAnonymous=false`)
+  au stage IAM de la policy de l'API `accounts-read` (cf. `targets.yaml`
+  `inboundAuth`, adapter `labctl/internal/adapter/webmethods/inboundauth.go`).
+
+**Matrice mesurée** (token frais TTL ~5 min ; « sans token » mesuré **deux fois**
+pour écarter tout effet de cache — résultats identiques) :
+
+```
+                      avec token        sans token (×2)   token forgé
+wso2       :8243      200 {"count":2,…  401               —
+apisix     :9080      200 {"count":2,…  200  ✗ RÉGRESSION —
+webmethods :5555      200 {"count":2,…  401               401 "Unauthorized application request"
+```
+
+- **webMethods réel** : ✓ 200 + corps Microcks avec le token Oracle-master,
+  **401 sans token et 401 avec un JWT forgé** (signature non vérifiable au JWKS)
+  — l'auth entrante imposée par labctl est effective.
+- **WSO2** : ✓ 200 / 401 (`900902 Missing Credentials`).
+- **APISIX** : ✗ **régression constatée au moment de la preuve finale** — un
+  re-apply `labctl` (routes réécrites le 2026-06-11 10:55:58) a **écrasé le
+  plugin `openid-connect`** posé par `setup-identity.sh` (limitation connue de
+  l'adapter : il ne préserve pas les plugins externes au re-apply). Remédiation
+  en une commande : rejouer l'étape 3/3 de `./scripts/setup-identity.sh`
+  (PUT des routes `accounts-read-0/1` avec `openid-connect`), puis corriger
+  l'adapter APISIX pour préserver/projeter l'auth entrante (même modèle
+  `inboundAuth` que webMethods). Non rejoué dans cette session (modification
+  d'APISIX non autorisée ici) — la matrice ci-dessus est l'état **mesuré**, pas
+  l'état visé.
+
+> Bilan : l'auth entrante est **prouvée sur le webMethods réel** (le runtime le
+> plus legacy) et sur WSO2 ; sur APISIX elle est posée par `setup-identity.sh`
+> mais pas encore **possédée** par le control plane — c'est l'écart restant
+> (projeter `inboundAuth` côté APISIX comme côté webMethods).
+
+**Dénouement (même jour) — l'écart est fermé structurellement** : le modèle
+`inboundAuth` est porté à l'adapter APISIX. Le target `apisix` de `targets.yaml`
+déclare `inboundAuth.discoveryUrl`
+(`http://keycloak:8080/realms/stoa-lab/.well-known/openid-configuration`) et
+l'adapter (`labctl/internal/adapter/apisix/inboundauth.go`, miroir de
+`webmethods/inboundauth.go`) projette le plugin **`openid-connect`** prouvé
+(bearer-only, `use_jwks`, RS256) sur **chaque** PUT de route — par `Publish` au
+apply **et** par le re-PUT wholesale de `CreateConsumer` au subscribe. La
+régression ci-dessus ne peut plus se produire : l'auth entrante n'est plus un
+état posé à la main que l'apply écrase, c'est l'apply lui-même qui la porte.
+Validation fail-closed des deux côtés (`load.go` au parse, `New()` à la
+construction) ; sans bloc `inboundAuth`, comportement strictement inchangé.
+
+**Convergence rejouée** : `labctl apply -f targets.yaml` ×2 → 3/3 gateways
+`reused`, `openid-connect` présent sur `accounts-read-0` **et** `-1` (GET admin :
+discovery conforme au manifeste, `proxy-rewrite` toujours vers
+`/rest/Accounts+Read+API/1.0.0`), 6 routes au total (zéro doublon), et côté
+webMethods toujours **1 alias / 1 action / 1 stage IAM** — l'idempotence tient
+sur les deux runtimes.
+
+**Matrice finale mesurée** (token frais à chaque passe ; « sans token » mesuré
+**deux fois**, résultats identiques avant et après le re-apply) :
+
+```
+                      avec token        sans token (×2)   token forgé
+wso2       :8243      200 {"count":2,…  401               —
+apisix     :9080      200 {"count":2,…  401  ✓ corrigé    —
+webmethods :5555      200 {"count":2,…  401               401
+```
+
+`./scripts/phase3-identity-demo.sh` rejoue désormais la preuve de bout en bout :
+token Oracle-master (`alice@bc.example` via Dex, `azp=accounts-read-consumer`)
+→ **200×3** avec le token, **401×3** sans.
+
+> La régression a eu lieu — elle est documentée ci-dessus telle que mesurée.
+> Le fix n'est pas un re-patch manuel mais un transfert de possession : les
+> **trois** runtimes valident maintenant la même identité via une auth entrante
+> déclarée au manifeste et projetée par `labctl apply`.
+
+---
+
+## Preuve 5 bis — Barrière OAuth2 webMethods : 3/4 leviers opposables (gap documenté)
+
+Sur le **webMethods réel** (`apigateway-trial:10.15`), le control plane projette
+une barrière OAuth2 complète. **3 des 4 leviers** sont **opposables** (mesurés
+adversarialement) ; le 4ᵉ (**audience**) est **câblé dans `labctl`** mais **non
+opposable sur le trial 10.15** — gap honnête, mécanisme prêt pour un build capable.
+
+| Levier (claim) | État | Preuve |
+|---|---|---|
+| **Signature** (JWKS RS256) | ✅ opposable | token forgé / signature octet-altérée → **401** ; token valide → **200** |
+| **azp** (application) | ✅ opposable | identifier `azp == accounts-read-consumer` mappé sur la strategy ; mauvais `azp` → refusé |
+| **scope** | ✅ opposable | scope-mapping `requiredAuthScopes` lié à l'API ; token sans scope → **403/401** (chemin strict `oAuth2Token`) |
+| **audience** (`aud`) | ⚠️ **câblé, non opposable sur 10.15 trial** | cf. ci-dessous — 2 leviers prouvent le diagnostic |
+
+**Pourquoi l'audience n'est pas opposable sur ce runtime** — prouvé par **deux
+leviers indépendants** :
+
+1. **Introspection distante inerte** — l'alias bascule de la validation JWKS
+   **OFFLINE** (`localIntrospectionConfig`, qui **ne vérifie jamais `aud`**) vers
+   l'**introspection RFC 7662 distante** (`remoteIntrospectionConfig`, où le
+   resource-server checke `aud` contre `strategy.audience`). Le mécanisme est
+   **entièrement câblé** dans l'adapter
+   (`labctl/internal/adapter/webmethods/inboundauth.go` : `introspectionEndpoint`,
+   `introspectionUser` requis par l'`AuthServerAliasValidator` 10.15) — mais sur
+   l'image **trial**, le chemin reste **inerte** (l'`aud` n'est pas opposé).
+2. **`oAuth2Token`** — l'action IAM passe de `jwtClaims` (signature seule) à
+   **`identificationType=oAuth2Token`** (chemin strict : `applicationLookup=strict`)
+   qui **impose scope + application**, mais **pas l'audience** sur ce runtime.
+   (Passage validé **live** ; cohérent avec la strategy `OAUTH2`, scope toujours
+   imposé, **aucune régression** vs le mode `openIdClaims` antérieur.)
+
+> **Bilan** : signature/azp/scope sont **prouvés opposables** ; l'audience est
+> **diagnostiquée non opposable sur le trial 10.15** et son enforcement est
+> **câblé** dans `labctl` (introspection distante) — un build capable l'active sans
+> re-design. Gap documenté, pas masqué.
+
+---
+
+## Preuve 6 — Observabilité fédérée OTel + corrélation trace ↔ transaction ★
+
+L'observabilité est portée par **deux plans complémentaires** (ADR-070), reliés par
+un **pivot unique : le `trace_id` W3C**.
+
+- **Plan OPS/SRE temps réel** — OTel/LGTM (`grafana/otel-lgtm`, conteneur
+  `poc-otel-lgtm`) : Grafana (http://localhost:3000) + **Tempo** (traces) + **Loki**
+  (logs) + **Prometheus** (span-metrics auto-générées). APISIX et webMethods émettent
+  en **OpenTelemetry natif** (OTLP 4317/4318) → un seul plan transverse.
+- **Plan GOUVERNANCE/AUDIT** — OpenSearch (analytics transactionnelle, ADR-070, cf.
+  section suivante) : un document par transaction, redacté, isolé par tenant.
 
 ```
 $ # Tempo : service.name émettant des traces
@@ -155,11 +299,46 @@ $ # Prometheus (span metrics auto-générées par Tempo)
 traces_spanmetrics_calls_total{service="apisix|webmethods-mock"}
 ```
 
-Deux runtimes **hétérogènes** (APISIX OSS + webMethods legacy) atterrissent dans
-**un seul plan d'observabilité** — la démonstration de fédération de l'observabilité.
-Dashboard fédération : **http://localhost:3000/d/stoa-fed-overview** — sélecteur
-`$gateway`, requêtes/s et latence p95 par runtime, table des traces récentes.
-JSON versionné : `observability/grafana/dashboards/federation-overview.json`.
+### Dashboard de fédération (versionné + provisionné live)
+
+Dashboard **« STOA — Fédération (OTel + Transactions) »** — uid `stoa-fed-otel-txn`,
+**http://localhost:3000/d/stoa-fed-otel-txn** (6 panneaux : RPS/latence p95 par
+runtime depuis Prometheus/Tempo + **table des transactions OpenSearch**). Grafana est
+ouvert (pas d'auth) ; il est provisionné **et** versionné, des deux côtés :
+
+- **fichiers reproductibles** : `observability/grafana/provisioning/` (datasource
+  `OpenSearch-Txn`, dashboard `dashboards/federation-otel-transactions.json`,
+  correlation `correlations/tempo-to-opensearch.yaml`) ;
+- **chemin live/idempotent** : `observability/grafana/provisioning/apply.sh` (re-PUT
+  par uid si présent, POST sinon ; la correlation Tempo→OpenSearch passe par `apply.sh`
+  car la datasource source Tempo est read-only — non provisionnable par fichier).
+
+### Le pivot trace ↔ transaction (validé empiriquement)
+
+Le schéma `stoa.txn` porte un champ `trace_id`. Un appel data-plane réel produit
+**le même `trace_id` W3C dans les deux plans** → on pivote de l'un à l'autre :
+
+```
+trace_id = 73ffd5332255a5de453384d4bc45eb4c        # VRAI trace_id W3C (non synthétique)
+
+  Tempo (OTLP)      GET /api/traces/<trace_id>  → 200  service.name=apisix
+                    span "opentelemetry-lua" réel (APISIX)
+  OpenSearch (txn)  term trace_id:"<trace_id>"  → 1 doc  gateway=apisix
+                    api=accounts-read  status=success
+```
+
+- **trace → transaction** : *correlation* Grafana **Tempo → OpenSearch-Txn**
+  (uid `efotpn446a5fkc`, `field=traceID`, requête `trace_id:"${__value.raw}"`) —
+  posée par `apply.sh`.
+- **transaction → trace** : *data link* sur le champ `trace_id` du panneau table
+  OpenSearch → **Explore Tempo**.
+
+> Le lien est **bidirectionnel sur le `trace_id` W3C**. Condition technique : le
+> `trace_id` doit être **réel**, pas synthétique. Elle est remplie en activant
+> `plugin_attr.opentelemetry.set_ngx_var=true` dans `gateways/apisix/config.yaml`
+> — sans quoi `$opentelemetry_trace_id` est vide dans le `log_format` du kafka-logger
+> (le doc OpenSearch ne porterait alors qu'un identifiant local, non corrélable à
+> Tempo). Le `request_id` déterministe sert de filet **anti-sampling** (ADR-070).
 
 > **WSO2 OTel** : WSO2 4.5 embarque `opentelemetry-all` et se configure via
 > `[apim.open_telemetry.remote_tracer]` (`scripts/setup-wso2-otel.sh`). Sur cette
@@ -174,11 +353,108 @@ JSON versionné : `observability/grafana/dashboards/federation-overview.json`.
 
 ---
 
+## Preuve 6 bis — Analytics transactionnelle par fournisseur (ADR-070)
+
+Le **plan de gouvernance/audit** : toutes les transactions (succès **et** erreur)
+centralisées dans **un OpenSearch unique**, **isolées par fournisseur** et **redactées
+à un seul endroit auditable**. C'est l'analytique transactionnelle per-fournisseur
+que la thèse listait comme « pas encore prouvée » — désormais prouvée bout-en-bout
+sur la tranche APISIX.
+
+**Chaîne d'ingestion** (off the transaction path, ADR-068 — la gateway *émet*, ne
+*traite* pas) :
+
+```
+APISIX (kafka-logger)  →  topic stoa.txn.apisix  (Redpanda, poc-analytics-redpanda)
+   →  Data Prepper (poc-analytics-data-prepper, observability/data-prepper/pipelines.yaml)
+   →  OpenSearch data stream txn-accounts-team  (backing .ds-txn-accounts-team-*)
+```
+
+**Le collecteur (Data Prepper) est la SEULE autorité de redaction** (ADR-070) — la
+gateway ne ship **jamais** de body brut. Règle de capture stricte (pipeline) :
+
+| Issue | Ce qui est indexé |
+|---|---|
+| **succès** (`status<400`) | **métadonnées seules** (tenant/provider/api, trace_id, latence, http_*) |
+| **erreur** (`status>=400`) | méta + `response_body` **redacté** + `request_headers`/`response_headers` **redactés** |
+
+Redaction **déterministe** appliquée **avant** indexation : IBAN FR (garde 4+4,
+masque le milieu), montants/soldes (`balance|amount|montant|solde|…` → masqué), et
+suppression des en-têtes sensibles bruts (`Authorization`/`Cookie`/`Set-Cookie`) —
+`redaction_applied=true` est stampé. Aucune PII non-redactée n'atteint
+`txn-{tenant}-*`.
+
+**Isolation tenant + RBAC par fournisseur** (vérifié live) :
+
+| Objet | Valeur live |
+|---|---|
+| **data stream** | `txn-accounts-team` → backing `.ds-txn-accounts-team-000001` |
+| **tenant Dashboards** | `accounts-team` |
+| **rôle** | `tenant-accounts-team-viewer` — `index_patterns` = `txn-accounts-team*` + `.ds-txn-accounts-team-*` |
+| **FLS / field masking** | `user_ip`, `user_agent`, `response_body`, `request_headers.*`, `response_headers.*` |
+| **tenant_permissions** | `accounts-team` → `kibana_all_read` |
+| **user** | `accounts-viewer` (read-only, scope au seul tenant) |
+
+> **Double rempart PII** : la donnée est **redactée à l'ingestion** (collecteur =
+> autorité) **et** **masquée à l'affichage** (FLS du rôle). Le FLS seul ne suffit
+> pas (la donnée brute resterait indexée) — d'où la redaction obligatoire en amont.
+
+**Provisioning reproductible** (`observability/opensearch/provision/provision.sh`,
+idempotent) : un run à blanc reproduit **tout** — template data-stream (01) + ISM
+rétention (02) + tenant Dashboards (07) + rôle/FLS (03) + user (04) + roles-mapping
+(05) + l'index-pattern saved-object `txn-accounts-team` (08, sur le tenant
+`accounts-team`). C'est le miroir de ce que `labctl` projette
+(« Define Once → Observe Everywhere »).
+
+**Projection par le control plane** (`labctl`) : quand le manifeste porte un bloc
+*observability/tenant*, l'adapter APISIX
+(`labctl/internal/adapter/apisix/kafkalogger.go`) **projette le plugin `kafka-logger`**
+sur chaque route au publish **et** au re-PUT du subscribe — le `log_format` est la
+projection FLAT du schéma `stoa.txn` (contrainte APISIX : tout `log_format` doit être
+une string plate, `batch_max_size=1` pour que Data Prepper désérialise un objet par
+record). L'émission n'est pas un état posé à la main : c'est l'`apply` qui la porte.
+
+---
+
 ## Preuve 7 — Souveraineté
 
 100 % local / self-hosted, **zéro dépendance SaaS** : toutes les briques tournent
 en conteneurs sur le poste (`docker compose`), aucune sortie vers un service
 managé tiers. C'est l'argument différenciant vs Axway Amplify (SaaS, hors zone).
+
+---
+
+## 2026-06-12 — CI multi-env webMethods : promotion-from-Git, proxy admin, rollback (ADR-075) ★
+
+**Validé live, `scripts/demo-multienv.sh` → 19/19 PASS** (dont 5 contre-épreuves
+fail-closed), sur la topologie `docker-compose.envs.yml` (3 mocks wM dialecte 10.15
+sur réseau `nonprod` interne, trial réel = PROD, seul pont `[poc, nonprod]`).
+
+- **Spike préalable sur le trial 10.15** (méthodologie capture-from-UI) : `${alias}`
+  résolu **par requête** dans `straightThroughRouting` (switch d'env par un seul PUT
+  d'alias, sans réactivation) ; payload 200 Ko traverse le data-plane ; PUT
+  `/policyActions` **enveloppé obligatoire** (body nu = 200 no-op silencieux) ;
+  credential alias `httpAuthCredentials.password` **en base64** ; action outbound
+  **imbriquée** sous `transportSecurity` (à plat = NPE 500).
+- **Routing-by-alias dans labctl** (`routing.go`) : prouvé live sur le trial —
+  apply → data-plane via `${api}-backend` + **Basic injecté par credential alias**
+  (`liveuser:livepass` vu par le backend), re-apply idempotent, valeur d'alias
+  changée → le data-plane suit immédiatement.
+- **Proxy admin** : matrice `setup-wm-admin-proxy.sh` **15/15** — sans token 401 ;
+  token sans le scope de l'env 401 ; `ci-horsprod` (scopes `deploy:{dev,rec,int}`)
+  200 ; `/rest/apigateway/users` hors allowlist 404 ; DELETE 405. `labctl apply`
+  complet **à travers le proxy** (bearer → credential alias → admin mock) sans que
+  le client ne porte les creds admin de l'env.
+- **Chaîne de gates** : dev/rec auto au merge (gate Git, env non mergé = skip
+  narratif) ; rec→int approuvé par référence `pr_…` par un membre `int-team`
+  (claim `groups`) ; int→prod = `change_ref`+`pv_ref` requis + **ITSM approved**
+  + 4-yeux ; apply prod au **SHA pinné** (`deploy.prod.yaml: commit`).
+- **Rollback exploit 1-clic** : restaure le `deploy.prod.yaml` N-1 (avec SON pin),
+  marker `rolled_back` + evidence motivée, re-apply idempotent. **Jamais de DELETE.**
+- **Contre-épreuves** : ITSM draft → 409 `ITSM_NOT_APPROVED` ; self-approval prod →
+  403 `SELF_APPROVAL_BLOCKED` ; rollback d'un 1er déploiement → 409
+  `NO_PREVIOUS_STATE` ; `poc-jenkins` ne résout pas `wm-mock-dev` (isolement réseau) ;
+  AppRole `ci-pipeline` lit `secret/stoa/envs/dev/wm-admin` → **403 Vault**.
 
 ---
 
@@ -197,5 +473,11 @@ le **Reverse Invoke / zéro entrant** (critère *éliminatoire*, §0.2/§4.2) es
 **pas un livrable STOA**. Le must-prove de STOA est distinct et plus modeste : **orchestrer
 des gateways en topologie zéro-entrant sans réintroduire d'entrant, et garder son propre
 canal de management en zéro-entrant** (agent de config sortant-only **ou** pull GitOps) —
-STOA restant **hors du chemin transactionnel**. Également différés : analytique
-transactionnelle par fournisseur, streaming > 500 Mo.
+STOA restant **hors du chemin transactionnel**.
+
+L'**analytique transactionnelle par fournisseur** (longtemps listée ici comme non
+prouvée) est **désormais démontrée** sur la tranche APISIX (Preuve 6 bis, ADR-070) :
+data stream + RBAC + FLS + redaction à un point unique, bout-en-bout. Restent
+**différés** : tranches wM (Log Invocation→Kafka) et WSO2 (Fluent Bit sidecar) de la
+même chaîne, l'enforcement **audience** wM (câblé, non opposable sur trial 10.15),
+WSO2 OTel (réglage d'exporteur), et le streaming > 500 Mo.
