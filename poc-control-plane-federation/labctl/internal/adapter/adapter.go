@@ -168,6 +168,34 @@ type ConsumerSpec struct {
 	// ThrottlingPolicy / Plan is the business plan/tier (WSO2 "Unlimited",
 	// webMethods plan). Defaults to "Unlimited" in the PoC.
 	ThrottlingPolicy string
+
+	// --- Partner onboarding identifiers (ADR-071) ---------------------------
+	// These OPTIONAL fields declare the partner identity an admin posts BY HAND
+	// today on the webMethods application (custom TOKEN, IP allowlist, public
+	// CERTIFICATE) so labctl can project them as-code. Absent on every field =>
+	// the consumer behaves exactly as before (azp/openIdClaims only). Ignored by
+	// gateways that do not model per-application identifiers (WSO2/APISIX).
+
+	// TokenIdentifiers are custom token strings projected as a webMethods
+	// application identifier (key "token"). The client presents the token in a
+	// custom header; the "Identify & Authorize Application" action in token mode
+	// resolves THIS application. Non-secret tokens (shared test material) may
+	// live in Git; production secrets MUST be referenced from Vault/PAM, never
+	// inlined in the manifest (ADR-068/069).
+	TokenIdentifiers []string
+
+	// IPAllowlist are IPs and/or ranges ("203.0.113.10", "10.60.30.1-10.60.30.30")
+	// projected as a webMethods application identifier (key "ipAddressRange").
+	// Enforced only when the API carries the IP-range identification action;
+	// posed-but-inert otherwise (same semantics as azp). Auditable in Git.
+	IPAllowlist []string
+
+	// PublicCertRef references a PUBLIC X.509 certificate (PEM) of the partner —
+	// an on-disk path OR an inline PEM. labctl registers it in the gateway
+	// truststore (mTLS handshake trust) AND posts it as the application
+	// identifier (key "httpsCertificate", identity match). Only PUBLIC material
+	// is accepted; a PEM carrying a PRIVATE KEY is rejected (never in Git).
+	PublicCertRef string
 }
 
 // ConsumerResult is the uniform outcome of CreateConsumer for one gateway.

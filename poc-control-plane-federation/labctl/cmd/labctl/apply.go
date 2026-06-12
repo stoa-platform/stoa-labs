@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/stoa-platform/stoa-labs/poc/labctl/internal/backstage"
 	"github.com/stoa-platform/stoa-labs/poc/labctl/internal/cli"
 	"github.com/stoa-platform/stoa-labs/poc/labctl/internal/openapi"
+	"github.com/stoa-platform/stoa-labs/poc/labctl/internal/output"
 	"github.com/stoa-platform/stoa-labs/poc/labctl/internal/targets"
 )
 
@@ -36,9 +38,20 @@ type publishOutcome struct {
 
 func runApply(cmd *cobra.Command, _ []string) error {
 	ctx := cmd.Context()
+	format, err := output.ParseFormat(outputFlag)
+	if err != nil {
+		return err
+	}
 	out := cmd.OutOrStdout()
+	// In json mode stdout must carry the JSON document ONLY; every human
+	// progress line moves to stderr. In table mode log == out, so the rendering
+	// is byte-identical to the historical output.
+	log := out
+	if format == output.FormatJSON {
+		log = cmd.ErrOrStderr()
+	}
 
-	tf, err := targets.Load(fileFlag)
+	tf, err := loadResolvedTargets(ctx, fileFlag)
 	if err != nil {
 		return err
 	}
@@ -47,83 +60,122 @@ func runApply(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	fmt.Fprintf(out, "Define Once → Expose Everywhere: %q v%s → %d gateways\n", api.Name, api.Version, len(tf.Targets))
-	fmt.Fprintf(out, "  contract: %s\n  backend:  %s\n\n", tf.Contract, backendOrPlaceholder(api.BackendURL))
+	fmt.Fprintf(log, "Define Once → Expose Everywhere: %q v%s → %d gateways\n", api.Name, api.Version, len(tf.Targets))
+	fmt.Fprintf(log, "  contract: %s\n  backend:  %s\n\n", tf.Contract, backendOrPlaceholder(api.BackendURL))
 
 	if api.BackendURL == "" {
 		// No upstream resolved from targets.yaml backendUrl nor an absolute
 		// servers[].url: gateways have nothing real to proxy to, so a "published"
 		// status here can be a synthetic false positive (routes exist but the
 		// data plane points nowhere). Surface it loudly.
-		fmt.Fprintf(out, "  %s no backendUrl resolved (targets.yaml backendUrl empty and no absolute servers[].url) —\n", cli.FAIL)
-		fmt.Fprintf(out, "    gateways have no real upstream to proxy to; a published status may be a synthetic false positive.\n\n")
+		fmt.Fprintf(log, "  %s no backendUrl resolved (targets.yaml backendUrl empty and no absolute servers[].url) —\n", cli.FAIL)
+		fmt.Fprintf(log, "    gateways have no real upstream to proxy to; a published status may be a synthetic false positive.\n\n")
 	}
 
 	// --- the dispatch loop: every target gets the SAME contract ---
 	outcomes := make([]publishOutcome, 0, len(tf.Targets))
-	endpoints := map[string]string{} // gateway -> live invocation URL (for Backstage)
+	endpoints := map[string]string{} // target NAME -> live invocation URL (for Backstage)
 	for _, t := range tf.Targets {
 		oc := publishOutcome{name: t.Name, typ: t.Type}
 		ad, err := adapter.New(t.ToConfig())
 		if err != nil {
 			oc.err = err
 			outcomes = append(outcomes, oc)
-			fmt.Fprintf(out, "  %s %-12s adapter: %v\n", cli.FAIL, t.Name, err)
+			fmt.Fprintf(log, "  %s %-12s adapter: %v\n", cli.FAIL, t.Name, err)
 			continue
 		}
 		if err := ad.Health(ctx); err != nil {
 			oc.err = fmt.Errorf("health: %w", err)
 			outcomes = append(outcomes, oc)
-			fmt.Fprintf(out, "  %s %-12s unreachable: %v\n", cli.FAIL, t.Name, err)
+			fmt.Fprintf(log, "  %s %-12s unreachable: %v\n", cli.FAIL, t.Name, err)
 			continue
 		}
 		res, err := ad.Publish(ctx, api)
 		oc.res, oc.err = res, err
 		outcomes = append(outcomes, oc)
 		if err != nil {
-			fmt.Fprintf(out, "  %s %-12s publish: %v\n", cli.FAIL, t.Name, err)
+			fmt.Fprintf(log, "  %s %-12s publish: %v\n", cli.FAIL, t.Name, err)
 			continue
 		}
-		endpoints[ad.Name()] = res.InvocationURL
-		fmt.Fprintf(out, "  %s %-12s %s\n", cli.OK, t.Name, res.InvocationURL)
+		// Key by the unique target NAME, not ad.Name() (the gateway TYPE): two
+		// targets of the same type (e.g. wso2-prod + wso2-dr) must NOT collide
+		// into one Backstage endpoint — that would silently drop a gateway.
+		endpoints[t.Name] = res.InvocationURL
+		fmt.Fprintf(log, "  %s %-12s %s\n", cli.OK, t.Name, res.InvocationURL)
 	}
 
-	// --- result table ---
-	fmt.Fprintln(out)
-	rows := make([][]string, 0, len(outcomes))
+	// --- result (table for humans, one stable JSON document for machines) ---
+	report := publishReport(outcomes)
 	failed := 0
 	for _, o := range outcomes {
 		if o.err != nil || o.res == nil {
 			failed++
-			rows = append(rows, []string{o.name, cli.FAIL, "", "", cli.Truncate(errStr(o.err), 48)})
-			continue
 		}
-		created := "reused"
-		if o.res.Created {
-			created = "created"
-		}
-		rows = append(rows, []string{o.name, cli.OK, o.res.APIID, o.res.InvocationURL, created})
 	}
-	cli.Table(out, []string{"GATEWAY", "STATUS", "API ID", "INVOCATION URL", "STATE"}, rows)
+	if format == output.FormatJSON {
+		if err := output.WriteJSON(out, report); err != nil {
+			return err
+		}
+	} else {
+		fmt.Fprintln(out)
+		rows := make([][]string, 0, len(outcomes))
+		for _, o := range outcomes {
+			if o.err != nil || o.res == nil {
+				rows = append(rows, []string{o.name, cli.FAIL, "", "", cli.Truncate(errStr(o.err), 48)})
+				continue
+			}
+			created := "reused"
+			if o.res.Created {
+				created = "created"
+			}
+			rows = append(rows, []string{o.name, cli.OK, o.res.APIID, o.res.InvocationURL, created})
+		}
+		cli.Table(out, []string{"GATEWAY", "STATUS", "API ID", "INVOCATION URL", "STATE"}, rows)
+	}
 
 	// --- Backstage federated entity (one API entity for all gateways) ---
 	if len(endpoints) > 0 {
-		writeBackstageEntity(cmd, tf, api, endpoints)
+		writeBackstageEntity(log, tf, api, endpoints)
 	}
 
-	fmt.Fprintf(out, "\n%d/%d gateways published from one contract.\n", len(outcomes)-failed, len(outcomes))
+	fmt.Fprintf(log, "\n%d/%d gateways published from one contract.\n", len(outcomes)-failed, len(outcomes))
 	if failed > 0 {
 		return fmt.Errorf("%d/%d gateways failed to publish", failed, len(outcomes))
 	}
 	return nil
 }
 
+// publishReport projects the per-target dispatch outcomes onto the stable
+// machine-readable shape shared with the governance BFF. Nothing the human
+// table shows is dropped: gateway, status (error presence), api id, invocation
+// URL and created/reused all survive — plus revision_id and published, which
+// the table folds away.
+func publishReport(outcomes []publishOutcome) output.PublishReport {
+	r := output.PublishReport{OK: true, Targets: make([]output.PublishTarget, 0, len(outcomes))}
+	for _, o := range outcomes {
+		t := output.PublishTarget{Gateway: o.name, Type: o.typ}
+		if o.err != nil || o.res == nil {
+			r.OK = false
+			t.Error = errStr(o.err)
+		}
+		if o.res != nil {
+			t.APIID = o.res.APIID
+			t.RevisionID = o.res.RevisionID
+			t.InvocationURL = o.res.InvocationURL
+			t.Published = o.res.Published
+			t.Created = o.res.Created
+		}
+		r.Targets = append(r.Targets, t)
+	}
+	return r
+}
+
 // writeBackstageEntity renders the federated catalog-info.yaml next to the
 // manifest and best-effort registers it with Backstage when reachable. Backstage
 // itself is brought up in Phase 3, so registration failure is a SKIP, not an error.
-func writeBackstageEntity(cmd *cobra.Command, tf *targets.File, api *adapter.NormalizedAPI, endpoints map[string]string) {
-	out := cmd.OutOrStdout()
-
+// out is the human log writer (stdout in table mode, stderr in json mode — the
+// entity notes are progress narration, not part of the machine result).
+func writeBackstageEntity(out io.Writer, tf *targets.File, api *adapter.NormalizedAPI, endpoints map[string]string) {
 	manifestDir := filepath.Dir(fileFlag)
 	specPath := backstageSpecPath(manifestDir, api.SpecPath)
 

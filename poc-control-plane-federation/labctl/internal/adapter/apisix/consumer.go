@@ -34,10 +34,19 @@ func (a *Adapter) CreateConsumer(ctx context.Context, api *adapter.NormalizedAPI
 		ConsumerID: username,
 	}
 
+	// Idempotency: fetch the consumer's existing credential so a re-run CONVERGES
+	// on the same secret rather than minting a fresh one (which would invalidate
+	// every token/apikey already issued). A spec-supplied value still wins; we
+	// only fall back to the stored credential before generating a brand-new one.
+	existing, err := a.existingConsumerCreds(ctx, username)
+	if err != nil {
+		return nil, fmt.Errorf("apisix consumer %s: %w", username, err)
+	}
+
 	// 1. CONSUMER — username goes in the BODY; only PUT is supported (no POST).
 	switch authType {
 	case "key-auth":
-		key := spec.Key
+		key := firstNonEmpty(spec.Key, existing["key-auth"].Key)
 		if key == "" {
 			gen, err := generateSecret()
 			if err != nil {
@@ -64,11 +73,11 @@ func (a *Adapter) CreateConsumer(ctx context.Context, api *adapter.NormalizedAPI
 			a.gwURL, api.BasePath)
 
 	case "jwt-auth":
-		key := spec.Key
-		if key == "" {
-			key = username // the consumer "key" claim defaults to the username
-		}
-		secret := spec.Secret
+		// key claim: spec wins, else the existing consumer's key, else the
+		// username (a stable default — never random, so it is idempotent anyway).
+		key := firstNonEmpty(spec.Key, existing["jwt-auth"].Key, username)
+		// secret: spec wins, else REUSE the stored secret, else generate once.
+		secret := firstNonEmpty(spec.Secret, existing["jwt-auth"].Secret)
 		if secret == "" {
 			gen, err := generateSecret()
 			if err != nil {
@@ -93,6 +102,19 @@ func (a *Adapter) CreateConsumer(ctx context.Context, api *adapter.NormalizedAPI
 			a.gwURL, key)
 	}
 
+	// Under inboundAuth, openid-connect (not the consumer apikey/jwt) enforces
+	// the route. The consumer credential just provisioned is INERT (no route
+	// names key-auth), so don't surface it as if the caller must send it —
+	// override with a bearer-shaped hint and clear the unused credential so
+	// subscribe never writes a misleading APISIX apikey to labctl-credentials.
+	if a.oidcDiscovery != "" {
+		res.ConsumerKey = ""
+		res.ConsumerSecret = ""
+		res.TokenHint = fmt.Sprintf(
+			"present the Keycloak bearer token to %s%s (validated by openid-connect; NO apikey)",
+			a.gwURL, api.BasePath)
+	}
+
 	// 2. ENFORCE auth on every published route by merging an EMPTY auth plugin
 	//    object (plus the shared non-auth plugins) onto each route id.
 	endpoints := api.Endpoints
@@ -105,7 +127,7 @@ func (a *Adapter) CreateConsumer(ctx context.Context, api *adapter.NormalizedAPI
 			Methods:   ep.Methods,
 			Status:    1,
 			ServiceID: api.Name,
-			Plugins:   pluginsWithAuth(api.BasePath, backendBasePath(api.BackendURL), authType),
+			Plugins:   a.pluginsWithAuth(api.BasePath, backendBasePath(api.BackendURL), authType, api.Name, api.Version),
 			// Re-stamp labels: a PUT replaces the whole route object, so without
 			// these the publish-time Name/Version labels would be wiped here.
 			Labels: routeLabels(api.Name, api.Version, api.BasePath),
@@ -116,10 +138,12 @@ func (a *Adapter) CreateConsumer(ctx context.Context, api *adapter.NormalizedAPI
 		}
 	}
 
-	// 3. jwt-auth ONLY — provision the public sign route. Without it
-	//    /apisix/plugin/jwt/sign returns 404. Requires 'public-api' and
-	//    'jwt-auth' enabled in the APISIX plugins list.
-	if authType == "jwt-auth" {
+	// 3. jwt-auth ONLY (and only without inboundAuth) — provision the public
+	//    sign route. Without it /apisix/plugin/jwt/sign returns 404. Requires
+	//    'public-api' and 'jwt-auth' enabled in the APISIX plugins list. Under
+	//    inboundAuth the route enforces openid-connect, so a jwt-sign endpoint
+	//    would be dead weight.
+	if authType == "jwt-auth" && a.oidcDiscovery == "" {
 		signRoute := publicAPIRoute{
 			URI: "/apisix/plugin/jwt/sign",
 			Plugins: map[string]any{
@@ -145,12 +169,24 @@ func (a *Adapter) putConsumer(ctx context.Context, body consumerBody) error {
 	return nil
 }
 
-// pluginsWithAuth returns the shared non-auth plugins with the requested auth
-// plugin enabled via an EMPTY object ({} merely turns the plugin on; the route
-// names no consumer — APISIX matches the incoming credential at request time).
-func pluginsWithAuth(basePath, backendPath, authType string) map[string]any {
-	p := sharedPlugins(basePath, backendPath)
-	p[authType] = map[string]any{}
+// pluginsWithAuth returns the route plugins (shared non-auth set + inbound
+// openid-connect when configured — routePlugins) with the requested consumer
+// auth plugin enabled via an EMPTY object ({} merely turns the plugin on; the
+// route names no consumer — APISIX matches the incoming credential at request
+// time). Building on routePlugins matters: this PUT replaces the whole route
+// object, so composing from sharedPlugins alone would silently wipe the
+// inbound openid-connect enforcement off the route.
+func (a *Adapter) pluginsWithAuth(basePath, backendPath, authType, api, apiVersion string) map[string]any {
+	p := a.routePlugins(basePath, backendPath, api, apiVersion)
+	// Inbound openid-connect (manifest inboundAuth) IS the route's auth model:
+	// do NOT layer the consumer key-auth/jwt-auth on top. The two are
+	// incompatible — key-auth runs first in the auth phase and rejects the
+	// Keycloak bearer with "Missing API key in request" (the regression this
+	// guards). With inboundAuth off, the consumer auth plugin stays the
+	// enforcement, exactly as before.
+	if a.oidcDiscovery == "" {
+		p[authType] = map[string]any{}
+	}
 	return p
 }
 

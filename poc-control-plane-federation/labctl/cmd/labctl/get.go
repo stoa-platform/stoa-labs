@@ -7,6 +7,7 @@ import (
 
 	"github.com/stoa-platform/stoa-labs/poc/labctl/internal/adapter"
 	"github.com/stoa-platform/stoa-labs/poc/labctl/internal/cli"
+	"github.com/stoa-platform/stoa-labs/poc/labctl/internal/output"
 	"github.com/stoa-platform/stoa-labs/poc/labctl/internal/targets"
 )
 
@@ -26,6 +27,10 @@ func init() {
 
 func runGet(cmd *cobra.Command, args []string) error {
 	ctx := cmd.Context()
+	format, err := output.ParseFormat(outputFlag)
+	if err != nil {
+		return err
+	}
 	out := cmd.OutOrStdout()
 
 	if len(args) == 1 && args[0] != "apis" {
@@ -37,32 +42,59 @@ func runGet(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	rows := [][]string{}
-	var listErrs int
+	// Build the federated catalog once; render it as table or JSON below.
+	report := output.ListReport{OK: true, Targets: make([]output.ListTarget, 0, len(tf.Targets))}
 	for _, t := range tf.Targets {
+		lt := output.ListTarget{Gateway: t.Name, Type: t.Type, APIs: []output.ListedAPI{}}
 		ad, err := adapter.New(t.ToConfig())
+		if err == nil {
+			var apis []adapter.PublishedAPI
+			apis, err = ad.List(ctx)
+			for _, a := range apis {
+				lt.APIs = append(lt.APIs, output.ListedAPI{
+					APIID:    a.APIID,
+					Name:     a.Name,
+					Version:  a.Version,
+					BasePath: a.BasePath,
+				})
+			}
+		}
 		if err != nil {
-			listErrs++
-			rows = append(rows, []string{t.Name, cli.FAIL, "", "", cli.Truncate(err.Error(), 40)})
-			continue
+			report.OK = false
+			lt.Error = err.Error()
 		}
-		apis, err := ad.List(ctx)
-		if err != nil {
-			listErrs++
-			rows = append(rows, []string{t.Name, cli.FAIL, "", "", cli.Truncate(err.Error(), 40)})
-			continue
-		}
-		if len(apis) == 0 {
-			rows = append(rows, []string{t.Name, cli.SKIP, "(none)", "", ""})
-			continue
-		}
-		for _, a := range apis {
-			rows = append(rows, []string{t.Name, a.APIID, a.Name, a.Version, a.BasePath})
-		}
+		report.Targets = append(report.Targets, lt)
 	}
 
-	cli.Table(out, []string{"GATEWAY", "API ID", "NAME", "VERSION", "BASEPATH"}, rows)
-	if listErrs > 0 {
+	if format == output.FormatJSON {
+		if err := output.WriteJSON(out, report); err != nil {
+			return err
+		}
+	} else {
+		rows := [][]string{}
+		for _, lt := range report.Targets {
+			if lt.Error != "" {
+				rows = append(rows, []string{lt.Gateway, cli.FAIL, "", "", cli.Truncate(lt.Error, 40)})
+				continue
+			}
+			if len(lt.APIs) == 0 {
+				rows = append(rows, []string{lt.Gateway, cli.SKIP, "(none)", "", ""})
+				continue
+			}
+			for _, a := range lt.APIs {
+				rows = append(rows, []string{lt.Gateway, a.APIID, a.Name, a.Version, a.BasePath})
+			}
+		}
+		cli.Table(out, []string{"GATEWAY", "API ID", "NAME", "VERSION", "BASEPATH"}, rows)
+	}
+
+	if !report.OK {
+		listErrs := 0
+		for _, lt := range report.Targets {
+			if lt.Error != "" {
+				listErrs++
+			}
+		}
 		return fmt.Errorf("%d/%d gateways failed to list", listErrs, len(tf.Targets))
 	}
 	return nil
