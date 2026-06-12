@@ -94,6 +94,42 @@ func (s *Server) createAPI(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{"apiResponse": apiEnvelope(rec)})
 }
 
+// createVersionAPI mirrors the native versioning endpoint (POST
+// /apis/{id}/versions, 201 — vérifié live sur le trial) : mint d'un NOUVEAU
+// record du même apiName avec newApiVersion (inactif, policy par défaut
+// clonée du modèle d'import). C'est le fallback de labctl quand un nom existe
+// sous une AUTRE version (le produit refuse POST frais ET PUT in-place).
+func (s *Server) createVersionAPI(w http.ResponseWriter, r *http.Request) {
+	baseID := r.PathValue("id")
+	var in struct {
+		NewAPIVersion string `json:"newApiVersion"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in.NewAPIVersion == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"errorDetails": "newApiVersion is required"})
+		return
+	}
+	s.store.mu.Lock()
+	defer s.store.mu.Unlock()
+	base, ok := s.store.apis[baseID]
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"errorDetails": "api " + baseID + " not found"})
+		return
+	}
+	id := s.store.nextID("api")
+	polID := s.mintDefaultPolicy(id, base.APIName, base.Definition)
+	rec := &apiRecord{
+		ID:         id,
+		APIName:    base.APIName,
+		APIVersion: in.NewAPIVersion,
+		IsActive:   false,
+		Type:       "REST",
+		Policies:   []string{polID},
+		Definition: base.Definition,
+	}
+	s.store.apis[id] = rec
+	writeJSON(w, http.StatusCreated, map[string]any{"apiResponse": apiEnvelope(rec)})
+}
+
 // mintDefaultPolicy creates the SERVICE-scoped default policy + its enforcement
 // actions, exactly like the import on the real product:
 //   - routing: a straightThroughRouting action at servers[0].url +

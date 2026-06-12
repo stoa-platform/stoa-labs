@@ -61,6 +61,7 @@ func (s *Server) Handler() http.Handler {
 	admin.HandleFunc("POST /rest/apigateway/apis", s.createAPI)
 	admin.HandleFunc("GET /rest/apigateway/apis/{id}", s.getAPI)
 	admin.HandleFunc("PUT /rest/apigateway/apis/{id}", s.updateAPI)
+	admin.HandleFunc("POST /rest/apigateway/apis/{id}/versions", s.createVersionAPI)
 	admin.HandleFunc("PUT /rest/apigateway/apis/{id}/activate", s.activateAPI)
 	admin.HandleFunc("PUT /rest/apigateway/apis/{id}/deactivate", s.deactivateAPI)
 	admin.HandleFunc("GET /rest/apigateway/alias", s.listAliases)

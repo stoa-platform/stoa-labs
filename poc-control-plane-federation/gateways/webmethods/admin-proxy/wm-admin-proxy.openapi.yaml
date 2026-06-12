@@ -57,6 +57,17 @@ paths:
       requestBody: { $ref: "#/components/requestBodies/passthrough" }
       responses:
         "200": { $ref: "#/components/responses/proxied" }
+  /rest/apigateway/apis/{id}/versions:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    post:
+      summary: >-
+        Mint a NEW version record of an existing API (native versioning) —
+        labctl's fallback when a name exists under another version (the
+        product refuses both a fresh POST and an in-place version PUT;
+        manqué au premier allowlist, trouvé par le build #28).
+      requestBody: { $ref: "#/components/requestBodies/passthrough" }
+      responses:
+        "201": { $ref: "#/components/responses/proxied" }
   /rest/apigateway/apis/{id}/activate:
     parameters: [{ $ref: "#/components/parameters/id" }]
     put:
