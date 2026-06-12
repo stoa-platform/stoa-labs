@@ -33,8 +33,16 @@ pipeline {
     stage('Apply — Define Once, Expose Everywhere') {
       steps {
         dir('poc-control-plane-federation') {
-          // GitOps : 1 contrat OpenAPI + targets.cluster.yaml en git -> fédéré sur les 3 gateways
-          sh '"$WORKSPACE/labctl" apply -f targets.cluster.yaml'
+          // GitOps : 1 contrat OpenAPI + targets.cluster.yaml en git -> fédéré sur les 3 gateways.
+          // NON-BLOQUANT (catchError → UNSTABLE) : ce stage est la preuve legacy
+          // tri-gateway, PAS la chaîne multi-env (webMethods-only, stages suivants).
+          // WSO2 4.x a un quirk connu : à la rotation des révisions (max 5), la
+          // suppression de la plus ancienne peut rester coincée ("Failed to delete
+          // API revision registry artifacts", build #25) — un état à nettoyer À LA
+          // MAIN côté WSO2, qui ne doit pas bloquer les déploiements wM gated.
+          catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+            sh '"$WORKSPACE/labctl" apply -f targets.cluster.yaml'
+          }
         }
       }
     }
