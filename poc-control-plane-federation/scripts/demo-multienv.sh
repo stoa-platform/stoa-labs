@@ -206,7 +206,11 @@ B="$(cat /tmp/dm.json)"; V2ID="$(echo "$B" | pid)"
 gov POST "/tenants/$TENANT/promotions/${V2ID:-pr_missing}/approve" "$TOK_BOB" '{}' >/dev/null
 B="$(cat /tmp/dm.json)"
 [ "$CODE" = 200 ] && ok "④ v1.0.1 promue en prod ($V2ID — 2e état du deploy.prod.yaml)" || bad "④ MEP v1.0.1 KO (HTTP $CODE): $B"
-applyenv prod >/dev/null 2>&1
+# PAS de >/dev/null muet : c'est CET apply (v1.0.1 par-dessus v1.0.0) qui a
+# révélé le fallback versioning wM (POST /apis/{id}/versions) — le masquer
+# avait laissé passer le bug au premier 19/19.
+applyenv prod >/tmp/dm-apply-v101.log 2>&1 && ok "④ v1.0.1 appliquée en prod (versioning wM natif)" \
+  || { bad "④ apply v1.0.1 KO"; tail -5 /tmp/dm-apply-v101.log | sed 's/^/    /'; }
 # Le rollback : restaure deploy.prod.yaml N-1 (v1.0.0, AVEC son pin), marker
 # rolled_back + evidence motivée — l'exploit ne fait QUE ça + re-apply.
 gov POST "/tenants/$TENANT/promotions/$V2ID/rollback" "$TOK_BOB" \
