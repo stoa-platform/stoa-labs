@@ -190,31 +190,54 @@ func (a *Adapter) Publish(ctx context.Context, api *adapter.NormalizedAPI) (*ada
 	return a.publishResult(canonical, created), nil
 }
 
-// createAPI POSTs the import payload and reports (id, created). On 409 (name
-// conflict not visible in the pre-list — concurrent create, stale index or a
-// same-name record under another version) it re-lists ONCE and falls back to
-// PUT on the conflicting record (created=false: we converged, not created); a
-// 409 with no matching record is a ghost conflict and surfaces as an error
-// (career C.2 semantics — one retry, no loop).
+// createAPI POSTs the import payload and reports (id, created). On a name
+// conflict (409, or the trial's 400 "API with apiName … already exists") it
+// re-lists ONCE and converges:
+//   - same name+version exists -> PUT on that record (created=false);
+//   - name exists under ANOTHER version -> le produit REFUSE un POST frais ET
+//     le changement de version in-place au PUT (400, prouvé live en déployant
+//     v1.0.1 par-dessus v1.0.0 — stoa-prod-deploy #3). Le chemin natif wM est
+//     l'endpoint de VERSIONING : POST /apis/{id}/versions {newApiVersion,
+//     retainApplications} mint un NOUVEAU record (policies/applications
+//     clonées), puis le payload d'import est PUT dessus pour servir NOTRE
+//     contrat (le clone copie l'ancienne spec). Les deux versions coexistent
+//     sur la gateway — Git (deploy.{env}.yaml) reste l'autorité sur la version
+//     qu'un env pin.
+//
+// A conflict with no matching record is a ghost conflict and surfaces as an
+// error (career C.2 semantics — one retry, no loop).
 func (a *Adapter) createAPI(ctx context.Context, wmName string, payload map[string]any) (string, bool, error) {
 	url := a.adminPath("/apis")
 	code, raw, err := a.sendJSON(ctx, http.MethodPost, url, payload)
 	if err != nil {
 		return "", false, fmt.Errorf("create api %q: %w", wmName, err)
 	}
-	if code == http.StatusConflict {
+	nameConflict := code == http.StatusConflict ||
+		(code == http.StatusBadRequest && bytes.Contains(raw, []byte("already exists")))
+	if nameConflict {
 		refreshed, lerr := a.listAPIs(ctx)
 		if lerr != nil {
-			return "", false, fmt.Errorf("create api %q: 409 conflict and re-list failed: %w", wmName, lerr)
+			return "", false, fmt.Errorf("create api %q: %d conflict and re-list failed: %w", wmName, code, lerr)
+		}
+		wantVersion, _ := payload["apiVersion"].(string)
+		if cur, ok := findByNameVersion(refreshed, wmName, wantVersion); ok {
+			if uerr := a.updateAPI(ctx, cur.ID, payload); uerr != nil {
+				return "", false, fmt.Errorf("create api %q: conflict→PUT fallback on %s: %w", wmName, cur.ID, uerr)
+			}
+			return cur.ID, false, nil
 		}
 		cur, ok := findByName(refreshed, wmName)
 		if !ok {
-			return "", false, fmt.Errorf("create api %q: 409 conflict but API absent from re-list (ghost conflict): %s", wmName, truncate(raw, 300))
+			return "", false, fmt.Errorf("create api %q: %d conflict but API absent from re-list (ghost conflict): %s", wmName, code, truncate(raw, 300))
 		}
-		if uerr := a.updateAPI(ctx, cur.ID, payload); uerr != nil {
-			return "", false, fmt.Errorf("create api %q: 409→PUT fallback on %s: %w", wmName, cur.ID, uerr)
+		newID, verr := a.createVersion(ctx, cur.ID, wmName, wantVersion)
+		if verr != nil {
+			return "", false, verr
 		}
-		return cur.ID, false, nil
+		if uerr := a.updateAPI(ctx, newID, payload); uerr != nil {
+			return "", false, fmt.Errorf("create api %q: version %s mintée (%s) mais PUT d'import KO: %w", wmName, wantVersion, newID, uerr)
+		}
+		return newID, true, nil
 	}
 	if code != http.StatusCreated && code != http.StatusOK {
 		return "", false, fmt.Errorf("create api %q: expected 200/201, got %d: %s", wmName, code, truncate(raw, 300))
@@ -224,6 +247,33 @@ func (a *Adapter) createAPI(ctx context.Context, wmName string, payload map[stri
 		return "", false, fmt.Errorf("create api %q: response carries no api id: %s", wmName, truncate(raw, 300))
 	}
 	return id, true, nil
+}
+
+// createVersion mints a NEW version record of an existing API via the native
+// versioning endpoint (POST /apis/{id}/versions, 201 — vérifié live sur le
+// trial). retainApplications garde les souscriptions des consumers sur la
+// nouvelle version (le modèle ADR-072 : l'identité consumer est UNE, les
+// versions sont des déploiements).
+func (a *Adapter) createVersion(ctx context.Context, baseID, wmName, newVersion string) (string, error) {
+	if newVersion == "" {
+		return "", fmt.Errorf("create version of %q: empty target apiVersion", wmName)
+	}
+	url := a.adminPath("/apis/" + baseID + "/versions")
+	code, raw, err := a.sendJSON(ctx, http.MethodPost, url, map[string]any{
+		"newApiVersion":      newVersion,
+		"retainApplications": true,
+	})
+	if err != nil {
+		return "", fmt.Errorf("create version %q of %q: %w", newVersion, wmName, err)
+	}
+	if code != http.StatusCreated && code != http.StatusOK {
+		return "", fmt.Errorf("create version %q of %q: POST %s expected 200/201, got %d: %s", newVersion, wmName, url, code, truncate(raw, 300))
+	}
+	id := parseCreateResponseID(raw)
+	if id == "" {
+		return "", fmt.Errorf("create version %q of %q: response carries no api id: %s", newVersion, wmName, truncate(raw, 300))
+	}
+	return id, nil
 }
 
 // updateAPI PUTs the import payload onto an existing record. 200/201 are

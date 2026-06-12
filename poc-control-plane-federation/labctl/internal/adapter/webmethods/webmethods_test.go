@@ -114,6 +114,7 @@ func (m *mockGateway) handler() http.Handler {
 	mux.HandleFunc("POST /rest/apigateway/apis", m.createAPI)
 	mux.HandleFunc("GET /rest/apigateway/apis/{id}", m.getAPI)
 	mux.HandleFunc("PUT /rest/apigateway/apis/{id}", m.updateAPI)
+	mux.HandleFunc("POST /rest/apigateway/apis/{id}/versions", m.createVersionAPI)
 	mux.HandleFunc("PUT /rest/apigateway/apis/{id}/activate", m.activateAPI)
 	mux.HandleFunc("PUT /rest/apigateway/apis/{id}/deactivate", m.deactivateAPI)
 	mux.HandleFunc("GET /rest/apigateway/applications", m.listApps)
@@ -246,6 +247,65 @@ func (m *mockGateway) createAPI(w http.ResponseWriter, r *http.Request) {
 	rec := wmAPI{ID: id, APIName: name, APIVersion: version, IsActive: false, Type: "REST", Policies: []string{polID}}
 	m.apis[id] = &storedAPI{rec: rec, payload: in}
 	// Real create response is nested: {"apiResponse":{"api":{...}}}.
+	m.writeJSON(w, http.StatusCreated, map[string]any{
+		"apiResponse": map[string]any{"api": rec, "responseStatus": "SUCCESS"},
+	})
+}
+
+// createVersionAPI mirrors the native versioning endpoint (POST
+// /apis/{id}/versions, 201 — vérifié live) : il MINT un nouveau record du
+// même apiName avec newApiVersion (inactif, policy par défaut + action
+// straightThroughRouting clonées du modèle d'import) — le chemin que
+// l'adapter prend quand un nom existe sous une AUTRE version.
+func (m *mockGateway) createVersionAPI(w http.ResponseWriter, r *http.Request) {
+	baseID := r.PathValue("id")
+	var in struct {
+		NewAPIVersion string `json:"newApiVersion"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in.NewAPIVersion == "" {
+		m.writeJSON(w, http.StatusBadRequest, map[string]string{"errorDetails": "newApiVersion is required"})
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	base, ok := m.apis[baseID]
+	if !ok {
+		m.writeJSON(w, http.StatusNotFound, map[string]string{"errorDetails": "api not found"})
+		return
+	}
+	m.apiSeq++
+	id := fmt.Sprintf("wm-api-%04d", m.apiSeq)
+	m.routeActSeq++
+	routeActID := fmt.Sprintf("wm-route-act-%04d", m.routeActSeq)
+	m.routingActions[routeActID] = map[string]any{
+		"id":          routeActID,
+		"names":       []any{map[string]any{"value": "Straight Through Routing", "locale": "en"}},
+		"templateKey": "straightThroughRouting",
+		"parameters": []any{
+			map[string]any{"templateKey": "endpointUri", "values": []any{importedServerURL(base.payload)}},
+			map[string]any{"templateKey": "method", "values": []any{"CUSTOM"}},
+		},
+		"active": true,
+	}
+	m.policySeq++
+	polID := fmt.Sprintf("wm-pol-%04d", m.policySeq)
+	m.policies[polID] = map[string]any{
+		"id":    polID,
+		"names": []any{map[string]any{"value": "Default Policy for API " + base.rec.APIName, "locale": "English"}},
+		"policyEnforcements": []any{
+			map[string]any{"stageKey": "transport", "enforcements": []any{
+				map[string]any{"enforcementObjectId": "wm-act-transport", "order": nil}}},
+			map[string]any{"stageKey": "routing", "enforcements": []any{
+				map[string]any{"enforcementObjectId": routeActID, "order": nil}}},
+		},
+		"policyScope":  "SERVICE",
+		"systemPolicy": false,
+		"global":       false,
+		"active":       false,
+	}
+	m.policyAPI[polID] = id
+	rec := wmAPI{ID: id, APIName: base.rec.APIName, APIVersion: in.NewAPIVersion, IsActive: false, Type: "REST", Policies: []string{polID}}
+	m.apis[id] = &storedAPI{rec: rec, payload: base.payload}
 	m.writeJSON(w, http.StatusCreated, map[string]any{
 		"apiResponse": map[string]any{"api": rec, "responseStatus": "SUCCESS"},
 	})
@@ -1102,19 +1162,27 @@ func TestPublish_Conflict409FallsBackToPUT(t *testing.T) {
 	}
 
 	// Same name, NEW version: the pre-list finds no name+version match, so the
-	// adapter POSTs — and the gateway answers 409 (name conflict). The adapter
-	// must re-list once and converge via PUT on the conflicting record.
+	// adapter POSTs — and the gateway answers 409 (name conflict). Le produit
+	// refuse AUSSI le changement de version in-place au PUT (prouvé live), donc
+	// l'adapter doit minter la nouvelle version via POST /apis/{id}/versions
+	// puis PUT le payload d'import dessus : les DEUX versions coexistent.
 	mock.conflictNextCreate = true
 	api.Version = "2.0.0"
 	res, err := a.Publish(context.Background(), api)
 	if err != nil {
 		t.Fatalf("conflict Publish: %v", err)
 	}
-	if len(mock.apis) != 1 {
-		t.Fatalf("server holds %d apis after 409 fallback, want 1", len(mock.apis))
+	if len(mock.apis) != 2 {
+		t.Fatalf("server holds %d apis after version-conflict fallback, want 2 (v1 + v2 coexistent)", len(mock.apis))
 	}
 	if got := mock.apis[res.APIID].rec.APIVersion; got != "2.0.0" {
-		t.Errorf("apiVersion after 409→PUT fallback = %q, want 2.0.0", got)
+		t.Errorf("apiVersion of the minted record = %q, want 2.0.0", got)
+	}
+	if !res.Created {
+		t.Errorf("Created = false after version mint, want true (new record)")
+	}
+	if !mock.apis[res.APIID].rec.IsActive {
+		t.Errorf("minted version not activated by Publish")
 	}
 }
 
