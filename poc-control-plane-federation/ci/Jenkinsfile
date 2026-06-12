@@ -107,7 +107,10 @@ pipeline {
               #    - ci-applier   -> médiation apply-uac (rôle cp-applier + tenant, ADR-072)
               #    - ci-horsprod  -> Bearer présenté aux proxies wm-admin-{env}
               #      (scopes deploy:dev+rec+int par défaut, JAMAIS deploy:prod, ADR-075)
-              rm -rf governance && git clone --depth 1 http://gitea:3000/ci/governance.git governance
+              # Clone COMPLET (pas de --depth 1) : le pinning de version lit le contrat
+              # au SHA capturé par la promotion (git show <commit>:…) — un clone
+              # shallow ne porte pas l'historique et casse ResolvePinned.
+              rm -rf governance && git clone http://gitea:3000/ci/governance.git governance
               CI_TOKEN=$(curl -sf -X POST http://keycloak:8080/realms/stoa-lab/protocol/openid-connect/token \
                 -d client_id=ci-applier -d client_secret="$CI_SECRET" -d grant_type=client_credentials \
                 | sed -n 's/.*"access_token":"\\([^"]*\\)".*/\\1/p')
