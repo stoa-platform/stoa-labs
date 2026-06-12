@@ -50,10 +50,14 @@ func TestMiddleware_RejectsMissingAndGarbageBearer(t *testing.T) {
 func TestServer_DataPlaneOpenWhenAuthDisabled(t *testing.T) {
 	t.Setenv("JWT_ISSUER", "") // auth off
 	h := NewServer().Handler()
-	// register an API, then hit the data-plane without any token -> not 401.
-	do(t, h, "POST", "/rest/apigateway/apis", map[string]string{"apiName": "x", "basePath": "/x"})
-	rr := do(t, h, "GET", "/gateway/x", nil)
+	// Import + activate an API (10.15 dialect), then hit the data-plane without
+	// any Bearer token -> resolved 200, never 401.
+	importAPI(t, h, "open-api", "1.0.0")
+	rr := do(t, h, "GET", "/gateway/open-api/1.0.0/accounts", nil)
 	if rr.Code == http.StatusUnauthorized {
 		t.Fatalf("data-plane must be open when auth disabled, got 401")
+	}
+	if rr.Code != http.StatusOK {
+		t.Fatalf("data-plane resolve = %d body=%s, want 200", rr.Code, rr.Body)
 	}
 }

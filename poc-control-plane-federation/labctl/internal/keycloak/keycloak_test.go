@@ -268,3 +268,191 @@ func TestEnsureClient_Validation(t *testing.T) {
 		t.Fatalf("expected validation error for missing URL, got nil")
 	}
 }
+
+// fakeConsumerAuthKC emulates the slice of the Keycloak Admin REST API
+// EnsureConsumerAuth touches: token, clients list, the client's
+// protocol-mappers/models (audience mapper), realm client-scopes, and the
+// per-client default-client-scopes assignment. Stateful, so the same server
+// backs both the "create" and the idempotent "already present" assertions.
+type fakeConsumerAuthKC struct {
+	t     *testing.T
+	mu    sync.Mutex
+	realm string
+
+	mappers      []protocolMapper
+	scopes       []clientScope
+	defaultScope map[string]bool // scopeID -> assigned as default
+
+	mapperPosts int
+	scopePosts  int
+	defaultPuts int
+}
+
+func (f *fakeConsumerAuthKC) handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/realms/master/protocol/openid-connect/token", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, tokenResponse{AccessToken: testToken})
+	})
+
+	clientsPath := "/admin/realms/" + f.realm + "/clients"
+	mux.HandleFunc(clientsPath, func(w http.ResponseWriter, r *http.Request) {
+		// resolve consumer client by clientId.
+		writeJSON(w, http.StatusOK, []clientRep{{ID: testUUID, ClientID: testClient}})
+	})
+
+	mux.HandleFunc(clientsPath+"/"+testUUID+"/protocol-mappers/models", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			writeJSON(w, http.StatusOK, f.mappers)
+		case http.MethodPost:
+			var m protocolMapper
+			_ = json.NewDecoder(r.Body).Decode(&m)
+			f.mu.Lock()
+			f.mapperPosts++
+			m.ID = "mapper-1"
+			f.mappers = append(f.mappers, m)
+			f.mu.Unlock()
+			w.WriteHeader(http.StatusCreated)
+		}
+	})
+
+	scopesPath := "/admin/realms/" + f.realm + "/client-scopes"
+	mux.HandleFunc(scopesPath, func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			writeJSON(w, http.StatusOK, f.scopes)
+		case http.MethodPost:
+			var s clientScope
+			_ = json.NewDecoder(r.Body).Decode(&s)
+			f.mu.Lock()
+			f.scopePosts++
+			s.ID = "scope-1"
+			f.scopes = append(f.scopes, s)
+			f.mu.Unlock()
+			w.WriteHeader(http.StatusCreated)
+		}
+	})
+
+	// default-client-scopes/{id} PUT — wildcard via a prefix handler.
+	defPrefix := clientsPath + "/" + testUUID + "/default-client-scopes/"
+	mux.HandleFunc(defPrefix, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		id := strings.TrimPrefix(r.URL.Path, defPrefix)
+		f.mu.Lock()
+		f.defaultPuts++
+		if f.defaultScope == nil {
+			f.defaultScope = map[string]bool{}
+		}
+		f.defaultScope[id] = true
+		f.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	return mux
+}
+
+func consumerAuthCfg(srvURL string) ConsumerAuthConfig {
+	return ConsumerAuthConfig{
+		Config: Config{
+			URL: srvURL, Realm: testRealm, AdminUser: "admin", AdminPassword: "pw",
+			ClientID: testClient,
+		},
+		Audience: "accounts-read",
+		Scope:    "accounts.read",
+	}
+}
+
+// TestEnsureConsumerAuth_CreatesThenIdempotent drives EnsureConsumerAuth twice:
+// the first run creates the audience mapper + client scope and assigns it
+// default; the second converges with no new POSTs.
+func TestEnsureConsumerAuth_CreatesThenIdempotent(t *testing.T) {
+	fk := &fakeConsumerAuthKC{t: t, realm: testRealm}
+	srv := httptest.NewServer(fk.handler())
+	defer srv.Close()
+
+	if err := EnsureConsumerAuth(context.Background(), consumerAuthCfg(srv.URL)); err != nil {
+		t.Fatalf("EnsureConsumerAuth (create): %v", err)
+	}
+	if fk.mapperPosts != 1 {
+		t.Errorf("audience mapper POSTs = %d, want 1", fk.mapperPosts)
+	}
+	if fk.scopePosts != 1 {
+		t.Errorf("client scope POSTs = %d, want 1", fk.scopePosts)
+	}
+	if !fk.defaultScope["scope-1"] {
+		t.Errorf("client scope not assigned as DEFAULT: %v", fk.defaultScope)
+	}
+	// The mapper carries aud=accounts-read into the access token.
+	if len(fk.mappers) != 1 {
+		t.Fatalf("mappers = %d, want 1", len(fk.mappers))
+	}
+	m := fk.mappers[0]
+	if m.ProtocolMapper != "oidc-audience-mapper" {
+		t.Errorf("protocolMapper = %q, want oidc-audience-mapper", m.ProtocolMapper)
+	}
+	if m.Config["included.custom.audience"] != "accounts-read" {
+		t.Errorf("included.custom.audience = %q, want accounts-read", m.Config["included.custom.audience"])
+	}
+	if m.Config["access.token.claim"] != "true" {
+		t.Errorf("access.token.claim = %q, want true", m.Config["access.token.claim"])
+	}
+	// The scope is token-scope-bearing.
+	if len(fk.scopes) != 1 || fk.scopes[0].Attributes["include.in.token.scope"] != "true" {
+		t.Errorf("client scope not include.in.token.scope=true: %+v", fk.scopes)
+	}
+
+	// --- second run: idempotent, no new POSTs ---
+	if err := EnsureConsumerAuth(context.Background(), consumerAuthCfg(srv.URL)); err != nil {
+		t.Fatalf("EnsureConsumerAuth (idempotent): %v", err)
+	}
+	if fk.mapperPosts != 1 {
+		t.Errorf("audience mapper POSTs = %d after re-run, want 1 (idempotent)", fk.mapperPosts)
+	}
+	if fk.scopePosts != 1 {
+		t.Errorf("client scope POSTs = %d after re-run, want 1 (idempotent)", fk.scopePosts)
+	}
+	// PUT default-client-scopes is safe to repeat (idempotent assignment).
+	if fk.defaultPuts != 2 {
+		t.Errorf("default-scope PUTs = %d, want 2 (one per run, idempotent assignment)", fk.defaultPuts)
+	}
+}
+
+// TestEnsureConsumerAuth_NoopWhenEmpty proves the signature-only path needs no
+// Keycloak writes (and makes no HTTP calls at all).
+func TestEnsureConsumerAuth_NoopWhenEmpty(t *testing.T) {
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	cfg := ConsumerAuthConfig{Config: Config{URL: srv.URL, Realm: testRealm, ClientID: testClient}}
+	if err := EnsureConsumerAuth(context.Background(), cfg); err != nil {
+		t.Fatalf("EnsureConsumerAuth (no-op): %v", err)
+	}
+	if called {
+		t.Error("EnsureConsumerAuth made an HTTP call with empty audience+scope, want zero calls")
+	}
+}
+
+// TestEnsureConsumerAuth_HalfConfigFailsClosed rejects audience without scope
+// (and vice versa) — the gateway OAuth2 path enforces BOTH.
+func TestEnsureConsumerAuth_HalfConfigFailsClosed(t *testing.T) {
+	for name, cfg := range map[string]ConsumerAuthConfig{
+		"audience only": {Config: Config{URL: "http://x", Realm: testRealm, ClientID: testClient}, Audience: "a"},
+		"scope only":    {Config: Config{URL: "http://x", Realm: testRealm, ClientID: testClient}, Scope: "s"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := EnsureConsumerAuth(context.Background(), cfg); err == nil {
+				t.Fatal("half-filled consumer auth succeeded, want fail-closed")
+			}
+		})
+	}
+}

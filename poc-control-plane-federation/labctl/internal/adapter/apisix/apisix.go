@@ -50,6 +50,15 @@ type Adapter struct {
 	gwURL    string // data-plane base,    no trailing slash (e.g. http://apisix:9080)
 	adminKey string // value sent in X-API-KEY on every admin call
 	auth     string // consumer auth model: "jwt-auth" | "key-auth"
+
+	// oidcDiscovery is the inbound-auth OIDC discovery URL from the manifest's
+	// inboundAuth block; "" = feature off (no openid-connect on routes).
+	oidcDiscovery string
+
+	// kafkaLogger holds the resolved transactional-analytics emission config
+	// from the manifest's observability block (ADR-070). When kafkaBroker is ""
+	// the feature is off and no kafka-logger plugin is projected onto routes.
+	kafkaLogger kafkaLoggerConfig
 }
 
 // init registers the APISIX factory so internal/register can blank-import this
@@ -70,13 +79,19 @@ func New(cfg adapter.Config) (adapter.Adapter, error) {
 	if auth != "jwt-auth" && auth != "key-auth" {
 		return nil, fmt.Errorf("apisix: unsupported consumerAuth %q (want jwt-auth|key-auth)", auth)
 	}
+	oidcDiscovery, err := inboundDiscoveryFromConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
 	return &Adapter{
-		cfg:      cfg,
-		client:   httpx.NewClient(cfg.Insecure),
-		adminURL: adminURL,
-		gwURL:    strings.TrimRight(cfg.GatewayURL, "/"),
-		adminKey: cfg.Cred("adminKey", ""),
-		auth:     auth,
+		cfg:           cfg,
+		client:        httpx.NewClient(cfg.Insecure),
+		adminURL:      adminURL,
+		gwURL:         strings.TrimRight(cfg.GatewayURL, "/"),
+		adminKey:      cfg.Cred("adminKey", ""),
+		auth:          auth,
+		oidcDiscovery: oidcDiscovery,
+		kafkaLogger:   kafkaLoggerFromConfig(cfg),
 	}, nil
 }
 
@@ -228,4 +243,49 @@ func generateSecret() (string, error) {
 		return "", fmt.Errorf("generate credential: %w", err)
 	}
 	return hex.EncodeToString(b), nil
+}
+
+// consumerGetResponse mirrors APISIX 3.x GET /apisix/admin/consumers/<username>:
+// {"value":{"username":"...","plugins":{"jwt-auth":{"key":...,"secret":...}}}}.
+// Only the auth-plugin credential fields are needed for idempotent reuse.
+type consumerGetResponse struct {
+	Value struct {
+		Username string                        `json:"username"`
+		Plugins  map[string]consumerPluginCred `json:"plugins"`
+	} `json:"value"`
+}
+
+// consumerPluginCred is the credential carried by a consumer's auth plugin
+// (key-auth: Key only; jwt-auth: Key+Secret).
+type consumerPluginCred struct {
+	Key    string `json:"key"`
+	Secret string `json:"secret"`
+}
+
+// existingConsumerCreds fetches the consumer's current auth credential so a
+// re-run of `subscribe` CONVERGES on the same secret instead of rotating it —
+// the adapter contract requires idempotency on the consumer name, and rotating
+// would invalidate every token/apikey already issued. It returns a nil map when
+// the consumer does not yet exist (404), which is the create path.
+func (a *Adapter) existingConsumerCreds(ctx context.Context, username string) (map[string]consumerPluginCred, error) {
+	u := a.adminURL + "/apisix/admin/consumers/" + username
+	var resp consumerGetResponse
+	code, err := httpx.JSON(ctx, a.client, http.MethodGet, u, a.adminHeaders(), nil, &resp)
+	if code == http.StatusNotFound {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get consumer %s: %w", username, err)
+	}
+	return resp.Value.Plugins, nil
+}
+
+// firstNonEmpty returns the first non-empty argument, or "" when all are empty.
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }

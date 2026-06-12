@@ -1,62 +1,24 @@
 package main
 
+// Server wires the 10.15-DIALECT admin surface (admin.go), the resolving
+// data-plane (dataplane.go) and native OTel emission. The mock is a faithful
+// stand-in for softwareag/apigateway-trial:10.15 AS THE LABCTL ADAPTER SPEAKS
+// IT — envelopes, lifecycle and traps included — so it can play the dev/rec/int
+// environments behind the production gateway's admin proxy: `labctl apply` and
+// `labctl apply-uac` (type webmethods) pass against it end to end, and the
+// multi-env ${alias} routing demo resolves per request.
+
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
-	"fmt"
-	"io"
 	"net/http"
-	"net/http/httputil"
-	"net/url"
-	"strings"
-	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 )
 
-// API mirrors the subset of the webMethods API Gateway admin model that the
-// STOA webMethods adapter relies on. The mock is intentionally a faithful
-// stand-in: the same surface a real `apigateway:10.15` exposes, so the Link
-// can be repointed at the real product without changing its code.
-type API struct {
-	ID         string `json:"apiId"`
-	Name       string `json:"apiName"`
-	Version    string `json:"apiVersion"`
-	BasePath   string `json:"basePath"`
-	BackendURL string `json:"backendUrl"`
-	CreatedAt  string `json:"createdAt"`
-}
-
-// Subscription mirrors a webMethods application subscription (consumer).
-type Subscription struct {
-	ID          string `json:"subscriptionId"`
-	Application string `json:"applicationName"`
-	APIID       string `json:"apiId"`
-	ClientID    string `json:"clientId"`
-	CreatedAt   string `json:"createdAt"`
-}
-
-// Store is the in-memory state of the mock. Synthetic only, no persistence.
-type Store struct {
-	mu   sync.RWMutex
-	apis map[string]*API
-	subs map[string]*Subscription
-	seq  int
-}
-
-func NewStore() *Store {
-	return &Store{apis: map[string]*API{}, subs: map[string]*Subscription{}}
-}
-
-func (s *Store) nextID(prefix string) string {
-	s.seq++
-	return fmt.Sprintf("%s-%04d", prefix, s.seq)
-}
-
-// Server wires the admin REST surface, the data-plane proxy and OTel metrics.
 type Server struct {
 	store    *Store
 	now      func() time.Time
@@ -65,6 +27,11 @@ type Server struct {
 	// auth, when non-nil, enforces Keycloak Bearer JWT validation on the
 	// data-plane (Phase 3). nil = no auth (Phase 1/2 + unit tests).
 	auth *Authenticator
+	// adminUser/adminPass guard /rest/apigateway/* with HTTP Basic, like the
+	// real Integration Server. Env ADMIN_USER / ADMIN_PASSWORD, defaults
+	// Administrator/manage (the trial image defaults targets.yaml carries).
+	adminUser string
+	adminPass string
 }
 
 func NewServer() *Server {
@@ -72,43 +39,94 @@ func NewServer() *Server {
 	calls, _ := meter.Int64Counter("webmethods_dataplane_requests_total",
 		metric.WithDescription("Data-plane requests handled by the webMethods mock"))
 	errs, _ := meter.Int64Counter("webmethods_dataplane_errors_total",
-		metric.WithDescription("Data-plane requests with no matching API"))
+		metric.WithDescription("Data-plane requests refused (no API, inactive, out of contract, unresolved alias)"))
 	return &Server{
-		store:    NewStore(),
-		now:      time.Now,
-		dpCalls:  calls,
-		dpErrors: errs,
-		auth:     NewAuthenticatorFromEnv(context.Background()),
+		store:     NewStore(),
+		now:       time.Now,
+		dpCalls:   calls,
+		dpErrors:  errs,
+		auth:      NewAuthenticatorFromEnv(context.Background()),
+		adminUser: envOr("ADMIN_USER", "Administrator"),
+		adminPass: envOr("ADMIN_PASSWORD", "manage"),
 	}
 }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
-	// --- Admin REST surface (what the STOA webMethods adapter calls) ---
-	mux.HandleFunc("GET /rest/apigateway/is/health", s.health)
-	mux.HandleFunc("GET /rest/apigateway/apis", s.listAPIs)
-	mux.HandleFunc("POST /rest/apigateway/apis", s.createAPI)
-	mux.HandleFunc("GET /rest/apigateway/apis/{id}", s.getAPI)
-	mux.HandleFunc("DELETE /rest/apigateway/apis/{id}", s.deleteAPI)
-	mux.HandleFunc("GET /rest/apigateway/subscriptions", s.listSubscriptions)
-	mux.HandleFunc("POST /rest/apigateway/subscriptions", s.createSubscription)
-	mux.HandleFunc("POST /rest/apigateway/transactionalEvents", s.events)
+	// --- Admin REST surface (the exact dialect labctl's adapter speaks) ---
+	admin := http.NewServeMux()
+	admin.HandleFunc("GET /rest/apigateway/health", s.health)
+	admin.HandleFunc("GET /rest/apigateway/apis", s.listAPIs)
+	admin.HandleFunc("POST /rest/apigateway/apis", s.createAPI)
+	admin.HandleFunc("GET /rest/apigateway/apis/{id}", s.getAPI)
+	admin.HandleFunc("PUT /rest/apigateway/apis/{id}", s.updateAPI)
+	admin.HandleFunc("PUT /rest/apigateway/apis/{id}/activate", s.activateAPI)
+	admin.HandleFunc("PUT /rest/apigateway/apis/{id}/deactivate", s.deactivateAPI)
+	admin.HandleFunc("GET /rest/apigateway/alias", s.listAliases)
+	admin.HandleFunc("POST /rest/apigateway/alias", s.createAlias)
+	admin.HandleFunc("GET /rest/apigateway/alias/{id}", s.getAlias)
+	admin.HandleFunc("PUT /rest/apigateway/alias/{id}", s.updateAlias)
+	admin.HandleFunc("GET /rest/apigateway/policyActions", s.listActions)
+	admin.HandleFunc("POST /rest/apigateway/policyActions", s.createAction)
+	admin.HandleFunc("GET /rest/apigateway/policyActions/{id}", s.getAction)
+	admin.HandleFunc("PUT /rest/apigateway/policyActions/{id}", s.updateAction)
+	admin.HandleFunc("GET /rest/apigateway/policies/{id}", s.getPolicy)
+	admin.HandleFunc("PUT /rest/apigateway/policies/{id}", s.updatePolicy)
+	admin.HandleFunc("GET /rest/apigateway/applications", s.listApps)
+	admin.HandleFunc("POST /rest/apigateway/applications", s.createApp)
+	admin.HandleFunc("GET /rest/apigateway/applications/{id}", s.getApp)
+	admin.HandleFunc("PUT /rest/apigateway/applications/{id}", s.updateApp)
+	admin.HandleFunc("PUT /rest/apigateway/applications/{id}/apis", s.associateAPIs)
+	admin.HandleFunc("GET /rest/apigateway/strategies", s.listStrategies)
+	admin.HandleFunc("POST /rest/apigateway/strategies", s.createStrategy)
+	admin.HandleFunc("GET /rest/apigateway/strategies/{id}", s.getStrategy)
+	admin.HandleFunc("PUT /rest/apigateway/strategies/{id}", s.updateStrategy)
+	admin.HandleFunc("GET /rest/apigateway/scopes", s.listScopes)
+	admin.HandleFunc("POST /rest/apigateway/scopes", s.createScope)
+	admin.HandleFunc("GET /rest/apigateway/scopes/{id}", s.getScope)
+	admin.HandleFunc("PUT /rest/apigateway/scopes/{id}", s.updateScope)
+	admin.HandleFunc("GET /rest/apigateway/configurations/keystore", s.getKeystore)
+	admin.HandleFunc("PUT /rest/apigateway/configurations/keystore", s.putKeystore)
+	admin.HandleFunc("POST /rest/apigateway/transactionalEvents", s.events)
 
-	// --- Data-plane: everything under /gateway/<basePath>/... ---
+	// Legacy liveness route, kept OPEN (no Basic) on purpose: scripts/up.sh and
+	// scripts/smoke-test.sh probe it without credentials. Everything else under
+	// /rest/apigateway/* is Basic-auth'd like the real Integration Server.
+	mux.HandleFunc("GET /rest/apigateway/is/health", s.legacyHealth)
+	mux.Handle("/rest/apigateway/", s.requireBasicAuth(admin))
+
+	// --- Data-plane: /gateway/{apiName}/{apiVersion}/{resource...} ---
 	// Phase 3: when a Keycloak authenticator is configured, the data-plane
-	// requires a valid Bearer JWT (the admin surface above stays open, like a
-	// real gateway's management plane).
+	// requires a valid Bearer JWT (the admin surface keeps its own Basic gate,
+	// like a real gateway's management plane).
 	if s.auth != nil {
 		mux.Handle("/gateway/", s.auth.Middleware(http.HandlerFunc(s.dataPlane)))
 	} else {
 		mux.HandleFunc("/gateway/", s.dataPlane)
 	}
 
-	// Liveness for docker healthcheck (plain, no auth).
-	mux.HandleFunc("GET /health", s.health)
+	// Liveness for the docker healthcheck binary (plain, no auth).
+	mux.HandleFunc("GET /health", s.legacyHealth)
 
 	return mux
+}
+
+// requireBasicAuth guards the admin surface: the real product answers 401 with
+// a Basic challenge on missing/bad credentials for EVERY /rest/apigateway/*
+// call. Constant-time compare — fail closed, never leak which half mismatched.
+func (s *Server) requireBasicAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user, pass, ok := r.BasicAuth()
+		userOK := subtle.ConstantTimeCompare([]byte(user), []byte(s.adminUser)) == 1
+		passOK := subtle.ConstantTimeCompare([]byte(pass), []byte(s.adminPass)) == 1
+		if !ok || !userOK || !passOK {
+			w.Header().Set("WWW-Authenticate", `Basic realm="Integration Server"`)
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Unauthorized"})
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -118,149 +136,14 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+// health serves the 10.15 admin health document. The labctl adapter treats a
+// 200 as "reachable AND credentials accepted" and refuses status=red.
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
-	// webMethods /is/health returns an "isAlive" envelope.
+	writeJSON(w, http.StatusOK, map[string]any{"status": "green", "gateway": "webmethods-mock"})
+}
+
+// legacyHealth keeps the historical mock liveness shape ({"isAlive":true}) for
+// docker healthchecks and the existing up/smoke scripts.
+func (s *Server) legacyHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"isAlive": true, "gateway": "webmethods-mock"})
-}
-
-func (s *Server) listAPIs(w http.ResponseWriter, _ *http.Request) {
-	s.store.mu.RLock()
-	defer s.store.mu.RUnlock()
-	out := make([]*API, 0, len(s.store.apis))
-	for _, a := range s.store.apis {
-		out = append(out, a)
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"apis": out, "count": len(out)})
-}
-
-func (s *Server) createAPI(w http.ResponseWriter, r *http.Request) {
-	var in API
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
-		return
-	}
-	if in.Name == "" || in.BasePath == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "apiName and basePath are required"})
-		return
-	}
-	in.BasePath = "/" + strings.Trim(in.BasePath, "/")
-	s.store.mu.Lock()
-	in.ID = s.store.nextID("api")
-	in.CreatedAt = s.now().UTC().Format(time.RFC3339)
-	if in.Version == "" {
-		in.Version = "1.0.0"
-	}
-	s.store.apis[in.ID] = &in
-	s.store.mu.Unlock()
-	writeJSON(w, http.StatusCreated, in)
-}
-
-func (s *Server) getAPI(w http.ResponseWriter, r *http.Request) {
-	s.store.mu.RLock()
-	a, ok := s.store.apis[r.PathValue("id")]
-	s.store.mu.RUnlock()
-	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "api not found"})
-		return
-	}
-	writeJSON(w, http.StatusOK, a)
-}
-
-func (s *Server) deleteAPI(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	s.store.mu.Lock()
-	_, ok := s.store.apis[id]
-	delete(s.store.apis, id)
-	s.store.mu.Unlock()
-	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "api not found"})
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
-func (s *Server) listSubscriptions(w http.ResponseWriter, _ *http.Request) {
-	s.store.mu.RLock()
-	defer s.store.mu.RUnlock()
-	out := make([]*Subscription, 0, len(s.store.subs))
-	for _, sub := range s.store.subs {
-		out = append(out, sub)
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"subscriptions": out, "count": len(out)})
-}
-
-func (s *Server) createSubscription(w http.ResponseWriter, r *http.Request) {
-	var in Subscription
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
-		return
-	}
-	if in.Application == "" || in.ClientID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "applicationName and clientId are required"})
-		return
-	}
-	s.store.mu.Lock()
-	in.ID = s.store.nextID("sub")
-	in.CreatedAt = s.now().UTC().Format(time.RFC3339)
-	s.store.subs[in.ID] = &in
-	s.store.mu.Unlock()
-	writeJSON(w, http.StatusCreated, in)
-}
-
-func (s *Server) events(w http.ResponseWriter, r *http.Request) {
-	// webMethods pushes transactional events here; the mock accepts and drops.
-	_, _ = io.Copy(io.Discard, r.Body)
-	w.WriteHeader(http.StatusAccepted)
-}
-
-// dataPlane routes /gateway/<basePath>/... to the registered backend (reverse
-// proxy) or returns a synthetic response when no backend URL is configured.
-func (s *Server) dataPlane(w http.ResponseWriter, r *http.Request) {
-	path := strings.TrimPrefix(r.URL.Path, "/gateway")
-	api := s.matchAPI(path)
-	if api == nil {
-		s.dpErrors.Add(r.Context(), 1)
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no API registered for path", "path": path})
-		return
-	}
-	s.dpCalls.Add(r.Context(), 1, metric.WithAttributes(
-		attribute.String("api", api.Name),
-		attribute.String("basePath", api.BasePath),
-	))
-
-	if api.BackendURL != "" {
-		target, err := url.Parse(api.BackendURL)
-		if err != nil {
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "bad backend url"})
-			return
-		}
-		proxy := httputil.NewSingleHostReverseProxy(target)
-		r.URL.Path = strings.TrimPrefix(path, api.BasePath)
-		r.Host = target.Host
-		proxy.ServeHTTP(w, r)
-		return
-	}
-
-	// Synthetic response — zero real data.
-	writeJSON(w, http.StatusOK, map[string]any{
-		"gateway":   "webmethods-mock",
-		"api":       api.Name,
-		"path":      path,
-		"synthetic": true,
-		"data":      []any{},
-	})
-}
-
-func (s *Server) matchAPI(path string) *API {
-	s.store.mu.RLock()
-	defer s.store.mu.RUnlock()
-	var best *API
-	for _, a := range s.store.apis {
-		if path == a.BasePath || strings.HasPrefix(path, a.BasePath+"/") {
-			if best == nil || len(a.BasePath) > len(best.BasePath) {
-				best = a
-			}
-		}
-	}
-	return best
 }

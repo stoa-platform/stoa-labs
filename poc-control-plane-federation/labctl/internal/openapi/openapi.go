@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/stoa-platform/stoa-labs/poc/labctl/internal/adapter"
@@ -135,8 +136,6 @@ func normalizePath(p string) string {
 
 func endpoints(paths map[string]map[string]any) []adapter.Endpoint {
 	out := make([]adapter.Endpoint, 0, len(paths))
-	// Stable order is not guaranteed by maps; adapters that need determinism
-	// sort by Path themselves. We keep insertion-free, methods upper-cased.
 	for p, ops := range paths {
 		var methods []string
 		for verb := range ops {
@@ -147,8 +146,16 @@ func endpoints(paths map[string]map[string]any) []adapter.Endpoint {
 		if len(methods) == 0 {
 			continue
 		}
+		sort.Strings(methods) // stable method order per endpoint
 		out = append(out, adapter.Endpoint{Path: p, Methods: methods})
 	}
+	// Deterministic order is REQUIRED, not optional: Go map iteration is
+	// randomized, and adapters derive stable resource ids from the endpoint
+	// INDEX (e.g. the APISIX route id "<name>-<i>"). Without this sort a plain
+	// re-apply would shuffle which operation maps to which id, creating
+	// duplicate/orphan routes — a silent idempotency break. Sort by Path here so
+	// every adapter inherits one canonical ordering.
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out
 }
 

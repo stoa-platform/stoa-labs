@@ -10,8 +10,13 @@ import (
 // Version is over/under-written at build time (-ldflags) or kept as the default.
 var Version = "0.1.0-poc"
 
-// fileFlag is the federation manifest path, shared by apply/subscribe/get.
+// fileFlag is the federation manifest path, shared by apply/subscribe/get/plan.
 var fileFlag string
+
+// outputFlag selects the rendering format ("table" for humans, "json" for the
+// governance BFF / CI). In json mode stdout carries the JSON document ONLY;
+// human progress logs move to stderr.
+var outputFlag string
 
 var rootCmd = &cobra.Command{
 	Use:   "labctl",
@@ -28,6 +33,8 @@ var rootCmd = &cobra.Command{
 func init() {
 	rootCmd.PersistentFlags().StringVarP(&fileFlag, "file", "f", "targets.yaml",
 		"federation manifest (targets.yaml)")
+	rootCmd.PersistentFlags().StringVarP(&outputFlag, "output", "o", "table",
+		"output format: table|json (json prints the result on stdout, logs on stderr)")
 }
 
 // Execute runs the root command.

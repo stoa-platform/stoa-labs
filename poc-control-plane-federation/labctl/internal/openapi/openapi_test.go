@@ -3,6 +3,7 @@ package openapi
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -97,6 +98,90 @@ paths: {}
 	}
 	if api.SpecPath != p {
 		t.Errorf("SpecPath = %q, want %q", api.SpecPath, p)
+	}
+}
+
+// Error paths: a missing file, malformed YAML, and a title-less doc are exactly
+// the operator mistakes a demo will hit, and the messages are what the operator
+// reads — so they must be exercised (parity with keycloak/backstage).
+func TestLoad_ErrorPaths(t *testing.T) {
+	t.Run("missing file", func(t *testing.T) {
+		_, err := Load(filepath.Join(t.TempDir(), "does-not-exist.yaml"), "", "")
+		if err == nil || !strings.Contains(err.Error(), "read contract") {
+			t.Fatalf("err = %v, want 'read contract ...'", err)
+		}
+	})
+	t.Run("malformed yaml", func(t *testing.T) {
+		p := writeContract(t, "{{ not: valid: yaml")
+		_, err := Load(p, "", "")
+		if err == nil || !strings.Contains(err.Error(), "parse OpenAPI") {
+			t.Fatalf("err = %v, want 'parse OpenAPI ...'", err)
+		}
+	})
+	t.Run("missing info.title", func(t *testing.T) {
+		p := writeContract(t, "openapi: 3.0.0\npaths: {}\n")
+		_, err := Load(p, "", "")
+		if err == nil || !strings.Contains(err.Error(), "info.title is required") {
+			t.Fatalf("err = %v, want 'info.title is required'", err)
+		}
+	})
+}
+
+// Determinism: endpoints must come back sorted by Path (and methods sorted)
+// regardless of map iteration order, because adapters derive stable resource ids
+// from the endpoint index. Multiple paths + multiple verbs make a shuffle
+// observable. Loading the same contract repeatedly must yield identical order.
+func TestLoad_EndpointsDeterministicOrder(t *testing.T) {
+	p := writeContract(t, `
+openapi: 3.0.0
+info:
+  title: Accounts Read API
+  version: 1.0.0
+servers:
+  - url: /accounts-read/v1
+paths:
+  /transactions:
+    get: {}
+  /accounts:
+    post: {}
+    get: {}
+  /accounts/{id}:
+    get: {}
+`)
+	const runs = 20
+	var want []string
+	for i := 0; i < runs; i++ {
+		api, err := Load(p, "accounts-read", "")
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		got := make([]string, len(api.Endpoints))
+		for j, ep := range api.Endpoints {
+			got[j] = ep.Path + " " + strings.Join(ep.Methods, ",")
+		}
+		if i == 0 {
+			want = got
+			// Paths must be in sorted order.
+			wantPaths := []string{"/accounts", "/accounts/{id}", "/transactions"}
+			for k, ep := range api.Endpoints {
+				if ep.Path != wantPaths[k] {
+					t.Fatalf("endpoint[%d].Path = %q, want %q (sorted)", k, ep.Path, wantPaths[k])
+				}
+			}
+			// Methods on /accounts must be sorted (GET before POST).
+			if api.Endpoints[0].Methods[0] != "GET" || api.Endpoints[0].Methods[1] != "POST" {
+				t.Fatalf("/accounts methods = %v, want [GET POST] sorted", api.Endpoints[0].Methods)
+			}
+			continue
+		}
+		if len(got) != len(want) {
+			t.Fatalf("run %d: %d endpoints, want %d", i, len(got), len(want))
+		}
+		for j := range got {
+			if got[j] != want[j] {
+				t.Fatalf("run %d: endpoint[%d] = %+v, want %+v (non-deterministic order)", i, j, got[j], want[j])
+			}
+		}
 	}
 }
 

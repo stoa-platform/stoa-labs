@@ -1,0 +1,4 @@
+disabled — gate for the labctl webmethods live integration test (TestLive_RealGatewayPublishListConsumer).
+Rewrite the first word to "enabled" (or touch /tmp/wm-live-test.flag) to run the test against the real
+gateway on http://localhost:5555 (docker-compose.wm.yml, Basic Administrator:manage).
+Last live run: 2026-06-11 — PASS (publish ef22d7de-9763-4d21-a6e2-d742957469ef, application 4a388084-169a-418c-8856-46c3515e8e05).

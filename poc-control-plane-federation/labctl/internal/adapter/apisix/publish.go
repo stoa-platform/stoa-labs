@@ -16,9 +16,14 @@ import (
 // by construction in traditional+etcd mode — the PUT itself makes traffic live,
 // there is NO deploy/revision step).
 //
-// Auth (jwt-auth/key-auth) is deliberately NOT enabled here: enabling it at
-// publish time would open a 401 window on the data plane before any consumer
-// exists. Auth is attached in CreateConsumer instead.
+// CONSUMER auth (jwt-auth/key-auth) is deliberately NOT enabled here: enabling
+// it at publish time would open a 401 window on the data plane before any
+// consumer exists. Auth is attached in CreateConsumer instead.
+//
+// INBOUND auth (openid-connect) IS projected here when the manifest configures
+// it: tokens come from the platform's issuer (Keycloak), not from a
+// gateway-local consumer, so there is no 401 window — and deferring it would
+// leave the routes open between apply and subscribe.
 func (a *Adapter) Publish(ctx context.Context, api *adapter.NormalizedAPI) (*adapter.PublishResult, error) {
 	upstreamID := api.Name // stable seed shared by upstream + service
 
@@ -67,7 +72,7 @@ func (a *Adapter) Publish(ctx context.Context, api *adapter.NormalizedAPI) (*ada
 			Methods:   ep.Methods,
 			Status:    1, // 1 = enabled (0 would create but serve no traffic)
 			ServiceID: upstreamID,
-			Plugins:   sharedPlugins(api.BasePath, backendPath),
+			Plugins:   a.routePlugins(api.BasePath, backendPath, api.Name, api.Version),
 			Labels:    routeLabels(api.Name, api.Version, api.BasePath),
 		}
 		rURL := fmt.Sprintf("%s/apisix/admin/routes/%s-%d", a.adminURL, api.Name, i)
