@@ -9,6 +9,11 @@
 // (ci/Jenkinsfile.rollback). Voir ci/README.md + adr/adr-075.
 pipeline {
   agent any
+  // Builds SÉRIALISÉS : le token Bearer des proxies vit à un chemin FIXE
+  // (/tmp/stoa-wm-admin-token, déclaré par les manifests envs/) — deux builds
+  // concurrents se le voleraient (course observée builds #23/#24). Un
+  // déploiement à la fois est de toute façon le régime bancaire.
+  options { disableConcurrentBuilds() }
   // NB: pas d'options { timestamps() } — exige le plugin timestamper (absent
   // de l'image). Bug du scaffold détecté au premier run (Phase 0).
   // Webhook Gitea → /generic-webhook-trigger/invoke?token=stoa-ci (exempt de
