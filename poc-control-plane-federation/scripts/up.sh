@@ -10,6 +10,11 @@ if [[ ! -f .env ]]; then
   cp .env.example .env
 fi
 
+# Source .env so the access URLs printed at the end reflect configured ports.
+# (Compose reads .env on its own; this only affects THIS script's shell.)
+# Mirrors smoke-test.sh.
+set -a; [[ -f .env ]] && . ./.env; set +a
+
 echo "→ build du mock webMethods + pull des images"
 $COMPOSE build webmethods-mock
 $COMPOSE up -d

@@ -1,0 +1,219 @@
+# =============================================================================
+# wm-admin-proxy.openapi.yaml — contrat ALLOWLIST des proxies admin wM (ADR-075)
+#
+# Importé 3 fois sur le wM RÉEL (manifests targets.wm-admin-{dev,rec,int}.yaml)
+# → APIs sœurs wm-admin-{env} v1.0, data-plane :
+#     /gateway/wm-admin-{env}/1.0/rest/apigateway/...
+# routées par ${wm-admin-{env}}/${sys:resource_path} vers le mock de l'env
+# (réseau nonprod, injoignable autrement — la contrainte réseau EST la preuve).
+#
+# ALLOWLIST = UNIQUEMENT les chemins admin que labctl utilise (vérifié dans
+# labctl/internal/adapter/webmethods/*.go : publish/consumer/inboundauth/oauth2).
+# Tout chemin HORS contrat → 404 par le wM réel (ex. /rest/apigateway/users —
+# contre-épreuve dans setup-wm-admin-proxy.sh).
+#
+# AUCUN DELETE : le rollback est un re-apply depuis Git (revert + convergence
+# idempotente, ADR-069/075) — JAMAIS une suppression via le proxy. Un DELETE
+# présenté → 405/404.
+#
+# Schemas libres (additionalProperties: true) : c'est un PROXY de payloads
+# admin 10.15, pas une re-spécification — les shapes exacts (bodies nus vs
+# enveloppés, endPointURI, password base64…) sont la responsabilité de labctl.
+# =============================================================================
+openapi: 3.0.3
+info:
+  title: wm-admin-proxy
+  description: >
+    Allowlist control-plane proxy onto the webMethods 10.15 admin REST surface
+    used by labctl. One sister API per low environment (dev/rec/int), each
+    OAuth2-scoped (deploy:{env}) and routed via ${alias} to that env's gateway.
+  version: "1.0"
+servers:
+  - url: /
+paths:
+  /rest/apigateway/health:
+    get:
+      summary: Gateway liveness/auth preflight (labctl Health)
+      responses:
+        "200": { $ref: "#/components/responses/proxied" }
+  /rest/apigateway/apis:
+    get:
+      summary: List APIs (idempotent lookup by name)
+      responses:
+        "200": { $ref: "#/components/responses/proxied" }
+    post:
+      summary: Create API by OpenAPI import
+      requestBody: { $ref: "#/components/requestBodies/passthrough" }
+      responses:
+        "201": { $ref: "#/components/responses/proxied" }
+  /rest/apigateway/apis/{id}:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get:
+      summary: Read one API (read-back assertion)
+      responses:
+        "200": { $ref: "#/components/responses/proxied" }
+    put:
+      summary: Update API (re-import; policy + ${alias} routing preserved)
+      requestBody: { $ref: "#/components/requestBodies/passthrough" }
+      responses:
+        "200": { $ref: "#/components/responses/proxied" }
+  /rest/apigateway/apis/{id}/activate:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    put:
+      summary: Activate API
+      responses:
+        "200": { $ref: "#/components/responses/proxied" }
+  /rest/apigateway/apis/{id}/deactivate:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    put:
+      summary: Deactivate API (required before some updates)
+      responses:
+        "200": { $ref: "#/components/responses/proxied" }
+  /rest/apigateway/alias:
+    get:
+      summary: List aliases (auth-server / endpoint / credential)
+      responses:
+        "200": { $ref: "#/components/responses/proxied" }
+    post:
+      summary: Create alias (body NU — endpoint endPointURI / credential base64)
+      requestBody: { $ref: "#/components/requestBodies/passthrough" }
+      responses:
+        "201": { $ref: "#/components/responses/proxied" }
+  /rest/apigateway/alias/{id}:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get:
+      summary: Read one alias (read-back; credential password MASQUÉ)
+      responses:
+        "200": { $ref: "#/components/responses/proxied" }
+    put:
+      summary: Update alias (résolution PAR REQUÊTE — re-route instantané)
+      requestBody: { $ref: "#/components/requestBodies/passthrough" }
+      responses:
+        "200": { $ref: "#/components/responses/proxied" }
+  /rest/apigateway/strategies:
+    get:
+      summary: List OAuth2 strategies
+      responses:
+        "200": { $ref: "#/components/responses/proxied" }
+    post:
+      summary: Create OAuth2 strategy (body NU)
+      requestBody: { $ref: "#/components/requestBodies/passthrough" }
+      responses:
+        "201": { $ref: "#/components/responses/proxied" }
+  /rest/apigateway/strategies/{id}:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get:
+      summary: Read one strategy
+      responses:
+        "200": { $ref: "#/components/responses/proxied" }
+    put:
+      summary: Update strategy (converge alias/clientId/audience)
+      requestBody: { $ref: "#/components/requestBodies/passthrough" }
+      responses:
+        "200": { $ref: "#/components/responses/proxied" }
+  /rest/apigateway/scopes:
+    get:
+      summary: List scope mappings
+      responses:
+        "200": { $ref: "#/components/responses/proxied" }
+    post:
+      summary: Create scope mapping (body NU)
+      requestBody: { $ref: "#/components/requestBodies/passthrough" }
+      responses:
+        "201": { $ref: "#/components/responses/proxied" }
+  /rest/apigateway/scopes/{id}:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get:
+      summary: Read one scope mapping
+      responses:
+        "200": { $ref: "#/components/responses/proxied" }
+    put:
+      summary: Update scope mapping (bind apiScopes)
+      requestBody: { $ref: "#/components/requestBodies/passthrough" }
+      responses:
+        "200": { $ref: "#/components/responses/proxied" }
+  /rest/apigateway/policyActions:
+    get:
+      summary: List policy actions
+      responses:
+        "200": { $ref: "#/components/responses/proxied" }
+    post:
+      summary: Create policy action (body ENVELOPPÉ {"policyAction":{...}})
+      requestBody: { $ref: "#/components/requestBodies/passthrough" }
+      responses:
+        "201": { $ref: "#/components/responses/proxied" }
+  /rest/apigateway/policyActions/{id}:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get:
+      summary: Read one policy action (read-back OBLIGATOIRE après PUT)
+      responses:
+        "200": { $ref: "#/components/responses/proxied" }
+    put:
+      summary: >
+        Update policy action — PIÈGE 10.15 : exige le body ENVELOPPÉ
+        {"policyAction": {"id": ...}} ; un body nu renvoie 200 SANS persister.
+      requestBody: { $ref: "#/components/requestBodies/passthrough" }
+      responses:
+        "200": { $ref: "#/components/responses/proxied" }
+  /rest/apigateway/policies/{id}:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get:
+      summary: Read one policy (IAM stage attach read-back)
+      responses:
+        "200": { $ref: "#/components/responses/proxied" }
+    put:
+      summary: Update policy (body ENVELOPPÉ {"policy":{...}})
+      requestBody: { $ref: "#/components/requestBodies/passthrough" }
+      responses:
+        "200": { $ref: "#/components/responses/proxied" }
+  /rest/apigateway/applications:
+    get:
+      summary: List applications (consumers)
+      responses:
+        "200": { $ref: "#/components/responses/proxied" }
+    post:
+      summary: Create application
+      requestBody: { $ref: "#/components/requestBodies/passthrough" }
+      responses:
+        "201": { $ref: "#/components/responses/proxied" }
+  /rest/apigateway/applications/{id}:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    get:
+      summary: Read one application
+      responses:
+        "200": { $ref: "#/components/responses/proxied" }
+    put:
+      summary: Update application (identifiers/authStrategyIds)
+      requestBody: { $ref: "#/components/requestBodies/passthrough" }
+      responses:
+        "200": { $ref: "#/components/responses/proxied" }
+  /rest/apigateway/applications/{id}/apis:
+    parameters: [{ $ref: "#/components/parameters/id" }]
+    put:
+      summary: Subscribe application to APIs ({"apiIDs":[...]})
+      requestBody: { $ref: "#/components/requestBodies/passthrough" }
+      responses:
+        "200": { $ref: "#/components/responses/proxied" }
+components:
+  parameters:
+    id:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+  requestBodies:
+    passthrough:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: true
+  responses:
+    proxied:
+      description: Réponse du gateway amont, relayée telle quelle.
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: true

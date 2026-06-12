@@ -46,14 +46,75 @@ targets:
     consumerAuth: key-auth               # key-auth (header `apikey: <key>`) | jwt-auth
                                          # (jwt-auth needs the public-api jwt-sign
                                          # route, an APISIX-version-specific detail)
+    # Inbound openid-connect (bearer_only, RS256 via JWKS), projeté par labctl
+    # apply sur CHAQUE route — SAME value as targets.yaml because APISIX
+    # resolves the discovery FROM ITS OWN CONTAINER (in-network in both
+    # perspectives): keycloak:8080, PAS localhost:8480. KC_HOSTNAME épingle
+    # iss=http://localhost:8480/realms/stoa-lab DANS la discovery, et le JWKS
+    # est fetché in-network (BACKCHANNEL_DYNAMIC).
+    inboundAuth:
+      discoveryUrl: http://keycloak:8080/realms/stoa-lab/.well-known/openid-configuration
+    # Analytics transactionnelle centralisée (ADR-070, tranche APISIX). labctl
+    # projette un kafka-logger sur CHAQUE route (à côté de openid-connect), qui
+    # émet le schéma commun stoa.txn (tag tenant + trace_id) vers Redpanda. SANS
+    # ce bloc, un apply CI réécrirait les routes SANS kafka-logger (régression de
+    # l'observabilité). Le producteur tourne DANS le conteneur APISIX, donc le
+    # broker est le nom docker-INTERNE (réseau `poc`), PAS le port hôte 18092.
+    # topic dérivé du prefix → stoa.txn.apisix ; tenant dérivé de backstage.owner.
+    observability:
+      kafkaBroker: poc-analytics-redpanda:9092
+      topicPrefix: stoa.txn
     credentials:
       adminKey: poc-apisix-admin-key     # PLACEHOLDER — matches gateways/apisix/config.yaml
 
+  # REAL webMethods API Gateway (softwareag/apigateway-trial:10.15, see
+  # docker-compose.wm.yml — container poc-webmethods-real on the `poc`
+  # network). The mock stays available (mocks/webmethods, webmethods-mock:8080)
+  # but is no longer a target.
   - name: webmethods
     type: webmethods
-    adminUrl: http://webmethods-mock:8080      # /rest/apigateway (mock: no auth)
-    gatewayUrl: http://webmethods-mock:8080    # data-plane under /gateway/<basePath>
-    credentials: {}                      # mock has NO auth; real apigateway:10.15 = HTTP Basic
+    adminUrl: http://webmethods-real:5555      # /rest/apigateway/* (HTTP Basic)
+    gatewayUrl: http://webmethods-real:5555    # data-plane under /gateway/<apiName>/<version>
+    # Inbound JWT/JWKS auth, projected control-plane-side by labctl apply:
+    # auth-server alias + "Identify & Authorize" (jwtClaims) action attached to
+    # the API policy's IAM stage. Split-horizon / deux horizons réseau — SAME
+    # values as targets.yaml because wM is always in-network:
+    #   - issuer  = the token's iss claim EXACTLY (Keycloak épinglé côté host
+    #     via KC_HOSTNAME — ce que le CLIENT a vu au mint du token);
+    #   - jwksUri = reachable FROM the wM CONTAINER (réseau compose `poc`,
+    #     donc keycloak:8080, PAS localhost:8480).
+    inboundAuth:
+      issuer: http://localhost:8480/realms/stoa-lab
+      jwksUri: http://keycloak:8080/realms/stoa-lab/protocol/openid-connect/certs
+      aliasName: KeycloakStoaLab         # gateway-side auth-server alias name
+      # OAuth2 path: full barrier (audience + scope + application identity), not
+      # signature-only. apply: OAUTH2 strategy + scope mapping + policy strict/
+      # openIdClaims; subscribe: KC audience mapper + default client scope + the
+      # wM application identifier azp/openIdClaims + authStrategyIds.
+      #   - audience MUST equal the aud claim subscribe writes (KC audience mapper);
+      #   - scope    MUST equal the default client scope subscribe grants;
+      #   - clientId defaults from keycloak.consumerClientId (the azp matched).
+      audience: accounts-read
+      scope: accounts.read
+      clientId: accounts-read-consumer
+      # REMOTE introspection (RFC 7662) — makes the audience a BARRIER (offline
+      # JWKS never checks aud). Asks the AS active/aud/azp/scope per request so the
+      # resource-server path enforces aud against strategy.audience. Local block is
+      # kept as a signature fallback. introspectionEndpoint = reachable FROM the wM
+      # CONTAINER (keycloak:8080, same split-horizon as jwksUri). Gateway's own
+      # confidential client poc-gateways/poc-gateways-secret (distinct from the
+      # consumer's clientId). Coût CAB-938: no native cache -> 1 KC call/request.
+      introspectionEndpoint: http://keycloak:8080/realms/stoa-lab/protocol/openid-connect/token/introspect
+      introspectionClientId: poc-gateways
+      introspectionClientSecret: poc-gateways-secret
+      introspectionUser: Administrator   # REQUIRED by 10.15 (alias validator)
+      # ⚠ LIVE FINDING: remoteIntrospectionConfig is INERT on apigateway-trial:10.15
+      # (local JWKS path short-circuits it). Enforces 3/4 (signature+azp+scope);
+      # AUDIENCE stays fail-open on this build. Kept so a build honouring remote
+      # introspection enforces aud with no code change. See targets.yaml note.
+    credentials:
+      username: Administrator            # PLACEHOLDER — trial image default admin
+      password: manage
 
 # --- subscribe: out-of-band OAuth client minted in Keycloak ------------------
 keycloak:
@@ -67,6 +128,8 @@ keycloak:
 
 # --- Backstage catalog registration (Phase 3) --------------------------------
 backstage:
+  # owner == canonical control-plane tenant (banking-demo): one tenant identity
+  # across onboarding, apply and txn analytics (ADR-070/072).
   url: http://backstage:7007
-  owner: accounts-team
+  owner: banking-demo
   system: accounts
