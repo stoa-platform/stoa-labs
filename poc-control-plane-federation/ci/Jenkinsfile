@@ -1,9 +1,20 @@
 // CI bank-réaliste : push Git -> webhook -> Jenkins -> labctl (Define Once).
 // Le build de labctl est AIR-GAPPED (vendor/ + GOPROXY=off) ; l'apply tape les
 // gateways par leurs noms docker INTERNES (zéro flux entrant depuis l'extérieur).
+//
+// CE PIPELINE EST LE PIPELINE HORS-PROD (ADR-075) : déclenché par webhook
+// (token stoa-ci), il converge dev -> rec -> int via les proxies admin
+// wm-admin-{env}. La prod a SON pipeline (ci/Jenkinsfile.prod, AUCUN trigger,
+// gate Git-natif promotion+ITSM+4-yeux) ; le rollback le sien
+// (ci/Jenkinsfile.rollback). Voir ci/README.md + adr/adr-075.
 pipeline {
   agent any
-  options { timestamps() }
+  // NB: pas d'options { timestamps() } — exige le plugin timestamper (absent
+  // de l'image). Bug du scaffold détecté au premier run (Phase 0).
+  // Webhook Gitea → /generic-webhook-trigger/invoke?token=stoa-ci (exempt de
+  // crumb CSRF, contrairement à /job/…/build?token=). Le trigger s'enregistre
+  // au premier build du job (lancer le build #1 manuellement à la création).
+  triggers { GenericTrigger(token: 'stoa-ci', printContributedVariables: false, printPostContent: false) }
   environment { GOPROXY = 'off'; GOFLAGS = '-mod=vendor'; GOSUMDB = 'off' }
   stages {
     stage('Build labctl (air-gapped, vendored)') {
@@ -22,6 +33,107 @@ pipeline {
         }
       }
     }
+    // ADR-072/075 — Médiation control-plane MULTI-ENV : la CI applique les
+    // contrats UAC du repo governance sur la chaîne HORS-PROD dev→rec→int,
+    // SCOPÉ à un tenant, ATTRIBUÉ et AUDITÉ. Ce pipeline est le pipeline
+    // HORS-PROD : il ne porte AUCUN chemin vers la prod (le client ci-horsprod
+    // n'a pas le scope deploy:prod ; la prod est ci/Jenkinsfile.prod, gated).
+    //
+    // Par env : apply-uac --env $E -f envs/$E/targets.cluster.yaml — l'adminUrl
+    // est le PROXY allowlist wm-admin-{env} du wM réel (le mock de l'env vit
+    // sur le réseau nonprod interne, Jenkins ne l'atteint JAMAIS en direct).
+    // Le token Bearer présenté au proxy = ci-horsprod (client_credentials,
+    // scopes deploy:dev+rec+int par défaut), écrit 0600 au chemin
+    // bearerTokenFile attendu par les manifests (/tmp/stoa-wm-admin-token).
+    //
+    // Le GATE est GIT : un env sans deploy.{env}.yaml mergé dans le repo
+    // governance est SKIPPÉ par apply-uac (narration, pas d'erreur) — la
+    // promotion d'un env = un merge, jamais un paramètre de job.
+    //
+    // Credentials Jenkins requis (en prod : émis depuis Vault, rotés) :
+    //   - vault-ci-secret-id   : secret_id AppRole ci-pipeline (seul secret)
+    stage('Mediation — apply-uac dev→rec→int (ADR-072/075)') {
+      environment {
+        // Le token a iss=localhost:8480 (frontend KC figé), mais le JWKS est
+        // fetché EN RÉSEAU sur keycloak:8080 (split-horizon).
+        KEYCLOAK_URL                = 'http://localhost:8480'
+        KEYCLOAK_JWKS_URL           = 'http://keycloak:8080/realms/stoa-lab/protocol/openid-connect/certs'
+        LABCTL_AUDIENCE             = 'onboarding-api'
+        OPENSEARCH_URL              = 'https://opensearch:9200'
+        OPENSEARCH_USER             = 'admin'
+        OPENSEARCH_INSECURE         = 'true'
+        OTEL_EXPORTER_OTLP_ENDPOINT = 'http://otel-lgtm:4318'
+        APPLY_TENANT                = 'banking-demo'
+        VAULT_ADDR                  = 'http://vault:8200'
+        // VAULT_ROLE_ID = l'IDENTITÉ AppRole (NON-SECRET, comme un username) — c'est
+        // pourquoi elle peut vivre en clair ici. Le secret_id (credential ci-dessous)
+        // est le SEUL vrai secret, court (~10min), rotable. Login -> token ÉPHÉMÈRE
+        // (TTL 3min) scopé aux policies stoa-ci+stoa-labctl. Plus de root token (ADR-074).
+        // NB PoC : ce role_id est propre à l'instance Vault dev courante ; s'il redémarre,
+        // re-régler via `scripts/setup-vault-approle.sh --mint ci-pipeline` (1ère valeur).
+        VAULT_ROLE_ID               = '48b2ce71-9e52-15cc-409c-8f138525af9d'
+      }
+      steps {
+        dir('poc-control-plane-federation') {
+          withCredentials([string(credentialsId: 'vault-ci-secret-id', variable: 'VAULT_SECRET_ID')]) {
+            sh '''
+              set +x          # NEVER echo: secret_id, vault token, OAuth tokens must not reach the console
+              set -eu
+              : "${VAULT_ROLE_ID:?VAULT_ROLE_ID (non-secret AppRole id) doit être configuré au niveau Jenkins}"
+              # tmpfiles 0600 créés EN AMONT pour que le trap ne référence jamais un var unset (set -u)
+              # WMTOKFILE est FIXE (/tmp/stoa-wm-admin-token) : c'est le bearerTokenFile
+              # déclaré par envs/*/targets.cluster.yaml — nettoyé par le trap.
+              VTOKFILE=$(mktemp); TOKFILE=$(mktemp); WMTOKFILE=/tmp/stoa-wm-admin-token
+              trap 'rm -f "$VTOKFILE" "$TOKFILE" "$WMTOKFILE"' EXIT
+              # 0) LOGIN AppRole (role_id config + secret_id court) -> token ÉPHÉMÈRE
+              VTOK=$(curl -sf -X POST "$VAULT_ADDR/v1/auth/approle/login" \
+                -d "{\\"role_id\\":\\"$VAULT_ROLE_ID\\",\\"secret_id\\":\\"$VAULT_SECRET_ID\\"}" \
+                | sed -n 's/.*"client_token":"\\([^"]*\\)".*/\\1/p')
+              [ -n "$VTOK" ] || { echo 'vault approle login failed'; exit 1; }
+              ( umask 077; printf %s "$VTOK" > "$VTOKFILE" )
+              # 1) secrets pipeline lus avec le token éphémère. NB : la policy stoa-ci
+              #    ne lit PAS secret/stoa/envs/+/wm-admin (creds admin des mocks) — la
+              #    CI hors-prod ne voit JAMAIS un credential gateway, seulement les
+              #    secrets de SES comptes de service (test négatif 403 dans la démo).
+              CI_SECRET=$(curl -sf -H "X-Vault-Token: $VTOK" "$VAULT_ADDR/v1/secret/data/stoa/ci" \
+                | sed -n 's/.*"ciApplierSecret":"\\([^"]*\\)".*/\\1/p')
+              HP_SECRET=$(curl -sf -H "X-Vault-Token: $VTOK" "$VAULT_ADDR/v1/secret/data/stoa/ci" \
+                | sed -n 's/.*"ciHorsprodSecret":"\\([^"]*\\)".*/\\1/p')
+              export OPENSEARCH_PASSWORD=$(curl -sf -H "X-Vault-Token: $VTOK" "$VAULT_ADDR/v1/secret/data/stoa/opensearch" \
+                | sed -n 's/.*"adminPassword":"\\([^"]*\\)".*/\\1/p')
+              [ -n "$CI_SECRET" ] && [ -n "$HP_SECRET" ] && [ -n "$OPENSEARCH_PASSWORD" ] || { echo 'vault fetch failed (setup-vault-envs.sh lancé ?)'; exit 1; }
+              unset VTOK
+              # 2) clone governance + mint des DEUX comptes de service (client_credentials) :
+              #    - ci-applier   -> médiation apply-uac (rôle cp-applier + tenant, ADR-072)
+              #    - ci-horsprod  -> Bearer présenté aux proxies wm-admin-{env}
+              #      (scopes deploy:dev+rec+int par défaut, JAMAIS deploy:prod, ADR-075)
+              rm -rf governance && git clone --depth 1 http://gitea:3000/ci/governance.git governance
+              CI_TOKEN=$(curl -sf -X POST http://keycloak:8080/realms/stoa-lab/protocol/openid-connect/token \
+                -d client_id=ci-applier -d client_secret="$CI_SECRET" -d grant_type=client_credentials \
+                | sed -n 's/.*"access_token":"\\([^"]*\\)".*/\\1/p')
+              WM_TOKEN=$(curl -sf -X POST http://keycloak:8080/realms/stoa-lab/protocol/openid-connect/token \
+                -d client_id=ci-horsprod -d client_secret="$HP_SECRET" -d grant_type=client_credentials \
+                | sed -n 's/.*"access_token":"\\([^"]*\\)".*/\\1/p')
+              [ -n "$CI_TOKEN" ] && [ -n "$WM_TOKEN" ] || { echo 'no CI token (setup-ci-horsprod.sh lancé ?)'; exit 1; }
+              # 3) tokens via fichiers 0600 (jamais env/argv/log) ; labctl lit les creds
+              #    gateway depuis Vault avec le MÊME token éphémère (VAULT_TOKEN_FILE).
+              ( umask 077; printf %s "$CI_TOKEN" > "$TOKFILE"; printf %s "$WM_TOKEN" > "$WMTOKFILE" )
+              unset CI_TOKEN WM_TOKEN CI_SECRET HP_SECRET
+              # 4) chaîne hors-prod dev -> rec -> int. Gate GIT : un env sans
+              #    deploy.{env}.yaml mergé est SKIPPÉ par apply-uac (narration) ;
+              #    verify par env (get apis via le MÊME proxy/Bearer).
+              for E in dev rec int; do
+                echo "=== env $E — apply-uac (proxy wm-admin-$E) ==="
+                LABCTL_TOKEN_FILE="$TOKFILE" VAULT_TOKEN_FILE="$VTOKFILE" "$WORKSPACE/labctl" apply-uac \
+                  --repo governance --env "$E" --tenant "$APPLY_TENANT" -f "envs/$E/targets.cluster.yaml"
+                echo "=== env $E — verify (catalogue) ==="
+                "$WORKSPACE/labctl" get apis -f "envs/$E/targets.cluster.yaml"
+              done
+            '''
+          }
+        }
+      }
+    }
     stage('Verify — catalogue unifié') {
       steps {
         dir('poc-control-plane-federation') {
@@ -31,7 +143,7 @@ pipeline {
     }
   }
   post {
-    success { echo '✓ API fédérée sur WSO2 + APISIX + webMethods depuis 1 commit (offline build, in-zone apply).' }
+    success { echo '✓ API fédérée + médiation control-plane (scoped/attribué/audité/tracé) depuis 1 commit.' }
     failure { echo '✗ pipeline KO — voir le log de l’étape.' }
   }
 }
