@@ -1,0 +1,141 @@
+// ci/Jenkinsfile.prod — pipeline PROD (ADR-075). AUCUN trigger : lancé À LA MAIN
+// (Build with Parameters) par l'opérateur de mise en prod, avec l'ID de la
+// promotion approuvée. Le GATE est GIT-NATIF : tout est relu depuis le repo
+// governance AVANT le moindre dispatch — le job ne fait confiance ni à ses
+// paramètres ni à un état externe, seulement à ce qui est mergé et approuvé.
+//
+// Conditions (fail-closed, error() avant tout dispatch) :
+//   - promotions/banking-demo/$PROMOTION_ID.yaml : status=approved, to=prod
+//   - 4-yeux : approved_by != requested_by
+//   - change ITSM référencé (change_ref) + preuve de validation (pv_ref) non vides
+//   - deploy.prod.yaml du slug existe avec un commit PINNÉ (version exacte
+//     déployée = celle approuvée, pas « le dernier main »)
+//
+// Le client ci-horsprod n'a PAS le scope deploy:prod : ce pipeline applique en
+// ADMIN DIRECT sur le wM réel (envs/prod/targets.cluster.yaml), creds résolus
+// depuis Vault (pattern AppRole existant, ADR-074). Rollback : Jenkinsfile.rollback.
+pipeline {
+  agent any
+  // PAS de triggers {} : prod ne part JAMAIS d'un webhook.
+  parameters {
+    string(name: 'PROMOTION_ID', defaultValue: '', description: 'ID de la promotion int→prod approuvée (promotions/banking-demo/{id}.yaml)')
+  }
+  environment {
+    GOPROXY = 'off'; GOFLAGS = '-mod=vendor'; GOSUMDB = 'off'
+    KEYCLOAK_URL                = 'http://localhost:8480'
+    KEYCLOAK_JWKS_URL           = 'http://keycloak:8080/realms/stoa-lab/protocol/openid-connect/certs'
+    LABCTL_AUDIENCE             = 'onboarding-api'
+    OPENSEARCH_URL              = 'https://opensearch:9200'
+    OPENSEARCH_USER             = 'admin'
+    OPENSEARCH_INSECURE         = 'true'
+    OTEL_EXPORTER_OTLP_ENDPOINT = 'http://otel-lgtm:4318'
+    APPLY_TENANT                = 'banking-demo'
+    VAULT_ADDR                  = 'http://vault:8200'
+    // Identité AppRole non-secrète (cf. Jenkinsfile hors-prod) ; le secret_id
+    // est le credential Jenkins vault-ci-secret-id.
+    VAULT_ROLE_ID               = '48b2ce71-9e52-15cc-409c-8f138525af9d'
+  }
+  stages {
+    stage('Build labctl (air-gapped, vendored)') {
+      steps {
+        dir('poc-control-plane-federation/labctl') {
+          sh 'go version'
+          sh 'go build -trimpath -o "$WORKSPACE/labctl" .'   // aucun accès réseau
+        }
+      }
+    }
+    stage('Gate Git-natif — promotion approuvée + ITSM + 4-yeux + commit pinné') {
+      steps {
+        dir('poc-control-plane-federation') {
+          sh '''
+            set -eu
+            [ -n "$PROMOTION_ID" ] || { echo 'GATE: PROMOTION_ID requis'; exit 1; }
+            rm -rf governance && git clone --depth 1 http://gitea:3000/ci/governance.git governance
+            P="governance/promotions/banking-demo/$PROMOTION_ID.yaml"
+            [ -f "$P" ] || { echo "GATE: promotion $PROMOTION_ID introuvable (non mergée ?)"; exit 1; }
+            # yget <clé> <fichier> — YAML plat clé: valeur (le format des markers
+            # de promotion governance-api), sans dépendance python sur l'agent.
+            yget() { sed -n "s/^$1:[[:space:]]*//p" "$2" | head -1 | tr -d '"'; }
+            STATUS=$(yget status "$P"); TO=$(yget to "$P"); SLUG=$(yget slug "$P")
+            REQ=$(yget requested_by "$P"); APPR=$(yget approved_by "$P")
+            CHG=$(yget change_ref "$P");  PV=$(yget pv_ref "$P")
+            echo "promotion $PROMOTION_ID: slug=$SLUG to=$TO status=$STATUS requested_by=$REQ approved_by=$APPR change_ref=$CHG pv_ref=$PV"
+            [ "$STATUS" = approved ] || { echo "GATE: status=$STATUS (attendu approved)"; exit 1; }
+            [ "$TO" = prod ]         || { echo "GATE: to=$TO (attendu prod)"; exit 1; }
+            [ -n "$SLUG" ]           || { echo 'GATE: slug vide'; exit 1; }
+            # 4-yeux : l'approbateur ne peut pas être le demandeur (déjà enforce
+            # par governance-api SELF_APPROVAL_BLOCKED — re-vérifié ici car le
+            # gate est GIT, pas une confiance dans l'API).
+            [ -n "$REQ" ] && [ -n "$APPR" ] && [ "$REQ" != "$APPR" ] \
+              || { echo "GATE: 4-yeux KO (requested_by=$REQ approved_by=$APPR)"; exit 1; }
+            [ -n "$CHG" ] || { echo 'GATE: change_ref (ITSM) vide'; exit 1; }
+            [ -n "$PV" ]  || { echo 'GATE: pv_ref (preuve de validation) vide'; exit 1; }
+            # Version PINNÉE : deploy.prod.yaml mergé, champ commit non vide.
+            D="governance/tenants/banking-demo/apis/$SLUG/deploy.prod.yaml"
+            [ -f "$D" ] || { echo "GATE: $D absent (la promotion n'a pas mergé deploy.prod.yaml)"; exit 1; }
+            COMMIT=$(yget commit "$D")
+            [ -n "$COMMIT" ] || { echo 'GATE: deploy.prod.yaml sans commit pinné'; exit 1; }
+            echo "GATE OK — $SLUG → prod @ $COMMIT (change $CHG, PV $PV, approuvé par $APPR)"
+          '''
+        }
+      }
+    }
+    stage('Apply PROD — apply-uac --env prod (admin direct, secrets Vault)') {
+      steps {
+        dir('poc-control-plane-federation') {
+          withCredentials([string(credentialsId: 'vault-ci-secret-id', variable: 'VAULT_SECRET_ID')]) {
+            sh '''
+              set +x          # NEVER echo: secret_id, vault token, OAuth token
+              set -eu
+              : "${VAULT_ROLE_ID:?VAULT_ROLE_ID doit être configuré au niveau Jenkins}"
+              VTOKFILE=$(mktemp); TOKFILE=$(mktemp); trap 'rm -f "$VTOKFILE" "$TOKFILE"' EXIT
+              VTOK=$(curl -sf -X POST "$VAULT_ADDR/v1/auth/approle/login" \
+                -d "{\\"role_id\\":\\"$VAULT_ROLE_ID\\",\\"secret_id\\":\\"$VAULT_SECRET_ID\\"}" \
+                | sed -n 's/.*"client_token":"\\([^"]*\\)".*/\\1/p')
+              [ -n "$VTOK" ] || { echo 'vault approle login failed'; exit 1; }
+              ( umask 077; printf %s "$VTOK" > "$VTOKFILE" )
+              CI_SECRET=$(curl -sf -H "X-Vault-Token: $VTOK" "$VAULT_ADDR/v1/secret/data/stoa/ci" \
+                | sed -n 's/.*"ciApplierSecret":"\\([^"]*\\)".*/\\1/p')
+              export OPENSEARCH_PASSWORD=$(curl -sf -H "X-Vault-Token: $VTOK" "$VAULT_ADDR/v1/secret/data/stoa/opensearch" \
+                | sed -n 's/.*"adminPassword":"\\([^"]*\\)".*/\\1/p')
+              [ -n "$CI_SECRET" ] && [ -n "$OPENSEARCH_PASSWORD" ] || { echo 'vault fetch failed'; exit 1; }
+              unset VTOK
+              CI_TOKEN=$(curl -sf -X POST http://keycloak:8080/realms/stoa-lab/protocol/openid-connect/token \
+                -d client_id=ci-applier -d client_secret="$CI_SECRET" -d grant_type=client_credentials \
+                | sed -n 's/.*"access_token":"\\([^"]*\\)".*/\\1/p')
+              [ -n "$CI_TOKEN" ] || { echo 'no CI token'; exit 1; }
+              ( umask 077; printf %s "$CI_TOKEN" > "$TOKFILE" )
+              unset CI_TOKEN CI_SECRET
+              # Admin DIRECT du wM réel ; creds Basic résolus depuis Vault
+              # (secret/stoa/gateways/webmethods) via le token éphémère.
+              LABCTL_TOKEN_FILE="$TOKFILE" VAULT_TOKEN_FILE="$VTOKFILE" "$WORKSPACE/labctl" apply-uac \
+                --repo governance --env prod --tenant "$APPLY_TENANT" -f envs/prod/targets.cluster.yaml
+            '''
+          }
+        }
+      }
+    }
+    stage('Smoke test — data-plane prod') {
+      steps {
+        dir('poc-control-plane-federation') {
+          sh '''
+            set -eu
+            # Même logique que scripts/phase3-identity-demo.sh, côté agent :
+            #   1. catalogue : l'API est servie par le gateway (get apis)
+            #   2. barrière data-plane : sans token -> 401 (policy enforce)
+            "$WORKSPACE/labctl" get apis -f envs/prod/targets.cluster.yaml
+            CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 \
+              "http://webmethods-real:5555/gateway/accounts-read/1.0.0/accounts")
+            echo "data-plane sans token -> HTTP $CODE"
+            [ "$CODE" = 401 ] || { echo "SMOKE KO: attendu 401 sans token (reçu $CODE)"; exit 1; }
+            echo 'SMOKE OK — API servie, barrière OAuth2 active.'
+          '''
+        }
+      }
+    }
+  }
+  post {
+    success { echo '✓ PROD convergée depuis une promotion approuvée (4-yeux + ITSM + commit pinné).' }
+    failure { echo '✗ pipeline prod KO — AUCUN dispatch n\'a lieu si le gate échoue.' }
+  }
+}
