@@ -110,7 +110,10 @@ pipeline {
               unset CI_TOKEN CI_SECRET
               # Re-clone APRÈS le revert : l'état appliqué est l'état Git
               # post-rollback (version précédente pinnée) — convergence idempotente.
-              rm -rf governance && git clone --depth 1 http://gitea:3000/ci/governance.git governance
+              # Clone COMPLET (pas de --depth 1) : le pinning de version lit le contrat
+              # au SHA capturé par la promotion (git show <commit>:…) — un clone
+              # shallow ne porte pas l'historique et casse ResolvePinned.
+              rm -rf governance && git clone http://gitea:3000/ci/governance.git governance
               LABCTL_TOKEN_FILE="$TOKFILE" VAULT_TOKEN_FILE="$VTOKFILE" "$WORKSPACE/labctl" apply-uac \
                 --repo governance --env prod --tenant "$APPLY_TENANT" -f envs/prod/targets.cluster.yaml
             '''

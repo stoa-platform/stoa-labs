@@ -50,7 +50,10 @@ pipeline {
           sh '''
             set -eu
             [ -n "$PROMOTION_ID" ] || { echo 'GATE: PROMOTION_ID requis'; exit 1; }
-            rm -rf governance && git clone --depth 1 http://gitea:3000/ci/governance.git governance
+            # Clone COMPLET (pas de --depth 1) : le pinning de version lit le contrat
+            # au SHA capturé par la promotion (git show <commit>:…) — un clone
+            # shallow ne porte pas l'historique et casse ResolvePinned.
+            rm -rf governance && git clone http://gitea:3000/ci/governance.git governance
             P="governance/promotions/banking-demo/$PROMOTION_ID.yaml"
             [ -f "$P" ] || { echo "GATE: promotion $PROMOTION_ID introuvable (non mergée ?)"; exit 1; }
             # yget <clé> <fichier> — YAML plat clé: valeur (le format des markers
