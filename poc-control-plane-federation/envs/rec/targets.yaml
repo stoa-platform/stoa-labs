@@ -19,7 +19,7 @@ contract: ../../apis/accounts-read.openapi.yaml
 backendUrl: http://poc-token-echo:8080/backend/rec
 
 targets:
-  - name: webmethods
+  - name: wm-rec
     type: webmethods
     # adminUrl = le PROXY admin de l'env (allowlist + scope deploy:rec), PAS le
     # mock : labctl parle « 10.15 » au proxy, le wM réel relaie vers wm-mock-rec.

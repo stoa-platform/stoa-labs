@@ -12,7 +12,7 @@ contract: ../../apis/accounts-read.openapi.yaml
 backendUrl: http://poc-token-echo:8080/backend/int
 
 targets:
-  - name: webmethods
+  - name: wm-int
     type: webmethods
     # Le proxy admin de l'env — Jenkins n'atteint JAMAIS wm-mock-int directement
     # (contre-épreuve : docker exec poc-jenkins getent hosts wm-mock-int → KO).
