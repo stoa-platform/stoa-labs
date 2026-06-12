@@ -54,8 +54,26 @@ dans la VALEUR des aliases, l'asset est identique en Git). Démo `scripts/demo-m
   que le job existant voie le nouveau Jenkinsfile.
 - **Bringup** : compose envs → `setup-vault-envs.sh` → `setup-vault-approle.sh` (rôle
   `proxy-provision`) → `setup-ci-horsprod.sh` → `setup-wm-admin-proxy.sh` → `demo-multienv.sh`.
-  ⚠ le dual-home du trial exige un recreate (config dans l'ES externe, rien ne se perd) ; en session
-  un `docker network connect stoa-labs-poc_nonprod poc-webmethods-real` suffit.
+  Le trial est recréé dual-homed `[poc, nonprod]` (config dans l'ES externe — vérifié : les 7 APIs
+  et proxies ont survécu au recreate, redéploiement data-plane ~1 min après healthy).
+- **CÂBLÉ ET PROUVÉ SUR LE VRAI JENKINS (2026-06-12 soir)** : jobs `stoa-federation` (hors-prod,
+  webhook, **sérialisé** `disableConcurrentBuilds` — course observée sur le chemin de token fixe),
+  `stoa-prod-deploy` + `stoa-prod-rollback` (manuels, 1er build = bootstrap des paramètres).
+  Chaîne réelle exécutée : promotion rec→int `pr-f2e682ad` (alice→bob/int-team) → build int pinné ;
+  int→prod `pr-b890f434` (CHG-0001+PV) → `stoa-prod-deploy #2` SUCCESS (gate Git rejoué) ;
+  v1.0.1 → `#4` SUCCESS ; **rollback `#2` SUCCESS** (revert signé `dc8e0a4`, v1.0.0+pin restaurés,
+  marker `rolled_back`, re-apply, smoke). governance-api (NOUVEAU binaire, remplace l'ancien) sur
+  `:8787` host (repo `console-light/var/governance-repo`, hooks de push auto, `ITSM_URL` branché).
+  **Trouvailles des runs réels** : (a) nouvelle version d'API = `POST /apis/{id}/versions` (le
+  trial répond 400 'already exists' au POST ET refuse le PUT in-place — fallback encodé dans
+  l'adapter, endpoint ajouté à l'allowlist proxy + mock) ; (b) clones governance **complets**
+  (pas de `--depth 1` : le pinning lit `git show <sha>`) ; (c) targets hors-prod nommés `wm-{env}`
+  (sinon Vault fusionne le Basic prod par-dessus le bearer) ; (d) `scripts/
+  jenkins-refresh-vault-secret.sh` = rotation du secret_id AppRole avant une session de builds
+  (TTL court ADR-074 : `vault approle login failed` ⇒ relancer ce script).
+  ⚠ **WSO2 hors-sujet mais cassé** : rotation des révisions coincée (`Failed to delete API
+  revision registry artifacts`, builds #25+) — stage legacy passé en `catchError`→UNSTABLE ;
+  nettoyage MANUEL côté WSO2 à faire (UI Publisher, supprimer les révisions de accounts-read).
 
 ## Mise à jour 2026-06-12 — Secrets depuis Vault (ADR-074, concrétise gap (d) d'ADR-072)
 

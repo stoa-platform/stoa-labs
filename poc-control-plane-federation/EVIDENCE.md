@@ -455,6 +455,15 @@ sur réseau `nonprod` interne, trial réel = PROD, seul pont `[poc, nonprod]`).
   403 `SELF_APPROVAL_BLOCKED` ; rollback d'un 1er déploiement → 409
   `NO_PREVIOUS_STATE` ; `poc-jenkins` ne résout pas `wm-mock-dev` (isolement réseau) ;
   AppRole `ci-pipeline` lit `secret/stoa/envs/dev/wm-admin` → **403 Vault**.
+- **★ Exécuté sur le VRAI Jenkins** (pas seulement le script de démo) : webhook Gitea →
+  `stoa-federation` **#29 UNSTABLE-by-design** (stage legacy WSO2 jaune — état revisions
+  à nettoyer, hors-sujet ; chaîne dev→rec→int **verte** via les proxies, pins respectés) ;
+  `stoa-prod-deploy #2/#4` **SUCCESS** (gate Git rejoué : approved/4-yeux/CHG/PV/pin —
+  v1.0.0 puis v1.0.1 via le **versioning natif** `POST /apis/{id}/versions`, trouvé par
+  l'échec du #3 : le trial refuse POST frais ET PUT in-place pour une nouvelle version) ;
+  `stoa-prod-rollback #2` **SUCCESS** (revert **signé** `dc8e0a4` : v1.0.0 + son pin
+  restaurés, marker `rolled_back` motivé, re-apply idempotent, smoke 401 — les deux
+  versions coexistent sur la gateway, **Git pin celle qui fait foi**).
 
 ---
 
