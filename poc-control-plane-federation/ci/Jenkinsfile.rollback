@@ -7,6 +7,9 @@
 // Rollback = re-apply Git, jamais une mutation manuelle de la gateway.
 pipeline {
   agent any
+  // Builds SÉRIALISÉS : un acte prod à la fois (et le chemin de token fixe
+  // partagé interdit la concurrence — cf. ci/Jenkinsfile).
+  options { disableConcurrentBuilds() }
   // PAS de triggers {} : un rollback prod est un acte opéré, jamais un webhook.
   parameters {
     string(name: 'PROMOTION_ID', defaultValue: '', description: 'ID de la promotion prod à annuler')
