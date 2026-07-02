@@ -98,6 +98,7 @@ func New(cfg adapter.Config) (adapter.Adapter, error) {
 		bearerToken: token,
 		inbound:     inbound,
 		routing:     routing,
+		throttle:    throttleFromConfig(cfg),
 		http:        httpx.NewClient(cfg.Insecure),
 	}, nil
 }
@@ -134,6 +135,7 @@ type Adapter struct {
 	bearerToken string             // bearer token (CI mode; "" in Basic mode) — exactly one mode is set
 	inbound     *inboundAuthConfig // optional inbound JWT/JWKS projection (nil = feature off)
 	routing     *routingConfig     // optional routing-by-alias projection (nil = feature off)
+	throttle    *throttleConfig    // optional rate-limit throttle projection (nil = feature off)
 	http        *http.Client
 }
 

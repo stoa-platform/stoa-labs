@@ -3,7 +3,11 @@
 // for "which gateways, at which URLs, with which knobs".
 package targets
 
-import "github.com/stoa-platform/stoa-labs/poc/labctl/internal/adapter"
+import (
+	"strconv"
+
+	"github.com/stoa-platform/stoa-labs/poc/labctl/internal/adapter"
+)
 
 // File is the parsed targets.yaml.
 type File struct {
@@ -90,7 +94,22 @@ type Target struct {
 	// Absent = the import-time backend (backendUrl/servers[]) stays effective.
 	Routing *Routing `json:"routing"`
 
+	// RateLimit optionally projects a per-API traffic hard-limit (ADR-076
+	// rate-limit leg): requests over the limit are rejected 429 at the gateway.
+	// On webMethods it is a "Traffic Optimization" (throttle) policyAction on the
+	// LMT stage. Absent = no throttle projected (behavior unchanged).
+	RateLimit *RateLimit `json:"rateLimit"`
+
 	Credentials map[string]string `json:"credentials"`
+}
+
+// RateLimit declares the optional per-API traffic hard-limit of one target.
+// Requests exceeding Requests over the window are rejected (429). The webMethods
+// throttle enforces it in-gateway (not fail-open).
+type RateLimit struct {
+	Requests int    `json:"requests"` // hard limit (max requests); <=0 = feature off
+	Interval int    `json:"interval"` // window/alert interval (default 1)
+	Unit     string `json:"unit"`     // minutes|hours|days|weeks|... (default minutes)
 }
 
 // Routing declares the optional routing-by-alias block of one target. The
@@ -297,6 +316,11 @@ func (t Target) ToConfig() adapter.Config {
 			}
 			opts["routingCredentialAliasName"] = name
 		}
+	}
+	if t.RateLimit != nil && t.RateLimit.Requests > 0 {
+		opts["rateLimitRequests"] = strconv.Itoa(t.RateLimit.Requests)
+		opts["rateLimitInterval"] = strconv.Itoa(t.RateLimit.Interval)
+		opts["rateLimitUnit"] = t.RateLimit.Unit
 	}
 	return adapter.Config{
 		Type:        t.Type,

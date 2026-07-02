@@ -229,6 +229,14 @@ func (a *Adapter) Publish(ctx context.Context, api *adapter.NormalizedAPI) (*ada
 		return nil, fmt.Errorf("webmethods publish: %w", err)
 	}
 
+	// 6. Rate-limit projection (optional rateLimit manifest block): a "Traffic
+	// Optimization" throttle action on the LMT stage, rejecting requests over the
+	// limit with 429. Runs AFTER inbound auth (its dependentActions=[evaluatePolicy]
+	// need the IAM action present). No-op when the manifest carries no rateLimit.
+	if err := a.ensureThrottle(ctx, canonical.ID, canonical.APIName); err != nil {
+		return nil, fmt.Errorf("webmethods publish: %w", err)
+	}
+
 	return a.publishResult(canonical, created), nil
 }
 
