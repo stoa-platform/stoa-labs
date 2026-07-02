@@ -100,6 +100,13 @@ type Target struct {
 	// LMT stage. Absent = no throttle projected (behavior unchanged).
 	RateLimit *RateLimit `json:"rateLimit"`
 
+	// TransportProtocol optionally pins the API's accepted transport protocol
+	// (ADR-076 mTLS wiring). "https" makes the API reachable ONLY over the HTTPS
+	// listener (entryProtocolPolicy protocol=[https]) — combined with a
+	// clientAuth=require HTTPS port + trusted client CA, that is end-to-end mTLS
+	// for this API. Empty = leave the import default (http) untouched.
+	TransportProtocol string `json:"transportProtocol"`
+
 	Credentials map[string]string `json:"credentials"`
 }
 
@@ -321,6 +328,9 @@ func (t Target) ToConfig() adapter.Config {
 		opts["rateLimitRequests"] = strconv.Itoa(t.RateLimit.Requests)
 		opts["rateLimitInterval"] = strconv.Itoa(t.RateLimit.Interval)
 		opts["rateLimitUnit"] = t.RateLimit.Unit
+	}
+	if t.TransportProtocol != "" {
+		opts["transportProtocol"] = t.TransportProtocol
 	}
 	return adapter.Config{
 		Type:        t.Type,

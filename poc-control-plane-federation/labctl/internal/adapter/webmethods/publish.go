@@ -237,6 +237,13 @@ func (a *Adapter) Publish(ctx context.Context, api *adapter.NormalizedAPI) (*ada
 		return nil, fmt.Errorf("webmethods publish: %w", err)
 	}
 
+	// 7. Transport protocol (optional transportProtocol manifest block): pin the
+	// API's entryProtocolPolicy (e.g. https-only for end-to-end mTLS on a
+	// clientAuth=require listener). No-op when the manifest leaves it unset.
+	if err := a.ensureTransportProtocol(ctx, canonical.ID); err != nil {
+		return nil, fmt.Errorf("webmethods publish: %w", err)
+	}
+
 	return a.publishResult(canonical, created), nil
 }
 
