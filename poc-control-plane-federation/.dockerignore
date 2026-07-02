@@ -1,0 +1,9 @@
+# Contexte de build de l'image Jenkins = racine du repo (docker-compose.ci.yml),
+# mais le Dockerfile ne COPY que labctl/. On garde UNIQUEMENT labctl/ (dont
+# vendor/, requis pour le build air-gapped GOPROXY=off) — le reste du repo n'est
+# pas envoyé au démon Docker (contexte léger, pas de fuite d'artefacts).
+# N.B. n'affecte QUE les builds dont le contexte est cette racine (le service
+# jenkins) ; les autres services buildent depuis leur propre sous-dossier.
+*
+!labctl
+labctl/bin
