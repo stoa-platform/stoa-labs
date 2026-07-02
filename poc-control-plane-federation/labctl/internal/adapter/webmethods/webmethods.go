@@ -91,15 +91,16 @@ func New(cfg adapter.Config) (adapter.Adapter, error) {
 		return nil, err
 	}
 	return &Adapter{
-		adminURL:    strings.TrimRight(cfg.AdminURL, "/"),
-		gatewayURL:  strings.TrimRight(cfg.GatewayURL, "/"),
-		username:    user,
-		password:    pass,
-		bearerToken: token,
-		inbound:     inbound,
-		routing:     routing,
-		throttle:    throttleFromConfig(cfg),
-		http:        httpx.NewClient(cfg.Insecure),
+		adminURL:          strings.TrimRight(cfg.AdminURL, "/"),
+		gatewayURL:        strings.TrimRight(cfg.GatewayURL, "/"),
+		username:          user,
+		password:          pass,
+		bearerToken:       token,
+		inbound:           inbound,
+		routing:           routing,
+		throttle:          throttleFromConfig(cfg),
+		transportProtocol: cfg.Opt("transportProtocol", ""),
+		http:              httpx.NewClient(cfg.Insecure),
 	}, nil
 }
 
@@ -128,15 +129,16 @@ func readBearerTokenFile(path string) (string, error) {
 // Adapter is one webMethods gateway driver bound to a single target. Stateless
 // beyond its endpoints and HTTP client; safe for concurrent use.
 type Adapter struct {
-	adminURL    string             // control-plane base, no trailing slash (e.g. http://localhost:5555)
-	gatewayURL  string             // data-plane base, no trailing slash (used to build InvocationURL)
-	username    string             // HTTP Basic user (Administrator on the trial image; "" in bearer mode)
-	password    string             // HTTP Basic pass ("" in bearer mode)
-	bearerToken string             // bearer token (CI mode; "" in Basic mode) — exactly one mode is set
-	inbound     *inboundAuthConfig // optional inbound JWT/JWKS projection (nil = feature off)
-	routing     *routingConfig     // optional routing-by-alias projection (nil = feature off)
-	throttle    *throttleConfig    // optional rate-limit throttle projection (nil = feature off)
-	http        *http.Client
+	adminURL          string             // control-plane base, no trailing slash (e.g. http://localhost:5555)
+	gatewayURL        string             // data-plane base, no trailing slash (used to build InvocationURL)
+	username          string             // HTTP Basic user (Administrator on the trial image; "" in bearer mode)
+	password          string             // HTTP Basic pass ("" in bearer mode)
+	bearerToken       string             // bearer token (CI mode; "" in Basic mode) — exactly one mode is set
+	inbound           *inboundAuthConfig // optional inbound JWT/JWKS projection (nil = feature off)
+	routing           *routingConfig     // optional routing-by-alias projection (nil = feature off)
+	throttle          *throttleConfig    // optional rate-limit throttle projection (nil = feature off)
+	transportProtocol string             // optional API transport protocol ("https" = mTLS-only; "" = default http)
+	http              *http.Client
 }
 
 // Name returns the stable gateway identifier.
