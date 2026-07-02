@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
+	"strings"
 
 	"github.com/stoa-platform/stoa-labs/poc/labctl/internal/adapter"
 	"github.com/stoa-platform/stoa-labs/poc/labctl/internal/httpx"
@@ -80,9 +82,8 @@ func findByNameVersion(apis []wmAPI, name, version string) (wmAPI, bool) {
 	return wmAPI{}, false
 }
 
-// findByName returns the first API matching apiName only — used by the 409
-// fallback (a name conflict can come from a record under another version) and
-// by CreateConsumer to resolve the published apiId.
+// findByName returns the first API matching apiName only — used by
+// CreateConsumer to resolve the published apiId (version-agnostic).
 func findByName(apis []wmAPI, name string) (wmAPI, bool) {
 	for _, api := range apis {
 		if api.APIName == name {
@@ -90,6 +91,47 @@ func findByName(apis []wmAPI, name string) (wmAPI, bool) {
 		}
 	}
 	return wmAPI{}, false
+}
+
+// latestByName returns the name-matching API with the HIGHEST apiVersion.
+// webMethods refuses "create version" from any base but the newest ("Versioning
+// is allowed only from latest version", proven live), so the version-mint
+// fallback MUST select the latest existing version — the first name match in
+// gateway list order is not guaranteed to be it.
+func latestByName(apis []wmAPI, name string) (wmAPI, bool) {
+	var latest wmAPI
+	found := false
+	for _, api := range apis {
+		if api.APIName != name {
+			continue
+		}
+		if !found || apiVersionLess(latest.APIVersion, api.APIVersion) {
+			latest, found = api, true
+		}
+	}
+	return latest, found
+}
+
+// apiVersionLess compares dotted versions component-wise and NUMERICALLY so
+// 1.0.10 > 1.0.2 (a lexical sort gets that wrong). Non-numeric components fall
+// back to a per-component string compare; a prefix-equal shorter version sorts
+// lower. The UAC schema enforces X.Y.Z, so the numeric path is the norm.
+func apiVersionLess(a, b string) bool {
+	as, bs := strings.Split(a, "."), strings.Split(b, ".")
+	for i := 0; i < len(as) && i < len(bs); i++ {
+		ai, aerr := strconv.Atoi(as[i])
+		bi, berr := strconv.Atoi(bs[i])
+		if aerr != nil || berr != nil {
+			if as[i] != bs[i] {
+				return as[i] < bs[i]
+			}
+			continue
+		}
+		if ai != bi {
+			return ai < bi
+		}
+	}
+	return len(as) < len(bs)
 }
 
 // importPayload builds the real 10.15 import body:
@@ -226,7 +268,9 @@ func (a *Adapter) createAPI(ctx context.Context, wmName string, payload map[stri
 			}
 			return cur.ID, false, nil
 		}
-		cur, ok := findByName(refreshed, wmName)
+		// Mint the new version from the LATEST existing version — wM rejects
+		// versioning from any other base ("only from latest version").
+		cur, ok := latestByName(refreshed, wmName)
 		if !ok {
 			return "", false, fmt.Errorf("create api %q: %d conflict but API absent from re-list (ghost conflict): %s", wmName, code, truncate(raw, 300))
 		}

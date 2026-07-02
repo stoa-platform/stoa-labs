@@ -3,14 +3,18 @@ package governance
 import (
 	"fmt"
 	"regexp"
+
+	"github.com/stoa-platform/stoa-labs/poc/labctl/internal/render"
 )
 
 // UAC validation (contract §5). The BFF is the authority: it re-validates
 // every contract before commit, in stdlib Go — not a full JSON Schema engine,
 // but the load-bearing subset of uac_contract_v1_schema.json: required
-// fields, enums, the name/version patterns, plus the two semantic rules:
+// fields, enums, the name/version patterns, plus the three semantic rules:
 //   - destructive endpoint  => requires_human_approval (DESTRUCTIVE_REQUIRES_APPROVAL)
 //   - published contract    => at least one endpoint   (PUBLISHED_REQUIRES_ENDPOINT)
+//   - classification+exposure+tags => a derivable security posture, fail-closed
+//     via render.Derive (INTEGRITY_INCONSISTENT) — ADR-076 Phase 3
 //
 // The UI does the rich validation with ajv on the same schema (GET /schema/uac).
 
@@ -27,7 +31,8 @@ var (
 )
 
 var (
-	classificationEnum = map[string]bool{"H": true, "VH": true, "VVH": true}
+	classificationEnum = map[string]bool{"VH": true, "H": true, "M": true}
+	exposureEnum       = map[string]bool{"internal": true, "external": true}
 	statusEnum         = map[string]bool{"draft": true, "published": true, "deprecated": true}
 	methodEnum         = map[string]bool{"GET": true, "POST": true, "PUT": true, "PATCH": true, "DELETE": true, "HEAD": true, "OPTIONS": true}
 	sideEffectsEnum    = map[string]bool{"none": true, "read": true, "write": true, "destructive": true}
@@ -71,7 +76,34 @@ func ValidateUAC(contract map[string]any, published bool) []ValidationError {
 	if classification == "" {
 		add("classification", "REQUIRED", "le champ 'classification' est requis")
 	} else if !classificationEnum[classification] {
-		add("classification", "ENUM", "'classification' doit être H, VH ou VVH : %q invalide", classification)
+		add("classification", "ENUM", "'classification' doit être VH, H ou M : %q invalide", classification)
+	}
+
+	// exposure (optionnel) — load-bearing : sélectionne l'ancre de confiance / IdP
+	// et l'obligation d'allowlist IP (ADR-076). Absent => hérité par défaut au render.
+	exposure, _ := contract["exposure"].(string)
+	if exposure != "" && !exposureEnum[exposure] {
+		add("exposure", "ENUM", "'exposure' doit être internal ou external : %q invalide", exposure)
+	}
+
+	// Cohérence intégrité -> stratégie (ADR-076 Phase 3) : la posture de sécurité
+	// est une fonction DÉRIVÉE de la classification. Un contrat dont classification
+	// + exposure + tags ne produisent AUCUN bundle valide (niveau inconnu, ou
+	// exception apikey hors M/internal) est rejeté fail-closed — un projet ne peut
+	// pas shipper une posture plus faible que son niveau d'intégrité. On ne le lance
+	// que si la classification est un enum valide (sinon l'erreur ENUM suffit).
+	if classificationEnum[classification] && (exposure == "" || exposureEnum[exposure]) {
+		var tags []string
+		if raw, ok := contract["tags"].([]any); ok {
+			for _, t := range raw {
+				if s, ok := t.(string); ok {
+					tags = append(tags, s)
+				}
+			}
+		}
+		if _, rerr := render.Derive(render.Input{Classification: classification, Exposure: exposure, Tags: tags}); rerr != nil {
+			add("classification", "INTEGRITY_INCONSISTENT", "stratégie de sécurité non dérivable : %v", rerr)
+		}
 	}
 
 	status, _ := contract["status"].(string)
@@ -154,10 +186,11 @@ func ValidateUAC(contract map[string]any, published bool) []ValidationError {
 		}
 	}
 
-	// Publication gate (§5 mode published): at least one endpoint.
-	if published && len(endpoints) == 0 {
+	// Publication gate (§5 mode published): at least one endpoint — SAUF contrat
+	// llm-only (le schéma then.anyOf accepte endpoints>=1 OU un llm_config valide).
+	if published && len(endpoints) == 0 && contract["llm_config"] == nil {
 		add("endpoints", "PUBLISHED_REQUIRES_ENDPOINT",
-			"un contrat publié doit exposer au moins un endpoint")
+			"un contrat publié doit exposer au moins un endpoint (ou un llm_config)")
 	}
 
 	return errs

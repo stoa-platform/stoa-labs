@@ -35,7 +35,17 @@
     },
     "classification": {
       "$ref": "#/$defs/Classification",
-      "description": "ICT risk classification (DORA-aligned). Determines required security policies."
+      "description": "Data integrity classification (client literal scale VH/H/M, ADR-076). Determines required security policies."
+    },
+    "exposure": {
+      "$ref": "#/$defs/Exposure",
+      "description": "Network exposure (ADR-076). Selects the trust anchor / IdP (internal vs partner) and whether an IP allowlist is mandatory."
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*:[a-z0-9-]+$" },
+      "default": [],
+      "description": "Orthogonal classification tags (key:value), e.g. domain:accounts, pii:medium, auth-exception:apikey (ADR-076). Security posture is DERIVED from classification by the render engine (labctl render) — do not hand-write policy/integrity tags here."
     },
     "endpoints": {
       "type": "array",
@@ -96,8 +106,13 @@
   "$defs": {
     "Classification": {
       "type": "string",
-      "enum": ["H", "VH", "VVH"],
-      "description": "ICT risk classification (DORA-aligned). H=High (standard), VH=Very High (sensitive), VVH=Very Very High (critical)."
+      "enum": ["VH", "H", "M"],
+      "description": "Data integrity classification (client literal scale, ADR-076). VH=Very High (OAuth2+mTLS), H=High (OAuth2), M=Medium (OAuth2 default, ApiKey-only permitted internal). A future critical tier maps 1:1 to STOA VVH."
+    },
+    "Exposure": {
+      "type": "string",
+      "enum": ["internal", "external"],
+      "description": "internal = internal IdP (wM LOCAL / internal realm); external = partner IdP + mandatory IP allowlist (ADR-076)."
     },
     "Status": {
       "type": "string",

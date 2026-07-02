@@ -36,7 +36,10 @@ services:
 
   jenkins:
     build:
-      context: ./ci/jenkins
+      # Contexte = racine du repo (pas ./ci/jenkins) pour que le Dockerfile puisse
+      # COPY labctl/ (le moteur, sibling) et le compiler in-image. Voir .dockerignore.
+      context: .
+      dockerfile: ci/jenkins/Dockerfile
     image: stoa-labs/jenkins-go:dev
     container_name: poc-jenkins
     environment:
