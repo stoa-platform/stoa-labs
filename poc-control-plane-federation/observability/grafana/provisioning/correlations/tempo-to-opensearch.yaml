@@ -1,0 +1,32 @@
+# Grafana Correlation — Tempo (trace) -> OpenSearch-Txn (transaction d'audit).
+#
+# This is the TRACE -> TRANSACTION half of the ADR-070 pivot. From any Tempo
+# trace (Explore or the dashboard "Traces récentes" panel), the trace_id becomes
+# a clickable correlation that opens the OpenSearch documents (data stream
+# txn-accounts-team) carrying the SAME W3C trace_id.
+#
+# The TRANSACTION -> TRACE half is a per-field data link baked into the
+# "Transactions récentes" table panel of dashboard stoa-fed-otel-txn (the
+# trace_id cell opens the matching Tempo trace in Explore).
+#
+# ⚠️ APPLY NOTE: the source datasource (Tempo) is provisioned read-only by the
+# otel-lgtm image, so this correlation cannot be attached via a *Tempo*
+# provisioning file we own. It is therefore applied idempotently over the HTTP
+# API by apply-correlations.sh (same dir). This YAML is the declarative source
+# of truth / documentation and mirrors exactly what the script POSTs.
+apiVersion: 1
+
+correlations:
+  - org_id: 1
+    source_datasource_uid: tempo
+    target_datasource_uid: opensearch-txn
+    label: "Transaction (OpenSearch)"
+    description: >-
+      Pivot trace -> transaction d'audit : ouvre les documents OpenSearch
+      (data stream txn-accounts-team) portant ce trace_id W3C (ADR-070).
+    type: query
+    config:
+      field: traceID
+      target:
+        query: 'trace_id:"${__value.raw}"'
+      transformations: []

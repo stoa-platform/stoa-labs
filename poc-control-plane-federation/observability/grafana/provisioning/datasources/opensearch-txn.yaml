@@ -1,0 +1,56 @@
+# Grafana datasource — OpenSearch (plan GOUVERNANCE/AUDIT, ADR-070).
+#
+# Bridges the two observability planes (ADR-070):
+#   - OPS/SRE real-time  : Tempo + Prometheus + Loki (otel-lgtm, already present)
+#   - GOVERNANCE/AUDIT   : OpenSearch data stream txn-accounts-team (this file)
+# The pivot between them is the W3C trace_id (field stoa.txn.trace_id).
+#
+# IMPORTANT — plugin choice:
+#   The dedicated `grafana-opensearch-datasource` plugin is NOT bundled in the
+#   otel-lgtm image (air-gapped PoC, no plugin install at runtime). OpenSearch
+#   2.x is wire-compatible with Elasticsearch 7.10, so we use the BUILT-IN
+#   `elasticsearch` datasource pointed at OpenSearch. This is a documented,
+#   supported compatibility path (queries, time series and Logs/table all work
+#   against the txn-* data stream). esVersion 7.10.0 selects the 7.x query path.
+#
+# Reachability: access=proxy → Grafana's Go backend opens the connection, so the
+# URL must resolve INSIDE the otel-lgtm container. `opensearch` is the compose
+# network alias of poc-analytics-opensearch (verified: getent hosts opensearch).
+# TLS is self-signed → tlsSkipVerify. Auth = admin (read across .ds-* backing
+# indices); a least-privilege path (accounts-viewer / FLS) is documented in
+# 06-sso-oidc-dashboards.DEFERRED.md but admin is used here to keep the open,
+# no-SSO PoC reproducible.
+apiVersion: 1
+
+datasources:
+  - name: OpenSearch-Txn
+    uid: opensearch-txn
+    type: elasticsearch
+    access: proxy
+    url: https://opensearch:9200
+    # Data stream pattern (one stream per tenant: txn-accounts-team, ...).
+    database: "txn-*"
+    basicAuth: true
+    basicAuthUser: admin
+    isDefault: false
+    editable: true
+    jsonData:
+      # OpenSearch 2.13 ≈ Elasticsearch 7.10 wire protocol.
+      esVersion: "7.10.0"
+      timeField: "@timestamp"
+      # Data streams: each write goes to the current generation; reads fan out
+      # over .ds-* — no rollover index alias juggling needed here.
+      interval: ""
+      maxConcurrentShardRequests: 5
+      logMessageField: "status"
+      logLevelField: "http_status"
+      tlsSkipVerify: true
+      # Pivot OUT of a transaction: make trace_id a clickable data link that
+      # opens the matching trace in Tempo (transaction → trace).
+      dataLinks:
+        - field: trace_id
+          name: "Voir la trace (Tempo)"
+          datasourceUid: tempo
+          url: ""
+    secureJsonData:
+      basicAuthPassword: "Stoa!Passw0rd2026"

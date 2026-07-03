@@ -1,0 +1,20 @@
+{
+  "eventType": "PolicyViolation",
+  "sourceGateway": "APIGateway",
+  "creationDate": 1781186085701,
+  "apiName": "accounts-read",
+  "apiVersion": "1.0.0",
+  "apiId": "ef22d7de-9763-4d21-a6e2-d742957469ef",
+  "applicationId": "137ebad1-e7ea-4599-b3ef-445ddd3499d8",
+  "applicationName": "accounts-read-consumer",
+  "applicationIp": "192.168.65.1",
+  "alertDesc": " A violation of policy was detected :  Token specified is invalid or has expired.",
+  "alertSource": "accounts-read(1.0.0)",
+  "alertType": "PolicyViolation",
+  "sessionId": "789f9a16d9f3410ab0668a49067e3544",
+  "operationName": "/accounts",
+  "responseCode": "401",
+  "userAgent": "",
+  "httpMethod": "get",
+  "sourceGatewayNode": "192.168.16.14"
+}

@@ -1,0 +1,13 @@
+{
+  "description": "ADR-070 control-plane audit viewer: read-only on audit-*-banking-demo* (onboarding AND apply) ONLY. Mirrors the role<->index-pattern tenant isolation pattern (cf. tenant-accounts-team-viewer). Provisioned idempotently.",
+  "cluster_permissions": [],
+  "index_permissions": [
+    {
+      "index_patterns": ["audit-*-banking-demo*"],
+      "dls": "", "fls": [],
+      "masked_fields": ["client_ip"],
+      "allowed_actions": ["read","indices:data/read/search","indices:data/read/get","indices:admin/mappings/get","indices:monitor/settings/get","indices:admin/get"]
+    }
+  ],
+  "tenant_permissions": []
+}

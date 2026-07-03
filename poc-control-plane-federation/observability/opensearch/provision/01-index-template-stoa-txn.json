@@ -1,0 +1,77 @@
+{
+  "index_patterns": ["txn-*"],
+  "priority": 100,
+  "data_stream": {
+    "timestamp_field": { "name": "@timestamp" }
+  },
+  "_meta": {
+    "managed_by": "labctl",
+    "adr": "adr-070",
+    "schema": "stoa.txn",
+    "schema_version": "1"
+  },
+  "template": {
+    "settings": {
+      "index": {
+        "number_of_shards": 1,
+        "number_of_replicas": 0,
+        "refresh_interval": "5s"
+      }
+    },
+    "mappings": {
+      "_meta": {
+        "schema": "stoa.txn",
+        "schema_version": "1",
+        "pii_fields": [
+          "user_ip",
+          "user_agent",
+          "request_headers",
+          "response_headers",
+          "response_body"
+        ]
+      },
+      "dynamic": "false",
+      "properties": {
+        "tenant":       { "type": "keyword" },
+        "provider":     { "type": "keyword" },
+        "api":          { "type": "keyword" },
+        "api_version":  { "type": "keyword" },
+        "gateway":      { "type": "keyword" },
+
+        "trace_id":     { "type": "keyword" },
+        "span_id":      { "type": "keyword" },
+        "request_id":   { "type": "keyword" },
+
+        "@timestamp":   { "type": "date" },
+        "status":       { "type": "keyword" },
+        "http_method":  { "type": "keyword" },
+        "http_path":    { "type": "keyword" },
+        "http_status":  { "type": "integer" },
+        "latency_ms":   { "type": "long" },
+
+        "consumer_id":  { "type": "keyword" },
+
+        "user_ip":      { "type": "ip",      "meta": { "pii": "true" } },
+        "user_agent":   { "type": "keyword", "meta": { "pii": "true" } },
+
+        "request_headers": {
+          "type": "object",
+          "enabled": false
+        },
+        "response_headers": {
+          "type": "object",
+          "enabled": false
+        },
+        "response_body": {
+          "type": "text",
+          "meta": { "pii": "true" }
+        },
+
+        "redaction_applied": { "type": "boolean" },
+        "redacted_fields":   { "type": "keyword" },
+        "retention_tier":    { "type": "keyword" },
+        "schema_version":    { "type": "keyword" }
+      }
+    }
+  }
+}

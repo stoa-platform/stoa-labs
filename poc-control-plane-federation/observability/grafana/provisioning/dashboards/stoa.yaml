@@ -1,0 +1,18 @@
+# Grafana dashboard provider for the federation dashboard.
+#
+# Mounted into the otel-lgtm image's provisioning dir so the dashboard is loaded
+# automatically on a FRESH `up` — previously the JSON lived only in the repo and
+# had to be imported by hand, so the EVIDENCE deep-link (/d/stoa-fed-overview)
+# 404'd on a clean machine. The dashboard JSON itself is bind-mounted at the
+# options.path below (a sibling dir, scanned for *.json, not for providers).
+apiVersion: 1
+providers:
+  - name: stoa-federation
+    orgId: 1
+    type: file
+    disableDeletion: false
+    allowUiUpdates: true
+    updateIntervalSeconds: 30
+    options:
+      path: /otel-lgtm/grafana/conf/provisioning/dashboards/json
+      foldersFromFilesStructure: false

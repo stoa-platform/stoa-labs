@@ -1,0 +1,44 @@
+{
+  "policy": {
+    "policy_id": "stoa-txn-retention",
+    "description": "ADR-070 PoC compressed retention for txn-* indices: hot (rollover ~1d / ~1mb) -> delete ~7d. Provisioned idempotently by labctl.",
+    "default_state": "hot",
+    "schema_version": 1,
+    "states": [
+      {
+        "name": "hot",
+        "actions": [
+          {
+            "rollover": {
+              "min_size": "1mb",
+              "min_index_age": "1d"
+            }
+          }
+        ],
+        "transitions": [
+          {
+            "state_name": "delete",
+            "conditions": {
+              "min_index_age": "7d"
+            }
+          }
+        ]
+      },
+      {
+        "name": "delete",
+        "actions": [
+          {
+            "delete": {}
+          }
+        ],
+        "transitions": []
+      }
+    ],
+    "ism_template": [
+      {
+        "index_patterns": ["txn-*"],
+        "priority": 100
+      }
+    ]
+  }
+}
