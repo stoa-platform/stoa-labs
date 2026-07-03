@@ -97,6 +97,14 @@ type inboundAuthConfig struct {
 	// (the Basic-auth principal already configured), so the manifest need not
 	// repeat it.
 	introspectionUser string
+
+	// mtls, when true, requires a trusted CLIENT CERTIFICATE in addition to the
+	// OAuth2 token at the IAM stage (ADR-076 VH leg): the Identify & Authorize
+	// action carries an httpsCertificate rule in AND with oAuth2Token (mtls.go).
+	// The HTTPS listener is in clientAuth=request (cert optional at transport; the
+	// requirement is ENFORCED at IAM). Requires the OAuth2 path (audience set) —
+	// the AND's first rule is oAuth2Token.
+	mtls bool
 }
 
 // remoteIntrospectionEnabled reports whether the manifest asked to enforce the
@@ -182,6 +190,13 @@ func inboundAuthFromConfig(cfg adapter.Config) (*inboundAuthConfig, error) {
 			return nil, fmt.Errorf("webmethods: inboundAuth has introspectionEndpoint but no introspectionUser, and no Basic-auth username to default from (bearer-token mode has none) — set inboundAuth.introspectionUser (10.15 requires a Gateway user on the remote introspection block)")
 		}
 	}
+	// mTLS barrier: the OAuth2+cert IAM action's first rule is oAuth2Token, so the
+	// mTLS leg needs the OAuth2 path. mtls without an audience is a half-configured
+	// barrier (a cert alone with no token gate) — fail closed.
+	mtls := cfg.Opt("inboundMtls", "") == "true"
+	if mtls && audience == "" {
+		return nil, fmt.Errorf("webmethods: inboundAuth has mtls but no audience (the mTLS barrier ANDs a trusted client cert WITH the OAuth2 token; set inboundAuth.audience/scope/clientId)")
+	}
 	return &inboundAuthConfig{
 		issuer:                    issuer,
 		jwksURI:                   jwks,
@@ -193,6 +208,7 @@ func inboundAuthFromConfig(cfg adapter.Config) (*inboundAuthConfig, error) {
 		introspectionClientID:     introspectionClientID,
 		introspectionClientSecret: introspectionClientSecret,
 		introspectionUser:         introspectionUser,
+		mtls:                      mtls,
 	}, nil
 }
 
@@ -596,6 +612,9 @@ func nestedRuleParams(action map[string]any) []map[string]any {
 // signature-only OR a legacy openIdClaims action when the manifest now asks for
 // the oAuth2Token OAuth2 path, and vice versa.
 func isIdentifyAction(action map[string]any) bool {
+	if isMtlsIdentifyAction(action) {
+		return false // OAuth2+cert action — owned by ensureMtlsIdentifyAction, never converge it here
+	}
 	switch identificationType(action) {
 	case "jwtClaims", "openIdClaims", "oAuth2Token":
 		return true
@@ -661,6 +680,11 @@ func identifyActionBody(id string, mode identifyActionMode) map[string]any {
 // Identify & Authorize action and lets a manifest flip an API between
 // signature-only and the full OAuth2 path without orphaning the old action.
 func (a *Adapter) ensureIdentifyAction(ctx context.Context) (string, error) {
+	// VH leg: when the manifest asks for mTLS, the IAM action is the OAuth2+cert
+	// AND action (a distinct shared action), not the oauth2-only one.
+	if a.inbound != nil && a.inbound.mtls {
+		return a.ensureMtlsIdentifyAction(ctx)
+	}
 	actions, err := a.listPolicyActions(ctx)
 	if err != nil {
 		return "", err
