@@ -89,6 +89,17 @@ Le labs a **prouvé sa thèse** — un control plane sur briques OSS fédère 3 
 - **Effort** : M. **Priorité** : 🟠.
 
 ---
+> ✅ **A1 FAIT (2026-07-03).** Gate d'enforcement livré : découverte `api.yaml`
+> colocalisé (ou `--uac`), pré-check statique `[INTEGRITY_UNFULFILLED]` avant toute
+> écriture, read-back gateway `[ENFORCEMENT_UNCONFIRMED]` post-publish (verifier
+> wM complet : strategy + scope mapping + action IAM toutes-règles + throttle LMT +
+> logInvocation global + transport). Preuve `scripts/test-integrity-enforce.sh`
+> **31/31 live** (contre-épreuve sabotage incluse) ; `go test ./...` vert ;
+> chaîne CI fermée (deploy-one.yml api.yaml obligatoire, PR-gate couplage) ;
+> docs à jour (ADR-076, EVIDENCE, accounts-team, stoa-platform-ci). Résiduels
+> actés : anti-spoof classification → A5 ; APISIX/WSO2 read-back → A3/B1.
+
+---
 **/goal A3 — Compléter l'analytics par fournisseur (parité 3/3)**
 - **Contexte** : ADR-070 prouvé sur la tranche APISIX (kafka-logger→Data Prepper→OpenSearch). Les tranches webMethods (Log Invocation→Kafka) et WSO2 (Fluent Bit sidecar) sont différées.
 - **Objectif** : câbler les deux tranches manquantes vers le **même** OpenSearch, avec la **même** redaction 1-point et le pivot `trace_id`.

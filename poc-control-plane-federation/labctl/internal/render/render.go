@@ -29,6 +29,22 @@ type Result struct {
 // an ApiKey-only posture — the single governed downgrade the client scale allows.
 const AuthExceptionApiKey = "auth-exception:apikey"
 
+// CodeIntegrityInconsistent is the machine code for "this contract's integrity
+// level yields no valid bundle" — SHARED by the validate-side gate
+// (governance.ValidateUAC) and the apply-side gate (cmd/labctl), so the code
+// announced stable to CI consumers cannot drift between the two sites.
+const CodeIntegrityInconsistent = "INTEGRITY_INCONSISTENT"
+
+// EffectiveExposure is the single place the empty-exposure default lives:
+// Derive, the enforcement requirement and the render command all report the
+// SAME effective value.
+func EffectiveExposure(exposure string) string {
+	if exposure == "" {
+		return "internal"
+	}
+	return exposure
+}
+
 // Derive computes the required policy bundle, fail-closed (ADR-076):
 //
 //	VH -> oauth2 + mtls ; H -> oauth2 ; M -> oauth2 (default)
@@ -44,10 +60,7 @@ func Derive(in Input) (Result, error) {
 		return Result{}, fmt.Errorf("classification %q inconnue (attendu VH, H ou M)", in.Classification)
 	}
 
-	exposure := in.Exposure
-	if exposure == "" {
-		exposure = "internal"
-	}
+	exposure := EffectiveExposure(in.Exposure)
 	if exposure != "internal" && exposure != "external" {
 		return Result{}, fmt.Errorf("exposure %q invalide (attendu internal ou external)", in.Exposure)
 	}

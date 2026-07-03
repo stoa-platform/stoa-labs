@@ -467,6 +467,74 @@ sur réseau `nonprod` interne, trial réel = PROD, seul pont `[poc, nonprod]`).
 
 ---
 
+## 2026-07-03 — Enforcement « sécurité = f(intégrité) » au `labctl apply` (ADR-076, écart résiduel fermé) ★
+
+**Validé live, `scripts/test-integrity-enforce.sh` → 31/31 PASS** contre le
+webMethods réel (`apigateway-trial:10.15`). Le bundle dérivé de la classification
+d'intégrité n'est plus seulement *validé* (INTEGRITY_INCONSISTENT au merge) et
+*constaté* (rapport de réconciliation) — il est **enforcé fail-closed à l'apply**,
+en deux gates, quand un contrat UAC (`api.yaml`) est colocalisé au manifeste
+(layout repo-par-projet) ou nommé via `--uac` (aucun flag d'opt-out) :
+
+- **Gate 1 — pré-check statique `[INTEGRITY_UNFULFILLED]`** : chaque target doit
+  déclarer les knobs du bundle (VH ⇒ `inboundAuth.mtls` + `transportProtocol:
+  https` + `audience/scope` + `rateLimit`) — sinon refus **avant toute écriture**
+  (prouvé : compte d'APIs gateway identique avant/après le refus).
+- **Gate 2 — read-back gateway `[ENFORCEMENT_UNCONFIRMED]`** : après publish,
+  l'état **RELU** doit confirmer le bundle — strategy `OIDC-<api>`, scope mapping
+  lié à l'apiID, action IAM **toutes-règles** (AND oAuth2Token+httpsCertificate,
+  `allowAnonymous=false`), throttle LMT (limite relue > 0), `logInvocation`
+  global actif avec `storeRequestPayload=false` (posture ADR-070), transport
+  `[https]`. Verdicts imprimés en entier (table + bloc JSON additif — le contrat
+  CI `.ok/.created/.api_id` est inchangé).
+
+```
+1. VH sans jambe mTLS        -> rc=1 [INTEGRITY_UNFULFILLED], RIEN écrit
+2. VH conforme               -> rc=0 ; oauth2/mtls/rate-limit/audit-log=enforced,
+                                ip-allowlist=degraded, audience annotée 3/4 (trial)
+3. re-apply                  -> rc=0 (idempotent, read-only)
+4. CONTRE-ÉPREUVE sabotage   -> allowAnonymous→true (hors-bande, action IAM AND
+   partagée — que le projecteur NE converge JAMAIS) : re-apply rc=1
+   [ENFORCEMENT_UNCONFIRMED] mtls=missing ; restore prouvé ; re-apply rc=0
+5. H sans inboundAuth        -> rc=1 [INTEGRITY_UNFULFILLED] (oauth2)
+6. VH sur apisix             -> rc=1 (mtls/rate-limit non projetables en A1 — honnête)
+7. M+apikey exposure=external-> rc=1 [INTEGRITY_INCONSISTENT] (même code que validate)
+```
+
+**Chaîne CI fermée** : `stoa-platform-ci/deploy/deploy-one.yml` rend `api.yaml`
+**obligatoire** (stat + assert explicite — supprimer le contrat ne désactive pas
+le gate en douce) et le copie dans le workspace de rendu → le gate s'active dans
+le pipeline plateforme sans autre changement (`rc≠0` déjà gaté) ; le PR-gate
+d'`accounts-team` (pr-check.yml + pr-check.sh) asserte le couplage
+`target.yaml ⇒ api.yaml colocalisé` dès la PR.
+
+**Sémantique assumée (jamais surclamée)** :
+- Un verdict UNCONFIRMED **ne désactive pas l'API** — gate niveau pipeline
+  (cohérent rollback-sans-DELETE) ; remédiation = pipeline rouge + rapport de
+  réconciliation + humain. Le verify est un instantané à l'apply ; une mutation
+  hors-bande ultérieure est vue au prochain apply (prouvé par le cas 4) ou par
+  `reconcile` (read-only, non bloquant — défense en profondeur).
+- Le gate garantit **bundle(classification déclarée) ⊆ enforced** ; il ne prouve
+  PAS que la classification déclarée est la bonne (anti-downgrade = écart ADR-076
+  #1, classification en gouvernance centrale — goal A5). Un target plus fort que
+  son bundle déclenche un warning « classification sous-déclarée ? ».
+- Les verdicts self-reported viennent du code in-repo (`labctl/internal/adapter/
+  webmethods/enforce.go`), pas d'une attestation externe ; `unverifiable` = refus.
+
+**Constat annexe (état du trial, hors A1)** : l'apply plateforme du repo réel
+`accounts-team` active correctement le gate (pré-check VH passé) mais est bloqué
+EN AMONT du gate par un état gâté du trial (47h+ d'expérimentations) : le record
+`accounts-read v1.0.3` refusait le PUT in-place (500 « Error message: null »,
+même famille que l'échec prod-deploy #3 du 2026-06-12) ; sa purge `forceDelete`
+a ensuite exposé une **corruption de la chaîne de versions** (« Versioning is
+allowed only from latest version » sur la base 1.0.2 — la métadonnée *latest*
+pointe un record supprimé). Le rapport de réconciliation lit désormais
+honnêtement la dernière version présente (1.0.2, IAM sans règle cert = drift
+réel vs le manifeste VH). Remédiation = rebuild-from-Git sur état sain
+(teardown/up ou env neuf) — opération d'environnement, PAS un défaut du gate :
+la preuve 31/31 couvre create + converge + drift sur API propre, et le
+read-back audit-log/reconcile a été validé live sur ce même trial.
+
 ## Teardown (destruction contrôlée)
 
 ```bash

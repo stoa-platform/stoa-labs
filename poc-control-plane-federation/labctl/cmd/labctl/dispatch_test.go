@@ -78,12 +78,39 @@ func (f *fakeTarget) CreateConsumer(context.Context, *adapter.NormalizedAPI, *ad
 	return &adapter.ConsumerResult{Gateway: f.name, ConsumerID: "c-" + f.name, ConsumerKey: "k-" + f.name}, nil
 }
 
+// fakeVerifier wraps fakeTarget with the OPTIONAL EnforcementVerifier
+// capability, so the apply gate's type assertion can be exercised both ways
+// (the plain fakeTarget deliberately does NOT implement it):
+//   - "verify-ok":      every required policy reads back enforced;
+//   - "verify-missing": the mtls leg reads back missing (drift caught).
+type fakeVerifier struct{ *fakeTarget }
+
+func (f *fakeVerifier) VerifyEnforcement(_ context.Context, _ string, want adapter.EnforcementRequirement) (*adapter.EnforcementReport, error) {
+	rep := &adapter.EnforcementReport{}
+	for _, p := range want.Policies {
+		status := adapter.VerdictEnforced
+		if f.behavior == "verify-missing" && p == "mtls" {
+			status = adapter.VerdictMissing
+		}
+		rep.Verdicts = append(rep.Verdicts, adapter.PolicyVerdict{
+			Policy: p, Status: status, Detail: "synthetic",
+		})
+	}
+	return rep, nil
+}
+
 func init() {
 	adapter.Register("faketgt", func(cfg adapter.Config) (adapter.Adapter, error) {
-		if cfg.Cred("behavior", "ok") == "fail-new" {
+		behavior := cfg.Cred("behavior", "ok")
+		if behavior == "fail-new" {
 			return nil, fmt.Errorf("synthetic adapter build failure")
 		}
-		return &fakeTarget{name: cfg.Name, behavior: cfg.Cred("behavior", "ok")}, nil
+		f := &fakeTarget{name: cfg.Name, behavior: behavior}
+		switch behavior {
+		case "verify-ok", "verify-missing":
+			return &fakeVerifier{fakeTarget: f}, nil
+		}
+		return f, nil
 	})
 }
 
