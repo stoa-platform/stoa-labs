@@ -2,6 +2,7 @@
 title: "ADR-073 — Traces du webMethods réel vers Tempo : le tracer natif 10.15 est inroutable ; pont events→OTLP (Log Invocation → custom destination → wm-trace-bridge) = voie retenue, PoC ET cible (E2EM écarté : payant, refus client)"
 sidebar_label: "ADR-073 : Traces wM → Tempo"
 status: "Accepté — implémenté et vérifié in-situ 2026-06-12"
+maturite_technique: "✅ Implémenté & vérifié in-situ (wm-trace-bridge, trace réelle)"
 date: 2026-06-12
 adr_number: 73
 visibility: private
@@ -11,6 +12,7 @@ note: "Privé (stoa-labs). S'appuie sur ADR-068 (hors data-plane), ADR-070 (fron
 # ADR-073 — Traces du webMethods réel vers Grafana Tempo
 
 **Statut :** Accepté — implémenté et vérifié in-situ (2026-06-12).
+**Maturité technique :** ✅ Implémenté & vérifié in-situ (`observability/wm-trace-bridge/`, trace réelle Tempo) — seul ADR dont les deux axes (business + technique) sont alignés.
 **Révision 2026-06-12 (même jour)** : l'agent **E2EM est écarté pour la cible** (produit payant — décision client). Le pont events→OTLP passe de « démonstrateur PoC » à **voie retenue PoC ET cible**, sous les conditions de durcissement listées en Conséquences.
 **Date :** 2026-06-12.
 **Contexte client (anonymisé) :** banque — webMethods API Gateway **10.15** (data-plane legacy), observabilité cible OTel/Tempo.

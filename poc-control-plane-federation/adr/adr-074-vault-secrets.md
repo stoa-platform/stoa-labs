@@ -2,6 +2,7 @@
 title: "ADR-074 — Secrets depuis Vault : creds plateforme hors-Git, lus à l'exécution, rotables sans rebuild (concrétise le gap (d) d'ADR-072)"
 sidebar_label: "ADR-074 : Secrets depuis Vault"
 status: "Proposé — en attente Council 8/10 (GO/NO-GO)"
+maturite_technique: "✅ Livré & prouvé — Vault as-code + AppRole + rotation"
 date: 2026-06-12
 adr_number: 74
 visibility: private
@@ -10,7 +11,8 @@ note: "Privé (stoa-labs). S'appuie sur ADR-072 (médiation control-plane, gap (
 
 # ADR-074 — Secrets depuis Vault
 
-**Statut :** Proposé — en attente validation Council 8/10 (GO/NO-GO).
+**Statut :** Proposé — en attente validation Council 8/10 (GO/NO-GO). *(axe gouvernance/business — distinct de la maturité technique ci-dessous)*
+**Maturité technique :** ✅ Livré & prouvé — `labctl/internal/vault` (KV v2 stdlib), AppRole least-privilege (403 croisés labctl↔ci), rotation live (`test-vault-rotation.sh`).
 **Date :** 2026-06-12.
 **Contexte client (anonymisé) :** banque — gateways mutualisées, secrets gérés en coffre.
 **Lié à :** [[adr-072-control-plane-mediation]] (gap (d)), [[adr-067-reuse-first-owned-portable-layer]].
