@@ -2,6 +2,7 @@
 title: "ADR-076 — Cycle de vie d'API GitOps repo-par-projet : classification d'intégrité → stratégie de sécurité DÉRIVÉE as-code, catalogue de policies central non-affaiblissable, promotion trunk + marqueurs (main = cible prod)"
 sidebar_label: "ADR-076 : GitOps API lifecycle repo-par-projet"
 status: "Proposé — en attente Council (GO/NO-GO)"
+maturite_technique: "🟡 Socle livré ; enforcement sécurité=f(intégrité) aspirationnel (Phase 3)"
 date: 2026-07-01
 adr_number: 76
 visibility: private
@@ -10,7 +11,8 @@ note: "Privé (stoa-labs). S'appuie sur ADR-067 (reuse-first / couche possédée
 
 # ADR-076 — Cycle de vie d'API GitOps repo-par-projet
 
-**Statut :** Proposé — en attente validation Council (GO/NO-GO).
+**Statut :** Proposé — en attente validation Council (GO/NO-GO). *(axe gouvernance/business — distinct de la maturité technique ci-dessous)*
+**Maturité technique :** 🟡 Socle livré (moteur `render` + gate `INTEGRITY_INCONSISTENT` fail-closed, enum client VH/H/M) ; enforcement « sécurité = f(intégrité) » au data-plane **aspirationnel jusqu'à Phase 3**.
 **Date :** 2026-07-01.
 **Contexte client (anonymisé) :** banque — webMethods API Gateway 10.15, chaîne dev → rec → int → prod (ADR-075), demande d'**un repo Git par projet** avec cycle de vie « création/modif d'API → création sur la gateway → publication par env », **stratégie de sécurité fonction du niveau d'intégrité de la donnée**, certificats (mTLS), OAuth2 interne/externe, filtrage IP, tokens custom, et si possible **global policies + filtrage par tag**.
 **Lié à :** [[adr-067-reuse-first-owned-portable-layer]], [[adr-068-stoa-off-the-transaction-path]], [[adr-069-retention-moat-governance-source-of-truth]], [[adr-071-partner-onboarding-as-code]], [[adr-072-control-plane-mediation]], [[adr-074-vault-secrets]], [[adr-075-wm-admin-proxy-multienv]].

@@ -2,6 +2,7 @@
 title: "ADR-075 — Multi-env webMethods sans gateway de promotion : rebuild-from-Git idempotent par env, différences portées par les aliases, et 3 APIs proxy admin sœurs allowlist OAuth2-scopées comme unique chemin vers les envs bas"
 sidebar_label: "ADR-075 : Proxy admin wM multi-env"
 status: "Proposé — en attente Council (GO/NO-GO)"
+maturite_technique: "✅ Livré & prouvé — multi-env 19/19 + vrai Jenkins"
 date: 2026-06-12
 adr_number: 75
 visibility: private
@@ -10,7 +11,8 @@ note: "Privé (stoa-labs). S'appuie sur ADR-069 (Git source de vérité), ADR-07
 
 # ADR-075 — Proxy admin wM multi-env
 
-**Statut :** Proposé — en attente validation Council (GO/NO-GO).
+**Statut :** Proposé — en attente validation Council (GO/NO-GO). *(axe gouvernance/business — distinct de la maturité technique ci-dessous)*
+**Maturité technique :** ✅ Livré & prouvé — `demo-multienv.sh` 19/19 + **vrai Jenkins** (prod-deploy/rollback SUCCESS) ; ITSM gate + 4-yeux + pin SHA.
 **Date :** 2026-06-12.
 **Contexte client (anonymisé) :** banque — webMethods API Gateway 10.15, chaîne d'environnements dev → rec → int → prod, Jenkins n'ayant de route réseau QUE vers la zone prod.
 **Lié à :** [[adr-069-retention-moat-governance-source-of-truth]], [[adr-072-control-plane-mediation]], [[adr-074-vault-secrets]].

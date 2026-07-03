@@ -2,6 +2,7 @@
 title: "ADR-070 — Analytics transactionnelle centralisée OpenSearch multi-tenant : collecteur normalisant comme point de contrôle unique, RBAC par fournisseur"
 sidebar_label: "ADR-070 : Analytics OpenSearch multi-tenant"
 status: "Proposé — en attente Council 8/10 (GO/NO-GO)"
+maturite_technique: "✅ Livré & prouvé — tranche analytics APISIX (wM/WSO2 différées)"
 date: 2026-06-11
 adr_number: 70
 visibility: private
@@ -10,7 +11,8 @@ note: "Privé (stoa-labs). S'appuie sur ADR-067 (reuse-first), ADR-068 (hors dat
 
 # ADR-070 — Analytics transactionnelle centralisée OpenSearch multi-tenant
 
-**Statut :** Proposé — en attente validation Council 8/10 (GO/NO-GO).
+**Statut :** Proposé — en attente validation Council 8/10 (GO/NO-GO). *(axe gouvernance/business — distinct de la maturité technique ci-dessous)*
+**Maturité technique :** ✅ Socle livré & prouvé sur la tranche APISIX (data stream + RBAC/FLS par tenant + redaction à un point unique + pivot `trace_id`) ; tranches wM/WSO2 différées.
 **Date :** 2026-06-11.
 **Contexte client (anonymisé) :** institution financière régulée (anonymisé).
 **Lié à :** [[adr-067-reuse-first-owned-portable-layer]], [[adr-068-stoa-off-the-transaction-path]], [[adr-069-retention-moat-governance-source-of-truth]].

@@ -2,6 +2,7 @@
 title: "ADR-072 — Médiation control-plane sur gateway mutualisée : le dev ne touche jamais l'admin gateway ; le control plane authentifie, autorise scoped-tenant, applique avec les creds plateforme, audite chaque mutation et rate-limite"
 sidebar_label: "ADR-072 : Médiation control-plane"
 status: "Proposé — en attente Council 8/10 (GO/NO-GO)"
+maturite_technique: "✅ Livré & prouvé live — médiation (scripts 8/8·11/11·13/13·11/11)"
 date: 2026-06-12
 adr_number: 72
 visibility: private
@@ -10,7 +11,8 @@ note: "Privé (stoa-labs). S'appuie sur ADR-067 (reuse-first), ADR-068 (hors dat
 
 # ADR-072 — Médiation control-plane (gateway mutualisée)
 
-**Statut :** Proposé — en attente validation Council 8/10 (GO/NO-GO).
+**Statut :** Proposé — en attente validation Council 8/10 (GO/NO-GO). *(axe gouvernance/business — distinct de la maturité technique ci-dessous)*
+**Maturité technique :** ✅ Livré & prouvé live — scripts à compteurs (`test-onboarding-matrix` 8/8, `test-apply-scope` 11/11, `test-apply-audit` 13/13, `demo-mediation` 11/11).
 **Date :** 2026-06-12.
 **Contexte client (anonymisé) :** banque — gateways hétérogènes (WSO2 4.5, Apache APISIX 3.11, webMethods 10.15) **mutualisées** entre équipes/tenants.
 **Lié à :** [[adr-067-reuse-first-owned-portable-layer]], [[adr-068-stoa-off-the-transaction-path]], [[adr-069-retention-moat-governance-source-of-truth]], [[adr-070-opensearch-txn-analytics]], [[adr-071-partner-onboarding-as-code]].
