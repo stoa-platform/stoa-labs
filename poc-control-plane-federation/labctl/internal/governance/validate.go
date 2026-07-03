@@ -102,7 +102,7 @@ func ValidateUAC(contract map[string]any, published bool) []ValidationError {
 			}
 		}
 		if _, rerr := render.Derive(render.Input{Classification: classification, Exposure: exposure, Tags: tags}); rerr != nil {
-			add("classification", "INTEGRITY_INCONSISTENT", "stratégie de sécurité non dérivable : %v", rerr)
+			add("classification", render.CodeIntegrityInconsistent, "stratégie de sécurité non dérivable : %v", rerr)
 		}
 	}
 

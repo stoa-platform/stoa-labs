@@ -85,6 +85,11 @@ type mockGateway struct {
 	// /configurations/keystore (404) — the truststore step must degrade
 	// gracefully (best-effort) rather than fail the whole subscribe.
 	noKeystoreEndpoint bool
+	// nakedActionGet mimics builds whose GET /policyActions/{id} answers the
+	// record NAKED (no {"policyAction":...} envelope) — the double shape the
+	// transport projection pinned live; the enforcement read-back must accept
+	// both.
+	nakedActionGet bool
 }
 
 func newMockGateway() *mockGateway {
@@ -104,6 +109,47 @@ func newMockGateway() *mockGateway {
 		keystoreConfig: map[string]any{
 			"truststoreName": "", "keystoreName": "", "signingAlias": "",
 		},
+	}
+}
+
+// seedTransportAction backs the fixed "wm-act-transport" enforcement id every
+// minted default policy references, exactly like the real product (the
+// entryProtocolPolicy action IS a readable record live; imported APIs default
+// to protocol [http]). Kept in routingActions so updateAction converges it.
+func (m *mockGateway) seedTransportAction() {
+	m.routingActions["wm-act-transport"] = map[string]any{
+		"id":          "wm-act-transport",
+		"names":       []any{map[string]any{"value": "Enable HTTP/HTTPS", "locale": "en"}},
+		"templateKey": "entryProtocolPolicy",
+		"parameters": []any{
+			map[string]any{"templateKey": "protocol", "values": []any{"http"}},
+		},
+		"active": true,
+	}
+}
+
+// seedGlobalLogInvocation seeds the fixed-id GLOBAL transaction-logging pair
+// (the audit-log substrate wm-otel-setup.sh converges live). active and
+// storeRequestPayload take ANY scalar so tests can pin the read-back type
+// tolerance (string vs bool).
+func (m *mockGateway) seedGlobalLogInvocation(active any, storeRequestPayload any) {
+	m.policies[globalLogInvocationPolicyID] = map[string]any{
+		"id":                 globalLogInvocationPolicyID,
+		"names":              []any{map[string]any{"value": "Transaction logging", "locale": "en"}},
+		"policyEnforcements": []any{},
+		"policyScope":        "GLOBAL",
+		"systemPolicy":       true,
+		"active":             active,
+	}
+	m.actions[globalLogInvocationActionID] = map[string]any{
+		"id":          globalLogInvocationActionID,
+		"names":       []any{map[string]any{"value": "Log Invocation", "locale": "en"}},
+		"templateKey": "logInvocation",
+		"parameters": []any{
+			map[string]any{"templateKey": "storeRequestPayload", "values": []any{storeRequestPayload}},
+			map[string]any{"templateKey": "logGenerationFrequency", "values": []any{"Always"}},
+		},
+		"active": true,
 	}
 }
 
@@ -134,6 +180,7 @@ func (m *mockGateway) handler() http.Handler {
 	mux.HandleFunc("PUT /rest/apigateway/alias/{id}", m.updateAlias)
 	mux.HandleFunc("GET /rest/apigateway/policyActions", m.listActions)
 	mux.HandleFunc("POST /rest/apigateway/policyActions", m.createAction)
+	mux.HandleFunc("GET /rest/apigateway/policyActions/{id}", m.getAction)
 	mux.HandleFunc("PUT /rest/apigateway/policyActions/{id}", m.updateAction)
 	mux.HandleFunc("GET /rest/apigateway/policies/{id}", m.getPolicy)
 	mux.HandleFunc("PUT /rest/apigateway/policies/{id}", m.updatePolicy)
@@ -624,6 +671,27 @@ func (m *mockGateway) updateAction(w http.ResponseWriter, r *http.Request) {
 		m.routingActions[id] = act
 	} else {
 		m.actions[id] = act
+	}
+	m.writeJSON(w, http.StatusOK, map[string]any{"policyAction": act})
+}
+
+// getAction serves one action by DIRECT id GET — enveloped by default, NAKED
+// when nakedActionGet is on (both shapes observed live on 10.15).
+func (m *mockGateway) getAction(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	act, ok := m.actions[id]
+	if !ok {
+		act, ok = m.routingActions[id]
+	}
+	if !ok {
+		m.writeJSON(w, http.StatusNotFound, map[string]string{"error": "policy action not found"})
+		return
+	}
+	if m.nakedActionGet {
+		m.writeJSON(w, http.StatusOK, act)
+		return
 	}
 	m.writeJSON(w, http.StatusOK, map[string]any{"policyAction": act})
 }
