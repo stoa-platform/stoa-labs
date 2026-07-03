@@ -40,6 +40,15 @@ const (
 	// CodeUnconfirmed: the gateway's read-back state does not confirm the
 	// derived bundle (post-apply gate).
 	CodeUnconfirmed = "ENFORCEMENT_UNCONFIRMED"
+	// CodeUngoverned (goal A5): the deploying project owns no central
+	// classification for this API — a governed deploy requires the API to be
+	// classified in the central registry (no self-classification).
+	CodeUngoverned = "CLASSIFICATION_UNGOVERNED"
+	// CodeSpoofed (goal A5): the project contract declares a posture WEAKER than
+	// (or a tenant different from) the central governance registry — a downgrade
+	// attempt. The bundle is derived from the CENTRAL value regardless; this code
+	// makes the attempt loud instead of a confusing downstream INTEGRITY_UNFULFILLED.
+	CodeSpoofed = "CLASSIFICATION_SPOOFED"
 )
 
 // Requirement builds the read-back requirement from the loaded contract subset

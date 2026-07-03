@@ -216,3 +216,174 @@ func TestRunApply_ExplicitUACFlag(t *testing.T) {
 		t.Errorf("gate did not activate via --uac:\n%s", out)
 	}
 }
+
+// --- A5: central classification registry (anti-spoof) --------------------
+
+// writeRegistry drops a central classification registry and points the gate at
+// it for the duration of the test (flag + project identity).
+func withCentral(t *testing.T, body, project string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "classifications.yaml")
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatalf("write registry: %v", err)
+	}
+	// Hermetic (review M5): the flag wins, but clear the env twins so an ambient
+	// LABCTL_PROJECT/LABCTL_CLASSIFICATION_SOURCE on the runner cannot mask an
+	// intentionally-empty project (e.g. the no-identity test) or a flag-off case.
+	t.Setenv("LABCTL_PROJECT", "")
+	t.Setenv("LABCTL_CLASSIFICATION_SOURCE", "")
+	prevSrc, prevProj := classificationSourceFlag, projectFlag
+	classificationSourceFlag, projectFlag = p, project
+	t.Cleanup(func() { classificationSourceFlag, projectFlag = prevSrc, prevProj })
+	return p
+}
+
+const centralReg = `apiVersion: governance.stoa.io/v1
+kind: ClassificationRegistry
+classifications:
+  - {owner: accounts-team, tenant: banking-demo, api: accounts-read-api, classification: VH, exposure: external}
+  - {owner: payments-team, tenant: payments-team, api: payments-read-api, classification: H, exposure: internal}
+`
+
+// The central classification is AUTHORITATIVE: a project api.yaml that matches
+// central deploys with the governed bundle.
+func TestRunApply_CentralGovernedMatches(t *testing.T) {
+	p := writeFederation(t, `targets:
+  - {name: gw-a, type: faketgt, adminUrl: http://a, credentials: {behavior: verify-ok}}
+`)
+	writeUAC(t, p, uacVH) // name accounts-read-api, tenant banking-demo, VH/external
+	withCentral(t, centralReg, "accounts-team")
+	out, err := runDispatch(t, runApply, p)
+	if err != nil {
+		t.Fatalf("governed match should pass: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "classification=VH") {
+		t.Errorf("gate should derive VH from central:\n%s", out)
+	}
+}
+
+// DOWNGRADE: the project declares M while central says VH → refused
+// CLASSIFICATION_SPOOFED (the anti-spoof property A5 exists for).
+func TestRunApply_CentralRefusesDowngrade(t *testing.T) {
+	p := writeFederation(t, `targets:
+  - {name: gw-a, type: faketgt, adminUrl: http://a, credentials: {behavior: verify-ok}}
+`)
+	writeUAC(t, p, strings.Replace(uacVH, "classification: VH\nexposure: external", "classification: M", 1))
+	withCentral(t, centralReg, "accounts-team")
+	_, err := runDispatch(t, runApply, p)
+	if err == nil || !strings.Contains(err.Error(), "CLASSIFICATION_SPOOFED") {
+		t.Fatalf("err = %v, want [CLASSIFICATION_SPOOFED]", err)
+	}
+}
+
+// B1 anti-spoof: a project cannot borrow another project's weaker row. The
+// api.yaml name is scoped to the injected project identity — accounts-team
+// pointing at payments-read-api → UNGOVERNED (it owns no such API).
+func TestRunApply_CentralRejectsRowBorrowing(t *testing.T) {
+	p := writeFederation(t, `contract: contract.yaml
+name: payments-read-api
+targets:
+  - {name: gw-a, type: faketgt, adminUrl: http://a, credentials: {behavior: verify-ok}}
+`)
+	// api.yaml claims to be payments-read-api / H (matching payments' central row)…
+	writeUAC(t, p, `name: payments-read-api
+version: 1.0.0
+tenant_id: payments-team
+classification: H
+status: draft
+`)
+	// …but the pipeline injects the REAL owner: accounts-team.
+	withCentral(t, centralReg, "accounts-team")
+	_, err := runDispatch(t, runApply, p)
+	if err == nil || !strings.Contains(err.Error(), "CLASSIFICATION_UNGOVERNED") {
+		t.Fatalf("err = %v, want [CLASSIFICATION_UNGOVERNED] (accounts-team owns no payments-read-api)", err)
+	}
+}
+
+// The tenant is governed too: lying about tenant_id → SPOOFED.
+func TestRunApply_CentralRefusesTenantSpoof(t *testing.T) {
+	p := writeFederation(t, `targets:
+  - {name: gw-a, type: faketgt, adminUrl: http://a, credentials: {behavior: verify-ok}}
+`)
+	writeUAC(t, p, strings.Replace(uacVH, "tenant_id: banking-demo", "tenant_id: payments-team", 1))
+	withCentral(t, centralReg, "accounts-team")
+	_, err := runDispatch(t, runApply, p)
+	if err == nil || !strings.Contains(err.Error(), "CLASSIFICATION_SPOOFED") {
+		t.Fatalf("err = %v, want [CLASSIFICATION_SPOOFED] (tenant mismatch)", err)
+	}
+}
+
+// An API absent from the registry cannot self-classify → UNGOVERNED.
+func TestRunApply_CentralUngovernedAPI(t *testing.T) {
+	p := writeFederation(t, `targets:
+  - {name: gw-a, type: faketgt, adminUrl: http://a, credentials: {behavior: verify-ok}}
+`)
+	writeUAC(t, p, uacVH)
+	// registry without accounts-read-api for this owner
+	withCentral(t, `apiVersion: governance.stoa.io/v1
+kind: ClassificationRegistry
+classifications:
+  - {owner: other-team, tenant: t, api: other-api, classification: M, exposure: internal}
+`, "accounts-team")
+	_, err := runDispatch(t, runApply, p)
+	if err == nil || !strings.Contains(err.Error(), "CLASSIFICATION_UNGOVERNED") {
+		t.Fatalf("err = %v, want [CLASSIFICATION_UNGOVERNED]", err)
+	}
+}
+
+// Over-declaration (project stronger than central) is harmless: it warns and
+// derives from central, does not block.
+func TestRunApply_CentralOverDeclarationWarns(t *testing.T) {
+	p := writeFederation(t, `targets:
+  - {name: gw-a, type: faketgt, adminUrl: http://a, credentials: {behavior: verify-ok}}
+`)
+	// api.yaml VH/external, but central says accounts-read-api is only H →
+	// project over-declared: derives from central (H), warns, does not block.
+	writeUAC(t, p, uacVH)
+	withCentral(t, `apiVersion: governance.stoa.io/v1
+kind: ClassificationRegistry
+classifications:
+  - {owner: accounts-team, tenant: banking-demo, api: accounts-read-api, classification: H, exposure: external}
+`, "accounts-team")
+	out, err := runDispatch(t, runApply, p)
+	if err != nil {
+		t.Fatalf("over-declaration should pass (derives from central): %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "sur-provisionné") {
+		t.Errorf("should warn about over-declaration:\n%s", out)
+	}
+	if !strings.Contains(out, "classification=H") {
+		t.Errorf("bundle should derive from CENTRAL H, not project VH:\n%s", out)
+	}
+}
+
+// Source configured but no project identity → fail-closed UNGOVERNED (no
+// governed lookup without the non-editable identity).
+func TestRunApply_CentralNoProjectIdentityFails(t *testing.T) {
+	p := writeFederation(t, `targets:
+  - {name: gw-a, type: faketgt, adminUrl: http://a, credentials: {behavior: verify-ok}}
+`)
+	writeUAC(t, p, uacVH)
+	withCentral(t, centralReg, "") // empty project identity
+	_, err := runDispatch(t, runApply, p)
+	if err == nil || !strings.Contains(err.Error(), "CLASSIFICATION_UNGOVERNED") {
+		t.Fatalf("err = %v, want [CLASSIFICATION_UNGOVERNED] (no project identity)", err)
+	}
+}
+
+// Non-regression: with NO central source, the gate is strictly A1 (project
+// classification drives). The historical VH path still passes.
+func TestRunApply_NoCentralSourceIsStrictA1(t *testing.T) {
+	p := writeFederation(t, `targets:
+  - {name: gw-a, type: faketgt, adminUrl: http://a, credentials: {behavior: verify-ok}}
+`)
+	writeUAC(t, p, uacVH)
+	// classificationSourceFlag/projectFlag stay empty (no withCentral)
+	out, err := runDispatch(t, runApply, p)
+	if err != nil {
+		t.Fatalf("A1 path (no central) should pass: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "classification=VH") {
+		t.Errorf("A1 uses project-declared VH:\n%s", out)
+	}
+}

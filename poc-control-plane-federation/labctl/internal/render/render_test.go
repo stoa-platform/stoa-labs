@@ -61,3 +61,25 @@ func TestDerive(t *testing.T) {
 		})
 	}
 }
+
+func TestWeaker(t *testing.T) {
+	cases := []struct {
+		class, exp, wClass, wExp string
+		want                     bool
+	}{
+		{"M", "internal", "VH", "external", true},   // both weaker
+		{"H", "internal", "VH", "external", true},   // class weaker
+		{"VH", "internal", "VH", "external", true},  // exposure weaker (drops ip-allowlist)
+		{"VH", "external", "VH", "external", false}, // equal
+		{"VH", "external", "H", "internal", false},  // stronger (over-declaration)
+		{"H", "external", "H", "external", false},   // equal
+		{"M", "internal", "M", "internal", false},   // equal
+		{"VH", "internal", "H", "internal", false},  // stronger class, same exposure
+		{"H", "external", "H", "internal", false},   // over-exposed (not weaker)
+	}
+	for _, c := range cases {
+		if got := Weaker(c.class, c.exp, c.wClass, c.wExp); got != c.want {
+			t.Errorf("Weaker(%s/%s vs %s/%s) = %v, want %v", c.class, c.exp, c.wClass, c.wExp, got, c.want)
+		}
+	}
+}

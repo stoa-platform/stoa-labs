@@ -478,6 +478,51 @@ managé tiers. C'est l'argument différenciant vs Axway Amplify (SaaS, hors zone
 
 ---
 
+## 2026-07-04 — Classification CENTRALE anti-spoof + poly-repo réel (ADR-076 écart #1, goal A5) ★
+
+**Validé, `scripts/test-classification-central.sh` → 11/11.** L'écart #1 d'ADR-076
+(la classification d'intégrité vivait dans l'`api.yaml` du repo PROJET, éditable →
+une équipe pouvait déclarer M pour éviter le mTLS d'une donnée VH) est **fermé** :
+l'autorité passe à un **registre central** (`stoa-platform-ci/governance/classifications.yaml`,
+repo plateforme non éditable ; en prod = repo `data-governance`).
+
+`labctl apply` reçoit la source (`LABCTL_CLASSIFICATION_SOURCE`) + l'**identité projet
+non-éditable** (`LABCTL_PROJECT` = `PROJECT_NAME` du Jenkinsfile plateforme). Le bundle
+de sécurité est **dérivé du central** (autoritaire) ; l'`api.yaml` projet n'est qu'une
+**référence** qui doit ne pas être plus faible.
+
+**Ancre anti-spoof (le point dur, corrigé en review)** : la clé de lookup est
+**(owner, api)** où `owner` vient du pipeline, JAMAIS de l'`api.yaml`. Un projet ne voit
+que ses propres entrées → il ne peut pas « pointer la ligne plus faible d'un autre
+projet » en renommant son `api.yaml` (le trou qu'un design naïf keyé sur `(tenant_id,
+name)` — tous deux projet-éditables — aurait laissé ouvert).
+
+**Matrice mesurée** (2 repos pilotes, MÊME pipeline/binaire) :
+
+```
+                              central   → bundle dérivé
+accounts-team / accounts-read  VH/ext   → oauth2+mtls+rate-limit+audit-log+ip-allowlist
+payments-team / payments-read  H/int    → oauth2+rate-limit+audit-log  (PAS de mtls) ✓ différent
+
+  downgrade api.yaml VH→M (accounts-team)            → [CLASSIFICATION_SPOOFED]
+  accounts-team prétend servir payments-read         → [CLASSIFICATION_UNGOVERNED] (emprunt refusé)
+  tenant_id falsifié (banking-demo→payments-team)    → [CLASSIFICATION_SPOOFED]
+  API renommée absente du registre                   → [CLASSIFICATION_UNGOVERNED]
+  faux governance/ planté DANS le repo projet        → IGNORÉ (seul le chemin plateforme fait foi)
+  sans source (dev-local/PR-gate)                    → comportement A1 (déclaration projet) — non-régression
+```
+
+- **Séparation des devoirs** : le PR-gate projet reste aveugle au central (feedback
+  rapide) → une équipe voit son PR VERT puis est **refusée au deploy** plateforme.
+  L'autorité est le gate plateforme, jamais le repo projet.
+- **Non-régression A1** : `test-integrity-enforce.sh` reste **31/31 live** (le chemin
+  partagé est inchangé sans `LABCTL_CLASSIFICATION_SOURCE`).
+- **Onboarding** (fail-closed) : une API absente du registre ne déploie pas
+  (`UNGOVERNED`) — l'enregistrer = une PR vers la source de gouvernance (data-governance),
+  sérialisée, pas self-service.
+
+---
+
 ## 2026-06-12 — CI multi-env webMethods : promotion-from-Git, proxy admin, rollback (ADR-075) ★
 
 **Validé live, `scripts/demo-multienv.sh` → 19/19 PASS** (dont 5 contre-épreuves
