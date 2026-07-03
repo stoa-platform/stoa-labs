@@ -1,0 +1,26 @@
+# =============================================================================
+# Data Prepper — server config (ADR-070 socle / Phase 1)
+#
+# Collecteur-central NORMALISANT : SEUL endroit où l'on normalise au schéma
+# `stoa.txn`, redacte (IBAN/MONETARY/PII) et route vers txn-{tenant}-*.
+# Ce fichier configure le SERVEUR Data Prepper (API d'admin/peer-forwarder) ;
+# les pipelines (source Kafka → processeurs → sink OpenSearch) vivent dans
+# pipelines.yaml.
+#
+# Phase 1 (socle) : pipeline TRIVIAL/NO-OP pour démarrer le service HEALTHY.
+# Phase 3 : normalisation + redaction + routage index-par-tenant.
+# =============================================================================
+
+ssl: false                       # PoC : API d'admin en clair (pas exposée hôte)
+server_port: 4900                # endpoint /list, /shutdown, métriques Prometheus
+
+# Métadonnées de pipeline persistées (offsets gérés côté Kafka consumer group).
+peer_forwarder:
+  ssl: false
+
+# Pas de circuit-breaker mémoire agressif pour le PoC single-node.
+circuit_breakers:
+  heap:
+    usage: 6gb
+    reset: 2s
+    check_interval: 500ms

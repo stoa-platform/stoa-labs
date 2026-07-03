@@ -24,6 +24,16 @@ par-dessus la config de l'image — remplacement du fichier ENTIER). **otel-lgtm
 seule) le recrée sans, silencieusement. Spans wM en différé ~10-40 s (dispatch
 d'events), fenêtre native exacte via `externalCalls` — cf. ADR-073.
 
+**Plan GOUVERNANCE/AUDIT — analytics transactionnelle par fournisseur (ADR-070, parité 3/3)** :
+chaque runtime alimente aussi un `stoa.txn.{provider}` (Redpanda → Data Prepper →
+OpenSearch `txn-{tenant}`), pivotable au plan traces par le `trace_id` :
+
+| Provider | Source txn → Kafka | Pipeline Data Prepper |
+|---|---|---|
+| APISIX | plugin `kafka-logger` (projeté par labctl) → `stoa.txn.apisix` | `stoa-txn-apisix` |
+| webMethods réel | `wm-trace-bridge` (events Log Invocation) → `stoa.txn.webmethods` | `stoa-txn-webmethods` |
+| **WSO2** | **`wso2-otel-tap`** (goal A3) : tap OTLP/gRPC → **forward** spans à otel-lgtm (Tempo inchangé) **+** record `stoa.txn` par trace (trace_id natif du span) → `stoa.txn.wso2`. WSO2 pointe `remote_tracer.url=wso2-otel-tap:4317` (overlay analytics ; socle seul = otel-lgtm direct). Piège : WSO2 exporte en **gzip** (codec à enregistrer côté serveur gRPC) | `stoa-txn-wso2` |
+
 **DoD Phase 1** : les 3 `service.name` apparaissent dans Grafana (Explore → Tempo/Prometheus).
 
 `grafana/dashboards/federation-overview.json` (variable `$gateway`) est produit en **Phase 4** (T20) — pièce maîtresse de l'EVIDENCE : la corrélation `trace_id` d'un appel traversant les 3 runtimes hétérogènes jusqu'à Tempo.
