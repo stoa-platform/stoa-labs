@@ -14,14 +14,18 @@ Démonstrateur : **un control plane assemblé sur briques OSS fédère 3 gateway
 | 1 | Socle OSS (docker-compose, 3 gateways + identité + obs) | ✅ **validé live** (`up.sh` + `smoke-test.sh`) |
 | 2 | `labctl` + Define Once (1 OpenAPI → 3 gateways) | ✅ **validé live** (`demo.sh` : publish + catalogue + subscribe + appels authentifiés 200×3) |
 | **3** | **Identité Oracle-master (Dex → Keycloak → 3 gateways)** | ✅ **validé live** (`setup-identity.sh` + `phase3-identity-demo.sh`) |
-| 4 | Evidence report + observabilité | ✅ [`EVIDENCE.md`](./EVIDENCE.md) (7 preuves, sorties live) + dashboard Grafana `stoa-fed-overview` (OTel : APISIX + webMethods ; WSO2 OTel en suivi) |
+| 4 | Evidence report + observabilité | ✅ [`EVIDENCE.md`](./EVIDENCE.md) (preuves live) + dashboard Grafana `stoa-fed-overview` (OTel : APISIX + webMethods + WSO2 — **3/3**, goal A2 2026-07-03) |
 
 ### Phase 3 — un token Keycloak (fédéré depuis Oracle/Dex) validé par les 3 gateways
 
 ```bash
-./scripts/setup-identity.sh         # WSO2 KeyCloak Key Manager + APISIX openid-connect + prérequis KC
+./scripts/setup-identity.sh         # enregistre le KeyCloak Key Manager (+ APISIX oidc + prérequis KC)
+docker restart poc-wso2am           # OBLIGATOIRE : WSO2 charge les Key Managers au DÉMARRAGE (~3 min)
+./scripts/setup-identity.sh         # re-run idempotent : le map-keys réussit (KM désormais chargé)
 ./scripts/phase3-identity-demo.sh   # alice@oracle (via Dex) → 1 token → 200 sur WSO2 + APISIX + webMethods
 ```
+
+> Le restart + re-run est requis car WSO2 ne charge les Key Managers qu'au démarrage ; `setup-identity.sh` est idempotent (re-jouable sans risque).
 
 | Gateway | Validation du token Keycloak | Preuve |
 |---------|------------------------------|--------|
@@ -70,7 +74,7 @@ cp .env.example .env          # vérifier/ajuster les tags d'images
 | Gateway #2 | **Apache APISIX** (réel) + etcd | gateway OSS additionnel |
 | Gateway #3 | **webMethods mock** (`mocks/webmethods`, Go) | legacy commercial stand-in |
 | Identité | **Keycloak** (broker) + **Dex** (mock Oracle) | Oracle master → Keycloak émet, 3 gateways consomment |
-| Observabilité | **Grafana otel-lgtm** (Collector + Tempo/Loki/Prometheus) | 1 dashboard, OTLP des 3 gateways |
+| Observabilité | **Grafana otel-lgtm** (Collector + Tempo/Loki/Prometheus) | 1 dashboard, OTLP des **3/3** gateways (APISIX + webMethods + WSO2 — `setup-wso2-otel.sh`, goal A2) |
 | Backend | **Microcks** + MongoDB | backend synthétique depuis OpenAPI |
 
 Détail et numéros de tickets : [`PLAN.md`](./PLAN.md) §5.
