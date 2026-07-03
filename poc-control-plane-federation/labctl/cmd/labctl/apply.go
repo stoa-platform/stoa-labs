@@ -37,6 +37,10 @@ var applyCmd = &cobra.Command{
 func init() {
 	applyCmd.Flags().StringVar(&uacFlag, "uac", "",
 		"UAC contract (api.yaml) driving the enforcement gate; default: api.yaml colocated with the manifest")
+	applyCmd.Flags().StringVar(&classificationSourceFlag, "classification-source", "",
+		"central integrity-classification registry (ADR-076 A5); default env LABCTL_CLASSIFICATION_SOURCE. When set, the classification is AUTHORITATIVE from this registry, not the project api.yaml")
+	applyCmd.Flags().StringVar(&projectFlag, "project", "",
+		"non-editable project identity for the central-classification lookup; default env LABCTL_PROJECT (the pipeline's PROJECT_NAME)")
 	rootCmd.AddCommand(applyCmd)
 }
 
@@ -81,6 +85,9 @@ func runApply(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	if enf != nil {
+		for _, w := range enf.warnings {
+			fmt.Fprintf(log, "  %s %s\n", cli.SKIP, w)
+		}
 		fmt.Fprintf(log, "Enforcement ADR-076 (%s): classification=%s exposure=%s → authn=%s policies=[%s]\n",
 			enf.contractPath, enf.req.Classification, enf.req.Exposure, enf.req.Authn, strings.Join(enf.req.Policies, ", "))
 		var violations []string

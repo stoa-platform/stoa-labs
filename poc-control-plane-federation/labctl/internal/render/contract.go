@@ -8,12 +8,13 @@ import (
 )
 
 // ContractSubset is the security-relevant, on-disk subset of a UAC contract
-// (api.yaml): exactly the fields Derive consumes plus the name used to
-// cross-check the contract against the federation manifest. Shared by the
-// `labctl render` command and the apply-side enforcement gate so both read the
-// SAME fields the same way.
+// (api.yaml): exactly the fields Derive consumes plus the name/tenant used to
+// cross-check the contract against the federation manifest and the central
+// classification registry (goal A5). Shared by the `labctl render` command and
+// the apply-side enforcement gate so both read the SAME fields the same way.
 type ContractSubset struct {
 	Name           string   `json:"name"`
+	TenantID       string   `json:"tenant_id"`
 	Classification string   `json:"classification"`
 	Exposure       string   `json:"exposure"`
 	Tags           []string `json:"tags"`

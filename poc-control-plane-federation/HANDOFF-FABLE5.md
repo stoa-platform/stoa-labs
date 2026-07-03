@@ -136,6 +136,18 @@ Le labs a **prouvé sa thèse** — un control plane sur briques OSS fédère 3 
 - **Effort** : M. **Priorité** : 🟠.
 
 ---
+> ✅ **A5 FAIT (2026-07-04).** Classification anti-spoof + poly-repo. Autorité de
+> classification déplacée de l'`api.yaml` projet (éditable) vers un registre CENTRAL
+> (`stoa-platform-ci/governance/classifications.yaml`, repo plateforme non éditable).
+> `labctl apply` : bundle dérivé du CENTRAL, clé **(owner, api)** où owner=`LABCTL_PROJECT`
+> (PROJECT_NAME du pipeline, non-éditable) → ferme le trou « pointer une ligne plus
+> faible » (review B1). Codes : `[CLASSIFICATION_SPOOFED]` (downgrade/tenant), `[CLASSIFICATION_UNGOVERNED]`
+> (API absente/empruntée). 2e repo pilote `payments-team` (H/internal, bundle SANS mtls
+> ≠ accounts-team VH) déployé par le même pipeline. Preuve `test-classification-central.sh`
+> **11/11** (bundles différents, spoof/emprunt/tenant/ungoverned refusés, faux governance/
+> projet ignoré). Non-régression A1 : 31/31 live. Sans source → strictement A1.
+
+---
 **/goal A5 — Poly-repo réel + classification anti-spoof**
 - **Contexte** : le modèle repo-par-projet n'a qu'**un** pilote (`accounts-team`), et la classification d'intégrité vit **dans le repo projet** (donc modifiable par l'équipe = spoofable).
 - **Objectif** : (1) ajouter un 2e repo projet pilote (intégrité différente, ex. H ou M) pour prouver l'échelle ; (2) déplacer la classification dans un **repo de gouvernance central** non éditable par l'équipe API (cohérent avec la séparation des devoirs de `stoa-platform-ci`).
