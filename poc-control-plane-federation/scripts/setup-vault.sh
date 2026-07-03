@@ -43,11 +43,15 @@ echo "Vault $VAULT_ADDR — provisioning secret/$PREFIX/* (KV v2)"
 put gateways/wso2       "{\"username\":\"$WSO2_USER\",\"password\":\"$WSO2_PASS\"}"
 put gateways/apisix     "{\"adminKey\":\"$APISIX_ADMIN_KEY\"}"
 put gateways/webmethods "{\"username\":\"$WM_USER\",\"password\":\"$WM_PASS\"}"
-# mTLS sous gateways/* (couvert par la policy stoa-labctl) ; PEM multiline -> JSON-encodé.
+# truststore_pass = secret PLATEFORME (mot de passe du JKS de la gateway) -> gateways/*.
+put gateways/webmethods/mtls "{\"truststore_pass\":\"$WM_TRUSTSTORE_PASS\"}"
+# CA partenaire = matériel FOURNI PAR LE PROJET -> projects/accounts-team/* (son
+# namespace). Ici seed root (PoC) ; le vrai modèle = le PROJET l'y écrit via son rôle
+# write-accounts-team (self-service scopé, cf. setup-vault-approle.sh + démo).
 if [ -n "$WM_CLIENT_CA_PEM" ]; then
-  put gateways/webmethods/mtls "$(TP="$WM_TRUSTSTORE_PASS" CA="$WM_CLIENT_CA_PEM" python3 -c 'import json,os;print(json.dumps({"truststore_pass":os.environ["TP"],"client_ca_pem":os.environ["CA"]}))')"
+  put projects/accounts-team/mtls "$(CA="$WM_CLIENT_CA_PEM" python3 -c 'import json,os;print(json.dumps({"client_ca_pem":os.environ["CA"]}))')"
 else
-  echo "  (skip gateways/webmethods/mtls : pas de CA — définir WM_CLIENT_CA_FILE/PEM)"
+  echo "  (skip projects/accounts-team/mtls : pas de CA — définir WM_CLIENT_CA_FILE/PEM)"
 fi
 put keycloak            "{\"adminUsername\":\"$KC_ADMIN_USER\",\"adminPassword\":\"$KC_ADMIN_PASS\",\"consumerClientSecret\":\"$KC_CONSUMER_SECRET\"}"
 put ci                  "{\"ciApplierSecret\":\"$CI_APPLIER_SECRET\"}"

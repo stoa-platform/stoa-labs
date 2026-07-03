@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 # setup-vault-approle.sh — durcissement ADR-074 : IDENTITÉS ÉPHÉMÈRES least-priv.
 # Remplace le root token statique par des AppRoles scopées :
-#   - policy stoa-labctl          : LECTURE secret/stoa/gateways/* + secret/stoa/keycloak
+#   - policy stoa-labctl          : LECTURE secret/stoa/gateways/* + keycloak +
+#     projects/* (le platform-reader lit le matériel FOURNI par les projets)
 #   - policy stoa-ci              : LECTURE secret/stoa/ci + secret/stoa/opensearch
 #   - policy stoa-proxy-provision : LECTURE secret/stoa/envs/+/wm-admin (creds
 #     admin des mocks dev/rec/int) + secret/stoa/gateways/webmethods (l'admin du
 #     wM réel où les proxies sont appliqués) — ADR-075, setup-wm-admin-proxy.sh
+#   - policy write-accounts-team  : ÉCRITURE SCOPÉE projects/accounts-team/* (le
+#     PROJET pousse SES secrets dans son seul sous-arbre — jamais gateways/*, jamais
+#     un autre projet). Séparation des devoirs : lecture=plateforme, écriture=projet.
 # Chaque rôle émet, sur (role_id public + secret_id court/usage-limité), un TOKEN
 # ÉPHÉMÈRE (TTL court) portant SA SEULE policy — un token compromis ne lit que son
 # périmètre, jamais root, et expire. C'est le « management du token Vault » prod.
@@ -42,8 +46,18 @@ policy() {
 }
 
 echo "Vault $VAULT_ADDR — policies least-privilege + AppRoles éphémères"
+# stoa-labctl (platform reader) : lit les creds gateway/keycloak ET le matériel
+# FOURNI par les projets sous projects/* (CA partenaire, creds backend) pour les
+# déployer. Il LIT projects/* mais n'y ÉCRIT jamais.
 policy stoa-labctl 'path "secret/data/stoa/gateways/*" { capabilities = ["read"] }
-path "secret/data/stoa/keycloak" { capabilities = ["read"] }'
+path "secret/data/stoa/keycloak" { capabilities = ["read"] }
+path "secret/data/stoa/projects/*" { capabilities = ["read"] }'
+# write-accounts-team : self-service SCOPÉ du projet accounts-team. Il ÉCRIT (et
+# relit) UNIQUEMENT son propre sous-arbre projects/accounts-team/*. Jamais gateways/*,
+# jamais keycloak, jamais un autre projet. C'est la réponse à « comment un projet
+# pousse ses creds dans un Vault qui n'est pas le sien » : un rôle write scopé.
+policy write-accounts-team 'path "secret/data/stoa/projects/accounts-team/*" { capabilities = ["create","update","read"] }
+path "secret/metadata/stoa/projects/accounts-team/*" { capabilities = ["read","list"] }'
 policy stoa-ci 'path "secret/data/stoa/ci" { capabilities = ["read"] }
 path "secret/data/stoa/opensearch" { capabilities = ["read"] }'
 # ADR-075 — provisioning des proxies admin wm-admin-{env} UNIQUEMENT. Le chemin
@@ -73,9 +87,14 @@ role ci-pipeline 'stoa-ci,stoa-labctl'
 # proxy-provision : l'OPÉRATEUR qui pose les 3 proxies admin (ADR-075,
 # setup-wm-admin-proxy.sh) — seul rôle à lire secret/stoa/envs/+/wm-admin.
 role proxy-provision stoa-proxy-provision
+# accounts-team : identité du PROJET pour pousser SES propres secrets (self-service
+# scopé). WRITE limité à projects/accounts-team/* — un token de ce rôle ne peut ni
+# écrire gateways/*, ni lire un autre projet (contre-épreuve dans le --demo-scope).
+role accounts-team write-accounts-team
 
 echo "done. Mint d'un secret_id frais :"
-echo "    $0 --mint labctl           # token éphémère, policy stoa-labctl (gateways+keycloak)"
+echo "    $0 --mint labctl           # token éphémère, policy stoa-labctl (gateways+keycloak+projects RO)"
 echo "    $0 --mint ci               # token éphémère, policy stoa-ci (ci+opensearch)"
 echo "    $0 --mint ci-pipeline      # token éphémère, les 2 policies (le job Jenkins)"
 echo "    $0 --mint proxy-provision  # token éphémère, policy stoa-proxy-provision (ADR-075)"
+echo "    $0 --mint accounts-team    # token éphémère, WRITE scopé projects/accounts-team/* (projet)"

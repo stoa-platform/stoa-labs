@@ -48,8 +48,9 @@
     # Convention plateforme (internal/vault) : URL = {mount}/data/{prefix}/{sub}.
     vault_kv_mount: "secret"                        # VAULT_KV_MOUNT (défaut "secret")
     vault_prefix: "stoa"                            # VAULT_PREFIX (défaut "stoa")
-    vault_wm_creds_sub: "gateways/webmethods"       # creds admin gateway (DÉJÀ lu par labctl) : { username, password }
-    vault_mtls_sub: "gateways/webmethods/mtls"      # mTLS { truststore_pass, client_ca_pem } — sous gateways/* (policy stoa-labctl)
+    vault_wm_creds_sub: "gateways/webmethods"       # creds admin gateway (PLATEFORME) : { username, password }
+    vault_gw_mtls_sub: "gateways/webmethods/mtls"   # truststore_pass (PLATEFORME — mot de passe du JKS gateway)
+    vault_proj_ca_sub: "projects/accounts-team/mtls" # CA partenaire (FOURNIE PAR LE PROJET, son namespace)
     wm_admin_pass_fallback: "manage"                # PoC sans Vault
     truststore_pass_fallback: "manage"             # PoC sans Vault
     client_ca_file_fallback: "files/{{ client_ca_alias }}.pem"  # PoC sans Vault (gitignoré)
@@ -112,12 +113,22 @@
       no_log: true
       when: "vault_addr | length > 0"
 
-    - name: "Vault : lire {{ vault_prefix }}/{{ vault_mtls_sub }} (truststore_pass, client_ca_pem) [KV v2]"
+    - name: "Vault : lire {{ vault_prefix }}/{{ vault_gw_mtls_sub }} (truststore_pass — PLATEFORME) [KV v2]"
       ansible.builtin.uri:
-        url: "{{ vault_addr }}/v1/{{ vault_kv_mount }}/data/{{ vault_prefix }}/{{ vault_mtls_sub }}"
+        url: "{{ vault_addr }}/v1/{{ vault_kv_mount }}/data/{{ vault_prefix }}/{{ vault_gw_mtls_sub }}"
         headers: { X-Vault-Token: "{{ vault_token }}" }
         status_code: [200, 404]
-      register: kv_mtls
+      register: kv_gw_mtls
+      delegate_to: localhost
+      no_log: true
+      when: "vault_addr | length > 0"
+
+    - name: "Vault : lire {{ vault_prefix }}/{{ vault_proj_ca_sub }} (CA partenaire — PROJET) [KV v2]"
+      ansible.builtin.uri:
+        url: "{{ vault_addr }}/v1/{{ vault_kv_mount }}/data/{{ vault_prefix }}/{{ vault_proj_ca_sub }}"
+        headers: { X-Vault-Token: "{{ vault_token }}" }
+        status_code: [200, 404]
+      register: kv_proj_ca
       delegate_to: localhost
       no_log: true
       when: "vault_addr | length > 0"
@@ -125,9 +136,9 @@
     - name: "Secrets : résoudre (Vault prioritaire ; fallback PoC défaut/fichier)"
       ansible.builtin.set_fact:
         wm_password: "{{ (kv_wm.json.data.data.password | default('')) or wm_admin_pass_fallback }}"
-        store_pass: "{{ (kv_mtls.json.data.data.truststore_pass | default('')) or truststore_pass_fallback }}"
+        store_pass: "{{ (kv_gw_mtls.json.data.data.truststore_pass | default('')) or truststore_pass_fallback }}"
         ca_pem: >-
-          {{ (kv_mtls.json.data.data.client_ca_pem | default(''))
+          {{ (kv_proj_ca.json.data.data.client_ca_pem | default(''))
              or (lookup('file', client_ca_file_fallback, errors='ignore') | default('', true)) }}
       no_log: true
 
