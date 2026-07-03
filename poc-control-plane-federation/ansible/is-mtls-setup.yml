@@ -1,0 +1,252 @@
+---
+# ansible/is-mtls-setup.yml
+#
+# ADR-076 — pré-requis mTLS « couche IS-admin » (HORS REST apigateway) du modèle
+# « port request + barrière IAM par-API ». Deux réglages que labctl NE fait PAS
+# (pas d'API apigateway propre) et qui vivent donc ici, en Ansible fidèle client :
+#
+#   1. Listener HTTPS clientAuth = request  -> le cert client est ACCEPTÉ (optionnel)
+#      au transport. L'enforcement mTLS d'une API VH se fait ensuite AU STAGE IAM
+#      (labctl `inboundAuth.mtls: true` -> action « OAuth2 AND httpsCertificate »).
+#      request (et non require) = toutes les APIs restent joignables sur le port ;
+#      chaque API décide par sa policy IAM (VH exige le cert, H/M non).
+#   2. CA cliente dans le truststore IS     -> sans quoi un cert présenté n'est pas
+#      « trusted » et la règle httpsCertificate ne matche pas. Le JKS est chargé au
+#      DÉMARRAGE de l'IS : un changement de truststore EXIGE un restart (prouvé live —
+#      la CA importée à chaud n'était pas prise avant restart).
+#
+# Idempotent : clientAuth n'est PUT que s'il diffère ; la CA n'est importée (et l'IS
+# restarté) que si l'alias est absent/différent. Re-run convergé = lecture seule.
+# Read-backs fail-closed : le play échoue BRUYAMMENT si un réglage n'a pas pris
+# (jamais de faux « OK »).
+#
+# En prod ce rôle cible stoa-infra/ansible (même principe, secrets en Vault ADR-074).
+# En PoC il vise le conteneur trial (voir inventory.example.ini + les vars is_restart_*).
+
+- name: "webMethods IS — pré-requis mTLS (couche IS-admin, ADR-076)"
+  hosts: webmethods
+  gather_facts: false
+
+  vars:
+    # --- Étape 1 : endpoint admin apigateway (le PUT /ports vit ici) -------------
+    wm_admin_url: "http://localhost:5555"
+    wm_user: "Administrator"
+    # wm_password (admin) est RÉSOLU depuis Vault en tête de `tasks` (section Secrets).
+    https_port: 5543                 # listener HTTPS « DefaultSecure »
+    client_auth: "request"           # none | request | require  (modèle ADR-076 = request)
+
+    # --- Étape 2 : truststore IS (keytool sur le JKS de la plateforme) -----------
+    truststore_path: "/opt/softwareag/common/conf/platform_truststore.jks"
+    keytool_bin: "/opt/softwareag/jvm/jvm/bin/keytool"
+    client_ca_alias: "accounts-team-client-ca"
+
+    # --- Secrets : TOUS lus de VAULT au runtime (ADR-074, KV v2), jamais en Git.
+    # admin password wM, storepass du truststore, CA cliente. Fallback total sans
+    # VAULT_ADDR (défauts trial + fichier local) = parité moteur internal/vault.
+    # Résolus en tête de `tasks` (section « Secrets »).
+    vault_addr: "{{ lookup('env', 'VAULT_ADDR') }}"
+    # Convention plateforme (internal/vault) : URL = {mount}/data/{prefix}/{sub}.
+    vault_kv_mount: "secret"                        # VAULT_KV_MOUNT (défaut "secret")
+    vault_prefix: "stoa"                            # VAULT_PREFIX (défaut "stoa")
+    vault_wm_creds_sub: "gateways/webmethods"       # creds admin gateway (DÉJÀ lu par labctl) : { username, password }
+    vault_mtls_sub: "gateways/webmethods/mtls"      # mTLS { truststore_pass, client_ca_pem } — sous gateways/* (policy stoa-labctl)
+    wm_admin_pass_fallback: "manage"                # PoC sans Vault
+    truststore_pass_fallback: "manage"             # PoC sans Vault
+    client_ca_file_fallback: "files/{{ client_ca_alias }}.pem"  # PoC sans Vault (gitignoré)
+
+    # --- restart IS (handler) : le truststore n'est relu qu'au démarrage ---------
+    # PoC docker : is_restart_host=localhost + docker restart. Client : le service
+    # SAG sur l'hôte IS (sagcc / systemctl restart integrationserver@default).
+    is_restart_host: "{{ inventory_hostname }}"
+    is_restart_cmd: "sagcc exec lifecycle restart node local component integrationserver-default"
+    is_health_url: "{{ wm_admin_url }}/rest/apigateway/health"
+
+  tasks:
+    # ========== Secrets : Vault (AppRole, ADR-074) d'abord, fallback PoC ==========
+    # Auth = MÊME chaîne que le moteur internal/vault (cohérence CI) : token statique
+    # (VAULT_TOKEN_FILE 0600 > VAULT_TOKEN) SINON login AppRole (VAULT_ROLE_ID +
+    # VAULT_SECRET_ID_FILE > VAULT_SECRET_ID -> token ÉPHÉMÈRE scopé à la policy du
+    # rôle, pas de root token). En uri HTTP (comme internal/vault, zéro dépendance CLI).
+    # Tout skippé sans VAULT_ADDR -> fallback total (défauts trial + fichier local).
+    - name: "Vault : token statique (VAULT_TOKEN_FILE > VAULT_TOKEN)"
+      ansible.builtin.set_fact:
+        vault_token: >-
+          {{ (lookup('file', lookup('env', 'VAULT_TOKEN_FILE'), errors='ignore') | default('', true) | trim)
+             or (lookup('env', 'VAULT_TOKEN') | default('', true) | trim) }}
+      no_log: true
+      when: "vault_addr | length > 0"
+
+    - name: "Vault : login AppRole (si aucun token statique)"
+      ansible.builtin.uri:
+        url: "{{ vault_addr }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ lookup('env', 'VAULT_ROLE_ID') }}"
+          secret_id: >-
+            {{ (lookup('file', lookup('env', 'VAULT_SECRET_ID_FILE'), errors='ignore') | default('', true) | trim)
+               or (lookup('env', 'VAULT_SECRET_ID') | default('', true) | trim) }}
+        status_code: [200]
+      register: approle
+      delegate_to: localhost
+      no_log: true
+      when:
+        - "vault_addr | length > 0"
+        - "vault_token | default('') | length == 0"
+
+    - name: "Vault : token effectif (statique ou AppRole éphémère)"
+      ansible.builtin.set_fact:
+        vault_token: >-
+          {{ vault_token if (vault_token | default('') | length > 0)
+             else (approle.json.auth.client_token | default('')) }}
+      no_log: true
+      when: "vault_addr | length > 0"
+
+    - name: "Vault : lire {{ vault_prefix }}/{{ vault_wm_creds_sub }} (creds admin gateway) [KV v2]"
+      ansible.builtin.uri:
+        url: "{{ vault_addr }}/v1/{{ vault_kv_mount }}/data/{{ vault_prefix }}/{{ vault_wm_creds_sub }}"
+        headers: { X-Vault-Token: "{{ vault_token }}" }
+        status_code: [200, 404]
+      register: kv_wm
+      delegate_to: localhost
+      no_log: true
+      when: "vault_addr | length > 0"
+
+    - name: "Vault : lire {{ vault_prefix }}/{{ vault_mtls_sub }} (truststore_pass, client_ca_pem) [KV v2]"
+      ansible.builtin.uri:
+        url: "{{ vault_addr }}/v1/{{ vault_kv_mount }}/data/{{ vault_prefix }}/{{ vault_mtls_sub }}"
+        headers: { X-Vault-Token: "{{ vault_token }}" }
+        status_code: [200, 404]
+      register: kv_mtls
+      delegate_to: localhost
+      no_log: true
+      when: "vault_addr | length > 0"
+
+    - name: "Secrets : résoudre (Vault prioritaire ; fallback PoC défaut/fichier)"
+      ansible.builtin.set_fact:
+        wm_password: "{{ (kv_wm.json.data.data.password | default('')) or wm_admin_pass_fallback }}"
+        store_pass: "{{ (kv_mtls.json.data.data.truststore_pass | default('')) or truststore_pass_fallback }}"
+        ca_pem: >-
+          {{ (kv_mtls.json.data.data.client_ca_pem | default(''))
+             or (lookup('file', client_ca_file_fallback, errors='ignore') | default('', true)) }}
+      no_log: true
+
+    # ========== Étape 1 : listener HTTPS clientAuth = {{ client_auth }} ==========
+    - name: "Ports : lire l'état courant (résoudre l'alias + clientAuth du port HTTPS)"
+      ansible.builtin.uri:
+        url: "{{ wm_admin_url }}/rest/apigateway/ports"
+        user: "{{ wm_user }}"
+        password: "{{ wm_password }}"
+        force_basic_auth: true
+        headers: { Accept: "application/json" }
+      register: gw_ports
+      changed_when: false
+
+    - name: "Ports : isoler le record du listener :{{ https_port }}"
+      ansible.builtin.set_fact:
+        https_listener: >-
+          {{ (gw_ports.json.listeners | selectattr('port', 'equalto', https_port)
+              | list | first) | default({}) }}
+
+    - name: "Ports : fail-closed si aucun listener HTTPS sur :{{ https_port }}"
+      ansible.builtin.assert:
+        that: "https_listener.alias is defined"
+        fail_msg: >-
+          Aucun listener HTTPS sur le port {{ https_port }} — créer/activer le port
+          HTTPS (API Gateway UI ou IS Admin) avant ce play.
+
+    - name: "Ports : PUT clientAuth={{ client_auth }} (read-modify-write, skip si déjà à la valeur)"
+      ansible.builtin.uri:
+        url: "{{ wm_admin_url }}/rest/apigateway/ports/{{ https_listener.alias }}"
+        method: PUT
+        user: "{{ wm_user }}"
+        password: "{{ wm_password }}"
+        force_basic_auth: true
+        headers:
+          Accept: "application/json"
+          Content-Type: "application/json"
+        body_format: json
+        body: "{{ https_listener | combine({'clientAuth': client_auth}) }}"
+        status_code: [200, 201]
+      when: "https_listener.clientAuth | default('none') != client_auth"
+      register: put_client_auth
+      # NOTE trial : certains builds renvoient 500 sur un PUT /ports (quirk de mise à
+      # jour de port). Fallback manuel = API Gateway UI (Administration > Ports) ou
+      # IS Admin (:5555/WmRoot > Security > Ports). Le read-back ci-dessous échoue
+      # bruyamment si le PUT n'a pas pris.
+
+    - name: "Ports : read-back fail-closed — clientAuth = {{ client_auth }}"
+      ansible.builtin.uri:
+        url: "{{ wm_admin_url }}/rest/apigateway/ports"
+        user: "{{ wm_user }}"
+        password: "{{ wm_password }}"
+        force_basic_auth: true
+        headers: { Accept: "application/json" }
+      register: gw_ports_after
+      changed_when: false
+      failed_when: >-
+        (gw_ports_after.json.listeners | selectattr('port', 'equalto', https_port)
+         | map(attribute='clientAuth') | list | first | default('none')) != client_auth
+
+    # ========== Étape 2 : CA cliente dans le truststore IS ==========
+    # CA + storepass déjà résolus (section Secrets, Vault d'abord). keytool via
+    # ansible.builtin. Idempotent : import + restart SEULEMENT si l'alias est absent.
+
+    - name: "Truststore : fail-closed si aucune CA (ni Vault ni fichier)"
+      ansible.builtin.assert:
+        that: "ca_pem | length > 0"
+        fail_msg: >-
+          Aucune CA : Vault {{ vault_mtls_path }}#client_ca_pem vide ET fichier
+          {{ client_ca_file_fallback }} absent. Alimenter Vault (ADR-074) ou fournir le fichier (PoC).
+
+    - name: "Truststore : l'alias de la CA est-il déjà présent ?"
+      ansible.builtin.command:
+        argv: ["{{ keytool_bin }}", "-list", "-keystore", "{{ truststore_path }}", "-storepass", "{{ store_pass }}", "-alias", "{{ client_ca_alias }}"]
+      register: ca_present
+      changed_when: false
+      failed_when: false        # rc != 0 => alias absent (pas une erreur)
+      no_log: true              # -storepass en argv
+
+    - name: "Truststore : écrire le PEM (0600) sur l'hôte IS — si CA absente"
+      ansible.builtin.copy:
+        content: "{{ ca_pem }}"
+        dest: "/tmp/{{ client_ca_alias }}.pem"
+        mode: "0600"
+      when: "ca_present.rc != 0"
+
+    - name: "Truststore : importer la CA (keytool) — le JKS est chargé au boot IS"
+      ansible.builtin.command:
+        argv: ["{{ keytool_bin }}", "-importcert", "-noprompt", "-trustcacerts", "-alias", "{{ client_ca_alias }}", "-file", "/tmp/{{ client_ca_alias }}.pem", "-keystore", "{{ truststore_path }}", "-storepass", "{{ store_pass }}"]
+      when: "ca_present.rc != 0"
+      register: ca_import
+      notify: restart integration server
+      no_log: true              # -storepass en argv
+      # Rotation de CA (même alias, nouveau cert) : keytool refuse l'import sur un
+      # alias existant -> supprimer d'abord (keytool -delete -alias ...) puis re-run.
+
+    - name: "Truststore : purger le PEM temporaire (jamais au repos)"
+      ansible.builtin.file:
+        path: "/tmp/{{ client_ca_alias }}.pem"
+        state: absent
+
+  handlers:
+    # Le truststore JKS n'est relu qu'au DÉMARRAGE de l'IS -> restart quand la CA change.
+    - name: restart integration server
+      ansible.builtin.command: "{{ is_restart_cmd }}"
+      delegate_to: "{{ is_restart_host }}"
+      changed_when: true
+      notify: wait for IS health
+
+    - name: wait for IS health
+      ansible.builtin.uri:
+        url: "{{ is_health_url }}"
+        user: "{{ wm_user }}"
+        password: "{{ wm_password }}"
+        force_basic_auth: true
+        status_code: 200
+      register: is_health
+      until: is_health.status == 200
+      retries: 48        # ~4 min (le trial met ~1-2 min à redevenir sain)
+      delay: 5
+      delegate_to: "{{ is_restart_host }}"
+      changed_when: false
