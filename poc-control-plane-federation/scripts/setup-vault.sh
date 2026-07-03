@@ -29,6 +29,11 @@ put() {
 WSO2_USER="${WSO2_USER:-admin}";            WSO2_PASS="${WSO2_PASS:-admin}"
 APISIX_ADMIN_KEY="${APISIX_ADMIN_KEY:-poc-apisix-admin-key}"
 WM_USER="${WM_USER:-Administrator}";        WM_PASS="${WM_PASS:-manage}"
+# mTLS (ADR-076) : storepass du truststore + CA cliente PUBLIQUE. CA via contenu
+# (WM_CLIENT_CA_PEM) ou fichier (WM_CLIENT_CA_FILE, défaut = CA de démo du repo).
+WM_TRUSTSTORE_PASS="${WM_TRUSTSTORE_PASS:-manage}"
+WM_CLIENT_CA_FILE="${WM_CLIENT_CA_FILE:-$(cd "$(dirname "$0")/.." && pwd)/ansible/files/accounts-team-client-ca.pem}"
+WM_CLIENT_CA_PEM="${WM_CLIENT_CA_PEM:-$(cat "$WM_CLIENT_CA_FILE" 2>/dev/null || true)}"
 KC_ADMIN_USER="${KC_ADMIN_USER:-admin}";    KC_ADMIN_PASS="${KC_ADMIN_PASS:-admin}"
 KC_CONSUMER_SECRET="${KC_CONSUMER_SECRET:-}"
 CI_APPLIER_SECRET="${CI_APPLIER_SECRET:-ci-applier-secret}"
@@ -38,6 +43,12 @@ echo "Vault $VAULT_ADDR — provisioning secret/$PREFIX/* (KV v2)"
 put gateways/wso2       "{\"username\":\"$WSO2_USER\",\"password\":\"$WSO2_PASS\"}"
 put gateways/apisix     "{\"adminKey\":\"$APISIX_ADMIN_KEY\"}"
 put gateways/webmethods "{\"username\":\"$WM_USER\",\"password\":\"$WM_PASS\"}"
+# mTLS sous gateways/* (couvert par la policy stoa-labctl) ; PEM multiline -> JSON-encodé.
+if [ -n "$WM_CLIENT_CA_PEM" ]; then
+  put gateways/webmethods/mtls "$(TP="$WM_TRUSTSTORE_PASS" CA="$WM_CLIENT_CA_PEM" python3 -c 'import json,os;print(json.dumps({"truststore_pass":os.environ["TP"],"client_ca_pem":os.environ["CA"]}))')"
+else
+  echo "  (skip gateways/webmethods/mtls : pas de CA — définir WM_CLIENT_CA_FILE/PEM)"
+fi
 put keycloak            "{\"adminUsername\":\"$KC_ADMIN_USER\",\"adminPassword\":\"$KC_ADMIN_PASS\",\"consumerClientSecret\":\"$KC_CONSUMER_SECRET\"}"
 put ci                  "{\"ciApplierSecret\":\"$CI_APPLIER_SECRET\"}"
 put opensearch          "{\"adminPassword\":\"$OS_ADMIN_PASS\"}"
