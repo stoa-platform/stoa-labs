@@ -1,0 +1,588 @@
+# =============================================================================
+# Data Prepper — pipelines (ADR-070, tranche APISIX, Phase 3)
+#
+# Collecteur-central NORMALISANT = la SEULE autorité de redaction (ADR-070).
+#
+#   source kafka (Redpanda, topic stoa.txn.apisix, group_id data-prepper)
+#     → (a) NORMALISE les champs FLAT émis par le kafka-logger APISIX vers le
+#            schéma commun stoa.txn (headers à plat req_header_*/resp_header_*
+#            → objets request_headers{}/response_headers{} ; status string dérivé
+#            de http_status integer).
+#     → (b) REDACTE de façon déterministe (IBAN garder 4+4, MONETARY ***,
+#            Authorization / cookies / set-cookie) + redaction_applied=true.
+#     → (c) GARANTIT l'absence de request_body (jamais émis par APISIX ; drop
+#            défensif si présent).
+#     → (d) CAPTURE :  succès  = MÉTADONNÉES seules (drop body + headers)
+#                      erreur  = méta + response_body (redacté)
+#                                + request_headers (redactés)
+#                                + response_headers (redactés)
+#            JAMAIS le request body.
+#     → route (tenant) → sink opensearch index "txn-${/tenant}-%{yyyy.MM.dd}".
+#
+# Contrat d'entrée RÉEL (kafka-logger APISIX, vérifié live 2026-06-11) :
+#   le log_format APISIX projette un objet JSON PLAT (contrainte :byte() — pas
+#   d'objets nichés). Les en-têtes sont des clés plates :
+#     req_header_authorization, req_header_cookie, req_header_user_agent,
+#     req_header_x_request_id, resp_header_content_type,
+#     resp_header_www_authenticate.
+#   http_status est un INTEGER ; il N'Y A PAS de champ `status` string à la
+#   source (on le DÉRIVE ici) ; response_body éventuel = clé plate `body`
+#   (capturé par include_resp_body sur status>=400).
+#   batch_max_size=1 côté APISIX => 1 objet JSON par message Kafka (sinon le
+#   logger émet un ARRAY que la source kafka json refuse — START_ARRAY).
+#
+# ⚠️ Sécurité : ce pipeline N'INDEXE JAMAIS de PII non-redacté sous txn-{tenant}-*.
+# La redaction (b) précède la capture (d) qui précède le routage/sink.
+# =============================================================================
+
+stoa-txn-apisix:
+  workers: 2
+  delay: 1000
+
+  source:
+    kafka:
+      bootstrap_servers:
+        - "redpanda:9092"
+      encryption:
+        type: none
+      topics:
+        - name: "stoa.txn.apisix"
+          group_id: "data-prepper"
+          auto_offset_reset: "earliest"
+          serde_format: json
+
+  processor:
+    # -------------------------------------------------------------------------
+    # (a) NORMALISATION vers le schéma stoa.txn.
+    # -------------------------------------------------------------------------
+
+    # a.1 — Identité gateway / gouvernance : valeurs statiques de cette tranche.
+    - add_entries:
+        entries:
+          - key: "gateway"
+            value: "apisix"
+            overwrite_if_key_exists: true
+          - key: "schema_version"
+            value: "1"
+            overwrite_if_key_exists: true
+          - key: "retention_tier"
+            value: "regulated"
+            overwrite_if_key_exists: false
+          - key: "provider"
+            value: "apisix"
+            overwrite_if_key_exists: false
+
+    # a.2 — Types numériques. http_status arrive déjà en integer (kafka-logger),
+    #       mais on FORCE le type pour rendre la comparaison numérique (a.4) sûre
+    #       quelle que soit la source. latency_ms -> double.
+    - convert_entry_type:
+        key: "http_status"
+        type: "integer"
+    - convert_entry_type:
+        key: "latency_ms"
+        type: "double"
+
+    # a.3 — status (success|error) DÉRIVÉ de http_status integer.
+    #       http_status est garanti integer (a.2) -> la comparaison ne peut plus
+    #       lever de NPE (le bug live : `status` valait le code HTTP numérique et
+    #       /http_status était parfois null quand l'event arrivait en ARRAY).
+    - add_entries:
+        entries:
+          - key: "status"
+            value: "success"
+            overwrite_if_key_exists: true
+    - add_entries:
+        entries:
+          - key: "status"
+            value: "error"
+            overwrite_if_key_exists: true
+            add_when: '/http_status >= 400'
+
+    # a.5 — tenant : projeté par APISIX (log_format). Filet PoC si absent.
+    - add_entries:
+        entries:
+          - key: "tenant"
+            value: "accounts-team"
+            overwrite_if_key_exists: false
+
+    # a.6 — Reconstruit les OBJETS request_headers{} / response_headers{} à partir
+    #       des clés PLATES émises par APISIX (contrainte :byte()). On ne copie que
+    #       des en-têtes NON vides. La redaction (b) s'applique ensuite.
+    - copy_values:
+        entries:
+          - from_key: "req_header_authorization"
+            to_key: "/request_headers/Authorization"
+          - from_key: "req_header_cookie"
+            to_key: "/request_headers/Cookie"
+          - from_key: "req_header_user_agent"
+            to_key: "/request_headers/User-Agent"
+          - from_key: "req_header_x_request_id"
+            to_key: "/request_headers/X-Request-Id"
+          - from_key: "resp_header_content_type"
+            to_key: "/response_headers/Content-Type"
+          - from_key: "resp_header_www_authenticate"
+            to_key: "/response_headers/WWW-Authenticate"
+
+    # a.7 — response_body : APISIX capture le corps sur status>=400 dans la clé
+    #       plate `body`. On la normalise en response_body (text).
+    - rename_keys:
+        entries:
+          - from_key: "body"
+            to_key: "response_body"
+            overwrite_if_to_key_exists: false
+
+    # -------------------------------------------------------------------------
+    # (c) ABSENCE DE REQUEST_BODY — APISIX ne l'émet jamais (include_req_body=false).
+    #     Drop défensif au cas où.
+    # -------------------------------------------------------------------------
+    - delete_entries:
+        with_keys:
+          - "request_body"
+
+    # -------------------------------------------------------------------------
+    # (b) REDACTION DÉTERMINISTE — autorité unique (ADR-070).
+    # -------------------------------------------------------------------------
+
+    # b.1 — IBAN (FR) sur response_body : garde 4 premiers + 4 derniers, masque
+    #       le milieu. Ex : FR7630006000011234567890189 -> FR7630****0189.
+    - substitute_string:
+        entries:
+          - source: "response_body"
+            from: "(FR\\d{2}[A-Z0-9]{2})[A-Z0-9]{2,}([A-Z0-9]{4})"
+            to: "$1****$2"
+
+    # b.2 — MONETARY : montants / soldes -> "***" (PIIType custom, ADR-070 #5).
+    #       Le préfixe optionnel [a-z_]* couvre les clés composées usuelles en
+    #       banque (last_amount, total_balance, available_balance, booked_balance,
+    #       amount_due...). On capture la clé monétaire en fin de mot-clé JSON.
+    - substitute_string:
+        entries:
+          - source: "response_body"
+            from: "(\"[a-z_]*(?:balance|amount|montant|solde|available|booked|credit|debit)\"\\s*:\\s*)(\"[^\"]*\"|-?[0-9]+(?:\\.[0-9]+)?)"
+            to: "$1\"***\""
+
+    # b.3 — En-têtes sensibles masqués (Authorization / Cookie / Set-Cookie).
+    #       On supprime LES OBJETS reconstruits ET les clés plates source, pour
+    #       qu'aucun secret ne subsiste où que ce soit dans l'event.
+    - delete_entries:
+        with_keys:
+          - "/request_headers/Authorization"
+          - "/request_headers/Cookie"
+          - "/response_headers/Set-Cookie"
+          - "req_header_authorization"
+          - "req_header_cookie"
+
+    # b.4 — Drapeaux d'audit de redaction (toujours posés).
+    - add_entries:
+        entries:
+          - key: "redaction_applied"
+            value: true
+            overwrite_if_key_exists: true
+          - key: "redacted_fields"
+            value: ["response_body", "request_headers.Authorization", "request_headers.Cookie", "response_headers.Set-Cookie", "iban", "monetary"]
+            overwrite_if_key_exists: true
+
+    # -------------------------------------------------------------------------
+    # (d) CAPTURE conditionnelle (règle utilisateur stricte) :
+    #       SUCCÈS  -> MÉTADONNÉES seules : drop body + headers (objets + plats).
+    #       ERREUR  -> garde response_body + request_headers + response_headers
+    #                  (déjà redactés en (b)). JAMAIS le request body.
+    # -------------------------------------------------------------------------
+    - delete_entries:
+        with_keys:
+          - "response_body"
+          - "request_headers"
+          - "response_headers"
+        delete_when: '/status == "success"'
+
+    # d.bis — Nettoyage des clés PLATES résiduelles APISIX (req_header_*/resp_header_*
+    #         restantes + champs natifs) : jamais indexées (template dynamic:false)
+    #         mais on garde l'event propre et sans PII flottante.
+    - delete_entries:
+        with_keys:
+          - "req_header_user_agent"
+          - "req_header_x_request_id"
+          - "resp_header_content_type"
+          - "resp_header_www_authenticate"
+          - "route_id"
+          - "service_id"
+          - "start_time"
+          - "kafka_key"
+
+  # ---------------------------------------------------------------------------
+  # Route (tenant) -> sink OpenSearch index-par-tenant.
+  # ---------------------------------------------------------------------------
+  sink:
+    - opensearch:
+        hosts:
+          - "https://opensearch:9200"
+        username: "admin"
+        password: "Stoa!Passw0rd2026"
+        insecure: true                       # PoC : certificat démo auto-signé
+        index: "txn-${/tenant}"              # DATA STREAM par tenant (append-only)
+        action: "create"                     # data stream => op_type create obligatoire
+        normalize_index: true                # nom toujours valide
+        # Le template `stoa-txn` (data_stream activé, index_patterns txn-*) + l'ISM
+        # `stoa-txn-retention` sont posés par provision.sh — on NE re-pousse PAS ici.
+        # document_id retiré : data stream append-only (idempotence custom-id non supportée).
+        max_retries: 16
+        dlq_file: "/usr/share/data-prepper/log/stoa-txn-apisix-dlq.json"
+
+# =============================================================================
+# Tranche webMethods RÉEL (ADR-073, Y analytics) — même schéma stoa.txn.
+#
+# Producteur : wm-trace-bridge (le Y : spans→Tempo + JSON BRUT de chaque event
+# Transactional → topic stoa.txn.webmethods). Contrat d'entrée = l'événement
+# transactionnel wM 10.15 tel quel (capturé in-situ 2026-06-12, cf.
+# observability/wm-trace-bridge/testdata/transactional.json) :
+#   - headers en OBJETS (requestHeaders{}/responseHeaders{}), PAS à plat ;
+#     Authorization déjà masquée par le gateway (« ************** ») — on
+#     supprime quand même (autorité de redaction = ICI, ADR-070) ;
+#   - responseCode STRING ("200"), totalTime ms, creationDate epoch ms ;
+#   - payloads VIDES (storeRequest/ResponsePayload=false côté Log Invocation)
+#     → les erreurs partent sans response_body (différence assumée vs APISIX,
+#     cf. ADR-073 ; activer les payloads à la source si besoin d'audit body) ;
+#   - traceparent du client dans requestHeaders.traceparent → pivot trace_id.
+# =============================================================================
+
+stoa-txn-webmethods:
+  workers: 2
+  delay: 1000
+
+  source:
+    kafka:
+      bootstrap_servers:
+        - "redpanda:9092"
+      encryption:
+        type: none
+      topics:
+        - name: "stoa.txn.webmethods"
+          group_id: "data-prepper"
+          auto_offset_reset: "earliest"
+          serde_format: json
+
+  processor:
+    # (0) Défensif : seuls les événements transactionnels portent le schéma txn.
+    - drop_events:
+        drop_when: '/eventType != "Transactional"'
+
+    # (a) NORMALISATION vers le schéma stoa.txn (mêmes clés que la tranche APISIX).
+    - add_entries:
+        entries:
+          - key: "gateway"
+            value: "webmethods"
+            overwrite_if_key_exists: true
+          - key: "provider"
+            value: "webmethods"
+            overwrite_if_key_exists: true
+          - key: "schema_version"
+            value: "1"
+            overwrite_if_key_exists: true
+          - key: "retention_tier"
+            value: "regulated"
+            overwrite_if_key_exists: false
+          - key: "tenant"
+            value: "accounts-team"      # filet PoC : l'event wM ne porte pas de tenant
+            overwrite_if_key_exists: false
+
+    # a.1 — renommages 1:1 vers les clés communes.
+    - rename_keys:
+        entries:
+          - from_key: "apiName"
+            to_key: "api"
+            overwrite_if_to_key_exists: true
+          - from_key: "apiVersion"
+            to_key: "api_version"
+            overwrite_if_to_key_exists: true
+          - from_key: "httpMethod"
+            to_key: "http_method"
+            overwrite_if_to_key_exists: true
+          - from_key: "operationName"
+            to_key: "http_path"
+            overwrite_if_to_key_exists: true
+          - from_key: "responseCode"
+            to_key: "http_status"
+            overwrite_if_to_key_exists: true
+          - from_key: "totalTime"
+            to_key: "latency_ms"
+            overwrite_if_to_key_exists: true
+          - from_key: "correlationID"
+            to_key: "request_id"
+            overwrite_if_to_key_exists: true
+          - from_key: "applicationName"
+            to_key: "consumer_id"
+            overwrite_if_to_key_exists: true
+          - from_key: "applicationIp"
+            to_key: "user_ip"
+            overwrite_if_to_key_exists: true
+          - from_key: "requestHeaders"
+            to_key: "request_headers"
+            overwrite_if_to_key_exists: true
+          - from_key: "responseHeaders"
+            to_key: "response_headers"
+            overwrite_if_to_key_exists: true
+          - from_key: "resPayload"
+            to_key: "response_body"
+            overwrite_if_to_key_exists: true
+
+    # a.2 — types : responseCode arrive en STRING, totalTime en number.
+    - convert_entry_type:
+        key: "http_status"
+        type: "integer"
+    - convert_entry_type:
+        key: "latency_ms"
+        type: "double"
+
+    # a.3 — @timestamp (exigé par le data stream) depuis creationDate (epoch ms).
+    - date:
+        match:
+          - key: "creationDate"
+            patterns: ["epoch_milli"]
+        destination: "@timestamp"
+
+    # a.4 — status (success|error) DÉRIVÉ de http_status (on écrase le
+    #       SUCCESS/FAILURE wM pour rester homogène avec la tranche APISIX).
+    - add_entries:
+        entries:
+          - key: "status"
+            value: "success"
+            overwrite_if_key_exists: true
+    - add_entries:
+        entries:
+          - key: "status"
+            value: "error"
+            overwrite_if_key_exists: true
+            add_when: '/http_status >= 400'
+
+    # a.5 — pivot trace_id : extrait du traceparent W3C stocké par Log Invocation
+    #       (00-<32hex>-<16hex>-..) AVANT la capture (d) qui peut supprimer les
+    #       headers. user_agent top-level comme APISIX.
+    - copy_values:
+        entries:
+          - from_key: "/request_headers/traceparent"
+            to_key: "trace_id"
+          - from_key: "/request_headers/User-Agent"
+            to_key: "user_agent"
+    - substitute_string:
+        entries:
+          - source: "trace_id"
+            from: "^00-([0-9a-f]{32})-.*$"
+            to: "$1"
+
+    # (c) JAMAIS de request body (capture model) — drop défensif de tous les
+    #     payloads côté requête + flux natifs (dupliqués du client). Les noms
+    #     LIVE divergent du swagger officiel (vérifié in-situ 2026-06-12) :
+    #     le trial 10.15 émet nativeRequestPayload/nativeResponsePayload (pas
+    #     nativeReqPayload/nativeResPayload) — on couvre LES DEUX formes.
+    - delete_entries:
+        with_keys:
+          - "reqPayload"
+          - "requestPayload"
+          - "nativeReqPayload"
+          - "nativeResPayload"
+          - "nativeRequestPayload"
+          - "nativeResponsePayload"
+          - "messagePayload"
+          - "request_body"
+          - "nativeRequestHeaders"
+          - "nativeResponseHeaders"
+
+    # (b) REDACTION DÉTERMINISTE — mêmes règles que la tranche APISIX.
+    - substitute_string:
+        entries:
+          - source: "response_body"
+            from: "(FR\\d{2}[A-Z0-9]{2})[A-Z0-9]{2,}([A-Z0-9]{4})"
+            to: "$1****$2"
+    - substitute_string:
+        entries:
+          - source: "response_body"
+            from: "(\"[a-z_]*(?:balance|amount|montant|solde|available|booked|credit|debit)\"\\s*:\\s*)(\"[^\"]*\"|-?[0-9]+(?:\\.[0-9]+)?)"
+            to: "$1\"***\""
+    - delete_entries:
+        with_keys:
+          - "/request_headers/Authorization"
+          - "/request_headers/Cookie"
+          - "/request_headers/traceparent"
+          - "/response_headers/Set-Cookie"
+    - add_entries:
+        entries:
+          - key: "redaction_applied"
+            value: true
+            overwrite_if_key_exists: true
+          - key: "redacted_fields"
+            value: ["response_body", "request_headers.Authorization", "request_headers.Cookie", "response_headers.Set-Cookie", "iban", "monetary"]
+            overwrite_if_key_exists: true
+
+    # (d) CAPTURE : succès = métadonnées seules ; erreur = méta + headers
+    #     redactés (+ response_body s'il existe — vide tant que les payloads
+    #     sont OFF à la source).
+    - delete_entries:
+        with_keys:
+          - "response_body"
+          - "request_headers"
+          - "response_headers"
+        delete_when: '/status == "success"'
+
+    # d.bis — nettoyage des clés wM résiduelles (event propre, pas de PII flottante).
+    - delete_entries:
+        with_keys:
+          - "eventType"
+          - "creationDate"
+          - "sessionId"
+          - "customFields"
+          - "queryParameters"
+          - "externalCalls"
+          - "sourceGateway"
+          - "sourceGatewayDetails"
+          - "sourceGatewayNode"
+          - "cachedResponse"
+          - "callbackRequest"
+          - "isCallbackRequest"
+          - "kafka_key"
+          - "gatewayTime"
+          - "providerTime"
+          - "nativeHttpMethod"
+          - "nativeURL"
+          - "applicationId"
+          - "consumerIp"
+          - "serverID"
+          - "packageId"
+          - "packageName"
+          - "planId"
+          - "planName"
+          - "apiId"
+          - "origin"
+          - "messageType"
+          - "totalDataSize"
+          - "errorOrigin"
+
+  sink:
+    - opensearch:
+        hosts:
+          - "https://opensearch:9200"
+        username: "admin"
+        password: "Stoa!Passw0rd2026"
+        insecure: true
+        index: "txn-${/tenant}"
+        action: "create"
+        normalize_index: true
+        max_retries: 16
+        dlq_file: "/usr/share/data-prepper/log/stoa-txn-webmethods-dlq.json"
+
+# =============================================================================
+# Tranche WSO2 (goal A3) — même schéma stoa.txn, source = spans OTel natifs.
+#
+# Producteur : wso2-otel-tap (le Y : WSO2 exporte son OTLP/gRPC vers le tap, qui
+# FORWARDE les spans à otel-lgtm — Tempo inchangé — ET émet un record stoa.txn
+# PLAT par trace d'API vers stoa.txn.wso2). Le record porte le trace_id NATIF du
+# span → pivot Tempo↔OpenSearch identique aux tranches APISIX/webMethods.
+#
+# Contrat d'entrée (déjà pré-normalisé par le tap) : gateway/provider=wso2,
+# tenant (résolu api→tenant), api/api_version, http_method/http_path,
+# http_status (int), latency_ms (double), trace_id (32hex), request_id,
+# consumer_id, @timestamp (heure du span). AUCUN corps, AUCUN header — les spans
+# n'en portent pas : succès = métadonnées seules PAR CONSTRUCTION (ADR-070). La
+# redaction (autorité unique = ICI) n'a donc rien à masquer, mais les drapeaux
+# d'audit sont posés pour rester homogène avec les deux autres tranches.
+# =============================================================================
+stoa-txn-wso2:
+  workers: 2
+  delay: 1000
+
+  source:
+    kafka:
+      bootstrap_servers:
+        - "redpanda:9092"
+      encryption:
+        type: none
+      topics:
+        - name: "stoa.txn.wso2"
+          group_id: "data-prepper"
+          auto_offset_reset: "earliest"
+          serde_format: json
+
+  processor:
+    # (0) Défensif : seul un record portant une API est une transaction.
+    - drop_events:
+        drop_when: '/api == null'
+
+    # (a) Identité gateway / gouvernance (le tap pose déjà gateway/provider ;
+    #     on stampe schema_version/retention_tier + filet tenant).
+    - add_entries:
+        entries:
+          - key: "gateway"
+            value: "wso2"
+            overwrite_if_key_exists: true
+          - key: "provider"
+            value: "wso2"
+            overwrite_if_key_exists: true
+          - key: "schema_version"
+            value: "1"
+            overwrite_if_key_exists: true
+          - key: "retention_tier"
+            value: "regulated"
+            overwrite_if_key_exists: false
+          - key: "tenant"
+            value: "accounts-team"       # filet PoC si le tap n'a pas résolu
+            overwrite_if_key_exists: false
+
+    # (a.2) Types : http_status integer, latency_ms double (comparaison sûre).
+    - convert_entry_type:
+        key: "http_status"
+        type: "integer"
+    - convert_entry_type:
+        key: "latency_ms"
+        type: "double"
+
+    # NB (M-7 review) : PAS de processor `date` de repli ici. Le tap émet
+    # TOUJOURS `@timestamp` (RFC3339 depuis l'end-time du span ; un span OTLP a
+    # toujours un end-time non nul) — un `date` from_time_received ré-écrivant un
+    # @timestamp déjà présent casse l'indexation data-stream sur ce build
+    # (records consommés, ni indexés ni en DLQ — constaté live 2026-07-03). Le
+    # champ vient donc uniquement du tap, vérifié dans stoa.txn.wso2.
+
+    # (a.3) status (success|error) DÉRIVÉ de http_status.
+    - add_entries:
+        entries:
+          - key: "status"
+            value: "success"
+            overwrite_if_key_exists: true
+    - add_entries:
+        entries:
+          - key: "status"
+            value: "error"
+            overwrite_if_key_exists: true
+            add_when: '/http_status >= 400'
+
+    # (c) JAMAIS de request body — drop défensif (le tap n'en émet jamais).
+    - delete_entries:
+        with_keys:
+          - "request_body"
+          - "response_body"
+          - "request_headers"
+          - "response_headers"
+
+    # (b) Drapeaux d'audit de redaction (autorité = ICI ; rien à masquer côté
+    #     spans, mais on reste homogène avec APISIX/webMethods).
+    - add_entries:
+        entries:
+          - key: "redaction_applied"
+            value: true
+            overwrite_if_key_exists: true
+          - key: "redacted_fields"
+            value: ["response_body", "request_headers.Authorization", "request_headers.Cookie", "response_headers.Set-Cookie", "iban", "monetary"]
+            overwrite_if_key_exists: true
+
+  # Route (tenant) -> sink OpenSearch data stream par tenant (identique apisix).
+  sink:
+    - opensearch:
+        hosts:
+          - "https://opensearch:9200"
+        username: "admin"
+        password: "Stoa!Passw0rd2026"
+        insecure: true
+        index: "txn-${/tenant}"
+        action: "create"
+        normalize_index: true
+        max_retries: 16
+        dlq_file: "/usr/share/data-prepper/log/stoa-txn-wso2-dlq.json"

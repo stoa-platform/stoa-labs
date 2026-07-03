@@ -1,0 +1,206 @@
+# =============================================================================
+# PoC Control Plane Fédération — socle ANALYTICS transactionnel (ADR-070)
+#
+# OVERRIDE du projet `stoa-labs-poc`. À utiliser EMPILÉ sur le socle :
+#   docker compose -p stoa-labs-poc \
+#     -f docker-compose.poc.yml -f docker-compose.analytics.yml up -d \
+#     redpanda opensearch opensearch-dashboards data-prepper
+#
+# Pipeline cible (ADR-070, tranche APISIX) :
+#   APISIX (kafka-logger) → Redpanda (stoa.txn.apisix)
+#     → Data Prepper (normalise stoa.txn + REDACTE + route)
+#       → OpenSearch (index-par-tenant txn-{tenant}-* + RBAC/FLS/ISM)
+#         → OpenSearch Dashboards
+#
+# Frontière nette (ADR-068/070) : OpenSearch = audit/gouvernance/per-fournisseur ;
+# otel-lgtm (socle) = ops/SRE temps réel. Corrélation par trace_id.
+#
+# 4 services AJOUTÉS, propres au PoC (NE réutilisent AUCUN Redpanda d'un autre
+# projet local). Réseau `poc` partagé avec APISIX/Keycloak du socle.
+#
+# Ports hôte choisis NON conflictuels (cf. `docker ps` au 2026-06-11) :
+#   opensearch        9201 -> 9200   (9200 libre côté hôte, mais 9201 explicite)
+#   opensearch        9601 -> 9600   (performance analyzer)
+#   dashboards        5601 -> 5601
+#   redpanda kafka    18092 -> 18092 (19092/19093/29092 déjà pris)
+#   redpanda admin    19744 -> 9644  (9644/19644/29644 déjà pris)
+#   data-prepper      4900  -> 4900  (API/metrics — libre)
+# =============================================================================
+
+name: stoa-labs-poc
+
+networks:
+  # Réutilise le réseau du socle (projet stoa-labs-poc → réseau `stoa-labs-poc_poc`).
+  poc:
+    driver: bridge
+
+volumes:
+  opensearch-data:
+  redpanda-data:
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # Bus — Redpanda (Kafka API), PROPRE au PoC (conteneur poc-analytics-redpanda)
+  # ---------------------------------------------------------------------------
+  redpanda:
+    image: redpandadata/redpanda:v24.1.1
+    container_name: poc-analytics-redpanda
+    command:
+      - redpanda
+      - start
+      - --node-id=0
+      - --mode=dev-container
+      - --smp=1
+      - --memory=1G
+      - --reserve-memory=0M
+      - --overprovisioned
+      # Deux listeners : INTERNAL (réseau compose, redpanda:9092 pour Data Prepper
+      # et APISIX kafka-logger) + EXTERNAL (hôte localhost:18092 pour rpk/debug).
+      - --kafka-addr=INTERNAL://0.0.0.0:9092,EXTERNAL://0.0.0.0:18092
+      - --advertise-kafka-addr=INTERNAL://redpanda:9092,EXTERNAL://localhost:18092
+      - --rpc-addr=0.0.0.0:33145
+      - --advertise-rpc-addr=redpanda:33145
+    ports:
+      - "18092:18092"   # Kafka API (externe, debug rpk depuis l'hôte)
+      - "19744:9644"    # Admin API / Prometheus metrics
+    volumes:
+      - redpanda-data:/var/lib/redpanda/data
+    healthcheck:
+      # rpk est embarqué dans l'image ; cluster health interne.
+      test: ["CMD-SHELL", "rpk cluster health -X brokers=localhost:9092 | grep -E 'Healthy:.+true' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    networks: [poc]
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Store de gouvernance — OpenSearch (single-node, sécurité ACTIVÉE)
+  # ---------------------------------------------------------------------------
+  opensearch:
+    image: opensearchproject/opensearch:2.13.0
+    container_name: poc-analytics-opensearch
+    environment:
+      - discovery.type=single-node
+      - cluster.name=stoa-poc-analytics
+      - node.name=poc-analytics-os
+      - bootstrap.memory_lock=true
+      - "OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g"
+      # Sécurité conservée (RBAC/FLS/DLS = exigence ADR-070). On garde la config
+      # démo (DISABLE_INSTALL_DEMO_CONFIG=false) pour avoir le plugin security
+      # provisionné, mais on fixe le mot de passe admin fort.
+      - DISABLE_INSTALL_DEMO_CONFIG=false
+      - DISABLE_SECURITY_PLUGIN=false
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=Stoa!Passw0rd2026
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - opensearch-data:/usr/share/opensearch/data
+    ports:
+      - "9201:9200"     # REST API (https)
+      - "9601:9600"     # Performance Analyzer
+    healthcheck:
+      # Sécurité activée → probe HTTPS avec creds admin, -k (cert démo auto-signé).
+      test: ["CMD-SHELL", "curl -sk -u admin:Stoa!Passw0rd2026 https://localhost:9200/_cluster/health | grep -E '\"status\":\"(green|yellow)\"' || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 30
+      start_period: 40s
+    networks: [poc]
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # UI gouvernance — OpenSearch Dashboards
+  # ---------------------------------------------------------------------------
+  opensearch-dashboards:
+    image: opensearchproject/opensearch-dashboards:2.13.0
+    container_name: poc-analytics-dashboards
+    depends_on:
+      opensearch:
+        condition: service_healthy
+    environment:
+      - 'OPENSEARCH_HOSTS=["https://opensearch:9200"]'
+      - OPENSEARCH_USERNAME=kibanaserver
+      - OPENSEARCH_PASSWORD=kibanaserver
+      - OPENSEARCH_SSL_VERIFICATIONMODE=none
+      # SSO OIDC Keycloak (realm stoa-lab) = best-effort / Phase 3 (différable).
+    ports:
+      - "5601:5601"
+    healthcheck:
+      # Sécurité OpenSearch activée → /api/status exige une auth (sinon 401).
+      # On probe avec les creds admin ; "state":"green" = Dashboards opérationnel.
+      test: ["CMD-SHELL", "curl -sf -u admin:Stoa!Passw0rd2026 http://localhost:5601/api/status | grep -E '\"state\":\"green\"' || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 30
+      start_period: 60s
+    networks: [poc]
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Collecteur NORMALISANT — Data Prepper (autorité de redaction, ADR-070)
+  #
+  # Phase 1 (socle) : pipeline TRIVIAL (consomme stoa.txn.apisix → index technique
+  # jetable) pour démarrer HEALTHY. Phase 3 : normalise stoa.txn + redacte + route.
+  # ---------------------------------------------------------------------------
+  data-prepper:
+    image: opensearchproject/data-prepper:2.8.0
+    container_name: poc-analytics-data-prepper
+    depends_on:
+      opensearch:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+    environment:
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=Stoa!Passw0rd2026
+    volumes:
+      - ./observability/data-prepper/pipelines.yaml:/usr/share/data-prepper/pipelines/pipelines.yaml:ro
+      - ./observability/data-prepper/data-prepper-config.yaml:/usr/share/data-prepper/config/data-prepper-config.yaml:ro
+    ports:
+      - "4900:4900"     # API d'admin / métriques Prometheus
+    healthcheck:
+      # Data Prepper expose /list (pipelines actives) sur le port serveur 4900.
+      test: ["CMD-SHELL", "curl -sf http://localhost:4900/list || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 30
+      start_period: 40s
+    networks: [poc]
+    restart: unless-stopped
+
+  # wso2-otel-tap (goal A3) — tap inline sur l'export OTLP/gRPC de WSO2 : forward
+  # des spans vers otel-lgtm (Tempo INCHANGÉ) + émission d'un record stoa.txn par
+  # trace d'API vers Redpanda (topic stoa.txn.wso2) porteur du trace_id NATIF du
+  # span → pivot Tempo↔OpenSearch. WSO2 pointe son remote_tracer.url dessus
+  # (setup-wso2-otel.sh WSO2_OTLP_TARGET=wso2-otel-tap:4317). Vit dans l'overlay
+  # analytics car il produit la tranche txn WSO2 ; socle seul (sans analytics) =
+  # WSO2 pointe otel-lgtm en direct (comportement A2, traces 3/3 déjà prouvées).
+  wso2-otel-tap:
+    build: ./observability/wso2-otel-tap
+    container_name: poc-wso2-otel-tap
+    depends_on:
+      - redpanda
+    environment:
+      # Forward des spans vers le collecteur du socle (Tempo). Si otel-lgtm est
+      # momentanément down, le tap répond quand même OK à WSO2 (pas de stall).
+      FORWARD_OTLP_GRPC: "otel-lgtm:4317"
+      WSO2_TXN_KAFKA_BROKERS: "redpanda:9092"
+      WSO2_TXN_KAFKA_TOPIC: "stoa.txn.wso2"
+      # Résolution tenant api→tenant (les spans WSO2 ne portent pas de tenant).
+      WSO2_TENANT_MAP: "accounts-read=accounts-team"
+      WSO2_DEFAULT_TENANT: "accounts-team"
+    healthcheck:
+      test: ["CMD", "/wso2-otel-tap", "-healthcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks: [poc]
+    restart: unless-stopped

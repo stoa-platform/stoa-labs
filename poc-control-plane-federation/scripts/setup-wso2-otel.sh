@@ -24,22 +24,27 @@
 set -euo pipefail
 C=poc-wso2am
 TOML=/home/wso2carbon/wso2am-4.5.0/repository/conf/deployment.toml
+# Cible OTLP/gRPC. Défaut = otel-lgtm en direct (socle seul, goal A2, traces 3/3).
+# Avec l'overlay analytics (goal A3), pointer le tap :
+#   WSO2_OTLP_TARGET=wso2-otel-tap:4317 ./scripts/setup-wso2-otel.sh
+# le tap forwarde à otel-lgtm (Tempo inchangé) ET produit la tranche txn WSO2.
+TARGET="${WSO2_OTLP_TARGET:-otel-lgtm:4317}"
 
 if docker exec "$C" sh -c "grep -q 'apim.open_telemetry' $TOML"; then
   echo "  WSO2 OTel already configured."
   exit 0
 fi
 
-docker exec "$C" sh -c "cp $TOML $TOML.pre-otel.bak && cat >> $TOML <<'EOF'
+docker exec "$C" sh -c "cp $TOML $TOML.pre-otel.bak && cat >> $TOML <<EOF
 
-# goal A2: OTel OTLP -> otel-lgtm (Tempo). Vérité bytecode OTLPTelemetry :
+# goal A2/A3: OTel OTLP -> $TARGET. Vérité bytecode OTLPTelemetry :
 # - SEUL 'url' est lu (jamais hostname/port) ; exporteur gRPC => scheme http:// + :4317
 # - une entrée properties est OBLIGATOIRE (isNotEmpty(headerValue), design api-key NR)
 # - resource_attributes service.name écrase le nom par défaut (dernier merge gagne)
 [apim.open_telemetry]
 remote_tracer.enable = true
 remote_tracer.name = \"otlp\"
-remote_tracer.url = \"http://otel-lgtm:4317\"
+remote_tracer.url = \"http://$TARGET\"
 
 [[apim.open_telemetry.remote_tracer.properties]]
 name = \"x-stoa-poc\"

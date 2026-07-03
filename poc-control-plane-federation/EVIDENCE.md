@@ -366,7 +366,9 @@ Le **plan de gouvernance/audit** : toutes les transactions (succès **et** erreu
 centralisées dans **un OpenSearch unique**, **isolées par fournisseur** et **redactées
 à un seul endroit auditable**. C'est l'analytique transactionnelle per-fournisseur
 que la thèse listait comme « pas encore prouvée » — désormais prouvée bout-en-bout
-sur la tranche APISIX.
+**sur les 3 tranches (APISIX + webMethods + WSO2)** : goal A3 (2026-07-03) ferme la
+parité, `scripts/test-txn-wso2.sh` **12/12**. Agrégat live des `gateway` portant des
+docs txn : `{apisix, webmethods, wso2}`.
 
 **Chaîne d'ingestion** (off the transaction path, ADR-068 — la gateway *émet*, ne
 *traite* pas) :
@@ -420,6 +422,51 @@ sur chaque route au publish **et** au re-PUT du subscribe — le `log_format` es
 projection FLAT du schéma `stoa.txn` (contrainte APISIX : tout `log_format` doit être
 une string plate, `batch_max_size=1` pour que Data Prepper désérialise un objet par
 record). L'émission n'est pas un état posé à la main : c'est l'`apply` qui la porte.
+
+### Tranche WSO2 (goal A3, 2026-07-03) — parité 3/3, source = spans OTel natifs
+
+WSO2 n'expose sa transaction data-plane (8243, PassThrough/Synapse) dans **aucun log
+fichier porteur du trace_id** (`apim_metrics.log` off, `http_access` sans trace_id) :
+la **seule** source qui porte le trace_id W3C est les **spans OTel** (débloqués par
+le goal A2). D'où le `wso2-otel-tap` (`observability/wso2-otel-tap/`, Go) — le même
+rôle « Y » que `wm-trace-bridge`, côté spans :
+
+```
+WSO2 :8243 --OTLP/gRPC(gzip)--> wso2-otel-tap ─┬─► forward OTLP ─► otel-lgtm (Tempo, INCHANGÉ)
+                                               └─► stoa.txn.wso2 (Redpanda) ─► Data Prepper
+                                                     (pipeline stoa-txn-wso2) ─► OpenSearch txn-{tenant}
+```
+
+Le tap reçoit l'export OTLP de WSO2 (repointé `remote_tracer.url=wso2-otel-tap:4317`),
+**forwarde chaque batch tel quel** à otel-lgtm (Tempo garde la trace WSO2 complète) et
+**émet un record `stoa.txn` PLAT par TRACE d'API** — sélection du **span RACINE**
+(`parent_span_id` vide) qui, seul sur WSO2 4.5, porte `span.api.name` +
+`span.http.response.status.code` (vérifié live ; les enfants `GET--/x`, `API:*_Latency`
+ne les portent pas). Cette règle rend le « 1 doc/trace » **structurel et
+indépendant du batching** : si le BatchSpanProcessor de WSO2 fragmente une trace sur
+plusieurs exports, les enfants (sans attrs) ne produisent rien, seul le root émet —
+zéro double-comptage, et la latence est celle de la requête globale (jamais un
+enfant). Vers `stoa.txn.wso2`. Le record porte le **trace_id
+NATIF du span** → pivot Tempo↔OpenSearch identique aux deux autres tranches. Les spans
+ne portant aucun corps, la capture est **métadonnées seules par construction**
+(ADR-070) ; Data Prepper reste l'autorité de redaction unique. Tenant résolu
+`api→tenant` (les spans WSO2 ne portent pas de tenant) + filet pipeline.
+
+**Preuve mesurée** (`scripts/test-txn-wso2.sh`, 12/12) : un appel WSO2 → trace_id
+`fc34bcf9709b2b2d896818b9de66aa85` présent **dans Tempo** (`service.name=wso2`, trace
+complète) **et dans OpenSearch** `.ds-txn-accounts-team-*` (`gateway=wso2`,
+`http_status=404`, `status=error`, `latency_ms=7.09`, `consumer_id`,
+`redaction_applied=true`, `@timestamp`=heure du span) — **1 seul doc** pour ce
+trace_id (dedup par trace), **aucun** `response_body`/`request_headers` (métadonnées
+seules). Piège pinné : WSO2 exporte en **gzip** (`setCompression("gzip")`, bytecode) →
+le serveur gRPC du tap enregistre le codec gzip (sinon `UNIMPLEMENTED: Decompressor
+not installed`).
+
+> **Restent différés** (hors A3) : rien sur la parité analytics (3/3 atteinte). Le tap
+> vit dans l'overlay analytics ; en socle seul, WSO2 pointe otel-lgtm en direct (A2,
+> traces 3/3). Un cas **succès** (200) n'a pas été capturé faute de backend sain sur le
+> trial (chaîne de versions accounts-read gâtée, cf. note goal A1) ; le chemin succès =
+> métadonnées seules est prouvé par construction (spans sans corps) + le test wM.
 
 ---
 
@@ -560,8 +607,10 @@ canal de management en zéro-entrant** (agent de config sortant-only **ou** pull
 STOA restant **hors du chemin transactionnel**.
 
 L'**analytique transactionnelle par fournisseur** (longtemps listée ici comme non
-prouvée) est **désormais démontrée** sur la tranche APISIX (Preuve 6 bis, ADR-070) :
-data stream + RBAC + FLS + redaction à un point unique, bout-en-bout. Restent
-**différés** : tranches wM (Log Invocation→Kafka) et WSO2 (Fluent Bit sidecar) de la
-même chaîne, l'enforcement **audience** wM (câblé, non opposable sur trial 10.15),
-WSO2 OTel (réglage d'exporteur), et le streaming > 500 Mo.
+prouvée) est **désormais démontrée sur les 3 tranches** (APISIX + webMethods + WSO2 ;
+Preuve 6 bis, ADR-070, goals A3) : data stream + RBAC + FLS + redaction à un point
+unique + pivot `trace_id`, bout-en-bout, parité 3/3. **WSO2 OTel** (goal A2) et sa
+tranche analytics (goal A3) sont **résolus** (le « Fluent Bit sidecar » envisagé était
+une impasse : les logs fichier WSO2 ne portent pas le trace_id — la source retenue est
+les spans OTel via `wso2-otel-tap`). Restent **différés** : l'enforcement **audience**
+wM (câblé, non opposable sur trial 10.15) et le streaming > 500 Mo.

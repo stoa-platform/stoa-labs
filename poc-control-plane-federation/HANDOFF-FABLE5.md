@@ -117,6 +117,17 @@ Le labs a **prouvé sa thèse** — un control plane sur briques OSS fédère 3 
 - **Effort** : L. **Priorité** : 🟠.
 
 ---
+> ✅ **A3 FAIT (2026-07-03).** Parité analytics txn 3/3. Le vrai reste-à-faire était
+> WSO2 seul (APISIX + wM déjà livrés). Insight décisif : les logs fichier WSO2 ne
+> portent AUCUN trace_id → « Fluent Bit sidecar » = impasse ; la seule source avec le
+> trace_id W3C = les spans OTel (débloqués par A2). Livré : `wso2-otel-tap` (Go,
+> récepteur OTLP/gRPC → forward Tempo + record `stoa.txn.wso2` par trace, trace_id
+> natif) + pipeline `stoa-txn-wso2` (miroir apisix) + service compose (overlay
+> analytics) + `setup-wso2-otel.sh` repointable. Preuve `scripts/test-txn-wso2.sh`
+> **12/12** : pivot Tempo↔OpenSearch (même trace_id), dedup 1 doc/trace, 3/3, méta
+> seules. Piège pinné : WSO2 exporte en gzip → codec gzip à enregistrer côté serveur.
+
+---
 **/goal A4 — TokenProvider webMethods outbound as-code**
 - **Contexte** : le TokenProvider IS+Vault (creds body-based wM 10.15) est câblé à la main via 2 `policyActions`, pas projeté par `labctl apply`.
 - **Objectif** : porter la config outbound (routing-by-alias + credential alias base64 + action outbound imbriquée sous `transportSecurity`) dans l'adaptateur, projetée à chaque apply, idempotente.
