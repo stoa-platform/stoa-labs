@@ -17,7 +17,7 @@
 | 3 | Catalogue unifié (`labctl get apis`, 3 gw ; Backstage différé) | — | ✅ couvert |
 | 4 | Self-service souscription (request→approve→creds) | — | ✅ couvert |
 | 5 | Identité Oracle-master (Dex→Keycloak broker→3 gw) | §4.x identité | ✅ couvert (live) |
-| 6 | Observabilité unifiée OTel (APISIX + webMethods → Tempo ; WSO2 OTel en suivi) | §0.5 | 🟡 2/3 runtimes |
+| 6 | Observabilité unifiée OTel (APISIX + webMethods + WSO2 → Tempo — goal A2, 2026-07-03) | §0.5 | ✅ 3/3 runtimes |
 | 7 | Souveraineté (100 % local/self-hosted, 0 SaaS) | vs Axway Amplify | ✅ couvert |
 | 8 | Analytique transactionnelle par fournisseur — OpenSearch (data stream + RBAC/FLS par tenant + redaction à un point unique + pivot `trace_id`) | §4.11, §0.6 | 🟡 tranche APISIX (wM/WSO2 différées) |
 

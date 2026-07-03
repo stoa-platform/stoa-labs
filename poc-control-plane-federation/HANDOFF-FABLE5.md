@@ -100,6 +100,15 @@ Le labs a **prouvé sa thèse** — un control plane sur briques OSS fédère 3 
 > actés : anti-spoof classification → A5 ; APISIX/WSO2 read-back → A3/B1.
 
 ---
+> ✅ **A2 FAIT (2026-07-03).** Cause racine au BYTECODE (`OTLPTelemetry.class`) :
+> le tracer OTLP ne lit que `url` (jamais hostname/port) ET exige une entrée
+> `properties` non vide, sinon NPE au boot (= la « déstabilisation »). Config
+> correcte dans `setup-wso2-otel.sh` (gRPC `http://otel-lgtm:4317` + header
+> factice + `resource_attributes service.name=wso2`). Prouvé : Tempo liste
+> `['apisix','webmethods-mock','wso2']`, trace wso2 complète (Key_Validation →
+> Backend_Latency), stack stable, zéro erreur d'export. EVIDENCE Preuve 6 → 3/3.
+
+---
 **/goal A3 — Compléter l'analytics par fournisseur (parité 3/3)**
 - **Contexte** : ADR-070 prouvé sur la tranche APISIX (kafka-logger→Data Prepper→OpenSearch). Les tranches webMethods (Log Invocation→Kafka) et WSO2 (Fluent Bit sidecar) sont différées.
 - **Objectif** : câbler les deux tranches manquantes vers le **même** OpenSearch, avec la **même** redaction 1-point et le pivot `trace_id`.

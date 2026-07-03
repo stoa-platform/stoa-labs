@@ -292,11 +292,11 @@ un **pivot unique : le `trace_id` W3C**.
   section suivante) : un document par transaction, redacté, isolé par tenant.
 
 ```
-$ # Tempo : service.name émettant des traces
-['apisix', 'webmethods-mock']        # 2 runtimes hétérogènes (OSS + legacy), 1 plan
+$ # Tempo : service.name émettant des traces (goal A2, 2026-07-03 : WSO2 rejoint)
+['apisix', 'webmethods-mock', 'wso2']   # 3/3 runtimes hétérogènes, 1 plan
 
 $ # Prometheus (span metrics auto-générées par Tempo)
-traces_spanmetrics_calls_total{service="apisix|webmethods-mock"}
+traces_spanmetrics_calls_total{service="apisix|webmethods-mock|wso2"}
 ```
 
 ### Dashboard de fédération (versionné + provisionné live)
@@ -340,13 +340,20 @@ trace_id = 73ffd5332255a5de453384d4bc45eb4c        # VRAI trace_id W3C (non synt
 > (le doc OpenSearch ne porterait alors qu'un identifiant local, non corrélable à
 > Tempo). Le `request_id` déterministe sert de filet **anti-sampling** (ADR-070).
 
-> **WSO2 OTel** : WSO2 4.5 embarque `opentelemetry-all` et se configure via
-> `[apim.open_telemetry.remote_tracer]` (`scripts/setup-wso2-otel.sh`). Sur cette
-> image, la config naïve (`name="otlp"` → otel-lgtm:4317) **déstabilise le
-> démarrage du gateway** — c'est un réglage d'exporteur à affiner (endpoint/format
-> OTLP gRPC vs HTTP), pas un bloqueur de la thèse. Laissé en suivi pour ne pas
-> fragiliser la stack ; la fédération de l'observabilité est déjà prouvée sur 2
-> runtimes hétérogènes.
+> **WSO2 OTel — RÉSOLU (goal A2, 2026-07-03)** : cause racine trouvée au
+> **bytecode** (`OTLPTelemetry.class`, tracing_9.31.86) — le tracer OTLP ne lit
+> QUE `remote_tracer.url` (jamais hostname/port, clés jaeger/zipkin) **et** exige
+> une entrée `[[remote_tracer.properties]]` non vide (design api-key New Relic) ;
+> sinon le champ `openTelemetry` reste null → NPE au boot = la « déstabilisation »
+> observée. Config correcte (`scripts/setup-wso2-otel.sh`) : `url =
+> "http://otel-lgtm:4317"` (exporteur **gRPC**, scheme obligatoire), une propriété
+> header factice, et `[[resource_attributes]] service.name=wso2` (le dernier merge
+> gagne sur le nom par défaut). Prouvé live : trace
+> `e1985c23c6cde9082668a541a06dab6f` — `rootServiceName=wso2`, spans complets
+> (CORS → Key_Validation → Throttle → Request_Mediation → **Backend_Latency** →
+> Response_Mediation, `GET--/accounts`), stack stable (9443/8243 en 200, zéro
+> erreur d'export). Persistance : config in-container (survit au restart, re-jouer
+> le script après un recreate, comme wm-otel-setup.sh).
 >
 > `grafana/otel-lgtm` est une image **dev/démo** (collector + LGTM tout-en-un),
 > pas un design de production — l'atterrissage dans la stack cible reste le même.
