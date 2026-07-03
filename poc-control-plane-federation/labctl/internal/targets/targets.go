@@ -259,6 +259,15 @@ type InboundAuth struct {
 	// block with an empty Gateway user). When empty the adapter defaults it from
 	// the target's Basic-auth username. Ignored unless IntrospectionEndpoint set.
 	IntrospectionUser string `json:"introspectionUser"`
+
+	// Mtls, when true, requires a trusted CLIENT CERTIFICATE at the IAM stage IN
+	// ADDITION to the OAuth2 token (ADR-076 VH leg): the Identify & Authorize
+	// action ANDs an httpsCertificate rule with oAuth2Token, so a no-cert request
+	// is rejected 401 at IAM even on a clientAuth=request listener (mTLS enforced
+	// per-API, not per-port). The client cert must be registered on the consumer
+	// application (labctl subscribe publicCertRef). Requires the OAuth2 path
+	// (Audience set). Absent = OAuth2 only (no cert requirement).
+	Mtls bool `json:"mtls"`
 }
 
 // Keycloak holds the out-of-band OAuth client settings used by `labctl subscribe`.
@@ -300,6 +309,9 @@ func (t Target) ToConfig() adapter.Config {
 		opts["inboundAuthIntrospectionClientId"] = t.InboundAuth.IntrospectionClientID
 		opts["inboundAuthIntrospectionClientSecret"] = t.InboundAuth.IntrospectionClientSecret
 		opts["inboundAuthIntrospectionUser"] = t.InboundAuth.IntrospectionUser
+		if t.InboundAuth.Mtls {
+			opts["inboundMtls"] = "true"
+		}
 	}
 	if t.Observability != nil {
 		opts["observabilityKafkaBroker"] = t.Observability.KafkaBroker
