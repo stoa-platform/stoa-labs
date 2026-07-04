@@ -71,6 +71,11 @@ type Deployment struct {
 	PromotedBy string `json:"promoted_by"`
 	Message    string `json:"message,omitempty"`
 	Commit     string `json:"commit,omitempty"`
+	// ChangeRef records the ITSM change that authorised this dispatched state
+	// (the promotion's change_ref). It makes the marker self-describing so the
+	// dispatch gate (A6) can re-check ITSM LIVE against the state it projects,
+	// closing the TOCTOU between merge/build and dispatch.
+	ChangeRef string `json:"change_ref,omitempty"`
 }
 
 // Promotion mirrors promotions/{t}/{id}.yaml. Its status IS its position in

@@ -79,6 +79,11 @@ type Deploy struct {
 	PromotedBy string `json:"promoted_by"`
 	Message    string `json:"message"`
 	Commit     string `json:"commit"`
+	// ChangeRef pins the ITSM change that authorised THIS dispatched state
+	// (written by the promotion that enabled the env, ADR-075/A6). The dispatch
+	// gate re-checks it LIVE at apply time — anchoring the anti-TOCTOU check on
+	// the state actually being dispatched, not on "some approved promotion".
+	ChangeRef string `json:"change_ref"`
 }
 
 // API is one governed API as laid out in the repo: its coordinates
