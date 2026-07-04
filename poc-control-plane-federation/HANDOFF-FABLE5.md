@@ -10,10 +10,11 @@
 
 Le labs a **prouvé sa thèse** — un control plane sur briques OSS fédère 3 gateways
 hétérogènes (WSO2, APISIX, webMethods **réel** 10.15) sous identité Oracle-master, avec
-une discipline de preuve rare. **Le cœur de la Phase A (durcir) est désormais livré** :
+une discipline de preuve rare. **La Phase A (durcir) est désormais livrée en entier** :
 « sécurité = f(intégrité) » est **enforced** ET **anti-spoof**, l'observabilité et
-l'analytics sont **3/3 runtimes**. Ce qui reste : quelques goals de finition Phase A
-(A4/A6/A7) et surtout **(B) faire atterrir les briques prouvées dans la plateforme
+l'analytics sont **3/3 runtimes**, et la **finition A4/A6/A7 est close** (auth outbound
+wM as-code, re-check ITSM au dispatch, console→webhook réel→déploiement + 4-yeux exercé
+E2E). Ce qui reste : **(B) faire atterrir les briques prouvées dans la plateforme
 `stoa`**, où deux d'entre elles (APISIX, WSO2) n'ont **aucune** existence.
 
 ---
@@ -27,6 +28,9 @@ l'analytics sont **3/3 runtimes**. Ce qui reste : quelques goals de finition Pha
 | **A2** — WSO2 OTel → traces 3/3 | ✅ | cause au bytecode (`url` seul + `properties` obligatoire) ; Tempo `['apisix','webmethods-mock','wso2']` | `558d435` |
 | **A3** — analytics par fournisseur 3/3 | ✅ | `wso2-otel-tap` (spans OTel, pas les logs fichier) ; `test-txn-wso2.sh` **12/12**, pivot trace_id Tempo↔OpenSearch | `1a4442b`, `e3ab434` |
 | **A5** — classification centrale anti-spoof + poly-repo | ✅ | registre central owner-keyé (`test-classification-central.sh` **11/11**) ; 2e repo pilote `payments-team` (H, bundle ≠ VH) | `3dc3766`, `5b4607a`, `58dddab` |
+| **A4** — auth outbound wM as-code (idempotent) | ✅ | `ensureCredentialAlias` **write-always** (ré-émet le password base64) + refus d'une 2e action outbound (fail-closed) ; `test-outbound-auth.sh` **19/19 live** | `cef6b2d` |
+| **A6** — re-check ITSM **LIVE au dispatch** (anti-TOCTOU) | ✅ | `preflightDispatchGate` fail-closed AVANT tout écrit gateway ; `change_ref` ancré dans `deploy.{env}.yaml` ; `dispatchgate_test.go` **7/7** + `demo-multienv.sh §③b` (révoqué→409, injoignable→503) + sous-commande `labctl dispatch-gate` (même vérité en stage Jenkins) | `daf9245` |
+| **A7** — console-light : **webhook réel** + 4-yeux exercé E2E | ✅ | spec Playwright `50-four-eyes-denial` + `prove-a7-four-eyes.sh` **7/7** (`denials.jsonl` peuplé, 403 `SELF_APPROVAL_BLOCKED`, contre-épreuve identité bob≠dave) ; webhook réel Console→Gitea `ci/governance`→Jenkins `stoa-governance`→`apply-uac` (build live, cause webhook, APISIX 3/3) ; fix bug réel `rolled_back` (StatusBadge crashait) ; `GET /environments` | `b8e7f8d`, `39591d8` |
 
 **Insights réutilisables (durement gagnés)** :
 - **A1** : le read-back attrape ce que le projecteur ne corrige pas — l'action IAM AND
