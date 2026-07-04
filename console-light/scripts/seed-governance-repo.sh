@@ -124,14 +124,14 @@ endpoints:
         - input: { iban: "FR7630001007941234567890185" }
 EOF
 
-# --- contrat 3 : initiation de paiement (VVH, draft, endpoint destructif) -----
+# --- contrat 3 : initiation de paiement (VH, draft, endpoint destructif) ------
 cat > tenants/banking-demo/apis/payments-initiation/api.yaml <<'EOF'
 name: payments-initiation
 version: 0.3.0
 tenant_id: banking-demo
 display_name: "Initiation de paiement"
-description: "Initiation et annulation d'ordres de paiement. Classification VVH — endpoint destructif sous approbation humaine."
-classification: VVH
+description: "Initiation et annulation d'ordres de paiement. Classification VH (sommet de l'échelle client) — endpoint destructif sous approbation humaine."
+classification: VH
 status: draft
 required_policies: [oauth2, mtls, rate-limit-strict, audit-full]
 endpoints:

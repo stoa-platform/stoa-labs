@@ -64,9 +64,9 @@ import type {
 const HTTP_METHODS: HttpMethod[] = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'];
 
 const CLASSIFICATIONS: Array<{ value: UacClassification; label: string }> = [
-  { value: 'H', label: 'H — Haute (standard)' },
-  { value: 'VH', label: 'VH — Très haute (sensible)' },
-  { value: 'VVH', label: 'VVH — Critique' },
+  { value: 'M', label: 'M — Moyenne (plancher, OAuth2 défaut)' },
+  { value: 'H', label: 'H — Haute (OAuth2)' },
+  { value: 'VH', label: 'VH — Très haute (critique, OAuth2+mTLS)' },
 ];
 
 const SIDE_EFFECTS: Array<{ value: UacSideEffects; label: string }> = [

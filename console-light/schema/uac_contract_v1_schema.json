@@ -96,8 +96,8 @@
   "$defs": {
     "Classification": {
       "type": "string",
-      "enum": ["H", "VH", "VVH"],
-      "description": "ICT risk classification (DORA-aligned). H=High (standard), VH=Very High (sensitive), VVH=Very Very High (critical)."
+      "enum": ["VH", "H", "M"],
+      "description": "Data integrity classification (client literal scale, ADR-076). VH=Very High (OAuth2+mTLS), H=High (OAuth2), M=Medium (OAuth2 default, ApiKey-only permitted internal). A future critical tier maps 1:1 to STOA VVH."
     },
     "Status": {
       "type": "string",

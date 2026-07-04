@@ -97,7 +97,7 @@ Le client a une préférence Angular (compétence de ses équipes). Décision : 
 - **Pré-requis labctl (double usage CLI + BFF)** : `--output json` (sérialiser les `publishOutcome/consumerOutcome` existants) + verbe `plan`/`diff` (List vs NormalizedAPI désiré, le flag `Created` existe déjà). Le JSON devient à la fois le payload de l'écran de validation ET l'évidence.
 - **Multi-API** : convention répertoire-par-API dans Git (`tenants/{t}/apis/{slug}/`), le manifeste FederationTarget reste 1-contrat (généré par le BFF par API).
 - **Secrets** : sortir les credentials de `targets.yaml` (placeholders PoC en clair) → variables d'env injectées par Jenkins ; jamais dans Git.
-- **Schéma de contrat** : `uac_contract_v1_schema.json` (le canonique, 279 lignes, classification DORA H/VH/VVH, `endpoint.llm` avec `destructive⇒requires_human_approval`) — PAS `stoa-catalog/uac.schema.json` (contrat de TENANT, autre usage ; ne pas confondre, dette CAB-2135).
+- **Schéma de contrat** : `uac_contract_v1_schema.json` (le canonique, 279 lignes, classification échelle client VH/H/M — ex-DORA H/VH/VVH migrée ADR-076 décision #1, `endpoint.llm` avec `destructive⇒requires_human_approval`) — PAS `stoa-catalog/uac.schema.json` (contrat de TENANT, autre usage ; ne pas confondre, dette CAB-2135).
 
 ## 6. Spec d'acceptance
 
