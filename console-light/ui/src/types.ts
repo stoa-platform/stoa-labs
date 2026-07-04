@@ -133,7 +133,10 @@ export interface ContractVersion {
 // Contrats UAC (§4, §5 — schéma uac_contract_v1_schema.json)
 // ============================================================================
 
-export type UacClassification = 'H' | 'VH' | 'VVH';
+// Client-agreed integrity scale (ADR-076 décision #1) : VH > H > M. Replaces the
+// former DORA H/VH/VVH — the BFF validates VH/H/M, so the UI must too. A future
+// "critical" tier maps 1:1 to the old VVH (non-breaking extension).
+export type UacClassification = 'VH' | 'H' | 'M';
 export type UacStatus = 'draft' | 'published' | 'deprecated';
 export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'HEAD' | 'OPTIONS';
 export type UacSideEffects = 'none' | 'read' | 'write' | 'destructive';

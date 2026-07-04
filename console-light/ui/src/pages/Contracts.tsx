@@ -29,16 +29,17 @@ const STATUS_STYLES: Record<UacStatus, string> = {
 };
 
 const CLASSIFICATION_LABELS: Record<UacClassification, string> = {
+  M: 'Moyenne',
   H: 'Haute',
-  VH: 'Très haute',
-  VVH: 'Vitale (très très haute)',
+  VH: 'Très haute (critique)',
 };
 
-// VVH en ROUGE — la criticité bancaire doit sauter aux yeux.
+// VH (sommet de l'échelle client, OAuth2+mTLS) en ROUGE — la criticité bancaire
+// doit sauter aux yeux.
 const CLASSIFICATION_STYLES: Record<UacClassification, string> = {
-  H: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400',
-  VH: 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400',
-  VVH: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400',
+  M: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400',
+  H: 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400',
+  VH: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400',
 };
 
 function formatDate(iso: string): string {
