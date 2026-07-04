@@ -258,7 +258,7 @@ func TestPublish_RoutingCredentialAliasAndOutboundAuth(t *testing.T) {
 	}
 }
 
-func TestPublish_RoutingCredentialAliasIdempotentDespiteMaskedPassword(t *testing.T) {
+func TestPublish_RoutingCredentialAliasWriteAlwaysReemitsPassword(t *testing.T) {
 	mock := newMockGateway()
 	srv := httptest.NewServer(mock.handler())
 	defer srv.Close()
@@ -271,20 +271,130 @@ func TestPublish_RoutingCredentialAliasIdempotentDespiteMaskedPassword(t *testin
 		t.Fatalf("second Publish: %v", err)
 	}
 
-	// The read-back password is MASKED (base64 of asterisks): a drift check
-	// keyed on it would PUT on every apply. Keyed on userName only -> the
-	// second run writes NOTHING.
+	// The stored password is never readable (masked on read-back), so drift is
+	// undetectable — the credential alias is WRITE-ALWAYS: the second run
+	// re-emits it via a PUT. Idempotence is proven by stable ids (no duplicate
+	// alias) and a re-emitted REAL password, not by the absence of a PUT.
 	if got := mock.countRequests("POST /rest/apigateway/alias"); got != 2 {
 		t.Errorf("POST /alias count = %d over two publishes, want 2 (endpoint + credential, once each)", got)
 	}
-	if got := mock.countRequests("PUT /rest/apigateway/alias/"); got != 0 {
-		t.Errorf("PUT /alias count = %d, want 0 (masked password must not drive drift)", got)
+	if got := mock.countRequests("PUT /rest/apigateway/alias/"); got != 1 {
+		t.Errorf("PUT /alias count = %d over two publishes, want 1 (credential alias re-emitted write-always on the 2nd run; endpoint alias converged so no PUT)", got)
+	}
+	if len(mock.aliases) != 2 {
+		t.Errorf("aliases after re-apply = %d, want 2 (no duplicate from the write-always PUT)", len(mock.aliases))
+	}
+	cred := aliasByName(mock, "accounts-read-backend-cred")
+	creds, _ := cred["httpAuthCredentials"].(map[string]any)
+	wantB64 := base64.StdEncoding.EncodeToString([]byte(testBackendPass))
+	if creds["password"] != wantB64 {
+		t.Errorf("stored password after re-apply = %v, want the REAL base64 %q re-emitted (never the read-back mask)", creds["password"], wantB64)
 	}
 	if got := mock.countRequests("POST /rest/apigateway/policyActions"); got != 1 {
 		t.Errorf("POST /policyActions count = %d over two publishes, want 1", got)
 	}
 	if got := mock.countRequests("PUT /rest/apigateway/policies/"); got != 1 {
 		t.Errorf("PUT /policies count = %d over two publishes, want 1 (attach once)", got)
+	}
+}
+
+// A same-user password rotation (the DoD-3 case the old userName-keyed drift
+// check missed) must actually reach the gateway: the write-always convergence
+// re-emits the NEW base64 password on the next apply.
+func TestPublish_RoutingCredentialWriteAlwaysProjectsPasswordRotation(t *testing.T) {
+	mock := newMockGateway()
+	srv := httptest.NewServer(mock.handler())
+	defer srv.Close()
+
+	// Apply #1 creates the credential alias with the original password.
+	a1, api := newRoutingAdapter(t, srv, true)
+	if _, err := a1.Publish(context.Background(), api); err != nil {
+		t.Fatalf("Publish #1: %v", err)
+	}
+
+	// Rotate the backend password (SAME userName) and apply again with a second
+	// adapter against the SAME gateway — the alias already exists.
+	rotated := "be-pass-ROTATED-v2"
+	a2, err := New(adapter.Config{
+		Type:       gatewayName,
+		Name:       gatewayName,
+		AdminURL:   srv.URL,
+		GatewayURL: "http://webmethods-real:5555",
+		Credentials: map[string]string{
+			"username":        testUser,
+			"password":        testPass,
+			"backendUsername": testBackendUser, // unchanged
+			"backendPassword": rotated,
+		},
+		Options: map[string]string{
+			"routingEndpointAliasName":   "{api}-backend",
+			"routingEndpointAliasUrl":    testBackendDevURL,
+			"routingCredentialAliasName": "{api}-backend-cred",
+		},
+	})
+	if err != nil {
+		t.Fatalf("New (rotated): %v", err)
+	}
+	if _, err := a2.(*Adapter).Publish(context.Background(), api); err != nil {
+		t.Fatalf("Publish #2 (rotated): %v", err)
+	}
+
+	cred := aliasByName(mock, "accounts-read-backend-cred")
+	creds, _ := cred["httpAuthCredentials"].(map[string]any)
+	if creds["userName"] != testBackendUser {
+		t.Errorf("userName = %v, want unchanged %q", creds["userName"], testBackendUser)
+	}
+	wantB64 := base64.StdEncoding.EncodeToString([]byte(rotated))
+	if creds["password"] != wantB64 {
+		t.Errorf("stored password after rotation = %v, want the NEW base64 %q — a same-user rotation must be projected (was the missed DoD-3 bug)", creds["password"], wantB64)
+	}
+	if len(mock.aliases) != 2 {
+		t.Errorf("aliases after rotation = %d, want 2 (converge in place, no duplicate)", len(mock.aliases))
+	}
+}
+
+// A SECOND outboundTransportAuthentication action on the routing stage (a
+// duplicate/orphan of a prior run, or an injected action re-pointing the
+// backend credentials) must fail the convergence LOUDLY — never let the
+// first-match converge and leave the extra one live (the A1 first-rule-only
+// false-negative class).
+func TestPublish_RoutingRefusesDuplicateOutboundAction(t *testing.T) {
+	mock := newMockGateway()
+	srv := httptest.NewServer(mock.handler())
+	defer srv.Close()
+
+	a, api := newRoutingAdapter(t, srv, true)
+	res, err := a.Publish(context.Background(), api)
+	if err != nil {
+		t.Fatalf("Publish #1: %v", err)
+	}
+
+	// Inject a second outbound-auth action and attach it to the routing stage.
+	polID := mock.apis[res.APIID].rec.Policies[0]
+	mock.actions["dupe-outbound"] = map[string]any{
+		"id":          "dupe-outbound",
+		"names":       []any{map[string]any{"value": "Outbound Auth - Transport (injected)", "locale": "en"}},
+		"templateKey": "outboundTransportAuthentication",
+		"parameters": []any{map[string]any{
+			"templateKey": "transportSecurity",
+			"parameters": []any{
+				map[string]any{"templateKey": "authType", "values": []any{"ALIAS"}},
+				map[string]any{"templateKey": "authMode", "values": []any{"NEW"}},
+				map[string]any{"templateKey": "alias", "values": []any{"${attacker-cred}"}},
+			},
+		}},
+		"active": true,
+	}
+	if !appendStageEnforcement(mock.policies[polID], stageRouting, "dupe-outbound") {
+		t.Fatal("could not attach the duplicate action to the routing stage")
+	}
+
+	_, err = a.Publish(context.Background(), api)
+	if err == nil {
+		t.Fatal("Publish succeeded with two outboundTransportAuthentication actions on the routing stage, want a fail-closed refusal")
+	}
+	if !strings.Contains(err.Error(), "outboundTransportAuthentication actions") || !strings.Contains(err.Error(), "ambiguous") {
+		t.Errorf("error %q should name the ambiguous duplicate outbound actions and refuse to converge", err.Error())
 	}
 }
 

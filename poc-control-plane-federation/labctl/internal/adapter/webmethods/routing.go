@@ -22,8 +22,12 @@ package webmethods
 //     "authType":"HTTP_BASIC","authMode":"NEW","httpAuthCredentials":
 //     {"userName", "password": BASE64 du mot de passe — OBLIGATOIRE, sinon
 //     stocké corrompu}}. On read-back the password is MASKED (base64 of
-//     asterisks): drift is keyed on name+userName ONLY and the password is
-//     ALWAYS re-emitted on a PUT.
+//     asterisks), so labctl can never tell whether the stored secret drifted
+//     (UI edit, ES restore, upstream rotation) — the alias is therefore
+//     WRITE-ALWAYS: the desired credentials are re-emitted on EVERY apply. That
+//     is what makes a password rotation (same userName, new password) actually
+//     reach the gateway; idempotence is proven by stable ids, not by the
+//     absence of a PUT.
 //  4. OUTBOUND AUTH – TRANSPORT (optional, with the credential alias): action
 //     templateKey "outboundTransportAuthentication" whose parameters are ONE
 //     nested "transportSecurity" group (FLAT params => NPE 500 in
@@ -238,10 +242,16 @@ func (a *Adapter) credAliasPassword() string {
 }
 
 // ensureCredentialAlias finds the httpTransportSecurityAlias by NAME and
-// converges it. Drift is keyed on userName ONLY: the read-back password is
-// MASKED (base64 of asterisks — comparing it would force a spurious PUT on
-// every apply, or worse, write the mask back as the real password). The real
-// base64 password is therefore ALWAYS re-emitted on a PUT.
+// converges it WRITE-ALWAYS: the stored password is never readable (masked as
+// the base64 of asterisks on every read-back), so labctl cannot detect drift
+// on the gateway (UI edit, ES snapshot restore, upstream rotation). The only
+// sound convergence for a write-only secret is to re-emit the desired
+// credentials on EVERY apply — keying the write on the masked read-back would
+// either PUT nothing useful or, worse, write the mask back as the real
+// password. Re-emitting also makes a same-user password rotation reach the
+// gateway (the bug this replaced: a drift check keyed on userName skipped the
+// PUT and left the old password live). Idempotence is proven by stable ids and
+// the data-plane, not by the absence of a PUT.
 func (a *Adapter) ensureCredentialAlias(ctx context.Context, name string) error {
 	wantUser := a.routing.backendUsername
 	aliases, err := a.listAliases(ctx)
@@ -252,16 +262,9 @@ func (a *Adapter) ensureCredentialAlias(ctx context.Context, name string) error 
 		if al.Name != name {
 			continue
 		}
-		creds, _ := al.Raw["httpAuthCredentials"].(map[string]any)
-		gotUser := ""
-		if creds != nil {
-			gotUser, _ = creds["userName"].(string)
-		}
-		if gotUser == wantUser {
-			return nil // converged (password never compared — masked on read)
-		}
-		// Drifted: overwrite ONLY the credentials block on the full read-back
-		// record, re-emitting the base64 password (the read-back one is a mask).
+		// Present: overwrite ONLY the credentials block on the full read-back
+		// record (gateway-enriched fields survive), re-emitting the base64
+		// password unconditionally — the read-back one is a mask.
 		al.Raw["httpAuthCredentials"] = map[string]any{
 			"userName": wantUser,
 			"password": a.credAliasPassword(),
@@ -396,19 +399,40 @@ func stageEnforcementIDs(policy map[string]any, stageKey string) []string {
 	return nil
 }
 
-// findStageAction returns the first action of the stage whose templateKey
-// matches, plus its id ("" when absent).
-func findStageAction(routeIDs []string, byID map[string]map[string]any, templateKey string) (string, map[string]any) {
+// findStageActions returns the ids of EVERY action on the stage whose
+// templateKey matches, in enforcement order. A well-formed policy carries at
+// most one enforcing action per templateKey on a stage; more than one is an
+// ambiguity the projection must never converge blindly — a first-match would
+// leave the extra action live while reporting "converged" (the exact class of
+// the A1 first-rule-only false negative, here for a duplicate/orphan or an
+// injected outbound-auth action re-pointing the backend credentials).
+func findStageActions(routeIDs []string, byID map[string]map[string]any, templateKey string) []string {
+	var ids []string
 	for _, id := range routeIDs {
 		act := byID[id]
 		if act == nil {
 			continue
 		}
 		if tk, _ := act["templateKey"].(string); tk == templateKey {
-			return id, act
+			ids = append(ids, id)
 		}
 	}
-	return "", nil
+	return ids
+}
+
+// findStageAction returns the SINGLE action of the stage whose templateKey
+// matches (id + record), fail-closed on more than one. Callers rely on there
+// being at most one enforcing action per templateKey; >1 is refused loudly
+// rather than silently converging the first.
+func findStageAction(routeIDs []string, byID map[string]map[string]any, templateKey string) (string, map[string]any, error) {
+	ids := findStageActions(routeIDs, byID, templateKey)
+	if len(ids) > 1 {
+		return "", nil, fmt.Errorf("routing: the %s stage carries %d %s actions (%v) — ambiguous (duplicate, orphan of a prior run, or injected); refuse to converge the first and leave the rest live", stageRouting, len(ids), templateKey, ids)
+	}
+	if len(ids) == 0 {
+		return "", nil, nil
+	}
+	return ids[0], byID[ids[0]], nil
 }
 
 // actionParamValues returns the values of a top-level action parameter
@@ -460,7 +484,10 @@ func firstStringValue(values []any) string {
 // ENVELOPED with ONLY endpointUri replaced, then read-back-asserts the value —
 // the live trap is a 200 that persists NOTHING when the envelope is missing.
 func (a *Adapter) convergeStraightThroughRouting(ctx context.Context, apiID string, routeIDs []string, byID map[string]map[string]any, epName string) error {
-	actionID, action := findStageAction(routeIDs, byID, "straightThroughRouting")
+	actionID, action, err := findStageAction(routeIDs, byID, "straightThroughRouting")
+	if err != nil {
+		return err
+	}
 	if action == nil {
 		// An imported API always carries one on this build; its absence means
 		// the policy was hand-edited into a shape this projection cannot
@@ -483,7 +510,10 @@ func (a *Adapter) convergeStraightThroughRouting(ctx context.Context, apiID stri
 // it to the routing stage, or converges the alias param of an existing one.
 func (a *Adapter) convergeOutboundAuth(ctx context.Context, apiID, policyID string, policy map[string]any, routeIDs []string, byID map[string]map[string]any, credName string) error {
 	want := aliasRef(credName)
-	actionID, action := findStageAction(routeIDs, byID, "outboundTransportAuthentication")
+	actionID, action, err := findStageAction(routeIDs, byID, "outboundTransportAuthentication")
+	if err != nil {
+		return err
+	}
 	if action != nil {
 		if got := outboundAuthAlias(action); got == want {
 			return nil // converged — idempotent no-op
