@@ -46,6 +46,7 @@ func (s *Server) Handler() http.Handler {
 
 	// --- identity & static ---
 	mux.HandleFunc("GET /api/v1/me", s.auth(s.handleMe))
+	mux.HandleFunc("GET /api/v1/environments", s.auth(s.handleEnvironments))
 	mux.HandleFunc("GET /api/v1/schema/uac", s.auth(s.handleSchema))
 	mux.HandleFunc("GET /api/v1/roles", s.auth(s.handleRoles))
 	mux.HandleFunc("GET /api/v1/dashboard", s.auth(s.handleDashboard))
