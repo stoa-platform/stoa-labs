@@ -90,6 +90,24 @@ func (s *Server) handleRoles(w http.ResponseWriter, r *http.Request, _ governanc
 	writeJSON(w, http.StatusOK, out)
 }
 
+// handleEnvironments exposes the promotion chain + per-hop gates (GET
+// /environments) — the single source of truth for the UI's hops and its
+// gate-dependent inputs. Without it the client hardcodes env names (they drift:
+// ADR-075 is dev→rec→int→prod, not the historical dev→staging→production) and
+// cannot know which hop requires a change_ref / pv_ref. Same auth level as /me
+// (read-only chain metadata, no tenant scope).
+func (s *Server) handleEnvironments(w http.ResponseWriter, r *http.Request, _ governance.Identity) {
+	chain, err := s.Store.EnvChain(r.Context())
+	if err != nil {
+		apiError(w, http.StatusInternalServerError, "INTERNAL", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"environments": chain.Envs,
+		"gates":        chain.Gates,
+	})
+}
+
 // handleDashboard aggregates the governance overview (GET /dashboard),
 // scoped to the caller's tenants.
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request, id governance.Identity) {
