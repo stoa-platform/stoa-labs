@@ -26,6 +26,13 @@ pipeline {
     OPENSEARCH_INSECURE         = 'true'
     OTEL_EXPORTER_OTLP_ENDPOINT = 'http://otel-lgtm:4318'
     APPLY_TENANT                = 'banking-demo'
+    // Le re-apply prod passe par apply-uac : la couche dispatch-gate (A6) relit
+    // l'ITSM du change de l'état N-1 restauré (deploy.prod.yaml reverté). Sans
+    // ITSM_URL elle refuserait fail-closed (ITSM_NOT_CONFIGURED). NB PoC/mock :
+    // le change du N-1 reste 'approved' ; un ITSM RÉEL le passerait 'implemented'
+    // post-MEP → un rollback d'urgence devrait porter son propre change_ref
+    // (param CHANGE_REF) plutôt que celui du N-1 — durcissement documenté (A6).
+    ITSM_URL                    = 'http://itsm-mock:8788'
     VAULT_ADDR                  = 'http://vault:8200'
     VAULT_ROLE_ID               = '48b2ce71-9e52-15cc-409c-8f138525af9d'
     // governance-api tourne sur le HOST dans le PoC (:8787) — depuis l'agent

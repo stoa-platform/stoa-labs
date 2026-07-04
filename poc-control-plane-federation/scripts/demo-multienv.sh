@@ -86,7 +86,11 @@ git -C "$REPO" -c user.name="Alice Banking" -c user.email=alice@bank.example com
 
 GOVERNANCE_REPO="$REPO" KC_BASE="$KC" KC_REALM=stoa-lab ITSM_URL="$ITSM" LISTEN=":${GPORT}" \
   "$GAPI" >/tmp/dm_gapi.log 2>&1 &
-SRV=$!; trap 'kill $SRV 2>/dev/null; wait $SRV 2>/dev/null; rm -f /tmp/stoa-wm-admin-token' EXIT
+SRV=$!
+# Le trap restaure INCONDITIONNELLEMENT CHG-0001=approved : la contre-épreuve ③b
+# révoque ce change dans l'ITSM LIVE partagé — un crash dans la fenêtre ne doit
+# pas laisser le mock cassé pour les autres flux (governance-api :8787, Jenkins).
+trap 'curl -s -X PUT "$ITSM/changes/CHG-0001/status" -H "Content-Type: application/json" -d "{\"status\":\"approved\"}" >/dev/null 2>&1; kill $SRV 2>/dev/null; wait $SRV 2>/dev/null; rm -f /tmp/stoa-wm-admin-token' EXIT
 for _ in $(seq 1 50); do curl -s -o /dev/null "$GOV/healthz" && break; sleep 0.2; done
 
 say "0b. Identités — alice (request), bob (devops + groupe int-team), dave (cpi-admin)"
@@ -139,8 +143,12 @@ TOK_ALICE="$(mint_user alice)"; TOK_BOB="$(mint_user bob)"; TOK_DAVE="$(mint_use
 # Médiation apply (ADR-072) : compte de service cp-applier.
 CPTOKFILE="$BD/cptok"; ( umask 077; bash scripts/setup-ci-applier.sh --mint > "$CPTOKFILE" )
 
-applyenv() { # applyenv <env> — converge l'env depuis le repo governance jetable
-  LABCTL_TOKEN_FILE="$CPTOKFILE" "$LABCTL" apply-uac \
+applyenv() { # applyenv <env> — converge l'env depuis le repo governance jetable.
+  # ITSM_URL arme le re-check LIVE du gate au dispatch (A6) : pour un env gated
+  # itsmCheck (prod), apply-uac refuse fail-closed si le change du deploy.{env}.yaml
+  # n'est plus approved à cet instant. DISPATCH_ITSM permet aux contre-épreuves de
+  # forcer un ITSM injoignable sans toucher l'instance partagée.
+  LABCTL_TOKEN_FILE="$CPTOKFILE" ITSM_URL="${DISPATCH_ITSM:-$ITSM}" "$LABCTL" apply-uac \
     --repo "$REPO" --env "$1" --tenant "$TENANT" -f "envs/$1/targets.yaml"
 }
 
@@ -176,9 +184,28 @@ B="$(cat /tmp/dm.json)"
 [ "$CODE" = 200 ] && ok "③ approuvée par bob ≠ alice (4-yeux) — ITSM vérifié approved" || bad "③ approve prod KO (HTTP $CODE): $B"
 if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^poc-jenkins$'; then
   echo "  → en réel : job ci/Jenkinsfile.prod (Build with Parameters, PROMOTION_ID=$PRODID)"
-  echo "    qui REJOUE ce gate depuis Git avant tout dispatch. Lab : apply direct équivalent."
+  echo "    qui REJOUE ce gate depuis Git + labctl dispatch-gate avant tout dispatch."
 fi
-applyenv prod && ok "③ prod convergé (admin DIRECT wM réel + commit pinné)" || bad "③ apply prod KO"
+
+# ③b CONTRE-ÉPREUVE TOCTOU (A6) — le change est révoqué ENTRE l'approbation/merge
+# et le dispatch : le re-check LIVE au dispatch doit REJOUER le 409, AUCUN apply.
+say "③b anti-TOCTOU — CHG-0001 révoqué APRÈS l'approbation, AVANT le dispatch"
+curl -s -X PUT "$ITSM/changes/CHG-0001/status" -H 'Content-Type: application/json' \
+  -d '{"status":"cancelled"}' >/dev/null
+OUT="$(applyenv prod 2>&1)"; RC=$?
+echo "$OUT" | grep -i itsm | sed 's/^/    /'
+if [ "$RC" -ne 0 ] && echo "$OUT" | grep -q 'ITSM_NOT_APPROVED'; then
+  ok "③b change révoqué au dispatch → apply prod BLOQUÉ (409 ITSM_NOT_APPROVED rejoué)"
+else bad "③b apply prod aurait dû être bloqué au dispatch (rc=$RC)"; fi
+# Sabotage-test du fail-closed : ITSM injoignable au dispatch → refus 503 (pas un pass muet)
+OUT="$(DISPATCH_ITSM=http://127.0.0.1:1 applyenv prod 2>&1)"; RC=$?
+if [ "$RC" -ne 0 ] && echo "$OUT" | grep -q 'ITSM_UNAVAILABLE'; then
+  ok "③b ITSM injoignable au dispatch → 503 ITSM_UNAVAILABLE (fail-closed, pas de pass muet)"
+else bad "③b ITSM injoignable aurait dû refuser 503 (rc=$RC)"; fi
+# Ré-approbation → le dispatch repasse (preuve que le gate n'est pas juste 'toujours non').
+curl -s -X PUT "$ITSM/changes/CHG-0001/status" -H 'Content-Type: application/json' \
+  -d '{"status":"approved"}' >/dev/null
+applyenv prod && ok "③ prod convergé après ré-approbation (admin DIRECT wM réel + commit pinné)" || bad "③ apply prod KO"
 C=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 "$WM/gateway/accounts-read/1.0.0/accounts")
 [ "$C" = 401 ] && ok "③ smoke prod : data-plane sans token → 401 (barrière active)" || bad "③ smoke prod → $C (attendu 401)"
 

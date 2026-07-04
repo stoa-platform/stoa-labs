@@ -95,7 +95,16 @@ Le client CI hors-prod (`ci-horsprod`, client_credentials) porte `deploy:dev+rec
 |---|---|
 | **→ dev, → rec** | push provider mergé → webhook → pipeline hors-prod (auto) — `deploy.dev/rec.yaml` au fil de l'eau |
 | **rec → int** | promotion par référence (`pr_xxx`) **approuvée par l'équipe int** (`approverGroup`) → merge `deploy.int.yaml` → convergence |
-| **int → prod** | promotion + **change ITSM approuvé** (`change_ref`, vérifié auprès de l'ITSM — 409 si draft, 503 si non configuré) + **preuve de validation** (`pv_ref`) + **4-yeux** (`approved_by != requested_by`, self-approval → 403) → `ci/Jenkinsfile.prod` (AUCUN trigger), gate **Git-natif** relu avant tout dispatch |
+| **int → prod** | promotion + **change ITSM approuvé** (`change_ref`, vérifié auprès de l'ITSM — 409 si draft, 503 si non configuré) + **preuve de validation** (`pv_ref`) + **4-yeux** (`approved_by != requested_by`, self-approval → 403) → `ci/Jenkinsfile.prod` (AUCUN trigger), gate **Git-natif** relu avant tout dispatch **+ re-check ITSM LIVE au DISPATCH** (anti-TOCTOU, A6) |
+
+### Re-check ITSM au dispatch (anti-TOCTOU, goal A6)
+
+Le gate Git-natif valide l'état **mergé** — l'approbation *au moment du merge/build*. Un change approuvé puis **révoqué** entre le build et le clic « déployer » passerait sinon inaperçu. Le re-check ferme cette fenêtre en **deux couches** :
+
+- **Couche autoritaire (labctl `apply-uac`)** : un pré-check *fail-closed* avant tout écrit gateway relit, pour chaque env gated `itsmCheck` réellement dispatché, le `change_ref` **inscrit dans `deploy.{env}.yaml`** (écrit par la promotion qui a activé l'env — l'ancre est l'**état dispatché**, pas « une promotion approuvée quelconque ») et interroge l'ITSM **live**. Verdicts : `409 ITSM_NOT_APPROVED` (révoqué), `503 ITSM_UNAVAILABLE`/`ITSM_NOT_CONFIGURED` (fail-closed), `NO_CHANGE_REF` (état non rattaché à un change). Le gate s'arme sur la **config de gate du repo** + les deploys activés — **jamais** sur le seul flag `--env` : `--env any` re-check **tout** env gated activé (pas de bypass en omettant le flag). Une seule passe pré-dispatch → **zéro dispatch partiel** sur repo multi-contrats.
+- **Couche pipeline (`labctl dispatch-gate`)** : la **même** vérité Go exposée en stage Jenkins dédié (`ci/Jenkinsfile.prod`), qui échoue *avant* le stage Apply — pas de ré-implémentation shell du check (une seule source de vérité).
+
+**Preuve** : `scripts/demo-multienv.sh` §③b (change révoqué entre approbation et dispatch → `409` rejoué ; ITSM injoignable → `503`) ; unitaires `cmd/labctl/dispatchgate_test.go` (approved/révoqué/unavailable/not-configured/no-change-ref/ungated-noop/`--env any`). **Limite documentée** : le re-apply *rollback* re-checke le change de l'état N-1 restauré ; dans un ITSM réel ce change serait `implemented` post-MEP (non `approved`) → un rollback d'urgence devrait porter son **propre** `change_ref` (le mock le laisse `approved`, le PoC passe).
 | **rollback** | `ci/Jenkinsfile.rollback` : revert **Git** ordonné par governance-api (raison + change ITSM, audité) + **re-apply idempotent** — jamais de suppression gateway |
 
 ---

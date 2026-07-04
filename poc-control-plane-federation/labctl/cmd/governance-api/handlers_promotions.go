@@ -139,6 +139,10 @@ func (s *Server) handlePromotionRequest(w http.ResponseWriter, r *http.Request, 
 	}
 	deployRaw, err := governance.MarshalYAML(governance.Deployment{
 		Version: version, Enabled: true, PromotedBy: id.Username, Message: body.Message, Commit: pinSHA,
+		// Anchor the dispatch gate (A6) on THIS state: the change that authorised
+		// this promotion travels into the deploy marker, so a live ITSM re-check
+		// at apply time targets exactly the state being dispatched.
+		ChangeRef: body.ChangeRef,
 	})
 	if err != nil {
 		apiError(w, http.StatusInternalServerError, "INTERNAL", err.Error())
