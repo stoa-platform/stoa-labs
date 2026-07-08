@@ -2,7 +2,17 @@
 
 > Analyse : stoa-labs (PoC control-plane-federation, accounts-team, payments-team,
 > console-light, stoa-platform-ci, adr) en profondeur ; monorepo `stoa` lu pour les
-> points de raccordement. Créé 2026-07-03 ; **rafraîchi 2026-07-04** (Phase A cœur livrée).
+> points de raccordement. Créé 2026-07-03 ; **rafraîchi 2026-07-08** (Phase A livrée en
+> entier + environnement réparé et re-prouvé de bout en bout, cf. §0.quater).
+>
+> ⚠️ **PÉRIMÈTRE NON-COMMITTÉ (à commiter en priorité)** : toute la **chaîne ADR-077**
+> du 05/07 vit hors Git — `adr/adr-077-…md`, `cmd/governance-api/userdeploy{,_test}.go`
+> (+ hooks dans handlers_promotions/server/main), `scripts/setup-user-vault-jwt.sh`,
+> `setup-user-deploy-job.sh`, `test-user-vault-jwt.sh`, `test-console-user-deploy.sh`,
+> bump KC 26.3.4 (docker-compose.poc.yml), realm-stoa-lab.json, setup-identity.sh
+> (console-light), API-CONTRACT.md (champ `user_deploy`) — plus une grappe de scripts
+> de preuve antérieurs (demo-mediation, test-apply-*, wm-*, otlp) et EVIDENCE.md.
+> **Une preuve non commitée n'existe pas pour le prochain agent.**
 
 ---
 
@@ -14,8 +24,11 @@ une discipline de preuve rare. **La Phase A (durcir) est désormais livrée en e
 « sécurité = f(intégrité) » est **enforced** ET **anti-spoof**, l'observabilité et
 l'analytics sont **3/3 runtimes**, et la **finition A4/A6/A7 est close** (auth outbound
 wM as-code, re-check ITSM au dispatch, console→webhook réel→déploiement + 4-yeux exercé
-E2E). Ce qui reste : **(B) faire atterrir les briques prouvées dans la plateforme
-`stoa`**, où deux d'entre elles (APISIX, WSO2) n'ont **aucune** existence.
+E2E). L'**environnement de démo est entièrement fonctionnel** (08/07) : déploiement
+9/9, multi-env 22/22, identité 3/3, analytics 3/3. Ce qui reste : **commiter la chaîne
+ADR-077** (G14, hors Git !), un peu d'entretien (A'), et surtout **(B) faire atterrir
+les briques prouvées dans la plateforme `stoa`**, où deux d'entre elles (APISIX, WSO2)
+n'ont **aucune** existence.
 
 ---
 
@@ -47,12 +60,91 @@ E2E). Ce qui reste : **(B) faire atterrir les briques prouvées dans la platefor
   *design* ont attrapé des trous (A1 : faux négatif VH ; A5 : trou B1 de clé projet-éditable)
   AVANT d'écrire une ligne — c'est là que le gain est maximal.
 
-⚠️ **État du trial wM** : la chaîne de versions de `accounts-read` est corrompue
-(« Versioning only from latest » vers un record supprimé, cf. note A1). Un `apply`
-plateforme réel du repo `accounts-team` bute EN AMONT du gate → **rebuild-from-Git sur
-état sain requis** (teardown/up ou env neuf). Ce n'est pas un défaut du gate (les scripts
-de preuve tournent sur API propre). Le trial **flappe** ~toutes les 20 min (santé 000
-transitoire) — attendre health=200 avant tout spike.
+~~⚠️ État du trial wM : chaîne accounts-read corrompue~~ → **RÉPARÉ le 04-07/07-07**
+(rebuild-from-Git exécuté, cf. §0.quater). Reste vrai : le trial **flappe** ~25 min —
+`wm-keepalive.sh` le recycle proactivement (uptime ≥ 23 min ; données dans l'ES externe,
+un restart ne perd rien). Pattern opératoire pour un provisioning long :
+`docker restart poc-webmethods-real` (fenêtre fraîche, boot ~2 min) →
+`touch /tmp/wm-keepalive.pause` → travailler → `rm -f /tmp/wm-keepalive.pause`.
+
+---
+
+## 0.ter Livré 2026-07-05 — chaîne A : identité UTILISATEUR jusqu'à Vault (ADR-077)
+
+Contrainte IT client : « un **utilisateur** se connecte au Vault, pas une application »,
+avec des jobs Jenkins non interactifs. Livré et prouvé : **token exchange standard
+RFC 8693** (Keycloak **bumpé 26.1.4 → 26.3.4**, l'exchange standard est GA depuis 26.2) →
+JWT court `aud=vault` `sub=utilisateur` `tenant=<tenant>` → job Jenkins
+`stoa-user-deploy` **sans aucun credential propre** → `auth/jwt/login` → token Vault
+**nominatif et TENANT-scopé** (policy templatée : cross-tenant → 403 ; revoke fin de
+build **prouvé** par lookup-self 403). `scripts/test-user-vault-jwt.sh` **24/24 live**
+après durcissement post-review adversariale (bound azp, jetons hors argv, webhook sans
+jeton → build rouge, audit scopé au run). **Wiring console BRANCHÉ le même jour** :
+au `promote-approve`, la governance-api échange le Bearer de l'APPROBATEUR et
+déclenche le job (`userdeploy.go`, opt-in `USER_DEPLOY_WEBHOOK_URL` +
+`VAULT_EXCHANGE_SECRET[_FILE]` fail-fast, async, champ additif `user_deploy`,
+URL webhook redactée dans les logs, arrêt gracieux) —
+`scripts/test-console-user-deploy.sh` **12/12 live** (identité de bob, pas de dave ;
+build corrélé à la promotion ; zéro jeton loggé, JWT et token GWT) + 7 tests
+unitaires Go sous `-race`. Détail + runbook post-recreate KC :
+`adr/adr-077-user-identity-to-vault-token-exchange.md`.
+
+**Gotchas durement gagnés (2026-07-05)** :
+- **Usernames fédérés = `<user>@bc.example`** (confirmé : le seeding console-light
+  utilisait les prénoms nus et ne matchait RIEN — corrigé dans
+  `console-light/scripts/setup-identity.sh`).
+- **Recreate poc-keycloak = realm à re-seeder** — runbook complet ADR-077 §Restauration,
+  **validé par une passe de non-régression** (A7 était retombé à 6/7, phase3 ne mintait
+  plus) puis re-vert : A7 7/7, chaîne A 21/21 (script d'alors ; 24 checks après le
+  durcissement post-review), mints CI 3/3. Les 3 pertes non couvertes
+  par les seeds standards : (a) **`unmanagedAttributePolicy=DISABLED`** (défaut KC ≥ 24)
+  fait ignorer EN SILENCE le PUT de l'attribut `tenant` (rôles OK, tenant absent → 403
+  tenant à l'approve ; le seed console-light l'active désormais lui-même) ; (b) les
+  **mappers `demo-tenant-attr`/`demo-groups` de stoa-portal** + groupe `int-team`
+  (recréés par le bloc identité idempotent de `demo-multienv.sh`) ; (c) le **client
+  runtime `accounts-read-consumer`** (créé par `labctl subscribe`) — recréé avec le même
+  secret que `labctl-credentials.txt`.
+- **`clientScopes` dans un realm import supprime les scopes built-in** → le scope
+  `vault-aud` est provisionné par script, PAS dans `realm-stoa-lab.json`.
+- **Groovy triple-quoted : `\"` est consommé par Groovy, pas par le shell** (le JSON
+  partait sans guillemets → « error parsing JSON » Vault). Zéro backslash dans les
+  blocs `sh` inline ; body construit par `printf` single-quoted.
+- **Jenkins `config.xml` POST exige `charset=utf-8`** (sinon 500 « invalid XML
+  character 0x80 » sur les accents) — et TOUJOURS vérifier le code HTTP : la mise à
+  jour échouait en silence.
+- **`docker exec … | grep -q` sous `pipefail` = SIGPIPE 141** dès que la sortie dépasse
+  le buffer de pipe → faux FAIL. Variable + here-string.
+- ~~⚠️ WSO2 trial : KM Keycloak absent, leg WSO2 phase3 dégradé~~ → **RÉSOLU le 07-07**
+  (KM restauré + souscription rejouée via `demo.sh`, `phase3-identity-demo.sh` **3/3**,
+  cf. §0.quater).
+
+## 0.quater Livré 2026-07-04→07 — enum console, réparation gateways, remise en état
+
+| Chantier | Résultat | Preuve | Commits |
+|---|---|---|---|
+| **Migration enum console-light `VVH`→`VH/H/M`** | ✅ | la migration ADR-076 déc. #1 n'avait couvert QUE labctl/BFF ; console-light (schéma ajv, types, 3 pages, seed) + le contrat VIVANT `payments-initiation=VVH` → **422 à chaque édition**. Migré (mapping criticité H→M, VH→H, VVH→VH) + seed commité sur `main` du repo governance (le BFF lit `ReadFile(ref "main")`, PAS le worktree). PUT draft 200 (était 422) ; **Playwright 18/18** | `f5b6d6a`, `7563427`, seed `031535a` |
+| **Réparation gateways → apply-uac 9/9** (user a autorisé) | ✅ | wM : force-delete des 6 objets corrompus (`?forceDelete=true` → 204) ; WSO2 : registry corrompu (create/delete/delete-api TOUS 500 en REST, irréparable par l'API) + conteneur SANS volume → `up --force-recreate` = registry propre en ~30 s. apply-uac recrée frais (adapters create-if-absent) → **build webhook #58 SUCCESS 9/9, job `stoa-governance` bleu** | (ops live, pas de code) |
+| **Analytics WSO2 re-câblée post-recreate** | ✅ | la config OTel in-container est PERDUE au recreate → rejouer `WSO2_OTLP_TARGET=wso2-otel-tap:4317 scripts/setup-wso2-otel.sh` (les APIs publiées survivent au restart) ; `test-txn-wso2.sh` **12/12**, parité 3/3 | — |
+| **Remise en état multi-env + identité (07-07)** | ✅ | (1) **Vault dev-mode en seed PARTIEL** (`envs/*`, `keycloak`, `ci`, `deploy/*` perdus ; symptôme `{"errors":[]}` 404 KV) → rejouer LA CHAÎNE complète setup-vault{,-envs,-approle}.sh + setup-ci-{horsprod,applier}.sh ; (2) **wm-admin-{dev,rec,int} corrompus** (même signature PUT 500 « null ») → force-delete + `setup-wm-admin-proxy.sh` → matrice **15/15** ; (3) `demo-multienv.sh` **22/22** (19 d'origine + contre-épreuves A6 ③b) ; (4) `phase3-identity-demo.sh` **3/3** (WSO2 200 + APISIX 200 + wM 200 avec UN token Oracle-fédéré, 401×3 sans) | (ops live) |
+
+**🐛 Bug labctl trouvé et tracké (non corrigé)** : `consumer.go` associe l'application
+consommatrice au **premier match de nom** (`findByName`) — avec 2 versions actives du
+même nom sur wM (accounts-read v1.0.0 + v1.0.1, héritage du cycle promotion/rollback
+ADR-075), subscribe n'associe QU'UNE version → **401 sur l'autre** (`applicationLookup=
+strict`). Vécu live au leg wM de phase3 ; fix manuel `PUT /applications/{id}/apis` avec
+les 2 apiIDs. Fix propre : associer la version du manifeste (`findByNameVersion`) ou
+toutes les versions actives.
+
+**Gotchas d'environnement (à connaître avant toute session)** :
+- **WSO2 recreate ≠ restart** : le recreate perd OTel + KM + consumers (conteneur stock
+  sans volume) ; le restart ne perd rien. Runbook post-recreate : apply-uac (APIs) →
+  `setup-wso2-otel.sh` (traces/analytics) → `setup-identity.sh` (KM, garde l'existant) →
+  `demo.sh` (souscription consumer).
+- **Vault dev-mode = in-memory** : après un restart du conteneur, TOUT re-seeder (la
+  chaîne complète, pas un sous-ensemble — l'état partiel est vicieux : l'AppRole login
+  marche mais les lectures 404).
+- **apply-uac local** : penser `ITSM_URL=http://localhost:8788` sinon le gate A6
+  refuse `→prod` fail-closed (`503 ITSM_NOT_CONFIGURED` — comportement voulu).
 
 ---
 
@@ -64,25 +156,30 @@ transitoire) — attendre health=200 avant tout spike.
 | Identité Oracle-master (Dex→Keycloak→3 gw) | ✅ PROUVÉ live | `phase3-identity-demo.sh` : 1 token → 200×3 / 401×3 |
 | Médiation control-plane (ADR-072) | ✅ PROUVÉ | `test-onboarding-matrix` 8/8, `test-apply-scope` 11/11, `test-apply-audit` 13/13, `demo-mediation` 11/11 |
 | Secrets Vault as-code + rotation (ADR-074) | ✅ PROUVÉ | `internal/vault`, AppRole least-privilege (403 croisés), `test-vault-rotation.sh` |
-| CI multi-env sans gateway de promotion (ADR-075) | ✅ PROUVÉ | `demo-multienv.sh` 19/19 ; **vrai Jenkins** ; ITSM gate + 4-yeux + pin SHA |
+| CI multi-env sans gateway de promotion (ADR-075) | ✅ PROUVÉ | `demo-multienv.sh` **22/22** (07-07, inclut anti-TOCTOU A6) ; **vrai Jenkins** ; ITSM gate + 4-yeux + pin SHA |
 | **Observabilité OTel fédérée** | ✅ **3/3** (A2) | Tempo : APISIX + webMethods + **WSO2** ; `setup-wso2-otel.sh` |
 | **Analytics txn par fournisseur (ADR-070)** | ✅ **3/3** (A3) | data-stream + RBAC/FLS + redaction 1-point + pivot trace_id ; `wso2-otel-tap` ; `test-txn-wso2.sh` 12/12 |
 | Traces wM réel → Tempo (ADR-073) | ✅ PROUVÉ | `wm-trace-bridge` |
 | **GitOps cycle de vie API (ADR-076)** | ✅ **enforced + anti-spoof** (A1+A5) | gate apply fail-closed (31/31) + classification centrale owner-keyée (11/11) ; enum VH/H/M |
-| console-light (IHM gouvernance) | ✅ Démo-able E2E | `tsc` clean, Playwright multi-personas, UI→commit→Jenkins→3 gw→200 |
+| console-light (IHM gouvernance) | ✅ Démo-able E2E, **désormais trackée dans Git** | `tsc` clean, **Playwright 18/18**, enum `VH/H/M` aligné BFF, UI→commit→webhook→Jenkins→**9/9 gateways** (build #58) |
 | accounts-team + **payments-team** (repos-clients GitOps) | ✅ Fonctionnels | 2 pilotes poly-repo, bundles différents dérivés du central |
+| **Identité utilisateur → Vault, token exchange (ADR-077)** | ✅ PROUVÉ live | `test-user-vault-jwt.sh` **24/24** ; KC 26.3.4, job Jenkins **zéro credential**, token Vault nominatif **tenant-scopé** + audit |
 
 ---
 
-## 2. Les gaps réels restants (les gaps A1/A2/A3/A5/A8 sont fermés)
+## 2. Les gaps réels restants (TOUS les gaps Phase A — G1-G8 — sont fermés)
 
 | # | Gap | Nature | Goal |
 |---|---|---|---|
-| G4 | **TokenProvider wM outbound câblé à la main** (2 policyActions), pas as-code | Dette de câblage | **A4** |
-| G6 | **TOCTOU ITSM prod** : pas de re-check live de l'approbation au dispatch | Faille temporelle | **A6** |
-| G7 | **console-light** : webhook sur miroir de démo, refus 4-yeux non exercé E2E | Câblage démo | **A7** |
+| ~~G4~~ | ~~TokenProvider wM outbound à la main~~ → **fermé (A4**, 19/19) | — | ✅ |
+| ~~G6~~ | ~~TOCTOU ITSM prod~~ → **fermé (A6**, dispatch-gate + 22/22) | — | ✅ |
+| ~~G7~~ | ~~webhook démo / 4-yeux non exercé~~ → **fermé (A7**, denials.jsonl + 9/9) | — | ✅ |
 | G9 | **audience wM non opposable** (trial 10.15) ; **dev/rec/int = mocks wM** ; **SSO OIDC OpenSearch** déféré ; **streaming >500 Mo** hors scope | Limites assumées | — (documentées) |
 | G10 | **read-back enforcement APISIX/WSO2** absent : tout target non-wM sous gate A1 = structurellement rouge (`unverifiable`) | Fail-closed assumé | **B1** (adaptateurs plateforme) |
+| G11 | **`labctl subscribe` multi-version wM** : association app→API au premier match de nom → 401 sur les autres versions actives | Bug tracké (07-07) | entretien |
+| G12 | **Config WSO2 non déclarative** : un recreate perd OTel/KM/consumers (runbook manuel §0.quater) | Dette infra | entretien |
+| G13 | **Secrets de démo en clair dans Git** (admin/admin, Administrator/manage, tokens webhook) — Vault est déjà câblé (ADR-074) | Blocker rollout client | entretien |
+| G14 | **Chaîne ADR-077 non commitée** (cf. bandeau en tête) | Risque de perte | **priorité 1** |
 
 ---
 
@@ -112,42 +209,31 @@ cross-runtime) ; double source-de-vérité déclarative ; anomalie git `cli/src`
 > Chaque goal est auto-contenu (contexte + DoD + fichiers). Effort : S (<0.5j) · M (1-2j)
 > · L (3j+). Racine labs = `/Users/torpedo/hlfh-repos/stoa-labs`.
 
-### PHASE A — finition du labs (A1/A2/A3/A5/A8 déjà faits)
+### PHASE A — finition du labs : ✅ LIVRÉE EN ENTIER (A1-A8, cf. §0.bis)
+
+### PHASE A' — entretien (petits goals autonomes, aucun ne bloque B)
 
 ---
-**/goal A4 — TokenProvider webMethods outbound as-code**
-- **Contexte** : le TokenProvider IS+Vault (creds body-based wM 10.15) est câblé à la main
-  via 2 `policyActions`, pas projeté par `labctl apply`.
-- **Objectif** : porter la config outbound (routing-by-alias + credential alias base64 +
-  action outbound imbriquée sous `transportSecurity`) dans l'adaptateur, projetée à chaque
-  apply, idempotente.
-- **Critères** : re-apply idempotent recrée l'auth outbound sans intervention ; Basic injecté
-  vu par le backend ; changement d'alias suivi immédiatement (déjà prouvé pour le routing).
-- **Fichiers** : `labctl/internal/adapter/webmethods/{routing,inboundauth}.go`,
-  `gateways/webmethods/token-provider/`.
-- **Effort** : M. **Priorité** : 🟠.
+**/goal A'0 — Commiter la chaîne ADR-077 (G14, priorité 1)**
+- Tout le périmètre du bandeau en tête : adr-077, userdeploy.go + hooks, scripts
+  setup/test user-vault, bump KC, realm, API-CONTRACT. Découper en commits propres
+  (feat governance-api / feat scripts / docs adr). **Effort : S.**
 
 ---
-**/goal A6 — Fermer le TOCTOU du gate ITSM prod**
-- **Contexte** : le gate prod (ITSM approved + 4-yeux + pin SHA) est vérifié au merge/build,
-  pas re-checké **live** à l'instant du dispatch — fenêtre TOCTOU.
-- **Objectif** : re-valider l'approbation ITSM (et le 4-yeux) au dispatch prod, juste avant `apply`.
-- **Critères** : une approbation ITSM révoquée entre build et dispatch → apply prod **bloqué**
-  (`409 ITSM_NOT_APPROVED` rejoué au dispatch) ; contre-épreuve dans `demo-multienv.sh`.
-- **Fichiers** : `ci/Jenkinsfile.prod`, `envs/prod/`, `scripts/demo-multienv.sh`.
-- **Effort** : M. **Priorité** : 🟡.
+**/goal A'1 — Fix subscribe multi-version wM (G11)**
+- `consumer.go` : associer la version du manifeste (`findByNameVersion`) ou toutes les
+  versions actives ; test unitaire 2-versions + re-preuve phase3. **Effort : S.**
 
 ---
-**/goal A7 — console-light : webhook réel + refus 4-yeux exercé E2E**
-- **Contexte** : le webhook pointe sur un miroir de démo (`var/ci-mirror`) et le refus
-  self-approval 4-yeux est couvert en unitaire mais jamais exercé en E2E (`denials.jsonl` vide).
-- **Objectif** : brancher le webhook sur le vrai repo de gouvernance + un spec Playwright qui
-  **tente** une self-approval et capture le refus.
-- **Critères** : commit console → vrai repo → Jenkins → déploiement ; spec E2E qui produit une
-  entrée `denials.jsonl` avec le 403 `SELF_APPROVAL_BLOCKED`.
-- **Fichiers** : `console-light/` (config webhook, specs Playwright `50-*`), BFF
-  `labctl/cmd/governance-api/`.
-- **Effort** : M. **Priorité** : 🟡.
+**/goal A'2 — Config WSO2 déclarative (G12)**
+- Bind-mount `deployment.toml` (OTel baked-in) + script bootstrap post-recreate unique
+  et idempotent (apply-uac → otel → identity → subscribe), documenté dans le compose.
+  **Effort : S-M.**
+
+---
+**/goal A'3 — Purge des secrets démo (G13, blocker rollout)**
+- Remplacer les creds en clair des fichiers trackés par lecture Vault/env (le câblage
+  ADR-074 existe) ; gitleaks en CI pour verrouiller. **Effort : M.**
 
 ---
 
@@ -239,9 +325,10 @@ cross-runtime) ; double source-de-vérité déclarative ; anomalie git `cli/src`
 ## 5. Ordonnancement recommandé
 
 ```
-Phase A (reste) : A4 · A6 · A7  (finition, indépendants)
-Phase B (graduer) : B0 (décisions, bloquant) → B1 (APISIX/WSO2, débloque tout)
-                    → B2, B3 → B4, B5, B6
+Phase A  : ✅ LIVRÉE (A1-A8)
+Phase A' : A'0 (commit ADR-077, priorité 1) · A'1-A'3 (entretien, indépendants)
+Phase B  : B0 (décisions, bloquant) → B1 (APISIX/WSO2, débloque tout)
+           → B2, B3 → B4, B5, B6
 ```
 
 - **B0 avant tout B** : les 3 collisions (fédération, double source-de-vérité, cli/src) doivent
