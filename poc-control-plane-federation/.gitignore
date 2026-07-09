@@ -7,3 +7,8 @@ catalog-info.yaml
 
 # Local env
 .env
+
+# Sorties de build/release (É0) : les binaires ne se committent JAMAIS — ils se
+# livrent versionnés via `make release` (dist/<version>/ + SHA256SUMS + SBOM).
+dist/
+labctl/bin/

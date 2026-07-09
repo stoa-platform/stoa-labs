@@ -14,7 +14,15 @@
 set -euo pipefail
 OS_URL="${OS_URL:-https://localhost:9201}"
 OS_AUTH="${OS_AUTH:-admin:Stoa!Passw0rd2026}"
-CURL=(/usr/bin/curl -s -k -u "$OS_AUTH" -H 'Content-Type: application/json')
+# TLS (É0) — same knobs as provision.sh: OPENSEARCH_CA_FILE verifies against the
+# enterprise CA; OPENSEARCH_INSECURE=false forces strict system trust; the
+# default (unset/true) keeps -k for the PoC's self-signed demo certs ONLY.
+CURL=(/usr/bin/curl -s -u "$OS_AUTH" -H 'Content-Type: application/json')
+if [ -n "${OPENSEARCH_CA_FILE:-}" ]; then
+  CURL+=(--cacert "$OPENSEARCH_CA_FILE")
+else
+  case "${OPENSEARCH_INSECURE:-true}" in 1|true|yes|on) CURL+=(-k) ;; esac
+fi
 
 echo "[1/3] role tenant-banking-demo-viewer (read-only txn-banking-demo*, PII masked)"
 "${CURL[@]}" -X PUT "$OS_URL/_plugins/_security/api/roles/tenant-banking-demo-viewer" -d '{

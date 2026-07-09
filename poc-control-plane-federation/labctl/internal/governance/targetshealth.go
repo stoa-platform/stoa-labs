@@ -2,7 +2,6 @@ package governance
 
 import (
 	"context"
-	"crypto/tls"
 	"net/http"
 	"os"
 	"sync"
@@ -10,6 +9,7 @@ import (
 
 	"sigs.k8s.io/yaml"
 
+	"github.com/stoa-platform/stoa-labs/poc/labctl/internal/httpx"
 	"github.com/stoa-platform/stoa-labs/poc/labctl/internal/targets"
 )
 
@@ -70,12 +70,11 @@ func ProbeTargets(ctx context.Context, ts []targets.Target) []TargetStatus {
 				out[i].Health = "down"
 				return
 			}
-			client := &http.Client{
-				Timeout: 2 * time.Second,
-				Transport: &http.Transport{
-					TLSClientConfig: &tls.Config{InsecureSkipVerify: insecure}, //nolint:gosec // PoC self-signed gateways
-				},
-			}
+			// httpx.NewClient: same egress knobs as every adapter call
+			// (HTTP(S)_PROXY/NO_PROXY + LABCTL_CA_FILE) — a probe must see
+			// the gateway exactly the way the apply path will.
+			client := httpx.NewClient(insecure)
+			client.Timeout = 2 * time.Second
 			start := time.Now()
 			resp, err := client.Do(req)
 			if err != nil {
