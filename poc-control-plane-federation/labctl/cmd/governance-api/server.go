@@ -28,9 +28,17 @@ type Server struct {
 	// configured: an itsmCheck hop then refuses with 503 (fail-closed).
 	ITSM *governance.ITSMClient
 
+	// UserDeploy is the chain-A dispatcher (ADR-077): at promote-approve it
+	// exchanges the APPROVER's Bearer (RFC 8693) for a short aud=vault JWT and
+	// fires the credential-less stoa-user-deploy Jenkins job. nil = wiring off,
+	// the A7 flow is unchanged.
+	UserDeploy *UserDeploy
+
 	// denialWG tracks the asynchronous 403-audit commits so tests (and a
 	// graceful shutdown) can wait for the trail to land in Git.
 	denialWG sync.WaitGroup
+	// dispatchWG tracks the asynchronous chain-A dispatches (tests/shutdown).
+	dispatchWG sync.WaitGroup
 }
 
 // corsOrigin is the only allowed dev origin (contract §7).
@@ -191,6 +199,29 @@ func (s *Server) auditDeny(id governance.Identity, action, tenant, resource, cod
 
 // WaitDenials blocks until pending denial audits are committed (tests).
 func (s *Server) WaitDenials() { s.denialWG.Wait() }
+
+// dispatchUserDeploy fires the chain-A user-identity deployment (ADR-077),
+// asynchronously — the approve response never waits on Keycloak/Jenkins, and a
+// dispatch failure is logged, not surfaced (the approval itself is already
+// committed; the deploy channel is an effect, not a gate). rawBearer MUST be
+// captured from the request before the handler returns.
+func (s *Server) dispatchUserDeploy(rawBearer, tenant, promoID, approver string) {
+	hint := fmt.Sprintf("promote-approve %s/%s par %s", tenant, promoID, approver)
+	s.dispatchWG.Add(1)
+	go func() {
+		defer s.dispatchWG.Done()
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := s.UserDeploy.Dispatch(ctx, rawBearer, hint); err != nil {
+			log.Printf("governance-api: user-deploy dispatch (%s/%s): %v", tenant, promoID, err)
+			return
+		}
+		log.Printf("governance-api: user-deploy dispatché (%s/%s, approbateur %s)", tenant, promoID, approver)
+	}()
+}
+
+// WaitDispatches blocks until pending chain-A dispatches finished (tests).
+func (s *Server) WaitDispatches() { s.dispatchWG.Wait() }
 
 // ---- JSON helpers ----
 
