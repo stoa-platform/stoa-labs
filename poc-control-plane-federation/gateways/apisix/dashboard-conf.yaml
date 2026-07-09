@@ -1,0 +1,24 @@
+# APISIX Dashboard (UI) — lit/écrit le MÊME etcd qu'APISIX (poc-etcd:2379).
+# C'est un viewer/éditeur de confort sur les routes que labctl publie : on y voit
+# par route les plugins kafka-logger (analytics txn) / openid-connect (auth) /
+# opentelemetry (traces) / proxy-rewrite. Login PoC jetable admin/admin, pas de
+# TLS (in-zone). Ne remplace pas labctl (la source de vérité reste Git/UAC).
+conf:
+  listen:
+    host: 0.0.0.0
+    port: 9000
+  etcd:
+    endpoints:
+      - "etcd:2379"
+  log:
+    error_log:
+      level: warn
+      file_path: /dev/stderr
+    access_log:
+      file_path: /dev/stdout
+authentication:
+  secret: stoa-poc-dashboard-disposable-secret
+  expire_time: 3600
+  users:
+    - username: admin
+      password: admin
