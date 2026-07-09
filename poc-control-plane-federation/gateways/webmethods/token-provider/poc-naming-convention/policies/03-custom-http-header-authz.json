@@ -1,0 +1,12 @@
+{"policyAction": {
+  "id": "a07dccc4-a697-4316-92bf-4163e5f6a0e4",
+  "names": [{"value": "poc-inject-authz", "locale": "en"}],
+  "templateKey": "customHttpHeaders",
+  "parameters": [
+    {"templateKey": "header", "parameters": [
+      {"templateKey": "headerKey", "values": ["Authorization"]},
+      {"templateKey": "headerValue", "values": ["Bearer ${credspoc_token}"]}
+    ]}
+  ],
+  "active": true
+}}

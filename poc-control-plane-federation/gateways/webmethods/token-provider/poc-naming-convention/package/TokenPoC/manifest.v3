@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<Values version="2.0">
+  <value name="enabled">yes</value>
+  <value name="version">1.0</value>
+  <value name="name">TokenPoC</value>
+  <value name="build">1</value>
+  <value name="description">PoC convention de nommage apiName_user/_password via ctxvar</value>
+  <value name="time"></value>
+  <value name="jvm_version">11</value>
+  <value name="publisher">stoa-labs</value>
+  <value name="patch_nums"></value>
+  <null name="startup_services"/>
+  <null name="shutdown_services"/>
+  <null name="replication_services"/>
+  <null name="requires"/>
+  <value name="system_package">no</value>
+  <null name="listACL"/>
+</Values>
