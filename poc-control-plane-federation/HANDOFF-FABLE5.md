@@ -2,17 +2,21 @@
 
 > Analyse : stoa-labs (PoC control-plane-federation, accounts-team, payments-team,
 > console-light, stoa-platform-ci, adr) en profondeur ; monorepo `stoa` lu pour les
-> points de raccordement. Créé 2026-07-03 ; **rafraîchi 2026-07-08** (Phase A livrée en
-> entier + environnement réparé et re-prouvé de bout en bout, cf. §0.quater).
+> points de raccordement. Créé 2026-07-03 ; **rafraîchi 2026-07-09** (É0 bloqueurs
+> transverses du livrable **LEVÉ 18/18** + gitlinks imbriqués purgés, cf. §0.quinquies ;
+> précédent : Phase A livrée + env réparé, §0.quater).
 >
-> ⚠️ **PÉRIMÈTRE NON-COMMITTÉ (à commiter en priorité)** : toute la **chaîne ADR-077**
-> du 05/07 vit hors Git — `adr/adr-077-…md`, `cmd/governance-api/userdeploy{,_test}.go`
-> (+ hooks dans handlers_promotions/server/main), `scripts/setup-user-vault-jwt.sh`,
+> ⚠️ **PÉRIMÈTRE NON-COMMITTÉ (à commiter en priorité, goal A'0)** : toute la **chaîne
+> ADR-077** du 05/07 vit hors Git — `adr/adr-077-…md`, `cmd/governance-api/userdeploy
+> {,_test}.go` (+ hooks dans handlers_promotions/server/main), `scripts/setup-user-vault-jwt.sh`,
 > `setup-user-deploy-job.sh`, `test-user-vault-jwt.sh`, `test-console-user-deploy.sh`,
 > bump KC 26.3.4 (docker-compose.poc.yml), realm-stoa-lab.json, setup-identity.sh
 > (console-light), API-CONTRACT.md (champ `user_deploy`) — plus une grappe de scripts
-> de preuve antérieurs (demo-mediation, test-apply-*, wm-*, otlp) et EVIDENCE.md.
-> **Une preuve non commitée n'existe pas pour le prochain agent.**
+> de preuve antérieurs (demo-mediation, test-apply-*, wm-*, otlp).
+> **État 07-09** : ce périmètre est **STAGÉ** dans l'index de stoa-labs (62 fichiers,
+> 5605 insertions), prêt à découper en commits ; EVIDENCE.md n'y garde QUE la section
+> ADR-077 (la section É0 est committée en `652d122`) ; DELIVERY-PROCESS.md en est SORTI
+> (committé). **Une preuve non commitée n'existe pas pour le prochain agent.**
 
 ---
 
@@ -25,10 +29,12 @@ une discipline de preuve rare. **La Phase A (durcir) est désormais livrée en e
 l'analytics sont **3/3 runtimes**, et la **finition A4/A6/A7 est close** (auth outbound
 wM as-code, re-check ITSM au dispatch, console→webhook réel→déploiement + 4-yeux exercé
 E2E). L'**environnement de démo est entièrement fonctionnel** (08/07) : déploiement
-9/9, multi-env 22/22, identité 3/3, analytics 3/3. Ce qui reste : **commiter la chaîne
-ADR-077** (G14, hors Git !), un peu d'entretien (A'), et surtout **(B) faire atterrir
-les briques prouvées dans la plateforme `stoa`**, où deux d'entre elles (APISIX, WSO2)
-n'ont **aucune** existence.
+9/9, multi-env 22/22, identité 3/3, analytics 3/3. La piste CLIENT est ouverte : **É0
+(bloqueurs transverses du livrable) est LEVÉ** le 07-09 (18/18 — proxy/CA/auth Git/
+`make release`), prochaine marche É1-É4 (rolification Ansible). Ce qui reste : **commiter
+la chaîne ADR-077** (G14, stagée, hors Git !), un peu d'entretien (A'), et surtout **(B)
+faire atterrir les briques prouvées dans la plateforme `stoa`**, où deux d'entre elles
+(APISIX, WSO2) n'ont **aucune** existence.
 
 ---
 
@@ -145,6 +151,42 @@ toutes les versions actives.
   marche mais les lectures 404).
 - **apply-uac local** : penser `ITSM_URL=http://localhost:8788` sinon le gate A6
   refuse `→prod` fail-closed (`503 ITSM_NOT_CONFIGURED` — comportement voulu).
+
+---
+
+## 0.quinquies Livré 2026-07-06→09 — piste CLIENT : rollout modulaire, purge, process livrable
+
+> Changement d'axe : plus rien à prouver en labs — cette piste prépare **l'intégration chez
+> le client** (webMethods 10.15, Jenkins existant, ITSM, IdP d'entreprise).
+
+| Chantier | Résultat | Où |
+|---|---|---|
+| **Rollout client modulaire** | ✅ Procédure « socle minimal + 9 briques à interrupteur » — chaque brique a son toggle VÉRIFIÉ dans le code (`VAULT_ADDR` absent = no-op `vault.go:47` ; `ITSM_URL` vide + `itsmCheck` = 503 fail-closed ; gate intégrité armé par la présence d'`api.yaml` ; wiring console opt-in `USER_DEPLOY_WEBHOOK_URL`), son état OFF, sa marche arrière, sa preuve X/X = critère d'acceptation. Ordre P0 Jenkins→P6 si le client ne choisit pas | mémoire `client-rollout-modular`, séquence détaillée en conversation 07-06 |
+| **Audit purge secrets (07-07)** | ✅ gitleaks sur les 5 repos + l'historique GitHub (64 commits) : **rien à purger, pas de réécriture**. Tout le sensible réel est untracked+gitignoré (`labctl-credentials.txt`, `console-light/var/` — dont clé SSH `governance_signing` —, `.claude/`) ; les 7 hits historiques = valeurs démo publiques (`Administrator:manage`, `poc-apisix-admin-key`, fixtures). La « purge » devient une **checklist de livraison** : `git archive` (exclut l'untracked), remplacer les placeholders (`stoa-root-token`, `vault-exchange-secret-poc`, `Stoa!Passw0rd2026`), régénérer le nominal (clé signing, secrets clients OAuth2) | mémoire `client-rollout-modular` (bloc audit) |
+| **Process PoC → livrable (07-09)** | ✅ **`DELIVERY-PROCESS.md`** (**committé** `652d122`) : livrable en 3 couches (MOTEUR invariant / CONFIG client `clients/<x>/` / PREUVE `--tags verify`) ; 4 degrés d'automatisation D0-D3 (D1 ≠ `ansible --check` — pattern `reconcile` ; D3 sans risque car la politique vit dans labctl) ; migration Ansible É1→É9 (une brique = un rôle = un tag = un verify, commencer par rolifier `is-mtls-setup.yml` + `deploy/reconcile` existants) ; fondé sur inventaire multi-agents : **59 knobs**, mapping rôles, critique adversariale | `DELIVERY-PROCESS.md`, mémoire `poc-to-deliverable` |
+| **É0 — bloqueurs transverses LEVÉS (07-09)** | ✅ les 4 chantiers implémentés + prouvés **`test-e0-blockers.sh` → 18/18** (dont preuves au niveau du BINAIRE livré, exécutable hors zone) : (1) proxy `http.ProxyFromEnvironment` sur les 2 transports labctl ; (2) CA `LABCTL_CA_FILE`/`VAULT_CACERT` (RootCAs étendus, **fail-closed** si bundle illisible) + `-k` purgé des 3 provision OpenSearch (`OPENSEARCH_CA_FILE`/`OPENSEARCH_INSECURE`) ; (3) auth Git `GOVERNANCE_GIT_URL`/`PROJECT_REPO` + `GIT_CREDENTIALS_ID` optionnel via `GIT_ASKPASS` dans les 4 Jenkinsfiles (secret jamais URL/argv/log) ; (4) **`make release`** : 3 binaires × 3 archs versionnés (ldflags → `labctl version`) + SHA256SUMS + **SBOM SPDX-2.3** (`release-sbom.sh` depuis vendor/modules.txt), air-gapped | commits **`652d122`** (stoa-labs) + **`079f2d9`** (stoa-platform-ci) ; EVIDENCE.md §É0, DELIVERY-PROCESS §4 statut LEVÉ |
+
+**É0 : ~~bloqueurs~~ → LEVÉ 07-09** (détail ligne « É0 » du tableau ci-dessus ; preuve
+`test-e0-blockers.sh` 18/18). **Reste la dette P1** (non-É0, backlog `DELIVERY-PROCESS.md`
+§7) : **governance-api sans remote Git** (`gitrepo.go` commit/merge locaux, zéro push →
+split-brain console↔pipeline chez un client), `host.docker.internal` dans
+`Jenkinsfile.rollback`, `/tmp/stoa-wm-admin-token` partagé (course inter-builds),
+`VAULT_ROLE_ID`+`APPLY_TENANT` littéraux dans les 4 Jenkinsfiles, issuer KC **compilé**
+dans la console (`ui/src/config.ts`), aucun packaging hors-compose (systemd/TLS) pour
+governance-api/onboarding-api.
+
+**✅ Gitlinks imbriqués : RÉSOLU 07-09** (commit `4e02330`) : `accounts-team`,
+`payments-team` **et `stoa-platform-ci`** étaient stagés à la racine de `stoa-labs` en
+gitlinks 160000 SANS `.gitmodules` (répertoires vides pour tout cloneur). Purgés de
+l'index (`git rm --cached -f`, contenu disque et repos autonomes intacts) + **ignorés
+dans le `.gitignore` racine** pour empêcher un futur `git add .` de les recréer. Si un
+jour leur contenu doit vivre dans stoa-labs : submodules (remote public requis) ou
+dé-nesting — un choix explicite, plus jamais un accident de staging.
+
+**Décision en suspens (posée 07-07, non tranchée)** : nom du binaire chez le client —
+`labctl` reste le nom LAB (auto-descriptif « jetable », protège la condition C1) ; à la
+frontière de packaging : `stoactl` (pilote produit STOA) vs nom neutre/client-brandé
+(angle « couche souveraine possédée », ADR-067). Un seul nom chez le client.
 
 ---
 
@@ -329,6 +371,11 @@ Phase A  : ✅ LIVRÉE (A1-A8)
 Phase A' : A'0 (commit ADR-077, priorité 1) · A'1-A'3 (entretien, indépendants)
 Phase B  : B0 (décisions, bloquant) → B1 (APISIX/WSO2, débloque tout)
            → B2, B3 → B4, B5, B6
+Phase C  : piste CLIENT (§0.quinquies, indépendante de B) —
+           C0 = É0 bloqueurs transverses : ✅ LEVÉ 07-09 (18/18, commits 652d122+079f2d9)
+           → C1 = É1-É4 squelette Ansible + stoa_vault + stoa_socle (1er palier vendable)
+             ← PROCHAINE étape de la piste client
+           → C2+ = suivre DELIVERY-PROCESS.md §5 (É5-É9)
 ```
 
 - **B0 avant tout B** : les 3 collisions (fédération, double source-de-vérité, cli/src) doivent
