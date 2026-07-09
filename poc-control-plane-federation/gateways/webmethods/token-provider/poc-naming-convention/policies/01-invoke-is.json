@@ -1,0 +1,13 @@
+{"policyAction": {
+  "id": "30ed0157-e44c-47b2-b87e-552ee1fde553",
+  "names": [{"value": "poc-prepare-creds-or-cached-token", "locale": "en"}],
+  "templateKey": "requestInvokeESB",
+  "parameters": [
+    {"templateKey": "invokeISService", "parameters": [
+      {"templateKey": "serviceName", "values": ["tokenPoC.gateway:prepare"]},
+      {"templateKey": "runAsUser", "values": ["Administrator"]},
+      {"templateKey": "complyToISSpec", "values": ["true"]}
+    ]}
+  ],
+  "active": true
+}}

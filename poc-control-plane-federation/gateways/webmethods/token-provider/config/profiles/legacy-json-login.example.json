@@ -1,0 +1,33 @@
+{
+  "description": "Provider 2 — backend maison : login JSON proprietaire ({user,pwd,domain}), jeton dans data.jwt, pas d'expires_in dans la reponse donc TTL fixe.",
+  "tokenRequest": {
+    "urlTemplate": "https://legacy.bank.local/auth/v1/login",
+    "method": "POST",
+    "contentType": "application/json",
+    "bodyTemplate": "{\"user\":\"{{username}}\",\"pwd\":\"{{password}}\",\"domain\":\"{{domain}}\",\"scope\":\"{{scope}}\"}",
+    "headers": {
+      "Accept": "application/json"
+    },
+    "timeoutMillis": 8000
+  },
+  "params": {
+    "domain": "CORP",
+    "scope": "payments:read payments:write"
+  },
+  "secrets": {
+    "vaultPath": "apigw/backends/legacy-payments",
+    "map": {
+      "username": "user",
+      "password": "pass"
+    }
+  },
+  "response": {
+    "tokenPath": "data.jwt",
+    "fixedTtlSeconds": 900,
+    "tokenType": "Bearer"
+  },
+  "inject": {
+    "headerName": "Authorization",
+    "valueTemplate": "Bearer {{token}}"
+  }
+}

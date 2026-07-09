@@ -1,0 +1,14 @@
+{
+  "addr": "https://vault.bank.local:8200",
+  "approle": {
+    "mount": "approle",
+    "roleIdPassmanKey": "tokenprovider.vault.roleid",
+    "secretIdPassmanKey": "tokenprovider.vault.secretid"
+  },
+  "kv": {
+    "mount": "secret",
+    "version": 2
+  },
+  "cacheSecretsSeconds": 300,
+  "timeoutMillis": 5000
+}

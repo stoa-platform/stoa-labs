@@ -1,0 +1,12 @@
+{"policyAction": {
+  "names": [{"value": "poc-store-token-cache", "locale": "en"}],
+  "templateKey": "responseInvokeESB",
+  "parameters": [
+    {"templateKey": "invokeISService", "parameters": [
+      {"templateKey": "serviceName", "values": ["tokenPoC.gateway:store"]},
+      {"templateKey": "runAsUser", "values": ["Administrator"]},
+      {"templateKey": "complyToISSpec", "values": ["true"]}
+    ]}
+  ],
+  "active": true
+}}
