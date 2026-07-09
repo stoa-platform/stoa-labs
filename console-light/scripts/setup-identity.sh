@@ -44,6 +44,16 @@ api() { # api METHOD PATH [DATA]
   fi
 }
 
+# --- attributs non gérés : ENABLED, sinon le PUT attributes.tenant ci-dessous
+# est IGNORÉ EN SILENCE (unmanagedAttributePolicy par défaut = DISABLED depuis
+# KC 24 ; constaté après recreate du realm : rôles OK mais tenant absent) -----
+UP=$(api GET "/users/profile")
+if ! printf '%s' "$UP" | grep -q '"unmanagedAttributePolicy":"ENABLED"'; then
+  DATA=$(printf '%s' "$UP" | python3 -c 'import sys,json;p=json.load(sys.stdin);p["unmanagedAttributePolicy"]="ENABLED";print(json.dumps(p))')
+  api PUT "/users/profile" "$DATA" >/dev/null
+  say "unmanagedAttributePolicy → ENABLED (les attributs user persisteront)"
+fi
+
 # --- rôles realm (normalement importés au boot ; filet idempotent) ----------
 for role in cpi-admin tenant-admin devops viewer; do
   if ! api GET "/roles/${role}" >/dev/null 2>&1; then
@@ -53,6 +63,7 @@ for role in cpi-admin tenant-admin devops viewer; do
 done
 
 # --- assignation par user : username rôle tenant -----------------------------
+MISSING=0
 assign() {
   local username="$1" role="$2" tenant="$3"
   local users uid
@@ -60,6 +71,7 @@ assign() {
   uid=$(printf '%s' "$users" | python3 -c 'import sys,json;u=json.load(sys.stdin);print(u[0]["id"] if u else "")')
   if [ -z "$uid" ]; then
     warn "user '${username}' absent (premier login broker pas encore fait) — re-jouer ce script après."
+    MISSING=$((MISSING+1))
     return 0
   fi
   # attribut tenant (vide pour cpi-admin = tous tenants)
@@ -73,9 +85,17 @@ assign() {
   say "✓ ${username} → rôle ${role}${tenant:+, tenant ${tenant}}"
 }
 
-assign alice tenant-admin banking-demo
-assign bob   devops       banking-demo
-assign carol viewer       banking-demo
-assign dave  cpi-admin    ""
+# Piège vérifié (cf. prove-a7-four-eyes.sh) : le username fédéré est le claim
+# preferred_username = "<user>@bc.example", PAS le prénom nu.
+assign alice@bc.example tenant-admin banking-demo
+assign bob@bc.example   devops       banking-demo
+assign carol@bc.example viewer       banking-demo
+assign dave@bc.example  cpi-admin    ""
 
-say "Terminé. Les users doivent se re-loguer pour que le token porte les rôles."
+# Restauration incomplète = code retour non-zéro (sinon un runbook enchaîné
+# croit la restauration faite alors que les users n'existaient pas encore).
+if [ "$MISSING" -gt 0 ]; then
+  warn "Incomplet : ${MISSING}/4 users absents — faire leur premier login broker puis re-jouer ce script."
+  exit 1
+fi
+say "Terminé (4/4). Les users doivent se re-loguer pour que le token porte les rôles."

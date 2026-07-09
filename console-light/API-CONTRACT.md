@@ -93,7 +93,7 @@ evidence/denials/denials.jsonl
 | `GET /tenants/{t}/promotions?status=` | promotions:read | `[{id, slug, from, to, requested_by, message, status, created_at, branch, approved_by?, reason?}]` |
 | `POST /tenants/{t}/promotions` | promotions:request | corps `{slug, from, to, message}` (message obligatoire ≤1000c, chaînes valides dev→staging, staging→production) → `{promotion}` |
 | `GET /tenants/{t}/promotions/{id}/diff` | promotions:read | `{diff: "<unified diff texte>", files: [{path, additions, deletions}]}` |
-| `POST /tenants/{t}/promotions/{id}/approve` | promotions:approve | corps `{message?}` → 4-yeux → merge signé → `{promotion, merge_commit: {sha, sha7, signed}, evidence}` |
+| `POST /tenants/{t}/promotions/{id}/approve` | promotions:approve | corps `{message?}` → 4-yeux → merge signé → `{promotion, merge_commit: {sha, sha7, signed}, evidence, user_deploy: "dispatched"\|"not_configured"}` (champ additif ADR-077 : dispatch ASYNCHRONE du token exchange de l'approbateur vers le job Jenkins `stoa-user-deploy` ; l'UI peut l'ignorer) |
 | `POST /tenants/{t}/promotions/{id}/reject` | promotions:approve | corps `{reason}` (obligatoire) → `{promotion}` |
 | `GET /subscriptions?tenant=&status=` | subscriptions:read | `[{id, tenant, api, consumer, requested_by, status, created_at, reason?}]` |
 | `POST /subscriptions/{id}/approve` | subscriptions:approve | → commit + evidence → `{subscription, commit}` |
