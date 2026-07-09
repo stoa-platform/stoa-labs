@@ -2,21 +2,16 @@
 
 > Analyse : stoa-labs (PoC control-plane-federation, accounts-team, payments-team,
 > console-light, stoa-platform-ci, adr) en profondeur ; monorepo `stoa` lu pour les
-> points de raccordement. Créé 2026-07-03 ; **rafraîchi 2026-07-09** (É0 bloqueurs
-> transverses du livrable **LEVÉ 18/18** + gitlinks imbriqués purgés, cf. §0.quinquies ;
-> précédent : Phase A livrée + env réparé, §0.quater).
+> points de raccordement. Créé 2026-07-03 ; **rafraîchi 2026-07-09** (É0 LEVÉ 18/18 +
+> gitlinks purgés + **A'0 CLOS : tout le périmètre ADR-077 est committé** — l'arbre de
+> travail est PROPRE ; précédent : Phase A livrée + env réparé, §0.quater).
 >
-> ⚠️ **PÉRIMÈTRE NON-COMMITTÉ (à commiter en priorité, goal A'0)** : toute la **chaîne
-> ADR-077** du 05/07 vit hors Git — `adr/adr-077-…md`, `cmd/governance-api/userdeploy
-> {,_test}.go` (+ hooks dans handlers_promotions/server/main), `scripts/setup-user-vault-jwt.sh`,
-> `setup-user-deploy-job.sh`, `test-user-vault-jwt.sh`, `test-console-user-deploy.sh`,
-> bump KC 26.3.4 (docker-compose.poc.yml), realm-stoa-lab.json, setup-identity.sh
-> (console-light), API-CONTRACT.md (champ `user_deploy`) — plus une grappe de scripts
-> de preuve antérieurs (demo-mediation, test-apply-*, wm-*, otlp).
-> **État 07-09** : ce périmètre est **STAGÉ** dans l'index de stoa-labs (62 fichiers,
-> 5605 insertions), prêt à découper en commits ; EVIDENCE.md n'y garde QUE la section
-> ADR-077 (la section É0 est committée en `652d122`) ; DELIVERY-PROCESS.md en est SORTI
-> (committé). **Une preuve non commitée n'existe pas pour le prochain agent.**
+> ✅ **A'0 / G14 CLOS (07-09)** : l'ex-« périmètre non-committé » (chaîne ADR-077 du
+> 05/07 + grappe de preuves ADR-072/073/074 + token-provider wM) est en Git, découpé
+> en **9 commits thématiques** `be70302..fe351a4` (governance-api / identité / console /
+> docs ADR+EVIDENCE / preuves / token-provider / observabilité / docs ; + purge d'un
+> binaire governance-api 10 Mo stagé par accident, désormais gitignoré). Build +
+> `go test -race` verts post-commit. `git status` : **rien**.
 
 ---
 
@@ -31,10 +26,10 @@ wM as-code, re-check ITSM au dispatch, console→webhook réel→déploiement + 
 E2E). L'**environnement de démo est entièrement fonctionnel** (08/07) : déploiement
 9/9, multi-env 22/22, identité 3/3, analytics 3/3. La piste CLIENT est ouverte : **É0
 (bloqueurs transverses du livrable) est LEVÉ** le 07-09 (18/18 — proxy/CA/auth Git/
-`make release`), prochaine marche É1-É4 (rolification Ansible). Ce qui reste : **commiter
-la chaîne ADR-077** (G14, stagée, hors Git !), un peu d'entretien (A'), et surtout **(B)
-faire atterrir les briques prouvées dans la plateforme `stoa`**, où deux d'entre elles
-(APISIX, WSO2) n'ont **aucune** existence.
+`make release`), prochaine marche É1-É4 (rolification Ansible). **A'0 est clos** (la
+chaîne ADR-077 et toutes les preuves sont en Git, arbre propre). Ce qui reste : un peu
+d'entretien (A'1-A'3), et surtout **(B) faire atterrir les briques prouvées dans la
+plateforme `stoa`**, où deux d'entre elles (APISIX, WSO2) n'ont **aucune** existence.
 
 ---
 
@@ -221,7 +216,7 @@ frontière de packaging : `stoactl` (pilote produit STOA) vs nom neutre/client-b
 | G11 | **`labctl subscribe` multi-version wM** : association app→API au premier match de nom → 401 sur les autres versions actives | Bug tracké (07-07) | entretien |
 | G12 | **Config WSO2 non déclarative** : un recreate perd OTel/KM/consumers (runbook manuel §0.quater) | Dette infra | entretien |
 | G13 | **Secrets de démo en clair dans Git** (admin/admin, Administrator/manage, tokens webhook) — Vault est déjà câblé (ADR-074) | Blocker rollout client | entretien |
-| G14 | **Chaîne ADR-077 non commitée** (cf. bandeau en tête) | Risque de perte | **priorité 1** |
+| ~~G14~~ | ~~Chaîne ADR-077 non commitée~~ → **fermé (A'0**, 07-09, 9 commits `be70302..fe351a4`) | — | ✅ |
 
 ---
 
@@ -256,10 +251,9 @@ cross-runtime) ; double source-de-vérité déclarative ; anomalie git `cli/src`
 ### PHASE A' — entretien (petits goals autonomes, aucun ne bloque B)
 
 ---
-**/goal A'0 — Commiter la chaîne ADR-077 (G14, priorité 1)**
-- Tout le périmètre du bandeau en tête : adr-077, userdeploy.go + hooks, scripts
-  setup/test user-vault, bump KC, realm, API-CONTRACT. Découper en commits propres
-  (feat governance-api / feat scripts / docs adr). **Effort : S.**
+**/goal A'0 — Commiter la chaîne ADR-077 (G14) : ✅ CLOS 07-09**
+- Fait : 9 commits thématiques `be70302..fe351a4` (bandeau en tête). Arbre propre,
+  build + tests -race verts post-commit.
 
 ---
 **/goal A'1 — Fix subscribe multi-version wM (G11)**
@@ -368,7 +362,7 @@ cross-runtime) ; double source-de-vérité déclarative ; anomalie git `cli/src`
 
 ```
 Phase A  : ✅ LIVRÉE (A1-A8)
-Phase A' : A'0 (commit ADR-077, priorité 1) · A'1-A'3 (entretien, indépendants)
+Phase A' : A'0 ✅ CLOS 07-09 (chaîne ADR-077 committée) · A'1-A'3 (entretien, indépendants)
 Phase B  : B0 (décisions, bloquant) → B1 (APISIX/WSO2, débloque tout)
            → B2, B3 → B4, B5, B6
 Phase C  : piste CLIENT (§0.quinquies, indépendante de B) —
