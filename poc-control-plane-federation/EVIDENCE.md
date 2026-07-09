@@ -634,6 +634,67 @@ réel vs le manifeste VH). Remédiation = rebuild-from-Git sur état sain
 la preuve 31/31 couvre create + converge + drift sur API propre, et le
 read-back audit-log/reconcile a été validé live sur ce même trial.
 
+## 2026-07-05 — Identité UTILISATEUR jusqu'à Vault : token exchange RFC 8693 (ADR-077) ★
+
+**Contrainte client (IT)** : « c'est un **utilisateur** qui se connecte au Vault, pas une
+application » — ET des jobs Jenkins non interactifs. Réponse prouvée : la session
+Keycloak de l'utilisateur est propagée par **token exchange standard (RFC 8693)** en un
+JWT court (5 min, `aud=vault`, **`tenant=<son tenant>`**) que le job CI présente à
+`auth/jwt/login` ; le token Vault obtenu est **nominatif ET tenant-scopé** (entité =
+l'utilisateur, TTL 10 min, policy **templatée par tenant**, révoqué en fin de build avec
+**preuve de mort**). **Zéro credential côté chaîne CI** : ni mot de passe, ni AppRole,
+ni token longue durée — le job `stoa-user-deploy` ne détient rien.
+
+```
+alice (humaine, Dex/Oracle) ─auth_code─▶ Keycloak 26.3.4
+  ─exchange RFC 8693 (vault-exchange, audience=vault)─▶ JWT 300 s sub=alice
+    aud=vault tenant=banking-demo
+  ─webhook (payload masqué)─▶ Jenkins stoa-user-deploy (AUCUN credential propre)
+  ─auth/jwt/login─▶ token Vault NOMINATIF (display_name=jwt-alice@bc.example)
+  ─▶ READ deploy/banking-demo (200) · CROSS-TENANT payments-team 403 · hors
+    périmètre 403 · revoke-self VÉRIFIÉ (lookup-self → 403) en fin de build
+```
+
+**Preuve : `./scripts/test-user-vault-jwt.sh` → 24/24 PASS** (2026-07-05, durci après
+review adversariale), dont :
+- chaîne nominale 13/13 (claims du JWT échangé : `preferred_username=alice@bc.example`,
+  `aud=vault`, `azp=vault-exchange`, `tenant=banking-demo` — la délégation est TRACÉE et
+  la **ségrégation par tenant enforcée** : cross-tenant → 403) ;
+- E2E CI 6/6 : build Jenkins SUCCESS, identité humaine attestée dans le log, token
+  révoqué **et prouvé mort**, **aucun jeton dans le log** (`printContributedVariables=
+  false` + `set +x` + jetons hors argv), webhook **sans** jeton → build **FAILURE** ;
+- contre-épreuves 5/5 : token non échangé → Vault refuse (`bound_audiences` + `azp`) ;
+  subject token de service non adressé → **Keycloak refuse l'exchange** ; carol (viewer)
+  → **Vault refuse** (`bound_claims realm_access.roles`) ; **audit Vault nominatif scopé
+  à ce run**, y compris pour les refus.
+
+**Changements d'environnement** : Keycloak **26.1.4 → 26.3.4** (l'exchange standard est
+GA depuis 26.2 ; image hardcodée dans `docker-compose.poc.yml` — la variable
+`KEYCLOAK_IMAGE` de `.env`/`.env.example` n'est plus consommée, à réaligner à la main) ;
+clients `vault-exchange` (+ mapper `tenant`) /`vault` + mappers d'adressage dans
+`realm-stoa-lab.json` ; `setup-user-vault-jwt.sh` (KC scope dynamique + Vault
+jwt/policy templatée/rôle/audit) ; `setup-user-deploy-job.sh` (job Jenkins sans
+credential). Runbook post-recreate Keycloak : ADR-077 §Restauration (pièges : usernames
+fédérés = `<user>@bc.example`, `unmanagedAttributePolicy`, client runtime).
+
+**Wiring console → chaîne A (livré le même jour)** : au `promote-approve`, la
+governance-api échange le Bearer de **l'approbateur** (RFC 8693) et déclenche
+`stoa-user-deploy` avec le JWT — opt-in env (`USER_DEPLOY_WEBHOOK_URL` +
+`VAULT_EXCHANGE_SECRET[_FILE]`), dispatch asynchrone, réponse `user_deploy:
+dispatched`. **Preuve : `./scripts/test-console-user-deploy.sh` → 12/12 PASS** —
+UNE action utilisateur (bob approuve, 4-yeux intact) et c'est l'identité de **bob**
+(pas dave le demandeur, pas un service account) que Vault voit : build Jenkins
+SUCCESS **corrélé à LA promotion** (hint), `identite=bob@bc.example
+tenant=banking-demo`, token prouvé mort, zéro jeton dans les logs BFF et Jenkins
+(JWT **et** token du webhook — URL redactée au boot). + 7 tests unitaires Go sous
+`-race` (contrat d'exchange, refus → pas de webhook, hook approve, refus 4-yeux →
+zéro dispatch, exchange KO → approve reste 200, flux inchangé sans wiring, opt-in
+env fail-fast).
+
+**Limites documentées** : pas d'humain = pas de déploiement (propriété de
+gouvernance assumée) ; jobs planifiés → AppRole (ADR-074) inchangé ; lien
+approbation→exchange organisationnel (ADR-077 §Limites 7).
+
 ## 2026-07-09 — É0 : levée des 4 bloqueurs transverses du livrable (DELIVERY-PROCESS §4) ★
 
 Les quatre bloqueurs qui gataient TOUTES les briques dès qu'on quitte le poste
