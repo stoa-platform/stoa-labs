@@ -16,10 +16,20 @@ OSD_AUTH="${OSD_AUTH:-$OS_AUTH}"
 # space). The viewer role grants kibana_all_read on this tenant.
 OSD_TENANT="${OSD_TENANT:-accounts-team}"
 DIR="$(cd "$(dirname "$0")" && pwd)"
-CURL=(/usr/bin/curl -s -k -u "$OS_AUTH")
+# TLS (É0) — no hardwired -k anymore; three regimes, one knob each:
+#   OPENSEARCH_CA_FILE=<pem>   verify against the enterprise CA (--cacert; wins)
+#   OPENSEARCH_INSECURE=false  strict system trust
+#   default (unset/true)       -k — PoC regime only (self-signed demo certs)
+# A client site sets OPENSEARCH_CA_FILE (or INSECURE=false) and never ships -k.
+CURL=(/usr/bin/curl -s -u "$OS_AUTH")
 # Dashboards needs the osd-xsrf header on every write and the securitytenant
 # header to target the per-tenant saved-object space.
-OSD_CURL=(/usr/bin/curl -s -k -u "$OSD_AUTH" -H 'osd-xsrf: true' -H "securitytenant: $OSD_TENANT")
+OSD_CURL=(/usr/bin/curl -s -u "$OSD_AUTH" -H 'osd-xsrf: true' -H "securitytenant: $OSD_TENANT")
+if [ -n "${OPENSEARCH_CA_FILE:-}" ]; then
+  CURL+=(--cacert "$OPENSEARCH_CA_FILE"); OSD_CURL+=(--cacert "$OPENSEARCH_CA_FILE")
+else
+  case "${OPENSEARCH_INSECURE:-true}" in 1|true|yes|on) CURL+=(-k); OSD_CURL+=(-k) ;; esac
+fi
 
 echo "[1/7] index template stoa-txn (data_stream enabled)"
 "${CURL[@]}" -X PUT "$OS_URL/_index_template/stoa-txn" \

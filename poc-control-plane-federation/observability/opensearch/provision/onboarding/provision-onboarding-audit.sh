@@ -25,7 +25,15 @@ set -euo pipefail
 OS_URL="${OS_URL:-https://localhost:9201}"
 OS_AUTH="${OS_AUTH:-admin:Stoa!Passw0rd2026}"
 DIR="$(cd "$(dirname "$0")" && pwd)"
-CURL=(/usr/bin/curl -s -k -u "$OS_AUTH")
+# TLS (É0) — same knobs as provision.sh: OPENSEARCH_CA_FILE verifies against the
+# enterprise CA; OPENSEARCH_INSECURE=false forces strict system trust; the
+# default (unset/true) keeps -k for the PoC's self-signed demo certs ONLY.
+CURL=(/usr/bin/curl -s -u "$OS_AUTH")
+if [ -n "${OPENSEARCH_CA_FILE:-}" ]; then
+  CURL+=(--cacert "$OPENSEARCH_CA_FILE")
+else
+  case "${OPENSEARCH_INSECURE:-true}" in 1|true|yes|on) CURL+=(-k) ;; esac
+fi
 
 echo "[1/4] index template audit-onboarding (audit-onboarding-* mapping)"
 "${CURL[@]}" -X PUT "$OS_URL/_index_template/audit-onboarding" \
@@ -60,5 +68,6 @@ echo "[3/4] tenant payments-team audit RBAC"
 provision_tenant payments payments-team
 
 echo "[4/4] done. Tenant isolation proof (each viewer sees ONLY its tenant's audits):"
-echo "    curl -s -k -u banking-audit-viewer:Stoa!Audit2026  $OS_URL/audit-onboarding-banking-demo/_search   # 200"
-echo "    curl -s -k -u banking-audit-viewer:Stoa!Audit2026  $OS_URL/audit-onboarding-payments-team/_search  # 403"
+echo "    (PoC self-signed: add -k, or point --cacert at OPENSEARCH_CA_FILE)"
+echo "    curl -s -u banking-audit-viewer:Stoa!Audit2026  $OS_URL/audit-onboarding-banking-demo/_search   # 200"
+echo "    curl -s -u banking-audit-viewer:Stoa!Audit2026  $OS_URL/audit-onboarding-payments-team/_search  # 403"

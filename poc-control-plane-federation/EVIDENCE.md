@@ -634,6 +634,46 @@ réel vs le manifeste VH). Remédiation = rebuild-from-Git sur état sain
 la preuve 31/31 couvre create + converge + drift sur API propre, et le
 read-back audit-log/reconcile a été validé live sur ce même trial.
 
+## 2026-07-09 — É0 : levée des 4 bloqueurs transverses du livrable (DELIVERY-PROCESS §4) ★
+
+Les quatre bloqueurs qui gataient TOUTES les briques dès qu'on quitte le poste
+du lab (critique de transposabilité 2026-07-09) sont levés :
+
+1. **Proxy sortant d'entreprise** — les DEUX transports HTTP de labctl
+   (`internal/httpx.NewClient`, sonde `targetshealth`) portent désormais
+   `Proxy: http.ProxyFromEnvironment` : derrière un egress proxy bancaire,
+   `HTTP(S)_PROXY`/`NO_PROXY` suffisent, aucun rebuild.
+2. **CA d'entreprise** — knob `LABCTL_CA_FILE` (tous les adapters + sonde) et
+   `VAULT_CACERT` (client Vault, nom standard, fallback `LABCTL_CA_FILE`) :
+   bundle PEM AJOUTÉ au trust système (`RootCAs`), **fail-closed** si le fichier
+   est illisible ou sans certificat (erreur à chaque requête, jamais de repli
+   silencieux). `Insecure` reste l'échappatoire PoC, plus jamais nécessaire chez
+   un client. Les 3 scripts de provision OpenSearch perdent leur `-k` câblé :
+   `OPENSEARCH_CA_FILE` (--cacert, prioritaire) / `OPENSEARCH_INSECURE`
+   (défaut PoC true — certs démo self-signed).
+3. **Auth Git** — plus aucun `git clone` d'URL en dur dans les 4 Jenkinsfiles
+   (ci/Jenkinsfile{,.prod,.rollback} + stoa-platform-ci/Jenkinsfile.deploy) :
+   knob `GOVERNANCE_GIT_URL` (resp. `PROJECT_REPO`) surchargeable au niveau job
+   + convention `GIT_CREDENTIALS_ID` OPTIONNELLE (vide = anonyme PoC, posé =
+   credential usernamePassword injecté via un helper `GIT_ASKPASS` éphémère —
+   le secret ne touche ni l'URL du remote, ni argv, ni le log).
+4. **Release binaire** — `make release` : 3 binaires livrables (labctl,
+   governance-api, onboarding-api) × 3 archs (linux/amd64 minimum contractuel,
+   linux/arm64, darwin/arm64), **versionnés** (ldflags → `labctl version`,
+   traçable au commit), `SHA256SUMS` vérifiable (`sha256sum -c`), **SBOM
+   SPDX-2.3** généré depuis `vendor/modules.txt` (purl golang par module) —
+   le tout **air-gapped** (`GOPROXY=off -mod=vendor`), buildé hors zone :
+   l'agent Jenkins client reçoit les binaires, jamais le toolchain Go.
+
+**Preuve : `./scripts/test-e0-blockers.sh` → 18/18 PASS** — dont preuves au
+niveau du BINAIRE LIVRÉ (pas seulement des tests unitaires) : l'appel admin vers
+un host non résolvable TRANSITE par un faux `HTTP_PROXY` local (requête
+absolute-form observée) ; face à un HTTPS signé par une CA inconnue, échec x509
+SANS knob (contrôle) et handshake accepté AVEC `LABCTL_CA_FILE` ; ELF x86-64
+vérifié au `file`, checksums re-vérifiés, SBOM re-parsé. + tests Go
+(`internal/httpx`, `internal/vault`) sous `-race`, suite complète verte.
+S'exécute HORS ZONE : aucun service du compose requis.
+
 ## Teardown (destruction contrôlée)
 
 ```bash
