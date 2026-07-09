@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+# setup-user-vault-jwt.sh — chaîne A (ADR-077) : l'IDENTITÉ UTILISATEUR va
+# jusqu'à Vault, sans aucun mot de passe stocké côté chaîne CI.
+#
+#   user (Console/Dex) ──auth_code──▶ Keycloak ──token exchange (RFC 8693,
+#   client vault-exchange, audience=vault)──▶ JWT court sub=user, aud=vault,
+#   tenant=<tenant> ──▶ Vault auth/jwt/login ──▶ token Vault NOMINATIF
+#   (entité = user) scoped au périmètre deploy de SON tenant.
+#
+# Répond à la contrainte client « c'est un utilisateur qui se connecte au
+# Vault, pas une application » : l'entité Vault ET l'audit log portent
+# l'utilisateur ; le pipeline n'a que la délégation courte (TTL 5 min).
+#
+# Provisionne (idempotent, re-jouable après recreate de poc-keycloak/poc-vault) :
+#   Keycloak (état DYNAMIQUE — le realm import ne doit PAS déclarer clientScopes,
+#   sinon il supprime la création des scopes built-in) :
+#     1. client scope `vault-aud` (audience mapper → vault)
+#     2. attaché en scope PAR DÉFAUT du client `vault-exchange` — sans lui,
+#        l'exchange standard refuse « Requested audience not available: vault »
+#   Vault :
+#     3. auth method `jwt` + config JWKS split-horizon (fetch keycloak:8080,
+#        issuer épinglé http://localhost:8480 — même modèle que les gateways)
+#     4. policy `user-deploy` TEMPLATÉE par tenant : READ limité à
+#        secret/stoa/deploy/<tenant de l'entité>/* (ségrégation par tenant —
+#        un tenant-admin de banking-demo ne lit PAS payments-team)
+#     5. rôle jwt `user-deploy` : bound_audiences=vault + azp=vault-exchange
+#        (défense en profondeur : même un token aud=vault émis autrement
+#        qu'via l'échangeur est refusé), entité = claim preferred_username,
+#        claim tenant → metadata (alimente la policy templatée), restreint
+#        aux rôles realm métier (bound_claims any-of)
+#     6. audit device file (la preuve nominative que l'IT demande)
+#     7. secrets de démo secret/stoa/deploy/{banking-demo,payments-team}/demo
+#
+# Les clients KC `vault` / `vault-exchange` (dont le mapper tenant) et les
+# mappers aud=vault-exchange de console-light / stoa-portal sont STATIQUES :
+# identity/keycloak/realm-stoa-lab.json.
+#
+# NB dave/cpi-admin (attribut tenant vide) : le claim_mappings `tenant` exige
+# le claim dans le JWT → login refusé. Assumé : la chaîne A est un canal de
+# déploiement TENANT-scopé ; un admin plateforme passe par sa propre policy
+# (delta prod documenté en ADR-077 §Limites).
+set -uo pipefail
+
+KC_BASE="${KC_BASE:-http://localhost:8480}"
+REALM="${REALM:-stoa-lab}"
+KC_ADMIN_USER="${KC_ADMIN_USER:-admin}"; KC_ADMIN_PASSWORD="${KC_ADMIN_PASSWORD:-admin}"
+VADDR="${VAULT_ADDR:-http://localhost:8200}"; VTOK="${VAULT_TOKEN:-stoa-root-token}"
+# Vue de l'INTÉRIEUR du conteneur poc-vault (réseau compose) vs issuer épinglé.
+KC_JWKS_INTERNAL="${KC_JWKS_INTERNAL:-http://keycloak:8080/realms/${REALM}/protocol/openid-connect/certs}"
+KC_ISSUER_PINNED="${KC_ISSUER_PINNED:-${KC_BASE}/realms/${REALM}}"
+
+say()  { printf '\033[1;36m[user-vault]\033[0m %s\n' "$*"; }
+fail() { printf '\033[1;31m[user-vault]\033[0m %s\n' "$*"; exit 1; }
+# Le token Vault part dans un header-FILE, jamais en argv (ps/cmdline) —
+# standard du repo depuis ADR-074 (« jamais en argv »).
+VHDR="$(mktemp)"; trap 'rm -f "$VHDR" /tmp/uvj-*.err' EXIT
+printf 'X-Vault-Token: %s\n' "$VTOK" > "$VHDR"
+vcurl(){ curl -s -H @"$VHDR" "$@"; }
+
+# ═══ 1+2. Keycloak : client scope vault-aud → défaut de vault-exchange ═══════
+AT=$(curl -s -d grant_type=password -d client_id=admin-cli \
+  -d "username=${KC_ADMIN_USER}" -d "password=${KC_ADMIN_PASSWORD}" \
+  "${KC_BASE}/realms/master/protocol/openid-connect/token" |
+  python3 -c 'import sys,json;print(json.load(sys.stdin).get("access_token",""))')
+[ -n "$AT" ] || fail "token admin Keycloak KO (${KC_BASE})"
+KR="${KC_BASE}/admin/realms/${REALM}"
+kc(){ curl -s -H "Authorization: Bearer $AT" -H 'Content-Type: application/json' "$@"; }
+
+SID=$(kc "$KR/client-scopes" | python3 -c 'import sys,json;print(next((s["id"] for s in json.load(sys.stdin) if s["name"]=="vault-aud"),""))')
+if [ -z "$SID" ]; then
+  RC=$(kc -X POST "$KR/client-scopes" -d '{
+    "name":"vault-aud","protocol":"openid-connect",
+    "attributes":{"include.in.token.scope":"false","display.on.consent.screen":"false"},
+    "protocolMappers":[{"name":"vault-audience","protocol":"openid-connect",
+      "protocolMapper":"oidc-audience-mapper","consentRequired":false,
+      "config":{"included.client.audience":"vault","id.token.claim":"false","access.token.claim":"true"}}]}' \
+    -o /dev/null -w '%{http_code}')
+  [ "$RC" = 201 ] || fail "création client scope vault-aud KO (HTTP $RC)"
+  SID=$(kc "$KR/client-scopes" | python3 -c 'import sys,json;print(next((s["id"] for s in json.load(sys.stdin) if s["name"]=="vault-aud"),""))')
+  say "client scope vault-aud créé"
+else
+  say "client scope vault-aud déjà présent"
+fi
+[ -n "$SID" ] || fail "client scope vault-aud introuvable après création"
+
+CID=$(kc "$KR/clients?clientId=vault-exchange" | python3 -c 'import sys,json;c=json.load(sys.stdin);print(c[0]["id"] if c else "")')
+[ -n "$CID" ] || fail "client vault-exchange absent — recréer poc-keycloak (realm-stoa-lab.json le déclare)"
+RC=$(kc -X PUT "$KR/clients/$CID/default-client-scopes/$SID" -o /dev/null -w '%{http_code}')
+[ "$RC" = 204 ] || fail "attache vault-aud à vault-exchange KO (HTTP $RC)"
+say "vault-aud = scope par défaut de vault-exchange"
+
+# ═══ 3. Vault : auth jwt + config split-horizon ══════════════════════════════
+if ! vcurl "$VADDR/v1/sys/auth" | python3 -c 'import sys,json;raise SystemExit(0 if "jwt/" in json.load(sys.stdin) else 1)' 2>/dev/null; then
+  RC=$(vcurl -X POST "$VADDR/v1/sys/auth/jwt" -d '{"type":"jwt"}' -o /tmp/uvj-auth.err -w '%{http_code}')
+  case "$RC" in 200|204) say "auth method jwt activée";; *) fail "activation auth jwt KO (HTTP $RC): $(cat /tmp/uvj-auth.err)";; esac
+else
+  say "auth method jwt déjà activée"
+fi
+# accessor du mount jwt — requis par la policy templatée par tenant.
+JWT_ACCESSOR=$(vcurl "$VADDR/v1/sys/auth" | python3 -c 'import sys,json;print(json.load(sys.stdin)["jwt/"]["accessor"])' 2>/dev/null)
+[ -n "$JWT_ACCESSOR" ] || fail "accessor du mount jwt introuvable"
+
+RC=$(vcurl -X POST "$VADDR/v1/auth/jwt/config" -d "{
+  \"jwks_url\": \"${KC_JWKS_INTERNAL}\",
+  \"bound_issuer\": \"${KC_ISSUER_PINNED}\"
+}" -w '%{http_code}' -o /tmp/uvj-cfg.err)
+[ "$RC" = 204 ] || [ "$RC" = 200 ] || fail "config auth/jwt KO (HTTP $RC) — Vault joint-il keycloak:8080 ? $(cat /tmp/uvj-cfg.err)"
+say "config jwt : jwks=${KC_JWKS_INTERNAL} / issuer épinglé ${KC_ISSUER_PINNED}"
+
+# ═══ 4. policy user-deploy TEMPLATÉE : READ deploy/<tenant de l'entité>/* ═══
+RC=$(vcurl -X PUT "$VADDR/v1/sys/policies/acl/user-deploy" -d "{
+  \"policy\": \"path \\\"secret/data/stoa/deploy/{{identity.entity.aliases.${JWT_ACCESSOR}.metadata.tenant}}/*\\\" { capabilities = [\\\"read\\\"] }\\npath \\\"secret/metadata/stoa/deploy/{{identity.entity.aliases.${JWT_ACCESSOR}.metadata.tenant}}/*\\\" { capabilities = [\\\"read\\\", \\\"list\\\"] }\"
+}" -o /tmp/uvj-pol.err -w '%{http_code}')
+[ "$RC" = 204 ] || [ "$RC" = 200 ] || fail "policy user-deploy KO (HTTP $RC): $(cat /tmp/uvj-pol.err)"
+say "policy user-deploy templatée (READ secret/stoa/deploy/<tenant>/* uniquement)"
+
+# ═══ 5. rôle jwt user-deploy ═════════════════════════════════════════════════
+RC=$(vcurl -X POST "$VADDR/v1/auth/jwt/role/user-deploy" -d '{
+  "role_type": "jwt",
+  "bound_audiences": ["vault"],
+  "user_claim": "preferred_username",
+  "claim_mappings": { "preferred_username": "username", "azp": "exchanged_by", "tenant": "tenant" },
+  "bound_claims_type": "string",
+  "bound_claims": {
+    "/realm_access/roles": ["tenant-admin", "devops", "cpi-admin"],
+    "azp": "vault-exchange"
+  },
+  "token_policies": ["user-deploy"],
+  "token_ttl": 600,
+  "token_max_ttl": 900
+}' -w '%{http_code}' -o /tmp/uvj-role.err)
+[ "$RC" = 204 ] || [ "$RC" = 200 ] || fail "rôle jwt KO (HTTP $RC): $(cat /tmp/uvj-role.err)"
+say "rôle jwt user-deploy : aud=vault + azp=vault-exchange, entité=preferred_username, tenant→metadata, rôles realm requis"
+
+# ═══ 6. audit device (preuve nominative : QUI s'est connecté, PAS de secrets en clair) ═══
+if ! vcurl "$VADDR/v1/sys/audit" | python3 -c 'import sys,json;raise SystemExit(0 if "file/" in json.load(sys.stdin) else 1)' 2>/dev/null; then
+  RC=$(vcurl -X PUT "$VADDR/v1/sys/audit/file" -d '{"type":"file","options":{"file_path":"/tmp/vault-audit.log"}}' -o /tmp/uvj-aud.err -w '%{http_code}')
+  case "$RC" in 200|204) say "audit device file activé (/tmp/vault-audit.log dans poc-vault)";; *) fail "audit device KO (HTTP $RC): $(cat /tmp/uvj-aud.err)";; esac
+else
+  say "audit device déjà actif"
+fi
+
+# ═══ 7. secrets de démo PAR TENANT (valeurs PoC jetables, déterministes) ═══════
+for T in banking-demo payments-team; do
+  RC=$(vcurl -X POST "$VADDR/v1/secret/data/stoa/deploy/$T/demo" -d "{
+    \"data\": { \"deployKey\": \"poc-user-chain-a-$T\", \"note\": \"périmètre $T — lu avec un token Vault NOMINATIF (ADR-077)\" }
+  }" -o /tmp/uvj-kv.err -w '%{http_code}')
+  [ "$RC" = 200 ] || [ "$RC" = 204 ] || fail "écriture secret deploy/$T/demo KO (HTTP $RC): $(cat /tmp/uvj-kv.err)"
+done
+say "secrets secret/stoa/deploy/{banking-demo,payments-team}/demo écrits"
+
+say "Terminé. Preuve : ./scripts/test-user-vault-jwt.sh"
