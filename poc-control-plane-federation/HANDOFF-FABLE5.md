@@ -2,16 +2,26 @@
 
 > Analyse : stoa-labs (PoC control-plane-federation, accounts-team, payments-team,
 > console-light, stoa-platform-ci, adr) en profondeur ; monorepo `stoa` lu pour les
-> points de raccordement. Créé 2026-07-03 ; **rafraîchi 2026-07-09** (É0 LEVÉ 18/18 +
-> gitlinks purgés + **A'0 CLOS : tout le périmètre ADR-077 est committé** — l'arbre de
-> travail est PROPRE ; précédent : Phase A livrée + env réparé, §0.quater).
+> points de raccordement. Créé 2026-07-03 ; **rafraîchi 2026-07-10** (A'0 clos ET
+> **POUSSÉ sur GitHub** ; incident remote réparé ; GOAL self-service wM cadré en
+> session parallèle ; précédents : É0 levé 18/18 §0.quinquies, Phase A §0.quater).
 >
-> ✅ **A'0 / G14 CLOS (07-09)** : l'ex-« périmètre non-committé » (chaîne ADR-077 du
-> 05/07 + grappe de preuves ADR-072/073/074 + token-provider wM) est en Git, découpé
-> en **9 commits thématiques** `be70302..fe351a4` (governance-api / identité / console /
-> docs ADR+EVIDENCE / preuves / token-provider / observabilité / docs ; + purge d'un
-> binaire governance-api 10 Mo stagé par accident, désormais gitignoré). Build +
-> `go test -race` verts post-commit. `git status` : **rien**.
+> ✅ **A'0 / G14 CLOS (07-09) + POUSSÉ** : l'ex-« périmètre non-committé » (chaîne
+> ADR-077 du 05/07 + grappe de preuves ADR-072/073/074 + token-provider wM) est en Git,
+> découpé en **9 commits thématiques** `be70302..fe351a4` (governance-api / identité /
+> console / docs ADR+EVIDENCE / preuves / token-provider / observabilité / docs ; +
+> purge d'un binaire governance-api 10 Mo stagé par accident, désormais gitignoré).
+> Build + `go test -race` verts post-commit. **GitHub = HEAD local** (vérifié
+> ls-remote). `git status` : seul reste `GOAL-self-service-api-app-2026-07-09.md`
+> (untracked, cadrage session parallèle, cf. §0.sexies).
+>
+> ⚠️ **Gotcha durement gagné (incident 07-09, réparé)** : TOUJOURS vérifier
+> `git remote -v` AVANT un push. Une commande `git remote set-url` de la checklist
+> gitlinks a été exécutée depuis le MAUVAIS répertoire (racine stoa-labs au lieu de
+> `stoa-platform-ci/`) → l'origin de stoa-labs pointait le Gitea local → un push a
+> envoyé tout l'historique stoa-labs en branche étrangère sur `ci/stoa-platform-ci`.
+> Réparé le jour même : origin restauré GitHub, branche étrangère supprimée du Gitea,
+> vrai push vérifié. Les checklists multi-repos doivent porter `git -C <chemin>`.
 
 ---
 
@@ -182,6 +192,26 @@ dé-nesting — un choix explicite, plus jamais un accident de staging.
 `labctl` reste le nom LAB (auto-descriptif « jetable », protège la condition C1) ; à la
 frontière de packaging : `stoactl` (pilote produit STOA) vs nom neutre/client-brandé
 (angle « couche souveraine possédée », ADR-067). Un seul nom chez le client.
+
+---
+
+## 0.sexies Session parallèle 07-09 — self-service wM 10.15 (spikes prouvés, GOAL cadré → ADR-078)
+
+Deux spikes live sur le trial wM 10.15 (détail : mémoire `wm-1015-teams-scoping`) :
+- **Spike #1 Teams scoping** : l'isolation par équipe est ENFORCÉE sur l'admin API REST
+  pour les **APIs** (3/3 sceptiques) ; les **applications ne sont PAS cloisonnées**
+  (brèche prouvée : delete cross-team 204, register API invisible 201).
+- **Spike #2 self-service OAuth2** : PROUVÉ en 2 variantes — N-proxies à alias statique
+  + mono-proxy à mapper dynamique **fail-closed** (anti-spoof 3/3). Pièges : alias
+  `${}` obligatoire, `aud` JWT en tableau, callout au stage transport.
+
+**`GOAL-self-service-api-app-2026-07-09.md`** (racine PoC, **untracked** — à commiter
+avec l'implémentation) : cadrage « prêt à exécuter », feeds **ADR-078**. Décision :
+(P) producteur = GitOps ADR-076 tel quel (Teams natif suffit) ; (C) consommateur =
+proxy admin OAuth2 par équipe (spike #2) + **2 gardes applicatives** (`owner` +
+`register`) fermant la brèche applications du spike #1 ; (I) credentials = Keycloak
+Client Registration + Initial Access Tokens scopés. Le Developer Portal natif n'est
+PAS le point de départ (headless mais lourd, même limite que Teams sur les apps).
 
 ---
 
@@ -370,6 +400,8 @@ Phase C  : piste CLIENT (§0.quinquies, indépendante de B) —
            → C1 = É1-É4 squelette Ansible + stoa_vault + stoa_socle (1er palier vendable)
              ← PROCHAINE étape de la piste client
            → C2+ = suivre DELIVERY-PROCESS.md §5 (É5-É9)
+Piste D  : self-service wM 10.15 (§0.sexies, indépendante) — GOAL cadré prêt à
+           exécuter → ADR-078 + gardes owner/register + Keycloak CRS (spikes prouvés)
 ```
 
 - **B0 avant tout B** : les 3 collisions (fédération, double source-de-vérité, cli/src) doivent
