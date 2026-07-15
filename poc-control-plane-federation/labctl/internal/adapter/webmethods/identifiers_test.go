@@ -125,13 +125,21 @@ func TestCreateConsumer_ProjectsTokenAndIPIdentifiers(t *testing.T) {
 		t.Errorf("token value = %v, want [b2b-partner-acme-2026]", got)
 	}
 
-	// IP identifier — key "ipAddressRange", both entries carried.
+	// IP identifier — key "ipAddressRange", both entries carried, NORMALIZED to
+	// the from-to form (a single IP becomes X-X; an explicit range is unchanged).
 	ip := identifierByKeyName(t, mock, res.ConsumerID, identifierKeyIP, identifierNameIP)
 	if ip == nil {
 		t.Fatalf("ipAddressRange identifier not posed: %v", app["identifiers"])
 	}
-	if got := identifierStringValues(ip); len(got) != 2 {
-		t.Errorf("ip value = %v, want 2 entries", got)
+	got := identifierStringValues(ip)
+	want := []string{"203.0.113.10-203.0.113.10", "10.60.30.1-10.60.30.30"}
+	if len(got) != len(want) {
+		t.Fatalf("ip value = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("ip[%d] = %q, want %q", i, got[i], want[i])
+		}
 	}
 
 	// The API association survives the identifier PUT.
