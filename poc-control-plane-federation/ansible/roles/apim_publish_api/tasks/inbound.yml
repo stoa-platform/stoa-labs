@@ -1,0 +1,137 @@
+---
+# roles/apim_publish_api/tasks/inbound.yml
+# Policies INBOUND (ADR-075) : validation au stage IAM de l'API.
+#   mode jwt    -> alias auth-server (issuer+JWKS) + règle IAM open/jwtClaims (signature)
+#   mode oauth2 -> alias + règle IAM strict/oAuth2Token (audience/scope/strategy = extension)
+# Shapes prouvées (Go inboundauth.go/oauth2.go + wm-1015-rest-shapes) :
+#   - POST /alias body NU {name, type:authServerAlias, authServerType:EXTERNAL,
+#     localIntrospectionConfig{issuer, jwksuri}} ; jwksuri joignable DEPUIS la gateway.
+#   - action evaluatePolicy (logicalConnector OR, allowAnonymous false, IdentificationRule).
+#   - PUT /policies enveloppé {policy:{...}} pour attacher le stage IAM.
+# Importé dans le block module_defaults de main.yml (auth héritée). Idempotent.
+
+- name: "Inbound : fail-closed sur la config minimale"
+  ansible.builtin.assert:
+    that:
+      - "(apim_api.inbound.issuer | default('')) | length > 0"
+      - "(apim_api.inbound.jwks_uri | default('')) | length > 0"
+      - "(apim_api.inbound.alias_name | default('')) | length > 0"
+    fail_msg: "inbound requiert issuer + jwks_uri + alias_name."
+
+- name: "Inbound : mode -> (applicationLookup, identificationType)"
+  ansible.builtin.set_fact:
+    in_lookup: "{{ 'strict' if (apim_api.inbound.mode | default('jwt')) == 'oauth2' else 'open' }}"
+    in_type: "{{ 'oAuth2Token' if (apim_api.inbound.mode | default('jwt')) == 'oauth2' else 'jwtClaims' }}"
+
+# ===== 1. Alias auth-server (find-or-create) ================================
+- name: "Inbound : lister les alias"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_api_base }}/alias"
+  register: in_aliases
+  changed_when: false
+
+- name: "Inbound : id de l'alias '{{ apim_api.inbound.alias_name }}' si présent"
+  ansible.builtin.set_fact:
+    in_alias_id: >-
+      {{ (in_aliases.json.alias | default([]) | selectattr('name', 'equalto', apim_api.inbound.alias_name)
+          | map(attribute='id') | list | first) | default('') }}
+
+- name: "Inbound : créer l'alias auth-server (body NU) si absent"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_api_base }}/alias"
+    method: POST
+    body:
+      name: "{{ apim_api.inbound.alias_name }}"
+      description: "apim_publish_api inbound auth (JWKS local introspection)"
+      type: "authServerAlias"
+      authServerType: "EXTERNAL"
+      localIntrospectionConfig:
+        issuer: "{{ apim_api.inbound.issuer }}"
+        jwksuri: "{{ apim_api.inbound.jwks_uri }}"
+    status_code: [200, 201]
+  register: in_alias_create
+  when: "in_alias_id | length == 0"
+
+# ===== 2. Action IAM (find-or-create par empreinte de règle) ================
+- name: "Inbound : liste des policyActions"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_api_base }}/policyActions"
+  register: in_actions
+  changed_when: false
+
+- name: "Inbound : id vide par défaut"
+  ansible.builtin.set_fact:
+    in_iam_id: ""
+- name: "Inbound : id de l'action IAM {{ in_lookup }}/{{ in_type }} (empreinte)"
+  ansible.builtin.set_fact:
+    in_iam_id: "{{ item.id }}"
+  loop: "{{ in_actions.json.policyAction | default([]) }}"
+  loop_control: { label: "{{ item.id }}" }
+  when: >-
+    (item.parameters | default([]) | selectattr('templateKey', 'equalto', 'IdentificationRule')
+     | map(attribute='parameters') | flatten
+     | selectattr('templateKey', 'equalto', 'identificationType')
+     | map(attribute='values') | flatten | sort) == ([in_type] | sort)
+
+- name: "Inbound : créer l'action IAM {{ in_lookup }}/{{ in_type }} si absente"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_api_base }}/policyActions"
+    method: POST
+    body:
+      policyAction:
+        names: [{ value: "identify ({{ apim_api.name }})", locale: "en" }]
+        templateKey: "evaluatePolicy"
+        parameters:
+          - { templateKey: "logicalConnector", values: ["OR"] }
+          - { templateKey: "allowAnonymous", values: ["false"] }
+          - templateKey: "IdentificationRule"
+            parameters:
+              - { templateKey: "applicationLookup", values: ["{{ in_lookup }}"] }
+              - { templateKey: "identificationType", values: ["{{ in_type }}"] }
+        active: true
+    status_code: [200, 201]
+  register: in_iam_create
+  when: "in_iam_id | length == 0"
+
+- ansible.builtin.set_fact:
+    in_iam_id: "{{ in_iam_create.json.policyAction.id | default(in_iam_create.json.id) }}"
+  when: "in_iam_id | length == 0"
+
+# ===== 3. Attacher l'action au stage IAM de la policy de l'API ==============
+- name: "Inbound : GET policy de l'API"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_api_base }}/apis/{{ apim_api_id }}"
+  register: in_api_get
+  changed_when: false
+
+- ansible.builtin.set_fact:
+    in_pol_id: "{{ (in_api_get.json.apiResponse.api.policies | default([])) | first | default('') }}"
+
+- name: "Inbound : convergence du stage IAM"
+  when: "in_pol_id | length > 0"
+  block:
+    - ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/policies/{{ in_pol_id }}"
+      register: in_pol_get
+      changed_when: false
+    - ansible.builtin.set_fact:
+        in_pol: "{{ in_pol_get.json.policy | default(in_pol_get.json) }}"
+    - ansible.builtin.set_fact:
+        in_iam_attached: >-
+          {{ in_iam_id in (in_pol.policyEnforcements | default([])
+              | selectattr('stageKey', 'equalto', 'IAM')
+              | map(attribute='enforcements') | flatten
+              | map(attribute='enforcementObjectId') | list) }}
+    - name: "Inbound : attacher (IAM = notre action) + PUT enveloppé — si pas attaché"
+      when: "not in_iam_attached"
+      block:
+        - ansible.builtin.set_fact:
+            in_pol_new: >-
+              {{ in_pol | combine({'policyEnforcements':
+                  [{'stageKey': 'IAM', 'enforcements': [{'enforcementObjectId': in_iam_id, 'order': none}]}]
+                  + (in_pol.policyEnforcements | default([]) | rejectattr('stageKey', 'equalto', 'IAM') | list) }) }}
+        - ansible.builtin.uri:
+            url: "{{ apim_ss_api_base }}/policies/{{ in_pol_id }}"
+            method: PUT
+            body: { policy: "{{ in_pol_new }}" }
+            status_code: [200, 201]

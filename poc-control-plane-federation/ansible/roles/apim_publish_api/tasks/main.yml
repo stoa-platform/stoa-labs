@@ -1,0 +1,90 @@
+---
+# roles/apim_publish_api/tasks/main.yml
+# Publie une API : import OpenAPI (multipart) -> activate -> team -> inbound.
+# Idempotent, read-back fail-closed. Shapes prouvées (Go + wm-1015-rest-shapes).
+
+- name: "Secrets : auth admin (Vault, fallback PoC)"
+  ansible.builtin.import_tasks: secrets.yml
+
+- name: "Publish — API '{{ apim_api.name }}' v{{ apim_api.version }}"
+  module_defaults:
+    ansible.builtin.uri: "{{ apim_ss_uri_defaults }}"
+  block:
+
+    - name: "Contrat : fail-closed si absent"
+      ansible.builtin.assert:
+        that: "apim_api.contract | length > 0"
+        fail_msg: "apim_api.contract requis (chemin du contrat OpenAPI)."
+
+    # ===== 1. Import (find-or-import) ========================================
+    - name: "Import : l'API existe-t-elle déjà ?"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/apis"
+      register: pub_apis
+      changed_when: false
+
+    - name: "Import : id si déjà publiée (name+version)"
+      ansible.builtin.set_fact:
+        apim_api_id: >-
+          {{ (pub_apis.json.apiResponse | map(attribute='api')
+              | selectattr('apiName', 'equalto', apim_api.name)
+              | selectattr('apiVersion', 'equalto', apim_api.version)
+              | map(attribute='id') | list | first) | default('') }}
+
+    - name: "Import : multipart POST /apis (le JSON from-scratch est cassé sur 10.15)"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/apis"
+        method: POST
+        body_format: form-multipart
+        body:
+          file:
+            content: "{{ lookup('file', apim_api.contract) }}"
+            filename: "{{ apim_api.contract | basename }}"
+            mime_type: "application/x-yaml"
+          type: "openapi"
+          apiName: "{{ apim_api.name }}"
+          apiVersion: "{{ apim_api.version }}"
+        status_code: [200, 201]
+      register: pub_import
+      when: "apim_api_id | length == 0"
+
+    - name: "Import : capturer l'id (création)"
+      ansible.builtin.set_fact:
+        apim_api_id: "{{ pub_import.json.apiResponse.api.id }}"
+      when: "apim_api_id | length == 0"
+
+    - name: "Import : fail-closed si pas d'id"
+      ansible.builtin.assert:
+        that: "apim_api_id | length > 0"
+        fail_msg: "import KO : aucune id d'API."
+
+    # ===== 2. Activate =======================================================
+    - name: "Activate : relire l'état"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/apis/{{ apim_api_id }}"
+      register: pub_api_get
+      changed_when: false
+
+    - name: "Activate : PUT /activate si inactive"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/apis/{{ apim_api_id }}/activate"
+        method: PUT
+        status_code: [200, 201]
+      when: "not (pub_api_get.json.apiResponse.api.isActive | default(false))"
+
+    - name: "Activate : read-back fail-closed — l'API est ACTIVE"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/apis/{{ apim_api_id }}"
+      register: pub_api_after
+      changed_when: false
+      failed_when: "not (pub_api_after.json.apiResponse.api.isActive | default(false))"
+
+    # ===== 3. Scoping équipe (optionnel, ADR-076) ============================
+    - name: "Team : scoping par équipe"
+      ansible.builtin.import_tasks: team.yml
+      when: "(apim_api.team | default('')) | length > 0"
+
+    # ===== 4. Policies inbound (optionnel) ===================================
+    - name: "Inbound : validation JWT/OAuth2 au stage IAM"
+      ansible.builtin.import_tasks: inbound.yml
+      when: "(apim_api.inbound | default({})) | length > 0"
