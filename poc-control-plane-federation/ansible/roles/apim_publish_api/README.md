@@ -11,9 +11,14 @@ Orchestration ET mutation en Ansible pur ; le moteur Go labctl reste la spec par
 - **Import multipart** `POST /apis` (`file` + `type=openapi` + `apiName` + `apiVersion`) —
   le JSON from-scratch est cassé sur 10.15, le multipart est le chemin fiable.
 - **Activate** (`PUT /apis/{id}/activate`) + read-back fail-closed `isActive=true`.
-- **Inbound JWT** : alias auth-server (`POST /alias` body NU, `localIntrospectionConfig
-  {issuer, jwksuri}`) + règle IAM `open/jwtClaims` attachée. Prouvé : data-plane
-  **sans token → 401**, **token valide → passe l'IAM** (502 = backend non branché).
+- **Inbound JWT** (`mode: jwt`) : alias auth-server (`POST /alias` body NU,
+  `localIntrospectionConfig{issuer, jwksuri}`) + règle IAM `open/jwtClaims`. Prouvé :
+  data-plane **sans token → 401**, **token valide → passe l'IAM** (502 = backend non branché).
+- **Inbound OAuth2 COMPLET** (`mode: oauth2`) : alias + **strategy OAUTH2**
+  (`POST /strategies`, alias+clientId+audience) + **scope mapping** (`POST /scopes`,
+  `requiredAuthScopes[alias+scope]` + `apiScopes[apiId]`) + règle IAM
+  `strict/oAuth2Token`. Prouvé : strategy + scope posés, **sans token → 401**.
+  (`OAUTH2_CONFIRMED` au verify.)
 - **Idempotent** (import/alias/IAM réutilisés par empreinte ; re-run sans 409).
 - `verify` : `PUBLISH_CONFIRMED` + `INBOUND_CONFIRMED`.
 
@@ -40,8 +45,8 @@ un pipeline combiné (publier l'API PUIS créer le consommateur) les pose une fo
 
 - **Team scoping** (`team.yml`) : **NON testé live** (le lab n'a pas d'accessProfile
   d'équipe ; Teams doit être activé). Shape best-effort du spike — à valider client.
-- **Inbound `oauth2`** : la règle IAM `strict/oAuth2Token` est posée, mais la
-  **strategy OAUTH2 + le scope mapping** (le liant audience/scope, cf. `oauth2.go`)
-  ne sont pas encore projetés — extension. Le mode `jwt` (signature) est complet.
+- **Enforcement `aud` de l'OAuth2** : sur le **trial** l'introspection remote est
+  inerte → l'`aud` reste fail-OPEN (signature + azp + scope enforced, 3/4 barrières,
+  cf. finding ADR-075). Sur un build non-trial l'aud est enforcé sans changement.
 - **Backend** : l'import prend les `servers[]` du contrat ; le backend par alias
   (`${alias}` env-switchable, ADR-075) est une extension (`routing.yml` à venir).
