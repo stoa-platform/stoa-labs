@@ -1,0 +1,69 @@
+---
+# roles/apim_selfservice_app/tasks/resolve-env.yml
+#
+# MULTI-ENV (ADR-078). Chez le client, IP source, certificat client et clé backend
+# DIFFÈRENT par environnement (dev/rec/int/prod), alors que l'identité de l'app
+# (name/api/enforce/nom du header backend) est INVARIANTE. Le proxy d'admin, lui,
+# est un endpoint unique : c'est le header X-Environment (piloté par apim_ss_env)
+# qui sélectionne l'env — pas une base différente.
+#
+# Le manifeste porte donc :
+#   - à la racine : l'identité INVARIANTE (name, api, enforce, backend.header…) ;
+#   - sous `per_env: { dev: {...}, rec: {...}, ... }` : les valeurs qui CHANGENT
+#     par env (ip_allowlist, public_cert_ref, éventuel override backend).
+#
+# Manifeste EFFECTIF = racine (sans per_env)  ⊕(récursif)  per_env[apim_ss_env].
+# FAIL-CLOSED : si per_env est déclaré, l'env DOIT être fourni ET connu — on refuse
+# de matérialiser une identité (IP/cert) non définie pour l'environnement ciblé.
+#
+# CHARGEMENT DU MANIFESTE : passer un CHEMIN via `apim_ss_manifest` (include_vars,
+# précédence 18) — PAS `-e @fichier` (extra-var, précédence 22 : il masquerait le
+# set_fact de fusion ci-dessous et la surcharge per_env serait silencieusement
+# perdue). apim_ss_env, lui, reste un extra-var (l'ops choisit l'env à l'apply).
+
+# include_vars résout relativement au rôle/playbook, pas au cwd : un chemin
+# repo-relatif (clients/…) est donc résolu depuis la racine = playbook_dir/.. ;
+# un chemin absolu est pris tel quel.
+- name: "Env : charger le manifeste (chemin) — include_vars, pas extra-var"
+  ansible.builtin.include_vars: >-
+    {{ apim_ss_manifest if apim_ss_manifest.startswith('/')
+       else (playbook_dir ~ '/../' ~ apim_ss_manifest) }}
+  when: "(apim_ss_manifest | default('')) | length > 0"
+
+- name: "Env : le manifeste porte-t-il des surcharges par environnement ?"
+  ansible.builtin.set_fact:
+    apim_ss_has_per_env: "{{ (apim_ss_app.per_env | default({})) | length > 0 }}"
+
+- name: "Env : FAIL-CLOSED — per_env présent ⇒ apim_ss_env déclaré ET connu du manifeste"
+  ansible.builtin.assert:
+    that:
+      - "(apim_ss_env | default('')) | length > 0"
+      - "apim_ss_env in (apim_ss_app.per_env | default({}))"
+    fail_msg: >-
+      ENV_UNDEFINED : le manifeste déclare per_env={{ (apim_ss_app.per_env | default({})).keys() | list }}
+      mais apim_ss_env='{{ apim_ss_env | default('') }}' est vide ou hors de cette liste.
+      Refus de déployer une identité (IP/cert/clé backend) non définie pour cet environnement.
+    success_msg: "ENV_OK : environnement '{{ apim_ss_env }}' déclaré dans le manifeste."
+  when: apim_ss_has_per_env
+
+# NB : on passe par des variables intermédiaires. Un set_fact qui réassigne
+# apim_ss_app EN FONCTION de apim_ss_app (self-référence) est résolu paresseusement
+# par Jinja vers la valeur d'origine — la fusion serait silencieusement perdue.
+- name: "Env : décomposer racine (sans per_env) et surcharge de l'env"
+  ansible.builtin.set_fact:
+    apim_ss_app_base: "{{ apim_ss_app | dict2items | rejectattr('key', 'equalto', 'per_env') | items2dict }}"
+    apim_ss_app_over: "{{ apim_ss_app.per_env[apim_ss_env] }}"
+  when: apim_ss_has_per_env
+
+- name: "Env : manifeste EFFECTIF = racine ⊕ per_env[{{ apim_ss_env }}]"
+  ansible.builtin.set_fact:
+    apim_ss_app: "{{ apim_ss_app_base | combine(apim_ss_app_over, recursive=True) }}"
+  when: apim_ss_has_per_env
+
+- name: "Env : identité entrante résolue pour '{{ apim_ss_env | default('(mono-env)') }}'"
+  ansible.builtin.debug:
+    msg: >-
+      app={{ apim_ss_app.name }} env={{ apim_ss_env | default('(mono-env)') }} :
+      ip_allowlist={{ apim_ss_app.ip_allowlist | default([]) }},
+      cert={{ (apim_ss_app.public_cert_ref | default('')) | length > 0 }},
+      enforce={{ apim_ss_app.enforce | default([]) }}

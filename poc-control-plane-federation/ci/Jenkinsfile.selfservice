@@ -26,6 +26,10 @@ pipeline {
   parameters {
     string(name: 'MANIFEST', defaultValue: 'clients/_example/applications/demo-consumer.ansible.yml',
            description: "Manifeste de demande (vars du rôle : apim_ss_app).")
+    // Env cible : sélectionne per_env[ENVIRONMENT] du manifeste ET pose X-Environment
+    // vers le proxy d'admin (endpoint unique multi-env). Vide = manifeste mono-env.
+    choice(name: 'ENVIRONMENT', choices: ['dev', 'rec', 'int', 'prod'],
+           description: "Environnement cible (identité IP/cert par env + header X-Environment).")
     // DÉMO lab : identité nominative = JWT court aud=vault (exchange RFC 8693
     // Keycloak, ADR-077, TTL 5 min). CLIENT (voie A) : password param LDAP + POST
     // auth/ldap/login/<user> (§3 ADR-078).
@@ -96,9 +100,12 @@ pipeline {
 
             # 2) CONVERGE via le RÔLE : le rôle lit les creds gateway dans Vault
             #    avec le token nominatif (VAULT_TOKEN_FILE), chemin tenant-scopé.
+            # Le manifeste est passé en CHEMIN (apim_ss_manifest → include_vars dans le
+            # rôle), PAS en `-e @` : un extra-var masquerait la fusion per_env (précédence).
             export VAULT_TOKEN_FILE="$VTOKF"
             ansible-playbook -i "$INVENTORY" ansible/selfservice-app.yml \
-              -e @"$MANIFEST" \
+              -e apim_ss_manifest="$MANIFEST" \
+              -e apim_ss_env="${ENVIRONMENT:-}" \
               -e apim_ss_api_base="$APIM_API_BASE" \
               -e apim_ss_data_base="$APIM_DATA_BASE" \
               -e apim_ss_vault_wm_creds_sub="$APIM_WM_CREDS_SUB"
@@ -106,7 +113,8 @@ pipeline {
             # 3) VERIFY fail-closed (structurel : ENFORCEMENT_CONFIRMED + OUTBOUND_CONFIRMED ;
             #    le check data-plane live reste off — l'IP de l'agent ≠ l'allowlist).
             ansible-playbook -i "$INVENTORY" ansible/selfservice-app-verify.yml \
-              -e @"$MANIFEST" \
+              -e apim_ss_manifest="$MANIFEST" \
+              -e apim_ss_env="${ENVIRONMENT:-}" \
               -e apim_ss_api_base="$APIM_API_BASE" \
               -e apim_ss_data_base="$APIM_DATA_BASE" \
               -e apim_ss_vault_wm_creds_sub="$APIM_WM_CREDS_SUB"

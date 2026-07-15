@@ -61,3 +61,10 @@ apim_ss_app:
   # Sous-ensemble de ["httpsCertificate","ipAddressRange"]. Vide = pose les
   # identifiers SANS règle IAM (comportement historique inerte — À ÉVITER).
   enforce: []
+  # --- MULTI-ENV : valeurs qui DIFFÈRENT par env (résolu par resolve-env.yml) --
+  # Mettre ici les champs env-spécifiques (ip_allowlist, public_cert_ref, override
+  # backend…). Le rôle fusionne racine ⊕ per_env[apim_ss_env]. Vide = mono-env.
+  #   per_env:
+  #     dev:  { ip_allowlist: ["10.10.1.0-10.10.1.9"], public_cert_ref: "certs/dev/app.crt" }
+  #     prod: { ip_allowlist: ["10.90.1.0-10.90.1.9"], public_cert_ref: "certs/prod/app.crt" }
+  per_env: {}

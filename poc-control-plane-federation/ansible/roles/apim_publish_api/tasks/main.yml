@@ -3,6 +3,9 @@
 # Publie une API : import OpenAPI (multipart) -> activate -> team -> inbound.
 # Idempotent, read-back fail-closed. Shapes prouvées (Go + wm-1015-rest-shapes).
 
+- name: "Env : résoudre l'API effective (identité invariante ⊕ per_env inbound)"
+  ansible.builtin.import_tasks: resolve-env.yml
+
 - name: "Secrets : auth admin (Vault, fallback PoC)"
   ansible.builtin.import_tasks: secrets.yml
 

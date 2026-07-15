@@ -1,14 +1,23 @@
 ---
-# Manifeste de demande (format rôle apim_selfservice_app). L'infra (base, env,
-# auth, chemins Vault) est surchargée par le pipeline / group_vars — ici, la
-# DEMANDE seule.
+# Manifeste de demande (format rôle apim_selfservice_app). L'infra (base, env, auth,
+# chemins Vault) est surchargée par le pipeline / group_vars — ici, la DEMANDE seule.
+#
+# MULTI-ENV : l'identité de l'app (name/api/enforce/header backend) est INVARIANTE ;
+# ce qui CHANGE par env (IP source, cert client) vit sous per_env. Le rôle fusionne
+# racine ⊕ per_env[apim_ss_env] et REFUSE un env non déclaré (fail-closed).
+# La clé backend, elle, reste ${backend_apikey} (template invariant) : c'est le
+# TokenProvider IS de l'env qui la résout depuis le Vault de cet env.
 apim_ss_app:
   name: "demo-consumer"
   api: "demo-selfservice"
   api_version: "1.0.0"
   description: "ADR-078 self-service (rôle Ansible via Jenkins)"
   contact_emails: ["demo@bank.invalid"]
-  ip_allowlist: ["192.168.65.1"]
-  public_cert_ref: ""
-  backend: { header: "apikey", value_template: "${backend_apikey}" }
-  enforce: ["ipAddressRange"]
+  backend: { header: "apikey", value_template: "${backend_apikey}" }   # invariant
+  enforce: ["ipAddressRange"]                                          # invariant
+
+  per_env:
+    dev:  { ip_allowlist: ["192.168.65.1"],        public_cert_ref: "" }
+    rec:  { ip_allowlist: ["10.20.1.0-10.20.1.9"], public_cert_ref: "" }
+    int:  { ip_allowlist: ["10.30.1.0-10.30.1.9"], public_cert_ref: "" }
+    prod: { ip_allowlist: ["10.90.1.0-10.90.1.9"], public_cert_ref: "" }

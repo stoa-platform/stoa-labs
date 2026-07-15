@@ -41,6 +41,21 @@ ansible-playbook -i inv.ini ansible/publish-api-verify.yml -e @api.yml
 Infra (base, env, auth, Vault) : mêmes vars `apim_ss_*` que le rôle consommateur —
 un pipeline combiné (publier l'API PUIS créer le consommateur) les pose une fois.
 
+## Multi-environnement (`per_env`) — prouvé live
+
+L'identité de l'API (`name`/`version`/`contract`) est INVARIANTE ; ce qui CHANGE
+par env c'est l'**inbound** — l'issuer/JWKS de l'IdP (et audience/client_id en
+OAuth2) ne sont pas les mêmes en dev/rec/int/prod. On met donc l'inbound variable
+sous `per_env: { dev: {inbound: {...}}, ... }` (`alias_name`/`mode` restent racine).
+Le rôle (`tasks/resolve-env.yml`, pendant du consommateur) fusionne **racine ⊕
+per_env[apim_ss_env]** selon l'env choisi. **FAIL-CLOSED** : `per_env` déclaré ⇒
+`apim_ss_env` fourni ET connu, sinon refus (`ENV_UNDEFINED`) — sinon l'API validerait
+les jetons du **mauvais émetteur** (pire qu'un refus). Prouvé : `apim_ss_env=dev`
+matérialise l'issuer `…/stoa-lab` sur l'alias, `=staging` → refus.
+
+Charger le manifeste par **CHEMIN** (`-e apim_ss_manifest=<fichier>` → `include_vars`),
+**jamais `-e @fichier`** (extra-var : masquerait la fusion). `apim_ss_env` reste extra-var.
+
 ## Limites / à valider
 
 - **Team scoping** (`team.yml`) : **NON testé live** (le lab n'a pas d'accessProfile
