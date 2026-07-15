@@ -156,6 +156,14 @@ Connecteur `AND` (jamais `OR` : *n'importe lequel suffit* = régression inaccept
 
 > ⚠️ **Correction :** l'entrée « Identité = API Key / `apiAccessKey` / `strict/apiKey` » d'une version antérieure est **abandonnée** (elle décrivait la clé *entrante* gateway, hors périmètre client). Le spike du 2026-07-14 reste conservé comme preuve d'opposabilité si un usage futur en veut une.
 
+### 6. Multi-environnement — identité par env, endpoint d'admin unique
+
+L'IP source, le certificat client et la clé backend **diffèrent par env** ; l'identité de l'app/API (name/api/enforce) est **invariante**. Décision : le manifeste porte l'invariant à la racine + un bloc **`per_env: {dev,rec,int,prod}`** ; chaque rôle calcule le manifeste **effectif = racine ⊕ per_env[env]** (fusion récursive, `tasks/resolve-env.yml`), **fail-closed** si l'env n'est pas déclaré (`ENV_UNDEFINED`). L'API d'admin reste un **endpoint proxy unique** : le header `X-Environment` route (pas de base par env). La clé backend reste `${backend_apikey}` (template invariant), résolue par env par le TokenProvider ← Vault de l'env. **Piège tranché :** le manifeste se charge par **chemin** (`-e apim_ss_manifest` → `include_vars`, précédence 18) et **jamais** `-e @fichier` (extra-var 22 : masquerait le `set_fact` de fusion, surcharge `per_env` perdue en silence). *Prouvé live 2026-07-15 : consommateur dev→prod bascule l'identifier IP, producteur dev matérialise l'issuer sur l'alias, env inconnu refusé.*
+
+### 7. Port en Deny-by-Default — allow-list de l'API (IS-admin)
+
+Chez le client, le **port data-plane est en Deny-by-Default** : chaque API publiée doit être **ajoutée à l'allow-list du port**. C'est l'**Access Mode du listener Integration Server** — surface **différente** de l'API d'admin apigateway (le REST `/ports` ne l'expose pas), pilotée par le form WmRoot `security-ports-editaccess.dsp`. Décision : `tasks/port-access.yml` (opt-in `apim_ss_port_manage`, après l'activate) fait **read → add idempotent → read-back fail-closed** (`PORT_ALLOWLIST_CONFIRMED`) ; play standalone `is-port-access.yml` pour la création d'env. **Le rôle ne FLIPPE JAMAIS le mode** (risque de lockout du data-plane) : le passage en Deny est fait à la création de l'env côté client. *Prouvé live 2026-07-15 : POST addNode/deleteNode + read-back basic-auth sans CSRF.* **Caveats** (§ Écarts) : allow-list par **service IS `folder:service`** (le port rejette les URLs data-plane — testé), mapping API→service = config gateway du client ; **CSRF guard** OFF sur le trial (à gérer si activé côté client).
+
 ---
 
 ## Preuves de spike (2026-07-14, `apigateway-trial:10.15` réelle)
