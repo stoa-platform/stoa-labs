@@ -49,3 +49,25 @@
                   | map(attribute='enforcementObjectId') | list) | length > 0
             fail_msg: "INBOUND_UNCONFIRMED : alias absent OU aucune règle IAM au stage IAM."
             success_msg: "INBOUND_CONFIRMED : alias '{{ apim_api.inbound.alias_name }}' + règle IAM ({{ apim_api.inbound.mode | default('jwt') }}) opposée."
+
+        # --- oauth2 : strategy + scope mapping liés à l'API ---
+        - name: "Verify(oauth2) : strategy + scope"
+          when: "(apim_api.inbound.mode | default('jwt')) == 'oauth2'"
+          block:
+            - ansible.builtin.uri: { url: "{{ apim_ss_api_base }}/strategies" }
+              register: v_strats
+              changed_when: false
+            - ansible.builtin.uri: { url: "{{ apim_ss_api_base }}/scopes" }
+              register: v_scopes
+              changed_when: false
+            - name: "Verify(oauth2) : FAIL-CLOSED — strategy OAUTH2 + scope mapping liant l'API"
+              ansible.builtin.assert:
+                that:
+                  - "(v_strats.json.strategies | default([]) | selectattr('name','equalto', 'apim-strat-' ~ apim_api.name) | list) | length > 0"
+                  - >-
+                    (v_scopes.json.scopes | default([])
+                      | selectattr('scopeName','equalto', apim_api.inbound.alias_name ~ ':' ~ apim_api.inbound.scope)
+                      | selectattr('apiScopes','defined')
+                      | selectattr('apiScopes','contains', v_api.id) | list) | length > 0
+                fail_msg: "OAUTH2_UNCONFIRMED : strategy absente OU scope non lié à l'API."
+                success_msg: "OAUTH2_CONFIRMED : strategy apim-strat-{{ apim_api.name }} + scope mapping liant l'API (audience/scope opposés)."

@@ -52,6 +52,78 @@
   register: in_alias_create
   when: "in_alias_id | length == 0"
 
+# ===== 1b. OAuth2 : strategy + scope mapping (AVANT l'IAM : gate jamais mi-ouvert) ==
+- name: "Inbound(oauth2) : config requise (audience + scope + client_id)"
+  ansible.builtin.assert:
+    that:
+      - "(apim_api.inbound.audience | default('')) | length > 0"
+      - "(apim_api.inbound.scope | default('')) | length > 0"
+      - "(apim_api.inbound.client_id | default('')) | length > 0"
+    fail_msg: "mode oauth2 requiert inbound.audience + inbound.scope + inbound.client_id."
+  when: "(apim_api.inbound.mode | default('jwt')) == 'oauth2'"
+
+- name: "Inbound(oauth2) : strategy OAUTH2 + scope mapping"
+  when: "(apim_api.inbound.mode | default('jwt')) == 'oauth2'"
+  block:
+    # --- strategy (find-or-create par nom) : POST /strategies body NU ---
+    - ansible.builtin.uri: { url: "{{ apim_ss_api_base }}/strategies" }
+      register: in_strats
+      changed_when: false
+    - ansible.builtin.set_fact:
+        in_strat_present: >-
+          {{ (in_strats.json.strategies | default([])
+              | selectattr('name', 'equalto', 'apim-strat-' ~ apim_api.name) | list) | length > 0 }}
+    - name: "Inbound(oauth2) : créer la strategy OAUTH2 (alias+clientId+audience) si absente"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/strategies"
+        method: POST
+        body:
+          name: "apim-strat-{{ apim_api.name }}"
+          description: "apim_publish_api : strategy OAUTH2 (OIDC)"
+          type: "OAUTH2"
+          authServerAlias: "{{ apim_api.inbound.alias_name }}"
+          clientId: "{{ apim_api.inbound.client_id }}"
+          audience: "{{ apim_api.inbound.audience }}"
+        status_code: [200, 201]
+      when: "not in_strat_present"
+
+    # --- scope mapping (find-or-create par scopeName, bind apiID) : POST /scopes NU ---
+    - ansible.builtin.uri: { url: "{{ apim_ss_api_base }}/scopes" }
+      register: in_scopes
+      changed_when: false
+    - ansible.builtin.set_fact:
+        in_scope_name: "{{ apim_api.inbound.alias_name }}:{{ apim_api.inbound.scope }}"
+    - ansible.builtin.set_fact:
+        in_scope: >-
+          {{ (in_scopes.json.scopes | default([])
+              | selectattr('scopeName', 'equalto', in_scope_name) | list | first) | default({}) }}
+    - name: "Inbound(oauth2) : créer le scope mapping (requiredAuthScopes + apiScopes) si absent"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/scopes"
+        method: POST
+        body:
+          scopeName: "{{ in_scope_name }}"
+          scopeDescription: "apim_publish_api : scope mapping {{ apim_api.inbound.scope }}"
+          audience: "{{ apim_api.inbound.audience }}"
+          apiScopes: ["{{ apim_api_id }}"]
+          requiredAuthScopes:
+            - { authServerAlias: "{{ apim_api.inbound.alias_name }}", scopeName: "{{ apim_api.inbound.scope }}" }
+        status_code: [200, 201]
+      when: "in_scope.id is not defined"
+    - name: "Inbound(oauth2) : lier l'API au scope existant (PUT) si pas déjà liée"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/scopes/{{ in_scope.id }}"
+        method: PUT
+        body: >-
+          {{ in_scope | combine({
+              'apiScopes': ((in_scope.apiScopes | default([])) + [apim_api_id]) | unique,
+              'audience': apim_api.inbound.audience,
+              'requiredAuthScopes': [{'authServerAlias': apim_api.inbound.alias_name, 'scopeName': apim_api.inbound.scope}]}) }}
+        status_code: [200, 201]
+      when:
+        - "in_scope.id is defined"
+        - "apim_api_id not in (in_scope.apiScopes | default([]))"
+
 # ===== 2. Action IAM (find-or-create par empreinte de règle) ================
 - name: "Inbound : liste des policyActions"
   ansible.builtin.uri:
