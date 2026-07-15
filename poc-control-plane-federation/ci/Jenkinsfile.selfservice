@@ -1,0 +1,150 @@
+// ci/Jenkinsfile.selfservice — SELF-SERVICE « création d'application » (ADR-078).
+//
+// Modèle PLAN / APPLY (le webhook ne peut PAS porter d'identité humaine : un build
+// déclenché sans humain tourne en ACL.SYSTEM et ne résout aucun credential
+// user-scoped — doc CloudBees, JENKINS-44772). Donc :
+//
+//   push/PR ──webhook──▶ PLAN   : identité de JOB (en prod : Vault Kubernetes auth
+//                                 du pod), LECTURE SEULE — valide le manifeste de
+//                                 demande, dry-run, diff. AUCUN secret d'écriture.
+//              humain ──▶ APPLY  : build PARAMÉTRÉ — l'humain fournit SON identité
+//                                 (voie A client : user/mot de passe LDAP → Vault
+//                                 auth/ldap ; DÉMO lab : JWT nominatif Keycloak,
+//                                 chaîne ADR-077 déjà prouvée) → token Vault
+//                                 NOMINATIF → lit les creds du compte de service
+//                                 gateway dans Vault → labctl/apply-engine crée
+//                                 l'Application (cert dans l'asset + IP opposés,
+//                                 clé backend injectée par le TokenProvider/Vault).
+//
+// L'identité user ne sert QU'À obtenir le token Vault nominatif ; les appels wM se
+// font avec le COMPTE DE SERVICE (creds lus dans Vault). L'humain n'est jamais
+// propagé à la gateway (contrainte client). Voir adr/adr-078.
+pipeline {
+  agent any
+  options { disableConcurrentBuilds() }   // un apply à la fois = régime bancaire
+
+  parameters {
+    string(name: 'MANIFEST', defaultValue: 'clients/_example/applications/demo-consumer.json',
+           description: "Manifeste de demande d'application (name, api, ipAllowlist, publicCertRef, backend).")
+    // DÉMO lab : l'identité nominative arrive comme JWT court aud=vault (exchange
+    // RFC 8693 Keycloak, ADR-077). JWT ÉPHÉMÈRE (TTL 5 min) → paramètre string
+    // (le `when` teste .trim() ; un password param renverrait un hudson.util.Secret
+    // sans .trim()). CHEZ LE CLIENT (voie A) : password parameter LDAP + POST
+    // auth/ldap/login/<user> (§3 ADR-078).
+    string(name: 'USER_VAULT_JWT', defaultValue: '',
+           description: "Identité NOMINATIVE : JWT court aud=vault (exchange Keycloak, TTL 5 min). Vide sur le PLAN.")
+  }
+
+  // Le PLAN peut partir d'un webhook (identité de job). L'APPLY, lui, exige une
+  // action humaine (build paramétré avec USER_VAULT_JWT) — jamais le webhook.
+  triggers { GenericTrigger(token: 'stoa-selfservice-plan',
+             genericVariables: [[key: 'MANIFEST', value: '$.manifest']],
+             printContributedVariables: false, printPostContent: false) }
+
+  environment {
+    VAULT_ADDR   = "${env.VAULT_ADDR   ?: 'http://vault:8200'}"
+    // Gateway wM vue DEPUIS l'agent (réseau docker interne), pas localhost.
+    WM_ADMIN_URL = "${env.WM_ADMIN_URL ?: 'http://webmethods-real:5555/rest/apigateway'}"
+    // Chemin KV du compte de service gateway, TENANT-SCOPÉ (la policy user-deploy
+    // du token nominatif n'autorise que secret/stoa/deploy/<tenant>/* — ADR-077).
+    WM_SVC_VAULT_PATH = "${env.WM_SVC_VAULT_PATH ?: 'secret/data/stoa/deploy/banking-demo/wm-admin'}"
+  }
+
+  stages {
+
+    // ── PLAN ─────────────────────────────────────────────────────────────────
+    // Identité de JOB, LECTURE SEULE : valide le manifeste, ne touche RIEN.
+    // Aucun secret requis — c'est ce qui rend le déclenchement webhook légitime.
+    stage('Plan — valider la demande (lecture seule, identité de job)') {
+      steps {
+        dir('poc-control-plane-federation') {
+          // ${MANIFEST:-...} : au 1er build, le bloc parameters{} n'est pas encore
+          // enregistré (le var d'env n'existe pas) — le défaut shell rend le PLAN
+          // robuste dès le build #1.
+          sh '''
+            set -eu
+            MANIFEST="${MANIFEST:-clients/_example/applications/demo-consumer.json}"
+            echo "=== PLAN : manifeste ${MANIFEST} ==="
+            python3 - "$MANIFEST" <<'PY'
+import json, sys, ipaddress
+m = json.load(open(sys.argv[1]))
+for k in ("name", "api"):
+    assert m.get(k), f"champ requis manquant : {k}"
+for r in m.get("ipAllowlist", []):
+    lo = r.split("-")[0]
+    ipaddress.ip_address(lo)            # valide la plage IP
+cert = m.get("publicCertRef", "")
+assert "PRIVATE KEY" not in open(cert).read().upper() if cert and not cert.startswith("-----") else True, \
+    "publicCertRef porte une clé privée : refusé"
+print(f"  ✓ demande valide : app '{m['name']}' → API '{m['api']}'")
+print(f"    entrant : cert={'oui' if m.get('publicCertRef') else 'non'} | IP={m.get('ipAllowlist')}")
+print(f"    sortant : clé backend via {m.get('backend',{}).get('vaultPath','<vault>')} (TokenProvider)")
+PY
+          '''
+        }
+      }
+    }
+
+    // ── APPLY ────────────────────────────────────────────────────────────────
+    // Barrière humaine : sans USER_VAULT_JWT (build webhook), on s'arrête au plan.
+    // Avec (build paramétré humain) : identité nominative → Vault → apply.
+    stage('Apply — créer l\'application (identité nominative → Vault → gateway)') {
+      steps {
+        dir('poc-control-plane-federation') {
+          withCredentials([]) {
+            sh '''
+              set +x            # NE JAMAIS écho : JWT, token Vault, creds gateway
+              set -eu
+              MANIFEST="${MANIFEST:-clients/_example/applications/demo-consumer.json}"
+              # Barrière humaine (dans le shell, robuste au type de param) : sans
+              # identité nominative (build webhook/plan), on s'arrête ici, vert.
+              if [ -z "${USER_VAULT_JWT:-}" ]; then
+                echo "  (pas d'identité nominative → PLAN-only, apply sauté)"; exit 0
+              fi
+              # un JWT n'a pas d'espace interne (base64url + points) : on purge tout
+              # whitespace (newline de mint, etc.) qui casserait le corps JSON.
+              USER_VAULT_JWT=$(printf '%s' "$USER_VAULT_JWT" | tr -d '[:space:]')
+              VTOKF=$(mktemp); trap 'rm -f "$VTOKF"' EXIT
+
+              # 1) IDENTITÉ NOMINATIVE → TOKEN VAULT.
+              #    DÉMO (Keycloak) : le JWT aud=vault est échangé côté console
+              #    (ADR-077) et présenté au rôle jwt user-deploy.
+              #    CLIENT (voie A) : remplacer ce bloc par
+              #      curl -sf $VAULT_ADDR/v1/auth/ldap/login/$LDAP_USER -d "{\\"password\\":\\"$LDAP_PASS\\"}"
+              VT=$(curl -sf -X POST "$VAULT_ADDR/v1/auth/jwt/login" \
+                    --data-binary "$(printf '{"role":"user-deploy","jwt":"%s"}' "$USER_VAULT_JWT")" \
+                    | sed -n 's/.*"client_token":"\\([^"]*\\)".*/\\1/p')
+              [ -n "$VT" ] || { echo 'auth/jwt/login KO (identité nominative refusée)'; exit 1; }
+              ( umask 077; printf %s "$VT" > "$VTOKF" )
+              WHO=$(curl -sf -H "X-Vault-Token: $VT" "$VAULT_ADDR/v1/auth/token/lookup-self" \
+                    | sed -n 's/.*"display_name":"\\([^"]*\\)".*/\\1/p')
+              echo "  ✓ token Vault NOMINATIF obtenu (entité=$WHO) — le job ne détient aucun credential propre"
+
+              # 2) CREDS DU COMPTE DE SERVICE GATEWAY lus dans Vault avec CE token.
+              export WM_USER=$(curl -sf -H "X-Vault-Token: $VT" "$VAULT_ADDR/v1/$WM_SVC_VAULT_PATH" \
+                    | sed -n 's/.*"username":"\\([^"]*\\)".*/\\1/p')
+              export WM_PASS=$(curl -sf -H "X-Vault-Token: $VT" "$VAULT_ADDR/v1/$WM_SVC_VAULT_PATH" \
+                    | sed -n 's/.*"password":"\\([^"]*\\)".*/\\1/p')
+              [ -n "$WM_USER" ] && [ -n "$WM_PASS" ] || { echo 'creds gateway absents de Vault'; exit 1; }
+              unset VT
+
+              # 3) APPLY : crée l'Application (cert asset + IP opposés + injection
+              #    clé backend as-code). Cible produit : `labctl apply-consumer`.
+              WM_ADMIN_URL="$WM_ADMIN_URL" WM_USER="$WM_USER" WM_PASS="$WM_PASS" \
+                python3 scripts/apply-selfservice-application.py "$MANIFEST"
+
+              # 4) le token nominatif meurt avec le build (durée de vie = le build).
+              curl -sf -X POST -H "X-Vault-Token: $(cat "$VTOKF")" \
+                "$VAULT_ADDR/v1/auth/token/revoke-self" >/dev/null && echo "  ✓ token Vault révoqué"
+            '''
+          }
+        }
+      }
+    }
+  }
+
+  post {
+    success { echo '✓ Application self-service créée : identité entrante (cert+IP) opposée, clé backend cachée (P-callout), sous identité nominative. Zéro credential stocké côté CI.' }
+    failure { echo '✗ pipeline KO — voir le log de l\'étape.' }
+  }
+}
