@@ -13,7 +13,7 @@
 
 - name: "Backend : GET de l'API -> policy id"
   ansible.builtin.uri:
-    url: "{{ stoa_ss_admin_url }}/rest/apigateway/apis/{{ ss_api_id }}"
+    url: "{{ stoa_ss_api_base }}/apis/{{ ss_api_id }}"
   register: bk_api_get
   changed_when: false
 
@@ -22,7 +22,7 @@
 
 - name: "Backend : GET policy"
   ansible.builtin.uri:
-    url: "{{ stoa_ss_admin_url }}/rest/apigateway/policies/{{ bk_pol_id }}"
+    url: "{{ stoa_ss_api_base }}/policies/{{ bk_pol_id }}"
   register: bk_pol_get
   changed_when: false
 
@@ -35,7 +35,7 @@
 
 - name: "Backend : liste des policyActions"
   ansible.builtin.uri:
-    url: "{{ stoa_ss_admin_url }}/rest/apigateway/policyActions"
+    url: "{{ stoa_ss_api_base }}/policyActions"
   register: bk_actions
   changed_when: false
 
@@ -65,7 +65,7 @@
 
 - name: "Backend : converger l'action (PUT si déjà attachée, POST sinon)"
   ansible.builtin.uri:
-    url: "{{ stoa_ss_admin_url }}/rest/apigateway/policyActions{{ ('/' ~ bk_hdr_id) if (bk_hdr_id | length > 0) else '' }}"
+    url: "{{ stoa_ss_api_base }}/policyActions{{ ('/' ~ bk_hdr_id) if (bk_hdr_id | length > 0) else '' }}"
     method: "{{ 'PUT' if (bk_hdr_id | length > 0) else 'POST' }}"
     body: >-
       {{ {'policyAction': (bk_action.policyAction | combine({'id': bk_hdr_id}))}
@@ -94,7 +94,7 @@
                     (bk_routing_stage.enforcements | rejectattr('enforcementObjectId', 'in', bk_customhdr_ids) | list)
                     + [{'enforcementObjectId': bk_hdr_id, 'order': none}] }) ] }) }}
     - ansible.builtin.uri:
-        url: "{{ stoa_ss_admin_url }}/rest/apigateway/policies/{{ bk_pol_id }}"
+        url: "{{ stoa_ss_api_base }}/policies/{{ bk_pol_id }}"
         method: PUT
         body: { policy: "{{ bk_pol_new }}" }
         status_code: [200, 201]

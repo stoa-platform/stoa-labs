@@ -43,9 +43,36 @@ ansible-playbook -i inventory.ini ansible/selfservice-app.yml \
 ansible-playbook -i inventory.ini ansible/selfservice-app-verify.yml -e @vars.yml
 ```
 
-Chez le client : `stoa_ss_admin_url` = le **proxy `wm-admin-{env}`** (ADR-075) +
-bearer OAuth2, pas Basic direct ; les creds admin sont lus dans **Vault**
-(`tasks/secrets.yml`, fallback PoC total sans `VAULT_ADDR`).
+## Endpoint, environnement, authentification (variabilisés)
+
+Les tâches ne portent **que la ressource** (`/applications`, `/apis`, `/policies`,
+`/policyActions`) — la base est une variable.
+
+| Var | Rôle | Défaut (PoC direct) |
+|---|---|---|
+| `stoa_ss_api_base` | base de l'API d'admin, **préfixe inclus** ; chez le client = le **proxy** qui mappe `rest/apigateway` | `http://localhost:5555/rest/apigateway` |
+| `stoa_ss_data_base` | base data-plane (verify live) | `http://localhost:5555/gateway` |
+| `stoa_ss_env` | env ciblé via header (proxy on-premise **multi-env**) ; vide = pas de header | `""` |
+| `stoa_ss_env_header` | nom du header d'env | `X-Environment` |
+| `stoa_ss_auth_mode` | `basic` (direct) \| `oauth2` (proxy) | `basic` |
+| `stoa_ss_oauth_token_url` / `_client_id` / `_client_secret` / `_scope` | OAuth2 client_credentials — de préférence depuis **Vault** (`gateways/webmethods/admin-oauth`) | `""` |
+
+**Mode `oauth2` (proxy client)** : le rôle fait le **get token** (`client_credentials`)
+et passe `Authorization: Bearer …` + `X-Environment: <env>` sur chaque appel — un
+seul endpoint proxifié attaque tous les envs. Aucune auth basic. Prouvé : token
+Keycloak récupéré, headers `Accept + X-Environment + Authorization`.
+
+Exemple client (via Vault) :
+
+```bash
+ansible-playbook -i inv.ini ansible/selfservice-app.yml \
+  -e stoa_ss_auth_mode=oauth2 -e stoa_ss_env=rec \
+  -e stoa_ss_api_base=https://apim-admin.banque.internal/proxy \
+  -e @app.yml     # VAULT_ADDR posé -> token_url/client_id/secret lus dans Vault
+```
+
+Creds (basic OU oauth2) lus dans **Vault** (`tasks/secrets.yml`), fallback PoC
+total sans `VAULT_ADDR`.
 
 ## Le manifeste `stoa_ss_app`
 
