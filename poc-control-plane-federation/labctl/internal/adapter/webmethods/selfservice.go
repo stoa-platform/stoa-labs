@@ -1,9 +1,13 @@
 package webmethods
 
 import (
+	"context"
 	"fmt"
 	"net"
+	"net/http"
 	"strings"
+
+	"github.com/stoa-platform/stoa-labs/poc/labctl/internal/adapter"
 )
 
 // Self-service consumer identity enforcement (ADR-078). The consumer application
@@ -102,4 +106,123 @@ func cidrBounds(n *net.IPNet) (net.IP, net.IP) {
 		last[i] = ip[i] | ^n.Mask[i]
 	}
 	return first, last
+}
+
+// --- enforcement: pose the AND identification action + attach to the API -----
+
+// actionMatchesRuleTypes reports whether an evaluatePolicy action's set of
+// IdentificationRule types equals want (order-insensitive). It is the exact
+// fingerprint that tells the OAuth2+cert action ({oAuth2Token,httpsCertificate})
+// apart from the self-service cert+IP action ({httpsCertificate,ipAddressRange}):
+// both carry an httpsCertificate rule, so a "has cert" test would confuse them.
+func actionMatchesRuleTypes(action map[string]any, want []string) bool {
+	got := actionRuleTypes(action)
+	if len(got) != len(want) {
+		return false
+	}
+	set := make(map[string]int, len(got))
+	for _, g := range got {
+		set[g]++
+	}
+	for _, w := range want {
+		if set[w] == 0 {
+			return false
+		}
+		set[w]--
+	}
+	return true
+}
+
+// selfServiceActionName documents the shared AND action (matching is on the rule
+// fingerprint, never the name).
+func selfServiceActionName(idTypes []string) string {
+	return "Identify & Authorize (" + strings.Join(idTypes, "+") + ") (labctl)"
+}
+
+// ensureSelfServiceIdentifyAction finds the shared AND(idTypes) IAM action by its
+// exact rule-type fingerprint or creates it, and returns its id. The body is
+// fixed for a given idTypes, so a present action is reused as-is (no PUT) — same
+// shared-action discipline as ensureMtlsIdentifyAction (avoids action sprawl).
+func (a *Adapter) ensureSelfServiceIdentifyAction(ctx context.Context, idTypes []string) (string, error) {
+	actions, err := a.listPolicyActions(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, act := range actions {
+		if actionMatchesRuleTypes(act, idTypes) {
+			if id, _ := act["id"].(string); id != "" {
+				return id, nil // converged — idempotent no-op
+			}
+		}
+	}
+	url := a.adminPath("/policyActions")
+	code, raw, err := a.sendJSON(ctx, http.MethodPost, url, identifyAndActionBody("", selfServiceActionName(idTypes), idTypes))
+	if err != nil {
+		return "", fmt.Errorf("self-service identify: create AND action: %w", err)
+	}
+	if code != http.StatusCreated && code != http.StatusOK {
+		return "", fmt.Errorf("self-service identify: create AND action: expected 200/201, got %d: %s", code, truncate(raw, 300))
+	}
+	id := parsePolicyActionID(raw)
+	if id == "" {
+		return "", fmt.Errorf("self-service identify: create AND action: response carries no id: %s", truncate(raw, 300))
+	}
+	return id, nil
+}
+
+// ensureSelfServiceIdentify poses the AND(idTypes) Identify & Authorize action on
+// the API's SERVICE policy and attaches it to the IAM stage — the enforcement
+// that OPPOSES the consumer's cert/IP identifiers (posed-but-inert without it:
+// the fail-open of ADR-078). Idempotent: converges once the stage references the
+// action, and reuses attachIAMStage + the read-back proof from the inbound-auth
+// path. A no-op when idTypes is empty.
+func (a *Adapter) ensureSelfServiceIdentify(ctx context.Context, apiID string, idTypes []string) error {
+	if len(idTypes) == 0 {
+		return nil
+	}
+	rec, err := a.getAPI(ctx, apiID)
+	if err != nil {
+		return fmt.Errorf("self-service identify: %w", err)
+	}
+	policyID, policy, err := a.findServicePolicy(ctx, rec.Policies)
+	if err != nil {
+		return err
+	}
+	actionID, err := a.ensureSelfServiceIdentifyAction(ctx, idTypes)
+	if err != nil {
+		return err
+	}
+	if policyIAMReferences(policy, actionID) {
+		return nil // converged
+	}
+	if err := a.attachIAMStage(ctx, apiID, policyID, policy, actionID); err != nil {
+		return err
+	}
+	after, err := a.getPolicy(ctx, policyID)
+	if err != nil {
+		return fmt.Errorf("self-service identify: read-back after attach: %w", err)
+	}
+	if !policyIAMReferences(after, actionID) {
+		return fmt.Errorf("self-service identify: policy %s does not reference action %s in the %s stage after attach", policyID, actionID, stageIAM)
+	}
+	return nil
+}
+
+// selfServiceIdTypes derives the identification dimensions to enforce from the
+// consumer's DECLARED identity: oAuth2Token when the OAuth2 path is on (so the
+// existing token gate is never weakened), plus httpsCertificate and/or
+// ipAddressRange for each identifier the consumer actually carries. Order is
+// stable so re-apply hits the same shared action.
+func (a *Adapter) selfServiceIdTypes(spec *adapter.ConsumerSpec) []string {
+	var t []string
+	if a.inbound.oauth2Enabled() {
+		t = append(t, "oAuth2Token")
+	}
+	if strings.TrimSpace(spec.PublicCertRef) != "" {
+		t = append(t, identificationTypeCert)
+	}
+	if len(dedup(spec.IPAllowlist)) > 0 {
+		t = append(t, identificationTypeIP)
+	}
+	return t
 }

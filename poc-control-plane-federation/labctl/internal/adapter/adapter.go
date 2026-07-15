@@ -196,6 +196,15 @@ type ConsumerSpec struct {
 	// identifier (key "httpsCertificate", identity match). Only PUBLIC material
 	// is accepted; a PEM carrying a PRIVATE KEY is rejected (never in Git).
 	PublicCertRef string
+
+	// EnforceInboundIdentifiers OPPOSES the declared cert/IP identifiers by posing
+	// the AND identification action on the API's IAM stage (ADR-078). Opt-in:
+	// default false keeps the historical "posed-but-inert" behaviour (an identifier
+	// written on the application but never enforced — the fail-open). When true,
+	// webMethods poses AND(oAuth2Token?, httpsCertificate?, ipAddressRange?) — one
+	// rule per declared dimension — so a caller missing any is rejected at IAM.
+	// Ignored by gateways without per-application identifier enforcement.
+	EnforceInboundIdentifiers bool
 }
 
 // ConsumerResult is the uniform outcome of CreateConsumer for one gateway.

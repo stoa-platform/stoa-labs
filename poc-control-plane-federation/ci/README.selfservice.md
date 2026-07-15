@@ -45,6 +45,13 @@ $ python3 scripts/apply-selfservice-application.py \
 - **Handshake mTLS complet** `AND(cert, IP)` : la branche IP est prouvée en
   isolation (403). Le certificat exige le **listener HTTPS client-auth** pour être
   testé de bout en bout — étape suivante (la règle `AND` est déjà posée).
+- **Certificat client de l'app (versions de fix touchées par le bug de hash
+  base64)** : l'API REST de l'identifier `httpsCertificate` refuse le binaire brut
+  (400) et n'accepte que base64/PEM (stockés verbatim). Sur les versions de la
+  gateway où le hash de vérification du certif en base64 est bugué (intermittent),
+  le cert de l'app se pose **manuellement dans l'UI** (export `.cer` binaire
+  Windows → upload Designer). labctl le pose en REST best-effort sur les versions
+  saines ; la plage IP et la clé backend restent 100 % REST.
 - **Identité voie A (LDAP)** : la démo réutilise la chaîne **Keycloak** nominative
   (ADR-077, 24/24). Chez le client, remplacer le bloc `auth/jwt/login` du
   Jenkinsfile par `auth/ldap/login/<user>` (un seul bloc à swapper — commenté).
