@@ -18,12 +18,19 @@ VÉRIFIÉE côté Go (`labctl/internal/adapter/webmethods`, mémoire projet
 
 ## Ce qui est prouvé live (10.15 réelle)
 
+**Plan ENTRANT** (`tasks/main.yml`) :
 - App + identifier `ipAddressRange` + règle IAM `AND(ipAddressRange)` posés,
   **idempotents** (re-run = no-op ; find par **empreinte de règles** — la gateway
   force le nom « Identify & Authorize », donc jamais de match par nom).
 - **Fail-open fermé** : IP hors plage → **403**, IP autorisée → **200**.
-- `verify` **fail-closed** : `ENFORCEMENT_CONFIRMED` (le stage IAM oppose bien
-  l'action AND) + preuve data-plane 200 en enforce IP-only.
+
+**Plan SORTANT** (`tasks/backend.yml`, P-callout) :
+- Request Transformation `customHttpHeaders` posée au stage routing (idempotence
+  clé sur l'action déjà attachée → **une seule** par API, pas de 409). Prouvé
+  live : le backend (token-echo) **reçoit le header injecté**.
+
+`verify` **fail-closed** : `ENFORCEMENT_CONFIRMED` (le stage IAM oppose l'action
+AND) + `OUTBOUND_CONFIRMED` (customHttpHeaders au routing) + preuve data-plane 200.
 
 ## Usage
 
@@ -57,8 +64,11 @@ bearer OAuth2, pas Basic direct ; les creds admin sont lus dans **Vault**
   **manuellement dans l'UI** (export `.cer` binaire) — le REST refuse le binaire
   (400). `AND(cert,IP)` ne se teste pas en clair (cert non présenté → 401) : il
   exige le listener HTTPS client-auth.
-- **Plan SORTANT (clé backend, P-callout)** : PAS encore dans ce rôle v1 —
-  section `tasks/backend.yml` à ajouter (callout transport + `customHttpHeaders`),
-  résolution Vault par le package IS TokenProvider (résidu Designer).
+- **Plan SORTANT (clé backend, P-callout)** : `tasks/backend.yml` POSE le câblage
+  (`customHttpHeaders headerValue=${backend_apikey}`). La **valeur** est résolue au
+  runtime par le package IS **TokenProvider ← Vault** (déploiement Designer = résidu
+  manuel) ; pour un test hors TokenProvider, mettre `backend.value_template` à un
+  littéral (prouvé : atterrit au backend). Le callout transport qui alimente
+  `${backend_apikey}` n'est PAS posé par ce rôle (dépend du package IS).
 - **CIDR** : rejeté fail-closed (à convertir en range via `ansible.utils.ipaddr`
   en évolution).
