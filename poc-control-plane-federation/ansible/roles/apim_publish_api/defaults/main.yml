@@ -24,6 +24,20 @@ apim_ss_vault_prefix: "stoa"
 apim_ss_vault_wm_creds_sub: "gateways/webmethods"
 apim_ss_vault_oauth_sub: "gateways/webmethods/admin-oauth"
 
+# --- IS-ADMIN : allow-list d'un port en Deny-by-Default (tasks/port-access.yml) ---
+# Surface DIFFÉRENTE de l'API d'admin apigateway : c'est l'Access Mode du listener
+# Integration Server (Security > Ports > Access Mode), piloté par le form WmRoot.
+# Opt-in : n'agit QUE si apim_ss_port_manage=true (là où le port data-plane est en
+# Deny-by-Default). Ne flippe JAMAIS le mode (le passage en Deny se fait à la
+# création de l'env, côté client) — on ne fait qu'AJOUTER l'entrée de l'API.
+apim_ss_port_manage: false
+apim_ss_isadmin_base: "http://localhost:5555/WmRoot"   # client : proxifié ou direct
+apim_ss_port_alias: "HTTPListener@5555"                # le listener data-plane concerné
+apim_ss_port_listener_type: "Regular"
+# Entrée à autoriser = référence de SERVICE IS (folder:service). Le port rejette les
+# URLs data-plane ; le mapping API→service dépend du dispatch gateway du client.
+apim_ss_port_allow_entry: ""
+
 # --- l'API à publier --------------------------------------------------------
 apim_api:
   name: "accounts-read"
