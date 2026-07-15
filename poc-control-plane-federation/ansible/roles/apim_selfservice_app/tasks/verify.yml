@@ -129,9 +129,12 @@
         success_msg: "OUTBOUND_CONFIRMED : injection clé backend (customHttpHeaders) posée au stage routing."
       when: "apim_ss_app.enforce | length > 0 and (apim_ss_app.backend.header | default('')) | length > 0"
 
-    # ----- preuve LIVE data-plane, uniquement en enforce IP-only ------------
-    # Appel CONSOMMATEUR (anonyme, l'IP identifie) : override des defaults admin —
-    # jamais l'auth d'admin sur le data-plane. On garde SEULEMENT X-Environment.
+    # ----- preuve LIVE data-plane (OPTIONNELLE) -----------------------------
+    # Appel CONSOMMATEUR anonyme (l'IP identifie) -> 200. N'a de sens que si l'IP
+    # de l'APPELANT est dans l'allowlist : vrai depuis un poste connu, FAUX depuis
+    # un agent CI (IP différente). D'où le flag apim_ss_verify_dataplane (défaut
+    # false) : la preuve fail-closed STRUCTURELLE (ENFORCEMENT/OUTBOUND_CONFIRMED)
+    # reste toujours active ; ce check live ne s'ajoute que sur demande.
     - name: "Verify (live IP-only) : appel data-plane depuis une IP autorisée -> 200"
       ansible.builtin.uri:
         url: "{{ apim_ss_data_base }}/{{ apim_ss_app.api }}/{{ apim_ss_app.api_version }}/accounts"
@@ -142,4 +145,6 @@
         password: "{{ omit }}"
       register: v_dp
       changed_when: false
-      when: "apim_ss_app.enforce == ['ipAddressRange']"
+      when:
+        - "apim_ss_app.enforce == ['ipAddressRange']"
+        - "apim_ss_verify_dataplane | default(false) | bool"
