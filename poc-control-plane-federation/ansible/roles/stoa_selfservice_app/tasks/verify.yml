@@ -117,6 +117,23 @@
         success_msg: "ENFORCEMENT_CONFIRMED : AND({{ stoa_ss_app.enforce | join('+') }}) opposé au stage IAM."
       when: "stoa_ss_app.enforce | length > 0"
 
+    # ----- plan SORTANT : la Request Transformation est-elle posée ? --------
+    - name: "Verify : ids du stage routing + customHttpHeaders (plan sortant)"
+      ansible.builtin.set_fact:
+        v_routing_ids: >-
+          {{ (v_pol_get.json.policy | default(v_pol_get.json)).policyEnforcements | default([])
+             | selectattr('stageKey', 'equalto', 'routing') | map(attribute='enforcements') | flatten
+             | map(attribute='enforcementObjectId') | list }}
+        v_customhdr_ids: "{{ v_actions.json.policyAction | default([]) | selectattr('templateKey', 'equalto', 'customHttpHeaders') | map(attribute='id') | list }}"
+      when: "stoa_ss_app.enforce | length > 0 and (stoa_ss_app.backend.header | default('')) | length > 0"
+
+    - name: "Verify : FAIL-CLOSED — la clé backend est injectée (customHttpHeaders au routing)"
+      ansible.builtin.assert:
+        that: "(v_customhdr_ids | select('in', v_routing_ids) | list) | length > 0"
+        fail_msg: "OUTBOUND_UNCONFIRMED : aucun customHttpHeaders attaché au routing — clé backend non injectée."
+        success_msg: "OUTBOUND_CONFIRMED : injection clé backend (customHttpHeaders) posée au stage routing."
+      when: "stoa_ss_app.enforce | length > 0 and (stoa_ss_app.backend.header | default('')) | length > 0"
+
     # ----- preuve LIVE data-plane, uniquement en enforce IP-only ------------
     - name: "Verify (live IP-only) : appel data-plane depuis une IP autorisée -> 200"
       ansible.builtin.uri:

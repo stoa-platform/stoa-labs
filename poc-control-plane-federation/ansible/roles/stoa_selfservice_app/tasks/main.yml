@@ -238,3 +238,8 @@
                 method: PUT
                 body: { policy: "{{ ss_pol_new }}" }
                 status_code: [200, 201]
+
+    # ===== 5. Plan SORTANT : injection de la clé backend (P-callout) ==========
+    - name: "Backend : injection de la clé backend (customHttpHeaders)"
+      ansible.builtin.import_tasks: backend.yml
+      when: "(stoa_ss_app.backend.header | default('')) | length > 0"
