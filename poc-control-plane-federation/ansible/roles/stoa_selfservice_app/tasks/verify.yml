@@ -10,17 +10,12 @@
 
 - name: "Verify — self-service application '{{ stoa_ss_app.name }}'"
   module_defaults:
-    ansible.builtin.uri:
-      user: "{{ stoa_ss_wm_user }}"
-      password: "{{ stoa_ss_wm_password }}"
-      force_basic_auth: true
-      headers: { Accept: "application/json" }
-      body_format: json
+    ansible.builtin.uri: "{{ stoa_ss_uri_defaults }}"
   block:
 
     - name: "Verify : relire l'application"
       ansible.builtin.uri:
-        url: "{{ stoa_ss_admin_url }}/rest/apigateway/applications"
+        url: "{{ stoa_ss_api_base }}/applications"
       register: v_apps
       changed_when: false
 
@@ -36,7 +31,7 @@
 
     - name: "Verify : relire le record de l'app"
       ansible.builtin.uri:
-        url: "{{ stoa_ss_admin_url }}/rest/apigateway/applications/{{ v_app_id }}"
+        url: "{{ stoa_ss_api_base }}/applications/{{ v_app_id }}"
       register: v_app_get
       changed_when: false
 
@@ -54,7 +49,7 @@
     # ----- l'enforcement est-il RÉELLEMENT posé sur la policy de l'API ? -----
     - name: "Verify : résoudre l'API + sa policy + l'action IAM nommée"
       ansible.builtin.uri:
-        url: "{{ stoa_ss_admin_url }}/rest/apigateway/apis"
+        url: "{{ stoa_ss_api_base }}/apis"
       register: v_apis
       changed_when: false
 
@@ -67,7 +62,7 @@
 
     - name: "Verify : id de l'action IAM nommée"
       ansible.builtin.uri:
-        url: "{{ stoa_ss_admin_url }}/rest/apigateway/policyActions"
+        url: "{{ stoa_ss_api_base }}/policyActions"
       register: v_actions
       changed_when: false
 
@@ -86,7 +81,7 @@
 
     - name: "Verify : GET API -> policy id"
       ansible.builtin.uri:
-        url: "{{ stoa_ss_admin_url }}/rest/apigateway/apis/{{ v_api_id }}"
+        url: "{{ stoa_ss_api_base }}/apis/{{ v_api_id }}"
       register: v_api_get
       changed_when: false
       when: "stoa_ss_app.enforce | length > 0"
@@ -97,7 +92,7 @@
 
     - name: "Verify : GET policy"
       ansible.builtin.uri:
-        url: "{{ stoa_ss_admin_url }}/rest/apigateway/policies/{{ v_pol_id }}"
+        url: "{{ stoa_ss_api_base }}/policies/{{ v_pol_id }}"
       register: v_pol_get
       changed_when: false
       when: "stoa_ss_app.enforce | length > 0"
@@ -135,10 +130,16 @@
       when: "stoa_ss_app.enforce | length > 0 and (stoa_ss_app.backend.header | default('')) | length > 0"
 
     # ----- preuve LIVE data-plane, uniquement en enforce IP-only ------------
+    # Appel CONSOMMATEUR (anonyme, l'IP identifie) : override des defaults admin —
+    # jamais l'auth d'admin sur le data-plane. On garde SEULEMENT X-Environment.
     - name: "Verify (live IP-only) : appel data-plane depuis une IP autorisée -> 200"
       ansible.builtin.uri:
-        url: "{{ stoa_ss_admin_url }}/gateway/{{ stoa_ss_app.api }}/{{ stoa_ss_app.api_version }}/accounts"
+        url: "{{ stoa_ss_data_base }}/{{ stoa_ss_app.api }}/{{ stoa_ss_app.api_version }}/accounts"
         status_code: [200]
+        headers: "{{ {stoa_ss_env_header: stoa_ss_env} if (stoa_ss_env | length > 0) else {} }}"
+        force_basic_auth: false
+        user: "{{ omit }}"
+        password: "{{ omit }}"
       register: v_dp
       changed_when: false
       when: "stoa_ss_app.enforce == ['ipAddressRange']"

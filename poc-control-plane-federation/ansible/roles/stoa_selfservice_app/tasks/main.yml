@@ -12,18 +12,13 @@
 
 - name: "Converge — self-service application '{{ stoa_ss_app.name }}'"
   module_defaults:
-    ansible.builtin.uri:
-      user: "{{ stoa_ss_wm_user }}"
-      password: "{{ stoa_ss_wm_password }}"
-      force_basic_auth: true
-      headers: { Accept: "application/json" }
-      body_format: json
+    ansible.builtin.uri: "{{ stoa_ss_uri_defaults }}"
   block:
 
     # ===== 1. Résoudre l'API publiée =========================================
     - name: "API : lister"
       ansible.builtin.uri:
-        url: "{{ stoa_ss_admin_url }}/rest/apigateway/apis"
+        url: "{{ stoa_ss_api_base }}/apis"
       register: ss_apis
       changed_when: false
 
@@ -43,7 +38,7 @@
     # ===== 2. Application (find-or-create) ====================================
     - name: "App : lister"
       ansible.builtin.uri:
-        url: "{{ stoa_ss_admin_url }}/rest/apigateway/applications"
+        url: "{{ stoa_ss_api_base }}/applications"
       register: ss_apps
       changed_when: false
 
@@ -55,7 +50,7 @@
 
     - name: "App : créer si absente"
       ansible.builtin.uri:
-        url: "{{ stoa_ss_admin_url }}/rest/apigateway/applications"
+        url: "{{ stoa_ss_api_base }}/applications"
         method: POST
         body:
           name: "{{ stoa_ss_app.name }}"
@@ -74,7 +69,7 @@
 
     - name: "App : associer à l'API (idempotent)"
       ansible.builtin.uri:
-        url: "{{ stoa_ss_admin_url }}/rest/apigateway/applications/{{ ss_app_id }}/apis"
+        url: "{{ stoa_ss_api_base }}/applications/{{ ss_app_id }}/apis"
         method: PUT
         body: { apiIDs: ["{{ ss_api_id }}"] }
         status_code: [200, 201]
@@ -115,7 +110,7 @@
 
     - name: "App : relire le record complet (read-modify-write)"
       ansible.builtin.uri:
-        url: "{{ stoa_ss_admin_url }}/rest/apigateway/applications/{{ ss_app_id }}"
+        url: "{{ stoa_ss_api_base }}/applications/{{ ss_app_id }}"
       register: ss_app_get
       changed_when: false
 
@@ -132,7 +127,7 @@
                   (ss_app_rec.identifiers | default([]) | rejectattr('key', 'in', ['httpsCertificate', 'ipAddressRange']) | list)
                   + ss_desired_ids }) }}
         - ansible.builtin.uri:
-            url: "{{ stoa_ss_admin_url }}/rest/apigateway/applications/{{ ss_app_id }}"
+            url: "{{ stoa_ss_api_base }}/applications/{{ ss_app_id }}"
             method: PUT
             body: "{{ ss_app_merged }}"
             status_code: [200, 201]
@@ -141,7 +136,7 @@
     # Ferme le fail-open : sans cette règle, les identifiers sont écrits mais inertes.
     - name: "IAM : liste des policyActions"
       ansible.builtin.uri:
-        url: "{{ stoa_ss_admin_url }}/rest/apigateway/policyActions"
+        url: "{{ stoa_ss_api_base }}/policyActions"
       register: ss_actions
       changed_when: false
 
@@ -174,7 +169,7 @@
 
     - name: "IAM : créer l'action AND({{ stoa_ss_app.enforce | join('+') }}) si absente"
       ansible.builtin.uri:
-        url: "{{ stoa_ss_admin_url }}/rest/apigateway/policyActions"
+        url: "{{ stoa_ss_api_base }}/policyActions"
         method: POST
         body:
           policyAction:
@@ -196,7 +191,7 @@
     # ----- attacher l'action à la policy SERVICE de l'API (stage IAM) --------
     - name: "Policy : GET de l'API (pour ses policies)"
       ansible.builtin.uri:
-        url: "{{ stoa_ss_admin_url }}/rest/apigateway/apis/{{ ss_api_id }}"
+        url: "{{ stoa_ss_api_base }}/apis/{{ ss_api_id }}"
       register: ss_api_get
       changed_when: false
       when: "stoa_ss_app.enforce | length > 0"
@@ -210,7 +205,7 @@
       when: "stoa_ss_app.enforce | length > 0 and ss_pol_id | length > 0"
       block:
         - ansible.builtin.uri:
-            url: "{{ stoa_ss_admin_url }}/rest/apigateway/policies/{{ ss_pol_id }}"
+            url: "{{ stoa_ss_api_base }}/policies/{{ ss_pol_id }}"
           register: ss_pol_get
           changed_when: false
 
@@ -234,7 +229,7 @@
                       [{'stageKey': 'IAM', 'enforcements': [{'enforcementObjectId': ss_iam_id, 'order': none}]}]
                       + (ss_pol.policyEnforcements | default([]) | rejectattr('stageKey', 'equalto', 'IAM') | list) }) }}
             - ansible.builtin.uri:
-                url: "{{ stoa_ss_admin_url }}/rest/apigateway/policies/{{ ss_pol_id }}"
+                url: "{{ stoa_ss_api_base }}/policies/{{ ss_pol_id }}"
                 method: PUT
                 body: { policy: "{{ ss_pol_new }}" }
                 status_code: [200, 201]
