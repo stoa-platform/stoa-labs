@@ -1,0 +1,14 @@
+---
+# Manifeste de demande (format rôle apim_selfservice_app). L'infra (base, env,
+# auth, chemins Vault) est surchargée par le pipeline / group_vars — ici, la
+# DEMANDE seule.
+apim_ss_app:
+  name: "demo-consumer"
+  api: "demo-selfservice"
+  api_version: "1.0.0"
+  description: "ADR-078 self-service (rôle Ansible via Jenkins)"
+  contact_emails: ["demo@bank.invalid"]
+  ip_allowlist: ["192.168.65.1"]
+  public_cert_ref: ""
+  backend: { header: "apikey", value_template: "${backend_apikey}" }
+  enforce: ["ipAddressRange"]
