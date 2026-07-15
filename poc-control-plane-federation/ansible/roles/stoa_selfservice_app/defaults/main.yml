@@ -1,0 +1,41 @@
+---
+# roles/stoa_selfservice_app/defaults/main.yml
+#
+# Self-service de création d'application consommatrice (ADR-078), 100 % Ansible :
+# Ansible fait l'orchestration ET la mutation gateway (module uri) — pour ce
+# client, le moteur Go labctl est parqué (contrainte de provenance). Les shapes
+# REST et la logique d'idempotence/fail-closed sont la SPEC VÉRIFIÉE côté Go
+# (mémoire wm-1015-rest-shapes ; preuve Python 9/9 + tests Go).
+
+# --- endpoint admin gateway -------------------------------------------------
+# Chez le client : le PROXY wm-admin-{env} (ADR-075) + bearer OAuth2, pas Basic.
+stoa_ss_admin_url: "http://localhost:5555"
+stoa_ss_wm_user: "Administrator"
+stoa_ss_wm_password: "manage"          # écrasé par Vault (tasks/secrets.yml)
+
+# --- Vault (mêmes conventions que is-mtls-setup.yml / internal/vault) --------
+stoa_ss_vault_addr: "{{ lookup('env', 'VAULT_ADDR') }}"
+stoa_ss_vault_kv_mount: "secret"
+stoa_ss_vault_prefix: "stoa"
+stoa_ss_vault_wm_creds_sub: "gateways/webmethods"     # { username, password }
+
+# --- la demande d'application à converger -----------------------------------
+# Une seule ici ; en réel : boucler sur une liste OU charger un manifeste
+# (clients/<x>/applications/*.json) via lookup('file') | from_json.
+stoa_ss_app:
+  name: "demo-consumer"
+  api: "demo-selfservice"
+  api_version: "1.0.0"
+  description: "ADR-078 self-service application (Ansible)"
+  contact_emails: []
+  # Identité ENTRANTE (identifiers de l'asset application) :
+  ip_allowlist: []              # ex. ["192.168.65.1", "10.0.0.1-10.0.0.5"] (single|A-B ; PAS de CIDR — cf. README)
+  public_cert_ref: ""          # chemin vers un PEM PUBLIC (ou "")
+  # Plan SORTANT (P-callout) : header de clé backend injecté vers l'amont.
+  backend:
+    header: "apikey"
+    value_template: "${backend_apikey}"   # résolu au runtime par le TokenProvider IS ← Vault
+  # Dimensions à OPPOSER par la règle IAM AND (strict) — ferme le fail-open.
+  # Sous-ensemble de ["httpsCertificate", "ipAddressRange"]. Vide = pose les
+  # identifiers SANS règle IAM (comportement historique inerte — À ÉVITER).
+  enforce: []

@@ -1,0 +1,9 @@
+---
+# ansible/selfservice-app-verify.yml — preuve FAIL-CLOSED rejouable (critère d'acceptation).
+- name: "Self-service application — verify fail-closed (ADR-078)"
+  hosts: webmethods
+  gather_facts: false
+  tasks:
+    - ansible.builtin.include_role:
+        name: stoa_selfservice_app
+        tasks_from: verify
