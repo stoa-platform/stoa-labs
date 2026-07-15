@@ -5,5 +5,5 @@
   gather_facts: false
   tasks:
     - ansible.builtin.include_role:
-        name: stoa_selfservice_app
+        name: apim_selfservice_app
         tasks_from: verify

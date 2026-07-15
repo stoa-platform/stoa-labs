@@ -1,5 +1,5 @@
 ---
-# roles/stoa_selfservice_app/defaults/main.yml
+# roles/apim_selfservice_app/defaults/main.yml
 #
 # Self-service de création d'application consommatrice (ADR-078), 100 % Ansible :
 # Ansible fait l'orchestration ET la mutation gateway (module uri) — pour ce
@@ -10,41 +10,41 @@
 # --- endpoint de l'API d'ADMIN (les tâches ne portent QUE la ressource) ------
 # La base INCLUT le préfixe : en direct PoC = .../rest/apigateway ; chez le
 # client = le PROXY qui le mappe (et l'authentifie en OAuth2, cf. auth_mode).
-stoa_ss_api_base: "http://localhost:5555/rest/apigateway"
+apim_ss_api_base: "http://localhost:5555/rest/apigateway"
 # data-plane (appel consommateur du verify live IP-only)
-stoa_ss_data_base: "http://localhost:5555/gateway"
+apim_ss_data_base: "http://localhost:5555/gateway"
 
 # --- proxy multi-env on-premise : un seul endpoint, l'env via un header -------
-stoa_ss_env: ""                       # dev|rec|int|prod ; vide = pas de header (PoC direct)
-stoa_ss_env_header: "X-Environment"   # nom du header (configurable)
+apim_ss_env: ""                       # dev|rec|int|prod ; vide = pas de header (PoC direct)
+apim_ss_env_header: "X-Environment"   # nom du header (configurable)
 
 # --- authentification de l'API d'admin ---------------------------------------
 #   basic  : user/mot de passe (PoC direct) — lus dans Vault, fallback manage.
 #   oauth2 : bearer client_credentials (proxy client) — token récupéré au runtime
 #            et passé en Authorization: Bearer sur chaque appel.
-stoa_ss_auth_mode: "basic"            # basic | oauth2
+apim_ss_auth_mode: "basic"            # basic | oauth2
 
 # basic (fallback PoC)
-stoa_ss_wm_user: "Administrator"
-stoa_ss_wm_password: "manage"
+apim_ss_wm_user: "Administrator"
+apim_ss_wm_password: "manage"
 
 # oauth2 (creds de préférence depuis Vault ; sinon ces vars)
-stoa_ss_oauth_token_url: ""
-stoa_ss_oauth_client_id: ""
-stoa_ss_oauth_client_secret: ""
-stoa_ss_oauth_scope: ""
+apim_ss_oauth_token_url: ""
+apim_ss_oauth_client_id: ""
+apim_ss_oauth_client_secret: ""
+apim_ss_oauth_scope: ""
 
 # --- Vault (mêmes conventions que is-mtls-setup.yml / internal/vault) --------
-stoa_ss_vault_addr: "{{ lookup('env', 'VAULT_ADDR') }}"
-stoa_ss_vault_kv_mount: "secret"
-stoa_ss_vault_prefix: "stoa"
-stoa_ss_vault_wm_creds_sub: "gateways/webmethods"           # basic  : { username, password }
-stoa_ss_vault_oauth_sub: "gateways/webmethods/admin-oauth"  # oauth2 : { token_url, client_id, client_secret, scope }
+apim_ss_vault_addr: "{{ lookup('env', 'VAULT_ADDR') }}"
+apim_ss_vault_kv_mount: "secret"
+apim_ss_vault_prefix: "stoa"
+apim_ss_vault_wm_creds_sub: "gateways/webmethods"           # basic  : { username, password }
+apim_ss_vault_oauth_sub: "gateways/webmethods/admin-oauth"  # oauth2 : { token_url, client_id, client_secret, scope }
 
 # --- la demande d'application à converger ------------------------------------
 # Une seule ici ; en réel : boucler sur une liste OU charger un manifeste
 # (clients/<x>/applications/*.json) via lookup('file') | from_json.
-stoa_ss_app:
+apim_ss_app:
   name: "demo-consumer"
   api: "demo-selfservice"
   api_version: "1.0.0"
