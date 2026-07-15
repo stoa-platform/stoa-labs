@@ -82,7 +82,12 @@
       changed_when: false
       failed_when: "not (pub_api_after.json.apiResponse.api.isActive | default(false))"
 
-    # ===== 3. Scoping équipe (optionnel, ADR-076) ============================
+    # ===== 3. Allow-list du port Deny-by-Default (IS-admin, opt-in) ==========
+    - name: "Port : ajouter l'API à l'allow-list du listener (Deny-by-Default)"
+      ansible.builtin.import_tasks: port-access.yml
+      when: "apim_ss_port_manage | default(false) | bool"
+
+    # ===== 4. Scoping équipe (optionnel, ADR-076) ============================
     - name: "Team : scoping par équipe"
       ansible.builtin.import_tasks: team.yml
       when: "(apim_api.team | default('')) | length > 0"

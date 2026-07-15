@@ -56,6 +56,39 @@ matérialise l'issuer `…/stoa-lab` sur l'alias, `=staging` → refus.
 Charger le manifeste par **CHEMIN** (`-e apim_ss_manifest=<fichier>` → `include_vars`),
 **jamais `-e @fichier`** (extra-var : masquerait la fusion). `apim_ss_env` reste extra-var.
 
+## Port en Deny-by-Default : allow-list (IS-admin, opt-in) — prouvé live
+
+Chez le client, le **port data-plane est en Deny-by-Default** : chaque API publiée
+doit être **ajoutée à l'allow-list du port**. C'est l'**Access Mode du listener
+Integration Server** (`Security > Ports > Access Mode`) — une surface DIFFÉRENTE de
+l'API d'admin apigateway (le REST `/ports` ne l'expose pas), pilotée par le form
+WmRoot `security-ports-editaccess.dsp`. `tasks/port-access.yml` (opt-in
+`apim_ss_port_manage=true`, importé après l'activate) fait **read → add idempotent
+→ read-back fail-closed** (`PORT_ALLOWLIST_CONFIRMED`). Prouvé live (10.15) :
+add depuis vide, skip idempotent au re-run, retrait, sans CSRF token.
+
+Pour la **création d'environnement** (autoriser plusieurs services d'un coup) :
+play standalone `ansible/is-port-access.yml` (`-e apim_ss_port_allow_entries=[…]`).
+
+| Var | Rôle | Défaut |
+|---|---|---|
+| `apim_ss_port_manage` | active l'étape (là où le port est Deny-by-Default) | `false` |
+| `apim_ss_isadmin_base` | surface IS-admin WmRoot (client : proxifié ou direct) | `http://localhost:5555/WmRoot` |
+| `apim_ss_port_alias` | listener concerné | `HTTPListener@5555` |
+| `apim_ss_port_allow_entry` | entrée à autoriser = **référence de service IS `folder:service`** de l'API | `""` |
+
+**À valider / caveats :**
+- **`folder:service` uniquement** : le port **REJETTE les URLs data-plane** (`/gateway/…`
+  testé, silencieusement droppé) — l'allow-list est par SERVICE IS. Le **mapping
+  API → service** dépend du dispatch gateway du client (d'où `apim_ss_port_allow_entry`
+  paramétrable). À confirmer sur l'IS du client quel service sert le data-plane.
+- **Le mode n'est JAMAIS flippé** par le rôle (risque de **lockout** du data-plane) :
+  le passage en Deny-by-Default est fait à la **création de l'env** côté client ; le
+  rôle ne fait qu'AJOUTER l'entrée.
+- **CSRF** : sur ce trial le guard IS-admin est OFF (le POST passe sans token). Si le
+  client a le **CSRF guard activé** sur l'admin IS, le form POST exigera un token
+  (à récupérer par cookie/page) — extension à prévoir.
+
 ## Limites / à valider
 
 - **Team scoping** (`team.yml`) : **NON testé live** (le lab n'a pas d'accessProfile
