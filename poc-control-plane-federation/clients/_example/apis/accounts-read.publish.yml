@@ -1,0 +1,12 @@
+---
+# Manifeste de publication (vars du rôle apim_publish_api).
+apim_api:
+  name: "accounts-read-ans"
+  version: "1.0.0"
+  contract: "{{ playbook_dir }}/../apis/accounts-read.openapi.yaml"
+  team: ""
+  inbound:
+    issuer: "http://localhost:8480/realms/stoa-lab"
+    jwks_uri: "http://keycloak:8080/realms/stoa-lab/protocol/openid-connect/certs"
+    alias_name: "BankAuth-demo"
+    mode: "jwt"
