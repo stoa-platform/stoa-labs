@@ -5,6 +5,9 @@
 # bruyamment si l'app n'oppose pas ce que sa demande exige. Read-only, self-
 # contained (re-résout tout), pour tourner indépendamment du converge.
 
+- name: "Env : résoudre le manifeste effectif (identité invariante ⊕ per_env)"
+  ansible.builtin.import_tasks: resolve-env.yml
+
 - name: "Secrets : creds admin gateway (Vault, fallback PoC)"
   ansible.builtin.import_tasks: secrets.yml
 

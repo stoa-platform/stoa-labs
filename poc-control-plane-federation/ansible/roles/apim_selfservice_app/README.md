@@ -74,15 +74,41 @@ ansible-playbook -i inv.ini ansible/selfservice-app.yml \
 Creds (basic OU oauth2) lus dans **Vault** (`tasks/secrets.yml`), fallback PoC
 total sans `VAULT_ADDR`.
 
+## Multi-environnement (`per_env`) — prouvé live
+
+Sur chaque env, l'**IP source, le certificat client et la clé backend diffèrent**,
+alors que l'identité de l'app (`name`/`api`/`enforce`/nom du header) est INVARIANTE.
+Le manifeste porte donc l'invariant à la racine et les valeurs qui changent sous
+`per_env: { dev: {...}, rec: {...}, int: {...}, prod: {...} }`. Le rôle
+(`tasks/resolve-env.yml`) calcule le **manifeste effectif = racine ⊕ per_env[env]**
+(fusion récursive) selon `apim_ss_env`. Le proxy d'admin, lui, reste un endpoint
+unique : c'est le header `X-Environment` (piloté par le même `apim_ss_env`) qui
+route — pas une base différente.
+
+- **FAIL-CLOSED** : `per_env` déclaré ⇒ `apim_ss_env` doit être fourni ET présent
+  dans la liste, sinon **refus** (`ENV_UNDEFINED`) — on ne matérialise jamais une
+  identité (IP/cert) non définie pour l'env ciblé. Prouvé : `apim_ss_env=dev` pose
+  l'IP dev, `=prod` bascule l'identifier vers la plage prod, `=staging`/vide → refus.
+- **Chargement du manifeste** : passer un **CHEMIN** via `-e apim_ss_manifest=<fichier>`
+  (le rôle fait `include_vars`), **jamais `-e @fichier`** : un extra-var (précédence
+  22) masquerait le `set_fact` de fusion (19) et la surcharge `per_env` serait
+  silencieusement perdue. `apim_ss_env` reste, lui, un extra-var (l'ops choisit l'env).
+  Chemin repo-relatif résolu depuis `playbook_dir/..`, ou absolu.
+
+```bash
+ansible-playbook -i inv.ini ansible/selfservice-app.yml \
+  -e apim_ss_manifest=clients/acme/applications/svc-toto.yml -e apim_ss_env=prod
+```
+
 ## Le manifeste `apim_ss_app`
 
 | Champ | Rôle |
 |---|---|
-| `name`, `api`, `api_version` | application + API cible (publiée d'abord) |
-| `ip_allowlist` | IPs / plages `A-B` — **PAS de CIDR** (la gateway le drop en silence) ; une IP nue est normalisée en `X-X` (match exact + visible UI) |
-| `public_cert_ref` | chemin d'un PEM **public** (clé privée refusée) |
-| `enforce` | dimensions à OPPOSER, sous-ensemble de `["httpsCertificate","ipAddressRange"]` — **vide = identifiers inertes, à éviter** |
-| `backend` | header + template de clé backend (plan sortant, cf. limites) |
+| `name`, `api`, `api_version` | application + API cible (publiée d'abord) — INVARIANT |
+| `enforce` | dimensions à OPPOSER, sous-ensemble de `["httpsCertificate","ipAddressRange"]` — **vide = identifiers inertes, à éviter** — INVARIANT |
+| `backend` | header + template de clé backend (plan sortant, cf. limites) — INVARIANT (la valeur, elle, est résolue par env via le TokenProvider ← Vault de l'env) |
+| `per_env.<env>.ip_allowlist` | IPs / plages `A-B` — **PAS de CIDR** (la gateway le drop en silence) ; une IP nue est normalisée en `X-X` (match exact + visible UI) — **PAR ENV** |
+| `per_env.<env>.public_cert_ref` | chemin d'un PEM **public** (clé privée refusée) — **PAR ENV** |
 
 ## Limites / résidus (assumés, ADR-078)
 

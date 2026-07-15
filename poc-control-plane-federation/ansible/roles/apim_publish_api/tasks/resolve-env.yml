@@ -1,0 +1,56 @@
+---
+# roles/apim_publish_api/tasks/resolve-env.yml
+#
+# MULTI-ENV (ADR-078), pendant PRODUCTEUR de apim_selfservice_app/resolve-env.yml.
+# L'identité de l'API (name/version/contract) est INVARIANTE ; ce qui CHANGE par env,
+# c'est l'INBOUND — l'issuer/JWKS de l'IdP, l'audience et le client_id OAuth2 ne sont
+# pas les mêmes en dev/rec/int/prod. Ces valeurs vivent sous `per_env`.
+#
+# API EFFECTIVE = racine (sans per_env)  ⊕(récursif)  per_env[apim_ss_env].
+# FAIL-CLOSED : per_env déclaré ⇒ apim_ss_env fourni ET connu (sinon on publierait
+# une API qui valide les jetons du MAUVAIS émetteur — pire qu'un refus).
+#
+# CHARGEMENT : passer un CHEMIN via `apim_ss_manifest` (include_vars, précédence 18),
+# JAMAIS `-e @fichier` (extra-var 22 : il masquerait le set_fact de fusion).
+
+- name: "Env : charger le manifeste (chemin) — include_vars, pas extra-var"
+  ansible.builtin.include_vars: >-
+    {{ apim_ss_manifest if apim_ss_manifest.startswith('/')
+       else (playbook_dir ~ '/../' ~ apim_ss_manifest) }}
+  when: "(apim_ss_manifest | default('')) | length > 0"
+
+- name: "Env : l'API porte-t-elle des surcharges par environnement ?"
+  ansible.builtin.set_fact:
+    apim_api_has_per_env: "{{ (apim_api.per_env | default({})) | length > 0 }}"
+
+- name: "Env : FAIL-CLOSED — per_env présent ⇒ apim_ss_env déclaré ET connu"
+  ansible.builtin.assert:
+    that:
+      - "(apim_ss_env | default('')) | length > 0"
+      - "apim_ss_env in (apim_api.per_env | default({}))"
+    fail_msg: >-
+      ENV_UNDEFINED : l'API déclare per_env={{ (apim_api.per_env | default({})).keys() | list }}
+      mais apim_ss_env='{{ apim_ss_env | default('') }}' est vide ou hors de cette liste.
+      Refus de publier une inbound (issuer/audience) non définie pour cet environnement.
+    success_msg: "ENV_OK : environnement '{{ apim_ss_env }}' déclaré pour l'API."
+  when: apim_api_has_per_env
+
+# Variables intermédiaires : un set_fact auto-référentiel serait résolu vers la
+# valeur d'origine (fusion perdue).
+- name: "Env : décomposer racine (sans per_env) et surcharge de l'env"
+  ansible.builtin.set_fact:
+    apim_api_base_m: "{{ apim_api | dict2items | rejectattr('key', 'equalto', 'per_env') | items2dict }}"
+    apim_api_over_m: "{{ apim_api.per_env[apim_ss_env] }}"
+  when: apim_api_has_per_env
+
+- name: "Env : API EFFECTIVE = racine ⊕ per_env[{{ apim_ss_env }}]"
+  ansible.builtin.set_fact:
+    apim_api: "{{ apim_api_base_m | combine(apim_api_over_m, recursive=True) }}"
+  when: apim_api_has_per_env
+
+- name: "Env : inbound résolu pour '{{ apim_ss_env | default('(mono-env)') }}'"
+  ansible.builtin.debug:
+    msg: >-
+      api={{ apim_api.name }} v{{ apim_api.version }} env={{ apim_ss_env | default('(mono-env)') }} :
+      inbound.mode={{ (apim_api.inbound | default({})).mode | default('(aucun)') }},
+      issuer={{ (apim_api.inbound | default({})).issuer | default('(n/a)') }}

@@ -7,6 +7,9 @@
 # 9/9 + mémoire wm-1015-rest-shapes). Le plan SORTANT (injection clé backend
 # P-callout) est en tasks/backend.yml (section suivante).
 
+- name: "Env : résoudre le manifeste effectif (identité invariante ⊕ per_env)"
+  ansible.builtin.import_tasks: resolve-env.yml
+
 - name: "Secrets : creds admin gateway (Vault, fallback PoC)"
   ansible.builtin.import_tasks: secrets.yml
 

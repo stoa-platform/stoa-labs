@@ -16,6 +16,10 @@ pipeline {
   parameters {
     string(name: 'MANIFEST', defaultValue: 'clients/_example/apis/accounts-read.publish.yml',
            description: "Manifeste de publication (vars du rôle : apim_api).")
+    // Env cible : sélectionne per_env[ENVIRONMENT] (inbound issuer/JWKS/audience par
+    // env) ET pose X-Environment vers le proxy d'admin. Vide = API mono-env.
+    choice(name: 'ENVIRONMENT', choices: ['dev', 'rec', 'int', 'prod'],
+           description: "Environnement cible (inbound par env + header X-Environment).")
     string(name: 'USER_VAULT_JWT', defaultValue: '',
            description: "Identité NOMINATIVE : JWT court aud=vault. Vide sur le PLAN.")
   }
@@ -74,15 +78,19 @@ pipeline {
             echo "  ✓ token Vault NOMINATIF (entité=$WHO) — le job ne détient aucun credential propre"
             unset VT
 
+            # Manifeste en CHEMIN (apim_ss_manifest → include_vars), PAS `-e @` :
+            # un extra-var masquerait la fusion per_env (précédence Ansible).
             export VAULT_TOKEN_FILE="$VTOKF"
             ansible-playbook -i "$INVENTORY" ansible/publish-api.yml \
-              -e @"$MANIFEST" \
+              -e apim_ss_manifest="$MANIFEST" \
+              -e apim_ss_env="${ENVIRONMENT:-}" \
               -e apim_ss_api_base="$APIM_API_BASE" \
               -e apim_ss_data_base="$APIM_DATA_BASE" \
               -e apim_ss_vault_wm_creds_sub="$APIM_WM_CREDS_SUB"
 
             ansible-playbook -i "$INVENTORY" ansible/publish-api-verify.yml \
-              -e @"$MANIFEST" \
+              -e apim_ss_manifest="$MANIFEST" \
+              -e apim_ss_env="${ENVIRONMENT:-}" \
               -e apim_ss_api_base="$APIM_API_BASE" \
               -e apim_ss_data_base="$APIM_DATA_BASE" \
               -e apim_ss_vault_wm_creds_sub="$APIM_WM_CREDS_SUB"

@@ -1,5 +1,7 @@
 ---
 # roles/apim_publish_api/tasks/verify.yml (--tags verify) — preuve fail-closed.
+- name: "Env : résoudre l'API effective (identité invariante ⊕ per_env inbound)"
+  ansible.builtin.import_tasks: resolve-env.yml
 - name: "Secrets : auth admin (Vault, fallback PoC)"
   ansible.builtin.import_tasks: secrets.yml
 - name: "Verify — API '{{ apim_api.name }}' v{{ apim_api.version }}"

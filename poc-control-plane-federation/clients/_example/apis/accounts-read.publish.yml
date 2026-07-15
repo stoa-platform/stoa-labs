@@ -1,12 +1,34 @@
 ---
 # Manifeste de publication (vars du rôle apim_publish_api).
+#
+# MULTI-ENV : l'identité de l'API (name/version/contract) est INVARIANTE ; ce qui
+# CHANGE par env, c'est l'INBOUND — l'issuer/JWKS de l'IdP (et audience/client_id
+# en OAuth2) ne sont pas les mêmes en dev/rec/int/prod. Le rôle fusionne racine ⊕
+# per_env[apim_ss_env] et REFUSE un env non déclaré (fail-closed : sinon l'API
+# validerait les jetons du MAUVAIS émetteur). alias_name + mode restent invariants.
 apim_api:
   name: "accounts-read-ans"
   version: "1.0.0"
   contract: "{{ playbook_dir }}/../apis/accounts-read.openapi.yaml"
   team: ""
   inbound:
-    issuer: "http://localhost:8480/realms/stoa-lab"
-    jwks_uri: "http://keycloak:8080/realms/stoa-lab/protocol/openid-connect/certs"
-    alias_name: "BankAuth-demo"
-    mode: "jwt"
+    alias_name: "BankAuth-demo"   # invariant : nom de l'alias auth-server
+    mode: "jwt"                   # invariant : type de validation (jwt|oauth2)
+
+  per_env:
+    dev:
+      inbound:
+        issuer: "http://localhost:8480/realms/stoa-lab"
+        jwks_uri: "http://keycloak:8080/realms/stoa-lab/protocol/openid-connect/certs"
+    rec:
+      inbound:
+        issuer: "http://localhost:8480/realms/stoa-rec"
+        jwks_uri: "http://keycloak:8080/realms/stoa-rec/protocol/openid-connect/certs"
+    int:
+      inbound:
+        issuer: "http://localhost:8480/realms/stoa-int"
+        jwks_uri: "http://keycloak:8080/realms/stoa-int/protocol/openid-connect/certs"
+    prod:
+      inbound:
+        issuer: "https://auth.bank.invalid/realms/prod"
+        jwks_uri: "https://auth.bank.invalid/realms/prod/protocol/openid-connect/certs"
