@@ -5,4 +5,4 @@
   hosts: webmethods
   gather_facts: false
   roles:
-    - role: stoa_selfservice_app
+    - role: apim_selfservice_app
