@@ -1,0 +1,240 @@
+---
+# roles/stoa_selfservice_app/tasks/main.yml
+#
+# Convergence du PLAN ENTRANT self-service (ADR-078) : application + identifiers
+# cert/IP + règle IAM AND(strict) qui les OPPOSE (ferme le fail-open « identifier
+# écrit mais inerte »). Idempotent, read-modify-write. Shapes prouvées (Go/Python
+# 9/9 + mémoire wm-1015-rest-shapes). Le plan SORTANT (injection clé backend
+# P-callout) est en tasks/backend.yml (section suivante).
+
+- name: "Secrets : creds admin gateway (Vault, fallback PoC)"
+  ansible.builtin.import_tasks: secrets.yml
+
+- name: "Converge — self-service application '{{ stoa_ss_app.name }}'"
+  module_defaults:
+    ansible.builtin.uri:
+      user: "{{ stoa_ss_wm_user }}"
+      password: "{{ stoa_ss_wm_password }}"
+      force_basic_auth: true
+      headers: { Accept: "application/json" }
+      body_format: json
+  block:
+
+    # ===== 1. Résoudre l'API publiée =========================================
+    - name: "API : lister"
+      ansible.builtin.uri:
+        url: "{{ stoa_ss_admin_url }}/rest/apigateway/apis"
+      register: ss_apis
+      changed_when: false
+
+    - name: "API : résoudre l'id de {{ stoa_ss_app.api }} v{{ stoa_ss_app.api_version }}"
+      ansible.builtin.set_fact:
+        ss_api_id: >-
+          {{ (ss_apis.json.apiResponse | map(attribute='api')
+              | selectattr('apiName', 'equalto', stoa_ss_app.api)
+              | selectattr('apiVersion', 'equalto', stoa_ss_app.api_version)
+              | map(attribute='id') | list | first) | default('') }}
+
+    - name: "API : fail-closed si non publiée"
+      ansible.builtin.assert:
+        that: "ss_api_id | length > 0"
+        fail_msg: "API {{ stoa_ss_app.api }} v{{ stoa_ss_app.api_version }} absente — la publier d'abord."
+
+    # ===== 2. Application (find-or-create) ====================================
+    - name: "App : lister"
+      ansible.builtin.uri:
+        url: "{{ stoa_ss_admin_url }}/rest/apigateway/applications"
+      register: ss_apps
+      changed_when: false
+
+    - name: "App : id si déjà présente"
+      ansible.builtin.set_fact:
+        ss_app_id: >-
+          {{ (ss_apps.json.applications | selectattr('name', 'equalto', stoa_ss_app.name)
+              | map(attribute='id') | list | first) | default('') }}
+
+    - name: "App : créer si absente"
+      ansible.builtin.uri:
+        url: "{{ stoa_ss_admin_url }}/rest/apigateway/applications"
+        method: POST
+        body:
+          name: "{{ stoa_ss_app.name }}"
+          description: "{{ stoa_ss_app.description }}"
+          contactEmails: "{{ stoa_ss_app.contact_emails }}"
+        status_code: [200, 201]
+      register: ss_app_create
+      when: "ss_app_id | length == 0"
+
+    - name: "App : capturer l'id (création ; enveloppe flat OU applications[])"
+      ansible.builtin.set_fact:
+        ss_app_id: >-
+          {{ ss_app_create.json.id
+             | default((ss_app_create.json.applications | first).id) }}
+      when: "ss_app_id | length == 0"
+
+    - name: "App : associer à l'API (idempotent)"
+      ansible.builtin.uri:
+        url: "{{ stoa_ss_admin_url }}/rest/apigateway/applications/{{ ss_app_id }}/apis"
+        method: PUT
+        body: { apiIDs: ["{{ ss_api_id }}"] }
+        status_code: [200, 201]
+
+    # ===== 3. Identifiers ENTRANTS : certificat (asset) + plage IP ============
+    - name: "Cert : lire le PEM public + refuser toute clé privée"
+      when: "stoa_ss_app.public_cert_ref | length > 0"
+      block:
+        - ansible.builtin.set_fact:
+            ss_cert_pem: "{{ lookup('file', stoa_ss_app.public_cert_ref) }}"
+          no_log: true
+        - ansible.builtin.assert:
+            that: "'PRIVATE KEY' not in ss_cert_pem"
+            fail_msg: "publicCertRef porte une clé privée — refusé (cert PUBLIC uniquement)."
+        - name: "Cert : base64 DER (BEGIN/END + espaces retirés)"
+          ansible.builtin.set_fact:
+            ss_cert_der: >-
+              {{ ss_cert_pem | regex_replace('-----BEGIN CERTIFICATE-----', '')
+                             | regex_replace('-----END CERTIFICATE-----', '')
+                             | regex_replace('[^A-Za-z0-9+/=]', '') }}
+
+    - name: "IP : refuser le CIDR (la gateway le drop en silence — cf. README)"
+      ansible.builtin.assert:
+        that: "stoa_ss_app.ip_allowlist | select('search', '/') | list | length == 0"
+        fail_msg: "CIDR non supporté (drop silencieux gateway) — utiliser une IP ou une plage A-B."
+
+    - name: "IP : normaliser (single -> X-X ; A-B inchangé — visible UI + opposable)"
+      ansible.builtin.set_fact:
+        ss_ip_norm: "{{ stoa_ss_app.ip_allowlist | map('regex_replace', '^([^-]+)$', '\\1-\\1') | list }}"
+
+    - name: "Identifiers : ensemble désiré (cert + IP)"
+      ansible.builtin.set_fact:
+        ss_desired_ids: >-
+          {{ ([] if (stoa_ss_app.public_cert_ref | length == 0)
+                else [{'key': 'httpsCertificate', 'name': 'client-cert', 'value': [ss_cert_der]}])
+             + ([] if (ss_ip_norm | length == 0)
+                else [{'key': 'ipAddressRange', 'name': 'ip-allowlist', 'value': ss_ip_norm}]) }}
+
+    - name: "App : relire le record complet (read-modify-write)"
+      ansible.builtin.uri:
+        url: "{{ stoa_ss_admin_url }}/rest/apigateway/applications/{{ ss_app_id }}"
+      register: ss_app_get
+      changed_when: false
+
+    - name: "App : record (déballer l'enveloppe applications[])"
+      ansible.builtin.set_fact:
+        ss_app_rec: "{{ ss_app_get.json.applications | default([ss_app_get.json]) | first }}"
+
+    - name: "Identifiers : merge (retirer cert/IP existants, GARDER azp/openIdClaims, ajouter désirés) + PUT"
+      when: "ss_desired_ids | length > 0"
+      block:
+        - ansible.builtin.set_fact:
+            ss_app_merged: >-
+              {{ ss_app_rec | combine({'identifiers':
+                  (ss_app_rec.identifiers | default([]) | rejectattr('key', 'in', ['httpsCertificate', 'ipAddressRange']) | list)
+                  + ss_desired_ids }) }}
+        - ansible.builtin.uri:
+            url: "{{ stoa_ss_admin_url }}/rest/apigateway/applications/{{ ss_app_id }}"
+            method: PUT
+            body: "{{ ss_app_merged }}"
+            status_code: [200, 201]
+
+    # ===== 4. Règle IAM AND(strict) qui OPPOSE les identifiers ================
+    # Ferme le fail-open : sans cette règle, les identifiers sont écrits mais inertes.
+    - name: "IAM : liste des policyActions"
+      ansible.builtin.uri:
+        url: "{{ stoa_ss_admin_url }}/rest/apigateway/policyActions"
+      register: ss_actions
+      changed_when: false
+
+    # La gateway FORCE le nom « Identify & Authorize » sur toute action
+    # evaluatePolicy (prouvé live) — donc idempotence par EMPREINTE de règles
+    # (ensemble trié des identificationType), pas par nom. Match EXACT (pas
+    # « contient ») pour ne pas happer une action AND d'un autre ensemble.
+    - name: "IAM : id vide par défaut"
+      ansible.builtin.set_fact:
+        ss_iam_id: ""
+
+    - name: "IAM : résoudre l'id existant par empreinte de règles (loop)"
+      ansible.builtin.set_fact:
+        ss_iam_id: "{{ item.id }}"
+      loop: "{{ ss_actions.json.policyAction | default([]) }}"
+      loop_control: { label: "{{ item.id }}" }
+      when: >-
+        (item.parameters | default([]) | selectattr('templateKey', 'equalto', 'IdentificationRule')
+         | map(attribute='parameters') | flatten
+         | selectattr('templateKey', 'equalto', 'identificationType')
+         | map(attribute='values') | flatten | sort) == (stoa_ss_app.enforce | sort)
+
+    - name: "IAM : construire les IdentificationRules (une strict par dimension)"
+      ansible.builtin.set_fact:
+        ss_iam_rules: >-
+          {{ (ss_iam_rules | default([])) + [{'templateKey': 'IdentificationRule', 'parameters':
+              [{'templateKey': 'applicationLookup', 'values': ['strict']},
+               {'templateKey': 'identificationType', 'values': [item]}]}] }}
+      loop: "{{ stoa_ss_app.enforce }}"
+
+    - name: "IAM : créer l'action AND({{ stoa_ss_app.enforce | join('+') }}) si absente"
+      ansible.builtin.uri:
+        url: "{{ stoa_ss_admin_url }}/rest/apigateway/policyActions"
+        method: POST
+        body:
+          policyAction:
+            names: [{ value: "stoa-ss-identify-{{ stoa_ss_app.api }}", locale: "en" }]
+            templateKey: "evaluatePolicy"
+            parameters: >-
+              {{ [{'templateKey': 'logicalConnector', 'values': ['AND']},
+                  {'templateKey': 'allowAnonymous', 'values': ['false']}] + ss_iam_rules }}
+            active: true
+        status_code: [200, 201]
+      register: ss_iam_create
+      when: "ss_iam_id | length == 0 and stoa_ss_app.enforce | length > 0"
+
+    - name: "IAM : capturer l'id (création)"
+      ansible.builtin.set_fact:
+        ss_iam_id: "{{ ss_iam_create.json.policyAction.id | default(ss_iam_create.json.id) }}"
+      when: "ss_iam_id | length == 0 and stoa_ss_app.enforce | length > 0"
+
+    # ----- attacher l'action à la policy SERVICE de l'API (stage IAM) --------
+    - name: "Policy : GET de l'API (pour ses policies)"
+      ansible.builtin.uri:
+        url: "{{ stoa_ss_admin_url }}/rest/apigateway/apis/{{ ss_api_id }}"
+      register: ss_api_get
+      changed_when: false
+      when: "stoa_ss_app.enforce | length > 0"
+
+    - name: "Policy : id de la policy SERVICE (enveloppe apiResponse.api, un dict)"
+      ansible.builtin.set_fact:
+        ss_pol_id: "{{ (ss_api_get.json.apiResponse.api.policies | default([])) | first | default('') }}"
+      when: "stoa_ss_app.enforce | length > 0"
+
+    - name: "Policy : convergence du stage IAM"
+      when: "stoa_ss_app.enforce | length > 0 and ss_pol_id | length > 0"
+      block:
+        - ansible.builtin.uri:
+            url: "{{ stoa_ss_admin_url }}/rest/apigateway/policies/{{ ss_pol_id }}"
+          register: ss_pol_get
+          changed_when: false
+
+        - ansible.builtin.set_fact:
+            ss_pol: "{{ ss_pol_get.json.policy | default(ss_pol_get.json) }}"
+
+        - name: "Policy : le stage IAM référence-t-il déjà notre action ?"
+          ansible.builtin.set_fact:
+            ss_iam_attached: >-
+              {{ ss_iam_id in (ss_pol.policyEnforcements | default([])
+                  | selectattr('stageKey', 'equalto', 'IAM')
+                  | map(attribute='enforcements') | flatten
+                  | map(attribute='enforcementObjectId') | list) }}
+
+        - name: "Policy : reconstruire (IAM = notre action) + PUT enveloppé — si pas attaché"
+          when: "not ss_iam_attached"
+          block:
+            - ansible.builtin.set_fact:
+                ss_pol_new: >-
+                  {{ ss_pol | combine({'policyEnforcements':
+                      [{'stageKey': 'IAM', 'enforcements': [{'enforcementObjectId': ss_iam_id, 'order': none}]}]
+                      + (ss_pol.policyEnforcements | default([]) | rejectattr('stageKey', 'equalto', 'IAM') | list) }) }}
+            - ansible.builtin.uri:
+                url: "{{ stoa_ss_admin_url }}/rest/apigateway/policies/{{ ss_pol_id }}"
+                method: PUT
+                body: { policy: "{{ ss_pol_new }}" }
+                status_code: [200, 201]
