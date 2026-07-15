@@ -1,0 +1,11 @@
+apiVersion: labctl.stoa.io/v1
+kind: FederationTarget
+name: demo-selfservice
+contract: ./apis/accounts-read.openapi.yaml
+backendUrl: http://wm-token-echo:8080
+targets:
+  - name: webmethods
+    type: webmethods
+    adminUrl: http://localhost:5555
+    gatewayUrl: http://localhost:5555
+    credentials: { username: Administrator, password: manage }

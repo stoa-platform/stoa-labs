@@ -1,0 +1,13 @@
+{
+  "name": "demo-consumer",
+  "api": "demo-selfservice",
+  "description": "ADR-078 — demande d'application self-service (cert client + plage IP + clé backend via TokenProvider)",
+  "contactEmails": ["demo@bank.invalid"],
+  "ipAllowlist": ["192.168.65.1"],
+  "publicCertRef": "clients/_example/applications/demo-client.crt",
+  "backend": {
+    "header": "apikey",
+    "valueTemplate": "${backend_apikey}",
+    "vaultPath": "apigw/backends/demo-selfservice"
+  }
+}
