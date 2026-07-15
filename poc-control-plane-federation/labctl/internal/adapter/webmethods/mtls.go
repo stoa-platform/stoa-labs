@@ -67,15 +67,12 @@ func actionRuleTypes(action map[string]any) []string {
 	return out
 }
 
-// isMtlsIdentifyAction reports whether an action is the OAuth2+cert IAM action
-// (an evaluatePolicy carrying an httpsCertificate IdentificationRule).
+// isMtlsIdentifyAction reports whether an action is THE OAuth2+cert IAM action —
+// exactly {oAuth2Token, httpsCertificate}. It matches on the exact rule-type set
+// (not merely "has a cert rule") so it never grabs the self-service cert+IP
+// action {httpsCertificate, ipAddressRange}, which also carries a cert rule.
 func isMtlsIdentifyAction(action map[string]any) bool {
-	for _, t := range actionRuleTypes(action) {
-		if t == identificationTypeCert {
-			return true
-		}
-	}
-	return false
+	return actionMatchesRuleTypes(action, []string{"oAuth2Token", identificationTypeCert})
 }
 
 // mtlsIdentifyActionBody builds the ENVELOPED OAuth2+cert IAM action body: an AND

@@ -1,6 +1,82 @@
 package webmethods
 
-import "testing"
+import (
+	"context"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/stoa-platform/stoa-labs/poc/labctl/internal/adapter"
+)
+
+// TestCreateConsumer_EnforceInboundIdentifiers exercises the driver end-to-end
+// against the mock gateway: with EnforceInboundIdentifiers, CreateConsumer poses
+// the AND(oAuth2Token,cert,IP) action on the API and attaches it to the IAM stage
+// — the enforcement that OPPOSES the declared identifiers (closes the fail-open).
+// Asserts the exact rule set, non-collision with the mtls action, and idempotence.
+func TestCreateConsumer_EnforceInboundIdentifiers(t *testing.T) {
+	mock := newMockGateway()
+	srv := httptest.NewServer(mock.handler())
+	defer srv.Close()
+
+	a, api := newOAuth2Adapter(t, srv)
+	pub, err := a.Publish(context.Background(), api)
+	if err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+
+	spec := &adapter.ConsumerSpec{
+		Name:                      "svc-toto",
+		ClientID:                  testClientID,
+		AuthType:                  "oauth2",
+		PublicCertRef:             testPublicCertPEM(t),
+		IPAllowlist:               []string{"203.0.113.10"},
+		EnforceInboundIdentifiers: true,
+	}
+	if _, err := a.CreateConsumer(context.Background(), api, spec); err != nil {
+		t.Fatalf("CreateConsumer: %v", err)
+	}
+
+	polID := mock.apis[pub.APIID].rec.Policies[0]
+	stage := iamStage(t, mock, polID)
+	if stage == nil {
+		t.Fatalf("policy %s has no IAM stage", polID)
+	}
+	enf, _ := stage["enforcements"].([]any)
+	if len(enf) != 1 {
+		t.Fatalf("IAM enforcements = %v, want exactly one", enf)
+	}
+	actionID, _ := enf[0].(map[string]any)["enforcementObjectId"].(string)
+	action := mock.actions[actionID]
+	if action == nil {
+		t.Fatalf("attached IAM action %q not found in mock", actionID)
+	}
+
+	want := []string{"oAuth2Token", identificationTypeCert, identificationTypeIP}
+	if !actionMatchesRuleTypes(action, want) {
+		t.Errorf("IAM action rule types = %v, want %v", actionRuleTypes(action), want)
+	}
+	if isMtlsIdentifyAction(action) {
+		t.Error("self-service AND(oauth2,cert,IP) action wrongly grabbed by isMtlsIdentifyAction")
+	}
+
+	// Idempotence: a second CreateConsumer converges — same action, no duplicate.
+	if _, err := a.CreateConsumer(context.Background(), api, spec); err != nil {
+		t.Fatalf("CreateConsumer (2nd): %v", err)
+	}
+	enf2, _ := iamStage(t, mock, polID)["enforcements"].([]any)
+	if len(enf2) != 1 || enf2[0].(map[string]any)["enforcementObjectId"] != actionID {
+		t.Errorf("IAM stage not idempotent: %v (want single ref to %q)", enf2, actionID)
+	}
+	n := 0
+	for _, act := range mock.actions {
+		if actionMatchesRuleTypes(act, want) {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("self-service action count = %d, want 1 (no duplicate minted on re-apply)", n)
+	}
+}
 
 // TestNormalizeIPRange pins the from-to normalization that closes the CIDR
 // silent-drop and the UI-hides-a-bare-single quirks (both live-pinned 2026-07-15).
