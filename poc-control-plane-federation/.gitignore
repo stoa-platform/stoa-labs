@@ -7,3 +7,14 @@ catalog-info.yaml
 
 # Local env
 .env
+
+# Sorties de build/release (É0) : les binaires ne se committent JAMAIS — ils se
+# livrent versionnés via `make release` (dist/<version>/ + SHA256SUMS + SBOM).
+# Les 4 noms nus = binaires `go build` posés à la racine du module (un
+# governance-api de 10 Mo a failli partir en Git avec le périmètre ADR-077).
+dist/
+labctl/bin/
+labctl/labctl
+labctl/governance-api
+labctl/onboarding-api
+labctl/itsm-mock

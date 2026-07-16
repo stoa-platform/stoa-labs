@@ -1,0 +1,52 @@
+# Config Prometheus de l'image otel-lgtm ÉTENDUE pour scraper le /metrics du
+# webMethods RÉEL (ADR-073, T3). Montée par docker-compose.wm.yml par-dessus
+# /otel-lgtm/prometheus.yaml — l'override remplace le fichier ENTIER, donc on
+# reprend ici le contenu d'origine (copie de grafana/otel-lgtm:0.8.6 = pin
+# OTEL_LGTM_IMAGE dans .env ; vérifié in-situ 2026-06-12 :
+# `docker exec poc-otel-lgtm cat /otel-lgtm/prometheus.yaml`) + scrape_configs.
+# Si le pin change : re-diff-er ce fichier. NB: fallback_scrape_protocol
+# requiert Prometheus >= 3.0.
+otlp:
+  # Recommended attributes to be promoted to labels.
+  promote_resource_attributes:
+    - service.instance.id
+    - service.name
+    - service.namespace
+    - service.version
+    - cloud.availability_zone
+    - cloud.region
+    - container.name
+    - deployment.environment.name
+    - k8s.cluster.name
+    - k8s.container.name
+    - k8s.cronjob.name
+    - k8s.daemonset.name
+    - k8s.deployment.name
+    - k8s.job.name
+    - k8s.namespace.name
+    - k8s.pod.name
+    - k8s.replicaset.name
+    - k8s.statefulset.name
+
+storage:
+  tsdb:
+    # A 10min time window is enough because it can easily absorb retries and network delays.
+    out_of_order_time_window: 10m
+
+scrape_configs:
+  # webMethods API Gateway 10.15 expose GET /metrics (format Prometheus) sur le
+  # port IS 5555, auth désactivée par défaut en conteneur Docker. Métriques
+  # par-API sag_apigw_api_* (tx, erreurs, latences) nouvelles en 10.15 ;
+  # gauges remises à zéro après chaque scrape (hypothèse mono-scraper), et
+  # compteurs remis à zéro au restart (keepalive!) — à lire en `increase()`.
+  - job_name: webmethods-apigateway
+    metrics_path: /metrics
+    scrape_interval: 30s
+    # IS 10.15 renvoie Content-Type text/html sur /metrics ; Prometheus 3.x
+    # rejette sans fallback explicite (vérifié in-situ : "received unsupported
+    # Content-Type \"text/html\"").
+    fallback_scrape_protocol: PrometheusText0.0.4
+    static_configs:
+      - targets: ["webmethods-real:5555"]
+        labels:
+          gateway: webmethods

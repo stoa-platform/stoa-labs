@@ -20,7 +20,16 @@ pipeline {
   // crumb CSRF, contrairement à /job/…/build?token=). Le trigger s'enregistre
   // au premier build du job (lancer le build #1 manuellement à la création).
   triggers { GenericTrigger(token: 'stoa-ci', printContributedVariables: false, printPostContent: false) }
-  environment { GOPROXY = 'off'; GOFLAGS = '-mod=vendor'; GOSUMDB = 'off' }
+  environment {
+    GOPROXY = 'off'; GOFLAGS = '-mod=vendor'; GOSUMDB = 'off'
+    // É0 — auth Git : URL du repo governance + credential Jenkins OPTIONNEL,
+    // surchargeables au niveau job (défauts = Gitea anonyme du PoC). Chez un
+    // client : GOVERNANCE_GIT_URL = remote d'entreprise, GIT_CREDENTIALS_ID =
+    // credential usernamePassword (PAT) — le clone passe par GIT_ASKPASS,
+    // le secret ne touche ni l'URL, ni argv, ni le log.
+    GOVERNANCE_GIT_URL = "${env.GOVERNANCE_GIT_URL ?: 'http://gitea:3000/ci/governance.git'}"
+    GIT_CREDENTIALS_ID = "${env.GIT_CREDENTIALS_ID ?: ''}"
+  }
   stages {
     stage('Build labctl (air-gapped, vendored)') {
       steps {
@@ -63,8 +72,20 @@ pipeline {
     // governance est SKIPPÉ par apply-uac (narration, pas d'erreur) — la
     // promotion d'un env = un merge, jamais un paramètre de job.
     //
+    stage('Checkout governance (GitOps source)') {
+      steps {
+        dir('poc-control-plane-federation') {
+          // Clone COMPLET (pas de --depth 1) : le pinning de version lit le
+          // contrat au SHA capturé par la promotion (git show <commit>:…) — un
+          // clone shallow ne porte pas l'historique et casse ResolvePinned.
+          // GIT_CREDENTIALS_ID non vide -> créds injectées via GIT_ASKPASS.
+          script { cloneGovernance() }
+        }
+      }
+    }
     // Credentials Jenkins requis (en prod : émis depuis Vault, rotés) :
     //   - vault-ci-secret-id   : secret_id AppRole ci-pipeline (seul secret)
+    //   - GIT_CREDENTIALS_ID   : optionnel (remote governance authentifié, É0)
     stage('Mediation — apply-uac dev→rec→int (ADR-072/075)') {
       environment {
         // Le token a iss=localhost:8480 (frontend KC figé), mais le JWKS est
@@ -116,14 +137,12 @@ pipeline {
                 | sed -n 's/.*"adminPassword":"\\([^"]*\\)".*/\\1/p')
               [ -n "$CI_SECRET" ] && [ -n "$HP_SECRET" ] && [ -n "$OPENSEARCH_PASSWORD" ] || { echo 'vault fetch failed (setup-vault-envs.sh lancé ?)'; exit 1; }
               unset VTOK
-              # 2) clone governance + mint des DEUX comptes de service (client_credentials) :
+              # 2) mint des DEUX comptes de service (client_credentials) — le repo
+              #    governance a été cloné par le stage Checkout (auth Git É0) :
               #    - ci-applier   -> médiation apply-uac (rôle cp-applier + tenant, ADR-072)
               #    - ci-horsprod  -> Bearer présenté aux proxies wm-admin-{env}
               #      (scopes deploy:dev+rec+int par défaut, JAMAIS deploy:prod, ADR-075)
-              # Clone COMPLET (pas de --depth 1) : le pinning de version lit le contrat
-              # au SHA capturé par la promotion (git show <commit>:…) — un clone
-              # shallow ne porte pas l'historique et casse ResolvePinned.
-              rm -rf governance && git clone http://gitea:3000/ci/governance.git governance
+              [ -d governance/.git ] || { echo 'governance/ absent (stage Checkout KO ?)'; exit 1; }
               CI_TOKEN=$(curl -sf -X POST http://keycloak:8080/realms/stoa-lab/protocol/openid-connect/token \
                 -d client_id=ci-applier -d client_secret="$CI_SECRET" -d grant_type=client_credentials \
                 | sed -n 's/.*"access_token":"\\([^"]*\\)".*/\\1/p')
@@ -161,5 +180,36 @@ pipeline {
   post {
     success { echo '✓ API fédérée + médiation control-plane (scoped/attribué/audité/tracé) depuis 1 commit.' }
     failure { echo '✗ pipeline KO — voir le log de l’étape.' }
+  }
+}
+
+// É0 — clone du repo governance ($GOVERNANCE_GIT_URL) avec auth Git OPTIONNELLE.
+// GIT_CREDENTIALS_ID vide (défaut PoC) -> clone anonyme, comportement inchangé.
+// GIT_CREDENTIALS_ID posé (client) -> credential usernamePassword injecté via un
+// helper GIT_ASKPASS éphémère 0700 qui RELIT l'env : le secret n'apparaît jamais
+// dans l'URL du remote, ni en argv (visible /proc), ni au log (masque
+// withCredentials). Clone toujours COMPLET (ResolvePinned exige l'historique).
+def cloneGovernance() {
+  def clone = {
+    sh '''
+      set -eu
+      rm -rf governance
+      if [ -n "${GIT_USER:-}" ]; then
+        ASKPASS="$WORKSPACE/.git-askpass"
+        printf '#!/bin/sh\\ncase "$1" in Username*) printf %%s "$GIT_USER" ;; *) printf %%s "$GIT_PASS" ;; esac\\n' > "$ASKPASS"
+        chmod 700 "$ASKPASS"
+        GIT_ASKPASS="$ASKPASS" GIT_TERMINAL_PROMPT=0 git clone "$GOVERNANCE_GIT_URL" governance
+        rm -f "$ASKPASS"
+      else
+        GIT_TERMINAL_PROMPT=0 git clone "$GOVERNANCE_GIT_URL" governance
+      fi
+    '''
+  }
+  if (env.GIT_CREDENTIALS_ID?.trim()) {
+    withCredentials([usernamePassword(credentialsId: env.GIT_CREDENTIALS_ID,
+                                      usernameVariable: 'GIT_USER',
+                                      passwordVariable: 'GIT_PASS')]) { clone() }
+  } else {
+    clone()
   }
 }

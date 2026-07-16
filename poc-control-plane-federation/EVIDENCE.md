@@ -292,11 +292,11 @@ un **pivot unique : le `trace_id` W3C**.
   section suivante) : un document par transaction, redacté, isolé par tenant.
 
 ```
-$ # Tempo : service.name émettant des traces
-['apisix', 'webmethods-mock']        # 2 runtimes hétérogènes (OSS + legacy), 1 plan
+$ # Tempo : service.name émettant des traces (goal A2, 2026-07-03 : WSO2 rejoint)
+['apisix', 'webmethods-mock', 'wso2']   # 3/3 runtimes hétérogènes, 1 plan
 
 $ # Prometheus (span metrics auto-générées par Tempo)
-traces_spanmetrics_calls_total{service="apisix|webmethods-mock"}
+traces_spanmetrics_calls_total{service="apisix|webmethods-mock|wso2"}
 ```
 
 ### Dashboard de fédération (versionné + provisionné live)
@@ -340,13 +340,20 @@ trace_id = 73ffd5332255a5de453384d4bc45eb4c        # VRAI trace_id W3C (non synt
 > (le doc OpenSearch ne porterait alors qu'un identifiant local, non corrélable à
 > Tempo). Le `request_id` déterministe sert de filet **anti-sampling** (ADR-070).
 
-> **WSO2 OTel** : WSO2 4.5 embarque `opentelemetry-all` et se configure via
-> `[apim.open_telemetry.remote_tracer]` (`scripts/setup-wso2-otel.sh`). Sur cette
-> image, la config naïve (`name="otlp"` → otel-lgtm:4317) **déstabilise le
-> démarrage du gateway** — c'est un réglage d'exporteur à affiner (endpoint/format
-> OTLP gRPC vs HTTP), pas un bloqueur de la thèse. Laissé en suivi pour ne pas
-> fragiliser la stack ; la fédération de l'observabilité est déjà prouvée sur 2
-> runtimes hétérogènes.
+> **WSO2 OTel — RÉSOLU (goal A2, 2026-07-03)** : cause racine trouvée au
+> **bytecode** (`OTLPTelemetry.class`, tracing_9.31.86) — le tracer OTLP ne lit
+> QUE `remote_tracer.url` (jamais hostname/port, clés jaeger/zipkin) **et** exige
+> une entrée `[[remote_tracer.properties]]` non vide (design api-key New Relic) ;
+> sinon le champ `openTelemetry` reste null → NPE au boot = la « déstabilisation »
+> observée. Config correcte (`scripts/setup-wso2-otel.sh`) : `url =
+> "http://otel-lgtm:4317"` (exporteur **gRPC**, scheme obligatoire), une propriété
+> header factice, et `[[resource_attributes]] service.name=wso2` (le dernier merge
+> gagne sur le nom par défaut). Prouvé live : trace
+> `e1985c23c6cde9082668a541a06dab6f` — `rootServiceName=wso2`, spans complets
+> (CORS → Key_Validation → Throttle → Request_Mediation → **Backend_Latency** →
+> Response_Mediation, `GET--/accounts`), stack stable (9443/8243 en 200, zéro
+> erreur d'export). Persistance : config in-container (survit au restart, re-jouer
+> le script après un recreate, comme wm-otel-setup.sh).
 >
 > `grafana/otel-lgtm` est une image **dev/démo** (collector + LGTM tout-en-un),
 > pas un design de production — l'atterrissage dans la stack cible reste le même.
@@ -359,7 +366,9 @@ Le **plan de gouvernance/audit** : toutes les transactions (succès **et** erreu
 centralisées dans **un OpenSearch unique**, **isolées par fournisseur** et **redactées
 à un seul endroit auditable**. C'est l'analytique transactionnelle per-fournisseur
 que la thèse listait comme « pas encore prouvée » — désormais prouvée bout-en-bout
-sur la tranche APISIX.
+**sur les 3 tranches (APISIX + webMethods + WSO2)** : goal A3 (2026-07-03) ferme la
+parité, `scripts/test-txn-wso2.sh` **12/12**. Agrégat live des `gateway` portant des
+docs txn : `{apisix, webmethods, wso2}`.
 
 **Chaîne d'ingestion** (off the transaction path, ADR-068 — la gateway *émet*, ne
 *traite* pas) :
@@ -414,6 +423,51 @@ projection FLAT du schéma `stoa.txn` (contrainte APISIX : tout `log_format` doi
 une string plate, `batch_max_size=1` pour que Data Prepper désérialise un objet par
 record). L'émission n'est pas un état posé à la main : c'est l'`apply` qui la porte.
 
+### Tranche WSO2 (goal A3, 2026-07-03) — parité 3/3, source = spans OTel natifs
+
+WSO2 n'expose sa transaction data-plane (8243, PassThrough/Synapse) dans **aucun log
+fichier porteur du trace_id** (`apim_metrics.log` off, `http_access` sans trace_id) :
+la **seule** source qui porte le trace_id W3C est les **spans OTel** (débloqués par
+le goal A2). D'où le `wso2-otel-tap` (`observability/wso2-otel-tap/`, Go) — le même
+rôle « Y » que `wm-trace-bridge`, côté spans :
+
+```
+WSO2 :8243 --OTLP/gRPC(gzip)--> wso2-otel-tap ─┬─► forward OTLP ─► otel-lgtm (Tempo, INCHANGÉ)
+                                               └─► stoa.txn.wso2 (Redpanda) ─► Data Prepper
+                                                     (pipeline stoa-txn-wso2) ─► OpenSearch txn-{tenant}
+```
+
+Le tap reçoit l'export OTLP de WSO2 (repointé `remote_tracer.url=wso2-otel-tap:4317`),
+**forwarde chaque batch tel quel** à otel-lgtm (Tempo garde la trace WSO2 complète) et
+**émet un record `stoa.txn` PLAT par TRACE d'API** — sélection du **span RACINE**
+(`parent_span_id` vide) qui, seul sur WSO2 4.5, porte `span.api.name` +
+`span.http.response.status.code` (vérifié live ; les enfants `GET--/x`, `API:*_Latency`
+ne les portent pas). Cette règle rend le « 1 doc/trace » **structurel et
+indépendant du batching** : si le BatchSpanProcessor de WSO2 fragmente une trace sur
+plusieurs exports, les enfants (sans attrs) ne produisent rien, seul le root émet —
+zéro double-comptage, et la latence est celle de la requête globale (jamais un
+enfant). Vers `stoa.txn.wso2`. Le record porte le **trace_id
+NATIF du span** → pivot Tempo↔OpenSearch identique aux deux autres tranches. Les spans
+ne portant aucun corps, la capture est **métadonnées seules par construction**
+(ADR-070) ; Data Prepper reste l'autorité de redaction unique. Tenant résolu
+`api→tenant` (les spans WSO2 ne portent pas de tenant) + filet pipeline.
+
+**Preuve mesurée** (`scripts/test-txn-wso2.sh`, 12/12) : un appel WSO2 → trace_id
+`fc34bcf9709b2b2d896818b9de66aa85` présent **dans Tempo** (`service.name=wso2`, trace
+complète) **et dans OpenSearch** `.ds-txn-accounts-team-*` (`gateway=wso2`,
+`http_status=404`, `status=error`, `latency_ms=7.09`, `consumer_id`,
+`redaction_applied=true`, `@timestamp`=heure du span) — **1 seul doc** pour ce
+trace_id (dedup par trace), **aucun** `response_body`/`request_headers` (métadonnées
+seules). Piège pinné : WSO2 exporte en **gzip** (`setCompression("gzip")`, bytecode) →
+le serveur gRPC du tap enregistre le codec gzip (sinon `UNIMPLEMENTED: Decompressor
+not installed`).
+
+> **Restent différés** (hors A3) : rien sur la parité analytics (3/3 atteinte). Le tap
+> vit dans l'overlay analytics ; en socle seul, WSO2 pointe otel-lgtm en direct (A2,
+> traces 3/3). Un cas **succès** (200) n'a pas été capturé faute de backend sain sur le
+> trial (chaîne de versions accounts-read gâtée, cf. note goal A1) ; le chemin succès =
+> métadonnées seules est prouvé par construction (spans sans corps) + le test wM.
+
 ---
 
 ## Preuve 7 — Souveraineté
@@ -421,6 +475,51 @@ record). L'émission n'est pas un état posé à la main : c'est l'`apply` qui l
 100 % local / self-hosted, **zéro dépendance SaaS** : toutes les briques tournent
 en conteneurs sur le poste (`docker compose`), aucune sortie vers un service
 managé tiers. C'est l'argument différenciant vs Axway Amplify (SaaS, hors zone).
+
+---
+
+## 2026-07-04 — Classification CENTRALE anti-spoof + poly-repo réel (ADR-076 écart #1, goal A5) ★
+
+**Validé, `scripts/test-classification-central.sh` → 11/11.** L'écart #1 d'ADR-076
+(la classification d'intégrité vivait dans l'`api.yaml` du repo PROJET, éditable →
+une équipe pouvait déclarer M pour éviter le mTLS d'une donnée VH) est **fermé** :
+l'autorité passe à un **registre central** (`stoa-platform-ci/governance/classifications.yaml`,
+repo plateforme non éditable ; en prod = repo `data-governance`).
+
+`labctl apply` reçoit la source (`LABCTL_CLASSIFICATION_SOURCE`) + l'**identité projet
+non-éditable** (`LABCTL_PROJECT` = `PROJECT_NAME` du Jenkinsfile plateforme). Le bundle
+de sécurité est **dérivé du central** (autoritaire) ; l'`api.yaml` projet n'est qu'une
+**référence** qui doit ne pas être plus faible.
+
+**Ancre anti-spoof (le point dur, corrigé en review)** : la clé de lookup est
+**(owner, api)** où `owner` vient du pipeline, JAMAIS de l'`api.yaml`. Un projet ne voit
+que ses propres entrées → il ne peut pas « pointer la ligne plus faible d'un autre
+projet » en renommant son `api.yaml` (le trou qu'un design naïf keyé sur `(tenant_id,
+name)` — tous deux projet-éditables — aurait laissé ouvert).
+
+**Matrice mesurée** (2 repos pilotes, MÊME pipeline/binaire) :
+
+```
+                              central   → bundle dérivé
+accounts-team / accounts-read  VH/ext   → oauth2+mtls+rate-limit+audit-log+ip-allowlist
+payments-team / payments-read  H/int    → oauth2+rate-limit+audit-log  (PAS de mtls) ✓ différent
+
+  downgrade api.yaml VH→M (accounts-team)            → [CLASSIFICATION_SPOOFED]
+  accounts-team prétend servir payments-read         → [CLASSIFICATION_UNGOVERNED] (emprunt refusé)
+  tenant_id falsifié (banking-demo→payments-team)    → [CLASSIFICATION_SPOOFED]
+  API renommée absente du registre                   → [CLASSIFICATION_UNGOVERNED]
+  faux governance/ planté DANS le repo projet        → IGNORÉ (seul le chemin plateforme fait foi)
+  sans source (dev-local/PR-gate)                    → comportement A1 (déclaration projet) — non-régression
+```
+
+- **Séparation des devoirs** : le PR-gate projet reste aveugle au central (feedback
+  rapide) → une équipe voit son PR VERT puis est **refusée au deploy** plateforme.
+  L'autorité est le gate plateforme, jamais le repo projet.
+- **Non-régression A1** : `test-integrity-enforce.sh` reste **31/31 live** (le chemin
+  partagé est inchangé sans `LABCTL_CLASSIFICATION_SOURCE`).
+- **Onboarding** (fail-closed) : une API absente du registre ne déploie pas
+  (`UNGOVERNED`) — l'enregistrer = une PR vers la source de gouvernance (data-governance),
+  sérialisée, pas self-service.
 
 ---
 
@@ -467,6 +566,175 @@ sur réseau `nonprod` interne, trial réel = PROD, seul pont `[poc, nonprod]`).
 
 ---
 
+## 2026-07-03 — Enforcement « sécurité = f(intégrité) » au `labctl apply` (ADR-076, écart résiduel fermé) ★
+
+**Validé live, `scripts/test-integrity-enforce.sh` → 31/31 PASS** contre le
+webMethods réel (`apigateway-trial:10.15`). Le bundle dérivé de la classification
+d'intégrité n'est plus seulement *validé* (INTEGRITY_INCONSISTENT au merge) et
+*constaté* (rapport de réconciliation) — il est **enforcé fail-closed à l'apply**,
+en deux gates, quand un contrat UAC (`api.yaml`) est colocalisé au manifeste
+(layout repo-par-projet) ou nommé via `--uac` (aucun flag d'opt-out) :
+
+- **Gate 1 — pré-check statique `[INTEGRITY_UNFULFILLED]`** : chaque target doit
+  déclarer les knobs du bundle (VH ⇒ `inboundAuth.mtls` + `transportProtocol:
+  https` + `audience/scope` + `rateLimit`) — sinon refus **avant toute écriture**
+  (prouvé : compte d'APIs gateway identique avant/après le refus).
+- **Gate 2 — read-back gateway `[ENFORCEMENT_UNCONFIRMED]`** : après publish,
+  l'état **RELU** doit confirmer le bundle — strategy `OIDC-<api>`, scope mapping
+  lié à l'apiID, action IAM **toutes-règles** (AND oAuth2Token+httpsCertificate,
+  `allowAnonymous=false`), throttle LMT (limite relue > 0), `logInvocation`
+  global actif avec `storeRequestPayload=false` (posture ADR-070), transport
+  `[https]`. Verdicts imprimés en entier (table + bloc JSON additif — le contrat
+  CI `.ok/.created/.api_id` est inchangé).
+
+```
+1. VH sans jambe mTLS        -> rc=1 [INTEGRITY_UNFULFILLED], RIEN écrit
+2. VH conforme               -> rc=0 ; oauth2/mtls/rate-limit/audit-log=enforced,
+                                ip-allowlist=degraded, audience annotée 3/4 (trial)
+3. re-apply                  -> rc=0 (idempotent, read-only)
+4. CONTRE-ÉPREUVE sabotage   -> allowAnonymous→true (hors-bande, action IAM AND
+   partagée — que le projecteur NE converge JAMAIS) : re-apply rc=1
+   [ENFORCEMENT_UNCONFIRMED] mtls=missing ; restore prouvé ; re-apply rc=0
+5. H sans inboundAuth        -> rc=1 [INTEGRITY_UNFULFILLED] (oauth2)
+6. VH sur apisix             -> rc=1 (mtls/rate-limit non projetables en A1 — honnête)
+7. M+apikey exposure=external-> rc=1 [INTEGRITY_INCONSISTENT] (même code que validate)
+```
+
+**Chaîne CI fermée** : `stoa-platform-ci/deploy/deploy-one.yml` rend `api.yaml`
+**obligatoire** (stat + assert explicite — supprimer le contrat ne désactive pas
+le gate en douce) et le copie dans le workspace de rendu → le gate s'active dans
+le pipeline plateforme sans autre changement (`rc≠0` déjà gaté) ; le PR-gate
+d'`accounts-team` (pr-check.yml + pr-check.sh) asserte le couplage
+`target.yaml ⇒ api.yaml colocalisé` dès la PR.
+
+**Sémantique assumée (jamais surclamée)** :
+- Un verdict UNCONFIRMED **ne désactive pas l'API** — gate niveau pipeline
+  (cohérent rollback-sans-DELETE) ; remédiation = pipeline rouge + rapport de
+  réconciliation + humain. Le verify est un instantané à l'apply ; une mutation
+  hors-bande ultérieure est vue au prochain apply (prouvé par le cas 4) ou par
+  `reconcile` (read-only, non bloquant — défense en profondeur).
+- Le gate garantit **bundle(classification déclarée) ⊆ enforced** ; il ne prouve
+  PAS que la classification déclarée est la bonne (anti-downgrade = écart ADR-076
+  #1, classification en gouvernance centrale — goal A5). Un target plus fort que
+  son bundle déclenche un warning « classification sous-déclarée ? ».
+- Les verdicts self-reported viennent du code in-repo (`labctl/internal/adapter/
+  webmethods/enforce.go`), pas d'une attestation externe ; `unverifiable` = refus.
+
+**Constat annexe (état du trial, hors A1)** : l'apply plateforme du repo réel
+`accounts-team` active correctement le gate (pré-check VH passé) mais est bloqué
+EN AMONT du gate par un état gâté du trial (47h+ d'expérimentations) : le record
+`accounts-read v1.0.3` refusait le PUT in-place (500 « Error message: null »,
+même famille que l'échec prod-deploy #3 du 2026-06-12) ; sa purge `forceDelete`
+a ensuite exposé une **corruption de la chaîne de versions** (« Versioning is
+allowed only from latest version » sur la base 1.0.2 — la métadonnée *latest*
+pointe un record supprimé). Le rapport de réconciliation lit désormais
+honnêtement la dernière version présente (1.0.2, IAM sans règle cert = drift
+réel vs le manifeste VH). Remédiation = rebuild-from-Git sur état sain
+(teardown/up ou env neuf) — opération d'environnement, PAS un défaut du gate :
+la preuve 31/31 couvre create + converge + drift sur API propre, et le
+read-back audit-log/reconcile a été validé live sur ce même trial.
+
+## 2026-07-05 — Identité UTILISATEUR jusqu'à Vault : token exchange RFC 8693 (ADR-077) ★
+
+**Contrainte client (IT)** : « c'est un **utilisateur** qui se connecte au Vault, pas une
+application » — ET des jobs Jenkins non interactifs. Réponse prouvée : la session
+Keycloak de l'utilisateur est propagée par **token exchange standard (RFC 8693)** en un
+JWT court (5 min, `aud=vault`, **`tenant=<son tenant>`**) que le job CI présente à
+`auth/jwt/login` ; le token Vault obtenu est **nominatif ET tenant-scopé** (entité =
+l'utilisateur, TTL 10 min, policy **templatée par tenant**, révoqué en fin de build avec
+**preuve de mort**). **Zéro credential côté chaîne CI** : ni mot de passe, ni AppRole,
+ni token longue durée — le job `stoa-user-deploy` ne détient rien.
+
+```
+alice (humaine, Dex/Oracle) ─auth_code─▶ Keycloak 26.3.4
+  ─exchange RFC 8693 (vault-exchange, audience=vault)─▶ JWT 300 s sub=alice
+    aud=vault tenant=banking-demo
+  ─webhook (payload masqué)─▶ Jenkins stoa-user-deploy (AUCUN credential propre)
+  ─auth/jwt/login─▶ token Vault NOMINATIF (display_name=jwt-alice@bc.example)
+  ─▶ READ deploy/banking-demo (200) · CROSS-TENANT payments-team 403 · hors
+    périmètre 403 · revoke-self VÉRIFIÉ (lookup-self → 403) en fin de build
+```
+
+**Preuve : `./scripts/test-user-vault-jwt.sh` → 24/24 PASS** (2026-07-05, durci après
+review adversariale), dont :
+- chaîne nominale 13/13 (claims du JWT échangé : `preferred_username=alice@bc.example`,
+  `aud=vault`, `azp=vault-exchange`, `tenant=banking-demo` — la délégation est TRACÉE et
+  la **ségrégation par tenant enforcée** : cross-tenant → 403) ;
+- E2E CI 6/6 : build Jenkins SUCCESS, identité humaine attestée dans le log, token
+  révoqué **et prouvé mort**, **aucun jeton dans le log** (`printContributedVariables=
+  false` + `set +x` + jetons hors argv), webhook **sans** jeton → build **FAILURE** ;
+- contre-épreuves 5/5 : token non échangé → Vault refuse (`bound_audiences` + `azp`) ;
+  subject token de service non adressé → **Keycloak refuse l'exchange** ; carol (viewer)
+  → **Vault refuse** (`bound_claims realm_access.roles`) ; **audit Vault nominatif scopé
+  à ce run**, y compris pour les refus.
+
+**Changements d'environnement** : Keycloak **26.1.4 → 26.3.4** (l'exchange standard est
+GA depuis 26.2 ; image hardcodée dans `docker-compose.poc.yml` — la variable
+`KEYCLOAK_IMAGE` de `.env`/`.env.example` n'est plus consommée, à réaligner à la main) ;
+clients `vault-exchange` (+ mapper `tenant`) /`vault` + mappers d'adressage dans
+`realm-stoa-lab.json` ; `setup-user-vault-jwt.sh` (KC scope dynamique + Vault
+jwt/policy templatée/rôle/audit) ; `setup-user-deploy-job.sh` (job Jenkins sans
+credential). Runbook post-recreate Keycloak : ADR-077 §Restauration (pièges : usernames
+fédérés = `<user>@bc.example`, `unmanagedAttributePolicy`, client runtime).
+
+**Wiring console → chaîne A (livré le même jour)** : au `promote-approve`, la
+governance-api échange le Bearer de **l'approbateur** (RFC 8693) et déclenche
+`stoa-user-deploy` avec le JWT — opt-in env (`USER_DEPLOY_WEBHOOK_URL` +
+`VAULT_EXCHANGE_SECRET[_FILE]`), dispatch asynchrone, réponse `user_deploy:
+dispatched`. **Preuve : `./scripts/test-console-user-deploy.sh` → 12/12 PASS** —
+UNE action utilisateur (bob approuve, 4-yeux intact) et c'est l'identité de **bob**
+(pas dave le demandeur, pas un service account) que Vault voit : build Jenkins
+SUCCESS **corrélé à LA promotion** (hint), `identite=bob@bc.example
+tenant=banking-demo`, token prouvé mort, zéro jeton dans les logs BFF et Jenkins
+(JWT **et** token du webhook — URL redactée au boot). + 7 tests unitaires Go sous
+`-race` (contrat d'exchange, refus → pas de webhook, hook approve, refus 4-yeux →
+zéro dispatch, exchange KO → approve reste 200, flux inchangé sans wiring, opt-in
+env fail-fast).
+
+**Limites documentées** : pas d'humain = pas de déploiement (propriété de
+gouvernance assumée) ; jobs planifiés → AppRole (ADR-074) inchangé ; lien
+approbation→exchange organisationnel (ADR-077 §Limites 7).
+
+## 2026-07-09 — É0 : levée des 4 bloqueurs transverses du livrable (DELIVERY-PROCESS §4) ★
+
+Les quatre bloqueurs qui gataient TOUTES les briques dès qu'on quitte le poste
+du lab (critique de transposabilité 2026-07-09) sont levés :
+
+1. **Proxy sortant d'entreprise** — les DEUX transports HTTP de labctl
+   (`internal/httpx.NewClient`, sonde `targetshealth`) portent désormais
+   `Proxy: http.ProxyFromEnvironment` : derrière un egress proxy bancaire,
+   `HTTP(S)_PROXY`/`NO_PROXY` suffisent, aucun rebuild.
+2. **CA d'entreprise** — knob `LABCTL_CA_FILE` (tous les adapters + sonde) et
+   `VAULT_CACERT` (client Vault, nom standard, fallback `LABCTL_CA_FILE`) :
+   bundle PEM AJOUTÉ au trust système (`RootCAs`), **fail-closed** si le fichier
+   est illisible ou sans certificat (erreur à chaque requête, jamais de repli
+   silencieux). `Insecure` reste l'échappatoire PoC, plus jamais nécessaire chez
+   un client. Les 3 scripts de provision OpenSearch perdent leur `-k` câblé :
+   `OPENSEARCH_CA_FILE` (--cacert, prioritaire) / `OPENSEARCH_INSECURE`
+   (défaut PoC true — certs démo self-signed).
+3. **Auth Git** — plus aucun `git clone` d'URL en dur dans les 4 Jenkinsfiles
+   (ci/Jenkinsfile{,.prod,.rollback} + stoa-platform-ci/Jenkinsfile.deploy) :
+   knob `GOVERNANCE_GIT_URL` (resp. `PROJECT_REPO`) surchargeable au niveau job
+   + convention `GIT_CREDENTIALS_ID` OPTIONNELLE (vide = anonyme PoC, posé =
+   credential usernamePassword injecté via un helper `GIT_ASKPASS` éphémère —
+   le secret ne touche ni l'URL du remote, ni argv, ni le log).
+4. **Release binaire** — `make release` : 3 binaires livrables (labctl,
+   governance-api, onboarding-api) × 3 archs (linux/amd64 minimum contractuel,
+   linux/arm64, darwin/arm64), **versionnés** (ldflags → `labctl version`,
+   traçable au commit), `SHA256SUMS` vérifiable (`sha256sum -c`), **SBOM
+   SPDX-2.3** généré depuis `vendor/modules.txt` (purl golang par module) —
+   le tout **air-gapped** (`GOPROXY=off -mod=vendor`), buildé hors zone :
+   l'agent Jenkins client reçoit les binaires, jamais le toolchain Go.
+
+**Preuve : `./scripts/test-e0-blockers.sh` → 18/18 PASS** — dont preuves au
+niveau du BINAIRE LIVRÉ (pas seulement des tests unitaires) : l'appel admin vers
+un host non résolvable TRANSITE par un faux `HTTP_PROXY` local (requête
+absolute-form observée) ; face à un HTTPS signé par une CA inconnue, échec x509
+SANS knob (contrôle) et handshake accepté AVEC `LABCTL_CA_FILE` ; ELF x86-64
+vérifié au `file`, checksums re-vérifiés, SBOM re-parsé. + tests Go
+(`internal/httpx`, `internal/vault`) sous `-race`, suite complète verte.
+S'exécute HORS ZONE : aucun service du compose requis.
+
 ## Teardown (destruction contrôlée)
 
 ```bash
@@ -485,8 +753,10 @@ canal de management en zéro-entrant** (agent de config sortant-only **ou** pull
 STOA restant **hors du chemin transactionnel**.
 
 L'**analytique transactionnelle par fournisseur** (longtemps listée ici comme non
-prouvée) est **désormais démontrée** sur la tranche APISIX (Preuve 6 bis, ADR-070) :
-data stream + RBAC + FLS + redaction à un point unique, bout-en-bout. Restent
-**différés** : tranches wM (Log Invocation→Kafka) et WSO2 (Fluent Bit sidecar) de la
-même chaîne, l'enforcement **audience** wM (câblé, non opposable sur trial 10.15),
-WSO2 OTel (réglage d'exporteur), et le streaming > 500 Mo.
+prouvée) est **désormais démontrée sur les 3 tranches** (APISIX + webMethods + WSO2 ;
+Preuve 6 bis, ADR-070, goals A3) : data stream + RBAC + FLS + redaction à un point
+unique + pivot `trace_id`, bout-en-bout, parité 3/3. **WSO2 OTel** (goal A2) et sa
+tranche analytics (goal A3) sont **résolus** (le « Fluent Bit sidecar » envisagé était
+une impasse : les logs fichier WSO2 ne portent pas le trace_id — la source retenue est
+les spans OTel via `wso2-otel-tap`). Restent **différés** : l'enforcement **audience**
+wM (câblé, non opposable sur trial 10.15) et le streaming > 500 Mo.

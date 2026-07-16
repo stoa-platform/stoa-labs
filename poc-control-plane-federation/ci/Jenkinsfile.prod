@@ -25,6 +25,10 @@ pipeline {
   }
   environment {
     GOPROXY = 'off'; GOFLAGS = '-mod=vendor'; GOSUMDB = 'off'
+    // É0 — auth Git (cf. ci/Jenkinsfile) : défauts PoC anonymes, surchargeables
+    // au niveau job ; GIT_CREDENTIALS_ID non vide -> clone via GIT_ASKPASS.
+    GOVERNANCE_GIT_URL = "${env.GOVERNANCE_GIT_URL ?: 'http://gitea:3000/ci/governance.git'}"
+    GIT_CREDENTIALS_ID = "${env.GIT_CREDENTIALS_ID ?: ''}"
     KEYCLOAK_URL                = 'http://localhost:8480'
     KEYCLOAK_JWKS_URL           = 'http://keycloak:8080/realms/stoa-lab/protocol/openid-connect/certs'
     LABCTL_AUDIENCE             = 'onboarding-api'
@@ -33,6 +37,9 @@ pipeline {
     OPENSEARCH_INSECURE         = 'true'
     OTEL_EXPORTER_OTLP_ENDPOINT = 'http://otel-lgtm:4318'
     APPLY_TENANT                = 'banking-demo'
+    // ITSM du re-check LIVE au dispatch (A6) : le stage 'Gate LIVE' ET la couche
+    // labctl apply-uac (fail-closed) le relisent à l'instant du dispatch.
+    ITSM_URL                    = 'http://itsm-mock:8788'
     VAULT_ADDR                  = 'http://vault:8200'
     // Identité AppRole non-secrète (cf. Jenkinsfile hors-prod) ; le secret_id
     // est le credential Jenkins vault-ci-secret-id.
@@ -47,16 +54,24 @@ pipeline {
         }
       }
     }
+    stage('Checkout governance (GitOps source)') {
+      steps {
+        dir('poc-control-plane-federation') {
+          // Clone COMPLET (pas de --depth 1) : le pinning de version lit le
+          // contrat au SHA capturé par la promotion (git show <commit>:…) — un
+          // clone shallow ne porte pas l'historique et casse ResolvePinned.
+          // GIT_CREDENTIALS_ID non vide -> créds injectées via GIT_ASKPASS (É0).
+          script { cloneGovernance() }
+        }
+      }
+    }
     stage('Gate Git-natif — promotion approuvée + ITSM + 4-yeux + commit pinné') {
       steps {
         dir('poc-control-plane-federation') {
           sh '''
             set -eu
             [ -n "$PROMOTION_ID" ] || { echo 'GATE: PROMOTION_ID requis'; exit 1; }
-            # Clone COMPLET (pas de --depth 1) : le pinning de version lit le contrat
-            # au SHA capturé par la promotion (git show <commit>:…) — un clone
-            # shallow ne porte pas l'historique et casse ResolvePinned.
-            rm -rf governance && git clone http://gitea:3000/ci/governance.git governance
+            [ -d governance/.git ] || { echo 'GATE: governance/ absent (stage Checkout KO ?)'; exit 1; }
             P="governance/promotions/banking-demo/$PROMOTION_ID.yaml"
             [ -f "$P" ] || { echo "GATE: promotion $PROMOTION_ID introuvable (non mergée ?)"; exit 1; }
             # yget <clé> <fichier> — YAML plat clé: valeur (le format des markers
@@ -83,6 +98,19 @@ pipeline {
             [ -n "$COMMIT" ] || { echo 'GATE: deploy.prod.yaml sans commit pinné'; exit 1; }
             echo "GATE OK — $SLUG → prod @ $COMMIT (change $CHG, PV $PV, approuvé par $APPR)"
           '''
+        }
+      }
+    }
+    stage('Gate LIVE — ITSM re-checké au DISPATCH (anti-TOCTOU, A6)') {
+      steps {
+        dir('poc-control-plane-federation') {
+          // Le gate Git-natif ci-dessus a validé l'état MERGÉ (approbation au
+          // moment du merge). Ici on re-valide l'état LIVE de l'ITSM À L'INSTANT
+          // du dispatch : un change approuvé au merge puis RÉVOQUÉ avant ce point
+          // bloque l'apply. Un SEUL binaire (labctl dispatch-gate) — pas de
+          // ré-implémentation shell du check ITSM : le stage échoue AVANT Apply,
+          // et la couche apply-uac le rejoue fail-closed dans le process d'apply.
+          sh '"$WORKSPACE/labctl" dispatch-gate --repo governance --env prod --tenant "$APPLY_TENANT"'
         }
       }
     }
@@ -143,5 +171,33 @@ pipeline {
   post {
     success { echo '✓ PROD convergée depuis une promotion approuvée (4-yeux + ITSM + commit pinné).' }
     failure { echo '✗ pipeline prod KO — AUCUN dispatch n\'a lieu si le gate échoue.' }
+  }
+}
+
+// É0 — clone du repo governance avec auth Git OPTIONNELLE (même convention que
+// ci/Jenkinsfile) : GIT_CREDENTIALS_ID vide -> anonyme (PoC) ; posé -> creds via
+// GIT_ASKPASS éphémère (jamais URL/argv/log). Clone COMPLET (ResolvePinned).
+def cloneGovernance() {
+  def clone = {
+    sh '''
+      set -eu
+      rm -rf governance
+      if [ -n "${GIT_USER:-}" ]; then
+        ASKPASS="$WORKSPACE/.git-askpass"
+        printf '#!/bin/sh\\ncase "$1" in Username*) printf %%s "$GIT_USER" ;; *) printf %%s "$GIT_PASS" ;; esac\\n' > "$ASKPASS"
+        chmod 700 "$ASKPASS"
+        GIT_ASKPASS="$ASKPASS" GIT_TERMINAL_PROMPT=0 git clone "$GOVERNANCE_GIT_URL" governance
+        rm -f "$ASKPASS"
+      else
+        GIT_TERMINAL_PROMPT=0 git clone "$GOVERNANCE_GIT_URL" governance
+      fi
+    '''
+  }
+  if (env.GIT_CREDENTIALS_ID?.trim()) {
+    withCredentials([usernamePassword(credentialsId: env.GIT_CREDENTIALS_ID,
+                                      usernameVariable: 'GIT_USER',
+                                      passwordVariable: 'GIT_PASS')]) { clone() }
+  } else {
+    clone()
   }
 }

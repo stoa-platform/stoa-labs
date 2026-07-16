@@ -1,0 +1,40 @@
+{
+  "index_patterns": ["audit-onboarding-*"],
+  "priority": 100,
+  "_meta": {
+    "managed_by": "labctl",
+    "adr": "adr-070",
+    "schema": "stoa.audit.onboarding",
+    "schema_version": "1"
+  },
+  "template": {
+    "settings": {
+      "index": {
+        "number_of_shards": 1,
+        "number_of_replicas": 0,
+        "refresh_interval": "1s"
+      }
+    },
+    "mappings": {
+      "_meta": {
+        "schema": "stoa.audit.onboarding",
+        "schema_version": "1",
+        "pii_fields": ["client_ip"]
+      },
+      "dynamic": "strict",
+      "properties": {
+        "timestamp":   { "type": "date" },
+        "actor":       { "type": "keyword" },
+        "action":      { "type": "keyword" },
+        "tenant":      { "type": "keyword" },
+        "partner":     { "type": "keyword" },
+        "decision":    { "type": "keyword" },
+        "reason":      { "type": "keyword" },
+        "commit_sha":  { "type": "keyword" },
+        "trace_id":    { "type": "keyword" },
+        "client_ip":   { "type": "keyword", "meta": { "pii": "true" } },
+        "http_status": { "type": "integer" }
+      }
+    }
+  }
+}

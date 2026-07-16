@@ -1,0 +1,37 @@
+---
+# roles/apim_publish_api/tasks/team.yml — scoping par équipe (ADR-076, isolation).
+#
+# ⚠ NON TESTÉ LIVE dans le lab de démo (pas d'accessProfile d'ÉQUIPE ; la feature
+# Teams doit être ACTIVÉE côté gateway). Shape best-effort issue du spike Teams
+# (mémoire wm-1015-teams-scoping) : POST /assets/team, newTeams = UUID
+# d'accessProfile (les NOMS -> 400). À VALIDER chez le client avant mise en prod.
+# Optionnel : ne tourne que si apim_api.team est renseigné.
+
+- name: "Team : résoudre l'UUID de l'accessProfile '{{ apim_api.team }}'"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_api_base }}/accessProfiles"
+  register: team_aps
+  changed_when: false
+
+- name: "Team : UUID (ou vide)"
+  ansible.builtin.set_fact:
+    team_uuid: >-
+      {{ (team_aps.json.accessProfiles | default(team_aps.json.accessProfile) | default([])
+          | selectattr('name', 'equalto', apim_api.team) | map(attribute='id') | list | first) | default('') }}
+
+- name: "Team : fail-closed si l'accessProfile d'équipe est absent"
+  ansible.builtin.assert:
+    that: "team_uuid | length > 0"
+    fail_msg: >-
+      accessProfile d'équipe '{{ apim_api.team }}' absent — Teams activé ? profil créé ?
+      (POST /accessProfiles avec le privilège 'Manage APIs' — cf. GOAL E5).
+
+- name: "Team : assigner l'API à l'équipe (POST /assets/team, newTeams = UUID)"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_api_base }}/assets/team"
+    method: POST
+    body:
+      assetIds: ["{{ apim_api_id }}"]
+      newTeams: ["{{ team_uuid }}"]
+    status_code: [200, 201]
+  register: team_assign

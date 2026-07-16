@@ -1,0 +1,198 @@
+{
+  "title": "STOA — Fédération (OTel + Transactions)",
+  "uid": "stoa-fed-otel-txn",
+  "tags": ["stoa", "federation", "otel", "transactions", "adr-070", "poc"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "refresh": "10s",
+  "time": { "from": "now-1h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "gateway",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "query": { "query": "label_values(traces_spanmetrics_calls_total, service)", "refId": "A" },
+        "includeAll": true,
+        "multi": true,
+        "current": { "text": ["All"], "value": ["$__all"] },
+        "refresh": 2,
+        "sort": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "text",
+      "title": "",
+      "gridPos": { "h": 4, "w": 24, "x": 0, "y": 0 },
+      "options": {
+        "mode": "markdown",
+        "content": "## Fédération — deux plans d'observabilité reliés par `trace_id` (ADR-070)\nUn **plan OPS/SRE temps réel** (OTel → Tempo + span-metrics Prometheus) pour des gateways hétérogènes — **Apache APISIX** (OSS) et **webMethods** (legacy) — et un **plan GOUVERNANCE/AUDIT** (OpenSearch, data stream `txn-accounts-team`). Le **pivot** est le `trace_id` W3C : depuis la table *Transactions récentes*, le `trace_id` est un lien cliquable vers la **trace Tempo** correspondante. Sélecteur `$gateway`. Données synthétiques, anonymisé."
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Requêtes/s par gateway (span metrics)",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 15, "lineWidth": 2 } },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["last", "max"] },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (service) (rate(traces_spanmetrics_calls_total{service=~\"$gateway\", span_kind=\"SPAN_KIND_SERVER\"}[1m]))",
+          "legendFormat": "{{service}}",
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Latence p95 par gateway (s)",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "s", "custom": { "drawStyle": "line", "fillOpacity": 15, "lineWidth": 2 } },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["last", "max"] },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (service, le) (rate(traces_spanmetrics_latency_bucket{service=~\"$gateway\", span_kind=\"SPAN_KIND_SERVER\"}[5m])))",
+          "legendFormat": "{{service}}",
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Erreurs HTTP (≥400) — source: transactions OpenSearch",
+      "description": "Comptage des transactions en erreur (http_status >= 400) issues du plan AUDIT (data stream txn-accounts-team). Signal métier/HTTP réel — complète le status_code des spans OTel (souvent UNSET côté APISIX). Un seul histogramme temporel (pas de split terms) : Grafana/elasticsearch ↔ OpenSearch 2.x rejette l'agg imbriquée terms>date_histogram via _msearch ; le split par gateway est déjà porté par les panneaux req/s et p95.",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 4 },
+      "datasource": { "type": "elasticsearch", "uid": "opensearch-txn" },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "min": 0, "custom": { "drawStyle": "bars", "fillOpacity": 60, "lineWidth": 1 }, "color": { "mode": "fixed", "fixedColor": "red" } },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "calcs": ["sum"] },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "elasticsearch", "uid": "opensearch-txn" },
+          "alias": "erreurs HTTP (>=400)",
+          "query": "http_status:>=400",
+          "metrics": [{ "id": "1", "type": "count" }],
+          "bucketAggs": [
+            { "id": "2", "type": "date_histogram", "field": "@timestamp", "settings": { "interval": "1m", "min_doc_count": "0" } }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Transactions récentes (OpenSearch — data stream txn-accounts-team)",
+      "description": "Plan GOUVERNANCE/AUDIT. Le champ trace_id est un lien cliquable vers la trace Tempo correspondante (pivot trace→transaction). PII masquée côté OpenSearch (FLS).",
+      "gridPos": { "h": 11, "w": 24, "x": 0, "y": 12 },
+      "datasource": { "type": "elasticsearch", "uid": "opensearch-txn" },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "trace_id" },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Ouvrir la trace ${__value.raw} dans Tempo",
+                    "url": "/explore?left=%7B%22datasource%22:%22tempo%22,%22queries%22:%5B%7B%22refId%22:%22A%22,%22datasource%22:%7B%22type%22:%22tempo%22,%22uid%22:%22tempo%22%7D,%22queryType%22:%22traceql%22,%22query%22:%22${__value.raw}%22%7D%5D,%22range%22:%7B%22from%22:%22now-6h%22,%22to%22:%22now%22%7D%7D",
+                    "targetBlank": true
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": { "showHeader": true, "sortBy": [{ "displayName": "@timestamp", "desc": true }] },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "elasticsearch", "uid": "opensearch-txn" },
+          "query": "*",
+          "metrics": [{ "id": "1", "type": "logs", "settings": { "limit": "50" } }],
+          "bucketAggs": []
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "indexByName": {
+              "@timestamp": 0,
+              "gateway": 1,
+              "tenant": 2,
+              "api": 3,
+              "http_method": 4,
+              "http_path": 5,
+              "http_status": 6,
+              "status": 7,
+              "trace_id": 8
+            },
+            "includeByName": {
+              "@timestamp": true,
+              "gateway": true,
+              "tenant": true,
+              "api": true,
+              "http_method": true,
+              "http_path": true,
+              "http_status": true,
+              "status": true,
+              "trace_id": true
+            }
+          }
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Traces récentes (Tempo) — toutes gateways",
+      "description": "Plan OPS/SRE. Cliquer un trace_id ouvre la trace complète (waterfall des spans).",
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 23 },
+      "datasource": { "type": "tempo", "uid": "tempo" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "tempo", "uid": "tempo" },
+          "queryType": "traceqlSearch",
+          "filters": [
+            {
+              "id": "svc",
+              "tag": "service.name",
+              "operator": "=~",
+              "scope": "resource",
+              "value": ["$gateway"],
+              "valueType": "string"
+            }
+          ],
+          "limit": 20,
+          "tableType": "traces"
+        }
+      ]
+    }
+  ]
+}

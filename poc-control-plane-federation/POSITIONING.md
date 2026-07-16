@@ -21,7 +21,7 @@ Réponse en une phrase à *« pourquoi acheter STOA plutôt que recopier ce PoC 
 | | Scaffold PoC (`labctl`, ce repo) | Produit STOA |
 |---|---|---|
 | Nature | Démonstrateur **jetable**, environnement éphémère | Plateforme supportée, versionnée, SLA |
-| `labctl` (~300 LOC) | Prouve que le *dispatch* « 1 contrat → N gw » est trivial | N'est PAS le produit — le produit est tout **autour** du dispatch |
+| `labctl` (boucle de *dispatch* ~180 LOC ; l'outil complet + 3 adapters ≈ 3 700 LOC) | Prouve que le *dispatch* « 1 contrat → N gw » est trivial — **mais le volume réel est dans les adapters / auth / HTTP**, soit précisément la « maintenance » que STOA vend | N'est PAS le produit — le produit est tout **autour** du dispatch |
 | Adapters | 3 adapters figés contre des admin APIs à un instant T | **STOA Links maintenus** : suivent les montées de version WSO2/APISIX/webMethods, testés en CI, garantis |
 | Contrats | OpenAPI publié, point | **Validation + détection de drift** : le contrat reste la source de vérité, alertes si une gw dérive |
 | Identité | Token KC consommé par 3 gw | **Fédération credentials/policies multi-runtime** : un changement de policy propagé partout, cohérent |

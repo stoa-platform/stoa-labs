@@ -1,0 +1,5 @@
+---
+- name: "Publier une API (PRODUCTEUR, ADR-076)"
+  hosts: webmethods
+  gather_facts: false
+  roles: [ apim_publish_api ]

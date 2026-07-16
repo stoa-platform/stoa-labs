@@ -1,0 +1,5 @@
+{
+  "users": ["accounts-viewer"],
+  "backend_roles": ["tenant-accounts-team"],
+  "description": "ADR-070 mapping: internal user accounts-viewer + backend_role tenant-accounts-team (future SSO/OIDC group claim) -> tenant-accounts-team-viewer. Provisioned idempotently by labctl."
+}

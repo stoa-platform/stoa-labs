@@ -1,0 +1,70 @@
+---
+# roles/apim_selfservice_app/defaults/main.yml
+#
+# Self-service de création d'application consommatrice (ADR-078), 100 % Ansible :
+# Ansible fait l'orchestration ET la mutation gateway (module uri) — pour ce
+# client, le moteur Go labctl est parqué (contrainte de provenance). Les shapes
+# REST et la logique d'idempotence/fail-closed sont la SPEC VÉRIFIÉE côté Go
+# (mémoire wm-1015-rest-shapes ; preuve Python 9/9 + tests Go).
+
+# --- endpoint de l'API d'ADMIN (les tâches ne portent QUE la ressource) ------
+# La base INCLUT le préfixe : en direct PoC = .../rest/apigateway ; chez le
+# client = le PROXY qui le mappe (et l'authentifie en OAuth2, cf. auth_mode).
+apim_ss_api_base: "http://localhost:5555/rest/apigateway"
+# data-plane (appel consommateur du verify live IP-only)
+apim_ss_data_base: "http://localhost:5555/gateway"
+
+# --- proxy multi-env on-premise : un seul endpoint, l'env via un header -------
+apim_ss_env: ""                       # dev|rec|int|prod ; vide = pas de header (PoC direct)
+apim_ss_env_header: "X-Environment"   # nom du header (configurable)
+
+# --- authentification de l'API d'admin ---------------------------------------
+#   basic  : user/mot de passe (PoC direct) — lus dans Vault, fallback manage.
+#   oauth2 : bearer client_credentials (proxy client) — token récupéré au runtime
+#            et passé en Authorization: Bearer sur chaque appel.
+apim_ss_auth_mode: "basic"            # basic | oauth2
+
+# basic (fallback PoC)
+apim_ss_wm_user: "Administrator"
+apim_ss_wm_password: "manage"
+
+# oauth2 (creds de préférence depuis Vault ; sinon ces vars)
+apim_ss_oauth_token_url: ""
+apim_ss_oauth_client_id: ""
+apim_ss_oauth_client_secret: ""
+apim_ss_oauth_scope: ""
+
+# --- Vault (mêmes conventions que is-mtls-setup.yml / internal/vault) --------
+apim_ss_vault_addr: "{{ lookup('env', 'VAULT_ADDR') }}"
+apim_ss_vault_kv_mount: "secret"
+apim_ss_vault_prefix: "stoa"
+apim_ss_vault_wm_creds_sub: "gateways/webmethods"           # basic  : { username, password }
+apim_ss_vault_oauth_sub: "gateways/webmethods/admin-oauth"  # oauth2 : { token_url, client_id, client_secret, scope }
+
+# --- la demande d'application à converger ------------------------------------
+# Une seule ici ; en réel : boucler sur une liste OU charger un manifeste
+# (clients/<x>/applications/*.json) via lookup('file') | from_json.
+apim_ss_app:
+  name: "demo-consumer"
+  api: "demo-selfservice"
+  api_version: "1.0.0"
+  description: "ADR-078 self-service application (Ansible)"
+  contact_emails: []
+  # Identité ENTRANTE (identifiers de l'asset application) :
+  ip_allowlist: []              # ex. ["192.168.65.1", "10.0.0.1-10.0.0.5"] (single|A-B ; PAS de CIDR — cf. README)
+  public_cert_ref: ""          # chemin vers un PEM PUBLIC (ou "")
+  # Plan SORTANT (P-callout) : header de clé backend injecté vers l'amont.
+  backend:
+    header: "apikey"
+    value_template: "${backend_apikey}"   # résolu au runtime par le TokenProvider IS ← Vault
+  # Dimensions à OPPOSER par la règle IAM AND (strict) — ferme le fail-open.
+  # Sous-ensemble de ["httpsCertificate","ipAddressRange"]. Vide = pose les
+  # identifiers SANS règle IAM (comportement historique inerte — À ÉVITER).
+  enforce: []
+  # --- MULTI-ENV : valeurs qui DIFFÈRENT par env (résolu par resolve-env.yml) --
+  # Mettre ici les champs env-spécifiques (ip_allowlist, public_cert_ref, override
+  # backend…). Le rôle fusionne racine ⊕ per_env[apim_ss_env]. Vide = mono-env.
+  #   per_env:
+  #     dev:  { ip_allowlist: ["10.10.1.0-10.10.1.9"], public_cert_ref: "certs/dev/app.crt" }
+  #     prod: { ip_allowlist: ["10.90.1.0-10.90.1.9"], public_cert_ref: "certs/prod/app.crt" }
+  per_env: {}

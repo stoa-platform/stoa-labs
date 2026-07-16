@@ -29,6 +29,51 @@ type Result struct {
 // an ApiKey-only posture — the single governed downgrade the client scale allows.
 const AuthExceptionApiKey = "auth-exception:apikey"
 
+// CodeIntegrityInconsistent is the machine code for "this contract's integrity
+// level yields no valid bundle" — SHARED by the validate-side gate
+// (governance.ValidateUAC) and the apply-side gate (cmd/labctl), so the code
+// announced stable to CI consumers cannot drift between the two sites.
+const CodeIntegrityInconsistent = "INTEGRITY_INCONSISTENT"
+
+// EffectiveExposure is the single place the empty-exposure default lives:
+// Derive, the enforcement requirement and the render command all report the
+// SAME effective value.
+func EffectiveExposure(exposure string) string {
+	if exposure == "" {
+		return "internal"
+	}
+	return exposure
+}
+
+// classificationRank orders the integrity levels (VH strongest). 0 = unknown.
+// Used by the central-registry gate (goal A5) to tell a DOWNGRADE (project
+// weaker than the governed level = spoof) from over-declaration (project
+// stronger = harmless over-provisioning).
+func classificationRank(c string) int {
+	switch c {
+	case "VH":
+		return 3
+	case "H":
+		return 2
+	case "M":
+		return 1
+	}
+	return 0
+}
+
+// Weaker reports whether posture (class, exposure) is WEAKER than the governed
+// (wantClass, wantExposure): a lower integrity rank, or dropping the external
+// exposure (which removes the mandatory ip-allowlist). Equal or stronger is not
+// weaker. This is the security-relevant comparison for the anti-spoof gate.
+func Weaker(class, exposure, wantClass, wantExposure string) bool {
+	if classificationRank(class) < classificationRank(wantClass) {
+		return true
+	}
+	// external → ip-allowlist mandatory; declaring internal when the governed
+	// exposure is external is a weakening.
+	return EffectiveExposure(wantExposure) == "external" && EffectiveExposure(exposure) == "internal"
+}
+
 // Derive computes the required policy bundle, fail-closed (ADR-076):
 //
 //	VH -> oauth2 + mtls ; H -> oauth2 ; M -> oauth2 (default)
@@ -44,10 +89,7 @@ func Derive(in Input) (Result, error) {
 		return Result{}, fmt.Errorf("classification %q inconnue (attendu VH, H ou M)", in.Classification)
 	}
 
-	exposure := in.Exposure
-	if exposure == "" {
-		exposure = "internal"
-	}
+	exposure := EffectiveExposure(in.Exposure)
 	if exposure != "internal" && exposure != "external" {
 		return Result{}, fmt.Errorf("exposure %q invalide (attendu internal ou external)", in.Exposure)
 	}

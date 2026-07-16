@@ -1,0 +1,39 @@
+{"policyAction": {
+  "id": "7a193997-1746-45a6-b94a-067d496ff693",
+  "names": [{"value": "poc-fetch-token", "locale": "en"}],
+  "templateKey": "customPolicy",
+  "parameters": [
+    {"templateKey": "transformationConditions", "parameters": [
+      {"templateKey": "logicalConnector", "values": ["OR"]},
+      {"templateKey": "transformationCondition", "parameters": [
+        {"templateKey": "transformationVariable", "values": ["${credspoc_token}"]},
+        {"templateKey": "transformationConditionOperator", "values": ["equals"]},
+        {"templateKey": "transformationConditionValue", "values": [""]}
+      ]}
+    ]},
+    {"templateKey": "customExtensionAction", "values": ["customAction"]},
+    {"templateKey": "customExtensionType", "values": ["externalCallout"]},
+    {"templateKey": "externalEndpoint", "parameters": [
+      {"templateKey": "endpointUri", "values": ["http://poc-token-echo:8080/token"]},
+      {"templateKey": "externalEndpointMethod", "values": ["POST"]},
+      {"templateKey": "connectTimeout", "values": ["10"]},
+      {"templateKey": "readTimeout", "values": ["10"]}
+    ]},
+    {"templateKey": "customExtensionRequestProcessing", "parameters": [
+      {"templateKey": "requestPayload", "values": ["{\"api\":\"${apiName}\",\"u_sans_prefix\":\"${credspoc_user}\",\"p_sans_prefix\":\"${credspoc_password}\",\"scope\":\"openid\"}"]}
+    ]},
+    {"templateKey": "customExtensionResponseProcessing", "parameters": [
+      {"templateKey": "copyEntireResponse", "values": ["false"]},
+      {"templateKey": "abortInCaseOfFailure", "values": ["true"]},
+      {"templateKey": "responsePayloadMap", "parameters": [
+        {"templateKey": "responseFromCustomPolicyExpression", "values": ["${credspoc_token}"]},
+        {"templateKey": "targetPayloadExpression", "values": ["${response[customExtension].payload.jsonPath[$.access_token]}"]}
+      ]},
+      {"templateKey": "responsePayloadMap", "parameters": [
+        {"templateKey": "responseFromCustomPolicyExpression", "values": ["${response.headers.X-Poc-Token-Cache}"]},
+        {"templateKey": "targetPayloadExpression", "values": ["${response[customExtension].payload.jsonPath[$.access_token]}"]}
+      ]}
+    ]}
+  ],
+  "active": true
+}}

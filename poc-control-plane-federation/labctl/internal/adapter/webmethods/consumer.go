@@ -129,6 +129,19 @@ func (a *Adapter) CreateConsumer(ctx context.Context, api *adapter.NormalizedAPI
 		}
 	}
 
+	// 6. Self-service enforcement (ADR-078, opt-in): OPPOSE the declared cert/IP
+	// identifiers by posing the AND identification rule on the API. Without it the
+	// identifiers are posed-but-inert (the fail-open). idTypes = exactly the
+	// dimensions the consumer declares (+ oAuth2Token when the OAuth2 path is on,
+	// so the token gate is preserved, never weakened). No-op by default.
+	if spec.EnforceInboundIdentifiers {
+		if idTypes := a.selfServiceIdTypes(spec); len(idTypes) > 0 {
+			if err := a.ensureSelfServiceIdentify(ctx, target.ID, idTypes); err != nil {
+				return nil, fmt.Errorf("webmethods consumer: enforce inbound identifiers on api %q: %w", api.Name, err)
+			}
+		}
+	}
+
 	return a.consumerResult(appID, spec.ClientID), nil
 }
 

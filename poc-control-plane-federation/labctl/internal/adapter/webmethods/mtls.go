@@ -67,46 +67,22 @@ func actionRuleTypes(action map[string]any) []string {
 	return out
 }
 
-// isMtlsIdentifyAction reports whether an action is the OAuth2+cert IAM action
-// (an evaluatePolicy carrying an httpsCertificate IdentificationRule).
+// isMtlsIdentifyAction reports whether an action is THE OAuth2+cert IAM action —
+// exactly {oAuth2Token, httpsCertificate}. It matches on the exact rule-type set
+// (not merely "has a cert rule") so it never grabs the self-service cert+IP
+// action {httpsCertificate, ipAddressRange}, which also carries a cert rule.
 func isMtlsIdentifyAction(action map[string]any) bool {
-	for _, t := range actionRuleTypes(action) {
-		if t == identificationTypeCert {
-			return true
-		}
-	}
-	return false
+	return actionMatchesRuleTypes(action, []string{"oAuth2Token", identificationTypeCert})
 }
 
-// mtlsIdentifyActionBody builds the ENVELOPED OAuth2+cert IAM action body. Both
-// rules use applicationLookup=strict (each must resolve to the SAME consumer app:
-// the token via azp/openIdClaims, the cert via httpsCertificate). logicalConnector
-// AND + allowAnonymous=false => a request missing either is rejected 401.
+// mtlsIdentifyActionBody builds the ENVELOPED OAuth2+cert IAM action body: an AND
+// of oAuth2Token and httpsCertificate, both applicationLookup=strict (each must
+// resolve to the SAME consumer app: the token via azp/openIdClaims, the cert via
+// httpsCertificate). allowAnonymous=false => a request missing either is rejected
+// 401. It is the OAuth2+cert case of the general identifyAndActionBody
+// (selfservice.go).
 func mtlsIdentifyActionBody(id string) map[string]any {
-	rule := func(idType string) map[string]any {
-		return map[string]any{
-			"templateKey": "IdentificationRule",
-			"parameters": []any{
-				map[string]any{"templateKey": "applicationLookup", "values": []any{"strict"}},
-				map[string]any{"templateKey": "identificationType", "values": []any{idType}},
-			},
-		}
-	}
-	action := map[string]any{
-		"names":       []any{map[string]any{"value": mtlsActionName, "locale": "en"}},
-		"templateKey": "evaluatePolicy",
-		"parameters": []any{
-			map[string]any{"templateKey": "logicalConnector", "values": []any{"AND"}},
-			map[string]any{"templateKey": "allowAnonymous", "values": []any{"false"}},
-			rule("oAuth2Token"),
-			rule(identificationTypeCert),
-		},
-		"active": true,
-	}
-	if id != "" {
-		action["id"] = id
-	}
-	return map[string]any{"policyAction": action}
+	return identifyAndActionBody(id, mtlsActionName, []string{"oAuth2Token", identificationTypeCert})
 }
 
 // ensureMtlsIdentifyAction finds the shared OAuth2+cert IAM action (by its cert-rule

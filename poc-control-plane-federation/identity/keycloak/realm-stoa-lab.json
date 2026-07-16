@@ -67,6 +67,17 @@
             "access.token.claim": "true",
             "userinfo.token.claim": "true"
           }
+        },
+        {
+          "name": "vault-exchange-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "vault-exchange",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
         }
       ]
     },
@@ -79,7 +90,20 @@
       "directAccessGrantsEnabled": true,
       "redirectUris": ["*"],
       "webOrigins": ["*"],
-      "attributes": { "post.logout.redirect.uris": "*" }
+      "attributes": { "post.logout.redirect.uris": "*" },
+      "protocolMappers": [
+        {
+          "name": "vault-exchange-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "vault-exchange",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
     },
     {
       "clientId": "poc-gateways",
@@ -100,6 +124,46 @@
           "consentRequired": false,
           "config": {
             "included.client.audience": "poc-gateways",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "vault",
+      "name": "HashiCorp Vault — cible d'audience (token exchange, chaîne A ADR-077)",
+      "description": "Client-ressource : n'émet ni ne consomme de flow OAuth2. Il n'existe que pour que le token exchange standard (RFC 8693) puisse cibler audience=vault ; Vault (auth jwt) exige ensuite bound_audiences=vault.",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "vault-resource-unused-poc",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false
+    },
+    {
+      "clientId": "vault-exchange",
+      "name": "STS token exchange → Vault (délégation identité utilisateur, ADR-077)",
+      "description": "Client confidentiel autorisé au token exchange standard (KC 26.2+) : échange le token utilisateur de la Console (aud=vault-exchange) contre un JWT court aud=vault, sub=utilisateur. Aucun flow interactif, aucun service account.",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "vault-exchange-secret-poc",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "attributes": {
+        "standard.token.exchange.enabled": "true"
+      },
+      "protocolMappers": [
+        {
+          "name": "tenant-attribute",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "tenant",
+            "claim.name": "tenant",
+            "jsonType.label": "String",
             "id.token.claim": "false",
             "access.token.claim": "true"
           }

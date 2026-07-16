@@ -1,0 +1,153 @@
+---
+# roles/apim_selfservice_app/tasks/verify.yml  (--tags verify)
+#
+# Preuve FAIL-CLOSED, rejouable comme critère d'acceptation : le play ÉCHOUE
+# bruyamment si l'app n'oppose pas ce que sa demande exige. Read-only, self-
+# contained (re-résout tout), pour tourner indépendamment du converge.
+
+- name: "Env : résoudre le manifeste effectif (identité invariante ⊕ per_env)"
+  ansible.builtin.import_tasks: resolve-env.yml
+
+- name: "Secrets : creds admin gateway (Vault, fallback PoC)"
+  ansible.builtin.import_tasks: secrets.yml
+
+- name: "Verify — self-service application '{{ apim_ss_app.name }}'"
+  module_defaults:
+    ansible.builtin.uri: "{{ apim_ss_uri_defaults }}"
+  block:
+
+    - name: "Verify : relire l'application"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/applications"
+      register: v_apps
+      changed_when: false
+
+    - ansible.builtin.set_fact:
+        v_app_id: >-
+          {{ (v_apps.json.applications | selectattr('name', 'equalto', apim_ss_app.name)
+              | map(attribute='id') | list | first) | default('') }}
+
+    - name: "Verify : fail-closed si l'application est absente"
+      ansible.builtin.assert:
+        that: "v_app_id | length > 0"
+        fail_msg: "Application {{ apim_ss_app.name }} absente."
+
+    - name: "Verify : relire le record de l'app"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/applications/{{ v_app_id }}"
+      register: v_app_get
+      changed_when: false
+
+    - ansible.builtin.set_fact:
+        v_app_rec: "{{ v_app_get.json.applications | default([v_app_get.json]) | first }}"
+        v_id_keys: "{{ (v_app_get.json.applications | default([v_app_get.json]) | first).identifiers | default([]) | map(attribute='key') | list }}"
+
+    - name: "Verify : chaque dimension à opposer est PRÉSENTE comme identifier de l'asset"
+      ansible.builtin.assert:
+        that: "item in v_id_keys"
+        fail_msg: "identifier {{ item }} absent de l'application (fail-open : dimension déclarée non posée)."
+        success_msg: "identifier {{ item }} présent dans l'asset."
+      loop: "{{ apim_ss_app.enforce }}"
+
+    # ----- l'enforcement est-il RÉELLEMENT posé sur la policy de l'API ? -----
+    - name: "Verify : résoudre l'API + sa policy + l'action IAM nommée"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/apis"
+      register: v_apis
+      changed_when: false
+
+    - ansible.builtin.set_fact:
+        v_api_id: >-
+          {{ (v_apis.json.apiResponse | map(attribute='api')
+              | selectattr('apiName', 'equalto', apim_ss_app.api)
+              | selectattr('apiVersion', 'equalto', apim_ss_app.api_version)
+              | map(attribute='id') | list | first) | default('') }}
+
+    - name: "Verify : id de l'action IAM nommée"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/policyActions"
+      register: v_actions
+      changed_when: false
+
+    - ansible.builtin.set_fact:
+        v_iam_id: ""
+    - name: "Verify : id de l'action IAM par empreinte de règles (nom forcé par la gateway)"
+      ansible.builtin.set_fact:
+        v_iam_id: "{{ item.id }}"
+      loop: "{{ v_actions.json.policyAction | default([]) }}"
+      loop_control: { label: "{{ item.id }}" }
+      when: >-
+        (item.parameters | default([]) | selectattr('templateKey', 'equalto', 'IdentificationRule')
+         | map(attribute='parameters') | flatten
+         | selectattr('templateKey', 'equalto', 'identificationType')
+         | map(attribute='values') | flatten | sort) == (apim_ss_app.enforce | sort)
+
+    - name: "Verify : GET API -> policy id"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/apis/{{ v_api_id }}"
+      register: v_api_get
+      changed_when: false
+      when: "apim_ss_app.enforce | length > 0"
+
+    - ansible.builtin.set_fact:
+        v_pol_id: "{{ (v_api_get.json.apiResponse.api.policies | default([])) | first | default('') }}"
+      when: "apim_ss_app.enforce | length > 0"
+
+    - name: "Verify : GET policy"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/policies/{{ v_pol_id }}"
+      register: v_pol_get
+      changed_when: false
+      when: "apim_ss_app.enforce | length > 0"
+
+    - name: "Verify : FAIL-CLOSED — le stage IAM oppose bien notre action AND"
+      ansible.builtin.assert:
+        that:
+          - "v_iam_id | length > 0"
+          - >-
+            v_iam_id in ((v_pol_get.json.policy | default(v_pol_get.json)).policyEnforcements | default([])
+              | selectattr('stageKey', 'equalto', 'IAM')
+              | map(attribute='enforcements') | flatten
+              | map(attribute='enforcementObjectId') | list)
+        fail_msg: >-
+          ENFORCEMENT_UNCONFIRMED : la policy de {{ apim_ss_app.api }} n'oppose pas
+          l'action AND({{ apim_ss_app.enforce | join('+') }}) — les identifiers seraient inertes.
+        success_msg: "ENFORCEMENT_CONFIRMED : AND({{ apim_ss_app.enforce | join('+') }}) opposé au stage IAM."
+      when: "apim_ss_app.enforce | length > 0"
+
+    # ----- plan SORTANT : la Request Transformation est-elle posée ? --------
+    - name: "Verify : ids du stage routing + customHttpHeaders (plan sortant)"
+      ansible.builtin.set_fact:
+        v_routing_ids: >-
+          {{ (v_pol_get.json.policy | default(v_pol_get.json)).policyEnforcements | default([])
+             | selectattr('stageKey', 'equalto', 'routing') | map(attribute='enforcements') | flatten
+             | map(attribute='enforcementObjectId') | list }}
+        v_customhdr_ids: "{{ v_actions.json.policyAction | default([]) | selectattr('templateKey', 'equalto', 'customHttpHeaders') | map(attribute='id') | list }}"
+      when: "apim_ss_app.enforce | length > 0 and (apim_ss_app.backend.header | default('')) | length > 0"
+
+    - name: "Verify : FAIL-CLOSED — la clé backend est injectée (customHttpHeaders au routing)"
+      ansible.builtin.assert:
+        that: "(v_customhdr_ids | select('in', v_routing_ids) | list) | length > 0"
+        fail_msg: "OUTBOUND_UNCONFIRMED : aucun customHttpHeaders attaché au routing — clé backend non injectée."
+        success_msg: "OUTBOUND_CONFIRMED : injection clé backend (customHttpHeaders) posée au stage routing."
+      when: "apim_ss_app.enforce | length > 0 and (apim_ss_app.backend.header | default('')) | length > 0"
+
+    # ----- preuve LIVE data-plane (OPTIONNELLE) -----------------------------
+    # Appel CONSOMMATEUR anonyme (l'IP identifie) -> 200. N'a de sens que si l'IP
+    # de l'APPELANT est dans l'allowlist : vrai depuis un poste connu, FAUX depuis
+    # un agent CI (IP différente). D'où le flag apim_ss_verify_dataplane (défaut
+    # false) : la preuve fail-closed STRUCTURELLE (ENFORCEMENT/OUTBOUND_CONFIRMED)
+    # reste toujours active ; ce check live ne s'ajoute que sur demande.
+    - name: "Verify (live IP-only) : appel data-plane depuis une IP autorisée -> 200"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_data_base }}/{{ apim_ss_app.api }}/{{ apim_ss_app.api_version }}/accounts"
+        status_code: [200]
+        headers: "{{ {apim_ss_env_header: apim_ss_env} if (apim_ss_env | length > 0) else {} }}"
+        force_basic_auth: false
+        user: "{{ omit }}"
+        password: "{{ omit }}"
+      register: v_dp
+      changed_when: false
+      when:
+        - "apim_ss_app.enforce == ['ipAddressRange']"
+        - "apim_ss_verify_dataplane | default(false) | bool"

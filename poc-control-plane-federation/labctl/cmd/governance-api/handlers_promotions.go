@@ -139,6 +139,10 @@ func (s *Server) handlePromotionRequest(w http.ResponseWriter, r *http.Request, 
 	}
 	deployRaw, err := governance.MarshalYAML(governance.Deployment{
 		Version: version, Enabled: true, PromotedBy: id.Username, Message: body.Message, Commit: pinSHA,
+		// Anchor the dispatch gate (A6) on THIS state: the change that authorised
+		// this promotion travels into the deploy marker, so a live ITSM re-check
+		// at apply time targets exactly the state being dispatched.
+		ChangeRef: body.ChangeRef,
 	})
 	if err != nil {
 		apiError(w, http.StatusInternalServerError, "INTERNAL", err.Error())
@@ -346,15 +350,30 @@ func (s *Server) handlePromotionApprove(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
+	// Chaîne A (ADR-077) : l'approbation vient d'être COMMITÉE — on propage
+	// l'IDENTITÉ de l'approbateur vers le canal de déploiement (exchange
+	// RFC 8693 → job Jenkins sans credential) IMMÉDIATEMENT, avant même la
+	// relecture : un échec de re-lecture ne doit pas perdre l'effet d'une
+	// approbation déjà actée dans Git. Le Bearer brut est capturé ici (la
+	// requête meurt avec le handler).
+	userDeploy := "not_configured"
+	if s.UserDeploy != nil {
+		userDeploy = "dispatched"
+		s.dispatchUserDeploy(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "),
+			tenant, promoID, id.Username)
+	}
+
 	reread, err := s.Store.FindPromotion(ctx, tenant, promoID)
 	if err != nil {
 		apiError(w, http.StatusInternalServerError, "GIT_ERROR", "relecture après merge: "+err.Error())
 		return
 	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"promotion":    reread,
 		"merge_commit": map[string]any{"sha": mergeCommit.SHA, "sha7": mergeCommit.SHA7, "signed": mergeCommit.Signed},
 		"evidence":     evPath,
+		"user_deploy":  userDeploy,
 	})
 }
 

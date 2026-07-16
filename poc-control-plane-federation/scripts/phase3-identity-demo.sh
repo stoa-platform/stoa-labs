@@ -1,7 +1,15 @@
 #!/usr/bin/env bash
 # Phase 3 DoD — ONE Keycloak token (Oracle-master via the broker) validated by
 # all THREE heterogeneous gateways at the data-plane.
+# webMethods = REAL apigateway-trial:10.15 (poc-webmethods-real, :5555), JWT
+# imposé via labctl inboundAuth (alias auth-server JWKS + action IAM
+# "Identify & Authorize" jwtClaims projetés par `labctl apply`).
+# APISIX = openid-connect (bearer_only+use_jwks) AUSSI projeté par labctl
+# inboundAuth (discoveryUrl) — plus besoin de setup-identity.sh §3/3 pour APISIX,
+# et `labctl apply` ne rouvre plus le trou (la route re-PUT porte le plugin).
 # Prereq: ./scripts/demo.sh  (publish+subscribe) then ./scripts/setup-identity.sh
+#         (WSO2 Key Manager + realm Keycloak; la partie APISIX y est désormais
+#         redondante) + docker-compose.wm.yml up (real webMethods gateway)
 set -uo pipefail
 cd "$(dirname "$0")/.."
 get() { awk -v sec="[$1]" -v k="$2" '$0==sec{f=1;next} f&&/^\[/{exit} f{p=index($0,"="); if(p){key=substr($0,1,p-1); gsub(/ /,"",key); if(key==k){v=substr($0,p+1); sub(/^ +/,"",v); print v; exit}}}' labctl-credentials.txt; }
@@ -43,11 +51,11 @@ echo ""
 echo "════════ the SAME token, validated by 3 heterogeneous gateways ════════"
 call "wso2"       "https://localhost:8243/accounts-read/v1/1.0.0/accounts"
 call "apisix"     "http://localhost:9080/accounts-read/v1/accounts"
-call "webmethods" "http://localhost:8090/gateway/accounts-read/v1/accounts"
+call "webmethods" "http://localhost:5555/gateway/accounts-read/1.0.0/accounts"
 echo "  — negative (auth enforced):"
 no_tok "wso2"       "https://localhost:8243/accounts-read/v1/1.0.0/accounts"
 no_tok "apisix"     "http://localhost:9080/accounts-read/v1/accounts"
-no_tok "webmethods" "http://localhost:8090/gateway/accounts-read/v1/accounts"
+no_tok "webmethods" "http://localhost:5555/gateway/accounts-read/1.0.0/accounts"
 
 echo ""
 echo "✓ Phase 3 — Oracle-master identity, federated by Keycloak, validated by"

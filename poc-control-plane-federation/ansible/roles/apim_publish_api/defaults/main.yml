@@ -1,0 +1,53 @@
+---
+# roles/apim_publish_api/defaults/main.yml
+#
+# Publication d'API (PRODUCTEUR, ADR-076/075) 100 % Ansible : import OpenAPI
+# multipart + activate + scoping équipe + policies inbound (validation JWT/OAuth2
+# au stage IAM). Spec vérifiée = Go labctl (publish.go / inboundauth.go / oauth2.go),
+# mémoire wm-1015-rest-shapes. Le binaire Go reste parqué (contrainte de provenance).
+
+# --- infra (MÊMES noms que apim_selfservice_app : partagé en pipeline combiné) ---
+apim_ss_api_base: "http://localhost:5555/rest/apigateway"
+apim_ss_data_base: "http://localhost:5555/gateway"
+apim_ss_env: ""
+apim_ss_env_header: "X-Environment"
+apim_ss_auth_mode: "basic"
+apim_ss_wm_user: "Administrator"
+apim_ss_wm_password: "manage"
+apim_ss_oauth_token_url: ""
+apim_ss_oauth_client_id: ""
+apim_ss_oauth_client_secret: ""
+apim_ss_oauth_scope: ""
+apim_ss_vault_addr: "{{ lookup('env', 'VAULT_ADDR') }}"
+apim_ss_vault_kv_mount: "secret"
+apim_ss_vault_prefix: "stoa"
+apim_ss_vault_wm_creds_sub: "gateways/webmethods"
+apim_ss_vault_oauth_sub: "gateways/webmethods/admin-oauth"
+
+# --- IS-ADMIN : allow-list d'un port en Deny-by-Default (tasks/port-access.yml) ---
+# Surface DIFFÉRENTE de l'API d'admin apigateway : c'est l'Access Mode du listener
+# Integration Server (Security > Ports > Access Mode), piloté par le form WmRoot.
+# Opt-in : n'agit QUE si apim_ss_port_manage=true (là où le port data-plane est en
+# Deny-by-Default). Ne flippe JAMAIS le mode (le passage en Deny se fait à la
+# création de l'env, côté client) — on ne fait qu'AJOUTER l'entrée de l'API.
+apim_ss_port_manage: false
+apim_ss_isadmin_base: "http://localhost:5555/WmRoot"   # client : proxifié ou direct
+apim_ss_port_alias: "HTTPListener@5555"                # le listener data-plane concerné
+apim_ss_port_listener_type: "Regular"
+# Entrée à autoriser = référence de SERVICE IS (folder:service). Le port rejette les
+# URLs data-plane ; le mapping API→service dépend du dispatch gateway du client.
+apim_ss_port_allow_entry: ""
+
+# --- l'API à publier --------------------------------------------------------
+apim_api:
+  name: "accounts-read"
+  version: "1.0.0"
+  contract: ""          # chemin du contrat OpenAPI (yaml|json) — REQUIS (absolu ou relatif au playbook)
+  team: ""              # nom d'équipe (accessProfile) à assigner — optionnel (isolation ADR-076)
+  # Policies INBOUND (optionnel) : validation au stage IAM. Vide = API ouverte.
+  #   issuer      : l'iss EXACT du token (épinglé côté émetteur)
+  #   jwks_uri    : JWKS joignable DEPUIS la gateway (réseau interne, pas localhost)
+  #   alias_name  : nom de l'alias auth-server côté gateway
+  #   mode        : jwt (signature seule) | oauth2 (strict + audience + scope + strategy)
+  #   audience/scope/client_id : requis en mode oauth2
+  inbound: {}

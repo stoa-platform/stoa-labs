@@ -9,11 +9,16 @@
 package main
 
 import (
+	"context"
 	_ "embed"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
+	"time"
 
 	"github.com/stoa-platform/stoa-labs/poc/labctl/internal/governance"
 )
@@ -46,13 +51,43 @@ func main() {
 		Schema:      uacSchema,
 		// ITSM_URL empty → nil client → itsmCheck gates refuse (fail-closed).
 		ITSM: governance.NewITSMClient(os.Getenv("ITSM_URL")),
+		// Chaîne A (ADR-077) : opt-in par USER_DEPLOY_WEBHOOK_URL +
+		// VAULT_EXCHANGE_SECRET[_FILE]. Absent → flux A7 inchangé.
+		UserDeploy: NewUserDeployFromEnv(kcBase, kcRealm),
 	}
 
 	listen := envOr("LISTEN", ":8787")
-	log.Printf("governance-api: repo=%s keycloak=%s/realms/%s listen=%s", repoPath, kcBase, kcRealm, listen)
-	if err := http.ListenAndServe(listen, srv.Handler()); err != nil {
-		log.Fatalf("governance-api: %v", err)
+	userDeployState := "off"
+	if srv.UserDeploy != nil {
+		// L'URL du webhook porte le token generic-webhook-trigger dans sa query
+		// string — on logge l'URL REDACTÉE (query strippée), jamais le token.
+		userDeployState = "on"
+		if u, err := url.Parse(srv.UserDeploy.WebhookURL); err == nil {
+			u.RawQuery = ""
+			userDeployState = "on → " + u.String()
+		}
 	}
+	log.Printf("governance-api: repo=%s keycloak=%s/realms/%s listen=%s user-deploy=%s", repoPath, kcBase, kcRealm, listen, userDeployState)
+
+	// Arrêt gracieux : un SIGTERM juste après un approve ne doit pas perdre un
+	// dispatch chaîne A (ni un audit de refus) en vol — on ferme l'écoute PUIS
+	// on vide les goroutines suivies avant de sortir.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	hs := &http.Server{Addr: listen, Handler: srv.Handler()}
+	go func() {
+		if err := hs.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("governance-api: %v", err)
+		}
+	}()
+	<-ctx.Done()
+	stop()
+	shCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = hs.Shutdown(shCtx)
+	srv.WaitDispatches()
+	srv.WaitDenials()
+	log.Printf("governance-api: arrêt propre (dispatches chaîne A et audits vidés)")
 }
 
 // envOr reads an env var with a default (contract §7).

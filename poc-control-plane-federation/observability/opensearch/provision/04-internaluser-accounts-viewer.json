@@ -1,0 +1,8 @@
+{
+  "password": "Stoa!Viewer2026",
+  "backend_roles": ["tenant-accounts-team"],
+  "attributes": {
+    "tenant": "accounts-team"
+  },
+  "description": "ADR-070 test viewer for tenant accounts-team (RBAC test without SSO). Provisioned idempotently by labctl."
+}

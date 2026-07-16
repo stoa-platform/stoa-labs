@@ -47,8 +47,10 @@ type Client struct {
 func Enabled() bool { return strings.TrimSpace(os.Getenv("VAULT_ADDR")) != "" }
 
 // FromEnv builds a Client from VAULT_ADDR / VAULT_TOKEN / VAULT_KV_MOUNT
-// (default "secret") / VAULT_PREFIX (default "stoa") / VAULT_INSECURE. It
-// returns (nil, false) when VAULT_ADDR is empty — the no-op path.
+// (default "secret") / VAULT_PREFIX (default "stoa") / VAULT_INSECURE /
+// VAULT_CACERT (the standard Vault CLI knob — enterprise CA bundle; falls back
+// to LABCTL_CA_FILE so one knob can cover gateways AND Vault). It returns
+// (nil, false) when VAULT_ADDR is empty — the no-op path.
 func FromEnv() (*Client, bool) {
 	addr := strings.TrimSpace(os.Getenv("VAULT_ADDR"))
 	if addr == "" {
@@ -61,7 +63,7 @@ func FromEnv() (*Client, bool) {
 		secretID: resolveSecretID(),
 		mount:    envOr("VAULT_KV_MOUNT", "secret"),
 		prefix:   envOr("VAULT_PREFIX", "stoa"),
-		hc:       httpx.NewClient(boolEnv("VAULT_INSECURE")),
+		hc:       httpx.NewClientCA(boolEnv("VAULT_INSECURE"), envOr("VAULT_CACERT", os.Getenv("LABCTL_CA_FILE"))),
 	}, true
 }
 

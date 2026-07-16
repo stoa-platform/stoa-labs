@@ -1,0 +1,75 @@
+---
+# roles/apim_publish_api/tasks/verify.yml (--tags verify) — preuve fail-closed.
+- name: "Env : résoudre l'API effective (identité invariante ⊕ per_env inbound)"
+  ansible.builtin.import_tasks: resolve-env.yml
+- name: "Secrets : auth admin (Vault, fallback PoC)"
+  ansible.builtin.import_tasks: secrets.yml
+- name: "Verify — API '{{ apim_api.name }}' v{{ apim_api.version }}"
+  module_defaults:
+    ansible.builtin.uri: "{{ apim_ss_uri_defaults }}"
+  block:
+    - name: "Verify : relire le catalogue"
+      ansible.builtin.uri: { url: "{{ apim_ss_api_base }}/apis" }
+      register: v_apis
+      changed_when: false
+    - ansible.builtin.set_fact:
+        v_api: >-
+          {{ (v_apis.json.apiResponse | map(attribute='api')
+              | selectattr('apiName','equalto', apim_api.name)
+              | selectattr('apiVersion','equalto', apim_api.version) | list | first) | default({}) }}
+    - name: "Verify : FAIL-CLOSED — l'API est publiée ET ACTIVE"
+      ansible.builtin.assert:
+        that:
+          - "v_api.id is defined"
+          - "v_api.isActive | default(false)"
+        fail_msg: "PUBLISH_UNCONFIRMED : API {{ apim_api.name }} v{{ apim_api.version }} absente ou inactive."
+        success_msg: "PUBLISH_CONFIRMED : {{ apim_api.name }} v{{ apim_api.version }} publiée + active (id={{ v_api.id | default('?') }})."
+
+    # ----- inbound (optionnel) : la validation JWT/OAuth2 est-elle opposée ? -
+    - name: "Verify : inbound — alias + règle IAM"
+      when: "(apim_api.inbound | default({})) | length > 0"
+      block:
+        - ansible.builtin.uri: { url: "{{ apim_ss_api_base }}/alias" }
+          register: v_aliases
+          changed_when: false
+        - ansible.builtin.uri: { url: "{{ apim_ss_api_base }}/policyActions" }
+          register: v_pa
+          changed_when: false
+        - ansible.builtin.uri: { url: "{{ apim_ss_api_base }}/apis/{{ v_api.id }}" }
+          register: v_apiget
+          changed_when: false
+        - ansible.builtin.uri: { url: "{{ apim_ss_api_base }}/policies/{{ (v_apiget.json.apiResponse.api.policies | default([])) | first }}" }
+          register: v_polget
+          changed_when: false
+        - name: "Verify : FAIL-CLOSED — alias auth-server présent + règle IAM opposée au stage IAM"
+          ansible.builtin.assert:
+            that:
+              - "(v_aliases.json.alias | default([]) | selectattr('name','equalto', apim_api.inbound.alias_name) | list) | length > 0"
+              - >-
+                ((v_polget.json.policy | default(v_polget.json)).policyEnforcements | default([])
+                  | selectattr('stageKey','equalto','IAM') | map(attribute='enforcements') | flatten
+                  | map(attribute='enforcementObjectId') | list) | length > 0
+            fail_msg: "INBOUND_UNCONFIRMED : alias absent OU aucune règle IAM au stage IAM."
+            success_msg: "INBOUND_CONFIRMED : alias '{{ apim_api.inbound.alias_name }}' + règle IAM ({{ apim_api.inbound.mode | default('jwt') }}) opposée."
+
+        # --- oauth2 : strategy + scope mapping liés à l'API ---
+        - name: "Verify(oauth2) : strategy + scope"
+          when: "(apim_api.inbound.mode | default('jwt')) == 'oauth2'"
+          block:
+            - ansible.builtin.uri: { url: "{{ apim_ss_api_base }}/strategies" }
+              register: v_strats
+              changed_when: false
+            - ansible.builtin.uri: { url: "{{ apim_ss_api_base }}/scopes" }
+              register: v_scopes
+              changed_when: false
+            - name: "Verify(oauth2) : FAIL-CLOSED — strategy OAUTH2 + scope mapping liant l'API"
+              ansible.builtin.assert:
+                that:
+                  - "(v_strats.json.strategies | default([]) | selectattr('name','equalto', 'apim-strat-' ~ apim_api.name) | list) | length > 0"
+                  - >-
+                    (v_scopes.json.scopes | default([])
+                      | selectattr('scopeName','equalto', apim_api.inbound.alias_name ~ ':' ~ apim_api.inbound.scope)
+                      | selectattr('apiScopes','defined')
+                      | selectattr('apiScopes','contains', v_api.id) | list) | length > 0
+                fail_msg: "OAUTH2_UNCONFIRMED : strategy absente OU scope non lié à l'API."
+                success_msg: "OAUTH2_CONFIRMED : strategy apim-strat-{{ apim_api.name }} + scope mapping liant l'API (audience/scope opposés)."

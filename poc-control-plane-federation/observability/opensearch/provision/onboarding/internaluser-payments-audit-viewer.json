@@ -1,0 +1,6 @@
+{
+  "password": "Stoa!Audit2026",
+  "backend_roles": ["tenant-payments-team-audit"],
+  "attributes": { "tenant": "payments-team" },
+  "description": "PoC tenant audit viewer (payments-team). RBAC test for audit-onboarding-payments-team* WITHOUT SSO. Provisioned idempotently."
+}
