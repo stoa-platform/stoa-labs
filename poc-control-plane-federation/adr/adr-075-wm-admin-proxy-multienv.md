@@ -2,6 +2,7 @@
 title: "ADR-075 — Multi-env webMethods sans gateway de promotion : rebuild-from-Git idempotent par env, différences portées par les aliases, et 3 APIs proxy admin sœurs allowlist OAuth2-scopées comme unique chemin vers les envs bas"
 sidebar_label: "ADR-075 : Proxy admin wM multi-env"
 status: "Proposé — en attente Council (GO/NO-GO)"
+maturite_technique: "✅ Livré & prouvé — multi-env 19/19 + vrai Jenkins"
 date: 2026-06-12
 adr_number: 75
 visibility: private
@@ -10,7 +11,8 @@ note: "Privé (stoa-labs). S'appuie sur ADR-069 (Git source de vérité), ADR-07
 
 # ADR-075 — Proxy admin wM multi-env
 
-**Statut :** Proposé — en attente validation Council (GO/NO-GO).
+**Statut :** Proposé — en attente validation Council (GO/NO-GO). *(axe gouvernance/business — distinct de la maturité technique ci-dessous)*
+**Maturité technique :** ✅ Livré & prouvé — `demo-multienv.sh` 19/19 + **vrai Jenkins** (prod-deploy/rollback SUCCESS) ; ITSM gate + 4-yeux + pin SHA.
 **Date :** 2026-06-12.
 **Contexte client (anonymisé) :** banque — webMethods API Gateway 10.15, chaîne d'environnements dev → rec → int → prod, Jenkins n'ayant de route réseau QUE vers la zone prod.
 **Lié à :** [[adr-069-retention-moat-governance-source-of-truth]], [[adr-072-control-plane-mediation]], [[adr-074-vault-secrets]].
@@ -93,7 +95,16 @@ Le client CI hors-prod (`ci-horsprod`, client_credentials) porte `deploy:dev+rec
 |---|---|
 | **→ dev, → rec** | push provider mergé → webhook → pipeline hors-prod (auto) — `deploy.dev/rec.yaml` au fil de l'eau |
 | **rec → int** | promotion par référence (`pr_xxx`) **approuvée par l'équipe int** (`approverGroup`) → merge `deploy.int.yaml` → convergence |
-| **int → prod** | promotion + **change ITSM approuvé** (`change_ref`, vérifié auprès de l'ITSM — 409 si draft, 503 si non configuré) + **preuve de validation** (`pv_ref`) + **4-yeux** (`approved_by != requested_by`, self-approval → 403) → `ci/Jenkinsfile.prod` (AUCUN trigger), gate **Git-natif** relu avant tout dispatch |
+| **int → prod** | promotion + **change ITSM approuvé** (`change_ref`, vérifié auprès de l'ITSM — 409 si draft, 503 si non configuré) + **preuve de validation** (`pv_ref`) + **4-yeux** (`approved_by != requested_by`, self-approval → 403) → `ci/Jenkinsfile.prod` (AUCUN trigger), gate **Git-natif** relu avant tout dispatch **+ re-check ITSM LIVE au DISPATCH** (anti-TOCTOU, A6) |
+
+### Re-check ITSM au dispatch (anti-TOCTOU, goal A6)
+
+Le gate Git-natif valide l'état **mergé** — l'approbation *au moment du merge/build*. Un change approuvé puis **révoqué** entre le build et le clic « déployer » passerait sinon inaperçu. Le re-check ferme cette fenêtre en **deux couches** :
+
+- **Couche autoritaire (labctl `apply-uac`)** : un pré-check *fail-closed* avant tout écrit gateway relit, pour chaque env gated `itsmCheck` réellement dispatché, le `change_ref` **inscrit dans `deploy.{env}.yaml`** (écrit par la promotion qui a activé l'env — l'ancre est l'**état dispatché**, pas « une promotion approuvée quelconque ») et interroge l'ITSM **live**. Verdicts : `409 ITSM_NOT_APPROVED` (révoqué), `503 ITSM_UNAVAILABLE`/`ITSM_NOT_CONFIGURED` (fail-closed), `NO_CHANGE_REF` (état non rattaché à un change). Le gate s'arme sur la **config de gate du repo** + les deploys activés — **jamais** sur le seul flag `--env` : `--env any` re-check **tout** env gated activé (pas de bypass en omettant le flag). Une seule passe pré-dispatch → **zéro dispatch partiel** sur repo multi-contrats.
+- **Couche pipeline (`labctl dispatch-gate`)** : la **même** vérité Go exposée en stage Jenkins dédié (`ci/Jenkinsfile.prod`), qui échoue *avant* le stage Apply — pas de ré-implémentation shell du check (une seule source de vérité).
+
+**Preuve** : `scripts/demo-multienv.sh` §③b (change révoqué entre approbation et dispatch → `409` rejoué ; ITSM injoignable → `503`) ; unitaires `cmd/labctl/dispatchgate_test.go` (approved/révoqué/unavailable/not-configured/no-change-ref/ungated-noop/`--env any`). **Limite documentée** : le re-apply *rollback* re-checke le change de l'état N-1 restauré ; dans un ITSM réel ce change serait `implemented` post-MEP (non `approved`) → un rollback d'urgence devrait porter son **propre** `change_ref` (le mock le laisse `approved`, le PoC passe).
 | **rollback** | `ci/Jenkinsfile.rollback` : revert **Git** ordonné par governance-api (raison + change ITSM, audité) + **re-apply idempotent** — jamais de suppression gateway |
 
 ---

@@ -5,12 +5,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/stoa-platform/stoa-labs/poc/labctl/internal/adapter"
 	"github.com/stoa-platform/stoa-labs/poc/labctl/internal/backstage"
 	"github.com/stoa-platform/stoa-labs/poc/labctl/internal/cli"
+	"github.com/stoa-platform/stoa-labs/poc/labctl/internal/enforce"
 	"github.com/stoa-platform/stoa-labs/poc/labctl/internal/openapi"
 	"github.com/stoa-platform/stoa-labs/poc/labctl/internal/output"
 	"github.com/stoa-platform/stoa-labs/poc/labctl/internal/targets"
@@ -21,19 +23,33 @@ var applyCmd = &cobra.Command{
 	Short: "Publish the OpenAPI contract on every target gateway (Define Once, Expose Everywhere)",
 	Long: "apply loads the single OpenAPI contract and dispatches it to every gateway in " +
 		"targets.yaml through its adapter — the federation engine: one contract, N heterogeneous " +
-		"runtimes. It also writes a Backstage catalog-info.yaml for the federated API.",
+		"runtimes. It also writes a Backstage catalog-info.yaml for the federated API.\n\n" +
+		"ENFORCEMENT (ADR-076): when a UAC contract (api.yaml) sits next to the manifest — or is " +
+		"named via --uac — apply derives the required security bundle from its integrity " +
+		"classification and FAIL-CLOSES the run twice: [INTEGRITY_UNFULFILLED] when a target does " +
+		"not declare the knobs the bundle requires (static, nothing written), and " +
+		"[ENFORCEMENT_UNCONFIRMED] when the gateway's read-back state does not confirm the bundle " +
+		"after publish. There is no opt-out flag; an UNCONFIRMED verdict does not deactivate the " +
+		"API (pipeline-level gate — remediation is the red pipeline + the reconcile report).",
 	RunE: runApply,
 }
 
 func init() {
+	applyCmd.Flags().StringVar(&uacFlag, "uac", "",
+		"UAC contract (api.yaml) driving the enforcement gate; default: api.yaml colocated with the manifest")
+	applyCmd.Flags().StringVar(&classificationSourceFlag, "classification-source", "",
+		"central integrity-classification registry (ADR-076 A5); default env LABCTL_CLASSIFICATION_SOURCE. When set, the classification is AUTHORITATIVE from this registry, not the project api.yaml")
+	applyCmd.Flags().StringVar(&projectFlag, "project", "",
+		"non-editable project identity for the central-classification lookup; default env LABCTL_PROJECT (the pipeline's PROJECT_NAME)")
 	rootCmd.AddCommand(applyCmd)
 }
 
 type publishOutcome struct {
-	name string
-	typ  string
-	res  *adapter.PublishResult
-	err  error
+	name        string
+	typ         string
+	res         *adapter.PublishResult
+	err         error
+	enforcement []adapter.PolicyVerdict
 }
 
 func runApply(cmd *cobra.Command, _ []string) error {
@@ -62,6 +78,37 @@ func runApply(cmd *cobra.Command, _ []string) error {
 
 	fmt.Fprintf(log, "Define Once → Expose Everywhere: %q v%s → %d gateways\n", api.Name, api.Version, len(tf.Targets))
 	fmt.Fprintf(log, "  contract: %s\n  backend:  %s\n\n", tf.Contract, backendOrPlaceholder(api.BackendURL))
+
+	// --- enforcement gate 1/2: static pre-check, BEFORE any write ------------
+	enf, err := loadEnforcement(fileFlag, api.Name)
+	if err != nil {
+		return err
+	}
+	if enf != nil {
+		for _, w := range enf.warnings {
+			fmt.Fprintf(log, "  %s %s\n", cli.SKIP, w)
+		}
+		fmt.Fprintf(log, "Enforcement ADR-076 (%s): classification=%s exposure=%s → authn=%s policies=[%s]\n",
+			enf.contractPath, enf.req.Classification, enf.req.Exposure, enf.req.Authn, strings.Join(enf.req.Policies, ", "))
+		var violations []string
+		for _, t := range tf.Targets {
+			v, warns := enforce.PrecheckTarget(t, enf.req)
+			for _, w := range warns {
+				fmt.Fprintf(log, "  %s %s: %s\n", cli.SKIP, t.Name, w)
+			}
+			for _, x := range v {
+				violations = append(violations, t.Name+": "+x)
+			}
+		}
+		if len(violations) > 0 {
+			for _, v := range violations {
+				fmt.Fprintf(log, "  %s %s\n", cli.FAIL, v)
+			}
+			return fmt.Errorf("[%s] %d violation(s): le manifeste n'implémente pas le bundle dérivé de la classification %s — rien n'a été écrit",
+				enforce.CodeUnfulfilled, len(violations), enf.req.Classification)
+		}
+		fmt.Fprintln(log)
+	}
 
 	if api.BackendURL == "" {
 		// No upstream resolved from targets.yaml backendUrl nor an absolute
@@ -92,16 +139,43 @@ func runApply(cmd *cobra.Command, _ []string) error {
 		}
 		res, err := ad.Publish(ctx, api)
 		oc.res, oc.err = res, err
-		outcomes = append(outcomes, oc)
 		if err != nil {
+			outcomes = append(outcomes, oc)
 			fmt.Fprintf(log, "  %s %-12s publish: %v\n", cli.FAIL, t.Name, err)
 			continue
 		}
+		// --- enforcement gate 2/2: read-back AFTER publish -------------------
+		// The gateway's LIVE state must confirm the derived bundle; a target
+		// whose adapter cannot read it back is unverifiable, hence refused. The
+		// API stays published and ACTIVE on failure (pipeline-level gate, no
+		// auto-deactivate): remediation is the red pipeline + reconcile + human.
+		if enf != nil {
+			verdicts, verr := verifyTargetEnforcement(ctx, ad, res.APIID, enf.req)
+			oc.enforcement = verdicts
+			if verr != nil {
+				oc.err = verr
+				outcomes = append(outcomes, oc)
+				fmt.Fprintf(log, "  %s %-12s %v\n", cli.FAIL, t.Name, verr)
+				continue
+			}
+		}
+		outcomes = append(outcomes, oc)
 		// Key by the unique target NAME, not ad.Name() (the gateway TYPE): two
 		// targets of the same type (e.g. wso2-prod + wso2-dr) must NOT collide
 		// into one Backstage endpoint — that would silently drop a gateway.
 		endpoints[t.Name] = res.InvocationURL
 		fmt.Fprintf(log, "  %s %-12s %s\n", cli.OK, t.Name, res.InvocationURL)
+	}
+
+	// Full verdict table (never overclaim: enforced/degraded annotations are
+	// printed, not just failures). Narration writer — stderr in JSON mode.
+	if enf != nil {
+		fmt.Fprintf(log, "\nEnforcement (read-back, jamais l'intention):\n")
+		for _, o := range outcomes {
+			for _, v := range o.enforcement {
+				fmt.Fprintf(log, "  %-12s %-12s %-12s %s\n", o.name, v.Policy, v.Status, v.Detail)
+			}
+		}
 	}
 
 	// --- result (table for humans, one stable JSON document for machines) ---
@@ -164,6 +238,14 @@ func publishReport(outcomes []publishOutcome) output.PublishReport {
 			t.InvocationURL = o.res.InvocationURL
 			t.Published = o.res.Published
 			t.Created = o.res.Created
+		}
+		// Additive enforcement block (absent when the gate is off) — the CI
+		// contract (.ok/.targets[].created/api_id) is attribute-accessed, so new
+		// keys are safe.
+		for _, v := range o.enforcement {
+			t.Enforcement = append(t.Enforcement, output.EnforcementVerdict{
+				Policy: v.Policy, Status: v.Status, Detail: v.Detail,
+			})
 		}
 		r.Targets = append(r.Targets, t)
 	}

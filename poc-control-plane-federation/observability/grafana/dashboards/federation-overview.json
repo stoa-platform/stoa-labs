@@ -1,5 +1,5 @@
 {
-  "title": "STOA Labs \u2014 Federation (observabilite)",
+  "title": "STOA Labs — Federation (observabilite)",
   "uid": "stoa-fed-overview",
   "tags": [
     "stoa",
@@ -53,7 +53,7 @@
       },
       "options": {
         "mode": "markdown",
-        "content": "## F\u00e9d\u00e9ration \u2014 observabilit\u00e9 unifi\u00e9e\nUn seul plan d'observabilit\u00e9 (OTel -> Tempo/Prometheus) pour des gateways h\u00e9t\u00e9rog\u00e8nes : **Apache APISIX** (OSS) + **webMethods** (mock legacy) \u2014 et **WSO2** quand son exporteur OTel est activ\u00e9 (`scripts/setup-wso2-otel.sh`). S\u00e9lecteur `$gateway`. Donn\u00e9es synth\u00e9tiques \u2014 institution financière régulée (Eurosyst\u00e8me), anonymis\u00e9."
+        "content": "## Fédération — observabilité unifiée\nUn seul plan d'observabilité (OTel -> Tempo/Prometheus) pour des gateways hétérogènes : **Apache APISIX** (OSS) + **webMethods** (mock legacy) — et **WSO2** quand son exporteur OTel est activé (`scripts/setup-wso2-otel.sh`). Sélecteur `$gateway`. Données synthétiques — institution financière régulée (anonymisé), anonymisé."
       }
     },
     {
@@ -156,7 +156,7 @@
     },
     {
       "type": "table",
-      "title": "Traces recentes (Tempo) \u2014 toutes gateways",
+      "title": "Traces recentes (Tempo) — toutes gateways",
       "gridPos": {
         "h": 10,
         "w": 24,
@@ -191,6 +191,166 @@
           "tableType": "traces"
         }
       ]
+    },
+    {
+      "id": 1,
+      "type": "row",
+      "title": "webMethods réel — métriques natives du gateway (sag_apigw_*, scrape :5555/metrics)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 22
+      },
+      "panels": []
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "wM — transactions par API",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 23
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 12
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (api_name) (rate(sag_apigw_api_tx_count[5m])) * 60",
+          "legendFormat": "{{api_name}} tx/min"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "description": "rate() encaisse les remises à zéro du compteur (recycle keepalive ~23 min)."
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "wM — erreurs par code (policy/exec/backend)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 23
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 12
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (code, error) (rate(sag_apigw_api_tx_error_count[5m])) * 60",
+          "legendFormat": "{{code}} ({{error}})/min"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (api_name) (rate(sag_apigw_api_backend_error_count[5m])) * 60",
+          "legendFormat": "backend {{api_name}}/min"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "description": "Inclut TOUS les 401 (même anonymes/non-preemptive, qui ne génèrent ni trace ni event — cf. ADR-073). Les rejets avec token invalide (preemptive) ont EN PLUS un span Error dans Tempo via le poller PV."
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "wM — latence moyenne : gateway vs backend (ms)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 23
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 12
+          },
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "avg by (api_name) (sag_apigw_api_avg_response_time{code=~\"2xx\"})",
+          "legendFormat": "{{api_name}} totale"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "avg by (api_name) (sag_apigw_api_avg_backend_response_time{code=~\"2xx\"})",
+          "legendFormat": "{{api_name}} backend"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "description": "Vue du gateway lui-même (complément des span metrics Tempo : ici on voit aussi ce que les traces ne couvrent pas)."
     }
   ]
 }

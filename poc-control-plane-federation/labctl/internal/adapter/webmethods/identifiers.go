@@ -132,7 +132,18 @@ func desiredPartnerIdentifiers(spec *adapter.ConsumerSpec) ([]wmIdentifier, erro
 		out = append(out, wmIdentifier{key: identifierKeyToken, name: identifierNameToken, value: v})
 	}
 	if v := dedup(spec.IPAllowlist); len(v) > 0 {
-		out = append(out, wmIdentifier{key: identifierKeyIP, name: identifierNameIP, value: v})
+		// Normalize to the from-to form the gateway stores unambiguously and the
+		// UI renders: a single IP -> X-X, a CIDR -> first-last (the gateway
+		// silently drops both a bare CIDR and hides a bare single in the UI).
+		norm := make([]string, 0, len(v))
+		for _, e := range v {
+			nr, err := normalizeIPRange(e)
+			if err != nil {
+				return nil, err
+			}
+			norm = append(norm, nr)
+		}
+		out = append(out, wmIdentifier{key: identifierKeyIP, name: identifierNameIP, value: norm})
 	}
 	if ref := strings.TrimSpace(spec.PublicCertRef); ref != "" {
 		pemBytes, err := loadPublicCertPEM(ref)

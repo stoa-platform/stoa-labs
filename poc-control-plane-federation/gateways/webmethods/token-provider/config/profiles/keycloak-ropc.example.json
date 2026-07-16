@@ -1,0 +1,35 @@
+{
+  "description": "Provider 1 — IdP type Keycloak, grant password (ROPC) : form-urlencoded, realm dans l'URL, scope en parametre. Les valeurs pointent vers le Keycloak du PoC (realm stoa-lab) pour test local.",
+  "tokenRequest": {
+    "urlTemplate": "http://keycloak:8080/realms/{{realm}}/protocol/openid-connect/token",
+    "method": "POST",
+    "contentType": "application/x-www-form-urlencoded",
+    "bodyTemplate": "grant_type=password&client_id={{clientId}}&username={{username}}&password={{password}}&scope={{scope}}",
+    "timeoutMillis": 10000
+  },
+  "params": {
+    "realm": "stoa-lab",
+    "clientId": "apigw-token-client",
+    "scope": "openid"
+  },
+  "secrets": {
+    "vaultPath": "apigw/backends/keycloak-demo",
+    "map": {
+      "username": "username",
+      "password": "password"
+    }
+  },
+  "response": {
+    "tokenPath": "access_token",
+    "expiresInPath": "expires_in",
+    "tokenType": "Bearer"
+  },
+  "cache": {
+    "refreshSkewPercent": 80,
+    "minTtlSeconds": 30
+  },
+  "inject": {
+    "headerName": "Authorization",
+    "valueTemplate": "{{tokenType}} {{token}}"
+  }
+}

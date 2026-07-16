@@ -3,11 +3,9 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
-	"sigs.k8s.io/yaml"
 
 	"github.com/stoa-platform/stoa-labs/poc/labctl/internal/render"
 )
@@ -34,25 +32,14 @@ func runRender(cmd *cobra.Command, args []string) error {
 	if len(args) == 1 {
 		path = args[0]
 	}
-	raw, err := os.ReadFile(path)
+	// Same loader as the apply-side enforcement gate: both read the SAME
+	// contract subset the same way (render.LoadContract).
+	c, err := render.LoadContract(path)
 	if err != nil {
-		return fmt.Errorf("read %s: %w", path, err)
-	}
-	var c struct {
-		Name           string   `json:"name"`
-		Classification string   `json:"classification"`
-		Exposure       string   `json:"exposure"`
-		Tags           []string `json:"tags"`
-	}
-	if err := yaml.Unmarshal(raw, &c); err != nil {
-		return fmt.Errorf("parse %s: %w", path, err)
+		return err
 	}
 
-	res, err := render.Derive(render.Input{
-		Classification: c.Classification,
-		Exposure:       c.Exposure,
-		Tags:           c.Tags,
-	})
+	res, err := render.Derive(c.Input())
 	if err != nil {
 		// Fail-closed: a contract whose integrity level yields no valid bundle
 		// must not merge. Surface on stderr, exit non-zero.
@@ -62,10 +49,7 @@ func runRender(cmd *cobra.Command, args []string) error {
 
 	// Effective exposure: render.Derive defaults an empty exposure to "internal";
 	// report that so the shown exposure matches the derived bundle.
-	effExposure := c.Exposure
-	if effExposure == "" {
-		effExposure = "internal"
-	}
+	effExposure := render.EffectiveExposure(c.Exposure)
 
 	out := cmd.OutOrStdout()
 	if outputFlag == "json" {

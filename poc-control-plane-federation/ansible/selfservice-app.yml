@@ -1,0 +1,8 @@
+---
+# ansible/selfservice-app.yml — converge le PLAN ENTRANT self-service (ADR-078).
+# Chez le client : cible le proxy wm-admin-{env} + bearer OAuth2 (ADR-075).
+- name: "Self-service application — converge (ADR-078, Ansible)"
+  hosts: webmethods
+  gather_facts: false
+  roles:
+    - role: apim_selfservice_app

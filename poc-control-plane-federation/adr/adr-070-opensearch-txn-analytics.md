@@ -2,6 +2,7 @@
 title: "ADR-070 — Analytics transactionnelle centralisée OpenSearch multi-tenant : collecteur normalisant comme point de contrôle unique, RBAC par fournisseur"
 sidebar_label: "ADR-070 : Analytics OpenSearch multi-tenant"
 status: "Proposé — en attente Council 8/10 (GO/NO-GO)"
+maturite_technique: "✅ Livré & prouvé — analytics par fournisseur PARITÉ 3/3 (APISIX + webMethods + WSO2), pivot trace_id, redaction 1-point (goals A3, 2026-07-03)"
 date: 2026-06-11
 adr_number: 70
 visibility: private
@@ -10,7 +11,8 @@ note: "Privé (stoa-labs). S'appuie sur ADR-067 (reuse-first), ADR-068 (hors dat
 
 # ADR-070 — Analytics transactionnelle centralisée OpenSearch multi-tenant
 
-**Statut :** Proposé — en attente validation Council 8/10 (GO/NO-GO).
+**Statut :** Proposé — en attente validation Council 8/10 (GO/NO-GO). *(axe gouvernance/business — distinct de la maturité technique ci-dessous)*
+**Maturité technique :** ✅ Livré & prouvé — **parité 3/3** (data stream + RBAC/FLS par tenant + redaction à un point unique + pivot `trace_id`) : APISIX (`kafka-logger`), webMethods réel (`wm-trace-bridge`), **WSO2** (`wso2-otel-tap` — goal A3, source = spans OTel car les logs fichier WSO2 ne portent pas le trace_id ; `scripts/test-txn-wso2.sh` 12/12). Le « Fluent Bit sidecar » de la décision initiale (§8) est **abandonné** au profit du tap OTLP (voir Conséquences).
 **Date :** 2026-06-11.
 **Contexte client (anonymisé) :** institution financière régulée (anonymisé).
 **Lié à :** [[adr-067-reuse-first-owned-portable-layer]], [[adr-068-stoa-off-the-transaction-path]], [[adr-069-retention-moat-governance-source-of-truth]].
@@ -137,7 +139,7 @@ La valeur STOA en jeu (ADR-067) : **neutralité vendor** — « Define Once → 
 | 5 | Solde/montant | **PIIType custom `MONETARY`, redacté** | comme IBAN |
 | 6 | Redaction wM | **collecteur = autorité unique** ; masking wM best-effort validé | ne bloque pas |
 | 7 | wM subscriptions | **poll** (robuste reset trial) | push+reconciler = prod |
-| 8 | Export WSO2 | **Fluent Bit sidecar** | MetricReporter custom = prod |
+| 8 | Export WSO2 | ~~Fluent Bit sidecar~~ → **`wso2-otel-tap`** (tap OTLP, goal A3) | révisé : les logs fichier WSO2 ne portent PAS le trace_id → Fluent Bit casserait le pivot. La seule source avec le trace_id W3C = les spans OTel (débloqués par A2) : le tap forwarde à Tempo ET émet `stoa.txn.wso2` par trace. Piège : WSO2 exporte en gzip (codec serveur à enregistrer). |
 | 9 | APISIX→store | **kafka-logger → collecteur** | évite risque `_bulk` ES8 |
 | 10 | Socle / ordre | **poser les 4 services**, câbler APISIX → wM → WSO2 (1 tenant d'abord) | pas de tranche jetable |
 | 11 | DLS partagé | index-par-tenant ; bascule DLS si **> ~1000 tenants** | seuil à affiner |

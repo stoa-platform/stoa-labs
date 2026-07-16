@@ -51,17 +51,29 @@ const (
 	ActionUnknown = "unknown"
 )
 
+// EnforcementVerdict is one policy's read-back outcome in the apply report
+// (ADR-076 enforcement gate). Detail carries only whitelisted, non-secret
+// facts — never raw gateway records, never credentials.
+type EnforcementVerdict struct {
+	Policy string `json:"policy"`
+	Status string `json:"status"` // enforced | degraded | missing | unverifiable
+	Detail string `json:"detail,omitempty"`
+}
+
 // PublishTarget is the per-gateway outcome of `labctl apply`. Fields other than
-// error are always emitted (stable shape); error is present only on failure.
+// error/enforcement are always emitted (stable shape); error is present only on
+// failure, enforcement only when the ADR-076 gate ran (additive — machine
+// consumers of .ok/.created/.api_id are unaffected).
 type PublishTarget struct {
-	Gateway       string `json:"gateway"`
-	Type          string `json:"type"`
-	APIID         string `json:"api_id"`
-	RevisionID    string `json:"revision_id"`
-	InvocationURL string `json:"invocation_url"`
-	Published     bool   `json:"published"`
-	Created       bool   `json:"created"`
-	Error         string `json:"error,omitempty"`
+	Gateway       string               `json:"gateway"`
+	Type          string               `json:"type"`
+	APIID         string               `json:"api_id"`
+	RevisionID    string               `json:"revision_id"`
+	InvocationURL string               `json:"invocation_url"`
+	Published     bool                 `json:"published"`
+	Created       bool                 `json:"created"`
+	Enforcement   []EnforcementVerdict `json:"enforcement,omitempty"`
+	Error         string               `json:"error,omitempty"`
 }
 
 // PublishReport is the `labctl apply` aggregate: OK is true only when every

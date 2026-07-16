@@ -1,0 +1,22 @@
+{"policy": {
+  "id": "28d3fd69-e59e-4b3d-b5d4-2f55298d6e29",
+  "names": [{"value": "Default Policy for API credspoc", "locale": "English"}],
+  "policyEnforcements": [
+    {"stageKey": "transport", "enforcements": [{"enforcementObjectId": "e0817e93-7600-4b67-96cc-7e1b52ca9aab", "order": null}]},
+    {"stageKey": "requestPayloadProcessing", "enforcements": [
+      {"enforcementObjectId": "30ed0157-e44c-47b2-b87e-552ee1fde553", "order": "1"},
+      {"enforcementObjectId": "7a193997-1746-45a6-b94a-067d496ff693", "order": "2"}
+    ]},
+    {"stageKey": "routing", "enforcements": [
+      {"enforcementObjectId": "a07dccc4-a697-4316-92bf-4163e5f6a0e4", "order": null},
+      {"enforcementObjectId": "627a3d8e-ee92-4f4e-b92b-46383bce4fcd", "order": null}
+    ]},
+    {"stageKey": "responseProcessing", "enforcements": [
+      {"enforcementObjectId": "7ef856cc-87be-445f-84c6-22e66f0397ae", "order": null}
+    ]}
+  ],
+  "policyScope": "SERVICE",
+  "systemPolicy": false,
+  "global": false,
+  "active": false
+}}

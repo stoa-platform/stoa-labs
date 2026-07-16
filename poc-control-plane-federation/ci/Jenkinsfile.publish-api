@@ -1,0 +1,110 @@
+// ci/Jenkinsfile.publish-api — PUBLICATION D'API (PRODUCTEUR, ADR-076/075).
+//
+// Même modèle que ci/Jenkinsfile.selfservice, côté producteur : le CI lance le
+// RÔLE ANSIBLE `apim_publish_api` (import OpenAPI multipart + activate + inbound).
+// Aucun binaire/script AI-co-développé dans la chaîne cible client.
+//
+//   push/PR ──webhook──▶ PLAN   : identité de JOB, LECTURE SEULE — valide le
+//                                 manifeste + ansible --syntax-check.
+//              humain ──▶ APPLY  : build PARAMÉTRÉ, identité NOMINATIVE
+//                                 (Keycloak→Vault ; client = LDAP) → le rôle lit
+//                                 les creds admin dans Vault et publie + verify.
+pipeline {
+  agent any
+  options { disableConcurrentBuilds() }
+
+  parameters {
+    string(name: 'MANIFEST', defaultValue: 'clients/_example/apis/accounts-read.publish.yml',
+           description: "Manifeste de publication (vars du rôle : apim_api).")
+    // Env cible : sélectionne per_env[ENVIRONMENT] (inbound issuer/JWKS/audience par
+    // env) ET pose X-Environment vers le proxy d'admin. Vide = API mono-env.
+    choice(name: 'ENVIRONMENT', choices: ['dev', 'rec', 'int', 'prod'],
+           description: "Environnement cible (inbound par env + header X-Environment).")
+    string(name: 'USER_VAULT_JWT', defaultValue: '',
+           description: "Identité NOMINATIVE : JWT court aud=vault. Vide sur le PLAN.")
+  }
+
+  triggers { GenericTrigger(token: 'stoa-publish-api-plan',
+             genericVariables: [[key: 'MANIFEST', value: '$.manifest']],
+             printContributedVariables: false, printPostContent: false) }
+
+  environment {
+    VAULT_ADDR        = "${env.VAULT_ADDR ?: 'http://vault:8200'}"
+    APIM_API_BASE     = "${env.APIM_API_BASE  ?: 'http://webmethods-real:5555/rest/apigateway'}"
+    APIM_DATA_BASE    = "${env.APIM_DATA_BASE ?: 'http://webmethods-real:5555/gateway'}"
+    APIM_WM_CREDS_SUB = "${env.APIM_WM_CREDS_SUB ?: 'deploy/banking-demo/wm-admin'}"
+    INVENTORY         = 'ansible/inventory.lab.ini'
+  }
+
+  stages {
+
+    stage('Plan — valider le contrat (lecture seule, identité de job)') {
+      steps {
+        dir('poc-control-plane-federation') {
+          sh '''
+            set -eu
+            MANIFEST="${MANIFEST:-clients/_example/apis/accounts-read.publish.yml}"
+            echo "=== PLAN : manifeste ${MANIFEST} ==="
+            test -f "$MANIFEST" || { echo "manifeste introuvable : $MANIFEST"; exit 1; }
+            grep -qE '^[[:space:]]*name:' "$MANIFEST" && grep -qE '^[[:space:]]*contract:' "$MANIFEST" \
+              || { echo "manifeste incomplet (name/contract requis)"; exit 1; }
+            ansible-playbook -i "$INVENTORY" ansible/publish-api.yml --syntax-check
+            echo "  ✓ manifeste valide + playbook syntaxiquement correct (aucune mutation)"
+          '''
+        }
+      }
+    }
+
+    stage('Apply — publier + verify via le rôle Ansible (identité nominative → Vault)') {
+      steps {
+        dir('poc-control-plane-federation') {
+          sh '''
+            set +x
+            set -eu
+            MANIFEST="${MANIFEST:-clients/_example/apis/accounts-read.publish.yml}"
+            if [ -z "${USER_VAULT_JWT:-}" ]; then
+              echo "  (pas d'identité nominative → PLAN-only, apply sauté)"; exit 0
+            fi
+            USER_VAULT_JWT=$(printf '%s' "$USER_VAULT_JWT" | tr -d '[:space:]')
+            VTOKF=$(mktemp); trap 'rm -f "$VTOKF"' EXIT
+
+            VT=$(curl -sf -X POST "$VAULT_ADDR/v1/auth/jwt/login" \
+                  --data-binary "$(printf '{"role":"user-deploy","jwt":"%s"}' "$USER_VAULT_JWT")" \
+                  | sed -n 's/.*"client_token":"\\([^"]*\\)".*/\\1/p')
+            [ -n "$VT" ] || { echo 'auth/jwt/login KO (identité nominative refusée)'; exit 1; }
+            ( umask 077; printf %s "$VT" > "$VTOKF" )
+            WHO=$(curl -sf -H "X-Vault-Token: $VT" "$VAULT_ADDR/v1/auth/token/lookup-self" \
+                  | sed -n 's/.*"display_name":"\\([^"]*\\)".*/\\1/p')
+            echo "  ✓ token Vault NOMINATIF (entité=$WHO) — le job ne détient aucun credential propre"
+            unset VT
+
+            # Manifeste en CHEMIN (apim_ss_manifest → include_vars), PAS `-e @` :
+            # un extra-var masquerait la fusion per_env (précédence Ansible).
+            export VAULT_TOKEN_FILE="$VTOKF"
+            ansible-playbook -i "$INVENTORY" ansible/publish-api.yml \
+              -e apim_ss_manifest="$MANIFEST" \
+              -e apim_ss_env="${ENVIRONMENT:-}" \
+              -e apim_ss_api_base="$APIM_API_BASE" \
+              -e apim_ss_data_base="$APIM_DATA_BASE" \
+              -e apim_ss_vault_wm_creds_sub="$APIM_WM_CREDS_SUB"
+
+            ansible-playbook -i "$INVENTORY" ansible/publish-api-verify.yml \
+              -e apim_ss_manifest="$MANIFEST" \
+              -e apim_ss_env="${ENVIRONMENT:-}" \
+              -e apim_ss_api_base="$APIM_API_BASE" \
+              -e apim_ss_data_base="$APIM_DATA_BASE" \
+              -e apim_ss_vault_wm_creds_sub="$APIM_WM_CREDS_SUB"
+
+            curl -sf -X POST -H "X-Vault-Token: $(cat "$VTOKF")" \
+              "$VAULT_ADDR/v1/auth/token/revoke-self" >/dev/null && echo "  ✓ token Vault révoqué"
+          '''
+        }
+      }
+    }
+  }
+
+  post {
+    success { echo '✓ API publiée + vérifiée par le RÔLE ANSIBLE, sous identité nominative. Zéro binaire/script, zéro credential stocké côté CI.' }
+    failure { echo '✗ pipeline KO — voir le log de l\'étape.' }
+  }
+}

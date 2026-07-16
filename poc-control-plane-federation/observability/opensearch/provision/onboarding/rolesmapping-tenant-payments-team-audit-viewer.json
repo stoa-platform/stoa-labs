@@ -1,0 +1,5 @@
+{
+  "backend_roles": ["tenant-payments-team-audit"],
+  "users": ["payments-audit-viewer"],
+  "description": "ADR-070 mapping: internal user payments-audit-viewer + backend_role tenant-payments-team-audit (future SSO/OIDC group claim) -> tenant-payments-team-audit-viewer. Provisioned idempotently."
+}

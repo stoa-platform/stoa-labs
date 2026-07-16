@@ -1,0 +1,6 @@
+---
+- name: "Publier une API — verify fail-closed"
+  hosts: webmethods
+  gather_facts: false
+  tasks:
+    - ansible.builtin.include_role: { name: apim_publish_api, tasks_from: verify }

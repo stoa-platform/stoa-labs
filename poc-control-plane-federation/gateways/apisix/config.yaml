@@ -28,6 +28,9 @@ plugins:
   - opentelemetry
   - proxy-rewrite
   - prometheus
+  # Analytics transactionnelle (ADR-070) : émet stoa.txn vers Redpanda
+  # (topic stoa.txn.apisix) — consommé par Data Prepper (normalise/redacte/route).
+  - kafka-logger
   # Consumer auth (labctl subscribe). public-api exposes the jwt sign endpoint
   # /apisix/plugin/jwt/sign (NOT enabled by default — required for jwt-auth).
   - jwt-auth
@@ -39,6 +42,11 @@ plugins:
 
 plugin_attr:
   opentelemetry:
+    # set_ngx_var expose le trace_id/span_id W3C en variables nginx
+    # ($opentelemetry_trace_id / $opentelemetry_span_id) AVANT la phase log, pour
+    # que kafka-logger puisse les estamper dans stoa.txn (corrélation audit↔ops
+    # OpenSearch↔OTel/LGTM, ADR-070). Sans cela les variables sont vides.
+    set_ngx_var: true
     # Export OTLP/HTTP des traces vers l'all-in-one otel-lgtm.
     collector:
       address: otel-lgtm:4318

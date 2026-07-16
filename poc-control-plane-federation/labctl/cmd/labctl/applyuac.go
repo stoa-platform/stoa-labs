@@ -153,6 +153,25 @@ func runApplyUAC(cmd *cobra.Command, _ []string) error {
 		fmt.Fprintf(log, "tenant scope: %s\n\n", scope)
 	}
 
+	// --- A6: re-check the ITSM gate LIVE at the instant of dispatch (anti-TOCTOU,
+	// ADR-075). A single pre-flight pass over every gated env this run would
+	// dispatch, BEFORE any gateway write — a change approved at merge but revoked
+	// since blocks the WHOLE run (fail-closed, zero partial dispatch). Armed by
+	// the repo's gate config + enabled deploys, not by --env (any re-checks every
+	// gated env), so the gate cannot be skipped by dropping the flag.
+	gchain, err := loadGovChain(uacRepoFlag)
+	if err != nil {
+		return err
+	}
+	if err := preflightDispatchGate(ctx, gchain, apis, scope, uacEnvFlag); err != nil {
+		auditor.record(ctx, audit.Event{
+			Actor: auditor.actorFor(""), Action: audit.ActionApply,
+			Tenant: scope, Resource: uacEnvFlag, Decision: audit.Deny,
+			Reason: dispatchGateReason(err), TraceID: audit.NewTraceID(),
+		})
+		return err
+	}
+
 	report := uacReport{OK: true, Env: uacEnvFlag, APIs: make([]uacAPIReport, 0, len(apis))}
 	var rows [][]string
 	published, total, projected, skipped := 0, 0, 0, 0

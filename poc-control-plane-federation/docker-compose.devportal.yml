@@ -1,0 +1,114 @@
+# webMethods Developer Portal RÉEL (IBM 11.1) — catalogue/consommateur en face
+# de la gateway. Overlay indépendant : le DevPortal n'est PAS requis par la
+# chaîne Console → Git → CI → gateway, il s'ajoute par-dessus.
+#
+#   docker compose -f docker-compose.poc.yml -f docker-compose.devportal.yml up -d dp-opensearch devportal
+#
+#   UI / REST : http://localhost:18101/portal/
+#   Admin par défaut : Administrator / manage
+#
+# ─── Faits établis par inspection de l'image (2026-07-13), PAS par la doc ────
+#
+# 1. IMAGE       ibmwebmethods.azurecr.io/devportal:11.1  (le repo s'appelle
+#    `devportal`, pas `developerportal` ni `apiportal` — `apiportal` = l'ancien
+#    produit ARIS, EOL). amd64 → ÉMULÉ sur Apple Silicon, comme la gateway :
+#    boot lent (plusieurs minutes). User non-root 1724.
+#
+# 2. DATASTORE = OPENSEARCH, pas Elasticsearch. Le portal.war 11.1 embarque
+#    opensearch-rest-client 2.19.4 / opensearch-java 2.14 — plus aucun jar ES.
+#    ⚠️ Le docker-compose de référence livré DANS l'image
+#    (/opt/softwareag/DeveloperPortal/developers/docker/single/) est PÉRIMÉ :
+#    il date du 10.11 (image `store/softwareag/devportal:10.11.0.1`, ES 7.13.1,
+#    port 8083). Ne pas le suivre pour du 11.1.
+#    → instance DÉDIÉE : l'OpenSearch de l'overlay analytics (poc-analytics-
+#      opensearch, 2.13, TLS + auth, index txn-*) n'est PAS réutilisable ici.
+#
+# 3. ENV VARS ES : le chart Helm officiel d'IBM (webmethods-helm-charts) pose
+#    LES DEUX, avec ce commentaire exact :
+#      SPRING_ELASTICSEARCH_REST_URIS   # supports version 10.15
+#      SPRING_ELASTICSEARCH_URIS        # supports version 11.0
+#    Le nom de propriété reste "elasticsearch" (legacy Spring Boot) alors que le
+#    client est OpenSearch. On pose les deux : inerte sur la version qui ne la
+#    lit pas, et l'overlay survit à un downgrade/upgrade d'image.
+#
+# 4. PORT 8080 dans le conteneur (ExposedPorts de l'image), pas 8083 (=10.15)
+#    ni 18102. Le `-Dserver.port=18102` de configuration/dpo_wrapper.conf est un
+#    LEURRE : l'entrypoint S01start.sh supprime ce fichier au démarrage.
+#
+# 5. LICENCE — voir le bloc ⚠️ sur le service `devportal` ci-dessous.
+#
+# ─── Vérifié en boot réel (2026-07-13, ce fichier tel quel) ─────────────────
+#   conteneur healthy · GET /portal/ → 200 · GET /portal/rest/v1/apis en Basic
+#   Administrator/manage → 200 · cluster OpenSearch green · index créés par le
+#   portal : portal_default_core, portal_default_umc, portal_master_umc,
+#   api_tms_core, api_tms_audit.
+#   Seule réserve : /portal/rest/v1/health renvoie {"status":"yellow"} → cf. licence.
+#   (Les WARN OpenSearchIDataStoreClient "404 Not Found" au 1er boot sont des
+#    cache miss bénins, pas une panne.)
+name: stoa-labs-poc
+
+volumes:
+  dp-os-data:
+
+services:
+  # Datastore dédié du Developer Portal. Version alignée sur le client embarqué
+  # dans le portal.war (2.19.4) — ne pas downgrader vers l'ES 7.x de l'ancien
+  # compose de référence. Sécurité désactivée : lab, HTTP nu, comme wm-elasticsearch.
+  dp-opensearch:
+    image: opensearchproject/opensearch:2.19.1
+    container_name: poc-dp-opensearch
+    environment:
+      - discovery.type=single-node
+      - cluster.name=stoa-poc-devportal
+      - DISABLE_SECURITY_PLUGIN=true
+      - DISABLE_INSTALL_DEMO_CONFIG=true
+      - OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
+    volumes:
+      - dp-os-data:/usr/share/opensearch/data
+    ports:
+      - "19201:9200"   # debug/curl depuis l'hôte (les index du portal y vivent)
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    networks: [poc]
+    restart: unless-stopped
+
+  # ⚠️ LICENCE — le portal démarre et sert UI + REST, mais en état NON LICENCIÉ.
+  # L'image embarque /opt/softwareag/Licenses/DPO_License.xml ("Free trial only")
+  # dont la balise <ExpirationDate> vaut 2024/09/01 → DÉJÀ EXPIRÉE. Au boot :
+  #   LicenseCacheSupplier - Loaded 0 licenses for tenant default
+  # → /portal/rest/v1/health reste "yellow" (jamais "green"). Sans conséquence
+  # pour un lab (rien n'est bloqué, cf. preuves ci-dessus), mais c'est un
+  # bloqueur pour toute démo client : fournir une licence DPO valide, p.ex.
+  #   volumes:
+  #     - ./gateways/webmethods/licenses/DPO_License.xml:/opt/softwareag/Licenses/DPO_License.xml:ro
+  # (le chemin est déjà pointé par l'env PORTAL_SERVER_CONFIG_LICENSE de l'image).
+  devportal:
+    image: ibmwebmethods.azurecr.io/devportal:11.1
+    container_name: poc-devportal
+    # Images trial déjà présentes en local → on interdit tout accès registry.
+    # `never` = échec net si l'image manque, plutôt qu'un `docker login`
+    # surprise sur ibmwebmethods.azurecr.io au milieu d'un `up`.
+    pull_policy: never
+    platform: linux/amd64
+    depends_on:
+      dp-opensearch:
+        condition: service_healthy
+    ports:
+      - "18101:8080"   # UI + REST -> http://localhost:18101/portal/
+    environment:
+      # Les deux noms, cf. note 3 en tête de fichier.
+      - SPRING_ELASTICSEARCH_URIS=http://dp-opensearch:9200
+      - SPRING_ELASTICSEARCH_REST_URIS=http://dp-opensearch:9200
+      - JVM_INIT_MEMORY=512
+      - JVM_MAX_MEMORY=2048
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/portal/rest/v1/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 40
+      start_period: 240s   # amd64 émulé : le boot dépasse largement la gateway
+    networks: [poc]
+    restart: unless-stopped

@@ -196,7 +196,12 @@ services:
   # Identité — Keycloak (broker : fédère Dex/Oracle, émet les tokens)
   # ---------------------------------------------------------------------------
   keycloak:
-    image: ${KEYCLOAK_IMAGE}
+    # Hardcoded 26.3.4 (NOT ${KEYCLOAK_IMAGE} — .env est géré hors outillage
+    # agent [deny-listé] et porte un 26.1.4 stale désormais NON consommé ;
+    # même précédent que le port 8480 ci-dessous ; .env.example réaligné).
+    # Le token exchange STANDARD (RFC 8693) est GA depuis KC 26.2 — requis
+    # par la chaîne A « identité utilisateur → Vault » (ADR-077).
+    image: quay.io/keycloak/keycloak:26.3.4
     container_name: poc-keycloak
     command: ["start-dev", "--import-realm"]
     depends_on:

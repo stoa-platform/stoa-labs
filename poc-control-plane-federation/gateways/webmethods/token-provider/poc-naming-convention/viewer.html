@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>TokenPoC — viewer (façon Designer)</title>
+<style>
+  :root {
+    --sidebar-bg: #1e2a38; --sidebar-fg: #c7d3e0; --sidebar-sel: #2e6da4;
+    --accent: #2e6da4; --stage-req: #4a90d9; --stage-rout: #7b61a8; --stage-resp: #4a9d7f;
+    --code-bg: #f7f8fa; --border: #d8dee6;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.5 -apple-system, "Segoe UI", sans-serif; display: flex; height: 100vh; color: #233; }
+  /* ------- arbre gauche, façon Package Navigator ------- */
+  #tree { width: 320px; background: var(--sidebar-bg); color: var(--sidebar-fg); overflow: auto; padding: 12px 0; flex-shrink: 0; }
+  #tree h1 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: #8aa0b8; padding: 4px 16px; margin: 8px 0 2px; }
+  #tree .node { padding: 5px 16px; cursor: pointer; white-space: nowrap; }
+  #tree .node:hover { background: #283a4e; }
+  #tree .node.sel { background: var(--sidebar-sel); color: #fff; }
+  #tree .lvl1 { padding-left: 32px; } #tree .lvl2 { padding-left: 48px; }
+  #tree .ico { display: inline-block; width: 1.5em; }
+  /* ------- panneau central ------- */
+  #main { flex: 1; overflow: auto; padding: 24px 32px; background: #fff; }
+  h2 { margin: 0 0 4px; font-size: 20px; } .sub { color: #678; margin: 0 0 18px; font-size: 13px; }
+  pre.code { background: var(--code-bg); border: 1px solid var(--border); border-radius: 6px; padding: 16px; overflow: auto; font: 12.5px/1.55 "SF Mono", Menlo, monospace; tab-size: 4; }
+  .kw { color: #a626a4; } .str { color: #50a14f; } .com { color: #a0a1a7; font-style: italic; } .typ { color: #c18401; }
+  table.props { border-collapse: collapse; margin: 8px 0 20px; }
+  table.props td { border: 1px solid var(--border); padding: 6px 12px; vertical-align: top; }
+  table.props td:first-child { background: #f0f3f7; font-weight: 600; width: 240px; }
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; color: #fff; margin-right: 6px; }
+  /* ------- diagramme de flux ------- */
+  .flow { display: flex; flex-direction: column; gap: 0; max-width: 760px; }
+  .step { border: 1.5px solid; border-radius: 8px; padding: 10px 14px; background: #fff; position: relative; }
+  .step b { display: block; } .step small { color: #567; }
+  .arrow { text-align: center; color: #89a; font-size: 18px; line-height: 1.4; }
+  .branch { display: flex; gap: 14px; } .branch > div { flex: 1; display: flex; flex-direction: column; }
+  .lane-title { text-align: center; font-size: 12px; font-weight: 700; padding: 3px; border-radius: 4px; margin-bottom: 6px; }
+  .hit  { background: #e4f3ec; color: #21694b; } .miss { background: #fdeaea; color: #9c3636; }
+  .skip { opacity: .45; }
+</style>
+</head>
+<body>
+
+<nav id="tree">
+  <h1>Gateway · API</h1>
+  <div class="node" data-view="diagram"><span class="ico">🗺</span>credspoc 1.0 — flux runtime</div>
+  <div class="node lvl1" data-view="pol-invokeis"><span class="ico">⚡</span>1 · Invoke IS (prepare)</div>
+  <div class="node lvl1" data-view="pol-customext"><span class="ico">⚡</span>2 · Custom Extension (fetch token)</div>
+  <div class="node lvl1" data-view="pol-header"><span class="ico">⚡</span>3 · Custom HTTP Header (Authorization)</div>
+  <div class="node lvl1" data-view="pol-store"><span class="ico">⚡</span>4 · Invoke IS (store, response)</div>
+  <h1>IS · Package TokenPoC</h1>
+  <div class="node" data-view="pkg"><span class="ico">📦</span>TokenPoC</div>
+  <div class="node lvl1"><span class="ico">📁</span>tokenPoC.gateway</div>
+  <div class="node lvl2" data-view="svc-prepare"><span class="ico">⚙️</span>prepare <small>(java)</small></div>
+  <div class="node lvl2" data-view="svc-store"><span class="ico">⚙️</span>store <small>(java)</small></div>
+  <div class="node lvl2" data-view="svc-setCreds"><span class="ico">⚙️</span>setCreds <small>(java, pattern v1)</small></div>
+</nav>
+
+<main id="main"></main>
+
+<script>
+const SOURCE_URL = "package/TokenPoC/code/source/tokenPoC/gateway.java";
+
+const POLICIES = {
+  "pol-invokeis": {
+    titre: "1 · Invoke webMethods IS — poc-prepare-creds-or-cached-token",
+    stage: "requestPayloadProcessing", couleur: "var(--stage-req)",
+    desc: "Invoque tokenPoC.gateway:prepare (Comply to IS Spec). Cache hit → pose mx:credspoc_token ; miss → pose mx:credspoc_user / mx:credspoc_password.",
+    props: [
+      ["templateKey", "requestInvokeESB (héritage « Invoke ESB » Mediator)"],
+      ["serviceName", "tokenPoC.gateway:prepare"],
+      ["runAsUser", "Administrator"],
+      ["complyToISSpec", "true (spec pub.apigateway.invokeISService.specifications:RequestSpec)"],
+      ["ordre", "1 — s'exécute avant la Custom Extension (orderPosition first)"]
+    ]
+  },
+  "pol-customext": {
+    titre: "2 · Custom Extension — poc-fetch-token",
+    stage: "requestPayloadProcessing", couleur: "var(--stage-req)",
+    desc: "Callout HTTP vers le token-endpoint, exécuté SEULEMENT si ${credspoc_token} est vide (cache miss). La Transformation assigne le jeton à la variable.",
+    props: [
+      ["templateKey", "customPolicy"],
+      ["CONDITION", "${credspoc_token} equals \"\"  — variable non résolue → vide : remplace le « not exists » manquant"],
+      ["endpointUri", "http://poc-token-echo:8080/token  (POST, timeouts 10 s)"],
+      ["requestPayload", '{"api":"${apiName}","u_sans_prefix":"${credspoc_user}","p_sans_prefix":"${credspoc_password}","scope":"openid"}'],
+      ["abortInCaseOfFailure", "true — un échec du callout fait échouer l'appel (event FAILURE)"],
+      ["Transformation ⚠️ champs inversés", "responseFromCustomPolicyExpression = ${credspoc_token} (la VARIABLE cible) · targetPayloadExpression = ${response[customExtension].payload.jsonPath[$.access_token]} (la VALUE source)"]
+    ]
+  },
+  "pol-header": {
+    titre: "3 · Custom HTTP Header — poc-inject-authz",
+    stage: "routing", couleur: "var(--stage-rout)",
+    desc: "Pose le header sortant vers le backend, cache hit OU miss (la variable vient de prepare ou de la Transformation).",
+    props: [
+      ["templateKey", "customHttpHeaders"],
+      ["headerKey", "Authorization"],
+      ["headerValue", "Bearer ${credspoc_token}"],
+      ["⚠️ piège", "variable non résolue → valeur ENTIÈRE vide (pas « Bearer  ») : panne silencieuse, le backend rend 401"]
+    ]
+  },
+  "pol-store": {
+    titre: "4 · Invoke webMethods IS — poc-store-token-cache",
+    stage: "responseProcessing", couleur: "var(--stage-resp)",
+    desc: "Relit mx:credspoc_token (le store de variables est PARTAGÉ entre Transformation, variable framework et API ctxvar) et l'écrit au cache JVM avec TTL.",
+    props: [
+      ["templateKey", "responseInvokeESB"],
+      ["serviceName", "tokenPoC.gateway:store"],
+      ["pont validé", "getContextVariable(\"mx:credspoc_token\") lit la variable assignée par la Transformation — preuve log : « STORED via=ctxvar »"]
+    ]
+  }
+};
+
+const SERVICES = {
+  "svc-prepare":  { titre: "tokenPoC.gateway:prepare",  desc: "Stage Request — cache hit : pose mx:<api>_token · miss : pose les creds (la convention <apiName>_user/_password ; en réel, lus dans passman/Vault).", marker: "public static final void prepare" },
+  "svc-store":    { titre: "tokenPoC.gateway:store",    desc: "Stage Response — relit mx:<api>_token et alimente le cache JVM (TTL démo 60 s).", marker: "public static final void store" },
+  "svc-setCreds": { titre: "tokenPoC.gateway:setCreds", desc: "Pattern v1 (sans cache) — pose toujours les creds. Conservé pour comparaison.", marker: "public static final void setCreds" }
+};
+
+function esc(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;"); }
+function hiJava(s) {
+  // single-pass : chaque token n'est classe qu'une fois, jamais de re-match dans le HTML genere
+  const re = /(\/\*[\s\S]*?\*\/|\/\/[^\n]*)|("(?:[^"\\]|\\.)*")|\b(public|private|static|final|void|return|if|else|while|for|try|catch|new|class|package|import|throws|null|true|false|this|long|int|boolean)\b|\b(String|IData|IDataCursor|IDataUtil|IDataFactory|Object|ServiceException|NSName|Service|Entry|ConcurrentHashMap|Exception|System)\b/g;
+  let out = "", last = 0;
+  for (const m of s.matchAll(re)) {
+    out += esc(s.slice(last, m.index));
+    const cls = m[1] ? "com" : m[2] ? "str" : m[3] ? "kw" : "typ";
+    out += '<span class="' + cls + '">' + esc(m[0]) + "</span>";
+    last = m.index + m[0].length;
+  }
+  return out + esc(s.slice(last));
+}
+
+let javaSource = null;
+async function getSource() {
+  if (javaSource) return javaSource;
+  try {
+    javaSource = await (await fetch(SOURCE_URL)).text();
+  } catch (e) {
+    javaSource = "// Servir ce dossier en HTTP pour charger le source :\n//   python3 -m http.server 8099   (depuis poc-naming-convention/)\n//   puis ouvrir http://localhost:8099/viewer.html\n// (fetch de fichier local bloqué par le navigateur en file://)";
+  }
+  return javaSource;
+}
+
+const VIEWS = {
+  diagram: () => `
+    <h2>API credspoc 1.0 — flux runtime du pattern token (validé in-situ)</h2>
+    <p class="sub">Ce que ni Designer ni l'UI gateway ne montrent : l'enchaînement réel, branches cache hit / miss.</p>
+    <div class="flow">
+      <div class="step" style="border-color: var(--stage-req)"><b>① Invoke IS — tokenPoC.gateway:prepare</b><small>stage requestPayloadProcessing · regarde le cache JVM</small></div>
+      <div class="arrow">▼</div>
+      <div class="branch">
+        <div>
+          <div class="lane-title hit">CACHE HIT (jeton valide)</div>
+          <div class="step" style="border-color: var(--stage-req)"><b>pose ${'$'}{credspoc_token}</b><small>variable de contexte mx:…_token</small></div>
+          <div class="arrow">▼</div>
+          <div class="step skip" style="border-color: var(--stage-req)"><b>② Custom Extension</b><small>condition ${'$'}{credspoc_token} ≠ "" → <b>SKIP, aucun appel</b></small></div>
+        </div>
+        <div>
+          <div class="lane-title miss">CACHE MISS</div>
+          <div class="step" style="border-color: var(--stage-req)"><b>pose ${'$'}{credspoc_user} / ${'$'}{credspoc_password}</b><small>convention &lt;apiName&gt;_user / _password</small></div>
+          <div class="arrow">▼</div>
+          <div class="step" style="border-color: var(--stage-req)"><b>② Custom Extension → POST /token</b><small>body substitué ; Transformation : ${'$'}{credspoc_token} ← jsonPath $.access_token</small></div>
+        </div>
+      </div>
+      <div class="arrow">▼</div>
+      <div class="step" style="border-color: var(--stage-rout)"><b>③ Custom HTTP Header (stage routing)</b><small>Authorization = Bearer ${'$'}{credspoc_token} → routage vers le backend</small></div>
+      <div class="arrow">▼</div>
+      <div class="step" style="border-color: var(--stage-resp)"><b>④ Invoke IS — tokenPoC.gateway:store (stage responseProcessing)</b><small>relit mx:…_token → cache JVM (TTL) — n'écrit que si nouveau jeton</small></div>
+    </div>
+    <p class="sub" style="margin-top:18px">Preuve : 3 appels → 1 seul callout /token, même Bearer ; après TTL 60 s → nouveau callout, nouveau Bearer. Debug : <code>docker logs poc-wm-token-seeder</code> · Tempo service <code>webmethods</code>.</p>`,
+
+  pkg: () => `
+    <h2>📦 Package TokenPoC</h2>
+    <p class="sub">Déployé sur l'IS embarqué du gateway (instances/default/packages/TokenPoC) — compilé par jcode, activé à chaud.</p>
+    <table class="props">
+      <tr><td>Namespace</td><td>tokenPoC.gateway — 3 services Java (prepare, store, setCreds)</td></tr>
+      <tr><td>Cache</td><td>ConcurrentHashMap statique (JVM) — TTL démo 60 s</td></tr>
+      <tr><td>API ctxvar</td><td>pub.apigateway.ctxvar:declare/set/getContextVariable — préfixe mx: obligatoire à l'écriture, référence ${'$'}{sansPrefixe} côté policies</td></tr>
+      <tr><td>Sources</td><td>package/TokenPoC/code/source/tokenPoC/gateway.java (cliquez un service à gauche)</td></tr>
+    </table>`,
+};
+
+async function render(view) {
+  const main = document.getElementById("main");
+  if (VIEWS[view]) { main.innerHTML = VIEWS[view](); return; }
+  if (POLICIES[view]) {
+    const p = POLICIES[view];
+    main.innerHTML = `<h2>${p.titre}</h2>
+      <p class="sub"><span class="badge" style="background:${p.couleur}">${p.stage}</span>${p.desc}</p>
+      <table class="props">${p.props.map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join("")}</table>
+      <p class="sub">JSON éprouvé : <code>policies/</code> (POST /rest/apigateway/policyActions puis PUT /rest/apigateway/policies/{id}).</p>`;
+    return;
+  }
+  if (SERVICES[view]) {
+    const s = SERVICES[view];
+    const src = await getSource();
+    main.innerHTML = `<h2>⚙️ ${s.titre}</h2><p class="sub">${s.desc}</p><pre class="code">${hiJava(src)}</pre>`;
+    const mark = document.querySelector("pre.code");
+    const idx = src.indexOf(s.marker);
+    if (idx >= 0 && mark) mark.scrollTop = (src.slice(0, idx).split("\n").length - 4) * 19;
+    return;
+  }
+}
+
+document.querySelectorAll("#tree .node[data-view]").forEach(n => {
+  n.addEventListener("click", () => {
+    document.querySelectorAll("#tree .node").forEach(m => m.classList.remove("sel"));
+    n.classList.add("sel");
+    render(n.dataset.view);
+  });
+});
+document.querySelector('#tree .node[data-view="diagram"]').click();
+</script>
+</body>
+</html>

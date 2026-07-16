@@ -1,0 +1,6 @@
+{
+  "attributes": {
+    "title": "txn-accounts-team",
+    "timeFieldName": "@timestamp"
+  }
+}

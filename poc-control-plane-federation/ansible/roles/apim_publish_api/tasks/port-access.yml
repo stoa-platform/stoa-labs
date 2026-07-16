@@ -1,0 +1,76 @@
+---
+# roles/apim_publish_api/tasks/port-access.yml
+#
+# IS-ADMIN (WmRoot) — ajoute l'API à l'ALLOW-LIST d'un port en Deny-by-Default.
+# C'est l'Access Mode du listener Integration Server (Security > Ports > Access
+# Mode), une surface DIFFÉRENTE de l'API d'admin apigateway. Piloté par le form
+# WmRoot security-ports-editaccess.dsp. Mécanisme PROUVÉ LIVE (10.15) :
+#   - GET editaccess.dsp?port=…&listenerType=… -> HTML, entrées = name="node" value="…"
+#   - POST {Action:addNode, port, listenerType, services:<folder:service>, submit:Save Additions}
+#   - POST {Action:deleteNode, port, listenerType, node:<entrée>}
+#   basic-auth, sans CSRF/session. L'allow-list est par SERVICE IS (folder:service) :
+#   le port REJETTE les URLs data-plane (testé) — d'où apim_ss_port_allow_entry.
+#
+# SÉCURITÉ : ce task ne FLIPPE JAMAIS le mode du port (risque de lockout du data-
+# plane). Le passage en Deny-by-Default est fait à la CRÉATION DE L'ENV (côté
+# client) ; ici on se contente d'AJOUTER l'entrée de l'API, idempotent, read-back
+# fail-closed. Auth héritée du module_defaults (apim_ss_uri_defaults) ; body_format
+# surchargé en form-urlencoded (le form WmRoot n'est pas du JSON).
+
+- name: "Port : fail-closed sur la config requise"
+  ansible.builtin.assert:
+    that:
+      - "(apim_ss_isadmin_base | default('')) | length > 0"
+      - "(apim_ss_port_alias | default('')) | length > 0"
+      - "(apim_ss_port_allow_entry | default('')) | length > 0"
+    fail_msg: >-
+      apim_ss_port_manage=true exige apim_ss_isadmin_base + apim_ss_port_alias +
+      apim_ss_port_allow_entry (référence de service IS folder:service de l'API).
+
+- name: "Port : lire l'allow-list courante du listener"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_isadmin_base }}/security-ports-editaccess.dsp?port={{ apim_ss_port_alias | urlencode }}&listenerType={{ apim_ss_port_listener_type }}"
+    return_content: true
+    body_format: form-urlencoded
+  register: port_page
+  changed_when: false
+
+# Les entrées de la liste ne sont PAS dans un input caché (ceux-ci sont vides) :
+# elles sont rendues en texte de cellule via writeTD("…rowdata-l");</script>ENTRY</TD>.
+- name: "Port : entrées déjà présentes"
+  ansible.builtin.set_fact:
+    port_current: "{{ port_page.content | regex_findall('writeTD\\(\"[a-z]*rowdata-l\"\\);</script>([^<]+)</TD>') }}"
+
+- name: "Port : AJOUTER l'API à l'allow-list si absente (addNode)"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_isadmin_base }}/security-ports-editaccess.dsp"
+    method: POST
+    body_format: form-urlencoded
+    body:
+      Action: "addNode"
+      port: "{{ apim_ss_port_alias }}"
+      listenerType: "{{ apim_ss_port_listener_type }}"
+      services: "{{ apim_ss_port_allow_entry }}"
+      submit: "Save Additions"
+    status_code: [200]
+  when: "apim_ss_port_allow_entry not in port_current"
+
+- name: "Port : READ-BACK — relire la liste du listener"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_isadmin_base }}/security-ports-editaccess.dsp?port={{ apim_ss_port_alias | urlencode }}&listenerType={{ apim_ss_port_listener_type }}"
+    return_content: true
+    body_format: form-urlencoded
+  register: port_after
+  changed_when: false
+
+- name: "Port : entrées après ajout"
+  ansible.builtin.set_fact:
+    port_after_entries: "{{ port_after.content | regex_findall('writeTD\\(\"[a-z]*rowdata-l\"\\);</script>([^<]+)</TD>') }}"
+
+- name: "Port : FAIL-CLOSED — l'API EST dans l'allow-list"
+  ansible.builtin.assert:
+    that: "apim_ss_port_allow_entry in port_after_entries"
+    fail_msg: "PORT_ALLOWLIST_UNCONFIRMED : '{{ apim_ss_port_allow_entry }}' absent de l'allow-list du port {{ apim_ss_port_alias }}."
+    success_msg: >-
+      PORT_ALLOWLIST_CONFIRMED : '{{ apim_ss_port_allow_entry }}' présent dans
+      l'allow-list du port {{ apim_ss_port_alias }} ({{ apim_ss_port_listener_type }}).

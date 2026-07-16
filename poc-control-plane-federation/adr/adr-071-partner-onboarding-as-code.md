@@ -2,6 +2,7 @@
 title: "ADR-071 — Onboarding partenaire as-code : manifeste déclaratif par partenaire projeté par labctl, API self-service write-through-Git, certs publics + IP auditables par PR"
 sidebar_label: "ADR-071 : Partner onboarding as-code"
 status: "Proposé — en attente Council 8/10 (GO/NO-GO)"
+maturite_technique: "✅ Livré & testé — onboarding as-code"
 date: 2026-06-11
 adr_number: 71
 visibility: private
@@ -10,7 +11,8 @@ note: "Privé (stoa-labs). S'appuie sur ADR-067 (reuse-first / couche possédée
 
 # ADR-071 — Onboarding partenaire as-code
 
-**Statut :** Proposé — en attente validation Council 8/10 (GO/NO-GO).
+**Statut :** Proposé — en attente validation Council 8/10 (GO/NO-GO). *(axe gouvernance/business — distinct de la maturité technique ci-dessous)*
+**Maturité technique :** ✅ Livré & testé (`labctl/internal/onboarding`, `cmd/onboarding-api` ; DoD byte-compat + build air-gapped coché).
 **Date :** 2026-06-11.
 **Contexte client (anonymisé) :** banque — gateway webMethods API Gateway 10.15.
 **Lié à :** [[adr-067-reuse-first-owned-portable-layer]], [[adr-068-stoa-off-the-transaction-path]], [[adr-069-retention-moat-governance-source-of-truth]].

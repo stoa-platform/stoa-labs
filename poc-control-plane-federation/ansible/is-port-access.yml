@@ -1,0 +1,40 @@
+---
+# ansible/is-port-access.yml — IS-ADMIN standalone : ajoute une ou plusieurs
+# entrées à l'ALLOW-LIST d'un port en Deny-by-Default. Usage « CRÉATION D'ENV » :
+# on autorise d'un coup les services du data-plane sur le listener de l'env.
+# Pendant "env-setup" de is-mtls-setup.yml. NE FLIPPE JAMAIS le mode (le passage
+# en Deny-by-Default est fait à la création de l'env côté client) — cf.
+# roles/apim_publish_api/tasks/port-access.yml (mécanisme prouvé live).
+#
+#   ansible-playbook -i inv.ini ansible/is-port-access.yml \
+#     -e apim_ss_isadmin_base=https://apim-admin.banque.internal/WmRoot \
+#     -e apim_ss_port_alias='HTTPListener@5555' \
+#     -e '{"apim_ss_port_allow_entries":["folderA:svc1","folderB:svc2"]}'
+- name: "IS-admin : allow-list d'un port Deny-by-Default"
+  hosts: webmethods
+  gather_facts: false
+  vars:
+    apim_ss_port_allow_entries: []
+  tasks:
+    - name: "Secrets : auth admin (Vault, fallback PoC)"
+      ansible.builtin.import_role:
+        name: apim_publish_api
+        tasks_from: secrets.yml
+
+    - name: "Fail-closed : au moins une entrée à autoriser"
+      ansible.builtin.assert:
+        that: "apim_ss_port_allow_entries | length > 0"
+        fail_msg: "apim_ss_port_allow_entries (liste de folder:service) requis."
+
+    - name: "Allow-list du port {{ apim_ss_port_alias }}"
+      module_defaults:
+        ansible.builtin.uri: "{{ apim_ss_uri_defaults }}"
+      block:
+        - name: "Ajouter chaque entrée (idempotent + read-back fail-closed)"
+          ansible.builtin.include_role:
+            name: apim_publish_api
+            tasks_from: port-access.yml
+          vars:
+            apim_ss_port_allow_entry: "{{ item }}"
+          loop: "{{ apim_ss_port_allow_entries }}"
+          loop_control: { label: "{{ item }}" }

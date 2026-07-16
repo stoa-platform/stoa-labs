@@ -1,0 +1,135 @@
+// ci/Jenkinsfile.selfservice — SELF-SERVICE « création d'application » (ADR-078).
+//
+// Chez ce client, le code co-développé avec une IA n'est pas livrable en binaire
+// (Go) ni en script (Python) ; SEUL un playbook Ansible que l'ops relit passe.
+// Le CI lance donc le RÔLE Ansible `apim_selfservice_app` (Ansible orchestre ET
+// mute la gateway). Le moteur Go labctl reste parqué comme spec vérifiée.
+//
+// Modèle PLAN / APPLY (le webhook ne peut PAS porter d'identité humaine : un build
+// déclenché sans humain tourne en ACL.SYSTEM et ne résout aucun credential
+// user-scoped — doc CloudBees, JENKINS-44772) :
+//
+//   push/PR ──webhook──▶ PLAN   : identité de JOB, LECTURE SEULE — valide le
+//                                 manifeste + ansible --syntax-check. AUCUN secret.
+//              humain ──▶ APPLY  : build PARAMÉTRÉ — l'humain fournit SON identité
+//                                 (DÉMO : JWT nominatif Keycloak ADR-077 ; CLIENT
+//                                 voie A : user/mot de passe LDAP) → token Vault
+//                                 NOMINATIF → le RÔLE lit les creds du compte de
+//                                 service gateway dans Vault et converge + verify.
+//
+// L'identité user ne sert QU'À obtenir le token Vault nominatif ; les appels wM se
+// font avec le COMPTE DE SERVICE (creds lus dans Vault par le rôle). Voir adr/adr-078.
+pipeline {
+  agent any
+  options { disableConcurrentBuilds() }   // un apply à la fois = régime bancaire
+
+  parameters {
+    string(name: 'MANIFEST', defaultValue: 'clients/_example/applications/demo-consumer.ansible.yml',
+           description: "Manifeste de demande (vars du rôle : apim_ss_app).")
+    // Env cible : sélectionne per_env[ENVIRONMENT] du manifeste ET pose X-Environment
+    // vers le proxy d'admin (endpoint unique multi-env). Vide = manifeste mono-env.
+    choice(name: 'ENVIRONMENT', choices: ['dev', 'rec', 'int', 'prod'],
+           description: "Environnement cible (identité IP/cert par env + header X-Environment).")
+    // DÉMO lab : identité nominative = JWT court aud=vault (exchange RFC 8693
+    // Keycloak, ADR-077, TTL 5 min). CLIENT (voie A) : password param LDAP + POST
+    // auth/ldap/login/<user> (§3 ADR-078).
+    string(name: 'USER_VAULT_JWT', defaultValue: '',
+           description: "Identité NOMINATIVE : JWT court aud=vault. Vide sur le PLAN.")
+  }
+
+  triggers { GenericTrigger(token: 'stoa-selfservice-plan',
+             genericVariables: [[key: 'MANIFEST', value: '$.manifest']],
+             printContributedVariables: false, printPostContent: false) }
+
+  environment {
+    VAULT_ADDR        = "${env.VAULT_ADDR ?: 'http://vault:8200'}"
+    // Base de l'API d'admin vue DEPUIS l'agent (réseau docker) ; chez le client = le proxy.
+    APIM_API_BASE     = "${env.APIM_API_BASE  ?: 'http://webmethods-real:5555/rest/apigateway'}"
+    APIM_DATA_BASE    = "${env.APIM_DATA_BASE ?: 'http://webmethods-real:5555/gateway'}"
+    // Chemin KV du compte de service gateway, TENANT-SCOPÉ (la policy user-deploy
+    // du token nominatif n'autorise que secret/stoa/deploy/<tenant>/* — ADR-077).
+    APIM_WM_CREDS_SUB = "${env.APIM_WM_CREDS_SUB ?: 'deploy/banking-demo/wm-admin'}"
+    INVENTORY         = 'ansible/inventory.lab.ini'
+  }
+
+  stages {
+
+    // ── PLAN ─────────────────────────────────────────────────────────────────
+    stage('Plan — valider la demande (lecture seule, identité de job)') {
+      steps {
+        dir('poc-control-plane-federation') {
+          sh '''
+            set -eu
+            MANIFEST="${MANIFEST:-clients/_example/applications/demo-consumer.ansible.yml}"
+            echo "=== PLAN : manifeste ${MANIFEST} ==="
+            test -f "$MANIFEST" || { echo "manifeste introuvable : $MANIFEST"; exit 1; }
+            grep -qE '^[[:space:]]*name:' "$MANIFEST" && grep -qE '^[[:space:]]*api:' "$MANIFEST" \
+              || { echo "manifeste incomplet (name/api requis)"; exit 1; }
+            ansible-playbook -i "$INVENTORY" ansible/selfservice-app.yml --syntax-check
+            echo "  ✓ demande valide + playbook syntaxiquement correct (aucune mutation)"
+          '''
+        }
+      }
+    }
+
+    // ── APPLY ────────────────────────────────────────────────────────────────
+    stage('Apply — converge + verify via le rôle Ansible (identité nominative → Vault)') {
+      steps {
+        dir('poc-control-plane-federation') {
+          sh '''
+            set +x            # NE JAMAIS écho : JWT, token Vault, creds gateway
+            set -eu
+            MANIFEST="${MANIFEST:-clients/_example/applications/demo-consumer.ansible.yml}"
+            # Barrière humaine : sans identité nominative (build webhook/plan), stop, vert.
+            if [ -z "${USER_VAULT_JWT:-}" ]; then
+              echo "  (pas d'identité nominative → PLAN-only, apply sauté)"; exit 0
+            fi
+            USER_VAULT_JWT=$(printf '%s' "$USER_VAULT_JWT" | tr -d '[:space:]')
+            VTOKF=$(mktemp); trap 'rm -f "$VTOKF"' EXIT
+
+            # 1) IDENTITÉ NOMINATIVE → TOKEN VAULT (démo Keycloak ; client = LDAP).
+            VT=$(curl -sf -X POST "$VAULT_ADDR/v1/auth/jwt/login" \
+                  --data-binary "$(printf '{"role":"user-deploy","jwt":"%s"}' "$USER_VAULT_JWT")" \
+                  | sed -n 's/.*"client_token":"\\([^"]*\\)".*/\\1/p')
+            [ -n "$VT" ] || { echo 'auth/jwt/login KO (identité nominative refusée)'; exit 1; }
+            ( umask 077; printf %s "$VT" > "$VTOKF" )
+            WHO=$(curl -sf -H "X-Vault-Token: $VT" "$VAULT_ADDR/v1/auth/token/lookup-self" \
+                  | sed -n 's/.*"display_name":"\\([^"]*\\)".*/\\1/p')
+            echo "  ✓ token Vault NOMINATIF (entité=$WHO) — le job ne détient aucun credential propre"
+            unset VT
+
+            # 2) CONVERGE via le RÔLE : le rôle lit les creds gateway dans Vault
+            #    avec le token nominatif (VAULT_TOKEN_FILE), chemin tenant-scopé.
+            # Le manifeste est passé en CHEMIN (apim_ss_manifest → include_vars dans le
+            # rôle), PAS en `-e @` : un extra-var masquerait la fusion per_env (précédence).
+            export VAULT_TOKEN_FILE="$VTOKF"
+            ansible-playbook -i "$INVENTORY" ansible/selfservice-app.yml \
+              -e apim_ss_manifest="$MANIFEST" \
+              -e apim_ss_env="${ENVIRONMENT:-}" \
+              -e apim_ss_api_base="$APIM_API_BASE" \
+              -e apim_ss_data_base="$APIM_DATA_BASE" \
+              -e apim_ss_vault_wm_creds_sub="$APIM_WM_CREDS_SUB"
+
+            # 3) VERIFY fail-closed (structurel : ENFORCEMENT_CONFIRMED + OUTBOUND_CONFIRMED ;
+            #    le check data-plane live reste off — l'IP de l'agent ≠ l'allowlist).
+            ansible-playbook -i "$INVENTORY" ansible/selfservice-app-verify.yml \
+              -e apim_ss_manifest="$MANIFEST" \
+              -e apim_ss_env="${ENVIRONMENT:-}" \
+              -e apim_ss_api_base="$APIM_API_BASE" \
+              -e apim_ss_data_base="$APIM_DATA_BASE" \
+              -e apim_ss_vault_wm_creds_sub="$APIM_WM_CREDS_SUB"
+
+            # 4) le token nominatif meurt avec le build.
+            curl -sf -X POST -H "X-Vault-Token: $(cat "$VTOKF")" \
+              "$VAULT_ADDR/v1/auth/token/revoke-self" >/dev/null && echo "  ✓ token Vault révoqué"
+          '''
+        }
+      }
+    }
+  }
+
+  post {
+    success { echo '✓ Application self-service convergée + vérifiée par le RÔLE ANSIBLE, sous identité nominative. Zéro binaire/script, zéro credential stocké côté CI.' }
+    failure { echo '✗ pipeline KO — voir le log de l\'étape.' }
+  }
+}

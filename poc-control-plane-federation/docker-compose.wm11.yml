@@ -1,0 +1,95 @@
+# webMethods API Gateway IBM 11.1 — gateway SŒUR, à côté du 10.15 du lab.
+#
+# ⚠️ OPTIONNELLE — elle n'est PAS nécessaire à l'appairage du Developer Portal.
+# Elle a été montée pour lever un doute : on croyait l'appairage 10.15 → portal
+# 11.1 cassé. C'était FAUX — le bug était dans le payload (cf. scripts/pair-
+# devportal.sh, piège `externalPortal`), et l'appairage est prouvé sur les DEUX
+# gateways (10.15 ET 11.1), cross-version compris. Elle reste ici comme bac à
+# sable 11.1 propre (et parce qu'elle a servi à trouver le payload correct :
+# c'est son bundle UI qui a livré la forme exacte de la requête).
+#
+# Le lab (CI, ADR, policies, analytics) reste sur poc-webmethods-real (10.15).
+# Rien n'est partagé : datastore, ports et container names sont distincts.
+# Pour l'arrêter : docker compose -f docker-compose.poc.yml -f docker-compose.wm11.yml \
+#                   rm -sf wm11-gateway wm11-opensearch
+#
+#   docker compose -f docker-compose.poc.yml -f docker-compose.devportal.yml \
+#                  -f docker-compose.wm11.yml up -d wm11-opensearch wm11-gateway
+#
+#   admin REST + data-plane : http://localhost:15556/rest/apigateway/...
+#   console UI              : http://localhost:19074/apigatewayui/
+#   Administrator / manage
+#
+# ─── Faits établis par inspection de l'image (2026-07-13) ───────────────────
+#
+# 1. DATASTORE = OPENSEARCH 2.19.4 (mêmes jars que le portal 11.1), et AUCUN
+#    data store interne n'est livré dans l'image → instance externe OBLIGATOIRE.
+# 2. Les env vars gardent le nom LEGACY `apigw_elasticsearch_*` alors que le
+#    moteur est OpenSearch — exactement le même décalage que SPRING_ELASTICSEARCH_*
+#    côté portal. Ne pas chercher un `apigw_opensearch_*` : il n'existe pas.
+# 3. ⚠️ AUCUNE LICENCE dans l'image : contrairement à `softwareag/apigateway-trial:10.15`
+#    (licence trial embarquée), `ibmwebmethods.azurecr.io/apigateway:11.1` est
+#    l'image PRODUIT — le client monte sa licence. Comportement au boot sans
+#    licence = à observer (cf. EVIDENCE).
+# 4. amd64 → émulé sur Apple Silicon : boot lent (plusieurs minutes), comme la 10.15.
+#
+# ─── Appairage avec le Developer Portal ─────────────────────────────────────
+# Voir scripts/pair-devportal.sh : sens du flux, payload exact, et les deux
+# pièges (`externalPortal` est un OBJET — un booléen déclenche le message
+# trompeur "Missing Parameter: document" ; et `Accept: application/json` est
+# obligatoire, sinon la gateway répond du HTML en 200).
+#
+#   GW=http://localhost:15556 GW_SELF=http://poc-wm11-gateway:5555 \
+#   DEST_NAME=stoa_wm11 ./scripts/pair-devportal.sh
+name: stoa-labs-poc
+
+volumes:
+  wm11-os-data:
+
+services:
+  wm11-opensearch:
+    image: opensearchproject/opensearch:2.19.1
+    container_name: poc-wm11-opensearch
+    environment:
+      - discovery.type=single-node
+      - cluster.name=stoa-poc-wm11
+      - DISABLE_SECURITY_PLUGIN=true
+      - DISABLE_INSTALL_DEMO_CONFIG=true
+      - OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
+    volumes:
+      - wm11-os-data:/usr/share/opensearch/data
+    ports:
+      - "19202:9200"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    networks: [poc]
+    restart: unless-stopped
+
+  wm11-gateway:
+    image: ibmwebmethods.azurecr.io/apigateway:11.1
+    container_name: poc-wm11-gateway
+    pull_policy: never       # image trial locale : aucun accès registry (cf. make images-check)
+    platform: linux/amd64
+    depends_on:
+      wm11-opensearch:
+        condition: service_healthy
+    ports:
+      - "15556:5555"    # IS : admin REST + invocation /gateway/... (5555 est pris par la 10.15)
+      - "19074:9072"    # console UI (HTTP)
+      - "9075:9073"     # console UI (HTTPS)
+    environment:
+      # Nom legacy "elasticsearch" alors que le moteur est OpenSearch (cf. note 2).
+      - apigw_elasticsearch_hosts=wm11-opensearch:9200
+      - apigw_elasticsearch_http_username=
+      - apigw_elasticsearch_http_password=
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf -u Administrator:manage http://localhost:5555/rest/apigateway/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 40
+      start_period: 240s
+    networks: [poc]
+    restart: unless-stopped

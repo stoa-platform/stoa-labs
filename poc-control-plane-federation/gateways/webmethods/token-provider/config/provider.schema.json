@@ -1,0 +1,109 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://stoa-labs/poc/webmethods/token-provider/provider.schema.json",
+  "title": "TokenProvider profile",
+  "description": "Profil de provider de jeton pour le package IS TokenProvider. Un fichier par provider dans config/profiles/<nom>.json ; <nom> doit matcher [a-z0-9][a-z0-9-]{0,63}. Les placeholders {{cle}} des templates sont resolus depuis 'params' (statique, non sensible) et 'secrets.map' (valeurs lues dans Vault).",
+  "type": "object",
+  "required": ["tokenRequest", "response"],
+  "additionalProperties": false,
+  "properties": {
+    "description": { "type": "string" },
+    "tokenRequest": {
+      "type": "object",
+      "required": ["urlTemplate"],
+      "additionalProperties": false,
+      "properties": {
+        "urlTemplate": {
+          "type": "string",
+          "description": "URL du endpoint de jeton ; accepte des placeholders ({{realm}}...). Les valeurs injectees sont URL-encodees."
+        },
+        "method": { "type": "string", "default": "POST" },
+        "contentType": {
+          "type": "string",
+          "default": "application/x-www-form-urlencoded",
+          "description": "Determine l'encodage des placeholders du body : form-urlencoded -> URL-encoding, json -> echappement JSON, autre -> brut."
+        },
+        "bodyTemplate": {
+          "type": "string",
+          "description": "Body de l'appel de jeton avec placeholders. Omis pour les providers sans body."
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "description": "Headers additionnels de l'appel de jeton ; valeurs templatable (mode brut)."
+        },
+        "authUserVar": {
+          "type": "string",
+          "description": "Nom du placeholder a utiliser comme user Basic auth sur l'appel de jeton (ex: clientId). Optionnel."
+        },
+        "authPassVar": { "type": "string" },
+        "timeoutMillis": { "type": "integer", "default": 10000 }
+      }
+    },
+    "params": {
+      "type": "object",
+      "additionalProperties": { "type": "string" },
+      "description": "Valeurs statiques NON SENSIBLES : scope, realm, domain, client_id public... Differenciables par environnement (un fichier de profil par env)."
+    },
+    "secrets": {
+      "type": "object",
+      "required": ["vaultPath", "map"],
+      "additionalProperties": false,
+      "properties": {
+        "vaultPath": {
+          "type": "string",
+          "description": "Chemin du secret KV (sans le mount ni /data/), ex: apigw/backends/legacy-payments."
+        },
+        "map": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "description": "placeholder -> champ du secret Vault. Ces placeholders sont consideres secrets : jamais logges."
+        }
+      }
+    },
+    "response": {
+      "type": "object",
+      "additionalProperties": false,
+      "oneOf": [
+        { "required": ["expiresInPath"], "not": { "required": ["fixedTtlSeconds"] } },
+        { "required": ["fixedTtlSeconds"], "not": { "required": ["expiresInPath"] } }
+      ],
+      "properties": {
+        "tokenPath": {
+          "type": "string",
+          "default": "access_token",
+          "description": "Chemin pointe vers le jeton dans la reponse JSON (ex: data.jwt). Tableaux non supportes."
+        },
+        "expiresInPath": {
+          "type": "string",
+          "description": "Chemin pointe vers la duree de vie en secondes. Exclusif avec fixedTtlSeconds (l'un des deux est requis)."
+        },
+        "fixedTtlSeconds": { "type": "integer", "minimum": 1 },
+        "tokenType": { "type": "string", "default": "Bearer" }
+      }
+    },
+    "cache": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "refreshSkewPercent": {
+          "type": "integer", "default": 80, "minimum": 10, "maximum": 95,
+          "description": "Le jeton est renouvele a X% de sa duree de vie reelle."
+        },
+        "minTtlSeconds": { "type": "integer", "default": 30 }
+      }
+    },
+    "inject": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "headerName": { "type": "string", "default": "Authorization" },
+        "valueTemplate": {
+          "type": "string",
+          "default": "{{tokenType}} {{token}}",
+          "description": "Valeur du header pose sur la requete sortante ; placeholders disponibles : token, tokenType."
+        }
+      }
+    }
+  }
+}

@@ -54,3 +54,12 @@ crash.log
 coverage/
 .cache/
 tmp/
+
+# Repos git IMBRIQUÉS (chacun a son propre .git : les pilotes poly-repo ADR-076
+# et le repo plateforme, poussés sur le Gitea du PoC). Sans .gitmodules, un
+# `git add .` depuis la racine les stagerait en gitlinks CASSÉS (SHA sans URL,
+# irrésolvable au clone) — incident corrigé le 2026-07-09. Les ignorer ici ;
+# si un jour leur contenu doit vivre dans stoa-labs : submodules ou dé-nesting.
+accounts-team/
+payments-team/
+stoa-platform-ci/
