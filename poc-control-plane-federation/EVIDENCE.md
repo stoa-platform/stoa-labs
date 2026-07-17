@@ -735,6 +735,150 @@ vérifié au `file`, checksums re-vérifiés, SBOM re-parsé. + tests Go
 (`internal/httpx`, `internal/vault`) sous `-race`, suite complète verte.
 S'exécute HORS ZONE : aucun service du compose requis.
 
+## 2026-07-17 — L'« upload de certificat binaire » de l'UI wM est un MYTHE (ADR-078 écart n°5 RÉFUTÉ) ★
+
+**Croyance réfutée** (spike 2026-07-15) : « le REST refuse le binaire, donc sur une
+version touchée par le bug de hash base64 le cert de l'app doit se poser à la main
+dans l'UI (export `.cer` binaire Windows) ⇒ labctl ne peut pas ». Le raisonnement
+supposait que l'UI transporte des **octets bruts**. **Trace réseau : elle ne le fait
+pas.**
+
+**Protocole** (gateway RÉELLE `apigateway-trial:10.15`, app **jetable**
+`spike-cert-binary` créée puis détruite — gateway restaurée à ses 4 apps) :
+
+1. `openssl x509 -outform DER` → `.cer` **binaire** vrai (855 o, entête `30 82 03 53`,
+   `file` = « Certificate, Version=3 »).
+2. UI **de l'API Gateway** (`http://localhost:19072/apigatewayui/`, *pas* le
+   Designer) → *Application → Edit → Identifiers → Client certificates → Browse →
+   Add → Save*, en capturant le réseau (Playwright).
+3. Read-back `GET :5555/rest/apigateway/applications/{id}` + comparaison d'octets.
+
+**Ce que l'UI envoie réellement** (capture verbatim) :
+
+```
+PUT /apigatewayui/apigateway/applications/{id}      Content-Type: application/json
+"identifiers":[{"value":["MIIDUzCCAjugAwIBAgIU..."],"name":"demo-client-binary.cer","key":"httpsCertificate"}]
+```
+
+Le champ `<input type=file accept=".cer,.der,.pem,.crt">` est lu **en JS** et
+**base64-encodé côté client** : PUT JSON ordinaire, aucun `multipart`, aucun
+`octet-stream`. **Il n'existe aucun chemin binaire dans le produit.**
+
+**Mesure décisive** — octets stockés par la gateway, les deux voies :
+
+| Voie | `name` | `sha256(valeur stockée)` | `== base64(DER)` |
+|---|---|---|---|
+| UI (`.cer` **binaire**, Browse+Add+Save) | `demo-client-binary.cer` | `ff18b2a650aee4e3bdc606835b88274af7b237060480a05f17893b9274970474` | ✅ |
+| REST (labctl, `base64(DER)`) | `partner-cert` | `ff18b2a650aee4e3bdc606835b88274af7b237060480a05f17893b9274970474` | ✅ |
+
+**Identiques au bit près** (même longueur 1140, même sha256), et le PUT de l'UI est
+relu tel quel par le REST `:5555` ⇒ **même API derrière**, comme supposé.
+
+**Conséquence** : un bug de hash de vérification ne peut pas discriminer les deux
+voies — elles déposent les **mêmes octets** ; il les touche **toutes les deux ou
+aucune**. « Exporter en binaire + passer par l'UI » ne contourne donc **rien** ; le
+contournement n'a jamais existé, seule la croyance qu'un `.cer` binaire *reste*
+binaire jusqu'à la gateway. Si un bug de hash se manifeste sur une version de fix
+client, la cause est **ailleurs** (matière stockée ou parsing runtime, pas
+l'encodage du transport) — **et l'UI n'y échappera pas non plus**.
+
+⇒ **Aucun résidu manuel sur le cert** : cert + plage IP + clé backend = **100 %
+REST/labctl**. `identifiers.go` envoyait déjà la bonne forme (`{name, key:
+httpsCertificate, value:[base64(DER)]}`) — **aucun changement de code requis** côté Go.
+*(Faits du 2026-07-15 conservés : le REST refuse le binaire brut et l'hex — 400 —,
+n'accepte que `base64(DER)` ou le PEM complet, stockés verbatim sans parsing. C'est
+cohérent : l'UI non plus n'envoie que du base64.)*
+
+### Volet Ansible : « via Ansible c'est aussi bon ? » — OUI après avoir fermé 2 bugs LATENTS
+
+Le livrable client, c'est le **rôle Ansible** (le Go est parqué). Il fallait donc le
+prouver LIVE, pas raisonner par analogie. Rôle `apim_selfservice_app` lancé contre la
+10.15 réelle sur une app **jetable** (`spike-cert-ansible`, `enforce:[]` + backend
+neutralisé pour isoler l'écriture du cert et ne PAS toucher la policy de l'API de
+démo ; app supprimée ensuite — gateway restaurée à ses 4 apps). **Résultat cert :
+identité au bit près avec les deux autres voies.**
+
+| Voie | sha256(valeur stockée) |
+|---|---|
+| UI (`.cer` binaire) | `ff18b2a650aee4e3bdc606835b88274af7b237060480a05f17893b9274970474` |
+| REST (labctl `base64(DER)`) | `ff18b2a650aee4e3bdc606835b88274af7b237060480a05f17893b9274970474` |
+| **Ansible (rôle, PEM→strip→base64)** | `ff18b2a650aee4e3bdc606835b88274af7b237060480a05f17893b9274970474` |
+
+Idempotent (RUN 2 : pas de doublon d'identifier, même hash). MAIS le premier run a
+révélé **deux bugs que le rôle portait sans le savoir** — tous deux masqués jusque-là
+parce que les runs « prouvés » du 2026-07-15 trouvaient l'app **déjà créée** par le
+moteur Python et **sans** `public_cert_ref` :
+
+- **BUG 1 — création d'app CASSÉE à chaque fois (raison d'être du rôle).** `set_fact
+  ss_app_id: {{ a.id | default((a.applications|first).id) }}` : Jinja évalue
+  l'**argument** de `default()` **eagerly** → `.applications` déréférencé même quand
+  `.id` existe → `'dict object' has no attribute 'applications'` à **chaque** POST.
+  Le chemin de création n'avait donc **jamais** tourné live. **Fix** : expression
+  conditionnelle `a.id if ('id' in a) else …` (paresseuse) + assert `APP_ID_UNRESOLVED`.
+- **BUG 2 — extraction de cert qui CORROMPT en silence deux formats clients courants.**
+  Le rôle faisait « retirer BEGIN/END sur TOUT le fichier puis filtrer le non-base64 ».
+  Mesuré contre la gateway :
+  - **PEM en chaîne** (leaf + intermédiaire, ordre openssl standard) → les 2 corps
+    **concaténés** en un blob (1140 → 2272 car., décode en 1702 o) ;
+  - **PEM à en-tête texte** (`Bag Attributes`, `subject=` : exports Windows/Java
+    courants) → les **lettres de l'en-tête** survivent au filtre et préfixent le
+    base64 (1140 → 1200 car., ne décode même plus).
+
+  La gateway stockant **verbatim** (elle ne parse pas), l'apply aurait dit
+  « convergé » avec une **identité morte** (le cert présenté ne matcherait jamais →
+  401 au handshake). La **spec Go**, elle, était déjà correcte (`pem.Decode` = premier
+  bloc, décodé proprement — même `sha256` sur les deux formats) : c'est la
+  **transcription Ansible** qui avait dévié de la spec. **Fix** : isoler le PREMIER
+  bloc CERTIFICATE (équivalent `pem.Decode`) + trois assertions fail-closed
+  (bloc présent, corps non vide, longueur multiple de 4).
+
+**Preuves du fix, live** : `chain.pem` et `bagattr.pem` → `CERT_OK` + `sha256`
+`ff18b2a6…` (SAIN) ; `garbage.pem` (sans bloc) → **refusé** `CERT_INVALID` (au lieu
+d'une corruption silencieuse). Aucune autre extraction naïve ailleurs dans `ansible/`
+(grep). ⇒ Réponse à la question : **oui, le cert par Ansible est bon — désormais aussi
+robuste que la spec Go, et fail-closed sur les PEM non conformes.**
+
+### Même crible sur le rôle PRODUCTEUR `apim_publish_api` (from-scratch live)
+
+Appliqué la même méthode au rôle producteur (import OpenAPI → activate → inbound) :
+audit des captures d'id, puis exécution **from-scratch** sur des APIs **jetables**
+(nettoyées ensuite — gateway ramenée à ses 10 APIs, 0 résidu alias/strategy/scope/
+action). Deux enseignements — un faux suspect écarté, un vrai bug fermé.
+
+**Faux suspect (écarté par la mesure).** `inbound.yml:169`
+`{{ x.policyAction.id | default(x.id) }}` ressemblait au BUG 1 du consommateur (défaut
+`default()` évalué eagerly). **Mais non** : testé en isolation sur la vraie forme
+`{policyAction:{id}}`, il renvoie l'id **sans erreur**. La différence avec le
+consommateur : là, le défaut était `(x.applications | first).id` — le **filtre `first`
+force** l'évaluation d'un `Undefined` et lève ; ici `x.id` est un accès d'attribut **nu**
+→ `Undefined` non forcé, ignoré par `default()`. Confirmé **live** : run oauth2
+from-scratch (empreinte `oAuth2Token` inexistante ⇒ chemin de **création** d'action
+réellement exécuté) → `ok=42 failed=0`, puis `PUBLISH_CONFIRMED` + `INBOUND_CONFIRMED`
++ `OAUTH2_CONFIRMED`, idempotent. Les captures `main.yml:93` (`apiResponse.api.id`,
+forme du POST multipart vérifiée) et `team.yml:19` sont saines aussi. **Leçon : ne pas
+« corriger » par analogie — le motif jumeau n'était pas le même bug.**
+
+**Vrai bug — un contrat OpenAPI en JSON échoue à l'import (400), silencieusement
+réservé au YAML.** Le rôle lit le contrat par `lookup('file')` et le pousse en
+`form-multipart`. Mesuré : contrat **YAML** → publié ; contrat **JSON** (cas client
+courant) → **400 « input openapi file is not valid »**. Isolé par croisement
+**contenu × extension** (contenu YAML sous nom `.json` → OK ; contenu JSON sous nom
+`.yaml` → 400) : **c'est le contenu, pas l'extension**. Or `curl` publie ce même JSON
+sans souci (201) ⇒ défaut **100 % côté Ansible**. Capture du corps multipart émis :
+la partie `file` contenait `{'openapi': '3.0.3', …}` — **guillemets SIMPLES, un repr
+de dict Python, pas du JSON**. Mécanisme : un contrat JSON commence par `{` ; le
+**templating natif d'Ansible coerce** la string en dict, que l'encodeur multipart
+`str()` en repr Python → JSON invalide. Le YAML (ne commençant pas par `{`) survivait,
+d'où le masquage. **Fix** : `| string` sur le `lookup('file')` des DEUX chemins (import
+POST + update PUT) — fige la valeur en texte avant coercion. Prouvé sur l'echo-server
+(partie `file` repasse en guillemets doubles) **et live** : contrat JSON from-scratch
+→ `PUBLISH_CONFIRMED` ; YAML → non-régression verte.
+
+⇒ Réponse : le rôle producteur était **plus sain** que le consommateur (ses chemins de
+création fonctionnaient from-scratch), mais il **refusait tout contrat JSON** — corrigé.
+*(Non exercé, assumé : `team.yml` — Teams désactivé au lab, shape POST /assets/team
+best-effort ; à valider chez le client.)*
+
 ## Teardown (destruction contrôlée)
 
 ```bash
