@@ -49,6 +49,42 @@
         success_msg: "identifier {{ item }} présent dans l'asset."
       loop: "{{ apim_ss_app.enforce }}"
 
+    # ----- cert : la VALEUR du manifeste est posée, le NOM porte sa date -----
+    # (replace : name = "<app>-exp-YYYYMMDD" ; overlap : multi-dates triées
+    # "<app>-exp-YYYYMMDD+YYYYMMDD" — dans les deux cas la date du cert du
+    # manifeste DOIT apparaître, c'est elle que les scans du client lisent.)
+    - name: "Verify : cert — valeur présente + nom daté (scans d'exploitation client)"
+      when: "(apim_ss_app.public_cert_ref | default('')) | length > 0"
+      block:
+        - name: "Verify : recharger le PEM + recalculer expiration attendue"
+          ansible.builtin.set_fact:
+            ss_cert_pem: "{{ lookup('file', apim_ss_app.public_cert_ref) }}"
+        - ansible.builtin.import_tasks: cert-expiry.yml
+        - name: "Verify : valeur base64(DER) du manifeste + identifier live"
+          ansible.builtin.set_fact:
+            v_cert_der: >-
+              {{ ss_cert_pem.split('-----BEGIN CERTIFICATE-----')[1].split('-----END CERTIFICATE-----')[0]
+                 | regex_replace('[^A-Za-z0-9+/=]', '') }}
+            v_cert_id: >-
+              {{ (v_app_rec.identifiers | default([])
+                  | selectattr('key', 'equalto', 'httpsCertificate') | list | first) | default({}) }}
+        - name: "Verify : FAIL-CLOSED — le cert du manifeste est POSÉ et son nom porte sa date"
+          ansible.builtin.assert:
+            that:
+              - "v_cert_der in (v_cert_id.value | default([]))"
+              - "(v_cert_id.name | default('')) is regex('-exp-[0-9]{8}(\\+[0-9]{8})*$')"
+              - "ss_cert_expiry_ymd in (v_cert_id.name | default(''))"
+            fail_msg: >-
+              CERT_NAME_UNCONFIRMED : identifier httpsCertificate
+              name='{{ v_cert_id.name | default('(absent)') }}'
+              ({{ v_cert_id.value | default([]) | length }} valeur(s)) — le cert du
+              manifeste (exp {{ ss_cert_expiry_ymd }}) est absent OU le nom ne porte
+              pas sa date : les scans d'expiration du client seraient aveugles.
+            success_msg: >-
+              CERT_NAME_CONFIRMED : '{{ v_cert_id.name }}'
+              ({{ v_cert_id.value | default([]) | length }} valeur(s), date
+              {{ ss_cert_expiry_ymd }} visible).
+
     # ----- l'enforcement est-il RÉELLEMENT posé sur la policy de l'API ? -----
     - name: "Verify : résoudre l'API + sa policy + l'action IAM nommée"
       ansible.builtin.uri:

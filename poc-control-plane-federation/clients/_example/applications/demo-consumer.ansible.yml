@@ -15,6 +15,13 @@ apim_ss_app:
   contact_emails: ["demo@bank.invalid"]
   backend: { header: "apikey", value_template: "${backend_apikey}" }   # invariant
   enforce: ["ipAddressRange"]                                          # invariant
+  # Rotation du cert client (quand public_cert_ref est posé) : l'identifier
+  # httpsCertificate est nommé "<app>-exp-YYYYMMDD" (date GMT du NotAfter —
+  # les scans d'exploitation lisent '-exp-[0-9]{8}') ; un cert expiré est
+  # REFUSÉ (CERT_EXPIRED). replace = substitution ; overlap = chevauchement
+  # (nouveau cert AJOUTÉ aux valides existants, expirés purgés, nom
+  # multi-dates "-exp-YYYYMMDD+YYYYMMDD") pour le double-run consommateur.
+  cert_rotation: "replace"
 
   per_env:
     dev:  { ip_allowlist: ["192.168.65.1"],        public_cert_ref: "" }

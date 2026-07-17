@@ -50,6 +50,14 @@ apim_ss_vault_prefix: "stoa"
 apim_ss_vault_wm_creds_sub: "gateways/webmethods"           # basic  : { username, password }
 apim_ss_vault_oauth_sub: "gateways/webmethods/admin-oauth"  # oauth2 : { token_url, client_id, client_secret, scope }
 
+# --- certificat consommateur : garde d'expiration (cert-expiry.yml) ----------
+# Le nom de l'identifier httpsCertificate porte la date NotAfter :
+# "<app|cert_name_prefix>-exp-YYYYMMDD" (les scripts d'exploitation du client
+# scannent '-exp-[0-9]{8}' pour repérer les certs expirés). Fail-closed : un
+# cert expiré — ou à moins de min_days_left jours — est REFUSÉ (identité morte,
+# elle ne matcherait jamais au handshake).
+apim_ss_cert_min_days_left: 0
+
 # --- la demande d'application à converger ------------------------------------
 # Une seule ici ; en réel : boucler sur une liste OU charger un manifeste
 # (clients/<x>/applications/*.json) via lookup('file') | from_json.
@@ -62,6 +70,15 @@ apim_ss_app:
   # Identité ENTRANTE (identifiers de l'asset application) :
   ip_allowlist: []              # ex. ["192.168.65.1", "10.0.0.1-10.0.0.5"] (single|A-B ; PAS de CIDR — cf. README)
   public_cert_ref: ""          # chemin vers un PEM PUBLIC (ou "")
+  # Rotation du certificat (main §3b, raisonne PAR VALEUR base64(DER)) :
+  #   replace (défaut) : la valeur du manifeste REMPLACE la dimension ;
+  #   overlap          : AJOUT aux certs existants encore valides (fenêtre de
+  #                      chevauchement pour le double-run consommateur) + PURGE
+  #                      automatique des valeurs expirées/illisibles à chaque run.
+  # Nom de l'identifier = "<app|cert_name_prefix>-exp-YYYYMMDD[+YYYYMMDD]"
+  # (dates triées — les scans d'exploitation du client lisent '-exp-[0-9]{8}').
+  cert_rotation: "replace"
+  # cert_name_prefix: ""       # préfixe du nom du cert (défaut : name de l'app)
   # Plan SORTANT (P-callout) : header de clé backend injecté vers l'amont.
   backend:
     header: "apikey"
