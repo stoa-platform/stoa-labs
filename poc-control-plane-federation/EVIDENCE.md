@@ -735,6 +735,60 @@ vérifié au `file`, checksums re-vérifiés, SBOM re-parsé. + tests Go
 (`internal/httpx`, `internal/vault`) sous `-race`, suite complète verte.
 S'exécute HORS ZONE : aucun service du compose requis.
 
+## 2026-07-17 — L'« upload de certificat binaire » de l'UI wM est un MYTHE (ADR-078 écart n°5 RÉFUTÉ) ★
+
+**Croyance réfutée** (spike 2026-07-15) : « le REST refuse le binaire, donc sur une
+version touchée par le bug de hash base64 le cert de l'app doit se poser à la main
+dans l'UI (export `.cer` binaire Windows) ⇒ labctl ne peut pas ». Le raisonnement
+supposait que l'UI transporte des **octets bruts**. **Trace réseau : elle ne le fait
+pas.**
+
+**Protocole** (gateway RÉELLE `apigateway-trial:10.15`, app **jetable**
+`spike-cert-binary` créée puis détruite — gateway restaurée à ses 4 apps) :
+
+1. `openssl x509 -outform DER` → `.cer` **binaire** vrai (855 o, entête `30 82 03 53`,
+   `file` = « Certificate, Version=3 »).
+2. UI **de l'API Gateway** (`http://localhost:19072/apigatewayui/`, *pas* le
+   Designer) → *Application → Edit → Identifiers → Client certificates → Browse →
+   Add → Save*, en capturant le réseau (Playwright).
+3. Read-back `GET :5555/rest/apigateway/applications/{id}` + comparaison d'octets.
+
+**Ce que l'UI envoie réellement** (capture verbatim) :
+
+```
+PUT /apigatewayui/apigateway/applications/{id}      Content-Type: application/json
+"identifiers":[{"value":["MIIDUzCCAjugAwIBAgIU..."],"name":"demo-client-binary.cer","key":"httpsCertificate"}]
+```
+
+Le champ `<input type=file accept=".cer,.der,.pem,.crt">` est lu **en JS** et
+**base64-encodé côté client** : PUT JSON ordinaire, aucun `multipart`, aucun
+`octet-stream`. **Il n'existe aucun chemin binaire dans le produit.**
+
+**Mesure décisive** — octets stockés par la gateway, les deux voies :
+
+| Voie | `name` | `sha256(valeur stockée)` | `== base64(DER)` |
+|---|---|---|---|
+| UI (`.cer` **binaire**, Browse+Add+Save) | `demo-client-binary.cer` | `ff18b2a650aee4e3bdc606835b88274af7b237060480a05f17893b9274970474` | ✅ |
+| REST (labctl, `base64(DER)`) | `partner-cert` | `ff18b2a650aee4e3bdc606835b88274af7b237060480a05f17893b9274970474` | ✅ |
+
+**Identiques au bit près** (même longueur 1140, même sha256), et le PUT de l'UI est
+relu tel quel par le REST `:5555` ⇒ **même API derrière**, comme supposé.
+
+**Conséquence** : un bug de hash de vérification ne peut pas discriminer les deux
+voies — elles déposent les **mêmes octets** ; il les touche **toutes les deux ou
+aucune**. « Exporter en binaire + passer par l'UI » ne contourne donc **rien** ; le
+contournement n'a jamais existé, seule la croyance qu'un `.cer` binaire *reste*
+binaire jusqu'à la gateway. Si un bug de hash se manifeste sur une version de fix
+client, la cause est **ailleurs** (matière stockée ou parsing runtime, pas
+l'encodage du transport) — **et l'UI n'y échappera pas non plus**.
+
+⇒ **Aucun résidu manuel sur le cert** : cert + plage IP + clé backend = **100 %
+REST/labctl**. `identifiers.go` envoyait déjà la bonne forme (`{name, key:
+httpsCertificate, value:[base64(DER)]}`) — **aucun changement de code requis**.
+*(Faits du 2026-07-15 conservés : le REST refuse le binaire brut et l'hex — 400 —,
+n'accepte que `base64(DER)` ou le PEM complet, stockés verbatim sans parsing. C'est
+cohérent : l'UI non plus n'envoie que du base64.)*
+
 ## Teardown (destruction contrôlée)
 
 ```bash

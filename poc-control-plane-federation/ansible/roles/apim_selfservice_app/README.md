@@ -112,15 +112,20 @@ ansible-playbook -i inv.ini ansible/selfservice-app.yml \
 
 ## Limites / résidus (assumés, ADR-078)
 
-- **Certificat** : posé en identifier REST *best-effort*, en **base64** (le champ
-  JSON `value` de l'identifier). Sur les versions touchées par le **bug de hash
-  base64** de la gateway, le cert de l'app se pose **manuellement dans l'UI** (export
-  `.cer` **binaire**) — le REST refuse le binaire (400). `AND(cert,IP)` ne se teste
-  pas en clair (cert non présenté → 401) : il exige le listener HTTPS client-auth.
-  - **Préservation d'un cert UI** : le re-run ne remplace QUE les dimensions
-    **déclarées par le manifeste** (`ss_managed_keys`). Un `httpsCertificate` posé
-    en `.cer` binaire dans l'UI (donc `public_cert_ref` vide) est **conservé** au
-    re-run au lieu d'être effacé — prouvé live. (Idem `azp`/`openIdClaims`.)
+- **Certificat** : posé en identifier REST, en **base64** (le champ JSON `value`
+  de l'identifier) — **c'est la voie normale, pas un pis-aller**. L'UI de la
+  gateway fait **exactement la même chose** : elle lit le `.cer` binaire en JS et
+  l'envoie en `base64(DER)` dans le même PUT JSON. Trace réseau + comparaison des
+  octets stockés (spike 2026-07-17, ADR-078 écart n°5) : **même sha256** par les
+  deux voies ⇒ il n'existe **aucun** « upload binaire », et donc aucun
+  contournement UI d'un bug de hash. Le REST refuse le binaire brut et l'hex (400)
+  et n'accepte que `base64(DER)` ou le PEM complet, stockés verbatim.
+  `AND(cert,IP)` ne se teste pas en clair (cert non présenté → 401) : il exige le
+  listener HTTPS client-auth.
+  - **Préservation d'un cert posé hors manifeste** : le re-run ne remplace QUE les
+    dimensions **déclarées par le manifeste** (`ss_managed_keys`). Un
+    `httpsCertificate` posé par l'UI (donc `public_cert_ref` vide) est **conservé**
+    au re-run au lieu d'être effacé — prouvé live. (Idem `azp`/`openIdClaims`.)
 - **Plan SORTANT (clé backend, P-callout)** : `tasks/backend.yml` POSE le câblage
   (`customHttpHeaders headerValue=${backend_apikey}`). La **valeur** est résolue au
   runtime par le package IS **TokenProvider ← Vault** (déploiement Designer = résidu
