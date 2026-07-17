@@ -146,14 +146,6 @@
       ansible.builtin.set_fact:
         ss_ip_norm: "{{ apim_ss_app.ip_allowlist | map('regex_replace', '^([^-]+)$', '\\1-\\1') | list }}"
 
-    - name: "Identifiers : ensemble désiré (cert + IP)"
-      ansible.builtin.set_fact:
-        ss_desired_ids: >-
-          {{ ([] if (apim_ss_app.public_cert_ref | length == 0)
-                else [{'key': 'httpsCertificate', 'name': 'client-cert', 'value': [ss_cert_der]}])
-             + ([] if (ss_ip_norm | length == 0)
-                else [{'key': 'ipAddressRange', 'name': 'ip-allowlist', 'value': ss_ip_norm}]) }}
-
     - name: "App : relire le record complet (read-modify-write)"
       ansible.builtin.uri:
         url: "{{ apim_ss_api_base }}/applications/{{ ss_app_id }}"
@@ -163,6 +155,98 @@
     - name: "App : record (déballer l'enveloppe applications[])"
       ansible.builtin.set_fact:
         ss_app_rec: "{{ ss_app_get.json.applications | default([ss_app_get.json]) | first }}"
+
+    # ===== 3b. Rotation du certificat (replace | overlap) =====================
+    # L'identité d'un cert n'est PAS son nom mais sa VALEUR base64(DER) —
+    # stockée verbatim, matchée octet-à-octet (ADR-078). La rotation raisonne
+    # donc PAR VALEUR (dédup incluse : un double-run est un no-op), et le NOM
+    # est recalculé déterministiquement depuis les dates des valeurs retenues :
+    #   replace (défaut) : la valeur du manifeste REMPLACE la dimension
+    #                      -> name "<app>-exp-YYYYMMDD" ;
+    #   overlap          : la valeur du manifeste s'AJOUTE aux certs existants
+    #                      ENCORE VALIDES (fenêtre de chevauchement pour que le
+    #                      consommateur bascule sans coupure) ; les valeurs
+    #                      EXPIRÉES sont purgées à chaque run
+    #                      -> name "<app>-exp-YYYYMMDD+YYYYMMDD" (dates triées,
+    #                      toujours greppable '-exp-[0-9]{8}').
+    - name: "Cert : expiration du cert du manifeste -> garde + nom single"
+      ansible.builtin.import_tasks: cert-expiry.yml
+      when: "apim_ss_app.public_cert_ref | length > 0"
+
+    - name: "Cert : rotation (replace | overlap)"
+      when: "apim_ss_app.public_cert_ref | length > 0"
+      block:
+        - name: "Rotation : fail-closed sur le mode"
+          ansible.builtin.assert:
+            that: "(apim_ss_app.cert_rotation | default('replace')) in ['replace', 'overlap']"
+            fail_msg: "cert_rotation='{{ apim_ss_app.cert_rotation | default('replace') }}' — attendu replace|overlap."
+
+        - name: "Rotation : valeurs par défaut (replace)"
+          ansible.builtin.set_fact:
+            ss_cert_values: ["{{ ss_cert_der }}"]
+
+        - name: "Rotation : overlap — conserver les certs existants valides"
+          when: "(apim_ss_app.cert_rotation | default('replace')) == 'overlap'"
+          block:
+            - name: "Overlap : valeurs existantes de la dimension (hors le cert du manifeste)"
+              ansible.builtin.set_fact:
+                ss_cert_existing: >-
+                  {{ ss_app_rec.identifiers | default([])
+                     | selectattr('key', 'equalto', 'httpsCertificate')
+                     | map(attribute='value') | flatten | unique
+                     | difference([ss_cert_der]) }}
+
+            # La valeur stockée EST le corps d'un PEM : re-wrap 64 colonnes et
+            # openssl lit la date. Un value illisible (rc!=0) = PURGÉ (on ne
+            # garde jamais une identité qu'on ne sait pas dater).
+            - name: "Overlap : NotAfter de chaque cert existant"
+              ansible.builtin.command:
+                argv: ["openssl", "x509", "-noout", "-enddate"]
+                stdin: "-----BEGIN CERTIFICATE-----\n{{ item | regex_replace('(.{64})', '\\1\n') }}\n-----END CERTIFICATE-----"
+              register: ss_old_dates
+              changed_when: false
+              failed_when: false
+              delegate_to: localhost
+              loop: "{{ ss_cert_existing }}"
+              loop_control: { label: "{{ item[:24] }}…" }
+
+            - name: "Overlap : garder les valides, purger les expirés/illisibles"
+              ansible.builtin.set_fact:
+                ss_cert_kept: >-
+                  {{ (ss_cert_kept | default([]))
+                     + ([{'value': item.item, 'ymd': cert_ymd}] if cert_keep else []) }}
+              vars:
+                cert_raw: "{{ item.stdout | default('') | regex_replace('^notAfter=', '') | regex_replace(' +', ' ') | trim }}"
+                cert_ymd: "{{ (cert_raw | to_datetime('%b %d %H:%M:%S %Y %Z')).strftime('%Y%m%d') if (item.rc | default(1)) == 0 else '' }}"
+                cert_keep: >-
+                  {{ (item.rc | default(1)) == 0
+                     and ((cert_raw | to_datetime('%b %d %H:%M:%S %Y %Z')) - now(utc=true)).days >= 0 }}
+              loop: "{{ ss_old_dates.results | default([]) }}"
+              loop_control: { label: "{{ item.item[:24] }}…" }
+
+            - name: "Overlap : valeurs finales + nom multi-dates"
+              ansible.builtin.set_fact:
+                ss_cert_values: "{{ (ss_cert_kept | default([]) | map(attribute='value') | list) + [ss_cert_der] }}"
+                ss_cert_name: >-
+                  {{ (apim_ss_app.cert_name_prefix | default(apim_ss_app.name, true)) ~ '-exp-'
+                     ~ (((ss_cert_kept | default([]) | map(attribute='ymd') | list) + [ss_cert_expiry_ymd])
+                        | unique | sort | join('+')) }}
+
+            - name: "Overlap : purge journalisée"
+              ansible.builtin.debug:
+                msg: >-
+                  overlap : {{ ss_cert_values | length }} cert(s) posés
+                  ({{ (ss_cert_kept | default([])) | length }} conservé(s),
+                  {{ (ss_cert_existing | length) - ((ss_cert_kept | default([])) | length) }} purgé(s) expirés/illisibles) ;
+                  name={{ ss_cert_name }}
+
+    - name: "Identifiers : ensemble désiré (cert + IP)"
+      ansible.builtin.set_fact:
+        ss_desired_ids: >-
+          {{ ([] if (apim_ss_app.public_cert_ref | length == 0)
+                else [{'key': 'httpsCertificate', 'name': ss_cert_name, 'value': ss_cert_values}])
+             + ([] if (ss_ip_norm | length == 0)
+                else [{'key': 'ipAddressRange', 'name': 'ip-allowlist', 'value': ss_ip_norm}]) }}
 
     # On ne remplace QUE les dimensions RÉELLEMENT gérées par le manifeste
     # (celles présentes dans ss_desired_ids). Ainsi un identifier posé HORS du

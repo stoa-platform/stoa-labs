@@ -1,0 +1,55 @@
+---
+# roles/apim_selfservice_app/tasks/cert-expiry.yml (partagé main/verify)
+#
+# NOMMAGE DU CERTIFICAT PAR DATE D'EXPIRATION (demande client) : les scripts
+# d'exploitation du client scannent les identifiers d'applications pour trouver
+# les certificats expirés — le nom de l'identifier `httpsCertificate` porte
+# donc la date NotAfter : "<app|prefix>-exp-YYYYMMDD" (grep: '-exp-[0-9]{8}').
+# Le champ `name` de l'identifier est PERSISTÉ par la gateway (prouvé par la
+# trace UI d'ADR-078 : l'UI y met le nom du fichier uploadé) et n'a AUCUN rôle
+# runtime (le matching se fait sur la VALEUR base64(DER)) — le renommage est
+# purement organisationnel, sans effet sur le handshake.
+#
+# Entrée  : ss_cert_pem (le PEM public, déjà chargé et validé par l'appelant).
+# Sorties : ss_cert_expiry_ymd (YYYYMMDD), ss_cert_days_left, ss_cert_name.
+# FAIL-CLOSED : certificat expiré (ou sous apim_ss_cert_min_days_left jours)
+# = refus — on ne pose JAMAIS une identité déjà morte (elle ne matcherait
+# jamais au handshake : fail silencieux garanti en prod).
+
+- name: "Cert : NotAfter via openssl (contrôleur — le PEM y a été lu)"
+  ansible.builtin.command:
+    argv: ["openssl", "x509", "-noout", "-enddate"]
+    stdin: "{{ ss_cert_pem }}"
+  register: ss_cert_enddate
+  changed_when: false
+  delegate_to: localhost
+
+# strptime : normaliser le double espace d'openssl ("Mar  5") avant parse.
+- name: "Cert : date d'expiration (YYYYMMDD) + jours restants"
+  ansible.builtin.set_fact:
+    ss_cert_expiry_ymd: >-
+      {{ (ss_cert_enddate.stdout | regex_replace('^notAfter=', '')
+          | regex_replace(' +', ' ') | trim
+          | to_datetime('%b %d %H:%M:%S %Y %Z')).strftime('%Y%m%d') }}
+    ss_cert_days_left: >-
+      {{ ((ss_cert_enddate.stdout | regex_replace('^notAfter=', '')
+           | regex_replace(' +', ' ') | trim
+           | to_datetime('%b %d %H:%M:%S %Y %Z')) - now(utc=true)).days }}
+
+- name: "Cert : FAIL-CLOSED — certificat expiré ou trop proche de l'expiration"
+  ansible.builtin.assert:
+    that: "ss_cert_days_left | int >= (apim_ss_cert_min_days_left | int)"
+    fail_msg: >-
+      CERT_EXPIRED : {{ apim_ss_app.public_cert_ref }} expire le
+      {{ ss_cert_expiry_ymd }} ({{ ss_cert_days_left }} j restants,
+      minimum exigé {{ apim_ss_cert_min_days_left }}) — refus de poser une
+      identité morte (elle ne matcherait jamais au handshake).
+    success_msg: >-
+      CERT_VALID : expire le {{ ss_cert_expiry_ymd }}
+      ({{ ss_cert_days_left }} j restants).
+
+- name: "Cert : nom de l'identifier = <app|prefix>-exp-YYYYMMDD"
+  ansible.builtin.set_fact:
+    ss_cert_name: >-
+      {{ (apim_ss_app.cert_name_prefix | default(apim_ss_app.name, true))
+         ~ '-exp-' ~ ss_cert_expiry_ymd }}
