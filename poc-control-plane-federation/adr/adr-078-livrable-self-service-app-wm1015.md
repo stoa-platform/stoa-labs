@@ -160,7 +160,13 @@ Connecteur `AND` (jamais `OR` : *n'importe lequel suffit* = régression inaccept
 
 L'IP source, le certificat client et la clé backend **diffèrent par env** ; l'identité de l'app/API (name/api/enforce) est **invariante**. Décision : le manifeste porte l'invariant à la racine + un bloc **`per_env: {dev,rec,int,prod}`** ; chaque rôle calcule le manifeste **effectif = racine ⊕ per_env[env]** (fusion récursive, `tasks/resolve-env.yml`), **fail-closed** si l'env n'est pas déclaré (`ENV_UNDEFINED`). L'API d'admin reste un **endpoint proxy unique** : le header `X-Environment` route (pas de base par env). La clé backend reste `${backend_apikey}` (template invariant), résolue par env par le TokenProvider ← Vault de l'env. **Piège tranché :** le manifeste se charge par **chemin** (`-e apim_ss_manifest` → `include_vars`, précédence 18) et **jamais** `-e @fichier` (extra-var 22 : masquerait le `set_fact` de fusion, surcharge `per_env` perdue en silence). *Prouvé live 2026-07-15 : consommateur dev→prod bascule l'identifier IP, producteur dev matérialise l'issuer sur l'alias, env inconnu refusé.*
 
-### 7. Port en Deny-by-Default — allow-list de l'API (IS-admin)
+### 7. Lifecycle — mise à jour et préservation
+
+**Mise à jour d'une API existante** : create-only par défaut (pas de re-déploiement surprise) ; `apim_api.update: true` ⇒ **deactivate → PUT `/apis/{id}` multipart → activate** (le PUT est **refusé — 400 — sur une API active**, prouvé live ; brève coupure data-plane assumée). *Piège Jinja épinglé : `apim_api['update']` et non `apim_api.update` (collision avec la méthode `update()` du dict → sinon skip silencieux).*
+
+**Mise à jour d'une application** (IP/cert) : read-modify-write **déclaratif**, mais le rôle ne remplace QUE les dimensions **déclarées par le manifeste** — un `httpsCertificate` posé **hors manifeste** (par l'UI, p. ex. par un admin) quand `public_cert_ref` est vide est **préservé** au re-run (prouvé live), au lieu d'être effacé. *(La préservation reste utile — un cert peut légitimement être posé par l'UI —, mais elle n'est plus un palliatif : depuis le spike 2026-07-17, le cert est posable à 100 % en REST. L'UI et le REST déposent les **mêmes octets** `base64(DER)` ; « le binaire n'est possible que par l'UI » était **faux** — cf. écart n°5.)*
+
+### 8. Port en Deny-by-Default — allow-list de l'API (IS-admin)
 
 Chez le client, le **port data-plane est en Deny-by-Default** : chaque API publiée doit être **ajoutée à l'allow-list du port**. C'est l'**Access Mode du listener Integration Server** — surface **différente** de l'API d'admin apigateway (le REST `/ports` ne l'expose pas), pilotée par le form WmRoot `security-ports-editaccess.dsp`. Décision : `tasks/port-access.yml` (opt-in `apim_ss_port_manage`, après l'activate) fait **read → add idempotent → read-back fail-closed** (`PORT_ALLOWLIST_CONFIRMED`) ; play standalone `is-port-access.yml` pour la création d'env. **Le rôle ne FLIPPE JAMAIS le mode** (risque de lockout du data-plane) : le passage en Deny est fait à la création de l'env côté client. *Prouvé live 2026-07-15 : POST addNode/deleteNode + read-back basic-auth sans CSRF.* **Caveats** (§ Écarts) : allow-list par **service IS `folder:service`** (le port rejette les URLs data-plane — testé), mapping API→service = config gateway du client ; **CSRF guard** OFF sur le trial (à gérer si activé côté client).
 
@@ -194,7 +200,21 @@ API + application **jetables**, créées puis **supprimées** ; gateway restaur�
 
 4. **🔴 `/applications` non cloisonné par team (rappel spike #1).** Delete cross-team → 204, register d'une API invisible → 201. Pour un self-service **multi-équipes bancaire**, c'est bloquant. Les **gardes applicatives** (E3 du GOAL : `owner`/`register`/oracle) ne sont **pas optionnelles** dans le livrable — condition de vendabilité.
 
-5. **🟠 Certificat client de l'app = RÉSIDU UI sur les versions de fix touchées par un bug de hash base64.** Spike 2026-07-15 : l'API REST de l'identifier `httpsCertificate` **refuse le binaire brut et l'hex (400)** ; elle n'accepte que `base64(DER)` (forme actuelle) ou le **PEM complet**, tous deux **stockés verbatim** (la gateway ne parse pas). **Bug gateway connu (version-dépendant, intermittent)** : selon la version de fix, la gateway **rate le hash de vérification du certif quand il est en base64**. Contournement éprouvé côté client : export `.cer` **binaire** (Windows) + **upload dans l'UI** (Designer). ⇒ **labctl NE PEUT PAS injecter le cert binaire par REST** ; re-encoder en PEM n'aide pas (toujours du base64 armuré, même matière hashée). **Reste manuel** : sur une version touchée, l'identifier cert de l'app se pose **dans l'UI** (comme le déploiement du package IS TokenProvider) ; labctl le pose en REST *best-effort* sur les versions saines. La plage IP et la clé backend, elles, restent 100 % REST/labctl.
+5. **✅ Certificat client de l'app = 100 % REST/labctl. L'« upload binaire » de l'UI est un MYTHE — RÉFUTÉ par trace réseau (spike 2026-07-17).** L'hypothèse « il faut passer par l'UI parce que le REST ne prend pas le binaire » supposait que l'UI POSTe des octets bruts. **Elle ne le fait pas.** Trace live capturée sur l'UI **de l'API Gateway** (`apigatewayui`, *pas* le Designer) en uploadant un vrai `.cer` **binaire** (DER, 855 o) via *Client certificates → Browse → Add → Save* :
+
+   ```
+   PUT /apigatewayui/apigateway/applications/{id}     Content-Type: application/json
+   "identifiers":[{"value":["MIIDUzCCAjugAwIBAgIU..."],"name":"demo-client-binary.cer","key":"httpsCertificate"}]
+   ```
+
+   L'UI **lit le fichier binaire en JS et le base64-encode côté client** avant l'envoi. Il n'existe **aucun** chemin binaire : le champ `<input type=file accept=".cer,.der,.pem,.crt">` alimente un PUT JSON ordinaire. **Mesure décisive** — la valeur stockée par la gateway après l'upload UI est **identique au bit près** à `base64(DER)`, soit exactement ce que `labctl` envoie déjà (`identifiers.go`) :
+
+   | Voie | `name` | `sha256(valeur stockée)` |
+   |---|---|---|
+   | UI (`.cer` binaire, Browse+Add+Save) | `demo-client-binary.cer` | `ff18b2a650aee4e3bdc606835b88274a…` |
+   | REST (labctl, `base64(DER)`) | `partner-cert` | `ff18b2a650aee4e3bdc606835b88274a…` |
+
+   Même endpoint derrière (le PUT UI est relu tel quel par `GET :5555/rest/apigateway/applications/{id}`), même matière, même hash. **Conséquence sur le bug de hash de vérification** : il ne peut pas discriminer les deux voies, puisqu'elles déposent les mêmes octets — il les touche **toutes les deux ou aucune**. « Exporter en binaire + passer par l'UI » ne contourne donc **rien** : le contournement supposé n'a jamais existé, seule la *croyance* qu'un `.cer` binaire reste binaire jusqu'à la gateway. Si un bug de hash se manifeste sur une version de fix client, la cause est **ailleurs** (à ré-instruire sur cette version : c'est la matière stockée ou son parsing runtime, pas l'encodage du transport) — **et l'UI n'y échappera pas non plus**. ⇒ **Aucun résidu manuel** : cert, plage IP et clé backend sont **100 % REST/labctl**. *(Faits conservés du spike 2026-07-15 : le REST refuse le binaire brut et l'hex — 400 —, n'accepte que `base64(DER)` ou le PEM complet, stockés verbatim sans parsing. C'est cohérent : l'UI aussi n'envoie que du base64.)*
 
 ---
 

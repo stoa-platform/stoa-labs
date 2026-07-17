@@ -56,6 +56,16 @@ Les tâches ne portent **que la ressource** (`/applications`, `/apis`, `/policie
 | `apim_ss_env_header` | nom du header d'env | `X-Environment` |
 | `apim_ss_auth_mode` | `basic` (direct) \| `oauth2` (proxy) | `basic` |
 | `apim_ss_oauth_token_url` / `_client_id` / `_client_secret` / `_scope` | OAuth2 client_credentials — de préférence depuis **Vault** (`gateways/webmethods/admin-oauth`) | `""` |
+| `apim_ss_ca_path` | **CA privé** (bundle PEM) : couvre gateway + IdP OAuth2 + Vault (concaténer si CA différentes). Vide = trust store système | `""` |
+
+**Auth à Vault (env, précédence statique > Kubernetes > LDAP > AppRole)** — le play lit les creds gateway ; il n'exige **aucune** entité nominative (accès système, ADR-074) :
+
+| Env | Rôle |
+|-----|------|
+| `VAULT_TOKEN_FILE` > `VAULT_TOKEN` | token statique (ex. token IHM) — prioritaire |
+| `VAULT_K8S_ROLE` (+ `VAULT_K8S_JWT_PATH`) | **★ auth Kubernetes** (`auth/kubernetes/login`) — le pod agent s'authentifie avec **son** ServiceAccount token, **zéro secret stocké** (reco HashiCorp sur K8s). Fait DANS le conteneur agent → identité du pod agent, pas du contrôleur (piège du plugin Jenkins). `VAULT_K8S_JWT_PATH` surcharge le chemin du SA token (défaut `/var/run/secrets/kubernetes.io/serviceaccount/token`) |
+| `VAULT_LDAP_USER` + (`VAULT_LDAP_PASS_FILE` > `VAULT_LDAP_PASS`) | **login AD par build** (`auth/ldap/login`) — token court (TTL banque ~1h couvre 1 run), rien de stocké. Mappe la policy `cp-gateway-read` au **groupe AD** du compte de service (`auth/ldap/groups/<grp>`) |
+| `VAULT_ROLE_ID` + (`VAULT_SECRET_ID_FILE` > `VAULT_SECRET_ID`) | AppRole (fallback) — ignoré si `VAULT_K8S_ROLE` ou `VAULT_LDAP_USER` est posé. Sécuriser le SecretID par **response-wrapping** (`VAULT_SECRET_ID_FILE` = SecretID déballé au run) |
 
 **Mode `oauth2` (proxy client)** : le rôle fait le **get token** (`client_credentials`)
 et passe `Authorization: Bearer …` + `X-Environment: <env>` sur chaque appel — un
@@ -112,11 +122,31 @@ ansible-playbook -i inv.ini ansible/selfservice-app.yml \
 
 ## Limites / résidus (assumés, ADR-078)
 
-- **Certificat** : posé en identifier REST *best-effort*. Sur les versions de fix
-  touchées par le **bug de hash base64** de la gateway, le cert de l'app se pose
-  **manuellement dans l'UI** (export `.cer` binaire) — le REST refuse le binaire
-  (400). `AND(cert,IP)` ne se teste pas en clair (cert non présenté → 401) : il
-  exige le listener HTTPS client-auth.
+- **Certificat** : posé en identifier REST, en **base64** (le champ JSON `value`
+  de l'identifier) — **c'est la voie normale, pas un pis-aller**. L'UI de la
+  gateway fait **exactement la même chose** : elle lit le `.cer` binaire en JS et
+  l'envoie en `base64(DER)` dans le même PUT JSON. Trace réseau + comparaison des
+  octets stockés (spike 2026-07-17, ADR-078 écart n°5) : **même sha256** par les
+  deux voies ⇒ il n'existe **aucun** « upload binaire », et donc aucun
+  contournement UI d'un bug de hash. Le REST refuse le binaire brut et l'hex (400)
+  et n'accepte que `base64(DER)` ou le PEM complet, stockés verbatim.
+  `AND(cert,IP)` ne se teste pas en clair (cert non présenté → 401) : il exige le
+  listener HTTPS client-auth.
+  - **Extraction robuste (fail-closed)** : le rôle isole le **premier** bloc
+    `-----BEGIN/END CERTIFICATE-----` (équivalent du `pem.Decode()` de la spec Go),
+    PAS un simple strip global. Mesuré live (spike 2026-07-17) : le strip global
+    **corrompait en silence** un PEM **en chaîne** (leaf + intermédiaire →
+    corps concaténés) et un PEM **à en-tête texte** (`Bag Attributes`, `subject=` :
+    exports Windows/Java → lettres de l'en-tête gardées dans le base64). La gateway
+    stocke verbatim ⇒ identité **morte** (401 au handshake) sous un « convergé »
+    trompeur. Corrigé + fail-closed : un fichier sans bloc CERTIFICATE, ou un corps
+    base64 mal formé (longueur non multiple de 4), est **refusé** (`CERT_INVALID`),
+    plus jamais posé corrompu. Prouvé : `chain.pem`/`bagattr.pem` → même `sha256`
+    que le leaf ; `garbage.pem` → refus.
+  - **Préservation d'un cert posé hors manifeste** : le re-run ne remplace QUE les
+    dimensions **déclarées par le manifeste** (`ss_managed_keys`). Un
+    `httpsCertificate` posé par l'UI (donc `public_cert_ref` vide) est **conservé**
+    au re-run au lieu d'être effacé — prouvé live. (Idem `azp`/`openIdClaims`.)
 - **Plan SORTANT (clé backend, P-callout)** : `tasks/backend.yml` POSE le câblage
   (`customHttpHeaders headerValue=${backend_apikey}`). La **valeur** est résolue au
   runtime par le package IS **TokenProvider ← Vault** (déploiement Designer = résidu

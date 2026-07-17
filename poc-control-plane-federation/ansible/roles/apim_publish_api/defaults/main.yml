@@ -20,9 +20,18 @@ apim_ss_oauth_client_secret: ""
 apim_ss_oauth_scope: ""
 apim_ss_vault_addr: "{{ lookup('env', 'VAULT_ADDR') }}"
 apim_ss_vault_kv_mount: "secret"
+apim_ss_vault_k8s_mount: "auth/kubernetes"    # auth Kubernetes : login du SA du pod agent
 apim_ss_vault_prefix: "stoa"
 apim_ss_vault_wm_creds_sub: "gateways/webmethods"
 apim_ss_vault_oauth_sub: "gateways/webmethods/admin-oauth"
+
+# --- TLS : CA privé (client) -------------------------------------------------
+# Bundle PEM (CA racine/intermédiaires) qui DOIT couvrir CHAQUE endpoint https
+# joint par le play : la gateway (apim_ss_api_base), l'IdP OAuth2
+# (apim_ss_oauth_token_url) ET Vault (apim_ss_vault_addr) — concaténer les CA
+# si elles diffèrent (souvent 1 seule racine corporate). Vide = trust store
+# système (PoC http, ou CA publique). Câblé sur le module uri via ca_path.
+apim_ss_ca_path: ""
 
 # --- IS-ADMIN : allow-list d'un port en Deny-by-Default (tasks/port-access.yml) ---
 # Surface DIFFÉRENTE de l'API d'admin apigateway : c'est l'Access Mode du listener
@@ -44,6 +53,12 @@ apim_api:
   version: "1.0.0"
   contract: ""          # chemin du contrat OpenAPI (yaml|json) — REQUIS (absolu ou relatif au playbook)
   team: ""              # nom d'équipe (accessProfile) à assigner — optionnel (isolation ADR-076)
+  # update: si l'API EXISTE déjà (même name+version), ré-importer le contrat
+  # (le contrat devient la source de vérité). false = create-only (défaut sûr :
+  # pas de re-déploiement surprise). true ⇒ deactivate → PUT /apis/{id} → activate
+  # (le PUT est REFUSÉ sur une API active — 400 — d'où la désactivation ; brève
+  # coupure du data-plane le temps de l'update). Bumper `version` reste l'alternative.
+  update: false
   # Policies INBOUND (optionnel) : validation au stage IAM. Vide = API ouverte.
   #   issuer      : l'iss EXACT du token (épinglé côté émetteur)
   #   jwks_uri    : JWKS joignable DEPUIS la gateway (réseau interne, pas localhost)

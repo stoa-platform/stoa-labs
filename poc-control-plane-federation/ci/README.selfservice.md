@@ -45,13 +45,15 @@ $ python3 scripts/apply-selfservice-application.py \
 - **Handshake mTLS complet** `AND(cert, IP)` : la branche IP est prouvée en
   isolation (403). Le certificat exige le **listener HTTPS client-auth** pour être
   testé de bout en bout — étape suivante (la règle `AND` est déjà posée).
-- **Certificat client de l'app (versions de fix touchées par le bug de hash
-  base64)** : l'API REST de l'identifier `httpsCertificate` refuse le binaire brut
-  (400) et n'accepte que base64/PEM (stockés verbatim). Sur les versions de la
-  gateway où le hash de vérification du certif en base64 est bugué (intermittent),
-  le cert de l'app se pose **manuellement dans l'UI** (export `.cer` binaire
-  Windows → upload Designer). labctl le pose en REST best-effort sur les versions
-  saines ; la plage IP et la clé backend restent 100 % REST.
+- **Certificat client de l'app — 100 % REST, pas de résidu UI.** L'API REST de
+  l'identifier `httpsCertificate` refuse le binaire brut et l'hex (400) et
+  n'accepte que `base64(DER)` ou le PEM complet (stockés verbatim). Ce n'est PAS
+  une limite : l'UI de la gateway n'envoie **pas** de binaire non plus — elle
+  base64-encode le `.cer` en JS avant le même PUT JSON. Trace réseau + octets
+  stockés comparés (spike 2026-07-17, ADR-078 écart n°5) : **même sha256** par
+  l'UI et par labctl ⇒ « exporter en `.cer` binaire et passer par l'UI » ne
+  contourne aucun bug de hash (les deux voies déposent les mêmes octets, un tel
+  bug les toucherait toutes les deux). Cert, plage IP et clé backend : 100 % REST.
 - **Identité voie A (LDAP)** : la démo réutilise la chaîne **Keycloak** nominative
   (ADR-077, 24/24). Chez le client, remplacer le bloc `auth/jwt/login` du
   Jenkinsfile par `auth/ldap/login/<user>` (un seul bloc à swapper — commenté).
