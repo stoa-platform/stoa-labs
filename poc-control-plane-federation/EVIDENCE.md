@@ -784,10 +784,59 @@ l'encodage du transport) — **et l'UI n'y échappera pas non plus**.
 
 ⇒ **Aucun résidu manuel sur le cert** : cert + plage IP + clé backend = **100 %
 REST/labctl**. `identifiers.go` envoyait déjà la bonne forme (`{name, key:
-httpsCertificate, value:[base64(DER)]}`) — **aucun changement de code requis**.
+httpsCertificate, value:[base64(DER)]}`) — **aucun changement de code requis** côté Go.
 *(Faits du 2026-07-15 conservés : le REST refuse le binaire brut et l'hex — 400 —,
 n'accepte que `base64(DER)` ou le PEM complet, stockés verbatim sans parsing. C'est
 cohérent : l'UI non plus n'envoie que du base64.)*
+
+### Volet Ansible : « via Ansible c'est aussi bon ? » — OUI après avoir fermé 2 bugs LATENTS
+
+Le livrable client, c'est le **rôle Ansible** (le Go est parqué). Il fallait donc le
+prouver LIVE, pas raisonner par analogie. Rôle `apim_selfservice_app` lancé contre la
+10.15 réelle sur une app **jetable** (`spike-cert-ansible`, `enforce:[]` + backend
+neutralisé pour isoler l'écriture du cert et ne PAS toucher la policy de l'API de
+démo ; app supprimée ensuite — gateway restaurée à ses 4 apps). **Résultat cert :
+identité au bit près avec les deux autres voies.**
+
+| Voie | sha256(valeur stockée) |
+|---|---|
+| UI (`.cer` binaire) | `ff18b2a650aee4e3bdc606835b88274af7b237060480a05f17893b9274970474` |
+| REST (labctl `base64(DER)`) | `ff18b2a650aee4e3bdc606835b88274af7b237060480a05f17893b9274970474` |
+| **Ansible (rôle, PEM→strip→base64)** | `ff18b2a650aee4e3bdc606835b88274af7b237060480a05f17893b9274970474` |
+
+Idempotent (RUN 2 : pas de doublon d'identifier, même hash). MAIS le premier run a
+révélé **deux bugs que le rôle portait sans le savoir** — tous deux masqués jusque-là
+parce que les runs « prouvés » du 2026-07-15 trouvaient l'app **déjà créée** par le
+moteur Python et **sans** `public_cert_ref` :
+
+- **BUG 1 — création d'app CASSÉE à chaque fois (raison d'être du rôle).** `set_fact
+  ss_app_id: {{ a.id | default((a.applications|first).id) }}` : Jinja évalue
+  l'**argument** de `default()` **eagerly** → `.applications` déréférencé même quand
+  `.id` existe → `'dict object' has no attribute 'applications'` à **chaque** POST.
+  Le chemin de création n'avait donc **jamais** tourné live. **Fix** : expression
+  conditionnelle `a.id if ('id' in a) else …` (paresseuse) + assert `APP_ID_UNRESOLVED`.
+- **BUG 2 — extraction de cert qui CORROMPT en silence deux formats clients courants.**
+  Le rôle faisait « retirer BEGIN/END sur TOUT le fichier puis filtrer le non-base64 ».
+  Mesuré contre la gateway :
+  - **PEM en chaîne** (leaf + intermédiaire, ordre openssl standard) → les 2 corps
+    **concaténés** en un blob (1140 → 2272 car., décode en 1702 o) ;
+  - **PEM à en-tête texte** (`Bag Attributes`, `subject=` : exports Windows/Java
+    courants) → les **lettres de l'en-tête** survivent au filtre et préfixent le
+    base64 (1140 → 1200 car., ne décode même plus).
+
+  La gateway stockant **verbatim** (elle ne parse pas), l'apply aurait dit
+  « convergé » avec une **identité morte** (le cert présenté ne matcherait jamais →
+  401 au handshake). La **spec Go**, elle, était déjà correcte (`pem.Decode` = premier
+  bloc, décodé proprement — même `sha256` sur les deux formats) : c'est la
+  **transcription Ansible** qui avait dévié de la spec. **Fix** : isoler le PREMIER
+  bloc CERTIFICATE (équivalent `pem.Decode`) + trois assertions fail-closed
+  (bloc présent, corps non vide, longueur multiple de 4).
+
+**Preuves du fix, live** : `chain.pem` et `bagattr.pem` → `CERT_OK` + `sha256`
+`ff18b2a6…` (SAIN) ; `garbage.pem` (sans bloc) → **refusé** `CERT_INVALID` (au lieu
+d'une corruption silencieuse). Aucune autre extraction naïve ailleurs dans `ansible/`
+(grep). ⇒ Réponse à la question : **oui, le cert par Ansible est bon — désormais aussi
+robuste que la spec Go, et fail-closed sur les PEM non conformes.**
 
 ## Teardown (destruction contrôlée)
 

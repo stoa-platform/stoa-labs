@@ -122,6 +122,17 @@ ansible-playbook -i inv.ini ansible/selfservice-app.yml \
   et n'accepte que `base64(DER)` ou le PEM complet, stockés verbatim.
   `AND(cert,IP)` ne se teste pas en clair (cert non présenté → 401) : il exige le
   listener HTTPS client-auth.
+  - **Extraction robuste (fail-closed)** : le rôle isole le **premier** bloc
+    `-----BEGIN/END CERTIFICATE-----` (équivalent du `pem.Decode()` de la spec Go),
+    PAS un simple strip global. Mesuré live (spike 2026-07-17) : le strip global
+    **corrompait en silence** un PEM **en chaîne** (leaf + intermédiaire →
+    corps concaténés) et un PEM **à en-tête texte** (`Bag Attributes`, `subject=` :
+    exports Windows/Java → lettres de l'en-tête gardées dans le base64). La gateway
+    stocke verbatim ⇒ identité **morte** (401 au handshake) sous un « convergé »
+    trompeur. Corrigé + fail-closed : un fichier sans bloc CERTIFICATE, ou un corps
+    base64 mal formé (longueur non multiple de 4), est **refusé** (`CERT_INVALID`),
+    plus jamais posé corrompu. Prouvé : `chain.pem`/`bagattr.pem` → même `sha256`
+    que le leaf ; `garbage.pem` → refus.
   - **Préservation d'un cert posé hors manifeste** : le re-run ne remplace QUE les
     dimensions **déclarées par le manifeste** (`ss_managed_keys`). Un
     `httpsCertificate` posé par l'UI (donc `public_cert_ref` vide) est **conservé**

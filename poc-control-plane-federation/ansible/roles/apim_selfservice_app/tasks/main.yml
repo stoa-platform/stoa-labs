@@ -63,12 +63,24 @@
       register: ss_app_create
       when: "ss_app_id | length == 0"
 
+    # PIÈGE JINJA : `a.id | default((a.applications|first).id)` est FAUX — Jinja
+    # évalue l'ARGUMENT de default() EAGERLY, donc `.applications` est déréférencé
+    # même quand `.id` existe → 'dict object' has no attribute 'applications' à
+    # CHAQUE création. (Masqué jusqu'ici : les runs "prouvés" trouvaient l'app déjà
+    # créée par le moteur Python, donc ces tâches étaient sautées.) L'expression
+    # conditionnelle if/else, elle, est PARESSEUSE. Sur 10.15 le POST /applications
+    # répond à plat (`.id`) ; l'enveloppe applications[] est gardée par prudence.
     - name: "App : capturer l'id (création ; enveloppe flat OU applications[])"
       ansible.builtin.set_fact:
         ss_app_id: >-
-          {{ ss_app_create.json.id
-             | default((ss_app_create.json.applications | first).id) }}
+          {{ ss_app_create.json.id if ('id' in ss_app_create.json)
+             else (ss_app_create.json.applications | first).id }}
       when: "ss_app_id | length == 0"
+
+    - name: "App : fail-closed — un id d'application est obligatoire pour la suite"
+      ansible.builtin.assert:
+        that: "ss_app_id | length > 0"
+        fail_msg: "APP_ID_UNRESOLVED : la gateway n'a pas renvoyé d'id exploitable à la création."
 
     - name: "App : associer à l'API (idempotent)"
       ansible.builtin.uri:
@@ -87,12 +99,43 @@
         - ansible.builtin.assert:
             that: "'PRIVATE KEY' not in ss_cert_pem"
             fail_msg: "publicCertRef porte une clé privée — refusé (cert PUBLIC uniquement)."
-        - name: "Cert : base64 DER (BEGIN/END + espaces retirés)"
+
+        - name: "Cert : fail-closed — un bloc CERTIFICATE est obligatoire"
+          ansible.builtin.assert:
+            that:
+              - "'-----BEGIN CERTIFICATE-----' in ss_cert_pem"
+              - "'-----END CERTIFICATE-----' in ss_cert_pem"
+            fail_msg: >-
+              CERT_INVALID : {{ apim_ss_app.public_cert_ref }} ne contient pas de bloc
+              CERTIFICATE complet (PEM X.509 public attendu).
+
+        # On isole le PREMIER bloc — équivalent du pem.Decode() de la spec Go.
+        # Un simple « retirer BEGIN/END puis filtrer le non-base64 » sur TOUT le
+        # fichier CORROMPT en silence deux cas fréquents chez un client (mesuré) :
+        #   - PEM en CHAÎNE (leaf + intermédiaire, ordre openssl = leaf d'abord) :
+        #     les 2 corps sont CONCATÉNÉS en un blob (1140 -> 2272 car.) ;
+        #   - PEM à en-tête texte (« Bag Attributes », « subject= » : exports
+        #     Windows/Java courants) : les LETTRES de l'en-tête sont conservées par
+        #     le filtre et préfixent le base64 (-> 1200 car., ne décode même plus).
+        # La gateway stocke verbatim (elle ne parse pas) : l'apply dirait « convergé »
+        # avec une identité MORTE (le cert présenté ne matcherait jamais -> 401).
+        - name: "Cert : isoler le PREMIER bloc CERTIFICATE (équivalent pem.Decode)"
           ansible.builtin.set_fact:
-            ss_cert_der: >-
-              {{ ss_cert_pem | regex_replace('-----BEGIN CERTIFICATE-----', '')
-                             | regex_replace('-----END CERTIFICATE-----', '')
-                             | regex_replace('[^A-Za-z0-9+/=]', '') }}
+            ss_cert_body: "{{ ss_cert_pem.split('-----BEGIN CERTIFICATE-----')[1].split('-----END CERTIFICATE-----')[0] }}"
+
+        - name: "Cert : base64(DER) = corps du bloc, sans espaces ni retours ligne"
+          ansible.builtin.set_fact:
+            ss_cert_der: "{{ ss_cert_body | regex_replace('[^A-Za-z0-9+/=]', '') }}"
+
+        - name: "Cert : fail-closed — le base64(DER) extrait doit être bien formé"
+          ansible.builtin.assert:
+            that:
+              - "ss_cert_der | length > 0"
+              - "(ss_cert_der | length) % 4 == 0"
+            fail_msg: >-
+              CERT_INVALID : corps base64 extrait vide ou mal formé
+              (longueur={{ ss_cert_der | length }}, attendu multiple de 4).
+            success_msg: "CERT_OK : base64(DER) extrait ({{ ss_cert_der | length }} car.)."
 
     - name: "IP : refuser le CIDR (la gateway le drop en silence — cf. README)"
       ansible.builtin.assert:
@@ -123,9 +166,11 @@
 
     # On ne remplace QUE les dimensions RÉELLEMENT gérées par le manifeste
     # (celles présentes dans ss_desired_ids). Ainsi un identifier posé HORS du
-    # manifeste — typiquement un certificat uploadé en .cer BINAIRE dans l'UI
-    # (contournement du bug de hash base64) quand public_cert_ref est vide — est
-    # PRÉSERVÉ au re-run, au lieu d'être effacé. (De même azp/openIdClaims.)
+    # manifeste — p. ex. un certificat posé par un admin dans l'UI quand
+    # public_cert_ref est vide — est PRÉSERVÉ au re-run, au lieu d'être effacé.
+    # (De même azp/openIdClaims.) NB : ce n'est PAS un palliatif d'un « upload
+    # binaire » réservé à l'UI — ce mythe est réfuté (ADR-078 écart n°5) : l'UI
+    # base64-encode le .cer en JS et PUT le MÊME base64(DER) que ce rôle.
     - name: "Identifiers : merge — remplacer SEULEMENT les dimensions du manifeste, garder le reste"
       when: "ss_desired_ids | length > 0"
       block:
