@@ -1,0 +1,11 @@
+---
+# Promotion d'API par archive (ADR-079) — export sanitizé / import 0-coupure.
+#   export : ansible-playbook ansible/promote-api.yml -e apim_promote_action=export \
+#              -e apim_promote_manifest=clients/_example/apis/accounts-read.promote.yml
+#   import : ansible-playbook ansible/promote-api.yml -e apim_ss_env=rec \
+#              -e apim_promote_manifest=clients/_example/apis/accounts-read.promote.yml
+# (manifeste par CHEMIN — include_vars ; jamais -e @fichier, cf. resolve-env.yml)
+- name: "Promouvoir une API par archive (ADR-079)"
+  hosts: webmethods
+  gather_facts: false
+  roles: [ apim_promote_api ]

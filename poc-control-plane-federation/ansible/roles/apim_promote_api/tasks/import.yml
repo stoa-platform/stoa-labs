@@ -1,0 +1,124 @@
+---
+# roles/apim_promote_api/tasks/import.yml
+# Import 0-COUPURE (ADR-079) : alias-first -> POST /archive?overwrite=<types>
+# -> read-back fail-closed (ArchiveResult + GUID iso + isActive + smoke).
+# JAMAIS de deactivate : l'overwrite écrase l'API ACTIVE en place (prouvé sous
+# charge : 833/833 et 741/741 requêtes 200 pendant l'overwrite).
+
+- name: "Import — promotion de '{{ apim_promote.name }}' v{{ apim_promote.version }}"
+  module_defaults:
+    ansible.builtin.uri: "{{ apim_ss_uri_defaults }}"
+  block:
+
+    # ===== 0. Garde-fous =====================================================
+    - name: "Import : fail-closed — archive + guid (id-map) requis"
+      ansible.builtin.assert:
+        that:
+          - "(apim_promote.archive | default('')) | length > 0"
+          - "(apim_promote.guid | default('')) | length > 0"
+        fail_msg: >-
+          IMPORT_REFUSED : apim_promote.archive ET apim_promote.guid (id-map épinglé)
+          sont requis — sans guid, pas de preuve d'iso inter-gateways (ADR-079).
+
+    - name: "Import : fail-closed — overwrite ne couvre JAMAIS les aliases"
+      ansible.builtin.assert:
+        that:
+          - "apim_promote.overwrite != '*'"
+          - "'aliases' not in (apim_promote.overwrite).split(',')"
+        fail_msg: >-
+          IMPORT_REFUSED : overwrite='{{ apim_promote.overwrite }}' écraserait les valeurs
+          d'alias LOCALES de l'env (backend/creds per-env) — piège clobber prouvé (ADR-079).
+
+    - name: "Import : inventaire de l'archive"
+      ansible.builtin.command:
+        argv: ["unzip", "-l", "{{ apim_promote.archive }}"]
+      register: imp_toc
+      changed_when: false
+
+    - name: "Import : FAIL-CLOSED — archive sans Alias/ ni PassmanData/ (ARCHIVE_TAINTED)"
+      ansible.builtin.assert:
+        that:
+          - "'Alias/' not in imp_toc.stdout"
+          - "'PassmanData/' not in imp_toc.stdout"
+        fail_msg: >-
+          ARCHIVE_TAINTED : l'archive embarque des Alias (valeurs per-env d'un autre env)
+          ou du PassmanData (secret chiffré). Sur un env vierge, l'import SEEDERAIT le
+          backend/creds de l'env source. Ré-exporter via apim_promote_action=export
+          (sanitize) — ADR-079.
+
+    # ===== 1. Alias-first (backend + creds de CET env, hors archive) =========
+    - name: "Import : alias-first (valeurs per-env posées AVANT l'API)"
+      ansible.builtin.import_tasks: alias.yml
+
+    # ===== 2. POST /archive?overwrite=<types> ================================
+    - name: "Import : POST /archive?overwrite={{ apim_promote.overwrite }} (0-coupure)"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/archive?overwrite={{ apim_promote.overwrite }}"
+        method: POST
+        body_format: form-multipart
+        body:
+          file:
+            filename: "{{ apim_promote.archive }}"
+            mime_type: "application/zip"
+        status_code: [200, 201]
+      register: imp_post
+
+    # ===== 3. Read-back fail-closed ==========================================
+    # ArchiveResult = [ {API:{...}}, {Policy:{...}}, ... ] — une clé par entrée.
+    - name: "Import : aplatir le rapport"
+      ansible.builtin.set_fact:
+        imp_rows: "{{ imp_post.json.ArchiveResult | default([]) | map('dict2items') | flatten }}"
+
+    - name: "Import : FAIL-CLOSED — tous les assets portés par l'archive en Success"
+      ansible.builtin.assert:
+        that:
+          - "imp_rows | length > 0"
+          - "(imp_rows | rejectattr('value.status', 'equalto', 'Success') | list) | length == 0"
+        fail_msg: >-
+          IMPORT_FAILED : {{ imp_rows | rejectattr('value.status', 'equalto', 'Success')
+            | map(attribute='value') | map(attribute='name') | list }}
+          — rapport complet : {{ imp_post.json }}
+        success_msg: >-
+          IMPORT_OK : {{ imp_rows | length }} asset(s), overwrite={{
+            (imp_rows | selectattr('value.overwritten', 'equalto', true) | list) | length }},
+          création={{ (imp_rows | rejectattr('value.overwritten', 'equalto', true) | list) | length }}.
+
+    - name: "Import : FAIL-CLOSED — GUID ISO (l'API importée EST le guid épinglé)"
+      ansible.builtin.assert:
+        that: >-
+          (imp_rows | selectattr('key', 'equalto', 'API')
+            | selectattr('value.id', 'equalto', apim_promote.guid) | list) | length > 0
+        fail_msg: >-
+          GUID_MISMATCH : l'archive ne porte pas l'API guid={{ apim_promote.guid }} —
+          l'id-map du manifeste et l'artefact divergent (mauvaise archive ?).
+
+    - name: "Import : relire l'API par GUID"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/apis/{{ apim_promote.guid }}"
+      register: imp_get
+      changed_when: false
+
+    - name: "Import : FAIL-CLOSED — l'API est ACTIVE après import (piège isActive)"
+      ansible.builtin.assert:
+        that: "imp_get.json.apiResponse.api.isActive | default(false)"
+        fail_msg: >-
+          IMPORT_UNCONFIRMED : {{ apim_promote.name }} INACTIVE après import — l'archive
+          portait isActive:false (piège ADR-079) ; le data-plane est COUPÉ. Ré-exporter
+          depuis l'état actif puis ré-importer.
+        success_msg: >-
+          PROMOTE_CONFIRMED : {{ apim_promote.name }} v{{ apim_promote.version }}
+          guid={{ apim_promote.guid }} active sur '{{ apim_ss_env | default('(mono-env)') }}'.
+
+    # ===== 4. Scope-mapping per-API (optionnel — APRÈS l'API : il la référence
+    # par GUID ; ne voyage pas dans l'archive, prouvé) =========================
+    - name: "Import : scope-mapping per-API+version (modèle client)"
+      ansible.builtin.include_tasks: scope.yml
+      when: "(apim_promote.scope_mapping | default({})) | length > 0"
+
+    # ===== 5. Smoke data-plane (optionnel) ===================================
+    - name: "Import : smoke test data-plane"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_data_base }}{{ apim_promote.smoke_path }}"
+        status_code: [200]
+      changed_when: false
+      when: "(apim_promote.smoke_path | default('')) | length > 0"

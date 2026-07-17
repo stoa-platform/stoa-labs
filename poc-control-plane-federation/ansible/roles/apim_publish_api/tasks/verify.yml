@@ -68,7 +68,9 @@
                   - "(v_strats.json.strategies | default([]) | selectattr('name','equalto', 'apim-strat-' ~ apim_api.name) | list) | length > 0"
                   - >-
                     (v_scopes.json.scopes | default([])
-                      | selectattr('scopeName','equalto', apim_api.inbound.alias_name ~ ':' ~ apim_api.inbound.scope)
+                      | selectattr('scopeName','equalto',
+                          apim_api.inbound.scope_mapping_name
+                          | default(apim_api.name ~ ':' ~ apim_api.version))
                       | selectattr('apiScopes','defined')
                       | selectattr('apiScopes','contains', v_api.id) | list) | length > 0
                 fail_msg: "OAUTH2_UNCONFIRMED : strategy absente OU scope non lié à l'API."

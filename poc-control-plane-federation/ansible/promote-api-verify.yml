@@ -1,0 +1,11 @@
+---
+# Preuve fail-closed de promotion (ADR-079) — lecture seule.
+#   ansible-playbook ansible/promote-api-verify.yml -e apim_ss_env=rec \
+#     -e apim_promote_manifest=clients/_example/apis/accounts-read.promote.yml
+- name: "Vérifier une promotion (ADR-079)"
+  hosts: webmethods
+  gather_facts: false
+  tasks:
+    - ansible.builtin.include_role:
+        name: apim_promote_api
+        tasks_from: verify

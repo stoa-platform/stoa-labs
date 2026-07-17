@@ -1,0 +1,247 @@
+---
+# roles/apim_promote_api/tasks/alias.yml
+# ALIAS-FIRST (ADR-079, décision 5) : les valeurs per-env (backend, creds)
+# vivent dans des alias posés AVANT l'import de l'API — jamais dans l'archive.
+# Pièges prouvés au spike 2026-07-17 :
+#   - binding ${alias} résolu NOM->ID au déploiement de l'API : un alias
+#     delete/recréé (nouvel id) casse le routage DURABLEMENT (502) même si le
+#     nom est identique -> convergence par PUT du record, JAMAIS delete+POST ;
+#   - casse EXACTE endPointURI (endpointUri est droppé en silence) ->
+#     read-back fail-closed après chaque write ;
+#   - credential alias : password MASQUÉ en lecture -> write-always (on
+#     ré-émet la valeur Vault à chaque apply ; asserter le masque serait faux).
+
+# ===== endpoint alias (backend per-env) ======================================
+- name: "Alias : endpoint backend (alias-first)"
+  when: "(apim_promote.backend_alias | default({})).name | default('') | length > 0"
+  block:
+    - name: "Alias : fail-closed — backend_alias.url requis (per_env)"
+      ansible.builtin.assert:
+        that: "(apim_promote.backend_alias.url | default('')) | length > 0"
+        fail_msg: >-
+          ALIAS_UNDEFINED : backend_alias '{{ apim_promote.backend_alias.name }}' sans url
+          pour l'env '{{ apim_ss_env | default('(mono-env)') }}' — la déclarer sous per_env.
+
+    - name: "Alias : lister"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/alias"
+      register: al_list
+      changed_when: false
+
+    - name: "Alias : record existant (par NOM — jamais delete/recreate)"
+      ansible.builtin.set_fact:
+        al_ep: >-
+          {{ (al_list.json.alias | default([])
+              | selectattr('name', 'equalto', apim_promote.backend_alias.name)
+              | list | first) | default({}) }}
+
+    - name: "Alias : créer l'endpoint alias (body NU, casse endPointURI) si absent"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/alias"
+        method: POST
+        body:
+          name: "{{ apim_promote.backend_alias.name }}"
+          description: "apim_promote_api : backend per-env (ADR-079, alias-first)"
+          type: "endpoint"
+          endPointURI: "{{ apim_promote.backend_alias.url }}"
+        status_code: [200, 201]
+      when: "al_ep.id is not defined"
+
+    - name: "Alias : converger la valeur par PUT du record (si drift)"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/alias/{{ al_ep.id }}"
+        method: PUT
+        body: "{{ al_ep | combine({'endPointURI': apim_promote.backend_alias.url}) }}"
+        status_code: [200, 201]
+      when:
+        - "al_ep.id is defined"
+        - "(al_ep.endPointURI | default('')) != apim_promote.backend_alias.url"
+
+    - name: "Alias : read-back FAIL-CLOSED — endPointURI persisté"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/alias"
+      register: al_after
+      changed_when: false
+      failed_when: >-
+        ((al_after.json.alias | default([])
+          | selectattr('name', 'equalto', apim_promote.backend_alias.name)
+          | map(attribute='endPointURI') | list | first) | default(''))
+        != apim_promote.backend_alias.url
+
+# ===== credential alias (creds backend per-env, Vault) =======================
+- name: "Alias : credentials backend (write-always, Vault)"
+  when: "(apim_promote.cred_alias | default({})).name | default('') | length > 0"
+  block:
+    - name: "Alias : fail-closed — cred_alias.vault_sub requis (per_env) + Vault joignable"
+      ansible.builtin.assert:
+        that:
+          - "(apim_promote.cred_alias.vault_sub | default('')) | length > 0"
+          - "apim_ss_vault_addr | length > 0"
+        fail_msg: >-
+          CRED_UNDEFINED : cred_alias '{{ apim_promote.cred_alias.name }}' exige vault_sub
+          (per_env) ET VAULT_ADDR — les creds backend ne vivent ni dans Git ni dans l'archive.
+
+    # authType prouvés live : HTTP_BASIC et NTLM (même conteneur httpAuthCredentials,
+    # NTLM ajoute `domain` — spike 2026-07-17 soir ; enum complet du produit :
+    # ALIAS, NTLM, OAUTH2, REMOVE_INCOMING_HTTP_HEADERS, JWT, KERBEROS, HTTP_BASIC).
+    # KERBEROS/OAUTH2/JWT : conteneurs de créds NON épinglés -> refusés fail-closed
+    # (les prendre en charge = un spike de shape d'abord, jamais une shape devinée).
+    - name: "Alias : fail-closed — auth_type supporté (shapes prouvées uniquement)"
+      ansible.builtin.assert:
+        that: "(apim_promote.cred_alias.auth_type | default('HTTP_BASIC')) in ['HTTP_BASIC', 'NTLM']"
+        fail_msg: >-
+          CRED_TYPE_UNSUPPORTED : auth_type='{{ apim_promote.cred_alias.auth_type | default('HTTP_BASIC') }}'
+          — supportés : HTTP_BASIC, NTLM (shapes prouvées). KERBEROS/OAUTH2/JWT exigent
+          un spike de shape préalable (ADR-079).
+
+    - name: "Alias : creds backend depuis Vault [KV v2]"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_vault_addr }}/v1/{{ apim_ss_vault_kv_mount }}/data/{{ apim_ss_vault_prefix }}/{{ apim_promote.cred_alias.vault_sub }}"
+        headers: { X-Vault-Token: "{{ apim_ss_vault_token }}" }
+        status_code: [200]
+        ca_path: "{{ apim_ss_ca_path | default('') or omit }}"
+      register: al_kv
+      delegate_to: localhost
+      no_log: true
+
+    - name: "Alias : user/password backend (password base64 — format wire prouvé) + domain NTLM"
+      ansible.builtin.set_fact:
+        al_cred_type: "{{ apim_promote.cred_alias.auth_type | default('HTTP_BASIC') }}"
+        al_cred_user: "{{ al_kv.json.data.data.username }}"
+        al_cred_pw_b64: "{{ al_kv.json.data.data.password | b64encode }}"
+        # domain (NTLM) : Vault prioritaire, manifeste sinon (non-secret)
+        al_cred_domain: >-
+          {{ (al_kv.json.data.data.domain | default(''))
+             or (apim_promote.cred_alias.domain | default('')) }}
+      no_log: true
+
+    - name: "Alias : fail-closed — NTLM exige un domain"
+      ansible.builtin.assert:
+        that: "al_cred_type != 'NTLM' or (al_cred_domain | length > 0)"
+        fail_msg: "CRED_UNDEFINED : auth_type=NTLM exige `domain` (Vault ou manifeste)."
+
+    - name: "Alias : bloc httpAuthCredentials effectif (domain si NTLM)"
+      ansible.builtin.set_fact:
+        al_cred_block: >-
+          {{ {'userName': al_cred_user, 'password': al_cred_pw_b64}
+             | combine({'domain': al_cred_domain} if (al_cred_domain | length > 0) else {}) }}
+      no_log: true
+
+    - name: "Alias : lister"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/alias"
+      register: al_list2
+      changed_when: false
+
+    - name: "Alias : record credential existant (par NOM)"
+      ansible.builtin.set_fact:
+        al_cr: >-
+          {{ (al_list2.json.alias | default([])
+              | selectattr('name', 'equalto', apim_promote.cred_alias.name)
+              | list | first) | default({}) }}
+
+    - name: "Alias : créer le credential alias (body NU, {{ al_cred_type | default('HTTP_BASIC') }}) si absent"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/alias"
+        method: POST
+        body:
+          name: "{{ apim_promote.cred_alias.name }}"
+          description: "apim_promote_api : creds backend per-env (Vault, ADR-079)"
+          type: "httpTransportSecurityAlias"
+          authType: "{{ al_cred_type }}"
+          authMode: "NEW"
+          httpAuthCredentials: "{{ al_cred_block }}"
+        status_code: [200, 201]
+      no_log: true
+      when: "al_cr.id is not defined"
+
+    # WRITE-ALWAYS : le password relu est un masque — on ré-émet la valeur
+    # Vault à CHAQUE apply (une rotation same-user atteint ainsi la gateway).
+    - name: "Alias : ré-émettre les creds (write-always) si présent"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/alias/{{ al_cr.id }}"
+        method: PUT
+        body: >-
+          {{ al_cr | combine({'authType': al_cred_type,
+                              'httpAuthCredentials': al_cred_block}) }}
+        status_code: [200, 201]
+      no_log: true
+      when: "al_cr.id is defined"
+
+    - name: "Alias : read-back FAIL-CLOSED — userName+authType(+domain) persistés (password masqué par design)"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/alias"
+      register: al_after2
+      changed_when: false
+      failed_when: >-
+        (((al_after2.json.alias | default([])
+           | selectattr('name', 'equalto', apim_promote.cred_alias.name)
+           | list | first) | default({})).httpAuthCredentials | default({})).userName | default('')
+        != al_cred_user
+        or (((al_after2.json.alias | default([])
+              | selectattr('name', 'equalto', apim_promote.cred_alias.name)
+              | list | first) | default({})).authType | default('')) != al_cred_type
+        or (al_cred_domain | length > 0 and
+            ((((al_after2.json.alias | default([])
+                | selectattr('name', 'equalto', apim_promote.cred_alias.name)
+                | list | first) | default({})).httpAuthCredentials | default({})).domain | default('')) != al_cred_domain)
+
+# ===== alias génériques SANS secret (simple, endpoints additionnels, …) ======
+# Converge déclaratif par NOM : chaque entrée = {name, record:{type, …champs}}.
+# Même doctrine : jamais delete/recreate (PUT read-back ⊕ record), read-back
+# fail-closed sur les champs déclarés. AUCUN secret ici (ils vont dans
+# cred_alias ← Vault) — shapes prouvées : simple {type:"simple", value},
+# endpoint {type:"endpoint", endPointURI}.
+- name: "Alias : génériques sans secret (aliases[])"
+  when: "(apim_promote.aliases | default([])) | length > 0"
+  block:
+    - name: "Alias : lister (génériques)"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/alias"
+      register: al_glist
+      changed_when: false
+
+    - name: "Alias : créer les génériques absents (body NU)"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/alias"
+        method: POST
+        body: "{{ {'name': item.name} | combine(item.record) }}"
+        status_code: [200, 201]
+      loop: "{{ apim_promote.aliases }}"
+      loop_control: { label: "{{ item.name }}" }
+      when: >-
+        (al_glist.json.alias | default([])
+          | selectattr('name', 'equalto', item.name) | list) | length == 0
+
+    - name: "Alias : converger les génériques présents (PUT read-back ⊕ record)"
+      ansible.builtin.uri:
+        url: >-
+          {{ apim_ss_api_base }}/alias/{{ (al_glist.json.alias
+             | selectattr('name', 'equalto', item.name) | list | first).id }}
+        method: PUT
+        body: >-
+          {{ (al_glist.json.alias | selectattr('name', 'equalto', item.name) | list | first)
+             | combine(item.record) }}
+        status_code: [200, 201]
+      loop: "{{ apim_promote.aliases }}"
+      loop_control: { label: "{{ item.name }}" }
+      when: >-
+        (al_glist.json.alias | default([])
+          | selectattr('name', 'equalto', item.name) | list) | length > 0
+
+    - name: "Alias : relire (génériques)"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/alias"
+      register: al_gafter
+      changed_when: false
+
+    - name: "Alias : read-back FAIL-CLOSED — champs déclarés persistés (champ à champ)"
+      ansible.builtin.assert:
+        that: >-
+          ((al_gafter.json.alias | default([])
+            | selectattr('name', 'equalto', item.name) | list | first | default({}))
+           | dict2items | selectattr('key', 'in', item.record.keys() | list)
+           | items2dict) == item.record
+        fail_msg: "ALIAS_DRIFT : '{{ item.name }}' ne porte pas les champs déclarés après write."
+      loop: "{{ apim_promote.aliases }}"
+      loop_control: { label: "{{ item.name }}" }

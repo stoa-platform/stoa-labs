@@ -1,0 +1,92 @@
+---
+# roles/apim_promote_api/tasks/export.yml
+# Export d'une archive PORTABLE : GET /archive?apis=<guid> puis sanitize
+# (strip Alias/PassmanData/ExportReport + purge acdl + fail-closed isActive).
+# L'archive produite est l'ARTEFACT DE BUILD (dépôt d'artefacts, pas Git).
+
+- name: "Export — archive de '{{ apim_promote.name }}' v{{ apim_promote.version }}"
+  module_defaults:
+    ansible.builtin.uri: "{{ apim_ss_uri_defaults }}"
+  block:
+
+    - name: "Export : fail-closed sur la destination"
+      ansible.builtin.assert:
+        that: "(apim_promote.archive | default('')) | length > 0"
+        fail_msg: "apim_promote.archive requis (chemin de l'archive à produire)."
+
+    # ===== 1. Résoudre le GUID (id-map d'abord, name+version sinon) ==========
+    - name: "Export : catalogue des APIs"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/apis"
+      register: exp_apis
+      changed_when: false
+
+    - name: "Export : GUID effectif (guid épinglé prioritaire, sinon name+version)"
+      ansible.builtin.set_fact:
+        exp_guid: >-
+          {{ (apim_promote.guid | default('')) or
+             ((exp_apis.json.apiResponse | map(attribute='api')
+               | selectattr('apiName', 'equalto', apim_promote.name)
+               | selectattr('apiVersion', 'equalto', apim_promote.version)
+               | map(attribute='id') | list | first) | default('')) }}
+
+    - name: "Export : fail-closed si l'API est introuvable"
+      ansible.builtin.assert:
+        that: "exp_guid | length > 0"
+        fail_msg: >-
+          EXPORT_REFUSED : API {{ apim_promote.name }} v{{ apim_promote.version }}
+          introuvable (ni guid épinglé, ni name+version au catalogue).
+
+    # ===== 2. Fail-closed isActive (piège prouvé : archive inactive =========
+    # importée, elle DÉSACTIVE l'API cible — 404 durable) =====================
+    - name: "Export : relire l'API"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/apis/{{ exp_guid }}"
+      register: exp_get
+      changed_when: false
+
+    - name: "Export : FAIL-CLOSED — on n'exporte qu'une API ACTIVE"
+      ansible.builtin.assert:
+        that: "exp_get.json.apiResponse.api.isActive | default(false)"
+        fail_msg: >-
+          EXPORT_REFUSED : {{ apim_promote.name }} v{{ apim_promote.version }} est INACTIVE —
+          son archive désactiverait l'API à chaque import (piège isActive, ADR-079).
+          Activer l'API avant d'exporter.
+
+    # ===== 3. GET /archive?apis=<guid> -> zip ================================
+    - name: "Export : GET /archive?apis={{ exp_guid }}"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/archive?apis={{ exp_guid }}"
+        dest: "{{ apim_promote.archive }}"
+        status_code: [200]
+
+    # ===== 4. Sanitize (strip Alias/PassmanData + purge acdl + isActive ======
+    # + routing re-pointé ${backend_alias} : l'authoring peut publier avec un
+    # backend littéral, l'ARTEFACT livré route toujours par alias) =============
+    - name: "Export : sanitize de l'archive (portable, sans valeur per-env ni secret)"
+      ansible.builtin.command:
+        argv: >-
+          {{ ["python3", role_path ~ "/files/sanitize_archive.py", apim_promote.archive]
+             + (["--routing-alias", apim_promote.backend_alias.name]
+                if ((apim_promote.backend_alias | default({})).name | default('') | length > 0)
+                else []) }}
+      register: exp_sanitize
+      changed_when: true
+
+    - name: "Export : rapport de sanitize"
+      ansible.builtin.set_fact:
+        exp_report: "{{ exp_sanitize.stdout | from_json }}"
+
+    - name: "Export : FAIL-CLOSED — archive saine (API présente, active, sans résidu)"
+      ansible.builtin.assert:
+        that:
+          - "exp_report.error is not defined"
+          - "(exp_report.apis | selectattr('id', 'equalto', exp_guid) | list) | length == 1"
+        fail_msg: "EXPORT_UNCONFIRMED : {{ exp_report.error | default('GUID absent de l archive') }}"
+        success_msg: >-
+          EXPORT_CONFIRMED : {{ apim_promote.archive }} — id-map à épingler dans le manifeste :
+          guid={{ exp_guid }} ; strippé : {{ exp_report.stripped | length }} entrée(s).
+
+    - name: "Export : id-map (à committer dans le manifeste de promotion)"
+      ansible.builtin.debug:
+        msg: "{{ exp_report.apis }}"
