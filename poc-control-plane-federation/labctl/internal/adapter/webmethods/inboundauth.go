@@ -105,6 +105,12 @@ type inboundAuthConfig struct {
 	// requirement is ENFORCED at IAM). Requires the OAuth2 path (audience set) —
 	// the AND's first rule is oAuth2Token.
 	mtls bool
+
+	// scopeMappingName overrides the scope-mapping name. "" (default) selects
+	// the PER-API model "<apiName>:<apiVersion>" (ADR-079, client-aligned);
+	// setting it restores the legacy SHARED mapping (e.g. "<alias>:<scope>",
+	// apiScopes accumulated across APIs — discouraged for promotion).
+	scopeMappingName string
 }
 
 // remoteIntrospectionEnabled reports whether the manifest asked to enforce the
@@ -152,6 +158,7 @@ func inboundAuthFromConfig(cfg adapter.Config) (*inboundAuthConfig, error) {
 	// The Gateway user the introspection call runs as. REQUIRED by 10.15; default
 	// to the Basic-auth admin username already configured on the adapter.
 	introspectionUser := cfg.Opt("inboundAuthIntrospectionUser", cfg.Cred("username", ""))
+	scopeMappingName := cfg.Opt("inboundScopeMappingName", "")
 	if issuer == "" && jwks == "" {
 		return nil, nil
 	}
@@ -209,6 +216,7 @@ func inboundAuthFromConfig(cfg adapter.Config) (*inboundAuthConfig, error) {
 		introspectionClientSecret: introspectionClientSecret,
 		introspectionUser:         introspectionUser,
 		mtls:                      mtls,
+		scopeMappingName:          scopeMappingName,
 	}, nil
 }
 
@@ -225,7 +233,7 @@ func inboundAuthFromConfig(cfg adapter.Config) (*inboundAuthConfig, error) {
 // application identifier (azp/openIdClaims) + authStrategyIds binding lives in
 // `labctl subscribe` (CreateConsumer), because the consumer's clientId is only
 // known there. apiName seeds the per-API strategy name (see strategyName).
-func (a *Adapter) ensureInboundAuth(ctx context.Context, apiID, apiName string) error {
+func (a *Adapter) ensureInboundAuth(ctx context.Context, apiID, apiName, apiVersion string) error {
 	if a.inbound == nil {
 		return nil
 	}
@@ -243,7 +251,7 @@ func (a *Adapter) ensureInboundAuth(ctx context.Context, apiID, apiName string) 
 		if _, err := a.ensureStrategy(ctx, apiName); err != nil {
 			return err
 		}
-		if err := a.ensureScopeMapping(ctx, apiID); err != nil {
+		if err := a.ensureScopeMapping(ctx, apiID, apiName, apiVersion); err != nil {
 			return err
 		}
 	}
@@ -915,10 +923,16 @@ func (a *Adapter) putPolicyGuarded(ctx context.Context, apiID, policyID string, 
 }
 
 // setAPIActive drives the explicit activate/deactivate lifecycle endpoints.
+// DEACTIVATION is gated (ADR-079): outside the authoring environment a
+// deactivate cuts the data plane — targets set allowDeactivate=false there and
+// updates flow through the archive import verb instead (0-downtime).
 func (a *Adapter) setAPIActive(ctx context.Context, apiID string, active bool) error {
 	verb := "deactivate"
 	if active {
 		verb = "activate"
+	}
+	if !active && !a.allowDeactivate {
+		return fmt.Errorf("deactivate api %s: UPDATE_FORBIDDEN (ADR-079) — this target sets allowDeactivate=false (deactivating cuts the data plane); deliver the change through the archive import verb (labctl promote / apim_promote_api) instead", apiID)
 	}
 	url := a.adminPath("/apis/" + apiID + "/" + verb)
 	code, raw, err := httpx.Do(ctx, a.http, http.MethodPut, url, a.authHeaders(), nil)

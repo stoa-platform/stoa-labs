@@ -169,11 +169,17 @@ func parseStrategyID(respBody []byte) string {
 
 // --- scope mapping ----------------------------------------------------------
 
-// scopeMappingName is the scope-mapping scopeName. It is alias-qualified
-// ("<alias>:<scope>") exactly as the live product stores it, so the lookup is
-// stable across re-applies.
-func (a *Adapter) scopeMappingName() string {
-	return a.inbound.aliasName + ":" + a.inbound.scope
+// scopeMappingName is the scope-mapping scopeName. The DEFAULT is the
+// PER-API+VERSION model (ADR-079, aligned with the client and the Ansible
+// role): "<apiName>:<apiVersion>" — one mapping per API, 1:1 with the
+// deployment unit, so a promote never has to re-merge shared multi-API state.
+// The legacy SHARED model ("<alias>:<scope>", apiScopes accumulating every
+// API) stays reachable through the inboundScopeMappingName option.
+func (a *Adapter) scopeMappingName(apiName, apiVersion string) string {
+	if a.inbound.scopeMappingName != "" {
+		return a.inbound.scopeMappingName
+	}
+	return apiName + ":" + apiVersion
 }
 
 // listScopes fetches /rest/apigateway/scopes ({"scopes":[...]} envelope, bare
@@ -226,12 +232,12 @@ func (a *Adapter) scopeRequiresAuthScope(raw map[string]any) bool {
 // The mapping is found by scopeName ("<alias>:<scope>"). The API binding is
 // ADDED to apiScopes (not replaced), so a scope shared by several APIs is never
 // truncated.
-func (a *Adapter) ensureScopeMapping(ctx context.Context, apiID string) error {
+func (a *Adapter) ensureScopeMapping(ctx context.Context, apiID, apiName, apiVersion string) error {
 	scopes, err := a.listScopes(ctx)
 	if err != nil {
 		return err
 	}
-	wantName := a.scopeMappingName()
+	wantName := a.scopeMappingName(apiName, apiVersion)
 	for _, sc := range scopes {
 		if name, _ := sc["scopeName"].(string); name != wantName {
 			continue

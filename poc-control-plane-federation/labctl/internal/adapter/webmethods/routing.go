@@ -72,6 +72,15 @@ type routingConfig struct {
 	credAliasName   string
 	backendUsername string
 	backendPassword string
+
+	// credAuthType selects the transport-security auth scheme: HTTP_BASIC
+	// (default) or NTLM (spike-pinned 2026-07-17: same httpAuthCredentials
+	// container + a `domain` field). Anything else is refused at construction
+	// until its credential container is pinned by a spike (ADR-079).
+	credAuthType string
+	// credDomain is the NTLM domain (required when credAuthType is NTLM;
+	// not a secret — it rides in the options block).
+	credDomain string
 }
 
 // routingFromConfig projects the generic adapter Config onto the routing
@@ -104,6 +113,14 @@ func routingFromConfig(cfg adapter.Config) (*routingConfig, error) {
 		rc.backendPassword = cfg.Cred("backendPassword", "")
 		if rc.backendUsername == "" || rc.backendPassword == "" {
 			return nil, fmt.Errorf("webmethods: routing.credentialAlias needs credentials.backendUsername and credentials.backendPassword (the values the alias stores; got username-set=%t password-set=%t)", rc.backendUsername != "", rc.backendPassword != "")
+		}
+		rc.credAuthType = cfg.Opt("routingCredentialAuthType", "HTTP_BASIC")
+		rc.credDomain = cfg.Opt("routingCredentialDomain", "")
+		if rc.credAuthType != "HTTP_BASIC" && rc.credAuthType != "NTLM" {
+			return nil, fmt.Errorf("webmethods: routing.credentialAlias authType %q unsupported — HTTP_BASIC or NTLM (other containers need a shape spike first, ADR-079)", rc.credAuthType)
+		}
+		if rc.credAuthType == "NTLM" && rc.credDomain == "" {
+			return nil, fmt.Errorf("webmethods: routing.credentialAlias authType NTLM requires routingCredentialDomain")
 		}
 	}
 	return rc, nil
@@ -140,80 +157,13 @@ func (a *Adapter) ensureRouting(ctx context.Context, apiID, apiName string) erro
 
 // --- endpoint alias ----------------------------------------------------------
 
-// ensureEndpointAlias finds the endpoint alias by NAME and converges it:
-//   - absent             -> POST (NAKED body, the spike-pinned shape);
-//   - present, drifted   -> PUT the read-back record with ONLY endPointURI
-//     overwritten (gateway-enriched fields survive);
-//   - present, identical -> no write at all.
-//
-// Every write is followed by a read-back assertion on endPointURI: the field
-// casing is a classic trap (endpointUri vs endPointURI) and the surface drops
-// unknown fields silently.
+// ensureEndpointAlias converges the endpoint alias NAME onto the per-env URL —
+// delegated to the parameterised ADR-079 primitive (create NAKED body with the
+// spike-pinned shape, PUT-converge on drift, read-back asserted on the
+// endPointURI casing trap, never delete/recreate).
 func (a *Adapter) ensureEndpointAlias(ctx context.Context, name string) error {
-	wantURL := a.routing.endpointAliasURL
-	aliases, err := a.listAliases(ctx)
-	if err != nil {
+	if err := a.EnsureEndpointAliasValue(ctx, name, a.routing.endpointAliasURL); err != nil {
 		return fmt.Errorf("routing: %w", err)
-	}
-	for _, al := range aliases {
-		if al.Name != name {
-			continue
-		}
-		got, _ := al.Raw["endPointURI"].(string)
-		if got == wantURL {
-			return nil // converged — idempotent no-op
-		}
-		al.Raw["endPointURI"] = wantURL
-		url := a.adminPath("/alias/" + al.ID)
-		code, raw, perr := a.sendJSON(ctx, http.MethodPut, url, al.Raw)
-		if perr != nil {
-			return fmt.Errorf("routing: update endpoint alias %q: %w", name, perr)
-		}
-		if code != http.StatusOK && code != http.StatusCreated {
-			return fmt.Errorf("routing: update endpoint alias %q: expected 200/201, got %d: %s", name, code, truncate(raw, 300))
-		}
-		return a.assertEndpointAliasStuck(ctx, al.ID, name)
-	}
-
-	// Absent: create (NAKED body, exact spike shape — endPointURI casing is
-	// load-bearing).
-	body := map[string]any{
-		"name":                  name,
-		"description":           "labctl routing: per-environment backend endpoint alias",
-		"type":                  "endpoint",
-		"endPointURI":           wantURL,
-		"optimizationTechnique": "None",
-		"passSecurityHeaders":   true,
-	}
-	url := a.adminPath("/alias")
-	code, raw, err := a.sendJSON(ctx, http.MethodPost, url, body)
-	if err != nil {
-		return fmt.Errorf("routing: create endpoint alias %q: %w", name, err)
-	}
-	if code != http.StatusCreated && code != http.StatusOK {
-		return fmt.Errorf("routing: create endpoint alias %q: expected 200/201, got %d: %s", name, code, truncate(raw, 300))
-	}
-	id := parseAliasID(raw)
-	if id == "" {
-		id = a.lookupAliasID(ctx, name)
-	}
-	if id == "" {
-		return fmt.Errorf("routing: create endpoint alias %q: no id in response and name lookup failed", name)
-	}
-	return a.assertEndpointAliasStuck(ctx, id, name)
-}
-
-// assertEndpointAliasStuck GETs the alias and proves endPointURI persisted as
-// configured — a silently-dropped field (wrong casing, locked build) would
-// otherwise leave the API routed at the import-time backend with no error.
-func (a *Adapter) assertEndpointAliasStuck(ctx context.Context, aliasID, name string) error {
-	rec, err := a.getAliasRecord(ctx, aliasID)
-	if err != nil {
-		return fmt.Errorf("routing: read-back endpoint alias %q: %w", name, err)
-	}
-	got, _ := rec["endPointURI"].(string)
-	if got != a.routing.endpointAliasURL {
-		return fmt.Errorf("routing: endpoint alias %q endPointURI came back %q, want %q — the write did not persist (check the exact endPointURI casing on this build)", name, got, a.routing.endpointAliasURL)
 	}
 	return nil
 }
@@ -253,77 +203,10 @@ func (a *Adapter) credAliasPassword() string {
 // PUT and left the old password live). Idempotence is proven by stable ids and
 // the data-plane, not by the absence of a PUT.
 func (a *Adapter) ensureCredentialAlias(ctx context.Context, name string) error {
-	wantUser := a.routing.backendUsername
-	aliases, err := a.listAliases(ctx)
-	if err != nil {
+	if err := a.EnsureCredentialAliasValue(ctx, name,
+		a.routing.credAuthType, a.routing.backendUsername,
+		a.credAliasPassword(), a.routing.credDomain); err != nil {
 		return fmt.Errorf("routing: %w", err)
-	}
-	for _, al := range aliases {
-		if al.Name != name {
-			continue
-		}
-		// Present: overwrite ONLY the credentials block on the full read-back
-		// record (gateway-enriched fields survive), re-emitting the base64
-		// password unconditionally — the read-back one is a mask.
-		al.Raw["httpAuthCredentials"] = map[string]any{
-			"userName": wantUser,
-			"password": a.credAliasPassword(),
-		}
-		url := a.adminPath("/alias/" + al.ID)
-		code, raw, perr := a.sendJSON(ctx, http.MethodPut, url, al.Raw)
-		if perr != nil {
-			return fmt.Errorf("routing: update credential alias %q: %w", name, perr)
-		}
-		if code != http.StatusOK && code != http.StatusCreated {
-			return fmt.Errorf("routing: update credential alias %q: expected 200/201, got %d: %s", name, code, truncate(raw, 300))
-		}
-		return a.assertCredentialAliasStuck(ctx, al.ID, name)
-	}
-
-	// Absent: create (NAKED body, exact spike shape).
-	body := map[string]any{
-		"name":        name,
-		"description": "labctl routing: backend HTTP Basic credential alias",
-		"type":        "httpTransportSecurityAlias",
-		"authType":    "HTTP_BASIC",
-		"authMode":    "NEW",
-		"httpAuthCredentials": map[string]any{
-			"userName": wantUser,
-			"password": a.credAliasPassword(),
-		},
-	}
-	url := a.adminPath("/alias")
-	code, raw, err := a.sendJSON(ctx, http.MethodPost, url, body)
-	if err != nil {
-		return fmt.Errorf("routing: create credential alias %q: %w", name, err)
-	}
-	if code != http.StatusCreated && code != http.StatusOK {
-		return fmt.Errorf("routing: create credential alias %q: expected 200/201, got %d: %s", name, code, truncate(raw, 300))
-	}
-	id := parseAliasID(raw)
-	if id == "" {
-		id = a.lookupAliasID(ctx, name)
-	}
-	if id == "" {
-		return fmt.Errorf("routing: create credential alias %q: no id in response and name lookup failed", name)
-	}
-	return a.assertCredentialAliasStuck(ctx, id, name)
-}
-
-// assertCredentialAliasStuck GETs the alias and proves the userName persisted.
-// The password is NOT asserted (masked on read-back, by design).
-func (a *Adapter) assertCredentialAliasStuck(ctx context.Context, aliasID, name string) error {
-	rec, err := a.getAliasRecord(ctx, aliasID)
-	if err != nil {
-		return fmt.Errorf("routing: read-back credential alias %q: %w", name, err)
-	}
-	creds, _ := rec["httpAuthCredentials"].(map[string]any)
-	gotUser := ""
-	if creds != nil {
-		gotUser, _ = creds["userName"].(string)
-	}
-	if gotUser != a.routing.backendUsername {
-		return fmt.Errorf("routing: credential alias %q userName came back %q, want %q — the write did not persist", name, gotUser, a.routing.backendUsername)
 	}
 	return nil
 }
