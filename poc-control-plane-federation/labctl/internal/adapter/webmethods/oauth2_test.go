@@ -140,10 +140,13 @@ func TestPublish_OAuth2ProjectsStrategyScopeAndStrictAction(t *testing.T) {
 		t.Errorf("strategy audience = %v, want %q", st["audience"], testAudience)
 	}
 
-	// Scope mapping: alias-qualified name, bound to the API, gating on the scope.
+	// Scope mapping: PER-API name (ADR-079 client model — one mapping per
+	// API+version, no shared multi-API state; the legacy "<alias>:<scope>"
+	// shared name stays reachable via inboundScopeMappingName).
 	sc := onlyScope(t, mock)
-	if sc["scopeName"] != testAliasName+":"+testScope {
-		t.Errorf("scope scopeName = %v, want %q", sc["scopeName"], testAliasName+":"+testScope)
+	wantScopeName := api.Name + ":" + api.Version
+	if sc["scopeName"] != wantScopeName {
+		t.Errorf("scope scopeName = %v, want %q", sc["scopeName"], wantScopeName)
 	}
 	if !scopeBindsAPI(sc, res.APIID) {
 		t.Errorf("scope apiScopes %v does not bind the API %q", sc["apiScopes"], res.APIID)

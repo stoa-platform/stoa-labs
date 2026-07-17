@@ -214,7 +214,7 @@ func (a *Adapter) Publish(ctx context.Context, api *adapter.NormalizedAPI) (*ada
 	// AFTER the import/update on purpose — a re-import may touch the policy,
 	// and this step re-reads and converges whatever state it left. No-op when
 	// the manifest carries no inboundAuth (zero extra calls).
-	if err := a.ensureInboundAuth(ctx, canonical.ID, canonical.APIName); err != nil {
+	if err := a.ensureInboundAuth(ctx, canonical.ID, canonical.APIName, canonical.APIVersion); err != nil {
 		return nil, fmt.Errorf("webmethods publish: %w", err)
 	}
 

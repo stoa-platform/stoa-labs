@@ -96,6 +96,7 @@ func New(cfg adapter.Config) (adapter.Adapter, error) {
 		username:          user,
 		password:          pass,
 		bearerToken:       token,
+		allowDeactivate:   cfg.Opt("allowDeactivate", "true") != "false",
 		inbound:           inbound,
 		routing:           routing,
 		throttle:          throttleFromConfig(cfg),
@@ -134,6 +135,7 @@ type Adapter struct {
 	username          string             // HTTP Basic user (Administrator on the trial image; "" in bearer mode)
 	password          string             // HTTP Basic pass ("" in bearer mode)
 	bearerToken       string             // bearer token (CI mode; "" in Basic mode) — exactly one mode is set
+	allowDeactivate   bool               // ADR-079 gate: false = deactivate is UPDATE_FORBIDDEN (non-authoring envs)
 	inbound           *inboundAuthConfig // optional inbound JWT/JWKS projection (nil = feature off)
 	routing           *routingConfig     // optional routing-by-alias projection (nil = feature off)
 	throttle          *throttleConfig    // optional rate-limit throttle projection (nil = feature off)
