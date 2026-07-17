@@ -56,6 +56,20 @@ matérialise l'issuer `…/stoa-lab` sur l'alias, `=staging` → refus.
 Charger le manifeste par **CHEMIN** (`-e apim_ss_manifest=<fichier>` → `include_vars`),
 **jamais `-e @fichier`** (extra-var : masquerait la fusion). `apim_ss_env` reste extra-var.
 
+## Mise à jour d'une API existante (`apim_api.update`) — prouvé live
+
+Par défaut le rôle est **create-only** : si l'API (même `name`+`version`) existe
+déjà, le contrat n'est **pas** ré-importé (pas de re-déploiement surprise ; bumper
+`version` reste l'alternative). Mettre **`update: true`** dans le manifeste pour
+pousser un contrat modifié sur une API existante : le rôle fait **deactivate → PUT
+`/apis/{id}` (multipart) → activate**. La désactivation est nécessaire car le PUT
+d'update est **refusé (400) sur une API active** (prouvé live) — d'où une **brève
+coupure du data-plane** le temps de l'update. `activate`/`inbound` reconvergent après.
+
+> Piège Jinja épinglé : tester `apim_api['update']` et **non** `apim_api.update` —
+> l'accès par attribut `.update` résout la **méthode `update()` du dict** (collision),
+> jamais la clé du manifeste (le bloc serait alors toujours skippé, en silence).
+
 ## Port en Deny-by-Default : allow-list (IS-admin, opt-in) — prouvé live
 
 Chez le client, le **port data-plane est en Deny-by-Default** : chaque API publiée

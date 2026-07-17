@@ -121,13 +121,20 @@
       ansible.builtin.set_fact:
         ss_app_rec: "{{ ss_app_get.json.applications | default([ss_app_get.json]) | first }}"
 
-    - name: "Identifiers : merge (retirer cert/IP existants, GARDER azp/openIdClaims, ajouter désirés) + PUT"
+    # On ne remplace QUE les dimensions RÉELLEMENT gérées par le manifeste
+    # (celles présentes dans ss_desired_ids). Ainsi un identifier posé HORS du
+    # manifeste — typiquement un certificat uploadé en .cer BINAIRE dans l'UI
+    # (contournement du bug de hash base64) quand public_cert_ref est vide — est
+    # PRÉSERVÉ au re-run, au lieu d'être effacé. (De même azp/openIdClaims.)
+    - name: "Identifiers : merge — remplacer SEULEMENT les dimensions du manifeste, garder le reste"
       when: "ss_desired_ids | length > 0"
       block:
         - ansible.builtin.set_fact:
+            ss_managed_keys: "{{ ss_desired_ids | map(attribute='key') | list }}"
+        - ansible.builtin.set_fact:
             ss_app_merged: >-
               {{ ss_app_rec | combine({'identifiers':
-                  (ss_app_rec.identifiers | default([]) | rejectattr('key', 'in', ['httpsCertificate', 'ipAddressRange']) | list)
+                  (ss_app_rec.identifiers | default([]) | rejectattr('key', 'in', ss_managed_keys) | list)
                   + ss_desired_ids }) }}
         - ansible.builtin.uri:
             url: "{{ apim_ss_api_base }}/applications/{{ ss_app_id }}"

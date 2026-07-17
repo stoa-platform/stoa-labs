@@ -44,6 +44,12 @@ apim_api:
   version: "1.0.0"
   contract: ""          # chemin du contrat OpenAPI (yaml|json) — REQUIS (absolu ou relatif au playbook)
   team: ""              # nom d'équipe (accessProfile) à assigner — optionnel (isolation ADR-076)
+  # update: si l'API EXISTE déjà (même name+version), ré-importer le contrat
+  # (le contrat devient la source de vérité). false = create-only (défaut sûr :
+  # pas de re-déploiement surprise). true ⇒ deactivate → PUT /apis/{id} → activate
+  # (le PUT est REFUSÉ sur une API active — 400 — d'où la désactivation ; brève
+  # coupure du data-plane le temps de l'update). Bumper `version` reste l'alternative.
+  update: false
   # Policies INBOUND (optionnel) : validation au stage IAM. Vide = API ouverte.
   #   issuer      : l'iss EXACT du token (épinglé côté émetteur)
   #   jwks_uri    : JWKS joignable DEPUIS la gateway (réseau interne, pas localhost)
