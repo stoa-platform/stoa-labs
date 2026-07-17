@@ -1,0 +1,93 @@
+---
+# roles/apim_promote_api/defaults/main.yml
+#
+# Promotion d'API par ARCHIVE (ADR-079) 100 % Ansible : export sanitizé d'une
+# archive à GUID stables + import overwrite SANS désactivation (0-coupure).
+# Shapes prouvées live (spike 2026-07-17, apigateway-trial:10.15) :
+#   - EXPORT  : GET  /rest/apigateway/archive?apis=<guid>  -> zip {API/…, APIGatewayAssets.acdl}
+#   - IMPORT  : POST /rest/apigateway/archive?overwrite=<types> multipart file=<zip>
+#   - overwrite par TYPES = pluriels minuscules ("apis,policies,policyactions") ;
+#     "*" = tout (DANGER : écrase aussi les Alias embarqués = valeurs per-env).
+#   - PIÈGE isActive : une archive isActive:false DÉSACTIVE l'API à l'import
+#     (404 durable) -> l'export refuse une API inactive, l'import re-vérifie.
+#   - PIÈGE alias : l'export d'une API routée ${alias} EMBARQUE l'Alias (valeur
+#     d'un env) + PassmanData (secret chiffré) -> le sanitize les STRIP (zip+acdl).
+#   - PIÈGE binding : ${alias} est résolu nom->id AU DÉPLOIEMENT ; ne JAMAIS
+#     delete/recréer un alias (502 durable) -> convergence par PUT uniquement.
+# Le binaire Go reste parqué (contrainte de provenance) — même doctrine
+# qu'apim_publish_api.
+
+# --- infra (MÊMES noms que apim_publish_api / apim_selfservice_app : partagé) ---
+apim_ss_api_base: "http://localhost:5555/rest/apigateway"
+apim_ss_data_base: "http://localhost:5555/gateway"
+apim_ss_env: ""
+apim_ss_env_header: "X-Environment"
+apim_ss_auth_mode: "basic"
+apim_ss_wm_user: "Administrator"
+apim_ss_wm_password: "manage"
+apim_ss_oauth_token_url: ""
+apim_ss_oauth_client_id: ""
+apim_ss_oauth_client_secret: ""
+apim_ss_oauth_scope: ""
+apim_ss_vault_addr: "{{ lookup('env', 'VAULT_ADDR') }}"
+apim_ss_vault_kv_mount: "secret"
+apim_ss_vault_k8s_mount: "auth/kubernetes"
+apim_ss_vault_prefix: "stoa"
+apim_ss_vault_wm_creds_sub: "gateways/webmethods"
+apim_ss_vault_oauth_sub: "gateways/webmethods/admin-oauth"
+apim_ss_ca_path: ""
+
+# --- action du rôle : export | import ----------------------------------------
+apim_promote_action: "import"
+
+# --- le manifeste de promotion ----------------------------------------------
+apim_promote:
+  name: ""              # identité (contrôle croisé avec le contenu de l'archive)
+  version: ""
+  # id-map (ADR-079) : le GUID épinglé de l'API. REQUIS à l'import (c'est LUI
+  # qui garantit l'iso inter-gateways : scope-mappings, souscriptions et teams
+  # référencent ce GUID). À l'export, vide = résolu par name+version puis À
+  # ÉPINGLER dans ce manifeste (commit Git).
+  guid: ""
+  # chemin de l'archive : destination (export) / source (import). Artefact de
+  # build tagué (dépôt d'artefacts) — PAS un fichier suivi par Git (ADR-079 C3).
+  archive: ""
+  # types overwrités à l'import. JAMAIS "aliases" (valeurs per-env) ni "*"
+  # (l'écraserait). Le spike prouve : un Alias embarqué non couvert est SKIPPÉ
+  # sans cascade ; couvert, il CLOBBE la valeur locale de l'env.
+  overwrite: "apis,policies,policyactions"
+  # Endpoint alias per-env (alias-first, posé AVANT l'import — hors archive) :
+  #   backend_alias: { name: "acme-backend", url: "" }   # url via per_env
+  backend_alias: {}
+  # Credential alias per-env (write-always, creds lues dans Vault KV v2 sous
+  # <prefix>/<vault_sub> champs username/password[/domain] — jamais Git/archive).
+  # auth_type : HTTP_BASIC (défaut) | NTLM (prouvés live — NTLM = même conteneur
+  # httpAuthCredentials + champ domain, Vault prioritaire puis manifeste).
+  # Enum produit complet : ALIAS, NTLM, OAUTH2, REMOVE_INCOMING_HTTP_HEADERS,
+  # JWT, KERBEROS, HTTP_BASIC — KERBEROS/OAUTH2/JWT refusés fail-closed tant que
+  # leur conteneur de creds n'est pas épinglé par spike (jamais de shape devinée).
+  #   cred_alias: { name: "acme-backend-creds", auth_type: "NTLM", domain: "CORP", vault_sub: "" }
+  cred_alias: {}
+  # Alias GÉNÉRIQUES sans secret (simple, endpoints additionnels…) — converge
+  # déclaratif par NOM (PUT read-back ⊕ record, jamais delete/recreate),
+  # read-back champ à champ. Shapes prouvées : simple {type,value},
+  # endpoint {type, endPointURI}. Les secrets vont dans cred_alias (Vault).
+  #   aliases:
+  #     - { name: "acme-api-key", record: { type: "simple", value: "..." } }
+  aliases: []
+  # Scope-mapping PER-API+VERSION (modèle client) — posé par REST après import
+  # (ne voyage PAS dans l'archive, prouvé). Le mapping 1:1 suit le GUID stable
+  # de l'API « tout au long » ; l'AS est référencé PAR NOM (env-local, doit
+  # pré-exister — fail-closed SCOPE_AS_MISSING sinon) :
+  #   scope_mapping:
+  #     name: ""                      # défaut "<name>:<version>"
+  #     external_scope: "accounts.read"   # scope porté par le token
+  #     auth_server_alias: "BankAuth-demo"  # invariant (les VALEURS AS sont per-env)
+  #     audience: ""
+  scope_mapping: {}
+  # smoke test data-plane optionnel après import (chemin relatif au data base),
+  # ex : "/accounts-read/1.0.0/accounts" — vide = pas d'invoke.
+  smoke_path: ""
+  # surcharges par environnement (fusion récursive racine ⊕ per_env[env],
+  # fail-closed si env non déclaré) — même modèle qu'apim_publish_api.
+  per_env: {}

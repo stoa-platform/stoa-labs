@@ -88,11 +88,21 @@
       when: "not in_strat_present"
 
     # --- scope mapping (find-or-create par scopeName, bind apiID) : POST /scopes NU ---
+    # MODÈLE (ADR-079, aligné client) : UN scope-mapping PAR API+VERSION —
+    # scopeName = "<api>:<version>". Le mapping appartient à l'API (1:1), suit
+    # son GUID stable tout au long de la vie (aucun état partagé à re-fusionner
+    # à la promotion). Le nom du mapping est ORGANISATIONNEL : le token matche
+    # requiredAuthScopes.scopeName (scope externe), pas le nom du mapping.
+    # L'ancien modèle PARTAGÉ ("<alias>:<scope>", apiScopes accumulés multi-API)
+    # reste accessible via inbound.scope_mapping_name — déconseillé pour la
+    # promotion (l'archive/l'apply d'une API écraserait la liste des autres).
     - ansible.builtin.uri: { url: "{{ apim_ss_api_base }}/scopes" }
       register: in_scopes
       changed_when: false
     - ansible.builtin.set_fact:
-        in_scope_name: "{{ apim_api.inbound.alias_name }}:{{ apim_api.inbound.scope }}"
+        in_scope_name: >-
+          {{ apim_api.inbound.scope_mapping_name
+             | default(apim_api.name ~ ':' ~ apim_api.version) }}
     - ansible.builtin.set_fact:
         in_scope: >-
           {{ (in_scopes.json.scopes | default([])

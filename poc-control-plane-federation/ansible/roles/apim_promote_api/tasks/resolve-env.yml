@@ -1,0 +1,57 @@
+---
+# roles/apim_promote_api/tasks/resolve-env.yml
+#
+# MULTI-ENV (ADR-079), pendant PROMOTION de apim_publish_api/resolve-env.yml.
+# L'identité de l'archive (name/version/guid/archive) est INVARIANTE ; ce qui
+# CHANGE par env, ce sont les VALEURS D'ALIAS — backend_alias.url (endpoint du
+# backend de CET env) et cred_alias.vault_sub (creds backend de CET env). Ces
+# valeurs ne voyagent JAMAIS dans l'archive (piège clobber prouvé au spike) :
+# elles sont posées alias-first par le déployeur de l'env.
+#
+# MANIFESTE EFFECTIF = racine (sans per_env) ⊕(récursif) per_env[apim_ss_env].
+# FAIL-CLOSED : per_env déclaré ⇒ apim_ss_env fourni ET connu (sinon on
+# importerait une API routée vers le backend du MAUVAIS env — pire qu'un refus).
+#
+# CHARGEMENT : passer un CHEMIN via `apim_promote_manifest` (include_vars,
+# précédence 18), JAMAIS `-e @fichier` (extra-var 22 : masquerait la fusion).
+
+- name: "Env : charger le manifeste (chemin) — include_vars, pas extra-var"
+  ansible.builtin.include_vars: >-
+    {{ apim_promote_manifest if apim_promote_manifest.startswith('/')
+       else (playbook_dir ~ '/../' ~ apim_promote_manifest) }}
+  when: "(apim_promote_manifest | default('')) | length > 0"
+
+- name: "Env : le manifeste porte-t-il des surcharges par environnement ?"
+  ansible.builtin.set_fact:
+    apim_promote_has_per_env: "{{ (apim_promote.per_env | default({})) | length > 0 }}"
+
+- name: "Env : FAIL-CLOSED — per_env présent ⇒ apim_ss_env déclaré ET connu"
+  ansible.builtin.assert:
+    that:
+      - "(apim_ss_env | default('')) | length > 0"
+      - "apim_ss_env in (apim_promote.per_env | default({}))"
+    fail_msg: >-
+      ENV_UNDEFINED : le manifeste déclare per_env={{ (apim_promote.per_env | default({})).keys() | list }}
+      mais apim_ss_env='{{ apim_ss_env | default('') }}' est vide ou hors de cette liste.
+      Refus de promouvoir avec des valeurs d'alias (backend/creds) non définies pour cet environnement.
+    success_msg: "ENV_OK : environnement '{{ apim_ss_env }}' déclaré pour la promotion."
+  when: apim_promote_has_per_env
+
+- name: "Env : décomposer racine (sans per_env) et surcharge de l'env"
+  ansible.builtin.set_fact:
+    apim_promote_base_m: "{{ apim_promote | dict2items | rejectattr('key', 'equalto', 'per_env') | items2dict }}"
+    apim_promote_over_m: "{{ apim_promote.per_env[apim_ss_env] }}"
+  when: apim_promote_has_per_env
+
+- name: "Env : manifeste EFFECTIF = racine ⊕ per_env[{{ apim_ss_env }}]"
+  ansible.builtin.set_fact:
+    apim_promote: "{{ apim_promote_base_m | combine(apim_promote_over_m, recursive=True) }}"
+  when: apim_promote_has_per_env
+
+- name: "Env : promotion résolue pour '{{ apim_ss_env | default('(mono-env)') }}'"
+  ansible.builtin.debug:
+    msg: >-
+      api={{ apim_promote.name }} v{{ apim_promote.version }} env={{ apim_ss_env | default('(mono-env)') }} :
+      guid={{ apim_promote.guid | default('(à épingler)') }},
+      backend_alias={{ (apim_promote.backend_alias | default({})).name | default('(aucun)') }}
+      -> {{ (apim_promote.backend_alias | default({})).url | default('(n/a)') }}

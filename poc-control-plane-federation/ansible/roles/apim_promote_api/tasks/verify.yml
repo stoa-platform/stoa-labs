@@ -1,0 +1,63 @@
+---
+# roles/apim_promote_api/tasks/verify.yml (--tags verify) — preuve fail-closed.
+# Relit l'état SANS écrire : API active par GUID, valeur d'alias de l'env,
+# smoke data-plane optionnel.
+
+- name: "Env : résoudre le manifeste effectif (invariant ⊕ per_env)"
+  ansible.builtin.import_tasks: resolve-env.yml
+
+- name: "Secrets : auth admin (Vault, fallback PoC)"
+  ansible.builtin.import_tasks: secrets.yml
+
+- name: "Verify — promotion '{{ apim_promote.name }}' v{{ apim_promote.version }}"
+  module_defaults:
+    ansible.builtin.uri: "{{ apim_ss_uri_defaults }}"
+  block:
+
+    - name: "Verify : relire l'API par GUID (id-map)"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/apis/{{ apim_promote.guid }}"
+        status_code: [200, 404]
+      register: v_get
+      changed_when: false
+
+    - name: "Verify : FAIL-CLOSED — l'API du guid épinglé est présente ET ACTIVE"
+      ansible.builtin.assert:
+        that:
+          - "v_get.status == 200"
+          - "v_get.json.apiResponse.api.isActive | default(false)"
+          - "v_get.json.apiResponse.api.apiName == apim_promote.name"
+        fail_msg: >-
+          PROMOTE_UNCONFIRMED : guid={{ apim_promote.guid }} absent ou inactif sur
+          '{{ apim_ss_env | default('(mono-env)') }}'.
+        success_msg: >-
+          PROMOTE_CONFIRMED : {{ apim_promote.name }} v{{ apim_promote.version }}
+          guid={{ apim_promote.guid }} active.
+
+    - name: "Verify : valeur d'alias backend de CET env"
+      when: "(apim_promote.backend_alias | default({})).name | default('') | length > 0"
+      block:
+        - ansible.builtin.uri:
+            url: "{{ apim_ss_api_base }}/alias"
+          register: v_al
+          changed_when: false
+        - name: "Verify : FAIL-CLOSED — endPointURI == valeur per_env"
+          ansible.builtin.assert:
+            that: >-
+              ((v_al.json.alias | default([])
+                | selectattr('name', 'equalto', apim_promote.backend_alias.name)
+                | map(attribute='endPointURI') | list | first) | default(''))
+              == apim_promote.backend_alias.url
+            fail_msg: >-
+              ALIAS_DRIFT : '{{ apim_promote.backend_alias.name }}' ne porte pas la valeur
+              de l'env '{{ apim_ss_env | default('(mono-env)') }}'.
+            success_msg: >-
+              ALIAS_CONFIRMED : {{ apim_promote.backend_alias.name }} ->
+              {{ apim_promote.backend_alias.url }}.
+
+    - name: "Verify : smoke data-plane"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_data_base }}{{ apim_promote.smoke_path }}"
+        status_code: [200]
+      changed_when: false
+      when: "(apim_promote.smoke_path | default('')) | length > 0"

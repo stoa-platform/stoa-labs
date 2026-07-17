@@ -1,0 +1,56 @@
+---
+# Manifeste de PROMOTION (vars du rôle apim_promote_api, ADR-079).
+#
+# MODÈLE : l'archive (artefact de build tagué — dépôt d'artefacts, PAS Git) est
+# INVARIANTE et porte les GUID ; ce qui CHANGE par env, ce sont les VALEURS
+# d'alias (backend, creds) — posées alias-first par le déployeur de l'env,
+# jamais embarquées dans l'archive (piège clobber prouvé au spike 2026-07-17).
+#
+# CYCLE :
+#   1. dev (authoring)  : apim_publish_api publie/active ; le routing pointe
+#      ${accounts-backend} (jamais une URL en dur — sinon l'archive est clouée
+#      à un env, prouvé : l'export embarque l'URL littérale).
+#   2. export           : apim_promote_action=export -> archive sanitizée +
+#      id-map affiché -> ÉPINGLER guid: ci-dessous (commit Git), pousser
+#      l'archive taguée au dépôt d'artefacts.
+#   3. rec/int/…/prod   : apim_promote_action=import -e apim_ss_env=<env> ->
+#      alias-first + overwrite 0-coupure + read-back GUID/active.
+# Le scope-mapping ne voyage PAS dans l'archive (prouvé) : posé par
+# apim_publish_api (inbound oauth2) en référençant l'AS par NOM et l'API par
+# GUID — stable puisque le GUID ne change plus jamais.
+apim_promote:
+  name: "accounts-read"
+  version: "1.0.0"
+  # id-map (ADR-079) : GUID épinglé à l'export, IDENTIQUE sur toutes les
+  # gateways — c'est lui qui garde scope-mappings/souscriptions/teams valides.
+  guid: ""                                   # <- coller la sortie EXPORT_CONFIRMED
+  archive: "{{ playbook_dir }}/../dist/accounts-read-1.0.0.archive.zip"
+  overwrite: "apis,policies,policyactions"   # JAMAIS aliases ni * (clobber per-env)
+  backend_alias:
+    name: "accounts-backend"                 # invariant : la RÉFÉRENCE ${accounts-backend}
+  cred_alias:
+    name: "accounts-backend-creds"           # invariant : référence du credential alias
+  # Scope-mapping PER-API+VERSION (modèle client) — reconstruit par REST sur
+  # chaque env (il ne voyage PAS dans l'archive, prouvé), lié au guid stable :
+  # posé une fois, il reste le même « tout au long ». L'AS est référencé par
+  # NOM ; ses VALEURS (issuer/jwks du Keycloak de l'env) sont posées par le
+  # play inbound/init d'env (fail-closed SCOPE_AS_MISSING si absent).
+  scope_mapping:
+    external_scope: "accounts.read"          # scope porté par le token
+    auth_server_alias: "BankAuth-demo"       # invariant (valeurs AS per-env ailleurs)
+    audience: ""
+  smoke_path: ""                             # ex : "/accounts-read/1.0.0/accounts"
+
+  per_env:
+    dev:
+      backend_alias: { url: "http://poc-token-echo:8080/backend/dev" }
+      cred_alias: { vault_sub: "envs/dev/backends/accounts" }
+    rec:
+      backend_alias: { url: "http://poc-token-echo:8080/backend/rec" }
+      cred_alias: { vault_sub: "envs/rec/backends/accounts" }
+    int:
+      backend_alias: { url: "http://poc-token-echo:8080/backend/int" }
+      cred_alias: { vault_sub: "envs/int/backends/accounts" }
+    prod:
+      backend_alias: { url: "https://accounts.core.bank.invalid" }
+      cred_alias: { vault_sub: "envs/prod/backends/accounts" }

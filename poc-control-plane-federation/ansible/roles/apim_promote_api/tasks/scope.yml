@@ -1,0 +1,111 @@
+---
+# roles/apim_promote_api/tasks/scope.yml
+# Scope-mapping PER-API+VERSION (modèle client, ADR-079) — posé par REST.
+#
+# PROUVÉ (spike 2026-07-17) : les scope-mappings NE VOYAGENT PAS dans l'archive
+# REST — ni à l'export (`?apis=` ne les inclut pas ; aucun param dédié reconnu),
+# ni à l'import (types synthétisés ignorés en silence). Le mapping est donc
+# CONVERGÉ ici, idempotent, APRÈS l'import de l'API (il la référence par GUID —
+# stable grâce à l'archive, donc posé UNE FOIS il reste valide à travers tous
+# les redéploiements : « le même scope mapping tout au long »).
+#
+# MODÈLE : UN mapping par API+version (scopeName = "<name>:<version>") — 1:1
+# avec l'unité de déploiement, AUCUN état partagé multi-API à écraser. Le nom
+# du mapping est organisationnel : le token matche external_scope
+# (requiredAuthScopes.scopeName) via l'AS référencé PAR NOM (env-local).
+
+- name: "Scope : fail-closed — external_scope + auth_server_alias requis"
+  ansible.builtin.assert:
+    that:
+      - "(apim_promote.scope_mapping.external_scope | default('')) | length > 0"
+      - "(apim_promote.scope_mapping.auth_server_alias | default('')) | length > 0"
+    fail_msg: >-
+      SCOPE_UNDEFINED : scope_mapping exige external_scope (scope du token) ET
+      auth_server_alias (AS de CET env, référencé par nom).
+
+- name: "Scope : nom du mapping (défaut = modèle per-API+version)"
+  ansible.builtin.set_fact:
+    sc_name: >-
+      {{ apim_promote.scope_mapping.name
+         | default(apim_promote.name ~ ':' ~ apim_promote.version, true) }}
+
+# ALIAS-FIRST pour l'AS aussi : le mapping référence l'AS par NOM — il doit
+# exister sur CET env (posé par le play inbound/init d'env), sinon fail-closed
+# (un mapping vers un AS fantôme serait un gate mi-ouvert).
+- name: "Scope : l'alias auth-server de l'env existe ?"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_api_base }}/alias"
+  register: sc_aliases
+  changed_when: false
+
+- name: "Scope : FAIL-CLOSED — AS '{{ apim_promote.scope_mapping.auth_server_alias | default('') }}' présent sur l'env"
+  ansible.builtin.assert:
+    that: >-
+      (sc_aliases.json.alias | default([])
+        | selectattr('name', 'equalto', apim_promote.scope_mapping.auth_server_alias)
+        | list) | length > 0
+    fail_msg: >-
+      SCOPE_AS_MISSING : l'alias auth-server '{{ apim_promote.scope_mapping.auth_server_alias }}'
+      n'existe pas sur cet env — le poser d'abord (alias-first, play inbound/init d'env).
+
+- name: "Scope : mappings existants"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_api_base }}/scopes"
+  register: sc_list
+  changed_when: false
+
+- name: "Scope : record existant (par NOM per-API)"
+  ansible.builtin.set_fact:
+    sc_rec: >-
+      {{ (sc_list.json.scopes | default([])
+          | selectattr('scopeName', 'equalto', sc_name) | list | first) | default({}) }}
+
+- name: "Scope : créer le mapping per-API (body NU) si absent"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_api_base }}/scopes"
+    method: POST
+    body:
+      scopeName: "{{ sc_name }}"
+      scopeDescription: "apim_promote_api : scope-mapping per-API (ADR-079)"
+      audience: "{{ apim_promote.scope_mapping.audience | default('') }}"
+      apiScopes: ["{{ apim_promote.guid }}"]
+      requiredAuthScopes:
+        - authServerAlias: "{{ apim_promote.scope_mapping.auth_server_alias }}"
+          scopeName: "{{ apim_promote.scope_mapping.external_scope }}"
+    status_code: [200, 201]
+  when: "sc_rec.id is not defined"
+
+# CONVERGE (PUT record complet) : per-API ⇒ apiScopes = [le guid], point.
+# Pas d'accumulation multi-API à préserver — c'est le cœur du modèle.
+- name: "Scope : converger le mapping (PUT) si présent"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_api_base }}/scopes/{{ sc_rec.id }}"
+    method: PUT
+    body: >-
+      {{ sc_rec | combine({
+          'apiScopes': [apim_promote.guid],
+          'audience': apim_promote.scope_mapping.audience | default(sc_rec.audience | default('')),
+          'requiredAuthScopes': [{
+            'authServerAlias': apim_promote.scope_mapping.auth_server_alias,
+            'scopeName': apim_promote.scope_mapping.external_scope }] }) }}
+    status_code: [200, 201]
+  when: "sc_rec.id is defined"
+
+- name: "Scope : read-back FAIL-CLOSED — le mapping lie l'API (GUID) et l'AS"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_api_base }}/scopes"
+  register: sc_after
+  changed_when: false
+  failed_when: >-
+    (sc_after.json.scopes | default([])
+      | selectattr('scopeName', 'equalto', sc_name)
+      | selectattr('apiScopes', 'defined')
+      | selectattr('apiScopes', 'contains', apim_promote.guid)
+      | list) | length == 0
+
+- name: "Scope : SCOPE_CONFIRMED"
+  ansible.builtin.debug:
+    msg: >-
+      SCOPE_CONFIRMED : mapping '{{ sc_name }}' → API guid={{ apim_promote.guid }},
+      AS={{ apim_promote.scope_mapping.auth_server_alias }}
+      scope={{ apim_promote.scope_mapping.external_scope }}.

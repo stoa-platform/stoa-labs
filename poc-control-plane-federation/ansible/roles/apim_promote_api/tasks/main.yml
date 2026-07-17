@@ -1,0 +1,23 @@
+---
+# roles/apim_promote_api/tasks/main.yml
+# Promotion par archive (ADR-079) : export sanitizé | import 0-coupure.
+# Dispatch sur apim_promote_action. Idempotent, read-back fail-closed.
+
+- name: "Env : résoudre le manifeste effectif (invariant ⊕ per_env)"
+  ansible.builtin.import_tasks: resolve-env.yml
+
+- name: "Secrets : auth admin (Vault, fallback PoC)"
+  ansible.builtin.import_tasks: secrets.yml
+
+- name: "Action : fail-closed sur apim_promote_action"
+  ansible.builtin.assert:
+    that: "apim_promote_action in ['export', 'import']"
+    fail_msg: "apim_promote_action='{{ apim_promote_action }}' — attendu export|import."
+
+- name: "Export — archive sanitizée de '{{ apim_promote.name }}' v{{ apim_promote.version }}"
+  ansible.builtin.import_tasks: export.yml
+  when: "apim_promote_action == 'export'"
+
+- name: "Import — promotion 0-coupure de '{{ apim_promote.name }}' v{{ apim_promote.version }}"
+  ansible.builtin.import_tasks: import.yml
+  when: "apim_promote_action == 'import'"
