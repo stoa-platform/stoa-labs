@@ -63,7 +63,12 @@
             body_format: form-multipart
             body:
               file:
-                content: "{{ lookup('file', apim_api.contract) }}"
+                # `| string` OBLIGATOIRE : un contrat OpenAPI en JSON commence par
+                # `{`, et le templating natif d'Ansible convertit alors la string
+                # en dict, que le multipart ré-encode en repr Python (guillemets
+                # SIMPLES) → JSON invalide → 400 « input openapi file is not valid ».
+                # `| string` fige la valeur en texte (cf. import ci-dessous).
+                content: "{{ lookup('file', apim_api.contract) | string }}"
                 filename: "{{ apim_api.contract | basename }}"
                 mime_type: "application/x-yaml"
               type: "openapi"
@@ -78,7 +83,14 @@
         body_format: form-multipart
         body:
           file:
-            content: "{{ lookup('file', apim_api.contract) }}"
+            # `| string` OBLIGATOIRE — sinon un contrat OpenAPI en JSON (qui commence
+            # par `{`) est coercé en dict par le templating natif d'Ansible puis
+            # ré-encodé en repr Python (guillemets SIMPLES) dans le multipart →
+            # « input openapi file is not valid » (400). Mesuré : YAML passait, JSON
+            # échouait, à contenu ÉGAL (croisement contenu×extension + capture du
+            # corps multipart). Un contrat JSON est parfaitement valide côté gateway
+            # (curl le prouve) : le défaut était 100 % côté encodage Ansible.
+            content: "{{ lookup('file', apim_api.contract) | string }}"
             filename: "{{ apim_api.contract | basename }}"
             mime_type: "application/x-yaml"
           type: "openapi"

@@ -34,7 +34,7 @@ ansible-playbook -i inv.ini ansible/publish-api-verify.yml -e @api.yml
 | Champ | Rôle |
 |---|---|
 | `name`, `version` | identité de l'API |
-| `contract` | **chemin** du contrat OpenAPI (yaml/json) — absolu ou relatif au playbook |
+| `contract` | **chemin** du contrat OpenAPI (**YAML ou JSON**) — absolu ou relatif au playbook. *NB : un contrat JSON exige le fix `\| string` sur le `lookup('file')` (sinon Ansible le coerce en dict → multipart en repr Python guillemets simples → 400 ; prouvé + corrigé 2026-07-17).* |
 | `team` | nom d'accessProfile d'équipe (isolation ADR-076) — **optionnel** |
 | `inbound` | `{issuer, jwks_uri, alias_name, mode}` — `mode: jwt` (signature) \| `oauth2` (strict). `jwks_uri` joignable **DEPUIS la gateway** (nom interne, pas localhost). Vide = API ouverte. |
 

@@ -838,6 +838,47 @@ d'une corruption silencieuse). Aucune autre extraction naïve ailleurs dans `ans
 (grep). ⇒ Réponse à la question : **oui, le cert par Ansible est bon — désormais aussi
 robuste que la spec Go, et fail-closed sur les PEM non conformes.**
 
+### Même crible sur le rôle PRODUCTEUR `apim_publish_api` (from-scratch live)
+
+Appliqué la même méthode au rôle producteur (import OpenAPI → activate → inbound) :
+audit des captures d'id, puis exécution **from-scratch** sur des APIs **jetables**
+(nettoyées ensuite — gateway ramenée à ses 10 APIs, 0 résidu alias/strategy/scope/
+action). Deux enseignements — un faux suspect écarté, un vrai bug fermé.
+
+**Faux suspect (écarté par la mesure).** `inbound.yml:169`
+`{{ x.policyAction.id | default(x.id) }}` ressemblait au BUG 1 du consommateur (défaut
+`default()` évalué eagerly). **Mais non** : testé en isolation sur la vraie forme
+`{policyAction:{id}}`, il renvoie l'id **sans erreur**. La différence avec le
+consommateur : là, le défaut était `(x.applications | first).id` — le **filtre `first`
+force** l'évaluation d'un `Undefined` et lève ; ici `x.id` est un accès d'attribut **nu**
+→ `Undefined` non forcé, ignoré par `default()`. Confirmé **live** : run oauth2
+from-scratch (empreinte `oAuth2Token` inexistante ⇒ chemin de **création** d'action
+réellement exécuté) → `ok=42 failed=0`, puis `PUBLISH_CONFIRMED` + `INBOUND_CONFIRMED`
++ `OAUTH2_CONFIRMED`, idempotent. Les captures `main.yml:93` (`apiResponse.api.id`,
+forme du POST multipart vérifiée) et `team.yml:19` sont saines aussi. **Leçon : ne pas
+« corriger » par analogie — le motif jumeau n'était pas le même bug.**
+
+**Vrai bug — un contrat OpenAPI en JSON échoue à l'import (400), silencieusement
+réservé au YAML.** Le rôle lit le contrat par `lookup('file')` et le pousse en
+`form-multipart`. Mesuré : contrat **YAML** → publié ; contrat **JSON** (cas client
+courant) → **400 « input openapi file is not valid »**. Isolé par croisement
+**contenu × extension** (contenu YAML sous nom `.json` → OK ; contenu JSON sous nom
+`.yaml` → 400) : **c'est le contenu, pas l'extension**. Or `curl` publie ce même JSON
+sans souci (201) ⇒ défaut **100 % côté Ansible**. Capture du corps multipart émis :
+la partie `file` contenait `{'openapi': '3.0.3', …}` — **guillemets SIMPLES, un repr
+de dict Python, pas du JSON**. Mécanisme : un contrat JSON commence par `{` ; le
+**templating natif d'Ansible coerce** la string en dict, que l'encodeur multipart
+`str()` en repr Python → JSON invalide. Le YAML (ne commençant pas par `{`) survivait,
+d'où le masquage. **Fix** : `| string` sur le `lookup('file')` des DEUX chemins (import
+POST + update PUT) — fige la valeur en texte avant coercion. Prouvé sur l'echo-server
+(partie `file` repasse en guillemets doubles) **et live** : contrat JSON from-scratch
+→ `PUBLISH_CONFIRMED` ; YAML → non-régression verte.
+
+⇒ Réponse : le rôle producteur était **plus sain** que le consommateur (ses chemins de
+création fonctionnaient from-scratch), mais il **refusait tout contrat JSON** — corrigé.
+*(Non exercé, assumé : `team.yml` — Teams désactivé au lab, shape POST /assets/team
+best-effort ; à valider chez le client.)*
+
 ## Teardown (destruction contrôlée)
 
 ```bash
