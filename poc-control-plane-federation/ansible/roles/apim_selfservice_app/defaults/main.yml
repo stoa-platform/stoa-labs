@@ -14,6 +14,14 @@ apim_ss_api_base: "http://localhost:5555/rest/apigateway"
 # data-plane (appel consommateur du verify live IP-only)
 apim_ss_data_base: "http://localhost:5555/gateway"
 
+# --- TLS : CA privé (client) -------------------------------------------------
+# Bundle PEM (CA racine/intermédiaires) qui DOIT couvrir CHAQUE endpoint https
+# joint par le play : la gateway (apim_ss_api_base), l'IdP OAuth2
+# (apim_ss_oauth_token_url) ET Vault (apim_ss_vault_addr) — concaténer les CA
+# si elles diffèrent (souvent 1 seule racine corporate). Vide = trust store
+# système (PoC http, ou CA publique). Câblé sur le module uri via ca_path.
+apim_ss_ca_path: ""
+
 # --- proxy multi-env on-premise : un seul endpoint, l'env via un header -------
 apim_ss_env: ""                       # dev|rec|int|prod ; vide = pas de header (PoC direct)
 apim_ss_env_header: "X-Environment"   # nom du header (configurable)

@@ -56,6 +56,15 @@ Les tâches ne portent **que la ressource** (`/applications`, `/apis`, `/policie
 | `apim_ss_env_header` | nom du header d'env | `X-Environment` |
 | `apim_ss_auth_mode` | `basic` (direct) \| `oauth2` (proxy) | `basic` |
 | `apim_ss_oauth_token_url` / `_client_id` / `_client_secret` / `_scope` | OAuth2 client_credentials — de préférence depuis **Vault** (`gateways/webmethods/admin-oauth`) | `""` |
+| `apim_ss_ca_path` | **CA privé** (bundle PEM) : couvre gateway + IdP OAuth2 + Vault (concaténer si CA différentes). Vide = trust store système | `""` |
+
+**Auth à Vault (env, précédence statique > LDAP > AppRole)** — le play lit les creds gateway ; il n'exige **aucune** entité nominative (accès système, ADR-074) :
+
+| Env | Rôle |
+|-----|------|
+| `VAULT_TOKEN_FILE` > `VAULT_TOKEN` | token statique (ex. token IHM) — prioritaire |
+| `VAULT_LDAP_USER` + (`VAULT_LDAP_PASS_FILE` > `VAULT_LDAP_PASS`) | **login AD par build** (`auth/ldap/login`) — token court (TTL banque ~1h couvre 1 run), rien de stocké. Mappe la policy `cp-gateway-read` au **groupe AD** du compte de service (`auth/ldap/groups/<grp>`) |
+| `VAULT_ROLE_ID` + (`VAULT_SECRET_ID_FILE` > `VAULT_SECRET_ID`) | AppRole (fallback PoC) — ignoré si `VAULT_LDAP_USER` est posé |
 
 **Mode `oauth2` (proxy client)** : le rôle fait le **get token** (`client_credentials`)
 et passe `Authorization: Bearer …` + `X-Environment: <env>` sur chaque appel — un
