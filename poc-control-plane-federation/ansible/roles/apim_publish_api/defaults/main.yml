@@ -20,6 +20,7 @@ apim_ss_oauth_client_secret: ""
 apim_ss_oauth_scope: ""
 apim_ss_vault_addr: "{{ lookup('env', 'VAULT_ADDR') }}"
 apim_ss_vault_kv_mount: "secret"
+apim_ss_vault_k8s_mount: "auth/kubernetes"    # auth Kubernetes : login du SA du pod agent
 apim_ss_vault_prefix: "stoa"
 apim_ss_vault_wm_creds_sub: "gateways/webmethods"
 apim_ss_vault_oauth_sub: "gateways/webmethods/admin-oauth"

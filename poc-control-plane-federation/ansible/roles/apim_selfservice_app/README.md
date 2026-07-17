@@ -58,13 +58,14 @@ Les tâches ne portent **que la ressource** (`/applications`, `/apis`, `/policie
 | `apim_ss_oauth_token_url` / `_client_id` / `_client_secret` / `_scope` | OAuth2 client_credentials — de préférence depuis **Vault** (`gateways/webmethods/admin-oauth`) | `""` |
 | `apim_ss_ca_path` | **CA privé** (bundle PEM) : couvre gateway + IdP OAuth2 + Vault (concaténer si CA différentes). Vide = trust store système | `""` |
 
-**Auth à Vault (env, précédence statique > LDAP > AppRole)** — le play lit les creds gateway ; il n'exige **aucune** entité nominative (accès système, ADR-074) :
+**Auth à Vault (env, précédence statique > Kubernetes > LDAP > AppRole)** — le play lit les creds gateway ; il n'exige **aucune** entité nominative (accès système, ADR-074) :
 
 | Env | Rôle |
 |-----|------|
 | `VAULT_TOKEN_FILE` > `VAULT_TOKEN` | token statique (ex. token IHM) — prioritaire |
+| `VAULT_K8S_ROLE` (+ `VAULT_K8S_JWT_PATH`) | **★ auth Kubernetes** (`auth/kubernetes/login`) — le pod agent s'authentifie avec **son** ServiceAccount token, **zéro secret stocké** (reco HashiCorp sur K8s). Fait DANS le conteneur agent → identité du pod agent, pas du contrôleur (piège du plugin Jenkins). `VAULT_K8S_JWT_PATH` surcharge le chemin du SA token (défaut `/var/run/secrets/kubernetes.io/serviceaccount/token`) |
 | `VAULT_LDAP_USER` + (`VAULT_LDAP_PASS_FILE` > `VAULT_LDAP_PASS`) | **login AD par build** (`auth/ldap/login`) — token court (TTL banque ~1h couvre 1 run), rien de stocké. Mappe la policy `cp-gateway-read` au **groupe AD** du compte de service (`auth/ldap/groups/<grp>`) |
-| `VAULT_ROLE_ID` + (`VAULT_SECRET_ID_FILE` > `VAULT_SECRET_ID`) | AppRole (fallback PoC) — ignoré si `VAULT_LDAP_USER` est posé |
+| `VAULT_ROLE_ID` + (`VAULT_SECRET_ID_FILE` > `VAULT_SECRET_ID`) | AppRole (fallback) — ignoré si `VAULT_K8S_ROLE` ou `VAULT_LDAP_USER` est posé. Sécuriser le SecretID par **response-wrapping** (`VAULT_SECRET_ID_FILE` = SecretID déballé au run) |
 
 **Mode `oauth2` (proxy client)** : le rôle fait le **get token** (`client_credentials`)
 et passe `Authorization: Bearer …` + `X-Environment: <env>` sur chaque appel — un
