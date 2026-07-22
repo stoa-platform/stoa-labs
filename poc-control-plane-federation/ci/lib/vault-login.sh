@@ -49,18 +49,23 @@ _vault_cleanup() {
 
 # _vault_curl <fichier-sortie> <méthode> <url> [args curl…] -> imprime le code HTTP.
 # Pose systématiquement le namespace et la CA d'entreprise s'ils sont configurés.
+#
+# Construit sa ligne d'arguments avec `set --` et NON avec un tableau bash : le
+# step `sh` de Jenkins exécute /bin/sh (dash sur les images Debian, ash sur
+# Alpine), où `args=(…)` est une erreur de syntaxe. Tout ce fichier reste donc
+# POSIX — c'est la contrainte qui compte, il est sourcé par le pipeline.
 _vault_curl() {
-  local out="$1" method="$2" url="$3"
+  local out="$1" method="$2" url="$3" ca
   shift 3
-  local args=(-s -o "$out" -w '%{http_code}' -X "$method" "$url")
+  set -- -s -o "$out" -w '%{http_code}' -X "$method" "$url" "$@"
   if [ -n "${VAULT_NAMESPACE:-}" ]; then
-    args+=(-H "X-Vault-Namespace: ${VAULT_NAMESPACE}")
+    set -- "$@" -H "X-Vault-Namespace: ${VAULT_NAMESPACE}"
   fi
-  local ca="${VAULT_CACERT:-${LABCTL_CA_FILE:-}}"
+  ca="${VAULT_CACERT:-${LABCTL_CA_FILE:-}}"
   if [ -n "$ca" ] && [ -f "$ca" ]; then
-    args+=(--cacert "$ca")
+    set -- "$@" --cacert "$ca"
   fi
-  curl "${args[@]}" "$@"
+  curl "$@"
 }
 
 # _vault_mount — normalise VAULT_USER_AUTH_MOUNT : `ldap`, `auth/ldap` et
