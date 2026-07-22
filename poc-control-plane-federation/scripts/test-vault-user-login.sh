@@ -314,6 +314,56 @@ else
   skip "T25-T29 mount $LDAP_MOUNT absent — lancer scripts/setup-vault-ldap.sh (userpass ne peut porter ni '@' ni '\\')"
 fi
 
+# ═══ 8. Deux périmètres DISJOINTS : déployeur de tenant vs opérateur de prod ═══
+sec "8. Périmètre de l'opérateur de mise en prod (Jenkinsfile.prod/.rollback)"
+
+# Jenkinsfile.prod/.rollback lisent des secrets de PLATEFORME (stoa/ci,
+# stoa/opensearch, stoa/gateways/*) — hors de toute policy deploy-<tenant>. D'où
+# une policy `operator-deploy` séparée. Ce qui doit être prouvé n'est pas qu'elle
+# marche, mais que les deux périmètres sont DISJOINTS dans les DEUX sens : un
+# déployeur de tenant ne lit pas les secrets de plateforme, et un opérateur de
+# prod ne lit pas les périmètres de déploiement des tenants.
+T_OSCAR=$(login "$MOUNT" "$LAB_OSCAR_USER" "$LAB_OSCAR_PASS")
+if [ -n "$T_OSCAR" ]; then
+  [ "$(vread "$T_OSCAR" "secret/data/stoa/ci")" = 200 ] \
+    && ok "T30 opérateur prod lit les secrets de PLATEFORME (stoa/ci) → 200" \
+    || bad "T30 opérateur prod ne lit pas stoa/ci — Jenkinsfile.prod ne peut pas tourner en nominatif"
+  [ "$(vread "$T_OSCAR" "secret/data/stoa/gateways/webmethods")" = 200 ] \
+    && ok "T31 opérateur prod lit les creds admin gateway → 200" \
+    || bad "T31 opérateur prod ne lit pas gateways/webmethods"
+  [ "$(vread "$T_OSCAR" "secret/data/stoa/deploy/$LAB_TENANT_ALICE/demo")" = 403 ] \
+    && ok "T32 opérateur prod N'ACCÈDE PAS au périmètre d'un tenant → 403" \
+    || bad "T32 l'opérateur prod lit le périmètre d'un tenant (périmètres non disjoints)"
+else
+  bad "T30-T32 login de l'opérateur prod refusé"
+fi
+if [ -n "$T_ALICE" ]; then
+  # La réciproque, celle qui compte pour le client : donner le déploiement d'un
+  # tenant à quelqu'un ne lui donne PAS les secrets de service de la plateforme.
+  [ "$(vread "$T_ALICE" "secret/data/stoa/ci")" = 403 ] \
+    && ok "T33 déployeur de tenant N'ACCÈDE PAS aux secrets de plateforme → 403" \
+    || bad "T33 un déployeur de tenant lit stoa/ci (périmètres non disjoints)"
+fi
+
+# Le jeton du compte de service doit s'obtenir SANS mettre le client_secret en argv
+# (form_post_no_argv), sinon Jenkinsfile.prod le fuiterait dans ps à chaque prod.
+KCURL="${KC_TOKEN_URL:-http://localhost:8480/realms/stoa-lab/protocol/openid-connect/token}"
+KCOUT=$( set +u
+  . ci/lib/vault-login.sh
+  export VAULT_ADDR="$VADDR" VAULT_USER_AUTH_MOUNT="$MOUNT" \
+         VAULT_USER="$LAB_OSCAR_USER" VAULT_USER_PASSWORD="$LAB_OSCAR_PASS"
+  unset USER_VAULT_JWT
+  vault_login_nominative >/dev/null 2>&1 || exit 1
+  SEC=$(vault_read secret/data/stoa/ci ciApplierSecret) || exit 1
+  RESP=$(vault_tmpfile kc.json)
+  printf 'client_id=ci-applier\ngrant_type=client_credentials\nclient_secret=%s\n' "$SEC" \
+    | form_post_no_argv "$RESP" "$KCURL"
+  python3 -c 'import json,sys;print("TOKEN_OK" if json.load(open(sys.argv[1])).get("access_token") else "NO_TOKEN")' "$RESP"
+  vault_revoke_proof >/dev/null 2>&1 )
+grep -q TOKEN_OK <<<"$KCOUT" \
+  && ok "T34 jeton du compte de service obtenu avec le client_secret HORS argv (chaîne Jenkinsfile.prod)" \
+  || skip "T34 chaîne Jenkinsfile.prod non vérifiable ici (Keycloak/ci-applier indisponible : $(tr -d '\n' <<<"$KCOUT" | tail -c 60))"
+
 curl -s -o /dev/null -H "X-Vault-Token: stoa-root-token" -X DELETE "$VADDR/v1/auth/$MOUNT/users/sentinel"
 
 echo

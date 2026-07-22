@@ -22,6 +22,18 @@ pipeline {
   // PAS de triggers {} : prod ne part JAMAIS d'un webhook.
   parameters {
     string(name: 'PROMOTION_ID', defaultValue: '', description: 'ID de la promotion int→prod approuvée (promotions/banking-demo/{id}.yaml)')
+    // Identité NOMINATIVE de l'opérateur de mise en prod (voie A, ADR-078 §3).
+    // Laissées vides → repli AppRole : le job s'exécute sous une identité de
+    // MACHINE et l'acte prod n'est imputable à personne. C'est le comportement
+    // historique, conservé pour ne rien casser — pas la cible.
+    // ⚠ Le token nominatif doit porter une policy couvrant les secrets de
+    // PLATEFORME (stoa/ci, stoa/opensearch, stoa/gateways/*), pas seulement un
+    // périmètre deploy-<tenant> : c'est la policy `operator-deploy`, dont
+    // l'octroi à des humains est une DÉCISION CLIENT (ADR-078 § Décisions, n°9).
+    string(name: 'VAULT_USER', defaultValue: '',
+           description: "Identité NOMINATIVE de l'opérateur : login annuaire. Vide = repli AppRole (acte non imputable).")
+    password(name: 'VAULT_USER_PASSWORD', defaultValue: '',
+             description: "Mot de passe annuaire, saisi à chaque mise en prod. ⚠ Ne pas rejouer après un refus (lockout AD).")
   }
   environment {
     GOPROXY = 'off'; GOFLAGS = '-mod=vendor'; GOSUMDB = 'off'
@@ -121,28 +133,41 @@ pipeline {
             sh '''
               set +x          # NEVER echo: secret_id, vault token, OAuth token
               set -eu
-              : "${VAULT_ROLE_ID:?VAULT_ROLE_ID doit être configuré au niveau Jenkins}"
-              VTOKFILE=$(mktemp); TOKFILE=$(mktemp); trap 'rm -f "$VTOKFILE" "$TOKFILE"' EXIT
-              VTOK=$(curl -sf -X POST "$VAULT_ADDR/v1/auth/approle/login" \
-                -d "{\\"role_id\\":\\"$VAULT_ROLE_ID\\",\\"secret_id\\":\\"$VAULT_SECRET_ID\\"}" \
-                | sed -n 's/.*"client_token":"\\([^"]*\\)".*/\\1/p')
-              [ -n "$VTOK" ] || { echo 'vault approle login failed'; exit 1; }
-              ( umask 077; printf %s "$VTOK" > "$VTOKFILE" )
-              CI_SECRET=$(curl -sf -H "X-Vault-Token: $VTOK" "$VAULT_ADDR/v1/secret/data/stoa/ci" \
-                | sed -n 's/.*"ciApplierSecret":"\\([^"]*\\)".*/\\1/p')
-              export OPENSEARCH_PASSWORD=$(curl -sf -H "X-Vault-Token: $VTOK" "$VAULT_ADDR/v1/secret/data/stoa/opensearch" \
-                | sed -n 's/.*"adminPassword":"\\([^"]*\\)".*/\\1/p')
-              [ -n "$CI_SECRET" ] && [ -n "$OPENSEARCH_PASSWORD" ] || { echo 'vault fetch failed'; exit 1; }
-              unset VTOK
-              CI_TOKEN=$(curl -sf -X POST http://keycloak:8080/realms/stoa-lab/protocol/openid-connect/token \
-                -d client_id=ci-applier -d client_secret="$CI_SECRET" -d grant_type=client_credentials \
-                | sed -n 's/.*"access_token":"\\([^"]*\\)".*/\\1/p')
-              [ -n "$CI_TOKEN" ] || { echo 'no CI token'; exit 1; }
-              ( umask 077; printf %s "$CI_TOKEN" > "$TOKFILE" )
-              unset CI_TOKEN CI_SECRET
+              # Login Vault mutualisé (ci/lib/vault-login.sh) : NOMINATIF si l'opérateur
+              # a saisi VAULT_USER + son mot de passe, sinon repli AppRole — identité de
+              # MACHINE, comportement historique inchangé. La lib annonce à voix haute
+              # laquelle a servi : un log prod qui ne distingue pas « acte d'un humain »
+              # de « acte d'une machine » ruine l'imputabilité recherchée.
+              . ci/lib/vault-login.sh
+              # Trap armé AVANT le login : révoque + prouve la mort du token même si
+              # l'apply échoue. Un seul trap EXIT existe en shell, d'où vault_tmpfile
+              # pour les fichiers sensibles de ce bloc (ils meurent avec lui).
+              trap vault_trap_revoke EXIT
+              vault_login_any || exit 1
+
+              # Lectures KV par la lib : token en fichier d'en-têtes (jamais en argv,
+              # contrairement à un -H "X-Vault-Token: $TOK") et parse JSON plutôt que
+              # sed — un sed sur du JSON casse dès qu'un champ contient une quote.
+              CI_SECRET=$(vault_read secret/data/stoa/ci ciApplierSecret)
+              OPENSEARCH_PASSWORD=$(vault_read secret/data/stoa/opensearch adminPassword)
+              export OPENSEARCH_PASSWORD
+
+              # Jeton du compte de service : le client_secret part par le CORPS de la
+              # requête via printf (builtin, donc sans process ni argv) — un
+              # -d client_secret="$S" l'exposerait dans ps.
+              KCRESP=$(vault_tmpfile kc-resp.json)
+              printf 'client_id=ci-applier\\ngrant_type=client_credentials\\nclient_secret=%s\\n' "$CI_SECRET" \\
+                | form_post_no_argv "$KCRESP" http://keycloak:8080/realms/stoa-lab/protocol/openid-connect/token >/dev/null
+              unset CI_SECRET
+              TOKFILE=$(vault_tmpfile labctl-token)
+              python3 -c 'import json,sys;t=json.load(open(sys.argv[1]))["access_token"];open(sys.argv[2],"w").write(t)' \\
+                "$KCRESP" "$TOKFILE"
+              [ -s "$TOKFILE" ] || { echo 'no CI token'; exit 1; }
+
               # Admin DIRECT du wM réel ; creds Basic résolus depuis Vault
-              # (secret/stoa/gateways/webmethods) via le token éphémère.
-              LABCTL_TOKEN_FILE="$TOKFILE" VAULT_TOKEN_FILE="$VTOKFILE" "$WORKSPACE/labctl" apply-uac \
+              # (secret/stoa/gateways/webmethods) via le token éphémère — VAULT_TOKEN_FILE
+              # est déjà exporté par la lib.
+              LABCTL_TOKEN_FILE="$TOKFILE" "$WORKSPACE/labctl" apply-uac \
                 --repo governance --env prod --tenant "$APPLY_TENANT" -f envs/prod/targets.cluster.yaml
             '''
           }

@@ -72,7 +72,7 @@ mount d'auth est un knob, `VAULT_USER_AUTH_MOUNT` : `ldap` chez le client (ou `a
 `ldap-corp`…), `userpass` en lab — **la requête REST est identique**, il n'y a
 aucun bloc à « swapper ».
 
-**Preuve** : `./scripts/test-vault-user-login.sh` → **29/29** (2026-07-22), plus un
+**Preuve** : `./scripts/test-vault-user-login.sh` → **34/34** (2026-07-22), plus un
 build Jenkins E2E vert (mot de passe en paramètre → token `ldap-alice` → rôle
 Ansible `ok=49 failed=0` + verify `ok=32 failed=0` → révocation prouvée, mot de
 passe absent du log).

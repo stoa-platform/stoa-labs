@@ -50,5 +50,25 @@ LAB_BOB_PASS="${BOB_PASS:-$LAB_BOB_PASS_DEFAULT}"
 LAB_ALICE_DOMAIN_USER='CORP\alice'
 LAB_ALICE_UPN_USER='alice@corp.example'
 
+# oscar — OPÉRATEUR DE MISE EN PROD. Périmètre DIFFÉRENT des déployeurs de tenant :
+# Jenkinsfile.prod/.rollback lisent des secrets de PLATEFORME (stoa/ci,
+# stoa/opensearch, stoa/gateways/*), hors de toute policy deploy-<tenant>. D'où une
+# policy distincte, `operator-deploy`. Qu'un HUMAIN ait le droit de lire ces secrets
+# est une DÉCISION CLIENT (ADR-078 § Décisions n°9) : ici c'est un choix de lab,
+# volontairement porté par un compte et un groupe SÉPARÉS pour que la question reste
+# visible plutôt que diluée dans le périmètre des déployeurs.
+LAB_OSCAR_USER='oscar'
+LAB_OSCAR_PASS="${OSCAR_PASS:-0scar-lab-2026}"
+
+# oscar — OPÉRATEUR DE MISE EN PROD. Périmètre DIFFÉRENT des déployeurs de tenant :
+# Jenkinsfile.prod/.rollback lisent des secrets de PLATEFORME (stoa/ci,
+# stoa/opensearch, stoa/gateways/*), hors de toute policy deploy-<tenant>. D'où une
+# policy distincte, `operator-deploy`. Qu'un HUMAIN ait le droit de lire ces secrets
+# est une DÉCISION CLIENT (ADR-078 § Décisions n°9) : ici c'est un choix de lab,
+# volontairement porté par un compte et un groupe SÉPARÉS pour que la question reste
+# visible plutôt que diluée dans le périmètre des déployeurs.
+LAB_OSCAR_USER='oscar'
+LAB_OSCAR_PASS="${OSCAR_PASS:-0scar-lab-2026}"
+
 LAB_TENANT_ALICE='banking-demo'
 LAB_TENANT_BOB='payments-team'

@@ -248,6 +248,56 @@ vault_login_any() {
   return "$rc"
 }
 
+# vault_tmpfile <nom> — imprime un chemin de fichier DANS le répertoire temporaire
+# 0700 géré par la lib, détruit par vault_trap_revoke. Sert aux fichiers sensibles
+# de l'appelant (token OAuth, corps de requête) : bash ne garde qu'UN SEUL trap
+# EXIT, donc un `trap 'rm -f "$X"' EXIT` de l'appelant ÉCRASERAIT la révocation du
+# token Vault. Passer par ici, c'est garder un seul trap et tout nettoyer.
+vault_tmpfile() {
+  if [ -z "$_VAULT_TMPDIR" ]; then
+    echo "  ✗ vault_tmpfile appelé avant tout login" >&2
+    return 1
+  fi
+  : > "$_VAULT_TMPDIR/$1"
+  chmod 600 "$_VAULT_TMPDIR/$1"
+  printf '%s' "$_VAULT_TMPDIR/$1"
+}
+
+# form_post_no_argv <fichier-sortie> <url>   — les paires clé=valeur sur STDIN,
+# une par ligne. Imprime le code HTTP.
+#
+# POST application/x-www-form-urlencoded dont le corps part par FICHIER. Un
+# `curl -d client_secret="$S"` met le secret dans la ligne de commande, donc dans
+# `ps` et /proc/<pid>/cmdline — lisibles par les autres builds du même nœud. Même
+# invariant que pour le mot de passe d'annuaire, appliqué aux appels non-Vault de
+# la chaîne (jeton OAuth du compte de service).
+#
+# Les paires arrivent par STDIN et NON en arguments : un argument serait à son tour
+# visible dans l'argv de python3. Côté appelant, les alimenter avec `printf` — un
+# BUILTIN du shell, donc sans process ni ligne de commande :
+#   printf 'client_id=x\ngrant_type=client_credentials\nclient_secret=%s\n' "$S" \
+#     | form_post_no_argv "$resp" "$url"
+# (Limite assumée : une valeur contenant un saut de ligne n'est pas représentable.)
+form_post_no_argv() {
+  local out="$1" url="$2" body rc
+  if [ -z "$_VAULT_TMPDIR" ]; then
+    echo "  ✗ form_post_no_argv appelé avant tout login" >&2
+    return 1
+  fi
+  body="$_VAULT_TMPDIR/form-body"
+  # `python3 -c` et NON un heredoc : un heredoc occuperait stdin, et python y
+  # lirait son propre script au lieu des paires.
+  python3 -c 'import sys, urllib.parse
+pairs = [l.split("=", 1) for l in sys.stdin.read().splitlines() if "=" in l]
+open(sys.argv[1], "w").write(urllib.parse.urlencode(dict(pairs)))' "$body"
+  chmod 600 "$body"
+  curl -s -o "$out" -w '%{http_code}' -X POST "$url" \
+       -H 'Content-Type: application/x-www-form-urlencoded' --data-binary "@$body"
+  rc=$?
+  rm -f "$body"
+  return "$rc"
+}
+
 # vault_read <chemin-v1> <champ> — lit un champ d'un secret KV v2 et l'imprime.
 # Le token part par fichier d'en-têtes (jamais en argv, contrairement à un
 # `-H "X-Vault-Token: $TOK"`) et l'extraction est un parse JSON, pas un `sed` :

@@ -95,3 +95,23 @@ docker compose -f docker-compose.poc.yml -f docker-compose.ci.yml up -d --build 
 - **Exécuté par le client, pas par toi** : c'est *leur* Jenkins qui lance un
   binaire **approuvé**, sous *leur* change-control et *leur* audit (cf. la
   réponse « ai-je le droit de lancer la CLI ? » → idéalement non, c'est leur CI).
+
+## Identité Vault des pipelines (voie A, ADR-078 §3)
+
+Les 4 pipelines partagent **`ci/lib/vault-login.sh`** — une seule implémentation du
+login, de la lecture KV et de la révocation. Ce que chacun fait :
+
+| Pipeline | Déclenchement | Identité Vault |
+|---|---|---|
+| `Jenkinsfile.selfservice` | webhook (plan) + humain (apply) | **nominative** user/mot de passe (voie A) ou JWT (voie B) ; sans identité → PLAN-only vert |
+| `Jenkinsfile.publish-api` | humain | idem |
+| `Jenkinsfile.prod` | **humain uniquement** (aucun trigger) | nominative si `VAULT_USER` + mot de passe fournis, **repli AppRole** sinon (annoncé dans le log) |
+| `Jenkinsfile.rollback` | **humain uniquement** | idem |
+| `Jenkinsfile` (apply-uac) | webhook | AppRole — un build sans humain tourne en `ACL.SYSTEM`, il n'y a **personne** à nommer |
+
+Deux périmètres de secrets, **disjoints et prouvés tels** (T30-T33) :
+`deploy-<tenant>` pour les déployeurs applicatifs, `operator-deploy` (secrets de
+plateforme : `stoa/ci`, `stoa/opensearch`, `stoa/gateways/*`) pour les opérateurs de
+mise en prod. Deux groupes d'annuaire séparés.
+
+Preuve : `./scripts/test-vault-user-login.sh` → **34/34**.
