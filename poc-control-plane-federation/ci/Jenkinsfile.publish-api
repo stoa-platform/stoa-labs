@@ -6,9 +6,12 @@
 //
 //   push/PR ──webhook──▶ PLAN   : identité de JOB, LECTURE SEULE — valide le
 //                                 manifeste + ansible --syntax-check.
-//              humain ──▶ APPLY  : build PARAMÉTRÉ, identité NOMINATIVE
-//                                 (Keycloak→Vault ; client = LDAP) → le rôle lit
-//                                 les creds admin dans Vault et publie + verify.
+//              humain ──▶ APPLY  : build PARAMÉTRÉ, identité NOMINATIVE (voie A :
+//                                 user + mot de passe annuaire ; voie B : JWT
+//                                 Keycloak) → le rôle lit les creds admin dans
+//                                 Vault et publie + verify.
+//
+// Login, révocation et preuve de mort du token : ci/lib/vault-login.sh (ADR-078 §2).
 pipeline {
   agent any
   options { disableConcurrentBuilds() }
@@ -20,8 +23,14 @@ pipeline {
     // env) ET pose X-Environment vers le proxy d'admin. Vide = API mono-env.
     choice(name: 'ENVIRONMENT', choices: ['dev', 'rec', 'int', 'prod'],
            description: "Environnement cible (inbound par env + header X-Environment).")
+    // VOIE A (V1, ADR-078 §3) — identité d'annuaire saisie à l'apply, jamais persistée.
+    string(name: 'VAULT_USER', defaultValue: '',
+           description: "Identité NOMINATIVE (voie A) : votre login annuaire (sAMAccountName, UPN user@domaine, ou DOMAIN\\\\user). Vide sur le PLAN.")
+    password(name: 'VAULT_USER_PASSWORD', defaultValue: '',
+             description: "Mot de passe annuaire, saisi À CHAQUE apply. ⚠ Ne PAS relancer en boucle après un refus (lockout AD).")
+    // VOIE B (cible SSO, ADR-077) — prioritaire si fournie.
     string(name: 'USER_VAULT_JWT', defaultValue: '',
-           description: "Identité NOMINATIVE : JWT court aud=vault. Vide sur le PLAN.")
+           description: "Identité NOMINATIVE (voie B) : JWT court aud=vault. Prioritaire sur la voie A. Vide sur le PLAN.")
   }
 
   triggers { GenericTrigger(token: 'stoa-publish-api-plan',
@@ -30,6 +39,8 @@ pipeline {
 
   environment {
     VAULT_ADDR        = "${env.VAULT_ADDR ?: 'http://vault:8200'}"
+    // `ldap` chez le client (AD), `userpass` en lab : MÊME requête REST, seul le mount change.
+    VAULT_USER_AUTH_MOUNT = "${env.VAULT_USER_AUTH_MOUNT ?: 'ldap'}"
     APIM_API_BASE     = "${env.APIM_API_BASE  ?: 'http://webmethods-real:5555/rest/apigateway'}"
     APIM_DATA_BASE    = "${env.APIM_DATA_BASE ?: 'http://webmethods-real:5555/gateway'}"
     APIM_WM_CREDS_SUB = "${env.APIM_WM_CREDS_SUB ?: 'deploy/banking-demo/wm-admin'}"
@@ -62,25 +73,21 @@ pipeline {
             set +x
             set -eu
             MANIFEST="${MANIFEST:-clients/_example/apis/accounts-read.publish.yml}"
-            if [ -z "${USER_VAULT_JWT:-}" ]; then
+
+            # IDENTITÉ NOMINATIVE → TOKEN VAULT (voie B si JWT fourni, sinon voie A).
+            . ci/lib/vault-login.sh
+            # Trap armé AVANT le login : révoque + prouve la mort MÊME si la
+            # publication échoue (un revoke en dernière instruction est sauté par `set -e`).
+            trap vault_trap_revoke EXIT
+            # `RC=0; cmd || RC=$?` et NON `if ! cmd` : après un `!`, $? vaut 0.
+            RC=0; vault_login_nominative || RC=$?
+            if [ "$RC" != 0 ]; then
+              [ "$RC" = 2 ] || exit 1     # identité fournie mais refusée = rouge
               echo "  (pas d'identité nominative → PLAN-only, apply sauté)"; exit 0
             fi
-            USER_VAULT_JWT=$(printf '%s' "$USER_VAULT_JWT" | tr -d '[:space:]')
-            VTOKF=$(mktemp); trap 'rm -f "$VTOKF"' EXIT
-
-            VT=$(curl -sf -X POST "$VAULT_ADDR/v1/auth/jwt/login" \
-                  --data-binary "$(printf '{"role":"user-deploy","jwt":"%s"}' "$USER_VAULT_JWT")" \
-                  | sed -n 's/.*"client_token":"\\([^"]*\\)".*/\\1/p')
-            [ -n "$VT" ] || { echo 'auth/jwt/login KO (identité nominative refusée)'; exit 1; }
-            ( umask 077; printf %s "$VT" > "$VTOKF" )
-            WHO=$(curl -sf -H "X-Vault-Token: $VT" "$VAULT_ADDR/v1/auth/token/lookup-self" \
-                  | sed -n 's/.*"display_name":"\\([^"]*\\)".*/\\1/p')
-            echo "  ✓ token Vault NOMINATIF (entité=$WHO) — le job ne détient aucun credential propre"
-            unset VT
 
             # Manifeste en CHEMIN (apim_ss_manifest → include_vars), PAS `-e @` :
             # un extra-var masquerait la fusion per_env (précédence Ansible).
-            export VAULT_TOKEN_FILE="$VTOKF"
             ansible-playbook -i "$INVENTORY" ansible/publish-api.yml \
               -e apim_ss_manifest="$MANIFEST" \
               -e apim_ss_env="${ENVIRONMENT:-}" \
@@ -95,8 +102,8 @@ pipeline {
               -e apim_ss_data_base="$APIM_DATA_BASE" \
               -e apim_ss_vault_wm_creds_sub="$APIM_WM_CREDS_SUB"
 
-            curl -sf -X POST -H "X-Vault-Token: $(cat "$VTOKF")" \
-              "$VAULT_ADDR/v1/auth/token/revoke-self" >/dev/null && echo "  ✓ token Vault révoqué"
+            # Le token nominatif meurt avec le build : révocation + PREUVE DE MORT
+            # (lookup-self -> 403) exécutées par le trap, succès comme échec.
           '''
         }
       }

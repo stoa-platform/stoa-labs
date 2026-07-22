@@ -1,0 +1,53 @@
+# =============================================================================
+# docker-compose.ldap.yml — ANNUAIRE de démonstration pour la VOIE A (ADR-078 §3).
+#
+# Pourquoi un annuaire alors que `userpass` prouve déjà la chaîne pipeline : la
+# requête REST de login est identique aux deux, mais TOUT ce qui casse chez le
+# client est ailleurs — le bind, la forme du DN utilisateur, le filtre de groupe,
+# et surtout le MAPPING GROUPE → POLICY qui porte la ségrégation par tenant.
+# `userpass` ne peut rien en dire (il ne connaît ni bind ni groupe), et il refuse
+# même les logins en UPN ou DOMAIN\user (regex de path : \w, `-`, `.` seulement).
+#
+#   docker compose -f docker-compose.poc.yml -f docker-compose.ldap.yml up -d openldap
+#   bash scripts/setup-vault-ldap.sh
+#   ./scripts/test-vault-user-login.sh      # les tests [ldap] cessent d'être sautés
+#
+# ⚠ Annuaire JETABLE : mots de passe en clair dans ldap/seed/*.ldif, TLS désactivé.
+# Chez le client c'est l'AD d'entreprise, en LDAPS, et rien de ceci n'est livré.
+# =============================================================================
+
+name: stoa-labs-poc
+
+networks:
+  poc:
+    driver: bridge
+
+services:
+
+  openldap:
+    image: ${OPENLDAP_IMAGE:-osixia/openldap:1.5.0}
+    container_name: poc-openldap
+    # --copy-service : sans lui, les LDIF de bootstrap montés en lecture seule
+    # ne sont PAS appliqués (l'image les copie d'abord dans son arbre de travail).
+    command: ["--copy-service", "--loglevel", "warning"]
+    environment:
+      LDAP_ORGANISATION: "Banque Demo"
+      LDAP_DOMAIN: "corp.example"
+      LDAP_BASE_DN: "dc=corp,dc=example"
+      LDAP_ADMIN_PASSWORD: "${LDAP_ADMIN_PASSWORD:-admin-lab-2026}"
+      LDAP_TLS: "false"
+    # PAS de LDIF de bootstrap monté ici, volontairement : ces fichiers ne sont
+    # joués qu'à la CRÉATION du volume, donc un re-seed exigerait de détruire le
+    # conteneur — et les mots de passe y seraient dupliqués (dérive garantie avec
+    # scripts/lib/lab-vault-users.sh). Les utilisateurs et groupes sont poussés
+    # par scripts/setup-vault-ldap.sh, idempotent et rejouable à chaud.
+    ports:
+      - "${PORT_LDAP:-1389}:389"
+    networks: [poc]
+    healthcheck:
+      test: ["CMD", "ldapsearch", "-x", "-H", "ldap://localhost:389",
+             "-b", "dc=corp,dc=example", "-D", "cn=admin,dc=corp,dc=example",
+             "-w", "${LDAP_ADMIN_PASSWORD:-admin-lab-2026}", "-s", "base"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
