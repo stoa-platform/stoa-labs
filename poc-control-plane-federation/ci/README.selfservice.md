@@ -54,9 +54,56 @@ $ python3 scripts/apply-selfservice-application.py \
   l'UI et par labctl ⇒ « exporter en `.cer` binaire et passer par l'UI » ne
   contourne aucun bug de hash (les deux voies déposent les mêmes octets, un tel
   bug les toucherait toutes les deux). Cert, plage IP et clé backend : 100 % REST.
-- **Identité voie A (LDAP)** : la démo réutilise la chaîne **Keycloak** nominative
-  (ADR-077, 24/24). Chez le client, remplacer le bloc `auth/jwt/login` du
-  Jenkinsfile par `auth/ldap/login/<user>` (un seul bloc à swapper — commenté).
+## Identité nominative — voie A (user/mot de passe), livrée et prouvée
+
+L'apply demande **votre identité d'annuaire**, jamais un credential du job :
+
+| Paramètre de build | Rôle |
+|---|---|
+| `VAULT_USER` | votre login annuaire — `sAMAccountName`, UPN `user@domaine`, ou `DOMAIN\user` |
+| `VAULT_USER_PASSWORD` (type `password`) | saisi **à chaque apply**, jamais persisté hors du build |
+| `USER_VAULT_JWT` | voie B (SSO Keycloak, ADR-077) — **prioritaire** si fournie |
+
+Aucune des deux → le build s'arrête **vert en PLAN-only** : un build webhook tourne
+en `ACL.SYSTEM` et ne porte aucun humain, il ne peut donc pas appliquer.
+
+Tout le login vit dans **`ci/lib/vault-login.sh`**, partagé par les pipelines. Le
+mount d'auth est un knob, `VAULT_USER_AUTH_MOUNT` : `ldap` chez le client (ou `ad`,
+`ldap-corp`…), `userpass` en lab — **la requête REST est identique**, il n'y a
+aucun bloc à « swapper ».
+
+**Preuve** : `./scripts/test-vault-user-login.sh` → **29/29** (2026-07-22), plus un
+build Jenkins E2E vert (mot de passe en paramètre → token `ldap-alice` → rôle
+Ansible `ok=49 failed=0` + verify `ok=32 failed=0` → révocation prouvée, mot de
+passe absent du log).
+
+Mise en place du lab :
+
+```bash
+bash scripts/setup-vault-userpass.sh          # palier 1 : sans annuaire
+docker compose -f docker-compose.poc.yml -f docker-compose.ldap.yml up -d openldap
+bash scripts/setup-vault-ldap.sh              # palier 2 : annuaire réel
+./scripts/test-vault-user-login.sh
+```
+
+### Ce qui reste à trancher chez le client
+
+1. **MFA sur l'annuaire ?** Si oui, **la voie A tombe** — un login non interactif ne
+   passe pas de MFA. Repli : voie B (ADR-077). *À poser en premier : c'est la seule
+   question qui peut invalider tout le montage.*
+2. **Mount exact** (`ldap`, `ad`, `ldap-corp`…) et **Vault Enterprise à namespaces ?**
+   (`VAULT_USER_AUTH_MOUNT`, `VAULT_NAMESPACE` — les deux sont des knobs, aucun code.)
+3. **Format de login** attendu : `sAMAccountName`, UPN, ou `DOMAIN\user` ? Il fixe
+   `userattr`/`upndomain` — **et il contraint le backend** : `auth/userpass` refuse
+   `@` et `\` dans un username (regex de path), seul `auth/ldap` les accepte.
+4. **Un groupe d'annuaire par tenant** — qui les crée, qui les peuple ? En LDAP il
+   n'y a pas de claim `tenant` (contrairement au JWT d'ADR-077) : la policy est
+   attachée au **groupe**, donc c'est l'annuaire qui gouverne « qui déploie pour qui ».
+5. **Politique de lockout** : un pipeline qui rejoue un mot de passe refusé verrouille
+   le compte nominatif. Le code échoue une fois, sans réessai — la consigne doit être
+   portée aux utilisateurs.
+6. **TTL max du token** vs durée de build : si le build dépasse le TTL, il faut
+   ajouter un `renew-self` (non implémenté — le TTL du lab est de 600 s).
 
 ## Rejouer la démo
 
