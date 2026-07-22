@@ -46,7 +46,7 @@ pipeline {
     // (param CHANGE_REF) plutôt que celui du N-1 — durcissement documenté (A6).
     ITSM_URL                    = 'http://itsm-mock:8788'
     VAULT_ADDR                  = 'http://vault:8200'
-    VAULT_ROLE_ID               = '48b2ce71-9e52-15cc-409c-8f138525af9d'
+    VAULT_ROLE_ID               = "${env.VAULT_ROLE_ID ?: 'fa09b310-79a7-8845-609b-9b6090bcd53b'}"
     // governance-api tourne sur le HOST dans le PoC (:8787) — depuis l'agent
     // Jenkins, host.docker.internal (Docker Desktop). Sur un démon Linux nu :
     // ajouter extra_hosts host-gateway au service jenkins, ou pointer un

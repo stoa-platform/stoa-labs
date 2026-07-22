@@ -105,7 +105,7 @@ pipeline {
         // (TTL 3min) scopé aux policies stoa-ci+stoa-labctl. Plus de root token (ADR-074).
         // NB PoC : ce role_id est propre à l'instance Vault dev courante ; s'il redémarre,
         // re-régler via `scripts/setup-vault-approle.sh --mint ci-pipeline` (1ère valeur).
-        VAULT_ROLE_ID               = '48b2ce71-9e52-15cc-409c-8f138525af9d'
+        VAULT_ROLE_ID               = "${env.VAULT_ROLE_ID ?: 'fa09b310-79a7-8845-609b-9b6090bcd53b'}"
       }
       steps {
         dir('poc-control-plane-federation') {

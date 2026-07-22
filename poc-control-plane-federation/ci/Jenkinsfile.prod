@@ -55,7 +55,7 @@ pipeline {
     VAULT_ADDR                  = 'http://vault:8200'
     // Identité AppRole non-secrète (cf. Jenkinsfile hors-prod) ; le secret_id
     // est le credential Jenkins vault-ci-secret-id.
-    VAULT_ROLE_ID               = '48b2ce71-9e52-15cc-409c-8f138525af9d'
+    VAULT_ROLE_ID               = "${env.VAULT_ROLE_ID ?: 'fa09b310-79a7-8845-609b-9b6090bcd53b'}"
   }
   stages {
     stage('Build labctl (air-gapped, vendored)') {
