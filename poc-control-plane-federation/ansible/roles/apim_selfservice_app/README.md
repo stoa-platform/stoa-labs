@@ -58,14 +58,25 @@ Les tâches ne portent **que la ressource** (`/applications`, `/apis`, `/policie
 | `apim_ss_oauth_token_url` / `_client_id` / `_client_secret` / `_scope` | OAuth2 client_credentials — de préférence depuis **Vault** (`gateways/webmethods/admin-oauth`) | `""` |
 | `apim_ss_ca_path` | **CA privé** (bundle PEM) : couvre gateway + IdP OAuth2 + Vault (concaténer si CA différentes). Vide = trust store système | `""` |
 
-**Auth à Vault (env, précédence statique > Kubernetes > LDAP > AppRole)** — le play lit les creds gateway ; il n'exige **aucune** entité nominative (accès système, ADR-074) :
+**Auth à Vault (env, précédence statique > Kubernetes > user/mot de passe > AppRole)** — le play lit les creds gateway ; il n'exige **aucune** entité nominative (accès système, ADR-074) :
 
 | Env | Rôle |
 |-----|------|
 | `VAULT_TOKEN_FILE` > `VAULT_TOKEN` | token statique (ex. token IHM) — prioritaire |
 | `VAULT_K8S_ROLE` (+ `VAULT_K8S_JWT_PATH`) | **★ auth Kubernetes** (`auth/kubernetes/login`) — le pod agent s'authentifie avec **son** ServiceAccount token, **zéro secret stocké** (reco HashiCorp sur K8s). Fait DANS le conteneur agent → identité du pod agent, pas du contrôleur (piège du plugin Jenkins). `VAULT_K8S_JWT_PATH` surcharge le chemin du SA token (défaut `/var/run/secrets/kubernetes.io/serviceaccount/token`) |
-| `VAULT_LDAP_USER` + (`VAULT_LDAP_PASS_FILE` > `VAULT_LDAP_PASS`) | **login AD par build** (`auth/ldap/login`) — token court (TTL banque ~1h couvre 1 run), rien de stocké. Mappe la policy `cp-gateway-read` au **groupe AD** du compte de service (`auth/ldap/groups/<grp>`) |
-| `VAULT_ROLE_ID` + (`VAULT_SECRET_ID_FILE` > `VAULT_SECRET_ID`) | AppRole (fallback) — ignoré si `VAULT_K8S_ROLE` ou `VAULT_LDAP_USER` est posé. Sécuriser le SecretID par **response-wrapping** (`VAULT_SECRET_ID_FILE` = SecretID déballé au run) |
+| `VAULT_USER` + (`VAULT_USER_PASS_FILE` > `VAULT_USER_PASSWORD`) | **login user/mot de passe par build** (`POST /v1/<mount>/login/<user>`) — token court, rien de stocké. Le mount vient de `VAULT_USER_AUTH_MOUNT` : `auth/ldap` chez le client (AD ; ou `auth/ad`, `auth/ldap-corp`…), `auth/userpass` en lab — **même requête REST, seul le mount change**. La policy se mappe au **groupe d'annuaire** (`auth/ldap/groups/<grp>` → `deploy-<tenant>`). `VAULT_LDAP_USER`/`VAULT_LDAP_PASS[_FILE]` restent acceptés (alias historique) |
+| `VAULT_ROLE_ID` + (`VAULT_SECRET_ID_FILE` > `VAULT_SECRET_ID`) | AppRole (fallback) — ignoré si `VAULT_K8S_ROLE` ou `VAULT_USER` est posé. Sécuriser le SecretID par **response-wrapping** (`VAULT_SECRET_ID_FILE` = SecretID déballé au run) |
+| `VAULT_NAMESPACE` | **Vault Enterprise** : posé en `X-Vault-Namespace` sur *tous* les appels (login, lectures KV). Vide = Vault OSS / namespace racine |
+
+> **Sous Jenkins, ces logins ne servent pas** : `ci/lib/vault-login.sh` fait le login
+> **nominatif** une seule fois et exporte `VAULT_TOKEN_FILE`, que le rôle consomme en
+> tête de précédence — les tâches de login ci-dessus sont alors *skippées* (visible
+> dans le log du build). Une seule implémentation d'auth à auditer. Ces logins
+> couvrent les exécutions **hors** Jenkins (ops en local, agent K8s sans wrapper).
+>
+> ⚠ **Un login user/mot de passe REFUSÉ ne doit pas être rejoué en boucle** : la
+> politique de lockout de l'annuaire verrouille le compte nominatif après N échecs.
+> Le rôle échoue donc *une fois*, avec un diagnostic qui ne contient aucun secret.
 
 **Mode `oauth2` (proxy client)** : le rôle fait le **get token** (`client_credentials`)
 et passe `Authorization: Bearer …` + `X-Environment: <env>` sur chaque appel — un
