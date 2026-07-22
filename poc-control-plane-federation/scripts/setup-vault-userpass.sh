@@ -90,6 +90,30 @@ PY
                 *) fail "policy deploy-$T KO (HTTP $RC): $(cat "$TMP/err")";; esac
 done
 
+# Policy de l'OPÉRATEUR DE MISE EN PROD — périmètre PLATEFORME, distinct des
+# périmètres de tenant. Jenkinsfile.prod/.rollback en ont besoin pour tourner sous
+# une identité NOMINATIVE ; sans elle, ces pipelines ne peuvent que retomber sur
+# l'AppRole (identité de machine, acte non imputable à un humain).
+# HCL généré en python (comme les policies de tenant) : le faire transiter par un
+# printf shell casserait ses guillemets à la première expansion.
+python3 - > "$TMP/pol.json" <<'POLICY'
+import json, sys
+hcl = (
+    "# Perimetre PLATEFORME de l'operateur de mise en prod - READ SEULE.\n"
+    "# /!\\ Donne a un HUMAIN la lecture des secrets de service (jeton du compte\n"
+    "# applicatif, mot de passe OpenSearch, creds admin des gateways). L'octroi de\n"
+    "# cette policy est une decision de securite du client, pas un defaut technique.\n"
+    'path "secret/data/stoa/ci"             { capabilities = ["read"] }\n'
+    'path "secret/data/stoa/opensearch"     { capabilities = ["read"] }\n'
+    'path "secret/data/stoa/gateways/*"     { capabilities = ["read"] }\n'
+    'path "secret/metadata/stoa/gateways/*" { capabilities = ["read", "list"] }\n'
+)
+json.dump({"policy": hcl}, sys.stdout)
+POLICY
+RC=$(vcurl -X PUT "$VADDR/v1/sys/policies/acl/operator-deploy" --data-binary @"$TMP/pol.json" -o "$TMP/err" -w '%{http_code}')
+case "$RC" in 200|204) say "policy operator-deploy (READ plateforme : ci, opensearch, gateways/*)";;
+              *) fail "policy operator-deploy KO (HTTP $RC): $(cat "$TMP/err")";; esac
+
 # ═══ 3. utilisateurs de démo ═════════════════════════════════════════════════
 # mkuser <username> <password> <policies csv>  — le username est URL-ENCODÉ dans
 # le path (il peut contenir \ ou @) et le mot de passe part par FICHIER (jamais argv).
@@ -111,6 +135,7 @@ PY
 mkuser "$LAB_ALICE_USER" "$LAB_ALICE_PASS" "deploy-$LAB_TENANT_ALICE"
 mkuser "$LAB_BOB_USER"   "$LAB_BOB_PASS"   "deploy-$LAB_TENANT_BOB"
 mkuser "$LAB_CAROL_USER" "$LAB_CAROL_PASS" ''
+mkuser "$LAB_OSCAR_USER" "$LAB_OSCAR_PASS" 'operator-deploy'
 # Pas de CORP\alice ni alice@corp.example ICI : `userpass` refuse `@` et `\` dans
 # un username (GenericNameRegex). Les formats AD réels sont provisionnés et prouvés
 # sur le palier LDAP — cf. scripts/lib/lab-vault-users.sh et setup-vault-ldap.sh.

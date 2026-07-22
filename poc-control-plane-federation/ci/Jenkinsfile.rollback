@@ -15,6 +15,14 @@ pipeline {
     string(name: 'PROMOTION_ID', defaultValue: '', description: 'ID de la promotion prod à annuler')
     string(name: 'REASON',       defaultValue: '', description: 'Raison du rollback (audit)')
     string(name: 'CHANGE_REF',   defaultValue: '', description: 'Change ITSM couvrant le rollback (ex. CHG-0003)')
+    // Identité NOMINATIVE de l'opérateur (voie A, ADR-078 §3). Vides → repli
+    // AppRole : identité de MACHINE, acte non imputable — comportement historique.
+    // Le token nominatif exige la policy `operator-deploy` (secrets de PLATEFORME) :
+    // son octroi à des humains est une décision client (ADR-078 § Décisions, n°9).
+    string(name: 'VAULT_USER', defaultValue: '',
+           description: "Identité NOMINATIVE de l'opérateur : login annuaire. Vide = repli AppRole (acte non imputable).")
+    password(name: 'VAULT_USER_PASSWORD', defaultValue: '',
+             description: "Mot de passe annuaire, saisi à chaque rollback. ⚠ Ne pas rejouer après un refus (lockout AD).")
   }
   environment {
     GOPROXY = 'off'; GOFLAGS = '-mod=vendor'; GOSUMDB = 'off'
@@ -69,18 +77,18 @@ pipeline {
               # promotions:approve (rôles realm devops/cpi-admin) — assigner le
               # rôle `devops` à service-account-ci-applier (one-shot, admin KC),
               # sinon 403. En prod : un client de service rollback DÉDIÉ.
-              VTOK=$(curl -sf -X POST "$VAULT_ADDR/v1/auth/approle/login" \
-                -d "{\\"role_id\\":\\"$VAULT_ROLE_ID\\",\\"secret_id\\":\\"$VAULT_SECRET_ID\\"}" \
-                | sed -n 's/.*"client_token":"\\([^"]*\\)".*/\\1/p')
-              [ -n "$VTOK" ] || { echo 'vault approle login failed'; exit 1; }
-              CI_SECRET=$(curl -sf -H "X-Vault-Token: $VTOK" "$VAULT_ADDR/v1/secret/data/stoa/ci" \
-                | sed -n 's/.*"ciApplierSecret":"\\([^"]*\\)".*/\\1/p')
-              unset VTOK
-              [ -n "$CI_SECRET" ] || { echo 'vault fetch failed'; exit 1; }
-              SA_TOKEN=$(curl -sf -X POST http://keycloak:8080/realms/stoa-lab/protocol/openid-connect/token \
-                -d client_id=ci-applier -d client_secret="$CI_SECRET" -d grant_type=client_credentials \
-                | sed -n 's/.*"access_token":"\\([^"]*\\)".*/\\1/p')
+              # Login Vault mutualisé : NOMINATIF si l'opérateur a saisi VAULT_USER +
+              # son mot de passe, sinon repli AppRole (identité de machine, historique).
+              . ci/lib/vault-login.sh
+              trap vault_trap_revoke EXIT
+              vault_login_any || exit 1
+              CI_SECRET=$(vault_read secret/data/stoa/ci ciApplierSecret)
+              # client_secret par le CORPS via printf (builtin : ni process ni argv).
+              SARESP=$(vault_tmpfile sa-resp.json)
+              printf 'client_id=ci-applier\\ngrant_type=client_credentials\\nclient_secret=%s\\n' "$CI_SECRET" \\
+                | form_post_no_argv "$SARESP" http://keycloak:8080/realms/stoa-lab/protocol/openid-connect/token >/dev/null
               unset CI_SECRET
+              SA_TOKEN=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["access_token"])' "$SARESP")
               [ -n "$SA_TOKEN" ] || { echo 'no service-account token'; exit 1; }
               # Le revert est fait PAR governance-api (commit Git attribué +
               # marker rolled_back) — le job ne touche jamais le repo à la main.
@@ -115,28 +123,25 @@ pipeline {
             sh '''
               set +x
               set -eu
-              VTOKFILE=$(mktemp); TOKFILE=$(mktemp); trap 'rm -f "$VTOKFILE" "$TOKFILE"' EXIT
-              VTOK=$(curl -sf -X POST "$VAULT_ADDR/v1/auth/approle/login" \
-                -d "{\\"role_id\\":\\"$VAULT_ROLE_ID\\",\\"secret_id\\":\\"$VAULT_SECRET_ID\\"}" \
-                | sed -n 's/.*"client_token":"\\([^"]*\\)".*/\\1/p')
-              [ -n "$VTOK" ] || { echo 'vault approle login failed'; exit 1; }
-              ( umask 077; printf %s "$VTOK" > "$VTOKFILE" )
-              CI_SECRET=$(curl -sf -H "X-Vault-Token: $VTOK" "$VAULT_ADDR/v1/secret/data/stoa/ci" \
-                | sed -n 's/.*"ciApplierSecret":"\\([^"]*\\)".*/\\1/p')
-              export OPENSEARCH_PASSWORD=$(curl -sf -H "X-Vault-Token: $VTOK" "$VAULT_ADDR/v1/secret/data/stoa/opensearch" \
-                | sed -n 's/.*"adminPassword":"\\([^"]*\\)".*/\\1/p')
-              [ -n "$CI_SECRET" ] && [ -n "$OPENSEARCH_PASSWORD" ] || { echo 'vault fetch failed'; exit 1; }
-              unset VTOK
-              CI_TOKEN=$(curl -sf -X POST http://keycloak:8080/realms/stoa-lab/protocol/openid-connect/token \
-                -d client_id=ci-applier -d client_secret="$CI_SECRET" -d grant_type=client_credentials \
-                | sed -n 's/.*"access_token":"\\([^"]*\\)".*/\\1/p')
-              [ -n "$CI_TOKEN" ] || { echo 'no CI token'; exit 1; }
-              ( umask 077; printf %s "$CI_TOKEN" > "$TOKFILE" )
-              unset CI_TOKEN CI_SECRET
+              # Même login mutualisé que le stage précédent : nominatif, sinon AppRole.
+              . ci/lib/vault-login.sh
+              trap vault_trap_revoke EXIT
+              vault_login_any || exit 1
+              CI_SECRET=$(vault_read secret/data/stoa/ci ciApplierSecret)
+              OPENSEARCH_PASSWORD=$(vault_read secret/data/stoa/opensearch adminPassword)
+              export OPENSEARCH_PASSWORD
+              KCRESP=$(vault_tmpfile kc-resp.json)
+              printf 'client_id=ci-applier\\ngrant_type=client_credentials\\nclient_secret=%s\\n' "$CI_SECRET" \\
+                | form_post_no_argv "$KCRESP" http://keycloak:8080/realms/stoa-lab/protocol/openid-connect/token >/dev/null
+              unset CI_SECRET
+              TOKFILE=$(vault_tmpfile labctl-token)
+              python3 -c 'import json,sys;open(sys.argv[2],"w").write(json.load(open(sys.argv[1]))["access_token"])' \\
+                "$KCRESP" "$TOKFILE"
+              [ -s "$TOKFILE" ] || { echo 'no CI token'; exit 1; }
               # Le repo governance post-revert a été cloné par le stage
               # 'Checkout governance (post-revert)' (auth Git É0).
               [ -d governance/.git ] || { echo 'governance/ absent (stage Checkout KO ?)'; exit 1; }
-              LABCTL_TOKEN_FILE="$TOKFILE" VAULT_TOKEN_FILE="$VTOKFILE" "$WORKSPACE/labctl" apply-uac \
+              LABCTL_TOKEN_FILE="$TOKFILE" "$WORKSPACE/labctl" apply-uac \
                 --repo governance --env prod --tenant "$APPLY_TENANT" -f envs/prod/targets.cluster.yaml
             '''
           }

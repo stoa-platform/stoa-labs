@@ -67,7 +67,9 @@ ldap_add() {   # ldap_add <libellé> < LDIF sur stdin
   if [ "$rc" = 0 ]; then
     say "$label — créé"
   elif grep -q 'Already exists' <<<"$out"; then
-    say "$label — déjà présent (idempotent)"
+    # -c (continue) : ldapadd a ajouté les entrées NOUVELLES et ignoré celles qui
+    # existaient déjà. Dire « déjà présent » masquerait les ajouts réels.
+    say "$label — convergé (nouvelles entrées ajoutées, existantes ignorées)"
   else
     fail "$label KO (rc=$rc) : $out"
   fi
@@ -94,6 +96,7 @@ ldif_user() {  # ldif_user <uid> <dn-échappé> <mot de passe>
   ldif_user "$LAB_ALICE_USER"     "$LAB_ALICE_USER"          "$LAB_ALICE_PASS"
   ldif_user "$LAB_BOB_USER"       "$LAB_BOB_USER"            "$LAB_BOB_PASS"
   ldif_user "$LAB_CAROL_USER"     "$LAB_CAROL_USER"          "$LAB_CAROL_PASS"
+  ldif_user "$LAB_OSCAR_USER"     "$LAB_OSCAR_USER"          "$LAB_OSCAR_PASS"
   ldif_user "$LAB_ALICE_UPN_USER" "$LAB_ALICE_UPN_USER"      "$LAB_ALICE_PASS"
   ldif_user "$LAB_ALICE_DOMAIN_USER" 'CORP\5Calice'          "$LAB_ALICE_PASS"
 } | ldap_add "utilisateurs (alice, bob, carol, UPN, DOMAIN\\user)"
@@ -118,6 +121,9 @@ ldif_group() { # ldif_group <cn> <dn membre>…
   # carol est dans l'annuaire et dans un groupe — mais un groupe SANS policy de
   # déploiement : être authentifié n'est pas être autorisé.
   ldif_group "apim-readonly" "uid=$LAB_CAROL_USER,ou=People,$BASE_DN"
+  # Groupe SÉPARÉ de ceux des tenants : l'opérateur de mise en prod lit les secrets
+  # de plateforme, les déployeurs de tenant non. Deux périmètres, deux groupes.
+  ldif_group "apim-operator-prod" "uid=$LAB_OSCAR_USER,ou=People,$BASE_DN"
 } | ldap_add "groupes (apim-deploy-<tenant>, apim-readonly)"
 
 # ═══ 2. auth method ldap ═════════════════════════════════════════════════════
@@ -178,6 +184,11 @@ for T in "$LAB_TENANT_ALICE" "$LAB_TENANT_BOB"; do
   case "$RC" in 200|204) say "groupe 'apim-deploy-$T' -> policy deploy-$T";;
                 *) fail "mapping groupe apim-deploy-$T KO (HTTP $RC): $(cat "$TMP/err")";; esac
 done
+RC=$(vcurl -X POST "$VADDR/v1/auth/$MOUNT/groups/apim-operator-prod" \
+     -d '{"policies":"operator-deploy"}' -o "$TMP/err" -w '%{http_code}')
+case "$RC" in 200|204) say "groupe 'apim-operator-prod' -> policy operator-deploy (secrets de PLATEFORME — décision client)";;
+              *) fail "mapping groupe apim-operator-prod KO (HTTP $RC): $(cat "$TMP/err")";; esac
+
 # apim-readonly n'est mappé sur AUCUNE policy : carol s'authentifiera sans
 # pouvoir lire le moindre périmètre de déploiement.
 vcurl -o /dev/null -w '' -X POST "$VADDR/v1/auth/$MOUNT/groups/apim-readonly" -d '{"policies":""}'

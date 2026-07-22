@@ -11,7 +11,7 @@ note: "Privé (stoa-labs). Répond au GOAL-self-service-api-app-2026-07-09 (vole
 
 # ADR-078 — Livrable self-service « création d'application » (wM 10.15, Jenkins)
 
-**Statut :** Proposé — cadre la V1 du livrable ; décisions identité (LDAP) et agents (K8s éphémères) **actées le 2026-07-15** ; **voie A (user/mot de passe → Vault) LIVRÉE ET PROUVÉE le 2026-07-22 (29/29 + E2E Jenkins)** ; restent la localisation de l'API key backend et 6 questions ouvertes par la mise en œuvre (§ Décisions client).
+**Statut :** Proposé — cadre la V1 du livrable ; décisions identité (LDAP) et agents (K8s éphémères) **actées le 2026-07-15** ; **voie A (user/mot de passe → Vault) LIVRÉE ET PROUVÉE le 2026-07-22 (34/34 + E2E Jenkins)** ; restent la localisation de l'API key backend et 6 questions ouvertes par la mise en œuvre (§ Décisions client).
 **Maturité technique :** ◐ Partiellement prouvé.
 - ✅ **Prouvé live** (spike 2026-07-14, `apigateway-trial:10.15` réelle, API + app jetables créées puis supprimées, gateway restaurée 8 APIs / 3 apps intactes) : les trois identifiers d'application (**API key**, **certificat x509**, **plage IP**) sont **opposables** — refus effectif d'une IP hors plage (403), d'un appel sans/mauvaise API key (401), et binding cert au truststore (ADR-071).
 - 🔴 **Deux fail-open natifs découverts** au même spike (voir § Écarts) : l'identifier IP **ne filtre RIEN sans règle d'identification IAM** (que `labctl` ne pose pas aujourd'hui → `ipAllowlist` **décoratif**) ; l'expiration de l'API key est un réglage **global de la gateway**, pas par application (poser un TTL par app renvoie 200 mais n'est pas persisté).
@@ -105,7 +105,7 @@ Deux implémentations, **au choix du client** (§ Décisions à trancher) :
 | **A — Vault LDAP, mot de passe en paramètre de build** | `password parameter` Jenkins → `POST /v1/auth/ldap/login/<user>` en REST → token Vault nominatif → `revoke-self` en fin de build | Colle **littéralement** à « user/pwd dans Jenkins ». Le mot de passe transite par Jenkins (`build.xml`) et fuit entre builds concurrents (`ps e`) → **agents éphémères impératifs** |
 | **B — ADR-077 (Console OIDC → exchange RFC 8693 → JWT `aud=vault`)** | **Déjà prouvé 24/24**, zéro credential stocké côté CI, tenant-scopé | Exige Jenkins/Console en **SSO Keycloak** — ce n'est plus « user/pwd dans Jenkins » ; KC ≥ 26.2 |
 
-**Décidé (2026-07-15) : voie A pour la V1** (Vault LDAP, mot de passe saisi au build ; endpoint REST standard, colle à la demande client) ; **B en cible** quand le SSO Keycloak sera en place. **✅ LIVRÉE ET PROUVÉE le 2026-07-22** — `scripts/test-vault-user-login.sh` **29/29** + build Jenkins E2E vert (mot de passe en paramètre → token `ldap-alice` → rôle Ansible `ok=49 failed=0` + verify `ok=32 failed=0` → révocation prouvée). Détails ci-dessous. `revoke-self` **vérifié** en fin de build (`lookup-self` → 403 : la durée de vie du token = le build) — le job `setup-user-deploy-job.sh` le fait déjà. La fuite `ps e` du mot de passe est fermée par les **agents K8s éphémères** (§2, un pod par build).
+**Décidé (2026-07-15) : voie A pour la V1** (Vault LDAP, mot de passe saisi au build ; endpoint REST standard, colle à la demande client) ; **B en cible** quand le SSO Keycloak sera en place. **✅ LIVRÉE ET PROUVÉE le 2026-07-22** — `scripts/test-vault-user-login.sh` **34/34** + build Jenkins E2E vert (mot de passe en paramètre → token `ldap-alice` → rôle Ansible `ok=49 failed=0` + verify `ok=32 failed=0` → révocation prouvée). Détails ci-dessous. `revoke-self` **vérifié** en fin de build (`lookup-self` → 403 : la durée de vie du token = le build) — le job `setup-user-deploy-job.sh` le fait déjà. La fuite `ps e` du mot de passe est fermée par les **agents K8s éphémères** (§2, un pod par build).
 
 #### Voie A — ce que la mise en œuvre a appris (2026-07-22)
 
@@ -154,13 +154,39 @@ par `json.dumps` et non forgé en shell (prouvé avec un mot de passe contenant
 mot de passe est `unset` avant `ansible-playbook` (le process fils ne l'hérite pas),
 et l'audit Vault ne contient aucun mot de passe en clair.
 
-**Reste ouvert** : `Jenkinsfile.prod` et `Jenkinsfile.rollback` restent sur AppRole.
-Leur token doit lire `stoa/ci`, `stoa/opensearch` et `stoa/gateways/*` — hors du
-périmètre d'une policy `deploy-<tenant>` — donc les basculer en nominatif suppose une
-**décision client** : le token d'un humain a-t-il le droit de lire les secrets de
-plateforme ? La lib porte déjà `vault_login_any` (nominatif puis repli AppRole, avec
-annonce explicite quand l'acte n'est imputable à aucun humain) ; le câblage attend
-cette réponse et une reprise de la preuve ADR-075 19/19.
+**`Jenkinsfile.prod` et `.rollback` — câblés avec repli AppRole (2026-07-22).** Ces
+deux pipelines sont *manuels par construction* (« PAS de triggers : prod ne part
+JAMAIS d'un webhook »), donc ce sont les meilleurs candidats à l'identité nominative :
+un acte de mise en prod devrait être imputable à quelqu'un. Ils utilisent
+`vault_login_any` — nominatif si l'opérateur saisit `VAULT_USER` + son mot de passe,
+**repli AppRole sinon**, comportement historique inchangé. Le repli **s'annonce** dans
+le log (« identité NON NOMINATIVE (AppRole) : cet acte n'est imputable à AUCUN
+humain ») : un journal de prod qui ne distingue pas l'acte d'un humain de celui d'une
+machine ruine l'imputabilité recherchée.
+
+Leur périmètre de secrets **diffère** de celui des déployeurs de tenant : ils lisent
+`stoa/ci`, `stoa/opensearch`, `stoa/gateways/*`, hors de toute policy
+`deploy-<tenant>`. D'où une policy **`operator-deploy`** distincte, portée par un
+**groupe d'annuaire séparé** (`apim-operator-prod`) — de sorte que les deux périmètres
+sont **disjoints dans les deux sens**, ce qui est prouvé (T30-T33) : un opérateur de
+prod n'accède pas aux périmètres des tenants, et un déployeur de tenant n'accède pas
+aux secrets de plateforme. **Qu'un humain ait le droit de lire les secrets de service
+reste une décision client** (§ Décisions n°9) : le lab l'accorde à un compte dédié
+pour que la question demeure visible plutôt que diluée.
+
+Deux durcissements au passage, sur du code qui existait déjà : les lectures Vault
+passent par `vault_read` (token en fichier d'en-têtes au lieu de
+`-H "X-Vault-Token: $TOK"` en argv, et parse JSON au lieu d'un `sed` qui casse dès
+qu'un champ contient une quote), et le `client_secret` du compte de service part par
+le **corps** de la requête via `form_post_no_argv` au lieu d'un `-d client_secret=…`
+visible dans `ps`.
+
+**Non re-prouvé** : la chaîne ADR-075 **19/19** n'a pas été rejouée après ce câblage
+(elle exige un état governance/promotions/ITSM complet). Ce qui l'a été : les 4
+Jenkinsfiles passent le linter déclaratif de Jenkins, et le bloc shell de prod a été
+**rejoué à l'identique dans le conteneur Jenkins** (donc sous `dash`) contre le Vault
+et le Keycloak réels, dans les deux modes — nominatif (`ldap-oscar`, policy
+`operator-deploy`) et repli AppRole.
 
 **Traçabilité réellement obtenue (à documenter honnêtement) :** le `user_claim` du rôle Vault devient le nom de l'entity alias, l'`entity_id` est journalisé → **piste nominative DANS Vault**. Mais les appels gateway partant sous le compte de service, **webMethods ne verra jamais l'humain** : l'imputabilité de bout en bout n'existe **que par corrélation** (audit Vault ↔ log Jenkins ↔ audit gateway). ⇒ **injecter un identifiant de corrélation** dans les trois journaux.
 
@@ -319,8 +345,11 @@ Colonne ENTRANTE = identification opposable du consommateur (plan a). Colonne SO
 7. **Un groupe d'annuaire par tenant** : qui les crée, qui les peuple ? (cf. §3 constat 2.)
 8. **Politique de lockout** de l'annuaire, et **TTL max** du token vs durée de build
    (au-delà, il faut un `renew-self`, non implémenté).
-9. **Les secrets de plateforme sont-ils lisibles par un humain ?** Bloque la bascule
-   de `Jenkinsfile.prod`/`.rollback` en nominatif.
+9. **Les secrets de plateforme sont-ils lisibles par un humain ?** Le câblage
+   nominatif de `Jenkinsfile.prod`/`.rollback` est livré et repose sur la policy
+   `operator-deploy` ; reste à décider si votre PSSI accorde cette policy à des
+   humains — sinon ces deux pipelines restent sur le repli AppRole, avec l'acte
+   non imputable que cela implique.
 
 **Restante — à confirmer (faisabilité tranchée par le spike 2026-07-15) :**
 3. **Quel pattern d'injection de l'API key backend ?** Le spike a **écarté** le mapping natif « identifier stocké → header » (impossible sur 10.15). Restent trois patterns (§5b) : **★ P-callout (TokenProvider Vault-backed, recommandé** — clé par consommateur dans Vault, cachée du client, déjà dans le repo) ; **P-recopie** (le client présente la clé, la gateway la recopie — acceptable seulement si le consommateur est légitimement porteur) ; **P-alias** (1 clé par API/env). *Le choix dépend d'une réponse sécurité : le consommateur a-t-il le droit de détenir la clé backend, ou doit-elle lui rester cachée ?*
@@ -330,7 +359,7 @@ Colonne ENTRANTE = identification opposable du consommateur (plan a). Colonne SO
 - [ ] Repo produit `stoa-apim-delivery` initialisé (historique propre, branch protection, `make release`).
 - [ ] **Plan entrant** : action IAM `AND` généralisée — `ipAddressRange` (+ `httpsCertificate`) posés en règle d'identification, connecteur dérivé de la classification. **Preuve X/X** reproduisant la matrice A-D du spike.
 - [ ] **Plan sortant** : pattern d'injection choisi (§ Décision 3 ; reco P-callout) ; si P-callout, TokenProvider projeté **as-code** (fin du câblage manuel des 2 policyActions). *(Faisabilité tranchée : `customHttpHeaders` prouvé, mapping natif d'identifier écarté — spike 2026-07-15.)*
-- [x] Chemin **apply** en **Vault LDAP** nominatif (voie A), `revoke-self` vérifié **avec preuve de mort et y compris quand le build échoue** — `scripts/test-vault-user-login.sh` 29/29 + E2E Jenkins (2026-07-22). *Reste* : identité de job en **Vault Kubernetes auth** (non prouvable en lab sans cluster), et `Jenkinsfile.prod`/`.rollback` (cf. §3, décision client sur la lecture des secrets de plateforme par un humain).
+- [x] Chemin **apply** en **Vault LDAP** nominatif (voie A), `revoke-self` vérifié **avec preuve de mort et y compris quand le build échoue** — `scripts/test-vault-user-login.sh` 34/34 + E2E Jenkins (2026-07-22). *Reste* : identité de job en **Vault Kubernetes auth** (non prouvable en lab sans cluster), et `Jenkinsfile.prod`/`.rollback` (cf. §3, décision client sur la lecture des secrets de plateforme par un humain).
 - [ ] Frontière secrets : plus aucun secret d'amorçage Vault dans Jenkins (K8s auth) ; fallback AppRole documenté (response wrapping) pour un client non-K8s.
 - [ ] Gardes applicatives (E3) présentes (owner/register/oracle) — pas de self-service multi-équipes sans elles.
 
