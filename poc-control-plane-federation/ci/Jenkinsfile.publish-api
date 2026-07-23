@@ -28,6 +28,13 @@ pipeline {
     // avec OAuth2 devant (self-proxy wm-admin-self, scripts/setup-wm-admin-self-proxy.sh).
     choice(name: 'ADMIN_VIA', choices: ['direct', 'proxy-oauth2'],
            description: "Accès à l'API d'admin : direct (lab, Basic) ou proxy-oauth2 (modèle client : self-proxy + Bearer client_credentials).")
+    // ── DEBUG (opt-in) : rend VISIBLE ce que le pipeline fait — appels Vault
+    // (méthode/URL/code HTTP), erreurs de Vault/Keycloak/gateway, verbosité
+    // Ansible. Pour localiser « est-ce MA config ou LA LEUR qui plante ». Ne
+    // fuite AUCUN secret : mot de passe/token/corps-de-succès jamais imprimés,
+    // corps d'erreur rédactés (STOA_DEBUG → ci/lib/vault-login.sh + rôle).
+    booleanParam(name: 'DEBUG', defaultValue: false,
+                 description: "Trace détaillée (appels, codes HTTP, erreurs redactées) — aucun secret exposé.")
     // VOIE A (V1, ADR-078 §3) — identité d'annuaire saisie à l'apply, jamais persistée.
     string(name: 'VAULT_USER', defaultValue: '',
            description: "Identité NOMINATIVE (voie A) : votre login annuaire (sAMAccountName, UPN user@domaine, ou DOMAIN\\\\user). Vide sur le PLAN.")
@@ -113,6 +120,13 @@ pipeline {
             done
 
             # IDENTITÉ NOMINATIVE → TOKEN VAULT (voie B si JWT fourni, sinon voie A).
+            # DEBUG : exporte STOA_DEBUG (lib + rôle Ansible) et pose la verbosité ansible.
+            VOPT=""
+            if [ "${DEBUG:-false}" = "true" ]; then
+              export STOA_DEBUG=1
+              VOPT="-v"
+              echo "  [DEBUG activé] appels Vault/HTTP tracés, erreurs redactées — aucun secret n'est imprimé."
+            fi
             . ci/lib/vault-login.sh
             # Trap armé AVANT le login : révoque + prouve la mort MÊME si la
             # publication échoue (un revoke en dernière instruction est sauté par `set -e`).
@@ -126,7 +140,7 @@ pipeline {
 
             # Manifeste en CHEMIN (apim_ss_manifest → include_vars), PAS `-e @` :
             # un extra-var masquerait la fusion per_env (précédence Ansible).
-            ansible-playbook -i "$INVENTORY" ansible/publish-api.yml \
+            ansible-playbook ${VOPT:-} -e stoa_debug="${DEBUG:-false}" -i "$INVENTORY" ansible/publish-api.yml \
               -e apim_ss_manifest="$MANIFEST" \
               -e apim_ss_env="${ENVIRONMENT:-}" \
               -e apim_ss_api_base="$APIM_API_BASE" \
@@ -135,7 +149,7 @@ pipeline {
               -e apim_ss_auth_mode="$APIM_AUTH_MODE" \
               -e apim_ss_vault_oauth_sub="$APIM_OAUTH_SUB"
 
-            ansible-playbook -i "$INVENTORY" ansible/publish-api-verify.yml \
+            ansible-playbook ${VOPT:-} -e stoa_debug="${DEBUG:-false}" -i "$INVENTORY" ansible/publish-api-verify.yml \
               -e apim_ss_manifest="$MANIFEST" \
               -e apim_ss_env="${ENVIRONMENT:-}" \
               -e apim_ss_api_base="$APIM_API_BASE" \

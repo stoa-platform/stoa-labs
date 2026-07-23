@@ -38,6 +38,13 @@ pipeline {
     // avec OAuth2 devant (self-proxy wm-admin-self, scripts/setup-wm-admin-self-proxy.sh).
     choice(name: 'ADMIN_VIA', choices: ['direct', 'proxy-oauth2'],
            description: "Accès à l'API d'admin : direct (lab, Basic) ou proxy-oauth2 (modèle client : self-proxy + Bearer client_credentials).")
+    // ── DEBUG (opt-in) : rend VISIBLE ce que le pipeline fait — appels Vault
+    // (méthode/URL/code HTTP), erreurs de Vault/Keycloak/gateway, verbosité
+    // Ansible. Pour localiser « est-ce MA config ou LA LEUR qui plante ». Ne
+    // fuite AUCUN secret : mot de passe/token/corps-de-succès jamais imprimés,
+    // corps d'erreur rédactés (STOA_DEBUG → ci/lib/vault-login.sh + rôle).
+    booleanParam(name: 'DEBUG', defaultValue: false,
+                 description: "Trace détaillée (appels, codes HTTP, erreurs redactées) — aucun secret exposé.")
     // ── VOIE A (retenue pour la V1, ADR-078 §3) : l'humain saisit SON identité
     // d'annuaire au moment de l'apply. Le mot de passe n'est JAMAIS persisté hors
     // du build : ni dans le credentials store, ni dans Git, ni sur disque.
@@ -138,6 +145,13 @@ pipeline {
             # 1) IDENTITÉ NOMINATIVE → TOKEN VAULT. Voie B (JWT) si fournie, sinon
             #    voie A (VAULT_USER + mot de passe annuaire). Le détail — corps JSON
             #    non forgé en shell, user URL-encodé, rien en argv — est dans la lib.
+            # DEBUG : exporte STOA_DEBUG (lib + rôle Ansible) et pose la verbosité ansible.
+            VOPT=""
+            if [ "${DEBUG:-false}" = "true" ]; then
+              export STOA_DEBUG=1
+              VOPT="-v"
+              echo "  [DEBUG activé] appels Vault/HTTP tracés, erreurs redactées — aucun secret n'est imprimé."
+            fi
             . ci/lib/vault-login.sh
             # Le trap est armé AVANT tout : il révoque MÊME si la convergence échoue.
             # Sans lui, un `revoke` en dernière instruction est sauté par `set -e` dès
@@ -159,7 +173,7 @@ pipeline {
             #    chemin tenant-scopé.
             # Le manifeste est passé en CHEMIN (apim_ss_manifest → include_vars dans le
             # rôle), PAS en `-e @` : un extra-var masquerait la fusion per_env (précédence).
-            ansible-playbook -i "$INVENTORY" ansible/selfservice-app.yml \
+            ansible-playbook ${VOPT:-} -e stoa_debug="${DEBUG:-false}" -i "$INVENTORY" ansible/selfservice-app.yml \
               -e apim_ss_manifest="$MANIFEST" \
               -e apim_ss_env="${ENVIRONMENT:-}" \
               -e apim_ss_api_base="$APIM_API_BASE" \
@@ -170,7 +184,7 @@ pipeline {
 
             # 3) VERIFY fail-closed (structurel : ENFORCEMENT_CONFIRMED + OUTBOUND_CONFIRMED ;
             #    le check data-plane live reste off — l'IP de l'agent ≠ l'allowlist).
-            ansible-playbook -i "$INVENTORY" ansible/selfservice-app-verify.yml \
+            ansible-playbook ${VOPT:-} -e stoa_debug="${DEBUG:-false}" -i "$INVENTORY" ansible/selfservice-app-verify.yml \
               -e apim_ss_manifest="$MANIFEST" \
               -e apim_ss_env="${ENVIRONMENT:-}" \
               -e apim_ss_api_base="$APIM_API_BASE" \
