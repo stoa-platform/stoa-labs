@@ -14,9 +14,13 @@
 #               (client_id/secret) pour l'application. Le pipeline STOCKE ce couple
 #               dans Vault, PAR ENV (multi-env : un client par (app, env)).
 #
-# Invariant multi-env : l'IDENTITÉ de l'app (name/api/claim) est invariante ; ce
-# qui change par env vit sous per_env (audience/issuer/jwks côté API, chemin Vault
-# côté secret interne). Le rôle a déjà fusionné racine ⊕ per_env[apim_ss_env].
+# Multi-env : l'IDENTITÉ de l'app (name/api) est invariante, mais la CLAIM peut
+# CHANGER par env (name et/ou value — le client de l'IdP diffère souvent entre
+# dev et prod), tout comme l'audience. Le rôle a déjà fusionné racine ⊕
+# per_env[apim_ss_env] (recursive) : poser claim.value sous per_env suffit, le
+# nom est hérité de la racine. La stratégie est nommée OAUTH2-<app>-<env> et
+# CONVERGE (PUT) — un changement de claim/audience est réappliqué au re-run.
+# PROUVÉ live : dev → clientId=consumer-dev, int → consumer-int.
 #
 # Entrées (du manifeste, bloc apim_ss_app.auth, résolu par resolve-env) :
 #   apim_ss_auth_app_mode      : "idp" | "internal"  (défaut idp)
@@ -96,15 +100,14 @@
     fail_msg: "apim_ss_app.auth.audience vide — elle doit valoir l'audience de l'API cible."
     success_msg: "Audience de la stratégie = {{ apim_ss_auth_audience }} (celle de l'API)."
 
-- name: "Auth app : créer la stratégie OAUTH2 si absente (audience = celle de l'API)"
-  ansible.builtin.uri:
-    url: "{{ apim_ss_api_base }}/strategies"
-    method: POST
-    body_format: json
+# CONVERGE (pas create-only) : le corps désiré est calculé une fois ; POST si la
+# stratégie est absente, PUT sinon. Sans le PUT, une claim/audience qui CHANGE
+# (par env, ou en rotation de client) ne serait jamais appliquée sur un re-run —
+# la stratégie garderait sa 1re valeur (bug réel : per-env claim ignorée).
+- name: "Auth app : corps désiré de la stratégie (clientId = claim en idp)"
+  ansible.builtin.set_fact:
     # Corps NU (pas d'enveloppe) — forme 10.15 vérifiée (OIDC-wm-admin-*).
-    # clientId : en idp = la valeur de la claim (le client de l'IdP) ; en
-    # internal = le nom de l'app (la gateway rattache/gènère le client local).
-    body:
+    apim_ss_strat_body:
       type: "OAUTH2"
       authServerAlias: "{{ apim_ss_auth_alias_eff }}"
       name: "{{ apim_ss_strat_name }}"
@@ -113,19 +116,37 @@
       clientId: >-
         {{ (apim_ss_auth_claim.value | default(apim_ss_app.name))
            if apim_ss_auth_mode_eff == 'idp' else apim_ss_app.name }}
+  no_log: true
+
+- name: "Auth app : CRÉER la stratégie si absente (POST)"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_api_base }}/strategies"
+    method: POST
+    body_format: json
+    body: "{{ apim_ss_strat_body }}"
     status_code: [200, 201]
   register: apim_ss_strat_create
   delegate_to: localhost
   no_log: true
   when: "apim_ss_strat_id | length == 0"
 
-- name: "Auth app : capturer l'id de stratégie (création ou existant)"
+- name: "Auth app : capturer l'id à la création"
   ansible.builtin.set_fact:
     apim_ss_strat_id: >-
-      {{ apim_ss_strat_id if (apim_ss_strat_id | length > 0)
-         else (apim_ss_strat_create.json.strategy.id
-               | default(apim_ss_strat_create.json.id | default(''))) }}
+      {{ apim_ss_strat_create.json.strategy.id | default(apim_ss_strat_create.json.id | default('')) }}
   no_log: true
+  when: "apim_ss_strat_id | length == 0"
+
+- name: "Auth app : CONVERGER la stratégie existante (PUT) — claim/audience à jour"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_api_base }}/strategies/{{ apim_ss_strat_id }}"
+    method: PUT
+    body_format: json
+    body: "{{ apim_ss_strat_body | combine({'id': apim_ss_strat_id}) }}"
+    status_code: [200, 201]
+  delegate_to: localhost
+  no_log: true
+  when: "apim_ss_strat_id | length > 0 and apim_ss_strat_create is skipped"
 
 - name: "Auth app : fail-closed — un id de stratégie est obligatoire"
   ansible.builtin.assert:
