@@ -77,12 +77,16 @@ for T in $TENANTS; do
 import json, sys
 t = sys.argv[1]
 hcl = (
-    '# Périmètre de déploiement du tenant %s — READ SEULE.\n'
-    '# Aucune capability sur les autres tenants : la ségrégation est ENFORCÉE ici,\n'
-    '# pas dans le pipeline (un Jenkinsfile modifié ne peut pas l\'élargir).\n'
-    'path "secret/data/stoa/deploy/%s/*"     { capabilities = ["read"] }\n'
-    'path "secret/metadata/stoa/deploy/%s/*" { capabilities = ["read", "list"] }\n'
-) % (t, t, t)
+    '# Périmètre de déploiement du tenant %s.\n'
+    '# LECTURE sur tout le sous-arbre du tenant ; ÉCRITURE limitée au seul\n'
+    '# sous-arbre apps/ (mode OAuth2 internal : celui qui déploie une app de SON\n'
+    '# tenant y stocke le client généré par la gateway — jamais ailleurs, jamais\n'
+    "# un autre tenant). La ségrégation reste ENFORCÉE ici, pas dans le pipeline.\n"
+    'path "secret/data/stoa/deploy/%s/*"          { capabilities = ["read"] }\n'
+    'path "secret/metadata/stoa/deploy/%s/*"      { capabilities = ["read", "list"] }\n'
+    'path "secret/data/stoa/deploy/%s/apps/*"     { capabilities = ["create", "update", "read"] }\n'
+    'path "secret/metadata/stoa/deploy/%s/apps/*" { capabilities = ["read", "list"] }\n'
+) % (t, t, t, t, t)
 json.dump({"policy": hcl}, sys.stdout)
 PY
   RC=$(vcurl -X PUT "$VADDR/v1/sys/policies/acl/deploy-$T" --data-binary @"$TMP/pol.json" -o "$TMP/err" -w '%{http_code}')

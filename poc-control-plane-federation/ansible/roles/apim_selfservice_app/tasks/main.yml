@@ -91,7 +91,7 @@
 
     # ===== 3. Identifiers ENTRANTS : certificat (asset) + plage IP ============
     - name: "Cert : lire le PEM public + refuser toute clé privée"
-      when: "apim_ss_app.public_cert_ref | length > 0"
+      when: "apim_ss_app.public_cert_ref | default('') | length > 0"
       block:
         - ansible.builtin.set_fact:
             ss_cert_pem: "{{ lookup('file', apim_ss_app.public_cert_ref) }}"
@@ -139,12 +139,12 @@
 
     - name: "IP : refuser le CIDR (la gateway le drop en silence — cf. README)"
       ansible.builtin.assert:
-        that: "apim_ss_app.ip_allowlist | select('search', '/') | list | length == 0"
+        that: "apim_ss_app.ip_allowlist | default([]) | select('search', '/') | list | length == 0"
         fail_msg: "CIDR non supporté (drop silencieux gateway) — utiliser une IP ou une plage A-B."
 
     - name: "IP : normaliser (single -> X-X ; A-B inchangé — visible UI + opposable)"
       ansible.builtin.set_fact:
-        ss_ip_norm: "{{ apim_ss_app.ip_allowlist | map('regex_replace', '^([^-]+)$', '\\1-\\1') | list }}"
+        ss_ip_norm: "{{ apim_ss_app.ip_allowlist | default([]) | map('regex_replace', '^([^-]+)$', '\\1-\\1') | list }}"
 
     - name: "App : relire le record complet (read-modify-write)"
       ansible.builtin.uri:
@@ -171,10 +171,10 @@
     #                      toujours greppable '-exp-[0-9]{8}').
     - name: "Cert : expiration du cert du manifeste -> garde + nom single"
       ansible.builtin.import_tasks: cert-expiry.yml
-      when: "apim_ss_app.public_cert_ref | length > 0"
+      when: "apim_ss_app.public_cert_ref | default('') | length > 0"
 
     - name: "Cert : rotation (replace | overlap)"
-      when: "apim_ss_app.public_cert_ref | length > 0"
+      when: "apim_ss_app.public_cert_ref | default('') | length > 0"
       block:
         - name: "Rotation : fail-closed sur le mode"
           ansible.builtin.assert:
@@ -243,7 +243,7 @@
     - name: "Identifiers : ensemble désiré (cert + IP)"
       ansible.builtin.set_fact:
         ss_desired_ids: >-
-          {{ ([] if (apim_ss_app.public_cert_ref | length == 0)
+          {{ ([] if (apim_ss_app.public_cert_ref | default('') | length == 0)
                 else [{'key': 'httpsCertificate', 'name': ss_cert_name, 'value': ss_cert_values}])
              + ([] if (ss_ip_norm | length == 0)
                 else [{'key': 'ipAddressRange', 'name': 'ip-allowlist', 'value': ss_ip_norm}]) }}
@@ -377,3 +377,10 @@
     - name: "Backend : injection de la clé backend (customHttpHeaders)"
       ansible.builtin.import_tasks: backend.yml
       when: "(apim_ss_app.backend.header | default('')) | length > 0"
+
+    # ===== 6. AUTH OAuth2 de l'application (idp | internal) ====================
+    # Deux modes (ADR-076 #5) : idp = client sur l'IdP, claim depuis Git ;
+    # internal = gateway=AS, client généré, stocké dans Vault PAR ENV.
+    - name: "Auth app : OAuth2 (idp claim-from-Git | internal client→Vault)"
+      ansible.builtin.import_tasks: consumer-auth.yml
+      when: "(apim_ss_app.auth is defined) and (apim_ss_app.auth | length > 0)"

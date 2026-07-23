@@ -1,0 +1,30 @@
+---
+# demo-consumer-internal.ansible.yml — application consommatrice, AUTH mode INTERNAL.
+#
+# La gateway wM EST l'authorization server (alias LOCAL_IS `local`). La stratégie
+# créée référence `local` ; la gateway génère un client (client_id/secret) pour
+# l'application. Le pipeline STOCKE ce couple dans Vault, PAR ENV — un client par
+# (app, env). Le consommateur le lit au runtime pour un client_credentials ; il
+# n'est JAMAIS dans Git.
+apim_ss_app:
+  name: "demo-consumer-internal"
+  api: "demo-selfservice"
+  api_version: "1.0.0"
+  description: "ADR-078 — consommateur OAuth2 mode INTERNAL (gateway = auth server)"
+  contact_emails: ["demo-internal@bank.invalid"]
+  backend: { header: "apikey", value_template: "${backend_apikey}" }
+  enforce: []
+
+  auth:
+    mode: "internal"
+    # server_alias ignoré en internal (forcé à 'local'). Pas de claim (le client
+    # est généré par la gateway, pas fourni par un IdP externe).
+    audience: "demo-selfservice"    # = audience de l'API (racine ; surchargeable par env)
+
+  per_env:
+    # MULTI-ENV : le client généré est écrit à un chemin Vault DISTINCT par env
+    # (tenant+app+env-scopé) — un secret ≠ par environnement, jamais partagé.
+    dev:  { auth: { vault_sub: "deploy/banking-demo/apps/demo-consumer-internal/dev/oauth-client" } }
+    rec:  { auth: { vault_sub: "deploy/banking-demo/apps/demo-consumer-internal/rec/oauth-client" } }
+    int:  { auth: { vault_sub: "deploy/banking-demo/apps/demo-consumer-internal/int/oauth-client" } }
+    prod: { auth: { vault_sub: "deploy/banking-demo/apps/demo-consumer-internal/prod/oauth-client" } }

@@ -1,0 +1,281 @@
+---
+# roles/apim_selfservice_app/tasks/consumer-auth.yml — AUTH OAuth2 de l'application
+# consommatrice créée, DEUX modes (ADR-076 décision #5, ADR-078) :
+#
+#   idp       — l'IdP (Keycloak, un IdP partenaire…) est l'authorization server.
+#               Le client EXISTE DÉJÀ sur l'IdP (créé en amont par l'IAM). Le
+#               manifeste Git porte LA CLAIM qui identifie l'app (ex. azp) ; sur la
+#               gateway on ne crée QUE l'application + son identifier openIdClaims
+#               + une stratégie OAUTH2 pointant l'alias auth-server EXTERNE, avec
+#               audience = celle de l'API. AUCUN secret à stocker (il vit sur l'IdP).
+#
+#   internal  — la gateway wM EST l'authorization server (alias LOCAL_IS `local`).
+#               La stratégie créée référence `local`; la gateway génère un client
+#               (client_id/secret) pour l'application. Le pipeline STOCKE ce couple
+#               dans Vault, PAR ENV (multi-env : un client par (app, env)).
+#
+# Invariant multi-env : l'IDENTITÉ de l'app (name/api/claim) est invariante ; ce
+# qui change par env vit sous per_env (audience/issuer/jwks côté API, chemin Vault
+# côté secret interne). Le rôle a déjà fusionné racine ⊕ per_env[apim_ss_env].
+#
+# Entrées (du manifeste, bloc apim_ss_app.auth, résolu par resolve-env) :
+#   apim_ss_auth_app_mode      : "idp" | "internal"  (défaut idp)
+#   apim_ss_auth_server_alias  : nom de l'alias auth-server sur la gateway
+#                                (idp: EXTERNAL préexistant ; internal: "local")
+#   apim_ss_auth_claim         : {name, value} — la CLAIM d'identification (idp)
+#                                (ex. {name: azp, value: "acme-consumer"})
+#   apim_ss_auth_audience      : audience de la stratégie = audience de l'API
+#   apim_ss_auth_vault_sub     : (internal) sous-chemin KV où écrire le client
+#                                généré, TENANT+ENV-scopé (ex.
+#                                deploy/banking-demo/apps/acme/dev/oauth-client)
+# Produit : l'application porte l'identifier de claim + la stratégie ; en internal,
+#           le client est écrit dans Vault (idempotent : ré-utilise l'existant).
+
+# ===== Pré-vol : le mode est explicite, l'alias auth-server existe =============
+- name: "Auth app : mode effectif + fail-closed sur un mode inconnu"
+  ansible.builtin.set_fact:
+    apim_ss_auth_mode_eff: "{{ (apim_ss_auth_app_mode | default('idp') | trim | lower) }}"
+
+- name: "Auth app : fail-closed — mode ∈ {idp, internal}"
+  ansible.builtin.assert:
+    that: "apim_ss_auth_mode_eff in ['idp', 'internal']"
+    fail_msg: "apim_ss_app.auth.mode='{{ apim_ss_auth_mode_eff }}' inconnu (attendu idp|internal)."
+    success_msg: "Auth de l'application : mode {{ apim_ss_auth_mode_eff }}."
+
+- name: "Auth app : résoudre l'alias auth-server (internal ⇒ 'local' d'office)"
+  ansible.builtin.set_fact:
+    apim_ss_auth_alias_eff: >-
+      {{ 'local' if apim_ss_auth_mode_eff == 'internal'
+         else (apim_ss_auth_server_alias | default('') | trim) }}
+
+- name: "Auth app : l'alias auth-server existe sur la gateway (par NOM — portable multi-env, ADR-079)"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_api_base }}/alias"
+    method: GET
+  register: apim_ss_alias_list
+  delegate_to: localhost
+  no_log: true
+
+- name: "Auth app : fail-closed — alias auth-server introuvable"
+  ansible.builtin.assert:
+    that: >-
+      apim_ss_auth_alias_eff | length > 0 and
+      (apim_ss_alias_list.json.alias | default([])
+        | selectattr('name', 'equalto', apim_ss_auth_alias_eff) | list | length) > 0
+    fail_msg: >-
+      Alias auth-server '{{ apim_ss_auth_alias_eff }}' absent de la gateway.
+      idp : poser l'alias EXTERNAL par env (inbound.yml, même nom / valeurs locales).
+      internal : 'local' (LOCAL_IS) est natif — la gateway est-elle bien l'AS ?
+    success_msg: "Alias auth-server '{{ apim_ss_auth_alias_eff }}' présent."
+
+# ===== 1. Stratégie OAUTH2 (idempotente, par API) — audience = celle de l'API ==
+# Nommée de façon déterministe par (app, env) : re-run = converge, jamais de doublon.
+- name: "Auth app : nom déterministe de la stratégie"
+  ansible.builtin.set_fact:
+    apim_ss_strat_name: "OAUTH2-{{ apim_ss_app.name }}-{{ apim_ss_env | default('mono') }}"
+
+- name: "Auth app : la stratégie existe-t-elle déjà ?"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_api_base }}/strategies"
+    method: GET
+  register: apim_ss_strat_list
+  delegate_to: localhost
+  no_log: true
+
+- name: "Auth app : id de la stratégie si présente"
+  ansible.builtin.set_fact:
+    apim_ss_strat_id: >-
+      {{ ((apim_ss_strat_list.json.strategies
+           | default(apim_ss_strat_list.json.strategy | default([])))
+          | selectattr('name', 'equalto', apim_ss_strat_name) | map(attribute='id') | first)
+         | default('') }}
+
+- name: "Auth app : fail-closed — audience obligatoire (= audience de l'API)"
+  ansible.builtin.assert:
+    that: "apim_ss_auth_audience | default('') | trim | length > 0"
+    fail_msg: "apim_ss_app.auth.audience vide — elle doit valoir l'audience de l'API cible."
+    success_msg: "Audience de la stratégie = {{ apim_ss_auth_audience }} (celle de l'API)."
+
+- name: "Auth app : créer la stratégie OAUTH2 si absente (audience = celle de l'API)"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_api_base }}/strategies"
+    method: POST
+    body_format: json
+    # Corps NU (pas d'enveloppe) — forme 10.15 vérifiée (OIDC-wm-admin-*).
+    # clientId : en idp = la valeur de la claim (le client de l'IdP) ; en
+    # internal = le nom de l'app (la gateway rattache/gènère le client local).
+    body:
+      type: "OAUTH2"
+      authServerAlias: "{{ apim_ss_auth_alias_eff }}"
+      name: "{{ apim_ss_strat_name }}"
+      description: "apim_selfservice_app: OAUTH2 ({{ apim_ss_auth_mode_eff }}) pour {{ apim_ss_app.name }}"
+      audience: "{{ apim_ss_auth_audience }}"
+      clientId: >-
+        {{ (apim_ss_auth_claim.value | default(apim_ss_app.name))
+           if apim_ss_auth_mode_eff == 'idp' else apim_ss_app.name }}
+    status_code: [200, 201]
+  register: apim_ss_strat_create
+  delegate_to: localhost
+  no_log: true
+  when: "apim_ss_strat_id | length == 0"
+
+- name: "Auth app : capturer l'id de stratégie (création ou existant)"
+  ansible.builtin.set_fact:
+    apim_ss_strat_id: >-
+      {{ apim_ss_strat_id if (apim_ss_strat_id | length > 0)
+         else (apim_ss_strat_create.json.strategy.id
+               | default(apim_ss_strat_create.json.id | default(''))) }}
+  no_log: true
+
+- name: "Auth app : fail-closed — un id de stratégie est obligatoire"
+  ansible.builtin.assert:
+    that: "apim_ss_strat_id | length > 0"
+    fail_msg: "Stratégie OAUTH2 {{ apim_ss_strat_name }} ni trouvée ni créée."
+
+# ===== 2. Mode IDP — la CLAIM (Git) devient l'identifier de l'application ======
+# Le client EXISTE sur l'IdP ; ici on n'ADDRESSE l'app qu'à cette claim. C'est
+# openIdClaims/<name> = <valeur> (opposé au stage IAM par la stratégie ci-dessus).
+- name: "Auth app [idp] : fail-closed — la claim d'identification est fournie"
+  ansible.builtin.assert:
+    that:
+      - "apim_ss_auth_claim.name | default('') | trim | length > 0"
+      - "apim_ss_auth_claim.value | default('') | trim | length > 0"
+    fail_msg: >-
+      Mode idp : apim_ss_app.auth.claim {name,value} est obligatoire — c'est ELLE
+      qui identifie l'application (le client est créé EN AMONT sur l'IdP).
+    success_msg: "Claim d'identification : {{ apim_ss_auth_claim.name }}={{ apim_ss_auth_claim.value }}."
+  when: "apim_ss_auth_mode_eff == 'idp'"
+
+- name: "Auth app [idp] : identifier openIdClaims = la claim du manifeste"
+  ansible.builtin.set_fact:
+    apim_ss_auth_identifier:
+      key: "openIdClaims"
+      name: "{{ apim_ss_auth_claim.name }}"
+      value: ["{{ apim_ss_auth_claim.value }}"]
+  when: "apim_ss_auth_mode_eff == 'idp'"
+
+# ===== 2bis. LIER sur l'application : identifier de claim (idp) + authStrategyIds =
+# Read-modify-write auto-suffisant (même patron que le self-proxy) : on NE touche
+# QUE la dimension openIdClaims (préserve cert/IP posés en section 3) et on AJOUTE
+# la stratégie à authStrategyIds sans écraser une éventuelle stratégie existante.
+- name: "Auth app : relire le record de l'application (read-modify-write)"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_api_base }}/applications/{{ ss_app_id }}"
+    method: GET
+  register: apim_ss_auth_reread
+  delegate_to: localhost
+  no_log: true
+
+- name: "Auth app : déballer le record (enveloppe applications[] OU plat)"
+  ansible.builtin.set_fact:
+    apim_ss_auth_rec: >-
+      {{ (apim_ss_auth_reread.json.applications | default([apim_ss_auth_reread.json]))[0] }}
+  no_log: true
+
+- name: "Auth app : record muté (identifier claim si idp + strategie dans authStrategyIds)"
+  ansible.builtin.set_fact:
+    apim_ss_auth_rec_new: >-
+      {{ apim_ss_auth_rec
+         | combine({'identifiers':
+             ((apim_ss_auth_rec.identifiers | default([]) | rejectattr('key', 'equalto', 'openIdClaims') | list)
+              + ([apim_ss_auth_identifier] if apim_ss_auth_mode_eff == 'idp' else []))})
+         | combine({'authStrategyIds':
+             ((apim_ss_auth_rec.authStrategyIds | default([])) + [apim_ss_strat_id]) | unique}) }}
+  no_log: true
+
+- name: "Auth app : PUT du record muté (claim opposable + stratégie liée)"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_api_base }}/applications/{{ ss_app_id }}"
+    method: PUT
+    body: "{{ apim_ss_auth_rec_new }}"
+    status_code: [200, 201]
+  delegate_to: localhost
+  no_log: true
+
+# ===== 3. Mode INTERNAL — la gateway génère le client, on le STOCKE dans Vault ==
+# La stratégie sur l'AS `local` est posée ; le client OAuth2 (client_id/secret) est
+# émis par le serveur d'autorisation INTERNE de la gateway. On le capture et on
+# l'écrit dans Vault au chemin TENANT+ENV-scopé (multi-env : un secret par env).
+- name: "Auth app [internal] : fail-closed — sous-chemin Vault du client fourni"
+  ansible.builtin.assert:
+    that: "apim_ss_auth_vault_sub | default('') | trim | length > 0"
+    fail_msg: >-
+      Mode internal : apim_ss_app.auth.vault_sub est obligatoire (où écrire le
+      client généré, ex. deploy/<tenant>/apps/<app>/<env>/oauth-client).
+  when: "apim_ss_auth_mode_eff == 'internal'"
+
+# Le client interne peut venir de DEUX sources :
+#   (a) apim_ss_internal_client_id / _secret fournis en extra-var (le pipeline a
+#       appelé le DCR du serveur interne en amont, ou l'opérateur les a saisis) ;
+#   (b) relu depuis l'application (accessTokens.oauth2_credentials) SI la gateway
+#       les y matérialise. ⚠ Sur wM 10.15 trial, la surface admin REST sondée
+#       n'expose PAS d'auto-génération OAuth2 (seul apiAccessKey est émis) : la
+#       source (a) est le chemin nominal tant que le DCR interne n'est pas câblé.
+- name: "Auth app [internal] : relire l'application (capture éventuelle du client matérialisé)"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_api_base }}/applications/{{ ss_app_id }}"
+    method: GET
+  register: apim_ss_app_reread
+  delegate_to: localhost
+  no_log: true
+  when: "apim_ss_auth_mode_eff == 'internal'"
+
+- name: "Auth app [internal] : résoudre client_id/secret (extra-var prioritaire, sinon relu de l'app)"
+  ansible.builtin.set_fact:
+    apim_ss_int_cid: >-
+      {{ (apim_ss_internal_client_id | default('') | trim)
+         or (((apim_ss_app_reread.json.applications | default([apim_ss_app_reread.json]))[0]
+              | default({})).accessTokens | default({})).oauth2_credentials.clientId | default('')
+         or apim_ss_app.name }}
+    apim_ss_int_secret: >-
+      {{ (apim_ss_internal_client_secret | default('') | trim)
+         or (((apim_ss_app_reread.json.applications | default([apim_ss_app_reread.json]))[0]
+              | default({})).accessTokens | default({})).oauth2_credentials.clientSecret | default('') }}
+  no_log: true
+  when: "apim_ss_auth_mode_eff == 'internal'"
+
+# FAIL-CLOSED : ne JAMAIS écrire un secret vide dans Vault (ce serait un
+# fail-open silencieux — un consommateur lirait un client inutilisable). Sans
+# secret capturé, on s'arrête avec un diagnostic actionnable.
+- name: "Auth app [internal] : fail-closed — un client_secret non vide a été capturé"
+  ansible.builtin.assert:
+    that: "apim_ss_int_secret | default('') | trim | length > 0"
+    fail_msg: >-
+      INTERNAL_CLIENT_SECRET_MANQUANT : aucun client_secret capturé pour
+      '{{ apim_ss_app.name }}'. La gateway (AS interne) ne l'a pas matérialisé sur
+      l'application via la surface admin REST. Fournir le couple via
+      apim_ss_internal_client_id / apim_ss_internal_client_secret (issus du DCR du
+      serveur d'autorisation interne), OU câbler ce DCR. RIEN n'est écrit dans Vault.
+    success_msg: "Client interne capturé (client_id={{ apim_ss_int_cid }}, secret présent)."
+  when: "apim_ss_auth_mode_eff == 'internal'"
+
+- name: "Auth app [internal] : ÉCRIRE le client dans Vault (KV v2, tenant+env-scopé)"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_vault_addr }}/v1/{{ apim_ss_vault_kv_mount }}/data/{{ apim_ss_vault_prefix }}/{{ apim_ss_auth_vault_sub }}"
+    method: POST
+    headers: "{{ apim_ss_vault_ns_headers | combine({'X-Vault-Token': apim_ss_vault_token}) }}"
+    body_format: json
+    # « user/pwd » du client = client_id + client_secret ; + audience/alias pour
+    # que le consommateur rejoue un client_credentials sans redécouvrir la config.
+    body:
+      data:
+        client_id: "{{ apim_ss_int_cid }}"
+        client_secret: "{{ apim_ss_int_secret }}"
+        audience: "{{ apim_ss_auth_audience }}"
+        auth_server_alias: "{{ apim_ss_auth_alias_eff }}"
+        env: "{{ apim_ss_env | default('mono') }}"
+    status_code: [200, 204]
+  register: apim_ss_internal_write
+  delegate_to: localhost
+  no_log: true
+  when:
+    - "apim_ss_auth_mode_eff == 'internal'"
+    - "apim_ss_vault_addr | length > 0"
+
+- name: "Auth app [internal] : trace (sans secret) — client stocké dans Vault"
+  ansible.builtin.debug:
+    msg: >-
+      Client OAuth2 interne pour '{{ apim_ss_app.name }}' (env {{ apim_ss_env | default('mono') }})
+      écrit dans Vault : {{ apim_ss_vault_prefix }}/{{ apim_ss_auth_vault_sub }}
+      (client_id={{ apim_ss_int_cid }}, secret masqué). Le consommateur le lit au runtime, jamais Git.
+  when: "apim_ss_auth_mode_eff == 'internal'"
