@@ -199,6 +199,28 @@ PY
     fi
     # json.dumps échappe " \ $ et l'unicode — ne jamais forger ce corps en shell.
     export VAULT_USER_PASSWORD
+    # DEBUG : EMPREINTE du mot de passe EXACTEMENT tel qu'il sera envoyé — pour
+    # répondre à « curl marche mais pas le pipeline ». N'imprime JAMAIS le mot de
+    # passe : seulement sa longueur (car. + octets), un préfixe SHA-256, et un
+    # drapeau si des espaces/retours-ligne l'entourent (LE piège classique d'un
+    # paramètre Jenkins ou d'un fichier qui ajoute un \n). Comparer avec, côté
+    # curl qui marche :  printf '%s' 'monMotDePasse' | shasum -a 256
+    if _vault_debug_on; then
+      _vault_dbg "$(python3 - <<'PY'
+import hashlib, os
+p = os.environ.get("VAULT_USER_PASSWORD", "")
+b = p.encode("utf-8", "surrogatepass")
+flags = []
+if p != p.strip():            flags.append("ESPACES/NL AUTOUR")
+if "\n" in p or "\r" in p:    flags.append("CONTIENT CR/LF")
+if p != p.rstrip():           flags.append("finit par un blanc")
+if p != p.lstrip():           flags.append("commence par un blanc")
+tag = ("  ⚠ " + " ; ".join(flags)) if flags else "  (aucun blanc parasite)"
+print("empreinte mot de passe: %d caractères / %d octets  sha256=%s%s"
+      % (len(p), len(b), hashlib.sha256(b).hexdigest()[:16], tag))
+PY
+)"
+    fi
     python3 - "$body" <<'PY'
 import json, os, sys
 fd = os.open(sys.argv[1], os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
