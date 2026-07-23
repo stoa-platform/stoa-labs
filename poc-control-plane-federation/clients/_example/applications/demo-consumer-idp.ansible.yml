@@ -1,0 +1,35 @@
+---
+# demo-consumer-idp.ansible.yml — application consommatrice, AUTH mode IDP.
+#
+# L'IdP (ici Keycloak) est l'authorization server. Le client OAuth2 EXISTE DÉJÀ
+# sur l'IdP (créé EN AMONT par l'IAM — hors périmètre de ce pipeline). Ce que Git
+# porte, c'est LA CLAIM qui identifie l'application ; sur la gateway on ne crée que
+# l'application + son identifier openIdClaims + la stratégie OAUTH2 → alias EXTERNE.
+# L'audience de la stratégie = celle de l'API. AUCUN secret stocké (il vit sur l'IdP).
+apim_ss_app:
+  name: "demo-consumer-idp"
+  api: "demo-selfservice"
+  api_version: "1.0.0"
+  description: "ADR-078 — consommateur OAuth2 mode IDP (claim depuis Git)"
+  contact_emails: ["demo-idp@bank.invalid"]
+  backend: { header: "apikey", value_template: "${backend_apikey}" }
+  # L'opposabilité vient de la stratégie + de la claim (openIdClaims) — pas d'IP/cert ici.
+  enforce: []
+
+  auth:
+    mode: "idp"
+    # Alias auth-server EXTERNAL déjà posé sur la gateway (inbound.yml, par env :
+    # même NOM, valeurs locales — portable, ADR-079). Ici la démo Keycloak.
+    server_alias: "KeycloakStoaLab"
+    # LA CLAIM d'identification — vit dans Git. C'est elle qui « crée » l'app côté
+    # gateway (le client, lui, préexiste sur l'IdP). azp = client autorisé.
+    claim: { name: "azp", value: "ci-horsprod" }
+
+  per_env:
+    # MULTI-ENV : l'audience = celle de l'API cible, PAR env. La claim, invariante,
+    # reste en racine ; seule l'audience (et, en vrai, l'issuer/jwks de l'alias)
+    # change par env.
+    dev:  { auth: { audience: "demo-selfservice" } }
+    rec:  { auth: { audience: "demo-selfservice" } }
+    int:  { auth: { audience: "demo-selfservice" } }
+    prod: { auth: { audience: "demo-selfservice" } }

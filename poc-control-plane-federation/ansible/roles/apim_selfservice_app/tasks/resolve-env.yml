@@ -67,3 +67,15 @@
       ip_allowlist={{ apim_ss_app.ip_allowlist | default([]) }},
       cert={{ (apim_ss_app.public_cert_ref | default('')) | length > 0 }},
       enforce={{ apim_ss_app.enforce | default([]) }}
+
+# ── Bloc AUTH de l'application (idp | internal) — aplati en variables après la
+# fusion racine ⊕ per_env (consumer-auth.yml les consomme). Absent = pas d'auth
+# OAuth2 sur l'app (le bloc est opt-in ; cert/IP restent la V1 par défaut).
+- name: "Env : aplatir apim_ss_app.auth (mode/alias/claim/audience/vault_sub)"
+  ansible.builtin.set_fact:
+    apim_ss_auth_app_mode: "{{ apim_ss_app.auth.mode | default('idp') }}"
+    apim_ss_auth_server_alias: "{{ apim_ss_app.auth.server_alias | default('') }}"
+    apim_ss_auth_claim: "{{ apim_ss_app.auth.claim | default({}) }}"
+    apim_ss_auth_audience: "{{ apim_ss_app.auth.audience | default('') }}"
+    apim_ss_auth_vault_sub: "{{ apim_ss_app.auth.vault_sub | default('') }}"
+  when: "apim_ss_app.auth is defined"
