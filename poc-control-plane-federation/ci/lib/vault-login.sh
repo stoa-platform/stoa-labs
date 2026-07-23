@@ -38,6 +38,44 @@
 _VAULT_TMPDIR=""
 _VAULT_REVOKED=0
 
+# ── MODE DEBUG (STOA_DEBUG / VAULT_DEBUG non vide) ────────────────────────────
+# Rend VISIBLE ce que le pipeline fait — méthode, URL, code HTTP de chaque appel,
+# et le CORPS D'ERREUR (jamais le corps de succès : il porte token/secret). Pensé
+# pour répondre à « je ne sais pas si c'est MA config ou LA LEUR qui plante » :
+# l'URL + le code + le message d'erreur de Vault/Keycloak/gateway localisent la
+# faute sans exposer le moindre secret.
+#
+# INVARIANT DE SÛRETÉ (contre-épreuve dans scripts/test-vault-user-login.sh) :
+#   - jamais le mot de passe, le token, ni un corps de réponse 2xx dans les logs ;
+#   - tout ce qui est imprimé passe par _vault_redact (masque tokens hvs./JWT et
+#     les secrets connus tenus par le process).
+_vault_debug_on() { [ -n "${STOA_DEBUG:-}${VAULT_DEBUG:-}" ]; }
+
+# _vault_redact — filtre de rédaction. Masque : tokens Vault (hvs.*, s.*, b.*),
+# JWT (eyXXX.YYY.ZZZ), en-têtes X-Vault-Token, et toute valeur sensible connue
+# passée en $VAULT_USER_PASSWORD / VAULT_TOKEN. Défense en profondeur — les corps
+# d'erreur n'échoient normalement AUCUN secret, mais on ne parie pas là-dessus.
+_vault_redact() {
+  VP="${VAULT_USER_PASSWORD:-}" python3 -c '
+import os, re, sys
+s = sys.stdin.read()
+pw = os.environ.get("VP", "")
+if pw and len(pw) >= 3:
+    s = s.replace(pw, "***REDACTED-PWD***")
+s = re.sub(r"(hvs\.|hvb\.|s\.|b\.)[A-Za-z0-9._-]{8,}", r"\1***REDACTED-TOKEN***", s)
+s = re.sub(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+", "***REDACTED-JWT***", s)
+s = re.sub(r"(?i)(X-Vault-Token:\s*)\S+", r"\1***REDACTED***", s)
+s = re.sub(r"(?i)(\"?client_?secret\"?\s*[:=]\s*\"?)[^\"\s,&]+", r"\1***REDACTED***", s)
+sys.stdout.write(s)
+' 2>/dev/null || cat   # si python indisponible, mieux vaut ne RIEN imprimer que fuiter -> voir appelant
+}
+
+# _vault_dbg <message> — imprime sur stderr, préfixé, seulement en mode debug.
+_vault_dbg() {
+  _vault_debug_on || return 0
+  printf '\033[2m[vault-dbg] %s\033[0m\n' "$1" >&2
+}
+
 # _vault_cleanup — efface les fichiers temporaires (jamais le token en clair sur disque
 # une fois le build fini). Appelé par vault_trap_revoke.
 _vault_cleanup() {
@@ -55,7 +93,7 @@ _vault_cleanup() {
 # Alpine), où `args=(…)` est une erreur de syntaxe. Tout ce fichier reste donc
 # POSIX — c'est la contrainte qui compte, il est sourcé par le pipeline.
 _vault_curl() {
-  local out="$1" method="$2" url="$3" ca
+  local out="$1" method="$2" url="$3" ca code
   shift 3
   set -- -s -o "$out" -w '%{http_code}' -X "$method" "$url" "$@"
   if [ -n "${VAULT_NAMESPACE:-}" ]; then
@@ -65,7 +103,20 @@ _vault_curl() {
   if [ -n "$ca" ] && [ -f "$ca" ]; then
     set -- "$@" --cacert "$ca"
   fi
-  curl "$@"
+  code="$(curl "$@")"
+  printf '%s' "$code"
+  # DEBUG : trace l'appel (méthode + URL, jamais le corps requête) et, SI erreur
+  # (>=400), le corps de réponse RÉDACTÉ — un corps 2xx peut porter un secret
+  # (token de login, KV read), on ne l'imprime JAMAIS.
+  if _vault_debug_on; then
+    _vault_dbg "$method $url -> HTTP $code"
+    case "$code" in
+      [45]??)
+        if [ -f "$out" ] && [ -s "$out" ]; then
+          _vault_dbg "  ↳ erreur: $(_vault_redact < "$out" | tr -d '\n' | cut -c1-400)"
+        fi ;;
+    esac
+  fi
 }
 
 # _vault_mount — normalise VAULT_USER_AUTH_MOUNT : `ldap`, `auth/ldap` et
@@ -105,7 +156,19 @@ vault_login_nominative() {
   jwt="$(printf '%s' "$jwt" | tr -d '[:space:]')"
 
   if [ -z "$jwt" ] && [ -z "$user" ]; then
+    _vault_dbg "aucune identité (ni USER_VAULT_JWT ni VAULT_USER) -> code 2 (PLAN-only)"
     return 2
+  fi
+
+  # Contexte (non-secret) : ce que le pipeline VA faire, avant de le faire.
+  if _vault_debug_on; then
+    local _ca="${VAULT_CACERT:-${LABCTL_CA_FILE:-}}"
+    _vault_dbg "VAULT_ADDR=$VAULT_ADDR  namespace=${VAULT_NAMESPACE:-<aucun>}  CA=${_ca:-<système>}"
+    if [ -n "$jwt" ]; then
+      _vault_dbg "voie B (JWT) : rôle=${VAULT_JWT_ROLE:-user-deploy}"
+    else
+      _vault_dbg "voie A (user/pwd) : mount=$(_vault_mount)  user=$user"
+    fi
   fi
 
   _VAULT_TMPDIR="$(mktemp -d)"
@@ -309,11 +372,21 @@ vault_read() {
     return 1
   fi
   resp="$_VAULT_TMPDIR/read.json"
+  _vault_dbg "lecture KV: GET v1/$path (champ '$field')"
   code="$(_vault_curl "$resp" GET "$VAULT_ADDR/v1/$path" -H "@$_VAULT_TMPDIR/token.hdr" || true)"
   if [ "$code" != "200" ]; then
     echo "  ✗ lecture $path REFUSÉE (HTTP $code) — la policy du token couvre-t-elle ce chemin ?" >&2
+    _vault_dbg "  ↳ le token a-t-il une policy autorisant read sur '$path' ? (403=non, 404=chemin absent)"
     rm -f "$resp"
     return 1
+  fi
+  # DEBUG : liste les CHAMPS disponibles (les CLÉS, jamais les valeurs) — répond à
+  # « le secret existe mais je ne trouve pas mon champ » sans exposer aucune valeur.
+  if _vault_debug_on; then
+    _vault_dbg "  ↳ champs disponibles: $(python3 -c '
+import json,sys
+try: print(",".join(sorted(json.load(open(sys.argv[1])).get("data",{}).get("data",{}).keys())) or "<vide>")
+except Exception: print("<illisible>")' "$resp" 2>/dev/null)"
   fi
   FIELD="$field" python3 - "$resp" <<'PY'
 import json, os, sys

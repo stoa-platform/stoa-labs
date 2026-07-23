@@ -195,6 +195,35 @@ else
   ok "T18 token Vault ABSENT de la sortie de la lib (seuls entité/TTL/policies sont affichés)"
 fi
 
+# MODE DEBUG (STOA_DEBUG) : montre BEAUCOUP plus (appels, codes, erreurs) — il
+# doit rester NON-FUYANT. On capture TOUTE la sortie debug d'un login réussi ET
+# d'un login raté (mot de passe sentinelle) et on vérifie que NI le mot de passe
+# NI le token n'y apparaissent.
+DBGOUT="$WORK/dbg.txt"
+DBGSENTINEL="Sentinel-dbg-$$-a1b2c3"
+( set +u; . ci/lib/vault-login.sh
+  export STOA_DEBUG=1 VAULT_ADDR="$VADDR" VAULT_USER_AUTH_MOUNT="$MOUNT"
+  # 1) login réussi (alice) : trace + lecture KV
+  export VAULT_USER="$LAB_ALICE_USER" VAULT_USER_PASSWORD="$LAB_ALICE_PASS"; unset USER_VAULT_JWT
+  vault_login_nominative && cat "$VAULT_TOKEN_FILE" > "$WORK/tok2"
+  vault_read "secret/data/stoa/deploy/$LAB_TENANT_ALICE/wm-admin" username >/dev/null
+  vault_revoke_proof
+  # 2) login raté avec un mot de passe SENTINELLE (doit tracer l'erreur, pas le mdp)
+  export VAULT_USER="alice" VAULT_USER_PASSWORD="$DBGSENTINEL"
+  vault_login_nominative ) > "$DBGOUT" 2>&1
+grep -q "$LAB_ALICE_PASS" "$DBGOUT" && bad "D1 [debug] mot de passe d'alice dans la sortie debug" \
+  || grep -q "$DBGSENTINEL" "$DBGOUT" && bad "D1 [debug] mot de passe sentinelle dans la sortie debug" \
+  || ok "D1 [debug] STOA_DEBUG actif : AUCUN mot de passe dans la sortie (ni réussi ni raté)"
+if [ -s "$WORK/tok2" ] && grep -qF "$(cat "$WORK/tok2")" "$DBGOUT"; then
+  bad "D2 [debug] le token Vault apparaît dans la sortie debug"
+else
+  ok "D2 [debug] token Vault ABSENT de la sortie debug (appels/codes/erreurs seulement)"
+fi
+# et le debug DOIT être utile : l'erreur de bind du login raté est bien tracée.
+grep -qE "HTTP 4[0-9][0-9]|bind|denied|REFUSÉ" "$DBGOUT" \
+  && ok "D3 [debug] l'erreur du login raté EST visible (code HTTP / message) — diagnostic utile" \
+  || bad "D3 [debug] le login raté n'a produit aucune trace exploitable"
+
 # ═══ 5. Révocation — y compris quand le build échoue ═════════════════════════
 sec "5. Révocation et preuve de mort"
 
