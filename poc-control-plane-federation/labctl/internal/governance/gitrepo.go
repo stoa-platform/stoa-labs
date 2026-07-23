@@ -22,7 +22,16 @@ import (
 // seed script): the BFF never passes -S so test repos can switch it off.
 type Repo struct {
 	Dir string
-	mu  sync.Mutex
+	// PushRemote, when non-empty, makes every successful commit PUSH the current
+	// branch to that remote (git push <remote> HEAD) — and a push failure IS a
+	// commit failure (fail-closed: a consumer that re-clones the remote, like
+	// Jenkinsfile.rollback's re-apply stage, must never observe a state older
+	// than what the API just answered). Empty (the default) = strictly the old
+	// local-only behaviour — labctl and every existing test are unaffected.
+	// Wired from GOVERNANCE_GIT_PUSH_REMOTE by cmd/governance-api (ADR-075/078;
+	// closes the tracked P1 debt "governance-api sans push Git").
+	PushRemote string
+	mu         sync.Mutex
 }
 
 // CommitInfo is the uniform commit echo returned by write endpoints.
@@ -184,7 +193,19 @@ func (r *Repo) commit(ctx context.Context, actor Actor, subject, body string, al
 	if _, err := r.git(ctx, args...); err != nil {
 		return CommitInfo{}, err
 	}
-	return r.head(ctx, "HEAD")
+	head, err := r.head(ctx, "HEAD")
+	if err != nil {
+		return CommitInfo{}, err
+	}
+	// Opt-in publish: the write is only DONE when the remote holds it. `HEAD`
+	// pushes the branch we just committed on (main or a promotion branch).
+	if r.PushRemote != "" {
+		if _, err := r.git(ctx, "push", r.PushRemote, "HEAD"); err != nil {
+			return CommitInfo{}, fmt.Errorf("commit %s created locally but push to %q failed (fail-closed): %w",
+				head.SHA7, r.PushRemote, err)
+		}
+	}
+	return head, nil
 }
 
 // CommitFiles is the direct-on-main write (publish dev, sub-approve, reject

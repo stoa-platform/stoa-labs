@@ -115,3 +115,30 @@ plateforme : `stoa/ci`, `stoa/opensearch`, `stoa/gateways/*`) pour les opérateu
 mise en prod. Deux groupes d'annuaire séparés.
 
 Preuve : `./scripts/test-vault-user-login.sh` → **34/34**.
+
+## Runbook — jobs prod & rollback en identité nominative (validé 2026-07-23)
+
+Prérequis d'infra (une fois par lab) :
+
+1. **governance-api sur l'hôte, port 8787** (le job rollback l'appelle en
+   `host.docker.internal:8787`), sur un CLONE du repo governance avec
+   `GOVERNANCE_GIT_PUSH_REMOTE=origin` : chaque commit gouverné (revert, markers,
+   deny) est POUSSÉ fail-closed — sans quoi le stage re-apply re-clonerait un état
+   où le revert n'existe pas.
+2. **Token de push Gitea** : `docker exec -u git poc-gitea gitea admin user
+   generate-access-token --username ci --token-name <nom> --scopes
+   write:repository` ; le poser dans l'URL push du clone LOCAL uniquement
+   (jamais commité).
+3. **Rôle realm `devops` au service-account `ci-applier`** (perdu à chaque
+   recreate Keycloak) — sinon le rollback répond 403 `promotions:approve`.
+4. **Secret AppRole frais** avant chaque salve : `scripts/jenkins-refresh-vault-secret.sh`
+   (TTL ~10 min).
+
+⚠ **Fenêtre keepalive** : la gateway trial est recyclée toutes les ~20 min
+(`restart-wm.sh`, cron `*/5`, `WM_MAX_MIN=20`). Un build qui chevauche le seuil
+est coupé en plein vol (« unreachable ») — lancer les jobs longs juste après un
+cycle (`docker inspect poc-webmethods-real` → StartedAt récent + healthy).
+
+En cas de NPE « Unable to process the PUT/ACTIVATE request for apis » :
+`scripts/repair-wm-dangling-policyaction.sh` (diagnostic puis `--fix`), puis
+re-apply depuis Git — voir l'en-tête du script.
