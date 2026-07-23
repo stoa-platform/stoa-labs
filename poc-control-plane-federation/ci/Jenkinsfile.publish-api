@@ -27,7 +27,7 @@ pipeline {
     string(name: 'VAULT_USER', defaultValue: '',
            description: "Identité NOMINATIVE (voie A) : votre login annuaire (sAMAccountName, UPN user@domaine, ou DOMAIN\\\\user). Vide sur le PLAN.")
     password(name: 'VAULT_USER_PASSWORD', defaultValue: '',
-             description: "Mot de passe annuaire, saisi À CHAQUE apply. ⚠ Ne PAS relancer en boucle après un refus (lockout AD).")
+             description: "Mot de passe annuaire, saisi À CHAQUE apply. ⚠ Ne PAS relancer en boucle après un refus (lockout AD). NB : le bouton « Change Password » est un libellé Jenkins (SECURITY-1721) — il signifie « saisir la valeur du champ », RIEN ne modifie votre mot de passe annuaire ; cliquez-le puis tapez votre mot de passe.")
     // VOIE B (cible SSO, ADR-077) — prioritaire si fournie.
     string(name: 'USER_VAULT_JWT', defaultValue: '',
            description: "Identité NOMINATIVE (voie B) : JWT court aud=vault. Prioritaire sur la voie A. Vide sur le PLAN.")
