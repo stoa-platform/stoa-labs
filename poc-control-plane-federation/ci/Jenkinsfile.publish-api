@@ -23,6 +23,11 @@ pipeline {
     // env) ET pose X-Environment vers le proxy d'admin. Vide = API mono-env.
     choice(name: 'ENVIRONMENT', choices: ['dev', 'rec', 'int', 'prod'],
            description: "Environnement cible (inbound par env + header X-Environment).")
+    // Mode d'accès à l'API d'admin. Chez le CLIENT il n'y a QUE proxy-oauth2 :
+    // l'admin n'est jamais exposée en direct — elle est proxifiée SUR la gateway
+    // avec OAuth2 devant (self-proxy wm-admin-self, scripts/setup-wm-admin-self-proxy.sh).
+    choice(name: 'ADMIN_VIA', choices: ['direct', 'proxy-oauth2'],
+           description: "Accès à l'API d'admin : direct (lab, Basic) ou proxy-oauth2 (modèle client : self-proxy + Bearer client_credentials).")
     // VOIE A (V1, ADR-078 §3) — identité d'annuaire saisie à l'apply, jamais persistée.
     string(name: 'VAULT_USER', defaultValue: '',
            description: "Identité NOMINATIVE (voie A) : votre login annuaire (sAMAccountName, UPN user@domaine, ou DOMAIN\\\\user). Vide sur le PLAN.")
@@ -44,6 +49,11 @@ pipeline {
     APIM_API_BASE     = "${env.APIM_API_BASE  ?: 'http://webmethods-real:5555/rest/apigateway'}"
     APIM_DATA_BASE    = "${env.APIM_DATA_BASE ?: 'http://webmethods-real:5555/gateway'}"
     APIM_WM_CREDS_SUB = "${env.APIM_WM_CREDS_SUB ?: 'deploy/banking-demo/wm-admin'}"
+    // Self-proxy OAuth2 de l'admin (ADMIN_VIA=proxy-oauth2) + chemin KV TENANT-scopé
+    // des creds OAuth2 du pipeline ({token_url, client_id, client_secret, scope} —
+    // sous deploy/<tenant>/ : le token nominatif ne lit QUE son périmètre).
+    APIM_PROXY_BASE   = "${env.APIM_PROXY_BASE ?: 'http://webmethods-real:5555/gateway/wm-admin-self/1.0/rest/apigateway'}"
+    APIM_OAUTH_SUB    = "${env.APIM_OAUTH_SUB  ?: 'deploy/banking-demo/admin-oauth'}"
     INVENTORY         = 'ansible/inventory.lab.ini'
   }
 
@@ -74,15 +84,30 @@ pipeline {
             set -eu
             MANIFEST="${MANIFEST:-clients/_example/apis/accounts-read.publish.yml}"
 
+            # Mode d'accès à l'admin : chez le client, TOUJOURS proxy-oauth2 —
+            # l'API d'admin est derrière son self-proxy, le rôle obtient un Bearer
+            # (client_credentials, creds lus dans Vault) au lieu du Basic direct.
+            if [ "${ADMIN_VIA:-direct}" = "proxy-oauth2" ]; then
+              APIM_API_BASE="$APIM_PROXY_BASE"
+              APIM_AUTH_MODE="oauth2"
+              echo "  (API d'admin via le SELF-PROXY OAuth2 : $APIM_API_BASE)"
+            else
+              APIM_AUTH_MODE="basic"
+            fi
+
             # 0) GATEWAY DISPONIBLE ? Le lab la recycle toutes les ~20 min (keepalive
             #    licence trial) et un rolling restart chez le client produit la même
             #    fenêtre : attendre son retour (max 5 min) AVANT de consommer
             #    l'identité — plutôt qu'échouer au milieu du play sur un
             #    « Connection refused » cryptique. /health répond 200 sans auth.
             i=0
-            until [ "$(curl -s -o /dev/null -m 5 -w '%{http_code}' "$APIM_API_BASE/health" || true)" = "200" ]; do
+            while :; do
+              HC="$(curl -s -o /dev/null -m 5 -w '%{http_code}' "$APIM_API_BASE/health" || true)"
+              # 200 = up (accès direct) ; 401 = up ET l'OAuth2 du proxy est déjà
+              # enforce (on sonde SANS token — le 401 est la preuve de vie du proxy).
+              if [ "$HC" = 200 ] || [ "$HC" = 401 ]; then break; fi
               i=$((i+1))
-              if [ "$i" -ge 60 ]; then echo "  ✗ gateway toujours injoignable après 5 min ($APIM_API_BASE/health)"; exit 1; fi
+              if [ "$i" -ge 60 ]; then echo "  ✗ gateway toujours injoignable après 5 min ($APIM_API_BASE/health -> $HC)"; exit 1; fi
               if [ "$i" -eq 1 ]; then echo "  (gateway indisponible — recyclage en cours ? attente du retour, max 5 min…)"; fi
               sleep 5
             done
@@ -106,14 +131,18 @@ pipeline {
               -e apim_ss_env="${ENVIRONMENT:-}" \
               -e apim_ss_api_base="$APIM_API_BASE" \
               -e apim_ss_data_base="$APIM_DATA_BASE" \
-              -e apim_ss_vault_wm_creds_sub="$APIM_WM_CREDS_SUB"
+              -e apim_ss_vault_wm_creds_sub="$APIM_WM_CREDS_SUB" \
+              -e apim_ss_auth_mode="$APIM_AUTH_MODE" \
+              -e apim_ss_vault_oauth_sub="$APIM_OAUTH_SUB"
 
             ansible-playbook -i "$INVENTORY" ansible/publish-api-verify.yml \
               -e apim_ss_manifest="$MANIFEST" \
               -e apim_ss_env="${ENVIRONMENT:-}" \
               -e apim_ss_api_base="$APIM_API_BASE" \
               -e apim_ss_data_base="$APIM_DATA_BASE" \
-              -e apim_ss_vault_wm_creds_sub="$APIM_WM_CREDS_SUB"
+              -e apim_ss_vault_wm_creds_sub="$APIM_WM_CREDS_SUB" \
+              -e apim_ss_auth_mode="$APIM_AUTH_MODE" \
+              -e apim_ss_vault_oauth_sub="$APIM_OAUTH_SUB"
 
             # Le token nominatif meurt avec le build : révocation + PREUVE DE MORT
             # (lookup-self -> 403) exécutées par le trap, succès comme échec.
