@@ -22,14 +22,19 @@ apim_ss_app:
     # même NOM, valeurs locales — portable, ADR-079). Ici la démo Keycloak.
     server_alias: "KeycloakStoaLab"
     # LA CLAIM d'identification — vit dans Git. C'est elle qui « crée » l'app côté
-    # gateway (le client, lui, préexiste sur l'IdP). azp = client autorisé.
-    claim: { name: "azp", value: "ci-horsprod" }
+    # gateway (le client, lui, préexiste sur l'IdP). Le NOM de la claim (azp) est
+    # ici invariant ; sa VALEUR peut changer par env (le client de l'IdP diffère
+    # souvent entre dev et prod : realm/env distincts). Cf. per_env ci-dessous.
+    claim: { name: "azp" }
 
   per_env:
-    # MULTI-ENV : l'audience = celle de l'API cible, PAR env. La claim, invariante,
-    # reste en racine ; seule l'audience (et, en vrai, l'issuer/jwks de l'alias)
-    # change par env.
-    dev:  { auth: { audience: "demo-selfservice" } }
-    rec:  { auth: { audience: "demo-selfservice" } }
-    int:  { auth: { audience: "demo-selfservice" } }
-    prod: { auth: { audience: "demo-selfservice" } }
+    # MULTI-ENV. La fusion est RÉCURSIVE (racine ⊕ per_env) : ce que per_env pose
+    # sous auth.* surcharge la racine, le reste est hérité. Ici la VALEUR de la
+    # claim ET l'audience changent par env — le nom `azp` est hérité de la racine.
+    # PROUVÉ live : dev → stratégie clientId=consumer-dev, int → consumer-int
+    # (stratégie OAUTH2-<app>-<env>, une par env). L'audience = celle de l'API sur
+    # CET env (issuer/jwks de l'alias EXTERNAL changent aussi par env, posés alias-first).
+    dev:  { auth: { audience: "demo-selfservice", claim: { value: "consumer-dev" } } }
+    rec:  { auth: { audience: "demo-selfservice", claim: { value: "consumer-rec" } } }
+    int:  { auth: { audience: "demo-selfservice", claim: { value: "consumer-int" } } }
+    prod: { auth: { audience: "demo-selfservice", claim: { value: "consumer-prod" } } }
