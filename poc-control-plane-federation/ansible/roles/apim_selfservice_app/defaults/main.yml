@@ -46,6 +46,13 @@ apim_ss_oauth_scope: ""
 apim_ss_vault_addr: "{{ lookup('env', 'VAULT_ADDR') }}"
 apim_ss_vault_kv_mount: "secret"
 apim_ss_vault_k8s_mount: "auth/kubernetes"    # auth Kubernetes : login du SA du pod agent
+# Mount de la méthode d'auth USER/PASSWORD. `auth/ldap` chez le client (AD ; le
+# mount peut s'appeler auth/ad, auth/ldap-corp…), `auth/userpass` en lab : la
+# requête REST est IDENTIQUE, seul ce chemin change. Normalisé — `ldap`,
+# `auth/ldap` et `auth/ldap/` donnent le même résultat.
+apim_ss_vault_user_mount: >-
+  auth/{{ lookup('env', 'VAULT_USER_AUTH_MOUNT') | default('ldap', true) | trim
+          | regex_replace('^auth/', '') | regex_replace('/+$', '') }}
 apim_ss_vault_prefix: "stoa"
 apim_ss_vault_wm_creds_sub: "gateways/webmethods"           # basic  : { username, password }
 apim_ss_vault_oauth_sub: "gateways/webmethods/admin-oauth"  # oauth2 : { token_url, client_id, client_secret, scope }

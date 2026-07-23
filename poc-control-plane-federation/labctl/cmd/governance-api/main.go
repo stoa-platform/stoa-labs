@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -37,6 +38,16 @@ func main() {
 	repo, err := governance.OpenRepo(repoPath)
 	if err != nil {
 		log.Fatalf("governance-api: %v", err)
+	}
+	// GOVERNANCE_GIT_PUSH_REMOTE (ex. "origin") : chaque commit gouverné est
+	// AUSSI poussé vers ce remote, fail-closed — sans lui, Jenkinsfile.rollback
+	// re-clonait un état où le revert n'existait pas (dette P1 « governance-api
+	// sans push Git »). Vide (défaut) : commits locaux seuls, comportement
+	// historique — le remote et son credential restent hors du binaire (URL du
+	// remote du clone : ex. token Gitea posé par l'opérateur, jamais commité).
+	repo.PushRemote = strings.TrimSpace(os.Getenv("GOVERNANCE_GIT_PUSH_REMOTE"))
+	if repo.PushRemote != "" {
+		log.Printf("governance-api: push post-commit ACTIVÉ vers le remote %q (fail-closed)", repo.PushRemote)
 	}
 
 	kcBase := envOr("KC_BASE", "http://localhost:8480")

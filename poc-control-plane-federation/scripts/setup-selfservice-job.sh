@@ -14,13 +14,19 @@
 # Idempotent — même mécanique crumb/createItem/config.xml que setup-user-deploy-job.sh.
 set -uo pipefail
 
+# TOUT est surchargeable par env : le MÊME script pose le job frère publish-api-deploy —
+#   JOB=publish-api-deploy TRIGGER_TOKEN=stoa-publish-api-plan \
+#   SCRIPT_PATH=poc-control-plane-federation/ci/Jenkinsfile.publish-api \
+#   MANIFEST_DEFAULT=clients/_example/apis/accounts-read.publish.yml \
+#   JOB_DESC="publication d'API (PRODUCTEUR)" bash scripts/setup-selfservice-job.sh
 JENKINS="${JENKINS:-http://localhost:18080}"
 JOB="${JOB:-selfservice-app-deploy}"
-TRIGGER_TOKEN="stoa-selfservice-plan"
+TRIGGER_TOKEN="${TRIGGER_TOKEN:-stoa-selfservice-plan}"
 GIT_URL="${GIT_URL:-http://gitea:3000/ci/stoa-labs.git}"   # vu DEPUIS l'agent (réseau docker)
 BRANCH="${BRANCH:-feat/selfservice-app-adr078}"
-SCRIPT_PATH="poc-control-plane-federation/ci/Jenkinsfile.selfservice"
-MANIFEST_DEFAULT="clients/_example/applications/demo-consumer.ansible.yml"
+SCRIPT_PATH="${SCRIPT_PATH:-poc-control-plane-federation/ci/Jenkinsfile.selfservice}"
+MANIFEST_DEFAULT="${MANIFEST_DEFAULT:-clients/_example/applications/demo-consumer.ansible.yml}"
+JOB_DESC="${JOB_DESC:-self-service creation d application - CONSOMMATEUR}"
 
 say()  { printf '\033[1;36m[selfservice-job]\033[0m %s\n' "$*"; }
 fail() { printf '\033[1;31m[selfservice-job]\033[0m %s\n' "$*"; exit 1; }
@@ -29,7 +35,7 @@ XML="$(mktemp)"; CK="$(mktemp)"; trap 'rm -f "$XML" "$CK"' EXIT
 cat > "$XML" <<JOBXML
 <?xml version='1.1' encoding='UTF-8'?>
 <flow-definition plugin="workflow-job">
-  <description>ADR-078 — self-service &#171; cr&#233;ation d'application &#187; (CONSOMMATEUR) via le r&#244;le Ansible apim_selfservice_app. PLAN (webhook stoa-selfservice-plan, lecture seule, identit&#233; de job) / APPLY (build param&#233;tr&#233;, identit&#233; nominative USER_VAULT_JWT &#8594; Vault &#8594; convergence + verify fail-closed).</description>
+  <description>ADR-078 — ${JOB_DESC} via son r&#244;le Ansible. PLAN (webhook stoa-selfservice-plan, lecture seule, identit&#233; de job) / APPLY (build param&#233;tr&#233;, identit&#233; nominative USER_VAULT_JWT &#8594; Vault &#8594; convergence + verify fail-closed).</description>
   <keepDependencies>false</keepDependencies>
   <properties>
     <org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty>
@@ -74,8 +80,18 @@ cat > "$XML" <<JOBXML
           </choices>
         </hudson.model.ChoiceParameterDefinition>
         <hudson.model.StringParameterDefinition>
+          <name>VAULT_USER</name>
+          <description>VOIE A &#8212; identit&#233; NOMINATIVE : votre login annuaire (sAMAccountName, UPN user@domaine, ou DOMAIN\user). Vide sur le PLAN.</description>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.PasswordParameterDefinition>
+          <name>VAULT_USER_PASSWORD</name>
+          <description>VOIE A &#8212; mot de passe annuaire, saisi &#224; CHAQUE apply, jamais persist&#233; hors du build. &#9888; Ne pas relancer en boucle apr&#232;s un refus (lockout AD). NB : le bouton &#171; Change Password &#187; est un libell&#233; Jenkins &#8212; il signifie &#171; saisir la valeur &#187;, RIEN ne modifie votre mot de passe annuaire.</description>
+          <defaultValue></defaultValue>
+        </hudson.model.PasswordParameterDefinition>
+        <hudson.model.StringParameterDefinition>
           <name>USER_VAULT_JWT</name>
-          <description>Identit&#233; NOMINATIVE : JWT court aud=vault. Vide sur le PLAN.</description>
+          <description>VOIE B &#8212; identit&#233; NOMINATIVE : JWT court aud=vault. Prioritaire sur la voie A. Vide sur le PLAN.</description>
           <trim>false</trim>
         </hudson.model.StringParameterDefinition>
       </parameterDefinitions>

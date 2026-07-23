@@ -12,10 +12,13 @@
 //   push/PR ──webhook──▶ PLAN   : identité de JOB, LECTURE SEULE — valide le
 //                                 manifeste + ansible --syntax-check. AUCUN secret.
 //              humain ──▶ APPLY  : build PARAMÉTRÉ — l'humain fournit SON identité
-//                                 (DÉMO : JWT nominatif Keycloak ADR-077 ; CLIENT
-//                                 voie A : user/mot de passe LDAP) → token Vault
-//                                 NOMINATIF → le RÔLE lit les creds du compte de
-//                                 service gateway dans Vault et converge + verify.
+//                                 (voie A : VAULT_USER + mot de passe annuaire ;
+//                                 voie B : JWT nominatif Keycloak ADR-077) → token
+//                                 Vault NOMINATIF → le RÔLE lit les creds du compte
+//                                 de service gateway dans Vault et converge + verify.
+//
+// Le login, la révocation et la preuve de mort du token vivent dans UN SEUL
+// endroit — ci/lib/vault-login.sh, partagé par les pipelines (ADR-078 §2).
 //
 // L'identité user ne sert QU'À obtenir le token Vault nominatif ; les appels wM se
 // font avec le COMPTE DE SERVICE (creds lus dans Vault par le rôle). Voir adr/adr-078.
@@ -30,11 +33,21 @@ pipeline {
     // vers le proxy d'admin (endpoint unique multi-env). Vide = manifeste mono-env.
     choice(name: 'ENVIRONMENT', choices: ['dev', 'rec', 'int', 'prod'],
            description: "Environnement cible (identité IP/cert par env + header X-Environment).")
-    // DÉMO lab : identité nominative = JWT court aud=vault (exchange RFC 8693
-    // Keycloak, ADR-077, TTL 5 min). CLIENT (voie A) : password param LDAP + POST
-    // auth/ldap/login/<user> (§3 ADR-078).
+    // ── VOIE A (retenue pour la V1, ADR-078 §3) : l'humain saisit SON identité
+    // d'annuaire au moment de l'apply. Le mot de passe n'est JAMAIS persisté hors
+    // du build : ni dans le credentials store, ni dans Git, ni sur disque.
+    // ⚠ Un paramètre `password` est chiffré dans le build.xml avec la clé de
+    // l'instance — c'est-à-dire lisible par un admin Jenkins. Ce n'est PAS une
+    // frontière de confinement (ADR-078 §2) : ce qui borne le risque, c'est le TTL
+    // court du token, sa révocation en fin de build, et les agents éphémères.
+    string(name: 'VAULT_USER', defaultValue: '',
+           description: "Identité NOMINATIVE (voie A) : votre login annuaire. Format imposé par le mount Vault — sAMAccountName, UPN user@domaine, ou DOMAIN\\\\user. Vide sur le PLAN.")
+    password(name: 'VAULT_USER_PASSWORD', defaultValue: '',
+             description: "Mot de passe annuaire, saisi À CHAQUE apply. ⚠ Ne PAS relancer en boucle après un refus : la politique de lockout AD verrouille le compte. NB : le bouton « Change Password » est un libellé Jenkins (SECURITY-1721) — il signifie « saisir la valeur du champ », RIEN ne modifie votre mot de passe annuaire ; cliquez-le puis tapez votre mot de passe.")
+    // ── VOIE B (cible quand le SSO Keycloak sera en place, ADR-077) : JWT court
+    // aud=vault issu de l'exchange RFC 8693. Prioritaire s'il est fourni.
     string(name: 'USER_VAULT_JWT', defaultValue: '',
-           description: "Identité NOMINATIVE : JWT court aud=vault. Vide sur le PLAN.")
+           description: "Identité NOMINATIVE (voie B) : JWT court aud=vault. Prioritaire sur la voie A. Vide sur le PLAN.")
   }
 
   triggers { GenericTrigger(token: 'stoa-selfservice-plan',
@@ -43,6 +56,9 @@ pipeline {
 
   environment {
     VAULT_ADDR        = "${env.VAULT_ADDR ?: 'http://vault:8200'}"
+    // Mount de l'auth user/password : `ldap` chez le client (AD ; peut s'appeler
+    // ad, ldap-corp…), `userpass` en lab. MÊME requête REST — seul ce mount change.
+    VAULT_USER_AUTH_MOUNT = "${env.VAULT_USER_AUTH_MOUNT ?: 'ldap'}"
     // Base de l'API d'admin vue DEPUIS l'agent (réseau docker) ; chez le client = le proxy.
     APIM_API_BASE     = "${env.APIM_API_BASE  ?: 'http://webmethods-real:5555/rest/apigateway'}"
     APIM_DATA_BASE    = "${env.APIM_DATA_BASE ?: 'http://webmethods-real:5555/gateway'}"
@@ -77,32 +93,47 @@ pipeline {
       steps {
         dir('poc-control-plane-federation') {
           sh '''
-            set +x            # NE JAMAIS écho : JWT, token Vault, creds gateway
+            set +x            # NE JAMAIS écho : mot de passe, JWT, token Vault, creds gateway
             set -eu
             MANIFEST="${MANIFEST:-clients/_example/applications/demo-consumer.ansible.yml}"
-            # Barrière humaine : sans identité nominative (build webhook/plan), stop, vert.
-            if [ -z "${USER_VAULT_JWT:-}" ]; then
+
+            # 0) GATEWAY DISPONIBLE ? Le lab la recycle toutes les ~20 min (keepalive
+            #    licence trial) et un rolling restart chez le client produit la même
+            #    fenêtre : attendre son retour (max 5 min) AVANT de consommer
+            #    l'identité — plutôt qu'échouer au milieu du play sur un
+            #    « Connection refused » cryptique. /health répond 200 sans auth.
+            i=0
+            until [ "$(curl -s -o /dev/null -m 5 -w '%{http_code}' "$APIM_API_BASE/health" || true)" = "200" ]; do
+              i=$((i+1))
+              if [ "$i" -ge 60 ]; then echo "  ✗ gateway toujours injoignable après 5 min ($APIM_API_BASE/health)"; exit 1; fi
+              if [ "$i" -eq 1 ]; then echo "  (gateway indisponible — recyclage en cours ? attente du retour, max 5 min…)"; fi
+              sleep 5
+            done
+
+            # 1) IDENTITÉ NOMINATIVE → TOKEN VAULT. Voie B (JWT) si fournie, sinon
+            #    voie A (VAULT_USER + mot de passe annuaire). Le détail — corps JSON
+            #    non forgé en shell, user URL-encodé, rien en argv — est dans la lib.
+            . ci/lib/vault-login.sh
+            # Le trap est armé AVANT tout : il révoque MÊME si la convergence échoue.
+            # Sans lui, un `revoke` en dernière instruction est sauté par `set -e` dès
+            # qu'une étape rate, et le token nominatif survit jusqu'à son TTL.
+            trap vault_trap_revoke EXIT
+            # `RC=0; cmd || RC=$?` et NON `if ! cmd; then RC=$?` : après un `!`, $?
+            # vaut 0 (la négation a réussi) et le code de retour est perdu.
+            RC=0; vault_login_nominative || RC=$?
+            if [ "$RC" != 0 ]; then
+              # Barrière humaine : aucune identité fournie (build webhook = ACL.SYSTEM,
+              # aucun humain) → on s'arrête VERT, en plan-only. Une identité fournie
+              # mais REFUSÉE, elle, est une erreur : build rouge (fail-closed).
+              [ "$RC" = 2 ] || exit 1
               echo "  (pas d'identité nominative → PLAN-only, apply sauté)"; exit 0
             fi
-            USER_VAULT_JWT=$(printf '%s' "$USER_VAULT_JWT" | tr -d '[:space:]')
-            VTOKF=$(mktemp); trap 'rm -f "$VTOKF"' EXIT
-
-            # 1) IDENTITÉ NOMINATIVE → TOKEN VAULT (démo Keycloak ; client = LDAP).
-            VT=$(curl -sf -X POST "$VAULT_ADDR/v1/auth/jwt/login" \
-                  --data-binary "$(printf '{"role":"user-deploy","jwt":"%s"}' "$USER_VAULT_JWT")" \
-                  | sed -n 's/.*"client_token":"\\([^"]*\\)".*/\\1/p')
-            [ -n "$VT" ] || { echo 'auth/jwt/login KO (identité nominative refusée)'; exit 1; }
-            ( umask 077; printf %s "$VT" > "$VTOKF" )
-            WHO=$(curl -sf -H "X-Vault-Token: $VT" "$VAULT_ADDR/v1/auth/token/lookup-self" \
-                  | sed -n 's/.*"display_name":"\\([^"]*\\)".*/\\1/p')
-            echo "  ✓ token Vault NOMINATIF (entité=$WHO) — le job ne détient aucun credential propre"
-            unset VT
 
             # 2) CONVERGE via le RÔLE : le rôle lit les creds gateway dans Vault
-            #    avec le token nominatif (VAULT_TOKEN_FILE), chemin tenant-scopé.
+            #    avec le token nominatif (VAULT_TOKEN_FILE exporté par la lib),
+            #    chemin tenant-scopé.
             # Le manifeste est passé en CHEMIN (apim_ss_manifest → include_vars dans le
             # rôle), PAS en `-e @` : un extra-var masquerait la fusion per_env (précédence).
-            export VAULT_TOKEN_FILE="$VTOKF"
             ansible-playbook -i "$INVENTORY" ansible/selfservice-app.yml \
               -e apim_ss_manifest="$MANIFEST" \
               -e apim_ss_env="${ENVIRONMENT:-}" \
@@ -119,9 +150,8 @@ pipeline {
               -e apim_ss_data_base="$APIM_DATA_BASE" \
               -e apim_ss_vault_wm_creds_sub="$APIM_WM_CREDS_SUB"
 
-            # 4) le token nominatif meurt avec le build.
-            curl -sf -X POST -H "X-Vault-Token: $(cat "$VTOKF")" \
-              "$VAULT_ADDR/v1/auth/token/revoke-self" >/dev/null && echo "  ✓ token Vault révoqué"
+            # 4) le token nominatif meurt avec le build — révocation + PREUVE DE MORT
+            #    (lookup-self -> 403) exécutées par le trap, succès comme échec.
           '''
         }
       }

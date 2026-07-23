@@ -251,3 +251,42 @@ func TestListDirAndExistsOnMissingPaths(t *testing.T) {
 		t.Fatalf("expected empty listing, got %v", names)
 	}
 }
+
+// TestCommitFilesPushRemote — le knob PushRemote publie chaque commit vers le
+// remote (fail-closed) ; vide, rien ne part (comportement historique). Ferme la
+// dette P1 « governance-api sans push Git » (Jenkinsfile.rollback re-clone le
+// remote : sans push, le revert répondu par l'API n'y existait pas).
+func TestCommitFilesPushRemote(t *testing.T) {
+	repo := newTestRepo(t)
+	ctx := context.Background()
+
+	// Un remote bare local joue le rôle de Gitea.
+	bare := t.TempDir()
+	gitT(t, bare, "init", "--bare", "-b", "main", ".")
+	gitT(t, repo.Dir, "remote", "add", "origin", bare)
+
+	// 1) PushRemote vide : le commit reste local, le bare ne bouge pas.
+	if _, err := repo.CommitFiles(ctx, alice, map[string][]byte{"a.yaml": []byte("a: 1\n")}, "local only", ""); err != nil {
+		t.Fatalf("CommitFiles (sans push): %v", err)
+	}
+	if out := gitT(t, bare, "branch", "--list", "main"); strings.TrimSpace(out) != "" {
+		t.Fatalf("bare a reçu un push alors que PushRemote est vide: %q", out)
+	}
+
+	// 2) PushRemote posé : le commit est publié, le bare avance au même SHA.
+	repo.PushRemote = "origin"
+	commit, err := repo.CommitFiles(ctx, alice, map[string][]byte{"b.yaml": []byte("b: 2\n")}, "pushed", "")
+	if err != nil {
+		t.Fatalf("CommitFiles (push): %v", err)
+	}
+	remoteSHA := strings.TrimSpace(gitT(t, bare, "rev-parse", "main"))
+	if remoteSHA != commit.SHA {
+		t.Fatalf("le remote n'a pas le commit répondu: remote=%s réponse=%s", remoteSHA, commit.SHA)
+	}
+
+	// 3) Remote cassé : le commit DOIT échouer (fail-closed), pas réussir en silence.
+	repo.PushRemote = "remote-inexistant"
+	if _, err := repo.CommitFiles(ctx, alice, map[string][]byte{"c.yaml": []byte("c: 3\n")}, "must fail", ""); err == nil {
+		t.Fatalf("push vers un remote inexistant aurait dû échouer (fail-closed)")
+	}
+}
