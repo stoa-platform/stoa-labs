@@ -22,7 +22,7 @@ pipeline {
     string(name: 'VAULT_USER', defaultValue: '',
            description: "Identité NOMINATIVE de l'opérateur : login annuaire. Vide = repli AppRole (acte non imputable).")
     password(name: 'VAULT_USER_PASSWORD', defaultValue: '',
-             description: "Mot de passe annuaire, saisi à chaque rollback. ⚠ Ne pas rejouer après un refus (lockout AD).")
+             description: "Mot de passe annuaire, saisi à chaque rollback. ⚠ Ne pas rejouer après un refus (lockout AD). NB : le bouton « Change Password » est un libellé Jenkins (SECURITY-1721) — il signifie « saisir la valeur du champ », RIEN ne modifie votre mot de passe annuaire ; cliquez-le puis tapez votre mot de passe.")
   }
   environment {
     GOPROXY = 'off'; GOFLAGS = '-mod=vendor'; GOSUMDB = 'off'

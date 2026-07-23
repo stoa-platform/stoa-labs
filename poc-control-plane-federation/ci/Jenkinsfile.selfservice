@@ -43,7 +43,7 @@ pipeline {
     string(name: 'VAULT_USER', defaultValue: '',
            description: "Identité NOMINATIVE (voie A) : votre login annuaire. Format imposé par le mount Vault — sAMAccountName, UPN user@domaine, ou DOMAIN\\\\user. Vide sur le PLAN.")
     password(name: 'VAULT_USER_PASSWORD', defaultValue: '',
-             description: "Mot de passe annuaire, saisi À CHAQUE apply. ⚠ Ne PAS relancer en boucle après un refus : la politique de lockout AD verrouille le compte.")
+             description: "Mot de passe annuaire, saisi À CHAQUE apply. ⚠ Ne PAS relancer en boucle après un refus : la politique de lockout AD verrouille le compte. NB : le bouton « Change Password » est un libellé Jenkins (SECURITY-1721) — il signifie « saisir la valeur du champ », RIEN ne modifie votre mot de passe annuaire ; cliquez-le puis tapez votre mot de passe.")
     // ── VOIE B (cible quand le SSO Keycloak sera en place, ADR-077) : JWT court
     // aud=vault issu de l'exchange RFC 8693. Prioritaire s'il est fourni.
     string(name: 'USER_VAULT_JWT', defaultValue: '',
