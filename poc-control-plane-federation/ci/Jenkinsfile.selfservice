@@ -97,6 +97,19 @@ pipeline {
             set -eu
             MANIFEST="${MANIFEST:-clients/_example/applications/demo-consumer.ansible.yml}"
 
+            # 0) GATEWAY DISPONIBLE ? Le lab la recycle toutes les ~20 min (keepalive
+            #    licence trial) et un rolling restart chez le client produit la même
+            #    fenêtre : attendre son retour (max 5 min) AVANT de consommer
+            #    l'identité — plutôt qu'échouer au milieu du play sur un
+            #    « Connection refused » cryptique. /health répond 200 sans auth.
+            i=0
+            until [ "$(curl -s -o /dev/null -m 5 -w '%{http_code}' "$APIM_API_BASE/health" || true)" = "200" ]; do
+              i=$((i+1))
+              if [ "$i" -ge 60 ]; then echo "  ✗ gateway toujours injoignable après 5 min ($APIM_API_BASE/health)"; exit 1; fi
+              if [ "$i" -eq 1 ]; then echo "  (gateway indisponible — recyclage en cours ? attente du retour, max 5 min…)"; fi
+              sleep 5
+            done
+
             # 1) IDENTITÉ NOMINATIVE → TOKEN VAULT. Voie B (JWT) si fournie, sinon
             #    voie A (VAULT_USER + mot de passe annuaire). Le détail — corps JSON
             #    non forgé en shell, user URL-encodé, rien en argv — est dans la lib.
