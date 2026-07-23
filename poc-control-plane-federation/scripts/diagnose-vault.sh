@@ -80,8 +80,26 @@ esac
 
 sec "3. LOGIN avec l'identité fournie (le cœur de la voie A)"
 if [ -z "${VAULT_USER:-${VAULT_LDAP_USER:-}}" ]; then
-  warn "VAULT_USER non fourni — étape login SAUTÉE. (Fournir VAULT_USER + VAULT_USER_PASSWORD pour la tester.)"
+  warn "VAULT_USER non fourni — étape login SAUTÉE. (Fournir VAULT_USER pour la tester.)"
 else
+  # SAISIE SÛRE du mot de passe : si aucun n'est déjà fourni (env/fichier), on le
+  # demande avec `read -s` — qui lit l'entrée VERBATIM, SANS aucune interprétation
+  # shell. C'est LA parade aux caractères spéciaux : `$$` (PID), `$x` (variable),
+  # `*` (glob) ne sont JAMAIS interprétés. Évite tout problème de guillemets.
+  if [ -z "${VAULT_USER_PASSWORD:-${VAULT_USER_PASS:-${VAULT_LDAP_PASS:-}}}" ] \
+     && [ -z "${VAULT_USER_PASS_FILE:-${VAULT_LDAP_PASS_FILE:-}}" ]; then
+    if [ -t 0 ]; then
+      printf 'Mot de passe pour %s (saisie masquée, aucun caractère interprété) : ' \
+        "${VAULT_USER:-$VAULT_LDAP_USER}" >&2
+      read -rs VAULT_USER_PASSWORD; echo >&2
+      export VAULT_USER_PASSWORD
+      _dbg_len=$(printf '%s' "$VAULT_USER_PASSWORD" | wc -c | tr -d ' ')
+      echo "   (mot de passe saisi : $_dbg_len octets — compare au besoin avec: printf %%s '…' | shasum -a 256)"
+    else
+      warn "aucun mot de passe fourni et pas de terminal pour le saisir — login SAUTÉ."
+      warn "  → fournir VAULT_USER_PASS_FILE=<fichier 0600> (recommandé pour \$ * @), ou VAULT_USER_PASSWORD en guillemets SIMPLES."
+    fi
+  fi
   # shellcheck disable=SC1091
   . ci/lib/vault-login.sh
   RC=0; vault_login_nominative || RC=$?
