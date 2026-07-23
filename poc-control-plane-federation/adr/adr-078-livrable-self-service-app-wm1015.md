@@ -181,12 +181,19 @@ qu'un champ contient une quote), et le `client_secret` du compte de service part
 le **corps** de la requête via `form_post_no_argv` au lieu d'un `-d client_secret=…`
 visible dans `ps`.
 
-**Non re-prouvé** : la chaîne ADR-075 **19/19** n'a pas été rejouée après ce câblage
-(elle exige un état governance/promotions/ITSM complet). Ce qui l'a été : les 4
-Jenkinsfiles passent le linter déclaratif de Jenkins, et le bloc shell de prod a été
-**rejoué à l'identique dans le conteneur Jenkins** (donc sous `dash`) contre le Vault
-et le Keycloak réels, dans les deux modes — nominatif (`ldap-oscar`, policy
-`operator-deploy`) et repli AppRole.
+**Re-prouvé le 2026-07-23** : chaîne ADR-075 rejouée **22/22** (`demo-multienv.sh`,
+après réparation de la gateway — cf. `scripts/repair-wm-dangling-policyaction.sh` :
+NPE de PUT/ACTIVATE causé par une policyAction IAM SUPPRIMÉE mais encore référencée
+par 6 policies, réparé par excision REST + re-apply depuis Git, zéro suppression
+d'API) ; puis les VRAIS jobs Jenkins sur la branche : `stoa-prod-deploy` **SUCCESS
+×2** (repli AppRole annoncé « non imputable », puis NOMINATIF `ldap-oscar` policy
+`operator-deploy`) et `stoa-prod-rollback` **SUCCESS ×2** (AppRole puis NOMINATIF,
+les deux stages) — revert commité et **poussé** par governance-api
+(`GOVERNANCE_GIT_PUSH_REMOTE`, ferme la dette P1 « sans push Git »), re-clone,
+re-apply `ACCEPT`, promotion `rolled_back`, mot de passe absent des logs (0
+occurrence). Contrainte de lab découverte : le keepalive trial recycle la gateway
+toutes les ~20 min (`WM_MAX_MIN=20`, cron `*/5`) — un build qui chevauche le seuil
+est coupé ; lancer les jobs longs juste après un cycle.
 
 **Traçabilité réellement obtenue (à documenter honnêtement) :** le `user_claim` du rôle Vault devient le nom de l'entity alias, l'`entity_id` est journalisé → **piste nominative DANS Vault**. Mais les appels gateway partant sous le compte de service, **webMethods ne verra jamais l'humain** : l'imputabilité de bout en bout n'existe **que par corrélation** (audit Vault ↔ log Jenkins ↔ audit gateway). ⇒ **injecter un identifiant de corrélation** dans les trois journaux.
 
