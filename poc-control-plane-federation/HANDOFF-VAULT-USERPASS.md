@@ -103,6 +103,21 @@ bash scripts/setup-wm-admin-proxy.sh ; bash scripts/demo-multienv.sh   # re-appl
 
 ---
 
+## MODE DEBUG (pour localiser une panne au client — « ma config ou la leur ? »)
+
+Tout est verrouillé `no_log`/`set +x` pour ne jamais fuiter un secret → par défaut on est aveugle. Le mode debug **opt-in** rend visible les appels **sans** exposer de secret (corps de succès jamais imprimés, corps d'erreur rédactés).
+
+- **Dans le pipeline** : cocher le paramètre **`DEBUG`** du build → traces `[vault-dbg] MÉTHODE url -> HTTP code`, erreurs Vault/Keycloak/gateway rédactées, verbosité Ansible, résumé des lectures KV (chemin + statut). Prouvé non-fuyant : `test-vault-user-login.sh` **37/37** (D1/D2/D3) + E2E `publish #16 DEBUG=true`.
+- **En ligne de commande** : `STOA_DEBUG=1` devant n'importe quel appel à `ci/lib/vault-login.sh`.
+- **Diagnostic autonome (LE plus utile au client)** : `scripts/diagnose-vault.sh` — rejoue la chaîne (joignable ? mount ? login ? lecture ?) avec les mêmes variables que le pipeline, et donne à CHAQUE étape le code HTTP + le message d'erreur Vault pour localiser la faute. Exemple :
+  ```bash
+  VAULT_ADDR=https://vault.corp:8200 VAULT_USER_AUTH_MOUNT=ldap \
+  VAULT_USER='alice@corp' VAULT_USER_PASSWORD='...' \
+  [VAULT_NAMESPACE=…] [VAULT_CACERT=/etc/pki/corp-ca.pem] \
+  bash scripts/diagnose-vault.sh
+  ```
+  Messages typiques : `failed to bind` (mot de passe/format/mount) · `403` sur la lecture (policy) · `404` (secret non provisionné) · `sys/health INJOIGNABLE` (réseau/TLS). ⚠ Honnête sur l'ambiguïté : un mount **absent** renvoie 403 comme un mount qui **rejette** — le script le dit au lieu de sur-affirmer.
+
 ## MÉMOIRE PROJET (contexte durable)
 - `memory/vault-user-password-login.md` — ce chantier, complet.
 - `memory/wm-npe-dangling-policyaction.md` — la NPE wM (cause = policyAction supprimée mais référencée).
