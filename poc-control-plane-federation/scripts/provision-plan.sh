@@ -67,8 +67,8 @@ sed -n '1,40p' "$PLAN_LOG"
 
 echo "[4/4] commentaire sur la PR #${PR_NUMBER} (verdict ${VERDICT})"
 # Corps du commentaire construit en python3 (jq absent du conteneur Jenkins).
-PR_NUMBER="$PR_NUMBER" GIT_REPO="$GIT_REPO" API="$API" GITEA_TOKEN="$GITEA_TOKEN" \
-VERDICT="$VERDICT" MAN="$MAN" PLAN_LOG="$PLAN_LOG" python3 - <<'PY'
+PR_NUMBER="$PR_NUMBER" GIT_REPO="$GIT_REPO" API="$API" GITEA_TOKEN="$GITEA_TOKEN" GIT_HOST="$GIT_HOST" \
+PR_BRANCH="$PR_BRANCH" VERDICT="$VERDICT" MAN="$MAN" PLAN_LOG="$PLAN_LOG" python3 - <<'PY'
 import os, json, urllib.request
 verdict = os.environ["VERDICT"]
 api, repo, tok = os.environ["API"], os.environ["GIT_REPO"], os.environ["GITEA_TOKEN"]
@@ -76,8 +76,10 @@ prn = os.environ["PR_NUMBER"]
 MARKER = "<!-- provision-plan -->"   # marqueur pour retrouver LE commentaire de plan
 head = "✅ **Plan self-service OK**" if verdict == "ok" else "❌ **Plan self-service EN ÉCHEC**"
 log = open(os.environ["PLAN_LOG"]).read()[-1500:]
+man = os.environ["MAN"]
+man_url = f"{os.environ['GIT_HOST']}/{repo}/src/branch/{os.environ['PR_BRANCH']}/{man}"
 body = (f"{MARKER}\n{head} — automatique (webhook PR).\n\n"
-        f"- manifeste : `{os.environ['MAN']}`\n"
+        f"- manifeste : [`{man}`]({man_url})\n"
         f"- nature : lecture seule (aucune mutation, aucun secret) — ADR-078 §2\n\n"
         "<details><summary>sortie du plan</summary>\n\n```\n" + log + "\n```\n</details>\n\n"
         + ("Prêt pour validation humaine (4-yeux) puis apply nominatif au merge."

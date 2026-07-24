@@ -1,0 +1,62 @@
+<?xml version='1.1' encoding='UTF-8'?>
+<flow-definition plugin="workflow-job">
+  <description>Apply post-merge : une PR de provisioning FUSIONNÉE ouvre une DEMANDE EN ATTENTE dans Jenkins (input) ; sur validation + identité Vault → apply nominatif via selfservice-app-deploy.</description>
+  <keepDependencies>false</keepDependencies>
+  <properties>
+    <org.jenkinsci.plugins.workflow.job.properties.DisableConcurrentBuildsJobProperty/>
+    <org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty>
+      <triggers>
+        <org.jenkinsci.plugins.gwt.GenericTrigger plugin="generic-webhook-trigger@2.4.2">
+          <spec></spec>
+          <genericVariables>
+            <org.jenkinsci.plugins.gwt.GenericVariable><key>PR_BRANCH</key><value>$.pull_request.head.ref</value></org.jenkinsci.plugins.gwt.GenericVariable>
+            <org.jenkinsci.plugins.gwt.GenericVariable><key>PR_NUMBER</key><value>$.pull_request.number</value></org.jenkinsci.plugins.gwt.GenericVariable>
+            <org.jenkinsci.plugins.gwt.GenericVariable><key>PR_ACTION</key><value>$.action</value></org.jenkinsci.plugins.gwt.GenericVariable>
+            <org.jenkinsci.plugins.gwt.GenericVariable><key>PR_MERGED</key><value>$.pull_request.merged</value></org.jenkinsci.plugins.gwt.GenericVariable>
+          </genericVariables>
+          <printContributedVariables>true</printContributedVariables>
+          <printPostContent>false</printPostContent>
+          <token>stoa-provision-apply</token>
+          <silentResponse>false</silentResponse>
+          <regexpFilterText>$PR_ACTION|$PR_MERGED</regexpFilterText>
+          <regexpFilterExpression>^closed\|true$</regexpFilterExpression>
+          <overrideQuietPeriod>false</overrideQuietPeriod>
+          <shouldNotFlattern>false</shouldNotFlattern>
+          <allowSeveralTriggersPerBuild>false</allowSeveralTriggersPerBuild>
+        </org.jenkinsci.plugins.gwt.GenericTrigger>
+      </triggers>
+    </org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty>
+  </properties>
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition" plugin="workflow-cps">
+    <script>
+def ref = env.PR_BRANCH ?: ''
+if (!ref.startsWith('provision/')) { echo "branche '${ref}' hors provision/* — rien a appliquer"; return }
+def rest = ref.substring('provision/'.length())
+def envName = rest.substring(rest.lastIndexOf('-') + 1)
+def appName = rest.substring(0, rest.lastIndexOf('-'))
+def manifest = "clients/provisioned/applications/${appName}.ansible.yml"
+currentBuild.displayName = "apply ${appName}/${envName} (PR #${env.PR_NUMBER})"
+echo "Demande FUSIONNEE — application=${appName} env=${envName} manifeste=${manifest}"
+
+// ── DEMANDE EN ATTENTE : validation humaine + identite Vault ──────────────
+def creds = input(
+  id: 'apply', message: "Appliquer l'application ${appName} en ${envName} ? Fournissez VOTRE identite Vault (voie A).",
+  parameters: [
+    string(name: 'VAULT_USER', defaultValue: '', description: 'Login annuaire (ex. oscar)'),
+    password(name: 'VAULT_USER_PASSWORD', defaultValue: '', description: 'Mot de passe annuaire')
+  ])
+
+// ── APPLY NOMINATIF : delegue au job prouve selfservice-app-deploy ────────
+build job: 'selfservice-app-deploy', wait: true, parameters: [
+  string(name: 'MANIFEST', value: manifest),
+  string(name: 'ENVIRONMENT', value: envName),
+  string(name: 'ADMIN_VIA', value: 'proxy-oauth2'),
+  string(name: 'VAULT_USER', value: creds.VAULT_USER),
+  [$class: 'PasswordParameterValue', name: 'VAULT_USER_PASSWORD', value: creds.VAULT_USER_PASSWORD]
+]
+echo "Apply nominatif lance pour ${appName}/${envName} par ${creds.VAULT_USER}"
+    </script>
+    <sandbox>true</sandbox>
+  </definition>
+  <triggers/>
+</flow-definition>
