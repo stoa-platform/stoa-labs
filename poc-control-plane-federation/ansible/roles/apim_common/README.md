@@ -36,6 +36,17 @@ suivantes :
 - `oauth2` : bearer `client_credentials` (proxy client) — creds depuis Vault
   (`<prefix>/<apim_ss_vault_oauth_sub>`), fallback vars `apim_ss_oauth_*`.
 
+Conventions client épousées SANS code (tout est knob) : préfixe KV optionnel
+(`apim_ss_vault_prefix: ""` = entrée à PLAT, ex. `secret_DEV/data/APIM-TEST-ADMIN`),
+noms des CHAMPS des entrées (`apim_ss_vault_*_key`, ex. `admin-client-id`),
+résolution champ PAR champ (id/secret dans Vault + `token_url` en var = OK).
+
+AS local wM (proxy admin sur la gateway) : token endpoint
+`https://<gateway-IS>/invoke/pub.apigateway.oauth2/getAccessToken` et
+`apim_ss_oauth_client_auth: basic` — sondé live : en `post` (creds dans le
+corps), wM exige HTTPS (« Transport protocol must be HTTPS ») ; le Basic est
+évalué partout. Keycloak accepte les deux méthodes.
+
 ## Sans accès Vault (poste client, PoC)
 
 Toutes les tâches Vault sont gardées par `VAULT_ADDR` : **sans `VAULT_ADDR`
@@ -57,5 +68,16 @@ L'organisation du Vault client n'a pas besoin de ressembler au lab : mount,
 préfixe et sous-chemins sont des knobs (`apim_ss_vault_kv_mount`,
 `apim_ss_vault_prefix`, `apim_ss_vault_wm_creds_sub`, `apim_ss_vault_oauth_sub`).
 
-Debug non-fuyant : `-e stoa_debug=true` trace voie d'auth, chemins KV et codes
-HTTP — jamais une valeur de secret.
+## Diagnostic d'échec TOUJOURS actif (debug ou pas)
+
+`no_log: true` n'est JAMAIS levé, même en debug (un run debug ne doit pas
+pouvoir fuiter un secret dans un log Jenkins archivé). En contrepartie, chaque
+appel Vault muet (logins K8s/AppRole, lectures KV, bearer) est en
+`failed_when: false` suivi d'un **assert fail-closed** qui ré-expose le
+diagnostic NON-SECRET : code HTTP, URL KV complète, namespace, causes probables
+(policy sans segment `data/`, mount/préfixe, KV v1 vs v2, `VAULT_NAMESPACE`
+absent de l'étape ansible-playbook) — même doctrine que le login user/password.
+Plus jamais de « output has been hidden » sur un 403.
+
+Debug non-fuyant : `-e stoa_debug=true` trace en plus la voie d'auth, les
+chemins KV et les codes HTTP des étapes RÉUSSIES — jamais une valeur de secret.
