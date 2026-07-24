@@ -3,7 +3,9 @@
 - name: "Env : résoudre l'API effective (identité invariante ⊕ per_env inbound)"
   ansible.builtin.import_tasks: resolve-env.yml
 - name: "Secrets : auth admin (Vault, fallback PoC)"
-  ansible.builtin.import_tasks: secrets.yml
+  ansible.builtin.import_role:
+    name: apim_common
+    tasks_from: secrets.yml
 - name: "Verify — API '{{ apim_api.name }}' v{{ apim_api.version }}"
   module_defaults:
     ansible.builtin.uri: "{{ apim_ss_uri_defaults }}"

@@ -6,39 +6,10 @@
 # au stage IAM). Spec vérifiée = Go labctl (publish.go / inboundauth.go / oauth2.go),
 # mémoire wm-1015-rest-shapes. Le binaire Go reste parqué (contrainte de provenance).
 
-# --- infra (MÊMES noms que apim_selfservice_app : partagé en pipeline combiné) ---
-apim_ss_api_base: "http://localhost:5555/rest/apigateway"
-apim_ss_data_base: "http://localhost:5555/gateway"
-apim_ss_env: ""
-apim_ss_env_header: "X-Environment"
-apim_ss_auth_mode: "basic"
-apim_ss_wm_user: "Administrator"
-apim_ss_wm_password: "manage"
-apim_ss_oauth_token_url: ""
-apim_ss_oauth_client_id: ""
-apim_ss_oauth_client_secret: ""
-apim_ss_oauth_scope: ""
-apim_ss_vault_addr: "{{ lookup('env', 'VAULT_ADDR') }}"
-apim_ss_vault_kv_mount: "secret"
-apim_ss_vault_k8s_mount: "auth/kubernetes"    # auth Kubernetes : login du SA du pod agent
-# Mount de la méthode d'auth USER/PASSWORD. `auth/ldap` chez le client (AD ; le
-# mount peut s'appeler auth/ad, auth/ldap-corp…), `auth/userpass` en lab : la
-# requête REST est IDENTIQUE, seul ce chemin change. Normalisé — `ldap`,
-# `auth/ldap` et `auth/ldap/` donnent le même résultat.
-apim_ss_vault_user_mount: >-
-  auth/{{ lookup('env', 'VAULT_USER_AUTH_MOUNT') | default('ldap', true) | trim
-          | regex_replace('^auth/', '') | regex_replace('/+$', '') }}
-apim_ss_vault_prefix: "stoa"
-apim_ss_vault_wm_creds_sub: "gateways/webmethods"
-apim_ss_vault_oauth_sub: "gateways/webmethods/admin-oauth"
-
-# --- TLS : CA privé (client) -------------------------------------------------
-# Bundle PEM (CA racine/intermédiaires) qui DOIT couvrir CHAQUE endpoint https
-# joint par le play : la gateway (apim_ss_api_base), l'IdP OAuth2
-# (apim_ss_oauth_token_url) ET Vault (apim_ss_vault_addr) — concaténer les CA
-# si elles diffèrent (souvent 1 seule racine corporate). Vide = trust store
-# système (PoC http, ou CA publique). Câblé sur le module uri via ca_path.
-apim_ss_ca_path: ""
+# --- connexion admin, TLS, multi-env, auth (basic|oauth2), Vault --------------
+# Défauts PARTAGÉS (namespace apim_ss_*) déplacés dans
+# roles/apim_common/defaults/main.yml — importés par main/verify via
+# import_role (exposés au play : surcharge inventaire/-e inchangée).
 
 # --- IS-ADMIN : allow-list d'un port en Deny-by-Default (tasks/port-access.yml) ---
 # Surface DIFFÉRENTE de l'API d'admin apigateway : c'est l'Access Mode du listener

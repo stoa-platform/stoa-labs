@@ -9,7 +9,9 @@
   ansible.builtin.import_tasks: resolve-env.yml
 
 - name: "Secrets : creds admin gateway (Vault, fallback PoC)"
-  ansible.builtin.import_tasks: secrets.yml
+  ansible.builtin.import_role:
+    name: apim_common
+    tasks_from: secrets.yml
 
 - name: "Verify — self-service application '{{ apim_ss_app.name }}'"
   module_defaults:
