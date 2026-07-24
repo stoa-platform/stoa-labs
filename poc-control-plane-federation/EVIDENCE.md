@@ -904,3 +904,49 @@ tranche analytics (goal A3) sont **résolus** (le « Fluent Bit sidecar » envis
 une impasse : les logs fichier WSO2 ne portent pas le trace_id — la source retenue est
 les spans OTel via `wso2-otel-tap`). Restent **différés** : l'enforcement **audience**
 wM (câblé, non opposable sur trial 10.15) et le streaming > 500 Mo.
+
+## 2026-07-24 — Identité runtime d'une application OAuth2 wM 10.15 : la STRATÉGIE, pas la claim ★
+
+**Question de départ** (design provisioning OIG/CLI2 → gateway) : « la claim
+d'identification est-elle un paramètre (azp, client_id, toto…), et une bascule de
+claim peut-elle être 0-coupure ? » Deux volets, assets jetables, cleanup par trap.
+
+**Volet A — stockage** (`scripts/spike-claim-identifier.sh`, **11/11**) : le nom de
+la claim d'un identifier `openIdClaims` est une donnée libre (toto/client_id/
+x-custom-claim acceptés et relus) ; deux identifiers de noms différents coexistent ;
+un identifier porte deux valeurs ; rejeu idempotent. ÉCART chaîne de livraison :
+`consumer-auth.yml` fait `rejectattr('openIdClaims')` → n'en laisse jamais qu'un.
+
+**Volet B — runtime** (`scripts/spike-claim-runtime.sh`, **11/11**, banc d'essai
+`accounts-read/1.0.0` strict/oAuth2Token JAMAIS modifiée, oracle = `Application:<nom>`
+dans le body d'erreur backend) — le stockage MENTAIT par omission :
+
+- **R1** : une app SANS identifier mais avec stratégie est identifiée → le matching
+  est `token.azp/client_id == strategy.clientId` (l'AS externe étant l'alias).
+- **R2** : l'identifier `openIdClaims/azp` SEUL (clientId vierge) n'identifie PAS →
+  **l'identifier de claim est décoratif au runtime**. Le volet A ne le voyait pas.
+- **R3** : un nom de claim custom (`x-spike-claim`) n'est évalué NI en `openIdClaims`
+  NI en `jwtClaims` → **« la claim est un paramètre » est FAUX au runtime 10.15**.
+- **R4** : DEUX stratégies (clientId ancien + nouveau) attachées à la même app
+  matchent SIMULTANÉMENT → **rotation 0-coupure par recouvrement de stratégies**.
+- **R5** : détach + DELETE de la stratégie → un token FRAIS matche ENCORE (cache/
+  registre runtime ; le mapping fantôme survit aux runs — un clientId ayant un jour
+  porté une stratégie supprimée rend `Application:null` durablement). **Retrait ≠
+  révocation** : révoquer = désactiver le client sur l'IdP / suspendre l'app.
+- **R2bis (sécurité)** : token VALIDE (signature+aud OK) sans stratégie matchante →
+  le backend est atteint en `Application:sys:defaultApplication` — pas de 401,
+  malgré `applicationLookup=strict`. À fermer avant toute opposabilité par app.
+
+**Livrable pipeline** (Ansible-only, lisible Jenkins — demande utilisateur) :
+`ansible/strategy-rotation.yml` + `roles/apim_selfservice_app/tasks/rotate-strategy.yml`
+— phase `overlap` (pose + attache la stratégie du nouveau clientId, additif strict)
+puis phase `retire` (détache + supprime par clientId, fail-closed si l'app resterait
+sans identité, avertissement retrait≠révocation). **Prouvé E2E sur le lab** :
+overlap sur `demo-consumer-idp` → 4 stratégies ; retire → `authStrategyIds`
+octet-identiques à l'origine, objet stratégie purgé.
+
+**Conséquence design** (mémoire `oracle-idp-gateway-sync`) : le pipeline de
+provisioning pilote la STRATÉGIE (clientId imposé = clé d'idempotence ET identité
+runtime) ; l'identifier de claim reste projetable pour la doc/UI mais n'est pas un
+contrôle ; la rotation d'un client OAuth2 (OIG ou local) = overlap → bascule →
+retire + révocation SUR L'IdP.

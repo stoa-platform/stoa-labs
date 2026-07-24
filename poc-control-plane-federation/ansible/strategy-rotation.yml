@@ -1,0 +1,26 @@
+---
+# ansible/strategy-rotation.yml — rotation 0-coupure de l'identité OAuth2 d'une
+# application (bascule de clientId par RECOUVREMENT de stratégies, wM 10.15).
+#
+# Le pipeline Jenkins n'appelle QUE ce play (pas de shell) :
+#
+#   phase 1 (overlap) — la nouvelle identité s'AJOUTE, l'ancienne matche encore :
+#     ansible-playbook -i ansible/inventory.lab.ini ansible/strategy-rotation.yml \
+#       -e '{"apim_ss_rot": {"app": "demo-consumer-idp", "add_client_id": "consumer-dev-v2",
+#            "server_alias": "KeycloakStoaLab", "audience": "demo-selfservice"}}'
+#
+#   phase 2 (retire) — après bascule des consommateurs, retirer l'ancienne :
+#     ansible-playbook -i ansible/inventory.lab.ini ansible/strategy-rotation.yml \
+#       -e '{"apim_ss_rot": {"app": "demo-consumer-idp", "retire_client_id": "consumer-dev"}}'
+#
+# Fondement : spike runtime 2026-07-24 (scripts/spike-claim-runtime.sh, 11/11) —
+# l'identité runtime = la stratégie (clientId), deux stratégies matchent
+# simultanément, et le retrait n'est PAS une révocation (cache runtime : la
+# révocation effective se fait sur l'IdP / par suspension de l'app).
+- name: "Rotation d'identité OAuth2 par recouvrement de stratégies"
+  hosts: webmethods
+  gather_facts: false
+  tasks:
+    - ansible.builtin.include_role:
+        name: apim_selfservice_app
+        tasks_from: rotate-strategy
