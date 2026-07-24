@@ -1085,3 +1085,30 @@ signé `ci`, PR À VALIDER (4-yeux) ; entrées validées ([A-Za-z0-9._-], env �
 {dev,rec,int,prod}) anti-injection path/branche/YAML ; secret Git en credential
 Jenkins (jamais commité). Le pipeline aval (plan sur la MR, apply au merge, promo
 par env) est l'existant ADR-075/076/079 — le maillon 1 est LA porte d'entrée.
+
+## 2026-07-24 — BOUCLE FERMÉE : PR ouverte → plan auto → commentaire (webhook Gitea) ★
+
+Fin de la chaîne self-service, bout-en-bout et AUTOMATIQUE :
+```
+OIG/CLI2 → API provisioning (barrière strict+scope) → job provisioning-request
+  → PR sur ci/stoa-labs (manifeste idp|internal selon l'appelant)
+    → webhook Gitea (pull_request) → job provision-plan
+      → PLAN self-service lecture seule (manifeste valide + ansible --syntax-check)
+      → commentaire ✅/❌ sur la PR (visible avant validation humaine)
+```
+Prouvé E2E (0 intervention) : OIG appelle → PR #14 ouverte → provision-plan
+auto-déclenché par le webhook → 1 commentaire « ✅ Plan self-service OK » posté.
+
+PIÈCES : `scripts/provision-plan.sh` (checkout branche PR, localise le manifeste
+par git diff, plan lecture seule, commente via API Gitea — python3 jq-free, token
+jamais loggé, commentaire IDEMPOTENT via marqueur `<!-- provision-plan -->` →
+PATCH) ; `ci/jenkins/provision-plan.job.xml` (job pipeline, webhook Gitea token
+stoa-provision-plan, filtre action=opened|reopened|synchronized, **disableConcurrentBuilds**
+pour éviter la race double-commentaire quand Gitea émet opened+synchronized).
+Webhook Gitea : `POST /repos/ci/stoa-labs/hooks` events=[pull_request] →
+`jenkins:8080/generic-webhook-trigger/invoke?token=stoa-provision-plan`.
+
+FRONTIÈRE : le plan est LECTURE SEULE (identité de job, aucune mutation, aucun
+secret — ADR-078). L'apply reste un build NOMINATIF au merge (humain → Vault).
+Le commentaire de plan donne au valideur de quoi décider (4-yeux) ; le reste de
+la promotion (apply au merge, multi-env, 0-coupure) = existant ADR-075/076/079.
