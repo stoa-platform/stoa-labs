@@ -1,0 +1,47 @@
+# targets.provisioning.yaml — l'API `provisioning` qui fronte Jenkins, câblée par
+# `labctl apply -f` (inbound-auth JWT + stratégie + scope + IAM strict). Le
+# routing est ensuite RE-POINTÉ vers le Generic Webhook Trigger de Jenkins par
+# setup-provisioning-api.sh (archive-patch endpointUri), car le token GWT vit en
+# query — labctl route vers backendUrl, le patch ajoute ?token=.
+#
+# webMethods SEULEMENT (la façade de provisioning est portée par LA gateway du
+# client, pas répliquée). Barrière opposable trial = azp + SCOPE `provision`
+# (l'audience reste fail-open sur trial : introspection inerte, cf. targets.yaml).
+apiVersion: labctl.stoa.io/v1
+kind: FederationTarget
+name: provisioning
+
+contract: ../../../apis/provisioning.openapi.yaml
+
+# Backend nominal = le GWT de Jenkins (docker-interne). Le routing effectif est
+# re-pointé sur invoke?token=… par le script (query hors contrat).
+backendUrl: http://jenkins:8080/generic-webhook-trigger
+
+targets:
+  - name: webmethods
+    type: webmethods
+    adminUrl: http://localhost:5555
+    gatewayUrl: http://localhost:5555
+    inboundAuth:
+      issuer: http://localhost:8480/realms/stoa-lab
+      jwksUri: http://keycloak:8080/realms/stoa-lab/protocol/openid-connect/certs
+      aliasName: KeycloakStoaLab
+      # azp + SCOPE opposables (audience fail-open sur trial). Le scope `provision`
+      # n'est accordé QU'aux appelants (oig/cli2) — un token d'une autre API (aud
+      # accounts-read, sans ce scope) est rejeté : c'est la barrière R2bis sur trial.
+      audience: provisioning
+      scope: provision
+      clientId: oig-provisioner
+      introspectionEndpoint: http://keycloak:8080/realms/stoa-lab/protocol/openid-connect/token/introspect
+      introspectionClientId: poc-gateways
+      introspectionClientSecret: poc-gateways-secret
+      introspectionUser: Administrator
+    credentials:
+      username: Administrator
+      password: manage
+
+keycloak:
+  url: http://localhost:8480
+  realm: stoa-lab
+  admin: { username: admin, password: admin }
+  consumerClientId: oig-provisioner
