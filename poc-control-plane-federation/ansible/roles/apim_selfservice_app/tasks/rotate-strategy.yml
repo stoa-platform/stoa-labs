@@ -1,0 +1,245 @@
+---
+# roles/apim_selfservice_app/tasks/rotate-strategy.yml  (tasks_from: rotate-strategy)
+#
+# ROTATION 0-COUPURE de l'identité OAuth2 d'une application (wM 10.15) — la
+# version pipeline-lisible (uri-only) du fait prouvé par le spike runtime
+# (scripts/spike-claim-runtime.sh, 11/11, 2026-07-24) :
+#
+#   · l'identité runtime d'une application en mode IdP est la STRATÉGIE
+#     (token.azp/client_id == strategy.clientId) — PAS l'identifier de claim,
+#     qui est décoratif au runtime ;
+#   · deux stratégies attachées à la même application matchent SIMULTANÉMENT →
+#     la bascule ancien→nouveau client se fait par RECOUVREMENT, sans coupure :
+#       1. overlap  : POSER la stratégie du nouveau clientId (additive)  — ce fichier
+#       2. (le consommateur bascule ses tokens à son rythme)
+#       3. retire   : DÉTACHER + SUPPRIMER la stratégie de l'ancien       — ce fichier
+#
+#   ⚠️ RETRAIT ≠ RÉVOCATION (piège R5 du spike) : après détach+DELETE, un token
+#   frais de l'ancien client matche ENCORE (cache/registre runtime, fenêtre non
+#   bornée observée). La révocation effective = désactiver le client sur l'IdP
+#   (source d'autorité) et/ou suspendre l'application. Le retrait ici est de
+#   l'HYGIÈNE d'état désiré, pas un acte de sécurité.
+#
+# Entrée (extra-vars ou vars de play) — les deux actions sont indépendantes,
+# fournir l'une, l'autre, ou les deux (overlap d'abord, retire ensuite) :
+#   apim_ss_rot:
+#     app:              "demo-consumer-idp"    # nom de l'application (obligatoire)
+#     add_client_id:    "consumer-dev-v2"      # overlap : nouvelle identité à POSER
+#     server_alias:     "KeycloakStoaLab"      # (add) alias auth-server EXTERNAL
+#     audience:         "demo-selfservice"     # (add) audience de l'API cible
+#     retire_client_id: "consumer-dev"         # retire : ancienne identité à RETIRER
+#
+# Convention de nommage : la stratégie posée s'appelle
+#   OAUTH2-<app>-rot-<clientId>   (une par clientId → l'upsert est trivial et
+# l'état de la gateway raconte la rotation). Les stratégies historiques du rôle
+# (OAUTH2-<app>-<env>) sont retirables par retire_client_id comme les autres :
+# le retrait raisonne par clientId ATTACHÉ, pas par nom.
+
+- name: "Rotate : fail-closed — app nommée + au moins une action"
+  ansible.builtin.assert:
+    that:
+      - "apim_ss_rot.app | default('') | trim | length > 0"
+      - >-
+        (apim_ss_rot.add_client_id | default('') | trim | length > 0)
+        or (apim_ss_rot.retire_client_id | default('') | trim | length > 0)
+    fail_msg: >-
+      apim_ss_rot.app est obligatoire, avec add_client_id (overlap) et/ou
+      retire_client_id (retire). Rien à faire sinon — on échoue plutôt que de
+      laisser croire qu'une rotation a eu lieu.
+
+- name: "Secrets : creds admin gateway (Vault, fallback PoC)"
+  ansible.builtin.import_role:
+    name: apim_common
+    tasks_from: secrets.yml
+
+- name: "Rotate — application '{{ apim_ss_rot.app }}'"
+  module_defaults:
+    ansible.builtin.uri: "{{ apim_ss_uri_defaults }}"
+  block:
+
+    # ===== Résolution de l'application (enveloppe applications[] OU plat) =====
+    - name: "Rotate : résoudre l'application par son nom"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/applications"
+      register: rot_apps
+      changed_when: false
+
+    - ansible.builtin.set_fact:
+        rot_app_id: >-
+          {{ (rot_apps.json.applications | selectattr('name', 'equalto', apim_ss_rot.app)
+              | map(attribute='id') | list | first) | default('') }}
+
+    - name: "Rotate : fail-closed — l'application existe"
+      ansible.builtin.assert:
+        that: "rot_app_id | length > 0"
+        fail_msg: "Application {{ apim_ss_rot.app }} absente de la gateway — rien à faire tourner."
+
+    - name: "Rotate : relire le record complet (le PUT remplace l'objet)"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/applications/{{ rot_app_id }}"
+      register: rot_app_get
+      changed_when: false
+
+    - ansible.builtin.set_fact:
+        rot_app_rec: "{{ rot_app_get.json.applications | default([rot_app_get.json]) | first }}"
+
+    # Les stratégies EXISTANTES (record complet chacune) — sert aux deux actions.
+    - name: "Rotate : lire les stratégies de la gateway"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/strategies"
+      register: rot_strats
+      changed_when: false
+
+    # ================= ACTION 1 — overlap : POSER la nouvelle identité ========
+    - name: "Overlap : poser puis attacher la stratégie du nouveau clientId"
+      when: "apim_ss_rot.add_client_id | default('') | trim | length > 0"
+      block:
+        - name: "Overlap : fail-closed — alias + audience fournis (le corps de la stratégie en dépend)"
+          ansible.builtin.assert:
+            that:
+              - "apim_ss_rot.server_alias | default('') | trim | length > 0"
+              - "apim_ss_rot.audience | default('') | trim | length > 0"
+            fail_msg: >-
+              add_client_id exige server_alias (alias auth-server EXTERNAL) et
+              audience (celle de l'API cible) — mêmes exigences que consumer-auth.
+
+        - ansible.builtin.set_fact:
+            rot_add_name: "OAUTH2-{{ apim_ss_rot.app }}-rot-{{ apim_ss_rot.add_client_id }}"
+
+        - ansible.builtin.set_fact:
+            rot_add_id: >-
+              {{ ((rot_strats.json.strategies | default([]))
+                  | selectattr('name', 'equalto', rot_add_name)
+                  | map(attribute='id') | list | first) | default('') }}
+
+        - name: "Overlap : CRÉER la stratégie si absente (idempotent par nom)"
+          ansible.builtin.uri:
+            url: "{{ apim_ss_api_base }}/strategies"
+            method: POST
+            body:
+              type: "OAUTH2"
+              authServerAlias: "{{ apim_ss_rot.server_alias }}"
+              name: "{{ rot_add_name }}"
+              description: >-
+                rotate-strategy: identité {{ apim_ss_rot.add_client_id }}
+                pour {{ apim_ss_rot.app }} (recouvrement 0-coupure)
+              audience: "{{ apim_ss_rot.audience }}"
+              clientId: "{{ apim_ss_rot.add_client_id }}"
+            status_code: [200, 201]
+          register: rot_add_create
+          when: "rot_add_id | length == 0"
+
+        - ansible.builtin.set_fact:
+            rot_add_id: >-
+              {{ rot_add_id if (rot_add_id | length > 0)
+                 else (rot_add_create.json.strategy.id | default(rot_add_create.json.id | default(''))) }}
+
+        - name: "Overlap : fail-closed — un id de stratégie est acquis"
+          ansible.builtin.assert:
+            that: "rot_add_id | length > 0"
+            fail_msg: "Stratégie {{ rot_add_name }} ni trouvée ni créée."
+
+        # ADDITIF STRICT : on AJOUTE aux authStrategyIds — jamais de remplacement,
+        # c'est précisément ce qui rend la bascule sans coupure (spike R4).
+        - name: "Overlap : ATTACHER la stratégie à l'application (additif, PUT du record complet)"
+          ansible.builtin.uri:
+            url: "{{ apim_ss_api_base }}/applications/{{ rot_app_id }}"
+            method: PUT
+            body: >-
+              {{ rot_app_rec
+                 | combine({'authStrategyIds':
+                     ((rot_app_rec.authStrategyIds | default([])) + [rot_add_id]) | unique}) }}
+            status_code: [200, 201]
+          when: "rot_add_id not in (rot_app_rec.authStrategyIds | default([]))"
+
+        - name: "Overlap : read-back — la nouvelle identité est bien attachée"
+          ansible.builtin.uri:
+            url: "{{ apim_ss_api_base }}/applications/{{ rot_app_id }}"
+          register: rot_add_verify
+          changed_when: false
+          failed_when: >-
+            rot_add_id not in
+            ((rot_add_verify.json.applications | default([rot_add_verify.json]) | first).authStrategyIds | default([]))
+
+        - name: "Overlap : OK"
+          ansible.builtin.debug:
+            msg: >-
+              Recouvrement actif : {{ apim_ss_rot.app }} accepte DÉSORMAIS AUSSI
+              clientId={{ apim_ss_rot.add_client_id }} (stratégie {{ rot_add_name }}).
+              L'ancienne identité continue de matcher — basculer les consommateurs,
+              puis repasser avec retire_client_id.
+
+    # ================= ACTION 2 — retire : RETIRER l'ancienne identité ========
+    - name: "Retire : détacher puis supprimer la/les stratégies de l'ancien clientId"
+      when: "apim_ss_rot.retire_client_id | default('') | trim | length > 0"
+      block:
+        # Relire le record : l'overlap ci-dessus a pu le modifier dans ce même run.
+        - name: "Retire : relire le record de l'application"
+          ansible.builtin.uri:
+            url: "{{ apim_ss_api_base }}/applications/{{ rot_app_id }}"
+          register: rot_ret_get
+          changed_when: false
+
+        - ansible.builtin.set_fact:
+            rot_ret_rec: "{{ rot_ret_get.json.applications | default([rot_ret_get.json]) | first }}"
+
+        # Le retrait raisonne par clientId ATTACHÉ (pas par nom de stratégie) :
+        # il couvre les stratégies historiques du rôle comme celles posées ici.
+        - ansible.builtin.set_fact:
+            rot_ret_ids: >-
+              {{ (rot_strats.json.strategies | default([]))
+                 | selectattr('id', 'in', rot_ret_rec.authStrategyIds | default([]))
+                 | selectattr('clientId', 'equalto', apim_ss_rot.retire_client_id)
+                 | map(attribute='id') | list }}
+            rot_keep_ids: >-
+              {{ (rot_ret_rec.authStrategyIds | default([]))
+                 | difference((rot_strats.json.strategies | default([]))
+                     | selectattr('clientId', 'equalto', apim_ss_rot.retire_client_id)
+                     | map(attribute='id') | list) }}
+
+        - name: "Retire : no-op déclaré si l'ancien clientId n'est pas attaché"
+          ansible.builtin.debug:
+            msg: >-
+              Aucune stratégie clientId={{ apim_ss_rot.retire_client_id }} attachée
+              à {{ apim_ss_rot.app }} — retrait déjà convergé (no-op).
+          when: "rot_ret_ids | length == 0"
+
+        # FAIL-CLOSED : refuser de laisser l'application SANS identité — un
+        # retrait qui vide authStrategyIds est une demande de décommissionnement,
+        # pas une rotation ; ça se fait via le converge du rôle, explicitement.
+        - name: "Retire : fail-closed — il reste au moins une identité après retrait"
+          ansible.builtin.assert:
+            that: "rot_keep_ids | length > 0"
+            fail_msg: >-
+              Retirer clientId={{ apim_ss_rot.retire_client_id }} laisserait
+              {{ apim_ss_rot.app }} SANS AUCUNE stratégie (plus aucune identité
+              acceptée) : c'est un décommissionnement, pas une rotation. Poser
+              d'abord la nouvelle identité (add_client_id), ou décommissionner
+              explicitement via le converge du rôle.
+          when: "rot_ret_ids | length > 0"
+
+        - name: "Retire : DÉTACHER (PUT du record complet, authStrategyIds épuré)"
+          ansible.builtin.uri:
+            url: "{{ apim_ss_api_base }}/applications/{{ rot_app_id }}"
+            method: PUT
+            body: "{{ rot_ret_rec | combine({'authStrategyIds': rot_keep_ids}) }}"
+            status_code: [200, 201]
+          when: "rot_ret_ids | length > 0"
+
+        - name: "Retire : SUPPRIMER les objets stratégie détachés"
+          ansible.builtin.uri:
+            url: "{{ apim_ss_api_base }}/strategies/{{ item }}"
+            method: DELETE
+            status_code: [200, 204]
+          loop: "{{ rot_ret_ids }}"
+
+        - name: "Retire : ⚠️ retrait ≠ révocation (fait prouvé — spike R5)"
+          ansible.builtin.debug:
+            msg: >-
+              Stratégie(s) clientId={{ apim_ss_rot.retire_client_id }} détachée(s)
+              et supprimée(s) — MAIS le runtime peut encore matcher ce client
+              (cache/registre, fenêtre non bornée observée). Pour une révocation
+              EFFECTIVE : désactiver le client sur l'IdP (source d'autorité)
+              et/ou suspendre l'application. Ce retrait est l'hygiène de l'état
+              désiré, pas un contrôle de sécurité.
+          when: "rot_ret_ids | length > 0"
