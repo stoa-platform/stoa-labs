@@ -1,0 +1,19 @@
+# provisioning.publish.yml — publie l'API `provisioning` en PUR ANSIBLE
+# (apim_publish_api, sans labctl) : contrat + inbound OAuth2 (stratégie + scope
+# mapping requiredAuthScopes=provision + IAM strict/oAuth2Token). C'est ce rôle
+# qui pose la BARRIÈRE côté gateway ; l'octroi du scope `provision` aux SEULS
+# appelants (OIG/CLI2) est côté IdP (OAM/AS). Routing→Jenkins re-pointé par
+# setup-provisioning-api.sh (le token GWT vit en query, hors contrat).
+apim_api:
+  name: "provisioning"
+  version: "1.0"
+  contract: "apis/provisioning.openapi.yaml"
+  update: false          # API déjà publiée : on converge l'inbound, pas de ré-import
+  inbound:
+    mode: "oauth2"
+    issuer: "http://localhost:8480/realms/stoa-lab"
+    jwks_uri: "http://keycloak:8080/realms/stoa-lab/protocol/openid-connect/certs"
+    alias_name: "KeycloakStoaLab"
+    audience: "provisioning"
+    scope: "provision"
+    client_id: "oig-provisioner"

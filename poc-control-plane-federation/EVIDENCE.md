@@ -1013,3 +1013,36 @@ rejeté — c'est la fermeture du trou R2bis SUR LE TRIAL. Hors trial, l'introsp
 ferme AUSSI l'audience, sans toucher au manifeste. Contre-preuve du câblage : avant
 labctl, le même token KC passait sur accounts-read (404 backend) et échouait sur
 provisioning (401 « token invalid ») — pur manque de config niveau-API, désormais levé.
+
+### 2026-07-24 (suite) — La barrière scope est POSABLE EN PUR ANSIBLE (pas de gap)
+
+Ma crainte d'un « gap scope côté Ansible » était MAL PLACÉE : le scope ne vit pas
+dans le rôle consommateur (`apim_selfservice_app`) mais dans le rôle PRODUCTEUR
+`apim_publish_api`, qui fait déjà le **scope mapping** — endpoint `/scopes` :
+`{scopeName, audience, apiScopes:[apiId], requiredAuthScopes:[{alias, scope}]}`.
+
+CAMPAGNE D'ISOLATION (probe1-4, assets jetables) — QUI porte la barrière :
+- probe2/probe3 : câblage gateway complet (stratégie clientId+audience + app +
+  identifier azp + souscription) MAIS token sans scope `provision` → **401**.
+- probe3 : le champ `scopes` d'une STRATÉGIE est IGNORÉ par wM 10.15 (relu null) —
+  la barrière n'est ni sur la stratégie ni sur l'API (archive : `scopes:[]`).
+- probe4 : MÊME câblage gateway (= ce que fait le rôle Ansible) + client KC AVEC
+  le scope `provision` en default → **200**. ⇒ le câblage consommateur suffit ;
+  ce qui discrimine, c'est le SCOPE DANS LE TOKEN = un octroi **côté IdP**.
+- Localisation : le scope mapping `provisioning:1.0`
+  (`requiredAuthScopes:[{KeycloakStoaLab, provision}]`) sur `/scopes`.
+
+PREUVE PUR ANSIBLE (sans labctl) : suppression du scope mapping (créé par labctl)
+→ `ansible-playbook publish-api.yml` avec `gateways/webmethods/provisioning/
+provisioning.publish.yml` (inbound mode=oauth2, scope=provision) → le rôle
+**recrée le mapping à l'identique** → 4 voix : anonyme 401 · OIG 200+triggered ·
+CLI2 200+triggered · TIERS (sans scope) **401**. La barrière est donc portée
+100 % par le rôle Ansible `apim_publish_api` — labctl n'était qu'un raccourci de lab.
+
+RÉPARTITION CLIENT (sans labctl) : (1) `apim_publish_api` publie l'API + pose la
+barrière (stratégie + scope mapping + IAM strict) ; (2) `apim_selfservice_app`
+provisionne les consommateurs OIG/CLI2 (stratégie clientId + identifier azp +
+souscription) ; (3) l'IdP (OAM pour OIG, AS local wM pour CLI2) accorde le scope
+`provision` aux SEULS appelants — la ségrégation vit avec l'autorité d'identité,
+pas dans le pipeline. Sur trial l'audience reste fail-open (introspection inerte) ;
+la barrière effective = le SCOPE, qui suffit.
