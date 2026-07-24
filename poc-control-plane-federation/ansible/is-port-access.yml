@@ -18,7 +18,7 @@
   tasks:
     - name: "Secrets : auth admin (Vault, fallback PoC)"
       ansible.builtin.import_role:
-        name: apim_publish_api
+        name: apim_common
         tasks_from: secrets.yml
 
     - name: "Fail-closed : au moins une entrée à autoriser"

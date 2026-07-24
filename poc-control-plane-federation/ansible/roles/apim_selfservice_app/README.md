@@ -92,8 +92,8 @@ ansible-playbook -i inv.ini ansible/selfservice-app.yml \
   -e @app.yml     # VAULT_ADDR posé -> token_url/client_id/secret lus dans Vault
 ```
 
-Creds (basic OU oauth2) lus dans **Vault** (`tasks/secrets.yml`), fallback PoC
-total sans `VAULT_ADDR`.
+Creds (basic OU oauth2) lus dans **Vault** (rôle partagé
+`apim_common/tasks/secrets.yml`), fallback PoC total sans `VAULT_ADDR`.
 
 ## Multi-environnement (`per_env`) — prouvé live
 

@@ -21,7 +21,7 @@ Tout le reste (prod/rollback nominatifs, chaîne ADR-075) est validé. **Un seul
 
 | Brique | Preuve | Fichiers clés |
 |---|---|---|
-| **Login user/pwd → Vault** (voie A) | `scripts/test-vault-user-login.sh` **34/34** ; job SCM `selfservice-app-deploy #7` SUCCESS ; `publish-api-deploy #11` SUCCESS | `ci/lib/vault-login.sh` (POSIX), rôles `apim_*/tasks/secrets.yml` |
+| **Login user/pwd → Vault** (voie A) | `scripts/test-vault-user-login.sh` **34/34** ; job SCM `selfservice-app-deploy #7` SUCCESS ; `publish-api-deploy #11` SUCCESS | `ci/lib/vault-login.sh` (POSIX), rôle partagé `apim_common/tasks/secrets.yml` (importé par les rôles `apim_*`) |
 | **Palier userpass** (sans annuaire) | inclus dans 34/34 | `scripts/setup-vault-userpass.sh`, `scripts/lib/lab-vault-users.sh` |
 | **Palier LDAP réel** (UPN, DOMAIN\user, groupe→policy) | tests [ldap] du 34/34 | `scripts/setup-vault-ldap.sh`, `docker-compose.ldap.yml` (poc-openldap) |
 | **prod/rollback nominatif + repli AppRole** | `stoa-prod-deploy ×2` + `stoa-prod-rollback ×2` SUCCESS (AppRole *et* nominatif oscar) ; ADR-075 **22/22** | `ci/Jenkinsfile.prod`, `.rollback`, `vault_login_any` |

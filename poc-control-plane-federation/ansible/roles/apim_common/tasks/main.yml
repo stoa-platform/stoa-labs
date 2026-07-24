@@ -1,0 +1,6 @@
+---
+# roles/apim_common/tasks/main.yml — le rôle ne fait QUE la résolution d'auth
+# admin (secrets.yml). Lister apim_common dans `roles:` ou l'importer sans
+# tasks_from équivaut donc à `tasks_from: secrets.yml`.
+- name: "Secrets : auth admin (Vault, fallback PoC)"
+  ansible.builtin.import_tasks: secrets.yml
