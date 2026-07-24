@@ -1112,3 +1112,26 @@ FRONTIÈRE : le plan est LECTURE SEULE (identité de job, aucune mutation, aucun
 secret — ADR-078). L'apply reste un build NOMINATIF au merge (humain → Vault).
 Le commentaire de plan donne au valideur de quoi décider (4-yeux) ; le reste de
 la promotion (apply au merge, multi-env, 0-coupure) = existant ADR-075/076/079.
+
+## 2026-07-24 — APPLY POST-MERGE : « demande en attente » Jenkins + identité tenant ★
+
+Réponse à « après le merge validé, comment j'applique ? » : la PR FUSIONNÉE ouvre
+une DEMANDE EN ATTENTE dans Jenkins (pas de mail à chasser). `ci/jenkins/provision-apply.job.xml`
+(webhook Gitea, filtre action=closed ∧ merged=true) : détecte app/env depuis la
+branche, ouvre un `input` (build PAUSED_PENDING_INPUT, nommé « apply <app>/<env> »)
+demandant l'identité Vault du valideur ; sur validation → apply nominatif délégué
+à selfservice-app-deploy (proxy-oauth2, converge + verify). disableConcurrentBuilds.
+
+Prouvé E2E : merge PR #17 → provision-apply PAUSED_PENDING_INPUT (apply merge-test2/dev)
+→ proceed(identité) → selfservice-app-deploy converge+verify **SUCCESS** (build #22,
+failed=0). SÉGRÉGATION démontrée à l'apply : oscar (operator-deploy, plateforme) →
+403 sur le KV tenant `deploy/banking-demo/*` ; alice (deploy-banking-demo) → 200.
+L'apply exige donc l'identité du BON tenant — la douve vit dans la policy Vault,
+pas dans le pipeline.
+
+Le webhook (merge) ne porte AUCUN humain (ADR-078) → il ne fait qu'OUVRIR la
+demande ; l'humain fournit SON identité à l'`input` → l'apply est nominatif.
+Piège lab : les proxies wm-admin-* se désactivent aux recyclages du trial
+(activate 500 après corruption) → apply via proxy-oauth2 KO tant que non re-setup ;
+ADMIN_VIA=direct (Basic) contourne pour prouver le converge. Lien manifeste du
+commentaire de plan = GIT_WEB_HOST (URL vue par l'humain, split-horizon lab).
