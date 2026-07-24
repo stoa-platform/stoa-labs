@@ -1061,3 +1061,27 @@ PLAN-only (stoa-selfservice-plan, lecture seule, identité de job) — l'apply
 nominatif reste un build paramétré séparé (ADR-078 §2 : un webhook ne porte aucun
 humain). Chaîne complète : app OIG/CLI2 → barrière gateway (strict+scope) → plan
 self-service Jenkins, sans jamais toucher Jenkins en direct.
+
+## 2026-07-24 — MAILLON 1 : demande OIG/CLI2 → manifeste + Merge Request ★
+
+L'appel gateway devient un ARTEFACT GIT + une PR (porte d'entrée du workflow GitOps).
+Chaîne prouvée E2E : OIG (app, scope provision) → `POST /provisioning/1.0/applications`
+`{app,env,clientId,api,apiVersion,audience,caller}` → gateway (strict+scope) →
+job Jenkins `provisioning-request` → clone ci/stoa-labs, rend le manifeste
+`apim_ss_app` (mode idp), branche `provision/<app>-<env>`, commit (identité de
+service `ci`), push, ouvre la PR (API Gitea). Prouvé : OIG → PR #4/#5 créées avec
+le manifeste correct (claim azp=<clientId>) ; idempotent (PR réutilisée par
+branche) ; anonyme/tiers déjà rejetés en amont (barrière scope).
+
+PIÈCES (reproductibles) : `scripts/provision-request.sh` (rend+push+PR, python3
+pour être jq-free côté conteneur Jenkins ; token jamais loggé, set +x, URL push
+en mémoire) ; `ci/jenkins/provisioning-request.job.xml` (job pipeline GWT token
+stoa-provision-request, mappe le body → REQ_*) ; `scripts/setup-provision-request-job.sh`
+(mint token Gitea + credential Jenkins secret-text + (re)crée le job, idempotent).
+Routing : `GWT_TOKEN=stoa-provision-request TARGET_JOB=provisioning-request`.
+
+GARDE-FOUS : aucune identité humaine (webhook = ACL.SYSTEM, ADR-078) → commit
+signé `ci`, PR À VALIDER (4-yeux) ; entrées validées ([A-Za-z0-9._-], env ∈
+{dev,rec,int,prod}) anti-injection path/branche/YAML ; secret Git en credential
+Jenkins (jamais commité). Le pipeline aval (plan sur la MR, apply au merge, promo
+par env) est l'existant ADR-075/076/079 — le maillon 1 est LA porte d'entrée.
