@@ -950,3 +950,41 @@ provisioning pilote la STRATÉGIE (clientId imposé = clé d'idempotence ET iden
 runtime) ; l'identifier de claim reste projetable pour la doc/UI mais n'est pas un
 contrôle ; la rotation d'un client OAuth2 (OIG ou local) = overlap → bascule →
 retire + révocation SUR L'IdP.
+
+## 2026-07-24 — L'API `provisioning` qui fronte Jenkins sur la gateway (skeleton fail-closed) ★
+
+Concrétise le point de bascule du design (OIG/CLI2 sont des APPLICATIONS ; ils
+n'attaquent jamais Jenkins en direct) : `scripts/setup-provisioning-api.sh`
+(10/10, idempotent, crée aussi le job cible `provisioning-webhook`) pose sur wM
+10.15 une API `provisioning/1.0` routée vers le Generic Webhook Trigger de Jenkins.
+
+PROUVÉ :
+- **Routing gateway → Jenkins** : le corps GWT renvoie `{"triggered":true,
+  "resolvedVariables":{"caller":"<cid>"}}` — l'appel qui traverse la gateway
+  déclenche bien un build (oracle = corps GWT, PAS nextBuildNumber qui ment via
+  quiet-period). Routing figé via archive-patch (`endpointUri` =
+  `http://jenkins:8080/generic-webhook-trigger/invoke?token=stoa-provisioning`).
+- **Fail-closed anonyme** : sans stage IAM l'API était OUVERTE (sans token →
+  200 + build). Après ajout du stage IAM strict/oAuth2Token (action partagée
+  a5a8a079), sans token → **401**. C'est la différence entre « router vers
+  Jenkins » et « n'y laisser router que des appelants ».
+- **Deux appelants = deux applications** : clients KC `oig-provisioner` /
+  `cli2-provisioner` (aud=provisioning), une stratégie OAUTH2 par appelant
+  (clientId = son client), app + identifier azp + souscription.
+
+FINITION IDENTIFIÉE (honnête) : l'API bâtie en REST NU n'a PAS le binding
+**inbound-auth** (issuer/JWKS/introspection) que `labctl apply` câble via
+`targets.yaml`. Conséquence : l'app EST identifiée (`Application:oig-provisioner`
+dans l'erreur) mais le JWT n'est pas validé → « Token invalid or expired » (401).
+Contre-preuve : le MÊME token KC passe l'auth sur `accounts-read` (→404 backend)
+et échoue sur `provisioning` (→401) — c'est bien un manque de config niveau-API,
+pas d'identité. L'état livré est donc **fail-closed** (rejette tout le monde tant
+que le trust n'est pas câblé) — sûr, non fonctionnel pour les appelants.
+→ Étape suivante = FederationTarget labctl (comme accounts-read/wm-admin-self)
+routé vers Jenkins, qui câble le trust ET, via l'**introspection distante**,
+ferme le trou audience R2bis (un token aud≠provisioning est alors rejeté).
+
+TROU R2bis rappelé et MESURÉ ici : la 3e voix (tiers `accounts-read-consumer`,
+aud=accounts-read) est actuellement rejetée (fail-closed global), mais le point à
+garder est que SANS enforcement d'audience un token valide d'une autre API
+passerait en `sys:defaultApplication` — d'où l'introspection en finition.
