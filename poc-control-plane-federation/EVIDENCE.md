@@ -1046,3 +1046,18 @@ souscription) ; (3) l'IdP (OAM pour OIG, AS local wM pour CLI2) accorde le scope
 `provision` aux SEULS appelants — la ségrégation vit avec l'autorité d'identité,
 pas dans le pipeline. Sur trial l'audience reste fail-open (introspection inerte) ;
 la barrière effective = le SCOPE, qui suffit.
+
+### 2026-07-24 (suite) — Webhook routé vers le VRAI job selfservice-app-deploy
+
+Le routing de l'API `provisioning` pointe désormais le job réel :
+`…/generic-webhook-trigger/invoke?token=stoa-selfservice-plan`. La demande de
+l'appelant porte le manifeste dans le body (`{"manifest":"…"}`, mappé `$.manifest`
+→ MANIFEST par le GWT du job). Prouvé : OIG/CLI2 (scope provision) → l'appel
+déclenche `selfservice-app-deploy` avec MANIFEST résolu (triggered:true) ; anonyme
+et tiers (sans scope) → 401. `setup-provisioning-api.sh` : GWT_TOKEN/TARGET_JOB
+paramétrables (défaut = job réel ; job de preuve `provisioning-webhook` disponible
+via GWT_TOKEN=stoa-provisioning TARGET_JOB=provisioning-webhook). Le webhook =
+PLAN-only (stoa-selfservice-plan, lecture seule, identité de job) — l'apply
+nominatif reste un build paramétré séparé (ADR-078 §2 : un webhook ne porte aucun
+humain). Chaîne complète : app OIG/CLI2 → barrière gateway (strict+scope) → plan
+self-service Jenkins, sans jamais toucher Jenkins en direct.
