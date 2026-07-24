@@ -43,7 +43,16 @@ REALM="${REALM:-stoa-lab}"
 KC_ADMIN_USER="${KC_ADMIN_USER:-admin}"; KC_ADMIN_PASS="${KC_ADMIN_PASS:-admin}"
 JENKINS_UI="${JENKINS_UI:-http://localhost:18080}"
 JENKINS_INCLUSTER="${JENKINS_INCLUSTER:-http://jenkins:8080}"
-GWT_TOKEN="${GWT_TOKEN:-stoa-provisioning}"
+# Cible RÉELLE : le job self-service (webhook stoa-selfservice-plan = PLAN-only,
+# lecture seule, identité de job — l'apply nominatif reste un build paramétré
+# séparé, ADR-078 §2 : un webhook ne porte AUCUN humain). Le job de preuve
+# inoffensif `provisioning-webhook` (token stoa-provisioning) reste disponible
+# pour un smoke-test isolé : GWT_TOKEN=stoa-provisioning TARGET_JOB=provisioning-webhook.
+GWT_TOKEN="${GWT_TOKEN:-stoa-selfservice-plan}"
+TARGET_JOB="${TARGET_JOB:-selfservice-app-deploy}"
+# Manifeste porté par le body de la demande (mappé $.manifest -> MANIFEST par le
+# GWT du job) : en réel, l'appelant (OIG/CLI2) POSTe SA demande.
+PROOF_MANIFEST="${PROOF_MANIFEST:-clients/_example/applications/demo-consumer-idp.ansible.yml}"
 API_NAME=provisioning; API_VER=1.0
 MANIFEST="${MANIFEST:-gateways/webmethods/provisioning/targets.provisioning.yaml}"
 OIG_CID="${OIG_CID:-oig-provisioner}"
@@ -59,8 +68,14 @@ info(){ printf '  ·  %s\n' "$*"; }
 adm(){ curl -sS -u "$AUTH" -H "Accept: application/json" "$@"; }
 trap 'rm -rf "$WORK"' EXIT
 
-# ── Jenkins : job cible GWT (inoffensif), créé si absent ────────────────────
+# ── Jenkins : job cible ─────────────────────────────────────────────────────
+# Le vrai job (selfservice-app-deploy) DOIT préexister — on ne le crée pas ici.
+# Le job de preuve inoffensif (provisioning-webhook) est créé à la demande.
 ensure_jenkins_job(){
+  if [ "$TARGET_JOB" != "provisioning-webhook" ]; then
+    curl -sf "$JENKINS_UI/job/$TARGET_JOB/api/json" >/dev/null 2>&1 && return 0
+    printf '  job cible %s absent — le créer d abord\n' "$TARGET_JOB" >&2; return 1
+  fi
   curl -sf "$JENKINS_UI/job/provisioning-webhook/api/json" >/dev/null 2>&1 && return 0
   local ck cj f c xml; ck=$(mktemp)
   cj=$(curl -sf -c "$ck" "$JENKINS_UI/crumbIssuer/api/json") || { rm -f "$ck"; return 1; }
@@ -124,7 +139,7 @@ kc_token(){ # <clientId> [scope]
 say "0. préambule"
 [ "$(adm -o /dev/null -w '%{http_code}' "$GW/applications")" = "200" ] || { ko "gateway injoignable"; exit 1; }
 [ -n "$(KCADM)" ] || { ko "admin Keycloak injoignable"; exit 1; }
-ensure_jenkins_job && ok "job Jenkins provisioning-webhook prêt (créé si absent)" || { ko "job Jenkins — création échouée"; exit 1; }
+ensure_jenkins_job && ok "job Jenkins cible '$TARGET_JOB' prêt" || { ko "job Jenkins '$TARGET_JOB' absent/échec"; exit 1; }
 [ -f "$MANIFEST" ] || { ko "manifeste absent : $MANIFEST"; exit 1; }
 ok "gateway + Keycloak + manifeste prêts"
 
@@ -153,25 +168,25 @@ R=$(patch_routing "$API_ID") && ok "routing = $JENKINS_INCLUSTER/generic-webhook
 adm -X PUT "$GW/apis/$API_ID/activate" -o /dev/null; sleep 2
 
 # ── 4. preuve 4 voix ────────────────────────────────────────────────────────
-say "4. preuve 4 voix (oracle = corps GWT : triggered + caller résolu)"
-call(){ # <token|-> <caller> -> "HTTP<code>|<triggered>|<caller>"
+say "4. preuve 4 voix (oracle = corps GWT : $TARGET_JOB triggered + MANIFEST résolu)"
+# La demande porte le manifeste (mappé $.manifest -> MANIFEST par le GWT du job).
+call(){ # <token|-> <caller> -> "HTTP<code>|<triggered>"
   local auth=(); [ "$1" != "-" ] && auth=(-H "Authorization: Bearer $1")
-  local b code trig res
+  local b code trig
   b=$(curl -sS -w '\n%{http_code}' ${auth[@]+"${auth[@]}"} -H "Content-Type: application/json" \
-    -X POST "$DP/$API_NAME/$API_VER/applications" -d "{\"caller\":\"$2\"}")
+    -X POST "$DP/$API_NAME/$API_VER/applications" -d "{\"manifest\":\"$PROOF_MANIFEST\",\"caller\":\"$2\"}")
   code=$(printf '%s' "$b" | tail -1)
-  trig=$(printf '%s' "$b" | sed '$d' | jq -r '.jobs["provisioning-webhook"].triggered // false' 2>/dev/null)
-  res=$(printf '%s' "$b" | sed '$d' | jq -r '.jobs["provisioning-webhook"].resolvedVariables.caller // "-"' 2>/dev/null)
-  printf 'HTTP%s|%s|%s' "$code" "${trig:-false}" "${res:--}"
+  trig=$(printf '%s' "$b" | sed '$d' | jq -r --arg j "$TARGET_JOB" '.jobs[$j].triggered // false' 2>/dev/null)
+  printf 'HTTP%s|%s' "$code" "${trig:-false}"
 }
 R=$(call "-" anon); info "sans token : $R"
 [ "${R%%|*}" = "HTTP401" ] && ok "voix 0 ANONYME : 401 — identité obligatoire" || ko "voix 0 : attendu HTTP401, obtenu $R"
 
 R=$(call "$(kc_token "$OIG_CID" provision)" "$OIG_CID"); info "OIG : $R"
-[ "$R" = "HTTP200|true|$OIG_CID" ] && ok "voix 1 OIG : identifié + build déclenché" || ko "voix 1 OIG : attendu HTTP200|true|$OIG_CID, obtenu $R"
+[ "$R" = "HTTP200|true" ] && ok "voix 1 OIG : identifié + $TARGET_JOB déclenché (MANIFEST porté)" || ko "voix 1 OIG : attendu HTTP200|true, obtenu $R"
 
 R=$(call "$(kc_token "$CLI2_CID" provision)" "$CLI2_CID"); info "CLI2 : $R"
-[ "$R" = "HTTP200|true|$CLI2_CID" ] && ok "voix 2 CLI2 : identifié + build déclenché" || ko "voix 2 CLI2 : attendu HTTP200|true|$CLI2_CID, obtenu $R"
+[ "$R" = "HTTP200|true" ] && ok "voix 2 CLI2 : identifié + $TARGET_JOB déclenché (MANIFEST porté)" || ko "voix 2 CLI2 : attendu HTTP200|true, obtenu $R"
 
 # voix 3 : tiers LÉGITIME d'une AUTRE API, sans le scope provision → doit être rejeté.
 T3=$(kc_token "$THIRD_CID" 2>/dev/null || true)
