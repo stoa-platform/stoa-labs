@@ -108,25 +108,49 @@ else
 fi
 
 echo "[4/4] ouverture de la Pull Request ${BRANCH} → ${GIT_BASE}"
-# PR idempotente : si une MR ouverte existe déjà pour CETTE branche, on la réutilise.
-# Le filtre `head=` de Gitea n'est pas fiable → on filtre côté client sur head.ref.
-EXIST=$(curl -sf -H "Authorization: token ${GITEA_TOKEN}" \
-  "${API}/repos/${GIT_REPO}/pulls?state=open&limit=50" 2>/dev/null \
-  | jq -r --arg b "$BRANCH" '.[] | select(.head.ref==$b) | .number' 2>/dev/null | head -1)
-if [ -n "$EXIST" ]; then
-  echo "  PR déjà ouverte: #${EXIST}"
-  PR_URL="${GIT_HOST}/${GIT_REPO}/pulls/${EXIST}"
-else
-  PR_BODY=$(printf 'Demande de provisioning application.\n\n- application : %s\n- environnement : %s\n- API consommee : %s v%s\n- claim azp : %s\n- demandeur (azp) : %s\n\nPlan self-service a lancer sur cette MR. Validation humaine requise (4-yeux) - un webhook ne porte aucun humain (ADR-078).' \
-    "$REQ_APP" "$REQ_ENV" "$REQ_API" "$REQ_API_VER" "$REQ_CLIENT_ID" "$REQ_CALLER")
-  PAYLOAD=$(jq -n --arg t "provision(${REQ_ENV}): ${REQ_APP}" --arg h "$BRANCH" --arg b "$GIT_BASE" --arg body "$PR_BODY" \
-    '{title:$t, head:$h, base:$b, body:$body}')
-  RESP=$(curl -sf -X POST -H "Authorization: token ${GITEA_TOKEN}" -H "Content-Type: application/json" \
-    "${API}/repos/${GIT_REPO}/pulls" -d "$PAYLOAD" 2>/dev/null || true)
-  NUM=$(printf '%s' "$RESP" | jq -r '.number // empty' 2>/dev/null)
-  [ -n "$NUM" ] || { echo "ERREUR: création PR échouée: $(printf '%s' "$RESP" | jq -r '.message // .' 2>/dev/null | head -c 200)" >&2; exit 1; }
-  PR_URL="${GIT_HOST}/${GIT_REPO}/pulls/${NUM}"
-  echo "  PR créée: #${NUM}"
-fi
+# Interaction PR en PYTHON3 (portable — le conteneur Jenkins n'a pas jq) : liste
+# idempotente (filtre côté client sur head.ref), création sinon. Le token n'est
+# PAS en argv (passé par env GITEA_TOKEN) ; aucun secret imprimé.
+PR_OUT=$(REQ_APP="$REQ_APP" REQ_ENV="$REQ_ENV" REQ_API="$REQ_API" REQ_API_VER="$REQ_API_VER" \
+  REQ_CLIENT_ID="$REQ_CLIENT_ID" REQ_CALLER="$REQ_CALLER" BRANCH="$BRANCH" GIT_BASE="$GIT_BASE" \
+  API="$API" GIT_REPO="$GIT_REPO" GITEA_TOKEN="$GITEA_TOKEN" python3 - <<'PY'
+import os, json, urllib.request, urllib.error, sys
+api, repo, tok = os.environ["API"], os.environ["GIT_REPO"], os.environ["GITEA_TOKEN"]
+branch, base = os.environ["BRANCH"], os.environ["GIT_BASE"]
+def req(method, url, data=None):
+    body = json.dumps(data).encode() if data is not None else None
+    r = urllib.request.Request(url, data=body, method=method,
+        headers={"Authorization": "token "+tok, "Content-Type": "application/json"})
+    with urllib.request.urlopen(r) as resp:
+        return json.loads(resp.read() or "null")
+# idempotence : PR ouverte existante pour CETTE branche ?
+try:
+    for pr in req("GET", f"{api}/repos/{repo}/pulls?state=open&limit=50") or []:
+        if pr.get("head", {}).get("ref") == branch:
+            print("EXIST", pr["number"]); sys.exit(0)
+except urllib.error.HTTPError as e:
+    print("ERR", e.code, e.read().decode()[:200]); sys.exit(1)
+title = f"provision({os.environ['REQ_ENV']}): {os.environ['REQ_APP']}"
+bodytxt = ("Demande de provisioning application.\n\n"
+    f"- application : {os.environ['REQ_APP']}\n- environnement : {os.environ['REQ_ENV']}\n"
+    f"- API consommee : {os.environ['REQ_API']} v{os.environ['REQ_API_VER']}\n"
+    f"- claim azp : {os.environ['REQ_CLIENT_ID']}\n- demandeur (azp) : {os.environ['REQ_CALLER']}\n\n"
+    "Plan self-service a lancer sur cette MR. Validation humaine requise (4-yeux) - "
+    "un webhook ne porte aucun humain (ADR-078).")
+try:
+    pr = req("POST", f"{api}/repos/{repo}/pulls",
+             {"title": title, "head": branch, "base": base, "body": bodytxt})
+    print("CREATED", pr["number"])
+except urllib.error.HTTPError as e:
+    print("ERR", e.code, e.read().decode()[:200]); sys.exit(1)
+PY
+) || { echo "ERREUR: création PR échouée: ${PR_OUT}" >&2; exit 1; }
+PR_NUM=$(printf '%s' "$PR_OUT" | awk '{print $2}')
+case "$PR_OUT" in
+  EXIST*)   echo "  PR déjà ouverte: #${PR_NUM}";;
+  CREATED*) echo "  PR créée: #${PR_NUM}";;
+  *)        echo "ERREUR: réponse inattendue: ${PR_OUT}" >&2; exit 1;;
+esac
+PR_URL="${GIT_HOST}/${GIT_REPO}/pulls/${PR_NUM}"
 echo "PR_URL=${PR_URL}"
 echo "OK: demande ${REQ_APP}/${REQ_ENV} → manifeste + MR"
