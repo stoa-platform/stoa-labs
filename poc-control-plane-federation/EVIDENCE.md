@@ -988,3 +988,28 @@ TROU R2bis rappelé et MESURÉ ici : la 3e voix (tiers `accounts-read-consumer`,
 aud=accounts-read) est actuellement rejetée (fail-closed global), mais le point à
 garder est que SANS enforcement d'audience un token valide d'une autre API
 passerait en `sys:defaultApplication` — d'où l'introspection en finition.
+
+### 2026-07-24 (suite) — FINITION LEVÉE : chaîne OIG/CLI2 → build FONCTIONNELLE, barrière scope
+
+Le binding inbound-auth manquant est câblé par **labctl** (pas du REST nu) :
+`gateways/webmethods/provisioning/targets.provisioning.yaml` (webMethods-only) +
+contrat `apis/provisioning.openapi.yaml`. `setup-provisioning-api.sh` réécrit
+autour du flux réel (10/10) : `labctl apply` (authServer alias + IAM strict/
+oAuth2Token) → `labctl subscribe` ×2 (mint KC client + audience mapper + **default
+scope `provision`** + stratégie OAUTH2 + app + identifier azp + souscription) →
+archive-patch du routing vers le GWT (`invoke?token=`) → preuve 4 voix.
+
+PREUVE 4 VOIX (oracle = corps GWT triggered+caller) :
+- voix 0 ANONYME (sans token) → **401**
+- voix 1 OIG (aud=provisioning, scope=provision) → **200 + triggered** (caller résolu)
+- voix 2 CLI2 (idem) → **200 + triggered**
+- voix 3 TIERS (`accounts-read-consumer`, token VALIDE d'une autre API, SANS scope
+  provision) → **401** — barrière fermée.
+
+BARRIÈRE = le SCOPE, pas l'audience : sur le trial 10.15 l'audience est fail-open
+(introspection distante INERTE, targets.yaml l.130-140). Le scope `provision`,
+accordé aux SEULS appelants, tient : un token d'une autre API sans ce scope est
+rejeté — c'est la fermeture du trou R2bis SUR LE TRIAL. Hors trial, l'introspection
+ferme AUSSI l'audience, sans toucher au manifeste. Contre-preuve du câblage : avant
+labctl, le même token KC passait sur accounts-read (404 backend) et échouait sur
+provisioning (401 « token invalid ») — pur manque de config niveau-API, désormais levé.

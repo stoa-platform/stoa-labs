@@ -1,0 +1,24 @@
+openapi: 3.0.0
+info:
+  title: provisioning
+  version: "1.0"
+  description: >-
+    Façade de provisioning sur la gateway. Les appelants (applications OIG, CLI2)
+    y POSTent une demande ; la gateway route vers le Generic Webhook Trigger de
+    Jenkins (jamais Jenkins en direct ; routing re-pointé par le script car le
+    token GWT vit en query). Barrière opposable wM 10.15 trial = azp + SCOPE
+    provision (audience fail-open sur trial : introspection inerte, cf targets.yaml).
+servers:
+  - url: http://jenkins:8080
+paths:
+  /applications:
+    post:
+      operationId: provisionApplication
+      summary: Déclenche le provisioning d'une application (via Jenkins).
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, properties: { caller: { type: string } } }
+      responses:
+        '200': { description: accepted }
