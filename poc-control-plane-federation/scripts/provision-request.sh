@@ -35,11 +35,30 @@ set +x   # jamais de trace : le token ne doit pas fuiter
 
 REQ_APP="${REQ_APP:?REQ_APP requis}"
 REQ_ENV="${REQ_ENV:?REQ_ENV requis}"
-REQ_CLIENT_ID="${REQ_CLIENT_ID:?REQ_CLIENT_ID requis}"
 REQ_API="${REQ_API:?REQ_API requis}"
 REQ_API_VER="${REQ_API_VER:-1.0.0}"
 REQ_AUDIENCE="${REQ_AUDIENCE:-$REQ_API}"
 REQ_CALLER="${REQ_CALLER:-unknown}"
+REQ_CLIENT_ID="${REQ_CLIENT_ID:-}"
+TENANT="${TENANT:-banking-demo}"
+
+# MODE = propriété de l'APPELANT, jamais du body (anti-spoof) : OIG provisionne
+# des apps mode IDP (client OAuth2 externe déjà sur l'IdP → Git porte la claim) ;
+# CLI2 provisionne des apps mode INTERNAL (la gateway wM EST l'AS local, elle
+# génère le client → le pipeline l'écrit dans Vault par env). La correspondance
+# caller→mode est une table (surchargeable), PAS un champ de la requête.
+#   REQ_MODE explicite (test) > table par caller > défaut idp.
+case "${REQ_MODE:-}" in
+  idp|internal) MODE="$REQ_MODE";;
+  *) case "$REQ_CALLER" in
+       cli2*|*-internal) MODE="internal";;
+       *)                 MODE="idp";;
+     esac;;
+esac
+# En mode idp, la claim (= clientId de l'appelant) EST l'identité → obligatoire.
+if [ "$MODE" = "idp" ] && [ -z "$REQ_CLIENT_ID" ]; then
+  echo "REFUS: mode idp exige REQ_CLIENT_ID (la claim azp qui identifie l'app)" >&2; exit 2
+fi
 GITEA_TOKEN="${GITEA_TOKEN:?GITEA_TOKEN requis}"
 GIT_REPO="${GIT_REPO:-ci/stoa-labs}"
 GIT_BASE="${GIT_BASE:-main}"
@@ -47,8 +66,10 @@ GIT_HOST="${GIT_HOST:-http://gitea:3000}"
 MANIFEST_DIR="${MANIFEST_DIR:-poc-control-plane-federation/clients/provisioned/applications}"
 
 # Garde-fous d'entrée : noms sûrs (pas d'injection dans un path/branche/YAML).
-for v in REQ_APP REQ_ENV REQ_CLIENT_ID REQ_API; do
+# REQ_CLIENT_ID est optionnel (internal) → validé seulement s'il est fourni.
+for v in REQ_APP REQ_ENV REQ_API REQ_CLIENT_ID; do
   val="${!v}"
+  [ -n "$val" ] || continue
   case "$val" in
     *[!A-Za-z0-9._-]*) echo "REFUS: $v='$val' contient un caractère non autorisé ([A-Za-z0-9._-])" >&2; exit 2;;
   esac
@@ -70,18 +91,44 @@ cd "$WORK/repo"
 git config user.email "ci@bc.example"; git config user.name "provisioning (service ci)"
 git checkout -q -B "$BRANCH"
 
-echo "[2/4] rendu du manifeste ${REL_PATH}"
+echo "[2/4] rendu du manifeste ${REL_PATH} (mode ${MODE})"
 mkdir -p "$(dirname "$REL_PATH")"
-cat > "$REL_PATH" <<YAML
+if [ "$MODE" = "internal" ]; then
+  # CLI2 : la gateway wM EST l'AS local ('local'), elle génère le client — le
+  # pipeline l'écrit dans Vault PAR ENV (tenant+app+env-scopé). Pas de claim, pas
+  # de secret dans Git ; vault_sub généré au chemin conventionnel apps/<app>/<env>.
+  cat > "$REL_PATH" <<YAML
 ---
 # ${REQ_APP}.ansible.yml — GÉNÉRÉ par une demande de provisioning (maillon 1).
 # Appelant : ${REQ_CALLER} (azp). Ne PAS éditer à la main : re-générer via la demande.
-# Le client OAuth2 existe côté IdP ; Git porte la CLAIM qui identifie l'application.
+# Mode INTERNAL : la gateway wM est l'authorization server ; elle génère le client
+# (client_id/secret), le pipeline le STOCKE dans Vault par env — jamais dans Git.
 apim_ss_app:
   name: "${REQ_APP}"
   api: "${REQ_API}"
   api_version: "${REQ_API_VER}"
-  description: "Provisioned via ${REQ_CALLER} — demande ${REQ_ENV}"
+  description: "Provisioned via ${REQ_CALLER} — demande ${REQ_ENV} (internal)"
+  contact_emails: []
+  enforce: []
+  auth:
+    mode: "internal"
+    audience: "${REQ_AUDIENCE}"
+  per_env:
+    ${REQ_ENV}: { auth: { vault_sub: "deploy/${TENANT}/apps/${REQ_APP}/${REQ_ENV}/oauth-client" } }
+YAML
+else
+  # OIG : le client OAuth2 existe DÉJÀ côté IdP ; Git porte la CLAIM (azp) qui
+  # identifie l'application sur la gateway. Aucun secret (il vit sur l'IdP).
+  cat > "$REL_PATH" <<YAML
+---
+# ${REQ_APP}.ansible.yml — GÉNÉRÉ par une demande de provisioning (maillon 1).
+# Appelant : ${REQ_CALLER} (azp). Ne PAS éditer à la main : re-générer via la demande.
+# Mode IDP : le client OAuth2 existe côté IdP ; Git porte la CLAIM qui identifie l'app.
+apim_ss_app:
+  name: "${REQ_APP}"
+  api: "${REQ_API}"
+  api_version: "${REQ_API_VER}"
+  description: "Provisioned via ${REQ_CALLER} — demande ${REQ_ENV} (idp)"
   contact_emails: []
   enforce: []
   auth:
@@ -90,6 +137,7 @@ apim_ss_app:
     audience: "${REQ_AUDIENCE}"
     claim: { name: "azp", value: "${REQ_CLIENT_ID}" }
 YAML
+fi
 
 if git diff --quiet -- "$REL_PATH" 2>/dev/null && git ls-files --error-unmatch "$REL_PATH" >/dev/null 2>&1; then
   echo "  (manifeste inchangé — demande idempotente)"
@@ -112,7 +160,7 @@ echo "[4/4] ouverture de la Pull Request ${BRANCH} → ${GIT_BASE}"
 # idempotente (filtre côté client sur head.ref), création sinon. Le token n'est
 # PAS en argv (passé par env GITEA_TOKEN) ; aucun secret imprimé.
 PR_OUT=$(REQ_APP="$REQ_APP" REQ_ENV="$REQ_ENV" REQ_API="$REQ_API" REQ_API_VER="$REQ_API_VER" \
-  REQ_CLIENT_ID="$REQ_CLIENT_ID" REQ_CALLER="$REQ_CALLER" BRANCH="$BRANCH" GIT_BASE="$GIT_BASE" \
+  REQ_CLIENT_ID="$REQ_CLIENT_ID" REQ_CALLER="$REQ_CALLER" MODE="$MODE" BRANCH="$BRANCH" GIT_BASE="$GIT_BASE" \
   API="$API" GIT_REPO="$GIT_REPO" GITEA_TOKEN="$GITEA_TOKEN" python3 - <<'PY'
 import os, json, urllib.request, urllib.error, sys
 api, repo, tok = os.environ["API"], os.environ["GIT_REPO"], os.environ["GITEA_TOKEN"]
@@ -130,11 +178,14 @@ try:
             print("EXIST", pr["number"]); sys.exit(0)
 except urllib.error.HTTPError as e:
     print("ERR", e.code, e.read().decode()[:200]); sys.exit(1)
+mode = os.environ.get("MODE", "idp")
 title = f"provision({os.environ['REQ_ENV']}): {os.environ['REQ_APP']}"
+ident = (f"- claim azp : {os.environ['REQ_CLIENT_ID']}" if mode == "idp"
+         else "- client OAuth2 : genere par la gateway (mode internal), stocke dans Vault par env")
 bodytxt = ("Demande de provisioning application.\n\n"
     f"- application : {os.environ['REQ_APP']}\n- environnement : {os.environ['REQ_ENV']}\n"
-    f"- API consommee : {os.environ['REQ_API']} v{os.environ['REQ_API_VER']}\n"
-    f"- claim azp : {os.environ['REQ_CLIENT_ID']}\n- demandeur (azp) : {os.environ['REQ_CALLER']}\n\n"
+    f"- mode : {mode}\n- API consommee : {os.environ['REQ_API']} v{os.environ['REQ_API_VER']}\n"
+    f"{ident}\n- demandeur (azp) : {os.environ['REQ_CALLER']}\n\n"
     "Plan self-service a lancer sur cette MR. Validation humaine requise (4-yeux) - "
     "un webhook ne porte aucun humain (ADR-078).")
 try:
