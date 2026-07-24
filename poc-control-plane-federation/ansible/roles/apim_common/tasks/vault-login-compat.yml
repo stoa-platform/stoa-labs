@@ -1,0 +1,91 @@
+---
+# roles/apim_common/tasks/vault-login-compat.yml  (tasks_from: vault-login-compat)
+#
+# SHIM DE COMPATIBILITÉ pour les pipelines var-driven (rôle « common » historique
+# à base de community.hashi_vault.vault_login) : mêmes NOMS de variables en
+# entrée, même FACT `vault_token` en sortie — mais l'implémentation est
+# secrets.yml (uri stdlib, zéro collection, zéro hvac), donc la config Vault est
+# ISO sur tous les pipelines et il n'y a qu'UNE surface d'auth à auditer
+# (ADR-078 §2). Le pipeline remplace ses 3 tasks (vault_login + assert +
+# set_fact) par :
+#
+#     - ansible.builtin.include_role:
+#         name: apim_common
+#         tasks_from: vault-login-compat
+#       # vars inchangées : vault_addr, vault_auth_mount, username_adbdf,
+#       # password_adbdf, vault_login_namespace ('' = racine)
+#
+# Entrées acceptées (précédence : variable de play > env — env inchangé = même
+# comportement que secrets.yml nu) :
+#   vault_addr              -> apim_ss_vault_addr        (sinon env VAULT_ADDR)
+#   vault_auth_mount        -> apim_ss_vault_user_mount  ("ldap", "adbdf"… — "auth/" ajouté)
+#   username_adbdf          -> apim_ss_vault_user
+#   password_adbdf          -> apim_ss_vault_pass
+#   vault_login_namespace   -> apim_ss_vault_namespace   ('' = racine, comme avant)
+#   vault_auth_method       -> contrôlé : ldap|userpass|ad seulement (le login REST
+#                              est POST /v1/auth/<mount>/login/<user> — identique
+#                              pour les trois ; approle/token passent par les env
+#                              VAULT_ROLE_ID… / VAULT_TOKEN_FILE de secrets.yml)
+# Sortie :
+#   vault_token             (fact, no_log) — le nom que les tasks aval consomment déjà
+#
+# GAGNÉ au passage par rapport au vault_login historique :
+#   - plus de dépendance community.hashi_vault + hvac sur le contrôleur ;
+#   - fail-closed AVEC diagnostic (code HTTP + knobs, jamais un secret) au lieu
+#     d'un « output has been hidden » muet ;
+#   - au 2e import dans le même run, le token est RÉUTILISÉ (un login par build).
+# RESTE au wrapper pipeline (ci/lib/vault-login.sh) : la révocation garantie sur
+# abort (trap) et le chemin plan-only sans humain — propriétés du processus qui
+# ENVELOPPE Ansible, pas d'une task dedans.
+
+- name: "Vault compat : fail-closed — méthode d'auth supportée par ce chemin"
+  ansible.builtin.assert:
+    that: "(vault_auth_method | default('ldap', true)) in ['ldap', 'userpass', 'ad']"
+    fail_msg: >-
+      vault_auth_method='{{ vault_auth_method | default('') }}' n'est pas un login
+      user/password (POST /v1/auth/<mount>/login/<user>). Pour approle : env
+      VAULT_ROLE_ID + VAULT_SECRET_ID_FILE ; pour un token existant :
+      VAULT_TOKEN_FILE — secrets.yml les prend déjà en tête de précédence.
+
+# Désactiver la vérification TLS n'est PAS repris du rôle historique : en banque
+# on fournit la CA (VAULT_CACERT / LABCTL_CA_FILE -> apim_ss_ca_path), on ne
+# l'éteint pas. Fail-closed bruyant plutôt qu'un MITM silencieux.
+- name: "Vault compat : fail-closed — pas de validate_certs=false"
+  ansible.builtin.assert:
+    that: "vault_validate_certs | default(true) | bool"
+    fail_msg: >-
+      vault_validate_certs=false refusé : fournir la CA d'entreprise via
+      VAULT_CACERT (ou LABCTL_CA_FILE), la vérification TLS reste active.
+
+- name: "Vault compat : mapper les variables du pipeline vers apim_common"
+  ansible.builtin.set_fact:
+    apim_ss_vault_addr: >-
+      {{ (vault_addr | default('', true) | trim)
+         or (lookup('env', 'VAULT_ADDR') | default('', true) | trim) }}
+    apim_ss_vault_user_mount: >-
+      auth/{{ (vault_auth_mount | default('ldap', true) | trim) | regex_replace('^auth/', '') }}
+    apim_ss_vault_user: "{{ username_adbdf | default('', true) | trim }}"
+    apim_ss_vault_pass: "{{ password_adbdf | default('', true) }}"
+    apim_ss_vault_namespace: "{{ vault_login_namespace | default('', true) | trim }}"
+  no_log: true
+
+- name: "Vault compat : login + résolution des secrets (implémentation unique)"
+  ansible.builtin.import_tasks: secrets.yml
+
+# Équivalent du « controle du token » du rôle historique — même sémantique
+# fail-closed, sans exposer le token.
+- name: "Vault compat : contrôle du token"
+  ansible.builtin.assert:
+    that: "apim_ss_vault_token | default('') | length > 0"
+    fail_msg: >-
+      Echec de recuperation du token vault (addr={{ apim_ss_vault_addr }},
+      mount={{ apim_ss_vault_user_mount }},
+      namespace={{ apim_ss_vault_namespace | default('<racine>', true) }}).
+
+# Le nom de fact que les tasks aval du pipeline consomment déjà. RAPPEL no_log :
+# il est PAR TASK, pas par variable — toute task aval qui met vault_token dans un
+# header/body doit être no_log elle aussi (un -v suffit à fuiter sinon).
+- name: "Vault compat : stockage du token (nom historique vault_token)"
+  ansible.builtin.set_fact:
+    vault_token: "{{ apim_ss_vault_token }}"
+  no_log: true
