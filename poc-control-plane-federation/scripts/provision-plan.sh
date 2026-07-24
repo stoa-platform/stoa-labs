@@ -32,6 +32,10 @@ GIT_BASE="${GIT_BASE:-main}"
 GIT_HOST="${GIT_HOST:-http://gitea:3000}"
 MANIFEST_DIR="${MANIFEST_DIR:-poc-control-plane-federation/clients/provisioned/applications}"
 INVENTORY="${INVENTORY:-ansible/inventory.lab.ini}"
+# URL Git vue par l'HUMAIN (lien du commentaire) — distincte de GIT_HOST (in-cluster,
+# pour les opérations git). Chez le client, les deux valent l'URL entreprise ; au lab,
+# split-horizon (jenkins→gitea:3000, navigateur→localhost:13000).
+GIT_WEB_HOST="${GIT_WEB_HOST:-$GIT_HOST}"
 
 case "$PR_BRANCH" in provision/*) ;; *) echo "IGNORE: branche '$PR_BRANCH' hors provision/* — pas une demande" >&2; exit 0;; esac
 WORK="$(mktemp -d /tmp/provplan.XXXXXX)"; trap 'rm -rf "$WORK"' EXIT
@@ -67,7 +71,7 @@ sed -n '1,40p' "$PLAN_LOG"
 
 echo "[4/4] commentaire sur la PR #${PR_NUMBER} (verdict ${VERDICT})"
 # Corps du commentaire construit en python3 (jq absent du conteneur Jenkins).
-PR_NUMBER="$PR_NUMBER" GIT_REPO="$GIT_REPO" API="$API" GITEA_TOKEN="$GITEA_TOKEN" GIT_HOST="$GIT_HOST" \
+PR_NUMBER="$PR_NUMBER" GIT_REPO="$GIT_REPO" API="$API" GITEA_TOKEN="$GITEA_TOKEN" GIT_HOST="$GIT_HOST" GIT_WEB_HOST="$GIT_WEB_HOST" \
 PR_BRANCH="$PR_BRANCH" VERDICT="$VERDICT" MAN="$MAN" PLAN_LOG="$PLAN_LOG" python3 - <<'PY'
 import os, json, urllib.request
 verdict = os.environ["VERDICT"]
@@ -77,7 +81,7 @@ MARKER = "<!-- provision-plan -->"   # marqueur pour retrouver LE commentaire de
 head = "✅ **Plan self-service OK**" if verdict == "ok" else "❌ **Plan self-service EN ÉCHEC**"
 log = open(os.environ["PLAN_LOG"]).read()[-1500:]
 man = os.environ["MAN"]
-man_url = f"{os.environ['GIT_HOST']}/{repo}/src/branch/{os.environ['PR_BRANCH']}/{man}"
+man_url = f"{os.environ['GIT_WEB_HOST']}/{repo}/src/branch/{os.environ['PR_BRANCH']}/{man}"
 body = (f"{MARKER}\n{head} — automatique (webhook PR).\n\n"
         f"- manifeste : [`{man}`]({man_url})\n"
         f"- nature : lecture seule (aucune mutation, aucun secret) — ADR-078 §2\n\n"

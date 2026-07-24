@@ -32,7 +32,7 @@ node {
   stage('checkout') { git url: 'http://gitea:3000/ci/stoa-labs.git', branch: 'main' }
   stage('plan') {
     withCredentials([string(credentialsId: 'gitea-provision-token', variable: 'GITEA_TOKEN')]) {
-      dir('poc-control-plane-federation') { sh 'set +x; bash scripts/provision-plan.sh' }
+      dir('poc-control-plane-federation') { sh 'set +x; GIT_WEB_HOST=http://localhost:13000 bash scripts/provision-plan.sh' }
     }
   }
 }
