@@ -40,6 +40,15 @@ apim_ss_wm_user: "Administrator"
 apim_ss_wm_password: "manage"
 
 # oauth2 (creds de préférence depuis Vault ; sinon ces vars)
+# Méthode d'authentification du CLIENT au token endpoint (RFC 6749) :
+#   post  — client_id/secret dans le CORPS (client_secret_post ; Keycloak & co)
+#   basic — Authorization: Basic base64(id:secret) (client_secret_basic).
+#           REQUIS pour l'AS LOCAL wM (proxy admin sur la gateway) : sondé live,
+#           en post la gateway répond « Transport protocol must be HTTPS » (le
+#           body-creds n'est accepté qu'en HTTPS) alors que le Basic est évalué
+#           partout. Token endpoint wM local (port IS) :
+#           /invoke/pub.apigateway.oauth2/getAccessToken
+apim_ss_oauth_client_auth: "post"   # post | basic
 apim_ss_oauth_token_url: ""
 apim_ss_oauth_client_id: ""
 apim_ss_oauth_client_secret: ""
@@ -56,6 +65,20 @@ apim_ss_vault_k8s_mount: "auth/kubernetes"    # auth Kubernetes : login du SA du
 apim_ss_vault_user_mount: >-
   auth/{{ lookup('env', 'VAULT_USER_AUTH_MOUNT') | default('ldap', true) | trim
           | regex_replace('^auth/', '') | regex_replace('/+$', '') }}
+# Préfixe OPTIONNEL ("" accepté) : l'entrée peut vivre à PLAT à la racine du
+# mount (ex. client : mount secret_DEV, entrée APIM-TEST-ADMIN) — mettre alors
+# le nom complet dans *_sub et le préfixe à vide (les segments vides sont élidés).
 apim_ss_vault_prefix: "stoa"
 apim_ss_vault_wm_creds_sub: "gateways/webmethods"           # basic  : { username, password }
 apim_ss_vault_oauth_sub: "gateways/webmethods/admin-oauth"  # oauth2 : { token_url, client_id, client_secret, scope }
+# Noms des CHAMPS dans les entrées KV — knobs pour épouser la convention de
+# nommage du client (ex. entrée APIM-*-ADMIN à champs admin-client-id /
+# admin-client-secret). Un champ ABSENT de l'entrée retombe champ PAR champ sur
+# la var apim_ss_* correspondante (mix possible : id/secret dans Vault,
+# token_url en var d'inventaire).
+apim_ss_vault_wm_user_key: "username"
+apim_ss_vault_wm_password_key: "password"
+apim_ss_vault_oauth_token_url_key: "token_url"
+apim_ss_vault_oauth_client_id_key: "client_id"
+apim_ss_vault_oauth_client_secret_key: "client_secret"
+apim_ss_vault_oauth_scope_key: "scope"

@@ -61,6 +61,17 @@ pipeline {
     // sous deploy/<tenant>/ : le token nominatif ne lit QUE son périmètre).
     APIM_PROXY_BASE   = "${env.APIM_PROXY_BASE ?: 'http://webmethods-real:5555/gateway/wm-admin-self/1.0/rest/apigateway'}"
     APIM_OAUTH_SUB    = "${env.APIM_OAUTH_SUB  ?: 'deploy/banking-demo/admin-oauth'}"
+    // ── Organisation du VAULT CLIENT + AS du proxy admin — mêmes knobs que
+    // Jenkinsfile.selfservice (voir ses commentaires) : mount/préfixe KV ('' de
+    // préfixe = entrées à PLAT, d'où != null), noms des champs oauth2, token_url
+    // (VIDE = lu dans Vault, jamais passé vide en -e) et méthode d'auth client
+    // ('basic' pour l'AS local wM : /invoke/pub.apigateway.oauth2/getAccessToken).
+    APIM_KV_MOUNT          = "${env.APIM_KV_MOUNT ?: 'secret'}"
+    APIM_KV_PREFIX         = "${env.APIM_KV_PREFIX != null ? env.APIM_KV_PREFIX : 'stoa'}"
+    APIM_OAUTH_CID_KEY     = "${env.APIM_OAUTH_CID_KEY ?: 'client_id'}"
+    APIM_OAUTH_CSECRET_KEY = "${env.APIM_OAUTH_CSECRET_KEY ?: 'client_secret'}"
+    APIM_OAUTH_TOKEN_URL   = "${env.APIM_OAUTH_TOKEN_URL ?: ''}"
+    APIM_OAUTH_CLIENT_AUTH = "${env.APIM_OAUTH_CLIENT_AUTH ?: 'post'}"
     INVENTORY         = 'ansible/inventory.lab.ini'
   }
 
@@ -101,6 +112,10 @@ pipeline {
             else
               APIM_AUTH_MODE="basic"
             fi
+
+            # token_url : passé en -e SEULEMENT si non vide (sinon résolution Vault).
+            TOKEN_URL_OPT=""
+            [ -n "${APIM_OAUTH_TOKEN_URL:-}" ] && TOKEN_URL_OPT="-e apim_ss_oauth_token_url=${APIM_OAUTH_TOKEN_URL}"
 
             # 0) GATEWAY DISPONIBLE ? Le lab la recycle toutes les ~20 min (keepalive
             #    licence trial) et un rolling restart chez le client produit la même
@@ -147,7 +162,13 @@ pipeline {
               -e apim_ss_data_base="$APIM_DATA_BASE" \
               -e apim_ss_vault_wm_creds_sub="$APIM_WM_CREDS_SUB" \
               -e apim_ss_auth_mode="$APIM_AUTH_MODE" \
-              -e apim_ss_vault_oauth_sub="$APIM_OAUTH_SUB"
+              -e apim_ss_vault_oauth_sub="$APIM_OAUTH_SUB" \
+              -e apim_ss_vault_kv_mount="$APIM_KV_MOUNT" \
+              -e apim_ss_vault_prefix="$APIM_KV_PREFIX" \
+              -e apim_ss_oauth_client_auth="$APIM_OAUTH_CLIENT_AUTH" \
+              -e apim_ss_vault_oauth_client_id_key="$APIM_OAUTH_CID_KEY" \
+              -e apim_ss_vault_oauth_client_secret_key="$APIM_OAUTH_CSECRET_KEY" \
+              ${TOKEN_URL_OPT:-}
 
             ansible-playbook ${VOPT:-} -e stoa_debug="${DEBUG:-false}" -i "$INVENTORY" ansible/publish-api-verify.yml \
               -e apim_ss_manifest="$MANIFEST" \
@@ -156,7 +177,13 @@ pipeline {
               -e apim_ss_data_base="$APIM_DATA_BASE" \
               -e apim_ss_vault_wm_creds_sub="$APIM_WM_CREDS_SUB" \
               -e apim_ss_auth_mode="$APIM_AUTH_MODE" \
-              -e apim_ss_vault_oauth_sub="$APIM_OAUTH_SUB"
+              -e apim_ss_vault_oauth_sub="$APIM_OAUTH_SUB" \
+              -e apim_ss_vault_kv_mount="$APIM_KV_MOUNT" \
+              -e apim_ss_vault_prefix="$APIM_KV_PREFIX" \
+              -e apim_ss_oauth_client_auth="$APIM_OAUTH_CLIENT_AUTH" \
+              -e apim_ss_vault_oauth_client_id_key="$APIM_OAUTH_CID_KEY" \
+              -e apim_ss_vault_oauth_client_secret_key="$APIM_OAUTH_CSECRET_KEY" \
+              ${TOKEN_URL_OPT:-}
 
             # Le token nominatif meurt avec le build : révocation + PREUVE DE MORT
             # (lookup-self -> 403) exécutées par le trap, succès comme échec.
