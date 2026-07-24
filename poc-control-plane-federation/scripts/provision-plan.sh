@@ -71,21 +71,32 @@ PR_NUMBER="$PR_NUMBER" GIT_REPO="$GIT_REPO" API="$API" GITEA_TOKEN="$GITEA_TOKEN
 VERDICT="$VERDICT" MAN="$MAN" PLAN_LOG="$PLAN_LOG" python3 - <<'PY'
 import os, json, urllib.request
 verdict = os.environ["VERDICT"]
+api, repo, tok = os.environ["API"], os.environ["GIT_REPO"], os.environ["GITEA_TOKEN"]
+prn = os.environ["PR_NUMBER"]
+MARKER = "<!-- provision-plan -->"   # marqueur pour retrouver LE commentaire de plan
 head = "✅ **Plan self-service OK**" if verdict == "ok" else "❌ **Plan self-service EN ÉCHEC**"
 log = open(os.environ["PLAN_LOG"]).read()[-1500:]
-body = (f"{head} — automatique (webhook PR).\n\n"
+body = (f"{MARKER}\n{head} — automatique (webhook PR).\n\n"
         f"- manifeste : `{os.environ['MAN']}`\n"
         f"- nature : lecture seule (aucune mutation, aucun secret) — ADR-078 §2\n\n"
         "<details><summary>sortie du plan</summary>\n\n```\n" + log + "\n```\n</details>\n\n"
         + ("Prêt pour validation humaine (4-yeux) puis apply nominatif au merge."
            if verdict == "ok" else "**Corriger la demande avant validation.**"))
-req = urllib.request.Request(
-    f"{os.environ['API']}/repos/{os.environ['GIT_REPO']}/issues/{os.environ['PR_NUMBER']}/comments",
-    data=json.dumps({"body": body}).encode(), method="POST",
-    headers={"Authorization": "token "+os.environ["GITEA_TOKEN"], "Content-Type": "application/json"})
+def call(method, url, data=None):
+    r = urllib.request.Request(url, data=(json.dumps(data).encode() if data else None), method=method,
+        headers={"Authorization": "token "+tok, "Content-Type": "application/json"})
+    with urllib.request.urlopen(r) as resp: return json.loads(resp.read() or "null")
 try:
-    with urllib.request.urlopen(req) as r:
-        print("  commentaire posté: #" + str(json.loads(r.read())["id"]))
+    # commentaire de plan existant (marqueur) ? → PATCH (idempotent) ; sinon POST.
+    existing = None
+    for c in call("GET", f"{api}/repos/{repo}/issues/{prn}/comments") or []:
+        if MARKER in (c.get("body") or ""): existing = c["id"]; break
+    if existing:
+        call("PATCH", f"{api}/repos/{repo}/issues/comments/{existing}", {"body": body})
+        print("  commentaire de plan mis à jour: #" + str(existing))
+    else:
+        c = call("POST", f"{api}/repos/{repo}/issues/{prn}/comments", {"body": body})
+        print("  commentaire de plan posté: #" + str(c["id"]))
 except Exception as e:
     print("  ERREUR commentaire:", e); raise SystemExit(1)
 PY

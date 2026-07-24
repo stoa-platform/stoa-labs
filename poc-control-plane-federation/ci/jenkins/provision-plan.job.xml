@@ -1,0 +1,42 @@
+<?xml version='1.1' encoding='UTF-8'?>
+<flow-definition plugin="workflow-job">
+  <description>Fermeture de boucle : PR de provisioning ouverte (webhook Gitea) → plan self-service lecture seule → commentaire sur la PR.</description>
+  <keepDependencies>false</keepDependencies>
+  <properties>
+    <org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty>
+      <triggers>
+        <org.jenkinsci.plugins.gwt.GenericTrigger plugin="generic-webhook-trigger@2.4.2">
+          <spec></spec>
+          <genericVariables>
+            <org.jenkinsci.plugins.gwt.GenericVariable><key>PR_BRANCH</key><value>$.pull_request.head.ref</value></org.jenkinsci.plugins.gwt.GenericVariable>
+            <org.jenkinsci.plugins.gwt.GenericVariable><key>PR_NUMBER</key><value>$.pull_request.number</value></org.jenkinsci.plugins.gwt.GenericVariable>
+            <org.jenkinsci.plugins.gwt.GenericVariable><key>PR_ACTION</key><value>$.action</value></org.jenkinsci.plugins.gwt.GenericVariable>
+          </genericVariables>
+          <printPostContent>false</printPostContent>
+          <printContributedVariables>true</printContributedVariables>
+          <token>stoa-provision-plan</token>
+          <silentResponse>false</silentResponse>
+          <regexpFilterText>$PR_ACTION</regexpFilterText>
+          <regexpFilterExpression>^(opened|reopened|synchronized)$</regexpFilterExpression>
+          <overrideQuietPeriod>false</overrideQuietPeriod>
+          <shouldNotFlattern>false</shouldNotFlattern>
+          <allowSeveralTriggersPerBuild>false</allowSeveralTriggersPerBuild>
+        </org.jenkinsci.plugins.gwt.GenericTrigger>
+      </triggers>
+    </org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty>
+  </properties>
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition" plugin="workflow-cps">
+    <script>
+node {
+  stage('checkout') { git url: 'http://gitea:3000/ci/stoa-labs.git', branch: 'main' }
+  stage('plan') {
+    withCredentials([string(credentialsId: 'gitea-provision-token', variable: 'GITEA_TOKEN')]) {
+      dir('poc-control-plane-federation') { sh 'set +x; bash scripts/provision-plan.sh' }
+    }
+  }
+}
+    </script>
+    <sandbox>true</sandbox>
+  </definition>
+  <triggers/>
+</flow-definition>
