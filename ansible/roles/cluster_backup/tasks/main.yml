@@ -1,0 +1,157 @@
+---
+# roles/cluster_backup/tasks/main.yml
+#
+# Fail-closed, read-back-assert : une sauvegarde n'est déclarée valide que si on
+# a RELU l'archive et vérifié l'intégrité du SQLite qu'elle contient. Une
+# sauvegarde qu'on n'a pas testée n'est pas une sauvegarde.
+
+- name: "Horodatage de la sauvegarde"
+  ansible.builtin.set_fact:
+    backup_stamp: "{{ ansible_date_time.iso8601_basic_short }}"
+
+- name: "Créer les répertoires de sauvegarde"
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  become: true
+  loop:
+    - "{{ backup_dir }}"
+    - "{{ backup_dir }}/work"
+
+# --- Copie CONSISTANTE du datastore -------------------------------------------
+# `sqlite3 .backup` prend une copie cohérente d'une base VIVANTE, en respectant
+# le verrouillage. Un simple `cp` de state.db pendant que k3s écrit produirait
+# une base potentiellement corrompue — et on ne s'en apercevrait qu'au moment de
+# restaurer, c'est-à-dire au pire moment.
+- name: "Copie consistante du datastore SQLite"
+  ansible.builtin.command:
+    cmd: sqlite3 {{ k3s_data_dir }}/db/state.db ".backup '{{ backup_dir }}/work/state.db'"
+  become: true
+  changed_when: true
+
+- name: "Vérifier l'intégrité de la copie AVANT de l'archiver"
+  ansible.builtin.command:
+    cmd: sqlite3 {{ backup_dir }}/work/state.db "PRAGMA integrity_check;"
+  become: true
+  register: backup_integrity
+  changed_when: false
+
+- name: "Assert : la copie du datastore est saine"
+  ansible.builtin.assert:
+    that:
+      - backup_integrity.stdout | trim == 'ok'
+    fail_msg: >-
+      La copie du datastore est corrompue (integrity_check = « {{ backup_integrity.stdout | trim }} »).
+      Sauvegarde ABANDONNÉE plutôt que de conserver une archive inutilisable.
+    success_msg: "integrity_check = ok"
+
+# --- Archive : datastore + clés de déchiffrement + jeton ----------------------
+- name: "Construire l'archive"
+  ansible.builtin.shell:
+    cmd: >-
+      tar czf {{ backup_dir }}/k3s-{{ backup_stamp }}.tar.gz
+      -C {{ backup_dir }}/work state.db
+      -C {{ k3s_data_dir }} cred token
+  become: true
+  changed_when: true
+
+- name: "Restreindre les droits (l'archive vaut un accès cluster-admin)"
+  ansible.builtin.file:
+    path: "{{ backup_dir }}/k3s-{{ backup_stamp }}.tar.gz"
+    owner: root
+    group: root
+    mode: "{{ backup_mode }}"
+  become: true
+
+- name: "Nettoyer le répertoire de travail"
+  ansible.builtin.file:
+    path: "{{ backup_dir }}/work"
+    state: absent
+  become: true
+
+# --- Read-back : on relit l'archive, on ne fait pas confiance à tar -----------
+- name: "Read-back : lister le contenu de l'archive"
+  ansible.builtin.command:
+    cmd: tar tzf {{ backup_dir }}/k3s-{{ backup_stamp }}.tar.gz
+  become: true
+  register: backup_listing
+  changed_when: false
+
+- name: "Assert : l'archive contient les trois éléments indispensables"
+  ansible.builtin.assert:
+    that:
+      - "'state.db' in backup_listing.stdout"
+      - "'cred/encryption-config.json' in backup_listing.stdout"
+      - "'token' in backup_listing.stdout"
+    fail_msg: >-
+      Archive incomplète. Sans `cred/encryption-config.json`, les Secrets du
+      datastore sont chiffrés et DÉFINITIVEMENT illisibles : la sauvegarde
+      donnerait un faux sentiment de sécurité.
+    success_msg: "archive complète (datastore + clés + jeton)"
+
+# --- Copie hors-nœud ----------------------------------------------------------
+- name: "Créer le répertoire hors-nœud"
+  ansible.builtin.file:
+    path: "{{ backup_offsite_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  become: true
+  delegate_to: "{{ backup_offsite_host }}"
+
+# Les workers ne se font pas confiance en SSH entre eux, et c'est très bien
+# ainsi. Le transfert passe donc par le nœud de contrôle, EN FLUX : l'archive
+# traverse un pipe et n'est jamais écrite sur le disque du poste de contrôle —
+# elle contient la clé de chiffrement des Secrets.
+- name: "Transférer l'archive hors-nœud, en flux, via le nœud de contrôle"
+  ansible.builtin.shell:
+    cmd: >-
+      ssh -o BatchMode=yes {{ hostvars[inventory_hostname].inventory_hostname }}
+      'sudo cat {{ backup_dir }}/k3s-{{ backup_stamp }}.tar.gz'
+      | ssh -o BatchMode=yes {{ backup_offsite_host }}
+      'sudo install -d -m 0700 /var/lib/k3s-backups/offsite &&
+       sudo tee {{ backup_offsite_dir }}/k3s-{{ backup_stamp }}.tar.gz >/dev/null &&
+       sudo chmod {{ backup_mode }} {{ backup_offsite_dir }}/k3s-{{ backup_stamp }}.tar.gz'
+  delegate_to: localhost
+  become: false
+  changed_when: true
+
+- name: "Read-back : l'archive hors-nœud est-elle intacte ?"
+  ansible.builtin.command:
+    cmd: tar tzf {{ backup_offsite_dir }}/k3s-{{ backup_stamp }}.tar.gz
+  become: true
+  delegate_to: "{{ backup_offsite_host }}"
+  register: backup_offsite_listing
+  changed_when: false
+
+- name: "Assert : la copie hors-nœud est complète et lisible"
+  ansible.builtin.assert:
+    that:
+      - "'cred/encryption-config.json' in backup_offsite_listing.stdout"
+      - "'state.db' in backup_offsite_listing.stdout"
+    fail_msg: >-
+      La copie hors-nœud est illisible ou incomplète. Une sauvegarde qui ne
+      survit pas à la perte de la machine sauvegardée ne protège de rien.
+    success_msg: "copie hors-nœud vérifiée sur {{ backup_offsite_host }}"
+
+# --- Rétention ----------------------------------------------------------------
+- name: "Rotation locale"
+  ansible.builtin.shell:
+    cmd: >-
+      ls -1t {{ backup_dir }}/k3s-*.tar.gz 2>/dev/null
+      | tail -n +{{ backup_keep + 1 }} | xargs -r rm -f
+  become: true
+  changed_when: true
+
+- name: "Rotation hors-nœud"
+  ansible.builtin.shell:
+    cmd: >-
+      ls -1t {{ backup_offsite_dir }}/k3s-*.tar.gz 2>/dev/null
+      | tail -n +{{ backup_keep + 1 }} | xargs -r rm -f
+  become: true
+  delegate_to: "{{ backup_offsite_host }}"
+  changed_when: true
