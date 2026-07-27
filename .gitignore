@@ -55,6 +55,10 @@ coverage/
 .cache/
 tmp/
 
+# Sorties brutes des benchs de flotte (preuve rejouable, pas du code).
+# Le verdict, lui, se consigne dans la doc/EVIDENCE.
+ansible/artifacts/
+
 # Repos git IMBRIQUÉS (chacun a son propre .git : les pilotes poly-repo ADR-076
 # et le repo plateforme, poussés sur le Gitea du PoC). Sans .gitmodules, un
 # `git add .` depuis la racine les stagerait en gitlinks CASSÉS (SHA sans URL,
