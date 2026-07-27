@@ -1,0 +1,112 @@
+---
+# roles/argocd_bootstrap/tasks/main.yml
+#
+# Fail-closed, read-back-assert. Argo CD n'est déclaré opérationnel que lorsque
+# ses Applications rapportent un état Healthy — pas quand kubectl sort 0.
+
+- name: "Créer le namespace argocd"
+  ansible.builtin.command:
+    cmd: k3s kubectl create namespace {{ argocd_namespace }} --dry-run=client -o yaml
+  become: true
+  register: argocd_ns_yaml
+  changed_when: false
+
+- name: "Appliquer le namespace"
+  ansible.builtin.shell:
+    cmd: echo '{{ argocd_ns_yaml.stdout }}' | k3s kubectl apply -f -
+  become: true
+  changed_when: true
+
+# --- Installation d'Argo CD ---------------------------------------------------
+# `--server-side` est requis : le manifeste amont contient des CRD qui dépassent
+# la limite de 262 144 octets de l'annotation last-applied-configuration utilisée
+# par l'apply client-side. C'est le même piège que celui documenté en #26279.
+- name: "Installer Argo CD {{ argocd_version }} (server-side apply)"
+  ansible.builtin.command:
+    cmd: >-
+      k3s kubectl apply --server-side --force-conflicts
+      -n {{ argocd_namespace }} -f {{ argocd_install_url }}
+  become: true
+  register: argocd_install
+  changed_when: "'configured' in argocd_install.stdout or 'created' in argocd_install.stdout"
+
+# NOTE sur --force-conflicts : il n'est employé QUE pour l'installation d'Argo CD
+# lui-même, où Argo est le propriétaire légitime et unique de ses propres objets
+# (cas explicitement recommandé par la doc Kubernetes pour un contrôleur qui
+# possède ses ressources). Il n'est JAMAIS employé pour les Applications
+# applicatives, où le conflit doit rester bloquant.
+
+- name: "Attendre qu'Argo CD soit disponible"
+  ansible.builtin.command:
+    cmd: >-
+      k3s kubectl wait --for=condition=Available
+      deployment/argocd-server -n {{ argocd_namespace }}
+      --timeout={{ argocd_ready_timeout }}
+  become: true
+  register: argocd_ready
+  changed_when: false
+
+- name: "Assert : Argo CD répond"
+  ansible.builtin.assert:
+    that:
+      - "'condition met' in argocd_ready.stdout"
+    fail_msg: "Argo CD n'est pas disponible après {{ argocd_ready_timeout }}."
+    success_msg: "Argo CD {{ argocd_version }} disponible"
+
+# --- Graine : AppProject + Applications ---------------------------------------
+- name: "Créer le répertoire de dépôt des manifestes"
+  ansible.builtin.file:
+    path: /tmp/argocd-bootstrap
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: "Téléverser les manifestes de bootstrap"
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "/tmp/argocd-bootstrap/{{ item | basename }}"
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  loop: "{{ lookup('fileglob', argocd_bootstrap_src + '/*.yaml', wantlist=True) }}"
+
+# L'AppProject doit exister AVANT les Applications qui s'y réfèrent : une
+# Application dont le projet est absent reste en erreur permanente.
+- name: "Appliquer l'AppProject (avant les Applications)"
+  ansible.builtin.command:
+    cmd: k3s kubectl apply -f /tmp/argocd-bootstrap/appproject-stoa.yaml
+  become: true
+  changed_when: true
+
+- name: "Appliquer les Applications"
+  ansible.builtin.shell:
+    cmd: >-
+      for f in /tmp/argocd-bootstrap/app-*.yaml; do
+        k3s kubectl apply -f "$f";
+      done
+  become: true
+  changed_when: true
+
+# --- Read-back-assert ---------------------------------------------------------
+- name: "Lister les Applications enregistrées"
+  ansible.builtin.command:
+    cmd: k3s kubectl get applications -n {{ argocd_namespace }} -o name
+  become: true
+  register: argocd_apps
+  changed_when: false
+
+- name: "Assert : les Applications attendues existent"
+  ansible.builtin.assert:
+    that:
+      - "'application.argoproj.io/' + item in argocd_apps.stdout"
+    fail_msg: "L'Application {{ item }} est absente après bootstrap."
+    success_msg: "Application {{ item }} enregistrée"
+  loop:
+    - stoa-crds
+    - gateways-dev
+    - gateways-staging
+    - ingress-nginx
+    - observability

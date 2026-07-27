@@ -1,0 +1,119 @@
+---
+# cluster.yml — reconstruction complète du cluster k3s DEPUIS GIT.
+#
+# C'est le playbook qui rend le cluster jetable : tant qu'il tourne de bout en
+# bout sans intervention manuelle, la perte du plan de contrôle est un incident
+# de disponibilité, pas de données. Le renoncement à la HA repose sur CE fichier.
+#
+# Usage :
+#   ansible-playbook -i inventory.contabo.ini cluster.yml
+#
+# Contre-épreuve de sabotage (à rejouer périodiquement) :
+#   ansible-playbook -i inventory.contabo.ini cluster.yml -e k3s_teardown=true
+#   puis relancer le playbook et vérifier que le RTO tient sous 60 min.
+
+- name: "Chronométrer la reconstruction (RTO rebuild-from-Git)"
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: "Horodater le début"
+      ansible.builtin.set_fact:
+        k3s_build_started: "{{ lookup('pipe', 'date -u +%s') }}"
+      run_once: true
+
+# Le pare-feu AVANT le cluster : ufw tourne en `-P INPUT DROP` sur les 5 VPS.
+# Sans cette étape, les agents échouent à joindre le plan de contrôle avec
+# « failed to get CA certs: context deadline exceeded » — panne vécue, et dont
+# la cause est invisible côté agent (le message accuse 127.0.0.1:6444, qui n'est
+# que le proxy local vers le serveur).
+- name: "Pare-feu inter-nœuds (déclaré, pas édité à la main)"
+  hosts: k3s_cluster
+  gather_facts: true
+  become: true
+  roles:
+    - k3s_firewall
+
+- name: "Plan de contrôle k3s (unique, datastore kine/SQLite)"
+  hosts: k3s_server
+  gather_facts: false
+  become: true
+  roles:
+    - k3s_server
+
+- name: "Agents k3s"
+  hosts: k3s_agents
+  gather_facts: false
+  become: true
+  roles:
+    - k3s_agent
+
+- name: "Porte de preuve : le cluster est-il conforme à ce que Git déclare ?"
+  hosts: k3s_server
+  gather_facts: false
+  become: true
+  tasks:
+    - name: "Lister les nœuds vus par le plan de contrôle"
+      ansible.builtin.command:
+        cmd: k3s kubectl get nodes -o jsonpath={.items[*].metadata.name}
+      register: k3s_nodes
+      changed_when: false
+
+    - name: "Assert : tous les nœuds déclarés en inventaire sont présents"
+      ansible.builtin.assert:
+        that:
+          - item in k3s_nodes.stdout.split(' ')
+        fail_msg: >-
+          DIVERGENCE : le nœud {{ item }} est déclaré en inventaire mais absent
+          du cluster. C'est exactement le type d'écart (script visant « w1+w2 »,
+          réalité « w5+w3 ») qui a produit la dette du cluster précédent.
+        success_msg: "{{ item }} présent"
+      loop: "{{ groups['k3s_server'] + groups['k3s_agents'] }}"
+
+    - name: "Assert : AUCUN nœud inattendu (dérive inverse)"
+      ansible.builtin.assert:
+        that:
+          - k3s_nodes.stdout.split(' ') | sort | length == (groups['k3s_server'] + groups['k3s_agents']) | sort | length
+        fail_msg: >-
+          DIVERGENCE : le cluster porte des nœuds absents de l'inventaire —
+          {{ k3s_nodes.stdout }}. Git n'est plus la source de vérité.
+
+    - name: "Read-back : backend flannel réellement en service (chiffrement)"
+      ansible.builtin.command:
+        cmd: ip link show flannel-wg
+      register: k3s_wg_link
+      changed_when: false
+      failed_when: false
+
+    - name: "Assert : l'interface WireGuard existe (trafic inter-nœuds chiffré)"
+      ansible.builtin.assert:
+        that:
+          - k3s_wg_link.rc == 0
+        fail_msg: >-
+          REFUS : l'interface `flannel-wg` est absente. Le trafic de pods
+          circulerait EN CLAIR entre les nœuds, sur IP publiques. Vérifier
+          --flannel-backend=wireguard-native et le module noyau.
+        success_msg: "flannel-wg présent — trafic inter-nœuds chiffré"
+
+- name: "Publier le RTO mesuré"
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: "Calculer la durée de reconstruction"
+      ansible.builtin.set_fact:
+        k3s_build_seconds: "{{ (lookup('pipe', 'date -u +%s') | int) - (hostvars['localhost']['k3s_build_started'] | int) }}"
+
+    - name: "RTO rebuild-from-Git"
+      ansible.builtin.debug:
+        msg: >-
+          RTO mesuré : {{ (k3s_build_seconds | int / 60) | round(1) }} min.
+          Seuil d'acceptabilité fixé à 60 min — au-delà, le renoncement à la
+          haute disponibilité n'est plus justifié par la mesure.
+
+    - name: "Assert : le RTO tient sous le seuil qui justifie l'absence de HA"
+      ansible.builtin.assert:
+        that:
+          - (k3s_build_seconds | int) < 3600
+        fail_msg: >-
+          RTO {{ (k3s_build_seconds | int / 60) | round(1) }} min > 60 min.
+          L'argument « pas de HA car reconstructible » ne tient plus : soit on
+          réduit le RTO, soit on rouvre la question de la HA.
