@@ -1,0 +1,161 @@
+---
+# roles/k3s_server/tasks/main.yml
+#
+# Idempotent, fail-closed, read-back-assert :
+#   - la garde « hôte vide » REFUSE par défaut d'écraser une machine en service ;
+#   - l'installation est vérifiée par un read-back (`kubectl get node`), pas par
+#     le code de retour de l'installeur ;
+#   - aucune IP n'est écrite en Git : elles sont dérivées des faits à l'exécution.
+
+- name: "Collecter les faits (IP publique, RAM)"
+  ansible.builtin.setup:
+    gather_subset:
+      - network
+      - hardware
+
+# --- Garde 1 : l'hôte est-il vide ? -------------------------------------------
+- name: "Garde : conteneurs Docker en service sur l'hôte"
+  ansible.builtin.command:
+    cmd: docker ps -q
+  register: k3s_docker_ps
+  changed_when: false
+  failed_when: false
+
+- name: "Garde : k3s déjà installé ?"
+  ansible.builtin.stat:
+    path: /usr/local/bin/k3s
+  register: k3s_binary
+
+- name: "Garde : REFUSER d'installer sur un hôte qui porte une charge"
+  ansible.builtin.assert:
+    that:
+      - (k3s_docker_ps.stdout | default('') | trim) == ''
+    fail_msg: >-
+      REFUS : {{ inventory_hostname }} porte {{ k3s_docker_ps.stdout_lines | default([]) | length }}
+      conteneur(s) Docker en service. Cette garde existe pour empêcher de viser
+      par erreur worker-3 (webMethods 10.15 + Elasticsearch + Caddy) ou un hôte
+      de production. Relancer avec -e k3s_require_empty_host=false EN CONNAISSANCE
+      DE CAUSE, après avoir vérifié ce que la machine porte.
+    success_msg: "hôte vide — OK"
+  # `| bool` : une variable d'inventaire INI arrive comme chaîne ("false" est
+  # VRAI en Jinja). Sans ce filtre, la garde n'est pas levable par hôte.
+  when: (k3s_require_empty_host | bool) and not (k3s_force | bool)
+
+- name: "Garde : RAM libre suffisante"
+  ansible.builtin.assert:
+    that:
+      - ansible_memfree_mb | int >= k3s_min_free_mb
+    fail_msg: >-
+      REFUS : {{ ansible_memfree_mb }} Mo libres < {{ k3s_min_free_mb }} Mo exigés
+      sur {{ inventory_hostname }}.
+    success_msg: "{{ ansible_memfree_mb }} Mo libres — OK"
+
+# --- Prérequis : module noyau WireGuard ---------------------------------------
+# Le backend flannel chiffré en dépend. On le vérifie AVANT d'installer, pour ne
+# pas laisser un cluster à moitié posé avec un réseau en clair.
+- name: "Charger le module noyau wireguard"
+  community.general.modprobe:
+    name: wireguard
+    state: present
+  become: true
+
+- name: "Read-back : le module wireguard est bien chargé"
+  ansible.builtin.command:
+    cmd: lsmod
+  register: k3s_lsmod
+  changed_when: false
+
+- name: "Assert : wireguard chargé (sinon le trafic inter-nœuds serait EN CLAIR)"
+  ansible.builtin.assert:
+    that:
+      - "'wireguard' in k3s_lsmod.stdout"
+    fail_msg: >-
+      REFUS : le module noyau `wireguard` n'est pas chargé sur {{ inventory_hostname }}.
+      Sans lui, `--flannel-backend=wireguard-native` échoue et le trafic de pods
+      transiterait EN CLAIR sur IP publiques. Installer wireguard-tools / le
+      noyau adéquat avant de relancer.
+
+- name: "Rendre le chargement persistant au reboot"
+  ansible.builtin.copy:
+    dest: /etc/modules-load.d/wireguard.conf
+    content: "wireguard\n"
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+
+# --- Installation --------------------------------------------------------------
+# L'IP publique est dérivée des faits — AUCUNE IP n'est écrite en Git.
+- name: "Installer le plan de contrôle k3s (version épinglée)"
+  ansible.builtin.shell:
+    cmd: >-
+      curl -sfL https://get.k3s.io |
+      INSTALL_K3S_VERSION='{{ k3s_version }}'
+      INSTALL_K3S_EXEC='server
+      --node-name={{ k3s_node_name }}
+      --advertise-address={{ ansible_default_ipv4.address }}
+      --tls-san={{ ansible_default_ipv4.address }}
+      --flannel-backend={{ k3s_flannel_backend }}
+      {% for d in k3s_disable %}--disable={{ d }} {% endfor %}
+      --write-kubeconfig-mode={{ k3s_kubeconfig_mode }}
+      {% if k3s_secrets_encryption %}--secrets-encryption{% endif %}'
+      sh -s -
+  args:
+    creates: /usr/local/bin/k3s
+  become: true
+  register: k3s_install
+
+- name: "Attendre que le service k3s soit actif"
+  ansible.builtin.systemd:
+    name: k3s
+    state: started
+    enabled: true
+  become: true
+
+# --- Read-back-assert : on ne croit pas l'installeur, on vérifie l'état --------
+# NB : on utilise `kubectl wait` et NON `get -o jsonpath=...[?(@.type=="Ready")]`.
+# Le module `command` passe la chaîne dans shlex, qui retire les guillemets
+# internes : le jsonpath devient `@.type==Ready`, invalide, et renvoie une chaîne
+# vide — la boucle `until` tourne alors jusqu'à épuisement sans jamais réussir,
+# alors que le nœud est Ready. Piège vécu, pas théorique.
+- name: "Read-back : attendre que le nœud soit Ready"
+  ansible.builtin.command:
+    cmd: k3s kubectl wait --for=condition=Ready node/{{ k3s_node_name }} --timeout=300s
+  become: true
+  register: k3s_node_ready
+  changed_when: false
+
+- name: "Assert : le plan de contrôle répond et le nœud porte le bon nom"
+  ansible.builtin.assert:
+    that:
+      - "'condition met' in k3s_node_ready.stdout"
+    fail_msg: "Le nœud {{ k3s_node_name }} n'est pas Ready après 5 min."
+    success_msg: "{{ k3s_node_name }} Ready — plan de contrôle opérationnel"
+
+- name: "Read-back : confirmer que le datastore est bien SQLite (pas etcd)"
+  ansible.builtin.stat:
+    path: /var/lib/rancher/k3s/server/db/state.db
+  become: true
+  register: k3s_sqlite
+
+- name: "Assert : datastore SQLite présent (etcd écarté par la mesure disque)"
+  ansible.builtin.assert:
+    that:
+      - k3s_sqlite.stat.exists
+    fail_msg: >-
+      Le datastore SQLite est absent : k3s a probablement démarré en mode etcd.
+      C'est exactement la configuration écartée par la mesure fsync du 27/07.
+
+# --- Jeton de jonction : récupéré à l'exécution, JAMAIS écrit en Git ----------
+- name: "Récupérer le jeton de jonction des agents"
+  ansible.builtin.slurp:
+    src: /var/lib/rancher/k3s/server/node-token
+  become: true
+  register: k3s_node_token_raw
+  no_log: true
+
+- name: "Publier le jeton et l'URL du serveur comme faits (en mémoire seulement)"
+  ansible.builtin.set_fact:
+    k3s_join_token: "{{ k3s_node_token_raw.content | b64decode | trim }}"
+    k3s_server_url: "https://{{ ansible_default_ipv4.address }}:6443"
+  no_log: true

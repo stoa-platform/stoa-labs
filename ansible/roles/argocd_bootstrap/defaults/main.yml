@@ -1,0 +1,27 @@
+---
+# roles/argocd_bootstrap/defaults/main.yml
+#
+# Amorçage d'Argo CD — la SEULE étape impérative admise.
+#
+# Un réconciliateur GitOps ne peut pas s'installer lui-même depuis Git : il faut
+# une graine. Cette graine est réduite au strict minimum (installer Argo CD,
+# poser l'AppProject et les Applications), et tout le reste du cluster en
+# découle par réconciliation. C'est la différence avec le `setup.sh` précédent,
+# qui posait TOUT impérativement et n'avait aucun moyen de détecter sa dérive.
+
+# Version épinglée. >= 3.3.2 est IMPÉRATIF : c'est la version qui corrige l'échec
+# de migration client-side → server-side sur les objets de plus de 256 Ko
+# (typiquement les CRD), cf. argoproj/argo-cd#26279. On prend la stable courante.
+argocd_version: "v3.4.5"
+
+argocd_namespace: "argocd"
+
+# Manifeste d'installation amont, dérivé de la version épinglée.
+argocd_install_url: "https://raw.githubusercontent.com/argoproj/argo-cd/{{ argocd_version }}/manifests/install.yaml"
+
+# Manifestes de bootstrap versionnés dans le dépôt `stoa` (public).
+# Chemin sur le NŒUD DE CONTRÔLE, relatif au playbook.
+argocd_bootstrap_src: "{{ playbook_dir }}/../../stoa/deploy/bootstrap/argocd"
+
+# Délai d'attente de disponibilité d'Argo CD.
+argocd_ready_timeout: "600s"

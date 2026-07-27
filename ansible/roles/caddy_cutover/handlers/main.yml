@@ -1,0 +1,6 @@
+---
+- name: reload caddy
+  ansible.builtin.systemd:
+    name: caddy
+    state: reloaded
+  become: true
