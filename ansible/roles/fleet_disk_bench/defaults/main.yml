@@ -1,0 +1,48 @@
+---
+# roles/fleet_disk_bench/defaults/main.yml
+#
+# Mesure de la latence d'écriture SYNCHRONE (fsync) d'un hôte de la flotte.
+# Le chiffre qui décide de la topologie du cluster : etcd synchronise son WAL à
+# chaque écriture, et la recommandation amont est
+# `etcd_disk_wal_fsync_duration_seconds` **p99 < 10 ms**. Une moyenne obtenue
+# par `dd` ne donne PAS le p99 — d'où fio.
+
+# --- profil WAL etcd (le job décisif) ----------------------------------------
+# Reproduit le motif d'écriture du WAL : synchrone, petits blocs, fdatasync à
+# chaque opération. 22 Mo / 2300 o ≈ 10 000 opérations — assez pour un p99 stable
+# sans marteler le disque.
+disk_bench_wal_size: "22m"
+disk_bench_wal_bs: 2300
+
+# Seuil d'échec (ms). 10 ms = recommandation etcd. Le rôle ÉCHOUE au-dessus :
+# fail-closed, pour qu'un disque inapte ne passe pas en vert par inattention.
+disk_bench_wal_p99_max_ms: 10
+disk_bench_fail_on_threshold: true
+
+# --- job IOPS 4k aléatoires (optionnel) --------------------------------------
+# Hors du chemin de décision : opt-in, pour ne pas allonger la fenêtre d'écriture
+# sur un hôte de production.
+disk_bench_run_iops: false
+disk_bench_iops_size: "256m"
+disk_bench_iops_runtime: 30
+
+# --- garde-fous ---------------------------------------------------------------
+# Un bench sur un hôte chargé mesure la contention, pas le disque — et perturbe
+# la charge en place. Refus par défaut au-dessus de ce load average (1 min).
+disk_bench_max_loadavg: 1.0
+# Espace libre exigé sous le répertoire de test (Mo), marge incluse.
+disk_bench_min_free_mb: 2048
+# Contournement explicite des deux gardes ci-dessus. Jamais par défaut.
+disk_bench_force: false
+
+# --- exécution ----------------------------------------------------------------
+# Répertoire de test. Doit être sur le système de fichiers À MESURER (celui qui
+# porterait /var/lib/rancher ou /var/lib/etcd), pas un tmpfs.
+disk_bench_dir: "/var/tmp"
+# Le paquet reste installé après le run : le rôle DÉCLARE cet état, donc le
+# réinstaller à chaque fois n'est pas une dérive. Passer à true pour un hôte
+# qui doit rester strictement minimal.
+disk_bench_remove_fio: false
+
+# Où déposer le JSON brut sur le nœud de contrôle (preuve rejouable).
+disk_bench_artifact_dir: "{{ playbook_dir }}/artifacts"
