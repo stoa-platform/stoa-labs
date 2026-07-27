@@ -1,0 +1,5 @@
+---
+- name: "Mesurer la latence d'écriture synchrone (fsync) de la flotte"
+  hosts: "{{ target | default('contabo_idle') }}"
+  gather_facts: false
+  roles: [ fleet_disk_bench ]

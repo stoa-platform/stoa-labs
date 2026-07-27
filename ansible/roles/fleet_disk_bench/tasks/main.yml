@@ -1,0 +1,192 @@
+---
+# roles/fleet_disk_bench/tasks/main.yml
+#
+# Idempotent, fail-closed, read-back-assert :
+#   - les deux gardes (charge, espace) REFUSENT par défaut ;
+#   - l'installation de fio est vérifiée par un read-back (`fio --version`), pas
+#     par le retour du gestionnaire de paquets ;
+#   - une métrique absente du JSON fait ÉCHOUER le play (jamais un 0 silencieux
+#     qui passerait le seuil) ;
+#   - le répertoire de test est supprimé même en cas d'échec (block/always).
+
+# --- Garde 1 : charge de l'hôte ----------------------------------------------
+- name: "Garde : load average 1 min"
+  ansible.builtin.slurp:
+    src: /proc/loadavg
+  register: disk_bench_loadavg_raw
+
+- name: "Garde : refuser un hôte chargé (mesure faussée + charge perturbée)"
+  ansible.builtin.assert:
+    that:
+      - (disk_bench_loadavg_raw.content | b64decode).split(' ')[0] | float <= disk_bench_max_loadavg
+    fail_msg: >-
+      REFUS : load average
+      {{ (disk_bench_loadavg_raw.content | b64decode).split(' ')[0] }}
+      > seuil {{ disk_bench_max_loadavg }} sur {{ inventory_hostname }}.
+      Un bench sur hôte chargé mesure la contention, pas le disque, et perturbe
+      la charge en place. Relancer avec -e disk_bench_force=true en connaissance
+      de cause, ou viser un nœud au repos.
+    success_msg: "load {{ (disk_bench_loadavg_raw.content | b64decode).split(' ')[0] }} — OK"
+  when: not disk_bench_force
+
+# --- Garde 2 : espace libre ---------------------------------------------------
+- name: "Garde : espace libre sous {{ disk_bench_dir }}"
+  ansible.builtin.command:
+    cmd: "df -Pm {{ disk_bench_dir }}"
+  register: disk_bench_df
+  changed_when: false
+
+- name: "Garde : refuser si l'espace libre est insuffisant"
+  ansible.builtin.assert:
+    that:
+      - disk_bench_df.stdout_lines[1].split()[3] | int >= disk_bench_min_free_mb
+    fail_msg: >-
+      REFUS : {{ disk_bench_df.stdout_lines[1].split()[3] }} Mo libres sous
+      {{ disk_bench_dir }} < {{ disk_bench_min_free_mb }} Mo exigés.
+  when: not disk_bench_force
+
+# --- Installation (idempotente) + read-back ----------------------------------
+- name: "fio : présent"
+  ansible.builtin.package:
+    name: fio
+    state: present
+  become: true
+
+- name: "fio : read-back (le retour du gestionnaire de paquets ne suffit pas)"
+  ansible.builtin.command:
+    cmd: fio --version
+  register: disk_bench_fio_version
+  changed_when: false
+  failed_when: disk_bench_fio_version.stdout is not match('^fio-')
+
+# --- Mesure -------------------------------------------------------------------
+- name: "Bench"
+  block:
+    - name: "Répertoire de test temporaire"
+      ansible.builtin.tempfile:
+        state: directory
+        path: "{{ disk_bench_dir }}"
+        prefix: fio-bench-
+      register: disk_bench_tmp
+
+    - name: "fio : profil WAL etcd (écritures synchrones, fdatasync par opération)"
+      ansible.builtin.command:
+        argv:
+          - fio
+          - "--name=etcd-wal"
+          - "--rw=write"
+          - "--ioengine=sync"
+          - "--fdatasync=1"
+          - "--directory={{ disk_bench_tmp.path }}"
+          - "--size={{ disk_bench_wal_size }}"
+          - "--bs={{ disk_bench_wal_bs }}"
+          - "--output-format=json"
+      register: disk_bench_wal_raw
+      changed_when: false
+
+    - name: "Parser le JSON fio"
+      ansible.builtin.set_fact:
+        disk_bench_wal: "{{ (disk_bench_wal_raw.stdout | from_json).jobs[0].sync.lat_ns }}"
+
+    # Read-back-assert : avec --fdatasync=1, fio DOIT peupler jobs[].sync.lat_ns.
+    # Si la clé manque (build sans support, engine incompatible), on échoue au
+    # lieu de rapporter une latence nulle qui passerait le seuil.
+    - name: "Read-back : la métrique de latence fsync existe réellement"
+      ansible.builtin.assert:
+        that:
+          - disk_bench_wal.percentile is defined
+          - disk_bench_wal.percentile['99.000000'] is defined
+          - disk_bench_wal.mean | float > 0
+        fail_msg: >-
+          ÉCHEC read-back : fio n'a pas produit de latence fsync exploitable sur
+          {{ inventory_hostname }}. Ne PAS interpréter comme un disque rapide.
+
+    - name: "Latences fsync en ms"
+      ansible.builtin.set_fact:
+        disk_bench_ms:
+          mean: "{{ (disk_bench_wal.mean | float / 1000000) | round(3) }}"
+          p50: "{{ (disk_bench_wal.percentile['50.000000'] | float / 1000000) | round(3) }}"
+          p95: "{{ (disk_bench_wal.percentile['95.000000'] | float / 1000000) | round(3) }}"
+          p99: "{{ (disk_bench_wal.percentile['99.000000'] | float / 1000000) | round(3) }}"
+          p999: "{{ (disk_bench_wal.percentile['99.900000'] | float / 1000000) | round(3) }}"
+
+    - name: "fio : IOPS 4k aléatoires (optionnel)"
+      ansible.builtin.command:
+        argv:
+          - fio
+          - "--name=rand4k"
+          - "--rw=randwrite"
+          - "--ioengine=libaio"
+          - "--direct=1"
+          - "--iodepth=32"
+          - "--bs=4k"
+          - "--size={{ disk_bench_iops_size }}"
+          - "--runtime={{ disk_bench_iops_runtime }}"
+          - "--time_based"
+          - "--directory={{ disk_bench_tmp.path }}"
+          - "--output-format=json"
+      register: disk_bench_iops_raw
+      changed_when: false
+      when: disk_bench_run_iops
+
+    - name: "IOPS mesurés"
+      ansible.builtin.set_fact:
+        disk_bench_iops: "{{ (disk_bench_iops_raw.stdout | from_json).jobs[0].write.iops | round(0) }}"
+      when: disk_bench_run_iops
+
+    # --- Preuve rejouable : JSON brut rapatrié sur le nœud de contrôle --------
+    - name: "Répertoire d'artefacts (nœud de contrôle)"
+      ansible.builtin.file:
+        path: "{{ disk_bench_artifact_dir }}"
+        state: directory
+        mode: "0755"
+      delegate_to: localhost
+      run_once: true
+
+    - name: "Déposer le JSON fio brut"
+      ansible.builtin.copy:
+        content: "{{ disk_bench_wal_raw.stdout }}"
+        dest: "{{ disk_bench_artifact_dir }}/{{ inventory_hostname }}-fio-wal.json"
+        mode: "0644"
+      delegate_to: localhost
+
+  always:
+    - name: "Nettoyage du répertoire de test (y compris en cas d'échec)"
+      ansible.builtin.file:
+        path: "{{ disk_bench_tmp.path }}"
+        state: absent
+      when: disk_bench_tmp.path is defined
+
+    - name: "fio : désinstallation (opt-in)"
+      ansible.builtin.package:
+        name: fio
+        state: absent
+      become: true
+      when: disk_bench_remove_fio
+
+# --- Verdict ------------------------------------------------------------------
+- name: "Résultat"
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }} — fsync WAL :
+      moy {{ disk_bench_ms.mean }} ms |
+      p50 {{ disk_bench_ms.p50 }} |
+      p95 {{ disk_bench_ms.p95 }} |
+      p99 {{ disk_bench_ms.p99 }} |
+      p99.9 {{ disk_bench_ms.p999 }} ms
+      {{ ' | ' ~ disk_bench_iops ~ ' IOPS 4k' if disk_bench_run_iops else '' }}
+
+- name: "Porte de preuve : p99 fsync sous le seuil etcd"
+  ansible.builtin.assert:
+    that:
+      - disk_bench_ms.p99 | float <= disk_bench_wal_p99_max_ms
+    fail_msg: >-
+      SEUIL DÉPASSÉ sur {{ inventory_hostname }} : p99 fsync
+      {{ disk_bench_ms.p99 }} ms > {{ disk_bench_wal_p99_max_ms }} ms.
+      Conséquence : un control-plane HA à 3 nœuds avec etcd embarqué est
+      contre-indiqué sur ce stockage (le consensus Raft synchronise chaque
+      écriture sur chaque membre). Rester mono-CP SQLite/kine, ou datastore
+      externe.
+    success_msg: >-
+      p99 {{ disk_bench_ms.p99 }} ms <= {{ disk_bench_wal_p99_max_ms }} ms — apte à etcd.
+  when: disk_bench_fail_on_threshold
