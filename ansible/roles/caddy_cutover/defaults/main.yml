@@ -1,0 +1,51 @@
+---
+# roles/caddy_cutover/defaults/main.yml
+#
+# Bascule du trafic de l'ANCIEN cluster k3s vers le NOUVEAU, en changeant la
+# cible amont de Caddy.
+#
+# Pourquoi c'est peu risqué : les quatre noms servis (dev-gw-k3s, dev-wm-k3s,
+# staging-gw-k3s, staging-wm-k3s) résolvent directement vers l'hôte qui porte
+# Caddy — le proxy Cloudflare est désactivé pour eux. La bascule ne touche donc
+# AUCUN enregistrement DNS : c'est une ligne de configuration, rechargée à chaud,
+# et réversible par restauration d'une sauvegarde horodatée.
+#
+# Corollaire important : aucun jeton d'API Cloudflare n'est nécessaire. La
+# bascule n'est pas bloquée par l'impasse du jeton enfermé dans l'Infisical mort.
+
+# Cible amont actuelle, à remplacer. `localhost` parce que Caddy et l'agent k3s
+# de l'ancien cluster cohabitent sur le même hôte.
+caddy_upstream_from: "localhost:30080"
+
+# Hôte du NOUVEAU cluster vers lequel router. On vise le plan de contrôle par
+# défaut, mais n'importe quel nœud conviendrait : un NodePort répond sur TOUS
+# les nœuds du cluster, pas seulement celui qui porte le pod d'ingress.
+caddy_new_upstream_group: "k3s_server"
+caddy_new_upstream_port: 30080
+
+# Noms à vérifier APRÈS bascule. La porte de preuve : chacun doit rendre 200 sur
+# /health, comme avant. `/` rend 404 (l'application n'y sert rien) — l'assertion
+# porte donc sur /health, seul chemin qui distingue « ça sert » de « ça répond ».
+caddy_verify_hosts:
+  - dev-gw-k3s.gostoa.dev
+  - dev-wm-k3s.gostoa.dev
+  - staging-gw-k3s.gostoa.dev
+  - staging-wm-k3s.gostoa.dev
+caddy_verify_path: "/health"
+caddy_verify_expect: 200
+
+# Restauration : rejouer le playbook avec -e caddy_rollback=true remet la
+# dernière sauvegarde en place.
+caddy_rollback: false
+
+caddy_config_path: "/etc/caddy/Caddyfile"
+caddy_backup_dir: "/etc/caddy/backups"
+
+# NOTE DE SÉCURITÉ — fenêtre à assumer, et à refermer.
+# Entre cette bascule et l'intégration de l'hôte Caddy au nouveau cluster, le
+# trafic Caddy → ingress traverse l'Internet public EN CLAIR (HTTP), puisque les
+# deux machines ne partagent pas de réseau privé. C'est acceptable pour une
+# fenêtre courte sur des environnements de lab, PAS comme état permanent.
+# La sortie : faire rejoindre le nouveau cluster à l'hôte Caddy, ce qui rétablit
+# `localhost:30080` et supprime le saut réseau. Tant que ce n'est pas fait, cette
+# note doit rester visible.
