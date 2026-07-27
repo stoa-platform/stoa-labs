@@ -1,0 +1,28 @@
+---
+# backup.yml — sauvegarde du plan de contrôle k3s.
+#
+# Complément indispensable de `cluster.yml`. Ce dernier reconstruit la FORME du
+# cluster depuis Git ; celui-ci restitue ce que Git ignore — au premier rang
+# duquel `stoa-gateway-secrets`, créé à la main et présent nulle part ailleurs.
+#
+# Usage :
+#   ansible-playbook -i inventory.contabo.ini backup.yml
+#
+# À automatiser (cron / timer systemd) une fois la première exécution vérifiée.
+#
+# RESTAURATION (procédure, à répéter en exercice — une sauvegarde jamais
+# restaurée n'est qu'une hypothèse) :
+#   1. systemctl stop k3s
+#   2. tar xzf k3s-<horodatage>.tar.gz -C /tmp/restore
+#   3. cp /tmp/restore/state.db      /var/lib/rancher/k3s/server/db/state.db
+#      cp -r /tmp/restore/cred/*     /var/lib/rancher/k3s/server/cred/
+#      cp /tmp/restore/token         /var/lib/rancher/k3s/server/token
+#   4. systemctl start k3s
+#   5. Vérifier : kubectl get secret stoa-gateway-secrets -n gateway-dev
+
+- name: "Sauvegarde du plan de contrôle"
+  hosts: k3s_server
+  gather_facts: true
+  become: true
+  roles:
+    - cluster_backup

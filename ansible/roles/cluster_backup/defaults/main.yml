@@ -1,0 +1,42 @@
+---
+# roles/cluster_backup/defaults/main.yml
+#
+# Sauvegarde du plan de contrôle — ce qui rend le cluster réellement récupérable.
+#
+# POURQUOI CE RÔLE EXISTE. Toute la décision d'écarter la haute disponibilité
+# repose sur une phrase : « le cluster est reconstructible depuis Git ». Elle est
+# vraie des charges — les overlays et les Applications Argo CD la rendent vraie.
+# Elle est FAUSSE d'au moins un objet : `stoa-gateway-secrets`, créé à la main,
+# absent de tout dépôt, et qui n'existe plus qu'ici depuis la mise au rebut de
+# l'ancien cluster. Sans sauvegarde, perdre worker-1 c'est perdre définitivement
+# trois identifiants que rien ne régénère.
+#
+# CE QU'IL FAUT POUR RESTAURER, et pourquoi les deux sont indispensables :
+#   - `state.db` : le datastore kine/SQLite, qui contient TOUS les objets, dont
+#     les Secrets ;
+#   - `server/cred/` : notamment `encryption-config.json`. Le cluster tourne avec
+#     `--secrets-encryption` (aescbc), donc les Secrets sont chiffrés AU REPOS
+#     dans state.db. Une sauvegarde du seul datastore serait illisible — un faux
+#     sentiment de sécurité, la pire des sauvegardes.
+#   - `server/token` : nécessaire pour que les agents rejoignent après restauration.
+#
+# CE N'EST PAS un remplacement du rebuild-from-Git, c'est son complément : Git
+# reconstruit la forme, la sauvegarde restitue ce que Git ignore.
+
+k3s_data_dir: "/var/lib/rancher/k3s/server"
+backup_dir: "/var/lib/k3s-backups"
+
+# Copie hors-nœud. Une sauvegarde qui ne survit pas à la perte de la machine
+# qu'elle sauvegarde ne sert à rien. On vise un pair du cluster, dans une plage
+# réseau différente (contrainte Contabo : worker-1 et worker-2 ne se voient pas).
+backup_offsite_host: "worker-5"
+backup_offsite_dir: "/var/lib/k3s-backups/offsite"
+
+# Rétention (nombre d'archives conservées de chaque côté).
+backup_keep: 7
+
+# ATTENTION — l'archive contient la clé de chiffrement des Secrets ET les
+# kubeconfigs d'administration. Elle vaut un accès cluster-admin complet.
+# Elle est donc créée en 0600 root, et ne doit JAMAIS être versionnée,
+# téléversée, ni sortie de la flotte sans chiffrement supplémentaire.
+backup_mode: "0600"
