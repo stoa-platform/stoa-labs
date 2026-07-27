@@ -37,7 +37,9 @@
       de production. Relancer avec -e k3s_require_empty_host=false EN CONNAISSANCE
       DE CAUSE, après avoir vérifié ce que la machine porte.
     success_msg: "hôte vide — OK"
-  when: k3s_require_empty_host and not k3s_force
+  # `| bool` : une variable d'inventaire INI arrive comme chaîne ("false" est
+  # VRAI en Jinja). Sans ce filtre, la garde n'est pas levable par hôte.
+  when: (k3s_require_empty_host | bool) and not (k3s_force | bool)
 
 - name: "Garde : RAM libre suffisante"
   ansible.builtin.assert:

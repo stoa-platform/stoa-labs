@@ -28,7 +28,13 @@
       légitime qu'à l'étape de bascule, en levant explicitement la garde :
       -e k3s_require_empty_host=false
     success_msg: "hôte vide — OK"
-  when: k3s_require_empty_host and not k3s_force
+  # `| bool` est INDISPENSABLE : une variable posée dans un inventaire INI
+  # (`worker-3 k3s_require_empty_host=false`) arrive comme la CHAÎNE "false",
+  # que Jinja évalue comme VRAIE — `false` minuscule n'est pas un littéral
+  # Python, donc Ansible ne la convertit pas. Sans ce filtre, la garde ne peut
+  # pas être levée par hôte, et refuse en silence de la bonne façon mais pour la
+  # mauvaise raison. Piège vécu le 2026-07-27.
+  when: (k3s_require_empty_host | bool) and not (k3s_force | bool)
 
 - name: "Garde : RAM libre suffisante"
   ansible.builtin.assert:
