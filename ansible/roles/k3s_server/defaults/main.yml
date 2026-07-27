@@ -1,0 +1,58 @@
+---
+# roles/k3s_server/defaults/main.yml
+#
+# Plan de contrôle k3s — UNIQUE, sans etcd, sur datastore kine/SQLite.
+#
+# Pourquoi pas d'etcd embarqué en HA : la mesure fio du 2026-07-27 place le p99
+# de `fsync` de la flotte à 9,63 / 10,03 / 10,95 ms sur des nœuds VIDES, soit
+# exactement sur le seuil amont etcd (p99 < 10 ms, FAQ etcd v3.6), avec une
+# queue à 24 ms au p99.9. Un consensus Raft amplifie ce coût à chaque écriture.
+# Le renoncement à la HA est compensé par un RTO de reconstruction mesuré
+# (cf. cluster.yml, tâche de chronométrage) — pas supposé acceptable.
+
+# Version épinglée. JAMAIS de "latest" : c'est la dette mesurée du cluster
+# précédent (images :latest non épinglées). Aligné sur la version en service,
+# déjà éprouvée 128 jours.
+k3s_version: "v1.34.5+k3s1"
+
+# Nom de nœud DÉTERMINISTE, aligné sur l'alias SSH.
+# Le cluster précédent a divergé jusqu'à nommer `k3s-worker-1` un nœud qui est
+# physiquement worker-3, et à laisser le plan de contrôle sous le nom Contabo
+# `vmi3109796`. Un nom de nœud qui ne désigne pas la machine est un piège
+# d'exploitation : on le supprime à la racine.
+k3s_node_name: "{{ inventory_hostname }}"
+
+# Chiffrement du trafic inter-nœuds.
+# Les 5 VPS n'ont PAS de réseau privé souscrit : ils communiquent sur IP
+# publiques. Le backend flannel par défaut (vxlan) transporterait le trafic de
+# pods EN CLAIR sur l'Internet public. `wireguard-native` est le backend chiffré
+# intégré à k3s — vérifié : le module noyau `wireguard` charge sur la flotte.
+k3s_flannel_backend: "wireguard-native"
+
+# Composants désactivés.
+#  - traefik   : l'ingress en service est ingress-nginx ; deux contrôleurs
+#                d'ingress sur le même cluster est une source de conflit.
+#  - servicelb : on expose par NodePort derrière Caddy ; klipper n'a pas d'objet.
+# local-storage (local-path-provisioner) est CONSERVÉ : c'est le stockage des
+# labs, et les données de lab sont jetables par construction.
+k3s_disable:
+  - traefik
+  - servicelb
+
+# Chiffrement au repos des Secrets dans le datastore. Sans cette option, un
+# Secret est lisible en clair par quiconque lit state.db.
+k3s_secrets_encryption: true
+
+# Le kubeconfig ne doit pas être lisible par tout le monde (défaut k3s : 0600,
+# souvent relâché à 0644 à la main — on déclare 0640 explicitement).
+k3s_kubeconfig_mode: "0640"
+
+# --- garde-fous ---------------------------------------------------------------
+# REFUS d'installer sur un hôte qui porte déjà une charge. C'est la garde qui
+# empêche de viser par erreur worker-3 (webMethods + Caddy) ou worker-5 (plan de
+# contrôle en service). Contournement explicite uniquement.
+k3s_require_empty_host: true
+k3s_force: false
+
+# RAM libre minimale exigée (Mo) pour un plan de contrôle.
+k3s_min_free_mb: 2048

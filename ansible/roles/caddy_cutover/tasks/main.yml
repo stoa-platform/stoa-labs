@@ -1,0 +1,169 @@
+---
+# roles/caddy_cutover/tasks/main.yml
+#
+# Bascule fail-closed avec restauration AUTOMATIQUE :
+#   - sauvegarde horodatée avant toute écriture ;
+#   - `caddy validate` AVANT rechargement — une config invalide n'atteint jamais
+#     le service ;
+#   - vérification depuis le NŒUD DE CONTRÔLE (chemin réel, pas depuis l'hôte) ;
+#   - en cas d'échec, la sauvegarde est restaurée et rechargée, puis le play
+#     échoue bruyamment. On ne laisse jamais un trafic à moitié basculé.
+
+- name: "Collecter les faits"
+  ansible.builtin.setup:
+    gather_subset:
+      - network
+
+# --- Garde : l'ancienne cible sert-elle vraiment ? ----------------------------
+- name: "Garde : lire la configuration Caddy en place"
+  ansible.builtin.slurp:
+    src: "{{ caddy_config_path }}"
+  become: true
+  register: caddy_current_raw
+
+- name: "Garde : refuser si la cible attendue est absente"
+  ansible.builtin.assert:
+    that:
+      - caddy_upstream_from in (caddy_current_raw.content | b64decode)
+    fail_msg: >-
+      REFUS : « {{ caddy_upstream_from }} » est introuvable dans
+      {{ caddy_config_path }}. La bascule a peut-être déjà été faite, ou la
+      configuration a changé. Vérifier avant de forcer — un remplacement à vide
+      ne produirait aucune erreur et donnerait l'illusion d'une bascule réussie.
+    success_msg: "cible {{ caddy_upstream_from }} présente — OK"
+  when: not caddy_rollback
+
+- name: "Résoudre la nouvelle cible amont (IP dérivée, jamais écrite en Git)"
+  ansible.builtin.set_fact:
+    caddy_new_upstream: >-
+      {{ hostvars[groups[caddy_new_upstream_group][0]].ansible_default_ipv4.address
+      }}:{{ caddy_new_upstream_port }}
+  when: not caddy_rollback
+
+# --- Sauvegarde ----------------------------------------------------------------
+- name: "Créer le répertoire de sauvegardes"
+  ansible.builtin.file:
+    path: "{{ caddy_backup_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+  become: true
+
+- name: "Sauvegarder la configuration courante"
+  ansible.builtin.copy:
+    src: "{{ caddy_config_path }}"
+    dest: "{{ caddy_backup_dir }}/Caddyfile.{{ ansible_date_time.iso8601_basic_short }}"
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0640"
+  become: true
+  register: caddy_backup
+  when: not caddy_rollback
+
+# --- Restauration explicite (-e caddy_rollback=true) --------------------------
+- name: "Restauration : retrouver la sauvegarde la plus récente"
+  ansible.builtin.shell:
+    cmd: "ls -1t {{ caddy_backup_dir }}/Caddyfile.* | head -1"
+  become: true
+  register: caddy_latest_backup
+  changed_when: false
+  when: caddy_rollback
+
+- name: "Restauration : remettre la sauvegarde en place"
+  ansible.builtin.copy:
+    src: "{{ caddy_latest_backup.stdout }}"
+    dest: "{{ caddy_config_path }}"
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  when: caddy_rollback
+  notify: reload caddy
+
+# --- Bascule, avec restauration automatique en cas d'échec --------------------
+- name: "Bascule du trafic"
+  when: not caddy_rollback
+  block:
+    # Ne remplace QUE `localhost:30080`. Les blocs `dev-wm` / `dev-wm-ui`
+    # pointent vers localhost:5555 et localhost:19072 — le webMethods 10.15 en
+    # Docker, hors cluster — et ne doivent PAS bouger.
+    - name: "Repointer les quatre hôtes k3s vers le nouveau cluster"
+      ansible.builtin.replace:
+        path: "{{ caddy_config_path }}"
+        regexp: "{{ caddy_upstream_from | regex_escape }}"
+        replace: "{{ caddy_new_upstream }}"
+      become: true
+      register: caddy_replaced
+
+    - name: "Valider la configuration AVANT de recharger"
+      ansible.builtin.command:
+        cmd: "caddy validate --adapter caddyfile --config {{ caddy_config_path }}"
+      become: true
+      register: caddy_validate
+      changed_when: false
+
+    - name: "Recharger Caddy (à chaud, sans coupure)"
+      ansible.builtin.systemd:
+        name: caddy
+        state: reloaded
+      become: true
+
+    - name: "Laisser le rechargement s'établir"
+      ansible.builtin.wait_for:
+        timeout: 5
+
+    # Vérification depuis le NŒUD DE CONTRÔLE : c'est le chemin réel emprunté
+    # par un client, pas une boucle locale sur l'hôte.
+    - name: "Porte de preuve : chaque hôte doit rendre {{ caddy_verify_expect }} sur {{ caddy_verify_path }}"
+      ansible.builtin.uri:
+        url: "https://{{ item }}{{ caddy_verify_path }}"
+        method: GET
+        status_code: "{{ caddy_verify_expect }}"
+        timeout: 15
+      delegate_to: localhost
+      become: false
+      loop: "{{ caddy_verify_hosts }}"
+      register: caddy_probe
+      retries: 3
+      delay: 5
+      until: caddy_probe is succeeded
+
+  rescue:
+    - name: "ÉCHEC — restaurer la configuration précédente"
+      ansible.builtin.copy:
+        src: "{{ caddy_backup.dest }}"
+        dest: "{{ caddy_config_path }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0644"
+      become: true
+
+    - name: "ÉCHEC — recharger Caddy sur la configuration restaurée"
+      ansible.builtin.systemd:
+        name: caddy
+        state: reloaded
+      become: true
+
+    - name: "ÉCHEC — vérifier que l'ancien chemin sert de nouveau"
+      ansible.builtin.uri:
+        url: "https://{{ item }}{{ caddy_verify_path }}"
+        method: GET
+        status_code: "{{ caddy_verify_expect }}"
+        timeout: 15
+      delegate_to: localhost
+      become: false
+      loop: "{{ caddy_verify_hosts }}"
+
+    - name: "Interrompre : la bascule a échoué et a été annulée"
+      ansible.builtin.fail:
+        msg: >-
+          BASCULE ANNULÉE. La configuration précédente a été restaurée et le
+          trafic sert de nouveau depuis l'ancien cluster (vérifié ci-dessus).
+          Cause probable : le nouveau cluster ne sert pas encore les quatre
+          hôtes — vérifier que les Applications Argo CD `gateways-dev` et
+          `gateways-staging` sont Synced/Healthy, et que le NodePort 30080
+          répond sur {{ caddy_new_upstream | default('le nouveau cluster') }}.

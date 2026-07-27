@@ -1,0 +1,30 @@
+---
+# cutover.yml — bascule du trafic vers le nouveau cluster k3s.
+#
+# PRÉREQUIS, à vérifier AVANT de lancer : le nouveau cluster doit déjà servir
+# les quatre hôtes. Tant que les Applications Argo CD `gateways-dev` et
+# `gateways-staging` ne sont pas Synced/Healthy, la bascule se fera, échouera à
+# la vérification, et s'annulera d'elle-même — c'est le comportement voulu, mais
+# autant ne pas la déclencher pour rien.
+#
+# Usage :
+#   ansible-playbook -i inventory.contabo.ini cutover.yml
+#
+# Retour arrière explicite (la bascule se restaure aussi toute seule en cas
+# d'échec de la porte de preuve) :
+#   ansible-playbook -i inventory.contabo.ini cutover.yml -e caddy_rollback=true
+#
+# La bascule ne touche AUCUN DNS : les quatre noms résolvent déjà vers l'hôte
+# qui porte Caddy. Aucun jeton Cloudflare n'est requis.
+
+- name: "Collecter les faits du nouveau cluster (pour résoudre la cible amont)"
+  hosts: k3s_server
+  gather_facts: true
+  tasks: []
+
+- name: "Bascule du trafic : Caddy → nouveau cluster"
+  hosts: caddy
+  gather_facts: false
+  become: true
+  roles:
+    - caddy_cutover

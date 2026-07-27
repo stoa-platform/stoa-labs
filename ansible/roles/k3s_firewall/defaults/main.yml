@@ -1,0 +1,34 @@
+---
+# roles/k3s_firewall/defaults/main.yml
+#
+# Ouverture du pare-feu ENTRE NŒUDS DU CLUSTER, déclarée en Git.
+#
+# Pourquoi ce rôle existe : ufw est actif avec `-P INPUT DROP` sur les 5 VPS.
+# Sur worker-5, les autorisations ont été posées à la main, et elles ont dérivé —
+# on y trouve encore trois règles `6443 ALLOW IN` nommées « ArgoCD OVH node 1..3 »
+# pour des hôtes hors gestion depuis longtemps, et une règle « K3s worker w2 »
+# qui désigne en réalité worker-3. Un pare-feu édité à la main accumule
+# exactement le même type de dette que le cluster qu'il protège.
+#
+# Ici les pairs sont DÉRIVÉS de l'inventaire à l'exécution : aucune IP en Git.
+#
+# LIMITE ASSUMÉE : ce rôle n'AJOUTE que des règles ALLOW ; il n'en retire aucune.
+# Retirer un hôte de l'inventaire ne lui révoque donc PAS son accès — la règle
+# ufw correspondante survit jusqu'à suppression manuelle. C'est un choix
+# délibéré (aucun risque de verrouillage), mais cela signifie que la
+# réconciliation est à sens unique : le pare-feu n'est pas « déclaratif » au
+# sens strict. Toute révocation doit être explicite, et la règle orpheline
+# reste visible dans `ufw status` avec son commentaire d'origine.
+
+# Groupe dont les membres s'autorisent mutuellement.
+k3s_firewall_peer_group: "k3s_cluster"
+
+# NodePorts de l'ingress, joignables au-delà du cluster (Caddy en amont).
+# Plage volontairement étroite : 30080 (HTTP) et 30443 (HTTPS) uniquement.
+k3s_firewall_nodeports:
+  - "30080"
+  - "30443"
+
+# Le port SSH n'est JAMAIS touché par ce rôle : on n'ajoute que des règles
+# ALLOW, on ne modifie ni la politique par défaut ni les règles existantes.
+# Aucun risque de verrouillage.

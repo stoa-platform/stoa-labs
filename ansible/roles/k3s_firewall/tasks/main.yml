@@ -1,0 +1,50 @@
+---
+# roles/k3s_firewall/tasks/main.yml
+#
+# N'ajoute QUE des règles ALLOW. Ne modifie jamais la politique par défaut ni la
+# règle SSH — impossible de se verrouiller hors des machines.
+
+- name: "Collecter les faits réseau des pairs"
+  ansible.builtin.setup:
+    gather_subset:
+      - network
+
+- name: "Autoriser tout le trafic depuis chaque pair du cluster"
+  community.general.ufw:
+    rule: allow
+    from_ip: "{{ hostvars[item].ansible_default_ipv4.address }}"
+    comment: "k3s peer {{ item }} (declared by ansible)"
+  become: true
+  loop: "{{ groups[k3s_firewall_peer_group] }}"
+  when: item != inventory_hostname
+
+- name: "Autoriser les NodePorts de l'ingress"
+  community.general.ufw:
+    rule: allow
+    port: "{{ item }}"
+    proto: tcp
+    comment: "k3s ingress NodePort (declared by ansible)"
+  become: true
+  loop: "{{ k3s_firewall_nodeports }}"
+
+# --- Read-back-assert ---------------------------------------------------------
+# On ne fait pas confiance au code de retour d'ufw : on relit la table et on
+# vérifie que chaque pair y figure.
+- name: "Read-back : relire les règles ufw"
+  ansible.builtin.command:
+    cmd: ufw status
+  become: true
+  register: k3s_fw_status
+  changed_when: false
+
+- name: "Assert : chaque pair du cluster est bien autorisé"
+  ansible.builtin.assert:
+    that:
+      - hostvars[item].ansible_default_ipv4.address in k3s_fw_status.stdout
+    fail_msg: >-
+      Le pair {{ item }} n'apparaît pas dans les règles ufw de
+      {{ inventory_hostname }} : le trafic inter-nœuds serait bloqué et les
+      agents ne pourraient pas joindre le plan de contrôle.
+    success_msg: "pair {{ item }} autorisé"
+  loop: "{{ groups[k3s_firewall_peer_group] }}"
+  when: item != inventory_hostname

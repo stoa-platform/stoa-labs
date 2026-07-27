@@ -1,0 +1,15 @@
+---
+# bootstrap.yml — amorçage GitOps du cluster.
+#
+# À exécuter APRÈS cluster.yml. Pose Argo CD, puis lui confie le cluster :
+# à partir d'ici, toute mutation passe par Git.
+#
+# Usage :
+#   ansible-playbook -i inventory.contabo.ini bootstrap.yml
+
+- name: "Argo CD — réconciliateur unique du cluster"
+  hosts: k3s_server
+  gather_facts: false
+  become: true
+  roles:
+    - argocd_bootstrap

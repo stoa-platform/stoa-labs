@@ -1,0 +1,20 @@
+---
+# roles/k3s_agent/defaults/main.yml
+#
+# Agent k3s. Le jeton de jonction n'est JAMAIS écrit en Git : il est lu sur le
+# plan de contrôle à l'exécution et transporté en mémoire (no_log), conformément
+# à « zéro secret en clair ».
+
+k3s_version: "v1.34.5+k3s1"
+k3s_node_name: "{{ inventory_hostname }}"
+
+# Groupe d'inventaire portant le plan de contrôle — source du jeton et de l'URL.
+k3s_server_group: "k3s_server"
+
+# --- garde-fous ---------------------------------------------------------------
+# Même garde que pour le serveur : refuser un hôte qui porte déjà une charge.
+# worker-3 porte webMethods 10.15 + Elasticsearch + Caddy : il ne rejoint le
+# cluster QUE lors de l'étape de bascule, avec la garde explicitement levée.
+k3s_require_empty_host: true
+k3s_force: false
+k3s_min_free_mb: 1024
