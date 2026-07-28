@@ -1,0 +1,3 @@
+jenkins_image_context: "/opt/stoa-build/poc-control-plane-federation"
+jenkins_image_tag: "localhost:30300/ci/jenkins-go:v1"
+gitea_registry_user: "ci"

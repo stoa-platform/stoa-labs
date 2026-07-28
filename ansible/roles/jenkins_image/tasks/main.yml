@@ -1,0 +1,47 @@
+---
+# Construite sur worker-3 : c'est le SEUL nœud disposant d'un moteur de
+# construction (Docker actif ; ni podman ni buildah ailleurs — vérifié).
+
+- name: "Assert : Docker est disponible sur cet hôte"
+  ansible.builtin.command:
+    cmd: docker info
+  become: true
+  changed_when: false
+
+# Écart FACTUEL constaté à l'exécution (non prévu par la spec) : /opt/ sur
+# worker-3 est root:root 0755 — hegemon (utilisateur SSH, sans become sur cette
+# tâche) ne peut pas y créer de sous-répertoire. rsync échoue alors avec
+# "mkdir ... failed: No such file or directory" (constaté, cf. rapport Tâche 4).
+# On pré-crée le répertoire, appartenant à hegemon, pour que la synchronisation
+# suivante (sans become, cf. limitation connue du module synchronize) puisse y
+# écrire.
+- name: "S'assurer que le répertoire du contexte de construction existe"
+  ansible.builtin.file:
+    path: "{{ jenkins_image_context }}"
+    state: directory
+    owner: "{{ ansible_user | default('hegemon') }}"
+    mode: "0755"
+  become: true
+
+- name: "Déposer le contexte de construction"
+  ansible.posix.synchronize:
+    src: "{{ playbook_dir }}/../poc-control-plane-federation/"
+    dest: "{{ jenkins_image_context }}/"
+    delete: true
+    rsync_opts:
+      - "--exclude=.git"
+
+- name: "Construire l'image Jenkins"
+  ansible.builtin.command:
+    cmd: >-
+      docker build -f ci/jenkins/Dockerfile
+      -t {{ jenkins_image_tag }} .
+    chdir: "{{ jenkins_image_context }}"
+  become: true
+  changed_when: true
+
+- name: "Read-back : l'image existe localement"
+  ansible.builtin.command:
+    cmd: docker image inspect {{ jenkins_image_tag }}
+  become: true
+  changed_when: false

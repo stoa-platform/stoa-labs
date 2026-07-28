@@ -29,10 +29,14 @@ RUN cd /usr/local/src/labctl \
 USER jenkins
 # Plugins requis par le scaffold (« Pipeline script from SCM » + checkout Git) —
 # l'image de base n'en embarque AUCUN. Install au build (one-shot, hors zone).
-RUN jenkins-plugin-cli --plugins "git workflow-aggregator generic-webhook-trigger pipeline-stage-view"
+RUN jenkins-plugin-cli --plugins "git workflow-aggregator generic-webhook-trigger pipeline-stage-view kubernetes"
 # pipeline-stage-view : dessine la Stage View (visualisation des stages sur la page
 # du job) — workflow-aggregator ne l'embarque PAS. Sans lui les stages s'exécutent
 # mais ne s'affichent pas (trouvé au build #1 accounts-team).
 # generic-webhook-trigger : endpoint /generic-webhook-trigger/invoke?token=…
 # exempt de crumb CSRF — le POST /job/…/build?token= est refusé (403 crumb)
 # par les Jenkins modernes, même non sécurisés. Validé au premier run Phase 0.
+# kubernetes : agents éphémères en pods (podTemplate) — la porte de preuve
+# G-c (pipeline exécutée par un pod jetable, pas par le contrôleur Jenkins
+# lui-même) en dépend ; absent de l'image de base et jamais tiré comme
+# dépendance transitive des trois plugins ci-dessus.

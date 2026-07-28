@@ -1,0 +1,13 @@
+---
+- name: "Déclarer le registre Gitea sur tous les nœuds"
+  hosts: k3s_cluster
+  gather_facts: false
+  become: true
+  roles:
+    - registry_config
+
+- name: "Construire l'image Jenkins (worker-3, seul nœud avec Docker)"
+  hosts: worker-3
+  gather_facts: false
+  roles:
+    - jenkins_image

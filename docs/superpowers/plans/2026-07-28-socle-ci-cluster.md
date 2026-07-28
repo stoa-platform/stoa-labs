@@ -899,14 +899,14 @@ git commit -s --allow-empty -m "docs(ci): preuve G-b — Vault distingue les ide
 - Consomme : Gitea (tâche 1) et son registre intégré.
 - Produit : l'image `localhost:30300/ci/jenkins-go:v1`, tirable par tous les nœuds.
 
-- [ ] **Step 1 : Assertion (doit échouer)**
+- [x] **Step 1 : Assertion (doit échouer)**
 
 ```bash
 ssh worker-3 'sudo crictl pull localhost:30300/ci/jenkins-go:v1'
 ```
 Attendu : échec — l'image n'existe pas et le registre n'est pas configuré.
 
-- [ ] **Step 2 : Configurer le registre dans k3s sur tous les nœuds**
+- [x] **Step 2 : Configurer le registre dans k3s sur tous les nœuds**
 
 Le registre Gitea est servi en HTTP sans TLS, sur un nom interne au cluster. containerd doit être configuré pour l'accepter, sinon tout `pull` échouera.
 
@@ -965,7 +965,7 @@ registry_host: "localhost:30300"
     fail_msg: "Le registre n'est pas déclaré : tous les pulls d'image Jenkins échoueront."
 ```
 
-- [ ] **Step 3 : Rôle de construction de l'image**
+- [x] **Step 3 : Rôle de construction de l'image**
 
 `roles/jenkins_image/defaults/main.yml` :
 
@@ -1012,7 +1012,7 @@ gitea_registry_user: "ci"
   changed_when: false
 ```
 
-- [ ] **Step 4 : Playbook d'appel**
+- [x] **Step 4 : Playbook d'appel**
 
 `stoa-labs/ansible/ci-image.yml` :
 
@@ -1032,14 +1032,14 @@ gitea_registry_user: "ci"
     - jenkins_image
 ```
 
-- [ ] **Step 5 : Exécuter**
+- [x] **Step 5 : Exécuter**
 
 ```bash
 cd /Users/potomitan/stoa-platform/stoa-labs/ansible
 ansible-playbook -i inventory.contabo.ini ci-image.yml
 ```
 
-- [ ] **Step 6 : Pousser l'image vers le registre Gitea**
+- [x] **Step 6 : Pousser l'image vers le registre Gitea**
 
 ```bash
 # Depuis worker-3, via un port-forward vers Gitea
@@ -1047,7 +1047,7 @@ ssh worker-3 'sudo docker login localhost:30300 -u ci -p ci-bootstrap && \
   sudo docker push localhost:30300/ci/jenkins-go:v1'
 ```
 
-- [ ] **Step 7 : Porte de preuve — un AUTRE nœud peut tirer l'image**
+- [x] **Step 7 : Porte de preuve — un AUTRE nœud peut tirer l'image**
 
 C'est l'assertion qui compte : construire sur worker-3 ne sert à rien si worker-4 ne peut pas tirer.
 
@@ -1056,7 +1056,7 @@ ssh worker-4 'sudo crictl pull localhost:30300/ci/jenkins-go:v1 && echo PULL-OK'
 ```
 Attendu : `PULL-OK`
 
-- [ ] **Step 8 : Commiter**
+- [x] **Step 8 : Commiter**
 
 ```bash
 cd /Users/potomitan/stoa-platform/stoa-labs

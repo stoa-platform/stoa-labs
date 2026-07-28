@@ -1,0 +1,97 @@
+---
+# Écart FACTUEL constaté à l'exécution (non prévu par la spec) : sur les nœuds
+# k3s-agent (worker-3/4/5), /etc/rancher/k3s/ n'existe PAS — seul /etc/rancher/
+# node/ est créé par l'agent. `copy` ne crée pas les répertoires parents ; sans
+# cette étape le déploiement échoue avec "Destination directory ... does not
+# exist" sur tous les agents (constaté, cf. rapport Tâche 4). worker-1
+# (k3s_server) possède déjà le répertoire (créé par le serveur) : `file` est
+# idempotent, donc sans effet là où il existe déjà.
+- name: "S'assurer que /etc/rancher/k3s existe"
+  ansible.builtin.file:
+    path: /etc/rancher/k3s
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  become: true
+
+- name: "Déclarer le registre Gitea auprès de containerd"
+  ansible.builtin.copy:
+    dest: /etc/rancher/k3s/registries.yaml
+    owner: root
+    group: root
+    mode: "0600"
+    content: |
+      # Registre interne Gitea, servi en HTTP sur un nom de Service du cluster.
+      # Sans cette déclaration, containerd refuse le pull (pas de TLS).
+      mirrors:
+        "{{ registry_host }}":
+          endpoint:
+            - "http://{{ registry_host }}"
+      configs:
+        "{{ registry_host }}":
+          tls:
+            insecure_skip_verify: true
+  become: true
+  register: reg_conf
+
+- name: "Redémarrer k3s si la configuration a changé"
+  ansible.builtin.systemd:
+    name: "{{ 'k3s' if inventory_hostname in groups['k3s_server'] else 'k3s-agent' }}"
+    state: restarted
+  become: true
+  when: reg_conf.changed
+
+- name: "Read-back : le fichier est-il en place ?"
+  ansible.builtin.command:
+    cmd: grep -c "{{ registry_host }}" /etc/rancher/k3s/registries.yaml
+  become: true
+  register: reg_check
+  changed_when: false
+
+- name: "Assert : registre déclaré"
+  ansible.builtin.assert:
+    that:
+      - reg_check.stdout | int >= 1
+    fail_msg: "Le registre n'est pas déclaré : tous les pulls d'image Jenkins échoueront."
+
+- name: "Lire le ClusterIP du Service Gitea (depuis le plan de contrôle, seul nœud avec kubeconfig)"
+  ansible.builtin.command:
+    cmd: >-
+      k3s kubectl -n {{ gitea_registry_namespace }} get svc {{ gitea_registry_service }}
+      -o jsonpath={.spec.clusterIP}
+  become: true
+  delegate_to: "{{ groups['k3s_server'][0] }}"
+  run_once: true
+  register: gitea_svc_ip
+  changed_when: false
+
+- name: "Diffuser le ClusterIP à tous les nœuds du cluster"
+  ansible.builtin.set_fact:
+    gitea_registry_realm_ip: "{{ gitea_svc_ip.stdout }}"
+  delegate_to: "{{ item }}"
+  delegate_facts: true
+  loop: "{{ ansible_play_hosts }}"
+  run_once: true
+
+- name: "Résoudre localement le nom du realm de jeton OCI de Gitea (vers le ClusterIP réel)"
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: "\\s{{ gitea_registry_realm_host }}$"
+    line: "{{ gitea_registry_realm_ip }} {{ gitea_registry_realm_host }}"
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+
+- name: "Read-back : le realm de jeton répond bien (nom ET port 3000, tel qu'annoncé par ROOT_URL)"
+  ansible.builtin.uri:
+    url: "http://{{ gitea_registry_realm_host }}:{{ gitea_registry_realm_port }}/v2/"
+    status_code: [200, 401]
+  register: realm_check
+
+- name: "Assert : le realm de jeton est joignable"
+  ansible.builtin.assert:
+    that:
+      - realm_check.status in [200, 401]
+    fail_msg: "Le realm de jeton OCI ({{ gitea_registry_realm_host }}:{{ gitea_registry_realm_port }}) n'est pas joignable : docker login/push et crictl pull échoueront à l'authentification."

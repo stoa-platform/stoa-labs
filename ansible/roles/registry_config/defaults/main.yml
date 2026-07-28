@@ -1,0 +1,28 @@
+# `localhost` parce que containerd tourne au niveau HÔTE et ignore CoreDNS :
+# un nom en .svc.cluster.local y est irrésoluble. Chaque nœud tape son propre
+# NodePort, kube-proxy route vers le pod Gitea. Valeur constante, versionnée,
+# rien à rejouer après une reconstruction.
+registry_host: "localhost:30300"
+
+# Écart FACTUEL constaté à l'exécution (non prévu par la spec) : le registre
+# OCI de Gitea (Tâche 1) répond à tout /v2 avec un challenge
+# `WWW-Authenticate: Bearer realm="http://gitea.ci.svc.cluster.local:3000/v2/token"…` —
+# ce nom vient de `GITEA__server__ROOT_URL`, fixé côté GitOps (dépôt `stoa`,
+# hors périmètre de cette tâche : pas de PR stoa ici). `docker login`/push ET
+# `crictl pull` suivent ce realm LITTÉRALEMENT (nom *et* port 3000, pas le
+# NodePort 30300) ; sans résolution locale, tout accès authentifié échoue avec
+# "dial tcp: lookup ...: no such host" — identique à l'échec de l'Étape 1, mais
+# côté jeton plutôt que côté image.
+#
+# `localhost:30300` (le NodePort) ne suffit PAS ici : le port dans le realm est
+# 3000, pas 30300, et un simple alias vers 127.0.0.1 buterait sur "connection
+# refused" (rien n'écoute en 127.0.0.1:3000 sur l'hôte — constaté). En
+# revanche le ClusterIP du Service :3000 EST joignable depuis la net-namespace
+# hôte sur chaque nœud (règles kube-proxy valables cluster-wide, vérifié sur
+# les 4 nœuds) : c'est donc le ClusterIP, résolu dynamiquement à chaque run
+# (jamais figé en dur : instable après reconstruction du Service), qui est
+# aliasé à ce nom dans /etc/hosts — cf. tasks/main.yml.
+gitea_registry_realm_host: "gitea.ci.svc.cluster.local"
+gitea_registry_realm_port: 3000
+gitea_registry_namespace: "ci"
+gitea_registry_service: "gitea"
