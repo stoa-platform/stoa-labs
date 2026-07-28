@@ -1269,6 +1269,7 @@ podTemplate(serviceAccount: 'jenkins-agent', containers: [
     container('vault') {
       sh '''
         set -e
+        set +x
         VT=$(vault write -address=$VAULT_ADDR -field=token \
           auth/kubernetes/login role=jenkins-agent \
           jwt=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token))
@@ -1278,6 +1279,9 @@ podTemplate(serviceAccount: 'jenkins-agent', containers: [
   }
 }
 ```
+*(durci : `set +x` autour du jeton — la trace `sh` de Jenkins échoue sinon le
+jeton Vault court-terme en clair dans la console ; corrigé en fix round 1,
+voir rapport tâche 5.)*
 
 Lancer le job. Attendu : la sortie affiche `preuve-g8`. **Constaté** (voir rapport tâche 5).
 **Assertion complémentaire :** aucun credential statique dans Jenkins —
@@ -1295,8 +1299,12 @@ console (aucune JCasC, cf. écart assumé plus bas) : `namespace=ci`,
 Kubernetes auto-détecté (compte de service `jenkins`, in-cluster config).
 Le job `probe` (pipeline SCM, dépôt Gitea `ci/probe`, aucun credential
 stocké) a lui aussi été créé par REST (`createItem`). Cet état vit
-uniquement dans `jenkins-home` (PVC couvert par la sauvegarde tâche 2) —
-aucun fichier Git ne le décrit.
+uniquement dans `jenkins-home` (PVC couvert par la sauvegarde tâche 2) ;
+sa configuration exacte (XML tel que servi par le Jenkins vivant, `GET
+/job/probe/config.xml`) est en outre versionnée dans
+`docs/superpowers/plans/2026-07-28-jenkins-probe-job.xml` (fix round 1,
+corrige un Important de revue : sans cela le job n'était pas reconstruisible
+si `jenkins-home` était perdu entre deux sauvegardes).
 
 - [x] **Step 8 : CONTRE-ÉPREUVE — révoquer le rôle, le pipeline doit échouer fermé**
 
@@ -1354,4 +1362,4 @@ fond différée au lot 2 : repenser `ROOT_URL` côté `stoa`, en tenant compte
 que `localhost:30300` casserait les accès registre depuis les pods
 eux-mêmes (résoluble à l'hôte, pas dans le réseau de pods).
 
-**Écart assumé :** la spéc mentionne JCasC pour la configuration Jenkins. Ce plan ne l'implémente pas — le job de preuve est créé à la main. JCasC devient pertinent quand il y aura plus d'un job ; l'introduire maintenant alourdirait la tâche 5 sans rien prouver de plus.
+**Écart assumé :** la spéc mentionne JCasC pour la configuration Jenkins. Ce plan ne l'implémente pas — le job de preuve est créé à la main. JCasC devient pertinent quand il y aura plus d'un job ; l'introduire maintenant alourdirait la tâche 5 sans rien prouver de plus. L'état manuel reconstructible = script Groovy du cloud (rapport T5) + XML du job (ce fichier : `docs/superpowers/plans/2026-07-28-jenkins-probe-job.xml`).
