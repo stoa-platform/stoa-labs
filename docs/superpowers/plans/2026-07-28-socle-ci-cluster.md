@@ -74,7 +74,7 @@
 - Consomme : l'AppProject `stoa` et le cluster existants.
 - Produit : le Service `gitea.ci.svc.cluster.local:3000`, le namespace `ci`.
 
-- [ ] **Step 1 : Écrire la porte de preuve (elle doit échouer maintenant)**
+- [x] **Step 1 : Écrire la porte de preuve (elle doit échouer maintenant)**
 
 Créer `stoa/deploy/bootstrap/ci/gitea/PROOF.md` avec l'assertion :
 
@@ -83,14 +83,14 @@ Créer `stoa/deploy/bootstrap/ci/gitea/PROOF.md` avec l'assertion :
 kubectl -n ci exec deploy/probe -- curl -sf http://gitea.ci.svc.cluster.local:3000/api/v1/version
 ```
 
-- [ ] **Step 2 : Lancer l'assertion pour vérifier qu'elle échoue**
+- [x] **Step 2 : Lancer l'assertion pour vérifier qu'elle échoue**
 
 ```bash
 ssh worker-1 'sudo k3s kubectl get ns ci'
 ```
 Attendu : `Error from server (NotFound): namespaces "ci" not found`
 
-- [ ] **Step 3 : Ajouter la destination `ci` à l'AppProject**
+- [x] **Step 3 : Ajouter la destination `ci` à l'AppProject**
 
 Dans `appproject-stoa.yaml`, sous `spec.destinations`, ajouter :
 
@@ -99,7 +99,7 @@ Dans `appproject-stoa.yaml`, sous `spec.destinations`, ajouter :
       namespace: ci
 ```
 
-- [ ] **Step 4 : Écrire les manifestes Gitea**
+- [x] **Step 4 : Écrire les manifestes Gitea**
 
 `stoa/deploy/bootstrap/ci/gitea/service.yaml` :
 
@@ -208,7 +208,7 @@ resources:
   - statefulset.yaml
 ```
 
-- [ ] **Step 5 : Écrire l'Application Argo CD**
+- [x] **Step 5 : Écrire l'Application Argo CD**
 
 `stoa/deploy/bootstrap/argocd/app-ci-gitea.yaml` :
 
@@ -245,7 +245,7 @@ spec:
         maxDuration: 5m
 ```
 
-- [ ] **Step 6 : Commiter, pousser, ouvrir la PR sur `stoa`**
+- [x] **Step 6 : Commiter, pousser, ouvrir la PR sur `stoa`**
 
 ```bash
 cd /Users/potomitan/stoa-platform/stoa
@@ -258,7 +258,7 @@ git push -u origin feat/ci-gitea
 gh pr create --base main --title "feat(ci): déployer Gitea dans le cluster labs" --body "Premier composant du socle CI. Aucune exposition publique."
 ```
 
-- [ ] **Step 7 : Après fusion, appliquer et vérifier la porte de preuve**
+- [x] **Step 7 : Après fusion, appliquer et vérifier la porte de preuve**
 
 ```bash
 cd /Users/potomitan/stoa-platform/stoa-labs/ansible
@@ -270,7 +270,7 @@ ssh worker-1 'sudo k3s kubectl -n ci run probe --rm -i --restart=Never --image=c
 ```
 Attendu : un JSON du type `{"version":"1.22.x"}`
 
-- [ ] **Step 8 : Contre-épreuve — la donnée survit-elle au pod ?**
+- [x] **Step 8 : Contre-épreuve — la donnée survit-elle au pod ?**
 
 ```bash
 # Créer un utilisateur et un dépôt
@@ -283,13 +283,24 @@ ssh worker-1 'sudo k3s kubectl -n ci exec gitea-0 -- gitea admin user list'
 ```
 Attendu : l'utilisateur `ci` est **toujours là**. S'il a disparu, le PVC n'est pas monté — arrêter et corriger.
 
-- [ ] **Step 9 : Commiter la preuve**
+- [x] **Step 9 : Commiter la preuve**
 
 ```bash
 cd /Users/potomitan/stoa-platform/stoa-labs
 git add docs/superpowers/plans/
 git commit -s -m "docs(ci): preuve d'exécution tâche 1 — Gitea persistant"
 ```
+
+### Preuve d'exécution (2026-07-28)
+
+- PR `stoa` : [#2816](https://github.com/stoa-platform/stoa/pull/2816), squash-mergée en `fb777fd934cb0c316e1e01e712c3b4a9a1a35359` (base pré-merge `5db0202f809b09fb25a8d5f063f694606601c6fb`). 4 checks requis verts : License Compliance, SBOM Generation, Verify Signed Commits, Regression Test Guard.
+- Step 2 (porte de preuve, avant construction) :
+  `ssh worker-1 'sudo k3s kubectl get ns ci'` → `Error from server (NotFound): namespaces "ci" not found`.
+- Step 7 (après fusion, `ansible-playbook -i inventory.contabo.ini bootstrap.yml` exécuté avec succès sur worker-1 seul) :
+  `curl -sf http://gitea.ci.svc.cluster.local:3000/api/v1/version` (via pod `probe`, image `curlimages/curl:8.10.1`) → `{"version":"1.22.6"}`.
+- Step 8 (contre-épreuve) : utilisateur admin `ci` créé (`su git -c 'gitea admin user create ...'`, nécessaire — `gitea` refuse de tourner en root) ; pod `gitea-0` supprimé et recréé (0 redémarrage du conteneur, PVC `gitea-data-gitea-0` 20Gi toujours `Bound`) ; `gitea admin user list` après recréation → l'utilisateur `ci` (admin, actif) est toujours présent.
+- Argo CD : Application `ci-gitea` → `Healthy`, mais reste `OutOfSync` sur la ressource `StatefulSet` seule (`Service` est `Synced`). Cause identifiée : Kubernetes ajoute `status: {phase: Pending}` à chaque `volumeClaimTemplates[]` d'un StatefulSet vivant ; ce champ n'existe pas côté Git et Argo le signale en diff — comportement connu (k8s #72964 / Argo CD #5342), sans effet sur la santé ni sur les données (0 redémarrage constaté, un seul cycle de sync). Aucune des 5 Applications préexistantes n'utilise de StatefulSet, donc cette dérive cosmétique n'était jamais apparue avant Gitea. À surveiller sur Vault (tâche 3), qui aura le même profil.
+- worker-3 vérifié après le bootstrap (bien que l'ansible ne l'ait pas ciblé) : `wm-dev-apigateway` et `wm-dev-elasticsearch` `Up`/`healthy`, service `caddy` actif en continu depuis le 19 mai (aucun redémarrage pendant cette session). `curl -sk https://localhost` renvoie une erreur TLS — comportement préexistant et sans rapport : Caddy n'a pas de site configuré pour le SNI `localhost` ; un test avec le Host réel (`dev-wm.gostoa.dev`) renvoie `200`.
 
 ---
 
