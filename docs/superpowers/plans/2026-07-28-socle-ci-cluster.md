@@ -405,6 +405,16 @@ backup_localpath_root: "/var/lib/rancher/k3s/storage"
 # Si cette indisponibilité devient inacceptable, l'échappatoire est de passer
 # aux dumps natifs (`gitea dump`, arrêt de Vault) — au prix d'un chemin de code
 # par application.
+#
+# CONSÉQUENCE NON DOCUMENTÉE JUSQU'ICI, propre à Vault : contrairement à
+# Gitea, Vault ne revient PAS opérationnel tout seul après ce redémarrage — il
+# redémarre SCELLÉ. Chaque sauvegarde de PVC laisse donc le socle CI HORS
+# SERVICE jusqu'à un descellement manuel (`vault operator unseal` × 2, clés
+# hors ligne — cf. tâche 3, étape 7). L'alerte `VaultSealed` est AVEUGLE
+# pendant la fenêtre elle-même (le pod est absent, rien à observer) et ne se
+# déclenche qu'au retour du pod scellé, au pire ~15 min plus tard selon
+# l'intervalle d'évaluation. Non automatisé ici — décision volontairement
+# laissée hors périmètre ; cf. note de runbook plus bas dans cette tâche.
 - name: "Mémoriser le nombre de répliques courant"
   ansible.builtin.shell:
     cmd: >-
@@ -494,6 +504,43 @@ backup_localpath_root: "/var/lib/rancher/k3s/storage"
         label: "{{ item.ns }}/{{ item.name }}"
       changed_when: true
 
+    # Course avec le selfHeal Argo CD : les trois Applications `ci` ont
+    # `selfHeal: true`, et `replicas: 1` est dans Git — la mise à zéro plus
+    # haut EST une dérive qu'Argo CD revert. Mesuré en tâche 2 : réaction en
+    # ~5 s. Sur la fenêtre d'archive de cette exécution (jeu de données de
+    # test minuscule), rien n'a été observé ; mais sur un PVC volumineux
+    # (Vault, Jenkins), la fenêtre de `tar` peut dépasser ce délai, et un pod
+    # peut alors redémarrer PENDANT l'archivage — écrivant sur le PVC pendant
+    # que `tar` le lit. La relecture plus bas (comptage d'entrées) ne détecte
+    # PAS ce cas : une archive prise à moitié en écriture reste non-vide et
+    # lisible, elle rassurerait à tort. Garde post-archive : si un pod est
+    # réapparu pendant le tar, l'archive est suspecte et la sauvegarde DOIT
+    # échouer plutôt que rassurer. Suite réelle nécessaire, non implémentée
+    # ici : fenêtre de synchronisation — désactiver l'auto-sync/selfHeal des
+    # Applications concernées le temps de la sauvegarde.
+    - name: "Lister les pods réapparus pendant l'archivage"
+      ansible.builtin.command:
+        cmd: k3s kubectl -n {{ item }} get pods -o name
+      become: true
+      loop: "{{ backup_pvc_namespaces }}"
+      loop_control:
+        label: "{{ item }}"
+      register: backup_pods_post_archive
+      changed_when: false
+
+    - name: "Assert : aucun pod n'est réapparu pendant l'archivage"
+      ansible.builtin.assert:
+        that:
+          - item.stdout == ""
+        fail_msg: >-
+          Pod(s) réapparu(s) dans {{ item.item }} pendant l'archivage :
+          {{ item.stdout_lines | join(', ') }}. Cause probable : selfHeal
+          Argo CD a reverté la dérive replicas=0 pendant le `tar`. L'archive
+          est suspecte — sauvegarde REJETÉE plutôt que de rassurer à tort.
+      loop: "{{ backup_pods_post_archive.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
   always:
     - name: "Redémarrer les charges, y compris après échec"
       ansible.builtin.command:
@@ -577,6 +624,12 @@ cd /Users/potomitan/stoa-platform/stoa-labs
 git add ansible/roles/cluster_backup
 git commit -s -m "feat(ansible): étendre la sauvegarde aux PVC local-path"
 ```
+
+**Runbook — après CHAQUE exécution de `backup.yml` :** desceller Vault avant
+de considérer le socle CI de nouveau en service — `vault operator unseal`
+×2, clés hors ligne (cf. tâche 3, étape 7). Le pod `vault-0` revient scellé
+après la quiescence ; l'alerte `VaultSealed` ne se déclenche qu'après coup et
+ne dispense donc pas d'un descellement manuel systématique.
 
 ### Preuve d'exécution (2026-07-28)
 
@@ -1168,7 +1221,11 @@ spec:
       # périmètre (Caddy TLS public + webMethods hors socle CI) ; le PVC
       # jenkins-home figerait ensuite Jenkins sur ce nœud de façon
       # permanente. Anti-affinité ajoutée dès le premier déploiement,
-      # à l'identique de la StatefulSet Vault.
+      # à l'identique de la StatefulSet Vault. Décision humaine actée : cette
+      # discipline vise les charges PERSISTANTES (contrôleur Jenkins, Vault) —
+      # les pods d'AGENT éphémères lancés par le plugin Kubernetes pour
+      # chaque build (`podTemplate`, sans PVC) sont, eux, TOLÉRÉS sur
+      # worker-3 : légers, sans état, sans anti-affinité posée pour eux.
       affinity:
         nodeAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
@@ -1353,6 +1410,17 @@ git commit -s --allow-empty -m "docs(ci): preuve G-c — pipeline authentifié s
 
 **Points laissés ouverts par la spéc et non résolus ici** (à trancher en cours d'exécution, ils ne bloquent aucune tâche) : rétention des builds Jenkins, espace disque hors-nœud pour les PVC, automatisation de la sauvegarde.
 
+**Point aggravant sur l'espace disque hors-nœud (spéc, Q2) :** les TROIS PVC
+`ci` (`gitea-data`, `vault-data`, `jenkins-home`) et leurs pods sont posés sur
+`worker-5` — qui est AUSSI `backup_offsite_host`. Une panne disque unique sur
+worker-5 emporte à la fois les données vivantes ET toutes les sauvegardes du
+socle CI : la copie hors-nœud protège de la perte d'un nœud PORTEUR de
+données, pas de la perte du nœud DE sauvegarde lui-même, qui se trouve être
+le même ici. Décision humaine requise (spéc Q2) : un second hôte hors-nœud
+pour la copie de sauvegarde, une seconde copie sur un troisième nœud, ou un
+re-placement des charges (`vault-data`/`jenkins-home` ailleurs que
+worker-5) — non tranché, non implémenté dans ce lot.
+
 **Dette actée en cours d'exécution (Tâche 4, acceptée le 2026-07-28) :** le
 realm d'auth OCI de Gitea dérive de `ROOT_URL`
 (`gitea.ci.svc.cluster.local:3000`), irrésoluble côté hôte ; contourné par
@@ -1363,3 +1431,5 @@ que `localhost:30300` casserait les accès registre depuis les pods
 eux-mêmes (résoluble à l'hôte, pas dans le réseau de pods).
 
 **Écart assumé :** la spéc mentionne JCasC pour la configuration Jenkins. Ce plan ne l'implémente pas — le job de preuve est créé à la main. JCasC devient pertinent quand il y aura plus d'un job ; l'introduire maintenant alourdirait la tâche 5 sans rien prouver de plus. L'état manuel reconstructible = script Groovy du cloud (rapport T5) + XML du job (ce fichier : `docs/superpowers/plans/2026-07-28-jenkins-probe-job.xml`).
+
+**Écart assumé :** la spéc (introduction) dit un pipeline « déclenché par un push dans Gitea », et son §6 promet un statut de commit rouge dans Gitea en cas d'échec de pipeline. Ni l'un ni l'autre n'est livré — préparé mais pas câblé : le plugin de webhook est présent côté Jenkins, `GITEA__webhook__ALLOWED_HOST_LIST` est posé côté Gitea (tâche 1), mais aucun webhook Gitea → Jenkins n'a été créé, et tous les builds `ci-*` (dont G-c) sont déclenchés à la main. La porte G-c prouve l'identité de pod (obtention du secret Vault sans credential statique) — elle ne prouve PAS le déclenchement automatique. Déclenchement par webhook + statut de commit → à câbler (lot 2 ou suite immédiate de ce lot).
