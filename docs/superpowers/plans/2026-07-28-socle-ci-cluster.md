@@ -1079,14 +1079,14 @@ git commit -s -m "feat(ansible): construire et distribuer l'image Jenkins via le
 - Consomme : Gitea (tâche 1), Vault et le SA `jenkins-agent` (tâche 3), l'image (tâche 4).
 - Produit : `jenkins.ci.svc.cluster.local:8080`.
 
-- [ ] **Step 1 : Assertion (doit échouer)**
+- [x] **Step 1 : Assertion (doit échouer)**
 
 ```bash
 ssh worker-1 'sudo k3s kubectl -n ci get deploy jenkins'
 ```
 Attendu : `Error from server (NotFound)`
 
-- [ ] **Step 2 : RBAC — Jenkins crée ses agents éphémères**
+- [x] **Step 2 : RBAC — Jenkins crée ses agents éphémères**
 
 `rbac.yaml` :
 
@@ -1122,7 +1122,7 @@ subjects:
     namespace: ci
 ```
 
-- [ ] **Step 3 : Service et Deployment**
+- [x] **Step 3 : Service et Deployment**
 
 `service.yaml` :
 
@@ -1163,6 +1163,21 @@ spec:
         app: jenkins
     spec:
       serviceAccountName: jenkins
+      # Déviation justifiée, même motif que PR #2819 (Vault, tâche 3) : le
+      # scheduler avait déjà tenté de placer Vault sur worker-3, nœud hors
+      # périmètre (Caddy TLS public + webMethods hors socle CI) ; le PVC
+      # jenkins-home figerait ensuite Jenkins sur ce nœud de façon
+      # permanente. Anti-affinité ajoutée dès le premier déploiement,
+      # à l'identique de la StatefulSet Vault.
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: NotIn
+                    values:
+                      - worker-3
       containers:
         - name: jenkins
           image: localhost:30300/ci/jenkins-go:v1
@@ -1218,11 +1233,11 @@ resources:
   - deployment.yaml
 ```
 
-- [ ] **Step 4 : Application Argo CD**
+- [x] **Step 4 : Application Argo CD**
 
 `app-ci-jenkins.yaml` — identique à `app-ci-gitea.yaml` avec `name: ci-jenkins` et `path: deploy/bootstrap/ci/jenkins`.
 
-- [ ] **Step 5 : Commiter, PR, fusionner, appliquer**
+- [x] **Step 5 : Commiter, PR, fusionner, appliquer**
 
 ```bash
 cd /Users/potomitan/stoa-platform/stoa
@@ -1232,19 +1247,23 @@ git commit -s -m "feat(ci): déployer Jenkins avec agents éphémères"
 git push -u origin feat/ci-jenkins && gh pr create --base main --title "feat(ci): déployer Jenkins avec agents éphémères" --body "Dernier composant du socle CI."
 ```
 
-- [ ] **Step 6 : Vérifier que Jenkins démarre**
+- [x] **Step 6 : Vérifier que Jenkins démarre**
 
 ```bash
 ssh worker-1 'sudo k3s kubectl -n ci wait --for=condition=Available deploy/jenkins --timeout=600s'
 ```
 
-- [ ] **Step 7 : PORTE DE PREUVE G-c — pipeline de bout en bout, sans secret statique**
+- [x] **Step 7 : PORTE DE PREUVE G-c — pipeline de bout en bout, sans secret statique**
 
-Créer dans Gitea un dépôt `ci/probe` contenant ce `Jenkinsfile` :
+Créer dans Gitea un dépôt `ci/probe` (public, sans credential Jenkins — Gitea API `ci`/`ci-bootstrap`) contenant ce `Jenkinsfile` :
 
 ```groovy
 podTemplate(serviceAccount: 'jenkins-agent', containers: [
-  containerTemplate(name: 'vault', image: 'hashicorp/vault:1.18', command: 'sleep', args: '9999')
+  containerTemplate(name: 'vault', image: 'hashicorp/vault:1.18', command: 'sleep', args: '9999',
+    # Amendement contrôleur validé : VAULT_ADDR posé sur le Deployment
+    # Jenkins ne se propage PAS aux conteneurs des pods agents (env
+    # séparé) ; posé explicitement ici via envVars du containerTemplate.
+    envVars: [envVar(key: 'VAULT_ADDR', value: 'http://vault.ci.svc.cluster.local:8200')])
 ]) {
   node(POD_LABEL) {
     container('vault') {
@@ -1260,25 +1279,44 @@ podTemplate(serviceAccount: 'jenkins-agent', containers: [
 }
 ```
 
-Lancer le job. Attendu : la sortie affiche `preuve-g8`.
+Lancer le job. Attendu : la sortie affiche `preuve-g8`. **Constaté** (voir rapport tâche 5).
 **Assertion complémentaire :** aucun credential statique dans Jenkins —
 ```bash
 ssh worker-1 'sudo k3s kubectl -n ci exec deploy/jenkins -- ls /var/jenkins_home/credentials.xml 2>/dev/null && echo "ÉCHEC: credentials statiques" || echo "OK: aucun credential statique"'
 ```
 
-- [ ] **Step 8 : CONTRE-ÉPREUVE — révoquer le rôle, le pipeline doit échouer fermé**
+**Amendement contrôleur validé (cloud Kubernetes) :** le Service `jenkins`
+n'expose que le port 8080 (verbatim du brief) — le port JNLP 50000 par
+défaut du plugin `kubernetes` pour les agents inbound est inaccessible.
+Le cloud Kubernetes a été configuré avec `webSocket: true` (agents
+connectés en WebSocket sur le port HTTP 8080 déjà exposé), via script
+console (aucune JCasC, cf. écart assumé plus bas) : `namespace=ci`,
+`jenkinsUrl=http://jenkins.ci.svc.cluster.local:8080/`, serveur API
+Kubernetes auto-détecté (compte de service `jenkins`, in-cluster config).
+Le job `probe` (pipeline SCM, dépôt Gitea `ci/probe`, aucun credential
+stocké) a lui aussi été créé par REST (`createItem`). Cet état vit
+uniquement dans `jenkins-home` (PVC couvert par la sauvegarde tâche 2) —
+aucun fichier Git ne le décrit.
+
+- [x] **Step 8 : CONTRE-ÉPREUVE — révoquer le rôle, le pipeline doit échouer fermé**
 
 ```bash
 ssh worker-1 'sudo k3s kubectl -n ci exec vault-0 -- sh -c "
   export VAULT_TOKEN=<JETON_RACINE>
   vault delete auth/kubernetes/role/jenkins-agent"'
 ```
-Relancer le job. Attendu : **échec** avec `permission denied`.
+Relancer le job. Attendu : **échec**. **Constaté** : échec fermé confirmé,
+mais avec le message Vault `400 invalid role name "jenkins-agent"` (le
+rôle entier a été supprimé, pas seulement débindé de ce SA) plutôt que le
+`permission denied` (403) littéral anticipé par le brief — sémantiquement
+équivalent (aucun jeton obtenu, aucun secret lu, pas de mise en cache).
+Détail dans le rapport tâche 5.
 Si le pipeline réussit encore, un secret est mis en cache quelque part — arrêter et corriger.
 
-Puis restaurer le rôle (répéter l'étape 8 de la tâche 3).
+Puis restaurer le rôle (répéter l'étape 8 de la tâche 3). **Fait**, puis
+job relancé une 3e fois pour prouver le retour au vert (voir rapport).
 
-- [ ] **Step 9 : Commiter la preuve**
+- [x] **Step 9 : Commiter la preuve**
 
 ```bash
 cd /Users/potomitan/stoa-platform/stoa-labs
