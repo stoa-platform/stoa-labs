@@ -19,9 +19,23 @@ argocd_namespace: "argocd"
 # Manifeste d'installation amont, dérivé de la version épinglée.
 argocd_install_url: "https://raw.githubusercontent.com/argoproj/argo-cd/{{ argocd_version }}/manifests/install.yaml"
 
+# Checkout local du dépôt `stoa` (public), sur le NŒUD DE CONTRÔLE. C'est un
+# poste de travail humain, pas un clone dédié au bootstrap : il est
+# chroniquement des centaines de commits derrière `origin/main`, sur une
+# branche de travail quelconque. `tasks/main.yml` le rafraîchit donc (fetch +
+# archive depuis `origin/main`, jamais un pull/checkout/commit) avant toute
+# lecture — voir la section « Graine » ci-dessous.
+argocd_bootstrap_repo: "{{ playbook_dir }}/../../stoa"
+
+# Chemin du sous-répertoire de graine, relatif à la racine du dépôt `stoa` —
+# c'est le pathspec passé à `git archive`.
+argocd_bootstrap_path: "deploy/bootstrap/argocd"
+
 # Manifestes de bootstrap versionnés dans le dépôt `stoa` (public).
-# Chemin sur le NŒUD DE CONTRÔLE, relatif au playbook.
-argocd_bootstrap_src: "{{ playbook_dir }}/../../stoa/deploy/bootstrap/argocd"
+# Chemin sur le NŒUD DE CONTRÔLE. Recréé à chaque exécution depuis
+# `origin/main` — ne jamais lire ce répertoire comme reflétant le HEAD local
+# du checkout.
+argocd_bootstrap_src: "{{ argocd_bootstrap_repo }}/{{ argocd_bootstrap_path }}"
 
 # Délai d'attente de disponibilité d'Argo CD.
 argocd_ready_timeout: "600s"

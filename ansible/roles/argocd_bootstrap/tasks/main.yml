@@ -53,6 +53,49 @@
     fail_msg: "Argo CD n'est pas disponible après {{ argocd_ready_timeout }}."
     success_msg: "Argo CD {{ argocd_version }} disponible"
 
+# --- Graine : rafraîchir depuis origin/main avant toute lecture locale --------
+# Le checkout `stoa` du nœud de contrôle (voir `argocd_bootstrap_repo`) sert de
+# source à la graine (AppProject + Applications) — d'un poste de travail
+# humain, pas d'un clone dédié : il est chroniquement des centaines de commits
+# derrière `origin/main`, sur une branche de travail quelconque. Sans
+# resynchronisation, ce rôle réappliquerait silencieusement un état PÉRIMÉ de
+# l'AppProject/des Applications à chaque exécution — piège déjà rencontré
+# pendant la Tâche 1 (l'Application `ci-gitea` restait absente après un
+# bootstrap, faute de resynchronisation manuelle préalable du répertoire de
+# graine).
+#
+# On ne fait donc JAMAIS de `pull`/`checkout`/`commit` dans ce checkout : ces
+# trois tâches ne lisent que des objets git (fetch, archive) et n'écrivent que
+# le sous-répertoire de graine sur disque — jamais le HEAD, l'index ou la
+# branche de travail de l'utilisateur.
+- name: "Graine : rafraîchir les objets git depuis origin/main (fetch seul, aucun pull/checkout/commit)"
+  ansible.builtin.command:
+    cmd: git fetch origin main
+    chdir: "{{ argocd_bootstrap_repo }}"
+  delegate_to: localhost
+  become: false
+  run_once: true
+  changed_when: true
+
+- name: "Graine : vider le sous-répertoire de graine (purge les fichiers supprimés côté origin/main)"
+  ansible.builtin.file:
+    path: "{{ argocd_bootstrap_src }}"
+    state: absent
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: "Graine : extraire deploy/bootstrap/argocd depuis origin/main (jamais depuis le HEAD local)"
+  ansible.builtin.shell:
+    cmd: >-
+      git archive origin/main -- {{ argocd_bootstrap_path }}
+      | tar -x -C {{ argocd_bootstrap_repo }}
+    chdir: "{{ argocd_bootstrap_repo }}"
+  delegate_to: localhost
+  become: false
+  run_once: true
+  changed_when: true
+
 # --- Graine : AppProject + Applications ---------------------------------------
 - name: "Créer le répertoire de dépôt des manifestes"
   ansible.builtin.file:
