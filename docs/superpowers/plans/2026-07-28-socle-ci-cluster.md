@@ -32,7 +32,7 @@
 | Vault — rôle et politique | `jenkins-agent` |
 | ServiceAccount des agents | `jenkins-agent` (namespace `ci`) |
 | Jenkins — Deployment / Service / PVC | `jenkins` / `jenkins.ci.svc.cluster.local:8080` / `jenkins-home` |
-| Image Jenkins | `gitea.ci.svc.cluster.local:3000/ci/jenkins-go:v1` |
+| Image Jenkins | `localhost:30300/ci/jenkins-go:v1` |
 
 ---
 
@@ -110,13 +110,28 @@ metadata:
   name: gitea
   namespace: ci
 spec:
-  type: ClusterIP
+  # NodePort, et non ClusterIP : le registre d'images doit être joignable au
+  # niveau HÔTE. containerd et `docker push` tournent hors du cluster et
+  # utilisent /etc/resolv.conf, pas CoreDNS — un nom en .svc.cluster.local y est
+  # irrésoluble. Chaque nœud tape son propre `localhost:30300`, kube-proxy route
+  # vers le pod Gitea où qu'il soit.
+  #
+  # Ce n'est PAS une exposition publique : ufw est en `-P INPUT DROP` et
+  # n'ouvre au monde que 22, 30080 et 30443 ; 30300 n'est joignable que par la
+  # boucle locale et les pairs du cluster. Vérifié le 2026-07-28.
+  #
+  # Pourquoi pas une entrée /etc/hosts pointant la ClusterIP : ce serait une
+  # liaison mutable posée hors de Git sur quatre nœuds. La ClusterIP change à
+  # toute recréation du Service, et les /etc/hosts deviendraient périmés EN
+  # SILENCE. `localhost` ne change jamais et le NodePort est versionné ici.
+  type: NodePort
   selector:
     app: gitea
   ports:
     - name: http
       port: 3000
       targetPort: 3000
+      nodePort: 30300
 ```
 
 `stoa/deploy/bootstrap/ci/gitea/statefulset.yaml` :
@@ -777,12 +792,12 @@ git commit -s --allow-empty -m "docs(ci): preuve G-b — Vault distingue les ide
 
 **Interfaces:**
 - Consomme : Gitea (tâche 1) et son registre intégré.
-- Produit : l'image `gitea.ci.svc.cluster.local:3000/ci/jenkins-go:v1`, tirable par tous les nœuds.
+- Produit : l'image `localhost:30300/ci/jenkins-go:v1`, tirable par tous les nœuds.
 
 - [ ] **Step 1 : Assertion (doit échouer)**
 
 ```bash
-ssh worker-3 'sudo crictl pull gitea.ci.svc.cluster.local:3000/ci/jenkins-go:v1'
+ssh worker-3 'sudo crictl pull localhost:30300/ci/jenkins-go:v1'
 ```
 Attendu : échec — l'image n'existe pas et le registre n'est pas configuré.
 
@@ -793,7 +808,11 @@ Le registre Gitea est servi en HTTP sans TLS, sur un nom interne au cluster. con
 `roles/registry_config/defaults/main.yml` :
 
 ```yaml
-registry_host: "gitea.ci.svc.cluster.local:3000"
+# `localhost` parce que containerd tourne au niveau HÔTE et ignore CoreDNS :
+# un nom en .svc.cluster.local y est irrésoluble. Chaque nœud tape son propre
+# NodePort, kube-proxy route vers le pod Gitea. Valeur constante, versionnée,
+# rien à rejouer après une reconstruction.
+registry_host: "localhost:30300"
 ```
 
 `roles/registry_config/tasks/main.yml` :
@@ -847,7 +866,7 @@ registry_host: "gitea.ci.svc.cluster.local:3000"
 
 ```yaml
 jenkins_image_context: "/opt/stoa-build/poc-control-plane-federation"
-jenkins_image_tag: "gitea.ci.svc.cluster.local:3000/ci/jenkins-go:v1"
+jenkins_image_tag: "localhost:30300/ci/jenkins-go:v1"
 gitea_registry_user: "ci"
 ```
 
@@ -919,8 +938,8 @@ ansible-playbook -i inventory.contabo.ini ci-image.yml
 
 ```bash
 # Depuis worker-3, via un port-forward vers Gitea
-ssh worker-3 'sudo docker login gitea.ci.svc.cluster.local:3000 -u ci -p ci-bootstrap && \
-  sudo docker push gitea.ci.svc.cluster.local:3000/ci/jenkins-go:v1'
+ssh worker-3 'sudo docker login localhost:30300 -u ci -p ci-bootstrap && \
+  sudo docker push localhost:30300/ci/jenkins-go:v1'
 ```
 
 - [ ] **Step 7 : Porte de preuve — un AUTRE nœud peut tirer l'image**
@@ -928,7 +947,7 @@ ssh worker-3 'sudo docker login gitea.ci.svc.cluster.local:3000 -u ci -p ci-boot
 C'est l'assertion qui compte : construire sur worker-3 ne sert à rien si worker-4 ne peut pas tirer.
 
 ```bash
-ssh worker-4 'sudo crictl pull gitea.ci.svc.cluster.local:3000/ci/jenkins-go:v1 && echo PULL-OK'
+ssh worker-4 'sudo crictl pull localhost:30300/ci/jenkins-go:v1 && echo PULL-OK'
 ```
 Attendu : `PULL-OK`
 
@@ -1041,7 +1060,7 @@ spec:
       serviceAccountName: jenkins
       containers:
         - name: jenkins
-          image: gitea.ci.svc.cluster.local:3000/ci/jenkins-go:v1
+          image: localhost:30300/ci/jenkins-go:v1
           env:
             - name: JAVA_OPTS
               value: "-Djenkins.install.runSetupWizard=false"
