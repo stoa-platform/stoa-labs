@@ -40,3 +40,9 @@ backup_keep: 7
 # Elle est donc créée en 0600 root, et ne doit JAMAIS être versionnée,
 # téléversée, ni sortie de la flotte sans chiffrement supplémentaire.
 backup_mode: "0600"
+
+# Namespaces dont les PVC local-path sont sauvegardés.
+backup_pvc_namespaces:
+  - ci
+# Racine des volumes local-path sur les nœuds.
+backup_localpath_root: "/var/lib/rancher/k3s/storage"

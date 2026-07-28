@@ -1,0 +1,163 @@
+---
+# Sauvegarde des PVC local-path. Ils vivent dans des répertoires sur UN nœud :
+# sans cette sauvegarde, perdre le nœud c'est perdre Gitea, Vault et Jenkins.
+
+- name: "Lister les PersistentVolumes"
+  ansible.builtin.command:
+    cmd: k3s kubectl get pv -o json
+  become: true
+  register: backup_pv_json
+  changed_when: false
+
+# Parsing en JSON plutôt qu'en champs séparés par des espaces : un PV sans
+# `nodeAffinity` produisait moins de champs que prévu et faisait sortir
+# `split(' ')[3]` de l'index. Ici, un PV incomplet est simplement ignoré.
+#
+# DÉVIATION DOCUMENTÉE PAR RAPPORT AU PLAN INITIAL : le plan supposait
+# `spec.hostPath.path`. Sur ce cluster (k3s v1.34.5+k3s1), le provisioner
+# `rancher.io/local-path` peuple `spec.local.path`, pas `spec.hostPath` — vérifié
+# sur les 3 PV existants (0 occurrence de `hostPath` dans `get pv -o json`). Le
+# provisioner a historiquement émis les deux formes selon les versions ; les
+# deux sont donc tolérées ici plutôt que de figer sur une seule, au cas où un PV
+# plus ancien ou un autre provisioner local-path coexisterait un jour.
+#
+# DEUXIÈME DÉVIATION, syntaxique celle-ci : `matchExpressions[0].values[0]`
+# (notation pointée du plan) échoue partout où l'item passe réellement le
+# filtre `when` — Jinja résout `.values` sur la méthode native `dict.values()`
+# avant la clé JSON du même nom, et l'indexation `[0]` sur cette méthode plante
+# avec « builtin_function_or_method object has no element 0 ». Reproduit
+# isolément sur un dict minimal `{'values': [...]}`. Corrigé en notation par
+# crochets `['values'][0]`, qui cible sans ambiguïté la clé JSON.
+- name: "Sélectionner les PV local-path des namespaces surveillés"
+  ansible.builtin.set_fact:
+    backup_pvcs: "{{ backup_pvcs | default([]) + [{
+      'ns':   item.spec.claimRef.namespace,
+      'name': item.spec.claimRef.name,
+      'path': item.spec.local.path if (item.spec.local is defined) else item.spec.hostPath.path,
+      'node': item.spec.nodeAffinity.required.nodeSelectorTerms[0].matchExpressions[0]['values'][0]
+    }] }}"
+  loop: "{{ (backup_pv_json.stdout | from_json)['items'] }}"
+  loop_control:
+    label: "{{ item.metadata.name }}"
+  when:
+    - item.spec.claimRef is defined
+    - item.spec.claimRef.namespace in backup_pvc_namespaces
+    - (item.spec.local is defined) or (item.spec.hostPath is defined)
+    - item.spec.nodeAffinity is defined
+
+- name: "Assert : au moins un PVC à sauvegarder"
+  ansible.builtin.assert:
+    that:
+      - backup_pvcs | default([]) | length > 0
+    fail_msg: >-
+      Aucun PVC trouvé dans {{ backup_pvc_namespaces | join(', ') }}. Une
+      sauvegarde qui ne sauvegarde rien et sort en succès est pire que pas de
+      sauvegarde : elle rassure.
+
+# --- Quiescence -------------------------------------------------------------
+# `tar` sur un PVC vivant a le MÊME défaut qu'un `cp` sur une base vivante — ce
+# que la sauvegarde du datastore évite justement via `sqlite3 .backup`. Gitea
+# porte du SQLite, Vault un stockage fichier : une archive prise à chaud peut
+# être silencieusement incohérente. On met donc les charges à zéro le temps de
+# l'archive. Consistant par construction, un seul mécanisme pour les trois
+# composants. Coût : quelques dizaines de secondes d'indisponibilité.
+# Si cette indisponibilité devient inacceptable, l'échappatoire est de passer
+# aux dumps natifs (`gitea dump`, arrêt de Vault) — au prix d'un chemin de code
+# par application.
+- name: "Mémoriser le nombre de répliques courant"
+  ansible.builtin.shell:
+    cmd: >-
+      k3s kubectl -n {{ item }} get deploy,statefulset
+      -o jsonpath='{range .items[*]}{.kind}/{.metadata.name}={.spec.replicas}{"\n"}{end}'
+  become: true
+  register: backup_replicas
+  changed_when: false
+  loop: "{{ backup_pvc_namespaces }}"
+
+# `block`/`always` est INDISPENSABLE ici : si l'archivage échoue, les charges
+# resteraient à zéro réplique et le socle CI serait éteint sans que personne ne
+# l'ait décidé. Le redémarrage doit survenir même en cas d'échec.
+- name: "Quiescer, archiver, redémarrer"
+  block:
+    - name: "Quiescer les charges"
+      ansible.builtin.command:
+        cmd: k3s kubectl -n {{ item }} scale deploy,statefulset --all --replicas=0
+      become: true
+      loop: "{{ backup_pvc_namespaces }}"
+      changed_when: true
+
+    - name: "Attendre l'arrêt effectif des pods"
+      ansible.builtin.command:
+        cmd: k3s kubectl -n {{ item }} wait --for=delete pod --all --timeout=180s
+      become: true
+      loop: "{{ backup_pvc_namespaces }}"
+      changed_when: false
+      failed_when: false
+
+    # Aucun fichier temporaire : `tar` est streamé du nœud porteur vers le nœud
+    # de sauvegarde. `pipefail` est INDISPENSABLE — sans lui, l'échec du `tar`
+    # en amont du tube est masqué par le succès du `tee`, et on dépose une
+    # archive VIDE en croyant avoir sauvegardé. C'est exactement le défaut de la
+    # première version de ce plan.
+    - name: "Archiver et déposer hors-nœud, en flux"
+      ansible.builtin.shell:
+        cmd: |
+          set -euo pipefail
+          ssh -o BatchMode=yes {{ item.node }} \
+            "sudo tar czf - -C {{ item.path }} ." \
+          | ssh -o BatchMode=yes {{ backup_offsite_host }} \
+            "sudo install -d -m 0700 {{ backup_offsite_dir }} && \
+             sudo tee {{ backup_offsite_dir }}/pvc-{{ item.ns }}-{{ item.name }}-{{ backup_stamp }}.tar.gz >/dev/null && \
+             sudo chmod {{ backup_mode }} {{ backup_offsite_dir }}/pvc-{{ item.ns }}-{{ item.name }}-{{ backup_stamp }}.tar.gz"
+        executable: /bin/bash
+      delegate_to: localhost
+      become: false
+      loop: "{{ backup_pvcs }}"
+      loop_control:
+        label: "{{ item.ns }}/{{ item.name }}"
+      changed_when: true
+
+  always:
+    - name: "Redémarrer les charges, y compris après échec"
+      ansible.builtin.command:
+        # `item.0` est le résultat de la tâche « Mémoriser » ; le namespace
+        # interrogé est dans `item.0.item`, pas dans `item.0` lui-même.
+        cmd: >-
+          k3s kubectl -n {{ item.0.item }} scale {{ item.1.split('=')[0] }}
+          --replicas={{ item.1.split('=')[1] }}
+      become: true
+      loop: "{{ backup_replicas.results | subelements('stdout_lines') }}"
+      loop_control:
+        label: "{{ item.0.item }} {{ item.1 }}"
+      when: item.1 | length > 0
+      changed_when: true
+
+# `tar tzf` seul ne suffit PAS : une archive vide mais bien formée le passe
+# sans broncher. On compte les entrées, sinon on valide du vide.
+- name: "Read-back : les archives PVC sont-elles lisibles ET non vides ?"
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      n=0
+      for f in {{ backup_offsite_dir }}/pvc-*-{{ backup_stamp }}.tar.gz; do
+        [ -e "$f" ] || { echo "aucune archive pour cet horodatage"; exit 1; }
+        entries=$(tar tzf "$f" | wc -l)
+        [ "$entries" -gt 1 ] || { echo "archive vide ou quasi vide : $f ($entries entrée(s))"; exit 1; }
+        n=$((n+1))
+      done
+      echo "$n archive(s) vérifiée(s)"
+    executable: /bin/bash
+  become: true
+  delegate_to: "{{ backup_offsite_host }}"
+  register: backup_pvc_readback
+  changed_when: false
+  failed_when: false
+
+- name: "Assert : toutes les archives PVC sont lisibles et contiennent des données"
+  ansible.builtin.assert:
+    that:
+      - backup_pvc_readback.rc == 0
+    fail_msg: >-
+      Sauvegarde PVC non fiable — {{ backup_pvc_readback.stdout | default('') }}
+      {{ backup_pvc_readback.stderr | default('') }}
+    success_msg: "{{ backup_pvc_readback.stdout | default('archives vérifiées') }}"

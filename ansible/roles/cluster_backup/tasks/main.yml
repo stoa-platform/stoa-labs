@@ -155,3 +155,6 @@
   become: true
   delegate_to: "{{ backup_offsite_host }}"
   changed_when: true
+
+- name: "Sauvegarder les PVC local-path"
+  ansible.builtin.include_tasks: pvc.yml
