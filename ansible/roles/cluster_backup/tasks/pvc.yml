@@ -64,6 +64,17 @@
 # Si cette indisponibilité devient inacceptable, l'échappatoire est de passer
 # aux dumps natifs (`gitea dump`, arrêt de Vault) — au prix d'un chemin de code
 # par application.
+#
+# CONSÉQUENCE NON DOCUMENTÉE JUSQU'ICI, propre à Vault : contrairement à
+# Gitea, Vault ne revient PAS opérationnel tout seul après ce redémarrage — il
+# redémarre SCELLÉ. Chaque sauvegarde de PVC laisse donc le socle CI HORS
+# SERVICE jusqu'à un descellement manuel (`vault operator unseal` × 2, clés
+# hors ligne — cf. tâche 3, étape 7). L'alerte `VaultSealed` est AVEUGLE
+# pendant la fenêtre elle-même (le pod est absent, rien à observer) et ne se
+# déclenche qu'au retour du pod scellé, au pire ~15 min plus tard selon
+# l'intervalle d'évaluation. Non automatisé ici — décision volontairement
+# laissée hors périmètre ; cf. note de runbook dans le plan
+# (docs/superpowers/plans/2026-07-28-socle-ci-cluster.md, Tâche 2).
 - name: "Mémoriser le nombre de répliques courant"
   ansible.builtin.shell:
     cmd: >-
@@ -152,6 +163,43 @@
       loop_control:
         label: "{{ item.ns }}/{{ item.name }}"
       changed_when: true
+
+    # Course avec le selfHeal Argo CD : les trois Applications `ci` ont
+    # `selfHeal: true`, et `replicas: 1` est dans Git — la mise à zéro plus
+    # haut EST une dérive qu'Argo CD revert. Mesuré en tâche 2 : réaction en
+    # ~5 s. Sur la fenêtre d'archive de cette exécution (jeu de données de
+    # test minuscule), rien n'a été observé ; mais sur un PVC volumineux
+    # (Vault, Jenkins), la fenêtre de `tar` peut dépasser ce délai, et un pod
+    # peut alors redémarrer PENDANT l'archivage — écrivant sur le PVC pendant
+    # que `tar` le lit. La relecture plus bas (comptage d'entrées) ne détecte
+    # PAS ce cas : une archive prise à moitié en écriture reste non-vide et
+    # lisible, elle rassurerait à tort. Garde post-archive : si un pod est
+    # réapparu pendant le tar, l'archive est suspecte et la sauvegarde DOIT
+    # échouer plutôt que rassurer. Suite réelle nécessaire, non implémentée
+    # ici : fenêtre de synchronisation — désactiver l'auto-sync/selfHeal des
+    # Applications concernées le temps de la sauvegarde.
+    - name: "Lister les pods réapparus pendant l'archivage"
+      ansible.builtin.command:
+        cmd: k3s kubectl -n {{ item }} get pods -o name
+      become: true
+      loop: "{{ backup_pvc_namespaces }}"
+      loop_control:
+        label: "{{ item }}"
+      register: backup_pods_post_archive
+      changed_when: false
+
+    - name: "Assert : aucun pod n'est réapparu pendant l'archivage"
+      ansible.builtin.assert:
+        that:
+          - item.stdout == ""
+        fail_msg: >-
+          Pod(s) réapparu(s) dans {{ item.item }} pendant l'archivage :
+          {{ item.stdout_lines | join(', ') }}. Cause probable : selfHeal
+          Argo CD a reverté la dérive replicas=0 pendant le `tar`. L'archive
+          est suspecte — sauvegarde REJETÉE plutôt que de rassurer à tort.
+      loop: "{{ backup_pods_post_archive.results }}"
+      loop_control:
+        label: "{{ item.item }}"
 
   always:
     - name: "Redémarrer les charges, y compris après échec"

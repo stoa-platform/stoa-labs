@@ -189,3 +189,9 @@
     - gateways-staging
     - ingress-nginx
     - observability
+    # Le socle CI fait partie du contrat de reconstruction : sans ces trois
+    # Applications, un rebuild-from-Git ne restitue ni Gitea, ni Vault, ni
+    # Jenkins, en silence.
+    - ci-gitea
+    - ci-vault
+    - ci-jenkins
