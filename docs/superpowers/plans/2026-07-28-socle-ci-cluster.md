@@ -417,7 +417,12 @@ backup_localpath_root: "/var/lib/rancher/k3s/storage"
 
 # `block`/`always` est INDISPENSABLE ici : si l'archivage échoue, les charges
 # resteraient à zéro réplique et le socle CI serait éteint sans que personne ne
-# l'ait décidé. Le redémarrage doit survenir même en cas d'échec.
+# l'ait décidé. GARANTIE HONNÊTE : `always` s'exécute en cas d'ÉCHEC D'UNE TÂCHE
+# du bloc (assert, tar, etc.) — mais PAS si l'hôte devient UNREACHABLE en cours
+# de bloc (perte de connexion SSH vers le poste de contrôle) : dans ce cas précis,
+# Ansible n'exécute PAS `always`, et le redémarrage n'a pas lieu. Remède : remettre
+# les répliques à la main (`k3s kubectl -n <ns> scale deploy,statefulset --all
+# --replicas=<n>`) ou relancer le play une fois la connexion rétablie.
 - name: "Quiescer, archiver, redémarrer"
   block:
     - name: "Quiescer les charges"
@@ -434,6 +439,37 @@ backup_localpath_root: "/var/lib/rancher/k3s/storage"
       loop: "{{ backup_pvc_namespaces }}"
       changed_when: false
       failed_when: false
+
+    # Le `wait` ci-dessus tolère l'absence de ressources (`failed_when: false`) —
+    # voulu : un namespace déjà vide de pods n'est pas une erreur. Mais un `wait`
+    # qui échoue par TIMEOUT sur un pod bloqué en `Terminating` ne doit PAS
+    # laisser le rôle continuer : on archiverait alors un système de fichiers
+    # qu'un processus peut encore écrire, ce qui défait silencieusement la
+    # garantie de quiescence promise plus haut. On reliste donc les pods
+    # restants et on échoue fermé (fail-closed, doctrine du rôle) si la liste
+    # n'est pas vide, avant tout archivage.
+    - name: "Lister les pods restants après l'attente"
+      ansible.builtin.command:
+        cmd: k3s kubectl -n {{ item }} get pods -o name
+      become: true
+      loop: "{{ backup_pvc_namespaces }}"
+      loop_control:
+        label: "{{ item }}"
+      register: backup_pods_remaining
+      changed_when: false
+
+    - name: "Assert : aucun pod ne subsiste avant l'archivage"
+      ansible.builtin.assert:
+        that:
+          - item.stdout == ""
+        fail_msg: >-
+          Pod(s) toujours présent(s) dans {{ item.item }} après le délai
+          d'attente : {{ item.stdout_lines | join(', ') }}. Un processus peut
+          encore écrire sur le PVC — archivage ABANDONNÉ plutôt que de produire
+          une sauvegarde potentiellement incohérente.
+      loop: "{{ backup_pods_remaining.results }}"
+      loop_control:
+        label: "{{ item.item }}"
 
     # Aucun fichier temporaire : `tar` est streamé du nœud porteur vers le nœud
     # de sauvegarde. `pipefail` est INDISPENSABLE — sans lui, l'échec du `tar`
