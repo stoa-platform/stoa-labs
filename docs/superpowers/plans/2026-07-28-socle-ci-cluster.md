@@ -1307,4 +1307,13 @@ git commit -s --allow-empty -m "docs(ci): preuve G-c — pipeline authentifié s
 
 **Points laissés ouverts par la spéc et non résolus ici** (à trancher en cours d'exécution, ils ne bloquent aucune tâche) : rétention des builds Jenkins, espace disque hors-nœud pour les PVC, automatisation de la sauvegarde.
 
+**Dette actée en cours d'exécution (Tâche 4, acceptée le 2026-07-28) :** le
+realm d'auth OCI de Gitea dérive de `ROOT_URL`
+(`gitea.ci.svc.cluster.local:3000`), irrésoluble côté hôte ; contourné par
+une entrée `/etc/hosts` → ClusterIP, re-résolue à chaque exécution de
+`registry_config` (fenêtre de risque documentée dans le rôle). Correction de
+fond différée au lot 2 : repenser `ROOT_URL` côté `stoa`, en tenant compte
+que `localhost:30300` casserait les accès registre depuis les pods
+eux-mêmes (résoluble à l'hôte, pas dans le réseau de pods).
+
 **Écart assumé :** la spéc mentionne JCasC pour la configuration Jenkins. Ce plan ne l'implémente pas — le job de preuve est créé à la main. JCasC devient pertinent quand il y aura plus d'un job ; l'introduire maintenant alourdirait la tâche 5 sans rien prouver de plus.
