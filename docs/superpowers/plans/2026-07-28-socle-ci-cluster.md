@@ -317,14 +317,14 @@ Placée **immédiatement** après Gitea, avant que Vault et Jenkins n'accumulent
 - Consomme : le rôle `cluster_backup` existant, le PVC `gitea-data` de la tâche 1.
 - Produit : des archives PVC dans `{{ backup_dir }}/pvc/`, copiées hors-nœud.
 
-- [ ] **Step 1 : Écrire l'assertion (elle doit échouer)**
+- [x] **Step 1 : Écrire l'assertion (elle doit échouer)**
 
 ```bash
 ssh worker-5 'sudo sh -c "ls -1 /var/lib/k3s-backups/offsite/pvc-*.tar.gz 2>/dev/null | head -1"'
 ```
 Attendu maintenant : **vide** — aucune sauvegarde de PVC n'existe.
 
-- [ ] **Step 2 : Ajouter les variables**
+- [x] **Step 2 : Ajouter les variables**
 
 Dans `defaults/main.yml`, ajouter :
 
@@ -336,7 +336,7 @@ backup_pvc_namespaces:
 backup_localpath_root: "/var/lib/rancher/k3s/storage"
 ```
 
-- [ ] **Step 3 : Écrire `tasks/pvc.yml`**
+- [x] **Step 3 : Écrire `tasks/pvc.yml`**
 
 ```yaml
 ---
@@ -353,13 +353,29 @@ backup_localpath_root: "/var/lib/rancher/k3s/storage"
 # Parsing en JSON plutôt qu'en champs séparés par des espaces : un PV sans
 # `nodeAffinity` produisait moins de champs que prévu et faisait sortir
 # `split(' ')[3]` de l'index. Ici, un PV incomplet est simplement ignoré.
+#
+# DÉVIATION DOCUMENTÉE PAR RAPPORT AU PLAN INITIAL : le plan supposait
+# `spec.hostPath.path`. Sur ce cluster (k3s v1.34.5+k3s1), le provisioner
+# `rancher.io/local-path` peuple `spec.local.path`, pas `spec.hostPath` — vérifié
+# sur les 3 PV existants (0 occurrence de `hostPath` dans `get pv -o json`). Le
+# provisioner a historiquement émis les deux formes selon les versions ; les
+# deux sont donc tolérées ici plutôt que de figer sur une seule, au cas où un PV
+# plus ancien ou un autre provisioner local-path coexisterait un jour.
+#
+# DEUXIÈME DÉVIATION, syntaxique celle-ci : `matchExpressions[0].values[0]`
+# (notation pointée du plan) échoue partout où l'item passe réellement le
+# filtre `when` — Jinja résout `.values` sur la méthode native `dict.values()`
+# avant la clé JSON du même nom, et l'indexation `[0]` sur cette méthode plante
+# avec « builtin_function_or_method object has no element 0 ». Reproduit
+# isolément sur un dict minimal `{'values': [...]}`. Corrigé en notation par
+# crochets `['values'][0]`, qui cible sans ambiguïté la clé JSON.
 - name: "Sélectionner les PV local-path des namespaces surveillés"
   ansible.builtin.set_fact:
     backup_pvcs: "{{ backup_pvcs | default([]) + [{
       'ns':   item.spec.claimRef.namespace,
       'name': item.spec.claimRef.name,
-      'path': item.spec.hostPath.path,
-      'node': item.spec.nodeAffinity.required.nodeSelectorTerms[0].matchExpressions[0].values[0]
+      'path': item.spec.local.path if (item.spec.local is defined) else item.spec.hostPath.path,
+      'node': item.spec.nodeAffinity.required.nodeSelectorTerms[0].matchExpressions[0]['values'][0]
     }] }}"
   loop: "{{ (backup_pv_json.stdout | from_json)['items'] }}"
   loop_control:
@@ -367,7 +383,7 @@ backup_localpath_root: "/var/lib/rancher/k3s/storage"
   when:
     - item.spec.claimRef is defined
     - item.spec.claimRef.namespace in backup_pvc_namespaces
-    - item.spec.hostPath is defined
+    - (item.spec.local is defined) or (item.spec.hostPath is defined)
     - item.spec.nodeAffinity is defined
 
 - name: "Assert : au moins un PVC à sauvegarder"
@@ -488,7 +504,7 @@ backup_localpath_root: "/var/lib/rancher/k3s/storage"
     success_msg: "{{ backup_pvc_readback.stdout | default('archives vérifiées') }}"
 ```
 
-- [ ] **Step 4 : Brancher dans `tasks/main.yml`**
+- [x] **Step 4 : Brancher dans `tasks/main.yml`**
 
 À la fin de `main.yml`, ajouter :
 
@@ -497,7 +513,7 @@ backup_localpath_root: "/var/lib/rancher/k3s/storage"
   ansible.builtin.include_tasks: pvc.yml
 ```
 
-- [ ] **Step 5 : Exécuter et vérifier**
+- [x] **Step 5 : Exécuter et vérifier**
 
 ```bash
 cd /Users/potomitan/stoa-platform/stoa-labs/ansible
@@ -506,7 +522,7 @@ ssh worker-5 'sudo sh -c "ls -1 /var/lib/k3s-backups/offsite/pvc-*.tar.gz"'
 ```
 Attendu : au moins une archive `pvc-ci-gitea-data-*.tar.gz`
 
-- [ ] **Step 6 : Contre-épreuve — restaurer et retrouver la donnée**
+- [x] **Step 6 : Contre-épreuve — restaurer et retrouver la donnée**
 
 ```bash
 ssh worker-5 'sudo sh -c "
@@ -518,13 +534,27 @@ ssh worker-5 'sudo sh -c "
 ```
 Attendu : `RESTAURATION-OK`. Sinon, l'archive ne contient pas les données Gitea — arrêter et corriger.
 
-- [ ] **Step 7 : Commiter**
+- [x] **Step 7 : Commiter**
 
 ```bash
 cd /Users/potomitan/stoa-platform/stoa-labs
 git add ansible/roles/cluster_backup
 git commit -s -m "feat(ansible): étendre la sauvegarde aux PVC local-path"
 ```
+
+### Preuve d'exécution (2026-07-28)
+
+- Step 1 (porte de preuve, avant implémentation) :
+  `ssh worker-5 'sudo sh -c "ls -1 /var/lib/k3s-backups/offsite/pvc-*.tar.gz 2>/dev/null | head -1"'` → sortie vide, conforme.
+- Deux déviations factuelles découvertes en exécutant Step 5 pour de vrai, documentées dans le code ci-dessus et non improvisées sans validation :
+  1. `spec.hostPath.path` n'existe sur aucun des 3 PV du cluster (provisioner `rancher.io/local-path`, k3s v1.34.5+k3s1) ; le champ réel est `spec.local.path`. Confirmé par jsonpath ciblé et par `grep -c '"hostPath"'` sur `get pv -o json` (0 occurrence, 3 occurrences de `"local"`). Premier essai : l'assertion « au moins un PVC » échoue proprement, AVANT toute quiescence — aucun impact sur Gitea. Correction acceptée par le contrôleur : lire `spec.local.path` en priorité, tolérer les deux formes.
+  2. Une fois la sélection corrigée et un item la franchissant réellement, `matchExpressions[0].values[0]` (notation pointée) échoue avec `builtin_function_or_method object has no element 0` — Jinja résout `.values` sur la méthode `dict.values()` avant la clé JSON homonyme. Reproduit isolément sur un dict minimal avant correction. Corrigé en `['values'][0]`.
+- Step 5 (après correction, `ansible-playbook -i inventory.contabo.ini backup.yml`) : succès complet, `ok=28 changed=11 failed=0`. Archive produite : `pvc-ci-gitea-data-gitea-0-20260728T150557.tar.gz` sur worker-5.
+- Fenêtre de quiescence observée sur les événements Kubernetes (`kubectl get events -n ci`) : un seul cycle `Killing`→`SuccessfulDelete`(13:06:21Z)→`SuccessfulCreate`(13:06:26Z)→`Started`(13:06:27Z) — environ 5 s d'indisponibilité, aucun double cycle qui aurait trahi une intervention de selfHeal Argo CD pendant la fenêtre. Le dernier `operationState`/`reconciledAt` d'`ci-gitea` datait de 13:05:18Z, avant le début de la quiescence (13:06:21Z) ; aucune nouvelle entrée d'historique de déploiement n'est apparue après le redémarrage. selfHeal n'a pas interféré de façon observable — la fenêtre réelle (~5 s, données de test quasi vides) était trop courte pour que son délai de réaction (~5 s empiriques) se manifeste avant que le rôle n'ait lui-même restauré `replicas=1`.
+- Step 6 (contre-épreuve) : `RESTAURATION-OK`. Glob ajusté de `pvc-ci-gitea-data-*.tar.gz` à rien — le nom réel (`pvc-ci-gitea-data-gitea-0-...`) correspond déjà à ce glob, aucun ajustement nécessaire. Contre-épreuve renforcée : extraction de `gitea.db` de l'archive et requête SQLite directe → l'utilisateur `ci` (id=1, `ci@gostoa.dev`) y est bien présent.
+- Contre-épreuve de sabotage du gate rouge : logique de relecture (comptage d'entrées) exécutée isolément sur worker-5 contre une fausse archive `.tar.gz` vide (`touch`, jamais un vrai PVC) → sort en échec (`exit=1`, message « archive vide ou quasi vide »), confirmant que le gate peut virer au rouge.
+- État final du cluster, vérifié après coup : `gitea-0` `1/1 Running`, StatefulSet `gitea` `1/1`, les 6 Applications Argo CD `Healthy` (`ci-gitea` reste `OutOfSync` — cause déjà documentée en Tâche 1 : `status.phase: Pending` ajouté par Kubernetes aux `volumeClaimTemplates[]` d'un StatefulSet vivant, absent de Git, sans effet sur la santé ni les données).
+- worker-3 non ciblé par cette automatisation (aucun groupe d'inventaire, aucun `delegate_to`) ; vérifié par prudence : Caddy actif en continu, `wm-dev-elasticsearch` `Up`/`healthy` sans interruption, `wm-dev-apigateway` `Up`/`healthy` avec un redémarrage (`RestartCount` 5→6) dont l'horodatage (13:05:50Z) chevauche la fenêtre du backup — coïncidence probable et non une conséquence de cette automatisation (aucune tâche du rôle ne cible worker-3), `RestartCount` stable ensuite et conteneur `healthy` en continu depuis.
 
 ---
 
