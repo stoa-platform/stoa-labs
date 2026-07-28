@@ -1,7 +1,36 @@
 <?xml version="1.1" encoding="UTF-8"?><flow-definition plugin="workflow-job">
+  <!-- Reconstruction : __WEBHOOK_TOKEN__ n'est PAS le jeton réel (aucun secret
+       dans Git). À la reconstruction du job, frapper un jeton neuf
+       (openssl rand -hex 24) et le poser des DEUX côtés : ici, et dans l'URL du
+       webhook push du dépôt Gitea ci/probe
+       (…/generic-webhook-trigger/invoke?token=<jeton>). Cf. plan F1
+       2026-07-28-f1-webhook-statut.md, tâches 2-3. -->
   <actions/>
-  <description>Pipeline de preuve G-c : clone Gitea (ci/probe, public, sans credential), authentification Vault par identité de pod (SA jenkins-agent), lecture de secret/ci/probe.</description>
+  <description>Pipeline de preuve G-c : clone Gitea (ci/probe, public, sans credential), authentification Vault par identité de pod (SA jenkins-agent), lecture de secret/ci/probe. F1 : déclenché par push Gitea (generic-webhook-trigger) ; le pipeline pose le statut de commit via un PAT lu dans Vault par identité de pod.</description>
   <keepDependencies>false</keepDependencies>
+  <properties>
+    <org.jenkinsci.plugins.workflow.job.properties.DisableConcurrentBuildsJobProperty/>
+    <org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty>
+      <triggers>
+        <org.jenkinsci.plugins.gwt.GenericTrigger plugin="generic-webhook-trigger@2.4.2">
+          <spec></spec>
+          <genericVariables>
+            <org.jenkinsci.plugins.gwt.GenericVariable><key>GWT_REF</key><value>$.ref</value></org.jenkinsci.plugins.gwt.GenericVariable>
+            <org.jenkinsci.plugins.gwt.GenericVariable><key>GWT_AFTER</key><value>$.after</value></org.jenkinsci.plugins.gwt.GenericVariable>
+          </genericVariables>
+          <printContributedVariables>true</printContributedVariables>
+          <printPostContent>false</printPostContent>
+          <token>__WEBHOOK_TOKEN__</token>
+          <silentResponse>false</silentResponse>
+          <regexpFilterText>$GWT_REF</regexpFilterText>
+          <regexpFilterExpression>^refs/heads/main$</regexpFilterExpression>
+          <overrideQuietPeriod>false</overrideQuietPeriod>
+          <shouldNotFlattern>false</shouldNotFlattern>
+          <allowSeveralTriggersPerBuild>false</allowSeveralTriggersPerBuild>
+        </org.jenkinsci.plugins.gwt.GenericTrigger>
+      </triggers>
+    </org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty>
+  </properties>
   <definition class="org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition" plugin="workflow-cps">
     <scm class="hudson.plugins.git.GitSCM" plugin="git">
       <configVersion>2</configVersion>
