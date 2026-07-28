@@ -85,16 +85,52 @@
   become: false
   run_once: true
 
+# `git archive | tar -x` est un pipe : SANS `pipefail`, seul le code de retour
+# de `tar` compte, et `tar -x` sur une entrée standard vide sort à 0. Si
+# `git archive` échoue (ref inconnue, chemin absent, erreur transitoire), le
+# pipe entier réussirait quand même, juste après la tâche de purge qui a vidé
+# le répertoire de graine — on continuerait alors avec une graine VIDE, sans
+# le savoir, et l'échec ne se manifesterait que plus loin, loin de sa cause.
+# `set -euo pipefail` (donc `/bin/bash`, pas `/bin/sh`) fait échouer le pipe
+# entier dès que `git archive` échoue.
 - name: "Graine : extraire deploy/bootstrap/argocd depuis origin/main (jamais depuis le HEAD local)"
   ansible.builtin.shell:
     cmd: >-
+      set -euo pipefail;
       git archive origin/main -- {{ argocd_bootstrap_path }}
       | tar -x -C {{ argocd_bootstrap_repo }}
+    executable: /bin/bash
     chdir: "{{ argocd_bootstrap_repo }}"
   delegate_to: localhost
   become: false
   run_once: true
   changed_when: true
+
+# --- Read-back : on ne fait pas confiance à `tar -x`, on relit la graine ------
+- name: "Graine : lister les fichiers extraits (read-back)"
+  ansible.builtin.command:
+    cmd: ls {{ argocd_bootstrap_src }}
+  delegate_to: localhost
+  become: false
+  run_once: true
+  register: argocd_seed_listing
+  changed_when: false
+
+- name: "Assert : la graine contient l'AppProject et au moins une Application"
+  ansible.builtin.assert:
+    that:
+      - "'appproject-stoa.yaml' in argocd_seed_listing.stdout_lines"
+      - "argocd_seed_listing.stdout_lines | select('match', '^app-.*\\.yaml$') | list | length > 0"
+    fail_msg: >-
+      Graine vide ou incomplète après extraction depuis origin/main : ni
+      `appproject-stoa.yaml` ni Application `app-*.yaml` présents dans
+      {{ argocd_bootstrap_src }}. On échoue ICI plutôt que de laisser
+      `kubectl apply` tourner plus loin sur un répertoire vide, ou pire,
+      réappliquer silencieusement d'anciens fichiers restés sur disque.
+    success_msg: >-
+      graine complète : appproject +
+      {{ argocd_seed_listing.stdout_lines | select('match', '^app-.*\.yaml$') | list | length }}
+      Application(s)
 
 # --- Graine : AppProject + Applications ---------------------------------------
 - name: "Créer le répertoire de dépôt des manifestes"
