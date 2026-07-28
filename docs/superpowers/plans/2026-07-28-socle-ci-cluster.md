@@ -608,14 +608,14 @@ git commit -s -m "feat(ansible): étendre la sauvegarde aux PVC local-path"
 - Consomme : le namespace `ci`.
 - Produit : `vault.ci.svc.cluster.local:8200`, le ServiceAccount `jenkins-agent`, le rôle Vault `jenkins-agent`.
 
-- [ ] **Step 1 : Assertion (doit échouer)**
+- [x] **Step 1 : Assertion (doit échouer)**
 
 ```bash
 ssh worker-1 'sudo k3s kubectl -n ci get sts vault'
 ```
 Attendu : `Error from server (NotFound)`
 
-- [ ] **Step 2 : ServiceAccount et RBAC pour la revue de jeton**
+- [x] **Step 2 : ServiceAccount et RBAC pour la revue de jeton**
 
 `serviceaccount.yaml` :
 
@@ -647,7 +647,7 @@ subjects:
     namespace: ci
 ```
 
-- [ ] **Step 3 : Service et StatefulSet Vault**
+- [x] **Step 3 : Service et StatefulSet Vault**
 
 `service.yaml` :
 
@@ -687,6 +687,20 @@ spec:
         app: vault
     spec:
       serviceAccountName: vault
+      # Amendement contrôleur validé (constat en cours de déploiement, PR #2819) :
+      # le scheduler avait placé vault-0 sur worker-3, or les règles de sécurité
+      # de la tâche interdisent de toucher ce nœud (hors périmètre, héberge des
+      # charges hors socle CI). Anti-affinité ajoutée pour l'exclure durablement
+      # (y compris après un self-heal Argo CD).
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: NotIn
+                    values:
+                      - worker-3
       containers:
         - name: vault
           image: hashicorp/vault:1.18
@@ -713,6 +727,17 @@ spec:
           volumeMounts:
             - name: vault-data
               mountPath: /vault/data
+          # Amendement contrôleur validé : Vault scellé renvoie 503
+          # (non-initialisé 501) → pod NotReady → le Service ferme les flux
+          # (échec fermé) ET l'alerte VaultSealed (readiness) peut réellement
+          # rougir ; sans cette sonde, un Vault scellé mais démarré resterait
+          # « Ready » et l'alerte ne rougirait jamais.
+          readinessProbe:
+            httpGet:
+              path: /v1/sys/health?standbyok=true
+              port: 8200
+            initialDelaySeconds: 5
+            periodSeconds: 10
           resources:
             requests:
               cpu: 100m
@@ -730,7 +755,7 @@ spec:
             storage: 5Gi
 ```
 
-- [ ] **Step 4 : Alerte `VaultSealed`**
+- [x] **Step 4 : Alerte `VaultSealed`**
 
 `prometheusrule.yaml` :
 
@@ -771,11 +796,11 @@ resources:
   - prometheusrule.yaml
 ```
 
-- [ ] **Step 5 : Application Argo CD**
+- [x] **Step 5 : Application Argo CD**
 
 `app-ci-vault.yaml` — identique à `app-ci-gitea.yaml` en remplaçant `name: ci-gitea` par `ci-vault` et `path: deploy/bootstrap/ci/gitea` par `deploy/bootstrap/ci/vault`.
 
-- [ ] **Step 6 : Commiter, PR, fusionner, appliquer**
+- [x] **Step 6 : Commiter, PR, fusionner, appliquer**
 
 ```bash
 cd /Users/potomitan/stoa-platform/stoa
@@ -786,7 +811,7 @@ git commit -s -m "feat(ci): Vault persistant avec auth Kubernetes"
 git push -u origin feat/ci-vault && gh pr create --base main --title "feat(ci): Vault persistant avec auth Kubernetes" --body "Stockage fichier sur PVC. Auth Kubernetes pour l'identité de job Jenkins."
 ```
 
-- [ ] **Step 7 : Initialiser et desceller Vault (une seule fois)**
+- [x] **Step 7 : Initialiser et desceller Vault (une seule fois)**
 
 ```bash
 ssh worker-1 'sudo k3s kubectl -n ci exec vault-0 -- vault operator init -key-shares=3 -key-threshold=2 -format=json'
@@ -801,7 +826,7 @@ ssh worker-1 'sudo k3s kubectl -n ci exec vault-0 -- vault status'
 ```
 Attendu : `Sealed  false`
 
-- [ ] **Step 8 : Activer l'auth Kubernetes et créer le rôle**
+- [x] **Step 8 : Activer l'auth Kubernetes et créer le rôle**
 
 ```bash
 ssh worker-1 'sudo k3s kubectl -n ci exec vault-0 -- sh -c "
@@ -812,17 +837,20 @@ ssh worker-1 'sudo k3s kubectl -n ci exec vault-0 -- sh -c "
   vault policy write jenkins-agent - <<EOF
 path \"secret/data/ci/*\" { capabilities = [\"read\"] }
 EOF
+  # Amendement contrôleur validé : token_policies=jenkins-agent (pas policy=,
+  # paramètre invalide/non standard ; risque d'un rôle ne portant que la
+  # policy default).
   vault write auth/kubernetes/role/jenkins-agent \
     bound_service_account_names=jenkins-agent \
     bound_service_account_namespaces=ci \
-    policy=jenkins-agent \
+    token_policies=jenkins-agent \
     ttl=20m
   vault secrets enable -path=secret kv-v2
   vault kv put secret/ci/probe value=preuve-g8
 "'
 ```
 
-- [ ] **Step 9 : PORTE DE PREUVE G-b — un pod avec le bon SA obtient un jeton**
+- [x] **Step 9 : PORTE DE PREUVE G-b — un pod avec le bon SA obtient un jeton**
 
 ```bash
 ssh worker-1 'sudo k3s kubectl -n ci run g8-ok --rm -i --restart=Never \
@@ -834,7 +862,7 @@ ssh worker-1 'sudo k3s kubectl -n ci run g8-ok --rm -i --restart=Never \
 ```
 Attendu : un `token` est renvoyé, avec un TTL de 20 min.
 
-- [ ] **Step 10 : CONTRE-ÉPREUVE — un autre ServiceAccount doit être REFUSÉ**
+- [x] **Step 10 : CONTRE-ÉPREUVE — un autre ServiceAccount doit être REFUSÉ**
 
 C'est la seule assertion qui prouve que Vault *distingue* les identités.
 
@@ -849,7 +877,7 @@ ssh worker-1 'sudo k3s kubectl -n ci run g8-ko --rm -i --restart=Never \
 Attendu : **échec**, `permission denied` ou `service account name not authorized`.
 Si ce pod obtient un jeton, **arrêter** : le rôle n'est pas correctement borné et G8 n'est pas fermé.
 
-- [ ] **Step 11 : Commiter la preuve**
+- [x] **Step 11 : Commiter la preuve**
 
 ```bash
 cd /Users/potomitan/stoa-platform/stoa-labs
