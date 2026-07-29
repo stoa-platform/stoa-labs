@@ -58,8 +58,10 @@ Trois poussées depuis worker-3 (docker login `ci`, motif prouvé lot 1 T4) :
 
 Les manifestes référencent les images **par digest** (`…@sha256:…`) : c'est la
 dette « épinglage par digest » du lot 1, affectée « F3, même passe » — appliquée
-aussi aux 3 images du socle (`ci/gitea`, `ci/vault`, `ci/jenkins`) dans une PR
-distincte. Conséquence assumée : l'image trial devient lisible anonymement par
+aussi aux images du socle dans une PR distincte, **sauf Vault** : changer son
+`image:` recréerait `vault-0`, qui redémarre **scellé** — le descellement est un
+geste exploitant (les parts sont hors de portée de l'agent, à raison). Reporté à
+la prochaine fenêtre exploitant, motif dans le commit. Conséquence assumée : l'image trial devient lisible anonymement par
 quiconque atteint `:30300` — même exposition que `jenkins-go` (loopback + pairs
 cluster, ufw ferme le reste) ; l'image est par ailleurs publique sur Docker Hub.
 
