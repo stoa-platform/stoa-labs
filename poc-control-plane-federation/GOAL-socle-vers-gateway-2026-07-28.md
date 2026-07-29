@@ -28,6 +28,8 @@ note: "Reste dans stoa-labs (privé). Le GOAL parent (self-service) reste le nor
 
 Constat de terrain (lot 1, élucidé pendant la tâche 4) : la **licence d'essai de `wm-dev-apigateway` sur worker-3 est expirée** — le conteneur s'auto-redémarre proprement en boucle (~30 min), avec brèves 502 publiques. **Porter une licence morte en cluster, c'est porter la panne.** Aucun jalon F3+ ne démarre sans avoir tranché : licence client réelle, nouvelle trial, ou build non-trial. Décision humaine, hors de portée d'un agent.
 
+**TRANCHÉ le 2026-07-29 (exploitant) : pas de licence.** L'auto-redémarrage subi devient un redémarrage **contrôlé** : cron root sur worker-3, `docker restart wm-dev-apigateway` toutes les 20 min — avant l'expiration, à instants connus (`ansible/wm-restart-cron.yml`, posé et validé le jour même). Même indisponibilité brève, mais prévisible et datable. **F3 est débloqué**, avec la conséquence assumée : le pod cluster portera le même motif (redémarrage périodique piloté — à intégrer à la spéc F3, pas à subir), et la « panne portée en cluster » est désormais un cycle d'exploitation documenté, pas une surprise.
+
 ---
 
 ## Jalons (F1…F5) — chacun avec sa porte de preuve et sa contre-épreuve
@@ -51,7 +53,7 @@ Aujourd'hui les trois PVC (gitea, vault, jenkins) **et** leurs archives vivent s
 Image poussée dans le **registre Gitea** (pas Docker Hub), manifestes par **PR sur `stoa`**, namespace dédié, Elasticsearch attenant. Contraintes mesurées à respecter : disque faible en `fsync` (prudence sur ES — c'est lui le composant sensible, pas la RAM : ~87 Go libres) ; **anti-affinité worker-3** tant que la prod Docker y tourne (le motif PR #2819 du lot 1, réutilisé) ; la dette ROOT_URL/realm OCI du lot 1 se repense **ici** (un ROOT_URL résoluble partout, sans casser les accès registre depuis les pods).
 **Porte F3 :** `/rest/apigateway` répond depuis un pod du cluster ; les données survivent à la suppression du pod (PVC).
 **Contre-épreuve :** pod tué en pleine vie → revient seul, config intacte. Et l'admin REST reste **inaccessible** hors du cluster (aucun Ingress — la doctrine du lot 1 tient).
-**État :** bloqué par la licence (préalable). La spécification lot 2 détaillera image, licence, dimensionnement ES.
+**État :** débloqué le 2026-07-29 — préalable licence tranché (pas de licence ; redémarrage contrôlé toutes les 20 min, motif à porter avec le pod). La spécification lot 2 détaillera image, cycle de redémarrage, dimensionnement ES.
 
 ### F4 — La chaîne de publication réelle *(E1 du GOAL parent, câblé sur la plateforme)*
 
