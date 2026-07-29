@@ -612,8 +612,8 @@
             "value": "application/json"
           }
         ],
-        "url": "{{gwUrl}}{{gwBasePath}}/health",
-        "description": "Support du rapport final. Ne modifie rien."
+        "url": "{{gwUrl}}{{gwBasePath}}/apis",
+        "description": "Support du rapport final. Ne modifie rien.\nPointe sur /apis, et non /health : /health peut être absent ou injoignable derrière un proxy,\net une requête EN ERREUR (et non un simple 404) empêcherait le script de test de s'exécuter —\ndonc ferait perdre le rapport et le verdict. /apis est joignable par construction :\nsi ce n'était pas le cas, le run aurait échoué dès la requête 01."
       }
     }
   ]
