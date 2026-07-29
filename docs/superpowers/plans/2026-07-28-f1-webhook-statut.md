@@ -40,7 +40,7 @@
 
 **Interfaces:** produit le numéro de build de référence `N0` et le SHA `S1` du push à blanc.
 
-- [ ] **Step 1 : Relever l'état de référence Jenkins**
+- [x] **Step 1 : Relever l'état de référence Jenkins**
 
 ```bash
 ssh worker-1 'sudo k3s kubectl -n ci run f1-t1a --rm -i --restart=Never --image=curlimages/curl:8.10.1 -- \
@@ -49,7 +49,7 @@ ssh worker-1 'sudo k3s kubectl -n ci run f1-t1a --rm -i --restart=Never --image=
 
 Noter `nextBuildNumber` (→ `N0 = nextBuildNumber`).
 
-- [ ] **Step 2 : Push à blanc via l'API Gitea (création de `PROBE.md`)**
+- [x] **Step 2 : Push à blanc via l'API Gitea (création de `PROBE.md`)**
 
 ```bash
 ssh worker-1 'sudo k3s kubectl -n ci run f1-t1b --rm -i --restart=Never --image=curlimages/curl:8.10.1 -- \
@@ -60,7 +60,7 @@ ssh worker-1 'sudo k3s kubectl -n ci run f1-t1b --rm -i --restart=Never --image=
 
 (`RjEgYmFzZWxpbmUgcGluZwo=` = base64 de `F1 baseline ping\n`.) Noter le SHA du commit renvoyé (→ `S1`).
 
-- [ ] **Step 3 : Attendre 90 s, vérifier qu'il ne s'est RIEN passé**
+- [x] **Step 3 : Attendre 90 s, vérifier qu'il ne s'est RIEN passé**
 
 ```bash
 sleep 90
@@ -82,13 +82,13 @@ Attendu : `nextBuildNumber` == `N0` (aucun build), statut du commit vide (`"stat
 - Consomme : job `probe` existant, plugin GWT 2.4.2.
 - Produit : endpoint `…/generic-webhook-trigger/invoke?token=<jeton>` actif, filtre `^refs/heads/main$`, variables `GWT_REF`/`GWT_AFTER`.
 
-- [ ] **Step 1 : Frapper le jeton (session uniquement)**
+- [x] **Step 1 : Frapper le jeton (session uniquement)**
 
 ```bash
 WEBHOOK_TOKEN=$(openssl rand -hex 24)
 ```
 
-- [ ] **Step 2 : Construire le config.xml complet**
+- [x] **Step 2 : Construire le config.xml complet**
 
 Écrire dans le scratchpad `f1-config.xml` (jeton réel substitué à `__WEBHOOK_TOKEN__`) :
 
@@ -146,7 +146,7 @@ WEBHOOK_TOKEN=$(openssl rand -hex 24)
 </flow-definition>
 ```
 
-- [ ] **Step 3 : POSTer la config dans Jenkins (crumb géré, depuis le pod)**
+- [x] **Step 3 : POSTer la config dans Jenkins (crumb géré, depuis le pod)**
 
 ```bash
 ssh worker-1 'sudo k3s kubectl -n ci exec -i deploy/jenkins -- bash -c "
@@ -165,7 +165,7 @@ ssh worker-1 'sudo k3s kubectl -n ci exec -i deploy/jenkins -- bash -c "
 
 Attendu : `200`.
 
-- [ ] **Step 4 : Read-back**
+- [x] **Step 4 : Read-back**
 
 ```bash
 ssh worker-1 'sudo k3s kubectl -n ci run f1-t2a --rm -i --restart=Never --image=curlimages/curl:8.10.1 -- \
@@ -174,7 +174,7 @@ ssh worker-1 'sudo k3s kubectl -n ci run f1-t2a --rm -i --restart=Never --image=
 
 Attendu : le trigger, les deux variables et le filtre sont présents (le jeton relu doit être celui frappé au Step 1).
 
-- [ ] **Step 5 : Contre-épreuves de l'endpoint (mauvais jeton, puis bon jeton)**
+- [x] **Step 5 : Contre-épreuves de l'endpoint (mauvais jeton, puis bon jeton)**
 
 ```bash
 # Mauvais jeton → aucun job ne matche
@@ -196,7 +196,7 @@ ssh worker-1 'sudo k3s kubectl -n ci run f1-t2c --rm -i --restart=Never --image=
 
 Attendu : cause « Generic Cause », `result: SUCCESS` (l'ancien Jenkinsfile passe encore — le statut de commit n'existe pas à ce stade, c'est normal).
 
-- [ ] **Step 6 : Mettre à jour le XML versionné (placeholder) et commiter**
+- [x] **Step 6 : Mettre à jour le XML versionné (placeholder) et commiter**
 
 Reporter le config.xml du Step 2 (avec `__WEBHOOK_TOKEN__`, PAS le jeton réel) dans `docs/superpowers/plans/2026-07-28-jenkins-probe-job.xml`, avec un commentaire XML en tête expliquant la re-frappe du jeton à la reconstruction.
 
@@ -216,7 +216,7 @@ git commit -s -m "feat(ci): trigger generic-webhook sur le job probe (jeton hors
 - Consomme : l'endpoint GWT de la T2 (jeton réel en variable de session).
 - Produit : webhook push actif sur `ci/probe` ; build auto-déclenché par push API.
 
-- [ ] **Step 1 : Créer le webhook**
+- [x] **Step 1 : Créer le webhook**
 
 ```bash
 ssh worker-1 'sudo k3s kubectl -n ci run f1-t3a --rm -i --restart=Never --image=curlimages/curl:8.10.1 -- \
@@ -227,7 +227,7 @@ ssh worker-1 'sudo k3s kubectl -n ci run f1-t3a --rm -i --restart=Never --image=
 
 Attendu : JSON du hook créé (`"active":true`, `"events":["push"]`). `ALLOWED_HOST_LIST=jenkins.ci.svc.cluster.local` (lot 1) doit laisser passer — si Gitea refuse l'URL, s'arrêter : c'est l'allowlist qui parle.
 
-- [ ] **Step 2 : Read-back**
+- [x] **Step 2 : Read-back**
 
 ```bash
 … curl -s -u ci:ci-bootstrap http://gitea.ci.svc.cluster.local:3000/api/v1/repos/ci/probe/hooks'
@@ -235,7 +235,7 @@ Attendu : JSON du hook créé (`"active":true`, `"events":["push"]`). `ALLOWED_H
 
 Attendu : exactement 1 hook, actif, événement `push`.
 
-- [ ] **Step 3 : Push réel → build sans action humaine**
+- [x] **Step 3 : Push réel → build sans action humaine**
 
 Relever `nextBuildNumber` (→ `N1`), puis pousser une mise à jour de `PROBE.md` (PUT avec le `sha` du fichier, contenu base64 de `F1 webhook ping\n`), attendre ≤ 90 s :
 
@@ -260,7 +260,7 @@ Attendu : build `N1` créé **sans aucune action côté Jenkins**, cause « Gene
 - Consomme : jeton racine Vault (exploitant, hors session).
 - Produit : `secret/ci/probe-status` lisible par le rôle `jenkins-agent`.
 
-- [ ] **Step 1 : Idempotence — purger un éventuel PAT homonyme**
+- [x] **Step 1 : Idempotence — purger un éventuel PAT homonyme**
 
 ```bash
 ssh worker-1 'sudo k3s kubectl -n ci run f1-t4a --rm -i --restart=Never --image=curlimages/curl:8.10.1 -- \
@@ -270,7 +270,7 @@ ssh worker-1 'sudo k3s kubectl -n ci run f1-t4a --rm -i --restart=Never --image=
 
 Attendu : `204` (supprimé) ou `404`/`422` (n'existait pas) — les deux sont sains.
 
-- [ ] **Step 2 : Stager le script de provisioning dans vault-0**
+- [x] **Step 2 : Stager le script de provisioning dans vault-0**
 
 Le script crée le PAT **dans le cluster** et l'écrit dans Vault sans jamais l'afficher :
 
@@ -292,7 +292,7 @@ echo "OK: secret/ci/probe-status ecrit (PAT probe-status, scope write:repository
 
 Staging : `ssh worker-1 'sudo k3s kubectl -n ci exec -i vault-0 -- sh -c "cat > /tmp/f1-provision.sh"' < f1-provision.sh`
 
-- [ ] **Step 3 : Remettre la commande à l'exploitant (AskUserQuestion) et attendre son feu vert**
+- [x] **Step 3 : Remettre la commande à l'exploitant (AskUserQuestion) et attendre son feu vert**
 
 ```bash
 ssh -t worker-1 'read -r -s -p "Jeton racine Vault : " VT; echo; sudo k3s kubectl -n ci exec vault-0 -- sh /tmp/f1-provision.sh "$VT"; unset VT'
@@ -300,7 +300,7 @@ ssh -t worker-1 'read -r -s -p "Jeton racine Vault : " VT; echo; sudo k3s kubect
 
 Le jeton est saisi masqué (`read -s`), n'entre ni dans l'historique local ni dans la session agent. Attendu : `OK: secret/ci/probe-status ecrit …`.
 
-- [ ] **Step 4 : Vérifier par l'identité de pod (la seule qui compte) et nettoyer**
+- [x] **Step 4 : Vérifier par l'identité de pod (la seule qui compte) et nettoyer**
 
 ```bash
 ssh worker-1 'sudo k3s kubectl -n ci run f1-t4b --rm -i --restart=Never \
@@ -329,7 +329,7 @@ Attendu : `PAT présent, longueur ≥ 40` (jamais la valeur). Le script est effa
 - Consomme : `secret/ci/probe-status` (T4), trigger + webhook (T2/T3).
 - Produit : statuts de commit `pending`→`success|failure`, SHA du commit vert `S2`.
 
-- [ ] **Step 0 : Vérifier `wget --post-data` dans l'image vault (pré-requis du postStatus)**
+- [x] **Step 0 : Vérifier `wget --post-data` dans l'image vault (pré-requis du postStatus)**
 
 ```bash
 ssh worker-1 'sudo k3s kubectl -n ci run f1-t5a --rm -i --restart=Never --image=hashicorp/vault:1.18 -- \
@@ -338,7 +338,7 @@ ssh worker-1 'sudo k3s kubectl -n ci run f1-t5a --rm -i --restart=Never --image=
 
 Attendu : ≥ 1. Sinon : ajouter un `containerTemplate` `curlimages/curl:8.10.1` au podTemplate et poster depuis ce conteneur (le PAT transite alors par un fichier de workspace effacé aussitôt).
 
-- [ ] **Step 1 : Pousser le nouveau Jenkinsfile via l'API (PUT, avec le sha du fichier actuel)**
+- [x] **Step 1 : Pousser le nouveau Jenkinsfile via l'API (PUT, avec le sha du fichier actuel)**
 
 Contenu exact (aussi versionné au Step 4) :
 
@@ -393,11 +393,11 @@ podTemplate(serviceAccount: 'jenkins-agent', containers: [
 
 Push : base64 du fichier → `PUT /api/v1/repos/ci/probe/contents/Jenkinsfile` (message : `feat(f1): statut de commit par identité de pod`). Noter le SHA (→ `S2`).
 
-- [ ] **Step 2 : Le build part seul et vire au vert**
+- [x] **Step 2 : Le build part seul et vire au vert**
 
 Poll ≤ 3 min : `GET /job/probe/api/json?tree=lastBuild[number,result]` → nouveau numéro, `result: SUCCESS`. En cas d'échec, lire la console (`/job/probe/<n>/consoleText`) — suspects : quoting du JSON, wget, droits du PAT.
 
-- [ ] **Step 3 : PORTE F1 — le commit est VERT dans Gitea**
+- [x] **Step 3 : PORTE F1 — le commit est VERT dans Gitea**
 
 ```bash
 … curl -s -u ci:ci-bootstrap http://gitea.ci.svc.cluster.local:3000/api/v1/repos/ci/probe/commits/<S2>/status'
@@ -405,7 +405,7 @@ Poll ≤ 3 min : `GET /job/probe/api/json?tree=lastBuild[number,result]` → nou
 
 Attendu : `"state":"success"`, un statut `context: jenkins/probe`, `target_url` vers le build. **Porte F1 verte.**
 
-- [ ] **Step 4 : Versionner le Jenkinsfile et commiter**
+- [x] **Step 4 : Versionner le Jenkinsfile et commiter**
 
 ```bash
 cd /Users/potomitan/stoa-platform/stoa-labs
@@ -421,7 +421,7 @@ git commit -s -m "feat(ci): le pipeline probe pose son statut de commit par iden
 
 **Interfaces:** produit les SHA `S3` (saboté, rouge) et `S4` (restauré, vert).
 
-- [ ] **Step 1 : Pousser le sabotage**
+- [x] **Step 1 : Pousser le sabotage**
 
 Même Jenkinsfile, avec — juste après le bloc `sh` de la preuve G-c, avant `postStatus(sha, 'success', …)` :
 
@@ -431,7 +431,7 @@ Même Jenkinsfile, avec — juste après le bloc `sh` de la preuve G-c, avant `p
 
 PUT sur `Jenkinsfile` (message : `test(f1): contre-épreuve — sabotage, le statut doit rougir`). Noter `S3`.
 
-- [ ] **Step 2 : Build auto rouge, statut rouge**
+- [x] **Step 2 : Build auto rouge, statut rouge**
 
 Poll : nouveau build, `result: FAILURE`. Puis :
 
@@ -441,11 +441,11 @@ Poll : nouveau build, `result: FAILURE`. Puis :
 
 Attendu : `"state":"failure"`, context `jenkins/probe`. **Un statut qui sait rougir : la contre-épreuve est faite.**
 
-- [ ] **Step 3 : Restaurer, revenir au vert**
+- [x] **Step 3 : Restaurer, revenir au vert**
 
 PUT du Jenkinsfile sain (message : `fix(f1): restauration post-contre-épreuve`). Noter `S4`. Poll : build vert, `/commits/<S4>/status` → `success`. (Troisième déclenchement automatique consécutif — la récurrence est prouvée de surcroît.)
 
-- [ ] **Step 4 : Assertions annexes (rejouées du lot 1)**
+- [x] **Step 4 : Assertions annexes (rejouées du lot 1)**
 
 ```bash
 # Aucun credential statique n'est apparu dans Jenkins :
@@ -466,11 +466,11 @@ Attendu : `OK-aucun-credential-statique` et `OK-jeton-hors-Git`.
 - Modify: `poc-control-plane-federation/GOAL-socle-vers-gateway-2026-07-28.md` (ligne « État » de F1)
 - Modify: mémoire agent (`memory/socle-ci-lot1-deploye.md` + `MEMORY.md`)
 
-- [ ] **Step 1 : Appendre la « Preuve d'exécution (2026-07-28) »** — numéros de build, SHA `S1..S4`, réponses d'API réelles (statuts, causes), écarts éventuels documentés.
+- [x] **Step 1 : Appendre la « Preuve d'exécution (2026-07-28) »** — numéros de build, SHA `S1..S4`, réponses d'API réelles (statuts, causes), écarts éventuels documentés.
 
-- [ ] **Step 2 : GOAL lot 2, jalon F1** — remplacer la ligne `**État :** tout est préparé, rien n'est câblé (écart assumé du lot 1, acté au plan).` par un état « fermé le 2026-07-28 » renvoyant vers ce plan.
+- [x] **Step 2 : GOAL lot 2, jalon F1** — remplacer la ligne `**État :** tout est préparé, rien n'est câblé (écart assumé du lot 1, acté au plan).` par un état « fermé le 2026-07-28 » renvoyant vers ce plan.
 
-- [ ] **Step 3 : Commit final**
+- [x] **Step 3 : Commit final**
 
 ```bash
 cd /Users/potomitan/stoa-platform/stoa-labs
@@ -478,7 +478,7 @@ git add docs/superpowers/plans/2026-07-28-f1-webhook-statut.md poc-control-plane
 git commit -s -m "docs(ci): preuve F1 — push→build sans action humaine, statut vert/rouge dans Gitea"
 ```
 
-- [ ] **Step 4 : Vérification finale avant clôture** (superpowers:verification-before-completion) — relire la porte F1 du GOAL mot à mot et pointer chaque preuve correspondante ; mettre à jour la mémoire.
+- [x] **Step 4 : Vérification finale avant clôture** (superpowers:verification-before-completion) — relire la porte F1 du GOAL mot à mot et pointer chaque preuve correspondante ; mettre à jour la mémoire.
 
 ## Auto-revue du plan
 
@@ -486,3 +486,48 @@ git commit -s -m "docs(ci): preuve F1 — push→build sans action humaine, stat
 - **Placeholders :** `<JETON_RACINE>` (voulu, secret zéro), `__WEBHOOK_TOKEN__` (voulu, D5), `<S1..S4>`/`<N0..N1>`/`<sha-PROBE.md>` (valeurs relevées en exécution) — aucun TBD.
 - **Cohérence :** chemin Vault, nom de PAT, context de statut identiques partout (cf. Interfaces stables) ; le Jenkinsfile de T6 S1 dérive exactement de T5 S1.
 - **Risque résiduel connu :** forme XML GWT (champs 2.4.2) — le précédent POC utilise la même version ; le read-back T2 S4 et la contre-épreuve T2 S5 attrapent toute divergence. Support `--post-data` de busybox wget vérifié en T5 S0 avec variante de repli.
+
+---
+
+## Preuve d'exécution (2026-07-28 / 2026-07-29)
+
+Exécution inline (`executing-plans`), séquentielle, sur le cluster k3s labs via `ssh worker-1 'sudo k3s kubectl …'`.
+
+### Porte F1 — verte
+
+| Élément | Valeur relevée |
+|---|---|
+| Déclenchement | webhook Gitea `push` → `generic-webhook-trigger`, cause Jenkins **`Generic Cause`** |
+| `S2` (Jenkinsfile F1) | `fc8c4a9b6c3b5e373da21a78e02a33e5544a8533` → build **7**, `SUCCESS`, statut **`success`** |
+| `S3` (sabotage) | `e4a15058c62c9c910055b2cd407436c32764d5a3` → build **8**, `FAILURE`, statut **`failure`** |
+| `S4` (restauration) | `c34f90d6e86674016570aff467ff30f9cf6a34c1` → build **9**, `SUCCESS`, statut **`success`** |
+| Statut de commit | `context: jenkins/probe`, `target_url: …/job/probe/<n>/`, `description: probe <state>`, auteur `ci` |
+| Secret Vault | `secret/ci/probe-status`, lu par identité de pod (SA `jenkins-agent`), longueur 40 = PAT Gitea sha1 |
+
+Trois déclenchements automatiques consécutifs (7, 8, 9) : la récurrence est prouvée en plus de la porte. Le statut sait rougir (build 8) puis reverdir (build 9) — la contre-épreuve du GOAL est tenue.
+
+**Assertions annexes rejouées du lot 1 :**
+
+- `credentials.xml` absent de `/var/jenkins_home` → `OK-aucun-credential-statique`.
+- Le jeton webhook réel n'est dans aucun fichier versionné : `2026-07-28-jenkins-probe-job.xml` ne porte que le placeholder `__WEBHOOK_TOKEN__` (2 occurrences).
+- Portes G-b/G-c du lot 1 rejouées après reconstruction de Vault : login par identité de pod OK, `secret/ci/probe` lisible.
+
+### Incident Vault — écart assumé, à solder
+
+La tâche 4 ne s'est pas déroulée comme planifiée. Chronologie factuelle :
+
+1. Le jeton racine Vault **et** les trois clés de descellement du lot 1 étaient **perdus** côté exploitant. Aucune écriture dans `secret/` n'était donc plus possible : la policy `jenkins-agent` est en lecture seule (`path "secret/data/ci/*" { capabilities = ["read"] }`), et aucune autre identité in-cluster n'existe. `generate-root` et `rekey` exigeant tous deux un quorum de parts, il n'existait aucune voie de récupération.
+2. Constat associé, plus grave que F1 : le socle était **à un redémarrage de la panne définitive** (Vault revient scellé après chaque `backup.yml` et à chaque reschedule du pod).
+3. Décision de l'exploitant : ré-initialiser Vault (périmètre labo, aucune donnée de valeur — seule la fixture `secret/ci/probe` y vivait). Backend `file` sur `/vault/data` effacé, pod recréé, `vault operator init -key-shares=3 -key-threshold=2`.
+4. **La sortie du premier `init` a été affichée dans la session de l'agent** (commande lancée sans TTY depuis l'outil, redirection absente) : les 3 clés et le jeton racine s'y trouvent en clair. Ce matériel doit être considéré comme **brûlé**.
+5. Une seconde passe a été outillée pour que les secrets ne quittent jamais le nœud : script exécuté sur worker-1, écrivant l'`init` dans `/root/vault-init-ci.txt` (root, 600), relisant lui-même les parts pour desceller puis reconfigurer (auth Kubernetes, policy + rôle `jenkins-agent`, kv-v2, `secret/ci/probe`, PAT Gitea, `secret/ci/probe-status`).
+
+**Point ouvert à confirmer avec l'exploitant :** au moment de la vérification, `/root/vault-init-ci.txt` était absent — soit récupéré et supprimé comme demandé, soit la seconde passe n'a pas eu lieu. **Si le Vault actuellement en service tourne encore sur le matériel de l'étape 4, il faut le faire tourner** (`vault operator rekey` + révocation du jeton racine), car ces valeurs figurent en clair dans une transcription de conversation.
+
+**Leçon retenue, applicable au-delà de F1 :** une commande qui *affiche* un secret est un piège, même accompagnée de la consigne « lance-la ailleurs ». Les procédures doivent rediriger la sortie sensible vers un fichier à droits restreints sur le nœud, et ne laisser passer que des messages de progression. C'est la forme retenue pour le script de bootstrap, et celle à reprendre au lot 2.
+
+### Écarts au plan tel qu'écrit
+
+- **T4 Step 2/3** : le script `f1-provision.sh` a été absorbé par le script de bootstrap complet (init + descellement + configuration lot 1 + provisioning F1), la reconstruction de Vault ayant rendu la seule provision insuffisante.
+- **T4 Step 1** : la purge du PAT homonyme a servi pour de bon — un premier essai avec jeton vide avait créé un PAT `probe-status` dont la valeur était irrécupérable. Le script a depuis été réordonné pour **valider le jeton Vault avant** toute création côté Gitea, afin qu'un échec ne laisse jamais d'orphelin.
+- **T5 Step 0** : `wget --post-data` confirmé présent dans `hashicorp/vault:1.18` — le conteneur `curl` de repli n'a pas été nécessaire.

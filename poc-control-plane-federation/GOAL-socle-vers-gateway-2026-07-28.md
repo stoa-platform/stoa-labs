@@ -37,7 +37,7 @@ Constat de terrain (lot 1, élucidé pendant la tâche 4) : la **licence d'essai
 Câbler le webhook Gitea → Jenkins (`generic-webhook-trigger`, déjà dans l'image ; `ALLOWED_HOST_LIST` déjà restreint au Service Jenkins) et la remontée du statut de commit dans Gitea.
 **Porte F1 :** un `git push` sur `ci/probe` déclenche le build **sans action humaine** ; le commit porte un statut vert dans Gitea.
 **Contre-épreuve :** casser le Jenkinsfile → le commit porte un statut **rouge**. Un statut qui ne rougit jamais ne prouve rien.
-**État :** tout est préparé, rien n'est câblé (écart assumé du lot 1, acté au plan).
+**État : FERMÉ le 2026-07-29.** Porte et contre-épreuve vertes — builds 7 (vert), 8 (rouge, sabotage) et 9 (vert, restauration) déclenchés sans action humaine, statuts `jenkins/probe` correspondants dans Gitea. Preuve détaillée : `docs/superpowers/plans/2026-07-28-f1-webhook-statut.md`, § « Preuve d'exécution ». Écart à traiter : le matériel de descellement Vault a été perdu puis exposé en session (cf. § « Incident Vault »).
 
 ### F2 — Sauvegarde réellement hors-nœud *(tranche la question Q2 du lot 1)*
 
@@ -75,7 +75,8 @@ Caddy (worker-3) repointe le trafic concerné vers le cluster (le pattern `cutov
 |---|---|---|
 | Realm OCI /etc/hosts→ClusterIP (ROOT_URL) | plan lot 1, § Dette actée | F3 |
 | Sauvegardes co-localisées worker-5 + rotation + quarantaine | plan lot 1 + revue finale | F2 |
-| Webhook + statut de commit | plan lot 1, écart assumé | F1 |
+| ~~Webhook + statut de commit~~ | plan lot 1, écart assumé | **soldé — F1, 2026-07-29** |
+| Rotation du matériel de descellement Vault (`operator rekey` + révocation du jeton racine) | incident F1 du 2026-07-29 | à trancher avec F2 (sauvegarde/restauration) |
 | Épinglage par digest des 3 images du socle | revue finale, follow-up | F3 (même passe) |
 | Rotation du mot de passe bootstrap `ci`/`ci-bootstrap` | rapports lot 1 | F4 (les identités réelles arrivent) |
 | JCasC (cloud + jobs Jenkins versionnés) | plan lot 1, écart assumé | F4 (dès le 2ᵉ job, le seuil est franchi) |
