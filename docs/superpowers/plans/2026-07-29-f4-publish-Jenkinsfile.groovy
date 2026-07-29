@@ -45,27 +45,43 @@ podTemplate(serviceAccount: 'jenkins-agent', containers: [
         postStatus(sha, 'pending', env.BUILD_URL)
       }
       try {
-        container('vault') {
-          // Login G-c : jeton Vault éphémère + creds wM → fichiers 0600 du
-          // workspace (partagé entre conteneurs du pod), jamais affichés.
-          // DANS le try : un refus Vault (secret absent, rôle révoqué après
-          // le pending) doit poster un statut failure — constat build #1 :
-          // placé avant le try, l'échec sautait le catch, statut resté
-          // pending.
-          sh '''
-            set -e
-            set +x
-            umask 077
-            vault write -address=$VAULT_ADDR -field=token \
-              auth/kubernetes/login role=jenkins-agent \
-              jwt=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token) > .vt
-            VAULT_TOKEN=$(cat .vt) vault kv get -address=$VAULT_ADDR \
-              -field=username secret/ci/gateways/wm-cluster > .wmu
-            VAULT_TOKEN=$(cat .vt) vault kv get -address=$VAULT_ADDR \
-              -field=password secret/ci/gateways/wm-cluster > .wmp
-          '''
-        }
         container('labctl') {
+          // Login G-c DANS le conteneur qui consomme : chaque conteneur du pod
+          // porte le même token de SA projeté, et l'API HTTP de Vault suffit
+          // (pas de binaire vault ici). Constat build #3 : écrire les creds
+          // depuis le conteneur `vault` donnait des fichiers 0600 d'un AUTRE
+          // UID — `cat: .wmu: Permission denied` côté labctl. Plus aucun
+          // passage de secret entre conteneurs.
+          // DANS le try : un refus Vault (secret absent, rôle révoqué) doit
+          // poster un statut failure — constat build #1.
+          stage('Identité de pod → Vault (creds gateway)') {
+            sh '''
+              set -e
+              set +x
+              umask 077
+              SAT=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
+              printf '{"role":"jenkins-agent","jwt":"%s"}' "$SAT" > .login.json
+              curl -sf -X POST -d @.login.json \
+                "$VAULT_ADDR/v1/auth/kubernetes/login" > .login.out
+              rm -f .login.json
+              python3 -c '
+import json
+tok=json.load(open(".login.out"))["auth"]["client_token"]
+open(".vt","w").write(tok)
+'
+              rm -f .login.out
+              curl -sf -H "X-Vault-Token: $(cat .vt)" \
+                "$VAULT_ADDR/v1/secret/data/ci/gateways/wm-cluster" > .kv.out
+              python3 -c '
+import json
+d=json.load(open(".kv.out"))["data"]["data"]
+open(".wmu","w").write(d["username"])
+open(".wmp","w").write(d["password"])
+'
+              rm -f .kv.out
+              echo "creds gateway obtenues par identite de pod (aucune valeur affichee)"
+            '''
+          }
           stage('Attendre la gateway (cycle trial)') {
             sh '''
               set -e
