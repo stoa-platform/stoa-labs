@@ -31,6 +31,11 @@
       "description": "user | group — second membre du couple attendu par /assets/owner."
     },
     {
+      "key": "gwBasePath",
+      "value": "/rest/apigateway",
+      "description": "Préfixe de chemin de l'API d'administration, SANS / final.\nAccès direct à la Gateway : /rest/apigateway\nDerrière une API proxifiée qui réexpose l'arbre ailleurs : mettre le préfixe du proxy,\nou la chaîne vide si le proxy sert directement /apis, /assets/owner, /health."
+    },
+    {
       "key": "filterNameContains",
       "value": "",
       "description": "Contains insensible à la casse sur apiName. Appliqué sur la LISTE. Vide = pas de contrainte."
@@ -159,18 +164,7 @@
             "value": "application/json"
           }
         ],
-        "url": {
-          "raw": "{{gwUrl}}/rest/apigateway/apis/{{probeApiId}}",
-          "host": [
-            "{{gwUrl}}"
-          ],
-          "path": [
-            "rest",
-            "apigateway",
-            "apis",
-            "{{probeApiId}}"
-          ]
-        },
+        "url": "{{gwUrl}}{{gwBasePath}}/apis/{{probeApiId}}",
         "description": "Lit une API au hasard pour vérifier que `owner` est lisible. Ne modifie rien."
       }
     },
@@ -281,17 +275,7 @@
             "value": "application/json"
           }
         ],
-        "url": {
-          "raw": "{{gwUrl}}/rest/apigateway/apis",
-          "host": [
-            "{{gwUrl}}"
-          ],
-          "path": [
-            "rest",
-            "apigateway",
-            "apis"
-          ]
-        },
+        "url": "{{gwUrl}}{{gwBasePath}}/apis",
         "description": "Liste toutes les APIs et applique le filtre Contains sur le nom."
       }
     },
@@ -408,18 +392,7 @@
             "value": "application/json"
           }
         ],
-        "url": {
-          "raw": "{{gwUrl}}/rest/apigateway/apis/{{currentApiId}}",
-          "host": [
-            "{{gwUrl}}"
-          ],
-          "path": [
-            "rest",
-            "apigateway",
-            "apis",
-            "{{currentApiId}}"
-          ]
-        },
+        "url": "{{gwUrl}}{{gwBasePath}}/apis/{{currentApiId}}",
         "description": "Lit le détail pour obtenir `owner`, absent de l'endpoint de liste. Lecture seule."
       }
     },
@@ -507,18 +480,7 @@
           "mode": "raw",
           "raw": "{{ownerChangePayload}}"
         },
-        "url": {
-          "raw": "{{gwUrl}}/rest/apigateway/assets/owner",
-          "host": [
-            "{{gwUrl}}"
-          ],
-          "path": [
-            "rest",
-            "apigateway",
-            "assets",
-            "owner"
-          ]
-        },
+        "url": "{{gwUrl}}{{gwBasePath}}/assets/owner",
         "description": "Change le propriétaire de TOUTES les APIs sélectionnées en un seul appel."
       }
     },
@@ -592,18 +554,7 @@
             "value": "application/json"
           }
         ],
-        "url": {
-          "raw": "{{gwUrl}}/rest/apigateway/apis/{{currentApiId}}",
-          "host": [
-            "{{gwUrl}}"
-          ],
-          "path": [
-            "rest",
-            "apigateway",
-            "apis",
-            "{{currentApiId}}"
-          ]
-        },
+        "url": "{{gwUrl}}{{gwBasePath}}/apis/{{currentApiId}}",
         "description": "Relit l'API pour prouver que le changement a réellement pris."
       }
     },
@@ -661,17 +612,7 @@
             "value": "application/json"
           }
         ],
-        "url": {
-          "raw": "{{gwUrl}}/rest/apigateway/health",
-          "host": [
-            "{{gwUrl}}"
-          ],
-          "path": [
-            "rest",
-            "apigateway",
-            "health"
-          ]
-        },
+        "url": "{{gwUrl}}{{gwBasePath}}/health",
         "description": "Support du rapport final. Ne modifie rien."
       }
     }
