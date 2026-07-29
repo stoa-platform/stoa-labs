@@ -883,3 +883,76 @@ non, rotation faite ou datée).
   `/root/f4-webhook.token`, `/root/f4-teams.env`, `/root/gitea-ci-pass`.
 - Placeholders volontaires et uniques : `__WEBHOOK_TOKEN__` (XML), `<APIID>`,
   `<UUID banking-demo>`, `<SHA>` (valeurs de session, jamais versionnées).
+
+---
+
+## Preuve d'exécution (2026-07-29, en cours — complétée au fil des portes)
+
+### T0 — Terrain (17:05–17:10 UTC)
+
+- Pods `ci` (gitea-0, jenkins, vault-0) et `wm` (ES, gateway) Ready ; `probe`
+  seul job Jenkins ; `ZERO-SECRET-OK` (credentials.xml absent) ;
+  `dev-wm.gostoa.dev` → 200. curl 8.14.1 disponible dans le pod jenkins.
+- Health gateway 200 depuis le pod jenkins ; cycle trial confirmé :
+  redémarrages aux minutes :00/:20/:40, ~5 min de démarrage — une sonde à
+  17:00 pile est tombée sur le restart (exit 7), re-jouée verte à 17:08.
+
+### T1 — Spike Teams : FERMÉ (17:08–17:50 UTC), le maillon non prouvé est prouvé
+
+Constats live (gateway `10.15.0.0.95`, ns `wm`) — TOUS différents du
+best-effort documenté, chacun attrapé par un GET d'observation ou une
+relecture :
+
+| Attendu (spike #1 / rôle Ansible) | Constaté live |
+|---|---|
+| configId `extendedSettings` | **`extended`** (`PUT /configurations/extended {"enableTeamWork":"true"}` → 200, relu `true`) |
+| `POST /assets/team {assetIds, newTeams}` | **`assetType:"API"` OBLIGATOIRE** — sans lui : 200 `{}` **no-op silencieux** (relecture inchangée) ; avec : message explicite + effet réel |
+| `newTeams` par UUID (nom → 400) | confirmé : nom → 400 `Assigned team banking-demo is not valid.` |
+| team relue dans l'API | champ `teams[]` au niveau **`apiResponse`** (PAS dans `api`) ; source `USER` ; l'assignation **retire `Default`** (confirmé) |
+| `userIds`/`groupIds` par nom | **UUID internes exigés** — les noms sont **ignorés en silence** (200, liste vide) ; groupes custom : id UUID ≠ name (PUT par nom → 404) |
+| accès admin REST des users d'équipe | 403 tant que le user n'est pas AUSSI membre du groupe système **`API-Gateway-Providers`** |
+| privilèges d'accessProfile | champ `privilege` = **bitmask** (copié de API-Gateway-Providers : `111100101101100000001`) |
+
+- Objets créés (201 partout, puis correctifs UUID en 200) : users
+  `svc-banking-demo` / `svc-insurance-demo` (mdp dans `/root/f4-teams.env`,
+  0600), groupes `banking-demo-devs` / `insurance-demo-devs`, accessProfiles
+  `banking-demo` (`b178395d-…845a`) / `insurance-demo` (`59bbd3ba-…27ee`).
+- **Survie au cycle trial MESURÉE** : objets créés à 17:12, restart 17:20,
+  relecture 17:27 — enableTeamWork, users, teams tous présents (état ES ;
+  PAS de re-bootstrap nécessaire avant les preuves — mieux que la crainte D3).
+- **Pré-preuve d'isolation (API jetable `f4-spike-jetable` en team
+  banking-demo)** :
+  - `GET /apis` en `svc-banking-demo` → `visible: ['f4-spike-jetable']`
+  - `GET /apis` en `svc-insurance-demo` → `{"apiResponse":[{"responseStatus":"NOT_FOUND","errorReason":"No APIs found"}]}`
+- API jetable supprimée (204). Script complet consigné :
+  `2026-07-29-f4-teams-bootstrap.sh` (idempotent, rejouable).
+
+### T3 — Repo d'équipe + webhook (18:00 UTC)
+
+`f4-gitea-setup.sh` sur worker-1 : `org: 201`, `repo: 201`, `post
+Jenkinsfile/stoa-publish.yaml/apis/accounts-read.openapi.yaml: 201`,
+`hook: 201` (l'allowlist Gitea a accepté l'URL du Service Jenkins). Jeton
+webhook frappé sur le nœud, `/root/f4-webhook.token` (0600), jamais affiché.
+
+### T4 — Job + rétention (18:05 UTC)
+
+- `createItem: 200` → jobs = `probe`, `publish-accounts` (jeton injecté côté
+  nœud par sed depuis `/root/f4-webhook.token`).
+- Rétention 25 builds poussée sur `ci/probe` (PUT contents 200) → **build
+  probe n°12 déclenché par le push, SUCCESS** = re-preuve F1 gratuite ;
+  `logRotator` visible dans `GET /job/probe/config.xml` ; `ZERO-SECRET-OK`
+  rejoué ; worker-3 → 200.
+- Vérifs de dé-risquage porte : `labctl 0.1.0-poc` et `python3 3.13.5`
+  présents dans l'image `jenkins-go` du conteneur agent ; `labctl apply -f`
+  confirmé ; pas de `api.yaml` (UAC) dans le repo d'équipe → pas de gate
+  d'enforcement.
+
+### T8 — NetworkPolicy ES : PR créée
+
+PR **stoa#2824** (`feat/f4-netpol-es`, 2 fichiers) — merge exploitant puis
+contre-épreuve après sync.
+
+### En attente au moment de ce point d'étape
+
+**T2** (geste exploitant quorum : `secret/ci/gateways/wm-cluster`) — bloquant
+pour T5 (porte), puis T6, T7 (2 gestes quorum), merge T8, T9, T10.
