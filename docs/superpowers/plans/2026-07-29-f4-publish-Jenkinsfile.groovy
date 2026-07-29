@@ -43,22 +43,28 @@ podTemplate(serviceAccount: 'jenkins-agent', containers: [
       def sha = env.GWT_AFTER ?: scmVars.GIT_COMMIT
       container('vault') {
         postStatus(sha, 'pending', env.BUILD_URL)
-        // Login G-c : jeton Vault éphémère + creds wM → fichiers 0600 du
-        // workspace (partagé entre conteneurs du pod), jamais affichés.
-        sh '''
-          set -e
-          set +x
-          umask 077
-          vault write -address=$VAULT_ADDR -field=token \
-            auth/kubernetes/login role=jenkins-agent \
-            jwt=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token) > .vt
-          VAULT_TOKEN=$(cat .vt) vault kv get -address=$VAULT_ADDR \
-            -field=username secret/ci/gateways/wm-cluster > .wmu
-          VAULT_TOKEN=$(cat .vt) vault kv get -address=$VAULT_ADDR \
-            -field=password secret/ci/gateways/wm-cluster > .wmp
-        '''
       }
       try {
+        container('vault') {
+          // Login G-c : jeton Vault éphémère + creds wM → fichiers 0600 du
+          // workspace (partagé entre conteneurs du pod), jamais affichés.
+          // DANS le try : un refus Vault (secret absent, rôle révoqué après
+          // le pending) doit poster un statut failure — constat build #1 :
+          // placé avant le try, l'échec sautait le catch, statut resté
+          // pending.
+          sh '''
+            set -e
+            set +x
+            umask 077
+            vault write -address=$VAULT_ADDR -field=token \
+              auth/kubernetes/login role=jenkins-agent \
+              jwt=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token) > .vt
+            VAULT_TOKEN=$(cat .vt) vault kv get -address=$VAULT_ADDR \
+              -field=username secret/ci/gateways/wm-cluster > .wmu
+            VAULT_TOKEN=$(cat .vt) vault kv get -address=$VAULT_ADDR \
+              -field=password secret/ci/gateways/wm-cluster > .wmp
+          '''
+        }
         container('labctl') {
           stage('Attendre la gateway (cycle trial)') {
             sh '''
