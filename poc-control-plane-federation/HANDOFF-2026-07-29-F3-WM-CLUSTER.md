@@ -38,10 +38,11 @@ le PVC ES porte la donnée. Aucun Ingress, ports fermés de l'extérieur (6/6),
    **non touché** (3 h 49 d'âge, Ready donc descellé), `ci-gitea` OutOfSync
    cosmétique connu. **Reste : Vault seul** — l'épingler en fenêtre
    exploitant, descellement dans la foulée.
-2. **Doublon de crons worker-3** (mesuré) : root `*/20` restart inconditionnel
-   **+** hegemon `*/25` keepalive conditionnel → aux minutes 20→25 le
-   keepalive re-redémarre une gateway encore en `starting` (~5 min de service
-   perdues/heure). Suggestion : supprimer le keepalive hegemon.
+2. ~~**Doublon de crons worker-3**~~ **soldé le 2026-07-29** : keepalive
+   hegemon `*/25` (`wm-dev-keepalive.sh`) retiré de la crontab ; le ping
+   monitoring `*/1` est conservé. Vérifié derrière : cron root `*/20` intact,
+   `wm-dev-apigateway` Up (healthy). Seul le redémarrage contrôlé root
+   subsiste.
 3. **Sauvegarde du ns `wm`** : `backup_pvc_namespaces` ne couvre que `ci` ;
    quiescement ES à instruire (risque `.suspect` à chaud). Dette actée spec F3.
 4. Toujours pendant : récupération hors ligne des parts Vault + `shred`.
