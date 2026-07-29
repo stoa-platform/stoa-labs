@@ -1,0 +1,39 @@
+---
+# wm-restart-cron.yml — décision licence webMethods (2026-07-29) : PAS de
+# licence. La trial expirée fait s'auto-redémarrer `wm-dev-apigateway` en
+# boucle (~30 min) à des instants imprévisibles, avec de brèves 502 publiques.
+# Ce cron prend les devants : un redémarrage CONTRÔLÉ toutes les 20 minutes —
+# avant l'expiration — aux instants connus (minute 0/20/40). Même
+# indisponibilité brève, mais prévisible et datable. Ce n'est pas une
+# réparation : c'est l'exploitation assumée d'une gateway sans licence, actée
+# au GOAL lot 2 (préalable F3). En cluster (F3), le motif équivalent devra
+# être porté avec le pod (redémarrage périodique piloté, pas subi).
+#
+# Usage :
+#   ansible-playbook -i inventory.contabo.ini wm-restart-cron.yml
+
+- name: "webMethods sans licence : redémarrage contrôlé toutes les 20 min"
+  hosts: worker-3
+  gather_facts: false
+  become: true
+  tasks:
+    - name: "Cron root : redémarrer wm-dev-apigateway toutes les 20 min"
+      ansible.builtin.cron:
+        name: "wm-dev-apigateway-restart-trial"
+        minute: "*/20"
+        job: "docker restart wm-dev-apigateway >/dev/null 2>&1"
+        user: root
+
+    - name: "Relire le crontab : l'entrée est bien posée"
+      ansible.builtin.command:
+        cmd: crontab -l -u root
+      register: wm_cron_readback
+      changed_when: false
+
+    - name: "Assert : l'entrée cron existe"
+      ansible.builtin.assert:
+        that:
+          - "'wm-dev-apigateway-restart-trial' in wm_cron_readback.stdout"
+          - "'*/20' in wm_cron_readback.stdout"
+        fail_msg: "L'entrée cron n'est pas dans le crontab root de worker-3."
+        success_msg: "Cron posé : docker restart wm-dev-apigateway toutes les 20 min."
