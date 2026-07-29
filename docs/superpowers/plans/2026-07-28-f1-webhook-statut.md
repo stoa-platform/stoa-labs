@@ -506,6 +506,16 @@ Exécution inline (`executing-plans`), séquentielle, sur le cluster k3s labs vi
 
 Trois déclenchements automatiques consécutifs (7, 8, 9) : la récurrence est prouvée en plus de la porte. Le statut sait rougir (build 8) puis reverdir (build 9) — la contre-épreuve du GOAL est tenue.
 
+**Contre-vérification indépendante (2026-07-29).** Les portes ci-dessus ayant été exécutées dans une autre session, elles ont été **re-mesurées** contre le cluster vivant plutôt que relues : les trois statuts (`fc8c4a9b`→`success`, `e4a1505 8`→`failure`, `c34f90d6`→`success`) et les trois causes de build (`Generic Cause`) ont été relus par API. Puis un **quatrième push, poussé depuis cette session**, a rejoué la porte de bout en bout :
+
+| Élément | Valeur relevée |
+|---|---|
+| `S5` (push indépendant sur `PROBE.md`) | `f1e0f57165a5984beace30890da69a77209967d8` |
+| Build | **10**, cause `Generic Cause`, `SUCCESS` |
+| Statut de commit | `success`, `context: jenkins/probe`, `target_url: …/job/probe/10/` |
+
+Vault relu au même moment par identité de pod (SA `jenkins-agent`) : `secret/ci/probe` = `preuve-g8`, `secret/ci/probe-status` présent (longueur 40). `credentials.xml` toujours absent de `/var/jenkins_home`. Le câblage est donc vivant maintenant, pas seulement au moment où il a été posé.
+
 **Assertions annexes rejouées du lot 1 :**
 
 - `credentials.xml` absent de `/var/jenkins_home` → `OK-aucun-credential-statique`.
@@ -522,7 +532,30 @@ La tâche 4 ne s'est pas déroulée comme planifiée. Chronologie factuelle :
 4. **La sortie du premier `init` a été affichée dans la session de l'agent** (commande lancée sans TTY depuis l'outil, redirection absente) : les 3 clés et le jeton racine s'y trouvent en clair. Ce matériel doit être considéré comme **brûlé**.
 5. Une seconde passe a été outillée pour que les secrets ne quittent jamais le nœud : script exécuté sur worker-1, écrivant l'`init` dans `/root/vault-init-ci.txt` (root, 600), relisant lui-même les parts pour desceller puis reconfigurer (auth Kubernetes, policy + rôle `jenkins-agent`, kv-v2, `secret/ci/probe`, PAT Gitea, `secret/ci/probe-status`).
 
-**Point ouvert à confirmer avec l'exploitant :** au moment de la vérification, `/root/vault-init-ci.txt` était absent — soit récupéré et supprimé comme demandé, soit la seconde passe n'a pas eu lieu. **Si le Vault actuellement en service tourne encore sur le matériel de l'étape 4, il faut le faire tourner** (`vault operator rekey` + révocation du jeton racine), car ces valeurs figurent en clair dans une transcription de conversation.
+**Point tranché par la mesure (2026-07-29, session F1) — le matériel brûlé n'est plus en service.** Horodatages relevés sur le cluster :
+
+| Mesure | Valeur |
+|---|---|
+| `vault-bootstrap.sh` sur worker-1 | écrit `2026-07-29 10:49:27 +0200` (= 08:49 UTC) |
+| Démarrage du pod `vault-0` courant | `2026-07-29T08:51:21Z` — l'effacement + redémarrage des étapes 1-2 du script |
+| `/vault/data/core/_master` et `_keyring` | écrits `09:21` UTC — l'`init` a donc eu lieu **sur ce pod**, après l'effacement |
+| Cluster ID Vault | `c51f3c8b-a6c6-c224-ea31-8156951fd9cd`, différent de celui du lot 1 (`5c0fecc0-1069-b4c0-fbf9-6079eba0b990`) |
+
+Le backend du premier `init` (celui dont la sortie a été affichée en session) a été **effacé** avant l'`init` en service. Les clés brûlées n'ouvrent plus rien : aucun `rekey` n'est requis.
+
+**Anomalie résiduelle, à confirmer par l'exploitant : 30 minutes séparent le redémarrage du pod (08:51) de l'`init` (09:21)**, alors que les étapes 2→3 du script s'enchaînent en moins de 5 minutes (attentes bornées à 180 s + 120 s). Le script n'a donc pas déroulé d'une traite : l'`init` en service a été lancé séparément, et **rien ne prouve que sa sortie soit passée par `/root/vault-init-ci.txt`** (fichier absent à la vérification — supprimé après récupération, ou jamais créé).
+
+**Conséquence à lever avant tout redémarrage :** si personne ne détient les parts de descellement courantes, le socle CI est à nouveau à un `backup.yml` (qui quiesce les pods) ou à un reschedule de la panne définitive — la cause exacte de cet incident. **Vérification non destructive à exécuter par l'exploitant**, qui prouve la détention d'une part valide sans rien modifier :
+
+```bash
+ssh -t worker-1 'sudo k3s kubectl -n ci exec vault-0 -- vault operator generate-root -init | grep -i nonce'
+# puis, avec le nonce affiché, soumettre UNE part (saisie masquée) :
+ssh -t worker-1 'read -r -s -p "Une part de descellement : " K; echo; \
+  sudo k3s kubectl -n ci exec vault-0 -- vault operator generate-root -nonce=<NONCE> "$K" | grep -i progress; \
+  unset K; sudo k3s kubectl -n ci exec vault-0 -- vault operator generate-root -cancel'
+```
+
+Attendu : `Progress 1/2` (la part est valide), puis l'annulation remet l'essai à zéro — aucun jeton racine n'est produit. Si la part est refusée, les clés courantes sont perdues : ré-initialiser **immédiatement** avec `vault-bootstrap.sh` en le laissant dérouler d'une traite, et mettre les parts à l'abri hors ligne avant de toucher à quoi que ce soit d'autre.
 
 **Leçon retenue, applicable au-delà de F1 :** une commande qui *affiche* un secret est un piège, même accompagnée de la consigne « lance-la ailleurs ». Les procédures doivent rediriger la sortie sensible vers un fichier à droits restreints sur le nœud, et ne laisser passer que des messages de progression. C'est la forme retenue pour le script de bootstrap, et celle à reprendre au lot 2.
 
