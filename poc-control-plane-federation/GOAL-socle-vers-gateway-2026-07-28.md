@@ -79,7 +79,7 @@ Caddy (worker-3) repointe le trafic concerné vers le cluster (le pattern `cutov
 | ~~Sauvegardes co-localisées worker-5 + rotation + quarantaine~~ | plan lot 1 + revue finale | **soldé — F2, 2026-07-29** |
 | ~~Webhook + statut de commit~~ | plan lot 1, écart assumé | **soldé — F1, 2026-07-29** |
 | Rotation du matériel de descellement Vault (`operator rekey` + révocation du jeton racine) | incident F1 du 2026-07-29 | à trancher avec F2 (sauvegarde/restauration) |
-| Épinglage par digest des 3 images du socle | revue finale, follow-up | **gitea+jenkins : PR #2823 (passe F3), à merger hors build ; Vault reporté** — un restart le rendrait scellé, geste exploitant |
+| ~~Épinglage par digest des 3 images du socle~~ | revue finale, follow-up | **gitea+jenkins soldés — PR #2823 mergée le 2026-07-29** (pods roulés, digests vérifiés en service, registre 401 OK, vault-0 non touché) ; **Vault seul reporté** — un restart le rendrait scellé, à épingler en fenêtre exploitant avec descellement dans la foulée |
 | Rotation du mot de passe bootstrap `ci`/`ci-bootstrap` | rapports lot 1 | F4 (les identités réelles arrivent) |
 | JCasC (cloud + jobs Jenkins versionnés) | plan lot 1, écart assumé | F4 (dès le 2ᵉ job, le seuil est franchi) |
 | Intégration Keycloak / échange JWT (ADR-077) | spéc lot 1, exclusions | après F4 |

@@ -32,12 +32,12 @@ le PVC ES porte la donnée. Aucun Ingress, ports fermés de l'extérieur (6/6),
 
 ## Reste ouvert (décisions/gestes exploitant)
 
-1. **PR [#2823](https://github.com/stoa-platform/stoa/pull/2823)** (digests
-   gitea+jenkins) : à merger **hors fenêtre de build/sauvegarde** — le
-   selfHeal roulera gitea (brève coupure du registre) et jenkins. **Vault
-   volontairement exclu** : un restart le rendrait scellé (descellement =
-   geste exploitant). L'épingler à la prochaine fenêtre, descellement dans la
-   foulée.
+1. ~~PR #2823 (digests gitea+jenkins)~~ **mergée le 2026-07-29 en fin de
+   session** — vérifié derrière : gitea-0 et jenkins roulés et Ready avec les
+   digests épinglés en service, registre 401 (challenge normal), `vault-0`
+   **non touché** (3 h 49 d'âge, Ready donc descellé), `ci-gitea` OutOfSync
+   cosmétique connu. **Reste : Vault seul** — l'épingler en fenêtre
+   exploitant, descellement dans la foulée.
 2. **Doublon de crons worker-3** (mesuré) : root `*/20` restart inconditionnel
    **+** hegemon `*/25` keepalive conditionnel → aux minutes 20→25 le
    keepalive re-redémarre une gateway encore en `starting` (~5 min de service
