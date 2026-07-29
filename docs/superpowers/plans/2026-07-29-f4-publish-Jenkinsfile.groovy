@@ -108,23 +108,26 @@ for p in profs:
         print(p["id"]); break
 ')
               test -n "$TID" || { echo "accessProfile $TEAM introuvable"; exit 1; }
+              # assetType OBLIGATOIRE : sans lui le POST rend 200 SANS RIEN
+              # FAIRE (constat spike T1 du 2026-07-29)
               code=$(curl -s -o /tmp/team.out -w '%{http_code}' -u "$AUTH" -H "$H" \
                 -H 'Content-Type: application/json' -X POST \
-                -d "{\\"assetIds\\":[\\"$APIID\\"],\\"newTeams\\":[\\"$TID\\"]}" \
+                -d "{\\"assetIds\\":[\\"$APIID\\"],\\"assetType\\":\\"API\\",\\"newTeams\\":[\\"$TID\\"]}" \
                 "$WM_BASE/assets/team")
               case "$code" in
                 200|201) echo "assets/team: $code" ;;
                 *) echo "assets/team REFUSE: $code"; cat /tmp/team.out; exit 1 ;;
               esac
-              # relecture obligatoire : un 200 wM ne prouve rien
+              # relecture obligatoire : un 200 wM ne prouve rien.
+              # teams vit au niveau apiResponse (PAS dans api) — spike T1.
               export WM_TID="$TID"
               curl -sf -u "$AUTH" -H "$H" "$WM_BASE/apis/$APIID" | python3 -c '
 import json,sys,os
-a=json.load(sys.stdin).get("apiResponse",{}).get("api",{})
-teams=a.get("teams") or []
+r=json.load(sys.stdin).get("apiResponse",{})
+teams=r.get("teams") or []
 tid=os.environ["WM_TID"]
-assert any(tid in str(t) for t in teams), "team absente a la relecture: %r" % (teams,)
-print("team relue OK sur", a.get("apiName"))
+assert any(t.get("id")==tid for t in teams), "team absente a la relecture: %r" % (teams,)
+print("team relue OK:", [t.get("name") for t in teams])
 '
             '''
           }
