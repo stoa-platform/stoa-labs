@@ -10,6 +10,11 @@
 #
 # À automatiser (cron / timer systemd) une fois la première exécution vérifiée.
 #
+# Contre-épreuve F2 (à exercer après toute évolution du rôle) :
+#   ansible-playbook -i inventory.contabo.ini backup-restore-drill.yml
+# restaure la dernière archive gitea SUR worker-2 et y retrouve l'utilisateur
+# `ci` — une sauvegarde jamais restaurée n'est qu'une hypothèse.
+#
 # RESTAURATION (procédure, à répéter en exercice — une sauvegarde jamais
 # restaurée n'est qu'une hypothèse) :
 #   1. systemctl stop k3s
