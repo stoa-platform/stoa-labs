@@ -53,7 +53,7 @@ Aujourd'hui les trois PVC (gitea, vault, jenkins) **et** leurs archives vivent s
 Image poussée dans le **registre Gitea** (pas Docker Hub), manifestes par **PR sur `stoa`**, namespace dédié, Elasticsearch attenant. Contraintes mesurées à respecter : disque faible en `fsync` (prudence sur ES — c'est lui le composant sensible, pas la RAM : ~87 Go libres) ; **anti-affinité worker-3** tant que la prod Docker y tourne (le motif PR #2819 du lot 1, réutilisé) ; la dette ROOT_URL/realm OCI du lot 1 se repense **ici** (un ROOT_URL résoluble partout, sans casser les accès registre depuis les pods).
 **Porte F3 :** `/rest/apigateway` répond depuis un pod du cluster ; les données survivent à la suppression du pod (PVC).
 **Contre-épreuve :** pod tué en pleine vie → revient seul, config intacte. Et l'admin REST reste **inaccessible** hors du cluster (aucun Ingress — la doctrine du lot 1 tient).
-**État :** débloqué le 2026-07-29 — préalable licence tranché (pas de licence ; redémarrage contrôlé toutes les 20 min, motif à porter avec le pod). La spécification lot 2 détaillera image, cycle de redémarrage, dimensionnement ES.
+**État : FERMÉ le 2026-07-29.** Porte et contre-épreuves vertes le jour même du déblocage : ns `wm` (PR stoa #2821/#2822, mergées par l'exploitant), ES 8.13.4 en StatefulSet sur worker-4 (nœud mesuré, PVC 10 Gi), gateway en Deployment sans volume (l'état vit dans ES), images **par digest** depuis le registre Gitea (PULL-OK worker-4, tag inexistant → NotFound), cycle trial **piloté** porté avec le pod (CronJob `*/20`, `restart-pilote: 200`, 3 jobs à 20 min d'intervalle observés). Porte : `GET /rest/apigateway/health` → 200 **depuis un pod du cluster** ; marqueur `f3-proof-2026-07-29` créé puis relu **après suppression simultanée des deux pods** (retour autonome en ~3 min 30) — la donnée est portée par le PVC ES. Contre-épreuves : aucun Ingress dans `wm`, ClusterIP only, 5555/9072/9200 fermés de l'extérieur (6/6), worker-3 intact toute la session. Dette realm OCI **requalifiée et bornée** (ROOT_URL inchangé — nom natif du Service, résoluble des pods ; ClusterIP gitea épinglée en Git). Preuve détaillée : `docs/superpowers/plans/2026-07-29-f3-webmethods-cluster.md`, § « Preuve d'exécution ». Reste de la passe : PR #2823 (digests gitea/jenkins — **Vault exclu**, un restart le rendrait scellé) à merger hors fenêtre de build ; F3 démarre **vide** (migration des 109 Mo de worker-3 = F5, double-run assumé).
 
 ### F4 — La chaîne de publication réelle *(E1 du GOAL parent, câblé sur la plateforme)*
 
@@ -75,11 +75,11 @@ Caddy (worker-3) repointe le trafic concerné vers le cluster (le pattern `cutov
 
 | Dette | Où actée | Jalon porteur |
 |---|---|---|
-| Realm OCI /etc/hosts→ClusterIP (ROOT_URL) | plan lot 1, § Dette actée | F3 |
+| ~~Realm OCI /etc/hosts→ClusterIP (ROOT_URL)~~ | plan lot 1, § Dette actée | **requalifiée et bornée — F3, 2026-07-29** (ROOT_URL = nom natif du Service, résoluble des pods ; résidu « liaison mutable » soldé par clusterIP épinglée en Git ; shim /etc/hosts hôtes conservé, vérifié par `registry_config`) |
 | ~~Sauvegardes co-localisées worker-5 + rotation + quarantaine~~ | plan lot 1 + revue finale | **soldé — F2, 2026-07-29** |
 | ~~Webhook + statut de commit~~ | plan lot 1, écart assumé | **soldé — F1, 2026-07-29** |
 | Rotation du matériel de descellement Vault (`operator rekey` + révocation du jeton racine) | incident F1 du 2026-07-29 | à trancher avec F2 (sauvegarde/restauration) |
-| Épinglage par digest des 3 images du socle | revue finale, follow-up | F3 (même passe) |
+| Épinglage par digest des 3 images du socle | revue finale, follow-up | **gitea+jenkins : PR #2823 (passe F3), à merger hors build ; Vault reporté** — un restart le rendrait scellé, geste exploitant |
 | Rotation du mot de passe bootstrap `ci`/`ci-bootstrap` | rapports lot 1 | F4 (les identités réelles arrivent) |
 | JCasC (cloud + jobs Jenkins versionnés) | plan lot 1, écart assumé | F4 (dès le 2ᵉ job, le seuil est franchi) |
 | Intégration Keycloak / échange JWT (ADR-077) | spéc lot 1, exclusions | après F4 |

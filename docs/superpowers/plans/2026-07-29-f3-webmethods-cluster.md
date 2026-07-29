@@ -681,3 +681,72 @@ reporté motif scellement ; nouvelle dette : backup ns `wm`, NetworkPolicy ES,
 migration données → F5).
 - [ ] **Step 3** : handoff de session + mémoire auto (socle-ci-lot1 : F3 fermé).
 - [ ] **Step 4** : commit stoa-labs.
+
+---
+
+## Preuve d'exécution (2026-07-29, session /goal F3)
+
+Horodatages UTC, sorties réelles (transcript de session).
+
+### Chaîne image (Tâche 2)
+
+- Poussées depuis worker-3 (login `ci`) : `ci/apigateway-trial:10.15@sha256:b6aee2b4…`,
+  `ci/elasticsearch:8.13.4@sha256:8efa98b1…`, `ci/curl:8.10.1@sha256:3a57427a…`.
+- `crictl pull` **par digest** depuis worker-4 : `PULL-OK`.
+- Contre-épreuve tag inexistant (`:9.99`) : `NotFound` (échec fermé).
+
+### Livraison (Tâches 3–6)
+
+- PR [#2821](https://github.com/stoa-platform/stoa/pull/2821) (AppProject `wm`,
+  clusterIP gitea épinglée, ES) — checks verts, **mergée par l'exploitant**.
+- PR [#2822](https://github.com/stoa-platform/stoa/pull/2822) (gateway + cycle
+  piloté) — protection stricte : rebase requis après le merge de la A (motif
+  mesuré : `mergeStateStatus: BEHIND` → rebase → `CLEAN`), merge relancé sur
+  commande exploitant.
+- Applications appliquées depuis `origin/main` (motif `argocd_bootstrap`, apply
+  server-side, jamais `Force`).
+- `wm-elasticsearch-0` : Ready en 109 s, **worker-4** (placement voulu), PVC
+  `es-data-wm-elasticsearch-0` Bound 10 Gi local-path.
+- `wm-apigateway-*` : Ready < 10 min (startupProbe), nœud hors worker-3.
+
+### Porte F3 (Tâche 7)
+
+- **F3a — répond depuis un pod** : depuis `wm-elasticsearch-0` (pod du cluster),
+  `GET http://wm-apigateway.wm.svc:5555/rest/apigateway/health` → **HTTP 200** ;
+  `health/all` : IS **green**, UI green, ES connecté (`elasticsearch:9200`,
+  98 shards actifs, `yellow` = répliques non assignées, attendu en single-node).
+- **Marqueur** : `POST /rest/apigateway/applications` `f3-proof-2026-07-29` →
+  **201**, id `03e668ed-2925-4189-99bb-2d199d587dd9`, créé `15:51:37 GMT`.
+- **F3b — les données survivent** : suppression simultanée du pod gateway ET de
+  `wm-elasticsearch-0` à ~15:52Z → retour **autonome** des deux (ES en ~3 min,
+  gateway Ready à `15:55:46Z`, ~3 min 31 au total, gateway re-planifiée sur
+  worker-5) → relecture : `applications: ['f3-proof-2026-07-29']` →
+  **MARQUEUR-PRESENT**. La preuve est portée par le PVC ES.
+
+### Contre-épreuves (Tâche 8)
+
+- **Revient seul** : events du ns — `SuccessfulCreate` ReplicaSet/StatefulSet
+  sans action humaine (seul le `delete pod` était le sabotage).
+- **Rien ne fuit** : `kubectl get ingress -A` → aucun dans `wm` (seuls les
+  ingress historiques gateway-dev/staging, autres ns) ; Services `wm` ClusterIP
+  uniquement ; depuis le poste de travail, 5555/9072/9200 **fermés** sur les IP
+  publiques de worker-4 et worker-5 (6/6 refus, ufw 22/30080/30443 seulement).
+- **Cycle piloté ≥ 40 min** : jobs `wm-restarter-29755640/29755660/29755680`
+  Complete à 20 min d'intervalle exact ; log du job : `restart-pilote: 200` ;
+  suppression du pod gateway observée en direct à la minute 0 (event `Killing`
+  + `SuccessfulCreate` dans la même seconde). Les pods de job (curl, éphémères,
+  sans PVC) tournent où le scheduler veut — y compris worker-3, toléré par la
+  doctrine lot 1 (éphémère ≠ persistant).
+- **Garde worker-3** (règle n°1) : prod Docker intacte pendant toute la session ;
+  un 502 public observé à la minute 0 = le **propre cycle** `*/20` du cron root
+  de worker-3 (conteneur `health: starting`), pas un effet de la session —
+  retour healthy vérifié derrière.
+
+### Écart assumé
+
+- Le premier essai de sonde via `kubectl run -i --rm` a rendu la sortie
+  illisible (course d'attache TTY) ; preuve rejouée par `kubectl exec` dans
+  `wm-elasticsearch-0` — plus stable, et c'est bien « depuis un pod du cluster ».
+- `gh pr merge` refusé à l'agent par le classifieur de permissions (2821) :
+  motif lot 1 « l'agent prépare, l'exploitant exécute » — merges A et B portés
+  par l'exploitant (commande `!`), rebase et vérifications par l'agent.
