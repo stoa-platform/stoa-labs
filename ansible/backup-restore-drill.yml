@@ -1,0 +1,87 @@
+---
+# backup-restore-drill.yml — contre-épreuve F2 : une sauvegarde jamais
+# restaurée n'est qu'une hypothèse. Depuis l'hôte de sauvegarde (worker-2,
+# DISTINCT du nœud porteur des données), restaurer la dernière archive gitea
+# et prouver que l'utilisateur `ci` s'y trouve — le même exercice qu'au lot 1,
+# rejoué depuis le bon côté du sinistre.
+#
+# Usage :
+#   ansible-playbook -i inventory.contabo.ini backup-restore-drill.yml
+#
+# Rien de sensible ne s'affiche : la base restaurée reste sur le nœud, seuls
+# un chemin et un comptage sortent. Le répertoire de travail est root-only et
+# détruit en fin d'exercice, succès ou échec.
+
+- name: "Contre-épreuve F2 : restauration depuis l'hôte de sauvegarde"
+  hosts: "{{ drill_host | default('worker-2') }}"
+  gather_facts: false
+  become: true
+  vars:
+    drill_offsite_dir: /var/lib/k3s-backups/offsite
+    drill_claim_prefix: pvc-ci-gitea-data-gitea-0
+  tasks:
+    - name: "Trouver la dernière archive gitea"
+      ansible.builtin.shell:
+        cmd: ls -1t {{ drill_offsite_dir }}/{{ drill_claim_prefix }}-*.tar.gz 2>/dev/null | head -1
+      register: drill_archive
+      changed_when: false
+      failed_when: false
+
+    - name: "Assert : une archive existe sur cet hôte"
+      ansible.builtin.assert:
+        that:
+          - drill_archive.stdout | length > 0
+        fail_msg: >-
+          Aucune archive {{ drill_claim_prefix }}-*.tar.gz dans
+          {{ drill_offsite_dir }} : rien à restaurer, la porte F2 n'est pas
+          franchie sur cet hôte.
+
+    - name: "Créer le répertoire de travail root-only"
+      ansible.builtin.command:
+        cmd: mktemp -d /root/f2-drill.XXXXXX
+      register: drill_tmp
+      changed_when: true
+
+    - name: "Restaurer, localiser la base, prouver l'utilisateur"
+      block:
+        - name: "Extraire l'archive"
+          ansible.builtin.command:
+            cmd: tar xzf {{ drill_archive.stdout }} -C {{ drill_tmp.stdout }}
+          changed_when: true
+
+        - name: "Localiser gitea.db dans l'arborescence restaurée"
+          ansible.builtin.shell:
+            cmd: find {{ drill_tmp.stdout }} -name gitea.db | head -1
+          register: drill_db
+          changed_when: false
+
+        - name: "Assert : la base est dans l'archive"
+          ansible.builtin.assert:
+            that:
+              - drill_db.stdout | length > 0
+            fail_msg: >-
+              gitea.db absent de l'archive restaurée — elle ne restaure pas ce
+              qu'elle promet.
+
+        - name: "Compter l'utilisateur ci dans la base restaurée"
+          ansible.builtin.command:
+            cmd: sqlite3 {{ drill_db.stdout }} "select count(*) from user where name='ci'"
+          register: drill_user
+          changed_when: false
+
+        - name: "Assert : l'utilisateur ci est retrouvé (contre-épreuve F2)"
+          ansible.builtin.assert:
+            that:
+              - drill_user.stdout | trim == '1'
+            fail_msg: >-
+              Utilisateur ci introuvable dans le gitea.db restauré (comptage =
+              « {{ drill_user.stdout | trim }} ») : la sauvegarde ne protège
+              pas ce qu'elle prétend.
+            success_msg: >-
+              Contre-épreuve F2 verte : utilisateur ci présent dans la base
+              restaurée sur {{ inventory_hostname }}.
+      always:
+        - name: "Détruire le répertoire de travail, succès ou échec"
+          ansible.builtin.file:
+            path: "{{ drill_tmp.stdout }}"
+            state: absent
