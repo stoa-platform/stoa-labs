@@ -76,7 +76,7 @@ Contre-épreuve : `ansible-playbook -i inventory.contabo.ini backup-restore-dril
 
 | Dette | Jalon porteur |
 |---|---|
-| Lever le point parts Vault, puis vider `backup_hot_workloads` (quiescence pleine) | humain, avant F3 |
+| ~~Lever le point parts Vault~~ **levé le 2026-07-29** (ré-init propre par l'exploitant, parts dans `/root/vault-init-ci.txt`, re-preuve F1 build 11) — reste : récupération hors ligne + `shred`, puis décider si `backup_hot_workloads` est vidé (la garde à chaud reste le meilleur design tant que le descellement post-backup n'est pas automatisable) | humain, quand il veut |
 | Chemins `.suspect` jamais déclenchés en réel (couverts par relecture seulement) | opportuniste |
 | Cron/timer du backup (note d'en-tête du playbook) | après adoption |
 | Rotation observée en suppression réelle (il faudrait 8 runs) | s'éteint tout seul à l'usage |
