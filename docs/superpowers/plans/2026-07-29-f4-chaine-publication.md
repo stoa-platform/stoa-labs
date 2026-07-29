@@ -33,6 +33,10 @@ labctl + ansible-core + python3), Vault 1.18 (kv-v2, auth k8s), Gitea 1.22
 - Accès cluster : `ssh worker-1 'sudo k3s kubectl -n <ns> …'` — le kubectl
   local du poste pointe un AUTRE cluster (sto-k8s OVH), ne jamais l'utiliser.
 - Checkout `~/stoa-platform/stoa` en retard : worktree neuf basé `origin/main`.
+- **Frontière des dépôts** : tous les commits de ce plan vont dans `stoa-labs`
+  (ce dépôt). Seule T8 écrit dans le dépôt produit `stoa` (org GitHub
+  `stoa-platform`) via le worktree `~/stoa-platform/stoa-f4` — dont le
+  `plan.md` est le plan de sprint plateforme (Linear, périmé), PAS ce plan.
 - Aucun Ingress/NodePort dans `wm` ; jamais `Force` dans ArgoCD.
 - Commits : conventionnels, français, `-s` (DCO) ; PR stoa squash-merge,
   rebase si `BEHIND`.
@@ -52,7 +56,7 @@ labctl + ansible-core + python3), Vault 1.18 (kv-v2, auth k8s), Gitea 1.22
 **Interfaces — Produces :** gateway saine, outillage confirmé (curl dans les
 pods jenkins/ES), heure du dernier restart notée (pour caler les fenêtres).
 
-- [ ] **Step 1 : socle et gateway up**
+- [x] **Step 1 : socle et gateway up**
 
 ```bash
 ssh worker-1 'sudo k3s kubectl -n ci get pods; sudo k3s kubectl -n wm get pods'
@@ -61,7 +65,7 @@ ssh worker-1 'sudo k3s kubectl -n ci get pods; sudo k3s kubectl -n wm get pods'
 Attendu : gitea-0, jenkins, vault-0 Ready 1/1 ; wm-elasticsearch-0 Ready ;
 wm-apigateway Running (0/1 possible si fenêtre de démarrage).
 
-- [ ] **Step 2 : curl disponible dans le pod jenkins + health gateway depuis le cluster**
+- [x] **Step 2 : curl disponible dans le pod jenkins + health gateway depuis le cluster**
 
 ```bash
 ssh worker-1 'sudo k3s kubectl -n ci exec deploy/jenkins -- curl --version | head -1'
@@ -75,7 +79,7 @@ restart `*/20` et rejouer). Si curl absent du pod jenkins : repli
 `kubectl -n wm exec wm-elasticsearch-0 -- curl …` pour tous les gestes
 in-cluster du plan.
 
-- [ ] **Step 3 : jobs Jenkins existants + assertion zéro secret (état initial)**
+- [x] **Step 3 : jobs Jenkins existants + assertion zéro secret (état initial)**
 
 ```bash
 ssh worker-1 'sudo k3s kubectl -n ci exec deploy/jenkins -- curl -s http://localhost:8080/api/json?tree=jobs[name]'
@@ -85,7 +89,7 @@ ssh worker-1 'sudo k3s kubectl -n ci exec deploy/jenkins -- sh -c \
 
 Attendu : `probe` seul job ; `ZERO-SECRET-OK`.
 
-- [ ] **Step 4 : noter l'heure du dernier restart gateway** (caler les preuves
+- [x] **Step 4 : noter l'heure du dernier restart gateway** (caler les preuves
 hors fenêtre morte)
 
 ```bash
@@ -93,7 +97,7 @@ ssh worker-1 'sudo k3s kubectl -n wm get pod -l app=wm-apigateway \
   -o jsonpath="{.items[0].metadata.creationTimestamp}{\"\n\"}"'
 ```
 
-- [ ] **Step 5 : garde worker-3** (`curl` poste → dev-wm.gostoa.dev, cf.
+- [x] **Step 5 : garde worker-3** (`curl` poste → dev-wm.gostoa.dev, cf.
 contraintes globales).
 
 ### Tâche 1 : Spike Teams sur la gateway cluster — le maillon non prouvé
@@ -117,7 +121,7 @@ appels partent du pod jenkins (`kubectl -n ci exec deploy/jenkins -- curl`),
 enrobés dans un script scp'é sur worker-1 (les creds admin ne passent pas en
 argv de session).
 
-- [ ] **Step 1 : préparer et pousser le script d'observation**
+- [x] **Step 1 : préparer et pousser le script d'observation**
 
 Écrire localement `/tmp/f4-teams-probe.sh` :
 
@@ -148,7 +152,7 @@ Attendu : quatre blocs JSON (ou 404 explicites). Noter : le nom exact du
 réglage Teams (`enableTeamWork` attendu), le shape des accessProfiles
 (`accessProfiles` vs `accessProfile`), users/groups.
 
-- [ ] **Step 2 : activer Teams si inactif** — d'après l'observation, PUT du
+- [x] **Step 2 : activer Teams si inactif** — d'après l'observation, PUT du
 réglage (shape à adapter au constat du Step 1) :
 
 ```bash
@@ -162,7 +166,7 @@ Attendu : 200/204. Relire (GET) : `enableTeamWork=true`. Si le réglage exige
 un redémarrage : le cycle `*/20` le fournit — attendre le prochain restart et
 relire.
 
-- [ ] **Step 3 : créer users, groupes, accessProfiles** — script
+- [x] **Step 3 : créer users, groupes, accessProfiles** — script
 `f4-teams-bootstrap.sh` scp'é (génère les mots de passe, 0600, idempotent —
 chaque création testée par GET avant POST) :
 
@@ -207,7 +211,7 @@ shape réel en commentaire du script versionné. (Doute connu : privilège
 `Manage APIs` vs `Manage applications` — trancher ici sur le corps de
 réponse.)
 
-- [ ] **Step 4 : valider `POST /assets/team` sur une API jetable**
+- [x] **Step 4 : valider `POST /assets/team` sur une API jetable**
 
 ```bash
 # f4-teams-shape.sh — import minimal, assignation, relecture, nettoyage.
@@ -228,7 +232,7 @@ Contre-essai : rejouer avec le NOM au lieu de l'UUID → 400 attendu (confirme
 le piège documenté). Bonus si peu coûteux : `GET /apis` en
 `svc-insurance-demo` → l'API jetable absente (pré-preuve T6).
 
-- [ ] **Step 5 : mesurer la survie au restart** — après le prochain cycle
+- [x] **Step 5 : mesurer la survie au restart** — après le prochain cycle
 `*/20` (≤ 20 min) :
 
 ```bash
@@ -239,13 +243,13 @@ Constat à consigner : users/groups/accessProfiles encore là (état ES) ou
 disparus (état IS local → le bootstrap se rejoue avant chaque preuve, dit la
 spéc D3). L'assignation de team de l'API jetable doit, elle, survivre (ES).
 
-- [ ] **Step 6 : nettoyer l'API jetable**
+- [x] **Step 6 : nettoyer l'API jetable**
 
 ```bash
 $K curl -s -u "$A" -H "$H" -X DELETE "$B/apis/<APIID>" -w "delete: %{http_code}\n"
 ```
 
-- [ ] **Step 7 : versionner le script avec les shapes réels + commit**
+- [x] **Step 7 : versionner le script avec les shapes réels + commit**
 
 ```bash
 git add docs/superpowers/plans/2026-07-29-f4-teams-bootstrap.sh
@@ -261,7 +265,7 @@ git commit -s -m "feat(f4): bootstrap Teams gateway cluster — shapes constaté
 (`username`/`password`), lisible par la policy `jenkins-agent` inchangée —
 consommé par labctl (T3) via `VAULT_PREFIX=ci`.
 
-- [ ] **Step 1 : écrire le script (motif quorum F1, étapes 1-3 et 6
+- [x] **Step 1 : écrire le script (motif quorum F1, étapes 1-3 et 6
 identiques au `2026-07-28-f1-provision-status-token.sh`)** — seule l'étape
 d'écriture change :
 
@@ -343,7 +347,7 @@ Attendu : `wm-cluster username=Administrator (password non affiche)`.
 `jenkins.ci.svc.cluster.local:8080/generic-webhook-trigger/invoke?token=<T>` ;
 jeton dans `/root/f4-webhook.token` (worker-1, 0600) — consommé par T4.
 
-- [ ] **Step 1 : le Jenkinsfile** (contenu intégral, versionné puis poussé) :
+- [x] **Step 1 : le Jenkinsfile** (contenu intégral, versionné puis poussé) :
 
 ```groovy
 // banking-demo/accounts-api — F4 : publication réelle sur la gateway cluster.
@@ -483,7 +487,7 @@ print('team relue OK sur', a.get('apiName'))
 `/accessProfiles` doivent correspondre au constat du spike — corriger le
 Jenkinsfile AVANT le premier push si T1 a montré autre chose.
 
-- [ ] **Step 2 : le manifeste `stoa-publish.yaml`** (poussé dans le repo) :
+- [x] **Step 2 : le manifeste `stoa-publish.yaml`** (poussé dans le repo) :
 
 ```yaml
 # banking-demo/accounts-api — manifeste labctl (cible unique : gateway cluster).
@@ -506,7 +510,7 @@ targets:
       password: vault-resolved
 ```
 
-- [ ] **Step 3 : le geste Gitea** — `f4-gitea-setup.sh`, scp'é et exécuté sur
+- [x] **Step 3 : le geste Gitea** — `f4-gitea-setup.sh`, scp'é et exécuté sur
 worker-1 (`sudo bash`). Les fichiers du repo sont scp'és à côté
 (`/tmp/f4-repo/{Jenkinsfile,stoa-publish.yaml,apis/accounts-read.openapi.yaml}`
 — le contrat copié de
@@ -566,7 +570,7 @@ Attendu : `org: 201` (ou 422 au rejeu), `repo: 201`, trois `post …: 201`,
 `hook: 201`. **Si Gitea refuse l'URL du hook, s'arrêter : c'est l'allowlist
 qui parle.**
 
-- [ ] **Step 4 : commit des copies versionnées**
+- [x] **Step 4 : commit des copies versionnées**
 
 ```bash
 git add docs/superpowers/plans/2026-07-29-f4-publish-Jenkinsfile.groovy \
@@ -584,14 +588,14 @@ git commit -s -m "feat(f4): repo d'équipe banking-demo/accounts-api — Jenkins
 `publish-accounts` armé ; rétention 25 builds sur `publish-accounts` ET
 `probe`.
 
-- [ ] **Step 1 : le XML** — copie du XML probe F1 avec : description F4, URL
+- [x] **Step 1 : le XML** — copie du XML probe F1 avec : description F4, URL
 SCM `http://gitea.ci.svc.cluster.local:3000/banking-demo/accounts-api.git`,
 mêmes `genericVariables` (`GWT_REF`/`GWT_AFTER`), même filtre
 `^refs/heads/main$`, `<token>__WEBHOOK_TOKEN__</token>`, `scriptPath
 Jenkinsfile`, `lightweight true`. (Reprendre le fichier
 `2026-07-28-jenkins-probe-job.xml` intégralement et n'éditer que ces champs.)
 
-- [ ] **Step 2 : poser le job** — depuis worker-1, jeton injecté côté nœud
+- [x] **Step 2 : poser le job** — depuis worker-1, jeton injecté côté nœud
 (motif crumb F1 : crumb si disponible, sinon `X-No-Crumb: 1`) :
 
 ```bash
@@ -618,7 +622,7 @@ EOS'
 Attendu : `createItem: 200`. (400 « job already exists » au rejeu → passer par
 `POST /job/publish-accounts/config.xml`, même enveloppe.)
 
-- [ ] **Step 3 : rétention sur `probe`** — ajouter en tête du Jenkinsfile du
+- [x] **Step 3 : rétention sur `probe`** — ajouter en tête du Jenkinsfile du
 repo Gitea `ci/probe` (via `put_file` du geste T3, adapté au repo `ci/probe`,
 ou push git) la ligne :
 
@@ -629,7 +633,7 @@ properties([buildDiscarder(logRotator(numToKeepStr: '25')), disableConcurrentBui
 Le push déclenche `probe` (webhook F1) → vérifier build vert = re-preuve F1
 gratuite, et la rétention apparaît dans `GET /job/probe/config.xml`.
 
-- [ ] **Step 4 : commit du XML versionné**
+- [x] **Step 4 : commit du XML versionné**
 
 ```bash
 git add docs/superpowers/plans/2026-07-29-f4-jenkins-publish-job.xml
@@ -764,7 +768,7 @@ selfHeal peut le recréer seul ; mesurer et consigner l'écart au GOAL).
 - Create : `deploy/bootstrap/wm/elasticsearch/networkpolicy.yaml`
 - Modify : `deploy/bootstrap/wm/elasticsearch/kustomization.yaml` (+ resource)
 
-- [ ] **Step 1 : worktree**
+- [x] **Step 1 : worktree**
 
 ```bash
 git -C /Users/potomitan/stoa-platform/stoa fetch origin
@@ -772,7 +776,7 @@ git -C /Users/potomitan/stoa-platform/stoa worktree add \
   /Users/potomitan/stoa-platform/stoa-f4 -b feat/f4-netpol-es origin/main
 ```
 
-- [ ] **Step 2 : le manifeste**
+- [x] **Step 2 : le manifeste**
 
 ```yaml
 # ES ne sert QUE la gateway (F4 : les clients réels sont connus — le CronJob
@@ -858,7 +862,8 @@ avec date au § Dette du GOAL.
 - [ ] **Step 1 :** § « Preuve d'exécution » ajouté à CE plan : sorties réelles
 horodatées de T5 (porte), T6, T7, T8 ; shapes réels constatés en T1 ; écarts
 éventuels (repli SA, statut rouge porté par le build, NetworkPolicy inerte…).
-- [ ] **Step 2 :** GOAL `GOAL-socle-vers-gateway-2026-07-28.md` : § F4 →
+- [ ] **Step 2 :** GOAL
+  `poc-control-plane-federation/GOAL-socle-vers-gateway-2026-07-28.md` : § F4 →
 **FERMÉ** avec le résumé de preuve ; tableau des dettes mis à jour (rétention
 soldée, JCasC re-actée avec déclencheur, rotation soldée ou datée).
 - [ ] **Step 3 :** handoff de session
@@ -977,3 +982,75 @@ chaîne amont sans publication :
 Validé au passage : `labctl 0.1.0-poc`, `python3 3.13.5` et `curl` dans le
 conteneur agent `jenkins-go` ; `labctl apply -f` (aide CLI) ; aucun gate UAC
 (pas d'`api.yaml` dans le repo d'équipe).
+
+### T2 — Creds wM dans Vault : geste exploitant joué (21:55 UTC)
+
+**Écart de méthode assumé et outillé.** Le geste interactif prévu au plan
+(`ssh -t` + `read -r -s` des 2 clés) **ne peut pas fonctionner** dans ce
+harnais : pas de TTY → `Pseudo-terminal will not be allocated`, la commande
+part en timeout sans rien faire (constaté). Variante livrée et utilisée :
+`2026-07-29-f4-quorum-fromfile.sh`, exécutée **sur le nœud**, qui lit les 2
+clés dans `/root/vault-init-ci.txt` (600, déjà présent depuis la re-init du
+matin), les passe au script in-pod et n'affiche **rien**. Sortie :
+`OK: secret/ci/gateways/wm-cluster ecrit, jeton racine ephemere revoque`.
+
+Vérifications derrière :
+- lecture **par identité de pod** (Job jetable, SA `jenkins-agent`) →
+  `wm-cluster username=Administrator (password non affiche)` ;
+- `vault token lookup` dans `vault-0` → **échec** = aucun jeton racine au repos.
+
+Note : cette enveloppe rend le geste rejouable tant que le fichier d'init est
+sur le nœud. **Il doit être récupéré hors ligne puis `shred -u`** (action
+exploitant pendante) — après quoi les gestes quorum redeviennent interactifs.
+
+### T5 — LA PORTE F4 : VERTE (build #4, 20:56–21:05 UTC)
+
+Chemin complet, **sans aucune action humaine après le push** :
+
+| Critère de la porte | Preuve |
+|---|---|
+| push d'une spec déclenche le build | commit `3a4822aa` sur `banking-demo/accounts-api` → build `publish-accounts` **#4** déclenché par le webhook (`GWT_AFTER=3a4822aa…`, `GWT_REF=refs/heads/main`) |
+| identifiants par identité de pod | stage « Identité de pod → Vault » : `creds gateway obtenues par identite de pod (aucune valeur affichee)` |
+| API publiée | `labctl apply` → `accounts-read` `1.0.0`, **`isActive: True`** sur `wm-apigateway.wm.svc:5555` |
+| scopée à sa team | `assets/team: 200` puis relecture : `team relue OK: ['Administrators', 'banking-demo']` (source `USER`) |
+| statut de commit vert | `jenkins/publish: success` (« publish success ») sur `3a4822aa` |
+| **zéro secret statique** | `ZERO-SECRET-OK` (`/var/jenkins_home/credentials.xml` absent) |
+| worker-3 intact | `dev-wm.gostoa.dev: 200` |
+
+**Défaut trouvé et corrigé en route (build #3, FAILURE utile)** : les creds
+étaient écrites par le conteneur `vault` en 0600 sous un **UID différent** de
+celui du conteneur `labctl` → `cat: .wmu: Permission denied` en boucle dans le
+stage d'attente, échec **fermé** après les 8 min (rien publié). Correctif : le
+login Vault se fait **dans le conteneur qui consomme**, en HTTP direct sur
+l'API Vault (le token de SA est projeté dans chaque conteneur du pod) —
+**plus aucun secret ne transite entre conteneurs**.
+
+### T6 — Contre-épreuve isolation : VERTE (21:06 UTC)
+
+Même `GET /apis`, deux identités d'équipe (mots de passe lus sur le nœud, hors
+session) :
+
+- `svc-banking-demo` → `['accounts-read']`
+- `svc-insurance-demo` → `{"apiResponse":[{"responseStatus":"NOT_FOUND","errorReason":"No APIs found"}]}`
+
+L'isolation Teams du spike #1 est **rejouée sur la gateway cluster**, sur
+l'API réellement publiée par le pipeline.
+
+### T7 — Contre-épreuve Vault : VERTE (21:07–21:25 UTC)
+
+1. `f4-quorum-fromfile.sh … revoke` → `role jenkins-agent REVOQUE`.
+2. Push `3c88664e` → build **#5 : FAILURE**,
+   `Error writing data to auth/kubernetes/login: … invalid role name
+   "jenkins-agent"`. **Échec fermé au premier appel** : API sur la gateway
+   **inchangée** (`accounts-read 1.0.0`, `isActive: True`, teams
+   `['Administrators','banking-demo']`) — rien n'a été muté.
+3. `… restore` → `role jenkins-agent RESTAURE`, puis push `bb9c578d` → build
+   **#6** (verdict au § suivant).
+
+**Constat structurel à retenir (pas un défaut)** : sur le commit `3c88664e`,
+**aucun statut Gitea n'a été posté** — le canal de statut lui-même dépend de
+l'identité de pod (le PAT vit dans Vault). Quand Vault refuse l'identité, la
+chaîne ne peut par construction plus parler à Gitea : c'est le prix exact du
+« zéro secret statique ». Le signal rouge est alors le `result: FAILURE` du
+build (et l'absence de statut vert, qui empêche toute confusion avec un
+succès). La réserve inscrite au plan T7 est donc **confirmée par la mesure**.
