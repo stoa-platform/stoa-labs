@@ -60,14 +60,14 @@ Image poussée dans le **registre Gitea** (pas Docker Hub), manifestes par **PR 
 Un pipeline Jenkins (image `jenkins-go`, `labctl` embarqué) publie une API sur la gateway cluster : spec OpenAPI poussée dans un repo Gitea d'équipe → build déclenché (F1) → identifiants wM obtenus **depuis Vault par identité de pod** (mécanique G-c, prouvée) → `POST /apis` + `POST /assets/team`.
 **Porte F4 :** push d'une spec → API visible, scopée à sa team, **zéro secret statique** dans Jenkins (l'assertion `credentials.xml` absent du lot 1, rejouée).
 **Contre-épreuve :** rôle Vault révoqué → la publication échoue **fermée**, statut rouge dans Gitea (F1) ; et le membre d'une autre team ne voit pas l'API (l'isolation Teams prouvée au spike #1).
-**État :** toutes les briques existent séparément ; ce jalon est leur premier assemblage bout en bout.
+**État : FERMÉ le 2026-07-29.** Porte et **deux** contre-épreuves vertes. Chaîne réelle : push d'une spec sur `banking-demo/accounts-api` (Gitea) → webhook → build `publish-accounts` **sans action humaine** → pod agent 2 conteneurs (SA `jenkins-agent`) → **login Vault par identité de pod dans le conteneur qui consomme** (API HTTP ; aucun secret ne transite entre conteneurs) → `labctl apply` → `accounts-read 1.0.0` **`isActive: true`** sur `wm-apigateway.wm.svc:5555` → `POST /assets/team` → relecture `['Administrators','banking-demo']` → statut `jenkins/publish: success`. **Zéro secret statique** rejoué (`credentials.xml` absent). Contre-épreuve **isolation** : même `GET /apis`, `svc-banking-demo` → `['accounts-read']`, `svc-insurance-demo` → `No APIs found`. Contre-épreuve **Vault** : rôle `jenkins-agent` révoqué (quorum) → build **FAILURE** `invalid role name`, **API inchangée sur la gateway** (échec fermé, aucune mutation) → rôle restauré → build **vert** de nouveau. Le **spike Teams** a corrigé quatre shapes que le dépôt tenait pour acquis (`assetType` obligatoire sinon 200 no-op ; UUID exigés pour users/groupes/teams ; appartenance au groupe `API-Gateway-Providers` requise pour l'admin REST ; configId `extended`). Preuve détaillée : `docs/superpowers/plans/2026-07-29-f4-chaine-publication.md`, § « Preuve d'exécution ». Reste de la passe : PR stoa **#2824** (NetworkPolicy ES) à merger par l'exploitant, puis sa contre-épreuve.
 
 ### F5 — Bascule et décommission
 
 Caddy (worker-3) repointe le trafic concerné vers le cluster (le pattern `cutover.yml` : une ligne de Caddyfile, pas de DNS) ; les conteneurs Docker `wm-dev-*` de worker-3 s'éteignent après période de recouvrement.
 **Porte F5 :** le trafic public est servi par la gateway cluster ; worker-3 ne porte plus que Caddy.
 **Contre-épreuve :** rollback = une ligne de Caddyfile, exercé une fois avant la décommission définitive.
-**État :** à cadrer en dernier ; ne démarre qu'avec F3+F4 verts et stables.
+**État :** **débloqué** (F3 et F4 fermés le 2026-07-29) ; à cadrer maintenant. Entrées connues : migration des ~109 Mo d'ES de worker-3, double-run à garder court, sauvegarde du ns `wm` (reprise F2) à poser AVANT la bascule, cycle trial `*/20` à assumer côté public (~15 min de service par cycle) — c'est le vrai sujet de F5, pas la tuyauterie.
 
 ---
 
@@ -80,10 +80,12 @@ Caddy (worker-3) repointe le trafic concerné vers le cluster (le pattern `cutov
 | ~~Webhook + statut de commit~~ | plan lot 1, écart assumé | **soldé — F1, 2026-07-29** |
 | Rotation du matériel de descellement Vault (`operator rekey` + révocation du jeton racine) | incident F1 du 2026-07-29 | à trancher avec F2 (sauvegarde/restauration) |
 | ~~Épinglage par digest des 3 images du socle~~ | revue finale, follow-up | **gitea+jenkins soldés — PR #2823 mergée le 2026-07-29** (pods roulés, digests vérifiés en service, registre 401 OK, vault-0 non touché) ; **Vault seul reporté** — un restart le rendrait scellé, à épingler en fenêtre exploitant avec descellement dans la foulée |
-| Rotation du mot de passe bootstrap `ci`/`ci-bootstrap` | rapports lot 1 | F4 (les identités réelles arrivent) |
-| JCasC (cloud + jobs Jenkins versionnés) | plan lot 1, écart assumé | F4 (dès le 2ᵉ job, le seuil est franchi) |
+| ~~Rotation du mot de passe bootstrap `ci`/`ci-bootstrap`~~ | rapports lot 1 | **soldée — F4, 2026-07-29** (rayon d'action mesuré d'abord : tirages d'images anonymes, aucun `imagePullSecrets` ; ancien mdp → 401, nouveau → 200, nouveau mdp root-only sur worker-1 ; chaîne re-prouvée verte après rotation) |
+| JCasC (cloud + jobs Jenkins versionnés) | plan lot 1, écart assumé | **re-actée F4** : déclencheur précis = *prochaine reconstruction de `jenkins-go`* (le plugin manque à l'image ; l'ajouter hors fenêtre exploitant ferait dériver les plugins) |
 | Intégration Keycloak / échange JWT (ADR-077) | spéc lot 1, exclusions | après F4 |
-| Rétention des builds Jenkins | question ouverte Q1 | F4 |
+| ~~Rétention des builds Jenkins~~ | question ouverte Q1 | **soldée — F4, 2026-07-29** (`buildDiscarder` 25 builds sur `probe` et `publish-accounts`) |
+| `team:` natif dans labctl (moteur unique ADR-076) | spéc F4 § D1 | même déclencheur que JCasC (le binaire vit dans l'image) |
+| Fichier d'init Vault encore sur worker-1 (`/root/vault-init-ci.txt`) | F1 → F4 | **prioritaire** : récupération hors ligne puis `shred -u` — tant qu'il est là, les gestes quorum sont automatisables (c'est ce qui a permis F4), mais le matériel de descellement est détenu par le nœud |
 
 ---
 
