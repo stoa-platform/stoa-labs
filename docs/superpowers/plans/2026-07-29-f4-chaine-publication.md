@@ -1054,3 +1054,49 @@ chaîne ne peut par construction plus parler à Gitea : c'est le prix exact du
 « zéro secret statique ». Le signal rouge est alors le `result: FAILURE` du
 build (et l'absence de statut vert, qui empêche toute confusion avec un
 succès). La réserve inscrite au plan T7 est donc **confirmée par la mesure**.
+
+3. Restauration → push `bb9c578d` → build **#6 : SUCCESS**, statut
+   `jenkins/publish: success`. **La chaîne reverdit** : la contre-épreuve est
+   complète (vert → rouge fermé → vert).
+
+### T9 — Rotation `ci`/`ci-bootstrap` : SOLDÉE (21:30 UTC)
+
+Rayon d'action **mesuré avant d'écrire** (leçon fondatrice du dépôt) : aucun
+`imagePullSecrets` dans `ci`/`wm`, aucune auth dans
+`/etc/rancher/k3s/registries.yaml`, aucun secret `dockerconfigjson` → les
+tirages d'images du registre Gitea sont **anonymes**, la rotation ne peut pas
+casser le cluster.
+
+- `patch: 200` ; contre-épreuve : `ancien mdp: 401`, `nouveau mdp: 200`.
+- Nouveau mot de passe : `/root/gitea-ci-pass` (worker-1, 0600, jamais
+  affiché) ; `f4-push-bump.sh` le lit désormais (repli bootstrap si absent).
+- **Re-preuve de bout en bout après rotation** : push `1acf1f64` avec le
+  nouvel identifiant → build **#7 : SUCCESS**, statut
+  `jenkins/publish: success`. Le PAT `probe-status` (un jeton, pas un mot de
+  passe) survit comme attendu.
+- Trap retiré : les deux scripts du lot 1 qui portent l'ancien mot de passe
+  **en dur** (`vault-bootstrap.sh`, `f1-provision-status-token.sh`) sont
+  signalés en tête du script de rotation.
+
+### T8 — NetworkPolicy ES : PR ouverte, merge exploitant
+
+PR **stoa#2824** (`feat/f4-netpol-es`) — `gh pr merge` refusé à l'agent par le
+classifieur (motif lot 1/F3 : l'exploitant merge). Contre-épreuve à jouer
+derrière : `curl 9200` depuis un pod `ci` → bloqué ; health gateway → 200.
+Si le curl passe, le contrôleur NetworkPolicy de k3s n'est pas actif : le
+consigner, laisser la policy (inerte mais prête), re-acter la dette.
+
+### Récapitulatif des builds de la passe
+
+| # | Push | Verdict | Ce qu'il prouve |
+|---|---|---|---|
+| 1 | `e59f71b2` | FAILURE | webhook + pod agent + login G-c OK ; secret absent → **échec fermé** (statut resté `pending` : défaut corrigé) |
+| 2 | `a52f79da` | FAILURE | l'échec fermé **rougit** dans Gitea (`jenkins/publish: failure`) |
+| 3 | `619888d5` | FAILURE | secret présent, mais creds illisibles entre conteneurs (UID) → **échec fermé, rien publié** |
+| 4 | `3a4822aa` | **SUCCESS** | **LA PORTE** : API active, scopée, statut vert, zéro secret statique |
+| 5 | `3c88664e` | FAILURE | rôle Vault révoqué → `invalid role name`, **API inchangée** |
+| 6 | `bb9c578d` | **SUCCESS** | rôle restauré → la chaîne reverdit |
+| 7 | `1acf1f64` | **SUCCESS** | rotation du mdp `ci` sans régression |
+
+Trois échecs, tous **fermés** et tous instructifs : aucun n'a publié quoi que
+ce soit sur la gateway. C'est la propriété qu'on voulait.
