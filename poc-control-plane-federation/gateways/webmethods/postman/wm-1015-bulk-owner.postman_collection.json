@@ -1,0 +1,469 @@
+{
+  "info": {
+    "name": "wm-1015-bulk-owner",
+    "description": "Réassignation en masse du champ `owner` des APIs d'une webMethods API Gateway 10.15.\n\nTrois modes, pilotés par la variable `runMode` :\n  - `probe`  : lit UNE API (`probeApiId`) et établit la forme réelle du champ `owner`. N'écrit rien. À lancer en premier.\n  - `dryRun` : liste, filtre, et rapporte `owner actuel -> owner cible` par API. N'écrit rien.\n  - `apply`  : écrit.\n\nÀ lancer avec le Collection Runner ou Newman UNIQUEMENT : la boucle repose sur\n`postman.setNextRequest`, sans effet en envoi manuel requête par requête.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      { "key": "token", "value": "{{accessToken}}", "type": "string" }
+    ]
+  },
+  "variable": [
+    { "key": "runMode", "value": "probe", "description": "probe | dryRun | apply" },
+    { "key": "newOwner", "value": "", "description": "Nouvelle valeur du champ owner. Obligatoire en mode apply." },
+    { "key": "filterNameContains", "value": "", "description": "Contains insensible à la casse sur apiName. Vide = pas de contrainte." },
+    { "key": "filterCurrentOwner", "value": "", "description": "Contains insensible à la casse sur l'owner courant. Vide = pas de contrainte.\nRenseigné, il rend les relances idempotentes : une API déjà traitée ne re-matche plus." },
+    { "key": "probeApiId", "value": "", "description": "id d'une API quelconque, utilisée par la requête 00 en mode probe." },
+    { "key": "maxApis", "value": "50", "description": "Garde-fou de volume. Au-delà, la requête 01 échoue et exige un relèvement explicite." },
+    { "key": "putEnvelope", "value": "api", "description": "Forme du corps envoyé au PUT : `api` (objet API nu) ou `full` (enveloppe apiResponse complète).\nÀ confirmer par le mode probe — voir la sortie de la requête 00." },
+    { "key": "queue", "value": "[]" },
+    { "key": "report", "value": "[]" },
+    { "key": "currentApiId", "value": "" },
+    { "key": "currentApiBody", "value": "" },
+    { "key": "currentApiPayload", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "00 — Reconnaissance",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Porte de reconnaissance. N'écrit rien.",
+              "// Objet : établir, sur la gateway réelle, OÙ vit le champ `owner` et sous quelle forme.",
+              "// Si l'hypothèse du script est fausse, on échoue ICI — avant la moindre écriture.",
+              "",
+              "const mode = String(pm.collectionVariables.get('runMode') || '').trim();",
+              "",
+              "pm.test('00 — runMode est valide', function () {",
+              "    pm.expect(['probe', 'dryRun', 'apply']).to.include(mode);",
+              "});",
+              "",
+              "pm.test('00 — la Gateway répond 200', function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "let body = null;",
+              "try { body = pm.response.json(); } catch (e) { body = null; }",
+              "",
+              "// L'enveloppe attendue est { apiResponse: { api: {...} } }. On tolère les variantes.",
+              "let api = null;",
+              "let shape = 'inconnue';",
+              "if (body && body.apiResponse && body.apiResponse.api) { api = body.apiResponse.api; shape = 'apiResponse.api'; }",
+              "else if (body && body.api) { api = body.api; shape = 'api'; }",
+              "else if (body && body.apiName) { api = body; shape = 'racine'; }",
+              "",
+              "pm.test('00 — objet API localisé dans la réponse', function () {",
+              "    pm.expect(api, 'objet API introuvable dans la réponse').to.be.an('object');",
+              "});",
+              "",
+              "if (api) {",
+              "    console.log('--- RECONNAISSANCE ------------------------------------------');",
+              "    console.log('Enveloppe détectée        : ' + shape);",
+              "    console.log('Clés de premier niveau    : ' + Object.keys(api).sort().join(', '));",
+              "    console.log('owner (valeur brute)      : ' + JSON.stringify(api.owner));",
+              "    console.log('owner (type)              : ' + typeof api.owner);",
+              "    console.log('');",
+              "    console.log(\"Si l'enveloppe détectée n'est pas 'apiResponse.api', ou si owner n'est pas\");",
+              "    console.log(\"une chaîne, NE PAS lancer apply : la spec du script doit être revue.\");",
+              "    console.log(\"Régler putEnvelope selon ce que le PUT de cette 10.15 attend ('api' ou 'full').\");",
+              "    console.log('-------------------------------------------------------------');",
+              "",
+              "    pm.test(\"00 — le champ 'owner' est présent sur l'objet API\", function () {",
+              "        pm.expect(api).to.have.property('owner');",
+              "    });",
+              "",
+              "    pm.test(\"00 — 'owner' est une chaîne de caractères\", function () {",
+              "        pm.expect(api.owner).to.be.a('string');",
+              "    });",
+              "}",
+              "",
+              "// En mode probe, on s'arrête là dans tous les cas.",
+              "if (mode === 'probe') {",
+              "    console.log('Mode probe : arrêt après reconnaissance. Aucune écriture.');",
+              "    postman.setNextRequest(null);",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Accept", "value": "application/json" }],
+        "url": {
+          "raw": "{{gwUrl}}/rest/apigateway/apis/{{probeApiId}}",
+          "host": ["{{gwUrl}}"],
+          "path": ["rest", "apigateway", "apis", "{{probeApiId}}"]
+        },
+        "description": "Lit une API au hasard pour établir la forme du champ `owner`. Ne modifie rien."
+      }
+    },
+    {
+      "name": "01 — Lister et filtrer",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Construit la file d'attente des APIs à traiter et pose les garde-fous.",
+              "",
+              "const mode       = String(pm.collectionVariables.get('runMode') || '').trim();",
+              "const newOwner   = String(pm.collectionVariables.get('newOwner') || '').trim();",
+              "const nameNeedle = String(pm.collectionVariables.get('filterNameContains') || '').trim().toLowerCase();",
+              "const ownNeedle  = String(pm.collectionVariables.get('filterCurrentOwner') || '').trim().toLowerCase();",
+              "const maxApis    = parseInt(pm.collectionVariables.get('maxApis') || '50', 10);",
+              "",
+              "pm.collectionVariables.set('report', '[]');",
+              "pm.collectionVariables.set('queue', '[]');",
+              "",
+              "pm.test('01 — la liste des APIs répond 200', function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "// Garde-fou : apply sans owner cible est une erreur de manipulation, pas un cas limite.",
+              "if (mode === 'apply' && newOwner === '') {",
+              "    pm.test(\"01 — apply exige un newOwner non vide\", function () {",
+              "        pm.expect.fail(\"runMode=apply mais newOwner est vide. Rien n'a été écrit.\");",
+              "    });",
+              "    postman.setNextRequest(null);",
+              "    return;",
+              "}",
+              "",
+              "let body = null;",
+              "try { body = pm.response.json(); } catch (e) { body = null; }",
+              "",
+              "// La liste peut arriver sous plusieurs formes selon le fix pack. On normalise.",
+              "function extractApis(b) {",
+              "    if (!b) { return []; }",
+              "    let raw = b.apiResponse || b.apis || b;",
+              "    if (!Array.isArray(raw)) { raw = raw.apiResponse || raw.apis || []; }",
+              "    if (!Array.isArray(raw)) { return []; }",
+              "    return raw",
+              "        .map(function (e) { return (e && e.api) ? e.api : e; })",
+              "        .filter(function (a) { return a && (a.id || a.apiId); });",
+              "}",
+              "",
+              "const apis = extractApis(body);",
+              "",
+              "pm.test('01 — au moins une API lue depuis la Gateway', function () {",
+              "    pm.expect(apis.length, 'aucune API extraite — la forme de la réponse a changé').to.be.above(0);",
+              "});",
+              "",
+              "const matched = apis.filter(function (a) {",
+              "    const n = String(a.apiName || '').toLowerCase();",
+              "    const o = String(a.owner || '').toLowerCase();",
+              "    const okName  = (nameNeedle === '') || (n.indexOf(nameNeedle) !== -1);",
+              "    const okOwner = (ownNeedle === '')  || (o.indexOf(ownNeedle)  !== -1);",
+              "    return okName && okOwner;",
+              "});",
+              "",
+              "// Déjà à la bonne valeur : on n'écrit pas pour rien.",
+              "const already = matched.filter(function (a) { return String(a.owner || '') === newOwner; });",
+              "const queue = matched",
+              "    .filter(function (a) { return String(a.owner || '') !== newOwner; })",
+              "    .map(function (a) {",
+              "        return {",
+              "            apiId:        a.id || a.apiId,",
+              "            apiName:      a.apiName || '(sans nom)',",
+              "            apiVersion:   a.apiVersion || '',",
+              "            currentOwner: String(a.owner || '')",
+              "        };",
+              "    });",
+              "",
+              "console.log('--- SÉLECTION -----------------------------------------------');",
+              "console.log('Mode                      : ' + mode);",
+              "console.log('APIs lues                 : ' + apis.length);",
+              "console.log('Filtre nom (contains)     : ' + (nameNeedle || '(aucun)'));",
+              "console.log('Filtre owner (contains)   : ' + (ownNeedle  || '(aucun)'));",
+              "console.log('APIs correspondantes      : ' + matched.length);",
+              "console.log('Déjà à la valeur cible    : ' + already.length + ' (ignorées)');",
+              "console.log('À traiter                 : ' + queue.length);",
+              "console.log('-------------------------------------------------------------');",
+              "",
+              "// Garde-fou de volume : protège du filtre oublié qui réassignerait tout le catalogue.",
+              "if (queue.length > maxApis) {",
+              "    pm.test('01 — garde-fou de volume', function () {",
+              "        pm.expect.fail(",
+              "            queue.length + ' APIs sélectionnées pour un maxApis de ' + maxApis + '. ' +",
+              "            \"Rien n'a été écrit. Resserrer le filtre, ou relever maxApis en conscience.\"",
+              "        );",
+              "    });",
+              "    postman.setNextRequest(null);",
+              "    return;",
+              "}",
+              "",
+              "pm.collectionVariables.set('queue', JSON.stringify(queue));",
+              "",
+              "if (queue.length === 0) {",
+              "    console.log('Aucune API à traiter.');",
+              "    postman.setNextRequest('04 — Rapport');",
+              "} else {",
+              "    postman.setNextRequest(\"02 — Lire l'API courante\");",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Accept", "value": "application/json" }],
+        "url": {
+          "raw": "{{gwUrl}}/rest/apigateway/apis",
+          "host": ["{{gwUrl}}"],
+          "path": ["rest", "apigateway", "apis"]
+        },
+        "description": "Liste toutes les APIs, applique le filtre Contains, construit la file d'attente."
+      }
+    },
+    {
+      "name": "02 — Lire l'API courante",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const queue = JSON.parse(pm.collectionVariables.get('queue') || '[]');",
+              "if (queue.length === 0) {",
+              "    postman.setNextRequest('04 — Rapport');",
+              "} else {",
+              "    pm.collectionVariables.set('currentApiId', queue[0].apiId);",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Lit l'API en tête de file. Conserve le corps INTACT : c'est lui que le PUT renverra,",
+              "// avec une seule clé modifiée. Rien n'est reconstruit à la main.",
+              "",
+              "const mode     = String(pm.collectionVariables.get('runMode') || '').trim();",
+              "const newOwner = String(pm.collectionVariables.get('newOwner') || '').trim();",
+              "const queue    = JSON.parse(pm.collectionVariables.get('queue') || '[]');",
+              "const report   = JSON.parse(pm.collectionVariables.get('report') || '[]');",
+              "const item     = queue[0];",
+              "",
+              "function advance() {",
+              "    queue.shift();",
+              "    pm.collectionVariables.set('queue', JSON.stringify(queue));",
+              "    pm.collectionVariables.set('report', JSON.stringify(report));",
+              "    postman.setNextRequest(queue.length > 0 ? \"02 — Lire l'API courante\" : '04 — Rapport');",
+              "}",
+              "",
+              "if (!item) { postman.setNextRequest('04 — Rapport'); return; }",
+              "",
+              "// Un 401 en cours de boucle rejaillira sur toutes les APIs suivantes : on arrête net",
+              "// plutôt que d'empiler N échecs identiques. Le filtre sur owner courant rend la",
+              "// relance idempotente — le reliquat sera repris tel quel.",
+              "if (pm.response.code === 401) {",
+              "    pm.test('02 — jeton refusé (401)', function () {",
+              "        pm.expect.fail(",
+              "            'Jeton expiré ou invalide. Arrêt à ' + item.apiName + '. ' +",
+              "            'Renouveler accessToken puis relancer : avec filterCurrentOwner renseigné, ' +",
+              "            'les APIs déjà traitées ne re-matchent plus.'",
+              "        );",
+              "    });",
+              "    postman.setNextRequest(null);",
+              "    return;",
+              "}",
+              "",
+              "pm.test('02 — lecture de ' + item.apiName + ' ' + item.apiVersion, function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "if (pm.response.code !== 200) {",
+              "    report.push({",
+              "        api: item.apiName, version: item.apiVersion, statut: 'KO_LECTURE',",
+              "        de: item.currentOwner, vers: newOwner,",
+              "        detail: 'HTTP ' + pm.response.code",
+              "    });",
+              "    advance();",
+              "    return;",
+              "}",
+              "",
+              "pm.collectionVariables.set('currentApiBody', pm.response.text());",
+              "",
+              "if (mode === 'dryRun') {",
+              "    report.push({",
+              "        api: item.apiName, version: item.apiVersion, statut: 'DRY_RUN',",
+              "        de: item.currentOwner, vers: newOwner, detail: 'aucune écriture'",
+              "    });",
+              "    advance();",
+              "} else {",
+              "    postman.setNextRequest(\"03 — Écrire l'API\");",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Accept", "value": "application/json" }],
+        "url": {
+          "raw": "{{gwUrl}}/rest/apigateway/apis/{{currentApiId}}",
+          "host": ["{{gwUrl}}"],
+          "path": ["rest", "apigateway", "apis", "{{currentApiId}}"]
+        },
+        "description": "Lit l'API en tête de file et conserve son corps intact pour le PUT."
+      }
+    },
+    {
+      "name": "03 — Écrire l'API",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Mute UNE SEULE clé sur l'objet lu en 02, puis renvoie l'objet entier.",
+              "// Tout ce qui n'est pas `owner` — policies, scopes, apiDefinition — traverse sans être touché.",
+              "",
+              "const newOwner = String(pm.collectionVariables.get('newOwner') || '').trim();",
+              "const envelope = String(pm.collectionVariables.get('putEnvelope') || 'api').trim();",
+              "const raw      = pm.collectionVariables.get('currentApiBody') || '';",
+              "",
+              "const body = JSON.parse(raw);",
+              "",
+              "let api = null;",
+              "if (body.apiResponse && body.apiResponse.api) { api = body.apiResponse.api; }",
+              "else if (body.api) { api = body.api; }",
+              "else { api = body; }",
+              "",
+              "api.owner = newOwner;",
+              "",
+              "// `api`  : la plupart des 10.15 attendent l'objet API nu sur le PUT.",
+              "// `full` : bascule si la gateway refuse l'objet nu (voir la sortie de la requête 00).",
+              "const payload = (envelope === 'full') ? body : api;",
+              "pm.collectionVariables.set('currentApiPayload', JSON.stringify(payload));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const newOwner = String(pm.collectionVariables.get('newOwner') || '').trim();",
+              "const queue    = JSON.parse(pm.collectionVariables.get('queue') || '[]');",
+              "const report   = JSON.parse(pm.collectionVariables.get('report') || '[]');",
+              "const item     = queue[0];",
+              "",
+              "if (!item) { postman.setNextRequest('04 — Rapport'); return; }",
+              "",
+              "if (pm.response.code === 401) {",
+              "    pm.test('03 — jeton refusé (401)', function () {",
+              "        pm.expect.fail(",
+              "            'Jeton expiré ou invalide. Arrêt à ' + item.apiName + '. ' +",
+              "            'Renouveler accessToken puis relancer pour reprendre le reliquat.'",
+              "        );",
+              "    });",
+              "    postman.setNextRequest(null);",
+              "    return;",
+              "}",
+              "",
+              "const ok = (pm.response.code === 200 || pm.response.code === 201 || pm.response.code === 204);",
+              "",
+              "pm.test('03 — écriture de ' + item.apiName + ' ' + item.apiVersion, function () {",
+              "    pm.expect(ok, 'HTTP ' + pm.response.code + ' : ' + pm.response.text().slice(0, 300)).to.be.true;",
+              "});",
+              "",
+              "report.push({",
+              "    api: item.apiName, version: item.apiVersion,",
+              "    statut: ok ? 'OK' : 'KO_ECRITURE',",
+              "    de: item.currentOwner, vers: newOwner,",
+              "    detail: ok ? '' : ('HTTP ' + pm.response.code + ' : ' + pm.response.text().slice(0, 200))",
+              "});",
+              "",
+              "// Sur échec unitaire on continue : un arrêt en plein lot laisserait un état partiel",
+              "// sans vue d'ensemble. Le verdict global est porté par la requête 04.",
+              "queue.shift();",
+              "pm.collectionVariables.set('queue', JSON.stringify(queue));",
+              "pm.collectionVariables.set('report', JSON.stringify(report));",
+              "postman.setNextRequest(queue.length > 0 ? \"02 — Lire l'API courante\" : '04 — Rapport');"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "PUT",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Accept", "value": "application/json" }
+        ],
+        "body": { "mode": "raw", "raw": "{{currentApiPayload}}" },
+        "url": {
+          "raw": "{{gwUrl}}/rest/apigateway/apis/{{currentApiId}}",
+          "host": ["{{gwUrl}}"],
+          "path": ["rest", "apigateway", "apis", "{{currentApiId}}"]
+        },
+        "description": "Renvoie l'objet API entier, avec la seule clé `owner` modifiée."
+      }
+    },
+    {
+      "name": "04 — Rapport",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Requête inoffensive servant de support au rapport final et à l'assertion globale.",
+              "",
+              "const mode   = String(pm.collectionVariables.get('runMode') || '').trim();",
+              "const report = JSON.parse(pm.collectionVariables.get('report') || '[]');",
+              "",
+              "const ok     = report.filter(function (r) { return r.statut === 'OK'; });",
+              "const dry    = report.filter(function (r) { return r.statut === 'DRY_RUN'; });",
+              "const ko     = report.filter(function (r) { return r.statut.indexOf('KO') === 0; });",
+              "",
+              "console.log('');",
+              "console.log('=== RAPPORT (' + mode + ') =================================');",
+              "if (report.length === 0) {",
+              "    console.log('Aucune API traitée.');",
+              "} else {",
+              "    report.forEach(function (r) {",
+              "        console.log(",
+              "            '[' + r.statut + '] ' + r.api + ' ' + r.version +",
+              "            ' | ' + (r.de || '(vide)') + ' -> ' + (r.vers || '(vide)') +",
+              "            (r.detail ? ' | ' + r.detail : '')",
+              "        );",
+              "    });",
+              "}",
+              "console.log('-------------------------------------------------------------');",
+              "console.log('OK ' + ok.length + '  |  DRY_RUN ' + dry.length + '  |  KO ' + ko.length);",
+              "if (mode === 'dryRun') {",
+              "    console.log('');",
+              "    console.log(\"RELIRE CETTE LISTE LIGNE À LIGNE avant de passer en apply.\");",
+              "    console.log(\"Le filtre Contains sur un champ texte libre sur-matche par nature :\");",
+              "    console.log(\"c'est ici, et seulement ici, que ça se voit.\");",
+              "}",
+              "console.log('=============================================================');",
+              "",
+              "pm.test('04 — aucun échec dans le lot', function () {",
+              "    pm.expect(ko.length, ko.map(function (r) { return r.api; }).join(', ')).to.eql(0);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Accept", "value": "application/json" }],
+        "url": {
+          "raw": "{{gwUrl}}/rest/apigateway/health",
+          "host": ["{{gwUrl}}"],
+          "path": ["rest", "apigateway", "health"]
+        },
+        "description": "Support du rapport final. Ne modifie rien."
+      }
+    }
+  ]
+}
