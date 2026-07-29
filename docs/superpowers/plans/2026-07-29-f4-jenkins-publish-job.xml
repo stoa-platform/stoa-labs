@@ -1,0 +1,57 @@
+<?xml version="1.1" encoding="UTF-8"?><flow-definition plugin="workflow-job">
+  <!-- Reconstruction : __WEBHOOK_TOKEN__ n'est PAS le jeton réel (aucun secret
+       dans Git). À la reconstruction du job, frapper un jeton neuf
+       (openssl rand -hex 24) et le poser des DEUX côtés : ici, et dans l'URL du
+       webhook push du dépôt Gitea banking-demo/accounts-api
+       (…/generic-webhook-trigger/invoke?token=<jeton>). En session F4 le jeton
+       vit dans /root/f4-webhook.token (worker-1). Cf. plan F4
+       2026-07-29-f4-chaine-publication.md, tâches 3-4. -->
+  <actions/>
+  <description>F4 — publication réelle : push d'une spec OpenAPI sur banking-demo/accounts-api → labctl apply sur la gateway cluster (wm-apigateway.wm.svc:5555), scoping team par POST /assets/team, identifiants wM et PAT Gitea lus dans Vault par identité de pod (SA jenkins-agent). Statut de commit contexte jenkins/publish.</description>
+  <keepDependencies>false</keepDependencies>
+  <properties>
+    <org.jenkinsci.plugins.workflow.job.properties.DisableConcurrentBuildsJobProperty/>
+    <org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty>
+      <triggers>
+        <org.jenkinsci.plugins.gwt.GenericTrigger plugin="generic-webhook-trigger@2.4.2">
+          <spec></spec>
+          <genericVariables>
+            <org.jenkinsci.plugins.gwt.GenericVariable><key>GWT_REF</key><value>$.ref</value></org.jenkinsci.plugins.gwt.GenericVariable>
+            <org.jenkinsci.plugins.gwt.GenericVariable><key>GWT_AFTER</key><value>$.after</value></org.jenkinsci.plugins.gwt.GenericVariable>
+          </genericVariables>
+          <printContributedVariables>true</printContributedVariables>
+          <printPostContent>false</printPostContent>
+          <token>__WEBHOOK_TOKEN__</token>
+          <silentResponse>false</silentResponse>
+          <regexpFilterText>$GWT_REF</regexpFilterText>
+          <regexpFilterExpression>^refs/heads/main$</regexpFilterExpression>
+          <overrideQuietPeriod>false</overrideQuietPeriod>
+          <shouldNotFlattern>false</shouldNotFlattern>
+          <allowSeveralTriggersPerBuild>false</allowSeveralTriggersPerBuild>
+        </org.jenkinsci.plugins.gwt.GenericTrigger>
+      </triggers>
+    </org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty>
+  </properties>
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition" plugin="workflow-cps">
+    <scm class="hudson.plugins.git.GitSCM" plugin="git">
+      <configVersion>2</configVersion>
+      <userRemoteConfigs>
+        <hudson.plugins.git.UserRemoteConfig>
+          <url>http://gitea.ci.svc.cluster.local:3000/banking-demo/accounts-api.git</url>
+        </hudson.plugins.git.UserRemoteConfig>
+      </userRemoteConfigs>
+      <branches>
+        <hudson.plugins.git.BranchSpec>
+          <name>*/main</name>
+        </hudson.plugins.git.BranchSpec>
+      </branches>
+      <doGenerateSubmoduleConfigurations>false</doGenerateSubmoduleConfigurations>
+      <submoduleCfg class="empty-list"/>
+      <extensions/>
+    </scm>
+    <scriptPath>Jenkinsfile</scriptPath>
+    <lightweight>true</lightweight>
+  </definition>
+  <triggers/>
+  <disabled>false</disabled>
+</flow-definition>
