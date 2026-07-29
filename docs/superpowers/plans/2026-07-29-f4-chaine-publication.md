@@ -956,3 +956,24 @@ contre-épreuve après sync.
 
 **T2** (geste exploitant quorum : `secret/ci/gateways/wm-cluster`) — bloquant
 pour T5 (porte), puis T6, T7 (2 gestes quorum), merge T8, T9, T10.
+
+### Pré-preuve fail-closed (hors plan, jouée en attendant le geste T2 — 19:10–19:35 UTC)
+
+Deux pushes d'essai AVANT l'écriture du secret Vault, pour dé-risquer toute la
+chaîne amont sans publication :
+
+- **Build #1** (push `e59f71b2`) : déclenché par le webhook SEUL, pod agent
+  3 conteneurs monté (premier pull `jenkins-go` sur le nœud d'agent), statut
+  `pending` posé par identité de pod, login G-c réussi, puis échec **fermé** :
+  `No value found at secret/data/ci/gateways/wm-cluster` → `FAILURE`.
+  Constat : la lecture des creds était AVANT le `try` → le statut est resté
+  `pending` (défaut corrigé).
+- **Build #2** (push `a52f79da`, Jenkinsfile corrigé — creds dans le `try`) :
+  `FAILURE` attendu + **statut `jenkins/publish: failure`** posé sur le
+  commit. L'échec fermé rougit dans Gitea — la contre-épreuve T7 aura son
+  canal de statut complet (le login du postStatus reste servi tant que le
+  RÔLE existe ; en cas de rôle révoqué, cf. réserve du plan T7).
+
+Validé au passage : `labctl 0.1.0-poc`, `python3 3.13.5` et `curl` dans le
+conteneur agent `jenkins-go` ; `labctl apply -f` (aide CLI) ; aucun gate UAC
+(pas d'`api.yaml` dans le repo d'équipe).
