@@ -706,3 +706,59 @@ Attendu : « Contre-épreuve F2 verte : utilisateur ci présent dans la base res
 git add docs/superpowers/plans/2026-07-29-f2-sauvegarde-hors-noeud.md poc-control-plane-federation/
 git commit -m "docs(f2): preuve F2 — archives des 3 PVC sur worker-2, restauration exercée, handoff"
 ```
+
+---
+
+## Preuve d'exécution (2026-07-29, mesures contre le cluster vivant)
+
+**Sabotage D6** (`-e backup_offsite_host=worker-5`) : échec fermé sur les trois
+PVC — « … vit sur worker-5, qui est aussi l'hôte de sauvegarde … sauvegarde
+REFUSÉE (porte F2) » — **avant toute quiescence** ; pods `ci` intacts après
+coup (âges 21 h / 18 h / 85 min, zéro redémarrage).
+
+**Run réel n°1** (stamp `20260729T121715`) : `failed=0` (49 ok, 2 skipped).
+Fenêtre de sync ouverte puis refermée sur `ci-gitea`, `ci-jenkins`,
+`ci-vault` ; quiescence de `Deployment/jenkins` et `StatefulSet/gitea`
+seulement ; empreintes Vault avant/après identiques (« aucune écriture pendant
+l'archivage à chaud ») ; aucun pod réapparu pendant l'archivage (la fenêtre de
+sync fait son travail — au lot 1, selfHeal revertait en ~5 s).
+
+**Porte F2 franchie** — sur worker-2, `/var/lib/k3s-backups/offsite/` :
+
+```
+pvc-ci-gitea-data-gitea-0-20260729T121715.tar.gz   (496 Mo)
+pvc-ci-jenkins-home-20260729T121715.tar.gz         (273 Mo)
+pvc-ci-vault-data-vault-0-20260729T121715.tar.gz   (19 Ko)
+```
+
+lisibles (read-back + comptage d'entrées), empreintes sha256 égales au staging,
+mode 0600, aucun `.suspect`. worker-2 ≠ worker-5 prouvé par l'assert D6 du
+même run.
+
+**Récurrence + rotation** — run n°2 (stamp `20260729T122215`) : `failed=0` de
+nouveau ; deux horodatages par claim des deux côtés (staging worker-5 et
+offsite worker-2), ≤ `backup_keep`, rien supprimé à tort.
+
+**Contre-épreuve F2 verte** — `backup-restore-drill.yml` sur worker-2 :
+archive extraite dans un répertoire root-only, `gitea.db` localisé,
+`select count(*) from user where name='ci'` = 1 → « utilisateur ci présent
+dans la base restaurée sur worker-2 », répertoire détruit ensuite.
+
+**Le socle n'a pas été dégradé** : après les deux runs, gitea et jenkins
+Running (redémarrés proprement par `always`), `vault-0` **jamais redémarré**
+(âge 96 min, antérieur au premier run), `Sealed=false` avant et après chaque
+run (asserts du rôle), politiques `automated {prune, selfHeal}` restaurées à
+l'identique sur les trois Applications.
+
+**Limites résiduelles, assumées :**
+- La rotation n'a pas encore été observée en train de supprimer (il faudrait
+  8 runs) ; le chemin de code s'exécute à chaque run et le comptage reste ≤ 7.
+- Les chemins de quarantaine (`.suspect`) n'ont pas été déclenchés en réel :
+  les provoquer exigerait d'écrire dans un PVC pendant la fenêtre. Ils sont
+  couverts par relecture de code seulement.
+- Le point Vault du handoff F1 (détention des parts) reste **ouvert** — F2 a
+  été conçu pour ne pas en dépendre (Vault jamais redémarré), mais `backup.yml`
+  ne restitue la quiescence pleine de Vault qu'une fois ce point levé
+  (`backup_hot_workloads` à vider alors).
+- L'ancien répertoire offsite de worker-5 garde les archives k3s d'avant F2
+  (historique) ; les nouvelles vont sur worker-2.

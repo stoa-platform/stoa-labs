@@ -44,7 +44,7 @@ Câbler le webhook Gitea → Jenkins (`generic-webhook-trigger`, déjà dans l'i
 Aujourd'hui les trois PVC (gitea, vault, jenkins) **et** leurs archives vivent sur worker-5 : une panne disque y perd données et copies. Candidat naturel : **worker-2** — exclu du cluster par l'isolation L2 Contabo (w1↔w2), mais joignable depuis worker-4/worker-5 (matrice mesurée du 2026-07-27), déjà identifié comme « disponible pour toute charge n'exigeant pas l'appartenance au cluster ». À vérifier avant d'industrialiser : joignabilité SSH w5→w2 et espace disque. En même temps : rotation des `pvc-*.tar.gz`, quarantaine `.suspect` des archives dont la garde post-archive a rougi, et fenêtre de synchronisation Argo (auto-sync suspendu pendant la sauvegarde — le contournement actuel est une garde, pas une solution).
 **Porte F2 :** archives des trois PVC lisibles sur l'hôte cible, **distinct du nœud porteur des données**.
 **Contre-épreuve :** exercice de restauration depuis cet hôte (l'utilisateur `ci` retrouvé dans le `gitea.db` restauré, comme au lot 1).
-**État :** décision humaine sur la cible, puis extension du rôle existant — la mécanique (flux, read-back, asserts) est prouvée.
+**État : FERMÉ le 2026-07-29.** Cible worker-2 (joignabilité et 361 Go mesurés avant d'écrire une ligne, comme exigé plus bas) ; deux runs verts consécutifs, trois archives lisibles sur worker-2 avec empreintes vérifiées, restauration exercée depuis worker-2 (`backup-restore-drill.yml`, utilisateur `ci` retrouvé). Rotation par claim, quarantaine `.suspect`, fenêtre de sync Argo (capture → patch → restauration) livrées. La porte est **encodée dans le rôle** : cible = nœud porteur ⟹ échec fermé (contre-épreuve de sabotage jouée). **Déviation assumée :** Vault n'est **pas** quiescé (il redémarrerait scellé alors que la détention des parts — point prioritaire du handoff F1, toujours ouvert — n'est pas prouvée) ; son PVC est archivé à chaud sous garde d'empreinte avant/après, et le rôle vérifie que Vault reste descellé en sortie. `backup_hot_workloads` à vider une fois le point Vault levé. Preuve : `docs/superpowers/plans/2026-07-29-f2-sauvegarde-hors-noeud.md`, § « Preuve d'exécution ».
 
 ### F3 — webMethods 10.15 dans le cluster *(le cœur du lot 2)*
 
@@ -74,7 +74,7 @@ Caddy (worker-3) repointe le trafic concerné vers le cluster (le pattern `cutov
 | Dette | Où actée | Jalon porteur |
 |---|---|---|
 | Realm OCI /etc/hosts→ClusterIP (ROOT_URL) | plan lot 1, § Dette actée | F3 |
-| Sauvegardes co-localisées worker-5 + rotation + quarantaine | plan lot 1 + revue finale | F2 |
+| ~~Sauvegardes co-localisées worker-5 + rotation + quarantaine~~ | plan lot 1 + revue finale | **soldé — F2, 2026-07-29** |
 | ~~Webhook + statut de commit~~ | plan lot 1, écart assumé | **soldé — F1, 2026-07-29** |
 | Rotation du matériel de descellement Vault (`operator rekey` + révocation du jeton racine) | incident F1 du 2026-07-29 | à trancher avec F2 (sauvegarde/restauration) |
 | Épinglage par digest des 3 images du socle | revue finale, follow-up | F3 (même passe) |
