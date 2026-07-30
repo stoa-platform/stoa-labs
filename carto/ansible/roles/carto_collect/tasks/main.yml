@@ -1,0 +1,118 @@
+---
+- name: Compte de service dédié
+  ansible.builtin.user:
+    name: "{{ carto_user }}"
+    system: true
+    shell: /usr/sbin/nologin
+
+- name: Répertoire d'installation
+  ansible.builtin.file:
+    path: "{{ carto_install_dir }}"
+    state: directory
+    owner: "{{ carto_user }}"
+    mode: "0755"
+
+- name: Dépôt du paquet — collecteur, rendu et marqueur d'import
+  ansible.builtin.copy:
+    src: "{{ carto_source_dir }}/{{ item }}"
+    dest: "{{ carto_install_dir }}/carto/"
+    owner: "{{ carto_user }}"
+    mode: "0644"
+  loop:
+    - collect
+    - render
+    - __init__.py
+
+- name: Racine web de publication
+  ansible.builtin.file:
+    path: "{{ carto_web_root }}"
+    state: directory
+    owner: "{{ carto_user }}"
+    mode: "0755"
+
+- name: Enveloppe d'exécution
+  ansible.builtin.template:
+    src: carto-collect.sh.j2
+    dest: "{{ carto_install_dir }}/carto-collect.sh"
+    owner: "{{ carto_user }}"
+    mode: "0700"
+  no_log: true          # le gabarit porte les identifiants
+
+- name: Planification quotidienne
+  ansible.builtin.cron:
+    name: carto-collect
+    user: "{{ carto_user }}"
+    hour: "{{ carto_schedule_hour }}"
+    minute: "{{ carto_schedule_minute }}"
+    # Le script se place lui-meme dans {{ carto_install_dir }} (voir le
+    # gabarit) : plus besoin d'un `cd` porte par la ligne de planification.
+    job: "{{ carto_install_dir }}/carto-collect.sh"
+
+- name: Vérification — la chaîne tourne en dry-run sans rien publier
+  ansible.builtin.command:
+    # Appelle l'enveloppe, pas `python3 -m carto.collect` directement : les
+    # identifiants sont deja internes au script rendu (gabarit `no_log`
+    # ci-dessus). Aucun `environment:` ici — passer WM_PASS par ce biais
+    # l'exposerait en clair dans la trace EXEC du plugin de connexion des
+    # qu'on relance la tache en -vvv, ce que `no_log` ne protege pas.
+    cmd: "{{ carto_install_dir }}/carto-collect.sh --verify"
+  become_user: "{{ carto_user }}"
+  changed_when: false
+  register: carto_verify
+
+- name: Vérification — la collecte voit des APIs, du trafic et une fenêtre non nulle
+  # Les trois assertions sont nécessaires. `apis=0` seul laisse passer le mode
+  # de défaillance le plus sournois du produit (README, tableau de diagnostic) :
+  # motif d'index erroné (un tiret avant l'étoile) ou policy `Log Invocation`
+  # inactive donnent `apis=2 aretes=0 fenetre_couverte=0j` — l'inventaire est
+  # lu, aucun événement n'est trouvé, et la carto publiée dit sans erreur que
+  # personne n'appelle personne.
+  ansible.builtin.assert:
+    that:
+      - "'apis=0' not in carto_verify.stdout"
+      - "'aretes=0' not in carto_verify.stdout"
+      - "'fenetre_couverte=0j' not in carto_verify.stdout"
+    fail_msg: >-
+      collecte dégradée ({{ carto_verify.stdout }}) : `apis=0` = identifiants ou
+      chemins d'administration à revoir ; `aretes=0` et/ou `fenetre_couverte=0j`
+      = aucun événement lu — vérifier WM_ES_INDEX (étoile COLLÉE, pas de tiret
+      avant) et l'activation de la policy GlobalLogInvocationPolicy.
+
+- name: Vérification — le trafic est rattaché à des consommateurs identifiés
+  # Quatrième assertion, et la seule qui couvre le pire cas RÉELLEMENT MESURÉ.
+  # Sur la gateway de mesure (carto/TERRAIN.md, V5), la collecte sort
+  # `apis=2 aretes=3 fenetre_couverte=34j trafic_non_identifie=100.0%` : les
+  # trois assertions ci-dessus passent, le déploiement est VERT, et seul le
+  # bandeau de la page dira que la moitié du produit ne tient pas. Un rôle qui
+  # se déclare satisfait pendant que la page crie est un rôle qui ment.
+  #
+  # Le seuil est celui du rendu (SEUIL_NON_IDENTIFIE dans index.html) : la
+  # page et le déploiement doivent s'alarmer au même moment.
+  vars:
+    # Un `vars:` de tâche rend une CHAÎNE, même après `| float` : la
+    # conversion doit être faite au point de comparaison, sinon Ansible
+    # échoue sur « '<=' not supported between instances of 'str' and 'float' »
+    # — une panne de rôle au lieu du diagnostic attendu. Vérifié.
+    carto_part_non_identifiee: >-
+      {{ carto_verify.stdout | regex_search('trafic_non_identifie=([0-9.]+)%', '\1') | first }}
+  ansible.builtin.assert:
+    that:
+      # D'abord la présence du compteur : un collecteur trop ancien pour le
+      # porter doit être nommé comme tel, pas produire une erreur de gabarit.
+      # L'ordre compte — `assert` s'arrête à la première condition fausse.
+      - "'trafic_non_identifie=' in carto_verify.stdout"
+      - carto_part_non_identifiee | float <= carto_seuil_non_identifie_pct | float
+    fail_msg: >-
+      collecte publiable mais NON FIABLE sur la dimension consommateur
+      ({{ carto_verify.stdout }}) : la part du trafic qui n'est rattachée à
+      aucun consommateur identifié dépasse
+      {{ carto_seuil_non_identifie_pct }} %. Concrètement, la réponse
+      majoritaire à « qui consomme quoi » est « on ne sait pas » : le trafic
+      s'agrège sur des nœuds « (inconnu) », les consommateurs réels basculent
+      en « déclaré, inactif », et l'annuaire les annonce sans appel. Les
+      inventaires d'APIs et d'Applications, eux, restent exacts. Cause connue
+      et NON RÉSOLUE : la gateway ne renseigne pas l'application appelante
+      (`applicationId` = `Unknown`) — question ouverte V5 de
+      carto/TERRAIN.md, à trancher avec le client avant de se fier à cette
+      dimension. Si ce message apparaît, la carto reste utile pour l'inventaire
+      et la fenêtre, pas pour « qui appelle qui ».

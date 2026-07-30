@@ -1,0 +1,42 @@
+---
+# carto_install_dir est le PARENT du paquet : le code vit dans
+# {{ carto_install_dir }}/carto/. On invoque donc `python3 -m carto.collect`
+# exactement comme depuis le depot — une seule commande a connaitre.
+carto_install_dir: /opt/carto-app
+# Racine du livrable sur la machine qui joue le playbook (le repertoire carto/).
+# `copy` avec un src relatif chercherait dans files/ du role : on passe donc un
+# chemin absolu.
+carto_source_dir: "{{ playbook_dir }}/../.."
+# V6 — cible de publication : NON MESUREE dans ce labo (aucun mecanisme de
+# depot n'existe sur le cluster de labo). Cette valeur est un defaut neutre a
+# arbitrer avec le client, pas un chemin reel — voir carto/README.md.
+carto_web_root: /var/www/carto
+carto_user: carto
+carto_schedule_hour: "2"
+carto_schedule_minute: "11"
+# Pas de `carto_window_days` : la fenetre longue est figee a 90 jours dans le
+# collecteur (voir carto/collect/__main__.py). Exposer un reglage qui ne
+# reglait rien — l'ancienne option `--days` ne changeait que l'etiquette du
+# document, pas les agregations — etait le mensonge le plus direct de ce role.
+carto_alert_command: "logger -t carto -p user.err"   # a remplacer par le canal du client
+
+# Part maximale du trafic non rattache a un consommateur identifie, en
+# POURCENTAGE, au-dela de laquelle le deploiement est declare degrade.
+# 50.0 : meme valeur que SEUIL_NON_IDENTIFIE (0.5) dans carto/render/index.html
+# — le role et la page doivent tomber d'accord sur le moment ou la dimension
+# consommateur cesse d'etre fiable. Les deux se modifient ensemble.
+# Terrain mesure (carto/TERRAIN.md, V5) : 100 % sur la gateway de mesure. La
+# valeur n'est donc PAS theorique, et ce seuil sera franchi tant que la
+# question ouverte de V5 n'est pas tranchee avec le client.
+carto_seuil_non_identifie_pct: 50.0
+
+# Identifiants : jamais dans le depot, jamais en dur ici. Fournis a l'execution
+# depuis le coffre (par ex. via des extra-vars chiffrees ou un lookup vault),
+# comme le reste de la chaine du projet. Le gabarit qui les ecrit sur le noeud
+# est pose avec no_log pour qu'ils ne transitent jamais par une sortie Ansible.
+carto_env:
+  WM_ADMIN_URL: ""
+  WM_USER: ""
+  WM_PASS: ""
+  WM_ES_URL: ""
+  WM_ES_INDEX: ""

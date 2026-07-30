@@ -1,0 +1,605 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Carto API et consommateurs</title>
+<style>
+  :root { --bg:#fff; --fg:#1a1a1a; --mut:#666; --line:#e3e3e3; --acc:#0b5fff;
+          --warn:#b23c00; --ok:#0a7a3d; }
+  body { margin:0; font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+         color:var(--fg); background:var(--bg); }
+  header { padding:12px 20px; border-bottom:1px solid var(--line); }
+  h1 { font-size:16px; margin:0 0 8px; }
+  nav button { font:inherit; border:1px solid var(--line); background:#fff;
+               padding:6px 12px; margin-right:4px; cursor:pointer; border-radius:4px; }
+  nav button[aria-current="true"] { background:var(--acc); color:#fff; border-color:var(--acc); }
+  #banner { padding:8px 20px; font-size:13px; background:#f4f7ff; border-bottom:1px solid var(--line); }
+  #banner.stale { background:#fff1e8; color:var(--warn); font-weight:600; }
+  main { padding:16px 20px; }
+  .bar { display:flex; gap:8px; align-items:center; margin-bottom:12px; flex-wrap:wrap; }
+  input[type=search], select { font:inherit; padding:6px 8px; border:1px solid var(--line); border-radius:4px; }
+  table { border-collapse:collapse; width:100%; font-size:13px; }
+  th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); }
+  th { cursor:pointer; user-select:none; white-space:nowrap; }
+  td.num { text-align:right; font-variant-numeric:tabular-nums; }
+  .tag { font-size:11px; padding:1px 6px; border-radius:10px; border:1px solid var(--line); }
+  .tag.declared { color:var(--ok); border-color:var(--ok); }
+  .tag.undeclared { color:var(--warn); border-color:var(--warn); font-weight:600; }
+  .tag.idle { color:var(--mut); }
+  .muted { color:var(--mut); }
+  a { color:var(--acc); cursor:pointer; }
+</style>
+
+<header>
+  <h1>Carto des API et des consommateurs</h1>
+  <nav id="nav"></nav>
+</header>
+<div id="banner">chargement…</div>
+<main id="view"></main>
+
+<script>
+"use strict";
+const S = { carto:null, history:[], idx:null, view:"table" };
+
+// Version du contrat de donnees que CETTE page sait lire (carto/collect/model.py,
+// SCHEMA_VERSION — les deux doivent bouger ENSEMBLE, un test le garde).
+// Une page qui affiche un document d'une version qu'elle ne connait pas lit des
+// champs au hasard et presente le resultat comme une mesure : elle refuse.
+//
+// Version 2 : `ghost` sur chaque noeud et `unidentifiedCallShare` a la racine
+// sont devenus obligatoires. Sur un document de version 1, qui ne les porte
+// pas, cette page degraderait SANS UN MOT — c'est precisement pour ce
+// document-la que le refus ci-dessous existe.
+const SCHEMA_VERSION = 2;
+
+// Seuil d'alerte sur la part du trafic non rattachee a un consommateur
+// identifie. 50 % : au-dela, la reponse majoritaire a « qui consomme quoi »
+// est « on ne sait pas » — la table se trompe plus souvent qu'elle n'a raison,
+// et le produit doit le dire, pas le sous-entendre. Un seuil bas (quelques
+// applications supprimees suffiraient a le franchir) laisserait le bandeau
+// orange en permanence et desensibiliserait le lecteur : une alerte qui est
+// toujours allumee n'alerte plus.
+const SEUIL_NON_IDENTIFIE = 0.5;
+
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c =>
+  ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" }[c]));
+const fmt = n => (n ?? 0).toLocaleString("fr-FR");
+const day = iso => iso ? iso.slice(0,10) : "—";
+
+function push(map, k, v) { (map.get(k) || map.set(k, []).get(k)).push(v); }
+
+function index(c) {
+  const api = new Map(c.apis.map(a => [a.id, a]));
+  const con = new Map(c.consumers.map(x => [x.id, x]));
+  const byApi = new Map(), byCon = new Map();
+  for (const e of c.edges) { push(byApi, e.apiId, e); push(byCon, e.consumerId, e); }
+  return { api, con, byApi, byCon };
+}
+
+function ageDays(iso) {
+  const t = iso ? Date.parse(iso) : NaN;
+  return Number.isNaN(t) ? NaN : Math.floor((Date.now() - t) / 86400000);
+}
+
+function versionSupportee(doc) {
+  return (doc || {}).schemaVersion === SCHEMA_VERSION;
+}
+
+// Le refus doit dire QUOI FAIRE, sinon il n'est qu'une panne de plus.
+//
+// Le cas de loin le plus frequent est la fenetre de deploiement : le role
+// Ansible depose `index.html` et le collecteur ENSEMBLE, mais le `carto.json`
+// deja publie n'est reecrit qu'a la prochaine execution planifiee. Pendant
+// quelques heures, la page neuve lit donc un document ancien. Le remede n'est
+// pas de toucher a la page : c'est d'attendre la collecte suivante, ou de la
+// declencher. Le cas inverse (document plus recent que la page) existe aussi
+// et appelle le remede oppose : on nomme les deux.
+function refuserVersion(doc) {
+  const vue = (doc || {}).schemaVersion;
+  const geste = !Number.isFinite(vue)
+    ? " Le document ne porte aucun numéro de version lisible — il n'a"
+      + " probablement pas été produit par ce collecteur : vérifier ce qui"
+      + " écrit dans la racine web."
+    : vue < SCHEMA_VERSION
+      ? " Le document est plus ancien que la page — c'est la fenêtre normale"
+        + " qui suit un déploiement. Que faire : attendre la prochaine collecte"
+        + " planifiée, qui réécrira carto.json ; ou, pour ne pas attendre,"
+        + " relancer le collecteur (python3 -m carto.collect --out <racine web>)."
+      : " Le document est plus récent que la page — redéployer index.html en"
+        + " même temps que collect/ (le rôle Ansible dépose les deux ensemble).";
+  const b = document.getElementById("banner");
+  b.className = "stale";
+  b.textContent = "⚠ carto.json est en version de schéma " + String(vue)
+    + `, cette page ne sait lire que la version ${SCHEMA_VERSION}.`
+    + " Rien n'est affiché : mieux vaut pas de carto qu'une carto mal lue."
+    + geste;
+  return b.textContent;
+}
+
+// Profondeur REELLEMENT couverte, plafonnee par la fenetre nominale de la
+// colonne. Une colonne « 90 j » qui ne contient que 34 jours de trafic ment
+// sur ce qu'elle montre — et c'est la colonne qu'on lit.
+function libFenetre(nominal) {
+  const c = ((S.carto || {}).window || {}).coveredDays;
+  return Number.isFinite(c) ? `${Math.min(nominal, c)} j` : `${nominal} j`;
+}
+
+// Le bandeau existe pour crier quand la donnée est mauvaise : il ne doit
+// donc jamais planter, ni se taire, sur un carto.json abîmé ou étranger.
+function banner() {
+  const b = document.getElementById("banner");
+  const w = S.carto.window || {};
+  const age = ageDays(S.carto.generatedAt);
+  const dateIllisible = Number.isNaN(age);
+  const perime = dateIllisible || age > 2;
+
+  // Trafic non imputable a un consommateur identifie (terrain V5 : cas
+  // majoritaire attendu). Sans cette alerte, tout le trafic s'agrege sur un
+  // noeud fantome, chaque consommateur reel bascule en « declare, inactif »,
+  // l'annuaire annonce « N consommateurs dont N sans aucun appel » — et le
+  // bandeau reste vert. C'est le pire mode de defaillance du produit.
+  const part = S.carto.unidentifiedCallShare;
+  const partConnue = Number.isFinite(part);
+  const nonIdentifie = partConnue && part > SEUIL_NON_IDENTIFIE;
+
+  const alerte = perime || nonIdentifie;
+  b.className = alerte ? "stale" : "";
+
+  const dateTxt = dateIllisible
+    ? `<b>date de collecte illisible — donnée non fiable</b>`
+    : `Données du ${esc(day(S.carto.generatedAt))}`
+      + (perime ? ` — <b>périmées de ${age} jours, la collecte a échoué</b>` : ` (il y a ${age} j)`);
+
+  const coveredKnown = Number.isFinite(w.coveredDays);
+  const requestedKnown = Number.isFinite(w.requestedDays);
+  const fenetreTxt = coveredKnown
+    ? ` · fenêtre réellement couverte : <b>${w.coveredDays} jours</b>`
+      + (requestedKnown && w.coveredDays < w.requestedDays
+          ? ` <span class="muted">(${w.requestedDays} demandés — rétention de l'index plus courte)</span>` : "")
+    : ` · <span class="muted">fenêtre couverte : profondeur inconnue (champ absent du document)</span>`;
+
+  const pct = partConnue ? (part * 100).toFixed(1) : null;
+  const partTxt = !partConnue
+    ? ` · <span class="muted">part du trafic non identifié : inconnue (champ absent du document)</span>`
+    : nonIdentifie
+      ? ` · <b>${pct} % des appels ne sont rattachés à aucun consommateur identifié :`
+        + ` la dimension « qui consomme » de cette carto n'est PAS fiable</b>`
+        + ` <span class="muted">(la gateway ne renseigne pas l'application appelante)</span>`
+      : ` · <span class="muted">${pct} % des appels sans consommateur identifié</span>`;
+
+  b.innerHTML = (alerte ? "⚠ " : "") + dateTxt + fenetreTxt + partTxt;
+}
+
+const VIEWS = [
+  ["table",    "Qui consomme quoi"],
+  ["annuaire", "Annuaire des consommateurs"],
+  ["signaux",  "Signaux"],
+  ["evolution","Évolution"],
+];
+
+function nav() {
+  document.getElementById("nav").innerHTML = VIEWS.map(([k, label]) =>
+    `<button data-v="${k}" aria-current="${S.view === k}">${esc(label)}</button>`).join("");
+}
+
+function render() {
+  nav();
+  const host = document.getElementById("view");
+  if (S.view === "table")     host.innerHTML = viewTable();
+  if (S.view === "annuaire")  host.innerHTML = viewAnnuaire();
+  if (S.view === "signaux")   host.innerHTML = viewSignaux();
+  if (S.view === "evolution") host.innerHTML = viewEvolution();
+  if (S.view === "fiche")     host.innerHTML = viewFiche(S.focus);
+  if (S.view === "evolution") drawEvolution();
+}
+
+document.addEventListener("click", ev => {
+  const b = ev.target.closest("button[data-v]");
+  if (b) { S.view = b.dataset.v; render(); return; }
+  const f = ev.target.closest("a[data-focus]");
+  if (f) { S.focus = f.dataset.focus; S.view = "fiche"; render(); }
+});
+
+document.addEventListener("input", ev => {
+  if (ev.target.matches("[data-filter]")) { S.filter = ev.target.value.toLowerCase(); render(); }
+});
+
+async function boot() {
+  try {
+    S.carto = await (await fetch("carto.json", { cache:"no-store" })).json();
+    try { S.history = await (await fetch("history.json", { cache:"no-store" })).json(); }
+    catch (_) { S.history = []; }
+  } catch (err) {
+    document.getElementById("banner").className = "stale";
+    document.getElementById("banner").textContent =
+      "⚠ carto.json introuvable ou illisible — ouvrir cette page via le serveur web, pas en file://";
+    return;
+  }
+  if (!versionSupportee(S.carto)) {
+    refuserVersion(S.carto);
+    return;
+  }
+  try {
+    S.idx = index(S.carto);
+    banner();
+    render();
+  } catch (err) {
+    document.getElementById("banner").className = "stale";
+    document.getElementById("banner").textContent =
+      "⚠ carto.json chargé mais structurellement inexploitable — vérifier le fichier généré par la collecte.";
+  }
+}
+
+// --- vue : qui consomme quoi -------------------------------------------
+function rowsTable() {
+  const f = S.filter || "";
+  return S.carto.edges.map(e => ({
+    e,
+    api: S.idx.api.get(e.apiId),
+    con: S.idx.con.get(e.consumerId),
+  })).filter(r =>
+    !f || (r.api.name + " " + r.con.name).toLowerCase().includes(f));
+}
+
+function statut(e) {
+  if (!e.declared) return '<span class="tag undeclared">non déclaré</span>';
+  if (e.calls.d90 === 0) return '<span class="tag idle">déclaré, inactif</span>';
+  return '<span class="tag declared">actif</span>';
+}
+
+function viewTable() {
+  const rows = rowsTable().sort((a, b) => b.e.calls.d90 - a.e.calls.d90);
+  return `
+  <div class="bar">
+    <input type="search" data-filter placeholder="filtrer par API ou consommateur…" size="34">
+    <span class="muted">${fmt(rows.length)} lien(s)</span>
+    <button onclick="exportCsv()">Exporter en CSV</button>
+  </div>
+  <table><thead><tr>
+    <th>API</th><th>Consommateur</th><th>Statut</th>
+    <th class="num">${libFenetre(7)}</th><th class="num">${libFenetre(30)}</th>
+    <th class="num">${libFenetre(90)}</th>
+    <th>Dernier appel</th><th class="num">Erreurs</th>
+  </tr></thead><tbody>
+  ${rows.map(r => `<tr>
+    <td><a data-focus="api:${esc(r.e.apiId)}">${esc(r.api.name)}</a>
+        <span class="muted">${esc(r.api.version || "")}</span></td>
+    <td><a data-focus="con:${esc(r.e.consumerId)}">${esc(r.con.name)}</a></td>
+    <td>${statut(r.e)}</td>
+    <td class="num">${fmt(r.e.calls.d7)}</td>
+    <td class="num">${fmt(r.e.calls.d30)}</td>
+    <td class="num">${fmt(r.e.calls.d90)}</td>
+    <td>${esc(day(r.e.lastCall))}</td>
+    <td class="num">${(r.e.errorRate * 100).toFixed(1)} %</td>
+  </tr>`).join("")}
+  </tbody></table>`;
+}
+
+function exportCsv() {
+  const head = ["api", "version", "consommateur", "contact", "declare",
+                "appels_7j", "appels_30j", "appels_90j", "dernier_appel", "taux_erreur"];
+  const lines = [head.join(";")].concat(rowsTable().map(r => [
+    r.api.name, r.api.version || "", r.con.name, r.con.contact || "",
+    r.e.declared ? "oui" : "non",
+    r.e.calls.d7, r.e.calls.d30, r.e.calls.d90, r.e.lastCall || "", r.e.errorRate,
+  ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(";")));
+  const url = URL.createObjectURL(new Blob(["﻿" + lines.join("\n")],
+                                          { type:"text/csv;charset=utf-8" }));
+  const a = document.createElement("a");
+  a.href = url; a.download = `carto-${day(S.carto.generatedAt)}.csv`; a.click();
+  URL.revokeObjectURL(url);
+}
+
+// --- vue : annuaire des consommateurs ----------------------------------
+// Toutes les Applications enregistrees, y compris celles sans aucun trafic :
+// ce sont elles qu'il faut prevenir lors d'une depreciation.
+//
+// Les noeuds `ghost` en sont EXCLUS : un identifiant vu dans le trafic mais
+// absent de l'inventaire (objet supprime, ou appelant non identifie) n'est
+// pas un consommateur enregistre, et on ne peut prevenir personne a son
+// sujet. Ils restent visibles dans la vue Signaux, qui est leur place.
+function viewAnnuaire() {
+  const f = S.filter || "";
+  const fantomes = S.carto.consumers.filter(c => c.ghost).length;
+  const rows = S.carto.consumers.filter(c => !c.ghost).map(c => {
+    const edges = S.idx.byCon.get(c.id) || [];
+    return { c, apis: edges.length, actives: edges.filter(e => e.calls.d90 > 0).length,
+             calls: edges.reduce((n, e) => n + e.calls.d90, 0) };
+  }).filter(r => !f || (r.c.name + " " + (r.c.owner || "")).toLowerCase().includes(f))
+    .sort((a, b) => a.c.name.localeCompare(b.c.name, "fr"));
+
+  return `
+  <div class="bar">
+    <input type="search" data-filter placeholder="filtrer par nom ou équipe…" size="30">
+    <span class="muted">${fmt(rows.length)} consommateur(s) enregistré(s),
+      dont ${fmt(rows.filter(r => r.actives === 0).length)} sans aucun appel${
+      fantomes ? ` — ${fmt(fantomes)} appelant(s) non identifié(s) ou supprimé(s)
+      exclus de cet annuaire, voir la vue Signaux` : ""}</span>
+    <button onclick="exportAnnuaire()">Exporter en CSV</button>
+  </div>
+  <table><thead><tr>
+    <th>Consommateur</th><th>Équipe</th><th>Contact</th>
+    <th class="num">APIs liées</th><th class="num">dont actives</th>
+    <th class="num">Appels ${libFenetre(90)}</th><th>Enregistré le</th>
+  </tr></thead><tbody>
+  ${rows.map(r => `<tr>
+    <td><a data-focus="con:${esc(r.c.id)}">${esc(r.c.name)}</a></td>
+    <td>${esc(r.c.owner || "—")}</td>
+    <td>${esc(r.c.contact || "—")}</td>
+    <td class="num">${fmt(r.apis)}</td>
+    <td class="num">${r.actives === 0 ? '<span class="tag idle">0</span>' : fmt(r.actives)}</td>
+    <td class="num">${fmt(r.calls)}</td>
+    <td>${esc(day(r.c.createdAt))}</td>
+  </tr>`).join("")}
+  </tbody></table>`;
+}
+
+function exportAnnuaire() {
+  const lines = [["consommateur","equipe","contact","apis_liees","apis_actives","appels_90j","enregistre_le"].join(";")];
+  for (const c of S.carto.consumers.filter(x => !x.ghost)) {
+    const edges = S.idx.byCon.get(c.id) || [];
+    lines.push([c.name, c.owner || "", c.contact || "", edges.length,
+                edges.filter(e => e.calls.d90 > 0).length,
+                edges.reduce((n, e) => n + e.calls.d90, 0), c.createdAt || ""]
+      .map(v => `"${String(v).replace(/"/g, '""')}"`).join(";"));
+  }
+  const url = URL.createObjectURL(new Blob(["﻿" + lines.join("\n")],
+                                           { type:"text/csv;charset=utf-8" }));
+  const a = document.createElement("a");
+  a.href = url; a.download = `annuaire-consommateurs-${day(S.carto.generatedAt)}.csv`; a.click();
+  URL.revokeObjectURL(url);
+}
+
+// --- vue : fiche d'un noeud --------------------------------------------
+// La liste "qui prevenir" est l'UNION des declares et des observes : un
+// consommateur declare qui n'a pas encore appele doit y figurer.
+function contactsFor(apiId) {
+  return (S.idx.byApi.get(apiId) || [])
+    .map(e => S.idx.con.get(e.consumerId))
+    .filter(c => c && c.contact)
+    .map(c => c.contact)
+    .filter((v, i, a) => a.indexOf(v) === i)
+    .sort();
+}
+
+function graphSvg(centerLabel, neighbours) {
+  const R = 120, cx = 180, cy = 150, n = Math.max(neighbours.length, 1);
+  const pts = neighbours.map((lab, i) => {
+    const t = (2 * Math.PI * i) / n - Math.PI / 2;
+    return { lab, x: cx + R * Math.cos(t), y: cy + R * Math.sin(t) };
+  });
+  return `<svg width="360" height="300" role="img" aria-label="voisinage">
+    ${pts.map(p => `<line x1="${cx}" y1="${cy}" x2="${p.x}" y2="${p.y}" stroke="#ccc"/>`).join("")}
+    ${pts.map(p => `<circle cx="${p.x}" cy="${p.y}" r="5" fill="#0b5fff"/>
+      <text x="${p.x}" y="${p.y - 9}" font-size="10" text-anchor="middle">${esc(p.lab)}</text>`).join("")}
+    <circle cx="${cx}" cy="${cy}" r="8" fill="#1a1a1a"/>
+    <text x="${cx}" y="${cy + 22}" font-size="11" text-anchor="middle" font-weight="600">${esc(centerLabel)}</text>
+  </svg>`;
+}
+
+function viewFiche(focus) {
+  const [kind, id] = (focus || "").split(/:(.+)/);
+  if (kind === "api") {
+    const a = S.idx.api.get(id);
+    if (!a) return `<p>API inconnue.</p>`;
+    const edges = S.idx.byApi.get(id) || [];
+    const mails = contactsFor(id);
+    return `
+      <h2>${esc(a.name)} <span class="muted">${esc(a.version || "")}</span></h2>
+      <p class="muted">Équipe : ${esc(a.owner || "—")} · ${a.active ? "active" : "inactive"}
+         · enregistrée le ${esc(day(a.createdAt))}</p>
+      ${graphSvg(a.name, edges.slice(0, 14).map(e => (S.idx.con.get(e.consumerId) || {}).name || "?"))}
+      <h3>Qui prévenir (${mails.length} adresse(s))</h3>
+      ${mails.length
+        ? `<p><textarea rows="3" style="width:100%">${esc(mails.join("; "))}</textarea></p>`
+        : `<p class="muted">Aucun contact renseigné pour les consommateurs de cette API.</p>`}
+      <h3>Consommateurs (${edges.length})</h3>
+      <table><thead><tr><th>Consommateur</th><th>Statut</th>
+        <th class="num">${libFenetre(90)}</th><th>Dernier appel</th></tr></thead><tbody>
+      ${edges.sort((x, y) => y.calls.d90 - x.calls.d90).map(e => `<tr>
+        <td><a data-focus="con:${esc(e.consumerId)}">${esc((S.idx.con.get(e.consumerId) || {}).name)}</a></td>
+        <td>${statut(e)}</td><td class="num">${fmt(e.calls.d90)}</td>
+        <td>${esc(day(e.lastCall))}</td></tr>`).join("")}
+      </tbody></table>`;
+  }
+  const c = S.idx.con.get(id);
+  if (!c) return `<p>Consommateur inconnu.</p>`;
+  const edges = S.idx.byCon.get(id) || [];
+  return `
+    <h2>${esc(c.name)}</h2>
+    <p class="muted">Équipe : ${esc(c.owner || "—")} · contact : ${esc(c.contact || "—")}
+       · enregistré le ${esc(day(c.createdAt))}</p>
+    ${graphSvg(c.name, edges.slice(0, 14).map(e => (S.idx.api.get(e.apiId) || {}).name || "?"))}
+    <h3>APIs (${edges.length})</h3>
+    <table><thead><tr><th>API</th><th>Statut</th>
+      <th class="num">${libFenetre(90)}</th><th>Dernier appel</th></tr></thead><tbody>
+    ${edges.sort((x, y) => y.calls.d90 - x.calls.d90).map(e => `<tr>
+      <td><a data-focus="api:${esc(e.apiId)}">${esc((S.idx.api.get(e.apiId) || {}).name)}</a></td>
+      <td>${statut(e)}</td><td class="num">${fmt(e.calls.d90)}</td>
+      <td>${esc(day(e.lastCall))}</td></tr>`).join("")}
+    </tbody></table>`;
+}
+
+// --- vue : signaux ------------------------------------------------------
+function viewSignaux() {
+  // Meme robustesse que le bandeau : un document etranger ne doit pas faire
+  // echouer cette vue en silence (l'ecran resterait sur la vue precedente).
+  const cov = (S.carto.window || {}).coveredDays;
+  const wTxt = Number.isFinite(cov)
+    ? `<b>${cov} jours</b>`
+    : `<b>profondeur inconnue</b> — le document ne porte pas la fenêtre couverte`;
+  const apisSansTrafic = S.carto.apis.filter(a =>
+    !(S.idx.byApi.get(a.id) || []).some(e => e.calls.d90 > 0));
+  const declaresInactifs = S.carto.edges.filter(e => e.declared && e.calls.d90 === 0);
+  const nonDeclares = S.carto.edges.filter(e => !e.declared && e.calls.d90 > 0);
+  // Sur le champ `ghost` du contrat de donnees, jamais sur le prefixe du nom :
+  // une etiquette est cosmetique, un signal ne doit pas dependre d'elle.
+  const fantomes = S.carto.apis.concat(S.carto.consumers).filter(o => o.ghost === true);
+  const erreurs = S.carto.edges.filter(e => e.calls.d90 >= 100 && e.errorRate > 0.05);
+
+  const bloc = (titre, aide, lignes) => `
+    <h3>${esc(titre)} <span class="muted">(${lignes.length})</span></h3>
+    <p class="muted">${esc(aide)}</p>
+    ${lignes.length ? `<ul>${lignes.join("")}</ul>` : `<p class="muted">Rien à signaler.</p>`}`;
+
+  const lienApi = id => `<a data-focus="api:${esc(id)}">${esc((S.idx.api.get(id) || {}).name)}</a>`;
+  const lienCon = id => `<a data-focus="con:${esc(id)}">${esc((S.idx.con.get(id) || {}).name)}</a>`;
+
+  return `
+    <p class="muted">Signaux calculés sur la fenêtre réellement couverte : ${wTxt}.</p>
+    ${bloc("APIs sans aucun appel",
+           "Candidates à la décommission — vérifier d'abord qu'aucun consommateur déclaré n'attend d'y passer.",
+           apisSansTrafic.map(a => `<li>${lienApi(a.id)}</li>`))}
+    ${bloc("Consommateurs déclarés inactifs",
+           "Autorisés mais jamais vus sur la fenêtre : à relancer, pas à supprimer. Ils doivent être prévenus des changements.",
+           declaresInactifs.map(e => `<li>${lienCon(e.consumerId)} → ${lienApi(e.apiId)}</li>`))}
+    ${bloc("Trafic sans autorisation déclarée",
+           "Écart de gouvernance : du trafic observé sans lien déclaré correspondant. À investiguer.",
+           nonDeclares.map(e => `<li>${lienCon(e.consumerId)} → ${lienApi(e.apiId)}
+             <span class="muted">${fmt(e.calls.d90)} appels</span></li>`))}
+    ${bloc("Objets disparus encore appelés",
+           "Le trafic référence un identifiant absent de l'inventaire : objet supprimé, ou appelant non identifié.",
+           fantomes.map(o => `<li>${esc(o.name)}</li>`))}
+    ${bloc("Taux d'erreur anormal",
+           "Plus de 5 % d'erreurs sur au moins 100 appels.",
+           erreurs.map(e => `<li>${lienCon(e.consumerId)} → ${lienApi(e.apiId)}
+             <span class="muted">${(e.errorRate * 100).toFixed(1)} %</span></li>`))}`;
+}
+
+// --- vue : evolution ----------------------------------------------------
+// Toutes les grandeurs du journal sont des STOCKS mesurees a une date : une
+// semaine se resume par sa DERNIERE valeur, jamais par une somme.
+function weekKey(date) {
+  const d = new Date(date + "T00:00:00Z");
+  const t = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  t.setUTCDate(t.getUTCDate() + 4 - (t.getUTCDay() || 7));   // jeudi ISO
+  const y0 = new Date(Date.UTC(t.getUTCFullYear(), 0, 1));
+  const w = Math.ceil(((t - y0) / 86400000 + 1) / 7);
+  return `${t.getUTCFullYear()}-S${String(w).padStart(2, "0")}`;
+}
+
+function weekly(rows) {
+  const byWeek = new Map();
+  for (const r of [...rows].sort((a, b) => a.date.localeCompare(b.date))) {
+    byWeek.set(weekKey(r.date), r);          // la derniere du groupe l'emporte
+  }
+  return [...byWeek.entries()].map(([k, r]) => ({ ...r, week: k }));
+}
+
+// Serie RETRO-CALCULEE a partir des dates d'enregistrement : disponible des
+// le premier passage, mais c'est une courbe de SURVIVANTS — elle ne connait
+// que les objets existant encore aujourd'hui, donc elle sous-estime le passe
+// et ne montre aucune disparition. Elle est tracee en pointilles, jamais
+// melangee visuellement avec la serie mesuree.
+//
+// Mesure sur la sortie reelle du collecteur (carto/TERRAIN.md, V1) :
+// consumers[].createdAt est renseigne (liste /applications porte "created",
+// 4/4 mesures) mais apis[].createdAt est TOUJOURS null (absent de la liste
+// /apis, 0/2 mesures — le detail par API le porte mais n'est pas collecte).
+// Consequence : aucune serie retro-calculee n'est fabriquee pour les APIs,
+// seulement pour les consommateurs enregistres. Ne pas fabriquer de date de
+// substitution pour les APIs.
+function retroSeries() {
+  const dates = [];
+  for (const c of S.carto.consumers) if (c.createdAt) dates.push(c.createdAt.slice(0, 10));
+  if (!dates.length) return [];
+  dates.sort();
+  const out = new Map();
+  let cons = 0;
+  for (const d of dates) {
+    cons++;
+    out.set(weekKey(d), { week: weekKey(d), consumersRegistered: cons });
+  }
+  return [...out.values()];
+}
+
+function viewEvolution() {
+  const mes = weekly(S.history), retro = retroSeries();
+  if (!mes.length && !retro.length) {
+    return `<p>Aucun historique pour l'instant. La courbe se construit à partir
+            du premier passage du collecteur.</p>`;
+  }
+  const last = mes[mes.length - 1], prev = mes[mes.length - 5];
+  const delta = (k) => prev ? (last[k] - prev[k] >= 0 ? "+" : "") + fmt(last[k] - prev[k]) : "—";
+  return `
+    <div class="bar">
+      ${last ? `<span>Aujourd'hui : <b>${fmt(last.apis)}</b> APIs,
+        <b>${fmt(last.consumersRegistered)}</b> consommateurs enregistrés
+        dont <b>${fmt(last.consumersActive)}</b> actifs.</span>
+        <span class="muted">Sur 4 semaines : ${delta("apis")} APIs,
+        ${delta("consumersRegistered")} consommateurs.</span>` : ""}
+    </div>
+    <canvas id="chart" width="900" height="320" style="max-width:100%"></canvas>
+    <p class="muted" style="max-width:70ch">
+      <b>Historique des APIs non reconstituable.</b> La gateway ne date pas
+      ses APIs : le champ de création n'existe pas dans la réponse de liste
+      de l'API d'administration (mesuré — voir <code>carto/TERRAIN.md</code>).
+      La courbe des APIs ne peut donc démarrer qu'à la <b>première collecte</b>,
+      visible ci-dessus : un démarrage brutal à cette date ne signifie pas
+      que la plateforme n'avait aucune API avant — seul l'historique n'existe pas.
+    </p>
+    <p class="muted" style="max-width:70ch">
+      <b>Deux séries, deux fiabilités.</b> Le trait plein est <b>mesuré</b> :
+      un point par semaine depuis la mise en service du collecteur, exact pour
+      les APIs comme pour les consommateurs. Le pointillé est <b>rétro-calculé</b>,
+      uniquement pour les consommateurs enregistrés, à partir de leur date
+      d'enregistrement — les APIs n'en portent aucune (voir ci-dessus). C'est
+      une courbe de <b>survivants</b> : elle ne connaît que les consommateurs
+      existant <i>aujourd'hui</i>, donc elle sous-estime le passé et ne montre
+      aucune disparition. Ne pas en déduire que la plateforme n'a jamais perdu
+      de consommateur.
+    </p>
+    <table><thead><tr><th>Semaine</th><th class="num">APIs</th>
+      <th class="num">Consommateurs</th><th class="num">dont actifs</th>
+      <th class="num">Appels (fenêtre)</th></tr></thead><tbody>
+    ${[...mes].reverse().map(r => `<tr><td>${esc(r.week)}</td>
+      <td class="num">${fmt(r.apis)}</td>
+      <td class="num">${fmt(r.consumersRegistered)}</td>
+      <td class="num">${fmt(r.consumersActive)}</td>
+      <td class="num">${fmt(r.calls)}</td></tr>`).join("")}
+    </tbody></table>`;
+}
+
+function drawEvolution() {
+  const cv = document.getElementById("chart");
+  if (!cv) return;
+  const mes = weekly(S.history), retro = retroSeries();
+  const weeks = [...new Set(retro.concat(mes).map(r => r.week))].sort();
+  if (!weeks.length) return;
+  const x = w => 50 + (weeks.indexOf(w) / Math.max(weeks.length - 1, 1)) * (cv.width - 70);
+  const max = Math.max(1, ...mes.map(r => Math.max(r.apis, r.consumersRegistered)),
+                          ...retro.map(r => r.consumersRegistered));
+  const y = v => cv.height - 40 - (v / max) * (cv.height - 60);
+
+  const g = cv.getContext("2d");
+  g.clearRect(0, 0, cv.width, cv.height);
+  g.strokeStyle = "#e3e3e3"; g.beginPath();
+  g.moveTo(50, cv.height - 40); g.lineTo(cv.width - 20, cv.height - 40); g.stroke();
+
+  const line = (rows, key, color, dashed) => {
+    const pts = rows.filter(r => r[key] != null);
+    if (!pts.length) return;
+    g.setLineDash(dashed ? [4, 4] : []);
+    g.strokeStyle = color; g.lineWidth = 2; g.beginPath();
+    pts.forEach((r, i) => i ? g.lineTo(x(r.week), y(r[key])) : g.moveTo(x(r.week), y(r[key])));
+    g.stroke(); g.setLineDash([]);
+  };
+
+  // Pointille : uniquement les consommateurs (retro-calcule). Aucune serie
+  // retro pour les APIs — la gateway ne les date pas (voir plus haut).
+  line(retro, "consumersRegistered", "#0a7a3d", true);
+  line(mes, "apis", "#0b5fff", false);
+  line(mes, "consumersRegistered", "#0a7a3d", false);
+  line(mes, "consumersActive", "#b23c00", false);
+
+  g.fillStyle = "#666"; g.font = "11px system-ui";
+  g.fillText(weeks[0], 50, cv.height - 22);
+  g.fillText(weeks[weeks.length - 1], cv.width - 90, cv.height - 22);
+  g.fillStyle = "#0b5fff"; g.fillText("APIs (mesuré)", 55, 16);
+  g.fillStyle = "#0a7a3d"; g.fillText("consommateurs enregistrés", 160, 16);
+  g.fillStyle = "#b23c00"; g.fillText("dont actifs", 380, 16);
+  g.fillStyle = "#666";
+  g.fillText("pointillé = rétro-calculé, consommateurs uniquement (survivants) — pas d'historique reconstitué pour les APIs", 55, 32);
+}
+
+window.CARTO = { S, esc, fmt, day, index, statut };
+boot();
+</script>
