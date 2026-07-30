@@ -64,11 +64,49 @@ gh CLI (PR `stoa-platform/stoa`), ssh (alias worker-1..5).
 | Tâche | État | Reste |
 |---|---|---|
 | **T0** Terrain | ✅ **fait** — voie 1 confirmée (200 en 18,7 ms depuis l'hôte), 2 écarts de doc élucidés | — |
-| **T1** PR `stoa` | ⏸ **PR #2825 posée**, 23 contrôles verts (`UNSTABLE` = « Demo Smoke (observation) », non bloquant) | **merge exploitant**, puis apply de l'Application et relecture de la ClusterIP |
-| **T2** Data-plane interne | ⛔ bloqué par T1 | après merge |
-| **T3** Sauvegarde ns `wm` | ✅ **code fait** (2 bugs du rôle corrigés au passage) | **run** après merge (la capture d'état échoue fermée si `wm-backend-dev` n'existe pas) |
-| **T4** Rôle de bascule | ✅ **écrit et vérifié à blanc** ; 4 gardes ; **sabotage 1 vert** (cible fausse → refus d'écrire, `changed=0`) | **sabotage 2** (chemin `rescue`) — écriture Caddy, geste exploitant |
-| **T5–T8** | ⛔ bloqués | — |
+| **T1** PR `stoa` | ✅ **FAIT** — PR **#2825 mergée** par l'exploitant à 08:30:07Z (`dc2cd17b`), Application `wm-backend-dev` appliquée, `Synced/Healthy`, pod prêt en 12 s. **ClusterIP `10.43.227.71` inchangée après re-sync** → l'épinglage a porté sur la valeur vive | — |
+| **T2** Data-plane interne | ✅ **PORTE VERTE** — `/gateway/accounts-read/1.0.0/accounts` sur la ClusterIP → **200 + JSON de `backend-dev`**, là où elle rendait **500** avant | — |
+| **T3** Sauvegarde ns `wm` | 🔄 **run en cours** (code fait, 2 bugs du rôle corrigés au passage) | relecture de l'archive sur worker-2 |
+| **T4** Rôle de bascule | ✅ **écrit, vérifié à blanc**, 4 gardes ; **sabotage 1 vert** (cible fausse → refus d'écrire, `changed=0`) | **sabotage 2** (chemin `rescue`) — écriture Caddy, geste exploitant |
+| **T5–T8** | ⛔ bloqués sur l'écriture Caddy | — |
+
+### T2 — la preuve, et ce qu'elle a validé au passage
+
+```
+$ curl http://10.43.227.71:5555/gateway/accounts-read/1.0.0/accounts   # depuis l'HÔTE worker-3
+{"backend": "backend-dev.wm.svc.cluster.local",
+ "receivedPath": "/accounts/accounts",
+ "accounts": [{"id": "ACC-001", ...}, {"id": "ACC-002", ...}]}
+HTTP 200
+```
+
+Le passage **500 → 200** prouve que c'est bien `backend-dev` qui a débloqué
+l'invocation, et non un effet de bord.
+
+**`receivedPath: "/accounts/accounts"` est le fait le plus utile de la tâche.**
+C'est exactement le cas de concaténation anticipé en spéc § D5 : webMethods a
+ajouté la ressource `/accounts` à un endpoint qui se terminait **déjà** par
+`/accounts`. Un backend servant uniquement `/accounts` aurait rendu **404**, et
+la porte F5 aurait rougi pour une raison subtile, à chercher entre wM, Caddy et
+le backend. Avoir choisi un backend **agnostique au chemin et journalisant** a
+transformé une inconnue en preuve consignée, au lieu de parier sur une règle de
+concaténation non documentée.
+
+La gateway a demandé **9 essais (~90 s)** avant d'être prête : on était dans la
+fenêtre du cycle trial. L'attente active du plan (motif F4) a fait son office.
+
+### Observation — `wm-elasticsearch` restera `OutOfSync` pour toujours
+
+Relevé pendant T1, **préexistant à F5 et sans gravité** (`Healthy`), mais à
+consigner pour qu'on ne le lise pas plus tard comme un dégât de la sauvegarde :
+la seule ressource en écart est le `StatefulSet`, et l'écart porte sur des
+**défauts ajoutés par Kubernetes** dans `volumeClaimTemplates` (`apiVersion`,
+`kind`, `volumeMode: Filesystem`, `status`). Or `volumeClaimTemplates` est
+**immuable** sur un StatefulSet : Argo ne pourra jamais réconcilier.
+
+Conséquence à connaître : pour cette Application, « OutOfSync » **ne signale plus
+rien** — c'est une alerte allumée en permanence. Correctif (hors F5, une ligne) :
+déclarer `volumeMode: Filesystem` dans Git, ou poser un `ignoreDifferences`.
 
 **Deux gestes exploitant bloquent la suite** (tous deux **tentés puis refusés**
 au classifieur, en commandes propres et mono-objet — la contrainte n'est pas
