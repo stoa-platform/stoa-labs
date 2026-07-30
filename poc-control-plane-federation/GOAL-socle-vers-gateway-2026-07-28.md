@@ -67,7 +67,41 @@ Un pipeline Jenkins (image `jenkins-go`, `labctl` embarqué) publie une API sur 
 Caddy (worker-3) repointe le trafic concerné vers le cluster (le pattern `cutover.yml` : une ligne de Caddyfile, pas de DNS) ; les conteneurs Docker `wm-dev-*` de worker-3 s'éteignent après période de recouvrement.
 **Porte F5 :** le trafic public est servi par la gateway cluster ; worker-3 ne porte plus que Caddy.
 **Contre-épreuve :** rollback = une ligne de Caddyfile, exercé une fois avant la décommission définitive.
-**État :** **débloqué** (F3 et F4 fermés le 2026-07-29) ; à cadrer maintenant. Entrées connues : migration des ~109 Mo d'ES de worker-3, double-run à garder court, sauvegarde du ns `wm` (reprise F2) à poser AVANT la bascule, cycle trial `*/20` à assumer côté public (~15 min de service par cycle) — c'est le vrai sujet de F5, pas la tuyauterie.
+**État :** **débloqué** (F3 et F4 fermés le 2026-07-29) ; à cadrer maintenant. Entrées connues : migration des ~109 Mo d'ES de worker-3, double-run à garder court, sauvegarde du ns `wm` (reprise F2) à poser AVANT la bascule, cycle trial `*/20` à assumer côté public (~15 min de service par cycle) — c'est le vrai sujet de F5, pas la tuyauterie. **Le point d'amont** (comment Caddy atteint la gateway sans Ingress) est instruit ci-dessous, § Nommage et exposition.
+
+---
+
+## Nommage et exposition — inventaire des noms (F1 → F5)
+
+**Aucun jalon F1–F5 ne crée d'enregistrement DNS public.** C'est une décision, pas un manque : le jeton Cloudflare `DNS:Edit` est enfermé dans l'Infisical mort (`docs/superpowers/specs/2026-07-28-socle-ci-cluster-design.md:66-67`) et la doctrine §4.1 du lot 1 (`:99-110`) refuse tout Ingress sur le socle. Tous les noms créés par le lot 2 sont **internes au cluster** ; la bascule F5 se fait **sans toucher au DNS** (`ansible/cutover.yml:17-18`, `roles/caddy_cutover/defaults/main.yml:7-14`).
+
+### Les noms internes (faits mesurés, F1 → F4)
+
+| Rôle | Nom | Exposition |
+|---|---|---|
+| Dépôt projet, webhook, realm OCI du registre | `gitea.ci.svc.cluster.local:3000` — ClusterIP **épinglée en Git** (`10.43.60.211`) | ClusterIP + NodePort 30300 |
+| Pull d'image par containerd | `localhost:30300/ci/<image>@sha256:…` — containerd tourne au niveau **hôte** et ignore CoreDNS ; le realm renvoyé par le registre (`gitea.ci.svc.cluster.local:3000`) est résolu par un shim `/etc/hosts` → ClusterIP (rôle `registry_config`) | NodePort, **fermé de l'extérieur** (ufw : 22/30080/30443 seulement) |
+| Secrets par identité de pod | `vault.ci.svc.cluster.local:8200` | ClusterIP |
+| Cible du webhook (`ALLOWED_HOST_LIST`) | `jenkins.ci.svc.cluster.local:8080` | ClusterIP |
+| Admin REST **et** data-plane wM | `wm-apigateway.wm.svc:5555` | ClusterIP |
+| Console wM | `wm-apigateway.wm.svc:9072` | ClusterIP |
+| Data store de la gateway | **`elasticsearch:9200`** — le Service du ns `wm` s'appelle `elasticsearch` (nom court = zéro delta avec le compose worker-3) ; le StatefulSet et l'Application Argo s'appellent `wm-elasticsearch`, le pod `wm-elasticsearch-0`, le label `app=wm-elasticsearch`. **Ne pas confondre : `wm-elasticsearch.wm.svc` ne résout pas.** | ClusterIP |
+| Backend de l'API publiée (F4) | `backend-dev.wm.svc.cluster.local:8080/accounts` — **nom honnête, aucun backend réel derrière** : l'invocation data-plane appartient à F5 | — |
+| Nom public existant servi par Caddy (worker-3) | `dev-wm.gostoa.dev` → worker-3 (200 avec le Host réel, mesuré au lot 1) | public, **préexistant** |
+
+**Hors périmètre faute de DNS :** `rec-gw` / `rec-kong` / `rec-wm.gostoa.dev` sont déclarés par des Ingress historiques mais **n'ont aucun enregistrement** (`RESEARCH-cluster-k3s-contabo-2026-07-27.md:104-105`) ; `vps-wm.gostoa.dev` est un hôte à qualifier dont le TLS échoue et qui n'est pas le webMethods réellement utilisé (`:93-95`). Les faire servir exigerait des enregistrements **nouveaux**, donc le jalon **G0** du rapport cluster (« sortie de l'impasse du jeton + inventaire DNS autoritatif », `RAPPORT-cluster-k3s-contabo-2026-07-27.md:252-268`) — qui n'appartient à aucun jalon F.
+
+### Le point d'amont de F5 : NodePort, Ingress, ou ClusterIP ?
+
+F5 ne change pas de nom, il change une **cible amont** dans le Caddyfile. Les trois voies ne se valent pas :
+
+1. **ClusterIP épinglée — voie recommandée.** Caddy (worker-3) → `<clusterIP wm-apigateway>:5555`, adresse déclarée en Git comme celle de gitea. worker-3 **est** un nœud du cluster, et le chemin hôte → ClusterIP est **déjà prouvé en service** : c'est exactement ce que fait containerd pour résoudre le realm du registre via le shim `registry_config`. Zéro Ingress, zéro NodePort, zéro règle ufw, doctrine du §4.1 intacte, rollback toujours d'une ligne.
+2. **Ingress dans `wm`.** 30080/30443 sont déjà ouverts par ufw, donc c'est techniquement le chemin le plus court — mais cela **casse frontalement** la contre-épreuve F3 (« aucun Ingress dans `wm` », `wm` en ClusterIP only, 6/6 refus mesurés). À ne faire que par **exception explicite** au §4.1, jamais en contournement silencieux (même exigence qu'ADR-080 pour un webhook entrant).
+3. **NodePort dédié sur 5555 — à refuser.** Il faudrait **ouvrir 5555 dans ufw sur les IP publiques de tous les nœuds** (un NodePort répond sur chaque nœud) : c'est-à-dire exposer un admin REST webMethods sur l'Internet ouvert, exactement le défaut n8n que le rapport dénonce.
+
+**À mesurer avant de trancher** (le lot 1 a appris à tester d'abord, cf. `hostPath` vs `local`) : `curl <clusterIP>:5555/rest/apigateway/health` **depuis l'hôte worker-3** — pas depuis un pod. Si ça répond, la voie 1 est acquise ; si ça échoue, le choix remonte à l'exploitant entre l'exception §4.1 (voie 2) et l'abandon de la bascule publique.
+
+**Note à conserver :** la note de sécurité de `roles/caddy_cutover/defaults/main.yml:44-51` (« le trafic Caddy → ingress traverse l'Internet public EN CLAIR ») visait la bascule ancien k3s → nouveau k3s, où Caddy était **hors** du cluster cible. Elle **ne s'applique pas** à F5 : worker-3 porte Caddy *et* un agent du cluster, le saut réseau n'existe pas. De même, `caddy_verify_hosts` (`:29-33`) liste les quatre noms `*-k3s.gostoa.dev` de cette bascule-là — F5 réutilise le **pattern**, pas la liste, et devra re-paramétrer les noms wM réels et le `caddy_verify_path`.
 
 ---
 
@@ -85,6 +119,7 @@ Caddy (worker-3) repointe le trafic concerné vers le cluster (le pattern `cutov
 | Intégration Keycloak / échange JWT (ADR-077) | spéc lot 1, exclusions | après F4 |
 | ~~Rétention des builds Jenkins~~ | question ouverte Q1 | **soldée — F4, 2026-07-29** (`buildDiscarder` 25 builds sur `probe` et `publish-accounts`) |
 | `team:` natif dans labctl (moteur unique ADR-076) | spéc F4 § D1 | même déclencheur que JCasC (le binaire vit dans l'image) |
+| **Contre-épreuve NetworkPolicy ES écrite sur un nom qui n'existe pas** : le Step 4 de la passe #2824 interroge `wm-elasticsearch.wm.svc:9200`, or le Service du ns `wm` s'appelle **`elasticsearch`** (`wm-elasticsearch` = StatefulSet/pod/label). Le `curl` échouerait en **NXDOMAIN**, le `\|\| echo "BLOQUE (attendu)"` verdirait — la contre-épreuve prouverait la faute de frappe, pas la policy. | plan F4, PR #2824 Step 4 (`docs/superpowers/plans/2026-07-29-f4-chaine-publication.md:814`) | **à corriger AVANT de jouer la contre-épreuve #2824** (nom `elasticsearch.wm.svc:9200`, et distinguer refus réseau de non-résolution) |
 | Fichier d'init Vault encore sur worker-1 (`/root/vault-init-ci.txt`) | F1 → F4 | **prioritaire** : récupération hors ligne puis `shred -u` — tant qu'il est là, les gestes quorum sont automatisables (c'est ce qui a permis F4), mais le matériel de descellement est détenu par le nœud |
 
 ---
