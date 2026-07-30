@@ -54,17 +54,26 @@ provision_tenant() {
     --data-binary @"$DIR/role-tenant-${tenant}-audit-viewer.json"; echo
   echo "  - internaluser $user (backend_role tenant-${tenant}-audit)"
   # Le fichier internaluser-*.json ne porte plus le mot de passe en clair (dépôt
-  # public) : on injecte AUDIT_VIEWER_PASS dans le gabarit au moment de l'appel.
-  PAYLOAD="$(AUDIT_PASS="$AUDIT_VIEWER_PASS" python3 -c '
+  # public) : on injecte AUDIT_VIEWER_PASS dans le gabarit au moment de l'appel,
+  # via un fichier TEMPORAIRE hors dépôt (mktemp sans répertoire cible) — jamais
+  # en argv (ADR-074, « jamais en argv » : --data-binary @fichier, pas la charge
+  # utile en dur sur la ligne de commande de curl). `local` : la variable ne
+  # doit pas survivre en portée globale après le retour de la fonction.
+  local payload_file
+  payload_file="$(mktemp)"
+  AUDIT_PASS="$AUDIT_VIEWER_PASS" python3 -c '
 import json, os, sys
 with open(sys.argv[1]) as f:
     d = json.load(f)
 d["password"] = os.environ["AUDIT_PASS"]
-print(json.dumps(d))
-' "$DIR/internaluser-${short}-audit-viewer.json")"
+with open(sys.argv[2], "w") as out:
+    json.dump(d, out)
+' "$DIR/internaluser-${short}-audit-viewer.json" "$payload_file"
+  chmod 600 "$payload_file"
   "${CURL[@]}" -X PUT "$OS_URL/_plugins/_security/api/internalusers/$user" \
     -H 'Content-Type: application/json' \
-    --data-binary "$PAYLOAD"; echo
+    --data-binary @"$payload_file"; echo
+  rm -f "$payload_file"
   echo "  - rolesmapping $role"
   "${CURL[@]}" -X PUT "$OS_URL/_plugins/_security/api/rolesmapping/$role" \
     -H 'Content-Type: application/json' \

@@ -14,6 +14,7 @@
 set -euo pipefail
 OS_URL="${OS_URL:-https://localhost:9201}"
 OS_AUTH="${OS_AUTH:?Variable OS_AUTH absente — définissez-la (\"admin:<mot-de-passe>\", voir poc-control-plane-federation/.env.example)}"
+VIEWER_PASS="${VIEWER_PASS:?Variable VIEWER_PASS absente — définissez-la (voir poc-control-plane-federation/.env.example)}"
 # TLS (É0) — same knobs as provision.sh: OPENSEARCH_CA_FILE verifies against the
 # enterprise CA; OPENSEARCH_INSECURE=false forces strict system trust; the
 # default (unset/true) keeps -k for the PoC's self-signed demo certs ONLY.
@@ -38,12 +39,30 @@ echo "[1/3] role tenant-banking-demo-viewer (read-only txn-banking-demo*, PII ma
 }'; echo
 
 echo "[2/3] internaluser banking-txn-viewer (backend_role tenant-banking-demo)"
-"${CURL[@]}" -X PUT "$OS_URL/_plugins/_security/api/internalusers/banking-txn-viewer" -d '{
-  "password": "Stoa!Viewer2026",
-  "backend_roles": ["tenant-banking-demo"],
-  "attributes": {"tenant": "banking-demo"},
-  "description": "ADR-070 test txn viewer for banking-demo (RBAC test without SSO)."
-}'; echo
+# VIEWER_PASS ne passe JAMAIS en argv (ADR-074) : il traverse l'environnement du
+# process enfant (VP=... python3 ...), pas un paramètre de ligne de commande ;
+# python3 écrit directement le JSON (json.dump, échappement correct — pas de
+# concaténation de guillemets) dans un fichier TEMPORAIRE 0600 hors dépôt
+# (mktemp sans répertoire cible).
+PAYLOAD_FILE="$(mktemp)"
+trap 'rm -f "$PAYLOAD_FILE"' EXIT
+( umask 077
+  VP="$VIEWER_PASS" python3 -c '
+import json, os, sys
+payload = {
+    "password": os.environ["VP"],
+    "backend_roles": ["tenant-banking-demo"],
+    "attributes": {"tenant": "banking-demo"},
+    "description": "ADR-070 test txn viewer for banking-demo (RBAC test without SSO).",
+}
+with open(sys.argv[1], "w") as out:
+    json.dump(payload, out)
+' "$PAYLOAD_FILE"
+)
+"${CURL[@]}" -X PUT "$OS_URL/_plugins/_security/api/internalusers/banking-txn-viewer" \
+  --data-binary @"$PAYLOAD_FILE"; echo
+rm -f "$PAYLOAD_FILE"
+trap - EXIT
 
 echo "[3/3] rolesmapping tenant-banking-demo-viewer"
 "${CURL[@]}" -X PUT "$OS_URL/_plugins/_security/api/rolesmapping/tenant-banking-demo-viewer" -d '{

@@ -109,7 +109,15 @@ services:
       - "9601:9600"     # Performance Analyzer
     healthcheck:
       # Sécurité activée → probe HTTPS avec creds admin, -k (cert démo auto-signé).
-      test: ["CMD-SHELL", "curl -sk -u admin:${OPENSEARCH_PASSWORD:?Variable OPENSEARCH_PASSWORD absente — définissez-la, voir poc-control-plane-federation/.env.example} https://localhost:9200/_cluster/health | grep -E '\"status\":\"(green|yellow)\"' || exit 1"]
+      # $$OPENSEARCH_INITIAL_ADMIN_PASSWORD (échappé pour docker compose, donc
+      # PAS interpolé côté hôte) est développé par LE SHELL DU CONTENEUR à
+      # l'exécution, à partir de la variable d'environnement DÉJÀ posée
+      # ci-dessus sur CE MÊME conteneur — le mot de passe n'apparaît donc
+      # jamais en clair dans la commande de `docker inspect`/`compose config`,
+      # et un mot de passe contenant espace/$/;/antiquote ne casse plus le
+      # healthcheck (il est repris entre guillemets, développé une seule fois,
+      # côté conteneur).
+      test: ["CMD-SHELL", "curl -sk -u \"admin:$$OPENSEARCH_INITIAL_ADMIN_PASSWORD\" https://localhost:9200/_cluster/health | grep -E '\"status\":\"(green|yellow)\"' || exit 1"]
       interval: 15s
       timeout: 10s
       retries: 30
@@ -132,12 +140,20 @@ services:
       - OPENSEARCH_PASSWORD=kibanaserver
       - OPENSEARCH_SSL_VERIFICATIONMODE=none
       # SSO OIDC Keycloak (realm stoa-lab) = best-effort / Phase 3 (différable).
+      # Nom DISTINCT de OPENSEARCH_PASSWORD ci-dessus (qui est le mot de passe
+      # du compte système kibanaserver, sans rapport) : celui-ci sert UNIQUEMENT
+      # au healthcheck (probe /api/status en admin), jamais aux requêtes propres
+      # de Dashboards vers OpenSearch.
+      - HEALTHCHECK_ADMIN_PASSWORD=${OPENSEARCH_PASSWORD:?Variable OPENSEARCH_PASSWORD absente — définissez-la (voir poc-control-plane-federation/.env.example)}
     ports:
       - "5601:5601"
     healthcheck:
       # Sécurité OpenSearch activée → /api/status exige une auth (sinon 401).
       # On probe avec les creds admin ; "state":"green" = Dashboards opérationnel.
-      test: ["CMD-SHELL", "curl -sf -u admin:${OPENSEARCH_PASSWORD:?Variable OPENSEARCH_PASSWORD absente — définissez-la, voir poc-control-plane-federation/.env.example} http://localhost:5601/api/status | grep -E '\"state\":\"green\"' || exit 1"]
+      # $$HEALTHCHECK_ADMIN_PASSWORD (échappé pour docker compose) est développé
+      # par le shell DU CONTENEUR à l'exécution — cf. commentaire équivalent sur
+      # le healthcheck du service opensearch ci-dessus (même raison, même fix).
+      test: ["CMD-SHELL", "curl -sf -u \"admin:$$HEALTHCHECK_ADMIN_PASSWORD\" http://localhost:5601/api/status | grep -E '\"state\":\"green\"' || exit 1"]
       interval: 15s
       timeout: 10s
       retries: 30

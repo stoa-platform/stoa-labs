@@ -447,7 +447,7 @@ docker restart poc-wso2am            # OBLIGATOIRE : WSO2 charge les KM au DÉMA
 - WSO2 Publisher/Devportal : https://localhost:9443/{publisher,devportal} — `admin`/`admin`
 - Keycloak admin : http://localhost:8480/admin/ — `admin`/`admin` — realm `stoa-lab` (users `alice@bc.example`/`password`)
 - Grafana : http://localhost:3000 — **ouvert (pas d'auth)** — dashboard `stoa-fed-otel-txn`
-- OpenSearch : https://localhost:9201 (`admin`/`<mot-de-passe-opensearch>`, `-k`) · Dashboards http://localhost:5601 · viewer tenant `accounts-viewer` (mdp dans `observability/opensearch/provision/04-internaluser-accounts-viewer.json`)
+- OpenSearch : https://localhost:9201 (`admin`/`<mot-de-passe-opensearch>`, `-k`) · Dashboards http://localhost:5601 · viewer tenant `accounts-viewer` (mdp = `VIEWER_PASS`, voir `poc-control-plane-federation/.env.example` — le gabarit `04-internaluser-accounts-viewer.json` ne porte plus la valeur)
 - Microcks : http://localhost:8585 — APISIX admin : `X-API-KEY: poc-apisix-admin-key` (9180)
 - Clients : `poc-gateways`/`poc-gateways-secret` ; `accounts-read-consumer` (secret dans `labctl-credentials.txt`, gitignoré, régénéré par `subscribe`)
 
