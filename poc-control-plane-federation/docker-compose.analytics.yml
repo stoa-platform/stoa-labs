@@ -93,7 +93,7 @@ services:
       # provisionné, mais on fixe le mot de passe admin fort.
       - DISABLE_INSTALL_DEMO_CONFIG=false
       - DISABLE_SECURITY_PLUGIN=false
-      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=Stoa!Passw0rd2026
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=${OPENSEARCH_PASSWORD:?Variable OPENSEARCH_PASSWORD absente — définissez-la (voir poc-control-plane-federation/.env.example)}
     ulimits:
       memlock:
         soft: -1
@@ -108,7 +108,7 @@ services:
       - "9601:9600"     # Performance Analyzer
     healthcheck:
       # Sécurité activée → probe HTTPS avec creds admin, -k (cert démo auto-signé).
-      test: ["CMD-SHELL", "curl -sk -u admin:Stoa!Passw0rd2026 https://localhost:9200/_cluster/health | grep -E '\"status\":\"(green|yellow)\"' || exit 1"]
+      test: ["CMD-SHELL", "curl -sk -u admin:${OPENSEARCH_PASSWORD:?Variable OPENSEARCH_PASSWORD absente — définissez-la, voir poc-control-plane-federation/.env.example} https://localhost:9200/_cluster/health | grep -E '\"status\":\"(green|yellow)\"' || exit 1"]
       interval: 15s
       timeout: 10s
       retries: 30
@@ -136,7 +136,7 @@ services:
     healthcheck:
       # Sécurité OpenSearch activée → /api/status exige une auth (sinon 401).
       # On probe avec les creds admin ; "state":"green" = Dashboards opérationnel.
-      test: ["CMD-SHELL", "curl -sf -u admin:Stoa!Passw0rd2026 http://localhost:5601/api/status | grep -E '\"state\":\"green\"' || exit 1"]
+      test: ["CMD-SHELL", "curl -sf -u admin:${OPENSEARCH_PASSWORD:?Variable OPENSEARCH_PASSWORD absente — définissez-la, voir poc-control-plane-federation/.env.example} http://localhost:5601/api/status | grep -E '\"state\":\"green\"' || exit 1"]
       interval: 15s
       timeout: 10s
       retries: 30
@@ -159,7 +159,9 @@ services:
       redpanda:
         condition: service_healthy
     environment:
-      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=Stoa!Passw0rd2026
+      # Lu par pipelines.yaml via ${OPENSEARCH_PASSWORD} (substitution native Data
+      # Prepper) : le mot de passe ne vit plus en clair dans le fichier versionné.
+      - OPENSEARCH_PASSWORD=${OPENSEARCH_PASSWORD:?Variable OPENSEARCH_PASSWORD absente — définissez-la (voir poc-control-plane-federation/.env.example)}
     volumes:
       - ./observability/data-prepper/pipelines.yaml:/usr/share/data-prepper/pipelines/pipelines.yaml:ro
       - ./observability/data-prepper/data-prepper-config.yaml:/usr/share/data-prepper/config/data-prepper-config.yaml:ro

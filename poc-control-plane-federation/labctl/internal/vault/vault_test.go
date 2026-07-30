@@ -43,7 +43,7 @@ func TestReadKV(t *testing.T) {
 	defer srv.Close()
 
 	t.Setenv("VAULT_ADDR", srv.URL)
-	t.Setenv("VAULT_TOKEN", "stoa-root-token")
+	t.Setenv("VAULT_TOKEN", "unit-test-token")
 	t.Setenv("VAULT_KV_MOUNT", "secret")
 	t.Setenv("VAULT_PREFIX", "stoa")
 
@@ -61,8 +61,8 @@ func TestReadKV(t *testing.T) {
 	if gotPath != "/v1/secret/data/stoa/gateways/apisix" {
 		t.Errorf("path = %q, want /v1/secret/data/stoa/gateways/apisix", gotPath)
 	}
-	if gotToken != "stoa-root-token" {
-		t.Errorf("X-Vault-Token = %q, want stoa-root-token", gotToken)
+	if gotToken != "unit-test-token" {
+		t.Errorf("X-Vault-Token = %q, want unit-test-token", gotToken)
 	}
 }
 

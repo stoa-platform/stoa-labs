@@ -20,7 +20,7 @@ set -euo pipefail
 KC_BASE="${KC_BASE:-http://localhost:8480}"
 REALM="${REALM:-stoa-lab}"
 ADMIN_USER="${ADMIN_USER:-admin}"; ADMIN_PASS="${ADMIN_PASS:-admin}"
-CLIENT="${CI_CLIENT:-ci-applier}"; SECRET="${CI_SECRET:-ci-applier-secret}"
+CLIENT="${CI_CLIENT:-ci-applier}"; SECRET="${CI_SECRET:?Variable CI_SECRET absente — définissez-la (voir poc-control-plane-federation/.env.example)}"
 TENANT="${CI_TENANT:-banking-demo}"; AUD="${AUDIENCE:-onboarding-api}"
 CURL=(/usr/bin/curl -s); JSON=(-H 'Content-Type: application/json')
 

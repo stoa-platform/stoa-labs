@@ -22,7 +22,7 @@ set -euo pipefail
 KC_BASE="${KC_BASE:-http://localhost:8480}"
 REALM="${REALM:-stoa-lab}"
 ADMIN_USER="${ADMIN_USER:-admin}"; ADMIN_PASS="${ADMIN_PASS:-admin}"
-CLIENT="${CI_CLIENT:-ci-horsprod}"; SECRET="${CI_SECRET:-ci-horsprod-secret}"
+CLIENT="${CI_CLIENT:-ci-horsprod}"; SECRET="${CI_SECRET:?Variable CI_SECRET absente — définissez-la (voir poc-control-plane-federation/.env.example)}"
 AUD="${AUDIENCE:-wm-admin}"
 SCOPES=(deploy:dev deploy:rec deploy:int)   # PAS deploy:prod (barrière)
 CURL=(/usr/bin/curl -s); JSON=(-H 'Content-Type: application/json')

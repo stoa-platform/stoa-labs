@@ -11,7 +11,7 @@ set -uo pipefail
 KC=http://localhost:8480
 WSO2=https://localhost:8243
 OS=https://localhost:9201
-OS_PASS="${OPENSEARCH_PASSWORD:-Stoa!Passw0rd2026}"
+OS_PASS="${OPENSEARCH_PASSWORD:?Variable OPENSEARCH_PASSWORD absente — définissez-la (voir poc-control-plane-federation/.env.example)}"
 API_PATH="/accounts-read/v1/1.0.0/accounts"
 
 PASS=0; FAIL=0

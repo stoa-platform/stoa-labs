@@ -12,8 +12,8 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OS_URL="${OPENSEARCH_URL:-https://localhost:9201}"
-OS_PASS="${OPENSEARCH_PASSWORD:-Stoa!Passw0rd2026}"
-AUDIT_VIEWER_PASS="${AUDIT_VIEWER_PASS:-Stoa!Audit2026}"
+OS_PASS="${OPENSEARCH_PASSWORD:?Variable OPENSEARCH_PASSWORD absente — définissez-la (voir poc-control-plane-federation/.env.example)}"
+AUDIT_VIEWER_PASS="${AUDIT_VIEWER_PASS:?Variable AUDIT_VIEWER_PASS absente — définissez-la (voir poc-control-plane-federation/.env.example)}"
 PASS=0; FAIL=0
 ok()  { PASS=$((PASS+1)); printf '  \033[32mPASS\033[0m %s\n' "$*"; }
 bad() { FAIL=$((FAIL+1)); printf '  \033[31mFAIL\033[0m %s\n' "$*"; }

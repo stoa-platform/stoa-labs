@@ -150,11 +150,16 @@ echo "═══ 2/4 Tokens de test (client_credentials — aucun mot de passe ut
 TOK_OK="$(bash scripts/setup-ci-horsprod.sh --mint 2>/dev/null)"
 [ -n "$TOK_OK" ] || { echo "✗ mint ci-horsprod (setup-ci-horsprod.sh ?)"; exit 1; }
 # ci-applier : client de la médiation ADR-072 — AUCUN scope deploy:{env} → sert
-# de contre-épreuve « bon issuer, bonne signature, MAUVAIS scope ».
-TOK_NOSCOPE="$(curl -s -X POST "$KC_BASE/realms/stoa-lab/protocol/openid-connect/token" \
-  -d client_id=ci-applier -d "client_secret=${CI_APPLIER_SECRET:-ci-applier-secret}" -d grant_type=client_credentials \
-  | python3 -c 'import sys,json;print(json.load(sys.stdin).get("access_token",""))')"
-[ -n "$TOK_NOSCOPE" ] || echo "  (ci-applier non mintable — test 'sans scope' sera SKIP)"
+# de contre-épreuve « bon issuer, bonne signature, MAUVAIS scope ». Contre-preuve
+# OPTIONNELLE : pas de secret par défaut (dépôt public) ; si CI_APPLIER_SECRET
+# n'est pas fourni, ce test annexe est simplement SAUTÉ (pas de repli silencieux).
+TOK_NOSCOPE=""
+if [ -n "${CI_APPLIER_SECRET:-}" ]; then
+  TOK_NOSCOPE="$(curl -s -X POST "$KC_BASE/realms/stoa-lab/protocol/openid-connect/token" \
+    -d client_id=ci-applier -d "client_secret=$CI_APPLIER_SECRET" -d grant_type=client_credentials \
+    | python3 -c 'import sys,json;print(json.load(sys.stdin).get("access_token",""))')"
+fi
+[ -n "$TOK_NOSCOPE" ] || echo "  (ci-applier non mintable — test 'sans scope' sera SKIP ; définir CI_APPLIER_SECRET pour l'activer, voir poc-control-plane-federation/.env.example)"
 
 code() { # code METHOD URL [TOKEN] -> http_code
   local m="$1" u="$2" t="${3:-}"

@@ -1,5 +1,5 @@
 {
-  "password": "Stoa!Audit2026",
+  "password": "<injecte-a-l-execution-par-AUDIT_VIEWER_PASS>",
   "backend_roles": ["tenant-banking-demo-audit"],
   "attributes": { "tenant": "banking-demo" },
   "description": "PoC tenant audit viewer (banking-demo). RBAC test for audit-onboarding-banking-demo* WITHOUT SSO. Provisioned idempotently."

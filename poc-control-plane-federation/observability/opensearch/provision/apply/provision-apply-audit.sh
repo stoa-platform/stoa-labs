@@ -16,7 +16,7 @@
 set -euo pipefail
 
 OS_URL="${OS_URL:-https://localhost:9201}"
-OS_AUTH="${OS_AUTH:-admin:Stoa!Passw0rd2026}"
+OS_AUTH="${OS_AUTH:?Variable OS_AUTH absente — définissez-la (\"admin:<mot-de-passe>\", voir poc-control-plane-federation/.env.example)}"
 DIR="$(cd "$(dirname "$0")" && pwd)"
 ONB="$DIR/../onboarding"
 CURL=(/usr/bin/curl -s -k -u "$OS_AUTH")
@@ -39,5 +39,5 @@ echo "[2/3] tenant banking-demo apply-audit RBAC"; apply_role banking-demo
 echo "[3/3] tenant payments-team apply-audit RBAC"; apply_role payments-team
 
 echo "done. Apply-plane tenant isolation proof:"
-echo "    curl -s -k -u banking-audit-viewer:Stoa!Audit2026  $OS_URL/audit-apply-banking-demo/_search   # 200"
-echo "    curl -s -k -u banking-audit-viewer:Stoa!Audit2026  $OS_URL/audit-apply-payments-team/_search  # 403"
+echo "    curl -s -k -u banking-audit-viewer:<mot-de-passe-audit-viewer>  $OS_URL/audit-apply-banking-demo/_search   # 200"
+echo "    curl -s -k -u banking-audit-viewer:<mot-de-passe-audit-viewer>  $OS_URL/audit-apply-payments-team/_search  # 403"

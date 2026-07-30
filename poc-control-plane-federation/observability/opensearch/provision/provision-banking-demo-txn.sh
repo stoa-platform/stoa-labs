@@ -13,7 +13,7 @@
 # and are left as a follow-up.
 set -euo pipefail
 OS_URL="${OS_URL:-https://localhost:9201}"
-OS_AUTH="${OS_AUTH:-admin:Stoa!Passw0rd2026}"
+OS_AUTH="${OS_AUTH:?Variable OS_AUTH absente — définissez-la (\"admin:<mot-de-passe>\", voir poc-control-plane-federation/.env.example)}"
 # TLS (É0) — same knobs as provision.sh: OPENSEARCH_CA_FILE verifies against the
 # enterprise CA; OPENSEARCH_INSECURE=false forces strict system trust; the
 # default (unset/true) keeps -k for the PoC's self-signed demo certs ONLY.

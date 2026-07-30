@@ -53,4 +53,8 @@ datasources:
           datasourceUid: tempo
           url: ""
     secureJsonData:
-      basicAuthPassword: "Stoa!Passw0rd2026"
+      # $__env{...} = substitution Grafana native à partir de la variable
+      # d'environnement du conteneur (dépôt public : plus de mot de passe en
+      # clair ici ; voir OPENSEARCH_PASSWORD dans docker-compose.poc.yml +
+      # poc-control-plane-federation/.env.example).
+      basicAuthPassword: "$__env{OPENSEARCH_PASSWORD}"

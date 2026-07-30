@@ -8,7 +8,7 @@
 set -euo pipefail
 
 OS_URL="${OS_URL:-https://localhost:9201}"
-OS_AUTH="${OS_AUTH:-admin:Stoa!Passw0rd2026}"
+OS_AUTH="${OS_AUTH:?Variable OS_AUTH absente — définissez-la (\"admin:<mot-de-passe>\", voir poc-control-plane-federation/.env.example)}"
 # OpenSearch Dashboards (saved objects API) — plain HTTP on 5601 in the PoC.
 OSD_URL="${OSD_URL:-http://localhost:5601}"
 OSD_AUTH="${OSD_AUTH:-$OS_AUTH}"

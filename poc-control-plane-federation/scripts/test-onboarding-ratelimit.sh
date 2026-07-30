@@ -11,7 +11,7 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 KC_BASE="${KC_BASE:-http://localhost:8480}"
 OS_URL="${OPENSEARCH_URL:-https://localhost:9201}"
-OS_PASS="${OPENSEARCH_PASSWORD:-Stoa!Passw0rd2026}"
+OS_PASS="${OPENSEARCH_PASSWORD:?Variable OPENSEARCH_PASSWORD absente — définissez-la (voir poc-control-plane-federation/.env.example)}"
 PORT="${PORT:-8789}"
 API="http://localhost:${PORT}"
 LIMIT=3

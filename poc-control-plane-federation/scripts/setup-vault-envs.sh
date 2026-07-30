@@ -18,7 +18,7 @@
 set -euo pipefail
 
 VAULT_ADDR="${VAULT_ADDR:-http://localhost:8200}"
-VAULT_TOKEN="${VAULT_TOKEN:-stoa-root-token}"
+VAULT_TOKEN="${VAULT_TOKEN:?Variable VAULT_TOKEN absente — définissez-la (voir poc-control-plane-federation/.env.example)}"
 MOUNT="${VAULT_KV_MOUNT:-secret}"
 PREFIX="${VAULT_PREFIX:-stoa}"
 CURL=(/usr/bin/curl -s -H "X-Vault-Token: $VAULT_TOKEN")
@@ -35,7 +35,7 @@ put() {
 WM_DEV_USER="${WM_DEV_USER:-wm-dev-admin}";  WM_DEV_PASS="${WM_DEV_PASS:-wm-dev-secret-poc}"
 WM_REC_USER="${WM_REC_USER:-wm-rec-admin}";  WM_REC_PASS="${WM_REC_PASS:-wm-rec-secret-poc}"
 WM_INT_USER="${WM_INT_USER:-wm-int-admin}";  WM_INT_PASS="${WM_INT_PASS:-wm-int-secret-poc}"
-CI_HORSPROD_SECRET="${CI_HORSPROD_SECRET:-ci-horsprod-secret}"
+CI_HORSPROD_SECRET="${CI_HORSPROD_SECRET:?Variable CI_HORSPROD_SECRET absente — définissez-la (voir poc-control-plane-federation/.env.example)}"
 
 echo "Vault $VAULT_ADDR — provisioning secret/$PREFIX/envs/* (KV v2, ADR-075)"
 put envs/dev/wm-admin "{\"username\":\"$WM_DEV_USER\",\"password\":\"$WM_DEV_PASS\"}"
@@ -48,8 +48,13 @@ CUR_APPLIER="$("${CURL[@]}" "$VAULT_ADDR/v1/$MOUNT/data/$PREFIX/ci" \
   | python3 -c 'import sys,json
 try: print(json.load(sys.stdin)["data"]["data"].get("ciApplierSecret",""))
 except Exception: print("")' 2>/dev/null || true)"
-CI_APPLIER_SECRET="${CI_APPLIER_SECRET:-${CUR_APPLIER:-ci-applier-secret}}"
-[ -n "$CI_APPLIER_SECRET" ] || CI_APPLIER_SECRET="ci-applier-secret"
+CI_APPLIER_SECRET="${CI_APPLIER_SECRET:-$CUR_APPLIER}"
+[ -n "$CI_APPLIER_SECRET" ] || {
+  echo "Variable CI_APPLIER_SECRET absente et aucun ciApplierSecret déjà présent dans" >&2
+  echo "Vault (secret/$PREFIX/ci) — définissez CI_APPLIER_SECRET (voir" >&2
+  echo "poc-control-plane-federation/.env.example) ou lancez d'abord scripts/setup-vault.sh." >&2
+  exit 1
+}
 put ci "{\"ciApplierSecret\":\"$CI_APPLIER_SECRET\",\"ciHorsprodSecret\":\"$CI_HORSPROD_SECRET\"}"
 
 echo "done. Vérif (re-lecture d'un secret) :"

@@ -23,7 +23,8 @@
 set -euo pipefail
 
 OS_URL="${OS_URL:-https://localhost:9201}"
-OS_AUTH="${OS_AUTH:-admin:Stoa!Passw0rd2026}"
+OS_AUTH="${OS_AUTH:?Variable OS_AUTH absente — définissez-la (\"admin:<mot-de-passe>\", voir poc-control-plane-federation/.env.example)}"
+AUDIT_VIEWER_PASS="${AUDIT_VIEWER_PASS:?Variable AUDIT_VIEWER_PASS absente — définissez-la (voir poc-control-plane-federation/.env.example)}"
 DIR="$(cd "$(dirname "$0")" && pwd)"
 # TLS (É0) — same knobs as provision.sh: OPENSEARCH_CA_FILE verifies against the
 # enterprise CA; OPENSEARCH_INSECURE=false forces strict system trust; the
@@ -52,9 +53,18 @@ provision_tenant() {
     -H 'Content-Type: application/json' \
     --data-binary @"$DIR/role-tenant-${tenant}-audit-viewer.json"; echo
   echo "  - internaluser $user (backend_role tenant-${tenant}-audit)"
+  # Le fichier internaluser-*.json ne porte plus le mot de passe en clair (dépôt
+  # public) : on injecte AUDIT_VIEWER_PASS dans le gabarit au moment de l'appel.
+  PAYLOAD="$(AUDIT_PASS="$AUDIT_VIEWER_PASS" python3 -c '
+import json, os, sys
+with open(sys.argv[1]) as f:
+    d = json.load(f)
+d["password"] = os.environ["AUDIT_PASS"]
+print(json.dumps(d))
+' "$DIR/internaluser-${short}-audit-viewer.json")"
   "${CURL[@]}" -X PUT "$OS_URL/_plugins/_security/api/internalusers/$user" \
     -H 'Content-Type: application/json' \
-    --data-binary @"$DIR/internaluser-${short}-audit-viewer.json"; echo
+    --data-binary "$PAYLOAD"; echo
   echo "  - rolesmapping $role"
   "${CURL[@]}" -X PUT "$OS_URL/_plugins/_security/api/rolesmapping/$role" \
     -H 'Content-Type: application/json' \
@@ -69,5 +79,5 @@ provision_tenant payments payments-team
 
 echo "[4/4] done. Tenant isolation proof (each viewer sees ONLY its tenant's audits):"
 echo "    (PoC self-signed: add -k, or point --cacert at OPENSEARCH_CA_FILE)"
-echo "    curl -s -u banking-audit-viewer:Stoa!Audit2026  $OS_URL/audit-onboarding-banking-demo/_search   # 200"
-echo "    curl -s -u banking-audit-viewer:Stoa!Audit2026  $OS_URL/audit-onboarding-payments-team/_search  # 403"
+echo "    curl -s -u banking-audit-viewer:\$AUDIT_VIEWER_PASS  $OS_URL/audit-onboarding-banking-demo/_search   # 200"
+echo "    curl -s -u banking-audit-viewer:\$AUDIT_VIEWER_PASS  $OS_URL/audit-onboarding-payments-team/_search  # 403"

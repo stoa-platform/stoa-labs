@@ -19,6 +19,14 @@
 #            JAMAIS le request body.
 #     → route (tenant) → sink opensearch index "txn-${/tenant}-%{yyyy.MM.dd}".
 #
+# NB : les sinks opensearch ci-dessous portent "${OPENSEARCH_PASSWORD}" — pas un
+# mot de passe en clair (dépôt public). C'est une substitution native de Data
+# Prepper (résolue à partir de la variable d'environnement du même nom du
+# conteneur data-prepper, cf. docker-compose.analytics.yml +
+# poc-control-plane-federation/.env.example) ; à ne pas confondre avec
+# "${/tenant}" plus bas, qui est une expression Data Prepper sur un CHAMP de
+# l'événement (JsonPointer), pas une variable d'environnement.
+#
 # Contrat d'entrée RÉEL (kafka-logger APISIX, vérifié live 2026-06-11) :
 #   le log_format APISIX projette un objet JSON PLAT (contrainte :byte() — pas
 #   d'objets nichés). Les en-têtes sont des clés plates :
@@ -217,7 +225,7 @@ stoa-txn-apisix:
         hosts:
           - "https://opensearch:9200"
         username: "admin"
-        password: "Stoa!Passw0rd2026"
+        password: "${OPENSEARCH_PASSWORD}"
         insecure: true                       # PoC : certificat démo auto-signé
         index: "txn-${/tenant}"              # DATA STREAM par tenant (append-only)
         action: "create"                     # data stream => op_type create obligatoire
@@ -461,7 +469,7 @@ stoa-txn-webmethods:
         hosts:
           - "https://opensearch:9200"
         username: "admin"
-        password: "Stoa!Passw0rd2026"
+        password: "${OPENSEARCH_PASSWORD}"
         insecure: true
         index: "txn-${/tenant}"
         action: "create"
@@ -579,7 +587,7 @@ stoa-txn-wso2:
         hosts:
           - "https://opensearch:9200"
         username: "admin"
-        password: "Stoa!Passw0rd2026"
+        password: "${OPENSEARCH_PASSWORD}"
         insecure: true
         index: "txn-${/tenant}"
         action: "create"

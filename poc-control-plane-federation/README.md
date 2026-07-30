@@ -59,12 +59,17 @@ Prérequis : Docker + Docker Compose. Profil light, mais prévoir ~16 Go RAM (WS
 
 ```bash
 cd poc-control-plane-federation
-cp .env.example .env          # vérifier/ajuster les tags d'images
+cp .env.example .env          # vérifier/ajuster les tags d'images + les secrets locaux
+set -a && source .env && set +a   # exporte-les vers CE shell (requis pour scripts/*.sh
+                                   # lancés à la main ; up.sh/smoke-test.sh le font déjà seuls)
 ./scripts/up.sh               # build le mock + up + attend les healthchecks
 ./scripts/smoke-test.sh       # DoD Phase 1 : les 3 gateways + identité + obs répondent
 ./scripts/down.sh             # arrêt (volumes conservés)
 ./scripts/teardown.sh         # destruction contrôlée (volumes + image mock)
 ```
+
+Aucun secret n'est plus écrit en clair dans le code (dépôt public) : `.env` (ignoré
+par git) porte les valeurs locales — gabarit dans [`.env.example`](./.env.example).
 
 ## Composants (briques OSS)
 

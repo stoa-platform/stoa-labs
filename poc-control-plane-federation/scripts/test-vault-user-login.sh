@@ -24,6 +24,7 @@ set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 VADDR="${VAULT_ADDR:-http://localhost:8200}"
+VTOK="${VAULT_TOKEN:?Variable VAULT_TOKEN absente — définissez-la (voir poc-control-plane-federation/.env.example)}"
 MOUNT="${USERPASS_MOUNT:-userpass}"
 LDAP_MOUNT="${LDAP_MOUNT:-ldap}"
 # shellcheck source=scripts/lib/lab-vault-users.sh
@@ -168,7 +169,7 @@ sec "4. Non-fuite du mot de passe et du token"
 # argv : le mot de passe ne doit apparaître dans la ligne de commande d'AUCUN
 # process (ps / /proc/<pid>/cmdline sont lisibles par les autres builds du nœud).
 SENTINEL="Sentinel-argv-$$"
-curl -s -o /dev/null -H "X-Vault-Token: stoa-root-token" -X POST \
+curl -s -o /dev/null -H "X-Vault-Token: $VTOK" -X POST \
   "$VADDR/v1/auth/$MOUNT/users/sentinel" \
   -d "{\"password\":\"$SENTINEL\",\"token_policies\":\"\",\"token_ttl\":60}"
 PSOUT="$WORK/ps.txt"
@@ -295,7 +296,7 @@ fi
 # ═══ 7. [ldap] Formats de login AD — palier annuaire réel ═══════════════════
 sec "7. [ldap] Formats de login de l'annuaire (UPN, DOMAIN\\user)"
 
-if curl -s -H "X-Vault-Token: ${VAULT_TOKEN:-stoa-root-token}" "$VADDR/v1/sys/auth" \
+if curl -s -H "X-Vault-Token: $VTOK" "$VADDR/v1/sys/auth" \
      | grep -q "\"$LDAP_MOUNT/\""; then
 
   # Trouvaille live 2026-07-22 : `userpass` REFUSE '@' et '\' dans un username
@@ -393,7 +394,7 @@ grep -q TOKEN_OK <<<"$KCOUT" \
   && ok "T34 jeton du compte de service obtenu avec le client_secret HORS argv (chaîne Jenkinsfile.prod)" \
   || skip "T34 chaîne Jenkinsfile.prod non vérifiable ici (Keycloak/ci-applier indisponible : $(tr -d '\n' <<<"$KCOUT" | tail -c 60))"
 
-curl -s -o /dev/null -H "X-Vault-Token: stoa-root-token" -X DELETE "$VADDR/v1/auth/$MOUNT/users/sentinel"
+curl -s -o /dev/null -H "X-Vault-Token: $VTOK" -X DELETE "$VADDR/v1/auth/$MOUNT/users/sentinel"
 
 echo
 echo "=== RESULT: $PASS passed, $FAIL failed, $SKIP skipped ==="

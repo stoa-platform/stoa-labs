@@ -22,8 +22,8 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 KC=http://localhost:8480
 OS_URL="${OPENSEARCH_URL:-https://localhost:9201}"
-OS_PASS="${OPENSEARCH_PASSWORD:-Stoa!Passw0rd2026}"
-VPASS="${AUDIT_VIEWER_PASS:-Stoa!Audit2026}"
+OS_PASS="${OPENSEARCH_PASSWORD:?Variable OPENSEARCH_PASSWORD absente — définissez-la (voir poc-control-plane-federation/.env.example)}"
+VPASS="${AUDIT_VIEWER_PASS:?Variable AUDIT_VIEWER_PASS absente — définissez-la (voir poc-control-plane-federation/.env.example)}"
 PORT="${PORT:-8790}"; API="http://localhost:${PORT}"
 PASS=0; FAIL=0
 ok()  { PASS=$((PASS+1)); printf '  \033[32mPASS\033[0m %s\n' "$*"; }
