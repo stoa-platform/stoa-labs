@@ -69,9 +69,39 @@ gh CLI (PR `stoa-platform/stoa`), ssh (alias worker-1..5).
 | **T3** Sauvegarde ns `wm` | ✅ **FAIT** — run vert (`ok=52 changed=19 failed=0`), archive du PVC ES **relue sur worker-2**, Vault resté descellé | — |
 | **T4** Rôle de bascule | ✅ **FAIT — les DEUX sabotages verts.** Sabotage 1 : cible fausse → refus d'écrire, `changed=0`. **Sabotage 2 : le chemin `rescue` est prouvé en conditions réelles** (détail ci-dessous) | — |
 | **T5** Bascule + P-a/P-b | ✅ **PORTES P-a ET P-b VERTES** — bascule jouée par l'exploitant le 2026-07-30, `ok=15 changed=3 failed=0` (détail ci-dessous) | — |
-| **T6** Contre-épreuve rollback | ⏸ le chemin `rescue` est déjà prouvé (sabotage 2) ; reste le chemin **explicite** `-e wm_cutover_rollback=true` | écriture Caddy — geste exploitant |
+| **T6** Contre-épreuve rollback | ✅ **FAITE, dans les DEUX sens** — chemin automatique (`rescue`, sabotage 2) et chemin **explicite** (`-e wm_cutover_rollback=true`), chacun vérifié (détail ci-dessous) | re-bascule |
 | **T7** Décommission + P-c | ⛔ **après T6, jamais avant** | `docker stop/rm` sur worker-3 — geste exploitant |
 | **T8** Re-mesure + consignation | ⛔ en aval | — |
+
+### T6 — le retour arrière est complet, pas approximatif
+
+Joué par l'exploitant depuis l'état basculé : `ok=14 changed=2 failed=0`. Les
+**trois gardes ajoutées au rôle ont toutes mordu** :
+
+1. « état basculé reconnu — restauration légitime » — la garde d'entrée qui
+   empêche de restaurer une sauvegarde arbitraire depuis un état non basculé ;
+2. « All assertions passed » — il existe bien une sauvegarde à restaurer ;
+3. **« empreinte d'avant-bascule retrouvée à l'identique — OK »** — c'est celle
+   qui compte : elle distingue « le retour arrière est complet » de « quelque
+   chose a été remis ».
+
+Puis la porte de restauration : `/rest/apigateway/health` public → 200.
+
+Vérifié à la main derrière :
+
+| | T0 | après rollback |
+|---|---|---|
+| empreinte Caddyfile | `5fab7a255ef128b4…` | **identique** |
+| marqueur `F5 : bascule` | absent | **absent** |
+| `rest/apigateway/health` | 200 | **200** |
+| `rest/apigateway/apis` | 401 | **401** |
+| `dev-wm-ui.gostoa.dev/` | 302 | **302** |
+| `dev-gw-k3s/health` (garde) | 200 | **200** |
+
+**La contre-épreuve du GOAL est donc tenue dans les deux sens** : la restauration
+*automatique* après une porte rouge (sabotage 2) et la restauration *explicite*
+demandée par un exploitant. Ce sont deux chemins de code distincts, et un
+rollback jamais exercé serait un passif, pas une garantie.
 
 ### T5 — les portes, mesurées
 
