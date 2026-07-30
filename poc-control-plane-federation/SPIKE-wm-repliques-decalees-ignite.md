@@ -1,7 +1,7 @@
 ---
 title: "Spike — deux répliques wM 10.15 à redémarrages décalés sur un ES partagé (Ignite)"
 type: spike
-status: "Cadré le 2026-07-30. DEUX inconnues sur trois levées par un test antérieur de l'exploitant ; il ne reste que le coût de la rotation de topologie."
+status: "EXÉCUTÉ et CONCLUANT le 2026-07-30 : 99,1 % mesuré contre ~85 % en mono-réplique. L'hypothèse à réfuter ne l'a pas été."
 date: 2026-07-30
 lié: [GOAL-socle-vers-gateway-2026-07-28, 2026-07-30-f5-bascule-decommission-design]
 ---
@@ -75,6 +75,43 @@ C'est l'hypothèse à réfuter, pas à espérer.
 reste qu'à porter les répliques à 2, décaler les redémarrages (A à :00/:20/:40,
 B à :10/:30/:50) et rejouer la sonde publique de F5. Aucune inconnue
 d'infrastructure ne s'interpose.
+
+## RÉSULTAT — mesuré le 2026-07-30, 20:07→21:11 UTC
+
+**99,1 % de disponibilité sur 63 min**, contre **~85 %** en mono-réplique.
+
+| | Mono-réplique | Rotation décalée |
+|---|---|---|
+| Coupure par cycle | **120–235 s** | **≤ 5 s** |
+| Disponibilité | ~85 % | **99,1 %** |
+| Total non-200 | ~355 s sur 36 min | **35 s sur 63 min** |
+| Codes | 503 (340 s) · 500 (10 s) · 000 (5 s) | **500 seulement** |
+
+Sept rotations observées, une toutes les 10 min, alternant A et B :
+20:10 · 20:20 · 20:30 · 20:40 · 20:50 · 21:00 · 21:10. **Chacune coûte un
+seul échantillon** — la coupure réelle est donc sous la résolution de la
+sonde (5 s), et non pas « 5 s » exactement.
+
+**L'hypothèse à réfuter ne l'a pas été.** Le rééquilibrage Ignite que je
+redoutais ne se manifeste pas à cette échelle : deux nœuds en rotation
+permanente servent nettement mieux qu'un nœud seul.
+
+Authenticité de la mesure vérifiée : les deux pods portent des âges
+différents (4 min et 14 min), les Jobs alternent bien `b, a, b, a, b, a`, et
+le Service expose deux endpoints. Ce n'est pas une réplique morte dont
+l'autre ne tournerait jamais.
+
+### Ce qui change de nature, et qu'il faut savoir
+
+Le code d'erreur passe de **503** à **500**. En mono-réplique, Caddy rendait
+son `handle_errors` pendant 2-4 min ; désormais un client malchanceux reçoit
+un **500 de webMethods** relayé par Caddy, pendant moins de 5 s. C'est
+l'exact comportement anticipé au § 3 — une requête atteint la réplique qui
+s'en va. La différence est qu'elle dure des secondes, pas des minutes.
+
+Un client qui réessaie réussit. Mais un client qui ne réessaie pas voit une
+erreur applicative, là où il voyait une indisponibilité franche. À garder en
+tête si un consommateur réel arrive.
 
 ## Critère d'arrêt proposé
 
