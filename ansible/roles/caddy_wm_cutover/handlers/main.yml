@@ -1,0 +1,9 @@
+---
+# Le rôle recharge Caddy par des tâches explicites (l'ordre compte : valider,
+# recharger, PUIS vérifier la porte). Ce handler reste disponible pour un
+# appelant qui composerait le rôle autrement.
+- name: reload caddy
+  ansible.builtin.systemd:
+    name: caddy
+    state: reloaded
+  become: true

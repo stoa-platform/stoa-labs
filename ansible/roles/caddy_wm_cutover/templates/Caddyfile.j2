@@ -1,0 +1,59 @@
+# Managed by Ansible — do not edit manually
+# TLS termination via Caddy (Let's Encrypt auto)
+
+
+dev-gw-k3s.gostoa.dev {
+    reverse_proxy localhost:30080 {
+        header_up Host dev-gw-k3s.gostoa.dev
+    }
+}
+
+dev-wm-k3s.gostoa.dev {
+    reverse_proxy localhost:30080 {
+        header_up Host dev-wm-k3s.gostoa.dev
+    }
+}
+
+staging-gw-k3s.gostoa.dev {
+    reverse_proxy localhost:30080 {
+        header_up Host staging-gw-k3s.gostoa.dev
+    }
+}
+
+staging-wm-k3s.gostoa.dev {
+    reverse_proxy localhost:30080 {
+        header_up Host staging-wm-k3s.gostoa.dev
+    }
+}
+
+# ── {{ wm_cutover_marker }} ─────────────────────────────
+# AVANT F5, ce bloc proxifiait TOUT vers localhost:5555 (le webMethods Docker de
+# worker-3), ce qui publiait l'admin REST de webMethods sur l'Internet ouvert
+# derrière un simple basic auth : /rest/apigateway/apis rendait 401, mesuré.
+# La contre-épreuve F3 avait pourtant établi 6/6 refus pour la gateway du
+# cluster — basculer à l'identique aurait annulé la doctrine §4.1 EN SILENCE.
+#
+# Publiquement : /gateway/* et rien d'autre. L'admin REST et la console
+# repassent en interne au cluster, atteints par tunnel SSH / port-forward.
+dev-wm.gostoa.dev {
+    handle /gateway/* {
+        reverse_proxy {{ wm_cutover_upstream }}:{{ wm_cutover_upstream_port }}
+    }
+    handle {
+        respond 404
+    }
+    # Le cycle trial coupe 150 s toutes les 20 min (mesuré F5, 2026-07-30).
+    # Un 503 explicite vaut mieux qu'un 502 brut : la face publique dit ce qui
+    # se passe au lieu de laisser croire à une panne de la plateforme.
+    handle_errors {
+        respond "gateway en cycle de renouvellement" 503
+    }
+}
+
+# Console d'admin : FERMÉE publiquement par F5. Le bloc est CONSERVÉ et refuse,
+# plutôt que supprimé : un refus est mesurable, une absence est ambiguë (et le
+# certificat reste géré, donc la fermeture ne se présente pas comme une panne
+# TLS).
+dev-wm-ui.gostoa.dev {
+    respond 404
+}

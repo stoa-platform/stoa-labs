@@ -1,0 +1,303 @@
+---
+# roles/caddy_wm_cutover/tasks/main.yml
+#
+# Bascule fail-closed avec restauration AUTOMATIQUE. Même squelette que
+# `caddy_cutover`, dont le comportement a fait ses preuves, avec deux
+# différences : un template au lieu d'un `replace` (la forme du bloc change,
+# pas une valeur), et deux portes distinctes selon le sens (un même chemin
+# n'est pas valide dans les deux configurations).
+
+- name: "Garde : empreinte du Caddyfile en place"
+  ansible.builtin.stat:
+    path: "{{ caddy_config_path }}"
+    checksum_algorithm: sha256
+  become: true
+  register: caddy_before
+
+- name: "Garde : lire le contenu courant (pour reconnaître un état déjà basculé)"
+  ansible.builtin.slurp:
+    src: "{{ caddy_config_path }}"
+  become: true
+  register: caddy_before_raw
+
+- name: "Garde : l'état courant est-il l'état AVANT, ou déjà l'état cible ?"
+  ansible.builtin.set_fact:
+    caddy_is_pre_cutover: "{{ caddy_before.stat.checksum | default('') == wm_cutover_expected_sha256 }}"
+    caddy_is_already_target: "{{ wm_cutover_marker in (caddy_before_raw.content | b64decode) }}"
+
+# Accepter les DEUX états rend le rôle idempotent. Sans cela, la re-bascule qui
+# suit la contre-épreuve de rollback échouerait sur sa propre empreinte.
+- name: "Garde : refuser si le fichier n'est NI l'état avant NI l'état cible"
+  ansible.builtin.assert:
+    that:
+      - caddy_before.stat.exists
+      - caddy_is_pre_cutover or caddy_is_already_target
+    fail_msg: >-
+      REFUS : {{ caddy_config_path }} a l'empreinte
+      {{ caddy_before.stat.checksum | default('ABSENT') }} — ni l'état AVANT
+      attendu ({{ wm_cutover_expected_sha256 }}), ni un état déjà basculé (le
+      marqueur « {{ wm_cutover_marker }} » est absent). Le fichier a changé hors
+      de ce rôle. Le relire, comprendre pourquoi, puis mettre à jour
+      wm_cutover_expected_sha256 — ne JAMAIS forcer : le template écrirait
+      l'état cible par-dessus une configuration inconnue, et le TLS de TOUTE la
+      flotte passe par ce fichier.
+    success_msg: >-
+      état reconnu ({{ 'avant-bascule' if caddy_is_pre_cutover else 'déjà basculé' }}) — OK
+  when: not wm_cutover_rollback
+
+# Depuis CET hôte (worker-3), pas depuis un pod : c'est le chemin que Caddy
+# empruntera. Basculer vers une cible en cours de redémarrage ferait rougir la
+# porte pour une raison qui n'est pas la bascule.
+- name: "Garde : la cible amont répond-elle depuis CET hôte ?"
+  ansible.builtin.uri:
+    url: "http://{{ wm_cutover_upstream }}:{{ wm_cutover_upstream_port }}/rest/apigateway/health"
+    method: GET
+    status_code: 200
+    timeout: 10
+  become: false
+  register: wm_upstream_probe
+  retries: "{{ wm_cutover_upstream_retries }}"
+  delay: 10
+  until: wm_upstream_probe is succeeded
+  when: not wm_cutover_rollback
+  # S'exécute MÊME à blanc : c'est un GET en lecture seule, et savoir si la
+  # cible répond est précisément ce qu'un --check doit apprendre avant qu'on
+  # engage une bascule.
+  check_mode: false
+
+- name: "Créer le répertoire de sauvegardes"
+  ansible.builtin.file:
+    path: "{{ caddy_backup_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+  become: true
+
+- name: "Sauvegarder la configuration courante"
+  ansible.builtin.copy:
+    src: "{{ caddy_config_path }}"
+    dest: "{{ caddy_backup_dir }}/Caddyfile.{{ ansible_date_time.iso8601_basic_short }}"
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0640"
+  become: true
+  register: caddy_backup
+  when: not wm_cutover_rollback
+
+# --- Restauration explicite (-e wm_cutover_rollback=true) ---------------------
+# GARDE D'ENTRÉE : ne restaurer que DEPUIS l'état basculé. Le répertoire de
+# sauvegardes contient aussi celles du rôle `caddy_cutover` (bascule ancien k3s →
+# nouveau k3s, 2026-07-27) : un `-e wm_cutover_rollback=true` lancé sans bascule
+# préalable prendrait « la plus récente » et restaurerait une configuration
+# vieille de plusieurs jours, en annonçant un retour arrière réussi.
+- name: "Restauration : refuser si la configuration n'est PAS l'état basculé"
+  ansible.builtin.assert:
+    that:
+      - caddy_is_already_target
+    fail_msg: >-
+      REFUS : {{ caddy_config_path }} ne porte pas le marqueur
+      « {{ wm_cutover_marker }} » — il n'est donc pas dans l'état basculé, et
+      il n'y a RIEN à restaurer. Restaurer « la sauvegarde la plus récente »
+      depuis un état non basculé remettrait une configuration arbitraire (le
+      répertoire contient aussi les sauvegardes du rôle caddy_cutover).
+    success_msg: "état basculé reconnu — restauration légitime"
+  when: wm_cutover_rollback
+
+- name: "Restauration : retrouver la sauvegarde la plus récente"
+  ansible.builtin.shell:
+    cmd: "set -o pipefail && ls -1t {{ caddy_backup_dir }}/Caddyfile.* | head -1"
+    executable: /bin/bash
+  become: true
+  register: caddy_latest_backup
+  changed_when: false
+  when: wm_cutover_rollback
+
+- name: "Restauration : refuser s'il n'existe aucune sauvegarde"
+  ansible.builtin.assert:
+    that:
+      - caddy_latest_backup.stdout | length > 0
+    fail_msg: >-
+      REFUS : aucune sauvegarde dans {{ caddy_backup_dir }}. Il n'y a rien à
+      restaurer — ne pas laisser croire à un retour arrière réussi.
+  when: wm_cutover_rollback
+
+- name: "Restauration : remettre la sauvegarde en place"
+  ansible.builtin.copy:
+    src: "{{ caddy_latest_backup.stdout }}"
+    dest: "{{ caddy_config_path }}"
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0644"
+  become: true
+  when: wm_cutover_rollback
+
+# La sauvegarde restaurée doit être EXACTEMENT la configuration d'avant-F5, pas
+# une simplement plus ancienne. C'est ce qui distingue « le retour arrière est
+# complet » de « quelque chose a été remis ».
+- name: "Restauration : empreinte du fichier restauré"
+  ansible.builtin.stat:
+    path: "{{ caddy_config_path }}"
+    checksum_algorithm: sha256
+  become: true
+  register: caddy_restored
+  when: wm_cutover_rollback
+
+- name: "Restauration : le fichier restauré est bien l'état d'avant-bascule"
+  ansible.builtin.assert:
+    that:
+      - caddy_restored.stat.checksum == wm_cutover_expected_sha256
+    fail_msg: >-
+      La sauvegarde restaurée ({{ caddy_latest_backup.stdout }}) a l'empreinte
+      {{ caddy_restored.stat.checksum }}, or l'état d'avant-bascule attendu est
+      {{ wm_cutover_expected_sha256 }}. Une sauvegarde étrangère a été reprise —
+      ne pas recharger Caddy sur cette base.
+    success_msg: "empreinte d'avant-bascule retrouvée à l'identique — OK"
+  when:
+    - wm_cutover_rollback
+    - not ansible_check_mode
+
+- name: "Restauration : valider avant de recharger"
+  ansible.builtin.command:
+    cmd: "caddy validate --adapter caddyfile --config {{ caddy_config_path }}"
+  become: true
+  changed_when: false
+  when: wm_cutover_rollback
+
+- name: "Restauration : recharger Caddy"
+  ansible.builtin.systemd:
+    name: caddy
+    state: reloaded
+  become: true
+  when: wm_cutover_rollback
+
+- name: "Restauration : PORTE — l'ancien chemin sert de nouveau"
+  ansible.builtin.uri:
+    url: "{{ wm_rollback_verify_url }}"
+    method: GET
+    status_code: "{{ wm_rollback_verify_expect }}"
+    timeout: 15
+  delegate_to: localhost
+  become: false
+  register: rollback_probe
+  retries: 6
+  delay: 10
+  until: rollback_probe is succeeded
+  when:
+    - wm_cutover_rollback
+    - not ansible_check_mode
+
+# --- Bascule, avec restauration automatique en cas d'échec -------------------
+- name: "Bascule du trafic"
+  when: not wm_cutover_rollback
+  block:
+    - name: "Écrire l'état cible (data-plane seul)"
+      ansible.builtin.template:
+        src: Caddyfile.j2
+        dest: "{{ caddy_config_path }}"
+        owner: root
+        group: root
+        mode: "0644"
+      become: true
+
+    - name: "Valider la configuration AVANT de recharger"
+      ansible.builtin.command:
+        cmd: "caddy validate --adapter caddyfile --config {{ caddy_config_path }}"
+      become: true
+      changed_when: false
+
+    - name: "Recharger Caddy (à chaud, sans coupure)"
+      ansible.builtin.systemd:
+        name: caddy
+        state: reloaded
+      become: true
+
+    - name: "Laisser le rechargement s'établir"
+      ansible.builtin.wait_for:
+        timeout: 5
+
+    # Vérification depuis le NŒUD DE CONTRÔLE : le chemin réel d'un client,
+    # pas une boucle locale sur l'hôte.
+    # `not ansible_check_mode` sur les TROIS vérifications d'après-écriture : en
+    # mode --check rien n'est réellement écrit, donc les affirmer serait un
+    # mensonge, et l'assertion de corps échouerait sur un `wm_gate` non peuplé
+    # (le module uri est sauté à blanc) — entraînant un `rescue` qui chercherait
+    # une sauvegarde jamais créée. Un --check doit montrer le diff et valider
+    # l'amont, pas prétendre avoir prouvé la porte.
+    - name: "PORTE P-a : l'invocation data-plane rend {{ wm_cutover_verify_expect }}"
+      ansible.builtin.uri:
+        url: "{{ wm_cutover_verify_url }}"
+        method: GET
+        status_code: "{{ wm_cutover_verify_expect }}"
+        timeout: 20
+        return_content: true
+      delegate_to: localhost
+      become: false
+      register: wm_gate
+      retries: 6
+      delay: 15
+      until: wm_gate is succeeded
+      when: not ansible_check_mode
+
+    - name: "PORTE P-a : le corps vient bien du backend en cluster"
+      ansible.builtin.assert:
+        that:
+          - wm_cutover_verify_body in (wm_gate.content | default(''))
+        fail_msg: >-
+          La porte rend {{ wm_cutover_verify_expect }} mais le corps ne contient
+          pas « {{ wm_cutover_verify_body }} ». Un 200 peut venir d'une page
+          d'erreur ou d'un cache : sans cette assertion, la porte serait
+          décorative.
+        success_msg: "corps servi par le backend en cluster — OK"
+      when: not ansible_check_mode
+
+    - name: "GARDE : un nom NON concerné répond comme avant"
+      ansible.builtin.uri:
+        url: "{{ wm_cutover_guard_url }}"
+        method: GET
+        status_code: "{{ wm_cutover_guard_expect }}"
+        timeout: 15
+      delegate_to: localhost
+      become: false
+      when: not ansible_check_mode
+
+  rescue:
+    - name: "ÉCHEC — restaurer la configuration précédente"
+      ansible.builtin.copy:
+        src: "{{ caddy_backup.dest }}"
+        dest: "{{ caddy_config_path }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0644"
+      become: true
+
+    - name: "ÉCHEC — recharger Caddy sur la configuration restaurée"
+      ansible.builtin.systemd:
+        name: caddy
+        state: reloaded
+      become: true
+
+    - name: "ÉCHEC — vérifier que l'ancien chemin sert de nouveau"
+      ansible.builtin.uri:
+        url: "{{ wm_rollback_verify_url }}"
+        method: GET
+        status_code: "{{ wm_rollback_verify_expect }}"
+        timeout: 15
+      delegate_to: localhost
+      become: false
+      register: rescue_probe
+      retries: 6
+      delay: 10
+      until: rescue_probe is succeeded
+
+    - name: "Interrompre : la bascule a échoué et a été annulée"
+      ansible.builtin.fail:
+        msg: >-
+          BASCULE ANNULÉE. La configuration précédente a été restaurée et le
+          trafic sert de nouveau depuis le webMethods Docker de worker-3
+          (vérifié ci-dessus). Causes probables : ClusterIP
+          {{ wm_cutover_upstream }} injoignable depuis l'hôte, gateway en cycle
+          de redémarrage, ou backend-dev non prêt.

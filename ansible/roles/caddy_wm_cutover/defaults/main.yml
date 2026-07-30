@@ -1,0 +1,66 @@
+---
+# roles/caddy_wm_cutover/defaults/main.yml
+#
+# Bascule du nom public dev-wm.gostoa.dev depuis le webMethods DOCKER de
+# worker-3 vers la gateway du CLUSTER — jalon F5.
+#
+# Ce rôle est DISTINCT de `caddy_cutover` (bascule ancien k3s → nouveau k3s) :
+#   1. `caddy_cutover` substitue UN JETON (localhost:30080 → IP). F5 change la
+#      FORME du bloc : seuls les chemins /gateway/* restent publics, tout le
+#      reste rend 404. Un `replace` ne peut pas exprimer cela.
+#   2. Les noms servis, les chemins de vérification et le sens de la porte
+#      diffèrent.
+#
+# La NOTE DE SÉCURITÉ de caddy_cutover (« le trafic Caddy → ingress traverse
+# l'Internet public EN CLAIR ») NE S'APPLIQUE PAS ici : elle visait une bascule
+# où Caddy était HORS du cluster cible. worker-3 porte Caddy *et* un agent du
+# cluster — il n'y a aucun saut réseau.
+
+# Cible amont : ClusterIP du Service wm-apigateway, ÉPINGLÉE dans
+#   stoa deploy/bootstrap/wm/apigateway/service.yaml
+# LES DEUX VALEURS DOIVENT CHANGER ENSEMBLE. Mesurée joignable depuis l'HÔTE
+# worker-3 (et non depuis un pod) : 200 en 18,7 ms, 2026-07-30.
+wm_cutover_upstream: "10.43.227.71"
+wm_cutover_upstream_port: 5555
+
+# Empreinte SHA-256 du Caddyfile attendu AVANT bascule (relevée au T0 du plan).
+# Le rôle REFUSE d'écrire si le fichier n'est ni cet état-là, ni l'état cible :
+# on n'écrase pas une configuration qu'on n'a pas vue, et le TLS de TOUTE la
+# flotte passe par ce fichier.
+wm_cutover_expected_sha256: "5fab7a255ef128b4f7842df9bad86e84416f718477ec1bffb07df3e63e615689"
+
+# Marqueur reconnaissant un Caddyfile DÉJÀ basculé. Il rend le rôle idempotent :
+# sans lui, la re-bascule qui suit la contre-épreuve de rollback échouerait sur
+# sa propre empreinte — une garde qui refuse le geste légitime est un défaut.
+# Doit apparaître VERBATIM dans templates/Caddyfile.j2.
+wm_cutover_marker: "F5 : bascule vers la gateway du CLUSTER"
+
+# Essais de la garde de cible amont (× 10 s). 48 = 8 min, soit largement les
+# 150 s du cycle trial mesuré. La contre-épreuve de sabotage le réduit à 2 pour
+# échouer vite au lieu d'attendre 8 min.
+wm_cutover_upstream_retries: 48
+
+# PORTE DE LA BASCULE : l'invocation data-plane réelle. On ne vérifie PAS
+# /rest/apigateway/health — il n'est plus public après bascule, et une
+# invocation prouve strictement plus qu'un health.
+wm_cutover_verify_url: "https://dev-wm.gostoa.dev/gateway/accounts-read/1.0.0/accounts"
+wm_cutover_verify_expect: 200
+# Fragment que le corps doit contenir : un 200 peut venir d'une page d'erreur
+# ou d'un cache. Sans cette assertion, la porte serait décorative.
+wm_cutover_verify_body: "backend-dev.wm.svc.cluster.local"
+
+# PORTE DE LA RESTAURATION : la configuration d'origine reproxyfie TOUT vers
+# localhost:5555, donc /rest/apigateway/health y redevient public. Confondre les
+# deux portes ferait rougir une restauration réussie.
+wm_rollback_verify_url: "https://dev-wm.gostoa.dev/rest/apigateway/health"
+wm_rollback_verify_expect: 200
+
+# GARDE « TLS de la flotte » : Caddy termine les certificats de tous les noms.
+# Un nom NON concerné doit répondre comme avant, sinon le durcissement de
+# dev-wm est une régression déguisée.
+wm_cutover_guard_url: "https://dev-gw-k3s.gostoa.dev/health"
+wm_cutover_guard_expect: 200
+
+wm_cutover_rollback: false
+caddy_config_path: "/etc/caddy/Caddyfile"
+caddy_backup_dir: "/etc/caddy/backups"

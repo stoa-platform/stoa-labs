@@ -1,0 +1,34 @@
+---
+# wm-cutover.yml — jalon F5 : le nom public dev-wm.gostoa.dev passe du
+# webMethods DOCKER de worker-3 à la gateway du CLUSTER, en data-plane seul.
+#
+# PRÉREQUIS, vérifiés ailleurs et NON re-vérifiés ici :
+#   - ClusterIP wm-apigateway épinglée en Git (stoa) et joignable de l'hôte ;
+#   - backend-dev déployé, et /gateway/accounts-read/1.0.0/accounts vert EN
+#     INTERNE (plan F5, tâche 2) — on ne débogue jamais deux choses à la fois ;
+#   - PVC ES du ns wm sauvegardé hors-nœud (plan F5, tâche 3).
+#
+# Usage :
+#   ansible-playbook -i inventory.contabo.ini wm-cutover.yml
+#
+# Retour arrière explicite (la bascule se restaure AUSSI toute seule si sa
+# porte rougit) :
+#   ansible-playbook -i inventory.contabo.ini wm-cutover.yml -e wm_cutover_rollback=true
+#
+# Contre-épreuves de sabotage, à jouer AVANT la vraie bascule, pendant que
+# Docker sert encore — valider le filet quand le trafic public est intact vaut
+# mieux que casser un service en service pour le tester :
+#   1) la garde doit REFUSER d'écrire si la cible est injoignable :
+#      … -e wm_cutover_upstream=10.43.0.99 -e wm_cutover_upstream_retries=2
+#   2) la restauration automatique doit JOUER si la porte rougit :
+#      … -e wm_cutover_verify_expect=599
+#
+# La bascule ne touche AUCUN DNS : dev-wm.gostoa.dev résout déjà vers worker-3.
+# Aucun jeton Cloudflare n'est requis.
+
+- name: "F5 — bascule du nom public vers la gateway du cluster"
+  hosts: caddy
+  gather_facts: true
+  become: false
+  roles:
+    - caddy_wm_cutover
