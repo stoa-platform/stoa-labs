@@ -70,8 +70,89 @@ gh CLI (PR `stoa-platform/stoa`), ssh (alias worker-1..5).
 | **T4** Rôle de bascule | ✅ **FAIT — les DEUX sabotages verts.** Sabotage 1 : cible fausse → refus d'écrire, `changed=0`. **Sabotage 2 : le chemin `rescue` est prouvé en conditions réelles** (détail ci-dessous) | — |
 | **T5** Bascule + P-a/P-b | ✅ **PORTES P-a ET P-b VERTES** — bascule jouée par l'exploitant le 2026-07-30, `ok=15 changed=3 failed=0` (détail ci-dessous) | — |
 | **T6** Contre-épreuve rollback | ✅ **FAITE, dans les DEUX sens** — chemin automatique (`rescue`, sabotage 2) et chemin **explicite** (`-e wm_cutover_rollback=true`), chacun vérifié (détail ci-dessous) | re-bascule |
-| **T7** Décommission + P-c | ⛔ **après T6, jamais avant** | `docker stop/rm` sur worker-3 — geste exploitant |
-| **T8** Re-mesure + consignation | ⛔ en aval | — |
+| **T7** Décommission + P-c | ✅ **PORTE P-c VERTE** — worker-3 ne porte plus que Caddy et son agent k3s (détail ci-dessous) | — |
+| **T8** Re-mesure + consignation | 🔄 sonde du cycle en cours (~52 min, 2 cycles) | GOAL et handoff |
+
+### T7 — la décommission, et un bug de mon propre garde-fou
+
+Ordre respecté : re-bascule verte → arrêt → archive → **relecture** → retrait.
+
+**Arrêt.** `docker stop` des deux conteneurs (`Exited 137` et `143`), puis
+vérification immédiate : **P-a toujours à 200**. Le double-run est terminé, le
+cluster sert seul, et le public n'a rien senti.
+
+**L'archive froide a d'abord été REFUSÉE par son propre contrôle** — et c'était
+un défaut du script, pas des données :
+
+```
+entrées dans l'archive : 1995
+REFUS : aucun chemin d'index Elasticsearch dans l'archive
+```
+
+Or `indices/` était bien là. Cause : `set -o pipefail` combiné à `grep -q`. Le
+`-q` fait sortir grep dès la **première** correspondance, ce qui ferme le tube ;
+`tar` reçoit SIGPIPE et sort non-zéro ; avec `pipefail` le pipeline entier est
+réputé en échec. **Perversité du défaut : plus l'archive est valide, plus vite
+grep trouve, et plus sûrement le contrôle échoue.** Le `wc -l` juste au-dessus n'en
+souffrait pas — il lit tout le flux, donc `tar` se termine normalement.
+Corrigé en `grep -ci`, qui lit tout et donne en prime un compte utile.
+
+**Archive validée** (`grep -c` : 1862 chemins d'index sur 1995 entrées, 17 Mo
+compressés depuis 108 Mo). Empreinte **identique** entre deux exécutions : les
+données étant figées, l'archive est reproductible à l'octet.
+
+**Porte dure sur worker-2**, acheminée via le poste de contrôle :
+
+```
+sha256sum -c  →  OK
+entrées : 1995      chemins d'index : 1862
+extraction réelle d'un state-3.st  →  OK, 125 octets
+```
+
+Pas seulement une empreinte concordante : un fichier **extrait** et non vide. Le
+filet est exploitable, pas seulement présent.
+
+**Le piège `0700 root`, rencontré une TROISIÈME fois.** Le `chmod` final a échoué
+avec `cannot access '…/*'` : le glob est développé par le shell distant qui tourne
+en `hegemon`, lequel ne peut pas lister un répertoire parent en `0700 root` — le
+`*` reste donc littéral. Préfixer chaque commande de `sudo` ne suffit jamais pour
+ce répertoire ; il faut `sudo bash -c '…'` pour le shell **entier**. Déjà noté au
+relevé T0, puis à la relecture de T3, et refait quand même.
+
+**Retrait.** `docker rm` des deux conteneurs, puis
+`docker volume rm webmethods-dev_es-dev-data` — **nommé explicitement, jamais
+`volume prune`**. Relecture : aucun volume `wm` restant.
+
+**Cron déposé par le module qui l'avait posé** (`cron … state=absent`), ce qui
+enlève le marqueur `#Ansible:` *et* l'entrée. Résultat : crontab root **vide**, et
+le ping d'uptime `*/1` de `hegemon` **intact** — le filtrage ciblé a protégé ce
+qu'il devait.
+
+### PORTE P-c
+
+```
+conteneurs wm-dev-*      : aucun
+crontab root             : vide
+crontab hegemon          : inchangée (ping d'uptime */1 préservé)
+Caddy                    : active
+agent k3s                : active
+conteneurs Docker        : aucun
+```
+
+**worker-3 ne porte plus que Caddy et son agent k3s** — et l'agent est
+précisément ce qui rend la bascule possible (le chemin hôte → ClusterIP).
+
+### Les trois portes, relues APRÈS la décommission
+
+La vraie question n'était pas « a-t-on retiré » mais « le public dépendait-il de
+ce qu'on a détruit ». Réponse mesurée :
+
+| | Résultat |
+|---|---|
+| **P-a** `gateway/accounts-read/1.0.0/accounts` | **200** + corps de `backend-dev` |
+| **P-b** `rest/apigateway/apis` · `/health` · `/apigatewayui/` · `/` · `dev-wm-ui` | **404** partout |
+| **P-c** worker-3 | Caddy + agent k3s seuls |
+| Garde flotte — les **quatre** noms `*-k3s.gostoa.dev/health` | **200** partout |
 
 ### T6 — le retour arrière est complet, pas approximatif
 

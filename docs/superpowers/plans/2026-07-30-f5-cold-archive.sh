@@ -68,7 +68,17 @@ ls -lh "$OUT" | sed 's/^/  /'
 ENTRIES="$(tar -tzf "$OUT" | wc -l)"
 echo "  entrées dans l'archive : $ENTRIES"
 [ "$ENTRIES" -gt 0 ] || { echo "REFUS : archive vide." >&2; exit 1; }
-tar -tzf "$OUT" | grep -qi "indices" || {
+
+# `grep -c` et NON `grep -q` : avec `set -o pipefail`, un `grep -q` sort dès la
+# première correspondance, ferme le tube, `tar` reçoit SIGPIPE et sort non-zéro,
+# et le pipeline entier est réputé en échec. Résultat pervers : plus l'archive
+# est valide, plus vite grep trouve, et plus sûrement le contrôle échoue.
+# Constaté sur la vraie archive (1995 entrées, `indices/` bien présent, refus).
+# `grep -c` lit tout le flux, donc `tar` se termine normalement — comme le
+# `wc -l` ci-dessus, qui pour cette raison n'avait jamais échoué.
+IDX="$(tar -tzf "$OUT" | grep -ci "/indices/" || true)"
+echo "  chemins d'index Elasticsearch : $IDX"
+[ "${IDX:-0}" -gt 0 ] || {
   echo "REFUS : aucun chemin d'index Elasticsearch dans l'archive — ce n'est" >&2
   echo "pas la donnée qu'on croit sauvegarder." >&2
   exit 1
