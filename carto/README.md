@@ -26,7 +26,11 @@ dédié (sans shell), dépose le paquet dans `{{ carto_install_dir }}/carto/`
 lui-même — le code s'invoque donc toujours par `python3 -m carto.collect`,
 exactement comme depuis le dépôt), pose l'enveloppe d'exécution
 `carto-collect.sh`, planifie une exécution quotidienne par `cron`, et vérifie
-en fin de rôle qu'une collecte en `--dry-run` voit bien des APIs.
+en fin de rôle qu'une collecte en `--dry-run` voit bien des APIs, **des arêtes
+et une fenêtre couverte non nulle** — les trois assertions sont nécessaires :
+`apis=0` seul laisse passer le mode de défaillance le plus sournois du produit
+(dernières lignes du tableau de diagnostic ci-dessous), où l'inventaire est lu
+mais aucun événement ne l'est.
 
 Le rôle **ne porte aucun secret**. Les identifiants (`WM_ADMIN_URL`,
 `WM_USER`, `WM_PASS`, `WM_ES_URL`, `WM_ES_INDEX`, variable `carto_env`) sont
@@ -78,6 +82,8 @@ périmée qui a l'air fraîche. `carto-collect.sh` :
 | `agregation tronquee` | plus d'objets que `BUCKET_SIZE` | augmenter `BUCKET_SIZE` dans `analytics.py` |
 | `fenêtre couverte` < demandée | rétention des index plus courte | normal, c'est la vérité (spec D4) |
 | Page vide, bandeau d'erreur | page ouverte en `file://` | passer par le serveur web |
+| Bandeau en alerte « X % des appels ne sont rattachés à aucun consommateur identifié » | la gateway ne renseigne pas l'application appelante dans ses événements (`applicationId` = `Unknown`) | c'est la vérité, pas un bug du collecteur : la carto reste juste sur les APIs, sa dimension consommateur ne l'est pas. Voir `TERRAIN.md` V5 et la question ouverte prioritaire ci-dessous. Le seuil d'alerte est de 50 % (`SEUIL_NON_IDENTIFIE` dans `render/index.html`) |
+| Bandeau « version de schéma », page vide | `carto.json` produit par un collecteur plus récent que la page | redéployer `index.html` en même temps que `collect/` — le rôle Ansible dépose les deux ensemble |
 | **Zéro arête et fenêtre couverte à zéro alors que le trafic existe** | `ES_INDEX` mal écrit : un tiret avant l'étoile (`..._transactionalevents-*`) ne matche **aucun** index — le motif réel est `<type>_<horodatage>-<séquence>`, sans tiret avant l'étoile (`..._transactionalevents*`) | relire `ES_INDEX` contre `TERRAIN.md` (V3) ; la collecte publie sans erreur une carto où personne n'appelle personne — c'est le mode de défaillance le plus sournois du produit |
 | Index des événements transactionnels vide, seuls les événements d'erreur existent | sur webMethods 10.15, la policy système `GlobalLogInvocationPolicy` (Log Invocation) n'est pas active — sans elle, aucune API n'écrit jamais d'événement transactionnel, quel que soit le trafic | vérifier `GET /rest/apigateway/policies` et activer la policy (voir `TERRAIN.md`, V3) ; symptôme identique au précédent : une carto vide qui a l'air valide |
 
@@ -86,8 +92,13 @@ périmée qui a l'air fraîche. `carto-collect.sh` :
 - La rotation du compte technique lecture seule.
 - La surveillance de l'échec du job : un échec silencieux publierait une carto
   périmée qui a l'air fraîche.
-- À chaque montée de version du Gateway : rejouer `capture-fixtures.sh`,
-  relancer les tests, mettre à jour `TERRAIN.md` si un champ a bougé.
+- À chaque montée de version du Gateway : rejouer `capture-fixtures.sh` (il
+  capture les **quatre** fixtures — inventaire, agrégation et plus vieil
+  événement — et exige donc `WM_ES_URL`/`WM_ES_INDEX` en plus des accès
+  d'administration), relancer les tests, mettre à jour `TERRAIN.md` si un champ
+  a bougé. `aggregation-d90.json` n'est pas une capture brute : son bloc
+  `_meta`, qui distingue le mesuré du substitué, est à réécrire à la main sur
+  la nouvelle capture — le script le rappelle à la fin de son exécution.
 - **Question ouverte prioritaire (`TERRAIN.md`, V5) : vérifier chez le client
   que l'identification de l'application appelante (`ES_APP_FIELD`,
   `applicationId`) est effective dans les événements transactionnels de LEUR

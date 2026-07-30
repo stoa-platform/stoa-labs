@@ -237,8 +237,10 @@ arrivera, autant qu'elle soit déjà servie.
 
 - Le job publie les fichiers sur le serveur web interne. Idempotent : il
   écrase, rien à nettoyer.
-- Chaque `carto.json` est commité dans un dépôt git → historique et diffs sans
-  code supplémentaire.
+- ~~Chaque `carto.json` est commité dans un dépôt git.~~ **Abandonné** (revue
+  de branche, 2026-07-30) : rien ne l'implémentait et rien ne le portera ici ;
+  l'historique est celui de `history.json` (D6). Une promesse tombée en
+  silence coûte plus cher qu'un renoncement écrit.
 - **Entretien réel, à annoncer au client** : la rotation du compte lecture
   seule ; la surveillance de l'échec du job (D9) ; la validation de schéma qui
   protège des montées de version du Gateway (D8).
