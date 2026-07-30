@@ -39,7 +39,7 @@ spécification les acte plutôt que de les contourner :
 |---|---|---|
 | **P-a** | Le nom public sert une **invocation data-plane réelle** portée par la gateway du cluster | `GET https://dev-wm.gostoa.dev/gateway/accounts-read/1.0.0/accounts` → **200 + corps JSON du backend** |
 | **P-b** | La surface d'admin **cesse** d'être publique | `/rest/apigateway/apis` → **404** (401 aujourd'hui) ; console → 404 ; les mêmes appels depuis un pod du cluster → inchangés |
-| **P-c** | worker-3 ne porte plus que Caddy | aucun conteneur `wm-dev-*`, volumes retirés, crons `*/20` et `*/25` déposés |
+| **P-c** | worker-3 ne porte plus que Caddy | aucun conteneur `wm-dev-*`, volumes retirés, cron root `*/20` déposé |
 
 P-a est la **première invocation data-plane de toute la plateforme**. Elle solde
 la dette que F4 avait documentée honnêtement (« nom honnête, aucun backend réel
@@ -257,7 +257,8 @@ disparaît. L'archive froide devient **l'unique filet**, donc :
    est lisible. Une empreinte qui concorde prouve un transfert, pas une archive
    exploitable (leçon F2).
 3. **Rien n'est retiré avant que 2 soit vert.** Le `rm` des conteneurs et des
-   volumes, puis la dépose du cron root `*/20` et du keepalive hegemon `*/25`,
+   volumes, puis la dépose du cron root `*/20` (le seul qui existe : voir la
+   correction du § D10),
    viennent après.
 
 **Ordre non négociable :** le **rollback est exercé avant le retrait**. Après
@@ -289,7 +290,7 @@ faute que ce dépôt évite. Spike à part entière.
 | « Le point d'amont de F5 » (3 voies à trancher) | **soldé par la mesure** — § D1, voie 1 |
 | Backend fictif d'`accounts-read` (F4, assumé) | **soldée** — § D5 |
 | Chiffre faux du cycle trial dans le manifeste | **corrigé** — § D9 |
-| Keepalive hegemon `*/25` en doublon (~5 min/h perdues) | **déposé** avec les conteneurs — § D8 |
+| ~~Keepalive hegemon `*/25` en doublon (~5 min/h perdues)~~ | **la dette n'existe pas** — vérifié au relevé T0 du plan : crontab `root` = une seule ligne (`*/20 … docker restart wm-dev-apigateway`) ; crontab `hegemon` = un ping d'uptime `*/1` vers `status.gostoa.dev`, étranger à webMethods ; rien dans `/etc/cron.d`, aucun timer systemd. Le handoff F4 point 4 était **inexact** ; à corriger au GOAL. Le ping `*/1` n'est pas touché. |
 | Contre-épreuve NetworkPolicy ES écrite sur `wm-elasticsearch.wm.svc` (nom inexistant) | **hors périmètre F5**, mais la mesure apporte un indice : ES est injoignable depuis l'hôte **par IP directe** (donc sans DNS — c'est un refus réseau, pas un NXDOMAIN), alors que la gateway répond depuis le même hôte. La contre-épreuve propre reste à jouer depuis un pod `ci` avec le nom **`elasticsearch.wm.svc:9200`**. |
 | `/root/vault-init-ci.txt` sur worker-1 | **hors périmètre** — geste exploitant, inchangé |
 | Image `hashicorp/vault:1.18` des pods agents non épinglée | **hors périmètre** |
@@ -325,7 +326,7 @@ faute que ce dépôt évite. Spike à part entière.
    l'originale** → re-bascule → P-a de nouveau verte.
 8. **P8** — **décommission**, dans cet ordre interne : `stop` → archive froide
    → **relecture sur worker-2 (porte dure)** → `rm` conteneurs + volumes →
-   dépose du cron root `*/20` et du keepalive `*/25` → porte P-c.
+   dépose du cron root `*/20` (le seul existant) → porte P-c.
    **L'archive vient après la re-bascule, pas avant** : les conteneurs doivent
    servir jusqu'à la bascule, et une archive « froide » exige de les arrêter.
    Elle ne protège pas d'une bascule ratée — c'est le rôle du rollback (P7),

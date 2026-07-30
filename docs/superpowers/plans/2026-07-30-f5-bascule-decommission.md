@@ -78,7 +78,8 @@ ssh worker-3 'sudo docker ps --format "{{.Names}}\t{{.Status}}"; \
 Consigner : **la ClusterIP de `wm-apigateway`** (la spéc dit `10.43.227.71` —
 si elle diffère, c'est cette valeur-là qui sera épinglée en T1), le nœud
 portant la gateway, la présence des deux conteneurs, et les **deux** crons
-(root `*/20` et keepalive hegemon `*/25`).
+(root `*/20` ; le keepalive hegemon `*/25` du handoff F4 est à confirmer — le
+  relevé ci-dessous établit qu'il n'existe pas).
 
 - [ ] **Step 2 : la mesure qui autorise toute la suite** (voie 1 de la spéc)
 
@@ -125,7 +126,39 @@ ssh worker-2 'df -h /var/lib | tail -1; echo; ls -la /var/lib/k3s-backups/offsit
 
 Attendu : largement plus que 200 Mo libres (F2 avait mesuré 361 Go).
 
-- [ ] **Step 6 : commit du relevé**
+- [x] **Step 6 : commit du relevé**
+
+#### Relevé T0 — exécuté le 2026-07-30 (07:0x–07:3x UTC)
+
+| Mesure | Valeur relevée |
+|---|---|
+| ClusterIP `wm-apigateway` | **`10.43.227.71`** (ports 5555, 9072) — conforme à la spéc |
+| ClusterIP `elasticsearch` | `10.43.210.198:9200` |
+| `health` depuis l'**hôte** worker-3 | **200 en 18,7 ms** → voie 1 acquise, le plan est autorisé |
+| ES cluster depuis l'hôte | **000** (bloqué) — NetworkPolicy `wm-elasticsearch-ingress` en place, ingress restreint aux pods `app=wm-apigateway` |
+| Surface publique AVANT | `/` **200** · `/rest/apigateway/health` **200** · `/rest/apigateway/apis` **401** · `/apigatewayui/` **302** · `dev-wm-ui/` **302** |
+| Garde flotte, référence | `https://dev-gw-k3s.gostoa.dev/health` → à relever au run (Caddy sert 4 noms `*-k3s` vers `localhost:30080`) |
+| Empreinte Caddyfile | **`5fab7a255ef128b4f7842df9bad86e84416f718477ec1bffb07df3e63e615689`**, 51 lignes |
+| Conteneurs worker-3 | `wm-dev-apigateway` (127.0.0.1:5555, 127.0.0.1:19072), `wm-dev-elasticsearch` |
+| Placement cluster | gateway sur worker-5, ES sur worker-4, `wm-restarter` sur worker-3 |
+| worker-2 | **360 Go libres**, `/var/lib/k3s-backups/offsite` présent (root-only, `0700`) avec les 8 archives F2 (1,5 Go, deux runs) |
+| Nommage des archives F2 | `pvc-<ns>-<pvc>-<stamp>.tar.gz` — donc le ns `wm` produira `pvc-wm-es-data-wm-elasticsearch-0-*.tar.gz` |
+| Coupure du cycle trial | **150 s** (07:20:23 → 07:22:54), sonde à 5 s depuis l'hôte |
+
+**Deux écarts avec la documentation, élucidés :**
+
+1. **Les archives F2 sont bien sur worker-2.** Un premier `ls` sans `sudo` les
+   avait fait croire absentes : le répertoire est `0700 root`. Aucun défaut —
+   seulement un piège de relecture, à ne pas reproduire.
+2. **Le keepalive hegemon `*/25` n'existe pas.** Le handoff F4 (point 4)
+   l'annonçait « en doublon du cron root `*/20`, ~5 min de service perdues par
+   heure ». Vérifié : crontab `root` = **une seule** ligne
+   (`*/20 … docker restart wm-dev-apigateway`) ; crontab `hegemon` = **un ping
+   d'uptime `*/1`** vers `status.gostoa.dev`, **sans aucun rapport avec
+   webMethods** ; `/etc/cron.d` vide de tout wM ; aucun timer systemd.
+   **Conséquence pour T7 Step 6 : il n'y a qu'UN cron à déposer**, et le ping
+   d'uptime `*/1` **ne doit pas être touché** — le motif de filtrage
+   (`wm-dev|wm-apigateway`) ne le capture pas, ce qui est exactement voulu.
 
 ```bash
 git add docs/superpowers/plans/2026-07-30-f5-bascule-decommission.md
@@ -1402,9 +1435,20 @@ Puis retirer les volumes listés (les nommer explicitement, **jamais**
 ssh worker-3 'sudo docker volume rm <VOL1> <VOL2>'
 ```
 
-- [ ] **Step 6 : déposer les deux crons** — le cron root `*/20` et le keepalive
-  hegemon `*/25` (ce dernier était en doublon, ~5 min de service perdues par
-  heure : handoff F4, point 4)
+- [ ] **Step 6 : déposer LE cron** — il n'y en a qu'un
+
+**Correction actée en T0 :** le handoff F4 (point 4) annonçait un keepalive
+hegemon `*/25` « en doublon du cron root, ~5 min de service perdues par heure ».
+**Il n'existe pas.** Mesuré : crontab `root` = une seule ligne
+(`*/20 … docker restart wm-dev-apigateway`) ; crontab `hegemon` = un **ping
+d'uptime `*/1`** vers `status.gostoa.dev`, étranger à webMethods ; rien dans
+`/etc/cron.d` ; aucun timer systemd.
+
+**Ne pas toucher au ping `*/1`** : il surveille l'hôte, pas la gateway. Le motif
+de filtrage ci-dessous (`wm-dev|wm-apigateway`) ne le capture pas — c'est
+délibéré, et le `diff` relu avant application le confirme. La boucle parcourt
+quand même les deux crontabs : c'est ce qui rend la preuve du non-effet
+explicite plutôt que supposée.
 
 **Un `crontab -l | grep -v … | crontab -` est dangereux** : si le `grep` ne
 laisse rien, la crontab est vidée, et un `grep` sans correspondance sort en
@@ -1433,8 +1477,8 @@ ssh worker-3 'echo "== root =="; sudo crontab -l | grep -i wm || echo "plus aucu
              echo "== hegemon =="; crontab -l | grep -i wm || echo "plus aucune ligne wm"'
 ```
 
-Vérifier aussi qu'aucun **timer systemd** ne prend le relais (le keepalive
-hegemon `*/25` du handoff F4 pourrait n'être pas une entrée crontab) :
+Vérifier aussi qu'aucun **timer systemd** ne prend le relais — c'est la
+dernière forme sous laquelle un mécanisme de relance pourrait subsister :
 
 ```bash
 ssh worker-3 'systemctl list-timers --all 2>/dev/null | grep -i "wm\|apigateway" || echo "aucun timer wm"
@@ -1549,7 +1593,10 @@ Dans `poc-control-plane-federation/GOAL-socle-vers-gateway-2026-07-28.md` :
   que la formulation initiale était inexacte ;
 - acter la **dette nouvelle** : spike « répliques wM décalées sur ES partagé » ;
 - barrer les dettes soldées : sauvegarde du ns `wm`, point d'amont F5, backend
-  fictif d'`accounts-read`, chiffre faux du cycle trial, keepalive `*/25` ;
+  fictif d'`accounts-read`, chiffre faux du cycle trial ;
+- **corriger** le point 4 du handoff F4 : le keepalive hegemon `*/25` n'existe
+  pas (relevé T0) — la dette était imaginaire, et la retirer sans le dire
+  laisserait croire qu'on l'a soldée ;
 - noter que la **migration ES a été écartée par décision** (§ D6), pas oubliée.
 
 - [ ] **Step 5 : écrire le handoff**
