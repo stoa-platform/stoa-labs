@@ -1,0 +1,494 @@
+{
+  "info": {
+    "name": "wm-1015-audit-trace",
+    "description": "Audit du **mode trace** (« Enable tracing » / Trace API) des APIs d'une webMethods API Gateway 10.15.\n\nPourquoi cet audit : le tracer natif 10.15 est un outil de DEBUG. Il capture policies,\npayloads et logs par requête, et stocke tout dans l'API Data Store (Elasticsearch),\navec un impact performance/stockage documenté par l'éditeur. Il n'a rien à faire\nallumé en dehors d'une session de diagnostic — et il n'existe aucun écran qui liste\nles APIs où il traîne allumé. D'où cette collection. Voir ADR-073.\n\nMÉCANISME (établi sur une 10.15 réelle le 2026-07-30) :\n  GET /rest/apigateway/apis  ->  apiResponse[].api.tracingEnabled  (booléen)\n\nDeux bonnes nouvelles, mesurées et non supposées :\n  1. `tracingEnabled` est porté par la PROJECTION DE LISTE, pas seulement par le\n     détail. L'audit complet de la gateway tient donc en UNE requête — contrairement\n     à `owner`, absent de la liste, qui obligeait la collection bulk-owner à lire\n     le détail de chaque API une par une.\n  2. Le champ existe à l'identique sur le détail (`apiResponse.api.tracingEnabled`),\n     ce qui permet la contre-épreuve du mode `deep`.\n\nCETTE COLLECTION NE MODIFIE RIEN. Aucun mode n'écrit : pas de POST, pas de PUT,\npas de DELETE. Elle constate et rend un verdict. L'extinction du tracer reste un\ngeste explicite d'exploitant, hors de cet outil.\n\nUn champ `tracingEnabled` ABSENT n'est jamais rapporté comme « éteint » : il est\nrapporté INDETERMINE et fait échouer le verdict. Un audit qui répond « tout va bien »\nparce qu'il n'a pas su lire est pire que pas d'audit.\n\nTrois modes, pilotés par `runMode` :\n  - `probe` : lit UNE API (`probeApiId`) et prouve que `tracingEnabled` est lisible\n              et booléen, sur le détail. Ne juge rien.\n  - `audit` : UNE requête de liste, classe toutes les APIs, rend le verdict. Défaut.\n  - `deep`  : `audit`, puis RELIT le détail des APIs suspectes pour confirmer que la\n              projection de liste ne mentait pas. Signale toute divergence.\n\nÀ lancer avec le Collection Runner ou Newman UNIQUEMENT : l'enchaînement repose sur\n`postman.setNextRequest`, sans effet en envoi manuel requête par requête.\n\nÉTEINDRE UN TRACER que cet audit a trouvé allumé — geste d'exploitant, hors\ncollection, et le seul documenté par le produit :\n  PUT /rest/apigateway/apis/{apiId}/tracing/disable      (pendant : .../tracing/enable)\nAucun corps de requête, aucun paramètre : l'apiId dans le chemin suffit. Source :\nles descripteurs Swagger livrés PAR le produit, dans le conteneur de la gateway —\n  .../packages/WmAPIGateway/resources/apigatewayservices/APIGatewayServiceManagement.json\nqui est l'autorité sur cette API d'admin, plutôt qu'un endpoint devinné.\n\nCONTRE-ÉPREUVE FAITE le 2026-07-30 sur la 10.15 du lab, dans les deux sens.\nSur une gateway où tout est déjà éteint, un audit juste et un audit AVEUGLE rendent\nle même verdict : il fallait donc voir la collection réagir à un tracer réellement\nallumé. Sur une API jetable (créée, puis supprimée) :\n  - `tracing/enable`  -> `tracingEnabled` passe à true SUR LA LISTE ET SUR LE DÉTAIL ;\n    l'audit sort cette API — et elle seule — en TRACE_ACTIVE et FAIT ÉCHOUER le verdict,\n    l'autre API de la gateway restant OK ;\n  - `deep` confirme le cas sur le détail ;\n  - `tracing/disable` -> le verdict repasse au vert.\nLe champ n'est donc pas un leurre, et l'audit n'est pas muet. À rejouer si un jour\nun upgrade change la forme des réponses.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{accessToken}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "runMode",
+      "value": "audit",
+      "description": "probe | audit | deep — aucun n'écrit."
+    },
+    {
+      "key": "gwBasePath",
+      "value": "/rest/apigateway",
+      "description": "Préfixe de chemin de l'API d'administration, SANS / final.\nAccès direct à la Gateway : /rest/apigateway\nDerrière une API proxifiée qui réexpose l'arbre ailleurs : mettre le préfixe du proxy,\nou la chaîne vide si le proxy sert directement /apis."
+    },
+    {
+      "key": "filterNameContains",
+      "value": "",
+      "description": "Contains insensible à la casse sur apiName. Vide = auditer TOUTE la gateway,\nce qui est le réglage voulu pour un audit. Ne le renseigner que pour instruire\nun périmètre déjà identifié."
+    },
+    {
+      "key": "confirmScope",
+      "value": "suspects",
+      "description": "Mode deep uniquement. suspects = relire le détail des APIs TRACE_ACTIVE et\nINDETERMINE seulement. all = relire le détail de toutes les APIs retenues."
+    },
+    {
+      "key": "probeApiId",
+      "value": "",
+      "description": "id d'une API quelconque, utilisée par la requête 00 en mode probe."
+    },
+    {
+      "key": "maxApis",
+      "value": "200",
+      "description": "Garde-fou de volume sur le nombre de RELECTURES de détail du mode deep.\nSans effet en mode audit, qui ne fait qu'une seule requête quel que soit\nle nombre d'APIs."
+    },
+    {
+      "key": "report",
+      "value": "[]"
+    },
+    {
+      "key": "confirmQueue",
+      "value": "[]"
+    },
+    {
+      "key": "currentApiId",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "00 — Reconnaissance",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Porte de reconnaissance. N'écrit rien.",
+              "// Vérifie que `tracingEnabled` est lisible là où la suite de la collection le cherche.",
+              "",
+              "const mode       = String(pm.variables.get('runMode') || '').trim();",
+              "const probeApiId = String(pm.variables.get('probeApiId') || '').trim();",
+              "",
+              "pm.test('00 — runMode est valide', function () {",
+              "    pm.expect(['probe', 'audit', 'deep']).to.include(mode);",
+              "});",
+              "",
+              "// Un runMode inconnu arrête le run au lieu de retomber sur un défaut. Le rapport",
+              "// dirait alors quel mode a tourné, pas celui qu'on croyait avoir demandé.",
+              "if (['probe', 'audit', 'deep'].indexOf(mode) === -1) {",
+              "    console.log(\"runMode inconnu : '\" + mode + \"'. Attendu : probe | audit | deep. Arrêt.\");",
+              "    postman.setNextRequest(null);",
+              "    return;",
+              "}",
+              "",
+              "// La reconnaissance n'a de sens qu'en mode probe : hors de ce mode on enchaîne",
+              "// directement, sans exiger de probeApiId ni asserter sur cette réponse.",
+              "if (mode !== 'probe') {",
+              "    postman.setNextRequest('01 — Auditer le mode trace');",
+              "    return;",
+              "}",
+              "",
+              "pm.test('00 — probeApiId est renseigné', function () {",
+              "    pm.expect(probeApiId, 'le mode probe exige un probeApiId').to.not.eql('');",
+              "});",
+              "if (probeApiId === '') { postman.setNextRequest(null); return; }",
+              "",
+              "pm.test('00 — la Gateway répond 200', function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "let body = null;",
+              "try { body = pm.response.json(); } catch (e) { body = null; }",
+              "",
+              "// Si la réponse est du HTML, c'est que l'en-tête Accept n'a pas été pris en compte :",
+              "// l'Integration Server rend en HTML par défaut. Toutes les requêtes d'ici portent Accept.",
+              "pm.test('00 — la réponse est bien du JSON (Accept: application/json honoré)', function () {",
+              "    pm.expect(body, 'réponse non-JSON — probable rendu HTML par défaut de l\\'IS').to.not.be.null;",
+              "});",
+              "",
+              "let api = null;",
+              "let shape = 'inconnue';",
+              "if (body && body.apiResponse && body.apiResponse.api) { api = body.apiResponse.api; shape = 'apiResponse.api'; }",
+              "else if (body && body.api) { api = body.api; shape = 'api'; }",
+              "else if (body && body.apiName) { api = body; shape = 'racine'; }",
+              "",
+              "pm.test('00 — objet API localisé dans la réponse', function () {",
+              "    pm.expect(api, 'objet API introuvable dans la réponse').to.be.an('object');",
+              "});",
+              "",
+              "if (api) {",
+              "    console.log('--- RECONNAISSANCE ------------------------------------------');",
+              "    console.log('Enveloppe détectée        : ' + shape);",
+              "    console.log('API                       : ' + api.apiName + ' ' + (api.apiVersion || ''));",
+              "    console.log('Clés de premier niveau    : ' + Object.keys(api).sort().join(', '));",
+              "    console.log('tracingEnabled (brut)     : ' + JSON.stringify(api.tracingEnabled));",
+              "    console.log('tracingEnabled (type)     : ' + typeof api.tracingEnabled);",
+              "    console.log('-------------------------------------------------------------');",
+              "",
+              "    pm.test(\"00 — le champ 'tracingEnabled' est présent sur le détail de l'API\", function () {",
+              "        pm.expect(api).to.have.property('tracingEnabled');",
+              "    });",
+              "    pm.test(\"00 — 'tracingEnabled' est un booléen\", function () {",
+              "        pm.expect(api.tracingEnabled).to.be.a('boolean');",
+              "    });",
+              "}",
+              "",
+              "console.log('Mode probe : arrêt après reconnaissance. Aucun verdict, aucune écriture.');",
+              "postman.setNextRequest(null);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Accept",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{gwUrl}}{{gwBasePath}}/apis/{{probeApiId}}",
+        "description": "Lit une API au hasard pour prouver que `tracingEnabled` est lisible. Ne modifie rien."
+      }
+    },
+    {
+      "name": "01 — Auditer le mode trace",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// L'audit tient dans cette seule requête : la projection de liste porte",
+              "// `tracingEnabled` (mesuré sur une 10.15 réelle). Aucune écriture.",
+              "",
+              "const mode       = String(pm.variables.get('runMode') || '').trim();",
+              "const nameNeedle = String(pm.variables.get('filterNameContains') || '').trim().toLowerCase();",
+              "const scope      = String(pm.variables.get('confirmScope') || 'suspects').trim();",
+              "const maxApis    = parseInt(pm.variables.get('maxApis') || '200', 10);",
+              "",
+              "pm.collectionVariables.set('report', '[]');",
+              "pm.collectionVariables.set('confirmQueue', '[]');",
+              "",
+              "pm.test('01 — la liste des APIs répond 200', function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "let body = null;",
+              "try { body = pm.response.json(); } catch (e) { body = null; }",
+              "",
+              "pm.test('01 — la réponse est bien du JSON (Accept: application/json honoré)', function () {",
+              "    pm.expect(body, 'réponse non-JSON — probable rendu HTML par défaut de l\\'IS').to.not.be.null;",
+              "});",
+              "",
+              "function extractApis(b) {",
+              "    if (!b) { return []; }",
+              "    let raw = b.apiResponse || b.apis || b;",
+              "    if (!Array.isArray(raw)) { raw = raw.apiResponse || raw.apis || []; }",
+              "    if (!Array.isArray(raw)) { return []; }",
+              "    return raw",
+              "        .map(function (e) { return (e && e.api) ? e.api : e; })",
+              "        .filter(function (a) { return a && (a.id || a.apiId); });",
+              "}",
+              "",
+              "const apis = extractApis(body);",
+              "",
+              "pm.test('01 — au moins une API lue depuis la Gateway', function () {",
+              "    pm.expect(apis.length, 'aucune API extraite — la forme de la réponse a changé').to.be.above(0);",
+              "});",
+              "",
+              "const retenues = apis.filter(function (a) {",
+              "    const n = String(a.apiName || '').toLowerCase();",
+              "    return (nameNeedle === '') || (n.indexOf(nameNeedle) !== -1);",
+              "});",
+              "",
+              "// Classement. Le cas qui compte est le troisième : un champ absent ou non booléen",
+              "// n'est PAS un tracer éteint, c'est un audit qui n'a pas su lire. Il sort INDETERMINE",
+              "// et fera échouer le verdict en 03.",
+              "const report = retenues.map(function (a) {",
+              "    const v = a.tracingEnabled;",
+              "    let statut;",
+              "    if (v === true)       { statut = 'TRACE_ACTIVE'; }",
+              "    else if (v === false) { statut = 'OK'; }",
+              "    else                  { statut = 'INDETERMINE'; }",
+              "    return {",
+              "        apiId:      a.id || a.apiId,",
+              "        api:        a.apiName || '(sans nom)',",
+              "        version:    a.apiVersion || '',",
+              "        actif:      (a.isActive === true),",
+              "        vuListe:    (typeof v === 'boolean') ? v : null,",
+              "        statut:     statut,",
+              "        detail:     (statut === 'INDETERMINE')",
+              "                        ? ('tracingEnabled ' + (('tracingEnabled' in a) ? ('non booléen : ' + JSON.stringify(v)) : 'absent de la réponse'))",
+              "                        : ''",
+              "    };",
+              "});",
+              "",
+              "pm.collectionVariables.set('report', JSON.stringify(report));",
+              "",
+              "function count(s) { return report.filter(function (r) { return r.statut === s; }).length; }",
+              "",
+              "console.log('--- AUDIT DU MODE TRACE -------------------------------------');",
+              "console.log('Mode                      : ' + mode);",
+              "console.log('APIs lues sur la gateway  : ' + apis.length);",
+              "console.log('Filtre nom (contains)     : ' + (nameNeedle || '(aucun — toute la gateway)'));",
+              "console.log('APIs auditées             : ' + report.length);",
+              "console.log('Trace ACTIVE              : ' + count('TRACE_ACTIVE'));",
+              "console.log('Trace éteinte             : ' + count('OK'));",
+              "console.log('Indéterminé               : ' + count('INDETERMINE'));",
+              "console.log('-------------------------------------------------------------');",
+              "",
+              "if (mode !== 'deep') {",
+              "    postman.setNextRequest('03 — Verdict');",
+              "    return;",
+              "}",
+              "",
+              "// Mode deep : la projection de liste est une projection. On relit le détail pour",
+              "// confirmer, au minimum là où le verdict se joue.",
+              "const aConfirmer = (scope === 'all')",
+              "    ? report.slice()",
+              "    : report.filter(function (r) { return r.statut !== 'OK'; });",
+              "",
+              "if (aConfirmer.length > maxApis) {",
+              "    pm.test('01 — garde-fou de volume', function () {",
+              "        pm.expect.fail(",
+              "            aConfirmer.length + ' relectures de détail demandées pour un maxApis de ' + maxApis + '. ' +",
+              "            'Resserrer filterNameContains, passer confirmScope à suspects, ou relever maxApis en conscience. ' +",
+              "            \"Le mode audit reste disponible : il ne fait qu'une requête.\"",
+              "        );",
+              "    });",
+              "    postman.setNextRequest(null);",
+              "    return;",
+              "}",
+              "",
+              "console.log('Mode deep : ' + aConfirmer.length + ' relecture(s) de détail (confirmScope=' + scope + ').');",
+              "pm.collectionVariables.set('confirmQueue', JSON.stringify(aConfirmer.map(function (r) { return r.apiId; })));",
+              "",
+              "if (aConfirmer.length === 0) {",
+              "    postman.setNextRequest('03 — Verdict');",
+              "} else {",
+              "    postman.setNextRequest('02 — Confirmer sur le détail');",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Accept",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{gwUrl}}{{gwBasePath}}/apis",
+        "description": "Liste toutes les APIs. La projection porte `tracingEnabled` : un audit complet\nde la gateway coûte cette unique requête. Lecture seule."
+      }
+    },
+    {
+      "name": "02 — Confirmer sur le détail",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const q = JSON.parse(pm.collectionVariables.get('confirmQueue') || '[]');",
+              "if (q.length === 0) {",
+              "    postman.setNextRequest('03 — Verdict');",
+              "} else {",
+              "    pm.collectionVariables.set('currentApiId', q[0]);",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Contre-épreuve du mode deep. Relit le détail et compare au `tracingEnabled`",
+              "// vu sur la liste. Boucle EN LECTURE SEULE.",
+              "",
+              "const queue  = JSON.parse(pm.collectionVariables.get('confirmQueue') || '[]');",
+              "const report = JSON.parse(pm.collectionVariables.get('report') || '[]');",
+              "const apiId  = queue[0];",
+              "",
+              "function advance() {",
+              "    queue.shift();",
+              "    pm.collectionVariables.set('confirmQueue', JSON.stringify(queue));",
+              "    pm.collectionVariables.set('report', JSON.stringify(report));",
+              "    postman.setNextRequest(queue.length > 0 ? '02 — Confirmer sur le détail' : '03 — Verdict');",
+              "}",
+              "",
+              "if (!apiId) { postman.setNextRequest('03 — Verdict'); return; }",
+              "",
+              "const entree = report.filter(function (r) { return r.apiId === apiId; })[0];",
+              "const nom    = entree ? (entree.api + ' ' + entree.version) : apiId;",
+              "",
+              "if (pm.response.code === 401) {",
+              "    pm.test('02 — jeton refusé (401)', function () {",
+              "        pm.expect.fail('Jeton expiré ou invalide. Arrêt à la confirmation de ' + nom + '. Verdict non rendu.');",
+              "    });",
+              "    postman.setNextRequest(null);",
+              "    return;",
+              "}",
+              "",
+              "pm.test('02 — relecture de ' + nom, function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "if (pm.response.code !== 200) {",
+              "    if (entree) {",
+              "        entree.statut = 'INDETERMINE';",
+              "        entree.detail = 'relecture du détail : HTTP ' + pm.response.code;",
+              "    }",
+              "    advance();",
+              "    return;",
+              "}",
+              "",
+              "let api = null;",
+              "try {",
+              "    const b = pm.response.json();",
+              "    api = (b.apiResponse && b.apiResponse.api) ? b.apiResponse.api : (b.api || b);",
+              "} catch (e) { api = null; }",
+              "",
+              "const vuDetail = (api && typeof api.tracingEnabled === 'boolean') ? api.tracingEnabled : null;",
+              "",
+              "if (entree) {",
+              "    entree.vuDetail = vuDetail;",
+              "",
+              "    if (vuDetail === null) {",
+              "        entree.statut = 'INDETERMINE';",
+              "        entree.detail = 'tracingEnabled illisible sur le détail : ' + JSON.stringify(api ? api.tracingEnabled : null);",
+              "    } else if (entree.vuListe !== null && entree.vuListe !== vuDetail) {",
+              "        // La liste et le détail ne racontent pas la même chose. On retient le détail,",
+              "        // qui est la source, et on le signale bruyamment : c'est la prémisse de cette",
+              "        // collection — auditer sur la liste — qui vacille.",
+              "        entree.statut = 'DIVERGENCE';",
+              "        entree.detail = 'liste=' + entree.vuListe + ' mais détail=' + vuDetail;",
+              "    } else {",
+              "        entree.statut = vuDetail ? 'TRACE_ACTIVE' : 'OK';",
+              "        entree.detail = 'confirmé sur le détail';",
+              "    }",
+              "}",
+              "",
+              "advance();"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Accept",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{gwUrl}}{{gwBasePath}}/apis/{{currentApiId}}",
+        "description": "Relit le détail pour confirmer le `tracingEnabled` vu sur la liste. Lecture seule."
+      }
+    },
+    {
+      "name": "03 — Verdict",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const mode   = String(pm.variables.get('runMode') || '').trim();",
+              "const report = JSON.parse(pm.collectionVariables.get('report') || '[]');",
+              "",
+              "function sel(s) { return report.filter(function (r) { return r.statut === s; }); }",
+              "const actives      = sel('TRACE_ACTIVE');",
+              "const indetermines = sel('INDETERMINE');",
+              "const divergences  = sel('DIVERGENCE');",
+              "",
+              "console.log('');",
+              "console.log('=== VERDICT — MODE TRACE (' + mode + ') =======================');",
+              "if (report.length === 0) {",
+              "    console.log('Aucune API auditée.');",
+              "} else if (actives.length === 0 && indetermines.length === 0 && divergences.length === 0) {",
+              "    console.log('Aucune API en mode trace sur les ' + report.length + ' auditée(s).');",
+              "} else {",
+              "    report.filter(function (r) { return r.statut !== 'OK'; }).forEach(function (r) {",
+              "        console.log('[' + r.statut + '] ' + r.api + ' ' + r.version +",
+              "                    ' | actif=' + r.actif + ' | id=' + r.apiId +",
+              "                    (r.detail ? ' | ' + r.detail : ''));",
+              "    });",
+              "}",
+              "console.log('-------------------------------------------------------------');",
+              "console.log('AUDITÉES ' + report.length +",
+              "            '  |  TRACE_ACTIVE ' + actives.length +",
+              "            '  |  OK ' + sel('OK').length +",
+              "            '  |  INDETERMINE ' + indetermines.length +",
+              "            '  |  DIVERGENCE ' + divergences.length);",
+              "",
+              "if (actives.length > 0) {",
+              "    console.log('');",
+              "    console.log('À ÉTEINDRE. Le tracer 10.15 est un outil de debug : il capture policies,');",
+              "    console.log(\"payloads et logs par requête dans l'API Data Store, avec un impact\");",
+              "    console.log('performance et stockage. Une API en production ne doit pas le porter.');",
+              "    console.log('');",
+              "    console.log(\"Cette collection n'écrit pas. L'extinction est un geste d'exploitant :\");",
+              "    // Résolu ici, et non écrit en {{gwUrl}} : Postman n'interpole pas les variables",
+              "    // dans les chaînes d'un script. La ligne imprimée doit être copiable telle quelle.",
+              "    const base = String(pm.variables.get('gwUrl') || '') + String(pm.variables.get('gwBasePath') || '');",
+              "    actives.forEach(function (r) {",
+              "        console.log('  PUT ' + base + '/apis/' + r.apiId + '/tracing/disable');",
+              "    });",
+              "    console.log('  (aucun corps de requête ; relancer cet audit ensuite pour le prouver)');",
+              "}",
+              "if (indetermines.length > 0) {",
+              "    console.log('');",
+              "    console.log(\"INDETERMINE n'est pas 'éteint' : c'est 'pas su lire'. Lancer le mode probe\");",
+              "    console.log(\"sur l'une de ces APIs pour voir la forme réelle de la réponse.\");",
+              "}",
+              "if (divergences.length > 0) {",
+              "    console.log('');",
+              "    console.log('DIVERGENCE : la liste et le détail ne disent pas la même chose sur le même');",
+              "    console.log(\"champ. C'est la prémisse de cet audit — se fier à la projection de liste —\");",
+              "    console.log('qui est en cause. Auditer en deep avec confirmScope=all en attendant.');",
+              "}",
+              "if (mode === 'audit' && actives.length > 0) {",
+              "    console.log('');",
+              "    console.log('Relancer en runMode=deep pour confirmer chaque API active sur son détail');",
+              "    console.log(\"avant d'ouvrir un ticket.\");",
+              "}",
+              "console.log('=============================================================');",
+              "",
+              "pm.test('03 — aucune API en mode trace', function () {",
+              "    pm.expect(actives.length, actives.map(function (r) { return r.api + ' ' + r.version; }).join(', ')).to.eql(0);",
+              "});",
+              "",
+              "pm.test('03 — le mode trace a pu être lu sur toutes les APIs auditées', function () {",
+              "    pm.expect(indetermines.length, indetermines.map(function (r) { return r.api; }).join(', ')).to.eql(0);",
+              "});",
+              "",
+              "pm.test('03 — liste et détail concordent', function () {",
+              "    pm.expect(divergences.length, divergences.map(function (r) { return r.api; }).join(', ')).to.eql(0);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Accept",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{gwUrl}}{{gwBasePath}}/apis",
+        "description": "Support du verdict final. Ne modifie rien.\nPointe sur /apis, et non /health : /health peut être absent ou injoignable derrière un proxy,\net une requête EN ERREUR (et non un simple 404) empêcherait le script de test de s'exécuter —\ndonc ferait perdre le rapport et le verdict. /apis est joignable par construction :\nsi ce n'était pas le cas, le run aurait échoué dès la requête 01."
+      }
+    }
+  ]
+}
