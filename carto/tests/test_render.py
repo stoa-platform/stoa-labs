@@ -275,6 +275,15 @@ class TestVueSignaux(RenderJsTestCase):
 
     def test_les_fantomes_sont_detectes_par_le_champ_pas_par_l_etiquette(self):
         # I5 : renommer l'etiquette ne doit pas vider le signal.
+        #
+        # L'assertion porte sur le BLOC « Objets disparus encore appelés », pas
+        # sur la presence du nom quelque part dans la page. Version precedente
+        # de ce test : elle cherchait le nom dans tout le HTML, et le meme nom
+        # apparaissait aussi dans « Trafic sans autorisation déclarée » (l'arete
+        # `declared: false` ci-dessous). Le test passait donc grace a l'autre
+        # bloc, et remettre la detection par etiquette de nom laissait toute la
+        # suite au vert. Un test qui passe pour la mauvaise raison ne garde
+        # rien : c'est le compteur du bloc concerne qui est verifie.
         doc = json.loads(self.carto_js())
         doc["consumers"].append({"id": "Unknown", "name": "appelant sans nom",
                                  "owner": None, "contact": None,
@@ -284,9 +293,15 @@ class TestVueSignaux(RenderJsTestCase):
                              "calls": {"d7": 5, "d30": 5, "d90": 5},
                              "lastCall": None, "errorRate": 0.0})
         out = self.js(self.contexte(json.dumps(doc)) + """
-          console.log(viewSignaux().includes("appelant sans nom") ? "VU" : "PERDU");
+          const html = viewSignaux();
+          const debut = html.indexOf("Objets disparus encore appelés");
+          const suite = html.indexOf("<h3", debut + 1);
+          const bloc = debut < 0 ? "" : html.slice(debut, suite < 0 ? html.length : suite);
+          console.log(JSON.stringify({ bloc }));
         """)
-        self.assertEqual(out.strip(), "VU")
+        bloc = json.loads(out)["bloc"]
+        self.assertIn("(1)", bloc, f"bloc des objets disparus vide :\n{bloc}")
+        self.assertIn("appelant sans nom", bloc)
 
     def test_l_annuaire_ne_presente_pas_un_inconnu_comme_enregistre(self):
         doc = json.loads(self.carto_js())
