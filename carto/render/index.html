@@ -55,20 +55,34 @@ function index(c) {
 }
 
 function ageDays(iso) {
-  return Math.floor((Date.now() - Date.parse(iso)) / 86400000);
+  const t = iso ? Date.parse(iso) : NaN;
+  return Number.isNaN(t) ? NaN : Math.floor((Date.now() - t) / 86400000);
 }
 
+// Le bandeau existe pour crier quand la donnée est mauvaise : il ne doit
+// donc jamais planter, ni se taire, sur un carto.json abîmé ou étranger.
 function banner() {
   const b = document.getElementById("banner");
-  const w = S.carto.window, age = ageDays(S.carto.generatedAt);
-  const stale = age > 2;
+  const w = S.carto.window || {};
+  const age = ageDays(S.carto.generatedAt);
+  const dateIllisible = Number.isNaN(age);
+  const stale = dateIllisible || age > 2;
   b.className = stale ? "stale" : "";
-  b.innerHTML = (stale ? "⚠ " : "")
-    + `Données du ${esc(day(S.carto.generatedAt))}`
-    + (stale ? ` — <b>périmées de ${age} jours, la collecte a échoué</b>` : ` (il y a ${age} j)`)
-    + ` · fenêtre réellement couverte : <b>${w.coveredDays} jours</b>`
-    + (w.coveredDays < w.requestedDays
-        ? ` <span class="muted">(${w.requestedDays} demandés — rétention de l'index plus courte)</span>` : "");
+
+  const dateTxt = dateIllisible
+    ? `<b>date de collecte illisible — donnée non fiable</b>`
+    : `Données du ${esc(day(S.carto.generatedAt))}`
+      + (stale ? ` — <b>périmées de ${age} jours, la collecte a échoué</b>` : ` (il y a ${age} j)`);
+
+  const coveredKnown = Number.isFinite(w.coveredDays);
+  const requestedKnown = Number.isFinite(w.requestedDays);
+  const fenetreTxt = coveredKnown
+    ? ` · fenêtre réellement couverte : <b>${w.coveredDays} jours</b>`
+      + (requestedKnown && w.coveredDays < w.requestedDays
+          ? ` <span class="muted">(${w.requestedDays} demandés — rétention de l'index plus courte)</span>` : "")
+    : ` · <span class="muted">fenêtre couverte : profondeur inconnue (champ absent du document)</span>`;
+
+  b.innerHTML = (stale ? "⚠ " : "") + dateTxt + fenetreTxt;
 }
 
 const VIEWS = [
@@ -116,9 +130,15 @@ async function boot() {
       "⚠ carto.json introuvable ou illisible — ouvrir cette page via le serveur web, pas en file://";
     return;
   }
-  S.idx = index(S.carto);
-  banner();
-  render();
+  try {
+    S.idx = index(S.carto);
+    banner();
+    render();
+  } catch (err) {
+    document.getElementById("banner").className = "stale";
+    document.getElementById("banner").textContent =
+      "⚠ carto.json chargé mais structurellement inexploitable — vérifier le fichier généré par la collecte.";
+  }
 }
 
 // --- vue : qui consomme quoi -------------------------------------------
