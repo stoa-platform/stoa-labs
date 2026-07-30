@@ -142,9 +142,26 @@ croire les archives F2 absentes.
    `volumeClaimTemplates`, champ immuable. Correctif d'une ligne
    (`volumeMode: Filesystem` en Git, ou `ignoreDifferences`). Ce qui compte
    n'est pas la dérive mais l'**alerte allumée en permanence**.
-6. **Archive froide de worker-3** dans
-   `/var/lib/k3s-backups/offsite/wm-dev-worker3/` sur worker-2 (17 Mo),
-   **hors rotation** de `cluster_backup` : à gérer à la main.
+6. ~~**Archive froide de worker-3**, **hors rotation** : à gérer à la main.~~
+   **TRAITÉ le 2026-07-30 — et la formulation ci-dessus était trompeuse.**
+   « Hors rotation » se lisait comme un manque ; c'est en réalité l'état
+   **correct**. La rotation de `cluster_backup` balaie
+   `offsite/pvc-<ns>-<claim>-*.tar.gz` — ancré sur le préfixe `pvc-` et à la
+   racine d'`offsite` — alors que cette archive vit dans un sous-répertoire avec
+   un autre préfixe : aucune correspondance possible (vérifié en lisant le
+   rôle). Et c'est heureux, car l'archive est **terminale** : worker-3 étant
+   décommissionné, rien ne la régénérera, donc une rotation ne pourrait que la
+   détruire.
+   Le risque réel n'était pas la suppression mais **l'oubli** — elle n'existait
+   que dans ce handoff. Livré : `ansible/archive-verify.yml`, qui relit
+   l'empreinte, ouvre l'archive, vérifie qu'elle porte bien des index ES, et
+   rappelle ce qu'elle contient et la rétention décidée. Joué **vert**
+   (empreinte OK, 1995 entrées, 1862 chemins d'index) **et saboté** (motif
+   introuvable → `ARCHIVE INEXPLOITABLE`, l'empreinte restant OK : le contrôle
+   distingue ses causes).
+   **Rétention : conservation indéfinie**, décidée le 2026-07-30. 17 Mo pour
+   356 Go libres — le coût de la garder est nul, celui de la perdre définitif.
+   À ne supprimer que sur décision explicite.
 7. **Image `hashicorp/vault:1.18`** des pods agents non épinglée par digest.
 8. **Spike hors jalons F** : deux répliques wM 10.15 à redémarrages décalés sur
    un ES partagé, pour supprimer les 120–235 s. Exige un vrai clustering

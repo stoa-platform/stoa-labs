@@ -1,0 +1,99 @@
+---
+# archive-verify.yml — vérifie les archives TERMINALES conservées hors-nœud.
+#
+# Une archive terminale est le dernier état d'une charge décommissionnée : plus
+# rien ne la régénérera. Elle est donc VOLONTAIREMENT hors du champ de
+# `cluster_backup`, dont la rotation ne pourrait que la détruire (elle balaie
+# `offsite/pvc-<ns>-<claim>-*.tar.gz`, ancré sur le préfixe `pvc-` et à la
+# racine d'`offsite` ; ces archives-ci vivent dans un sous-répertoire et portent
+# un autre préfixe — vérifié le 2026-07-30, aucune correspondance possible).
+#
+# Le risque réel n'est donc pas la suppression : c'est l'OUBLI. Une archive dont
+# plus personne ne sait ce qu'elle contient, ni si elle est encore lisible, ne
+# protège rien. Ce playbook répond aux deux questions, sans archéologie :
+#   - l'empreinte concorde-t-elle encore ?
+#   - l'archive s'ouvre-t-elle, et contient-elle ce qu'on croit ?
+#
+# Usage :
+#   ansible-playbook -i inventory.contabo.ini archive-verify.yml
+#
+# À rejouer après toute intervention sur worker-2, et périodiquement — une
+# corruption silencieuse de disque ne s'annonce pas.
+
+- name: "Vérifier les archives terminales hors-nœud"
+  hosts: "{{ archive_host | default('worker-2') }}"
+  gather_facts: false
+  become: true
+
+  vars:
+    archive_root: /var/lib/k3s-backups/offsite
+    # Chaque entrée : le répertoire, et un motif que l'archive DOIT contenir.
+    # Le motif est ce qui distingue « le fichier existe » de « c'est bien la
+    # donnée qu'on croit sauvegarder ».
+    archives:
+      - dir: wm-dev-worker3
+        must_contain: "/indices/"
+        quoi: >-
+          État final d'Elasticsearch du webMethods Docker de worker-3,
+          décommissionné par F5 le 2026-07-30. Contient les 7 définitions
+          d'API du lab et la configuration accumulée en 2 mois. Seule copie :
+          les conteneurs et le volume ont été retirés le jour même.
+        retention: >-
+          CONSERVATION INDÉFINIE, décidée le 2026-07-30. 17 Mo pour 356 Go
+          libres : le coût de la garder est nul, celui de la perdre est
+          définitif. À ne supprimer que sur décision explicite, jamais par
+          une rotation automatique.
+
+  tasks:
+    # `sudo bash -c` pour le shell ENTIER, et non `sudo` devant chaque commande :
+    # /var/lib/k3s-backups/offsite est en 0700 root, donc un `cd` ou un glob
+    # exécuté par l'utilisateur courant échoue en « Permission denied » et le
+    # motif reste littéral. Piège rencontré TROIS fois pendant F5 — il coûtait à
+    # chaque coup un faux diagnostic (« les archives sont absentes »).
+    - name: "Relire chaque archive : empreinte, ouverture, contenu attendu"
+      ansible.builtin.shell:
+        cmd: |
+          set -euo pipefail
+          cd "{{ archive_root }}/{{ item.dir }}"
+          A=$(ls -1t *.tar.gz 2>/dev/null | head -1)
+          [ -n "$A" ] || { echo "AUCUNE ARCHIVE dans {{ item.dir }}"; exit 1; }
+          echo "archive=$A"
+          sha256sum -c "${A}.sha256" >/dev/null 2>&1 || { echo "EMPREINTE KO"; exit 1; }
+          echo "empreinte=OK"
+          # `grep -c` et NON `grep -q` : sous `pipefail`, un `-q` sort dès la
+          # première correspondance, ferme le tube, `tar` reçoit SIGPIPE et le
+          # pipeline entier passe pour un échec. Plus l'archive est valide, plus
+          # sûrement le contrôle échouerait. Constaté en F5 sur cette archive.
+          echo "entrees=$(tar -tzf "$A" | wc -l)"
+          echo "motif=$(tar -tzf "$A" | grep -c '{{ item.must_contain }}' || true)"
+          echo "taille=$(du -h "$A" | cut -f1)"
+        executable: /bin/bash
+      register: archive_check
+      changed_when: false
+      loop: "{{ archives }}"
+      loop_control:
+        label: "{{ item.dir }}"
+
+    - name: "Assert : archive lisible ET portant la donnée attendue"
+      ansible.builtin.assert:
+        that:
+          - "'empreinte=OK' in item.stdout"
+          - (item.stdout | regex_search('entrees=(\\d+)', '\\1') | first | int) > 0
+          - (item.stdout | regex_search('motif=(\\d+)', '\\1') | first | int) > 0
+        fail_msg: >-
+          ARCHIVE {{ item.item.dir }} INEXPLOITABLE.
+          {{ item.stdout }}
+          Ce n'est pas une alerte de confort : {{ item.item.quoi }}
+        success_msg: "{{ item.item.dir }} — {{ item.stdout_lines | join(' · ') }}"
+      loop: "{{ archive_check.results }}"
+      loop_control:
+        label: "{{ item.item.dir }}"
+
+    - name: "Rappeler ce que chaque archive contient et jusqu'à quand la garder"
+      ansible.builtin.debug:
+        msg:
+          - "{{ item.dir }} : {{ item.quoi }}"
+          - "Rétention : {{ item.retention }}"
+      loop: "{{ archives }}"
+      loop_control:
+        label: "{{ item.dir }}"
