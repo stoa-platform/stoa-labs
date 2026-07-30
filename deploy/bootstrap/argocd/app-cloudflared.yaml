@@ -1,0 +1,36 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: edge-cloudflared
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  # Projet `default` et non `stoa` : l'AppProject `stoa` restreint ses sources au
+  # dépôt stoa et sa liste de namespaces ne couvre pas `edge`. L'étendre exigerait
+  # une PR sur le dépôt stoa — ce que ce montage vise justement à éviter.
+  project: default
+
+  source:
+    # SSH, parce que stoa-labs est privé : Argo s'authentifie par la clé de
+    # déploiement en lecture seule (Secret de dépôt dans le namespace argocd).
+    repoURL: git@github.com:stoa-platform/stoa-labs.git
+    targetRevision: main
+    path: deploy/bootstrap/edge/cloudflared
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: edge
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        maxDuration: 3m
+        factor: 2
