@@ -2,6 +2,7 @@
 # PoC Control Plane Fédération — socle ANALYTICS transactionnel (ADR-070)
 #
 # OVERRIDE du projet `stoa-labs-poc`. À utiliser EMPILÉ sur le socle :
+#   bash observability/data-prepper/render-pipelines.sh   # REQUIS (rend pipelines.rendered.yaml, hors git)
 #   docker compose -p stoa-labs-poc \
 #     -f docker-compose.poc.yml -f docker-compose.analytics.yml up -d \
 #     redpanda opensearch opensearch-dashboards data-prepper
@@ -158,12 +159,16 @@ services:
         condition: service_healthy
       redpanda:
         condition: service_healthy
-    environment:
-      # Lu par pipelines.yaml via ${OPENSEARCH_PASSWORD} (substitution native Data
-      # Prepper) : le mot de passe ne vit plus en clair dans le fichier versionné.
-      - OPENSEARCH_PASSWORD=${OPENSEARCH_PASSWORD:?Variable OPENSEARCH_PASSWORD absente — définissez-la (voir poc-control-plane-federation/.env.example)}
     volumes:
-      - ./observability/data-prepper/pipelines.yaml:/usr/share/data-prepper/pipelines/pipelines.yaml:ro
+      # Data Prepper ne substitue AUCUNE variable d'environnement dans
+      # pipelines.yaml (vérifié — ni ${VAR}, ni ${env:VAR}/${env.VAR}) : le
+      # fichier versionné (marqueur __FROM_ENV__) n'est donc PAS monté ici.
+      # Ce qui EST monté, c'est le fichier RENDU (gitignored, 0600) produit
+      # par render-pipelines.sh — REQUIS avant ce `up` (sinon Docker monterait
+      # un RÉPERTOIRE VIDE à la place du fichier attendu, et data-prepper
+      # échouerait au démarrage) :
+      #   bash observability/data-prepper/render-pipelines.sh
+      - ./observability/data-prepper/pipelines.rendered.yaml:/usr/share/data-prepper/pipelines/pipelines.yaml:ro
       - ./observability/data-prepper/data-prepper-config.yaml:/usr/share/data-prepper/config/data-prepper-config.yaml:ro
     ports:
       - "4900:4900"     # API d'admin / métriques Prometheus
