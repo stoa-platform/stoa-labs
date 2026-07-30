@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Collecte de la carto. LECTURE SEULE sur la production.
+# Regle (spec D9) : un echec silencieux produit PIRE que rien — une carto
+# perimee qui a l'air fraiche. On alerte donc systematiquement, et on laisse
+# en place la derniere carto valide.
+set -uo pipefail
+export WM_ADMIN_URL={{ carto_env.WM_ADMIN_URL | quote }}
+export WM_USER={{ carto_env.WM_USER | quote }}
+export WM_PASS={{ carto_env.WM_PASS | quote }}
+export WM_ES_URL={{ carto_env.WM_ES_URL | quote }}
+export WM_ES_INDEX={{ carto_env.WM_ES_INDEX | quote }}
+
+LOG=$(mktemp)
+# La sortie peut contenir des elements d'infrastructure : elle va dans un
+# fichier, jamais sur la sortie standard du planificateur.
+if python3 -m carto.collect --out {{ carto_web_root }} --days {{ carto_window_days }} >"$LOG" 2>&1
+then
+  install -m 0644 {{ carto_install_dir }}/carto/render/index.html {{ carto_web_root }}/index.html
+  rm -f "$LOG"
+  exit 0
+fi
+
+{{ carto_alert_command }} "collecte de la carto EN ECHEC — la carto publiee date de la veille ou avant"
+cp "$LOG" {{ carto_install_dir }}/last-failure.log
+chmod 0600 {{ carto_install_dir }}/last-failure.log
+rm -f "$LOG"
+exit 1

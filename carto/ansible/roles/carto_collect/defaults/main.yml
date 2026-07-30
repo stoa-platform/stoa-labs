@@ -1,0 +1,29 @@
+---
+# carto_install_dir est le PARENT du paquet : le code vit dans
+# {{ carto_install_dir }}/carto/. On invoque donc `python3 -m carto.collect`
+# exactement comme depuis le depot — une seule commande a connaitre.
+carto_install_dir: /opt/carto-app
+# Racine du livrable sur la machine qui joue le playbook (le repertoire carto/).
+# `copy` avec un src relatif chercherait dans files/ du role : on passe donc un
+# chemin absolu.
+carto_source_dir: "{{ playbook_dir }}/../.."
+# V6 — cible de publication : NON MESUREE dans ce labo (aucun mecanisme de
+# depot n'existe sur le cluster de labo). Cette valeur est un defaut neutre a
+# arbitrer avec le client, pas un chemin reel — voir carto/README.md.
+carto_web_root: /var/www/carto
+carto_user: carto
+carto_schedule_hour: "2"
+carto_schedule_minute: "11"
+carto_window_days: 90
+carto_alert_command: "logger -t carto -p user.err"   # a remplacer par le canal du client
+
+# Identifiants : jamais dans le depot, jamais en dur ici. Fournis a l'execution
+# depuis le coffre (par ex. via des extra-vars chiffrees ou un lookup vault),
+# comme le reste de la chaine du projet. Le gabarit qui les ecrit sur le noeud
+# est pose avec no_log pour qu'ils ne transitent jamais par une sortie Ansible.
+carto_env:
+  WM_ADMIN_URL: ""
+  WM_USER: ""
+  WM_PASS: ""
+  WM_ES_URL: ""
+  WM_ES_INDEX: ""
