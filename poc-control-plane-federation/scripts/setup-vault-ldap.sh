@@ -92,14 +92,35 @@ ldif_user() {  # ldif_user <uid> <dn-échappé> <mot de passe>
 
 # alice, bob, carol + les DEUX formats d'entreprise. Dans un DN, le `\` doit être
 # échappé en `\5C` (RFC 4514) — l'attribut uid, lui, porte la valeur littérale.
-{
-  ldif_user "$LAB_ALICE_USER"     "$LAB_ALICE_USER"          "$LAB_ALICE_PASS"
-  ldif_user "$LAB_BOB_USER"       "$LAB_BOB_USER"            "$LAB_BOB_PASS"
-  ldif_user "$LAB_CAROL_USER"     "$LAB_CAROL_USER"          "$LAB_CAROL_PASS"
-  ldif_user "$LAB_OSCAR_USER"     "$LAB_OSCAR_USER"          "$LAB_OSCAR_PASS"
-  ldif_user "$LAB_ALICE_UPN_USER" "$LAB_ALICE_UPN_USER"      "$LAB_ALICE_PASS"
-  ldif_user "$LAB_ALICE_DOMAIN_USER" 'CORP\5Calice'          "$LAB_ALICE_PASS"
-} | ldap_add "utilisateurs (alice, bob, carol, UPN, DOMAIN\\user)"
+#
+# Les mots de passe ne vivent plus dans lab-vault-users.sh (dépôt public, cf.
+# check-no-plaintext-secrets.sh) : ils viennent du fichier root-only du nœud
+# (tâche 4). Absent sur ce poste -> annuaire de démo NON semé, sauté plutôt
+# qu'un crash sous `set -u` ou un LDIF vide envoyé à ldapadd.
+# LDAP_LAB_USERS_SEEDED : bascule à 1 UNIQUEMENT si les 4 mots de passe étaient
+# là. Relecture (2026-07-30) : le bloc `ldif_group` qui suit référence des membres
+# `uid=…,ou=People,…` — le garder inconditionnel alors que ce bloc-ci est sauté
+# créerait des groupes avec des membres qui n'existent pas dans l'annuaire. Cette
+# variable sert à sauter le bloc groupes EN MÊME TEMPS (même condition, cohérence
+# garantie) et à rendre le "Terminé." final PARTIEL au lieu de trompeur.
+LDAP_LAB_USERS_SEEDED=0
+: "${LAB_ALICE_PASS:=}"
+: "${LAB_BOB_PASS:=}"
+: "${LAB_CAROL_PASS:=}"
+: "${LAB_OSCAR_PASS:=}"
+if [ -z "$LAB_ALICE_PASS" ] || [ -z "$LAB_BOB_PASS" ] || [ -z "$LAB_CAROL_PASS" ] || [ -z "$LAB_OSCAR_PASS" ]; then
+  warn "mots de passe absents (fichier root-only non monté) : utilisateurs d'annuaire non créés"
+else
+  {
+    ldif_user "$LAB_ALICE_USER"     "$LAB_ALICE_USER"          "$LAB_ALICE_PASS"
+    ldif_user "$LAB_BOB_USER"       "$LAB_BOB_USER"            "$LAB_BOB_PASS"
+    ldif_user "$LAB_CAROL_USER"     "$LAB_CAROL_USER"          "$LAB_CAROL_PASS"
+    ldif_user "$LAB_OSCAR_USER"     "$LAB_OSCAR_USER"          "$LAB_OSCAR_PASS"
+    ldif_user "$LAB_ALICE_UPN_USER" "$LAB_ALICE_UPN_USER"      "$LAB_ALICE_PASS"
+    ldif_user "$LAB_ALICE_DOMAIN_USER" 'CORP\5Calice'          "$LAB_ALICE_PASS"
+  } | ldap_add "utilisateurs (alice, bob, carol, UPN, DOMAIN\\user)"
+  LDAP_LAB_USERS_SEEDED=1
+fi
 
 # Groupes = groupOfNames. Vault les retrouve SANS overlay memberOf : son
 # groupfilter par défaut fait la recherche inverse (quels groupes ont ce membre).
@@ -112,19 +133,28 @@ ldif_group() { # ldif_group <cn> <dn membre>…
   for m in "$@"; do printf 'member: %s\n' "$m"; done
   printf '\n'
 }
-{
-  ldif_group "apim-deploy-$LAB_TENANT_ALICE" \
-    "uid=$LAB_ALICE_USER,ou=People,$BASE_DN" \
-    "uid=$LAB_ALICE_UPN_USER,ou=People,$BASE_DN" \
-    "uid=CORP\\5Calice,ou=People,$BASE_DN"
-  ldif_group "apim-deploy-$LAB_TENANT_BOB" "uid=$LAB_BOB_USER,ou=People,$BASE_DN"
-  # carol est dans l'annuaire et dans un groupe — mais un groupe SANS policy de
-  # déploiement : être authentifié n'est pas être autorisé.
-  ldif_group "apim-readonly" "uid=$LAB_CAROL_USER,ou=People,$BASE_DN"
-  # Groupe SÉPARÉ de ceux des tenants : l'opérateur de mise en prod lit les secrets
-  # de plateforme, les déployeurs de tenant non. Deux périmètres, deux groupes.
-  ldif_group "apim-operator-prod" "uid=$LAB_OSCAR_USER,ou=People,$BASE_DN"
-} | ldap_add "groupes (apim-deploy-<tenant>, apim-readonly)"
+# MÊME garde que le bloc utilisateurs ci-dessus, et EXACTEMENT la même condition
+# (LDAP_LAB_USERS_SEEDED) : un groupe dont le membre `uid=alice,ou=People,…`
+# n'existe pas dans l'annuaire est un état incohérent que ldapadd ne détecte pas
+# (pas d'overlay d'intégrité référentielle ici) — il faut donc l'empêcher en amont
+# plutôt que le laisser se créer en silence.
+if [ "$LDAP_LAB_USERS_SEEDED" = 1 ]; then
+  {
+    ldif_group "apim-deploy-$LAB_TENANT_ALICE" \
+      "uid=$LAB_ALICE_USER,ou=People,$BASE_DN" \
+      "uid=$LAB_ALICE_UPN_USER,ou=People,$BASE_DN" \
+      "uid=CORP\\5Calice,ou=People,$BASE_DN"
+    ldif_group "apim-deploy-$LAB_TENANT_BOB" "uid=$LAB_BOB_USER,ou=People,$BASE_DN"
+    # carol est dans l'annuaire et dans un groupe — mais un groupe SANS policy de
+    # déploiement : être authentifié n'est pas être autorisé.
+    ldif_group "apim-readonly" "uid=$LAB_CAROL_USER,ou=People,$BASE_DN"
+    # Groupe SÉPARÉ de ceux des tenants : l'opérateur de mise en prod lit les secrets
+    # de plateforme, les déployeurs de tenant non. Deux périmètres, deux groupes.
+    ldif_group "apim-operator-prod" "uid=$LAB_OSCAR_USER,ou=People,$BASE_DN"
+  } | ldap_add "groupes (apim-deploy-<tenant>, apim-readonly)"
+else
+  warn "annuaire non semé (cf. avertissement précédent) : groupes NON créés (éviterait des membres fantômes)"
+fi
 
 # ═══ 2. auth method ldap ═════════════════════════════════════════════════════
 if ! vcurl "$VADDR/v1/sys/auth" | python3 -c "import sys,json;raise SystemExit(0 if '$MOUNT/' in json.load(sys.stdin) else 1)" 2>/dev/null; then
@@ -197,4 +227,19 @@ say "groupe 'apim-readonly' -> aucune policy (authentifié ≠ autorisé)"
 vcurl "$VADDR/v1/sys/policies/acl/deploy-$LAB_TENANT_ALICE" | grep -q '"policy"' \
   || warn "policy deploy-$LAB_TENANT_ALICE absente — lancer d'abord scripts/setup-vault-userpass.sh"
 
-say "Terminé. VAULT_USER_AUTH_MOUNT=$MOUNT  ·  preuve : ./scripts/test-vault-user-login.sh"
+# Le mount ldap, ses policies de groupe et son TTL sont configurés dans TOUS les
+# cas (ils ne dépendent d'aucun mot de passe de lab-vault-users.sh) — mais si
+# l'annuaire lui-même n'a pas été semé (LDAP_LAB_USERS_SEEDED=0 : fichier
+# root-only absent), aucun des 5 comptes de démo n'existe et
+# test-vault-user-login.sh échouera à s'authentifier malgré un Vault
+# "correctement" configuré. Dire "Terminé." dans ce cas mentirait par omission :
+# code de sortie 2 (même convention que vault_login_nominative pour « repli
+# volontaire, pas une erreur ») pour que l'appelant (script ou humain) puisse
+# distinguer complet de partiel sans relire tout le log.
+if [ "$LDAP_LAB_USERS_SEEDED" = 1 ]; then
+  say "Terminé. VAULT_USER_AUTH_MOUNT=$MOUNT  ·  preuve : ./scripts/test-vault-user-login.sh"
+  exit 0
+else
+  warn "Terminé PARTIELLEMENT — mount/policies/TTL ldap configurés, mais annuaire NON semé (mots de passe absents) : aucun login LDAP ne peut réussir tant que le fichier root-only n'est pas monté et ce script rejoué."
+  exit 2
+fi

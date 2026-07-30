@@ -1,0 +1,75 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openldap
+  labels:
+    app.kubernetes.io/name: openldap
+    app.kubernetes.io/part-of: stoa-lab
+spec:
+  # Un seul réplica : sans volume partagé, deux réplicas serviraient deux annuaires
+  # divergents. L'annuaire est jetable, sa disponibilité n'est pas un enjeu.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: openldap
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: openldap
+        app.kubernetes.io/part-of: stoa-lab
+    spec:
+      affinity:
+        nodeAffinity:
+          # worker-3 est prévu pour extinction en F5 : rien de nouveau ne s'y pose.
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: NotIn
+                    values: ["worker-3"]
+      containers:
+        - name: openldap
+          # osixia/openldap:1.5.0 — épinglée par digest (un tag est mutable).
+          image: osixia/openldap@sha256:18742e9c449c9c1afe129d3f2f3ee15fb34cc43e5f940a20f3399728f41d7c28
+          # --copy-service : sans lui, l'image n'applique pas son arbre de travail
+          # correctement. Repris tel quel du docker-compose.ldap.yml éprouvé.
+          args: ["--copy-service", "--loglevel", "warning"]
+          env:
+            - name: LDAP_ORGANISATION
+              value: "Banque Demo"
+            - name: LDAP_DOMAIN
+              value: "corp.example"
+            - name: LDAP_BASE_DN
+              value: "dc=corp,dc=example"
+            # TLS désactivé : annuaire de démonstration interne au cluster, en
+            # ClusterIP, jamais publié. Chez le client c'est un AD en LDAPS, et
+            # rien de ce manifeste n'est livré.
+            - name: LDAP_TLS
+              value: "false"
+            - name: LDAP_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  # HORS GIT — créé à part. Voir l'étape 4 de cette tâche.
+                  name: openldap-admin
+                  key: password
+          ports:
+            - name: ldap
+              containerPort: 389
+          readinessProbe:
+            tcpSocket:
+              port: ldap
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: ldap
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 512Mi

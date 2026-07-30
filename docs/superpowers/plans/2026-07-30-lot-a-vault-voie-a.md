@@ -55,7 +55,7 @@ Découpage par responsabilité : le déploiement de l'annuaire (Argo), son peupl
 
 Les appelants historiques (`setup-vault-userpass.sh`, `test-vault-user-login.sh`) lisaient les mots de passe depuis ce fichier. Ils liront désormais le fichier root-only produit par la tâche 4. Le POC compose continue de fonctionner tant que ce fichier existe sur le poste ; sans lui, ses tests `[userpass]`/`[ldap]` se **sautent** au lieu d'échouer — comportement déjà porté par `skip()` dans le harnais.
 
-`LAB_BOB_PASS_METACHARS` **reste en Git** : ce n'est pas un secret mais un vecteur de test d'injection, et il ne doit être le mot de passe d'aucun compte réel. Le renommage (`_PASS` → `_PASS_METACHARS`) est délibéré : il empêche la garde de le confondre avec un mot de passe et dit ce que la variable est.
+`LAB_BOB_PASS_METACHARS` **reste en Git**. C'est un vecteur de test d'injection — et, depuis la tâche 3, **le mot de passe LDAP effectif de bob**, sciemment public (voir la correction du 2026-07-30 dans la spéc, D4). Le renommage (`_PASS` → `_PASS_METACHARS`) est délibéré : il empêche la garde de le confondre avec un mot de passe et dit ce que la variable est.
 
 - [ ] **Étape 1 : écrire la garde qui échoue**
 
@@ -181,7 +181,17 @@ Le bloc `oscar` était **dupliqué à l'identique** dans la version précédente
 poc-control-plane-federation/scripts/check-no-plaintext-secrets.sh
 ```
 
-Attendu : `OK — aucune affectation de secret littéral`.
+**Critère relâché (arbitrage du 2026-07-30).** Le critère initial — la garde affiche `OK` globalement — s'est révélé inatteignable : une fois sa regex réparée, elle trouve **28 fuites préexistantes dans 15 fichiers**, dont `VAULT_TOKEN="${VAULT_TOKEN:-stoa-root-token}"` répété quatre fois. Aucune n'est de la responsabilité de cette tâche.
+
+Attendu ici, et suffisant pour clore la tâche :
+
+```bash
+poc-control-plane-federation/scripts/check-no-plaintext-secrets.sh 2>&1 | grep -c "lab-vault-users.sh"
+```
+
+Attendu : `0` — le fichier purgé ne figure plus parmi les signalements.
+
+**Dette nommée, à traiter dans une passe dédiée** : les 28 affectations restantes, le jeton racine Vault en dur, et la décision de faire de cette garde un contrôle bloquant du dépôt. Tant que ce n'est pas fait, la garde documente une situation, elle ne la garantit pas.
 
 Puis vérifier que le fichier reste sourçable et que la variable de test survit :
 
@@ -193,7 +203,7 @@ bash -c '. poc-control-plane-federation/scripts/lib/lab-vault-users.sh
          printf "metachars long: %s\n" "${#LAB_BOB_PASS_METACHARS}"'
 ```
 
-Attendu : les quatre noms, les deux formats, les deux tenants, et `metachars long: 47`.
+Attendu : les quatre noms, les deux formats, les deux tenants, et `metachars long: 45`.
 
 - [ ] **Étape 5 : vérifier qu'aucun appelant ne casse en silence**
 
@@ -233,7 +243,8 @@ elle casse tous les clones pour un bénéfice illusoire sur un dépôt déjà co
 la mesure qui protège est de ne jamais réutiliser ces valeurs.
 
 LAB_BOB_PASS renommé LAB_BOB_PASS_METACHARS et CONSERVÉ : c'est un vecteur de test
-d'injection (guillemet, antislash, dollar), pas le mot de passe d'un compte.
+d'injection (guillemet, antislash, dollar). NOTE du 2026-07-30 : il est AUSSI devenu le
+mot de passe de bob — voir la correction de D4 dans la spéc.
 
 Ajoute check-no-plaintext-secrets.sh, garde qui échoue si une affectation de secret
 littéral réapparaît, et qui rédige les valeurs qu'elle signale.
@@ -495,11 +506,18 @@ Attendu : `Synced/Healthy`, pod `1/1 Running`, et **pas sur worker-3**.
 Puis prouver que l'annuaire sert vraiment son arbre — un pod `Running` ne le prouve pas :
 
 ```bash
-kubectl -n ci exec deploy/openldap -- sh -c '
-  ldapsearch -x -H ldap://localhost:389 -b "dc=corp,dc=example" -s base -LLL dn'
+kubectl -n ci exec deploy/openldap -- slapcat -b "dc=corp,dc=example"
 ```
 
-Attendu : `dn: dc=corp,dc=example`. Cet appel est anonyme et ne demande donc aucun mot de passe.
+Attendu : `dn: dc=corp,dc=example`, `o: Banque Demo`, `dc: corp`.
+
+**Correctif du 2026-07-30 — ne pas utiliser `ldapsearch -x` anonyme ici.** La version initiale de cette étape interrogeait l'annuaire en anonyme et attendait `dn: dc=corp,dc=example`. C'est faux : l'ACL par défaut de `osixia/openldap:1.5.0` refuse toute lecture anonyme (`by * none`), et l'appel renvoie `No such object (32)` alors même que l'arbre existe.
+
+L'hypothèse n'avait jamais été validée nulle part — le `docker-compose.ldap.yml` cité comme référence éprouvée n'exerce jamais l'anonyme non plus : son `healthcheck` se connecte en admin. Un critère de preuve hérité d'une référence qui ne le vérifiait pas.
+
+`slapcat` lit la base directement dans le pod, sans passer par le réseau ni par une ACL, et n'exige donc aucun mot de passe. C'est la bonne sonde ici : elle répond à « la donnée est-elle là ? », qui est la question de cette étape.
+
+Le refus de lecture anonyme n'est pas un défaut à corriger : Vault se connectera avec `binddn`/`bindpass` (tâche 4), et un annuaire qui refuse l'anonyme est le comportement souhaitable.
 
 - [ ] **Étape 6 : commit du constat**
 
@@ -566,7 +584,11 @@ ldap_apply() {
   kubectl -n "$NS" exec -i "$DEPLOY" -- sh -c '
     umask 077
     PWF=$(mktemp)
-    head -n 1 > "$PWF"          # 1re ligne de stdin = mot de passe de bind
+    # 1re ligne de stdin = mot de passe de bind, SANS son saut de ligne.
+    # `ldapadd -y` ne retire PAS le saut final du fichier : le garder ajoute un
+    # octet au mot de passe et le bind échoue en « Invalid credentials (49) ».
+    # Démontré le 2026-07-30 : 32 octets -> bind OK, 33 octets -> refus.
+    head -n 1 | tr -d "\n" > "$PWF"
     cat > /tmp/seed.ldif        # le reste = LDIF
     ldapadd -x -D "'"$BIND_DN"'" -y "$PWF" -c -f /tmp/seed.ldif 2>&1
     RC=$?
@@ -1117,3 +1139,60 @@ Ne pas écrire cette section avant d'avoir les résultats réels. Une preuve ré
 **Cohérence des noms.** `LAB_BOB_PASS_METACHARS` est défini en tâche 1 et consommé en tâche 3 ; la tâche 5 le réécrit littéralement plutôt que de sourcer le fichier, parce qu'elle s'exécute dans un pod qui n'a pas le dépôt — la valeur est identique aux deux endroits. `openldap-admin` (Secret), `openldap.ci.svc.cluster.local:389` (Service), `deploy/openldap` (Deployment), `secret/deploy/<tenant>/wm-admin` (chemin KV) et `lab-vault-users.env` (fichier root-only) portent le même nom dans toutes les tâches qui les citent.
 
 **Périmètre.** Cinq tâches, chacune avec un livrable testable seul : le fichier purgé et sa garde, l'annuaire qui répond, l'arbre peuplé, Vault configuré, la porte franchie. La tâche 4 est la seule non exécutable par un agent, et c'est structurel.
+
+---
+
+## Amendement du 2026-07-30 — aucun mot de passe en clair, même en démonstration
+
+Décision de l'exploitant, prise après l'exécution de la tâche 3 : aucun mot de passe ne doit subsister en clair, y compris dans un annuaire de démonstration. Précision sur la cible client : **la saisie se fera dans Jenkins, en paramètre de build, et rien ne sera stocké dans Git** — ce que la voie A fait déjà (D7).
+
+Deux stockages en clair existent, et un seul peut aller dans Vault.
+
+### A.1 — L'annuaire hache au lieu de stocker en clair (amende la tâche 3)
+
+`slapcat` rend aujourd'hui des `userPassword` en `{CLEARTEXT}` : quiconque atteint la base lit tout. Cela s'est produit deux fois le 2026-07-30, par des commandes de diagnostic.
+
+Le remède n'est pas Vault : un annuaire doit vérifier un bind localement, il lui faut le mot de passe ou son empreinte. Le remède est le **hachage salé**. `seed-ldap-cluster.sh` calcule l'empreinte dans le pod avant de l'envoyer :
+
+```sh
+# slappasswd est fourni par l'image ; le mot de passe part par STDIN, jamais en argv.
+HASH=$(printf '%s' "$PW" | kubectl -n "$NS" exec -i "$DEPLOY" -- slappasswd -h '{SSHA}' -T /dev/stdin)
+```
+
+et pose `userPassword: $HASH` à la création comme dans la passe `ldapmodify … replace`.
+
+**Contre-épreuve, à ajouter à la tâche 5 :** `slapcat` projeté sur `userPassword` doit rendre des valeurs commençant par `{SSHA}` et **aucune** en `{CLEARTEXT}`. Sans ce contrôle, rien ne distingue un annuaire haché d'un annuaire qui ne l'est pas.
+
+### A.2 — Le fichier du nœud devient transitoire (amende la tâche 4)
+
+Le script exploitant, qui détient déjà un jeton racine par quorum, charge les mots de passe dans Vault :
+
+```sh
+vault kv put secret/ci/lab-users/alice password="$A_PW"   # idem carol, oscar
+```
+
+**Le fichier `/root/stoa-lab-secrets/lab-vault-users.env` est CONSERVÉ**, en `600 root`. Décision de l'exploitant du 2026-07-30, et elle est juste : `{SSHA}` étant irréversible, l'annuaire ne permet plus de retrouver un mot de passe. Si Vault est scellé et que le fichier a été effacé, plus personne ne peut se connecter comme `alice` — y compris pour diagnostiquer pourquoi Vault ne s'ouvre pas.
+
+Deux copies, donc, dans deux systèmes aux modes de défaillance indépendants : Vault pour l'usage automatisé, le fichier du nœud pour l'accès humain de secours. C'est délibéré, pas une négligence.
+
+**Filet de sécurité réel — et sa limite, qui est sévère.** Ces mots de passe sont *jetables* : `seed-ldap-cluster.sh` en régénère de nouveaux à chaque passage. Mais il ne les **resynchronise pas**, et c'est le point que la première rédaction de cet amendement se figurait à l'envers.
+
+> **CORRECTION (2026-07-30, revue de branche).** Ce paragraphe affirmait : « `seed-ldap-cluster.sh` les régénère et les resynchronise à chaque passage. Perdre les deux copies ne coûte qu'une exécution du script », et concluait « perdre ces mots de passe, c'est relancer un script ». C'est l'inverse qui est vrai : **relancer le script est ce qui casse l'état prouvé.**
+>
+> `seed-ldap-cluster.sh` écrit dans **deux** systèmes — l'annuaire et le fichier root-only du nœud — et dans **aucun** troisième. Il n'écrit **pas** dans Vault, et il ne le peut pas : la seule identité dont il dispose est `jenkins-agent`, qui n'a que `read` sur `secret/data/ci/*`. Après un rejeu, `secret/ci/lab-users/{alice,carol,oscar}` porte donc les **anciennes** valeurs pendant que l'annuaire porte les **nouvelles**. Le harnais, qui lit les mots de passe depuis Vault (A.3), présente alors des valeurs périmées à l'annuaire : `login ldap/alice -> 400`, et un lab qui rendait 17/0/0 tombe. Le message d'erreur ne désigne pas le rejeu comme la cause.
+>
+> Resynchroniser exige d'**écrire** dans `secret/ci/lab-users/*`, donc un jeton racine, donc **une nouvelle cérémonie de quorum** (2 parts sur 3, porteurs distincts). Le coût d'un rejeu accidentel n'est pas « une exécution de script » : c'est une cérémonie.
+>
+> Ce qui reste vrai de l'idée d'origine : les *valeurs* n'ont aucune importance, rien ne dépend d'un mot de passe particulier. Ce qui est faux : croire que leur **synchronisation** se rétablit toute seule. Les valeurs sont jetables ; l'état à trois copies cohérentes ne l'est pas.
+>
+> **Non corrigé en code, et volontairement** : donner à ce script un chemin d'écriture vers Vault reviendrait à lui accorder un pouvoir d'écriture sur les secrets — exactement ce que la ségrégation par policy du lot A sert à démontrer. La parade est un avertissement en tête de `seed-ldap-cluster.sh` : ne pas rejouer sur un lab déjà prouvé, et si un rejeu est nécessaire, planifier la cérémonie dans la foulée.
+
+*Écart assumé avec les parts de descellement de Vault*, où le `shred` était le bon geste : celles-là n'ont **aucun** mécanisme de régénération. Perdre les parts, c'est perdre Vault définitivement ; perdre ces mots de passe-ci, c'est un script **et** une cérémonie de quorum — coûteux, mais réparable.
+
+### A.3 — Le harnais lit depuis Vault par identité de pod (amende la tâche 5)
+
+Le harnais ne lit plus le fichier du nœud : il obtient les mots de passe de démonstration depuis `secret/ci/lab-users/*` en s'authentifiant **par identité de pod** — le chemin F1, gardé vivant par la décision D1.
+
+**C'est ce qui brise la circularité.** Un mot de passe qui sert à s'authentifier à Vault ne peut pas y être rangé *pour son propre porteur* ; mais un lecteur qui emprunte un **autre** chemin d'authentification peut l'y lire. Le harnais est une machine et possède une identité de pod ; alice est une personne et n'en a pas.
+
+**Ce qui ne bougera jamais :** le mot de passe que l'opérateur saisit pour se connecter à Vault. Il ne peut pas vivre dans Vault, ni au lab ni chez le client. Chez le client il n'est stocké nulle part — il est saisi au build.

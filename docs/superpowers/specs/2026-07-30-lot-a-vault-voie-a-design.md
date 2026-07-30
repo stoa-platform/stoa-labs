@@ -95,7 +95,7 @@ Le script tire des mots de passe aléatoires et les écrit dans un fichier root-
 
 **Pas de réécriture d'historique.** Elle casserait tous les hachages et tous les clones, et sur un dépôt public les objets peuvent déjà être copiés dans des forks ou des archives : le bénéfice est illusoire. Les anciennes valeurs restent lisibles dans l'historique ; la mesure qui protège réellement est de **ne jamais les réutiliser**.
 
-**Le vecteur de test à caractères hostiles reste en Git** — `B0b "q" \back $dollar 'sq' ;semi &amp {brace}`. Ce n'est pas un secret mais un **cas de test** : il prouve que le login ne casse ni ne s'injecte sur des guillemets, antislashs et dollars. Il garde sa valeur en public à condition de n'être le mot de passe d'aucun compte réel.
+**Le vecteur de test à caractères hostiles reste en Git** — `B0b "q" \back $dollar 'sq' ;semi &amp {brace}`. Ce n'est pas un secret mais un **cas de test** : il prouve que le login ne casse ni ne s'injecte sur des guillemets, antislashs et dollars. **Correction du 2026-07-30, revue de branche :** cette condition est VIOLÉE et le rester est un choix assumé. `seed-ldap-cluster.sh` fait de ce vecteur le mot de passe LDAP effectif de bob — un `login ldap/bob` rend 200. Le changer imposerait de ranger une valeur générée dans Vault, donc une nouvelle cérémonie de quorum avec des clés irremplaçables. Arbitrage : **bob est un compte de démonstration dont le mot de passe est sciemment public**. Portée bornée — annuaire et Vault en ClusterIP, et bob n'a de droits que sur son propre tenant `payments-team` (lecture de `wm-admin`, dont la valeur est déjà publique partout dans ce dépôt, et écriture sur `apps/payments-team/*`). Ce qui a été corrigé est l'**affirmation contraire**, pas la valeur.
 
 ### D5 — OpenLDAP en ns `ci`, versionné dans `stoa-labs`, sans volume
 
@@ -163,7 +163,31 @@ Le CronJob `wm-restarter` recycle la gateway toutes les 20 minutes, avec environ
 
 Le lot A ne touche pas la gateway, il n'est donc pas concerné directement. Mais toute preuve de bout en bout qui l'inclura (lots B et C) doit être lancée **juste après un cycle**, et une exécution de plus de 17 minutes sera coupée en plein vol. À traiter dans le lot B, pas ici.
 
-## 8. Dettes assumées
+## 8. Preuve d'exécution
+
+Exécutée le **2026-07-30**, contre le cluster réel (`worker-1`, plan de contrôle, tunnel SSH sur 6443), avec `poc-control-plane-federation/scripts/test-voie-a-cluster.sh`.
+
+**Nœud d'exécution du pod de preuve :** `worker-3` (ns `ci`, `--serviceaccount=jenkins-agent`, image `python:3.12-alpine`). Le même pod, avec la même identité de compte de service du premier au dernier appel Vault, répond aussi à l'exigence « depuis un agent Jenkins, pas un pod quelconque » : `auth/kubernetes/login` (rôle `jenkins-agent`) réussit avant tout login LDAP.
+
+**Résultat global (3 exécutions successives, reproductibles) :** `RÉSULTAT GLOBAL : 17 réussis, 0 échoués, 0 sautés`, code de sortie 0 à chaque fois. Aucun pod orphelin après coup (`--rm` effectif).
+
+**Résultat par contre-épreuve :**
+
+| # | Contre-épreuve | Résultat mesuré |
+|---|---|---|
+| — | PORTE A (login `ldap/alice` + lecture `wm-admin` de banking-demo) | `200` puis `200` — OK |
+| 1 | Mauvais mot de passe | `400`, aucun jeton émis — échec fermé confirmé |
+| 2 | Cross-tenant (`bob`, mot de passe à métacaractères `" \ $ ' ; & {}`) | login `200` (le corps JSON résiste aux métacaractères) ; lecture de `banking-demo` → `403` ; lecture de son propre tenant `payments-team` → `200` |
+| 3 | Authentifié sans policy de déploiement (`carol`) | login `200`, lecture `banking-demo` → `403` |
+| 4 | Jeton révoqué | `revoke-self` puis lecture → `403` — preuve de mort, pas de révocation cosmétique |
+| 5 | Formats de login | `ldap` atteint la phase de bind pour `CORP\alice` et `alice@corp.example` (`400` — annuaire plat, alias non peuplés, cf. dette groupes imbriqués) ; `userpass` refuse l'UPN → `500`, avant tout bind — le format contraint bien le choix du backend |
+| 6 | Hachage de l'annuaire (amendement A.1) | `4` entrées `userPassword` dans `slapcat`, décodées depuis le base64 systématique (pas de `grep` sur le brut — piège mesuré et évité), **4** en `{SSHA}`, **0** en `{CLEARTEXT}` |
+
+**Mots de passe de démonstration (amendement A.3) :** lus par le pod lui-même depuis `secret/ci/lab-users/{alice,carol}`, après authentification par **identité de pod** (`auth/kubernetes/login`, rôle `jenkins-agent`) — jamais injectés par variable d'environnement depuis le fichier du nœud. Le jeton de service utilisé pour cette lecture est révoqué aussitôt après (moindre privilège).
+
+Aucun mot de passe, jeton ni empreinte complète n'apparaît dans la sortie du harnais — uniquement des longueurs de chaîne, des codes HTTP et des verdicts.
+
+## 9. Dettes assumées
 
 - **Le TTL du jeton Vault face à la durée d'un build** : au-delà du TTL, il faudrait `renew-self`, non implémenté. Sans objet sur un lot A qui ne fait que se connecter et lire, à reprendre au lot B si un build long apparaît.
 - **Groupes d'annuaire imbriqués** : le `groupfilter` par défaut de Vault ne résout pas le nesting (`LDAP_MATCHING_RULE_IN_CHAIN`). L'annuaire du lab restera plat ; si le client utilise des groupes imbriqués, le mapping groupe→policy devra être revu.

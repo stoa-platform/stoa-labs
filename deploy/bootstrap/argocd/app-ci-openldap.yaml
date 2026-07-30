@@ -1,0 +1,31 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: ci-openldap
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  # Projet `default` et non `stoa` : l'AppProject `stoa` restreint ses sources au
+  # dépôt stoa. Montage validé le 2026-07-30 avec edge/cloudflared.
+  project: default
+  source:
+    # HTTPS anonyme : stoa-labs est public, Argo n'a aucun identifiant de dépôt.
+    repoURL: https://github.com/stoa-platform/stoa-labs.git
+    targetRevision: main
+    path: deploy/bootstrap/ci/openldap
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: ci
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        maxDuration: 3m
+        factor: 2

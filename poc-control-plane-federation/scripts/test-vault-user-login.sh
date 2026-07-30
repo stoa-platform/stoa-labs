@@ -35,6 +35,55 @@ bad(){  printf '  \033[31m✗ %s\033[0m\n' "$1"; FAIL=$((FAIL+1)); }
 skip(){ printf '  \033[33m- %s (sauté)\033[0m\n' "$1"; SKIP=$((SKIP+1)); }
 sec(){  printf '\n\033[1m%s\033[0m\n' "$1"; }
 
+# Les mots de passe d'alice, carol et oscar ne vivent plus dans
+# lab-vault-users.sh (dépôt public, cf. check-no-plaintext-secrets.sh) : ils
+# viennent du fichier root-only du nœud (tâche 4), absent sur un poste de
+# développement. Sans lui, TOUTE cette preuve ([userpass] ET [ldap], qui rejoue
+# les mêmes identités) se SAUTE plutôt que d'échouer — un test qui n'a pas pu
+# tourner ne doit jamais prétendre avoir vérifié.
+#
+# ⚠ `LAB_BOB_PASS` NE FAIT PLUS PARTIE DE CETTE CONDITION (corrigé 2026-07-30).
+# Il ne vient PAS du fichier root-only : c'est l'alias de l'identifiant public
+# assumé de bob, défini dans lab-vault-users.sh, donc toujours présent dès que ce
+# fichier est sourcé. Le tester ici revenait à poser une question dont la réponse
+# ne dépend pas de ce qu'on cherche à savoir — et pendant la fenêtre où l'alias
+# avait disparu du dépôt sans remplaçant, cette garde était TOUJOURS vraie : la
+# preuve se sautait intégralement même sur un poste correctement équipé, et
+# rendait `0 passed … exit 0`, c'est-à-dire VERT. Un test qui ne peut ni passer
+# ni échouer ne doit jamais rendre vert.
+#
+# CE QUE FAIT DÉSORMAIS LA BRANCHE « SAUTÉ » : elle le dit, et elle sort en 2.
+# Pourquoi 2 et pas 0 : `0 passed` sur un canal de CI se lit comme un succès.
+# Pourquoi 2 et pas 1 : 1 est réservé à « la preuve a été tentée et elle a
+# ÉCHOUÉ ». 2 = « rien n'a pu être vérifié » — même convention que le
+# provisioning partiel de setup-vault-ldap.sh.
+# Pourquoi ne pas « exercer ce qu'on peut » avec le seul mot de passe de bob :
+# ce serait un faux signal. Sans le fichier root-only, le monde compose n'a
+# jamais été semé du tout (setup-vault-userpass.sh / seed ont besoin des mêmes
+# valeurs) — donc bob n'existe pas non plus côté Vault, et ses tests
+# échoueraient en accusant le code au lieu de l'environnement manquant. Le saut
+# honnête est ici la bonne réponse ; c'est le VERT qui était le défaut.
+: "${LAB_ALICE_PASS:=}"
+: "${LAB_BOB_PASS:=}"
+: "${LAB_CAROL_PASS:=}"
+: "${LAB_OSCAR_PASS:=}"
+if [ -z "$LAB_ALICE_PASS" ] || [ -z "$LAB_CAROL_PASS" ] || [ -z "$LAB_OSCAR_PASS" ]; then
+  skip "toute la preuve [userpass]/[ldap] — mots de passe d'alice/carol/oscar absents (fichier root-only non monté)"
+  echo
+  echo "=== RESULT: NON CONCLUANT — 0 test exécuté, $SKIP sauté(s) ==="
+  echo "    Rien n'a été vérifié. Ce n'est ni un succès ni un échec : monter"
+  echo "    /root/stoa-lab-secrets/lab-vault-users.env (tâche 4) puis relancer."
+  exit 2
+fi
+if [ -z "$LAB_BOB_PASS" ]; then
+  # Ne peut arriver que si lab-vault-users.sh a cessé de définir l'alias.
+  # C'est une régression du dépôt, pas un environnement incomplet : rouge franc.
+  bad "LAB_BOB_PASS non défini alors que lab-vault-users.sh est sourcé — l'alias de l'identifiant public de bob a-t-il été supprimé ?"
+  echo
+  echo "=== RESULT: $PASS passed, $FAIL failed, $SKIP skipped ==="
+  exit 1
+fi
+
 WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
 
 # Offset de l'audit AVANT le run : les tests d'audit ne regardent que CE run.

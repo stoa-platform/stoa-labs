@@ -136,10 +136,34 @@ PY
                 *) fail "création utilisateur '$u' KO (HTTP $rc): $(cat "$TMP/err")";; esac
 }
 
-mkuser "$LAB_ALICE_USER" "$LAB_ALICE_PASS" "deploy-$LAB_TENANT_ALICE"
-mkuser "$LAB_BOB_USER"   "$LAB_BOB_PASS"   "deploy-$LAB_TENANT_BOB"
-mkuser "$LAB_CAROL_USER" "$LAB_CAROL_PASS" ''
-mkuser "$LAB_OSCAR_USER" "$LAB_OSCAR_PASS" 'operator-deploy'
+# Les mots de passe ne vivent plus dans lab-vault-users.sh (dépôt public, cf.
+# check-no-plaintext-secrets.sh) : ils viennent du fichier root-only du nœud
+# (tâche 4). Absent sur ce poste -> LAB_*_PASS est vide -> l'utilisateur
+# correspondant est SAUTÉ, pas une erreur silencieuse ni un crash sous `set -u`.
+: "${LAB_ALICE_PASS:=}"
+if [ -z "$LAB_ALICE_PASS" ]; then
+  warn "alice — mot de passe absent (fichier root-only non monté) : utilisateur non créé"
+else
+  mkuser "$LAB_ALICE_USER" "$LAB_ALICE_PASS" "deploy-$LAB_TENANT_ALICE"
+fi
+: "${LAB_BOB_PASS:=}"
+if [ -z "$LAB_BOB_PASS" ]; then
+  warn "bob — mot de passe absent (fichier root-only non monté) : utilisateur non créé"
+else
+  mkuser "$LAB_BOB_USER" "$LAB_BOB_PASS" "deploy-$LAB_TENANT_BOB"
+fi
+: "${LAB_CAROL_PASS:=}"
+if [ -z "$LAB_CAROL_PASS" ]; then
+  warn "carol — mot de passe absent (fichier root-only non monté) : utilisateur non créé"
+else
+  mkuser "$LAB_CAROL_USER" "$LAB_CAROL_PASS" ''
+fi
+: "${LAB_OSCAR_PASS:=}"
+if [ -z "$LAB_OSCAR_PASS" ]; then
+  warn "oscar — mot de passe absent (fichier root-only non monté) : utilisateur non créé"
+else
+  mkuser "$LAB_OSCAR_USER" "$LAB_OSCAR_PASS" 'operator-deploy'
+fi
 # Pas de CORP\alice ni alice@corp.example ICI : `userpass` refuse `@` et `\` dans
 # un username (GenericNameRegex). Les formats AD réels sont provisionnés et prouvés
 # sur le palier LDAP — cf. scripts/lib/lab-vault-users.sh et setup-vault-ldap.sh.
