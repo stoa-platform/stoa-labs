@@ -71,6 +71,35 @@ Pour les accès machine (collection Postman, CI Ansible), Access fournit des
 **jetons de service** : en-têtes `CF-Access-Client-Id` et
 `CF-Access-Client-Secret`, sans parcours navigateur.
 
+Un jeton `lab-wm-api-postman` est en place sur `wm-api.labs.gostoa.dev`
+(politique `non_identity`, validité 1 an). Ses valeurs sont conservées hors ligne
+côté exploitant — Cloudflare n'affiche le secret qu'à la création.
+
+Pour la collection `gateways/webmethods/postman/wm-1015-bulk-owner` :
+
+| Variable | Valeur |
+|---|---|
+| `gwUrl` | `https://wm-api.labs.gostoa.dev` |
+| `gwBasePath` | `/rest/apigateway` |
+
+plus les deux en-têtes Access au niveau de la collection. Attention : cette
+gateway est celle **du cluster**, pas l'instance Docker de worker-3 sur laquelle
+la collection a été prouvée — leurs catalogues sont distincts (F3 démarre vide,
+la migration des données est prévue en F5).
+
+### Preuve d'exécution — 2026-07-30
+
+- Tunnel `stoa-lab` : `healthy`, **8 connexions** (4 par pod, 2 réplicas sur
+  worker-4 et worker-5 — worker-3 évité).
+- Argo `edge-cloudflared` : `Synced/Healthy` sur la révision attendue ; ancien
+  ConfigMap sans empreinte **élagué**, volume sur
+  `cloudflared-config-<empreinte>`.
+- Les 4 noms sans authentification → **302** vers `stoa-platform.cloudflareaccess.com`.
+- `wm-api` avec jeton de service → **200** sur `/rest/apigateway/health`, puis
+  `GET /rest/apigateway/apis` renvoie le catalogue réel.
+- Fenêtre de licence observée telle que documentée : 502 pendant ~105 s après
+  redémarrage du pod, puis 200.
+
 ### Dettes assumées
 
 - **Image `cloudflared` épinglée par digest** (`2025.8.1`), mais tirée du Docker
