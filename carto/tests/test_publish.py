@@ -1,4 +1,7 @@
 import json, pathlib, tempfile, unittest
+from unittest import mock
+
+import carto.collect.publish as publish_mod
 from carto.collect.publish import publish, RefusedPublication
 
 GOOD = {"schemaVersion": 1, "generatedAt": "2026-07-30T00:00:00Z",
@@ -43,3 +46,31 @@ class TestPublication(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             publish(d, GOOD, HIST)
             self.assertEqual(json.loads((pathlib.Path(d) / "carto.json").read_text())["schemaVersion"], 1)
+
+    def test_echec_d_ecriture_du_second_fichier_ne_laisse_aucun_tmp(self):
+        # Le premier temporaire (carto.json.tmp) s'ecrit sans probleme, le
+        # second (history.json.tmp) echoue : rien ne doit trainer, ni tmp
+        # ni fichier final, puisque aucune bascule n'a encore eu lieu.
+        original = publish_mod._write_tmp
+
+        def flaky(path, payload):
+            if path.name == "history.json":
+                raise OSError("panne simulee d'ecriture")
+            return original(path, payload)
+
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(publish_mod, "_write_tmp", side_effect=flaky):
+                with self.assertRaises(OSError):
+                    publish(d, GOOD, HIST)
+            self.assertEqual(list(pathlib.Path(d).iterdir()), [])
+
+    def test_echec_pendant_l_ecriture_ne_laisse_pas_de_residu(self):
+        # Un echec au milieu de l'ecriture elle-meme (pas seulement entre
+        # deux etapes) ne doit pas laisser de temporaire orphelin.
+        with tempfile.TemporaryDirectory() as d:
+            path = pathlib.Path(d) / "carto.json"
+            with mock.patch.object(pathlib.Path, "write_text",
+                                   side_effect=OSError("panne simulee d'ecriture")):
+                with self.assertRaises(OSError):
+                    publish_mod._write_tmp(path, GOOD)
+            self.assertEqual(list(pathlib.Path(d).iterdir()), [])
