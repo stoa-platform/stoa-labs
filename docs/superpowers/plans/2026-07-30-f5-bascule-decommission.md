@@ -59,6 +59,28 @@ gh CLI (PR `stoa-platform/stoa`), ssh (alias worker-1..5).
 
 ---
 
+## Avancement — session du 2026-07-30
+
+| Tâche | État | Reste |
+|---|---|---|
+| **T0** Terrain | ✅ **fait** — voie 1 confirmée (200 en 18,7 ms depuis l'hôte), 2 écarts de doc élucidés | — |
+| **T1** PR `stoa` | ⏸ **PR #2825 posée**, 23 contrôles verts (`UNSTABLE` = « Demo Smoke (observation) », non bloquant) | **merge exploitant**, puis apply de l'Application et relecture de la ClusterIP |
+| **T2** Data-plane interne | ⛔ bloqué par T1 | après merge |
+| **T3** Sauvegarde ns `wm` | ✅ **code fait** (2 bugs du rôle corrigés au passage) | **run** après merge (la capture d'état échoue fermée si `wm-backend-dev` n'existe pas) |
+| **T4** Rôle de bascule | ✅ **écrit et vérifié à blanc** ; 4 gardes ; **sabotage 1 vert** (cible fausse → refus d'écrire, `changed=0`) | **sabotage 2** (chemin `rescue`) — écriture Caddy, geste exploitant |
+| **T5–T8** | ⛔ bloqués | — |
+
+**Deux gestes exploitant bloquent la suite** (tous deux refusés à l'agent, à
+raison) : le **merge de la PR #2825**, et **toute écriture dans le Caddyfile de
+worker-3** — c'est la terminaison TLS de la flotte entière.
+
+**État laissé** : identique au relevé T0. Empreinte du Caddyfile inchangée, une
+seule sauvegarde (celle du 2026-07-27, antérieure), les deux conteneurs Docker
+en service, surface publique intacte (`health` 200, `apis` 401, `ui` 302,
+`dev-gw-k3s` 200). Rien n'est à moitié fait.
+
+---
+
 ### Tâche 0 : Vérifications terrain
 
 Les valeurs de la spéc ont été mesurées le 2026-07-29/30. Elles peuvent avoir
