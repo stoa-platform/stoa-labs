@@ -200,6 +200,168 @@ function exportCsv() {
   URL.revokeObjectURL(url);
 }
 
+// --- vue : annuaire des consommateurs ----------------------------------
+// Toutes les Applications enregistrees, y compris celles sans aucun trafic :
+// ce sont elles qu'il faut prevenir lors d'une depreciation.
+function viewAnnuaire() {
+  const f = S.filter || "";
+  const rows = S.carto.consumers.map(c => {
+    const edges = S.idx.byCon.get(c.id) || [];
+    return { c, apis: edges.length, actives: edges.filter(e => e.calls.d90 > 0).length,
+             calls: edges.reduce((n, e) => n + e.calls.d90, 0) };
+  }).filter(r => !f || (r.c.name + " " + (r.c.owner || "")).toLowerCase().includes(f))
+    .sort((a, b) => a.c.name.localeCompare(b.c.name, "fr"));
+
+  return `
+  <div class="bar">
+    <input type="search" data-filter placeholder="filtrer par nom ou équipe…" size="30">
+    <span class="muted">${fmt(rows.length)} consommateur(s) enregistré(s),
+      dont ${fmt(rows.filter(r => r.actives === 0).length)} sans aucun appel</span>
+    <button onclick="exportAnnuaire()">Exporter en CSV</button>
+  </div>
+  <table><thead><tr>
+    <th>Consommateur</th><th>Équipe</th><th>Contact</th>
+    <th class="num">APIs liées</th><th class="num">dont actives</th>
+    <th class="num">Appels 90 j</th><th>Enregistré le</th>
+  </tr></thead><tbody>
+  ${rows.map(r => `<tr>
+    <td><a data-focus="con:${esc(r.c.id)}">${esc(r.c.name)}</a></td>
+    <td>${esc(r.c.owner || "—")}</td>
+    <td>${esc(r.c.contact || "—")}</td>
+    <td class="num">${fmt(r.apis)}</td>
+    <td class="num">${r.actives === 0 ? '<span class="tag idle">0</span>' : fmt(r.actives)}</td>
+    <td class="num">${fmt(r.calls)}</td>
+    <td>${esc(day(r.c.createdAt))}</td>
+  </tr>`).join("")}
+  </tbody></table>`;
+}
+
+function exportAnnuaire() {
+  const lines = [["consommateur","equipe","contact","apis_liees","apis_actives","appels_90j","enregistre_le"].join(";")];
+  for (const c of S.carto.consumers) {
+    const edges = S.idx.byCon.get(c.id) || [];
+    lines.push([c.name, c.owner || "", c.contact || "", edges.length,
+                edges.filter(e => e.calls.d90 > 0).length,
+                edges.reduce((n, e) => n + e.calls.d90, 0), c.createdAt || ""]
+      .map(v => `"${String(v).replace(/"/g, '""')}"`).join(";"));
+  }
+  const url = URL.createObjectURL(new Blob(["﻿" + lines.join("\n")],
+                                           { type:"text/csv;charset=utf-8" }));
+  const a = document.createElement("a");
+  a.href = url; a.download = `annuaire-consommateurs-${day(S.carto.generatedAt)}.csv`; a.click();
+  URL.revokeObjectURL(url);
+}
+
+// --- vue : fiche d'un noeud --------------------------------------------
+// La liste "qui prevenir" est l'UNION des declares et des observes : un
+// consommateur declare qui n'a pas encore appele doit y figurer.
+function contactsFor(apiId) {
+  return (S.idx.byApi.get(apiId) || [])
+    .map(e => S.idx.con.get(e.consumerId))
+    .filter(c => c && c.contact)
+    .map(c => c.contact)
+    .filter((v, i, a) => a.indexOf(v) === i)
+    .sort();
+}
+
+function graphSvg(centerLabel, neighbours) {
+  const R = 120, cx = 180, cy = 150, n = Math.max(neighbours.length, 1);
+  const pts = neighbours.map((lab, i) => {
+    const t = (2 * Math.PI * i) / n - Math.PI / 2;
+    return { lab, x: cx + R * Math.cos(t), y: cy + R * Math.sin(t) };
+  });
+  return `<svg width="360" height="300" role="img" aria-label="voisinage">
+    ${pts.map(p => `<line x1="${cx}" y1="${cy}" x2="${p.x}" y2="${p.y}" stroke="#ccc"/>`).join("")}
+    ${pts.map(p => `<circle cx="${p.x}" cy="${p.y}" r="5" fill="#0b5fff"/>
+      <text x="${p.x}" y="${p.y - 9}" font-size="10" text-anchor="middle">${esc(p.lab)}</text>`).join("")}
+    <circle cx="${cx}" cy="${cy}" r="8" fill="#1a1a1a"/>
+    <text x="${cx}" y="${cy + 22}" font-size="11" text-anchor="middle" font-weight="600">${esc(centerLabel)}</text>
+  </svg>`;
+}
+
+function viewFiche(focus) {
+  const [kind, id] = (focus || "").split(/:(.+)/);
+  if (kind === "api") {
+    const a = S.idx.api.get(id);
+    if (!a) return `<p>API inconnue.</p>`;
+    const edges = S.idx.byApi.get(id) || [];
+    const mails = contactsFor(id);
+    return `
+      <h2>${esc(a.name)} <span class="muted">${esc(a.version || "")}</span></h2>
+      <p class="muted">Équipe : ${esc(a.owner || "—")} · ${a.active ? "active" : "inactive"}
+         · enregistrée le ${esc(day(a.createdAt))}</p>
+      ${graphSvg(a.name, edges.slice(0, 14).map(e => (S.idx.con.get(e.consumerId) || {}).name || "?"))}
+      <h3>Qui prévenir (${mails.length} adresse(s))</h3>
+      ${mails.length
+        ? `<p><textarea rows="3" style="width:100%">${esc(mails.join("; "))}</textarea></p>`
+        : `<p class="muted">Aucun contact renseigné pour les consommateurs de cette API.</p>`}
+      <h3>Consommateurs (${edges.length})</h3>
+      <table><thead><tr><th>Consommateur</th><th>Statut</th>
+        <th class="num">90 j</th><th>Dernier appel</th></tr></thead><tbody>
+      ${edges.sort((x, y) => y.calls.d90 - x.calls.d90).map(e => `<tr>
+        <td><a data-focus="con:${esc(e.consumerId)}">${esc((S.idx.con.get(e.consumerId) || {}).name)}</a></td>
+        <td>${statut(e)}</td><td class="num">${fmt(e.calls.d90)}</td>
+        <td>${esc(day(e.lastCall))}</td></tr>`).join("")}
+      </tbody></table>`;
+  }
+  const c = S.idx.con.get(id);
+  if (!c) return `<p>Consommateur inconnu.</p>`;
+  const edges = S.idx.byCon.get(id) || [];
+  return `
+    <h2>${esc(c.name)}</h2>
+    <p class="muted">Équipe : ${esc(c.owner || "—")} · contact : ${esc(c.contact || "—")}
+       · enregistré le ${esc(day(c.createdAt))}</p>
+    ${graphSvg(c.name, edges.slice(0, 14).map(e => (S.idx.api.get(e.apiId) || {}).name || "?"))}
+    <h3>APIs (${edges.length})</h3>
+    <table><thead><tr><th>API</th><th>Statut</th>
+      <th class="num">90 j</th><th>Dernier appel</th></tr></thead><tbody>
+    ${edges.sort((x, y) => y.calls.d90 - x.calls.d90).map(e => `<tr>
+      <td><a data-focus="api:${esc(e.apiId)}">${esc((S.idx.api.get(e.apiId) || {}).name)}</a></td>
+      <td>${statut(e)}</td><td class="num">${fmt(e.calls.d90)}</td>
+      <td>${esc(day(e.lastCall))}</td></tr>`).join("")}
+    </tbody></table>`;
+}
+
+// --- vue : signaux ------------------------------------------------------
+function viewSignaux() {
+  const w = S.carto.window.coveredDays;
+  const apisSansTrafic = S.carto.apis.filter(a =>
+    !(S.idx.byApi.get(a.id) || []).some(e => e.calls.d90 > 0));
+  const declaresInactifs = S.carto.edges.filter(e => e.declared && e.calls.d90 === 0);
+  const nonDeclares = S.carto.edges.filter(e => !e.declared && e.calls.d90 > 0);
+  const fantomes = S.carto.apis.concat(S.carto.consumers)
+    .filter(o => (o.name || "").startsWith("(inconnu)"));
+  const erreurs = S.carto.edges.filter(e => e.calls.d90 >= 100 && e.errorRate > 0.05);
+
+  const bloc = (titre, aide, lignes) => `
+    <h3>${esc(titre)} <span class="muted">(${lignes.length})</span></h3>
+    <p class="muted">${esc(aide)}</p>
+    ${lignes.length ? `<ul>${lignes.join("")}</ul>` : `<p class="muted">Rien à signaler.</p>`}`;
+
+  const lienApi = id => `<a data-focus="api:${esc(id)}">${esc((S.idx.api.get(id) || {}).name)}</a>`;
+  const lienCon = id => `<a data-focus="con:${esc(id)}">${esc((S.idx.con.get(id) || {}).name)}</a>`;
+
+  return `
+    <p class="muted">Signaux calculés sur la fenêtre réellement couverte : <b>${w} jours</b>.</p>
+    ${bloc("APIs sans aucun appel",
+           "Candidates à la décommission — vérifier d'abord qu'aucun consommateur déclaré n'attend d'y passer.",
+           apisSansTrafic.map(a => `<li>${lienApi(a.id)}</li>`))}
+    ${bloc("Consommateurs déclarés inactifs",
+           "Autorisés mais jamais vus sur la fenêtre : à relancer, pas à supprimer. Ils doivent être prévenus des changements.",
+           declaresInactifs.map(e => `<li>${lienCon(e.consumerId)} → ${lienApi(e.apiId)}</li>`))}
+    ${bloc("Trafic sans autorisation déclarée",
+           "Écart de gouvernance : du trafic observé sans lien déclaré correspondant. À investiguer.",
+           nonDeclares.map(e => `<li>${lienCon(e.consumerId)} → ${lienApi(e.apiId)}
+             <span class="muted">${fmt(e.calls.d90)} appels</span></li>`))}
+    ${bloc("Objets disparus encore appelés",
+           "Le trafic référence un identifiant absent de l'inventaire : objet supprimé, ou appelant non identifié.",
+           fantomes.map(o => `<li>${esc(o.name)}</li>`))}
+    ${bloc("Taux d'erreur anormal",
+           "Plus de 5 % d'erreurs sur au moins 100 appels.",
+           erreurs.map(e => `<li>${lienCon(e.consumerId)} → ${lienApi(e.apiId)}
+             <span class="muted">${(e.errorRate * 100).toFixed(1)} %</span></li>`))}`;
+}
+
 window.CARTO = { S, esc, fmt, day, index, statut };
 boot();
 </script>
