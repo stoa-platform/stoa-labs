@@ -44,17 +44,21 @@
     user: "{{ carto_user }}"
     hour: "{{ carto_schedule_hour }}"
     minute: "{{ carto_schedule_minute }}"
-    job: "cd {{ carto_install_dir }} && ./carto-collect.sh"
+    # Le script se place lui-meme dans {{ carto_install_dir }} (voir le
+    # gabarit) : plus besoin d'un `cd` porte par la ligne de planification.
+    job: "{{ carto_install_dir }}/carto-collect.sh"
 
 - name: Vérification — la chaîne tourne en dry-run sans rien publier
   ansible.builtin.command:
-    cmd: python3 -m carto.collect --out /tmp/carto-verify --dry-run
-    chdir: "{{ carto_install_dir }}"
-  environment: "{{ carto_env }}"
+    # Appelle l'enveloppe, pas `python3 -m carto.collect` directement : les
+    # identifiants sont deja internes au script rendu (gabarit `no_log`
+    # ci-dessus). Aucun `environment:` ici — passer WM_PASS par ce biais
+    # l'exposerait en clair dans la trace EXEC du plugin de connexion des
+    # qu'on relance la tache en -vvv, ce que `no_log` ne protege pas.
+    cmd: "{{ carto_install_dir }}/carto-collect.sh --verify"
   become_user: "{{ carto_user }}"
   changed_when: false
   register: carto_verify
-  no_log: true          # l'environnement porte les identifiants
 
 - name: Vérification — la collecte a bien vu des APIs
   ansible.builtin.assert:

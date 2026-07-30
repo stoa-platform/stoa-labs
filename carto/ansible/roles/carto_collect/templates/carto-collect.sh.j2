@@ -4,11 +4,31 @@
 # perimee qui a l'air fraiche. On alerte donc systematiquement, et on laisse
 # en place la derniere carto valide.
 set -uo pipefail
+# Le script se place lui-meme dans son repertoire d'installation : toute
+# invocation (cron, appel manuel par chemin absolu, unite systemd,
+# diagnostic) trouve le paquet sans dependre d'un `cd` fait par l'appelant.
+cd "{{ carto_install_dir }}" || exit 1
+
 export WM_ADMIN_URL={{ carto_env.WM_ADMIN_URL | quote }}
 export WM_USER={{ carto_env.WM_USER | quote }}
 export WM_PASS={{ carto_env.WM_PASS | quote }}
 export WM_ES_URL={{ carto_env.WM_ES_URL | quote }}
 export WM_ES_INDEX={{ carto_env.WM_ES_INDEX | quote }}
+
+# Mode verification (invoque par Ansible en fin de role, `--verify`) : ne
+# publie rien, rapporte les compteurs sur la sortie standard, ne touche ni
+# au journal d'echec ni a la carto deja publiee. Les identifiants restent
+# internes a ce script : Ansible n'a jamais besoin de les repasser via
+# `environment:` — ce couplage exposerait WM_PASS en clair dans la trace
+# EXEC du plugin de connexion des qu'on relance en -vvv, ce que `no_log` ne
+# protege pas (no_log masque le resultat de la tache, pas cette trace-la).
+if [ "${1:-}" = "--verify" ]; then
+  VERIFY_OUT=$(mktemp -d)
+  python3 -m carto.collect --out "$VERIFY_OUT" --dry-run --days {{ carto_window_days }}
+  status=$?
+  rm -rf "$VERIFY_OUT"
+  exit "$status"
+fi
 
 LOG=$(mktemp)
 # La sortie peut contenir des elements d'infrastructure : elle va dans un
@@ -17,6 +37,10 @@ if python3 -m carto.collect --out {{ carto_web_root }} --days {{ carto_window_da
 then
   install -m 0644 {{ carto_install_dir }}/carto/render/index.html {{ carto_web_root }}/index.html
   rm -f "$LOG"
+  # Un passage reussi efface un eventuel journal d'echec precedent : sinon
+  # sa seule presence, retrouvee des jours plus tard, ferait croire a une
+  # panne en cours alors que tout va bien — un faux signal d'alarme.
+  rm -f "{{ carto_install_dir }}/last-failure.log"
   exit 0
 fi
 

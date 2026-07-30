@@ -31,13 +31,19 @@ en fin de rôle qu'une collecte en `--dry-run` voit bien des APIs.
 Le rôle **ne porte aucun secret**. Les identifiants (`WM_ADMIN_URL`,
 `WM_USER`, `WM_PASS`, `WM_ES_URL`, `WM_ES_INDEX`, variable `carto_env`) sont
 vides par défaut et doivent être fournis à l'exécution depuis le coffre,
-comme le reste de la chaîne du projet. La tâche qui écrit le gabarit
-`carto-collect.sh.j2` (et celle qui vérifie la collecte) est posée avec
-`no_log: true` : aucun identifiant ne doit pouvoir se retrouver dans une
-sortie Ansible, un journal, ou un argument de ligne de commande. L'enveloppe
-elle-même écrit toute sortie de la collecte — qui peut contenir des éléments
-d'infrastructure — dans un fichier, jamais sur la sortie standard du
-planificateur.
+comme le reste de la chaîne du projet. Seule la tâche qui écrit le gabarit
+`carto-collect.sh.j2` est posée avec `no_log: true` — c'est elle qui manipule
+réellement les identifiants. La tâche Ansible de vérification, elle,
+n'utilise **jamais** `environment:` pour repasser `carto_env` : elle appelle
+`carto-collect.sh --verify`, qui porte déjà les identifiants en interne
+(injectés par `export` dans le fichier rendu). Ce choix n'est pas cosmétique :
+passer des secrets par `environment:` sur une tâche `command` les expose en
+clair dans la trace `EXEC` du plugin de connexion dès qu'on relance en
+`-vvv` — un geste courant en diagnostic d'échec — et `no_log` **ne protège
+pas** cette trace-là (il masque seulement le résultat affiché de la tâche).
+L'enveloppe elle-même écrit toute sortie de la collecte — qui peut contenir
+des éléments d'infrastructure — dans un fichier, jamais sur la sortie
+standard du planificateur.
 
 **Cible de publication (`carto_web_root`, V6) : non mesurée.** Aucun
 mécanisme de dépôt/publication n'a été sondé sur le cluster de labo de ce
@@ -56,13 +62,18 @@ périmée qui a l'air fraîche. `carto-collect.sh` :
 - laisse en place la dernière carto publiée avec succès (aucune publication
   partielle n'écrase la précédente) ;
 - écrit le journal d'échec dans `{{ carto_install_dir }}/last-failure.log`,
-  un fichier root-only (`chmod 0600`), jamais sur la sortie standard.
+  un fichier appartenant au compte de service (`carto_user`) et restreint
+  (`chmod 0600`), jamais sur la sortie standard ;
+- **efface ce journal au prochain passage réussi** : sa seule présence
+  signale donc un échec non résolu, jamais un résidu d'un incident déjà
+  corrigé — un journal qui traîne indéfiniment produirait le même faux
+  signal d'alarme que ce que cette enveloppe combat par ailleurs.
 
 ## Diagnostic
 
 | Symptôme | Cause | Geste |
 |---|---|---|
-| Bandeau orange « données périmées » | le job échoue depuis N jours | lire `last-failure.log` (root, 0600) |
+| Bandeau orange « données périmées » | le job échoue depuis N jours | lire `last-failure.log` (compte de service, 0600) ; s'il est absent, le dernier passage a réussi |
 | `publication refusee` | collecte dégradée, ancienne carto conservée | comparer les compteurs du `--dry-run` |
 | `agregation tronquee` | plus d'objets que `BUCKET_SIZE` | augmenter `BUCKET_SIZE` dans `analytics.py` |
 | `fenêtre couverte` < demandée | rétention des index plus courte | normal, c'est la vérité (spec D4) |
