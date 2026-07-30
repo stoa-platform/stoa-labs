@@ -18,21 +18,21 @@ data:
     # SORTANTE. La contre-épreuve F3 (« aucun Ingress dans wm, ClusterIP only »)
     # reste donc vraie telle qu'elle a été prouvée.
     ingress:
-      - hostname: gitea.lab.gostoa.dev
+      - hostname: gitea.labs.gostoa.dev
         service: http://gitea.ci.svc.cluster.local:3000
 
-      - hostname: jenkins.lab.gostoa.dev
+      - hostname: jenkins.labs.gostoa.dev
         service: http://jenkins.ci.svc.cluster.local:8080
 
       # Console d'administration webMethods.
-      - hostname: wm.lab.gostoa.dev
+      - hostname: wm.labs.gostoa.dev
         service: http://wm-apigateway.wm.svc.cluster.local:9072
 
       # REST d'administration webMethods — cible de la collection Postman
-      # (gwUrl=https://wm-api.lab.gostoa.dev, gwBasePath=/rest/apigateway).
+      # (gwUrl=https://wm-api.labs.gostoa.dev, gwBasePath=/rest/apigateway).
       # Attendre des 502 pendant ~3 min toutes les 20 min : c'est le CronJob
       # de licence `wm-restarter`, pas le tunnel.
-      - hostname: wm-api.lab.gostoa.dev
+      - hostname: wm-api.labs.gostoa.dev
         service: http://wm-apigateway.wm.svc.cluster.local:5555
 
       # Tout nom non listé est refusé plutôt que routé par défaut.

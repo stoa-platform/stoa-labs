@@ -10,14 +10,14 @@ pendant le rebuild de `stoa`.
 
 ## `edge/cloudflared` — accès nominatif au lab
 
-Un tunnel Cloudflare (`stoa-lab`) publie quatre noms sous `lab.gostoa.dev` :
+Un tunnel Cloudflare (`stoa-lab`) publie quatre noms sous `labs.gostoa.dev` :
 
 | Nom | Service interne |
 |---|---|
-| `gitea.lab.gostoa.dev` | `gitea.ci:3000` |
-| `jenkins.lab.gostoa.dev` | `jenkins.ci:8080` |
-| `wm.lab.gostoa.dev` | `wm-apigateway.wm:9072` (console) |
-| `wm-api.lab.gostoa.dev` | `wm-apigateway.wm:5555` (REST admin) |
+| `gitea.labs.gostoa.dev` | `gitea.ci:3000` |
+| `jenkins.labs.gostoa.dev` | `jenkins.ci:8080` |
+| `wm.labs.gostoa.dev` | `wm-apigateway.wm:9072` (console) |
+| `wm-api.labs.gostoa.dev` | `wm-apigateway.wm:5555` (REST admin) |
 
 **Aucun port n'est ouvert, aucun Ingress n'est créé.** La connexion vers
 Cloudflare est sortante, et `cloudflared` joint les Services par leur nom DNS
