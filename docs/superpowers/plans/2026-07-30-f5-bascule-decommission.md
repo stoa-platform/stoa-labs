@@ -1499,31 +1499,44 @@ délibéré, et le `diff` relu avant application le confirme. La boucle parcourt
 quand même les deux crontabs : c'est ce qui rend la preuve du non-effet
 explicite plutôt que supposée.
 
-**Un `crontab -l | grep -v … | crontab -` est dangereux** : si le `grep` ne
-laisse rien, la crontab est vidée, et un `grep` sans correspondance sort en
-code 1. On sauvegarde, on montre le retrait, puis on applique — et on refuse si
-le compte de lignes retirées n'est pas celui attendu.
+**Le cron est GÉRÉ PAR ANSIBLE** — relevé le 2026-07-30 :
 
-```bash
-ssh worker-3 'set -u
- for W in root hegemon; do
-   if [ "$W" = root ]; then C="sudo crontab"; else C="crontab"; fi
-   $C -l > /tmp/cron-$W.before 2>/dev/null || : > /tmp/cron-$W.before
-   grep -viE "wm-dev|wm-apigateway" /tmp/cron-$W.before > /tmp/cron-$W.after || : > /tmp/cron-$W.after
-   B=$(wc -l < /tmp/cron-$W.before); A=$(wc -l < /tmp/cron-$W.after)
-   echo "== $W : $B ligne(s) avant, $A apres — retirees :"
-   diff /tmp/cron-$W.before /tmp/cron-$W.after || true
- done'
+```
+#Ansible: wm-dev-apigateway-restart-trial
+*/20 * * * * docker restart wm-dev-apigateway >/dev/null 2>&1
 ```
 
-Relire le `diff` : **seules** des lignes `wm-dev*` doivent disparaître. Puis
-appliquer, avec les sauvegardes conservées sur le nœud :
+Il a été posé par `ansible/wm-restart-cron.yml` via le module `cron`
+(`name: "wm-dev-apigateway-restart-trial"`). **On le retire donc par le même
+module**, pas par un `grep` artisanal : `state: absent` enlève le marqueur *et*
+l'entrée, atomiquement et idempotemment, sans jamais risquer de vider la
+crontab. (Le « 2 lignes » que compte un `grep -c wm-dev` est ce marqueur plus
+l'entrée — pas deux crons.)
 
 ```bash
-ssh worker-3 'sudo crontab /tmp/cron-root.after && sudo cp /tmp/cron-root.before /root/cron-root.f5-before
-             crontab /tmp/cron-hegemon.after && cp /tmp/cron-hegemon.before ~/cron-hegemon.f5-before'
-ssh worker-3 'echo "== root =="; sudo crontab -l | grep -i wm || echo "plus aucune ligne wm"
-             echo "== hegemon =="; crontab -l | grep -i wm || echo "plus aucune ligne wm"'
+cd /Users/potomitan/stoa-platform/stoa-labs/ansible
+ansible worker-3 -i inventory.contabo.ini -b -m cron \
+  -a 'name="wm-dev-apigateway-restart-trial" state=absent'
+```
+
+Relecture :
+
+```bash
+ssh worker-3 'sudo crontab -l; echo "--- lignes wm restantes : $(sudo crontab -l | grep -c wm-dev || true) ---"'
+```
+
+Attendu : plus aucune ligne `wm-dev`, et la crontab **non vidée** de ses
+éventuelles autres entrées.
+
+**Puis vérifier la crontab `hegemon` sans y toucher.** Elle contient un ping
+d'uptime `*/1` vers `status.gostoa.dev`, **étranger à webMethods** : il surveille
+l'hôte, pas la gateway, et doit rester. Le relevé ci-dessous rend le non-effet
+explicite plutôt que supposé :
+
+```bash
+ssh worker-3 'echo "== hegemon (NE PAS MODIFIER) =="; crontab -l
+             echo "== lignes wm dans la crontab hegemon =="
+             crontab -l | grep -i "wm-dev\|apigateway" || echo "  aucune — rien a deposer ici"'
 ```
 
 Vérifier aussi qu'aucun **timer systemd** ne prend le relais — c'est la
