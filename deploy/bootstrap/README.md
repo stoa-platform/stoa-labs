@@ -105,6 +105,6 @@ la migration des données est prévue en F5).
 - **Image `cloudflared` épinglée par digest** (`2025.8.1`), mais tirée du Docker
   Hub et non du registre Gitea — contrairement aux images wM de F3. À reprendre
   si la doctrine « tout par le registre interne » doit tenir ici aussi.
-- **Le cycle de licence webMethods reste visible** : `wm.lab` et `wm-api.lab`
+- **Le cycle de licence webMethods reste visible** : `wm.labs` et `wm-api.labs`
   renvoient des 502 pendant ~3 min toutes les 20 min (CronJob `wm-restarter`).
   Ce n'est pas une défaillance du tunnel.
