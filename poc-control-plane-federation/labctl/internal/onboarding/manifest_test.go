@@ -107,7 +107,7 @@ func TestToManifestRejects(t *testing.T) {
 }
 
 // A private-key PEM in publicCert must be refused with a clear, auditable reason
-// (the guard that keeps secrets out of Git — ADR-068/069).
+// (the guard that keeps secrets out of Git — le principe hors-data-plane/069).
 func TestPrivateKeyRefusedWithReason(t *testing.T) {
 	req := validRequest()
 	req.PublicCert = "-----BEGIN EC PRIVATE KEY-----\nZZ\n-----END EC PRIVATE KEY-----\n"

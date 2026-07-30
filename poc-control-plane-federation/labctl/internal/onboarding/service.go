@@ -17,7 +17,7 @@ type gitWriter interface {
 }
 
 // Service is the write-through-Git onboarding engine. It owns NO gateway
-// client: its only side effect is a commit in the governance repo (ADR-068).
+// client: its only side effect is a commit in the governance repo.
 type Service struct {
 	Repo gitWriter
 }
@@ -37,7 +37,7 @@ type Result struct {
 // It NEVER touches a gateway: the commit is the whole transaction. The client's
 // CI (or a `labctl subscribe` run over the manifest) is what converges
 // webMethods — keeping STOA off the data path and Git the single source of
-// truth (ADR-067/068/069).
+// truth.
 func (s *Service) Onboard(ctx context.Context, req Request, actor governance.Actor) (*Result, []string, error) {
 	m, verrs := req.ToManifest()
 	if len(verrs) > 0 {

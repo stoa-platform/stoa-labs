@@ -9,7 +9,7 @@
 // locally against the realm JWKS — iss + exp + aud), AUTHORIZED (realm role
 // partner-onboarder AND a tenant that MUST equal the body tenant), VALIDATED,
 // and WRITTEN as a partner manifest into the governance Git repository — and it
-// stops there. It NEVER calls a gateway (ADR-068 — STOA off the data path; Git
+// stops there. It NEVER calls a gateway (le principe hors-data-plane — STOA off the data path; Git
 // is the source of truth). Every decision (ACCEPT/DENY) is audited to OpenSearch
 // (per-tenant index) and to a structured stdout line with a W3C trace_id.
 //

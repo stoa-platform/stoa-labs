@@ -5,18 +5,15 @@ status: "Proposé — réponse à une contrainte IT client (« un utilisateur se
 maturite_technique: "✅ Livré & prouvé — chaîne complète alice → exchange → Vault → job Jenkins, ségrégation PAR TENANT enforcée (scripts/test-user-vault-jwt.sh 24/24 live 2026-07-05 après durcissement post-review adversariale) ; nécessite Keycloak ≥ 26.2 (bump 26.1.4 → 26.3.4 effectué)"
 date: 2026-07-05
 adr_number: 77
-visibility: private
-note: "Privé (stoa-labs). S'appuie sur ADR-074 (secrets Vault), ADR-075 (chaîne multi-env), ADR-076 (GitOps lifecycle). Contexte client bancaire — ne pas porter dans stoa-docs (public)."
+note: "S'appuie sur ADR-074 (secrets Vault), ADR-075 (chaîne multi-env), ADR-076 (GitOps lifecycle)."
 ---
 
 # ADR-077 — Identité utilisateur de bout en bout jusqu'à Vault (token exchange)
 
 **Statut :** Proposé — réponse d'architecture à une contrainte IT client.
 **Maturité technique :** ✅ Livré & prouvé (2026-07-05) — `scripts/test-user-vault-jwt.sh` **24/24 live** (après durcissement issu d'une review adversariale), dont contre-épreuves : token non échangé refusé (`bound_audiences` + `azp`), subject token non adressé refusé par Keycloak, rôle realm insuffisant refusé par Vault, **cross-tenant refusé** (policy templatée), webhook sans jeton → build rouge, audit nominatif scopé au run — refus compris.
-**Contexte client (anonymisé) :** banque — l'équipe IT **exige que ce soit un utilisateur (humain) qui se connecte au Vault, et non une application** (AppRole/service account refusés), tout en voulant des jobs Jenkins non interactifs. Contrainte prise au pied de la lettre et satisfaite *sans* stocker le moindre mot de passe.
+**Contexte technique :** l'équipe IT **exige que ce soit un utilisateur (humain) qui se connecte au Vault, et non une application** (AppRole/service account refusés), tout en voulant des jobs Jenkins non interactifs. Contrainte prise au pied de la lettre et satisfaite *sans* stocker le moindre mot de passe.
 **Lié à :** [[adr-074-vault-secrets]], [[adr-075-wm-admin-proxy-multienv]], [[adr-076-gitops-api-lifecycle-repo-per-project]].
-
-> ⚠️ **Confidentialité.** Modèle d'authentification secrets d'une banque. Vit dans `stoa-labs` (privé), **pas** dans `stoa-docs`.
 
 ---
 

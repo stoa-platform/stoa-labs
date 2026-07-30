@@ -1,7 +1,7 @@
 # HANDOFF — PoC Control Plane de Fédération (stoa-labs)
 
 > État au 2026-06-12. À lire en premier pour reprendre. Données synthétiques,
-> client anonymisé (institution financière régulée anonymisé). Repo : `stoa-platform/stoa-labs` (privé).
+> aucun contexte client. Repo : `stoa-platform/stoa-labs` (public).
 
 ## TL;DR
 
@@ -187,7 +187,7 @@ Passe « médiation » : fermer les 4 gaps du plan de contrôle sur une gateway 
   token `cp-applier` (`$LABCTL_TOKEN`) qui **borne** le scope → **cross-tenant DENY** fail-closed
   avant tout dispatch. Code : `cmd/labctl/scope.go`.
 - **It.3** **Attribution + audit de chaque mutation** (`scripts/test-apply-audit.sh` **13/13**) :
-  `audit-apply-{tenant}`, `actor`=auteur du commit Git (ADR-069), `principal`=SA `cp-applier`,
+  `audit-apply-{tenant}`, `actor`=auteur du commit Git, `principal`=SA `cp-applier`,
   `commit_sha`, **pivot `trace_id`**, isolation viewer. Code : `cmd/labctl/applyaudit.go` +
   `internal/audit` (champs `resource`/`gateway`/`principal`) + provisioning
   `observability/opensearch/provision/apply/`.
@@ -415,14 +415,14 @@ poc-control-plane-federation/
 │   ├── opensearch/provision/{01..08}*.json + provision.sh     # data-stream/tenant/RBAC/FLS/index-pattern (ADR-070)
 │   └── data-prepper/pipelines.yaml                            # collecteur normalisant/redactant
 └── scripts/{up,down,teardown,smoke-test,demo,setup-identity,phase3-identity-demo,get-oracle-token,setup-wso2-otel}.sh
-adr/  (privé)  adr-067 reuse-first · adr-068 hors-transactionnel · adr-069 douve de rétention · adr-070 analytics OpenSearch
+adr/           adr-070 analytics OpenSearch · adr-071..080 (onboarding, médiation, Vault, GitOps, promotion)
 ```
 
 ## État des phases (toutes validées live sauf mention)
 
 | Phase | Quoi | État |
 |---|---|---|
-| 0 | Plan + cadrage + ADR-067 | ✅ |
+| 0 | Plan + cadrage | ✅ |
 | 1 | Socle OSS (9 briques) | ✅ live |
 | 2 | `labctl` Define Once → 3 gw (57 tests) | ✅ live |
 | 3 | Identité Oracle-master (Dex→Keycloak→3 gw) | ✅ live |
@@ -460,31 +460,24 @@ docker restart poc-wso2am            # OBLIGATOIRE : WSO2 charge les KM au DÉMA
 - **`labctl` build air-gapped** : `cd labctl && GOPROXY=off GOFLAGS=-mod=vendor go build` (deps dans `vendor/`).
 - **WSO2 OTel** : `setup-wso2-otel.sh` est **EXPÉRIMENTAL** — la config naïve a cassé le démarrage du gateway (reverté). À affiner avant usage.
 
-## Décisions stratégiques (ADR privés — en attente Council 8/10)
+## Décisions d'architecture
 
 | ADR | Décision | Council |
 |---|---|---|
-| 067 | Reuse-first — couche possédée portable, runtimes commodity fédérés (règle des 3 bacs) | **CONDITIONAL 6.8/10** |
-| 068 | STOA **hors du chemin transactionnel** ; Reverse Invoke transactionnel = **capacité gateway**, pas STOA ; agent control-plane sortant-only (ou pull GitOps) | **CONDITIONAL 7.1/10** |
-| 069 | **Douve de rétention** = gouvernance source-de-vérité vendor-neutral + fabric maintenue/garantie (survit à SAP+Joule ET à un pull GitOps) | Proposé |
 | 070 | **Analytics transactionnelle OpenSearch multi-tenant** : collecteur normalisant = point de redaction unique auditable, RBAC/index par fournisseur, coexistence OTel (pivot trace_id) — **tranche APISIX prouvée live** | Proposé |
 
 **Modèle d'exploitation acté** : **CLI-en-CI / GitOps pull**, **pas d'agent runtime**, build **air-gapped** (vendor/), **binaire signé exécuté par LEUR CI** (Jenkins) — zéro flux entrant. Scaffold CI : `docker-compose.ci.yml` + `ci/` (Gitea+Jenkins+webhooks), **à valider au premier run**.
 
-## Conditions Council — état
+## Reste à prouver
 
-- ✅ **Traitées (doc)** : C3-068 (evidence-pack cohérent), C2-068 (gate DORA + secrets→PAM/Vault), C4-067 (intention/médiation dans la gate), C2-067 (douve nommée = ADR-069).
-- ⏳ **Business (à toi)** : **C1-067** chiffrage BUILD/RUN 5 ans (barrière n°1 à l'auto-balle) · **C3-067** propriété juridique du Bac possédé · **C4-068** stratégie d'entrée GTM (hors-zone d'abord) + partenaire ESN qualifié.
-- ⏳ **Technique** : **C1-068** prouver que l'agent bat un pull GitOps (sinon : pas d'agent) · must-prove ADR-069 « autorité, pas miroir » + « garantie, pas homme-jour ».
-- ⚠️ **Angles morts Council (non instruits)** : le deal BC existe-t-il + est-il réplicable (2ᵉ logo jamais nommé) · SAP+Joule = scénario central, pas de queue · **chiffrer la fenêtre multi-runtime** (la variable la plus déterminante).
+- ⏳ **Technique** : prouver que l'agent bat un pull GitOps (sinon : pas d'agent) · must-prove « autorité, pas miroir » + « garantie, pas homme-jour ».
 
 ## Threads ouverts (prochaines actions possibles)
 
-1. **Ansible** (dernier échange) : « on a Ansible, pourquoi le CLI ? » → **rider Ansible** (Bac B), livrer STOA en **collection Ansible** OU `labctl` appelé depuis un playbook. Floor honnête : s'ils ne valorisent ni la logique maintenue ni la gouvernance, pas de deal. **À faire** : scaffolder un exemple Ansible + acter « outillage = Bac B » dans ADR-067.
+1. **Ansible** (dernier échange) : « on a Ansible, pourquoi le CLI ? » → **rider Ansible** (Bac B), livrer STOA en **collection Ansible** OU `labctl` appelé depuis un playbook. Floor honnête : s'ils ne valorisent ni la logique maintenue ni la gouvernance, pas de deal. **À faire** : scaffolder un exemple Ansible + acter « outillage = Bac B » dans le principe reuse-first.
 2. **Valider la CI Jenkins live** (Gitea+Jenkins+webhook → un commit fédère l'API).
-3. **Re-soumettre 067/068/069 au Council** après les arbitrages business.
 4. **Backstage/RHDH** : non déployé ; le positionner comme **wedge produit hors-zone** (réponse partielle C4-068), pas comme preuve technique.
-5. **Reverse Invoke (data-plane)** : c'est une **capacité gateway** à vérifier produit par produit (webMethods ✓, WSO2/APISIX/SAP à confirmer) — pas un jet STOA.
+5. **Reverse Invoke (data-plane)** : c'est une **capacité gateway** à vérifier produit par produit (webMethods ✓, WSO2/APISIX à confirmer) — pas un jet STOA.
 
 ## Comment c'est construit
 ~6 workflows multi-agents (design+vérif adversariale, implémentation parallèle, review, fix, Council) + débogage live. Leçon récurrente : **la vérification adversariale réduit le risque, l'exécution live confirme la vérité** (ex. WSO2 `deploy-revision`=201 vs 200 que la vérif avait inversé ; connecteur KeyCloak vs default ; etc.).

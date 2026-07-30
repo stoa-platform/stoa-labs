@@ -5,8 +5,7 @@ status: "Accepté — implémenté et vérifié in-situ 2026-06-12"
 maturite_technique: "✅ Implémenté & vérifié in-situ (wm-trace-bridge, trace réelle)"
 date: 2026-06-12
 adr_number: 73
-visibility: private
-note: "Privé (stoa-labs). S'appuie sur ADR-068 (hors data-plane), ADR-070 (frontière OpenSearch=audit / otel-lgtm=ops, corrélation par trace_id). Ne pas porter dans stoa-docs (public)."
+note: "S'appuie sur ADR-070 (frontière OpenSearch=audit / otel-lgtm=ops, corrélation par trace_id)."
 ---
 
 # ADR-073 — Traces du webMethods réel vers Grafana Tempo
@@ -15,8 +14,8 @@ note: "Privé (stoa-labs). S'appuie sur ADR-068 (hors data-plane), ADR-070 (fron
 **Maturité technique :** ✅ Implémenté & vérifié in-situ (`observability/wm-trace-bridge/`, trace réelle Tempo) — seul ADR dont les deux axes (business + technique) sont alignés.
 **Révision 2026-06-12 (même jour)** : l'agent **E2EM est écarté pour la cible** (produit payant — décision client). Le pont events→OTLP passe de « démonstrateur PoC » à **voie retenue PoC ET cible**, sous les conditions de durcissement listées en Conséquences.
 **Date :** 2026-06-12.
-**Contexte client (anonymisé) :** banque — webMethods API Gateway **10.15** (data-plane legacy), observabilité cible OTel/Tempo.
-**Lié à :** [[adr-068-stoa-off-the-transaction-path]], [[adr-070-opensearch-txn-analytics]].
+**Contexte technique :** webMethods API Gateway **10.15** (data-plane legacy), observabilité cible OTel/Tempo.
+**Lié à :** [[adr-070-opensearch-txn-analytics]].
 
 ---
 
@@ -94,7 +93,7 @@ client ──traceparent──▶ wM 10.15 (:5555 data-plane)
 
 - ✅ DoD fédération : 3 gateways **réelles** dans Tempo avec corrélation `trace_id` client.
 - ✅ Tout survit au keepalive (`docker restart`) : destination+policy en ES externe ; le mount Prometheus et le bridge sont du compose. Les `watt.*` (server.cnf) survivent au restart mais **pas au force-recreate** → relancer `./scripts/wm-otel-setup.sh` (idempotent).
-- ⚠️ Les spans wM arrivent en **différé** (~10-40 s) et les durées sont **reconstruites** (`creationDate`/`totalTime`/`providerTime`) — fidèle pour l'analyse, pas du streaming temps réel. Assumé : ADR-068, STOA hors data-plane.
+- ⚠️ Les spans wM arrivent en **différé** (~10-40 s) et les durées sont **reconstruites** (`creationDate`/`totalTime`/`providerTime`) — fidèle pour l'analyse, pas du streaming temps réel. Assumé : le principe hors-data-plane, STOA hors data-plane.
 - ✅ Le span natif utilise la **fenêtre exacte** fournie par `externalCalls` (`callStartTime`/`callEndTime`) ; repli `providerTime` en fin de fenêtre si le tableau est absent (versions/fixpacks).
 - ⚠️ Les events **PolicyViolation (rejets 401) ne sont pas dispatchés** vers la custom destination malgré l'abonnement ERROR+POLICYVIOLATION (observé 2×, ils arrivent bien dans l'ES interne) — les 401 restent couverts par `sag_apigw_api_tx_error_count` (Prometheus) et la voie analytics ADR-070 ; le bridge sait les convertir s'ils arrivent (testé sur fixture).
 - 📌 **Pour la cible bancaire (révision même jour — E2EM écarté, produit payant)** : le **pont est la voie cible**. Les 4 conditions de durcissement sont **traitées en OSS** (implémentées et vérifiées le jour même) :

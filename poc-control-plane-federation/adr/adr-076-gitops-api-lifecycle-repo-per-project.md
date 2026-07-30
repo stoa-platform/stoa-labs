@@ -5,8 +5,7 @@ status: "Proposé — en attente Council (GO/NO-GO)"
 maturite_technique: "✅ Livré & prouvé — gate d'enforcement à l'apply (pré-check + read-back fail-closed, 31/31 live 2026-07-03) ; restent les limites trial documentées (audience 3/4, ip-allowlist dégradé) + anti-spoof classification (écart #1, goal A5)"
 date: 2026-07-01
 adr_number: 76
-visibility: private
-note: "Privé (stoa-labs). S'appuie sur ADR-067 (reuse-first / couche possédée portable), ADR-068 (hors data-plane), ADR-069 (Git source de vérité), ADR-071 (onboarding partenaire as-code), ADR-072 (médiation control-plane), ADR-074 (secrets Vault), ADR-075 (proxy admin wM multi-env). Ne pas porter dans stoa-docs (public)."
+note: "S'appuie sur ADR-071 (onboarding partenaire as-code), ADR-072 (médiation control-plane), ADR-074 (secrets Vault), ADR-075 (proxy admin wM multi-env)."
 ---
 
 # ADR-076 — Cycle de vie d'API GitOps repo-par-projet
@@ -14,16 +13,14 @@ note: "Privé (stoa-labs). S'appuie sur ADR-067 (reuse-first / couche possédée
 **Statut :** Proposé — en attente validation Council (GO/NO-GO). *(axe gouvernance/business — distinct de la maturité technique ci-dessous)*
 **Maturité technique :** ✅ Livré & prouvé (2026-07-03/04) — moteur `render` + gate `INTEGRITY_INCONSISTENT` (validate) **+ gate d'enforcement à l'apply** : pré-check statique `INTEGRITY_UNFULFILLED` + read-back gateway `ENFORCEMENT_UNCONFIRMED` (`scripts/test-integrity-enforce.sh` **31/31 live**, contre-épreuve sabotage) **+ classification CENTRALE anti-spoof** (goal A5 : autorité déplacée hors du repo projet, clé (owner, api) liée à l'identité pipeline non-éditable, `scripts/test-classification-central.sh` **11/11**, 2 repos pilotes à bundles différents). Restent documentés : audience fail-open trial (3/4), ip-allowlist dégradé (consommateur).
 **Date :** 2026-07-01.
-**Contexte client (anonymisé) :** banque — webMethods API Gateway 10.15, chaîne dev → rec → int → prod (ADR-075), demande d'**un repo Git par projet** avec cycle de vie « création/modif d'API → création sur la gateway → publication par env », **stratégie de sécurité fonction du niveau d'intégrité de la donnée**, certificats (mTLS), OAuth2 interne/externe, filtrage IP, tokens custom, et si possible **global policies + filtrage par tag**.
-**Lié à :** [[adr-067-reuse-first-owned-portable-layer]], [[adr-068-stoa-off-the-transaction-path]], [[adr-069-retention-moat-governance-source-of-truth]], [[adr-071-partner-onboarding-as-code]], [[adr-072-control-plane-mediation]], [[adr-074-vault-secrets]], [[adr-075-wm-admin-proxy-multienv]].
-
-> ⚠️ **Confidentialité.** Topologie de gouvernance d'APIs d'une banque + matrice de sécurité par niveau d'intégrité. Vit dans `stoa-labs` (privé), **pas** dans `stoa-docs` (public).
+**Contexte technique :** webMethods API Gateway 10.15, chaîne dev → rec → int → prod (ADR-075), demande d'**un repo Git par projet** avec cycle de vie « création/modif d'API → création sur la gateway → publication par env », **stratégie de sécurité fonction du niveau d'intégrité de la donnée**, certificats (mTLS), OAuth2 interne/externe, filtrage IP, tokens custom, et si possible **global policies + filtrage par tag**.
+**Lié à :** [[adr-071-partner-onboarding-as-code]], [[adr-072-control-plane-mediation]], [[adr-074-vault-secrets]], [[adr-075-wm-admin-proxy-multienv]].
 
 ---
 
 ## Décision (test « archi 40 ans / 30 secondes »)
 
-> Chaque projet a **un repo Git** qui est un **shard byte-compatible** du schéma de gouvernance déjà prouvé (ADR-069/072/075) : l'équipe y pousse le **contrat** (`openapi.yaml`) et un **manifeste UAC** (`api.yaml` : classification d'intégrité + tags + exposure) ; **elle ne pose jamais une policy à la main**. La **stratégie de sécurité est DÉRIVÉE** de la classification par `labctl render` (`classification → bundle de policies concret`), **épinglée** dans `strategy.lock`, et **vérifiée fail-closed** (`validate` refuse le merge d'une API `VH` sans mTLS). Les policies sont **possédées centralement** dans un catalogue de gouvernance que le repo projet **ne peut pas affaiblir** — une équipe ne peut **physiquement pas** shipper une posture plus faible que son niveau. La promotion reste **trunk + marqueurs `deploy.{env}.yaml`** (forme prouvée 19/19), **`main` = cible de promotion prod** ; create → publish → promote → rollback réutilisent tel quel l'existant (ADR-071/072/075, Vault ADR-074, TokenProvider).
+> Chaque projet a **un repo Git** qui est un **shard byte-compatible** du schéma de gouvernance déjà prouvé (le principe Git-source-de-vérité/072/075) : l'équipe y pousse le **contrat** (`openapi.yaml`) et un **manifeste UAC** (`api.yaml` : classification d'intégrité + tags + exposure) ; **elle ne pose jamais une policy à la main**. La **stratégie de sécurité est DÉRIVÉE** de la classification par `labctl render` (`classification → bundle de policies concret`), **épinglée** dans `strategy.lock`, et **vérifiée fail-closed** (`validate` refuse le merge d'une API `VH` sans mTLS). Les policies sont **possédées centralement** dans un catalogue de gouvernance que le repo projet **ne peut pas affaiblir** — une équipe ne peut **physiquement pas** shipper une posture plus faible que son niveau. La promotion reste **trunk + marqueurs `deploy.{env}.yaml`** (forme prouvée 19/19), **`main` = cible de promotion prod** ; create → publish → promote → rollback réutilisent tel quel l'existant (ADR-071/072/075, Vault ADR-074, TokenProvider).
 > **Test** : *une équipe projet peut-elle, depuis SON repo, faire baisser la barrière de sécurité en dessous du niveau d'intégrité de sa donnée — sans qu'un `validate` fail-closed et un catalogue central hors de son repo l'en empêchent ?* Si la réponse n'est pas « non, mécaniquement impossible », alors « sécurité = f(intégrité) » est un slogan, pas un contrôle.
 
 ---
@@ -106,7 +103,7 @@ Trunk source de vérité + marqueurs `deploy.{env}.yaml` (desired-state pinné) 
 
 ---
 
-## Modèle de sécurité par couches — PROUVÉ vs ASPIRATIONNEL (revue adversariale institution financière régulée)
+## Modèle de sécurité par couches — PROUVÉ vs ASPIRATIONNEL (revue adversariale)
 
 > ⚠️ **Le squelette GitOps est bank-grade et prouvé. La règle « sécurité = f(intégrité) » est désormais DÉRIVÉE + VALIDÉE fail-closed (`render` intégré à `ValidateUAC`), ENFORCÉE À L'APPLY (2026-07-03, goal A1 : pré-check `INTEGRITY_UNFULFILLED` avant toute écriture + read-back gateway `ENFORCEMENT_UNCONFIRMED` — le verdict vient de l'état RELU, jamais de l'intention) et RÉCONCILIÉE par le rapport Ansible (défense en profondeur, non bloquant). Les limites structurelles du trial restent annotées, jamais surclamées : audience fail-open (3/4 barrières), ip-allowlist dégradé (consommateur).** Cette honnêteté protège le POSITIONING (C1) : la valeur STOA est le **catalogue maintenu + le moteur de dérivation + les Links** à travers les dérives de version, jamais « les 300 lignes de pipeline ».
 
@@ -179,6 +176,6 @@ Trunk source de vérité + marqueurs `deploy.{env}.yaml` (desired-state pinné) 
 
 ## Références
 
-- [[adr-069-retention-moat-governance-source-of-truth]], [[adr-071-partner-onboarding-as-code]], [[adr-072-control-plane-mediation]], [[adr-074-vault-secrets]], [[adr-075-wm-admin-proxy-multienv]].
+- [[adr-071-partner-onboarding-as-code]], [[adr-072-control-plane-mediation]], [[adr-074-vault-secrets]], [[adr-075-wm-admin-proxy-multienv]].
 - PoC `stoa-labs` — briques réutilisées : `ci/Jenkinsfile{,.prod,.rollback}`, `labctl/` (dispatch + adapters + `internal/uac` + `internal/governance` + `cmd/governance-api`), `envs/{env}/targets.cluster.yaml`, `gateways/webmethods/token-provider/` (TokenProvider outbound).
 - `POSITIONING.md` (garde-fou C1 : ne jamais réduire STOA au pipeline de glue).

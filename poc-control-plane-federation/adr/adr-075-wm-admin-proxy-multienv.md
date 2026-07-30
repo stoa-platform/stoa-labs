@@ -5,8 +5,7 @@ status: "Proposé — en attente Council (GO/NO-GO)"
 maturite_technique: "✅ Livré & prouvé — multi-env 19/19 + vrai Jenkins"
 date: 2026-06-12
 adr_number: 75
-visibility: private
-note: "Privé (stoa-labs). S'appuie sur ADR-069 (Git source de vérité), ADR-072 (médiation control-plane), ADR-074 (secrets Vault). Ne pas porter dans stoa-docs (public)."
+note: "S'appuie sur ADR-072 (médiation control-plane), ADR-074 (secrets Vault)."
 ---
 
 # ADR-075 — Proxy admin wM multi-env
@@ -14,10 +13,8 @@ note: "Privé (stoa-labs). S'appuie sur ADR-069 (Git source de vérité), ADR-07
 **Statut :** Proposé — en attente validation Council (GO/NO-GO). *(axe gouvernance/business — distinct de la maturité technique ci-dessous)*
 **Maturité technique :** ✅ Livré & prouvé — `demo-multienv.sh` 19/19 + **vrai Jenkins** (prod-deploy/rollback SUCCESS) ; ITSM gate + 4-yeux + pin SHA.
 **Date :** 2026-06-12.
-**Contexte client (anonymisé) :** banque — webMethods API Gateway 10.15, chaîne d'environnements dev → rec → int → prod, Jenkins n'ayant de route réseau QUE vers la zone prod.
-**Lié à :** [[adr-069-retention-moat-governance-source-of-truth]], [[adr-072-control-plane-mediation]], [[adr-074-vault-secrets]].
-
-> ⚠️ **Confidentialité.** Topologie d'environnements et de promotion d'une banque. Vit dans `stoa-labs` (privé), **pas** dans `stoa-docs` (public).
+**Contexte technique :** webMethods API Gateway 10.15, chaîne d'environnements dev → rec → int → prod, Jenkins n'ayant de route réseau QUE vers la zone prod.
+**Lié à :** [[adr-072-control-plane-mediation]], [[adr-074-vault-secrets]].
 
 ---
 
@@ -30,7 +27,7 @@ note: "Privé (stoa-labs). S'appuie sur ADR-069 (Git source de vérité), ADR-07
 
 ## Contexte et problème
 
-1. **La « gateway de promotion » wM est une copie d'état opaque.** Le mécanisme produit (promotion management) duplique des objets d'un runtime vers un autre : c'est un **2e runtime à opérer**, un état **non diffable** (pas de PR, pas de revert), et une promotion **non rejouable** (l'état source bouge). À l'opposé d'ADR-069 (Git source de vérité) et de la convergence idempotente déjà prouvée par labctl (read-back-assert, re-apply défensif).
+1. **La « gateway de promotion » wM est une copie d'état opaque.** Le mécanisme produit (promotion management) duplique des objets d'un runtime vers un autre : c'est un **2e runtime à opérer**, un état **non diffable** (pas de PR, pas de revert), et une promotion **non rejouable** (l'état source bouge). À l'opposé d'le socle d'architecture et de la convergence idempotente déjà prouvée par labctl (read-back-assert, re-apply défensif).
 2. **Contrainte réseau réelle : Jenkins → prod uniquement.** Le CI du client n'a de flux ouvert que vers la zone prod. Les gateways dev/rec/int sont **injoignables** de Jenkins — il faut un chemin d'administration **médié**, pas une ouverture de flux par env (refusée par la sécurité réseau, à raison).
 3. **Les différences par env** (URL backend, credential sortant) étaient embarquées dans la policy de routage — donc re-importer le contrat dans un autre env exigeait de réécrire la policy. Il faut **séparer le contrat (identique partout) de la matière par env**.
 
@@ -116,7 +113,7 @@ Le gate Git-natif valide l'état **mergé** — l'approbation *au moment du merg
 **Frontières / limites assumées.**
 - **Audience fail-open sur le trial** : 3/4 barrières (signature + azp + scope). Documenté, jamais vendu.
 - Le wM prod devient un **point de passage admin** des envs bas : sa dispo conditionne l'administration hors-prod (pas le data-plane des envs). Acceptable — c'est déjà l'actif le plus surveillé.
-- **Latence double-hop** sur le plan admin uniquement (control plane, ADR-068 : jamais sur la transaction).
+- **Latence double-hop** sur le plan admin uniquement (control plane, le principe hors-data-plane : jamais sur la transaction).
 - Les mocks d'envs bas valident la **surface 10.15** et la résolution `${alias}` ; un wM réel par env reste la cible d'intégration finale.
 - `host.docker.internal` (rollback job → governance-api host) est une commodité PoC, pas un modèle cible.
 
@@ -124,7 +121,7 @@ Le gate Git-natif valide l'état **mergé** — l'approbation *au moment du merg
 
 ## Alternatives écartées
 
-- **Promotion management wM (copie d'état)** — rejeté : runtime supplémentaire, état opaque non diffable, promotion non rejouable, à rebours d'ADR-069.
+- **Promotion management wM (copie d'état)** — rejeté : runtime supplémentaire, état opaque non diffable, promotion non rejouable, à rebours d'le principe Git-source-de-vérité.
 - **Une API proxy unique à routing conditionnel (header/path → env)** — rejeté : l'autorisation par env devient une logique cachée dans une policy (non diffable, erreur = tous les envs ouverts) ; trois APIs sœurs rendent la barrière **déclarative, par-ressource, opposable par scope**.
 - **Ouvrir des flux Jenkins → chaque env** — rejeté : multiplie les routes inter-zones (la sécurité réseau du client dit non) ; le proxy réutilise la SEULE route existante en y ajoutant allowlist + OAuth2.
 - **DELETE dans l'allowlist pour « nettoyer »** — rejeté : la suppression contournerait Git ; le rollback est un revert + re-apply (état toujours reconstructible).

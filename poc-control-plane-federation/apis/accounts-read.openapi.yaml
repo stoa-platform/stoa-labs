@@ -8,7 +8,7 @@ info:
     gateways (WSO2, APISIX, webMethods). Données 100% fictives.
     side_effects=read, safe_for_agents=true.
   contact:
-    name: STOA Labs (PoC institution financière régulée anonymisé — anonymisé)
+    name: STOA Labs (PoC control plane de fédération)
 servers:
   - url: /accounts-read/v1
     description: Base path logique (réécrit par chaque gateway)

@@ -1,8 +1,8 @@
 # PoC — Control Plane de Fédération (briques OSS)
 
-Démonstrateur : **un control plane assemblé sur briques OSS fédère 3 gateways hétérogènes** (WSO2 API Manager, Apache APISIX, webMethods mock) — réponse au trou identifié par une étude « alternatives API Management & intégration » d'une **institution financière régulée (anonymisé)**.
+Démonstrateur : **un control plane assemblé sur briques OSS fédère 3 gateways hétérogènes** (WSO2 API Manager, Apache APISIX, webMethods mock) — réponse au trou fonctionnel classique du multi-gateway : pas de source de vérité unique, pas de catalogue unifié, pas de self-service portable.
 
-> ⚠️ Scaffold de **démonstration**, pas le produit. Lire [`POSITIONING.md`](./POSITIONING.md) (scaffold jetable vs valeur produit STOA) et [`HARD-CRITERIA-MAP.md`](./HARD-CRITERIA-MAP.md) (ce que ce jet prouve vs critères durs, dont le Reverse Invoke). Cadre stratégique : [`../adr/adr-067-reuse-first-owned-portable-layer.md`](../adr/adr-067-reuse-first-owned-portable-layer.md).
+> ⚠️ Scaffold de **démonstration**, pas le produit. Lire [`HARD-CRITERIA-MAP.md`](./HARD-CRITERIA-MAP.md) (ce que ce jet prouve vs les critères durs, dont le Reverse Invoke).
 >
 > Tout est **synthétique**, local, éphémère. Zéro SaaS, zéro donnée réelle, zéro secret en clair.
 

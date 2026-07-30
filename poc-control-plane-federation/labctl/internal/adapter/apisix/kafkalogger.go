@@ -9,7 +9,7 @@ package apisix
 // auditable redaction point — IBAN/MONETARY/PII), and routes to the
 // tenant-isolated OpenSearch index txn-{tenant}-*.
 //
-// The gateway is an EMITTER only (ADR-068, off the transaction path): it stamps
+// The gateway is an EMITTER only (le principe hors-data-plane, off the transaction path): it stamps
 // metadata + a tenant tag + the W3C trace_id, and on ERROR (status>=400) the
 // request/response headers — never the request body, and the response body
 // capture is ARMED here but EXTRACTED/redacted at the collector (see the

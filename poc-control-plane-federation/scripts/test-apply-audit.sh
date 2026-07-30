@@ -2,7 +2,7 @@
 # test-apply-audit.sh — LIVE proof of apply-plane attribution + audit (It.3):
 # every gateway mutation a `labctl apply-uac` run performs lands as a per-tenant
 # audit-apply-{tenant} document, Git-attributed (actor = the manifest's commit
-# author, ADR-069) and carrying the cp-applier CI principal + a trace_id pivot
+# author, le principe Git-source-de-vérité) and carrying the cp-applier CI principal + a trace_id pivot
 # (ADR-070). A cross-tenant attempt is audited as a DENY. Tenant viewers read
 # ONLY their own apply-audit index.
 #

@@ -50,7 +50,7 @@
 | `deploy/bootstrap/ci/vault/` | manifestes Vault + `PrometheusRule` `VaultSealed` |
 | `deploy/bootstrap/ci/jenkins/` | manifestes Jenkins + ServiceAccount + RBAC |
 
-**Dépôt `stoa-labs` (privé) — Ansible**
+**Dépôt `stoa-labs` — Ansible**
 
 | Fichier | Responsabilité |
 |---|---|

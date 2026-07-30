@@ -12,7 +12,7 @@
 #       → OpenSearch (index-par-tenant txn-{tenant}-* + RBAC/FLS/ISM)
 #         → OpenSearch Dashboards
 #
-# Frontière nette (ADR-068/070) : OpenSearch = audit/gouvernance/per-fournisseur ;
+# Frontière nette (frontière analytique) : OpenSearch = audit/gouvernance/per-fournisseur ;
 # otel-lgtm (socle) = ops/SRE temps réel. Corrélation par trace_id.
 #
 # 4 services AJOUTÉS, propres au PoC (NE réutilisent AUCUN Redpanda d'un autre

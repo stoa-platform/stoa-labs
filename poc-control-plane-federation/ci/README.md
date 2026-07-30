@@ -87,11 +87,11 @@ docker compose -f docker-compose.poc.yml -f docker-compose.ci.yml up -d --build 
 ## Pourquoi c'est le bon modèle pour une banque
 
 - **Pas d'agent runtime** : le CI applique l'état désiré (GitOps pull) — cf.
-  [`../../adr/adr-068-stoa-off-the-transaction-path.md`](../../adr/adr-068-stoa-off-the-transaction-path.md).
+  le principe « STOA hors du chemin transactionnel ».
 - **Zéro entrant externe** : Jenkins tourne **dans** le réseau ; il atteint les
   admin APIs des gateways en interne. Rien n'ouvre de port vers la zone depuis dehors.
 - **Air-gapped** : build sans internet (vendor/), binaire signable (condition
-  ADR-068 : « build signé + reproductible, SBOM »).
+  le principe hors-data-plane : « build signé + reproductible, SBOM »).
 - **Exécuté par le client, pas par toi** : c'est *leur* Jenkins qui lance un
   binaire **approuvé**, sous *leur* change-control et *leur* audit (cf. la
   réponse « ai-je le droit de lancer la CLI ? » → idéalement non, c'est leur CI).

@@ -2,8 +2,8 @@
 
 > **Statut :** cadrage validé avant toute ligne de code (règle anti-boucle de réécriture).
 > **Date :** 2026-06-10 · **Owner :** Christophe
-> **Client cible démo :** banque anonyme (anonymisé) — ne jamais nommer dans ce repo.
-> **Références :** ADR-067/068/069 (`../adr/`), PoC fédération (`../poc-control-plane-federation/HANDOFF.md`), plan de jeu commercial (stoa-strategy `clients/client-banque-etude-alternatives/document-4`).
+> **Cible démo :** institution financière générique — aucun contexte client dans ce repo.
+> **Références :** le principe reuse-first/068/069 (`../adr/`), PoC fédération (`../poc-control-plane-federation/HANDOFF.md`), plan de jeu commercial (stoa-strategy `clients/client-banque-etude-alternatives/document-4`).
 
 ---
 
@@ -28,7 +28,7 @@ Tout ce qui ne sert pas ce parcours est **hors scope v1**.
 
 ## 2. Principes non négociables
 
-1. **La console n'exécute jamais labctl sur le chemin de prod** (ADR-068). Elle écrit des commits gouvernés dans Git ; le webhook déclenche Jenkins ; Jenkins exécute le binaire signé. La console *suit* le pipeline, elle ne le remplace pas. (Exception assumée : preview/plan en lecture seule.)
+1. **La console n'exécute jamais labctl sur le chemin de prod**. Elle écrit des commits gouvernés dans Git ; le webhook déclenche Jenkins ; Jenkins exécute le binaire signé. La console *suit* le pipeline, elle ne le remplace pas. (Exception assumée : preview/plan en lecture seule.)
 2. **Git = source de vérité, push direct interdit** sur le repo gouverné. Mode canonique `pull_request` de la spec `catalog-release-versioning-contract.md` (branches `stoa/api/{tenant}/{api}/...`, merge commit, tag annoté) — critères CRV-1..6 repris tels quels.
 3. **Les 6 invariants Git-first** d'`api-creation-gitops-rewrite.md` s'appliquent au BFF : le payload HTTP ne projette jamais ; on projette depuis le contenu relu après commit ; idempotence par content hash ; `git_path` déterministe par slug.
 4. **OSS-first** : pas de brique custom là où l'écosystème couvre (diff = git diff ; identité = Keycloak ; exécution = Jenkins ; convergence cluster = ArgoCD le moment venu).
@@ -90,7 +90,7 @@ WSO2 · APISIX · webMethods-mock  (+ n+1 : module MCP dormant — même chaîne
 ```
 
 **Décision framework (2026-06-10) — React v1, Angular en point d'extension :**
-Le client a une préférence Angular (compétence de ses équipes). Décision : **v1 en React** — la carrière réutilisable (~12k LOC : écrans 4-yeux, design system, RBAC) est React, et la Console est un *produit* maintenu par STOA (ADR-069 « produit, pas TMA »), pas un développement custom hérité par le client. L'argument Angular ne vaut que pour du code que le client possède : la réponse produit est **API-first** — leurs équipes Angular étendent via le BFF (REST/OIDC), option web components pour l'embed. **Trigger de révision** : si l'appel d'offres classe la console comme développement custom maintenable par les équipes client (à vérifier — question ajoutée au cadrage client), réévaluer un front Angular comme réécriture bornée sur le même BFF (les écrans v1 + Gherkin = la spec).
+Une préférence Angular peut exister côté équipes intégratrices. Décision : **v1 en React** — la carrière réutilisable (~12k LOC : écrans 4-yeux, design system, RBAC) est React, et la Console est un *produit* maintenu par STOA (le principe Git-source-de-vérité « produit, pas TMA »), pas un développement custom hérité par le client. L'argument Angular ne vaut que pour du code que le client possède : la réponse produit est **API-first** — leurs équipes Angular étendent via le BFF (REST/OIDC), option web components pour l'embed. **Trigger de révision** : si l'appel d'offres classe la console comme développement custom maintenable par les équipes client (à vérifier — question ajoutée au cadrage client), réévaluer un front Angular comme réécriture bornée sur le même BFF (les écrans v1 + Gherkin = la spec).
 
 **Décisions d'implémentation :**
 - BFF en Go **dans le module labctl** (recommandation inventaire) : import direct du moteur (`Adapter.Publish/List/CreateConsumer`, `keycloak.EnsureClient`) — le CLI reste une coque mince sur les mêmes packages, cohérent CLI-en-CI.

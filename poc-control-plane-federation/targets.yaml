@@ -164,7 +164,7 @@ keycloak:
 # current behavior unchanged. Ignored by WSO2/APISIX.
 #
 # SÉCURITÉ / SECURITY : cert PUBLIC + IP = config NON-secrète, auditable par PR
-# en Git (la douve ADR-067/069). Un token portant un VRAI secret partagé doit
+# en Git (la douve). Un token portant un VRAI secret partagé doit
 # être référencé depuis Vault/PAM, JAMAIS inscrit ici. Une clé PRIVÉE dans
 # publicCertRef est REFUSÉE par l'adapter. // public cert + IP are non-secret
 # (auditable in Git); a real shared-secret token belongs in Vault/PAM, never

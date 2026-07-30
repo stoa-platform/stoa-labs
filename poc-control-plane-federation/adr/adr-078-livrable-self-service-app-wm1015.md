@@ -5,8 +5,7 @@ status: "Proposé — cadre la V1 du livrable client à partir du PoC ; décisio
 maturite_technique: "◐ Partiellement prouvé — identifiers cert/IP/API-key opposés live sur la 10.15 réelle (spike 2026-07-14, 8/8, gateway restaurée) ; DEUX fail-open natifs découverts (ipAllowlist décoratif, TTL de clé global) ; frontière secrets et modèle plan/apply étayés par doc éditeur (recherche 2026-07-14, 21 claims vérifiés 3-votes) ; repo produit NON encore extrait"
 date: 2026-07-15
 adr_number: 78
-visibility: private
-note: "Privé (stoa-labs). Répond au GOAL-self-service-api-app-2026-07-09 (volet CONSOMMATEUR, feeds_adr: 78). S'appuie sur ADR-071 (onboarding-as-code), ADR-074 (Vault), ADR-075 (multi-env), ADR-076 (GitOps lifecycle), ADR-077 (identité user→Vault). Contexte client bancaire on-premise — ne pas porter dans stoa-docs (public)."
+note: "Répond au GOAL-self-service-api-app-2026-07-09 (volet CONSOMMATEUR, feeds_adr: 78). S'appuie sur ADR-071 (onboarding-as-code), ADR-074 (Vault), ADR-075 (multi-env), ADR-076 (GitOps lifecycle), ADR-077 (identité user→Vault)."
 ---
 
 # ADR-078 — Livrable self-service « création d'application » (wM 10.15, Jenkins)
@@ -18,11 +17,9 @@ note: "Privé (stoa-labs). Répond au GOAL-self-service-api-app-2026-07-09 (vole
 - ✅ **Étayé doc éditeur** (recherche 2026-07-14, 103 agents, 21 claims vérifiés en 3-votes adversariaux) : frontière secrets Vault/Jenkins, impossibilité d'un token Vault nominatif via les plugins Jenkins standards, contrainte mécanique du webhook (ACL.SYSTEM).
 - ⚠️ **Non encore fait** : extraction du repo produit ; fermeture des deux fail-open ; endpoint de régénération de clé (contrat non trouvé).
 
-**Contexte client (anonymisé) :** banque on-premise. Le PoC de fédération multi-gateway doit devenir un **livrable évolutif** installable et maintenable chez un client, **sans perdre le lab** (bac à sable 4 gateways pour d'autres use cases). La V1 cible **uniquement webMethods API Gateway 10.15**, un seul use case : le **self-service de création d'application consommatrice** via Jenkins, avec **certificat**, **filtrage IP** et **API key** comme identité applicative. **Vault est disponible et gouverné** chez le client. L'**identité de l'utilisateur** (login user/mot de passe dans Jenkins) sert **uniquement** à obtenir un **token Vault nominatif** ; les appels vers webMethods se font avec un **compte de service** dont les credentials sont lus dans Vault — **l'identité user n'est jamais propagée à la gateway**.
+**Contexte technique :** déploiement on-premise. Le PoC de fédération multi-gateway doit devenir un **livrable évolutif** installable et maintenable chez un client, **sans perdre le lab** (bac à sable 4 gateways pour d'autres use cases). La V1 cible **uniquement webMethods API Gateway 10.15**, un seul use case : le **self-service de création d'application consommatrice** via Jenkins, avec **certificat**, **filtrage IP** et **API key** comme identité applicative. **Vault est disponible et gouverné** chez le client. L'**identité de l'utilisateur** (login user/mot de passe dans Jenkins) sert **uniquement** à obtenir un **token Vault nominatif** ; les appels vers webMethods se font avec un **compte de service** dont les credentials sont lus dans Vault — **l'identité user n'est jamais propagée à la gateway**.
 
 **Lié à :** [[adr-071-partner-onboarding-as-code]], [[adr-074-vault-secrets]], [[adr-075-wm-admin-proxy-multienv]], [[adr-076-gitops-api-lifecycle-repo-per-project]], [[adr-077-user-identity-to-vault-token-exchange]].
-
-> ⚠️ **Confidentialité.** Architecture de livraison et modèle secrets d'une banque. Vit dans `stoa-labs` (privé), **pas** dans `stoa-docs`.
 
 ---
 
