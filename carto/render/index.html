@@ -362,6 +362,142 @@ function viewSignaux() {
              <span class="muted">${(e.errorRate * 100).toFixed(1)} %</span></li>`))}`;
 }
 
+// --- vue : evolution ----------------------------------------------------
+// Toutes les grandeurs du journal sont des STOCKS mesurees a une date : une
+// semaine se resume par sa DERNIERE valeur, jamais par une somme.
+function weekKey(date) {
+  const d = new Date(date + "T00:00:00Z");
+  const t = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  t.setUTCDate(t.getUTCDate() + 4 - (t.getUTCDay() || 7));   // jeudi ISO
+  const y0 = new Date(Date.UTC(t.getUTCFullYear(), 0, 1));
+  const w = Math.ceil(((t - y0) / 86400000 + 1) / 7);
+  return `${t.getUTCFullYear()}-S${String(w).padStart(2, "0")}`;
+}
+
+function weekly(rows) {
+  const byWeek = new Map();
+  for (const r of [...rows].sort((a, b) => a.date.localeCompare(b.date))) {
+    byWeek.set(weekKey(r.date), r);          // la derniere du groupe l'emporte
+  }
+  return [...byWeek.entries()].map(([k, r]) => ({ ...r, week: k }));
+}
+
+// Serie RETRO-CALCULEE a partir des dates d'enregistrement : disponible des
+// le premier passage, mais c'est une courbe de SURVIVANTS — elle ne connait
+// que les objets existant encore aujourd'hui, donc elle sous-estime le passe
+// et ne montre aucune disparition. Elle est tracee en pointilles, jamais
+// melangee visuellement avec la serie mesuree.
+//
+// Mesure sur la sortie reelle du collecteur (carto/TERRAIN.md, V1) :
+// consumers[].createdAt est renseigne (liste /applications porte "created",
+// 4/4 mesures) mais apis[].createdAt est TOUJOURS null (absent de la liste
+// /apis, 0/2 mesures — le detail par API le porte mais n'est pas collecte).
+// Consequence : aucune serie retro-calculee n'est fabriquee pour les APIs,
+// seulement pour les consommateurs enregistres. Ne pas fabriquer de date de
+// substitution pour les APIs.
+function retroSeries() {
+  const dates = [];
+  for (const c of S.carto.consumers) if (c.createdAt) dates.push(c.createdAt.slice(0, 10));
+  if (!dates.length) return [];
+  dates.sort();
+  const out = new Map();
+  let cons = 0;
+  for (const d of dates) {
+    cons++;
+    out.set(weekKey(d), { week: weekKey(d), consumersRegistered: cons });
+  }
+  return [...out.values()];
+}
+
+function viewEvolution() {
+  const mes = weekly(S.history), retro = retroSeries();
+  if (!mes.length && !retro.length) {
+    return `<p>Aucun historique pour l'instant. La courbe se construit à partir
+            du premier passage du collecteur.</p>`;
+  }
+  const last = mes[mes.length - 1], prev = mes[mes.length - 5];
+  const delta = (k) => prev ? (last[k] - prev[k] >= 0 ? "+" : "") + fmt(last[k] - prev[k]) : "—";
+  return `
+    <div class="bar">
+      ${last ? `<span>Aujourd'hui : <b>${fmt(last.apis)}</b> APIs,
+        <b>${fmt(last.consumersRegistered)}</b> consommateurs enregistrés
+        dont <b>${fmt(last.consumersActive)}</b> actifs.</span>
+        <span class="muted">Sur 4 semaines : ${delta("apis")} APIs,
+        ${delta("consumersRegistered")} consommateurs.</span>` : ""}
+    </div>
+    <canvas id="chart" width="900" height="320" style="max-width:100%"></canvas>
+    <p class="muted" style="max-width:70ch">
+      <b>Historique des APIs non reconstituable.</b> La gateway ne date pas
+      ses APIs : le champ de création n'existe pas dans la réponse de liste
+      de l'API d'administration (mesuré — voir <code>carto/TERRAIN.md</code>).
+      La courbe des APIs ne peut donc démarrer qu'à la <b>première collecte</b>,
+      visible ci-dessus : un démarrage brutal à cette date ne signifie pas
+      que la plateforme n'avait aucune API avant — seul l'historique n'existe pas.
+    </p>
+    <p class="muted" style="max-width:70ch">
+      <b>Deux séries, deux fiabilités.</b> Le trait plein est <b>mesuré</b> :
+      un point par semaine depuis la mise en service du collecteur, exact pour
+      les APIs comme pour les consommateurs. Le pointillé est <b>rétro-calculé</b>,
+      uniquement pour les consommateurs enregistrés, à partir de leur date
+      d'enregistrement — les APIs n'en portent aucune (voir ci-dessus). C'est
+      une courbe de <b>survivants</b> : elle ne connaît que les consommateurs
+      existant <i>aujourd'hui</i>, donc elle sous-estime le passé et ne montre
+      aucune disparition. Ne pas en déduire que la plateforme n'a jamais perdu
+      de consommateur.
+    </p>
+    <table><thead><tr><th>Semaine</th><th class="num">APIs</th>
+      <th class="num">Consommateurs</th><th class="num">dont actifs</th>
+      <th class="num">Appels (fenêtre)</th></tr></thead><tbody>
+    ${[...mes].reverse().map(r => `<tr><td>${esc(r.week)}</td>
+      <td class="num">${fmt(r.apis)}</td>
+      <td class="num">${fmt(r.consumersRegistered)}</td>
+      <td class="num">${fmt(r.consumersActive)}</td>
+      <td class="num">${fmt(r.calls)}</td></tr>`).join("")}
+    </tbody></table>`;
+}
+
+function drawEvolution() {
+  const cv = document.getElementById("chart");
+  if (!cv) return;
+  const mes = weekly(S.history), retro = retroSeries();
+  const weeks = [...new Set(retro.concat(mes).map(r => r.week))].sort();
+  if (!weeks.length) return;
+  const x = w => 50 + (weeks.indexOf(w) / Math.max(weeks.length - 1, 1)) * (cv.width - 70);
+  const max = Math.max(1, ...mes.map(r => Math.max(r.apis, r.consumersRegistered)),
+                          ...retro.map(r => r.consumersRegistered));
+  const y = v => cv.height - 40 - (v / max) * (cv.height - 60);
+
+  const g = cv.getContext("2d");
+  g.clearRect(0, 0, cv.width, cv.height);
+  g.strokeStyle = "#e3e3e3"; g.beginPath();
+  g.moveTo(50, cv.height - 40); g.lineTo(cv.width - 20, cv.height - 40); g.stroke();
+
+  const line = (rows, key, color, dashed) => {
+    const pts = rows.filter(r => r[key] != null);
+    if (!pts.length) return;
+    g.setLineDash(dashed ? [4, 4] : []);
+    g.strokeStyle = color; g.lineWidth = 2; g.beginPath();
+    pts.forEach((r, i) => i ? g.lineTo(x(r.week), y(r[key])) : g.moveTo(x(r.week), y(r[key])));
+    g.stroke(); g.setLineDash([]);
+  };
+
+  // Pointille : uniquement les consommateurs (retro-calcule). Aucune serie
+  // retro pour les APIs — la gateway ne les date pas (voir plus haut).
+  line(retro, "consumersRegistered", "#0a7a3d", true);
+  line(mes, "apis", "#0b5fff", false);
+  line(mes, "consumersRegistered", "#0a7a3d", false);
+  line(mes, "consumersActive", "#b23c00", false);
+
+  g.fillStyle = "#666"; g.font = "11px system-ui";
+  g.fillText(weeks[0], 50, cv.height - 22);
+  g.fillText(weeks[weeks.length - 1], cv.width - 90, cv.height - 22);
+  g.fillStyle = "#0b5fff"; g.fillText("APIs (mesuré)", 55, 16);
+  g.fillStyle = "#0a7a3d"; g.fillText("consommateurs enregistrés", 160, 16);
+  g.fillStyle = "#b23c00"; g.fillText("dont actifs", 380, 16);
+  g.fillStyle = "#666";
+  g.fillText("pointillé = rétro-calculé, consommateurs uniquement (survivants) — pas d'historique reconstitué pour les APIs", 55, 32);
+}
+
 window.CARTO = { S, esc, fmt, day, index, statut };
 boot();
 </script>
