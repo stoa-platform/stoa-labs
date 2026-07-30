@@ -68,8 +68,68 @@ gh CLI (PR `stoa-platform/stoa`), ssh (alias worker-1..5).
 | **T2** Data-plane interne | ✅ **PORTE VERTE** — `/gateway/accounts-read/1.0.0/accounts` sur la ClusterIP → **200 + JSON de `backend-dev`**, là où elle rendait **500** avant | — |
 | **T3** Sauvegarde ns `wm` | ✅ **FAIT** — run vert (`ok=52 changed=19 failed=0`), archive du PVC ES **relue sur worker-2**, Vault resté descellé | — |
 | **T4** Rôle de bascule | ✅ **FAIT — les DEUX sabotages verts.** Sabotage 1 : cible fausse → refus d'écrire, `changed=0`. **Sabotage 2 : le chemin `rescue` est prouvé en conditions réelles** (détail ci-dessous) | — |
-| **T5** Bascule + P-a/P-b | ⏸ prête ; le filet est prouvé | `ansible-playbook wm-cutover.yml` — geste exploitant |
-| **T6–T8** | ⛔ en aval de T5 | — |
+| **T5** Bascule + P-a/P-b | ✅ **PORTES P-a ET P-b VERTES** — bascule jouée par l'exploitant le 2026-07-30, `ok=15 changed=3 failed=0` (détail ci-dessous) | — |
+| **T6** Contre-épreuve rollback | ⏸ le chemin `rescue` est déjà prouvé (sabotage 2) ; reste le chemin **explicite** `-e wm_cutover_rollback=true` | écriture Caddy — geste exploitant |
+| **T7** Décommission + P-c | ⛔ **après T6, jamais avant** | `docker stop/rm` sur worker-3 — geste exploitant |
+| **T8** Re-mesure + consignation | ⛔ en aval | — |
+
+### T5 — les portes, mesurées
+
+**P-a — l'invocation data-plane par le nom public :**
+
+```
+$ curl https://dev-wm.gostoa.dev/gateway/accounts-read/1.0.0/accounts
+{"backend": "backend-dev.wm.svc.cluster.local",
+ "receivedPath": "/accounts/accounts",
+ "accounts": [{"id": "ACC-001", …}, {"id": "ACC-002", …}]}
+HTTP 200
+```
+
+**P-b — le durcissement, avant/après, nom par nom :**
+
+| Chemin | AVANT (T0) | APRÈS |
+|---|---|---|
+| `dev-wm.gostoa.dev/rest/apigateway/apis` | **401** | **404** |
+| `dev-wm.gostoa.dev/rest/apigateway/health` | 200 | **404** |
+| `dev-wm.gostoa.dev/apigatewayui/` | 302 | **404** |
+| `dev-wm.gostoa.dev/` | 200 | **404** |
+| `dev-wm-ui.gostoa.dev/` | 302 | **404** |
+| `dev-gw-k3s.gostoa.dev/health` (garde flotte) | 200 | **200** |
+
+L'admin REST de webMethods n'est plus sur l'Internet ouvert. Et ce n'est pas une
+casse : **depuis un pod du cluster, `/rest/apigateway/apis` rend toujours 200**.
+La surface a été retirée du public, pas supprimée.
+
+**La preuve indépendante — et la correction d'une assertion fausse de ce plan.**
+
+Le Step 6 prévu affirmait que `transactionalevents` passerait à > 0. **C'est
+faux, et l'erreur est dans ce plan, pas dans la bascule** : mesuré après les
+invocations, `count: 0`. L'index existe, et `errorevents: 2` /
+`lifecycleevents: 117` montrent que l'écriture ES fonctionne — ce type
+d'événement exige simplement une **politique de journalisation d'invocation** sur
+l'API, que `accounts-read` (publiée avec des politiques minimales par F4) n'a
+pas. L'assertion supposait un comportement par défaut de webMethods sans l'avoir
+vérifié.
+
+La preuve indépendante existe, et elle est **plus forte** que celle prévue —
+prise au bout de la chaîne plutôt qu'en son milieu :
+
+```
+$ kubectl logs -n wm deploy/backend-dev
+backend-dev "GET /accounts/accounts HTTP/1.1" 200 -
+backend-dev "GET /accounts HTTP/1.1" 200 -        ← sondes de readiness
+```
+
+Le backend a journalisé la requête **avec le chemin concaténé par webMethods**.
+Or son Service est en ClusterIP, injoignable de l'extérieur : une requête HTTPS
+publique a produit une ligne de journal dans un pod inaccessible depuis
+Internet. La chaîne `Caddy → gateway du cluster → backend-dev` est donc établie
+de bout en bout, et le `receivedPath` est une empreinte que Caddy seul ne
+pourrait pas fabriquer.
+
+C'est exactement l'usage prévu au § D5 (« le chemin réellement reçu devient une
+preuve consignée ») — la décision a servi deux fois : à éviter un 404, puis à
+prouver la chaîne quand l'assertion prévue s'est révélée fausse.
 
 ### T4 sabotage 2 — le filet tient, prouvé sur le vrai fichier
 
