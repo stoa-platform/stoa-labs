@@ -1,5 +1,22 @@
 # Carto des API et des consommateurs — plan d'implémentation
 
+> **Document historique — ne pas recopier tel quel.** Ce plan a été écrit avant
+> le relevé du terrain, et l'implémentation s'en est écartée sur des points
+> mesurés. Deux écarts feraient régresser le produit si l'on recopiait le code
+> ci-dessous :
+>
+> - **`--days` et `carto_window_days` ont été supprimés.** Tels qu'écrits ici,
+>   ils ne paramètrent que le calcul de profondeur couverte, pas les
+>   agrégations : le document annoncerait une fenêtre qu'il ne respecte pas. Et
+>   une profondeur réglable ferait cohabiter dans la même série de
+>   `history.json` des totaux à 30 et à 90 jours. La fenêtre longue est figée.
+> - **Les constantes de `gateway.py`, d'`analytics.py` et le motif d'index sont
+>   des placeholders faux.** Les valeurs qui font foi sont dans
+>   `carto/TERRAIN.md`, mesurées sur une vraie gateway. Le motif d'index
+>   Elasticsearch ne porte **pas** de tiret avant l'étoile.
+>
+> L'état réel du produit est le code de `carto/`, pas ce document.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** produire une carto toujours à jour des APIs et des consommateurs d'un
