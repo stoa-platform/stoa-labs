@@ -1,7 +1,7 @@
 ---
 title: "Spike — deux répliques wM 10.15 à redémarrages décalés sur un ES partagé (Ignite)"
 type: spike
-status: "Cadré sur mesures du 2026-07-30 ; NON exécuté. Trois inconnues nommées, dont une qui peut le clore."
+status: "Cadré le 2026-07-30. DEUX inconnues sur trois levées par un test antérieur de l'exploitant ; il ne reste que le coût de la rotation de topologie."
 date: 2026-07-30
 lié: [GOAL-socle-vers-gateway-2026-07-28, 2026-07-30-f5-bascule-decommission-design]
 ---
@@ -29,40 +29,52 @@ B à :10/:30/:50), pour qu'il y en ait toujours une servie.
 | **La valeur est une map SÉRIALISÉE EN CHAÎNE, pas du JSON** | `{"listener.active":"{listener={nodeName=…, host=null, port=-1}, insecureTrustManager=false}"}` — la valeur est une *string*. Même classe de piège que les shapes Teams du spike F4 (`assetType` obligatoire, UUID exigés) : écrire du JSON imbriqué rendrait probablement 200 **sans effet**. À vérifier par relecture, jamais au code de retour. |
 | Endpoint `/clusterConfigurations` | **404** — n'existe pas. La configuration passe par `configurations/dataspace`. |
 
-## Ce qui reste INCONNU — et l'ordre dans lequel le mesurer
+## Deux inconnues LEVÉES par un test antérieur de l'exploitant
 
-L'ordre compte : la première inconnue peut clore le spike sans écrire une ligne.
+Rapporté le 2026-07-30 : un cluster monté **via le scaling Kubernetes**, deux
+pods fixes plus des nœuds dynamiques ajoutés par la montée en charge.
 
-### 1. La licence trial tolère-t-elle DEUX instances ? *(bloquant potentiel)*
+### 1. ~~La licence trial tolère-t-elle deux instances ?~~ → **OUI**
 
-Non déterminé — aucun `licenseKey.xml` lisible aux emplacements usuels ; la
-trial paraît embarquée. Si elle est limitée à un nœud, **le spike s'arrête ici**
-et la seule sortie devient une vraie licence.
-**À mesurer en premier**, avant tout travail de manifeste.
+Plusieurs instances ont tourné simultanément. Ce qui pouvait clore le spike ne
+le clôt pas.
 
-### 2. La découverte Ignite fonctionne-t-elle de pod à pod dans k3s ?
+### 2. ~~La découverte Ignite fonctionne-t-elle de pod à pod dans k3s ?~~ → **OUI**
 
-Ignite utilise par défaut **47500** (découverte) et **47100** (communication),
-et son `TcpDiscoveryVmIpFinder` attend une liste d'adresses — or les IP de pods
-changent à chaque redémarrage. Deux voies :
-- adresses statiques → incompatible avec des pods éphémères ;
-- un Service *headless* + noms stables (StatefulSet) → le motif habituel en k8s.
+Et mieux que supposé : **les nouveaux pods s'intègrent au cluster**, y compris
+ceux créés dynamiquement par la montée en charge. La découverte encaisse donc
+des IP changeantes.
 
-Conséquence de conception : les répliques devraient probablement passer de
-`Deployment` à **StatefulSet**, ce qui change aussi le CronJob de redémarrage
-(cibler un pod nommé, pas un label).
+**Correction d'une spéculation de cette note.** Une version antérieure avançait
+qu'il faudrait « probablement passer de `Deployment` à `StatefulSet` » pour
+obtenir des noms stables. La mesure de l'exploitant dit le contraire : des pods
+éphémères rejoignent le cluster. Le `Deployment` peut donc suffire — hypothèse
+écartée par une mesure, pas par un raisonnement.
 
-### 3. LE VRAI RISQUE — la rotation de topologie coûte-t-elle plus que le trou ?
+## L'UNIQUE question qui reste
 
-Un nœud Ignite qui **quitte et rejoint le cluster toutes les 10 minutes**
-provoque des rééquilibrages de cache. Avec
-`igniteFailureDetectionTimeout: 30000`, chaque départ est détecté en ~30 s.
+### 3. La rotation de topologie coûte-t-elle plus que le trou qu'elle supprime ?
 
-> Il est parfaitement possible que deux nœuds en rotation permanente servent
-> **moins bien** qu'un nœud seul avec un trou de 120-235 s toutes les 20 min.
+C'est désormais le seul sujet — et c'est celui que le test antérieur **n'a pas
+couvert**, l'exploitant l'ayant explicitement noté : son cluster avait des
+nœuds qui *rejoignaient* (montée en charge), jamais un nœud qui **part et
+revient toutes les 10 minutes**.
 
-C'est l'hypothèse à réfuter en priorité, pas à espérer. Un spike qui conclut
-« ne pas faire » est un spike réussi.
+La différence n'est pas de degré. Un ajout de nœud est un événement ponctuel
+que le cluster absorbe ; une rotation permanente signifie qu'à tout instant un
+nœud est en train de partir, d'être détecté absent
+(`igniteFailureDetectionTimeout: 30000`, soit ~30 s), ou de rejoindre — avec le
+rééquilibrage de cache que cela implique.
+
+> Il reste parfaitement possible que deux nœuds en rotation permanente servent
+> **moins bien** qu'un nœud seul avec son trou de 120-235 s toutes les 20 min.
+
+C'est l'hypothèse à réfuter, pas à espérer.
+
+**Ce qui rend la mesure peu coûteuse :** les deux prérequis étant levés, il ne
+reste qu'à porter les répliques à 2, décaler les redémarrages (A à :00/:20/:40,
+B à :10/:30/:50) et rejouer la sonde publique de F5. Aucune inconnue
+d'infrastructure ne s'interpose.
 
 ## Critère d'arrêt proposé
 
