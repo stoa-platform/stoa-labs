@@ -16,6 +16,11 @@ d90) sont produites par la MEME requete, seule la duree change (`now-Nd`).
 Ainsi toute paire (api, consommateur) presente dans d7 ou d30 est forcement
 presente dans d90 — ne jamais ajouter de filtre supplementaire propre a une
 seule fenetre, cela casserait cette garantie.
+
+Cet invariant n'est pas seulement documente : build.py le VERIFIE arete par
+arete et refuse de publier s'il est viole (build.InconsistentWindows). Un
+rollover d'index ou une purge concurrente entre les trois requetes peut le
+rompre sans que ce module y soit pour rien.
 """
 import datetime as dt
 

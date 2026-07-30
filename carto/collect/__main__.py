@@ -21,7 +21,21 @@ import urllib.request
 
 from . import analytics, build, gateway, history, publish
 
+# Les trois fenetres sont FIGEES, et il n'existe pas d'option pour les changer.
+#
+# Decision de revue (2026-07-30) : l'ancienne option `--days` n'alimentait que
+# `covered_window()` et laissait les agregations sur 90 jours — un document
+# portant `requestedDays: 30` decrivait donc du trafic sur 90 jours. Plutot que
+# de rendre la profondeur longue configurable, on la fige :
+#   1. `d90` est un NOM du contrat de donnees, lu par le rendu, l'export CSV et
+#      surtout `history.json`, qui accumule `calls` d'un passage a l'autre.
+#      Une profondeur configurable ferait cohabiter dans la MEME serie des
+#      totaux a 30 et a 90 jours sans que rien ne le signale — le defaut que
+#      ce produit combat, reintroduit ailleurs.
+#   2. La profondeur qui compte n'est pas celle qu'on demande mais celle qu'on
+#      a : elle reste MESUREE (`window.coveredDays`, spec D4) et affichee.
 WINDOWS = {"d7": 7, "d30": 30, "d90": 90}
+REQUESTED_DAYS = WINDOWS["d90"]
 
 
 def _es_search(base, index, body):
@@ -57,7 +71,6 @@ def main(argv=None):
     p.add_argument("--out", required=True, help="repertoire de publication")
     p.add_argument("--dry-run", action="store_true", help="ne publie rien, rapporte les compteurs")
     p.add_argument("--from-fixtures", help="lit des fixtures au lieu de la production")
-    p.add_argument("--days", type=int, default=90, help="fenetre demandee (defaut 90)")
     args = p.parse_args(argv)
 
     if args.from_fixtures:
@@ -76,14 +89,15 @@ def main(argv=None):
         gateway.normalize_consumers(raw_apps),
         gateway.declared_edges(raw_apps),
         {w: analytics.parse_aggregation(raw) for w, raw in raw_obs.items()},
-        analytics.covered_window(raw_oldest, args.days, now),
+        analytics.covered_window(raw_oldest, REQUESTED_DAYS, now),
         now.isoformat().replace("+00:00", "Z"),
     )
     row = history.counters(doc)
 
     print(f"apis={row['apis']} consommateurs={row['consumersRegistered']} "
           f"actifs={row['consumersActive']} aretes={len(doc['edges'])} "
-          f"fenetre_couverte={doc['window']['coveredDays']}j")
+          f"fenetre_couverte={doc['window']['coveredDays']}j "
+          f"trafic_non_identifie={round(doc['unidentifiedCallShare'] * 100, 1)}%")
 
     if args.dry_run:
         print("dry-run : rien n'a ete publie")

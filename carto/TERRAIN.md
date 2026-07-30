@@ -1,10 +1,20 @@
 # Terrain mesuré — 2026-07-30
 
 Gateway sondée : webMethods API Gateway 10.15 (cluster Kubernetes de labo).
-Accès : admin REST `http://127.0.0.1:15555/rest/apigateway` (`Administrator:manage`,
-`Accept: application/json` obligatoire, via tunnel local) ; API Data Store
+Accès : admin REST `http://127.0.0.1:15555/rest/apigateway`
+(`Accept: application/json` obligatoire, via tunnel local) ; API Data Store
 (Elasticsearch) `http://127.0.0.1:19200` (idem). Toutes les valeurs
 ci-dessous sont mesurées, pas devinées.
+
+**Identifiants** : les commandes ci-dessous lisent le compte d'administration
+dans `$WM_USER` / `$WM_PASS` ; aucun identifiant n'est écrit dans ce dépôt,
+qui est public. Le compte utilisé lors de la mesure était le compte
+d'administration **par défaut du produit** sur un labo jetable — le nommer ici
+reviendrait à publier une paire d'identifiants fonctionnelle. Pour rejouer :
+
+```
+export WM_USER='<compte lecture seule>' WM_PASS='<mot de passe>'
+```
 
 ## V1 — date de création des APIs et Applications
 
@@ -22,11 +32,11 @@ ex. `"2026-07-30 16:55:59 GMT"` pour `carto-probe-api`) ainsi qu'un
 
 Commandes :
 ```
-curl -sS -u Administrator:manage -H 'Accept: application/json' \
+curl -sS -u "$WM_USER:$WM_PASS" -H 'Accept: application/json' \
   http://127.0.0.1:15555/rest/apigateway/applications
-curl -sS -u Administrator:manage -H 'Accept: application/json' \
+curl -sS -u "$WM_USER:$WM_PASS" -H 'Accept: application/json' \
   http://127.0.0.1:15555/rest/apigateway/apis
-curl -sS -u Administrator:manage -H 'Accept: application/json' \
+curl -sS -u "$WM_USER:$WM_PASS" -H 'Accept: application/json' \
   http://127.0.0.1:15555/rest/apigateway/apis/<apiId>
 ```
 
@@ -61,8 +71,15 @@ Conséquence : **aucune des profondeurs mesurées ici n'est transposable au
 client.** Elles reflètent l'âge du labo et le moment où la journalisation a
 été activée pendant cette tâche (voir V3), pas une rétention produit. À
 re-mesurer sur un tenant qui tourne depuis longtemps, avec la politique de
-journalisation déjà correctement configurée dès le départ. Ne pas figer de
-valeur en dur dans le code — paramétrer la fenêtre.
+journalisation déjà correctement configurée dès le départ.
+
+Ce qu'il ne faut jamais figer en dur, c'est la **profondeur annoncée** : le
+collecteur demande une fenêtre longue de 90 jours (constante assumée, voir
+`carto/collect/__main__.py`) mais **mesure** ce qu'il a réellement
+(`window.coveredDays`, à partir du plus vieil événement de l'index) et
+n'affiche jamais que cette profondeur-là. Une option qui aurait fait varier
+la fenêtre demandée sans faire varier les agrégations a existé (`--days`) :
+elle a été retirée en revue de branche, elle ne changeait que l'étiquette.
 
 ## V3 — chemins d'administration, shape de l'agrégation, et pourquoi l'index était vide
 
@@ -135,7 +152,7 @@ trafic.
 
 Correction appliquée et vérifiée :
 ```
-curl -sS -u Administrator:manage -H 'Accept: application/json' -X PUT \
+curl -sS -u "$WM_USER:$WM_PASS" -H 'Accept: application/json' -X PUT \
   http://127.0.0.1:15555/rest/apigateway/policies/GlobalLogInvocationPolicy/activate
 ```
 Après activation, du trafic réussi réel généré à travers le data-plane

@@ -14,7 +14,10 @@ carto_web_root: /var/www/carto
 carto_user: carto
 carto_schedule_hour: "2"
 carto_schedule_minute: "11"
-carto_window_days: 90
+# Pas de `carto_window_days` : la fenetre longue est figee a 90 jours dans le
+# collecteur (voir carto/collect/__main__.py). Exposer un reglage qui ne
+# reglait rien — l'ancienne option `--days` ne changeait que l'etiquette du
+# document, pas les agregations — etait le mensonge le plus direct de ce role.
 carto_alert_command: "logger -t carto -p user.err"   # a remplacer par le canal du client
 
 # Identifiants : jamais dans le depot, jamais en dur ici. Fournis a l'execution

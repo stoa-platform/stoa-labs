@@ -24,7 +24,7 @@ export WM_ES_INDEX={{ carto_env.WM_ES_INDEX | quote }}
 # protege pas (no_log masque le resultat de la tache, pas cette trace-la).
 if [ "${1:-}" = "--verify" ]; then
   VERIFY_OUT=$(mktemp -d)
-  python3 -m carto.collect --out "$VERIFY_OUT" --dry-run --days {{ carto_window_days }}
+  python3 -m carto.collect --out "$VERIFY_OUT" --dry-run
   status=$?
   rm -rf "$VERIFY_OUT"
   exit "$status"
@@ -33,9 +33,17 @@ fi
 LOG=$(mktemp)
 # La sortie peut contenir des elements d'infrastructure : elle va dans un
 # fichier, jamais sur la sortie standard du planificateur.
-if python3 -m carto.collect --out {{ carto_web_root }} --days {{ carto_window_days }} >"$LOG" 2>&1
+#
+# L'installation du rendu fait partie de la CONDITION, pas du corps du succes :
+# ce script tourne sans `-e`, et un `install` en echec (droits, disque plein)
+# apres une collecte reussie sortait en 0, sans alerte ni journal — une
+# publication partielle silencieuse, exactement ce que cette enveloppe combat.
+# Sa sortie d'erreur va dans le meme journal, pour que l'exploitant voie
+# laquelle des deux etapes a lache.
+if python3 -m carto.collect --out {{ carto_web_root }} >"$LOG" 2>&1 \
+   && install -m 0644 {{ carto_install_dir }}/carto/render/index.html \
+        {{ carto_web_root }}/index.html >>"$LOG" 2>&1
 then
-  install -m 0644 {{ carto_install_dir }}/carto/render/index.html {{ carto_web_root }}/index.html
   rm -f "$LOG"
   # Un passage reussi efface un eventuel journal d'echec precedent : sinon
   # sa seule presence, retrouvee des jours plus tard, ferait croire a une
@@ -44,7 +52,7 @@ then
   exit 0
 fi
 
-{{ carto_alert_command }} "collecte de la carto EN ECHEC — la carto publiee date de la veille ou avant"
+{{ carto_alert_command }} "collecte ou publication de la carto EN ECHEC — la carto publiee date de la veille ou avant"
 cp "$LOG" {{ carto_install_dir }}/last-failure.log
 chmod 0600 {{ carto_install_dir }}/last-failure.log
 rm -f "$LOG"
