@@ -60,6 +60,12 @@ def _check_windows(api_id, con_id, calls):
     concurrente), on produirait sans un mot une arête `d7=980, d90=0` affichée
     « déclaré, inactif », `errorRate 0.0`, `lastCall null` — une carto fausse
     qui a l'air valide. On refuse de publier.
+
+    Corollaire : ce contrôle n'est tenable que parce que les trois requêtes
+    partent de la plus courte fenêtre à la plus longue — sinon un appel arrivé
+    entre deux requêtes suffirait à faire échouer une collecte saine. Cet ordre
+    est explicite dans `__main__.windows_par_duree_croissante()`, qui en porte
+    le raisonnement complet. Ne pas le défaire.
     """
     if calls["d7"] <= calls["d30"] <= calls["d90"]:
         return

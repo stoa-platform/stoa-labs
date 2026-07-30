@@ -13,7 +13,11 @@ import pathlib
 import tempfile
 import unittest
 
-from carto.collect.__main__ import WINDOWS, REQUESTED_DAYS, main
+from unittest import mock
+
+import carto.collect.__main__ as main_mod
+from carto.collect.__main__ import (WINDOWS, REQUESTED_DAYS, main,
+                                    windows_par_duree_croissante)
 from carto.collect.model import validate_carto, validate_history
 
 FIX = str(pathlib.Path(__file__).parent / "fixtures")
@@ -51,6 +55,24 @@ class TestFenetreNonDecorative(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             _, out = run(["--out", d, "--dry-run", "--from-fixtures", FIX])
         self.assertIn("fenetre_couverte=0j", out)
+
+
+class TestOrdreDesFenetres(unittest.TestCase):
+    """L'ordre des trois requetes est PORTEUR, il ne doit plus dependre de
+    l'ordre d'insertion de `WINDOWS` : un tri du dictionnaire ferait lever
+    `InconsistentWindows` sur une collecte saine (voir la docstring de
+    `windows_par_duree_croissante`)."""
+
+    def test_les_fenetres_partent_de_la_plus_courte_a_la_plus_longue(self):
+        self.assertEqual([d for _, d in windows_par_duree_croissante()],
+                         [7, 30, 90])
+
+    def test_remanier_le_dictionnaire_ne_change_plus_l_ordre_des_requetes(self):
+        # la mutation « anodine » qui cassait tout : reordonner WINDOWS.
+        a_l_envers = {"d90": 90, "d30": 30, "d7": 7}
+        with mock.patch.object(main_mod, "WINDOWS", a_l_envers):
+            self.assertEqual([n for n, _ in windows_par_duree_croissante()],
+                             ["d7", "d30", "d90"])
 
 
 class TestBoutEnBout(unittest.TestCase):

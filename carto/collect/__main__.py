@@ -38,6 +38,29 @@ WINDOWS = {"d7": 7, "d30": 30, "d90": 90}
 REQUESTED_DAYS = WINDOWS["d90"]
 
 
+def windows_par_duree_croissante():
+    """Les fenetres, de la plus courte a la plus longue. L'ORDRE EST PORTEUR.
+
+    Les trois agregations sont trois requetes distinctes, donc trois instants
+    distincts. Un appel qui arrive PENDANT la sequence n'est vu que par les
+    requetes envoyees apres lui.
+
+    En interrogeant du plus court au plus long, un tel appel ne peut tomber
+    que dans des fenetres PLUS LARGES que celles deja mesurees : d7 <= d30 <=
+    d90 tient encore, et `build._check_windows` laisse passer.
+
+    Dans l'ordre inverse (d90 d'abord), le meme appel serait compte dans d7
+    sans l'etre dans d90 : `d7=1, d90=0`, l'invariant tombe, et le collecteur
+    leverait `InconsistentWindows` — refusant de publier une collecte
+    parfaitement saine, sur la seule foi d'un appel arrive au mauvais moment.
+
+    C'est pourquoi ce tri existe au lieu de s'en remettre a l'ordre
+    d'insertion de `WINDOWS` : trier ou remanier ce dictionnaire est le genre
+    de nettoyage anodin que personne ne relie a une panne de collecte.
+    """
+    return sorted(WINDOWS.items(), key=lambda kv: kv[1])
+
+
 def _es_search(base, index, body):
     # POST sur /_search : verbe impose par l'API de recherche Elasticsearch,
     # meme si l'operation est une lecture. Ne pas transformer en GET.
@@ -59,9 +82,10 @@ def _from_fixtures(d):
 
 def _from_gateway(env):
     gw = gateway.Gateway(env["WM_ADMIN_URL"], env["WM_USER"], env["WM_PASS"])
+    # Ordre volontaire, pas incident : voir windows_par_duree_croissante().
     observed = {w: _es_search(env["WM_ES_URL"], env["WM_ES_INDEX"],
                              analytics.aggregation_query(days))
-                for w, days in WINDOWS.items()}
+                for w, days in windows_par_duree_croissante()}
     oldest = _es_search(env["WM_ES_URL"], env["WM_ES_INDEX"], analytics.oldest_query())
     return gw.apis(), gw.applications(), observed, oldest
 
