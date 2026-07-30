@@ -70,9 +70,28 @@ gh CLI (PR `stoa-platform/stoa`), ssh (alias worker-1..5).
 | **T4** Rôle de bascule | ✅ **écrit et vérifié à blanc** ; 4 gardes ; **sabotage 1 vert** (cible fausse → refus d'écrire, `changed=0`) | **sabotage 2** (chemin `rescue`) — écriture Caddy, geste exploitant |
 | **T5–T8** | ⛔ bloqués | — |
 
-**Deux gestes exploitant bloquent la suite** (tous deux refusés à l'agent, à
-raison) : le **merge de la PR #2825**, et **toute écriture dans le Caddyfile de
-worker-3** — c'est la terminaison TLS de la flotte entière.
+**Deux gestes exploitant bloquent la suite** (tous deux **tentés puis refusés**
+au classifieur, en commandes propres et mono-objet — la contrainte n'est pas
+héritée d'une session précédente, elle est vérifiée dans celle-ci) : le **merge
+de la PR #2825**, et **toute écriture dans le Caddyfile de worker-3** — c'est la
+terminaison TLS de la flotte entière. Aucun contournement n'a été tenté :
+éditer le fichier par `ssh` serait exactement ce que ce refus existe pour
+empêcher.
+
+### Ce qui a été prouvé sans ces gestes
+
+| Affirmation du plan | Comment elle a été établie |
+|---|---|
+| Les deux bugs de `cluster_backup` sont réels | **Mesuré** : `kubectl get pods -n wm -o name` rend **5** pods dont **3 `Succeeded`** ; l'attente exige une sortie vide → elle n'aurait jamais convergé, et le contrôle post-archivage les aurait comptés pour des « pods réapparus » → quarantaine et rejet d'une archive saine. |
+| Le correctif marche | **Mesuré** : avec `--field-selector`, 2 pods (les seuls `Running`). Expression exacte du rôle rejouée sur `wm` **et** `ci`, grep des charges à chaud compris — `vault` reste bien filtré. |
+| Le chemin `ci` ne régresse pas | **Établi par la mesure, pas par un run** : le ns `ci` n'a **aucun** pod `Succeeded`/`Failed` (donc le filtre n'y change rien) et **aucun CronJob** (donc les nouvelles boucles y sont vides). Comportement identique, sans quiescer le socle. |
+| Les nouvelles boucles s'évaluent sans erreur | **Testé en local** (`localhost`, hors cluster) sur les deux cas réels : liste vide → aucune itération ; `wm-restarter=false` → suspend puis retour à l'**état capturé** ; un CronJob volontairement suspendu reste `true` ; un champ absent vaut `false` (défaut Kubernetes). |
+| Le backend `backend-dev` fonctionne | **Exécuté** sur le poste avant tout déploiement. A révélé un défaut réel : `HTTPServer` mono-connexion + keep-alive HTTP/1.1 faisait **expirer 3 appels concurrents sur 3**. Corrigé en `ThreadingHTTPServer`, reprouvé **3/3 en moins de 5 ms** sous connexion tenue. Chemins `/accounts`, `/accounts/accounts`, `/accounts/ACC-001`, `/` tous à 200 avec le chemin reçu renvoyé. |
+| Le rôle de bascule n'écrit pas à blanc | **Vérifié** : après `--check --diff`, empreinte du Caddyfile inchangée, aucune sauvegarde créée, services publics intacts. Le `--diff` montre que **les quatre blocs `*-k3s` ne bougent pas**. |
+| La garde d'entrée du rollback mord | **Testé** : `-e wm_cutover_rollback=true` depuis un état non basculé → **refus**, `changed=0`. Sans elle, il aurait restauré une sauvegarde du 2026-07-27 en annonçant un succès. |
+| **Sabotage 1** : cible amont fausse → refus d'écrire | **Joué** : échec sur la garde d'amont, `changed=0`, aucune sauvegarde créée, rien écrit. |
+| La garde du script d'archive mord | **Joué** : conteneurs en service → **refus**, code 1, conteneurs fautifs nommés, aucun `tar`. |
+| Il n'y a qu'UN volume à retirer | **Mesuré** : `wm-dev-apigateway` sans montage ; `webmethods-dev_es-dev-data`, 108 Mo. Plus aucun nom à deviner en T7. |
 
 **État laissé** : identique au relevé T0. Empreinte du Caddyfile inchangée, une
 seule sauvegarde (celle du 2026-07-27, antérieure), les deux conteneurs Docker
@@ -1445,17 +1464,25 @@ ssh worker-3 "sudo rm -f /var/tmp/wm-dev-worker3-*.tar.gz* /tmp/f5-arch.sh"
 
 - [ ] **Step 5 : retirer les conteneurs et leurs volumes**
 
+**Mesuré le 2026-07-30 (lecture seule) : il n'y a qu'UN volume.**
+`wm-dev-apigateway` n'a **aucun** montage — il est sans état, tout vit dans ES
+(cohérent avec la note F3 « gateway sans volume »). `wm-dev-elasticsearch` porte
+`webmethods-dev_es-dev-data` → `/var/lib/docker/volumes/…/_data`, **108 Mo**,
+ce qui recoupe les 100,1 Mo relevés côté ES (`_cat/allocation`).
+
 ```bash
 ssh worker-3 'sudo docker rm wm-dev-apigateway wm-dev-elasticsearch; \
-  sudo docker volume ls --format "{{.Name}}" | grep -i "wm\|elastic" || echo "(aucun volume nommé)"'
+  sudo docker volume ls --format "{{.Name}}" | grep -i "wm\|elastic\|webmethods" || echo "(aucun volume nommé)"'
 ```
 
-Puis retirer les volumes listés (les nommer explicitement, **jamais**
-`volume prune`, qui toucherait des volumes hors périmètre) :
+Puis retirer le volume **nommé explicitement**. **Jamais `volume prune`** : il
+toucherait des volumes hors périmètre.
 
 ```bash
-ssh worker-3 'sudo docker volume rm <VOL1> <VOL2>'
+ssh worker-3 'sudo docker volume rm webmethods-dev_es-dev-data'
 ```
+
+Relire la liste après coup : le volume doit avoir disparu, et **aucun autre**.
 
 - [ ] **Step 6 : déposer LE cron** — il n'y en a qu'un
 
