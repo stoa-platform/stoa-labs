@@ -66,7 +66,7 @@ gh CLI (PR `stoa-platform/stoa`), ssh (alias worker-1..5).
 | **T0** Terrain | ✅ **fait** — voie 1 confirmée (200 en 18,7 ms depuis l'hôte), 2 écarts de doc élucidés | — |
 | **T1** PR `stoa` | ✅ **FAIT** — PR **#2825 mergée** par l'exploitant à 08:30:07Z (`dc2cd17b`), Application `wm-backend-dev` appliquée, `Synced/Healthy`, pod prêt en 12 s. **ClusterIP `10.43.227.71` inchangée après re-sync** → l'épinglage a porté sur la valeur vive | — |
 | **T2** Data-plane interne | ✅ **PORTE VERTE** — `/gateway/accounts-read/1.0.0/accounts` sur la ClusterIP → **200 + JSON de `backend-dev`**, là où elle rendait **500** avant | — |
-| **T3** Sauvegarde ns `wm` | 🔄 **run en cours** (code fait, 2 bugs du rôle corrigés au passage) | relecture de l'archive sur worker-2 |
+| **T3** Sauvegarde ns `wm` | ✅ **FAIT** — run vert (`ok=52 changed=19 failed=0`), archive du PVC ES **relue sur worker-2**, Vault resté descellé | — |
 | **T4** Rôle de bascule | ✅ **FAIT — les DEUX sabotages verts.** Sabotage 1 : cible fausse → refus d'écrire, `changed=0`. **Sabotage 2 : le chemin `rescue` est prouvé en conditions réelles** (détail ci-dessous) | — |
 | **T5** Bascule + P-a/P-b | ⏸ prête ; le filet est prouvé | `ansible-playbook wm-cutover.yml` — geste exploitant |
 | **T6–T8** | ⛔ en aval de T5 | — |
@@ -109,6 +109,33 @@ content: {"backend": "backend-dev.wm.svc.cluster.local",
 L'invocation data-plane **a fonctionné par le nom public, à travers Caddy** : la
 porte n'a rougi que parce qu'on exigeait 599. P-a reste à établir dans un état
 **conservé** (avec P-b), mais son mécanisme n'est plus une hypothèse.
+
+### T3 — la preuve
+
+Run vert : `ok=52  changed=19  failed=0`. Le PVC du ns `wm` est passé par toute
+la chaîne : archivé sur worker-4, **relu localement**, transféré en flux via le
+poste, **relu hors-nœud avec empreinte égale au staging**, puis roté par claim.
+`Vault descellé, socle intact.` en sortie.
+
+Relecture **indépendante** sur worker-2 (une empreinte prouve un transfert, pas
+une archive exploitable — leçon F2) :
+
+```
+pvc-wm-es-data-wm-elasticsearch-0-20260730T104324.tar.gz   4,7 Mo   0600 root
+entrées : 1803        chemins d'index : 1695
+./indices/m3SvOXbpQ_-aYlYY2mnA4Q/0/translog/translog-4.tlog
+```
+
+**4,7 Mo contre les 108 Mo de worker-3** : l'ES du cluster ne porte que
+`accounts-read` et la configuration Teams, sans les 92 Mo de logs d'audit
+accumulés par le cycle de redémarrage de worker-3. L'écart n'est pas une perte,
+c'est la mesure de ce que valait vraiment le « volume » de worker-3.
+
+**Piège de relecture, rencontré deux fois.** `cd /var/lib/k3s-backups/offsite`
+échoue en `Permission denied` sans `sudo` (répertoire `0700 root`) : préfixer
+chaque commande ne suffit pas, il faut `sudo bash -c '…'` pour le shell entier.
+Déjà noté au relevé T0 — et refait quand même. C'est ce qui avait fait croire les
+archives F2 absentes.
 
 ### T3 — la fenêtre s'est refermée proprement
 
