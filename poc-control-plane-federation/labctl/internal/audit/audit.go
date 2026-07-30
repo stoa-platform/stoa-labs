@@ -68,7 +68,7 @@ const (
 // auditable by PR; tokens, client secrets and Git credentials never appear.
 type Event struct {
 	Timestamp string   `json:"timestamp"`
-	Actor     string   `json:"actor"`              // who is responsible: write plane = validated token user; apply plane = the manifest's Git commit author (ADR-069)
+	Actor     string   `json:"actor"`              // who is responsible: write plane = validated token user; apply plane = the manifest's Git commit author
 	Action    string   `json:"action"`             // partner.onboard | api.publish | consumer.subscribe | api.apply
 	Tenant    string   `json:"tenant"`             // tenant the decision is recorded under (the per-tenant index suffix)
 	Partner   string   `json:"partner,omitempty"`  // write plane: partner/application name ("-" when unparsed)

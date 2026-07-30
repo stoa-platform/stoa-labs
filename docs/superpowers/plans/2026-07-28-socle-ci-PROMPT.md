@@ -47,10 +47,10 @@ les manifestes depuis **GitHub** (`stoa-platform/stoa`, public).
 ## Où va quoi, et pourquoi
 
 - **Manifestes Kubernetes → dépôt `stoa` (PUBLIC).** Argo CD y lit sans
-  credential ; les mettre dans `stoa-labs` (privé) exigerait une deploy-key,
+  credential ; les mettre dans `stoa-labs` exigerait une deploy-key,
   donc un « secret zéro » que la doctrine interdit. Les manifestes ne
   contiennent aucun secret.
-- **Ansible → dépôt `stoa-labs` (privé).**
+- **Ansible → dépôt `stoa-labs`.**
 
 **Le checkout local de `stoa` est chroniquement en retard sur `origin/main`
 (plusieurs centaines de commits) et se trouve sur une branche de travail.** Ne

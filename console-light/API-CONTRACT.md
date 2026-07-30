@@ -1,7 +1,7 @@
 # Console Light — Contrat d'API du BFF gouvernance (v1)
 
 > Document de référence pour les agents BFF (Go) et UI (React). Toute divergence = bug.
-> Cadrage parent : `CADRAGE.md`. Principes : ADR-068 (la console n'exécute jamais labctl en prod — elle écrit des commits), CRV-1..6 (action validée = commit), zéro secret statique.
+> Cadrage parent : `CADRAGE.md`. Principes : le principe hors-data-plane (la console n'exécute jamais labctl en prod — elle écrit des commits), CRV-1..6 (action validée = commit), zéro secret statique.
 
 ## 0. Topologie & ports
 

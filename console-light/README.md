@@ -2,7 +2,7 @@
 
 > Cadrage : `CADRAGE.md` · Contrat d'API : `API-CONTRACT.md` · Journal : `SESSION-LOG.md`
 
-Chaque action validée dans l'IHM = **commit Git signé + évidence**. L'exécution vers les gateways passe par la CI (webhook → Jenkins → labctl), jamais par la console (ADR-068).
+Chaque action validée dans l'IHM = **commit Git signé + évidence**. L'exécution vers les gateways passe par la CI (webhook → Jenkins → labctl), jamais par la console.
 
 ## Démarrage (dev)
 

@@ -13,7 +13,7 @@
 # contre-épreuve dans setup-wm-admin-proxy.sh).
 #
 # AUCUN DELETE : le rollback est un re-apply depuis Git (revert + convergence
-# idempotente, ADR-069/075) — JAMAIS une suppression via le proxy. Un DELETE
+# idempotente, le principe Git-source-de-vérité/075) — JAMAIS une suppression via le proxy. Un DELETE
 # présenté → 405/404.
 #
 # Schemas libres (additionalProperties: true) : c'est un PROXY de payloads

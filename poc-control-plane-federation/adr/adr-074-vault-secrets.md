@@ -5,8 +5,7 @@ status: "Proposé — en attente Council 8/10 (GO/NO-GO)"
 maturite_technique: "✅ Livré & prouvé — Vault as-code + AppRole + rotation"
 date: 2026-06-12
 adr_number: 74
-visibility: private
-note: "Privé (stoa-labs). S'appuie sur ADR-072 (médiation control-plane, gap (d)) et ADR-067 (reuse-first). Ne pas porter dans stoa-docs (public)."
+note: "S'appuie sur ADR-072 (médiation control-plane, gap (d))."
 ---
 
 # ADR-074 — Secrets depuis Vault
@@ -14,10 +13,8 @@ note: "Privé (stoa-labs). S'appuie sur ADR-072 (médiation control-plane, gap (
 **Statut :** Proposé — en attente validation Council 8/10 (GO/NO-GO). *(axe gouvernance/business — distinct de la maturité technique ci-dessous)*
 **Maturité technique :** ✅ Livré & prouvé — `labctl/internal/vault` (KV v2 stdlib), AppRole least-privilege (403 croisés labctl↔ci), rotation live (`test-vault-rotation.sh`).
 **Date :** 2026-06-12.
-**Contexte client (anonymisé) :** banque — gateways mutualisées, secrets gérés en coffre.
-**Lié à :** [[adr-072-control-plane-mediation]] (gap (d)), [[adr-067-reuse-first-owned-portable-layer]].
-
-> ⚠️ **Confidentialité.** Topologie de gestion de secrets. Vit dans `stoa-labs` (privé), **pas** dans `stoa-docs` (public).
+**Contexte technique :** gateways mutualisées, secrets gérés en coffre.
+**Lié à :** [[adr-072-control-plane-mediation]] (gap (d)).
 
 ---
 
@@ -43,7 +40,7 @@ ADR-072 a acté le **gap (d)** : l'admin API d'une gateway est tout-puissant, au
 | **onboarding-api** | `OPENSEARCH_PASSWORD` en env | si vide + Vault → `secret/stoa/opensearch#adminPassword` |
 | **CI (Jenkins)** | 2 credentials Jenkins (`ci-applier-secret`, `opensearch-password`) | **1** credential `vault-token` ; le shell fetch les 2 secrets + labctl résout les creds gateway depuis Vault (`VAULT_ADDR` set) |
 
-**Implémentation** : nouveau paquet **`internal/vault`** (KV v2 sur l'API REST, **stdlib `internal/httpx`, zéro dépendance vendorée** — air-gapped, ADR-067) ; wrapper **`cmd/labctl/loadResolvedTargets`** (garde `internal/targets` pur). Vault **dev-mode** dans `docker-compose.poc.yml` (KV v2 sous `secret/`, root token PoC jetable), secrets provisionnés idempotemment par `scripts/setup-vault.sh`.
+**Implémentation** : nouveau paquet **`internal/vault`** (KV v2 sur l'API REST, **stdlib `internal/httpx`, zéro dépendance vendorée** — air-gapped, le principe reuse-first) ; wrapper **`cmd/labctl/loadResolvedTargets`** (garde `internal/targets` pur). Vault **dev-mode** dans `docker-compose.poc.yml` (KV v2 sous `secret/`, root token PoC jetable), secrets provisionnés idempotemment par `scripts/setup-vault.sh`.
 
 **Sémantique** : `VAULT_ADDR` set → Vault **autoritaire** (override) ; un secret **absent** (404) → on **garde le littéral** (override où Vault a la valeur, pas aveuglément) ; Vault **injoignable/403** → **erreur** (fail-closed : un coffre configuré-mais-cassé ne doit pas retomber silencieusement sur les littéraux). Aucun secret n'est **jamais loggé** (cf. fix token CI : `set +x`, jamais en argv).
 
@@ -104,6 +101,6 @@ rotation auto ; le bootstrap des policies/roles est un **opérateur Vault**, pas
 
 ## Alternatives écartées
 
-- **Vendoring du SDK Vault Go** — rejeté : KV v2 = REST JSON, `internal/httpx` suffit ; éviter une dépendance supply-chain (ADR-067, air-gapped).
+- **Vendoring du SDK Vault Go** — rejeté : KV v2 = REST JSON, `internal/httpx` suffit ; éviter une dépendance supply-chain (le principe reuse-first, air-gapped).
 - **Injection des secrets à `up` (env du conteneur)** — rejeté : ça les fige au démarrage (pas de rotation sans restart) et les expose dans l'inspect du conteneur.
 - **Garder les credentials Jenkins** — rejeté : multiplie les copies de secrets hors coffre ; un seul token Vault centralise.

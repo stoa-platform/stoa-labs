@@ -53,7 +53,7 @@
       },
       "options": {
         "mode": "markdown",
-        "content": "## Fédération — observabilité unifiée\nUn seul plan d'observabilité (OTel -> Tempo/Prometheus) pour des gateways hétérogènes : **Apache APISIX** (OSS) + **webMethods** (mock legacy) — et **WSO2** quand son exporteur OTel est activé (`scripts/setup-wso2-otel.sh`). Sélecteur `$gateway`. Données synthétiques — institution financière régulée (anonymisé), anonymisé."
+        "content": "## Fédération — observabilité unifiée\nUn seul plan d'observabilité (OTel -> Tempo/Prometheus) pour des gateways hétérogènes : **Apache APISIX** (OSS) + **webMethods** (mock legacy) — et **WSO2** quand son exporteur OTel est activé (`scripts/setup-wso2-otel.sh`). Sélecteur `$gateway`. Données 100 % synthétiques."
       }
     },
     {

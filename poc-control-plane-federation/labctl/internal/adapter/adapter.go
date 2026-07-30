@@ -181,7 +181,7 @@ type ConsumerSpec struct {
 	// custom header; the "Identify & Authorize Application" action in token mode
 	// resolves THIS application. Non-secret tokens (shared test material) may
 	// live in Git; production secrets MUST be referenced from Vault/PAM, never
-	// inlined in the manifest (ADR-068/069).
+	// inlined in the manifest.
 	TokenIdentifiers []string
 
 	// IPAllowlist are IPs and/or ranges ("203.0.113.10", "10.60.30.1-10.60.30.30")

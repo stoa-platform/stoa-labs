@@ -235,7 +235,7 @@ func runApplyUAC(cmd *cobra.Command, _ []string) error {
 		fmt.Fprintln(log)
 
 		// Audit every gateway mutation (ADR-070): one event per (tenant, gateway,
-		// api), Git-attributed (ADR-069: actor = the manifest's commit author),
+		// api), Git-attributed (actor = the manifest's commit author),
 		// correlated by a per-contract trace_id (the OpenSearch↔OTel pivot).
 		author, sha := auditor.commitFor(a.Path)
 		traceID := audit.NewTraceID()

@@ -3,8 +3,8 @@
 // declarative partner request; the service VALIDATES it and WRITES a partner
 // manifest into the governance Git repository — and stops there. It NEVER calls
 // webMethods (nor any gateway): the gateways are converged by the client's CI /
-// `labctl subscribe` reading the committed manifest (ADR-068 — STOA is off the
-// data path; Git is the source of truth = the douve of ADR-067/069).
+// `labctl subscribe` reading the committed manifest (le principe hors-data-plane — STOA is off the
+// data path; Git is the source of truth = the douve of le principe reuse-first/069).
 //
 // The manifest this package writes is the SAME shape `labctl` consumes: its
 // `partner` block deserialises into targets.Partner, so a `labctl subscribe`
@@ -185,7 +185,7 @@ func (m *Manifest) YAML() ([]byte, error) {
 	header := "# Généré par onboarding-api (write-through-Git, ADR-071).\n" +
 		"# NON-SECRET : cert public + IP + tokens de test, auditables par PR.\n" +
 		"# Les secrets (client secret, clés privées) vivent dans Vault/PAM, JAMAIS ici.\n" +
-		"# Projeté par `labctl subscribe` / la CI — l'API ne touche JAMAIS la gateway (ADR-068).\n"
+		"# Projeté par `labctl subscribe` / la CI — l'API ne touche JAMAIS la gateway.\n"
 	body, err := yaml.Marshal(m)
 	if err != nil {
 		return nil, err

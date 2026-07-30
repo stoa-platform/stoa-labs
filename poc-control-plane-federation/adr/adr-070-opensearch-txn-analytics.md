@@ -5,8 +5,6 @@ status: "Proposé — en attente Council 8/10 (GO/NO-GO)"
 maturite_technique: "✅ Livré & prouvé — analytics par fournisseur PARITÉ 3/3 (APISIX + webMethods + WSO2), pivot trace_id, redaction 1-point (goals A3, 2026-07-03)"
 date: 2026-06-11
 adr_number: 70
-visibility: private
-note: "Privé (stoa-labs). S'appuie sur ADR-067 (reuse-first), ADR-068 (hors data-plane), ADR-069 (douve de rétention). Ne pas porter dans stoa-docs (public)."
 ---
 
 # ADR-070 — Analytics transactionnelle centralisée OpenSearch multi-tenant
@@ -14,10 +12,8 @@ note: "Privé (stoa-labs). S'appuie sur ADR-067 (reuse-first), ADR-068 (hors dat
 **Statut :** Proposé — en attente validation Council 8/10 (GO/NO-GO). *(axe gouvernance/business — distinct de la maturité technique ci-dessous)*
 **Maturité technique :** ✅ Livré & prouvé — **parité 3/3** (data stream + RBAC/FLS par tenant + redaction à un point unique + pivot `trace_id`) : APISIX (`kafka-logger`), webMethods réel (`wm-trace-bridge`), **WSO2** (`wso2-otel-tap` — goal A3, source = spans OTel car les logs fichier WSO2 ne portent pas le trace_id ; `scripts/test-txn-wso2.sh` 12/12). Le « Fluent Bit sidecar » de la décision initiale (§8) est **abandonné** au profit du tap OTLP (voir Conséquences).
 **Date :** 2026-06-11.
-**Contexte client (anonymisé) :** institution financière régulée (anonymisé).
-**Lié à :** [[adr-067-reuse-first-owned-portable-layer]], [[adr-068-stoa-off-the-transaction-path]], [[adr-069-retention-moat-governance-source-of-truth]].
-
-> ⚠️ **Confidentialité.** Positionnement + données synthétiques bancaires. Vit dans `stoa-labs` (privé), **pas** dans `stoa-docs` (public).
+**Contexte technique :** plateforme d'API multi-tenant.
+**Lié à :**.
 
 ---
 
@@ -40,22 +36,22 @@ Chaque gateway a **sa** façon d'émettre, et elles sont **hétérogènes** :
 
 L'utilisateur propose, pour wM, une **« GLOBAL policy filtrée par TAG → un index par tenant »**. Il faut trancher sa faisabilité réelle.
 
-La valeur STOA en jeu (ADR-067) : **neutralité vendor** — « Define Once → Observe Everywhere ». Si le schéma commun est défini **N fois** côté gateway, on a **N sources de vérité** et l'ajout d'un 4ᵉ runtime re-câble un schéma entier. Pour une banque, l'**auditabilité d'UNE règle de redaction** prime.
+La valeur STOA en jeu : **neutralité vendor** — « Define Once → Observe Everywhere ». Si le schéma commun est défini **N fois** côté gateway, on a **N sources de vérité** et l'ajout d'un 4ᵉ runtime re-câble un schéma entier. Pour une banque, l'**auditabilité d'UNE règle de redaction** prime.
 
 ## Forces en présence (decision drivers)
 
 - **Conformité** : un IBAN ne doit **jamais** être indexé en clair → un **point de redaction déterministe unique**, auditable.
 - **Neutralité vendor** : un **schéma commun** et un **pattern d'index** identiques pour les 3 gateways (et le 4ᵉ).
-- **RBAC par fournisseur** : isolation **physique** par index + rétention séparable par tenant (douve ADR-069).
-- **Hors data-plane** (ADR-068) : labctl **configure**, ne **traite** pas les transactions ; les briques d'ingestion sont du **commodity OSS** (Bac B), pas du custom STOA dans le flux.
-- **Reuse-first** (ADR-067) : Redpanda, Data Prepper, Keycloak, OTel **réutilisés**, pas reconstruits.
+- **RBAC par fournisseur** : isolation **physique** par index + rétention séparable par tenant (douve).
+- **Hors data-plane** : labctl **configure**, ne **traite** pas les transactions ; les briques d'ingestion sont du **commodity OSS** (Bac B), pas du custom STOA dans le flux.
+- **Reuse-first** : Redpanda, Data Prepper, Keycloak, OTel **réutilisés**, pas reconstruits.
 - **Coexistence OTel** : éviter la duplication ; corrélation par traceId ; frontières RBAC distinctes.
 
 ## Options considérées
 
 1. **★ Collecteur-central normalisant** — Gateways → Redpanda → Data Prepper (normalise + redacte + route) → OpenSearch index-par-tenant. **Retenu.** Point de contrôle unique, schéma + redaction centralisés, RBAC homogène.
 2. **Hybride tag-à-la-source + routage-collecteur** — même squelette, mais une part d'enrichissement/redaction **à la source** (Data Masking wM, custom MetricReporter WSO2). *Rejeté comme cible* (mais **greffé** en partie) : réintroduit une **double-vérité** (redaction inégale à la source) → auditabilité diluée. Plusieurs de ses idées sont **conservées** (cf. Décision retenue).
-3. **Direct-Write** — chaque gateway écrit OpenSearch (zéro collecteur). *Rejeté comme cible* : schéma défini 3 fois (3 sources de vérité) ; **aucun** point de redaction déterministe (IBAN en clair possible) ; wM = compat ES8 fragile + index non-templatable (casse la rétention par tenant, rupture ADR-069) ; WSO2 = Fluent Bit obligatoire (pas « direct »). **Utile uniquement** comme tranche de démo APISIX rapide.
+3. **Direct-Write** — chaque gateway écrit OpenSearch (zéro collecteur). *Rejeté comme cible* : schéma défini 3 fois (3 sources de vérité) ; **aucun** point de redaction déterministe (IBAN en clair possible) ; wM = compat ES8 fragile + index non-templatable (casse la rétention par tenant, rupture le principe Git-source-de-vérité) ; WSO2 = Fluent Bit obligatoire (pas « direct »). **Utile uniquement** comme tranche de démo APISIX rapide.
 
 ## Décision retenue
 
@@ -71,7 +67,7 @@ La valeur STOA en jeu (ADR-067) : **neutralité vendor** — « Define Once → 
 
 **Schéma commun `stoa.txn`** (champs typés) : `tenant/provider/api/api_version/gateway` (routage+identité), `trace_id/span_id/request_id` (corrélation), `@timestamp/status/http_*/latency_ms` (résultat), `consumer_id/user_name/user_ip/user_agent` (PII, FLS), `request_body/response_body` (redactés, jamais bruts) + `redaction_applied/redacted_fields` (audit), `retention_tier/schema_version` (gouvernance). Les 3 mappings d'entrée convergent ici.
 
-**Index** : **index-par-tenant** par défaut (`txn-{tenant}-%{yyyy.MM.dd}`, routé par `${tenant}` au collecteur), `index-par-tenant-par-API` pour gros fournisseurs (tiering + ISM delete obligatoires), **DLS partagé** uniquement en échappatoire haute-cardinalité (rétention non séparable → fragilise ADR-069).
+**Index** : **index-par-tenant** par défaut (`txn-{tenant}-%{yyyy.MM.dd}`, routé par `${tenant}` au collecteur), `index-par-tenant-par-API` pour gros fournisseurs (tiering + ISM delete obligatoires), **DLS partagé** uniquement en échappatoire haute-cardinalité (rétention non séparable → fragilise le principe Git-source-de-vérité).
 
 **Redaction** : **collecteur = autorité** (allow-list de champs, substitute_string IBAN/soldes, exclude_keys PII) ; gateway = best-effort (troncature/conditionnel/en-têtes) ; **FLS = affichage seulement** (la donnée brute reste indexée → redaction OBLIGATOIRE en amont).
 
@@ -86,14 +82,14 @@ La valeur STOA en jeu (ADR-067) : **neutralité vendor** — « Define Once → 
 **Decision gate** (tout nouvel élément d'analytique transactionnelle) — **trois questions** :
 1. **La redaction passe-t-elle par UN point unique auditable ?** Non → on retombe dans la double-vérité (Option 2/3) → re-router au collecteur.
 2. **Le schéma `stoa.txn` est-il produit identique quelle que soit la gateway ?** Non → source de vérité multiple → dette C2.
-3. **L'isolation tenant est-elle PHYSIQUE (index-pattern) avec rétention séparable ?** Non → fragilise la douve ADR-069 → préférer index-par-tenant à DLS partagé.
+3. **L'isolation tenant est-elle PHYSIQUE (index-pattern) avec rétention séparable ?** Non → fragilise la douve → préférer index-par-tenant à DLS partagé.
 
 ## Conséquences
 
 **Positives**
-- **Un seul point de redaction déterministe auditable** (exigence bancaire) ; un seul schéma → neutralité vendor (ADR-067).
-- **RBAC + rétention par fournisseur** physiques (index-pattern) → douve ADR-069 renforcée (source de vérité transactionnelle autoritative, coût de sortie élevé).
-- **Hors data-plane** (ADR-068) : labctl configure ; le flux ne traverse aucun composant STOA-propriétaire ; ingestion = commodity OSS (Bac B).
+- **Un seul point de redaction déterministe auditable** (exigence bancaire) ; un seul schéma → neutralité vendor.
+- **RBAC + rétention par fournisseur** physiques (index-pattern) → douve renforcée (source de vérité transactionnelle autoritative, coût de sortie élevé).
+- **Hors data-plane** : labctl configure ; le flux ne traverse aucun composant STOA-propriétaire ; ingestion = commodity OSS (Bac B).
 - **Coexistence OTel propre** : corrélation par traceId sans duplication ; frontières RBAC nettes.
 - **Démo progressive** : APISIX frugal d'abord (boucle labctl prouvée vite), collecteur ensuite.
 
@@ -114,7 +110,7 @@ La valeur STOA en jeu (ADR-067) : **neutralité vendor** — « Define Once → 
 
 ## Références
 
-- [[adr-067-reuse-first-owned-portable-layer]] (reuse-first, Bac B commodity), [[adr-068-stoa-off-the-transaction-path]] (hors data-plane), [[adr-069-retention-moat-governance-source-of-truth]] (douve de rétention / source de vérité).
+-.
 - PoC `stoa-labs` — `docker-compose.poc.yml` (services présents), `targets.yaml` (owner/system = base tenant), `labctl/internal/adapter/apisix/publish.go` (`sharedPlugins`/`routeLabels` = levier de projection), `gateways/apisix/config.yaml` (OTel sans `set_ngx_var`).
 - OpenSearch Data Prepper (kafka source / opensearch sink / `index: ${tenant}` / conditional routing), OpenSearch Security (role↔index-pattern, FLS/DLS, OIDC), ISM (rollover/rétention).
 
@@ -144,7 +140,7 @@ La valeur STOA en jeu (ADR-067) : **neutralité vendor** — « Define Once → 
 | 10 | Socle / ordre | **poser les 4 services**, câbler APISIX → wM → WSO2 (1 tenant d'abord) | pas de tranche jetable |
 | 11 | DLS partagé | index-par-tenant ; bascule DLS si **> ~1000 tenants** | seuil à affiner |
 | 12 | SSO Dashboards | **OIDC realm `stoa-lab`** + `role_mapping` projeté par labctl ; watcher dynamique différé | « même IdP » API+analytics |
-| 13 | ADR | **070, `visibility: private`** | — |
+| 13 | ADR | **070** | — |
 
 **Plan de build dérivé** : (1) socle 4 services (Redpanda/OpenSearch/Dashboards/Data Prepper) ; (2) tranche APISIX bout-en-bout 1 tenant (kafka-logger+tag → Data Prepper normalise/redacte/route → OpenSearch + RBAC/ISM/SSO) ; (3) wM (Log Invocation+poll) puis WSO2 (Fluent Bit). La passe monitoring = tranche (2).
 
@@ -161,7 +157,7 @@ retenue, sont actés à l'usage :
 Le modèle d'index nominal `txn-{tenant}-%{yyyy.MM.dd}` est raffiné en **data stream
 OpenSearch par tenant** (`txn-{tenant}` → backing indices `.ds-txn-{tenant}-NNNNNN`,
 ex. `txn-accounts-team` / `.ds-txn-accounts-team-000001`). C'est le **même** objectif —
-isolation physique par fournisseur, rétention séparable (douve ADR-069) — exprimé
+isolation physique par fournisseur, rétention séparable (douve) — exprimé
 avec l'abstraction native d'OpenSearch pour les données append-only horodatées :
 rollover/ISM gérés par le data stream, write index unique, **aucune écriture directe**
 sur un backing index. Conséquence sur le RBAC : le rôle `tenant-{tenant}-viewer` couvre
@@ -187,7 +183,7 @@ Loki n'en reçoit aucune copie.** Frontières RBAC distinctes inchangées.
 
 ### 3. Identification `oAuth2Token` (cohérence strategy OAuth2)
 
-Côté **identité entrante** des APIs (ADR-068 : labctl *configure*, ne *traite* pas),
+Côté **identité entrante** des APIs (labctl *configure*, ne *traite* pas),
 l'action IAM webMethods qui borde l'analytique transactionnelle passe de
 `identificationType=jwtClaims` (signature seule) à **`identificationType=oAuth2Token`**
 (chemin strict, `applicationLookup=strict`) — **cohérent avec la strategy `OAUTH2`**

@@ -191,7 +191,7 @@ dé-nesting — un choix explicite, plus jamais un accident de staging.
 **Décision en suspens (posée 07-07, non tranchée)** : nom du binaire chez le client —
 `labctl` reste le nom LAB (auto-descriptif « jetable », protège la condition C1) ; à la
 frontière de packaging : `stoactl` (pilote produit STOA) vs nom neutre/client-brandé
-(angle « couche souveraine possédée », ADR-067). Un seul nom chez le client.
+(angle « couche souveraine possédée », le principe reuse-first). Un seul nom chez le client.
 
 ---
 

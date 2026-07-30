@@ -1,17 +1,16 @@
-# PoC — Control Plane de Fédération sur briques OSS (réponse étude BC anonymisé)
+# PoC — Control Plane de Fédération sur briques OSS
 
-> **Phase 0 — AUDIT & PLAN.** Repo cible : **`stoa-labs`** (privé). Approche : **inspiré de STOA, assemblé sur briques OSS** — pas de redéploiement de la stack propriétaire STOA.
-> **GATE : ce plan attend une validation Council 8/10 (GO/NO-GO) avant tout code.**
+> **Phase 0 — AUDIT & PLAN.** Repo cible : **`stoa-labs`**. Approche : **inspiré de STOA, assemblé sur briques OSS** — pas de redéploiement de la stack propriétaire STOA.
 >
-> Anonymisation : « institution financière régulée (anonymisé) » / « BC » uniquement. Données 100 % synthétiques, environnement éphémère, zéro SaaS.
+> Aucun contexte client dans ce dépôt. Données 100 % synthétiques, environnement éphémère, zéro SaaS.
 
 ---
 
 ## 0. TL;DR pour le Council
 
-**Thèse.** L'étude conclut qu'aucun produit OSS/commercial ne livre un control plane unifié transverse (§4.8, §7), la seule fédération citée étant Axway Amplify (SaaS, hors zone). Ce PoC démontre qu'on peut **assembler ce control plane de fédération à partir de briques OSS souveraines**, en s'inspirant de l'architecture STOA, **sans moteur custom maison** (anti-§7.6) : la pièce « fédération » est un **orchestrateur mince** (~quelques centaines de lignes) au-dessus d'APIs d'admin standard ; tout le reste est OSS sur étagère.
+**Thèse.** Aucun produit OSS/commercial ne livre un control plane unifié transverse ; la seule fédération comparable est Axway Amplify (SaaS, hors zone). Ce PoC démontre qu'on peut **assembler ce control plane de fédération à partir de briques OSS souveraines**, en s'inspirant de l'architecture STOA, **sans moteur custom maison** (anti-moteur-custom) : la pièce « fédération » est un **orchestrateur mince** (~quelques centaines de lignes) au-dessus d'APIs d'admin standard ; tout le reste est OSS sur étagère.
 
-**Décision de design (vs PoC précédent).** On NE réutilise PAS la stack custom STOA (control-plane-api Python, stoa-gateway Rust, portail React). On en **reprend les idées** (UAC → contrat unique ; adapter pattern ; dispatch « 1 contrat → N gateways » ; broker OIDC ; observabilité corrélée) et on les **réimplémente sur OSS**. Trade-off assumé : **plus de glue d'intégration, moins de réuse de l'existant STOA** (~28-30 h Claude time vs ~20 h pour la voie « tout-STOA »), mais **bien plus souverain, lisible et non lié au produit** — argument décisif pour un comité de institution financière régulée.
+**Décision de design (vs PoC précédent).** On NE réutilise PAS la stack custom STOA (control-plane-api Python, stoa-gateway Rust, portail React). On en **reprend les idées** (UAC → contrat unique ; adapter pattern ; dispatch « 1 contrat → N gateways » ; broker OIDC ; observabilité corrélée) et on les **réimplémente sur OSS**. Trade-off assumé : **plus de glue d'intégration, moins de réuse de l'existant STOA** (~28-30 h Claude time vs ~20 h pour la voie « tout-STOA »), mais **bien plus souverain, lisible et non lié au produit** — argument décisif pour un comité d'architecture en environnement régulé.
 
 **Choix structurants validés :**
 | Axe | Choix |
@@ -26,8 +25,8 @@
 
 Plan jugé solide (anti-§7.6, OSS-first, DoD discipliné) ; **2 conditions de cadrage** à verrouiller (sans ré-architecturer ; Phase 1 lançable en parallèle) :
 
-- **C1 — Narratif « scaffold vs produit » (anti-auto-balle-GTM).** Le « ~300 LOC » prouve que le *dispatch* est facile ; il ne doit JAMAIS laisser croire que STOA = 300 lignes de glue (sinon la banque le recopie sans nous payer). `EVIDENCE.md` + pitch doivent séparer explicitement le **scaffold jetable du PoC** (`labctl`, démonstrateur) de la **valeur produit STOA** (Links maintenus vs N intégrations fragiles contre des admin APIs mouvantes, validation/drift des contrats, fédération credentials/policies multi-runtime, RBAC, audit, couche MCP/agent, support+SLA) — avec une réponse en une phrase à « pourquoi acheter STOA plutôt que recopier ce PoC ». → **livrable `POSITIONING.md`**.
-- **C2 — Mapping critères durs de l'étude.** Le PoC prouve le control plane mais reste muet sur des critères *éliminatoires/élevés* : **Reverse Invoke / zéro entrant en zone de confiance** (§0.2, §4.2 — *éliminatoire*, un comité BC peut bloquer seul), analytique transactionnelle par fournisseur via OpenSearch (§4.11, §0.6), streaming gros fichiers >500 Mo (§0.4). Ajouter une section « ce que ce jet prouve vs ce que les critères durs exigent encore », **RI nommé comme prochain must-prove**. → **livrable `HARD-CRITERIA-MAP.md`**.
+- **C1 — Narratif « scaffold vs produit ».** Le « ~300 LOC » prouve que le *dispatch* est facile ; il ne doit JAMAIS laisser croire que STOA = 300 lignes de glue. `EVIDENCE.md` doit séparer explicitement le **scaffold jetable du PoC** (`labctl`, démonstrateur) de la **valeur produit STOA** (Links maintenus vs N intégrations fragiles contre des admin APIs mouvantes, validation/drift des contrats, fédération credentials/policies multi-runtime, RBAC, audit, couche MCP/agent, support+SLA).
+- **C2 — Mapping des critères durs.** Le PoC prouve le control plane mais reste muet sur des critères *éliminatoires/élevés* : **Reverse Invoke / zéro entrant en zone de confiance** (*éliminatoire*, un comité d'architecture peut bloquer seul), analytique transactionnelle par fournisseur via OpenSearch, streaming gros fichiers >500 Mo. Ajouter une section « ce que ce jet prouve vs ce que les critères durs exigent encore », **RI nommé comme prochain must-prove**. → **livrable `HARD-CRITERIA-MAP.md`**.
 
 **Pièce maîtresse EVIDENCE :** la corrélation **`trace_id` de bout en bout à travers les 3 gateways hétérogènes jusqu'à Tempo** — *le* moment qui rend la fédération tangible. À mettre en avant, pas une capture parmi d'autres.
 
@@ -207,7 +206,7 @@ Chaîne identité : **Dex (Oracle master, mock) → Keycloak (broker, émetteur)
 - ✅ **Inspiré-pas-copié de STOA** : on porte les idées (UAC→OpenAPI, adapter, dispatch, broker, obs corrélée), pas la stack propriétaire.
 - ✅ **Anti-§7.6** : pas de moteur de fédération custom lourd — orchestrateur mince sur APIs d'admin standard.
 - ✅ **Souveraineté** : 100 % local/self-hosted, zéro SaaS — l'argument vs Axway Amplify.
-- ✅ **Anonymisation** : « BC / institution financière régulée (anonymisé) » uniquement.
+- ✅ **Aucun contexte client** : ni nom, ni secteur, ni référence à une étude interne.
 - ✅ **Pas de secrets en clair** : `.env.example` + placeholders.
 - ✅ **OTel natif partout** : 3 gateways → OTLP → LGTM.
 - ✅ **DoD STOA** : scripts up/down/teardown + smoke-test à chaque phase.

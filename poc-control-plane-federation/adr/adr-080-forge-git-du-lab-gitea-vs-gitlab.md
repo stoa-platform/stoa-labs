@@ -5,15 +5,14 @@ status: "Acté — décision de lab, ne requiert pas le Council (aucun engagemen
 maturite_technique: "✅ Livré & prouvé — Gitea 1.22 déployé en ns `ci`, porte F1 verte (push → build sans action humaine, statut vert/rouge sur le commit) le 2026-07-29. La table de correspondance Gitea↔GitLab de la §5 est `[INFÉR]` — conçue sur documentation, jamais exécutée."
 date: 2026-07-29
 adr_number: 80
-visibility: private
-note: "Privé (stoa-labs). Nomme la pile outillage du client. S'appuie sur ADR-076 (repo-par-projet), ADR-074 (secrets Vault). Une version assainie (principe seul : « le forge est une commodité, le moteur CI est le livrable ») serait portable dans stoa-docs ; celle-ci ne l'est pas."
+note: "S'appuie sur ADR-076 (repo-par-projet), ADR-074 (secrets Vault). Une version assainie (principe seul : « le forge est une commodité, le moteur CI est le livrable ») serait portable dans stoa-docs ; celle-ci ne l'est pas."
 ---
 
 # ADR-080 — Forge Git du lab : Gitea retenu, GitLab écarté
 
 **Statut :** Acté (2026-07-29). Décision de lab : elle n'engage rien chez le client et ne touche pas le produit.
 **Maturité technique :** ✅ Gitea 1.22 déployé (ns `ci`, StatefulSet + PVC `local-path`), registre d'images intégré activé, webhook interne restreint par `GITEA__webhook__ALLOWED_HOST_LIST`. Porte F1 verte et contre-épreuve rouge (builds 7/8/9, SHA S2/S3/S4) — commit `2ed00b1`.
-**Contexte client (anonymisé) :** banque — **GitLab** est le forge d'entreprise ; **Jenkins** exécute les pipelines. Le lab tourne sur Gitea.
+**Contexte technique :** **GitLab** est le forge d'entreprise ; **Jenkins** exécute les pipelines. Le lab tourne sur Gitea.
 **Lié à :** [[adr-076-gitops-api-lifecycle-repo-per-project]], [[adr-074-vault-secrets]], [[adr-072-control-plane-mediation]].
 
 ---

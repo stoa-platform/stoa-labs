@@ -13,7 +13,7 @@ import (
 
 // applyAuditor records every gateway mutation (and the run-level denials) of an
 // apply run to the per-tenant audit-apply-{tenant} index + the stdout OTel
-// bridge (ADR-070). Attribution is Git-first (ADR-069): the human Actor is the
+// bridge (ADR-070). Attribution is Git-first: the human Actor is the
 // COMMIT AUTHOR of the manifest, the cp-applier CI service account is the
 // Principal — so even though the gateway only ever sees the platform admin
 // credential, "who changed what for which tenant" is always recoverable.
@@ -38,7 +38,7 @@ func newApplyAuditor(repoDir string, prin principal, logw io.Writer) *applyAudit
 }
 
 // commitFor reads the author + sha of the last commit touching path — Git-first
-// attribution (ADR-069). Empty when the repo is not a git worktree or the path
+// attribution. Empty when the repo is not a git worktree or the path
 // is untracked (best-effort: attribution degrades, it never blocks an apply).
 func (a *applyAuditor) commitFor(path string) (author, sha string) {
 	if a.repoDir == "" || path == "" {
@@ -56,7 +56,7 @@ func (a *applyAuditor) commitFor(path string) (author, sha string) {
 }
 
 // actorFor resolves the responsible identity: the Git commit author when known
-// (ADR-069), else the cp-applier principal, else $LABCTL_ACTOR, else "unknown".
+//, else the cp-applier principal, else $LABCTL_ACTOR, else "unknown".
 // An audited event is never left unattributed.
 func (a *applyAuditor) actorFor(commitAuthor string) string {
 	if commitAuthor != "" {

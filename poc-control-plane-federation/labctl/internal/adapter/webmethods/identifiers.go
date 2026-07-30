@@ -281,7 +281,7 @@ func dedup(in []string) []string {
 // loadPublicCertPEM resolves PublicCertRef to PEM bytes — an inline PEM (the ref
 // itself contains a BEGIN line) or an on-disk path — and REFUSES any material
 // carrying a private key. Only PUBLIC certificates may flow through this path
-// (secrets live in Vault/PAM, never in Git — ADR-068/069).
+// (secrets live in Vault/PAM, never in Git — le principe hors-data-plane/069).
 func loadPublicCertPEM(ref string) ([]byte, error) {
 	ref = strings.TrimSpace(ref)
 	var raw []byte

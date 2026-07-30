@@ -3,9 +3,8 @@ title: "GOAL — Du socle CI à la gateway en cluster : solder le lot 1, porter 
 type: goal
 status: "Cadré sur les preuves du lot 1 (G-a/G-b/G-c fermées le 2026-07-28). Deux décisions humaines préalables (licence wM, cible de sauvegarde). À valider avant spécification du lot 2."
 date: 2026-07-28
-visibility: private
 lié: [GOAL-self-service-api-app-2026-07-09, adr-074-vault, adr-076-gitops-api-lifecycle-repo-per-project, adr-077-user-identity-to-vault-token-exchange]
-note: "Reste dans stoa-labs (privé). Le GOAL parent (self-service) reste le nord ; celui-ci construit la plateforme qui l'exécutera."
+note: "Le GOAL parent (self-service) reste le nord ; celui-ci construit la plateforme qui l'exécutera."
 ---
 
 # GOAL — Du socle CI à la gateway en cluster

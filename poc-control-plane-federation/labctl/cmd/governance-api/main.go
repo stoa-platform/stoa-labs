@@ -1,6 +1,6 @@
 // Command governance-api is the Console Light BFF (console-light/API-CONTRACT.md):
 // a thin governance layer over a Git repository where every validated action is
-// a signed commit. It never executes labctl on the production path (ADR-068) —
+// a signed commit. It never executes labctl on the production path —
 // it writes governed commits; the client's CI converges the gateways.
 //
 // Stdlib + the module's vendored YAML only. Run from labctl/:

@@ -1,10 +1,9 @@
-# EVIDENCE — PoC Control Plane de Fédération (institution financière régulée anonymisé)
+# EVIDENCE — PoC Control Plane de Fédération
 
 > Rapport de preuves, validé **en live** sur la stack locale (2026-06). Données
-> 100 % synthétiques, environnement éphémère, zéro SaaS, client anonymisé.
+> 100 % synthétiques, environnement éphémère, zéro SaaS, aucun contexte client.
 >
-> À lire avec [`POSITIONING.md`](./POSITIONING.md) (scaffold jetable vs valeur produit STOA)
-> et [`HARD-CRITERIA-MAP.md`](./HARD-CRITERIA-MAP.md) (ce que ce jet prouve vs les critères durs restants).
+> À lire avec [`HARD-CRITERIA-MAP.md`](./HARD-CRITERIA-MAP.md) (ce que ce jet prouve vs les critères durs restants).
 
 ## Thèse
 
@@ -370,7 +369,7 @@ que la thèse listait comme « pas encore prouvée » — désormais prouvée bo
 parité, `scripts/test-txn-wso2.sh` **12/12**. Agrégat live des `gateway` portant des
 docs txn : `{apisix, webmethods, wso2}`.
 
-**Chaîne d'ingestion** (off the transaction path, ADR-068 — la gateway *émet*, ne
+**Chaîne d'ingestion** (off the transaction path, le principe hors-data-plane — la gateway *émet*, ne
 *traite* pas) :
 
 ```
@@ -888,8 +887,8 @@ best-effort ; à valider chez le client.)*
 
 ## Ce que ce jet ne prouve PAS encore
 
-Voir [`HARD-CRITERIA-MAP.md`](./HARD-CRITERIA-MAP.md) et [`../adr/adr-068-stoa-off-the-transaction-path.md`](../adr/adr-068-stoa-off-the-transaction-path.md) :
-le **Reverse Invoke / zéro entrant** (critère *éliminatoire*, §0.2/§4.2) est un pattern
+Voir [`HARD-CRITERIA-MAP.md`](./HARD-CRITERIA-MAP.md) :
+le **Reverse Invoke / zéro entrant** (critère *éliminatoire*) est un pattern
 **data-plane / DMZ transactionnel** → **capacité des gateways qualifiées** (webMethods),
 **pas un livrable STOA**. Le must-prove de STOA est distinct et plus modeste : **orchestrer
 des gateways en topologie zéro-entrant sans réintroduire d'entrant, et garder son propre

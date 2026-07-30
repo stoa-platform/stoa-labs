@@ -5,8 +5,7 @@ status: "Proposé — en attente Council 8/10 (GO/NO-GO)"
 maturite_technique: "✅ Livré & prouvé live — médiation (scripts 8/8·11/11·13/13·11/11)"
 date: 2026-06-12
 adr_number: 72
-visibility: private
-note: "Privé (stoa-labs). S'appuie sur ADR-067 (reuse-first), ADR-068 (hors data-plane), ADR-069 (Git source de vérité), ADR-070 (analytics/audit OpenSearch + pivot OTel), ADR-071 (onboarding as-code). Ne pas porter dans stoa-docs (public)."
+note: "S'appuie sur ADR-070 (analytics/audit OpenSearch + pivot OTel), ADR-071 (onboarding as-code)."
 ---
 
 # ADR-072 — Médiation control-plane (gateway mutualisée)
@@ -14,10 +13,8 @@ note: "Privé (stoa-labs). S'appuie sur ADR-067 (reuse-first), ADR-068 (hors dat
 **Statut :** Proposé — en attente validation Council 8/10 (GO/NO-GO). *(axe gouvernance/business — distinct de la maturité technique ci-dessous)*
 **Maturité technique :** ✅ Livré & prouvé live — scripts à compteurs (`test-onboarding-matrix` 8/8, `test-apply-scope` 11/11, `test-apply-audit` 13/13, `demo-mediation` 11/11).
 **Date :** 2026-06-12.
-**Contexte client (anonymisé) :** banque — gateways hétérogènes (WSO2 4.5, Apache APISIX 3.11, webMethods 10.15) **mutualisées** entre équipes/tenants.
-**Lié à :** [[adr-067-reuse-first-owned-portable-layer]], [[adr-068-stoa-off-the-transaction-path]], [[adr-069-retention-moat-governance-source-of-truth]], [[adr-070-opensearch-txn-analytics]], [[adr-071-partner-onboarding-as-code]].
-
-> ⚠️ **Confidentialité.** Topologie d'accès control-plane d'une banque. Vit dans `stoa-labs` (privé), **pas** dans `stoa-docs` (public).
+**Contexte technique :** gateways hétérogènes (WSO2 4.5, Apache APISIX 3.11, webMethods 10.15) **mutualisées** entre équipes/tenants.
+**Lié à :** [[adr-070-opensearch-txn-analytics]], [[adr-071-partner-onboarding-as-code]].
 
 ---
 
@@ -39,7 +36,7 @@ Or l'**API d'admin d'une gateway est toute-puissante** (un `X-API-KEY` APISIX, u
 - **(c) Rate-limit du plan management** — un dev pouvait **noyer** le plan partagé.
 - **(d) Creds non-scopées** — l'admin gateway ne sait pas restreindre par tenant.
 
-Ces trous **contredisent** la proposition STOA : ADR-068 (hors data-plane) et ADR-069 (Git source de vérité) ne valent que si **qui change quoi, pour quel tenant** est *enforce* et *tracé* sur le plan de contrôle lui-même.
+Ces trous **contredisent** la proposition STOA : la portabilité de la couche de gouvernance et la neutralité vendor ne valent que si **qui change quoi, pour quel tenant** est *enforce* et *tracé* sur le plan de contrôle lui-même.
 
 ---
 
@@ -59,7 +56,7 @@ Ces trous **contredisent** la proposition STOA : ADR-068 (hors data-plane) et AD
   2. **Borne** : un token `cp-applier` **lie** le scope à son tenant ; `--tenant` divergent → **DENY** (« cross-tenant denied »), *avant tout dispatch*. Sans token, `--tenant`/`$LABCTL_TENANT` filtre (plus faible, documenté) ; sans rien → run **UNSCOPED** averti.
   3. Un contrat hors-scope est **skippé**, jamais projeté → un job ne peut **pas** muter les ressources d'un autre tenant **même en détenant les creds plateforme**.
 
-- **(b) Attribution end-to-end — Git-first (ADR-069).** Chaque mutation gateway (`api.publish` / `consumer.subscribe`) → un event `{actor, principal, tenant, resource, gateway, decision, reason, commit_sha, trace_id}` dans `audit-apply-{tenant}`. `actor` = **auteur du commit** du manifeste (le dev responsable, lu via `git log`) ; `principal` = le **service account CI** `cp-applier`. Corrélation OTel par `trace_id` (ADR-070). La gateway ne voyant que `Administrator`, l'attribution dev/projet vient **du control plane**.
+- **(b) Attribution end-to-end — Git-first.** Chaque mutation gateway (`api.publish` / `consumer.subscribe`) → un event `{actor, principal, tenant, resource, gateway, decision, reason, commit_sha, trace_id}` dans `audit-apply-{tenant}`. `actor` = **auteur du commit** du manifeste (le dev responsable, lu via `git log`) ; `principal` = le **service account CI** `cp-applier`. Corrélation OTel par `trace_id` (ADR-070). La gateway ne voyant que `Administrator`, l'attribution dev/projet vient **du control plane**.
 
 - **(c) Rate-limit — ENFORCE.** Middleware token-bucket in-process par `actor+tenant` sur `onboarding-api` (stdlib seul, air-gapped) → `429` **audité** `reason=rate_limited` au-delà du seuil (`ONBOARDING_RATE_PER_MIN`, défaut 20). Un tenant ne peut **pas** affamer le plan partagé.
 

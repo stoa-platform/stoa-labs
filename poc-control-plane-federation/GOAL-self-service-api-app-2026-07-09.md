@@ -3,10 +3,9 @@ title: "GOAL — Self-service de création d'APIs (producteur) et d'applications
 type: goal
 status: "Cadré — prêt à exécuter. Socle déjà prouvé en live (spike #1 Teams scoping + spike #2 proxy OAuth2). Reste à industrialiser."
 date: 2026-07-09
-visibility: private
 feeds_adr: 78
 lié: [adr-075-wm-admin-proxy-multienv, adr-076-gitops-api-lifecycle-repo-per-project, adr-077-user-identity-to-vault-token-exchange]
-note: "Contexte client bancaire on-premise. Reste dans stoa-labs (privé) — ne pas porter dans stoa-docs."
+note: "Déploiement on-premise."
 ---
 
 # GOAL — Self-service API & application, 100 % API REST, isolé par équipe (wM 10.15)

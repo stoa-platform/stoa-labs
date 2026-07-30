@@ -42,7 +42,7 @@ type File struct {
 // optional; an empty block changes nothing.
 //
 // SECURITY: PublicCertRef and IPAllowlist are NON-SECRET config — auditable by
-// PR in Git (the douve of ADR-067/069). TokenIdentifiers carrying a real shared
+// PR in Git (the douve of le principe reuse-first/069). TokenIdentifiers carrying a real shared
 // secret MUST be referenced from Vault/PAM, never inlined here; a PEM private
 // key in PublicCertRef is REFUSED by the adapter.
 type Partner struct {
@@ -124,7 +124,7 @@ type RateLimit struct {
 // credential alias (optional) carries the backend's HTTP Basic credential for
 // the Outbound Auth – Transport action. The credential VALUES live in
 // Target.Credentials (backendUsername/backendPassword) — never in this block,
-// so the manifest stays free of inline secrets (ADR-068/069).
+// so the manifest stays free of inline secrets.
 type Routing struct {
 	EndpointAlias   *EndpointAlias   `json:"endpointAlias"`
 	CredentialAlias *CredentialAlias `json:"credentialAlias"`
