@@ -50,8 +50,17 @@ backup_keep: 7
 backup_mode: "0600"
 
 # Namespaces dont les PVC local-path sont sauvegardés.
+#
+# `wm` ajouté par F5 : la bascule Caddy fait du PVC ES du ns wm la seule source
+# de vérité de la gateway PUBLIQUE. Le sauvegarder est un prérequis BLOQUANT de
+# la bascule, pas une amélioration — jusqu'ici ce PVC n'avait aucune copie.
+#
+# Attention : ce paramètre pilote DEUX choses — les PVC archivés, et les
+# namespaces dont toutes les charges sont quiescées puis redémarrées. Y ajouter
+# un namespace quiesce donc tout ce qu'il contient.
 backup_pvc_namespaces:
   - ci
+  - wm
 # Racine des volumes local-path sur les nœuds.
 backup_localpath_root: "/var/lib/rancher/k3s/storage"
 
@@ -61,6 +70,11 @@ backup_localpath_root: "/var/lib/rancher/k3s/storage"
 # mort. Son PVC est archivé à chaud sous garde d'empreinte (voir pvc.yml).
 # Quand l'exploitant aura prouvé la détention (procédure non destructive du
 # handoff F1), vider cette liste restitue la quiescence pleine.
+#
+# F5 : l'ES du ns `wm` n'est PAS ici, et c'est délibéré. Contrairement à Vault,
+# il ne revient pas scellé d'un redémarrage — il est donc pleinement quiesçable.
+# Et le pod gateway est de toute façon interrompu 150 s toutes les 20 min par le
+# cycle trial : la fenêtre ne coûte aucune indisponibilité qui n'existe pas déjà.
 backup_hot_workloads:
   - statefulset/vault
 
@@ -68,8 +82,20 @@ backup_hot_workloads:
 # sauvegarde : selfHeal revert la mise à zéro des répliques en ~5 s (mesuré au
 # lot 1) — la fenêtre de synchronisation est la vraie réponse, la garde
 # post-archive n'est plus qu'une défense en profondeur.
+#
+# TOUTE Application dont une charge est quiescée doit figurer ici, sinon
+# selfHeal remonte les répliques pendant l'archivage. Les trois Applications du
+# ns `wm` sont donc listées : F5 y quiesce ES, la gateway et le backend.
+# La capture d'état échoue FERMÉE si une Application nommée ici n'existe pas
+# (`kubectl get application <nom>` sans ignore_errors) — c'est voulu : une
+# fenêtre qui laisse une Application non suspendue serait silencieusement
+# inefficace. Corollaire : ne pas jouer la sauvegarde avant que la PR posant
+# `wm-backend-dev` soit mergée et synchronisée.
 backup_sync_window_apps:
   - ci-gitea
   - ci-jenkins
   - ci-vault
+  - wm-elasticsearch
+  - wm-apigateway
+  - wm-backend-dev
 backup_argocd_namespace: "argocd"

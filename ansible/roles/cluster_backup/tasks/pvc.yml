@@ -148,6 +148,24 @@
   loop_control:
     label: "{{ item.item }}"
 
+# --- CronJobs des namespaces sauvegardés --------------------------------------
+# Une charge PLANIFIÉE ne doit pas muter un namespace qu'on quiesce. Le ns `wm`
+# porte `wm-restarter` (*/20) : sans suspension, il tirerait pendant la fenêtre,
+# créerait un pod Running transitoire qui ferait boucler l'attente, et
+# redémarrerait une gateway déjà à zéro. Générique par construction : tout
+# CronJob de tout namespace sauvegardé est suspendu puis remis dans son état
+# d'origine (et non « repris » à l'aveugle — un CronJob déjà suspendu à dessein
+# doit le rester).
+- name: "Capturer l'état suspend des CronJobs des namespaces sauvegardés"
+  ansible.builtin.command:
+    cmd: >-
+      k3s kubectl -n {{ item }} get cronjob
+      -o jsonpath='{range .items[*]}{.metadata.name}={.spec.suspend}{"\n"}{end}'
+  become: true
+  register: backup_cronjobs
+  changed_when: false
+  loop: "{{ backup_pvc_namespaces }}"
+
 # `block`/`always` : si l'archivage échoue, les charges ne doivent pas rester à
 # zéro ni les Applications sans auto-sync. GARANTIE HONNÊTE inchangée du lot 1 :
 # `always` ne s'exécute PAS si l'hôte de contrôle devient UNREACHABLE en cours
@@ -164,6 +182,18 @@
       become: true
       loop: "{{ backup_sync_window_apps }}"
       when: backup_sync_automated[item] != ''
+      changed_when: true
+
+    - name: "Suspendre les CronJobs des namespaces sauvegardés"
+      ansible.builtin.command:
+        cmd: >-
+          k3s kubectl -n {{ item.0.item }} patch cronjob {{ item.1.split('=')[0] }}
+          --type=merge -p '{"spec":{"suspend":true}}'
+      become: true
+      loop: "{{ backup_cronjobs.results | subelements('stdout_lines') }}"
+      loop_control:
+        label: "{{ item.0.item }} {{ item.1 }}"
+      when: item.1 | length > 0
       changed_when: true
 
     - name: "Quiescer les charges (sauf celles à chaud)"
@@ -183,11 +213,18 @@
     # kubectl est exécuté dans $( ) sous `set -e` : son échec fait échouer la
     # tâche au lieu de produire un faux « aucun pod » (fail-closed). Le
     # `grep -v '^$'` évite qu'une sortie vide compte pour une ligne.
+    # `--field-selector` exclut les pods en phase TERMINALE (Succeeded/Failed).
+    # Sans lui, tout namespace contenant des pods de Job achevés ne satisferait
+    # JAMAIS cette attente : le ns `wm` conserve 3 pods `wm-restarter` en
+    # Completed (successfulJobsHistoryLimit: 3), et le play mourait après ses
+    # 36 essais. Un pod terminé ne tient aucun descripteur sur le PVC — le sens
+    # de l'attente est « plus aucune charge n'écrit », pas « plus aucun objet ».
     - name: "Attendre l'arrêt des pods quiescés (les charges à chaud restent)"
       ansible.builtin.shell:
         cmd: |
           set -eu
-          out=$(k3s kubectl -n {{ item }} get pods -o name)
+          out=$(k3s kubectl -n {{ item }} get pods \
+            --field-selector=status.phase!=Succeeded,status.phase!=Failed -o name)
           echo "$out" | grep -Ev '{{ backup_hot_pod_re }}' | grep -v '^$' || true
         executable: /bin/bash
       become: true
@@ -283,11 +320,17 @@
 
     # Défense en profondeur : avec la fenêtre de sync fermée, plus AUCUN pod
     # quiescé ne doit réapparaître. Si ça arrive, quarantaine générale du run.
+    # Même `--field-selector` que l'attente ci-dessus, et pour une raison plus
+    # grave : sans lui, les pods de Job achevés du ns `wm` seraient comptés pour
+    # des « pods réapparus », déclenchant la QUARANTAINE et le REJET d'une
+    # sauvegarde parfaitement saine. Une garde qui rejette le cas normal ne
+    # protège rien — elle apprend à ignorer les alertes.
     - name: "Lister les pods quiescés réapparus pendant l'archivage"
       ansible.builtin.shell:
         cmd: |
           set -eu
-          out=$(k3s kubectl -n {{ item }} get pods -o name)
+          out=$(k3s kubectl -n {{ item }} get pods \
+            --field-selector=status.phase!=Succeeded,status.phase!=Failed -o name)
           echo "$out" | grep -Ev '{{ backup_hot_pod_re }}' | grep -v '^$' || true
         executable: /bin/bash
       become: true
@@ -324,6 +367,20 @@
         label: "{{ item.item }}"
 
   always:
+    # Remis dans l'état CAPTURÉ, pas « repris » : `.spec.suspend` absent rend
+    # la chaîne vide côté jsonpath, et l'état d'origine est alors `false`.
+    - name: "Rendre aux CronJobs leur état d'origine, y compris après échec"
+      ansible.builtin.command:
+        cmd: >-
+          k3s kubectl -n {{ item.0.item }} patch cronjob {{ item.1.split('=')[0] }}
+          --type=merge -p '{"spec":{"suspend":{{ 'true' if item.1.split('=')[1] == 'true' else 'false' }}}}'
+      become: true
+      loop: "{{ backup_cronjobs.results | subelements('stdout_lines') }}"
+      loop_control:
+        label: "{{ item.0.item }} {{ item.1 }}"
+      when: item.1 | length > 0
+      changed_when: true
+
     - name: "Redémarrer les charges, y compris après échec"
       ansible.builtin.command:
         # `item.0` est le résultat de la tâche « Mémoriser » ; le namespace
