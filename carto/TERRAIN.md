@@ -121,12 +121,14 @@ curl -sS -u Administrator:manage -H 'Accept: application/json' -X PUT \
   http://127.0.0.1:15555/rest/apigateway/policies/GlobalLogInvocationPolicy/activate
 ```
 Après activation, du trafic réussi réel généré à travers le data-plane
-(`carto-probe-app-active` : 35 appels, `carto-probe-app-low` : 9 appels,
-`carto-probe-app-idle` : 0 appel) a bien produit des documents :
-`gateway_default_analytics_transactionalevents-*` est passé de 0 à 47
-documents, tous `"status": "SUCCESS"`, `"responseCode": "200"`, avec
-`apiId` correctement renseigné et des volumes différenciés par
-consommateur retrouvés dans l'agrégation (voir `aggregation-d90.json`).
+(`carto-probe-app-active` : 39 appels au total sur toute la tâche,
+`carto-probe-app-low` : 9 appels, `carto-probe-app-idle` : 0 appel) a bien
+produit des documents : `gateway_default_analytics_transactionalevents-*`
+est passé de 0 à 48 documents, tous `"status": "SUCCESS"`,
+`"responseCode": "200"`, avec `apiId` correctement renseigné. Les volumes
+différenciés par consommateur (39 vs 9) ne sont PAS retrouvés dans le champ
+`applicationId` de ces documents — voir V5, qui explique pourquoi et ce qui
+a été fait à la place dans `aggregation-d90.json`.
 
 Point annexe vérifié et écarté : les réglages de destination
 (`configurations/gatewayDestinationConfig`,
@@ -184,7 +186,7 @@ déclarée consommatrice.** Ce n'est plus une limite de mesure (comme le
 laissait penser l'ancienne hypothèse « pas d'événement de succès
 disponible ») — **c'est un second problème, distinct et confirmé.**
 
-Part d'événements sans appelant identifié : **100 % (47/47)** sur
+Part d'événements sans appelant identifié : **100 % (48/48)** sur
 `transactionalevents` après correction du blocage de journalisation, tous
 succès confondus.
 
@@ -210,6 +212,32 @@ l'événement produit :
 7. `order` d'enforcement explicite (`1`) au lieu de `null` sur le stage IAM
    — pas de changement.
 
+**Deuxième passe, sur demande explicite : chercher un gabarit qui marche
+déjà sur le catalogue plutôt que de continuer à deviner une configuration.**
+8. Inventaire complet des policies du labo (`GET /policies`) : seulement 5
+   au total. `accounts-read` (l'API antérieure à notre passage) porte
+   `Default Policy for API accounts-read` (id `b15a72e9-...`), qui n'a que
+   les stages `transport` (Enable HTTP/HTTPS) et `routing` (Straight
+   Through Routing) — **aucun stage `IAM`, donc aucune identification**.
+   C'est exactement la même forme que la policy par défaut de
+   `carto-probe-api`. **Aucune des deux APIs du catalogue ne porte de
+   policy d'identification préexistante à copier** — les deux seules
+   policies au stage `IAM` de tout le labo sont celles que nous avons
+   créées nous-mêmes. Il n'existe donc pas de gabarit "self-service" à
+   reproduire sur cette gateway ; ce n'est pas qu'on ne l'a pas trouvé, il
+   n'y en a pas.
+9. Association Application↔API dans les deux sens : `GET
+   /applications/{id}/apis` (déjà fait) **et** `GET /apis/{apiId}/applications`
+   (sens inverse), les deux confirment que les 3 Applications
+   `carto-probe-*` sont bien associées à `carto-probe-api`
+   (`consumingAPIs` contient l'id de l'API des deux côtés). Ce n'est donc
+   pas un défaut d'association clé↔API.
+10. `carto-probe-api` elle-même désactivée puis réactivée (`PUT
+    /apis/{apiId}/deactivate` puis `/activate`, pas seulement la policy)
+    pour forcer le recalcul de son jeu de policies effectif — nouvel appel
+    réel avec clé API valide juste après : **`applicationId` toujours
+    `Unknown`**.
+
 Constat annexe : `GET /apis/{apiId}/globalPolicies` (censé lister les
 policies globales actives applicables à une API) affiche
 `["GlobalLogInvocationPolicy"]` mais **n'affiche jamais notre policy
@@ -221,18 +249,36 @@ policies système, ou policy réellement non appliquée : les deux hypothèses
 restent ouvertes — la seconde est la plus probable puisqu'elle est cohérente
 avec l'observation directe sur le trafic).
 
-**Conclusion : l'identification de l'appelant par clé API ne fonctionne pas
-dans ce labo, pour une cause non complètement diagnostiquée malgré une
-investigation structurée (7 tentatives listées ci-dessus).** Ce n'est donc
-plus seulement « à refaire » — c'est un vrai problème de fond à porter à
-l'attention de l'équipe avant T2/T3 : **si ce comportement se reproduit chez
-le client, la cartographie affichera 100 % du trafic sous un consommateur
-« (non identifié) » et sera inutilisable pour répondre à « qui consomme
-quoi ».** Recommandation : vérifier ce mécanisme en priorité sur un tenant
-client réel (voire avec l'assistance du support Software AG), idéalement
-avec un scénario d'authentification plus simple à auditer que `apiKey`
-(par ex. HTTP Basic Auth avec les `identifiers` applicatifs, qui n'a pas été
-testé ici faute de temps).
+**Conclusion, après deux passes d'investigation (10 tentatives/vérifications
+au total, dont la comparaison avec le seul autre API du catalogue) :
+l'identification de l'appelant par clé API ne fonctionne pas dans ce labo,
+pour une cause structurelle non complètement diagnostiquée — et il n'existe
+aucun gabarit fonctionnel dans ce catalogue pour la débloquer.** Ce n'est
+plus « à refaire » — c'est un vrai problème de fond à porter à l'attention
+de l'équipe avant T2/T3 : **si ce comportement se reproduit chez le client,
+la cartographie affichera 100 % du trafic sous un consommateur « (non
+identifié) » et sera inutilisable pour répondre à « qui consomme quoi ».**
+Recommandation : vérifier ce mécanisme **en priorité** sur un tenant client
+réel (voire avec l'assistance du support Software AG), idéalement avec un
+scénario d'authentification plus simple à auditer que `apiKey` (par ex.
+HTTP Basic Auth avec les `identifiers` applicatifs, qui n'a pas été testé
+ici faute de temps).
+
+**Décision prise sur ce point (arrêt de l'investigation, cf. consigne) :**
+`carto/tests/fixtures/aggregation-d90.json` conserve la *forme* mesurée
+(structure de l'agrégation, doc_count total, horodatages) mais **substitue**
+les deux identifiants de consommateur : la gateway avait réellement
+renseigné `"Unknown"` pour les 48 documents ; ces valeurs ont été remplacées
+par les identifiants réels de `carto-probe-app-active` (39 appels réels) et
+`carto-probe-app-low` (9 appels réels), reconstruits à partir du journal des
+appels de cette tâche (chaque lot ciblait une clé précise, retrouvable via
+le motif de l'URL native — la gateway elle-même ne fait pas cette
+distinction). `carto-probe-app-idle` (zéro appel) n'apparaît dans aucun
+bucket, ce qui est la forme correcte : un consommateur silencieux ne peut
+structurellement pas apparaître dans une agrégation sur les événements,
+c'est la jointure déclaré×observé qui doit le révéler. **Le fichier porte en
+tête (`_meta`) un avertissement explicite qui distingue ce qui est mesuré de
+ce qui est substitué — ne pas retirer cet avertissement en aval.**
 
 Conséquence pour le produit : tant que ce point n'est pas résolu, prévoir
 dans l'UI un état « (non identifié) » comme cas *majoritaire attendu*, pas
@@ -270,6 +316,14 @@ ES_TIME_FIELD = "creationDate"
 ES_STATUS_FIELD = "responseCode"
 ```
 
+**Question ouverte à vérifier en priorité absolue chez le client, avant
+toute promesse sur la dimension consommateur du produit** (voir V5) :
+*l'identification de l'application appelante (`ES_APP_FIELD`) est-elle
+effective dans les événements transactionnels de LEUR gateway ?* Si non,
+la cartographie observée (par opposition à la cartographie déclarée) n'a
+pas de dimension consommateur exploitable, quel que soit le reste du
+pipeline de collecte.
+
 Pré-requis d'exploitation à ne pas oublier chez le client (déduit de V3) :
 **vérifier que la policy système `GlobalLogInvocationPolicy` (ou une policy
 Log Invocation équivalente attachée à chaque API d'intérêt) est active**
@@ -284,7 +338,7 @@ Préfixe `carto-probe-` sur tout ce qui a été créé :
   (backend : le même backend de test synthétique que l'API préexistante du
   labo, interne au cluster).
 - Application `carto-probe-app-active`, id `4c329b2e-bcf7-45dc-996d-d5d9dfb538e0`
-  (~35 appels réussis + quelques erreurs 405 générés).
+  (39 appels réussis + quelques erreurs 405 générés).
 - Application `carto-probe-app-low`, id `f06fa084-3745-4e6d-afac-98246b3c2757`
   (~9 appels réussis + 1 erreur 405 générés).
 - Application `carto-probe-app-idle`, id `b168b889-f8e5-4ab2-bd11-bdf351942e8a`

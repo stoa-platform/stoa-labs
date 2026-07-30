@@ -1,4 +1,10 @@
 {
+  "_meta": {
+    "avertissement": "SYNTHÉTIQUE PARTIEL — À LIRE AVANT TOUTE RÉUTILISATION.",
+    "ce_qui_est_mesure": "La structure entière (clés, imbrication api->consumer->last/errors, doc_count total=48, index interrogé, requête utilisée) est réelle : capturée contre gateway_default_analytics_transactionalevents-* après correction de la politique Log Invocation (voir carto/TERRAIN.md V3). Les compteurs par consommateur (39 pour l'app active, 9 pour l'app à faible volume) et les horodatages 'last' sont également réels, reconstruits à partir du journal des appels effectués par cette tâche (chaque lot d'appels ciblait une clé API précise, retrouvable via le motif de l'URL native de chaque appel) car la gateway ne renseigne pas applicationId sur ces documents (voir ci-dessous).",
+    "ce_qui_est_substitue": "Les valeurs de la clé 'key' des deux buckets 'consumer' (l'identifiant d'application) sont SUBSTITUÉES : la gateway a réellement renseigné 'Unknown' pour les 48 documents, quelle que soit l'application appelante authentifiée (voir carto/TERRAIN.md V5 — confirmé après investigation structurée, pas une lacune de mesure). Ces deux valeurs ont été remplacées par les identifiants réels des Applications carto-probe-app-active et carto-probe-app-low pour que cette fixture exerce les cas produits (consommateur à fort volume, consommateur à faible volume). carto-probe-app-idle (déclarée, zéro appel) n'apparaît volontairement dans aucun bucket : une agrégation sur les événements ne peut structurellement pas révéler un consommateur qui n'a rien émis — c'est exactement le cas que la jointure déclaré×observé (carto/collect/build.py) doit couvrir séparément, pas cette fixture.",
+    "question_ouverte_prioritaire_chez_le_client": "L'identification de l'application appelante est-elle effective dans les événements transactionnels de LEUR gateway ? Si la réponse est non chez eux aussi, la cartographie observée n'a pas de dimension consommateur exploitable, et il faut le savoir avant de promettre quoi que ce soit. Voir carto/TERRAIN.md V5 pour la méthode de vérification et les tentatives déjà écartées ici."
+  },
   "took": 5,
   "timed_out": false,
   "_shards": {
@@ -9,7 +15,7 @@
   },
   "hits": {
     "total": {
-      "value": 47,
+      "value": 48,
       "relation": "eq"
     },
     "max_score": null,
@@ -22,14 +28,27 @@
       "buckets": [
         {
           "key": "5ed95567-62e7-4a4e-a2da-441f0b276098",
-          "doc_count": 47,
+          "doc_count": 48,
           "consumer": {
             "doc_count_error_upper_bound": 0,
             "sum_other_doc_count": 0,
             "buckets": [
               {
-                "key": "Unknown",
-                "doc_count": 47,
+                "key": "4c329b2e-bcf7-45dc-996d-d5d9dfb538e0",
+                "key_comment": "SUBSTITUÉ — id réel de carto-probe-app-active ; la gateway avait renseigné Unknown, voir _meta",
+                "doc_count": 39,
+                "last": {
+                  "value": 1785432913325.0,
+                  "value_as_string": "2026-07-30T17:35:13.325Z"
+                },
+                "errors": {
+                  "doc_count": 0
+                }
+              },
+              {
+                "key": "f06fa084-3745-4e6d-afac-98246b3c2757",
+                "key_comment": "SUBSTITUÉ — id réel de carto-probe-app-low ; la gateway avait renseigné Unknown, voir _meta",
+                "doc_count": 9,
                 "last": {
                   "value": 1785432377212.0,
                   "value_as_string": "2026-07-30T17:26:17.212Z"
