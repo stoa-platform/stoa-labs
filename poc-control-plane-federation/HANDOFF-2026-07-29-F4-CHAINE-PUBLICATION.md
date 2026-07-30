@@ -82,9 +82,23 @@ exercé**. Mesuré sur la 10.15 réelle :
 3. **Scripts du lot 1 avec l'ancien mot de passe en dur** (`vault-bootstrap.sh`,
    `f1-provision-status-token.sh`) : substituer `$(cat /root/gitea-ci-pass)`
    s'ils sont rejoués (noté en tête du script de rotation).
-4. Keepalive hegemon `*/25` de worker-3 toujours en doublon du cron root
-   `*/20` (~5 min de service perdues/heure).
-5. Sauvegarde du ns `wm` (reprise F2) : à poser **avant** F5.
+4. ~~Keepalive hegemon `*/25` de worker-3 toujours en doublon du cron root
+   `*/20` (~5 min de service perdues/heure).~~
+   **CORRIGÉ le 2026-07-30 (relevé T0 de F5) : ce keepalive n'existe pas.**
+   Mesuré sur worker-3 : crontab `root` = **une seule** entrée
+   (`*/20 … docker restart wm-dev-apigateway`, plus son marqueur
+   `#Ansible: wm-dev-apigateway-restart-trial` — un `grep -c wm-dev` compte
+   donc 2 lignes, ce qui a pu induire en erreur) ; crontab `hegemon` = un
+   **ping d'uptime `*/1`** vers `status.gostoa.dev`, **étranger à
+   webMethods**, qui surveille l'hôte et **doit rester** ; rien dans
+   `/etc/cron.d` ; aucun timer systemd. Il n'y a donc **aucune** perte de
+   service de ce fait, et **un seul** cron à déposer à la décommission.
+5. ~~Sauvegarde du ns `wm` (reprise F2) : à poser **avant** F5.~~
+   **SOLDÉ le 2026-07-30 (F5, tâche 3)** : `backup_pvc_namespaces: [ci, wm]`,
+   run vert, archive du PVC ES relue sur worker-2 (1695 chemins d'index).
+   Deux bugs du rôle `cluster_backup` ont été trouvés et corrigés au passage
+   (pods de Job en `Succeeded` faisant échouer la quiescence, puis mettant
+   les archives en quarantaine).
 6. Image `hashicorp/vault:1.18` des pods agents non épinglée par digest.
 
 ## Pour F5
