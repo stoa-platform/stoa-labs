@@ -38,7 +38,7 @@ l'entité ; documenté pour éviter la surprise en T9.
 
 ## V2 — rétention réelle des index d'analytics
 
-Plus vieil événement mesuré dans **`gateway_default_analytics_transactionalevents-*`**
+Plus vieil événement mesuré dans **`gateway_default_analytics_transactionalevents*`**
 (ES_INDEX retenu, voir V3) : `2026-07-30T17:17:29.637Z` → cet index vient
 tout juste d'être activé (voir V3), sa profondeur ne reflète donc que la
 durée de cette session de mesure, pas une rétention réelle. Requête (voir
@@ -51,9 +51,9 @@ curl -s -H 'Content-Type: application/json' \
 
 Pour référence, mesuré aussi dans deux autres index déjà peuplés avant notre
 intervention :
-- `gateway_default_analytics_errorevents-*` : `2026-07-30T07:15:17.163Z`
+- `gateway_default_analytics_errorevents*` : `2026-07-30T07:15:17.163Z`
   (≈ 1 jour avant capture).
-- `gateway_default_analytics_lifecycleevents-*` : `2026-07-29T14:49:53.799Z`
+- `gateway_default_analytics_lifecycleevents*` : `2026-07-29T14:49:53.799Z`
   (correspond à la mise en service du cluster de labo lui-même, pas à une
   politique de rétention).
 
@@ -94,6 +94,24 @@ DECLARED_PATH = `/applications/{applicationId}/apis`
 
 ### ES_INDEX / ES_API_FIELD / ES_APP_FIELD / ES_TIME_FIELD / ES_STATUS_FIELD
 
+**Convention de nommage des index (à ne pas mal reproduire chez le
+client)** : chaque famille d'événements suit le motif
+`gateway_default_<type>_<horodatage_epoch_ms_de_création>-<numéro_de_séquence>`
+— par exemple, l'index concret vu sur ce labo pour les événements
+transactionnels s'appelle
+`gateway_default_analytics_transactionalevents_1785336571351-000001`
+(`_cat/indices?v` le montre). Le séparateur avant l'horodatage est un
+**underscore**, pas un tiret. **Le motif de recherche ES sûr est donc
+`gateway_default_analytics_transactionalevents*` (une étoile collée
+directement après le nom du type, sans tiret ni underscore ajouté)** : il
+matche `<type>_<n'importe quel horodatage>-<n'importe quelle séquence>`
+quel que soit le tenant, alors qu'un motif écrit avec un tiret avant
+l'étoile (`..._transactionalevents-*`) ne matche **rien du tout** — ni ici,
+ni chez le client, où l'horodatage sera de toute façon différent. C'est
+l'erreur qui s'était glissée dans une version antérieure de ce document
+(corrigée) : toutes les occurrences ci-dessous utilisent désormais le motif
+sans tiret, vérifié en le rejouant contre l'ES du labo.
+
 **Root cause trouvée et corrigée** (ne plus refaire cette investigation en
 T2/T3). Le texte de description de `APIGatewayAdministration.json`
 (paramètre `eventType` de `GET /apitransactions`) dit noir sur blanc :
@@ -111,7 +129,7 @@ logging »), qui référence l'action `GlobalLogInvocationPolicyAction`
 — donc conçue pour journaliser succès ET échecs). Cette policy système
 était **`"active": false`** par défaut sur ce labo. C'est la cause unique et
 suffisante du 0 document initial sur
-`gateway_default_analytics_transactionalevents-*` : sans elle, aucune API
+`gateway_default_analytics_transactionalevents*` : sans elle, aucune API
 n'écrit jamais d'événement transactionnel, quel que soit le volume de
 trafic.
 
@@ -123,7 +141,7 @@ curl -sS -u Administrator:manage -H 'Accept: application/json' -X PUT \
 Après activation, du trafic réussi réel généré à travers le data-plane
 (`carto-probe-app-active` : 39 appels au total sur toute la tâche,
 `carto-probe-app-low` : 9 appels, `carto-probe-app-idle` : 0 appel) a bien
-produit des documents : `gateway_default_analytics_transactionalevents-*`
+produit des documents : `gateway_default_analytics_transactionalevents*`
 est passé de 0 à 48 documents, tous `"status": "SUCCESS"`,
 `"responseCode": "200"`, avec `apiId` correctement renseigné. Les volumes
 différenciés par consommateur (39 vs 9) ne sont PAS retrouvés dans le champ
@@ -140,8 +158,8 @@ existent) — donc ce n'est pas un levier séparé pour ce type d'événement,
 contrairement aux autres types. Le seul levier est la policy Log Invocation,
 comme le dit la documentation. `PUT /apis/{apiId}/tracing/enable` (testé
 également) est sans effet sur `transactionalevents` : il peuple
-`gateway_default_mediatortracespan-*` et
-`gateway_default_requestresponsetracespans-*` (traces d'appel brutes, avec
+`gateway_default_mediatortracespan*` et
+`gateway_default_requestresponsetracespans*` (traces d'appel brutes, avec
 payloads, **sans champ `applicationId`**) — mécanisme différent, pas un
 remplacement.
 
@@ -150,13 +168,35 @@ Mapping complet vérifié via
 
 Constantes retenues (mesurées, désormais sur l'index réellement conçu pour
 cet usage) :
-- `ES_INDEX` = `gateway_default_analytics_transactionalevents-*`
+- `ES_INDEX` = `gateway_default_analytics_transactionalevents*`
 - `ES_API_FIELD` = `apiId`
 - `ES_APP_FIELD` = `applicationId`
 - `ES_TIME_FIELD` = `creationDate` (epoch millis)
-- `ES_STATUS_FIELD` = `responseCode` (type `keyword`, chaîne à 3 chiffres —
-  une comparaison lexicographique `gte "400"` fonctionne car tous les codes
-  HTTP standards font 3 caractères, mais ce n'est pas un entier)
+- `ES_STATUS_FIELD` = `responseCode` (type `keyword` — donc une comparaison
+  `range.gte` est **lexicographique**, pas numérique. Vérifié par la mesure,
+  pas supposé : sur les 48 documents présents, une agrégation `terms` sur
+  `responseCode` donne un seul code réel, `"200"` (48/48), et en parallèle
+  un filtre `{"range": {"responseCode": {"gte": 400}}}` compte `0` — les
+  deux concordent (48 succès, 0 erreur, dans les deux lectures). Cet
+  échantillon ne contient toutefois aucun code à répartition non triviale
+  (pas de `4xx`/`5xx` capturé dans `transactionalevents` — voir V5 et la
+  note sur les 405 qui n'atteignent jamais cet index) : la coïncidence
+  lexicographique/numérique n'a donc été **exercée qu'avec un seul code**
+  ce qui suffit à confirmer que le filtre ne casse rien ici, mais reste à
+  reconfirmer chez le client avec un échantillon qui contienne réellement
+  des `4xx`/`5xx` dans cet index. Elle tient structurellement parce que
+  tous les codes HTTP standards font 3 caractères (comparaison
+  lexicographique et numérique coïncident sur des chaînes de longueur
+  fixe), pas parce que ce champ est numérique — il ne l'est pas.
+  Requête utilisée :
+  ```
+  curl -s -H 'Content-Type: application/json' \
+    'http://127.0.0.1:19200/gateway_default_analytics_transactionalevents*/_search' \
+    -d '{ "size": 0, "aggs": {
+          "codes":  { "terms":  { "field": "responseCode", "size": 50 } },
+          "gte400": { "filter": { "range": { "responseCode": { "gte": 400 } } } }
+        } }'
+  ```
 
 Différence de mapping notée entre index (à ne pas généraliser à tort) :
 sur `errorevents`, `applicationId` est `text` + analyseur
@@ -309,7 +349,7 @@ APP_FIELDS = {
 }
 DECLARED_PATH = "/applications/{applicationId}/apis"   # GET -> {"apiIDs": [...]}; POST body = {"apiIDs": [...]}
 
-ES_INDEX = "gateway_default_analytics_transactionalevents-*"
+ES_INDEX = "gateway_default_analytics_transactionalevents*"
 ES_API_FIELD = "apiId"
 ES_APP_FIELD = "applicationId"   # mesuré "Unknown" à 100% ici — voir V5, préoccupation majeure
 ES_TIME_FIELD = "creationDate"
