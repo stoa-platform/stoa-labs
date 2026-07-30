@@ -29,9 +29,9 @@ ClusterIssuer, et n'en a pas besoin pour ce chemin.
 
 ### Ce qui n'est PAS dans Git
 
-Deux secrets, créés hors dépôt. Les manifestes les référencent par nom.
+Un seul secret, créé hors dépôt. Le manifeste le référence par nom.
 
-**1. `Secret/cloudflared-credentials` dans le namespace `edge`**
+**`Secret/cloudflared-credentials` dans le namespace `edge`**
 
 Porte la clé `credentials.json` (`AccountTag`, `TunnelSecret`, `TunnelID`).
 Obtenu à la création du tunnel ; conservé hors ligne côté exploitant.
@@ -41,24 +41,15 @@ kubectl -n edge create secret generic cloudflared-credentials \
   --from-file=credentials.json=<chemin-hors-ligne>/tunnel-credentials.json
 ```
 
-**2. Secret de dépôt Argo, dans le namespace `argocd`**
-
-`stoa-labs` est privé. Argo s'authentifie par une **clé de déploiement en
-lecture seule** posée sur le dépôt (`argocd-k3s-contabo`).
-
-```bash
-kubectl -n argocd create secret generic repo-stoa-labs \
-  --from-literal=type=git \
-  --from-literal=url=git@github.com:stoa-platform/stoa-labs.git \
-  --from-file=sshPrivateKey=<chemin-hors-ligne>/argocd-stoa-labs
-kubectl -n argocd label secret repo-stoa-labs \
-  argocd.argoproj.io/secret-type=repository
-```
+Aucun identifiant de dépôt n'est nécessaire : `stoa-labs` est **public**, comme
+`stoa`, et Argo le clone en anonyme. Ce dépôt étant public, **rien de sensible ne
+doit y entrer** — ni identifiant, ni topologie exploitable, ni dette de sécurité
+encore ouverte.
 
 ### Amorçage
 
 L'`Application` elle-même n'est pas synchronisée par Argo (problème de
-l'œuf et de la poule). Elle s'applique une fois, après les deux secrets :
+l'œuf et de la poule). Elle s'applique une fois, après le secret :
 
 ```bash
 kubectl apply -f deploy/bootstrap/argocd/app-cloudflared.yaml

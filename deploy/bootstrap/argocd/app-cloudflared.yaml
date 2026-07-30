@@ -12,9 +12,9 @@ spec:
   project: default
 
   source:
-    # SSH, parce que stoa-labs est privé : Argo s'authentifie par la clé de
-    # déploiement en lecture seule (Secret de dépôt dans le namespace argocd).
-    repoURL: git@github.com:stoa-platform/stoa-labs.git
+    # HTTPS anonyme : stoa-labs est public, comme le dépôt stoa. Argo n'a aucun
+    # identifiant de dépôt configuré et n'en a pas besoin ici.
+    repoURL: https://github.com/stoa-platform/stoa-labs.git
     targetRevision: main
     path: deploy/bootstrap/edge/cloudflared
 
