@@ -71,7 +71,50 @@ gh CLI (PR `stoa-platform/stoa`), ssh (alias worker-1..5).
 | **T5** Bascule + P-a/P-b | ✅ **PORTES P-a ET P-b VERTES** — bascule jouée par l'exploitant le 2026-07-30, `ok=15 changed=3 failed=0` (détail ci-dessous) | — |
 | **T6** Contre-épreuve rollback | ✅ **FAITE, dans les DEUX sens** — chemin automatique (`rescue`, sabotage 2) et chemin **explicite** (`-e wm_cutover_rollback=true`), chacun vérifié (détail ci-dessous) | re-bascule |
 | **T7** Décommission + P-c | ✅ **PORTE P-c VERTE** — worker-3 ne porte plus que Caddy et son agent k3s (détail ci-dessous) | — |
-| **T8** Re-mesure + consignation | 🔄 sonde du cycle en cours (~52 min, 2 cycles) | GOAL et handoff |
+| **T8** Re-mesure + consignation | ✅ **FAIT** — deux cycles mesurés côté public ; **le chiffre du cycle trial est corrigé pour la seconde fois** (détail ci-dessous) | — |
+
+### T8 — le cycle trial mesuré côté public, et un chiffre à corriger
+
+Sonde à 5 s sur `https://dev-wm.gostoa.dev/gateway/accounts-read/1.0.0/accounts`,
+36 min, **deux cycles complets** :
+
+| Coupure | Durée |
+|---|---|
+| 10:40:09 → 10:44:04 | **235 s** |
+| 11:00:14 → 11:02:18 | **120 s** |
+
+**La dispersion est forte — presque un facteur 2.** La réserve posée en spéc
+(« un seul cycle observé ; le chiffre gravé sera un intervalle, pas un point »)
+était justifiée. Le chiffre honnête est donc **120–235 s par cycle de 20 min**,
+soit **~85 % de disponibilité** en moyenne sur ces deux cycles (355 s de coupure
+cumulée), et non un point.
+
+**Le chiffre de 150 s est FAUX pour le data-plane, et c'est moi qui l'ai écrit
+dans `stoa`.** Il avait été mesuré sur `/rest/apigateway/health` : or le health
+remonte **avant** que l'API soit chargée et invocable. L'écart mesuré est de
+~85 s sur le premier cycle. Ce que voit un client est donc **plus long** que ce
+que voit une sonde de santé — et c'est le client qui compte.
+
+**Dette à solder :** le commentaire de
+`stoa deploy/bootstrap/wm/apigateway/cronjob.yaml`, posé par la PR #2825, annonce
+« 150 s » et « 87,5 % ». À remplacer par « 120–235 s mesurées côté data-plane
+public, ~85 % ». Laisser un chiffre connu comme faux dans Git est pire que
+l'estimation qu'il remplaçait, puisqu'il se présente comme une mesure.
+
+**`handle_errors` fonctionne — mais pas totalement.** Codes rencontrés pendant
+les 355 s de coupure :
+
+| Code | Durée | Origine |
+|---|---|---|
+| **503** | 340 s | le `handle_errors` du Caddyfile — l'intention est tenue |
+| **500** | 10 s | **webMethods répond lui-même 500** pendant son arrêt, et Caddy **relaie** ce 5xx amont. `handle_errors` ne capture que les erreurs *de Caddy*, pas une réponse d'erreur transmise avec succès. |
+| **000** | 5 s | aucune réponse en moins de 6 s (le `--max-time` de la sonde) — la tentative de connexion de Caddy vers un amont mort dépasse le délai du client |
+
+Donc 96 % de la fenêtre porte le message explicite voulu, et **15 s laissent
+passer un 500 ou un silence**. Ce n'est pas un défaut à corriger dans F5 : le
+couvrir exigerait d'intercepter les 5xx amont (`handle_response`), ce qui
+masquerait aussi de vraies erreurs applicatives de la gateway. À connaître, pas à
+maquiller.
 
 ### T7 — la décommission, et un bug de mon propre garde-fou
 
