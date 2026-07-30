@@ -1,6 +1,25 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
+
+# Namespace porté ici : sans lui, le ConfigMap généré naît sans namespace tandis
+# que le Deployment déclare `edge`, et le transformateur de références n'apparie
+# pas les deux — le volume resterait sur le nom sans empreinte.
+namespace: edge
+
 resources:
   - namespace.yaml
-  - configmap.yaml
   - deployment.yaml
+
+# Le ConfigMap est GÉNÉRÉ, pas écrit à la main : son nom porte une empreinte du
+# contenu. Toute modification de config.yaml change ce nom, donc le podSpec, donc
+# déclenche un déploiement. Un ConfigMap écrit en dur serait mis à jour en place
+# sans redémarrer les pods — cloudflared continuerait de router les anciens noms,
+# en silence.
+configMapGenerator:
+  - name: cloudflared-config
+    files:
+      - config.yaml
+
+generatorOptions:
+  labels:
+    app.kubernetes.io/part-of: stoa-lab
