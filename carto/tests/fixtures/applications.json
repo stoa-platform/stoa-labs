@@ -1,0 +1,158 @@
+{
+  "applications": [
+    {
+      "name": "f3-proof-2026-07-29",
+      "description": null,
+      "contactEmails": [],
+      "identifiers": [],
+      "siteURLs": [],
+      "jsOrigins": [],
+      "authStrategyIds": [],
+      "version": "1.0",
+      "id": "03e668ed-2925-4189-99bb-2d199d587dd9",
+      "created": "2026-07-29 15:51:37 GMT",
+      "lastupdated": null,
+      "owner": "Administrator",
+      "ownerType": "user",
+      "subscription": false,
+      "consumingAPIs": [],
+      "teams": [
+        {
+          "id": "Administrators",
+          "name": "Administrators",
+          "source": "SYSTEM"
+        },
+        {
+          "id": "Default",
+          "name": "Default",
+          "source": "SYSTEM"
+        }
+      ],
+      "accessTokens": {
+        "apiAccessKey_credentials": {
+          "apiAccessKey": "REDACTED",
+          "expirationInterval": null,
+          "expirationDate": null,
+          "expired": false
+        }
+      }
+    },
+    {
+      "name": "carto-probe-app-active",
+      "description": "Application de sondage carto-probe (T0) -- a supprimer apres capture.",
+      "contactEmails": [],
+      "identifiers": [],
+      "siteURLs": [],
+      "jsOrigins": [],
+      "authStrategyIds": [],
+      "version": "1.0",
+      "id": "4c329b2e-bcf7-45dc-996d-d5d9dfb538e0",
+      "created": "2026-07-30 16:59:33 GMT",
+      "lastupdated": null,
+      "owner": "Administrator",
+      "ownerType": "user",
+      "subscription": false,
+      "consumingAPIs": [
+        "5ed95567-62e7-4a4e-a2da-441f0b276098"
+      ],
+      "teams": [
+        {
+          "id": "Administrators",
+          "name": "Administrators",
+          "source": "SYSTEM"
+        },
+        {
+          "id": "Default",
+          "name": "Default",
+          "source": "SYSTEM"
+        }
+      ],
+      "accessTokens": {
+        "apiAccessKey_credentials": {
+          "apiAccessKey": "REDACTED",
+          "expirationInterval": null,
+          "expirationDate": null,
+          "expired": false
+        }
+      }
+    },
+    {
+      "name": "carto-probe-app-low",
+      "description": "Application de sondage carto-probe (T0) -- a supprimer apres capture.",
+      "contactEmails": [],
+      "identifiers": [],
+      "siteURLs": [],
+      "jsOrigins": [],
+      "authStrategyIds": [],
+      "version": "1.0",
+      "id": "f06fa084-3745-4e6d-afac-98246b3c2757",
+      "created": "2026-07-30 16:59:35 GMT",
+      "lastupdated": null,
+      "owner": "Administrator",
+      "ownerType": "user",
+      "subscription": false,
+      "consumingAPIs": [
+        "5ed95567-62e7-4a4e-a2da-441f0b276098"
+      ],
+      "teams": [
+        {
+          "id": "Administrators",
+          "name": "Administrators",
+          "source": "SYSTEM"
+        },
+        {
+          "id": "Default",
+          "name": "Default",
+          "source": "SYSTEM"
+        }
+      ],
+      "accessTokens": {
+        "apiAccessKey_credentials": {
+          "apiAccessKey": "REDACTED",
+          "expirationInterval": null,
+          "expirationDate": null,
+          "expired": false
+        }
+      }
+    },
+    {
+      "name": "carto-probe-app-idle",
+      "description": "Application de sondage carto-probe (T0) -- a supprimer apres capture.",
+      "contactEmails": [],
+      "identifiers": [],
+      "siteURLs": [],
+      "jsOrigins": [],
+      "authStrategyIds": [],
+      "version": "1.0",
+      "id": "b168b889-f8e5-4ab2-bd11-bdf351942e8a",
+      "created": "2026-07-30 16:59:37 GMT",
+      "lastupdated": null,
+      "owner": "Administrator",
+      "ownerType": "user",
+      "subscription": false,
+      "consumingAPIs": [
+        "5ed95567-62e7-4a4e-a2da-441f0b276098"
+      ],
+      "teams": [
+        {
+          "id": "Administrators",
+          "name": "Administrators",
+          "source": "SYSTEM"
+        },
+        {
+          "id": "Default",
+          "name": "Default",
+          "source": "SYSTEM"
+        }
+      ],
+      "accessTokens": {
+        "apiAccessKey_credentials": {
+          "apiAccessKey": "REDACTED",
+          "expirationInterval": null,
+          "expirationDate": null,
+          "expired": false
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,56 @@
+{
+  "apiResponse": [
+    {
+      "api": {
+        "apiName": "accounts-read",
+        "apiVersion": "1.0.0",
+        "apiDescription": "API synthétique de lecture de comptes — le contrat \"Define Once\" du PoC de fédération. Une seule définition OpenAPI, publiée par labctl sur les 3 gateways (WSO2, APISIX, webMethods). Données 100% fictives. side_effects=read, safe_for_agents=true.\n",
+        "isActive": true,
+        "type": "REST",
+        "tracingEnabled": false,
+        "publishedPortals": [],
+        "systemVersion": 1,
+        "id": "f12b0b1f-797c-4881-a1b2-511e290af69e"
+      },
+      "responseStatus": "SUCCESS",
+      "teams": [
+        {
+          "id": "Administrators",
+          "name": "Administrators",
+          "source": "SYSTEM"
+        },
+        {
+          "id": "b178395d-7fac-42a1-92f4-ea775b70845a",
+          "name": "banking-demo",
+          "source": "USER"
+        }
+      ]
+    },
+    {
+      "api": {
+        "apiName": "carto-probe-api",
+        "apiVersion": "1.0.0",
+        "apiDescription": "API de sondage carto-probe (T0)\n",
+        "isActive": true,
+        "type": "REST",
+        "tracingEnabled": false,
+        "publishedPortals": [],
+        "systemVersion": 1,
+        "id": "5ed95567-62e7-4a4e-a2da-441f0b276098"
+      },
+      "responseStatus": "SUCCESS",
+      "teams": [
+        {
+          "id": "Administrators",
+          "name": "Administrators",
+          "source": "SYSTEM"
+        },
+        {
+          "id": "Default",
+          "name": "Default",
+          "source": "SYSTEM"
+        }
+      ]
+    }
+  ]
+}

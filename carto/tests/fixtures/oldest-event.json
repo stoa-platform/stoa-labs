@@ -1,0 +1,24 @@
+{
+  "took": 1,
+  "timed_out": false,
+  "_shards": {
+    "total": 1,
+    "successful": 1,
+    "skipped": 0,
+    "failed": 0
+  },
+  "hits": {
+    "total": {
+      "value": 12,
+      "relation": "eq"
+    },
+    "max_score": null,
+    "hits": []
+  },
+  "aggregations": {
+    "oldest": {
+      "value": 1785395717163.0,
+      "value_as_string": "2026-07-30T07:15:17.163Z"
+    }
+  }
+}
