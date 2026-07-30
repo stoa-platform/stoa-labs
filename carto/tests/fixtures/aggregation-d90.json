@@ -1,15 +1,15 @@
 {
-  "took": 14,
+  "took": 5,
   "timed_out": false,
   "_shards": {
-    "total": 1,
-    "successful": 1,
+    "total": 5,
+    "successful": 5,
     "skipped": 0,
     "failed": 0
   },
   "hits": {
     "total": {
-      "value": 12,
+      "value": 47,
       "relation": "eq"
     },
     "max_score": null,
@@ -22,41 +22,20 @@
       "buckets": [
         {
           "key": "5ed95567-62e7-4a4e-a2da-441f0b276098",
-          "doc_count": 9,
+          "doc_count": 47,
           "consumer": {
             "doc_count_error_upper_bound": 0,
             "sum_other_doc_count": 0,
             "buckets": [
               {
-                "key": "unknown",
-                "doc_count": 9,
+                "key": "Unknown",
+                "doc_count": 47,
                 "last": {
-                  "value": 1785431012592.0,
-                  "value_as_string": "2026-07-30T17:03:32.592Z"
+                  "value": 1785432377212.0,
+                  "value_as_string": "2026-07-30T17:26:17.212Z"
                 },
                 "errors": {
-                  "doc_count": 9
-                }
-              }
-            ]
-          }
-        },
-        {
-          "key": "f12b0b1f-797c-4881-a1b2-511e290af69e",
-          "doc_count": 3,
-          "consumer": {
-            "doc_count_error_upper_bound": 0,
-            "sum_other_doc_count": 0,
-            "buckets": [
-              {
-                "key": "unknown",
-                "doc_count": 3,
-                "last": {
-                  "value": 1785411483161.0,
-                  "value_as_string": "2026-07-30T11:38:03.161Z"
-                },
-                "errors": {
-                  "doc_count": 3
+                  "doc_count": 0
                 }
               }
             ]

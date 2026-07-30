@@ -1,9 +1,10 @@
-# Terrain client mesuré — 2026-07-30
+# Terrain mesuré — 2026-07-30
 
-Gateway sondée : webMethods API Gateway 10.15 (namespace `wm`, cluster labo Contabo).
+Gateway sondée : webMethods API Gateway 10.15 (cluster Kubernetes de labo).
 Accès : admin REST `http://127.0.0.1:15555/rest/apigateway` (`Administrator:manage`,
-`Accept: application/json` obligatoire) ; API Data Store (Elasticsearch)
-`http://127.0.0.1:19200`. Toutes les valeurs ci-dessous sont mesurées, pas devinées.
+`Accept: application/json` obligatoire, via tunnel local) ; API Data Store
+(Elasticsearch) `http://127.0.0.1:19200` (idem). Toutes les valeurs
+ci-dessous sont mesurées, pas devinées.
 
 ## V1 — date de création des APIs et Applications
 
@@ -37,35 +38,41 @@ l'entité ; documenté pour éviter la surprise en T9.
 
 ## V2 — rétention réelle des index d'analytics
 
-Plus vieil événement mesuré (voir aussi la mise en garde ES_INDEX en V3) :
+Plus vieil événement mesuré dans **`gateway_default_analytics_transactionalevents-*`**
+(ES_INDEX retenu, voir V3) : `2026-07-30T17:17:29.637Z` → cet index vient
+tout juste d'être activé (voir V3), sa profondeur ne reflète donc que la
+durée de cette session de mesure, pas une rétention réelle. Requête (voir
+`carto/tests/fixtures/oldest-event.json`) :
+```
+curl -s -H 'Content-Type: application/json' \
+  'http://127.0.0.1:19200/gateway_default_analytics_transactionalevents*/_search' \
+  -d '{ "size": 0, "aggs": { "oldest": { "min": { "field": "creationDate" } } } }'
+```
 
-- Dans l'index retenu comme ES_INDEX (`gateway_default_analytics_errorevents-*`) :
-  `2026-07-30T07:15:17.163Z` → **profondeur réelle ≈ 1 jour** (date du jour :
-  2026-07-30). Requête (voir `carto/tests/fixtures/oldest-event.json`) :
-  ```
-  curl -s -H 'Content-Type: application/json' \
-    'http://127.0.0.1:19200/gateway_default_analytics_errorevents*/_search' \
-    -d '{ "size": 0, "aggs": { "oldest": { "min": { "field": "creationDate" } } } }'
-  ```
-- Dans `gateway_default_analytics_lifecycleevents-*` (événements de cycle de
-  vie, plus anciens que les événements d'erreur) : `2026-07-29T14:49:53.799Z`
-  → correspond à l'âge du cluster labo lui-même (stand-up récent), pas à une
-  vraie politique de rétention.
-- Dans `gateway_default_analytics_transactionalevents-*` : agrégation `min`
-  renvoie `null` (0 document — voir V3, finding critique).
+Pour référence, mesuré aussi dans deux autres index déjà peuplés avant notre
+intervention :
+- `gateway_default_analytics_errorevents-*` : `2026-07-30T07:15:17.163Z`
+  (≈ 1 jour avant capture).
+- `gateway_default_analytics_lifecycleevents-*` : `2026-07-29T14:49:53.799Z`
+  (correspond à la mise en service du cluster de labo lui-même, pas à une
+  politique de rétention).
 
-Conséquence : **la profondeur mesurée ici (~1 jour) reflète l'âge du labo, pas
-une rétention produit.** Elle n'est PAS transposable telle quelle chez le
-client : à re-mesurer sur un tenant qui tourne depuis longtemps. Ne pas figer
-en dur "1 jour" comme fenêtre affichable dans le code — le paramétrer.
+Conséquence : **aucune des profondeurs mesurées ici n'est transposable au
+client.** Elles reflètent l'âge du labo et le moment où la journalisation a
+été activée pendant cette tâche (voir V3), pas une rétention produit. À
+re-mesurer sur un tenant qui tourne depuis longtemps, avec la politique de
+journalisation déjà correctement configurée dès le départ. Ne pas figer de
+valeur en dur dans le code — paramétrer la fenêtre.
 
-## V3 — chemins d'administration et shape de l'agrégation
+## V3 — chemins d'administration, shape de l'agrégation, et pourquoi l'index était vide
 
 Sources primaires (lues à la source, pas devinées) :
 ```
-kubectl -n wm exec deploy/wm-apigateway -- ls \
+kubectl exec deploy/<gateway> -- ls \
   /opt/softwareag/IntegrationServer/instances/default/packages/WmAPIGateway/resources/apigatewayservices/
-# → APIGatewayServiceManagement.json (APIs), APIGatewayApplication.json (Applications)
+# → APIGatewayServiceManagement.json (APIs), APIGatewayApplication.json (Applications),
+#   APIGatewayAdministration.json (destinations, /apitransactions, description des types d'événements),
+#   APIGatewayPolicyManagement.json (policies, policyActions, policyStages)
 ```
 
 Liste des APIs         : `GET /rest/apigateway/apis`
@@ -85,107 +92,151 @@ la liste complète des APIs déclarées (non additif).
 
 DECLARED_PATH = `/applications/{applicationId}/apis`
 
-ES_INDEX / ES_API_FIELD / ES_APP_FIELD / ES_TIME_FIELD / ES_STATUS_FIELD —
-**finding critique, à lire en entier avant de recopier ces constantes** :
+### ES_INDEX / ES_API_FIELD / ES_APP_FIELD / ES_TIME_FIELD / ES_STATUS_FIELD
 
-L'API Data Store expose plusieurs index d'événements
-(`_cat/indices?v` → familles `gateway_default_analytics_<type>-*`). La
-shape "idéale" décrite dans le brief (agrégation imbriquée api → consumer,
-avec `last` et compteur d'erreurs) correspond exactement au mapping de
-**`gateway_default_analytics_transactionalevents-*`**
-(`apiId` keyword, `applicationId` keyword, `creationDate` date, `responseCode`
-keyword, `httpMethod`, `totalTime`, etc. — mapping complet vérifié via
-`GET /gateway_default_analytics_transactionalevents*/_mapping`).
+**Root cause trouvée et corrigée** (ne plus refaire cette investigation en
+T2/T3). Le texte de description de `APIGatewayAdministration.json`
+(paramètre `eventType` de `GET /apitransactions`) dit noir sur blanc :
 
-**Mesuré en conditions réelles : cet index est resté à 0 document** après
-plus de 50 appels data-plane réels (succès et erreurs, avec et sans clé
-d'application, avant et après un redémarrage du pod, avec `tracingEnabled`
-activé, avec 3 vérifications espacées et un `_refresh` forcé). Ni les
-réglages `configurations/gatewayDestinationConfig`,
-`configurations/elasticsearchDestinationConfig`,
-`configurations/desDestinationConfig` (aucun n'expose de bascule
-`sendTransactionalEvent` — seuls `sendErrorEvent`, `sendPerformanceMetrics`,
-`sendLifecycleEvent`, `sendPolicyViolationEvent` existent), ni l'activation du
-tracing par API (`PUT /apis/{apiId}/tracing/enable`, qui peuple en revanche
-`gateway_default_mediatortracespan-*` et
-`gateway_default_requestresponsetracespans-*` — traces d'appel brutes,
-**sans champ `applicationId`**) n'ont débloqué d'écriture dans cet index.
+> Transactional event: Provides a summary (request & response) of each
+> runtime transaction in the system. **It is generated when a Log
+> Invocation policy is included for the API.** For example, if an API has
+> this policy attached to it, then for every invoke the system generates a
+> transaction event.
 
-L'index réellement peuplé par le trafic data-plane, avec les 4 champs requis,
-est **`gateway_default_analytics_errorevents-*`** — mais il ne contient QUE
-les invocations qui se terminent en erreur (`responseCode >= 400`), jamais
-les succès. Champs mesurés sur un document réel :
-```json
-{"eventType":"Error","apiId":"...","apiName":"...","apiVersion":"...",
- "applicationId":"Unknown","applicationName":"Unknown","applicationIp":"...",
- "operationName":"/accounts","httpMethod":"get","responseCode":"405",
- "errorDesc":"Method not allowed : post","creationDate":1785431...,
- "correlationID":"..."}
+Vérification mesurée : `GET /rest/apigateway/policies` liste une policy
+**système, globale, nommée `GlobalLogInvocationPolicy`** (« Transaction
+logging »), qui référence l'action `GlobalLogInvocationPolicyAction`
+(templateKey `logInvocation`, stage `LMT`, `logGenerationFrequency: Always`
+— donc conçue pour journaliser succès ET échecs). Cette policy système
+était **`"active": false`** par défaut sur ce labo. C'est la cause unique et
+suffisante du 0 document initial sur
+`gateway_default_analytics_transactionalevents-*` : sans elle, aucune API
+n'écrit jamais d'événement transactionnel, quel que soit le volume de
+trafic.
+
+Correction appliquée et vérifiée :
 ```
+curl -sS -u Administrator:manage -H 'Accept: application/json' -X PUT \
+  http://127.0.0.1:15555/rest/apigateway/policies/GlobalLogInvocationPolicy/activate
+```
+Après activation, du trafic réussi réel généré à travers le data-plane
+(`carto-probe-app-active` : 35 appels, `carto-probe-app-low` : 9 appels,
+`carto-probe-app-idle` : 0 appel) a bien produit des documents :
+`gateway_default_analytics_transactionalevents-*` est passé de 0 à 47
+documents, tous `"status": "SUCCESS"`, `"responseCode": "200"`, avec
+`apiId` correctement renseigné et des volumes différenciés par
+consommateur retrouvés dans l'agrégation (voir `aggregation-d90.json`).
 
-Constantes retenues (mesurées, pas idéales) :
-- `ES_INDEX` = `gateway_default_analytics_errorevents-*` (motif ES ;
-  index concret vu : `gateway_default_analytics_errorevents_1785336568900-000001`)
+Point annexe vérifié et écarté : les réglages de destination
+(`configurations/gatewayDestinationConfig`,
+`configurations/elasticsearchDestinationConfig`,
+`configurations/desDestinationConfig`) n'exposent **aucune** bascule
+`send*TransactionalEvent` (seuls `sendErrorEvent`, `sendPerformanceMetrics`,
+`sendLifecycleEvent`, `sendPolicyViolationEvent`, et les `sendAuditlog*Event`
+existent) — donc ce n'est pas un levier séparé pour ce type d'événement,
+contrairement aux autres types. Le seul levier est la policy Log Invocation,
+comme le dit la documentation. `PUT /apis/{apiId}/tracing/enable` (testé
+également) est sans effet sur `transactionalevents` : il peuple
+`gateway_default_mediatortracespan-*` et
+`gateway_default_requestresponsetracespans-*` (traces d'appel brutes, avec
+payloads, **sans champ `applicationId`**) — mécanisme différent, pas un
+remplacement.
+
+Mapping complet vérifié via
+`GET /gateway_default_analytics_transactionalevents*/_mapping`.
+
+Constantes retenues (mesurées, désormais sur l'index réellement conçu pour
+cet usage) :
+- `ES_INDEX` = `gateway_default_analytics_transactionalevents-*`
 - `ES_API_FIELD` = `apiId`
 - `ES_APP_FIELD` = `applicationId`
 - `ES_TIME_FIELD` = `creationDate` (epoch millis)
-- `ES_STATUS_FIELD` = `responseCode` (type `keyword`/`text`, chaîne à 3
-  chiffres — une comparaison lexicographique `gte "400"` fonctionne car tous
-  les codes HTTP standards font 3 caractères, mais ce n'est pas un entier)
+- `ES_STATUS_FIELD` = `responseCode` (type `keyword`, chaîne à 3 chiffres —
+  une comparaison lexicographique `gte "400"` fonctionne car tous les codes
+  HTTP standards font 3 caractères, mais ce n'est pas un entier)
 
-**Conséquence directe pour T2/T3 : l'agrégation de volumétrie par
-consommateur, cœur du produit, ne peut aujourd'hui mesurer QUE le trafic en
-erreur.** Le trafic réussi (la majorité des appels, y compris nos rafales
-différenciées par Application) n'est tracé nulle part dans cet
-environnement. C'est un blocage majeur pour la finalité du projet (cartographier
-qui consomme quoi, pas seulement qui échoue), à vérifier en priorité absolue
-sur le tenant client réel avant d'aller plus loin : il est plausible que ce
-soit une limitation de cette image de démonstration/trial (licence limitée,
-composant de collecte non démarré) plutôt qu'un comportement standard du
-produit.
+Différence de mapping notée entre index (à ne pas généraliser à tort) :
+sur `errorevents`, `applicationId` est `text` + analyseur
+`not_analyzed_ignorecase` (agrégation renvoie la valeur en minuscules) ;
+sur `transactionalevents`, `applicationId` est `keyword` strict (agrégation
+renvoie la casse d'origine, ex. `"Unknown"`). Les deux se comportent
+correctement en `terms` agg, juste avec une casse différente.
 
 ## V4 — contact exploitable sur les Applications
 
 Champ `contactEmails` existe dans le schéma (`Application.contactEmails`,
 tableau de chaînes) mais est **vide (`[]`)** sur toutes les Applications
 observées, y compris celles semées par cette tâche (nous ne l'avons pas
-renseigné) et l'Application préexistante `f3-proof-2026-07-29`.
-Conséquence : source externe nécessaire pour un contact exploitable — laquelle
-n'est pas déterminée ici (pas d'annuaire consommateurs disponible dans ce
-labo). À lever avec le client : LDAP interne, CMDB, ou déclaratif au moment de
-l'enregistrement de l'Application.
+renseigné) et l'Application préexistante repérée sur ce labo avant notre
+intervention. Conséquence : source externe nécessaire pour un contact
+exploitable — laquelle n'est pas déterminée ici (pas d'annuaire
+consommateurs disponible dans ce labo). À lever avec le client : LDAP
+interne, CMDB, ou déclaratif au moment de l'enregistrement de l'Application.
 
 ## V5 — identification de l'appelant dans les événements
 
-Le champ `applicationId` est-il toujours renseigné ? **Non, jamais avec une
-vraie identité observée dans cette campagne** : toutes les valeurs capturées
-valent `"Unknown"` (ou `"unknown"` après normalisation par l'analyseur ES du
-champ `applicationId` sur cet index, qui est `text` + `not_analyzed_ignorecase`,
-pas un `keyword` strict — voir mapping mesuré).
+Le champ `applicationId` est-il toujours renseigné ? **Non — et après
+correction du blocage V3, c'est maintenant vérifié sur du trafic réussi et
+authentifié : `applicationId` vaut `"Unknown"` à 100 %, y compris pour des
+appels 200 passés avec la clé API (`x-Gateway-APIKey`) d'une Application
+déclarée consommatrice.** Ce n'est plus une limite de mesure (comme le
+laissait penser l'ancienne hypothèse « pas d'événement de succès
+disponible ») — **c'est un second problème, distinct et confirmé.**
 
-Part d'événements sans appelant identifié : **100 % (12/12)** dans
-l'échantillon capturé.
+Part d'événements sans appelant identifié : **100 % (47/47)** sur
+`transactionalevents` après correction du blocage de journalisation, tous
+succès confondus.
 
-Mise en garde importante avant de généraliser cette mesure : les erreurs
-capturées ici sont soit des `405 Method not allowed` (rejetées par la gateway
-avant l'étage IAM où l'identification se produit — donc structurellement
-`Unknown`, ce n'est pas un échec de la politique d'identification), soit des
-`500 Downtime exception` / `404 Resource not found` antérieurs à notre
-intervention. **Nous n'avons pas réussi, dans la fenêtre de temps disponible,
-à produire une erreur authentifiée post-identification** (le backend
-synthétique renvoie 200 pour toute route/id valide, donc pas de 4xx/5xx
-métier après IAM). Une politique "Identify & Authorize Application" par clé
-API (`x-Gateway-APIKey`, confirmé exact via
-`config/resources/beans/gateway-core.xml` et
-`configurations/settings.extendedKeys.apiKeyHeader`) a été créée et activée
-(policy globale scope=API `carto-probe-api`), mais **son effet sur
-l'attribution `applicationId` n'a pas pu être vérifié** faute d'un chemin
-d'événement qui capture les succès (V3). À refaire dès que le blocage V3 est
-levé.
+Ce qui a été tenté pour faire fonctionner l'identification par clé API,
+dans l'ordre, chaque étape vérifiée par un appel réel suivi d'une lecture de
+l'événement produit :
+1. Policy `evaluatePolicy` (Identify & Authorize), `identificationType: apiKey`,
+   `applicationLookup: relax` — `applicationId` reste `Unknown`.
+2. En-tête confirmé exact par lecture de code (`config/resources/beans/
+   gateway-core.xml`, `configurations/settings.extendedKeys.apiKeyHeader` =
+   `x-Gateway-APIKey`) et vérifié réellement transmis (`curl -v`) — pas un
+   problème de transport.
+3. Clé API de l'Application re-vérifiée à jour (`GET /applications`,
+   valeur courante de `accessTokens.apiAccessKey_credentials.apiAccessKey`)
+   avant chaque test, Application bien déclarée consommatrice de l'API
+   (`GET /applications/{id}/apis` confirme le lien).
+4. `applicationLookup` basculé de `relax` à `strict` (« Registered
+   applications », sémantiquement le bon choix ici) — pas de changement.
+5. Scope de la policy globale élargi de « restreinte à `carto-probe-api` »
+   à « aucune condition de scope » (toutes APIs REST) — pas de changement.
+6. Policy désactivée puis réactivée pour forcer un recalcul de policy
+   effective — pas de changement.
+7. `order` d'enforcement explicite (`1`) au lieu de `null` sur le stage IAM
+   — pas de changement.
 
-Conséquence : tant que V3 n'est pas résolu, la quasi-totalité (voire la
-totalité) des appels apparaîtront sous un consommateur « (non identifié) » —
-recalibrer les attentes de la démo en conséquence.
+Constat annexe : `GET /apis/{apiId}/globalPolicies` (censé lister les
+policies globales actives applicables à une API) affiche
+`["GlobalLogInvocationPolicy"]` mais **n'affiche jamais notre policy
+personnalisée d'identification**, même active et sans condition de scope —
+signe que cette policy n'est probablement pas correctement prise en compte
+dans le pipeline effectif de l'API, sans qu'on ait pu établir pourquoi dans
+le temps disponible (bug d'admin-endpoint qui ne liste que certains types de
+policies système, ou policy réellement non appliquée : les deux hypothèses
+restent ouvertes — la seconde est la plus probable puisqu'elle est cohérente
+avec l'observation directe sur le trafic).
+
+**Conclusion : l'identification de l'appelant par clé API ne fonctionne pas
+dans ce labo, pour une cause non complètement diagnostiquée malgré une
+investigation structurée (7 tentatives listées ci-dessus).** Ce n'est donc
+plus seulement « à refaire » — c'est un vrai problème de fond à porter à
+l'attention de l'équipe avant T2/T3 : **si ce comportement se reproduit chez
+le client, la cartographie affichera 100 % du trafic sous un consommateur
+« (non identifié) » et sera inutilisable pour répondre à « qui consomme
+quoi ».** Recommandation : vérifier ce mécanisme en priorité sur un tenant
+client réel (voire avec l'assistance du support Software AG), idéalement
+avec un scénario d'authentification plus simple à auditer que `apiKey`
+(par ex. HTTP Basic Auth avec les `identifiers` applicatifs, qui n'a pas été
+testé ici faute de temps).
+
+Conséquence pour le produit : tant que ce point n'est pas résolu, prévoir
+dans l'UI un état « (non identifié) » comme cas *majoritaire attendu*, pas
+comme cas résiduel.
 
 ## V6 — cible de publication
 
@@ -212,36 +263,50 @@ APP_FIELDS = {
 }
 DECLARED_PATH = "/applications/{applicationId}/apis"   # GET -> {"apiIDs": [...]}; POST body = {"apiIDs": [...]}
 
-ES_INDEX = "gateway_default_analytics_errorevents-*"   # voir avertissement V3 : erreurs uniquement
+ES_INDEX = "gateway_default_analytics_transactionalevents-*"
 ES_API_FIELD = "apiId"
-ES_APP_FIELD = "applicationId"
+ES_APP_FIELD = "applicationId"   # mesuré "Unknown" à 100% ici — voir V5, préoccupation majeure
 ES_TIME_FIELD = "creationDate"
 ES_STATUS_FIELD = "responseCode"
 ```
+
+Pré-requis d'exploitation à ne pas oublier chez le client (déduit de V3) :
+**vérifier que la policy système `GlobalLogInvocationPolicy` (ou une policy
+Log Invocation équivalente attachée à chaque API d'intérêt) est active**
+avant de faire confiance à `transactionalevents` — sinon l'index reste vide
+silencieusement, sans erreur, sans avertissement.
 
 ## Objets semés sur cette gateway de labo (à nettoyer)
 
 Préfixe `carto-probe-` sur tout ce qui a été créé :
 
 - API `carto-probe-api` v1.0.0, id `5ed95567-62e7-4a4e-a2da-441f0b276098`
-  (backend : `http://backend-dev.wm.svc.cluster.local:8080/accounts`, le même
-  backend synthétique qu'`accounts-read`).
+  (backend : le même backend de test synthétique que l'API préexistante du
+  labo, interne au cluster).
 - Application `carto-probe-app-active`, id `4c329b2e-bcf7-45dc-996d-d5d9dfb538e0`
-  (~40 appels générés, succès + erreurs 405).
+  (~35 appels réussis + quelques erreurs 405 générés).
 - Application `carto-probe-app-low`, id `f06fa084-3745-4e6d-afac-98246b3c2757`
-  (~10 appels générés, succès + erreurs 405).
+  (~9 appels réussis + 1 erreur 405 générés).
 - Application `carto-probe-app-idle`, id `b168b889-f8e5-4ab2-bd11-bdf351942e8a`
   (déclarée consommatrice de `carto-probe-api`, **zéro appel émis** — cas
   central "déclaré sans trafic").
 - Policy action `187e03ac-cf30-4bfb-9592-c7c568f8e73a` (Identify & Authorize,
-  templateKey `evaluatePolicy`, apiKey, `allowAnonymous=true`).
-- Policy globale `b37b96d2-4ac9-4868-a2e3-b1cbe951ab46` (scope API_NAME =
-  `carto-probe-api`), active.
+  templateKey `evaluatePolicy`, apiKey, `allowAnonymous=true`, lookup
+  `strict`) — n'a pas produit d'identification effective (voir V5).
+- Policy globale `b37b96d2-4ac9-4868-a2e3-b1cbe951ab46` (initialement scopée
+  à `carto-probe-api`, puis élargie à toutes APIs REST pendant le
+  diagnostic), active.
 - Policy service-scope orpheline `7287d306-62fb-48d6-a247-5e78dc76e20b`
   (créée puis non utilisée — remplacée par la policy globale ci-dessus ;
   peut être supprimée).
+- Policy système `GlobalLogInvocationPolicy` : **activée par cette tâche**
+  (`active: false` → `true`). ⚠ Ce changement est global à toute la gateway
+  de labo (toutes les APIs présentes, pas seulement `carto-probe-api`) — à
+  décider consciemment si on le laisse actif ou si on le redésactive lors du
+  nettoyage, selon l'usage prévu du labo après cette tâche.
 
 Suppression recommandée (ordre) : désactiver puis supprimer les 3
-Applications, désactiver puis supprimer l'API, supprimer les 2 policies et la
-policy action, via les mêmes chemins DELETE (`/applications/{id}`,
-`/apis/{id}`, `/policies/{id}`, `/policyActions/{id}`).
+Applications, désactiver puis supprimer l'API, supprimer les 2 policies
+custom et la policy action, via les mêmes chemins DELETE
+(`/applications/{id}`, `/apis/{id}`, `/policies/{id}`, `/policyActions/{id}`).
+Décider séparément du sort de `GlobalLogInvocationPolicy` (voir ci-dessus).

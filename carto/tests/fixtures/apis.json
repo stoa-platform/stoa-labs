@@ -33,7 +33,7 @@
         "apiDescription": "API de sondage carto-probe (T0)\n",
         "isActive": true,
         "type": "REST",
-        "tracingEnabled": false,
+        "tracingEnabled": true,
         "publishedPortals": [],
         "systemVersion": 1,
         "id": "5ed95567-62e7-4a4e-a2da-441f0b276098"
