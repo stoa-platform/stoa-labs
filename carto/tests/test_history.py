@@ -1,10 +1,13 @@
 import unittest
 from carto.collect.history import counters, append_history
 
-def carto(edges):
+def carto(edges, apis=None, consumers=None):
     return {"generatedAt": "2026-07-30T02:11:00Z",
-            "apis": [{"id": "a1"}, {"id": "a2"}],
-            "consumers": [{"id": "c1"}, {"id": "c2"}, {"id": "c3"}],
+            "apis": apis if apis is not None
+                    else [{"id": "a1", "ghost": False}, {"id": "a2", "ghost": False}],
+            "consumers": consumers if consumers is not None
+                    else [{"id": "c1", "ghost": False}, {"id": "c2", "ghost": False},
+                          {"id": "c3", "ghost": False}],
             "edges": edges}
 
 def e(api, con, d90):
@@ -26,6 +29,40 @@ class TestCompteurs(unittest.TestCase):
 
     def test_la_date_est_celle_de_la_collecte_sans_heure(self):
         self.assertEqual(counters(carto([]))["date"], "2026-07-30")
+
+class TestFantomes(unittest.TestCase):
+    """I5 — un objet inconnu n'est pas un objet enregistré.
+
+    Compter les fantômes dans `consumersRegistered` gonfle l'annuaire ET la
+    courbe d'évolution, durablement : avec un `applicationId` non renseigné
+    (terrain V5), un seul nœud fantôme suffit à fausser la série.
+    """
+
+    def test_un_appelant_non_identifie_n_est_pas_un_consommateur_enregistre(self):
+        c = counters(carto([e("a1", "Unknown", 48)],
+                           consumers=[{"id": "c1", "ghost": False},
+                                      {"id": "Unknown", "ghost": True}]))
+        self.assertEqual(c["consumersRegistered"], 1)
+
+    def test_un_appelant_non_identifie_n_est_pas_compte_comme_actif(self):
+        c = counters(carto([e("a1", "Unknown", 48)],
+                           consumers=[{"id": "c1", "ghost": False},
+                                      {"id": "Unknown", "ghost": True}]))
+        self.assertEqual(c["consumersActive"], 0)
+
+    def test_une_api_disparue_n_est_pas_une_api_de_l_inventaire(self):
+        c = counters(carto([e("zz", "c1", 3)],
+                           apis=[{"id": "a1", "ghost": False}, {"id": "zz", "ghost": True}]))
+        self.assertEqual(c["apis"], 1)
+
+    def test_le_trafic_des_fantomes_reste_compte_dans_les_appels(self):
+        # `calls` mesure du TRAFIC, lequel a bien eu lieu : l'exclure
+        # reviendrait a effacer 100 % des appels dans le cas du terrain V5.
+        c = counters(carto([e("a1", "Unknown", 48)],
+                           consumers=[{"id": "c1", "ghost": False},
+                                      {"id": "Unknown", "ghost": True}]))
+        self.assertEqual(c["calls"], 48)
+
 
 class TestAppend(unittest.TestCase):
     def test_ajoute_une_ligne(self):

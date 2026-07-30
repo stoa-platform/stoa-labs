@@ -7,10 +7,13 @@ def doc(**over):
         "generatedAt": "2026-07-30T02:11:00Z",
         "window": {"requestedDays": 90, "coveredDays": 34,
                    "oldestEvent": "2026-06-26T00:00:00Z"},
+        "unidentifiedCallShare": 0.0,
         "apis": [{"id": "a1", "name": "orders", "version": "1.0",
-                  "owner": "team-x", "active": True, "createdAt": None}],
+                  "owner": "team-x", "active": True, "createdAt": None,
+                  "ghost": False}],
         "consumers": [{"id": "c1", "name": "crm", "owner": "team-y",
-                       "contact": "crm@ex.invalid", "createdAt": None}],
+                       "contact": "crm@ex.invalid", "createdAt": None,
+                       "ghost": False}],
         "edges": [{"apiId": "a1", "consumerId": "c1", "declared": True,
                    "calls": {"d7": 1, "d30": 2, "d90": 3},
                    "lastCall": "2026-07-29T18:02:00Z", "errorRate": 0.0}],
@@ -55,6 +58,75 @@ class TestValidateCarto(unittest.TestCase):
         d["edges"][0].update(calls={"d7": 0, "d30": 0, "d90": 0},
                              lastCall=None, errorRate=0.0)
         self.assertEqual(validate_carto(d), [])
+
+class TestChampsConsommesParLeRendu(unittest.TestCase):
+    """I3 — le validateur garantit TOUT ce que le rendu consomme.
+
+    `(e.errorRate * 100).toFixed(1)` affiche `NaN %` comme si c'etait une
+    mesure, et le filtre des taux anormaux se tait, si le champ manque.
+    """
+
+    def test_refuse_un_errorrate_manquant(self):
+        d = doc()
+        del d["edges"][0]["errorRate"]
+        self.assertTrue(any("errorRate" in e for e in validate_carto(d)))
+
+    def test_refuse_un_errorrate_non_numerique(self):
+        d = doc()
+        d["edges"][0]["errorRate"] = "0.1"
+        self.assertTrue(any("errorRate" in e for e in validate_carto(d)))
+
+    def test_refuse_un_errorrate_hors_de_zero_un(self):
+        d = doc()
+        d["edges"][0]["errorRate"] = 12.0
+        self.assertTrue(any("errorRate" in e for e in validate_carto(d)))
+
+    def test_refuse_un_lastcall_manquant(self):
+        d = doc()
+        del d["edges"][0]["lastCall"]
+        self.assertTrue(any("lastCall" in e for e in validate_carto(d)))
+
+    def test_accepte_un_lastcall_nul_mais_pas_un_lastcall_numerique(self):
+        d = doc()
+        d["edges"][0]["lastCall"] = None
+        self.assertEqual(validate_carto(d), [])
+        d["edges"][0]["lastCall"] = 1785431849637
+        self.assertTrue(any("lastCall" in e for e in validate_carto(d)))
+
+    def test_refuse_un_ghost_manquant_sur_une_api(self):
+        d = doc()
+        del d["apis"][0]["ghost"]
+        self.assertTrue(any("ghost" in e for e in validate_carto(d)))
+
+    def test_refuse_un_ghost_manquant_sur_un_consommateur(self):
+        d = doc()
+        del d["consumers"][0]["ghost"]
+        self.assertTrue(any("ghost" in e for e in validate_carto(d)))
+
+    def test_refuse_une_part_de_trafic_non_identifie_absente(self):
+        d = doc()
+        del d["unidentifiedCallShare"]
+        self.assertTrue(any("unidentifiedCallShare" in e for e in validate_carto(d)))
+
+    def test_refuse_une_part_de_trafic_non_identifie_aberrante(self):
+        self.assertTrue(any("unidentifiedCallShare" in e
+                            for e in validate_carto(doc(unidentifiedCallShare=1.4))))
+
+    def test_un_booleen_ne_passe_pas_pour_un_taux(self):
+        # bool est un int en Python : True glisserait sans ce garde-fou
+        self.assertTrue(any("unidentifiedCallShare" in e
+                            for e in validate_carto(doc(unidentifiedCallShare=True))))
+
+    def test_refuse_un_oldestevent_manquant(self):
+        d = doc()
+        del d["window"]["oldestEvent"]
+        self.assertTrue(any("oldestEvent" in e for e in validate_carto(d)))
+
+    def test_accepte_un_oldestevent_nul_index_vide(self):
+        d = doc()
+        d["window"]["oldestEvent"] = None
+        self.assertEqual(validate_carto(d), [])
+
 
 class TestValidateHistory(unittest.TestCase):
     def test_ligne_complete_est_valide(self):

@@ -15,16 +15,27 @@ def counters(carto):
 
     Retourne un dictionnaire avec les clés :
     - date : date de la collecte (YYYYMMDD)
-    - apis : nombre d'APIs dans le graphe
-    - consumersRegistered : nombre total de consommateurs enregistrés
-    - consumersActive : nombre de consommateurs ayant appelé au moins une API (d90 > 0)
-    - calls : total des appels sur la fenêtre d90
+    - apis : nombre d'APIs ENREGISTRÉES dans l'inventaire
+    - consumersRegistered : nombre de consommateurs ENREGISTRÉS
+    - consumersActive : nombre de consommateurs enregistrés ayant appelé au
+      moins une API (d90 > 0)
+    - calls : total des appels sur la fenêtre d90, fantômes COMPRIS
+
+    Les nœuds `ghost` (identifiant vu dans le trafic mais absent de
+    l'inventaire : objet supprimé, ou appelant non identifié) sont exclus des
+    trois comptages d'objets : un objet inconnu n'est pas un objet enregistré,
+    et la courbe d'évolution hériterait sinon d'un gonflement permanent. Ils
+    restent comptés dans `calls`, qui mesure du TRAFIC, lequel a bien eu lieu.
     """
-    active = {e["consumerId"] for e in carto["edges"] if e["calls"]["d90"] > 0}
+    apis = [a for a in carto["apis"] if not a.get("ghost")]
+    consumers = [c for c in carto["consumers"] if not c.get("ghost")]
+    registered = {c["id"] for c in consumers}
+    active = {e["consumerId"] for e in carto["edges"]
+              if e["calls"]["d90"] > 0 and e["consumerId"] in registered}
     return {
         "date": carto["generatedAt"][:10],
-        "apis": len(carto["apis"]),
-        "consumersRegistered": len(carto["consumers"]),
+        "apis": len(apis),
+        "consumersRegistered": len(consumers),
         "consumersActive": len(active),
         "calls": sum(e["calls"]["d90"] for e in carto["edges"]),
     }
