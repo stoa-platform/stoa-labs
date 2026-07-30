@@ -67,8 +67,59 @@ gh CLI (PR `stoa-platform/stoa`), ssh (alias worker-1..5).
 | **T1** PR `stoa` | ✅ **FAIT** — PR **#2825 mergée** par l'exploitant à 08:30:07Z (`dc2cd17b`), Application `wm-backend-dev` appliquée, `Synced/Healthy`, pod prêt en 12 s. **ClusterIP `10.43.227.71` inchangée après re-sync** → l'épinglage a porté sur la valeur vive | — |
 | **T2** Data-plane interne | ✅ **PORTE VERTE** — `/gateway/accounts-read/1.0.0/accounts` sur la ClusterIP → **200 + JSON de `backend-dev`**, là où elle rendait **500** avant | — |
 | **T3** Sauvegarde ns `wm` | 🔄 **run en cours** (code fait, 2 bugs du rôle corrigés au passage) | relecture de l'archive sur worker-2 |
-| **T4** Rôle de bascule | ✅ **écrit, vérifié à blanc**, 4 gardes ; **sabotage 1 vert** (cible fausse → refus d'écrire, `changed=0`) | **sabotage 2** (chemin `rescue`) — écriture Caddy, geste exploitant |
-| **T5–T8** | ⛔ bloqués sur l'écriture Caddy | — |
+| **T4** Rôle de bascule | ✅ **FAIT — les DEUX sabotages verts.** Sabotage 1 : cible fausse → refus d'écrire, `changed=0`. **Sabotage 2 : le chemin `rescue` est prouvé en conditions réelles** (détail ci-dessous) | — |
+| **T5** Bascule + P-a/P-b | ⏸ prête ; le filet est prouvé | `ansible-playbook wm-cutover.yml` — geste exploitant |
+| **T6–T8** | ⛔ en aval de T5 | — |
+
+### T4 sabotage 2 — le filet tient, prouvé sur le vrai fichier
+
+Joué par l'exploitant le 2026-07-30 à ~10:47Z, **pendant que Docker servait
+encore**. Déroulé constaté :
+
+1. garde d'empreinte : « état reconnu (avant-bascule) — OK » ;
+2. **garde d'amont : 30 essais en échec puis OK.** Elle a absorbé la fenêtre de
+   quiescence de la sauvegarde T3 qui tournait en parallèle. Les 8 min de
+   patience posées « pour le cycle trial » ont servi à un cas non prévu et ont
+   évité un faux échec — la marge était la bonne, pour une autre raison que
+   celle qui l'avait motivée ;
+3. sauvegarde horodatée créée (`Caddyfile.20260730T104713`) ;
+4. template écrit, **`caddy validate` ok** — première validation réelle du
+   template, il est syntaxiquement bon ;
+5. rechargement à chaud ;
+6. **porte rouge** : 200 obtenu, 599 exigé → échec après 6 essais ;
+7. **`rescue` : restauration, rechargement, et vérification que l'ancien chemin
+   sert de nouveau** (`/rest/apigateway/health` → 200) ;
+8. `BASCULE ANNULÉE`, bruyamment. `rescued=1`.
+
+**État après coup : empreinte du Caddyfile EXACTEMENT la valeur T0**
+(`5fab7a255ef128b4…`), surface publique revenue à 200/401/302/200. Une bascule
+ratée revient donc toute seule, et sans laisser de trace.
+
+**Preuve incidente de P-a, à travers le nom public.** Le message d'échec contient
+la réponse réellement obtenue pendant la fenêtre :
+
+```
+status : 200
+url    : https://dev-wm.gostoa.dev/gateway/accounts-read/1.0.0/accounts
+via    : 1.1 Caddy
+content: {"backend": "backend-dev.wm.svc.cluster.local",
+          "receivedPath": "/accounts/accounts", "accounts": [...]}
+```
+
+L'invocation data-plane **a fonctionné par le nom public, à travers Caddy** : la
+porte n'a rougi que parce qu'on exigeait 599. P-a reste à établir dans un état
+**conservé** (avec P-b), mais son mécanisme n'est plus une hypothèse.
+
+### T3 — la fenêtre s'est refermée proprement
+
+Constaté pendant le run : ns `wm` entièrement quiescé, les 6 Applications sans
+`automated`, **`wm-restarter: suspend=true`** (le code de suspension des CronJobs
+ajouté pour F5, à l'œuvre), et `vault-0` **laissé tournant** comme charge à
+chaud. Puis restauration : 3 pods `Running`, `automated` remis partout, et
+**`wm-restarter: suspend=false`** — rendu à son état *capturé*, pas « repris »
+à l'aveugle. Surface publique inchangée pendant toute la fenêtre (200/302/200) :
+la quiescence du cluster est invisible du public, puisque le trafic est encore
+sur Docker.
 
 ### T2 — la preuve, et ce qu'elle a validé au passage
 
