@@ -1,0 +1,185 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Carto API et consommateurs</title>
+<style>
+  :root { --bg:#fff; --fg:#1a1a1a; --mut:#666; --line:#e3e3e3; --acc:#0b5fff;
+          --warn:#b23c00; --ok:#0a7a3d; }
+  body { margin:0; font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+         color:var(--fg); background:var(--bg); }
+  header { padding:12px 20px; border-bottom:1px solid var(--line); }
+  h1 { font-size:16px; margin:0 0 8px; }
+  nav button { font:inherit; border:1px solid var(--line); background:#fff;
+               padding:6px 12px; margin-right:4px; cursor:pointer; border-radius:4px; }
+  nav button[aria-current="true"] { background:var(--acc); color:#fff; border-color:var(--acc); }
+  #banner { padding:8px 20px; font-size:13px; background:#f4f7ff; border-bottom:1px solid var(--line); }
+  #banner.stale { background:#fff1e8; color:var(--warn); font-weight:600; }
+  main { padding:16px 20px; }
+  .bar { display:flex; gap:8px; align-items:center; margin-bottom:12px; flex-wrap:wrap; }
+  input[type=search], select { font:inherit; padding:6px 8px; border:1px solid var(--line); border-radius:4px; }
+  table { border-collapse:collapse; width:100%; font-size:13px; }
+  th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); }
+  th { cursor:pointer; user-select:none; white-space:nowrap; }
+  td.num { text-align:right; font-variant-numeric:tabular-nums; }
+  .tag { font-size:11px; padding:1px 6px; border-radius:10px; border:1px solid var(--line); }
+  .tag.declared { color:var(--ok); border-color:var(--ok); }
+  .tag.undeclared { color:var(--warn); border-color:var(--warn); font-weight:600; }
+  .tag.idle { color:var(--mut); }
+  .muted { color:var(--mut); }
+  a { color:var(--acc); cursor:pointer; }
+</style>
+
+<header>
+  <h1>Carto des API et des consommateurs</h1>
+  <nav id="nav"></nav>
+</header>
+<div id="banner">chargement…</div>
+<main id="view"></main>
+
+<script>
+"use strict";
+const S = { carto:null, history:[], idx:null, view:"table" };
+
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c =>
+  ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" }[c]));
+const fmt = n => (n ?? 0).toLocaleString("fr-FR");
+const day = iso => iso ? iso.slice(0,10) : "—";
+
+function push(map, k, v) { (map.get(k) || map.set(k, []).get(k)).push(v); }
+
+function index(c) {
+  const api = new Map(c.apis.map(a => [a.id, a]));
+  const con = new Map(c.consumers.map(x => [x.id, x]));
+  const byApi = new Map(), byCon = new Map();
+  for (const e of c.edges) { push(byApi, e.apiId, e); push(byCon, e.consumerId, e); }
+  return { api, con, byApi, byCon };
+}
+
+function ageDays(iso) {
+  return Math.floor((Date.now() - Date.parse(iso)) / 86400000);
+}
+
+function banner() {
+  const b = document.getElementById("banner");
+  const w = S.carto.window, age = ageDays(S.carto.generatedAt);
+  const stale = age > 2;
+  b.className = stale ? "stale" : "";
+  b.innerHTML = (stale ? "⚠ " : "")
+    + `Données du ${esc(day(S.carto.generatedAt))}`
+    + (stale ? ` — <b>périmées de ${age} jours, la collecte a échoué</b>` : ` (il y a ${age} j)`)
+    + ` · fenêtre réellement couverte : <b>${w.coveredDays} jours</b>`
+    + (w.coveredDays < w.requestedDays
+        ? ` <span class="muted">(${w.requestedDays} demandés — rétention de l'index plus courte)</span>` : "");
+}
+
+const VIEWS = [
+  ["table",    "Qui consomme quoi"],
+  ["annuaire", "Annuaire des consommateurs"],
+  ["signaux",  "Signaux"],
+  ["evolution","Évolution"],
+];
+
+function nav() {
+  document.getElementById("nav").innerHTML = VIEWS.map(([k, label]) =>
+    `<button data-v="${k}" aria-current="${S.view === k}">${esc(label)}</button>`).join("");
+}
+
+function render() {
+  nav();
+  const host = document.getElementById("view");
+  if (S.view === "table")     host.innerHTML = viewTable();
+  if (S.view === "annuaire")  host.innerHTML = viewAnnuaire();
+  if (S.view === "signaux")   host.innerHTML = viewSignaux();
+  if (S.view === "evolution") host.innerHTML = viewEvolution();
+  if (S.view === "fiche")     host.innerHTML = viewFiche(S.focus);
+  if (S.view === "evolution") drawEvolution();
+}
+
+document.addEventListener("click", ev => {
+  const b = ev.target.closest("button[data-v]");
+  if (b) { S.view = b.dataset.v; render(); return; }
+  const f = ev.target.closest("a[data-focus]");
+  if (f) { S.focus = f.dataset.focus; S.view = "fiche"; render(); }
+});
+
+document.addEventListener("input", ev => {
+  if (ev.target.matches("[data-filter]")) { S.filter = ev.target.value.toLowerCase(); render(); }
+});
+
+async function boot() {
+  try {
+    S.carto = await (await fetch("carto.json", { cache:"no-store" })).json();
+    try { S.history = await (await fetch("history.json", { cache:"no-store" })).json(); }
+    catch (_) { S.history = []; }
+  } catch (err) {
+    document.getElementById("banner").className = "stale";
+    document.getElementById("banner").textContent =
+      "⚠ carto.json introuvable ou illisible — ouvrir cette page via le serveur web, pas en file://";
+    return;
+  }
+  S.idx = index(S.carto);
+  banner();
+  render();
+}
+
+// --- vue : qui consomme quoi -------------------------------------------
+function rowsTable() {
+  const f = S.filter || "";
+  return S.carto.edges.map(e => ({
+    e,
+    api: S.idx.api.get(e.apiId),
+    con: S.idx.con.get(e.consumerId),
+  })).filter(r =>
+    !f || (r.api.name + " " + r.con.name).toLowerCase().includes(f));
+}
+
+function statut(e) {
+  if (!e.declared) return '<span class="tag undeclared">non déclaré</span>';
+  if (e.calls.d90 === 0) return '<span class="tag idle">déclaré, inactif</span>';
+  return '<span class="tag declared">actif</span>';
+}
+
+function viewTable() {
+  const rows = rowsTable().sort((a, b) => b.e.calls.d90 - a.e.calls.d90);
+  return `
+  <div class="bar">
+    <input type="search" data-filter placeholder="filtrer par API ou consommateur…" size="34">
+    <span class="muted">${fmt(rows.length)} lien(s)</span>
+    <button onclick="exportCsv()">Exporter en CSV</button>
+  </div>
+  <table><thead><tr>
+    <th>API</th><th>Consommateur</th><th>Statut</th>
+    <th class="num">7 j</th><th class="num">30 j</th><th class="num">90 j</th>
+    <th>Dernier appel</th><th class="num">Erreurs</th>
+  </tr></thead><tbody>
+  ${rows.map(r => `<tr>
+    <td><a data-focus="api:${esc(r.e.apiId)}">${esc(r.api.name)}</a>
+        <span class="muted">${esc(r.api.version || "")}</span></td>
+    <td><a data-focus="con:${esc(r.e.consumerId)}">${esc(r.con.name)}</a></td>
+    <td>${statut(r.e)}</td>
+    <td class="num">${fmt(r.e.calls.d7)}</td>
+    <td class="num">${fmt(r.e.calls.d30)}</td>
+    <td class="num">${fmt(r.e.calls.d90)}</td>
+    <td>${esc(day(r.e.lastCall))}</td>
+    <td class="num">${(r.e.errorRate * 100).toFixed(1)} %</td>
+  </tr>`).join("")}
+  </tbody></table>`;
+}
+
+function exportCsv() {
+  const head = ["api", "version", "consommateur", "contact", "declare",
+                "appels_7j", "appels_30j", "appels_90j", "dernier_appel", "taux_erreur"];
+  const lines = [head.join(";")].concat(rowsTable().map(r => [
+    r.api.name, r.api.version || "", r.con.name, r.con.contact || "",
+    r.e.declared ? "oui" : "non",
+    r.e.calls.d7, r.e.calls.d30, r.e.calls.d90, r.e.lastCall || "", r.e.errorRate,
+  ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(";")));
+  const url = URL.createObjectURL(new Blob(["﻿" + lines.join("\n")],
+                                          { type:"text/csv;charset=utf-8" }));
+  const a = document.createElement("a");
+  a.href = url; a.download = `carto-${day(S.carto.generatedAt)}.csv`; a.click();
+  URL.revokeObjectURL(url);
+}
+
+window.CARTO = { S, esc, fmt, day, index, statut };
+boot();
+</script>
