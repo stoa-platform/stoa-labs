@@ -16,7 +16,15 @@ mensonge que ce produit combat.
 """
 import re
 
-SCHEMA_VERSION = 1
+# Version 2 (2026-07-30) : ajout de DEUX champs OBLIGATOIRES au contrat —
+# `ghost` sur chaque noeud (apis[], consumers[]) et `unidentifiedCallShare` a
+# la racine. Un document de version 1 ne les porte pas ; lu par la page neuve,
+# il degraderait en SILENCE (bloc des objets disparus vide alors qu'il existe
+# des fantomes, annuaire qui les reintegre car `!c.ghost` vaut vrai sur
+# `undefined`, part non identifiee affichee « inconnue » en gris, sans alerte).
+# Ajouter un champ obligatoire au contrat, c'est incrementer ce numero : c'est
+# la seule chose qui permette au rendu de refuser au lieu de deviner.
+SCHEMA_VERSION = 2
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _WINDOWS = ("d7", "d30", "d90")
 

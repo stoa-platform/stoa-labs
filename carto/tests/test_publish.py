@@ -2,9 +2,10 @@ import json, pathlib, tempfile, unittest
 from unittest import mock
 
 import carto.collect.publish as publish_mod
+from carto.collect.model import SCHEMA_VERSION
 from carto.collect.publish import publish, RefusedPublication
 
-GOOD = {"schemaVersion": 1, "generatedAt": "2026-07-30T00:00:00Z",
+GOOD = {"schemaVersion": SCHEMA_VERSION, "generatedAt": "2026-07-30T00:00:00Z",
         "window": {"requestedDays": 90, "coveredDays": 90, "oldestEvent": None},
         "unidentifiedCallShare": 0.0,
         "apis": [{"id": "a1", "name": "orders", "ghost": False}],
@@ -46,7 +47,8 @@ class TestPublication(unittest.TestCase):
     def test_le_json_ecrit_est_relisible(self):
         with tempfile.TemporaryDirectory() as d:
             publish(d, GOOD, HIST)
-            self.assertEqual(json.loads((pathlib.Path(d) / "carto.json").read_text())["schemaVersion"], 1)
+            self.assertEqual(json.loads((pathlib.Path(d) / "carto.json").read_text())["schemaVersion"],
+                             SCHEMA_VERSION)
 
     def test_echec_d_ecriture_du_second_fichier_ne_laisse_aucun_tmp(self):
         # Le premier temporaire (carto.json.tmp) s'ecrit sans probleme, le

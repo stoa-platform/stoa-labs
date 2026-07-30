@@ -39,10 +39,16 @@
 "use strict";
 const S = { carto:null, history:[], idx:null, view:"table" };
 
-// Version du contrat de donnees que CETTE page sait lire (carto/collect/model.py).
+// Version du contrat de donnees que CETTE page sait lire (carto/collect/model.py,
+// SCHEMA_VERSION — les deux doivent bouger ENSEMBLE, un test le garde).
 // Une page qui affiche un document d'une version qu'elle ne connait pas lit des
 // champs au hasard et presente le resultat comme une mesure : elle refuse.
-const SCHEMA_VERSION = 1;
+//
+// Version 2 : `ghost` sur chaque noeud et `unidentifiedCallShare` a la racine
+// sont devenus obligatoires. Sur un document de version 1, qui ne les porte
+// pas, cette page degraderait SANS UN MOT — c'est precisement pour ce
+// document-la que le refus ci-dessous existe.
+const SCHEMA_VERSION = 2;
 
 // Seuil d'alerte sur la part du trafic non rattachee a un consommateur
 // identifie. 50 % : au-dela, la reponse majoritaire a « qui consomme quoi »
@@ -75,6 +81,37 @@ function ageDays(iso) {
 
 function versionSupportee(doc) {
   return (doc || {}).schemaVersion === SCHEMA_VERSION;
+}
+
+// Le refus doit dire QUOI FAIRE, sinon il n'est qu'une panne de plus.
+//
+// Le cas de loin le plus frequent est la fenetre de deploiement : le role
+// Ansible depose `index.html` et le collecteur ENSEMBLE, mais le `carto.json`
+// deja publie n'est reecrit qu'a la prochaine execution planifiee. Pendant
+// quelques heures, la page neuve lit donc un document ancien. Le remede n'est
+// pas de toucher a la page : c'est d'attendre la collecte suivante, ou de la
+// declencher. Le cas inverse (document plus recent que la page) existe aussi
+// et appelle le remede oppose : on nomme les deux.
+function refuserVersion(doc) {
+  const vue = (doc || {}).schemaVersion;
+  const geste = !Number.isFinite(vue)
+    ? " Le document ne porte aucun numéro de version lisible — il n'a"
+      + " probablement pas été produit par ce collecteur : vérifier ce qui"
+      + " écrit dans la racine web."
+    : vue < SCHEMA_VERSION
+      ? " Le document est plus ancien que la page — c'est la fenêtre normale"
+        + " qui suit un déploiement. Que faire : attendre la prochaine collecte"
+        + " planifiée, qui réécrira carto.json ; ou, pour ne pas attendre,"
+        + " relancer le collecteur (python3 -m carto.collect --out <racine web>)."
+      : " Le document est plus récent que la page — redéployer index.html en"
+        + " même temps que collect/ (le rôle Ansible dépose les deux ensemble).";
+  const b = document.getElementById("banner");
+  b.className = "stale";
+  b.textContent = "⚠ carto.json est en version de schéma " + String(vue)
+    + `, cette page ne sait lire que la version ${SCHEMA_VERSION}.`
+    + " Rien n'est affiché : mieux vaut pas de carto qu'une carto mal lue."
+    + geste;
+  return b.textContent;
 }
 
 // Profondeur REELLEMENT couverte, plafonnee par la fenetre nominale de la
@@ -177,13 +214,7 @@ async function boot() {
     return;
   }
   if (!versionSupportee(S.carto)) {
-    const b = document.getElementById("banner");
-    b.className = "stale";
-    b.textContent = "⚠ carto.json est en version de schéma "
-      + String((S.carto || {}).schemaVersion)
-      + `, cette page ne sait lire que la version ${SCHEMA_VERSION}. Rien n'est affiché :`
-      + " mieux vaut pas de carto qu'une carto mal lue. Mettre à jour index.html"
-      + " en même temps que le collecteur.";
+    refuserVersion(S.carto);
     return;
   }
   try {

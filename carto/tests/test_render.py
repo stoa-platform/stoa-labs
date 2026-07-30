@@ -20,6 +20,8 @@ import subprocess
 import tempfile
 import unittest
 
+from carto.collect.model import SCHEMA_VERSION
+
 RENDER = pathlib.Path(__file__).resolve().parents[1] / "render" / "index.html"
 
 # DOM minimal : `banner()` ecrit dans un element, les `addEventListener` de
@@ -71,7 +73,7 @@ class RenderJsTestCase(unittest.TestCase):
     def carto_js(self, **over):
         """Un document carto minimal mais VALIDE au sens du contrat."""
         doc = {
-            "schemaVersion": 1,
+            "schemaVersion": SCHEMA_VERSION,
             "generatedAt": "2026-07-30T02:00:00Z",
             "window": {"requestedDays": 90, "coveredDays": 34,
                        "oldestEvent": "2026-06-26T00:00:00Z"},
@@ -150,6 +152,52 @@ class TestBandeau(RenderJsTestCase):
 
 
 class TestVersionDeSchema(RenderJsTestCase):
+    def test_la_page_lit_exactement_la_version_que_le_collecteur_produit(self):
+        # Les deux constantes doivent bouger ENSEMBLE. Sans ce test, ajouter un
+        # champ obligatoire cote Python et oublier index.html (ou l'inverse)
+        # ne se voit qu'au deploiement.
+        out = self.js("console.log(String(SCHEMA_VERSION));")
+        self.assertEqual(int(out.strip()), SCHEMA_VERSION)
+
+    def test_la_page_refuse_le_document_de_la_version_precedente(self):
+        # LE scenario du premier deploiement : le role depose index.html et le
+        # collecteur ensemble, mais le carto.json publie reste en version 1
+        # jusqu'a la prochaine collecte planifiee. Sans refus, cette page
+        # degraderait en silence — `ghost` et `unidentifiedCallShare` absents,
+        # donc bloc des objets disparus vide, fantomes reintegres a l'annuaire
+        # (`!c.ghost` vaut vrai sur `undefined`), part non identifiee en gris.
+        self.assertEqual(SCHEMA_VERSION, 2, "ce test decrit la transition 1 -> 2")
+        refuse = self.js("""
+          console.log(JSON.stringify(versionSupportee({ schemaVersion: 1 })));
+        """)
+        self.assertEqual(json.loads(refuse), False)
+
+        out = self.js("""
+          const txt = refuserVersion({ schemaVersion: 1 });
+          console.log(JSON.stringify({ cls: __el.className, txt }));
+        """)
+        r = json.loads(out)
+        self.assertEqual(r["cls"], "stale")
+        self.assertIn("version de schéma 1", r["txt"])
+        self.assertIn(f"la version {SCHEMA_VERSION}", r["txt"])
+        # Un refus qui ne dit pas quoi faire n'est qu'une panne de plus.
+        self.assertIn("attendre la prochaine collecte", r["txt"])
+        self.assertIn("relancer le collecteur", r["txt"])
+
+    def test_un_document_plus_recent_appelle_le_geste_inverse(self):
+        out = self.js("""
+          console.log(refuserVersion({ schemaVersion: SCHEMA_VERSION + 1 }));
+        """)
+        self.assertIn("redéployer index.html", out)
+        self.assertNotIn("attendre la prochaine collecte", out)
+
+    def test_un_document_sans_version_lisible_ne_recoit_pas_un_geste_invente(self):
+        # ni « plus ancien » ni « plus recent » : on ne sait pas, on le dit.
+        out = self.js("console.log(refuserVersion({}));")
+        self.assertIn("aucun numéro de version lisible", out)
+        self.assertNotIn("attendre la prochaine collecte", out)
+        self.assertNotIn("redéployer index.html", out)
+
     def test_la_page_refuse_une_version_qu_elle_ne_connait_pas(self):
         out = self.js("""
           console.log(JSON.stringify({
