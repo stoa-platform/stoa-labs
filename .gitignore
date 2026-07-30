@@ -67,3 +67,8 @@ ansible/artifacts/
 accounts-team/
 payments-team/
 stoa-platform-ci/
+
+# Espace de travail des sessions superpowers : ledgers, rapports et paquets de
+# revue. Contient des récits d'incidents, des noms de nœuds et des identifiants
+# d'objets — jamais dans un dépôt public.
+.superpowers/
