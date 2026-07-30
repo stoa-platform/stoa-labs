@@ -63,7 +63,7 @@ derrière »).
 | Service `wm-apigateway` | **aucun `clusterIP` dans le manifeste** (`deploy/bootstrap/wm/apigateway/service.yaml`, `origin/main` `fd2f356f`) ; adresse courante allouée dynamiquement | § D2 — risque de casse silencieuse |
 | PVC du ns `wm` | `es-data-wm-elasticsearch-0`, 10 Gi, `local-path`, sur worker-4 | § D7 |
 | Couverture de la sauvegarde F2 | `backup_pvc_namespaces: [ci]` — le ns `wm` **n'est pas sauvegardé** | § D7 |
-| Joignabilité worker-3 → worker-2 | **TCP/22 OK** | chemin d'archive froide direct (§ D8) |
+| Joignabilité worker-3 → worker-2 | **TCP/22 OK** (joignabilité seule ; l'authentification par clé n'est **pas** mesurée) | worker-2 est atteignable ; l'archive passe malgré tout par le poste (§ D8) |
 | Coupure du cycle trial (cluster) | **07:20:23 → 07:22:54 = 150 s** par cycle de 20 min → **87,5 % de disponibilité** | le manifeste annonçait « ~15 min de service » : **surestimation d'un facteur 2** (§ D9) |
 | Durée des jobs `wm-restarter` | 4 s, 6 s, 9 s | le redémarrage est instantané ; les 150 s sont le **démarrage de wM** |
 | Placement | gateway sur worker-5, ES sur worker-4, `wm-restarter` sur worker-3 | anti-affinité worker-3 tenue pour les charges portantes |
@@ -246,8 +246,13 @@ portant plus que Caddy à la fin.
 **Conséquence assumée :** le recouvrement « en secondes » (`docker start`)
 disparaît. L'archive froide devient **l'unique filet**, donc :
 
-1. Tar froid des ~100 Mo d'ES Docker (conteneurs arrêtés) → **worker-2 en direct**
-   (TCP/22 mesuré OK), empreinte avant/après.
+1. Tar froid des ~100 Mo d'ES Docker (conteneurs arrêtés), avec empreinte, puis
+   acheminement vers worker-2 **par le poste de contrôle**. TCP/22 w3→w2 est
+   mesuré OK, mais l'**authentification** (clé de worker-3 autorisée sur
+   worker-2) ne l'est pas — et F2 achemine déjà ses archives par le poste
+   (« transfert WAN via le poste de contrôle »,
+   `roles/cluster_backup/defaults/main.yml:40`). On ne crée pas une relation de
+   confiance SSH nouvelle entre deux nœuds pour une archive unique.
 2. **Relecture effective sur worker-2** — l'archive s'ouvre et l'index `apis` y
    est lisible. Une empreinte qui concorde prouve un transfert, pas une archive
    exploitable (leçon F2).
@@ -293,28 +298,42 @@ faute que ce dépôt évite. Spike à part entière.
 
 ## Preuves à jouer (dans l'ordre)
 
-1. **P1** — PR `stoa` : `clusterIP` épinglée + commentaire du CronJob corrigé.
-   Mergée, re-syncée, ClusterIP **inchangée** après re-sync (relecture).
-2. **P2** — `cluster_backup` étendu au ns `wm` ; un run vert ; archive du PVC ES
+1. **P1** — PR `stoa` unique : `clusterIP` épinglée + commentaire du CronJob
+   corrigé + `backend-dev`. Mergée, re-syncée, ClusterIP **inchangée** après
+   re-sync (relecture). Une seule PR : chaque merge coûte un geste exploitant, et
+   les trois changements vivent sous `deploy/bootstrap/wm/`.
+2. **P2** — `backend-dev` répond depuis un pod ; **chemin reçu consigné**.
+3. **P3** — invocation data-plane **interne** :
+   `/gateway/accounts-read/1.0.0/accounts` sur la ClusterIP → **200 + JSON**,
+   là où elle rendait 500 avant. Avant de toucher Caddy — on ne débogue jamais
+   deux choses à la fois.
+4. **P4** — `cluster_backup` étendu au ns `wm` ; un run vert ; archive du PVC ES
    **lisible sur worker-2**.
-3. **P3** — `backend-dev` posé (PR `stoa`) ; depuis un pod : `curl backend-dev.wm.svc:8080/accounts` → 200 ; **chemin reçu consigné**.
-4. **P4** — invocation data-plane **interne** :
-   `/gateway/accounts-read/1.0.0/accounts` sur la ClusterIP → **200 + JSON**
-   (avant de toucher Caddy — on ne débogue pas deux choses à la fois).
-5. **P5** — archive froide worker-3 → worker-2, **relue** (§ D8, étapes 1-2).
-6. **P6** — **bascule** : porte P-a (invocation via `https://dev-wm.gostoa.dev`)
-   et porte P-b (`/rest/apigateway/apis` → 404, console → 404, et les mêmes
-   appels depuis un pod → inchangés).
+5. **P5** — **contre-épreuves de sabotage, jouées AVANT la vraie bascule**,
+   pendant que Docker sert encore. Le rôle a deux chemins fail-closed et les
+   deux sont éprouvés : *(a)* cible amont fausse → la garde **refuse d'écrire** ;
+   *(b)* attente d'un code impossible → l'écriture a lieu, la porte **rougit**,
+   et **la restauration automatique joue**, vérifiée. Une porte qui ne rougit
+   jamais ne prouve rien (leçon F1) — et valider le filet pendant que le trafic
+   public est intact vaut mieux que casser un service en service pour le tester.
+6. **P6** — **bascule** : porte P-a (invocation via `https://dev-wm.gostoa.dev`,
+   corps vérifié comme venant de `backend-dev`) et porte P-b
+   (`/rest/apigateway/apis` → 404, console → 404, et les mêmes appels depuis un
+   pod → inchangés). Plus la trace indépendante : `transactionalevents` > 0.
 7. **P7** — **contre-épreuve rollback** : restauration → `/rest/apigateway/health`
-   public → 200 (Docker sert de nouveau) → re-bascule → P-a de nouveau verte.
-8. **P8** — **contre-épreuve de sabotage** : Caddy pointé sur une ClusterIP
-   fausse → la porte **rougit** et la restauration automatique joue. Une porte
-   qui ne rougit jamais ne prouve rien (leçon F1).
-9. **P9** — **décommission** : `stop && rm` conteneurs + volumes, dépose du cron
-   root `*/20` et du keepalive `*/25` → porte P-c (`docker ps` sans `wm-dev-*`).
-10. **P10** — re-mesure du cycle trial sur **au moins deux cycles** à travers le
-    nom public, et relecture de P-a après un redémarrage (la donnée est portée
-    par ES, elle doit survivre).
+   public → 200 (Docker sert de nouveau), empreinte du Caddyfile **identique à
+   l'originale** → re-bascule → P-a de nouveau verte.
+8. **P8** — **décommission**, dans cet ordre interne : `stop` → archive froide
+   → **relecture sur worker-2 (porte dure)** → `rm` conteneurs + volumes →
+   dépose du cron root `*/20` et du keepalive `*/25` → porte P-c.
+   **L'archive vient après la re-bascule, pas avant** : les conteneurs doivent
+   servir jusqu'à la bascule, et une archive « froide » exige de les arrêter.
+   Elle ne protège pas d'une bascule ratée — c'est le rôle du rollback (P7),
+   qui est précisément pourquoi il se joue **avant** tout retrait.
+9. **P9** — re-mesure du cycle trial sur **au moins deux cycles** à travers le
+   nom public (code attendu pendant la coupure : **503**, pas 502), et relecture
+   de P-a après un redémarrage : la donnée est portée par ES, elle doit survivre
+   sans republication.
 
 **Garde permanente :** Caddy termine le TLS de **toute la flotte**. À chaque
 phase, vérifier qu'un nom non concerné (`dev-gw-k3s.gostoa.dev`) répond comme
