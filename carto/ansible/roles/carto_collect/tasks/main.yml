@@ -77,3 +77,42 @@
       chemins d'administration à revoir ; `aretes=0` et/ou `fenetre_couverte=0j`
       = aucun événement lu — vérifier WM_ES_INDEX (étoile COLLÉE, pas de tiret
       avant) et l'activation de la policy GlobalLogInvocationPolicy.
+
+- name: Vérification — le trafic est rattaché à des consommateurs identifiés
+  # Quatrième assertion, et la seule qui couvre le pire cas RÉELLEMENT MESURÉ.
+  # Sur la gateway de mesure (carto/TERRAIN.md, V5), la collecte sort
+  # `apis=2 aretes=3 fenetre_couverte=34j trafic_non_identifie=100.0%` : les
+  # trois assertions ci-dessus passent, le déploiement est VERT, et seul le
+  # bandeau de la page dira que la moitié du produit ne tient pas. Un rôle qui
+  # se déclare satisfait pendant que la page crie est un rôle qui ment.
+  #
+  # Le seuil est celui du rendu (SEUIL_NON_IDENTIFIE dans index.html) : la
+  # page et le déploiement doivent s'alarmer au même moment.
+  vars:
+    # Un `vars:` de tâche rend une CHAÎNE, même après `| float` : la
+    # conversion doit être faite au point de comparaison, sinon Ansible
+    # échoue sur « '<=' not supported between instances of 'str' and 'float' »
+    # — une panne de rôle au lieu du diagnostic attendu. Vérifié.
+    carto_part_non_identifiee: >-
+      {{ carto_verify.stdout | regex_search('trafic_non_identifie=([0-9.]+)%', '\1') | first }}
+  ansible.builtin.assert:
+    that:
+      # D'abord la présence du compteur : un collecteur trop ancien pour le
+      # porter doit être nommé comme tel, pas produire une erreur de gabarit.
+      # L'ordre compte — `assert` s'arrête à la première condition fausse.
+      - "'trafic_non_identifie=' in carto_verify.stdout"
+      - carto_part_non_identifiee | float <= carto_seuil_non_identifie_pct | float
+    fail_msg: >-
+      collecte publiable mais NON FIABLE sur la dimension consommateur
+      ({{ carto_verify.stdout }}) : la part du trafic qui n'est rattachée à
+      aucun consommateur identifié dépasse
+      {{ carto_seuil_non_identifie_pct }} %. Concrètement, la réponse
+      majoritaire à « qui consomme quoi » est « on ne sait pas » : le trafic
+      s'agrège sur des nœuds « (inconnu) », les consommateurs réels basculent
+      en « déclaré, inactif », et l'annuaire les annonce sans appel. Les
+      inventaires d'APIs et d'Applications, eux, restent exacts. Cause connue
+      et NON RÉSOLUE : la gateway ne renseigne pas l'application appelante
+      (`applicationId` = `Unknown`) — question ouverte V5 de
+      carto/TERRAIN.md, à trancher avec le client avant de se fier à cette
+      dimension. Si ce message apparaît, la carto reste utile pour l'inventaire
+      et la fenêtre, pas pour « qui appelle qui ».

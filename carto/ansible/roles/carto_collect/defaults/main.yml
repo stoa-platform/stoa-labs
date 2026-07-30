@@ -20,6 +20,16 @@ carto_schedule_minute: "11"
 # document, pas les agregations — etait le mensonge le plus direct de ce role.
 carto_alert_command: "logger -t carto -p user.err"   # a remplacer par le canal du client
 
+# Part maximale du trafic non rattache a un consommateur identifie, en
+# POURCENTAGE, au-dela de laquelle le deploiement est declare degrade.
+# 50.0 : meme valeur que SEUIL_NON_IDENTIFIE (0.5) dans carto/render/index.html
+# — le role et la page doivent tomber d'accord sur le moment ou la dimension
+# consommateur cesse d'etre fiable. Les deux se modifient ensemble.
+# Terrain mesure (carto/TERRAIN.md, V5) : 100 % sur la gateway de mesure. La
+# valeur n'est donc PAS theorique, et ce seuil sera franchi tant que la
+# question ouverte de V5 n'est pas tranchee avec le client.
+carto_seuil_non_identifie_pct: 50.0
+
 # Identifiants : jamais dans le depot, jamais en dur ici. Fournis a l'execution
 # depuis le coffre (par ex. via des extra-vars chiffrees ou un lookup vault),
 # comme le reste de la chaine du projet. Le gabarit qui les ecrit sur le noeud

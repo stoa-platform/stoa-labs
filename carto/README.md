@@ -26,11 +26,16 @@ dédié (sans shell), dépose le paquet dans `{{ carto_install_dir }}/carto/`
 lui-même — le code s'invoque donc toujours par `python3 -m carto.collect`,
 exactement comme depuis le dépôt), pose l'enveloppe d'exécution
 `carto-collect.sh`, planifie une exécution quotidienne par `cron`, et vérifie
-en fin de rôle qu'une collecte en `--dry-run` voit bien des APIs, **des arêtes
-et une fenêtre couverte non nulle** — les trois assertions sont nécessaires :
+en fin de rôle qu'une collecte en `--dry-run` voit bien des APIs, **des arêtes,
+une fenêtre couverte non nulle, et un trafic majoritairement rattaché à des
+consommateurs identifiés** — les quatre assertions sont nécessaires :
 `apis=0` seul laisse passer le mode de défaillance le plus sournois du produit
 (dernières lignes du tableau de diagnostic ci-dessous), où l'inventaire est lu
-mais aucun événement ne l'est.
+mais aucun événement ne l'est ; et les trois premières laissent passer le pire
+cas *réellement mesuré* (`TERRAIN.md`, V5), où la collecte sort
+`trafic_non_identifie=100.0%` — déploiement vert, page qui crie. Le seuil
+(`carto_seuil_non_identifie_pct`, 50 %) est celui du rendu
+(`SEUIL_NON_IDENTIFIE`) : les deux se modifient ensemble.
 
 Le rôle **ne porte aucun secret**. Les identifiants (`WM_ADMIN_URL`,
 `WM_USER`, `WM_PASS`, `WM_ES_URL`, `WM_ES_INDEX`, variable `carto_env`) sont
