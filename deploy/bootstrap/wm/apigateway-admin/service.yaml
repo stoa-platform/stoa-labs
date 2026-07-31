@@ -1,0 +1,55 @@
+# Service d'ADMINISTRATION de la gateway — une seule réplique, délibérément.
+#
+# POURQUOI IL EXISTE. Le Service `wm-apigateway` (dépôt stoa) répartit sur deux
+# répliques `rotation: a` et `rotation: b`, décalées dans le temps pour qu'il y en
+# ait toujours une debout pendant le redémarrage de licence de l'autre. C'est ce
+# qui rend le data-plane public continûment disponible depuis la bascule Caddy (F5).
+#
+# Mais ces deux instances webMethods n'ont AUCUNE configuration de cluster : elles
+# partagent le même Elasticsearch sans synchroniser leur cache mémoire. Mesuré le
+# 2026-07-30 : après un `POST /apis` réussi sur une réplique, un `GET /apis/{id}`
+# rend 200 sur celle-ci et 401 « User doesn't have permission » sur l'autre — un
+# message trompeur, qui ressemble à un défaut d'authentification alors que l'objet
+# est simplement absent du cache local. La convergence a lieu, mais pas tout de suite.
+#
+# Les pipelines de self-service écrivent puis RELISENT pour vérifier (« converge
+# puis verify fail-closed »). Sur un Service qui alterne, cette relecture tombe une
+# fois sur deux sur l'instance qui ne sait pas encore. Les deux pipelines ont échoué
+# ainsi, et passent intégralement au vert en visant une réplique unique.
+#
+# CE SERVICE NE RÉSOUT PAS L'INCOHÉRENCE — il l'évite, en donnant aux écritures et
+# à leurs relectures une cible stable. Le vrai correctif est une configuration de
+# cluster webMethods ; il dépasse ce lot et la licence d'essai ne le permet peut-être pas.
+#
+# POURQUOI PAS `sessionAffinity: ClientIP` SUR LE SERVICE EXISTANT : Caddy est un
+# hôte unique, donc TOUT le trafic public y porte la même IP source. L'affinité
+# collerait l'ensemble des consommateurs à une seule réplique et annulerait la
+# disponibilité que le couple A/B est là pour fournir. Les deux usages ont des
+# besoins opposés — le public veut la disponibilité, le pipeline veut la cohérence —
+# et ils méritent donc deux Services.
+#
+# CONTREPARTIE ASSUMÉE : quand `rotation: a` redémarre pour sa licence, les
+# pipelines sont indisponibles quelques minutes. Un build échoué se relance ; une
+# API publiquement injoignable, non.
+#
+# Additif : le Service `wm-apigateway` du dépôt stoa n'est pas modifié.
+apiVersion: v1
+kind: Service
+metadata:
+  name: wm-apigateway-admin
+  namespace: wm
+  labels:
+    app.kubernetes.io/name: wm-apigateway-admin
+    app.kubernetes.io/part-of: stoa-lab
+spec:
+  type: ClusterIP
+  selector:
+    app: wm-apigateway
+    rotation: a
+  ports:
+    - name: is-admin-data
+      port: 5555
+      targetPort: 5555
+    - name: console-ui
+      port: 9072
+      targetPort: 9072

@@ -1,0 +1,30 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: wm-apigateway-admin
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  # Projet `default` : l'AppProject `stoa` restreint ses sources au dépôt stoa.
+  # Cet objet est ADDITIF — il ne modifie rien de ce que ce dépôt-là pilote.
+  project: default
+  source:
+    repoURL: https://github.com/stoa-platform/stoa-labs.git
+    targetRevision: main
+    path: deploy/bootstrap/wm/apigateway-admin
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: wm
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        maxDuration: 3m
+        factor: 2

@@ -76,13 +76,13 @@
         <hudson.model.StringParameterDefinition>
           <name>APIM_API_BASE</name>
           <description>Cluster : API d'admin REST wM (namespace wm).</description>
-          <defaultValue>http://wm-apigateway.wm.svc.cluster.local:5555/rest/apigateway</defaultValue>
+          <defaultValue>http://wm-apigateway-admin.wm.svc.cluster.local:5555/rest/apigateway</defaultValue>
           <trim>true</trim>
         </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>
           <name>APIM_DATA_BASE</name>
           <description>Cluster : data-plane wM (namespace wm).</description>
-          <defaultValue>http://wm-apigateway.wm.svc.cluster.local:5555/gateway</defaultValue>
+          <defaultValue>http://wm-apigateway-admin.wm.svc.cluster.local:5555/gateway</defaultValue>
           <trim>true</trim>
         </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>
