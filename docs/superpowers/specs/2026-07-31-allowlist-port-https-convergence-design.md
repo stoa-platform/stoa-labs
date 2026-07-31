@@ -58,6 +58,11 @@ que le deviner), `WmAPIGateway/resources/apigatewayservices/APIGatewayPortManage
 
 `listenerKey` est documenté comme identifiant « within the WmRoot package ».
 
+Ce tableau transcrit le **Swagger livré**. Une seconde signature de l'écriture
+est rapportée en usage (`POST /ports/accessMode`, `listenerKey` dans le corps) :
+voir M2. Ce qui est acquis, et suffit au design, c'est que la surface est du
+REST JSON et que l'allow list s'écrit **en entier** sous forme de tableau.
+
 **Correction d'un fait admis.** ADR-078 (§8) affirme que « le REST `/ports`
 n'expose pas l'allow-list d'accès du listener », ce qui a motivé le recours au
 formulaire WmRoot `security-ports-editaccess.dsp` dans
@@ -138,7 +143,8 @@ scripts et manifestes : **zéro activation**. Son défaut vise `HTTPListener@555
 
 ### D1 — Surface : `accessMode` en REST, pas le formulaire WmRoot
 
-Le geste passe par `GET`/`PUT /rest/apigateway/ports/{listenerKey}/accessMode`.
+Le geste passe par la ressource `accessMode` de l'admin REST — sa signature
+exacte est l'objet de M2, et n'engage que l'implémentation du réconciliateur.
 `tasks/port-access.yml` devient caduc et sera retiré.
 
 *Écarté :* conserver le formulaire WmRoot. Il impose du parsing HTML par regex,
@@ -154,7 +160,8 @@ Le listener visé n'est pas figé : il est désigné par la configuration
 d'environnement de D3.1, au même titre que le tag.
 
 Le proxy n'expose **aucune écriture** sur la surface ports : ni `DELETE /ports`,
-ni `PUT /ports/disable`, ni `PUT /ports/{key}/accessMode`. Le seul écrivain de
+ni `PUT /ports/disable`, ni l'écriture de l'`accessMode` quelle que soit sa
+signature (M2). Le seul écrivain de
 l'allow list est le réconciliateur local de chaque nœud (D4) ; le CI n'écrit
 jamais un port, il pose un tag et attend la convergence. Cette retenue prolonge
 une doctrine déjà écrite : « ce task ne FLIPPE JAMAIS le mode du port (risque de
@@ -356,14 +363,35 @@ Deux issues, et elles ne conduisent pas au même lot :
   faire à chaque création, seulement à la création de l'environnement, et le
   lot se réduit à sa part infrastructure.
 
-*Protocole :* sur un environnement disposant d'un listener en deny-by-default,
-ajouter une API à l'allow list par la console, puis lire
-`GET /rest/apigateway/ports/{listenerKey}/accessMode` et consigner le contenu
-exact de `services`. **À faire avant d'écrire la moindre ligne.** Requiert un
-jeton Vault nominatif (`secret/deploy/{tenant}/wm-admin`).
+**M2 — signature réelle de l'écriture.** Deux formes concurrentes, chacune
+cohérente en elle-même :
 
-**M2.** Format exact de `listenerKey` — à relever par `GET /ports` sur un
-environnement pourvu d'un listener HTTPS.
+| | Chemin | Verbe | Corps |
+| --- | --- | --- | --- |
+| **A** — Swagger livré | `/ports/{listenerKey}/accessMode` | `PUT` | `{ accessMode, services[] }` |
+| **B** — usage rapporté | `/ports/accessMode` | `POST` | `{ listenerKey, services[] }` |
+
+Elles ne se contredisent pas : dans B le chemin ne porte aucun segment
+`listenerKey`, il est donc normal qu'il figure dans le corps. wM 10.15 diverge
+de son propre Swagger assez souvent pour qu'on ne tranche pas sur lecture seule,
+et les deux formes peuvent coexister selon le niveau de fix pack.
+
+**M1 et M2 se mesurent d'un seul geste.** Sur un environnement disposant d'un
+listener en deny-by-default, ajouter une API à l'allow list **par la console**
+et observer la requête émise. Cela livre en une fois le verbe, le chemin, la
+forme du corps *et* le contenu exact de `services` — c'est-à-dire la réponse à
+M1, qui décide de la taille du lot 2. L'onglet réseau du navigateur suffit :
+**aucun jeton Vault n'est requis**, la session de console porte l'appel.
+
+*Contrôle :* relire ensuite l'`accessMode` par un `GET` et consigner l'état.
+
+**À faire avant d'écrire la moindre ligne.**
+
+**Conduite à tenir quelle que soit l'issue :** ne jamais conclure sur le code de
+retour. Ce produit rend des **200 qui ne font rien** quand un champ requis
+manque — le dépôt en a déjà fait les frais sur d'autres ressources. Seule la
+**relecture** de l'`accessMode` fait preuve, conformément au fail-closed déjà
+en vigueur.
 
 **M3.** Porteur, dans Elasticsearch, du registre de convergence (D5) **et** de
 la configuration d'environnement (D3.1) : index dédié écrit par le service IS,
