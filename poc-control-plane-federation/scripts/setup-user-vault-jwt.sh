@@ -44,7 +44,7 @@ set -uo pipefail
 KC_BASE="${KC_BASE:-http://localhost:8480}"
 REALM="${REALM:-stoa-lab}"
 KC_ADMIN_USER="${KC_ADMIN_USER:-admin}"; KC_ADMIN_PASSWORD="${KC_ADMIN_PASSWORD:-admin}"
-VADDR="${VAULT_ADDR:-http://localhost:8200}"; VTOK="${VAULT_TOKEN:-stoa-root-token}"
+VADDR="${VAULT_ADDR:-http://localhost:8200}"; VTOK="${VAULT_TOKEN:?Variable VAULT_TOKEN absente — définissez-la (voir poc-control-plane-federation/.env.example)}"
 # Vue de l'INTÉRIEUR du conteneur poc-vault (réseau compose) vs issuer épinglé.
 KC_JWKS_INTERNAL="${KC_JWKS_INTERNAL:-http://keycloak:8080/realms/${REALM}/protocol/openid-connect/certs}"
 KC_ISSUER_PINNED="${KC_ISSUER_PINNED:-${KC_BASE}/realms/${REALM}}"

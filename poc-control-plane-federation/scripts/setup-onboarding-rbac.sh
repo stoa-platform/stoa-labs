@@ -18,8 +18,9 @@
 #      and group '/tenants/banking-demo' (proves the group-based tenant path)
 #
 # Re-running converges (look-up-then-create / PUT). Nothing here is a production
-# secret: 'onboarding-dev-secret' and the user passwords are DISPOSABLE PoC
-# material, never committed as real credentials.
+# secret: DEV_SECRET and the user passwords are DISPOSABLE PoC material,
+# fournies par l'environnement (voir poc-control-plane-federation/.env.example),
+# jamais committées en dur.
 #
 # Mint a token (the EXACT dev command), then call the API:
 #
@@ -36,7 +37,7 @@ ADMIN_PASS="${ADMIN_PASS:-admin}"
 ROLE="${ROLE:-partner-onboarder}"
 APPLIER_ROLE="${APPLIER_ROLE:-cp-applier}"   # gates the apply/converge plane (labctl apply-uac)
 DEV_CLIENT="${DEV_CLIENT:-onboarding-dev}"
-DEV_SECRET="${DEV_SECRET:-onboarding-dev-secret}"
+DEV_SECRET="${DEV_SECRET:?Variable DEV_SECRET absente — définissez-la (voir poc-control-plane-federation/.env.example)}"
 AUDIENCE="${AUDIENCE:-onboarding-api}"
 DEV_PASS="${DEV_PASS:-password}"
 CURL=(/usr/bin/curl -s)

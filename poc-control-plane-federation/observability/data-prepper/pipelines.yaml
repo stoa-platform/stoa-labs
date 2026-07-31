@@ -19,6 +19,21 @@
 #            JAMAIS le request body.
 #     → route (tenant) → sink opensearch index "txn-${/tenant}-%{yyyy.MM.dd}".
 #
+# NB : les sinks opensearch ci-dessous portent "__FROM_ENV__" — pas un mot de
+# passe en clair (dépôt public), et PAS davantage une substitution native Data
+# Prepper : Data Prepper ne résout AUCUNE variable d'environnement dans
+# pipelines.yaml (ni ${VAR}, ni ${env:VAR}, ni ${env.VAR} — seul ${{VARIABLE}},
+# alimenté par une section `variables` du pipeline, existe, et ce n'est pas ce
+# mécanisme-là). CE fichier est donc un GABARIT versionné, jamais lu tel quel
+# par le conteneur : `render-pipelines.sh` (même dossier) y substitue
+# OPENSEARCH_PASSWORD et écrit pipelines.rendered.yaml (gitignored, 0600) —
+# c'est CE fichier rendu que docker-compose.analytics.yml monte dans le
+# conteneur. Sans OPENSEARCH_PASSWORD, le rendu échoue explicitement (rien
+# n'est écrit) — voir render-pipelines.sh + poc-control-plane-federation/.env.example.
+# "__FROM_ENV__" est à ne pas confondre avec "${/tenant}" plus bas, qui EST une
+# expression Data Prepper réelle, mais sur un CHAMP de l'événement (JsonPointer
+# à l'exécution), pas une variable d'environnement au chargement.
+#
 # Contrat d'entrée RÉEL (kafka-logger APISIX, vérifié live 2026-06-11) :
 #   le log_format APISIX projette un objet JSON PLAT (contrainte :byte() — pas
 #   d'objets nichés). Les en-têtes sont des clés plates :
@@ -217,7 +232,7 @@ stoa-txn-apisix:
         hosts:
           - "https://opensearch:9200"
         username: "admin"
-        password: "Stoa!Passw0rd2026"
+        password: "__FROM_ENV__"
         insecure: true                       # PoC : certificat démo auto-signé
         index: "txn-${/tenant}"              # DATA STREAM par tenant (append-only)
         action: "create"                     # data stream => op_type create obligatoire
@@ -461,7 +476,7 @@ stoa-txn-webmethods:
         hosts:
           - "https://opensearch:9200"
         username: "admin"
-        password: "Stoa!Passw0rd2026"
+        password: "__FROM_ENV__"
         insecure: true
         index: "txn-${/tenant}"
         action: "create"
@@ -579,7 +594,7 @@ stoa-txn-wso2:
         hosts:
           - "https://opensearch:9200"
         username: "admin"
-        password: "Stoa!Passw0rd2026"
+        password: "__FROM_ENV__"
         insecure: true
         index: "txn-${/tenant}"
         action: "create"

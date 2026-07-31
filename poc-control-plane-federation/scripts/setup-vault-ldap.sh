@@ -27,7 +27,7 @@
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-VADDR="${VAULT_ADDR:-http://localhost:8200}"; VTOK="${VAULT_TOKEN:-stoa-root-token}"
+VADDR="${VAULT_ADDR:-http://localhost:8200}"; VTOK="${VAULT_TOKEN:?Variable VAULT_TOKEN absente — définissez-la (voir poc-control-plane-federation/.env.example)}"
 MOUNT="${LDAP_MOUNT:-ldap}"
 LDAP_CONTAINER="${LDAP_CONTAINER:-poc-openldap}"
 BASE_DN="${LDAP_BASE_DN:-dc=corp,dc=example}"

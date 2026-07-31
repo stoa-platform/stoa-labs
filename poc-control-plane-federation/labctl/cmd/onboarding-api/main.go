@@ -25,7 +25,7 @@
 //	KEYCLOAK_URL=http://localhost:8480 KEYCLOAK_REALM=stoa-lab \
 //	ONBOARDING_AUDIENCE=onboarding-api \
 //	OPENSEARCH_URL=https://localhost:9201 OPENSEARCH_USER=admin \
-//	OPENSEARCH_PASSWORD='Stoa!Passw0rd2026' OPENSEARCH_INSECURE=true \
+//	OPENSEARCH_PASSWORD='<mot-de-passe-opensearch>' OPENSEARCH_INSECURE=true \
 //	go run ./cmd/onboarding-api
 package main
 

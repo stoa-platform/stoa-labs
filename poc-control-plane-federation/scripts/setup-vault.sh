@@ -7,13 +7,15 @@
 # Vault dev-mode : KV v2 déjà monté sous secret/, unsealed, root token jetable.
 # Écriture KV v2 = upsert (POST .../data/<path>) → re-run = converge.
 #
-# Les VALEURS ci-dessous sont PoC-JETABLES (identiques aux placeholders déjà en
-# Git) — surchargeables par env. En prod : valeurs émises par Vault, rotées,
-# jamais dans un script. Lancer : bash scripts/setup-vault.sh
+# Les secrets de démo (VAULT_TOKEN, CI_APPLIER_SECRET, OS_ADMIN_PASS, ...) ne
+# sont PLUS en clair dans ce script (dépôt public) : ils sont EXIGÉS depuis
+# l'environnement, voir poc-control-plane-federation/.env.example. En prod :
+# valeurs émises par Vault, rotées, jamais dans un script.
+# Lancer : cp .env.example .env && set -a && source .env && set +a && bash scripts/setup-vault.sh
 set -euo pipefail
 
 VAULT_ADDR="${VAULT_ADDR:-http://localhost:8200}"
-VAULT_TOKEN="${VAULT_TOKEN:-stoa-root-token}"
+VAULT_TOKEN="${VAULT_TOKEN:?Variable VAULT_TOKEN absente — définissez-la (voir poc-control-plane-federation/.env.example)}"
 MOUNT="${VAULT_KV_MOUNT:-secret}"
 PREFIX="${VAULT_PREFIX:-stoa}"
 CURL=(/usr/bin/curl -s -H "X-Vault-Token: $VAULT_TOKEN")
@@ -36,8 +38,8 @@ WM_CLIENT_CA_FILE="${WM_CLIENT_CA_FILE:-$(cd "$(dirname "$0")/.." && pwd)/ansibl
 WM_CLIENT_CA_PEM="${WM_CLIENT_CA_PEM:-$(cat "$WM_CLIENT_CA_FILE" 2>/dev/null || true)}"
 KC_ADMIN_USER="${KC_ADMIN_USER:-admin}";    KC_ADMIN_PASS="${KC_ADMIN_PASS:-admin}"
 KC_CONSUMER_SECRET="${KC_CONSUMER_SECRET:-}"
-CI_APPLIER_SECRET="${CI_APPLIER_SECRET:-ci-applier-secret}"
-OS_ADMIN_PASS="${OS_ADMIN_PASS:-Stoa!Passw0rd2026}"
+CI_APPLIER_SECRET="${CI_APPLIER_SECRET:?Variable CI_APPLIER_SECRET absente — définissez-la (voir poc-control-plane-federation/.env.example)}"
+OS_ADMIN_PASS="${OS_ADMIN_PASS:?Variable OS_ADMIN_PASS absente — définissez-la (voir poc-control-plane-federation/.env.example)}"
 
 echo "Vault $VAULT_ADDR — provisioning secret/$PREFIX/* (KV v2)"
 put gateways/wso2       "{\"username\":\"$WSO2_USER\",\"password\":\"$WSO2_PASS\"}"

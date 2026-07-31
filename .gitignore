@@ -9,6 +9,10 @@ Thumbs.db
 # Secrets / env
 .env
 .env.*
+# ... sauf les gabarits d'exemple versionnés (aucun secret réel dedans, par
+# construction : ce sont eux qui documentent les variables à fournir).
+!.env.example
+!**/.env.example
 *.pem
 *.key
 secrets/

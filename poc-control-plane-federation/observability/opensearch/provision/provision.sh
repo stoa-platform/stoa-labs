@@ -8,13 +8,14 @@
 set -euo pipefail
 
 OS_URL="${OS_URL:-https://localhost:9201}"
-OS_AUTH="${OS_AUTH:-admin:Stoa!Passw0rd2026}"
+OS_AUTH="${OS_AUTH:?Variable OS_AUTH absente — définissez-la (\"admin:<mot-de-passe>\", voir poc-control-plane-federation/.env.example)}"
 # OpenSearch Dashboards (saved objects API) — plain HTTP on 5601 in the PoC.
 OSD_URL="${OSD_URL:-http://localhost:5601}"
 OSD_AUTH="${OSD_AUTH:-$OS_AUTH}"
 # Dashboards tenant the index-pattern saved object lives in (ADR-070 per-tenant
 # space). The viewer role grants kibana_all_read on this tenant.
 OSD_TENANT="${OSD_TENANT:-accounts-team}"
+VIEWER_PASS="${VIEWER_PASS:?Variable VIEWER_PASS absente — définissez-la (voir poc-control-plane-federation/.env.example)}"
 DIR="$(cd "$(dirname "$0")" && pwd)"
 # TLS (É0) — no hardwired -k anymore; three regimes, one knob each:
 #   OPENSEARCH_CA_FILE=<pem>   verify against the enterprise CA (--cacert; wins)
@@ -61,9 +62,25 @@ echo "[4/7] RBAC role tenant-accounts-team-viewer (index_perms + FLS + tenant_pe
   --data-binary @"$DIR/03-role-tenant-accounts-team-viewer.json"; echo
 
 echo "[5/7] internal user accounts-viewer"
+# Le gabarit 04-internaluser-accounts-viewer.json ne porte plus le mot de passe
+# en clair (dépôt public) : injection de VIEWER_PASS dans un fichier TEMPORAIRE
+# hors dépôt (mktemp sans répertoire cible), jamais en argv (ADR-074).
+PAYLOAD_FILE="$(mktemp)"
+trap 'rm -f "$PAYLOAD_FILE"' EXIT
+VP="$VIEWER_PASS" python3 -c '
+import json, os, sys
+with open(sys.argv[1]) as f:
+    d = json.load(f)
+d["password"] = os.environ["VP"]
+with open(sys.argv[2], "w") as out:
+    json.dump(d, out)
+' "$DIR/04-internaluser-accounts-viewer.json" "$PAYLOAD_FILE"
+chmod 600 "$PAYLOAD_FILE"
 "${CURL[@]}" -X PUT "$OS_URL/_plugins/_security/api/internalusers/accounts-viewer" \
   -H 'Content-Type: application/json' \
-  --data-binary @"$DIR/04-internaluser-accounts-viewer.json"; echo
+  --data-binary @"$PAYLOAD_FILE"; echo
+rm -f "$PAYLOAD_FILE"
+trap - EXIT
 
 echo "[6/7] rolesmapping tenant-accounts-team-viewer"
 "${CURL[@]}" -X PUT "$OS_URL/_plugins/_security/api/rolesmapping/tenant-accounts-team-viewer" \

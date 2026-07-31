@@ -1,5 +1,5 @@
 {
-  "password": "Stoa!Viewer2026",
+  "password": "<injecte-a-l-execution-par-VIEWER_PASS>",
   "backend_roles": ["tenant-accounts-team"],
   "attributes": {
     "tenant": "accounts-team"

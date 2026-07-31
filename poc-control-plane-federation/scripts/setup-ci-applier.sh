@@ -20,7 +20,11 @@ set -euo pipefail
 KC_BASE="${KC_BASE:-http://localhost:8480}"
 REALM="${REALM:-stoa-lab}"
 ADMIN_USER="${ADMIN_USER:-admin}"; ADMIN_PASS="${ADMIN_PASS:-admin}"
-CLIENT="${CI_CLIENT:-ci-applier}"; SECRET="${CI_SECRET:-ci-applier-secret}"
+# CI_SECRET prioritaire (appel ponctuel explicite) ; sinon CI_APPLIER_SECRET,
+# LA MÊME variable que lit setup-vault.sh / setup-vault-envs.sh pour écrire ce
+# secret dans Vault — évite la dérive silencieuse entre le secret avec lequel
+# CE script crée le client Keycloak et celui que Vault distribue ensuite.
+CLIENT="${CI_CLIENT:-ci-applier}"; SECRET="${CI_SECRET:-${CI_APPLIER_SECRET:?Variable CI_SECRET (ou CI_APPLIER_SECRET) absente — définissez-la (voir poc-control-plane-federation/.env.example)}}"
 TENANT="${CI_TENANT:-banking-demo}"; AUD="${AUDIENCE:-onboarding-api}"
 CURL=(/usr/bin/curl -s); JSON=(-H 'Content-Type: application/json')
 

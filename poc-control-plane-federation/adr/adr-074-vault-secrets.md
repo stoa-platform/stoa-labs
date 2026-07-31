@@ -38,7 +38,7 @@ ADR-072 a acté le **gap (d)** : l'admin API d'une gateway est tout-puissant, au
 |---|---|---|
 | **labctl** (apply/subscribe/plan/apply-uac) | creds dans `targets.yaml` `credentials{}` | `loadResolvedTargets` lit `secret/stoa/gateways/{target}` + `secret/stoa/keycloak` et **override** ; fallback littéral si Vault absent |
 | **onboarding-api** | `OPENSEARCH_PASSWORD` en env | si vide + Vault → `secret/stoa/opensearch#adminPassword` |
-| **CI (Jenkins)** | 2 credentials Jenkins (`ci-applier-secret`, `opensearch-password`) | **1** credential `vault-token` ; le shell fetch les 2 secrets + labctl résout les creds gateway depuis Vault (`VAULT_ADDR` set) |
+| **CI (Jenkins)** | 2 credentials Jenkins (`<secret-client-ci-applier>`, `opensearch-password`) | **1** credential `vault-token` ; le shell fetch les 2 secrets + labctl résout les creds gateway depuis Vault (`VAULT_ADDR` set) |
 
 **Implémentation** : nouveau paquet **`internal/vault`** (KV v2 sur l'API REST, **stdlib `internal/httpx`, zéro dépendance vendorée** — air-gapped, le principe reuse-first) ; wrapper **`cmd/labctl/loadResolvedTargets`** (garde `internal/targets` pur). Vault **dev-mode** dans `docker-compose.poc.yml` (KV v2 sous `secret/`, root token PoC jetable), secrets provisionnés idempotemment par `scripts/setup-vault.sh`.
 
@@ -51,7 +51,7 @@ ADR-072 a acté le **gap (d)** : l'admin API d'une gateway est tout-puissant, au
 **Positives.** Secrets **centralisés** + **hors des manifestes/artefacts** ; **rotables sans rebuild** (prouvé) ; **dev** ne porte aucun secret applicatif (Git PR / token OAuth) ; **CI** ne porte qu'un token Vault ; **rétro-compat totale** (sans Vault, rien ne change). Zéro nouvelle dépendance Go.
 
 **Frontières / suites notées.**
-- **Secrets restants** : `poc-gateways-secret` (introspection), `onboarding-dev-secret`, dex broker — extensibles sous le même `secret/stoa/…`.
+- **Secrets restants** : `poc-gateways-secret` (introspection), `<secret-client-onboarding-dev>`, dex broker — extensibles sous le même `secret/stoa/…`.
 - Les **valeurs** provisionnées par `setup-vault.sh` sont PoC-jetables (identiques aux placeholders) ; en prod, émises/rotées par Vault, jamais dans un script.
 - **Dev-mode** : Vault non scellé. Prod = Vault scellé + audit device + secrets dynamiques là où possible.
 

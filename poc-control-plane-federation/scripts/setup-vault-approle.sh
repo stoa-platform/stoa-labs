@@ -23,7 +23,7 @@
 #   bash scripts/setup-vault-approle.sh --mint ci
 set -euo pipefail
 VAULT_ADDR="${VAULT_ADDR:-http://localhost:8200}"
-VAULT_TOKEN="${VAULT_TOKEN:-stoa-root-token}"   # token ADMIN de bootstrap (pas le runtime)
+VAULT_TOKEN="${VAULT_TOKEN:?Variable VAULT_TOKEN absente — définissez-la (voir poc-control-plane-federation/.env.example)}"   # token ADMIN de bootstrap (pas le runtime)
 TOKEN_TTL="${TOKEN_TTL:-3m}"                     # durée de vie du token éphémère
 SECRET_ID_TTL="${SECRET_ID_TTL:-10m}"           # durée de vie du secret_id (court)
 SECRET_ID_USES="${SECRET_ID_USES:-0}"           # 0 = illimité (PoC) ; prod: 1 (single-use)

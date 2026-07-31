@@ -29,7 +29,7 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 
 VAULT_ADDR="${VAULT_ADDR:-http://localhost:8200}"
-VAULT_ADMIN_TOKEN="${VAULT_TOKEN:-stoa-root-token}"   # seed KV + lecture stoa/ci (bootstrap, PoC)
+VAULT_ADMIN_TOKEN="${VAULT_TOKEN:?Variable VAULT_TOKEN absente — définissez-la (voir poc-control-plane-federation/.env.example)}"   # seed KV + lecture stoa/ci (bootstrap, PoC)
 KC_BASE="${KC_BASE:-http://localhost:8480}"
 KC_ADMIN_USER="${KC_ADMIN_USER:-admin}"; KC_ADMIN_PASSWORD="${KC_ADMIN_PASSWORD:-admin}"
 WM="${WM_GATEWAY_URL:-http://localhost:5555}"

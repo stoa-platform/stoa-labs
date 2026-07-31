@@ -80,7 +80,7 @@ dans la VALEUR des aliases, l'asset est identique en Git). Démo `scripts/demo-m
 Les secrets plateforme ne vivent plus en placeholders `targets.yaml` / env / credentials
 Jenkins : ils sont dans **Vault**, **lus à l'exécution**, **rotables sans rebuild**. Prouvé LIVE :
 - **Infra** : service `vault` (hashicorp/vault dev-mode) dans `docker-compose.poc.yml`
-  (`localhost:8200` / interne `vault:8200`, root token PoC `stoa-root-token`). Secrets KV v2
+  (`localhost:8200` / interne `vault:8200`, root token PoC `<jeton-racine-vault>`). Secrets KV v2
   `secret/stoa/{gateways/{wso2,apisix,webmethods},keycloak,ci,opensearch}` via `scripts/setup-vault.sh`.
 - **Code** : paquet **`internal/vault`** (KV v2 REST via `internal/httpx`, **zéro dép vendorée**) ;
   wrapper **`cmd/labctl/loadResolvedTargets`** (override creds gateway + Keycloak ; `internal/targets`
@@ -314,7 +314,7 @@ imprécise) :
   (**ouvert, pas d'auth** — `/api/datasources` répond sans creds) + Tempo/Loki/
   Prometheus (3 datasources). APISIX + wM émettent OTel natif (OTLP 4317/4318).
 - **Plan GOUVERNANCE/AUDIT** — OpenSearch https://localhost:9201
-  (`admin` / `Stoa!Passw0rd2026`, `-k`) + Dashboards http://localhost:5601.
+  (`admin` / `<mot-de-passe-opensearch>`, `-k`) + Dashboards http://localhost:5601.
 - **Dashboard de fédération** : **« STOA — Fédération (OTel + Transactions) »**,
   uid `stoa-fed-otel-txn` → http://localhost:3000/d/stoa-fed-otel-txn (live v6,
   6 panneaux dont la **table OpenSearch**). Datasource `OpenSearch-Txn` (type
@@ -447,7 +447,7 @@ docker restart poc-wso2am            # OBLIGATOIRE : WSO2 charge les KM au DÉMA
 - WSO2 Publisher/Devportal : https://localhost:9443/{publisher,devportal} — `admin`/`admin`
 - Keycloak admin : http://localhost:8480/admin/ — `admin`/`admin` — realm `stoa-lab` (users `alice@bc.example`/`password`)
 - Grafana : http://localhost:3000 — **ouvert (pas d'auth)** — dashboard `stoa-fed-otel-txn`
-- OpenSearch : https://localhost:9201 (`admin`/`Stoa!Passw0rd2026`, `-k`) · Dashboards http://localhost:5601 · viewer tenant `accounts-viewer` (mdp dans `observability/opensearch/provision/04-internaluser-accounts-viewer.json`)
+- OpenSearch : https://localhost:9201 (`admin`/`<mot-de-passe-opensearch>`, `-k`) · Dashboards http://localhost:5601 · viewer tenant `accounts-viewer` (mdp = `VIEWER_PASS`, voir `poc-control-plane-federation/.env.example` — le gabarit `04-internaluser-accounts-viewer.json` ne porte plus la valeur)
 - Microcks : http://localhost:8585 — APISIX admin : `X-API-KEY: poc-apisix-admin-key` (9180)
 - Clients : `poc-gateways`/`poc-gateways-secret` ; `accounts-read-consumer` (secret dans `labctl-credentials.txt`, gitignoré, régénéré par `subscribe`)
 

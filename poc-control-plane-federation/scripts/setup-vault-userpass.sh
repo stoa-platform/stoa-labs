@@ -40,7 +40,7 @@
 #   ./scripts/test-vault-user-login.sh      # la preuve
 set -uo pipefail
 
-VADDR="${VAULT_ADDR:-http://localhost:8200}"; VTOK="${VAULT_TOKEN:-stoa-root-token}"
+VADDR="${VAULT_ADDR:-http://localhost:8200}"; VTOK="${VAULT_TOKEN:?Variable VAULT_TOKEN absente — définissez-la (voir poc-control-plane-federation/.env.example)}"
 MOUNT="${USERPASS_MOUNT:-userpass}"
 TENANTS="${TENANTS:-banking-demo payments-team}"
 TOKEN_TTL="${TOKEN_TTL:-600}"; TOKEN_MAX_TTL="${TOKEN_MAX_TTL:-900}"
