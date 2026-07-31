@@ -12,8 +12,8 @@ cd "{{ carto_install_dir }}" || exit 1
 export WM_ADMIN_URL={{ carto_env.WM_ADMIN_URL | quote }}
 export WM_USER={{ carto_env.WM_USER | quote }}
 export WM_PASS={{ carto_env.WM_PASS | quote }}
-export WM_ES_URL={{ carto_env.WM_ES_URL | quote }}
-export WM_ES_INDEX={{ carto_env.WM_ES_INDEX | quote }}
+# Depuis le 2026-07-31, ces trois variables suffisent : le trafic se lit par
+# l'API publique de la gateway, plus par son Elasticsearch interne.
 
 # Mode verification (invoque par Ansible en fin de role, `--verify`) : ne
 # publie rien, rapporte les compteurs sur la sortie standard, ne touche ni

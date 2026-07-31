@@ -127,14 +127,14 @@ properties([
 
 // Réglages d'infrastructure : surchargeables par variable d'environnement du
 // contrôleur, avec les coordonnées mesurées du cluster de labo en défaut.
+// UNE SEULE coordonnée depuis la refonte du 2026-07-31 : le trafic se lit par
+// l'API publique de la gateway (/transactionalEvents/_count et /_search), plus
+// par son Elasticsearch interne. `CARTO_WM_ES_URL` et `CARTO_WM_ES_INDEX` ont
+// disparu — et c'est ce qui rend ce job exécutable ailleurs qu'ici : une
+// NetworkPolicy du cluster n'ouvre l'Elasticsearch de la gateway qu'aux pods
+// de la gateway, jamais à un agent de CI, et aucun client n'ouvrira son API
+// Data Store à un tiers.
 def WM_ADMIN_URL = env.CARTO_WM_ADMIN_URL ?: 'http://wm-apigateway.wm.svc.cluster.local:5555/rest/apigateway'
-def WM_ES_URL    = env.CARTO_WM_ES_URL    ?: 'http://elasticsearch.wm.svc.cluster.local:9200'
-// PIÈGE LE PLUS SOURNOIS DU PRODUIT : l'étoile est COLLÉE au nom, sans tiret.
-// Le motif réel des index est `<type>_<horodatage>-<séquence>` ; un motif écrit
-// `..._transactionalevents-*` ne correspond à AUCUN index, l'agrégation renvoie
-// zéro, et la collecte publierait sans erreur une carto où personne n'appelle
-// personne. Voir carto/README.md (tableau de diagnostic) et carto/TERRAIN.md V3.
-def WM_ES_INDEX  = env.CARTO_WM_ES_INDEX  ?: 'gateway_default_analytics_transactionalevents*'
 // Image de l'agent : celle du contrôleur (python3 + curl + git), servie par le
 // registre du labo. Le collecteur ne demande RIEN d'autre que python3 stdlib.
 def AGENT_IMAGE  = env.CARTO_AGENT_IMAGE  ?: 'localhost:30300/ci/jenkins-go:v1@sha256:00ad5591be6f1c7b4eccfd7e498abe5e947dc07f01e4d7a247005b65ef0c565b'
@@ -148,8 +148,6 @@ podTemplate(containers: [
   containerTemplate(name: 'carto', image: AGENT_IMAGE, command: 'sleep', args: '9999',
     envVars: [
       envVar(key: 'WM_ADMIN_URL', value: WM_ADMIN_URL),
-      envVar(key: 'WM_ES_URL',    value: WM_ES_URL),
-      envVar(key: 'WM_ES_INDEX',  value: WM_ES_INDEX),
       envVar(key: 'CARTO_CREDS_ID', value: CREDS_ID),
       envVar(key: 'SEUIL_NON_IDENTIFIE_PCT', value: params.SEUIL_NON_IDENTIFIE_PCT ?: '50'),
       envVar(key: 'FENETRE_MIN_JOURS', value: params.FENETRE_MIN_JOURS ?: '1')
@@ -394,15 +392,16 @@ if apis is None or apis == 0:
         "d'administration a revoir (WM_ADMIN_URL, compte technique).")
 if aretes is None or aretes == 0:
     echecs.append(
-        "aretes=0 : aucun lien API<->consommateur - verifier WM_ES_INDEX "
-        "(l'etoile est COLLEE, pas de tiret avant) et l'activation de la "
-        "policy GlobalLogInvocationPolicy sur la gateway.")
+        "aretes=0 : aucun lien API<->consommateur - verifier l'activation de "
+        "la policy systeme GlobalLogInvocationPolicy sur la gateway : sans "
+        "elle, aucune API n'ecrit d'evenement transactionnel, quel que soit "
+        "le trafic (carto/TERRAIN.md V3).")
 if couv is None or couv < fenetre:
     echecs.append(
         "fenetre_couverte=%gj < %gj : la profondeur reellement couverte par les "
         "evenements est insuffisante - soit aucun evenement n'est lu (meme "
-        "causes que ci-dessus), soit la retention des index est plus courte "
-        "que la fenetre demandee." % (couv if couv is not None else -1, fenetre))
+        "causes que ci-dessus), soit la gateway ne conserve pas d'evenement "
+        "aussi ancien que la fenetre demandee." % (couv if couv is not None else -1, fenetre))
 if nonid is None:
     echecs.append(
         "compteur trafic_non_identifie absent : collecteur trop ancien pour "

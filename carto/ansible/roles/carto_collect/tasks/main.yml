@@ -63,10 +63,12 @@
 - name: Vérification — la collecte voit des APIs, du trafic et une fenêtre non nulle
   # Les trois assertions sont nécessaires. `apis=0` seul laisse passer le mode
   # de défaillance le plus sournois du produit (README, tableau de diagnostic) :
-  # motif d'index erroné (un tiret avant l'étoile) ou policy `Log Invocation`
-  # inactive donnent `apis=2 aretes=0 fenetre_couverte=0j` — l'inventaire est
-  # lu, aucun événement n'est trouvé, et la carto publiée dit sans erreur que
-  # personne n'appelle personne.
+  # la policy `Log Invocation` inactive donne `apis=2 aretes=0
+  # fenetre_couverte=0j` — l'inventaire est lu, aucun événement n'est trouvé, et
+  # la carto publiée dit sans erreur que personne n'appelle personne. Ce mode-là
+  # a survécu à la refonte du 2026-07-31 : ce n'est plus un motif d'index
+  # erroné qui le déclenche (il n'y a plus d'index à écrire), c'est la gateway
+  # qui n'écrit tout simplement aucun événement.
   ansible.builtin.assert:
     that:
       - "'apis=0' not in carto_verify.stdout"
@@ -75,8 +77,8 @@
     fail_msg: >-
       collecte dégradée ({{ carto_verify.stdout }}) : `apis=0` = identifiants ou
       chemins d'administration à revoir ; `aretes=0` et/ou `fenetre_couverte=0j`
-      = aucun événement lu — vérifier WM_ES_INDEX (étoile COLLÉE, pas de tiret
-      avant) et l'activation de la policy GlobalLogInvocationPolicy.
+      = aucun événement lu — vérifier l'activation de la policy système
+      GlobalLogInvocationPolicy sur la gateway (voir carto/TERRAIN.md V3).
 
 - name: Vérification — le trafic est rattaché à des consommateurs identifiés
   # Quatrième assertion, et la seule qui couvre le pire cas RÉELLEMENT MESURÉ.
