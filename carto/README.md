@@ -32,11 +32,68 @@ La date du dernier appel du trafic **non identifié** reste `null` : aucun
 filtre ne sait exprimer « tout sauf ces applications-là », et le contrat
 accepte `lastCall` nul — l'inventer serait pire.
 
+## Publication en Markdown dans un dépôt git dédié
+
+**Chez le client il n'y a pas de serveur web. Il y a git**, et une forge qui
+rend le Markdown. Publier là résout d'un coup : où consulter la carto, où faire
+durer l'historique — l'archive de build ne survit pas à la rotation des
+builds — et sans aucune infrastructure nouvelle. Bonus décisif : le **`git diff`
+de la carto devient le rapport de changement**. « Qu'est-ce qui a bougé cette
+semaine » devient une liste de lignes, avec date et auteur.
+
+    python3 -m carto.render --source /var/www/carto --out /tmp/pages --message
+    CARTO_PAGES_REPO_URL=… CARTO_PAGES_USER=… CARTO_PAGES_TOKEN=… \
+      carto/scripts/publier-markdown.sh --source /tmp/pages
+
+Sept fichiers sont publiés : `README.md` (l'entrée — date, fenêtre, part non
+identifiée, compteurs, signaux), `consommateurs.md` (l'annuaire complet, **y
+compris les consommateurs sans aucun appel** : ce sont eux qu'il faut
+prévenir), `apis.md` (une ligne par lien, avec statut et volumes),
+`evolution.md` (la table hebdomadaire), plus `carto.json`, `history.json` et
+`index.html` — ce dernier **autoportant** : les deux documents JSON y sont
+embarqués (voir `carto/render/page.py`), plus aucun `fetch`, il s'ouvre en
+double-cliquant. `carto.json`/`history.json` restent publiés à côté en plus :
+ce sont les données lisibles par une machine, et leur propre `git diff` reste
+exact indépendamment de toute mise en forme.
+
+**Ce qui fait tout réussir ou tout rater : le diff ne doit pas être du bruit.**
+Tout est trié par **nom**, jamais par volume ; les volumes changent tous les
+jours et un tri par volume ferait valser toutes les lignes en permanence pour
+aucune information. Aucune valeur ne change sans raison (la date de collecte
+est au jour, jamais à la seconde), et la table d'évolution est en ordre
+chronologique **croissant** pour qu'une semaine de plus soit une ligne ajoutée
+et non un décalage de tout le fichier. Le rendu est une fonction **pure**
+(`carto/render/markdown.py`, aucune I/O) et son déterminisme octet pour octet
+est testé.
+
+Le **commit est conditionnel** : on ne commite que si le corpus Markdown a
+changé. Les documents JSON sont embarqués dans le même commit mais ne le
+déclenchent jamais — `history.json` gagne un point par jour par construction, et
+le laisser décider produirait un commit quotidien au diff Markdown vide. Rien
+n'est perdu : `history.json` est cumulatif, un point non commité aujourd'hui
+part au prochain commit réel. Comme la date de collecte fait partie du corpus,
+un jour nouveau produit toujours un commit — c'est voulu, `git log` devient le
+journal de disponibilité du collecteur — mais **rejouer la collecte le même jour
+n'en produit aucun**. Le raisonnement complet, y compris l'alternative écartée,
+est en tête de `carto/scripts/publier-markdown.sh`.
+
+**Geste exploitant — le credential d'écriture.** Il n'est jamais en dur et
+n'a aucune valeur par défaut : dépôt **dédié** (distinct du dépôt de code — un
+commit quotidien polluerait l'historique du code, et les consommateurs d'API
+n'ont pas à y accéder), compte de **service** avec droit d'écriture sur ce seul
+dépôt, jeton limité à ce dépôt. Ce qu'il faut poser et sous quel identifiant est
+décrit en tête de `carto/scripts/publier-markdown.sh` ; les deux chaînes le
+lisent au même endroit (`CARTO_PAGES_USER` / `CARTO_PAGES_TOKEN`) et **échouent
+tôt en le nommant** s'il manque — le job Jenkins avant même de collecter, le
+rôle Ansible au déploiement. Vide = publication désactivée, et les deux le
+disent au lieu de se taire.
+
 ## Lancer à la main
 
     python3 -m carto.collect --out /var/www/carto              # publie
     python3 -m carto.collect --out /tmp/x --dry-run            # ne publie rien
     python3 -m carto.collect --out /tmp/x --from-fixtures carto/tests/fixtures
+    python3 -m carto.render  --source /var/www/carto --out /tmp/pages
 
 ## Tests
 
@@ -113,7 +170,11 @@ périmée qui a l'air fraîche. `carto-collect.sh` :
 | `le parametre \`status\` n'est plus honore` | ce paramètre n'est pas documenté ; une montée de version l'a peut-être retiré | sans lui le taux d'erreur de **toutes** les arêtes serait nul par construction : la sonde refuse de publier plutôt que de le laisser mentir. Voir `TERRAIN.md` V3 |
 | `deux applications portent le nom …` | la dimension consommateur s'interroge par **nom** d'application, et le filtre de la gateway ignore la casse | renommer l'une des deux côté gateway ; leur trafic serait sinon compté deux fois |
 | `fenêtre couverte` < demandée | pas d'événement plus ancien que ça dans la gateway | normal, c'est la vérité (spec D4) — attention, ce n'est PAS la rétention configurée, c'est l'âge du plus vieil événement encore présent |
-| Page vide, bandeau d'erreur | page ouverte en `file://` | passer par le serveur web |
+| Page vide, bandeau évoquant un serveur web | c'est le **gabarit brut** `carto/render/index.html` (jamais celle publiée dans le dépôt dédié) ouvert en `file://` sans avoir été rendu | régénérer avec `python3 -m carto.render` (page autoportante), ou passer par un serveur web si c'est ce gabarit brut qu'il faut servir tel quel |
+| Bandeau « données embarquées … illisibles » | la page autoportante a été tronquée ou corrompue au téléchargement | retélécharger le fichier depuis le dépôt dédié, ou régénérer avec `python3 -m carto.render` |
+| Le dépôt Markdown ne reçoit plus de commit | soit la collecte ne tourne plus, soit rien n'a changé | **lire la date en tête du `README.md` publié**, pas la date du dernier commit : c'est elle qui distingue les deux cas. Si elle n'avance plus, c'est la collecte qu'il faut regarder (`last-failure.log`) |
+| `PUBLICATION MARKDOWN IMPOSSIBLE — configuration absente` | `CARTO_PAGES_REPO_URL`, `CARTO_PAGES_USER` ou `CARTO_PAGES_TOKEN` non fourni | poser le credential d'écriture (geste exploitant en tête de `carto/scripts/publier-markdown.sh`). Rien n'a été poussé, la carto déjà publiée est intacte |
+| `poussée refusée par la forge` | jeton expiré ou révoqué, droit d'écriture retiré, ou branche protégée | régénérer le jeton et le remettre au même endroit — aucune modification de code |
 | Bandeau en alerte « X % des appels ne sont rattachés à aucun consommateur identifié » | la gateway ne renseigne pas l'application appelante dans ses événements (`applicationName` = `Unknown`) — ce trafic est le **résidu** : total de l'API moins la somme de ses applications identifiées | c'est la vérité, pas un bug du collecteur : la carto reste juste sur les APIs, sa dimension consommateur ne l'est pas. Voir `TERRAIN.md` V5 et la question ouverte prioritaire ci-dessous. Le seuil d'alerte est de 50 % (`SEUIL_NON_IDENTIFIE` dans `render/index.html`) |
 | Bandeau « version de schéma », page vide, **document plus ancien que la page** | fenêtre normale d'après-déploiement : le rôle dépose `index.html` et `collect/` ensemble, mais le `carto.json` déjà publié n'est réécrit qu'à la prochaine exécution planifiée | attendre la collecte suivante, ou la déclencher (`carto-collect.sh`). Le refus est volontaire : un document de version 1 lu par la page de version 2 dégraderait en silence (bloc des objets disparus vide, fantômes réintégrés à l'annuaire, part non identifiée en gris) |
 | Bandeau « version de schéma », page vide, **document plus récent que la page** | `carto.json` produit par un collecteur plus récent que la page | redéployer `index.html` en même temps que `collect/` — le rôle Ansible dépose les deux ensemble |
@@ -123,6 +184,10 @@ périmée qui a l'air fraîche. `carto-collect.sh` :
 ## Ce qu'il faut entretenir
 
 - La rotation du compte technique lecture seule.
+- La rotation du jeton d'écriture vers le dépôt de publication : à son
+  expiration, la publication échoue en 403 à la première poussée et la forge
+  garde une carto périmée. Le remède est de régénérer le jeton et de le remettre
+  au même endroit — aucune modification de code.
 - La surveillance de l'échec du job : un échec silencieux publierait une carto
   périmée qui a l'air fraîche.
 - À chaque montée de version du Gateway : rejouer `capture-fixtures.sh` (il

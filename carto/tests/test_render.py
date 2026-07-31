@@ -8,10 +8,16 @@ n'etaient testees par rien, chaque correction dessus se faisait a l'aveugle.
 
 Methode : on extrait le contenu du `<script>` de la page, on le prefixe d'un
 DOM minimal (la page n'est pas chargee dans un navigateur, seules les fonctions
-pures et le bandeau sont exerces), on retire l'appel `boot()` — qui ferait un
-`fetch` — et on execute le tout avec `node`, stdlib Python seule, aucune
-dependance JS. Si `node` est absent, ces tests sont sautes : ils ne doivent
-jamais casser la suite Python sur une machine qui n'a pas de JS.
+pures et le bandeau sont exerces), on retire l'appel automatique `boot()` — qui
+sera invoque EXPLICITEMENT par les tests qui en ont besoin — et on execute le
+tout avec `node`, stdlib Python seule, aucune dependance JS. Si `node` est
+absent, ces tests sont sautes : ils ne doivent jamais casser la suite Python
+sur une machine qui n'a pas de JS.
+
+La page ne fait plus aucun `fetch` : elle lit ses donnees dans deux blocs
+`<script type="application/json">` embarques par `carto/render/page.py`
+(`TestDonneesEmbarquees` ci-dessous couvre la lecture et sa defense — bloc
+absent ou illisible).
 """
 import json
 import pathlib
@@ -26,10 +32,27 @@ RENDER = pathlib.Path(__file__).resolve().parents[1] / "render" / "index.html"
 
 # DOM minimal : `banner()` ecrit dans un element, les `addEventListener` de
 # haut niveau doivent exister, `Date` et `Intl` sont natifs a node.
+#
+# "banner", "nav" et "view" existent TOUJOURS dans le vrai document (ils sont
+# dans le HTML statique) : ils sont donc pre-enregistres. "carto-data" et
+# "carto-history", eux, n'existent que si le gabarit a ete RENDU par
+# `carto/render/page.py` — un vrai `getElementById` renvoie `null` pour un id
+# absent du document, donc ce stub fait pareil : seul un test qui appelle
+# explicitement `__el_for(id)` fait "exister" ce bloc-la, avant d'y poser
+# `textContent` et d'appeler `lireJSONEmbarque()` ou `boot()`.
 PRELUDE = """
-const __el = { id:"banner", className:"", innerHTML:"", textContent:"" };
+const __els = {
+  banner: { id:"banner", className:"", innerHTML:"", textContent:"" },
+  nav: { innerHTML:"" },
+  view: { innerHTML:"" },
+};
+function __el_for(id) {
+  if (!__els[id]) __els[id] = { id, className:"", innerHTML:"", textContent:"" };
+  return __els[id];
+}
+const __el = __els.banner;
 const document = {
-  getElementById: () => __el,
+  getElementById: (id) => __els[id] || null,
   addEventListener: () => {},
   createElement: () => ({ click(){} }),
 };
@@ -212,6 +235,101 @@ class TestVersionDeSchema(RenderJsTestCase):
         self.assertFalse(r["future"])
         self.assertFalse(r["absente"])
         self.assertFalse(r["vide"])
+
+
+class TestDonneesEmbarquees(RenderJsTestCase):
+    """La page ne fait plus de `fetch` : les donnees vivent dans deux blocs
+    `<script type="application/json">` embarques par `carto/render/page.py`.
+
+    Ce que ce test garde : la lecture elle-meme (`lireJSONEmbarque`), ET la
+    defense sur les deux facons dont un bloc peut ne pas etre utilisable —
+    absent (fichier non produit par `carto.render`) ou illisible (JSON casse,
+    fichier tronque) — chacune avec sa PROPRE suite, jamais un ecran muet."""
+
+    def test_un_bloc_present_et_valide_est_lu(self):
+        out = self.js(f"""
+          __el_for("carto-data").textContent = JSON.stringify({self.carto_js()});
+          const r = lireJSONEmbarque("carto-data");
+          console.log(JSON.stringify({{ present: r.present, erreur: !!r.erreur,
+                                        schemaVersion: r.valeur.schemaVersion }}));
+        """)
+        r = json.loads(out)
+        self.assertTrue(r["present"])
+        self.assertFalse(r["erreur"])
+        self.assertEqual(r["schemaVersion"], SCHEMA_VERSION)
+
+    def test_un_bloc_absent_est_signale_absent_pas_illisible(self):
+        # Aucun `__el_for("carto-data")` n'a ete appele : c'est exactement un
+        # fichier qui n'a pas ete produit par `carto.render` (aucun bloc de
+        # donnees dans le document).
+        out = self.js("""console.log(JSON.stringify(lireJSONEmbarque("carto-data")));""")
+        r = json.loads(out)
+        self.assertEqual(r, {"present": False})
+
+    def test_un_bloc_present_mais_casse_est_signale_en_erreur(self):
+        out = self.js("""
+          __el_for("carto-data").textContent = "{ ceci n'est pas du JSON";
+          console.log(JSON.stringify(lireJSONEmbarque("carto-data")));
+        """)
+        r = json.loads(out)
+        self.assertEqual(r, {"present": True, "erreur": True})
+
+    def test_boot_charge_les_donnees_embarquees_sans_toucher_au_reseau(self):
+        # Pas de `fetch` dans ce harnais node : si boot() en appelait un ici,
+        # il echouerait — ce test passe seulement si le chemin embarque est
+        # bien pris en premier, sans jamais tenter le reseau.
+        out = self.js(f"""
+          __el_for("carto-data").textContent = JSON.stringify({self.carto_js()});
+          __el_for("carto-history").textContent = "[]";
+          await boot();
+          console.log(JSON.stringify({{ cls: __el.className, apis: S.carto.apis.length,
+                                        history: S.history.length }}));
+        """)
+        r = json.loads(out)
+        self.assertEqual(r["cls"], "")
+        self.assertEqual(r["apis"], 1)
+        self.assertEqual(r["history"], 0)
+
+    def test_boot_accepte_un_historique_absent_comme_liste_vide(self):
+        # Cas normal du tout premier passage : aucun bloc "carto-history".
+        out = self.js(f"""
+          __el_for("carto-data").textContent = JSON.stringify({self.carto_js()});
+          await boot();
+          console.log(JSON.stringify({{ cls: __el.className, history: S.history }}));
+        """)
+        r = json.loads(out)
+        self.assertEqual(r["cls"], "")
+        self.assertEqual(r["history"], [])
+
+    def test_boot_dit_clairement_quand_le_bloc_embarque_est_illisible(self):
+        # Present mais casse : PAS de nouvelle tentative reseau, un message
+        # dedie plutot qu'un ecran muet ou une erreur generique de fetch.
+        out = self.js("""
+          __el_for("carto-data").textContent = "{ json tronque";
+          await boot();
+          console.log(JSON.stringify({ cls: __el.className, texte: __el.textContent }));
+        """)
+        r = json.loads(out)
+        self.assertEqual(r["cls"], "stale")
+        self.assertIn("illisible", r["texte"])
+        self.assertIn("JSON invalide", r["texte"])
+
+    def test_boot_dit_clairement_quand_rien_n_est_embarque(self):
+        # Aucun bloc du tout (fichier non produit par `carto.render`) : plus
+        # aucun fetch de repli n'existe, la page ne doit jamais rester muette.
+        out = self.js("""
+          await boot();
+          console.log(JSON.stringify({ cls: __el.className, texte: __el.textContent }));
+        """)
+        r = json.loads(out)
+        self.assertEqual(r["cls"], "stale")
+        self.assertIn("n'embarque aucune donnée", r["texte"])
+        self.assertIn("carto.render", r["texte"])
+
+    def test_le_script_de_la_page_ne_contient_plus_aucun_fetch(self):
+        # Assertion la plus directe possible sur l'exigence : les deux fetch()
+        # ont disparu du script, pas seulement du chemin heureux.
+        self.assertNotIn("fetch(", self.src)
 
 
 class TestStatut(RenderJsTestCase):
