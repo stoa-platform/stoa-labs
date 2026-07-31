@@ -104,6 +104,15 @@ pipeline {
     // passe alors PAS en -e (extra-var > set_fact : un -e vide masquerait Vault).
     APIM_OAUTH_TOKEN_URL   = "${env.APIM_OAUTH_TOKEN_URL ?: ''}"
     APIM_OAUTH_CLIENT_AUTH = "${env.APIM_OAUTH_CLIENT_AUTH ?: 'post'}"
+    // ── Équipe qui CLOISONNE l'application (E3 geste 1). Vide = DÉRIVÉE du
+    // chemin KV du compte de service (`deploy/<tenant>/wm-admin` -> <tenant>).
+    // Cette dérivation n'est pas une commodité : elle lie la team au SEUL
+    // périmètre où le token nominatif a le droit d'écrire (policy Vault
+    // tenant-scopée, ADR-077). L'appelant ne peut donc pas cloisonner son
+    // application sous la team d'une autre équipe — il ne pourrait de toute
+    // façon pas en lire les creds. Surcharger APIM_TEAM reste possible quand
+    // le chemin KV ne suit pas cette convention.
+    APIM_TEAM         = "${env.APIM_TEAM ?: ''}"
     INVENTORY         = 'ansible/inventory.lab.ini'
   }
 
@@ -139,6 +148,11 @@ pipeline {
             # Mode d'accès à l'admin : chez le client, TOUJOURS proxy-oauth2 —
             # l'API d'admin est derrière son self-proxy, le rôle obtient un Bearer
             # (client_credentials, creds lus dans Vault) au lieu du Basic direct.
+            # Équipe de cloisonnement (E3 geste 1) — dérivée du chemin KV du
+            # compte de service, borné par la policy Vault du token nominatif.
+            TEAM="${APIM_TEAM:-$(printf '%s' "$APIM_WM_CREDS_SUB" | cut -d/ -f2)}"
+            echo "  (cloisonnement de l'application sur la team : ${TEAM})"
+
             if [ "${ADMIN_VIA:-direct}" = "proxy-oauth2" ]; then
               APIM_API_BASE="$APIM_PROXY_BASE"
               APIM_AUTH_MODE="oauth2"
@@ -208,6 +222,7 @@ pipeline {
             ansible-playbook ${VOPT:-} -e stoa_debug="${DEBUG:-false}" -i "$INVENTORY" ansible/selfservice-app.yml \
               -e apim_ss_manifest="$MANIFEST" \
               -e apim_ss_env="${ENVIRONMENT:-}" \
+              -e apim_ss_team="$TEAM" \
               -e apim_ss_api_base="$APIM_API_BASE" \
               -e apim_ss_data_base="$APIM_DATA_BASE" \
               -e apim_ss_vault_wm_creds_sub="$APIM_WM_CREDS_SUB" \
@@ -224,6 +239,7 @@ pipeline {
             ansible-playbook ${VOPT:-} -e stoa_debug="${DEBUG:-false}" -i "$INVENTORY" ansible/selfservice-app-verify.yml \
               -e apim_ss_manifest="$MANIFEST" \
               -e apim_ss_env="${ENVIRONMENT:-}" \
+              -e apim_ss_team="$TEAM" \
               -e apim_ss_api_base="$APIM_API_BASE" \
               -e apim_ss_data_base="$APIM_DATA_BASE" \
               -e apim_ss_vault_wm_creds_sub="$APIM_WM_CREDS_SUB" \

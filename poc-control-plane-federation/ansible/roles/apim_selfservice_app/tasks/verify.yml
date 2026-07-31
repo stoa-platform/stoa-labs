@@ -44,6 +44,36 @@
         v_app_rec: "{{ v_app_get.json.applications | default([v_app_get.json]) | first }}"
         v_id_keys: "{{ (v_app_get.json.applications | default([v_app_get.json]) | first).identifiers | default([]) | map(attribute='key') | list }}"
 
+    # ----- cloisonnement : l'application appartient-elle à une team ? --------
+    # Deux des trois gardes applicatives du design (E3) ne sont pas du code :
+    # c'est le produit qui les assure — mais SEULEMENT sur une application
+    # assignée. Une app restée en `Default` est visible et supprimable par
+    # toutes les équipes. Cette dimension se vérifie donc comme les autres, avec
+    # la même exigence : la team demandée présente ET `Default` partie.
+    - name: "Verify : équipe attendue (même résolution qu'à l'apply)"
+      ansible.builtin.import_tasks: team-name.yml
+
+    - name: "Verify : teams[] relues sur l'application"
+      ansible.builtin.set_fact:
+        ss_team_names: "{{ v_app_rec.teams | default([]) | map(attribute='name') | list }}"
+
+    - name: "Verify : FAIL-CLOSED — l'application est cloisonnée sur son équipe"
+      ansible.builtin.assert:
+        that:
+          - "ss_team_name | length > 0"
+          - "ss_team_name in ss_team_names"
+          - "'Default' not in ss_team_names"
+        fail_msg: >-
+          TEAM_UNCONFIRMED : '{{ apim_ss_app.name }}' porte teams={{ ss_team_names }}
+          (équipe attendue : '{{ ss_team_name | default('(aucune)', true) }}').
+          Une application en team Default est visible ET SUPPRIMABLE par toutes
+          les équipes — les gardes que le produit assure nativement ne s'appliquent
+          qu'aux applications assignées.
+        success_msg: >-
+          TEAM_CONFIRMED : '{{ apim_ss_app.name }}' cloisonnée sur '{{ ss_team_name }}'
+          (teams={{ ss_team_names }}).
+      when: "apim_ss_require_team | default(true) | bool"
+
     - name: "Verify : chaque dimension à opposer est PRÉSENTE comme identifier de l'asset"
       ansible.builtin.assert:
         that: "item in v_id_keys"
@@ -102,6 +132,16 @@
               | selectattr('apiName', 'equalto', apim_ss_app.api)
               | selectattr('apiVersion', 'equalto', apim_ss_app.api_version)
               | map(attribute='id') | list | first) | default('') }}
+
+    # ----- garde du register : l'équipe a-t-elle le droit de consommer l'API ? --
+    # Même oracle qu'à l'apply, même fichier — sinon leur accord ne prouverait
+    # rien. Rejouable : c'est une propriété de l'état, pas du déroulé de l'apply.
+    - name: "Verify : garde du register (visibilité de l'API pour l'équipe)"
+      when: "ss_team_name | length > 0 and v_api_id | length > 0"
+      block:
+        - ansible.builtin.set_fact:
+            ss_api_id: "{{ v_api_id }}"
+        - ansible.builtin.import_tasks: api-visibility.yml
 
     - name: "Verify : id de l'action IAM nommée"
       ansible.builtin.uri:

@@ -289,7 +289,23 @@ API + application **jetables**, créées puis **supprimées** ; gateway restaur�
    - le cloisonnement est **facultatif** : sans assignation, la brèche du spike #1 est intacte ⇒ l'assignation doit être posée **par la chaîne de création**, jamais laissée à l'appelant ;
    - le **register reste ouvert** : `svc-insurance-demo` ne peut pas lire `accounts-read` (**401**) mais l'associe à son app par `PUT /applications/{id}/apis {"apiIDs":[…]}` → **200**, association **réelle** (`consumingAPIs` côté app, et l'app listée par `GET /apis/{accounts-read}/applications`).
 
-   ⇒ des trois gardes E3, seule celle du **register** (avec l'oracle du 401 natif) reste à écrire ; `owner` et le filtre de liste sont couverts par le produit. Condition de vendabilité inchangée, périmètre divisé par trois. Détail et protocole : `GOAL-self-service-api-app-2026-07-09.md` § E3. *Forme à retenir : le refus natif est **401**, pas 403 ; et le corps de l'association est `{"apiIDs":[…]}` — un tableau nu rend **500 `errorDetails:null`**.*
+   **Suite du même jour — les deux points sont traités dans la chaîne** (`apim_selfservice_app`, prouvé live) :
+   - **assignation** posée par la chaîne de création, avant toute autre écriture, puis **relue** :
+     `TEAM_CONFIRMED` exige la team demandée présente ET `Default` partie ; sans équipe résolue, le rôle
+     refuse de déployer (`TEAM_UNDEFINED`). *Contre-preuve du besoin de relire* : **sans `assetType`, le
+     même `POST /assets/team` rend 200, un corps `{}`, et ne change rien.*
+   - **register** gardé par un oracle que la chaîne peut réellement porter. Celui du design (appeler
+     `GET /apis/{id}` avec les creds de l'équipe) n'est **pas disponible** : un utilisateur d'ÉQUIPE se
+     voit refuser `POST /assets/team` — *« The user: … is not authorized to perform: POST on the
+     resource: assets »*, **401**. Assigner une team est une opération d'**admin**, et pour l'admin
+     `GET /apis` n'est pas scopé. Oracle retenu : `GET /apis/{id}` → **`apiResponse.teams[]`**
+     (⚠ `api.teams` est **vide** — lire au niveau `apiResponse`) ; l'équipe demandeuse doit y figurer,
+     ou l'API être en `Default`. Équivalence avec la visibilité réelle **mesurée** sous une identité
+     jetable de `insurance-demo`. Refus = `API_NOT_VISIBLE_TO_TEAM`, **sans aucune mutation**.
+   - ⚠ **ne ferme que le chemin GitOps.** Le service IS de préprocessing reste nécessaire pour le chemin
+     **direct** — une équipe atteignant `/rest/apigateway` par le proxy OAuth2 d'E2.
+
+   ⇒ des trois gardes E3, seule celle du **register** (avec l'oracle du 401 natif) restait à écrire ; `owner` et le filtre de liste sont couverts par le produit. Condition de vendabilité inchangée, périmètre divisé par trois. Détail et protocole : `GOAL-self-service-api-app-2026-07-09.md` § E3. *Forme à retenir : le refus natif est **401**, pas 403 ; et le corps de l'association est `{"apiIDs":[…]}` — un tableau nu rend **500 `errorDetails:null`**.*
 
 5. **✅ Certificat client de l'app = 100 % REST/labctl. L'« upload binaire » de l'UI est un MYTHE — RÉFUTÉ par trace réseau (spike 2026-07-17).** L'hypothèse « il faut passer par l'UI parce que le REST ne prend pas le binaire » supposait que l'UI POSTe des octets bruts. **Elle ne le fait pas.** Trace live capturée sur l'UI **de l'API Gateway** (`apigatewayui`, *pas* le Designer) en uploadant un vrai `.cer` **binaire** (DER, 855 o) via *Client certificates → Browse → Add → Save* :
 
@@ -369,7 +385,7 @@ Colonne ENTRANTE = identification opposable du consommateur (plan a). Colonne SO
 - [ ] **Plan sortant** : pattern d'injection choisi (§ Décision 3 ; reco P-callout) ; si P-callout, TokenProvider projeté **as-code** (fin du câblage manuel des 2 policyActions). *(Faisabilité tranchée : `customHttpHeaders` prouvé, mapping natif d'identifier écarté — spike 2026-07-15.)*
 - [x] Chemin **apply** en **Vault LDAP** nominatif (voie A), `revoke-self` vérifié **avec preuve de mort et y compris quand le build échoue** — `scripts/test-vault-user-login.sh` 34/34 + E2E Jenkins (2026-07-22). *Reste* : identité de job en **Vault Kubernetes auth** (non prouvable en lab sans cluster), et `Jenkinsfile.prod`/`.rollback` (cf. §3, décision client sur la lecture des secrets de plateforme par un humain).
 - [ ] Frontière secrets : plus aucun secret d'amorçage Vault dans Jenkins (K8s auth) ; fallback AppRole documenté (response wrapping) pour un client non-K8s.
-- [ ] Gardes applicatives (E3) présentes (owner/register/oracle) — pas de self-service multi-équipes sans elles.
+- [x] Gardes applicatives (E3) présentes — `owner`/liste **assurés par le produit dès l'assignation**, assignation **posée et relue par la chaîne**, `register` **gardé** par l'oracle `apiResponse.teams[]`. Reste hors chemin de livraison : le service IS pour le chemin **direct** (proxy E2).
 
 ## Références
 

@@ -1,0 +1,46 @@
+---
+# roles/apim_selfservice_app/tasks/team-name.yml — quelle équipe, et d'où ?
+#
+# Isolé de team.yml parce que DEUX gardes en dépendent, et que l'une des deux
+# doit jouer AVANT toute écriture :
+#   - la garde du register (main.yml §1, « garde 3 » du GOAL) : l'équipe a-t-elle
+#     le droit de voir l'API qu'elle demande à consommer ?
+#   - le cloisonnement de l'application (tasks/team.yml, geste 1).
+#
+# `apim_ss_team` (extra-var posée par le pipeline) l'emporte sur `apim_ss_app.team`
+# (manifeste). Ordre délibéré : le manifeste vit dans le dépôt de l'équipe, donc
+# l'appelant l'écrit — il ne doit pas pouvoir choisir sous quelle équipe son
+# application est cloisonnée, ni au nom de quelle équipe la visibilité d'une API
+# est évaluée, quand la chaîne, elle, le sait.
+
+- name: "Team : nom d'équipe retenu (pipeline > manifeste)"
+  ansible.builtin.set_fact:
+    ss_team_name: >-
+      {{ (apim_ss_team | default('') | trim)
+         if ((apim_ss_team | default('') | trim) | length > 0)
+         else (apim_ss_app.team | default('') | trim) }}
+
+# Le repli non cloisonné existe pour le lab docker-compose, où la feature Teams
+# n'est pas activée : y exiger une équipe rendrait la démo impossible. Il est
+# OPT-IN et BRUYANT — on ne veut pas qu'un client le découvre dans les logs.
+- name: "Team : FAIL-CLOSED — une application sans équipe n'est cloisonnée pour personne"
+  ansible.builtin.assert:
+    that: "ss_team_name | length > 0"
+    fail_msg: >-
+      TEAM_UNDEFINED : aucune équipe pour l'application '{{ apim_ss_app.name }}'
+      (ni -e apim_ss_team=<team>, ni `team:` dans le manifeste). Une application
+      non assignée reste en team Default : visible ET SUPPRIMABLE par toutes les
+      équipes, et aucune garde de visibilité n'est opposable à sa demande de
+      register. Poser l'équipe, ou assumer explicitement le contraire avec
+      -e apim_ss_require_team=false (lab sans feature Teams uniquement).
+    success_msg: "TEAM_REQUESTED : application '{{ apim_ss_app.name }}' -> team '{{ ss_team_name }}'."
+  when: "apim_ss_require_team | default(true) | bool"
+
+- name: "Team : AVERTISSEMENT — cloisonnement et garde de visibilité désactivés"
+  ansible.builtin.debug:
+    msg: >-
+      ⚠ TEAM_SKIPPED : apim_ss_require_team=false et aucune équipe résolue.
+      L'application '{{ apim_ss_app.name }}' restera en team Default — visible et
+      supprimable par toutes les équipes — et la garde du register ne peut rien
+      opposer. Acceptable en lab sans feature Teams, JAMAIS chez un client.
+  when: "ss_team_name | length == 0"

@@ -1,0 +1,111 @@
+---
+# roles/apim_selfservice_app/tasks/team.yml — cloisonnement de l'APPLICATION
+# par assignation de team (E3 geste 1, GOAL § E3).
+#
+# CE QUE CETTE ASSIGNATION PROTÈGE, ET POURQUOI ELLE EST OBLIGATOIRE.
+# Mesuré le 2026-07-31 sur la gateway du cluster : une application assignée à
+# une team est cloisonnée NATIVEMENT — une autre équipe la voit disparaître de
+# son `GET /applications`, et `GET`/`DELETE /applications/{id}` lui répondent
+# 401 (la suppression n'a PAS lieu, relue par un témoin Administrator). Deux des
+# trois gardes applicatives du design tombent donc : le produit les assure.
+#
+# Mais il les assure SEULEMENT si l'assignation a eu lieu. Une application
+# laissée en team `Default` reste visible ET SUPPRIMABLE par toutes les équipes
+# — c'est l'état par défaut de tout ce que crée l'admin REST, y compris nos
+# propres pipelines (relevé le 2026-07-31 : les 7 applications de la gateway du
+# cluster étaient en `Default`, dont celles posées par lot B). La protection ne
+# dépend donc pas d'une fonctionnalité manquante mais d'un GESTE QU'ON PEUT
+# OUBLIER. C'est pourquoi elle est posée ICI, par la chaîne de création, et
+# fail-closed : un manifeste sans team ne déploie pas.
+#
+# ENTRÉE : `ss_team_name`, résolu (et rendu obligatoire) par team-name.yml, qui
+# tourne AVANT — la garde du register en dépend aussi.
+#
+# ⚠ C'EST UNE OPÉRATION D'ADMIN. Mesuré le 2026-07-31 : un utilisateur d'ÉQUIPE
+# se voit refuser cet appel — « The user: <user> is not authorized to perform:
+# POST on the resource: assets » (HTTP 401). La chaîne tourne donc sous une
+# identité admin (compte de service tenant-scopé côté Vault), et non sous
+# l'identité de l'équipe. Conséquence, tirée dans api-visibility.yml : la
+# visibilité des APIs vue par la chaîne n'est PAS celle de l'équipe.
+#
+# SHAPES (spike Teams F4, mémoire wm-1015-teams-scoping) :
+#   - une « team » EST un accessProfile ; `newTeams` attend son UUID (les NOMS
+#     rendent 400) ;
+#   - `assetType` est OBLIGATOIRE — sans lui, POST /assets/team répond 200 et
+#     NE FAIT RIEN (no-op silencieux). C'est le piège central de cet appel :
+#     un code de retour vert n'y prouve strictement rien. D'où la relecture
+#     ci-dessous, qui est la vraie porte de preuve.
+#
+# ⚠ RELECTURE : viser le Service d'administration (réplique unique). À travers
+# `wm-apigateway` (deux répliques sans cluster, caches mémoire non synchronisés)
+# une relecture peut tomber sur la réplique qui ignore encore l'écriture et
+# rendre un 401 qui PARLE D'AUTORISATION alors qu'il s'agit d'un cache froid.
+
+- name: "Team : assigner l'application à '{{ ss_team_name }}'"
+  when: "ss_team_name | length > 0"
+  block:
+
+    - name: "Team : lister les accessProfiles (une team EST un accessProfile)"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/accessProfiles"
+      register: ss_team_aps
+      changed_when: false
+
+    - name: "Team : UUID de l'accessProfile (ou vide)"
+      ansible.builtin.set_fact:
+        ss_team_uuid: >-
+          {{ (ss_team_aps.json.accessProfiles | default(ss_team_aps.json.accessProfile) | default([])
+              | selectattr('name', 'equalto', ss_team_name) | map(attribute='id') | list | first) | default('') }}
+
+    - name: "Team : fail-closed si l'accessProfile d'équipe est absent"
+      ansible.builtin.assert:
+        that: "ss_team_uuid | length > 0"
+        fail_msg: >-
+          TEAM_UNKNOWN : accessProfile '{{ ss_team_name }}' absent de la gateway.
+          Feature Teams activée (PUT /configurations/extended {"enableTeamWork":"true"}) ?
+          Équipe créée (POST /accessProfiles + groupe) — cf. GOAL E5 ?
+
+    # assetType OBLIGATOIRE : sans lui, 200 et rien ne se passe.
+    - name: "Team : POST /assets/team (assetType Application, newTeams = UUID)"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/assets/team"
+        method: POST
+        body:
+          assetIds: ["{{ ss_app_id }}"]
+          assetType: "Application"
+          newTeams: ["{{ ss_team_uuid }}"]
+        status_code: [200, 201]
+      register: ss_team_assign
+
+    # LA porte de preuve. Le POST ci-dessus rend 200 même quand il n'a rien fait
+    # (assetType manquant/inconnu) : seule la relecture distingue « assigné » de
+    # « accepté puis ignoré ». On exige les deux moitiés du résultat mesuré :
+    # la team demandée PRÉSENTE, et `Default` PARTI — car tant que Default est
+    # là, l'application reste visible de toutes les équipes et le cloisonnement
+    # n'a rien fermé.
+    - name: "Team : relire l'application (Service d'administration, réplique unique)"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/applications/{{ ss_app_id }}"
+      register: ss_team_after
+      changed_when: false
+
+    - name: "Team : teams[] relues"
+      ansible.builtin.set_fact:
+        ss_team_names_after: >-
+          {{ (ss_team_after.json.applications | default([ss_team_after.json]) | first).teams
+             | default([]) | map(attribute='name') | list }}
+
+    - name: "Team : FAIL-CLOSED — l'assignation a RÉELLEMENT eu lieu"
+      ansible.builtin.assert:
+        that:
+          - "ss_team_name in ss_team_names_after"
+          - "'Default' not in ss_team_names_after"
+        fail_msg: >-
+          TEAM_UNCONFIRMED : après POST /assets/team (HTTP
+          {{ ss_team_assign.status }}), l'application '{{ apim_ss_app.name }}'
+          porte teams={{ ss_team_names_after }} — attendu : '{{ ss_team_name }}'
+          présente et 'Default' absente. Un 200 sans effet est le comportement
+          connu de cet appel quand assetType manque ou ne correspond pas.
+        success_msg: >-
+          TEAM_CONFIRMED : '{{ apim_ss_app.name }}' cloisonnée sur
+          '{{ ss_team_name }}' (teams={{ ss_team_names_after }}, Default retirée).

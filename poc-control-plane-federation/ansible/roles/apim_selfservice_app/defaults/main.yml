@@ -20,6 +20,20 @@
 # elle ne matcherait jamais au handshake).
 apim_ss_cert_min_days_left: 0
 
+# --- cloisonnement de l'application par team (E3 geste 1, tasks/team.yml) ----
+# Une application créée par l'admin REST naît en team `Default` : visible ET
+# supprimable par TOUTES les équipes. Assignée à une team, elle est cloisonnée
+# NATIVEMENT (mesuré 2026-07-31 : cross-team GET/DELETE -> 401, absente de la
+# liste, la suppression n'a pas lieu). La protection existe donc, mais elle est
+# FACULTATIVE — d'où le fail-closed par défaut : pas de team, pas de déploiement.
+#
+# Nom de l'équipe : `-e apim_ss_team=<team>` (posé par le pipeline, prioritaire)
+# ou `team:` dans le manifeste (repli pour un apply manuel).
+#
+# Mettre à false UNIQUEMENT sur un lab où la feature Teams n'est pas activée
+# (docker-compose) : l'application y restera non cloisonnée, et le rôle le dira.
+apim_ss_require_team: true
+
 # --- la demande d'application à converger ------------------------------------
 # Une seule ici ; en réel : boucler sur une liste OU charger un manifeste
 # (clients/<x>/applications/*.json) via lookup('file') | from_json.
@@ -29,6 +43,9 @@ apim_ss_app:
   api_version: "1.0.0"
   description: "ADR-078 self-service application (Ansible)"
   contact_emails: []
+  # Équipe propriétaire — repli si le pipeline ne pose pas apim_ss_team.
+  # Vide + apim_ss_require_team=true (défaut) = refus de déployer.
+  team: ""
   # Identité ENTRANTE (identifiers de l'asset application) :
   ip_allowlist: []              # ex. ["192.168.65.1", "10.0.0.1-10.0.0.5"] (single|A-B ; PAS de CIDR — cf. README)
   public_cert_ref: ""          # chemin vers un PEM PUBLIC (ou "")
