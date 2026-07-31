@@ -119,6 +119,15 @@ echec() { echo "" >&2; echo "$1" >&2; exit 1; }
 [ -n "$SOURCE" ] || echec "--source <répertoire> est obligatoire (sortie de \`python3 -m carto.render\`)."
 [ -d "$SOURCE" ] || echec "répertoire source introuvable : $SOURCE"
 
+# Résolution en chemin ABSOLU, ICI, avant tout `cd`. Le script entre plus loin
+# dans le dépôt cloné (répertoire temporaire) ; toute variable de chemin reçue
+# relative à l'espace de travail de l'appelant (le job Jenkins passe
+# `--source carto-pages`, relatif à son propre répertoire) cesserait sinon de
+# désigner quoi que ce soit après le changement de répertoire. Le symptôme
+# observé était trompeur : « fichier absent de la source » alors que le rendu
+# avait parfaitement tourné — seul le chemin ne suivait plus.
+SOURCE="$(cd "$SOURCE" && pwd)"
+
 # Les pages ET les données. `git add` se fera par ces chemins NOMMÉS, jamais
 # par `git add -A` : d'autres fichiers peuvent vivre dans le dépôt de
 # publication (un CODEOWNERS, un LICENSE, une note d'exploitation posée à la
