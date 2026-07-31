@@ -66,13 +66,25 @@
       {{ apim_ss_app.public_cert_ref if apim_ss_app.public_cert_ref.startswith('/')
          else (playbook_dir ~ '/../' ~ apim_ss_app.public_cert_ref) }}
 
-- name: "Cert : FAIL-CLOSED — le fichier référencé existe"
+# stat AVANT lookup : `lookup('file')` sur un chemin absent lève une erreur de
+# TEMPLATE qui n'affiche que le chemin BRUT du manifeste — sans dire depuis
+# quelle base il a été résolu, c'est-à-dire précisément l'information qui manque
+# quand on se cogne au piège des deux bases. On échoue donc ici, en affichant le
+# chemin RÉSOLU.
+- name: "Cert : le fichier référencé existe-t-il (chemin résolu) ?"
   ansible.builtin.stat:
     path: "{{ ss_cert_path }}"
   register: ss_cert_stat
   delegate_to: localhost
   changed_when: false
-  failed_when: not ss_cert_stat.stat.exists
+
+- name: "Cert : FAIL-CLOSED — certificat introuvable"
+  ansible.builtin.assert:
+    that: "ss_cert_stat.stat.exists"
+    fail_msg: >-
+      CERT_NOT_FOUND : public_cert_ref='{{ apim_ss_app.public_cert_ref }}'
+      résolu en '{{ ss_cert_path }}' — fichier absent. Un chemin RELATIF est
+      repo-relatif (comme apim_ss_manifest), un chemin ABSOLU est pris tel quel.
 
 - name: "Cert : lire le PEM public"
   ansible.builtin.set_fact:

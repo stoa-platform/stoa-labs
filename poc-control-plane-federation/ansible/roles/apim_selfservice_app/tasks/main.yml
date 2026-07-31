@@ -99,7 +99,6 @@
       ansible.builtin.import_tasks: cert-der.yml
       when: "apim_ss_app.public_cert_ref | default('') | length > 0"
 
-
     - name: "IP : refuser le CIDR (la gateway le drop en silence — cf. README)"
       ansible.builtin.assert:
         that: "apim_ss_app.ip_allowlist | default([]) | select('search', '/') | list | length == 0"
