@@ -72,9 +72,12 @@ VAULT_TOKEN="$1"; export VAULT_TOKEN
 if vault kv get -field=token secret/ci/probe-status >/dev/null 2>&1; then
   echo "  secret/ci/probe-status deja present — inchange"
 else
+  # Basic calcule sur le noeud a partir de /root/gitea-ci-pass (0600) : le mot
+  # de passe ne figure ni dans ce fichier, ni dans l'URL (donc ni en argv).
   wget -q -O /tmp/vr-pat.json --header='Content-Type: application/json' \
+    --header="Authorization: Basic $(printf 'ci:%s' "$(cat /root/gitea-ci-pass)" | base64 -w0)" \
     --post-data='{"name":"probe-status","scopes":["write:repository"]}' \
-    'http://ci:ci-bootstrap@gitea.ci.svc.cluster.local:3000/api/v1/users/ci/tokens' \
+    'http://gitea.ci.svc.cluster.local:3000/api/v1/users/ci/tokens' \
     || { echo "  ECHEC : Gitea a refuse la creation du PAT (nom deja pris ?)"; exit 1; }
   PAT=$(sed -n 's/.*"sha1":"\([^"]*\)".*/\1/p' /tmp/vr-pat.json)
   rm -f /tmp/vr-pat.json

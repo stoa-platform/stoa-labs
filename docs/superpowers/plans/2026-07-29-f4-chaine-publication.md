@@ -524,7 +524,7 @@ worker-1 (`sudo bash`). Les fichiers du repo sont scp'és à côté
 set -eu
 umask 077
 G=http://localhost:30300/api/v1
-CRED='ci:ci-bootstrap'   # bootstrap — rotation en fin de passe (T9)
+CRED="ci:$(cat /root/gitea-ci-pass)"   # bootstrap — rotation en fin de passe (T9)
 J='Content-Type: application/json'
 TOKF=/root/f4-webhook.token
 [ -s "$TOKF" ] || openssl rand -hex 24 > "$TOKF"
@@ -822,7 +822,7 @@ Attendu : `BLOQUE (attendu)` puis `health-gw: 200` (la gateway, elle, passe).
 constat à consigner, policy laissée en place (inerte mais prête), dette
 re-actée ; ne pas improviser un composant réseau en fin de passe.
 
-### Tâche 9 : Rotation `ci`/`ci-bootstrap` (geste, non bloquant)
+### Tâche 9 : Rotation du mot de passe bootstrap de `ci` (geste, non bloquant)
 
 **Files :**
 - Create : `docs/superpowers/plans/2026-07-29-f4-rotate-ci-pass.sh`
@@ -835,13 +835,15 @@ quitte jamais le nœud) :
 set -eu
 umask 077
 NEWF=/root/gitea-ci-pass
-[ -s "$NEWF" ] || openssl rand -base64 18 | tr -d '\n' > "$NEWF"
-NEW=$(cat "$NEWF")
-curl -s -u 'ci:ci-bootstrap' -H 'Content-Type: application/json' -X PATCH \
+[ -s "$NEWF" ] || { echo "ECHEC : $NEWF absent — mot de passe courant inconnu"; exit 1; }
+OLD=$(cat "$NEWF")
+NEW=$(openssl rand -base64 18 | tr -d '\n')
+curl -s -u "ci:$OLD" -H 'Content-Type: application/json' -X PATCH \
   -d "{\"login_name\":\"ci\",\"source_id\":0,\"password\":\"$NEW\",\"must_change_password\":false}" \
   http://localhost:30300/api/v1/admin/users/ci -o /dev/null -w "patch: %{http_code}\n"
+printf '%s' "$NEW" > "$NEWF"
 # contre-épreuve : l'ancien mot de passe ne passe plus, le nouveau passe
-curl -s -u 'ci:ci-bootstrap' -o /dev/null -w "ancien: %{http_code}\n" http://localhost:30300/api/v1/user
+curl -s -u "ci:$OLD" -o /dev/null -w "ancien: %{http_code}\n" http://localhost:30300/api/v1/user
 curl -s -u "ci:$NEW" -o /dev/null -w "nouveau: %{http_code}\n" http://localhost:30300/api/v1/user
 echo "OK — mot de passe dans $NEWF ; les gestes futurs font: -u \"ci:\$(cat $NEWF)\""
 ```
@@ -1059,7 +1061,7 @@ succès). La réserve inscrite au plan T7 est donc **confirmée par la mesure**.
    `jenkins/publish: success`. **La chaîne reverdit** : la contre-épreuve est
    complète (vert → rouge fermé → vert).
 
-### T9 — Rotation `ci`/`ci-bootstrap` : SOLDÉE (21:30 UTC)
+### T9 — Rotation du mot de passe bootstrap de `ci` : SOLDÉE (21:30 UTC)
 
 Rayon d'action **mesuré avant d'écrire** (leçon fondatrice du dépôt) : aucun
 `imagePullSecrets` dans `ci`/`wm`, aucune auth dans

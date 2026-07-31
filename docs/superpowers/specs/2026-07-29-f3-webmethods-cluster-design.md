@@ -33,7 +33,7 @@ piloté** (pas subi), à intégrer à cette spéc.
 | Cluster | w1 control-plane, w3/w4/w5 agents ; `local-path` (WaitForFirstConsumer, PV `spec.local`, racine `/var/lib/rancher/k3s/storage`) ; ns `ci` sur worker-5 |
 | RAM/disque libres | ~20 Go RAM et >330 Go disque par nœud |
 | fio (profil WAL, nœuds au repos) | w1 p99 10,03 ms ; w2 9,63 ms ; **w4 10,95 ms** ; w3/w5 **jamais mesurés** (garde de charge) |
-| Registre | Gitea NodePort `localhost:30300`, pull **anonyme** (motif `ci/jenkins-go:v1`), push authentifié `ci`/`ci-bootstrap` depuis worker-3 (seul nœud à moteur de build) ; realm OCI = `ROOT_URL` (`gitea.ci.svc.cluster.local:3000`), résolu par `/etc/hosts`→ClusterIP sur les hôtes (rôle `registry_config`) |
+| Registre | Gitea NodePort `localhost:30300`, pull **anonyme** (motif `ci/jenkins-go:v1`), push authentifié `ci` depuis worker-3 (seul nœud à moteur de build) ; realm OCI = `ROOT_URL` (`gitea.ci.svc.cluster.local:3000`), résolu par `/etc/hosts`→ClusterIP sur les hôtes (rôle `registry_config`) |
 | ufw public | 22, 30080, 30443 uniquement — 30300 et 5555 non routés |
 
 ## Décisions (avec alternatives écartées)
@@ -205,7 +205,7 @@ le vérificateur (read-back 200/401 sur le realm).
 | NetworkPolicy autour d'ES (sans auth xpack, joignable de tout pod du cluster) | F4 (quand les clients réels seront connus) |
 | Migration des données worker-3 → cluster (109 Mo ; double-run = deux sources de vérité) | F5 (bascule) — F3 démarre **vide**, c'est assumé |
 | Re-pointage `envs/dev/targets*.yaml` (labctl) vers le Service cluster | F4 |
-| Rotation `ci`/`ci-bootstrap` (le push d'images en dépend encore) | F4 (inchangé) |
+| Rotation du mot de passe bootstrap de `ci` (le push d'images en dépend encore) | F4 (inchangé) |
 
 ## Risques
 

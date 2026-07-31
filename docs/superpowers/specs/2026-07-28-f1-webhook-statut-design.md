@@ -53,7 +53,7 @@ avec un **PAT Gitea lu dans Vault à chaque build** :
 C'est la mécanique G-c réutilisée pour son premier usage réel — exactement ce que
 F4 généralisera (« identifiants wM obtenus depuis Vault par identité de pod »).
 
-**Rejeté :** *credential dans Jenkins* (viole `credentials.xml absent`) ; *Secret Kubernetes monté dans le pod* (contourne Vault — « chaque identifiant par Vault », Décision du GOAL) ; *basic auth `ci`/`ci-bootstrap` dans le Jenkinsfile* (secret en clair dans un dépôt).
+**Rejeté :** *credential dans Jenkins* (viole `credentials.xml absent`) ; *Secret Kubernetes monté dans le pod* (contourne Vault — « chaque identifiant par Vault », Décision du GOAL) ; *basic auth `ci` dans le Jenkinsfile* (secret en clair dans un dépôt).
 
 ### D3 — L'écriture dans Vault est une porte utilisateur (secret zéro)
 
@@ -62,8 +62,9 @@ jeton racine, **hors ligne chez l'exploitant par conception** (lot 1, tâche 3).
 Aucun agent ne peut ni ne doit le faire. C'est **la seule intervention humaine**
 de F1 : une commande `vault kv put` fournie prête à l'emploi (placeholder
 `<JETON_RACINE>`, style lot 1), le jeton ne transitant jamais par la session.
-Le PAT est créé par l'agent via l'API Gitea (basic auth `ci`/`ci-bootstrap`,
-déjà en clair dans les docs du lot 1 — rotation actée pour F4) ; sa valeur est
+Le PAT est créé par l'agent via l'API Gitea (basic auth `ci`, dont le mot de
+passe était alors en clair dans les docs du lot 1 — rotation actée pour F4,
+soldée le 2026-07-29, valeur retirée des docs le 2026-07-31) ; sa valeur est
 du même niveau de sensibilité que ce mot de passe bootstrap.
 
 ### D4 — Contre-épreuve : sabotage à l'exécution, limite syntaxique documentée

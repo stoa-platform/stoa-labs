@@ -42,10 +42,10 @@ VAULT_TOKEN="$ROOT"; export VAULT_TOKEN
 vault token lookup >/dev/null || { echo "ECHEC etape 3 : jeton ephemere invalide"; exit 1; }
 
 echo "etape 4/6 : creation du PAT Gitea (probe-status)…"
-# Basic = base64("ci:ci-bootstrap") — identifiant bootstrap déjà public dans
-# les docs lot 1 (rotation actée pour F4).
+# Basic calcule sur le noeud a partir de /root/gitea-ci-pass (0600, rotation
+# T9 du 2026-07-29) : aucun identifiant en clair dans ce fichier.
 wget -q -O /tmp/f1-pat.json --header='Content-Type: application/json' \
-  --header='Authorization: Basic Y2k6Y2ktYm9vdHN0cmFw' \
+  --header="Authorization: Basic $(printf 'ci:%s' "$(cat /root/gitea-ci-pass)" | base64 -w0)" \
   --post-data='{"name":"probe-status","scopes":["write:repository"]}' \
   'http://gitea.ci.svc.cluster.local:3000/api/v1/users/ci/tokens' \
   || { vault token revoke -self >/dev/null 2>&1 || true; echo "ECHEC etape 4 : API Gitea"; exit 1; }

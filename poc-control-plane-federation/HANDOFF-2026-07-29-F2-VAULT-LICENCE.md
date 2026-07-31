@@ -81,7 +81,7 @@ du pod, pas subi).
 | Chemins quarantaine `.suspect` jamais déclenchés en réel | opportuniste |
 | Cron/timer pour `backup.yml` lui-même (aujourd'hui manuel) | après adoption |
 | Épinglage par digest des 3 images du socle | F3 (même passe) |
-| Mot de passe bootstrap `ci`/`ci-bootstrap` + JCasC + rétention builds | F4 |
+| Mot de passe bootstrap `ci` + JCasC + rétention builds | F4 |
 
 ## Suite immédiate proposée
 

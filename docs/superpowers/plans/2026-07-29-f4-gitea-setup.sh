@@ -6,7 +6,7 @@
 set -eu
 umask 077
 G=http://localhost:30300/api/v1
-CRED='ci:ci-bootstrap'   # bootstrap — rotation en fin de passe (plan F4, T9)
+CRED="ci:$(cat /root/gitea-ci-pass)"   # mdp du user `ci`, root-only sur worker-1 (rotation T9)
 J='Content-Type: application/json'
 TOKF=/root/f4-webhook.token
 [ -s "$TOKF" ] || openssl rand -hex 24 > "$TOKF"

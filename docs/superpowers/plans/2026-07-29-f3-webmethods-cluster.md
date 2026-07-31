@@ -24,6 +24,9 @@ worker-1..5).
 - **Anti-affinité worker-3** (bloc PR #2819) sur toute charge persistante.
 - **Jamais `Force`** dans les syncOptions ArgoCD ; apply server-side.
 - **Aucun secret affiché** : toute sortie sensible → fichier root-only du nœud.
+- **`<MDP_CI>`** = mot de passe du user Gitea `ci`, lu sur worker-1 dans
+  `/root/gitea-ci-pass` (0600) au moment de rejouer le geste : le substituant
+  est versionné, jamais la valeur.
 - Commits `stoa` : conventionnels, français, **`-s` (DCO)**, squash-merge.
 - Le checkout `~/stoa-platform/stoa` a ~328 commits de retard : ne JAMAIS
   travailler dedans — worktree neuf basé `origin/main` (Tâche 1).
@@ -66,7 +69,7 @@ ssh worker-3 'sudo docker pull curlimages/curl:8.10.1'
 - [ ] **Step 2 : retag + push des 3 images (login `ci`, motif lot 1 T4)**
 
 ```bash
-ssh worker-3 'sudo docker login localhost:30300 -u ci -p ci-bootstrap \
+ssh worker-3 'sudo docker login localhost:30300 -u ci -p "<MDP_CI>" \
   && sudo docker tag softwareag/apigateway-trial:10.15 localhost:30300/ci/apigateway-trial:10.15 \
   && sudo docker tag docker.elastic.co/elasticsearch/elasticsearch:8.13.4 localhost:30300/ci/elasticsearch:8.13.4 \
   && sudo docker tag curlimages/curl:8.10.1 localhost:30300/ci/curl:8.10.1 \

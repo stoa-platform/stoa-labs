@@ -144,7 +144,7 @@ exécuté, le fichier manque au moment où il en a besoin.
 |---|---|
 | Jenkinsfile non-compilable → commit sans statut (durcissement wrapper) | F4 (avec JCasC) |
 | Job `probe` créé/configuré par REST, pas par JCasC | F4 (dès le 2ᵉ job) |
-| Mot de passe bootstrap `ci`/`ci-bootstrap` en clair dans les docs | F4 (les identités réelles arrivent) |
+| Mot de passe bootstrap `ci` en clair dans les docs | F4 (les identités réelles arrivent) |
 
 ## Suite immédiate proposée
 

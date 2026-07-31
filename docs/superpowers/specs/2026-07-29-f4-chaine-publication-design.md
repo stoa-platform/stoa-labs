@@ -152,7 +152,7 @@ reste 200. La policy de la gateway elle-même attend F5 (exposition publique).
 - **Rétention des builds** : `options { buildDiscarder(logRotator(numToKeepStr:
   '25')) }` dans le Jenkinsfile de `publish-accounts` **et** celui de `probe`
   (push sur `ci/probe`) — soldée dans la passe.
-- **Rotation `ci`/`ci-bootstrap`** : geste exploitant **en fin de session**
+- **Rotation du mot de passe bootstrap de `ci`** : geste exploitant **en fin de session**
   (après la porte) : nouveau mot de passe dans un fichier root-only de
   worker-1, changé via l'API admin Gitea ; consommateurs mesurés = login
   docker push (manuel) et appels API admin des gestes — **aucun manifeste ni

@@ -15,6 +15,7 @@
 
 - **Le jeton racine Vault ne transite JAMAIS par la session agent** — la porte T4 est exécutée par l'exploitant (placeholder `<JETON_RACINE>`, style lot 1).
 - **Aucun secret dans Git** : le jeton webhook réel ne figure que dans l'état Jenkins/Gitea ; le XML versionné porte `__WEBHOOK_TOKEN__`.
+- **`<MDP_CI>`** = mot de passe du user Gitea `ci`, lu sur worker-1 dans `/root/gitea-ci-pass` (0600) au moment de rejouer le geste. Même convention que `<JETON_RACINE>` : le substituant est versionné, jamais la valeur.
 - **Aucun manifeste `stoa` modifié, aucun Ingress, worker-3 intouché.**
 - Pods utilitaires éphémères : `kubectl -n ci run f1-* --rm -i --restart=Never --image=curlimages/curl:8.10.1`.
 - Commits `stoa-labs` : conventionnels, signés DCO (`git commit -s`).
@@ -53,7 +54,7 @@ Noter `nextBuildNumber` (→ `N0 = nextBuildNumber`).
 
 ```bash
 ssh worker-1 'sudo k3s kubectl -n ci run f1-t1b --rm -i --restart=Never --image=curlimages/curl:8.10.1 -- \
-  curl -s -X POST -u ci:ci-bootstrap -H "Content-Type: application/json" \
+  curl -s -X POST -u ci:<MDP_CI> -H "Content-Type: application/json" \
     -d "{\"content\":\"RjEgYmFzZWxpbmUgcGluZwo=\",\"message\":\"chore(f1): push à blanc — porte de preuve baseline\"}" \
     http://gitea.ci.svc.cluster.local:3000/api/v1/repos/ci/probe/contents/PROBE.md'
 ```
@@ -66,7 +67,7 @@ ssh worker-1 'sudo k3s kubectl -n ci run f1-t1b --rm -i --restart=Never --image=
 sleep 90
 ssh worker-1 'sudo k3s kubectl -n ci run f1-t1c --rm -i --restart=Never --image=curlimages/curl:8.10.1 -- sh -c "
   curl -s \"http://jenkins.ci.svc.cluster.local:8080/job/probe/api/json?tree=nextBuildNumber\" ; echo ;
-  curl -s -u ci:ci-bootstrap http://gitea.ci.svc.cluster.local:3000/api/v1/repos/ci/probe/commits/<S1>/status"'
+  curl -s -u ci:<MDP_CI> http://gitea.ci.svc.cluster.local:3000/api/v1/repos/ci/probe/commits/<S1>/status"'
 ```
 
 Attendu : `nextBuildNumber` == `N0` (aucun build), statut du commit vide (`"state":""`, `"statuses":null` ou `[]`). **C'est la porte qui doit échouer maintenant** — si un build part, quelque chose est déjà câblé : s'arrêter et comprendre.
@@ -220,7 +221,7 @@ git commit -s -m "feat(ci): trigger generic-webhook sur le job probe (jeton hors
 
 ```bash
 ssh worker-1 'sudo k3s kubectl -n ci run f1-t3a --rm -i --restart=Never --image=curlimages/curl:8.10.1 -- \
-  curl -s -X POST -u ci:ci-bootstrap -H "Content-Type: application/json" \
+  curl -s -X POST -u ci:<MDP_CI> -H "Content-Type: application/json" \
     -d "{\"type\":\"gitea\",\"active\":true,\"events\":[\"push\"],\"config\":{\"url\":\"http://jenkins.ci.svc.cluster.local:8080/generic-webhook-trigger/invoke?token=<WEBHOOK_TOKEN>\",\"content_type\":\"json\"}}" \
     http://gitea.ci.svc.cluster.local:3000/api/v1/repos/ci/probe/hooks'
 ```
@@ -230,7 +231,7 @@ Attendu : JSON du hook créé (`"active":true`, `"events":["push"]`). `ALLOWED_H
 - [x] **Step 2 : Read-back**
 
 ```bash
-… curl -s -u ci:ci-bootstrap http://gitea.ci.svc.cluster.local:3000/api/v1/repos/ci/probe/hooks'
+… curl -s -u ci:<MDP_CI> http://gitea.ci.svc.cluster.local:3000/api/v1/repos/ci/probe/hooks'
 ```
 
 Attendu : exactement 1 hook, actif, événement `push`.
@@ -241,7 +242,7 @@ Relever `nextBuildNumber` (→ `N1`), puis pousser une mise à jour de `PROBE.md
 
 ```bash
 # GET contents pour le sha du fichier, puis :
-… curl -s -X PUT -u ci:ci-bootstrap -H "Content-Type: application/json" \
+… curl -s -X PUT -u ci:<MDP_CI> -H "Content-Type: application/json" \
     -d "{\"content\":\"RjEgd2ViaG9vayBwaW5nCg==\",\"message\":\"chore(f1): ping webhook\",\"sha\":\"<sha-PROBE.md>\"}" \
     http://gitea.ci.svc.cluster.local:3000/api/v1/repos/ci/probe/contents/PROBE.md'
 # poll jusqu'à 90 s :
@@ -264,7 +265,7 @@ Attendu : build `N1` créé **sans aucune action côté Jenkins**, cause « Gene
 
 ```bash
 ssh worker-1 'sudo k3s kubectl -n ci run f1-t4a --rm -i --restart=Never --image=curlimages/curl:8.10.1 -- \
-  curl -s -o /dev/null -w "%{http_code}" -X DELETE -u ci:ci-bootstrap \
+  curl -s -o /dev/null -w "%{http_code}" -X DELETE -u ci:<MDP_CI> \
   http://gitea.ci.svc.cluster.local:3000/api/v1/users/ci/tokens/probe-status'
 ```
 
@@ -281,7 +282,7 @@ set -eu
 VAULT_TOKEN="$1"; export VAULT_TOKEN
 wget -q -O /tmp/f1-pat.json --header='Content-Type: application/json' \
   --post-data='{"name":"probe-status","scopes":["write:repository"]}' \
-  'http://ci:ci-bootstrap@gitea.ci.svc.cluster.local:3000/api/v1/users/ci/tokens'
+  'http://ci:<MDP_CI>@gitea.ci.svc.cluster.local:3000/api/v1/users/ci/tokens'
 PAT=$(sed -n 's/.*"sha1":"\([^"]*\)".*/\1/p' /tmp/f1-pat.json)
 rm -f /tmp/f1-pat.json
 [ -n "$PAT" ] || { echo "ECHEC: PAT non extrait"; exit 1; }
@@ -400,7 +401,7 @@ Poll ≤ 3 min : `GET /job/probe/api/json?tree=lastBuild[number,result]` → nou
 - [x] **Step 3 : PORTE F1 — le commit est VERT dans Gitea**
 
 ```bash
-… curl -s -u ci:ci-bootstrap http://gitea.ci.svc.cluster.local:3000/api/v1/repos/ci/probe/commits/<S2>/status'
+… curl -s -u ci:<MDP_CI> http://gitea.ci.svc.cluster.local:3000/api/v1/repos/ci/probe/commits/<S2>/status'
 ```
 
 Attendu : `"state":"success"`, un statut `context: jenkins/probe`, `target_url` vers le build. **Porte F1 verte.**

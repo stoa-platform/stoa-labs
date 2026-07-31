@@ -2,11 +2,11 @@
 # F4 — pousse un bump horodaté sur banking-demo/accounts-api (déclencheur du
 # webhook, sans toucher au fond du manifeste). Exécuté sur worker-1 (root).
 #   $1 = message de commit
-# Le mot de passe du user `ci` est lu dans /root/gitea-ci-pass (rotation T9) ;
-# repli sur l'ancien bootstrap tant que la rotation n'a pas eu lieu.
+# Le mot de passe du user `ci` est lu dans /root/gitea-ci-pass (rotation T9,
+# 0600, jamais affiché) — plus de repli bootstrap : l'ancien mdp est révoqué.
 set -eu
 G=http://localhost:30300/api/v1
-if [ -s /root/gitea-ci-pass ]; then CRED="ci:$(cat /root/gitea-ci-pass)"; else CRED='ci:ci-bootstrap'; fi
+CRED="ci:$(cat /root/gitea-ci-pass)"
 J='Content-Type: application/json'
 F=stoa-publish.yaml
 CUR=$(curl -s -u "$CRED" "$G/repos/banking-demo/accounts-api/contents/$F")

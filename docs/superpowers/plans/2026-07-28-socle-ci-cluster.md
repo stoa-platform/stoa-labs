@@ -18,6 +18,7 @@
 - **`ServerSideApply=true` sans `Force`** dans tous les `syncOptions` ; `allowEmpty: false` posé explicitement.
 - **Nœuds du cluster : worker-1 (plan de contrôle), worker-3, worker-4, worker-5.** worker-2 est exclu (isolation Contabo d'un même segment L2).
 - **worker-3 est le seul nœud disposant d'un moteur de construction d'images** (Docker actif ; ni podman ni buildah ailleurs — vérifié).
+- **`<MDP_CI>`** = mot de passe du user Gitea `ci`, lu sur worker-1 dans `/root/gitea-ci-pass` (0600) au moment de rejouer le geste : le substituant est versionné, jamais la valeur.
 - **Commits :** conventionnels (`feat`/`fix`/`docs`/`chore`), signés DCO (`git commit -s`).
 
 ## Interfaces stables (noms utilisés d'une tâche à l'autre)
@@ -275,7 +276,7 @@ Attendu : un JSON du type `{"version":"1.22.x"}`
 ```bash
 # Créer un utilisateur et un dépôt
 ssh worker-1 'sudo k3s kubectl -n ci exec gitea-0 -- gitea admin user create \
-  --username ci --password ci-bootstrap --email ci@gostoa.dev --admin --must-change-password=false'
+  --username ci --password "<MDP_CI>" --email ci@gostoa.dev --admin --must-change-password=false'
 # Supprimer le pod : le PVC doit survivre
 ssh worker-1 'sudo k3s kubectl -n ci delete pod gitea-0'
 ssh worker-1 'sudo k3s kubectl -n ci wait --for=condition=Ready pod/gitea-0 --timeout=300s'
@@ -1096,7 +1097,7 @@ ansible-playbook -i inventory.contabo.ini ci-image.yml
 
 ```bash
 # Depuis worker-3, via un port-forward vers Gitea
-ssh worker-3 'sudo docker login localhost:30300 -u ci -p ci-bootstrap && \
+ssh worker-3 'sudo docker login localhost:30300 -u ci -p "<MDP_CI>" && \
   sudo docker push localhost:30300/ci/jenkins-go:v1'
 ```
 
@@ -1312,7 +1313,7 @@ ssh worker-1 'sudo k3s kubectl -n ci wait --for=condition=Available deploy/jenki
 
 - [x] **Step 7 : PORTE DE PREUVE G-c — pipeline de bout en bout, sans secret statique**
 
-Créer dans Gitea un dépôt `ci/probe` (public, sans credential Jenkins — Gitea API `ci`/`ci-bootstrap`) contenant ce `Jenkinsfile` :
+Créer dans Gitea un dépôt `ci/probe` (public, sans credential Jenkins — Gitea API, user `ci`) contenant ce `Jenkinsfile` :
 
 ```groovy
 podTemplate(serviceAccount: 'jenkins-agent', containers: [
