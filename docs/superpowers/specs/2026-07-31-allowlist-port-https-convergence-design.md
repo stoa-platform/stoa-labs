@@ -80,16 +80,71 @@ proxifiable.
 `customExtensionResponseProcessing`, `invokeESBParam`, `esbServices`. Une API
 de la gateway peut donc invoquer un ou plusieurs services IS custom.
 
-### L'allow list ne survit pas à la reconstruction d'un nœud
+### Stockage réel de l'allow list, et sémantique du mode (mesuré en séance)
+
+Fichier : `packages/WmRoot/config/listeners.cnf`, bloc `<record name="access">`,
+une entrée par listener :
+
+```xml
+<record name="HTTPSListener@5543">
+  <value name="default">include</value>          <!-- le mode -->
+  <record name="nodes" javaclass="com.wm.util.StringSet">
+    <list name="elements"><value>carto-probe-api</value></list>
+  </record>
+</record>
+```
+
+Le conteneur s'appelle `nodes` — le même mot que les actions `addNode` /
+`deleteNode` du formulaire WmRoot déjà employées dans `port-access.yml`.
+
+**Sémantique du champ `default`, établie par comparaison sur les trois
+listeners du lab :**
+
+| Listener | `default` | Entrées | Lecture |
+| --- | --- | --- | --- |
+| `HTTPListener@5555` | `include` | 0 | ouvert, rien de refusé |
+| `HTTPSListener@5543` | `include` | 1 | ouvert, `nodes` = liste de **refus** |
+| `HTTPListener@9999` | `exclude` | 595 | fermé, `nodes` = liste d'**autorisation** |
+
+Le port 9999 est le port de diagnostic, livré en deny-by-default avec ses 595
+services d'administration autorisés. `include` = *allow by default*,
+`exclude` = *deny by default*.
+
+**Piège majeur, à opposer dans l'implémentation.** L'écriture est *la même*
+dans les deux modes, mais l'effet est **inverse** : ajouter une API à `nodes`
+sur un port en `include` la **refuse**. Un réconciliateur qui écrirait sans
+vérifier le mode produirait exactement le contraire de son intention, sans
+aucune erreur.
+
+**Un listener HTTPS existe.** `HTTPSListener@5543`, `protocol: HTTPS`,
+`enabled: true`, `portAlias: DefaultSecure`, `clientAuth: request`, keystore
+`DEFAULT_IS_KEYSTORE`. Il est absent des ports du conteneur et du Service
+Kubernetes — il existe donc côté Integration Server sans être **publié** par le
+déploiement. C'est une question de plomberie k8s, pas une absence de port.
+`listenerKey` = `HTTPSListener@5543` : **M2 est répondue**.
+
+### Ce que devient l'allow list à la reconstruction d'un nœud
 
 La configuration d'un listener vit dans le package **WmRoot**, sur le système
 de fichiers de l'Integration Server. Les Deployments du cluster n'ont **aucun
-volume** (« l'état vit dans ES »), `strategy: Recreate`, et deux CronJobs
-décalés suppriment chacun sa réplique toutes les 20 minutes. Le dépôt avait
-déjà relevé le même motif pour les `watt.*` : « ils survivent au restart mais
-pas au recreate — c'est de la configuration de NŒUD, hors ES » (adr-073).
+volume**, `strategy: Recreate`, et deux CronJobs décalés suppriment chacun sa
+réplique toutes les 20 minutes. Le dépôt avait relevé le même motif pour les
+`watt.*` : « ils survivent au restart mais pas au recreate — c'est de la
+configuration de NŒUD, hors ES » (adr-073).
 
-Observé en séance : un pod identifié pour une lecture avait disparu dix minutes
+**Cette analogie est cependant démentie par la mesure.** Une réplique détruite
+et recréée est remontée **avec** l'entrée d'allow list, alors que son système
+de fichiers repart de l'image. La configuration de port n'est donc pas un
+simple fichier de nœud comme les `watt.*` : quelque chose la réinstalle au
+démarrage — vraisemblablement API Gateway depuis Elasticsearch, ce qui
+expliquerait aussi pourquoi elle dispose de sa propre ressource REST `/ports`.
+**C'est l'objet de M4, désormais la mesure bloquante du lot.**
+
+Ce qui est en revanche établi sans ambiguïté : **il n'y a aucune propagation à
+chaud**. Une réplique en fonctionnement depuis avant l'écriture ne la reçoit
+jamais. C'est ce trou-là que le lot doit combler.
+
+Observé aussi : un pod identifié pour une lecture avait disparu dix minutes
 plus tard, remplacé par un pod de nom différent — un `exec` sur l'ancien nom
 rend `NotFound`. Un pod recréé reçoit une nouvelle identité et une nouvelle
 adresse. **Toute liste de nœuds figée est donc fausse en permanence sur le
@@ -101,8 +156,9 @@ lab**, ce qui disqualifie tout mécanisme reposant sur un inventaire statique.
   `app=wm-apigateway` + `rotation=a|b`, anti-affinité stricte, worker-3 exclu.
 - Image `localhost:30300/ci/apigateway-trial:10.15` par digest — **un registre
   interne au cluster existe**, aucun initContainer, aucun volume.
-- Ports conteneur déclarés : **5555 et 9072 seulement**. Aucun listener HTTPS
-  n'existe côté cluster.
+- Ports conteneur déclarés : **5555 et 9072 seulement**. Le listener HTTPS
+  `HTTPSListener@5543` existe pourtant côté Integration Server (voir plus
+  haut) : il est simplement **non publié** par le Deployment et le Service.
 - Service `wm-apigateway` (ClusterIP épinglée, `sessionAffinity: None`) répartit
   sur les deux répliques : c'est la « VIP » du chemin CI.
 - Service `wm-apigateway-admin` (sélecteur `rotation: a`) épingle les écritures
@@ -346,24 +402,36 @@ Le lot porte deux livrables distincts. Ils sont séquencés, non parallèles :
 
 Chacun mérite son propre plan d'implémentation.
 
-## Mesures ouvertes
+## Mesures
 
-**M1 — bloquante.** Que contient réellement le champ `services` de
-`AccessMode` quand une API est ajoutée à l'allow list depuis la console API
-Gateway ? Le schéma nomme le champ `services`, et `listenerKey` est décrit
-« within the WmRoot package » ; par ailleurs `port-access.yml` a mesuré, sur la
-surface WmRoot, que « le port REJETTE les URLs data-plane (testé) » et n'accepte
-que des références `folder:service`.
+### M1 — RÉPONDUE le 2026-07-31 : l'entrée est un nom d'API
 
-Deux issues, et elles ne conduisent pas au même lot :
+Une API ajoutée à l'allow list du port HTTPS depuis la console apparaît dans
+`listeners.cnf` sous la forme d'un **nom d'API nu** :
 
-- le champ accepte des identifiants d'API → la spec tient telle quelle ;
-- le champ n'accepte que des services IS → l'allow list par API n'existe pas
-  sur cette surface. Si l'entrée est commune à toutes les API, il n'y a rien à
-  faire à chaque création, seulement à la création de l'environnement, et le
-  lot se réduit à sa part infrastructure.
+```xml
+<record name="HTTPSListener@5543">
+  <record name="nodes"><list name="elements">
+    <value>carto-probe-api</value>
+```
 
-**M2 — signature réelle de l'écriture.** Deux formes concurrentes, chacune
+à comparer aux entrées du port de diagnostic 9999, qui sont des services IS
+(`wm.server.query:getServerPaths`). **Les deux formes coexistent dans la même
+structure**, selon la nature du port : services IS pour un listener
+d'administration, noms d'API pour un port API Gateway.
+
+**Conséquences.** L'allow list par API existe bel et bien sur cette surface :
+le lot 2 garde tout son périmètre. Et l'affirmation d'ADR-078 selon laquelle
+« le port REJETTE les URLs data-plane, l'entrée est un `folder:service` » ne
+vaut **que** pour la surface WmRoot d'administration : elle a été indûment
+généralisée. Il n'y a aucun mapping API → service IS à construire.
+
+### M2 — RÉPONDUE : `listenerKey = HTTPSListener@5543`
+
+Relevé dans `listeners.cnf`. Le listener HTTPS existe, activé, avec keystore.
+
+Reste ouvert le seul point de forme, sans effet sur le design puisque
+l'écriture est interne au réconciliateur — deux signatures candidates, chacune
 cohérente en elle-même :
 
 | | Chemin | Verbe | Corps |
@@ -376,16 +444,38 @@ Elles ne se contredisent pas : dans B le chemin ne porte aucun segment
 de son propre Swagger assez souvent pour qu'on ne tranche pas sur lecture seule,
 et les deux formes peuvent coexister selon le niveau de fix pack.
 
-**M1 et M2 se mesurent d'un seul geste.** Sur un environnement disposant d'un
-listener en deny-by-default, ajouter une API à l'allow list **par la console**
-et observer la requête émise. Cela livre en une fois le verbe, le chemin, la
-forme du corps *et* le contenu exact de `services` — c'est-à-dire la réponse à
-M1, qui décide de la taille du lot 2. L'onglet réseau du navigateur suffit :
-**aucun jeton Vault n'est requis**, la session de console porte l'appel.
+*Méthode retenue pour trancher, si le besoin s'en fait sentir :* observer la
+requête émise par la console dans l'onglet réseau. Aucun jeton Vault n'est
+requis, la session de console porte l'appel.
 
-*Contrôle :* relire ensuite l'`accessMode` par un `GET` et consigner l'état.
+### M4 — BLOQUANTE : l'allow list est-elle restaurée au démarrage d'un nœud ?
 
-**À faire avant d'écrire la moindre ligne.**
+C'est désormais **la** question qui décide de l'architecture, et elle a
+remplacé M1 dans ce rôle.
+
+*Ce qui est mesuré.* Après une écriture par la console vers 15 h 18 UTC sur la
+réplique `a` :
+
+- la réplique `a`, **détruite et recréée à 15:20:05**, remonte à 15:22 avec
+  l'entrée présente et un fichier de taille identique à l'ancien ;
+- la réplique `b`, démarrée à 15:10 et **jamais redémarrée depuis**, ne l'a
+  toujours pas plus de dix minutes après.
+
+*Ce qui est donc acquis.* Il n'y a **aucune propagation à chaud** entre nœuds
+en fonctionnement : c'est le trou que ce lot doit combler, et il est confirmé.
+
+*Ce qui reste à établir.* La présence de l'entrée sur le pod `a` neuf admet
+deux explications : soit la configuration a été **restaurée depuis
+Elasticsearch au démarrage**, soit elle a été reposée à la main après 15:20.
+
+L'enjeu est majeur : **si la restauration au démarrage est réelle, D4 perd sa
+justification principale.** La durabilité serait assurée par le produit, et le
+lot se réduirait à la propagation vers les nœuds déjà en marche — un problème
+plus petit, et qui n'exige plus forcément un réconciliateur planifié.
+
+*Protocole, sans rien toucher :* laisser la rotation recycler `b` puis `a` et
+observer si le pod neuf remonte avec l'entrée alors que personne ne l'a
+reposée. Le lab fournit l'épreuve toutes les vingt minutes, gratuitement.
 
 **Conduite à tenir quelle que soit l'issue :** ne jamais conclure sur le code de
 retour. Ce produit rend des **200 qui ne font rien** quand un champ requis
