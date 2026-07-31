@@ -121,13 +121,51 @@
         #     le filtre et préfixent le base64 (-> 1200 car., ne décode même plus).
         # La gateway stocke verbatim (elle ne parse pas) : l'apply dirait « convergé »
         # avec une identité MORTE (le cert présenté ne matcherait jamais -> 401).
-        - name: "Cert : isoler le PREMIER bloc CERTIFICATE (équivalent pem.Decode)"
-          ansible.builtin.set_fact:
-            ss_cert_body: "{{ ss_cert_pem.split('-----BEGIN CERTIFICATE-----')[1].split('-----END CERTIFICATE-----')[0] }}"
+        # RE-ENCODAGE PAR UN PARSEUR, PAS EXTRACTION DE CHAÎNE (2026-07-31).
+        #
+        # POURQUOI. Retour de terrain de l'exploitant : selon le niveau de fix pack,
+        # l'import d'un certificat « DER encodé en base64 » ne fonctionne PAS
+        # toujours sur cette gateway — souci connu de longue date, qui réapparaît
+        # par intermittence. L'import du DER BINAIRE, lui, fonctionne à tous les
+        # coups. C'est le même endpoint : la valeur transite encodée, mais ce qui
+        # doit se trouver APRÈS décodage est du DER canonique.
+        #
+        # Les deux exports que propose Windows — « Base-64 encoded X.509 » et
+        # « DER encoded binary X.509 » — se distinguent exactement là. On reproduit
+        # ici le second : openssl PARSE le certificat et RÉ-ÉMET le DER, au lieu de
+        # découper le texte du PEM.
+        #
+        # CE QUE LE DÉCOUPAGE NE VOYAIT PAS. L'ancien code isolait le premier bloc
+        # puis filtrait le non-base64. Il traitait déjà les deux cas mesurés chez un
+        # client — PEM en chaîne (leaf + intermédiaire concaténés) et PEM à en-tête
+        # texte (« Bag Attributes », « subject= ») dont les lettres survivaient au
+        # filtre. Mais il restait une extraction : tout corps base64 syntaxiquement
+        # valide passait, même s'il ne décodait pas en certificat bien formé.
+        # openssl échoue franchement sur ces entrées au lieu de les propager.
+        #
+        # POURQUOI ÇA COMPTE ICI PLUS QU'AILLEURS. La gateway stocke la valeur
+        # VERBATIM sans la parser : un apply dirait « convergé », la relecture de
+        # `verify` comparerait deux chaînes identiques et confirmerait — et le
+        # handshake mTLS échouerait en production. Et comme le manifeste ne porte
+        # que le certificat PUBLIC (ADR-071 refuse toute clé privée), aucun test de
+        # connexion ne peut être joué depuis le CI pour le rattraper. C'est un
+        # défaut que TOUTE notre chaîne de preuve laisserait passer en vert.
+        - name: "Cert : DER canonique par openssl, encodé pour le transport"
+          ansible.builtin.shell:
+            cmd: |
+              set -o pipefail
+              openssl x509 -inform PEM -outform DER | base64 | tr -d '\n'
+            executable: /bin/bash
+            stdin: "{{ ss_cert_pem }}"
+            stdin_add_newline: false
+          register: ss_cert_der_out
+          changed_when: false
+          failed_when:
+            - "ss_cert_der_out.rc != 0 or (ss_cert_der_out.stdout | trim | length) == 0"
 
-        - name: "Cert : base64(DER) = corps du bloc, sans espaces ni retours ligne"
+        - name: "Cert : valeur effectivement transmise à la gateway"
           ansible.builtin.set_fact:
-            ss_cert_der: "{{ ss_cert_body | regex_replace('[^A-Za-z0-9+/=]', '') }}"
+            ss_cert_der: "{{ ss_cert_der_out.stdout | trim }}"
 
         - name: "Cert : fail-closed — le base64(DER) extrait doit être bien formé"
           ansible.builtin.assert:
