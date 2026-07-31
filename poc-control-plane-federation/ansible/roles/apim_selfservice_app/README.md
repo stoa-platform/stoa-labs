@@ -29,8 +29,30 @@ VÉRIFIÉE côté Go (`labctl/internal/adapter/webmethods`, mémoire projet
   clé sur l'action déjà attachée → **une seule** par API, pas de 409). Prouvé
   live : le backend (token-echo) **reçoit le header injecté**.
 
-`verify` **fail-closed** : `ENFORCEMENT_CONFIRMED` (le stage IAM oppose l'action
-AND) + `OUTBOUND_CONFIRMED` (customHttpHeaders au routing) + preuve data-plane 200.
+**Cloisonnement de l'application** (`tasks/team.yml`, E3 geste 1) :
+- `POST /assets/team {assetType:"Application"}` posé **par la chaîne de création**,
+  puis **relu** : `TEAM_CONFIRMED` exige la team demandée présente ET `Default`
+  partie. Prouvé live le 2026-07-31 (`teams=['Administrators','banking-demo']`),
+  idempotent au re-run.
+- **La relecture n'est pas décorative** : sans `assetType`, le même POST rend
+  **200** avec un corps `{}` et **ne change rien** (mesuré : teams inchangées).
+  Seule la relecture distingue « assigné » de « accepté puis ignoré ».
+- **Fail-closed par défaut** : pas d'équipe résolue ⇒ `TEAM_UNDEFINED`, refus de
+  déployer. Une application laissée en `Default` est visible **et supprimable**
+  par toutes les équipes ; assignée, elle est cloisonnée **nativement** (autre
+  équipe : `GET`/`DELETE` → 401, absente de la liste). La protection existe donc
+  dans le produit, mais elle est facultative — d'où son ancrage ici.
+- **D'où vient l'équipe** : `-e apim_ss_team=<team>` (posée par le pipeline, qui
+  la dérive du chemin KV du compte de service — donc du seul périmètre où le
+  token nominatif a le droit d'écrire) **l'emporte** sur `team:` du manifeste.
+  L'appelant écrit le manifeste : il ne doit pas choisir sous quelle équipe son
+  application est cloisonnée quand la chaîne, elle, le sait.
+- **Opt-out** : `-e apim_ss_require_team=false` — pour un lab **sans** feature
+  Teams uniquement. Le rôle affiche alors `TEAM_SKIPPED` en clair.
+
+`verify` **fail-closed** : `TEAM_CONFIRMED` (application cloisonnée sur son
+équipe) + `ENFORCEMENT_CONFIRMED` (le stage IAM oppose l'action AND) +
+`OUTBOUND_CONFIRMED` (customHttpHeaders au routing) + preuve data-plane 200.
 
 ## Usage
 
@@ -126,6 +148,7 @@ ansible-playbook -i inv.ini ansible/selfservice-app.yml \
 | Champ | Rôle |
 |---|---|
 | `name`, `api`, `api_version` | application + API cible (publiée d'abord) — INVARIANT |
+| `team` | équipe qui **cloisonne** l'application. **Repli** : `-e apim_ss_team` (posé par le pipeline) l'emporte. Aucune des deux ⇒ refus de déployer (`apim_ss_require_team`, défaut `true`) — INVARIANT |
 | `enforce` | dimensions à OPPOSER, sous-ensemble de `["httpsCertificate","ipAddressRange"]` — **vide = identifiers inertes, à éviter** — INVARIANT |
 | `backend` | header + template de clé backend (plan sortant, cf. limites) — INVARIANT (la valeur, elle, est résolue par env via le TokenProvider ← Vault de l'env) |
 | `per_env.<env>.ip_allowlist` | IPs / plages `A-B` — **PAS de CIDR** (la gateway le drop en silence) ; une IP nue est normalisée en `X-X` (match exact + visible UI) — **PAR ENV** |
@@ -166,3 +189,17 @@ ansible-playbook -i inv.ini ansible/selfservice-app.yml \
   `${backend_apikey}` n'est PAS posé par ce rôle (dépend du package IS).
 - **CIDR** : rejeté fail-closed (à convertir en range via `ansible.utils.ipaddr`
   en évolution).
+- **🔴 `enforce` est une propriété de l'API, PAS de l'application.** La règle
+  d'identification est attachée au **stage IAM de la policy SERVICE de l'API**, et
+  cette policy est **unique par API** : deux applications qui consomment la MÊME
+  API avec des `enforce` DIFFÉRENTS sont mutuellement exclusives. Mesuré le
+  2026-07-31 sur la gateway du cluster, avec les deux manifestes `_example` qui
+  ciblent tous deux `accounts-read` : après apply de `demo-consumer-cert`
+  (`httpsCertificate`), l'action `AND(ipAddressRange)` de
+  `demo-consumer-accounts-read` n'est plus seulement détachée — elle a **disparu
+  de `GET /policyActions`** ; l'apply inverse la recrée et fait disparaître celle
+  du certificat. Le dernier apply gagne, et l'autre consommateur perd son
+  identification. **Ce n'est pas silencieux** : le `verify` de l'application
+  perdante passe au rouge (`ENFORCEMENT_UNCONFIRMED`) — c'est la chaîne
+  fail-closed qui joue son rôle. Mais tant que ce point n'est pas tranché, **ne
+  pas déployer deux applications d'`enforce` différents sur une même API**.

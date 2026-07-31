@@ -84,6 +84,14 @@
         that: "ss_app_id | length > 0"
         fail_msg: "APP_ID_UNRESOLVED : la gateway n'a pas renvoyé d'id exploitable à la création."
 
+    # ===== 2b. Cloisonnement de l'application (E3 geste 1) ====================
+    # AVANT toute autre écriture : une application créée par l'admin REST naît
+    # en team `Default`, donc visible ET supprimable par toutes les équipes. La
+    # fenêtre où elle l'est doit être la plus courte possible — et surtout, elle
+    # ne doit jamais dépendre d'un geste laissé à l'appelant (cf. team.yml).
+    - name: "Team : cloisonner l'application (assignation + relecture fail-closed)"
+      ansible.builtin.import_tasks: team.yml
+
     - name: "App : associer à l'API (idempotent)"
       ansible.builtin.uri:
         url: "{{ apim_ss_api_base }}/applications/{{ ss_app_id }}/apis"

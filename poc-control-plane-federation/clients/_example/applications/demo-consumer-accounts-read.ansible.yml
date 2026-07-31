@@ -21,6 +21,12 @@ apim_ss_app:
   api_version: "1.0.0"
   description: "Lot B — preuve d'exécution réelle (selfservice-app-deploy, cluster)"
   contact_emails: ["demo@bank.invalid"]
+  # Équipe qui CLOISONNE l'application (E3 geste 1, tasks/team.yml). Repli de
+  # l'apply manuel : sous Jenkins, `apim_ss_team` est dérivée du chemin KV du
+  # compte de service et l'emporte sur cette valeur. Sans équipe résolue, le
+  # rôle REFUSE de déployer — une application non assignée reste en team
+  # Default, donc visible ET supprimable par toutes les équipes.
+  team: "banking-demo"
   backend: { header: "apikey", value_template: "${backend_apikey}" }   # invariant
   enforce: ["ipAddressRange"]                                          # invariant
   cert_rotation: "replace"

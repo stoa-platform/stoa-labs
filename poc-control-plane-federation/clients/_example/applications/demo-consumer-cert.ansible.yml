@@ -24,6 +24,15 @@
 # plage n'est joignable que depuis le réseau du client (d'où le flag
 # apim_ss_verify_dataplane, sans objet ici).
 #
+# ⚠ EXCLUSIF AVEC LE MANIFESTE VOISIN. `demo-consumer-accounts-read` cible la
+# MÊME API avec un `enforce` DIFFÉRENT (ipAddressRange). Or la règle
+# d'identification est attachée à la policy SERVICE de l'API, unique par API :
+# le dernier apply gagne et l'action de l'autre est SUPPRIMÉE (mesuré le
+# 2026-07-31 — elle disparaît de GET /policyActions, pas seulement du stage).
+# Le verify de l'application perdante passe alors au rouge
+# (ENFORCEMENT_UNCONFIRMED). Déployer l'un OU l'autre, pas les deux, tant que ce
+# point n'est pas tranché (cf. README du rôle, § Limites).
+#
 # API ciblée : `accounts-read` v1.0.0 — la seule RÉELLEMENT publiée et active
 # sur la gateway du cluster (F4, banking-demo/accounts-api). Le rôle est
 # fail-closed si l'API est absente (« API absente — la publier d'abord. »).
@@ -33,6 +42,10 @@ apim_ss_app:
   api_version: "1.0.0"
   description: "Preuve d'exécution du chemin certificat (base64(DER) par openssl)"
   contact_emails: ["demo@bank.invalid"]
+  # Équipe qui CLOISONNE l'application (E3 geste 1, tasks/team.yml). Sous
+  # Jenkins, `apim_ss_team` (dérivée du chemin KV du compte de service)
+  # l'emporte ; ici c'est le repli de l'apply manuel.
+  team: "banking-demo"
   backend: { header: "apikey", value_template: "${backend_apikey}" }   # invariant
   enforce: ["httpsCertificate"]                                        # invariant
   cert_rotation: "replace"
