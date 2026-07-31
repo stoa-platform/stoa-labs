@@ -23,7 +23,29 @@ set -uo pipefail
 # shellcheck disable=SC2015,SC2030,SC2031
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-VADDR="${VAULT_ADDR:-http://localhost:8200}"
+# Cible de ce harnais : le Vault du POC docker-compose, sur la boucle locale.
+#
+# `VAULT_ADDR` de l'environnement est DÉLIBÉRÉMENT IGNORÉ. Relevé le 2026-07-30 :
+# le poste de l'exploitant exporte `VAULT_ADDR=https://<vault-externe>` depuis son
+# ~/.zshrc. Ce script lit les mots de passe RÉELS d'alice, carol et oscar dans le
+# fichier root-only du nœud, et envoie aussi le jeton de lab en clair — les hériter
+# d'une variable d'ambiance expédie tout cela vers l'hôte qu'elle désigne, en
+# croyant tester son compose local.
+#
+# Pas de validation par suffixe : elle porterait sur l'URL et non sur l'hôte, or
+# `http://localhost:8200` ne se termine pas par `localhost` tandis que
+# `https://x.example/#localhost` s'y termine. Il faudrait un parseur d'URL en shell
+# à l'endroit exact où se tromper envoie des identifiants dehors — on ignore.
+#
+# Pour viser un autre Vault, c'est délibéré et ça se dit : POC_VAULT_ADDR.
+POC_VAULT_ADDR_DEFAULT='http://localhost:8200'
+VADDR="${POC_VAULT_ADDR:-$POC_VAULT_ADDR_DEFAULT}"
+if [ -n "${VAULT_ADDR:-}" ] && [ "$VAULT_ADDR" != "$VADDR" ]; then
+  # Dit, pas tu : l'exploitant doit savoir que sa variable n'a pas servi. On
+  # n'imprime jamais la valeur héritée, seulement celle effectivement visée.
+  printf '  \033[33mnote : le VAULT_ADDR de cet environnement est ignore ; ce harnais vise %s\033[0m\n' "$VADDR" >&2
+  printf '  \033[33m       (pour viser ailleurs volontairement : POC_VAULT_ADDR=...)\033[0m\n' >&2
+fi
 VTOK="${VAULT_TOKEN:?Variable VAULT_TOKEN absente — définissez-la (voir poc-control-plane-federation/.env.example)}"
 MOUNT="${USERPASS_MOUNT:-userpass}"
 LDAP_MOUNT="${LDAP_MOUNT:-ldap}"
