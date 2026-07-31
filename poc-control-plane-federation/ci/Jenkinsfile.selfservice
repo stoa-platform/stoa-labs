@@ -80,7 +80,17 @@ pipeline {
     // Self-proxy OAuth2 de l'admin (ADMIN_VIA=proxy-oauth2) + chemin KV TENANT-scopé
     // des creds OAuth2 du pipeline ({token_url, client_id, client_secret, scope} —
     // sous deploy/<tenant>/ : le token nominatif ne lit QUE son périmètre).
-    APIM_PROXY_BASE   = "${env.APIM_PROXY_BASE ?: 'http://webmethods-real:5555/gateway/wm-admin-self/1.0/rest/apigateway'}"
+    // Le proxy se décrit par MORCEAUX. Le NOM de l'API d'admin proxifiée change
+    // d'un client à l'autre et n'avait aucune variable à lui : il était noyé au
+    // milieu d'une URL entière, impossible à surcharger seul. APIM_PROXY_BASE
+    // reste l'échappatoire (override complet) pour un reverse proxy dont le
+    // chemin ne suit pas la convention wM /gateway/<api>/<version>. Vide par
+    // défaut → composé côté shell, et le composé vaut EXACTEMENT l'ancien défaut.
+    APIM_PROXY_HOST   = "${env.APIM_PROXY_HOST ?: 'http://webmethods-real:5555'}"
+    APIM_PROXY_API    = "${env.APIM_PROXY_API  ?: 'wm-admin-self'}"
+    APIM_PROXY_VER    = "${env.APIM_PROXY_VER  ?: '1.0'}"
+    APIM_PROXY_PATH   = "${env.APIM_PROXY_PATH ?: '/rest/apigateway'}"
+    APIM_PROXY_BASE   = "${env.APIM_PROXY_BASE ?: ''}"
     APIM_OAUTH_SUB    = "${env.APIM_OAUTH_SUB  ?: 'deploy/banking-demo/admin-oauth'}"
     // ── Organisation du VAULT CLIENT (le namespace passe par VAULT_NAMESPACE,
     // consommé par ci/lib/vault-login.sh ET le rôle ; variante « namespace dans
@@ -154,9 +164,16 @@ pipeline {
             echo "  (cloisonnement de l'application sur la team : ${TEAM})"
 
             if [ "${ADMIN_VIA:-direct}" = "proxy-oauth2" ]; then
-              APIM_API_BASE="$APIM_PROXY_BASE"
+              # Override complet s'il est fourni, sinon composition depuis les
+              # morceaux. `${VAR:-}` obligatoire : Jenkins n'EXPORTE PAS au shell
+              # une variable d'environnement vide (même piège qu'APIM_KV_PREFIX).
+              PROXY_BASE="${APIM_PROXY_BASE:-}"
+              if [ -z "$PROXY_BASE" ]; then
+                PROXY_BASE="${APIM_PROXY_HOST}/gateway/${APIM_PROXY_API}/${APIM_PROXY_VER}${APIM_PROXY_PATH}"
+              fi
+              APIM_API_BASE="$PROXY_BASE"
               APIM_AUTH_MODE="oauth2"
-              echo "  (API d'admin via le SELF-PROXY OAuth2 : $APIM_API_BASE)"
+              echo "  (API d'admin via le proxy OAuth2 : $APIM_API_BASE)"
             else
               APIM_AUTH_MODE="basic"
             fi
@@ -173,20 +190,36 @@ pipeline {
 
             # 0) GATEWAY DISPONIBLE ? Le lab la recycle toutes les ~20 min (keepalive
             #    licence trial) et un rolling restart chez le client produit la même
-            #    fenêtre : attendre son retour (max 5 min) AVANT de consommer
-            #    l'identité — plutôt qu'échouer au milieu du play sur un
-            #    « Connection refused » cryptique. /health répond 200 sans auth.
-            i=0
-            while :; do
-              HC="$(curl -s -o /dev/null -m 5 -w '%{http_code}' "$APIM_API_BASE/health" || true)"
+            #    fenêtre : attendre son retour AVANT de consommer l'identité —
+            #    plutôt qu'échouer au milieu du play sur un « Connection refused »
+            #    cryptique.
+            #
+            #    OPTIONNEL — APIM_PREFLIGHT=off. Chez un client, /health peut être
+            #    injoignable depuis la VIP, ou filtré en amont : le build mourrait
+            #    alors plusieurs minutes durant pour une raison étrangère au travail
+            #    demandé. Plutôt que de renoncer au bénéfice, APIM_PREFLIGHT_URL et
+            #    APIM_PREFLIGHT_CODES permettent de viser UNE AUTRE sonde de vie.
+            if [ "${APIM_PREFLIGHT:-on}" = "off" ]; then
+              echo "  (préflight de joignabilité désactivé — APIM_PREFLIGHT=off)"
+            else
+              PF_URL="${APIM_PREFLIGHT_URL:-}"
+              [ -n "$PF_URL" ] || PF_URL="$APIM_API_BASE/health"
               # 200 = up (accès direct) ; 401 = up ET l'OAuth2 du proxy est déjà
               # enforce (on sonde SANS token — le 401 est la preuve de vie du proxy).
-              if [ "$HC" = 200 ] || [ "$HC" = 401 ]; then break; fi
-              i=$((i+1))
-              if [ "$i" -ge 60 ]; then echo "  ✗ gateway toujours injoignable après 5 min ($APIM_API_BASE/health -> $HC)"; exit 1; fi
-              if [ "$i" -eq 1 ]; then echo "  (gateway indisponible — recyclage en cours ? attente du retour, max 5 min…)"; fi
-              sleep 5
-            done
+              PF_CODES="${APIM_PREFLIGHT_CODES:-200 401}"
+              PF_MAX="${APIM_PREFLIGHT_TRIES:-60}"
+              i=0
+              while :; do
+                HC="$(curl -s -o /dev/null -m 5 -w '%{http_code}' "$PF_URL" || true)"
+                for C in $PF_CODES; do
+                  if [ "$HC" = "$C" ]; then break 2; fi
+                done
+                i=$((i+1))
+                if [ "$i" -ge "$PF_MAX" ]; then echo "  ✗ gateway toujours injoignable après $((PF_MAX*5))s ($PF_URL -> $HC ; attendu : $PF_CODES)"; exit 1; fi
+                if [ "$i" -eq 1 ]; then echo "  (gateway indisponible — recyclage en cours ? attente du retour, max $((PF_MAX*5))s…)"; fi
+                sleep 5
+              done
+            fi
 
             # 1) IDENTITÉ NOMINATIVE → TOKEN VAULT. Voie B (JWT) si fournie, sinon
             #    voie A (VAULT_USER + mot de passe annuaire). Le détail — corps JSON
