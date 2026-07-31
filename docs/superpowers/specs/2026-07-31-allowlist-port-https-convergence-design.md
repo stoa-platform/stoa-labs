@@ -37,6 +37,9 @@ un nœud individuellement.
    parc.
 4. **Deny-by-default opposable.** Une API sans le marqueur d'exposition n'est
    pas dans l'allow list, sur aucun nœud.
+5. **Configuration opposable.** Changer le marqueur dans la configuration
+   d'environnement suffit à faire converger tous les nœuds sur le nouveau,
+   sans reconstruire d'image ni redéployer quoi que ce soit.
 
 ## Terrain (mesuré le 2026-07-31, sauf indication)
 
@@ -147,7 +150,8 @@ n'est pas contractualisable dans un OpenAPI — donc non proxifiable.
 Créer, activer, désactiver, supprimer un port et **poser le mode
 deny-by-default** relèvent de la CI d'infrastructure, à la création de
 l'environnement. Le certificat serveur n'est pas un prérequis dur de ce lot.
-L'alias du listener est un paramètre.
+Le listener visé n'est pas figé : il est désigné par la configuration
+d'environnement de D3.1, au même titre que le tag.
 
 Le proxy n'expose **aucune écriture** sur la surface ports : ni `DELETE /ports`,
 ni `PUT /ports/disable`, ni `PUT /ports/{key}/accessMode`. Le seul écrivain de
@@ -166,12 +170,20 @@ d'infrastructure. Le mécanisme est indépendant de l'alias visé.
 
 ### D3 — L'intention est un tag sur l'API
 
-Le CI pose un tag (`expose:https`) à la création. L'allow list attendue est la
+Le CI pose un tag sur l'API à la création. L'allow list attendue est la
 projection des API portant ce tag.
 
 La source de vérité reste donc dans **Elasticsearch** : partagée entre nœuds,
 durable à la reconstruction, et lisible par chaque nœud sur son propre
 `localhost`. Aucun magasin d'intention supplémentaire n'est introduit.
+
+**Le nom du tag n'est pas figé dans le code.** Il est porté par une
+configuration d'environnement, aux côtés du listener visé — les deux répondent
+à la même question, « quelles API sur quel port », et le réconciliateur a besoin
+des deux. La configuration est une **liste de règles** `{ listenerKey, tag }`,
+évaluées indépendamment : le cas courant est une règle unique, mais un
+environnement exposant un port interne et un port externe avec des marqueurs
+distincts est couvert par la même boucle, sans re-découpage ultérieur.
 
 *Écarté :* « toute API active est autorisée » — plus simple, mais une API
 activée hors CI s'auto-autoriserait, ce qui vide le deny-by-default de son sens.
@@ -181,13 +193,41 @@ Integration Server. *Écarté :* liste explicite portée par le CI à chaque
 publish — l'intention ne survivrait pas entre deux builds, et la réconciliation
 n'aurait aucune source à relire.
 
+#### D3.1 — Une seule source pour cette configuration, lue par les deux côtés
+
+Deux composants ont besoin du nom du tag : le CI, qui le **pose**, et le
+réconciliateur de chaque nœud, qui le **cherche**. S'ils le tiennent de deux
+endroits distincts, un écart entre les deux produit une convergence
+silencieusement vide — le CI tague, personne ne lit, l'API reste injoignable et
+rien ne le signale.
+
+La configuration vit donc en **un seul endroit, adossé à Elasticsearch** —
+partagé entre nœuds et durable à la reconstruction, pour les raisons mêmes qui
+fondent D3. Le réconciliateur la lit sur son `localhost` ; le CI la lit à
+travers le proxy, dont le contrat couvre déjà cette lecture. Un paramètre de job
+Jenkins reste possible, mais comme **surcharge de la configuration partagée**,
+pas comme valeur parallèle : le CI n'invente jamais un tag que les nœuds
+ignorent.
+
+*Écarté :* un réglage étendu de l'Integration Server (`watt.*`). Il vit dans
+`server.cnf`, sur le disque du nœud — donc perdu à la reconstruction, exactement
+le piège que ce lot existe pour traiter, et déjà relevé dans adr-073. *Écarté :*
+un fichier livré dans le package : changer le tag imposerait de reconstruire et
+redéployer une image.
+
+**Comportement si la configuration est absente ou illisible :** le
+réconciliateur **ne touche pas** à l'allow list et publie une erreur explicite
+dans le registre de convergence (D5). Le build rougit en nommant la cause. Ni
+purge silencieuse, ni repli sur une valeur codée en dur.
+
 ### D4 — Convergence par réconciliation locale, pas par fan-out
 
 Un service IS `stoa.ports:reconcile`, livré dans un package custom, tourne sur
-**chaque nœud par construction**. À chaque passage il lit les API taguées via
-l'admin REST **local**, calcule l'allow list attendue, la compare à
-l'`accessMode` local et applique l'écart. Il s'exécute **au démarrage du
-package** et périodiquement.
+**chaque nœud par construction**. À chaque passage il lit la configuration
+(D3.1), puis, pour chaque règle, les API portant le tag qu'elle désigne — le
+tout via l'admin REST **local**. Il calcule l'allow list attendue du listener
+visé, la compare à l'`accessMode` local et applique l'écart. Il s'exécute **au
+démarrage du package** et périodiquement.
 
 Le déclenchement au démarrage n'est pas un raffinement : sans lui, un nœud
 recréé sert du trafic en refusant tout jusqu'au premier tick. Sur le lab, la
@@ -285,9 +325,12 @@ jeton Vault nominatif (`secret/deploy/{tenant}/wm-admin`).
 **M2.** Format exact de `listenerKey` — à relever par `GET /ports` sur un
 environnement pourvu d'un listener HTTPS.
 
-**M3.** Forme du registre de convergence dans Elasticsearch : index dédié écrit
-par le service IS, ou alias API Gateway. Arbitrage d'implémentation ; le lab a
-déjà un motif d'index connu pour ses propres écritures.
+**M3.** Porteur, dans Elasticsearch, du registre de convergence (D5) **et** de
+la configuration d'environnement (D3.1) : index dédié écrit par le service IS,
+ou alias API Gateway. Même arbitrage pour les deux, et il n'est pas neutre —
+l'alias est déjà couvert par le contrat du proxy (`GET /alias`), donc lisible
+par le CI sans nouvel endpoint, mais il n'est pas conçu pour des écritures
+répétées comme celles du registre. Les deux porteurs peuvent différer.
 
 ## Tests
 
@@ -296,6 +339,9 @@ déjà un motif d'index connu pour ses propres écritures.
 - Newman en sonde de contrat sur le proxy — 401 sans jeton, 404 hors contrat,
   200 sur la lecture du registre — conformément à l'usage du dépôt (Newman
   sonde, Ansible implémente).
-- Les quatre contre-épreuves de la porte sont rejouables : la rotation `*/20`
+- Configuration absente ou illisible : vérifier que l'allow list existante est
+  **laissée intacte** et que le registre porte l'erreur. C'est le cas où une
+  purge silencieuse rendrait toutes les API injoignables d'un coup.
+- Les cinq contre-épreuves de la porte sont rejouables : la rotation `*/20`
   du lab fournit la contre-épreuve de durabilité en continu, sans mise en
   scène.
