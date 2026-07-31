@@ -23,6 +23,36 @@
     - render
     - __init__.py
 
+- name: Script de publication Markdown — déposé exécutable
+  # Posé seulement si la publication Markdown est demandée : un script de
+  # poussée git installé sur un hôte qui n'en a pas l'usage est une surface
+  # inutile. Mode 0755 et non 0644 : l'enveloppe l'invoque.
+  ansible.builtin.copy:
+    src: "{{ carto_source_dir }}/scripts/publier-markdown.sh"
+    dest: "{{ carto_install_dir }}/publier-markdown.sh"
+    owner: "{{ carto_user }}"
+    mode: "0755"
+  when: carto_pages_repo_url | length > 0
+
+- name: Publication Markdown — le credential d'écriture est-il fourni ?
+  # Échouer TÔT et EN NOMMANT ce qui manque. Sans ce contrôle, l'absence de
+  # jeton ne se verrait qu'à la première exécution planifiée, la nuit, sous la
+  # forme d'un échec de `git push` dans un journal que personne ne lit.
+  ansible.builtin.assert:
+    that:
+      - carto_pages_user | length > 0
+      - carto_pages_token | length > 0
+    fail_msg: >-
+      `carto_pages_repo_url` est renseigné mais le credential d'écriture ne
+      l'est pas : `carto_pages_user` et/ou `carto_pages_token` sont vides. Ce
+      couple n'a pas de valeur par défaut et n'en aura jamais — il est fourni à
+      l'exécution depuis le coffre. Ce qu'il faut poser (dépôt dédié, compte de
+      SERVICE avec droit d'écriture sur ce seul dépôt, jeton d'accès limité à
+      ce dépôt) est décrit dans la section « GESTE EXPLOITANT » en tête de
+      carto/scripts/publier-markdown.sh. Pour déployer sans publication
+      Markdown, laisser `carto_pages_repo_url` vide.
+  when: carto_pages_repo_url | length > 0
+
 - name: Racine web de publication
   ansible.builtin.file:
     path: "{{ carto_web_root }}"

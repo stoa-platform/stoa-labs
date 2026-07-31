@@ -43,3 +43,34 @@ carto_env:
   WM_ADMIN_URL: ""
   WM_USER: ""
   WM_PASS: ""
+
+# ── Publication Markdown dans un depot git dedie ────────────────────────────
+# VIDE = desactivee. Le role se comporte alors exactement comme avant : il
+# publie la carto dans `carto_web_root` et rien d'autre. Aucune URL par defaut
+# n'est plausible ici — une valeur inventee pousserait la carto d'un client
+# dans le depot d'un autre.
+#
+# Pourquoi cette voie existe : chez le client il n'y a pas de serveur web, il y
+# a git et une forge qui rend le Markdown. Publier la resout d'un coup ou
+# consulter la carto, ou faire durer l'historique, et sans aucune
+# infrastructure nouvelle. Le `git diff` du depot devient le rapport de
+# changement de la plateforme.
+#
+# DEPOT DEDIE, jamais le depot de code : un commit quotidien polluerait
+# l'historique du code, et les consommateurs d'API n'ont pas a acceder au code.
+carto_pages_repo_url: ""
+carto_pages_branch: main
+carto_pages_author_name: "carto (collecteur automatique)"
+carto_pages_author_email: "carto@localhost"
+
+# Credential d'ECRITURE vers le depot dedie. JAMAIS en dur ici, jamais dans le
+# depot : fourni a l'execution depuis le coffre, comme `carto_env`. Il est
+# DISTINCT du compte de lecture de la gateway — lire l'inventaire et ecrire la
+# publication sont deux droits differents, portes par deux comptes.
+# Ce qu'il faut poser, et sous quelle identite : voir la section « GESTE
+# EXPLOITANT » en tete de `carto/scripts/publier-markdown.sh`.
+# `carto_pages_user` est un compte de SERVICE (jamais celui d'une personne :
+# un depart ne doit pas arreter la publication), `carto_pages_token` un jeton
+# d'acces limite a ce seul depot.
+carto_pages_user: ""
+carto_pages_token: ""

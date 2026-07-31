@@ -104,6 +104,26 @@
 // documents JSON, eux, sont le livrable durable ; pour visualiser, il faut soit
 // assouplir cette CSP côté contrôleur, soit servir les trois fichiers depuis
 // n'importe quel serveur statique — ce qui est exactement le point ouvert V6.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// ET DEPUIS : LA PUBLICATION MARKDOWN DANS UN DÉPÔT GIT DÉDIÉ
+// ─────────────────────────────────────────────────────────────────────────────
+// L'archive de build répond mal à trois besoins à la fois : `index.html` ne
+// s'y affiche pas (CSP ci-dessus), l'historique disparaîtrait si le dernier
+// build réussi était purgé, et il faut un accès Jenkins pour la consulter.
+//
+// Chez le client il n'y a pas de serveur web — il y a git, et une forge qui
+// rend le Markdown. Le dernier stage de ce job publie donc la carto en pages
+// Markdown dans un dépôt DÉDIÉ : où consulter, où faire durer l'historique, et
+// zéro infrastructure nouvelle. Bonus décisif : le `git diff` de ce dépôt
+// devient le rapport de changement de la plateforme, avec date et auteur.
+//
+// Ce stage est FACULTATIF et désactivé par défaut : sans
+// CARTO_PAGES_REPO_URL, le job se comporte exactement comme avant et le dit.
+// L'archivage n'est pas remplacé — il reste le filet du labo.
+// Le geste exploitant (dépôt dédié, compte de service, jeton) est décrit en
+// tête de `carto/scripts/publier-markdown.sh`, qui porte toute la logique de
+// commit : ce Jenkinsfile ne fait que lui passer des identifiants.
 
 properties([
   buildDiscarder(logRotator(numToKeepStr: '30')),
@@ -117,7 +137,16 @@ properties([
     string(name: 'SEUIL_NON_IDENTIFIE_PCT', defaultValue: '50',
            description: "Part maximale tolérée du trafic non rattaché à un consommateur identifié (%). 50 = valeur du rôle Ansible et du rendu. Au-dessus de 50, la porte est PLUS FAIBLE que le rôle et le build le dira."),
     string(name: 'FENETRE_MIN_JOURS', defaultValue: '1',
-           description: "Profondeur minimale réellement couverte par les événements (jours). 1 = l'assertion du rôle (« pas fenetre_couverte=0j »). 0 désactive la porte et le build le dira.")
+           description: "Profondeur minimale réellement couverte par les événements (jours). 1 = l'assertion du rôle (« pas fenetre_couverte=0j »). 0 désactive la porte et le build le dira."),
+    // Publication Markdown : VIDE = désactivée, et le build le dit. C'est le
+    // seul paramètre qui l'active — pas de valeur par défaut plausible ici, une
+    // URL de dépôt inventée pousserait la carto d'un client chez un autre.
+    string(name: 'CARTO_PAGES_REPO_URL', defaultValue: '',
+           description: "URL HTTPS du dépôt git DÉDIÉ où publier la carto en Markdown (distinct du dépôt de code). Vide = publication Markdown désactivée, le job se limite à l'archivage. Geste exploitant complet en tête de carto/scripts/publier-markdown.sh."),
+    string(name: 'CARTO_PAGES_CREDENTIALS_ID', defaultValue: 'carto-pages-git',
+           description: "Identifiant du credential Jenkins « Username with password » portant le compte de SERVICE qui écrit dans le dépôt dédié (utilisateur = compte de service, mot de passe = jeton d'accès limité à ce dépôt). Distinct du credential de lecture de la gateway : lire l'inventaire et écrire la publication sont deux droits différents."),
+    string(name: 'CARTO_PAGES_BRANCH', defaultValue: 'main',
+           description: "Branche du dépôt dédié qui porte la carto publiée.")
   ]),
   // Planification quotidienne. `H` étale la charge : Jenkins choisit une minute
   // stable pour ce job dans l'heure indiquée, au lieu de faire partir tous les
@@ -141,6 +170,11 @@ def AGENT_IMAGE  = env.CARTO_AGENT_IMAGE  ?: 'localhost:30300/ci/jenkins-go:v1@s
 
 def CREDS_ID = params.CARTO_CREDENTIALS_ID ?: 'carto-wm-gateway'
 
+// Publication Markdown : entièrement pilotée par paramètres, jamais en dur.
+def PAGES_URL     = (params.CARTO_PAGES_REPO_URL ?: '').trim()
+def PAGES_CREDS   = params.CARTO_PAGES_CREDENTIALS_ID ?: 'carto-pages-git'
+def PAGES_BRANCHE = params.CARTO_PAGES_BRANCH ?: 'main'
+
 // AUCUN serviceAccount privilégié n'est demandé : ce pod ne parle ni à Vault ni
 // à l'API Kubernetes. C'est la contrepartie visible de l'arbitrage ci-dessus —
 // l'identité de pod ne sert plus à rien ici, on ne la réclame donc pas.
@@ -150,7 +184,12 @@ podTemplate(containers: [
       envVar(key: 'WM_ADMIN_URL', value: WM_ADMIN_URL),
       envVar(key: 'CARTO_CREDS_ID', value: CREDS_ID),
       envVar(key: 'SEUIL_NON_IDENTIFIE_PCT', value: params.SEUIL_NON_IDENTIFIE_PCT ?: '50'),
-      envVar(key: 'FENETRE_MIN_JOURS', value: params.FENETRE_MIN_JOURS ?: '1')
+      envVar(key: 'FENETRE_MIN_JOURS', value: params.FENETRE_MIN_JOURS ?: '1'),
+      // L'URL et la branche ne sont pas des secrets ; le compte de service et
+      // son jeton, eux, n'entrent JAMAIS dans le pod par ici — ils sont
+      // injectés le temps du seul stage qui pousse, par `withCredentials`.
+      envVar(key: 'CARTO_PAGES_REPO_URL', value: PAGES_URL),
+      envVar(key: 'CARTO_PAGES_BRANCH', value: PAGES_BRANCHE)
     ])
 ]) {
   node(POD_LABEL) {
@@ -194,6 +233,59 @@ podTemplate(containers: [
   le build en renseignant son identifiant dans le paramètre
   CARTO_CREDENTIALS_ID.
 """)
+        }
+
+        // Le credential d'ÉCRITURE de la publication Markdown est vérifié ICI,
+        // avant la collecte, et pas au dernier stage : découvrir au bout de
+        // 20 minutes qu'on ne peut pas publier ce qu'on vient de collecter est
+        // le pire moment pour l'apprendre. Un secret manquant doit échouer tôt
+        // et en se nommant.
+        if (!PAGES_URL) {
+          echo("Publication Markdown DÉSACTIVÉE (paramètre CARTO_PAGES_REPO_URL vide). " +
+               "Ce build se limitera à l'archivage des artefacts. Pour l'activer : " +
+               "renseigner l'URL du dépôt dédié et poser le credential d'écriture — " +
+               "geste complet en tête de carto/scripts/publier-markdown.sh.")
+        } else {
+          try {
+            withCredentials([usernamePassword(credentialsId: PAGES_CREDS,
+                                              usernameVariable: 'PAGES_U',
+                                              passwordVariable: 'PAGES_P')]) {
+              echo "Credential d'écriture « ${PAGES_CREDS} » présent : la carto sera publiée sur ${PAGES_URL} (branche ${PAGES_BRANCHE})."
+            }
+          } catch (Exception e) {
+            error("""
+╔══════════════════════════════════════════════════════════════════════════════
+║ CREDENTIAL D'ÉCRITURE ABSENT — la publication Markdown est demandée mais le
+║ job n'a pas de quoi pousser dans le dépôt dédié. Il s'arrête avant la
+║ collecte, pour ne pas collecter ce qu'il ne pourra pas publier.
+╚══════════════════════════════════════════════════════════════════════════════
+
+  CE QUI MANQUE : un credential Jenkins « Username with password » portant
+  l'identifiant  ${PAGES_CREDS}
+
+  LE GESTE QUI RÉPARE (à faire une fois, par l'équipe de support) :
+    1. Dans la forge : créer un dépôt DÉDIÉ à la carto, distinct du dépôt de
+       code, lisible par ceux qui doivent consulter la carto.
+    2. Créer un compte de SERVICE (jamais le compte d'une personne : un départ
+       ne doit pas arrêter la publication) et lui donner le droit d'ÉCRITURE
+       sur ce seul dépôt.
+    3. Générer pour ce compte un jeton d'accès limité à ce dépôt.
+    4. Manage Jenkins → Credentials → System → Global credentials
+       « Add Credentials »
+         Kind     : Username with password
+         Scope    : Global
+         ID       : ${PAGES_CREDS}
+         Username : le compte de service
+         Password : le jeton d'accès
+    5. Relancer ce build.
+
+  Ce credential est DISTINCT de celui de la gateway : lire l'inventaire et
+  écrire la publication sont deux droits différents, portés par deux comptes.
+
+  Pour publier sans rien pousser (le temps de préparer la forge) : laisser
+  CARTO_PAGES_REPO_URL vide — le job se limite alors à l'archivage.
+""")
+          }
         }
       }
 
@@ -444,6 +536,36 @@ PY
           echo "Carto archivee : ${env.BUILD_URL}artifact/carto-out/index.html"
           echo "Rappel : l'archive de build est la reponse du LABO. La cible " +
                "client reste un site statique auto-heberge (point ouvert V6)."
+        }
+
+        stage('Publication Markdown dans le dépôt dédié') {
+          // Après l'archivage, jamais avant : l'archive est le filet. Si la
+          // forge est indisponible, la carto du jour existe quand même quelque
+          // part, et c'est ce stage-là qui rougit — pas la collecte.
+          if (!PAGES_URL) {
+            echo("Publication Markdown désactivée (CARTO_PAGES_REPO_URL vide) : " +
+                 "rien n'est poussé. Ce n'est pas un échec, c'est le mode par défaut.")
+          } else {
+            // Le rendu Markdown ne demande aucun secret : il est fait AVANT
+            // d'ouvrir la parenthèse `withCredentials`, pour que le jeton
+            // n'existe dans l'environnement que pendant les commandes git.
+            sh '''
+              set -eu
+              python3 -m carto.render --source carto-out --out carto-pages --message
+              ls -l carto-pages
+            '''
+            withCredentials([usernamePassword(credentialsId: PAGES_CREDS,
+                                              usernameVariable: 'CARTO_PAGES_USER',
+                                              passwordVariable: 'CARTO_PAGES_TOKEN')]) {
+              // Toute la logique — clone, écriture, commit CONDITIONNEL, push,
+              // et le raisonnement qui la justifie — vit dans ce script, partagé
+              // avec l'enveloppe du rôle Ansible. Deux implémentations, en
+              // Groovy et en Jinja, auraient divergé au premier correctif.
+              sh 'carto/scripts/publier-markdown.sh --source carto-pages'
+            }
+            echo "Carto publiée sur ${PAGES_URL} (branche ${PAGES_BRANCHE}). " +
+                 "Le git diff de ce dépôt est le rapport de changement de la plateforme."
+          }
         }
       }
     }

@@ -44,6 +44,39 @@ if python3 -m carto.collect --out {{ carto_web_root }} >"$LOG" 2>&1 \
    && install -m 0644 {{ carto_install_dir }}/carto/render/index.html \
         {{ carto_web_root }}/index.html >>"$LOG" 2>&1
 then
+{% if carto_pages_repo_url %}
+  # Publication Markdown dans le depot git dedie. Elle vient APRES la
+  # publication locale, jamais avant : la carto du jour doit exister quelque
+  # part meme si la forge est injoignable.
+  #
+  # Son echec est un ECHEC du passage (meme alerte, meme journal) : une
+  # publication qui echoue en silence laisserait dans la forge une carto
+  # perimee qui a l'air fraiche — exactement ce que cette enveloppe combat.
+  # Mais la carto locale, elle, reste publiee : les deux cibles ne se
+  # contaminent pas.
+  export CARTO_PAGES_REPO_URL={{ carto_pages_repo_url | quote }}
+  export CARTO_PAGES_BRANCH={{ carto_pages_branch | quote }}
+  export CARTO_PAGES_AUTHOR_NAME={{ carto_pages_author_name | quote }}
+  export CARTO_PAGES_AUTHOR_EMAIL={{ carto_pages_author_email | quote }}
+  # Le compte de service et son jeton restent INTERNES a ce script, comme les
+  # identifiants de la gateway : ce gabarit est pose avec `no_log`, et rien ne
+  # les repasse jamais par une sortie Ansible ni par une ligne de commande.
+  export CARTO_PAGES_USER={{ carto_pages_user | quote }}
+  export CARTO_PAGES_TOKEN={{ carto_pages_token | quote }}
+
+  PAGES=$(mktemp -d)
+  if ! ( python3 -m carto.render --source {{ carto_web_root }} --out "$PAGES" --message \
+         && {{ carto_install_dir }}/publier-markdown.sh --source "$PAGES" ) >>"$LOG" 2>&1
+  then
+    rm -rf "$PAGES"
+    {{ carto_alert_command }} "publication Markdown de la carto EN ECHEC — la carto locale est a jour, celle du depot git ne l'est pas"
+    cp "$LOG" {{ carto_install_dir }}/last-failure.log
+    chmod 0600 {{ carto_install_dir }}/last-failure.log
+    rm -f "$LOG"
+    exit 1
+  fi
+  rm -rf "$PAGES"
+{% endif %}
   rm -f "$LOG"
   # Un passage reussi efface un eventuel journal d'echec precedent : sinon
   # sa seule presence, retrouvee des jours plus tard, ferait croire a une
