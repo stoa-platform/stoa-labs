@@ -99,7 +99,26 @@ Teams ne cloisonne **pas** les applications (spike #1 : delete cross-team 204, r
 2. `GET /applications` → filtrer la réponse sur `owner == svc-<team>`.
 3. `POST /applications/{id}/apis` → `GET /apis/{apiId}` avec les creds de la team comme **oracle** (401 natif → refus 403).
 **Preuve E3 :** `teamb` ne voit ni ne supprime l'app de `toto` ; register d'une API invisible refusé ; cycle create→register(tata)→delete par le propriétaire OK.
-**État :** à implémenter (design arrêté, oracle = refus natif prouvé). *Résiduel à tester d'abord :* une app **explicitement** assignée à une team via `/assets/team` devient-elle protégée nativement ? Si oui, gardes 1+2 tombent — check de 20 min.
+
+**État — le résiduel est TRANCHÉ (2026-07-31, mesuré sur la gateway du cluster).** Question posée : *une app **explicitement** assignée à une team via `/assets/team` devient-elle protégée nativement ?* **Oui pour les gardes 1 et 2, non pour la garde 3.** Le jalon se réduit donc à **une seule garde**, celle du register.
+
+| Garde | Verdict mesuré |
+|---|---|
+| 1. `GET`/`DELETE /applications/{id}` cross-team | **TOMBE** — protection native |
+| 2. filtre de `GET /applications` | **TOMBE** — protection native |
+| 3. `POST/PUT /applications/{id}/apis` avec une API invisible | **RESTE ENTIÈRE** — brèche confirmée |
+
+Protocole : app créée par `svc-banking-demo`, **ligne de base relevée avant assignation** (sans quoi un « non protégé » ne prouverait rien), assignation `POST /assets/team {assetType:"Application"}` **relue** (garde contre le 200 no-op silencieux), puis les gestes cross-team.
+
+- **Avant** assignation (`teams: [Administrators(SYSTEM), Default(SYSTEM)]`) : `svc-insurance-demo` → `GET /applications/{id}` **200 ×5**, app **présente** dans sa liste (5 apps).
+- **Après** assignation (relecture : `teams: [Administrators(SYSTEM), banking-demo(USER)]` — `Default` retiré, comme pour les APIs) : `svc-insurance-demo` → `GET /applications/{id}` **401 ×5**, app **absente** de la liste (4 apps), `DELETE` **401** et **l'app survit** (relue 200 par `Administrator`). Le propriétaire garde son accès (**200 ×3**) et le témoin `Administrator` reste vert (**200 ×3**) au même instant.
+- **Garde 3, brèche confirmée par relecture bilatérale** : `svc-insurance-demo` ne peut pas lire `accounts-read` (`GET /apis/{id}` → **401**) mais `PUT /applications/{son app}/apis {"apiIDs":["<accounts-read>"]}` → **200**, et l'association est **réelle** : `consumingAPIs = ['f12b0b1f…']` sur l'app, et `GET /apis/{accounts-read}/applications` liste l'app d'insurance. Le refus de lecture n'est **pas** opposé à l'écriture d'association — l'oracle du design (401 natif ⇒ refus) reste donc nécessaire.
+
+**Deux corrections de forme, apprises en se cognant :**
+- Le refus natif est **401**, pas 403. Une garde qui rendrait 403 serait *plus* explicite que le produit, pas moins.
+- Le corps de l'association est **`{"apiIDs":[…]}`** (comme le rôle `apim_selfservice_app`), **pas** un tableau nu : un tableau nu rend **500 `errorDetails:null`**. Un premier passage l'a pris pour un refus — c'était ma requête. C'est le **témoin** (même appel avec une API *visible*) qui l'a démasqué : sans lui, un échec ne distingue pas « refusé car invisible » de « mal formé ».
+
+⚠️ **Mesure invalidée si elle passe par le Service.** `wm-apigateway` porte désormais **deux** déploiements (`rotation=a`/`b`, redémarrages décalés) et son EndpointSlice expose des adresses **non prêtes** : les appels y sont répartis et rendent des **401 intermittents, y compris sur `Administrator`**. Un 401 lu à travers le Service ne distingue pas « refusé par le cloisonnement » de « réplique en cours de démarrage » — les trois premières passes en ont été polluées. La mesure ci-dessus est **épinglée sur l'IP d'un pod prêt**, encadrée d'un témoin de stabilité (8 GET verts avant, 3 pendant). *Voir la dette d'exploitation ouverte par ce constat, ci-dessous.*
 
 ### E4 — Credentials déclaratifs via Keycloak *(standard éditeur)*
 Provisionner clients/credentials OAuth2 par API : Client Registration Service (provider par défaut) + **Initial Access Token** scopé équipe (délégation sans creds admin), service account limité au rôle `create-client`, mapper claim `team` + scope `selfservice:<team>`.
@@ -156,7 +175,8 @@ C'est le modèle « federated API management » documenté (Azure APIM workspace
 ## Risques & limites 10.15 (assumés)
 
 - **Hygiène team Default** : à l'activation de Teams, tout l'existant tombe en team `Default` (visible de tous). Prévoir un one-shot d'assignation (E5) ; `/assets/team` retire Default (prouvé).
-- **Applications non cloisonnées nativement** → couvert par E3 (gardes). Point dur fonctionnel, pas architectural.
+- **Applications non cloisonnées nativement** — **requalifié le 2026-07-31** : elles le sont *dès lors qu'elles sont assignées à une team*. La faille n'est donc pas l'absence de cloisonnement mais son **caractère facultatif** : une app laissée en `Default` reste visible et supprimable par tous. La protection dépend d'un geste qu'on peut oublier ⇒ l'assignation doit être posée **par la chaîne de création**, pas laissée à l'appelant. Reste à couvrir par E3 : la **garde 3** (register d'une API invisible), non fermée par l'assignation.
+- **Nouvelle dette d'exploitation (hors E, relevée le 2026-07-31)** : le Service `wm-apigateway` route vers des répliques **non prêtes** — la sonde de disponibilité passe au vert **avant** que webMethods sache authentifier, donc l'admin REST rend des **401 intermittents** sous une identité valide. Même classe de défaut que le constat F5 (« `/health` remonte ~85 s avant que l'API soit invocable ») : la sonde ment sur ce qu'elle atteste. Conséquence directe : **toute mesure d'autorisation passant par le Service est ininterprétable**. À corriger par une sonde de disponibilité qui interroge un endpoint **authentifié**.
 - **Fail-open de la *valeur* d'`aud`** sur le trial (introspection remote inerte — finding ADR-075) ; un build client non-trial enforce l'aud sans changement de config. La *forme* (aud tableau) reste obligatoire.
 - **SPOF mapper** (variante dynamique) → E6 (HA + Vault).
 - **Fragilité trial** : crashs IS spontanés observés (restart auto Docker) — ne pas extrapoler au build client, mais le noter pour la démo.
@@ -170,17 +190,17 @@ C'est le modèle « federated API management » documenté (Azure APIM workspace
 |---|---|---|
 | Producteur (E1) | Isolation Teams native sur `/apis` (spike #1, 3/3) | Câbler repo→CI→import+assign sur template ADR-076 |
 | Consommateur (E2) | Proxy OAuth2, 2 variantes, anti-spoof (spike #2, 3/3) | Choisir la variante, généraliser |
-| Gardes app (E3) | Oracle = refus natif prouvé | Écrire le service IS (owner + register) ; tester l'option `/assets/team` sur app |
+| Gardes app (E3) | Oracle = refus natif prouvé ; **gardes 1+2 rendues inutiles par l'assignation de team (mesuré 2026-07-31)** | Écrire le service IS pour la **seule garde 3** (register) ; **et rendre l'assignation systématique** — c'est elle qui protège |
 | Credentials (E4) | Clients/scopes/mappers KC en REST (spike #2) | Passer aux Initial Access Tokens scopés équipe |
 | Industrialisation (E5) | Toutes les recettes REST unitaires | Rôle Ansible / script idempotent |
 | Durcissement (E6) | — | HA mapper, drift detection, audit signé, break-glass |
 
-**Chemin critique = E3 (gardes applications)** — c'est le seul manque *fonctionnel* ; E1/E2/E4 reposent sur du déjà-prouvé, E5/E6 sont de l'industrialisation.
+**Chemin critique = E3 (gardes applications)** — c'est le seul manque *fonctionnel* ; E1/E2/E4 reposent sur du déjà-prouvé, E5/E6 sont de l'industrialisation. **Réduit des deux tiers le 2026-07-31** : il ne reste que la garde 3 (register), les gardes 1 et 2 étant assurées nativement par l'assignation de team. Le coût bascule du *service IS* vers l'**automatisation de l'assignation** — c'est elle qui protège, et rien ne l'impose aujourd'hui.
 
 ---
 
 ## Prochaine action proposée (hors de ce GOAL)
 
-Sur validation : rédiger **ADR-078** (décision + JSON de policies exacts des deux variantes, tous capturés dans les évidences des spikes) et implémenter **E3** (le service IS de gardes) + le test résiduel `/assets/team` sur application. Le reste (E1/E4/E5) est de l'assemblage de briques prouvées.
+Sur validation : rédiger **ADR-078** (décision + JSON de policies exacts des deux variantes, tous capturés dans les évidences des spikes) et implémenter **E3** (le service IS de gardes) + ~~le test résiduel `/assets/team` sur application~~ **— résiduel exécuté le 2026-07-31, voir E3 ci-dessus.** E3 se re-cadre en deux gestes : (1) poser l'assignation de team **dans la chaîne de création** d'application (sinon la protection native reste facultative), (2) n'écrire de garde IS que pour le **register**. Le reste (E1/E4/E5) est de l'assemblage de briques prouvées.
 
 *Sources recherche : IBM/webMethods DevPortal 10.15 (headless REST), Keycloak Client Registration Service, Azure APIM APIOps & workspaces (pattern de référence), InfoQ/Tyk/Kong (modèle fédéré). Socle empirique : spikes live 2026-07-09 (Teams scoping + proxy OAuth2), voir [[wm-1015-teams-scoping]] et [[wm-1015-rest-shapes]].*
