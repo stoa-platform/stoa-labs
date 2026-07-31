@@ -50,8 +50,34 @@ VÉRIFIÉE côté Go (`labctl/internal/adapter/webmethods`, mémoire projet
 - **Opt-out** : `-e apim_ss_require_team=false` — pour un lab **sans** feature
   Teams uniquement. Le rôle affiche alors `TEAM_SKIPPED` en clair.
 
+**Garde du register** (`tasks/api-visibility.yml`, E3 geste 2 — chemin GitOps) :
+- La gateway laisse une équipe **associer une API qu'elle ne peut même pas lire**
+  (`GET /apis/{id}` → 401 mais `PUT /applications/{id}/apis` → 200, association
+  réelle). C'est la seule des trois gardes du design que le produit n'assure pas.
+- **L'oracle du design n'est pas disponible à la chaîne.** Il supposait d'appeler
+  `GET /apis/{id}` *avec les creds de l'équipe*. Or la chaîne ne peut pas tourner
+  sous l'identité de l'équipe : un utilisateur d'équipe se voit **refuser**
+  `POST /assets/team` (**401**, « not authorized to perform: POST on the resource:
+  assets » — mesuré 2026-07-31). Assigner une team est une opération d'**admin**,
+  et pour l'admin `GET /apis` n'est pas scopé : sa visibilité ne prouve rien.
+- **Oracle retenu** : l'admin lit l'assignation de l'API — `GET /apis/{id}` →
+  `apiResponse.teams[]` (**niveau `apiResponse`** ; `api.teams` est vide, piège
+  relevé dès F4). Règle : l'équipe demandeuse doit y figurer, **ou** l'API doit
+  être en `Default` (visible de toutes). Équivalence **mesurée**, pas supposée :
+  une identité `insurance-demo` voyait exactement les APIs en `Default`.
+- Prouvé live (identité admin, comme la chaîne réelle) : `insurance-demo` →
+  `accounts-read` (team `banking-demo`) **refusé** `API_NOT_VISIBLE_TO_TEAM`, et
+  **rien n'est créé** (la garde est en §1b, avant l'application) ;
+  `insurance-demo` → `accounts-read-ans` (`Default`) **autorisé** ;
+  `banking-demo` → `accounts-read` **autorisé**.
+- ⚠ **Ce que la garde NE couvre pas** : le chemin **direct**. Une équipe qui
+  atteindrait `/rest/apigateway` par le proxy OAuth2 (E2) pose toujours
+  l'association elle-même. Ce chemin reste à couvrir par le service IS de
+  préprocessing (GOAL § E3) — il ne se ferme pas en Ansible.
+
 `verify` **fail-closed** : `TEAM_CONFIRMED` (application cloisonnée sur son
-équipe) + `ENFORCEMENT_CONFIRMED` (le stage IAM oppose l'action AND) +
+équipe) + `REGISTER_ALLOWED` (l'API demandée est consommable par l'équipe) +
+`ENFORCEMENT_CONFIRMED` (le stage IAM oppose l'action AND) +
 `OUTBOUND_CONFIRMED` (customHttpHeaders au routing) + preuve data-plane 200.
 
 ## Usage

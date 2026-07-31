@@ -127,7 +127,39 @@ team `Default`, **y compris celles posées par le lot B**. La brèche du spike #
 théorique — c'était l'état courant de la plateforme. Les deux applications de la chaîne sont
 désormais cloisonnées ; celles des spikes antérieurs restent en `Default` (hors chaîne).
 
-**Reste de E3 : le geste 2 — la garde du register (garde 3 ci-dessous).**
+**Geste 2 — la garde du register : FERMÉE SUR LE CHEMIN GITOPS le 2026-07-31, résidu isolé.**
+
+L'oracle prévu par le design — appeler `GET /apis/{id}` **avec les creds de l'équipe**, 401 natif
+⇒ refus — **n'est pas disponible à la chaîne**, et c'est une découverte, pas un contournement :
+un utilisateur d'ÉQUIPE se voit **refuser `POST /assets/team`** — *« The user: … is not authorized
+to perform: POST on the resource: assets »*, **HTTP 401**. Assigner une team est une opération
+d'**admin**. La chaîne tourne donc nécessairement sous une identité admin (compte de service
+tenant-scopé côté Vault), et pour cette identité `GET /apis` **n'est pas scopé** : sa propre
+visibilité ne dit rien de celle de l'équipe. Les deux gestes de E3 tirent sur la même corde —
+celui qui peut cloisonner est précisément celui pour qui l'oracle est aveugle.
+
+**Oracle retenu** : l'admin lit l'assignation de l'API elle-même — `GET /apis/{id}` →
+`apiResponse.teams[]` (**niveau `apiResponse`** ; `api.teams` est vide — piège déjà relevé en F4).
+Règle : l'équipe demandeuse doit y figurer, **ou** l'API doit être en `Default` (fourre-tout
+visible de toutes). L'équivalence avec la visibilité réelle est **mesurée** : sous une identité
+jetable de `insurance-demo`, `GET /apis` rendait exactement les APIs en `Default`
+(`accounts-read-ans`, `carto-probe-api`) et pas `accounts-read` (team `banking-demo`).
+
+| Cas (identité admin, comme la chaîne réelle) | Observé |
+|---|---|
+| `insurance-demo` → `accounts-read` (team `banking-demo`) | **`API_NOT_VISIBLE_TO_TEAM`**, build rouge, **et rien n'est créé** (garde en §1b, avant l'application) |
+| `insurance-demo` → `accounts-read-ans` (team `Default`) | `REGISTER_ALLOWED` |
+| `banking-demo` → `accounts-read` | `REGISTER_ALLOWED` |
+| brèche re-mesurée sous identité d'équipe | `GET /apis/{accounts-read}` **401**, `PUT /applications/{app}/apis` **200**, `consumingAPIs` relus côté admin = l'API |
+
+Même garde, même fichier, rejouée par `verify` — sinon l'accord des deux ne prouverait rien.
+
+⚠ **RÉSIDU — le chemin DIRECT reste ouvert.** Cette garde ferme le chemin **GitOps**, celui par
+lequel une application est réellement livrée chez le client (les équipes produit n'ont aucun accès
+direct à la gateway, ADR-076/078). Elle ne ferme **pas** le chemin d'une équipe qui atteindrait
+`/rest/apigateway` par le proxy OAuth2 (E2) et poserait l'association elle-même. C'est là, et **là
+seulement**, que le service IS de préprocessing du design reste nécessaire — il ne s'écrit pas en
+Ansible et n'a pas pu être déployé ni prouvé ici (déploiement IS = résidu manuel, cf. TokenProvider).
 
 **État — le résiduel est TRANCHÉ (2026-07-31, mesuré sur la gateway du cluster).** Question posée : *une app **explicitement** assignée à une team via `/assets/team` devient-elle protégée nativement ?* **Oui pour les gardes 1 et 2, non pour la garde 3.** Le jalon se réduit donc à **une seule garde**, celle du register.
 
@@ -223,12 +255,12 @@ C'est le modèle « federated API management » documenté (Azure APIM workspace
 |---|---|---|
 | Producteur (E1) | Isolation Teams native sur `/apis` (spike #1, 3/3) | Câbler repo→CI→import+assign sur template ADR-076 |
 | Consommateur (E2) | Proxy OAuth2, 2 variantes, anti-spoof (spike #2, 3/3) | Choisir la variante, généraliser |
-| Gardes app (E3) | Oracle = refus natif prouvé ; gardes 1+2 rendues inutiles par l'assignation de team ; **assignation désormais POSÉE ET RELUE par la chaîne de création (geste 1 fermé le 2026-07-31)** | Écrire le service IS pour la **seule garde 3** (register) |
+| Gardes app (E3) | Gardes 1+2 assurées nativement dès l'assignation, **désormais POSÉE ET RELUE par la chaîne (geste 1)** ; garde 3 **fermée sur le chemin GitOps** par l'oracle `apiResponse.teams[]` (geste 2) — les deux prouvés live le 2026-07-31 | Service IS de préprocessing pour le **seul chemin direct** (équipe atteignant l'admin REST par le proxy E2) |
 | Credentials (E4) | Clients/scopes/mappers KC en REST (spike #2) | Passer aux Initial Access Tokens scopés équipe |
 | Industrialisation (E5) | Toutes les recettes REST unitaires | Rôle Ansible / script idempotent |
 | Durcissement (E6) | — | HA mapper, drift detection, audit signé, break-glass |
 
-**Chemin critique = E3 (gardes applications)** — c'est le seul manque *fonctionnel* ; E1/E2/E4 reposent sur du déjà-prouvé, E5/E6 sont de l'industrialisation. **Réduit des deux tiers le 2026-07-31** : il ne reste que la garde 3 (register), les gardes 1 et 2 étant assurées nativement par l'assignation de team. Le coût bascule du *service IS* vers l'**automatisation de l'assignation** — c'est elle qui protège, et rien ne l'impose aujourd'hui.
+**Chemin critique = E3 (gardes applications)** — c'était le seul manque *fonctionnel* ; E1/E2/E4 reposent sur du déjà-prouvé, E5/E6 sont de l'industrialisation. **Réduit des deux tiers le 2026-07-31** (gardes 1 et 2 assurées nativement dès l'assignation), **puis fermé sur le chemin GitOps le même jour** : l'assignation est posée et relue par la chaîne de création (geste 1), et la garde du register s'appuie sur l'assignation de l'API lue par l'admin (geste 2). **Ce qui reste n'est plus le chemin de livraison** : le service IS ne sert qu'au chemin *direct* (une équipe atteignant l'admin REST par le proxy E2), qui n'existe pas encore.
 
 ---
 

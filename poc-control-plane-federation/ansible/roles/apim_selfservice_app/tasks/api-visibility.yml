@@ -1,0 +1,68 @@
+---
+# roles/apim_selfservice_app/tasks/api-visibility.yml — GARDE DU REGISTER
+# (« garde 3 » du GOAL § E3), pour le chemin GitOps.
+#
+# LA BRÈCHE. Une équipe qui ne peut pas LIRE une API peut quand même l'ASSOCIER
+# à son application : `GET /apis/{id}` → 401, mais
+# `PUT /applications/{id}/apis {"apiIDs":[…]}` → 200, et l'association est
+# RÉELLE. Re-mesuré le 2026-07-31 sous une identité jetable de la team
+# insurance-demo : `accounts-read` (team banking-demo) absente de son `GET /apis`,
+# `GET /apis/{accounts-read}` → 401, `PUT …/apis` → 200 et `consumingAPIs` relus
+# côté admin contiennent bien l'API. Le refus de lecture n'est pas opposé à
+# l'écriture d'association : c'est la seule des trois gardes du design que le
+# produit n'assure pas.
+#
+# POURQUOI L'ORACLE DU DESIGN NE MARCHE PAS ICI. Le design prévoyait d'appeler
+# `GET /apis/{id}` AVEC LES CREDS DE L'ÉQUIPE : 401 natif ⇒ refus. Cet oracle
+# suppose que la chaîne détienne l'identité de l'équipe. Elle ne la détient pas,
+# et ne peut pas la détenir : mesuré le 2026-07-31, un utilisateur d'équipe se
+# voit REFUSER `POST /assets/team` —
+#   « The user: <user> is not authorized to perform: POST on the resource: assets »
+# (HTTP 401). Assigner une team est une opération d'ADMIN. La chaîne tourne donc
+# nécessairement sous une identité admin, pour laquelle `GET /apis` n'est pas
+# scopé : sa propre visibilité ne prouve rien sur celle de l'équipe.
+#
+# L'ORACLE RETENU. L'admin lit l'assignation de l'API elle-même —
+# `GET /apis/{id}` → `apiResponse.teams[]` (niveau apiResponse ; `api.teams` est
+# vide, piège relevé dès F4). C'est exactement la donnée dont le produit dérive
+# la visibilité : vérifié le 2026-07-31, l'identité insurance-demo voyait
+# exactement les APIs en team `Default` (`accounts-read-ans`, `carto-probe-api`)
+# et pas `accounts-read` (team `banking-demo`). L'équivalence est donc mesurée,
+# pas supposée.
+#
+# RÈGLE : l'équipe demandeuse doit figurer dans les teams de l'API, OU l'API doit
+# être en `Default` (team fourre-tout, visible de toutes les équipes).
+#
+# ⚠ CE QUE CETTE GARDE NE COUVRE PAS. Elle ferme le chemin GITOPS — celui par
+# lequel une application est réellement livrée chez le client (ADR-076/078 : les
+# équipes produit n'ont AUCUN accès direct à la gateway). Elle ne ferme pas le
+# chemin DIRECT : une équipe qui atteindrait `/rest/apigateway` par le proxy
+# OAuth2 (E2) peut toujours poser l'association elle-même. Ce chemin-là reste à
+# couvrir par le service IS de préprocessing prévu au GOAL — c'est le résidu de
+# E3 geste 2, et il ne se ferme pas en Ansible.
+
+- name: "Register : relire l'API pour ses teams (niveau apiResponse, PAS api.teams)"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_api_base }}/apis/{{ ss_api_id }}"
+  register: ss_api_teams_get
+  changed_when: false
+
+- name: "Register : teams de l'API"
+  ansible.builtin.set_fact:
+    ss_api_teams: >-
+      {{ (ss_api_teams_get.json.apiResponse | default({})).teams
+         | default([]) | map(attribute='name') | list }}
+
+- name: "Register : FAIL-CLOSED — l'équipe a le droit de consommer cette API"
+  ansible.builtin.assert:
+    that:
+      - "(ss_team_name in ss_api_teams) or ('Default' in ss_api_teams)"
+    fail_msg: >-
+      API_NOT_VISIBLE_TO_TEAM : l'API {{ apim_ss_app.api }}
+      v{{ apim_ss_app.api_version }} appartient à {{ ss_api_teams }} — l'équipe
+      '{{ ss_team_name }}' ne la voit pas et n'a donc pas à l'associer à son
+      application. (La gateway, elle, ACCEPTERAIT cette association : c'est la
+      brèche que cette garde ferme sur le chemin GitOps.)
+    success_msg: >-
+      REGISTER_ALLOWED : {{ apim_ss_app.api }} v{{ apim_ss_app.api_version }}
+      (teams={{ ss_api_teams }}) est consommable par l'équipe '{{ ss_team_name }}'.

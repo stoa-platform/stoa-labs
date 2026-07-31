@@ -20,6 +20,10 @@
     ansible.builtin.uri: "{{ apim_ss_uri_defaults }}"
   block:
 
+    # ===== 0. Équipe demandeuse (deux gardes en dépendent) ====================
+    - name: "Team : résoudre l'équipe demandeuse (fail-closed)"
+      ansible.builtin.import_tasks: team-name.yml
+
     # ===== 1. Résoudre l'API publiée =========================================
     - name: "API : lister"
       ansible.builtin.uri:
@@ -39,6 +43,16 @@
       ansible.builtin.assert:
         that: "ss_api_id | length > 0"
         fail_msg: "API {{ apim_ss_app.api }} v{{ apim_ss_app.api_version }} absente — la publier d'abord."
+
+    # ===== 1b. GARDE DU REGISTER (« garde 3 ») ================================
+    # AVANT de créer quoi que ce soit : l'équipe a-t-elle le droit de consommer
+    # cette API ? La gateway, elle, accepterait l'association d'une API que
+    # l'équipe ne voit même pas (brèche re-mesurée le 2026-07-31). Détail de
+    # l'oracle retenu, et de pourquoi celui du design ne s'applique pas ici :
+    # en-tête de api-visibility.yml.
+    - name: "Register : l'API demandée est-elle consommable par l'équipe ?"
+      ansible.builtin.import_tasks: api-visibility.yml
+      when: "ss_team_name | length > 0"
 
     # ===== 2. Application (find-or-create) ====================================
     - name: "App : lister"

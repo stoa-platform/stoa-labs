@@ -18,12 +18,15 @@
 # OUBLIER. C'est pourquoi elle est posée ICI, par la chaîne de création, et
 # fail-closed : un manifeste sans team ne déploie pas.
 #
-# D'OÙ VIENT LE NOM D'ÉQUIPE. `apim_ss_team` (extra-var, posée par le pipeline
-# qui connaît le dépôt d'origine) l'emporte sur `apim_ss_app.team` (manifeste).
-# Cet ordre est délibéré : le manifeste vit dans le dépôt de l'équipe (ADR-076),
-# donc l'appelant l'écrit — il ne doit pas pouvoir choisir sous quelle team son
-# application est cloisonnée quand la chaîne, elle, le sait. Sans pipeline
-# (apply manuel), le manifeste sert de repli.
+# ENTRÉE : `ss_team_name`, résolu (et rendu obligatoire) par team-name.yml, qui
+# tourne AVANT — la garde du register en dépend aussi.
+#
+# ⚠ C'EST UNE OPÉRATION D'ADMIN. Mesuré le 2026-07-31 : un utilisateur d'ÉQUIPE
+# se voit refuser cet appel — « The user: <user> is not authorized to perform:
+# POST on the resource: assets » (HTTP 401). La chaîne tourne donc sous une
+# identité admin (compte de service tenant-scopé côté Vault), et non sous
+# l'identité de l'équipe. Conséquence, tirée dans api-visibility.yml : la
+# visibilité des APIs vue par la chaîne n'est PAS celle de l'équipe.
 #
 # SHAPES (spike Teams F4, mémoire wm-1015-teams-scoping) :
 #   - une « team » EST un accessProfile ; `newTeams` attend son UUID (les NOMS
@@ -37,37 +40,6 @@
 # `wm-apigateway` (deux répliques sans cluster, caches mémoire non synchronisés)
 # une relecture peut tomber sur la réplique qui ignore encore l'écriture et
 # rendre un 401 qui PARLE D'AUTORISATION alors qu'il s'agit d'un cache froid.
-
-- name: "Team : nom d'équipe retenu (pipeline > manifeste)"
-  ansible.builtin.set_fact:
-    ss_team_name: >-
-      {{ (apim_ss_team | default('') | trim)
-         if ((apim_ss_team | default('') | trim) | length > 0)
-         else (apim_ss_app.team | default('') | trim) }}
-
-# Le repli non cloisonné existe pour le lab docker-compose, où la feature Teams
-# n'est pas activée : y exiger une team rendrait la démo impossible. Il est
-# OPT-IN et BRUYANT — on ne veut pas qu'un client le découvre dans les logs.
-- name: "Team : FAIL-CLOSED — une application sans team n'est cloisonnée pour personne"
-  ansible.builtin.assert:
-    that: "ss_team_name | length > 0"
-    fail_msg: >-
-      TEAM_UNDEFINED : aucune équipe pour l'application '{{ apim_ss_app.name }}'
-      (ni -e apim_ss_team=<team>, ni `team:` dans le manifeste). Une application
-      non assignée reste en team Default : visible ET SUPPRIMABLE par toutes les
-      équipes. Poser la team, ou assumer explicitement le contraire avec
-      -e apim_ss_require_team=false (lab sans feature Teams uniquement).
-    success_msg: "TEAM_REQUESTED : application '{{ apim_ss_app.name }}' -> team '{{ ss_team_name }}'."
-  when: "apim_ss_require_team | default(true) | bool"
-
-- name: "Team : AVERTISSEMENT — cloisonnement désactivé explicitement"
-  ansible.builtin.debug:
-    msg: >-
-      ⚠ TEAM_SKIPPED : apim_ss_require_team=false et aucune team résolue.
-      L'application '{{ apim_ss_app.name }}' restera en team Default — visible et
-      supprimable par toutes les équipes. Acceptable en lab sans feature Teams,
-      JAMAIS chez un client.
-  when: "ss_team_name | length == 0"
 
 - name: "Team : assigner l'application à '{{ ss_team_name }}'"
   when: "ss_team_name | length > 0"
