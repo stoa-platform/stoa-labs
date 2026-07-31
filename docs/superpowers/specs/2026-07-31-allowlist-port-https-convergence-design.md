@@ -11,15 +11,23 @@ lié: [adr-075-wm-admin-proxy-multienv, adr-078-livrable-self-service-app-wm1015
 ## Objectif et porte de preuve
 
 Le port HTTPS de la gateway est en **deny-by-default** : une API n'y est
-joignable que si elle figure dans l'allow list du listener. Cette allow list
-est de la **configuration de nœud**, pas de l'état partagé — donc à poser sur
-chacun des N nœuds, et perdue à chaque reconstruction de nœud. Depuis le CI, la
+joignable que si elle figure dans l'allow list du listener. Depuis le CI, la
 gateway n'est atteignable que par une **VIP** : aucun nœud n'est adressable
 individuellement.
 
-Le lot livre la convergence de cette allow list, et complète la proxification
-de l'API d'administration pour que toute action CI sur les API et les
-applications passe par un point d'entrée unique et contractualisé.
+La mesure a corrigé la prémisse de départ. Cette allow list **n'est pas** une
+configuration de nœud perdue à chaque reconstruction : elle est persistée hors
+du nœud et réappliquée au démarrage, ce que le lab a confirmé deux fois (M4).
+Le fichier local n'en est qu'une projection.
+
+**Le défaut réel est ailleurs, et il est étroit : rien ne propage l'allow list
+vers les nœuds déjà en marche.** Une réplique en fonctionnement au moment de la
+publication ne voit la nouvelle API qu'à son prochain redémarrage — jamais, sur
+une installation stable où l'on ne redémarre pas une gateway pour publier.
+
+Le lot comble ce trou, et complète la proxification de l'API d'administration
+pour que toute action CI sur les API et les applications passe par un point
+d'entrée unique et contractualisé.
 
 **Porte :** une API publiée par le CI est joignable **sur tous les nœuds** en
 HTTPS à la fin du build, sans qu'aucun composant du CI n'ait connu ni adressé
