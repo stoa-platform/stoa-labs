@@ -14,9 +14,28 @@ ingress:
   - hostname: jenkins.labs.gostoa.dev
     service: http://jenkins.ci.svc.cluster.local:8080
 
-  # Console d'administration webMethods.
+  # Console d'administration webMethods — vise le Service à réplique UNIQUE.
+  #
+  # POURQUOI PAS `wm-apigateway` : ce Service-là répartit sur `rotation: a` et
+  # `rotation: b`, deux JVM sans configuration de cluster. Or la console garde
+  # sa session CÔTÉ SERVEUR (cookie `API_GW_JSESSIONID`, module d'auth `form`,
+  # SSO désactivé) : rien n'est partagé entre les deux instances. cloudflared
+  # ouvre des connexions vers les DEUX pods — mesuré le 2026-07-31 sur
+  # /proc/net/tcp6 des deux pods, connexions venant de cloudflared 10.42.2.58 —
+  # donc les XHR de la SPA tombent une fois sur deux sur la JVM qui ne connaît
+  # pas la session. Le serveur répond alors « Invalid Session. Redirecting the
+  # user to /apigatewayui/login » et l'UI rebondit sans fin sur #/login : le
+  # login ne « prend » jamais. Même famille de cause que les 401 trompeurs du
+  # chemin d'écriture (cf. deploy/bootstrap/wm/apigateway-admin/service.yaml).
+  #
+  # CONTREPARTIE ASSUMÉE : la console suit désormais le redémarrage de licence
+  # de `rotation: a` (CronJob `wm-restarter-a`, à :00/:20/:40) — indisponible
+  # ~3 min toutes les 20 min, et la session est perdue à chaque redémarrage.
+  # Une console qui coupe par intermittence vaut mieux qu'une console où l'on
+  # ne peut pas se connecter du tout. Le data-plane public, lui, garde le
+  # Service réparti : voir la règle ci-dessous pour wm-api.
   - hostname: wm.labs.gostoa.dev
-    service: http://wm-apigateway.wm.svc.cluster.local:9072
+    service: http://wm-apigateway-admin.wm.svc.cluster.local:9072
 
   # REST d'administration webMethods — cible de la collection Postman
   # (gwUrl=https://wm-api.labs.gostoa.dev, gwBasePath=/rest/apigateway).
