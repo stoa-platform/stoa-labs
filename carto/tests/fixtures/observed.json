@@ -1,0 +1,94 @@
+{
+ "_meta": {
+  "avertissement": "SYNTHÉTIQUE PARTIEL — À LIRE AVANT TOUTE RÉUTILISATION.",
+  "ce_que_contient_ce_fichier": "La sortie du collecteur de trafic (carto/collect/analytics.py, fonction collect) telle qu'elle est passée à carto/collect/build.py : les arêtes observées par fenêtre, et la fenêtre réellement couverte. C'est ce que lit `python3 -m carto.collect --from-fixtures`. Les formes de réponse BRUTES de la gateway, elles, sont capturées à part dans transactional-events.json — les deux fichiers ne se remplacent pas.",
+  "ce_qui_est_mesure": "Capturé le 2026-07-31 contre la gateway webMethods 10.15 du labo, par l'API PUBLIQUE (/transactionalEvents/_count et /_search), après la refonte qui supprime l'accès à l'Elasticsearch interne. Sont réels et non retouchés : la fenêtre entière (requestedDays 90, coveredDays 0, oldestEvent 2026-07-30T17:17:29.637Z — établi par recherche dichotomique sur l'API publique, valeur identique au centième de seconde près à celle que donnait l'ancienne agrégation `min` sur Elasticsearch, ce qui vaut vérification croisée de la méthode) ; toute la ligne de l'API accounts-read (757 appels non attribués, 1 erreur en fenêtre longue) ; les volumes 39 et 9 de carto-probe-api ; les horodatages de dernier appel.",
+  "ce_qui_est_substitue": "Les deux arêtes de carto-probe-api sont attribuées à carto-probe-app-active (39 appels) et carto-probe-app-low (9 appels). La gateway, elle, n'a identifié AUCUN appelant : elle a écrit `Unknown` sur les 48 événements, comme sur presque tous les autres (carto/TERRAIN.md V5 — confirmé après investigation structurée, ce n'est pas une lacune de mesure). Ces deux attributions ont été reconstruites à partir du journal des appels de la tâche T0 (chaque lot ciblait une clé API précise, retrouvable via le motif de l'URL native) pour que la fixture exerce les cas produits : un consommateur à fort volume, un consommateur à faible volume. carto-probe-app-idle (déclarée consommatrice, zéro appel) n'apparaît volontairement dans aucune arête observée : un consommateur silencieux ne peut structurellement pas apparaître dans un comptage d'événements, c'est la jointure déclaré×observé de build.py qui doit le révéler.",
+  "ce_qui_reste_volontairement_non_attribue": "La ligne accounts-read est laissée telle que la gateway l'a rendue : 757 appels portés par le consommateur fantôme `Unknown`. C'est le RÉSIDU calculé par analytics.observed_rows (total de l'API moins la somme de ses applications identifiées), et c'est lui qui alimente unidentifiedCallShare. La fixture affiche donc ~94 % de trafic non identifié : ce n'est pas un défaut de la fixture, c'est le terrain mesuré, et le rendu doit crier dessus.",
+  "pourquoi_lastCall_est_nul_sur_le_residu": "Aucun filtre de la gateway ne sait exprimer « tout sauf ces applications-là ». Le dernier appel d'un résidu n'est donc pas mesurable de façon bornée ; le contrat accepte lastCall nul, et un nul honnête vaut mieux qu'une date inventée.",
+  "pourquoi_les_fenetres_courtes_n_ont_ni_erreur_ni_dernier_appel": "Le collecteur ne demande le détail (comptage en succès, donc erreurs, et date du dernier appel) que sur la fenêtre LONGUE, la seule dont build.py les lit. Les fenêtres courtes ne portent que des volumes — c'est ce qui garde le coût de la collecte borné.",
+  "question_ouverte_prioritaire_chez_le_client": "L'identification de l'application appelante est-elle effective dans les événements transactionnels de LEUR gateway ? Si la réponse est non chez eux aussi, la cartographie observée n'a pas de dimension consommateur exploitable, et il faut le savoir avant de promettre quoi que ce soit. Voir carto/TERRAIN.md V5."
+ },
+ "window": {
+  "requestedDays": 90,
+  "coveredDays": 0,
+  "oldestEvent": "2026-07-30T17:17:29.637Z"
+ },
+ "observed": {
+  "d7": [
+   {
+    "apiId": "f12b0b1f-797c-4881-a1b2-511e290af69e",
+    "consumerId": "Unknown",
+    "calls": 757,
+    "lastCall": null,
+    "errors": 0
+   },
+   {
+    "apiId": "5ed95567-62e7-4a4e-a2da-441f0b276098",
+    "consumerId": "4c329b2e-bcf7-45dc-996d-d5d9dfb538e0",
+    "_substitue": "consumerId — id réel de carto-probe-app-active ; la gateway avait renseigné Unknown, voir _meta",
+    "calls": 39,
+    "lastCall": null,
+    "errors": 0
+   },
+   {
+    "apiId": "5ed95567-62e7-4a4e-a2da-441f0b276098",
+    "consumerId": "f06fa084-3745-4e6d-afac-98246b3c2757",
+    "_substitue": "consumerId — id réel de carto-probe-app-low ; la gateway avait renseigné Unknown, voir _meta",
+    "calls": 9,
+    "lastCall": null,
+    "errors": 0
+   }
+  ],
+  "d30": [
+   {
+    "apiId": "f12b0b1f-797c-4881-a1b2-511e290af69e",
+    "consumerId": "Unknown",
+    "calls": 757,
+    "lastCall": null,
+    "errors": 0
+   },
+   {
+    "apiId": "5ed95567-62e7-4a4e-a2da-441f0b276098",
+    "consumerId": "4c329b2e-bcf7-45dc-996d-d5d9dfb538e0",
+    "_substitue": "consumerId — id réel de carto-probe-app-active, voir _meta",
+    "calls": 39,
+    "lastCall": null,
+    "errors": 0
+   },
+   {
+    "apiId": "5ed95567-62e7-4a4e-a2da-441f0b276098",
+    "consumerId": "f06fa084-3745-4e6d-afac-98246b3c2757",
+    "_substitue": "consumerId — id réel de carto-probe-app-low, voir _meta",
+    "calls": 9,
+    "lastCall": null,
+    "errors": 0
+   }
+  ],
+  "d90": [
+   {
+    "apiId": "f12b0b1f-797c-4881-a1b2-511e290af69e",
+    "consumerId": "Unknown",
+    "calls": 757,
+    "lastCall": null,
+    "errors": 1
+   },
+   {
+    "apiId": "5ed95567-62e7-4a4e-a2da-441f0b276098",
+    "consumerId": "4c329b2e-bcf7-45dc-996d-d5d9dfb538e0",
+    "_substitue": "consumerId — id réel de carto-probe-app-active, voir _meta",
+    "calls": 39,
+    "lastCall": "2026-07-30T17:35:13.325Z",
+    "errors": 0
+   },
+   {
+    "apiId": "5ed95567-62e7-4a4e-a2da-441f0b276098",
+    "consumerId": "f06fa084-3745-4e6d-afac-98246b3c2757",
+    "_substitue": "consumerId — id réel de carto-probe-app-low, voir _meta",
+    "calls": 9,
+    "lastCall": "2026-07-30T17:26:17.212Z",
+    "errors": 0
+   }
+  ]
+ }
+}

@@ -21,6 +21,7 @@ LECTURE SEULE : ce module n'emet que des GET.
 import base64
 import json
 import re
+import urllib.parse
 import urllib.request
 import urllib.error
 
@@ -168,12 +169,38 @@ class Gateway:
         self.auth = "Basic " + base64.b64encode(f"{user}:{password}".encode()).decode()
         self.timeout = timeout
 
-    def get(self, path):
-        req = urllib.request.Request(self.base + path, method="GET")
+    def get(self, path, params=None):
+        """GET sur l'API d'administration. `params` est encode en query string.
+
+        C'est aussi la fonction injectee dans `analytics.collect` : tout le
+        trafic de la carto passe donc par ce seul point d'I/O, avec les memes
+        identifiants et la meme absence d'ecriture. Les valeurs sont encodees
+        par `urlencode` — les filtres de la gateway sont des expressions
+        regulieres, donc porteurs de caracteres qu'une concatenation naive
+        casserait.
+        """
+        url = self.base + path
+        if params:
+            url += "?" + urllib.parse.urlencode(params)
+        req = urllib.request.Request(url, method="GET")
         req.add_header("Accept", "application/json")
         req.add_header("Authorization", self.auth)
-        with urllib.request.urlopen(req, timeout=self.timeout) as r:
-            return json.loads(r.read().decode())
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+                return json.loads(r.read().decode())
+        except urllib.error.HTTPError as err:
+            # La gateway explique ses refus dans le CORPS de la reponse
+            # (`{"errorDetails": " Insufficient parameters. ..."}`), avec un
+            # code 400. Sans cette relecture, l'exploitant ne lit que
+            # « HTTP Error 400: Bad Request » et n'a aucun geste a poser.
+            detail = ""
+            try:
+                detail = json.loads(err.read().decode()).get("errorDetails", "")
+            except Exception:
+                pass
+            raise urllib.error.HTTPError(
+                err.url, err.code, f"{err.reason} —{detail or ' (aucun detail)'} "
+                f"[{path}]", err.headers, None) from None
 
     def apis(self):
         return self.get("/apis")

@@ -1,0 +1,91 @@
+{
+ "_meta": {
+  "avertissement": "CAPTURE BRUTE — aucune valeur substituée dans ce fichier.",
+  "ce_qui_est_mesure": "Réponses réelles de l'API PUBLIQUE de la gateway webMethods 10.15 du labo, capturées le 2026-07-31 sur GET /rest/apigateway/transactionalEvents/_count et /_search (voir carto/TERRAIN.md, sections V2 et V3 refondues). Chaque entrée porte le nom du cas de lecture qu'elle sert à exercer dans carto/tests/test_analytics.py. Les identifiants d'API sont ceux du labo, jetables ; aucun identifiant de connexion n'y figure.",
+  "pourquoi_ce_fichier_existe": "La refonte du 2026-07-31 remplace l'accès à l'Elasticsearch interne par l'API publique. Les formes de réponse sont différentes et portent un piège majeur : quand rien ne correspond, `_count` renvoie une CHAÎNE (`compte_sans_resultat` ci-dessous) et non une liste vide, alors que `_search` renvoie bien une liste vide (`recherche_sans_resultat`). Un lecteur qui itérerait sur la chaîne fabriquerait une ligne de trafic par caractère. Ces deux entrées sont là pour que ce piège soit exercé sur du RÉEL, pas sur une forme supposée.",
+  "note_sur_le_parametre_status": "`status` n'est pas documenté dans le Swagger de la gateway mais filtre réellement sur `_count` (`compte_en_succes`) — et ne fonctionne PAS sur `_search`, qui renvoie une liste vide dès que ce paramètre est présent, quel que soit le statut demandé. Le collecteur ne l'utilise donc que sur `_count`. `sonde_du_filtre_statut` est la capture de la sonde qui vérifie, à chaque collecte, que ce paramètre non documenté est toujours honoré."
+ },
+ "compte_par_api": {
+  "count": [
+   {
+    "apiId": "f12b0b1f-797c-4881-a1b2-511e290af69e",
+    "apiName": "accounts-read",
+    "apiVersion": "1.0.0",
+    "count": 757
+   },
+   {
+    "apiId": "5ed95567-62e7-4a4e-a2da-441f0b276098",
+    "apiName": "carto-probe-api",
+    "apiVersion": "1.0.0",
+    "count": 48
+   }
+  ]
+ },
+ "compte_par_application": {
+  "count": [
+   {
+    "apiId": "f12b0b1f-797c-4881-a1b2-511e290af69e",
+    "apiName": "accounts-read",
+    "apiVersion": "1.0.0",
+    "count": 756
+   },
+   {
+    "apiId": "5ed95567-62e7-4a4e-a2da-441f0b276098",
+    "apiName": "carto-probe-api",
+    "apiVersion": "1.0.0",
+    "count": 48
+   }
+  ]
+ },
+ "compte_en_succes": {
+  "count": [
+   {
+    "apiId": "f12b0b1f-797c-4881-a1b2-511e290af69e",
+    "apiName": "accounts-read",
+    "apiVersion": "1.0.0",
+    "count": 756
+   },
+   {
+    "apiId": "5ed95567-62e7-4a4e-a2da-441f0b276098",
+    "apiName": "carto-probe-api",
+    "apiVersion": "1.0.0",
+    "count": 48
+   }
+  ]
+ },
+ "compte_sans_resultat": {
+  "count": " No records found."
+ },
+ "sonde_du_filtre_statut": {
+  "count": " No records found."
+ },
+ "dernier_appel": {
+  "transaction": [
+   {
+    "creationDate": 1785432913325,
+    "apiName": "carto-probe-api",
+    "apiVersion": "1.0.0",
+    "apiId": "5ed95567-62e7-4a4e-a2da-441f0b276098",
+    "totalTime": 63,
+    "providerTime": 56,
+    "applicationName": "Unknown",
+    "applicationIp": "127.0.0.1",
+    "applicationId": "Unknown",
+    "status": "SUCCESS",
+    "totalDataSize": 274,
+    "responseCode": "200",
+    "operationName": "/{id}",
+    "httpMethod": "get",
+    "nativeURL": "http://backend-dev.wm.svc.cluster.local:8080/accounts/ACC-REACTIVATE-TEST",
+    "serverID": "127.0.0.1:15555",
+    "callbackRequest": false
+   }
+  ]
+ },
+ "recherche_sans_resultat": {
+  "transaction": []
+ },
+ "requete_refusee": {
+  "errorDetails": " Insufficient parameters. At least one parameter in addition to the creation date range must be provided."
+ }
+}

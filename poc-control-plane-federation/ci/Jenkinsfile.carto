@@ -1,0 +1,451 @@
+// ci/Jenkinsfile.carto — CARTO DES APIs ET DES CONSOMMATEURS, ordonnancée par
+// Jenkins (voie LABO). Collecte en LECTURE SEULE, puis archivage du résultat.
+//
+// Pipeline SCRIPTÉ (et non déclaratif comme ses voisins ci/Jenkinsfile.*) :
+// c'est le modèle des deux pipelines qui tournent réellement sur ce cluster
+// (`podTemplate` + `node(POD_LABEL)`, cf. docs/superpowers/plans/*.groovy).
+// On suit ce qui est éprouvé ici plutôt que ce qui est joli ailleurs.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// POURQUOI CE FICHIER EXISTE À CÔTÉ DU RÔLE ANSIBLE
+// ─────────────────────────────────────────────────────────────────────────────
+// Le rôle `carto/ansible/roles/carto_collect/` reste la voie de référence : il
+// installe le collecteur sur un hôte, le planifie par cron et le vérifie. Il
+// n'est ni remplacé ni modifié par ce fichier. Ce Jenkinsfile est une SECONDE
+// voie, pour le labo où l'ordonnanceur est Jenkins et où il n'existe aucun hôte
+// dédié à la carto.
+//
+// Le principe maison est que la chaîne cible client lance des RÔLES ANSIBLE, pas
+// des scripts ad hoc. Ici on appelle le collecteur directement
+// (`python3 -m carto.collect`) et c'est un écart assumé, pour trois raisons :
+//   1. le collecteur est un module Python en stdlib seule, sans dépendance ni
+//      installation — le rôle ne servirait qu'à recopier des fichiers dans un
+//      conteneur jetable détruit à la fin du build ;
+//   2. la moitié du rôle (compte de service, cron, enveloppe d'exécution,
+//      journal d'échec) est précisément ce que Jenkins fournit déjà : identité
+//      d'agent, planification, capture de sortie, statut de build ;
+//   3. les quatre assertions du rôle, elles, sont reprises TELLES QUELLES
+//      ci-dessous — c'est la partie qui porte la valeur, et elle ne doit pas
+//      être plus faible ici que là-bas.
+// Chez le client, si la carto doit tourner sur un hôte plutôt que dans un pod,
+// c'est le rôle Ansible qu'on déroule, pas ce fichier.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// ARBITRAGE ASSUMÉ : LES IDENTIFIANTS DE LA GATEWAY VIVENT DANS JENKINS
+// ─────────────────────────────────────────────────────────────────────────────
+// Ce dépôt affirme ailleurs « zéro secret statique dans Jenkins » : les autres
+// pipelines obtiennent leurs identifiants de Vault, par identité de pod
+// Kubernetes, et c'était même une porte de preuve d'un jalon précédent. CE JOB
+// RECULE SUR CE POINT, sciemment : le client n'autorise pas l'authentification
+// Vault par identité de pod. Éprouver ici un chemin qu'il n'exécutera jamais ne
+// prouverait rien — le seul test qui vaut est celui du chemin réel. Il n'y a
+// donc qu'UNE voie, la sienne : un credential Jenkins, sans repli sur Vault.
+//
+// Ce qu'on perd : le secret n'est plus obtenu à la demande, à durée de vie
+// courte, contre une identité vérifiée par le cluster ; il est au repos dans
+// Jenkins, et sa compromission n'est pas bornée dans le temps.
+// Ce qui l'atténue :
+//   - il vit dans le magasin de credentials CHIFFRÉ de Jenkins, jamais dans git
+//     ni dans ce fichier ;
+//   - il est désigné par un identifiant PARAMÉTRABLE (CARTO_CREDENTIALS_ID) :
+//     poser, renommer ou faire tourner le credential ne demande aucune
+//     modification de code ;
+//   - il n'est jamais imprimé : ni dans le journal de build (masquage
+//     `withCredentials`), ni dans une ligne de commande visible dans la table
+//     des processus — le collecteur et la sonde de disponibilité lisent leurs
+//     identifiants dans l'ENVIRONNEMENT, aucun mot de passe n'est passé en
+//     argument à quoi que ce soit ;
+//   - le compte porté est un compte technique LECTURE SEULE : ce job n'émet que
+//     des GET, aucune écriture sur la gateway ni sur son magasin d'événements.
+// Ce que ça coûte à l'exploitation : la rotation du mot de passe devient un
+// geste périodique à la charge de l'équipe de support (voir ci-dessous), là où
+// Vault la rendait implicite. C'est une dette d'exploitation, pas un détail.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// GESTE EXPLOITANT — POSE DU CREDENTIAL (à faire AVANT le premier build)
+// ─────────────────────────────────────────────────────────────────────────────
+// Le credential est posé par l'équipe d'exploitation, pas par le développeur.
+// Tout ce qu'il faut savoir tient ici :
+//
+//   Où          : Manage Jenkins → Credentials → System →
+//                 Global credentials (unrestricted) → Add Credentials
+//   Kind        : « Username with password »
+//   Scope       : Global
+//   ID          : carto-wm-gateway   (valeur par défaut du paramètre
+//                 CARTO_CREDENTIALS_ID ; si vous en posez un autre, renseignez
+//                 son identifiant dans ce paramètre du job)
+//   Username    : le compte technique LECTURE SEULE de l'API d'administration
+//                 de l'API Gateway (celui qui peut faire GET /apis et
+//                 GET /applications, et rien d'autre)
+//   Password    : le mot de passe de ce compte
+//   Description : « Carto API — compte technique lecture seule de l'API Gateway »
+//
+// Ce credential ne donne accès qu'à la lecture de l'inventaire de la gateway :
+// ni droits d'écriture, ni publication, ni administration.
+// Rotation : quand le mot de passe du compte change côté gateway, il faut le
+// mettre à jour ICI (Update sur le credential) — sinon les builds planifiés
+// tombent en 401 dès la nuit suivante.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// OÙ VA LA CARTO : ARCHIVE DE BUILD (RÉPONSE DU LABO, PAS LA CIBLE CLIENT)
+// ─────────────────────────────────────────────────────────────────────────────
+// Aucun serveur web n'existe dans ce cluster pour héberger la carto (point
+// ouvert « V6 » du projet). Ce job archive donc `carto.json`, `history.json` et
+// `index.html` comme ARTEFACTS DE BUILD : Jenkins les sert, c'est zéro
+// infrastructure nouvelle et c'est consultable immédiatement.
+// C'EST LA RÉPONSE DU LABO, PAS LA CIBLE CLIENT. La cible client reste un site
+// statique auto-hébergé (chemin, serveur web et éventuel reverse-proxy à
+// arbitrer avec lui) : une archive de build n'a pas d'URL stable, n'est visible
+// que des gens qui ont accès à Jenkins, et disparaît avec la rotation des
+// builds.
+// Limite connue et à dire : Jenkins sert les artefacts sous une politique de
+// sécurité de contenu (CSP) très stricte qui neutralise le JavaScript de la
+// page. `index.html` ouvert DEPUIS l'archive s'affiche donc vide. Les deux
+// documents JSON, eux, sont le livrable durable ; pour visualiser, il faut soit
+// assouplir cette CSP côté contrôleur, soit servir les trois fichiers depuis
+// n'importe quel serveur statique — ce qui est exactement le point ouvert V6.
+
+properties([
+  buildDiscarder(logRotator(numToKeepStr: '30')),
+  disableConcurrentBuilds(),
+  parameters([
+    string(name: 'CARTO_CREDENTIALS_ID', defaultValue: 'carto-wm-gateway',
+           description: "Identifiant du credential Jenkins « Username with password » portant le compte technique LECTURE SEULE de l'API Gateway. Posé par l'exploitant (voir l'en-tête de ci/Jenkinsfile.carto)."),
+    // Seuil du rôle Ansible (carto_seuil_non_identifie_pct) ET du rendu
+    // (SEUIL_NON_IDENTIFIE dans render/index.html) : les trois se modifient
+    // ensemble. Au défaut, la porte de ce job est EXACTEMENT celle du rôle.
+    string(name: 'SEUIL_NON_IDENTIFIE_PCT', defaultValue: '50',
+           description: "Part maximale tolérée du trafic non rattaché à un consommateur identifié (%). 50 = valeur du rôle Ansible et du rendu. Au-dessus de 50, la porte est PLUS FAIBLE que le rôle et le build le dira."),
+    string(name: 'FENETRE_MIN_JOURS', defaultValue: '1',
+           description: "Profondeur minimale réellement couverte par les événements (jours). 1 = l'assertion du rôle (« pas fenetre_couverte=0j »). 0 désactive la porte et le build le dira.")
+  ]),
+  // Planification quotidienne. `H` étale la charge : Jenkins choisit une minute
+  // stable pour ce job dans l'heure indiquée, au lieu de faire partir tous les
+  // jobs du contrôleur à la même seconde.
+  pipelineTriggers([cron('H 3 * * *')])
+])
+
+// Réglages d'infrastructure : surchargeables par variable d'environnement du
+// contrôleur, avec les coordonnées mesurées du cluster de labo en défaut.
+// UNE SEULE coordonnée depuis la refonte du 2026-07-31 : le trafic se lit par
+// l'API publique de la gateway (/transactionalEvents/_count et /_search), plus
+// par son Elasticsearch interne. `CARTO_WM_ES_URL` et `CARTO_WM_ES_INDEX` ont
+// disparu — et c'est ce qui rend ce job exécutable ailleurs qu'ici : une
+// NetworkPolicy du cluster n'ouvre l'Elasticsearch de la gateway qu'aux pods
+// de la gateway, jamais à un agent de CI, et aucun client n'ouvrira son API
+// Data Store à un tiers.
+def WM_ADMIN_URL = env.CARTO_WM_ADMIN_URL ?: 'http://wm-apigateway.wm.svc.cluster.local:5555/rest/apigateway'
+// Image de l'agent : celle du contrôleur (python3 + curl + git), servie par le
+// registre du labo. Le collecteur ne demande RIEN d'autre que python3 stdlib.
+def AGENT_IMAGE  = env.CARTO_AGENT_IMAGE  ?: 'localhost:30300/ci/jenkins-go:v1@sha256:00ad5591be6f1c7b4eccfd7e498abe5e947dc07f01e4d7a247005b65ef0c565b'
+
+def CREDS_ID = params.CARTO_CREDENTIALS_ID ?: 'carto-wm-gateway'
+
+// AUCUN serviceAccount privilégié n'est demandé : ce pod ne parle ni à Vault ni
+// à l'API Kubernetes. C'est la contrepartie visible de l'arbitrage ci-dessus —
+// l'identité de pod ne sert plus à rien ici, on ne la réclame donc pas.
+podTemplate(containers: [
+  containerTemplate(name: 'carto', image: AGENT_IMAGE, command: 'sleep', args: '9999',
+    envVars: [
+      envVar(key: 'WM_ADMIN_URL', value: WM_ADMIN_URL),
+      envVar(key: 'CARTO_CREDS_ID', value: CREDS_ID),
+      envVar(key: 'SEUIL_NON_IDENTIFIE_PCT', value: params.SEUIL_NON_IDENTIFIE_PCT ?: '50'),
+      envVar(key: 'FENETRE_MIN_JOURS', value: params.FENETRE_MIN_JOURS ?: '1')
+    ])
+]) {
+  node(POD_LABEL) {
+    // La gateway du labo est recyclée toutes les ~20 min (licence d'essai) et
+    // met ~5 min à revenir : la sonde d'attente peut légitimement consommer
+    // 8 min avant que la collecte ne commence.
+    timeout(time: 25, unit: 'MINUTES') {
+
+      stage('Credential exploitant') {
+        // Échouer TÔT et EN NOMMANT ce qui manque. Sans ce contrôle, un
+        // credential absent produit une exception Jenkins au milieu du build,
+        // que l'équipe de support ne sait pas traduire en geste.
+        try {
+          withCredentials([usernamePassword(credentialsId: CREDS_ID,
+                                            usernameVariable: 'CARTO_U',
+                                            passwordVariable: 'CARTO_P')]) {
+            echo "Credential « ${CREDS_ID} » présent dans Jenkins."
+          }
+        } catch (Exception e) {
+          error("""
+╔══════════════════════════════════════════════════════════════════════════════
+║ CREDENTIAL JENKINS ABSENT — le job ne peut pas s'authentifier auprès de
+║ l'API Gateway, et s'arrête avant d'avoir rien tenté.
+╚══════════════════════════════════════════════════════════════════════════════
+
+  CE QUI MANQUE : un credential Jenkins de type « Username with password »
+  portant l'identifiant  ${CREDS_ID}
+
+  LE GESTE QUI RÉPARE (5 minutes, aucune modification de code) :
+    1. Manage Jenkins → Credentials → System → Global credentials (unrestricted)
+    2. « Add Credentials »
+    3. Kind     : Username with password
+       Scope    : Global
+       ID       : ${CREDS_ID}
+       Username : le compte technique LECTURE SEULE de l'API d'administration
+                  de l'API Gateway
+       Password : le mot de passe de ce compte
+    4. Relancer ce build.
+
+  Si votre credential porte un AUTRE identifiant, ne le renommez pas : relancez
+  le build en renseignant son identifiant dans le paramètre
+  CARTO_CREDENTIALS_ID.
+""")
+        }
+      }
+
+      stage('Source') {
+        // Récupère le dépôt qui porte le paquet `carto/` : le collecteur
+        // s'invoque toujours par `python3 -m carto.collect` depuis la racine.
+        checkout scm
+      }
+
+      container('carto') {
+
+        stage('Gateway disponible et credential accepté') {
+          withCredentials([usernamePassword(credentialsId: CREDS_ID,
+                                            usernameVariable: 'WM_USER',
+                                            passwordVariable: 'WM_PASS')]) {
+            // Sonde écrite en Python et non en `curl -u` : `-u` ferait
+            // apparaître le mot de passe dans la table des processus du nœud.
+            // Ici les identifiants ne quittent pas l'environnement du processus.
+            sh '''
+              set -eu
+              python3 - <<'PY'
+import base64, os, sys, time, urllib.error, urllib.request
+
+base = os.environ["WM_ADMIN_URL"].rstrip("/")
+cid  = os.environ["CARTO_CREDS_ID"]
+auth = base64.b64encode(
+    ("%s:%s" % (os.environ["WM_USER"], os.environ["WM_PASS"])).encode()).decode()
+
+REFUS = """
++==============================================================================
+| CREDENTIAL JENKINS REFUSE PAR L'API GATEWAY (HTTP %s).
++==============================================================================
+
+  Le credential " %s " EXISTE dans Jenkins, mais la gateway rejette ce couple
+  utilisateur / mot de passe. Le job n'a rien collecte et s'arrete ici.
+
+  CAUSE LA PLUS FREQUENTE : le mot de passe du compte technique a ete change
+  (ou a expire) cote gateway, et n'a pas ete reporte dans Jenkins.
+
+  LE GESTE QUI REPARE :
+    1. Manage Jenkins -> Credentials -> System -> Global credentials
+    2. Ouvrir " %s " -> Update
+    3. Saisir le mot de passe COURANT du compte technique (le nom d'utilisateur
+       ne change pas, sauf si le compte lui-meme a ete remplace)
+    4. Relancer ce build.
+
+  NE PAS relancer en boucle avant d'avoir corrige : certains annuaires
+  verrouillent le compte apres quelques refus consecutifs.
+
+  Si le code est 403 et non 401, le couple est bon mais le compte n'a pas le
+  droit de lire l'inventaire : demander l'ajout des droits de LECTURE sur
+  l'API d'administration (GET /apis, GET /applications).
+"""
+
+deadline = time.time() + 8 * 60      # cycle de recyclage du labo : ~20 min,
+essai = 0                            # retour en ~5 min
+while True:
+    essai += 1
+    req = urllib.request.Request(base + "/apis")
+    req.add_header("Authorization", "Basic " + auth)
+    req.add_header("Accept", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            print("gateway joignable et credential accepte (HTTP %s, essai %d)"
+                  % (r.status, essai))
+            sys.exit(0)
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            print(REFUS % (e.code, cid, cid), file=sys.stderr)
+            sys.exit(1)
+        motif = "HTTP %s" % e.code
+    except Exception as e:                     # noqa: BLE001 - reseau
+        motif = type(e).__name__
+    if time.time() >= deadline:
+        print("gateway toujours injoignable apres 8 min (%s) sur %s.\\n"
+              "  Ce n'est PAS forcement un bug : la gateway du labo est "
+              "recyclee toutes les ~20 min (licence d'essai) et met ~5 min a "
+              "revenir. Relancer le build ; si l'echec persiste sur plusieurs "
+              "passages, c'est la gateway qu'il faut regarder, pas ce job."
+              % (motif, base), file=sys.stderr)
+        sys.exit(1)
+    print("  gateway indisponible (%s) - nouvel essai dans 15 s (essai %d)"
+          % (motif, essai))
+    time.sleep(15)
+PY
+            '''
+          }
+        }
+
+        stage("Historique — restaurer celui du dernier build réussi") {
+          // EXIGENCE LA MOINS ÉVIDENTE DU JOB. `history.json` accumule une
+          // ligne par passage : c'est lui, et lui seul, qui porte la courbe
+          // d'évolution. Si chaque build repartait d'un répertoire vide, la
+          // courbe se réinitialiserait chaque nuit et la vue « Évolution » ne
+          // montrerait jamais rien.
+          //
+          // On le relit sur le DERNIER BUILD RÉUSSI (jamais le dernier build) :
+          // un build rouge n'a rien archivé, et un build dont la collecte
+          // était dégradée ne doit pas contaminer la série.
+          //
+          // Lecture anonyme de l'archive : vrai dans ce labo (Jenkins non
+          // sécurisé). Chez un client où Jenkins est sécurisé, ce GET demande
+          // une authentification — le geste équivalent est le plugin Copy
+          // Artifact (`copyArtifacts`), non installé sur ce contrôleur.
+          sh '''
+            set -eu
+            mkdir -p carto-out
+            if curl -sf -o carto-out/history.json \
+                 "${JOB_URL}lastSuccessfulBuild/artifact/carto-out/history.json"; then
+              python3 - <<'PY'
+import json
+rows = json.load(open("carto-out/history.json"))
+print("historique restaure : %d point(s) - dates : %s"
+      % (len(rows), ", ".join(r.get("date", "?") for r in rows[-8:])))
+PY
+            else
+              rm -f carto-out/history.json
+              echo "aucun historique a restaurer (aucun build reussi archive) :"
+              echo "la courbe d'evolution demarre a ce build. Normal au premier passage."
+            fi
+          '''
+        }
+
+        stage('Collecte (lecture seule)') {
+          withCredentials([usernamePassword(credentialsId: CREDS_ID,
+                                            usernameVariable: 'WM_USER',
+                                            passwordVariable: 'WM_PASS')]) {
+            // Les cinq variables attendues par le collecteur sont dans
+            // l'environnement — aucune sur la ligne de commande.
+            sh '''
+              set -eu
+              umask 077
+              if python3 -m carto.collect --out carto-out > collecte.log 2>&1; then
+                RC=0
+              else
+                RC=$?
+              fi
+              cat collecte.log
+              if [ "$RC" != 0 ]; then
+                echo ""
+                echo "la collecte a echoue (code $RC) : rien n'est publie, la"
+                echo "derniere carto archivee reste celle du dernier build reussi."
+                exit "$RC"
+              fi
+              grep -E '^apis=' collecte.log > compteurs.txt
+            '''
+          }
+        }
+
+        stage('Contrôle — refuser une collecte dégradée') {
+          // Les QUATRE assertions du rôle Ansible
+          // (carto/ansible/roles/carto_collect/tasks/main.yml), reprises à
+          // l'identique : une porte plus faible ici que là-bas serait pire
+          // qu'une absence de porte, puisqu'elle donnerait le même vert.
+          //
+          // Le contrôle passe AVANT l'archivage : une carto dégradée n'est pas
+          // publiée du tout. Une carto vide qui a l'air valide est pire qu'une
+          // absence de carto.
+          sh '''
+            set -eu
+            python3 - <<'PY'
+import os, re, sys
+
+ligne = open("compteurs.txt").read().strip()
+print("compteurs : %s\\n" % ligne)
+
+def n(cle, defaut=None):
+    m = re.search(cle + r"=([0-9.]+)", ligne)
+    if m:
+        return float(m.group(1))
+    if defaut is not None:
+        return defaut
+    return None
+
+seuil   = float(os.environ.get("SEUIL_NON_IDENTIFIE_PCT") or 50)
+fenetre = float(os.environ.get("FENETRE_MIN_JOURS") or 1)
+
+# Un controle assoupli doit se denoncer lui-meme : sinon un vert obtenu en
+# baissant la barre ressemble trait pour trait a un vert merite.
+if seuil > 50 or fenetre < 1:
+    print("*** CONTROLE ASSOUPLI PAR PARAMETRE ***")
+    print("    seuil trafic non identifie = %g %% (role Ansible : 50 %%)" % seuil)
+    print("    fenetre couverte minimale  = %g j (role Ansible : 1 j)" % fenetre)
+    print("    Ce build ne prouve donc PAS que la carto est de qualite publiable :")
+    print("    il prouve seulement que la chaine tourne. Remettre les defauts.\\n")
+
+echecs = []
+apis   = n("apis")
+aretes = n("aretes")
+couv   = n("fenetre_couverte")
+nonid  = n("trafic_non_identifie")
+
+if apis is None or apis == 0:
+    echecs.append(
+        "apis=0 : aucune API lue dans l'inventaire - identifiants ou chemin "
+        "d'administration a revoir (WM_ADMIN_URL, compte technique).")
+if aretes is None or aretes == 0:
+    echecs.append(
+        "aretes=0 : aucun lien API<->consommateur - verifier l'activation de "
+        "la policy systeme GlobalLogInvocationPolicy sur la gateway : sans "
+        "elle, aucune API n'ecrit d'evenement transactionnel, quel que soit "
+        "le trafic (carto/TERRAIN.md V3).")
+if couv is None or couv < fenetre:
+    echecs.append(
+        "fenetre_couverte=%gj < %gj : la profondeur reellement couverte par les "
+        "evenements est insuffisante - soit aucun evenement n'est lu (meme "
+        "causes que ci-dessus), soit la gateway ne conserve pas d'evenement "
+        "aussi ancien que la fenetre demandee." % (couv if couv is not None else -1, fenetre))
+if nonid is None:
+    echecs.append(
+        "compteur trafic_non_identifie absent : collecteur trop ancien pour "
+        "porter cette mesure - mettre a jour le paquet carto/.")
+elif nonid > seuil:
+    echecs.append(
+        "trafic_non_identifie=%g%% > %g%% : collecte PUBLIABLE MAIS NON FIABLE "
+        "sur la dimension consommateur. La reponse majoritaire a la question "
+        "'qui consomme quoi' est 'on ne sait pas' : le trafic s'agrege sur des "
+        "noeuds '(inconnu)' et les consommateurs reels basculent en 'declare, "
+        "inactif'. Les inventaires d'APIs et d'Applications, eux, restent "
+        "exacts. Cause connue et NON RESOLUE : la gateway ne renseigne pas "
+        "l'application appelante (applicationId = Unknown) - question ouverte "
+        "V5 de carto/TERRAIN.md, a trancher avec le client."
+        % (nonid, seuil))
+
+if echecs:
+    print("COLLECTE DEGRADEE - rien ne sera publie. La derniere carto archivee")
+    print("reste celle du dernier build reussi.\\n")
+    for e in echecs:
+        print("  - %s" % e)
+    sys.exit(1)
+
+print("collecte saine : les quatre signatures du role Ansible sont satisfaites.")
+PY
+          '''
+        }
+
+        stage('Publication — archivage des artefacts du build') {
+          // Le rendu est autonome : il lit carto.json et history.json posés à
+          // côté de lui. On archive donc les trois ensemble — un index.html
+          // sans son document, ou l'inverse, ne s'ouvre pas.
+          sh '''
+            set -eu
+            cp carto/render/index.html carto-out/index.html
+            ls -l carto-out
+          '''
+          archiveArtifacts artifacts: 'carto-out/carto.json, carto-out/history.json, carto-out/index.html',
+                           fingerprint: true, onlyIfSuccessful: false
+          echo "Carto archivee : ${env.BUILD_URL}artifact/carto-out/index.html"
+          echo "Rappel : l'archive de build est la reponse du LABO. La cible " +
+               "client reste un site statique auto-heberge (point ouvert V6)."
+        }
+      }
+    }
+  }
+}

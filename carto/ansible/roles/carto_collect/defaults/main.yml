@@ -34,9 +34,12 @@ carto_seuil_non_identifie_pct: 50.0
 # depuis le coffre (par ex. via des extra-vars chiffrees ou un lookup vault),
 # comme le reste de la chaine du projet. Le gabarit qui les ecrit sur le noeud
 # est pose avec no_log pour qu'ils ne transitent jamais par une sortie Ansible.
+# Refonte du 2026-07-31 : `WM_ES_URL` et `WM_ES_INDEX` ont DISPARU. Le trafic
+# se lit par l'API publique de la gateway (/transactionalEvents/_count et
+# /_search), pas par son Elasticsearch interne — que la NetworkPolicy du
+# cluster n'ouvre qu'aux pods de la gateway, et qu'aucun client n'exposera a
+# un tiers. Une seule base d'URL, un seul jeu d'identifiants.
 carto_env:
   WM_ADMIN_URL: ""
   WM_USER: ""
   WM_PASS: ""
-  WM_ES_URL: ""
-  WM_ES_INDEX: ""

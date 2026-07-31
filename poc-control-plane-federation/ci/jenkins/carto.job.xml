@@ -1,0 +1,87 @@
+<?xml version='1.1' encoding='UTF-8'?>
+<!-- carto.job.xml — job Jenkins `carto` : collecte quotidienne de la carto des
+     APIs et des consommateurs (ci/Jenkinsfile.carto), puis archivage du
+     résultat comme artefacts de build.
+
+     PRÉREQUIS EXPLOITANT, à poser AVANT le premier build : un credential
+     Jenkins « Username with password », scope Global, identifiant
+     `carto-wm-gateway`, portant le compte technique LECTURE SEULE de l'API
+     d'administration de l'API Gateway (Username = le compte, Password = son
+     mot de passe). Sans lui, le build s'arrête à la première étape en le
+     disant explicitement. Détail du geste : en-tête de ci/Jenkinsfile.carto.
+
+     Pose / mise à jour : scripts/setup-carto-job.sh (idempotent). Les
+     coordonnées SCM ci-dessous sont celles du labo ; le script les remplace
+     par GIT_URL / BRANCH / SCRIPT_PATH quand ces variables sont fournies. -->
+<flow-definition plugin="workflow-job">
+  <actions/>
+  <description>Carto des APIs et des consommateurs — collecte quotidienne en LECTURE SEULE sur l'API Gateway et son magasin d'événements, contrôle des quatre signatures du rôle Ansible carto_collect, puis archivage de carto.json + history.json + index.html. L'historique est restauré depuis le dernier build RÉUSSI, sans quoi la courbe d'évolution repartirait de zéro chaque nuit. Identifiants : credential Jenkins carto-wm-gateway (geste exploitant).</description>
+  <keepDependencies>false</keepDependencies>
+  <properties>
+    <org.jenkinsci.plugins.workflow.job.properties.DisableConcurrentBuildsJobProperty/>
+    <jenkins.model.BuildDiscarderProperty>
+      <strategy class="hudson.tasks.LogRotator">
+        <daysToKeep>-1</daysToKeep>
+        <numToKeep>30</numToKeep>
+        <artifactDaysToKeep>-1</artifactDaysToKeep>
+        <artifactNumToKeep>-1</artifactNumToKeep>
+      </strategy>
+    </jenkins.model.BuildDiscarderProperty>
+    <org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty>
+      <triggers>
+        <!-- Déclenchement planifié quotidien. `H` étale la charge : Jenkins
+             fixe une minute stable, propre à ce job, dans l'heure indiquée —
+             au lieu de faire partir tous les jobs à la même seconde. Le même
+             `cron` est redéclaré dans le Jenkinsfile : celui-ci fait foi dès
+             le premier build, celui-là fait vivre le job dès sa création. -->
+        <hudson.triggers.TimerTrigger>
+          <spec>H 3 * * *</spec>
+        </hudson.triggers.TimerTrigger>
+      </triggers>
+    </org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty>
+    <hudson.model.ParametersDefinitionProperty>
+      <parameterDefinitions>
+        <hudson.model.StringParameterDefinition>
+          <name>CARTO_CREDENTIALS_ID</name>
+          <description>Identifiant du credential Jenkins « Username with password » portant le compte technique LECTURE SEULE de l'API Gateway. Posé par l'exploitant.</description>
+          <defaultValue>carto-wm-gateway</defaultValue>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>SEUIL_NON_IDENTIFIE_PCT</name>
+          <description>Part maximale tolérée du trafic non rattaché à un consommateur identifié (%). 50 = valeur du rôle Ansible et du rendu. Au-dessus de 50, la porte est PLUS FAIBLE que le rôle et le build le dira.</description>
+          <defaultValue>50</defaultValue>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>FENETRE_MIN_JOURS</name>
+          <description>Profondeur minimale réellement couverte par les événements (jours). 1 = l'assertion du rôle (« pas fenetre_couverte=0j »). 0 désactive la porte et le build le dira.</description>
+          <defaultValue>1</defaultValue>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+      </parameterDefinitions>
+    </hudson.model.ParametersDefinitionProperty>
+  </properties>
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition" plugin="workflow-cps">
+    <scm class="hudson.plugins.git.GitSCM" plugin="git">
+      <configVersion>2</configVersion>
+      <userRemoteConfigs>
+        <hudson.plugins.git.UserRemoteConfig>
+          <url>http://gitea.ci.svc.cluster.local:3000/ci/stoa-labs.git</url>
+        </hudson.plugins.git.UserRemoteConfig>
+      </userRemoteConfigs>
+      <branches>
+        <hudson.plugins.git.BranchSpec>
+          <name>*/main</name>
+        </hudson.plugins.git.BranchSpec>
+      </branches>
+      <doGenerateSubmoduleConfigurations>false</doGenerateSubmoduleConfigurations>
+      <submoduleCfg class="empty-list"/>
+      <extensions/>
+    </scm>
+    <scriptPath>poc-control-plane-federation/ci/Jenkinsfile.carto</scriptPath>
+    <lightweight>true</lightweight>
+  </definition>
+  <triggers/>
+  <disabled>false</disabled>
+</flow-definition>
