@@ -19,8 +19,8 @@ _ZERO = {"d7": 0, "d30": 0, "d90": 0}
 class InconsistentWindows(Exception):
     """Les trois fenêtres se contredisent : le résultat serait FAUX, pas partiel.
 
-    Même esprit que `analytics.TruncatedAggregation` : mieux vaut ne rien
-    publier qu'une carto mensongère.
+    Même esprit que `analytics.CollectError` : mieux vaut ne rien publier
+    qu'une carto mensongère.
     """
 
 
