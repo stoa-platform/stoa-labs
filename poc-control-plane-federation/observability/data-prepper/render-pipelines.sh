@@ -8,7 +8,7 @@
 # ${env:VAR}, ni ${env.VAR} — vérifié, non documenté, rapporté cassé par
 # plusieurs utilisateurs amont ; seul ${{VARIABLE}} existe, alimenté par une
 # section `variables` du pipeline, pas par l'environnement). Le mécanisme
-# retenu ici mirrors celui déjà en place dans
+# retenu ici reprend celui déjà en place dans
 # scripts/setup-wm-admin-proxy.sh (placeholder __FROM_VAULT__ → sed vers un
 # fichier temporaire jamais commité) : le gabarit versionné ne porte JAMAIS la
 # vraie valeur ; seul le fichier RENDU (hors git) la porte.

@@ -8,7 +8,10 @@
 set -euo pipefail
 
 OS_URL="${OS_URL:-https://localhost:9201}"
-OS_AUTH="${OS_AUTH:?Variable OS_AUTH absente — définissez-la (\"admin:<mot-de-passe>\", voir poc-control-plane-federation/.env.example)}"
+# OS_AUTH dérive de OPENSEARCH_PASSWORD — variable canonique unique (voir
+# .env.example) : un seul endroit à renseigner, aucune divergence possible
+# entre les noms hérités qui désignent le même mot de passe admin.
+OS_AUTH="admin:${OPENSEARCH_PASSWORD:?Variable OPENSEARCH_PASSWORD absente — définissez-la (voir poc-control-plane-federation/.env.example)}"
 # OpenSearch Dashboards (saved objects API) — plain HTTP on 5601 in the PoC.
 OSD_URL="${OSD_URL:-http://localhost:5601}"
 OSD_AUTH="${OSD_AUTH:-$OS_AUTH}"
