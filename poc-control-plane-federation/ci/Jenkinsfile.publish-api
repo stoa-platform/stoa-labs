@@ -117,6 +117,12 @@ pipeline {
             TOKEN_URL_OPT=""
             [ -n "${APIM_OAUTH_TOKEN_URL:-}" ] && TOKEN_URL_OPT="-e apim_ss_oauth_token_url=${APIM_OAUTH_TOKEN_URL}"
 
+            # oauth_sub : idem — jamais lu en mode basic, et un `-e …=` vide
+            # écraserait le défaut du rôle. Jenkins n'exporte pas une env vide :
+            # sans le `${…:-}`, `set -u` tue l'étape.
+            OAUTH_SUB_OPT=""
+            [ -n "${APIM_OAUTH_SUB:-}" ] && OAUTH_SUB_OPT="-e apim_ss_vault_oauth_sub=${APIM_OAUTH_SUB}"
+
             # 0) GATEWAY DISPONIBLE ? Le lab la recycle toutes les ~20 min (keepalive
             #    licence trial) et un rolling restart chez le client produit la même
             #    fenêtre : attendre son retour (max 5 min) AVANT de consommer
@@ -162,13 +168,12 @@ pipeline {
               -e apim_ss_data_base="$APIM_DATA_BASE" \
               -e apim_ss_vault_wm_creds_sub="$APIM_WM_CREDS_SUB" \
               -e apim_ss_auth_mode="$APIM_AUTH_MODE" \
-              -e apim_ss_vault_oauth_sub="$APIM_OAUTH_SUB" \
               -e apim_ss_vault_kv_mount="$APIM_KV_MOUNT" \
-              -e apim_ss_vault_prefix="$APIM_KV_PREFIX" \
+              -e apim_ss_vault_prefix="${APIM_KV_PREFIX:-}" \
               -e apim_ss_oauth_client_auth="$APIM_OAUTH_CLIENT_AUTH" \
               -e apim_ss_vault_oauth_client_id_key="$APIM_OAUTH_CID_KEY" \
               -e apim_ss_vault_oauth_client_secret_key="$APIM_OAUTH_CSECRET_KEY" \
-              ${TOKEN_URL_OPT:-}
+              ${OAUTH_SUB_OPT:-} ${TOKEN_URL_OPT:-}
 
             ansible-playbook ${VOPT:-} -e stoa_debug="${DEBUG:-false}" -i "$INVENTORY" ansible/publish-api-verify.yml \
               -e apim_ss_manifest="$MANIFEST" \
@@ -177,13 +182,12 @@ pipeline {
               -e apim_ss_data_base="$APIM_DATA_BASE" \
               -e apim_ss_vault_wm_creds_sub="$APIM_WM_CREDS_SUB" \
               -e apim_ss_auth_mode="$APIM_AUTH_MODE" \
-              -e apim_ss_vault_oauth_sub="$APIM_OAUTH_SUB" \
               -e apim_ss_vault_kv_mount="$APIM_KV_MOUNT" \
-              -e apim_ss_vault_prefix="$APIM_KV_PREFIX" \
+              -e apim_ss_vault_prefix="${APIM_KV_PREFIX:-}" \
               -e apim_ss_oauth_client_auth="$APIM_OAUTH_CLIENT_AUTH" \
               -e apim_ss_vault_oauth_client_id_key="$APIM_OAUTH_CID_KEY" \
               -e apim_ss_vault_oauth_client_secret_key="$APIM_OAUTH_CSECRET_KEY" \
-              ${TOKEN_URL_OPT:-}
+              ${OAUTH_SUB_OPT:-} ${TOKEN_URL_OPT:-}
 
             # Le token nominatif meurt avec le build : révocation + PREUVE DE MORT
             # (lookup-self -> 403) exécutées par le trap, succès comme échec.

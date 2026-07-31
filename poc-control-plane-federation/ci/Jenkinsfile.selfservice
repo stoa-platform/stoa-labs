@@ -87,6 +87,11 @@ pipeline {
     // le chemin » : APIM_KV_MOUNT=<ORG>/APP/ESB/secret_DEV sans VAULT_NAMESPACE).
     // Préfixe : '' est VALIDE (entrées à PLAT, ex. secret_DEV/data/APIM-TEST-ADMIN)
     // — d'où le test != null (l'elvis ?: écraserait la chaîne vide, falsy en Groovy).
+    // ⚠ NÉCESSAIRE MAIS PAS SUFFISANT : Jenkins n'EXPORTE PAS au shell une variable
+    // d'environnement de valeur vide — elle est simplement ABSENTE de l'env du `sh`.
+    // Sous `set -u`, un `$APIM_KV_PREFIX` nu devient alors « unbound variable » et
+    // tue l'étape. Toute variable qui peut légitimement être vide DOIT donc être
+    // déréférencée en `${VAR:-}` côté shell (cf. TOKEN_URL_OPT plus bas).
     APIM_KV_MOUNT          = "${env.APIM_KV_MOUNT ?: 'secret'}"
     APIM_KV_PREFIX         = "${env.APIM_KV_PREFIX != null ? env.APIM_KV_PREFIX : 'stoa'}"
     // Noms des CHAMPS de l'entrée oauth2 (convention client : admin-client-id…).
@@ -146,6 +151,12 @@ pipeline {
             TOKEN_URL_OPT=""
             [ -n "${APIM_OAUTH_TOKEN_URL:-}" ] && TOKEN_URL_OPT="-e apim_ss_oauth_token_url=${APIM_OAUTH_TOKEN_URL}"
 
+            # oauth_sub : même règle. En mode basic il n'est JAMAIS lu — le laisser
+            # vide (ou non défini) ne doit pas tuer l'étape, et surtout ne doit pas
+            # écraser le défaut du rôle par un `-e apim_ss_vault_oauth_sub=` vide.
+            OAUTH_SUB_OPT=""
+            [ -n "${APIM_OAUTH_SUB:-}" ] && OAUTH_SUB_OPT="-e apim_ss_vault_oauth_sub=${APIM_OAUTH_SUB}"
+
             # 0) GATEWAY DISPONIBLE ? Le lab la recycle toutes les ~20 min (keepalive
             #    licence trial) et un rolling restart chez le client produit la même
             #    fenêtre : attendre son retour (max 5 min) AVANT de consommer
@@ -201,13 +212,12 @@ pipeline {
               -e apim_ss_data_base="$APIM_DATA_BASE" \
               -e apim_ss_vault_wm_creds_sub="$APIM_WM_CREDS_SUB" \
               -e apim_ss_auth_mode="$APIM_AUTH_MODE" \
-              -e apim_ss_vault_oauth_sub="$APIM_OAUTH_SUB" \
               -e apim_ss_vault_kv_mount="$APIM_KV_MOUNT" \
-              -e apim_ss_vault_prefix="$APIM_KV_PREFIX" \
+              -e apim_ss_vault_prefix="${APIM_KV_PREFIX:-}" \
               -e apim_ss_oauth_client_auth="$APIM_OAUTH_CLIENT_AUTH" \
               -e apim_ss_vault_oauth_client_id_key="$APIM_OAUTH_CID_KEY" \
               -e apim_ss_vault_oauth_client_secret_key="$APIM_OAUTH_CSECRET_KEY" \
-              ${TOKEN_URL_OPT:-}
+              ${OAUTH_SUB_OPT:-} ${TOKEN_URL_OPT:-}
 
             # 3) VERIFY fail-closed (structurel : ENFORCEMENT_CONFIRMED + OUTBOUND_CONFIRMED ;
             #    le check data-plane live reste off — l'IP de l'agent ≠ l'allowlist).
@@ -218,13 +228,12 @@ pipeline {
               -e apim_ss_data_base="$APIM_DATA_BASE" \
               -e apim_ss_vault_wm_creds_sub="$APIM_WM_CREDS_SUB" \
               -e apim_ss_auth_mode="$APIM_AUTH_MODE" \
-              -e apim_ss_vault_oauth_sub="$APIM_OAUTH_SUB" \
               -e apim_ss_vault_kv_mount="$APIM_KV_MOUNT" \
-              -e apim_ss_vault_prefix="$APIM_KV_PREFIX" \
+              -e apim_ss_vault_prefix="${APIM_KV_PREFIX:-}" \
               -e apim_ss_oauth_client_auth="$APIM_OAUTH_CLIENT_AUTH" \
               -e apim_ss_vault_oauth_client_id_key="$APIM_OAUTH_CID_KEY" \
               -e apim_ss_vault_oauth_client_secret_key="$APIM_OAUTH_CSECRET_KEY" \
-              ${TOKEN_URL_OPT:-}
+              ${OAUTH_SUB_OPT:-} ${TOKEN_URL_OPT:-}
 
             # 4) le token nominatif meurt avec le build — révocation + PREUVE DE MORT
             #    (lookup-self -> 403) exécutées par le trap, succès comme échec.
