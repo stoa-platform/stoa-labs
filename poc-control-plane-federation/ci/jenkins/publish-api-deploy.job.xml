@@ -1,0 +1,125 @@
+<?xml version='1.1' encoding='UTF-8'?>
+<flow-definition plugin="workflow-job">
+  <description>Lot B — publication d'API (ADR-076/075, PRODUCTEUR) sur le Jenkins du cluster. Pipeline from SCM sur le d&#233;p&#244;t PUBLIC github.com/stoa-platform/stoa-labs (clone anonyme), scriptPath ci/Jenkinsfile.publish-api, branche main. Mod&#232;le PLAN (lecture seule, sans identit&#233;) / APPLY (VAULT_USER + VAULT_USER_PASSWORD voie A, ou USER_VAULT_JWT voie B) &#8594; token Vault NOMINATIF &#8594; r&#244;le Ansible apim_publish_api (converge + verify fail-closed) sur la gateway du cluster. Les 5 param&#232;tres APIM_*/VAULT_* additionnels ci-dessous portent les ADRESSES DU CLUSTER (le Jenkinsfile est inchang&#233; : mêmes defaults docker-compose, surcharg&#233;s ici par param&#232;tre &#8594; env.X ?: default) ; APIM_KV_PREFIX est VIDE (pas 'stoa') car le secret est provisionn&#233; &#224; secret/deploy/banking-demo/wm-admin, sans pr&#233;fixe.</description>
+  <keepDependencies>false</keepDependencies>
+  <properties>
+    <jenkins.model.BuildDiscarderProperty>
+      <strategy class="hudson.tasks.LogRotator">
+        <daysToKeep>-1</daysToKeep>
+        <numToKeep>25</numToKeep>
+        <artifactDaysToKeep>-1</artifactDaysToKeep>
+        <artifactNumToKeep>-1</artifactNumToKeep>
+        <removeLastBuild>false</removeLastBuild>
+      </strategy>
+    </jenkins.model.BuildDiscarderProperty>
+    <hudson.model.ParametersDefinitionProperty>
+      <parameterDefinitions>
+        <!-- ── les 7 paramètres du Jenkinsfile (ADR-076/075) ─────────────── -->
+        <hudson.model.StringParameterDefinition>
+          <name>MANIFEST</name>
+          <description>Manifeste de publication (vars du r&#244;le : apim_api).</description>
+          <defaultValue>clients/_example/apis/accounts-read.publish.yml</defaultValue>
+          <trim>false</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.ChoiceParameterDefinition>
+          <name>ENVIRONMENT</name>
+          <description>Environnement cible (inbound par env + header X-Environment).</description>
+          <choices>
+            <string>dev</string>
+            <string>rec</string>
+            <string>int</string>
+            <string>prod</string>
+          </choices>
+        </hudson.model.ChoiceParameterDefinition>
+        <hudson.model.ChoiceParameterDefinition>
+          <name>ADMIN_VIA</name>
+          <description>Acc&#232;s &#224; l'API d'admin : direct (lab/cluster, Basic) ou proxy-oauth2 (mod&#232;le client). Sur le cluster du lab : direct.</description>
+          <choices>
+            <string>direct</string>
+            <string>proxy-oauth2</string>
+          </choices>
+        </hudson.model.ChoiceParameterDefinition>
+        <hudson.model.BooleanParameterDefinition>
+          <name>DEBUG</name>
+          <description>Trace d&#233;taill&#233;e (appels, codes HTTP, erreurs redact&#233;es) — aucun secret expos&#233;.</description>
+          <defaultValue>false</defaultValue>
+        </hudson.model.BooleanParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>VAULT_USER</name>
+          <description>VOIE A — identit&#233; NOMINATIVE : login annuaire (sAMAccountName, UPN, ou DOMAIN\user). Vide sur le PLAN.</description>
+          <defaultValue></defaultValue>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.PasswordParameterDefinition>
+          <name>VAULT_USER_PASSWORD</name>
+          <description>VOIE A — mot de passe annuaire, saisi &#224; CHAQUE apply, jamais persist&#233; hors du build.</description>
+          <defaultValue></defaultValue>
+        </hudson.model.PasswordParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>USER_VAULT_JWT</name>
+          <description>VOIE B — JWT court aud=vault. Prioritaire sur la voie A. Vide sur le PLAN.</description>
+          <defaultValue></defaultValue>
+          <trim>false</trim>
+        </hudson.model.StringParameterDefinition>
+        <!-- ── adresses du CLUSTER (aucune modif du Jenkinsfile — mêmes
+             env.X ?: default 'docker-compose' que le pipeline lit déjà,
+             surchargés ici par paramètre). APIM_KV_PREFIX="" est le correctif
+             nécessaire : le default du Jenkinsfile ('stoa') donnerait
+             secret/data/stoa/deploy/... alors que le secret est provisionné
+             à plat sur secret/deploy/... ── -->
+        <hudson.model.StringParameterDefinition>
+          <name>VAULT_ADDR</name>
+          <description>Cluster : Vault du namespace ci.</description>
+          <defaultValue>http://vault.ci.svc.cluster.local:8200</defaultValue>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>APIM_API_BASE</name>
+          <description>Cluster : API d'admin REST wM (namespace wm).</description>
+          <defaultValue>http://wm-apigateway.wm.svc.cluster.local:5555/rest/apigateway</defaultValue>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>APIM_DATA_BASE</name>
+          <description>Cluster : data-plane wM (namespace wm).</description>
+          <defaultValue>http://wm-apigateway.wm.svc.cluster.local:5555/gateway</defaultValue>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>VAULT_USER_AUTH_MOUNT</name>
+          <description>Cluster : mount d'auth voie A (identique au default du Jenkinsfile — explicite ici pour mémoire).</description>
+          <defaultValue>ldap</defaultValue>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>APIM_KV_PREFIX</name>
+          <description>Cluster : préfixe KV — VIDE (secret provisionné à plat sur secret/deploy/banking-demo/wm-admin, pas secret/stoa/deploy/...).</description>
+          <defaultValue></defaultValue>
+          <trim>false</trim>
+        </hudson.model.StringParameterDefinition>
+      </parameterDefinitions>
+    </hudson.model.ParametersDefinitionProperty>
+  </properties>
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition" plugin="workflow-cps">
+    <scm class="hudson.plugins.git.GitSCM" plugin="git">
+      <configVersion>2</configVersion>
+      <userRemoteConfigs>
+        <hudson.plugins.git.UserRemoteConfig>
+          <url>https://github.com/stoa-platform/stoa-labs.git</url>
+        </hudson.plugins.git.UserRemoteConfig>
+      </userRemoteConfigs>
+      <branches>
+        <hudson.plugins.git.BranchSpec>
+          <name>*/main</name>
+        </hudson.plugins.git.BranchSpec>
+      </branches>
+      <doGenerateSubmoduleConfigurations>false</doGenerateSubmoduleConfigurations>
+      <submoduleCfg class="empty-list"/>
+      <extensions/>
+    </scm>
+    <scriptPath>poc-control-plane-federation/ci/Jenkinsfile.publish-api</scriptPath>
+    <lightweight>true</lightweight>
+  </definition>
+  <triggers/>
+  <disabled>false</disabled>
+</flow-definition>
