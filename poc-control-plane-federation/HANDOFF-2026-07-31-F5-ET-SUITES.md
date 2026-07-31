@@ -48,9 +48,17 @@ data-plane réelle).
 Sept rotations observées, chacune coûtant **un seul échantillon** — la coupure
 réelle est donc **sous la résolution de la sonde**.
 
-**L'hypothèse posée pour être réfutée ne l'a pas été.** Je craignais que le
-rééquilibrage Ignite coûte plus que le trou supprimé ; il ne se manifeste pas à
-cette échelle.
+**L'hypothèse posée pour être réfutée ne l'a pas été** : deux nœuds en rotation
+permanente servent nettement mieux qu'un nœud seul.
+
+> **Corrigé le 2026-07-31.** Cette section affirmait aussi « je craignais que le
+> rééquilibrage Ignite coûte plus que le trou supprimé ; il ne se manifeste pas
+> à cette échelle ». **C'était affirmer plus que la mesure ne permet** : le
+> clustering était désactivé pendant toute la mesure, et l'est encore
+> (`listener={…, host=null, port=-1}`, relu le 2026-07-31). Les 99,1 % mesurent
+> la **rotation décalée seule**, pas Ignite. Et la mesure ne porte que sur le
+> data-plane : sur la **console**, la rotation a l'effet inverse — voir
+> `HANDOFF-2026-07-31-CONSOLE-WM-SESSION.md`.
 
 **À savoir — le code d'erreur passe de 503 à 500.** Un client malchanceux voit
 une **erreur applicative brève** au lieu d'une indisponibilité franche et
