@@ -50,8 +50,11 @@ identifiée, compteurs, signaux), `consommateurs.md` (l'annuaire complet, **y
 compris les consommateurs sans aucun appel** : ce sont eux qu'il faut
 prévenir), `apis.md` (une ligne par lien, avec statut et volumes),
 `evolution.md` (la table hebdomadaire), plus `carto.json`, `history.json` et
-`index.html` — les trois derniers permettent de récupérer la vue interactive et
-de la servir en local.
+`index.html` — ce dernier **autoportant** : les deux documents JSON y sont
+embarqués (voir `carto/render/page.py`), plus aucun `fetch`, il s'ouvre en
+double-cliquant. `carto.json`/`history.json` restent publiés à côté en plus :
+ce sont les données lisibles par une machine, et leur propre `git diff` reste
+exact indépendamment de toute mise en forme.
 
 **Ce qui fait tout réussir ou tout rater : le diff ne doit pas être du bruit.**
 Tout est trié par **nom**, jamais par volume ; les volumes changent tous les
@@ -167,7 +170,8 @@ périmée qui a l'air fraîche. `carto-collect.sh` :
 | `le parametre \`status\` n'est plus honore` | ce paramètre n'est pas documenté ; une montée de version l'a peut-être retiré | sans lui le taux d'erreur de **toutes** les arêtes serait nul par construction : la sonde refuse de publier plutôt que de le laisser mentir. Voir `TERRAIN.md` V3 |
 | `deux applications portent le nom …` | la dimension consommateur s'interroge par **nom** d'application, et le filtre de la gateway ignore la casse | renommer l'une des deux côté gateway ; leur trafic serait sinon compté deux fois |
 | `fenêtre couverte` < demandée | pas d'événement plus ancien que ça dans la gateway | normal, c'est la vérité (spec D4) — attention, ce n'est PAS la rétention configurée, c'est l'âge du plus vieil événement encore présent |
-| Page vide, bandeau d'erreur | page ouverte en `file://` | passer par le serveur web |
+| Page vide, bandeau évoquant un serveur web | c'est le **gabarit brut** `carto/render/index.html` (jamais celle publiée dans le dépôt dédié) ouvert en `file://` sans avoir été rendu | régénérer avec `python3 -m carto.render` (page autoportante), ou passer par un serveur web si c'est ce gabarit brut qu'il faut servir tel quel |
+| Bandeau « données embarquées … illisibles » | la page autoportante a été tronquée ou corrompue au téléchargement | retélécharger le fichier depuis le dépôt dédié, ou régénérer avec `python3 -m carto.render` |
 | Le dépôt Markdown ne reçoit plus de commit | soit la collecte ne tourne plus, soit rien n'a changé | **lire la date en tête du `README.md` publié**, pas la date du dernier commit : c'est elle qui distingue les deux cas. Si elle n'avance plus, c'est la collecte qu'il faut regarder (`last-failure.log`) |
 | `PUBLICATION MARKDOWN IMPOSSIBLE — configuration absente` | `CARTO_PAGES_REPO_URL`, `CARTO_PAGES_USER` ou `CARTO_PAGES_TOKEN` non fourni | poser le credential d'écriture (geste exploitant en tête de `carto/scripts/publier-markdown.sh`). Rien n'a été poussé, la carto déjà publiée est intacte |
 | `poussée refusée par la forge` | jeton expiré ou révoqué, droit d'écriture retiré, ou branche protégée | régénérer le jeton et le remettre au même endroit — aucune modification de code |

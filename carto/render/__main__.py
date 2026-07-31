@@ -3,14 +3,17 @@
     python3 -m carto.render --source <sortie du collecteur> --out <repertoire>
 
 Le repertoire de sortie recoit exactement ce qui sera publie dans le depot
-dedie : les quatre pages Markdown, les deux documents JSON, et `index.html`.
+dedie : les quatre pages Markdown, les deux documents JSON, et `index.html`
+— celui-ci AUTOPORTANT (voir `carto/render/page.py`) : les deux documents
+JSON y sont embarques, aucun `fetch`, un seul fichier qui s'ouvre en
+double-cliquant meme publie seul dans un depot git.
 Un seul repertoire, un seul contenu a comparer — le script de publication
 (`carto/scripts/publier-markdown.sh`) n'a plus qu'a faire du git.
 
 Ce module fait de l'I/O de FICHIERS et rien d'autre : aucune commande git,
-aucune connaissance du depot dedie ni de ses identifiants. Le rendu lui-meme
-(`carto/render/markdown.py`) n'a meme pas d'I/O du tout, ce qui rend son
-determinisme testable octet pour octet.
+aucune connaissance du depot dedie ni de ses identifiants. Les rendus
+eux-memes (`carto/render/markdown.py`, `carto/render/page.py`) n'ont meme pas
+d'I/O du tout, ce qui rend leur determinisme testable octet pour octet.
 """
 import argparse
 import json
@@ -18,7 +21,7 @@ import pathlib
 import shutil
 import sys
 
-from . import markdown
+from . import markdown, page
 
 RENDU_HTML = pathlib.Path(__file__).resolve().parent / "index.html"
 
@@ -54,14 +57,22 @@ def main(argv=None):
     out.mkdir(parents=True, exist_ok=True)
     for nom, texte in pages.items():
         (out / nom).write_text(texte, encoding="utf-8")
-    # Les documents sont recopies tels quels : ce sont EUX le livrable durable,
-    # les pages n'en sont qu'une lecture.
+    # Les documents JSON sont recopies TELS QUELS, en plus d'etre embarques
+    # dans index.html juste apres : ce sont les donnees lisibles par une
+    # machine, et leur propre `git diff` reste exact quel que soit ce qui
+    # change dans la mise en forme des pages. Publier ce sous-ensemble en
+    # double avec la page ne casse pas la continuite de l'historique : la
+    # source de verite de history.json reste le web root local du
+    # collecteur (`carto/collect/publish.py`), jamais cette copie-ci.
     for nom in ("carto.json", "history.json"):
         if (src / nom).exists():
             shutil.copyfile(src / nom, out / nom)
-    # La vue interactive voyage avec ses donnees : un index.html sans son
-    # carto.json, ou l'inverse, ne s'ouvre pas.
-    shutil.copyfile(RENDU_HTML, out / "index.html")
+    # La vue interactive est desormais AUTOPORTANTE (render/page.py) : ses
+    # donnees sont embarquees dans le fichier lui-meme, plus aucun fetch. Elle
+    # s'ouvre en double-cliquant, y compris publiee seule dans un depot git.
+    gabarit = RENDU_HTML.read_text(encoding="utf-8")
+    (out / "index.html").write_text(page.assembler(gabarit, carto, history),
+                                    encoding="utf-8")
 
     if args.message:
         (out / ".message").write_text(markdown.commit_message(carto, history),

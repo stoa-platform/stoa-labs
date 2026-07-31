@@ -34,6 +34,7 @@
 </header>
 <div id="banner">chargement…</div>
 <main id="view"></main>
+<!--CARTO_DATA-->
 
 <script>
 "use strict";
@@ -202,17 +203,48 @@ document.addEventListener("input", ev => {
   if (ev.target.matches("[data-filter]")) { S.filter = ev.target.value.toLowerCase(); render(); }
 });
 
+// Lecture d'un document JSON EMBARQUE dans un <script type="application/json">
+// pose par le rendu Python (carto/render/page.py), juste apres <main>. Cette
+// page ne fait plus aucun `fetch` : les deux documents voyagent DANS le
+// fichier, ce qui la rend lisible en `file://`, y compris publiee seule dans
+// un depot git ou une forge qui l'affiche comme du code source.
+//
+// Deux defauts distincts, chacun avec sa PROPRE suite dans boot() — jamais un
+// ecran muet :
+//   - absent    : aucun bloc de ce nom dans le document. Le cas normal serait
+//                 un fichier qui n'a pas ete produit par
+//                 `python3 -m carto.render` (le gabarit source du depot de
+//                 code, ouvert directement, ou une copie tronquee avant le
+//                 bloc).
+//   - illisible : le bloc existe mais son JSON est casse (fichier tronque ou
+//                 corrompu au telechargement).
+function lireJSONEmbarque(id) {
+  const el = document.getElementById(id);
+  if (!el) return { present: false };
+  try { return { present: true, valeur: JSON.parse(el.textContent) }; }
+  catch (err) { return { present: true, erreur: true }; }
+}
+
 async function boot() {
-  try {
-    S.carto = await (await fetch("carto.json", { cache:"no-store" })).json();
-    try { S.history = await (await fetch("history.json", { cache:"no-store" })).json(); }
-    catch (_) { S.history = []; }
-  } catch (err) {
+  const donnees = lireJSONEmbarque("carto-data");
+  if (!donnees.present || donnees.erreur) {
     document.getElementById("banner").className = "stale";
-    document.getElementById("banner").textContent =
-      "⚠ carto.json introuvable ou illisible — ouvrir cette page via le serveur web, pas en file://";
+    document.getElementById("banner").textContent = donnees.present
+      ? "⚠ les données embarquées dans cette page sont illisibles (JSON invalide)"
+        + " — le fichier a probablement été tronqué ou corrompu au téléchargement :"
+        + " le retélécharger, ou le régénérer avec `python3 -m carto.render`."
+      : "⚠ cette page n'embarque aucune donnée — ce n'est pas un fichier produit"
+        + " par `python3 -m carto.render` : le régénérer avec cette commande.";
     return;
   }
+  // Page autoportante : les deux documents sont dans le fichier lui-meme,
+  // aucun reseau n'est sollicite.
+  S.carto = donnees.valeur;
+  const historique = lireJSONEmbarque("carto-history");
+  // Un journal absent est le cas NORMAL du tout premier passage du
+  // collecteur (voir carto/collect/__main__.py) : pas d'alerte pour ça.
+  S.history = (historique.present && !historique.erreur) ? historique.valeur : [];
+
   if (!versionSupportee(S.carto)) {
     refuserVersion(S.carto);
     return;

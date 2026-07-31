@@ -384,14 +384,18 @@ def _page_readme(carto, history):
     out += ["## Les données, et la vue interactive", "",
             "- [`carto.json`](carto.json) — la carto complète, telle que le "
             "collecteur la produit (contrat de données version "
-            f"{SCHEMA_VERSION}).",
+            f"{SCHEMA_VERSION}). Fichier lisible par une machine ; son "
+            "`git diff` reste exact même quand la mise en forme des pages "
+            "change.",
             "- [`history.json`](history.json) — le journal d'évolution, un point "
             "par collecte. C'est lui qui rend l'historique **durable** : il "
             "survit ici même si l'artefact de build qui le portait est purgé.",
             "- [`index.html`](index.html) — la vue interactive (tri, filtre, "
-            "fiches, export CSV). Elle ne s'affiche pas depuis la forge : "
-            "récupérer les **trois** fichiers dans un même répertoire et les "
-            "servir en local (`python3 -m http.server`), jamais en `file://`.",
+            "fiches, export CSV), **autoportante** : `carto.json` et "
+            "`history.json` sont embarqués dans ce fichier, aucun serveur "
+            "n'est nécessaire. La forge l'affiche comme du code source, pas "
+            "comme une page : **télécharger ce seul fichier** et l'ouvrir en "
+            "double-cliquant suffit.",
             ""]
 
     out += ["## Lire le `git diff` de ce dépôt", "",
