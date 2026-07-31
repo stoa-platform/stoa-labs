@@ -1,37 +1,92 @@
 ---
-# roles/apim_publish_api/tasks/team.yml — scoping par équipe (ADR-076, isolation).
+# roles/apim_publish_api/tasks/team.yml — cloisonnement de l'API par assignation
+# de team (E1 ; pendant producteur de apim_selfservice_app/tasks/team.yml).
 #
-# ⚠ NON TESTÉ LIVE dans le lab de démo (pas d'accessProfile d'ÉQUIPE ; la feature
-# Teams doit être ACTIVÉE côté gateway). Shape best-effort issue du spike Teams
-# (mémoire wm-1015-teams-scoping) : POST /assets/team, newTeams = UUID
-# d'accessProfile (les NOMS -> 400). À VALIDER chez le client avant mise en prod.
-# Optionnel : ne tourne que si apim_api.team est renseigné.
+# CE FICHIER PORTAIT « ⚠ NON TESTÉ LIVE » ET TROIS DÉFAUTS. Corrigés ici :
+#   1. `assetType` manquait. Sans lui, POST /assets/team rend 200 et NE FAIT
+#      RIEN — no-op silencieux. C'est le piège central de cet appel : un code de
+#      retour vert n'y prouve strictement rien.
+#   2. Aucune relecture. Le 200 était pris pour la preuve. La preuve, c'est la
+#      relecture, et elle exige les DEUX moitiés du résultat : la team demandée
+#      présente ET `Default` partie — tant que Default est là, l'API reste
+#      lisible par toutes les équipes (mesuré le 2026-07-31 : 200 par un tiers).
+#   3. L'assignation était optionnelle. Une API sans team tombe en Default. La
+#      condition a disparu de main.yml ; l'obligation se règle en amont, par
+#      apim_pub_require_team (team-name.yml).
+#
+# SHAPES (spike Teams F4) : une « team » EST un accessProfile ; `newTeams` attend
+# son UUID (les NOMS rendent 400). La team relue vit au niveau `apiResponse` —
+# `api.teams` est vide, et viser le mauvais niveau donne un « aucune team »
+# silencieux.
+#
+# ⚠ RELECTURE : viser le Service d'administration (réplique unique). À travers
+# `wm-apigateway` (deux répliques sans cluster, caches mémoire non synchronisés)
+# une relecture peut tomber sur la réplique qui ignore encore l'écriture et
+# rendre un 401 qui PARLE D'AUTORISATION alors qu'il s'agit d'un cache froid.
 
-- name: "Team : résoudre l'UUID de l'accessProfile '{{ apim_api.team }}'"
-  ansible.builtin.uri:
-    url: "{{ apim_ss_api_base }}/accessProfiles"
-  register: team_aps
-  changed_when: false
+- name: "Team : cloisonner l'API sur '{{ pub_team_name }}'"
+  when: "pub_team_name | length > 0"
+  block:
 
-- name: "Team : UUID (ou vide)"
-  ansible.builtin.set_fact:
-    team_uuid: >-
-      {{ (team_aps.json.accessProfiles | default(team_aps.json.accessProfile) | default([])
-          | selectattr('name', 'equalto', apim_api.team) | map(attribute='id') | list | first) | default('') }}
+    - name: "Team : lister les accessProfiles (une team EST un accessProfile)"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/accessProfiles"
+      register: pub_team_aps
+      changed_when: false
 
-- name: "Team : fail-closed si l'accessProfile d'équipe est absent"
-  ansible.builtin.assert:
-    that: "team_uuid | length > 0"
-    fail_msg: >-
-      accessProfile d'équipe '{{ apim_api.team }}' absent — Teams activé ? profil créé ?
-      (POST /accessProfiles avec le privilège 'Manage APIs' — cf. GOAL E5).
+    - name: "Team : UUID de l'accessProfile (ou vide)"
+      ansible.builtin.set_fact:
+        pub_team_uuid: >-
+          {{ (pub_team_aps.json.accessProfiles | default(pub_team_aps.json.accessProfile) | default([])
+              | selectattr('name', 'equalto', pub_team_name) | map(attribute='id') | list | first) | default('') }}
 
-- name: "Team : assigner l'API à l'équipe (POST /assets/team, newTeams = UUID)"
-  ansible.builtin.uri:
-    url: "{{ apim_ss_api_base }}/assets/team"
-    method: POST
-    body:
-      assetIds: ["{{ apim_api_id }}"]
-      newTeams: ["{{ team_uuid }}"]
-    status_code: [200, 201]
-  register: team_assign
+    - name: "Team : fail-closed si l'accessProfile d'équipe est absent"
+      ansible.builtin.assert:
+        that: "pub_team_uuid | length > 0"
+        fail_msg: >-
+          TEAM_UNKNOWN : accessProfile '{{ pub_team_name }}' absent de la gateway.
+          Feature Teams activée (PUT /configurations/extended {"enableTeamWork":"true"},
+          configId `extended` et non `extendedSettings`) ? Équipe créée
+          (POST /accessProfiles + groupe, membres du groupe système
+          API-Gateway-Providers) — cf. GOAL E5 ?
+
+    # assetType OBLIGATOIRE : sans lui, 200 et rien ne se passe.
+    - name: "Team : POST /assets/team (assetType API, newTeams = UUID)"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/assets/team"
+        method: POST
+        body:
+          assetIds: ["{{ apim_api_id }}"]
+          assetType: "API"
+          newTeams: ["{{ pub_team_uuid }}"]
+        status_code: [200, 201]
+      register: pub_team_assign
+
+    # LA porte de preuve. Le POST ci-dessus rend 200 même quand il n'a rien fait :
+    # seule la relecture distingue « assigné » de « accepté puis ignoré ».
+    - name: "Team : relire l'API (Service d'administration, réplique unique)"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/apis/{{ apim_api_id }}"
+      register: pub_team_after
+      changed_when: false
+
+    - name: "Team : teams[] relues (niveau apiResponse — api.teams est vide)"
+      ansible.builtin.set_fact:
+        pub_team_names_after: >-
+          {{ (pub_team_after.json.apiResponse | default({})).teams | default([])
+             | map(attribute='name') | list }}
+
+    - name: "Team : FAIL-CLOSED — l'assignation a RÉELLEMENT eu lieu"
+      ansible.builtin.assert:
+        that:
+          - "pub_team_name in pub_team_names_after"
+          - "'Default' not in pub_team_names_after"
+        fail_msg: >-
+          TEAM_UNCONFIRMED : après POST /assets/team (HTTP
+          {{ pub_team_assign.status }}), l'API '{{ apim_api.name }}' porte
+          teams={{ pub_team_names_after }} — attendu : '{{ pub_team_name }}'
+          présente et 'Default' absente. Un 200 sans effet est le comportement
+          connu de cet appel quand assetType manque ou ne correspond pas.
+        success_msg: >-
+          TEAM_CONFIRMED : '{{ apim_api.name }}' cloisonnée sur
+          '{{ pub_team_name }}' (teams={{ pub_team_names_after }}, Default retirée).

@@ -2,6 +2,10 @@
 # roles/apim_publish_api/tasks/verify.yml (--tags verify) — preuve fail-closed.
 - name: "Env : résoudre l'API effective (identité invariante ⊕ per_env inbound)"
   ansible.builtin.import_tasks: resolve-env.yml
+- name: "Team : quelle équipe, et d'où (MÊME résolution que la convergence)"
+  # Le verify rejoue la même garde, dans le même fichier. Deux implémentations
+  # d'accord entre elles ne prouveraient rien d'autre que leur accord.
+  ansible.builtin.import_tasks: team-name.yml
 - name: "Secrets : auth admin (Vault, fallback PoC)"
   ansible.builtin.import_role:
     name: apim_common
@@ -19,13 +23,41 @@
           {{ (v_apis.json.apiResponse | map(attribute='api')
               | selectattr('apiName','equalto', apim_api.name)
               | selectattr('apiVersion','equalto', apim_api.version) | list | first) | default({}) }}
-    - name: "Verify : FAIL-CLOSED — l'API est publiée ET ACTIVE"
+    # E1 : le verify contrôle aussi le CLOISONNEMENT. En l'état il verdissait sur
+    # une API en `Default` — c'est-à-dire lue (200) par n'importe quelle équipe.
+    # Attester « publiée » sans contrôler la team, c'est certifier une propriété
+    # qu'on ne vérifie pas : plus dangereux que pas de verify du tout, parce que
+    # ça dispense de vérifier.
+    - name: "Verify : relire l'API (teams vivent au niveau apiResponse)"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/apis/{{ v_api.id }}"
+      register: v_api_get
+      changed_when: false
+      when: "v_api.id is defined"
+
+    - name: "Verify : teams[] de l'API"
+      ansible.builtin.set_fact:
+        v_team_names: >-
+          {{ (v_api_get.json.apiResponse | default({})).teams | default([])
+             | map(attribute='name') | list }}
+      when: "v_api.id is defined"
+
+    - name: "Verify : FAIL-CLOSED — l'API est publiée, ACTIVE et CLOISONNÉE"
       ansible.builtin.assert:
         that:
           - "v_api.id is defined"
           - "v_api.isActive | default(false)"
-        fail_msg: "PUBLISH_UNCONFIRMED : API {{ apim_api.name }} v{{ apim_api.version }} absente ou inactive."
-        success_msg: "PUBLISH_CONFIRMED : {{ apim_api.name }} v{{ apim_api.version }} publiée + active (id={{ v_api.id | default('?') }})."
+          - "pub_team_name | length == 0 or pub_team_name in (v_team_names | default([]))"
+          - "pub_team_name | length == 0 or 'Default' not in (v_team_names | default([]))"
+        fail_msg: >-
+          PUBLISH_UNCONFIRMED : API {{ apim_api.name }} v{{ apim_api.version }} —
+          absente, inactive, ou non cloisonnée (teams={{ v_team_names | default('n/a') }},
+          attendu '{{ pub_team_name }}' présente et 'Default' absente). Une API en
+          Default est lue par n'importe quelle équipe.
+        success_msg: >-
+          PUBLISH_CONFIRMED : {{ apim_api.name }} v{{ apim_api.version }} publiée,
+          active et cloisonnée sur '{{ pub_team_name }}'
+          (teams={{ v_team_names | default([]) }}, id={{ v_api.id | default('?') }}).
 
     # ----- inbound (optionnel) : la validation JWT/OAuth2 est-elle opposée ? -
     - name: "Verify : inbound — alias + règle IAM"
