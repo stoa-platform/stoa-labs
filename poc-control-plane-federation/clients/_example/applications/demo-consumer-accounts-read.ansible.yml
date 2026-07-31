@@ -1,0 +1,32 @@
+---
+# Manifeste de demande (format rôle apim_selfservice_app), variante lot B —
+# preuve d'exécution réelle sur le Jenkins du cluster.
+#
+# Les trois manifestes "démo" voisins (demo-consumer*.ansible.yml) ciblent tous
+# `api: "demo-selfservice"` — une API qui n'est publiée NULLE PART dans ce
+# dépôt (aucun manifeste apim_publish_api ne la crée) : elle supposait un seed
+# ad hoc du monde docker-compose, absent du cluster. `apim_selfservice_app`
+# est fail-closed sur ce point ("API absente — la publier d'abord.", role
+# tasks/main.yml:38) — mesuré en conditions réelles lors du lot B.
+#
+# Ce manifeste cible donc `accounts-read` v1.0.0 — l'API RÉELLEMENT publiée et
+# ACTIVE sur la gateway du cluster (F4, banking-demo/accounts-api), lisible
+# par l'identité déploiement team-scopée `deploy/banking-demo/wm-admin`
+# (vérifié : GET /apis/{accounts-read} -> 200 sous cette identité). Nom d'app
+# distinct (`-accounts-read`) pour ne rien collisionner avec les manifestes
+# `_example` existants.
+apim_ss_app:
+  name: "demo-consumer-accounts-read"
+  api: "accounts-read"
+  api_version: "1.0.0"
+  description: "Lot B — preuve d'exécution réelle (selfservice-app-deploy, cluster)"
+  contact_emails: ["demo@bank.invalid"]
+  backend: { header: "apikey", value_template: "${backend_apikey}" }   # invariant
+  enforce: ["ipAddressRange"]                                          # invariant
+  cert_rotation: "replace"
+
+  per_env:
+    dev:  { ip_allowlist: ["192.168.65.1"],        public_cert_ref: "" }
+    rec:  { ip_allowlist: ["10.20.1.0-10.20.1.9"], public_cert_ref: "" }
+    int:  { ip_allowlist: ["10.30.1.0-10.30.1.9"], public_cert_ref: "" }
+    prod: { ip_allowlist: ["10.90.1.0-10.90.1.9"], public_cert_ref: "" }
