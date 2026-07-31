@@ -420,6 +420,41 @@ class TestCliRendu(unittest.TestCase):
                 self.assertTrue((out / nom).exists(), nom)
             self.assertTrue((out / ".message").read_text(encoding="utf-8").startswith("carto "))
 
+            # Le fichier publie doit etre AUTOPORTANT : plus aucun fetch, les
+            # deux documents embarques et relisibles tels quels (pas les
+            # marqueurs bruts du gabarit committe).
+            html = (out / "index.html").read_text(encoding="utf-8")
+            self.assertNotIn("fetch(", html)
+            self.assertNotIn("<!--CARTO_DATA-->", html)
+            debut = html.index('id="carto-data">') + len('id="carto-data">')
+            fin = html.index("</script>", debut)
+            self.assertEqual(json.loads(html[debut:fin])["apis"][0]["name"], "paie")
+            debut = html.index('id="carto-history">') + len('id="carto-history">')
+            fin = html.index("</script>", debut)
+            self.assertEqual(len(json.loads(html[debut:fin])), len(HISTORY))
+
+    def test_le_rendu_autonome_refuse_un_gabarit_dont_le_marqueur_a_disparu(self):
+        """Meme famille de refus que la version de schema : mieux vaut un
+        echec franc a la publication qu'une page assemblee au hasard si
+        `render/index.html` change de forme sans que ce module ait suivi."""
+        import tempfile
+        from carto.render import __main__ as render_main
+        from carto.render.page import GabaritInvalide
+        with tempfile.TemporaryDirectory() as d:
+            src, out = pathlib.Path(d) / "src", pathlib.Path(d) / "out"
+            src.mkdir()
+            (src / "carto.json").write_text(json.dumps(carto()), encoding="utf-8")
+            faux_gabarit = pathlib.Path(d) / "faux.html"
+            faux_gabarit.write_text("<html>sans marqueur</html>", encoding="utf-8")
+            ancien = render_main.RENDU_HTML
+            render_main.RENDU_HTML = faux_gabarit
+            try:
+                with self.assertRaises(GabaritInvalide):
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        render_main.main(["--source", str(src), "--out", str(out)])
+            finally:
+                render_main.RENDU_HTML = ancien
+
     def test_un_journal_absent_est_le_cas_normal_du_premier_passage(self):
         import tempfile
         from carto.render.__main__ import main
