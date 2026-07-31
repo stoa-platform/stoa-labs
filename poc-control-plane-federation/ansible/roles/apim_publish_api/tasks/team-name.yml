@@ -1,0 +1,72 @@
+---
+# roles/apim_publish_api/tasks/team-name.yml — quelle équipe, et d'où ? (E1, D3)
+#
+# CE QUE CETTE TÂCHE DÉCIDE, ET POURQUOI ELLE EST ISOLÉE. Deux choses en
+# dépendent : le cloisonnement de l'API (team.yml) et le message porté au statut
+# de commit quand la demande est refusée. Elle ne fait AUCUN appel réseau, donc
+# elle tourne AVANT l'import — un refus ne doit rien laisser derrière lui.
+#
+# LE FOND DU PROBLÈME (mesuré le 2026-07-31 sur la gateway du cluster) :
+#   - assigner une team est réservé à l'ADMIN — un utilisateur d'équipe reçoit
+#     401 « not authorized to perform: POST on the resource: assets », même pour
+#     SA PROPRE équipe. La chaîne tourne donc nécessairement en admin.
+#   - et à l'admin, le produit n'oppose AUCUN refus cross-team : déplacer une API
+#     de banking-demo vers insurance-demo rend 200.
+# Le cloisonnement par équipe n'est donc PAS une propriété du produit. C'est une
+# propriété de la chaîne, et elle se joue ici.
+#
+# D'OÙ VIENT L'AUTORITÉ. `apim_ss_team` est posée en extra-var par le JOB
+# Jenkins, qui appartient à la plateforme (D2) — pas par le Jenkinsfile, qui
+# appartiendrait à l'équipe. C'est la seule raison pour laquelle cette valeur
+# est digne de confiance ; une garde qui lirait le dépôt de l'équipe raisonnerait
+# sur une donnée que l'équipe écrit.
+#
+# POURQUOI UNE DIVERGENCE ÉCHOUE AU LIEU D'ÊTRE IGNORÉE. Le chemin consommateur
+# (apim_selfservice_app/team-name.yml) laisse l'extra-var l'emporter en silence.
+# Ici on refuse : ignorer une demande cross-team la rend indétectable — ni
+# l'équipe qui l'a écrite ni la plateforme ne l'apprennent. La faire rougir la
+# trace dans le statut de commit, où les deux la lisent.
+
+- name: "Team : nom retenu (pipeline > manifeste)"
+  ansible.builtin.set_fact:
+    pub_team_name: >-
+      {{ (apim_ss_team | default('') | trim)
+         if ((apim_ss_team | default('') | trim) | length > 0)
+         else (apim_api.team | default('') | trim) }}
+    pub_team_claimed: "{{ apim_api.team | default('') | trim }}"
+
+- name: "Team : FAIL-CLOSED — le manifeste ne peut pas désigner une AUTRE équipe"
+  ansible.builtin.assert:
+    that: "pub_team_claimed | length == 0 or pub_team_claimed == pub_team_name"
+    fail_msg: >-
+      TEAM_FORBIDDEN : le manifeste réclame la team '{{ pub_team_claimed }}' alors
+      que la chaîne publie au nom de '{{ pub_team_name }}'. Publier dans l'équipe
+      d'un tiers rendrait l'API invisible à son auteur et visible à cette équipe —
+      et le produit ne l'interdit pas (l'assignation est une opération d'admin, à
+      laquelle aucun refus cross-team n'est opposé, mesuré le 2026-07-31). Rien
+      n'a été créé. Corriger `team:` dans le manifeste, ou la retirer : la chaîne
+      la connaît déjà.
+    success_msg: >-
+      TEAM_REQUESTED : API '{{ apim_api.name }}' -> team '{{ pub_team_name }}'
+      {{ '(demandée par le manifeste, concordante)' if pub_team_claimed | length > 0
+         else '(posée par la chaîne)' }}.
+  when: "apim_pub_require_team | default(true) | bool"
+
+- name: "Team : FAIL-CLOSED — une API sans équipe n'est cloisonnée pour personne"
+  ansible.builtin.assert:
+    that: "pub_team_name | length > 0"
+    fail_msg: >-
+      TEAM_UNDEFINED : aucune équipe pour l'API '{{ apim_api.name }}' (ni
+      -e apim_ss_team=<team>, ni `team:` dans le manifeste). Une API non assignée
+      reste en team Default : mesuré le 2026-07-31, elle est alors LUE (200) par
+      n'importe quelle équipe. Poser l'équipe, ou assumer explicitement le
+      contraire avec -e apim_pub_require_team=false (lab sans feature Teams).
+  when: "apim_pub_require_team | default(true) | bool"
+
+- name: "Team : AVERTISSEMENT — cloisonnement désactivé"
+  ansible.builtin.debug:
+    msg: >-
+      ⚠ TEAM_SKIPPED : apim_pub_require_team=false et aucune équipe résolue.
+      L'API '{{ apim_api.name }}' restera en team Default — lisible par toutes les
+      équipes. Acceptable en lab sans feature Teams, JAMAIS chez un client.
+  when: "pub_team_name | length == 0"

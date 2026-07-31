@@ -31,6 +31,17 @@ apim_ss_port_allow_entry: ""
 # liste, update:true est REFUSÉ (fail-closed) — MAJ via apim_promote_api.
 apim_pub_deactivate_envs: ["dev", ""]
 
+# --- E1 : ce que le manifeste de l'équipe a le droit de déclarer (D5) --------
+# include_vars charge le top-level du manifeste à la précédence 18 : toute clé
+# non listée ici deviendrait une variable du rôle. Élargir cette liste est une
+# décision d'architecture, pas un réglage.
+apim_pub_manifest_allowed: ["apim_api"]
+
+# --- E1 : une API sans équipe n'est cloisonnée pour personne (D3) ------------
+# Mesuré le 2026-07-31 : une API laissée en team `Default` est lue (200) par
+# n'importe quelle équipe. false = lab sans feature Teams, JAMAIS chez un client.
+apim_pub_require_team: true
+
 # --- l'API à publier --------------------------------------------------------
 apim_api:
   name: "accounts-read"

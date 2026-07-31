@@ -1,0 +1,7 @@
+---
+# Fixture E1 : le manifeste réclame une équipe qui n'est pas celle du pipeline.
+apim_api:
+  name: "e1-fixture"
+  version: "1.0.0"
+  contract: "/dev/null"
+  team: "insurance-demo"
