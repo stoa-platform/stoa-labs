@@ -237,11 +237,51 @@ La période gouverne directement l'attente du build (D5) : ordre de grandeur
 retenu, la minute — à calibrer au plan contre le coût des lectures
 d'administration répétées sur chaque nœud.
 
+#### D4.1 — Projection totale, jamais d'ajout incrémental
+
+`AccessMode` porte `services[]` **en entier** : l'écriture est un
+read-modify-write, motif que le dépôt pratique déjà dans `is-mtls-setup.yml`
+pour `clientAuth` (lecture, modification, réécriture du record complet,
+relecture fail-closed).
+
+Un ajout incrémental — lire la liste, y insérer l'API du build, réécrire le
+tout — est sujet aux **mises à jour perdues** : deux publications concurrentes
+lisent le même état, chacune ajoute la sienne, la seconde écriture efface la
+première sans que rien ne le signale. Le défaut est silencieux, et il se
+multiplie par le nombre de nœuds.
+
+Le réconciliateur ne complète donc jamais une liste lue : il **calcule la liste
+entière attendue** depuis la requête par tag, qui fait autorité, et écrit cet
+état complet. L'écriture est idempotente, et une mise à jour perdue par une
+écriture concurrente est réparée au passage suivant sans intervention.
+
+Corollaire opposable : le réconciliateur n'écrit **jamais** une liste dérivée
+d'une lecture incomplète. Toute erreur pendant le calcul interrompt le passage
+et laisse l'état en place (D3.1) — sans quoi un incident de lecture purgerait
+l'allow list et rendrait toutes les API injoignables d'un coup.
+
 *Écarté :* le fan-out actif, où un service IS appelle chaque nœud pour y écrire
 et relire. Il exige trois choses qui n'existent nulle part : un inventaire de
 nœuds à jour (impossible sur le lab, où les IP changent tous les cycles), des
 identifiants d'administration utilisables de nœud à nœud, et l'ouverture de
 flux inter-nœuds — que la VIP est précisément censée masquer.
+
+*Écarté :* l'URL interne du nœud passée **en paramètre** de l'API proxifiée, le
+CI appelant le proxy une fois par nœud. C'est la variante la plus directe, et
+elle a été proposée. Elle ouvre cependant une relayabilité vers une URL
+arbitraire, empruntant les identifiants sortants de la gateway, sur la surface
+la plus sensible du système : la forme même d'une SSRF, à contre-emploi de
+l'invariant d'allow-list stricte d'ADR-075. Elle laisse par ailleurs la
+durabilité entière — un nœud recréé repart vide. Si elle devait malgré tout
+être retenue, la cible ne devrait jamais être une URL libre mais un
+**identifiant de nœud** résolu côté serveur contre le registre de D5.
+
+**Note de convergence entre les deux voies.** Une variante « push » demanderait
+au stage de *request processing* (`customExtensionRequestProcessing`, livré dans
+le package) de résoudre dynamiquement la liste des nœuds — et la seule source
+possible de cette liste est le registre d'auto-enregistrement de D5. Le registre
+est donc requis dans les deux architectures : il n'engage pas le choix
+push/pull, et peut être construit avant que ce choix soit tranché.
 
 ### D5 — La preuve du build est un registre de convergence partagé
 
