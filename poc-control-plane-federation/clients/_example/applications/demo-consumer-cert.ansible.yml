@@ -1,0 +1,50 @@
+---
+# Manifeste de demande (format rôle apim_selfservice_app) — variante CERTIFICAT.
+#
+# POURQUOI CE MANIFESTE EXISTE. Aucun manifeste du dépôt ne portait de
+# `public_cert_ref` non vide : le bloc certificat du rôle était donc SKIPPÉ à
+# chaque passage du pipeline (mesuré, build 7 : « skipping: [localhost] » sur
+# les deux tâches, `occurrences de CERT_OK : 0`). Le chemin le plus délicat du
+# rôle — celui qui a justement dû être corrigé le 2026-07-31, cf. cert-der.yml —
+# n'était couvert par AUCUNE exécution réelle. Ce manifeste le rend exerçable :
+# il référence `demo-client.crt`, un PEM public valide déjà versionné ici et
+# jusque-là référencé par personne.
+#
+# CERTIFICAT SEUL, PAS cert+IP. Le manifeste voisin
+# (demo-consumer-accounts-read) couvre déjà `ipAddressRange`. En n'opposant ici
+# que `httpsCertificate`, un échec désigne sans ambiguïté le chemin certificat —
+# alors qu'un AND(cert+IP) laisserait un doute sur la dimension fautive.
+#
+# CE QUE CE MANIFESTE NE PROUVE PAS. Que le consommateur arrive à s'authentifier.
+# Le manifeste ne porte QUE le certificat public (ADR-071 refuse toute clé
+# privée) : sans la clé, aucun handshake mTLS ne peut être joué depuis le CI. La
+# preuve s'arrête à la CONFIGURATION — identifier posé, valeur exacte, nom daté,
+# enforcement AND réellement attaché à la policy de l'API. C'est la limite
+# structurelle de cette dimension, la même que pour `ipAddressRange` dont la
+# plage n'est joignable que depuis le réseau du client (d'où le flag
+# apim_ss_verify_dataplane, sans objet ici).
+#
+# API ciblée : `accounts-read` v1.0.0 — la seule RÉELLEMENT publiée et active
+# sur la gateway du cluster (F4, banking-demo/accounts-api). Le rôle est
+# fail-closed si l'API est absente (« API absente — la publier d'abord. »).
+apim_ss_app:
+  name: "demo-consumer-cert"
+  api: "accounts-read"
+  api_version: "1.0.0"
+  description: "Preuve d'exécution du chemin certificat (base64(DER) par openssl)"
+  contact_emails: ["demo@bank.invalid"]
+  backend: { header: "apikey", value_template: "${backend_apikey}" }   # invariant
+  enforce: ["httpsCertificate"]                                        # invariant
+  cert_rotation: "replace"
+
+  per_env:
+    # Même certificat de démo dans les 4 environnements — chez un client, chaque
+    # env porte le sien (le nom de l'identifier est recalculé depuis la date
+    # NotAfter de la valeur retenue : "<app>-exp-YYYYMMDD").
+    # `ip_allowlist` est absent volontairement : la dimension IP n'est pas
+    # opposée ici, et le rôle ne pose un identifier que pour les dimensions
+    # réellement portées par le manifeste.
+    dev:  { public_cert_ref: "clients/_example/applications/demo-client.crt" }
+    rec:  { public_cert_ref: "clients/_example/applications/demo-client.crt" }
+    int:  { public_cert_ref: "clients/_example/applications/demo-client.crt" }
+    prod: { public_cert_ref: "clients/_example/applications/demo-client.crt" }

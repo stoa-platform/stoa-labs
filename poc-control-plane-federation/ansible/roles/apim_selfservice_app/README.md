@@ -129,7 +129,7 @@ ansible-playbook -i inv.ini ansible/selfservice-app.yml \
 | `enforce` | dimensions à OPPOSER, sous-ensemble de `["httpsCertificate","ipAddressRange"]` — **vide = identifiers inertes, à éviter** — INVARIANT |
 | `backend` | header + template de clé backend (plan sortant, cf. limites) — INVARIANT (la valeur, elle, est résolue par env via le TokenProvider ← Vault de l'env) |
 | `per_env.<env>.ip_allowlist` | IPs / plages `A-B` — **PAS de CIDR** (la gateway le drop en silence) ; une IP nue est normalisée en `X-X` (match exact + visible UI) — **PAR ENV** |
-| `per_env.<env>.public_cert_ref` | chemin d'un PEM **public** (clé privée refusée) — **PAR ENV** |
+| `per_env.<env>.public_cert_ref` | chemin d'un PEM **public** (clé privée refusée) — relatif à la **racine du dépôt**, comme `apim_ss_manifest` (ou absolu) ; fichier absent = échec — **PAR ENV** |
 
 ## Limites / résidus (assumés, ADR-078)
 

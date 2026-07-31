@@ -58,15 +58,17 @@
     - name: "Verify : cert — valeur présente + nom daté (scans d'exploitation client)"
       when: "(apim_ss_app.public_cert_ref | default('')) | length > 0"
       block:
-        - name: "Verify : recharger le PEM + recalculer expiration attendue"
-          ansible.builtin.set_fact:
-            ss_cert_pem: "{{ lookup('file', apim_ss_app.public_cert_ref) }}"
+        # La valeur ATTENDUE doit être calculée EXACTEMENT comme la valeur POSÉE,
+        # sinon leur accord ne prouve plus rien. D'où le MÊME fichier partagé
+        # qu'apply (cert-der.yml) au lieu d'un découpage de chaîne local, qui
+        # rendait autre chose dès que le PEM n'était pas parfaitement propre.
+        # cert-der produit ss_cert_pem : il vient donc AVANT cert-expiry.
+        - name: "Verify : recharger le PEM et recalculer la valeur attendue"
+          ansible.builtin.import_tasks: cert-der.yml
         - ansible.builtin.import_tasks: cert-expiry.yml
-        - name: "Verify : valeur base64(DER) du manifeste + identifier live"
+        - name: "Verify : valeur base64(DER) attendue + identifier live"
           ansible.builtin.set_fact:
-            v_cert_der: >-
-              {{ ss_cert_pem.split('-----BEGIN CERTIFICATE-----')[1].split('-----END CERTIFICATE-----')[0]
-                 | regex_replace('[^A-Za-z0-9+/=]', '') }}
+            v_cert_der: "{{ ss_cert_der }}"
             v_cert_id: >-
               {{ (v_app_rec.identifiers | default([])
                   | selectattr('key', 'equalto', 'httpsCertificate') | list | first) | default({}) }}

@@ -1,0 +1,124 @@
+---
+# roles/apim_selfservice_app/tasks/cert-der.yml (partagé main/verify)
+#
+# Entrée  : apim_ss_app.public_cert_ref (chemin du PEM public, déjà résolu par
+#           per_env — l'appelant garde le `when: length > 0`).
+# Sorties : ss_cert_pem (le PEM, pour cert-expiry.yml) et
+#           ss_cert_der  (base64 du DER canonique — la valeur EXACTE posée sur
+#           la gateway, et donc la seule à laquelle `verify` doit comparer).
+#
+# RÉSOLUTION DU CHEMIN. Même règle que pour le manifeste lui-même (resolve-env)
+# : un chemin relatif est repo-relatif, donc résolu depuis playbook_dir/.. ; un
+# chemin absolu est pris tel quel. Sans ce dwim, `lookup('file', ...)` résout
+# depuis le dossier DU PLAYBOOK (ansible/) — mesuré le 2026-07-31 : le chemin
+# repo-relatif du manifeste échouait en « could not locate file in lookup »,
+# alors que `-e apim_ss_manifest=clients/...` marche, lui. Deux bases
+# différentes pour deux chemins du même manifeste : piège garanti côté client.
+#
+# RE-ENCODAGE PAR UN PARSEUR, PAS EXTRACTION DE CHAÎNE (2026-07-31).
+#
+# POURQUOI. Retour de terrain de l'exploitant : selon le niveau de fix pack,
+# l'import d'un certificat « DER encodé en base64 » ne fonctionne PAS toujours
+# sur cette gateway — souci connu de longue date, qui réapparaît par
+# intermittence. L'import du DER BINAIRE, lui, fonctionne à tous les coups.
+# C'est le même endpoint : la valeur transite encodée, mais ce qui doit se
+# trouver APRÈS décodage est du DER canonique.
+#
+# Les deux exports que propose Windows — « Base-64 encoded X.509 » et « DER
+# encoded binary X.509 » — se distinguent exactement là. On reproduit ici le
+# second : openssl PARSE le certificat et RÉ-ÉMET le DER, au lieu de découper
+# le texte du PEM.
+#
+# CE QUE LE DÉCOUPAGE NE VOYAIT PAS. L'ancien code isolait le premier bloc
+# (équivalent du pem.Decode de la spec Go) puis filtrait le non-base64. Il
+# couvrait déjà les deux cas MESURÉS chez un client, que ce filtre corrompait
+# en silence :
+#   - PEM en CHAÎNE (leaf + intermédiaire, ordre openssl = leaf d'abord) : les
+#     2 corps CONCATÉNÉS en un blob, 1140 -> 2272 caractères ;
+#   - PEM à en-tête texte (« Bag Attributes », « subject= » : exports
+#     Windows/Java courants) : les LETTRES de l'en-tête survivaient au filtre et
+#     préfixaient le base64 (1200 car., ne décodait même plus).
+# Mais il restait une EXTRACTION : tout corps base64 syntaxiquement valide
+# passait, même s'il ne décodait pas en certificat bien formé. Mesuré le
+# 2026-07-31 : « QUJDREVGR0g= » (12 car., multiple de 4) franchissait toutes les
+# gardes ; openssl le refuse. Sur un PEM propre, les deux méthodes rendent la
+# MÊME valeur — 1140 car. sur demo-client.crt, vérifié.
+#
+# POURQUOI ÇA COMPTE ICI PLUS QU'AILLEURS. La gateway stocke la valeur VERBATIM
+# sans la parser : un apply dirait « convergé », la relecture de `verify`
+# comparerait deux chaînes identiques et confirmerait — et le handshake mTLS
+# échouerait en production. Et comme le manifeste ne porte que le certificat
+# PUBLIC (ADR-071 refuse toute clé privée), aucun test de connexion ne peut être
+# joué depuis le CI pour le rattraper. C'est un défaut que TOUTE notre chaîne de
+# preuve laisserait passer en vert.
+#
+# POURQUOI UN FICHIER PARTAGÉ. `verify` compare la valeur LIVE de l'identifier
+# à la valeur ATTENDUE, qu'il recalcule depuis le même PEM. Si apply et verify
+# calculaient cette valeur par deux chemins différents (c'était le cas le temps
+# d'un commit : openssl côté apply, découpage de chaîne côté verify), leur
+# accord ne prouverait plus rien — il dépendrait de la coïncidence des deux
+# méthodes. Une seule définition, importée des deux côtés : elles ne peuvent
+# plus diverger.
+
+- name: "Cert : résoudre le chemin (repo-relatif comme le manifeste, ou absolu)"
+  ansible.builtin.set_fact:
+    ss_cert_path: >-
+      {{ apim_ss_app.public_cert_ref if apim_ss_app.public_cert_ref.startswith('/')
+         else (playbook_dir ~ '/../' ~ apim_ss_app.public_cert_ref) }}
+
+- name: "Cert : FAIL-CLOSED — le fichier référencé existe"
+  ansible.builtin.stat:
+    path: "{{ ss_cert_path }}"
+  register: ss_cert_stat
+  delegate_to: localhost
+  changed_when: false
+  failed_when: not ss_cert_stat.stat.exists
+
+- name: "Cert : lire le PEM public"
+  ansible.builtin.set_fact:
+    ss_cert_pem: "{{ lookup('file', ss_cert_path) }}"
+  no_log: true
+
+- name: "Cert : fail-closed — aucune clé privée dans le manifeste (ADR-071)"
+  ansible.builtin.assert:
+    that: "'PRIVATE KEY' not in ss_cert_pem"
+    fail_msg: "publicCertRef porte une clé privée — refusé (cert PUBLIC uniquement)."
+
+- name: "Cert : fail-closed — un bloc CERTIFICATE est obligatoire"
+  ansible.builtin.assert:
+    that:
+      - "'-----BEGIN CERTIFICATE-----' in ss_cert_pem"
+      - "'-----END CERTIFICATE-----' in ss_cert_pem"
+    fail_msg: >-
+      CERT_INVALID : {{ apim_ss_app.public_cert_ref }} ne contient pas de bloc
+      CERTIFICATE complet (PEM X.509 public attendu).
+
+- name: "Cert : DER canonique par openssl, encodé pour le transport"
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      openssl x509 -inform PEM -outform DER | base64 | tr -d '\n'
+    executable: /bin/bash
+    stdin: "{{ ss_cert_pem }}"
+    stdin_add_newline: false
+  register: ss_cert_der_out
+  changed_when: false
+  delegate_to: localhost
+  failed_when:
+    - "ss_cert_der_out.rc != 0 or (ss_cert_der_out.stdout | trim | length) == 0"
+
+- name: "Cert : valeur effectivement transmise à la gateway"
+  ansible.builtin.set_fact:
+    ss_cert_der: "{{ ss_cert_der_out.stdout | trim }}"
+
+- name: "Cert : fail-closed — le base64(DER) ré-encodé doit être bien formé"
+  ansible.builtin.assert:
+    that:
+      - "ss_cert_der | length > 0"
+      - "(ss_cert_der | length) % 4 == 0"
+    fail_msg: >-
+      CERT_INVALID : base64(DER) vide ou mal formé
+      (longueur={{ ss_cert_der | length }}, attendu multiple de 4).
+    success_msg: >-
+      CERT_OK : base64(DER) ré-encodé par openssl
+      ({{ ss_cert_der | length }} car.).
