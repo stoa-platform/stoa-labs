@@ -23,7 +23,10 @@
 set -euo pipefail
 
 OS_URL="${OS_URL:-https://localhost:9201}"
-OS_AUTH="${OS_AUTH:?Variable OS_AUTH absente — définissez-la (\"admin:<mot-de-passe>\", voir poc-control-plane-federation/.env.example)}"
+# OS_AUTH dérive de OPENSEARCH_PASSWORD — variable canonique unique (voir
+# .env.example) : un seul endroit à renseigner, aucune divergence possible
+# entre les noms hérités qui désignent le même mot de passe admin.
+OS_AUTH="admin:${OPENSEARCH_PASSWORD:?Variable OPENSEARCH_PASSWORD absente — définissez-la (voir poc-control-plane-federation/.env.example)}"
 AUDIT_VIEWER_PASS="${AUDIT_VIEWER_PASS:?Variable AUDIT_VIEWER_PASS absente — définissez-la (voir poc-control-plane-federation/.env.example)}"
 DIR="$(cd "$(dirname "$0")" && pwd)"
 # TLS (É0) — same knobs as provision.sh: OPENSEARCH_CA_FILE verifies against the
@@ -61,6 +64,7 @@ provision_tenant() {
   # doit pas survivre en portée globale après le retour de la fonction.
   local payload_file
   payload_file="$(mktemp)"
+  trap 'rm -f "$payload_file"' EXIT
   AUDIT_PASS="$AUDIT_VIEWER_PASS" python3 -c '
 import json, os, sys
 with open(sys.argv[1]) as f:
@@ -74,6 +78,7 @@ with open(sys.argv[2], "w") as out:
     -H 'Content-Type: application/json' \
     --data-binary @"$payload_file"; echo
   rm -f "$payload_file"
+  trap - EXIT
   echo "  - rolesmapping $role"
   "${CURL[@]}" -X PUT "$OS_URL/_plugins/_security/api/rolesmapping/$role" \
     -H 'Content-Type: application/json' \

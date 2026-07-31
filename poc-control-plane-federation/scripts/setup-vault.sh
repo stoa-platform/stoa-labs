@@ -39,7 +39,10 @@ WM_CLIENT_CA_PEM="${WM_CLIENT_CA_PEM:-$(cat "$WM_CLIENT_CA_FILE" 2>/dev/null || 
 KC_ADMIN_USER="${KC_ADMIN_USER:-admin}";    KC_ADMIN_PASS="${KC_ADMIN_PASS:-admin}"
 KC_CONSUMER_SECRET="${KC_CONSUMER_SECRET:-}"
 CI_APPLIER_SECRET="${CI_APPLIER_SECRET:?Variable CI_APPLIER_SECRET absente — définissez-la (voir poc-control-plane-federation/.env.example)}"
-OS_ADMIN_PASS="${OS_ADMIN_PASS:?Variable OS_ADMIN_PASS absente — définissez-la (voir poc-control-plane-federation/.env.example)}"
+# OS_ADMIN_PASS dérive de OPENSEARCH_PASSWORD — variable canonique unique
+# (voir .env.example) : un seul endroit à renseigner, aucune divergence
+# possible entre les noms hérités qui désignent le même mot de passe admin.
+OS_ADMIN_PASS="${OPENSEARCH_PASSWORD:?Variable OPENSEARCH_PASSWORD absente — définissez-la (voir poc-control-plane-federation/.env.example)}"
 
 echo "Vault $VAULT_ADDR — provisioning secret/$PREFIX/* (KV v2)"
 put gateways/wso2       "{\"username\":\"$WSO2_USER\",\"password\":\"$WSO2_PASS\"}"

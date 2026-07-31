@@ -13,7 +13,9 @@
 #   D) no token                            -> 401 no_token       + audit DENY (unknown)
 #
 # Re-runnable, self-cleaning. Air-gapped build (GOPROXY=off, vendored). No secret
-# is printed; the disposable PoC passwords live only in this PoC's scripts.
+# is printed; the disposable PoC passwords are supplied via the environment
+# (see poc-control-plane-federation/.env.example), never hardcoded in this
+# PoC's scripts.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

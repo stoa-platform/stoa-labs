@@ -21,7 +21,10 @@ GRAFANA_URL="${GRAFANA_URL:-http://localhost:3000}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_OBS="$(cd "$HERE/../.." && pwd)"            # observability/
 DASH_JSON="$REPO_OBS/grafana/dashboards/federation-otel-transactions.json"
-OS_PASSWORD="${OS_PASSWORD:?Variable OS_PASSWORD absente — définissez-la (voir poc-control-plane-federation/.env.example)}"
+# OS_PASSWORD dérive de OPENSEARCH_PASSWORD — variable canonique unique (voir
+# .env.example) : un seul endroit à renseigner, aucune divergence possible
+# entre les noms hérités qui désignent le même mot de passe admin.
+OS_PASSWORD="${OPENSEARCH_PASSWORD:?Variable OPENSEARCH_PASSWORD absente — définissez-la (voir poc-control-plane-federation/.env.example)}"
 
 say() { printf '\n=== %s ===\n' "$*"; }
 

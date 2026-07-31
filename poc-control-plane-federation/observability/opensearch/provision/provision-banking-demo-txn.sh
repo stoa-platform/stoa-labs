@@ -13,7 +13,10 @@
 # and are left as a follow-up.
 set -euo pipefail
 OS_URL="${OS_URL:-https://localhost:9201}"
-OS_AUTH="${OS_AUTH:?Variable OS_AUTH absente — définissez-la (\"admin:<mot-de-passe>\", voir poc-control-plane-federation/.env.example)}"
+# OS_AUTH dérive de OPENSEARCH_PASSWORD — variable canonique unique (voir
+# .env.example) : un seul endroit à renseigner, aucune divergence possible
+# entre les noms hérités qui désignent le même mot de passe admin.
+OS_AUTH="admin:${OPENSEARCH_PASSWORD:?Variable OPENSEARCH_PASSWORD absente — définissez-la (voir poc-control-plane-federation/.env.example)}"
 VIEWER_PASS="${VIEWER_PASS:?Variable VIEWER_PASS absente — définissez-la (voir poc-control-plane-federation/.env.example)}"
 # TLS (É0) — same knobs as provision.sh: OPENSEARCH_CA_FILE verifies against the
 # enterprise CA; OPENSEARCH_INSECURE=false forces strict system trust; the
