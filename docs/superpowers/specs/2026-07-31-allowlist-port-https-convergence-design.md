@@ -441,6 +441,11 @@ Le lot porte deux livrables distincts. Ils sont séquencés, non parallèles :
 
 Chacun mérite son propre plan d'implémentation.
 
+**Premier geste du lot 2, avant toute construction :** activer le clustering
+Ignite avec découverte Kubernetes (M5) et mesurer s'il propage l'allow list aux
+nœuds en marche. Le lot 2 tel que décrit ci-dessus n'a de raison d'être que si
+cette mesure est négative.
+
 **Le lot 2 a nettement rétréci après M4.** La durabilité et l'élasticité
 sortent du périmètre — le produit les assure. Ne reste que la fenêtre entre une
 publication et le prochain redémarrage de chaque nœud. Avant d'écrire le plan
@@ -529,6 +534,64 @@ retour. Ce produit rend des **200 qui ne font rien** quand un champ requis
 manque — le dépôt en a déjà fait les frais sur d'autres ressources. Seule la
 **relecture** de l'`accessMode` fait preuve, conformément au fail-closed déjà
 en vigueur.
+
+### M5 — le produit sait-il recharger à chaud ? Sondé le 2026-07-31
+
+**Il n'existe aucun endpoint générique de rechargement.** Sur l'ensemble des
+dix-neuf Swaggers livrés, la recherche des chemins contenant
+`refresh|reload|sync|restore|apply|cluster` ne rend que deux résultats :
+`/strategies/{strategyId}/refreshCredentials` (sans rapport) et **`/is/cluster`**.
+
+**Mais le produit sait se mettre en cluster, et il sait le faire dans
+Kubernetes.** `GET`/`PUT /is/cluster` portent un `ClusterInfo` :
+
+```json
+{ "clusterAware": true, "clusterName": "…", "pendingRestart": false,
+  "actionOnStartupError": "standalone",
+  "Ignite": { "discoveryPort": "10100", "communicationPort": "10200",
+              "hostnames": "…", "portRange": 0,
+              "k8sNamespace": null, "k8sServiceName": null } }
+```
+
+`k8sNamespace` et `k8sServiceName` sont décrits comme « the Kubernetes
+namespace / service name if the API Gateway cluster is deployed to a Kubernetes
+cluster ». La topologie du lab est exactement celle-là, et le Service
+`wm-apigateway` (sélecteur `app: wm-apigateway`, donc les deux répliques) est
+le `k8sServiceName` naturel. `pendingRestart` indique que le réglage prend
+effet au redémarrage — ce que la rotation `*/20` fournit gratuitement.
+
+**Prérequis mesurés, tous identifiés :**
+
+1. Les pods wM tournent sous la ServiceAccount **`default`**. Vérifié par
+   `kubectl auth can-i` : elle n'a **aucun droit** sur `endpoints`, `pods` ni
+   `services` dans le namespace `wm`. La découverte Ignite par Kubernetes lit
+   les endpoints d'un Service : il faut donc une SA dédiée, un Role et un
+   binding.
+2. Le seul Role du namespace est `wm-restarter` (`pods: list,
+   deletecollection`), qui sert les CronJobs — sans rapport.
+3. `serviceAccountName` doit être posé sur les deux Deployments, **qui vivent
+   dans le dépôt `stoa`**, pas ici.
+4. Les ports de découverte et de communication ne sont pas déclarés
+   (le conteneur n'expose que 5555 et 9072). Aucune NetworkPolicy ne restreint
+   les pods de la gateway, mais l'absence d'interdiction n'est pas une mesure.
+
+**L'inconnue qui décide de tout.** Le clustering Ignite partage les caches et
+la session. **Rien n'établit qu'il propage la configuration de port** — celle-ci
+est appliquée par API Gateway à l'Integration Server, ce qui est une autre
+couche. Cela se mesure après activation, et pas avant.
+
+**Deux risques à porter au dossier.** Le cache distribué paraît être une
+fonction sous licence (`wm.server.query:isDistributedCacheLicensed` figure
+parmi les services de l'IS) : sur un trial, c'est un verrou plausible, et le
+dépôt notait déjà la licence comme « le seul vrai verrou ». Par ailleurs la
+rotation décalée ferait entrer et sortir un membre toutes les dix minutes ; le
+coût du rééquilibrage Ignite est explicitement noté comme non instruit dans
+`SPIKE-wm-repliques-decalees-ignite.md`.
+
+**Conséquence pour le lot.** Avant de construire quoi que ce soit, activer le
+clustering et mesurer s'il ferme le trou de propagation à chaud. Si oui, le lot
+2 devient un réglage plus une preuve — sans package custom, sans image dérivée,
+sans registre. Si non, D4 reprend sa place, et l'on saura pourquoi.
 
 **M3.** Porteur, dans Elasticsearch, du registre de convergence (D5) **et** de
 la configuration d'environnement (D3.1) : index dédié écrit par le service IS,
