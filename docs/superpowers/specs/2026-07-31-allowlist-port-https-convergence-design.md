@@ -1,7 +1,7 @@
 ---
 title: "Allow list du port HTTPS — convergence multi-nœuds (spécification)"
 type: spec
-status: "Cadré et mesuré sur le contrat livré ; une mesure bloquante ouverte (M1) avant implémentation"
+status: "M1, M2 et M4 mesurees sur le lab le 2026-07-31 ; D4 revisee — la durabilite est une propriete du produit, seul le trou de propagation a chaud subsiste"
 date: 2026-07-31
 lié: [adr-075-wm-admin-proxy-multienv, adr-078-livrable-self-service-app-wm1015, 2026-07-29-f4-chaine-publication-design, 2026-07-29-f3-webmethods-cluster-design]
 ---
@@ -27,19 +27,24 @@ un nœud individuellement.
 
 **Contre-épreuves :**
 
-1. **Durabilité.** Un nœud est détruit et recréé. Sans nouvelle publication,
-   il retrouve seul l'allow list complète. (Sur le lab, la rotation `*/20`
-   fournit cette épreuve gratuitement et en continu.)
-2. **Élasticité.** Un nœud est ajouté. Il converge sans que le CI, la VIP ou
-   un inventaire aient été modifiés.
-3. **Fail-closed.** Un nœud est empêché de converger. Le build **rougit** et
+1. **Propagation à chaud.** Un nœud **déjà en marche** au moment de la
+   publication porte l'API dans son allow list, sans avoir redémarré. C'est
+   l'épreuve centrale : c'est exactement ce qui échoue aujourd'hui.
+2. **Fail-closed.** Un nœud est empêché de converger. Le build **rougit** et
    **nomme** ce nœud. Il ne rougit pas indéfiniment pour un nœud retiré du
    parc.
+3. **Mode opposable.** Sur un listener resté en `include`, le lot **refuse
+   d'écrire** et le signale, au lieu d'interdire l'API en croyant l'autoriser.
 4. **Deny-by-default opposable.** Une API sans le marqueur d'exposition n'est
    pas dans l'allow list, sur aucun nœud.
 5. **Configuration opposable.** Changer le marqueur dans la configuration
    d'environnement suffit à faire converger tous les nœuds sur le nouveau,
    sans reconstruire d'image ni redéployer quoi que ce soit.
+
+*Retirée après M4 :* la durabilité (un nœud recréé retrouve seul son allow
+list) et l'élasticité (un nœud ajouté converge). Mesurées comme **propriétés du
+produit**, elles restent bonnes à rejouer en garde-fou mais ne sont plus à
+construire.
 
 ## Terrain (mesuré le 2026-07-31, sauf indication)
 
@@ -132,17 +137,26 @@ réplique toutes les 20 minutes. Le dépôt avait relevé le même motif pour le
 `watt.*` : « ils survivent au restart mais pas au recreate — c'est de la
 configuration de NŒUD, hors ES » (adr-073).
 
-**Cette analogie est cependant démentie par la mesure.** Une réplique détruite
-et recréée est remontée **avec** l'entrée d'allow list, alors que son système
-de fichiers repart de l'image. La configuration de port n'est donc pas un
-simple fichier de nœud comme les `watt.*` : quelque chose la réinstalle au
-démarrage — vraisemblablement API Gateway depuis Elasticsearch, ce qui
-expliquerait aussi pourquoi elle dispose de sa propre ressource REST `/ports`.
-**C'est l'objet de M4, désormais la mesure bloquante du lot.**
+**Cette analogie est démentie par la mesure — c'est le résultat central du
+cadrage.** L'allow list est **persistée hors du nœud et réappliquée au
+démarrage**. Deux répliques neuves l'ont retrouvée seules, sans intervention
+(voir M4). La configuration de port n'est donc pas un fichier de nœud comme les
+`watt.*` : le fichier n'en est qu'une projection locale, reconstruite au boot.
+Cela explique aussi pourquoi elle dispose de sa propre ressource REST `/ports`.
 
-Ce qui est en revanche établi sans ambiguïté : **il n'y a aucune propagation à
-chaud**. Une réplique en fonctionnement depuis avant l'écriture ne la reçoit
-jamais. C'est ce trou-là que le lot doit combler.
+**La durabilité est donc assurée par le produit.** Le lot n'a pas à la
+construire.
+
+Ce qui reste, et qui est établi tout aussi nettement : **il n'y a aucune
+propagation à chaud**. Une réplique en fonctionnement depuis avant l'écriture
+ne l'a jamais reçue — vingt minutes durant, jusqu'à son redémarrage. C'est le
+seul trou réel, et c'est celui que le lot doit combler.
+
+**Levier local disponible.** L'Integration Server expose des services
+`wm.server.portAccess:*` — `addNodes`, `deleteNode`, `getPort`, `portList`,
+`resetPort`, `setType` — relevés dans la liste d'autorisation du port de
+diagnostic. Un nœud dispose donc d'une prise locale sur son propre accessMode,
+sans passer par le réseau.
 
 Observé aussi : un pod identifié pour une lecture avait disparu dix minutes
 plus tard, remplacé par un pod de nom différent — un `exec` sur l'ancien nom
@@ -283,22 +297,38 @@ réconciliateur **ne touche pas** à l'allow list et publie une erreur explicite
 dans le registre de convergence (D5). Le build rougit en nommant la cause. Ni
 purge silencieuse, ni repli sur une valeur codée en dur.
 
-### D4 — Convergence par réconciliation locale, pas par fan-out
+### D4 — Rafraîchissement local périodique, pour la seule propagation à chaud
 
-Un service IS `stoa.ports:reconcile`, livré dans un package custom, tourne sur
+*Révisée après M4.* Le motif d'origine — la durabilité — est tombé : le produit
+réapplique la configuration au démarrage. Ce qui reste est plus étroit, et la
+décision se réduit en conséquence.
+
+Un service IS `stoa.ports:refresh`, livré dans un package custom, tourne sur
 **chaque nœud par construction**. À chaque passage il lit la configuration
 (D3.1), puis, pour chaque règle, les API portant le tag qu'elle désigne — le
-tout via l'admin REST **local**. Il calcule l'allow list attendue du listener
-visé, la compare à l'`accessMode` local et applique l'écart. Il s'exécute **au
-démarrage du package** et périodiquement.
+tout via l'admin REST **local** — calcule l'allow list attendue du listener
+visé, la compare à l'`accessMode` local et applique l'écart, en s'appuyant sur
+les services `wm.server.portAccess:*` déjà présents.
 
-Le déclenchement au démarrage n'est pas un raffinement : sans lui, un nœud
-recréé sert du trafic en refusant tout jusqu'au premier tick. Sur le lab, la
-période doit être nettement inférieure aux 20 minutes de rotation.
+**Ce qu'il ne fait plus.** Pas d'exécution au démarrage : l'initialisation du
+nœud s'en charge déjà, et mieux. Le service ne comble que l'intervalle entre
+une publication et le prochain redémarrage — intervalle pendant lequel un nœud
+en marche sert du trafic sans connaître la nouvelle API.
+
+**Garde-fou tenant à la sémantique du mode.** Le service **vérifie que le
+listener visé est en `exclude`** avant toute écriture, et s'abstient sinon en
+publiant une erreur dans le registre (D5). Sur un port en `include`, la même
+écriture *refuserait* l'API au lieu de l'autoriser : c'est un fail-open
+silencieux, et c'est le défaut le plus dangereux de tout le lot.
 
 La période gouverne directement l'attente du build (D5) : ordre de grandeur
 retenu, la minute — à calibrer au plan contre le coût des lectures
 d'administration répétées sur chaque nœud.
+
+*Écarté :* ne rien faire et laisser le redémarrage propager. C'est ce qui se
+passe aujourd'hui, et c'est intenable : la fenêtre d'incohérence dure jusqu'au
+prochain redémarrage du nœud — indéfiniment sur une installation stable, où
+l'on ne redémarre pas une gateway pour publier une API.
 
 #### D4.1 — Projection totale, jamais d'ajout incrémental
 
@@ -397,10 +427,19 @@ Le lot porte deux livrables distincts. Ils sont séquencés, non parallèles :
   `direct` vers `proxy-oauth2`. Utile seul : il ferme un résidu déjà identifié
   dans `HANDOFF-PROVISIONING-CHAIN.md` (« re-setup propre des proxies
   `wm-admin-*` … aujourd'hui contourné en direct »).
-- **Lot 2 — convergence de l'allow list.** Le package `StoaPorts`, la
-  réconciliation, le registre, le tag, l'image dérivée, l'étape CI d'attente.
+- **Lot 2 — propagation à chaud de l'allow list.** Le package `StoaPorts`, le
+  rafraîchissement local, le registre, le tag, l'image dérivée, l'étape CI
+  d'attente.
 
 Chacun mérite son propre plan d'implémentation.
+
+**Le lot 2 a nettement rétréci après M4.** La durabilité et l'élasticité
+sortent du périmètre — le produit les assure. Ne reste que la fenêtre entre une
+publication et le prochain redémarrage de chaque nœud. Avant d'écrire le plan
+du lot 2, il vaut donc la peine de vérifier s'il existe déjà, côté produit, un
+geste de rechargement de la configuration de port sur un nœud en marche : le
+lot se réduirait alors à l'appeler partout et à en prouver l'effet, sans
+package custom ni image dérivée.
 
 ## Mesures
 
@@ -448,34 +487,34 @@ et les deux formes peuvent coexister selon le niveau de fix pack.
 requête émise par la console dans l'onglet réseau. Aucun jeton Vault n'est
 requis, la session de console porte l'appel.
 
-### M4 — BLOQUANTE : l'allow list est-elle restaurée au démarrage d'un nœud ?
+### M4 — RÉPONDUE le 2026-07-31 : oui, restaurée au démarrage
 
-C'est désormais **la** question qui décide de l'architecture, et elle a
-remplacé M1 dans ce rôle.
+Écriture unique par la console vers 15:18 sur la réplique `a`, puis **plus
+aucune intervention** — confirmé par l'opérateur. Observation passive des deux
+rotations suivantes :
 
-*Ce qui est mesuré.* Après une écriture par la console vers 15 h 18 UTC sur la
-réplique `a` :
+| Réplique | Pod recréé | Entrée au démarrage | Entrée ensuite |
+| --- | --- | --- | --- |
+| `b` | 15:30:04 | absente | **présente** ~2 min après |
+| `a` | 15:40:03 | absente | **présente** ~4 min après |
 
-- la réplique `a`, **détruite et recréée à 15:20:05**, remonte à 15:22 avec
-  l'entrée présente et un fichier de taille identique à l'ancien ;
-- la réplique `b`, démarrée à 15:10 et **jamais redémarrée depuis**, ne l'a
-  toujours pas plus de dix minutes après.
+Deux pods neufs, dont un (`b`) qui **n'avait jamais porté l'entrée**, la
+retrouvent seuls. La conclusion ne souffre pas d'alternative : la configuration
+est persistée hors du nœud et réappliquée à l'initialisation, avec un délai qui
+suit le temps de démarrage de l'Integration Server.
 
-*Ce qui est donc acquis.* Il n'y a **aucune propagation à chaud** entre nœuds
-en fonctionnement : c'est le trou que ce lot doit combler, et il est confirmé.
+**Ce que cela retire au lot.** D4 perd sa justification par la durabilité : le
+produit l'assure déjà. Un réconciliateur planifié n'est plus nécessaire *pour
+qu'un nœud reconstruit ou ajouté converge* — il converge tout seul.
 
-*Ce qui reste à établir.* La présence de l'entrée sur le pod `a` neuf admet
-deux explications : soit la configuration a été **restaurée depuis
-Elasticsearch au démarrage**, soit elle a été reposée à la main après 15:20.
+**Ce que cela laisse.** La propagation à chaud, et elle seule. La réplique `b`
+est restée vingt minutes sans l'entrée alors qu'elle tournait, jusqu'à son
+redémarrage. Aucun rafraîchissement périodique n'a été observé — la rotation du
+lab empêche d'observer au-delà de vingt minutes, ce qui borne l'affirmation.
 
-L'enjeu est majeur : **si la restauration au démarrage est réelle, D4 perd sa
-justification principale.** La durabilité serait assurée par le produit, et le
-lot se réduirait à la propagation vers les nœuds déjà en marche — un problème
-plus petit, et qui n'exige plus forcément un réconciliateur planifié.
-
-*Protocole, sans rien toucher :* laisser la rotation recycler `b` puis `a` et
-observer si le pod neuf remonte avec l'entrée alors que personne ne l'a
-reposée. Le lab fournit l'épreuve toutes les vingt minutes, gratuitement.
+**Conséquence sur la porte de preuve.** La contre-épreuve 1 (durabilité) n'est
+plus une exigence du lot mais une **propriété du produit** : elle reste bonne à
+rejouer en garde-fou, pas à construire.
 
 **Conduite à tenir quelle que soit l'issue :** ne jamais conclure sur le code de
 retour. Ce produit rend des **200 qui ne font rien** quand un champ requis
