@@ -18,6 +18,7 @@ CONTRAT = os.path.join(RACINE, "gateways/webmethods/admin-proxy/wm-admin-proxy.o
 ROLES = os.path.join(RACINE, "ansible/roles")
 PREFIXE = "/rest/apigateway"
 BASE = "{{ apim_ss_api_base }}"
+yaml_errors = []
 
 
 def operations_declarees():
@@ -39,9 +40,15 @@ def variantes(url):
     """
     chemin = url[len(BASE):].split("?", 1)[0]
     colle = re.search(r"[^/]\{\{", chemin)
-    formes = {re.sub(r"\{\{.*?\}\}", "{id}", chemin, flags=re.S)}
     if colle:
+        # Cas collé : le "/" est à l'intérieur du Jinja
+        # Remplacer Jinja par "/{id}" pour avoir la bonne forme (not "{id}")
+        formes = {re.sub(r"\{\{.*?\}\}", "/{id}", chemin, flags=re.S)}
+        # Ajouter aussi la forme sans identifiant
         formes.add(re.sub(r"\{\{.*?\}\}", "", chemin, flags=re.S))
+    else:
+        # Cas normal : Jinja entre deux segments
+        formes = {re.sub(r"\{\{.*?\}\}", "{id}", chemin, flags=re.S)}
     return {PREFIXE + f.rstrip("/") if f != "/" else PREFIXE for f in formes}
 
 
@@ -70,6 +77,7 @@ def taches_uri(noeud, fichier, sortie):
 
 
 def appels():
+    global yaml_errors
     trouves = []
     for dossier, _, fichiers in os.walk(ROLES):
         for f in fichiers:
@@ -78,13 +86,15 @@ def appels():
             p = os.path.join(dossier, f)
             try:
                 doc = yaml.safe_load(open(p, encoding="utf-8"))
-            except yaml.YAMLError:
+            except yaml.YAMLError as e:
+                yaml_errors.append((os.path.relpath(p, RACINE), str(e)))
                 continue
             taches_uri(doc, p, trouves)
     return trouves
 
 
 def main():
+    global yaml_errors
     declarees, doc = operations_declarees()
     trouves = appels()
 
@@ -114,6 +124,11 @@ def main():
                 sans_multipart.append((meth, forme, a["ou"], a["nom"]))
 
     ko = 0
+    if yaml_errors:
+        ko = 1
+        print(f"✗ {len(yaml_errors)} fichier(s) YAML non parsable :")
+        for p, e in sorted(yaml_errors):
+            print(f"    {p}\n           {e}")
     if manquants:
         ko = 1
         print(f"✗ {len(manquants)} appel(s) NON DECLARE(S) — 404 a travers le proxy :")
