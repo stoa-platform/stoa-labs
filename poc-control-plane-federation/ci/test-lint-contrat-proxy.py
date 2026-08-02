@@ -17,6 +17,7 @@ Sans argument : lance tous les cas. Code de sortie 0 si tous passent, 1
 sinon — avec le nom de chaque cas en echec imprime.
 """
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -284,6 +285,82 @@ def cas_10():
         assert "aucun DELETE" not in out, (
             f"le bilan affirme a tort « aucun DELETE » alors qu'un DELETE est "
             f"declare au contrat sous le chemin deroge\n{out}")
+    finally:
+        fx.nettoyer()
+
+
+@cas("11 — anti-diagonale sur policyActions (methode ET chemin pilotes par le "
+     "meme conditionnel Jinja) : code 1, les deux branches reelles tombent en 404")
+def cas_11():
+    fx = Fixture()
+    try:
+        doc = fx.charger_contrat()
+        # L'appel reel (apim_selfservice_app/tasks/backend.yml) est :
+        #   url: .../policyActions{{ ('/' ~ id) if id else '' }}
+        #   method: "{{ 'PUT' if id else 'POST' }}"
+        # Le contrat REEL declare la diagonale correcte : POST /policyActions
+        # et PUT /policyActions/{id}. On la remplace ici par l'anti-diagonale :
+        # PUT /policyActions et POST /policyActions/{id}. La double couverture
+        # (chaque forme couverte par au moins une methode, chaque methode par
+        # au moins une forme) est satisfaite par les DEUX déclarations — alors
+        # que les deux branches reelles de l'appel (POST sans id, PUT avec id)
+        # tombent en 404 : aucune des deux n'est celle declaree.
+        post = doc["paths"]["/rest/apigateway/policyActions"].pop("post")
+        put = doc["paths"]["/rest/apigateway/policyActions/{id}"].pop("put")
+        doc["paths"]["/rest/apigateway/policyActions"]["put"] = put
+        doc["paths"]["/rest/apigateway/policyActions/{id}"]["post"] = post
+        fx.ecrire_contrat(doc)
+        code, out = fx.executer()
+        assert code == 1, f"code {code}, attendu 1\n{out}"
+        assert "NON DECLARE" in out, f"section des appels manquants absente\n{out}"
+        assert "policyActions" in out and ROLE_INNOCENT in out, (
+            f"l'appel policyActions (methode+chemin conditionnels par le meme "
+            f"Jinja, {ROLE_INNOCENT}) n'est pas signale\n{out}")
+    finally:
+        fx.nettoyer()
+
+
+def _n_manquants(out):
+    m = re.search(r"(\d+) appel\(s\) NON DECLARE", out)
+    return int(m.group(1)) if m else 0
+
+
+@cas("12 — appel a UNE methode et UNE forme (aucun Jinja conditionnel) : la "
+     "couverture se reduit exactement a « cette paire est declaree »")
+def cas_12():
+    fx = Fixture()
+    try:
+        # apim_selfservice_app/tasks/team.yml : url sans aucun Jinja conditionnel
+        # (juste la base {{ apim_ss_api_base }}), methode par defaut GET (pas de
+        # champ `method:`) : len(methodes) == 1 et len(formes) == 1. Le branchement
+        # produit-croisé ajoute en tache 3 ne doit PAS s'appliquer ici — seule la
+        # paire (GET, /accessProfiles) doit etre exigee, ni plus ni moins.
+        #
+        # Baseline avant mutation, PAS un total absolu : le depot reel porte
+        # deja (decouverte de la tache 3) un appel non declare connu et
+        # independant de ce cas — PUT/POST /policyActions dans backend.yml,
+        # methode ET chemin pilotes par le meme Jinja. Comparer a la baseline
+        # isole ce que CE cas mute, sans supposer un total qui depend d'un
+        # etat du depot hors du champ de ce cas.
+        _, out_base = fx.executer()
+        n_base = _n_manquants(out_base)
+
+        doc = fx.charger_contrat()
+        del doc["paths"]["/rest/apigateway/accessProfiles"]["get"]
+        fx.ecrire_contrat(doc)
+        code, out = fx.executer()
+        assert code == 1, f"code {code}, attendu 1\n{out}"
+        assert "NON DECLARE" in out, f"section des appels manquants absente\n{out}"
+        assert "apim_selfservice_app/tasks/team.yml" in out and "accessProfiles" in out, (
+            f"l'appel GET /accessProfiles (team.yml) n'est pas signale\n{out}")
+        # Retirer UNE SEULE paire (methode, forme) non conditionnelle ne doit
+        # signaler QUE ses appelants reels (deux fichiers team.yml appellent
+        # GET /accessProfiles, chacun a une methode et une forme) — rien de
+        # plus au-dela de la baseline : la reduction reste locale.
+        assert _n_manquants(out) == n_base + 2, (
+            f"{_n_manquants(out) - n_base} appel(s) nouvellement signale(s) par "
+            f"rapport a la baseline (attendu 2 : les deux appelants reels de "
+            f"GET /accessProfiles)\n--- baseline ---\n{out_base}\n--- apres mutation ---\n{out}")
     finally:
         fx.nettoyer()
 

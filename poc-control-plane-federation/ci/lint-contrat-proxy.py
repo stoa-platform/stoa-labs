@@ -187,17 +187,31 @@ def main():
     manquants, sans_multipart = [], []
     for a in trouves:
         formes = variantes(a["url"])
-        # Double couverture : chaque forme doit être couverte par au moins une méthode,
-        # ET chaque méthode doit être couverte par au moins une forme. Une derogation
-        # assumee couvre au meme titre qu'une declaration : un appel derogé n'est pas
-        # un appel manquant — mais SEULEMENT depuis le fichier de role nomme au motif.
-        forms_covered = all(
-            any((m, f) in declarees or (m, f, a["ou"]) in DEROGATIONS for m in a["methodes"])
-            for f in formes)
-        methods_covered = all(
-            any((m, f) in declarees or (m, f, a["ou"]) in DEROGATIONS for f in formes)
-            for m in a["methodes"])
-        if not (forms_covered and methods_covered):
+        couverte = lambda m, f: (m, f) in declarees or (m, f, a["ou"]) in DEROGATIONS
+        if len(a["methodes"]) > 1 and len(formes) > 1:
+            # Methode ET chemin conditionnels sur le MEME appel (meme conditionnel
+            # Jinja, ex. apim_selfservice_app/tasks/backend.yml : `method: "{{ 'PUT'
+            # if id else 'POST' }}"` sur `url: .../policyActions{{ ('/' ~ id) if id
+            # else '' }}`). La double couverture ci-dessous (chaque forme couverte
+            # par au moins une methode, chaque methode par au moins une forme) est
+            # satisfaite par l'ANTI-DIAGONALE : declarer (PUT,/policyActions) et
+            # (POST,/policyActions/{id}) la satisfait alors que les DEUX branches
+            # reelles de l'appel (POST sans id, PUT avec id) tombent en 404.
+            # Le linter ne peut pas savoir, depuis le YAML, quelle branche du
+            # conditionnel methode va avec quelle branche du conditionnel chemin —
+            # les deux gabarits Jinja sont evalues independamment ici. Fail-closed :
+            # exiger le produit croisé complet (batir un appariement suppose serait
+            # une heuristique fausse un jour, en silence).
+            couverture_ok = all(couverte(m, f) for m in a["methodes"] for f in formes)
+        else:
+            # Un seul axe varie (ou aucun) : la double couverture se reduit deja
+            # exactement au produit croisé (verifie : avec un seul element d'un
+            # cote, les deux quantificateurs existentiels degenerent en un
+            # quantificateur universel sur l'autre cote) — comportement inchange.
+            forms_covered = all(any(couverte(m, f) for m in a["methodes"]) for f in formes)
+            methods_covered = all(any(couverte(m, f) for f in formes) for m in a["methodes"])
+            couverture_ok = forms_covered and methods_covered
+        if not couverture_ok:
             manquants.append(("/".join(a["methodes"]), sorted(formes)[0], a["ou"], a["nom"]))
             continue
         if a["multipart"]:
