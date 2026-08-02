@@ -520,17 +520,25 @@ Le `parameters` de `{id}` existe déjà sur ce chemin s'il est déjà déclaré 
 python3 ci/lint-contrat-proxy.py
 ```
 
-Attendu : code retour **0**, et — la chaîne des tâches 2 à 4 ayant été rejouée à
-l'écriture de ce plan sur une copie du dépôt — exactement :
+Attendu : code retour **0**, la dérogation imprimée avec son motif, et le bilan de
+couverture :
 
 ```
 ℹ 1 derogation(s) assumee(s) :
     DELETE /rest/apigateway/strategies/{id}
            ADR-075 interdit tout DELETE via le proxy. …
-✓ les 97 appels des roles sont couverts par le contrat (35 operations declarees)
+✓ les 95 appels des roles sont couverts par le contrat (35 operations declarees)
 ```
 
 Sur l'issue B, pas de ligne de dérogation et **36** opérations déclarées.
+
+**Ce qui fait foi ici, c'est le code retour 0 et les 35 opérations, pas le 95.** Le
+nombre d'appels dépend des fichiers de rôles présents sur la branche : une branche
+portant des rôles supplémentaires en comptera davantage sans que rien ne soit
+cassé. Une première rédaction de ce plan annonçait 97 — chiffre relevé par erreur
+sur un arbre portant deux fichiers de rôles issus d'un autre chantier
+(`manifest-guard.yml`, `team-name.yml`). Si ton compte diffère, vérifie d'abord
+`find ansible/roles -name '*.yml' | wc -l` avant de conclure à une régression.
 
 - [ ] **Étape 4 : inscrire la décision dans l'ADR**
 
