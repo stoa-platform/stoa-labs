@@ -7,8 +7,10 @@ direct. Ce linter le rend opposable sans gateway.
 
 Il verifie DEUX sens, pas un seul :
   - usage ⊆ contrat : tout appel des roles est declare (sinon 404 a la bascule) ;
-  - contrat ⊆ politique : AUCUN `delete:` au contrat (invariant phare d'ADR-075),
-    sauf s'il correspond a une cle de derogation nommee et motivee.
+  - contrat ⊆ politique : AUCUN `delete:` au contrat, sans aucune exception
+    (invariant phare d'ADR-075). Une cle de DEROGATIONS couvre un appel de
+    role qui contourne le proxy (acces direct, hors chaine CI) — jamais une
+    declaration au contrat : les deux sens ne se recouvrent pas.
 Ne verifier que le premier sens laissait passer un `delete:` ajoute au contrat
 sans appelant — c'est-a-dire exactement la regression que l'invariant interdit.
 
