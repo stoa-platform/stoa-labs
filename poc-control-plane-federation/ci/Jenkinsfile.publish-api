@@ -72,6 +72,11 @@ pipeline {
     APIM_OAUTH_CSECRET_KEY = "${env.APIM_OAUTH_CSECRET_KEY ?: 'client_secret'}"
     APIM_OAUTH_TOKEN_URL   = "${env.APIM_OAUTH_TOKEN_URL ?: ''}"
     APIM_OAUTH_CLIENT_AUTH = "${env.APIM_OAUTH_CLIENT_AUTH ?: 'post'}"
+    // ── Équipe qui CLOISONNE l'API (E1). Vide = DÉRIVÉE du chemin KV du compte
+    // de service (`deploy/<tenant>/wm-admin` -> <tenant>), donc du seul périmètre
+    // que la policy Vault du token nominatif autorise. Même mécanique que le
+    // chemin consommateur (ci/Jenkinsfile.selfservice).
+    APIM_TEAM         = "${env.APIM_TEAM ?: ''}"
     INVENTORY         = 'ansible/inventory.lab.ini'
   }
 
@@ -101,6 +106,20 @@ pipeline {
             set +x
             set -eu
             MANIFEST="${MANIFEST:-clients/_example/apis/accounts-read.publish.yml}"
+
+            # Équipe de cloisonnement de l'API (E1) — DÉRIVÉE du chemin KV du
+            # compte de service, comme le fait déjà le chemin consommateur.
+            # Ce n'est pas une commodité : elle lie la team au SEUL périmètre où
+            # le token nominatif a le droit de lire (policy Vault tenant-scopée,
+            # ADR-077). L'appelant ne peut donc pas publier sous la team d'une
+            # autre équipe — il ne pourrait de toute façon pas en lire les creds.
+            # Le rôle refuse (TEAM_FORBIDDEN) si le manifeste en réclame une
+            # autre, et refuse de publier sans équipe (TEAM_UNDEFINED) : mesuré
+            # le 2026-07-31, une API laissée en team Default est LUE (200) par
+            # n'importe quelle équipe. Surcharger APIM_TEAM reste possible quand
+            # le chemin KV ne suit pas cette convention.
+            TEAM="${APIM_TEAM:-$(printf '%s' "$APIM_WM_CREDS_SUB" | cut -d/ -f2)}"
+            echo "  (cloisonnement de l'API sur la team : ${TEAM})"
 
             # Mode d'accès à l'admin : chez le client, TOUJOURS proxy-oauth2 —
             # l'API d'admin est derrière son self-proxy, le rôle obtient un Bearer
@@ -164,6 +183,7 @@ pipeline {
             ansible-playbook ${VOPT:-} -e stoa_debug="${DEBUG:-false}" -i "$INVENTORY" ansible/publish-api.yml \
               -e apim_ss_manifest="$MANIFEST" \
               -e apim_ss_env="${ENVIRONMENT:-}" \
+              -e apim_ss_team="$TEAM" \
               -e apim_ss_api_base="$APIM_API_BASE" \
               -e apim_ss_data_base="$APIM_DATA_BASE" \
               -e apim_ss_vault_wm_creds_sub="$APIM_WM_CREDS_SUB" \
@@ -178,6 +198,7 @@ pipeline {
             ansible-playbook ${VOPT:-} -e stoa_debug="${DEBUG:-false}" -i "$INVENTORY" ansible/publish-api-verify.yml \
               -e apim_ss_manifest="$MANIFEST" \
               -e apim_ss_env="${ENVIRONMENT:-}" \
+              -e apim_ss_team="$TEAM" \
               -e apim_ss_api_base="$APIM_API_BASE" \
               -e apim_ss_data_base="$APIM_DATA_BASE" \
               -e apim_ss_vault_wm_creds_sub="$APIM_WM_CREDS_SUB" \

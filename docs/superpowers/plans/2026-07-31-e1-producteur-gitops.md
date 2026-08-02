@@ -950,8 +950,33 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ## Tâche 8 — Le pipeline quitte le dépôt de l'équipe — D2
 
-**Fichiers :** Créer `ci/Jenkinsfile.publish-api` (copie de reconstruction du
-script inline du job).
+> **CORRECTION du 2026-08-02 : la prémisse de cette tâche était fausse.**
+> `ci/Jenkinsfile.publish-api` **existait déjà** — c'est le pendant producteur de
+> `Jenkinsfile.selfservice` (modèle PLAN/APPLY, identité nominative), et il
+> lançait **déjà** le rôle Ansible. Je ne l'avais pas vu en explorant, et j'ai
+> failli l'écraser. Deux conséquences :
+>
+> 1. **D1 était déjà à moitié acquis** : sur le chemin fidèle-client, le moteur
+>    est le rôle Ansible depuis le départ. Ce que E1 y change, c'est la team.
+> 2. **J'y ai introduit une régression** : ce pipeline ne passait pas
+>    `apim_ss_team`, or `team-name.yml` rend l'équipe obligatoire — tout apply
+>    aurait échoué sur `TEAM_UNDEFINED`. Corrigé en y portant la dérivation du
+>    chemin consommateur : `TEAM="${APIM_TEAM:-$(… cut -d/ -f2)}"` sur
+>    `APIM_WM_CREDS_SUB` (`deploy/<tenant>/wm-admin`), passée en `-e` aux deux
+>    invocations (converge et verify).
+>
+> **Il y a donc DEUX chaînes productrices, et deux autorités différentes** —
+> c'est à retenir, pas à uniformiser de force :
+>
+> | Chaîne | Identité | D'où vient la team | Est-elle infalsifiable ? |
+> |---|---|---|---|
+> | Fidèle-client (`Jenkinsfile.publish-api`) | nominative (voie A/B) | chemin KV tenant-scopé | **Oui** — la policy Vault du token nominatif ne lit que son tenant |
+> | GitOps cluster (job F4) | identité de pod | `TEAM` du Jenkinsfile | **Non** — le Jenkinsfile vit dans le dépôt de l'équipe |
+>
+> La suite de cette tâche ne concerne donc **que la seconde**.
+
+**Fichiers :** Modifier `ci/Jenkinsfile.publish-api` (dérivation de la team) ;
+le job GitOps du cluster reste à reposer en `CpsFlowDefinition`.
 
 Tant que le pipeline vient du dépôt de l'équipe, `TEAM` est une valeur que
 l'équipe écrit — et toute garde en aval raisonne sur une donnée falsifiée.
@@ -1258,6 +1283,77 @@ passée. Même traitement que le keepalive */25 du handoff F4.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ```
+
+---
+
+## Preuve d'exécution — 2026-08-02, gateway du cluster
+
+Les cinq portes et les trois sabotages joués sont **verts**. Toutes les
+requêtes visent le Service d'administration (réplique unique).
+
+### Le décor, et une correction de la méthode
+
+Le rôle tourne dans un **pod agent portant le SA `jenkins-agent`**, pas dans le
+pod du contrôleur Jenkins. Premier essai depuis le contrôleur :
+
+```
+Login Vault Kubernetes REFUSÉ (HTTP 403) sur auth/kubernetes/login
+(role=jenkins-agent, namespace=<aucun>)
+```
+
+C'est **la mécanique G-c qui fonctionne**, pas une panne : le rôle Vault est lié
+au ServiceAccount de l'agent, et le contrôleur ne l'a pas. Mesurer depuis le
+contrôleur aurait mesuré autre chose que la chaîne. D'où un pod jetable
+`e1-runner` (`serviceAccountName: jenkins-agent`, image `jenkins-go` par digest),
+supprimé en fin de passe.
+
+Le rôle fait son propre login Vault (`VAULT_K8S_ROLE=jenkins-agent`,
+`apim_common/secrets.yml`) : le pipeline n'a plus à faire transiter de token
+entre conteneurs, contrairement au montage F4.
+
+### Les portes
+
+| Porte | Sortie réelle |
+|---|---|
+| **P-1a** publication cloisonnée | `TEAM_CONFIRMED : 'e1-gate-api' cloisonnée sur 'banking-demo' (teams=['Administrators', 'banking-demo'], Default retirée).` — `ok=37 failed=0` |
+| **P-1b** l'autre équipe ne la voit pas | témoin `svc-banking-demo GET /apis/{id}` → **200** ; `svc-insurance-demo` → **401**. Catalogues : banking-demo `['accounts-read','carto-probe-api','e1-gate-api']`, insurance-demo `['carto-probe-api']` |
+| **P-2** refus cross-team | `TEAM_FORBIDDEN : le manifeste réclame la team 'insurance-demo' alors que la chaîne publie au nom de 'banking-demo'` — `failed=1` |
+| **P-2b** le refus n'a rien créé | `e1-cross-api ABSENTE du catalogue` |
+| **P-3** le 200 ne prouve rien | `TEAM_UNCONFIRMED : après POST /assets/team (HTTP 200), l'API 'e1-gate-api' porte teams=['Administrators', 'banking-demo'] — attendu : 'insurance-demo' présente` |
+| **P-4** fail-closed sans équipe | `TEAM_UNDEFINED : aucune équipe pour l'API 'e1-gate-api'` |
+| **P-5** injection par le manifeste | `MANIFEST_KEYS_FORBIDDEN : … déclare ['apim_ss_api_base'], hors de la liste blanche ['apim_api']` |
+| **verify** | `PUBLISH_CONFIRMED : e1-gate-api v1.0.0 publiée, active et cloisonnée sur 'banking-demo'` |
+| **verify (contre-épreuve)** | attendu `insurance-demo` sur une API de `banking-demo` → `PUBLISH_UNCONFIRMED`. Un verify qui ne rougit jamais ne prouve rien. |
+
+### Ce que P-3 démontre exactement
+
+`assetType: "API"` retiré du corps du POST **dans le pod**, puis demande de
+déplacer `e1-gate-api` vers `insurance-demo` : la gateway répond **HTTP 200** et
+les teams restent `['Administrators','banking-demo']`. Le code de retour est
+vert, l'effet est nul. **C'est la relecture, et elle seule, qui l'attrape.**
+Rôle sain restauré ensuite, chaîne repassée au vert (`TEAM_CONFIRMED`).
+
+### P-4 et P-5 : les gardes précèdent le réseau
+
+Les deux ont été joués avec `apim_ss_api_base` pointé sur un **port mort**
+(`127.0.0.1:1`). Aucun `Connection refused` n'apparaît : les gardes rougissent
+avant qu'une socket soit ouverte. C'est la preuve de D4 — un refus ne laisse
+rien derrière lui parce qu'il survient avant la première écriture.
+
+### Nettoyage
+
+`e1-gate-api` désactivée (`200`) puis supprimée (`204`) ; `e1-cross-api` jamais
+créée ; pod `e1-runner` supprimé. Catalogue final :
+`['accounts-read', 'carto-probe-api']` — l'état d'avant la passe.
+
+### Ce qui n'est PAS fait
+
+- **Tâche 8** (le pipeline quitte le dépôt d'équipe) : l'artefact
+  `ci/Jenkinsfile.publish-api` est livré, mais **poser le job et créer le dépôt
+  plateforme dans Gitea sont des gestes exploitant**. Tant qu'ils ne sont pas
+  faits, `TEAM` reste écrit dans le dépôt de l'équipe : les gardes sont réelles,
+  leur **autorité** ne l'est pas encore.
+- **Tâche 9** (D6, retrait du privilège de création d'API) : non exécutée.
 
 ---
 
