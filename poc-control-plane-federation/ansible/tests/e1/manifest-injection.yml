@@ -1,0 +1,11 @@
+---
+# Fixture E1 : manifeste qui tente de détourner la base d'admin et le chemin KV.
+# include_vars charge le top-level à la précédence 18 : sans garde, ces deux
+# clés deviennent des variables du rôle.
+apim_api:
+  name: "e1-fixture"
+  version: "1.0.0"
+  contract: "/dev/null"
+  team: ""
+apim_ss_api_base: "http://ailleurs.invalid/rest/apigateway"
+apim_ss_vault_wm_creds_sub: "gateways/celui-des-autres"

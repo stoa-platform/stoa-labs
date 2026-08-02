@@ -1,0 +1,7 @@
+---
+# Fixture E1 : aucune équipe nulle part.
+apim_api:
+  name: "e1-fixture"
+  version: "1.0.0"
+  contract: "/dev/null"
+  team: ""

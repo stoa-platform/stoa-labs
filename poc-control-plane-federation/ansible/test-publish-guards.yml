@@ -1,0 +1,20 @@
+---
+# E1 — gardes HORS LIGNE : aucun appel à la gateway, aucun secret.
+# Ces deux gardes s'exécutent avant tout accès réseau ; elles doivent donc se
+# tester sans gateway, sans Vault et sans identité. C'est la boucle rapide.
+- name: "E1 — gardes du producteur (hors ligne)"
+  hosts: webmethods
+  gather_facts: false
+  tasks:
+    - name: "Garde 1 : liste blanche des clés du manifeste"
+      ansible.builtin.import_role:
+        name: apim_publish_api
+        tasks_from: manifest-guard.yml
+
+    - name: "Charger le manifeste (comme le fait resolve-env)"
+      ansible.builtin.include_vars: "{{ pub_manifest_path }}"
+
+    - name: "Garde 2 : quelle équipe, et d'où"
+      ansible.builtin.import_role:
+        name: apim_publish_api
+        tasks_from: team-name.yml

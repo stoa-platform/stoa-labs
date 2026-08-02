@@ -13,10 +13,11 @@
 # CHARGEMENT : passer un CHEMIN via `apim_ss_manifest` (include_vars, précédence 18),
 # JAMAIS `-e @fichier` (extra-var 22 : il masquerait le set_fact de fusion).
 
+- name: "Env : GARDE — le manifeste ne déclare que ce qu'il a le droit de déclarer"
+  ansible.builtin.import_tasks: manifest-guard.yml
+
 - name: "Env : charger le manifeste (chemin) — include_vars, pas extra-var"
-  ansible.builtin.include_vars: >-
-    {{ apim_ss_manifest if apim_ss_manifest.startswith('/')
-       else (playbook_dir ~ '/../' ~ apim_ss_manifest) }}
+  ansible.builtin.include_vars: "{{ pub_manifest_path }}"
   when: "(apim_ss_manifest | default('')) | length > 0"
 
 - name: "Env : l'API porte-t-elle des surcharges par environnement ?"

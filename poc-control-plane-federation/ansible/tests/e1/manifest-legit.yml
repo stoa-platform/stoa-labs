@@ -1,0 +1,7 @@
+---
+# Fixture E1 : manifeste conforme — une seule clé top-level.
+apim_api:
+  name: "e1-fixture"
+  version: "1.0.0"
+  contract: "/dev/null"
+  team: ""

@@ -6,6 +6,13 @@
 - name: "Env : résoudre l'API effective (identité invariante ⊕ per_env inbound)"
   ansible.builtin.import_tasks: resolve-env.yml
 
+# AVANT les secrets et AVANT le premier appel : un refus d'équipe ne doit rien
+# laisser derrière lui. Une API créée puis non assignée tombe en `Default`,
+# c'est-à-dire lisible par toutes les équipes — exactement le défaut que le
+# refus prétend empêcher.
+- name: "Team : quelle équipe, et d'où (AVANT tout appel — un refus ne crée rien)"
+  ansible.builtin.import_tasks: team-name.yml
+
 - name: "Secrets : auth admin (Vault, fallback PoC)"
   ansible.builtin.import_role:
     name: apim_common
@@ -150,10 +157,14 @@
       ansible.builtin.import_tasks: port-access.yml
       when: "apim_ss_port_manage | default(false) | bool"
 
-    # ===== 4. Scoping équipe (optionnel, ADR-076) ============================
-    - name: "Team : scoping par équipe"
+    # ===== 4. Cloisonnement par équipe (E1 — plus optionnel) =================
+    # L'obligation se règle en amont (team-name.yml / apim_pub_require_team) :
+    # ici on assigne, toujours, dès qu'une équipe est résolue. Le `when` d'antan
+    # (`apim_api.team | length > 0`) faisait dépendre la protection d'une clé
+    # que l'appelant pouvait simplement omettre — or une API laissée en
+    # `Default` est lue (200) par n'importe quelle équipe, mesuré le 2026-07-31.
+    - name: "Team : cloisonnement par équipe"
       ansible.builtin.import_tasks: team.yml
-      when: "(apim_api.team | default('')) | length > 0"
 
     # ===== 4. Policies inbound (optionnel) ===================================
     - name: "Inbound : validation JWT/OAuth2 au stage IAM"

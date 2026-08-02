@@ -1,0 +1,49 @@
+---
+# roles/apim_publish_api/tasks/manifest-guard.yml — ce que le manifeste a le
+# droit de déclarer (E1, D5).
+#
+# POURQUOI CETTE GARDE EXISTE. resolve-env.yml charge le manifeste par
+# include_vars : TOUT top-level du fichier devient une variable Ansible, à la
+# précédence 18. Or le manifeste vit dans le dépôt de l'ÉQUIPE — elle l'écrit.
+# Les extra-vars du pipeline (précédence 22) gagnent sur ce qu'elles couvrent,
+# mais une variable que le pipeline ne passe PAS est à la merci du manifeste :
+# apim_ss_api_base (où l'on écrit), apim_ss_vault_wm_creds_sub (quelles creds on
+# lit), apim_ss_auth_mode… Un manifeste pourrait donc rediriger la chaîne.
+#
+# La liste blanche est EXACTEMENT `apim_api`. L'élargir exige une ligne de
+# spécification qui dit laquelle et pourquoi : une liste qui s'étend par
+# commodité ne garde plus rien.
+#
+# Cette garde ne fait AUCUN appel réseau et tourne AVANT include_vars — donc
+# avant que quoi que ce soit du manifeste ait pu prendre effet.
+
+- name: "Manifeste : garde de liste blanche"
+  when: "(apim_ss_manifest | default('')) | length > 0"
+  block:
+
+    - name: "Manifeste : chemin absolu résolu"
+      ansible.builtin.set_fact:
+        pub_manifest_path: >-
+          {{ apim_ss_manifest if apim_ss_manifest.startswith('/')
+             else (playbook_dir ~ '/../' ~ apim_ss_manifest) }}
+
+    # Lecture BRUTE du fichier : on inspecte les clés SANS les instancier. Un
+    # include_vars ici aurait déjà posé les variables qu'on veut refuser.
+    - name: "Manifeste : clés déclarées au top-level"
+      ansible.builtin.set_fact:
+        pub_manifest_keys: >-
+          {{ (lookup('file', pub_manifest_path) | from_yaml | default({}, true)).keys() | list }}
+
+    - name: "Manifeste : FAIL-CLOSED — aucune clé hors liste blanche"
+      ansible.builtin.assert:
+        that: "(pub_manifest_keys | difference(apim_pub_manifest_allowed)) | length == 0"
+        fail_msg: >-
+          MANIFEST_KEYS_FORBIDDEN : le manifeste '{{ apim_ss_manifest }}' déclare
+          {{ pub_manifest_keys | difference(apim_pub_manifest_allowed) }}, hors de la
+          liste blanche {{ apim_pub_manifest_allowed }}. Ces clés deviendraient des
+          variables du rôle (include_vars, précédence 18) et pourraient détourner la
+          base d'admin, le chemin des identifiants ou le mode d'authentification.
+          Un manifeste ne déclare que l'API à publier.
+        success_msg: >-
+          MANIFEST_KEYS_OK : '{{ apim_ss_manifest }}' ne déclare que
+          {{ pub_manifest_keys }}.
