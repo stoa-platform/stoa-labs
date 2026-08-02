@@ -103,29 +103,95 @@ croyant l'avoir cloisonnée.
 
 ---
 
-## 5. Reste ouvert
+## 5. Ce qui te revient (gestes exploitant)
 
-1. **Le job GitOps du cluster reste un `CpsScmFlowDefinition`** pointant le
-   `Jenkinsfile` du dépôt de l'équipe. Tant qu'il en est là, l'équipe écrit son
-   propre `TEAM` **et** le `serviceAccount` de son podTemplate : les gardes sont
-   réelles, leur **autorité** ne l'est pas. Le reposer en `CpsFlowDefinition`
-   inline est un geste exploitant, et il exige un dépôt plateforme dans Gitea
-   pour porter le rôle. **C'est le vrai reste-à-faire de E1.**
-2. **D6 — retirer la création d'API aux comptes `svc-<team>`** : non fait. Le
-   bitmask est **opaque en REST** (`/accessProfiles/privileges`, `/privileges`,
-   `/permissions`, `/accessProfiles/permissions` → 404 les quatre) et les deux
-   équipes de démonstration ont **exactement** le bitmask du profil système
-   `API-Gateway-Providers`, sans un bit d'écart. La décomposition passe par la
-   console (noms) **puis** par un bit-flip mesuré sur un profil jetable (10 bits
-   à 1 : positions 0-3, 6, 8-9, 11-12, 20). Rollback capturé d'abord.
-3. **Les deux chaînes ne convergent pas**, et c'est assumé : fidèle-client =
-   identité nominative + team dérivée du chemin KV tenant-scopé (infalsifiable
-   par la policy Vault) ; GitOps cluster = identité de pod + team du job. Les
-   unifier demanderait un SA et un chemin KV par équipe — c'est E5.
+**1. Reposer le job GitOps en `CpsFlowDefinition` — c'est le vrai reste-à-faire
+de E1.** Le job actuel (`docs/superpowers/plans/2026-07-29-f4-jenkins-publish-job.xml:36-53`)
+est un `CpsScmFlowDefinition` de `scriptPath: Jenkinsfile` **pris dans le dépôt
+de l'équipe**. Tant qu'il en est là, l'équipe écrit son propre `TEAM` **et** le
+`serviceAccount` de son podTemplate — donc l'identité qui ouvre Vault. Les
+gardes sont réelles, leur **autorité** ne l'est pas.
+
+Trois choses à poser, dans cet ordre :
+
+- un dépôt **plateforme** dans Gitea (`stoa/platform`) portant
+  `poc-control-plane-federation/` — le job y prend le rôle Ansible ;
+- le job en `CpsFlowDefinition`, script **inline**, `TEAM` en dur (une valeur
+  par équipe, cf. E5) — le contenu à coller est
+  `ci/Jenkinsfile.publish-api` § « copie de reconstruction » ;
+- **retirer le `Jenkinsfile` du dépôt `banking-demo/accounts-api`**, sans quoi
+  il reste une porte d'entrée.
+
+Contre-épreuve à jouer derrière : pousser dans le dépôt d'équipe un manifeste
+avec `team: insurance-demo` → le build doit rougir sur `TEAM_FORBIDDEN` et le
+commit porter un statut rouge. Si le build passe, l'autorité n'est pas où on
+croit.
+
+**2. Décider de D6 (retirer la création d'API aux comptes `svc-<team>`).** Non
+fait, et pas faisable à l'aveugle : le bitmask est **opaque en REST**
+(`/accessProfiles/privileges`, `/privileges`, `/permissions`,
+`/accessProfiles/permissions` → **404** les quatre) et les deux équipes de
+démonstration ont **exactement** le bitmask du profil système
+`API-Gateway-Providers`, sans un bit d'écart — elles n'ont jamais été
+restreintes. Protocole : lire les noms dans la console (joignable depuis ton
+correctif du 2026-07-31), **puis** prouver par bit-flip sur un profil **jetable**
+(10 bits à 1 : positions 0-3, 6, 8-9, 11-12, 20). Ne rien écrire sur
+`banking-demo`/`insurance-demo` avant que le nom lu et l'effet mesuré
+concordent, et capturer le bitmask d'avant comme rollback.
+
+**Garde-fou de ce changement** : après retrait, trois conditions, pas une.
+`POST /apis` par l'équipe → 401 (la brèche est fermée) ; `GET /apis` scopé →
+**toujours vert** ; l'identité sortante de E2 → intacte. Si l'une des deux
+dernières rougit, remettre le bitmask et consigner la brèche comme dette :
+casser une preuve acquise pour fermer une brèche de lab serait un mauvais
+échange, d'autant que le modèle cible la ferme en ne donnant aucun compte
+gateway aux équipes produit.
+
+**3. Rien à merger côté `stoa`** — cette passe n'a touché que `stoa-labs`.
+
+## 6. Comment rejouer la preuve
+
+Tout est rejouable, secrets hors dépôt (`/root/f4-teams.env`, 0600, root — il
+porte désormais aussi `WM_ADMIN_PW`).
+
+```bash
+# La matrice de refus par identité (ce qui a renversé la porte du GOAL)
+ssh worker-1 'sudo /root/e1-matrice-refus.sh'      # docs/superpowers/plans/2026-07-31-e1-matrice-refus.sh
+# Les bitmasks des accessProfiles (lecture seule)
+ssh worker-1 'sudo /root/e1p.sh'                   # …/2026-07-31-e1-privileges.sh
+# Le volet lecture des portes (nécessite qu'une API de porte existe)
+ssh worker-1 'sudo /root/e1-portes.sh'             # …/2026-07-31-e1-portes.sh
+```
+
+Les gardes **hors ligne** se rejouent sans cluster ni secret, en quelques
+secondes — c'est la boucle rapide :
+
+```bash
+cd poc-control-plane-federation
+ansible-playbook -i ansible/inventory.lab.ini ansible/test-publish-guards.yml \
+  -e apim_ss_manifest=ansible/tests/e1/manifest-crossteam.yml -e apim_ss_team=banking-demo
+# attendu : MANIFEST_KEYS_OK puis échec TEAM_FORBIDDEN
+```
+
+Le volet **écriture** exige un pod portant le SA `jenkins-agent` (le contrôleur
+Jenkins reçoit **403** au login Vault — c'est la mécanique G-c qui marche, pas
+une panne) : recette complète au § « Preuve d'exécution » du plan.
+
+## 7. Deux choses à savoir sur l'état du dépôt
+
+- **La branche `docs/e1-producteur-gitops-spec` porte aussi deux de tes
+  commits** (`88c032b`, `55feba0`, sur la spec allowlist) — tu travaillais
+  dessus en parallèle. Rien n'a été écrasé, mais la branche n'est pas
+  mono-sujet : à savoir avant d'ouvrir la PR.
+- **Les deux chaînes productrices ne convergent pas**, et c'est assumé :
+  fidèle-client = identité nominative + team dérivée du chemin KV tenant-scopé
+  (infalsifiable par la policy Vault) ; GitOps cluster = identité de pod + team
+  du job. Les unifier demanderait un SA k8s, un rôle Vault et un chemin KV par
+  équipe — c'est E5, pas E1.
 
 ---
 
-## 6. Ce qu'il faut garder de cette passe
+## 8. Ce qu'il faut garder de cette passe
 
 **Une porte de preuve peut être fausse sans que rien ne le signale.** Celle de E1
 était écrite depuis le 2026-07-09, citée dans deux GOAL et une spec, et elle
