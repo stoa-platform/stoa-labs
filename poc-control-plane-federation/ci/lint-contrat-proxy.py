@@ -30,7 +30,18 @@ CONTRAT = os.environ.get("STOA_LINT_CONTRAT") or os.path.join(
     RACINE, "gateways/webmethods/admin-proxy/wm-admin-proxy.openapi.yaml")
 ROLES = os.environ.get("STOA_LINT_ROLES") or os.path.join(RACINE, "ansible/roles")
 PREFIXE = "/rest/apigateway"
-BASE = "{{ apim_ss_api_base }}"
+BASE_VAR = "apim_ss_api_base"
+# Reconnaissance NORMALISEE de la base : tolere les variations d'espacement
+# autour du nom de variable ET un filtre Jinja optionnel ({{ x | default(y) }}).
+# Racine du bug corrige ici : une comparaison LITTERALE
+# (`url.startswith("{{ apim_ss_api_base }}")`) ne reconnaissait que CETTE
+# graphie exacte. `{{apim_ss_api_base}}` (sans espaces, Jinja parfaitement
+# valide) ou `{{ apim_ss_api_base | default(x) }}` ne matchaient pas — et
+# l'appel disparaissait en silence : jamais ajoute a l'inventaire, jamais
+# signale, le linter restait vert. Ancree en debut de chaine : le PREFIXE de
+# l'URL doit etre la base (eventuellement filtree), pas une occurrence
+# quelconque plus loin dans la chaine.
+BASE_RE = re.compile(r"^\{\{\s*" + re.escape(BASE_VAR) + r"\s*(\|[^}]*)?\s*\}\}")
 # Planchers d'inventaire. `os.walk` sur un repertoire absent ne leve RIEN : le
 # linter concluait « les 0 appels sont couverts », code 0 — un vert sur du vide.
 # Ces planchers sont GROSSIERS a dessein : ils ne figent pas un compte (31
@@ -84,14 +95,25 @@ def deletes_au_contrat(declarees):
     return sorted((m, c) for (m, c) in declarees if m == "DELETE")
 
 
+def base_reconnue(url):
+    """Position de fin de la base normalisee dans `url`, ou None si `url` ne
+    commence pas par une ecriture reconnue de la base (espacement libre,
+    filtre Jinja optionnel). None ne signifie PAS "pas d'appel a la base" —
+    voir `_voir_url` : une URL qui MENTIONNE la base sans etre reconnue ici
+    est un suspect, jamais une absence silencieuse."""
+    m = BASE_RE.match(url)
+    return m.end() if m else None
+
+
 def variantes(url):
-    """Normalise une URL de tache en un ou plusieurs chemins de contrat.
+    """Normalise une URL de tache (dont la base est deja reconnue par
+    `base_reconnue`) en un ou plusieurs chemins de contrat.
 
     - la query string ne fait pas partie du chemin OpenAPI ;
     - `{{ x }}` colle a un segment => segment OPTIONNEL (Jinja conditionnel :
       `/policyActions{{ ('/' ~ id) if id else '' }}` rend les DEUX formes).
     """
-    chemin = url[len(BASE):].split("?", 1)[0]
+    chemin = url[base_reconnue(url):].split("?", 1)[0]
     colle = re.search(r"[^/]\{\{", chemin)
     if colle:
         # Cas collé : le "/" est à l'intérieur du Jinja
@@ -105,33 +127,93 @@ def variantes(url):
     return {PREFIXE + f.rstrip("/") if f != "/" else PREFIXE for f in formes}
 
 
-def taches_uri(noeud, fichier, sortie):
-    """Descend recursivement : les taches vivent sous des block/rescue/always."""
+MODULES_URI = ("ansible.builtin.uri", "uri")
+MODULES_GET_URL = ("ansible.builtin.get_url", "get_url")
+MODULES_COMMANDE = ("ansible.builtin.command", "command",
+                     "ansible.builtin.shell", "shell")
+
+
+def _texte_commande(val):
+    """Aplatit la valeur d'une tache command:/shell: en texte cherchable,
+    quelle que soit son ecriture (chaine brute, dict cmd:/argv:, liste)."""
+    if isinstance(val, str):
+        return val
+    if isinstance(val, list):
+        return " ".join(str(x) for x in val)
+    if isinstance(val, dict):
+        morceaux = []
+        for cle in ("cmd", "argv", "_raw_params"):
+            v = val.get(cle)
+            if isinstance(v, list):
+                morceaux.append(" ".join(str(x) for x in v))
+            elif v is not None:
+                morceaux.append(str(v))
+        return " ".join(morceaux)
+    return ""
+
+
+def _voir_url(url, ou, nom, methode_brute, multipart, sortie, suspects):
+    """Traite une URL candidate (uri: ou get_url:) : reconnue -> ajoutee a
+    `sortie` pour verification contre le contrat ; MENTIONNE la base sans
+    etre reconnue -> `suspects`, jamais ignoree en silence (point 2 du
+    brief : le linter ne doit jamais preferer le silence au doute)."""
+    if base_reconnue(url) is not None:
+        brut = str(methode_brute)
+        methodes = ([m.upper() for m in re.findall(r"'(\w+)'", brut)]
+                    if "{{" in brut else [brut.upper()])
+        sortie.append({
+            "methodes": methodes,
+            "url": url,
+            "multipart": multipart,
+            "ou": ou,
+            "nom": nom,
+        })
+    elif BASE_VAR in url:
+        suspects.append((ou, nom,
+                          f"URL mentionnant {BASE_VAR} sans forme reconnue : {url!r}"))
+
+
+def taches_appels(noeud, fichier, sortie, suspects):
+    """Descend recursivement : les taches vivent sous des block/rescue/always.
+
+    Trois surfaces d'appel a la base d'admin, toutes couvertes desormais :
+      - uri:/ansible.builtin.uri — verifiee contre le contrat quand reconnue ;
+      - get_url:/ansible.builtin.get_url — idem, methode GET implicite (ce
+        module n'a pas de parametre `method`) ;
+      - command:/shell: dont le texte contient `curl` ET la base — surface
+        non structuree, jamais rattachee a un chemin de contrat : TOUJOURS
+        signalee en suspect. En extraire un chemin depuis une chaine shell
+        libre serait une heuristique fausse un jour, en silence — fail-closed.
+    """
     if isinstance(noeud, list):
         for n in noeud:
-            taches_uri(n, fichier, sortie)
+            taches_appels(n, fichier, sortie, suspects)
     elif isinstance(noeud, dict):
+        ou = f"{os.path.relpath(fichier, ROLES)}"
+        nom = noeud.get("name", "?")
         for cle, val in noeud.items():
-            if cle in ("ansible.builtin.uri", "uri") and isinstance(val, dict):
+            if cle in MODULES_URI and isinstance(val, dict):
                 url = val.get("url", "")
-                if isinstance(url, str) and url.startswith(BASE):
-                    brut = str(val.get("method", "GET"))
-                    methodes = ([m.upper() for m in re.findall(r"'(\w+)'", brut)]
-                                if "{{" in brut else [brut.upper()])
-                    sortie.append({
-                        "methodes": methodes,
-                        "url": url,
-                        "multipart": val.get("body_format") == "form-multipart",
-                        "ou": f"{os.path.relpath(fichier, ROLES)}",
-                        "nom": noeud.get("name", "?"),
-                    })
+                if isinstance(url, str):
+                    _voir_url(url, ou, nom, val.get("method", "GET"),
+                              val.get("body_format") == "form-multipart",
+                              sortie, suspects)
+            elif cle in MODULES_GET_URL and isinstance(val, dict):
+                url = val.get("url", "")
+                if isinstance(url, str):
+                    _voir_url(url, ou, nom, "GET", False, sortie, suspects)
+            elif cle in MODULES_COMMANDE:
+                texte = _texte_commande(val)
+                if "curl" in texte and BASE_VAR in texte:
+                    suspects.append((ou, nom,
+                        "command:/shell: contenant curl et " + BASE_VAR))
             else:
-                taches_uri(val, fichier, sortie)
+                taches_appels(val, fichier, sortie, suspects)
 
 
 def appels():
     global yaml_errors
-    trouves, fichiers_vus = [], 0
+    trouves, suspects, fichiers_vus = [], [], 0
     for dossier, _, fichiers in os.walk(ROLES):
         for f in fichiers:
             if not f.endswith((".yml", ".yaml")):
@@ -143,8 +225,8 @@ def appels():
             except yaml.YAMLError as e:
                 yaml_errors.append((os.path.relpath(p, ROLES), str(e)))
                 continue
-            taches_uri(doc, p, trouves)
-    return trouves, fichiers_vus
+            taches_appels(doc, p, trouves, suspects)
+    return trouves, suspects, fichiers_vus
 
 
 def inventaire_suspect(trouves, fichiers_vus):
@@ -168,12 +250,12 @@ def inventaire_suspect(trouves, fichiers_vus):
 def main():
     global yaml_errors
     declarees, doc = operations_declarees()
-    trouves, fichiers_vus = appels()
+    trouves, suspects, fichiers_vus = appels()
 
-    suspect = inventaire_suspect(trouves, fichiers_vus)
-    if suspect:
+    anomalie = inventaire_suspect(trouves, fichiers_vus)
+    if anomalie:
         print("✗ INVENTAIRE ANORMAL — ce linter n'a rien verifie et ne peut RIEN conclure :")
-        print(f"    {suspect}")
+        print(f"    {anomalie}")
         print("    Checkout partiel, ansible/ non monte, ou repertoire renomme ?")
         print("    Un vert sur un inventaire vide serait un faux garde-fou : code 2.")
         return 2
@@ -182,6 +264,8 @@ def main():
         for a in sorted(trouves, key=lambda x: (x["url"], x["methodes"])):
             mp = " [multipart]" if a["multipart"] else ""
             print(f'{"/".join(a["methodes"]):6} {a["url"]}{mp}\n       {a["ou"]} — {a["nom"]}')
+        for ou, nom, motif in sorted(set(suspects)):
+            print(f'SUSPECT {ou} — {nom}\n       {motif}')
         return 0
 
     manquants, sans_multipart = [], []
@@ -257,6 +341,12 @@ def main():
         print(f"✗ {len(sans_multipart)} appel(s) en form-multipart sans requestBody multipart declare :")
         for m, c, ou, nom in sorted(set(sans_multipart)):
             print(f"    {m:6} {c}\n           {ou} — {nom}")
+    if suspects:
+        ko = 1
+        print(f"✗ {len(suspects)} appel(s) SUSPECT(S) — mention de {BASE_VAR} jamais ignoree "
+              f"(le linter ne prefere jamais le silence au doute) :")
+        for ou, nom, motif in sorted(set(suspects)):
+            print(f"    {ou} — {nom}\n           {motif}")
     if not ko:
         print(f"✓ les {len(trouves)} appels des roles ({fichiers_vus} fichiers parcourus) sont "
               f"couverts par le contrat ({len(declarees)} operations declarees, aucun DELETE)")

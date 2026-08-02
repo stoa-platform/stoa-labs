@@ -411,6 +411,96 @@ def cas_12():
         fx.nettoyer()
 
 
+@cas("13 — appel a la base SANS ESPACES ({{apim_ss_api_base}}) : reconnu apres "
+     "normalisation, code 1 (chemin non declare)")
+def cas_13():
+    fx = Fixture()
+    try:
+        taches = fx.charger_role(ROLE_INNOCENT)
+        taches.append({
+            "name": "Mutation banc : base sans espaces Jinja",
+            "ansible.builtin.uri": {
+                "url": "{{apim_ss_api_base}}/nouveau-endpoint-sans-espaces",
+            },
+        })
+        fx.ecrire_role(ROLE_INNOCENT, taches)
+        code, out = fx.executer()
+        assert code == 1, f"code {code}, attendu 1\n{out}"
+        assert "NON DECLARE" in out, f"section des appels manquants absente\n{out}"
+        assert "nouveau-endpoint-sans-espaces" in out and ROLE_INNOCENT in out, (
+            f"l'appel sans espaces autour de apim_ss_api_base n'est pas signale\n{out}")
+    finally:
+        fx.nettoyer()
+
+
+@cas("14 — appel a la base AVEC FILTRE JINJA ({{ apim_ss_api_base | default(...) }}) : "
+     "reconnu apres normalisation, code 1 (chemin non declare)")
+def cas_14():
+    fx = Fixture()
+    try:
+        taches = fx.charger_role(ROLE_INNOCENT)
+        taches.append({
+            "name": "Mutation banc : base avec filtre Jinja default()",
+            "ansible.builtin.uri": {
+                "url": "{{ apim_ss_api_base | default('http://localhost:5555/rest/apigateway') }}"
+                       "/nouveau-endpoint-filtre",
+            },
+        })
+        fx.ecrire_role(ROLE_INNOCENT, taches)
+        code, out = fx.executer()
+        assert code == 1, f"code {code}, attendu 1\n{out}"
+        assert "NON DECLARE" in out, f"section des appels manquants absente\n{out}"
+        assert "nouveau-endpoint-filtre" in out and ROLE_INNOCENT in out, (
+            f"l'appel avec filtre Jinja sur apim_ss_api_base n'est pas signale\n{out}")
+    finally:
+        fx.nettoyer()
+
+
+@cas("15 — ansible.builtin.get_url sur la base (surface aujourd'hui invisible, "
+     "meme avec un Jinja parfaitement bien forme) : code 1")
+def cas_15():
+    fx = Fixture()
+    try:
+        taches = fx.charger_role(ROLE_INNOCENT)
+        taches.append({
+            "name": "Mutation banc : get_url sur la base",
+            "ansible.builtin.get_url": {
+                "url": "{{ apim_ss_api_base }}/nouveau-fichier-get-url",
+                "dest": "/tmp/mutation-banc-get-url",
+            },
+        })
+        fx.ecrire_role(ROLE_INNOCENT, taches)
+        code, out = fx.executer()
+        assert code == 1, f"code {code}, attendu 1\n{out}"
+        assert "NON DECLARE" in out, f"section des appels manquants absente\n{out}"
+        assert "nouveau-fichier-get-url" in out and ROLE_INNOCENT in out, (
+            f"l'appel get_url sur la base n'est pas signale\n{out}")
+    finally:
+        fx.nettoyer()
+
+
+@cas("16 — ansible.builtin.command avec curl sur la base (surface aujourd'hui "
+     "invisible) : code 1")
+def cas_16():
+    fx = Fixture()
+    try:
+        taches = fx.charger_role(ROLE_INNOCENT)
+        taches.append({
+            "name": "Mutation banc : curl direct sur la base via command",
+            "ansible.builtin.command":
+                "curl -sf -X POST {{ apim_ss_api_base }}/nouveau-endpoint-curl",
+        })
+        fx.ecrire_role(ROLE_INNOCENT, taches)
+        code, out = fx.executer()
+        assert code == 1, f"code {code}, attendu 1\n{out}"
+        assert "SUSPECT" in out, (
+            f"le garde command:/shell: contenant curl ne s'est pas declenche\n{out}")
+        assert ROLE_INNOCENT in out and "curl" in out, (
+            f"la tache command: avec curl sur la base n'est pas signalee\n{out}")
+    finally:
+        fx.nettoyer()
+
+
 def main():
     echecs = []
     for nom, fn in CAS:
