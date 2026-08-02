@@ -20,6 +20,15 @@ PREFIXE = "/rest/apigateway"
 BASE = "{{ apim_ss_api_base }}"
 yaml_errors = []
 
+# Derogations ASSUMEES : appels que le contrat n'autorisera JAMAIS. Chaque entree
+# porte son motif — une derogation sans motif est un oubli deguise.
+DEROGATIONS = {
+    ("DELETE", "/rest/apigateway/strategies/{id}"):
+        "ADR-075 interdit tout DELETE via le proxy. La rotation d'identifiants "
+        "(apim_selfservice_app/tasks/rotate-strategy.yml) reste un geste "
+        "d'exploitation en acces direct, hors chaine CI.",
+}
+
 
 def operations_declarees():
     doc = yaml.safe_load(open(CONTRAT, encoding="utf-8"))
@@ -108,14 +117,23 @@ def main():
     for a in trouves:
         formes = variantes(a["url"])
         # Double couverture : chaque forme doit être couverte par au moins une méthode,
-        # ET chaque méthode doit être couverte par au moins une forme.
-        forms_covered = all(any((m, f) in declarees for m in a["methodes"]) for f in formes)
-        methods_covered = all(any((m, f) in declarees for f in formes) for m in a["methodes"])
+        # ET chaque méthode doit être couverte par au moins une forme. Une derogation
+        # assumee couvre au meme titre qu'une declaration : un appel derogé n'est pas
+        # un appel manquant.
+        forms_covered = all(
+            any((m, f) in declarees or (m, f) in DEROGATIONS for m in a["methodes"])
+            for f in formes)
+        methods_covered = all(
+            any((m, f) in declarees or (m, f) in DEROGATIONS for f in formes)
+            for m in a["methodes"])
         if not (forms_covered and methods_covered):
             manquants.append(("/".join(a["methodes"]), sorted(formes)[0], a["ou"], a["nom"]))
             continue
         if a["multipart"]:
-            forme, meth = next((f, m) for f in formes for m in a["methodes"] if (m, f) in declarees)
+            declare = next(((f, m) for f in formes for m in a["methodes"] if (m, f) in declarees), None)
+            if declare is None:
+                continue  # couvert uniquement par une derogation : rien a verifier au contrat
+            forme, meth = declare
             op = doc["paths"][forme][meth.lower()]
             rb = op.get("requestBody", {})
             ref = rb.get("$ref", "")
@@ -128,6 +146,10 @@ def main():
                 sans_multipart.append((meth, forme, a["ou"], a["nom"]))
 
     ko = 0
+    if DEROGATIONS:
+        print(f"ℹ {len(DEROGATIONS)} derogation(s) assumee(s) :")
+        for (m, c), motif in sorted(DEROGATIONS.items()):
+            print(f"    {m:6} {c}\n           {motif}")
     if yaml_errors:
         ko = 1
         print(f"✗ {len(yaml_errors)} fichier(s) YAML non parsable :")

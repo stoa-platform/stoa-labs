@@ -125,3 +125,43 @@ Le gate Git-natif valide l'état **mergé** — l'approbation *au moment du merg
 - **Une API proxy unique à routing conditionnel (header/path → env)** — rejeté : l'autorisation par env devient une logique cachée dans une policy (non diffable, erreur = tous les envs ouverts) ; trois APIs sœurs rendent la barrière **déclarative, par-ressource, opposable par scope**.
 - **Ouvrir des flux Jenkins → chaque env** — rejeté : multiplie les routes inter-zones (la sécurité réseau du client dit non) ; le proxy réutilise la SEULE route existante en y ajoutant allowlist + OAuth2.
 - **DELETE dans l'allowlist pour « nettoyer »** — rejeté : la suppression contournerait Git ; le rollback est un revert + re-apply (état toujours reconstructible).
+
+---
+
+## Décision datée — 2026-08-02 : le DELETE de la rotation d'identifiants
+
+**Constat.** `apim_selfservice_app/tasks/rotate-strategy.yml` (retrait, action 2 de la
+rotation 0-coupure) émet `DELETE {{ apim_ss_api_base }}/strategies/{{ item }}` pour
+supprimer les objets stratégie **détachés** de l'ancien `clientId`, après recouvrement.
+L'invariant « **aucun DELETE** » de cet ADR (§ Modèle de sécurité par couches, § Décision
+détaillée point 3) et ce rôle ne pouvaient pas être vrais ensemble via le proxy CI.
+
+**Décision : Issue A retenue** — la rotation d'identifiants ne passe **pas** par le proxy
+d'admin CI. L'invariant « aucun DELETE » **tient sans exception** dans le contrat
+(`gateways/webmethods/admin-proxy/wm-admin-proxy.openapi.yaml`, inchangé par cette
+décision). `rotate-strategy.yml` reste un geste d'**exploitation en accès direct** au
+gateway (identifiants admin directs, hors proxy, hors chaîne CI/Jenkins), au même titre que
+tout autre geste d'exploitation qui n'a jamais transité par la voie CI.
+
+L'appel est déclaré en **dérogation nommée et motivée** dans le linter de contrat
+(`ci/lint-contrat-proxy.py`, constante `DEROGATIONS`), imprimée à chaque exécution — pas
+une exclusion silencieuse. Le linter reste ainsi opposable sur tout **futur** DELETE non
+prévu : seul ce couple `(DELETE, /rest/apigateway/strategies/{id})` est couvert.
+
+**Pourquoi A et pas B (le contrat admet ce DELETE et lui seul).** Un `DELETE
+/strategies/{id}` mal ciblé dans le contrat proxy — routage, azp, ou id erroné — casse
+l'authentification de consommateurs en production, pour un geste (rotation
+d'identifiants) qui n'est de toute façon pas dans le chemin critique de la chaîne
+dev→rec→int→prod que ce proxy sert. Faire vivre une exception « aucun DELETE sauf
+strategies/{id} » dans le contrat l'aurait rendue **défendable à chaque revue** future
+(toute nouvelle demande de DELETE se réclamerait du précédent), à rebours de la lecture
+« allowlist = surface minimale, opposable, sans ambiguïté » que porte cet ADR.
+
+**Ce que ça coûte.** La rotation d'identifiants **n'est pas self-service** depuis la
+chaîne CI hors-prod : elle exige un accès direct au gateway (identifiants admin,
+hors token `ci-horsprod` scopé `deploy:{env}`). C'est un geste opérateur, pas un geste
+pipeline — cohérent avec le fait que retirer une stratégie détachée est de l'**hygiène
+d'état désiré**, pas une opération de convergence Git rejouable (cf. § Findings du spike,
+commentaire du rôle : retrait ≠ révocation). Si ce geste devait un jour rejoindre la
+chaîne CI, la décision serait à rouvrir explicitement — pas à contourner par un
+assouplissement discret de l'allowlist.
