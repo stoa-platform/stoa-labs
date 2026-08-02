@@ -289,27 +289,73 @@ def cas_10():
         fx.nettoyer()
 
 
-@cas("11 — anti-diagonale sur policyActions (methode ET chemin pilotes par le "
-     "meme conditionnel Jinja) : code 1, les deux branches reelles tombent en 404")
+# La tache UNIQUE telle qu'elle existait AVANT sa scission en deux taches a
+# methode fixe (tache 3, lot 1 bis, commit bc2a3a4) — reconstruite ici depuis
+# `git show 06594a5:.../backend.yml`, le dernier commit ou ce fichier la
+# portait encore. Depuis la scission, plus aucun appel du depot ne correle
+# methode et chemin sur le meme conditionnel Jinja (`grep -rn 'method:.*{{'
+# ansible/roles` ne rend plus rien) : pour exercer la branche produit-croisé
+# du linter, ce cas doit reintroduire cette forme dans la copie jetable du
+# role, pas seulement museler le contrat.
+_TACHE_CORRELEE_PRE_SCISSION = {
+    "name": "Backend : converger l'action (PUT si déjà attachée, POST sinon)",
+    "ansible.builtin.uri": {
+        "url": "{{ apim_ss_api_base }}/policyActions{{ ('/' ~ bk_hdr_id) if "
+               "(bk_hdr_id | length > 0) else '' }}",
+        "method": "{{ 'PUT' if (bk_hdr_id | length > 0) else 'POST' }}",
+        "body": "{{ {'policyAction': (bk_action.policyAction | "
+                "combine({'id': bk_hdr_id}))} if (bk_hdr_id | length > 0) "
+                "else bk_action }}",
+        "status_code": [200, 201],
+    },
+    "register": "bk_hdr_put",
+}
+_FACT_CORRELEE_PRE_SCISSION = {
+    "ansible.builtin.set_fact": {
+        "bk_hdr_id": "{{ bk_hdr_id if (bk_hdr_id | length > 0) else "
+                     "(bk_hdr_put.json.policyAction.id | default(bk_hdr_put.json.id)) }}",
+    }
+}
+
+
+@cas("11 — anti-diagonale sur un appel correle methode+chemin (role restaure "
+     "tel qu'avant la scission de backend.yml) : le linter d'avant durcissement "
+     "laisse passer, le linter actuel l'attrape")
 def cas_11():
     fx = Fixture()
     try:
+        # 1) Role : remplacer les deux taches a methode fixe (post-scission)
+        # par la tache unique correlee (pre-scission) — sans cette mutation,
+        # ce cas ne testerait plus rien de different du cas 3, puisque
+        # backend.yml ne contient plus aucun appel correle depuis la scission.
+        taches = fx.charger_role(ROLE_INNOCENT)
+        idx_put = next(i for i, t in enumerate(taches)
+                        if t.get("name", "").startswith("Backend : mettre à jour l'action"))
+        idx_post = next(i for i, t in enumerate(taches)
+                         if t.get("name", "").startswith("Backend : créer l'action"))
+        idx_fact = idx_post + 1
+        assert idx_fact < len(taches) and "bk_hdr_id" in taches[idx_fact].get(
+            "ansible.builtin.set_fact", {}), (
+            "structure de backend.yml inattendue — le set_fact bk_hdr_id ne "
+            "suit plus immediatement la tache POST : ce cas doit etre revu")
+        taches[idx_put:idx_fact + 1] = [_TACHE_CORRELEE_PRE_SCISSION, _FACT_CORRELEE_PRE_SCISSION]
+        fx.ecrire_role(ROLE_INNOCENT, taches)
+
+        # 2) Contrat : l'anti-diagonale. Le contrat REEL declare la diagonale
+        # correcte : POST /policyActions et PUT /policyActions/{id}. On la
+        # remplace ici par PUT /policyActions et POST /policyActions/{id}.
+        # L'ancienne double couverture (chaque forme couverte par au moins
+        # une methode, chaque methode par au moins une forme) est satisfaite
+        # par les DEUX declarations — alors que les deux branches reelles de
+        # l'appel correle (POST sans id, PUT avec id) tombent en 404 :
+        # aucune des deux n'est celle declaree.
         doc = fx.charger_contrat()
-        # L'appel reel (apim_selfservice_app/tasks/backend.yml) est :
-        #   url: .../policyActions{{ ('/' ~ id) if id else '' }}
-        #   method: "{{ 'PUT' if id else 'POST' }}"
-        # Le contrat REEL declare la diagonale correcte : POST /policyActions
-        # et PUT /policyActions/{id}. On la remplace ici par l'anti-diagonale :
-        # PUT /policyActions et POST /policyActions/{id}. La double couverture
-        # (chaque forme couverte par au moins une methode, chaque methode par
-        # au moins une forme) est satisfaite par les DEUX déclarations — alors
-        # que les deux branches reelles de l'appel (POST sans id, PUT avec id)
-        # tombent en 404 : aucune des deux n'est celle declaree.
         post = doc["paths"]["/rest/apigateway/policyActions"].pop("post")
         put = doc["paths"]["/rest/apigateway/policyActions/{id}"].pop("put")
         doc["paths"]["/rest/apigateway/policyActions"]["put"] = put
         doc["paths"]["/rest/apigateway/policyActions/{id}"]["post"] = post
         fx.ecrire_contrat(doc)
+
         code, out = fx.executer()
         assert code == 1, f"code {code}, attendu 1\n{out}"
         assert "NON DECLARE" in out, f"section des appels manquants absente\n{out}"
@@ -332,16 +378,16 @@ def cas_12():
     try:
         # apim_selfservice_app/tasks/team.yml : url sans aucun Jinja conditionnel
         # (juste la base {{ apim_ss_api_base }}), methode par defaut GET (pas de
-        # champ `method:`) : len(methodes) == 1 et len(formes) == 1. Le branchement
-        # produit-croisé ajoute en tache 3 ne doit PAS s'appliquer ici — seule la
-        # paire (GET, /accessProfiles) doit etre exigee, ni plus ni moins.
+        # champ `method:`) : len(methodes) == 1 et len(formes) == 1. Le produit
+        # croisé (tache 3, desormais inconditionnel — cf. lint-contrat-proxy.py)
+        # s'y reduit deja exactement a la simple paire : seule (GET,
+        # /accessProfiles) doit etre exigee, ni plus ni moins.
         #
-        # Baseline avant mutation, PAS un total absolu : le depot reel porte
-        # deja (decouverte de la tache 3) un appel non declare connu et
-        # independant de ce cas — PUT/POST /policyActions dans backend.yml,
-        # methode ET chemin pilotes par le meme Jinja. Comparer a la baseline
-        # isole ce que CE cas mute, sans supposer un total qui depend d'un
-        # etat du depot hors du champ de ce cas.
+        # Baseline avant mutation, PAS un total absolu code en dur : au moment
+        # d'ecrire ce cas, le depot reel est vert (n_base == 0), mais comparer
+        # a la baseline plutot qu'a une constante isole ce que CE cas mute de
+        # tout etat du depot hors de son champ — y compris un rouge futur sans
+        # rapport avec accessProfiles, que ce cas n'a pas a connaitre.
         _, out_base = fx.executer()
         n_base = _n_manquants(out_base)
 

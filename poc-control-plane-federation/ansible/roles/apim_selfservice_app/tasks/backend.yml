@@ -72,16 +72,15 @@
 # croisees ne sont JAMAIS appelees. Deux taches ordinaires, chacune a une
 # methode et une forme fixes, pilotees par la MEME condition qu'avant :
 # comportement HTTP identique, mais verifiable exactement par le linter.
-- name: "Backend : mettre a jour l'action deja attachee au stage routing (PUT)"
+- name: "Backend : mettre à jour l'action déjà attachée au stage routing (PUT)"
   ansible.builtin.uri:
     url: "{{ apim_ss_api_base }}/policyActions/{{ bk_hdr_id }}"
     method: PUT
     body: "{{ {'policyAction': (bk_action.policyAction | combine({'id': bk_hdr_id}))} }}"
     status_code: [200, 201]
-  register: bk_hdr_put_update
   when: "bk_hdr_id | length > 0"
 
-- name: "Backend : creer l'action (POST, aucune action customHttpHeaders attachee)"
+- name: "Backend : créer l'action (POST, aucune action customHttpHeaders attachée)"
   ansible.builtin.uri:
     url: "{{ apim_ss_api_base }}/policyActions"
     method: POST
