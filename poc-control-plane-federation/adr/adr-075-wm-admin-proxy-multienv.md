@@ -50,7 +50,7 @@ Le contrat et la policy sont **identiques** dans tous les envs ; seules les **va
 
 Le wM **prod** (seul joignable de Jenkins, seul pont vers le réseau interne `nonprod`) porte 3 APIs `wm-admin-{dev,rec,int}` :
 
-- **Même contrat allowlist** (`gateways/webmethods/admin-proxy/wm-admin-proxy.openapi.yaml`) : UNIQUEMENT les chemins admin que labctl utilise (`/apis`, `/alias`, `/strategies`, `/scopes`, `/policyActions`, `/policies/{id}`, `/applications`, `/health`). **Aucun DELETE** : le rollback est un re-apply Git, jamais une suppression. Hors contrat → **404**.
+- **Même contrat allowlist** (`gateways/webmethods/admin-proxy/wm-admin-proxy.openapi.yaml`) : UNIQUEMENT les chemins admin que labctl utilise (`/apis`, `/alias`, `/strategies`, `/scopes`, `/policyActions`, `/policies/{id}`, `/applications`, `/accessProfiles`, `/assets/team`, `/archive`, `/health`). **Aucun DELETE** : le rollback est un re-apply Git, jamais une suppression. Hors contrat → **404**.
 - **OAuth2 par API sœur** : scope `deploy:{env}` + azp `ci-horsprod` exigés en entrée ; routage `${wm-admin-{env}}` vers le gateway de l'env ; Basic sortant depuis `wm-admin-{env}-cred` (valeurs `secret/stoa/envs/{env}/wm-admin`, posées par `scripts/setup-wm-admin-proxy.sh`, AppRole `proxy-provision` dédié).
 - **Pourquoi des sœurs et pas une API unique à routing conditionnel** : la barrière d'autorisation devient **déclarative et par-ressource** (un scope = un env = une API, lisible dans le catalogue et auditable), au lieu d'une logique conditionnelle (header/path → env) **dans** la policy — invisible, non diffable, et dont une erreur d'écriture ouvre TOUS les envs. Trois objets identiques à un alias près = trivialement vérifiables.
 
@@ -147,6 +147,21 @@ L'appel est déclaré en **dérogation nommée et motivée** dans le linter de c
 (`ci/lint-contrat-proxy.py`, constante `DEROGATIONS`), imprimée à chaque exécution — pas
 une exclusion silencieuse. Le linter reste ainsi opposable sur tout **futur** DELETE non
 prévu : seul ce couple `(DELETE, /rest/apigateway/strategies/{id})` est couvert.
+
+**Ce que le linter ne couvre pas.** Deux limites, à ne pas confondre avec une garantie
+plus large que celle réellement tenue :
+
+- **La barrière est post-merge.** Le linter et le banc `ci/test-proxy-base-et-preflight.sh`
+  sont branchés dans l'étape PLAN de `ci/Jenkinsfile.publish-api`, dont le job
+  (`publish-api-deploy`) vise `*/main` : ils s'exécutent à chaque push/PR sur cette branche,
+  donc ne s'opposent qu'**après** fusion — jamais sur une proposition de changement avant
+  merge. Et `ci/Jenkinsfile.selfservice` — celui auquel `provision-apply` délègue
+  (`build job: 'selfservice-app-deploy'`) — ne les joue pas : sa propre étape PLAN se limite
+  à la validation du manifeste et au `--syntax-check` Ansible.
+- **`labctl` n'est pas couvert.** Il attaque les mêmes endpoints d'administration depuis du
+  Go ; le linter ne lit que les rôles Ansible sous `ansible/roles`. La revendication « toute
+  action CI passe par le contrat » reste donc partiellement non vérifiée pour cette voie —
+  c'est un second analyseur, sur un autre langage, qui reste à écrire.
 
 **Pourquoi A et pas B (le contrat admet ce DELETE et lui seul).** Un `DELETE
 /strategies/{id}` mal ciblé dans le contrat proxy — routage, azp, ou id erroné — casse

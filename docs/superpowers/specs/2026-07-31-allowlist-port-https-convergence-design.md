@@ -197,17 +197,32 @@ contrat → 404, entrée OAuth2 scopée. Le contrat couvre déjà le cycle de vi
 API (`POST /apis`, `PUT /apis/{id}`, `activate`, `deactivate`, `versions`) et
 des applications (`GET`/`POST /applications`, `PUT /applications/{id}/apis`).
 
-**Trois trous mesurés :**
+**Quatre trous mesurés :**
 
 1. Les rôles Ansible appellent `GET /accessProfiles`, `POST /assets/team`
    (scoping d'équipe) et `GET /archive` — **absents du contrat**, donc 404 à
    travers le proxy. Une chaîne complète passée par le proxy tombe aujourd'hui.
-2. La création d'API réelle est en **form-multipart** ; le contrat ne déclare
+2. `POST /archive` (import d'archive, promotion 0-coupure) est **également
+   absent du contrat** — et c'est un envoi en **multipart** : le trou le plus
+   risqué des quatre, puisqu'il cumule l'absence de déclaration et la surface
+   la moins éprouvée du proxy.
+3. La création d'API réelle est en **form-multipart** ; le contrat ne déclare
    que du `application/json`. Aucune preuve qu'un multipart traverse le proxy.
-3. Le proxy n'est **pas posé sur le cluster** : les job XML y sont en
-   `ADMIN_VIA=direct`, et aucun ne définit `APIM_PROXY_BASE` — choisir
-   `proxy-oauth2` y viserait `webmethods-real:5555`, qui n'existe pas dans le
-   cluster.
+4. Le proxy n'est **pas posé sur le cluster** : les job XML y restent en
+   `ADMIN_VIA=direct` par défaut. `APIM_PROXY_HOST`/`API`/`BASE` y sont bien
+   **définis** en paramètres depuis le commit `91d54e1` de cette même branche —
+   mais leur défaut désigne encore `webmethods-real:5555`, hôte docker-compose
+   absent du cluster, volontairement laissé ainsi tant que le proxy n'y est pas
+   posé : choisir `proxy-oauth2` sans le surcharger y viserait donc toujours un
+   hôte inexistant.
+
+**Le contrat croise aussi un conflit d'invariant, pas un trou de couverture.**
+`apim_selfservice_app/tasks/rotate-strategy.yml` appelle un `DELETE
+/strategies/{id}` que l'invariant « aucun DELETE » de cet ADR interdit au
+proxy — devenu l'arbitrage central du lot 1 (ADR-075, § Décision datée —
+2026-08-02). Issue retenue : la rotation reste hors proxy, en accès direct ;
+l'appel est couvert par une dérogation nommée et motivée dans
+`ci/lint-contrat-proxy.py`, jamais par une déclaration au contrat.
 
 ### L'existant côté allow list n'a jamais tourné
 
