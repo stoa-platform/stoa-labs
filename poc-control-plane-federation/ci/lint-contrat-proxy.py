@@ -107,7 +107,11 @@ def main():
     manquants, sans_multipart = [], []
     for a in trouves:
         formes = variantes(a["url"])
-        if not any((m, f) in declarees for f in formes for m in a["methodes"]):
+        # Double couverture : chaque forme doit être couverte par au moins une méthode,
+        # ET chaque méthode doit être couverte par au moins une forme.
+        forms_covered = all(any((m, f) in declarees for m in a["methodes"]) for f in formes)
+        methods_covered = all(any((m, f) in declarees for f in formes) for m in a["methodes"])
+        if not (forms_covered and methods_covered):
             manquants.append(("/".join(a["methodes"]), sorted(formes)[0], a["ou"], a["nom"]))
             continue
         if a["multipart"]:
