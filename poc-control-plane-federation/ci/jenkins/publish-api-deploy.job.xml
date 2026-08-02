@@ -121,7 +121,7 @@
           <name>APIM_PROXY_BASE</name>
           <description>Override COMPLET de la base du proxy. Vide = composée depuis APIM_PROXY_HOST/API/VER/PATH. À ne remplir que si le chemin ne suit pas la convention wM.</description>
           <defaultValue></defaultValue>
-          <trim>false</trim>
+          <trim>true</trim>
         </hudson.model.StringParameterDefinition>
         <!-- ── PRÉFLIGHT de joignabilité ──
              `off` chez un client dont /health n'est pas joignable depuis la VIP

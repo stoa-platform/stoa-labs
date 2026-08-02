@@ -199,7 +199,11 @@ pipeline {
             #    alors plusieurs minutes durant pour une raison étrangère au travail
             #    demandé. Plutôt que de renoncer au bénéfice, APIM_PREFLIGHT_URL et
             #    APIM_PREFLIGHT_CODES permettent de viser UNE AUTRE sonde de vie.
-            if [ "${APIM_PREFLIGHT:-on}" = "off" ]; then
+            # Comparaison insensible à la casse : Jenkins ne normalise pas la
+            # casse d'un paramètre `string`, et "Off"/"OFF" ne désactivaient
+            # rien avant ce correctif — silencieusement.
+            APIM_PREFLIGHT_LC="$(printf '%s' "${APIM_PREFLIGHT:-on}" | tr '[:upper:]' '[:lower:]')"
+            if [ "$APIM_PREFLIGHT_LC" = "off" ]; then
               echo "  (préflight de joignabilité désactivé — APIM_PREFLIGHT=off)"
             else
               PF_URL="${APIM_PREFLIGHT_URL:-}"
@@ -208,6 +212,13 @@ pipeline {
               # enforce (on sonde SANS token — le 401 est la preuve de vie du proxy).
               PF_CODES="${APIM_PREFLIGHT_CODES:-200 401}"
               PF_MAX="${APIM_PREFLIGHT_TRIES:-60}"
+              # `[ "$i" -ge "$PF_MAX" ]` sous sh : si PF_MAX n'est pas un entier,
+              # `-ge` rend 2 (ni vrai ni faux) — la branche de sortie n'est
+              # JAMAIS prise et la boucle tourne à l'infini. On valide AVANT
+              # d'entrer dans la boucle ; repli sur le défaut, avec avertissement.
+              case "$PF_MAX" in
+                ''|*[!0-9]*|0) echo "  ⚠ APIM_PREFLIGHT_TRIES='$PF_MAX' n'est pas un entier positif — repli sur le défaut (60)"; PF_MAX=60 ;;
+              esac
               i=0
               while :; do
                 HC="$(curl -s -o /dev/null -m 5 -w '%{http_code}' "$PF_URL" || true)"

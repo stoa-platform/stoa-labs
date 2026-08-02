@@ -3,11 +3,18 @@
 # avec un curl simule. Verifie composition de la base proxy + preflight optionnel.
 #
 # CE QUE CE TEST LIT VRAIMENT — et ne code plus en dur :
-#   - l'ANCIEN defaut = l'URL entiere ecrite dans le Jenkinsfile AVANT cette
-#     branche, relue par `git show <base>:<fichier>` ;
+#   - le point de comparaison (BASE_REF) = derive par `git merge-base` avec la
+#     branche par defaut (origin/main, ou main), jamais un SHA fige ;
+#   - l'ANCIEN defaut = l'URL entiere ecrite dans le Jenkinsfile a ce point,
+#     relue par `git show <base>:<fichier>` ;
 #   - les defauts APIM_PROXY_* = extraits par sed sur CHAQUE Jenkinsfile REEL ;
 #   - la ligne de composition elle-meme = extraite de CHAQUE Jenkinsfile REEL ;
-#   - les defauts du preflight (codes de preuve de vie, nombre d'essais) = idem.
+#   - les defauts du preflight (codes de preuve de vie, nombre d'essais) = idem ;
+#   - les garde-fous (validation de APIM_PREFLIGHT_TRIES, casse de
+#     APIM_PREFLIGHT) = leur PRESENCE ET leur ordre sont verifies par lecture
+#     litterale (grep) du Jenkinsfile REEL, pas seulement rejoues dans le
+#     harnais de simulation ci-dessous ;
+#   - le trim d'APIM_PROXY_BASE = extrait du job XML REEL.
 # Le premier jet codait les DEUX cotes de l'assertion « defauts => identique a
 # l'ancien defaut » dans le test : il comparait deux constantes du test entre
 # elles et restait VERT alors qu'un defaut du Jenkinsfile avait rompu la
@@ -20,17 +27,46 @@ ICI="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"   # .../poc-control-plane-f
 POC="$(dirname "$ICI")"                                 # .../poc-control-plane-federation
 RACINE="$(dirname "$POC")"                              # racine du depot
 SOUS_POC="$(basename "$POC")"
-# Commit de base de la branche : l'etat d'AVANT la proxification par morceaux.
-# Surchargeable pour rejouer le test contre un autre point de comparaison.
-BASE_REF="${STOA_BASE_REF:-92b846f}"
 JENKINSFILES="Jenkinsfile.publish-api Jenkinsfile.selfservice"
 
 KO=0
 ok(){ printf '  ok   %s\n' "$1"; }
 ko(){ printf '  KO   %s\n     attendu=[%s]\n     obtenu =[%s]\n' "$1" "$2" "$3"; KO=$((KO+1)); }
 cmp_(){ [ "$2" = "$3" ] && ok "$1" || ko "$1" "$2" "$3"; }
+# Vrai si $2 (sous-chaine fixe) apparait litteralement dans le fichier $3 —
+# pour verifier qu'un garde-fou est bien ECRIT dans le fichier REEL, sans
+# recopier sa logique dans le test (meme piege que l'ancien defaut fige).
+contient(){ grep -qF -- "$2" "$3" && ok "$1" || ko "$1" "present dans $3" "absent de $3"; }
+# Vrai si le motif $2 apparait a une ligne strictement avant le motif $3 dans
+# le fichier $4 — un garde-fou pose APRES la boucle qu'il est cense proteger
+# ne protege rien.
+avant(){
+  L1="$(grep -nF -- "$2" "$4" | head -1 | cut -d: -f1)"
+  L2="$(grep -nF -- "$3" "$4" | head -1 | cut -d: -f1)"
+  if [ -n "$L1" ] && [ -n "$L2" ] && [ "$L1" -lt "$L2" ]; then ok "$1"
+  else ko "$1" "ligne($2) < ligne($3)" "L1=$L1 L2=$L2 dans $4"; fi
+}
 # Un prerequis manquant n'est PAS un test qui passe : le test s'arrete en 2.
 fatal(){ printf '  !!   %s\n' "$1" >&2; exit 2; }
+
+# Commit de base : le point de comparaison d'AVANT la proxification par
+# morceaux. STOA_BASE_REF reste l'echappatoire explicite (poser n'importe
+# quelle ref). Le defaut NORMAL ne fige plus un SHA : cet historique a deja
+# ete purge une fois (handoff carto), et une seconde reecriture ferait
+# disparaitre un SHA fige, rendant le PLAN rouge pour une raison etrangere au
+# changement examine (le point de comparaison est mort, pas le changement).
+# Le defaut derive donc le point de divergence avec la branche par defaut
+# (origin/main, ou main en son absence) : stable meme apres une purge, tant
+# que la relation « cette branche descend de main » reste vraie.
+BASE_REF="${STOA_BASE_REF:-}"
+if [ -z "$BASE_REF" ]; then
+  if git -C "$RACINE" rev-parse --verify -q origin/main >/dev/null 2>&1; then
+    BASE_REF="$(git -C "$RACINE" merge-base HEAD origin/main 2>/dev/null || true)"
+  elif git -C "$RACINE" rev-parse --verify -q main >/dev/null 2>&1; then
+    BASE_REF="$(git -C "$RACINE" merge-base HEAD main 2>/dev/null || true)"
+  fi
+fi
+[ -n "$BASE_REF" ] || fatal "point de comparaison introuvable : ni STOA_BASE_REF, ni origin/main, ni main ne sont resolvables depuis ce clone (clone superficiel ? branche de base absente ?) — poser STOA_BASE_REF=<sha-ou-ref> explicitement pour rejouer le test."
 
 TMPD="$(mktemp -d)"; trap 'rm -rf "$TMPD"' EXIT
 
@@ -122,6 +158,63 @@ for JF in $JENKINSFILES; do
   echo "== $JF : defauts du preflight =="
   cmp_ "codes de preuve de vie" "$PF_CODES_REJOUES" "$(lire_defaut_sh "$F" PF_CODES APIM_PREFLIGHT_CODES)"
   cmp_ "nombre d'essais"        "$PF_MAX_REJOUE"    "$(lire_defaut_sh "$F" PF_MAX   APIM_PREFLIGHT_TRIES)"
+
+  echo "== $JF : garde-fous du preflight (lus dans le fichier reel) =="
+  # APIM_PREFLIGHT_TRIES non numerique : sous sh, `[ "$i" -ge "abc" ]` rend 2
+  # (ni vrai ni faux) — la branche de sortie n'est jamais prise, boucle a
+  # l'infini. Le garde-fou doit exister ET s'executer AVANT la boucle.
+  contient "$JF : le garde-fou PF_MAX existe (case sur un entier)" 'case "$PF_MAX" in' "$F"
+  contient "$JF : rejette le non-numerique" '*[!0-9]*' "$F"
+  contient "$JF : rejette aussi zero (pas un entier POSITIF)" '|0)' "$F"
+  contient "$JF : replie explicitement sur le defaut 60" 'PF_MAX=60' "$F"
+  avant "$JF : le garde-fou PF_MAX est pose avant la boucle, pas apres" \
+    'case "$PF_MAX" in' 'while :; do' "$F"
+  # APIM_PREFLIGHT sensible a la casse : 'Off' ne doit pas etre pris pour 'off'.
+  contient "$JF : APIM_PREFLIGHT est compare apres mise en minuscules" \
+    "tr '[:upper:]' '[:lower:]'" "$F"
+  contient "$JF : le test 'off' porte sur la variable normalisee" \
+    'if [ "$APIM_PREFLIGHT_LC" = "off" ]; then' "$F"
+done
+
+# ---- bloc 1bis : trim du parametre APIM_PROXY_BASE dans les job XML ----
+# APIM_PROXY_BASE est l'echappatoire (override complet, cf. commentaire du
+# Jenkinsfile) : c'est justement celle qui ne doit PAS laisser passer un
+# espace colle en debut/fin — sinon l'URL composee est invalide, et l'erreur
+# est difficile a voir (un espace ne se distingue pas a l'oeil dans un log).
+# Valeur LUE dans le XML reel : jamais une constante du test.
+JOBXMLS="jenkins/publish-api-deploy.job.xml jenkins/selfservice-app-deploy.job.xml"
+# Extrait le <trim> du bloc <hudson.model.StringParameterDefinition> dont le
+# <name> vaut $2, dans le fichier $1 (les blocs ne s'imbriquent pas dans ces XML).
+trim_de(){
+  awk -v nom="$2" '
+    /<hudson\.model\.StringParameterDefinition>/ { buf=""; dans=1 }
+    dans { buf = buf $0 "\n" }
+    /<\/hudson\.model\.StringParameterDefinition>/ {
+      dans=0
+      if (buf ~ ("<name>" nom "</name>")) {
+        if (match(buf, /<trim>[a-z]*<\/trim>/)) {
+          s = substr(buf, RSTART, RLENGTH); gsub(/<\/?trim>/, "", s); print s; exit
+        }
+      }
+    }
+  ' "$1"
+}
+
+for X in $JOBXMLS; do
+  XF="$POC/ci/$X"
+  [ -f "$XF" ] || fatal "$XF introuvable"
+  echo "== $X : trim d'APIM_PROXY_BASE =="
+  TR="$(trim_de "$XF" APIM_PROXY_BASE)"
+  [ -n "$TR" ] || fatal "APIM_PROXY_BASE : aucun <trim> lisible dans $XF"
+  cmp_ "$X : APIM_PROXY_BASE n'est plus la seule echappatoire non rognee (trim=true)" "true" "$TR"
+
+  if command -v python3 >/dev/null 2>&1; then
+    if python3 -c "import xml.dom.minidom,sys; xml.dom.minidom.parse(sys.argv[1])" "$XF" >"$TMPD/xmlok" 2>&1; then
+      ok "$X : XML bien forme"
+    else
+      ko "$X : XML bien forme" "0" "$(cat "$TMPD/xmlok")"
+    fi
+  fi
 done
 
 # ---- bloc 2 : preflight (copie conforme, curl simule) ----
@@ -136,13 +229,17 @@ curl(){
 preflight(){
   echo 0 > $CNT
   APIM_API_BASE="http://gw/rest/apigateway"
-  if [ "${APIM_PREFLIGHT:-on}" = "off" ]; then
+  APIM_PREFLIGHT_LC="$(printf '%s' "${APIM_PREFLIGHT:-on}" | tr '[:upper:]' '[:lower:]')"
+  if [ "$APIM_PREFLIGHT_LC" = "off" ]; then
     echo "SKIP"; return 0
   fi
   PF_URL="${APIM_PREFLIGHT_URL:-}"
   [ -n "$PF_URL" ] || PF_URL="$APIM_API_BASE/health"
   PF_CODES="${APIM_PREFLIGHT_CODES:-200 401}"
   PF_MAX="${APIM_PREFLIGHT_TRIES:-60}"
+  case "$PF_MAX" in
+    ''|*[!0-9]*|0) PF_MAX=60 ;;
+  esac
   i=0
   while :; do
     HC="$(curl || true)"
@@ -178,8 +275,36 @@ if ( CURL_SEQ="000,000,000"; APIM_PREFLIGHT_TRIES=3; preflight >/dev/null 2>&1 )
   ko "epuisement => code retour non nul" "!=0" "0"; else ok "epuisement => code retour non nul"; fi
 unset APIM_PREFLIGHT_TRIES
 
+# APIM_PREFLIGHT_TRIES non numerique : preuve QUANTITATIVE de non-bouclage —
+# pas seulement « ca finit par sortir », mais « ca sort au bout d'exactement
+# PF_MAX(=60, le defaut) appels curl », donc borne et pas un hasard de sequence.
+CURL_SEQ="000"; APIM_PREFLIGHT_TRIES="abc"
+R="$(preflight || true)"
+cmp_ "APIM_PREFLIGHT_TRIES='abc' => ne boucle plus a l'infini (replie sur 60)" \
+  "FAIL:http://gw/rest/apigateway/health:000" "$R"
+cmp_ "  … et le nombre d'essais reellement effectues est borne au defaut (60)" "60" "$(cat "$CNT")"
+unset APIM_PREFLIGHT_TRIES
+
+CURL_SEQ="000"; APIM_PREFLIGHT_TRIES="0"
+preflight >/dev/null || true
+cmp_ "APIM_PREFLIGHT_TRIES=0 n'est pas un entier POSITIF => replie aussi sur 60" "60" "$(cat "$CNT")"
+unset APIM_PREFLIGHT_TRIES
+
+CURL_SEQ="000"; APIM_PREFLIGHT_TRIES="-3"
+preflight >/dev/null || true
+cmp_ "APIM_PREFLIGHT_TRIES negatif => replie aussi sur 60" "60" "$(cat "$CNT")"
+unset APIM_PREFLIGHT_TRIES
+
 APIM_PREFLIGHT=off
 cmp_ "APIM_PREFLIGHT=off => saute, ne sonde pas" "SKIP" "$(preflight)"
+unset APIM_PREFLIGHT
+
+APIM_PREFLIGHT=Off
+cmp_ "APIM_PREFLIGHT=Off (casse mixte) => desactive aussi, insensible a la casse" "SKIP" "$(preflight)"
+unset APIM_PREFLIGHT
+
+APIM_PREFLIGHT=OFF
+cmp_ "APIM_PREFLIGHT=OFF (tout majuscule) => desactive aussi" "SKIP" "$(preflight)"
 unset APIM_PREFLIGHT
 
 CURL_SEQ="204"; APIM_PREFLIGHT_URL="https://vip/ping"; APIM_PREFLIGHT_CODES="204 200"
