@@ -501,6 +501,197 @@ def cas_16():
         fx.nettoyer()
 
 
+# Les six cas suivants (17 a 22) couvrent la tache 5 (lot 1 bis) — diagnostic
+# et robustesse. Chacun construit lui-meme l'etat qu'il teste, sur une copie
+# jetable : aucun ne depend d'un total fige de l'arbre reel au-dela d'un
+# plancher verifie dynamiquement (piege deja paye dans ce lot — cf. cas 11).
+
+
+@cas("17 — role entier absent (repertoire supprime) mais planchers de fichiers "
+     "franchis quand meme : MIN_APPELS doit mordre la ou MIN_FICHIERS_ROLES ne "
+     "mord pas")
+def cas_17():
+    fx = Fixture()
+    try:
+        # apim_promote_api : un role ENTIER, choisi parce que sa disparition
+        # laisse >= 20 fichiers (le plancher de fichiers reste MUET) tout en
+        # retirant assez d'appels pour que le plancher d'appels, s'il est
+        # calibre pour mordre, le fasse. Verifie dynamiquement ci-dessous —
+        # pas suppose.
+        role_absent = "apim_promote_api"
+        cible = os.path.join(fx.roles, role_absent)
+        assert os.path.isdir(cible), (
+            f"role {role_absent} introuvable dans la copie jetable — ce cas "
+            "doit etre revu")
+        shutil.rmtree(cible)
+
+        fichiers_restants = 0
+        for _, _, noms in os.walk(fx.roles):
+            for n in noms:
+                if n.endswith((".yml", ".yaml")):
+                    fichiers_restants += 1
+        assert fichiers_restants >= 20, (
+            f"il ne reste que {fichiers_restants} fichier(s) apres suppression de "
+            f"{role_absent} : MIN_FICHIERS_ROLES (20) se declencherait avant "
+            "MIN_APPELS, ce que ce cas ne veut PAS exercer — choisir un autre role")
+
+        code, out = fx.executer()
+        assert code == 2, (
+            f"code {code}, attendu 2 — un role entier a disparu sans faire "
+            f"chuter le nombre de fichiers sous le plancher\n{out}")
+        assert "fichier(s) YAML parcouru" not in out, (
+            f"c'est le plancher de FICHIERS qui a mordu, pas celui des APPELS — "
+            f"ce cas doit prouver l'inverse (MIN_APPELS non decoratif)\n{out}")
+        assert "appel(s) releve" in out, (
+            f"le plancher MIN_APPELS ne s'est pas declenche alors qu'un role "
+            f"entier a disparu — il resterait donc purement decoratif\n{out}")
+    finally:
+        fx.nettoyer()
+
+
+@cas("18 — fichier YAML illisible ET inventaire ampute simultanement : la "
+     "cause (fichier non parsable) s'imprime AVANT le symptome (code 2)")
+def cas_18():
+    fx = Fixture()
+    try:
+        fichiers = []
+        for dossier, _, noms in os.walk(fx.roles):
+            for n in noms:
+                if n.endswith((".yml", ".yaml")):
+                    fichiers.append(os.path.join(dossier, n))
+        fichiers.sort()
+        assert len(fichiers) >= 20, (
+            f"le depot reel n'a plus que {len(fichiers)} fichier(s) de roles : "
+            "ce cas doit etre revu avant qu'il ait un sens")
+        # Ampute l'inventaire (comme cas 9) ET rend illisible un fichier
+        # CONSERVE : les deux causes cohabitent, pour verifier que la seconde
+        # (YAML non parsable) n'est pas avalee par le retour anticipe de la
+        # premiere (inventaire anormal, code 2).
+        a_corrompre = fichiers[0]
+        for p in fichiers[19:]:
+            os.remove(p)
+        with open(a_corrompre, "a", encoding="utf-8") as f:
+            f.write("\n- this: [is, not, valid: yaml\n")
+
+        code, out = fx.executer()
+        assert code == 2, f"code {code}, attendu 2\n{out}"
+        assert "YAML non parsable" in out, (
+            f"la cause (fichier YAML non parsable) doit s'imprimer, pas "
+            f"disparaitre derriere le symptome INVENTAIRE ANORMAL\n{out}")
+        assert os.path.relpath(a_corrompre, fx.roles) in out, (
+            f"le fichier fautif n'est pas nomme\n{out}")
+        assert out.index("YAML non parsable") < out.index("INVENTAIRE ANORMAL"), (
+            f"la cause (YAML non parsable) doit s'imprimer AVANT le symptome "
+            f"(INVENTAIRE ANORMAL), pas apres\n{out}")
+    finally:
+        fx.nettoyer()
+
+
+@cas("19 — tache uri en forme compacte (sans name:) : le nom ne retombe plus "
+     "sur un '?' opaque")
+def cas_19():
+    fx = Fixture()
+    try:
+        taches = fx.charger_role(ROLE_INNOCENT)
+        taches.append({
+            # Pas de cle "name" : forme compacte, 15 appels sur 96 dans le
+            # depot reel l'utilisent deja.
+            "ansible.builtin.uri": {
+                "url": "{{ apim_ss_api_base }}/nouveau-endpoint-forme-compacte",
+            },
+        })
+        fx.ecrire_role(ROLE_INNOCENT, taches)
+        code, out = fx.executer()
+        assert code == 1, f"code {code}, attendu 1\n{out}"
+        assert "NON DECLARE" in out, f"section des appels manquants absente\n{out}"
+        assert "nouveau-endpoint-forme-compacte" in out and ROLE_INNOCENT in out, (
+            f"l'appel en forme compacte n'est pas signale\n{out}")
+        assert f"{ROLE_INNOCENT} — ?" not in out, (
+            f"le nom de la tache est retombe sur '?' — impossible a retrouver "
+            f"dans {ROLE_INNOCENT} quand le linter rougit\n{out}")
+    finally:
+        fx.nettoyer()
+
+
+@cas("20 — doublon de cle top-level 'paths' au contrat : refuse (code 2), "
+     "jamais un ecrasement silencieux")
+def cas_20():
+    fx = Fixture()
+    try:
+        # yaml.safe_dump ne peut pas ecrire un doublon (les cles d'un dict
+        # Python sont uniques) : le doublon est ecrit en texte brut, en
+        # AJOUTANT une seconde cle racine "paths" a la fin du fichier — ce
+        # qui, sous un chargeur nu, ecraserait TOUTE la premiere declaration
+        # (35 chemins) au profit du seul chemin factice ci-dessous.
+        with open(fx.contrat, "a", encoding="utf-8") as f:
+            f.write(textwrap.dedent("""
+                paths:
+                  /rest/apigateway/mutation-banc-doublon:
+                    get:
+                      summary: doublon de cle top-level 'paths' — banc
+                      responses:
+                        "200":
+                          $ref: "#/components/responses/proxied"
+                """))
+        code, out = fx.executer()
+        assert code == 2, (
+            f"code {code}, attendu 2 (contrat illisible : cle 'paths' dupliquee)\n{out}")
+        assert "dupliqu" in out.lower(), (
+            f"le doublon de cle n'est pas signale dans la sortie\n{out}")
+    finally:
+        fx.nettoyer()
+
+
+@cas("21 — methode Jinja a guillemets doubles ({{ \"PUT\" if x else \"POST\" }}) : "
+     "methodes reconnues (pas vides), l'appel non declare est signale")
+def cas_21():
+    fx = Fixture()
+    try:
+        taches = fx.charger_role(ROLE_INNOCENT)
+        taches.append({
+            "name": "Mutation banc : methode Jinja a guillemets doubles",
+            "ansible.builtin.uri": {
+                "url": "{{ apim_ss_api_base }}/nouveau-endpoint-guillemets-doubles",
+                "method": '{{ "PUT" if bk_hdr_id else "POST" }}',
+            },
+        })
+        fx.ecrire_role(ROLE_INNOCENT, taches)
+        code, out = fx.executer()
+        assert code == 1, (
+            f"code {code}, attendu 1 (methodes PUT/POST reconnues, chemin non "
+            f"declare) — methodes probablement retombees a une liste vide\n{out}")
+        assert "NON DECLARE" in out, f"section des appels manquants absente\n{out}"
+        assert "nouveau-endpoint-guillemets-doubles" in out and ROLE_INNOCENT in out, (
+            f"l'appel a methode Jinja a guillemets doubles n'est pas signale\n{out}")
+    finally:
+        fx.nettoyer()
+
+
+@cas("22 — module PyYAML absent (environnement casse) : code 2, jamais 1, "
+     "jamais un traceback brut")
+def cas_22():
+    fx = Fixture()
+    leurre = tempfile.mkdtemp(prefix="lint-contrat-proxy-bench-pyyaml-absent-")
+    try:
+        with open(os.path.join(leurre, "yaml.py"), "w", encoding="utf-8") as f:
+            f.write('raise ImportError("PyYAML absent (simule par le banc)")\n')
+        env = dict(os.environ)
+        env["PYTHONPATH"] = leurre + os.pathsep + env.get("PYTHONPATH", "")
+        env["STOA_LINT_CONTRAT"] = fx.contrat
+        env["STOA_LINT_ROLES"] = fx.roles
+        r = subprocess.run([sys.executable, LINTER], env=env,
+                            capture_output=True, text=True)
+        assert r.returncode == 2, (
+            f"code {r.returncode}, attendu 2 — un module absent est un "
+            f"environnement casse, PAS une violation de politique (1)\n"
+            f"{r.stdout}{r.stderr}")
+        assert "Traceback" not in r.stderr, (
+            f"traceback brut expose a la place d'un diagnostic propre\n{r.stderr}")
+    finally:
+        fx.nettoyer()
+        shutil.rmtree(leurre, ignore_errors=True)
+
+
 def main():
     echecs = []
     for nom, fn in CAS:

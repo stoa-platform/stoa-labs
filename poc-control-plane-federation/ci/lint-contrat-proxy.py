@@ -20,7 +20,19 @@ import os
 import re
 import sys
 
-import yaml
+# Importe APRES capture de l'echec eventuel : un `import yaml` nu, en tete de
+# module, laisse l'interpreteur mourir sur un traceback si PyYAML est absent
+# (environnement casse) — exit code 1, EXACTEMENT le meme code qu'une
+# violation de politique constatee. Un module absent, c'est « je ne peux rien
+# conclure », pas « j'ai verifie et c'est en violation » : code 2, distinct,
+# et un diagnostic lisible plutot qu'un traceback brut.
+try:
+    import yaml
+except ImportError as _erreur_import:
+    print(f"✗ ENVIRONNEMENT CASSE — module Python requis introuvable : {_erreur_import}")
+    print("    Ce linter depend de PyYAML (pip install pyyaml). Sans lui, aucune")
+    print("    verification n'est possible — ce n'est PAS une violation de politique.")
+    sys.exit(2)
 
 RACINE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # Chemins surchargeables : sans cela le linter n'est testable que contre le vrai
@@ -45,11 +57,20 @@ BASE_RE = re.compile(r"^\{\{\s*" + re.escape(BASE_VAR) + r"\s*(\|[^}]*)?\s*\}\}"
 # Planchers d'inventaire. `os.walk` sur un repertoire absent ne leve RIEN : le
 # linter concluait « les 0 appels sont couverts », code 0 — un vert sur du vide.
 # Ces planchers sont GROSSIERS a dessein : ils ne figent pas un compte (31
-# fichiers / 95 appels a ce jour, et ca monte quand des roles arrivent), ils
+# fichiers / 96 appels a ce jour, et ca monte quand des roles arrivent), ils
 # distinguent « inventaire parcouru » de « inventaire absent ou ampute »
 # (checkout partiel, ansible/ non monte, repertoire renomme).
 MIN_FICHIERS_ROLES = 20
-MIN_APPELS = 60
+# Recalibre (mesure sur le depot reel) : a 60, ce plancher etait INATTEIGNABLE.
+# Retirer un role entier (apim_promote_api, 8 fichiers / 24 appels, ou
+# apim_publish_api, 7 fichiers / 29 appels) laisse >= 20 fichiers — le plancher
+# de FICHIERS reste muet — mais ne fait chuter le total qu'a 72 ou 67 appels :
+# un ancien plancher a 60 ne mordait JAMAIS sur ces pertes-la, seul le hasard
+# de l'ordre de parcours (os.walk n'a pas d'ordre garanti) aurait pu le faire
+# mordre ailleurs. Un garde-fou qui ne peut pas se declencher est decoratif —
+# 80 encadre les deux pertes mesurees (72, 67) tout en restant sous le total
+# reel (96), avec la meme marge grossiere que le plancher de fichiers.
+MIN_APPELS = 80
 yaml_errors = []
 
 # Derogations ASSUMEES : appels que le contrat n'autorisera JAMAIS. Chaque entree
@@ -71,8 +92,32 @@ DEROGATIONS = {
 }
 
 
+class _ChargeurContratSansDoublons(yaml.SafeLoader):
+    """SafeLoader qui REFUSE toute cle dupliquee dans un mapping, au lieu de
+    laisser silencieusement la derniere ecraser la precedente — comportement
+    par defaut d'un `yaml.safe_load` nu. Reserve au CONTRAT : un doublon de
+    cle top-level (ex. deux blocs `paths:`) y fait disparaitre des chemins
+    declares SANS UN MOT, dans le sens usage ⊆ contrat — direction fail-closed
+    deja voulue ailleurs dans ce fichier, mais ici totalement MUETTE. Reproduit
+    accidentellement pendant une revue du lot 1."""
+
+    def construct_mapping(self, node, deep=False):
+        vues = set()
+        for cle_node, _ in node.value:
+            cle = self.construct_object(cle_node, deep=deep)
+            if cle in vues:
+                raise yaml.constructor.ConstructorError(
+                    None, None,
+                    f"cle dupliquee dans un mapping du contrat : {cle!r} — la "
+                    "premiere declaration serait ecrasee en silence",
+                    node.start_mark)
+            vues.add(cle)
+        return super().construct_mapping(node, deep=deep)
+
+
 def operations_declarees():
-    doc = yaml.safe_load(open(CONTRAT, encoding="utf-8"))
+    with open(CONTRAT, encoding="utf-8") as f:
+        doc = yaml.load(f, Loader=_ChargeurContratSansDoublons)
     ops = set()
     for chemin, corps in (doc.get("paths") or {}).items():
         for verbe in corps:
@@ -152,6 +197,17 @@ def _texte_commande(val):
     return ""
 
 
+# Guillemets simples OU doubles : `{{ "PUT" if x else "POST" }}` est du Jinja
+# aussi valide que `{{ 'PUT' if x else 'POST' }}`. Une regex ancree sur un SEUL
+# type de guillemet laissait passer l'autre : methodes=[] (liste vide), puis
+# `all(couverte(m, f) for m in [] for f in formes)` — un all() sur un produit
+# vide est VRAI, donc "couverte" sans avoir rien verifie. Pas fail-closed :
+# un FAUX VERT muet. Desormais les deux graphies sont reconnues, ET si aucune
+# des deux ne matche (autre forme non anticipee), l'appel part en suspect
+# plutot que de retomber sur cette liste vide silencieusement "couvrante".
+_METHODE_JINJA_RE = re.compile(r"""(['"])(\w+)\1""")
+
+
 def _voir_url(url, ou, nom, methode_brute, multipart, sortie, suspects):
     """Traite une URL candidate (uri: ou get_url:) : reconnue -> ajoutee a
     `sortie` pour verification contre le contrat ; MENTIONNE la base sans
@@ -159,8 +215,15 @@ def _voir_url(url, ou, nom, methode_brute, multipart, sortie, suspects):
     brief : le linter ne doit jamais preferer le silence au doute)."""
     if base_reconnue(url) is not None:
         brut = str(methode_brute)
-        methodes = ([m.upper() for m in re.findall(r"'(\w+)'", brut)]
-                    if "{{" in brut else [brut.upper()])
+        if "{{" in brut:
+            methodes = [m.upper() for _, m in _METHODE_JINJA_RE.findall(brut)]
+            if not methodes:
+                suspects.append((ou, nom,
+                    f"methode Jinja illisible (ni guillemets simples ni doubles) : "
+                    f"{brut!r}"))
+                return
+        else:
+            methodes = [brut.upper()]
         sortie.append({
             "methodes": methodes,
             "url": url,
@@ -190,21 +253,29 @@ def taches_appels(noeud, fichier, sortie, suspects):
             taches_appels(n, fichier, sortie, suspects)
     elif isinstance(noeud, dict):
         ou = f"{os.path.relpath(fichier, ROLES)}"
-        nom = noeud.get("name", "?")
+        # `name:` absente -> forme compacte (15 appels sur 96 dans le depot
+        # reel). Un repli sur "?" nu est illisible : gener precisement quand
+        # le linter rougit et qu'il faut retrouver la tache dans le fichier.
+        # Le repli embarque l'URL (ou le texte de commande) — greppable dans
+        # `ou` — plutot qu'un symbole opaque.
+        nom_declare = noeud.get("name")
         for cle, val in noeud.items():
             if cle in MODULES_URI and isinstance(val, dict):
                 url = val.get("url", "")
                 if isinstance(url, str):
+                    nom = nom_declare or f"(sans name: ; uri {url})"
                     _voir_url(url, ou, nom, val.get("method", "GET"),
                               val.get("body_format") == "form-multipart",
                               sortie, suspects)
             elif cle in MODULES_GET_URL and isinstance(val, dict):
                 url = val.get("url", "")
                 if isinstance(url, str):
+                    nom = nom_declare or f"(sans name: ; get_url {url})"
                     _voir_url(url, ou, nom, "GET", False, sortie, suspects)
             elif cle in MODULES_COMMANDE:
                 texte = _texte_commande(val)
                 if "curl" in texte and BASE_VAR in texte:
+                    nom = nom_declare or "(sans name: ; command/shell avec curl)"
                     suspects.append((ou, nom,
                         "command:/shell: contenant curl et " + BASE_VAR))
             else:
@@ -249,8 +320,32 @@ def inventaire_suspect(trouves, fichiers_vus):
 
 def main():
     global yaml_errors
-    declarees, doc = operations_declarees()
+    try:
+        declarees, doc = operations_declarees()
+    except OSError as e:
+        print(f"✗ CONTRAT INTROUVABLE — {CONTRAT} n'a pas pu etre ouvert :")
+        print(f"    {e}")
+        print("    Checkout partiel, ou STOA_LINT_CONTRAT errone ? Aucune verification")
+        print("    possible — ce n'est PAS une violation de politique : code 2.")
+        return 2
+    except yaml.YAMLError as e:
+        print(f"✗ CONTRAT ILLISIBLE — {CONTRAT} n'a pas pu etre charge :")
+        print(f"    {e}")
+        print("    YAML invalide, ou cle dupliquee (un chemin declare pourrait avoir")
+        print("    ete ecrase en silence). Aucune verification possible : code 2.")
+        return 2
     trouves, suspects, fichiers_vus = appels()
+
+    # La cause AVANT le symptome : un fichier YAML de roles illisible peut a
+    # la fois ecarter des appels (yaml_errors) ET faire chuter l'inventaire
+    # sous les planchers ci-dessous (anomalie -> code 2, retour immediat).
+    # Imprimer yaml_errors seulement plus loin dans le rapport (comme avant)
+    # laissait ce retour anticipe avaler la cause : l'utilisateur recevait
+    # « inventaire anormal » sans jamais voir QUEL fichier etait en cause.
+    if yaml_errors:
+        print(f"✗ {len(yaml_errors)} fichier(s) YAML non parsable :")
+        for p, e in sorted(yaml_errors):
+            print(f"    {p}\n           {e}")
 
     anomalie = inventaire_suspect(trouves, fichiers_vus)
     if anomalie:
@@ -320,10 +415,9 @@ def main():
         for (m, c, ou), motif in sorted(DEROGATIONS.items()):
             print(f"    {m:6} {c}\n           {ou}\n           {motif}")
     if yaml_errors:
+        # Deja imprime plus haut (la cause, avant le symptome eventuel) :
+        # ici, seul l'effet sur le code de sortie reste a acter.
         ko = 1
-        print(f"✗ {len(yaml_errors)} fichier(s) YAML non parsable :")
-        for p, e in sorted(yaml_errors):
-            print(f"    {p}\n           {e}")
     deletes = deletes_au_contrat(declarees)
     if deletes:
         ko = 1
