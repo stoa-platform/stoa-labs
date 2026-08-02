@@ -261,6 +261,33 @@ def cas_9():
         fx.nettoyer()
 
 
+@cas("10 — delete: ajoute au contrat SOUS le chemin deja deroge : code 1, "
+     "jamais « aucun DELETE »")
+def cas_10():
+    fx = Fixture()
+    try:
+        doc = fx.charger_contrat()
+        doc["paths"]["/rest/apigateway/strategies/{id}"]["delete"] = {
+            "summary": "mutation banc — DELETE non autorise, meme chemin que la derogation",
+            "responses": {"200": {"$ref": "#/components/responses/proxied"}},
+        }
+        fx.ecrire_contrat(doc)
+        code, out = fx.executer()
+        assert code == 1, f"code {code}, attendu 1\n{out}"
+        assert "DELETE DECLARE" in out, (
+            f"le garde contrat ⊆ politique ne s'est pas declenche\n{out}")
+        assert "strategies/{id}" in out, f"le chemin fautif n'est pas signale\n{out}"
+        # La derogation couvre un APPEL de role qui contourne le proxy, jamais
+        # une DECLARATION au contrat : les deux sens sont distincts, et le
+        # bilan ne doit jamais affirmer « aucun DELETE » quand un DELETE est
+        # declare au contrat.
+        assert "aucun DELETE" not in out, (
+            f"le bilan affirme a tort « aucun DELETE » alors qu'un DELETE est "
+            f"declare au contrat sous le chemin deroge\n{out}")
+    finally:
+        fx.nettoyer()
+
+
 def main():
     echecs = []
     for nom, fn in CAS:

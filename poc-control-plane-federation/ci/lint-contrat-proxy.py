@@ -71,12 +71,15 @@ def operations_declarees():
 def deletes_au_contrat(declarees):
     """Contrat ⊆ politique : ADR-075 n'admet AUCUN DELETE via le proxy.
 
-    Le rollback est un re-apply depuis Git, jamais une suppression. Seule une
-    cle de derogation, nommee et motivee, fait exception.
+    Le rollback est un re-apply depuis Git, jamais une suppression. AUCUNE
+    exception : une cle de DEROGATIONS couvre un appel de role qui contourne
+    le proxy (acces direct, hors chaine CI), pas une declaration au contrat.
+    Les deux sens sont distincts — tolerer ici le couple (methode, chemin)
+    d'une derogation reviendrait a laisser un `delete:` ajoute au contrat
+    sous ce chemin passer au vert, ce que le motif de la derogation exclut
+    explicitement.
     """
-    toleres = {(m, c) for (m, c, _) in DEROGATIONS}
-    return sorted((m, c) for (m, c) in declarees
-                  if m == "DELETE" and (m, c) not in toleres)
+    return sorted((m, c) for (m, c) in declarees if m == "DELETE")
 
 
 def variantes(url):
