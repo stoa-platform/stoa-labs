@@ -98,7 +98,29 @@ pipeline {
             grep -qE '^[[:space:]]*name:' "$MANIFEST" && grep -qE '^[[:space:]]*contract:' "$MANIFEST" \
               || { echo "manifeste incomplet (name/contract requis)"; exit 1; }
             ansible-playbook -i "$INVENTORY" ansible/publish-api.yml --syntax-check
-            echo "  ✓ manifeste valide + playbook syntaxiquement correct (aucune mutation)"
+
+            # ── GARDE-FOUS DU PROXY D'ADMIN (ADR-075) ──────────────────────
+            # Ici et pas ailleurs : cette étape est la SEULE lecture seule sans
+            # identité, déclenchée à CHAQUE push/PR par le webhook — donc la
+            # seule à s'exécuter AVANT qu'un humain n'engage son identité
+            # nominative. Les deux vérifications ne touchent ni gateway ni
+            # Vault : rien ne justifierait de les repousser à l'apply, et les
+            # dupliquer dans Jenkinsfile.selfservice rejouerait à l'identique
+            # un contrôle dépôt-entier, pour zéro signal supplémentaire.
+            #
+            # 1) usage ⊆ contrat ET contrat ⊆ politique — un appel de rôle non
+            #    déclaré rendrait 404 à la bascule proxy-oauth2 (invisible en
+            #    ADMIN_VIA=direct), et un `delete:` glissé au contrat violerait
+            #    l'invariant « aucun DELETE » sans qu'aucun appelant ne le
+            #    révèle. Échoue aussi si l'inventaire de rôles est vide/amputé.
+            python3 ci/lint-contrat-proxy.py
+            # 2) la base du proxy composée depuis ses morceaux vaut TOUJOURS
+            #    l'URL entière d'avant la proxification — sur les DEUX
+            #    Jenkinsfile, défauts relus dans les fichiers réels. Exige
+            #    l'historique git (clone non superficiel) : cf. STOA_BASE_REF.
+            sh ci/test-proxy-base-et-preflight.sh
+
+            echo "  ✓ manifeste valide + playbook syntaxiquement correct + garde-fous du proxy (aucune mutation)"
           '''
         }
       }

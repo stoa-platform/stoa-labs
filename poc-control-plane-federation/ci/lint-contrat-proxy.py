@@ -5,6 +5,13 @@ Hors contrat -> 404 (ADR-075). Un appel non declare ne casse donc QU'EN mode
 proxy-oauth2, jamais en direct : le defaut est invisible tant qu'on teste en
 direct. Ce linter le rend opposable sans gateway.
 
+Il verifie DEUX sens, pas un seul :
+  - usage ⊆ contrat : tout appel des roles est declare (sinon 404 a la bascule) ;
+  - contrat ⊆ politique : AUCUN `delete:` au contrat (invariant phare d'ADR-075),
+    sauf s'il correspond a une cle de derogation nommee et motivee.
+Ne verifier que le premier sens laissait passer un `delete:` ajoute au contrat
+sans appelant — c'est-a-dire exactement la regression que l'invariant interdit.
+
 Sans argument : verifie. `--liste` : imprime l'inventaire des appels.
 """
 import os
@@ -18,12 +25,23 @@ CONTRAT = os.path.join(RACINE, "gateways/webmethods/admin-proxy/wm-admin-proxy.o
 ROLES = os.path.join(RACINE, "ansible/roles")
 PREFIXE = "/rest/apigateway"
 BASE = "{{ apim_ss_api_base }}"
+# Planchers d'inventaire. `os.walk` sur un repertoire absent ne leve RIEN : le
+# linter concluait « les 0 appels sont couverts », code 0 — un vert sur du vide.
+# Ces planchers sont GROSSIERS a dessein : ils ne figent pas un compte (31
+# fichiers / 95 appels a ce jour, et ca monte quand des roles arrivent), ils
+# distinguent « inventaire parcouru » de « inventaire absent ou ampute »
+# (checkout partiel, ansible/ non monte, repertoire renomme).
+MIN_FICHIERS_ROLES = 20
+MIN_APPELS = 60
 yaml_errors = []
 
 # Derogations ASSUMEES : appels que le contrat n'autorisera JAMAIS. Chaque entree
-# porte son motif — une derogation sans motif est un oubli deguise.
+# porte son motif — une derogation sans motif est un oubli deguise — ET le
+# fichier de role qui la porte : une derogation vaut pour l'appelant NOMME au
+# motif, pas pour tout appelant futur du meme couple methode/chemin.
 DEROGATIONS = {
-    ("DELETE", "/rest/apigateway/strategies/{id}"):
+    ("DELETE", "/rest/apigateway/strategies/{id}",
+     "ansible/roles/apim_selfservice_app/tasks/rotate-strategy.yml"):
         "ADR-075 interdit tout DELETE via le proxy. La rotation d'identifiants "
         "(apim_selfservice_app/tasks/rotate-strategy.yml) reste un geste "
         "d'exploitation en acces direct, hors chaine CI.",
@@ -38,6 +56,17 @@ def operations_declarees():
             if verbe.lower() in ("get", "put", "post", "delete", "patch"):
                 ops.add((verbe.upper(), chemin))
     return ops, doc
+
+
+def deletes_au_contrat(declarees):
+    """Contrat ⊆ politique : ADR-075 n'admet AUCUN DELETE via le proxy.
+
+    Le rollback est un re-apply depuis Git, jamais une suppression. Seule une
+    cle de derogation, nommee et motivee, fait exception.
+    """
+    toleres = {(m, c) for (m, c, _) in DEROGATIONS}
+    return sorted((m, c) for (m, c) in declarees
+                  if m == "DELETE" and (m, c) not in toleres)
 
 
 def variantes(url):
@@ -87,11 +116,12 @@ def taches_uri(noeud, fichier, sortie):
 
 def appels():
     global yaml_errors
-    trouves = []
+    trouves, fichiers_vus = [], 0
     for dossier, _, fichiers in os.walk(ROLES):
         for f in fichiers:
             if not f.endswith((".yml", ".yaml")):
                 continue
+            fichiers_vus += 1
             p = os.path.join(dossier, f)
             try:
                 doc = yaml.safe_load(open(p, encoding="utf-8"))
@@ -99,13 +129,39 @@ def appels():
                 yaml_errors.append((os.path.relpath(p, RACINE), str(e)))
                 continue
             taches_uri(doc, p, trouves)
-    return trouves
+    return trouves, fichiers_vus
+
+
+def inventaire_suspect(trouves, fichiers_vus):
+    """Un inventaire vide ou ampute doit ECHOUER BRUYAMMENT, pas rendre un vert.
+
+    Sans ce garde, `ROLES` pointant sur un repertoire absent donnait
+    « ✓ les 0 appels des roles sont couverts », code 0 : le linter affirmait
+    couvrir ce qu'il n'avait meme pas regarde.
+    """
+    if not os.path.isdir(ROLES):
+        return f"repertoire de roles INTROUVABLE : {ROLES}"
+    if fichiers_vus < MIN_FICHIERS_ROLES:
+        return (f"{fichiers_vus} fichier(s) YAML parcouru(s) sous {ROLES} — "
+                f"plancher attendu : {MIN_FICHIERS_ROLES}")
+    if len(trouves) < MIN_APPELS:
+        return (f"{len(trouves)} appel(s) releve(s) dans les roles — "
+                f"plancher attendu : {MIN_APPELS}")
+    return None
 
 
 def main():
     global yaml_errors
     declarees, doc = operations_declarees()
-    trouves = appels()
+    trouves, fichiers_vus = appels()
+
+    suspect = inventaire_suspect(trouves, fichiers_vus)
+    if suspect:
+        print("✗ INVENTAIRE ANORMAL — ce linter n'a rien verifie et ne peut RIEN conclure :")
+        print(f"    {suspect}")
+        print("    Checkout partiel, ansible/ non monte, ou repertoire renomme ?")
+        print("    Un vert sur un inventaire vide serait un faux garde-fou : code 2.")
+        return 2
 
     if "--liste" in sys.argv:
         for a in sorted(trouves, key=lambda x: (x["url"], x["methodes"])):
@@ -119,12 +175,12 @@ def main():
         # Double couverture : chaque forme doit être couverte par au moins une méthode,
         # ET chaque méthode doit être couverte par au moins une forme. Une derogation
         # assumee couvre au meme titre qu'une declaration : un appel derogé n'est pas
-        # un appel manquant.
+        # un appel manquant — mais SEULEMENT depuis le fichier de role nomme au motif.
         forms_covered = all(
-            any((m, f) in declarees or (m, f) in DEROGATIONS for m in a["methodes"])
+            any((m, f) in declarees or (m, f, a["ou"]) in DEROGATIONS for m in a["methodes"])
             for f in formes)
         methods_covered = all(
-            any((m, f) in declarees or (m, f) in DEROGATIONS for f in formes)
+            any((m, f) in declarees or (m, f, a["ou"]) in DEROGATIONS for f in formes)
             for m in a["methodes"])
         if not (forms_covered and methods_covered):
             manquants.append(("/".join(a["methodes"]), sorted(formes)[0], a["ou"], a["nom"]))
@@ -148,13 +204,20 @@ def main():
     ko = 0
     if DEROGATIONS:
         print(f"ℹ {len(DEROGATIONS)} derogation(s) assumee(s) :")
-        for (m, c), motif in sorted(DEROGATIONS.items()):
-            print(f"    {m:6} {c}\n           {motif}")
+        for (m, c, ou), motif in sorted(DEROGATIONS.items()):
+            print(f"    {m:6} {c}\n           {ou}\n           {motif}")
     if yaml_errors:
         ko = 1
         print(f"✗ {len(yaml_errors)} fichier(s) YAML non parsable :")
         for p, e in sorted(yaml_errors):
             print(f"    {p}\n           {e}")
+    deletes = deletes_au_contrat(declarees)
+    if deletes:
+        ko = 1
+        print(f"✗ {len(deletes)} DELETE DECLARE(S) AU CONTRAT — ADR-075 n'en admet aucun :")
+        for m, c in deletes:
+            print(f"    {m:6} {c}\n           le rollback est un re-apply depuis Git, jamais une "
+                  f"suppression : retirer du contrat, ou l'assumer en derogation motivee.")
     if manquants:
         ko = 1
         print(f"✗ {len(manquants)} appel(s) NON DECLARE(S) — 404 a travers le proxy :")
@@ -166,8 +229,8 @@ def main():
         for m, c, ou, nom in sorted(set(sans_multipart)):
             print(f"    {m:6} {c}\n           {ou} — {nom}")
     if not ko:
-        print(f"✓ les {len(trouves)} appels des roles sont couverts par le contrat "
-              f"({len(declarees)} operations declarees)")
+        print(f"✓ les {len(trouves)} appels des roles ({fichiers_vus} fichiers parcourus) sont "
+              f"couverts par le contrat ({len(declarees)} operations declarees, aucun DELETE)")
     return ko
 
 

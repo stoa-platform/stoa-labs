@@ -1,13 +1,64 @@
 #!/bin/sh
 # Rejoue la logique exacte injectee dans les deux Jenkinsfile, sous `set -eu`,
 # avec un curl simule. Verifie composition de la base proxy + preflight optionnel.
+#
+# CE QUE CE TEST LIT VRAIMENT — et ne code plus en dur :
+#   - l'ANCIEN defaut = l'URL entiere ecrite dans le Jenkinsfile AVANT cette
+#     branche, relue par `git show <base>:<fichier>` ;
+#   - les defauts APIM_PROXY_* = extraits par sed sur CHAQUE Jenkinsfile REEL ;
+#   - la ligne de composition elle-meme = extraite de CHAQUE Jenkinsfile REEL ;
+#   - les defauts du preflight (codes de preuve de vie, nombre d'essais) = idem.
+# Le premier jet codait les DEUX cotes de l'assertion « defauts => identique a
+# l'ancien defaut » dans le test : il comparait deux constantes du test entre
+# elles et restait VERT alors qu'un defaut du Jenkinsfile avait rompu la
+# retro-compatibilite. Un test qui ne lit pas son sujet ne teste rien.
+#
+# Boucle sur les DEUX Jenkinsfile : rien ne garantit qu'ils restent alignes.
 set -eu
 
-ANCIEN_DEFAUT="http://webmethods-real:5555/gateway/wm-admin-self/1.0/rest/apigateway"
+ICI="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"   # .../poc-control-plane-federation/ci
+POC="$(dirname "$ICI")"                                 # .../poc-control-plane-federation
+RACINE="$(dirname "$POC")"                              # racine du depot
+SOUS_POC="$(basename "$POC")"
+# Commit de base de la branche : l'etat d'AVANT la proxification par morceaux.
+# Surchargeable pour rejouer le test contre un autre point de comparaison.
+BASE_REF="${STOA_BASE_REF:-92b846f}"
+JENKINSFILES="Jenkinsfile.publish-api Jenkinsfile.selfservice"
+
 KO=0
 ok(){ printf '  ok   %s\n' "$1"; }
 ko(){ printf '  KO   %s\n     attendu=[%s]\n     obtenu =[%s]\n' "$1" "$2" "$3"; KO=$((KO+1)); }
 cmp_(){ [ "$2" = "$3" ] && ok "$1" || ko "$1" "$2" "$3"; }
+# Un prerequis manquant n'est PAS un test qui passe : le test s'arrete en 2.
+fatal(){ printf '  !!   %s\n' "$1" >&2; exit 2; }
+
+TMPD="$(mktemp -d)"; trap 'rm -rf "$TMPD"' EXIT
+
+# ---- lecture des Jenkinsfile ---------------------------------------------
+# Defaut Groovy d'une variable d'environnement : `X = "${env.X ?: 'valeur'}"`.
+# Prefixe '=' dans la sortie pour distinguer « absent » (sortie vide) de
+# « present et vide » (sortie '='), le cas d'APIM_PROXY_BASE.
+defaut_env(){ sed -n "s/^[[:space:]]*$2[[:space:]]*=.*?:[[:space:]]*'\([^']*\)'.*/=\1/p" "$1" | head -1; }
+lire_defaut(){
+  V="$(defaut_env "$1" "$2")"
+  [ -n "$V" ] || fatal "$2 : aucun defaut Groovy dans $1 — le test ne peut rien affirmer"
+  printf '%s' "${V#=}"
+}
+# Defaut shell d'une variable du corps du pipeline : `X="${ENV_VAR:-valeur}"`.
+defaut_sh(){ sed -n "s/^[[:space:]]*$2=\"[\$]{$3:-\(.*\)}\".*/=\1/p" "$1" | head -1; }
+lire_defaut_sh(){
+  V="$(defaut_sh "$1" "$2" "$3")"
+  [ -n "$V" ] || fatal "$2 (\${$3:-...}) : introuvable dans $1 — le test ne peut rien affirmer"
+  printf '%s' "${V#=}"
+}
+# Les lignes d'affectation de PROXY_BASE, telles qu'elles sont ecrites.
+ligne_pb(){ sed -n 's/^[[:space:]]*\(PROXY_BASE=.*\)$/\1/p' "$1" | grep -F "$2" | head -1; }
+
+# ---- l'ANCIEN defaut : relu dans le Jenkinsfile d'AVANT la branche --------
+git -C "$RACINE" show "$BASE_REF:$SOUS_POC/ci/Jenkinsfile.publish-api" > "$TMPD/base.groovy" 2>/dev/null \
+  || fatal "impossible de lire $BASE_REF:$SOUS_POC/ci/Jenkinsfile.publish-api (clone superficiel ? commit absent ?) — poser STOA_BASE_REF"
+ANCIEN_DEFAUT="$(lire_defaut "$TMPD/base.groovy" APIM_PROXY_BASE)"
+printf 'ancien defaut (%s) : %s\n\n' "$BASE_REF" "$ANCIEN_DEFAUT"
 
 # ---- bloc 1 : composition de la base du proxy (copie conforme) ----
 compose(){
@@ -17,37 +68,66 @@ compose(){
   fi
   printf '%s' "$PROXY_BASE"
 }
-defauts(){
-  APIM_PROXY_HOST=http://webmethods-real:5555
-  APIM_PROXY_API=wm-admin-self
-  APIM_PROXY_VER=1.0
-  APIM_PROXY_PATH=/rest/apigateway
-  unset APIM_PROXY_BASE 2>/dev/null || true
-}
+# Les deux lignes que `compose()` transcrit. Comparees LITTERALEMENT a celles du
+# Jenkinsfile : sans quoi la « copie conforme » peut diverger sans que rien ne
+# le dise, et le reste du bloc ne mesurerait plus le pipeline reel.
+COMPO_ATTENDUE='PROXY_BASE="${APIM_PROXY_HOST}/gateway/${APIM_PROXY_API}/${APIM_PROXY_VER}${APIM_PROXY_PATH}"'
+OVERRIDE_ATTENDU='PROXY_BASE="${APIM_PROXY_BASE:-}"'
+# Defauts du preflight transcrits dans `preflight()` ci-dessous.
+PF_CODES_REJOUES='200 401'
+PF_MAX_REJOUE='60'
 
-echo "== composition de la base proxy =="
-defauts
-cmp_ "defauts => identique a l'ancien defaut" "$ANCIEN_DEFAUT" "$(compose)"
+for JF in $JENKINSFILES; do
+  F="$POC/ci/$JF"
+  [ -f "$F" ] || fatal "$F introuvable"
+  echo "== $JF : composition de la base proxy =="
 
-defauts; APIM_PROXY_API=wm-admin-prod
-cmp_ "le NOM seul est surchargeable" \
-  "http://webmethods-real:5555/gateway/wm-admin-prod/1.0/rest/apigateway" "$(compose)"
+  # Defauts LUS dans ce Jenkinsfile — plus aucune valeur codee dans le test.
+  D_HOST="$(lire_defaut "$F" APIM_PROXY_HOST)"
+  D_API="$(lire_defaut  "$F" APIM_PROXY_API)"
+  D_VER="$(lire_defaut  "$F" APIM_PROXY_VER)"
+  D_PATH="$(lire_defaut "$F" APIM_PROXY_PATH)"
+  D_BASE="$(defaut_env  "$F" APIM_PROXY_BASE)"
+  [ -n "$D_BASE" ] || fatal "APIM_PROXY_BASE : aucun defaut Groovy dans $F"
+  D_BASE="${D_BASE#=}"
 
-defauts; APIM_PROXY_HOST=https://apim.vip.interne:5543; APIM_PROXY_API=admin-proxy; APIM_PROXY_VER=2
-cmp_ "hote + nom + version" \
-  "https://apim.vip.interne:5543/gateway/admin-proxy/2/rest/apigateway" "$(compose)"
+  defauts(){
+    APIM_PROXY_HOST="$D_HOST"; APIM_PROXY_API="$D_API"
+    APIM_PROXY_VER="$D_VER";   APIM_PROXY_PATH="$D_PATH"
+    APIM_PROXY_BASE="$D_BASE"
+  }
 
-defauts; APIM_PROXY_BASE=https://edge.client/adm/v1
-cmp_ "override complet gagne" "https://edge.client/adm/v1" "$(compose)"
+  cmp_ "la ligne d'override est bien celle rejouee" "$OVERRIDE_ATTENDU" "$(ligne_pb "$F" 'APIM_PROXY_BASE')"
+  cmp_ "la ligne de composition est bien celle rejouee" "$COMPO_ATTENDUE" "$(ligne_pb "$F" 'APIM_PROXY_HOST')"
+  cmp_ "APIM_PROXY_BASE par defaut VIDE (sinon la composition ne sert jamais)" "" "$D_BASE"
 
-defauts; APIM_PROXY_BASE=""
-cmp_ "override VIDE (Jenkins n'exporte pas) => retombe sur la composition" \
-  "$ANCIEN_DEFAUT" "$(compose)"
+  defauts
+  cmp_ "defauts du Jenkinsfile => identique a l'ancien defaut" "$ANCIEN_DEFAUT" "$(compose)"
+
+  defauts; APIM_PROXY_API=wm-admin-prod
+  cmp_ "le NOM seul est surchargeable" \
+    "${D_HOST}/gateway/wm-admin-prod/${D_VER}${D_PATH}" "$(compose)"
+
+  defauts; APIM_PROXY_HOST=https://apim.vip.interne:5543; APIM_PROXY_API=admin-proxy; APIM_PROXY_VER=2
+  cmp_ "hote + nom + version" \
+    "https://apim.vip.interne:5543/gateway/admin-proxy/2${D_PATH}" "$(compose)"
+
+  defauts; APIM_PROXY_BASE=https://edge.client/adm/v1
+  cmp_ "override complet gagne" "https://edge.client/adm/v1" "$(compose)"
+
+  defauts; APIM_PROXY_BASE=""
+  cmp_ "override VIDE (Jenkins n'exporte pas) => retombe sur la composition" \
+    "$ANCIEN_DEFAUT" "$(compose)"
+
+  echo "== $JF : defauts du preflight =="
+  cmp_ "codes de preuve de vie" "$PF_CODES_REJOUES" "$(lire_defaut_sh "$F" PF_CODES APIM_PREFLIGHT_CODES)"
+  cmp_ "nombre d'essais"        "$PF_MAX_REJOUE"    "$(lire_defaut_sh "$F" PF_MAX   APIM_PREFLIGHT_TRIES)"
+done
 
 # ---- bloc 2 : preflight (copie conforme, curl simule) ----
 # Le compteur passe par FICHIER : curl est appele dans $( ), donc dans un
 # sous-shell, ou une variable ne survivrait pas (piege du premier jet).
-CURL_SEQ=""; CNT="$(mktemp)"; trap "rm -f $CNT" EXIT
+CURL_SEQ=""; CNT="$TMPD/cnt"
 curl(){
   N=$(( $(cat $CNT 2>/dev/null || echo 0) + 1 )); echo "$N" > $CNT
   printf '%s' "$(echo "$CURL_SEQ" | cut -d, -f$N)"

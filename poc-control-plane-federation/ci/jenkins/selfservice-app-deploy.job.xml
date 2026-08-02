@@ -107,8 +107,8 @@
              changent pas sur ce lab. ── -->
         <hudson.model.StringParameterDefinition>
           <name>APIM_PROXY_HOST</name>
-          <description>Cluster : hôte portant l'API proxy d'admin. Le default du Jenkinsfile vise webmethods-real (docker-compose), inexistant ici — d'où cette surcharge. N'a d'effet qu'avec ADMIN_VIA=proxy-oauth2, et suppose le proxy réellement déployé.</description>
-          <defaultValue>http://wm-apigateway-admin.wm.svc.cluster.local:5555</defaultValue>
+          <description>Hôte portant l'API proxy d'admin. N'a d'effet qu'avec ADMIN_VIA=proxy-oauth2. DÉFAUT VOLONTAIREMENT DOCKER-COMPOSE (webmethods-real, hôte INEXISTANT dans le cluster) TANT QUE LA TÂCHE 6 N'A PAS POSÉ LE PROXY : viser déjà wm-apigateway-admin.wm.svc.cluster.local désignerait un hôte RÉEL où l'API wm-admin-self n'existe pas. Le préflight accepte 200 ET 401 comme preuve de vie ; si la gateway répond 401 sur une API absente, il conclut « up », le build consomme l'identité Vault NOMINATIVE puis meurt au milieu du play — exactement l'échec cryptique que ce préflight existe pour éviter. Un hôte inexistant, lui, échoue franchement AVANT la consommation d'identité. À basculer sur http://wm-apigateway-admin.wm.svc.cluster.local:5555 (Service d'administration ÉPINGLÉ, jamais le Service réparti) le jour où le proxy est réellement déployé — le paramètre reste réglable build par build d'ici là.</description>
+          <defaultValue>http://webmethods-real:5555</defaultValue>
           <trim>true</trim>
         </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>
