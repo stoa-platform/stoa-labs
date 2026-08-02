@@ -205,6 +205,43 @@ paths:
       requestBody: { $ref: "#/components/requestBodies/passthrough" }
       responses:
         "200": { $ref: "#/components/responses/proxied" }
+  /rest/apigateway/accessProfiles:
+    get:
+      summary: >-
+        List access profiles — une team EST un accessProfile sur 10.15. Lecture
+        prealable obligatoire : /assets/team n'accepte que des UUID, jamais un nom.
+      responses:
+        "200": { $ref: "#/components/responses/proxied" }
+  /rest/apigateway/assets/team:
+    post:
+      summary: >-
+        Cloisonner un asset (API ou Application) sur une ou plusieurs teams.
+        assetType est OBLIGATOIRE : sans lui la 10.15 rend 200 SANS RIEN FAIRE.
+      requestBody: { $ref: "#/components/requestBodies/passthrough" }
+      responses:
+        "200": { $ref: "#/components/responses/proxied" }
+  /rest/apigateway/archive:
+    get:
+      summary: Exporter des APIs en archive (promotion inter-env, ADR-079)
+      parameters:
+        - name: apis
+          in: query
+          required: true
+          description: GUID de l'API a exporter
+          schema: { type: string }
+      responses:
+        "200": { $ref: "#/components/responses/proxied" }
+    post:
+      summary: Importer une archive (promotion 0-coupure) — envoi en multipart
+      parameters:
+        - name: overwrite
+          in: query
+          required: false
+          description: Types d'assets a ecraser a l'import
+          schema: { type: string }
+      requestBody: { $ref: "#/components/requestBodies/passthroughJsonOrMultipart" }
+      responses:
+        "200": { $ref: "#/components/responses/proxied" }
 components:
   parameters:
     id:
