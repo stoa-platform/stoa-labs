@@ -21,8 +21,12 @@ import sys
 import yaml
 
 RACINE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CONTRAT = os.path.join(RACINE, "gateways/webmethods/admin-proxy/wm-admin-proxy.openapi.yaml")
-ROLES = os.path.join(RACINE, "ansible/roles")
+# Chemins surchargeables : sans cela le linter n'est testable que contre le vrai
+# depot, ce qui a oblige chaque revue a muter des fichiers suivis puis a les
+# restaurer a la main. Les defauts restent le depot reel.
+CONTRAT = os.environ.get("STOA_LINT_CONTRAT") or os.path.join(
+    RACINE, "gateways/webmethods/admin-proxy/wm-admin-proxy.openapi.yaml")
+ROLES = os.environ.get("STOA_LINT_ROLES") or os.path.join(RACINE, "ansible/roles")
 PREFIXE = "/rest/apigateway"
 BASE = "{{ apim_ss_api_base }}"
 # Planchers d'inventaire. `os.walk` sur un repertoire absent ne leve RIEN : le
@@ -39,9 +43,15 @@ yaml_errors = []
 # porte son motif — une derogation sans motif est un oubli deguise — ET le
 # fichier de role qui la porte : une derogation vaut pour l'appelant NOMME au
 # motif, pas pour tout appelant futur du meme couple methode/chemin.
+#
+# Le chemin de la cle est ANCRE SUR ROLES (pas RACINE) : c'est la meme
+# convention que le champ "ou" pose par taches_uri(). Ancrer sur RACINE cassait
+# des que ROLES etait surcharge hors de RACINE/ansible/roles — le chemin
+# devenait un "../../../.." absurde et la derogation ne matchait plus jamais
+# (mesure en preparant ce plan).
 DEROGATIONS = {
     ("DELETE", "/rest/apigateway/strategies/{id}",
-     "ansible/roles/apim_selfservice_app/tasks/rotate-strategy.yml"):
+     "apim_selfservice_app/tasks/rotate-strategy.yml"):
         "ADR-075 interdit tout DELETE via le proxy. La rotation d'identifiants "
         "(apim_selfservice_app/tasks/rotate-strategy.yml) reste un geste "
         "d'exploitation en acces direct, hors chaine CI.",
@@ -107,7 +117,7 @@ def taches_uri(noeud, fichier, sortie):
                         "methodes": methodes,
                         "url": url,
                         "multipart": val.get("body_format") == "form-multipart",
-                        "ou": f"{os.path.relpath(fichier, RACINE)}",
+                        "ou": f"{os.path.relpath(fichier, ROLES)}",
                         "nom": noeud.get("name", "?"),
                     })
             else:
@@ -126,7 +136,7 @@ def appels():
             try:
                 doc = yaml.safe_load(open(p, encoding="utf-8"))
             except yaml.YAMLError as e:
-                yaml_errors.append((os.path.relpath(p, RACINE), str(e)))
+                yaml_errors.append((os.path.relpath(p, ROLES), str(e)))
                 continue
             taches_uri(doc, p, trouves)
     return trouves, fichiers_vus
