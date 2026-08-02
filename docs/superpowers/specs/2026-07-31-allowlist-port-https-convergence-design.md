@@ -191,32 +191,44 @@ lab**, ce qui disqualifie tout mécanisme reposant sur un inventaire statique.
 
 ### État de la proxification (ADR-075)
 
+*Mesuré le 2026-07-31 : trois trous avaient alors été relevés côté contrat, sans
+compter `POST /archive` — quatre endpoints manquaient en tout (`GET
+/accessProfiles`, `POST /assets/team`, `GET /archive`, `POST /archive`), plus le
+multipart de `POST`/`PUT /apis` non déclaré. Le lot 1 les a comblés depuis
+(commits `aaedb85`, `2f821ae`). Ce qui suit décrit l'état **au HEAD de cette
+branche**, pas l'état du 31 juillet — sans quoi les deux dates se
+contrediraient silencieusement.*
+
 Livrée en docker-compose : trois APIs sœurs `wm-admin-{dev,rec,int}` et un
 self-proxy `wm-admin-self`, contrat OpenAPI en allow-list, aucun `DELETE`, hors
-contrat → 404, entrée OAuth2 scopée. Le contrat couvre déjà le cycle de vie des
-API (`POST /apis`, `PUT /apis/{id}`, `activate`, `deactivate`, `versions`) et
-des applications (`GET`/`POST /applications`, `PUT /applications/{id}/apis`).
+contrat → 404, entrée OAuth2 scopée. Le contrat couvre aujourd'hui **21
+chemins** et **2 corps de requête** (`passthrough`,
+`passthroughJsonOrMultipart`) : le cycle de vie des API (`POST /apis`, `PUT
+/apis/{id}`, `activate`, `deactivate`, `versions`), des applications
+(`GET`/`POST /applications`, `PUT /applications/{id}/apis`), le cloisonnement
+d'équipe (`GET /accessProfiles`, `POST /assets/team`) et la promotion par
+archive (`GET`/`POST /archive`, ce dernier en multipart). Les quatre endpoints
+mesurés absents en juillet sont donc tous déclarés au contrat aujourd'hui.
 
-**Quatre trous mesurés :**
+**Deux trous restent ouverts :**
 
-1. Les rôles Ansible appellent `GET /accessProfiles`, `POST /assets/team`
-   (scoping d'équipe) et `GET /archive` — **absents du contrat**, donc 404 à
-   travers le proxy. Une chaîne complète passée par le proxy tombe aujourd'hui.
-2. `POST /archive` (import d'archive, promotion 0-coupure) est **également
-   absent du contrat** — et c'est un envoi en **multipart** : le trou le plus
-   risqué des quatre, puisqu'il cumule l'absence de déclaration et la surface
-   la moins éprouvée du proxy.
-3. La création d'API réelle est en **form-multipart** ; le contrat ne déclare
-   que du `application/json`. Aucune preuve qu'un multipart traverse le proxy.
-4. Le proxy n'est **pas posé sur le cluster** : les job XML y restent en
+1. **Aucune preuve qu'un multipart traverse réellement le proxy.** Le contrat
+   déclare `multipart/form-data` sur `POST`/`PUT /apis` et sur `POST /archive`
+   — ce dernier le plus risqué : un import, jamais rejoué à travers un proxy
+   dans ce dépôt — mais rien n'établit que wM 10.15 relaie le corps sans le
+   réencoder. La sonde prévue pour le mesurer, `ci/sonde-multipart-proxy.sh`
+   (tâche 5 du plan lot 1), n'a jamais été écrite : le fichier n'existe pas sur
+   cette branche.
+2. **Le proxy n'est pas posé sur le cluster.** Les job XML y restent en
    `ADMIN_VIA=direct` par défaut. `APIM_PROXY_HOST`/`API`/`BASE` y sont bien
-   **définis** en paramètres depuis le commit `91d54e1` de cette même branche —
-   mais leur défaut désigne encore `webmethods-real:5555`, hôte docker-compose
-   absent du cluster, volontairement laissé ainsi tant que le proxy n'y est pas
-   posé : choisir `proxy-oauth2` sans le surcharger y viserait donc toujours un
-   hôte inexistant.
+   **définis** en paramètres depuis le commit `91d54e1` — mais leur défaut
+   désigne encore `webmethods-real:5555`, hôte docker-compose absent du
+   cluster, volontairement laissé ainsi tant que le proxy n'y est pas posé :
+   choisir `proxy-oauth2` sans le surcharger y viserait donc toujours un hôte
+   inexistant.
 
-**Le contrat croise aussi un conflit d'invariant, pas un trou de couverture.**
+**Le contrat a aussi dû trancher un conflit d'invariant, distinct de ces deux
+trous.**
 `apim_selfservice_app/tasks/rotate-strategy.yml` appelle un `DELETE
 /strategies/{id}` que l'invariant « aucun DELETE » de cet ADR interdit au
 proxy — devenu l'arbitrage central du lot 1 (ADR-075, § Décision datée —

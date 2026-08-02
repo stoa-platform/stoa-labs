@@ -33,17 +33,20 @@ puis pose le proxy sur le cluster et y bascule les jobs.
 
 ## Structure des fichiers
 
-| Fichier | Responsabilité |
-| --- | --- |
-| `poc-control-plane-federation/ci/lint-contrat-proxy.py` | **créé** — confronte le contrat du proxy aux appels réels des rôles. Aucune gateway requise. |
-| `poc-control-plane-federation/gateways/webmethods/admin-proxy/wm-admin-proxy.openapi.yaml` | **modifié** — contrat d'allow-list : endpoints manquants, corps multipart. |
-| `poc-control-plane-federation/ci/sonde-multipart-proxy.sh` | **créé** — prouve qu'un multipart traverse réellement le proxy. |
-| `poc-control-plane-federation/scripts/setup-wm-admin-self-proxy.sh` | **modifié** — valeurs docker-compose devenues paramètres. |
-| `poc-control-plane-federation/ci/Jenkinsfile.publish-api` | **modifié** — `APIM_PROXY_BASE` composé par morceaux (`APIM_PROXY_HOST`/`API`/`VER`/`PATH`), préflight de joignabilité optionnel ; étape PLAN branche `lint-contrat-proxy.py` et `test-proxy-base-et-preflight.sh`. |
-| `poc-control-plane-federation/ci/Jenkinsfile.selfservice` | **modifié** — même composition de `APIM_PROXY_BASE` et même préflight ; son étape PLAN ne branche **pas** les deux garde-fous du proxy (limite consignée dans l'ADR). |
-| `poc-control-plane-federation/ci/test-proxy-base-et-preflight.sh` | **créé** — banc `set -eu` sans gateway qui rejoue la composition de la base du proxy et la logique de préflight des deux Jenkinsfile. |
-| `poc-control-plane-federation/ci/jenkins/*.job.xml` | **modifiés** — exposent `APIM_PROXY_HOST`/`API`/`BASE` et `APIM_PREFLIGHT*` en paramètres (commit `91d54e1`, changement réellement livré) ; la bascule `ADMIN_VIA` vers `proxy-oauth2` avec paramètres OAuth2 complets, prévue en tâche 7 ci-dessous, n'a **pas** été exécutée — `ADMIN_VIA` reste `direct` par défaut. |
-| `poc-control-plane-federation/adr/adr-075-wm-admin-proxy-multienv.md` | **modifié** — trace de la décision sur le DELETE. |
+Le plan décrit ce qu'il **prévoit** ; la colonne État distingue sans ambiguïté ce qui
+est réellement livré sur cette branche de ce qui reste à faire.
+
+| Fichier | Responsabilité | État |
+| --- | --- | --- |
+| `poc-control-plane-federation/ci/lint-contrat-proxy.py` | Confronte le contrat du proxy aux appels réels des rôles. Aucune gateway requise. | **livré** — créé tâche 1 ; étendu depuis (dérogations, robustesse) par le lot 1 bis |
+| `poc-control-plane-federation/gateways/webmethods/admin-proxy/wm-admin-proxy.openapi.yaml` | Contrat d'allow-list : endpoints manquants, corps multipart. | **livré** — `aaedb85` (endpoints), `2f821ae` (multipart) |
+| `poc-control-plane-federation/ci/sonde-multipart-proxy.sh` | Prouver qu'un multipart traverse réellement le proxy (tâche 5). | **prévu, non exécuté** — le fichier n'existe pas sur cette branche ; aucune preuve de traversée multipart à ce jour |
+| `poc-control-plane-federation/scripts/setup-wm-admin-self-proxy.sh` | Rendre paramétrables les valeurs docker-compose restantes (tâche 6). | **prévu, non exécuté** — `VAULT_ADDR`, `KC_BASE`, `KC_ADMIN_USER`, `WM_GATEWAY_URL` et `TENANT` sont **déjà** surchargeables (défauts docker-compose). Restent figés : le realm `stoa-lab`, le `token_url` `http://keycloak:8080/...` **écrit dans le secret Vault**, et le préfixe KV `stoa` — or le cluster utilise un préfixe **vide** |
+| `poc-control-plane-federation/ci/Jenkinsfile.publish-api` | `APIM_PROXY_BASE` composé par morceaux (`APIM_PROXY_HOST`/`API`/`VER`/`PATH`), préflight de joignabilité optionnel ; étape PLAN branche `lint-contrat-proxy.py` et `test-proxy-base-et-preflight.sh`. | **livré** |
+| `poc-control-plane-federation/ci/Jenkinsfile.selfservice` | Même composition de `APIM_PROXY_BASE` et même préflight ; son étape PLAN ne branche **pas** les deux garde-fous du proxy (limite consignée dans l'ADR). | **livré** |
+| `poc-control-plane-federation/ci/test-proxy-base-et-preflight.sh` | Banc `set -eu` sans gateway qui rejoue la composition de la base du proxy et la logique de préflight des deux Jenkinsfile. | **livré** |
+| `poc-control-plane-federation/ci/jenkins/*.job.xml` | Paramètres OAuth2 du mode proxy ; bascule `ADMIN_VIA` vers `proxy-oauth2` (tâche 7). | **partiel** — `APIM_PROXY_HOST`/`API`/`BASE` et `APIM_PREFLIGHT*` exposés en paramètres (`91d54e1`) ; bascule `ADMIN_VIA` et paramètres OAuth2 complets (tâche 7) non exécutés, `ADMIN_VIA` reste `direct` par défaut |
+| `poc-control-plane-federation/adr/adr-075-wm-admin-proxy-multienv.md` | Trace de la décision sur le DELETE. | **livré** |
 
 ---
 
