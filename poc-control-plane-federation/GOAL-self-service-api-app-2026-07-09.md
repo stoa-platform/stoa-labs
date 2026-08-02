@@ -85,8 +85,50 @@ Keycloak — Client Registration Service + Initial Access Token scopé équipe
 
 ### E1 — Producteur : self-service de création d'API par GitOps *(socle ADR-076, à recompléter)*
 Une équipe pousse une spec OpenAPI dans son repo → CI importe (`POST /apis` multipart) et assigne la team (`POST /assets/team`, UUID) → l'API est visible **uniquement** de sa team.
-**Preuve E1 :** membre `toto` publie `titi` → visible de `toto`, **absente** pour `teamb` (GET /apis scopé) ; publication cross-team (assigner une team dont on n'est pas membre) **refusée 400** « User cannot assign the specified team to API ».
-**État :** isolation native **déjà prouvée** (spike #1, 3/3 sceptiques) ; reste à câbler le pas « repo → CI → import+assign » sur le template ADR-076.
+**Preuve E1 — RÉÉCRITE le 2026-07-31 : l'énoncé précédent était FAUX.**
+~~publication cross-team (assigner une team dont on n'est pas membre) **refusée
+400** « User cannot assign the specified team to API »~~ — **ce refus n'existe
+pas sur la gateway du cluster.** Mesuré : un membre d'équipe reçoit **401 sur la
+ressource `assets`**, même pour **sa propre** équipe (assigner une team est une
+opération d'**admin**) ; et à l'admin — l'identité que la chaîne porte — le
+produit n'oppose **aucun** refus cross-team (déplacer une API vers l'équipe d'un
+tiers : **200**, relu). Le refus fin du spike #1 (2026-07-09, lab Docker) tenait
+à une configuration de privilèges, pas à une propriété de la 10.15 : l'écrire
+comme porte, c'était s'appuyer sur un accident. **Le cloisonnement est donc une
+propriété de la CHAÎNE, à construire et à prouver.**
+
+**Découverte non prévue, du même relevé** : une équipe peut publier **hors
+chaîne** (`POST /apis` multipart → **201**) et son API atterrit en `Default`,
+**lue 200 par une équipe tierce**. Sur les applications, E3 parlait d'« un geste
+qu'on peut oublier » ; sur les APIs, l'équipe **ne peut pas** faire le geste —
+publier sans la chaîne, c'est nécessairement publier pour tout le monde.
+
+**Portes de remplacement (spec `2026-07-31-e1-producteur-gitops-design.md`) —
+les cinq VERTES le 2026-08-02** sur la gateway du cluster, depuis un pod agent
+portant le SA `jenkins-agent` :
+
+| Porte | Mesure |
+|---|---|
+| **P-1** publication cloisonnée | `TEAM_CONFIRMED` — teams relues `['Administrators','banking-demo']`, `Default` retirée ; témoin `svc-banking-demo` **200**, `svc-insurance-demo` **401** ; catalogues divergents |
+| **P-2** refus cross-team | `TEAM_FORBIDDEN`, build rouge — **et le catalogue prouve que rien n'a été créé** |
+| **P-3** le 200 ne prouve rien | `assetType` retiré → POST **200**, teams **inchangées**, `TEAM_UNCONFIRMED`. La relecture est la porte, pas le code HTTP |
+| **P-4** fail-closed sans équipe | `TEAM_UNDEFINED` plutôt qu'une API en `Default` |
+| **P-5** injection par le manifeste | `MANIFEST_KEYS_FORBIDDEN` — `include_vars` charge le top-level à la précédence 18 : sans liste blanche, le manifeste de l'équipe détourne la base d'admin |
+| contre-épreuve `verify` | on lui ment sur la team → `PUBLISH_UNCONFIRMED`. Un verify qui ne rougit jamais ne prouve rien |
+
+P-4 et P-5 ont été joués avec la base d'admin sur un **port mort** : aucune
+socket n'est ouverte, donc les gardes précèdent le réseau — un refus ne laisse
+rien derrière lui.
+
+**État :** le moteur (`apim_publish_api`) est à parité du chemin consommateur.
+**Reste ouvert — et c'est ce qui fait l'autorité, pas la garde** : sur le chemin
+**GitOps du cluster**, le `Jenkinsfile` vit dans le dépôt de l'équipe (job F4 =
+`CpsScmFlowDefinition`), donc l'équipe écrit elle-même son `TEAM` et le
+`serviceAccount` de son podTemplate. Les gardes sont réelles, leur **autorité**
+ne l'est pas encore : il faut reposer le job en `CpsFlowDefinition` possédé par
+la plateforme (geste exploitant). Sur le chemin **fidèle-client**
+(`ci/Jenkinsfile.publish-api`), l'autorité est acquise — la team est dérivée du
+chemin KV tenant-scopé, borné par la policy Vault du token nominatif.
 
 ### E2 — Consommateur : proxy self-service OAuth2 *(ADR-078, spike #2 prouvé)*
 Exposer `/rest/apigateway` derrière un proxy OAuth2 avec identité technique sortante par équipe. Choisir la variante selon § Bascule.
@@ -253,7 +295,7 @@ C'est le modèle « federated API management » documenté (Azure APIM workspace
 
 | | Prouvé live | À faire |
 |---|---|---|
-| Producteur (E1) | Isolation Teams native sur `/apis` (spike #1, 3/3) | Câbler repo→CI→import+assign sur template ADR-076 |
+| Producteur (E1) | Isolation Teams native sur `/apis` (spike #1, 3/3) ; **les 5 portes vertes le 2026-08-02** — cloisonnement, refus cross-team sans rien créer, sabotage de l'`assetType` attrapé par la relecture, fail-closed sans équipe, injection par le manifeste refusée | Reposer le job GitOps du cluster en `CpsFlowDefinition` **possédé par la plateforme** — tant que le `Jenkinsfile` vit chez l'équipe, c'est elle qui écrit son `TEAM` (geste exploitant) |
 | Consommateur (E2) | Proxy OAuth2, 2 variantes, anti-spoof (spike #2, 3/3) | Choisir la variante, généraliser |
 | Gardes app (E3) | Gardes 1+2 assurées nativement dès l'assignation, **désormais POSÉE ET RELUE par la chaîne (geste 1)** ; garde 3 **fermée sur le chemin GitOps** par l'oracle `apiResponse.teams[]` (geste 2) — les deux prouvés live le 2026-07-31 | Service IS de préprocessing pour le **seul chemin direct** (équipe atteignant l'admin REST par le proxy E2) |
 | Credentials (E4) | Clients/scopes/mappers KC en REST (spike #2) | Passer aux Initial Access Tokens scopés équipe |
