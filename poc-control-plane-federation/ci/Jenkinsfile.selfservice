@@ -212,13 +212,31 @@ pipeline {
               # enforce (on sonde SANS token — le 401 est la preuve de vie du proxy).
               PF_CODES="${APIM_PREFLIGHT_CODES:-200 401}"
               PF_MAX="${APIM_PREFLIGHT_TRIES:-60}"
-              # `[ "$i" -ge "$PF_MAX" ]` sous sh : si PF_MAX n'est pas un entier,
-              # `-ge` rend 2 (ni vrai ni faux) — la branche de sortie n'est
-              # JAMAIS prise et la boucle tourne à l'infini. On valide AVANT
-              # d'entrer dans la boucle ; repli sur le défaut, avec avertissement.
+              # `[ "$i" -ge "$PF_MAX" ]` sous sh : si PF_MAX n'est pas un entier
+              # décimal canonique, `-ge` rend soit 2 (ni vrai ni faux — la
+              # branche de sortie n'est JAMAIS prise, boucle à l'infini), soit
+              # une interprétation OCTALE surprenante dans `$((PF_MAX*5))` plus
+              # bas (`08` : arithmétique invalide, l'étape meurt sur un message
+              # cryptique — exactement ce que ce garde-fou doit éviter). `0*`
+              # rejette `0`/`00` ET tout zéro en tête (`08`, `060`). On valide
+              # AVANT d'entrer dans la boucle ; repli sur le défaut, avec avertissement.
               case "$PF_MAX" in
-                ''|*[!0-9]*|0) echo "  ⚠ APIM_PREFLIGHT_TRIES='$PF_MAX' n'est pas un entier positif — repli sur le défaut (60)"; PF_MAX=60 ;;
+                ''|*[!0-9]*|0*) echo "  ⚠ APIM_PREFLIGHT_TRIES='$PF_MAX' n'est pas un entier positif — repli sur le défaut (60)"; PF_MAX=60 ;;
               esac
+              # Borne haute : une valeur énorme mais numérique (ex.
+              # 99999999999999999999) passe le garde-fou ci-dessus et rouvre
+              # le même mode de panne — une boucle non bornée en pratique
+              # (aucun timeout de build n'est posé dans les job XML). La
+              # LONGUEUR est testée avant toute comparaison arithmétique :
+              # au-delà de 4 chiffres la valeur dépasse déjà 3600, sans
+              # risquer un débordement de `-gt` sur un entier à 20 chiffres.
+              case "$PF_MAX" in
+                ?????*) echo "  ⚠ APIM_PREFLIGHT_TRIES='$PF_MAX' dépasse la borne raisonnable — repli sur 3600"; PF_MAX=3600 ;;
+              esac
+              if [ "$PF_MAX" -gt 3600 ]; then
+                echo "  ⚠ APIM_PREFLIGHT_TRIES='$PF_MAX' dépasse la borne raisonnable — repli sur 3600"
+                PF_MAX=3600
+              fi
               i=0
               while :; do
                 HC="$(curl -s -o /dev/null -m 5 -w '%{http_code}' "$PF_URL" || true)"

@@ -3,8 +3,10 @@
 # avec un curl simule. Verifie composition de la base proxy + preflight optionnel.
 #
 # CE QUE CE TEST LIT VRAIMENT — et ne code plus en dur :
-#   - le point de comparaison (BASE_REF) = derive par `git merge-base` avec la
-#     branche par defaut (origin/main, ou main), jamais un SHA fige ;
+#   - le point de comparaison (BASE_REF) = le dernier commit de l'historique
+#     de HEAD ou Jenkinsfile.publish-api porte encore un defaut
+#     APIM_PROXY_BASE NON VIDE (donc AVANT la proxification par morceaux),
+#     jamais un SHA fige NI une derivation par branche (cf. plus bas) ;
 #   - l'ANCIEN defaut = l'URL entiere ecrite dans le Jenkinsfile a ce point,
 #     relue par `git show <base>:<fichier>` ;
 #   - les defauts APIM_PROXY_* = extraits par sed sur CHAQUE Jenkinsfile REEL ;
@@ -14,6 +16,9 @@
 #     APIM_PREFLIGHT) = leur PRESENCE ET leur ordre sont verifies par lecture
 #     litterale (grep) du Jenkinsfile REEL, pas seulement rejoues dans le
 #     harnais de simulation ci-dessous ;
+#   - le COMPORTEMENT des garde-fous sur les valeurs adverses = le bloc est
+#     DECOUPE dans le Jenkinsfile REEL et EXECUTE sous `sh` (10^20, 08, 060),
+#     jamais transcrit : un rejeu peut diverger du fichier en silence ;
 #   - le trim d'APIM_PROXY_BASE = extrait du job XML REEL.
 # Le premier jet codait les DEUX cotes de l'assertion « defauts => identique a
 # l'ancien defaut » dans le test : il comparait deux constantes du test entre
@@ -49,26 +54,40 @@ avant(){
 # Un prerequis manquant n'est PAS un test qui passe : le test s'arrete en 2.
 fatal(){ printf '  !!   %s\n' "$1" >&2; exit 2; }
 
-# Commit de base : le point de comparaison d'AVANT la proxification par
-# morceaux. STOA_BASE_REF reste l'echappatoire explicite (poser n'importe
-# quelle ref). Le defaut NORMAL ne fige plus un SHA : cet historique a deja
-# ete purge une fois (handoff carto), et une seconde reecriture ferait
-# disparaitre un SHA fige, rendant le PLAN rouge pour une raison etrangere au
-# changement examine (le point de comparaison est mort, pas le changement).
-# Le defaut derive donc le point de divergence avec la branche par defaut
-# (origin/main, ou main en son absence) : stable meme apres une purge, tant
-# que la relation « cette branche descend de main » reste vraie.
+TMPD="$(mktemp -d)"; trap 'rm -rf "$TMPD"' EXIT
+
+# Commit de base : le dernier commit de l'historique de HEAD ou le
+# Jenkinsfile porte ENCORE un defaut APIM_PROXY_BASE NON VIDE — par
+# construction, l'etat d'AVANT la proxification par morceaux. STOA_BASE_REF
+# reste l'echappatoire explicite (poser n'importe quelle ref).
+#
+# Pourquoi PAS une derivation par branche (`merge-base` avec origin/main) :
+# le job reel vise `*/main`, et le plugin Git y place HEAD EXACTEMENT sur le
+# commit d'origin/main — donc merge-base(HEAD, origin/main) == HEAD. Relire
+# le Jenkinsfile a ce point relit alors le fichier COURANT (deja decompose,
+# defaut VIDE) : la comparaison « compose() == ancien defaut » devient
+# « compose() == '' », ce qui n'est jamais vrai. Mesure sur depot jetable :
+# main sain et main sabote rendent tous deux 4 ECHEC(S) — verdict IDENTIQUE,
+# donc PAS un faux vert, mais un FAUX ROUGE permanent des la fusion (pire :
+# le SHA fige qu'on remplaçait, lui, survivait a la fusion — c'etait une
+# regression). C'est precisement quand « cette branche descend de main »
+# devient une EGALITE que ce mecanisme se degrade ; il est donc abandonne.
+#
+# Le defaut normal remonte au contraire l'historique du FICHIER lui-meme :
+# identique sur main et sur une branche (aucune dependance a une topologie de
+# branches), et resistant a une purge tant qu'un commit pre-refonte reste
+# atteignable depuis HEAD — sans jamais figer un SHA particulier.
+JF_REF="$SOUS_POC/ci/Jenkinsfile.publish-api"
 BASE_REF="${STOA_BASE_REF:-}"
 if [ -z "$BASE_REF" ]; then
-  if git -C "$RACINE" rev-parse --verify -q origin/main >/dev/null 2>&1; then
-    BASE_REF="$(git -C "$RACINE" merge-base HEAD origin/main 2>/dev/null || true)"
-  elif git -C "$RACINE" rev-parse --verify -q main >/dev/null 2>&1; then
-    BASE_REF="$(git -C "$RACINE" merge-base HEAD main 2>/dev/null || true)"
-  fi
+  git -C "$RACINE" rev-list HEAD -- "$JF_REF" > "$TMPD/hist" 2>/dev/null || :
+  while read -r C; do
+    if git -C "$RACINE" show "$C:$JF_REF" 2>/dev/null \
+       | sed -n "s/^[[:space:]]*APIM_PROXY_BASE[[:space:]]*=.*?:[[:space:]]*'\([^']\{1,\}\)'.*/\1/p" \
+       | grep -q .; then BASE_REF="$C"; break; fi
+  done < "$TMPD/hist"
 fi
-[ -n "$BASE_REF" ] || fatal "point de comparaison introuvable : ni STOA_BASE_REF, ni origin/main, ni main ne sont resolvables depuis ce clone (clone superficiel ? branche de base absente ?) — poser STOA_BASE_REF=<sha-ou-ref> explicitement pour rejouer le test."
-
-TMPD="$(mktemp -d)"; trap 'rm -rf "$TMPD"' EXIT
+[ -n "$BASE_REF" ] || fatal "point de comparaison introuvable : aucun commit de l'historique de HEAD sur $JF_REF ne porte encore un defaut APIM_PROXY_BASE non vide (clone superficiel ? historique purge sans etat pre-refonte restant ?) — poser STOA_BASE_REF=<sha-ou-ref> explicitement pour rejouer le test."
 
 # ---- lecture des Jenkinsfile ---------------------------------------------
 # Defaut Groovy d'une variable d'environnement : `X = "${env.X ?: 'valeur'}"`.
@@ -95,6 +114,10 @@ git -C "$RACINE" show "$BASE_REF:$SOUS_POC/ci/Jenkinsfile.publish-api" > "$TMPD/
   || fatal "impossible de lire $BASE_REF:$SOUS_POC/ci/Jenkinsfile.publish-api (clone superficiel ? commit absent ?) — poser STOA_BASE_REF"
 ANCIEN_DEFAUT="$(lire_defaut "$TMPD/base.groovy" APIM_PROXY_BASE)"
 printf 'ancien defaut (%s) : %s\n\n' "$BASE_REF" "$ANCIEN_DEFAUT"
+# Garde-fou de trivialite : interdit STRUCTURELLEMENT qu'un point de
+# comparaison degenere (fichier deja decompose) produise un garde-fou
+# decoratif — quel que soit le mecanisme de derivation utilise au-dessus.
+[ -n "$ANCIEN_DEFAUT" ] || fatal "le point de comparaison $BASE_REF porte déjà la forme décomposée : la comparaison serait vide de sens — poser STOA_BASE_REF."
 
 # ---- bloc 1 : composition de la base du proxy (copie conforme) ----
 compose(){
@@ -165,15 +188,62 @@ for JF in $JENKINSFILES; do
   # l'infini. Le garde-fou doit exister ET s'executer AVANT la boucle.
   contient "$JF : le garde-fou PF_MAX existe (case sur un entier)" 'case "$PF_MAX" in' "$F"
   contient "$JF : rejette le non-numerique" '*[!0-9]*' "$F"
-  contient "$JF : rejette aussi zero (pas un entier POSITIF)" '|0)' "$F"
+  contient "$JF : rejette aussi zero EN TETE (0, 00, 08, 060 — piege octal de \$((…)))" '|0*)' "$F"
   contient "$JF : replie explicitement sur le defaut 60" 'PF_MAX=60' "$F"
   avant "$JF : le garde-fou PF_MAX est pose avant la boucle, pas apres" \
     'case "$PF_MAX" in' 'while :; do' "$F"
+  # Borne haute : sans elle, une valeur enorme mais numerique (ex.
+  # 99999999999999999999) passe le garde-fou ci-dessus et rouvre le meme
+  # mode de panne — aucun timeout de build n'est pose dans les job XML.
+  contient "$JF : la borne haute teste la longueur avant l'arithmetique (pas de debordement de -gt)" '?????*' "$F"
+  contient "$JF : la borne haute replie sur 3600" '-gt 3600' "$F"
+  avant "$JF : la borne haute est posee avant la boucle, pas apres" \
+    '?????*' 'while :; do' "$F"
   # APIM_PREFLIGHT sensible a la casse : 'Off' ne doit pas etre pris pour 'off'.
   contient "$JF : APIM_PREFLIGHT est compare apres mise en minuscules" \
     "tr '[:upper:]' '[:lower:]'" "$F"
   contient "$JF : le test 'off' porte sur la variable normalisee" \
     'if [ "$APIM_PREFLIGHT_LC" = "off" ]; then' "$F"
+
+  echo "== $JF : valeurs adverses, bloc REEL extrait et EXECUTE =="
+  # Les `contient`/`avant` ci-dessus prouvent que le garde-fou est ECRIT ;
+  # `preflight()` plus bas rejoue une COPIE de sa logique. Ni l'un ni l'autre
+  # ne prouve que le texte REEL, EXECUTE, se comporte bien : un rejeu peut
+  # diverger du fichier sans que rien ne le dise (c'est exactement ainsi que
+  # le harnais restait vert alors que '08' tuait le vrai bloc). On decoupe
+  # donc le bloc tel qu'il est ecrit — de `PF_MAX="${APIM_PREFLIGHT_TRIES:-60}"`
+  # jusqu'a la ligne qui precede `i=0` — et on l'execute sous `sh`.
+  sed -n '/PF_MAX="${APIM_PREFLIGHT_TRIES:-60}"/,/^[[:space:]]*i=0$/p' "$F" \
+    | sed '$d' > "$TMPD/gardes.sh"
+  grep -qF 'PF_MAX=' "$TMPD/gardes.sh" \
+    || fatal "$JF : bloc de garde-fous du preflight introuvable (ancres deplacees ?) — le test ne peut rien affirmer"
+  if grep -qF 'while' "$TMPD/gardes.sh"; then
+    fatal "$JF : l'extraction du bloc de garde-fous a deborde sur la boucle — le test ne peut rien affirmer"
+  fi
+  # Sonde ajoutee APRES le texte extrait (jamais dedans) : valeur bornee,
+  # arithmetique du message de sortie, et decidabilite de la sortie de boucle
+  # AUX DEUX BORNES. AVANT=1 (faux et decidable) + BORNE=0 (vrai) prouvent que
+  # la boucle sort a exactement PF_MAX tours, sans avoir a les jouer. C'est la
+  # propriete qui manquait : `-ge` contre un non-entier rend 2, `if` le traite
+  # comme faux, la sortie n'est JAMAIS prise.
+  cat >> "$TMPD/gardes.sh" <<'SONDE'
+RCLO=0; [ 0 -ge "$PF_MAX" ] || RCLO=$?
+RCHI=0; [ "$PF_MAX" -ge "$PF_MAX" ] || RCHI=$?
+printf 'PFMAX=%s MSG5=%s AVANT=%s BORNE=%s\n' "$PF_MAX" "$((PF_MAX*5))" "$RCLO" "$RCHI"
+SONDE
+  adverse(){ APIM_PREFLIGHT_TRIES="$1" sh "$TMPD/gardes.sh" 2>&1 | tail -1; }
+
+  cmp_ "$JF (texte reel) : 99999999999999999999 => borne a 3600, ne boucle plus sans fin" \
+    "PFMAX=3600 MSG5=18000 AVANT=1 BORNE=0" "$(adverse 99999999999999999999)"
+  # '08' : purement numerique, donc accepte par le filtre `*[!0-9]*` — mais
+  # `$((08*5))` est une erreur d'arithmetique octale qui TUE l'etape sous
+  # `set -e`. MSG5=300 prouve que la duree annoncee est bien lue en base 10.
+  cmp_ "$JF (texte reel) : 08 (piege octal) => ne tue plus l'etape, replie sur 60" \
+    "PFMAX=60 MSG5=300 AVANT=1 BORNE=0" "$(adverse 08)"
+  # '060' : meme filtre, mais ici l'octal est SILENCIEUX — `$((060*5))`
+  # vaudrait 240 (48*5) et annoncerait une duree fausse au lieu de 300.
+  cmp_ "$JF (texte reel) : 060 => la duree annoncee n'est plus lue en octal (300s, pas 240s)" \
+    "PFMAX=60 MSG5=300 AVANT=1 BORNE=0" "$(adverse 060)"
 done
 
 # ---- bloc 1bis : trim du parametre APIM_PROXY_BASE dans les job XML ----
@@ -226,6 +296,46 @@ curl(){
   printf '%s' "$(echo "$CURL_SEQ" | cut -d, -f$N)"
 }
 
+# Normalisation de PF_MAX — rejeu du bloc de garde-fous du Jenkinsfile, ISOLE
+# dans sa propre fonction pour que le BORNAGE puisse etre verifie sur la
+# VALEUR obtenue, sans payer PF_MAX tours de boucle. Jouer reellement la borne
+# haute coutait a lui seul ~34 s des 36 s du banc (2 cas x 3600 tours, chaque
+# tour forkant le curl simule) : inacceptable pour un banc joue a chaque build.
+# Ce n'est PAS un affaiblissement, parce que la preuve se decompose en deux
+# proprietes verifiees separement :
+#   (a) la VALEUR : 10^20 et 4000 deviennent 3600 — verifie ici, en O(1) ;
+#   (b) la BOUCLE sort a EXACTEMENT PF_MAX tours — verifie quantitativement
+#       plus bas par comptage des appels curl (cas 2, 3, 5, et 60 pour
+#       'abc'/'0'/'-3'/'08'/'060').
+# Le bloc REEL des deux Jenkinsfile est en outre extrait et EXECUTE plus haut
+# (« valeurs adverses, bloc REEL extrait et EXECUTE ») sur les memes valeurs
+# adverses, y compris la decidabilite de `[ "$i" -ge "$PF_MAX" ]` aux deux
+# bornes — ce rejeu ne peut donc pas diverger du fichier en silence.
+# L'avertissement est rejoue lui aussi (sur stderr, pour ne pas polluer la
+# valeur capturee par `$(preflight)` que les assertions comparent) — sans lui,
+# le harnais ne verifierait jamais que ce chemin s'execute reellement.
+normalise_pf_max(){
+  PF_MAX="$1"
+  case "$PF_MAX" in
+    ''|*[!0-9]*|0*)
+      printf "  ⚠ APIM_PREFLIGHT_TRIES='%s' n'est pas un entier positif — repli sur le défaut (60)\n" "$PF_MAX" >&2
+      PF_MAX=60
+      ;;
+  esac
+  # Borne haute rejouee ici aussi (longueur AVANT arithmetique, cf. Jenkinsfile) —
+  # sans elle, le harnais ne verifierait jamais qu'une valeur enorme est bornee.
+  case "$PF_MAX" in
+    ?????*)
+      printf "  ⚠ APIM_PREFLIGHT_TRIES='%s' dépasse la borne raisonnable — repli sur 3600\n" "$PF_MAX" >&2
+      PF_MAX=3600
+      ;;
+  esac
+  if [ "$PF_MAX" -gt 3600 ]; then
+    printf "  ⚠ APIM_PREFLIGHT_TRIES='%s' dépasse la borne raisonnable — repli sur 3600\n" "$PF_MAX" >&2
+    PF_MAX=3600
+  fi
+}
+
 preflight(){
   echo 0 > $CNT
   APIM_API_BASE="http://gw/rest/apigateway"
@@ -236,10 +346,7 @@ preflight(){
   PF_URL="${APIM_PREFLIGHT_URL:-}"
   [ -n "$PF_URL" ] || PF_URL="$APIM_API_BASE/health"
   PF_CODES="${APIM_PREFLIGHT_CODES:-200 401}"
-  PF_MAX="${APIM_PREFLIGHT_TRIES:-60}"
-  case "$PF_MAX" in
-    ''|*[!0-9]*|0) PF_MAX=60 ;;
-  esac
+  normalise_pf_max "${APIM_PREFLIGHT_TRIES:-60}"
   i=0
   while :; do
     HC="$(curl || true)"
@@ -247,7 +354,11 @@ preflight(){
       if [ "$HC" = "$C" ]; then break 2; fi
     done
     i=$((i+1))
-    if [ "$i" -ge "$PF_MAX" ]; then echo "FAIL:$PF_URL:$HC"; return 1; fi
+    # `$((PF_MAX*5))` rejoue ICI aussi : c'est cette arithmetique precise qui,
+    # sur le vrai Jenkinsfile, casse sur une valeur en tete de zero non filtree
+    # (piege octal) — sans elle, le harnais resterait vert alors que le bloc
+    # reel meurt sur un message cryptique.
+    if [ "$i" -ge "$PF_MAX" ]; then echo "FAIL:$PF_URL:$HC:apres $((PF_MAX*5))s"; return 1; fi
     if [ "$i" -eq 1 ]; then :; fi
   done
   echo "UP:$PF_URL:apres $i tentative(s)"
@@ -270,7 +381,7 @@ unset APIM_PREFLIGHT_TRIES
 
 CURL_SEQ="000,000,000"; APIM_PREFLIGHT_TRIES=3
 R="$(preflight || true)"
-cmp_ "epuisement => echec explicite" "FAIL:http://gw/rest/apigateway/health:000" "$R"
+cmp_ "epuisement => echec explicite" "FAIL:http://gw/rest/apigateway/health:000:apres 15s" "$R"
 if ( CURL_SEQ="000,000,000"; APIM_PREFLIGHT_TRIES=3; preflight >/dev/null 2>&1 ); then
   ko "epuisement => code retour non nul" "!=0" "0"; else ok "epuisement => code retour non nul"; fi
 unset APIM_PREFLIGHT_TRIES
@@ -281,7 +392,7 @@ unset APIM_PREFLIGHT_TRIES
 CURL_SEQ="000"; APIM_PREFLIGHT_TRIES="abc"
 R="$(preflight || true)"
 cmp_ "APIM_PREFLIGHT_TRIES='abc' => ne boucle plus a l'infini (replie sur 60)" \
-  "FAIL:http://gw/rest/apigateway/health:000" "$R"
+  "FAIL:http://gw/rest/apigateway/health:000:apres 300s" "$R"
 cmp_ "  … et le nombre d'essais reellement effectues est borne au defaut (60)" "60" "$(cat "$CNT")"
 unset APIM_PREFLIGHT_TRIES
 
@@ -294,6 +405,44 @@ CURL_SEQ="000"; APIM_PREFLIGHT_TRIES="-3"
 preflight >/dev/null || true
 cmp_ "APIM_PREFLIGHT_TRIES negatif => replie aussi sur 60" "60" "$(cat "$CNT")"
 unset APIM_PREFLIGHT_TRIES
+
+# Zero EN TETE : passe le filtre "que des chiffres" mais casse `$((PF_MAX*5))`
+# sur le vrai Jenkinsfile (interpretation octale, "08" n'existe pas en base
+# 8). C'est le cas precis remonte en revue — non couvert par les cas 'abc'/
+# '0'/'-3' ci-dessus, qui ne passent pas ce filtre-la.
+CURL_SEQ="000"; APIM_PREFLIGHT_TRIES="08"
+preflight >/dev/null || true
+cmp_ "APIM_PREFLIGHT_TRIES='08' (zero en tete, piege octal) => replie aussi sur 60" "60" "$(cat "$CNT")"
+unset APIM_PREFLIGHT_TRIES
+
+CURL_SEQ="000"; APIM_PREFLIGHT_TRIES="060"
+preflight >/dev/null || true
+cmp_ "APIM_PREFLIGHT_TRIES='060' (zero en tete) => replie aussi sur 60" "60" "$(cat "$CNT")"
+unset APIM_PREFLIGHT_TRIES
+
+# Valeur ENORME mais purement numerique : passe le premier garde-fou et
+# rouvrirait le meme mode de panne (boucle non bornee en pratique, aucun
+# timeout de build pose dans les job XML) sans la borne haute.
+# On mesure ici la VALEUR bornee, pas 3600 tours de boucle (cf. le commentaire
+# de `normalise_pf_max`) : les tours coutaient ~17 s par cas.
+normalise_pf_max "99999999999999999999" 2>"$TMPD/warn"
+cmp_ "APIM_PREFLIGHT_TRIES enorme => bornee a 3600, pas une boucle non bornee" "3600" "$PF_MAX"
+cmp_ "  … et \$((PF_MAX*5)) du message de sortie reste calculable" "18000" "$((PF_MAX*5))"
+contient "  … et le bornage est annonce, pas silencieux" 'dépasse la borne raisonnable' "$TMPD/warn"
+# La boucle sort a EXACTEMENT PF_MAX tours : faux (et DECIDABLE, rc=1) avant
+# la borne, vrai (rc=0) a la borne. C'est cette decidabilite qui manquait —
+# `-ge` contre un non-entier rend 2, et `if` traite 2 comme faux : sortie
+# jamais prise. Verifie aussi sur le texte REEL au bloc 1ter.
+RCLO=0; [ 0 -ge "$PF_MAX" ] || RCLO=$?
+RCHI=0; [ "$PF_MAX" -ge "$PF_MAX" ] || RCHI=$?
+cmp_ "  … la sortie de boucle est DECIDABLE avant la borne (faux, rc=1, jamais 2)" "1" "$RCLO"
+cmp_ "  … et se declenche A la borne (vrai, rc=0)" "0" "$RCHI"
+
+# Valeur numerique raisonnable en apparence (4 chiffres) mais > 3600 : prend
+# le chemin `-gt 3600` (pas le filtre de longueur "5 chiffres ou plus").
+normalise_pf_max "4000" 2>"$TMPD/warn"
+cmp_ "APIM_PREFLIGHT_TRIES=4000 (4 chiffres, > 3600) => borne aussi sur 3600" "3600" "$PF_MAX"
+contient "  … par le chemin arithmetique -gt 3600, avec avertissement" 'dépasse la borne raisonnable' "$TMPD/warn"
 
 APIM_PREFLIGHT=off
 cmp_ "APIM_PREFLIGHT=off => saute, ne sonde pas" "SKIP" "$(preflight)"
@@ -315,7 +464,7 @@ unset APIM_PREFLIGHT_URL APIM_PREFLIGHT_CODES
 CURL_SEQ="503"; APIM_PREFLIGHT_TRIES=2
 R="$(preflight || true)"
 cmp_ "code non attendu => n'est PAS pris pour une preuve de vie" \
-  "FAIL:http://gw/rest/apigateway/health:503" "$R"
+  "FAIL:http://gw/rest/apigateway/health:503:apres 10s" "$R"
 
 echo
 [ "$KO" -eq 0 ] && echo "TOUT PASSE" || { echo "$KO ECHEC(S)"; exit 1; }
