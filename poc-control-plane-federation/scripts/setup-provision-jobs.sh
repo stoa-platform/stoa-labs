@@ -47,29 +47,51 @@ ok(){   printf '  ✅ %s\n' "$*"; }
 warn(){ printf '  ⚠️  %s\n' "$*"; }
 ko(){   printf '  ❌ %s\n' "$*" >&2; exit 1; }
 
-# Authentification : optionnelle (lab ouvert), indispensable sur une instance
-# réelle.
+# ─────────────────────────────────────────────────────────────────────────────
+# DEUX AUTHENTIFICATIONS SUPERPOSÉES, ET C'EST VOULU
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. Le PORTAIL devant l'instance (Cloudflare Access chez ce client) : il répond
+#    302 vers son écran de connexion à toute requête non authentifiée, AVANT que
+#    Jenkins ne voie quoi que ce soit. Un token d'API Jenkins seul ne passe donc
+#    pas. On s'y authentifie par un SERVICE TOKEN (paire id/secret), le mode
+#    prévu pour l'automatisation — l'alternative étant une session navigateur ou
+#    WARP, qu'un script ne peut pas porter.
+# 2. JENKINS lui-même : login + token d'API.
+# Les deux sont indépendants : l'un peut être requis sans l'autre.
 #
-# LE TOKEN NE PASSE PAS PAR argv. Un `curl -u user:token` le rend visible à tout
-# le monde sur la machine (`ps auxww`) le temps de l'appel — sur un agent Jenkins
-# partagé, ce n'est pas théorique. On le passe donc par l'ENTRÉE STANDARD via
-# `curl -K -`, qui lit sa configuration sans jamais l'exposer.
+# RIEN NE PASSE PAR argv. Ni `-u user:token`, ni `-H "CF-Access-Client-Secret:
+# ..."` : tout cela est visible dans `ps auxww` le temps de l'appel, et sur une
+# machine partagée ce n'est pas théorique. La configuration est construite sur
+# l'ENTRÉE STANDARD et lue par `curl -K -`, qui accepte aussi bien `user =` que
+# `header =`.
 #
 # (Un tableau `AUTH=()` développé en `"${AUTH[@]}"` était le premier réflexe : il
 # échoue sous `set -u` en bash 3.2 — celui de macOS — quand le tableau est vide,
 # et le script rendait « Jenkins injoignable » sur une instance parfaitement
-# joignable. Mesuré le 2026-08-03.)
+# joignable. Mesuré le 2026-08-03 : le pire diagnostic possible, celui qui envoie
+# chercher la panne ailleurs.)
+CF_ACCESS_CLIENT_ID="${CF_ACCESS_CLIENT_ID:-}"
+CF_ACCESS_CLIENT_SECRET="${CF_ACCESS_CLIENT_SECRET:-}"
+
 jcurl(){
-  if [ -n "$JENKINS_USER" ]; then
-    printf 'user = "%s:%s"\n' "$JENKINS_USER" "$JENKINS_TOKEN" | curl -K - "$@"
-  else
-    curl "$@"
-  fi
+  {
+    [ -n "$JENKINS_USER" ] && printf 'user = "%s:%s"\n' "$JENKINS_USER" "$JENKINS_TOKEN"
+    if [ -n "$CF_ACCESS_CLIENT_ID" ]; then
+      printf 'header = "CF-Access-Client-Id: %s"\n' "$CF_ACCESS_CLIENT_ID"
+      printf 'header = "CF-Access-Client-Secret: %s"\n' "$CF_ACCESS_CLIENT_SECRET"
+    fi
+  } | curl -K - "$@"
 }
+
 if [ -n "$JENKINS_USER" ]; then
-  echo "Authentification : ${JENKINS_USER} (token masqué, hors argv)"
+  echo "Authentification Jenkins : ${JENKINS_USER} (token masqué, hors argv)"
 else
-  echo "Authentification : AUCUNE (instance ouverte présumée)"
+  echo "Authentification Jenkins : AUCUNE (instance ouverte présumée)"
+fi
+if [ -n "$CF_ACCESS_CLIENT_ID" ]; then
+  echo "Portail : service token Cloudflare Access fourni (secret masqué, hors argv)"
+else
+  echo "Portail : aucun service token — échouera si l'instance est derrière un portail"
 fi
 
 echo "Cible : $JENKINS_UI"
@@ -87,11 +109,29 @@ done
 ok "XML des jobs bien formés"
 
 # ── 1. crumb CSRF ────────────────────────────────────────────────────────────
-CK=$(mktemp); trap 'rm -f "$CK"' EXIT
-CJ=$(jcurl -sf -c "$CK" "$JENKINS_UI/crumbIssuer/api/json") \
-  || ko "Jenkins injoignable ou identifiants refusés ($JENKINS_UI)"
-F=$(printf '%s' "$CJ" | python3 -c 'import sys,json;print(json.load(sys.stdin)["crumbRequestField"])') \
-  || ko "réponse crumbIssuer inattendue"
+CK=$(mktemp); CB=$(mktemp); trap 'rm -f "$CK" "$CB"' EXIT
+# On lit le CODE plutôt que de se fier à `curl -f` : une redirection 302 vers un
+# portail N'EST PAS une erreur HTTP, `-f` la laisse passer, et le script échouait
+# ensuite sur un JSON vide avec un message qui n'aidait pas. Chaque cas mérite
+# son diagnostic — c'est lui qui dit à l'ops QUOI fournir.
+HC=$(jcurl -s -o "$CB" -w '%{http_code}' -c "$CK" "$JENKINS_UI/crumbIssuer/api/json")
+case "$HC" in
+  200) : ;;
+  301|302|303|307|308)
+    RU=$(jcurl -s -o /dev/null -w '%{redirect_url}' "$JENKINS_UI/crumbIssuer/api/json")
+    echo "  ❌ redirigé (HTTP $HC) vers un portail avant d'atteindre Jenkins." >&2
+    case "$RU" in
+      *cloudflareaccess.com*) echo "     Portail : Cloudflare Access." >&2 ;;
+      *) [ -n "$RU" ] && echo "     Redirection : ${RU%%\?*}" >&2 ;;
+    esac
+    ko "fournir CF_ACCESS_CLIENT_ID et CF_ACCESS_CLIENT_SECRET (service token), ou passer par WARP/session navigateur" ;;
+  401|403) ko "identifiants refusés (HTTP $HC) — vérifier JENKINS_USER / JENKINS_TOKEN, et les droits de configuration des jobs" ;;
+  000)     ko "Jenkins injoignable ($JENKINS_UI) — réseau, DNS ou TLS" ;;
+  *)       ko "réponse inattendue du crumbIssuer (HTTP $HC)" ;;
+esac
+CJ=$(cat "$CB")
+F=$(printf '%s' "$CJ" | python3 -c 'import sys,json;print(json.load(sys.stdin)["crumbRequestField"])' 2>/dev/null) \
+  || ko "réponse crumbIssuer illisible (HTTP 200 mais corps non JSON — portail intercalé ?)"
 C=$(printf '%s' "$CJ" | python3 -c 'import sys,json;print(json.load(sys.stdin)["crumb"])')
 ok "crumb CSRF obtenu"
 

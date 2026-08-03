@@ -28,10 +28,13 @@ LOG = os.environ["CALLLOG"]
 EXISTING = set(filter(None, os.environ.get("EXISTING_JOBS", "").split(",")))
 UPDATE_CODE = int(os.environ.get("UPDATE_CODE", "200"))
 NEED_AUTH = os.environ.get("NEED_AUTH", "") == "1"
+CRUMB_CODE = int(os.environ.get("CRUMB_CODE", "200"))   # 302 = portail devant Jenkins
+NEED_CF = os.environ.get("NEED_CF", "") == "1"          # exige le service token
 def log(line):
     with open(LOG, "a") as f: f.write(line + "\n")
 class H(BaseHTTPRequestHandler):
     def _authok(self):
+        if NEED_CF and not self.headers.get("CF-Access-Client-Id"): return False
         if not NEED_AUTH: return True
         return (self.headers.get("Authorization") or "").startswith("Basic ")
     def _send(self, code, body=b"{}"):
@@ -41,6 +44,12 @@ class H(BaseHTTPRequestHandler):
         if not self._authok(): return self._send(401)
         if self.path.startswith("/crumbIssuer"):
             log("GET crumb")
+            if CRUMB_CODE != 200:
+                # Un portail redirige AVANT que Jenkins ne voie la requete.
+                b = b""
+                self.send_response(CRUMB_CODE)
+                self.send_header("Location", "https://stoa-platform.cloudflareaccess.com/cdn-cgi/access/login/x")
+                self.send_header("Content-Length", "0"); self.end_headers(); return
             return self._send(200, json.dumps({"crumbRequestField": "Jenkins-Crumb", "crumb": "abc"}).encode())
         m = re.match(r"^/job/([^/]+)/api/json$", self.path)
         if m:
@@ -63,10 +72,11 @@ class H(BaseHTTPRequestHandler):
 HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
 PY
 
-start(){ # $1=jobs existants (csv) $2=code de mise à jour $3=auth requise(0/1)
+start(){ # $1=jobs existants (csv) $2=code MAJ $3=auth(0/1) $4=code crumb $5=CF requis(0/1)
   [ -n "$PID" ] && kill "$PID" 2>/dev/null
   : > "$TMP/calls.log"
   CALLLOG="$TMP/calls.log" EXISTING_JOBS="$1" UPDATE_CODE="$2" NEED_AUTH="${3:-0}" \
+  CRUMB_CODE="${4:-200}" NEED_CF="${5:-0}" \
     python3 "$TMP/fakejenkins.py" "$PORT" >/dev/null 2>&1 &
   PID=$!
   for _ in $(seq 1 40); do curl -s "http://127.0.0.1:$PORT/x" >/dev/null 2>&1 && return; sleep 0.1; done
@@ -134,7 +144,38 @@ grep -q 's3cr3t-token' <<<"$OUT" && ko "LE TOKEN FUITE dans la sortie" || ok "au
 grep -q 'alice' <<<"$OUT" && ok "l'identité utilisée est affichée (traçabilité)" || ko "identité non affichée"
 
 echo
-echo "== 8. instance injoignable : échec net =="
+echo "== 8. portail devant Jenkins : diagnostic qui dit QUOI fournir =="
+# Le cas réellement rencontré : jenkins.labs.gostoa.dev répond 302 vers
+# Cloudflare Access. Sans ce diagnostic, le script échouait plus loin sur un
+# JSON vide, avec un message qui envoyait chercher la panne ailleurs.
+start "provision-apply" 200 0 302
+OUT=$(cd "$REPO" && JENKINS_UI="$JU" JOBS=provision-apply bash "$S" 2>&1); RC=$?
+[ $RC -ne 0 ] && ok "refusé" || ko "a continué malgré la redirection"
+grep -q "portail" <<<"$OUT" && ok "le portail est nommé" || ko "diagnostic générique"
+grep -q "CF_ACCESS_CLIENT_ID" <<<"$OUT" && ok "dit quoi fournir" || ko "aucune issue proposée"
+[ -z "$(calls | grep -E 'POST')" ] && ok "aucune écriture tentée" || ko "écritures malgré le portail"
+
+echo
+echo "== 9. service token Cloudflare : en-têtes transmis, secret jamais imprimé =="
+start "provision-apply" 200 0 200 1
+OUT=$(cd "$REPO" && JENKINS_UI="$JU" JOBS=provision-apply \
+      CF_ACCESS_CLIENT_ID='cf-id.access' CF_ACCESS_CLIENT_SECRET='cf-s3cr3t' bash "$S" 2>&1); RC=$?
+[ $RC -eq 0 ] && ok "le portail laisse passer" || ko "en-têtes CF non transmis (rc=$RC)"
+grep -q 'cf-s3cr3t' <<<"$OUT" && ko "LE SECRET CF FUITE dans la sortie" || ok "aucune fuite du secret CF"
+grep -q 'service token Cloudflare Access fourni' <<<"$OUT" && ok "présence annoncée" || ko "silencieux"
+
+echo
+echo "== 10. les secrets ne passent PAS par argv (visibles dans ps) =="
+# `-u user:token` et `-H "CF-Access-Client-Secret: ..."` seraient visibles de
+# tout utilisateur de la machine le temps de l'appel. Tout doit passer par
+# `curl -K -` (entrée standard).
+CODE=$(grep -vE '^\s*#' "$S")
+grep -qE 'curl .*-u "?\$\{?JENKINS' <<<"$CODE" && ko "-u en argv" || ok "aucun -u en argv"
+grep -qE '\-H "CF-Access-Client-Secret' <<<"$CODE" && ko "en-tête CF en argv" || ok "aucun en-tête CF en argv"
+grep -q 'curl -K -' "$S" && ok "configuration passée par l'entrée standard" || ko "curl -K - absent"
+
+echo
+echo "== 11. instance injoignable : échec net =="
 OUT=$(cd "$REPO" && JENKINS_UI="http://127.0.0.1:1" JOBS=provision-apply bash "$S" 2>&1); RC=$?
 [ $RC -ne 0 ] && grep -q "injoignable" <<<"$OUT" && ok "diagnostic explicite" || ko "échec silencieux ou obscur"
 
