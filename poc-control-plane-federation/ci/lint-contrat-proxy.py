@@ -484,9 +484,11 @@ def main():
             print(f"    {m:6} {c}\n           {ou} — {nom}")
     if suspects:
         ko = 1
-        print(f"✗ {len(suspects)} appel(s) SUSPECT(S) — toute mention de {BASE_VAR} dans un "
-              f"scalaire des roles est verifiee ou signalee, jamais ignoree (le linter ne "
-              f"prefere jamais le silence au doute) :")
+        print(f"✗ {len(suspects)} appel(s) SUSPECT(S) — hors module d'appel reconnu, toute "
+              f"mention de {BASE_VAR} dans un scalaire des roles est verifiee ou signalee, "
+              f"jamais ignoree. DANS un module reconnu, seule la cle d'URL est lue : la base "
+              f"citee dans une autre cle (headers, chdir, dest) reste muette — aucune n'est "
+              f"un site d'appel, mais l'affirmation ne vaut pas au-dela :")
         for ou, nom, motif in sorted(set(suspects)):
             print(f"    {ou} — {nom}\n           {motif}")
     if not ko:

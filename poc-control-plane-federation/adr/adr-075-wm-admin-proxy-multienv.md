@@ -165,11 +165,16 @@ surface découverte ensuite s'y ajoute (une limite tue est pire qu'une limite av
   Go ; le linter ne lit que du YAML Ansible. La revendication « toute action CI passe par le
   contrat » reste donc partiellement non vérifiée pour cette voie — c'est un second
   analyseur, sur un autre langage, qui reste à écrire.
-- **Seul `ansible/roles` est parcouru.** `ROLES` vaut `ansible/roles` : les **playbooks**
-  `ansible/*.yml`, les `group_vars`/`host_vars` et l'inventaire ne sont **pas** lus. Les
-  playbooks ne portent aucune tâche d'appel aujourd'hui (ils se contentent d'inclure des
-  rôles), mais rien dans la chaîne CI ne l'impose — un `uri:` posé directement dans un
-  playbook serait invisible.
+- **Seul `ansible/roles` est parcouru, et l'angle mort n'est pas hypothétique.** `ROLES`
+  vaut `ansible/roles` : les **playbooks** `ansible/*.yml`, les `group_vars`/`host_vars`
+  et l'inventaire ne sont **pas** lus. Mesuré le 2026-08-03 : `ansible/is-mtls-setup.yml`
+  porte **11 tâches d'appel** directement sous son `tasks:`, dont trois sur
+  `/rest/apigateway/ports` — chemin **absent du contrat**, donc 404 à travers le proxy.
+  `ansible/is-port-access.yml` en porte une autre. Ces appels visent `wm_admin_url` et non
+  `apim_ss_api_base` : élargir `ROLES` ne suffirait donc pas à les voir, il faudrait aussi
+  reconnaître cette base — c'est la limite « une base construite autrement » ci-dessous.
+- **Seuls les fichiers `.yml`/`.yaml` sont lus.** Un script embarqué dans `files/` d'un rôle
+  et lancé par `script:` échappe à l'analyse, sauf si la base apparaît dans l'argument.
 - **L'indirection n'est attrapée qu'au site de définition.** Une URL montée dans un fait
   (`set_fact: {del_url: "{{ apim_ss_api_base }}/…"}`) est signalée **là où elle est
   écrite** ; le site d'usage (`uri: {url: "{{ del_url }}"}`) ne mentionne plus la base et
