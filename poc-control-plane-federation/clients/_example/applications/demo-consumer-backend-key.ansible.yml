@@ -1,0 +1,102 @@
+---
+# Manifeste de demande (format rôle apim_selfservice_app) — variante CLÉ BACKEND
+# STOCKÉE SUR L'APPLICATION.
+#
+# ─── CE QUE CE MANIFESTE MODÉLISE ────────────────────────────────────────────
+# Chez le client, la clé d'API du backend n'est PAS connue de l'application
+# cliente : la gateway sert de table de routage. La clé est stockée SUR
+# L'APPLICATION (identifier `token`), et une CUSTOM POLICY attachée à l'API la
+# lit puis l'injecte vers l'amont. Cette policy est hors du périmètre du rôle —
+# elle existe et tourne chez le client. Le rôle ne fait que POSER l'entrée.
+#
+# ─── OÙ SE MET LA CLÉ ? PAS ICI. ─────────────────────────────────────────────
+# Nulle part dans ce fichier, et dans aucun fichier du dépôt. Git ne porte que
+# la RÉFÉRENCE ; la valeur vit dans Vault. Le provider l'y dépose AVANT l'apply :
+#
+#   vault kv put secret/stoa/deploy/banking-demo/apps/demo-consumer-backend-key/dev/backend-key \
+#     api_key='<la clé fournie par le provider>'
+#
+# Le chemin lu par le rôle se compose de trois morceaux :
+#   <apim_ss_vault_kv_mount>/data/<apim_ss_vault_prefix>/<backend_key_ref>
+#   =        secret          /data/        stoa         / (la ligne ci-dessous)
+# (le segment `data/` est propre au KV v2 ; la CLI `vault kv` l'ajoute seule.)
+#
+# Garder le préfixe `deploy/<tenant>/` : c'est le SEUL périmètre que la policy
+# Vault du token nominatif autorise (tenant-scoping ADR-077). Hors de là, Vault
+# répond 403 et le rôle échoue en BACKEND_KEY_MISSING — sans rien poser.
+#
+# ─── COMMENT ANSIBLE SAIT QU'IL DOIT ALLER LA CHERCHER ───────────────────────
+# Il n'y a aucune découverte automatique : trois maillons explicites, dans cet
+# ordre.
+#
+#   1. VOUS DÉSIGNEZ CE FICHIER, par chemin, au lancement :
+#        ansible-playbook -i inv.ini ansible/selfservice-app.yml \
+#          -e apim_ss_manifest=clients/_example/applications/demo-consumer-backend-key.ansible.yml \
+#          -e apim_ss_env=dev
+#      tasks/resolve-env.yml en fait un `include_vars` — c'est ce qui définit la
+#      variable `apim_ss_app` ci-dessous. (JAMAIS `-e @fichier` : un extra-var
+#      masquerait la fusion per_env, cf. README du rôle.)
+#
+#   2. LA FUSION PAR ENV donne le manifeste EFFECTIF : racine ⊕ per_env[dev].
+#      C'est là que `backend_key_ref` prend sa valeur — elle DIFFÈRE par env,
+#      donc elle vit sous per_env, pas à la racine.
+#
+#   3. LA PRÉSENCE DE LA CLÉ DÉCLENCHE LA LECTURE. Dans tasks/main.yml :
+#        - import_tasks: backend-key.yml
+#          when: (apim_ss_app.backend_key_ref | default('')) | length > 0
+#      Non vide ⇒ le rôle lit Vault et pose l'identifier. Vide ou absent ⇒ tout
+#      le bloc est sauté et la dimension `token` n'est pas gérée (un identifier
+#      posé à la main dans l'UI serait alors PRÉSERVÉ au re-run).
+#
+# ─── CE QUE CE MANIFESTE NE PROUVE PAS ───────────────────────────────────────
+# Que le backend reçoit la clé. Le rôle la POSE sur l'application ; c'est la
+# custom policy du client qui la lit et l'injecte, et elle n'est pas déployée
+# dans ce lab. La preuve s'arrête à la CONFIGURATION — entrée présente, valeur
+# exacte, unique. C'est la même limite structurelle que pour le certificat.
+#
+# ⚠ ENFORCE ALIGNÉ SUR LE MANIFESTE VOISIN. La règle d'identification est
+# attachée à la policy SERVICE de l'API, unique par API : deux manifestes qui
+# ciblent la MÊME API avec des `enforce` DIFFÉRENTS sont mutuellement exclusifs
+# (le dernier apply gagne, cf. README du rôle § Limites). On reprend donc
+# `ipAddressRange`, comme demo-consumer-accounts-read, pour ne pas entrer en
+# conflit. La clé backend, elle, est ORTHOGONALE à `enforce` : elle ne s'oppose
+# à rien (et le rôle REFUSE `token` dans `enforce` — BACKEND_KEY_ENFORCED).
+apim_ss_app:
+  name: "demo-consumer-backend-key"
+  api: "accounts-read"
+  api_version: "1.0.0"
+  description: "Preuve d'exécution du chemin clé backend (identifier token ← Vault)"
+  contact_emails: ["demo@bank.invalid"]
+  team: "banking-demo"
+  enforce: ["ipAddressRange"]          # invariant — PAS `token` (cf. ci-dessus)
+  cert_rotation: "replace"
+
+  backend:
+    header: "apikey"
+    value_template: "${backend_apikey}"
+    # false = le rôle ne pose AUCUNE action customHttpHeaders : c'est la custom
+    # policy du client qui injecte. Ce n'est pas un confort — wM n'autorise
+    # QU'UNE action customHttpHeaders par API (409 sinon), les deux ne peuvent
+    # pas coexister. Mettre `true` (ou retirer la ligne) pour que le rôle
+    # reprenne l'injection à son compte.
+    inject: false
+
+  # Champ lu DANS l'entrée KV. Décommenter si votre convention diffère.
+  # backend_key_field: "api_key"
+
+  per_env:
+    # Une clé PAR ENV : un secret d'un environnement n'est jamais celui d'un
+    # autre. Chaque chemin doit exister dans Vault avant l'apply de cet env —
+    # sinon BACKEND_KEY_MISSING, et RIEN n'est posé sur la gateway.
+    dev:
+      ip_allowlist: ["192.168.65.1"]
+      backend_key_ref: "deploy/banking-demo/apps/demo-consumer-backend-key/dev/backend-key"
+    rec:
+      ip_allowlist: ["10.20.1.0-10.20.1.9"]
+      backend_key_ref: "deploy/banking-demo/apps/demo-consumer-backend-key/rec/backend-key"
+    int:
+      ip_allowlist: ["10.30.1.0-10.30.1.9"]
+      backend_key_ref: "deploy/banking-demo/apps/demo-consumer-backend-key/int/backend-key"
+    prod:
+      ip_allowlist: ["10.90.1.0-10.90.1.9"]
+      backend_key_ref: "deploy/banking-demo/apps/demo-consumer-backend-key/prod/backend-key"
