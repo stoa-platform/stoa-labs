@@ -204,4 +204,36 @@ case "$PR_OUT" in
 esac
 PR_URL="${GIT_HOST}/${GIT_REPO}/pulls/${PR_NUM}"
 echo "PR_URL=${PR_URL}"
-echo "OK: demande ${REQ_APP}/${REQ_ENV} → manifeste + MR"
+
+# ── PLAN ENCHAÎNÉ (ADR-081, corollaire 1) ────────────────────────────────────
+# Le demandeur avait TROIS endroits à regarder : son build, la PR dans la forge,
+# puis un autre build pour le plan. On enchaîne donc le plan ICI : un seul build
+# lui donne la PR ET son verdict.
+#
+# C'est un APPEL du script existant, pas une réécriture : provision-plan.sh est
+# déjà paramétré par PR_BRANCH/PR_NUMBER et déjà idempotent (upsert par
+# marqueur), donc rejouable sans empiler de commentaires.
+#
+# LE WEBHOOK `opened` EST CONSERVÉ, et le double passage est DÉLIBÉRÉ. Le
+# supprimer laisserait sans plan toute PR ouverte à la main sous provision/* —
+# le valideur mergerait alors sans verdict. Le commentaire étant un upsert, le
+# second passage met à jour le premier au lieu de le doubler ; le coût est un
+# build, le bénéfice est qu'aucun chemin d'ouverture n'échappe au plan.
+#
+# NE FAIT PAS ÉCHOUER LA DEMANDE. Un plan rouge est une information à porter au
+# valideur, pas une raison d'annuler une PR déjà ouverte et poussée : le
+# manifeste existe, la PR aussi, et c'est précisément ce qu'il faut corriger
+# puis repousser. Le verdict est repris dans la sortie ci-dessous.
+if [ "${PROVISION_PLAN_INLINE:-true}" = "true" ]; then
+  echo "[5/5] plan enchaîné sur la PR #${PR_NUM}"
+  if PR_BRANCH="$BRANCH" PR_NUMBER="$PR_NUM" \
+     bash "$(cd "$(dirname "$0")" && pwd)/provision-plan.sh"; then
+    echo "  PLAN_INLINE=ok"
+  else
+    echo "  PLAN_INLINE=fail — la PR est ouverte et commentée, la demande reste valide" >&2
+  fi
+else
+  echo "[5/5] plan enchaîné DÉSACTIVÉ (PROVISION_PLAN_INLINE=false) — le webhook s'en charge"
+fi
+
+echo "OK: demande ${REQ_APP}/${REQ_ENV} → manifeste + MR${PROVISION_PLAN_INLINE:+ + plan}"
