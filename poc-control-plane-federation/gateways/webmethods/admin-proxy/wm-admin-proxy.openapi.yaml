@@ -43,7 +43,7 @@ paths:
         "200": { $ref: "#/components/responses/proxied" }
     post:
       summary: Create API by OpenAPI import
-      requestBody: { $ref: "#/components/requestBodies/passthrough" }
+      requestBody: { $ref: "#/components/requestBodies/passthroughJsonOrMultipart" }
       responses:
         "201": { $ref: "#/components/responses/proxied" }
   /rest/apigateway/apis/{id}:
@@ -54,7 +54,7 @@ paths:
         "200": { $ref: "#/components/responses/proxied" }
     put:
       summary: Update API (re-import; policy + ${alias} routing preserved)
-      requestBody: { $ref: "#/components/requestBodies/passthrough" }
+      requestBody: { $ref: "#/components/requestBodies/passthroughJsonOrMultipart" }
       responses:
         "200": { $ref: "#/components/responses/proxied" }
   /rest/apigateway/apis/{id}/versions:
@@ -205,6 +205,43 @@ paths:
       requestBody: { $ref: "#/components/requestBodies/passthrough" }
       responses:
         "200": { $ref: "#/components/responses/proxied" }
+  /rest/apigateway/accessProfiles:
+    get:
+      summary: >-
+        List access profiles — une team EST un accessProfile sur 10.15. Lecture
+        prealable obligatoire : /assets/team n'accepte que des UUID, jamais un nom.
+      responses:
+        "200": { $ref: "#/components/responses/proxied" }
+  /rest/apigateway/assets/team:
+    post:
+      summary: >-
+        Cloisonner un asset (API ou Application) sur une ou plusieurs teams.
+        assetType est OBLIGATOIRE : sans lui la 10.15 rend 200 SANS RIEN FAIRE.
+      requestBody: { $ref: "#/components/requestBodies/passthrough" }
+      responses:
+        "200": { $ref: "#/components/responses/proxied" }
+  /rest/apigateway/archive:
+    get:
+      summary: Exporter des APIs en archive (promotion inter-env, ADR-079)
+      parameters:
+        - name: apis
+          in: query
+          required: true
+          description: GUID de l'API a exporter
+          schema: { type: string }
+      responses:
+        "200": { $ref: "#/components/responses/proxied" }
+    post:
+      summary: Importer une archive (promotion 0-coupure) — envoi en multipart
+      parameters:
+        - name: overwrite
+          in: query
+          required: false
+          description: Types d'assets a ecraser a l'import
+          schema: { type: string }
+      requestBody: { $ref: "#/components/requestBodies/passthroughJsonOrMultipart" }
+      responses:
+        "200": { $ref: "#/components/responses/proxied" }
 components:
   parameters:
     id:
@@ -217,6 +254,21 @@ components:
       required: true
       content:
         application/json:
+          schema:
+            type: object
+            additionalProperties: true
+    # Certains gestes d'admin 10.15 n'acceptent QUE le multipart (l'import d'API
+    # from-scratch en JSON est casse sur cette version), tandis que labctl attaque
+    # les memes chemins en JSON. Les deux sont donc legitimes — et un contrat qui
+    # ne declare que le JSON fait tomber la chaine Ansible a travers le proxy.
+    passthroughJsonOrMultipart:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: true
+        multipart/form-data:
           schema:
             type: object
             additionalProperties: true

@@ -63,20 +63,46 @@
               - { templateKey: "headerValue", values: ["{{ apim_ss_app.backend.value_template }}"] }
         active: true
 
-- name: "Backend : converger l'action (PUT si déjà attachée, POST sinon)"
+# Scission en deux taches a methode fixe (tache 3, lot 1 bis — durcissement
+# anti-diagonale du linter d'allow-list) : un appel unique dont la methode ET
+# le chemin dependaient du MEME conditionnel Jinja est indechiffrable pour un
+# linter statique — il ne peut pas prouver que PUT va toujours avec l'id et
+# POST toujours sans, et doit donc, fail-closed, exiger un produit croise
+# complet que le contrat (a raison) ne declare pas : ces deux combinaisons
+# croisees ne sont JAMAIS appelees. Deux taches ordinaires, chacune a une
+# methode et une forme fixes, pilotees par la MEME condition qu'avant :
+# comportement HTTP identique, mais verifiable exactement par le linter.
+- name: "Backend : mettre à jour l'action déjà attachée au stage routing (PUT)"
   ansible.builtin.uri:
-    url: "{{ apim_ss_api_base }}/policyActions{{ ('/' ~ bk_hdr_id) if (bk_hdr_id | length > 0) else '' }}"
-    method: "{{ 'PUT' if (bk_hdr_id | length > 0) else 'POST' }}"
-    body: >-
-      {{ {'policyAction': (bk_action.policyAction | combine({'id': bk_hdr_id}))}
-         if (bk_hdr_id | length > 0) else bk_action }}
+    url: "{{ apim_ss_api_base }}/policyActions/{{ bk_hdr_id }}"
+    method: PUT
+    body: "{{ {'policyAction': (bk_action.policyAction | combine({'id': bk_hdr_id}))} }}"
     status_code: [200, 201]
-  register: bk_hdr_put
+  when: "bk_hdr_id | length > 0"
 
+- name: "Backend : créer l'action (POST, aucune action customHttpHeaders attachée)"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_api_base }}/policyActions"
+    method: POST
+    body: "{{ bk_action }}"
+    status_code: [200, 201]
+  register: bk_hdr_put_create
+  when: "bk_hdr_id | length == 0"
+
+# bk_hdr_id | length > 0 => on vient de PUT sur une action deja connue : id
+# inchange. Sinon => on vient de POST, et bk_hdr_put_create est ALORS
+# TOUJOURS le resultat REEL de cette tache (jamais un skip) puisque c'est
+# exactement sa condition d'execution : en extraire l'id cree. Volontairement
+# PAS de register partage entre les deux taches ci-dessus — meme une tache
+# sautee ecrit son propre resultat (skipped=true, sans `.json`) dans la
+# variable enregistree, donc un register commun ferait dependre la valeur
+# finale de l'ORDRE des deux taches plutot que de celle qui a reellement
+# tourne. Deux registers distincts, choisis ici par la MEME condition que les
+# `when:` ci-dessus, eliminent cette dependance.
 - ansible.builtin.set_fact:
     bk_hdr_id: >-
       {{ bk_hdr_id if (bk_hdr_id | length > 0)
-         else (bk_hdr_put.json.policyAction.id | default(bk_hdr_put.json.id)) }}
+         else (bk_hdr_put_create.json.policyAction.id | default(bk_hdr_put_create.json.id)) }}
 
 # Attacher au routing UNIQUEMENT si pas déjà là. Dédup : on retire TOUT
 # customHttpHeaders (une seule autorisée par API) et on ajoute le nôtre, en

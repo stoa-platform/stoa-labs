@@ -97,6 +97,44 @@
           <defaultValue></defaultValue>
           <trim>false</trim>
         </hudson.model.StringParameterDefinition>
+        <!-- ── PROXIFICATION de l'API d'admin (ADMIN_VIA=proxy-oauth2) ──
+             Le NOM de l'API proxy est désormais un paramètre à lui seul : il
+             était auparavant noyé dans APIM_PROXY_BASE, donc non surchargeable
+             sans réécrire l'URL entière. APIM_PROXY_BASE reste l'échappatoire
+             pour un reverse proxy hors convention wM /gateway/<api>/<version>.
+             APIM_PROXY_VER et APIM_PROXY_PATH existent aussi côté pipeline
+             (defaults 1.0 et /rest/apigateway) — non exposés ici, ils ne
+             changent pas sur ce lab. ── -->
+        <hudson.model.StringParameterDefinition>
+          <name>APIM_PROXY_HOST</name>
+          <description>Hôte portant l'API proxy d'admin. N'a d'effet qu'avec ADMIN_VIA=proxy-oauth2. DÉFAUT VOLONTAIREMENT DOCKER-COMPOSE (webmethods-real, hôte INEXISTANT dans le cluster) TANT QUE LA TÂCHE 6 N'A PAS POSÉ LE PROXY : viser déjà wm-apigateway-admin.wm.svc.cluster.local désignerait un hôte RÉEL où l'API wm-admin-self n'existe pas. Le préflight accepte 200 ET 401 comme preuve de vie ; si la gateway répond 401 sur une API absente, il conclut « up », le build consomme l'identité Vault NOMINATIVE puis meurt au milieu du play — exactement l'échec cryptique que ce préflight existe pour éviter. Un hôte inexistant, lui, échoue franchement AVANT la consommation d'identité. À basculer sur http://wm-apigateway-admin.wm.svc.cluster.local:5555 (Service d'administration ÉPINGLÉ, jamais le Service réparti) le jour où le proxy est réellement déployé — le paramètre reste réglable build par build d'ici là.</description>
+          <defaultValue>http://webmethods-real:5555</defaultValue>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>APIM_PROXY_API</name>
+          <description>Nom de l'API d'admin proxifiée. Change d'un client à l'autre.</description>
+          <defaultValue>wm-admin-self</defaultValue>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>APIM_PROXY_BASE</name>
+          <description>Override COMPLET de la base du proxy. Vide = composée depuis APIM_PROXY_HOST/API/VER/PATH. À ne remplir que si le chemin ne suit pas la convention wM.</description>
+          <defaultValue></defaultValue>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <!-- ── PRÉFLIGHT de joignabilité ──
+             `off` chez un client dont /health n'est pas joignable depuis la VIP
+             ou est filtré en amont : sans cela le build meurt plusieurs minutes
+             durant pour une raison étrangère au travail demandé. Variantes plus
+             fines côté pipeline : APIM_PREFLIGHT_URL (autre sonde de vie),
+             APIM_PREFLIGHT_CODES (défaut « 200 401 »), APIM_PREFLIGHT_TRIES. ── -->
+        <hudson.model.StringParameterDefinition>
+          <name>APIM_PREFLIGHT</name>
+          <description>on (défaut) = attendre la gateway avant de consommer l'identité Vault ; off = ne pas sonder du tout.</description>
+          <defaultValue>on</defaultValue>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
       </parameterDefinitions>
     </hudson.model.ParametersDefinitionProperty>
   </properties>
