@@ -13,6 +13,11 @@
             <org.jenkinsci.plugins.gwt.GenericVariable><key>PR_NUMBER</key><value>$.pull_request.number</value></org.jenkinsci.plugins.gwt.GenericVariable>
             <org.jenkinsci.plugins.gwt.GenericVariable><key>PR_ACTION</key><value>$.action</value></org.jenkinsci.plugins.gwt.GenericVariable>
             <org.jenkinsci.plugins.gwt.GenericVariable><key>PR_MERGED</key><value>$.pull_request.merged</value></org.jenkinsci.plugins.gwt.GenericVariable>
+            <!-- Qui a validé, et qui avait demandé. SANS eux la garde d'identité
+                 ne peut RIEN vérifier et refuse (MERGER_UNKNOWN) : ces deux
+                 lignes ne sont pas décoratives, elles sont la garde. -->
+            <org.jenkinsci.plugins.gwt.GenericVariable><key>PR_MERGED_BY</key><value>$.pull_request.merged_by.login</value></org.jenkinsci.plugins.gwt.GenericVariable>
+            <org.jenkinsci.plugins.gwt.GenericVariable><key>PR_REQUESTER</key><value>$.pull_request.user.login</value></org.jenkinsci.plugins.gwt.GenericVariable>
           </genericVariables>
           <printContributedVariables>true</printContributedVariables>
           <printPostContent>false</printPostContent>
@@ -45,6 +50,29 @@ def creds = input(
     string(name: 'VAULT_USER', defaultValue: '', description: 'Login annuaire (ex. oscar)'),
     password(name: 'VAULT_USER_PASSWORD', defaultValue: '', description: 'Mot de passe annuaire')
   ])
+
+// ── GARDE : celui qui repond EST-IL celui qui a valide la PR ? ────────────
+// L'input authentifie personne : quiconque a le droit `input` sur Jenkins peut
+// y repondre. Le webhook, lui, dit QUI a merge — mais c'est une affirmation,
+// pas un credential. La garde relie les deux et refuse si elles divergent.
+// Elle tourne AVANT le build aval : rien n'est ecrit ni applique sur un refus.
+//
+// Les valeurs passent par l'ENVIRONNEMENT, jamais par interpolation Groovy dans
+// la chaine sh : elles viennent d'un webhook et d'une saisie humaine, donc d'un
+// tiers. La chaine sh est en quotes SIMPLES cote Groovy pour qu'il n'y touche
+// pas, et c'est le shell qui developpe les variables, entre guillemets.
+node {
+  stage('garde identite du valideur') {
+    git url: 'http://gitea:3000/ci/stoa-labs.git', branch: 'main'
+    withEnv(["G_MERGED_BY=${env.PR_MERGED_BY ?: ''}",
+             "G_REQUESTER=${env.PR_REQUESTER ?: ''}",
+             "G_VAULT_USER=${creds.VAULT_USER ?: ''}"]) {
+      dir('poc-control-plane-federation') {
+        sh 'set +x; sh scripts/lib/assert-merge-identity.sh --merged-by "$G_MERGED_BY" --requester "$G_REQUESTER" --vault-user "$G_VAULT_USER"'
+      }
+    }
+  }
+}
 
 // ── APPLY NOMINATIF : delegue au job prouve selfservice-app-deploy ────────
 build job: 'selfservice-app-deploy', wait: true, parameters: [
