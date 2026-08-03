@@ -24,10 +24,25 @@
 # include_vars résout relativement au rôle/playbook, pas au cwd : un chemin
 # repo-relatif (clients/…) est donc résolu depuis la racine = playbook_dir/.. ;
 # un chemin absolu est pris tel quel.
+#
+# On MÉMORISE le dossier du manifeste (apim_ss_manifest_dir) : c'est la seconde
+# base de résolution de `public_cert_ref` (cf. cert-der.yml). Sans lui, un
+# certificat posé À CÔTÉ du manifeste — ce que font le moteur Go
+# (targets/load.go) et l'ADR-071, et donc ce à quoi un ops s'attend — était
+# introuvable. Vide quand le manifeste n'est pas chargé par chemin (vars du
+# play) : cert-der.yml retombe alors sur la seule base repo-relative.
+- name: "Env : chemin du manifeste + son dossier (base n°2 pour public_cert_ref)"
+  ansible.builtin.set_fact:
+    apim_ss_manifest_path: >-
+      {{ (apim_ss_manifest if apim_ss_manifest.startswith('/')
+          else (playbook_dir ~ '/../' ~ apim_ss_manifest)) | trim }}
+    apim_ss_manifest_dir: >-
+      {{ ((apim_ss_manifest if apim_ss_manifest.startswith('/')
+           else (playbook_dir ~ '/../' ~ apim_ss_manifest)) | trim) | dirname }}
+  when: "(apim_ss_manifest | default('')) | length > 0"
+
 - name: "Env : charger le manifeste (chemin) — include_vars, pas extra-var"
-  ansible.builtin.include_vars: >-
-    {{ apim_ss_manifest if apim_ss_manifest.startswith('/')
-       else (playbook_dir ~ '/../' ~ apim_ss_manifest) }}
+  ansible.builtin.include_vars: "{{ apim_ss_manifest_path }}"
   when: "(apim_ss_manifest | default('')) | length > 0"
 
 - name: "Env : le manifeste porte-t-il des surcharges par environnement ?"

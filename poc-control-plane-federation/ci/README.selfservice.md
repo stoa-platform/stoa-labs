@@ -54,6 +54,29 @@ $ python3 scripts/apply-selfservice-application.py \
   l'UI et par labctl ⇒ « exporter en `.cer` binaire et passer par l'UI » ne
   contourne aucun bug de hash (les deux voies déposent les mêmes octets, un tel
   bug les toucherait toutes les deux). Cert, plage IP et clé backend : 100 % REST.
+
+## Ce que le stage PLAN refuse (hors ligne, sans secret)
+
+Le PLAN tourne en identité de JOB, sans Vault et sans toucher la gateway. Outre
+la validation du manifeste et le `--syntax-check`, il résout **le certificat**
+via `ansible/test-cert-path.yml` — une sonde qui rejoue exactement les tâches du
+rôle (`resolve-env` + `cert-der`) sans aucun appel réseau :
+
+| Refusé au PLAN | Cas |
+|---|---|
+| `CERT_NOT_FOUND` | `public_cert_ref` introuvable — le message affiche **les deux chemins essayés** (racine du dépôt, puis dossier du manifeste) |
+| `CERT_PATH_AMBIGUOUS` | même nom de fichier dans les deux bases avec des contenus **différents** |
+| `CERT_INVALID` | pas de bloc `CERTIFICATE`, ou `base64(DER)` mal formé |
+| clé privée | `publicCertRef` porte une `PRIVATE KEY` (ADR-071) |
+
+Une demande **sans** certificat (identité par IP seule) rend `PROBE_SKIP` et
+passe — c'est le cas du manifeste par défaut du pipeline. Ces erreurs échouaient
+auparavant à l'**apply**, donc après authentification nominative et après les
+premières écritures sur la gateway (application créée, cloisonnée, associée à
+l'API). Requiert `openssl` sur l'agent — déjà une dépendance de l'apply.
+
+**Preuve** : `./scripts/test-cert-path-resolution.sh` → **16/16**, hors ligne.
+
 ## Identité nominative — voie A (user/mot de passe), livrée et prouvée
 
 L'apply demande **votre identité d'annuaire**, jamais un credential du job :

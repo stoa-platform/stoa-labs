@@ -162,7 +162,9 @@ route — pas une base différente.
   (le rôle fait `include_vars`), **jamais `-e @fichier`** : un extra-var (précédence
   22) masquerait le `set_fact` de fusion (19) et la surcharge `per_env` serait
   silencieusement perdue. `apim_ss_env` reste, lui, un extra-var (l'ops choisit l'env).
-  Chemin repo-relatif résolu depuis `playbook_dir/..`, ou absolu.
+  Chemin repo-relatif résolu depuis `playbook_dir/..`, ou absolu. Le dossier ainsi
+  résolu est mémorisé (`apim_ss_manifest_dir`) et sert de **seconde base** à
+  `public_cert_ref` (cf. tableau ci-dessous).
 
 ```bash
 ansible-playbook -i inv.ini ansible/selfservice-app.yml \
@@ -178,7 +180,7 @@ ansible-playbook -i inv.ini ansible/selfservice-app.yml \
 | `enforce` | dimensions à OPPOSER, sous-ensemble de `["httpsCertificate","ipAddressRange"]` — **vide = identifiers inertes, à éviter** — INVARIANT |
 | `backend` | header + template de clé backend (plan sortant, cf. limites) — INVARIANT (la valeur, elle, est résolue par env via le TokenProvider ← Vault de l'env) |
 | `per_env.<env>.ip_allowlist` | IPs / plages `A-B` — **PAS de CIDR** (la gateway le drop en silence) ; une IP nue est normalisée en `X-X` (match exact + visible UI) — **PAR ENV** |
-| `per_env.<env>.public_cert_ref` | chemin d'un PEM **public** (clé privée refusée) — relatif à la **racine du dépôt**, comme `apim_ss_manifest` (ou absolu) ; fichier absent = échec — **PAR ENV** |
+| `per_env.<env>.public_cert_ref` | chemin d'un PEM **public** (clé privée refusée). **Absolu** = pris tel quel. **Relatif** = cherché d'abord depuis la **racine du dépôt** (comme `apim_ss_manifest`), puis **à côté du manifeste** — donc poser le `.crt` dans le même dossier que la définition de l'application et écrire le nom de fichier nu fonctionne. Introuvable dans les deux = échec (`CERT_NOT_FOUND`, qui **affiche les deux chemins essayés**) ; présent dans les deux avec des contenus **différents** = échec (`CERT_PATH_AMBIGUOUS`, on ne choisit jamais une identité en silence). Preuve hors ligne : `scripts/test-cert-path-resolution.sh` (13/13) — **PAR ENV** |
 
 ## Limites / résidus (assumés, ADR-078)
 

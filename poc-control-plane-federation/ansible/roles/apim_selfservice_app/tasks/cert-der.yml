@@ -7,13 +7,31 @@
 #           ss_cert_der  (base64 du DER canonique — la valeur EXACTE posée sur
 #           la gateway, et donc la seule à laquelle `verify` doit comparer).
 #
-# RÉSOLUTION DU CHEMIN. Même règle que pour le manifeste lui-même (resolve-env)
-# : un chemin relatif est repo-relatif, donc résolu depuis playbook_dir/.. ; un
-# chemin absolu est pris tel quel. Sans ce dwim, `lookup('file', ...)` résout
-# depuis le dossier DU PLAYBOOK (ansible/) — mesuré le 2026-07-31 : le chemin
-# repo-relatif du manifeste échouait en « could not locate file in lookup »,
-# alors que `-e apim_ss_manifest=clients/...` marche, lui. Deux bases
-# différentes pour deux chemins du même manifeste : piège garanti côté client.
+# RÉSOLUTION DU CHEMIN. Un chemin ABSOLU est pris tel quel. Un chemin RELATIF
+# est cherché dans DEUX bases, dans cet ordre :
+#   1. la racine du dépôt (playbook_dir/..), comme `apim_ss_manifest` ;
+#   2. le dossier DU MANIFESTE (apim_ss_manifest_dir, posé par resolve-env).
+# Sans ce dwim, `lookup('file', ...)` résout depuis le dossier DU PLAYBOOK
+# (ansible/) — mesuré le 2026-07-31 : le chemin repo-relatif du manifeste
+# échouait en « could not locate file in lookup », alors que
+# `-e apim_ss_manifest=clients/...` marche, lui. Deux bases différentes pour
+# deux chemins du même manifeste : piège garanti côté client.
+#
+# POURQUOI DEUX BASES (2026-08-03). La base repo-relative seule contredisait les
+# DEUX autres définitions de la même notion dans ce dépôt : le moteur Go
+# (`labctl/internal/targets/load.go`, `filepath.Join(dir, ref)`) et l'ADR-071
+# (« chemin résolu relativement au manifeste ») résolvent, eux, depuis le
+# dossier du manifeste. Remonté du terrain : un ops pose le `.crt` À CÔTÉ de la
+# définition de son application, écrit le nom de fichier nu, et se prend un
+# CERT_NOT_FOUND dont le chemin résolu pointe la racine du dépôt. Les deux
+# écritures sont désormais acceptées ; l'ordre (racine d'abord) garantit que les
+# manifestes existants — tous en repo-relatif — résolvent EXACTEMENT comme avant.
+#
+# ET SI LE FICHIER EXISTE DANS LES DEUX ? Deux fichiers de même nom, deux
+# identités possibles, une seule posée en silence : c'est précisément la classe
+# de défaut que le reste de ce fichier s'emploie à rendre impossible. On compare
+# donc les empreintes et on ÉCHOUE (CERT_PATH_AMBIGUOUS) si elles diffèrent ; le
+# même fichier atteignable par deux chemins, lui, n'est pas une ambiguïté.
 #
 # RE-ENCODAGE PAR UN PARSEUR, PAS EXTRACTION DE CHAÎNE (2026-07-31).
 #
@@ -60,31 +78,64 @@
 # méthodes. Une seule définition, importée des deux côtés : elles ne peuvent
 # plus diverger.
 
-- name: "Cert : résoudre le chemin (repo-relatif comme le manifeste, ou absolu)"
+- name: "Cert : chemins candidats (absolu tel quel ; sinon racine du dépôt puis dossier du manifeste)"
   ansible.builtin.set_fact:
-    ss_cert_path: >-
-      {{ apim_ss_app.public_cert_ref if apim_ss_app.public_cert_ref.startswith('/')
-         else (playbook_dir ~ '/../' ~ apim_ss_app.public_cert_ref) }}
+    ss_cert_candidates: >-
+      {{ [apim_ss_app.public_cert_ref] if apim_ss_app.public_cert_ref.startswith('/')
+         else ([playbook_dir ~ '/../' ~ apim_ss_app.public_cert_ref]
+               + ([apim_ss_manifest_dir ~ '/' ~ apim_ss_app.public_cert_ref]
+                  if ((apim_ss_manifest_dir | default('')) | length > 0) else [])) }}
 
 # stat AVANT lookup : `lookup('file')` sur un chemin absent lève une erreur de
 # TEMPLATE qui n'affiche que le chemin BRUT du manifeste — sans dire depuis
 # quelle base il a été résolu, c'est-à-dire précisément l'information qui manque
-# quand on se cogne au piège des deux bases. On échoue donc ici, en affichant le
-# chemin RÉSOLU.
-- name: "Cert : le fichier référencé existe-t-il (chemin résolu) ?"
+# quand on se cogne au piège des bases multiples. On échoue donc ici, en
+# affichant TOUS les chemins RÉSOLUS qui ont été essayés.
+# (get_checksum reste à sa valeur par défaut : l'empreinte sert à départager le
+# cas « présent dans les deux bases ».)
+- name: "Cert : lequel de ces chemins existe ?"
   ansible.builtin.stat:
-    path: "{{ ss_cert_path }}"
-  register: ss_cert_stat
+    path: "{{ item }}"
+  register: ss_cert_stats
   delegate_to: localhost
   changed_when: false
+  loop: "{{ ss_cert_candidates }}"
+
+- name: "Cert : retenir le premier chemin existant"
+  ansible.builtin.set_fact:
+    ss_cert_found: "{{ ss_cert_stats.results | selectattr('stat.exists') | list }}"
 
 - name: "Cert : FAIL-CLOSED — certificat introuvable"
   ansible.builtin.assert:
-    that: "ss_cert_stat.stat.exists"
+    that: "ss_cert_found | length > 0"
     fail_msg: >-
-      CERT_NOT_FOUND : public_cert_ref='{{ apim_ss_app.public_cert_ref }}'
-      résolu en '{{ ss_cert_path }}' — fichier absent. Un chemin RELATIF est
-      repo-relatif (comme apim_ss_manifest), un chemin ABSOLU est pris tel quel.
+      CERT_NOT_FOUND : public_cert_ref='{{ apim_ss_app.public_cert_ref }}' —
+      aucun fichier à ces emplacements : {{ ss_cert_candidates | join(' | ') }}.
+      Un chemin RELATIF est cherché depuis la racine du dépôt (comme
+      apim_ss_manifest) PUIS à côté du manifeste ; un chemin ABSOLU est pris tel
+      quel.
+
+- name: "Cert : FAIL-CLOSED — même nom dans les deux bases, contenus différents"
+  ansible.builtin.assert:
+    that: "(ss_cert_found | map(attribute='stat.checksum') | unique | length) == 1"
+    fail_msg: >-
+      CERT_PATH_AMBIGUOUS : public_cert_ref='{{ apim_ss_app.public_cert_ref }}'
+      désigne DEUX certificats différents —
+      {{ ss_cert_found | map(attribute='item') | join(' | ') }}.
+      Lever l'ambiguïté (renommer, ou donner le chemin repo-relatif complet)
+      plutôt que de laisser l'ordre de résolution choisir l'identité posée.
+
+- name: "Cert : chemin retenu (jamais silencieux — plusieurs bases possibles)"
+  ansible.builtin.set_fact:
+    ss_cert_path: "{{ (ss_cert_found | first).item }}"
+
+- name: "Cert : base de résolution effectivement utilisée"
+  ansible.builtin.debug:
+    msg: >-
+      CERT_PATH : '{{ apim_ss_app.public_cert_ref }}' -> '{{ ss_cert_path }}'
+      (base = {{ 'chemin absolu' if apim_ss_app.public_cert_ref.startswith('/')
+                 else ('racine du dépôt' if ss_cert_path == (ss_cert_candidates | first)
+                       else 'dossier du manifeste') }})
 
 - name: "Cert : lire le PEM public"
   ansible.builtin.set_fact:

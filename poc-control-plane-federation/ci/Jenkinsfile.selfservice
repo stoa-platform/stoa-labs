@@ -141,6 +141,34 @@ pipeline {
               || { echo "manifeste incomplet (name/api requis)"; exit 1; }
             ansible-playbook -i "$INVENTORY" ansible/selfservice-app.yml --syntax-check
             echo "  ✓ demande valide + playbook syntaxiquement correct (aucune mutation)"
+
+            # ── Certificat : résoudre ICI, pas en plein apply ─────────────────
+            # La sonde rejoue EXACTEMENT les tâches du rôle qui résolvent, lisent
+            # et ré-encodent public_cert_ref (resolve-env + cert-der), sans
+            # toucher à la gateway ni à Vault : elle a donc sa place au PLAN, et
+            # y répond à la seule question que le PLAN ne savait pas poser —
+            # « ce certificat existe-t-il, et est-il exploitable ? ». Avant, un
+            # chemin faux passait le PLAN au vert et n'échouait qu'à l'apply,
+            # après authentification nominative et après les premières écritures
+            # (application créée, cloisonnée, associée à l'API).
+            #
+            # Ce qui devient fail-closed au plan : CERT_NOT_FOUND (introuvable
+            # dans les deux bases), CERT_PATH_AMBIGUOUS (même nom, deux
+            # contenus), CERT_INVALID (pas de bloc CERTIFICATE, ou base64(DER)
+            # mal formé) et le refus ADR-071 d'une CLÉ PRIVÉE dans le manifeste.
+            # Sur une demande sans certificat (identité par IP seule), la sonde
+            # annonce PROBE_SKIP et rend 0 — le manifeste par défaut ci-dessus
+            # en est une (couvert : scripts/test-cert-path-resolution.sh, 16/16).
+            #
+            # Aucun secret : le manifeste ne porte que du certificat PUBLIC.
+            # NB : requiert `openssl` sur l'agent — c'est déjà une dépendance de
+            # l'APPLY (le rôle y ré-encode le DER), elle est simplement exigée
+            # plus tôt.
+            ansible-playbook -i localhost, ansible/test-cert-path.yml \
+              -e apim_ss_manifest="$MANIFEST" \
+              -e apim_ss_env="${ENVIRONMENT:-}" \
+              || { echo "  ✗ certificat du manifeste NON résoluble — corriger public_cert_ref avant l'apply"; exit 1; }
+            echo "  ✓ certificat du manifeste résolu et exploitable (ou absent, assumé)"
           '''
         }
       }

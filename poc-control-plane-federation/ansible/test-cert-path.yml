@@ -1,0 +1,39 @@
+---
+# ansible/test-cert-path.yml — SONDE HORS LIGNE de la résolution du chemin de
+# certificat (rôle apim_selfservice_app). Aucun appel à la gateway, aucun
+# secret : on n'exerce que resolve-env.yml (qui pose apim_ss_manifest_dir) et
+# cert-der.yml (qui l'utilise comme seconde base). C'est la boucle rapide de
+# scripts/test-cert-path-resolution.sh.
+#
+# DOIT VIVRE DANS ansible/ : la base repo-relative est `playbook_dir/..`. Un
+# playbook rangé plus profond changerait la base MESURÉE et le test ne prouverait
+# plus la règle réellement appliquée en production.
+- name: "Sonde — résolution de public_cert_ref (hors ligne)"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: "Manifeste effectif (pose apim_ss_manifest_dir)"
+      ansible.builtin.include_role:
+        name: apim_selfservice_app
+        tasks_from: resolve-env
+
+    # Le manifeste peut légitimement ne déclarer AUCUN certificat (identité par
+    # IP seule) : le rôle saute alors tout ce bloc (main.yml, `when:
+    # public_cert_ref | length > 0`). La sonde doit se comporter pareil, sinon
+    # elle ferait échouer au PLAN des demandes parfaitement valides.
+    - name: "Résolution + lecture + ré-encodage du certificat"
+      ansible.builtin.include_role:
+        name: apim_selfservice_app
+        tasks_from: cert-der
+      when: "(apim_ss_app.public_cert_ref | default('')) | length > 0"
+
+    - name: "Verdict de la sonde — certificat déclaré"
+      ansible.builtin.debug:
+        msg: "PROBE_OK path={{ ss_cert_path }} der_len={{ ss_cert_der | length }}"
+      when: "(apim_ss_app.public_cert_ref | default('')) | length > 0"
+
+    - name: "Verdict de la sonde — aucun certificat déclaré"
+      ansible.builtin.debug:
+        msg: "PROBE_SKIP : public_cert_ref vide — rien à résoudre (identité sans certificat)."
+      when: "(apim_ss_app.public_cert_ref | default('')) | length == 0"
