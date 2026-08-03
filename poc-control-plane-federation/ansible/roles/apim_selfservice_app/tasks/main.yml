@@ -106,12 +106,17 @@
     - name: "Team : cloisonner l'application (assignation + relecture fail-closed)"
       ansible.builtin.import_tasks: team.yml
 
+    # 204 EST un succès sur cet endpoint — contrat épinglé live par l'adapter Go
+    # (labctl/internal/adapter/webmethods/consumer.go : « PUT
+    # /applications/{id}/apis {"apiIDs":[...]} (200/201/204 are success) »), et
+    # c'est ce que rend le mock. Le rôle ne tolérait que 200/201 : une gateway
+    # qui répond 204 faisait échouer l'apply sur une association RÉUSSIE.
     - name: "App : associer à l'API (idempotent)"
       ansible.builtin.uri:
         url: "{{ apim_ss_api_base }}/applications/{{ ss_app_id }}/apis"
         method: PUT
         body: { apiIDs: ["{{ ss_api_id }}"] }
-        status_code: [200, 201]
+        status_code: [200, 201, 204]
 
     # ===== 3. Identifiers ENTRANTS : certificat (asset) + plage IP ============
     # Chargement du PEM, gardes fail-closed et ré-encodage base64(DER) : une
