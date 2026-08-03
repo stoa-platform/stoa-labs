@@ -37,6 +37,21 @@
 # rendraient ambiguë. C'est le merge par dimension (ss_managed_keys, main.yml)
 # qui le garantit : poser la nôtre remplace toute autre entrée `token`.
 #
+# …MAIS LE NOM EST CE QUE L'UI AFFICHE (retour de terrain 2026-08-03). Le rôle
+# posait "<app>-backend-key" : l'écran Identifiers de l'application affichait donc
+# une ligne « demo-consumer-backend-key », lue comme une clé CUSTOM au lieu du
+# type « Token ». La convention du produit est d'y mettre le LIBELLÉ DU TYPE — le
+# swagger officiel de l'Application Management Service (SoftwareAG/webmethods-api-
+# gateway, APIGatewayApplication.json) donne, dans l'exemple de POST /applications :
+#   {"value": ["token1"],   "name": "Token",        "key": "token"}
+#   {"value": ["user1"],    "name": "Username",     "key": "httpBasicAuth"}
+#   {"value": ["host1"],    "name": "Hostname",     "key": "hostNameAddress"}
+#   {"value": [...],        "name": "IP Addresses", "key": "ipAddressRange"}
+# D'où le défaut "Token", surchargeable par `backend_key_identifier_name` si la
+# convention d'exploitation du client diffère. Rien d'opposable ne change : le
+# matching reste sur le TYPE, et le merge reste par dimension (`key`), donc
+# renommer ne crée PAS de doublon — la ligne existante est remplacée.
+#
 # POURQUOI UN FICHIER PARTAGÉ. `verify` compare la valeur LIVE de l'identifier à
 # la valeur ATTENDUE, qu'il relit depuis le même chemin Vault. Si apply et verify
 # la résolvaient par deux chemins différents, leur accord ne prouverait plus
@@ -89,10 +104,10 @@
       BACKEND_KEY_OK : clé lue depuis Vault
       ({{ ss_backend_key | length }} car., valeur masquée).
 
-- name: "Clé backend : entrée d'identifier désirée (nom documentaire — la policy sélectionne par TYPE)"
+- name: "Clé backend : entrée d'identifier désirée (nom = libellé du TYPE, cf. en-tête)"
   ansible.builtin.set_fact:
     ss_backend_key_identifier:
       key: "token"
-      name: "{{ apim_ss_app.name }}-backend-key"
+      name: "{{ apim_ss_app.backend_key_identifier_name | default('Token') }}"
       value: ["{{ ss_backend_key }}"]
   no_log: true

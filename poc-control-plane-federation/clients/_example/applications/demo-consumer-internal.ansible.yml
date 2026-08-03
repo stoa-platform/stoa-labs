@@ -6,6 +6,13 @@
 # l'application. Le pipeline STOCKE ce couple dans Vault, PAR ENV — un client par
 # (app, env). Le consommateur le lit au runtime pour un client_credentials ; il
 # n'est JAMAIS dans Git.
+#
+# QUI ÉMET LE CLIENT. La stratégie porte un `dcrConfig` et AUCUN `clientId` :
+# c'est le « Generate credentials » de l'UI (dynamic client registration). Poser
+# un clientId à la main bascule la stratégie sur « ce client existe déjà » — la
+# gateway n'émet alors RIEN, et il faudrait fournir le secret à la main. Les
+# valeurs ci-dessous sont les DÉFAUTS du rôle ; elles ne sont écrites ici que
+# pour être lisibles en revue.
 apim_ss_app:
   name: "demo-consumer-internal"
   api: "demo-selfservice"
@@ -20,11 +27,33 @@ apim_ss_app:
     # server_alias ignoré en internal (forcé à 'local'). Pas de claim (le client
     # est généré par la gateway, pas fourni par un IdP externe).
     audience: "demo-selfservice"    # = audience de l'API (racine ; surchargeable par env)
+    # --- le client que la GATEWAY doit émettre (dcrConfig) --------------------
+    client_type: "CONFIDENTIAL"     # défaut. PUBLIC + client_credentials = REFUSÉ
+    grant_types: ["client_credentials"]   # défaut (énumération du produit)
+    # SCOPES : LAISSER VIDE. L'AS local publie un scope PAR DÉFAUT et c'est
+    # celui-là qu'il faut : le rôle le lit sur l'alias `local` (alias.scopes) et
+    # le pose. Ne remplir que pour en imposer un autre — il devra EXISTER sur
+    # l'AS (sinon SCOPE_INCONNU : un client lié à un scope inexistant ne se voit
+    # refuser qu'au runtime, chez le consommateur).
+    scopes: []
+    # token_lifetime: "3600"        # expirationInterval du client généré
+    # refresh_count: "0"            # nombre de refresh autorisés
 
   per_env:
     # MULTI-ENV : le client généré est écrit à un chemin Vault DISTINCT par env
     # (tenant+app+env-scopé) — un secret ≠ par environnement, jamais partagé.
+    # Les scopes aussi peuvent différer par env (l'AS local de prod n'a pas
+    # forcément les mêmes noms de scope que celui de dev).
     dev:  { auth: { vault_sub: "deploy/banking-demo/apps/demo-consumer-internal/dev/oauth-client" } }
     rec:  { auth: { vault_sub: "deploy/banking-demo/apps/demo-consumer-internal/rec/oauth-client" } }
     int:  { auth: { vault_sub: "deploy/banking-demo/apps/demo-consumer-internal/int/oauth-client" } }
     prod: { auth: { vault_sub: "deploy/banking-demo/apps/demo-consumer-internal/prod/oauth-client" } }
+
+# CE QUI EST ÉCRIT DANS VAULT (KV v2, à `vault_sub`) :
+#   client_id, client_secret        — le couple ÉMIS par la gateway
+#   auth_server_alias               — 'local'
+#   grant_types, client_type, scopes — de quoi rejouer un client_credentials sans
+#                                      redécouvrir la configuration
+#   env                             — l'environnement d'émission
+# Un re-apply ne roté RIEN : client_id et secret sont stables tant que le
+# manifeste ne change pas. Rotation explicite = PUT /strategies/{id}/refreshCredentials.

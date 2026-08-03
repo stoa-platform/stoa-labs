@@ -75,14 +75,47 @@ node {
 }
 
 // ── APPLY NOMINATIF : delegue au job prouve selfservice-app-deploy ────────
-build job: 'selfservice-app-deploy', wait: true, parameters: [
-  string(name: 'MANIFEST', value: manifest),
-  string(name: 'ENVIRONMENT', value: envName),
-  string(name: 'ADMIN_VIA', value: 'proxy-oauth2'),
-  string(name: 'VAULT_USER', value: creds.VAULT_USER),
-  [$class: 'PasswordParameterValue', name: 'VAULT_USER_PASSWORD', value: creds.VAULT_USER_PASSWORD]
-]
-echo "Apply nominatif lance pour ${appName}/${envName} par ${creds.VAULT_USER}"
+// Le resultat est CAPTURE puis remonte sur la PR (ADR-081, corollaire 2) : la
+// PR porte alors le plan, la decision (le merge) et le resultat au meme endroit
+// — pour le demandeur, le valideur et l'auditeur. Sans ca, l'apply ne laissait
+// de trace que dans un log de build, volatil et introuvable pour eux.
+def applyResult = 'SUCCESS'
+try {
+  build job: 'selfservice-app-deploy', wait: true, parameters: [
+    string(name: 'MANIFEST', value: manifest),
+    string(name: 'ENVIRONMENT', value: envName),
+    string(name: 'ADMIN_VIA', value: 'proxy-oauth2'),
+    string(name: 'VAULT_USER', value: creds.VAULT_USER),
+    [$class: 'PasswordParameterValue', name: 'VAULT_USER_PASSWORD', value: creds.VAULT_USER_PASSWORD]
+  ]
+} catch (Exception e) {
+  applyResult = 'FAILURE'
+  echo "Apply en echec : ${e.getMessage()}"
+} finally {
+  // Le commentaire est un RAPPORT, jamais un verdict : `|| true` pour qu'une
+  // panne de la forge ne transforme pas un apply reussi en build rouge. Le
+  // resultat reel est reaffirme juste apres, hors du finally.
+  node {
+    stage('statut sur la PR') {
+      git url: 'http://gitea:3000/ci/stoa-labs.git', branch: 'main'
+      withCredentials([string(credentialsId: 'gitea-provision-token', variable: 'GITEA_TOKEN')]) {
+        withEnv(["PR_NUMBER=${env.PR_NUMBER ?: ''}",
+                 "APPLY_RESULT=${applyResult}",
+                 "APP_NAME=${appName}",
+                 "ENV_NAME=${envName}",
+                 "VALIDATOR=${creds.VAULT_USER ?: ''}"]) {
+          dir('poc-control-plane-federation') {
+            sh 'set +x; bash scripts/provision-apply-comment.sh || true'
+          }
+        }
+      }
+    }
+  }
+}
+if (applyResult != 'SUCCESS') {
+  error("Apply nominatif en echec pour ${appName}/${envName} — PR #${env.PR_NUMBER} commentee.")
+}
+echo "Apply nominatif reussi pour ${appName}/${envName} par ${creds.VAULT_USER}"
     </script>
     <sandbox>true</sandbox>
   </definition>

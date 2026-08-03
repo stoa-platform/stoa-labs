@@ -29,6 +29,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
 	"sort"
 	"strings"
 )
@@ -256,9 +257,31 @@ func (s *Server) setActive(w http.ResponseWriter, r *http.Request, active bool) 
 
 // localISAlias is the built-in LOCAL_IS alias the real gateway always carries —
 // served so name lookups must actually filter, like live.
-var localISAlias = map[string]any{
-	"id": "local", "name": "local", "type": "authServerAlias", "authServerType": "LOCAL_IS",
-}
+//
+// It carries `scopes` ("List of scopes available in the authorization server",
+// AuthServerAlias schema): the local AS ships a DEFAULT scope, which is what a
+// self-service client is bound to when the manifest declares none. Overridable
+// via WM_LOCAL_SCOPES (comma-separated) so a proof can replay the ambiguous
+// build (several scopes, no obvious default) and the empty one.
+var localISAlias = func() map[string]any {
+	names := []string{"$sys:default"}
+	if v := os.Getenv("WM_LOCAL_SCOPES"); v != "" {
+		names = nil
+		for _, n := range strings.Split(v, ",") {
+			if n = strings.TrimSpace(n); n != "" {
+				names = append(names, n)
+			}
+		}
+	}
+	scopes := make([]any, 0, len(names))
+	for _, n := range names {
+		scopes = append(scopes, map[string]any{"name": n, "description": "scope of the local authorization server"})
+	}
+	return map[string]any{
+		"id": "local", "name": "local", "type": "authServerAlias", "authServerType": "LOCAL_IS",
+		"scopes": scopes,
+	}
+}()
 
 func (s *Server) listAliases(w http.ResponseWriter, _ *http.Request) {
 	s.store.mu.RLock()
@@ -719,13 +742,156 @@ func (s *Server) listStrategies(w http.ResponseWriter, _ *http.Request) {
 	}
 	sort.Strings(ids)
 	for _, id := range ids {
-		items = append(items, s.store.strategies[id])
+		// The LIVE list serves the secret IN CLEAR — that is the whole point.
+		rec := s.store.strategies[id]
+		if os.Getenv("WM_MASK_STRATEGY_CREDENTIAL") == "1" {
+			rec = maskStrategy(rec)
+		}
+		items = append(items, rec)
 	}
 	writeJSON(w, http.StatusOK, items)
 }
 
+// --- dynamic client registration (local authorization server) ------------------
+//
+// Shapes from the product's own swagger (SoftwareAG/webmethods-api-gateway,
+// apigatewayservices/APIGatewayApplication.json, "API Gateway Application
+// Management Service"):
+//
+//	StrategyRequest.clientId  — "should be provided when the dynamic client
+//	                            registration is NOT used to generate the
+//	                            credentials for the strategy" (exclusive of dcrConfig);
+//	dcrConfig (INPUT)         — clientType PUBLIC|CONFIDENTIAL, allowedGrantTypes
+//	                            from a closed enum, scopes, clientName,
+//	                            applicationType, redirectUris, expirationInterval,
+//	                            refreshCount;
+//	clientRegistration (OUTPUT, read-only) — the client the gateway MINTED:
+//	                            clientId, clientSecret, name, type "confidential",
+//	                            tokenLifetime, tokenRefreshLimit, clScopes and one
+//	                            <grant>Allowed boolean per grant type.
+//
+// The mock mints deterministic ids (wm-client-000N / wm-secret-000N) so proofs
+// are reproducible. WM_MASK_STRATEGY_CREDENTIAL=1 makes GET/list answer "***" for
+// clientRegistration.clientSecret — the pessimistic build where the secret is
+// readable ONLY in the create response, which the role must survive.
+var wmGrantTypeEnum = map[string]bool{
+	"authorization_code": true, "password": true, "client_credentials": true,
+	"refresh_token": true, "implicit": true,
+}
+
+// validateDCR mirrors the product's closed enums. Returns "" when acceptable.
+func validateDCR(dcr map[string]any) string {
+	switch ct, _ := dcr["clientType"].(string); ct {
+	case "PUBLIC", "CONFIDENTIAL":
+	default:
+		return "Undefined 'clientType' attribute value '" + ct + "', should be one of [PUBLIC, CONFIDENTIAL]"
+	}
+	grants, _ := dcr["allowedGrantTypes"].([]any)
+	if len(grants) == 0 {
+		return "dcrConfig.allowedGrantTypes is required"
+	}
+	for _, g := range grants {
+		gs, _ := g.(string)
+		if !wmGrantTypeEnum[gs] {
+			return "Undefined 'allowedGrantTypes' attribute value '" + gs + "', should be one of [authorization_code, password, client_credentials, refresh_token, implicit]"
+		}
+	}
+	return ""
+}
+
+// mintClient generates (or rotates) the OAuth client of a DCR strategy, writing
+// both strategy.clientId and the read-only clientRegistration block. Caller MUST
+// hold the lock. keepID rotates the SECRET only (refreshCredentials semantics).
+func (s *Server) mintClient(strat map[string]any, keepID bool) {
+	dcr, _ := strat["dcrConfig"].(map[string]any)
+	if dcr == nil {
+		return
+	}
+	clientID, _ := strat["clientId"].(string)
+	if !keepID || clientID == "" {
+		clientID = s.store.nextID("client")
+	}
+	grants := map[string]bool{}
+	if list, ok := dcr["allowedGrantTypes"].([]any); ok {
+		for _, g := range list {
+			gs, _ := g.(string)
+			grants[gs] = true
+		}
+	}
+	name, _ := dcr["clientName"].(string)
+	if name == "" {
+		name, _ = strat["name"].(string)
+	}
+	scopes := dcr["scopes"]
+	if scopes == nil {
+		scopes = []any{}
+	}
+	redirects := dcr["redirectUris"]
+	if redirects == nil {
+		redirects = []any{}
+	}
+	ct, _ := dcr["clientType"].(string)
+	strat["clientId"] = clientID
+	strat["clientRegistration"] = map[string]any{
+		"clientId":                 clientID,
+		"clientSecret":             s.store.nextID("secret"),
+		"name":                     name,
+		"version":                  "1.0",
+		"type":                     strings.ToLower(ct),
+		"enabled":                  true,
+		"tokenLifetime":            dcr["expirationInterval"],
+		"tokenRefreshLimit":        dcr["refreshCount"],
+		"redirectUris":             redirects,
+		"clScopes":                 scopes,
+		"authCodeAllowed":          grants["authorization_code"],
+		"implicitAllowed":          grants["implicit"],
+		"clientCredentialsAllowed": grants["client_credentials"],
+		"resourceOwnerAllowed":     grants["password"],
+	}
+	// The gateway normalises the config it echoes back (clientName + version),
+	// which is why the role compares desired ⊆ live and never for equality.
+	dcr["clientName"] = name
+	dcr["clientVersion"] = "1.0"
+}
+
+// maskStrategy hides the minted secret, reproducing the live 10.15 asymmetry
+// measured on 2026-08-03 (apigateway-trial:10.15, throwaway strategy):
+//
+//	POST /strategies      -> clientSecret "********************************"
+//	GET  /strategies/{id} -> clientSecret "********************************"
+//	GET  /strategies       -> clientSecret IN CLEAR
+//
+// So the ONLY surface that yields a usable credential is the LIST — the same
+// family of product inconsistency as the envelope (bare list vs enveloped
+// single). Callers that read the create response get asterisks, which is
+// exactly the trap the role must not fall into.
+//
+// WM_MASK_STRATEGY_CREDENTIAL=1 masks the LIST too: the pessimistic build where the
+// secret is never readable, which the role must survive via its Vault fallback.
+func maskStrategy(rec map[string]any) map[string]any {
+	cr, ok := rec["clientRegistration"].(map[string]any)
+	if !ok || cr == nil {
+		return rec
+	}
+	out := make(map[string]any, len(rec))
+	for k, v := range rec {
+		out[k] = v
+	}
+	masked := make(map[string]any, len(cr))
+	for k, v := range cr {
+		masked[k] = v
+	}
+	if _, has := masked["clientSecret"]; has {
+		masked["clientSecret"] = strings.Repeat("*", 32) // live width, measured 2026-08-03
+	}
+	out["clientRegistration"] = masked
+	return out
+}
+
 // createStrategy takes the NAKED body (type UPPERCASE "OAUTH2" enforced),
 // rejects duplicate names and answers ENVELOPED {"strategy":{...}} — live.
+// A body carrying dcrConfig MINTS the client (clientId + clientRegistration);
+// clientId and dcrConfig are mutually exclusive, as the schema states.
 func (s *Server) createStrategy(w http.ResponseWriter, r *http.Request) {
 	var in map[string]any
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
@@ -741,6 +907,18 @@ func (s *Server) createStrategy(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "type must be OAUTH2 (uppercase)"})
 		return
 	}
+	dcr, hasDCR := in["dcrConfig"].(map[string]any)
+	if hasDCR {
+		if cid, _ := in["clientId"].(string); cid != "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error": "clientId must not be provided when dcrConfig generates the credentials"})
+			return
+		}
+		if msg := validateDCR(dcr); msg != "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": msg})
+			return
+		}
+	}
 	s.store.mu.Lock()
 	defer s.store.mu.Unlock()
 	for _, st := range s.store.strategies {
@@ -750,8 +928,12 @@ func (s *Server) createStrategy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	in["id"] = s.store.nextID("strat")
+	if hasDCR {
+		s.mintClient(in, false)
+	}
 	s.store.strategies[in["id"].(string)] = in
-	writeJSON(w, http.StatusCreated, map[string]any{"strategy": in})
+	// Live masks the secret in the CREATE response too (see maskStrategy).
+	writeJSON(w, http.StatusCreated, map[string]any{"strategy": maskStrategy(in)})
 }
 
 func (s *Server) getStrategy(w http.ResponseWriter, r *http.Request) {
@@ -762,7 +944,31 @@ func (s *Server) getStrategy(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "strategy not found"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"strategy": st})
+	writeJSON(w, http.StatusOK, map[string]any{"strategy": maskStrategy(st)})
+}
+
+// refreshCredentials rotates the SECRET of a DCR strategy in place (the clientId
+// survives). "Applicable only when dynamic client registration (generate
+// credentials) is enabled in the strategy" — a strategy without dcrConfig is
+// rejected rather than silently no-op'ed.
+func (s *Server) refreshCredentials(w http.ResponseWriter, r *http.Request) {
+	s.store.mu.Lock()
+	defer s.store.mu.Unlock()
+	st, ok := s.store.strategies[r.PathValue("id")]
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "strategy not found"})
+		return
+	}
+	if _, hasDCR := st["dcrConfig"].(map[string]any); !hasDCR {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "refreshCredentials applies only to strategies using dynamic client registration"})
+		return
+	}
+	// MEASURED LIVE: refresh mints a WHOLE NEW client — the clientId changes
+	// too, it is not a secret-only renewal. Anything holding the old clientId
+	// is broken by this call, which is why the role never plays it on apply.
+	s.mintClient(st, false)
+	writeJSON(w, http.StatusOK, map[string]any{"strategy": maskStrategy(st)})
 }
 
 func (s *Server) updateStrategy(w http.ResponseWriter, r *http.Request) {

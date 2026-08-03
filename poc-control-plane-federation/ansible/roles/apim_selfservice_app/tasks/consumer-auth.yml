@@ -10,9 +10,50 @@
 #               audience = celle de l'API. AUCUN secret à stocker (il vit sur l'IdP).
 #
 #   internal  — la gateway wM EST l'authorization server (alias LOCAL_IS `local`).
-#               La stratégie créée référence `local`; la gateway génère un client
-#               (client_id/secret) pour l'application. Le pipeline STOCKE ce couple
-#               dans Vault, PAR ENV (multi-env : un client par (app, env)).
+#               La stratégie porte un bloc `dcrConfig` et AUCUN `clientId` : c'est
+#               la gateway qui GÉNÈRE le couple client_id/secret à la création
+#               (« Generate credentials » de l'UI = dynamic client registration).
+#               Le pipeline capture ce couple dans la RÉPONSE et le STOCKE dans
+#               Vault, PAR ENV (multi-env : un client par (app, env)).
+#
+# POURQUOI dcrConfig ET PAS clientId (correction 2026-08-03). Le rôle envoyait
+# `clientId: <nom de l'app>` en internal : c'est le chemin « le client existe
+# déjà », celui de l'IdP externe. La gateway l'acceptait — donc une stratégie
+# d'apparence saine — mais ne créait AUCUN client sur son AS local : pas de
+# secret, donc rien d'utilisable pour un client_credentials. Le rôle réclamait
+# alors le secret en extra-var (INTERNAL_CLIENT_SECRET_MANQUANT), c'est-à-dire
+# qu'il faisait porter à l'ops un secret que la gateway est censée émettre.
+#
+# Shapes (swagger officiel du produit, SoftwareAG/webmethods-api-gateway,
+# apigatewayservices/APIGatewayApplication.json — « API Gateway Application
+# Management Service ») :
+#   StrategyRequest.clientId : « should be provided when the dynamic client
+#                               registration is NOT used to generate the
+#                               credentials for the strategy » ⇒ EXCLUSIF de dcrConfig ;
+#   dcrConfig (ENTRÉE)  : {clientType: PUBLIC|CONFIDENTIAL, allowedGrantTypes:
+#                          [authorization_code|password|client_credentials|
+#                           refresh_token|implicit], scopes: [...], clientName,
+#                          applicationType, redirectUris, expirationInterval,
+#                          refreshCount, pkceType} ;
+#   clientRegistration (SORTIE, read-only) : {clientId, clientSecret, name, type:
+#                          "confidential", tokenLifetime, tokenRefreshLimit,
+#                          clScopes, clientCredentialsAllowed, ...}.
+# CONFIRMÉ LIVE sur la 10.15 réelle (spike 2026-08-03, `apigateway-trial:10.15`,
+# objets jetables supprimés, gateway restaurée) — et le live CORRIGE la doc :
+#   - POST /strategies avec `dcrConfig` et SANS `clientId` -> 201, la gateway
+#     émet `clientId` (un UUID) et le bloc `clientRegistration`
+#     (`type:"confidential"`, `clientCredentialsAllowed:true`, `pkceType`,
+#     `shell`, `clientVersion:"1.0"` qu'elle ajoute d'elle-même) ;
+#   - le `clientSecret` y est MASQUÉ (32 astérisques), et il l'est AUSSI sur
+#     `GET /strategies/{id}` — l'exemple en clair de la doc 11.0 est trompeur ;
+#   - il n'est EN CLAIR que sur `GET /strategies` (la LISTE). C'est de là que le
+#     §3 le capture ; s'y tromper écrit 32 astérisques dans Vault sous un apply
+#     vert (le repli Vault reste en défense si un build masque aussi la liste).
+# Rotation = PUT /strategies/{id}/refreshCredentials (« applicable only when
+# dynamic client registration is enabled ») : mesuré, elle régénère le clientId
+# **ET** le secret (ce n'est donc pas un simple renouvellement de secret).
+# Délibérément NON jouée à chaque apply : un apply idempotent ne doit pas
+# invalider — ni même renommer — le client que le consommateur utilise.
 #
 # Multi-env : l'IDENTITÉ de l'app (name/api) est invariante, mais la CLAIM peut
 # CHANGER par env (name et/ou value — le client de l'IdP diffère souvent entre
@@ -32,6 +73,12 @@
 #   apim_ss_auth_vault_sub     : (internal) sous-chemin KV où écrire le client
 #                                généré, TENANT+ENV-scopé (ex.
 #                                deploy/banking-demo/apps/acme/dev/oauth-client)
+#   apim_ss_auth_client_type   : (internal) CONFIDENTIAL (défaut) | PUBLIC
+#   apim_ss_auth_grant_types   : (internal) défaut ["client_credentials"]
+#   apim_ss_auth_scopes        : (internal) scopes de l'AS LOCAL à associer au
+#                                client généré (noms tels que déclarés sur l'AS)
+#   apim_ss_auth_token_lifetime / _refresh_count / _redirect_uris /
+#   apim_ss_auth_application_type : (internal) réglages du client généré
 # Produit : l'application porte l'identifier de claim + la stratégie ; en internal,
 #           le client est écrit dans Vault (idempotent : ré-utilise l'existant).
 
@@ -132,13 +179,160 @@
     - "apim_ss_auth_mode_eff != 'idp'"
     - "apim_ss_auth_audience_eff | length == 0"
 
+# ===== 1b. Mode INTERNAL — dcrConfig : ce que la gateway doit GÉNÉRER ==========
+- name: "Auth app [internal] : gardes du client à générer (enums du produit)"
+  when: "apim_ss_auth_mode_eff == 'internal'"
+  block:
+    - name: "Auth app [internal] : fail-closed — clientType ∈ {CONFIDENTIAL, PUBLIC}"
+      ansible.builtin.assert:
+        that: "(apim_ss_auth_client_type | default('CONFIDENTIAL') | upper) in ['CONFIDENTIAL', 'PUBLIC']"
+        fail_msg: >-
+          CLIENT_TYPE_INVALIDE : auth.client_type='{{ apim_ss_auth_client_type | default('') }}'
+          — le produit n'accepte que CONFIDENTIAL ou PUBLIC. Un client_credentials
+          exige un client CONFIDENTIEL (il s'authentifie par son secret).
+
+    # Un PUBLIC + client_credentials est un non-sens OAuth2 : le grant repose
+    # ENTIÈREMENT sur le secret, qu'un client public n'a par définition pas. La
+    # gateway ne l'interdit pas forcément — nous, si : mieux vaut refuser que
+    # produire un client dont personne ne pourra obtenir de token.
+    - name: "Auth app [internal] : fail-closed — client_credentials exige CONFIDENTIAL"
+      ansible.builtin.assert:
+        that: >-
+          not ('client_credentials' in (apim_ss_auth_grant_types | default([])))
+          or (apim_ss_auth_client_type | default('CONFIDENTIAL') | upper) == 'CONFIDENTIAL'
+        fail_msg: >-
+          CLIENT_PUBLIC_AVEC_CLIENT_CREDENTIALS : le grant client_credentials
+          s'authentifie PAR LE SECRET ; un client PUBLIC n'en a pas. Choisir
+          client_type=CONFIDENTIAL, ou retirer client_credentials des grant_types.
+
+    - name: "Auth app [internal] : fail-closed — grant types dans l'énumération"
+      ansible.builtin.assert:
+        that: >-
+          (apim_ss_auth_grant_types | default([])) | length > 0 and
+          ((apim_ss_auth_grant_types | default([]))
+            | difference(['authorization_code', 'password', 'client_credentials',
+                          'refresh_token', 'implicit']) | length) == 0
+        fail_msg: >-
+          GRANT_TYPES_INVALIDES : auth.grant_types={{ apim_ss_auth_grant_types | default([]) }}
+          — l'énumération du produit est [authorization_code, password,
+          client_credentials, refresh_token, implicit].
+
+    # ── LE SCOPE VIENT DE L'AS LOCAL, PAS DU MANIFESTE (décision client) --------
+    # L'AS local expose un scope PAR DÉFAUT : c'est celui auquel un client
+    # self-service doit être lié. Le manifeste n'a donc rien à déclarer dans le
+    # cas nominal — et surtout, rien à INVENTER : un scope nommé à la main qui
+    # n'existe pas sur l'AS produirait un client lié à rien, sans le moindre
+    # signal (le chemin strict `oAuth2Token` oppose scope ET application,
+    # EVIDENCE.md §Preuve 5 : le refus n'arriverait qu'au runtime, chez le
+    # consommateur). On lit donc la liste que l'AS publie et on s'y tient.
+    #
+    # L'alias auth-server porte ses scopes : `scopes: [{name, description}]`,
+    # « List of scopes available in the authorization server » (schéma
+    # AuthServerAlias, APIGatewayAlias.json). La liste /alias les rend en
+    # général ; sinon on relit l'alias par son id.
+    - name: "Auth app [internal] : record de l'alias auth-server local"
+      ansible.builtin.set_fact:
+        apim_ss_alias_rec: >-
+          {{ (apim_ss_alias_list.json.alias | default([])
+              | selectattr('name', 'equalto', apim_ss_auth_alias_eff) | list | first) | default({}) }}
+
+    - name: "Auth app [internal] : relire l'alias complet si la liste ne porte pas ses scopes"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/alias/{{ apim_ss_alias_rec.id }}"
+        method: GET
+        status_code: [200, 404]
+      register: apim_ss_alias_full
+      changed_when: false
+      delegate_to: localhost
+      no_log: true
+      when:
+        - "'scopes' not in apim_ss_alias_rec"
+        - "(apim_ss_alias_rec.id | default('')) | length > 0"
+
+    - name: "Auth app [internal] : scopes publiés par l'AS local"
+      ansible.builtin.set_fact:
+        apim_ss_local_scopes: >-
+          {{ (apim_ss_alias_rec.scopes
+              | default(((apim_ss_alias_full.json | default({})).alias
+                         | default(apim_ss_alias_full.json | default({}))).scopes | default([])))
+             | map(attribute='name') | select('string') | list }}
+
+    # « Le scope par défaut » : si l'AS n'en publie qu'un, il n'y a pas d'ambiguïté.
+    # S'il en publie plusieurs, on ne DEVINE pas — on retient celui qui se nomme
+    # comme un défaut ($sys:default, default-scope…), et si ce critère ne tranche
+    # pas à un seul, on s'arrête en affichant la liste. Choisir en silence, c'est
+    # décider à la place de l'exploitant quels droits porte le client.
+    - name: "Auth app [internal] : scopes effectifs (manifeste > défaut de l'AS)"
+      ansible.builtin.set_fact:
+        apim_ss_auth_scopes_eff: >-
+          {{ apim_ss_auth_scopes if ((apim_ss_auth_scopes | default([])) | length > 0)
+             else (apim_ss_local_scopes if ((apim_ss_local_scopes | length) == 1)
+                   else ((apim_ss_local_scopes | select('search', '(?i)default') | list)
+                         if ((apim_ss_local_scopes | select('search', '(?i)default') | list) | length == 1)
+                         else [])) }}
+
+    - name: "Auth app [internal] : fail-closed — un scope déclaré doit EXISTER sur l'AS"
+      ansible.builtin.assert:
+        that: >-
+          ((apim_ss_local_scopes | length) == 0)
+          or (((apim_ss_auth_scopes_eff | default([])) | difference(apim_ss_local_scopes)) | length == 0)
+        fail_msg: >-
+          SCOPE_INCONNU : auth.scopes={{ apim_ss_auth_scopes_eff | default([]) }} — l'AS
+          '{{ apim_ss_auth_alias_eff }}' ne publie que {{ apim_ss_local_scopes }}.
+          Un client lié à un scope inexistant ne se voit refuser qu'au RUNTIME,
+          chez le consommateur. Rien n'est créé.
+
+    - name: "Auth app [internal] : fail-closed — plusieurs scopes, aucun défaut évident"
+      ansible.builtin.assert:
+        that: >-
+          ((apim_ss_auth_scopes_eff | default([])) | length > 0)
+          or ((apim_ss_local_scopes | length) == 0)
+        fail_msg: >-
+          SCOPE_AMBIGU : l'AS '{{ apim_ss_auth_alias_eff }}' publie
+          {{ apim_ss_local_scopes }} et aucun ne s'impose comme le défaut. Déclarer
+          celui qui convient dans le manifeste (auth.scopes: ["<nom>"]) plutôt que
+          de laisser le rôle en choisir un. Rien n'est créé.
+
+    - name: "Auth app [internal] : l'AS local ne publie AUCUN scope"
+      ansible.builtin.debug:
+        msg: >-
+          SCOPES_ABSENTS : l'AS '{{ apim_ss_auth_alias_eff }}' ne publie aucun
+          scope — le client généré n'en portera aucun. Le chemin strict
+          oAuth2Token oppose scope + application : si l'API en exige un, le créer
+          sur l'AS local d'abord.
+      when: "(apim_ss_local_scopes | length) == 0"
+
+    - name: "Auth app [internal] : scope retenu"
+      ansible.builtin.debug:
+        msg: >-
+          SCOPE_{{ 'DECLARE' if ((apim_ss_auth_scopes | default([])) | length > 0) else 'PAR_DEFAUT' }} :
+          {{ apim_ss_auth_scopes_eff | join(',') }}
+          (publiés par l'AS : {{ apim_ss_local_scopes | join(',') or '(aucun)' }}).
+      when: "(apim_ss_auth_scopes_eff | default([])) | length > 0"
+
+    - name: "Auth app [internal] : dcrConfig désiré (le client que la gateway doit créer)"
+      ansible.builtin.set_fact:
+        apim_ss_dcr_config: >-
+          {{ {'clientType': (apim_ss_auth_client_type | default('CONFIDENTIAL') | upper),
+              'allowedGrantTypes': apim_ss_auth_grant_types,
+              'clientName': apim_ss_strat_name,
+              'expirationInterval': (apim_ss_auth_token_lifetime | default('3600') | string),
+              'refreshCount': (apim_ss_auth_refresh_count | default('0') | string),
+              'redirectUris': (apim_ss_auth_redirect_uris | default([]))}
+             | combine({'scopes': apim_ss_auth_scopes_eff}
+                       if ((apim_ss_auth_scopes_eff | default([])) | length > 0) else {})
+             | combine({'applicationType': apim_ss_auth_application_type}
+                       if ((apim_ss_auth_application_type | default('')) | length > 0) else {}) }}
+
 # CONVERGE (pas create-only) : le corps désiré est calculé une fois ; POST si la
 # stratégie est absente, PUT sinon. Sans le PUT, une claim/audience qui CHANGE
 # (par env, ou en rotation de client) ne serait jamais appliquée sur un re-run —
 # la stratégie garderait sa 1re valeur (bug réel : per-env claim ignorée).
-- name: "Auth app : corps désiré de la stratégie (clientId = claim en idp)"
+- name: "Auth app : corps désiré de la stratégie (idp: clientId ; internal: dcrConfig)"
   ansible.builtin.set_fact:
     # Corps NU (pas d'enveloppe) — forme 10.15 vérifiée (OIDC-wm-admin-*).
+    # `clientId` et `dcrConfig` sont EXCLUSIFS (cf. en-tête) : poser les deux,
+    # c'est demander à la fois « ce client existe » et « crée-m'en un ».
     # `audience` est AJOUTÉE par combine, donc absente du corps quand elle est
     # vide — et non présente à "" (ce qui poserait une audience vide sur la
     # gateway, indistinguable d'une audience volontaire).
@@ -146,14 +340,15 @@
       {{ {'type': 'OAUTH2',
           'authServerAlias': apim_ss_auth_alias_eff,
           'name': apim_ss_strat_name,
-          'description': 'apim_selfservice_app: OAUTH2 (' ~ apim_ss_auth_mode_eff ~ ') pour ' ~ apim_ss_app.name,
-          'clientId': ((apim_ss_auth_claim.value | default(apim_ss_app.name))
-                       if apim_ss_auth_mode_eff == 'idp' else apim_ss_app.name)}
+          'description': 'apim_selfservice_app: OAUTH2 (' ~ apim_ss_auth_mode_eff ~ ') pour ' ~ apim_ss_app.name}
+         | combine({'clientId': (apim_ss_auth_claim.value | default(apim_ss_app.name))}
+                   if apim_ss_auth_mode_eff == 'idp'
+                   else {'dcrConfig': apim_ss_dcr_config})
          | combine({'audience': apim_ss_auth_audience_eff}
                    if (apim_ss_auth_audience_eff | length > 0) else {}) }}
   no_log: true
 
-- name: "Auth app : CRÉER la stratégie si absente (POST)"
+- name: "Auth app : CRÉER la stratégie si absente (POST — internal : la gateway émet le client)"
   ansible.builtin.uri:
     url: "{{ apim_ss_api_base }}/strategies"
     method: POST
@@ -172,7 +367,15 @@
   no_log: true
   when: "apim_ss_strat_id | length == 0"
 
-- name: "Auth app : CONVERGER la stratégie existante (PUT) — claim/audience à jour"
+# CONVERGENCE, DEUX RÉGIMES.
+#   idp      : PUT du corps NU (comportement prouvé live, inchangé).
+#   internal : read-modify-write. Un PUT du corps nu remplacerait l'objet
+#              STOCKÉ — donc effacerait `clientRegistration` (le client généré) et
+#              son `clientId`, c'est-à-dire le credential que le consommateur
+#              utilise. On relit, on ne remplace QUE ce que le manifeste gouverne
+#              (description/audience/dcrConfig), et on n'écrit QUE si ça diffère :
+#              convergé = aucun PUT = aucun risque sur le client.
+- name: "Auth app [idp] : CONVERGER la stratégie existante (PUT) — claim/audience à jour"
   ansible.builtin.uri:
     url: "{{ apim_ss_api_base }}/strategies/{{ apim_ss_strat_id }}"
     method: PUT
@@ -181,7 +384,62 @@
     status_code: [200, 201]
   delegate_to: localhost
   no_log: true
-  when: "apim_ss_strat_id | length > 0 and apim_ss_strat_create is skipped"
+  when:
+    - "apim_ss_auth_mode_eff == 'idp'"
+    - "apim_ss_strat_id | length > 0 and apim_ss_strat_create is skipped"
+
+- name: "Auth app [internal] : CONVERGER sans détruire le client généré (read-modify-write)"
+  when:
+    - "apim_ss_auth_mode_eff == 'internal'"
+    - "apim_ss_strat_id | length > 0 and apim_ss_strat_create is skipped"
+  block:
+    - name: "Auth app [internal] : relire la stratégie stockée"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/strategies/{{ apim_ss_strat_id }}"
+        method: GET
+      register: apim_ss_strat_get
+      changed_when: false
+      delegate_to: localhost
+      no_log: true
+
+    - name: "Auth app [internal] : déballer l'enveloppe {strategy:{…}}"
+      ansible.builtin.set_fact:
+        apim_ss_strat_live: "{{ apim_ss_strat_get.json.strategy | default(apim_ss_strat_get.json) }}"
+      no_log: true
+
+    # Le dcrConfig RELU porte des champs que la gateway ajoute (clientName
+    # normalisé, clientVersion…) : on compare donc SOUS-ENSEMBLE désiré ⊆ live,
+    # jamais l'égalité — sinon chaque run croirait devoir écrire.
+    - name: "Auth app [internal] : le désiré est-il déjà en place ?"
+      ansible.builtin.set_fact:
+        apim_ss_dcr_converged: >-
+          {{ (apim_ss_strat_live.dcrConfig | default({})
+              | combine(apim_ss_dcr_config)) == (apim_ss_strat_live.dcrConfig | default({}))
+             and (apim_ss_strat_live.audience | default('')) == apim_ss_auth_audience_eff }}
+
+    - name: "Auth app [internal] : PUT du record fusionné (client généré PRÉSERVÉ)"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/strategies/{{ apim_ss_strat_id }}"
+        method: PUT
+        body_format: json
+        body: >-
+          {{ apim_ss_strat_live
+             | combine({'id': apim_ss_strat_id,
+                        'name': apim_ss_strat_name,
+                        'dcrConfig': (apim_ss_strat_live.dcrConfig | default({}) | combine(apim_ss_dcr_config))})
+             | combine({'audience': apim_ss_auth_audience_eff}
+                       if (apim_ss_auth_audience_eff | length > 0) else {}) }}
+        status_code: [200, 201]
+      delegate_to: localhost
+      no_log: true
+      when: "not apim_ss_dcr_converged"
+
+    - name: "Auth app [internal] : verdict de convergence"
+      ansible.builtin.debug:
+        msg: >-
+          DCR_{{ 'CONVERGED' if apim_ss_dcr_converged else 'UPDATED' }} :
+          stratégie {{ apim_ss_strat_name }} — dcrConfig
+          {{ 'déjà conforme (aucun PUT)' if apim_ss_dcr_converged else 'réappliqué (client généré préservé)' }}.
 
 - name: "Auth app : fail-closed — un id de stratégie est obligatoire"
   ansible.builtin.assert:
@@ -260,49 +518,122 @@
       client généré, ex. deploy/<tenant>/apps/<app>/<env>/oauth-client).
   when: "apim_ss_auth_mode_eff == 'internal'"
 
-# Le client interne peut venir de DEUX sources :
-#   (a) apim_ss_internal_client_id / _secret fournis en extra-var (le pipeline a
-#       appelé le DCR du serveur interne en amont, ou l'opérateur les a saisis) ;
-#   (b) relu depuis l'application (accessTokens.oauth2_credentials) SI la gateway
-#       les y matérialise. ⚠ Sur wM 10.15 trial, la surface admin REST sondée
-#       n'expose PAS d'auto-génération OAuth2 (seul apiAccessKey est émis) : la
-#       source (a) est le chemin nominal tant que le DCR interne n'est pas câblé.
-- name: "Auth app [internal] : relire l'application (capture éventuelle du client matérialisé)"
-  ansible.builtin.uri:
-    url: "{{ apim_ss_api_base }}/applications/{{ ss_app_id }}"
-    method: GET
-  register: apim_ss_app_reread
-  delegate_to: localhost
-  no_log: true
+# Le client interne vient, PAR ORDRE DE PRIORITÉ :
+#   (a) de la RÉPONSE du POST /strategies — le cas nominal depuis le câblage du
+#       dcrConfig : `strategy.clientId` + `strategy.clientRegistration.clientSecret`,
+#       tels que la gateway vient de les émettre ;
+#   (b) de la RELECTURE de la stratégie (re-run : la stratégie existe déjà) ;
+#   (c) d'extra-vars apim_ss_internal_client_id/_secret — échappatoire conservée
+#       pour un build où le DCR ne serait pas disponible, ou pour reprendre un
+#       client émis hors bande. Elles PRIMENT si elles sont fournies.
+#
+# ⚠ LE SECRET N'EST LISIBLE QUE DANS LA *LISTE* — mesuré LIVE sur la 10.15 réelle
+# (spike 2026-08-03, `softwareag/apigateway-trial:10.15`). Trois surfaces, TROIS
+# comportements, et c'est la surface la moins évidente qui est la bonne :
+#
+#   POST /strategies       -> clientRegistration.clientSecret = "********…" (32 *)
+#   GET  /strategies/{id}  -> clientRegistration.clientSecret = "********…" (32 *)
+#   GET  /strategies       -> clientRegistration.clientSecret = EN CLAIR
+#                             (mesuré : "64535607-fc92-436c-8bb7-664566ee9407")
+#
+# C'est une incohérence de sérialisation du produit, de la même famille que
+# l'enveloppe (liste NUE vs single ENVELOPPÉ, cf. strategies-list.yml). Prendre
+# le secret dans la réponse de création — ce que la doc 11.0 laisse croire, son
+# exemple le montrant en clair — écrirait 32 ASTÉRISQUES dans Vault : un
+# credential inutilisable, sous un apply vert. C'est le piège que ce bloc ferme.
+#
+# La neutralisation `^\*+$` reste en défense : si un build masque AUSSI la liste,
+# on tombe sur le repli Vault plutôt que de poser un faux secret.
+- name: "Auth app [internal] : capture du client émis (par la LISTE — seule surface en clair)"
   when: "apim_ss_auth_mode_eff == 'internal'"
+  block:
+    - name: "Auth app [internal] : relire la liste des stratégies"
+      ansible.builtin.import_tasks: strategies-list.yml
 
-- name: "Auth app [internal] : résoudre client_id/secret (extra-var prioritaire, sinon relu de l'app)"
+    - name: "Auth app [internal] : notre stratégie dans la liste"
+      ansible.builtin.set_fact:
+        apim_ss_strat_src: >-
+          {{ (apim_ss_strategies | selectattr('name', 'equalto', apim_ss_strat_name)
+              | list | first) | default({}) }}
+      no_log: true
+
+- name: "Auth app [internal] : résoudre client_id/secret (extra-var prioritaire, sinon la gateway)"
   ansible.builtin.set_fact:
     apim_ss_int_cid: >-
       {{ (apim_ss_internal_client_id | default('') | trim)
-         or (((apim_ss_app_reread.json.applications | default([apim_ss_app_reread.json]))[0]
-              | default({})).accessTokens | default({})).oauth2_credentials.clientId | default('')
-         or apim_ss_app.name }}
-    apim_ss_int_secret: >-
+         or (apim_ss_strat_src.clientId | default(''))
+         or ((apim_ss_strat_src.clientRegistration | default({})).clientId | default('')) }}
+    apim_ss_int_secret_raw: >-
       {{ (apim_ss_internal_client_secret | default('') | trim)
-         or (((apim_ss_app_reread.json.applications | default([apim_ss_app_reread.json]))[0]
-              | default({})).accessTokens | default({})).oauth2_credentials.clientSecret | default('') }}
+         or ((apim_ss_strat_src.clientRegistration | default({})).clientSecret | default('')) }}
   no_log: true
   when: "apim_ss_auth_mode_eff == 'internal'"
 
+# Un secret masqué N'EST PAS un secret : l'écrire dans Vault y poserait une
+# chaîne d'astérisques et le consommateur obtiendrait un 401 à chaque token. On
+# neutralise TOUTE chaîne faite uniquement d'astérisques — la 10.15 en rend 32
+# sur POST et GET single (mesuré live), d'autres entités du produit en rendent 3
+# (remoteIntrospectionConfig) : on ne liste pas les longueurs, on reconnaît la
+# FORME.
+- name: "Auth app [internal] : neutraliser un secret MASQUÉ par la gateway"
+  ansible.builtin.set_fact:
+    apim_ss_int_secret: >-
+      {{ '' if ((apim_ss_int_secret_raw | trim) is match('^\*+$'))
+         else (apim_ss_int_secret_raw | trim) }}
+  no_log: true
+  when: "apim_ss_auth_mode_eff == 'internal'"
+
+# REPLI : pas de secret exploitable en main (re-run + gateway qui masque). Le
+# client EXISTE pourtant sur l'AS — sa valeur a été écrite dans Vault au run de
+# création. On relit Vault : présent ⇒ convergé (on n'écrit rien), absent ⇒ on
+# s'arrête. Statuts 403/404 acceptés pour DIRE l'absence plutôt que de mourir sur
+# une erreur HTTP illisible (même patron que backend-key.yml).
+- name: "Auth app [internal] : le client est-il déjà dans Vault ? (repli sur secret non relisible)"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_vault_addr }}/v1/{{ apim_ss_vault_kv_mount }}/data/{{ apim_ss_vault_prefix }}/{{ apim_ss_auth_vault_sub }}"
+    method: GET
+    headers: "{{ apim_ss_vault_ns_headers | combine({'X-Vault-Token': apim_ss_vault_token}) }}"
+    status_code: [200, 403, 404]
+  register: apim_ss_int_vault_read
+  changed_when: false
+  delegate_to: localhost
+  no_log: true
+  when:
+    - "apim_ss_auth_mode_eff == 'internal'"
+    - "(apim_ss_int_secret | default('')) | length == 0"
+    - "(apim_ss_vault_addr | default('')) | length > 0"
+
+- name: "Auth app [internal] : secret déjà stocké (repli)"
+  ansible.builtin.set_fact:
+    apim_ss_int_secret_stored: >-
+      {{ (((apim_ss_int_vault_read.json | default({})).data | default({})).data | default({})).client_secret
+         | default('') | string | trim }}
+  no_log: true
+  when:
+    - "apim_ss_auth_mode_eff == 'internal'"
+    - "(apim_ss_int_secret | default('')) | length == 0"
+
 # FAIL-CLOSED : ne JAMAIS écrire un secret vide dans Vault (ce serait un
 # fail-open silencieux — un consommateur lirait un client inutilisable). Sans
-# secret capturé, on s'arrête avec un diagnostic actionnable.
-- name: "Auth app [internal] : fail-closed — un client_secret non vide a été capturé"
+# secret capturé NI secret déjà stocké, on s'arrête avec un diagnostic actionnable.
+- name: "Auth app [internal] : fail-closed — un client_secret exploitable existe"
   ansible.builtin.assert:
-    that: "apim_ss_int_secret | default('') | trim | length > 0"
+    that: >-
+      ((apim_ss_int_secret | default('')) | length > 0)
+      or ((apim_ss_int_secret_stored | default('')) | length > 0)
     fail_msg: >-
-      INTERNAL_CLIENT_SECRET_MANQUANT : aucun client_secret capturé pour
-      '{{ apim_ss_app.name }}'. La gateway (AS interne) ne l'a pas matérialisé sur
-      l'application via la surface admin REST. Fournir le couple via
-      apim_ss_internal_client_id / apim_ss_internal_client_secret (issus du DCR du
-      serveur d'autorisation interne), OU câbler ce DCR. RIEN n'est écrit dans Vault.
-    success_msg: "Client interne capturé (client_id={{ apim_ss_int_cid }}, secret présent)."
+      INTERNAL_CLIENT_SECRET_MANQUANT : aucun client_secret pour
+      '{{ apim_ss_app.name }}' (env {{ apim_ss_env | default('mono') }}). La
+      stratégie '{{ apim_ss_strat_name }}' porte-t-elle bien un `dcrConfig` (mode
+      internal) ? Un `clientId` posé à la main la fait basculer sur « client
+      existant » et la gateway n'émet alors AUCUN credential. Rotation possible :
+      PUT /strategies/{{ apim_ss_strat_id }}/refreshCredentials. Échappatoire :
+      apim_ss_internal_client_id / apim_ss_internal_client_secret.
+      RIEN n'est écrit dans Vault.
+    success_msg: >-
+      Client interne {{ 'ÉMIS par la gateway' if ((apim_ss_int_secret | default('')) | length > 0)
+                        else 'déjà stocké dans Vault (secret non relisible — aucune réécriture)' }}
+      (client_id={{ apim_ss_int_cid | default('?') }}).
   when: "apim_ss_auth_mode_eff == 'internal'"
 
 - name: "Auth app [internal] : ÉCRIRE le client dans Vault (KV v2, tenant+env-scopé)"
@@ -320,7 +651,11 @@
         {{ {'client_id': apim_ss_int_cid,
             'client_secret': apim_ss_int_secret,
             'auth_server_alias': apim_ss_auth_alias_eff,
+            'grant_types': (apim_ss_auth_grant_types | default(['client_credentials']) | join(' ')),
+            'client_type': (apim_ss_auth_client_type | default('CONFIDENTIAL') | upper),
             'env': (apim_ss_env | default('mono'))}
+           | combine({'scopes': (apim_ss_auth_scopes_eff | join(' '))}
+                     if ((apim_ss_auth_scopes_eff | default([])) | length > 0) else {})
            | combine({'audience': apim_ss_auth_audience_eff}
                      if (apim_ss_auth_audience_eff | length > 0) else {}) }}
     status_code: [200, 204]
@@ -330,11 +665,18 @@
   when:
     - "apim_ss_auth_mode_eff == 'internal'"
     - "apim_ss_vault_addr | length > 0"
+    - "(apim_ss_int_secret | default('')) | length > 0"
 
 - name: "Auth app [internal] : trace (sans secret) — client stocké dans Vault"
   ansible.builtin.debug:
     msg: >-
-      Client OAuth2 interne pour '{{ apim_ss_app.name }}' (env {{ apim_ss_env | default('mono') }})
-      écrit dans Vault : {{ apim_ss_vault_prefix }}/{{ apim_ss_auth_vault_sub }}
-      (client_id={{ apim_ss_int_cid }}, secret masqué). Le consommateur le lit au runtime, jamais Git.
+      INTERNAL_CLIENT_{{ 'WRITTEN' if ((apim_ss_int_secret | default('')) | length > 0) else 'KEPT' }} :
+      client OAuth2 interne pour '{{ apim_ss_app.name }}' (env {{ apim_ss_env | default('mono') }})
+      — client_id={{ apim_ss_int_cid }}, type={{ apim_ss_auth_client_type | default('CONFIDENTIAL') | upper }},
+      grants={{ apim_ss_auth_grant_types | default(['client_credentials']) | join(',') }},
+      scopes={{ apim_ss_auth_scopes_eff | default([]) | join(',') or '(aucun)' }},
+      Vault={{ apim_ss_vault_prefix }}/{{ apim_ss_auth_vault_sub }}
+      ({{ 'écrit à ce run' if ((apim_ss_int_secret | default('')) | length > 0)
+          else 'inchangé — secret non relisible, valeur déjà stockée' }}, secret masqué).
+      Le consommateur le lit au runtime, jamais Git.
   when: "apim_ss_auth_mode_eff == 'internal'"

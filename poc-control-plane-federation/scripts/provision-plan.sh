@@ -37,6 +37,10 @@ INVENTORY="${INVENTORY:-ansible/inventory.lab.ini}"
 # split-horizon (jenkins→gitea:3000, navigateur→localhost:13000).
 GIT_WEB_HOST="${GIT_WEB_HOST:-$GIT_HOST}"
 
+# Chemin du script résolu AVANT tout `cd` : ce script se déplace dans le clone de
+# la PR ($WORK/repo) en [1/4], et un `dirname "$0"` relatif n'y résoudrait plus.
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+
 case "$PR_BRANCH" in provision/*) ;; *) echo "IGNORE: branche '$PR_BRANCH' hors provision/* — pas une demande" >&2; exit 0;; esac
 WORK="$(mktemp -d /tmp/provplan.XXXXXX)"; trap 'rm -rf "$WORK"' EXIT
 API="${GIT_HOST}/api/v1"
@@ -70,41 +74,28 @@ PLAN_LOG="$WORK/plan.log"; VERDICT="ok"
 sed -n '1,40p' "$PLAN_LOG"
 
 echo "[4/4] commentaire sur la PR #${PR_NUMBER} (verdict ${VERDICT})"
-# Corps du commentaire construit en python3 (jq absent du conteneur Jenkins).
-PR_NUMBER="$PR_NUMBER" GIT_REPO="$GIT_REPO" API="$API" GITEA_TOKEN="$GITEA_TOKEN" GIT_HOST="$GIT_HOST" GIT_WEB_HOST="$GIT_WEB_HOST" \
-PR_BRANCH="$PR_BRANCH" VERDICT="$VERDICT" MAN="$MAN" PLAN_LOG="$PLAN_LOG" python3 - <<'PY'
-import os, json, urllib.request
+# L'UPSERT par marqueur vit dans scripts/lib/gitea-pr-comment.sh — partagé avec
+# le commentaire d'apply (ADR-081). Ici on ne construit que le CORPS ; le
+# marqueur, la recherche du commentaire existant et le choix POST/PATCH sont à
+# la lib. Sans ce partage, le même upsert existerait en deux copies.
+VERDICT="$VERDICT" MAN="$MAN" PLAN_LOG="$PLAN_LOG" GIT_REPO="$GIT_REPO" \
+GIT_WEB_HOST="$GIT_WEB_HOST" PR_BRANCH="$PR_BRANCH" BODY_OUT="$WORK/comment.md" python3 - <<'PY'
+import os
 verdict = os.environ["VERDICT"]
-api, repo, tok = os.environ["API"], os.environ["GIT_REPO"], os.environ["GITEA_TOKEN"]
-prn = os.environ["PR_NUMBER"]
-MARKER = "<!-- provision-plan -->"   # marqueur pour retrouver LE commentaire de plan
 head = "✅ **Plan self-service OK**" if verdict == "ok" else "❌ **Plan self-service EN ÉCHEC**"
-log = open(os.environ["PLAN_LOG"]).read()[-1500:]
-man = os.environ["MAN"]
-man_url = f"{os.environ['GIT_WEB_HOST']}/{repo}/src/branch/{os.environ['PR_BRANCH']}/{man}"
-body = (f"{MARKER}\n{head} — automatique (webhook PR).\n\n"
+log  = open(os.environ["PLAN_LOG"]).read()[-1500:]
+man  = os.environ["MAN"]
+man_url = f"{os.environ['GIT_WEB_HOST']}/{os.environ['GIT_REPO']}/src/branch/{os.environ['PR_BRANCH']}/{man}"
+body = (f"{head} — automatique.\n\n"
         f"- manifeste : [`{man}`]({man_url})\n"
         f"- nature : lecture seule (aucune mutation, aucun secret) — ADR-078 §2\n\n"
         "<details><summary>sortie du plan</summary>\n\n```\n" + log + "\n```\n</details>\n\n"
         + ("Prêt pour validation humaine (4-yeux) puis apply nominatif au merge."
            if verdict == "ok" else "**Corriger la demande avant validation.**"))
-def call(method, url, data=None):
-    r = urllib.request.Request(url, data=(json.dumps(data).encode() if data else None), method=method,
-        headers={"Authorization": "token "+tok, "Content-Type": "application/json"})
-    with urllib.request.urlopen(r) as resp: return json.loads(resp.read() or "null")
-try:
-    # commentaire de plan existant (marqueur) ? → PATCH (idempotent) ; sinon POST.
-    existing = None
-    for c in call("GET", f"{api}/repos/{repo}/issues/{prn}/comments") or []:
-        if MARKER in (c.get("body") or ""): existing = c["id"]; break
-    if existing:
-        call("PATCH", f"{api}/repos/{repo}/issues/comments/{existing}", {"body": body})
-        print("  commentaire de plan mis à jour: #" + str(existing))
-    else:
-        c = call("POST", f"{api}/repos/{repo}/issues/{prn}/comments", {"body": body})
-        print("  commentaire de plan posté: #" + str(c["id"]))
-except Exception as e:
-    print("  ERREUR commentaire:", e); raise SystemExit(1)
+open(os.environ["BODY_OUT"], "w").write(body)
 PY
+GIT_REPO="$GIT_REPO" GITEA_TOKEN="$GITEA_TOKEN" PR_NUMBER="$PR_NUMBER" GIT_HOST="$GIT_HOST" \
+COMMENT_MARKER='<!-- provision-plan -->' COMMENT_BODY_FILE="$WORK/comment.md" \
+  bash "$SELF_DIR/lib/gitea-pr-comment.sh" || { echo "  ERREUR commentaire" >&2; exit 1; }
 
 [ "$VERDICT" = "ok" ] && echo "OK: plan vert, PR #${PR_NUMBER} commentée" || { echo "PLAN EN ÉCHEC (PR commentée)"; exit 1; }
