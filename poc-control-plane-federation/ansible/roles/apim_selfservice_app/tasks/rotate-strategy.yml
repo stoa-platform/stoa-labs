@@ -84,11 +84,11 @@
         rot_app_rec: "{{ rot_app_get.json.applications | default([rot_app_get.json]) | first }}"
 
     # Les stratégies EXISTANTES (record complet chacune) — sert aux deux actions.
+    # Lecture NORMALISÉE (tableau nu 10.15 vs enveloppe) : lire `json.strategies`
+    # en direct rendait cette liste TOUJOURS vide, et le retrait ci-dessous
+    # déclarait alors un no-op sans rien détacher. Cf. strategies-list.yml.
     - name: "Rotate : lire les stratégies de la gateway"
-      ansible.builtin.uri:
-        url: "{{ apim_ss_api_base }}/strategies"
-      register: rot_strats
-      changed_when: false
+      ansible.builtin.import_tasks: strategies-list.yml
 
     # ================= ACTION 1 — overlap : POSER la nouvelle identité ========
     - name: "Overlap : poser puis attacher la stratégie du nouveau clientId"
@@ -108,7 +108,7 @@
 
         - ansible.builtin.set_fact:
             rot_add_id: >-
-              {{ ((rot_strats.json.strategies | default([]))
+              {{ (apim_ss_strategies
                   | selectattr('name', 'equalto', rot_add_name)
                   | map(attribute='id') | list | first) | default('') }}
 
@@ -187,13 +187,13 @@
         # il couvre les stratégies historiques du rôle comme celles posées ici.
         - ansible.builtin.set_fact:
             rot_ret_ids: >-
-              {{ (rot_strats.json.strategies | default([]))
+              {{ apim_ss_strategies
                  | selectattr('id', 'in', rot_ret_rec.authStrategyIds | default([]))
                  | selectattr('clientId', 'equalto', apim_ss_rot.retire_client_id)
                  | map(attribute='id') | list }}
             rot_keep_ids: >-
               {{ (rot_ret_rec.authStrategyIds | default([]))
-                 | difference((rot_strats.json.strategies | default([]))
+                 | difference(apim_ss_strategies
                      | selectattr('clientId', 'equalto', apim_ss_rot.retire_client_id)
                      | map(attribute='id') | list) }}
 

@@ -52,6 +52,31 @@
       {{ 'local' if apim_ss_auth_mode_eff == 'internal'
          else (apim_ss_auth_server_alias | default('') | trim) }}
 
+# AUDIENCE : OBLIGATOIRE EN idp, OPTIONNELLE EN internal (2026-08-03).
+#
+# Retour de terrain : en mode internal, le rôle réclamait une audience qui
+# N'EXISTE PAS. L'assert n'avait pas de `when:` — il s'appliquait aux DEUX modes,
+# alors que son message parle de « l'audience de l'API cible ». Or en internal
+# l'AS est la gateway elle-même (alias `local`) : il n'y a aucune audience d'API
+# à recopier. Le rôle bloquait donc l'apply sur une valeur sans référent.
+#
+# Et ce champ n'oppose rien sur ce runtime : EVIDENCE.md §Preuve 5 bis le mesure
+# par deux leviers indépendants — la validation JWKS OFFLINE
+# (localIntrospectionConfig) ne vérifie JAMAIS `aud`, et le chemin strict
+# `oAuth2Token` impose scope + application mais PAS l'audience. Exiger une valeur
+# que le runtime ignore, c'est affirmer un enforcement qui n'existe pas.
+#
+# On la garde obligatoire en idp : elle y est prouvée live (strategy
+# KeycloakStoaLab / audience=demo-selfservice) et REDEVIENT opposable sur un
+# build capable, via l'introspection RFC 7662 distante déjà câblée dans
+# labctl/internal/adapter/webmethods/inboundauth.go. La garde y a donc un sens.
+#
+# Vide ⇒ la clé `audience` est OMISE du corps (et de l'entrée Vault), jamais
+# envoyée à "" : on ne stocke pas une audience vide sur la gateway.
+- name: "Auth app : audience effective (vide = omise du corps)"
+  ansible.builtin.set_fact:
+    apim_ss_auth_audience_eff: "{{ apim_ss_auth_audience | default('') | trim }}"
+
 - name: "Auth app : l'alias auth-server existe sur la gateway (par NOM — portable multi-env, ADR-079)"
   ansible.builtin.uri:
     url: "{{ apim_ss_api_base }}/alias"
@@ -79,26 +104,33 @@
     apim_ss_strat_name: "OAUTH2-{{ apim_ss_app.name }}-{{ apim_ss_env | default('mono') }}"
 
 - name: "Auth app : la stratégie existe-t-elle déjà ?"
-  ansible.builtin.uri:
-    url: "{{ apim_ss_api_base }}/strategies"
-    method: GET
-  register: apim_ss_strat_list
-  delegate_to: localhost
-  no_log: true
+  ansible.builtin.import_tasks: strategies-list.yml
 
 - name: "Auth app : id de la stratégie si présente"
   ansible.builtin.set_fact:
     apim_ss_strat_id: >-
-      {{ ((apim_ss_strat_list.json.strategies
-           | default(apim_ss_strat_list.json.strategy | default([])))
-          | selectattr('name', 'equalto', apim_ss_strat_name) | map(attribute='id') | first)
-         | default('') }}
+      {{ (apim_ss_strategies | selectattr('name', 'equalto', apim_ss_strat_name)
+          | map(attribute='id') | first) | default('') }}
 
-- name: "Auth app : fail-closed — audience obligatoire (= audience de l'API)"
+- name: "Auth app [idp] : fail-closed — audience obligatoire (= audience de l'API)"
   ansible.builtin.assert:
-    that: "apim_ss_auth_audience | default('') | trim | length > 0"
-    fail_msg: "apim_ss_app.auth.audience vide — elle doit valoir l'audience de l'API cible."
-    success_msg: "Audience de la stratégie = {{ apim_ss_auth_audience }} (celle de l'API)."
+    that: "apim_ss_auth_audience_eff | length > 0"
+    fail_msg: >-
+      AUDIENCE_MANQUANTE : mode idp — apim_ss_app.auth.audience doit valoir
+      l'audience de l'API cible (elle est opposée par l'introspection distante
+      sur un build capable). En mode internal, elle est OPTIONNELLE.
+    success_msg: "Audience de la stratégie = {{ apim_ss_auth_audience_eff }} (celle de l'API)."
+  when: "apim_ss_auth_mode_eff == 'idp'"
+
+- name: "Auth app [internal] : audience omise (l'AS local n'en exige pas)"
+  ansible.builtin.debug:
+    msg: >-
+      AUDIENCE_OMISE : mode internal sans audience — la clé n'est pas envoyée à
+      la gateway (ni écrite dans Vault). Rien n'est perdu : ce runtime n'oppose
+      pas `aud` (EVIDENCE.md §Preuve 5 bis).
+  when:
+    - "apim_ss_auth_mode_eff != 'idp'"
+    - "apim_ss_auth_audience_eff | length == 0"
 
 # CONVERGE (pas create-only) : le corps désiré est calculé une fois ; POST si la
 # stratégie est absente, PUT sinon. Sans le PUT, une claim/audience qui CHANGE
@@ -107,15 +139,18 @@
 - name: "Auth app : corps désiré de la stratégie (clientId = claim en idp)"
   ansible.builtin.set_fact:
     # Corps NU (pas d'enveloppe) — forme 10.15 vérifiée (OIDC-wm-admin-*).
-    apim_ss_strat_body:
-      type: "OAUTH2"
-      authServerAlias: "{{ apim_ss_auth_alias_eff }}"
-      name: "{{ apim_ss_strat_name }}"
-      description: "apim_selfservice_app: OAUTH2 ({{ apim_ss_auth_mode_eff }}) pour {{ apim_ss_app.name }}"
-      audience: "{{ apim_ss_auth_audience }}"
-      clientId: >-
-        {{ (apim_ss_auth_claim.value | default(apim_ss_app.name))
-           if apim_ss_auth_mode_eff == 'idp' else apim_ss_app.name }}
+    # `audience` est AJOUTÉE par combine, donc absente du corps quand elle est
+    # vide — et non présente à "" (ce qui poserait une audience vide sur la
+    # gateway, indistinguable d'une audience volontaire).
+    apim_ss_strat_body: >-
+      {{ {'type': 'OAUTH2',
+          'authServerAlias': apim_ss_auth_alias_eff,
+          'name': apim_ss_strat_name,
+          'description': 'apim_selfservice_app: OAUTH2 (' ~ apim_ss_auth_mode_eff ~ ') pour ' ~ apim_ss_app.name,
+          'clientId': ((apim_ss_auth_claim.value | default(apim_ss_app.name))
+                       if apim_ss_auth_mode_eff == 'idp' else apim_ss_app.name)}
+         | combine({'audience': apim_ss_auth_audience_eff}
+                   if (apim_ss_auth_audience_eff | length > 0) else {}) }}
   no_log: true
 
 - name: "Auth app : CRÉER la stratégie si absente (POST)"
@@ -278,13 +313,16 @@
     body_format: json
     # « user/pwd » du client = client_id + client_secret ; + audience/alias pour
     # que le consommateur rejoue un client_credentials sans redécouvrir la config.
+    # `audience` suit le corps de la stratégie : omise si vide, pour ne pas faire
+    # croire au consommateur qu'il doit demander une audience inexistante.
     body:
-      data:
-        client_id: "{{ apim_ss_int_cid }}"
-        client_secret: "{{ apim_ss_int_secret }}"
-        audience: "{{ apim_ss_auth_audience }}"
-        auth_server_alias: "{{ apim_ss_auth_alias_eff }}"
-        env: "{{ apim_ss_env | default('mono') }}"
+      data: >-
+        {{ {'client_id': apim_ss_int_cid,
+            'client_secret': apim_ss_int_secret,
+            'auth_server_alias': apim_ss_auth_alias_eff,
+            'env': (apim_ss_env | default('mono'))}
+           | combine({'audience': apim_ss_auth_audience_eff}
+                     if (apim_ss_auth_audience_eff | length > 0) else {}) }}
     status_code: [200, 204]
   register: apim_ss_internal_write
   delegate_to: localhost

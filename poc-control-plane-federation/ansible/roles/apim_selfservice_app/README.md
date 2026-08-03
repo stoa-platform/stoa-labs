@@ -182,6 +182,8 @@ ansible-playbook -i inv.ini ansible/selfservice-app.yml \
 | `per_env.<env>.ip_allowlist` | IPs / plages `A-B` — **PAS de CIDR** (la gateway le drop en silence) ; une IP nue est normalisée en `X-X` (match exact + visible UI) — **PAR ENV** |
 | `per_env.<env>.public_cert_ref` | chemin d'un PEM **public** (clé privée refusée). **Absolu** = pris tel quel. **Relatif** = cherché d'abord depuis la **racine du dépôt** (comme `apim_ss_manifest`), puis **à côté du manifeste** — donc poser le `.crt` dans le même dossier que la définition de l'application et écrire le nom de fichier nu fonctionne. Introuvable dans les deux = échec (`CERT_NOT_FOUND`, qui **affiche les deux chemins essayés**) ; présent dans les deux avec des contenus **différents** = échec (`CERT_PATH_AMBIGUOUS`, on ne choisit jamais une identité en silence). Preuve hors ligne : `scripts/test-cert-path-resolution.sh` (13/13) — **PAR ENV** |
 
+| `auth` | bloc OAuth2 **opt-in** (absent ⇒ aucune stratégie posée). `mode: idp` = le client vit sur l'IdP, `claim {name,value}` l'identifie, **`audience` obligatoire** (= celle de l'API). `mode: internal` = la gateway est l'AS (`local`) et **`audience` est OPTIONNELLE** : l'AS local n'en exige pas, et ce runtime n'oppose de toute façon pas `aud` (`EVIDENCE.md` §Preuve 5 bis). Vide ⇒ la clé est **omise** du corps et de l'entrée Vault, jamais envoyée à `""`. Preuve hors ligne : `scripts/test-auth-audience.sh` (13/13) |
+
 ## Limites / résidus (assumés, ADR-078)
 
 - **Certificat** : posé en identifier REST, en **base64** (le champ JSON `value`

@@ -1,0 +1,81 @@
+---
+# ansible/test-auth-audience.yml — SONDE de la stratégie OAuth2 de l'application,
+# jouée contre le MOCK webMethods (mocks/webmethods, binaire Go autonome), donc
+# sans gateway réelle, sans Vault et sans secret.
+#
+# POURQUOI CONTRE LE MOCK plutôt qu'en pur hors-ligne : la construction du corps
+# de la stratégie et son POST sont indissociables (le rôle lit /alias, /strategies
+# puis écrit). Le mock refait la surface admin 10.15 — il exige `type: OAUTH2`,
+# rejette les noms dupliqués, et n'impose PAS d'audience, exactement comme le
+# produit. Ce que la sonde prouve n'est donc pas « le YAML se template », mais
+# « ce que le rôle ENVOIE est accepté, et contient — ou non — la clé audience ».
+#
+# Comme test-cert-path.yml, ce playbook DOIT vivre dans ansible/ (base
+# repo-relative = playbook_dir/..) et se lance par scripts/test-auth-audience.sh.
+- name: "Sonde — stratégie OAuth2 de l'application (contre le mock)"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: "Manifeste effectif"
+      ansible.builtin.import_role:
+        name: apim_selfservice_app
+        tasks_from: resolve-env
+
+    - name: "Creds admin (fallback PoC : ni Vault ni secret)"
+      ansible.builtin.import_role:
+        name: apim_common
+        tasks_from: secrets
+
+    - name: "Sonde"
+      module_defaults:
+        ansible.builtin.uri: "{{ apim_ss_uri_defaults }}"
+      block:
+        - name: "App : créer l'application sur le mock"
+          ansible.builtin.uri:
+            url: "{{ apim_ss_api_base }}/applications"
+            method: POST
+            body:
+              name: "{{ apim_ss_app.name }}"
+              description: "{{ apim_ss_app.description | default('sonde') }}"
+              contactEmails: "{{ apim_ss_app.contact_emails | default([]) }}"
+            status_code: [200, 201]
+          register: probe_app_create
+
+        - name: "App : capturer l'id (enveloppe flat OU applications[])"
+          ansible.builtin.set_fact:
+            ss_app_id: >-
+              {{ probe_app_create.json.id if ('id' in probe_app_create.json)
+                 else (probe_app_create.json.applications | first).id }}
+
+        - name: "Auth app : le chemin réellement testé"
+          ansible.builtin.import_role:
+            name: apim_selfservice_app
+            tasks_from: consumer-auth
+
+        - name: "Relire la stratégie telle que la gateway l'a STOCKÉE"
+          ansible.builtin.uri:
+            url: "{{ apim_ss_api_base }}/strategies"
+            method: GET
+          register: probe_strats
+          changed_when: false
+
+        # GET /strategies rend un TABLEAU NU sur 10.15 (incohérence d'enveloppe
+        # du produit, épinglée live dans le mock : les scopes, eux, sont
+        # enveloppés). On accepte les deux formes pour que la sonde mesure la
+        # stratégie et non la façon dont on l'a lue.
+        - name: "Verdict — la clé audience est-elle présente dans l'objet stocké ?"
+          ansible.builtin.set_fact:
+            probe_strat: >-
+              {{ ((probe_strats.json
+                   if (probe_strats.json is sequence and probe_strats.json is not mapping)
+                   else (probe_strats.json.strategies | default(probe_strats.json.strategy | default([]))))
+                  | selectattr('name', 'equalto', apim_ss_strat_name) | list | first) | default({}) }}
+
+        - name: "Verdict de la sonde"
+          ansible.builtin.debug:
+            msg: >-
+              PROBE_STRATEGY name={{ apim_ss_strat_name }}
+              audience_present={{ 'audience' in probe_strat }}
+              audience_value='{{ probe_strat.audience | default('') }}'
+              alias={{ probe_strat.authServerAlias | default('?') }}

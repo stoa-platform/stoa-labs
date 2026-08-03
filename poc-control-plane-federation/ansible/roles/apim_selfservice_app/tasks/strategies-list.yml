@@ -1,0 +1,58 @@
+---
+# roles/apim_selfservice_app/tasks/strategies-list.yml (partagé consumer-auth/rotate)
+#
+# Sortie : apim_ss_strategies — la liste des stratégies, TOUJOURS une liste plate.
+#
+# POURQUOI CE FICHIER EXISTE (2026-08-03). `GET /strategies` rend un TABLEAU NU
+# sur 10.15 — l'une des incohérences d'enveloppe du produit (les scopes, eux,
+# SONT enveloppés). Les deux appelants Ansible lisaient `json.strategies`, qui
+# est Undefined sur une liste : le `| default([])` rattrapait en silence et ils
+# voyaient TOUJOURS zéro stratégie.
+#
+# Ce n'est pas une hypothèse — trois sources indépendantes concordent :
+#   1. l'adapter Go, prouvé live, décode explicitement les deux formes
+#      (labctl/internal/adapter/webmethods/oauth2.go : « The product serves this
+#      as a BARE array on 10.15, but also accepts a {"strategies":[...]}
+#      envelope on some builds — decode both ») ;
+#   2. le mock du dépôt sert la forme nue, épinglée live (mocks/webmethods
+#      /admin.go : « serves the BARE array shape the live 10.15 returns ») ;
+#   3. mesuré le 2026-08-03 contre ce mock : un SECOND apply du même manifeste
+#      échouait — la stratégie n'étant jamais retrouvée, le rôle re-POSTait un
+#      nom déjà pris.
+#
+# CE QUE LE DÉFAUT COÛTAIT, par appelant :
+#   - consumer-auth : l'id restant vide, le POST était rejoué à chaque run et le
+#     PUT de convergence — dont le `when` exige un id non vide — était du CODE
+#     MORT. L'en-tête du fichier promettait pourtant « CONVERGE (pas
+#     create-only) » : la claim et l'audience n'étaient jamais réappliquées.
+#   - rotate-strategy : bien pire, parce que SILENCIEUX. Le retrait sélectionne
+#     les stratégies à détacher dans cette liste ; vide, il n'en trouve aucune et
+#     déclare un « no-op » — une rotation 0-coupure qui annonce le succès sans
+#     avoir rien retiré, donc l'ancienne identité toujours acceptée.
+#
+# POURQUOI PARTAGÉ. Deux appelants, une seule forme à connaître : dupliquer
+# l'expression, c'est se garantir qu'un jour l'un des deux la corrige et pas
+# l'autre — exactement le raisonnement de cert-der.yml.
+
+- name: "Stratégies : lire la liste"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_api_base }}/strategies"
+    method: GET
+  register: apim_ss_strat_raw
+  changed_when: false
+  no_log: true
+
+- name: "Stratégies : normaliser (tableau NU 10.15 | enveloppe strategies/strategy)"
+  ansible.builtin.set_fact:
+    apim_ss_strategies: >-
+      {{ apim_ss_strat_raw.json
+         if (apim_ss_strat_raw.json is sequence
+             and apim_ss_strat_raw.json is not mapping
+             and apim_ss_strat_raw.json is not string)
+         else (apim_ss_strat_raw.json.strategies
+               | default(apim_ss_strat_raw.json.strategy | default([]))) }}
+  no_log: true
+
+- name: "Stratégies : combien la gateway en porte-t-elle ?"
+  ansible.builtin.debug:
+    msg: "STRATEGIES_LUES : {{ apim_ss_strategies | length }} (forme {{ 'nue' if (apim_ss_strat_raw.json is sequence and apim_ss_strat_raw.json is not mapping and apim_ss_strat_raw.json is not string) else 'enveloppée' }})"
