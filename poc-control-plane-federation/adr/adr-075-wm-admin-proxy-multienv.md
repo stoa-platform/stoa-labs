@@ -148,20 +148,46 @@ L'appel est déclaré en **dérogation nommée et motivée** dans le linter de c
 une exclusion silencieuse. Le linter reste ainsi opposable sur tout **futur** DELETE non
 prévu : seul ce couple `(DELETE, /rest/apigateway/strategies/{id})` est couvert.
 
-**Ce que le linter ne couvre pas.** Deux limites, à ne pas confondre avec une garantie
-plus large que celle réellement tenue :
+**Ce que le linter ne couvre pas.** Les surfaces ci-dessous sont **hors de portée** du
+linter tel qu'il est livré — à ne pas confondre avec une garantie plus large que celle
+réellement tenue. La liste est tenue **exhaustive à la date de ce paragraphe** ; toute
+surface découverte ensuite s'y ajoute (une limite tue est pire qu'une limite avouée) :
 
 - **La barrière est post-merge.** Le linter et le banc `ci/test-proxy-base-et-preflight.sh`
   sont branchés dans l'étape PLAN de `ci/Jenkinsfile.publish-api`, dont le job
-  (`publish-api-deploy`) vise `*/main` : ils s'exécutent à chaque push/PR sur cette branche,
-  donc ne s'opposent qu'**après** fusion — jamais sur une proposition de changement avant
-  merge. Et `ci/Jenkinsfile.selfservice` — celui auquel `provision-apply` délègue
-  (`build job: 'selfservice-app-deploy'`) — ne les joue pas : sa propre étape PLAN se limite
-  à la validation du manifeste et au `--syntax-check` Ansible.
+  (`publish-api-deploy`) est un `flow-definition` **mono-branche** visant `*/main` : ils
+  s'exécutent à chaque push sur cette branche — **jamais sur une PR** (le job n'est pas
+  multibranch, aucune proposition de changement ne le déclenche), donc ne s'opposent
+  qu'**après** fusion. Et `ci/Jenkinsfile.selfservice` — celui auquel `provision-apply`
+  délègue (`build job: 'selfservice-app-deploy'`) — ne les joue pas : sa propre étape PLAN
+  se limite à la validation du manifeste et au `--syntax-check` Ansible.
 - **`labctl` n'est pas couvert.** Il attaque les mêmes endpoints d'administration depuis du
-  Go ; le linter ne lit que les rôles Ansible sous `ansible/roles`. La revendication « toute
-  action CI passe par le contrat » reste donc partiellement non vérifiée pour cette voie —
-  c'est un second analyseur, sur un autre langage, qui reste à écrire.
+  Go ; le linter ne lit que du YAML Ansible. La revendication « toute action CI passe par le
+  contrat » reste donc partiellement non vérifiée pour cette voie — c'est un second
+  analyseur, sur un autre langage, qui reste à écrire.
+- **Seul `ansible/roles` est parcouru.** `ROLES` vaut `ansible/roles` : les **playbooks**
+  `ansible/*.yml`, les `group_vars`/`host_vars` et l'inventaire ne sont **pas** lus. Les
+  playbooks ne portent aucune tâche d'appel aujourd'hui (ils se contentent d'inclure des
+  rôles), mais rien dans la chaîne CI ne l'impose — un `uri:` posé directement dans un
+  playbook serait invisible.
+- **L'indirection n'est attrapée qu'au site de définition.** Une URL montée dans un fait
+  (`set_fact: {del_url: "{{ apim_ss_api_base }}/…"}`) est signalée **là où elle est
+  écrite** ; le site d'usage (`uri: {url: "{{ del_url }}"}`) ne mentionne plus la base et
+  reste muet. Si la variable est définie **hors** de `ansible/roles` — `group_vars`,
+  inventaire, `-e` en ligne de commande, paramètre de job Jenkins — plus rien ne parle.
+- **Les surfaces non structurées sont signalées, jamais vérifiées.** `command:`, `shell:`,
+  `raw:`, `script:`, `uri:` en forme free-form et tout scalaire mentionnant la base
+  rougissent en **SUSPECT** : le linter refuse d'en dériver un chemin de contrat (une
+  heuristique sur une chaîne shell serait fausse un jour, en silence). Ils ne sont donc
+  jamais confrontés au contrat opération par opération — le verdict est binaire.
+- **Le raisonnement est statique, sur des gabarits Jinja.** Aucun template n'est évalué :
+  un appel dont la méthode et/ou le chemin sont conditionnels est exigé sur le **produit
+  croisé** de ses branches (fail-closed, mais plus strict que la réalité d'exécution). Une
+  base construite autrement que par le préfixe `{{ apim_ss_api_base }}` (URL en dur, autre
+  variable) échappe entièrement à l'analyse.
+- **Le verdict `multipart` ne porte que sur ce qui est déclaré au contrat.** Un appel en
+  `body_format: form-multipart` couvert uniquement par une **dérogation** n'est confronté à
+  aucun `requestBody` — par construction, une dérogation vit hors du contrat.
 
 **Pourquoi A et pas B (le contrat admet ce DELETE et lui seul).** Un `DELETE
 /strategies/{id}` mal ciblé dans le contrat proxy — routage, azp, ou id erroné — casse
@@ -180,3 +206,36 @@ d'état désiré**, pas une opération de convergence Git rejouable (cf. § Find
 commentaire du rôle : retrait ≠ révocation). Si ce geste devait un jour rejoindre la
 chaîne CI, la décision serait à rouvrir explicitement — pas à contourner par un
 assouplissement discret de l'allowlist.
+
+---
+
+## Dette ouverte — condition de la bascule `ADMIN_VIA=proxy-oauth2`
+
+`apim_selfservice_app/tasks/backend.yml` a été **scindé** : la tâche unique qui corrélait
+méthode et chemin sur le même conditionnel Jinja (`PUT` si l'action est déjà attachée,
+`POST` sinon) est devenue **deux tâches à méthode fixe**. C'est le **seul changement de
+comportement d'un rôle** livré par ce lot — tout le reste est du linter, du banc et de la
+documentation.
+
+**Son équivalence n'est prouvée que par lecture statique** : URL, méthode, corps et
+`register` ont été comparés branche par branche, sans **aucune exécution contre une
+gateway**. Une lecture statique ne voit pas ce qu'un `when:` évalue réellement, ni ce que
+la gateway répond à une action déjà attachée.
+
+**Condition, pas recommandation.** Avant de passer `ADMIN_VIA` à `proxy-oauth2` sur un job
+du cluster (tâche 7 du plan `2026-08-02-lot1-proxification-complete.md`), rejouer contre le
+labo :
+
+```
+ansible-playbook ansible/selfservice-app.yml
+ansible-playbook ansible/selfservice-app-verify.yml
+```
+
+**deux fois de suite** — la seconde passe est celle qui compte : elle exerce la branche
+`PUT` (action déjà attachée, `bk_hdr_id` non vide) que la première passe crée. Une seule
+exécution ne teste que la branche `POST` et laisserait la moitié de la scission non
+vérifiée. Tant que ce double aller-retour n'a pas été constaté vert, la bascule expose une
+convergence dont on ne sait pas si elle est idempotente.
+
+Cette dette ne vivait jusqu'ici que dans un fichier de session **non versionné** : elle est
+inscrite ici pour survivre à la session qui l'a contractée.

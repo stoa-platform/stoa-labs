@@ -45,7 +45,7 @@ est réellement livré sur cette branche de ce qui reste à faire.
 | `poc-control-plane-federation/ci/Jenkinsfile.publish-api` | `APIM_PROXY_BASE` composé par morceaux (`APIM_PROXY_HOST`/`API`/`VER`/`PATH`), préflight de joignabilité optionnel ; étape PLAN branche `lint-contrat-proxy.py` et `test-proxy-base-et-preflight.sh`. | **livré** |
 | `poc-control-plane-federation/ci/Jenkinsfile.selfservice` | Même composition de `APIM_PROXY_BASE` et même préflight ; son étape PLAN ne branche **pas** les deux garde-fous du proxy (limite consignée dans l'ADR). | **livré** |
 | `poc-control-plane-federation/ci/test-proxy-base-et-preflight.sh` | Banc `set -eu` sans gateway qui rejoue la composition de la base du proxy et la logique de préflight des deux Jenkinsfile. | **livré** |
-| `poc-control-plane-federation/ci/jenkins/*.job.xml` | Paramètres OAuth2 du mode proxy ; bascule `ADMIN_VIA` vers `proxy-oauth2` (tâche 7). | **partiel** — `APIM_PROXY_HOST`/`API`/`BASE` et `APIM_PREFLIGHT*` exposés en paramètres (`91d54e1`) ; bascule `ADMIN_VIA` et paramètres OAuth2 complets (tâche 7) non exécutés, `ADMIN_VIA` reste `direct` par défaut |
+| `poc-control-plane-federation/ci/jenkins/*.job.xml` | Paramètres OAuth2 du mode proxy ; bascule `ADMIN_VIA` vers `proxy-oauth2` (tâche 7). | **partiel** — `APIM_PROXY_HOST`/`API`/`BASE` et `APIM_PREFLIGHT` (ce seul paramètre : `APIM_PREFLIGHT_URL`, `APIM_PREFLIGHT_CODES` et `APIM_PREFLIGHT_TRIES` restent des variables du pipeline, non exposées comme paramètres de job) exposés en paramètres (`91d54e1`) ; bascule `ADMIN_VIA` et paramètres OAuth2 complets (tâche 7) non exécutés, `ADMIN_VIA` reste `direct` par défaut |
 | `poc-control-plane-federation/adr/adr-075-wm-admin-proxy-multienv.md` | Trace de la décision sur le DELETE. | **livré** |
 
 ---
@@ -907,6 +907,22 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 **Interfaces :**
 - Consomme : `APIM_PROXY_HOST` / `APIM_PROXY_API` / `APIM_PROXY_BASE` / `APIM_PREFLIGHT`,
   déjà exposés par le commit `91d54e1`.
+
+- [ ] **Étape 0 (BLOQUANTE) : prouver la scission de `backend.yml` par exécution**
+
+L'équivalence Ansible de la scission de `apim_selfservice_app/tasks/backend.yml` en deux
+tâches à méthode fixe — le **seul** changement de comportement d'un rôle livré par le lot 1
+bis — n'est prouvée que par **lecture statique**, jamais contre une gateway. Condition de la
+bascule, consignée dans l'ADR-075 (§ Dette ouverte) : rejouer contre le labo
+
+```bash
+ansible-playbook ansible/selfservice-app.yml
+ansible-playbook ansible/selfservice-app-verify.yml
+```
+
+**deux fois de suite** — la seconde passe exerce la branche `PUT` (action déjà attachée) que
+la première crée ; une seule exécution ne teste que la branche `POST`. Tant que ce double
+aller-retour n'est pas vert, ne pas basculer.
 
 - [ ] **Étape 1 : compléter les paramètres OAuth2**
 

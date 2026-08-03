@@ -236,29 +236,60 @@ def _voir_url(url, ou, nom, methode_brute, multipart, sortie, suspects):
                           f"URL mentionnant {BASE_VAR} sans forme reconnue : {url!r}"))
 
 
-def taches_appels(noeud, fichier, sortie, suspects):
+def _extrait(texte, n=160):
+    """Aplatit et tronque une valeur pour un diagnostic lisible (une ligne)."""
+    t = " ".join(str(texte).split())
+    return t if len(t) <= n else t[:n] + "..."
+
+
+def taches_appels(noeud, fichier, sortie, suspects, nom_herite=None):
     """Descend recursivement : les taches vivent sous des block/rescue/always.
 
-    Trois surfaces d'appel a la base d'admin, toutes couvertes desormais :
-      - uri:/ansible.builtin.uri — verifiee contre le contrat quand reconnue ;
-      - get_url:/ansible.builtin.get_url — idem, methode GET implicite (ce
-        module n'a pas de parametre `method`) ;
-      - command:/shell: dont le texte contient `curl` ET la base — surface
-        non structuree, jamais rattachee a un chemin de contrat : TOUJOURS
-        signalee en suspect. En extraire un chemin depuis une chaine shell
-        libre serait une heuristique fausse un jour, en silence — fail-closed.
+    Deux surfaces sont VERIFIEES contre le contrat, parce qu'elles portent une
+    URL structuree dont un chemin peut etre derive sans deviner :
+      - uri:/ansible.builtin.uri en forme dict — methode lue dans `method:` ;
+      - get_url:/ansible.builtin.get_url en forme dict — methode GET implicite
+        (ce module n'a pas de parametre `method`).
+
+    TOUT LE RESTE qui MENTIONNE la base part en suspect, jamais dans un `else:`
+    muet :
+      - command:/shell: (et toute ecriture de leur valeur : chaine, argv,
+        cmd) des que la base apparait — la porte ne depend PAS du nom de
+        l'outil HTTP : `wget --method=DELETE ...` attaque la base autant que
+        `curl -X DELETE ...`, et un dispatch cale sur `curl` rendait vert le
+        premier ;
+      - tout SCALAIRE mentionnant la base, quelle que soit la cle qui le
+        porte : `set_fact: {del_url: "{{ base }}/strategies/{{ id }}"}`
+        (l'idiome de ce depot — les roles montent des faits partout), `uri:`
+        en forme free-form (`uri: url=... method=DELETE`, valeur scalaire et
+        non dict), `raw:`, `script:`, ou n'importe quelle cle a venir.
+
+    En extraire un chemin de contrat serait une heuristique fausse un jour, en
+    silence : ces surfaces sont donc TOUJOURS signalees, jamais rattachees a une
+    operation. Fail-closed — le linter ne prefere jamais le silence au doute.
     """
+    if isinstance(noeud, str):
+        # Scalaire atteint par une LISTE (loop:, with_items:, argv:...) :
+        # aucune cle ne le porte, mais une mention de la base y pese autant.
+        if BASE_VAR in noeud:
+            suspects.append((os.path.relpath(fichier, ROLES),
+                              nom_herite or f"(sans name: ; {_extrait(noeud)})",
+                              f"scalaire mentionnant {BASE_VAR} hors d'un module "
+                              f"d'appel structure : {_extrait(noeud)}"))
+        return
     if isinstance(noeud, list):
         for n in noeud:
-            taches_appels(n, fichier, sortie, suspects)
+            taches_appels(n, fichier, sortie, suspects, nom_herite)
     elif isinstance(noeud, dict):
         ou = f"{os.path.relpath(fichier, ROLES)}"
         # `name:` absente -> forme compacte (15 appels sur 96 dans le depot
         # reel). Un repli sur "?" nu est illisible : gener precisement quand
         # le linter rougit et qu'il faut retrouver la tache dans le fichier.
         # Le repli embarque l'URL (ou le texte de commande) — greppable dans
-        # `ou` — plutot qu'un symbole opaque.
-        nom_declare = noeud.get("name")
+        # `ou` — plutot qu'un symbole opaque. `nom_herite` porte le `name:` du
+        # block englobant jusqu'aux scalaires imbriques (le `del_url` d'un
+        # set_fact n'a pas de nom a lui).
+        nom_declare = noeud.get("name") or nom_herite
         for cle, val in noeud.items():
             if cle in MODULES_URI and isinstance(val, dict):
                 url = val.get("url", "")
@@ -274,12 +305,18 @@ def taches_appels(noeud, fichier, sortie, suspects):
                     _voir_url(url, ou, nom, "GET", False, sortie, suspects)
             elif cle in MODULES_COMMANDE:
                 texte = _texte_commande(val)
-                if "curl" in texte and BASE_VAR in texte:
-                    nom = nom_declare or "(sans name: ; command/shell avec curl)"
+                if BASE_VAR in texte:
+                    nom = nom_declare or f"(sans name: ; {cle} {_extrait(texte)})"
                     suspects.append((ou, nom,
-                        "command:/shell: contenant curl et " + BASE_VAR))
+                        f"{cle}: attaque la base en shell libre (aucun chemin de "
+                        f"contrat derivable) : {_extrait(texte)}"))
+            elif isinstance(val, str) and BASE_VAR in val:
+                nom = nom_declare or f"(sans name: ; {cle}: {_extrait(val)})"
+                suspects.append((ou, nom,
+                    f"valeur scalaire sous la cle {cle!r} mentionnant {BASE_VAR}, "
+                    f"hors d'un module d'appel structure : {_extrait(val)}"))
             else:
-                taches_appels(val, fichier, sortie, suspects)
+                taches_appels(val, fichier, sortie, suspects, nom_declare)
 
 
 def appels():
@@ -394,20 +431,30 @@ def main():
             manquants.append(("/".join(a["methodes"]), sorted(formes)[0], a["ou"], a["nom"]))
             continue
         if a["multipart"]:
-            declare = next(((f, m) for f in formes for m in a["methodes"] if (m, f) in declarees), None)
-            if declare is None:
-                continue  # couvert uniquement par une derogation : rien a verifier au contrat
-            forme, meth = declare
-            op = doc["paths"][forme][meth.lower()]
-            rb = op.get("requestBody", {})
-            ref = rb.get("$ref", "")
-            if ref.startswith("#/"):
-                cible = doc
-                for seg in ref[2:].split("/"):
-                    cible = cible.get(seg, {})
-                rb = cible
-            if "multipart/form-data" not in (rb.get("content") or {}):
-                sans_multipart.append((meth, forme, a["ou"], a["nom"]))
+            # TOUTES les paires declarees, pas la premiere trouvee. Un `next(...)`
+            # ne controlait le multipart que sur UNE paire : un appel a deux
+            # methodes (ou deux formes) dont une seule declare
+            # multipart/form-data passait au vert des lors que la paire tiree la
+            # premiere etait la bonne — et « la premiere » dependait en outre de
+            # l'ordre d'iteration d'un set Python, donc du hash seed du
+            # processus. Un verdict qui change d'un run a l'autre n'est pas un
+            # garde-fou. Les paires couvertes SEULEMENT par une derogation ne
+            # sont pas dans `declarees` : elles restent hors contrat, donc rien
+            # a verifier — la liste est alors vide et aucune n'est signalee.
+            for forme in sorted(formes):
+                for meth in a["methodes"]:
+                    if (meth, forme) not in declarees:
+                        continue
+                    op = doc["paths"][forme][meth.lower()]
+                    rb = op.get("requestBody", {})
+                    ref = rb.get("$ref", "")
+                    if ref.startswith("#/"):
+                        cible = doc
+                        for seg in ref[2:].split("/"):
+                            cible = cible.get(seg, {})
+                        rb = cible
+                    if "multipart/form-data" not in (rb.get("content") or {}):
+                        sans_multipart.append((meth, forme, a["ou"], a["nom"]))
 
     ko = 0
     if DEROGATIONS:
@@ -437,8 +484,9 @@ def main():
             print(f"    {m:6} {c}\n           {ou} — {nom}")
     if suspects:
         ko = 1
-        print(f"✗ {len(suspects)} appel(s) SUSPECT(S) — mention de {BASE_VAR} jamais ignoree "
-              f"(le linter ne prefere jamais le silence au doute) :")
+        print(f"✗ {len(suspects)} appel(s) SUSPECT(S) — toute mention de {BASE_VAR} dans un "
+              f"scalaire des roles est verifiee ou signalee, jamais ignoree (le linter ne "
+              f"prefere jamais le silence au doute) :")
         for ou, nom, motif in sorted(set(suspects)):
             print(f"    {ou} — {nom}\n           {motif}")
     if not ko:

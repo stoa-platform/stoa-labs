@@ -8,7 +8,10 @@
 #     APIM_PROXY_BASE NON VIDE (donc AVANT la proxification par morceaux),
 #     jamais un SHA fige NI une derivation par branche (cf. plus bas) ;
 #   - l'ANCIEN defaut = l'URL entiere ecrite dans le Jenkinsfile a ce point,
-#     relue par `git show <base>:<fichier>` ;
+#     relue par `git show <base>:<fichier>` — pour Jenkinsfile.publish-api
+#     SEULEMENT (ce fichier UNIQUE fixe le point de comparaison, et l'URL
+#     historique qui en est tiree sert de reference aux DEUX Jenkinsfile
+#     courants ; l'historique de Jenkinsfile.selfservice n'est jamais relu) ;
 #   - les defauts APIM_PROXY_* = extraits par sed sur CHAQUE Jenkinsfile REEL ;
 #   - la ligne de composition elle-meme = extraite de CHAQUE Jenkinsfile REEL ;
 #   - les defauts du preflight (codes de preuve de vie, nombre d'essais) = idem ;
@@ -110,6 +113,12 @@ lire_defaut_sh(){
 ligne_pb(){ sed -n 's/^[[:space:]]*\(PROXY_BASE=.*\)$/\1/p' "$1" | grep -F "$2" | head -1; }
 
 # ---- l'ANCIEN defaut : relu dans le Jenkinsfile d'AVANT la branche --------
+# Un SEUL fichier est relu dans l'historique : Jenkinsfile.publish-api. La
+# boucle sur les DEUX Jenkinsfile plus bas confronte leurs defauts COURANTS a
+# cette unique URL historique — ce qui est le contrat voulu (les deux doivent
+# composer la MEME base qu'avant), mais n'est PAS « l'ancien defaut extrait de
+# chaque Jenkinsfile » : si Jenkinsfile.selfservice avait un jour porte un
+# autre defaut, ce test ne le saurait pas.
 git -C "$RACINE" show "$BASE_REF:$SOUS_POC/ci/Jenkinsfile.publish-api" > "$TMPD/base.groovy" 2>/dev/null \
   || fatal "impossible de lire $BASE_REF:$SOUS_POC/ci/Jenkinsfile.publish-api (clone superficiel ? commit absent ?) — poser STOA_BASE_REF"
 ANCIEN_DEFAUT="$(lire_defaut "$TMPD/base.groovy" APIM_PROXY_BASE)"

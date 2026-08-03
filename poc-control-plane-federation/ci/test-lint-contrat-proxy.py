@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
 """Banc d'essai de lint-contrat-proxy.py — rejoue les experiences manuelles.
 
-Le linter d'allow-list (lint-contrat-proxy.py) a deja laisse passer TROIS
-faux negatifs. Chacun a ete trouve par une experience manuelle (muter un
-fichier du depot, relancer, regarder, restaurer a la main) que personne
-n'avait enregistree. Ce banc les rejoue toutes, pour de bon, a chaque run.
+Le linter d'allow-list (lint-contrat-proxy.py) a deja laisse passer une SERIE
+de faux negatifs — un compte fige ici vieillirait mal, le lot 1 bis en a ferme
+plus d'une dizaine : base sans espaces, base filtree par un Jinja, get_url,
+command:/shell:, anti-diagonale sur un appel correle, methode Jinja a
+guillemets doubles, inventaire vide ou ampute, doublon de cle au contrat, URL
+montee en set_fact, shell sans curl, uri free-form, raw:/script:, verdict
+multipart controle sur une seule paire. Chacun a ete trouve par une experience
+manuelle (muter un fichier du depot, relancer, regarder, restaurer a la main)
+que personne n'avait enregistree. Ce banc les rejoue toutes, pour de bon, a
+chaque run — un cas par faux negatif ferme, et le compte fait foi, pas ce
+paragraphe.
 
 Regle cardinale : ce banc ne mute JAMAIS un fichier suivi par git. Chaque cas
 construit une COPIE JETABLE du contrat et de l'arbre de roles dans un
@@ -324,7 +331,41 @@ _FACT_CORRELEE_PRE_SCISSION = {
 def cas_11():
     fx = Fixture()
     try:
-        # 1) Role : remplacer les deux taches a methode fixe (post-scission)
+        # 1) Contrat : l'anti-diagonale. Le contrat REEL declare la diagonale
+        # correcte : POST /policyActions et PUT /policyActions/{id}. On la
+        # remplace ici par PUT /policyActions et POST /policyActions/{id}.
+        # L'ancienne double couverture (chaque forme couverte par au moins
+        # une methode, chaque methode par au moins une forme) est satisfaite
+        # par les DEUX declarations — alors que les deux branches reelles de
+        # l'appel correle (POST sans id, PUT avec id) tombent en 404 :
+        # aucune des deux n'est celle declaree.
+        doc = fx.charger_contrat()
+        post = doc["paths"]["/rest/apigateway/policyActions"].pop("post")
+        put = doc["paths"]["/rest/apigateway/policyActions/{id}"].pop("put")
+        doc["paths"]["/rest/apigateway/policyActions"]["put"] = put
+        doc["paths"]["/rest/apigateway/policyActions/{id}"]["post"] = post
+        fx.ecrire_contrat(doc)
+
+        # 2) BASELINE, avant toute mutation de role. Permuter post/put sur
+        # /policyActions dans TOUT le contrat abime aussi des appels a methode
+        # FIXE (apim_selfservice_app/tasks/main.yml, apim_publish_api/tasks/
+        # inbound.yml appellent POST /policyActions) : `code == 1` et
+        # « NON DECLARE » sont donc satisfaits par ces degats collateraux, sans
+        # rien devoir au produit croise. Deux affaiblissements successifs de ce
+        # cas dans ce lot sont partis de la. La discrimination est desormais
+        # portee par TROIS choses mesurees contre cette baseline, aucune
+        # incidente : la signature « PUT/POST » (methodes jointes d'un appel
+        # correle — aucun appel du depot n'en produit, `grep -rn 'method:.*{{'
+        # ansible/roles` ne rend rien depuis la scission), le NOM de la tache
+        # correlee, et le DELTA de comptage.
+        _, out_base = fx.executer()
+        n_base = _n_manquants(out_base)
+        assert "PUT/POST" not in out_base, (
+            f"un appel a methodes PUT/POST existe deja dans l'arbre de roles "
+            f"reel : la signature de ce cas n'est plus discriminante, le "
+            f"revoir\n{out_base}")
+
+        # 3) Role : remplacer les deux taches a methode fixe (post-scission)
         # par la tache unique correlee (pre-scission) — sans cette mutation,
         # ce cas ne testerait plus rien de different du cas 3, puisque
         # backend.yml ne contient plus aucun appel correle depuis la scission.
@@ -341,27 +382,31 @@ def cas_11():
         taches[idx_put:idx_fact + 1] = [_TACHE_CORRELEE_PRE_SCISSION, _FACT_CORRELEE_PRE_SCISSION]
         fx.ecrire_role(ROLE_INNOCENT, taches)
 
-        # 2) Contrat : l'anti-diagonale. Le contrat REEL declare la diagonale
-        # correcte : POST /policyActions et PUT /policyActions/{id}. On la
-        # remplace ici par PUT /policyActions et POST /policyActions/{id}.
-        # L'ancienne double couverture (chaque forme couverte par au moins
-        # une methode, chaque methode par au moins une forme) est satisfaite
-        # par les DEUX declarations — alors que les deux branches reelles de
-        # l'appel correle (POST sans id, PUT avec id) tombent en 404 :
-        # aucune des deux n'est celle declaree.
-        doc = fx.charger_contrat()
-        post = doc["paths"]["/rest/apigateway/policyActions"].pop("post")
-        put = doc["paths"]["/rest/apigateway/policyActions/{id}"].pop("put")
-        doc["paths"]["/rest/apigateway/policyActions"]["put"] = put
-        doc["paths"]["/rest/apigateway/policyActions/{id}"]["post"] = post
-        fx.ecrire_contrat(doc)
-
         code, out = fx.executer()
         assert code == 1, f"code {code}, attendu 1\n{out}"
         assert "NON DECLARE" in out, f"section des appels manquants absente\n{out}"
-        assert "policyActions" in out and ROLE_INNOCENT in out, (
-            f"l'appel policyActions (methode+chemin conditionnels par le meme "
-            f"Jinja, {ROLE_INNOCENT}) n'est pas signale\n{out}")
+        # Signature de l'appel correle : ses DEUX methodes, jointes par le
+        # linter. Un appel a methode fixe ne peut pas la produire — c'est elle,
+        # et non la simple presence du nom de fichier, qui prouve que c'est bien
+        # le produit croise qui a mordu (un renommage de backend.yml ne peut
+        # plus vider ce cas de sa substance).
+        assert "PUT/POST" in out, (
+            f"l'appel correle (methodes PUT et POST portees par le meme Jinja) "
+            f"n'apparait pas parmi les appels signales : seuls les degats "
+            f"collateraux de la permutation ont ete constates\n{out}")
+        assert "Backend : converger l'action" in out and ROLE_INNOCENT in out, (
+            f"l'appel policyActions correle (methode+chemin par le meme Jinja, "
+            f"{ROLE_INNOCENT}) n'est pas nomme dans la sortie\n{out}")
+        # Delta de comptage contre la baseline : la mutation de role retire
+        # DEUX appels a methode fixe (tous deux signales dans la baseline, la
+        # permutation les ayant prives de leur declaration) et en ajoute UN
+        # seul, correle. Tout autre delta signifie que la mutation a deplace
+        # autre chose que ce que ce cas pretend exercer.
+        assert _n_manquants(out) == n_base - 1, (
+            f"delta de {_n_manquants(out) - n_base} appel(s) signale(s) contre "
+            f"la baseline (attendu -1 : deux appels a methode fixe remplaces "
+            f"par un seul appel correle)\n--- baseline ---\n{out_base}\n"
+            f"--- apres mutation du role ---\n{out}")
     finally:
         fx.nettoyer()
 
@@ -622,7 +667,8 @@ def cas_20():
         # Python sont uniques) : le doublon est ecrit en texte brut, en
         # AJOUTANT une seconde cle racine "paths" a la fin du fichier — ce
         # qui, sous un chargeur nu, ecraserait TOUTE la premiere declaration
-        # (35 chemins) au profit du seul chemin factice ci-dessous.
+        # (21 chemins, 35 operations) au profit du seul chemin factice
+        # ci-dessous.
         with open(fx.contrat, "a", encoding="utf-8") as f:
             f.write(textwrap.dedent("""
                 paths:
@@ -690,6 +736,211 @@ def cas_22():
     finally:
         fx.nettoyer()
         shutil.rmtree(leurre, ignore_errors=True)
+
+
+# Les quatre cas suivants (23 a 26) couvrent les formes d'appel que le dispatch
+# de `taches_appels()` laissait tomber dans son `else:` — recursion muette, donc
+# VERT sur un DELETE sans declaration ni derogation. Ils sont ecrits AVANT le
+# correctif du linter et constates ROUGES contre lui (revue finale, lot 1 bis).
+# Chacun pose son appel dans un role, sans toucher au contrat : c'est bien
+# l'inventaire des appels — pas la couverture du contrat — qui est en cause.
+
+
+@cas("23 — URL montee en set_fact puis consommee ailleurs (forme IDIOMATIQUE de "
+     "ce depot) : le site de DEFINITION du fait est signale, jamais ignore")
+def cas_23():
+    fx = Fixture()
+    try:
+        taches = fx.charger_role(ROLE_INNOCENT)
+        taches.append({
+            "name": "Mutation banc : URL de suppression montee en fait",
+            "ansible.builtin.set_fact": {
+                "mutation_del_url":
+                    "{{ apim_ss_api_base }}/strategies/{{ mutation_id }}",
+            },
+        })
+        taches.append({
+            # Site d'USAGE : l'URL n'y mentionne plus la base, rien ne peut y
+            # etre rattache au contrat. C'est la definition qui doit parler.
+            "name": "Mutation banc : DELETE via le fait monte plus haut",
+            "ansible.builtin.uri": {
+                "url": "{{ mutation_del_url }}",
+                "method": "DELETE",
+            },
+        })
+        fx.ecrire_role(ROLE_INNOCENT, taches)
+        code, out = fx.executer()
+        assert code == 1, (
+            f"code {code}, attendu 1 — un DELETE monte par set_fact passe au "
+            f"vert : ni le site de definition ni le site d'usage ne parle\n{out}")
+        assert "SUSPECT" in out, f"aucun suspect signale\n{out}"
+        assert "mutation_del_url" in out and ROLE_INNOCENT in out, (
+            f"le set_fact qui monte l'URL sur la base n'est pas signale\n{out}")
+    finally:
+        fx.nettoyer()
+
+
+@cas("24 — shell: sans curl (wget) sur la base : la porte command:/shell: ne "
+     "doit pas dependre du nom de l'outil HTTP")
+def cas_24():
+    fx = Fixture()
+    try:
+        taches = fx.charger_role(ROLE_INNOCENT)
+        taches.append({
+            "name": "Mutation banc : suppression par un autre client HTTP",
+            "ansible.builtin.shell":
+                "wget --method=DELETE {{ apim_ss_api_base }}/strategies/"
+                "{{ mutation_id }}",
+        })
+        fx.ecrire_role(ROLE_INNOCENT, taches)
+        code, out = fx.executer()
+        assert code == 1, (
+            f"code {code}, attendu 1 — un shell: qui attaque la base sans "
+            f"ecrire 'curl' passe au vert\n{out}")
+        assert "SUSPECT" in out, f"aucun suspect signale\n{out}"
+        assert "wget" in out and ROLE_INNOCENT in out, (
+            f"la tache shell: avec wget sur la base n'est pas signalee\n{out}")
+    finally:
+        fx.nettoyer()
+
+
+@cas("25 — uri: en forme free-form (valeur SCALAIRE, pas un dict) : "
+     "`uri: url=... method=DELETE` ne doit pas glisser hors du dispatch")
+def cas_25():
+    fx = Fixture()
+    try:
+        taches = fx.charger_role(ROLE_INNOCENT)
+        taches.append({
+            "name": "Mutation banc : uri free-form",
+            "ansible.builtin.uri":
+                "url={{ apim_ss_api_base }}/strategies/{{ mutation_id }} "
+                "method=DELETE",
+        })
+        fx.ecrire_role(ROLE_INNOCENT, taches)
+        code, out = fx.executer()
+        assert code == 1, (
+            f"code {code}, attendu 1 — un uri: free-form (valeur scalaire) "
+            f"echappe au dispatch, qui n'accepte que la forme dict\n{out}")
+        assert "SUSPECT" in out, f"aucun suspect signale\n{out}"
+        assert "ansible.builtin.uri" in out and "strategies" in out and (
+            ROLE_INNOCENT in out), (
+            f"l'appel uri: free-form n'est pas signale\n{out}")
+    finally:
+        fx.nettoyer()
+
+
+@cas("26 — ansible.builtin.raw: et script: sur la base : deux modules "
+     "d'execution que le dispatch ne connait pas du tout")
+def cas_26():
+    fx = Fixture()
+    try:
+        taches = fx.charger_role(ROLE_INNOCENT)
+        taches.append({
+            "name": "Mutation banc : raw sur la base",
+            "ansible.builtin.raw":
+                "curl -X DELETE {{ apim_ss_api_base }}/strategies/"
+                "{{ mutation_id }}",
+        })
+        taches.append({
+            "name": "Mutation banc : script sur la base",
+            "ansible.builtin.script":
+                "supprimer-strategie.sh {{ apim_ss_api_base }}/strategies/"
+                "{{ mutation_id }}",
+        })
+        fx.ecrire_role(ROLE_INNOCENT, taches)
+        code, out = fx.executer()
+        assert code == 1, (
+            f"code {code}, attendu 1 — raw:/script: sur la base passent au "
+            f"vert\n{out}")
+        assert "SUSPECT" in out, f"aucun suspect signale\n{out}"
+        assert "ansible.builtin.raw" in out, (
+            f"la tache raw: sur la base n'est pas signalee\n{out}")
+        assert "ansible.builtin.script" in out, (
+            f"la tache script: sur la base n'est pas signalee\n{out}")
+    finally:
+        fx.nettoyer()
+
+
+# Les deux cas suivants (27, 28) couvrent le verdict `multipart` — une des
+# quatre sections de verdict du linter, resolution de `$ref` vers
+# `components/requestBodies` comprise, qu'AUCUN cas n'exercait jusqu'ici (le
+# mot n'apparaissait pas une fois dans ce banc). Trois appels reels sont en
+# `body_format: form-multipart` et le contrat porte `passthroughJsonOrMultipart`
+# sur trois operations : la section n'etait pourtant garantie par rien.
+
+
+@cas("27 — POST /archive repointe sur un requestBody JSON SEUL alors que "
+     "l'appel reel est en form-multipart : code 1, section multipart")
+def cas_27():
+    fx = Fixture()
+    try:
+        doc = fx.charger_contrat()
+        # Le $ref reste un $ref (la resolution vers components/requestBodies
+        # fait partie de ce qui est exerce ici) : seule sa CIBLE change, de
+        # passthroughJsonOrMultipart vers passthrough (application/json seul).
+        doc["paths"]["/rest/apigateway/archive"]["post"]["requestBody"] = {
+            "$ref": "#/components/requestBodies/passthrough"}
+        fx.ecrire_contrat(doc)
+        code, out = fx.executer()
+        assert code == 1, (
+            f"code {code}, attendu 1 — l'import d'archive (form-multipart) "
+            f"passe au vert contre un requestBody JSON seul\n{out}")
+        assert "form-multipart sans requestBody multipart declare" in out, (
+            f"la section de verdict multipart ne s'est pas declenchee\n{out}")
+        assert "/rest/apigateway/archive" in out and (
+            "apim_promote_api/tasks/import.yml" in out), (
+            f"l'appelant reel de POST /archive n'est pas signale\n{out}")
+    finally:
+        fx.nettoyer()
+
+
+@cas("28 — appel multipart a DEUX methodes declarees dont UNE SEULE porte "
+     "multipart/form-data : les deux paires sont controlees, pas la premiere seule")
+def cas_28():
+    fx = Fixture()
+    try:
+        # PUT /apis/{id} declare deja passthroughJsonOrMultipart au contrat
+        # reel. On lui ajoute un POST sur le MEME chemin, en JSON seul : un
+        # appel dont la methode est un conditionnel Jinja (PUT ou POST) a donc
+        # DEUX paires declarees, dont une seule accepte le multipart.
+        doc = fx.charger_contrat()
+        doc["paths"]["/rest/apigateway/apis/{id}"]["post"] = {
+            "summary": "mutation banc — meme chemin, requestBody JSON seul",
+            "requestBody": {"$ref": "#/components/requestBodies/passthrough"},
+            "responses": {"200": {"$ref": "#/components/responses/proxied"}},
+        }
+        fx.ecrire_contrat(doc)
+
+        taches = fx.charger_role(ROLE_INNOCENT)
+        taches.append({
+            "name": "Mutation banc : multipart a methode conditionnelle, UNE forme",
+            "ansible.builtin.uri": {
+                # UNE seule forme de chemin (le Jinja est un segment entier) :
+                # ce qui varie est la METHODE, dont l'ordre de lecture est
+                # deterministe (liste, pas un set) — le cas est donc stable,
+                # la ou faire varier la FORME dependrait de l'ordre d'iteration
+                # d'un set Python, aleatoire d'un processus a l'autre.
+                "url": "{{ apim_ss_api_base }}/apis/{{ mutation_id }}",
+                "method": "{{ 'PUT' if mutation_id else 'POST' }}",
+                "body_format": "form-multipart",
+                "body": {"file": {"filename": "x.zip",
+                                   "mime_type": "application/zip"}},
+            },
+        })
+        fx.ecrire_role(ROLE_INNOCENT, taches)
+
+        code, out = fx.executer()
+        assert code == 1, (
+            f"code {code}, attendu 1 — le multipart n'est controle que sur la "
+            f"PREMIERE paire declaree, la seconde (POST, JSON seul) passe\n{out}")
+        assert "form-multipart sans requestBody multipart declare" in out, (
+            f"la section de verdict multipart ne s'est pas declenchee\n{out}")
+        assert "POST" in out and "/rest/apigateway/apis/{id}" in out and (
+            ROLE_INNOCENT in out), (
+            f"la paire (POST, /apis/{{id}}) — declaree mais SANS multipart — "
+            f"n'est pas signalee\n{out}")
+    finally:
+        fx.nettoyer()
 
 
 def main():
