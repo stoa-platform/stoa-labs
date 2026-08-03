@@ -126,6 +126,25 @@
       ansible.builtin.import_tasks: cert-der.yml
       when: "apim_ss_app.public_cert_ref | default('') | length > 0"
 
+    # GARDE D'OPPOSABILITÉ. Un identifier est, par construction, MATCHÉ contre
+    # les requêtes entrantes. Non listé dans `enforce`, `token` est inerte :
+    # simple stockage, l'usage voulu ici. Listé, la clé BACKEND deviendrait un
+    # credential D'ENTRÉE — quiconque la présente serait identifié comme
+    # l'application. On ferme ce fail-open avant qu'il existe.
+    - name: "Clé backend : fail-closed — `token` ne doit PAS être opposé"
+      ansible.builtin.assert:
+        that: "'token' not in (apim_ss_app.enforce | default([]))"
+        fail_msg: >-
+          BACKEND_KEY_ENFORCED : `token` est listé dans enforce alors que
+          backend_key_ref est posé. La clé backend est du STOCKAGE, pas une
+          identité entrante — l'opposer ferait de quiconque la présente
+          l'application elle-même. Retirer `token` de enforce.
+      when: "(apim_ss_app.backend_key_ref | default('')) | length > 0"
+
+    - name: "Clé backend : lire la clé du backend dans Vault (jamais dans Git)"
+      ansible.builtin.import_tasks: backend-key.yml
+      when: "(apim_ss_app.backend_key_ref | default('')) | length > 0"
+
     - name: "IP : refuser le CIDR (la gateway le drop en silence — cf. README)"
       ansible.builtin.assert:
         that: "apim_ss_app.ip_allowlist | default([]) | select('search', '/') | list | length == 0"
@@ -229,13 +248,16 @@
                   {{ (ss_cert_existing | length) - ((ss_cert_kept | default([])) | length) }} purgé(s) expirés/illisibles) ;
                   name={{ ss_cert_name }}
 
-    - name: "Identifiers : ensemble désiré (cert + IP)"
+    - name: "Identifiers : ensemble désiré (cert + IP + clé backend)"
       ansible.builtin.set_fact:
         ss_desired_ids: >-
           {{ ([] if (apim_ss_app.public_cert_ref | default('') | length == 0)
                 else [{'key': 'httpsCertificate', 'name': ss_cert_name, 'value': ss_cert_values}])
              + ([] if (ss_ip_norm | length == 0)
-                else [{'key': 'ipAddressRange', 'name': 'ip-allowlist', 'value': ss_ip_norm}]) }}
+                else [{'key': 'ipAddressRange', 'name': 'ip-allowlist', 'value': ss_ip_norm}])
+             + ([] if (apim_ss_app.backend_key_ref | default('') | length == 0)
+                else [ss_backend_key_identifier]) }}
+      no_log: true
 
     # On ne remplace QUE les dimensions RÉELLEMENT gérées par le manifeste
     # (celles présentes dans ss_desired_ids). Ainsi un identifier posé HORS du
@@ -363,9 +385,24 @@
                 status_code: [200, 201]
 
     # ===== 5. Plan SORTANT : injection de la clé backend (P-callout) ==========
+    # `backend.inject: false` = une CUSTOM POLICY du client prend le relais de
+    # l'injection. Ce n'est pas un confort : wM n'autorise QU'UNE action
+    # customHttpHeaders par API (409 sinon), donc celle du rôle et celle du
+    # client ne peuvent pas coexister. Défaut true — rien ne change pour
+    # l'existant.
     - name: "Backend : injection de la clé backend (customHttpHeaders)"
       ansible.builtin.import_tasks: backend.yml
-      when: "(apim_ss_app.backend.header | default('')) | length > 0"
+      when:
+        - "(apim_ss_app.backend.header | default('')) | length > 0"
+        - "apim_ss_app.backend.inject | default(true) | bool"
+
+    - name: "Backend : injection DÉSACTIVÉE (custom policy du client)"
+      ansible.builtin.debug:
+        msg: >-
+          BACKEND_INJECT_OFF : backend.inject=false — le rôle ne pose AUCUNE
+          action customHttpHeaders sur {{ apim_ss_app.api }}. L'injection vers
+          l'amont relève de la custom policy attachée à l'API.
+      when: "not (apim_ss_app.backend.inject | default(true) | bool)"
 
     # ===== 6. AUTH OAuth2 de l'application (idp | internal) ====================
     # Deux modes (ADR-076 #5) : idp = client sur l'IdP, claim depuis Git ;

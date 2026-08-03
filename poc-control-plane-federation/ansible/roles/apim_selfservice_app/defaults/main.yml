@@ -62,6 +62,19 @@ apim_ss_app:
   backend:
     header: "apikey"
     value_template: "${backend_apikey}"   # résolu au runtime par le TokenProvider IS ← Vault
+    # inject: true   # false = le rôle NE POSE PAS l'action customHttpHeaders.
+    #                # À utiliser quand une CUSTOM POLICY du client prend le
+    #                # relais de l'injection : wM n'autorise QU'UNE action
+    #                # customHttpHeaders par API (409 sinon), les deux ne
+    #                # peuvent pas coexister. Défaut true = rien ne change.
+  # Clé backend STOCKÉE SUR L'APPLICATION (variante client, cf. README) : la
+  # gateway sert de table de routage, une custom policy attachée à l'API lit
+  # l'identifier `token` de l'application et l'injecte vers l'amont. Le
+  # manifeste ne porte QUE la référence Vault — jamais la valeur.
+  #   per_env:
+  #     dev: { backend_key_ref: "deploy/<tenant>/apps/<app>/dev/backend-key" }
+  backend_key_ref: ""            # sous-chemin KV v2 (vide = dimension non gérée)
+  backend_key_field: "api_key"   # champ à lire DANS l'entrée KV
   # Dimensions à OPPOSER par la règle IAM AND (strict) — ferme le fail-open.
   # Sous-ensemble de ["httpsCertificate","ipAddressRange"]. Vide = pose les
   # identifiers SANS règle IAM (comportement historique inerte — À ÉVITER).

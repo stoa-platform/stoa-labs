@@ -119,6 +119,38 @@
               ({{ v_cert_id.value | default([]) | length }} valeur(s), date
               {{ ss_cert_expiry_ymd }} visible).
 
+    # ----- clé backend : la valeur POSÉE est-elle bien celle de Vault ? ------
+    # On relit la clé par le MÊME fichier qu'apply (backend-key.yml), pour la
+    # même raison que le cert : deux chemins de résolution différents rendraient
+    # leur accord dépendant d'une coïncidence. La comparaison est booléenne et
+    # rien n'est journalisé — ni la valeur attendue, ni la valeur live.
+    - name: "Verify : clé backend — la valeur de Vault est POSÉE sur l'application"
+      when: "(apim_ss_app.backend_key_ref | default('')) | length > 0"
+      block:
+        - name: "Verify : relire la clé attendue depuis Vault"
+          ansible.builtin.import_tasks: backend-key.yml
+
+        - name: "Verify : identifier token live + verdict de comparaison"
+          ansible.builtin.set_fact:
+            v_bk_id: >-
+              {{ (v_app_rec.identifiers | default([])
+                  | selectattr('key', 'equalto', 'token') | list | first) | default({}) }}
+          no_log: true
+
+        - name: "Verify : FAIL-CLOSED — clé backend présente et identique à Vault"
+          ansible.builtin.assert:
+            that: "ss_backend_key in (v_bk_id.value | default([]))"
+            fail_msg: >-
+              BACKEND_KEY_UNCONFIRMED : l'identifier `token` de
+              '{{ apim_ss_app.name }}' ne porte pas la clé de Vault
+              ({{ (v_bk_id.value | default([])) | length }} valeur(s) posée(s),
+              name='{{ v_bk_id.name | default('(absent)') }}'). La custom policy
+              injecterait vers l'amont une clé absente ou périmée.
+            success_msg: >-
+              BACKEND_KEY_CONFIRMED : identifier `token`
+              name='{{ v_bk_id.name | default('') }}' porte la valeur de Vault
+              ({{ (v_bk_id.value | default([])) | length }} valeur(s)).
+
     # ----- l'enforcement est-il RÉELLEMENT posé sur la policy de l'API ? -----
     - name: "Verify : résoudre l'API + sa policy + l'action IAM nommée"
       ansible.builtin.uri:

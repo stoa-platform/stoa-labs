@@ -1,0 +1,98 @@
+---
+# roles/apim_selfservice_app/tasks/backend-key.yml (partagé main/verify)
+#
+# Entrée  : apim_ss_app.backend_key_ref (sous-chemin KV v2, déjà résolu par
+#           per_env — l'appelant garde le `when: length > 0`).
+# Sortie  : ss_backend_key — la valeur EXACTE à poser en identifier `token`,
+#           donc la seule à laquelle `verify` doit comparer.
+#
+# LE MODÈLE (variante client, écart assumé vs ADR-078 §5b). La clé d'API du
+# backend n'est PAS connue de l'application cliente : la gateway sert de table de
+# routage. La clé est stockée SUR L'APPLICATION, et une CUSTOM POLICY attachée à
+# l'API la lit puis l'injecte vers l'amont. Cette policy existe et tourne chez le
+# client — elle est HORS du périmètre de ce rôle. Ici on ne fait qu'une chose :
+# poser l'entrée sur l'application.
+#
+# L'ADR-078 recommandait P-callout (la clé reste dans Vault, la gateway ne la
+# voit jamais). Le choix du client la matérialise sur la gateway. Conséquence à
+# porter, non corrigeable côté Ansible : la valeur est lisible en clair par
+# `GET /applications` pour quiconque a un accès admin en lecture.
+#
+# POURQUOI VAULT ET PAS LE MANIFESTE. La clé reste le credential du backend. Que
+# la gateway la matérialise ne rend pas Git acceptable : la gateway est révocable
+# en un PUT et sous contrôle d'accès, alors qu'un dépôt PUBLIC garde la valeur
+# pour toujours, dans un historique qu'une rotation n'efface pas. C'est le motif
+# de la garde de dépôt scripts/check-no-plaintext-secrets.sh.
+#
+# POURQUOI LA CLÉ REST EST `token` (SINGULIER). La 10.15 impose une énumération
+# FERMÉE de clés d'identifier et rejette les autres en 400 « Undefined 'key'
+# attribute value ». `tokens` au pluriel — ce que suggère le libellé « Other
+# identifiers » de l'UI — n'en fait PAS partie. Énumération épinglée live dans
+# mocks/webmethods/admin.go (wmIdentifierKeyEnum).
+#
+# POURQUOI LE NOM DE L'ENTRÉE EST DOCUMENTAIRE. Confirmé en production chez le
+# client : la policy sélectionne l'identifier PAR SON TYPE, pas par son nom. Le
+# nom reste obligatoire dans l'entrée ; il ne sert qu'à l'humain qui lit l'UI ou
+# un audit. Corollaire : il ne doit exister QU'UNE entrée `token` — plusieurs la
+# rendraient ambiguë. C'est le merge par dimension (ss_managed_keys, main.yml)
+# qui le garantit : poser la nôtre remplace toute autre entrée `token`.
+#
+# POURQUOI UN FICHIER PARTAGÉ. `verify` compare la valeur LIVE de l'identifier à
+# la valeur ATTENDUE, qu'il relit depuis le même chemin Vault. Si apply et verify
+# la résolvaient par deux chemins différents, leur accord ne prouverait plus
+# rien — il dépendrait de la coïncidence des deux méthodes. Même raisonnement que
+# cert-der.yml.
+
+- name: "Clé backend : FAIL-CLOSED — Vault est requis (la valeur n'est jamais dans Git)"
+  ansible.builtin.assert:
+    that: "apim_ss_vault_addr | default('') | trim | length > 0"
+    fail_msg: >-
+      BACKEND_KEY_NO_VAULT : backend_key_ref='{{ apim_ss_app.backend_key_ref }}'
+      est déclaré mais aucune adresse Vault n'est configurée (apim_ss_vault_addr
+      / VAULT_ADDR). La clé backend ne se lit QUE dans Vault — refus de continuer
+      plutôt que de poser une identité vide ou de la chercher dans le manifeste.
+
+- name: "Clé backend : lire l'entrée KV v2"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_vault_addr }}/v1/{{ apim_ss_vault_kv_mount }}/data/{{ apim_ss_vault_prefix }}/{{ apim_ss_app.backend_key_ref }}"
+    method: GET
+    headers: "{{ apim_ss_vault_ns_headers | combine({'X-Vault-Token': apim_ss_vault_token}) }}"
+    status_code: [200, 403, 404]
+  register: ss_bk_read
+  delegate_to: localhost
+  changed_when: false
+  no_log: true
+
+- name: "Clé backend : extraire le champ"
+  ansible.builtin.set_fact:
+    ss_backend_key: >-
+      {{ ((ss_bk_read.json | default({})).data | default({})).data | default({})
+         | dict2items | selectattr('key', 'equalto', (apim_ss_app.backend_key_field | default('api_key')))
+         | map(attribute='value') | first | default('') | string | trim }}
+  no_log: true
+
+# FAIL-CLOSED : ne JAMAIS poser une clé vide. La gateway l'accepterait, l'apply
+# dirait « convergé », le verify comparerait deux chaînes vides et confirmerait —
+# et le backend refuserait chaque appel en production. Même symétrie que
+# INTERNAL_CLIENT_SECRET_MANQUANT (consumer-auth.yml) : rien n'est écrit.
+- name: "Clé backend : FAIL-CLOSED — une valeur non vide a été lue"
+  ansible.builtin.assert:
+    that: "ss_backend_key | length > 0"
+    fail_msg: >-
+      BACKEND_KEY_MISSING : rien à lire en
+      '{{ apim_ss_vault_prefix }}/{{ apim_ss_app.backend_key_ref }}'
+      champ '{{ apim_ss_app.backend_key_field | default('api_key') }}'
+      (HTTP {{ ss_bk_read.status | default('?') }}) — entrée absente, champ absent
+      ou valeur vide. RIEN n'est posé sur la gateway. Le provider doit déposer la
+      clé dans Vault AVANT l'apply.
+    success_msg: >-
+      BACKEND_KEY_OK : clé lue depuis Vault
+      ({{ ss_backend_key | length }} car., valeur masquée).
+
+- name: "Clé backend : entrée d'identifier désirée (nom documentaire — la policy sélectionne par TYPE)"
+  ansible.builtin.set_fact:
+    ss_backend_key_identifier:
+      key: "token"
+      name: "{{ apim_ss_app.name }}-backend-key"
+      value: ["{{ ss_backend_key }}"]
+  no_log: true

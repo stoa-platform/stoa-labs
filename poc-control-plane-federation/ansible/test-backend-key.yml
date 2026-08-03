@@ -1,0 +1,69 @@
+---
+# ansible/test-backend-key.yml — SONDE de la clé backend par consommateur,
+# jouée contre le MOCK webMethods (binaire Go du dépôt) et un FAUX Vault, donc
+# sans gateway réelle, sans Vault réel et sans secret.
+#
+# Elle lance le RÔLE COMPLET : ce qu'on veut prouver n'est pas qu'un template se
+# rend, mais que la clé lue dans Vault atterrit bien en identifier `token` sur
+# l'application, sans écraser cert/IP, et que les gardes refusent ce qu'elles
+# doivent refuser. Le mock applique la vraie énumération des clés d'identifier
+# (400 « Undefined 'key' attribute value » sur une clé inconnue) : une régression
+# vers `tokens` au pluriel échouerait ici.
+#
+# Comme les autres sondes, ce playbook DOIT vivre dans ansible/ et se lance par
+# scripts/test-backend-key.sh.
+- name: "Sonde — clé backend par consommateur (mock + faux Vault)"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    # `-e probe_converge=false` saute l'apply : indispensable pour exercer le cas
+    # ROUGE du verify (gateway et Vault divergents). Un verify qui converge
+    # d'abord ne pourrait jamais constater de divergence — il la corrigerait.
+    - name: "Converge — le rôle complet"
+      ansible.builtin.include_role:
+        name: apim_selfservice_app
+      when: "probe_converge | default(true) | bool"
+
+    - name: "Relecture de l'application posée"
+      when: "probe_converge | default(true) | bool"
+      module_defaults:
+        ansible.builtin.uri: "{{ apim_ss_uri_defaults }}"
+      block:
+        - name: "Relire le record"
+          ansible.builtin.uri:
+            url: "{{ apim_ss_api_base }}/applications/{{ ss_app_id }}"
+            method: GET
+          register: probe_app_get
+          changed_when: false
+
+        - name: "Déballer"
+          ansible.builtin.set_fact:
+            probe_rec: "{{ (probe_app_get.json.applications | default([probe_app_get.json]))[0] }}"
+
+        - name: "Entrées token posées"
+          ansible.builtin.set_fact:
+            probe_tokens: >-
+              {{ probe_rec.identifiers | default([])
+                 | selectattr('key', 'equalto', 'token') | list }}
+
+        # La valeur attendue arrive en extra-var (probe_expected_key) : la sonde
+        # compare, elle n'imprime JAMAIS la clé.
+        - name: "Verdict de la sonde"
+          ansible.builtin.debug:
+            msg: >-
+              PROBE_APP
+              id_keys={{ probe_rec.identifiers | default([]) | map(attribute='key') | list | sort }}
+              token_entries={{ probe_tokens | length }}
+              token_name='{{ (probe_tokens | first | default({})).name | default('') }}'
+              token_values={{ (probe_tokens | first | default({})).value | default([]) | length }}
+              token_match={{ (probe_expected_key | default('')) in ((probe_tokens | first | default({})).value | default([])) }}
+
+    # `-e probe_verify=true` enchaîne le VERIFY sur l'état qu'on vient de poser.
+    # C'est ce qui rend la comparaison « valeur live == valeur Vault »
+    # réellement exercée, y compris son cas ROUGE (Vault modifié après l'apply).
+    - name: "Verify — preuve fail-closed sur l'état posé"
+      ansible.builtin.include_role:
+        name: apim_selfservice_app
+        tasks_from: verify
+      when: "probe_verify | default(false) | bool"
