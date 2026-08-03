@@ -1,0 +1,100 @@
+---
+# ansible/test-internal-dcr.yml — SONDE du mode `internal` : la GATEWAY émet le
+# client OAuth2 (dynamic client registration), le rôle le capture et le range
+# dans Vault. Jouée contre le MOCK webMethods (binaire Go du dépôt) + un faux
+# Vault : ni gateway réelle, ni secret réel.
+#
+# CE QUE LA SONDE MESURE — pas « le YAML se template », mais ce que la gateway a
+# RÉELLEMENT stocké : la stratégie porte-t-elle un `dcrConfig` (et donc un client
+# émis par l'AS local), ou un `clientId` posé par nous (chemin « le client existe
+# déjà », qui n'émet AUCUN credential) ? La différence est invisible dans un
+# apply vert — c'est exactement le bug corrigé le 2026-08-03.
+#
+# Lancée par scripts/test-internal-dcr.sh (base repo-relative = playbook_dir/..).
+- name: "Sonde — client OAuth2 émis par la gateway (mode internal, DCR)"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: "Manifeste effectif"
+      ansible.builtin.import_role:
+        name: apim_selfservice_app
+        tasks_from: resolve-env
+
+    - name: "Creds admin (fallback PoC : ni Vault ni secret pour l'admin gateway)"
+      ansible.builtin.import_role:
+        name: apim_common
+        tasks_from: secrets
+
+    - name: "Sonde"
+      module_defaults:
+        ansible.builtin.uri: "{{ apim_ss_uri_defaults }}"
+      block:
+        - name: "App : lister (la sonde est rejouable)"
+          ansible.builtin.uri:
+            url: "{{ apim_ss_api_base }}/applications"
+          register: probe_apps
+          changed_when: false
+
+        - name: "App : id si déjà présente"
+          ansible.builtin.set_fact:
+            ss_app_id: >-
+              {{ (probe_apps.json.applications | default([])
+                  | selectattr('name', 'equalto', apim_ss_app.name)
+                  | map(attribute='id') | list | first) | default('') }}
+
+        - name: "App : créer si absente"
+          ansible.builtin.uri:
+            url: "{{ apim_ss_api_base }}/applications"
+            method: POST
+            body:
+              name: "{{ apim_ss_app.name }}"
+              description: "{{ apim_ss_app.description | default('sonde DCR') }}"
+              contactEmails: "{{ apim_ss_app.contact_emails | default([]) }}"
+            status_code: [200, 201]
+          register: probe_app_create
+          when: "ss_app_id | length == 0"
+
+        - name: "App : capturer l'id (enveloppe flat OU applications[])"
+          ansible.builtin.set_fact:
+            ss_app_id: >-
+              {{ probe_app_create.json.id if ('id' in probe_app_create.json)
+                 else (probe_app_create.json.applications | first).id }}
+          when: "ss_app_id | length == 0"
+
+        - name: "Auth app : le chemin réellement testé"
+          ansible.builtin.import_role:
+            name: apim_selfservice_app
+            tasks_from: consumer-auth
+
+        # Relecture DIRECTE (hors du rôle) : c'est l'état stocké par la gateway
+        # qui fait foi, pas ce que le rôle croit avoir envoyé.
+        - name: "Relire la stratégie telle que la gateway l'a STOCKÉE"
+          ansible.builtin.uri:
+            url: "{{ apim_ss_api_base }}/strategies/{{ apim_ss_strat_id }}"
+          register: probe_strat_get
+          changed_when: false
+
+        - name: "Déballer {strategy:{…}}"
+          ansible.builtin.set_fact:
+            probe_strat: "{{ probe_strat_get.json.strategy | default(probe_strat_get.json) }}"
+            probe_reg: >-
+              {{ (probe_strat_get.json.strategy | default(probe_strat_get.json)).clientRegistration | default({}) }}
+            probe_dcr: >-
+              {{ (probe_strat_get.json.strategy | default(probe_strat_get.json)).dcrConfig | default({}) }}
+
+        - name: "Verdict — le client a-t-il été ÉMIS par la gateway ?"
+          ansible.builtin.debug:
+            msg: >-
+              DCR_PROBE strategy={{ apim_ss_strat_name }}
+              dcr_present={{ (probe_dcr | length) > 0 }}
+              client_type='{{ probe_dcr.clientType | default('') }}'
+              grants='{{ (probe_dcr.allowedGrantTypes | default([])) | join(',') }}'
+              scopes='{{ (probe_dcr.scopes | default(probe_reg.clScopes | default([]))) | join(',') }}'
+              cc_allowed={{ probe_reg.clientCredentialsAllowed | default(false) }}
+              reg_type='{{ probe_reg.type | default('') }}'
+              client_id='{{ probe_strat.clientId | default('') }}'
+              client_id_is_app_name={{ (probe_strat.clientId | default('')) == apim_ss_app.name }}
+              secret_present={{ ((probe_reg.clientSecret | default('')) | length) > 0
+                                and (probe_reg.clientSecret | default('')) != '***' }}
+              captured_client_id='{{ apim_ss_int_cid | default('') }}'

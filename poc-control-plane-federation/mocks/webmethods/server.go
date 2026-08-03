@@ -83,6 +83,7 @@ func (s *Server) Handler() http.Handler {
 	admin.HandleFunc("POST /rest/apigateway/strategies", s.createStrategy)
 	admin.HandleFunc("GET /rest/apigateway/strategies/{id}", s.getStrategy)
 	admin.HandleFunc("PUT /rest/apigateway/strategies/{id}", s.updateStrategy)
+	admin.HandleFunc("PUT /rest/apigateway/strategies/{id}/refreshCredentials", s.refreshCredentials)
 	admin.HandleFunc("GET /rest/apigateway/scopes", s.listScopes)
 	admin.HandleFunc("POST /rest/apigateway/scopes", s.createScope)
 	admin.HandleFunc("GET /rest/apigateway/scopes/{id}", s.getScope)

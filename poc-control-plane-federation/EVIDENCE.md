@@ -1134,3 +1134,72 @@ Piège lab : les proxies wm-admin-* se désactivent aux recyclages du trial
 (activate 500 après corruption) → apply via proxy-oauth2 KO tant que non re-setup ;
 ADMIN_VIA=direct (Basic) contourne pour prouver le converge. Lien manifeste du
 commentaire de plan = GIT_WEB_HOST (URL vue par l'humain, split-horizon lab).
+
+## 2026-08-03 — Le client OAuth2 interne est ÉMIS PAR LA GATEWAY (DCR), et son secret n'est lisible QUE dans la liste ★
+
+Deux retours de terrain sur le rôle `apim_selfservice_app`, tranchés par le
+**swagger officiel du produit** (`SoftwareAG/webmethods-api-gateway`,
+`apigatewayservices/APIGatewayApplication.json` — surface publique, à consulter
+AVANT tout spike de shape) puis **vérifiés live sur la 10.15 réelle**.
+
+**1. L'identifier de clé backend s'affichait comme une clé custom.** Le rôle
+posait `name: "<app>-backend-key"`. La clé (`token`) était bonne, mais le `name`
+est **ce que l'UI affiche**, et la convention du produit y met le LIBELLÉ DU
+TYPE : le swagger donne `{"key":"token","name":"Token"}`,
+`{"key":"httpBasicAuth","name":"Username"}`, `{"key":"ipAddressRange","name":"IP
+Addresses"}`. Défaut passé à `"Token"` (knob `backend_key_identifier_name`).
+Rien d'opposable ne change — le matching se fait sur le TYPE et le merge par
+dimension, donc renommer REMPLACE la ligne au lieu d'en ajouter une. Vérifié
+live : `{"key":"token","name":"Token"}` accepté et relu verbatim.
+
+**2. La stratégie « locale » ne faisait créer AUCUN client.** Le rôle envoyait
+`clientId: <nom de l'app>` en mode internal — le chemin « ce client existe
+déjà », celui d'un IdP externe. La gateway l'acceptait (stratégie d'apparence
+saine) mais n'émettait rien : pas de secret, donc aucun `client_credentials`
+possible, et le rôle réclamait le secret en extra-var. `StrategyRequest.clientId`
+et `dcrConfig` sont **exclusifs** (« should be provided when the dynamic client
+registration is NOT used »). Forme correcte : `dcrConfig{clientType:
+CONFIDENTIAL, allowedGrantTypes:["client_credentials"], scopes, clientName, …}`
+**sans** `clientId`.
+
+**CE QUE LE LIVE A CORRIGÉ DANS LA DOC** (spike sur `apigateway-trial:10.15`,
+objets jetables supprimés, gateway restaurée 8 apps / 12 APIs / 17 stratégies) :
+
+| Surface | `clientRegistration.clientSecret` |
+|---|---|
+| `POST /strategies` (création) | `********************************` (32 *) |
+| `GET /strategies/{id}` | `********************************` |
+| **`GET /strategies` (LISTE)** | **EN CLAIR** (`64535607-fc92-436c-8bb7-664566ee9407`) |
+
+L'exemple en clair de la doc 11.0 est trompeur : capturer le secret dans la
+réponse de création écrit **32 astérisques dans Vault sous un apply vert** — le
+fail-open que ce rôle existe pour interdire. C'est la LISTE qui fait foi (même
+famille d'incohérence que l'enveloppe liste-nue / single-enveloppé,
+cf. `strategies-list.yml`). Neutralisation `^\*+$` conservée en défense.
+
+Autres faits mesurés : `refreshCredentials` régénère le **clientId AUSSI** (pas
+un simple renouvellement de secret → jamais jouée à l'apply) ; un POST portant
+`clientId` **et** `dcrConfig` est accepté sans broncher (la garde d'exclusivité
+est la NÔTRE) ; un `dcrConfig.clientSecret` fourni par l'appelant est stocké et
+**relu en clair** (fournir son propre secret est donc PIRE que laisser la
+gateway l'émettre) ; l'alias `local` publie `scopes` + `supportedGrantTypes`
+(d'où la résolution du scope par défaut depuis l'AS, jamais deviné : scope
+déclaré inconnu → `SCOPE_INCONNU`, plusieurs sans défaut évident →
+`SCOPE_AMBIGU`) ; `GET /alias` **sans `Accept: application/json` rend du HTML** ;
+`accessTokens` de l'application ne porte que `apiAccessKey_credentials` (pas
+d'`oauth_credentials` sur 10.15) ; le token endpoint
+`/invoke/pub.apigateway.oauth2/getAccessToken` refuse le HTTP (« Transport
+protocol must be HTTPS ») même en Basic.
+
+**Preuve E2E live** : `ansible/test-internal-dcr.yml` joué contre la 10.15
+réelle → `failed=0`, Vault reçoit un secret RÉEL (UUID) ; 2e apply
+`DCR_CONVERGED` (aucun PUT), client_id et secret INCHANGÉS — le credential en
+vol n'est jamais roté par accident. **Preuve hors ligne rejouable** :
+`scripts/test-internal-dcr.sh` **38/38** (le mock rejoue l'asymétrie de
+masquage, la rotation d'id, et `WM_MASK_STRATEGY_SECRET=1` pour le build qui
+masquerait aussi la liste — absorbé par le repli Vault, `INTERNAL_CLIENT_KEPT`).
+
+**Piège de terrain associé** : `BACKEND_KEY_MISSING` avec **HTTP 200** dans le
+message = entrée Vault TROUVÉE mais nom de champ différent (`api-key` créé,
+`api_key` lu). Le code HTTP du diagnostic discrimine entrée absente (404) de
+champ absent (200) — c'est pour ça qu'il y figure.

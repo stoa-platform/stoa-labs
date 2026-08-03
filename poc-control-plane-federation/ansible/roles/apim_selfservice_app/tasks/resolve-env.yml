@@ -94,3 +94,19 @@
     apim_ss_auth_audience: "{{ apim_ss_app.auth.audience | default('') }}"
     apim_ss_auth_vault_sub: "{{ apim_ss_app.auth.vault_sub | default('') }}"
   when: "apim_ss_app.auth is defined"
+
+# ── DCR (mode internal) : ce que la gateway doit CRÉER comme client OAuth2.
+# Ces champs ne sont lus qu'en mode internal ; ils décrivent le `dcrConfig` de la
+# stratégie (cf. consumer-auth.yml §1b). Les défauts matérialisent la demande du
+# client : client CONFIDENTIEL, grant client_credentials, scopes de l'AS local.
+# `scopes` est PAR ENV comme le reste (per_env est déjà fusionné à ce stade).
+- name: "Env : aplatir apim_ss_app.auth.dcr (client généré par la gateway)"
+  ansible.builtin.set_fact:
+    apim_ss_auth_client_type: "{{ apim_ss_app.auth.client_type | default('CONFIDENTIAL') }}"
+    apim_ss_auth_grant_types: "{{ apim_ss_app.auth.grant_types | default(['client_credentials']) }}"
+    apim_ss_auth_scopes: "{{ apim_ss_app.auth.scopes | default([]) }}"
+    apim_ss_auth_token_lifetime: "{{ apim_ss_app.auth.token_lifetime | default('3600') | string }}"
+    apim_ss_auth_refresh_count: "{{ apim_ss_app.auth.refresh_count | default('0') | string }}"
+    apim_ss_auth_redirect_uris: "{{ apim_ss_app.auth.redirect_uris | default([]) }}"
+    apim_ss_auth_application_type: "{{ apim_ss_app.auth.application_type | default('') }}"
+  when: "apim_ss_app.auth is defined"
