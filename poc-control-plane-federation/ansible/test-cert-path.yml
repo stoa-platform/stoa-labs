@@ -28,9 +28,16 @@
         tasks_from: cert-der
       when: "(apim_ss_app.public_cert_ref | default('')) | length > 0"
 
+    # der_sha : l'empreinte de la valeur RÉELLEMENT posée sur la gateway. C'est
+    # elle qui prouve que deux fichiers de formats différents (PEM vs DER
+    # binaire) rendent bien la MÊME identité — une longueur égale ne le dirait
+    # pas.
     - name: "Verdict de la sonde — certificat déclaré"
       ansible.builtin.debug:
-        msg: "PROBE_OK path={{ ss_cert_path }} der_len={{ ss_cert_der | length }}"
+        msg: >-
+          PROBE_OK path={{ ss_cert_path }} inform={{ ss_cert_inform }}
+          der_len={{ ss_cert_der | length }}
+          der_sha={{ ss_cert_der | hash('sha256') }}
       when: "(apim_ss_app.public_cert_ref | default('')) | length > 0"
 
     - name: "Verdict de la sonde — aucun certificat déclaré"

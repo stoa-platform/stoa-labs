@@ -137,33 +137,99 @@
                  else ('racine du dépôt' if ss_cert_path == (ss_cert_candidates | first)
                        else 'dossier du manifeste') }})
 
-- name: "Cert : lire le PEM public"
+# DEUX FORMATS DE FICHIER ACCEPTÉS (2026-08-03) : PEM *et* DER BINAIRE.
+#
+# POURQUOI. Les exports Windows proposent « Base-64 encoded X.509 » et « DER
+# encoded binary X.509 ». Le second — souvent le défaut, et l'extension `.cer`
+# usuelle chez le client — n'est PAS du texte : il n'a pas de bloc
+# `-----BEGIN CERTIFICATE-----`. Le rôle le refusait en `CERT_INVALID`, alors que
+# c'est un certificat public parfaitement valide.
+#
+# Ne PAS confondre avec l'encodage de TRANSPORT. Ce que la gateway stocke est,
+# dans les deux cas, le base64 du DER (cf. plus haut) : c'est le FICHIER SOURCE
+# qui peut être binaire, pas la valeur posée. Les deux formats donnent donc — et
+# le test le vérifie — exactement le même base64(DER).
+#
+# LA DÉTECTION SE FAIT SUR LE FICHIER, jamais sur son contenu templaté :
+# `lookup('file', ...)` décode en texte et corromprait des octets binaires.
+
+# `-e` OBLIGATOIRE : le motif commence par des tirets, grep le prendrait pour une
+# option. Sans lui, la détection rendait rc!=0 sur TOUS les fichiers — donc
+# « DER » même pour un PEM, et les gardes textuelles (clé privée !) étaient
+# sautées en silence. Mesuré le 2026-08-03 en écrivant le test.
+- name: "Cert : le fichier est-il du PEM (texte) ou du DER (binaire) ?"
+  ansible.builtin.command:
+    argv: ["grep", "-qa", "-e", "-----BEGIN CERTIFICATE-----", "{{ ss_cert_path }}"]
+  register: ss_cert_grep_pem
+  changed_when: false
+  failed_when: false
+  delegate_to: localhost
+
+- name: "Cert : format d'entrée retenu"
   ansible.builtin.set_fact:
-    ss_cert_pem: "{{ lookup('file', ss_cert_path) }}"
-  no_log: true
+    ss_cert_inform: "{{ 'PEM' if ss_cert_grep_pem.rc == 0 else 'DER' }}"
 
-- name: "Cert : fail-closed — aucune clé privée dans le manifeste (ADR-071)"
-  ansible.builtin.assert:
-    that: "'PRIVATE KEY' not in ss_cert_pem"
-    fail_msg: "publicCertRef porte une clé privée — refusé (cert PUBLIC uniquement)."
+# Gardes TEXTUELLES : applicables au seul PEM. En DER, la garde équivalente est
+# STRUCTURELLE — un blob qui parse en x509 EST un certificat, et un DER de clé
+# privée (ou un PKCS#12) fait échouer `openssl x509 -inform DER` ci-dessous.
+- name: "Cert : gardes du PEM (clé privée, bloc CERTIFICATE complet)"
+  when: "ss_cert_inform == 'PEM'"
+  block:
+    - name: "Cert : lire le PEM public"
+      ansible.builtin.set_fact:
+        ss_cert_raw: "{{ lookup('file', ss_cert_path) }}"
+      no_log: true
 
-- name: "Cert : fail-closed — un bloc CERTIFICATE est obligatoire"
+    - name: "Cert : fail-closed — aucune clé privée dans le manifeste (ADR-071)"
+      ansible.builtin.assert:
+        that: "'PRIVATE KEY' not in ss_cert_raw"
+        fail_msg: "publicCertRef porte une clé privée — refusé (cert PUBLIC uniquement)."
+
+    - name: "Cert : fail-closed — un bloc CERTIFICATE complet"
+      ansible.builtin.assert:
+        that: "'-----END CERTIFICATE-----' in ss_cert_raw"
+        fail_msg: >-
+          CERT_INVALID : {{ apim_ss_app.public_cert_ref }} s'ouvre sur un bloc
+          CERTIFICATE mais ne le referme pas (PEM tronqué).
+
+# PEM CANONIQUE, ré-émis par openssl depuis le fichier. Sortie unique pour les
+# deux formats : tout l'aval (cert-expiry.yml) continue de recevoir du PEM sans
+# rien savoir du format d'entrée. C'est aussi ce qui neutralise les PEM en
+# CHAÎNE (seul le premier certificat est ré-émis) et les en-têtes texte.
+- name: "Cert : PEM canonique (normalise PEM comme DER)"
+  ansible.builtin.command:
+    argv: ["openssl", "x509", "-inform", "{{ ss_cert_inform }}", "-in", "{{ ss_cert_path }}", "-outform", "PEM"]
+  register: ss_cert_pem_out
+  changed_when: false
+  delegate_to: localhost
+  failed_when: false
+
+# On n'échoue PAS sur le rc brut d'openssl : son message (« unable to load
+# certificate ») ne dit ni quel fichier, ni quels formats sont acceptés. Un
+# fichier illisible dans les DEUX formats est un CERT_INVALID, et le message
+# doit le nommer — c'est le seul diagnostic que l'ops verra.
+- name: "Cert : fail-closed — le fichier est un certificat X.509 lisible"
   ansible.builtin.assert:
-    that:
-      - "'-----BEGIN CERTIFICATE-----' in ss_cert_pem"
-      - "'-----END CERTIFICATE-----' in ss_cert_pem"
+    that: "ss_cert_pem_out.rc == 0 and (ss_cert_pem_out.stdout | trim | length) > 0"
     fail_msg: >-
-      CERT_INVALID : {{ apim_ss_app.public_cert_ref }} ne contient pas de bloc
-      CERTIFICATE complet (PEM X.509 public attendu).
+      CERT_INVALID : {{ apim_ss_app.public_cert_ref }} (résolu en
+      '{{ ss_cert_path }}') n'est un certificat X.509 lisible ni en PEM ni en DER
+      binaire — format détecté {{ ss_cert_inform }}, openssl refuse de le parser.
+      Formats acceptés : PEM (« Base-64 encoded X.509 ») et DER binaire
+      (« DER encoded binary X.509 »).
+    success_msg: "CERT_FORMAT : {{ ss_cert_inform }} — certificat X.509 lisible."
+
+- name: "Cert : PEM retenu"
+  ansible.builtin.set_fact:
+    ss_cert_pem: "{{ ss_cert_pem_out.stdout }}"
+  no_log: true
 
 - name: "Cert : DER canonique par openssl, encodé pour le transport"
   ansible.builtin.shell:
     cmd: |
       set -o pipefail
-      openssl x509 -inform PEM -outform DER | base64 | tr -d '\n'
+      openssl x509 -inform {{ ss_cert_inform }} -in {{ ss_cert_path | quote }} -outform DER | base64 | tr -d '\n'
     executable: /bin/bash
-    stdin: "{{ ss_cert_pem }}"
-    stdin_add_newline: false
   register: ss_cert_der_out
   changed_when: false
   delegate_to: localhost

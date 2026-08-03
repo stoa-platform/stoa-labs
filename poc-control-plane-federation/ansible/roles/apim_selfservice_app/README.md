@@ -181,32 +181,49 @@ ansible-playbook -i inv.ini ansible/selfservice-app.yml \
 | `backend` | header + template de clé backend (plan sortant, cf. limites) — INVARIANT (la valeur, elle, est résolue par env via le TokenProvider ← Vault de l'env). **`backend.inject`** (défaut `true`) : à `false`, le rôle ne pose **aucune** action `customHttpHeaders` — à utiliser quand une **custom policy** du client prend le relais de l'injection. Ce n'est pas un confort : wM n'autorise **qu'une** action `customHttpHeaders` par API (409 sinon), les deux ne peuvent pas coexister |
 | `per_env.<env>.backend_key_ref` | **clé backend stockée sur l'application** (variante client) : sous-chemin **KV v2** de la clé — Git ne porte **jamais** la valeur. Lue à l'apply, posée en identifier **`token`** (singulier — l'énumération 10.15 rejette `tokens` en 400). Le **nom** de l'entrée est documentaire : la policy du client sélectionne **par type**, d'où **une seule** entrée `token`. Absente/vide dans Vault = échec (`BACKEND_KEY_MISSING`, rien n'est posé) ; `token` listé dans `enforce` = échec (`BACKEND_KEY_ENFORCED` — la clé backend n'est pas une identité entrante). `verify` compare la valeur live à celle de Vault (`BACKEND_KEY_UNCONFIRMED`). Champ lu dans l'entrée : `backend_key_field`, défaut `api_key`. Preuve hors ligne : `scripts/test-backend-key.sh` (22/22) — **PAR ENV** |
 | `per_env.<env>.ip_allowlist` | IPs / plages `A-B` — **PAS de CIDR** (la gateway le drop en silence) ; une IP nue est normalisée en `X-X` (match exact + visible UI) — **PAR ENV** |
-| `per_env.<env>.public_cert_ref` | chemin d'un PEM **public** (clé privée refusée). **Absolu** = pris tel quel. **Relatif** = cherché d'abord depuis la **racine du dépôt** (comme `apim_ss_manifest`), puis **à côté du manifeste** — donc poser le `.crt` dans le même dossier que la définition de l'application et écrire le nom de fichier nu fonctionne. Introuvable dans les deux = échec (`CERT_NOT_FOUND`, qui **affiche les deux chemins essayés**) ; présent dans les deux avec des contenus **différents** = échec (`CERT_PATH_AMBIGUOUS`, on ne choisit jamais une identité en silence). Preuve hors ligne : `scripts/test-cert-path-resolution.sh` (13/13) — **PAR ENV** |
+| `per_env.<env>.public_cert_ref` | chemin d'un certificat X.509 **public** — **PEM ou DER binaire** (`.cer`), détecté automatiquement ; clé privée refusée dans un PEM (ADR-071). **Absolu** = pris tel quel. **Relatif** = cherché d'abord depuis la **racine du dépôt** (comme `apim_ss_manifest`), puis **à côté du manifeste** — donc poser le `.crt` dans le même dossier que la définition de l'application et écrire le nom de fichier nu fonctionne. Introuvable dans les deux = échec (`CERT_NOT_FOUND`, qui **affiche les deux chemins essayés**) ; présent dans les deux avec des contenus **différents** = échec (`CERT_PATH_AMBIGUOUS`, on ne choisit jamais une identité en silence). Preuve hors ligne : `scripts/test-cert-path-resolution.sh` (13/13) — **PAR ENV** |
 | `auth` | bloc OAuth2 **opt-in** (absent ⇒ aucune stratégie posée). `mode: idp` = le client vit sur l'IdP, `claim {name,value}` l'identifie, **`audience` obligatoire** (= celle de l'API). `mode: internal` = la gateway est l'AS (`local`) et **`audience` est OPTIONNELLE** : l'AS local n'en exige pas, et ce runtime n'oppose de toute façon pas `aud` (`EVIDENCE.md` §Preuve 5 bis). Vide ⇒ la clé est **omise** du corps et de l'entrée Vault, jamais envoyée à `""`. Preuve hors ligne : `scripts/test-auth-audience.sh` (13/13) |
 
 ## Limites / résidus (assumés, ADR-078)
 
-- **Certificat** : posé en identifier REST, en **base64** (le champ JSON `value`
-  de l'identifier) — **c'est la voie normale, pas un pis-aller**. L'UI de la
-  gateway fait **exactement la même chose** : elle lit le `.cer` binaire en JS et
-  l'envoie en `base64(DER)` dans le même PUT JSON. Trace réseau + comparaison des
-  octets stockés (spike 2026-07-17, ADR-078 écart n°5) : **même sha256** par les
-  deux voies ⇒ il n'existe **aucun** « upload binaire », et donc aucun
-  contournement UI d'un bug de hash. Le REST refuse le binaire brut et l'hex (400)
-  et n'accepte que `base64(DER)` ou le PEM complet, stockés verbatim.
-  `AND(cert,IP)` ne se teste pas en clair (cert non présenté → 401) : il exige le
-  listener HTTPS client-auth.
-  - **Extraction robuste (fail-closed)** : le rôle isole le **premier** bloc
-    `-----BEGIN/END CERTIFICATE-----` (équivalent du `pem.Decode()` de la spec Go),
-    PAS un simple strip global. Mesuré live (spike 2026-07-17) : le strip global
-    **corrompait en silence** un PEM **en chaîne** (leaf + intermédiaire →
-    corps concaténés) et un PEM **à en-tête texte** (`Bag Attributes`, `subject=` :
-    exports Windows/Java → lettres de l'en-tête gardées dans le base64). La gateway
-    stocke verbatim ⇒ identité **morte** (401 au handshake) sous un « convergé »
-    trompeur. Corrigé + fail-closed : un fichier sans bloc CERTIFICATE, ou un corps
-    base64 mal formé (longueur non multiple de 4), est **refusé** (`CERT_INVALID`),
-    plus jamais posé corrompu. Prouvé : `chain.pem`/`bagattr.pem` → même `sha256`
-    que le leaf ; `garbage.pem` → refus.
+- **Certificat.** Deux choses distinctes, que ce README confondait :
+
+  **Le FICHIER SOURCE** que vous référencez dans le manifeste peut être **PEM
+  *ou* DER binaire**. Les exports Windows proposent « Base-64 encoded X.509 »
+  (PEM, texte) et « DER encoded binary X.509 » (binaire, souvent le défaut et
+  l'extension `.cer`) : **les deux sont acceptés**. Le rôle détecte le format sur
+  le fichier — jamais sur son contenu templaté, qui corromprait des octets
+  binaires — et rend la **même** valeur dans les deux cas (empreintes comparées :
+  `scripts/test-cert-format.sh`, 12/12). Auparavant seul le PEM passait, un
+  `.cer` binaire était refusé en `CERT_INVALID`.
+
+  **La VALEUR POSÉE** sur la gateway, elle, est toujours du **base64(DER)** (le
+  champ JSON `value` de l'identifier) — **c'est la voie normale, pas un
+  pis-aller**. L'UI de la gateway fait exactement la même chose : elle lit le
+  `.cer` binaire en JS et l'envoie en `base64(DER)` dans le même PUT JSON. Trace
+  réseau + comparaison des octets stockés (spike 2026-07-17, ADR-078 écart n°5) :
+  **même sha256** par les deux voies ⇒ il n'existe **aucun** « upload binaire »
+  côté REST, et donc aucun contournement UI d'un bug de hash. Le REST refuse le
+  binaire brut et l'hex (400) et n'accepte que `base64(DER)` ou le PEM complet,
+  stockés verbatim. `AND(cert,IP)` ne se teste pas en clair (cert non présenté →
+  401) : il exige le listener HTTPS client-auth.
+
+  **À ne pas confondre** avec la **CA cliente**, qui n'est ni l'une ni l'autre :
+  elle est importée en **fichier** dans le truststore IS par `keytool`
+  (`ansible/is-mtls-setup.yml`), au niveau plateforme — pas en identifier
+  d'application.
+  - **Extraction robuste (fail-closed)** : c'est **openssl qui parse et ré-émet**
+    le certificat, PAS un découpage de chaîne — d'où la normalisation gratuite du
+    DER binaire, et l'immunité aux deux pièges mesurés live (spike 2026-07-17) :
+    un PEM **en chaîne** (leaf + intermédiaire → corps concaténés) et un PEM **à
+    en-tête texte** (`Bag Attributes`, `subject=` : exports Windows/Java →
+    lettres de l'en-tête gardées dans le base64). La gateway stocke verbatim ⇒
+    identité **morte** (401 au handshake) sous un « convergé » trompeur. Un
+    fichier illisible **dans les deux formats**, ou un base64 mal formé (longueur
+    non multiple de 4), est **refusé** (`CERT_INVALID`). Une **clé privée** dans
+    un PEM est refusée (ADR-071) ; en DER la garde est structurelle — un blob qui
+    parse en X.509 est un certificat. Prouvé : `chain.pem`/`bagattr.pem`/`.cer`
+    binaire → même `sha256` que le leaf ; DER tronqué et `garbage.pem` → refus.
   - **Préservation d'un cert posé hors manifeste** : le re-run ne remplace QUE les
     dimensions **déclarées par le manifeste** (`ss_managed_keys`). Un
     `httpsCertificate` posé par l'UI (donc `public_cert_ref` vide) est **conservé**
