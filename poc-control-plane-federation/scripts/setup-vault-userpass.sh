@@ -90,7 +90,11 @@ hcl = (
 json.dump({"policy": hcl}, sys.stdout)
 PY
   RC=$(vcurl -X PUT "$VADDR/v1/sys/policies/acl/deploy-$T" --data-binary @"$TMP/pol.json" -o "$TMP/err" -w '%{http_code}')
-  case "$RC" in 200|204) say "policy deploy-$T (READ secret/stoa/deploy/$T/* uniquement)";;
+  # Le message disait « READ … uniquement » alors que la policy accorde AUSSI
+  # create/update sur apps/*. Un message qui minimise le pouvoir réellement
+  # accordé est pire que pas de message : c'est sur lui que l'ops s'appuie pour
+  # dire à sa sécurité ce que le tenant peut faire.
+  case "$RC" in 200|204) say "policy deploy-$T (READ secret/stoa/deploy/$T/*, WRITE secret/stoa/deploy/$T/apps/* uniquement)";;
                 *) fail "policy deploy-$T KO (HTTP $RC): $(cat "$TMP/err")";; esac
 done
 

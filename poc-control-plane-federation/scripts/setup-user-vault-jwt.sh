@@ -107,12 +107,45 @@ RC=$(vcurl -X POST "$VADDR/v1/auth/jwt/config" -d "{
 [ "$RC" = 204 ] || [ "$RC" = 200 ] || fail "config auth/jwt KO (HTTP $RC) — Vault joint-il keycloak:8080 ? $(cat /tmp/uvj-cfg.err)"
 say "config jwt : jwks=${KC_JWKS_INTERNAL} / issuer épinglé ${KC_ISSUER_PINNED}"
 
-# ═══ 4. policy user-deploy TEMPLATÉE : READ deploy/<tenant de l'entité>/* ═══
-RC=$(vcurl -X PUT "$VADDR/v1/sys/policies/acl/user-deploy" -d "{
-  \"policy\": \"path \\\"secret/data/stoa/deploy/{{identity.entity.aliases.${JWT_ACCESSOR}.metadata.tenant}}/*\\\" { capabilities = [\\\"read\\\"] }\\npath \\\"secret/metadata/stoa/deploy/{{identity.entity.aliases.${JWT_ACCESSOR}.metadata.tenant}}/*\\\" { capabilities = [\\\"read\\\", \\\"list\\\"] }\"
-}" -o /tmp/uvj-pol.err -w '%{http_code}')
+# ═══ 4. policy user-deploy TEMPLATÉE (voie B) ════════════════════════════════
+# PÉRIMÈTRE : lecture sur tout le sous-arbre du tenant, ÉCRITURE bornée au seul
+# sous-arbre `apps/`. STRICTEMENT LE MÊME que la policy statique deploy-<tenant>
+# de la voie A (setup-vault-userpass.sh) : les deux voies mènent à la même
+# personne, elles doivent donner le même pouvoir. Jusqu'au 2026-08-03 la voie B
+# était en LECTURE SEULE — un même humain pouvait donc écrire la clé d'une
+# application en se connectant par mot de passe, et ne le pouvait plus en
+# arrivant par le SSO. Écart silencieux, corrigé ici.
+#
+# POURQUOI L'ÉCRITURE. Le valideur d'une PR initialise les secrets de
+# l'application qu'il approuve (clé backend, client OAuth2 interne) sous SON
+# identité : c'est ce qui rend l'écriture imputable dans l'audit Vault.
+#
+# POURQUOI `apps/` ET PAS LE SOUS-ARBRE DU TENANT. Le préfixe du tenant contient
+# aussi `wm-admin` (compte de service de la gateway) et `admin-oauth`. Y accorder
+# l'écriture permettrait à un valideur d'écraser les identifiants d'admin de son
+# tenant — escalade sévère. Le bornage est fait PAR PRÉFIXE, et il ne peut pas
+# l'être autrement : un `deny` explicite sur ces chemins serait TOTAL en HCL
+# Vault (il n'existe pas de « deny en écriture seulement ») et casserait la
+# LECTURE dont l'apply a besoin pour ces mêmes secrets.
+VP="secret/data/stoa/deploy/{{identity.entity.aliases.${JWT_ACCESSOR}.metadata.tenant}}"
+VM="secret/metadata/stoa/deploy/{{identity.entity.aliases.${JWT_ACCESSOR}.metadata.tenant}}"
+python3 - "$VP" "$VM" > /tmp/uvj-pol.json <<'PY'
+import json, sys
+d, m = sys.argv[1], sys.argv[2]
+hcl = (
+    '# Périmètre de déploiement du tenant porté par la claim (voie B, ADR-077).\n'
+    '# LECTURE sur tout le sous-arbre ; ÉCRITURE limitée à apps/ — miroir exact\n'
+    '# de la policy statique deploy-<tenant> de la voie A.\n'
+    'path "%s/*"          { capabilities = ["read"] }\n'
+    'path "%s/*"          { capabilities = ["read", "list"] }\n'
+    'path "%s/apps/*"     { capabilities = ["create", "update", "read"] }\n'
+    'path "%s/apps/*"     { capabilities = ["read", "list"] }\n'
+) % (d, m, d, m)
+json.dump({"policy": hcl}, sys.stdout)
+PY
+RC=$(vcurl -X PUT "$VADDR/v1/sys/policies/acl/user-deploy" --data-binary @/tmp/uvj-pol.json -o /tmp/uvj-pol.err -w '%{http_code}')
 [ "$RC" = 204 ] || [ "$RC" = 200 ] || fail "policy user-deploy KO (HTTP $RC): $(cat /tmp/uvj-pol.err)"
-say "policy user-deploy templatée (READ secret/stoa/deploy/<tenant>/* uniquement)"
+say "policy user-deploy templatée (READ deploy/<tenant>/*, WRITE deploy/<tenant>/apps/* uniquement)"
 
 # ═══ 5. rôle jwt user-deploy ═════════════════════════════════════════════════
 RC=$(vcurl -X POST "$VADDR/v1/auth/jwt/role/user-deploy" -d '{
