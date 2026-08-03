@@ -75,6 +75,11 @@ apim_ss_app:
   #     dev: { backend_key_ref: "deploy/<tenant>/apps/<app>/dev/backend-key" }
   backend_key_ref: ""            # sous-chemin KV v2 (vide = dimension non gérée)
   backend_key_field: "api_key"   # champ à lire DANS l'entrée KV
+  # NOM de l'entrée d'identifier — c'est ce que l'UI AFFICHE. Convention du
+  # produit : le LIBELLÉ DU TYPE ("Token"), pas un nom d'application (le swagger
+  # officiel donne name="Token"/key="token", name="Username"/key="httpBasicAuth").
+  # Ne change rien d'opposable : le matching se fait sur le TYPE.
+  backend_key_identifier_name: "Token"
   # Dimensions à OPPOSER par la règle IAM AND (strict) — ferme le fail-open.
   # Sous-ensemble de ["httpsCertificate","ipAddressRange"]. Vide = pose les
   # identifiers SANS règle IAM (comportement historique inerte — À ÉVITER).

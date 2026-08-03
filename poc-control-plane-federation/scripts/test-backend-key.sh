@@ -191,13 +191,59 @@ probe "$TMP/m-ok.yml" "$KEY2"
   && ok "re-run convergé, pas de doublon" || ko "non idempotent (rc=$RC)"
 
 echo
-echo "== 10. VERIFY : la valeur posée est confirmée contre Vault =="
+echo "== 10. NOM de l'entrée : le LIBELLÉ DU TYPE, pas un nom d'application =="
+# C'est ce que l'UI AFFICHE. La convention du produit est d'y mettre le libellé
+# du type (swagger officiel de l'Application Management Service :
+# {"name":"Token","key":"token"}, {"name":"Username","key":"httpBasicAuth"}) ;
+# un nom d'application s'y lit comme une clé CUSTOM. La sonde imprimait déjà
+# token_name mais AUCUN cas ne l'assertait — le nom pouvait donc changer sans
+# qu'une ligne rougisse.
+probe "$TMP/m-ok.yml" "$KEY2"
+grep -q "token_name='Token'" <<<"$OUT" \
+  && ok "défaut = 'Token'" || ko "nom par défaut inattendu (attendu 'Token')"
+
+echo
+echo "== 11. le knob de nom est pris en compte, et NE DUPLIQUE PAS l'entrée =="
+# Le point qui compte : le merge se fait par DIMENSION (`key`), pas par nom.
+# Renommer doit REMPLACER la ligne existante. Si un renommage créait une seconde
+# entrée `token`, la sélection par type deviendrait ambiguë — exactement ce que
+# le modèle interdit.
+cat > "$TMP/m-name.yml" <<EOF
+apim_ss_app:
+  name: "probe-bk"
+  api: "probe"
+  api_version: "1.0.0"
+  description: "sonde nom d'identifier"
+  contact_emails: []
+  team: ""
+  enforce: []
+  ip_allowlist: ["10.0.0.1"]
+  public_cert_ref: ""
+  backend: { header: "apikey", value_template: "\${backend_apikey}", inject: false }
+  backend_key_ref: "$SUB"
+  backend_key_identifier_name: "Jeton porteur"
+EOF
+probe "$TMP/m-name.yml" "$KEY2"
+[ $RC -eq 0 ] && ok "apply vert" || ko "échec avec un nom surchargé (rc=$RC)"
+grep -q "token_name='Jeton porteur'" <<<"$OUT" \
+  && ok "surcharge appliquée" || ko "knob ignoré"
+grep -q "token_entries=1" <<<"$OUT" \
+  && ok "toujours UNE entrée après renommage (remplacement, pas ajout)" \
+  || ko "le renommage a créé une entrée en double — sélection par type ambiguë"
+grep -q "token_match=True" <<<"$OUT" \
+  && ok "la valeur survit au renommage" || ko "valeur perdue au renommage"
+
+# On remet le nom par défaut pour les cas suivants (verify compare l'état posé).
+probe "$TMP/m-ok.yml" "$KEY2"
+
+echo
+echo "== 12. VERIFY : la valeur posée est confirmée contre Vault =="
 probe "$TMP/m-ok.yml" "$KEY2" -e probe_verify=true
 [ $RC -eq 0 ] && ok "verify vert" || ko "verify échoue sur un état pourtant correct (rc=$RC)"
 grep -q "BACKEND_KEY_CONFIRMED" <<<"$OUT" && ok "BACKEND_KEY_CONFIRMED" || ko "verdict absent"
 
 echo
-echo "== 11. VERIFY : ROUGE si la gateway et Vault divergent =="
+echo "== 13. VERIFY : ROUGE si la gateway et Vault divergent =="
 # Cas réel : quelqu'un a roté la clé dans Vault SANS réappliquer. La gateway
 # porte l'ancienne, donc la custom policy injecterait une clé périmée vers
 # l'amont. On change Vault puis on lance le verify SEUL (probe_converge=false) —
@@ -208,7 +254,7 @@ probe "$TMP/m-ok.yml" "$KEY1" -e probe_verify=true -e probe_converge=false
 grep -q "BACKEND_KEY_UNCONFIRMED" <<<"$OUT" && ok "BACKEND_KEY_UNCONFIRMED" || ko "verdict absent"
 
 echo
-echo "== 12. la clé n'apparaît JAMAIS dans la sortie =="
+echo "== 14. la clé n'apparaît JAMAIS dans la sortie =="
 grep -q "$KEY2" <<<"$OUT" && ko "la clé fuite dans le log !" || ok "aucune fuite de la clé"
 
 echo
