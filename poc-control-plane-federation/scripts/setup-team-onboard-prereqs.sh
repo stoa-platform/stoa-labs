@@ -18,7 +18,7 @@
 #   VAULT_TOKEN=… GITEA_ADMIN_USER=ci bash scripts/setup-team-onboard-prereqs.sh
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
-VAULT_ADDR="${VAULT_ADDR:-http://localhost:8200}"
+VAULT_ADDR="${VAULT_ADDR:?VAULT_ADDR requis}"
 VAULT_TOKEN="${VAULT_TOKEN:?VAULT_TOKEN requis (amorçage, droits admin)}"
 GITEA_CONTAINER="${GITEA_CONTAINER:-poc-gitea}"
 # Pas de défaut : le user admin réel de Gitea SE RELÈVE (docker exec -u git
@@ -62,6 +62,12 @@ RC=$(vcurl -X PUT "$VAULT_ADDR/v1/sys/policies/acl/team-onboarder" --data-binary
 { [ "$RC" = 200 ] || [ "$RC" = 204 ]; } && ok "policy team-onboarder" || ko "policy (HTTP $RC): $(cat "$TMP/err")"
 
 echo "2. token org-admin Gitea → Vault"
+# Pas de révocation de l'ancien token avant d'en minter un nouveau : cette
+# version de la CLI Gitea (1.22, vérifié via `gitea admin user --help`) n'expose
+# QUE `generate-access-token` sous `admin user` — ni list ni delete-access-token.
+# Accumulation de tokens `team-onboard-<ts>` assumée, même cycle de vie
+# « régénéré à chaque run, jamais révoqué individuellement » que documenté dans
+# setup-provision-request-job.sh (§1) — pas une régression introduite ici.
 GTOK=$(docker exec -u git "$GITEA_CONTAINER" gitea admin user generate-access-token \
   --username "$GITEA_ADMIN_USER" --token-name "team-onboard-$(date +%s)" \
   --scopes write:organization,write:repository 2>/dev/null | grep -oE '[0-9a-f]{40}' | head -1)
@@ -82,7 +88,31 @@ echo "3. attache à l'opérateur $ONBOARD_OPERATOR"
 # de passe et le login de l'utilisateur intacts.
 RC=$(vcurl -o "$TMP/operator.json" -w '%{http_code}' "$VAULT_ADDR/v1/auth/$MOUNT/users/$ONBOARD_OPERATOR")
 [ "$RC" = 200 ] || ko "opérateur '$ONBOARD_OPERATOR' introuvable dans auth/$MOUNT (HTTP $RC) — provisionner l'opérateur d'abord (scripts/setup-vault-userpass.sh, LAB_OSCAR_PASS)"
-EXISTING=$(python3 -c 'import json,sys; print(",".join(json.load(open(sys.argv[1]))["data"].get("token_policies") or []))' "$TMP/operator.json")
+# FAIL-CLOSED (revue ronde 1) : un GET HTTP 200 ne garantit PAS que l'extraction
+# ci-dessous a réussi. Deux verrous, tous deux nécessaires — un JSON malformé ou
+# une clé absente lève une exception Python (verrou 1, capté par `|| ko` sur la
+# commande elle-même) ; un `token_policies` retrouvé mais VIDE ne lève rien alors
+# que ce n'est jamais un état légitime pour un opérateur déjà provisionné (verrou
+# 2, `raise SystemExit` explicite). SANS ces deux verrous, un EXISTING vide et
+# silencieux fait de $MERGED plus bas la chaîne "team-onboarder" SEULE — le POST
+# suivant REMPLACE alors les token_policies de l'opérateur au lieu de les
+# compléter : exactement l'écrasement que l'additivité de cette étape doit
+# interdire. Reproduit et vérifié en direct (2026-08-04, task-3-report.md) :
+# sans ce garde-fou, une clé mal nommée fait disparaître silencieusement
+# `operator-deploy` d'oscar ; avec, le script s'arrête ICI, avant tout POST.
+if ! python3 - "$TMP/operator.json" > "$TMP/existing" 2> "$TMP/parseerr" <<'PY'
+import json, sys
+with open(sys.argv[1]) as f:
+    d = json.load(f)
+pol = d["data"]["token_policies"]  # KeyError si absente -> verrou 1
+if not pol:
+    raise SystemExit("token_policies vide malgre HTTP 200 (parsing suspect) -> verrou 2")
+print(",".join(pol))
+PY
+then
+  ko "lecture des policies existantes de '$ONBOARD_OPERATOR' — refus d'attacher (fail-closed, rien posté) : $(cat "$TMP/parseerr")"
+fi
+EXISTING=$(cat "$TMP/existing")
 if printf '%s' ",$EXISTING," | grep -qF ",team-onboarder,"; then
   ok "opérateur '$ONBOARD_OPERATOR' porte déjà team-onboarder (policies: $EXISTING)"
 else
