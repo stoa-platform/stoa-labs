@@ -262,10 +262,18 @@
     # comme un défaut ($sys:default, default-scope…), et si ce critère ne tranche
     # pas à un seul, on s'arrête en affichant la liste. Choisir en silence, c'est
     # décider à la place de l'exploitant quels droits porte le client.
+    #
+    # `[x] | flatten` UNE SECONDE FOIS, ici, au point de CONSOMMATION. La
+    # normalisation de resolve-env.yml est un set_fact (précédence 19) : un
+    # `-e apim_ss_auth_scopes=ScopeASLocal` passé par le CI (précédence 22,
+    # les extra-vars gagnent TOUJOURS) la court-circuite en silence et rend la
+    # chaîne intacte à l'assert ci-dessous. `_eff` est un nom interne que
+    # personne ne passe en extra-var : le renormaliser ici couvre la variable
+    # QUELLE QUE SOIT sa provenance — manifeste, group_vars ou ligne de commande.
     - name: "Auth app [internal] : scopes effectifs (manifeste > défaut de l'AS)"
       ansible.builtin.set_fact:
         apim_ss_auth_scopes_eff: >-
-          {{ apim_ss_auth_scopes if ((apim_ss_auth_scopes | default([])) | length > 0)
+          {{ ([apim_ss_auth_scopes] | flatten) if ((apim_ss_auth_scopes | default([])) | length > 0)
              else (apim_ss_local_scopes if ((apim_ss_local_scopes | length) == 1)
                    else ((apim_ss_local_scopes | select('search', '(?i)default') | list)
                          if ((apim_ss_local_scopes | select('search', '(?i)default') | list) | length == 1)

@@ -291,6 +291,17 @@ probe "$TMP/m-scalar.yml" "http://127.0.0.1:$SCA_PORT/rest/apigateway"
 grep -q "SCOPE_INCONNU" <<<"$OUT" && ko "SCOPE_INCONNU sur un scope pourtant publié" || ok "aucun refus mensonger"
 grep -q "scopes='lecture'" <<<"$OUT" && ok "le client porte le scope déclaré" || ko "scope scalaire perdu"
 grep -q "GRANT_TYPES_INVALIDES" <<<"$OUT" && ko "grant scalaire refusé à tort" || ok "grant_types scalaire normalisé lui aussi"
+
+# Même scalaire, mais injecté par le CI en EXTRA-VAR. Les extra-vars (précédence
+# 22) écrasent le set_fact de resolve-env.yml (19) : la normalisation d'amont est
+# alors court-circuitée, et seule celle du point de consommation tient. Ce cas
+# échoue si l'on retire le `flatten` de consumer-auth.yml, même correctif d'amont
+# en place — c'est ce que vit un Jenkinsfile qui passe `-e apim_ss_auth_scopes=`.
+mkmanifest "$TMP/m-extravar.yml" "probe-extravar" "internal" "CONFIDENTIAL" '["client_credentials"]' '[]'
+probe "$TMP/m-extravar.yml" "http://127.0.0.1:$SCA_PORT/rest/apigateway" -e apim_ss_auth_scopes=lecture
+[ $RC -eq 0 ] && ok "apply vert (scalaire en extra-var CI)" || { ko "extra-var scalaire refusé (rc=$RC)"; echo "$OUT" | tail -25; }
+grep -q "SCOPE_INCONNU" <<<"$OUT" && ko "SCOPE_INCONNU sur un scope pourtant publié (extra-var)" || ok "aucun refus mensonger (extra-var)"
+grep -q "scopes='lecture'" <<<"$OUT" && ok "le client porte le scope passé par le CI" || ko "scope extra-var perdu"
 kill "$SCA_PID" 2>/dev/null
 
 echo
