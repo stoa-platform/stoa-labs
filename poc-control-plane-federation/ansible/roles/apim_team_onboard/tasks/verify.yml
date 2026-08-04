@@ -18,17 +18,36 @@
     v_groups: "{{ (onb_v.results | selectattr('item', 'equalto', 'groups') | first).json.groups | default([]) }}"
     v_profs: "{{ (onb_v.results | selectattr('item', 'equalto', 'accessProfiles') | first).json.accessProfiles | default([]) }}"
 
+# CORRECTIF (revue round 1, 2026-08-04) : l'assert qui suit reutilisait
+# onb_user_id/onb_group_id — des FACTS poses par gateway.yml PENDANT L'APPLY,
+# jamais re-derives depuis la relecture fraiche ci-dessus. Si l'apply avait
+# mal resolu ces id (collision de loginId, bug de selection), verify.yml
+# aurait reutilise le meme identifiant errone et ne l'aurait jamais detecte —
+# alors que l'en-tete de ce fichier promet explicitement l'inverse : « verify
+# ne fait pas confiance aux faits poses par l'apply ». Les deux id sont donc
+# RE-DERIVES ici depuis v_users/v_groups (la relecture fraiche, pas l'apply).
+# Prefixe v_ (pas onb_) : signale au premier coup d'oeil que ces variables ne
+# viennent pas de l'apply. Contre-epreuve : task-7-report.md.
+- name: "Verify : re-deriver les id depuis la relecture fraiche (jamais ceux de l'apply)"
+  ansible.builtin.set_fact:
+    v_user_id: >-
+      {{ (v_users | selectattr('loginId', 'equalto', onb.user)
+          | map(attribute='id') | list | first) | default('') }}
+    v_group_id: >-
+      {{ (v_groups | selectattr('name', 'equalto', onb.group)
+          | map(attribute='id') | list | first) | default('') }}
+
 - name: "Verify : FAIL-CLOSED — les 4 objets existent et sont RELIES"
   ansible.builtin.assert:
     that:
       # le user existe
       - "(v_users | selectattr('loginId', 'equalto', onb.user) | list | length) == 1"
       # le user est membre de son groupe
-      - "onb_user_id in (v_groups | selectattr('name', 'equalto', onb.group) | map(attribute='userIds') | flatten | list)"
+      - "v_user_id in (v_groups | selectattr('name', 'equalto', onb.group) | map(attribute='userIds') | flatten | list)"
       # le groupe est porte par la team
-      - "onb_group_id in (v_profs | selectattr('name', 'equalto', onb.team) | map(attribute='groupIds') | flatten | list)"
+      - "v_group_id in (v_profs | selectattr('name', 'equalto', onb.team) | map(attribute='groupIds') | flatten | list)"
       # le user a acces a l'API d'admin
-      - "onb_user_id in (v_groups | selectattr('name', 'equalto', apim_onb_system_group) | map(attribute='userIds') | flatten | list)"
+      - "v_user_id in (v_groups | selectattr('name', 'equalto', apim_onb_system_group) | map(attribute='userIds') | flatten | list)"
     fail_msg: >-
       ONBOARD_UNCONFIRMED : la chaine user -> groupe -> team -> groupe systeme
       est rompue pour '{{ onb.team }}'. Un maillon absent = une equipe qui
