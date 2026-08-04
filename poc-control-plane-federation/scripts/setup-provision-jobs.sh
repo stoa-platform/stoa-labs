@@ -160,9 +160,18 @@ for J in $JOBS; do
   # « An invalid XML character (Unicode: 0x89) », rendu au client en HTTP 500
   # « Failed to persist config.xml » — un message qui ne dit rien de la cause.
   # Nos descriptions de jobs sont en français : le premier « FUSIONNÉE » suffit.
-  # Mesuré le 2026-08-04 : même la config RELUE de Jenkins, renvoyée telle
-  # quelle, échouait — ce qui a permis d'écarter le contenu et de désigner
-  # l'en-tête.
+  #
+  # LE DÉPÔT LE SAVAIT DÉJÀ, et je l'ai réappris à mes dépens : setup-carto-job.sh,
+  # setup-selfservice-job.sh et setup-user-deploy-job.sh déclarent tous ce charset,
+  # le second nommant même l'erreur (« invalid XML character 0x80 ») et le piège
+  # qui va avec — `createItem`, lui, TOLÈRE l'absence de charset, si bien qu'une
+  # MISE À JOUR échoue là où une CRÉATION passe. D'où la vérification du code HTTP,
+  # ici comme chez eux.
+  #
+  # (Re-mesuré le 2026-08-04 : même la config RELUE de Jenkins, renvoyée telle
+  # quelle, échouait — c'est ce contrôle qui a écarté le contenu et désigné
+  # l'en-tête. setup-provision-request-job.sh, lui, contournait ce 500 par un
+  # delete+create destructeur : il était le seul à ne pas avoir eu le mémo.)
   if [ "$EXISTS" = "200" ]; then
     HC=$(jcurl -s -b "$CK" -X POST "$JENKINS_UI/job/$J/config.xml" \
          -H "$F: $C" -H "Content-Type: application/xml; charset=utf-8" \
