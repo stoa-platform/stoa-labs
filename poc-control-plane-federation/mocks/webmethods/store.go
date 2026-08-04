@@ -44,6 +44,10 @@ type Store struct {
 	strategies map[string]map[string]any // id -> OAUTH2 strategy record (raw)
 	scopes     map[string]map[string]any // id -> scope mapping record (raw)
 	keystore   map[string]any            // gateway-wide keystore/truststore config
+	users      map[string]map[string]any // id -> user record (raw)
+	groups     map[string]map[string]any // id -> group record (raw); system groups (id==name) preinstalled
+	profiles   map[string]map[string]any // id -> accessProfile record (raw); system profiles (id==name) preinstalled
+	teamWork   bool                      // enableTeamWork (configurations/extended); false by default
 	seq        map[string]int            // per-kind id sequence
 }
 
@@ -60,7 +64,43 @@ func NewStore() *Store {
 		keystore: map[string]any{
 			"truststoreName": "", "keystoreName": "", "signingAlias": "",
 		},
-		seq: map[string]int{},
+		users: map[string]map[string]any{},
+		// Groupes SYSTÈME livrés d'usine par la vraie gateway : id == name
+		// (mesuré 2026-08-03), contrairement aux groupes CUSTOM créés par POST
+		// (id UUID). keepKnown() en dépend : un nom de groupe système EST un id
+		// connu, un nom de groupe custom ne l'est jamais.
+		groups: map[string]map[string]any{
+			"Administrators": {
+				"id": "Administrators", "name": "Administrators", "systemDefined": true,
+			},
+			"API-Gateway-Administrators": {
+				"id": "API-Gateway-Administrators", "name": "API-Gateway-Administrators", "systemDefined": true,
+			},
+			"API-Gateway-Providers": {
+				"id": "API-Gateway-Providers", "name": "API-Gateway-Providers", "systemDefined": true,
+			},
+			"Everybody": {
+				"id": "Everybody", "name": "Everybody", "systemDefined": true,
+			},
+		},
+		// AccessProfiles SYSTÈME, même règle id==name ; groupIds mesurés en clair
+		// sur la gateway.
+		profiles: map[string]map[string]any{
+			"Administrators": {
+				"id": "Administrators", "name": "Administrators", "systemDefined": true,
+				"groupIds": []any{"Administrators", "API-Gateway-Administrators"},
+			},
+			"API-Gateway-Providers": {
+				"id": "API-Gateway-Providers", "name": "API-Gateway-Providers", "systemDefined": true,
+				"groupIds": []any{"API-Gateway-Providers"},
+			},
+			"Default": {
+				"id": "Default", "name": "Default", "systemDefined": true,
+				"groupIds": []any{"Everybody"},
+			},
+		},
+		teamWork: false,
+		seq:      map[string]int{},
 	}
 }
 

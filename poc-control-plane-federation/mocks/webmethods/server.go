@@ -90,6 +90,16 @@ func (s *Server) Handler() http.Handler {
 	admin.HandleFunc("PUT /rest/apigateway/scopes/{id}", s.updateScope)
 	admin.HandleFunc("GET /rest/apigateway/configurations/keystore", s.getKeystore)
 	admin.HandleFunc("PUT /rest/apigateway/configurations/keystore", s.putKeystore)
+	admin.HandleFunc("GET /rest/apigateway/configurations/extended", s.getExtended)
+	admin.HandleFunc("PUT /rest/apigateway/configurations/extended", s.putExtended)
+	admin.HandleFunc("GET /rest/apigateway/users", s.listUsers)
+	admin.HandleFunc("POST /rest/apigateway/users", s.createUser)
+	admin.HandleFunc("GET /rest/apigateway/groups", s.listGroups)
+	admin.HandleFunc("POST /rest/apigateway/groups", s.createGroup)
+	admin.HandleFunc("PUT /rest/apigateway/groups/{id}", s.updateGroup)
+	admin.HandleFunc("GET /rest/apigateway/accessProfiles", s.listProfiles)
+	admin.HandleFunc("POST /rest/apigateway/accessProfiles", s.createProfile)
+	admin.HandleFunc("PUT /rest/apigateway/accessProfiles/{id}", s.updateProfile)
 	admin.HandleFunc("POST /rest/apigateway/transactionalEvents", s.events)
 
 	// Legacy liveness route, kept OPEN (no Basic) on purpose: scripts/up.sh and
