@@ -1,0 +1,260 @@
+---
+# roles/apim_team_onboard/tasks/gateway.yml — user, groupe, adhesion, team.
+#
+# QUATRE PIEGES, TOUS DES SUCCES SILENCIEUX (spike F4 T1, 2026-07-29) :
+#   1. userIds/groupIds attendent des UUID ; les NOMS sont acceptes (200) et
+#      IGNORES — liste relue vide, aucun message.
+#   2. `privilege` est un BITMASK, pas une liste de noms.
+#   3. l'adhesion au groupe systeme API-Gateway-Providers est un geste DISTINCT
+#      de la team : sans elle, 403 sur GET /apis.
+#   4. le groupe systeme s'adresse par son NOM, pas par un UUID.
+# D'ou une relecture apres CHAQUE ecriture : un 200 ne prouve rien ici.
+
+- name: "Gateway : lister les users"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_api_base }}/users"
+  register: onb_users
+  changed_when: false
+
+- name: "Gateway : id du user s'il existe"
+  ansible.builtin.set_fact:
+    onb_user_id: >-
+      {{ (onb_users.json.users | default([])
+          | selectattr('loginId', 'equalto', onb.user)
+          | map(attribute='id') | list | first) | default('') }}
+
+- name: "Gateway : creer le user technique"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_api_base }}/users"
+    method: POST
+    body:
+      loginId: "{{ onb.user }}"
+      firstName: "svc"
+      lastName: "{{ onb.team }}"
+      password: "{{ onb_password }}"
+      active: true
+      type: "local"
+    status_code: [200, 201]
+  register: onb_user_create
+  no_log: true
+  when: "onb_user_id | length == 0"
+
+- name: "Gateway : relire les users (l'id ne se deduit pas, il se relit)"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_api_base }}/users"
+  register: onb_users2
+  changed_when: false
+  when: "onb_user_id | length == 0"
+
+- name: "Gateway : id du user apres creation"
+  ansible.builtin.set_fact:
+    onb_user_id: >-
+      {{ (onb_users2.json.users | default([])
+          | selectattr('loginId', 'equalto', onb.user)
+          | map(attribute='id') | list | first) | default('') }}
+  when: "onb_user_id | length == 0"
+
+- name: "Gateway : FAIL-CLOSED — le user doit avoir un id"
+  ansible.builtin.assert:
+    that: "onb_user_id | length > 0"
+    fail_msg: "USER_UNRESOLVED : '{{ onb.user }}' absent apres creation."
+
+- name: "Gateway : lister les groupes"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_api_base }}/groups"
+  register: onb_groups
+  changed_when: false
+
+- name: "Gateway : id du groupe s'il existe"
+  ansible.builtin.set_fact:
+    onb_group_id: >-
+      {{ (onb_groups.json.groups | default([])
+          | selectattr('name', 'equalto', onb.group)
+          | map(attribute='id') | list | first) | default('') }}
+
+- name: "Gateway : creer le groupe (nu — les membres sont poses au PUT)"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_api_base }}/groups"
+    method: POST
+    body:
+      name: "{{ onb.group }}"
+      description: "devs {{ onb.team }}"
+      type: "local"
+    status_code: [200, 201]
+  when: "onb_group_id | length == 0"
+
+- name: "Gateway : relire les groupes"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_api_base }}/groups"
+  register: onb_groups2
+  changed_when: false
+
+- name: "Gateway : id du groupe (apres creation eventuelle)"
+  ansible.builtin.set_fact:
+    onb_group_id: >-
+      {{ (onb_groups2.json.groups | default([])
+          | selectattr('name', 'equalto', onb.group)
+          | map(attribute='id') | list | first) | default('') }}
+
+- name: "Gateway : FAIL-CLOSED — le groupe doit avoir un id"
+  ansible.builtin.assert:
+    that: "onb_group_id | length > 0"
+    fail_msg: "GROUP_UNRESOLVED : '{{ onb.group }}' absent apres creation."
+
+# PIEGE 1 : userIds en UUID. Un loginId ici => 200 et membre absent.
+- name: "Gateway : poser le membre du groupe (UUID, JAMAIS le loginId)"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_api_base }}/groups/{{ onb_group_id }}"
+    method: PUT
+    body:
+      id: "{{ onb_group_id }}"
+      name: "{{ onb.group }}"
+      description: "devs {{ onb.team }}"
+      type: "local"
+      userIds: ["{{ onb_user_id }}"]
+    status_code: [200, 201]
+
+- name: "Gateway : relire le groupe (LA porte de preuve du piege 1)"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_api_base }}/groups"
+  register: onb_groups3
+  changed_when: false
+
+- name: "Gateway : FAIL-CLOSED — le user est REELLEMENT membre"
+  ansible.builtin.assert:
+    that: >-
+      onb_user_id in ((onb_groups3.json.groups | default([])
+        | selectattr('id', 'equalto', onb_group_id)
+        | map(attribute='userIds') | flatten | list))
+    fail_msg: >-
+      GROUP_MEMBER_UNCONFIRMED : apres PUT /groups/{{ onb_group_id }}, le user
+      {{ onb.user }} n'est pas membre. Un 200 sans effet est le comportement
+      connu quand userIds porte des NOMS au lieu d'UUID.
+    success_msg: "GROUP_MEMBER_OK : {{ onb.user }} ∈ {{ onb.group }}"
+
+- name: "Gateway : lister les accessProfiles"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_api_base }}/accessProfiles"
+  register: onb_profiles
+  changed_when: false
+
+- name: "Gateway : id de l'accessProfile s'il existe"
+  ansible.builtin.set_fact:
+    onb_profile_id: >-
+      {{ (onb_profiles.json.accessProfiles | default([])
+          | selectattr('name', 'equalto', onb.team)
+          | map(attribute='id') | list | first) | default('') }}
+
+- name: "Gateway : creer la team (accessProfile ; groupIds en UUID)"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_api_base }}/accessProfiles"
+    method: POST
+    body:
+      name: "{{ onb.team }}"
+      description: "{{ onb.description | default('team ' ~ onb.team) }}"
+      privilege: "{{ apim_onb_privilege }}"
+      groupIds: ["{{ onb_group_id }}"]
+    status_code: [200, 201]
+  when: "onb_profile_id | length == 0"
+
+- name: "Gateway : mettre a jour la team si elle existe deja"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_api_base }}/accessProfiles/{{ onb_profile_id }}"
+    method: PUT
+    body:
+      id: "{{ onb_profile_id }}"
+      name: "{{ onb.team }}"
+      description: "{{ onb.description | default('team ' ~ onb.team) }}"
+      privilege: "{{ apim_onb_privilege }}"
+      groupIds: ["{{ onb_group_id }}"]
+    status_code: [200, 201]
+  when: "onb_profile_id | length > 0"
+
+- name: "Gateway : relire les accessProfiles (porte de preuve)"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_api_base }}/accessProfiles"
+  register: onb_profiles2
+  changed_when: false
+
+- name: "Gateway : id + groupes relus de la team"
+  ansible.builtin.set_fact:
+    onb_profile_rec: >-
+      {{ (onb_profiles2.json.accessProfiles | default([])
+          | selectattr('name', 'equalto', onb.team) | list | first) | default({}) }}
+
+- name: "Gateway : FAIL-CLOSED — la team porte REELLEMENT son groupe"
+  ansible.builtin.assert:
+    that:
+      - "onb_profile_rec | length > 0"
+      - "onb_group_id in (onb_profile_rec.groupIds | default([]))"
+    fail_msg: >-
+      TEAM_GROUP_UNCONFIRMED : l'accessProfile '{{ onb.team }}' ne porte pas le
+      groupe {{ onb.group }} ({{ onb_profile_rec.groupIds | default([]) }}).
+      groupIds par NOM = reference morte silencieuse.
+    success_msg: "TEAM_GROUP_OK : {{ onb.group }} ∈ accessProfile {{ onb.team }}"
+
+- name: "Gateway : id de la team"
+  ansible.builtin.set_fact:
+    onb_profile_id: "{{ onb_profile_rec.id }}"
+
+# PIEGE 3+4 : geste DISTINCT, groupe systeme adresse par son NOM.
+#
+# ECART AU BRIEF (declare) : `map(attribute='userIds')` SANS `default=[]`
+# LEVE une erreur Ansible ("dict object has no attribute 'userIds'") des que le
+# groupe systeme n'a jamais ete ecrit — c'est son etat d'usine (store.go du
+# mock : API-Gateway-Providers preinstalle, id==name, mais SANS champ userIds
+# tant qu'aucun PUT ne l'a pose). Constate en isolant l'expression du brief
+# contre le mock avant d'ecrire ce fichier : elle casse le tout premier
+# onboarding sur une gateway vierge. `default=[]` sur le filtre `map` (pas
+# `| default([])` en aval, qui n'attrape pas l'attribut manquant a l'interieur
+# du map) est le correctif minimal.
+- name: "Gateway : membres actuels du groupe systeme"
+  ansible.builtin.set_fact:
+    onb_sys_members: >-
+      {{ (onb_groups3.json.groups | default([])
+          | selectattr('name', 'equalto', apim_onb_system_group)
+          | map(attribute='userIds', default=[]) | flatten | list) }}
+
+- name: "Gateway : adherer au groupe systeme (acces a l'API d'admin)"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_api_base }}/groups/{{ apim_onb_system_group }}"
+    method: PUT
+    body:
+      id: "{{ apim_onb_system_group }}"
+      name: "{{ apim_onb_system_group }}"
+      description: "Users added to this group can perform similar API Gateway Providers tasks."
+      type: "local"
+      systemDefined: true
+      userIds: "{{ (onb_sys_members + [onb_user_id]) | unique }}"
+    status_code: [200, 201]
+  when: "onb_user_id not in onb_sys_members"
+
+# ECART AU BRIEF (declare, ajout) : le brief s'arrete au PUT ci-dessus, sans
+# relecture-assert — alors que son PROPRE en-tete pose la regle comme non
+# negociable ("relecture apres CHAQUE ecriture, avec un assert sur ce qui
+# devait changer") et que Task 7/verify.yml ne la fournit qu'en aval, hors de
+# ce fichier. Fermer la porte de preuve ICI, au meme endroit que l'ecriture,
+# evite qu'un gateway.yml execute seul (hors du playbook complet) reussisse en
+# silence sur le piege le plus grave des quatre : celui qui laisse le user
+# creer sa team sans jamais pouvoir faire GET /apis (403). L'assert est
+# INCONDITIONNEL, comme les trois autres portes de preuve de ce fichier —
+# meme quand le PUT ci-dessus est saute (deja membre), la relecture reconfirme
+# l'etat a chaque run.
+- name: "Gateway : relire les groupes (porte de preuve pieges 3+4)"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_api_base }}/groups"
+  register: onb_groups4
+  changed_when: false
+
+- name: "Gateway : FAIL-CLOSED — le user est REELLEMENT dans le groupe systeme"
+  ansible.builtin.assert:
+    that: >-
+      onb_user_id in ((onb_groups4.json.groups | default([])
+        | selectattr('name', 'equalto', apim_onb_system_group)
+        | map(attribute='userIds', default=[]) | flatten | list))
+    fail_msg: >-
+      SYSTEM_GROUP_UNCONFIRMED : apres PUT /groups/{{ apim_onb_system_group }},
+      {{ onb.user }} n'est pas membre de {{ apim_onb_system_group }}. Un 200
+      sans effet est le meme comportement connu que le piege 1 : sans cette
+      appartenance, GET /apis rendra 403 malgre l'appartenance a la team.
+    success_msg: "SYSTEM_GROUP_OK : {{ onb.user }} ∈ {{ apim_onb_system_group }}"
