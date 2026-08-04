@@ -15,9 +15,12 @@
 #
 # Provisionne (idempotent, re-jouable après recreate de poc-vault) :
 #   1. auth method `userpass` (mount configurable — USERPASS_MOUNT)
-#   2. policies `deploy-<tenant>` : READ secret/stoa/deploy/<tenant>/* UNIQUEMENT
-#   3. utilisateurs de démo (matrice de preuve, cf. ci-dessous)
-#   4. audit device file (la traçabilité nominative que l'IT exige)
+#   2. utilisateurs de démo (matrice de preuve, cf. ci-dessous)
+#   3. audit device file (la traçabilité nominative que l'IT exige)
+# Les policies `deploy-<tenant>` NE SONT PLUS créées ici : elles viennent du
+# rôle Ansible apim_team_onboard (tasks/vault.yml), un tenant onboardé =
+# une policy posée. Jouer ce script SEUL laisse alice/bob authentifiés mais
+# SANS le périmètre attendu tant que leur tenant n'a pas été onboardé.
 #
 # ⚠ DIFFÉRENCE DE MÉCANIQUE avec ADR-077 (chaîne B / JWT), à connaître :
 #   en JWT, la ségrégation par tenant vient d'une policy TEMPLATÉE sur le claim
@@ -69,7 +72,7 @@ else
   say "auth method $MOUNT/ déjà activée"
 fi
 
-# ═══ 2. policies deploy-<tenant> ═════════════════════════════════════════════
+# ═══ policies deploy-<tenant> — DEPLACEES vers le role Ansible ══════════════
 # Les policies deploy-<tenant> sont desormais posees par le role Ansible
 # apim_team_onboard (tasks/vault.yml) : c'est lui qui sait qu'une equipe
 # existe, et il est joue a chaque onboarding. Les ecrire ici AUSSI ferait deux

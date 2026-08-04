@@ -65,8 +65,9 @@
 # La policy borne le perimetre au SEUL sous-arbre de l'equipe. C'est la douve :
 # se reclamer de l'equipe X exige de savoir lire deploy/X/wm-admin (ADR-077).
 #
-# ⚠ FORME REPRISE VERBATIM de scripts/setup-vault-userpass.sh:75-97, qui creait
-# deja cette policy avant ce role. L'ECRITURE sur apps/* n'est PAS decorative :
+# ⚠ FORME REPRISE VERBATIM de l'ancienne boucle de scripts/setup-vault-userpass.sh
+# (retiree par ce meme commit — cf. son historique git — qui creait deja cette
+# policy avant ce role). L'ECRITURE sur apps/* n'est PAS decorative :
 # c'est le mode OAuth2 `internal`, ou celui qui deploie une application de son
 # tenant y stocke le client genere par la gateway. Une policy en LECTURE SEULE
 # — ce que ce plan proposait avant la revue du 2026-08-04 — casserait ces
@@ -94,6 +95,11 @@
     status_code: [200, 204]
     ca_path: "{{ apim_ss_ca_path | default('') or omit }}"
   delegate_to: localhost
+  # no_log : cet appel porte X-Vault-Token dans ses headers, comme tout uri
+  # de ce fichier — convention deja tenue par apim_common/tasks/secrets.yml.
+  # Sans lui, un echec (mauvais code HTTP, reseau, body malforme) imprime
+  # invocation.module_args dans la sortie du run, TOKEN EN CLAIR (root, au lab).
+  no_log: true
 
 - name: "Vault : etat (aucun secret dans le message)"
   ansible.builtin.debug:

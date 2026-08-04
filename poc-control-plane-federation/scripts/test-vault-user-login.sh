@@ -14,7 +14,14 @@
 #   · Vault injoignable ou identité refusée = ÉCHEC, jamais un repli silencieux ;
 #   · l'audit Vault porte l'identité nominative, succès ET refus, sur CE run.
 #
-# Prérequis : poc-vault up ; bash scripts/setup-vault-userpass.sh joué.
+# Prérequis : poc-vault up ; bash scripts/setup-vault-userpass.sh joué (crée les
+#   IDENTITÉS userpass, PAS leurs périmètres) ; ET les tenants de la matrice
+#   (LAB_TENANT_ALICE, LAB_TENANT_BOB) onboardés via le rôle Ansible
+#   apim_team_onboard, qui pose désormais SEUL les policies deploy-<tenant> :
+#     ansible-playbook -i ansible/inventory.lab.ini ansible/onboard-team.yml \
+#       -e apim_onb_team=<tenant>
+#   Sans ça, T6 (alice lit son tenant) et T27 (policy héritée du groupe LDAP)
+#   échouent — authentifiée mais sans le périmètre attendu, pas un bug du login.
 #   Palier LDAP (formats UPN / DOMAIN\user, mapping groupe AD→policy) : les tests
 #   marqués [ldap] sont SAUTÉS tant que setup-vault-ldap.sh n'a pas tourné.
 set -uo pipefail
