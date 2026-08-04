@@ -1,7 +1,7 @@
 ---
 title: "Onboarding d'équipe : le fichier déclare, le credential prouve (spécification)"
 type: spec
-status: "Cadré le 2026-08-03, revu le 2026-08-04 contre l'état réel du dépôt : le défaut du §1 est INTACT, la forme de policy du §5 est corrigée, la piste Jenkins du §6 est déclassée par ADR-081. Un point du terrain (§2, feature Teams éteinte) reste une HYPOTHÈSE à mesurer."
+status: "Cadré le 2026-08-03, revu le 2026-08-04 contre l'état réel du dépôt : le défaut du §1 est INTACT, la forme de policy du §5 est corrigée, la piste Jenkins du §6 est déclassée par ADR-081. Hypothèse du §2 CONFIRMÉE le 2026-08-04 sur la gateway 10.15 réelle : feature éteinte, POST /accessProfiles 201, relu présent avec son groupe — l'onboarding n'est pas bloqué par le bug."
 date: 2026-08-03
 lié: [GOAL-self-service-api-app-2026-07-09, adr-081-ou-vit-la-decision-humaine, 2026-07-29-f4-chaine-publication-design, 2026-07-31-e1-producteur-gitops-design, adr-076-gitops-api-lifecycle-repo-per-project, adr-077-user-identity-to-vault-token-exchange, adr-078-livrable-self-service-app-wm1015]
 ---
@@ -74,12 +74,14 @@ Les shapes REST et leurs pièges sont acquis (spike F4 T1,
 l'adhésion au groupe système est une étape distincte de la team,
 `enableTeamWork` vit sous le configId `extended`.
 
-**Hypothèse à mesurer, pas à supposer.** `POST /accessProfiles`, `/users` et
+**Hypothèse CONFIRMÉE le 2026-08-04 — mesurée, plus supposée.** `POST /accessProfiles`, `/users` et
 `/groups` portent des objets RBAC qui existent indépendamment du cloisonnement ;
-`enableTeamWork` ne ferait qu'activer leur effet sur les assets. Si c'est exact,
-**l'onboarding n'est pas bloqué par le bug** : les objets se posent, leur effet
-reste dormant jusqu'à réactivation. C'est la preuve n°6 du §7. Si elle rougit,
-le palier 1 se réduit à Vault et l'onboarding devient dépendant du correctif.
+`enableTeamWork` ne ferait qu'activer leur effet sur les assets. Mesuré sur `poc-webmethods-real` avec `enableTeamWork:"false"` : `POST /groups`
+201 (id UUID), `POST /accessProfiles` 201 (id UUID), relecture PRÉSENT avec
+`groupIds` portant l'UUID, puis suppression 204/204 sans résidu. **L'onboarding
+n'est pas bloqué par le bug** : les objets se posent, leur effet reste dormant
+jusqu'à réactivation. Mesure complémentaire : les objets SYSTÈME ont `id == name`
+(`API-Gateway-Providers`, `Everybody`), les objets CUSTOM reçoivent un UUID.
 
 **L'activation de la feature reste hors de tout pipeline.** C'est un réglage
 global de gateway : son rayon d'explosion est sans commune mesure avec un
