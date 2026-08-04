@@ -12,12 +12,12 @@
         </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>
           <name>DESCRIPTION</name>
-          <description>Description de l'équipe (sans guillemets doubles).</description>
+          <description>Description de l'équipe (sans guillemets doubles, ni \, ni retour à la ligne).</description>
           <defaultValue></defaultValue>
         </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>
           <name>APPROVERS</name>
-          <description>Matricules des approbateurs, séparés par des virgules. VIDE ACCEPTÉ : la projection owner ne fera rien tant que la liste n'est pas établie.</description>
+          <description>Matricules des approbateurs [A-Za-z0-9_-], séparés par des virgules. VIDE ACCEPTÉ : la projection owner ne fera rien tant que la liste n'est pas établie.</description>
           <defaultValue></defaultValue>
         </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>
