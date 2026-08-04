@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
-# setup-provision-jobs.sh — (re)pousse la CONFIGURATION des jobs de provisioning
-# `provision-apply` et `provision-plan` sur une instance Jenkins.
+# setup-provision-jobs.sh — (re)pousse la CONFIGURATION d'un ou plusieurs jobs
+# Jenkins depuis leur XML du dépôt (ci/jenkins/<nom>.job.xml).
+#
+# Par défaut : `provision-apply` et `provision-plan`. La variable JOBS le rend
+# GÉNÉRIQUE — setup-provision-request-job.sh l'appelle ainsi pour son propre job
+# plutôt que de réécrire la même logique.
 #
 # POURQUOI CE SCRIPT EXISTE. Ces deux jobs portent leur script Groovy EN LIGNE
 # dans leur XML (CpsFlowDefinition). Contrairement à leurs voisins, qui ne font

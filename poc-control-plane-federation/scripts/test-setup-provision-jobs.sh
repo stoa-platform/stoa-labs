@@ -190,7 +190,20 @@ calls | grep -q 'NO-CHARSET' && ko "un POST est parti sans charset" || ok "aucun
 grep -c 'charset=utf-8' "$S" | grep -qvE '^[01]$' && ok "déclaré sur TOUS les envois de config" || ko "déclaré partiellement"
 
 echo
-echo "== 12. instance injoignable : échec net =="
+echo "== 12. setup-provision-request-job.sh ne DÉTRUIT plus son job =="
+# Il faisait un delete+create inconditionnel — donc perdait l'historique de
+# builds a chaque execution — au motif que « le POST config.xml peut 500 ». Ce
+# 500 etait le defaut de charset, pas une fatalite du produit.
+R="$REPO/scripts/setup-provision-request-job.sh"
+CODE_R=$(grep -vE '^\s*#' "$R")
+grep -qE 'job/\$JOB/doDelete' <<<"$CODE_R" \
+  && ko "doDelete inconditionnel toujours present" || ok "aucune suppression inconditionnelle du job"
+grep -q 'setup-provision-jobs.sh' <<<"$CODE_R" \
+  && ok "delegue a la logique partagee" || ko "logique dupliquee ou absente"
+bash -n "$R" 2>/dev/null && ok "syntaxe valide" || ko "syntaxe cassee"
+
+echo
+echo "== 13. instance injoignable : échec net =="
 OUT=$(cd "$REPO" && JENKINS_UI="http://127.0.0.1:1" JOBS=provision-apply bash "$S" 2>&1); RC=$?
 [ $RC -ne 0 ] && grep -q "injoignable" <<<"$OUT" && ok "diagnostic explicite" || ko "échec silencieux ou obscur"
 
