@@ -13,7 +13,7 @@
 #
 # Entrées (env — mappées depuis les paramètres du job) :
 #   TEAM         (req) nom d'équipe — regex du rôle, refus TEAM_NAME_INVALID
-#   DESCRIPTION        libre (sans " ni retour ligne — YAML_UNSAFE_INPUT sinon)
+#   DESCRIPTION        libre (sans " ni \ ni retour ligne — YAML_UNSAFE_INPUT sinon)
 #   APPROVERS          matricules CSV ; VIDE ACCEPTÉ (cas payments-team)
 #   REPO               full-name org/nom (défaut <TEAM>/apis)
 #   REQ_ENV            dev|rec|int|prod — seul dev est OUVERT au palier 2
@@ -51,20 +51,48 @@ printf '%s' "$TEAM" | grep -Eq '^[a-z0-9][a-z0-9-]{1,30}$' \
 # Ces valeurs sont INJECTÉES dans un YAML : un " ou un retour ligne dans la
 # description casserait ou détournerait le fichier — même classe d'attaque que
 # l'évasion de chemin du rôle. Refus, pas échappement (KISS + auditables).
-case "$DESCRIPTION" in *'"'*|*$'\n'*) fail "YAML_UNSAFE_INPUT : description sans \" ni retour ligne";; esac
+#
+# Le \ est refusé pour la MÊME raison que le " (revue ronde 1, I1) : injecté
+# dans `description: "${DESCRIPTION}"`, un \ final fait lire au parseur YAML
+# un \" comme une quote ÉCHAPPÉE — le scalaire ne se ferme plus et avale tout
+# le reste du fichier (vérifié : yaml.safe_load casse sur TOUT le fichier,
+# pas seulement l'entrée ajoutée). Refuser tout \ plutôt que le seul cas final
+# évite d'avoir à raisonner sur d'autres combinaisons d'échappement YAML.
+case "$DESCRIPTION" in *'"'*|*$'\n'*|*'\'*) fail "YAML_UNSAFE_INPUT : description sans \" ni \\ ni retour ligne";; esac
+
+# REPO : org/nom, UN SEUL '/'. Chaque segment doit commencer et finir par un
+# caractère alphanumérique/underscore (jamais '.' ou '-' en tête/fin), et ne
+# jamais contenir '..' — sinon 'REPO=../..' passait la forme org/nom (revue
+# ronde 1, I3) alors que team-apply (Task 4) fera confiance à cette valeur
+# « déjà validée » pour nommer un dépôt à créer.
 case "$REPO" in
-  */*) printf '%s' "$REPO" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' \
-         || fail "YAML_UNSAFE_INPUT : REPO '$REPO' — forme org/nom requise";;
+  */*/*) fail "YAML_UNSAFE_INPUT : REPO '$REPO' — forme org/nom requise (un seul '/')";;
+  */*)
+    ORG="${REPO%%/*}"; NAME="${REPO#*/}"
+    for SEG in "$ORG" "$NAME"; do
+      case "$SEG" in *..*) fail "YAML_UNSAFE_INPUT : REPO '$REPO' — segment '$SEG' contient '..'";; esac
+      printf '%s' "$SEG" | grep -Eq '^[A-Za-z0-9_]([A-Za-z0-9_.-]*[A-Za-z0-9_])?$' \
+        || fail "YAML_UNSAFE_INPUT : REPO '$REPO' — segment '$SEG' invalide (forme ^[A-Za-z0-9_]([A-Za-z0-9_.-]*[A-Za-z0-9_])?\$)"
+    done
+    ;;
   *) fail "YAML_UNSAFE_INPUT : REPO '$REPO' — forme org/nom requise";;
 esac
+
+# Trim des seuls espaces de BORD (avant/après une virgule) — jamais des
+# espaces internes : "A B" doit rester "A B" pour que la classe [A-Za-z0-9_-]
+# le refuse ensuite. `tr -d '[:space:]'` FUSIONNAIT "A B" en "AB" (revue
+# ronde 1, Minor) — un refus déguisé en échappement, contraire au principe
+# affiché plus haut (« refus, pas échappement »).
+trim_bord(){ local s="$1"; s="${s#"${s%%[![:space:]]*}"}"; s="${s%"${s##*[![:space:]]}"}"; printf '%s' "$s"; }
+
 APPROVERS_YAML=""
 if [ -n "$APPROVERS" ]; then
   IFS=',' read -ra _APPR <<< "$APPROVERS"
   for a in "${_APPR[@]}"; do
-    a="$(printf '%s' "$a" | tr -d '[:space:]')"
+    a="$(trim_bord "$a")"
     [ -z "$a" ] && continue
     printf '%s' "$a" | grep -Eq '^[A-Za-z0-9_-]+$' \
-      || fail "YAML_UNSAFE_INPUT : approbateur '$a' — [A-Za-z0-9_-] uniquement"
+      || fail "YAML_UNSAFE_INPUT : approbateur '$a' — [A-Za-z0-9_-] uniquement (espace interne refusé)"
     APPROVERS_YAML="${APPROVERS_YAML:+$APPROVERS_YAML, }\"$a\""
   done
 fi
@@ -95,9 +123,9 @@ EOF
 # ── 3. branche, commit, push, PR ─────────────────────────────────────────────
 echo "[3/4] branche ${BRANCH} + PR"
 PUSH_URL="http://ci:${GITEA_TOKEN}@${GIT_HOST#http://}/${GIT_REPO}.git"
-git -C "$WORK/repo" checkout -q -b "$BRANCH"
+git -C "$WORK/repo" checkout -q -b "$BRANCH" || fail "création de la branche locale ${BRANCH}"
 git -C "$WORK/repo" -c user.name=ci -c user.email=ci@stoa.lab \
-  commit -qam "onboard(${TEAM}): demande d'onboarding ${REQ_ENV} (formulaire)"
+  commit -qam "onboard(${TEAM}): demande d'onboarding ${REQ_ENV} (formulaire)" || fail "commit sur ${BRANCH}"
 git -C "$WORK/repo" push -q "$PUSH_URL" "$BRANCH" 2>"$WORK/pusherr" \
   || { echo "ERREUR push (détail masqué — token)" >&2; grep -v "$GITEA_TOKEN" "$WORK/pusherr" >&2 || true; exit 1; }
 
@@ -112,7 +140,7 @@ req = urllib.request.Request(f"{api}/repos/{repo}/pulls", method="POST",
     headers={"Authorization": f"token {tok}", "Content-Type": "application/json"})
 print(json.load(urllib.request.urlopen(req))["number"])
 PY
-) || fail "ouverture de la PR"
+) || fail "ouverture de la PR — la branche '${BRANCH}' est déjà poussée sur ${GIT_HOST}/${GIT_REPO} (elle n'a pas de PR) : nettoyer avec 'git push ${GIT_HOST}/${GIT_REPO}.git --delete ${BRANCH}' avant de relancer la demande"
 echo "PR #${PR_NUMBER} ouverte : ${GIT_WEB_HOST}/${GIT_REPO}/pulls/${PR_NUMBER}"
 
 # ── 4. PLAN contre le fichier MODIFIÉ + commentaire ──────────────────────────
@@ -129,7 +157,15 @@ DERIVED=$(grep -oE 'equipe=[^"]*' "$PLAN_LOG" | head -1)
 if [ "$PLAN_RC" -eq 0 ]; then
   VERDICT="✅ PLAN OK — ${DERIVED:-dérivations non capturées}"
 else
-  VERDICT="❌ PLAN EN ÉCHEC — NE PAS MERGER : $(grep -oE '(TEAM_[A-Z_]+|TENANT_ROOT_UNSAFE)' "$PLAN_LOG" | sort -u | tr '\n' ' ')"
+  TAGS=$(grep -oE '(TEAM_[A-Z_]+|TENANT_ROOT_UNSAFE)' "$PLAN_LOG" | sort -u | tr '\n' ' ')
+  if [ -n "$TAGS" ]; then
+    VERDICT="❌ PLAN EN ÉCHEC — NE PAS MERGER : ${TAGS}"
+  else
+    # Aucun tag connu extrait (revue ronde 1, I1) : un ❌ sans cause envoie le
+    # valideur à la pêche. On poste les dernières lignes d'erreur brutes du
+    # plan plutôt qu'une chaîne vide.
+    VERDICT="❌ PLAN EN ÉCHEC — NE PAS MERGER : $(tail -3 "$PLAN_LOG" | tr '\n' ' ')"
+  fi
 fi
 BODY="${VERDICT}
 
