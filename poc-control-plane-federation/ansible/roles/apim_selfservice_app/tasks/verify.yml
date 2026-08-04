@@ -179,7 +179,13 @@
     # Même oracle qu'à l'apply, même fichier — sinon leur accord ne prouverait
     # rien. Rejouable : c'est une propriété de l'état, pas du déroulé de l'apply.
     - name: "Verify : garde du register (visibilité de l'API pour l'équipe)"
-      when: "ss_team_name | length > 0 and v_api_id | length > 0"
+      # apim_teams_enabled (sonde reposée plus haut dans ce fichier) est requis
+      # ici aussi : sans lui, cet appel GET /apis/{id} part encore sur une
+      # gateway dont la feature Teams est éteinte et une dérogation posée —
+      # même défaut du 2026-08-03, juste à un second point d'appel de ce
+      # fichier (réserve 2, signalée après revue par le lead : ses ancres
+      # initiales ne couvraient que le premier appel à api-visibility.yml).
+      when: "ss_team_name | length > 0 and v_api_id | length > 0 and (apim_teams_enabled | bool)"
       block:
         - ansible.builtin.set_fact:
             ss_api_id: "{{ v_api_id }}"
