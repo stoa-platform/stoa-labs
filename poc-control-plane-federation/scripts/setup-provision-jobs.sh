@@ -76,6 +76,17 @@ ko(){   printf '  ❌ %s\n' "$*" >&2; exit 1; }
 # chercher la panne ailleurs.)
 CF_ACCESS_CLIENT_ID="${CF_ACCESS_CLIENT_ID:-}"
 CF_ACCESS_CLIENT_SECRET="${CF_ACCESS_CLIENT_SECRET:-}"
+# Troisième voie d'accès au portail, à côté du service token : le JWT d'une
+# session utilisateur ouverte par `cloudflared access login`. Utile quand aucun
+# service token n'est autorisé sur l'application — c'est le cas mesuré le
+# 2026-08-04 sur jenkins.labs.gostoa.dev (service_token_status: false).
+# Vide + cloudflared présent -> on tente de le récupérer tout seul.
+CF_ACCESS_TOKEN="${CF_ACCESS_TOKEN:-}"
+if [ -z "$CF_ACCESS_TOKEN" ] && [ -z "$CF_ACCESS_CLIENT_ID" ] && command -v cloudflared >/dev/null 2>&1; then
+  case "$JENKINS_UI" in
+    https://*) CF_ACCESS_TOKEN=$(cloudflared access token --app "$JENKINS_UI" 2>/dev/null | grep -E '^ey' | head -1) ;;
+  esac
+fi
 
 jcurl(){
   {
@@ -84,6 +95,7 @@ jcurl(){
       printf 'header = "CF-Access-Client-Id: %s"\n' "$CF_ACCESS_CLIENT_ID"
       printf 'header = "CF-Access-Client-Secret: %s"\n' "$CF_ACCESS_CLIENT_SECRET"
     fi
+    [ -n "$CF_ACCESS_TOKEN" ] && printf 'header = "cf-access-token: %s"\n' "$CF_ACCESS_TOKEN"
   } | curl -K - "$@"
 }
 
@@ -93,9 +105,11 @@ else
   echo "Authentification Jenkins : AUCUNE (instance ouverte présumée)"
 fi
 if [ -n "$CF_ACCESS_CLIENT_ID" ]; then
-  echo "Portail : service token Cloudflare Access fourni (secret masqué, hors argv)"
+  echo "Portail : service token Cloudflare Access (secret masqué, hors argv)"
+elif [ -n "$CF_ACCESS_TOKEN" ]; then
+  echo "Portail : JWT de session cloudflared (récupéré automatiquement, hors argv)"
 else
-  echo "Portail : aucun service token — échouera si l'instance est derrière un portail"
+  echo "Portail : aucun jeton — échouera si l'instance est derrière un portail"
 fi
 
 echo "Cible : $JENKINS_UI"
@@ -128,7 +142,12 @@ case "$HC" in
       *cloudflareaccess.com*) echo "     Portail : Cloudflare Access." >&2 ;;
       *) [ -n "$RU" ] && echo "     Redirection : ${RU%%\?*}" >&2 ;;
     esac
-    ko "fournir CF_ACCESS_CLIENT_ID et CF_ACCESS_CLIENT_SECRET (service token), ou passer par WARP/session navigateur" ;;
+    echo "     Deux voies : (a) ouvrir une session —" >&2
+    echo "         cloudflared access login --url $JENKINS_UI" >&2
+    echo "       puis relancer : le JWT est repris automatiquement ;" >&2
+    echo "     (b) un service token AUTORISÉ sur cette application" >&2
+    echo "         (CF_ACCESS_CLIENT_ID / CF_ACCESS_CLIENT_SECRET)." >&2
+    ko "portail non franchi" ;;
   401|403) ko "identifiants refusés (HTTP $HC) — vérifier JENKINS_USER / JENKINS_TOKEN, et les droits de configuration des jobs" ;;
   000)     ko "Jenkins injoignable ($JENKINS_UI) — réseau, DNS ou TLS" ;;
   *)       ko "réponse inattendue du crumbIssuer (HTTP $HC)" ;;

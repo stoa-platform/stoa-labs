@@ -169,7 +169,7 @@ OUT=$(cd "$REPO" && JENKINS_UI="$JU" JOBS=provision-apply \
       CF_ACCESS_CLIENT_ID='cf-id.access' CF_ACCESS_CLIENT_SECRET='cf-s3cr3t' bash "$S" 2>&1); RC=$?
 [ $RC -eq 0 ] && ok "le portail laisse passer" || ko "en-têtes CF non transmis (rc=$RC)"
 grep -q 'cf-s3cr3t' <<<"$OUT" && ko "LE SECRET CF FUITE dans la sortie" || ok "aucune fuite du secret CF"
-grep -q 'service token Cloudflare Access fourni' <<<"$OUT" && ok "présence annoncée" || ko "silencieux"
+grep -q 'Portail : service token' <<<"$OUT" && ok "présence annoncée" || ko "silencieux"
 
 echo
 echo "== 10. les secrets ne passent PAS par argv (visibles dans ps) =="
