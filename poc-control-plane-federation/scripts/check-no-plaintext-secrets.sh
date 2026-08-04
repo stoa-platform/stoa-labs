@@ -150,15 +150,75 @@ if printf '%s\n' "$SELFTEST_HITS" | grep -q 'NOPE_PASS'; then
   RC=1
 fi
 
+# ═══ Base de référence ════════════════════════════════════════════════════════
+# La garde échouait sur 23 occurrences préexistantes, donc elle échouait
+# TOUJOURS. Une garde toujours rouge est une garde désactivée : plus personne ne
+# la regarde, et la 24e passe inaperçue. On fige donc le connu-et-assumé dans
+# scripts/secrets-baseline.txt (chaque ligne motivée), pour que toute occurrence
+# NOUVELLE rougisse.
+#
+# La clé est (fichier, VARIABLE) — pas la valeur : hacher la valeur pour
+# détecter un changement reviendrait à publier un condensat de secret dans un
+# dépôt public. Limite énoncée, pas masquée.
+BASELINE="$ROOT/scripts/secrets-baseline.txt"
+
+# Variables SENSIBLES d'une ligne (mêmes suffixes que le motif de détection).
+vars_de_ligne() {
+  printf '%s' "$1" \
+    | grep -oE '[A-Za-z_][A-Za-z0-9_]*(PASS|PASSWORD|SECRET|TOKEN)[A-Za-z0-9_]*=' \
+    | sed 's/=$//' | sort -u
+}
+
 # ═══ Scan réel ════════════════════════════════════════════════════════════════
 HITS=$(scan "$ROOT/scripts" "$ROOT/ci")
 
+NOUVEAUX="$SELFTEST_DIR/nouveaux"; : > "$NOUVEAUX"
+VUS="$SELFTEST_DIR/vus"; : > "$VUS"
+
 if [ -n "$HITS" ]; then
-  echo "ÉCHEC — affectation(s) de secret littéral dans un dépôt public :"
-  echo "$HITS" | sed 's/=.*/=<REDACTÉ PAR LA GARDE>/'
+  printf '%s\n' "$HITS" > "$SELFTEST_DIR/hits"
+  while IFS= read -r H; do
+    [ -n "$H" ] || continue
+    CHEMIN=${H%%:*}
+    REL=$(printf '%s' "$CHEMIN" | sed "s#^$ROOT/##")
+    RESTE=${H#*:}; CONTENU=${RESTE#*:}
+    # Une ligne n'est acceptée que si TOUTES ses variables sensibles le sont.
+    ACCEPTEE=1
+    for V in $(vars_de_ligne "$CONTENU"); do
+      if grep -qE "^${REL}\|${V}\|" "$BASELINE" 2>/dev/null; then
+        echo "${REL}|${V}" >> "$VUS"
+      else
+        ACCEPTEE=0
+        echo "  ${REL} : ${V}" >> "$NOUVEAUX"
+      fi
+    done
+    [ "$ACCEPTEE" = "1" ] || true
+  done < "$SELFTEST_DIR/hits"
+fi
+
+if [ -s "$NOUVEAUX" ]; then
+  echo "ÉCHEC — affectation(s) de secret littéral NON RÉFÉRENCÉE(S), dans un dépôt public :" >&2
+  sort -u "$NOUVEAUX" >&2
+  echo "  → soit lire la valeur depuis l'environnement, soit l'assumer" >&2
+  echo "    explicitement dans scripts/secrets-baseline.txt (avec sa raison)." >&2
   RC=1
 else
-  echo "OK — aucune affectation de secret littéral"
+  N=$(grep -c '^[^#]' "$BASELINE" 2>/dev/null || echo 0)
+  echo "OK — aucune affectation de secret littéral NOUVELLE ($N occurrence(s) assumée(s) en base de référence)"
+fi
+
+# Entrées devenues inutiles : signalées, jamais bloquantes — une base de
+# référence qui ne se purge pas finit par absoudre des fichiers disparus.
+if [ -f "$BASELINE" ]; then
+  PERIMEES=""
+  while IFS='|' read -r BF BV BR; do
+    case "$BF" in ''|'#'*) continue;; esac
+    grep -qx "${BF}|${BV}" "$VUS" 2>/dev/null || PERIMEES="${PERIMEES}  ${BF} : ${BV}\n"
+  done < "$BASELINE"
+  if [ -n "$PERIMEES" ]; then
+    echo "AVERTISSEMENT — entrée(s) de base de référence sans occurrence réelle (à purger) :"
+    printf "$PERIMEES"
+  fi
 fi
 
 exit $RC
