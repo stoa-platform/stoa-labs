@@ -9,6 +9,16 @@
 # des objets RBAC qui existent independamment du cloisonnement. Le role les pose
 # dans tous les cas et DIT ce qu'il en est — c'est ce qui permet d'onboarder
 # pendant qu'un correctif attend sa validation.
+#
+# MODE VAULT-SEUL (apim_onb_gateway=false, defaut true) : la sonde Teams (un
+# GET sur la gateway), gateway.yml (huit appels HTTP) et le volet gateway de
+# verify.yml sont SAUTES — seuls vault.yml (policy + KV) et le volet KV/policy
+# de verify.yml tournent. Correctif C1 (revue finale 2026-08-04) :
+# scripts/setup-vault-userpass.sh n'a besoin QUE de ce perimetre pour poser
+# alice/bob/carol, et exigeait pourtant, avant ce booleen, une gateway
+# joignable pour les huit appels de gateway.yml — un lab sans gateway
+# demarree faisait alors avorter le script AVANT meme l'etape 2 (aucune
+# identite posee). Voir defaults/main.yml pour la doc du booleen.
 
 - name: "Onboarding : resoudre l'equipe et ses noms derives"
   ansible.builtin.import_tasks: resolve.yml
@@ -43,14 +53,19 @@
     # faire perimer. `apim_teams_assert: false` (et non plus
     # `apim_teams_required`) exprime exactement ca — cf. teams-feature.yml,
     # section « ETAT != POLITIQUE » pour le detail des deux parametres.
+    # SAUTEE en mode Vault-seul : c'est un GET sur apim_ss_api_base, donc un
+    # appel gateway comme les autres — apim_onb_gateway=false doit n'en
+    # toucher AUCUN.
     - name: "Onboarding : etat de la feature Teams (informatif ici)"
       ansible.builtin.import_role:
         name: apim_common
         tasks_from: teams-feature.yml
       vars:
         apim_teams_assert: false     # ETAT seulement — l'onboarding n'arbitre aucune politique
+      when: "apim_onb_gateway | bool"
     - ansible.builtin.import_tasks: vault.yml
     - ansible.builtin.import_tasks: gateway.yml
+      when: "apim_onb_gateway | bool"
     - ansible.builtin.import_tasks: verify.yml
 
 - name: "Onboarding : etat de cloisonnement de l'equipe posee"
@@ -61,3 +76,14 @@
          else 'Equipe ' ~ onb.team ~ ' posee ; feature Teams ETEINTE — les objets '
               ~ 'existent, leur effet de cloisonnement est DORMANT jusqu a '
               ~ 'reactivation. Rien a rejouer le moment venu.' }}
+  when: "apim_onb_gateway | bool"
+
+- name: "Onboarding : mode VAULT-SEUL — objets gateway NI poses NI verifies"
+  ansible.builtin.debug:
+    msg: >-
+      Equipe {{ onb.team }} : policy {{ onb.policy }} + entree KV
+      {{ onb_kv_logical }} posees (apim_onb_gateway=false). Aucun objet
+      gateway (user technique, groupe, accessProfile, groupe systeme) n'a ete
+      pose ni verifie par ce run — jouer un onboarding complet
+      (apim_onb_gateway=true, le defaut) pour les poser.
+  when: "not (apim_onb_gateway | bool)"

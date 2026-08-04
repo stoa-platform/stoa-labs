@@ -15,8 +15,16 @@
 #
 # Provisionne (idempotent, re-jouable après recreate de poc-vault) :
 #   1. auth method `userpass` (mount configurable — USERPASS_MOUNT)
-#   2. onboarding des tenants de lab — Vault (policy deploy-<tenant>) + gateway
-#      (RBAC), via le playbook Ansible ansible/onboard-team.yml (TENANTS)
+#   2. onboarding des tenants de lab — Vault SEUL (policy deploy-<tenant> +
+#      entrée KV), via le rôle Ansible apim_team_onboard (TENANTS), en mode
+#      apim_onb_gateway=false : CE script NE POSE NI NE TOUCHE AUCUN objet
+#      gateway (user technique, groupe, accessProfile, groupe système) — un
+#      onboarding COMPLET (apim_onb_gateway=true, le défaut du rôle) le fait
+#      séparément, et exige alors une gateway joignable. Correctif C1 (revue
+#      finale 2026-08-04) : avant ce booléen, ce script appelait le rôle SANS
+#      le surcharger, donc en mode complet — huit appels HTTP sur une gateway
+#      que ce script ne démarre jamais (cf. §6 ci-dessous), qui arrêtaient le
+#      script ICI, AVANT même de poser alice/bob/carol.
 #   3. utilisateurs de démo (matrice de preuve, cf. ci-dessous)
 #   4. audit device file (la traçabilité nominative que l'IT exige)
 # + un garde-fou final (§5, hors numérotation ci-dessus : une VÉRIFICATION,
@@ -107,11 +115,20 @@ fi
 # poc-control-plane-federation/, mais ne doit pas EXIGER ce cwd pour rester
 # correct si on l'appelle d'ailleurs.
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Le token Vault part par VAULT_TOKEN_FILE (0600, dans $TMP — detruit par le
+# trap EXIT ci-dessus), JAMAIS par `-e apim_ss_vault_token=…` : ce fichier
+# lui-meme pose la regle deux lignes plus haut (§ token en header-FILE, ADR-074)
+# et apim_common/tasks/secrets.yml (§ Vault : token statique) lit deja
+# VAULT_TOKEN_FILE en priorite — c'est le meme motif que ci/lib/vault-login.sh.
+# Un `-e` finit en clair dans `ps`/`/proc/<pid>/cmdline`, lisibles par tout
+# autre process du meme noeud ; au lab ce token est ROOT.
+printf '%s' "$VTOK" > "$TMP/vault-token"
+chmod 600 "$TMP/vault-token"
 for T in $TENANTS; do
-  say "onboarding '$T' (ansible/onboard-team.yml — policy deploy-$T + RBAC gateway)…"
-  VAULT_ADDR="$VADDR" ansible-playbook \
+  say "onboarding '$T' (ansible/onboard-team.yml — policy deploy-$T + KV, Vault seul : apim_onb_gateway=false)…"
+  VAULT_ADDR="$VADDR" VAULT_TOKEN_FILE="$TMP/vault-token" ansible-playbook \
        -i "$REPO_ROOT/ansible/inventory.lab.ini" "$REPO_ROOT/ansible/onboard-team.yml" \
-       -e apim_onb_team="$T" -e apim_ss_vault_token="$VTOK" \
+       -e apim_onb_team="$T" -e apim_onb_gateway=false \
     || fail "onboarding '$T' KO (sortie Ansible ci-dessus) — arret : deploy-$T resterait absente et $T est un tenant declare de $TENANTS, pas un cas optionnel"
   say "onboarding '$T' -> OK"
 done

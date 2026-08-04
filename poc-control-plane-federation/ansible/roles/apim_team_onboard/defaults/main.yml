@@ -38,3 +38,13 @@ apim_onb_team: ""
 
 # Longueur du mot de passe genere (hex, donc 2 caracteres par octet).
 apim_onb_password_bytes: 12
+
+# Mode VAULT-SEUL (apim_onb_gateway=false) : pose la policy + l'entree KV,
+# SAUTE gateway.yml (huit appels HTTP sur apim_ss_api_base) et la relecture
+# des objets gateway en verify.yml. Sert au bootstrap qui n'a besoin que du
+# perimetre Vault d'une equipe (scripts/setup-vault-userpass.sh) — un
+# onboarding complet, distinct, pose ensuite le user/groupe/team/groupe
+# systeme. Defaut true : le comportement existant (onboarding complet,
+# gateway comprise) reste inchange pour tout appelant qui ne surcharge pas
+# ce booleen.
+apim_onb_gateway: true

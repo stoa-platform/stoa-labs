@@ -4,6 +4,15 @@
 # Verify ne fait pas confiance aux faits poses par l'apply : il RELIT tout
 # depuis les deux systemes. C'est ce qui distingue « le run n'a pas plante » de
 # « l'equipe existe ».
+#
+# MODE VAULT-SEUL (apim_onb_gateway=false) : le volet gateway ci-dessous (relire
+# users/groups/accessProfiles, assert de la chaine user->groupe->team->groupe
+# systeme) est SAUTE — gateway.yml n'a rien pose, ces assertions n'auraient
+# rien a confirmer et un verify qui les sauterait EN SILENCE serait pire que
+# l'absence de verify (il donnerait l'illusion d'une chaine confirmee). Le
+# volet KV/policy, lui, tourne TOUJOURS : c'est le seul perimetre que ce mode
+# pose. La synthese en fin de fichier dit explicitement lequel des deux volets
+# a tourne.
 
 - name: "Verify : relire les trois objets gateway"
   ansible.builtin.uri:
@@ -11,12 +20,14 @@
   register: onb_v
   changed_when: false
   loop: ["users", "groups", "accessProfiles"]
+  when: "apim_onb_gateway | bool"
 
 - name: "Verify : indexer les relectures"
   ansible.builtin.set_fact:
     v_users: "{{ (onb_v.results | selectattr('item', 'equalto', 'users') | first).json.users | default([]) }}"
     v_groups: "{{ (onb_v.results | selectattr('item', 'equalto', 'groups') | first).json.groups | default([]) }}"
     v_profs: "{{ (onb_v.results | selectattr('item', 'equalto', 'accessProfiles') | first).json.accessProfiles | default([]) }}"
+  when: "apim_onb_gateway | bool"
 
 # CORRECTIF (revue round 1, 2026-08-04) : l'assert qui suit reutilisait
 # onb_user_id/onb_group_id — des FACTS poses par gateway.yml PENDANT L'APPLY,
@@ -36,6 +47,7 @@
     v_group_id: >-
       {{ (v_groups | selectattr('name', 'equalto', onb.group)
           | map(attribute='id') | list | first) | default('') }}
+  when: "apim_onb_gateway | bool"
 
 - name: "Verify : FAIL-CLOSED — les 4 objets existent et sont RELIES"
   ansible.builtin.assert:
@@ -47,7 +59,11 @@
       # le groupe est porte par la team
       - "v_group_id in (v_profs | selectattr('name', 'equalto', onb.team) | map(attribute='groupIds') | flatten | list)"
       # le user a acces a l'API d'admin
-      - "v_user_id in (v_groups | selectattr('name', 'equalto', apim_onb_system_group) | map(attribute='userIds') | flatten | list)"
+      # `default=[]` sur le FILTRE map, meme piege/correctif que
+      # gateway.yml:230/:268 (I3, revue finale) : sans lui, un groupe systeme
+      # sans champ userIds (etat d'usine du mock avant tout PUT) leve une
+      # erreur Jinja au lieu de rendre une liste vide.
+      - "v_user_id in (v_groups | selectattr('name', 'equalto', apim_onb_system_group) | map(attribute='userIds', default=[]) | flatten | list)"
     fail_msg: >-
       ONBOARD_UNCONFIRMED : la chaine user -> groupe -> team -> groupe systeme
       est rompue pour '{{ onb.team }}'. Un maillon absent = une equipe qui
@@ -56,6 +72,16 @@
     success_msg: >-
       ONBOARD_OK : {{ onb.user }} ∈ {{ onb.group }} ∈ accessProfile
       {{ onb.team }}, et {{ onb.user }} ∈ {{ apim_onb_system_group }}.
+  when: "apim_onb_gateway | bool"
+
+- name: "Verify : gateway SAUTEE (mode Vault-seul, apim_onb_gateway=false)"
+  ansible.builtin.debug:
+    msg: >-
+      GATEWAY_SKIPPED : apim_onb_gateway=false — la chaine
+      user -> groupe -> team -> groupe systeme N'A ETE NI POSEE NI VERIFIEE
+      par ce run. Ne pas lire l'absence d'echec ci-dessus comme une preuve que
+      ces objets existent.
+  when: "not (apim_onb_gateway | bool)"
 
 - name: "Verify : relire l'entree KV (existence, jamais la valeur)"
   ansible.builtin.uri:
@@ -92,3 +118,14 @@
   # sortie du run — TOKEN EN CLAIR. Meme raisonnement que vault.yml:98-102 ;
   # une revue anterieure a deja leve un Critical sur un oubli de ce type.
   no_log: true
+
+- name: "Verify : synthese — ce qui a ete confirme, et ce qui ne l'a pas ete"
+  ansible.builtin.debug:
+    msg: >-
+      {{ ('VERIFY_OK (complet) : chaine gateway (user -> groupe -> team -> '
+          ~ 'groupe systeme) CONFIRMEE + KV (' ~ onb_kv_logical ~ ') et policy ('
+          ~ onb.policy ~ ') CONFIRMEES pour ' ~ onb.team ~ '.')
+         if (apim_onb_gateway | bool) else
+         ('VERIFY_OK (VAULT SEUL, apim_onb_gateway=false) : KV (' ~ onb_kv_logical
+          ~ ') et policy (' ~ onb.policy ~ ') CONFIRMEES pour ' ~ onb.team
+          ~ '. Objets gateway (user/groupe/team/groupe systeme) NON VERIFIES.') }}

@@ -73,9 +73,19 @@ ANSIBLE_ARGS=(
   -e "apim_onb_team=$T"
   -e "apim_onb_providers_file=$PROVIDERS_REL"
   -e "apim_ss_vault_addr=$VAULT_ADDR"
-  -e "apim_ss_vault_token=$VAULT_TOKEN"
   -e "apim_ss_api_base=$WM/rest/apigateway"
 )
+
+# Le token Vault part par VAULT_TOKEN_FILE (0600, exporte dans l'env de CE
+# process — donc herite par chaque appel ansible-playbook ci-dessous),
+# JAMAIS par `-e apim_ss_vault_token=…` : un `-e` finit en clair dans
+# `ps`/`/proc/<pid>/cmdline`. Meme motif que setup-vault-userpass.sh (§ header-
+# FILE, ADR-074) et ci/lib/vault-login.sh ; apim_common/tasks/secrets.yml lit
+# deja VAULT_TOKEN_FILE en priorite. Nettoye par cleanup_exit (trap EXIT).
+VAULT_TOKEN_FILE="$(mktemp)"
+chmod 600 "$VAULT_TOKEN_FILE"
+printf '%s' "$VAULT_TOKEN" > "$VAULT_TOKEN_FILE"
+export VAULT_TOKEN_FILE
 
 # --- teardown : gestes de suppression, partages entre la preuve 7 et le trap
 # EXIT ------------------------------------------------------------------------
@@ -106,7 +116,7 @@ print(next((u['id'] for u in json.load(sys.stdin).get('users',[]) if u.get('logi
   curl -s -H "X-Vault-Token: $VAULT_TOKEN" -X DELETE \
     "$VAULT_ADDR/v1/sys/policies/acl/deploy-$T" -o /dev/null
 }
-cleanup_exit() { teardown >/dev/null 2>&1; rm -f "$PROVIDERS_ABS"; }
+cleanup_exit() { teardown >/dev/null 2>&1; rm -f "$PROVIDERS_ABS" "$VAULT_TOKEN_FILE"; }
 trap cleanup_exit EXIT
 
 echo "== onboarding de l'equipe jetable $T sur $WM =="
