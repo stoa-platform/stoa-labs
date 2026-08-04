@@ -1,0 +1,9 @@
+---
+# Le nom d'equipe sert de segment de chemin Vault, de nom de policy ET de nom
+# de team. `../autre` sortirait du chemin KV : c'est une evasion de chemin qui
+# donnerait a une equipe les creds d'une autre, pas une coquetterie.
+providers:
+  - team: "../insurance-demo"
+    description: "evasion de chemin"
+    repo: "x/y"
+    approvers: []

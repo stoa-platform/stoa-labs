@@ -1,0 +1,54 @@
+---
+# roles/apim_team_onboard/tasks/resolve.yml — quelle equipe, et quels noms.
+#
+# La garde du nom n'est pas de la validation de confort. Le nom d'equipe sert
+# SIMULTANEMENT de segment de chemin Vault, de nom de policy et de nom de team :
+# `team: ../autre` produirait le chemin `deploy/../autre/wm-admin`, c'est-a-dire
+# les creds d'une AUTRE equipe. C'est une evasion de chemin.
+
+- name: "Providers : charger la source declarative"
+  ansible.builtin.include_vars:
+    file: "{{ apim_onb_providers_file }}"
+    name: onb_src
+
+- name: "Providers : entree de l'equipe ciblee"
+  ansible.builtin.set_fact:
+    onb_entry: >-
+      {{ (onb_src.providers | default([])
+          | selectattr('team', 'equalto', apim_onb_team)
+          | list | first) | default({}) }}
+
+- name: "Providers : FAIL-CLOSED — l'equipe doit etre declaree"
+  ansible.builtin.assert:
+    that: "onb_entry | length > 0"
+    fail_msg: >-
+      TEAM_NOT_DECLARED : '{{ apim_onb_team }}' est absente de
+      {{ apim_onb_providers_file }}. Une equipe s'onboarde par une entree revue
+      dans ce fichier, pas par un parametre de ligne de commande.
+
+- name: "Nom d'equipe : FAIL-CLOSED — forme imposee"
+  ansible.builtin.assert:
+    that: "onb_entry.team is match('^[a-z0-9][a-z0-9-]{1,30}$')"
+    fail_msg: >-
+      TEAM_NAME_INVALID : '{{ onb_entry.team }}' — attendu
+      ^[a-z0-9][a-z0-9-]{1,30}$. Ce nom devient un segment de chemin Vault, un
+      nom de policy et un nom de team : tout caractere hors de cette forme est
+      une evasion de chemin en puissance.
+    success_msg: "TEAM_NAME_OK : '{{ onb_entry.team }}'"
+
+- name: "Derivations : les quatre noms, depuis les gabarits"
+  ansible.builtin.set_fact:
+    onb: >-
+      {{ onb_entry | combine({
+           'user':   apim_onb_user_tpl,
+           'group':  apim_onb_group_tpl,
+           'kv_sub': apim_onb_kv_tpl,
+           'policy': apim_onb_policy_tpl }) }}
+  vars:
+    team: "{{ onb_entry.team }}"
+
+- name: "Derivations : journalisees (aucun secret)"
+  ansible.builtin.debug:
+    msg: >-
+      equipe={{ onb.team }} user={{ onb.user }} groupe={{ onb.group }}
+      kv={{ onb.kv_sub }} policy={{ onb.policy }}

@@ -1,0 +1,14 @@
+---
+# Les equipes de l'environnement dev. Source declarative de l'onboarding :
+# revue par PR, protegee par branch protection. C'est ici que l'appartenance
+# d'une equipe devient un fait date.
+#
+# UNE LIGNE PAR EQUIPE. Tout le reste (user, groupe, chemin KV, policy) est
+# DERIVE des gabarits de roles/apim_team_onboard/defaults/main.yml — les memes
+# que ceux dont le CI derive la team a l'execution. Ne jamais denormaliser ici
+# ce qui se derive la-bas : c'est ce qui garantit qu'ils ne divergent pas.
+providers:
+  - team: banking-demo
+    description: "Equipe paiements — comptes et virements"
+    repo: banking-demo/accounts-api      # declare des maintenant, consomme au palier 2
+    approvers: ["A123456", "B789012"]    # matricules — projetes dans owner au publish

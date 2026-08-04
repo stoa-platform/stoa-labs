@@ -88,3 +88,52 @@
           la feature est off : le role appellerait quand meme GET /accessProfiles
           (defaut du 2026-08-03, "le bouton" ne commandait que les assert).
         success_msg: "OK — nom d'equipe present mais feature off : le travail (pas seulement l'assert) est saute"
+
+- name: "Onboarding — gardes hors ligne"
+  hosts: webmethods
+  gather_facts: false
+  tasks:
+
+    - name: "Nom d'equipe : une evasion de chemin doit etre refusee"
+      block:
+        - ansible.builtin.import_role:
+            name: apim_team_onboard
+            tasks_from: resolve.yml
+          vars:
+            apim_onb_providers_file: "tests/onboard/providers-bad-name.yml"
+            apim_onb_team: "../insurance-demo"
+        - ansible.builtin.fail:
+            msg: "un nom d'equipe avec ../ a ete accepte"
+      rescue:
+        - ansible.builtin.assert:
+            that: "'TEAM_NAME_INVALID' in (ansible_failed_result.msg | default(''))"
+            fail_msg: >-
+              refus obtenu mais pas le bon :
+              {{ ansible_failed_result.msg | default('(sans message)') }}
+            success_msg: "OK — TEAM_NAME_INVALID"
+
+    - name: "Derivations : une equipe legitime rend les 4 noms attendus"
+      ansible.builtin.import_role:
+        name: apim_team_onboard
+        tasks_from: resolve.yml
+      vars:
+        apim_onb_providers_file: "providers.dev.yml"
+        apim_onb_team: "banking-demo"
+
+    - name: "Derivations : verifier chacune"
+      ansible.builtin.assert:
+        that:
+          - "onb.user   == 'svc-banking-demo'"
+          - "onb.group  == 'banking-demo-devs'"
+          - "onb.kv_sub == 'deploy/banking-demo/wm-admin'"
+          - "onb.policy == 'deploy-banking-demo'"
+        fail_msg: "derivations inattendues : {{ onb }}"
+        success_msg: "OK — svc-/-devs/deploy-…/deploy- derives"
+
+    - name: "Convention : la derivation du CI sur ce chemin KV rend bien l'equipe"
+      ansible.builtin.assert:
+        that: "(onb.kv_sub.split('/'))[1] == onb.team"
+        fail_msg: >-
+          le gabarit KV ne place pas le nom d'equipe en 2e segment — le
+          `cut -d/ -f2` du CI deriverait une valeur fausse.
+        success_msg: "OK — gabarit KV et derivation du CI concordent"

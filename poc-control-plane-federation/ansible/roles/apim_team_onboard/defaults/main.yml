@@ -1,0 +1,36 @@
+---
+# roles/apim_team_onboard/defaults/main.yml
+#
+# LES GABARITS SONT LA CONVENTION. Elle n'existait nulle part : elle etait
+# encodee deux fois dans un `cut -d/ -f2` (Jenkinsfile.selfservice:191,
+# Jenkinsfile.publish-api:153) que rien ne nommait. La declarer ici la rend
+# ASSERTABLE, et garantit que ce que l'onboarding pose et ce que le runtime
+# derive ne peuvent pas diverger.
+#
+# Chez un client dont la disposition KV differe, surcharger apim_onb_kv_tpl —
+# et poser APIM_TEAM dans le CI, puisque la derivation par cut ne s'applique
+# plus.
+apim_onb_user_tpl: "svc-{{ team }}"
+apim_onb_group_tpl: "{{ team }}-devs"
+apim_onb_kv_tpl: "deploy/{{ team }}/wm-admin"
+apim_onb_policy_tpl: "deploy-{{ team }}"
+
+# Groupe systeme dont l'appartenance conditionne l'acces a l'API d'admin
+# (sinon 403 sur GET /apis). Distinct de la team : deux gestes, pas un.
+apim_onb_system_group: "API-Gateway-Providers"
+
+# Bitmask de privileges. Defaut = celui du profil systeme API-Gateway-Providers,
+# comme le bootstrap F4. Le retrait de POST /apis (D6) n'est PAS tranche : il
+# exige de lire les noms en console puis un bit-flip sur un profil JETABLE, avec
+# capture du bitmask d'avant comme rollback. Le jour ou c'est tranche, cette
+# valeur suffit a propager.
+apim_onb_privilege: "111100101101100000001"
+
+# Source declarative, relative au repertoire ansible/.
+apim_onb_providers_file: "providers.dev.yml"
+
+# Equipe ciblee ; vide = toutes celles du fichier.
+apim_onb_team: ""
+
+# Longueur du mot de passe genere (hex, donc 2 caracteres par octet).
+apim_onb_password_bytes: 12
