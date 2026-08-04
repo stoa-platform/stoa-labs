@@ -1,0 +1,75 @@
+---
+# roles/apim_team_onboard/tasks/verify.yml — relecture independante.
+#
+# Verify ne fait pas confiance aux faits poses par l'apply : il RELIT tout
+# depuis les deux systemes. C'est ce qui distingue « le run n'a pas plante » de
+# « l'equipe existe ».
+
+- name: "Verify : relire les trois objets gateway"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_api_base }}/{{ item }}"
+  register: onb_v
+  changed_when: false
+  loop: ["users", "groups", "accessProfiles"]
+
+- name: "Verify : indexer les relectures"
+  ansible.builtin.set_fact:
+    v_users: "{{ (onb_v.results | selectattr('item', 'equalto', 'users') | first).json.users | default([]) }}"
+    v_groups: "{{ (onb_v.results | selectattr('item', 'equalto', 'groups') | first).json.groups | default([]) }}"
+    v_profs: "{{ (onb_v.results | selectattr('item', 'equalto', 'accessProfiles') | first).json.accessProfiles | default([]) }}"
+
+- name: "Verify : FAIL-CLOSED — les 4 objets existent et sont RELIES"
+  ansible.builtin.assert:
+    that:
+      # le user existe
+      - "(v_users | selectattr('loginId', 'equalto', onb.user) | list | length) == 1"
+      # le user est membre de son groupe
+      - "onb_user_id in (v_groups | selectattr('name', 'equalto', onb.group) | map(attribute='userIds') | flatten | list)"
+      # le groupe est porte par la team
+      - "onb_group_id in (v_profs | selectattr('name', 'equalto', onb.team) | map(attribute='groupIds') | flatten | list)"
+      # le user a acces a l'API d'admin
+      - "onb_user_id in (v_groups | selectattr('name', 'equalto', apim_onb_system_group) | map(attribute='userIds') | flatten | list)"
+    fail_msg: >-
+      ONBOARD_UNCONFIRMED : la chaine user -> groupe -> team -> groupe systeme
+      est rompue pour '{{ onb.team }}'. Un maillon absent = une equipe qui
+      existe a moitie : elle peut avoir un compte sans acces, ou une team sans
+      membre.
+    success_msg: >-
+      ONBOARD_OK : {{ onb.user }} ∈ {{ onb.group }} ∈ accessProfile
+      {{ onb.team }}, et {{ onb.user }} ∈ {{ apim_onb_system_group }}.
+
+- name: "Verify : relire l'entree KV (existence, jamais la valeur)"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_vault_addr }}/v1/{{ onb_kv_path }}"
+    headers: { X-Vault-Token: "{{ apim_ss_vault_token }}" }
+    ca_path: "{{ apim_ss_ca_path | default('') or omit }}"
+  register: onb_v_kv
+  delegate_to: localhost
+  changed_when: false
+  no_log: true
+
+- name: "Verify : FAIL-CLOSED — l'entree KV porte le bon username"
+  ansible.builtin.assert:
+    that: "onb_v_kv.json.data.data[apim_ss_vault_wm_user_key] == onb.user"
+    fail_msg: >-
+      KV_MISMATCH : {{ onb_kv_logical }} ne porte pas
+      '{{ onb.user }}'. Le CI derive la team du 2e segment de ce chemin : une
+      entree qui ne correspond pas au compte donne une identite incoherente.
+    success_msg: "KV_OK : {{ onb_kv_logical }} -> {{ onb.user }}"
+
+- name: "Verify : la policy existe"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_vault_addr }}/v1/sys/policies/acl/{{ onb.policy }}"
+    headers: { X-Vault-Token: "{{ apim_ss_vault_token }}" }
+    ca_path: "{{ apim_ss_ca_path | default('') or omit }}"
+  register: onb_v_pol
+  delegate_to: localhost
+  changed_when: false
+  failed_when: "onb_v_pol.status != 200"
+  # ECART AU BRIEF (declare, ajout) : le brief omet no_log ici alors que cette
+  # tache porte X-Vault-Token dans ses headers, comme CHAQUE autre appel Vault
+  # de ce role (vault.yml, et la tache KV juste au-dessus). Sans lui, un echec
+  # (mauvais code HTTP, reseau) imprimerait invocation.module_args dans la
+  # sortie du run — TOKEN EN CLAIR. Meme raisonnement que vault.yml:98-102 ;
+  # une revue anterieure a deja leve un Critical sur un oubli de ce type.
+  no_log: true

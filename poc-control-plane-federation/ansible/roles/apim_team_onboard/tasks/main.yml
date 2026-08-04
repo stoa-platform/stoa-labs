@@ -1,0 +1,57 @@
+---
+# roles/apim_team_onboard/tasks/main.yml — onboarding d'UNE equipe.
+#
+# ORDRE NON NEGOCIABLE : resolve -> vault -> gateway -> verify.
+# Vault avant la gateway parce qu'un secret orphelin est inoffensif alors qu'un
+# compte vivant au secret perdu ne l'est pas (cf. en-tete de vault.yml).
+#
+# La sonde Teams ne conditionne RIEN ici : users, groupes et accessProfiles sont
+# des objets RBAC qui existent independamment du cloisonnement. Le role les pose
+# dans tous les cas et DIT ce qu'il en est — c'est ce qui permet d'onboarder
+# pendant qu'un correctif attend sa validation.
+
+- name: "Onboarding : resoudre l'equipe et ses noms derives"
+  ansible.builtin.import_tasks: resolve.yml
+
+- name: "Onboarding : secrets d'admin gateway (Vault, fallback PoC)"
+  ansible.builtin.import_role:
+    name: apim_common
+    tasks_from: secrets.yml
+
+- name: "Onboarding — equipe '{{ onb.team }}'"
+  module_defaults:
+    ansible.builtin.uri: "{{ apim_ss_uri_defaults }}"
+  block:
+    # ECART AU BRIEF (declare, correctif) : le brief place cet import_role
+    # HORS du bloc module_defaults, avec `apim_ss_require_team: false` en var.
+    # Constate a la contre-epreuve (mock 18093) : GET /configurations/extended
+    # part alors SANS les headers/auth basic (apim_ss_uri_defaults ne
+    # s'applique qu'aux taches DANS ce bloc) -> HTTP 401, TEAMS_PROBE_FAILED,
+    # l'onboarding entier avorte. Deuxieme piege dans la meme ligne :
+    # `apim_ss_require_team` n'est PAS le parametre lu par teams-feature.yml
+    # (c'est `apim_ss_require_team` cote apim_selfservice_app UNIQUEMENT — cf.
+    # l'avertissement en tete de ce fichier, ecrit par la tache 3 pour
+    # exactement ce piege) : la sonde lit `apim_teams_required`, qui restait
+    # donc a son defaut fail-closed `true` — feature eteinte + team "exigee"
+    # par defaut = TEAMS_DISABLED, alors que le brief attend un onboarding qui
+    # REUSSIT avec le message de cloisonnement dormant (Step 4). Deplacer
+    # l'import DANS le bloc (module_defaults couvre l'appel) et poser le BON
+    # parametre corrige les deux d'un coup.
+    - name: "Onboarding : etat de la feature Teams (informatif ici)"
+      ansible.builtin.import_role:
+        name: apim_common
+        tasks_from: teams-feature.yml
+      vars:
+        apim_teams_required: false     # l'onboarding ne DEPEND pas de la feature
+    - ansible.builtin.import_tasks: vault.yml
+    - ansible.builtin.import_tasks: gateway.yml
+    - ansible.builtin.import_tasks: verify.yml
+
+- name: "Onboarding : etat de cloisonnement de l'equipe posee"
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'Equipe ' ~ onb.team ~ ' posee et ACTIVE : la feature Teams est allumee.'
+         if apim_teams_enabled | bool
+         else 'Equipe ' ~ onb.team ~ ' posee ; feature Teams ETEINTE — les objets '
+              ~ 'existent, leur effet de cloisonnement est DORMANT jusqu a '
+              ~ 'reactivation. Rien a rejouer le moment venu.' }}

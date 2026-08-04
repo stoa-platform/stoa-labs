@@ -1,0 +1,24 @@
+---
+# Onboarding d'une equipe (palier 1 : Vault + gateway ; le depot Gitea est au
+# palier 2). Le nom d'equipe est OBLIGATOIRE et doit etre declare dans
+# providers.<env>.yml.
+#
+#   ansible-playbook -i ansible/inventory.lab.ini ansible/onboard-team.yml \
+#     -e apim_onb_team=banking-demo
+#
+# Choisir la source declarative de l'environnement :
+#     -e apim_onb_providers_file=providers.dev.yml
+- name: "Onboarding d'equipe"
+  hosts: webmethods
+  gather_facts: false
+  tasks:
+    - name: "FAIL-CLOSED — une equipe cible est obligatoire"
+      ansible.builtin.assert:
+        that: "apim_onb_team | default('') | length > 0"
+        fail_msg: >-
+          Passer -e apim_onb_team=<equipe>. Onboarder « toutes les equipes du
+          fichier » d'un seul geste est volontairement absent : une erreur y
+          serait multipliee par le nombre d'equipes.
+
+    - ansible.builtin.import_role:
+        name: apim_team_onboard
