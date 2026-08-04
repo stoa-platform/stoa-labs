@@ -19,10 +19,19 @@ providers:
   # DOCUMENTE de scripts/test-vault-user-login.sh (LAB_TENANT_BOB) et de
   # scripts/lib/lab-vault-users.sh sans jamais avoir ete DECLARE ici — sans
   # cette entree, l'onboarding de bob echoue TEAM_NOT_DECLARED et T6/T27 de
-  # ce harnais restent casses (authentifie, sans le perimetre). `repo` reste
-  # un placeholder de palier 2 (Task 8, "approvers projetes dans owner") :
-  # aucune tache de ce palier ne le consomme encore.
+  # ce harnais restent casses (authentifie, sans le perimetre).
+  #
+  # `repo` et `approvers` restent VOLONTAIREMENT VIDES (arbitrage du lead,
+  # 2026-08-04) : payments-team EST un tenant reel de ce depot (HANDOFF.md,
+  # "Tenants canoniques"), mais ni son repo-produit ni sa liste d'approbateurs
+  # ne sont etablis ICI — les inventer aurait fini par etre pris pour argent
+  # comptant. Un champ vide + sa raison vaut mieux qu'une valeur plausible et
+  # fausse. Ni l'un ni l'autre n'est consomme a ce palier (resolve.yml ne fait
+  # que les transporter via `combine()`) : `repo` est un placeholder de
+  # palier 2, `approvers: []` prend la branche APPROVERS_EMPTY prevue par la
+  # Task 8 (log "rien a projeter", champ cible intact — cf. task-8-brief.md,
+  # `approvers.yml` step 3). A renseigner par qui detient ces faits.
   - team: payments-team
     description: "Equipe paiements — virements sortants (cross-tenant vs banking-demo)"
-    repo: payments-team/payments-initiation   # declare des maintenant, consomme au palier 2
-    approvers: ["C345678", "D901234"]         # matricules — projetes dans owner au publish
+    repo: ""          # inconnu — consomme au palier 2, a renseigner a ce moment
+    approvers: []      # inconnu — la liste d'approbateurs n'est pas encore etablie

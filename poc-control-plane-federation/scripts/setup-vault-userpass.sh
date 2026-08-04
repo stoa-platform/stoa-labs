@@ -91,10 +91,16 @@ fi
 #
 # Chaque tenant de $TENANTS est onboarde INDIVIDUELLEMENT (le playbook refuse
 # volontairement un mode « toutes les equipes » — une erreur y serait
-# multipliee par le nombre d'equipes, cf. onboard-team.yml). Un echec sur UN
-# tenant n'arrete pas la boucle (pas de `set -e` dans ce script, coherent avec
-# le reste du fichier) : il est signale par `warn`, et confirme ou infirme
-# par le garde-fou §5 plus bas — qui lit desormais le meme etat.
+# multipliee par le nombre d'equipes, cf. onboard-team.yml).
+#
+# ECHEC = ARRET (`fail`, pas `warn`). Les DEUX tenants de $TENANTS sont
+# desormais declares dans providers.dev.yml (arbitrage du lead, 2026-08-04) :
+# leur onboarding DOIT reussir. Un avertissement qui laisse la boucle
+# continuer serait exactement le mode de defaillance que cette dette repare —
+# le runbook publie annoncerait 34/34, l'echec passerait inapercu au milieu
+# de la sortie, et les tests concernant CE tenant echoueraient plus loin
+# (403) en le rattachant a la mauvaise cause. Une panne reelle sur
+# l'onboarding doit se voir ICI.
 #
 # Chemins ABSOLUS (racine du repo derivee de l'emplacement du script, pas du
 # cwd de l'appelant) : ce script est documente comme lance depuis
@@ -103,13 +109,11 @@ fi
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 for T in $TENANTS; do
   say "onboarding '$T' (ansible/onboard-team.yml — policy deploy-$T + RBAC gateway)…"
-  if VAULT_ADDR="$VADDR" ansible-playbook \
+  VAULT_ADDR="$VADDR" ansible-playbook \
        -i "$REPO_ROOT/ansible/inventory.lab.ini" "$REPO_ROOT/ansible/onboard-team.yml" \
-       -e apim_onb_team="$T" -e apim_ss_vault_token="$VTOK"; then
-    say "onboarding '$T' -> OK"
-  else
-    warn "onboarding '$T' KO (sortie Ansible ci-dessus) — deploy-$T restera absente ; le garde-fou §5 le confirmera"
-  fi
+       -e apim_onb_team="$T" -e apim_ss_vault_token="$VTOK" \
+    || fail "onboarding '$T' KO (sortie Ansible ci-dessus) — arret : deploy-$T resterait absente et $T est un tenant declare de $TENANTS, pas un cas optionnel"
+  say "onboarding '$T' -> OK"
 done
 
 # Policy de l'OPÉRATEUR DE MISE EN PROD — périmètre PLATEFORME, distinct des
