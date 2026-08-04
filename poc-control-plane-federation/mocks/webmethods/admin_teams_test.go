@@ -96,6 +96,52 @@ func TestAccessProfileAcceptsGroupUUID(t *testing.T) {
 	}
 }
 
+// LE MÊME PIÈGE, un cran plus bas : userIds passés par loginId (custom) sont
+// ignorés en silence — 200, liste vide. createGroup partage keepKnown avec
+// createProfile, mais ce chemin de code n'était jusqu'ici jamais exercé par
+// un test dédié (constat de revue, round 1).
+func TestGroupIgnoresUserLoginNames(t *testing.T) {
+	srv := httptest.NewServer(NewServer().Handler())
+	defer srv.Close()
+
+	post(t, srv, "/rest/apigateway/users", map[string]any{
+		"firstName": "Jane", "lastName": "Doe", "loginId": "jane.doe", "password": "x"})
+
+	grp := post(t, srv, "/rest/apigateway/groups", map[string]any{
+		"name": "banking-demo-devs", "type": "local",
+		"userIds": []string{"jane.doe"}, // un loginId custom, pas un UUID
+	})
+
+	ids, _ := grp["userIds"].([]any)
+	if len(ids) != 0 {
+		t.Fatalf("userIds = %v, attendu vide (les loginId custom sont ignorés)", ids)
+	}
+}
+
+// Le même appel avec l'UUID de l'utilisateur réellement créé fonctionne —
+// sans quoi le test précédent ne prouverait rien (il passerait aussi si la
+// surface était inerte).
+func TestGroupAcceptsUserUUID(t *testing.T) {
+	srv := httptest.NewServer(NewServer().Handler())
+	defer srv.Close()
+
+	usr := post(t, srv, "/rest/apigateway/users", map[string]any{
+		"firstName": "Jane", "lastName": "Doe", "loginId": "jane.doe", "password": "x"})
+	uid, _ := usr["id"].(string)
+	if uid == "" {
+		t.Fatal("l'utilisateur créé n'a pas d'id")
+	}
+
+	grp := post(t, srv, "/rest/apigateway/groups", map[string]any{
+		"name": "banking-demo-devs", "type": "local",
+		"userIds": []string{uid},
+	})
+	ids, _ := grp["userIds"].([]any)
+	if len(ids) != 1 || ids[0] != uid {
+		t.Fatalf("userIds = %v, attendu [%s]", ids, uid)
+	}
+}
+
 // Les groupes SYSTÈME (livrés d'usine) ont id == name — mesuré 2026-08-03.
 // Passer leur NOM comme groupId réussit donc : ce n'est PAS une exception au
 // piège du dessus, c'est la même règle keepKnown appliquée à un id différent.
