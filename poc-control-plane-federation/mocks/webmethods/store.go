@@ -23,6 +23,15 @@ type apiRecord struct {
 	Type       string   `json:"type"`
 	Policies   []string `json:"policies"`
 
+	// Owner mirrors the client's custom "approvers projected into owner" field
+	// (Task 8, ADR pending) — measured live at apiResponse.api.owner (api level,
+	// NOT apiResponse level, unlike `teams`), a STRING, absent from GET /apis
+	// (list) and present on GET /apis/{id} (single). omitempty reproduces the
+	// absent-until-first-write behaviour: a freshly imported API carries no
+	// owner in the mock (the real gateway's own default is the creator's login,
+	// never captured live — out of scope to reproduce).
+	Owner string `json:"owner,omitempty"`
+
 	// Definition is the decoded apiDefinition of the LAST import — data-plane
 	// only (resource allowlist matching), never serialized back to the admin
 	// surface (the labctl adapter does not read it).

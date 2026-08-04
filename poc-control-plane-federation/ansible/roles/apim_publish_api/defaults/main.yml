@@ -42,6 +42,25 @@ apim_pub_manifest_allowed: ["apim_api"]
 # n'importe quelle équipe. false = lab sans feature Teams, JAMAIS chez un client.
 apim_pub_require_team: true
 
+# --- approbateurs (projection depuis providers.<env>.yml) --------------------
+# La LISTE fait autorite dans providers.<env>.yml ; ce champ n'en est qu'une
+# PROJECTION, ecrite a chaque publish. Le developpement custom qui scrute les
+# approbations en attente lit ce champ : ne pas le renommer sans lui. Ecrire
+# des matricules ici ECRASE l'information de createur que le produit y logeait
+# jusque-la ("Administrator" sur les API du lab) — convention du client, pas
+# une decision de ce role.
+# Les deux knobs epousent l'encodage constate sur la gateway 10.15 du lab :
+# `owner` vit a apiResponse.api.owner (PAS apiResponse.teams, piege deja
+# rencontre), c'est une CHAINE, absente de la liste GET /apis, presente en GET
+# unitaire.
+apim_pub_approvers_field: "owner"
+apim_pub_approvers_join: ","      # mettre "" pour ecrire un TABLEAU
+# Knob PROPRE a ce role (namespace apim_pub_*) plutot que de reutiliser
+# apim_onb_providers_file (apim_team_onboard) : ce playbook (publish-api.yml)
+# tourne seul, sans que ce role d'onboarding n'ait jamais pose cette variable —
+# la reutiliser aurait echoue "variable is undefined" a chaque publish normal.
+apim_pub_providers_file: "providers.dev.yml"
+
 # --- l'API à publier --------------------------------------------------------
 apim_api:
   name: "accounts-read"

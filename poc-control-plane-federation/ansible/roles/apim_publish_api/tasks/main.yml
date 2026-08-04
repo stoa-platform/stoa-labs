@@ -152,6 +152,15 @@
       changed_when: false
       failed_when: "not (pub_api_after.json.apiResponse.api.isActive | default(false))"
 
+    # ===== 2b. Approbateurs : projection de la liste dans owner (E1) ========
+    # providers.<env>.yml fait autorite ; ecrit a CHAQUE publish (pas seulement
+    # a l'onboarding) pour qu'une API ayant derive revienne dans le rang. Avant
+    # le scoping team (pas de dependance entre les deux) ; apres l'activation,
+    # comme l'API doit exister pour etre relue.
+    - name: "Approbateurs : projeter la liste de l'equipe"
+      ansible.builtin.import_tasks: approvers.yml
+      when: "pub_team_name | length > 0"
+
     # ===== 3. Allow-list du port Deny-by-Default (IS-admin, opt-in) ==========
     - name: "Port : ajouter l'API à l'allow-list du listener (Deny-by-Default)"
       ansible.builtin.import_tasks: port-access.yml

@@ -1,0 +1,81 @@
+---
+# roles/apim_publish_api/tasks/approvers.yml — projection de la liste d'approbateurs.
+#
+# POURQUOI AU PUBLISH ET PAS A L'ONBOARDING. Les APIs naissent APRES l'equipe et
+# continueront de naitre : une liste posee une fois manquerait a la premiere API
+# publiee le lendemain. Ecrite ici, a chaque publish, une API ayant derive
+# revient dans le rang au publish suivant, sans geste particulier.
+#
+# La liste fait autorite dans providers.<env>.yml. Ce champ en est la PROJECTION.
+# Ecrire des matricules ECRASE l'information de createur que `owner` porte
+# aujourd'hui ("Administrator" sur les API du lab) — convention du client,
+# assumee et non remise en cause ici.
+#
+# ENTREE : `pub_team_name` (posee par team-name.yml, PAS ss_team_name — ce nom
+# est celui du role consommateur apim_selfservice_app) et `apim_api_id`
+# (posee en main.yml, soit a l'import soit au find-or-import ; PAS pub_api_id).
+
+- name: "Approbateurs : charger la source declarative"
+  ansible.builtin.include_vars:
+    file: "{{ apim_pub_providers_file }}"
+    name: pub_prov
+
+- name: "Approbateurs : liste de l'equipe"
+  ansible.builtin.set_fact:
+    pub_approvers: >-
+      {{ (pub_prov.providers | default([])
+          | selectattr('team', 'equalto', pub_team_name)
+          | map(attribute='approvers') | flatten | list) }}
+
+- name: "Approbateurs : rien a projeter (equipe absente ou liste vide)"
+  ansible.builtin.debug:
+    msg: >-
+      APPROVERS_EMPTY : aucune liste pour '{{ pub_team_name }}' dans
+      {{ apim_pub_providers_file }} — le champ
+      {{ apim_pub_approvers_field }} est laisse tel quel.
+  when: "pub_approvers | length == 0"
+
+- name: "Approbateurs : projeter dans {{ apim_pub_approvers_field }}"
+  when: "pub_approvers | length > 0"
+  block:
+    - name: "Approbateurs : relire l'API"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/apis/{{ apim_api_id }}"
+      register: pub_api_get
+      changed_when: false
+
+    - name: "Approbateurs : record de l'API"
+      ansible.builtin.set_fact:
+        pub_api_rec: "{{ pub_api_get.json.apiResponse.api }}"
+
+    - name: "Approbateurs : valeur projetee (chaine jointe OU tableau)"
+      ansible.builtin.set_fact:
+        pub_approvers_value: >-
+          {{ (pub_approvers | join(apim_pub_approvers_join))
+             if (apim_pub_approvers_join | length > 0) else pub_approvers }}
+
+    - name: "Approbateurs : ecrire (write-always — une API ayant derive revient)"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/apis/{{ apim_api_id }}"
+        method: PUT
+        body: >-
+          {{ {'apiResponse': {'api': pub_api_rec | combine({apim_pub_approvers_field: pub_approvers_value})}} }}
+        status_code: [200, 201]
+
+    - name: "Approbateurs : relire et EXIGER la valeur"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/apis/{{ apim_api_id }}"
+      register: pub_api_after
+      changed_when: false
+
+    - name: "Approbateurs : FAIL-CLOSED — la projection a REELLEMENT eu lieu"
+      ansible.builtin.assert:
+        that: "(pub_api_after.json.apiResponse.api[apim_pub_approvers_field] | default('')) == pub_approvers_value"
+        fail_msg: >-
+          APPROVERS_UNCONFIRMED : apres PUT, le champ
+          {{ apim_pub_approvers_field }} vaut
+          '{{ pub_api_after.json.apiResponse.api[apim_pub_approvers_field] | default('(absent)') }}'
+          au lieu de '{{ pub_approvers_value }}'. Le champ est peut-etre ignore
+          par le produit a ce niveau d'enveloppe (cf. le piege teams, lu au
+          niveau apiResponse et non api).
+        success_msg: "APPROVERS_OK : {{ pub_approvers | length }} approbateur(s) projete(s)"

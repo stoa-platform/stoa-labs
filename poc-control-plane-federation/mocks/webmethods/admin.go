@@ -205,13 +205,28 @@ func (s *Server) getAPI(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"apiResponse": apiEnvelope(rec)})
 }
 
-// updateAPI is the re-import: it refreshes the definition/version but PRESERVES
-// the policy and the routing action (same ids, ${alias} routing intact) — the
-// live-observed behaviour labctl's defensive convergence relies on.
+// updateAPI serves TWO distinct callers on the same route:
+//   - the re-import (flat {"apiVersion":..., "apiDefinition":...}): refreshes
+//     the definition/version but PRESERVES the policy and the routing action
+//     (same ids, ${alias} routing intact) — the live-observed behaviour
+//     labctl's defensive convergence relies on;
+//   - the field projection (Task 8, {"apiResponse":{"api":{...}}} — the SAME
+//     envelope GET returns): writes scalar fields the read-back exposes at
+//     api-level, currently only "owner" (approvers projection). ⚠ UNVERIFIED
+//     shape: only the GET/read envelope of `owner` was captured live on the
+//     real 10.15 gateway — nobody has confirmed THIS is the body the real
+//     product expects to WRITE it. Modeled here so approvers.yml's fail-closed
+//     read-back assert has something real to prove itself against; treat as a
+//     residual risk to confirm live before this ships to a client.
 func (s *Server) updateAPI(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		APIVersion    string         `json:"apiVersion"`
 		APIDefinition map[string]any `json:"apiDefinition"`
+		APIResponse   struct {
+			API struct {
+				Owner *string `json:"owner"`
+			} `json:"api"`
+		} `json:"apiResponse"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
@@ -229,6 +244,9 @@ func (s *Server) updateAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	if in.APIDefinition != nil {
 		rec.Definition = in.APIDefinition
+	}
+	if in.APIResponse.API.Owner != nil {
+		rec.Owner = *in.APIResponse.API.Owner
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"apiResponse": apiEnvelope(rec)})
 }
