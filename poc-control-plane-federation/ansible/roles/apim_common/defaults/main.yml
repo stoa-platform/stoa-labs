@@ -82,3 +82,14 @@ apim_ss_vault_oauth_token_url_key: "token_url"
 apim_ss_vault_oauth_client_id_key: "client_id"
 apim_ss_vault_oauth_client_secret_key: "client_secret"
 apim_ss_vault_oauth_scope_key: "scope"
+
+# --- état de la feature Teams (sonde partagee, tasks/teams-feature.yml) ------
+# DEUX notions distinctes, ne pas les confondre :
+#   apim_ss_teams_feature = ETAT DE LA PLATEFORME  (auto | off)
+#   apim_ss_require_team  = POLITIQUE             (true | false)
+# `auto` sonde GET /configurations/extended ; `off` court-circuite la sonde
+# quand on ne veut pas interroger la gateway. Poser cette variable dans
+# l'inventaire de l'environnement (depot plateforme, revu par PR) — JAMAIS
+# dans un manifeste d'equipe ni dans un parametre de build : sinon « qui peut
+# lancer un build » devient « qui peut desactiver le cloisonnement ».
+apim_ss_teams_feature: "auto"

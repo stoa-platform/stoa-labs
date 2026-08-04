@@ -1,0 +1,41 @@
+---
+# Gardes HORS LIGNE de l'onboarding et de la sonde Teams. Aucune gateway
+# reelle : le mock suffit, et les cas `off` ne sortent meme pas du process.
+- name: "Sonde Teams — table de verite"
+  hosts: webmethods
+  gather_facts: false
+  tasks:
+
+    # feature OFF forcee + require_team false => on passe, teams desactivees
+    - name: "OFF + derogation : la sonde rend false et ne refuse pas"
+      ansible.builtin.import_role:
+        name: apim_common
+        tasks_from: teams-feature.yml
+      vars:
+        apim_ss_teams_feature: "off"
+        apim_ss_require_team: false
+
+    - name: "OFF + derogation : apim_teams_enabled doit etre false"
+      ansible.builtin.assert:
+        that: "not (apim_teams_enabled | bool)"
+        fail_msg: "la sonde a rendu true alors que la feature est forcee off"
+        success_msg: "OK — feature off, cloisonnement desactive"
+
+    # feature OFF forcee + require_team true => refus TEAMS_DISABLED
+    - name: "OFF + exigence : doit refuser"
+      block:
+        - ansible.builtin.import_role:
+            name: apim_common
+            tasks_from: teams-feature.yml
+          vars:
+            apim_ss_teams_feature: "off"
+            apim_ss_require_team: true
+        - ansible.builtin.fail:
+            msg: "aucun refus alors que la feature est off et une team exigee"
+      rescue:
+        - ansible.builtin.assert:
+            that: "'TEAMS_DISABLED' in (ansible_failed_result.msg | default(''))"
+            fail_msg: >-
+              refus obtenu mais pas le bon :
+              {{ ansible_failed_result.msg | default('(sans message)') }}
+            success_msg: "OK — TEAMS_DISABLED"

@@ -1,0 +1,80 @@
+---
+# roles/apim_common/tasks/teams-feature.yml — etat de la feature Teams.
+#
+# POURQUOI CE FICHIER EXISTE. `apim_ss_require_team` ne commandait que les deux
+# assert (`TEAM_UNDEFINED`, `TEAM_CONFIRMED`) ; le travail reel — GET
+# /accessProfiles, POST /assets/team — etait commande par `ss_team_name`, que le
+# job pose TOUJOURS (`-e apim_ss_team=$TEAM`, derive de APIM_WM_CREDS_SUB). Le
+# poser a false ne desactivait donc rien : constate le 2026-08-03 sur une
+# gateway dont la feature est eteinte.
+#
+# LA LIGNE QUI COMPTE est la derniere de la table : feature ACTIVE + derogation
+# posee => REFUS. Une derogation temporaire ne doit pas survivre par oubli a la
+# cause qui l'a justifiee. Sans cette ligne, le jour ou le correctif passe en
+# production, rien ne signale les environnements restes non cloisonnes.
+
+- name: "Teams : sonde GET /configurations/extended (configId 'extended', PAS 'extendedSettings')"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_api_base }}/configurations/extended"
+  register: apim_ss_teams_probe
+  changed_when: false
+  failed_when: false
+  when: "(apim_ss_teams_feature | default('auto')) == 'auto'"
+
+- name: "Teams : la sonde a-t-elle abouti ?"
+  ansible.builtin.set_fact:
+    apim_ss_teams_probe_ok: >-
+      {{ (apim_ss_teams_feature | default('auto')) != 'auto'
+         or (apim_ss_teams_probe.status | default(0)) == 200 }}
+
+# Fail-closed : ne pas savoir n'est pas une raison de passer. On ne refuse que
+# si une team est exigee — sinon la sonde injoignable n'a aucune consequence.
+- name: "Teams : FAIL-CLOSED — sonde injoignable alors qu'une team est exigee"
+  ansible.builtin.assert:
+    that: "apim_ss_teams_probe_ok | bool"
+    fail_msg: >-
+      TEAMS_PROBE_FAILED : GET {{ apim_ss_api_base }}/configurations/extended a
+      rendu HTTP {{ apim_ss_teams_probe.status | default('(aucune reponse)') }}.
+      L'etat de la feature Teams est inconnu et une team est exigee — on ne
+      deploie pas dans le doute. Forcer apim_ss_teams_feature=off si la gateway
+      ne porte pas cette surface.
+  when: "apim_ss_require_team | default(true) | bool"
+
+# La valeur est une CHAINE "true"/"false", pas un booleen JSON (mesure F4).
+- name: "Teams : etat effectif de la feature"
+  ansible.builtin.set_fact:
+    apim_teams_enabled: >-
+      {{ false if (apim_ss_teams_feature | default('auto')) == 'off'
+         else ((apim_ss_teams_probe.json.enableTeamWork | default('false'))
+               | string | lower == 'true') }}
+
+- name: "Teams : FAIL-CLOSED — feature eteinte alors qu'une team est exigee"
+  ansible.builtin.assert:
+    that: "apim_teams_enabled | bool"
+    fail_msg: >-
+      TEAMS_DISABLED : la feature Teams est eteinte sur cette gateway et une
+      team est exigee (apim_ss_require_team=true). Rien n'a ete ecrit. Soit
+      activer la feature (geste d'ADMIN, hors pipeline :
+      PUT /configurations/extended {"enableTeamWork":"true"}), soit poser la
+      derogation apim_ss_require_team=false dans l'inventaire de
+      l'environnement — jamais dans un manifeste.
+  when: "apim_ss_require_team | default(true) | bool"
+
+- name: "Teams : FAIL-CLOSED — derogation perimee (la feature est revenue)"
+  ansible.builtin.assert:
+    that: "not (apim_teams_enabled | bool)"
+    fail_msg: >-
+      TEAMS_DEROGATION_STALE : apim_ss_require_team=false alors que la feature
+      Teams est ACTIVE sur cette gateway. La derogation avait pour cause une
+      feature indisponible ; cette cause a disparu. Retirer la derogation de
+      l'inventaire de l'environnement.
+  when: "not (apim_ss_require_team | default(true) | bool)"
+
+- name: "Teams : AVERTISSEMENT — cloisonnement desactive sur cet environnement"
+  ansible.builtin.debug:
+    msg: >-
+      ⚠ TEAMS_OFF : feature Teams eteinte et derogation posee. Les applications
+      et les APIs resteront en team Default — visibles et supprimables par
+      toutes les equipes. Acceptable le temps qu'un correctif atteigne cet
+      environnement, JAMAIS comme etat cible.
+  when: "not (apim_teams_enabled | bool)"
