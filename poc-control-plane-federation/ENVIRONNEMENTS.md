@@ -1,0 +1,136 @@
+# Cartographie des environnements — local, labs, plateforme STOA
+
+_Relevé du 2026-08-04. Ce qui est marqué **mesuré** a été vérifié à cette date ;
+le reste est signalé comme tel. Un document de cartographie qui ne distingue pas
+les deux fait perdre plus de temps qu'il n'en fait gagner._
+
+## Pourquoi ce document
+
+Trois environnements portent des noms proches et parfois les **mêmes jobs**, ce
+qui les rend faciles à confondre. Le 2026-08-04, une mise à jour de configuration
+Jenkins demandée « sur le labs » a été appliquée **en local** : les deux
+instances portaient les trois mêmes jobs (`provision-apply`, `provision-plan`,
+`provisioning-request`), et rien dans la réponse HTTP ne les distingue une fois
+le portail franchi. La confusion n'était pas évitable à l'œil — d'où ce relevé.
+
+---
+
+## 1. LOCAL — Docker sur le poste
+
+L'environnement de développement et de preuve. **C'est ici que tournent les jobs
+de la chaîne de provisioning et le Gitea qu'ils clonent.**
+
+| Composant | Conteneur | Port hôte |
+|---|---|---|
+| **Jenkins** (chaîne CI) | `poc-jenkins` | **18080** |
+| **Gitea** (forge des PR) | `poc-gitea` | **13000** |
+| webMethods API Gateway 10.15 | `poc-webmethods-real` | 5555 |
+| Vault | `poc-vault` | 8200 |
+| Keycloak | `poc-keycloak` | 8480 |
+| WSO2 API Manager | `poc-wso2am` | 8243 |
+| APISIX (+ dashboard) | `poc-apisix`, `poc-apisix-dashboard` | 9080, 9000 |
+| OpenSearch + Dashboards | `poc-analytics-*` | 9201, 5601 |
+| Grafana / OTel LGTM | `poc-otel-lgtm` | 3000 |
+| Microcks, Dex, ITSM mock | `poc-microcks`, `poc-dex`, `poc-itsm-mock` | 8585, 5556, 8788 |
+| Mocks webMethods par env | `poc-wm-mock-{dev,rec,int}` | (réseau interne) |
+
+**Point clé — les jobs clonent Gitea, pas GitHub.** Leur `git url` est
+`http://gitea:3000/ci/stoa-labs.git` (nom de service Docker). Un correctif poussé
+sur GitHub n'atteint **jamais** ces jobs tant qu'il n'est pas aussi sur Gitea.
+
+**Deux dépôts, deux historiques SANS ancêtre commun** (mesuré) :
+
+| Remote | URL | Rôle |
+|---|---|---|
+| `origin` | github.com/stoa-platform/stoa-labs | historique de référence |
+| `gitea` | localhost:13000/ci/stoa-labs | **ce que le CI exécute** |
+
+Les faire converger par `merge` est impossible (racines différentes). Tout report
+d'un côté à l'autre est un **transplant de contenu**, fichier par fichier.
+
+---
+
+## 2. LABS — `*.labs.gostoa.dev`
+
+Environnement hébergé, **derrière Cloudflare Access**. Mesuré : les trois hôtes
+répondent `302` vers `stoa-platform.cloudflareaccess.com`.
+
+| Hôte | Réponse | Portail |
+|---|---|---|
+| `jenkins.labs.gostoa.dev` | 302 | Cloudflare Access |
+| `wm.labs.gostoa.dev` | 302 | Cloudflare Access |
+| `wm-api.labs.gostoa.dev` | 302 | Cloudflare Access |
+
+D'après les HANDOFF du dépôt (non re-vérifié ici) : `wm.labs` sert la **console
+d'admin** webMethods et `wm-api.labs` le **data-plane**, adossés à un cluster k3s.
+
+### Y accéder depuis un script
+
+Un token d'API Jenkins **ne suffit pas** : le portail est *devant* et intercepte
+avant que Jenkins ne voie la requête. Il faut, au choix, un **service token**
+Access (`CF-Access-Client-Id` / `CF-Access-Client-Secret`), une session
+navigateur, ou WARP.
+
+⚠️ **Un service token est présent dans l'environnement du poste et n'est PAS
+autorisé sur cette application** (mesuré) : Cloudflare répond
+`service_token_status: false`. Il faut une policy « Service Auth » incluant ce
+token sur l'application Jenkins — ou un autre token.
+
+`scripts/setup-provision-jobs.sh` sait envoyer ces en-têtes et **nomme le portail**
+dans son diagnostic quand ils manquent.
+
+---
+
+## 3. PLATEFORME STOA — `*.gostoa.dev`
+
+Le produit, public. Mesuré le 2026-08-04 :
+
+| Hôte | Réponse | Rôle (CLAUDE.md) |
+|---|---|---|
+| `gostoa.dev` | 200 | landing |
+| `console.gostoa.dev` | 200 | console |
+| `portal.gostoa.dev` | 200 | portail |
+| `api.gostoa.dev` | 200 | API du control plane |
+| `docs.gostoa.dev` | 200 | documentation |
+| `auth.gostoa.dev` | 302 | authentification (redirection normale) |
+| `mcp.gostoa.dev` | **404** | MCP Gateway — documenté, ne répond pas |
+| `status.gostoa.dev` | **injoignable** | cité dans le dépôt, ne résout pas |
+
+Ces hôtes sont **publics** : aucun portail Access devant eux, contrairement au
+labs.
+
+---
+
+## Ce qui distingue les trois, en une phrase chacun
+
+- **local** : tout est joignable sans authentification de portail, et c'est la
+  seule instance que les scripts du dépôt atteignent aujourd'hui ;
+- **labs** : même topologie applicative, mais **derrière Cloudflare Access** —
+  inatteignable par un script sans service token autorisé ;
+- **plateforme** : le produit public, sans rapport avec la chaîne de provisioning
+  du PoC.
+
+## Comment savoir où l'on écrit
+
+Avant toute écriture, vérifier la cible plutôt que la déduire :
+
+```bash
+# local  -> 200 sans portail
+curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' http://localhost:18080/crumbIssuer/api/json
+# labs   -> 302 vers cloudflareaccess.com
+curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' https://jenkins.labs.gostoa.dev/crumbIssuer/api/json
+```
+
+Et pour le CI, la question qui compte n'est pas seulement « quel Jenkins » mais
+**« quel dépôt ce Jenkins clone-t-il »** : une config à jour qui exécute du code
+périmé donne un vert trompeur.
+
+## Résiduel
+
+- **Le lien entre le Jenkins local et celui du labs n'est pas établi.** Ce sont
+  peut-être deux instances distinctes, peut-être la même exposée deux fois : rien
+  ne permet de trancher tant que le portail masque l'instance publique.
+- `mcp.gostoa.dev` (404) et `status.gostoa.dev` (injoignable) sont cités comme
+  actifs — l'un dans CLAUDE.md, l'autre dans le dépôt.
+- Les hôtes `dev-wm` / `rec-wm` / `vps-wm.gostoa.dev` cités dans le dépôt ne
+  répondent pas (404 ou injoignables) : vestiges de topologies antérieures.
