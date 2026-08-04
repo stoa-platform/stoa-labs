@@ -62,6 +62,13 @@ class H(BaseHTTPRequestHandler):
         n = int(self.headers.get("Content-Length", 0))
         if n: self.rfile.read(n)
         if re.match(r"^/job/[^/]+/config\.xml$", self.path):
+            # Le VRAI Jenkins parse le corps en ISO-8859-1 quand le charset n'est
+            # pas declare, et rend 500 des le premier caractere accentue. On
+            # reproduit ce refus : sinon le test validerait un script qui echoue
+            # en production sur des descriptions francaises.
+            ct = (self.headers.get("Content-Type") or "").lower()
+            if "charset=utf-8" not in ct:
+                log("POST update NO-CHARSET " + self.path); return self._send(500)
             log("POST update " + self.path); return self._send(UPDATE_CODE)
         if re.match(r"^/job/[^/]+/doDelete$", self.path):
             log("POST DELETE " + self.path); return self._send(200)
@@ -175,7 +182,15 @@ grep -qE '\-H "CF-Access-Client-Secret' <<<"$CODE" && ko "en-tête CF en argv" |
 grep -q 'curl -K -' "$S" && ok "configuration passée par l'entrée standard" || ko "curl -K - absent"
 
 echo
-echo "== 11. instance injoignable : échec net =="
+echo "== 11. le charset UTF-8 est déclaré (sinon Jenkins casse sur les accents) =="
+start "provision-apply" 200
+OUT=$(cd "$REPO" && JENKINS_UI="$JU" JOBS=provision-apply bash "$S" 2>&1); RC=$?
+[ $RC -eq 0 ] && ok "accepté par une cible exigeant le charset" || ko "charset absent — 500 sur le 1er accent (rc=$RC)"
+calls | grep -q 'NO-CHARSET' && ko "un POST est parti sans charset" || ok "aucun POST sans charset"
+grep -c 'charset=utf-8' "$S" | grep -qvE '^[01]$' && ok "déclaré sur TOUS les envois de config" || ko "déclaré partiellement"
+
+echo
+echo "== 12. instance injoignable : échec net =="
 OUT=$(cd "$REPO" && JENKINS_UI="http://127.0.0.1:1" JOBS=provision-apply bash "$S" 2>&1); RC=$?
 [ $RC -ne 0 ] && grep -q "injoignable" <<<"$OUT" && ok "diagnostic explicite" || ko "échec silencieux ou obscur"
 

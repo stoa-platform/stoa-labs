@@ -151,9 +151,17 @@ for J in $JOBS; do
     continue
   fi
 
+  # LE `charset=utf-8` N'EST PAS DÉCORATIF. Sans lui, Jenkins parse le corps en
+  # ISO-8859-1 et casse sur le SECOND octet du premier caractère accentué :
+  # « An invalid XML character (Unicode: 0x89) », rendu au client en HTTP 500
+  # « Failed to persist config.xml » — un message qui ne dit rien de la cause.
+  # Nos descriptions de jobs sont en français : le premier « FUSIONNÉE » suffit.
+  # Mesuré le 2026-08-04 : même la config RELUE de Jenkins, renvoyée telle
+  # quelle, échouait — ce qui a permis d'écarter le contenu et de désigner
+  # l'en-tête.
   if [ "$EXISTS" = "200" ]; then
     HC=$(jcurl -s -b "$CK" -X POST "$JENKINS_UI/job/$J/config.xml" \
-         -H "$F: $C" -H "Content-Type: application/xml" \
+         -H "$F: $C" -H "Content-Type: application/xml; charset=utf-8" \
          --data-binary @"$X" -o /dev/null -w '%{http_code}')
     if [ "$HC" = "200" ]; then
       ok "configuration mise à jour en place (HTTP $HC) — historique conservé"
@@ -161,7 +169,7 @@ for J in $JOBS; do
       warn "mise à jour refusée (HTTP $HC) — repli delete+create DEMANDÉ, l'historique sera PERDU"
       jcurl -s -b "$CK" -X POST "$JENKINS_UI/job/$J/doDelete" -H "$F: $C" -o /dev/null
       HC=$(jcurl -s -b "$CK" -X POST "$JENKINS_UI/createItem?name=$J" \
-           -H "$F: $C" -H "Content-Type: application/xml" --data-binary @"$X" -o /dev/null -w '%{http_code}')
+           -H "$F: $C" -H "Content-Type: application/xml; charset=utf-8" --data-binary @"$X" -o /dev/null -w '%{http_code}')
       [ "$HC" = "200" ] && ok "job recréé (HTTP $HC)" || { warn "recréation échouée (HTTP $HC)"; RC=1; }
     else
       warn "mise à jour refusée (HTTP $HC). Le job est INCHANGÉ."
@@ -170,7 +178,7 @@ for J in $JOBS; do
     fi
   elif [ "$EXISTS" = "404" ]; then
     HC=$(jcurl -s -b "$CK" -X POST "$JENKINS_UI/createItem?name=$J" \
-         -H "$F: $C" -H "Content-Type: application/xml" --data-binary @"$X" -o /dev/null -w '%{http_code}')
+         -H "$F: $C" -H "Content-Type: application/xml; charset=utf-8" --data-binary @"$X" -o /dev/null -w '%{http_code}')
     [ "$HC" = "200" ] && ok "job créé (HTTP $HC)" || { warn "création échouée (HTTP $HC)"; RC=1; }
   else
     warn "état du job indéterminé (HTTP $EXISTS) — ni mis à jour ni créé"
