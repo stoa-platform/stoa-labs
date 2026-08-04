@@ -1,0 +1,103 @@
+---
+# roles/apim_team_onboard/tasks/vault.yml — le secret, le KV, la policy.
+#
+# VAULT AVANT LA GATEWAY, et ce n'est pas cosmetique. Le mot de passe n'existe
+# qu'une fois. Genere, pose sur la gateway, puis ecriture Vault en echec => un
+# compte VIVANT dont le secret est PERDU, a reinitialiser a la main. Dans
+# l'autre sens, un secret ecrit dont le compte n'existe pas est inoffensif : le
+# run suivant le reprend.
+#
+# LE SECRET N'EST GENERE QUE S'IL EST ABSENT. Un re-run ne fait pas tourner le
+# mot de passe — sinon rejouer l'onboarding casserait tous les jobs de l'equipe.
+# La rotation est un geste separe, jamais un effet de bord.
+
+- name: "Vault : chemins effectifs (prefixe optionnel, meme convention que secrets.yml)"
+  ansible.builtin.set_fact:
+    onb_kv_path: "{{ apim_ss_vault_kv_mount }}/data/{{ [apim_ss_vault_prefix, onb.kv_sub] | select | join('/') }}"
+    onb_kv_logical: "{{ [apim_ss_vault_prefix, onb.kv_sub] | select | join('/') }}"
+
+- name: "Vault : l'entree existe-t-elle deja ?"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_vault_addr }}/v1/{{ onb_kv_path }}"
+    headers: { X-Vault-Token: "{{ apim_ss_vault_token }}" }
+    status_code: [200, 404]
+    ca_path: "{{ apim_ss_ca_path | default('') or omit }}"
+  register: onb_kv_get
+  delegate_to: localhost
+  changed_when: false
+  no_log: true
+
+- name: "Vault : generer le mot de passe UNIQUEMENT s'il est absent"
+  ansible.builtin.set_fact:
+    onb_password: "{{ lookup('password', '/dev/null length=' ~ (apim_onb_password_bytes | int * 2) ~ ' chars=hexdigits') }}"
+    onb_password_created: true
+  no_log: true
+  when: "onb_kv_get.status == 404"
+
+- name: "Vault : sinon reprendre celui qui est stocke (aucune rotation au re-run)"
+  ansible.builtin.set_fact:
+    onb_password: "{{ onb_kv_get.json.data.data[apim_ss_vault_wm_password_key] }}"
+    onb_password_created: false
+  no_log: true
+  when: "onb_kv_get.status == 200"
+
+- name: "Vault : ecrire l'entree KV v2 (username + password)"
+  # Les noms de CHAMPS sont dynamiques (apim_ss_vault_wm_user_key/_password_key,
+  # knobs client). ECRIRE "{{ var }}": valeur comme cle de mapping YAML NE LES
+  # TEMPLATE PAS — Jinja ne re-templite pas une cle ecrite comme chaine
+  # litterale "{{ ... }}" a l'interieur d'un dict YAML : la cle POSEE serait
+  # alors le texte "{{ apim_ss_vault_wm_user_key }}", pas "username" (constate
+  # a la contre-epreuve : Vault recevait des champs nommes litteralement
+  # "{{ ... }}"). Construire le dict en Jinja natif — variables NUES comme cles
+  # dans une SEULE expression {{ }} — est la forme qui fonctionne.
+  ansible.builtin.uri:
+    url: "{{ apim_ss_vault_addr }}/v1/{{ onb_kv_path }}"
+    method: POST
+    headers: { X-Vault-Token: "{{ apim_ss_vault_token }}" }
+    body_format: json
+    body: "{{ {'data': {apim_ss_vault_wm_user_key: onb.user, apim_ss_vault_wm_password_key: onb_password}} }}"
+    status_code: [200, 204]
+    ca_path: "{{ apim_ss_ca_path | default('') or omit }}"
+  delegate_to: localhost
+  no_log: true
+  when: "onb_password_created | bool"
+
+# La policy borne le perimetre au SEUL sous-arbre de l'equipe. C'est la douve :
+# se reclamer de l'equipe X exige de savoir lire deploy/X/wm-admin (ADR-077).
+#
+# ⚠ FORME REPRISE VERBATIM de scripts/setup-vault-userpass.sh:75-97, qui creait
+# deja cette policy avant ce role. L'ECRITURE sur apps/* n'est PAS decorative :
+# c'est le mode OAuth2 `internal`, ou celui qui deploie une application de son
+# tenant y stocke le client genere par la gateway. Une policy en LECTURE SEULE
+# — ce que ce plan proposait avant la revue du 2026-08-04 — casserait ces
+# deploiements EN SILENCE, et le symptome apparaitrait loin de la cause.
+- name: "Vault : policy {{ onb.policy }} (lecture du sous-arbre, ecriture bornee a apps/)"
+  vars:
+    onb_tenant_root: "{{ [apim_ss_vault_prefix, 'deploy', onb.team] | select | join('/') }}"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_vault_addr }}/v1/sys/policies/acl/{{ onb.policy }}"
+    method: PUT
+    headers: { X-Vault-Token: "{{ apim_ss_vault_token }}" }
+    body_format: json
+    body:
+      policy: |
+        # Perimetre de deploiement du tenant {{ onb.team }}.
+        # LECTURE sur tout le sous-arbre du tenant ; ECRITURE limitee au seul
+        # sous-arbre apps/ (mode OAuth2 internal : celui qui deploie une app de
+        # SON tenant y stocke le client genere par la gateway — jamais ailleurs,
+        # jamais un autre tenant). La segregation reste ENFORCEE ici, pas dans
+        # le pipeline.
+        path "{{ apim_ss_vault_kv_mount }}/data/{{ onb_tenant_root }}/*"          { capabilities = ["read"] }
+        path "{{ apim_ss_vault_kv_mount }}/metadata/{{ onb_tenant_root }}/*"      { capabilities = ["read", "list"] }
+        path "{{ apim_ss_vault_kv_mount }}/data/{{ onb_tenant_root }}/apps/*"     { capabilities = ["create", "update", "read"] }
+        path "{{ apim_ss_vault_kv_mount }}/metadata/{{ onb_tenant_root }}/apps/*" { capabilities = ["read", "list"] }
+    status_code: [200, 204]
+    ca_path: "{{ apim_ss_ca_path | default('') or omit }}"
+  delegate_to: localhost
+
+- name: "Vault : etat (aucun secret dans le message)"
+  ansible.builtin.debug:
+    msg: >-
+      KV={{ onb_kv_logical }}
+      ({{ 'secret genere' if onb_password_created | bool else 'secret existant repris' }}),
+      policy={{ onb.policy }}

@@ -27,11 +27,15 @@
       dans ce fichier, pas par un parametre de ligne de commande.
 
 - name: "Nom d'equipe : FAIL-CLOSED — forme imposee"
+  # \Z, pas $ : en Python (regex du module `match`), `$` matche aussi juste
+  # avant un `\n` final — "banking-demo\n" passerait le filtre alors que ce
+  # `\n` n'a rien de legitime dans un segment de chemin Vault. \Z ancre sur la
+  # fin de chaine stricte, sans cette exception.
   ansible.builtin.assert:
-    that: "onb_entry.team is match('^[a-z0-9][a-z0-9-]{1,30}$')"
+    that: "onb_entry.team is match('^[a-z0-9][a-z0-9-]{1,30}\\Z')"
     fail_msg: >-
       TEAM_NAME_INVALID : '{{ onb_entry.team }}' — attendu
-      ^[a-z0-9][a-z0-9-]{1,30}$. Ce nom devient un segment de chemin Vault, un
+      ^[a-z0-9][a-z0-9-]{1,30}\Z. Ce nom devient un segment de chemin Vault, un
       nom de policy et un nom de team : tout caractere hors de cette forme est
       une evasion de chemin en puissance.
     success_msg: "TEAM_NAME_OK : '{{ onb_entry.team }}'"

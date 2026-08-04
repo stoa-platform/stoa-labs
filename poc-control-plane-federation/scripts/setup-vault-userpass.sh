@@ -69,34 +69,18 @@ else
   say "auth method $MOUNT/ déjà activée"
 fi
 
-# ═══ 2. policies deploy-<tenant> (STATIQUES, une par tenant — modèle LDAP) ═══
-# On génère le HCL en python : imbriquer une policy HCL (guillemets) dans du JSON
-# dans du shell donne un empilement d'échappements illisible et fragile.
-for T in $TENANTS; do
-  python3 - "$T" > "$TMP/pol.json" <<'PY'
-import json, sys
-t = sys.argv[1]
-hcl = (
-    '# Périmètre de déploiement du tenant %s.\n'
-    '# LECTURE sur tout le sous-arbre du tenant ; ÉCRITURE limitée au seul\n'
-    '# sous-arbre apps/ (mode OAuth2 internal : celui qui déploie une app de SON\n'
-    '# tenant y stocke le client généré par la gateway — jamais ailleurs, jamais\n'
-    "# un autre tenant). La ségrégation reste ENFORCÉE ici, pas dans le pipeline.\n"
-    'path "secret/data/stoa/deploy/%s/*"          { capabilities = ["read"] }\n'
-    'path "secret/metadata/stoa/deploy/%s/*"      { capabilities = ["read", "list"] }\n'
-    'path "secret/data/stoa/deploy/%s/apps/*"     { capabilities = ["create", "update", "read"] }\n'
-    'path "secret/metadata/stoa/deploy/%s/apps/*" { capabilities = ["read", "list"] }\n'
-) % (t, t, t, t, t)
-json.dump({"policy": hcl}, sys.stdout)
-PY
-  RC=$(vcurl -X PUT "$VADDR/v1/sys/policies/acl/deploy-$T" --data-binary @"$TMP/pol.json" -o "$TMP/err" -w '%{http_code}')
-  # Le message disait « READ … uniquement » alors que la policy accorde AUSSI
-  # create/update sur apps/*. Un message qui minimise le pouvoir réellement
-  # accordé est pire que pas de message : c'est sur lui que l'ops s'appuie pour
-  # dire à sa sécurité ce que le tenant peut faire.
-  case "$RC" in 200|204) say "policy deploy-$T (READ secret/stoa/deploy/$T/*, WRITE secret/stoa/deploy/$T/apps/* uniquement)";;
-                *) fail "policy deploy-$T KO (HTTP $RC): $(cat "$TMP/err")";; esac
-done
+# ═══ 2. policies deploy-<tenant> ═════════════════════════════════════════════
+# Les policies deploy-<tenant> sont desormais posees par le role Ansible
+# apim_team_onboard (tasks/vault.yml) : c'est lui qui sait qu'une equipe
+# existe, et il est joue a chaque onboarding. Les ecrire ici AUSSI ferait deux
+# sources pour un meme objet — donc une divergence, tot ou tard, sans que rien
+# ne la signale.
+#
+#   ansible-playbook -i ansible/inventory.lab.ini ansible/onboard-team.yml \
+#     -e apim_onb_team=<tenant>
+#
+# Ce script continue de creer les IDENTITES userpass ; il ne cree plus leurs
+# perimetres.
 
 # Policy de l'OPÉRATEUR DE MISE EN PROD — périmètre PLATEFORME, distinct des
 # périmètres de tenant. Jenkinsfile.prod/.rollback en ont besoin pour tourner sous

@@ -20,7 +20,10 @@
 #
 # Prérequis :
 #   docker compose -f docker-compose.poc.yml -f docker-compose.ldap.yml up -d openldap
-#   bash scripts/setup-vault-userpass.sh     (pour les policies deploy-<tenant>)
+#   les policies deploy-<tenant> viennent du rôle Ansible apim_team_onboard
+#   (tasks/vault.yml, joué par ansible-playbook ansible/onboard-team.yml
+#   -e apim_onb_team=<tenant>), pas de ce script ni de setup-vault-userpass.sh :
+#   ce mapping groupe→policy référence un nom qui doit avoir été onboardé.
 #
 #   bash scripts/setup-vault-ldap.sh
 #   ./scripts/test-vault-user-login.sh       # les tests [ldap] cessent d'être sautés
@@ -225,7 +228,7 @@ vcurl -o /dev/null -w '' -X POST "$VADDR/v1/auth/$MOUNT/groups/apim-readonly" -d
 say "groupe 'apim-readonly' -> aucune policy (authentifié ≠ autorisé)"
 
 vcurl "$VADDR/v1/sys/policies/acl/deploy-$LAB_TENANT_ALICE" | grep -q '"policy"' \
-  || warn "policy deploy-$LAB_TENANT_ALICE absente — lancer d'abord scripts/setup-vault-userpass.sh"
+  || warn "policy deploy-$LAB_TENANT_ALICE absente — onboarder d'abord ce tenant : ansible-playbook -i ansible/inventory.lab.ini ansible/onboard-team.yml -e apim_onb_team=$LAB_TENANT_ALICE"
 
 # Le mount ldap, ses policies de groupe et son TTL sont configurés dans TOUS les
 # cas (ils ne dépendent d'aucun mot de passe de lab-vault-users.sh) — mais si

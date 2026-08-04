@@ -29,7 +29,11 @@ apim_onb_privilege: "111100101101100000001"
 # Source declarative, relative au repertoire ansible/.
 apim_onb_providers_file: "providers.dev.yml"
 
-# Equipe ciblee ; vide = toutes celles du fichier.
+# Equipe ciblee. resolve.yml exige une correspondance EXACTE avec une entree
+# de apim_onb_providers_file — vide ne balaie PAS tout le fichier, ca echoue
+# juste TEAM_NOT_DECLARED (aucune entree n'a team: ""). Le playbook d'onboarding
+# rend cette variable obligatoire par construction (-e apim_onb_team=<equipe>) :
+# ce defaut n'est qu'un filet, pas une valeur destinee a servir telle quelle.
 apim_onb_team: ""
 
 # Longueur du mot de passe genere (hex, donc 2 caracteres par octet).

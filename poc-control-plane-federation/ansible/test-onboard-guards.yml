@@ -137,3 +137,29 @@
           le gabarit KV ne place pas le nom d'equipe en 2e segment — le
           `cut -d/ -f2` du CI deriverait une valeur fausse.
         success_msg: "OK — gabarit KV et derivation du CI concordent"
+
+    - name: "Nom d'equipe : un \\n final ne doit pas contourner l'ancre de fin"
+      block:
+        - ansible.builtin.import_role:
+            name: apim_team_onboard
+            tasks_from: resolve.yml
+          vars:
+            apim_onb_providers_file: "tests/onboard/providers-bad-name.yml"
+            apim_onb_team: "banking-demo\n"
+        - ansible.builtin.fail:
+            msg: "un nom d'equipe termine par \\n a ete accepte (Python '$' matche avant un \\n final)"
+      rescue:
+        - ansible.builtin.assert:
+            that: "'TEAM_NAME_INVALID' in (ansible_failed_result.msg | default(''))"
+            fail_msg: >-
+              refus obtenu mais pas le bon :
+              {{ ansible_failed_result.msg | default('(sans message)') }}
+            success_msg: "OK — TEAM_NAME_INVALID (\\Z, pas $)"
+
+    - name: "Vault : le chemin KV compose elide un prefixe vide"
+      ansible.builtin.assert:
+        that:
+          - "([ '', onb.kv_sub ] | select | join('/')) == 'deploy/banking-demo/wm-admin'"
+          - "([ 'stoa', onb.kv_sub ] | select | join('/')) == 'stoa/deploy/banking-demo/wm-admin'"
+        fail_msg: "la composition du chemin KV ne suit pas la convention apim_common"
+        success_msg: "OK — prefixe optionnel elide comme dans secrets.yml"

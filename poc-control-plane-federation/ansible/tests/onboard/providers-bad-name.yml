@@ -7,3 +7,10 @@ providers:
     description: "evasion de chemin"
     repo: "x/y"
     approvers: []
+  # \n final : en Python `$` matche aussi juste avant un \n de fin de chaine —
+  # `is match('^[a-z0-9][a-z0-9-]{1,30}$')` laisserait donc passer ce nom. La
+  # garde doit ancrer sur \Z (fin de chaine stricte), pas $.
+  - team: "banking-demo\n"
+    description: "evasion via \\n final ($ vs \\Z)"
+    repo: "x/y"
+    approvers: []
