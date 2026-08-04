@@ -6,14 +6,14 @@
   gather_facts: false
   tasks:
 
-    # feature OFF forcee + require_team false => on passe, teams desactivees
+    # feature OFF forcee + politique false => on passe, teams desactivees
     - name: "OFF + derogation : la sonde rend false et ne refuse pas"
       ansible.builtin.import_role:
         name: apim_common
         tasks_from: teams-feature.yml
       vars:
         apim_ss_teams_feature: "off"
-        apim_ss_require_team: false
+        apim_teams_required: false
 
     - name: "OFF + derogation : apim_teams_enabled doit etre false"
       ansible.builtin.assert:
@@ -21,7 +21,7 @@
         fail_msg: "la sonde a rendu true alors que la feature est forcee off"
         success_msg: "OK — feature off, cloisonnement desactive"
 
-    # feature OFF forcee + require_team true => refus TEAMS_DISABLED
+    # feature OFF forcee + politique true => refus TEAMS_DISABLED
     - name: "OFF + exigence : doit refuser"
       block:
         - ansible.builtin.import_role:
@@ -29,7 +29,7 @@
             tasks_from: teams-feature.yml
           vars:
             apim_ss_teams_feature: "off"
-            apim_ss_require_team: true
+            apim_teams_required: true
         - ansible.builtin.fail:
             msg: "aucun refus alors que la feature est off et une team exigee"
       rescue:
@@ -39,3 +39,26 @@
               refus obtenu mais pas le bon :
               {{ ansible_failed_result.msg | default('(sans message)') }}
             success_msg: "OK — TEAMS_DISABLED"
+
+    # PIEGE VERROUILLE : apim_ss_require_team (var du role apim_selfservice_app)
+    # posee a true DANS LE MEME vars: ne doit RIEN changer — seul le parametre
+    # apim_teams_required commande la sonde. Sans ce test, une regression qui
+    # relirait apim_ss_require_team en dur passerait inapercue (silencieuse,
+    # puisque la variable absente retombe habituellement sur son defaut true).
+    - name: "OFF + parametre false MALGRE apim_ss_require_team=true : la sonde obeit au parametre"
+      ansible.builtin.import_role:
+        name: apim_common
+        tasks_from: teams-feature.yml
+      vars:
+        apim_ss_teams_feature: "off"
+        apim_teams_required: false
+        apim_ss_require_team: true
+
+    - name: "PIEGE : apim_teams_enabled doit etre false (la variable de role a ete ignoree)"
+      ansible.builtin.assert:
+        that: "not (apim_teams_enabled | bool)"
+        fail_msg: >-
+          la sonde a lu apim_ss_require_team au lieu du parametre
+          apim_teams_required — inoperante pour apim_publish_api
+          (apim_pub_require_team)
+        success_msg: "OK — la sonde obeit au parametre, pas a la variable de role"
