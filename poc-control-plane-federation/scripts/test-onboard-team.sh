@@ -39,7 +39,25 @@ ok()  { PASS=$((PASS+1)); printf '  \033[32mPASS\033[0m %s\n' "$*"; }
 bad() { FAIL=$((FAIL+1)); printf '  \033[31mFAIL\033[0m %s\n' "$*"; }
 
 api() { curl -s -u "$WM_ADMIN_AUTH" -H 'Accept: application/json' "$WM/rest/apigateway/$1"; }
-vlt() { curl -s -H "X-Vault-Token: $1" "$VAULT_ADDR/v1/$2" -o /dev/null -w '%{http_code}'; }
+
+# Le token Vault part TOUJOURS par header-FILE (curl -H @fichier), jamais en
+# argv (ADR-074 — meme motif que setup-vault-userpass.sh:74-75, vcurl(), et
+# ci/lib/vault-login.sh). CORRECTIF (re-revue, 2026-08-04) : ce fichier
+# passait encore VAULT_TOKEN *et* le token ephemere de la douve (TOK, preuve 3)
+# en argv de curl (`-H "X-Vault-Token: $token"`) a cinq endroits — visibles
+# dans `ps`/`/proc/<pid>/cmdline`. vhdr() ecrit le token recu dans un fichier
+# 0600 SOUS $TMP (nettoye par cleanup_exit) et imprime son chemin ; tous les
+# appels Vault de ce script passent desormais par lui, quel que soit le token
+# (root VAULT_TOKEN, ou TOK, ephemere et scope a une seule policy).
+TMP="$(mktemp -d)"; chmod 700 "$TMP"
+vhdr() {
+  local f
+  f="$(mktemp "$TMP/vault-hdr.XXXXXX")"
+  chmod 600 "$f"
+  printf 'X-Vault-Token: %s\n' "$1" > "$f"
+  printf '%s' "$f"
+}
+vlt() { curl -s -H @"$(vhdr "$1")" "$VAULT_ADDR/v1/$2" -o /dev/null -w '%{http_code}'; }
 
 # --- equipe jetable declaree a la volee --------------------------------------
 # resolve.yml (roles/apim_team_onboard) EXIGE une correspondance EXACTE dans
@@ -81,9 +99,10 @@ ANSIBLE_ARGS=(
 # JAMAIS par `-e apim_ss_vault_token=…` : un `-e` finit en clair dans
 # `ps`/`/proc/<pid>/cmdline`. Meme motif que setup-vault-userpass.sh (§ header-
 # FILE, ADR-074) et ci/lib/vault-login.sh ; apim_common/tasks/secrets.yml lit
-# deja VAULT_TOKEN_FILE en priorite. Nettoye par cleanup_exit (trap EXIT).
-VAULT_TOKEN_FILE="$(mktemp)"
-chmod 600 "$VAULT_TOKEN_FILE"
+# deja VAULT_TOKEN_FILE en priorite. Sous $TMP (deja cree plus haut pour
+# vhdr()) : un seul repertoire, une seule cleanup.
+VAULT_TOKEN_FILE="$TMP/vault-token-file"
+: > "$VAULT_TOKEN_FILE"; chmod 600 "$VAULT_TOKEN_FILE"
 printf '%s' "$VAULT_TOKEN" > "$VAULT_TOKEN_FILE"
 export VAULT_TOKEN_FILE
 
@@ -111,12 +130,12 @@ print(next((u['id'] for u in json.load(sys.stdin).get('users',[]) if u.get('logi
   [ -n "$pid" ] && curl -s -u "$WM_ADMIN_AUTH" -X DELETE "$WM/rest/apigateway/accessProfiles/$pid" -o /dev/null
   [ -n "$gid" ] && curl -s -u "$WM_ADMIN_AUTH" -X DELETE "$WM/rest/apigateway/groups/$gid" -o /dev/null
   [ -n "$uid_" ] && curl -s -u "$WM_ADMIN_AUTH" -X DELETE "$WM/rest/apigateway/users/$uid_" -o /dev/null
-  curl -s -H "X-Vault-Token: $VAULT_TOKEN" -X DELETE \
+  curl -s -H @"$(vhdr "$VAULT_TOKEN")" -X DELETE \
     "$VAULT_ADDR/v1/secret/metadata/stoa/deploy/$T/wm-admin" -o /dev/null
-  curl -s -H "X-Vault-Token: $VAULT_TOKEN" -X DELETE \
+  curl -s -H @"$(vhdr "$VAULT_TOKEN")" -X DELETE \
     "$VAULT_ADDR/v1/sys/policies/acl/deploy-$T" -o /dev/null
 }
-cleanup_exit() { teardown >/dev/null 2>&1; rm -f "$PROVIDERS_ABS" "$VAULT_TOKEN_FILE"; }
+cleanup_exit() { teardown >/dev/null 2>&1; rm -f "$PROVIDERS_ABS"; rm -rf "$TMP"; }
 trap cleanup_exit EXIT
 
 echo "== onboarding de l'equipe jetable $T sur $WM =="
@@ -159,7 +178,7 @@ print('yes' if g and '$UID_' in (g.get('userIds') or []) else 'no')")
 # d'equipe faite par le CI (2e segment du chemin KV) est digne de confiance.
 # Un chemin HORS policy rend 403 meme s'il n'existe pas : la preuve tient donc
 # sans onboarder banking-demo au prealable.
-TOK=$(curl -s -H "X-Vault-Token: $VAULT_TOKEN" -X POST \
+TOK=$(curl -s -H @"$(vhdr "$VAULT_TOKEN")" -X POST \
   -d "{\"policies\":[\"deploy-$T\"],\"ttl\":\"5m\"}" \
   "$VAULT_ADDR/v1/auth/token/create" | python3 -c "
 import json,sys; print(json.load(sys.stdin)['auth']['client_token'])")
@@ -195,7 +214,7 @@ THEIRS=$(vlt "$TOK" "secret/data/stoa/deploy/banking-demo/wm-admin")
 # sha256sum de la reponse brute rendrait TOUJOURS "REJOUE" — meme quand rien
 # n'a change. Comparer .data.data est la seule forme qui repond a la question
 # posee : le secret a-t-il change, pas la requete qui l'a lu.
-kv() { curl -s -H "X-Vault-Token: $VAULT_TOKEN" \
+kv() { curl -s -H @"$(vhdr "$VAULT_TOKEN")" \
   "$VAULT_ADDR/v1/secret/data/stoa/deploy/$T/wm-admin" \
   | python3 -c "import json,sys; print(json.load(sys.stdin).get('data',{}).get('data',{}))"; }
 BEFORE=$(kv | sha256sum)

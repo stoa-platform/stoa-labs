@@ -51,6 +51,43 @@
   vars:
     team: "{{ onb_entry.team }}"
 
+# FAIL-CLOSED, AVANT TOUT USAGE de onb.kv_sub (correctif de la re-revue, I4bis
+# 2026-08-04). tasks/vault.yml derive le perimetre de la policy du DOSSIER
+# PARENT de la feuille que kv_sub designe (deploy/<team>/wm-admin ->
+# deploy/<team>) — une derivation legitime UNIQUEMENT si ce dossier parent se
+# termine par le nom d'equipe. Un gabarit apim_onb_kv_tpl surcharge qui ne
+# respecte pas cette forme casse cette hypothese SANS LE DIRE :
+#   - gabarit imbriquant le nom en dur ailleurs que comme dossier parent
+#     (ex. "secret_DEV/flat-{{ team }}-admin", un seul segment de feuille) ->
+#     le dossier parent devient "secret_DEV", PARTAGE par TOUTES les equipes.
+#     La policy deploy-<team> accorderait alors `read` sur le KV de chaque
+#     AUTRE equipe — la douve (preuve 3 de test-onboard-team.sh) tombe : 200
+#     au lieu de 403.
+#   - gabarit a PLAT, sans aucun `/` (cas reel documente en
+#     apim_common/defaults/main.yml : « l'entree peut vivre a PLAT a la racine
+#     du mount ») -> le dossier parent est VIDE, donc apres composition avec
+#     apim_ss_vault_prefix la policy accorde `read` sur TOUT le prefixe —
+#     y compris secret/data/stoa/gateways/* (creds admin de la gateway).
+# Les deux cas remplacent un refus fail-closed (403 bruyant, l'ancien
+# comportement code en dur) par un acces TROP LARGE et silencieux — pire que
+# le defaut qu'ils corrigent. On refuse donc ICI, avant que vault.yml ne s'en
+# serve, plutot que de laisser la policy se poser sur une hypothese fausse.
+- name: "Derivations : FAIL-CLOSED — le gabarit KV doit imbriquer l'equipe comme dossier parent"
+  ansible.builtin.assert:
+    that: "(onb.kv_sub.split('/')[:-1] | last | default('')) == onb.team"
+    fail_msg: >-
+      TENANT_ROOT_UNSAFE : le gabarit KV '{{ onb.kv_sub }}' (apim_onb_kv_tpl)
+      ne place pas '{{ onb.team }}' comme DERNIER SEGMENT de son dossier
+      parent. tasks/vault.yml derive le perimetre de la policy Vault de ce
+      dossier parent : s'il n'est pas nomme exactement par l'equipe (gabarit
+      a plat, ou nom d'equipe encode dans le nom de fichier plutot que dans
+      un dossier), la policy borne un sous-arbre PARTAGE par d'autres
+      equipes — voire tout le prefixe Vault — au lieu du sous-arbre de CETTE
+      equipe. Corriger apim_onb_kv_tpl pour qu'il imbrique l'equipe comme
+      dossier parent (forme "deploy/<team>/wm-admin"), jamais comme
+      fragment d'un nom de feuille ("flat-<team>-admin") ni omis (gabarit a plat).
+    success_msg: "TENANT_ROOT_OK : '{{ onb.kv_sub }}' imbrique bien '{{ onb.team }}' comme dossier parent."
+
 - name: "Derivations : journalisees (aucun secret)"
   ansible.builtin.debug:
     msg: >-
