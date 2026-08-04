@@ -62,7 +62,60 @@ répondent `302` vers `stoa-platform.cloudflareaccess.com`.
 | `wm-api.labs.gostoa.dev` | 302 | Cloudflare Access |
 
 D'après les HANDOFF du dépôt (non re-vérifié ici) : `wm.labs` sert la **console
-d'admin** webMethods et `wm-api.labs` le **data-plane**, adossés à un cluster k3s.
+d'admin** webMethods et `wm-api.labs` le **data-plane**.
+
+### Le cluster derrière : k3s sur Contabo
+
+**Atteignable sans le portail** (mesuré) : `~/.kube/k3s-contabo.yaml` pointe sur
+`https://127.0.0.1:16443` via un tunnel déjà en place. 4 nœuds
+(`worker-1` control-plane, `worker-3/4/5`).
+
+Le Jenkins du labs est le Service `jenkins` du namespace `ci` (ClusterIP
+`10.43.103.207:8080`), pod sur **worker-5** (144.91.73.37). Le même namespace
+porte `gitea-0`, `vault-0` et `openldap`. Le plan de contrôle est sur worker-1.
+
+**Aucun Ingress, aucun port ouvert.** Le seul chemin depuis l'extérieur est le
+tunnel **cloudflared sortant** : `jenkins.labs.gostoa.dev` →
+`http://jenkins.ci.svc.cluster.local:8080`, avec Cloudflare Access devant.
+
+Trois façons d'y accéder pour l'administrer, selon d'où l'on part :
+
+| Depuis | Comment |
+|---|---|
+| le poste | `kubectl -n ci port-forward svc/jenkins 18099:8080` |
+| un pod du cluster (`gitea-0`) ou worker-1 | `curl http://10.43.103.207:8080/…` |
+| un navigateur | `https://jenkins.labs.gostoa.dev` + Cloudflare Access |
+
+⚠️ Le `port-forward` **ne contourne pas le réseau** : il transite par l'**API
+server**, que le tunnel expose en `127.0.0.1:16443`. C'est pour ça qu'il marche
+depuis le poste là où un `curl` direct sur le ClusterIP échoue — un ClusterIP
+n'est routable que depuis le cluster. Il contourne le PORTAIL, pas la
+segmentation.
+
+Le pod Jenkins **n'a pas `curl`** : les scripts qui le pilotent depuis
+l'intérieur partent donc de `gitea-0` ou de worker-1.
+
+### C'est une instance DISTINCTE de la locale (tranché le 2026-08-04)
+
+La question restait ouverte faute de pouvoir comparer. Elle ne l'est plus :
+
+| | Jenkins LOCAL | Jenkins LABS |
+|---|---|---|
+| jobs | 13, dont **provision-apply / provision-plan / provisioning-request** | 5 : `carto`, `probe`, `publish-accounts`, `publish-api-deploy`, `selfservice-app-deploy` |
+| chaîne de provisioning | **oui** | **absente** |
+| SCM des jobs | Gitea local (`gitea:3000`) | GitHub, sauf `carto` |
+
+**La chaîne de provisioning self-service n'existe QUE en local.** Le labs porte
+la publication d'API et le self-service applicatif, qui clonent GitHub.
+
+⚠️ **Parenté, pas identité.** Le Jenkins docker-compose du PoC
+(`docker-compose.ci.yml`, conteneur `poc-jenkins`) est l'**ancêtre local** de
+celui du cluster. Les deux partagent des jobs de même nom — c'est ce qui rend la
+confusion si facile — mais ce n'est pas la même instance : `poc-jenkins` ne porte
+ni `publish-accounts`, ni ce que sert `labs.gostoa.dev`.
+
+Et `carto` y vise un **troisième dépôt** : `gitea.ci.svc.cluster.local:3000` —
+un Gitea interne au cluster, distinct du Gitea local et de GitHub.
 
 ### Y accéder depuis un script
 
