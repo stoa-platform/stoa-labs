@@ -101,6 +101,36 @@ labs.
 
 ---
 
+---
+
+## ⚠️ Les XML de `ci/jenkins/` ne visent pas tous la même instance
+
+Piège mesuré le 2026-08-04, en voulant « mettre à jour tous les jobs en local ».
+Deux familles cohabitent dans le même dossier, sans que rien dans le nom de
+fichier ne les distingue :
+
+| XML | SCM déclaré | Cible |
+|---|---|---|
+| `provision-apply`, `provision-plan`, `provisioning-request` | `http://gitea:3000/…` | **local** |
+| `selfservice-app-deploy`, `publish-api-deploy` | `https://github.com/…` | **cluster** (leur description le dit : « sur le Jenkins du cluster ») |
+| `carto` | — | absent du Jenkins local |
+
+**Pousser les XML « cluster » sur l'instance locale casserait les jobs** — ce
+n'est pas une dérive de configuration à réaligner, c'est une autre cible.
+Mesuré sur `selfservice-app-deploy` et `publish-api-deploy` :
+
+- le SCM passerait de `gitea:3000` (ce que la chaîne locale clone) à GitHub,
+  dépôt à l'historique **indépendant** ;
+- le **token de déclenchement disparaîtrait** (`stoa-selfservice-plan`,
+  `stoa-publish-api-plan` existent LIVE, absents des XML) : les jobs ne seraient
+  plus déclenchables par webhook.
+
+**Avant de pousser une config de job, comparer les éléments FONCTIONNELS** — SCM,
+token de trigger, paramètres — et pas seulement le nombre de lignes de diff. Un
+écart de 160 lignes peut n'être que de la métadonnée Jenkins (`DeclarativeJobAction`,
+versions de plugins épinglées, régénérées à chaque sauvegarde) ; c'est le SCM et
+le token qui décident si l'écrasement est bénin ou destructeur.
+
 ## Ce qui distingue les trois, en une phrase chacun
 
 - **local** : tout est joignable sans authentification de portail, et c'est la
