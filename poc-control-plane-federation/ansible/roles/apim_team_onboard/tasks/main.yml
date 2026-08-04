@@ -27,22 +27,28 @@
     # Constate a la contre-epreuve (mock 18093) : GET /configurations/extended
     # part alors SANS les headers/auth basic (apim_ss_uri_defaults ne
     # s'applique qu'aux taches DANS ce bloc) -> HTTP 401, TEAMS_PROBE_FAILED,
-    # l'onboarding entier avorte. Deuxieme piege dans la meme ligne :
-    # `apim_ss_require_team` n'est PAS le parametre lu par teams-feature.yml
-    # (c'est `apim_ss_require_team` cote apim_selfservice_app UNIQUEMENT — cf.
-    # l'avertissement en tete de ce fichier, ecrit par la tache 3 pour
-    # exactement ce piege) : la sonde lit `apim_teams_required`, qui restait
-    # donc a son defaut fail-closed `true` — feature eteinte + team "exigee"
-    # par defaut = TEAMS_DISABLED, alors que le brief attend un onboarding qui
-    # REUSSIT avec le message de cloisonnement dormant (Step 4). Deplacer
-    # l'import DANS le bloc (module_defaults couvre l'appel) et poser le BON
-    # parametre corrige les deux d'un coup.
+    # l'onboarding entier avorte. Deplacer l'import DANS le bloc (module_defaults
+    # couvre l'appel) corrige ce premier piege.
+    #
+    # DEUXIEME BUG (revue post-Task 7, 2026-08-04) : la premiere correction
+    # posait `apim_teams_required: false`, en pensant "je ne depends pas de la
+    # feature". Faux repos : ce parametre commande une POLITIQUE de derogation
+    # (les 3 asserts de teams-feature.yml), pas juste un etat — et sa 3e
+    # assertion REFUSE (TEAMS_DEROGATION_STALE) des que la feature redevient
+    # active alors qu'une derogation est posee. L'onboarding cassait donc tres
+    # exactement le jour ou le correctif client (qui rallume Teams) passe en
+    # prod — jamais vu au lab, ou la feature est toujours restee eteinte.
+    # `apim_team_onboard` ne veut que l'ETAT (`apim_teams_enabled`, message
+    # informatif) : il ne cloisonne rien lui-meme, donc n'a AUCUNE derogation a
+    # faire perimer. `apim_teams_assert: false` (et non plus
+    # `apim_teams_required`) exprime exactement ca — cf. teams-feature.yml,
+    # section « ETAT != POLITIQUE » pour le detail des deux parametres.
     - name: "Onboarding : etat de la feature Teams (informatif ici)"
       ansible.builtin.import_role:
         name: apim_common
         tasks_from: teams-feature.yml
       vars:
-        apim_teams_required: false     # l'onboarding ne DEPEND pas de la feature
+        apim_teams_assert: false     # ETAT seulement — l'onboarding n'arbitre aucune politique
     - ansible.builtin.import_tasks: vault.yml
     - ansible.builtin.import_tasks: gateway.yml
     - ansible.builtin.import_tasks: verify.yml

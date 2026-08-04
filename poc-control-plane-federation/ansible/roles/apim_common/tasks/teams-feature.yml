@@ -20,6 +20,27 @@
 # inoperante dans l'un des deux — et silencieusement, puisqu'une variable
 # absente retombe sur son defaut fail-closed `true`. C'est a l'appelant de dire
 # quelle est sa politique en la passant explicitement.
+#
+# ETAT != POLITIQUE (correctif, revue post-Task 7, 2026-08-04). Deux notions
+# distinctes se sont retrouvees ecrasees sur UN SEUL parametre
+# (`apim_teams_required`), et ca a casse un troisieme appelant :
+#   - `apim_selfservice_app` et `apim_publish_api` VEULENT une POLITIQUE :
+#     « j'accepte (ou pas) de ne pas cloisonner ». Les 3 asserts ci-dessous —
+#     y compris la derniere, qui tue une derogation perimee quand la feature
+#     revient — sont exactement leur raison d'etre.
+#   - `apim_team_onboard` ne veut que l'ETAT : « la feature est-elle active ? »
+#     (`apim_teams_enabled`, pour un message informatif). Il ne cloisonne
+#     rien lui-meme (il pose des objets RBAC, valables que la feature soit
+#     allumee ou pas) et n'a donc AUCUNE derogation a faire perimer. Passer
+#     `apim_teams_required: false` (pensant "je ne depends pas de la feature")
+#     faisait pourtant executer le 3e assert TEAMS_DEROGATION_STALE, qui
+#     REFUSE des que la feature redevient active — l'onboarding cassait donc
+#     tres exactement le jour ou la situation qu'il documente se resout.
+# `apim_teams_assert` (defaut `true`) separe les deux : a `false`, la sonde se
+# contente de poser `apim_teams_enabled` (etat) et N'EXECUTE AUCUNE assertion
+# ni l'avertissement de derogation (politique) — `apim_teams_required` devient
+# alors sans objet et n'a pas besoin d'etre passe. Defaut `true` => comportement
+# STRICTEMENT INCHANGE pour les deux roles existants.
 
 - name: "Teams : sonde GET /configurations/extended (configId 'extended', PAS 'extendedSettings')"
   ansible.builtin.uri:
@@ -46,7 +67,9 @@
       L'etat de la feature Teams est inconnu et une team est exigee — on ne
       deploie pas dans le doute. Forcer apim_ss_teams_feature=off si la gateway
       ne porte pas cette surface.
-  when: "apim_teams_required | default(true) | bool"
+  when:
+    - "apim_teams_assert | default(true) | bool"
+    - "apim_teams_required | default(true) | bool"
 
 # La valeur est une CHAINE "true"/"false", pas un booleen JSON (mesure F4).
 - name: "Teams : etat effectif de la feature"
@@ -69,7 +92,9 @@
       manifeste — sur la variable REELLEMENT actionnable selon le role
       appelant : apim_ss_require_team=false (apim_selfservice_app) ou
       apim_pub_require_team=false (apim_publish_api).
-  when: "apim_teams_required | default(true) | bool"
+  when:
+    - "apim_teams_assert | default(true) | bool"
+    - "apim_teams_required | default(true) | bool"
 
 - name: "Teams : FAIL-CLOSED — derogation perimee (la feature est revenue)"
   ansible.builtin.assert:
@@ -83,7 +108,9 @@
       variable REELLEMENT actionnable selon le role appelant :
       apim_ss_require_team (apim_selfservice_app) ou apim_pub_require_team
       (apim_publish_api).
-  when: "not (apim_teams_required | default(true) | bool)"
+  when:
+    - "apim_teams_assert | default(true) | bool"
+    - "not (apim_teams_required | default(true) | bool)"
 
 - name: "Teams : AVERTISSEMENT — cloisonnement desactive sur cet environnement"
   ansible.builtin.debug:
@@ -92,4 +119,6 @@
       et les APIs resteront en team Default — visibles et supprimables par
       toutes les equipes. Acceptable le temps qu'un correctif atteigne cet
       environnement, JAMAIS comme etat cible.
-  when: "not (apim_teams_enabled | bool)"
+  when:
+    - "apim_teams_assert | default(true) | bool"
+    - "not (apim_teams_enabled | bool)"
