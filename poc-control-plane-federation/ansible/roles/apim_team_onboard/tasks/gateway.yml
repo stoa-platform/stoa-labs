@@ -35,7 +35,6 @@
       active: true
       type: "local"
     status_code: [200, 201]
-  register: onb_user_create
   no_log: true
   when: "onb_user_id | length == 0"
 
@@ -102,6 +101,17 @@
     fail_msg: "GROUP_UNRESOLVED : '{{ onb.group }}' absent apres creation."
 
 # PIEGE 1 : userIds en UUID. Un loginId ici => 200 et membre absent.
+#
+# ECRITURE INCONDITIONNELLE, VOLONTAIRE (write-always) : elle corrige aussi une
+# derive sur description/type qu'un simple test d'appartenance ne verrait pas.
+# changed_when EXPLICITE requis malgre ca : ansible.builtin.uri (module.py,
+# ansible-core 11.2) pose `resp['changed'] = False` de façon INCONDITIONNELLE
+# et ne le bascule QUE si `dest` ecrit un fichier local — jamais notre cas. Sans
+# ce changed_when, cette tache rendrait changed=false a CHAQUE run, y compris
+# le tout premier ou elle cree reellement l'appartenance : le compteur
+# changed ne distinguerait jamais « rien n'a bouge » de « ca a rejoue en
+# silence ». Calcule depuis onb_groups2 — l'etat relu AVANT cette ecriture,
+# deja en main, aucun appel reseau supplementaire.
 - name: "Gateway : poser le membre du groupe (UUID, JAMAIS le loginId)"
   ansible.builtin.uri:
     url: "{{ apim_ss_api_base }}/groups/{{ onb_group_id }}"
@@ -113,6 +123,10 @@
       type: "local"
       userIds: ["{{ onb_user_id }}"]
     status_code: [200, 201]
+  changed_when: >-
+    onb_user_id not in ((onb_groups2.json.groups | default([])
+      | selectattr('id', 'equalto', onb_group_id)
+      | map(attribute='userIds', default=[]) | flatten | list))
 
 - name: "Gateway : relire le groupe (LA porte de preuve du piege 1)"
   ansible.builtin.uri:
