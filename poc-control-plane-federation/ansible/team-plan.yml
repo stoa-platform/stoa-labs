@@ -1,0 +1,21 @@
+---
+# team-plan.yml — le « PLAN » du formulaire d'onboarding (ADR-081, corollaire 1).
+#
+# Zéro mutation, zéro réseau : on ne joue QUE resolve.yml du rôle — c'est-à-dire
+# les gardes mêmes qui protégeront l'apply (TEAM_NAME_INVALID, TEAM_NOT_DECLARED,
+# TENANT_ROOT_UNSAFE) plus les quatre dérivations, montrées au valideur AVANT le
+# merge. Un plan qui rejouerait d'autres règles que celles de l'apply mentirait :
+# ici le plan EST un sous-ensemble de l'apply, par construction.
+- name: "PLAN onboarding d'équipe — gardes hors ligne, zéro mutation"
+  hosts: webmethods
+  gather_facts: false
+  tasks:
+    - name: "FAIL-CLOSED — une équipe cible est obligatoire"
+      ansible.builtin.assert:
+        that: "apim_onb_team | default('') | length > 0"
+        fail_msg: "Passer -e apim_onb_team=<equipe>."
+
+    - name: "Gardes du rôle (resolve seul : nom, déclaration, gabarit KV, dérivations)"
+      ansible.builtin.import_role:
+        name: apim_team_onboard
+        tasks_from: resolve.yml
