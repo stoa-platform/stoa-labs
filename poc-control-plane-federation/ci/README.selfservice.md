@@ -103,7 +103,7 @@ passe absent du log).
 Mise en place du lab :
 
 ```bash
-bash scripts/setup-vault-userpass.sh          # palier 1 : sans annuaire
+bash scripts/setup-vault-userpass.sh          # palier 1 : sans annuaire (onboarde aussi banking-demo/payments-team via ansible/onboard-team.yml)
 docker compose -f docker-compose.poc.yml -f docker-compose.ldap.yml up -d openldap
 bash scripts/setup-vault-ldap.sh              # palier 2 : annuaire réel
 ./scripts/test-vault-user-login.sh

@@ -70,7 +70,7 @@ Tout le reste (prod/rollback nominatifs, chaîne ADR-075) est validé. **Un seul
 cd poc-control-plane-federation
 bash scripts/setup-vault.sh                 # secrets de base
 bash scripts/setup-vault-approle.sh         # rôles AppRole (disparaissent au re-seed)
-bash scripts/setup-vault-userpass.sh        # palier 1 voie A + policies deploy-<tenant> + operator-deploy
+bash scripts/setup-vault-userpass.sh        # palier 1 voie A + onboarde banking-demo/payments-team (ansible/onboard-team.yml) + operator-deploy
 docker compose -f docker-compose.poc.yml -f docker-compose.ldap.yml up -d openldap
 bash scripts/setup-vault-ldap.sh            # palier 2 (annuaire réel)
 ./scripts/test-vault-user-login.sh          # → 34/34

@@ -15,12 +15,21 @@
 #
 # Provisionne (idempotent, re-jouable après recreate de poc-vault) :
 #   1. auth method `userpass` (mount configurable — USERPASS_MOUNT)
-#   2. utilisateurs de démo (matrice de preuve, cf. ci-dessous)
-#   3. audit device file (la traçabilité nominative que l'IT exige)
-# Les policies `deploy-<tenant>` NE SONT PLUS créées ici : elles viennent du
-# rôle Ansible apim_team_onboard (tasks/vault.yml), un tenant onboardé =
-# une policy posée. Jouer ce script SEUL laisse alice/bob authentifiés mais
-# SANS le périmètre attendu tant que leur tenant n'a pas été onboardé.
+#   2. onboarding des tenants de lab — Vault (policy deploy-<tenant>) + gateway
+#      (RBAC), via le playbook Ansible ansible/onboard-team.yml (TENANTS)
+#   3. utilisateurs de démo (matrice de preuve, cf. ci-dessous)
+#   4. audit device file (la traçabilité nominative que l'IT exige)
+# + un garde-fou final (§5, hors numérotation ci-dessus : une VÉRIFICATION,
+#   pas un provisionnement) qui contrôle que le KV attendu par le CI existe
+#   bien pour chaque tenant après l'étape 2.
+#
+# Les policies `deploy-<tenant>` NE SONT PLUS créées ICI DIRECTEMENT : ce
+# script APPELLE désormais le rôle Ansible apim_team_onboard (étape 2,
+# ci-dessous) — un tenant onboardé = une policy posée, par la SEULE
+# implémentation qui les crée. Avant ce script, jouer ce fichier seul laissait
+# alice/bob authentifiés mais SANS le périmètre attendu ; l'étape 2 referme
+# cet écart en gardant l'enchaînement publié (HANDOFF-VAULT-USERPASS.md,
+# ci/README.selfservice.md) jouable tel quel.
 #
 # ⚠ DIFFÉRENCE DE MÉCANIQUE avec ADR-077 (chaîne B / JWT), à connaître :
 #   en JWT, la ségrégation par tenant vient d'une policy TEMPLATÉE sur le claim
@@ -72,18 +81,36 @@ else
   say "auth method $MOUNT/ déjà activée"
 fi
 
-# ═══ policies deploy-<tenant> — DEPLACEES vers le role Ansible ══════════════
+# ═══ 2. onboarding des tenants de lab (Vault + gateway, via le role Ansible) ═
 # Les policies deploy-<tenant> sont desormais posees par le role Ansible
 # apim_team_onboard (tasks/vault.yml) : c'est lui qui sait qu'une equipe
 # existe, et il est joue a chaque onboarding. Les ecrire ici AUSSI ferait deux
 # sources pour un meme objet — donc une divergence, tot ou tard, sans que rien
-# ne la signale.
+# ne la signale. Ce script APPELLE donc le playbook au lieu de recreer les
+# policies lui-meme : SOURCE UNIQUE, enchainement publie preserve.
 #
-#   ansible-playbook -i ansible/inventory.lab.ini ansible/onboard-team.yml \
-#     -e apim_onb_team=<tenant>
+# Chaque tenant de $TENANTS est onboarde INDIVIDUELLEMENT (le playbook refuse
+# volontairement un mode « toutes les equipes » — une erreur y serait
+# multipliee par le nombre d'equipes, cf. onboard-team.yml). Un echec sur UN
+# tenant n'arrete pas la boucle (pas de `set -e` dans ce script, coherent avec
+# le reste du fichier) : il est signale par `warn`, et confirme ou infirme
+# par le garde-fou §5 plus bas — qui lit desormais le meme etat.
 #
-# Ce script continue de creer les IDENTITES userpass ; il ne cree plus leurs
-# perimetres.
+# Chemins ABSOLUS (racine du repo derivee de l'emplacement du script, pas du
+# cwd de l'appelant) : ce script est documente comme lance depuis
+# poc-control-plane-federation/, mais ne doit pas EXIGER ce cwd pour rester
+# correct si on l'appelle d'ailleurs.
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+for T in $TENANTS; do
+  say "onboarding '$T' (ansible/onboard-team.yml — policy deploy-$T + RBAC gateway)…"
+  if VAULT_ADDR="$VADDR" ansible-playbook \
+       -i "$REPO_ROOT/ansible/inventory.lab.ini" "$REPO_ROOT/ansible/onboard-team.yml" \
+       -e apim_onb_team="$T" -e apim_ss_vault_token="$VTOK"; then
+    say "onboarding '$T' -> OK"
+  else
+    warn "onboarding '$T' KO (sortie Ansible ci-dessus) — deploy-$T restera absente ; le garde-fou §5 le confirmera"
+  fi
+done
 
 # Policy de l'OPÉRATEUR DE MISE EN PROD — périmètre PLATEFORME, distinct des
 # périmètres de tenant. Jenkinsfile.prod/.rollback en ont besoin pour tourner sous
@@ -170,9 +197,13 @@ else
 fi
 
 # ═══ 5. garde-fou : le périmètre lu par le pipeline doit exister ══════════════
+# Cette entrée KV est créée par l'étape 2 ci-dessus (rôle apim_team_onboard),
+# PAS par scripts/setup-vault.sh (qui ne connaît aucun tenant). Un échec ici
+# après un run vert de l'étape 2 pointe donc vers l'ONBOARDING de CE tenant —
+# pas vers un script sans rapport avec les tenants.
 for T in $TENANTS; do
   RC=$(vcurl -o /dev/null -w '%{http_code}' "$VADDR/v1/secret/data/stoa/deploy/$T/wm-admin")
-  [ "$RC" = 200 ] || warn "secret/stoa/deploy/$T/wm-admin absent (HTTP $RC) — le rôle retombera sur ses valeurs littérales. Lancer scripts/setup-vault.sh."
+  [ "$RC" = 200 ] || warn "secret/stoa/deploy/$T/wm-admin absent (HTTP $RC) — le rôle retombera sur ses valeurs littérales. Onboarder ce tenant : ansible-playbook -i ansible/inventory.lab.ini ansible/onboard-team.yml -e apim_onb_team=$T"
 done
 
 say "Terminé. VAULT_USER_AUTH_MOUNT=$MOUNT  ·  preuve : ./scripts/test-vault-user-login.sh"
