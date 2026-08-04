@@ -47,7 +47,16 @@ TENANT="${TENANT:-banking-demo}"
 # CLI2 provisionne des apps mode INTERNAL (la gateway wM EST l'AS local, elle
 # génère le client → le pipeline l'écrit dans Vault par env). La correspondance
 # caller→mode est une table (surchargeable), PAS un champ de la requête.
-#   REQ_MODE explicite (test) > table par caller > défaut idp.
+#   REQ_MODE explicite (test, ou porte humaine — futur formulaire Jenkins qui
+#   trace son appelant dans REQ_CALLER=jenkins-form:<userId>, hors table
+#   caller→mode) > table par caller > défaut idp. Une valeur ni vide ni
+#   idp|internal est un typo de la porte humaine : REFUS plutôt que dérivation
+#   silencieuse (fail-closed — sinon un REQ_MODE mal orthographié retomberait
+#   sur la dérivation par caller sans que personne ne le remarque).
+case "${REQ_MODE:-}" in
+  ""|idp|internal) ;;
+  *) echo "REFUS: REQ_MODE='${REQ_MODE}' invalide (attendu idp|internal, ou vide)" >&2; exit 2;;
+esac
 case "${REQ_MODE:-}" in
   idp|internal) MODE="$REQ_MODE";;
   *) case "$REQ_CALLER" in
