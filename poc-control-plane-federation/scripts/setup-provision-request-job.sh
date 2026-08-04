@@ -44,11 +44,23 @@ HC=$(curl -s -b "$CK" -X POST "$JENKINS_UI/credentials/store/system/domain/_/cre
 
 # 3. job pipeline provisioning-request
 echo "3. job Jenkins $JOB"
-# delete+create : déterministe (le POST config.xml sur un job pipeline peut 500).
-curl -s -b "$CK" -X POST "$JENKINS_UI/job/$JOB/doDelete" -H "$F: $C" -o /dev/null
-HC=$(curl -s -b "$CK" -X POST "$JENKINS_UI/createItem?name=$JOB" -H "$F: $C" -H "Content-Type: application/xml" --data-binary @"$JOB_XML" -o /dev/null -w '%{http_code}')
-[ "$HC" = "200" ] && ok "job (re)créé" || ko "createItem (HTTP $HC)"
 rm -f "$CK"
+# DÉLÉGUÉ à setup-provision-jobs.sh, qui met à jour EN PLACE.
+#
+# Ce bloc faisait un delete+create inconditionnel, justifié par « le POST
+# config.xml sur un job pipeline peut 500 ». Ce 500 n'était pas une fatalité du
+# produit : Jenkins parse le corps en ISO-8859-1 quand le Content-Type ne déclare
+# pas de charset, et casse sur le premier caractère accentué de la description
+# (diagnostiqué le 2026-08-04 — trace SAXParseException « invalid XML character
+# (Unicode: 0x89) »). Le contournement coûtait cher : chaque exécution DÉTRUISAIT
+# l'historique de builds du job.
+#
+# La logique correcte (charset, mise à jour en place, création si absent, repli
+# destructeur seulement sur demande explicite) vit dans setup-provision-jobs.sh,
+# qui est générique (`JOBS=`) et prouvé contre l'instance réelle. On l'appelle
+# plutôt que d'en écrire une seconde copie qui divergerait.
+JENKINS_UI="$JENKINS_UI" JOBS="$JOB" bash "$(cd "$(dirname "$0")" && pwd)/setup-provision-jobs.sh" \
+  || ko "mise à jour du job $JOB"
 echo
 echo "→ pousser le script sur Gitea :  git push gitea main"
 echo "→ router l'API :  GWT_TOKEN=stoa-provision-request TARGET_JOB=$JOB ./scripts/setup-provisioning-api.sh"

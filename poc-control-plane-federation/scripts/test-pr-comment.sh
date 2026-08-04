@@ -161,21 +161,38 @@ for s in scripts/lib/gitea-pr-comment.sh scripts/provision-apply-comment.sh scri
 done
 
 echo
-echo "== 10. provision-plan.sh résout son chemin AVANT de changer de dossier =="
-# Piège rencontré en écrivant ce lot : le script se déplace dans le clone de la
-# PR ($WORK/repo) avant de commenter. Un `dirname "$0"` évalué APRÈS ce `cd` ne
-# résout plus — l'appel à la lib partagée échouerait à l'exécution, jamais à la
-# lecture. On verrouille donc l'ORDRE, statiquement.
-P="$REPO/scripts/provision-plan.sh"
-L_SELF=$(grep -n '^SELF_DIR=' "$P" | head -1 | cut -d: -f1)
-L_CD=$(grep -n '^cd "\$WORK' "$P" | head -1 | cut -d: -f1)
-if [ -n "$L_SELF" ] && [ -n "$L_CD" ] && [ "$L_SELF" -lt "$L_CD" ]; then
-  ok "SELF_DIR ligne $L_SELF, cd ligne $L_CD"
-else
-  ko "SELF_DIR résolu après le cd (ou absent) : self=$L_SELF cd=$L_CD"
-fi
-grep -q 'bash "\$SELF_DIR/lib/gitea-pr-comment.sh"' "$P" \
-  && ok "la lib est appelée par chemin absolu" || ko "appel relatif — cassera après le cd"
+echo "== 10. TOUT script qui change de dossier résout son chemin AVANT =="
+# Piège rencontré deux fois. Ces scripts se déplacent dans un clone jetable, puis
+# appellent un voisin par chemin relatif — qui ne résout plus. Ça n'échoue qu'à
+# l'EXÉCUTION, jamais à la lecture.
+#
+# La première version de ce cas ne vérifiait que provision-plan.sh. J'ai
+# reproduit le bug dans provision-request.sh le lendemain, et le test est resté
+# vert : une garde qui ne couvre qu'un fichier ne protège que ce fichier. Elle
+# balaie maintenant TOUS les scripts qui font un `cd` et appellent un voisin.
+for f in "$REPO"/scripts/provision-*.sh; do
+  b=$(basename "$f")
+  # concerné seulement si le script change de dossier ET invoque un autre script
+  grep -qE '^\s*cd "\$' "$f" || continue
+  # Filtre VOLONTAIREMENT large : « bash …quelque chose.sh ». Le premier jet
+  # exigeait une forme de guillemets précise et EXCLUAIT donc exactement la
+  # forme buguée — le fichier était SAUTÉ, et la suite restait verte sans le
+  # correctif. Un filtre qui ne reconnaît pas le défaut qu'il traque ne garde
+  # rien.
+  grep -qE 'bash .*\.sh' "$f" || continue
+  L_SELF=$(grep -n '^SELF_DIR=' "$f" | head -1 | cut -d: -f1)
+  L_CD=$(grep -nE '^\s*cd "\$' "$f" | head -1 | cut -d: -f1)
+  if [ -n "$L_SELF" ] && [ -n "$L_CD" ] && [ "$L_SELF" -lt "$L_CD" ]; then
+    ok "$b : SELF_DIR (l.$L_SELF) avant cd (l.$L_CD)"
+  else
+    ko "$b : chemin résolu APRÈS le cd (ou absent) — self=$L_SELF cd=$L_CD"
+  fi
+  if grep -qE 'bash "\$\(cd "\$\(dirname' "$f"; then
+    ko "$b : dirname évalué au moment de l'appel — cassera après le cd"
+  else
+    ok "$b : appel par chemin absolu mémorisé"
+  fi
+done
 
 echo
 echo "======================================================================"

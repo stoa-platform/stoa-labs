@@ -79,6 +79,11 @@ case "$REQ_ENV" in dev|rec|int|prod) ;; *) echo "REFUS: REQ_ENV='$REQ_ENV' (atte
 BRANCH="provision/${REQ_APP}-${REQ_ENV}"
 REL_PATH="${MANIFEST_DIR}/${REQ_APP}.ansible.yml"
 WORK="$(mktemp -d /tmp/provreq.XXXXXX)"
+# Chemin du script résolu AVANT tout `cd` : ce script se déplace dans le clone
+# ($WORK/repo) pour rendre le manifeste, et un `dirname "$0"` relatif n'y
+# résout plus. Piège déjà documenté dans provision-plan.sh — et reproduit ici
+# malgré ça, parce que la garde du test ne couvrait que l'autre fichier.
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 trap 'rm -rf "$WORK"' EXIT
 # URL avec token EN MÉMOIRE seulement (jamais écrite dans le clone ni loggée).
 PUSH_URL="http://ci:${GITEA_TOKEN}@${GIT_HOST#http://}/${GIT_REPO}.git"
@@ -227,7 +232,7 @@ echo "PR_URL=${PR_URL}"
 if [ "${PROVISION_PLAN_INLINE:-true}" = "true" ]; then
   echo "[5/5] plan enchaîné sur la PR #${PR_NUM}"
   if PR_BRANCH="$BRANCH" PR_NUMBER="$PR_NUM" \
-     bash "$(cd "$(dirname "$0")" && pwd)/provision-plan.sh"; then
+     bash "$SELF_DIR/provision-plan.sh"; then
     echo "  PLAN_INLINE=ok"
   else
     echo "  PLAN_INLINE=fail — la PR est ouverte et commentée, la demande reste valide" >&2
