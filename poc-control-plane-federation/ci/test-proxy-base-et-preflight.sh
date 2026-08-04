@@ -255,46 +255,17 @@ SONDE
     "PFMAX=60 MSG5=300 AVANT=1 BORNE=0" "$(adverse 060)"
 done
 
-# ---- bloc 1bis : trim du parametre APIM_PROXY_BASE dans les job XML ----
-# APIM_PROXY_BASE est l'echappatoire (override complet, cf. commentaire du
-# Jenkinsfile) : c'est justement celle qui ne doit PAS laisser passer un
-# espace colle en debut/fin — sinon l'URL composee est invalide, et l'erreur
-# est difficile a voir (un espace ne se distingue pas a l'oeil dans un log).
-# Valeur LUE dans le XML reel : jamais une constante du test.
-JOBXMLS="jenkins/publish-api-deploy.job.xml jenkins/selfservice-app-deploy.job.xml"
-# Extrait le <trim> du bloc <hudson.model.StringParameterDefinition> dont le
-# <name> vaut $2, dans le fichier $1 (les blocs ne s'imbriquent pas dans ces XML).
-trim_de(){
-  awk -v nom="$2" '
-    /<hudson\.model\.StringParameterDefinition>/ { buf=""; dans=1 }
-    dans { buf = buf $0 "\n" }
-    /<\/hudson\.model\.StringParameterDefinition>/ {
-      dans=0
-      if (buf ~ ("<name>" nom "</name>")) {
-        if (match(buf, /<trim>[a-z]*<\/trim>/)) {
-          s = substr(buf, RSTART, RLENGTH); gsub(/<\/?trim>/, "", s); print s; exit
-        }
-      }
-    }
-  ' "$1"
-}
-
-for X in $JOBXMLS; do
-  XF="$POC/ci/$X"
-  [ -f "$XF" ] || fatal "$XF introuvable"
-  echo "== $X : trim d'APIM_PROXY_BASE =="
-  TR="$(trim_de "$XF" APIM_PROXY_BASE)"
-  [ -n "$TR" ] || fatal "APIM_PROXY_BASE : aucun <trim> lisible dans $XF"
-  cmp_ "$X : APIM_PROXY_BASE n'est plus la seule echappatoire non rognee (trim=true)" "true" "$TR"
-
-  if command -v python3 >/dev/null 2>&1; then
-    if python3 -c "import xml.dom.minidom,sys; xml.dom.minidom.parse(sys.argv[1])" "$XF" >"$TMPD/xmlok" 2>&1; then
-      ok "$X : XML bien forme"
-    else
-      ko "$X : XML bien forme" "0" "$(cat "$TMPD/xmlok")"
-    fi
-  fi
-done
+# ---- bloc 1bis : SUPPRIME (2026-08-04) ----
+# Il verifiait <trim>true</trim> sur un parametre APIM_PROXY_BASE des job XML
+# ci/jenkins/{publish-api,selfservice-app}-deploy.job.xml. Ces XML ont ete
+# supprimes : ils n'etaient deployes nulle part, et APIM_PROXY_BASE n'est PAS
+# un parametre de build — c'est une variable d'ENVIRONNEMENT des deux
+# Jenkinsfile. La garde portait donc sur une declaration qui n'existait que
+# dans ces fichiers, et sur aucun job reel.
+#
+# Ce qu'elle protegeait vraiment — qu'un espace colle en debut/fin d'un
+# override d'URL ne passe pas — reste a couvrir la ou la valeur est REELLEMENT
+# lue : dans le shell des Jenkinsfile. Non fait ici, signale.
 
 # ---- bloc 2 : preflight (copie conforme, curl simule) ----
 # Le compteur passe par FICHIER : curl est appele dans $( ), donc dans un
