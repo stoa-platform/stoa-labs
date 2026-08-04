@@ -126,6 +126,35 @@ survit par oubli est le mode de défaillance qu'on ferme ici.
 **Correction de portée.** Le bouton commande désormais le **travail**, pas
 seulement les assertions — c'est l'écart constaté au §1.
 
+**Précision du 2026-08-04 (I5, revue finale) — la sonde ne lit pas
+`apim_ss_require_team` directement.** Le tableau ci-dessus nomme les variables
+de POLITIQUE **côté rôle appelant** ; la sonde elle-même
+(`apim_common/tasks/teams-feature.yml`) lit un troisième paramètre,
+`apim_teams_required`, que chaque appelant lui passe en `vars:` derivé de SA
+propre variable (`apim_ss_require_team` pour `apim_selfservice_app`,
+`apim_pub_require_team` pour `apim_publish_api`) — une sonde qui devinerait le
+nom serait inopérante pour l'un des deux, silencieusement (variable absente →
+défaut fail-closed `true`).
+
+`apim_team_onboard` est le **troisième consommateur**, et il ne veut ni l'un
+ni l'autre : il ne cloisonne rien lui-même (il pose des objets RBAC valables
+que la feature soit allumée ou pas) et n'a donc **aucune dérogation à faire
+périmer** — seul l'état (`apim_teams_enabled`, pour son message informatif)
+l'intéresse. Un quatrième paramètre, `apim_teams_assert` (défaut `true`),
+sépare ÉTAT et POLITIQUE : à `false`, la sonde pose `apim_teams_enabled` et
+**n'exécute aucune des trois assertions** de la table de vérité, `TEAMS_DEROGATION_STALE`
+comprise ; `apim_teams_required` devient alors sans objet. **Le rôle
+`apim_team_onboard` doit passer `apim_teams_assert: false`** (jamais
+`apim_teams_required: false`) — c'est ce qui distingue « je ne cloisonne rien »
+de « je consens à ne pas cloisonner ». Confondre les deux a produit le défaut
+bloquant corrigé en fin de parcours : passer `apim_teams_required: false` en
+pensant "je ne dépends pas de la feature" faisait exécuter la 4e ligne de la
+table de vérité, qui **refuse** dès que la feature redevient active alors
+qu'une dérogation est posée — l'onboarding cassait donc très exactement le
+jour où le correctif client (qui rallume Teams) passe en prod, jamais vu au
+lab où la feature reste éteinte. Voir `teams-feature.yml`, section
+« ÉTAT != POLITIQUE », pour le détail.
+
 **Emplacement du bouton :** inventaire par environnement dans le dépôt
 plateforme (`ansible/inventory.<env>.ini` ou `group_vars/<env>.yml`), protégé
 par branch protection et revue. Retenu contre une variable de job Jenkins parce
@@ -361,3 +390,4 @@ bitmask ; l'activation de la feature Teams elle-même.
 | `approvers` appliqué au publish, pas à l'onboarding | Les API naissent après l'onboarding |
 | `owner` conservé comme projection | Le développement custom qui le lit continue de tourner |
 | Dépôt Gitea reporté au palier 2 | Il demande un droit de création d'organisation, arbitrage distinct |
+| `apim_teams_assert: false` pour `apim_team_onboard` (jamais `apim_teams_required: false`) | ÉTAT ≠ POLITIQUE : l'onboarding ne cloisonne rien, donc n'a aucune dérogation à faire périmer ; lui passer la POLITIQUE déclenchait `TEAMS_DEROGATION_STALE` le jour où la feature redevient active (défaut bloquant corrigé en fin de parcours, revue 2026-08-04) |

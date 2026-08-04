@@ -1,0 +1,12 @@
+---
+# I3 (revue finale, 2026-08-04) : entree SANS cle `approvers:` — reproduit le
+# defaut reel corrige dans roles/apim_publish_api/tasks/approvers.yml
+# (`map(attribute='approvers')` sans `default=[]`). providers.<env>.yml est
+# edite par PR chez le client : une equipe a laquelle personne n'a encore
+# ajoute cette cle est un etat normal, pas une erreur de syntaxe — le publish
+# doit prendre le chemin APPROVERS_EMPTY prevu, pas planter sur une erreur
+# Jinja opaque ("dict object has no attribute 'approvers'").
+providers:
+  - team: no-approvers-key
+    description: "equipe sans cle approvers (I3)"
+    repo: ""

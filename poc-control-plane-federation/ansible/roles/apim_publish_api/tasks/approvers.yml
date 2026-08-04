@@ -21,11 +21,18 @@
     name: pub_prov
 
 - name: "Approbateurs : liste de l'equipe"
+  # `default=[]` sur le FILTRE map (pas `| default([])` en aval, qui n'attrape
+  # pas une cle absente A L'INTERIEUR du map) : meme piege, meme correctif que
+  # roles/apim_team_onboard/tasks/gateway.yml:230/:268 sur `map(attribute=
+  # 'userIds')`. Declencheur reel ici : une entree de providers.<env>.yml sans
+  # cle `approvers:` — fichier edite par PR chez le client, la premiere equipe
+  # ajoutee sans cette cle plantait tous ses publish sur une erreur Jinja
+  # opaque au lieu du chemin APPROVERS_EMPTY prevu deux taches plus bas.
   ansible.builtin.set_fact:
     pub_approvers: >-
       {{ (pub_prov.providers | default([])
           | selectattr('team', 'equalto', pub_team_name)
-          | map(attribute='approvers') | flatten | list) }}
+          | map(attribute='approvers', default=[]) | flatten | list) }}
 
 - name: "Approbateurs : rien a projeter (equipe absente ou liste vide)"
   ansible.builtin.debug:

@@ -18,3 +18,33 @@
       ansible.builtin.import_role:
         name: apim_publish_api
         tasks_from: team-name.yml
+
+    # I3 (revue finale, 2026-08-04) : approvers.yml faisait
+    # `map(attribute='approvers')` SANS `default=[]` — même piège déjà corrigé
+    # sur `map(attribute='userIds')` dans apim_team_onboard/tasks/gateway.yml
+    # (:230, :268). Sans le correctif, cette tâche lève une erreur Jinja
+    # ("dict object has no attribute 'approvers'") au lieu de prendre le
+    # chemin APPROVERS_EMPTY prévu — reproduit ici avec une entrée
+    # providers.<env>.yml qui n'a jamais eu la clé `approvers:`.
+    # set_fact (pas `vars:` sur la tâche) : la garde 2 ci-dessus a déjà posé
+    # pub_team_name via team-name.yml (ansible.builtin.set_fact), et un
+    # set_fact antérieur PRIME sur les `vars:` d'une tâche ultérieure dans la
+    # même play (précédence Ansible : set_fact > task vars). Un `vars:` ici
+    # aurait donc été silencieusement ignoré — constaté en isolant cette
+    # tâche seule.
+    - name: "Garde 3 : équipe de la fixture 'sans clé approvers'"
+      ansible.builtin.set_fact:
+        pub_team_name: "no-approvers-key"
+
+    - name: "Garde 3 : approvers.yml ne plante pas sur une entrée sans clé 'approvers:'"
+      ansible.builtin.import_role:
+        name: apim_publish_api
+        tasks_from: approvers.yml
+      vars:
+        apim_pub_providers_file: "tests/e1/providers-no-approvers-key.yml"
+
+    - name: "Garde 3 : la liste projetée est bien vide (chemin APPROVERS_EMPTY)"
+      ansible.builtin.assert:
+        that: "pub_approvers == []"
+        fail_msg: "pub_approvers={{ pub_approvers }} — attendu [] (clé approvers absente)"
+        success_msg: "OK — clé approvers absente traitée comme [], aucune erreur Jinja"

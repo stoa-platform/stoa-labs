@@ -23,6 +23,29 @@
     ansible.builtin.uri: "{{ apim_ss_uri_defaults }}"
   block:
 
+    # ===== 0a. État de la feature Teams (commande la garde de team.yml) =====
+    # EN TÊTE de bloc, AVANT le premier appel gateway (l'import/l'activation de
+    # l'API) — pas après (I2, revue finale 2026-08-04). L'en-tête de ce fichier
+    # promet : « AVANT les secrets et AVANT le premier appel : un refus
+    # d'équipe ne doit rien laisser derrière lui ». La contrainte « après
+    # secrets.yml » reste tenue : secrets.yml est importé plus haut, HORS de ce
+    # bloc (lignes 16-19). Même position que le 0a de apim_selfservice_app
+    # (roles/apim_selfservice_app/tasks/main.yml) — les deux rôles consommateurs
+    # de cette garde doivent se comporter pareil.
+    #
+    # Défaut avant ce correctif : la sonde était importée en 3b, APRÈS l'import
+    # de l'API, son activation et l'écriture d'owner — donc APRÈS l'API créée
+    # ET active. Avec la feature éteinte et apim_pub_require_team=true (valeurs
+    # par défaut), l'API se retrouvait créée-active en team `Default` (lisible
+    # par toutes les équipes) AVANT que le run n'échoue sur TEAMS_DISABLED :
+    # exactement l'artefact que la garde existe pour empêcher.
+    - name: "Teams : sonde de la feature + table de verite"
+      ansible.builtin.import_role:
+        name: apim_common
+        tasks_from: teams-feature.yml
+      vars:
+        apim_teams_required: "{{ apim_pub_require_team | default(true) }}"
+
     - name: "Contrat : fail-closed si absent"
       ansible.builtin.assert:
         that: "apim_api.contract | length > 0"
@@ -165,21 +188,6 @@
     - name: "Port : ajouter l'API à l'allow-list du listener (Deny-by-Default)"
       ansible.builtin.import_tasks: port-access.yml
       when: "apim_ss_port_manage | default(false) | bool"
-
-    # ===== 3b. État de la feature Teams (commande la garde qui suit) ==========
-    # APRÈS secrets.yml (ce fichier appelle la gateway, apim_ss_uri_defaults
-    # doit déjà porter les creds) et AVANT team.yml, son seul consommateur ici
-    # (apim_publish_api n'a pas d'équivalent api-visibility.yml). Défaut du
-    # 2026-08-03 corrigé : apim_pub_require_team=false ne désactivait RIEN —
-    # seuls les assert de team-name.yml/verify.yml en dépendaient, le travail
-    # (GET /accessProfiles, POST /assets/team) était commandé par pub_team_name
-    # seul, que la chaîne pose TOUJOURS.
-    - name: "Teams : sonde de la feature + table de verite"
-      ansible.builtin.import_role:
-        name: apim_common
-        tasks_from: teams-feature.yml
-      vars:
-        apim_teams_required: "{{ apim_pub_require_team | default(true) }}"
 
     # ===== 4. Cloisonnement par équipe (E1 — plus optionnel) =================
     # L'obligation se règle en amont (team-name.yml / apim_pub_require_team) ET

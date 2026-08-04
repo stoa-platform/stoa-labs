@@ -74,7 +74,19 @@
 # deploiements EN SILENCE, et le symptome apparaitrait loin de la cause.
 - name: "Vault : policy {{ onb.policy }} (lecture du sous-arbre, ecriture bornee a apps/)"
   vars:
-    onb_tenant_root: "{{ [apim_ss_vault_prefix, 'deploy', onb.team] | select | join('/') }}"
+    # DERIVE de onb.kv_sub, JAMAIS reconstruit (I4, revue finale 2026-08-04).
+    # Avant ce correctif, onb_tenant_root recomposait le chemin en dur
+    # ([apim_ss_vault_prefix, 'deploy', onb.team]) au lieu de le deriver du
+    # gabarit onb.kv_sub (apim_onb_kv_tpl, documente SURCHARGEABLE en
+    # defaults/main.yml). Chez un client dont la disposition KV differe,
+    # surcharger ce gabarit deplacait alors l'entree KV mais PAS le perimetre
+    # de la policy : le token de l'equipe perdait le droit de lire son propre
+    # secret, sans qu'aucun assert ne le signale (verify.yml relit avec le
+    # token ROOT, jamais avec la policy) — symptome : un 403 loin de sa cause.
+    # Ici le "sous-arbre du tenant" est le dossier PARENT de la feuille que
+    # kv_sub designe (deploy/<team>/wm-admin -> deploy/<team>) : ne jamais
+    # denormaliser ici ce qui se derive la-bas (le gabarit, resolve.yml).
+    onb_tenant_root: "{{ ([apim_ss_vault_prefix] + onb.kv_sub.split('/')[:-1]) | select | join('/') }}"
   ansible.builtin.uri:
     url: "{{ apim_ss_vault_addr }}/v1/sys/policies/acl/{{ onb.policy }}"
     method: PUT
