@@ -61,21 +61,28 @@
     that: "apim_teams_enabled | bool"
     fail_msg: >-
       TEAMS_DISABLED : la feature Teams est eteinte sur cette gateway et une
-      team est exigee (apim_teams_required=true). Rien n'a ete ecrit. Soit
-      activer la feature (geste d'ADMIN, hors pipeline :
+      team est exigee (apim_teams_required=true — le parametre que cette sonde
+      lit, derive par l'appelant de sa propre variable de politique). Rien n'a
+      ete ecrit. Soit activer la feature (geste d'ADMIN, hors pipeline :
       PUT /configurations/extended {"enableTeamWork":"true"}), soit poser la
-      derogation apim_teams_required=false dans l'inventaire de
-      l'environnement — jamais dans un manifeste.
+      derogation dans l'inventaire de l'environnement — JAMAIS dans un
+      manifeste — sur la variable REELLEMENT actionnable selon le role
+      appelant : apim_ss_require_team=false (apim_selfservice_app) ou
+      apim_pub_require_team=false (apim_publish_api).
   when: "apim_teams_required | default(true) | bool"
 
 - name: "Teams : FAIL-CLOSED — derogation perimee (la feature est revenue)"
   ansible.builtin.assert:
     that: "not (apim_teams_enabled | bool)"
     fail_msg: >-
-      TEAMS_DEROGATION_STALE : apim_teams_required=false alors que la feature
-      Teams est ACTIVE sur cette gateway. La derogation avait pour cause une
-      feature indisponible ; cette cause a disparu. Retirer la derogation de
-      l'inventaire de l'environnement.
+      TEAMS_DEROGATION_STALE : apim_teams_required=false (parametre lu par
+      cette sonde, derive par l'appelant de sa propre variable de politique)
+      alors que la feature Teams est ACTIVE sur cette gateway. La derogation
+      avait pour cause une feature indisponible ; cette cause a disparu.
+      Retirer la derogation de l'inventaire de l'environnement — sur la
+      variable REELLEMENT actionnable selon le role appelant :
+      apim_ss_require_team (apim_selfservice_app) ou apim_pub_require_team
+      (apim_publish_api).
   when: "not (apim_teams_required | default(true) | bool)"
 
 - name: "Teams : AVERTISSEMENT — cloisonnement desactive sur cet environnement"
