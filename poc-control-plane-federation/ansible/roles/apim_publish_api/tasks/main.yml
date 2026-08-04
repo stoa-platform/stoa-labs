@@ -157,9 +157,26 @@
       ansible.builtin.import_tasks: port-access.yml
       when: "apim_ss_port_manage | default(false) | bool"
 
+    # ===== 3b. État de la feature Teams (commande la garde qui suit) ==========
+    # APRÈS secrets.yml (ce fichier appelle la gateway, apim_ss_uri_defaults
+    # doit déjà porter les creds) et AVANT team.yml, son seul consommateur ici
+    # (apim_publish_api n'a pas d'équivalent api-visibility.yml). Défaut du
+    # 2026-08-03 corrigé : apim_pub_require_team=false ne désactivait RIEN —
+    # seuls les assert de team-name.yml/verify.yml en dépendaient, le travail
+    # (GET /accessProfiles, POST /assets/team) était commandé par pub_team_name
+    # seul, que la chaîne pose TOUJOURS.
+    - name: "Teams : sonde de la feature + table de verite"
+      ansible.builtin.import_role:
+        name: apim_common
+        tasks_from: teams-feature.yml
+      vars:
+        apim_teams_required: "{{ apim_pub_require_team | default(true) }}"
+
     # ===== 4. Cloisonnement par équipe (E1 — plus optionnel) =================
-    # L'obligation se règle en amont (team-name.yml / apim_pub_require_team) :
-    # ici on assigne, toujours, dès qu'une équipe est résolue. Le `when` d'antan
+    # L'obligation se règle en amont (team-name.yml / apim_pub_require_team) ET
+    # sur l'état de la feature (apim_teams_enabled, sonde ci-dessus) : ici on
+    # assigne dès qu'une équipe est résolue ET que la feature est active — plus
+    # « toujours » depuis le défaut du 2026-08-03. Le `when` d'antan
     # (`apim_api.team | length > 0`) faisait dépendre la protection d'une clé
     # que l'appelant pouvait simplement omettre — or une API laissée en
     # `Default` est lue (200) par n'importe quelle équipe, mesuré le 2026-07-31.

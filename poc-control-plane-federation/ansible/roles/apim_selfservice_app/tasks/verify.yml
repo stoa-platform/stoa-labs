@@ -50,6 +50,16 @@
     # assignée. Une app restée en `Default` est visible et supprimable par
     # toutes les équipes. Cette dimension se vérifie donc comme les autres, avec
     # la même exigence : la team demandée présente ET `Default` partie.
+    # Rejoue la MÊME sonde qu'à l'apply (même fichier) : verify est self-contained
+    # et ne doit rien supposer d'un run précédent — apim_teams_enabled doit être
+    # reposé ici, pas hérité d'une éventuelle convergence dans le même play.
+    - name: "Teams : sonde de la feature + table de verite"
+      ansible.builtin.import_role:
+        name: apim_common
+        tasks_from: teams-feature.yml
+      vars:
+        apim_teams_required: "{{ apim_ss_require_team | default(true) }}"
+
     - name: "Verify : équipe attendue (même résolution qu'à l'apply)"
       ansible.builtin.import_tasks: team-name.yml
 
@@ -72,7 +82,7 @@
         success_msg: >-
           TEAM_CONFIRMED : '{{ apim_ss_app.name }}' cloisonnée sur '{{ ss_team_name }}'
           (teams={{ ss_team_names }}).
-      when: "apim_ss_require_team | default(true) | bool"
+      when: "(apim_ss_require_team | default(true) | bool) and (apim_teams_enabled | bool)"
 
     - name: "Verify : chaque dimension à opposer est PRÉSENTE comme identifier de l'asset"
       ansible.builtin.assert:

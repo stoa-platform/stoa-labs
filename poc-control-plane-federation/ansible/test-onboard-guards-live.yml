@@ -1,0 +1,129 @@
+---
+# ansible/test-onboard-guards-live.yml — couvre en EXECUTION la 4e ligne de la
+# table de verite de la sonde Teams (roles/apim_common/tasks/teams-feature.yml) :
+#   feature ACTIVE + derogation posee (apim_teams_required=false) => REFUS
+#   TEAMS_DEROGATION_STALE.
+# Revue du 2026-08-04 : cette ligne n'avait jamais ete EXECUTEE, seulement
+# relue. C'est pourtant la raison d'etre du dispositif — elle fait mourir une
+# derogation temporaire le jour ou sa cause (feature eteinte) disparait ; sans
+# elle, rien ne signale un environnement reste non cloisonne apres correctif.
+#
+# CONTRAIREMENT A test-onboard-guards.yml (100% hors ligne : apim_ss_teams_feature
+# y est TOUJOURS force a "off"/"auto"-jamais-atteint, aucun appel reseau), CE
+# fichier a besoin d'un serveur qui REPOND reellement a GET/PUT
+# /rest/apigateway/configurations/extended — d'ou son isolement ici.
+#
+# ===== LANCER LE MOCK (terminal separe, PAS docker-compose) =================
+#   cd poc-control-plane-federation/mocks/webmethods
+#   LISTEN_ADDR=:18089 go run .
+#
+# Port 18089 choisi arbitrairement (verifie libre le 2026-08-04) et PORTE PAR
+# LA VAR apim_teams_probe_mock_port CI-DESSOUS — les deux doivent rester en
+# accord. Adapter les DEUX si 18089 est deja pris chez vous (-e ou edition).
+#
+# ⚠ N'UTILISEZ JAMAIS LE PORT 5555 : c'est la VRAIE gateway du lab, EN SERVICE
+# (docker-compose.wm.yml). Un test qui la viserait ecrirait sur un systeme reel.
+# 8080 est egalement a eviter ici : deja lie par docker sur ce poste (Jenkins
+# ou un autre service du lab) — d'ou le choix d'un port explicite plutot que le
+# defaut du mock (LISTEN_ADDR par defaut ":8080").
+#
+# Auth Basic Administrator/manage : ce sont A LA FOIS les defauts du mock
+# (ADMIN_USER/ADMIN_PASSWORD non poses, server.go) ET les defauts apim_common
+# (apim_ss_wm_user/apim_ss_wm_password) — aucune credential a passer. VAULT_ADDR
+# est explicitement vide ci-dessous (vars) pour que secrets.yml prenne ce repli
+# de facon DETERMINISTE, meme si VAULT_ADDR est exporte dans le shell de qui
+# lance ce playbook.
+#
+# ===== LANCER CE PLAYBOOK (mock demarre au prealable) =======================
+#   cd poc-control-plane-federation
+#   ansible-playbook -i ansible/inventory.lab.ini ansible/test-onboard-guards-live.yml
+
+- name: "Sonde Teams (LIVE, mock requis) — 4e ligne de la table de verite"
+  hosts: webmethods
+  gather_facts: false
+  vars:
+    apim_teams_probe_mock_port: 18089
+    apim_ss_api_base: "http://localhost:{{ apim_teams_probe_mock_port }}/rest/apigateway"
+    apim_ss_vault_addr: ""   # fallback Administrator/manage deterministe (cf. en-tete)
+  tasks:
+
+    - name: "Pre-vol : le mock est-il joignable ? (endpoint ouvert, sans auth — server.go legacyHealth)"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/is/health"
+        status_code: [200]
+      register: apim_teams_probe_healthcheck
+      failed_when: false
+
+    - name: "Pre-vol : FAIL-CLOSED avec diagnostic (pas le message uri brut)"
+      ansible.builtin.assert:
+        that: "(apim_teams_probe_healthcheck.status | default(0)) == 200"
+        fail_msg: >-
+          MOCK_UNREACHABLE : {{ apim_ss_api_base }}/is/health n'a pas repondu 200
+          (status={{ apim_teams_probe_healthcheck.status | default('aucune reponse') }}).
+          Le mock est-il lance ? cd poc-control-plane-federation/mocks/webmethods &&
+          LISTEN_ADDR=:{{ apim_teams_probe_mock_port }} go run .
+
+    - name: "Secrets : creds admin (apim_ss_vault_addr vide -> fallback Administrator/manage)"
+      ansible.builtin.import_role:
+        name: apim_common
+        tasks_from: secrets.yml
+
+    - name: "Contre le mock : basculer enableTeamWork -> true, sonder, restaurer"
+      module_defaults:
+        ansible.builtin.uri: "{{ apim_ss_uri_defaults }}"
+      block:
+
+        - name: "PUT /configurations/extended {enableTeamWork: true} (la cause de la derogation disparait)"
+          ansible.builtin.uri:
+            url: "{{ apim_ss_api_base }}/configurations/extended"
+            method: PUT
+            body: { enableTeamWork: true }
+            status_code: [200]
+          register: apim_teams_probe_put
+
+        - name: "Contre-mesure : la PUT a bien pris (sinon le test ne prouverait rien)"
+          ansible.builtin.assert:
+            that: "(apim_teams_probe_put.json.enableTeamWork | default('false') | string | lower) == 'true'"
+            fail_msg: >-
+              PUT enableTeamWork=true non reflete par le mock — reponse
+              {{ apim_teams_probe_put.json }}. Le reste du test n'a plus de sens :
+              la feature ne serait pas prouvee ACTIVE.
+
+        # LA LIGNE COUVERTE. apim_teams_required=false (derogation posee) alors
+        # que la feature vient d'etre prouvee ACTIVE ci-dessus : la sonde DOIT
+        # refuser TEAMS_DEROGATION_STALE plutot que de passer en silence — c'est
+        # le mecanisme qui fait mourir une derogation temporaire le jour ou sa
+        # cause (feature eteinte) disparait.
+        - name: "Sonde en mode auto, derogation posee, feature ACTIVE -> DOIT refuser"
+          block:
+            - ansible.builtin.import_role:
+                name: apim_common
+                tasks_from: teams-feature.yml
+              vars:
+                apim_ss_teams_feature: "auto"
+                apim_teams_required: false
+            - ansible.builtin.fail:
+                msg: >-
+                  AUCUN refus — la derogation perimee n'a pas ete detectee
+                  (regression sur la 4e ligne de la table de verite,
+                  TEAMS_DEROGATION_STALE).
+          rescue:
+            - ansible.builtin.assert:
+                that: "'TEAMS_DEROGATION_STALE' in (ansible_failed_result.msg | default(''))"
+                fail_msg: >-
+                  refus obtenu mais pas le bon :
+                  {{ ansible_failed_result.msg | default('(sans message)') }}
+                success_msg: "OK — TEAMS_DEROGATION_STALE : la derogation perimee est refusee (4e ligne EXECUTEE)"
+
+      always:
+        # Hygiene : un rerun de ce playbook (ou un autre test contre le meme
+        # process mock encore en vie) doit repartir de l'etat par defaut du
+        # mock (teamWork=false), pas de l'etat laisse par CE run.
+        - name: "Restaurer enableTeamWork=false (etat par defaut du mock)"
+          ansible.builtin.uri:
+            url: "{{ apim_ss_api_base }}/configurations/extended"
+            method: PUT
+            body: { enableTeamWork: false }
+            status_code: [200]
+          module_defaults:
+            ansible.builtin.uri: "{{ apim_ss_uri_defaults }}"

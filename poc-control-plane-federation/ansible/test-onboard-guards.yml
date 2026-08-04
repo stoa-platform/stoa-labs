@@ -62,3 +62,29 @@
           apim_teams_required — inoperante pour apim_publish_api
           (apim_pub_require_team)
         success_msg: "OK — la sonde obeit au parametre, pas a la variable de role"
+
+    # LE DEFAUT CONSTATE le 2026-08-03 : un nom d'equipe resolu suffisait a
+    # declencher GET /accessProfiles / POST /assets/team, MEME derogation posee
+    # (apim_ss_require_team=false ne desactivait rien — seuls les deux assert
+    # de team-name.yml/verify.yml en dependaient). team.yml et api-visibility.yml
+    # exigent maintenant AUSSI apim_teams_enabled : ce test verifie l'expression
+    # composee elle-meme (le cablage dans les roles est prouve par
+    # test-onboard-guards-live.yml, qui exerce en plus la 4e ligne de la table
+    # de verite contre un mock reel).
+    - name: "Derogation : sonde OFF + derogation (etat que le job Jenkins pose TOUJOURS)"
+      ansible.builtin.import_role:
+        name: apim_common
+        tasks_from: teams-feature.yml
+      vars:
+        apim_ss_teams_feature: "off"
+        apim_teams_required: false
+
+    - name: "Derogation : un nom d'equipe resolu ne doit PLUS, a lui seul, declencher le travail"
+      ansible.builtin.assert:
+        that: "not ((ss_team_name | default('banking-demo') | length > 0) and (apim_teams_enabled | bool))"
+        fail_msg: >-
+          la condition composee "(ss_team_name | length > 0) and (apim_teams_enabled | bool)"
+          — celle qui garde team.yml et api-visibility.yml — est vraie alors que
+          la feature est off : le role appellerait quand meme GET /accessProfiles
+          (defaut du 2026-08-03, "le bouton" ne commandait que les assert).
+        success_msg: "OK — nom d'equipe present mais feature off : le travail (pas seulement l'assert) est saute"

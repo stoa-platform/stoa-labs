@@ -20,9 +20,11 @@
          if ((apim_ss_team | default('') | trim) | length > 0)
          else (apim_ss_app.team | default('') | trim) }}
 
-# Le repli non cloisonné existe pour le lab docker-compose, où la feature Teams
-# n'est pas activée : y exiger une équipe rendrait la démo impossible. Il est
-# OPT-IN et BRUYANT — on ne veut pas qu'un client le découvre dans les logs.
+# Le repli non cloisonne est commande par DEUX variables, pas une :
+#   apim_ss_teams_feature (etat plateforme) et apim_ss_require_team (politique).
+# Poser require_team=false ne suffit pas a desactiver les teams — il ne leve
+# que les assert ; c'est la sonde qui commande le travail (apim_common/
+# tasks/teams-feature.yml). Constate le 2026-08-03.
 - name: "Team : FAIL-CLOSED — une application sans équipe n'est cloisonnée pour personne"
   ansible.builtin.assert:
     that: "ss_team_name | length > 0"

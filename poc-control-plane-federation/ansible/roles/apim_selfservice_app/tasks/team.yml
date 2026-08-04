@@ -42,7 +42,11 @@
 # rendre un 401 qui PARLE D'AUTORISATION alors qu'il s'agit d'un cache froid.
 
 - name: "Team : assigner l'application à '{{ ss_team_name }}'"
-  when: "ss_team_name | length > 0"
+  # apim_teams_enabled (posé par apim_common/tasks/teams-feature.yml, appelée
+  # AVANT ce fichier) est désormais REQUIS dans la condition : un nom d'équipe
+  # résolu ne suffit plus à déclencher GET /accessProfiles + POST /assets/team
+  # sur une gateway dont la feature Teams est éteinte (défaut du 2026-08-03).
+  when: "(ss_team_name | length > 0) and (apim_teams_enabled | bool)"
   block:
 
     - name: "Team : lister les accessProfiles (une team EST un accessProfile)"

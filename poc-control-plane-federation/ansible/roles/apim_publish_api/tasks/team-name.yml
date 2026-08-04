@@ -63,6 +63,12 @@
       contraire avec -e apim_pub_require_team=false (lab sans feature Teams).
   when: "apim_pub_require_team | default(true) | bool"
 
+# Le repli non cloisonne est commande par DEUX variables, pas une :
+#   apim_ss_teams_feature (etat plateforme, partagee) et apim_pub_require_team
+#   (politique, propre a ce role). Poser apim_pub_require_team=false ne suffit
+#   pas a desactiver les teams — il ne leve que les assert de ce fichier ; c'est
+#   la sonde qui commande le travail reel (apim_common/tasks/teams-feature.yml,
+#   importee par main.yml/verify.yml). Constate le 2026-08-03.
 - name: "Team : AVERTISSEMENT — cloisonnement désactivé"
   ansible.builtin.debug:
     msg: >-

@@ -42,13 +42,23 @@
              | map(attribute='name') | list }}
       when: "v_api.id is defined"
 
+    # Rejoue la MÊME sonde qu'à l'apply (même fichier) : verify est self-contained
+    # et ne doit rien supposer d'un run précédent — apim_teams_enabled doit être
+    # reposé ici, pas hérité d'une éventuelle convergence dans le même play.
+    - name: "Teams : sonde de la feature + table de verite"
+      ansible.builtin.import_role:
+        name: apim_common
+        tasks_from: teams-feature.yml
+      vars:
+        apim_teams_required: "{{ apim_pub_require_team | default(true) }}"
+
     - name: "Verify : FAIL-CLOSED — l'API est publiée, ACTIVE et CLOISONNÉE"
       ansible.builtin.assert:
         that:
           - "v_api.id is defined"
           - "v_api.isActive | default(false)"
-          - "pub_team_name | length == 0 or pub_team_name in (v_team_names | default([]))"
-          - "pub_team_name | length == 0 or 'Default' not in (v_team_names | default([]))"
+          - "pub_team_name | length == 0 or not (apim_teams_enabled | bool) or pub_team_name in (v_team_names | default([]))"
+          - "pub_team_name | length == 0 or not (apim_teams_enabled | bool) or 'Default' not in (v_team_names | default([]))"
         fail_msg: >-
           PUBLISH_UNCONFIRMED : API {{ apim_api.name }} v{{ apim_api.version }} —
           absente, inactive, ou non cloisonnée (teams={{ v_team_names | default('n/a') }},
