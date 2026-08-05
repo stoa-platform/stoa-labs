@@ -78,6 +78,7 @@
         status_code: [200, 201]
       register: ss_app_create
       when: "ss_app_id | length == 0"
+      changed_when: true
 
     # PIÈGE JINJA : `a.id | default((a.applications|first).id)` est FAUX — Jinja
     # évalue l'ARGUMENT de default() EAGERLY, donc `.applications` est déréférencé
@@ -106,17 +107,35 @@
     - name: "Team : cloisonner l'application (assignation + relecture fail-closed)"
       ansible.builtin.import_tasks: team.yml
 
+    # LECTURE AVANT ÉCRITURE. `consumingAPIs` est DÉJÀ porté par chaque entrée de
+    # la liste relue en §2 : la comparaison ne coûte aucun appel supplémentaire.
+    # Une application qui vient d'être créée n'y figure pas — le `default([])`
+    # la range, à raison, dans le cas « rien d'associé », et le PUT part.
+    - name: "App : APIs déjà consommées (relues en §2, sans appel supplémentaire)"
+      ansible.builtin.set_fact:
+        ss_app_apis_now: >-
+          {{ (ss_apps.json.applications | selectattr('name', 'equalto', apim_ss_app.name)
+              | map(attribute='consumingAPIs') | list | first) | default([], true) }}
+
     # 204 EST un succès sur cet endpoint — contrat épinglé live par l'adapter Go
     # (labctl/internal/adapter/webmethods/consumer.go : « PUT
     # /applications/{id}/apis {"apiIDs":[...]} (200/201/204 are success) »), et
     # c'est ce que rend le mock. Le rôle ne tolérait que 200/201 : une gateway
     # qui répond 204 faisait échouer l'apply sur une association RÉUSSIE.
-    - name: "App : associer à l'API (idempotent)"
+    #
+    # ÉGALITÉ STRICTE, et pas `ss_api_id not in ss_app_apis_now` : ce PUT REMPLACE
+    # l'ensemble consommé par le seul id du manifeste. Garder l'état final
+    # identique à celui d'avant le correctif impose donc d'écrire dès que
+    # l'ensemble diffère — y compris quand il CONTIENT notre API parmi d'autres.
+    # Sans écriture, la cible ne serait plus « exactement l'API du manifeste ».
+    - name: "App : associer à l'API (si l'ensemble consommé diffère)"
       ansible.builtin.uri:
         url: "{{ apim_ss_api_base }}/applications/{{ ss_app_id }}/apis"
         method: PUT
         body: { apiIDs: ["{{ ss_api_id }}"] }
         status_code: [200, 201, 204]
+      when: "ss_app_apis_now != [ss_api_id]"
+      changed_when: true
 
     # ===== 3. Identifiers ENTRANTS : certificat (asset) + plage IP ============
     # Chargement du PEM, gardes fail-closed et ré-encodage base64(DER) : une
@@ -271,16 +290,76 @@
       block:
         - ansible.builtin.set_fact:
             ss_managed_keys: "{{ ss_desired_ids | map(attribute='key') | list }}"
+
+        # LECTURE AVANT ÉCRITURE — la garde la plus importante du rôle.
+        # Ce PUT était INCONDITIONNEL, et wM ne met pas à jour les identifiers en
+        # place : il les DÉTRUIT et les RECRÉE. Mesuré le 2026-08-05 sur trois
+        # applies successifs d'un manifeste inchangé — même valeur d'allowlist,
+        # trois UUID d'identifier différents et trois `lastupdated` différents.
+        # Le coût n'est pas cosmétique : tout ce qui référence l'identifier par
+        # id (export/import, audit, reprise) casse en silence, la piste d'audit
+        # bancaire bouge sans changement, et chaque destruction/recréation ouvre
+        # une fenêtre où la requête d'un consommateur peut ne plus matcher.
+        #
+        # Comparer `ss_app_merged` au record relu ne marcherait PAS : la gateway
+        # ajoute un `id` à chaque entrée d'identifier, que l'ensemble désiré n'a
+        # pas — les deux dicts diffèreraient TOUJOURS et la garde ne se
+        # déclencherait jamais (le mode de panne « garde verte qui ne garde
+        # rien »). On compare donc les seuls champs GOUVERNÉS par le manifeste,
+        # valeurs triées : la rotation `overlap` raisonne déjà par VALEUR et
+        # dédup, jamais par ordre.
+        - name: "Identifiers : empreinte des dimensions gérées, telles qu'elles sont SUR la gateway"
+          ansible.builtin.set_fact:
+            ss_ids_now: >-
+              {{ (ss_ids_now | default([]))
+                 + [{'key': item.key,
+                     'name': item.name | default(''),
+                     'value': (item.value | default([]) | sort)}] }}
+          loop: "{{ ss_app_rec.identifiers | default([]) | selectattr('key', 'in', ss_managed_keys) | list }}"
+          loop_control: { label: "{{ item.key }}" }
+          no_log: true
+
+        - name: "Identifiers : MÊME empreinte pour l'ensemble désiré (seule comparaison valide)"
+          ansible.builtin.set_fact:
+            ss_ids_want: >-
+              {{ (ss_ids_want | default([]))
+                 + [{'key': item.key,
+                     'name': item.name | default(''),
+                     'value': (item.value | default([]) | sort)}] }}
+          loop: "{{ ss_desired_ids }}"
+          loop_control: { label: "{{ item.key }}" }
+          no_log: true
+
+        - name: "Identifiers : la gateway porte-t-elle déjà l'état désiré ?"
+          ansible.builtin.set_fact:
+            ss_ids_converged: >-
+              {{ (ss_ids_now | default([]) | sort(attribute='key'))
+                 == (ss_ids_want | default([]) | sort(attribute='key')) }}
+
         - ansible.builtin.set_fact:
             ss_app_merged: >-
               {{ ss_app_rec | combine({'identifiers':
                   (ss_app_rec.identifiers | default([]) | rejectattr('key', 'in', ss_managed_keys) | list)
                   + ss_desired_ids }) }}
-        - ansible.builtin.uri:
+          when: "not ss_ids_converged"
+          no_log: true
+
+        - name: "Identifiers : PUT du record — SEULEMENT si une dimension gérée diffère"
+          ansible.builtin.uri:
             url: "{{ apim_ss_api_base }}/applications/{{ ss_app_id }}"
             method: PUT
             body: "{{ ss_app_merged }}"
             status_code: [200, 201]
+          when: "not ss_ids_converged"
+          changed_when: true
+
+        - name: "Identifiers : déjà conformes — aucune écriture"
+          ansible.builtin.debug:
+            msg: >-
+              IDENTIFIERS_CONVERGED : {{ ss_managed_keys | join(', ') }} déjà
+              conformes sur la gateway — PUT non émis, l'UUID des identifiers et
+              le `lastupdated` de l'application sont préservés.
+          when: "ss_ids_converged"
 
     # ===== 4. Règle IAM AND(strict) qui OPPOSE les identifiers ================
     # Ferme le fail-open : sans cette règle, les identifiers sont écrits mais inertes.
@@ -332,6 +411,7 @@
         status_code: [200, 201]
       register: ss_iam_create
       when: "ss_iam_id | length == 0 and apim_ss_app.enforce | length > 0"
+      changed_when: true
 
     - name: "IAM : capturer l'id (création)"
       ansible.builtin.set_fact:
@@ -378,11 +458,13 @@
                   {{ ss_pol | combine({'policyEnforcements':
                       [{'stageKey': 'IAM', 'enforcements': [{'enforcementObjectId': ss_iam_id, 'order': none}]}]
                       + (ss_pol.policyEnforcements | default([]) | rejectattr('stageKey', 'equalto', 'IAM') | list) }) }}
-            - ansible.builtin.uri:
+            - name: "Policy : PUT du stage IAM (action pas encore attachée)"
+              ansible.builtin.uri:
                 url: "{{ apim_ss_api_base }}/policies/{{ ss_pol_id }}"
                 method: PUT
                 body: { policy: "{{ ss_pol_new }}" }
                 status_code: [200, 201]
+              changed_when: true
 
     # ===== 5. Plan SORTANT : injection de la clé backend (P-callout) ==========
     # `backend.inject: false` = une CUSTOM POLICY du client prend le relais de

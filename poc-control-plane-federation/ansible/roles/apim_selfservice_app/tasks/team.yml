@@ -65,6 +65,34 @@
           Feature Teams activée (PUT /configurations/extended {"enableTeamWork":"true"}) ?
           Équipe créée (POST /accessProfiles + groupe) — cf. GOAL E5 ?
 
+    # LECTURE AVANT ÉCRITURE. Cette relecture est la MÊME que celle de la porte
+    # de preuve ci-dessous — elle joue simplement une fois de plus, AVANT, pour
+    # décider s'il y a quelque chose à écrire. Sans elle le POST partait à chaque
+    # apply : une application déjà cloisonnée était ré-assignée à sa propre
+    # équipe, indéfiniment, et la gateway comptait chaque passage comme une
+    # modification de l'asset.
+    - name: "Team : état AVANT (l'assignation est-elle déjà celle voulue ?)"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/applications/{{ ss_app_id }}"
+      register: ss_team_before
+      changed_when: false
+
+    - name: "Team : teams[] actuelles"
+      ansible.builtin.set_fact:
+        ss_team_names_before: >-
+          {{ (ss_team_before.json.applications | default([ss_team_before.json]) | first).teams
+             | default([]) | map(attribute='name') | list }}
+
+    # Les DEUX moitiés du résultat voulu, exactement celles qu'exige la porte de
+    # preuve : la team demandée présente, ET `Default` partie. Tant que `Default`
+    # est là, l'application reste visible de toutes les équipes — donc si elle
+    # traîne, il RESTE quelque chose à écrire, même si la bonne team est déjà là.
+    - name: "Team : y a-t-il quelque chose à écrire ?"
+      ansible.builtin.set_fact:
+        ss_team_converged: >-
+          {{ (ss_team_name in ss_team_names_before)
+             and ('Default' not in ss_team_names_before) }}
+
     # assetType OBLIGATOIRE : sans lui, 200 et rien ne se passe.
     - name: "Team : POST /assets/team (assetType Application, newTeams = UUID)"
       ansible.builtin.uri:
@@ -76,6 +104,8 @@
           newTeams: ["{{ ss_team_uuid }}"]
         status_code: [200, 201]
       register: ss_team_assign
+      when: "not ss_team_converged"
+      changed_when: true
 
     # LA porte de preuve. Le POST ci-dessus rend 200 même quand il n'a rien fait
     # (assetType manquant/inconnu) : seule la relecture distingue « assigné » de
@@ -102,7 +132,8 @@
           - "'Default' not in ss_team_names_after"
         fail_msg: >-
           TEAM_UNCONFIRMED : après POST /assets/team (HTTP
-          {{ ss_team_assign.status }}), l'application '{{ apim_ss_app.name }}'
+          {{ ss_team_assign.status | default('non émis — état déjà conforme AVANT ce run') }}),
+          l'application '{{ apim_ss_app.name }}'
           porte teams={{ ss_team_names_after }} — attendu : '{{ ss_team_name }}'
           présente et 'Default' absente. Un 200 sans effet est le comportement
           connu de cet appel quand assetType manque ou ne correspond pas.

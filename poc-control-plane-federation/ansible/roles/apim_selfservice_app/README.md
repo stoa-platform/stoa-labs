@@ -20,7 +20,8 @@ VÉRIFIÉE côté Go (`labctl/internal/adapter/webmethods`, mémoire projet
 
 **Plan ENTRANT** (`tasks/main.yml`) :
 - App + identifier `ipAddressRange` + règle IAM `AND(ipAddressRange)` posés,
-  **idempotents** (re-run = no-op ; find par **empreinte de règles** — la gateway
+  **idempotents** (re-run = no-op **sur la gateway**, pas seulement dans le
+  recap — cf. § *Idempotence* ; find par **empreinte de règles** : la gateway
   force le nom « Identify & Authorize », donc jamais de match par nom).
 - **Fail-open fermé** : IP hors plage → **403**, IP autorisée → **200**.
 
@@ -79,6 +80,51 @@ VÉRIFIÉE côté Go (`labctl/internal/adapter/webmethods`, mémoire projet
 équipe) + `REGISTER_ALLOWED` (l'API demandée est consommable par l'équipe) +
 `ENFORCEMENT_CONFIRMED` (le stage IAM oppose l'action AND) +
 `OUTBOUND_CONFIRMED` (customHttpHeaders au routing) + preuve data-plane 200.
+
+## Idempotence — ce que le rôle garantit, et comment on le sait
+
+**Ansible n'a pas de state file.** L'idempotence de ce rôle n'est mémorisée nulle
+part : elle est **recalculée à chaque run** en lisant la gateway. Un agent CI
+éphémère est donc le mode nominal — il n'y a aucun fichier à conserver d'un
+build à l'autre (l'inventaire, lui, est une *entrée* versionnée : deux lignes,
+zéro état).
+
+**Ce qui a été corrigé le 2026-08-05.** Quatre écritures partaient à **chaque**
+apply, sans lecture préalable — `POST /assets/team`, `PUT
+/applications/{id}/apis`, `PUT /applications/{id}` et `PUT /policyActions/{id}`.
+Sur une application déjà conforme, trois applies successifs du **même** manifeste
+donnaient trois `lastupdated` différents **et trois UUID d'identifier
+différents** : wM ne met pas les identifiers à jour en place, il les détruit et
+les recrée. Coût réel — référence par id cassée (export/import, audit, reprise),
+piste d'audit qui bouge sans changement, écriture sur une API active hors du
+cadre zéro-coupure (ADR-079), et une fenêtre de non-identification à chaque
+recréation.
+
+**Pourquoi personne ne l'avait vu.** `ansible.builtin.uri` ne fait **aucune**
+détection de changement : il rapporte `ok`, jamais `changed`, qu'il ait écrit ou
+non. Le `PLAY RECAP` affichait donc `changed=0` — y compris sur le run qui
+retirait réellement la team `Default`. Le compteur d'idempotence du pipeline
+était structurellement vert : il ne pouvait pas voir le défaut. D'où le
+`changed_when:` explicite sur **toutes** les écritures du rôle — le recap est
+redevenu un signal.
+
+**Deux pièges de comparaison**, qui auraient donné des gardes vertes inutiles :
+
+- comparer le record fusionné au record relu ne marche pas — la gateway ajoute
+  un `id` à chaque identifier, absent de l'ensemble désiré, donc les deux dicts
+  diffèrent **toujours**. La comparaison porte sur les seuls champs gouvernés
+  par le manifeste (`key`/`name`/`value`), valeurs triées ;
+- `active` est **exclu** de la comparaison des `policyActions` : la gateway ne le
+  relit pas (mesuré — les 10 actions de l'instance rendent `active=false`, y
+  compris celles que ce rôle vient de créer avec `active: true`). Le corps envoyé
+  reste inchangé ; seule la décision d'émettre change.
+
+**Preuve rejouable** : `scripts/test-idempotence-selfservice.sh` (10/10).
+Il n'exige pas seulement `changed=0` au re-run — le code buggé le donnait déjà.
+Il exige **aussi** `changed>0` sur le run qui crée, et une écriture qui
+**repart** quand le manifeste change (T9/T10) : sans ce second volet, un rôle qui
+n'écrirait plus jamais passerait pour idempotent. Vérifié rouge (6/10) sur le
+code d'avant correctif.
 
 ## Usage
 

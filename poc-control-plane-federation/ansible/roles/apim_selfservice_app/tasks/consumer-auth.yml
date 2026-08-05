@@ -367,6 +367,7 @@
   delegate_to: localhost
   no_log: true
   when: "apim_ss_strat_id | length == 0"
+  changed_when: true
 
 - name: "Auth app : capturer l'id à la création"
   ansible.builtin.set_fact:
@@ -505,7 +506,32 @@
              ((apim_ss_auth_rec.authStrategyIds | default([])) + [apim_ss_strat_id]) | unique}) }}
   no_log: true
 
-- name: "Auth app : PUT du record muté (claim opposable + stratégie liée)"
+# LECTURE AVANT ÉCRITURE — même défaut, et même correctif, que le PUT des
+# identifiers de main.yml : ce PUT était INCONDITIONNEL, donc à chaque apply d'un
+# manifeste portant `auth:` la gateway détruisait et recréait les identifiers de
+# l'application (UUID neuf, `lastupdated` bumpé) pour un état déjà conforme.
+# Comparaison sur les seuls champs gouvernés ici — la claim `openIdClaims` (mode
+# idp) et l'appartenance de la stratégie à `authStrategyIds` — car le record relu
+# porte un `id` par identifier que l'ensemble désiré n'a pas : comparer les dicts
+# entiers diffèrerait toujours et la garde ne garderait rien.
+- name: "Auth app : claim openIdClaims déjà posée telle quelle ? (mode idp)"
+  ansible.builtin.set_fact:
+    apim_ss_auth_claim_converged: >-
+      {{ (apim_ss_auth_rec.identifiers | default([])
+          | selectattr('key', 'equalto', 'openIdClaims')
+          | selectattr('name', 'equalto', apim_ss_auth_identifier.name)
+          | map(attribute='value') | flatten | list | sort)
+         == (apim_ss_auth_identifier.value | sort) }}
+  when: "apim_ss_auth_mode_eff == 'idp'"
+  no_log: true
+
+- name: "Auth app : le record porte-t-il déjà l'état désiré ?"
+  ansible.builtin.set_fact:
+    apim_ss_auth_converged: >-
+      {{ (apim_ss_strat_id in (apim_ss_auth_rec.authStrategyIds | default([])))
+         and (apim_ss_auth_mode_eff != 'idp' or (apim_ss_auth_claim_converged | default(false))) }}
+
+- name: "Auth app : PUT du record muté (claim opposable + stratégie liée) — si différent"
   ansible.builtin.uri:
     url: "{{ apim_ss_api_base }}/applications/{{ ss_app_id }}"
     method: PUT
@@ -513,6 +539,16 @@
     status_code: [200, 201]
   delegate_to: localhost
   no_log: true
+  when: "not apim_ss_auth_converged"
+  changed_when: true
+
+- name: "Auth app : record déjà conforme — aucune écriture"
+  ansible.builtin.debug:
+    msg: >-
+      AUTH_RECORD_CONVERGED : stratégie déjà liée{{ ' et claim openIdClaims déjà posée'
+      if apim_ss_auth_mode_eff == 'idp' else '' }} — PUT non émis, UUID des
+      identifiers préservés.
+  when: "apim_ss_auth_converged"
 
 # ===== 3. Mode INTERNAL — la gateway génère le client, on le STOCKE dans Vault ==
 # La stratégie sur l'AS `local` est posée ; le client OAuth2 (client_id/secret) est
