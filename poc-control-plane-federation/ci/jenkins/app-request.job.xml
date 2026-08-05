@@ -25,16 +25,29 @@
         <hudson.model.ChoiceParameterDefinition>
           <name>API</name>
           <description>API consommée par l'application, sous la forme nom@version (liste des APIs publiées sur le dépôt plateforme + les dépôts d'équipe déclarés). Scindée côté job en REQ_API/REQ_API_VER.</description>
-          <!-- Premier choix VIDE en dur (même motif que TEAM) : SANS lui, un
-               job posé sans passer par setup-team-onboard-jobs.sh (ex.
-               setup-provision-jobs.sh appelé directement, JOBS=app-request)
-               laisse le placeholder non substitué -> choices=[] -> menu
-               INUTILISABLE (vérifié en revue). La vraie liste vit UNIQUEMENT
-               via setup-team-onboard-jobs.sh (scripts/lib/generate-choices.sh,
+          <!-- Premier choix VIDE en dur : SANS lui, un job posé sans passer
+               par setup-team-onboard-jobs.sh (ex. setup-provision-jobs.sh
+               appelé directement, JOBS=app-request) laisse le marqueur de
+               liste non substitué, choices vide, menu INUTILISABLE (vérifié
+               en revue). La vraie liste vit UNIQUEMENT via
+               setup-team-onboard-jobs.sh (scripts/lib/generate-choices.sh,
                Task 3) ; une soumission avec le choix vide échoue quand même
-               loud plus loin (REQ_API:? dans provision-request.sh). -->
-          <choices class="java.util.Arrays$ArrayList"><a class="string-array"><string></string>
-<!--CHOICES:APIS-->
+               loud plus loin (REQ_API:? dans provision-request.sh).
+               DIFFÉRENCE avec TEAM (ci-dessus) : ici API est un champ
+               REQUIS (pas de "ne rien assigner" légitime), donc ce choix de
+               secours ne doit PAS survivre à une substitution PROPRE — fix
+               round 2 (revue) : la balise string vide et le marqueur de
+               liste sont posés SUR LA MÊME LIGNE ci-dessous, pour que le sed
+               double-forme de setup-team-onboard-jobs.sh (insertion du
+               fragment après la ligne du marqueur, PUIS suppression de
+               cette même ligne, adressage par SOUS-CHAÎNE, pas ligne
+               exacte) supprime la ligne ENTIÈRE — secours ET marqueur — au
+               profit des VRAIS choix insérés juste après. Sur un job posé
+               BRUT (sans substitution), la ligne survit telle quelle :
+               exactement UN choix vide (le commentaire du marqueur est
+               ignoré par le parseur XML), jamais un choices vide. -->
+          <choices class="java.util.Arrays$ArrayList"><a class="string-array">
+<string></string><!--CHOICES:APIS-->
 </a></choices>
         </hudson.model.ChoiceParameterDefinition>
         <hudson.model.StringParameterDefinition>
