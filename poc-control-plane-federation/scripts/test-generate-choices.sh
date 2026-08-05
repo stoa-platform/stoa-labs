@@ -74,6 +74,15 @@ mk_platform_repo(){ # $1=racine bare $2=providers.dev.yml content $3=clients api
   mkdir -p "$(dirname "$barecdir")"
   git clone -q --bare "$src" "$barecdir" >/dev/null
 }
+mk_team_repo(){ # $1=racine bare (ex. $GH/banking-demo/accounts-api.git) $2=apis/*.publish.yml content
+  local barecdir="$1" src="$TMP/src-team-$$_$RANDOM"
+  mkdir -p "$src/apis"
+  printf '%s' "$2" > "$src/apis/payouts.publish.yml"
+  ( cd "$src" && git init -q -b main && git -c user.name=t -c user.email=t@t add -A \
+    && git -c user.name=t -c user.email=t commit -qm init >/dev/null )
+  mkdir -p "$(dirname "$barecdir")"
+  git clone -q --bare "$src" "$barecdir" >/dev/null
+}
 
 TWO_TEAMS='providers:
   - team: banking-demo
@@ -88,6 +97,18 @@ TWO_TEAMS='providers:
 ONE_API='apim_api:
   name: "accounts-read-ans"
   version: "1.0.0"
+'
+# 1 équipe avec repo DÉCLARÉ (banking-demo/accounts-api) — présent ou absent
+# selon le mock utilisé par le test 10 ci-dessous.
+ONE_TEAM_ONE_REPO='providers:
+  - team: banking-demo
+    description: "d1"
+    repo: banking-demo/accounts-api
+    approvers: []
+'
+PAYOUTS_API='apim_api:
+  name: "payouts"
+  version: "2.0.0"
 '
 
 echo "== 1. generate_choices_teams : 2 équipes déclarées -> 2 <string> =="
@@ -225,13 +246,65 @@ OUT=$(cd "$REPO" && JENKINS_UI="$JU" JOBS="app-request api-request" ENVN=dev bas
 grep -q "api-request" <<<"$OUT" && grep -q "ignoré" <<<"$OUT" && ok "api-request signalé absent, pas fatal" || ko "signal d'absence manquant"
 
 echo
-echo "== 10. bash -n sur les fichiers touchés =="
+echo "== 10. re-pose : le SIGNAL 'dépôt d'équipe toléré/sauté' survit au succès (revue round 1) =="
+# CONSTAT DE REVUE (round 1) : une re-pose peut RÉUSSIR (rc=0) tout en ayant
+# toléré un dépôt d'équipe déclaré-absent (generate_choices_apis, réserve 3
+# du rapport) — sans grep DÉDIÉ à ce cas, ce signal ne sortait jamais du
+# process sur le chemin de succès (seule la branche ÉCHEC de team-apply.sh
+# faisait un `tail`). Reproduit ici le MÊME pipeline que team-apply.sh :
+# capture combinée stdout+stderr dans un log, puis le MÊME grep -oE — sans
+# rejouer team-apply.sh en entier (Vault/Gitea/Ansible réels, hors périmètre
+# offline), même discipline que la preuve 9 juste au-dessus.
+TA_GREP(){ grep -oE 'CHOICES_SKIPPED_REPOS=[0-9]+' "$1" | tail -1 | cut -d= -f2; }
+
+echo "-- 10a. dépôt d'équipe DÉCLARÉ mais ABSENT du mock -> marqueur=1, re-pose VERTE, note ⚠ portée --"
+GH10A="$TMP/gitea10a"; mk_platform_repo "$GH10A/ci/stoa-labs.git" "$ONE_TEAM_ONE_REPO" "$ONE_API"
+# banking-demo/accounts-api.git n'est PAS créé sous $GH10A -> clone en échec, toléré (pas un ko).
+: > "$TMP/calls.log"; rm -rf "$BODYDIR"/*
+JENKINS_UI="$JU" JOBS="p3t3-disposable" GIT_HOST="$GH10A" GIT_REPO=ci/stoa-labs GITEA_TOKEN=dummy ENVN=dev \
+  bash "$SETUP" >"$TMP/refresh10a.log" 2>&1
+RC=$?
+[ "$RC" -eq 0 ] && ok "re-pose réussie malgré le dépôt d'équipe absent (toléré)" || ko "n'aurait pas dû échouer (rc=$RC)"
+SKIPPED_A=$(TA_GREP "$TMP/refresh10a.log")
+[ "$SKIPPED_A" = "1" ] && ok "marqueur CHOICES_SKIPPED_REPOS=1 présent dans le log de re-pose (succès)" \
+  || ko "marqueur attendu=1, obtenu='$SKIPPED_A' — voir $TMP/refresh10a.log"
+# Même construction que team-apply.sh (REFRESH_NOTE) — preuve que le grep
+# ci-dessus est bien EXPLOITABLE pour bâtir la note du commentaire PR.
+NOTE_A=""
+if [ -n "$SKIPPED_A" ] && [ "$SKIPPED_A" -gt 0 ]; then
+  NOTE_A=" (listes rafraîchies ; ⚠ ${SKIPPED_A} dépôt(s) d'équipe déclarés mais absents, sautés)"
+fi
+[ "$NOTE_A" = " (listes rafraîchies ; ⚠ 1 dépôt(s) d'équipe déclarés mais absents, sautés)" ] \
+  && ok "la note construite porte le signal : '$NOTE_A'" || ko "note inattendue : '$NOTE_A'"
+
+echo "-- 10b. contre-témoin : le même dépôt d'équipe, RÉELLEMENT présent -> marqueur=0, note propre --"
+GH10B="$TMP/gitea10b"; mk_platform_repo "$GH10B/ci/stoa-labs.git" "$ONE_TEAM_ONE_REPO" "$ONE_API"
+mk_team_repo "$GH10B/banking-demo/accounts-api.git" "$PAYOUTS_API"
+: > "$TMP/calls.log"; rm -rf "$BODYDIR"/*
+JENKINS_UI="$JU" JOBS="p3t3-disposable" GIT_HOST="$GH10B" GIT_REPO=ci/stoa-labs GITEA_TOKEN=dummy ENVN=dev \
+  bash "$SETUP" >"$TMP/refresh10b.log" 2>&1
+RC=$?
+[ "$RC" -eq 0 ] && ok "re-pose réussie, dépôt d'équipe présent" || ko "échec inattendu (rc=$RC)"
+SKIPPED_B=$(TA_GREP "$TMP/refresh10b.log")
+[ "$SKIPPED_B" = "0" ] && ok "marqueur CHOICES_SKIPPED_REPOS=0 (contre-témoin : rien sauté)" \
+  || ko "marqueur attendu=0, obtenu='$SKIPPED_B' — voir $TMP/refresh10b.log"
+NOTE_B=""
+if [ -n "$SKIPPED_B" ] && [ "$SKIPPED_B" -gt 0 ]; then
+  NOTE_B=" (listes rafraîchies ; ⚠ ${SKIPPED_B} dépôt(s) d'équipe déclarés mais absents, sautés)"
+fi
+[ -z "$NOTE_B" ] && ok "note propre, aucun ⚠ (contre-témoin)" || ko "note inattendue : '$NOTE_B'"
+grep -q '<string>payouts@2.0.0</string>' "$BODYDIR/p3t3-disposable.posted.xml" \
+  && ok "l'API du dépôt d'équipe désormais présent (payouts@2.0.0) est bien dans le XML posté" \
+  || ko "API du dépôt d'équipe absente du POST"
+
+echo
+echo "== 11. bash -n sur les fichiers touchés =="
 for f in "$LIB" "$SETUP" "$REPO/scripts/team-apply.sh" "$REPO/scripts/setup-provision-jobs.sh"; do
   bash -n "$f" 2>/dev/null && ok "syntaxe valide : $(basename "$f")" || ko "syntaxe cassée : $(basename "$f")"
 done
 
 echo
-echo "== 11. garde de secrets (fichiers TOUCHÉS par cette tâche uniquement) =="
+echo "== 12. garde de secrets (fichiers TOUCHÉS par cette tâche uniquement) =="
 # `gitleaks detect -s scripts/` sur le dépôt ENTIER a des trouvailles
 # PRÉEXISTANTES sans rapport avec cette tâche (ex. Administrator:manage dans
 # scripts/test-backend-key.sh — un identifiant de lab déjà présent avant

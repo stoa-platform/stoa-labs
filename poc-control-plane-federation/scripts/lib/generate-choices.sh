@@ -39,6 +39,22 @@
 # Sortie : sur stdout, une ligne "<string>valeur échappée</string>" par entrée
 # (ordre non garanti pour generate_choices_apis — trié). Rien d'autre sur
 # stdout : les diagnostics vont sur stderr, pour un usage sûr en `X=$(fn env)`.
+#
+# SIGNAL DE TOLÉRANCE (revue round 1) : generate_choices_apis émet, sur
+# stderr et SEULEMENT sur le chemin de succès, un marqueur explicite en FIN
+# de sortie — motif marqueur de la classe du palier 2 :
+#   CHOICES_SKIPPED_REPOS=<n>
+# <n> = nombre de dépôts d'équipe DÉCLARÉS mais introuvables sur Gitea,
+# tolérés (cf. FAIL-CLOSED plus haut), TOUJOURS émis (y compris n=0) pour
+# qu'un grep sache distinguer "zéro sauté" de "marqueur absent" (le second
+# cas signifie : generate_choices_apis pas appelée du tout ce run, ex. aucun
+# job posé n'a le placeholder APIS). VOLONTAIREMENT sur stderr, jamais
+# stdout : stdout devient tel quel le fragment XML inséré par `sed r` dans un
+# job Jenkins — y mêler une ligne "CHOICES_SKIPPED_REPOS=…" casserait le XML
+# posé. C'est ce marqueur que setup-team-onboard-jobs.sh laisse remonter
+# (stderr non capturé par `$(...)`) et que team-apply.sh grep dans son log de
+# re-pose MÊME SUR SUCCÈS — sans lui, une re-pose réussie pouvait cacher en
+# silence une équipe tolérée/sautée (cf. task-3-report.md, round 1).
 
 # _gc_escape <valeur> — échappe & et < (défense en profondeur : la regex
 # ^[a-z0-9][a-z0-9-]{1,30}$ de team-request.sh interdit déjà ces caractères
@@ -185,8 +201,10 @@ PY
   # dépôts d'équipe déclarés — CHACUN son propre clone (ce sont des dépôts
   # SÉPARÉS de la plateforme, cf. ADR-076, pas des sous-dossiers de
   # ci/stoa-labs). Un dépôt introuvable est attendu tant que T5/T6 n'ont pas
-  # livré la chaîne producteur : averti, ignoré POUR CETTE LISTE, pas fatal.
-  local rrepo tw
+  # livré la chaîne producteur : averti, ignoré POUR CETTE LISTE, pas fatal —
+  # mais COMPTÉ (skipped) : le nombre est le signal réutilisable par
+  # l'appelant, cf. marqueur CHOICES_SKIPPED_REPOS en fin de fonction.
+  local rrepo tw skipped=0
   while IFS= read -r rrepo; do
     [ -n "$rrepo" ] || continue
     tw="$work/team-$(printf '%s' "$rrepo" | tr './' '__')"
@@ -195,6 +213,7 @@ PY
         rm -rf "$work"; return 1
       fi
     else
+      skipped=$((skipped + 1))
       echo "  (avertissement) dépôt d'équipe ${rrepo} illisible sur main — ignoré pour cette liste" >&2
     fi
   done <<<"$repos"
@@ -207,6 +226,11 @@ PY
     echo "APIS_EMPTY : aucune API publiée trouvée (clients/ + dépôts d'équipe déclarés)" >&2
     return 1
   fi
+  # Marqueur TOUJOURS émis sur le chemin de succès (y compris skipped=0) —
+  # cf. en-tête "SIGNAL DE TOLÉRANCE". Émis AVANT les fragments XML pour ne
+  # jamais dépendre de l'ordre d'un flush partiel côté appelant ; sur stderr,
+  # jamais mêlé au fragment stdout.
+  echo "CHOICES_SKIPPED_REPOS=${skipped}" >&2
   while IFS= read -r n; do
     [ -n "$n" ] && printf '<string>%s</string>\n' "$(_gc_escape "$n")"
   done <<<"$result"

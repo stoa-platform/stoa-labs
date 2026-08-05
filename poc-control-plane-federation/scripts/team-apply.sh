@@ -204,7 +204,25 @@ if [ "$ONB_RC" -eq 0 ]; then
   if JENKINS_UI="${JENKINS_UI:-http://localhost:18080}" JOBS="app-request api-request" \
      ENVN="$ENVN" bash scripts/setup-team-onboard-jobs.sh >"$TMP/refresh.log" 2>&1
   then
-    echo "listes rafraîchies (app-request, api-request si présent)"
+    # REVUE (round 1, Important) : la re-pose peut RÉUSSIR tout en ayant
+    # toléré/sauté un dépôt d'équipe déclaré mais introuvable sur Gitea
+    # (generate_choices_apis, réserve 3 du rapport) — ce cas émet
+    # CHOICES_SKIPPED_REPOS=<n> sur stderr (marqueur explicite, motif du
+    # palier 2), qui atterrit dans CE log (stdout+stderr confondus) même sur
+    # le chemin de succès. Sans ce grep, la moitié "signal" de la tolérance
+    # ne sortait jamais du process : une re-pose verte pouvait cacher en
+    # silence une équipe manquante — la moitié de fail-open exacte que la
+    # revue a nommée. `tail -1` : au plus un marqueur par run (generate_
+    # choices_apis n'est appelée qu'une fois par invocation de
+    # setup-team-onboard-jobs.sh).
+    SKIPPED=$(grep -oE 'CHOICES_SKIPPED_REPOS=[0-9]+' "$TMP/refresh.log" | tail -1 | cut -d= -f2)
+    if [ -n "$SKIPPED" ] && [ "$SKIPPED" -gt 0 ]; then
+      REFRESH_NOTE=" (listes rafraîchies ; ⚠ ${SKIPPED} dépôt(s) d'équipe déclarés mais absents, sautés)"
+      echo "AVERTISSEMENT: listes rafraîchies mais ${SKIPPED} dépôt(s) d'équipe déclarés absents/sautés :" >&2
+      tail -20 "$TMP/refresh.log" >&2
+    else
+      echo "listes rafraîchies (app-request, api-request si présent)"
+    fi
   else
     REFRESH_NOTE=" ⚠ listes non rafraîchies — relancer setup-team-onboard-jobs.sh"
     echo "AVERTISSEMENT: re-pose des listes en échec — l'onboarding, lui, EST fait :" >&2
