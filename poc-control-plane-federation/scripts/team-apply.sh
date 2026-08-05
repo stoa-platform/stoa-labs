@@ -57,13 +57,32 @@ git fetch -q origin main && git checkout -q "$MERGE_SHA" \
 PROV="ansible/providers.${ENVN}.yml"
 grep -Eq "^  - team: ${TEAM}\$" "$PROV" \
   || fail "TEAM_NOT_IN_MERGED_STATE : ${TEAM} absente de ${PROV} au SHA mergé — le payload ne fait pas foi"
+# REVUE (Important) : la 1ère version n'avait aucun `|| fail` sur cette
+# extraction — une exception Python (YAML malformé, équipe absente malgré le
+# grep texte du dessus) laissait REPO_FULL vide EN SILENCE, et le script
+# prenait alors le chemin « repo vide dans providers » comme si c'était le
+# cas légitime payments-team : un commentaire ✅ trompeur possible. Même
+# classe de bug que le Critical de la Task 3 (extraction entre appels gardés
+# = le point aveugle). Deux verrous : (1) `|| fail` sur l'échec du process
+# python lui-même (exception -> exit non nul, capté par `||`) ; (2) un
+# marqueur explicite `REPO=` en préfixe de sortie — un python qui réussirait
+# SANS lever mais sans imprimer ce préfixe (sortie inattendue) est aussi
+# refusé, pour ne jamais confondre « champ repo légitimement absent/vide »
+# (le marqueur est présent, la valeur après lui est vide) et « extraction
+# cassée » (marqueur absent).
 REPO_FULL=$(TEAM="$TEAM" PROV="$PROV" python3 - <<'PY'
-import os, yaml
+import os, sys, yaml
 d = yaml.safe_load(open(os.environ["PROV"]))
-e = next(p for p in d["providers"] if p["team"] == os.environ["TEAM"])
-print(e.get("repo") or "")
+e = next((p for p in d["providers"] if p["team"] == os.environ["TEAM"]), None)
+if e is None:
+    sys.exit("TEAM_NOT_FOUND_IN_PARSE : incohérence grep vs yaml.safe_load")
+print("REPO=" + (e.get("repo") or ""))
 PY
-)
+) || fail "PARSE_PROVIDERS : lecture du champ repo de ${TEAM} dans ${PROV} — $REPO_FULL"
+case "$REPO_FULL" in
+  REPO=*) REPO_FULL="${REPO_FULL#REPO=}";;
+  *) fail "PARSE_PROVIDERS : sortie inattendue de l'extraction repo pour ${TEAM} (ni échec ni marqueur REPO=)";;
+esac
 
 # ── 2. dépôt Gitea (idempotent ; token org-admin lu dans Vault) ──────────────
 REPO_NOTE="dépôt : (repo vide dans providers — étape sautée)"
@@ -90,13 +109,42 @@ if [ -n "$REPO_FULL" ]; then
     RC=$(gapi -X POST -d "{\"username\":\"${ORG}\"}" -o "$TMP/err" -w '%{http_code}' "${GIT_HOST}/api/v1/orgs")
     { [ "$RC" = 201 ] || [ "$RC" = 200 ]; } || fail "création org ${ORG} (HTTP $RC)"
   fi
-  # repo : create-or-skip, puis squelette si créé
-  RC=$(gapi -o /dev/null -w '%{http_code}' "${GIT_HOST}/api/v1/repos/${REPO_FULL}")
-  if [ "$RC" = 200 ]; then
-    REPO_NOTE="dépôt ${REPO_FULL} : déjà existant, étape sautée (idempotence)"
-  else
+  # repo : trois états, pas deux (REVUE Important) — le test d'existence
+  # jetait le corps de la réponse (`-o /dev/null`), donc ne regardait jamais
+  # le champ `empty` de l'API Gitea. Un dépôt CRÉÉ (par un run précédent) dont
+  # le push du squelette avait échoué pour une raison résiduelle (réseau, panne
+  # Gitea, etc.) était alors déclaré « déjà existant, étape sautée » à chaque
+  # re-run et restait bloqué vide pour toujours — aucune réparation
+  # automatique, alors que le rôle Ansible (§3) est lui bien rejouable.
+  # Vérifié en direct (2026-08-05, curl+API Gitea réel) : un dépôt créé
+  # SANS jamais y pousser expose bien "empty": true dans la réponse GET.
+  # Trois états, donc trois notes distinctes :
+  #   absent            -> créer + pousser (cas normal)
+  #   existant ET vide   -> pousser SEULEMENT (réparation d'un run précédent)
+  #   existant NON vide  -> sauté (idempotence réelle)
+  RC=$(gapi -o "$TMP/repoinfo" -w '%{http_code}' "${GIT_HOST}/api/v1/repos/${REPO_FULL}")
+  PUSH_SKELETON=0
+  if [ "$RC" != 200 ]; then
     RC=$(gapi -X POST -d "{\"name\":\"${RNAME}\",\"auto_init\":false}" -o "$TMP/err" -w '%{http_code}' "${GIT_HOST}/api/v1/orgs/${ORG}/repos")
     [ "$RC" = 201 ] || fail "création dépôt ${REPO_FULL} (HTTP $RC)"
+    PUSH_SKELETON=1
+    REPO_NOTE="dépôt ${REPO_FULL} : créé depuis le squelette ADR-076"
+  else
+    # Même discipline fail-closed que l'extraction REPO_FULL ci-dessus :
+    # HTTP 200 ne garantit pas un parse réussi — un JSON inattendu ou un champ
+    # `empty` absent doit refuser, pas être lu comme "non vide" par défaut
+    # (un défaut silencieux là laisserait un dépôt vide non réparé, exactement
+    # le bug que cette revue corrige).
+    IS_EMPTY=$(python3 -c "import json; print('1' if json.load(open('$TMP/repoinfo'))['empty'] else '0')" 2>"$TMP/perr") \
+      || fail "lecture du champ 'empty' du dépôt ${REPO_FULL} (HTTP 200, parse en échec) : $(cat "$TMP/perr")"
+    if [ "$IS_EMPTY" = 1 ]; then
+      PUSH_SKELETON=1
+      REPO_NOTE="dépôt ${REPO_FULL} : existant VIDE, squelette poussé — réparation d'un run précédent"
+    else
+      REPO_NOTE="dépôt ${REPO_FULL} : déjà existant, étape sautée (idempotence)"
+    fi
+  fi
+  if [ "$PUSH_SKELETON" = 1 ]; then
     SK="$TMP/skel"; mkdir -p "$SK"
     cp -R clients/_example/. "$SK/"
     printf '# %s\n\nDépôt d équipe (squelette ADR-076 : apis/, applications/).\nCréé par team-apply au merge de la PR #%s.\n' "$REPO_FULL" "$PR_NUMBER" > "$SK/README.md"
@@ -119,9 +167,17 @@ if [ -n "$REPO_FULL" ]; then
       git -C "$SK" push -q "${GIT_HOST}/${REPO_FULL}.git" main 2>"$TMP/pe" \
       || { cat "$TMP/pe" >&2; fail "push du squelette"; }
     unset AUTH_B64
-    REPO_NOTE="dépôt ${REPO_FULL} : créé depuis le squelette ADR-076"
   fi
 fi
+
+# REVUE (point hérité du brief de cette tâche) : GIT_WEB_HOST était déclaré
+# mais jamais utilisé — l'intention était le lien humain dans le commentaire
+# ✅, même convention que provision-plan.sh:82-88 (URL construite depuis
+# GIT_WEB_HOST, pas GIT_HOST — le lien doit être cliquable pour un humain,
+# GIT_HOST peut être un nom interne au cluster non résolu hors des
+# conteneurs).
+REPO_LINK=""
+[ -n "$REPO_FULL" ] && REPO_LINK=" ([${REPO_FULL}](${GIT_WEB_HOST}/${REPO_FULL}))"
 
 # ── 3. onboarding (rôle du palier 1, idempotent) ─────────────────────────────
 ( ansible-playbook -i ansible/inventory.lab.ini ansible/onboard-team.yml \
@@ -133,7 +189,7 @@ ONB_RC=$?
 # ── 4. le statut RÉEL sur la PR — succès comme échec ─────────────────────────
 if [ "$ONB_RC" -eq 0 ]; then
   SUMMARY=$(grep -oE '(ONBOARD_OK|VERIFY_[A-Z_]+|TEAM_[A-Z_]+|TENANT_ROOT_UNSAFE|KV_[A-Z_]+)[^"]*' "$TMP/onb.log" | tail -3 | tr '\n' ' ')
-  comment "✅ team-apply ${TEAM}/${ENVN} — ${REPO_NOTE} ; onboarding : ${SUMMARY:-ONBOARD_OK}"
+  comment "✅ team-apply ${TEAM}/${ENVN} — ${REPO_NOTE}${REPO_LINK} ; onboarding : ${SUMMARY:-ONBOARD_OK}"
 else
   # ÉCART AU BRIEF (bug corrigé, constaté en direct) : le grep(tags) du brief
   # cherche UNIQUEMENT les marqueurs propres à apim_team_onboard (TEAM_*/KV_*/
