@@ -25,7 +25,15 @@
         <hudson.model.ChoiceParameterDefinition>
           <name>API</name>
           <description>API consommée par l'application, sous la forme nom@version (liste des APIs publiées sur le dépôt plateforme + les dépôts d'équipe déclarés). Scindée côté job en REQ_API/REQ_API_VER.</description>
-          <choices class="java.util.Arrays$ArrayList"><a class="string-array">
+          <!-- Premier choix VIDE en dur (même motif que TEAM) : SANS lui, un
+               job posé sans passer par setup-team-onboard-jobs.sh (ex.
+               setup-provision-jobs.sh appelé directement, JOBS=app-request)
+               laisse le placeholder non substitué -> choices=[] -> menu
+               INUTILISABLE (vérifié en revue). La vraie liste vit UNIQUEMENT
+               via setup-team-onboard-jobs.sh (scripts/lib/generate-choices.sh,
+               Task 3) ; une soumission avec le choix vide échoue quand même
+               loud plus loin (REQ_API:? dans provision-request.sh). -->
+          <choices class="java.util.Arrays$ArrayList"><a class="string-array"><string></string>
 <!--CHOICES:APIS-->
 </a></choices>
         </hudson.model.ChoiceParameterDefinition>
@@ -76,7 +84,21 @@ node {
     // (qui continue de recevoir REQ_API/REQ_API_VER séparés, forme inchangée pour
     // les voies machine OIG/CLI2). Premier '@' : name/version restent tous deux
     // dans [A-Za-z0-9._-] (garde du script), donc jamais de '@' interne à lever.
+    //
+    // Fix round 1 (revue, Important) : PAS de repli silencieux '1.0.0' pour une
+    // valeur NON VIDE sans '@' — une première version retombait sur ce défaut,
+    // ce qui aurait rejoué SILENCIEUSEMENT une fausse version pour tout rejeu de
+    // l'ANCIEN contrat machine (API seul, sans '@') contre ce job. Les choix
+    // générés portent TOUJOURS '@' (contrat de generate_choices_apis) : un '@'
+    // absent sur une valeur non vide est donc un typo/contrat obsolète, jamais
+    // une soumission légitime — échec loud AVANT le sh. Le cas VIDE (choix par
+    // défaut du menu, cf. commentaire XML plus haut) n'est PAS ce cas : il
+    // continue de tomber sur le refus loud existant de provision-request.sh
+    // (REQ_API:? requis).
     def apiChoice = params.API ?: ''
+    if (apiChoice != '' &amp;&amp; !apiChoice.contains('@')) {
+      error("API_FORMAT_INVALIDE : '${apiChoice}' — attendu nom@version (liste déroulante générée), aucun repli silencieux.")
+    }
     def atIdx = apiChoice.indexOf('@')
     def reqApi = atIdx &gt;= 0 ? apiChoice.substring(0, atIdx) : apiChoice
     def reqApiVer = atIdx &gt;= 0 ? apiChoice.substring(atIdx + 1) : '1.0.0'

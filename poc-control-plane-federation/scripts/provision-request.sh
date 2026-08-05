@@ -203,10 +203,24 @@ fi
 
 # Blocs optionnels du manifeste — chacun un no-op (chaîne vide) tant que le
 # champ correspondant est absent, pour une garantie octet pour octet (Step 4).
-ENFORCE_ITEMS=""
-[ -n "$REQ_IP_ALLOWLIST" ] && ENFORCE_ITEMS="${ENFORCE_ITEMS:+$ENFORCE_ITEMS, }\"ipAddressRange\""
-[ -n "$REQ_CERT_PEM" ] && ENFORCE_ITEMS="${ENFORCE_ITEMS:+$ENFORCE_ITEMS, }\"httpsCertificate\""
-
+#
+# `enforce` RESTE INTOUCHÉ ("[]", comportement pré-Task 4) — fix round 1
+# (revue) : une première version le dérivait automatiquement
+# (ipAddressRange/httpsCertificate) selon les champs fournis. Le README du
+# rôle apim_selfservice_app (§enforce, mesuré en direct le 2026-07-31) est
+# explicite : enforce est une propriété de l'API, PAS de l'application — deux
+# applications consommant la MÊME API avec des enforce DIFFÉRENTS sont
+# mutuellement exclusives (dernier apply gagne, l'action IAM de l'autre est
+# SUPPRIMÉE), et le rôle n'a AUCUN garde-fou cross-consommateur pour ce cas
+# (« tant que ce point n'est pas tranché », dixit le README). Dériver enforce
+# depuis un formulaire self-service armait donc, pour tout demandeur qui
+# remplit IP ou certificat, un piège documenté mais jamais tranché au niveau
+# plateforme. La décision d'opposer réellement ipAddressRange/httpsCertificate
+# est une décision AU NIVEAU DE L'API, qui doit se prendre AU MERGE (ADR-081 :
+# la PR est la pièce d'audit) — pas être devinée par le formulaire. Les
+# identifiers (ip_allowlist/public_cert_ref/cert_rotation) restent posés comme
+# DONNÉES ; le corps de la PR porte l'avertissement (cf. plus bas,
+# `enforce_warning` dans le bloc Python d'ouverture de PR).
 TEAM_LINE=""
 [ -n "$REQ_TEAM" ] && TEAM_LINE=$'  team: "'"${REQ_TEAM}"$'"\n'
 
@@ -244,7 +258,7 @@ apim_ss_app:
   api_version: "${REQ_API_VER}"
   description: "Provisioned via ${REQ_CALLER} — demande ${REQ_ENV} (internal)"
   contact_emails: []
-${TEAM_LINE}  enforce: [${ENFORCE_ITEMS}]
+${TEAM_LINE}  enforce: []
   auth:
     mode: "internal"
     audience: "${REQ_AUDIENCE}"
@@ -265,7 +279,7 @@ apim_ss_app:
   api_version: "${REQ_API_VER}"
   description: "Provisioned via ${REQ_CALLER} — demande ${REQ_ENV} (idp)"
   contact_emails: []
-${TEAM_LINE}  enforce: [${ENFORCE_ITEMS}]
+${TEAM_LINE}  enforce: []
   auth:
     mode: "idp"
     server_alias: "KeycloakStoaLab"
@@ -333,10 +347,28 @@ if os.environ.get("REQ_CERT_PRESENT") == "1":
     extra.append(f"- certificat public : {os.environ['CERT_REL']} "
                   f"(rotation : {os.environ.get('REQ_CERT_ROTATION') or 'replace'})")
 extra_txt = ("\n" + "\n".join(extra)) if extra else ""
+# Fix round 1 (revue) — AVERTISSEMENT DES DEUX PIEGES, visible pour
+# l'approbateur, seulement si une dimension d'identite entrante est fournie
+# (IP ou certificat) : enforce n'est PLUS derive automatiquement (cf. le
+# commentaire plus haut, pres du bloc "Blocs optionnels du manifeste"). La
+# decision d'opposer reellement ces identifiers reste au MERGE, jamais au
+# formulaire.
+enforce_warning = ""
+if os.environ.get("REQ_IP_ALLOWLIST") or os.environ.get("REQ_CERT_PRESENT") == "1":
+    enforce_warning = (
+        "\n\n:warning: IDENTITE ENTRANTE POSEE, ENFORCE NON MODIFIE : les "
+        "identifiers ci-dessus sont poses comme donnees mais PAS opposes a "
+        "l'execution (enforce reste [] par defaut) ; activer ipAddressRange/"
+        "httpsCertificate est une decision AU NIVEAU DE L'API, pas de cette "
+        "application (risque cross-consommateur documente, README "
+        "apim_selfservice_app Sec enforce : deux applications de la MEME API "
+        "avec des enforce differents sont mutuellement exclusives, dernier "
+        "apply gagne) — a trancher explicitement au merge, pas silencieusement "
+        "ici.")
 bodytxt = ("Demande de provisioning application.\n\n"
     f"- application : {os.environ['REQ_APP']}\n- environnement : {os.environ['REQ_ENV']}\n"
     f"- mode : {mode}\n- API consommee : {os.environ['REQ_API']} v{os.environ['REQ_API_VER']}\n"
-    f"{ident}\n- demandeur (azp) : {os.environ['REQ_CALLER']}{extra_txt}\n\n"
+    f"{ident}\n- demandeur (azp) : {os.environ['REQ_CALLER']}{extra_txt}{enforce_warning}\n\n"
     "Plan self-service a lancer sur cette MR. Validation humaine requise (4-yeux) - "
     "un webhook ne porte aucun humain (ADR-078).")
 try:

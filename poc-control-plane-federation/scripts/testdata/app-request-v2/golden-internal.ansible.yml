@@ -1,0 +1,17 @@
+---
+# p3t4golden-int.ansible.yml — GÉNÉRÉ par une demande de provisioning (maillon 1).
+# Appelant : cli2-provisioner (azp). Ne PAS éditer à la main : re-générer via la demande.
+# Mode INTERNAL : la gateway wM est l'authorization server ; elle génère le client
+# (client_id/secret), le pipeline le STOCKE dans Vault par env — jamais dans Git.
+apim_ss_app:
+  name: "p3t4golden-int"
+  api: "accounts-read"
+  api_version: "1.0.0"
+  description: "Provisioned via cli2-provisioner — demande dev (internal)"
+  contact_emails: []
+  enforce: []
+  auth:
+    mode: "internal"
+    audience: "accounts-read"
+  per_env:
+    dev: { auth: { vault_sub: "deploy/banking-demo/apps/p3t4golden-int/dev/oauth-client" } }
