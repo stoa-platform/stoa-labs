@@ -132,12 +132,19 @@ git -C "$WORK/repo" -c user.name=ci -c user.email=ci@stoa.lab \
 # LOGS ne protègent pas ça. On passe donc le credential par un HEADER Basic
 # injecté via variables d'ENVIRONNEMENT (GIT_CONFIG_COUNT/KEY_0/VALUE_0 —
 # jamais argv, jamais visible par ps -ww), même mécanisme que team-apply.sh
-# (repris à l'identique, pas recomposé). L'URL de push redevient nue.
+# (repris à l'identique, pas recomposé). L'URL de push redevient nue —
+# CONSÉQUENCE (revue finale de branche, Critical) : depuis ce même fix,
+# $WORK/pusherr ne peut PLUS contenir le token (il n'a plus jamais transité
+# par l'URL), donc le `grep -v "$GITEA_TOKEN"` ci-dessous ne filtrait plus
+# rien de réel — il ne restait qu'une fuite : le token EN CLAIR dans l'argv
+# de CE grep, visible par ps -ww pendant tout le chemin d'échec. Motif de
+# team-apply.sh:168 (`cat ... >&2`) repris ici — pusherr ne porte plus de
+# secret, rien à masquer.
 AUTH_B64=$(printf 'x:%s' "$GITEA_TOKEN" | base64 | tr -d '\n')
 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader \
   GIT_CONFIG_VALUE_0="Authorization: Basic ${AUTH_B64}" \
   git -C "$WORK/repo" push -q "${GIT_HOST}/${GIT_REPO}.git" "$BRANCH" 2>"$WORK/pusherr" \
-  || { echo "ERREUR push (détail masqué — token)" >&2; grep -v "$GITEA_TOKEN" "$WORK/pusherr" >&2 || true; exit 1; }
+  || { cat "$WORK/pusherr" >&2; exit 1; }
 unset AUTH_B64
 
 PR_NUMBER=$(API="${GIT_HOST}/api/v1" GIT_REPO="$GIT_REPO" GITEA_TOKEN="$GITEA_TOKEN" \

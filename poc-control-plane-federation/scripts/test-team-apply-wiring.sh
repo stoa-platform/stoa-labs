@@ -124,6 +124,20 @@ grep -q 'team-apply' "$REPO/scripts/setup-team-onboard-jobs.sh" \
   && ok "team-apply listé dans JOBS de setup-team-onboard-jobs.sh" || ko "team-apply absent de JOBS"
 
 echo
+echo "== 12. VAULT_USER_AUTH_MOUNT et APIM_API_BASE exportés dans le bloc sh =="
+# FILET STATIQUE (revue finale de branche) contre la régression qui a coûté
+# deux rounds de la Task 8 : VAULT_USER_AUTH_MOUNT absent du job faisait
+# retomber ci/lib/vault-login.sh sur son défaut ldap (la convention CLIENT)
+# alors que ce lab authentifie ses opérateurs en userpass — login refusé,
+# jamais détecté par une revue XML statique puisque ce filet n'existait pas.
+grep -q 'VAULT_USER_AUTH_MOUNT' "$JOB" \
+  && ok "VAULT_USER_AUTH_MOUNT exporté (sinon : login retombe sur le défaut ldap de la lib)" \
+  || ko "VAULT_USER_AUTH_MOUNT absent — régression connue (Task 8, deux rounds pour la trouver en réel)"
+grep -q 'APIM_API_BASE' "$JOB" \
+  && ok "APIM_API_BASE exporté (cible gateway explicite, jamais le défaut 5555 de la lib)" \
+  || ko "APIM_API_BASE absent — team-apply.sh viserait la cible codée en dur d'apim_common"
+
+echo
 echo "======================================================================"
 printf 'RÉSULTAT : %d/%d\n' "$PASS" "$((PASS+FAIL))"
 [ "$FAIL" -eq 0 ] || exit 1

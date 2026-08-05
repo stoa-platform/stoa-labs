@@ -267,7 +267,12 @@ cleanup_exit() {
   [ -n "${SAMPLER_PID:-}" ] && kill "$SAMPLER_PID" 2>/dev/null; wait "${SAMPLER_PID:-}" 2>/dev/null
   teardown >/dev/null 2>&1
   teardown10 >/dev/null 2>&1
-  curl -s -H @"$(vhdr "$TOK_ONBOARDER")" -X POST "$VAULT_ADDR/v1/auth/token/revoke-self" -o /dev/null 2>/dev/null
+  # ${TOK_ONBOARDER:-} : depuis que le trap est armé AVANT le mint (m4, revue
+  # précédente), le trap peut se déclencher AVANT que TOK_ONBOARDER n'existe
+  # (ex. le mint lui-même échoue) — sans cette garde, `set -u` ferait
+  # planter CETTE ligne, ce qui interromprait cleanup_exit() AVANT les
+  # lignes suivantes (restauration de team-request.sh, rm -rf "$TMP").
+  [ -n "${TOK_ONBOARDER:-}" ] && curl -s -H @"$(vhdr "$TOK_ONBOARDER")" -X POST "$VAULT_ADDR/v1/auth/token/revoke-self" -o /dev/null 2>/dev/null
   [ -f "$TMP/team-request.sh.orig" ] && cp "$TMP/team-request.sh.orig" scripts/team-request.sh 2>/dev/null
   rm -rf "$TMP"
 }

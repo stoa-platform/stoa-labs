@@ -44,7 +44,13 @@ node {
       // provision-apply). REPO vide → défaut calculé par le script.
       withEnv(["TEAM=${params.TEAM}", "DESCRIPTION=${params.DESCRIPTION}",
                "APPROVERS=${params.APPROVERS}", "REPO=${params.REPO ?: ''}",
-               "REQ_ENV=${params.REQ_ENV}"]) {
+               "REQ_ENV=${params.REQ_ENV}",
+               // lien humain-cliquable dans le commentaire de PR (revue finale
+               // de branche) : sans lui, team-request.sh retombe sur
+               // GIT_HOST (http://gitea:3000, nom interne au cluster, non
+               // résolu hors des conteneurs) — même valeur que
+               // team-apply.job.xml:127 et provision-plan.job.xml:35.
+               "GIT_WEB_HOST=http://localhost:13000"]) {
         dir('poc-control-plane-federation') {
           sh 'set +x; if [ -z "$REPO" ]; then unset REPO; fi; bash scripts/team-request.sh'
         }
