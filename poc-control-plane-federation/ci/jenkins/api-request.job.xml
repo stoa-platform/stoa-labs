@@ -1,0 +1,85 @@
+<?xml version='1.1' encoding='UTF-8'?>
+<flow-definition plugin="workflow-job">
+  <description>Formulaire : publier une API (la porte du PRODUCTEUR) → PR api/&lt;name&gt;-&lt;version&gt; sur le dépôt de l'ÉQUIPE (ADR-076) + plan hors ligne (manifest-guard/team-name/syntax-check) enchaîné. La décision reste le MERGE (ADR-081) : cette PR ne publie rien elle-même, la publication réelle vit dans le pipeline post-merge.</description>
+  <keepDependencies>false</keepDependencies>
+  <properties>
+    <hudson.model.ParametersDefinitionProperty>
+      <parameterDefinitions>
+        <hudson.model.ChoiceParameterDefinition>
+          <name>ACTION</name>
+          <description>create : première publication de l'API (API_NAME/API_VERSION). new-version : nouvelle version d'une API déjà publiée par cette équipe (API_BASE/NEW_VERSION).</description>
+          <choices class="java.util.Arrays$ArrayList"><a class="string-array"><string>create</string><string>new-version</string></a></choices>
+        </hudson.model.ChoiceParameterDefinition>
+        <hudson.model.ChoiceParameterDefinition>
+          <name>TEAM</name>
+          <description>Équipe propriétaire de l'API — DOIT être déjà onboardée avec un dépôt (providers.dev.yml, champ repo non vide) ; sinon REPO_MANQUANT avant toute écriture Git.</description>
+          <choices class="java.util.Arrays$ArrayList"><a class="string-array">
+<string></string><!--CHOICES:TEAMS-->
+</a></choices>
+        </hudson.model.ChoiceParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>API_NAME</name>
+          <description>Nom de l'API [a-z0-9-] uniquement (^[a-z0-9][a-z0-9-]{1,30}$). En mode new-version, DOIT concorder avec le nom porté par API_BASE (API_NAME_MISMATCH sinon).</description>
+          <defaultValue></defaultValue>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>API_VERSION</name>
+          <description>Version initiale (X.Y ou X.Y.Z) — REQUISE si ACTION=create, sans objet si ACTION=new-version (utiliser NEW_VERSION).</description>
+          <defaultValue>1.0.0</defaultValue>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.ChoiceParameterDefinition>
+          <name>API_BASE</name>
+          <description>API existante (nom@version) à faire évoluer — REQUISE si ACTION=new-version, sans objet si ACTION=create. Liste des APIs publiées (dépôt plateforme + dépôts d'équipe déclarés).</description>
+          <choices class="java.util.Arrays$ArrayList"><a class="string-array"><string></string>
+<!--CHOICES:APIS-->
+</a></choices>
+        </hudson.model.ChoiceParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>NEW_VERSION</name>
+          <description>Nouvelle version (X.Y ou X.Y.Z) — REQUISE si ACTION=new-version, différente de la version portée par API_BASE.</description>
+          <defaultValue></defaultValue>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.TextParameterDefinition>
+          <name>OPENAPI_SPEC</name>
+          <description>Contrat OpenAPI/Swagger complet, collé en YAML ou JSON. Doit parser (YAML ou JSON) et porter la clé 'openapi' ou 'swagger' au top-level (SPEC_INVALIDE sinon). Écrit tel quel dans apis/&lt;name&gt;.openapi.yaml, jamais édité par ce formulaire.</description>
+          <defaultValue></defaultValue>
+        </hudson.model.TextParameterDefinition>
+        <hudson.model.ChoiceParameterDefinition>
+          <name>INBOUND_MODE</name>
+          <description>jwt : validation de la signature seule. oauth2 : validation stricte + audience/scope. Seul choix de plomberie IdP laissé à l'équipe — alias/issuer/JWKS restent des valeurs PLATEFORME fixées par le gabarit gateways/templates/publish.yml.tmpl, jamais saisies ici.</description>
+          <choices class="java.util.Arrays$ArrayList"><a class="string-array"><string>jwt</string><string>oauth2</string></a></choices>
+        </hudson.model.ChoiceParameterDefinition>
+      </parameterDefinitions>
+    </hudson.model.ParametersDefinitionProperty>
+  </properties>
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition" plugin="workflow-cps">
+    <script>
+node {
+  stage('checkout') { git url: 'http://gitea:3000/ci/stoa-labs.git', branch: 'main' }
+  stage('api-request') {
+    withCredentials([string(credentialsId: 'gitea-provision-token', variable: 'GITEA_TOKEN')]) {
+      // Les paramètres passent par l'ENVIRONNEMENT, jamais interpolés dans la
+      // chaîne sh : saisie humaine = donnée d'un tiers (même règle que
+      // team-request.sh/provision-request.sh). API_VERSION/API_BASE/NEW_VERSION
+      // vides selon ACTION sont passés tels quels — le script les valide par
+      // mode, aucune dérivation Groovy silencieuse ici.
+      withEnv(["ACTION=${params.ACTION}", "TEAM=${params.TEAM ?: ''}",
+               "API_NAME=${params.API_NAME}", "API_VERSION=${params.API_VERSION ?: ''}",
+               "API_BASE=${params.API_BASE ?: ''}", "NEW_VERSION=${params.NEW_VERSION ?: ''}",
+               "OPENAPI_SPEC=${params.OPENAPI_SPEC ?: ''}", "INBOUND_MODE=${params.INBOUND_MODE}",
+               // lien humain-cliquable dans le commentaire de PR (même
+               // convention que team-request.job.xml/team-apply.job.xml) :
+               // sans lui, api-request.sh retombe sur GIT_HOST (nom interne
+               // au cluster, non résolu hors des conteneurs).
+               "GIT_WEB_HOST=http://localhost:13000"]) {
+        dir('poc-control-plane-federation') { sh 'set +x; bash scripts/api-request.sh' }
+      }
+    }
+  }
+}
+    </script>
+    <sandbox>true</sandbox>
+  </definition>
+  <triggers/>
+  <disabled>false</disabled>
+</flow-definition>

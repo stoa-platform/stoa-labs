@@ -13,7 +13,9 @@
 # chacun est dérivé du nom (convention de setup-provision-jobs.sh) :
 #   team-request → ci/jenkins/team-request.job.xml
 #   app-request  → ci/jenkins/app-request.job.xml
-# La Task 5 y ajoute team-apply en une ligne.
+#   team-apply   → ci/jenkins/team-apply.job.xml
+#   api-request  → ci/jenkins/api-request.job.xml (Task 5, palier 3 — la porte
+#                  du PRODUCTEUR, pendant app-request côté consommateur)
 #
 # ── LISTES DYNAMIQUES (Task 3, palier 3) ─────────────────────────────────────
 # Les XML de jobs à listes déroulantes portent des PLACEHOLDERS
@@ -25,10 +27,10 @@
 # QUE sur les XML qui contiennent au moins un des deux marqueurs (recherche
 # statique, avant tout réseau) — team-request/team-apply en ressortent donc
 # une copie strictement identique, jamais touchés par sed, jamais dépendants
-# de Gitea. Aujourd'hui (avant Task 4), app-request.job.xml n'a pas non plus
-# de placeholder : la génération dynamique reste DORMANTE tant qu'aucun job
-# livré ne la déclenche — cette tâche pose la mécanique, pas son premier
-# consommateur.
+# de Gitea. app-request.job.xml (Task 4) et api-request.job.xml (Task 5) sont
+# les deux consommateurs réels des marqueurs — le premier pour TEAMS+APIS
+# (côté consommateur), le second pour TEAMS+APIS aussi (côté producteur,
+# API_BASE en mode nouvelle-version).
 #
 # FAIL-CLOSED : si au moins un job POSÉ CE RUN porte un placeholder, la
 # génération correspondante (Gitea injoignable, providers.<env>.yml absent/
@@ -36,10 +38,12 @@
 # envoyé à Jenkins. Jamais un formulaire aux choix vides, jamais silencieux.
 #
 # TOLÉRANCE "job absent" : un nom cité dans JOBS dont le XML n'existe pas
-# encore dans le dépôt (ex. api-request, avant la Task 5) est signalé puis
-# IGNORÉ — pas un échec. C'est ce qui permet à team-apply.sh de demander la
-# re-pose de "app-request api-request" dès aujourd'hui, sans attendre que les
-# deux existent.
+# encore dans le dépôt (ex. un futur job de palier 3 pas encore livré) est
+# signalé puis IGNORÉ — pas un échec. C'est ce qui a permis à team-apply.sh de
+# demander la re-pose de "app-request api-request" avant même que ce dernier
+# n'existe (Task 3/4) ; les deux XML sont désormais livrés (Task 4/5), donc ce
+# chemin n'a plus de cas réel dans JOBS par défaut — il reste la protection
+# pour tout futur job cité avant sa propre livraison.
 #
 # Usage :
 #   JENKINS_UI=https://jenkins.labs.gostoa.dev \
@@ -56,7 +60,7 @@ cd "$(dirname "$0")/.."
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 JENKINS_UI="${JENKINS_UI:-http://localhost:18080}"
-JOBS="${JOBS:-team-request app-request team-apply}"
+JOBS="${JOBS:-team-request app-request team-apply api-request}"
 ENVN="${ENVN:-dev}"
 
 ok(){   printf '  \033[32m✅\033[0m %s\n' "$*"; }
