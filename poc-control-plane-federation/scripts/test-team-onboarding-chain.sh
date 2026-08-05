@@ -1,21 +1,26 @@
 #!/usr/bin/env bash
-# test-team-onboarding-chain.sh — la matrice de preuve du palier 2 (9 points) :
-# la CHAÎNE COMPLÈTE d'onboarding d'équipe en self-service, de la demande
-# (formulaire Jenkins → team-request.sh) jusqu'à l'apply post-merge
-# (team-apply.sh), sur une équipe JETABLE (probe-p2), rejouable de bout en
-# bout sans jamais toucher aux tenants réels (banking-demo, payments-team) —
-# sauf pour PROUVER, en lecture seule, que le refus TEAM_ALREADY_DECLARED les
-# protège (preuve 2).
-#
-# ÉCART ASSUMÉ AUX BRIEFS PRÉCÉDENTS, VOULU (motif Task 4, cf. progress.md) :
-# les preuves 5-6 invoquent team-apply.sh EN DIRECT, avec l'environnement que
-# poserait le webhook Jenkins (PR_BRANCH/PR_NUMBER/MERGE_SHA/…), et NON via le
-# job Jenkins `team-apply` — ce job n'est pas posé sur le Jenkins du lab (la
-# pause nominative qu'il impose ne s'automatise pas proprement dans un
-# harnais). C'est la MÊME preuve, un cran plus bas : le câblage du JOB
-# lui-même (garde d'identité appelée avant l'apply, aucune interpolation
-# Groovy, …) est couvert séparément par la preuve 4
-# (scripts/test-team-apply-wiring.sh, déjà 28/28).
+# test-team-onboarding-chain.sh — la matrice de preuve du palier 2 : la CHAÎNE
+# COMPLÈTE d'onboarding d'équipe en self-service, de la demande (formulaire
+# Jenkins → team-request.sh) jusqu'à l'apply post-merge (team-apply.sh), sur
+# des équipes JETABLES (probe-p2, probe-p2j), rejouable de bout en bout sans
+# jamais toucher aux tenants réels (banking-demo, payments-team) — sauf pour
+# PROUVER, en lecture seule, que le refus TEAM_ALREADY_DECLARED les protège
+# (preuve 2). 10 preuves + une contre-épreuve rouge (Step 2) :
+#   1-2   gardes d'entrée de team-request.sh (chemin, newline, déjà déclarée)
+#   3     PR nominale + PLAN OK
+#   4     câblage du job team-apply.job.xml (statique) + garde d'identité
+#         (contre-épreuve directe rouge/vert)
+#   5-6   team-apply.sh EN DIRECT (motif Task 4) : création réelle puis
+#         convergence idempotente
+#   7     job app-request (REQ_MODE additif)
+#   8     sondage ps — aucun token en argv, AVEC contrôle positif (le trafic
+#         git ciblé a bien été vu, pas juste "ps a tourné")
+#   9     teardown symétrique de 1-7 — rien d'orphelin
+#   10    chemin FORT : le VRAI job team-apply, webhook → pause → réponse API
+#         → garde d'identité RÉELLE → apply → ✅ sur la PR (verdict `fort`,
+#         reproduit — builds Jenkins #12/#13 SUCCESS). Seul un verdict `fort`
+#         compte comme preuve ; `fort_partiel`/`minimum` sont des replis
+#         DIAGNOSTIQUES, jamais un succès (§ PASS/FAIL plus bas).
 #
 # CIBLES OBLIGATOIRES, SANS DÉFAUT — même discipline que
 # scripts/test-onboard-team.sh (palier 1) : un défaut vers un système EN
@@ -23,8 +28,13 @@
 # lancement distrait écrirait dessus. C'est à qui lance ce script de fournir
 # ses cibles :
 #   GITEA_URL      base HTTP de la forge du lab (ex. http://localhost:13000)
-#   GITEA_TOKEN    token du compte de service `ci` (write:repository,
-#                  write:issue — même scope que team-request.sh)
+#   GITEA_TOKEN    token du compte de service `ci`, scopes
+#                  write:repository,write:issue,write:organization,read:user
+#                  — les deux premiers de team-request.sh NE SUFFISENT PAS
+#                  ICI : write:organization (sinon DELETE sur un org rend 403
+#                  et GET sur un org absent rend 403 au lieu de 404, preuve 9)
+#                  ET read:user (sinon GET sur un utilisateur rend 403,
+#                  preuve 10) sont requis en plus.
 #   VAULT_ADDR     ex. http://localhost:8200
 #   VAULT_TOKEN    droits d'amorçage (root du Vault de LAB) — sert UNIQUEMENT
 #                  à minter un token ÉPHÉMÈRE mono-policy `team-onboarder`
@@ -32,39 +42,47 @@
 #                  périmètre restreint, jamais avec le root lui-même — même
 #                  discipline que la Task 4 (« mono-policy porte tout le
 #                  chemin »).
-#   WM_GATEWAY_URL LE MOCK (cd mocks/webmethods && go run .), JAMAIS 5555 —
-#                  la vraie gateway du lab, en service.
-#   JENKINS_UI     ex. http://localhost:18080 (job app-request, preuve 7)
+#   WM_GATEWAY_URL LE MOCK standalone (cd mocks/webmethods && go run .),
+#                  JAMAIS 5555 — la vraie gateway du lab, en service. Utilisé
+#                  par les preuves 5/6/9 (team-apply.sh en direct). La preuve
+#                  10 (le VRAI job, dans Jenkins) applique contre un AUTRE
+#                  mock — voir APIM_API_BASE_HOST plus bas, pas une entrée de
+#                  ce script mais une cible distincte à connaître.
+#   JENKINS_UI     ex. http://localhost:18080 (jobs app-request et
+#                  team-apply, preuves 7 et 10)
 #
 # CHECKOUT PROPRE OBLIGATOIRE (preuves 5/6/10). team-apply.sh fait
-# `git checkout $MERGE_SHA` sur SON cwd (anti-TOCTOU) — un modification LOCALE
-# NON COMMITÉE de N'IMPORTE QUEL fichier suivi dans CE dépôt (y compris ce
-# script lui-même en cours d'itération) fait échouer ce checkout (« Your local
-# changes … would be overwritten »), le fait échouer AVANT même d'atteindre
+# `git checkout $MERGE_SHA` sur SON cwd (anti-TOCTOU) — une modification
+# LOCALE NON COMMITÉE de N'IMPORTE QUEL fichier suivi dans CE dépôt (y compris
+# ce script lui-même en cours d'itération) fait échouer ce checkout (« Your
+# local changes … would be overwritten »), AVANT même d'atteindre
 # team-apply.sh proprement dit. Constaté en direct en itérant sur ce script
 # depuis un clone que je resynchronisais par `cp` sans committer. Lancer ce
 # harnais depuis un checkout PROPRE (rien en `git status --short`), jamais
 # depuis un clone où l'on vient de coller un fichier à la main.
 #
-# WM_GATEWAY_URL — RELANCER LE MOCK ENTRE DEUX RUNS. Le mock standalone
-# (mocks/webmethods, `go run .`) n'a AUCUNE route DELETE (preuve 9,
-# WM_DELETE_SUPPORTED) : les objets gateway d'un run précédent survivent tant
-# que le process tourne. Un DEUXIÈME run sans redémarrer le mock voit donc
-# UID_BEFORE/GID_BEFORE/PID_BEFORE non vides à la preuve 5 (l'équipe existe
-# déjà) — mesuré en direct, PAS un défaut du script ni de team-apply.sh (le
-# rôle reste idempotent, `changed=0` correctement rendu) : c'est la preuve 5
-# qui exige à raison une ardoise vierge pour parler de « création réelle ».
-# `cd mocks/webmethods && go run .` avant CHAQUE run isolé, comme le
-# préconise déjà l'en-tête de team-request.sh.
+# DEUX MOCKS DISTINCTS, DEUX GESTES DE RESET — aucun n'a de route DELETE
+# (preuve 9, WM_DELETE_SUPPORTED ; même limite constatée sur les deux) :
+#   - WM_GATEWAY_URL (standalone, `go run .`, preuves 5/6/9) : relancer le
+#     PROCESS entre deux runs isolés — les objets d'un run précédent
+#     survivent tant qu'il tourne (constaté : UID_BEFORE/GID_BEFORE/
+#     PID_BEFORE non vides au 2e run sans relance, preuve 5 en échec à raison
+#     — ce n'est pas un défaut du script ni de team-apply.sh, dont le rôle
+#     reste idempotent, `changed=0` correctement rendu).
+#   - le mock DOCKER (conteneur `poc-webmethods`, réseau compose, alias
+#     `webmethods-mock:8080` — celui que le JOB team-apply cible réellement
+#     depuis l'intérieur de Jenkins, préuve 10) : relancer le CONTENEUR
+#     (`docker restart poc-webmethods`) entre deux runs si un verdict `fort`
+#     doit repartir d'une ardoise vierge.
 #
-# COMPTE HUMAIN DE MERGE (preuve 5) — ÉCART DÉCLARÉ : ce Gitea de lab ne porte
-# qu'un seul compte (`ci`, service, admin) ; il n'y a pas de second compte
-# "humain" distinct pour merger la PR. Le merge réel utilise donc GITEA_TOKEN
-# lui-même. Ce n'est PAS une lacune de cette preuve : l'identité qui merge et
-# celle qui répond à la pause nominative (assert-merge-identity.sh) sont
-# testées SÉPARÉMENT et en isolation par la preuve 4 (contre-épreuve directe
-# rouge/vert de la garde) — préciser QUI a mergé n'a pas d'incidence sur ce
-# que team-apply.sh fait une fois appelé avec un MERGE_SHA donné.
+# COMPTE HUMAIN DE MERGE (preuve 5) — ÉCART DÉCLARÉ : la preuve 5 (chemin
+# direct) merge via GITEA_TOKEN (compte `ci`) lui-même, faute d'un second
+# compte à l'époque de son écriture. Ce n'est pas une lacune : l'identité qui
+# merge et celle qui répond à la pause nominative sont testées SÉPARÉMENT et
+# en isolation par la preuve 4 (contre-épreuve directe rouge/vert de la
+# garde). La preuve 10, elle, merge RÉELLEMENT via un second compte Gitea
+# (`oscar` — voir écarts d'environnement ci-dessous), condition nécessaire
+# pour que sa propre garde d'identité ait un cas à discriminer.
 #
 # DETTE CONNUE, HORS PÉRIMÈTRE (déclarée par la Task 4, reconduite ici) :
 # provision-request.sh porte encore le motif URL-avec-token pour son propre
@@ -72,6 +90,29 @@
 # (sondage ps) ne l'exerce PAS : la preuve 7 déclenche provision-request.sh
 # par le JOB app-request, hors de la fenêtre de sondage (3/5/6 seulement, motif
 # exact demandé). Signalé, pas corrigé ici.
+#
+# 3 ÉCARTS D'ENVIRONNEMENT TROUVÉS EN OBTENANT LE VERDICT `fort` — À
+# CONNAÎTRE avant de relancer ce harnais sur un autre Jenkins/lab :
+#   1. `ansible-core` du CONTENEUR Jenkins est en 2.19.4, alors que TOUT le
+#      reste de ce palier (preuves 5/6 en direct, palier 1) tourne en local
+#      sous 2.18.x. 2.19 template les noms de tâche/bloc PLUS TÔT que 2.18 —
+#      un nom référençant un fact posé par une tâche précédente y crashe
+#      (`'onb' is undefined`). Corrigé dans le rôle (commit dédié,
+#      `apim_team_onboard/tasks/{main,vault}.yml`) — mais un futur rôle qui
+#      réintroduirait ce motif casserait pareil, SEULEMENT sous 2.19.
+#   2. Le conteneur `poc-webmethods` (mock DOCKER, cible réelle du job) était
+#      PÉRIMÉ (image antérieure à `admin_teams.go`) — reconstruit depuis la
+#      source de ce dépôt. Si un jour son image redevient périmée
+#      (rebuild du service depuis un ancien commit, pull d'une image taguée
+#      différemment…), la preuve 10 échouera dès la création du dépôt/des
+#      objets gateway (404 sur des routes absentes), pas au login.
+#   3. Un second compte Gitea RÉEL `oscar` (+ collaborateur admin sur
+#      `ci/stoa-labs`) a été provisionné pour que la preuve 10 ait un
+#      merger distinct du requester (`ci`) — sans lui, TOUTE preuve 10
+#      dégrade au verdict `minimum` (identité indisponible). La preuve le
+#      recrée elle-même s'il est absent (et le retire si c'est ELLE qui l'a
+#      créé) — mais sur ce lab il préexiste déjà, laissé en place à
+#      dessein (arbitrage du lead).
 set -uo pipefail
 set +x   # jamais de trace : des tokens transitent par ce script
 cd "$(dirname "$0")/.." || exit 1
@@ -119,60 +160,6 @@ vlt()  { curl -s -H @"$(vhdr "$1")" "$VAULT_ADDR/v1/$2" -o /dev/null -w '%{http_
 ghdr() { local f; f="$(mktemp "$TMP/ghdr.XXXXXX")"; chmod 600 "$f"; printf 'Authorization: token %s\n' "$1" > "$f"; printf '%s' "$f"; }
 gapi() { curl -s -H @"$(ghdr "$GITEA_TOKEN")" "$@"; }
 wmapi(){ curl -s -u Administrator:manage -H 'Accept: application/json' "$WM_GATEWAY_URL/rest/apigateway/$1"; }
-
-# ── token ÉPHÉMÈRE mono-policy team-onboarder, minté depuis VAULT_TOKEN ─────
-# La preuve nominale (5/6) doit tourner avec LE PÉRIMÈTRE RÉEL de l'apply, pas
-# avec le root — sinon elle ne prouverait rien sur ce que team-apply.sh peut
-# réellement faire en production (même discipline que task-4-report.md :
-# « la preuve que team-onboarder porte tout le chemin »).
-TOK_ONBOARDER=$(curl -s -H @"$(vhdr "$VAULT_TOKEN")" -X POST \
-  -d '{"policies":["team-onboarder"],"ttl":"20m","no_default_policy":true}' \
-  "$VAULT_ADDR/v1/auth/token/create" | python3 -c "import json,sys; print(json.load(sys.stdin).get('auth',{}).get('client_token',''))" 2>/dev/null)
-[ -n "$TOK_ONBOARDER" ] || { echo "impossible de minter le token éphémère team-onboarder (policy absente ? cf. scripts/setup-team-onboard-prereqs.sh) — abandon" >&2; exit 2; }
-VAULT_TOKEN_FILE_ONBOARDER="$TMP/vtok-onboarder"
-printf '%s' "$TOK_ONBOARDER" > "$VAULT_TOKEN_FILE_ONBOARDER"; chmod 600 "$VAULT_TOKEN_FILE_ONBOARDER"
-
-# ── baseline de main : providers.dev.yml TEL QU'IL EST avant toute mutation,
-# pour un revert bit-à-bit en teardown (discipline Task 4/T7 : main ne doit
-# jamais finir sale). ---------------------------------------------------------
-git clone -q --depth 1 -b main "$GITEA_URL/$GIT_REPO.git" "$TMP/baseline" \
-  || { echo "clone baseline de $GIT_REPO impossible — $GITEA_URL joignable ?" >&2; exit 2; }
-cp "$TMP/baseline/poc-control-plane-federation/ansible/providers.dev.yml" "$TMP/providers.dev.yml.baseline"
-
-# ── baseline de ci/jenkins/team-apply.job.xml (checkout LOCAL, PAS gitea — la
-# définition du job n'est jamais lue depuis gitea, seuls les scripts qu'il
-# APPELLE le sont). Nécessaire car team-apply.sh (preuves 5/6, invoqué EN
-# DIRECT sur CE checkout) fait `git checkout $MERGE_SHA` — un vrai `git
-# checkout` sur le cwd courant (anti-TOCTOU, cf. écart 1 du rapport) : ça
-# réécrit CE fichier vers l'état du commit mergé, qui peut être ANTÉRIEUR à un
-# fix qu'on vient de committer sur cette branche (constaté en direct : la
-# preuve 10 reposait alors une version PÉRIMÉE du job sans le savoir). On
-# capture le contenu AVANT toute mutation, on le restaure avant de poser le
-# job en preuve 10 — quel que soit l'état du HEAD à ce moment-là. -----------
-JOB10_XML="ci/jenkins/team-apply.job.xml"
-cp "$JOB10_XML" "$TMP/team-apply.job.xml.baseline" 2>/dev/null
-
-# ── classification, MESURÉE (pas supposée) : la cible WM_GATEWAY_URL expose-
-# t-elle un DELETE sur ses objets Teams ? mocks/webmethods/server.go ne
-# déclare AUCUNE route DELETE (grep -n DELETE ne remonte rien) — constaté en
-# direct : 405 Method Not Allowed sur un groupe jetable créé puis supprimé.
-# C'est un manque STRUCTUREL du mock autonome, déjà rencontré par la Task 4
-# (« Mock gateway : process arrêté … pas de nettoyage d'objets à faire côté
-# mock ») — pas une régression de ce palier. Contre une VRAIE gateway wM,
-# DELETE existe : la preuve 9 doit donc exiger l'absence des objets SEULEMENT
-# quand la cible le permet, jamais fermer les yeux dessus sans le dire.
-WM_DELETE_SUPPORTED=false
-_PROBE_GID=$(curl -s -u Administrator:manage -X POST -H 'Content-Type: application/json' \
-  -d '{"name":"t8-delete-probe","description":"sonde capacite DELETE"}' \
-  "$WM_GATEWAY_URL/rest/apigateway/groups" | python3 -c "import json,sys; print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
-if [ -n "$_PROBE_GID" ]; then
-  _PROBE_HC=$(curl -s -u Administrator:manage -X DELETE "$WM_GATEWAY_URL/rest/apigateway/groups/$_PROBE_GID" -o /dev/null -w '%{http_code}')
-  if [ "$_PROBE_HC" = 200 ] || [ "$_PROBE_HC" = 204 ]; then
-    WM_DELETE_SUPPORTED=true
-  fi
-fi
-unset _PROBE_GID _PROBE_HC
-echo "   (sonde DELETE gateway : ${WM_GATEWAY_URL} -> WM_DELETE_SUPPORTED=$WM_DELETE_SUPPORTED)"
 
 # ── teardown : UNE SEULE implémentation, appelée par la preuve 9 (qui en
 # vérifie l'effet) ET par le trap (filet de secours) — même motif que
@@ -286,6 +273,60 @@ cleanup_exit() {
 }
 trap cleanup_exit EXIT
 
+# ── token ÉPHÉMÈRE mono-policy team-onboarder, minté depuis VAULT_TOKEN ─────
+# La preuve nominale (5/6) doit tourner avec LE PÉRIMÈTRE RÉEL de l'apply, pas
+# avec le root — sinon elle ne prouverait rien sur ce que team-apply.sh peut
+# réellement faire en production (même discipline que task-4-report.md :
+# « la preuve que team-onboarder porte tout le chemin »).
+TOK_ONBOARDER=$(curl -s -H @"$(vhdr "$VAULT_TOKEN")" -X POST \
+  -d '{"policies":["team-onboarder"],"ttl":"20m","no_default_policy":true}' \
+  "$VAULT_ADDR/v1/auth/token/create" | python3 -c "import json,sys; print(json.load(sys.stdin).get('auth',{}).get('client_token',''))" 2>/dev/null)
+[ -n "$TOK_ONBOARDER" ] || { echo "impossible de minter le token éphémère team-onboarder (policy absente ? cf. scripts/setup-team-onboard-prereqs.sh) — abandon" >&2; exit 2; }
+VAULT_TOKEN_FILE_ONBOARDER="$TMP/vtok-onboarder"
+printf '%s' "$TOK_ONBOARDER" > "$VAULT_TOKEN_FILE_ONBOARDER"; chmod 600 "$VAULT_TOKEN_FILE_ONBOARDER"
+
+# ── baseline de main : providers.dev.yml TEL QU'IL EST avant toute mutation,
+# pour un revert bit-à-bit en teardown (discipline Task 4/T7 : main ne doit
+# jamais finir sale). ---------------------------------------------------------
+git clone -q --depth 1 -b main "$GITEA_URL/$GIT_REPO.git" "$TMP/baseline" \
+  || { echo "clone baseline de $GIT_REPO impossible — $GITEA_URL joignable ?" >&2; exit 2; }
+cp "$TMP/baseline/poc-control-plane-federation/ansible/providers.dev.yml" "$TMP/providers.dev.yml.baseline"
+
+# ── baseline de ci/jenkins/team-apply.job.xml (checkout LOCAL, PAS gitea — la
+# définition du job n'est jamais lue depuis gitea, seuls les scripts qu'il
+# APPELLE le sont). Nécessaire car team-apply.sh (preuves 5/6, invoqué EN
+# DIRECT sur CE checkout) fait `git checkout $MERGE_SHA` — un vrai `git
+# checkout` sur le cwd courant (anti-TOCTOU, cf. écart 1 du rapport) : ça
+# réécrit CE fichier vers l'état du commit mergé, qui peut être ANTÉRIEUR à un
+# fix qu'on vient de committer sur cette branche (constaté en direct : la
+# preuve 10 reposait alors une version PÉRIMÉE du job sans le savoir). On
+# capture le contenu AVANT toute mutation, on le restaure avant de poser le
+# job en preuve 10 — quel que soit l'état du HEAD à ce moment-là. -----------
+JOB10_XML="ci/jenkins/team-apply.job.xml"
+cp "$JOB10_XML" "$TMP/team-apply.job.xml.baseline" 2>/dev/null
+
+# ── classification, MESURÉE (pas supposée) : la cible WM_GATEWAY_URL expose-
+# t-elle un DELETE sur ses objets Teams ? mocks/webmethods/server.go ne
+# déclare AUCUNE route DELETE (grep -n DELETE ne remonte rien) — constaté en
+# direct : 405 Method Not Allowed sur un groupe jetable créé puis supprimé.
+# C'est un manque STRUCTUREL du mock autonome, déjà rencontré par la Task 4
+# (« Mock gateway : process arrêté … pas de nettoyage d'objets à faire côté
+# mock ») — pas une régression de ce palier. Contre une VRAIE gateway wM,
+# DELETE existe : la preuve 9 doit donc exiger l'absence des objets SEULEMENT
+# quand la cible le permet, jamais fermer les yeux dessus sans le dire.
+WM_DELETE_SUPPORTED=false
+_PROBE_GID=$(curl -s -u Administrator:manage -X POST -H 'Content-Type: application/json' \
+  -d '{"name":"t8-delete-probe","description":"sonde capacite DELETE"}' \
+  "$WM_GATEWAY_URL/rest/apigateway/groups" | python3 -c "import json,sys; print(json.load(sys.stdin).get('id',''))" 2>/dev/null)
+if [ -n "$_PROBE_GID" ]; then
+  _PROBE_HC=$(curl -s -u Administrator:manage -X DELETE "$WM_GATEWAY_URL/rest/apigateway/groups/$_PROBE_GID" -o /dev/null -w '%{http_code}')
+  if [ "$_PROBE_HC" = 200 ] || [ "$_PROBE_HC" = 204 ]; then
+    WM_DELETE_SUPPORTED=true
+  fi
+fi
+unset _PROBE_GID _PROBE_HC
+echo "   (sonde DELETE gateway : ${WM_GATEWAY_URL} -> WM_DELETE_SUPPORTED=$WM_DELETE_SUPPORTED)"
+
 echo "== chaîne d'onboarding d'équipe (palier 2) — équipe jetable $TEAM =="
 echo "   Gitea=$GITEA_URL  Vault=$VAULT_ADDR  gateway(mock)=$WM_GATEWAY_URL  Jenkins=$JENKINS_UI"
 echo
@@ -332,13 +373,22 @@ fi
 echo
 echo "== Step 2 : le harnais sait rougir (contre-épreuve de la preuve 2) =="
 cp scripts/team-request.sh "$TMP/team-request.sh.orig"
-sed -i '' 's/TEAM_ALREADY_DECLARED/EQUIPE_DEJA_DECLAREE_CASSEE_PAR_LE_HARNAIS/' scripts/team-request.sh
+# forme portable macOS (BSD sed, -i '' un argument séparé) / Linux (GNU sed,
+# -i sans argument) — motif déjà établi (scripts/test-classification-central.sh)
+sed -i '' 's/TEAM_ALREADY_DECLARED/EQUIPE_DEJA_DECLAREE_CASSEE_PAR_LE_HARNAIS/' scripts/team-request.sh 2>/dev/null \
+  || sed -i 's/TEAM_ALREADY_DECLARED/EQUIPE_DEJA_DECLAREE_CASSEE_PAR_LE_HARNAIS/' scripts/team-request.sh
 TEAM=banking-demo REQ_ENV=dev GITEA_TOKEN="$GITEA_TOKEN" GIT_HOST="$GITEA_URL" GIT_WEB_HOST="$GITEA_URL" GIT_REPO="$GIT_REPO" \
   bash scripts/team-request.sh >"$TMP/redcheck.log" 2>&1
 RRED=$?
 cp "$TMP/team-request.sh.orig" scripts/team-request.sh
+# ÉCHEC DE RESTAURATION = ARRÊT, pas un simple avertissement stderr : toutes
+# les preuves suivantes (3, 5, 6…) invoquent team-request.sh/team-apply.sh —
+# les laisser tourner contre un fichier encore MUTÉ (le tag cassé) rendrait
+# leurs verdicts non fiables sans le dire.
 if ! git diff --quiet -- scripts/team-request.sh 2>/dev/null; then
-  echo "  ATTENTION : scripts/team-request.sh ne revient pas identique après restauration" >&2
+  bad "Step 2. scripts/team-request.sh NE revient PAS identique après restauration — arrêt (les preuves suivantes tourneraient contre un fichier muté)"
+  echo "== $PASS PASS / $FAIL FAIL =="
+  exit 1
 fi
 if [ "$RRED" -ne 0 ] && ! grep -q TEAM_ALREADY_DECLARED "$TMP/redcheck.log"; then
   ok "Step 2. tag renommé → le critère de la preuve 2 rougit (rc=$RRED, tag absent du log), fichier restauré identique"
@@ -546,10 +596,19 @@ LINES=$(wc -l < "$PSLOG" 2>/dev/null | tr -d ' ')
 HITS_G=$(grep -cFf "$TMP/needle-gitea" "$PSLOG" 2>/dev/null || true)
 HITS_V=$(grep -cFf "$TMP/needle-vault" "$PSLOG" 2>/dev/null || true)
 HITS_URL=$(grep -cE 'https?://[A-Za-z0-9_.%-]+:[^@[:space:]]+@[A-Za-z0-9_.-]+' "$PSLOG" 2>/dev/null || true)
-if [ "${LINES:-0}" -gt 0 ] && [ "${HITS_G:-0}" -eq 0 ] && [ "${HITS_V:-0}" -eq 0 ] && [ "${HITS_URL:-0}" -eq 0 ]; then
-  ok "8. 0 occurrence en argv sur $LINES lignes de ps échantillonnées (GITEA_TOKEN, token Vault éphémère, ET motif générique user:secret@host)"
+# CONTRÔLE POSITIF (revue, Critical) : LINES>0 prouve seulement que `ps` a
+# TOURNÉ, pas que la fenêtre a VU la classe de process qu'elle police. Un
+# `git push` local dure <200ms ; git-remote-http/send-pack peuvent passer
+# entre deux échantillons et cette preuve rendrait PASS sans avoir rien
+# regardé. La contre-épreuve de la Task 4 avait établi "48 lignes de trafic
+# git RÉELLEMENT observées" — cette garantie doit être RECALCULÉE ici, pas
+# seulement citée en commentaire.
+HITS_TRAFFIC=$(grep -cE 'git-remote-http|send-pack|git push' "$PSLOG" 2>/dev/null || true)
+if [ "${LINES:-0}" -gt 0 ] && [ "${HITS_TRAFFIC:-0}" -gt 0 ] \
+   && [ "${HITS_G:-0}" -eq 0 ] && [ "${HITS_V:-0}" -eq 0 ] && [ "${HITS_URL:-0}" -eq 0 ]; then
+  ok "8. 0 occurrence en argv sur $LINES lignes de ps échantillonnées, DONT $HITS_TRAFFIC lignes de trafic git RÉELLEMENT observées (git-remote-http/send-pack/git push) — contrôle positif : la fenêtre a bien VU ce qu'elle policait"
 else
-  bad "8. GITEA_TOKEN×$HITS_G  token-Vault×$HITS_V  motif-URL-générique×$HITS_URL (sur $LINES lignes) — RÉGRESSION réelle si non nul, voir $PSLOG"
+  bad "8. GITEA_TOKEN×$HITS_G  token-Vault×$HITS_V  motif-URL-générique×$HITS_URL  trafic-git-observé×${HITS_TRAFFIC:-0} (sur $LINES lignes) — $([ "${HITS_TRAFFIC:-0}" -eq 0 ] && echo "CONTRÔLE POSITIF ÉCHOUÉ : aucun trafic git vu, la preuve ne peut RIEN affirmer" || echo "RÉGRESSION réelle") — voir $PSLOG"
 fi
 echo "  (hors périmètre, dette déclarée par la Task 4 : provision-request.sh porte encore le motif URL-avec-token pour son propre git push — non modifié par ce palier, non sondé ici car déclenché par le job de la preuve 7, hors fenêtre 3/5/6)"
 
@@ -569,6 +628,13 @@ RC_POL=$(vlt "$VAULT_TOKEN" "sys/policies/acl/deploy-$TEAM")
 UID_GONE=$(wmapi users | python3 -c "import json,sys;d=json.load(sys.stdin);print(next((u['id'] for u in d.get('users',[]) if u.get('loginId')=='svc-$TEAM'),''))" 2>/dev/null)
 GID_GONE=$(wmapi groups | python3 -c "import json,sys;d=json.load(sys.stdin);print(next((g['id'] for g in d.get('groups',[]) if g.get('name')=='$TEAM-devs'),''))" 2>/dev/null)
 PID_GONE=$(wmapi accessProfiles | python3 -c "import json,sys;d=json.load(sys.stdin);print(next((p['id'] for p in d.get('accessProfiles',[]) if p.get('name')=='$TEAM'),''))" 2>/dev/null)
+# le groupe jetable de la sonde WM_DELETE_SUPPORTED (démarrage du script) —
+# jamais CHERCHÉ jusqu'ici, donc invisible de l'accounting même quand il
+# survit (WM_DELETE_SUPPORTED=false : son propre DELETE avait déjà échoué).
+# Tentative de nettoyage best-effort + présence reportée explicitement.
+PROBE_GID_GONE=$(wmapi groups | python3 -c "import json,sys;d=json.load(sys.stdin);print(next((g['id'] for g in d.get('groups',[]) if g.get('name')=='t8-delete-probe'),''))" 2>/dev/null)
+[ -n "$PROBE_GID_GONE" ] && curl -s -u Administrator:manage -X DELETE "$WM_GATEWAY_URL/rest/apigateway/groups/$PROBE_GID_GONE" -o /dev/null
+PROBE_GID_GONE=$(wmapi groups | python3 -c "import json,sys;d=json.load(sys.stdin);print(next((g['id'] for g in d.get('groups',[]) if g.get('name')=='t8-delete-probe'),''))" 2>/dev/null)
 PR7_STATE=""
 [ -n "${PR7_NUM:-}" ] && PR7_STATE=$(gapi "$GITEA_URL/api/v1/repos/$GIT_REPO/pulls/${PR7_NUM}" | python3 -c "import json,sys;print(json.load(sys.stdin).get('state','?'))" 2>/dev/null)
 rm -rf "$TMP/verifymain"
@@ -585,20 +651,20 @@ cmp -s "$TMP/providers.dev.yml.baseline" "$TMP/verifymain/poc-control-plane-fede
 # satisfaire serait un faux rouge. On mesure, on ne suppose pas.
 GW_OK=1
 if [ "$WM_DELETE_SUPPORTED" = true ]; then
-  [ -z "$UID_GONE" ] && [ -z "$GID_GONE" ] && [ -z "$PID_GONE" ] || GW_OK=0
+  [ -z "$UID_GONE" ] && [ -z "$GID_GONE" ] && [ -z "$PID_GONE" ] && [ -z "$PROBE_GID_GONE" ] || GW_OK=0
 fi
 
-if [ "$RC_REPO" = 404 ] && [ "$RC_ORG" = 404 ] && [ "$RC_KV" != 200 ] && [ "$RC_POL" != 200 ] \
+if [ "$RC_REPO" = 404 ] && [ "$RC_ORG" = 404 ] && [ "$RC_KV" = 404 ] && [ "$RC_POL" = 404 ] \
    && [ "$GW_OK" = 1 ] \
    && [ "$PROV_DIFF" = same ] \
    && { [ -z "${PR7_NUM:-}" ] || [ "$PR7_STATE" = closed ]; }; then
   if [ "$WM_DELETE_SUPPORTED" = true ]; then
-    ok "9. teardown symétrique : org/dépôt/policy/KV/objets gateway absents, main.providers.dev.yml restauré identique à l'entrée, PR provision fermée"
+    ok "9. teardown symétrique : org/dépôt/policy/KV/objets gateway absents (dont le groupe jetable de la sonde DELETE), main.providers.dev.yml restauré identique à l'entrée, PR provision fermée"
   else
-    ok "9. teardown symétrique : org/dépôt/policy/KV absents, main.providers.dev.yml restauré identique à l'entrée, PR provision fermée — objets gateway du mock NON vérifiés absents (mock sans route DELETE, limite structurelle déjà actée Task 4 ; état en mémoire, perdu si le process mock est redémarré)"
+    ok "9. teardown symétrique : org/dépôt/policy/KV absents, main.providers.dev.yml restauré identique à l'entrée, PR provision fermée — objets gateway du mock NON vérifiés absents, DONT le groupe 't8-delete-probe' de la sonde DELETE (mock sans route DELETE, limite structurelle déjà actée Task 4 ; état en mémoire, perdu si le process mock est redémarré)${PROBE_GID_GONE:+ [présence confirmée : $PROBE_GID_GONE]}"
   fi
 else
-  bad "9. résidus : repo=$RC_REPO org=$RC_ORG kv=$RC_KV pol=$RC_POL uid=${UID_GONE:-vide} gid=${GID_GONE:-vide} pid=${PID_GONE:-vide} providers=$PROV_DIFF pr7=${PR7_STATE:-n/a} (WM_DELETE_SUPPORTED=$WM_DELETE_SUPPORTED)"
+  bad "9. résidus : repo=$RC_REPO org=$RC_ORG kv=$RC_KV pol=$RC_POL uid=${UID_GONE:-vide} gid=${GID_GONE:-vide} pid=${PID_GONE:-vide} probe_gid=${PROBE_GID_GONE:-vide} providers=$PROV_DIFF pr7=${PR7_STATE:-n/a} (WM_DELETE_SUPPORTED=$WM_DELETE_SUPPORTED)"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -644,11 +710,13 @@ curl -sf "$JENKINS_UI/job/team-apply/api/json" >/dev/null 2>&1 && JOB10_OK=1
 # pas un mécanisme nouveau, juste réutilisé ici.
 GITEA_OSCAR_HC=$(gapi -o /dev/null -w '%{http_code}' "$GITEA_URL/api/v1/users/oscar")
 if [ "$GITEA_OSCAR_HC" != 200 ]; then
-  _p10_pw=$(python3 -c "import secrets,string; print(''.join(secrets.choice(string.ascii_letters+string.digits) for _ in range(24)))")
+  # --random-password : ce mot de passe Gitea n'est JAMAIS utilisé (seul le
+  # token minté par generate-access-token, plus bas, authentifie les appels
+  # API) — Gitea le génère lui-même, jamais construit ni transmis par CE
+  # script, donc rien à faire fuir en argv ici (correction I2, revue).
   docker exec -u git "$GITEA_CONTAINER" gitea admin user create --username oscar --email oscar@stoa.lab \
-    --password "$_p10_pw" --must-change-password=false >/dev/null 2>&1 \
+    --random-password --must-change-password=false >/dev/null 2>&1 \
     && CREATED_OSCAR_GITEA=1
-  unset _p10_pw
 fi
 [ "$GITEA_OSCAR_HC" = 200 ] || [ "$CREATED_OSCAR_GITEA" = 1 ] \
   && gapi -X PUT -H 'Content-Type: application/json' -d '{"permission":"admin"}' \
@@ -673,6 +741,11 @@ if [ -n "$OSCAR_GITEA_TOK" ]; then
   if [ -n "$OSCAR_POL_BEFORE" ]; then
     OSCAR_VAULT_PASS=$(python3 -c "import secrets,string; print(''.join(secrets.choice(string.ascii_letters+string.digits) for _ in range(24)))")
     printf '{"password":"%s"}' "$OSCAR_VAULT_PASS" > "$TMP/oscar-pw.json"
+    # fichier 0600, jamais en argv : sert plus bas au heredoc python (input
+    # Jenkins) ET à la recherche de fuite dans le log (grep -Ff, jamais
+    # grep -F "$VAR" — CE grep-là serait lui-même la fuite qu'il cherche).
+    OSCAR_VAULT_PASS_FILE="$TMP/oscar-vault-pass"
+    printf '%s' "$OSCAR_VAULT_PASS" > "$OSCAR_VAULT_PASS_FILE"; chmod 600 "$OSCAR_VAULT_PASS_FILE"
     RC_SETPW=$(curl -s -H @"$(vhdr "$VAULT_TOKEN")" -X POST --data-binary @"$TMP/oscar-pw.json" \
       "$VAULT_ADDR/v1/auth/userpass/users/oscar/password" -o /dev/null -w '%{http_code}')
     OSCAR_POL_AFTER=$(curl -s -H @"$(vhdr "$VAULT_TOKEN")" "$VAULT_ADDR/v1/auth/userpass/users/oscar" \
@@ -786,13 +859,18 @@ print(json.dumps({
     _jf=$(printf '%s' "$_crumbjson" | python3 -c 'import sys,json;print(json.load(sys.stdin)["crumbRequestField"])')
     _jc=$(printf '%s' "$_crumbjson" | python3 -c 'import sys,json;print(json.load(sys.stdin)["crumb"])')
     _inputid=$(curl -s "$JENKINS_UI/job/team-apply/$N10/wfapi/pendingInputActions" | python3 -c "import json,sys; print(json.load(sys.stdin)[0]['id'])" 2>/dev/null)
-    python3 -c "
-import json
+    # mot de passe par ENVIRONNEMENT (jamais interpolé dans le texte -c d'un
+    # process — c'était la fuite : "python3 -c \"...'''\$OSCAR_VAULT_PASS'''...\""
+    # met le mot de passe EN CLAIR dans l'argv de python3, visible par
+    # `ps -Aww` — même motif que team-request.sh/team-apply.sh (ADR-074), ici
+    # réparé après coup plutôt que suivi dès l'écriture (revue).
+    OSCAR_VAULT_PASS="$OSCAR_VAULT_PASS" python3 - > "$TMP/input10.json" <<'PY'
+import json, os
 print(json.dumps({'parameter': [
   {'name': 'VAULT_USER', 'value': 'oscar'},
-  {'name': 'VAULT_USER_PASSWORD', 'value': '''$OSCAR_VAULT_PASS'''}
+  {'name': 'VAULT_USER_PASSWORD', 'value': os.environ['OSCAR_VAULT_PASS']}
 ]}))
-" > "$TMP/input10.json"
+PY
     SUB10_HC=$(curl -s -b "$TMP/jck10b" -H "$_jf: $_jc" -X POST \
       --data-urlencode json@"$TMP/input10.json" \
       "$JENKINS_UI/job/team-apply/$N10/wfapi/inputSubmit?inputId=${_inputid}" -o /dev/null -w '%{http_code}')
@@ -806,7 +884,10 @@ print(json.dumps({'parameter': [
     curl -s "$JENKINS_UI/job/team-apply/$N10/consoleText" > "$TMP/build10.log" 2>/dev/null
 
     GUARD_OK=0; grep -q "MERGE_IDENTITY_OK" "$TMP/build10.log" 2>/dev/null && GUARD_OK=1
-    PW_LEAK=$(grep -cF "$OSCAR_VAULT_PASS" "$TMP/build10.log" 2>/dev/null || true)
+    # -Ff sur un FICHIER 0600, jamais -F "$VAR" : un grep -F "$OSCAR_VAULT_PASS"
+    # mettrait le mot de passe en argv DE CE GREP — la vérification anti-fuite
+    # ne doit pas être elle-même une fuite (revue).
+    PW_LEAK=$(grep -cFf "$OSCAR_VAULT_PASS_FILE" "$TMP/build10.log" 2>/dev/null || true)
     MOUNT_GAP=0; grep -q "REFUSÉ.*HTTP 403" "$TMP/build10.log" 2>/dev/null && grep -qi "ldap" "$TMP/build10.log" 2>/dev/null && MOUNT_GAP=1
 
     if [ "${PW_LEAK:-0}" != 0 ]; then
@@ -824,11 +905,16 @@ print(json.dumps({'parameter': [
   fi
 fi
 
+# SEUL "fort" est un succès. `fort` est reproduit (builds Jenkins #12/#13
+# SUCCESS) : `fort_partiel`/`minimum` sont maintenant des REPLIS
+# DIAGNOSTIQUES qui existaient pour dégrader proprement AVANT que le chemin
+# complet ne soit prouvé possible — les compter PASS aujourd'hui masquerait
+# une régression réelle (ex. retirer VAULT_USER_AUTH_MOUNT du job XML
+# redonnerait un vert trompeur). Le compteur doit dire ce que les messages
+# disent (revue).
 case "$RESULT10" in
-  fort)         ok "10. $MSG10" ;;
-  fort_partiel) ok "10. $MSG10" ;;
-  minimum)      ok "10. $MSG10" ;;
-  *)            bad "10. $MSG10" ;;
+  fort) ok "10. $MSG10" ;;
+  *)    bad "10. $MSG10" ;;
 esac
 
 # 10h. teardown de la preuve 10 (fonction partagée avec le filet de secours du
