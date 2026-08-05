@@ -1,0 +1,306 @@
+---
+# roles/apim_publish_api/tasks/version.yml — CREATE-OR-VERSION (P3-T6).
+#
+# Atteint UNIQUEMENT quand aucun record ne porte name+version (main.yml :
+# apim_api_id vide). Deux issues :
+#   - le NOM est inconnu de la gateway  → ce fichier ne fait RIEN, l'import
+#     initial (inchangé) reprend la main ;
+#   - le NOM existe sous une AUTRE version → un import nu est impossible (le
+#     produit refuse POST /apis sur un nom déjà pris) et un PUT in-place
+#     réécrirait un record qui SERT. La seule voie produit est la duplication
+#     native POST /apis/{id}/versions, qui mint un NOUVEAU record ; la spec du
+#     manifeste y est ensuite poussée par le chemin re-import EXISTANT
+#     (main.yml, bloc « Update »), jamais par un second multipart écrit ici.
+#
+# TOUT ce qui suit épouse des faits MESURÉS sur la vraie 10.15 du lab le
+# 2026-08-05 (spike scripts/spike-api-versions-1015.sh, 27/27 ; rapport
+# .superpowers/sdd/2026-08-05-formulaires-enrichis-palier-3/task-1-report.md) :
+#
+#   M1  {"newApiVersion":"X"} SEUL suffit (201) — et le corps est du JSON
+#       LAXISTE : une clé inconnue n'est jamais refusée. Aucun code de retour
+#       ne dira donc qu'on s'est trompé de champ.
+#   M2  les policies de la nouvelle version sont un CLONE (ids NOUVEAUX, pas
+#       un partage de ceux de la base) et le record naît isActive:false —
+#       import et activation restent deux étapes, comme au premier import.
+#   M3  [DÉCISIF] les souscriptions ne suivent QUE si `retainApplications:true`
+#       est envoyé EXPLICITEMENT et avec la CASSE EXACTE. Absent, `false`, ou
+#       mal casé ("RetainApplications") : la souscription est perdue EN
+#       SILENCE (HTTP 201 dans tous les cas). C'est le bug labctl déjà tracké
+#       (mémoire wm-1015-teams-scoping). La base, elle, n'est JAMAIS désabonnée.
+#   M4  la duplication n'est permise QUE depuis la DERNIÈRE version en date
+#       (400 « Versioning is allowed only from latest version » sinon, y
+#       compris pour un second appel sur le même id juste après un succès).
+#
+# POURQUOI UN REFUS PLUTÔT QU'UNE DEVINETTE (M4 + relevé du 2026-08-05) :
+# GET /apis n'expose aucun marqueur de « dernière version » (clés relevées :
+# apiName, apiVersion, id, isActive, type, publishedPortals, systemVersion,
+# tracingEnabled, apiDescription — rien d'autre), et le numéro le plus GRAND
+# n'est PAS la dernière version : sur la lignée `accounts-read` du lab, 1.0.0
+# (créée le 07-05) a été minée DEPUIS 1.0.1 (créée le 07-04). Trier par semver
+# choisirait donc la mauvaise base. Le rôle refuse et le dit.
+#
+# DISCIPLINE : `ansible.builtin.uri` rend TOUJOURS changed=false sans `dest` —
+# chaque appel porte donc son `changed_when` véridique ; et un 201 ne prouve
+# rien (palier 1) — chaque écriture est suivie d'une RELECTURE qui assert.
+
+- name: "Version : records existants portant ce nom d'API (toutes versions)"
+  ansible.builtin.set_fact:
+    # Même matching que main.yml (name seul ici, name+version là-bas) : GLOBAL,
+    # sans filtre d'équipe. Résiduel d'enforcement CONNU et documenté (revue
+    # T5) — la porte amont API_NAME_COLLISION (api-request.sh) traite le cas
+    # côté demande. Ce fichier hérite du même matching, il ne l'élargit pas :
+    # il lit la MÊME liste `pub_apis`, déjà chargée par main.yml (aucun appel
+    # supplémentaire), et n'accepte de miner que sur une base UNIQUE.
+    pub_ver_siblings: >-
+      {{ pub_apis.json.apiResponse | default([]) | map(attribute='api')
+         | selectattr('apiName', 'equalto', apim_api.name) | list }}
+
+# ⚠ FAIT FIGÉ, PAS UNE EXPRESSION VIVE. Un `when` — sur une tâche, sur un bloc,
+# ou porté par l'import_tasks de main.yml — est RÉÉVALUÉ à CHAQUE tâche qu'il
+# couvre. Or ce fichier POSE `apim_api_id` en cours de route (section 4) : une
+# condition qui lirait `apim_api_id | length == 0` deviendrait fausse juste
+# après, et TOUT ce qui suit serait skippé EN SILENCE — le mint réussirait, les
+# asserts M2/M3 ne tourneraient jamais, et le run serait vert. C'est
+# exactement ce qui est arrivé à la première version de ce fichier, détecté
+# parce que les contre-épreuves D1/D4 (gardes injectées) refusaient de rougir.
+- name: "Version : duplication à envisager ? (figé AVANT toute écriture)"
+  ansible.builtin.set_fact:
+    pub_ver_needed: "{{ (apim_api_id | length == 0) and (pub_ver_siblings | length > 0) }}"
+
+- name: "Version : le nom existe deja sous une autre version — duplication produit"
+  when: "pub_ver_needed | bool"
+  block:
+
+    # ===== 1. La base : une seule, ou rien =================================
+    - name: "Version : candidats lisibles (version puis id), pour le diagnostic"
+      ansible.builtin.set_fact:
+        pub_ver_candidates: >-
+          {{ pub_ver_siblings | map(attribute='apiVersion') | list
+             | zip(pub_ver_siblings | map(attribute='id') | list)
+             | map('join', ' -> id ') | list }}
+
+    - name: "Version : FAIL-CLOSED — une seule base candidate, jamais de devinette"
+      ansible.builtin.assert:
+        that: "pub_ver_siblings | length == 1"
+        fail_msg: >-
+          VERSION_BASE_AMBIGUE : '{{ apim_api.name }}' existe déjà sur la gateway
+          en {{ pub_ver_siblings | length }} versions ({{ pub_ver_candidates | join(' ; ') }})
+          et aucune ne porte '{{ apim_api.version }}'. La duplication n'est permise
+          que depuis la DERNIÈRE version (HTTP 400 sinon), or GET /apis n'expose
+          aucun marqueur de « dernière » et le plus grand numéro n'est pas la
+          dernière version (mesuré 2026-08-05). Refus de deviner : retirer les
+          versions obsolètes, ou miner cette version à la main depuis la bonne
+          base puis relancer (le rôle reprendra alors le chemin nominal).
+        success_msg: >-
+          VERSION_BASE_OK : base unique {{ pub_ver_candidates | first }} →
+          nouvelle version '{{ apim_api.version }}'.
+
+    - name: "Version : identité de la base"
+      ansible.builtin.set_fact:
+        pub_ver_base_id: "{{ (pub_ver_siblings | first).id }}"
+        pub_ver_base_version: "{{ (pub_ver_siblings | first).apiVersion }}"
+
+    # ===== 2. Témoins AVANT (M2 policies, M3 souscriptions) ================
+    - name: "Version : lire la base (ses policies servent de témoin au clone)"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/apis/{{ pub_ver_base_id }}"
+      register: pub_ver_base_get
+      changed_when: false
+
+    # Une seule liste suffit : MESURÉ le 2026-08-05 sur la vraie 10.15, GET
+    # /applications porte `consumingAPIs` sur CHAQUE record — y compris sur une
+    # application fraîchement créée et jamais associée (valeur []). Pas de N+1
+    # GET unitaires, et la clé absente devient un signal exploitable (garde
+    # ci-dessous) plutôt qu'un témoin silencieusement vide.
+    - name: "Version : souscriptions AVANT le mint (témoin)"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/applications"
+      register: pub_ver_apps_before
+      changed_when: false
+
+    - name: "Version : FAIL-CLOSED — la forme qui porte les souscriptions est bien là"
+      ansible.builtin.assert:
+        # Sans cette garde, une gateway qui cesserait d'exposer consumingAPIs
+        # rendrait le témoin M3 VIDE — donc l'assert d'après VACANT, vert sans
+        # rien avoir prouvé. Exactement le « vert vacant » que le palier refuse.
+        that: >-
+          (pub_ver_apps_before.json.applications | default([]) | length == 0)
+          or ((pub_ver_apps_before.json.applications | default([])
+               | selectattr('consumingAPIs', 'defined') | list | length) > 0)
+        fail_msg: >-
+          VERSION_SUBS_SHAPE_UNKNOWN : GET /applications rend
+          {{ pub_ver_apps_before.json.applications | default([]) | length }} applications
+          dont AUCUNE ne porte la clé `consumingAPIs` (mesurée présente sur toutes,
+          même vides, le 2026-08-05). Le témoin de souscription serait vide par
+          accident de forme, pas par absence de souscription : refus de miner une
+          version dont on ne saurait pas dire si elle a emporté ses abonnés.
+
+    - name: "Version : applications souscrites à la base, AVANT"
+      ansible.builtin.set_fact:
+        pub_ver_subs_before: >-
+          {{ pub_ver_apps_before.json.applications | default([])
+             | selectattr('consumingAPIs', 'defined')
+             | selectattr('consumingAPIs', 'contains', pub_ver_base_id)
+             | map(attribute='id') | list | sort }}
+
+    # ===== 3. Le mint ======================================================
+    # `retainApplications: true` — EXPLICITE, booléen, casse EXACTE. Ne jamais
+    # « simplifier » ce champ : absent ou mal casé, la gateway répond 201 et
+    # perd les souscriptions en silence (M3). L'assert de la section 5 est là
+    # pour que ce fichier ne puisse pas dériver sans qu'un run le dise.
+    - name: "Version : POST /apis/{id}/versions (duplication native)"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/apis/{{ pub_ver_base_id }}/versions"
+        method: POST
+        body:
+          newApiVersion: "{{ apim_api.version }}"
+          retainApplications: true
+        status_code: [200, 201]
+      register: pub_ver_create
+      # Le module ne doit pas mourir sur un non-2xx : l'assert suivant rend un
+      # échec NOMMÉ, avec le message du produit (« ... already exists. »,
+      # « Versioning is allowed only from latest version ») plutôt qu'une trace
+      # d'appel brute.
+      failed_when: false
+      changed_when: "(pub_ver_create.status | default(0)) in [200, 201]"
+
+    - name: "Version : FAIL-CLOSED — la duplication a été acceptée"
+      ansible.builtin.assert:
+        that: "(pub_ver_create.status | default(0)) in [200, 201]"
+        fail_msg: >-
+          VERSION_CREATE_FAILED : POST /apis/{{ pub_ver_base_id }}/versions
+          (base v{{ pub_ver_base_version }} → v{{ apim_api.version }}) a rendu HTTP
+          {{ pub_ver_create.status | default('n/a') }} — {{ pub_ver_create.json | default({}) }}
+          {{ pub_ver_create.msg | default('') }}. Deux refus connus du produit :
+          le numéro de version existe déjà, ou la base n'est pas la DERNIÈRE
+          version de la lignée (« Versioning is allowed only from latest version »).
+
+    # ===== 4. Relecture : un 201 ne prouve rien ============================
+    - name: "Version : relire la liste des APIs (la nouvelle version EXISTE-t-elle ?)"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/apis"
+      register: pub_ver_apis_after
+      changed_when: false
+
+    - name: "Version : ids relus pour ce nom et cette nouvelle version"
+      ansible.builtin.set_fact:
+        pub_ver_new_ids: >-
+          {{ pub_ver_apis_after.json.apiResponse | default([]) | map(attribute='api')
+             | selectattr('apiName', 'equalto', apim_api.name)
+             | selectattr('apiVersion', 'equalto', apim_api.version)
+             | map(attribute='id') | list }}
+
+    - name: "Version : FAIL-CLOSED — la nouvelle version est RELUE, une seule fois"
+      ansible.builtin.assert:
+        that: "pub_ver_new_ids | length == 1"
+        fail_msg: >-
+          VERSION_UNCONFIRMED : après HTTP {{ pub_ver_create.status | default('n/a') }},
+          la relecture de GET /apis rend {{ pub_ver_new_ids | length }} record(s)
+          '{{ apim_api.name }}' v{{ apim_api.version }} (attendu : 1). Un code de
+          retour vert ne prouve pas l'écriture — c'est la relecture qui la prouve.
+        # `join` et NON `first` : Ansible template TOUTES les options de la
+        # tâche, y compris le success_msg, AVANT de savoir si l'assertion tient.
+        # Sur la liste VIDE — précisément le cas que cette garde existe pour
+        # attraper — `| first` lève « No first item, sequence was empty » et le
+        # run meurt sur une erreur Jinja opaque au lieu de dire
+        # VERSION_UNCONFIRMED. Constaté par la contre-épreuve D3.
+        success_msg: >-
+          VERSION_CREATED : '{{ apim_api.name }}' v{{ apim_api.version }} minée depuis
+          v{{ pub_ver_base_version }} (id {{ pub_ver_new_ids | join(', ') }}).
+
+    # C'est ICI que le reste du rôle bascule sur la nouvelle version : l'import
+    # initial de main.yml se skippe (apim_api_id non vide) et le chemin
+    # re-import y pousse la spec du manifeste (la duplication ne copie que la
+    # définition de la BASE).
+    - name: "Version : la suite du rôle travaille sur la nouvelle version"
+      ansible.builtin.set_fact:
+        apim_api_id: "{{ pub_ver_new_ids | first }}"
+        pub_version_minted: true
+
+    - name: "Version : lire le record miné (policies + état d'activation)"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/apis/{{ pub_ver_new_ids | first }}"
+      register: pub_ver_new_get
+      changed_when: false
+
+    - name: "Version : EXIGER le comportement mesuré — policies CLONÉES, record INACTIF"
+      ansible.builtin.assert:
+        that:
+          # M2 : ids de policy NOUVEAUX. Un partage d'id ferait qu'éditer la
+          # policy de la nouvelle version éditerait AUSSI celle de la base —
+          # une modification de la v2 changerait le comportement de la v1 en
+          # production. Si le produit changeait de sémantique, ce run le dit.
+          - "(pub_ver_new_get.json.apiResponse.api.policies | default([])) | length > 0"
+          - >-
+            ((pub_ver_new_get.json.apiResponse.api.policies | default([]))
+             | intersect(pub_ver_base_get.json.apiResponse.api.policies | default([]))) | length == 0
+          # M2 : le record naît inactif. S'il naissait ACTIF, il servirait la
+          # définition CLONÉE de la base avant que le re-import n'y pousse la
+          # spec du manifeste — du trafic sur un contrat non voulu.
+          - "not (pub_ver_new_get.json.apiResponse.api.isActive | default(false))"
+        fail_msg: >-
+          VERSION_CLONE_UNEXPECTED : la version minée porte
+          policies={{ pub_ver_new_get.json.apiResponse.api.policies | default([]) }}
+          (base : {{ pub_ver_base_get.json.apiResponse.api.policies | default([]) }}),
+          isActive={{ pub_ver_new_get.json.apiResponse.api.isActive | default(false) }}.
+          Attendu (mesuré 2026-08-05) : des ids de policy NOUVEAUX (clone, pas
+          partage) et un record INACTIF. Un partage d'id ferait qu'éditer la
+          policy de cette version éditerait aussi celle de la base ; un record
+          né actif servirait la définition clonée avant le re-import de la spec.
+        success_msg: >-
+          VERSION_CLONE_OK : policies clonées
+          ({{ pub_ver_new_get.json.apiResponse.api.policies | default([]) }}, disjointes
+          de la base) et record inactif — conforme à la mesure du 2026-08-05.
+
+    # ===== 5. M3 : les souscriptions ont-elles VRAIMENT suivi ? ============
+    - name: "Version : souscriptions APRÈS le mint (contre-témoin)"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/applications"
+      register: pub_ver_apps_after
+      changed_when: false
+
+    - name: "Version : applications souscrites, APRÈS (nouvelle version, puis base)"
+      ansible.builtin.set_fact:
+        pub_ver_subs_after: >-
+          {{ pub_ver_apps_after.json.applications | default([])
+             | selectattr('consumingAPIs', 'defined')
+             | selectattr('consumingAPIs', 'contains', pub_ver_new_ids | first)
+             | map(attribute='id') | list | sort }}
+        pub_ver_base_subs_after: >-
+          {{ pub_ver_apps_after.json.applications | default([])
+             | selectattr('consumingAPIs', 'defined')
+             | selectattr('consumingAPIs', 'contains', pub_ver_base_id)
+             | map(attribute='id') | list | sort }}
+
+    - name: "Version : EXIGER le comportement mesuré — souscriptions transportées"
+      ansible.builtin.assert:
+        that:
+          # Les DEUX moitiés de M3 : la nouvelle version hérite des abonnés de
+          # la base, et la base reste abonnée (le produit ne désabonne jamais
+          # l'ancienne version). INCLUSION et non égalité stricte : ce qui est
+          # interdit, c'est de PERDRE un abonné. Un abonné apparu entre les deux
+          # relectures (souscription concurrente, hors de ce run) n'est pas une
+          # violation, et une égalité stricte en ferait un faux refus.
+          - "(pub_ver_subs_before | difference(pub_ver_subs_after)) | length == 0"
+          - "(pub_ver_subs_before | difference(pub_ver_base_subs_after)) | length == 0"
+        fail_msg: >-
+          VERSION_SUBS_NOT_RETAINED : avant le mint, {{ pub_ver_subs_before | length }}
+          application(s) souscrite(s) à la base ({{ pub_ver_subs_before }}) ; après,
+          la nouvelle version est vue par {{ pub_ver_subs_after }} et la base par
+          {{ pub_ver_base_subs_after }} — PERDUES sur la nouvelle version :
+          {{ pub_ver_subs_before | difference(pub_ver_subs_after) }}.
+          `retainApplications: true` a bien été envoyé
+          (booléen, casse exacte) et la gateway a répondu
+          HTTP {{ pub_ver_create.status | default('n/a') }} — un écart ici signale un
+          CHANGEMENT DE COMPORTEMENT DU PRODUIT (mesuré le 2026-08-05 : transport
+          intégral, base jamais désabonnée), pas une erreur d'appel. Les consommateurs
+          concernés perdraient l'accès en silence : re-mesurer avant de lever ce refus.
+        # Un témoin VIDE ne fait pas échouer (publier une version dont personne
+        # ne consomme la base est légitime) mais il ne doit pas passer pour une
+        # preuve : le run le DIT.
+        success_msg: >-
+          {{ 'VERSION_SUBS_RETAINED : ' ~ (pub_ver_subs_before | length) ~
+             ' application(s) portée(s) sur la nouvelle version, base toujours abonnée.'
+             if (pub_ver_subs_before | length) > 0
+             else 'VERSION_SUBS_VACANT : aucune application souscrite à la base — le
+                   transport des souscriptions reste NON PROUVÉ dans ce run (témoin vide).' }}
