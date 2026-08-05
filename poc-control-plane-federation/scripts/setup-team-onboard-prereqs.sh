@@ -2,8 +2,14 @@
 # setup-team-onboard-prereqs.sh — les deux prérequis bloquants du palier 2 (§8) :
 #   1. policy Vault `team-onboarder` : ce que l'APPLY d'onboarding a le droit
 #      d'écrire — les policies deploy-<team> et les entrées KV wm-admin des
-#      tenants, RIEN d'autre. Toutes les preuves du palier 1 tournaient au token
-#      root : cette policy est ce qui rend l'apply livrable.
+#      tenants — PLUS la lecture SEULE du credential admin partagé de la
+#      gateway (secret/data/stoa/gateways/webmethods, entrée EXACTE, jamais
+#      gateways/*) : l'onboarding ADMINISTRE la gateway (users/groupes/
+#      accessProfiles via apim_common/secrets.yml), il a donc structurellement
+#      besoin de ce credential — ajouté en correction inter-tâches (Task 4,
+#      arbitrage du lead ; cf. le commentaire du HCL ci-dessous pour le détail
+#      et la limite connue). RIEN D'AUTRE. Toutes les preuves du palier 1
+#      tournaient au token root : cette policy est ce qui rend l'apply livrable.
 #   2. token org-admin Gitea (création d'orgs/dépôts), STOCKÉ DANS VAULT sous
 #      secret/stoa/ci/gitea-org-admin — jamais dans les credentials Jenkins :
 #      seul le porteur de team-onboarder le lit, donc seul l'apply post-merge.
@@ -51,10 +57,28 @@ hcl = (
     "# Ecrit les policies deploy-<team> et les entrees KV wm-admin des tenants\n"
     "# — et lit le token org-admin Gitea. RIEN d'autre : pas gateways/*, pas ci/*\n"
     "# au-dela de l'entree nommee.\n"
+    "#\n"
+    "# CORRECTION INTER-TACHES (Task 4, team-apply.sh, angle mort du brief T3\n"
+    "# initial — arbitrage du lead) : le brief T3 lisait \"pas gateways/*\" comme\n"
+    "# de la segregation de tenant, mais l'onboarding N'EST PAS un tenant — il\n"
+    "# ADMINISTRE la gateway (users/groupes/accessProfiles). apim_team_onboard\n"
+    "# importe apim_common/secrets.yml, qui a BESOIN du credential admin partage\n"
+    "# pour s'authentifier lui-meme contre l'API d'admin — reproduit en direct\n"
+    "# (403 -> l'onboarding entier avorte) avant ce correctif. Precedent maison :\n"
+    "# operator-deploy accorde deja cette meme lecture a un HUMAIN, avec le\n"
+    "# commentaire \"l'octroi de cette policy est une decision de securite du\n"
+    "# client\" (setup-vault-userpass.sh) — team-onboarder l'accorde ici a un\n"
+    "# APPLY automatise, pour la MEME raison (administrer, pas consommer).\n"
+    "#\n"
+    "# ENTREE EXACTE, JAMAIS gateways/* : le mode proxy-oauth2 du client lira\n"
+    "# gateways/webmethods/admin-oauth, deliberement NON couvert ici. Fail-closed\n"
+    "# + YAGNI : le jour ou l'apply bascule en proxy-oauth2, le 403 nommera le\n"
+    "# chemin manquant et on l'accordera A CE MOMENT — pas d'octroi preventif.\n"
     'path "sys/policies/acl/deploy-*"                  { capabilities = ["create", "update", "read"] }\n'
     'path "secret/data/stoa/deploy/+/wm-admin"         { capabilities = ["create", "update", "read"] }\n'
     'path "secret/metadata/stoa/deploy/*"              { capabilities = ["read", "list"] }\n'
     'path "secret/data/stoa/ci/gitea-org-admin"        { capabilities = ["read"] }\n'
+    'path "secret/data/stoa/gateways/webmethods"       { capabilities = ["read"] }\n'
 )
 json.dump({"policy": hcl}, __import__("sys").stdout)
 PY
