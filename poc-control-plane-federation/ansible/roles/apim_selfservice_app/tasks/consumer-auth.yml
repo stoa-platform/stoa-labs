@@ -262,10 +262,18 @@
     # comme un défaut ($sys:default, default-scope…), et si ce critère ne tranche
     # pas à un seul, on s'arrête en affichant la liste. Choisir en silence, c'est
     # décider à la place de l'exploitant quels droits porte le client.
+    #
+    # `[x] | flatten` UNE SECONDE FOIS, ici, au point de CONSOMMATION. La
+    # normalisation de resolve-env.yml est un set_fact (précédence 19) : un
+    # `-e apim_ss_auth_scopes=ScopeASLocal` passé par le CI (précédence 22,
+    # les extra-vars gagnent TOUJOURS) la court-circuite en silence et rend la
+    # chaîne intacte à l'assert ci-dessous. `_eff` est un nom interne que
+    # personne ne passe en extra-var : le renormaliser ici couvre la variable
+    # QUELLE QUE SOIT sa provenance — manifeste, group_vars ou ligne de commande.
     - name: "Auth app [internal] : scopes effectifs (manifeste > défaut de l'AS)"
       ansible.builtin.set_fact:
         apim_ss_auth_scopes_eff: >-
-          {{ apim_ss_auth_scopes if ((apim_ss_auth_scopes | default([])) | length > 0)
+          {{ ([apim_ss_auth_scopes] | flatten) if ((apim_ss_auth_scopes | default([])) | length > 0)
              else (apim_ss_local_scopes if ((apim_ss_local_scopes | length) == 1)
                    else ((apim_ss_local_scopes | select('search', '(?i)default') | list)
                          if ((apim_ss_local_scopes | select('search', '(?i)default') | list) | length == 1)
@@ -359,6 +367,7 @@
   delegate_to: localhost
   no_log: true
   when: "apim_ss_strat_id | length == 0"
+  changed_when: true
 
 - name: "Auth app : capturer l'id à la création"
   ansible.builtin.set_fact:
@@ -497,7 +506,32 @@
              ((apim_ss_auth_rec.authStrategyIds | default([])) + [apim_ss_strat_id]) | unique}) }}
   no_log: true
 
-- name: "Auth app : PUT du record muté (claim opposable + stratégie liée)"
+# LECTURE AVANT ÉCRITURE — même défaut, et même correctif, que le PUT des
+# identifiers de main.yml : ce PUT était INCONDITIONNEL, donc à chaque apply d'un
+# manifeste portant `auth:` la gateway détruisait et recréait les identifiers de
+# l'application (UUID neuf, `lastupdated` bumpé) pour un état déjà conforme.
+# Comparaison sur les seuls champs gouvernés ici — la claim `openIdClaims` (mode
+# idp) et l'appartenance de la stratégie à `authStrategyIds` — car le record relu
+# porte un `id` par identifier que l'ensemble désiré n'a pas : comparer les dicts
+# entiers diffèrerait toujours et la garde ne garderait rien.
+- name: "Auth app : claim openIdClaims déjà posée telle quelle ? (mode idp)"
+  ansible.builtin.set_fact:
+    apim_ss_auth_claim_converged: >-
+      {{ (apim_ss_auth_rec.identifiers | default([])
+          | selectattr('key', 'equalto', 'openIdClaims')
+          | selectattr('name', 'equalto', apim_ss_auth_identifier.name)
+          | map(attribute='value') | flatten | list | sort)
+         == (apim_ss_auth_identifier.value | sort) }}
+  when: "apim_ss_auth_mode_eff == 'idp'"
+  no_log: true
+
+- name: "Auth app : le record porte-t-il déjà l'état désiré ?"
+  ansible.builtin.set_fact:
+    apim_ss_auth_converged: >-
+      {{ (apim_ss_strat_id in (apim_ss_auth_rec.authStrategyIds | default([])))
+         and (apim_ss_auth_mode_eff != 'idp' or (apim_ss_auth_claim_converged | default(false))) }}
+
+- name: "Auth app : PUT du record muté (claim opposable + stratégie liée) — si différent"
   ansible.builtin.uri:
     url: "{{ apim_ss_api_base }}/applications/{{ ss_app_id }}"
     method: PUT
@@ -505,6 +539,16 @@
     status_code: [200, 201]
   delegate_to: localhost
   no_log: true
+  when: "not apim_ss_auth_converged"
+  changed_when: true
+
+- name: "Auth app : record déjà conforme — aucune écriture"
+  ansible.builtin.debug:
+    msg: >-
+      AUTH_RECORD_CONVERGED : stratégie déjà liée{{ ' et claim openIdClaims déjà posée'
+      if apim_ss_auth_mode_eff == 'idp' else '' }} — PUT non émis, UUID des
+      identifiers préservés.
+  when: "apim_ss_auth_converged"
 
 # ===== 3. Mode INTERNAL — la gateway génère le client, on le STOCKE dans Vault ==
 # La stratégie sur l'AS `local` est posée ; le client OAuth2 (client_id/secret) est

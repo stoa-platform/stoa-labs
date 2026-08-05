@@ -100,13 +100,22 @@
 # stratégie (cf. consumer-auth.yml §1b). Les défauts matérialisent la demande du
 # client : client CONFIDENTIEL, grant client_credentials, scopes de l'AS local.
 # `scopes` est PAR ENV comme le reste (per_env est déjà fusionné à ce stade).
+#
+# `[x] | flatten` sur les champs À VALEURS MULTIPLES : un manifeste qui écrit
+# `scopes: ScopeASLocal` (scalaire) au lieu de `scopes: ["ScopeASLocal"]` livrait
+# une CHAÎNE là où l'aval attend une liste — et `difference` sur une chaîne
+# itère ses CARACTÈRES : le fail-closed rejetait alors un scope qui existe bel
+# et bien sur l'AS, en affichant l'ensemble des lettres du nom. Le scalaire est
+# sans ambiguïté un élément unique, on le normalise ici plutôt que de le laisser
+# se transformer en refus mensonger. Ce qui n'est pas ambigu pour autant — un
+# `"a,b"` — reste un nom inconnu et sera refusé par les asserts en aval.
 - name: "Env : aplatir apim_ss_app.auth.dcr (client généré par la gateway)"
   ansible.builtin.set_fact:
     apim_ss_auth_client_type: "{{ apim_ss_app.auth.client_type | default('CONFIDENTIAL') }}"
-    apim_ss_auth_grant_types: "{{ apim_ss_app.auth.grant_types | default(['client_credentials']) }}"
-    apim_ss_auth_scopes: "{{ apim_ss_app.auth.scopes | default([]) }}"
+    apim_ss_auth_grant_types: "{{ [apim_ss_app.auth.grant_types | default(['client_credentials'])] | flatten }}"
+    apim_ss_auth_scopes: "{{ [apim_ss_app.auth.scopes | default([])] | flatten }}"
     apim_ss_auth_token_lifetime: "{{ apim_ss_app.auth.token_lifetime | default('3600') | string }}"
     apim_ss_auth_refresh_count: "{{ apim_ss_app.auth.refresh_count | default('0') | string }}"
-    apim_ss_auth_redirect_uris: "{{ apim_ss_app.auth.redirect_uris | default([]) }}"
+    apim_ss_auth_redirect_uris: "{{ [apim_ss_app.auth.redirect_uris | default([])] | flatten }}"
     apim_ss_auth_application_type: "{{ apim_ss_app.auth.application_type | default('') }}"
   when: "apim_ss_app.auth is defined"

@@ -271,7 +271,41 @@ grep -q "SCOPE_AMBIGU" <<<"$OUT" && ok "SCOPE_AMBIGU, avec la liste publiée" ||
 kill "$AMB_PID" 2>/dev/null
 
 echo
-echo "== 12. NON-RÉGRESSION idp : clientId = la claim, AUCUN dcrConfig =="
+echo "== 12. SCOPE : déclaré en SCALAIRE (et non en liste) -> même sens qu'une liste =="
+# Régression vécue chez le client : `scopes: ScopeASLocal` au lieu de
+# `scopes: ["ScopeASLocal"]` livrait une CHAÎNE là où l'aval attend une liste.
+# `difference` itérant les CARACTÈRES d'une chaîne, le fail-closed refusait un
+# scope BEL ET BIEN publié par l'AS, en affichant les lettres de son nom. L'AS
+# est ici volontairement multi-scopes : sans manifeste honoré, on tomberait sur
+# SCOPE_AMBIGU — le test prouve donc que c'est bien le scalaire qui a tranché.
+SCA_PORT=$((MASK_PORT+11))
+WM_LOCAL_SCOPES="lecture,ecriture" LISTEN_ADDR=":$SCA_PORT" "$TMP/wm-mock" >"$TMP/mock-sca.log" 2>&1 &
+SCA_PID=$!
+for _ in $(seq 1 50); do curl -sf "http://127.0.0.1:$SCA_PORT/health" >/dev/null 2>&1 && break; sleep 0.2; done
+curl -sf -u Administrator:manage -X POST "http://127.0.0.1:$SCA_PORT/rest/apigateway/apis" \
+  -H 'Content-Type: application/json' \
+  -d '{"apiName":"probe","apiVersion":"1.0.0","type":"REST","apiDefinition":{"openapi":"3.0.0"}}' >/dev/null
+mkmanifest "$TMP/m-scalar.yml" "probe-scalar" "internal" "CONFIDENTIAL" 'client_credentials' 'lecture'
+probe "$TMP/m-scalar.yml" "http://127.0.0.1:$SCA_PORT/rest/apigateway"
+[ $RC -eq 0 ] && ok "apply vert (scalaire = liste à un élément)" || { ko "scalaire refusé (rc=$RC)"; echo "$OUT" | tail -25; }
+grep -q "SCOPE_INCONNU" <<<"$OUT" && ko "SCOPE_INCONNU sur un scope pourtant publié" || ok "aucun refus mensonger"
+grep -q "scopes='lecture'" <<<"$OUT" && ok "le client porte le scope déclaré" || ko "scope scalaire perdu"
+grep -q "GRANT_TYPES_INVALIDES" <<<"$OUT" && ko "grant scalaire refusé à tort" || ok "grant_types scalaire normalisé lui aussi"
+
+# Même scalaire, mais injecté par le CI en EXTRA-VAR. Les extra-vars (précédence
+# 22) écrasent le set_fact de resolve-env.yml (19) : la normalisation d'amont est
+# alors court-circuitée, et seule celle du point de consommation tient. Ce cas
+# échoue si l'on retire le `flatten` de consumer-auth.yml, même correctif d'amont
+# en place — c'est ce que vit un Jenkinsfile qui passe `-e apim_ss_auth_scopes=`.
+mkmanifest "$TMP/m-extravar.yml" "probe-extravar" "internal" "CONFIDENTIAL" '["client_credentials"]' '[]'
+probe "$TMP/m-extravar.yml" "http://127.0.0.1:$SCA_PORT/rest/apigateway" -e apim_ss_auth_scopes=lecture
+[ $RC -eq 0 ] && ok "apply vert (scalaire en extra-var CI)" || { ko "extra-var scalaire refusé (rc=$RC)"; echo "$OUT" | tail -25; }
+grep -q "SCOPE_INCONNU" <<<"$OUT" && ko "SCOPE_INCONNU sur un scope pourtant publié (extra-var)" || ok "aucun refus mensonger (extra-var)"
+grep -q "scopes='lecture'" <<<"$OUT" && ok "le client porte le scope passé par le CI" || ko "scope extra-var perdu"
+kill "$SCA_PID" 2>/dev/null
+
+echo
+echo "== 13. NON-RÉGRESSION idp : clientId = la claim, AUCUN dcrConfig =="
 mkmanifest "$TMP/m-idp.yml" "probe-idp" "idp" "CONFIDENTIAL" '["client_credentials"]' '[]'
 # En idp l'audience est OBLIGATOIRE (garde conservée, cf. test-auth-audience.sh).
 sed -i.bak 's/audience: ""/audience: "probe-api"/' "$TMP/m-idp.yml"
