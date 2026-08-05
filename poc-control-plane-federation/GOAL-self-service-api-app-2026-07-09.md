@@ -45,7 +45,8 @@ note: "Déploiement on-premise."
 
 - **Headless confirmé** : les API REST du DevPortal 10.15 couvrent toutes les fonctions de l'UI (Applications, Approvals, OAuth tokens, Requests, Plans…). *Donc techniquement pilotable.* ✔
 - **MAIS** : la disponibilité des ressources REST **dépend du privilège de l'appelant** (surface admin/agrégée, pas par identité d'équipe non-admin) — même angle mort que Teams.
-- **REFUTÉ (0-3)** : le DevPortal **n'expose pas** de ressource « Teams » comme primitive d'isolation par tenant.
+- ~~**REFUTÉ (0-3)** : le DevPortal **n'expose pas** de ressource « Teams » comme primitive d'isolation par tenant.~~
+  **CORRIGÉ le 2026-08-04 — cette ligne était FAUSSE.** Mesuré sur un DevPortal 10.15 réel (`softwareag/devportal:10.15`, overlay `docker-compose.devportal1015.yml`) : `/portal/rest/v1/teams` est une **vraie ressource REST** (JSON, là où un chemin bidon retombe en HTML/200 — c'est le discriminant), avec `/teams/{id}/users` et `/teams/{id}/applications`, et l'API expose `list/get/post/update/delete/linkUsers/unLinkUsers`. L'enum `ApplicationAccessTree$NodeType` du war ne contient que deux valeurs : `USER` et `TEAM`. La recherche de 2026-07-09 s'appuyait sur une doc UI-centrée, pas sur le produit. Détail et limites : `scripts/spike-devportal-app-ownership.sh` (T12-T14) — les écritures du portail n'ont PAS pu être mesurées, la licence trial de l'image est expirée (406 « Valid license is missing »).
 - **REFUTÉ (1-2)** : le portail **ne permet pas** au consommateur de s'auto-servir de bout en bout (compte + souscription + gestion de clés) **sans étape opérateur/provider**.
 - **Couplage** : publier depuis la Gateway exige API Gateway 10.5+ (ok en 10.15) mais ajoute un produit à opérer/patcher/sauvegarder.
 

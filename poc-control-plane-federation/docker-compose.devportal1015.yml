@@ -1,0 +1,108 @@
+# webMethods Developer Portal RÉEL **10.15** (Software AG) — overlay de SPIKE.
+#
+# Pourquoi un second overlay alors que docker-compose.devportal.yml existe déjà :
+# celui-là monte le Developer Portal **11.1** (IBM). Or la question posée par le
+# client porte sur la **10.15**, et les deux versions ne partagent NI le port, NI
+# le datastore (cf. tableau ci-dessous). Les deux overlays sont donc disjoints et
+# peuvent coexister — ne pas fusionner, ne pas « corriger » l'un avec l'autre.
+#
+#   docker compose -f docker-compose.poc.yml -f docker-compose.devportal1015.yml \
+#     up -d dp1015-es devportal1015
+#
+#   UI / REST : http://localhost:18103/portal/
+#   Admin par défaut : Administrator / manage
+#
+# ─── Faits établis par inspection de l'image (2026-08-04), PAS par la doc ────
+#
+# 1. IMAGE  softwareag/devportal:10.15  (= 848853684735.dkr.ecr.../apim/devportal:10.15,
+#    même digest 459d9767eb02). amd64, build 2022-09 → ÉMULÉE sur Apple Silicon :
+#    boot en minutes, comme la gateway. User non-root 1724.
+#
+# 2. PORT 8083 dans le conteneur (ExposedPorts de l'image). Ce n'est PAS le 8080
+#    du 11.1, ni le 18102 du wrapper. Trois versions, trois ports : vérifier
+#    l'image, ne jamais recopier le port d'un autre overlay.
+#
+# 3. DATASTORE = ELASTICSEARCH 7.x, pas OpenSearch (le 11.1, lui, est passé à
+#    OpenSearch). Le portal.war 10.15 embarque elasticsearch-rest-client-7.17.4,
+#    elasticsearch-rest-high-level-client-7.17.4, spring-data-elasticsearch 4.4.1
+#    et lucene 8.11.1. D'où le serveur ES 7.17.3 ci-dessous (même mineure, image
+#    DÉJÀ présente en local — aucun pull).
+#    ⚠️ `poc-wm-es` (ES **8.13.4**, datastore de la gateway) N'EST PAS
+#    réutilisable : le high-level-client 7.17 se fait rejeter par le product
+#    check d'ES 8. Instance dédiée obligatoire.
+#
+# 4. ⚠️ LE PIÈGE DES DEUX NOMS DE PROPRIÉTÉ — ce n'est PAS une affaire de
+#    version, c'est une affaire de **profil Spring actif**. Dans le war :
+#      WEB-INF/classes/application.yml       -> spring.profiles.active: dev
+#      WEB-INF/classes/application-dev.yml   -> spring.elasticsearch.uris
+#      WEB-INF/classes/application-prod.yml  -> spring.elasticsearch.rest.uris
+#    Les deux formes existent donc DANS LA MÊME IMAGE, et laquelle est lue dépend
+#    du profil au démarrage. On pose LES DEUX variables : celle qui ne correspond
+#    pas au profil actif est inerte, et l'overlay survit à un changement de profil.
+#    (Le chart Helm d'IBM pose lui aussi les deux, mais l'explique par la version
+#     — l'inspection du war montre que la vraie raison est le profil.)
+#
+# 5. ⚠️ LICENCE EXPIRÉE — /opt/softwareag/Licenses/DPO_License.xml porte
+#    <ProductName>webMethods Developers Portal</ProductName> et
+#    <ExpirationDate>2022/10/30</ExpirationDate> : périmée. Même situation qu'en
+#    11.1, où le portal servait malgré tout UI + REST avec /rest/v1/health en
+#    "yellow". Sans conséquence pour ce spike ; BLOQUEUR pour toute démo client
+#    → fournir une licence DPO valide montée sur ce chemin (déjà pointé par l'env
+#    PORTAL_SERVER_CONFIG_LICENSE de l'image).
+
+name: stoa-labs-poc
+
+volumes:
+  dp1015-es-data:
+
+services:
+  # Datastore dédié du Developer Portal 10.15. Version alignée sur le client
+  # embarqué dans le portal.war (7.17.4) — cf. note 3.
+  dp1015-es:
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.17.3
+    container_name: poc-dp1015-es
+    pull_policy: never
+    environment:
+      - discovery.type=single-node
+      - cluster.name=stoa-poc-devportal-1015
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    volumes:
+      - dp1015-es-data:/usr/share/elasticsearch/data
+    ports:
+      - "19202:9200"   # debug/curl depuis l'hôte (les index du portal y vivent)
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    networks: [poc]
+    restart: unless-stopped
+
+  devportal1015:
+    image: softwareag/devportal:10.15
+    container_name: poc-devportal-1015
+    # Images trial déjà présentes en local → on interdit tout accès registry.
+    # `never` = échec net si l'image manque, plutôt qu'un `docker login` surprise
+    # au milieu d'un `up`.
+    pull_policy: never
+    platform: linux/amd64
+    depends_on:
+      dp1015-es:
+        condition: service_healthy
+    ports:
+      - "18103:8083"   # UI + REST -> http://localhost:18103/portal/
+    environment:
+      # LES DEUX noms, cf. note 4 (profil Spring, pas version).
+      - SPRING_ELASTICSEARCH_REST_URIS=http://dp1015-es:9200
+      - SPRING_ELASTICSEARCH_URIS=http://dp1015-es:9200
+      - JVM_INIT_MEMORY=512
+      - JVM_MAX_MEMORY=2048
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8083/portal/rest/v1/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 40
+      start_period: 300s   # amd64 émulé : le boot dépasse largement la gateway
+    networks: [poc]
+    restart: unless-stopped
