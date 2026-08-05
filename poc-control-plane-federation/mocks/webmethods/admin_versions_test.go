@@ -327,3 +327,142 @@ func TestCreateVersionAPI_OnlyLatestVersionAccepted(t *testing.T) {
 		t.Fatalf("mint from the new latest = %d body=%s", rr.Code, rr.Body)
 	}
 }
+
+// --- PUT /apis/{id} (update-in-place) — multipart + le refus mesuré sur une
+// API active --------------------------------------------------------------
+//
+// ansible/roles/apim_publish_api/tasks/main.yml:103-121 sends the SAME
+// multipart shape as the import (file/type/apiName/apiVersion) for the
+// update-in-place path (apim_api.update:true), preceded by the measured
+// dance: deactivate (the PUT is refused 400 on an ACTIVE api — ADR-078/079)
+// → PUT multipart → reactivate.
+
+// doMultipartUpdateAPI builds the same multipart shape as
+// doMultipartCreateAPI, for PUT /apis/{id}.
+func doMultipartUpdateAPI(t *testing.T, h http.Handler, id, apiVersion string, contract []byte) *httptest.ResponseRecorder {
+	t.Helper()
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	for k, v := range map[string]string{"apiVersion": apiVersion, "type": "openapi"} {
+		if err := mw.WriteField(k, v); err != nil {
+			t.Fatalf("write field %s: %v", k, err)
+		}
+	}
+	fw, err := mw.CreateFormFile("file", "update.openapi.yaml")
+	if err != nil {
+		t.Fatalf("create form file: %v", err)
+	}
+	if _, err := fw.Write(contract); err != nil {
+		t.Fatalf("write file part: %v", err)
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+	req := httptest.NewRequest("PUT", "/rest/apigateway/apis/"+id, &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.SetBasicAuth(testUser, testPass)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	return rr
+}
+
+// updatedMultipartYAMLContract is a second, DIFFERENT contract (different
+// servers[0].url and paths) — proves an update actually replaced the
+// definition rather than merely being accepted.
+const updatedMultipartYAMLContract = `openapi: 3.0.3
+info:
+  title: Multipart Probe v2
+  version: 1.0.0
+servers:
+  - url: http://backend.internal:9191/base-v2
+paths:
+  /widgets:
+    get:
+      summary: list widgets
+`
+
+// TestUpdateAPI_Multipart_RefusedWhileActive is the fact this round adds:
+// the PUT that main.yml sends for update-in-place is refused (400) on an
+// ACTIVE api — the exact reason the role deactivates first.
+func TestUpdateAPI_Multipart_RefusedWhileActive(t *testing.T) {
+	h := newTestServer(t)
+	id, _ := importAPI(t, h, "p3t2-update-active", "1.0.0") // importAPI activates
+
+	rr := doMultipartUpdateAPI(t, h, id, "1.0.0", []byte(updatedMultipartYAMLContract))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("multipart update on an ACTIVE api = %d body=%s, want 400", rr.Code, rr.Body)
+	}
+}
+
+// TestUpdateAPI_Multipart_InactiveAcceptsAndReplacesContract is the
+// counter-witness: deactivate first (like the role does), and the SAME
+// multipart update succeeds and the ALLOWLIST is really replaced — proven via
+// the data-plane, not just the 200. The ROUTING TARGET (servers[0].url baked
+// into the policy's straightThroughRouting action at import/versions time)
+// is, like the JSON re-import path (TestReimport_PreservesPolicyAndRoutingAction),
+// NOT regenerated from the new contract — the policy/action ids and their
+// current ${alias} (if any) survive an update untouched. Only `paths`
+// (the allowlist) comes from the freshly-decoded document.
+func TestUpdateAPI_Multipart_InactiveAcceptsAndReplacesContract(t *testing.T) {
+	h := newTestServer(t)
+	id, polID := importAPI(t, h, "p3t2-update-inactive", "1.0.0")
+
+	if rr := doAdmin(t, h, "PUT", "/rest/apigateway/apis/"+id+"/deactivate", nil); rr.Code != http.StatusOK {
+		t.Fatalf("deactivate = %d", rr.Code)
+	}
+	rr := doMultipartUpdateAPI(t, h, id, "1.0.0", []byte(updatedMultipartYAMLContract))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("multipart update on an INACTIVE api = %d body=%s, want 200", rr.Code, rr.Body)
+	}
+	env := decode(t, rr)["apiResponse"].(map[string]any)["api"].(map[string]any)
+	if got := env["policies"].([]any)[0].(string); got != polID {
+		t.Errorf("policy id after update = %q, want %q (preserved, like the JSON re-import path)", got, polID)
+	}
+
+	if rr := doAdmin(t, h, "PUT", "/rest/apigateway/apis/"+id+"/activate", nil); rr.Code != http.StatusOK {
+		t.Fatalf("re-activate = %d", rr.Code)
+	}
+	// The NEW contract's resource resolves — the allowlist was replaced —
+	// but at the ORIGINAL import's routing target (preserved, not regenerated).
+	rr2 := do(t, h, "GET", "/gateway/p3t2-update-inactive/1.0.0/widgets", nil)
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("resource from the NEW contract's paths = %d body=%s", rr2.Code, rr2.Body)
+	}
+	body := decode(t, rr2)
+	want := "http://backend.internal:8080/base/widgets" // importBody()'s servers[0].url, preserved
+	if body["resolved_url"] != want {
+		t.Errorf("resolved_url = %v, want %q (routing target preserved across update)", body["resolved_url"], want)
+	}
+	// The OLD contract's path is gone: the allowlist now reflects only the
+	// new definition's paths, not a union of both.
+	if rr3 := do(t, h, "GET", "/gateway/p3t2-update-inactive/1.0.0/accounts", nil); rr3.Code != http.StatusNotFound {
+		t.Errorf("old-contract path after update = %d, want 404 (allowlist replaced, not merged)", rr3.Code)
+	}
+}
+
+// TestUpdateAPI_JSON_RefusedWhileActive_ButOwnerProjectionSurvives is the
+// counter-witness that the isActive gate is scoped to RE-IMPORT bodies only:
+// approvers.yml (main.yml runs it AFTER Activate) writes the owner field via
+// the SAME route on an ACTIVE api and must keep working.
+func TestUpdateAPI_JSON_RefusedWhileActive_ButOwnerProjectionSurvives(t *testing.T) {
+	h := newTestServer(t)
+	id, _ := importAPI(t, h, "p3t2-update-json-active", "1.0.0")
+
+	// Re-import shape (apiVersion/apiDefinition): refused while active.
+	rr := doAdmin(t, h, "PUT", "/rest/apigateway/apis/"+id, importBody("p3t2-update-json-active", "1.0.0"))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("JSON re-import on an ACTIVE api = %d, want 400", rr.Code)
+	}
+
+	// Field projection (owner only): NOT gated — approvers.yml depends on this.
+	rr = doAdmin(t, h, "PUT", "/rest/apigateway/apis/"+id, map[string]any{
+		"apiResponse": map[string]any{"api": map[string]any{"owner": "team-x"}},
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("owner projection on an ACTIVE api = %d body=%s, want 200 (approvers.yml runs AFTER activate)", rr.Code, rr.Body)
+	}
+	got := decode(t, rr)["apiResponse"].(map[string]any)["api"].(map[string]any)
+	if got["owner"] != "team-x" {
+		t.Errorf("owner after projection = %v, want %q", got["owner"], "team-x")
+	}
+}

@@ -325,11 +325,13 @@ func (s *Server) getAPI(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"apiResponse": apiEnvelope(rec)})
 }
 
-// updateAPI serves TWO distinct callers on the same route:
-//   - the re-import (flat {"apiVersion":..., "apiDefinition":...}): refreshes
-//     the definition/version but PRESERVES the policy and the routing action
-//     (same ids, ${alias} routing intact) — the live-observed behaviour
-//     labctl's defensive convergence relies on;
+// updateAPI serves THREE distinct callers on the same route:
+//   - the re-import, flat JSON {"apiVersion":..., "apiDefinition":...}
+//     (labctl's defensive convergence) OR multipart/form-data (apim_publish_api's
+//     update-in-place, main.yml:103-121 — SAME "file"/apiVersion/type fields as
+//     createAPI, relevé 2026-08-05): refreshes the definition/version but
+//     PRESERVES the policy and the routing action (same ids, ${alias} routing
+//     intact) — the live-observed behaviour both callers rely on;
 //   - the field projection (Task 8, {"apiResponse":{"api":{...}}} — the SAME
 //     envelope GET returns): writes scalar fields the read-back exposes at
 //     api-level, currently only "owner" (approvers projection). ⚠ UNVERIFIED
@@ -338,7 +340,74 @@ func (s *Server) getAPI(w http.ResponseWriter, r *http.Request) {
 //     product expects to WRITE it. Modeled here so approvers.yml's fail-closed
 //     read-back assert has something real to prove itself against; treat as a
 //     residual risk to confirm live before this ships to a client.
+//
+// A re-import (either wire shape) on an ACTIVE API is refused 400 — prouvé
+// live, documented at ansible/roles/apim_publish_api/tasks/main.yml:70-72/97
+// and adr/adr-078 ("le PUT est REFUSÉ (400) sur une API active"), hence the
+// role's deactivate→PUT→activate dance (ADR-079). The FIELD PROJECTION is
+// NOT gated by isActive: approvers.yml writes owner to an ALREADY-ACTIVE API
+// (main.yml runs Approbateurs AFTER Activate) and that must keep working — the
+// gate only fires when the body actually carries a new version/definition.
+// ⚠ errorDetails text below is RECONSTRUCTED, not measured: main.yml/adr-078
+// only capture the FACT (400 on active) and never the exact wire message —
+// unlike createVersionAPI's messages (task-1-report.md), no spike captured
+// this one's body. Neither the role nor this mock's tests compare that text
+// (only the status code), so this is not currently load-bearing; confirm live
+// before treating the string itself as a contract.
 func (s *Server) updateAPI(w http.ResponseWriter, r *http.Request) {
+	apiVersion, definition, owner, isReimport, msg := decodeAPIUpdateBody(r)
+	if msg != "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": msg})
+		return
+	}
+	s.store.mu.Lock()
+	defer s.store.mu.Unlock()
+	rec, ok := s.store.apis[r.PathValue("id")]
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "api not found"})
+		return
+	}
+	if isReimport && rec.IsActive {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"errorDetails": "Api is Active, please deactivate before update",
+		})
+		return
+	}
+	if apiVersion != "" {
+		rec.APIVersion = apiVersion
+	}
+	if definition != nil {
+		rec.Definition = definition
+	}
+	if owner != nil {
+		rec.Owner = *owner
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"apiResponse": apiEnvelope(rec)})
+}
+
+// decodeAPIUpdateBody extracts (apiVersion, apiDefinition, owner) from either
+// wire shape PUT /apis/{id} accepts, and reports whether the body is a
+// RE-IMPORT (carries a new version/definition — multipart ALWAYS is, since it
+// always carries a "file") as opposed to a pure field projection (JSON
+// apiResponse.api.owner envelope only). Returns a non-empty msg on any
+// validation failure.
+func decodeAPIUpdateBody(r *http.Request) (apiVersion string, definition map[string]any, owner *string, isReimport bool, msg string) {
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
+		if err := r.ParseMultipartForm(20 << 20); err != nil {
+			return "", nil, nil, false, "invalid multipart body: " + err.Error()
+		}
+		apiVersion = r.FormValue("apiVersion")
+		file, _, err := r.FormFile("file")
+		if err != nil {
+			return "", nil, nil, false, `multipart body requires a "file" part with the OpenAPI contract`
+		}
+		defer file.Close()
+		raw, err := io.ReadAll(file)
+		if err != nil {
+			return "", nil, nil, false, "invalid multipart body: " + err.Error()
+		}
+		return apiVersion, parseContractDoc(raw), nil, true, ""
+	}
 	var in struct {
 		APIVersion    string         `json:"apiVersion"`
 		APIDefinition map[string]any `json:"apiDefinition"`
@@ -349,26 +418,10 @@ func (s *Server) updateAPI(w http.ResponseWriter, r *http.Request) {
 		} `json:"apiResponse"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
-		return
+		return "", nil, nil, false, "invalid body"
 	}
-	s.store.mu.Lock()
-	defer s.store.mu.Unlock()
-	rec, ok := s.store.apis[r.PathValue("id")]
-	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "api not found"})
-		return
-	}
-	if in.APIVersion != "" {
-		rec.APIVersion = in.APIVersion
-	}
-	if in.APIDefinition != nil {
-		rec.Definition = in.APIDefinition
-	}
-	if in.APIResponse.API.Owner != nil {
-		rec.Owner = *in.APIResponse.API.Owner
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"apiResponse": apiEnvelope(rec)})
+	isReimport = in.APIVersion != "" || in.APIDefinition != nil
+	return in.APIVersion, in.APIDefinition, in.APIResponse.API.Owner, isReimport, ""
 }
 
 func (s *Server) activateAPI(w http.ResponseWriter, r *http.Request) {
