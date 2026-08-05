@@ -36,6 +36,17 @@
 #                  la vraie gateway du lab, en service.
 #   JENKINS_UI     ex. http://localhost:18080 (job app-request, preuve 7)
 #
+# WM_GATEWAY_URL — RELANCER LE MOCK ENTRE DEUX RUNS. Le mock standalone
+# (mocks/webmethods, `go run .`) n'a AUCUNE route DELETE (preuve 9,
+# WM_DELETE_SUPPORTED) : les objets gateway d'un run précédent survivent tant
+# que le process tourne. Un DEUXIÈME run sans redémarrer le mock voit donc
+# UID_BEFORE/GID_BEFORE/PID_BEFORE non vides à la preuve 5 (l'équipe existe
+# déjà) — mesuré en direct, PAS un défaut du script ni de team-apply.sh (le
+# rôle reste idempotent, `changed=0` correctement rendu) : c'est la preuve 5
+# qui exige à raison une ardoise vierge pour parler de « création réelle ».
+# `cd mocks/webmethods && go run .` avant CHAQUE run isolé, comme le
+# préconise déjà l'en-tête de team-request.sh.
+#
 # COMPTE HUMAIN DE MERGE (preuve 5) — ÉCART DÉCLARÉ : ce Gitea de lab ne porte
 # qu'un seul compte (`ci`, service, admin) ; il n'y a pas de second compte
 # "humain" distinct pour merger la PR. Le merge réel utilise donc GITEA_TOKEN
@@ -56,7 +67,7 @@ set +x   # jamais de trace : des tokens transitent par ce script
 cd "$(dirname "$0")/.." || exit 1
 
 GITEA_URL="${GITEA_URL:?GITEA_URL requis (ex. http://localhost:13000) — aucun défaut, jamais deviner la forge}"
-GITEA_TOKEN="${GITEA_TOKEN:?GITEA_TOKEN requis (compte ci, write:repository,write:issue,write:organization — les deux premiers scopes de team-request.sh, PLUS write:organization : sans lui, DELETE sur un org rend 403 (mesure directe) et GET sur un org absent rend 403 au lieu de 404, ce qui casse la preuve 9)}"
+GITEA_TOKEN="${GITEA_TOKEN:?GITEA_TOKEN requis (compte ci, write:repository,write:issue,write:organization,read:user — les deux premiers scopes de team-request.sh, PLUS write:organization (sinon DELETE sur un org rend 403 et GET sur un org absent rend 403 au lieu de 404, preuve 9) PLUS read:user (sinon GET sur un utilisateur rend 403, preuve 10)}"
 VAULT_ADDR="${VAULT_ADDR:?VAULT_ADDR requis}"
 VAULT_TOKEN="${VAULT_TOKEN:?VAULT_TOKEN requis (amorçage — sert à minter un token éphémère mono-policy team-onboarder, jamais utilisé tel quel par team-apply.sh)}"
 WM_GATEWAY_URL="${WM_GATEWAY_URL:?WM_GATEWAY_URL requis, SANS DÉFAUT. Le port 5555 est la VRAIE gateway du lab, en service — un défaut qui le viserait exposerait ce harnais à écrire dessus. cd mocks/webmethods && go run . puis WM_GATEWAY_URL=http://localhost:PORT.}"
@@ -65,6 +76,13 @@ JENKINS_UI="${JENKINS_UI:?JENKINS_UI requis (ex. http://localhost:18080) — pre
 GIT_REPO="${GIT_REPO:-ci/stoa-labs}"
 TEAM="probe-p2"
 APP7="p2t8appreq"
+# Déclarées ICI (avant la preuve 1) — pas dans le bloc de la preuve 10 — pour
+# que teardown10() (appelée par le trap dès la ligne suivante) ne casse jamais
+# sous `set -u` si le script s'arrête avant même d'atteindre la preuve 10.
+GITEA_CONTAINER="${GITEA_CONTAINER:-poc-gitea}"
+TEAM10="probe-p2j"
+CREATED_OSCAR_GITEA=0
+RESULT10=""
 
 PASS=0; FAIL=0
 ok()  { PASS=$((PASS+1)); printf '  \033[32mPASS\033[0m %s\n' "$*"; }
@@ -177,9 +195,41 @@ restore_main_providers() {
   fi
 }
 
+# teardown10 — filet de secours ET geste explicite de la preuve 10 (même
+# motif « une seule implémentation, appelée deux fois » que teardown() /
+# team-request.sh). Toutes les variables qu'elle référence sont déclarées AVANT
+# la preuve 1 (TEAM10/CREATED_OSCAR_GITEA/RESULT10 plus haut) précisément pour
+# que set -u ne casse jamais ce filet, même si le script s'arrête AVANT que la
+# preuve 10 n'ait rien fait.
+teardown10() {
+  if [ -n "${PR10_NUM:-}" ]; then
+    gapi -X PATCH -H 'Content-Type: application/json' -d '{"state":"closed"}' \
+      "$GITEA_URL/api/v1/repos/$GIT_REPO/pulls/${PR10_NUM}" -o /dev/null 2>/dev/null
+  fi
+  gapi -X DELETE "$GITEA_URL/api/v1/repos/$GIT_REPO/branches/onboard/${TEAM10}-dev" -o /dev/null 2>/dev/null
+  if [ "$RESULT10" = fort ]; then
+    curl -s -H @"$(vhdr "$VAULT_TOKEN")" -X DELETE "$VAULT_ADDR/v1/secret/metadata/stoa/deploy/${TEAM10}/wm-admin" -o /dev/null
+    curl -s -H @"$(vhdr "$VAULT_TOKEN")" -X DELETE "$VAULT_ADDR/v1/sys/policies/acl/deploy-${TEAM10}" -o /dev/null
+    local _pid10 _gid10 _uid10
+    _pid10=$(wmapi accessProfiles | python3 -c "import json,sys;print(next((p['id'] for p in json.load(sys.stdin).get('accessProfiles',[]) if p.get('name')=='$TEAM10'),''))" 2>/dev/null)
+    _gid10=$(wmapi groups | python3 -c "import json,sys;print(next((g['id'] for g in json.load(sys.stdin).get('groups',[]) if g.get('name')=='$TEAM10-devs'),''))" 2>/dev/null)
+    _uid10=$(wmapi users | python3 -c "import json,sys;print(next((u['id'] for u in json.load(sys.stdin).get('users',[]) if u.get('loginId')=='svc-$TEAM10'),''))" 2>/dev/null)
+    [ -n "$_pid10" ] && curl -s -u Administrator:manage -X DELETE "$WM_GATEWAY_URL/rest/apigateway/accessProfiles/$_pid10" -o /dev/null
+    [ -n "$_gid10" ] && curl -s -u Administrator:manage -X DELETE "$WM_GATEWAY_URL/rest/apigateway/groups/$_gid10" -o /dev/null
+    [ -n "$_uid10" ] && curl -s -u Administrator:manage -X DELETE "$WM_GATEWAY_URL/rest/apigateway/users/$_uid10" -o /dev/null
+    gapi -X DELETE "$GITEA_URL/api/v1/repos/${TEAM10}/apis" -o /dev/null 2>/dev/null
+    gapi -X DELETE "$GITEA_URL/api/v1/orgs/${TEAM10}" -o /dev/null 2>/dev/null
+  fi
+  if [ "$CREATED_OSCAR_GITEA" = 1 ]; then
+    gapi -X DELETE "$GITEA_URL/api/v1/repos/$GIT_REPO/collaborators/oscar" -o /dev/null 2>/dev/null
+    docker exec -u git "$GITEA_CONTAINER" gitea admin user delete --username oscar >/dev/null 2>&1
+  fi
+}
+
 cleanup_exit() {
   [ -n "${SAMPLER_PID:-}" ] && kill "$SAMPLER_PID" 2>/dev/null; wait "${SAMPLER_PID:-}" 2>/dev/null
   teardown >/dev/null 2>&1
+  teardown10 >/dev/null 2>&1
   curl -s -H @"$(vhdr "$TOK_ONBOARDER")" -X POST "$VAULT_ADDR/v1/auth/token/revoke-self" -o /dev/null 2>/dev/null
   [ -f "$TMP/team-request.sh.orig" ] && cp "$TMP/team-request.sh.orig" scripts/team-request.sh 2>/dev/null
   rm -rf "$TMP"
@@ -500,6 +550,217 @@ if [ "$RC_REPO" = 404 ] && [ "$RC_ORG" = 404 ] && [ "$RC_KV" != 200 ] && [ "$RC_
 else
   bad "9. résidus : repo=$RC_REPO org=$RC_ORG kv=$RC_KV pol=$RC_POL uid=${UID_GONE:-vide} gid=${GID_GONE:-vide} pid=${PID_GONE:-vide} providers=$PROV_DIFF pr7=${PR7_STATE:-n/a} (WM_DELETE_SUPPORTED=$WM_DELETE_SUPPORTED)"
 fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 10. chemin fort — job team-apply RÉEL : webhook → pause → réponse API →
+#    garde d'identité EN VRAI (pas un appel direct comme la preuve 4), et
+#    jusqu'à team-apply.sh si l'environnement Jenkins le permet. Ajoutée sur
+#    demande du lead après levée du gate Gitea (main porte tout le palier 2,
+#    le job team-apply devient posable et exécutable) — le repli minimum
+#    (webhook → pause atteinte) est TOUJOURS produit ; le chemin complet
+#    (réponse → garde → apply) l'est SI une seconde identité Gitea réelle
+#    ("oscar") est disponible, sinon la preuve s'arrête proprement au minimum
+#    et le dit.
+# ─────────────────────────────────────────────────────────────────────────────
+echo
+echo "== 10. chemin fort — job team-apply réel (webhook -> pause -> réponse API -> garde) =="
+
+# GITEA_CONTAINER/TEAM10/CREATED_OSCAR_GITEA/RESULT10 : déclarées avant la
+# preuve 1 (filet de secours du trap, cf. commentaire là-bas).
+
+# 10a. pose du job (idempotent — motif déjà établi)
+JENKINS_UI="$JENKINS_UI" JOBS="team-apply" bash scripts/setup-team-onboard-jobs.sh >"$TMP/p10setup.log" 2>&1
+JOB10_OK=0
+curl -sf "$JENKINS_UI/job/team-apply/api/json" >/dev/null 2>&1 && JOB10_OK=1
+
+# 10b. identité "oscar" — un SECOND compte Gitea RÉEL est nécessaire pour aller
+# au-delà du minimum : le webhook expose merged_by.login/user.login RÉELS, et
+# la garde d'identité les compare au VAULT_USER saisi à la pause. Ce lab n'a
+# qu'un compte "ci" par défaut : sans un second compte réel, soit
+# merged_by==requester (four-eyes garanti), soit merged_by ne matche jamais
+# une identité Vault (MERGER_MISMATCH garanti). Forger le payload webhook
+# aurait été un mensonge, pas une preuve — on provisionne un compte réel,
+# SUPPRIMÉ en fin de preuve SI c'est CE run qui l'a créé (jamais s'il
+# préexistait — jamais destructeur d'un état antérieur).
+# docker exec sur le conteneur Gitea : MÊME motif que
+# setup-team-onboard-prereqs.sh (GITEA_CONTAINER, generate-access-token) —
+# pas un mécanisme nouveau, juste réutilisé ici.
+GITEA_OSCAR_HC=$(gapi -o /dev/null -w '%{http_code}' "$GITEA_URL/api/v1/users/oscar")
+if [ "$GITEA_OSCAR_HC" != 200 ]; then
+  _p10_pw=$(python3 -c "import secrets,string; print(''.join(secrets.choice(string.ascii_letters+string.digits) for _ in range(24)))")
+  docker exec -u git "$GITEA_CONTAINER" gitea admin user create --username oscar --email oscar@stoa.lab \
+    --password "$_p10_pw" --must-change-password=false >/dev/null 2>&1 \
+    && CREATED_OSCAR_GITEA=1
+  unset _p10_pw
+fi
+[ "$GITEA_OSCAR_HC" = 200 ] || [ "$CREATED_OSCAR_GITEA" = 1 ] \
+  && gapi -X PUT -H 'Content-Type: application/json' -d '{"permission":"admin"}' \
+       "$GITEA_URL/api/v1/repos/$GIT_REPO/collaborators/oscar" -o /dev/null 2>/dev/null
+
+OSCAR_GITEA_TOK=""
+{ [ "$GITEA_OSCAR_HC" = 200 ] || [ "$CREATED_OSCAR_GITEA" = 1 ]; } && \
+  OSCAR_GITEA_TOK=$(docker exec -u git "$GITEA_CONTAINER" gitea admin user generate-access-token \
+    --username oscar --token-name "t10-onboard-$$-$(date +%s)" --scopes write:repository,write:issue 2>/dev/null \
+    | grep -oE '[0-9a-f]{40}')
+
+# Mot de passe VAULT d'oscar : ÉPHÉMÈRE, minté à CHAQUE run via l'endpoint
+# DÉDIÉ .../password (jamais le POST plein, qui REMPLACE token_policies —
+# même piège que la Task 3) ; jamais persisté, jamais loggé. Un GET AVANT/
+# APRÈS vérifie que les policies existantes tiennent (fail-closed : si oscar
+# n'existe pas côté Vault userpass — prérequis d'un AUTRE palier, T3/T4,
+# jamais recréé ici — le chemin complet est simplement indisponible).
+OSCAR_VAULT_READY=0
+if [ -n "$OSCAR_GITEA_TOK" ]; then
+  OSCAR_POL_BEFORE=$(curl -s -H @"$(vhdr "$VAULT_TOKEN")" "$VAULT_ADDR/v1/auth/userpass/users/oscar" \
+    | python3 -c "import json,sys; d=json.load(sys.stdin); print(','.join(d.get('data',{}).get('token_policies',[])))" 2>/dev/null)
+  if [ -n "$OSCAR_POL_BEFORE" ]; then
+    OSCAR_VAULT_PASS=$(python3 -c "import secrets,string; print(''.join(secrets.choice(string.ascii_letters+string.digits) for _ in range(24)))")
+    printf '{"password":"%s"}' "$OSCAR_VAULT_PASS" > "$TMP/oscar-pw.json"
+    RC_SETPW=$(curl -s -H @"$(vhdr "$VAULT_TOKEN")" -X POST --data-binary @"$TMP/oscar-pw.json" \
+      "$VAULT_ADDR/v1/auth/userpass/users/oscar/password" -o /dev/null -w '%{http_code}')
+    OSCAR_POL_AFTER=$(curl -s -H @"$(vhdr "$VAULT_TOKEN")" "$VAULT_ADDR/v1/auth/userpass/users/oscar" \
+      | python3 -c "import json,sys; d=json.load(sys.stdin); print(','.join(d.get('data',{}).get('token_policies',[])))" 2>/dev/null)
+    if { [ "$RC_SETPW" = 204 ] || [ "$RC_SETPW" = 200 ]; } && [ "$OSCAR_POL_BEFORE" = "$OSCAR_POL_AFTER" ]; then
+      OSCAR_VAULT_READY=1
+    fi
+  fi
+fi
+CHEMIN_COMPLET_DISPONIBLE=0
+[ "$JOB10_OK" = 1 ] && [ "$OSCAR_VAULT_READY" = 1 ] && CHEMIN_COMPLET_DISPONIBLE=1
+[ "$CHEMIN_COMPLET_DISPONIBLE" = 1 ] \
+  && echo "   identité oscar (Gitea+Vault) prête -> chemin complet tenté" \
+  || echo "   identité oscar indisponible (Gitea:$GITEA_OSCAR_HC token:$([ -n "$OSCAR_GITEA_TOK" ] && echo ok || echo vide) VaultReady:$OSCAR_VAULT_READY) -> preuve MINIMUM (webhook -> pause) seulement"
+
+# 10c. PR réelle pour l'équipe jetable $TEAM10 (motif preuve 3)
+TEAM="$TEAM10" DESCRIPTION="chemin fort job team-apply (preuve 10)" REQ_ENV=dev \
+  GITEA_TOKEN="$GITEA_TOKEN" GIT_HOST="$GITEA_URL" GIT_WEB_HOST="$GITEA_URL" GIT_REPO="$GIT_REPO" \
+  bash scripts/team-request.sh >"$TMP/p10req.log" 2>&1
+R10REQ=$?
+PR10_NUM=$(grep -oE 'PR #[0-9]+ ouverte' "$TMP/p10req.log" | grep -oE '[0-9]+' | head -1)
+
+MERGE10_HC=""; MERGE10_SHA=""; MERGED_BY10="ci"
+if [ "$R10REQ" -eq 0 ] && [ -n "${PR10_NUM:-}" ]; then
+  # même piège async que la preuve 5 (Gitea calcule `mergeable` après coup)
+  M10=false; DEADLINE10=$(( $(date +%s) + 15 ))
+  while [ "$(date +%s)" -lt "$DEADLINE10" ]; do
+    M10=$(gapi "$GITEA_URL/api/v1/repos/$GIT_REPO/pulls/${PR10_NUM}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('mergeable') or False)" 2>/dev/null)
+    [ "$M10" = True ] && break
+    sleep 0.5
+  done
+  if [ "$CHEMIN_COMPLET_DISPONIBLE" = 1 ]; then
+    printf 'Authorization: token %s\n' "$OSCAR_GITEA_TOK" > "$TMP/oscar-ghdr"; chmod 600 "$TMP/oscar-ghdr"
+    MERGE10_HC=$(curl -s -H @"$TMP/oscar-ghdr" -X POST -H 'Content-Type: application/json' -d '{"Do":"merge"}' \
+      -o /dev/null -w '%{http_code}' "$GITEA_URL/api/v1/repos/$GIT_REPO/pulls/${PR10_NUM}/merge")
+    MERGED_BY10="oscar"
+  else
+    MERGE10_HC=$(gapi -X POST -H 'Content-Type: application/json' -d '{"Do":"merge"}' \
+      -o /dev/null -w '%{http_code}' "$GITEA_URL/api/v1/repos/$GIT_REPO/pulls/${PR10_NUM}/merge")
+    MERGED_BY10="ci"
+  fi
+  MERGE10_SHA=$(gapi "$GITEA_URL/api/v1/repos/$GIT_REPO/pulls/${PR10_NUM}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('merge_commit_sha') or '')" 2>/dev/null)
+fi
+
+RESULT10="skip"; MSG10="prérequis non réunis (job=$JOB10_OK PR=$R10REQ merge=$MERGE10_HC)"
+if [ "$JOB10_OK" = 1 ] && [ "$R10REQ" -eq 0 ] && [ "$MERGE10_HC" = 200 ] && [ -n "$MERGE10_SHA" ]; then
+  # 10d. webhook RÉEL (mêmes clés que team-apply.job.xml genericVariables)
+  N10=$(curl -sf "$JENKINS_UI/job/team-apply/api/json" | python3 -c 'import sys,json;print(json.load(sys.stdin)["nextBuildNumber"])')
+  python3 -c "
+import json
+print(json.dumps({
+  'action': 'closed',
+  'pull_request': {
+    'head': {'ref': 'onboard/${TEAM10}-dev'}, 'number': ${PR10_NUM},
+    'merged': True, 'merged_by': {'login': '${MERGED_BY10}'}, 'user': {'login': 'ci'},
+    'merge_commit_sha': '${MERGE10_SHA}'
+  }
+}))
+" > "$TMP/webhook10.json"
+  WHC10=$(curl -s -X POST -H 'Content-Type: application/json' --data-binary @"$TMP/webhook10.json" \
+    "$JENKINS_UI/generic-webhook-trigger/invoke?token=stoa-team-apply" -o /dev/null -w '%{http_code}')
+
+  # 10e. attente de la PAUSE (borné 30s)
+  ST10=""; DEADLINE10=$(( $(date +%s) + 30 ))
+  while [ "$(date +%s)" -lt "$DEADLINE10" ]; do
+    ST10=$(curl -s "$JENKINS_UI/job/team-apply/$N10/wfapi/describe" 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin).get('status',''))" 2>/dev/null)
+    [ -n "$ST10" ] && [ "$ST10" != "IN_PROGRESS" ] && break
+    sleep 1
+  done
+
+  if [ "$WHC10" != 200 ] || [ "$ST10" != "PAUSED_PENDING_INPUT" ]; then
+    RESULT10="fail"; MSG10="webhook_hc=$WHC10 status=$ST10 (pause non atteinte) — voir build #$N10"
+  elif [ "$CHEMIN_COMPLET_DISPONIBLE" != 1 ]; then
+    # preuve MINIMUM : la pause est atteinte, on l'abandonne proprement (API)
+    rm -f "$TMP/jck10a"
+    _crumbjson=$(curl -sf -c "$TMP/jck10a" "$JENKINS_UI/crumbIssuer/api/json")
+    _jf=$(printf '%s' "$_crumbjson" | python3 -c 'import sys,json;print(json.load(sys.stdin)["crumbRequestField"])')
+    _jc=$(printf '%s' "$_crumbjson" | python3 -c 'import sys,json;print(json.load(sys.stdin)["crumb"])')
+    _inputid=$(curl -s "$JENKINS_UI/job/team-apply/$N10/wfapi/pendingInputActions" | python3 -c "import json,sys; print(json.load(sys.stdin)[0]['id'])" 2>/dev/null)
+    curl -s -b "$TMP/jck10a" -H "$_jf: $_jc" -X POST "$JENKINS_UI/job/team-apply/$N10/input/${_inputid}/abort" -o /dev/null
+    RESULT10="minimum"; MSG10="webhook déclenché (HC $WHC10), build #$N10 -> PAUSED_PENDING_INPUT atteint (garde de branche + filtre GWT + checkout tous vérifiés en réel), puis abandonné (API) — identité oscar indisponible pour aller plus loin"
+  else
+    # 10f. réponse à la pause par l'API Jenkins — motif RECONSTITUÉ après 2
+    # échecs en session : le crumb ET le cookie de session doivent venir du
+    # MÊME appel curl -c que celui réutilisé (-b) pour le submit, sinon
+    # Jenkins répond "Rejected"/ABORTED sans message exploitable ; l'endpoint
+    # doit être form-urlencodé (JSON brut -> "expects a form submission").
+    rm -f "$TMP/jck10b"
+    _crumbjson=$(curl -sf -c "$TMP/jck10b" "$JENKINS_UI/crumbIssuer/api/json")
+    _jf=$(printf '%s' "$_crumbjson" | python3 -c 'import sys,json;print(json.load(sys.stdin)["crumbRequestField"])')
+    _jc=$(printf '%s' "$_crumbjson" | python3 -c 'import sys,json;print(json.load(sys.stdin)["crumb"])')
+    _inputid=$(curl -s "$JENKINS_UI/job/team-apply/$N10/wfapi/pendingInputActions" | python3 -c "import json,sys; print(json.load(sys.stdin)[0]['id'])" 2>/dev/null)
+    python3 -c "
+import json
+print(json.dumps({'parameter': [
+  {'name': 'VAULT_USER', 'value': 'oscar'},
+  {'name': 'VAULT_USER_PASSWORD', 'value': '''$OSCAR_VAULT_PASS'''}
+]}))
+" > "$TMP/input10.json"
+    SUB10_HC=$(curl -s -b "$TMP/jck10b" -H "$_jf: $_jc" -X POST \
+      --data-urlencode json@"$TMP/input10.json" \
+      "$JENKINS_UI/job/team-apply/$N10/wfapi/inputSubmit?inputId=${_inputid}" -o /dev/null -w '%{http_code}')
+
+    # 10g. attente de fin de build (borné 60s)
+    ST10B=""; DEADLINE10B=$(( $(date +%s) + 60 ))
+    while [ "$(date +%s)" -lt "$DEADLINE10B" ]; do
+      ST10B=$(curl -s "$JENKINS_UI/job/team-apply/$N10/wfapi/describe" 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin).get('status',''))" 2>/dev/null)
+      case "$ST10B" in PAUSED_PENDING_INPUT|IN_PROGRESS|"") sleep 1;; *) break;; esac
+    done
+    curl -s "$JENKINS_UI/job/team-apply/$N10/consoleText" > "$TMP/build10.log" 2>/dev/null
+
+    GUARD_OK=0; grep -q "MERGE_IDENTITY_OK" "$TMP/build10.log" 2>/dev/null && GUARD_OK=1
+    PW_LEAK=$(grep -cF "$OSCAR_VAULT_PASS" "$TMP/build10.log" 2>/dev/null || true)
+    MOUNT_GAP=0; grep -q "REFUSÉ.*HTTP 403" "$TMP/build10.log" 2>/dev/null && grep -qi "ldap" "$TMP/build10.log" 2>/dev/null && MOUNT_GAP=1
+
+    if [ "${PW_LEAK:-0}" != 0 ]; then
+      RESULT10="fail"; MSG10="FUITE : le mot de passe d'oscar apparaît $PW_LEAK fois dans le log du build #$N10"
+    elif [ "$GUARD_OK" != 1 ]; then
+      RESULT10="fail"; MSG10="garde d'identité non passée (MERGE_IDENTITY_OK absent), status=$ST10B — voir build #$N10"
+    elif [ "$ST10B" = SUCCESS ]; then
+      RESULT10="fort"; MSG10="chemin COMPLET : garde OK, apply exécuté, mot de passe jamais loggé (0 occurrence), build #$N10 SUCCESS"
+    elif [ "$MOUNT_GAP" = 1 ]; then
+      RESULT10="fort_partiel"; MSG10="garde OK (MERGE_IDENTITY_OK réel), mot de passe jamais loggé (0 occurrence), puis bloqué sur un GAP D'ENVIRONNEMENT connu et déjà remonté (VAULT_USER_AUTH_MOUNT non configuré globalement sur ce Jenkins -> login ldap refusé, oscar n'existe qu'en userpass) — build #$N10 status=$ST10B"
+    else
+      RESULT10="fail"; MSG10="échec inattendu après la garde (status=$ST10B, pas le gap de mount connu) — voir build #$N10"
+    fi
+    unset OSCAR_VAULT_PASS
+  fi
+fi
+
+case "$RESULT10" in
+  fort)         ok "10. $MSG10" ;;
+  fort_partiel) ok "10. $MSG10" ;;
+  minimum)      ok "10. $MSG10" ;;
+  *)            bad "10. $MSG10" ;;
+esac
+
+# 10h. teardown de la preuve 10 (fonction partagée avec le filet de secours du
+# trap — motif « une seule implémentation ») — PR/branche/déclaration, JAMAIS
+# le build (garde vivante, même convention que les builds de test des Tasks
+# 2/7) ; objets Vault/gateway éventuels (si le chemin complet a atteint
+# SUCCESS) ; compte Gitea oscar SEULEMENT si CE run l'a créé.
+teardown10
+restore_main_providers
+[ "$CREATED_OSCAR_GITEA" = 1 ] && echo "   compte Gitea oscar (créé par CE run) supprimé — état antérieur restauré"
 
 echo
 echo "== $PASS PASS / $FAIL FAIL =="
