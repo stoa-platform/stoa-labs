@@ -66,6 +66,25 @@
               | selectattr('apiVersion', 'equalto', apim_api.version)
               | map(attribute='id') | list | first) | default('') }}
 
+    # ----- create-or-version : le NOM existe, la VERSION demandée non ---------
+    # Extension ADDITIVE (P3-T6). Le nom inconnu de la gateway ⇒ version.yml ne
+    # fait RIEN et l'import initial ci-dessous reprend la main, à l'octet près.
+    # Le nom connu sous une AUTRE version ⇒ duplication native
+    # POST /apis/{id}/versions (un POST /apis nu est refusé sur un nom déjà
+    # pris), puis la spec du manifeste est poussée par le chemin re-import
+    # existant — d'où `pub_version_minted` dans la condition du bloc suivant.
+    - name: "Version : aucune version minée par ce run tant que version.yml ne le dit pas"
+      ansible.builtin.set_fact:
+        pub_version_minted: false
+
+    # PAS de `when:` ici : un `when` porté par un import_tasks est recopié sur
+    # CHAQUE tâche importée et RÉÉVALUÉ à chacune — or version.yml pose
+    # `apim_api_id` en cours de route, ce qui ferait skipper en silence tout ce
+    # qui suit (dont ses relectures-assert). Le fichier se garde lui-même sur
+    # un fait FIGÉ avant la première écriture (`pub_ver_needed`).
+    - name: "Version : create-or-version (le nom existe-t-il sous une autre version ?)"
+      ansible.builtin.import_tasks: version.yml
+
     # ----- update-in-place : l'API existe ET on veut pousser le contrat --------
     # Prouvé live : PUT /apis/{id} multipart met à jour la définition, MAIS il est
     # REFUSÉ (400) sur une API ACTIVE → deactivate d'abord ; l'étape « Activate »
@@ -74,26 +93,57 @@
     # attribut `.update` résout la MÉTHODE update() du dict (collision de nom),
     # jamais la clé du manifeste ⇒ le bloc serait toujours skippé. Idem pour toute
     # clé homonyme d'une méthode de dict (items/keys/values/get…).
+    # `pub_version_minted` : une version MINÉE par ce run est vide de la spec du
+    # manifeste (la duplication ne copie que la définition de la BASE) — elle
+    # DOIT passer par ce chemin, que le manifeste demande `update` ou non.
     - name: "Update : ré-importer le contrat si l'API existe ET update demandé"
-      when: "apim_api_id | length > 0 and (apim_api['update'] | default(false) | bool)"
+      when: >-
+        apim_api_id | length > 0
+        and ((apim_api['update'] | default(false) | bool)
+             or (pub_version_minted | default(false) | bool))
       block:
         # ADR-079 : le cycle deactivate→PUT→activate COUPE le data-plane. Il
         # n'est toléré que sur l'env d'AUTHORING (dev, onboarding). Partout
         # ailleurs, la mise à jour passe par l'import d'archive 0-coupure
         # (rôle apim_promote_api) — fail-closed ici, pas de coupure surprise.
+        # EXEMPTION ADR-079 pour une version MINÉE PAR CE RUN, et pour elle
+        # seule : elle vient de naître inactive (M2, mesuré) et n'a donc JAMAIS
+        # servi de trafic — le PUT qui suit ne peut couper aucun data-plane. La
+        # publication d'une nouvelle version EST d'ailleurs la voie 0-coupure
+        # que l'ADR-079 recommande ; l'interdire ici la rendrait impossible hors
+        # dev. L'exemption ne repose pas sur ce booléen seul : la tâche d'après
+        # RELIT l'état réel et refuse si le record n'est pas inactif.
         - name: "Update : FAIL-CLOSED — désactivation interdite hors env d'authoring (ADR-079)"
           ansible.builtin.assert:
-            that: "(apim_ss_env | default('')) in apim_pub_deactivate_envs"
+            that: >-
+              (pub_version_minted | default(false) | bool)
+              or ((apim_ss_env | default('')) in apim_pub_deactivate_envs)
             fail_msg: >-
               UPDATE_FORBIDDEN : update:true exige deactivate→PUT→activate (coupure
               data-plane) — interdit sur '{{ apim_ss_env | default('(mono-env)') }}'
               (autorisé : {{ apim_pub_deactivate_envs }}). Pour mettre à jour sans
-              coupure, promouvoir une archive : rôle apim_promote_api (ADR-079).
+              coupure, promouvoir une archive : rôle apim_promote_api (ADR-079), ou
+              publier une NOUVELLE version (le rôle la mine et y pousse la spec sans
+              jamais désactiver l'existante).
         - name: "Update : état d'activation courant"
           ansible.builtin.uri:
             url: "{{ apim_ss_api_base }}/apis/{{ apim_api_id }}"
           register: pub_upd_get
           changed_when: false
+
+        # La moitié NON FORGEABLE de l'exemption ci-dessus : l'état vient de la
+        # gateway, pas d'une variable. Si une version fraîchement minée était
+        # active, la désactiver couperait du trafic — refus.
+        - name: "Update : FAIL-CLOSED — une version minée par ce run doit être INACTIVE"
+          when: "pub_version_minted | default(false) | bool"
+          ansible.builtin.assert:
+            that: "not (pub_upd_get.json.apiResponse.api.isActive | default(false))"
+            fail_msg: >-
+              VERSION_MINTED_ACTIVE : la version '{{ apim_api.version }}' minée par ce
+              run est relue ACTIVE avant le re-import de la spec. Mesuré le 2026-08-05 :
+              une version naît INACTIVE. Poursuivre exigerait une désactivation, donc
+              une coupure du data-plane que l'exemption ADR-079 de ce chemin ne couvre
+              pas — refus.
         - name: "Update : désactiver (le PUT d'update est refusé sur une API active — 400)"
           ansible.builtin.uri:
             url: "{{ apim_ss_api_base }}/apis/{{ apim_api_id }}/deactivate"

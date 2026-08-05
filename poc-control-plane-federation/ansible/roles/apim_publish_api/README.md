@@ -70,6 +70,41 @@ coupure du data-plane** le temps de l'update. `activate`/`inbound` reconvergent 
 > l'accès par attribut `.update` résout la **méthode `update()` du dict** (collision),
 > jamais la clé du manifeste (le bloc serait alors toujours skippé, en silence).
 
+## Nouvelle version d'une API existante (`tasks/version.yml`) — mesuré le 2026-08-05
+
+**Rien à déclarer** : il suffit de bumper `apim_api.version`. Si le `name` existe
+sur la gateway sous une AUTRE version, le rôle ne tente pas un import nu (le
+produit refuse un `POST /apis` sur un nom déjà pris) : il **duplique**
+(`POST /apis/{id}/versions`) puis pousse la spec du manifeste par le chemin
+re-import ci-dessus. Nom inconnu ⇒ import initial, **inchangé**.
+
+Faits MESURÉS sur la 10.15 du lab (spike `scripts/spike-api-versions-1015.sh`,
+27/27) que le rôle **exige** à chaque mint, pour détecter un changement de
+comportement produit à la prochaine montée de version :
+
+| Fait | Ce que le rôle en fait |
+|---|---|
+| `retainApplications` est un **booléen à la casse EXACTE** ; absent, `false` ou mal casé ⇒ souscriptions PERDUES en silence (HTTP 201 quand même) | envoyé **explicitement à `true`**, puis relecture AVANT/APRÈS de `GET /applications` → `VERSION_SUBS_NOT_RETAINED` si un abonné a été perdu |
+| policies **CLONÉES** (ids nouveaux), record né **inactif** | relu et asserté → `VERSION_CLONE_UNEXPECTED` |
+| duplication permise **depuis la DERNIÈRE version seulement**, et `GET /apis` n'expose aucun marqueur de « dernière » (le plus grand numéro n'est PAS la dernière : lignée `accounts-read` du lab, 1.0.0 minée depuis 1.0.1) | **plusieurs versions candidates ⇒ refus `VERSION_BASE_AMBIGUE`** avec la liste, jamais de devinette |
+
+Échecs nommés : `VERSION_BASE_AMBIGUE`, `VERSION_CREATE_FAILED`,
+`VERSION_UNCONFIRMED`, `VERSION_CLONE_UNEXPECTED`, `VERSION_SUBS_SHAPE_UNKNOWN`,
+`VERSION_SUBS_NOT_RETAINED`, `VERSION_MINTED_ACTIVE`.
+
+**ADR-079** : le re-import qui suit un mint est **exempté** de `UPDATE_FORBIDDEN`
+— une version qui vient de naître est inactive et n'a jamais servi de trafic,
+donc rien à couper (publier une nouvelle version EST la voie 0-coupure). L'exemption
+ne tient pas sur un booléen : l'état est **relu sur la gateway** avant le PUT
+(`VERSION_MINTED_ACTIVE` sinon). Preuve rejouable, hors ligne :
+`scripts/test-publish-version.sh` (31/31 contre le mock).
+
+> Résiduel connu, hérité : la résolution de la base matche `apiName`
+> **globalement**, sans filtre d'équipe — même matching que la recherche
+> `name`+`version` de `main.yml`. La porte amont (`api-request.sh`,
+> `API_NAME_COLLISION`) traite le cas côté demande ; le chevillage aval reste
+> ouvert.
+
 ## Port en Deny-by-Default : allow-list (IS-admin, opt-in) — prouvé live
 
 Chez le client, le **port data-plane est en Deny-by-Default** : chaque API publiée
