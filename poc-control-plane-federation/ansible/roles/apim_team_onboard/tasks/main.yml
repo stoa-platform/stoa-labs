@@ -28,7 +28,17 @@
     name: apim_common
     tasks_from: secrets.yml
 
-- name: "Onboarding — equipe '{{ onb.team }}'"
+# CORRECTION INTER-TACHES (Task 8, ansible-core 2.19.4, jamais exerce avant —
+# premiere execution reelle de ce role DANS le conteneur Jenkins) : ce nom de
+# BLOC referencait `onb.team`, un fact pose par resolve.yml importe juste
+# au-dessus. Sous ansible-core 2.18.x le nom est template PARESSEUSEMENT (au
+# moment de l'execution, `onb` existe deja) ; sous 2.19.x il est template PLUS
+# TOT (avant que le bloc n'ait tourne) -> `'onb' is undefined`, reproduit en
+# direct (`docker exec` dans le conteneur Jenkins). `apim_onb_team` est le
+# PARAMETRE D'ENTREE du role, disponible des le parse, MEME VALEUR que
+# `onb.team` (onb.team EN EST derive dans resolve.yml) — aucune perte
+# d'information dans le nom affiche, sous AUCUNE des deux versions.
+- name: "Onboarding — equipe '{{ apim_onb_team }}'"
   module_defaults:
     ansible.builtin.uri: "{{ apim_ss_uri_defaults }}"
   block:

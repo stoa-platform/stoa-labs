@@ -72,7 +72,13 @@
 # tenant y stocke le client genere par la gateway. Une policy en LECTURE SEULE
 # — ce que ce plan proposait avant la revue du 2026-08-04 — casserait ces
 # deploiements EN SILENCE, et le symptome apparaitrait loin de la cause.
-- name: "Vault : policy {{ onb.policy }} (lecture du sous-arbre, ecriture bornee a apps/)"
+# CORRECTION INTER-TACHES (Task 8, ansible-core 2.19.4 — meme classe que
+# main.yml:31, cf. son commentaire). `onb.policy` remplace par `apim_onb_team`
+# (le parametre d'entree, disponible des le parse) plutot que de recomposer le
+# gabarit `apim_onb_policy_tpl` ici (dupliquerait sa forme, divergerait si le
+# gabarit est surcharge cote client) — un nom de tache est cosmetique, le
+# perimetre reel de la policy est dans son HCL plus bas, jamais dans son nom.
+- name: "Vault : policy deploy de l'equipe '{{ apim_onb_team }}' (lecture du sous-arbre, ecriture bornee a apps/)"
   vars:
     # DERIVE de onb.kv_sub, JAMAIS reconstruit (I4, revue finale 2026-08-04).
     # Avant ce correctif, onb_tenant_root recomposait le chemin en dur
