@@ -36,6 +36,14 @@ type apiRecord struct {
 	// only (resource allowlist matching), never serialized back to the admin
 	// surface (the labctl adapter does not read it).
 	Definition map[string]any `json:"-"`
+
+	// Teams is the API's team scoping. `json:"-"` is LOAD-BEARING: measured on
+	// the real 10.15 (2026-08-05), teams live at the apiResponse level and
+	// `apiResponse.api.teams` is NULL — the envelope emits them, the record
+	// never does (viser le mauvais niveau donne un « aucune team » silencieux,
+	// piège déjà épinglé dans apim_publish_api/tasks/team.yml). Names only here;
+	// apiEnvelope re-inflates the {id,name,source} shape.
+	Teams []string `json:"-"`
 }
 
 // Store holds every gateway-side object family the labctl adapter (and the
