@@ -15,16 +15,20 @@
           <description>Environnement cible (dev|rec|int|prod) — pilote le nom de branche provision/&lt;app&gt;-&lt;env&gt; et l'env du manifeste.</description>
           <choices class="java.util.Arrays$ArrayList"><a class="string-array"><string>dev</string><string>rec</string><string>int</string><string>prod</string></a></choices>
         </hudson.model.ChoiceParameterDefinition>
-        <hudson.model.StringParameterDefinition>
+        <hudson.model.ChoiceParameterDefinition>
+          <name>TEAM</name>
+          <description>Équipe propriétaire de l'application (cloisonnement), optionnel — laisser le premier choix (vide) pour ne rien assigner (comportement historique, non cloisonné). Doit être une équipe DÉJÀ onboardée (providers.&lt;env&gt;.yml) ; une valeur non déclarée est refusée (TEAM_NOT_DECLARED) avant toute écriture Git.</description>
+          <choices class="java.util.Arrays$ArrayList"><a class="string-array"><string></string>
+<!--CHOICES:TEAMS-->
+</a></choices>
+        </hudson.model.ChoiceParameterDefinition>
+        <hudson.model.ChoiceParameterDefinition>
           <name>API</name>
-          <description>API consommée par l'application [A-Za-z0-9._-] uniquement.</description>
-          <defaultValue></defaultValue>
-        </hudson.model.StringParameterDefinition>
-        <hudson.model.StringParameterDefinition>
-          <name>API_VER</name>
-          <description>Version de l'API consommée. Vide = 1.0.0.</description>
-          <defaultValue>1.0.0</defaultValue>
-        </hudson.model.StringParameterDefinition>
+          <description>API consommée par l'application, sous la forme nom@version (liste des APIs publiées sur le dépôt plateforme + les dépôts d'équipe déclarés). Scindée côté job en REQ_API/REQ_API_VER.</description>
+          <choices class="java.util.Arrays$ArrayList"><a class="string-array">
+<!--CHOICES:APIS-->
+</a></choices>
+        </hudson.model.ChoiceParameterDefinition>
         <hudson.model.StringParameterDefinition>
           <name>CLIENT_ID</name>
           <description>Claim azp du client OAuth2 [A-Za-z0-9._-] uniquement. REQUIS si MODE=idp (le client existe déjà côté IdP — cette valeur l'identifie sur la gateway) ; sans objet et laissable vide si MODE=internal (la gateway wM génère le client, rien à fournir ici).</description>
@@ -34,6 +38,21 @@
           <name>MODE</name>
           <description>idp : le client OAuth2 existe déjà côté IdP, CLIENT_ID obligatoire. internal : la gateway wM est l'authorization server, elle génère le client (stocké dans Vault par env) — CLIENT_ID sans objet. Une demande MODE=idp sans CLIENT_ID est REFUSÉE avant toute écriture Git.</description>
           <choices class="java.util.Arrays$ArrayList"><a class="string-array"><string>idp</string><string>internal</string></a></choices>
+        </hudson.model.ChoiceParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>IP_ALLOWLIST</name>
+          <description>Plage IP autorisée (identité entrante), optionnel — une IP unique (ex. 10.0.0.1) ou une plage A-B (ex. 10.0.0.1-10.0.0.5). Le CIDR (ex. 10.0.0.0/24) est REFUSÉ (IP_CIDR_REFUSE — la gateway le drop en silence) ; seuls les caractères [0-9A-Za-z.-] sont acceptés (IP_ALLOWLIST_INVALID sinon).</description>
+          <defaultValue></defaultValue>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.TextParameterDefinition>
+          <name>CERT_PEM</name>
+          <description>Certificat public X.509 (identité entrante mTLS), optionnel — coller un bloc PEM complet (-----BEGIN CERTIFICATE----- … -----END CERTIFICATE-----). Toute CLÉ PRIVÉE collée est REFUSÉE (CERT_PRIVATE_KEY_REFUSE) — ce champ n'accepte QUE le certificat public ; un bloc PEM incomplet est REFUSÉ (CERT_SANS_BLOC). Devient un fichier .crt versionné dans la PR (clients/provisioned/certs/&lt;app&gt;.crt), jamais une valeur en clair dans le manifeste.</description>
+          <defaultValue></defaultValue>
+        </hudson.model.TextParameterDefinition>
+        <hudson.model.ChoiceParameterDefinition>
+          <name>CERT_ROTATION</name>
+          <description>Stratégie de rotation du certificat — sans objet si CERT_PEM est vide. replace : la valeur remplace la dimension existante. overlap : ajout aux certificats existants encore valides (fenêtre de chevauchement) + purge automatique des valeurs expirées/illisibles.</description>
+          <choices class="java.util.Arrays$ArrayList"><a class="string-array"><string>replace</string><string>overlap</string></a></choices>
         </hudson.model.ChoiceParameterDefinition>
       </parameterDefinitions>
     </hudson.model.ParametersDefinitionProperty>
@@ -52,14 +71,30 @@ node {
     def cause = currentBuild.getBuildCauses('hudson.model.Cause$UserIdCause')
     def rawUid = (cause &amp;&amp; !cause.isEmpty()) ? "${cause[0].userId}" : 'anonymous'
     def uid = (rawUid == 'null' || rawUid == '') ? 'anonymous' : rawUid
+    // API v2 (Task 4, P3) : la liste déroulante porte "nom@version" (généré par
+    // scripts/lib/generate-choices.sh) — scindé ICI, jamais dans provision-request.sh
+    // (qui continue de recevoir REQ_API/REQ_API_VER séparés, forme inchangée pour
+    // les voies machine OIG/CLI2). Premier '@' : name/version restent tous deux
+    // dans [A-Za-z0-9._-] (garde du script), donc jamais de '@' interne à lever.
+    def apiChoice = params.API ?: ''
+    def atIdx = apiChoice.indexOf('@')
+    def reqApi = atIdx &gt;= 0 ? apiChoice.substring(0, atIdx) : apiChoice
+    def reqApiVer = atIdx &gt;= 0 ? apiChoice.substring(atIdx + 1) : '1.0.0'
     withCredentials([string(credentialsId: 'gitea-provision-token', variable: 'GITEA_TOKEN')]) {
       // Les paramètres passent par l'ENVIRONNEMENT, jamais interpolés dans la
       // chaîne sh : saisie humaine = donnée d'un tiers (même règle que
       // team-request/provision-apply). MODE explicite prime toujours sur la
-      // dérivation par REQ_CALLER dans provision-request.sh.
+      // dérivation par REQ_CALLER dans provision-request.sh. Les champs Task 4
+      // (TEAM/IP_ALLOWLIST/CERT_PEM/CERT_ROTATION) sont TOUS optionnels côté
+      // script — un formulaire qui les laisse vides reproduit le comportement
+      // d'avant Task 4, octet pour octet (cf. provision-request.sh).
       withEnv(["REQ_APP=${params.APP}", "REQ_ENV=${params.REQ_ENV}",
-               "REQ_API=${params.API}", "REQ_API_VER=${params.API_VER ?: '1.0.0'}",
+               "REQ_API=${reqApi}", "REQ_API_VER=${reqApiVer}",
                "REQ_CLIENT_ID=${params.CLIENT_ID ?: ''}", "REQ_MODE=${params.MODE}",
+               "REQ_TEAM=${params.TEAM ?: ''}",
+               "REQ_IP_ALLOWLIST=${params.IP_ALLOWLIST ?: ''}",
+               "REQ_CERT_PEM=${params.CERT_PEM ?: ''}",
+               "REQ_CERT_ROTATION=${params.CERT_ROTATION ?: 'replace'}",
                "REQ_CALLER=jenkins-form:${uid}"]) {
         dir('poc-control-plane-federation') { sh 'set +x; bash scripts/provision-request.sh' }
       }
