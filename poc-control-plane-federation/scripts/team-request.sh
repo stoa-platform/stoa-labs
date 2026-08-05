@@ -122,12 +122,23 @@ EOF
 
 # ── 3. branche, commit, push, PR ─────────────────────────────────────────────
 echo "[3/4] branche ${BRANCH} + PR"
-PUSH_URL="http://ci:${GITEA_TOKEN}@${GIT_HOST#http://}/${GIT_REPO}.git"
 git -C "$WORK/repo" checkout -q -b "$BRANCH" || fail "création de la branche locale ${BRANCH}"
 git -C "$WORK/repo" -c user.name=ci -c user.email=ci@stoa.lab \
   commit -qam "onboard(${TEAM}): demande d'onboarding ${REQ_ENV} (formulaire)" || fail "commit sur ${BRANCH}"
-git -C "$WORK/repo" push -q "$PUSH_URL" "$BRANCH" 2>"$WORK/pusherr" \
+# Fix transverse (constaté par la Task 4, team-apply.sh) : une URL
+# http://x:$TOKEN@host/... passée en argv à `git push` est visible EN CLAIR
+# dans la table des process (ps -Aww) pendant toute la durée du push, sur le
+# process `git` ET son enfant `git-remote-http` — set +x et le grep -v des
+# LOGS ne protègent pas ça. On passe donc le credential par un HEADER Basic
+# injecté via variables d'ENVIRONNEMENT (GIT_CONFIG_COUNT/KEY_0/VALUE_0 —
+# jamais argv, jamais visible par ps -ww), même mécanisme que team-apply.sh
+# (repris à l'identique, pas recomposé). L'URL de push redevient nue.
+AUTH_B64=$(printf 'x:%s' "$GITEA_TOKEN" | base64 | tr -d '\n')
+GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader \
+  GIT_CONFIG_VALUE_0="Authorization: Basic ${AUTH_B64}" \
+  git -C "$WORK/repo" push -q "${GIT_HOST}/${GIT_REPO}.git" "$BRANCH" 2>"$WORK/pusherr" \
   || { echo "ERREUR push (détail masqué — token)" >&2; grep -v "$GITEA_TOKEN" "$WORK/pusherr" >&2 || true; exit 1; }
+unset AUTH_B64
 
 PR_NUMBER=$(API="${GIT_HOST}/api/v1" GIT_REPO="$GIT_REPO" GITEA_TOKEN="$GITEA_TOKEN" \
   BRANCH="$BRANCH" TEAM="$TEAM" REQ_ENV="$REQ_ENV" python3 - <<'PY'
