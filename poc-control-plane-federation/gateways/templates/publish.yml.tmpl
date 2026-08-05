@@ -1,0 +1,64 @@
+---
+# gateways/templates/publish.yml.tmpl — gabarit de manifeste de publication
+# (ADR-076), rendu par scripts/api-request.sh à chaque demande du formulaire
+# Jenkins api-request (jamais édité à la main : une PR qui le modifie
+# directement est un signal, pas un usage prévu).
+#
+# FORME reprise à l'identique de clients/_example/apis/accounts-read.publish.yml
+# (l'exemple de référence de ce dépôt) : mêmes clés, même structure per_env.
+#
+# CE QUE L'ÉQUIPE FOURNIT (au formulaire) : name, version, le contrat OpenAPI
+# collé (écrit à côté, apis/<name>.openapi.yaml — cf. `contract` ci-dessous),
+# et inbound.mode (jwt|oauth2 — le SEUL choix de plomberie qui lui revient).
+#
+# CE QU'ELLE NE SAISIT JAMAIS : alias_name, issuer, jwks_uri (par env). Ce
+# sont des valeurs PLATEFORME, IDENTIQUES pour toutes les équipes — relevées
+# ici de clients/_example/apis/accounts-read.publish.yml et fixées dans ce
+# gabarit. Un manifeste d'équipe qui tenterait de les redéclarer serait de
+# toute façon sans effet : la garde de liste blanche
+# (roles/apim_publish_api/tasks/manifest-guard.yml, apim_pub_manifest_allowed
+# = ["apim_api"]) n'autorise que la clé top-level `apim_api` — TOUT son
+# contenu, y compris per_env, est donc entièrement sous le contrôle de CE
+# gabarit, jamais de ce que l'équipe pourrait ajouter à côté.
+apim_api:
+  name: "__API_NAME__"
+  version: "__API_VERSION__"
+  # PAS "{{ playbook_dir }}/../apis/…" comme l'exemple de référence
+  # (clients/_example/apis/accounts-read.publish.yml) — ÉCART DÉLIBÉRÉ,
+  # documenté au rapport de tâche. Cette forme ne marche QUE pour un
+  # manifeste qui vit DANS poc-control-plane-federation elle-même :
+  # playbook_dir y vaut toujours .../ansible, et "../apis/" y désigne
+  # poc-control-plane-federation/apis/. Un manifeste posé par api-request vit
+  # dans le dépôt de l'ÉQUIPE (apis/ à SA racine à elle, checkée out
+  # n'importe où par team-publish) — "../apis/" y pointerait sur le dépôt
+  # PLATEFORME, jamais sur le contrat réellement posé à côté de ce fichier
+  # (CONSTATÉ : lookup('file', …) sur la forme playbook_dir échoue — le
+  # fichier ciblé n'existe pas — quand ce même gabarit est rendu dans un
+  # clone hors de poc-control-plane-federation ; reproduit avant ce correctif).
+  # `pub_manifest_path` (fait posé par manifest-guard.yml — l'absolu RÉEL du
+  # fichier chargé, que l'appelant passe apim_ss_manifest ou pub_manifest_path)
+  # donne le dossier où CE manifeste vit VRAIMENT, quel que soit l'appelant :
+  # le contrat, écrit juste à côté par api-request.sh, s'y trouve donc TOUJOURS.
+  contract: "{{ (pub_manifest_path | dirname) }}/__API_NAME__.openapi.yaml"
+  team: ""   # jamais renseigné ici — la chaîne assigne l'équipe (E1, TEAM_FORBIDDEN sinon)
+  inbound:
+    alias_name: "BankAuth-demo"   # invariant PLATEFORME — jamais saisi par l'équipe
+    mode: "__INBOUND_MODE__"      # jwt (signature seule) | oauth2 (strict + audience/scope) — seul choix laissé à l'équipe
+
+  per_env:
+    dev:
+      inbound:
+        issuer: "http://localhost:8480/realms/stoa-lab"
+        jwks_uri: "http://keycloak:8080/realms/stoa-lab/protocol/openid-connect/certs"
+    rec:
+      inbound:
+        issuer: "http://localhost:8480/realms/stoa-rec"
+        jwks_uri: "http://keycloak:8080/realms/stoa-rec/protocol/openid-connect/certs"
+    int:
+      inbound:
+        issuer: "http://localhost:8480/realms/stoa-int"
+        jwks_uri: "http://keycloak:8080/realms/stoa-int/protocol/openid-connect/certs"
+    prod:
+      inbound:
+        issuer: "https://auth.bank.invalid/realms/prod"
+        jwks_uri: "https://auth.bank.invalid/realms/prod/protocol/openid-connect/certs"
