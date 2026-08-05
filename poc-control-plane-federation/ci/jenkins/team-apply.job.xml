@@ -94,6 +94,20 @@ node {
             export VAULT_ADDR="${VAULT_ADDR:-http://vault:8200}"
             export VAULT_USER="$V_USER"
             export VAULT_USER_PASSWORD="$V_PASS"
+            # CORRECTION INTER-TACHES (Task 8, gap trouve par execution REELLE
+            # du chemin fort — jamais exerce avant : ci/lib/vault-login.sh
+            # retombe sur son defaut ldap (la convention CLIENT — AD) si
+            # VAULT_USER_AUTH_MOUNT n'est pas fixe ; ce lab authentifie ses
+            # operateurs nominatifs en userpass (poses par
+            # setup-vault-userpass.sh), jamais en ldap (aucun annuaire dans ce
+            # docker-compose). Sans cette ligne, login refuse HTTP 403 sur
+            # auth/ldap/login pour un compte qui n'existe qu'en auth/userpass
+            # — reproduit en direct. Chez le client, la variable d'env Jenkins
+            # globale ou l'inventaire surchargera (meme calibrage lab/client
+            # que APIM_API_BASE ci-dessous). DOIT etre fixee AVANT de sourcer
+            # la lib (elle lit VAULT_USER_AUTH_MOUNT au moment du login, pas
+            # apres).
+            export VAULT_USER_AUTH_MOUNT="${VAULT_USER_AUTH_MOUNT:-userpass}"
             # shellcheck disable=SC1091
             . ci/lib/vault-login.sh
             trap vault_trap_revoke EXIT
