@@ -1,0 +1,125 @@
+<?xml version='1.1' encoding='UTF-8'?>
+<flow-definition plugin="workflow-job">
+  <description>Apply post-merge (onboarding equipe) : une PR onboard/* FUSIONNEE ouvre une DEMANDE EN ATTENTE dans Jenkins (input) ; sur validation + identite Vault -> apply nominatif via scripts/team-apply.sh (miroir de provision-apply.job.xml).</description>
+  <keepDependencies>false</keepDependencies>
+  <properties>
+    <org.jenkinsci.plugins.workflow.job.properties.DisableConcurrentBuildsJobProperty/>
+    <org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty>
+      <triggers>
+        <org.jenkinsci.plugins.gwt.GenericTrigger plugin="generic-webhook-trigger@2.4.2">
+          <spec></spec>
+          <genericVariables>
+            <org.jenkinsci.plugins.gwt.GenericVariable><key>PR_BRANCH</key><value>$.pull_request.head.ref</value></org.jenkinsci.plugins.gwt.GenericVariable>
+            <org.jenkinsci.plugins.gwt.GenericVariable><key>PR_NUMBER</key><value>$.pull_request.number</value></org.jenkinsci.plugins.gwt.GenericVariable>
+            <org.jenkinsci.plugins.gwt.GenericVariable><key>PR_ACTION</key><value>$.action</value></org.jenkinsci.plugins.gwt.GenericVariable>
+            <org.jenkinsci.plugins.gwt.GenericVariable><key>PR_MERGED</key><value>$.pull_request.merged</value></org.jenkinsci.plugins.gwt.GenericVariable>
+            <!-- Qui a validé, et qui avait demandé. SANS eux la garde d'identité
+                 ne peut RIEN vérifier et refuse (MERGER_UNKNOWN) : ces deux
+                 lignes ne sont pas décoratives, elles sont la garde
+                 (mêmes clés que provision-apply.job.xml). -->
+            <org.jenkinsci.plugins.gwt.GenericVariable><key>PR_MERGED_BY</key><value>$.pull_request.merged_by.login</value></org.jenkinsci.plugins.gwt.GenericVariable>
+            <org.jenkinsci.plugins.gwt.GenericVariable><key>PR_REQUESTER</key><value>$.pull_request.user.login</value></org.jenkinsci.plugins.gwt.GenericVariable>
+            <!-- ANTI-TOCTOU (team-apply.sh) : l'équipe est lue dans
+                 providers.<env>.yml TEL QUE MERGÉ, jamais dans le payload du
+                 webhook — d'où le besoin du SHA de merge, absent de
+                 provision-apply.job.xml (qui n'a pas ce garde-fou). -->
+            <org.jenkinsci.plugins.gwt.GenericVariable><key>MERGE_SHA</key><value>$.pull_request.merge_commit_sha</value></org.jenkinsci.plugins.gwt.GenericVariable>
+          </genericVariables>
+          <printContributedVariables>true</printContributedVariables>
+          <printPostContent>false</printPostContent>
+          <token>stoa-team-apply</token>
+          <silentResponse>false</silentResponse>
+          <regexpFilterText>$PR_ACTION|$PR_MERGED</regexpFilterText>
+          <regexpFilterExpression>^closed\|true$</regexpFilterExpression>
+          <overrideQuietPeriod>false</overrideQuietPeriod>
+          <shouldNotFlattern>false</shouldNotFlattern>
+          <allowSeveralTriggersPerBuild>false</allowSeveralTriggersPerBuild>
+        </org.jenkinsci.plugins.gwt.GenericTrigger>
+      </triggers>
+    </org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty>
+  </properties>
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition" plugin="workflow-cps">
+    <script>
+def ref = env.PR_BRANCH ?: ''
+if (!ref.startsWith('onboard/')) { echo "branche '${ref}' hors onboard/* — rien a appliquer"; return }
+def rest = ref.substring('onboard/'.length())
+def envName = rest.substring(rest.lastIndexOf('-') + 1)
+def teamName = rest.substring(0, rest.lastIndexOf('-'))
+currentBuild.displayName = "onboard ${teamName}/${envName} (PR #${env.PR_NUMBER})"
+
+// ── DEMANDE EN ATTENTE : la decision est deja prise (le merge) — la pause ne
+// re-decide pas, elle fournit l'identite NOMINATIVE qui portera l'apply
+// (policy team-onboarder, posee par setup-team-onboard-prereqs.sh). ─────────
+def creds = input(
+  id: 'onboard', message: "Onboarder l'equipe ${teamName} en ${envName} ? Fournissez VOTRE identite Vault (voie A).",
+  parameters: [
+    string(name: 'VAULT_USER', defaultValue: '', description: 'Login annuaire (ex. oscar)'),
+    password(name: 'VAULT_USER_PASSWORD', defaultValue: '', description: 'Mot de passe annuaire')
+  ])
+
+// ── GARDE : celui qui repond EST-IL celui qui a valide la PR ? (identique a
+// provision-apply.job.xml — meme garde, meme discipline : valeurs par
+// l'ENVIRONNEMENT, jamais par interpolation Groovy dans la chaine sh). ──────
+node {
+  stage('garde identite du valideur') {
+    git url: 'http://gitea:3000/ci/stoa-labs.git', branch: 'main'
+    withEnv(["G_MERGED_BY=${env.PR_MERGED_BY ?: ''}",
+             "G_REQUESTER=${env.PR_REQUESTER ?: ''}",
+             "G_VAULT_USER=${creds.VAULT_USER ?: ''}"]) {
+      dir('poc-control-plane-federation') {
+        sh 'set +x; sh scripts/lib/assert-merge-identity.sh --merged-by "$G_MERGED_BY" --requester "$G_REQUESTER" --vault-user "$G_VAULT_USER"'
+      }
+    }
+  }
+
+  // ── APPLY NOMINATIF : identite -> token Vault (ci/lib/vault-login.sh, voie
+  // A) -> scripts/team-apply.sh. Le mot de passe transite par withEnv/l'env de
+  // CE sh (comme provision-apply le fait pour VAULT_USER_PASSWORD via le
+  // parametre de build delegue) : jamais interpole Groovy dans la chaine sh,
+  // jamais argv. Login et apply tiennent dans UN SEUL step sh — team-apply.sh
+  // est invoque comme process ENFANT du meme shell (il herite VAULT_TOKEN_FILE
+  // exporte par la lib), pour que le trap de revocation pose juste apres le
+  // login (vault_trap_revoke, EXIT) ne revoque le token QU'APRES l'apply : deux
+  // steps sh separes rouvriraient un process par step, et le trap de la
+  // premiere revoquerait le token AVANT que la seconde ne le consomme.
+  stage('team-apply') {
+    withCredentials([string(credentialsId: 'gitea-provision-token', variable: 'GITEA_TOKEN')]) {
+      withEnv(["V_USER=${creds.VAULT_USER ?: ''}",
+               "V_PASS=${creds.VAULT_USER_PASSWORD ?: ''}",
+               "PR_BRANCH=${env.PR_BRANCH ?: ''}", "PR_NUMBER=${env.PR_NUMBER ?: ''}",
+               "MERGE_SHA=${env.MERGE_SHA ?: ''}"]) {
+        dir('poc-control-plane-federation') {
+          sh '''
+            set +x
+            export VAULT_ADDR="${VAULT_ADDR:-http://vault:8200}"
+            export VAULT_USER="$V_USER"
+            export VAULT_USER_PASSWORD="$V_PASS"
+            # shellcheck disable=SC1091
+            . ci/lib/vault-login.sh
+            trap vault_trap_revoke EXIT
+            RC=0; vault_login_nominative || RC=$?
+            if [ "$RC" != 0 ]; then
+              [ "$RC" = 2 ] || exit 1
+              echo "  (pas d'identite nominative -> rien a appliquer)"; exit 0
+            fi
+            # VAULT_TOKEN_FILE (token BRUT, cf. team-apply.sh) est exporte par
+            # la lib ci-dessus et herite par team-apply.sh en sous-processus.
+            # APIM_API_BASE cible le MOCK in-cluster (reseau compose 'poc',
+            # service webmethods-mock) — JAMAIS 5555/le vrai gateway ici.
+            # GIT_WEB_HOST : lien humain-cliquable dans le commentaire PR
+            # (meme convention que provision-plan.job.xml — GIT_HOST reste le
+            # nom interne au cluster, non resolu hors des conteneurs).
+            export APIM_API_BASE="${APIM_API_BASE:-http://webmethods-mock:8080/rest/apigateway}"
+            export GIT_WEB_HOST="${GIT_WEB_HOST:-http://localhost:13000}"
+            bash scripts/team-apply.sh
+          '''
+        }
+      }
+    }
+  }
+}
+    </script>
+    <sandbox>true</sandbox>
+  </definition>
+  <triggers/>
+</flow-definition>

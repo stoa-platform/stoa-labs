@@ -25,7 +25,7 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 
 JENKINS_UI="${JENKINS_UI:-http://localhost:18080}"
-JOBS="${JOBS:-team-request app-request}"
+JOBS="${JOBS:-team-request app-request team-apply}"
 
 ok(){ printf '  \033[32m✅\033[0m %s\n' "$*"; }
 ko(){ printf '  \033[31m❌\033[0m %s\n' "$*"; exit 1; }
