@@ -36,6 +36,16 @@
 #                  la vraie gateway du lab, en service.
 #   JENKINS_UI     ex. http://localhost:18080 (job app-request, preuve 7)
 #
+# CHECKOUT PROPRE OBLIGATOIRE (preuves 5/6/10). team-apply.sh fait
+# `git checkout $MERGE_SHA` sur SON cwd (anti-TOCTOU) — un modification LOCALE
+# NON COMMITÉE de N'IMPORTE QUEL fichier suivi dans CE dépôt (y compris ce
+# script lui-même en cours d'itération) fait échouer ce checkout (« Your local
+# changes … would be overwritten »), le fait échouer AVANT même d'atteindre
+# team-apply.sh proprement dit. Constaté en direct en itérant sur ce script
+# depuis un clone que je resynchronisais par `cp` sans committer. Lancer ce
+# harnais depuis un checkout PROPRE (rien en `git status --short`), jamais
+# depuis un clone où l'on vient de coller un fichier à la main.
+#
 # WM_GATEWAY_URL — RELANCER LE MOCK ENTRE DEUX RUNS. Le mock standalone
 # (mocks/webmethods, `go run .`) n'a AUCUNE route DELETE (preuve 9,
 # WM_DELETE_SUPPORTED) : les objets gateway d'un run précédent survivent tant
@@ -117,6 +127,19 @@ printf '%s' "$TOK_ONBOARDER" > "$VAULT_TOKEN_FILE_ONBOARDER"; chmod 600 "$VAULT_
 git clone -q --depth 1 -b main "$GITEA_URL/$GIT_REPO.git" "$TMP/baseline" \
   || { echo "clone baseline de $GIT_REPO impossible — $GITEA_URL joignable ?" >&2; exit 2; }
 cp "$TMP/baseline/poc-control-plane-federation/ansible/providers.dev.yml" "$TMP/providers.dev.yml.baseline"
+
+# ── baseline de ci/jenkins/team-apply.job.xml (checkout LOCAL, PAS gitea — la
+# définition du job n'est jamais lue depuis gitea, seuls les scripts qu'il
+# APPELLE le sont). Nécessaire car team-apply.sh (preuves 5/6, invoqué EN
+# DIRECT sur CE checkout) fait `git checkout $MERGE_SHA` — un vrai `git
+# checkout` sur le cwd courant (anti-TOCTOU, cf. écart 1 du rapport) : ça
+# réécrit CE fichier vers l'état du commit mergé, qui peut être ANTÉRIEUR à un
+# fix qu'on vient de committer sur cette branche (constaté en direct : la
+# preuve 10 reposait alors une version PÉRIMÉE du job sans le savoir). On
+# capture le contenu AVANT toute mutation, on le restaure avant de poser le
+# job en preuve 10 — quel que soit l'état du HEAD à ce moment-là. -----------
+JOB10_XML="ci/jenkins/team-apply.job.xml"
+cp "$JOB10_XML" "$TMP/team-apply.job.xml.baseline" 2>/dev/null
 
 # ── classification, MESURÉE (pas supposée) : la cible WM_GATEWAY_URL expose-
 # t-elle un DELETE sur ses objets Teams ? mocks/webmethods/server.go ne
@@ -568,7 +591,14 @@ echo "== 10. chemin fort — job team-apply réel (webhook -> pause -> réponse 
 # GITEA_CONTAINER/TEAM10/CREATED_OSCAR_GITEA/RESULT10 : déclarées avant la
 # preuve 1 (filet de secours du trap, cf. commentaire là-bas).
 
-# 10a. pose du job (idempotent — motif déjà établi)
+# 10a. restaure le XML depuis la baseline AVANT de poser (voir le commentaire
+# à la capture, plus haut : les preuves 5/6 peuvent avoir déplacé le HEAD de
+# CE checkout entre-temps via le `git checkout $MERGE_SHA` de team-apply.sh),
+# puis pose le job (idempotent — motif déjà établi).
+if [ -s "$TMP/team-apply.job.xml.baseline" ] && ! cmp -s "$TMP/team-apply.job.xml.baseline" "$JOB10_XML" 2>/dev/null; then
+  cp "$TMP/team-apply.job.xml.baseline" "$JOB10_XML"
+  echo "   ci/jenkins/team-apply.job.xml restauré à son état d'avant-run (HEAD avait bougé — preuves 5/6)"
+fi
 JENKINS_UI="$JENKINS_UI" JOBS="team-apply" bash scripts/setup-team-onboard-jobs.sh >"$TMP/p10setup.log" 2>&1
 JOB10_OK=0
 curl -sf "$JENKINS_UI/job/team-apply/api/json" >/dev/null 2>&1 && JOB10_OK=1
