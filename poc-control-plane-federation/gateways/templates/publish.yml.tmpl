@@ -9,17 +9,26 @@
 #
 # CE QUE L'ÉQUIPE FOURNIT (au formulaire) : name, version, le contrat OpenAPI
 # collé (écrit à côté, apis/<name>.openapi.yaml — cf. `contract` ci-dessous),
-# et inbound.mode (jwt|oauth2 — le SEUL choix de plomberie qui lui revient).
+# et inbound.mode (jwt — seul mode supporté pour l'instant, cf. api-request.sh).
 #
-# CE QU'ELLE NE SAISIT JAMAIS : alias_name, issuer, jwks_uri (par env). Ce
-# sont des valeurs PLATEFORME, IDENTIQUES pour toutes les équipes — relevées
-# ici de clients/_example/apis/accounts-read.publish.yml et fixées dans ce
-# gabarit. Un manifeste d'équipe qui tenterait de les redéclarer serait de
-# toute façon sans effet : la garde de liste blanche
-# (roles/apim_publish_api/tasks/manifest-guard.yml, apim_pub_manifest_allowed
-# = ["apim_api"]) n'autorise que la clé top-level `apim_api` — TOUT son
-# contenu, y compris per_env, est donc entièrement sous le contrôle de CE
-# gabarit, jamais de ce que l'équipe pourrait ajouter à côté.
+# CE QU'ELLE NE SAISIT JAMAIS AU FORMULAIRE : alias_name, issuer, jwks_uri
+# (par env). Ce sont des valeurs PLATEFORME, IDENTIQUES pour toutes les
+# équipes — relevées de clients/_example/apis/accounts-read.publish.yml et
+# POSÉES ici PAR api-request.sh au moment de l'ouverture de la PR.
+#
+# CE QUE CE GABARIT NE GARANTIT **PAS** (fix round 1, revue — la revendication
+# précédente était fausse, corrigée pour dire le vrai) : la garde de liste
+# blanche du rôle (roles/apim_publish_api/tasks/manifest-guard.yml,
+# apim_pub_manifest_allowed=["apim_api"]) ne borne QUE les clés TOP-LEVEL du
+# manifeste — elle vérifie que "apim_api" est la SEULE clé de premier niveau,
+# jamais ce qu'il y a DEDANS. Rien n'empêche donc une équipe d'éditer, dans
+# SON PROPRE dépôt (avant ou après le merge de cette PR), les valeurs posées
+# ici — issuer/jwks_uri/alias_name compris — et le plan (manifest-guard +
+# team-name + syntax-check) reste VERT sur un tel manifeste, mesuré en direct
+# (per_env.dev.inbound.issuer basculé vers un hôte arbitraire -> toujours
+# MANIFEST_KEYS_OK). Chevillage du CONTENU d'apim_api à ces valeurs POSÉES
+# À LA GÉNÉRATION relève de l'aval (T6/T7), pas de ce gabarit ni des gardes
+# actuelles — tolérance visible, pas une promesse.
 apim_api:
   name: "__API_NAME__"
   version: "__API_VERSION__"
@@ -43,7 +52,10 @@ apim_api:
   team: ""   # jamais renseigné ici — la chaîne assigne l'équipe (E1, TEAM_FORBIDDEN sinon)
   inbound:
     alias_name: "BankAuth-demo"   # invariant PLATEFORME — jamais saisi par l'équipe
-    mode: "__INBOUND_MODE__"      # jwt (signature seule) | oauth2 (strict + audience/scope) — seul choix laissé à l'équipe
+    mode: "__INBOUND_MODE__"      # jwt (signature seule) — seule valeur acceptée par api-request.sh actuellement ;
+                                   # oauth2 (strict + audience/scope/client_id) refusé à l'entrée du script
+                                   # (INBOUND_OAUTH2_NON_SUPPORTE) tant que ces champs n'ont pas leur propre
+                                   # entrée de formulaire — voir T6/T7
 
   per_env:
     dev:

@@ -46,8 +46,8 @@
         </hudson.model.TextParameterDefinition>
         <hudson.model.ChoiceParameterDefinition>
           <name>INBOUND_MODE</name>
-          <description>jwt : validation de la signature seule. oauth2 : validation stricte + audience/scope. Seul choix de plomberie IdP laissé à l'équipe — alias/issuer/JWKS restent des valeurs PLATEFORME fixées par le gabarit gateways/templates/publish.yml.tmpl, jamais saisies ici.</description>
-          <choices class="java.util.Arrays$ArrayList"><a class="string-array"><string>jwt</string><string>oauth2</string></a></choices>
+          <description>jwt : validation de la signature seule (seul mode disponible actuellement). alias/issuer/JWKS restent des valeurs PLATEFORME fixées par le gabarit gateways/templates/publish.yml.tmpl, jamais saisies ici. oauth2 (validation stricte + audience/scope/client_id) retiré du choix (fix round 1, revue) : ces trois champs sont PAR API/PAR CONSOMMATEUR (pas des valeurs plateforme fixables comme issuer/jwks) et ce formulaire ne les collecte pas — api-request.sh refuse oauth2 (INBOUND_OAUTH2_NON_SUPPORTE) tant qu'ils n'ont pas leur propre champ ; à instruire par T6/T7.</description>
+          <choices class="java.util.Arrays$ArrayList"><a class="string-array"><string>jwt</string></a></choices>
         </hudson.model.ChoiceParameterDefinition>
       </parameterDefinitions>
     </hudson.model.ParametersDefinitionProperty>

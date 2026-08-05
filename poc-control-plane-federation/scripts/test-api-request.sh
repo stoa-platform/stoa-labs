@@ -35,11 +35,16 @@ PASS=0; FAIL=0
 ok(){ PASS=$((PASS+1)); printf '  ✅ %s\n' "$*"; }
 ko(){ FAIL=$((FAIL+1)); printf '  ❌ %s\n' "$*"; }
 
+# Motif éprouvé de team-apply.sh (gapi()) — jamais le token en argv d'un
+# process (curl -H "Authorization: token $TOK" le mettrait en clair dans
+# ps -Aww pendant toute la durée de l'appel) : un HEADER FICHIER 0600, lu par
+# `curl -H @file`. GTHDR reste vide tant que la section D n'a pas déterminé
+# de token (Sections A/B/C n'en ont pas besoin) — cleanup() le sait via ${:-}.
 CLEANUP_URLS=()
 cleanup(){
-  if [ -n "${GITEA_TOKEN:-}" ]; then
+  if [ -n "${GITEA_TOKEN:-}" ] && [ -n "${GTHDR:-}" ] && [ -f "$GTHDR" ]; then
     for u in "${CLEANUP_URLS[@]:-}"; do
-      [ -n "$u" ] && curl -s -o /dev/null -X DELETE -H "Authorization: token $GITEA_TOKEN" "$u" 2>/dev/null || true
+      [ -n "$u" ] && curl -s -o /dev/null -X DELETE -H @"$GTHDR" "$u" 2>/dev/null || true
     done
   fi
   rm -rf "$TMP"
@@ -69,6 +74,7 @@ run_guard "ACTION invalide"          "ACTION_INVALIDE"        ACTION=bogus
 run_guard "TEAM format invalide"     "TEAM_NAME_INVALID"      TEAM='Not Valid'
 run_guard "API_NAME format invalide" "API_NAME_INVALID"       API_NAME='Bad_Name'
 run_guard "INBOUND_MODE invalide"    "INBOUND_MODE_INVALIDE"  INBOUND_MODE=basic
+run_guard "oauth2 refusé (fix round 1)" "INBOUND_OAUTH2_NON_SUPPORTE" INBOUND_MODE=oauth2
 run_guard "create sans API_VERSION"  "API_VERSION_REQUIS"     API_VERSION=''
 run_guard "version create invalide"  "API_VERSION_INVALIDE"   API_VERSION=abc
 run_guard "new-version sans API_BASE" "API_BASE_REQUIS"       ACTION=new-version API_VERSION=''
@@ -97,19 +103,35 @@ mk_team(){ # $1=bare-dir  $2=contenu optionnel de apis/foo.publish.yml
     git -c user.name=t -c user.email=t commit -qm init --allow-empty >/dev/null )
   mkdir -p "$(dirname "$bare")"; git clone -q --bare "$src" "$bare" >/dev/null
 }
-run_local(){ # $1=label $2=expected_tag $3=GH $4=GIT_REPO ; le reste = env...
-  local label="$1" tag="$2" gh="$3" gitrepo="$4"; shift 4
-  local before after out rc
+run_local(){ # $1=label $2=expected_tag $3=GH $4=GIT_REPO $5=team-bare-path-ou-vide ; le reste = env...
+  # $5 (fix round 1, revue — contre-épreuve "sans trace" vacante) : les
+  # gardes API_ALREADY_EXISTS/API_BASE_NOT_FOUND/API_BASE_STALE ne peuvent
+  # PAS rougir sur le dépôt PLATEFORME (le script ne l'écrit JAMAIS, quel
+  # que soit le refus) — vérifié : neutraliser cette garde et rejouer laisse
+  # le dépôt plateforme intact TOUT AUTANT, donc son ls-remote ne prouve rien
+  # pour CES gardes-là. La seule cible d'écriture pour elles est le dépôt
+  # d'ÉQUIPE (déjà cloné à ce stade) — c'est LUI qu'il faut vérifier intact.
+  # $5 vide = pas de dépôt d'équipe atteint à ce stade (TEAM_NOT_DECLARED/
+  # REPO_MANQUANT/REPO_INACCESSIBLE) : seule la plateforme est pertinente.
+  local label="$1" tag="$2" gh="$3" gitrepo="$4" teambare="$5"; shift 5
+  local before after tbefore tafter out rc
   before=$(git ls-remote "$gh/$gitrepo.git" 2>&1)
+  [ -n "$teambare" ] && tbefore=$(git ls-remote "$teambare" 2>&1)
   out=$(env -i PATH="$PATH" GIT_HOST="$gh" GIT_REPO="$gitrepo" GITEA_TOKEN=dummy \
         ACTION=create TEAM=teamx API_NAME=foo API_VERSION=1.0.0 \
         OPENAPI_SPEC='{"openapi":"3.0.0"}' INBOUND_MODE=jwt "$@" bash "$S" 2>&1)
   rc=$?
   after=$(git ls-remote "$gh/$gitrepo.git" 2>&1)
-  if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q "$tag" && [ "$before" = "$after" ]; then
-    ok "$label : refusé ($tag), dépôt plateforme intact (ls-remote inchangé)"
+  [ -n "$teambare" ] && tafter=$(git ls-remote "$teambare" 2>&1)
+  if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q "$tag" && [ "$before" = "$after" ] \
+     && { [ -z "$teambare" ] || [ "$tbefore" = "$tafter" ]; }; then
+    if [ -n "$teambare" ]; then
+      ok "$label : refusé ($tag), dépôt d'ÉQUIPE intact (ls-remote inchangé — la seule cible d'écriture réelle)"
+    else
+      ok "$label : refusé ($tag), dépôt plateforme intact (ls-remote inchangé)"
+    fi
   else
-    ko "$label : attendu exit=1 + '$tag' + ls-remote intact, obtenu rc=$rc out=$(printf '%s' "$out" | tail -1)"
+    ko "$label : attendu exit=1 + '$tag' + ls-remote(s) intact(s), obtenu rc=$rc out=$(printf '%s' "$out" | tail -1)"
   fi
 }
 
@@ -118,21 +140,21 @@ mk_platform "$GH1/ci/stoa-labs.git" 'providers:
   - team: teamx
     repo: teamx/apis
     approvers: []'
-run_local "TEAM_NOT_DECLARED" "TEAM_NOT_DECLARED" "$GH1" "ci/stoa-labs" TEAM=ghost-team
+run_local "TEAM_NOT_DECLARED" "TEAM_NOT_DECLARED" "$GH1" "ci/stoa-labs" "" TEAM=ghost-team
 
 GH2="$TMP/gh2"
 mk_platform "$GH2/ci/stoa-labs.git" 'providers:
   - team: teamx
     repo: ""
     approvers: []'
-run_local "REPO_MANQUANT" "REPO_MANQUANT" "$GH2" "ci/stoa-labs"
+run_local "REPO_MANQUANT" "REPO_MANQUANT" "$GH2" "ci/stoa-labs" ""
 
 GH3="$TMP/gh3"
 mk_platform "$GH3/ci/stoa-labs.git" 'providers:
   - team: teamx
     repo: teamx/nonexistent
     approvers: []'
-run_local "REPO_INACCESSIBLE" "REPO_INACCESSIBLE" "$GH3" "ci/stoa-labs"
+run_local "REPO_INACCESSIBLE" "REPO_INACCESSIBLE" "$GH3" "ci/stoa-labs" ""
 
 GH4="$TMP/gh4"
 mk_platform "$GH4/ci/stoa-labs.git" 'providers:
@@ -142,11 +164,61 @@ mk_platform "$GH4/ci/stoa-labs.git" 'providers:
 mk_team "$GH4/teamx/apis.git" 'apim_api:
   name: foo
   version: 1.0.0'
-run_local "API_ALREADY_EXISTS (create sur API existante)" "API_ALREADY_EXISTS" "$GH4" "ci/stoa-labs"
-run_local "API_BASE_NOT_FOUND (new-version sur API absente)" "API_BASE_NOT_FOUND" "$GH4" "ci/stoa-labs" \
+run_local "API_ALREADY_EXISTS (create sur API existante)" "API_ALREADY_EXISTS" "$GH4" "ci/stoa-labs" "$GH4/teamx/apis.git"
+run_local "API_BASE_NOT_FOUND (new-version sur API absente)" "API_BASE_NOT_FOUND" "$GH4" "ci/stoa-labs" "$GH4/teamx/apis.git" \
   ACTION=new-version API_VERSION='' API_NAME=bar API_BASE='bar@1.0.0' NEW_VERSION=2.0.0
-run_local "API_BASE_STALE (version de base désaccordée)" "API_BASE_STALE" "$GH4" "ci/stoa-labs" \
+run_local "API_BASE_STALE (version de base désaccordée)" "API_BASE_STALE" "$GH4" "ci/stoa-labs" "$GH4/teamx/apis.git" \
   ACTION=new-version API_VERSION='' API_NAME=foo API_BASE='foo@0.9.0' NEW_VERSION=2.0.0
+
+echo
+echo "═══ Section B2 — API_NAME_COLLISION, capture cross-team (fix round 1) ═══"
+# teamx possède déjà 'foo'. teamy (dépôt SÉPARÉ, apis/ VIDE) tente de créer
+# SA PROPRE 'foo' — sans cette garde, rien dans le dépôt de teamy ne
+# l'empêcherait (API_ALREADY_EXISTS ne regarde QUE le dépôt du demandeur), et
+# l'apply aval matche name+version globalement puis réassignerait l'équipe
+# (roles/apim_publish_api/tasks/team.yml) : une capture silencieuse.
+GH5="$TMP/gh5"
+mk_platform "$GH5/ci/stoa-labs.git" 'providers:
+  - team: teamx
+    repo: teamx/apis
+    approvers: []
+  - team: teamy
+    repo: teamy/apis
+    approvers: []'
+mk_team "$GH5/teamx/apis.git" 'apim_api:
+  name: foo
+  version: 1.0.0'
+mk_team "$GH5/teamy/apis.git" ""   # vide — AUCUNE API 'foo' déclarée ici
+
+BEFORE_X=$(git ls-remote "$GH5/teamx/apis.git" 2>&1)
+BEFORE_Y=$(git ls-remote "$GH5/teamy/apis.git" 2>&1)
+OUT_COL=$(env -i PATH="$PATH" GIT_HOST="$GH5" GIT_REPO="ci/stoa-labs" GITEA_TOKEN=dummy \
+  ACTION=create TEAM=teamy API_NAME=foo API_VERSION=1.0.0 \
+  OPENAPI_SPEC='{"openapi":"3.0.0"}' INBOUND_MODE=jwt bash "$S" 2>&1)
+RC_COL=$?
+AFTER_X=$(git ls-remote "$GH5/teamx/apis.git" 2>&1)
+AFTER_Y=$(git ls-remote "$GH5/teamy/apis.git" 2>&1)
+if [ "$RC_COL" -eq 1 ] && printf '%s' "$OUT_COL" | grep -q "API_NAME_COLLISION" \
+   && printf '%s' "$OUT_COL" | grep -q "teamx" \
+   && [ "$BEFORE_X" = "$AFTER_X" ] && [ "$BEFORE_Y" = "$AFTER_Y" ]; then
+  ok "API_NAME_COLLISION : refusé (propriétaire 'teamx' nommé dans le message), NI teamx NI teamy touchés"
+else
+  ko "API_NAME_COLLISION : attendu refus + propriétaire nommé + ls-remote intacts (×2), obtenu rc=$RC_COL out=$(printf '%s' "$OUT_COL" | tail -3)"
+fi
+
+# Contre-témoin VERT : un nom neuf (jamais publié nulle part) n'est PAS
+# bloqué par cette garde — le script progresse jusqu'au push sur teamy/apis
+# (l'ouverture de PR échoue ensuite, cette "forge" locale bare n'a pas d'API
+# REST Gitea — attendu, ce n'est pas ce que ce contre-témoin vérifie).
+OUT_COL2=$(env -i PATH="$PATH" GIT_HOST="$GH5" GIT_REPO="ci/stoa-labs" GITEA_TOKEN=dummy \
+  ACTION=create TEAM=teamy API_NAME=quux API_VERSION=1.0.0 \
+  OPENAPI_SPEC='{"openapi":"3.0.0"}' INBOUND_MODE=jwt bash "$S" 2>&1)
+AFTER2_Y=$(git ls-remote "$GH5/teamy/apis.git" 2>&1)
+if ! printf '%s' "$OUT_COL2" | grep -q "API_NAME_COLLISION" && [ "$AFTER2_Y" != "$BEFORE_Y" ]; then
+  ok "contre-témoin : nom neuf ('quux') NON bloqué par la collision — branche poussée sur teamy/apis"
+else
+  ko "contre-témoin : nom neuf bloqué à tort, ou branche jamais poussée — $(printf '%s' "$OUT_COL2" | tail -3)"
+fi
 
 echo
 echo "═══ Section C — hiérarchie de diagnostic PLAN (fatal > msg > tail-3) ═══"
@@ -183,7 +255,11 @@ if [ -z "$GITEA_TOKEN" ] || ! curl -s -o /dev/null "http://localhost:13000" 2>/d
 else
   GH="http://localhost:13000"
   PLATORG="p3t5plat${TS}"; TEAMORG="p3t5team${TS}"
-  gapi(){ curl -s -H "Authorization: token $GITEA_TOKEN" -H 'Content-Type: application/json' "$@"; }
+  # Motif team-apply.sh (fix round 1, revue — le token n'apparaît PLUS jamais
+  # en argv d'un process curl, visible via ps -Aww pendant toute la durée de
+  # l'appel) : header écrit UNE FOIS dans un fichier 0600, lu par `-H @file`.
+  GTHDR="$TMP/gtoken.hdr"; umask 077; printf 'Authorization: token %s\n' "$GITEA_TOKEN" > "$GTHDR"
+  gapi(){ curl -s -H @"$GTHDR" -H 'Content-Type: application/json' "$@"; }
   RC1=$(gapi -X POST -d "{\"username\":\"$PLATORG\"}" -o /dev/null -w '%{http_code}' "$GH/api/v1/orgs")
   RC2=$(gapi -X POST -d "{\"username\":\"$TEAMORG\"}" -o /dev/null -w '%{http_code}' "$GH/api/v1/orgs")
   RC3=$(gapi -X POST -d '{"name":"stoa-labs","auto_init":false}' -o /dev/null -w '%{http_code}' "$GH/api/v1/orgs/$PLATORG/repos")
@@ -231,14 +307,28 @@ YML
     # problème, pas le résoudre).
     settle(){ sleep 3; }
 
+    # Fix round 1 (revue, token en argv) : `env -i ... GITEA_TOKEN="$TOK" bash
+    # "$S"` met GITEA_TOKEN dans l'ARGV du process `env` (ps -Aww le montre
+    # tant qu'`env` n'a pas encore exec'é sa cible — motif de la MÊME classe
+    # que les URLs-avec-token déjà bannies ailleurs dans ce dépôt). Remède :
+    # `export` (jamais un argv, uniquement l'environnement du process — même
+    # canal que withCredentials/withEnv côté Jenkins) pour les 4 valeurs
+    # FIXES sur toute la section D, UNE SEULE FOIS ; chaque appel n'ajoute que
+    # ses propres affectations-préfixe LITTÉRALES (ACTION=…, TEAM=…) — jamais
+    # via un `"$@"` de wrapper (essayé, cassé : bash reconnaît les
+    # affectations-préfixe au PARSING du texte source, pas après expansion de
+    # paramètre — "$@" expansé y devient une simple liste de MOTS, dont le
+    # premier ("ACTION=create") est alors pris pour le NOM de la commande à
+    # exécuter — "command not found", reproduit puis corrigé ici).
+    export GIT_HOST="$GH" GIT_REPO="${PLATORG}/stoa-labs" GIT_WEB_HOST="$GH" GITEA_TOKEN="$GITEA_TOKEN"
+
     echo "── D1. mode create (nominal) ──"
     SPEC1='openapi: "3.0.0"
 info: {title: scratch-api, version: "1.0.0"}
 paths: {}'
     settle
-    OUT1=$(env -i PATH="$PATH" HOME="$HOME" GIT_HOST="$GH" GIT_REPO="${PLATORG}/stoa-labs" GIT_WEB_HOST="$GH" \
-      ACTION=create TEAM="$TEAMORG" API_NAME=scratch-api API_VERSION=1.0.0 \
-      OPENAPI_SPEC="$SPEC1" INBOUND_MODE=jwt GITEA_TOKEN="$GITEA_TOKEN" bash "$S" 2>&1)
+    OUT1=$(ACTION=create TEAM="$TEAMORG" API_NAME=scratch-api API_VERSION=1.0.0 \
+      OPENAPI_SPEC="$SPEC1" INBOUND_MODE=jwt bash "$S" 2>&1)
     RC=$?
     MANI1=$(gapi "$GH/api/v1/repos/$TEAMORG/apis/raw/api/scratch-api-1.0.0/apis/scratch-api.publish.yml")
     if [ "$RC" -eq 0 ] && printf '%s' "$MANI1" | grep -q 'name: "scratch-api"' \
@@ -276,27 +366,28 @@ paths: {}'
     fi
 
     echo "── D3. mode new-version (après merge) ──"
+    # INBOUND_MODE=jwt (fix round 1 : oauth2 désormais refusé à l'entrée,
+    # cf. la garde INBOUND_OAUTH2_NON_SUPPORTE testée en Section A — D3 vise
+    # à prouver le bump de version, pas le mode inbound).
     SPEC2='openapi: "3.0.0"
 info: {title: scratch-api, version: "2.0.0"}
 paths: {}'
     settle
-    OUT2=$(env -i PATH="$PATH" HOME="$HOME" GIT_HOST="$GH" GIT_REPO="${PLATORG}/stoa-labs" GIT_WEB_HOST="$GH" \
-      ACTION=new-version TEAM="$TEAMORG" API_NAME=scratch-api API_BASE='scratch-api@1.0.0' NEW_VERSION=2.0.0 \
-      OPENAPI_SPEC="$SPEC2" INBOUND_MODE=oauth2 GITEA_TOKEN="$GITEA_TOKEN" bash "$S" 2>&1)
+    OUT2=$(ACTION=new-version TEAM="$TEAMORG" API_NAME=scratch-api API_BASE='scratch-api@1.0.0' NEW_VERSION=2.0.0 \
+      OPENAPI_SPEC="$SPEC2" INBOUND_MODE=jwt bash "$S" 2>&1)
     RC2=$?
     MANI2=$(gapi "$GH/api/v1/repos/$TEAMORG/apis/raw/api/scratch-api-2.0.0/apis/scratch-api.publish.yml")
     if [ "$RC2" -eq 0 ] && printf '%s' "$MANI2" | grep -q 'version: "2.0.0"' \
-       && printf '%s' "$MANI2" | grep -q 'mode: "oauth2"'; then
-      ok "D3 : PR new-version ouverte, manifeste bumpé en 2.0.0, mode oauth2"
+       && printf '%s' "$MANI2" | grep -q 'mode: "jwt"'; then
+      ok "D3 : PR new-version ouverte, manifeste bumpé en 2.0.0"
     else
       ko "D3 : run en échec ou manifeste incorrect — $(printf '%s' "$OUT2" | tail -5)"
     fi
 
     echo "── D4. contre-épreuve : re-tenter new-version 1.0.0 -> 2.0.0 (base périmée) ──"
     settle
-    OUT3=$(env -i PATH="$PATH" HOME="$HOME" GIT_HOST="$GH" GIT_REPO="${PLATORG}/stoa-labs" GIT_WEB_HOST="$GH" \
-      ACTION=new-version TEAM="$TEAMORG" API_NAME=scratch-api API_BASE='scratch-api@1.0.0' NEW_VERSION=3.0.0 \
-      OPENAPI_SPEC="$SPEC2" INBOUND_MODE=jwt GITEA_TOKEN="$GITEA_TOKEN" bash "$S" 2>&1)
+    OUT3=$(ACTION=new-version TEAM="$TEAMORG" API_NAME=scratch-api API_BASE='scratch-api@1.0.0' NEW_VERSION=3.0.0 \
+      OPENAPI_SPEC="$SPEC2" INBOUND_MODE=jwt bash "$S" 2>&1)
     RC3=$?
     # main porte encore 1.0.0 (D3 n'est pas mergée) : ce n'est PAS une base
     # périmée ici, donc la PR doit s'ouvrir sans API_BASE_STALE. On vérifie

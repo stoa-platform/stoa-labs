@@ -24,7 +24,10 @@
 # CE QUE LE MANIFESTE NE PORTE JAMAIS : la plomberie IdP (alias_name, issuer,
 # jwks_uri par env) — valeurs PLATEFORME fixées par le gabarit
 # gateways/templates/publish.yml.tmpl, jamais saisies au formulaire. Seul
-# INBOUND_MODE (jwt|oauth2) revient à l'équipe.
+# INBOUND_MODE revient à l'équipe — jwt uniquement pour l'instant (fix
+# round 1, revue : oauth2 REFUSÉ, INBOUND_OAUTH2_NON_SUPPORTE — ce
+# formulaire ne collecte pas audience/scope/client_id qu'oauth2 exige
+# fail-closed à l'apply, cf. le commentaire de la garde plus bas).
 #
 # Entrées (env — mappées depuis les paramètres du job) :
 #   ACTION        (req) create | new-version
@@ -37,7 +40,7 @@
 #   NEW_VERSION         nouvelle version — REQUISE si ACTION=new-version,
 #                       différente de la version de base
 #   OPENAPI_SPEC  (req) contrat OpenAPI/Swagger collé (YAML ou JSON)
-#   INBOUND_MODE  (req) jwt | oauth2
+#   INBOUND_MODE  (req) jwt uniquement (oauth2 refusé — INBOUND_OAUTH2_NON_SUPPORTE)
 #   GITEA_TOKEN   (req) token du service ci (write:repository, write:issue)
 #   GIT_REPO           dépôt PLATEFORME (défaut ci/stoa-labs) — porte
 #                       ansible/providers.<env>.yml ET les gardes hors ligne
@@ -59,7 +62,7 @@ API_VERSION="${API_VERSION:-}"
 API_BASE="${API_BASE:-}"
 NEW_VERSION="${NEW_VERSION:-}"
 OPENAPI_SPEC="${OPENAPI_SPEC:?OPENAPI_SPEC requis}"
-INBOUND_MODE="${INBOUND_MODE:?INBOUND_MODE requis (jwt|oauth2)}"
+INBOUND_MODE="${INBOUND_MODE:?INBOUND_MODE requis (jwt uniquement — oauth2 refusé)}"
 GITEA_TOKEN="${GITEA_TOKEN:?GITEA_TOKEN requis}"
 GIT_REPO="${GIT_REPO:-ci/stoa-labs}"
 GIT_HOST="${GIT_HOST:-http://gitea:3000}"
@@ -85,7 +88,27 @@ case "$API_NAME" in *[!a-z0-9-]*) fail "API_NAME_INVALID : '$API_NAME' — ^[a-z
 printf '%s' "$API_NAME" | grep -Eq '^[a-z0-9][a-z0-9-]{1,30}$' \
   || fail "API_NAME_INVALID : '$API_NAME' — ^[a-z0-9][a-z0-9-]{1,30}\$ requis"
 
-case "$INBOUND_MODE" in jwt|oauth2) ;; *) fail "INBOUND_MODE_INVALIDE : '$INBOUND_MODE' — attendu jwt|oauth2";; esac
+# oauth2 REFUSÉ ICI, pas une simple valeur non encore branchée (fix round 1,
+# revue) : le gabarit ne pose jamais inbound.audience/scope/client_id, que
+# roles/apim_publish_api/tasks/inbound.yml:56-63 EXIGE fail-closed en mode
+# oauth2 — mais AUCUNE des deux gardes du PLAN (manifest-guard, team-name)
+# ne lit `inbound` : une PR oauth2 recevrait donc "✅ PLAN OK" pour un
+# manifeste qui cassera à l'apply, la classe exacte du bug `contract:` déjà
+# corrigé dans ce fichier. Mesuré : le seul exemple réel d'oauth2 du dépôt
+# (gateways/webmethods/provisioning/provisioning.publish.yml) porte audience/
+# scope/client_id comme des valeurs PAR API/PAR CONSOMMATEUR (l'audience et
+# le client appelant changent avec chaque API) — CONTRAIREMENT à issuer/
+# jwks_uri/alias_name qui, eux, sont réellement invariants plateforme. Ces
+# trois champs ne peuvent donc PAS être fixés dans le gabarit comme le sont
+# issuer/jwks — les figer avec une valeur bidon serait pire qu'un refus (une
+# API qui semblerait protégée sans l'être). Ce formulaire ne les collecte pas
+# (absents du brief) : oauth2 reste refusé tant qu'ils n'ont pas leur propre
+# champ — à trancher par T6/T7 (le job XML retire déjà le choix oauth2).
+case "$INBOUND_MODE" in
+  jwt) ;;
+  oauth2) fail "INBOUND_OAUTH2_NON_SUPPORTE : oauth2 exige inbound.audience/scope/client_id (roles/apim_publish_api/tasks/inbound.yml), non collectés par ce formulaire — seul jwt est supporté pour l'instant (cf. commentaire du script)";;
+  *) fail "INBOUND_MODE_INVALIDE : '$INBOUND_MODE' — attendu jwt";;
+esac
 
 VERSION_RE='^[0-9]+\.[0-9]+(\.[0-9]+)?$'
 
@@ -169,6 +192,50 @@ esac
 [ -n "$REPO_FULL" ] || fail "REPO_MANQUANT : onboarder d'abord un dépôt pour cette équipe (providers.${ENVN}.yml, champ repo de '${TEAM}' vide)"
 echo "  équipe '${TEAM}' -> dépôt ${REPO_FULL}"
 
+# ── 2b. collision cross-team (mode create uniquement) ────────────────────────
+# L'apply aval (roles/apim_publish_api/tasks/main.yml:61-67) matche name+version
+# GLOBALEMENT sur la gateway, SANS filtre équipe, puis réassigne l'équipe au
+# dernier publish (team.yml) — une équipe B peut donc CAPTURER une API
+# homonyme d'une équipe A via un simple create fusionné par SES PROPRES
+# approbateurs, sans jamais toucher au dépôt de A. `API_ALREADY_EXISTS`
+# ci-dessous ne voit que NOTRE dépôt — insuffisant. Le refus se joue ICI,
+# AVANT tout clone/écriture sur notre propre dépôt, sur l'UNION que
+# scripts/lib/generate-choices.sh calcule déjà pour les listes (dépôt
+# plateforme clients/ + TOUS les dépôts d'équipe déclarés, pas seulement le
+# nôtre) — reconstruite ici avec le NOM du propriétaire (generate_choices_apis
+# ne le porte pas, son contrat est une liste plate name@version).
+if [ "$ACTION" = "create" ]; then
+  echo "[1b/5] collision cross-team : '${API_NAME}' ailleurs sur la plateforme ?"
+  COLLISION_OWNER=""
+  if [ -d "$WORK/platform/poc-control-plane-federation/clients" ]; then
+    COLLISION_FILE=$(find "$WORK/platform/poc-control-plane-federation/clients" -type f \
+      -path "*/apis/${API_NAME}.publish.yml" 2>/dev/null | head -1)
+    [ -n "$COLLISION_FILE" ] && COLLISION_OWNER="dépôt plateforme (${COLLISION_FILE#"$WORK/platform/poc-control-plane-federation/"})"
+  fi
+  if [ -z "$COLLISION_OWNER" ]; then
+    ALL_PROVIDERS=$(python3 -c "
+import yaml
+d = yaml.safe_load(open('${PROV}')) or {}
+for p in (d.get('providers') or []):
+    r = p.get('repo')
+    if r:
+        print(p.get('team','') + '\t' + r)
+" 2>/dev/null)
+    while IFS=$'\t' read -r OTHER_TEAM OTHER_REPO; do
+      [ -n "$OTHER_REPO" ] || continue
+      [ "$OTHER_TEAM" = "$TEAM" ] && continue   # notre propre dépôt : couvert par API_ALREADY_EXISTS plus bas
+      OW=$(mktemp -d)
+      if git clone -q --depth 1 -b main "${GIT_HOST}/${OTHER_REPO}.git" "$OW" 2>/dev/null; then
+        [ -f "$OW/apis/${API_NAME}.publish.yml" ] && COLLISION_OWNER="équipe '${OTHER_TEAM}' (${OTHER_REPO})"
+      fi
+      rm -rf "$OW"
+      [ -n "$COLLISION_OWNER" ] && break
+    done <<<"$ALL_PROVIDERS"
+  fi
+  [ -z "$COLLISION_OWNER" ] \
+    || fail "API_NAME_COLLISION : '${API_NAME}' est déjà publiée par ${COLLISION_OWNER} — choisir un autre nom, ou coordonner avec cette équipe (l'apply aval matche name+version GLOBALEMENT et réassignerait l'équipe au dernier publish, cf. roles/apim_publish_api/tasks/team.yml)"
+fi
+
 # ── 3. clone du dépôt d'ÉQUIPE, écrit spec + manifeste ───────────────────────
 echo "[2/5] clone ${REPO_FULL}@main (dépôt de l'équipe)"
 git clone -q --depth 1 -b main "${GIT_HOST}/${REPO_FULL}.git" "$WORK/team" \
@@ -184,7 +251,7 @@ if [ "$ACTION" = "create" ]; then
     || fail "API_ALREADY_EXISTS : '${API_NAME}' existe déjà dans ${REPO_FULL} (${PUB_REL}) — utiliser ACTION=new-version"
 else
   [ -f "$PUB_PATH" ] \
-    || fail "API_BASE_NOT_FOUND : '${API_NAME}' introuvable dans ${REPO_FULL} (${PUB_REL}) — publier d'abord une version initiale (ACTION=create)"
+    || fail "API_BASE_NOT_FOUND : '${API_NAME}' introuvable dans ${REPO_FULL} (${PUB_REL}) — si ce nom n'appartient à AUCUNE équipe, publier d'abord une version initiale (ACTION=create) ; s'il apparaît dans la liste déroulante, il appartient à une AUTRE équipe (API_NAME_COLLISION vous le dira si vous tentez un create)"
   # Anti-TOCTOU léger : la liste déroulante (API_BASE) peut être en retard sur
   # ce que le dépôt d'équipe porte RÉELLEMENT sur main — un refus explicite
   # vaut mieux qu'une nouvelle version silencieusement basée sur la mauvaise
