@@ -99,11 +99,14 @@ rougir — la matrice casse une garde exprès et vérifie son propre FAIL.
 Critical est corrigé (`38d681b`). Puis re-pousser `gitea main` une dernière
 fois pour aligner le lab sur l'état final (le handoff compris).
 
-**2. Enregistrer le webhook Gitea de `team-apply` côté serveur** (token
-`stoa-team-apply`, événement pull_request, même forme que ceux des jobs
-provision). La preuve 10 POSTe le payload directement sur l'endpoint GWT ; le
-webhook serveur n'a jamais été enregistré — c'est le dernier maillon de la
-pose réelle.
+**2. ~~Enregistrer le webhook Gitea de `team-apply`~~ — FAIT (2026-08-05)** :
+hook id=6 sur `ci/stoa-labs`, événements pull_request, URL
+`http://jenkins:8080/generic-webhook-trigger/invoke?token=stoa-team-apply`,
+miroir exact du hook de provision-apply (id=5), token GWT confirmé contre le
+config.xml du job posé. La chaîne est donc VIVANTE dans le lab : une vraie PR
+`onboard/*` mergée déclenchera le job sans geste manuel. Non testé en
+tir réel serveur→Jenkins (la preuve 10 POSTe le même payload sur le même
+endpoint — seul le transport Gitea→Jenkins n'a pas été observé).
 
 **3. Trancher le point de configuration client `VAULT_USER_AUTH_MOUNT`** : le
 job `team-apply` porte un défaut `userpass` (lab), TOUT le reste du dépôt
