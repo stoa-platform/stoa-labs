@@ -708,16 +708,37 @@ print(json.dumps({
   WHC10=$(curl -s -X POST -H 'Content-Type: application/json' --data-binary @"$TMP/webhook10.json" \
     "$JENKINS_UI/generic-webhook-trigger/invoke?token=stoa-team-apply" -o /dev/null -w '%{http_code}')
 
-  # 10e. attente de la PAUSE (borné 30s)
+  # 10e. attente de la PAUSE (borné 30s). Piège constaté en direct : wfapi
+  # rend une SUITE d'états transitoires avant PAUSED_PENDING_INPUT — vide,
+  # puis "NOT_EXECUTED" (le run n'a pas encore démarré côté wfapi), puis
+  # "IN_PROGRESS" — s'arrêter dès le premier état "ni vide ni IN_PROGRESS"
+  # (comme une 1re version le faisait) prend NOT_EXECUTED pour un état final
+  # et sort de la boucle bien avant la pause réelle. On attend explicitement
+  # LA valeur cherchée ou un état terminal (échec avant même la pause).
   ST10=""; DEADLINE10=$(( $(date +%s) + 30 ))
   while [ "$(date +%s)" -lt "$DEADLINE10" ]; do
     ST10=$(curl -s "$JENKINS_UI/job/team-apply/$N10/wfapi/describe" 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin).get('status',''))" 2>/dev/null)
-    [ -n "$ST10" ] && [ "$ST10" != "IN_PROGRESS" ] && break
-    sleep 1
+    case "$ST10" in
+      ""|NOT_EXECUTED|IN_PROGRESS) sleep 1 ;;
+      *) break ;;
+    esac
   done
 
   if [ "$WHC10" != 200 ] || [ "$ST10" != "PAUSED_PENDING_INPUT" ]; then
     RESULT10="fail"; MSG10="webhook_hc=$WHC10 status=$ST10 (pause non atteinte) — voir build #$N10"
+    # filet de secours : si le build EST malgré tout en pause (détection en
+    # échec, pas le build), ne JAMAIS laisser un build bloqué en attente
+    # d'input indéfiniment — abandon par l'API.
+    _late_st=$(curl -s "$JENKINS_UI/job/team-apply/$N10/wfapi/describe" 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin).get('status',''))" 2>/dev/null)
+    if [ "$_late_st" = PAUSED_PENDING_INPUT ]; then
+      rm -f "$TMP/jck10z"
+      _crumbjson=$(curl -sf -c "$TMP/jck10z" "$JENKINS_UI/crumbIssuer/api/json")
+      _jf=$(printf '%s' "$_crumbjson" | python3 -c 'import sys,json;print(json.load(sys.stdin)["crumbRequestField"])')
+      _jc=$(printf '%s' "$_crumbjson" | python3 -c 'import sys,json;print(json.load(sys.stdin)["crumb"])')
+      _inputid=$(curl -s "$JENKINS_UI/job/team-apply/$N10/wfapi/pendingInputActions" | python3 -c "import json,sys; print(json.load(sys.stdin)[0]['id'])" 2>/dev/null)
+      curl -s -b "$TMP/jck10z" -H "$_jf: $_jc" -X POST "$JENKINS_UI/job/team-apply/$N10/input/${_inputid}/abort" -o /dev/null
+      MSG10="$MSG10 (build était en pause malgré la détection — abandonné par l'API)"
+    fi
   elif [ "$CHEMIN_COMPLET_DISPONIBLE" != 1 ]; then
     # preuve MINIMUM : la pause est atteinte, on l'abandonne proprement (API)
     rm -f "$TMP/jck10a"
