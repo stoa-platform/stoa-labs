@@ -1,7 +1,7 @@
 ---
 title: "Palier 3 — formulaires enrichis : listes vivantes, identité entrante, et la porte du producteur (spécification)"
 type: spec
-status: "Cadré le 2026-08-05 (trois questions tranchées : listes figées à la pose rafraîchies par les événements ; app v2 = identité entrante seulement ; API = PR sur le dépôt d'équipe) + amendement nouvelle-version. À valider avant plan. Deux points à MESURER avant d'écrire (§5)."
+status: "Cadré le 2026-08-05 (trois questions tranchées : listes figées à la pose rafraîchies par les événements ; app v2 = identité entrante seulement ; API = PR sur le dépôt d'équipe) + amendement nouvelle-version. retainApplications et le piège multi-version MESURÉS sur la vraie 10.15 le 2026-08-05 (§5, spike 27/27) — plus rien à mesurer avant d'écrire."
 date: 2026-08-05
 lié: [2026-08-04-formulaires-jenkins-palier-2-design, adr-076-gitops-api-lifecycle-repo-per-project, adr-078-livrable-self-service-app-wm1015, adr-081-ou-vit-la-decision-humaine, HANDOFF-2026-08-05-FORMULAIRES-JENKINS-PALIER-2]
 ---
@@ -134,19 +134,52 @@ l'identité vient de la topologie, validée par le fichier revu.
 ### Nouvelle version — extension ADDITIVE du rôle
 
 À l'apply, si l'API existe sur la gateway sous un autre numéro :
-`POST /apis/{id}/versions {newApiVersion}` (duplication produit — policies et
-associations portées), puis mise à jour de la spec par le chemin re-import
-existant. Sinon : import initial, comme aujourd'hui. Fail-closed sur
-l'ambigu : plusieurs versions candidates comme base → refus explicite.
+`POST /apis/{id}/versions {newApiVersion, retainApplications:true}` (mint
+d'un nouveau record — policies CLONÉES, souscriptions portées SI ET SEULEMENT
+SI `retainApplications:true` est envoyé explicitement, cf. mesures ci-dessous),
+puis mise à jour de la spec par le chemin re-import existant. Sinon : import
+initial, comme aujourd'hui. Fail-closed sur l'ambigu : la gateway elle-même
+refuse un numéro de version déjà existant (mesuré), mais PAS le cas de
+plusieurs versions candidates comme base côté rôle → refus explicite à écrire.
 
-**DEUX POINTS À MESURER AVANT D'ÉCRIRE** (jamais supposer) :
-1. la forme exacte de `retainApplications` sur la VRAIE 10.15 — le mock ne le
-   modélise pas, et le transport des souscriptions est tout l'intérêt de la
-   ressource vs un import nu ;
-2. le piège connu du lab : le *subscribe multi-version* wM a déjà mordu (bug
-   labctl tracké). Contre-épreuve exigée : une app souscrite à v1.0 l'est
-   encore — ou pas, selon le flag mesuré — après création de la v2.0, relu
-   depuis la gateway.
+**MESURÉ le 2026-08-05 sur la vraie gateway 10.15 du lab** (spike
+`scripts/spike-api-versions-1015.sh`, F4, 27/27, teardown vérifié — voir
+`.superpowers/sdd/2026-08-05-formulaires-enrichis-palier-3/task-1-report.md`) :
+
+1. **Forme du corps** — `{newApiVersion}` seul suffit (HTTP 201) : le champ
+   `retainApplications` n'est PAS requis pour que la duplication réussisse.
+   Le nom est EXACT et sensible à la casse : `retainApplications` (booléen).
+   Une variante mal casée (`RetainApplications`) est silencieusement IGNORÉE
+   (201, mais traitée comme absente) — cohérent avec le JSON laxiste déjà
+   observé ailleurs sur ce produit (clés inconnues tolérées, jamais une 400).
+2. **Ce qui est copié** — les `policies[]` de la nouvelle version sont un
+   CLONE (nouvel id de policy), PAS un partage de l'id de la base. La
+   nouvelle version naît `isActive:false` (import + activation restent deux
+   étapes distinctes, comme au premier import).
+3. **Le piège multi-version, DÉCISIF** — une app souscrite à la base
+   (`consumingAPIs`) ne devient PAS automatiquement souscrite à la nouvelle
+   version : `retainApplications` absent → NON porté ; `retainApplications:
+   false` explicite → NON porté (identique au défaut) ; `retainApplications:
+   true` explicite → PORTÉ (l'id de la nouvelle version apparaît dans
+   `consumingAPIs` de l'app, sans appel séparé à
+   `PUT /applications/{id}/apis`). La base, elle, reste souscrite dans tous
+   les cas (`/versions` ne désabonne jamais l'ancienne version). **Conclusion
+   pour le rôle** : `retainApplications:true` DOIT être envoyé explicitement
+   à chaque mint — l'omettre (ou le mal caser) reproduit exactement le bug
+   labctl déjà tracké (souscriptions perdues au changement de version), en
+   silence (HTTP 201 dans tous les cas, aucune erreur à observer).
+4. **Bonus — numéro de version déjà existant** : `POST /versions` sur la
+   DERNIÈRE version, ciblant un `newApiVersion` déjà miné, est refusé par la
+   gateway elle-même (HTTP 400, `"Unable to version the API <nom> with
+   version <x> that already exists."`) — pas besoin d'une garde applicative
+   pour CE cas précis.
+5. **Écart de conception découvert au passage** (hors scope de ce point, noté
+   pour T6) : `POST /apis/{id}/versions` est refusé (HTTP 400, `"Versioning
+   is allowed only from latest version"`) dès que `{id}` n'est plus la
+   DERNIÈRE version connue de l'API — y compris pour un second appel sur le
+   MÊME id juste après un premier succès. Le rôle doit donc toujours
+   résoudre puis viser la dernière version en date avant de verser, jamais
+   une version arbitraire choisie par le formulaire.
 
 ### Les deux extensions qui ferment les boucles
 
@@ -188,6 +221,6 @@ runtime (toujours son spec dédié à venir) ; l'installation d'Active Choices.
 | `PRIVATE KEY` refusé à l'entrée | On ne commite jamais une clé privée, même par accident de collage |
 | PR producteur sur le dépôt d'ÉQUIPE | ADR-076 ; le dépôt créé à l'onboarding devient vivant |
 | UN team-publish générique, team dérivée du dépôt déclencheur | L'identité vient de la topologie (non forgeable), validée par providers — l'inverse du défaut E1 |
-| Nouvelle version par `/apis/{id}/versions` | La duplication produit porte policies et associations ; un import nu les perdrait |
-| retainApplications et multi-version : MESURER d'abord | Le mock ne les modélise pas, et le piège multi-version a déjà mordu ce lab |
+| Nouvelle version par `/apis/{id}/versions` | Import nu impossible sur un nom existant (produit) ; la duplication clone les policies, et ne porte les souscriptions QUE si `retainApplications:true` est envoyé (mesuré) |
+| `retainApplications:true` envoyé EXPLICITEMENT à chaque mint | Mesuré 2026-08-05 : absent ou mal casé = souscriptions PERDUES en silence (HTTP 201 quand même) — exactement le bug labctl déjà tracké |
 | Contrats additifs partout | La non-régression des chaînes prouvées prime sur la nouveauté |
