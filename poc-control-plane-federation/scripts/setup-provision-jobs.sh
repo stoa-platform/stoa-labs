@@ -46,6 +46,13 @@ JENKINS_TOKEN="${JENKINS_TOKEN:-}"
 DRY_RUN="${DRY_RUN:-false}"
 ALLOW_RECREATE="${ALLOW_RECREATE:-false}"
 JOBS="${JOBS:-provision-apply provision-plan}"
+# ÉCART Task 3 (palier 3, déclaré) : JOBS_SRC_DIR permet à un appelant de
+# poser des XML PRÉ-RENDUS (setup-team-onboard-jobs.sh y substitue les
+# placeholders <!--CHOICES:*--> avant l'appel, dans un dossier de mise en
+# scène jetable) sans dupliquer ici la logique crumb/auth/POST — le motif que
+# ce fichier revendique déjà pour lui-même (cf. en-tête). Additif et
+# rétrocompatible : par défaut, comportement identique à avant (ci/jenkins).
+JOBS_SRC_DIR="${JOBS_SRC_DIR:-ci/jenkins}"
 
 ok(){   printf '  ✅ %s\n' "$*"; }
 warn(){ printf '  ⚠️  %s\n' "$*"; }
@@ -119,7 +126,7 @@ echo "Cible : $JENKINS_UI"
 # Avant tout appel réseau : pousser un XML cassé remplacerait une config qui
 # marche par une qui ne se charge pas.
 for J in $JOBS; do
-  X="ci/jenkins/${J}.job.xml"
+  X="${JOBS_SRC_DIR}/${J}.job.xml"
   [ -f "$X" ] || ko "XML introuvable : $X"
   python3 -c "import xml.etree.ElementTree as T; T.parse('$X')" 2>/dev/null \
     || ko "XML mal formé : $X (rien n'a été envoyé)"
@@ -160,7 +167,7 @@ ok "crumb CSRF obtenu"
 
 RC=0
 for J in $JOBS; do
-  X="ci/jenkins/${J}.job.xml"
+  X="${JOBS_SRC_DIR}/${J}.job.xml"
   echo
   echo "== $J =="
 
