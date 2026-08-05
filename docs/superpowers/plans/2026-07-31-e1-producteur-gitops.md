@@ -1155,6 +1155,34 @@ Une équipe peut publier hors chaîne, et son API atterrit en `Default` — lue 
 toutes. Cette tâche ferme la brèche **sur le lab**, ou constate qu'on ne peut pas
 la fermer sans casser P-1, et le consigne.
 
+> **RÉSULTAT du 2026-08-02 — le protocole ci-dessous a été exécuté, et il a
+> fallu le corriger deux fois.**
+>
+> - **§1** : la prémisse « il faut aussi être membre de `API-Gateway-Providers` »
+>   est **fausse**. Un utilisateur membre du seul groupe d'un accessProfile
+>   jetable obtient `GET /apis` **200** et `POST /apis` **201** sans y
+>   appartenir ; l'y ajouter ne change rien. Ce qui gouverne, c'est d'**avoir**
+>   un profil portant les privilèges — donc le levier est bien celui de l'équipe.
+> - **§2** : le bit-flip **un par un** est **négatif**. Les neuf bits testables
+>   (0-3, 6, 8-9, 11-12) laissent tous `POST /apis` à 201. La position 20 n'a pas
+>   pu être écrite : `PUT` 200 mais relu `1111001011011` — **les zéros de fin
+>   sont tronqués au stockage**.
+> - **§3** : la création est portée par un **OU de bits en positions 0-3**, ce
+>   qui explique §2 — en retirer un laisse les autres l'accorder.
+>
+> | bitmask posé | `GET /apis` | `POST /apis` |
+> |---|---|---|
+> | référence `111100101101100000001` | 200 | **201** |
+> | bits 0-3 seuls | 200 | **201** |
+> | bit 0 seul | 200 | **201** |
+> | **bits 0-5 retirés** `000000101101100000001` | **200** | **401** |
+> | bit 20 seul | 200 | **401** |
+> | vide | 200 | **401** |
+>
+> **`GET /apis` reste 200 dans tous les cas, bitmask vide compris** : la lecture
+> n'est pas gouvernée par ce champ. La valeur retenue est donc
+> `000000101101100000001`.
+
 - [ ] **Étape 1 : identifier le bit, sur un profil JETABLE**
 
 Créer `e1-probe-profile` (copie du bitmask de `banking-demo`) et
@@ -1346,14 +1374,35 @@ rien derrière lui parce qu'il survient avant la première écriture.
 créée ; pod `e1-runner` supprimé. Catalogue final :
 `['accounts-read', 'carto-probe-api']` — l'état d'avant la passe.
 
-### Ce qui n'est PAS fait
+### Tâche 8 — l'autorité, faite et prouvée par push (2026-08-02)
 
-- **Tâche 8** (le pipeline quitte le dépôt d'équipe) : l'artefact
-  `ci/Jenkinsfile.publish-api` est livré, mais **poser le job et créer le dépôt
-  plateforme dans Gitea sont des gestes exploitant**. Tant qu'ils ne sont pas
-  faits, `TEAM` reste écrit dans le dépôt de l'équipe : les gardes sont réelles,
-  leur **autorité** ne l'est pas encore.
-- **Tâche 9** (D6, retrait du privilège de création d'API) : non exécutée.
+Le job est passé de `CpsScmFlowDefinition` (`Jenkinsfile` du dépôt d'équipe) à
+**`CpsFlowDefinition` inline**, le moteur vit dans le dépôt plateforme
+`ci/stoa-labs`, et le `Jenkinsfile` a été retiré du dépôt d'équipe.
+
+| Build | Ce qui est poussé | Résultat | Statut Gitea |
+|---|---|---|---|
+| **#12** | manifeste légitime | **SUCCESS** — `TEAM_CONFIRMED`, `PUBLISH_CONFIRMED` sur `accounts-read` | `success` |
+| **#13** | manifeste réclamant `team: insurance-demo` | **FAILURE** — `TEAM_FORBIDDEN` | **`failure`** |
+| **#14** | remise en état | **SUCCESS** | `success` |
+
+Seul l'élément `<definition>` du `config.xml` a été remplacé : le réécrire en
+entier aurait perdu le jeton de webhook, qu'on ne connaît pas.
+
+**Trois pièges de l'API Jenkins**, tous documentés dans
+`2026-08-02-e1-d2-appliquer.py` : le crumb est lié à la **session** (sans cookie
+partagé, un crumb valide rend 403) ; sans **charset** déclaré, Jenkins décode le
+corps en latin-1 et le parseur rend un 500 « invalid XML character » — démontré
+en **repostant le config inchangé**, qui échouait aussi ; le pod Jenkins n'a pas
+`curl`.
+
+### Tâche 9 — D6, fait (2026-08-02)
+
+`POST /apis` par une équipe rend **401**. Le levier est la **conjonction** :
+bitmask de création retiré (bits 0-5) **et** retrait du compte du groupe système
+`API-Gateway-Providers` — les privilèges s'**unionnent** sur tous les profils
+d'un utilisateur. Cinq non-régressions vertes, dont **P-1 rejouée après coup**.
+Détail et rollback : § D6 du handoff.
 
 ---
 

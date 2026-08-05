@@ -38,6 +38,15 @@ id_pw() {
 }
 
 # req <ident> <method> <path> [json-compact]  -> corps puis "__CODE__<http>"
+#
+# ⚠ LE JSON DOIT ÊTRE SANS ESPACE. Dans une configuration curl (-K), une valeur
+# NON QUOTÉE s'arrête au PREMIER ESPACE — pas en fin de ligne. Un corps qui en
+# contient une part TRONQUÉ, et la gateway rend un 400
+# `JsonEOFException: was expecting closing quote` qui accuse le shape alors que
+# la requête n'est jamais partie entière (mesuré le 2026-08-02 sur POST /groups).
+# Les corps de cette sonde n'ont pas d'espace, donc ils passent. Si tu en ajoutes
+# un qui en a — une `description`, par exemple — passe par un fichier :
+# `data = @/chemin`, comme le fait 2026-08-02-e1-d6-privilege-creation-api.sh.
 req() {
   who="$1"; m="$2"; p="$3"; body="${4:-}"
   {

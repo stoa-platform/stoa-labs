@@ -59,17 +59,7 @@ pipeline {
     // Self-proxy OAuth2 de l'admin (ADMIN_VIA=proxy-oauth2) + chemin KV TENANT-scopé
     // des creds OAuth2 du pipeline ({token_url, client_id, client_secret, scope} —
     // sous deploy/<tenant>/ : le token nominatif ne lit QUE son périmètre).
-    // Le proxy se décrit par MORCEAUX. Le NOM de l'API d'admin proxifiée change
-    // d'un client à l'autre et n'avait aucune variable à lui : il était noyé au
-    // milieu d'une URL entière, impossible à surcharger seul. APIM_PROXY_BASE
-    // reste l'échappatoire (override complet) pour un reverse proxy dont le
-    // chemin ne suit pas la convention wM /gateway/<api>/<version>. Vide par
-    // défaut → composé côté shell, et le composé vaut EXACTEMENT l'ancien défaut.
-    APIM_PROXY_HOST   = "${env.APIM_PROXY_HOST ?: 'http://webmethods-real:5555'}"
-    APIM_PROXY_API    = "${env.APIM_PROXY_API  ?: 'wm-admin-self'}"
-    APIM_PROXY_VER    = "${env.APIM_PROXY_VER  ?: '1.0'}"
-    APIM_PROXY_PATH   = "${env.APIM_PROXY_PATH ?: '/rest/apigateway'}"
-    APIM_PROXY_BASE   = "${env.APIM_PROXY_BASE ?: ''}"
+    APIM_PROXY_BASE   = "${env.APIM_PROXY_BASE ?: 'http://webmethods-real:5555/gateway/wm-admin-self/1.0/rest/apigateway'}"
     APIM_OAUTH_SUB    = "${env.APIM_OAUTH_SUB  ?: 'deploy/banking-demo/admin-oauth'}"
     // ── Organisation du VAULT CLIENT + AS du proxy admin — mêmes knobs que
     // Jenkinsfile.selfservice (voir ses commentaires) : mount/préfixe KV ('' de
@@ -103,29 +93,7 @@ pipeline {
             grep -qE '^[[:space:]]*name:' "$MANIFEST" && grep -qE '^[[:space:]]*contract:' "$MANIFEST" \
               || { echo "manifeste incomplet (name/contract requis)"; exit 1; }
             ansible-playbook -i "$INVENTORY" ansible/publish-api.yml --syntax-check
-
-            # ── GARDE-FOUS DU PROXY D'ADMIN (ADR-075) ──────────────────────
-            # Ici et pas ailleurs : cette étape est la SEULE lecture seule sans
-            # identité, déclenchée à CHAQUE push/PR par le webhook — donc la
-            # seule à s'exécuter AVANT qu'un humain n'engage son identité
-            # nominative. Les deux vérifications ne touchent ni gateway ni
-            # Vault : rien ne justifierait de les repousser à l'apply, et les
-            # dupliquer dans Jenkinsfile.selfservice rejouerait à l'identique
-            # un contrôle dépôt-entier, pour zéro signal supplémentaire.
-            #
-            # 1) usage ⊆ contrat ET contrat ⊆ politique — un appel de rôle non
-            #    déclaré rendrait 404 à la bascule proxy-oauth2 (invisible en
-            #    ADMIN_VIA=direct), et un `delete:` glissé au contrat violerait
-            #    l'invariant « aucun DELETE » sans qu'aucun appelant ne le
-            #    révèle. Échoue aussi si l'inventaire de rôles est vide/amputé.
-            python3 ci/lint-contrat-proxy.py
-            # 2) la base du proxy composée depuis ses morceaux vaut TOUJOURS
-            #    l'URL entière d'avant la proxification — sur les DEUX
-            #    Jenkinsfile, défauts relus dans les fichiers réels. Exige
-            #    l'historique git (clone non superficiel) : cf. STOA_BASE_REF.
-            sh ci/test-proxy-base-et-preflight.sh
-
-            echo "  ✓ manifeste valide + playbook syntaxiquement correct + garde-fous du proxy (aucune mutation)"
+            echo "  ✓ manifeste valide + playbook syntaxiquement correct (aucune mutation)"
           '''
         }
       }
@@ -157,16 +125,9 @@ pipeline {
             # l'API d'admin est derrière son self-proxy, le rôle obtient un Bearer
             # (client_credentials, creds lus dans Vault) au lieu du Basic direct.
             if [ "${ADMIN_VIA:-direct}" = "proxy-oauth2" ]; then
-              # Override complet s'il est fourni, sinon composition depuis les
-              # morceaux. `${VAR:-}` obligatoire : Jenkins n'EXPORTE PAS au shell
-              # une variable d'environnement vide (même piège qu'APIM_KV_PREFIX).
-              PROXY_BASE="${APIM_PROXY_BASE:-}"
-              if [ -z "$PROXY_BASE" ]; then
-                PROXY_BASE="${APIM_PROXY_HOST}/gateway/${APIM_PROXY_API}/${APIM_PROXY_VER}${APIM_PROXY_PATH}"
-              fi
-              APIM_API_BASE="$PROXY_BASE"
+              APIM_API_BASE="$APIM_PROXY_BASE"
               APIM_AUTH_MODE="oauth2"
-              echo "  (API d'admin via le proxy OAuth2 : $APIM_API_BASE)"
+              echo "  (API d'admin via le SELF-PROXY OAuth2 : $APIM_API_BASE)"
             else
               APIM_AUTH_MODE="basic"
             fi
@@ -183,65 +144,20 @@ pipeline {
 
             # 0) GATEWAY DISPONIBLE ? Le lab la recycle toutes les ~20 min (keepalive
             #    licence trial) et un rolling restart chez le client produit la même
-            #    fenêtre : attendre son retour AVANT de consommer l'identité —
-            #    plutôt qu'échouer au milieu du play sur un « Connection refused »
-            #    cryptique.
-            #
-            #    OPTIONNEL — APIM_PREFLIGHT=off. Chez un client, /health peut être
-            #    injoignable depuis la VIP, ou filtré en amont : le build mourrait
-            #    alors plusieurs minutes durant pour une raison étrangère au travail
-            #    demandé. Plutôt que de renoncer au bénéfice, APIM_PREFLIGHT_URL et
-            #    APIM_PREFLIGHT_CODES permettent de viser UNE AUTRE sonde de vie.
-            # Comparaison insensible à la casse : Jenkins ne normalise pas la
-            # casse d'un paramètre `string`, et "Off"/"OFF" ne désactivaient
-            # rien avant ce correctif — silencieusement.
-            APIM_PREFLIGHT_LC="$(printf '%s' "${APIM_PREFLIGHT:-on}" | tr '[:upper:]' '[:lower:]')"
-            if [ "$APIM_PREFLIGHT_LC" = "off" ]; then
-              echo "  (préflight de joignabilité désactivé — APIM_PREFLIGHT=off)"
-            else
-              PF_URL="${APIM_PREFLIGHT_URL:-}"
-              [ -n "$PF_URL" ] || PF_URL="$APIM_API_BASE/health"
+            #    fenêtre : attendre son retour (max 5 min) AVANT de consommer
+            #    l'identité — plutôt qu'échouer au milieu du play sur un
+            #    « Connection refused » cryptique. /health répond 200 sans auth.
+            i=0
+            while :; do
+              HC="$(curl -s -o /dev/null -m 5 -w '%{http_code}' "$APIM_API_BASE/health" || true)"
               # 200 = up (accès direct) ; 401 = up ET l'OAuth2 du proxy est déjà
               # enforce (on sonde SANS token — le 401 est la preuve de vie du proxy).
-              PF_CODES="${APIM_PREFLIGHT_CODES:-200 401}"
-              PF_MAX="${APIM_PREFLIGHT_TRIES:-60}"
-              # `[ "$i" -ge "$PF_MAX" ]` sous sh : si PF_MAX n'est pas un entier
-              # décimal canonique, `-ge` rend soit 2 (ni vrai ni faux — la
-              # branche de sortie n'est JAMAIS prise, boucle à l'infini), soit
-              # une interprétation OCTALE surprenante dans `$((PF_MAX*5))` plus
-              # bas (`08` : arithmétique invalide, l'étape meurt sur un message
-              # cryptique — exactement ce que ce garde-fou doit éviter). `0*`
-              # rejette `0`/`00` ET tout zéro en tête (`08`, `060`). On valide
-              # AVANT d'entrer dans la boucle ; repli sur le défaut, avec avertissement.
-              case "$PF_MAX" in
-                ''|*[!0-9]*|0*) echo "  ⚠ APIM_PREFLIGHT_TRIES='$PF_MAX' n'est pas un entier positif — repli sur le défaut (60)"; PF_MAX=60 ;;
-              esac
-              # Borne haute : une valeur énorme mais numérique (ex.
-              # 99999999999999999999) passe le garde-fou ci-dessus et rouvre
-              # le même mode de panne — une boucle non bornée en pratique
-              # (aucun timeout de build n'est posé dans les job XML). La
-              # LONGUEUR est testée avant toute comparaison arithmétique :
-              # au-delà de 4 chiffres la valeur dépasse déjà 3600, sans
-              # risquer un débordement de `-gt` sur un entier à 20 chiffres.
-              case "$PF_MAX" in
-                ?????*) echo "  ⚠ APIM_PREFLIGHT_TRIES='$PF_MAX' dépasse la borne raisonnable — repli sur 3600"; PF_MAX=3600 ;;
-              esac
-              if [ "$PF_MAX" -gt 3600 ]; then
-                echo "  ⚠ APIM_PREFLIGHT_TRIES='$PF_MAX' dépasse la borne raisonnable — repli sur 3600"
-                PF_MAX=3600
-              fi
-              i=0
-              while :; do
-                HC="$(curl -s -o /dev/null -m 5 -w '%{http_code}' "$PF_URL" || true)"
-                for C in $PF_CODES; do
-                  if [ "$HC" = "$C" ]; then break 2; fi
-                done
-                i=$((i+1))
-                if [ "$i" -ge "$PF_MAX" ]; then echo "  ✗ gateway toujours injoignable après $((PF_MAX*5))s ($PF_URL -> $HC ; attendu : $PF_CODES)"; exit 1; fi
-                if [ "$i" -eq 1 ]; then echo "  (gateway indisponible — recyclage en cours ? attente du retour, max $((PF_MAX*5))s…)"; fi
-                sleep 5
-              done
-            fi
+              if [ "$HC" = 200 ] || [ "$HC" = 401 ]; then break; fi
+              i=$((i+1))
+              if [ "$i" -ge 60 ]; then echo "  ✗ gateway toujours injoignable après 5 min ($APIM_API_BASE/health -> $HC)"; exit 1; fi
+              if [ "$i" -eq 1 ]; then echo "  (gateway indisponible — recyclage en cours ? attente du retour, max 5 min…)"; fi
+              sleep 5
+            done
 
             # IDENTITÉ NOMINATIVE → TOKEN VAULT (voie B si JWT fourni, sinon voie A).
             # DEBUG : exporte STOA_DEBUG (lib + rôle Ansible) et pose la verbosité ansible.

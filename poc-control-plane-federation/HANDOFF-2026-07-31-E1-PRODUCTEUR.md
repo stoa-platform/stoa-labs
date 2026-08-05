@@ -103,49 +103,90 @@ croyant l'avoir cloisonnée.
 
 ---
 
-## 5. Ce qui te revient (gestes exploitant)
+## 5. D2 — l'autorité, FAITE et prouvée par push
 
-**1. Reposer le job GitOps en `CpsFlowDefinition` — c'est le vrai reste-à-faire
-de E1.** Le job actuel (`docs/superpowers/plans/2026-07-29-f4-jenkins-publish-job.xml:36-53`)
-est un `CpsScmFlowDefinition` de `scriptPath: Jenkinsfile` **pris dans le dépôt
-de l'équipe**. Tant qu'il en est là, l'équipe écrit son propre `TEAM` **et** le
-`serviceAccount` de son podTemplate — donc l'identité qui ouvre Vault. Les
-gardes sont réelles, leur **autorité** ne l'est pas.
+**Le vrai reste-à-faire de E1 est fermé le 2026-08-02.** Le job de publication
+était un `CpsScmFlowDefinition` pointant `scriptPath: Jenkinsfile` **dans le
+dépôt de l'équipe** : elle écrivait donc son propre `TEAM` et le
+`serviceAccount` de son podTemplate. Les gardes étaient réelles, leur autorité
+ne l'était pas.
 
-Trois choses à poser, dans cet ordre :
+Trois gestes, chacun relu :
 
-- un dépôt **plateforme** dans Gitea (`stoa/platform`) portant
-  `poc-control-plane-federation/` — le job y prend le rôle Ansible ;
-- le job en `CpsFlowDefinition`, script **inline**, `TEAM` en dur (une valeur
-  par équipe, cf. E5) — le contenu à coller est
-  `ci/Jenkinsfile.publish-api` § « copie de reconstruction » ;
-- **retirer le `Jenkinsfile` du dépôt `banking-demo/accounts-api`**, sans quoi
-  il reste une porte d'entrée.
+- **dépôt plateforme** : le rôle Ansible est poussé dans `ci/stoa-labs`
+  (1220 fichiers). Le job y prend son moteur ;
+- **job en `CpsFlowDefinition` inline** : seul l'élément `<definition>` est
+  remplacé, le reste du `config.xml` est conservé tel quel — réécrire tout
+  aurait perdu le **jeton de webhook**, qu'on ne connaît pas ;
+- **`Jenkinsfile` retiré** du dépôt d'équipe. Il ne reste que `README.md`,
+  `apis/` et un manifeste Ansible qui **ne dit pas** sous quelle équipe publier.
 
-Contre-épreuve à jouer derrière : pousser dans le dépôt d'équipe un manifeste
-avec `team: insurance-demo` → le build doit rougir sur `TEAM_FORBIDDEN` et le
-commit porter un statut rouge. Si le build passe, l'autorité n'est pas où on
-croit.
+**La contre-épreuve, par push réel dans le dépôt de l'équipe :**
 
-**2. Décider de D6 (retirer la création d'API aux comptes `svc-<team>`).** Non
-fait, et pas faisable à l'aveugle : le bitmask est **opaque en REST**
-(`/accessProfiles/privileges`, `/privileges`, `/permissions`,
-`/accessProfiles/permissions` → **404** les quatre) et les deux équipes de
-démonstration ont **exactement** le bitmask du profil système
-`API-Gateway-Providers`, sans un bit d'écart — elles n'ont jamais été
-restreintes. Protocole : lire les noms dans la console (joignable depuis ton
-correctif du 2026-07-31), **puis** prouver par bit-flip sur un profil **jetable**
-(10 bits à 1 : positions 0-3, 6, 8-9, 11-12, 20). Ne rien écrire sur
-`banking-demo`/`insurance-demo` avant que le nom lu et l'effet mesuré
-concordent, et capturer le bitmask d'avant comme rollback.
+| Build | Ce qui est poussé | Résultat | Statut de commit Gitea |
+|---|---|---|---|
+| **#12** | manifeste légitime | **SUCCESS** — `TEAM_CONFIRMED` puis `PUBLISH_CONFIRMED` sur `accounts-read` | `success` |
+| **#13** | manifeste réclamant `team: insurance-demo` | **FAILURE** — `TEAM_FORBIDDEN` | **`failure`** |
+| **#14** | remise en état | **SUCCESS** | `success` |
 
-**Garde-fou de ce changement** : après retrait, trois conditions, pas une.
-`POST /apis` par l'équipe → 401 (la brèche est fermée) ; `GET /apis` scopé →
-**toujours vert** ; l'identité sortante de E2 → intacte. Si l'une des deux
-dernières rougit, remettre le bitmask et consigner la brèche comme dette :
-casser une preuve acquise pour fermer une brèche de lab serait un mauvais
-échange, d'autant que le modèle cible la ferme en ne donnant aucun compte
-gateway aux équipes produit.
+C'est la seule mesure qui dit où est l'autorité : l'équipe a écrit la demande
+cross-team **dans son propre dépôt**, et le build a rougi. Le signal remonte
+jusqu'au commit — elle le voit sans qu'on ait à le lui dire.
+
+**Trois pièges de l'API Jenkins, payés et consignés dans les scripts :**
+
+- **le crumb est lié à la SESSION.** Demander `/crumbIssuer` puis POSTer sans
+  reporter le cookie donne « No valid crumb was included in the request » — un
+  403 qui parle du crumb alors que le crumb est bon.
+- **sans `charset` déclaré, Jenkins décode le corps en latin-1.** Le
+  `config.xml` revient avec un `0x80` et le parseur rend un **500 « invalid XML
+  character »**. Ce qui l'a démontré, c'est d'avoir reposté le config
+  **inchangé** : il échouait aussi. Le contenu était bon, l'en-tête ne l'était pas.
+- **le pod Jenkins n'a pas `curl`** — les appels passent par le pod `gitea`, ou
+  par worker-1, qui atteint les ClusterIP directement.
+
+**2. D6 — FAIT le 2026-08-02, et il a fallu trois tentatives.** La brèche
+« une équipe publie hors chaîne, en `Default`, lisible par toutes » est
+**fermée sur le labo**.
+
+| Condition | Attendu | Mesuré |
+|---|---|---|
+| `POST /apis` par l'équipe | 401 | **401** — la brèche est fermée |
+| `GET /apis` scopé | 200 + ses APIs | **200** `['accounts-read','carto-probe-api']` |
+| isolation : insurance → `accounts-read` | 401 | **401** |
+| `GET /applications` (E2 en dépend) | 200 | **200** |
+| **P-1 rejouée après D6** | `TEAM_CONFIRMED` | **`TEAM_CONFIRMED`** — la chaîne n'est pas cassée |
+
+**Le levier, c'est les deux ensemble** : bitmask restreint
+`000000101101100000001` (bits 0-5 retirés) **et** retrait du compte d'équipe du
+groupe système `API-Gateway-Providers`. Rollback dans
+`/root/e1-d6-rollback.txt` et `/root/e1-d6-rollback-groupe.txt` (root, 0600).
+
+**Le chemin pour y arriver vaut d'être lu, parce qu'il corrige trois croyances :**
+
+- Le dépôt tenait que « un user d'équipe doit AUSSI être membre de
+  `API-Gateway-Providers`, sinon 403 ». **Pas nécessaire** : un user membre du
+  seul groupe d'un profil jetable crée quand même. Le 403 de F4 venait d'un user
+  **sans profil**.
+- **Mais pas suffisant pour conclure.** J'ai écrit « ce n'est donc pas ce qui
+  gouverne » — j'affirmais plus que la mesure ne permettait. Il n'est pas
+  nécessaire, il reste **suffisant** : les privilèges **s'unionnent** sur tous
+  les profils de l'utilisateur. La première application l'a montré, en rougissant.
+- **Retirer un bit ne retire rien** : les neuf bits testables, ôtés un par un,
+  laissent `POST /apis` à 201. La création est portée par un **OU de bits en
+  positions 0-3**. Et la position 20 n'a pas pu être écrite — `PUT` 200, mais
+  relu sur **13 caractères au lieu de 21** : **les zéros de fin sont tronqués au
+  stockage**.
+
+**Ce qui a sauvé la manœuvre, c'est la garde, pas la perspicacité.** La première
+application posait le bon bitmask, le relisait conforme, et laissait pourtant
+`POST /apis` à 201. Sans les quatre contre-épreuves et le rollback automatique,
+D6 aurait été déclaré fait sur une lecture qui disait vrai — le bitmask *était*
+écrit — mais qui ne mesurait pas ce qui compte.
+
+⚠ **Ce que D6 ne ferme pas** : `GET /apis` reste **200 quel que soit le
+bitmask**, vide compris. La lecture n'est pas gouvernée par ce champ ; c'est
+l'assignation de team qui la scope. D6 ferme l'écriture, pas la visibilité.
 
 **3. Rien à merger côté `stoa`** — cette passe n'a touché que `stoa-labs`.
 
