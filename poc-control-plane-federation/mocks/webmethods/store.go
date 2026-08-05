@@ -43,33 +43,41 @@ type apiRecord struct {
 // unknown fields round-trip verbatim, exactly like the real product preserves
 // what it does not model.
 type Store struct {
-	mu         sync.RWMutex
-	apis       map[string]*apiRecord
-	policies   map[string]map[string]any // id -> policy record (raw)
-	actions    map[string]map[string]any // id -> policyAction record (raw)
-	aliases    map[string]map[string]any // id -> alias record (raw, password stored as received)
-	apps       map[string]map[string]any // id -> application record (raw)
-	appAPIs    map[string][]string       // appId -> associated apiIDs
-	strategies map[string]map[string]any // id -> OAUTH2 strategy record (raw)
-	scopes     map[string]map[string]any // id -> scope mapping record (raw)
-	keystore   map[string]any            // gateway-wide keystore/truststore config
-	users      map[string]map[string]any // id -> user record (raw)
-	groups     map[string]map[string]any // id -> group record (raw); system groups (id==name) preinstalled
-	profiles   map[string]map[string]any // id -> accessProfile record (raw); system profiles (id==name) preinstalled
-	teamWork   bool                      // enableTeamWork (configurations/extended); false by default
-	seq        map[string]int            // per-kind id sequence
+	mu       sync.RWMutex
+	apis     map[string]*apiRecord
+	policies map[string]map[string]any // id -> policy record (raw)
+	actions  map[string]map[string]any // id -> policyAction record (raw)
+	aliases  map[string]map[string]any // id -> alias record (raw, password stored as received)
+	apps     map[string]map[string]any // id -> application record (raw)
+	appAPIs  map[string][]string       // appId -> associated apiIDs
+	// latestVersionID tracks, per apiName lineage, which record id is
+	// currently the "latest" version — the ONLY id createVersionAPI accepts
+	// (mesuré 2026-08-05, spike-api-versions-1015: "Versioning is allowed
+	// only from latest version", HTTP 400 including on a SECOND call against
+	// the SAME id right after a first successful mint). Set at import
+	// (createAPI) and advanced on every successful mint (createVersionAPI).
+	latestVersionID map[string]string
+	strategies      map[string]map[string]any // id -> OAUTH2 strategy record (raw)
+	scopes          map[string]map[string]any // id -> scope mapping record (raw)
+	keystore        map[string]any            // gateway-wide keystore/truststore config
+	users           map[string]map[string]any // id -> user record (raw)
+	groups          map[string]map[string]any // id -> group record (raw); system groups (id==name) preinstalled
+	profiles        map[string]map[string]any // id -> accessProfile record (raw); system profiles (id==name) preinstalled
+	teamWork        bool                      // enableTeamWork (configurations/extended); false by default
+	seq             map[string]int            // per-kind id sequence
 }
 
 func NewStore() *Store {
 	return &Store{
-		apis:       map[string]*apiRecord{},
-		policies:   map[string]map[string]any{},
-		actions:    map[string]map[string]any{},
-		aliases:    map[string]map[string]any{},
-		apps:       map[string]map[string]any{},
-		appAPIs:    map[string][]string{},
-		strategies: map[string]map[string]any{},
-		scopes:     map[string]map[string]any{},
+		apis:            map[string]*apiRecord{},
+		policies:        map[string]map[string]any{},
+		actions:         map[string]map[string]any{},
+		aliases:         map[string]map[string]any{},
+		apps:            map[string]map[string]any{},
+		appAPIs:         map[string][]string{},
+		latestVersionID: map[string]string{},
+		strategies:      map[string]map[string]any{},
+		scopes:          map[string]map[string]any{},
 		keystore: map[string]any{
 			"truststoreName": "", "keystoreName": "", "signingAlias": "",
 		},

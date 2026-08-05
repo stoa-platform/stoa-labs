@@ -6,7 +6,11 @@ package main
 //   - APIs are created by IMPORT (POST /apis {apiName, apiVersion, type,
 //     apiDefinition}) and import does NOT activate (isActive=false; separate
 //     PUT /apis/{id}/activate). List = {"apiResponse":[{"api":{...}}]},
-//     single/create = {"apiResponse":{"api":{...}}}.
+//     single/create = {"apiResponse":{"api":{...}}}. POST /apis ALSO accepts
+//     multipart/form-data (fields apiName/apiVersion/type + a "file" part
+//     carrying the raw contract) — the EXACT shape ansible/roles/
+//     apim_publish_api/tasks/main.yml sends (relevé le 2026-08-05 : PAS
+//     "apiDefinition", le champ fichier s'appelle "file"; see contract.go).
 //   - Import mints the SERVICE-scoped "Default Policy for API <name>" with
 //     transport + routing stages; the routing action is a REAL
 //     straightThroughRouting policyAction at servers[0].url +
@@ -57,78 +61,194 @@ func (s *Server) listAPIs(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"apiResponse": items})
 }
 
+// createAPI serves POST /apis in the TWO shapes the real product accepts:
+// a flat JSON body ({"apiName":...,"apiDefinition":{...}}), or
+// multipart/form-data (fields apiName/apiVersion/type + a "file" part
+// carrying the raw OpenAPI contract) — the shape apim_publish_api actually
+// sends (relevé le 2026-08-05, ansible/roles/apim_publish_api/tasks/main.yml:
+// "file":{content,filename,mime_type}, NOT "apiDefinition" — a wrong guess
+// corrected before implementing). Dispatched on Content-Type, like the real
+// Integration Server's REST binding.
 func (s *Server) createAPI(w http.ResponseWriter, r *http.Request) {
-	var in struct {
-		APIName       string         `json:"apiName"`
-		APIVersion    string         `json:"apiVersion"`
-		Type          string         `json:"type"`
-		APIDefinition map[string]any `json:"apiDefinition"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
-		return
-	}
-	if in.APIName == "" || in.APIDefinition == nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "apiName and apiDefinition are required"})
+	apiName, apiVersion, definition, msg := decodeAPICreateBody(r)
+	if msg != "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": msg})
 		return
 	}
 	s.store.mu.Lock()
 	defer s.store.mu.Unlock()
 	// 409 on ANY apiName collision (same or another version) — the product's
 	// name conflict the adapter's 409→re-list→PUT fallback is tested against.
-	if s.store.findAPIByName(in.APIName) != nil {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "An API already exists with the name " + in.APIName})
+	if s.store.findAPIByName(apiName) != nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "An API already exists with the name " + apiName})
 		return
 	}
 	id := s.store.nextID("api")
-	polID := s.mintDefaultPolicy(id, in.APIName, in.APIDefinition)
+	polID := s.mintDefaultPolicy(id, apiName, definition)
 	rec := &apiRecord{
 		ID:         id,
-		APIName:    in.APIName,
-		APIVersion: in.APIVersion,
+		APIName:    apiName,
+		APIVersion: apiVersion,
 		IsActive:   false, // import does NOT activate (separate lifecycle step)
 		Type:       "REST",
 		Policies:   []string{polID},
-		Definition: in.APIDefinition,
+		Definition: definition,
 	}
 	s.store.apis[id] = rec
+	// The FIRST record of a name is, by construction, its own lineage's latest
+	// version — createVersionAPI's "latest only" gate (mesuré 2026-08-05) reads
+	// this pointer.
+	s.store.latestVersionID[apiName] = id
 	writeJSON(w, http.StatusCreated, map[string]any{"apiResponse": apiEnvelope(rec)})
 }
 
+// decodeAPICreateBody extracts (apiName, apiVersion, apiDefinition) from
+// either wire shape. Returns a non-empty msg (never both a definition and a
+// msg) on any validation failure.
+func decodeAPICreateBody(r *http.Request) (apiName, apiVersion string, definition map[string]any, msg string) {
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
+		if err := r.ParseMultipartForm(20 << 20); err != nil {
+			return "", "", nil, "invalid multipart body: " + err.Error()
+		}
+		apiName = r.FormValue("apiName")
+		apiVersion = r.FormValue("apiVersion")
+		file, _, err := r.FormFile("file")
+		if err != nil {
+			return "", "", nil, `multipart body requires a "file" part with the OpenAPI contract`
+		}
+		defer file.Close()
+		raw, err := io.ReadAll(file)
+		if err != nil {
+			return "", "", nil, "invalid multipart body: " + err.Error()
+		}
+		definition = parseContractDoc(raw)
+	} else {
+		var in struct {
+			APIName       string         `json:"apiName"`
+			APIVersion    string         `json:"apiVersion"`
+			APIDefinition map[string]any `json:"apiDefinition"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			return "", "", nil, "invalid body"
+		}
+		apiName, apiVersion, definition = in.APIName, in.APIVersion, in.APIDefinition
+	}
+	if apiName == "" || definition == nil {
+		return "", "", nil, "apiName and apiDefinition (or a multipart \"file\" part) are required"
+	}
+	return apiName, apiVersion, definition, ""
+}
+
 // createVersionAPI mirrors the native versioning endpoint (POST
-// /apis/{id}/versions, 201 — vérifié live sur le trial) : mint d'un NOUVEAU
-// record du même apiName avec newApiVersion (inactif, policy par défaut
-// clonée du modèle d'import). C'est le fallback de labctl quand un nom existe
-// sous une AUTRE version (le produit refuse POST frais ET PUT in-place).
+// /apis/{id}/versions, 201 — vérifié live sur le trial ET sur la vraie 10.15
+// du lab, spike-api-versions-1015, 2026-08-05) : mint d'un NOUVEAU record du
+// même apiName avec newApiVersion (inactif, policy par défaut CLONÉE — M2).
+// C'est le fallback de labctl quand un nom existe sous une AUTRE version (le
+// produit refuse POST frais ET PUT in-place).
+//
+// Trois faits MESURÉS (pas déduits) le 2026-08-05, tous reproduits ici :
+//
+//   - M1/BONUS : {"newApiVersion":...} SEUL suffit (201) ; un numéro déjà
+//     miné pour ce apiName est refusé 400 avec le message exact du produit ;
+//     {id} doit être la DERNIÈRE version connue de l'apiName — refusé 400
+//     "Versioning is allowed only from latest version" sinon, y compris pour
+//     un DEUXIÈME appel sur le MÊME id juste après un premier succès (le mint
+//     fait AVANCER le pointeur latestVersionID).
+//   - M3 [DÉCISIF] : retainApplications:true (booléen, casse EXACTE) propage
+//     la nouvelle version dans consumingAPIs des apps déjà souscrites à la
+//     base. Absent, false, OU MAL CASÉ ("RetainApplications") : AUCUN effet —
+//     201 dans tous les cas, la souscription est perdue EN SILENCE. La base
+//     reste souscrite dans TOUS les cas (jamais désabonnée par ce endpoint).
 func (s *Server) createVersionAPI(w http.ResponseWriter, r *http.Request) {
 	baseID := r.PathValue("id")
-	var in struct {
-		NewAPIVersion string `json:"newApiVersion"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in.NewAPIVersion == "" {
+	var raw map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"errorDetails": "newApiVersion is required"})
 		return
 	}
+	newVersion, _ := raw["newApiVersion"].(string)
+	if newVersion == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"errorDetails": "newApiVersion is required"})
+		return
+	}
+	// EXACT map-key lookup — NOT a decoded struct field. encoding/json's
+	// struct decoding matches JSON keys to Go struct tags CASE-INSENSITIVELY
+	// by default, which would silently accept "RetainApplications" too — the
+	// opposite of the measured product behaviour. A map[string]any preserves
+	// the JSON object's keys verbatim, so raw["retainApplications"] is unset
+	// (zero value false) whenever the caller sent any other casing.
+	retain, _ := raw["retainApplications"].(bool)
+
 	s.store.mu.Lock()
 	defer s.store.mu.Unlock()
+
 	base, ok := s.store.apis[baseID]
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{"errorDetails": "api " + baseID + " not found"})
 		return
 	}
+	if s.store.latestVersionID[base.APIName] != baseID {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"errorDetails": "Versioning is allowed only from latest version",
+		})
+		return
+	}
+	if s.store.findAPIByNameVersion(base.APIName, newVersion) != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"errorDetails": "Unable to version the API " + base.APIName + " with version " + newVersion + " that already exists.",
+		})
+		return
+	}
+
 	id := s.store.nextID("api")
+	// M2 (mesuré) : policies[] = un CLONE (mintDefaultPolicy mint de nouveaux
+	// ids de policy/action, jamais un partage de ceux de la base) ;
+	// isActive:false — exactement comme un premier import.
 	polID := s.mintDefaultPolicy(id, base.APIName, base.Definition)
 	rec := &apiRecord{
 		ID:         id,
 		APIName:    base.APIName,
-		APIVersion: in.NewAPIVersion,
+		APIVersion: newVersion,
 		IsActive:   false,
 		Type:       "REST",
 		Policies:   []string{polID},
 		Definition: base.Definition,
 	}
 	s.store.apis[id] = rec
+	// This record becomes the new latest of the lineage — baseID stops being
+	// versionable from here, exactly like the measured gateway.
+	s.store.latestVersionID[base.APIName] = id
+
+	if retain {
+		s.retainSubscriptions(baseID, id)
+	}
+
 	writeJSON(w, http.StatusCreated, map[string]any{"apiResponse": apiEnvelope(rec)})
+}
+
+// retainSubscriptions reproduces the measured retainApplications:true effect
+// (M3, 2026-08-05): every application currently subscribed to baseID also
+// gains newID in its consumingAPIs/appAPIs — baseID's own subscription is
+// left untouched (the product never desubscribes the base on /versions).
+// Caller MUST hold the store lock.
+func (s *Server) retainSubscriptions(baseID, newID string) {
+	for appID, apiIDs := range s.store.appAPIs {
+		subscribed := false
+		for _, id := range apiIDs {
+			if id == baseID {
+				subscribed = true
+				break
+			}
+		}
+		if !subscribed {
+			continue
+		}
+		updated := append(append([]string{}, apiIDs...), newID)
+		s.store.appAPIs[appID] = updated
+		if app := s.store.apps[appID]; app != nil {
+			app["consumingAPIs"] = updated
+		}
+	}
 }
 
 // mintDefaultPolicy creates the SERVICE-scoped default policy + its enforcement
