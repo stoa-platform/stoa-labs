@@ -38,6 +38,12 @@ trap cleanup EXIT
 API_NAME="p3t6-api"
 # Le commit d'AVANT ce lot (base du palier) — sert de témoin de non-régression.
 BASE_COMMIT="${BASE_COMMIT:-1cc0351}"
+# Tête du round 1 : sert de témoin AVANT pour les défauts trouvés en revue
+# (crash-consistance, capture cross-lignée) — le repro doit être VU rouge.
+ROUND1_COMMIT="${ROUND1_COMMIT:-bd65c43}"
+# Équipe au nom de laquelle la chaîne publie (posée par le JOB en production,
+# `-e apim_ss_team` — jamais par le manifeste, cf. team-name.yml).
+TEAM="payments-team"
 # La surface d'admin du mock exige la même auth basic que la 10.15 (défauts du
 # rôle : Administrator/manage) — sans elle, TOUTE lecture d'état rend
 # {"error":"Unauthorized"} et les témoins seraient vides sans le dire.
@@ -69,14 +75,26 @@ mock_start(){
   echo "ERREUR: le mock n'a pas démarré sur :${MOCK_PORT} — $(tail -3 "$TMP/mock.log")" >&2
   exit 1
 }
-fresh_mock(){ mock_stop; mock_start; }
+# Le store du mock est en mémoire : un mock frais est vierge de TOUT, y compris
+# de la feature Teams et des accessProfiles. Les re-semer fait partie du
+# « mock vierge », sinon le cloisonnement d'équipe — désormais sur le chemin
+# critique de la nouvelle version — ne pourrait pas être exercé.
+seed_teams(){
+  adm -o /dev/null -H 'Content-Type: application/json' -X PUT \
+    "$BASE/configurations/extended" -d '{"enableTeamWork":"true"}'
+  for t in payments-team other-team; do
+    adm -o /dev/null -H 'Content-Type: application/json' -X POST \
+      "$BASE/accessProfiles" -d "{\"name\":\"$t\"}"
+  done
+}
+fresh_mock(){ mock_stop; mock_start; seed_teams; }
 
 # run_role <dossier-ansible> <manifeste> [extra ansible-playbook args...]
 run_role(){
   local adir="$1" manifest="$2"; shift 2
   ansible-playbook -i "$adir/inventory.lab.ini" "$adir/publish-api.yml" \
     -e apim_ss_api_base="$BASE" \
-    -e apim_pub_require_team=false \
+    -e apim_ss_team="$TEAM" \
     -e apim_ss_manifest="$manifest" \
     "$@" 2>&1
 }
@@ -247,7 +265,7 @@ fi
 
 # A4 : les gardes hors ligne du producteur restent vertes.
 if ansible-playbook -i "$REPO/ansible/inventory.lab.ini" "$REPO/ansible/test-publish-guards.yml" \
-     -e apim_ss_manifest="$TMP/v1.yml" -e apim_ss_team="payments-team" >"$TMP/a4.log" 2>&1; then
+     -e apim_ss_manifest="$TMP/v1.yml" -e apim_ss_team="$TEAM" >"$TMP/a4.log" 2>&1; then
   ok "A4 test-publish-guards.yml (manifest-guard + team-name + approvers) : vert"
 else
   ko "A4 test-publish-guards.yml a rougi : $(grep -m1 '"msg"' "$TMP/a4.log")"
@@ -384,7 +402,7 @@ run_role "$INJ_DIR" "$TMP/v2.yml" >"$TMP/d4.log" 2>&1; RC=$?
 # PAR ACCIDENT, l'assert M3 vert sans rien prouver.
 prep_v1_with_subscriber
 inject "roles/apim_publish_api/tasks/version.yml" \
-     "s/selectattr('consumingAPIs', 'defined') | list | length/selectattr('consumingAPIsZZZ', 'defined') | list | length/"
+     "s/rejectattr('consumingAPIs', 'defined')/rejectattr('consumingAPIsZZZ', 'defined')/"
 run_role "$INJ_DIR" "$TMP/v2.yml" >"$TMP/d5.log" 2>&1; RC=$?
 [ "$RC" -ne 0 ] && grep -q "VERSION_SUBS_SHAPE_UNKNOWN" "$TMP/d5.log" \
   && ok "D5 clé consumingAPIs absente → VERSION_SUBS_SHAPE_UNKNOWN (pas de vert vacant)" \
@@ -422,6 +440,130 @@ grep -q "UPDATE_FORBIDDEN" "$TMP/e.log" \
   || ok "E2 aucune désactivation en jeu : la v2 naît inactive, rien n'est coupé"
 
 echo
+echo "═══ Section F — mint INTERROMPU : jamais activer le clone en silence ═══"
+# Le repro exact de la revue : le mint (POST /versions) réussit, le run meurt
+# AVANT le re-import de la spec. `pub_version_minted` est un fait de RUN : il
+# meurt avec le processus. Au run suivant, name+version est trouvé.
+half_born_v2(){   # mock frais + v1 publiée + app souscrite + v2 minée À LA MAIN
+  prep_v1_with_subscriber
+  adm -o /dev/null -H 'Content-Type: application/json' -X POST \
+    "$BASE/apis/$V1/versions" -d '{"newApiVersion":"2.0","retainApplications":true}'
+}
+
+# F0 — le défaut EXISTE avec le rôle du round 1 : témoin AVANT, sans lequel la
+# garde d'après ne prouverait rien (une garde qui ne ferme aucun trou réel).
+ROUND1_ANSIBLE="$TMP/ansible-round1"
+git -C "$REPO" archive "$ROUND1_COMMIT" ansible | tar -x -C "$TMP" -f - 2>/dev/null
+[ -f "$TMP/ansible/publish-api.yml" ] && mv "$TMP/ansible" "$ROUND1_ANSIBLE"
+if [ -f "$ROUND1_ANSIBLE/publish-api.yml" ]; then
+  half_born_v2
+  run_role "$ROUND1_ANSIBLE" "$TMP/v2.yml" >"$TMP/f0.log" 2>&1; RC=$?
+  C_V2=$(http_code "$DP/${API_NAME}/2.0/v2only")
+  if [ "$RC" -eq 0 ] && [ "$(api_field "$(api_id 2.0)" isActive)" = "true" ] && [ "$C_V2" = "404" ]; then
+    ok "F0 témoin AVANT ($ROUND1_COMMIT) : la v2 est ACTIVÉE (rc=0) en servant la spec de la BASE — /v2only 404"
+  else
+    ko "F0 le défaut ne se reproduit pas avec $ROUND1_COMMIT (rc=$RC, /v2only=$C_V2) — la garde F1 ne prouverait rien"
+  fi
+else
+  ko "F0 rôle du round 1 ($ROUND1_COMMIT) non extractible — témoin AVANT impossible"
+fi
+
+# F1 — avec la garde : refus nommé, et SURTOUT rien n'est activé.
+half_born_v2
+run_role "$REPO/ansible" "$TMP/v2.yml" >"$TMP/f1.log" 2>&1; RC=$?
+[ "$RC" -ne 0 ] && grep -q "VERSION_INCOMPLETE" "$TMP/f1.log" \
+  && ok "F1 mint interrompu → VERSION_INCOMPLETE (refus nommé)" \
+  || ko "F1 attendu VERSION_INCOMPLETE, rc=$RC"
+[ "$(api_field "$(api_id 2.0)" isActive)" = "false" ] \
+  && ok "F2 la v2 à moitié née reste INACTIVE — le clone n'est JAMAIS servi" \
+  || ko "F2 la v2 a été activée malgré le refus"
+
+# F3/F4 — la reprise explicite finit le travail : spec du manifeste, puis activation.
+run_role "$REPO/ansible" "$TMP/v2.yml" -e apim_pub_resume_version=true >"$TMP/f3.log" 2>&1; RC=$?
+[ "$RC" -eq 0 ] && grep -q "VERSION_RESUME" "$TMP/f3.log" \
+  && ok "F3 reprise explicite (apim_pub_resume_version=true) : vert, VERSION_RESUME prononcé" \
+  || ko "F3 la reprise a échoué (rc=$RC)"
+C_V2=$(http_code "$DP/${API_NAME}/2.0/v2only"); C_V1=$(http_code "$DP/${API_NAME}/1.0.0/v2only")
+[ "$C_V2" != "404" ] && [ "$C_V1" = "404" ] \
+  && ok "F4 après reprise, la v2 sert la spec du MANIFESTE (/v2only $C_V2) et la base non ($C_V1)" \
+  || ko "F4 spec non reprise : v2=$C_V2 v1=$C_V1"
+
+# F5 — non-régression du chemin voisin : un import initial interrompu AVANT
+# l'activate (lignée MONO-version, spec CORRECTE) doit toujours se reprendre
+# tout seul. La garde ne doit pas confondre les deux situations.
+fresh_mock
+adm -o /dev/null -X POST "$BASE/apis" \
+  -F "file=@$TMP/v1.openapi.yaml;type=application/x-yaml" -F "type=openapi" \
+  -F "apiName=${API_NAME}" -F "apiVersion=1.0.0"
+run_role "$REPO/ansible" "$TMP/v1.yml" >"$TMP/f5.log" 2>&1; RC=$?
+[ "$RC" -eq 0 ] && [ "$(api_field "$(api_id 1.0.0)" isActive)" = "true" ] \
+  && ok "F5 import initial interrompu (mono-version) : repris et activé sans geste — chemin voisin intact" \
+  || ko "F5 la garde a bloqué un import initial interrompu (rc=$RC)"
+
+echo "═══ Section G — la lignée d'une AUTRE équipe est intouchable ═══"
+# G0 — témoin AVANT : avec le rôle du round 1, un manifeste portant le nom
+# d'autrui MINE dans sa lignée et lui prend ses abonnés.
+if [ -f "$ROUND1_ANSIBLE/publish-api.yml" ]; then
+  TEAM="other-team"; prep_v1_with_subscriber
+  V1_OTHER="$V1"; APP_OTHER="$APPID"
+  TEAM="payments-team"
+  run_role "$ROUND1_ANSIBLE" "$TMP/v2.yml" >"$TMP/g0.log" 2>&1; RC=$?
+  V2X="$(api_id 2.0)"
+  if [ "$RC" -eq 0 ] && [ -n "$V2X" ] && app_subs "$APP_OTHER" | grep -q "$V2X"; then
+    ok "G0 témoin AVANT ($ROUND1_COMMIT) : version minée dans la lignée d'other-team, ses abonnés TRANSPORTÉS"
+  else
+    ko "G0 la capture ne se reproduit pas avec $ROUND1_COMMIT (rc=$RC) — la garde G1 ne prouverait rien"
+  fi
+else
+  ko "G0 rôle du round 1 non extractible — témoin AVANT impossible"
+fi
+
+# G1 — avec la garde : refus, et aucune trace.
+TEAM="other-team"; prep_v1_with_subscriber
+APP_OTHER="$APPID"; N_BEFORE="$(api_count)"
+TEAM="payments-team"
+run_role "$REPO/ansible" "$TMP/v2.yml" >"$TMP/g1.log" 2>&1; RC=$?
+[ "$RC" -ne 0 ] && grep -q "VERSION_BASE_FOREIGN" "$TMP/g1.log" \
+  && ok "G1 lignée d'autrui → VERSION_BASE_FOREIGN (refus nommé)" \
+  || ko "G1 attendu VERSION_BASE_FOREIGN, rc=$RC"
+[ "$(api_count)" = "$N_BEFORE" ] && [ -z "$(api_id 2.0)" ] \
+  && ok "G2 refus SANS TRACE : aucune version minée dans la lignée d'autrui" \
+  || ko "G2 une version a été créée malgré le refus"
+[ "$(app_subs "$APP_OTHER")" = "$V1" ] \
+  && ok "G3 les abonnés d'other-team n'ont pas bougé" \
+  || ko "G3 souscriptions d'other-team altérées : $(app_subs "$APP_OTHER")"
+
+# G4 — contre-témoin VERT : sa PROPRE lignée passe (sans quoi G1 pourrait
+# n'être qu'un refus systématique).
+TEAM="payments-team"; prep_v1_with_subscriber
+run_role "$REPO/ansible" "$TMP/v2.yml" >"$TMP/g4.log" 2>&1; RC=$?
+[ "$RC" -eq 0 ] && grep -q "VERSION_BASE_OWNED" "$TMP/g4.log" && [ -n "$(api_id 2.0)" ] \
+  && ok "G4 sa propre lignée : VERSION_BASE_OWNED, la v2 est minée" \
+  || ko "G4 la garde refuse aussi sa propre lignée (rc=$RC)"
+
+# G5 — feature Teams éteinte = ne pas savoir : refus (ne pas savoir n'autorise pas).
+fresh_mock
+run_role "$REPO/ansible" "$TMP/v1.yml" >"$TMP/g5-prep.log" 2>&1
+adm -o /dev/null -H 'Content-Type: application/json' -X PUT \
+  "$BASE/configurations/extended" -d '{"enableTeamWork":"false"}'
+run_role "$REPO/ansible" "$TMP/v2.yml" >"$TMP/g5.log" 2>&1; RC=$?
+[ "$RC" -ne 0 ] \
+  && ok "G5 feature Teams éteinte : refus (appartenance non confirmable)" \
+  || ko "G5 la version est passée alors que l'appartenance était inconnaissable"
+
+echo "═══ Section H — le témoin de souscription ne crie pas au loup ═══"
+# Contre-témoin NATUREL du fix mock : une application JAMAIS associée porte
+# quand même la clé consumingAPIs. Sans le fix, la garde ∀ de forme
+# (VERSION_SUBS_SHAPE_UNKNOWN) refuserait ce cas parfaitement légitime.
+TEAM="payments-team"; fresh_mock
+run_role "$REPO/ansible" "$TMP/v1.yml" >"$TMP/h-prep.log" 2>&1
+adm -o /dev/null -H 'Content-Type: application/json' -X POST "$BASE/applications" \
+  -d '{"name":"p3t6-jamais-associee"}'
+run_role "$REPO/ansible" "$TMP/v2.yml" >"$TMP/h.log" 2>&1; RC=$?
+[ "$RC" -eq 0 ] && grep -q "VERSION_SUBS_VACANT" "$TMP/h.log" \
+  && ok "H1 application jamais associée : le mint passe et le témoin se déclare VACANT" \
+  || ko "H1 le mint a été refusé (rc=$RC) ou le témoin vide est passé pour une preuve"
+
 echo "═══════════════════════════════════════════"
 printf '  RÉSULTAT : %d/%d\n' "$PASS" "$((PASS+FAIL))"
 [ "$FAIL" -eq 0 ] || printf '  %d ÉCHEC(S)\n' "$FAIL"
