@@ -98,6 +98,22 @@ func findByName(apis []wmAPI, name string) (wmAPI, bool) {
 // is allowed only from latest version", proven live), so the version-mint
 // fallback MUST select the latest existing version — the first name match in
 // gateway list order is not guaranteed to be it.
+//
+// ⚠ DETTE CONNUE, MESURÉE LE 2026-08-05 (P3-T6) : « plus grand numéro » ≠
+// « dernière version ». Sur la vraie 10.15 du lab, la lignée `accounts-read`
+// porte 1.0.1 (créée le 07-04) et 1.0.0 (créée le 07-05, MINÉE DEPUIS 1.0.1) :
+// la dernière version est donc 1.0.0, et ce tri choisirait 1.0.1 — d'où le
+// HTTP 400 « Versioning is allowed only from latest version » que la fonction
+// prétend éviter. GET /apis n'expose aucun marqueur de « dernière » (seul le
+// GET unitaire porte `nextVersion`, null en bout de chaîne — piste non
+// éprouvée, une seule lignée observée).
+//
+// Ce chemin reste VIVANT (scripts/demo-multienv.sh) et n'est PAS réécrit ici :
+// deux voies de naissance d'une version coexistent donc, et seule l'autre est
+// prouvée. La voie Ansible (rôle apim_publish_api, tasks/version.yml) refuse
+// plutôt que de deviner — VERSION_BASE_AMBIGUE dès que la lignée compte
+// plusieurs versions. Voir ansible/roles/apim_publish_api/README.md, section
+// « Nouvelle version ».
 func latestByName(apis []wmAPI, name string) (wmAPI, bool) {
 	var latest wmAPI
 	found := false
