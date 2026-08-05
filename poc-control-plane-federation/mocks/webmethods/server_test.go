@@ -209,9 +209,18 @@ func TestReimport_PreservesPolicyAndRoutingAction(t *testing.T) {
 	})
 	putRoutingURI(t, h, actID, "${env-backend}/${sys:resource_path}")
 
+	// The real product refuses PUT /apis/{id} on an ACTIVE api (400, mesuré —
+	// ADR-079/ADR-078) — the role's deactivate→PUT→activate dance
+	// (main.yml:92-121) is replayed rather than skipped.
+	if rr := doAdmin(t, h, "PUT", "/rest/apigateway/apis/"+apiID+"/deactivate", nil); rr.Code != http.StatusOK {
+		t.Fatalf("deactivate before re-import = %d", rr.Code)
+	}
 	rr := doAdmin(t, h, "PUT", "/rest/apigateway/apis/"+apiID, importBody("accounts-read", "1.0.0"))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("re-import code = %d body=%s", rr.Code, rr.Body)
+	}
+	if rr := doAdmin(t, h, "PUT", "/rest/apigateway/apis/"+apiID+"/activate", nil); rr.Code != http.StatusOK {
+		t.Fatalf("re-activate after re-import = %d", rr.Code)
 	}
 	// Policy id unchanged, ${alias} routing intact — the live-observed behaviour.
 	env := decode(t, rr)["apiResponse"].(map[string]any)["api"].(map[string]any)

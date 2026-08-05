@@ -218,10 +218,21 @@ func TestIntegration_AdapterSequenceThenMultiEnvRouting(t *testing.T) {
 	}
 
 	// 10. Re-import (PUT /apis/{id}) preserves the ${alias} routing — the
-	// defensive-convergence guarantee the CI plan leans on.
+	// defensive-convergence guarantee the CI plan leans on. The real product
+	// refuses this PUT on an ACTIVE api (400, mesuré — ADR-079/ADR-078) — the
+	// role's own deactivate→PUT→activate dance (main.yml:92-121) is replayed
+	// here rather than skipped.
+	code, _ = c.do("PUT", "/rest/apigateway/apis/"+apiID+"/deactivate", nil, true)
+	if code != 200 {
+		t.Fatalf("deactivate before re-import = %d", code)
+	}
 	code, _ = c.do("PUT", "/rest/apigateway/apis/"+apiID, importBody("payments-init", "1.0.0"), true)
 	if code != 200 {
 		t.Fatalf("re-import = %d", code)
+	}
+	code, _ = c.do("PUT", "/rest/apigateway/apis/"+apiID+"/activate", nil, true)
+	if code != 200 {
+		t.Fatalf("re-activate after re-import = %d", code)
 	}
 	_, actDoc = c.do("GET", "/rest/apigateway/policyActions/"+actID, nil, true)
 	act = actDoc["policyAction"].(map[string]any)
