@@ -165,6 +165,46 @@ else
   else
     ko "câblage placeholders : API_FORMAT_INVALIDE absent du XML posté"
   fi
+
+  # Fix round 2 (revue, casse nouvelle du round 1) : le sed double-forme ne
+  # supprime QUE la ligne du marqueur — un choix de secours posé sur une
+  # ligne SÉPARÉE (round 1) survivait donc à une substitution PROPRE
+  # (choices -> ['', 'foo@2.0.0'], choix par défaut VIDE sur un champ requis
+  # — reproduit live par le revieweur). Remède : secours + marqueur sur la
+  # MÊME ligne (round 2). Preuve dans LES DEUX SENS :
+  #   (a) job POSÉ (substitué) : le choix de secours a disparu AVEC le
+  #       marqueur — premier (et seul, ici) choix = le vrai nom@version.
+  api_choices(){ # $1 = fichier XML -> une valeur de <string> par ligne, pour le
+                 # ChoiceParameterDefinition nommé API (jamais TEAM/REQ_ENV/...)
+    python3 -c "
+import xml.etree.ElementTree as ET, sys
+root = ET.parse(sys.argv[1]).getroot()
+for pd in root.iter('hudson.model.ChoiceParameterDefinition'):
+    name = pd.findtext('name')
+    if name != 'API':
+        continue
+    for s in pd.iter('string'):
+        print(s.text if s.text is not None else '')
+" "$1" 2>/dev/null
+  }
+  API_CHOICES_POSTED=$(api_choices "$POSTED")
+  if [ "$(printf '%s\n' "$API_CHOICES_POSTED" | grep -c '^$')" -eq 0 ] \
+     && [ "$(printf '%s\n' "$API_CHOICES_POSTED" | head -1)" = "foo@2.0.0" ]; then
+    ok "câblage placeholders : job POSÉ — aucun choix vide résiduel, premier choix = foo@2.0.0"
+  else
+    ko "câblage placeholders : job POSÉ — choix API inattendus : [$(printf '%s,' "$API_CHOICES_POSTED")]"
+  fi
+  #   (b) XML SOURCE du dépôt, BRUT (jamais substitué — ex. job posé sans
+  #       passer par setup-team-onboard-jobs.sh) : EXACTEMENT un choix vide,
+  #       jamais zéro (sinon menu inutilisable, round 1) ni deux (round 2).
+  API_CHOICES_RAW=$(api_choices "$REPO/ci/jenkins/app-request.job.xml")
+  N_EMPTY=$(printf '%s\n' "$API_CHOICES_RAW" | grep -c '^$')
+  N_TOTAL=$(printf '%s\n' "$API_CHOICES_RAW" | grep -c '.*')
+  if [ "$N_EMPTY" -eq 1 ] && [ "$N_TOTAL" -eq 1 ]; then
+    ok "câblage placeholders : XML source BRUT — exactement UN choix vide (jamais choices=[])"
+  else
+    ko "câblage placeholders : XML source BRUT — attendu 1 choix vide et rien d'autre, obtenu $N_TOTAL choix ($N_EMPTY vide(s))"
+  fi
 fi
 
 echo
