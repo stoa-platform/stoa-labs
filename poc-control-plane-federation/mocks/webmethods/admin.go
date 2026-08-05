@@ -827,6 +827,16 @@ func (s *Server) createApp(w http.ResponseWriter, r *http.Request) {
 	if _, ok := in["authStrategyIds"]; !ok {
 		in["authStrategyIds"] = []any{}
 	}
+	// consumingAPIs is present-and-empty on a brand-new application — MEASURED
+	// on the real 10.15 (2026-08-05, P3-T6): an app created and never
+	// associated carries "consumingAPIs":[] in BOTH GET /applications (list)
+	// and GET /applications/{id}. The KEY's presence is load-bearing:
+	// apim_publish_api/tasks/version.yml uses "no record carries the key" as
+	// the signal that the subscription witness would be silently empty
+	// (VERSION_SUBS_SHAPE_UNKNOWN) rather than genuinely unsubscribed.
+	if _, ok := in["consumingAPIs"]; !ok {
+		in["consumingAPIs"] = []any{}
+	}
 	s.store.apps[in["id"].(string)] = in
 	// The real create response is the FLAT application object.
 	writeJSON(w, http.StatusCreated, in)
