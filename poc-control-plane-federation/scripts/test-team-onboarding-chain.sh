@@ -93,6 +93,17 @@ GITEA_CONTAINER="${GITEA_CONTAINER:-poc-gitea}"
 TEAM10="probe-p2j"
 CREATED_OSCAR_GITEA=0
 RESULT10=""
+# Le job team-apply (preuve 10) tourne DANS le conteneur Jenkins et applique
+# contre le mock DOCKER (réseau compose, service webmethods-mock:8080 — même
+# défaut que le job, cf. son XML) — PAS le mock standalone WM_GATEWAY_URL des
+# preuves 5/6/9 (processus séparé, atteignable seulement depuis le host). Le
+# port host mappé (docker-compose.poc.yml : PORT_WEBMETHODS, défaut 8090) est
+# donc une cible DISTINCTE pour le teardown de la preuve 10 — utiliser
+# WM_GATEWAY_URL ici serait un no-op qui ne trouve jamais les objets réels
+# (constaté en direct : un profil `probe-p2j` resté visible sur le mock
+# docker après un teardown qui se croyait complet, invisible depuis le mock
+# standalone qu'il interrogeait).
+APIM_API_BASE_HOST="${APIM_API_BASE_HOST:-http://localhost:8090/rest/apigateway}"
 
 PASS=0; FAIL=0
 ok()  { PASS=$((PASS+1)); printf '  \033[32mPASS\033[0m %s\n' "$*"; }
@@ -230,19 +241,35 @@ teardown10() {
       "$GITEA_URL/api/v1/repos/$GIT_REPO/pulls/${PR10_NUM}" -o /dev/null 2>/dev/null
   fi
   gapi -X DELETE "$GITEA_URL/api/v1/repos/$GIT_REPO/branches/onboard/${TEAM10}-dev" -o /dev/null 2>/dev/null
-  if [ "$RESULT10" = fort ]; then
-    curl -s -H @"$(vhdr "$VAULT_TOKEN")" -X DELETE "$VAULT_ADDR/v1/secret/metadata/stoa/deploy/${TEAM10}/wm-admin" -o /dev/null
-    curl -s -H @"$(vhdr "$VAULT_TOKEN")" -X DELETE "$VAULT_ADDR/v1/sys/policies/acl/deploy-${TEAM10}" -o /dev/null
-    local _pid10 _gid10 _uid10
-    _pid10=$(wmapi accessProfiles | python3 -c "import json,sys;print(next((p['id'] for p in json.load(sys.stdin).get('accessProfiles',[]) if p.get('name')=='$TEAM10'),''))" 2>/dev/null)
-    _gid10=$(wmapi groups | python3 -c "import json,sys;print(next((g['id'] for g in json.load(sys.stdin).get('groups',[]) if g.get('name')=='$TEAM10-devs'),''))" 2>/dev/null)
-    _uid10=$(wmapi users | python3 -c "import json,sys;print(next((u['id'] for u in json.load(sys.stdin).get('users',[]) if u.get('loginId')=='svc-$TEAM10'),''))" 2>/dev/null)
-    [ -n "$_pid10" ] && curl -s -u Administrator:manage -X DELETE "$WM_GATEWAY_URL/rest/apigateway/accessProfiles/$_pid10" -o /dev/null
-    [ -n "$_gid10" ] && curl -s -u Administrator:manage -X DELETE "$WM_GATEWAY_URL/rest/apigateway/groups/$_gid10" -o /dev/null
-    [ -n "$_uid10" ] && curl -s -u Administrator:manage -X DELETE "$WM_GATEWAY_URL/rest/apigateway/users/$_uid10" -o /dev/null
-    gapi -X DELETE "$GITEA_URL/api/v1/repos/${TEAM10}/apis" -o /dev/null 2>/dev/null
-    gapi -X DELETE "$GITEA_URL/api/v1/orgs/${TEAM10}" -o /dev/null 2>/dev/null
-  fi
+  # Tentative INCONDITIONNELLE (jamais gardée par RESULT10) : team-apply.sh
+  # crée le dépôt AVANT de lancer ansible/onboard-team.yml (§2 puis §3 de son
+  # propre script) — un run qui échoue APRÈS cette étape (ex. dans le rôle
+  # ansible lui-même) laisse un dépôt/org RÉELS même quand RESULT10 vaut
+  # "fail", pas seulement "fort". Constaté en direct : un run categorisé
+  # "fail" (bug ansible 2.19, corrigé depuis) avait bel et bien créé
+  # `probe-p2j/apis` ; gardé derrière `RESULT10=fort` uniquement, ce nettoyage
+  # ne l'aurait jamais atteint. Les appels DELETE sont des no-op sûrs quand
+  # rien n'existe (404/405) — inconditionnel coûte rien, gardé coûtait un
+  # résidu silencieux.
+  curl -s -H @"$(vhdr "$VAULT_TOKEN")" -X DELETE "$VAULT_ADDR/v1/secret/metadata/stoa/deploy/${TEAM10}/wm-admin" -o /dev/null
+  curl -s -H @"$(vhdr "$VAULT_TOKEN")" -X DELETE "$VAULT_ADDR/v1/sys/policies/acl/deploy-${TEAM10}" -o /dev/null
+  # Cible le mock DOCKER (APIM_API_BASE_HOST), PAS WM_GATEWAY_URL (le
+  # standalone des preuves 5/6/9, un process SÉPARÉ) — c'est CE mock que
+  # team-apply.sh applique réellement depuis l'intérieur du conteneur
+  # Jenkins. AUCUN des deux mocks n'a de route DELETE (même limite
+  # structurelle que la preuve 9, WM_DELETE_SUPPORTED) : ces appels sont donc
+  # un best-effort, forward-compatible avec une vraie gateway ; contre les
+  # deux mocks de ce lab, le retour à un état propre passe par un redémarrage
+  # du process/conteneur (opérateur), pas par cette tentative.
+  local _pid10 _gid10 _uid10
+  _pid10=$(curl -s -u Administrator:manage "$APIM_API_BASE_HOST/accessProfiles" | python3 -c "import json,sys;print(next((p['id'] for p in json.load(sys.stdin).get('accessProfiles',[]) if p.get('name')=='$TEAM10'),''))" 2>/dev/null)
+  _gid10=$(curl -s -u Administrator:manage "$APIM_API_BASE_HOST/groups" | python3 -c "import json,sys;print(next((g['id'] for g in json.load(sys.stdin).get('groups',[]) if g.get('name')=='$TEAM10-devs'),''))" 2>/dev/null)
+  _uid10=$(curl -s -u Administrator:manage "$APIM_API_BASE_HOST/users" | python3 -c "import json,sys;print(next((u['id'] for u in json.load(sys.stdin).get('users',[]) if u.get('loginId')=='svc-$TEAM10'),''))" 2>/dev/null)
+  [ -n "$_pid10" ] && curl -s -u Administrator:manage -X DELETE "$APIM_API_BASE_HOST/accessProfiles/$_pid10" -o /dev/null
+  [ -n "$_gid10" ] && curl -s -u Administrator:manage -X DELETE "$APIM_API_BASE_HOST/groups/$_gid10" -o /dev/null
+  [ -n "$_uid10" ] && curl -s -u Administrator:manage -X DELETE "$APIM_API_BASE_HOST/users/$_uid10" -o /dev/null
+  gapi -X DELETE "$GITEA_URL/api/v1/repos/${TEAM10}/apis" -o /dev/null 2>/dev/null
+  gapi -X DELETE "$GITEA_URL/api/v1/orgs/${TEAM10}" -o /dev/null 2>/dev/null
   if [ "$CREATED_OSCAR_GITEA" = 1 ]; then
     gapi -X DELETE "$GITEA_URL/api/v1/repos/$GIT_REPO/collaborators/oscar" -o /dev/null 2>/dev/null
     docker exec -u git "$GITEA_CONTAINER" gitea admin user delete --username oscar >/dev/null 2>&1
