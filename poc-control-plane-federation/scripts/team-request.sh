@@ -144,7 +144,7 @@ AUTH_B64=$(printf 'x:%s' "$GITEA_TOKEN" | base64 | tr -d '\n')
 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader \
   GIT_CONFIG_VALUE_0="Authorization: Basic ${AUTH_B64}" \
   git -C "$WORK/repo" push -q "${GIT_HOST}/${GIT_REPO}.git" "$BRANCH" 2>"$WORK/pusherr" \
-  || { cat "$WORK/pusherr" >&2; exit 1; }
+  || { echo "ERREUR: push" >&2; cat "$WORK/pusherr" >&2; exit 1; }
 unset AUTH_B64
 
 PR_NUMBER=$(API="${GIT_HOST}/api/v1" GIT_REPO="$GIT_REPO" GITEA_TOKEN="$GITEA_TOKEN" \

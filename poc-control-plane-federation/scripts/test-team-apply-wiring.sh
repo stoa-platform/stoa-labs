@@ -130,12 +130,20 @@ echo "== 12. VAULT_USER_AUTH_MOUNT et APIM_API_BASE exportés dans le bloc sh ==
 # retomber ci/lib/vault-login.sh sur son défaut ldap (la convention CLIENT)
 # alors que ce lab authentifie ses opérateurs en userpass — login refusé,
 # jamais détecté par une revue XML statique puisque ce filet n'existait pas.
-grep -q 'VAULT_USER_AUTH_MOUNT' "$JOB" \
+#
+# ANCRÉ sur la ligne `export VAR=`, PAS un grep nu (re-revue, Important) : un
+# grep -q 'VAULT_USER_AUTH_MOUNT' matche AUSSI les COMMENTAIRES qui nomment
+# la variable (le bloc juste au-dessus la cite 4 fois) — contre-épreuve du
+# relecteur : amputer les deux lignes `export` en laissant les commentaires
+# rendait quand même 30/30. Même classe de « vert vacant » que la preuve 8
+# du harnais (LINES>0 sans contrôle positif). L'ancre `^ *export VAR=` ne
+# matche QUE l'export réel, jamais sa mention en prose.
+grep -qE '^ *export VAULT_USER_AUTH_MOUNT=' "$JOB" \
   && ok "VAULT_USER_AUTH_MOUNT exporté (sinon : login retombe sur le défaut ldap de la lib)" \
   || ko "VAULT_USER_AUTH_MOUNT absent — régression connue (Task 8, deux rounds pour la trouver en réel)"
-grep -q 'APIM_API_BASE' "$JOB" \
-  && ok "APIM_API_BASE exporté (cible gateway explicite, jamais le défaut 5555 de la lib)" \
-  || ko "APIM_API_BASE absent — team-apply.sh viserait la cible codée en dur d'apim_common"
+grep -qE '^ *export APIM_API_BASE=' "$JOB" \
+  && ok "APIM_API_BASE exporté (cible gateway explicite requise)" \
+  || ko "APIM_API_BASE absent — le job doit le poser explicitement, sans lui team-apply.sh refuse de démarrer (\${APIM_API_BASE:?...}, team-apply.sh:32)"
 
 echo
 echo "======================================================================"
