@@ -37,6 +37,23 @@ apim_pub_deactivate_envs: ["dev", ""]
 # décision d'architecture, pas un réglage.
 apim_pub_manifest_allowed: ["apim_api"]
 
+# --- NOUVELLE VERSION (tasks/version.yml) ------------------------------------
+# Miner une version dans la lignée d'une AUTRE équipe y dépose un actif (la
+# version minée hérite des teams de sa base, mesuré le 2026-08-05) et y
+# transporte ses abonnés (retainApplications). La garde exige que CHAQUE version
+# de la lignée soit confirmée appartenir à l'équipe demandeuse ; ne pas savoir
+# (feature Teams éteinte, `teams` illisible, aucune équipe demandeuse) vaut
+# refus. `false` = on assume la capture cross-équipe : lab uniquement.
+apim_pub_version_require_team_match: true
+
+# Reprise d'un mint INTERROMPU entre la duplication et le push de la spec. Par
+# défaut le rôle REFUSE (VERSION_INCOMPLETE) plutôt que d'activer une version
+# qui porte encore la définition CLONÉE de sa base. `true` = geste explicite de
+# reprise : re-import de la spec + relectures, puis activation. À ne PAS poser
+# à demeure dans un pipeline — une version inactive peut aussi l'être parce
+# qu'un humain l'a retirée du service.
+apim_pub_resume_version: false
+
 # --- E1 : une API sans équipe n'est cloisonnée pour personne (D3) ------------
 # Mesuré le 2026-07-31 : une API laissée en team `Default` est lue (200) par
 # n'importe quelle équipe. false = lab sans feature Teams, JAMAIS chez un client.
