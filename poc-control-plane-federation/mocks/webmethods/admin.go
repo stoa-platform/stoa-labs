@@ -40,10 +40,36 @@ import (
 
 // --- APIs (import / lifecycle) ----------------------------------------------
 
-// apiEnvelope is the nested item shape {"api":{...},"responseStatus":"SUCCESS"}.
+// apiEnvelope is the nested item shape
+// {"api":{...},"responseStatus":"SUCCESS","teams":[...]}.
+//
+// `teams` sits at the ENVELOPE level, never inside "api" — measured on the real
+// 10.15 (2026-08-05): GET /apis/{id} answers apiResponse.teams=[{id,name,
+// source}] while apiResponse.api.teams is null, and GET /apis (list) carries the
+// SAME teams key on every item. Both levels matter: apim_publish_api reads the
+// LIST to decide whether a version lineage belongs to the requesting team
+// (VERSION_BASE_FOREIGN) without paying an extra call per sibling.
 func apiEnvelope(rec *apiRecord) map[string]any {
-	return map[string]any{"api": rec, "responseStatus": "SUCCESS"}
+	return map[string]any{"api": rec, "responseStatus": "SUCCESS", "teams": teamRefs(rec.Teams)}
 }
+
+// teamRefs inflates team NAMES into the product's {id,name,source} refs. System
+// profiles carry id==name (already the mock's convention for preinstalled
+// objects), and "source":"SYSTEM" is what the live gateway returns for both
+// Administrators and Default.
+func teamRefs(names []string) []any {
+	out := make([]any, 0, len(names))
+	for _, n := range names {
+		out = append(out, map[string]any{"id": n, "name": n, "source": "SYSTEM"})
+	}
+	return out
+}
+
+// defaultTeams is what a freshly imported API carries — measured live:
+// [Administrators, Default]. `Default` is the one that matters: while it is
+// there, EVERY team reads the API (mesuré le 2026-07-31), which is why
+// apim_publish_api asserts its removal after assigning a team.
+func defaultTeams() []string { return []string{"Administrators", "Default"} }
 
 func (s *Server) listAPIs(w http.ResponseWriter, _ *http.Request) {
 	s.store.mu.RLock()
@@ -93,6 +119,7 @@ func (s *Server) createAPI(w http.ResponseWriter, r *http.Request) {
 		Type:       "REST",
 		Policies:   []string{polID},
 		Definition: definition,
+		Teams:      defaultTeams(),
 	}
 	s.store.apis[id] = rec
 	// The FIRST record of a name is, by construction, its own lineage's latest
@@ -184,7 +211,13 @@ func (s *Server) createVersionAPI(w http.ResponseWriter, r *http.Request) {
 
 	base, ok := s.store.apis[baseID]
 	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]string{"errorDetails": "api " + baseID + " not found"})
+		// 401 et NON 404 : sur cette 10.15, un GET/POST visant une ressource
+		// supprimée — ou un GUID qui n'a JAMAIS existé — répond « User doesn't
+		// have permission to manage this API », même en Administrator (mesuré
+		// au spike T1, 2026-08-05, y compris avec un GUID inventé).
+		writeJSON(w, http.StatusUnauthorized, map[string]string{
+			"errorDetails": "User doesn't have permission to manage this API",
+		})
 		return
 	}
 	if s.store.latestVersionID[base.APIName] != baseID {
@@ -213,6 +246,13 @@ func (s *Server) createVersionAPI(w http.ResponseWriter, r *http.Request) {
 		Type:       "REST",
 		Policies:   []string{polID},
 		Definition: base.Definition,
+		// La version minée HÉRITE des teams de la base — MESURÉ le 2026-08-05
+		// sur la vraie 10.15 : base assignée à `payments-team` (Default retirée)
+		// puis mint → la nouvelle version naît avec [Administrators,
+		// payments-team], PAS en Default. C'est ce qui rend la capture
+		// cross-lignée si grave : une version minée dans la lignée d'autrui
+		// atterrit DANS le périmètre de cette équipe (garde VERSION_BASE_FOREIGN).
+		Teams: append([]string{}, base.Teams...),
 	}
 	s.store.apis[id] = rec
 	// This record becomes the new latest of the lineage — baseID stops being

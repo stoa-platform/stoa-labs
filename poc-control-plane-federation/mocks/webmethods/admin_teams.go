@@ -207,6 +207,58 @@ func (s *Server) updateProfile(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, in)
 }
 
+// --- assets/team (assignation d'équipe) --------------------------------------
+
+// assignTeam serves POST /assets/team {assetIds, assetType, newTeams} — the
+// call apim_publish_api/tasks/team.yml uses to scope an API to a team.
+//
+// Deux faits reproduits, tous deux porteurs :
+//   - `assetType` MANQUANT ou différent de "API" ⇒ HTTP 200 et RIEN ne se passe.
+//     C'est LE piège de cet appel (documenté dans team.yml) : un code vert n'y
+//     prouve strictement rien, seule la relecture distingue « assigné » de
+//     « accepté puis ignoré ».
+//   - `newTeams` attend des UUID d'accessProfile ; les entrées inconnues sont
+//     jetées EN SILENCE (même règle que keepKnown ailleurs). Les profils
+//     SYSTÈME ont id==name, d'où le passage du nom qui « marche » pour eux.
+//
+// L'assignation REMPLACE les teams non-système : `Administrators` est conservée
+// (elle l'est sur la vraie gateway, mesuré) et `Default` est RETIRÉE dès qu'une
+// équipe est posée — c'est très exactement ce que team.yml asserte.
+func (s *Server) assignTeam(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		AssetIDs  []string `json:"assetIds"`
+		AssetType string   `json:"assetType"`
+		NewTeams  []string `json:"newTeams"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
+		return
+	}
+	s.store.mu.Lock()
+	defer s.store.mu.Unlock()
+	if in.AssetType != "API" {
+		// Le no-op silencieux : 200, aucune écriture.
+		writeJSON(w, http.StatusOK, map[string]any{"responseStatus": "SUCCESS"})
+		return
+	}
+	names := []string{"Administrators"}
+	for _, t := range in.NewTeams {
+		prof, ok := s.store.profiles[t]
+		if !ok {
+			continue // id inconnu : jeté en silence, comme le produit
+		}
+		if n, _ := prof["name"].(string); n != "" && n != "Administrators" {
+			names = append(names, n)
+		}
+	}
+	for _, id := range in.AssetIDs {
+		if api := s.store.apis[id]; api != nil {
+			api.Teams = append([]string{}, names...)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"responseStatus": "SUCCESS"})
+}
+
 // keepKnown ne conserve que les entrées qui sont des ids CONNUS de la famille
 // visée. C'est LE piège : le produit accepte n'importe quoi (200) et jette
 // silencieusement ce qui n'est pas un id. Pour les objets SYSTÈME préinstallés

@@ -99,6 +99,7 @@ func (s *Server) Handler() http.Handler {
 	admin.HandleFunc("PUT /rest/apigateway/groups/{id}", s.updateGroup)
 	admin.HandleFunc("GET /rest/apigateway/accessProfiles", s.listProfiles)
 	admin.HandleFunc("POST /rest/apigateway/accessProfiles", s.createProfile)
+	admin.HandleFunc("POST /rest/apigateway/assets/team", s.assignTeam)
 	admin.HandleFunc("PUT /rest/apigateway/accessProfiles/{id}", s.updateProfile)
 	admin.HandleFunc("POST /rest/apigateway/transactionalEvents", s.events)
 
