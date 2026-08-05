@@ -189,7 +189,29 @@ ONB_RC=$?
 # ── 4. le statut RÉEL sur la PR — succès comme échec ─────────────────────────
 if [ "$ONB_RC" -eq 0 ]; then
   SUMMARY=$(grep -oE '(ONBOARD_OK|VERIFY_[A-Z_]+|TEAM_[A-Z_]+|TENANT_ROOT_UNSAFE|KV_[A-Z_]+)[^"]*' "$TMP/onb.log" | tail -3 | tr '\n' ' ')
-  comment "✅ team-apply ${TEAM}/${ENVN} — ${REPO_NOTE}${REPO_LINK} ; onboarding : ${SUMMARY:-ONBOARD_OK}"
+
+  # ── re-pose ÉVÉNEMENTIELLE des listes (Task 3, palier 3) ───────────────────
+  # L'équipe qu'on vient d'onboarder doit apparaître dans les listes
+  # déroulantes (app-request, api-request quand il existera) SANS attendre un
+  # relance manuelle de setup-team-onboard-jobs.sh. BEST-EFFORT BRUYANT : à ce
+  # point l'onboarding est déjà FAIT (ONB_RC=0, rôle Ansible idempotent
+  # convergé) — un échec de re-pose ne l'annule PAS et n'appelle jamais
+  # `fail` ; il est seulement NOMMÉ dans le commentaire ✅, pour qu'un humain
+  # sache qu'il doit relancer la pose à la main. api-request n'existe pas
+  # encore (Task 5) : setup-team-onboard-jobs.sh tolère proprement son
+  # absence (avertit, ignore), donc CE code est déjà prêt pour lui.
+  REFRESH_NOTE=""
+  if JENKINS_UI="${JENKINS_UI:-http://localhost:18080}" JOBS="app-request api-request" \
+     ENVN="$ENVN" bash scripts/setup-team-onboard-jobs.sh >"$TMP/refresh.log" 2>&1
+  then
+    echo "listes rafraîchies (app-request, api-request si présent)"
+  else
+    REFRESH_NOTE=" ⚠ listes non rafraîchies — relancer setup-team-onboard-jobs.sh"
+    echo "AVERTISSEMENT: re-pose des listes en échec — l'onboarding, lui, EST fait :" >&2
+    tail -20 "$TMP/refresh.log" >&2
+  fi
+
+  comment "✅ team-apply ${TEAM}/${ENVN} — ${REPO_NOTE}${REPO_LINK} ; onboarding : ${SUMMARY:-ONBOARD_OK}${REFRESH_NOTE}"
 else
   # ÉCART AU BRIEF (bug corrigé, constaté en direct) : le grep(tags) du brief
   # cherche UNIQUEMENT les marqueurs propres à apim_team_onboard (TEAM_*/KV_*/
