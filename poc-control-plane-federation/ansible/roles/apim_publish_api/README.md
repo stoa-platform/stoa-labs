@@ -88,22 +88,62 @@ comportement produit à la prochaine montée de version :
 | policies **CLONÉES** (ids nouveaux), record né **inactif** | relu et asserté → `VERSION_CLONE_UNEXPECTED` |
 | duplication permise **depuis la DERNIÈRE version seulement**, et `GET /apis` n'expose aucun marqueur de « dernière » (le plus grand numéro n'est PAS la dernière : lignée `accounts-read` du lab, 1.0.0 minée depuis 1.0.1) | **plusieurs versions candidates ⇒ refus `VERSION_BASE_AMBIGUE`** avec la liste, jamais de devinette |
 
-Échecs nommés : `VERSION_BASE_AMBIGUE`, `VERSION_CREATE_FAILED`,
-`VERSION_UNCONFIRMED`, `VERSION_CLONE_UNEXPECTED`, `VERSION_SUBS_SHAPE_UNKNOWN`,
-`VERSION_SUBS_NOT_RETAINED`, `VERSION_MINTED_ACTIVE`.
+Échecs nommés : `VERSION_BASE_FOREIGN`, `VERSION_BASE_AMBIGUE`,
+`VERSION_CREATE_FAILED`, `VERSION_UNCONFIRMED`, `VERSION_CLONE_UNEXPECTED`,
+`VERSION_SUBS_SHAPE_UNKNOWN`, `VERSION_SUBS_NOT_RETAINED`,
+`VERSION_MINTED_ACTIVE`, `VERSION_INCOMPLETE`.
+
+### La lignée doit appartenir à l'équipe demandeuse (`VERSION_BASE_FOREIGN`)
+
+Publier une NOUVELLE version sous un nom qui appartient à une AUTRE équipe
+n'est pas une publication, c'est une **capture d'actifs** : la version minée
+**hérite des teams de sa base** (mesuré le 2026-08-05 — elle atterrit donc dans
+le périmètre de la victime, jamais en `Default`) et `retainApplications:true`
+lui **transporte ses abonnés**. Avant cette garde, ce cas rendait un 409 franc ;
+le chemin nouvelle version le rendait silencieusement possible.
+
+La règle est **∀ et positive** : chaque version de la lignée doit être
+**confirmée** appartenir à l'équipe demandeuse (`apim_ss_team`, posée par le
+job). Une version en `Default`, une enveloppe sans `teams`, la feature Teams
+éteinte ou aucune équipe demandeuse ⇒ **refus** — ne pas savoir n'autorise pas.
+Knob de tolérance, lab uniquement : `apim_pub_version_require_team_match=false`.
+
+### Mint interrompu (`VERSION_INCOMPLETE`) — crash-consistance
+
+Le mint et le push de la spec sont **deux appels**. Entre les deux, la version
+existe avec la définition **clonée de sa base**. Si le run meurt là, le run
+suivant retrouve `name`+`version` et prendrait le chemin nominal : il
+**activerait le clone**, en silence (rc=0, aucun message, le data-plane sert le
+contrat de la base). Le rôle **refuse** ce cas — version inactive dans une
+lignée multi-versions, sans `update:` — et nomme le geste de reprise :
+`-e apim_pub_resume_version=true` (re-import de la spec + relectures, puis
+activation ; légal sans désactivation, le record est inactif).
+
+Ne PAS poser ce knob à demeure : une version inactive peut aussi l'avoir été
+**volontairement**, et la reprise la remettrait en service. Un import initial
+interrompu (lignée **mono-version**, spec correcte) n'est pas concerné : il se
+reprend tout seul, comme avant.
 
 **ADR-079** : le re-import qui suit un mint est **exempté** de `UPDATE_FORBIDDEN`
 — une version qui vient de naître est inactive et n'a jamais servi de trafic,
 donc rien à couper (publier une nouvelle version EST la voie 0-coupure). L'exemption
 ne tient pas sur un booléen : l'état est **relu sur la gateway** avant le PUT
 (`VERSION_MINTED_ACTIVE` sinon). Preuve rejouable, hors ligne :
-`scripts/test-publish-version.sh` (31/31 contre le mock).
+`scripts/test-publish-version.sh` (44/44 contre le mock, témoins AVANT inclus).
 
-> Résiduel connu, hérité : la résolution de la base matche `apiName`
-> **globalement**, sans filtre d'équipe — même matching que la recherche
-> `name`+`version` de `main.yml`. La porte amont (`api-request.sh`,
-> `API_NAME_COLLISION`) traite le cas côté demande ; le chevillage aval reste
-> ouvert.
+> **Deux voies de naissance d'une version coexistent, une seule est prouvée.**
+> Le moteur Go (`labctl/internal/adapter/webmethods/publish.go`, `latestByName`),
+> encore vivant via `scripts/demo-multienv.sh`, choisit la base par le **plus
+> grand numéro de version** — or ce n'est **pas** la dernière version (mesuré :
+> lignée `accounts-read`, 1.0.0 minée depuis 1.0.1), donc il prendrait le 400
+> « Versioning is allowed only from latest version ». Dette marquée, non
+> réécrite (hors périmètre) : voir le commentaire au-dessus de `latestByName`.
+
+> **Résiduel hérité** : la recherche `name`+`version` de `main.yml:61-67` reste
+> **globale**, sans filtre d'équipe. Le chemin nouvelle version, lui, ne l'est
+> plus : `VERSION_BASE_FOREIGN` exige que toute la lignée appartienne à
+> l'équipe demandeuse. Le chevillage du chemin `name`+`version` (une équipe qui
+> ré-applique une version portant le nom d'autrui) reste ouvert.
 
 ## Port en Deny-by-Default : allow-list (IS-admin, opt-in) — prouvé live
 

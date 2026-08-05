@@ -43,6 +43,16 @@
 # chaque appel porte donc son `changed_when` véridique ; et un 201 ne prouve
 # rien (palier 1) — chaque écriture est suivie d'une RELECTURE qui assert.
 
+- name: "Version : enveloppes existantes portant ce nom d'API (toutes versions)"
+  ansible.builtin.set_fact:
+    # On garde l'ENVELOPPE (api + teams) et pas seulement `api` : l'appartenance
+    # d'équipe vit au niveau enveloppe (MESURÉ le 2026-08-05 : GET /apis rend
+    # `teams` sur CHAQUE item de la liste, et `api.teams` est null). La lire ici
+    # évite un GET par version sœur.
+    pub_ver_sibling_items: >-
+      {{ pub_apis.json.apiResponse | default([])
+         | selectattr('api.apiName', 'equalto', apim_api.name) | list }}
+
 - name: "Version : records existants portant ce nom d'API (toutes versions)"
   ansible.builtin.set_fact:
     # Même matching que main.yml (name seul ici, name+version là-bas) : GLOBAL,
@@ -51,9 +61,68 @@
     # côté demande. Ce fichier hérite du même matching, il ne l'élargit pas :
     # il lit la MÊME liste `pub_apis`, déjà chargée par main.yml (aucun appel
     # supplémentaire), et n'accepte de miner que sur une base UNIQUE.
-    pub_ver_siblings: >-
-      {{ pub_apis.json.apiResponse | default([]) | map(attribute='api')
-         | selectattr('apiName', 'equalto', apim_api.name) | list }}
+    pub_ver_siblings: "{{ pub_ver_sibling_items | map(attribute='api') | list }}"
+
+# ===== 0. Le mint d'un run PRÉCÉDENT s'est-il arrêté en chemin ? =============
+# Le mint et le re-import de la spec sont DEUX appels : entre les deux, la
+# version existe avec la définition CLONÉE de la base, et `pub_version_minted`
+# — un fait de run — meurt avec le processus. Au run suivant, name+version est
+# trouvé, tout ce fichier se skippe, et l'Activate de main.yml ACTIVERAIT une
+# version qui sert la spec de la BASE : rc=0, changed=0, aucun message, le
+# data-plane ment. (Mesuré en revue ; hors env d'authoring, `update:true` est
+# refusé par UPDATE_FORBIDDEN — il n'y avait donc AUCUN chemin de réparation.)
+#
+# La condition est resserrée sur la population réellement exposée :
+#   - `apim_api_id` trouvé (sinon on est sur le chemin de création) ;
+#   - la lignée porte AU MOINS DEUX versions — un mint a donc pu avoir lieu.
+#     Un import initial interrompu avant l'activate (lignée mono-version) garde
+#     sa spec CORRECTE : le reprendre est légitime, et ce chemin-là ne change pas ;
+#   - `update` n'est pas demandé — sinon le re-import repousse la spec de toute
+#     façon avant l'activation, le danger n'existe pas.
+- name: "Version : une reprise est-elle à examiner ? (figé AVANT toute écriture)"
+  ansible.builtin.set_fact:
+    pub_ver_resume_check: >-
+      {{ (apim_api_id | length > 0) and (pub_ver_siblings | length >= 2)
+         and not (apim_api['update'] | default(false) | bool) }}
+
+- name: "Version : version deja presente dans une lignee multi-versions"
+  when: "pub_ver_resume_check | bool"
+  block:
+
+    - name: "Version : état d'activation du record déjà présent"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/apis/{{ apim_api_id }}"
+      register: pub_ver_existing_get
+      changed_when: false
+
+    - name: "Version : FAIL-CLOSED — ne jamais activer une version dont la spec n'est pas prouvée"
+      ansible.builtin.assert:
+        that: >-
+          (pub_ver_existing_get.json.apiResponse.api.isActive | default(false))
+          or (apim_pub_resume_version | default(false) | bool)
+        fail_msg: >-
+          VERSION_INCOMPLETE : '{{ apim_api.name }}' v{{ apim_api.version }} existe déjà
+          mais est INACTIVE, dans une lignée qui compte {{ pub_ver_siblings | length }}
+          versions — la signature d'un mint interrompu AVANT que la spec du manifeste
+          n'ait été poussée. Ce record porte alors la définition CLONÉE de sa base :
+          l'activer servirait le mauvais contrat, en silence. Refus. Pour reprendre le
+          travail là où il s'est arrêté (re-import de la spec, relectures, puis
+          activation — légal sans désactivation, le record est inactif) :
+          -e apim_pub_resume_version=true. Si cette version a été désactivée
+          VOLONTAIREMENT, ne pas reprendre : la réactiver la remettrait en service.
+        success_msg: >-
+          {{ 'VERSION_RESUME : reprise explicite demandée — la spec du manifeste va être
+              (re)poussée sur v' ~ apim_api.version ~ ' avant toute activation.'
+             if not (pub_ver_existing_get.json.apiResponse.api.isActive | default(false))
+             else 'VERSION_PRESENT : v' ~ apim_api.version ~ ' déjà publiée et ACTIVE — rien à reprendre.' }}
+
+    # La reprise emprunte le MÊME chemin que le mint : `pub_version_minted`
+    # commande le re-import de la spec dans main.yml, et sa contre-garde y
+    # revérifie que le record est bien inactif avant le PUT.
+    - name: "Version : reprise — la spec du manifeste sera poussée avant l'activation"
+      ansible.builtin.set_fact:
+        pub_version_minted: true
+      when: "not (pub_ver_existing_get.json.apiResponse.api.isActive | default(false))"
 
 # ⚠ FAIT FIGÉ, PAS UNE EXPRESSION VIVE. Un `when` — sur une tâche, sur un bloc,
 # ou porté par l'import_tasks de main.yml — est RÉÉVALUÉ à CHAQUE tâche qu'il
@@ -70,6 +139,60 @@
 - name: "Version : le nom existe deja sous une autre version — duplication produit"
   when: "pub_ver_needed | bool"
   block:
+
+    # ===== 0b. À QUI est cette lignée ? (AVANT tout le reste) ==============
+    # LE défaut que cette garde ferme (mesuré en revue) : sans elle, un
+    # manifeste portant le NOM d'une API d'une autre équipe, sous une version
+    # nouvelle, ne rend plus le 409 franc d'avant — il MINE dans la lignée de
+    # cette équipe et, `retainApplications:true` aidant, y TRANSPORTE ses
+    # abonnés. Et la version minée HÉRITE des teams de la base (mesuré le
+    # 2026-08-05 sur la 10.15) : elle atterrit donc DANS le périmètre de la
+    # victime, sans jamais passer par Default. Le refus base-unique ne protège
+    # rien ici — une API étrangère mono-version est le cas le plus courant.
+    #
+    # La règle est ∀ et POSITIVE : CHAQUE version de la lignée doit être
+    # confirmée appartenir à l'équipe demandeuse. Une version dont l'enveloppe
+    # ne porte pas `teams`, ou qui vit en `Default` (donc lisible par tous),
+    # n'est pas confirmée — donc refusée. Ne pas savoir n'est pas une
+    # autorisation.
+    - name: "Version : appartenance de chaque version de la lignée (niveau enveloppe)"
+      ansible.builtin.set_fact:
+        pub_ver_owners: >-
+          {{ dict(pub_ver_sibling_items | map(attribute='api.apiVersion') | list
+                  | zip(pub_ver_sibling_items | map(attribute='teams', default=[])
+                        | map('map', attribute='name') | map('list') | list)) }}
+
+    - name: "Version : versions dont l'appartenance à l'équipe demandeuse n'est PAS confirmée"
+      ansible.builtin.set_fact:
+        # `teams` absente ⇒ liste vide ⇒ NON confirmée (fail-closed sur la forme,
+        # sans garde séparée) ; équipe demandeuse vide ⇒ tout est non confirmé.
+        pub_ver_foreign: >-
+          {{ pub_ver_owners | dict2items | rejectattr('value', 'contains', pub_team_name)
+             | map(attribute='key') | list }}
+
+    - name: "Version : FAIL-CLOSED — miner une nouvelle version dans la lignée d'autrui"
+      when: "apim_pub_version_require_team_match | default(true) | bool"
+      ansible.builtin.assert:
+        that:
+          - "pub_team_name | length > 0"
+          - "apim_teams_enabled | default(false) | bool"
+          - "pub_ver_foreign | length == 0"
+        fail_msg: >-
+          VERSION_BASE_FOREIGN : refus de miner '{{ apim_api.name }}'
+          v{{ apim_api.version }} — l'appartenance de la lignée à l'équipe
+          demandeuse n'est pas CONFIRMÉE. Équipe demandeuse :
+          '{{ pub_team_name | default('(aucune)', true) }}' ; feature Teams :
+          {{ apim_teams_enabled | default(false) }} ; appartenance relue :
+          {{ pub_ver_owners }} ; non confirmées : {{ pub_ver_foreign }}.
+          Miner ici déposerait une version DANS le périmètre de l'équipe
+          propriétaire (la version minée hérite des teams de sa base, mesuré) et y
+          transporterait ses abonnés — une capture d'actifs, pas une publication.
+          Publier sous un nom qui appartient à votre équipe, ou lever
+          explicitement la garde (apim_pub_version_require_team_match=false)
+          en sachant ce qu'elle protège.
+        success_msg: >-
+          VERSION_BASE_OWNED : lignée '{{ apim_api.name }}' confirmée à
+          '{{ pub_team_name }}' ({{ pub_ver_owners }}).
 
     # ===== 1. La base : une seule, ou rien =================================
     - name: "Version : candidats lisibles (version puis id), pour le diagnostic"
@@ -123,14 +246,22 @@
         # Sans cette garde, une gateway qui cesserait d'exposer consumingAPIs
         # rendrait le témoin M3 VIDE — donc l'assert d'après VACANT, vert sans
         # rien avoir prouvé. Exactement le « vert vacant » que le palier refuse.
+        #
+        # ∀ et non ∃ : la mesure du 2026-08-05 dit que TOUTES les applications
+        # portent la clé, y compris celles qui n'ont jamais été associées (valeur
+        # []). Exiger « au moins une » laisserait passer une forme où seules les
+        # applications abonnées la portent — et dans ce cas un abonné perdu
+        # deviendrait invisible au témoin.
         that: >-
-          (pub_ver_apps_before.json.applications | default([]) | length == 0)
-          or ((pub_ver_apps_before.json.applications | default([])
-               | selectattr('consumingAPIs', 'defined') | list | length) > 0)
+          (pub_ver_apps_before.json.applications | default([])
+           | rejectattr('consumingAPIs', 'defined') | list | length) == 0
         fail_msg: >-
-          VERSION_SUBS_SHAPE_UNKNOWN : GET /applications rend
+          VERSION_SUBS_SHAPE_UNKNOWN : sur les
           {{ pub_ver_apps_before.json.applications | default([]) | length }} applications
-          dont AUCUNE ne porte la clé `consumingAPIs` (mesurée présente sur toutes,
+          rendues par GET /applications,
+          {{ pub_ver_apps_before.json.applications | default([])
+             | rejectattr('consumingAPIs', 'defined') | list | length }}
+          ne portent PAS la clé `consumingAPIs` (mesurée présente sur TOUTES,
           même vides, le 2026-08-05). Le témoin de souscription serait vide par
           accident de forme, pas par absence de souscription : refus de miner une
           version dont on ne saurait pas dire si elle a emporté ses abonnés.
