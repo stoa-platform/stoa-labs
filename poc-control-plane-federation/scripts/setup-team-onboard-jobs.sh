@@ -12,7 +12,8 @@
 # JOBS liste les jobs du palier posés par CE script, un nom par mot. Le XML de
 # chacun est dérivé du nom (convention de setup-provision-jobs.sh) :
 #   team-request → ci/jenkins/team-request.job.xml
-# Les Tasks 5 et 7 y ajoutent team-apply et app-request en une ligne chacune.
+#   app-request  → ci/jenkins/app-request.job.xml
+# La Task 5 y ajoute team-apply en une ligne.
 #
 # Usage :
 #   JENKINS_UI=https://jenkins.labs.gostoa.dev \
@@ -24,7 +25,7 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 
 JENKINS_UI="${JENKINS_UI:-http://localhost:18080}"
-JOBS="${JOBS:-team-request}"
+JOBS="${JOBS:-team-request app-request}"
 
 ok(){ printf '  \033[32m✅\033[0m %s\n' "$*"; }
 ko(){ printf '  \033[31m❌\033[0m %s\n' "$*"; exit 1; }
