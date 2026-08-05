@@ -10,9 +10,15 @@
 #   - Sections C/D/E (non-régression, nominal enrichi, garde REQ_TEAM) :
 #     contre le VRAI Gitea du lab (poc-gitea, port 13000) — provision-request.sh
 #     clone en http:// forcé, un bare repo local ne suffit pas ici. Objets
-#     JETABLES (préfixe p3t4-<timestamp>), nettoyés en fin de run (branches
+#     JETABLES (préfixe p3t4-<timestamp>, sauf C qui utilise les apps FIXES
+#     des golden files — cf. plus bas), nettoyés en fin de run (branches
 #     supprimées ; les PR restent, Gitea ne permet pas de les supprimer —
 #     inoffensif, même motif que test-team-onboarding-chain.sh).
+#
+#   Section C compare contre des FIXTURES COMMITTÉES
+#   (scripts/testdata/app-request-v2/golden-*.ansible.yml, rendues UNE FOIS
+#   par le script d'avant Task 4) — jamais contre `git show HEAD:...`, dont la
+#   valeur probante s'éteint dès que ce commit devient HEAD (fix round 1).
 #
 #   GITEA_TOKEN_FILE=<fichier 0600> ./scripts/test-app-request-v2.sh
 #   (défaut : mint un token jetable via `docker exec -u git poc-gitea ...`
@@ -147,6 +153,18 @@ else
   else
     ko "câblage placeholders : marqueur résiduel non substitué"
   fi
+  # Fix round 1 (revue, Important, static) : le refus loud API_FORMAT_INVALIDE
+  # (Groovy, fix 4) doit être PRÉSENT dans le XML réellement posté à Jenkins —
+  # PAS de fallback silencieux '1.0.0' pour une valeur non vide sans '@'.
+  # Vérification STATIQUE (pas d'exécution Groovy réelle — aucun `groovy` CLI
+  # dans ce lab, et le faux Jenkins ci-dessus n'exécute aucun pipeline, motif
+  # déjà accepté pour le reste de la logique Groovy de ce job dans ce test) :
+  # présence du garde-fou dans le corps posté.
+  if grep -q 'API_FORMAT_INVALIDE' "$POSTED" 2>/dev/null; then
+    ok "câblage placeholders : le garde-fou API_FORMAT_INVALIDE (fix 4) est bien dans le XML posté"
+  else
+    ko "câblage placeholders : API_FORMAT_INVALIDE absent du XML posté"
+  fi
 fi
 
 echo
@@ -177,44 +195,56 @@ for pr in d:
         break
 " 2>/dev/null; }
 
-  OLD_SCRIPT="$TMP/provision-request.OLD.sh"
-  git -C "$REPO" show HEAD:poc-control-plane-federation/scripts/provision-request.sh > "$OLD_SCRIPT" 2>/dev/null \
-    || git -C "$REPO/.." show HEAD:poc-control-plane-federation/scripts/provision-request.sh > "$OLD_SCRIPT" 2>/dev/null
-  chmod +x "$OLD_SCRIPT"
-
-  echo "── C. non-régression (diff textuel vide, méthode palier 2 T6) ──"
-  # NOTE : provision-request.sh clone TOUJOURS main à neuf (--depth 1) puis
-  # force-push un commit UNIQUE sur la branche provision/* — chaque run
-  # remplace donc l'historique de la branche (comportement PRÉEXISTANT, hors
-  # périmètre Task 4). Le SHA du commit differe donc à chaque run même à
-  # contenu identique (parent/horodatage) : la preuve porte sur le CONTENU du
-  # manifeste rendu (capturé entre les deux runs), pas sur le SHA.
+  echo "── C. non-régression (golden files, méthode palier 2 T6) ──"
+  # Fix round 1 (revue, Important) : la preuve C comparait AVANT/APRÈS en
+  # extrayant le script PRÉ-Task-4 via `git show HEAD:...` — valeur probante
+  # ÉTEINTE dès que ce commit devient HEAD (HEAD compare alors le script à
+  # lui-même, toujours vert). Remède : GOLDEN FILES committés, rendus UNE FOIS
+  # avec le script d'AVANT Task 4 (commit b39aee1, parent direct de la
+  # première livraison 2a3d58b), pour des entrées machine FIXES
+  # (REQ_APP=p3t4golden-idp/p3t4golden-int, REQ_ENV=dev, REQ_API=accounts-read
+  # v1.0.0, REQ_CALLER=oig-provisioner/cli2-provisioner, sans aucun REQ_*
+  # Task 4). La preuve compare désormais le manifeste produit PAR LE SCRIPT
+  # COURANT à ces fixtures — un octet qui bouge dans le rendu machine (absent
+  # des REQ_* Task 4) fait rougir la preuve, peu importe l'état de HEAD.
+  #
+  # QUAND RÉGÉNÉRER LÉGITIMEMENT : uniquement si le CONTRAT MACHINE lui-même
+  # change intentionnellement (ex. nouveau champ ajouté au template idp/
+  # internal, hors périmètre Task 4/REQ_* additifs) — jamais pour faire
+  # passer une régression au vert. Régénération :
+  #   git show <commit-avant-le-changement>:poc-control-plane-federation/scripts/provision-request.sh > /tmp/old.sh
+  #   GITEA_TOKEN=... GIT_HOST=http://localhost:13000 REQ_APP=p3t4golden-idp \
+  #     REQ_ENV=dev REQ_API=accounts-read REQ_API_VER=1.0.0 \
+  #     REQ_CALLER=oig-provisioner REQ_CLIENT_ID=golden-client-id \
+  #     PROVISION_PLAN_INLINE=false bash /tmp/old.sh
+  #   (puis récupérer le manifeste rendu via l'API Gitea raw et l'écrire dans
+  #   scripts/testdata/app-request-v2/golden-*.ansible.yml) — geste EXPLICITE,
+  #   jamais automatisé par ce test.
+  GOLDEN_DIR="$REPO/scripts/testdata/app-request-v2"
   nonreg_case(){
-    local label="$1" app="$2" caller="$3"; shift 3
+    local label="$1" app="$2" caller="$3" golden="$4"; shift 4
     local branch="provision/${app}-dev"
     CLEAN_BRANCHES+=("$branch")
-    local out1 rc1
-    out1=$(env GITEA_TOKEN="$GITEA_TOKEN" GIT_HOST="$GH" REQ_APP="$app" REQ_ENV=dev REQ_API=accounts-read \
-      REQ_API_VER=1.0.0 REQ_CALLER="$caller" PROVISION_PLAN_INLINE=false "$@" bash "$OLD_SCRIPT" 2>&1)
-    rc1=$?
-    if [ "$rc1" -ne 0 ]; then ko "$label : run OLD en échec — $(printf '%s' "$out1" | tail -3)"; return; fi
-    local mani1; mani1=$(raw_manifest "$branch" "$app")
-    [ -n "$mani1" ] || { ko "$label : manifeste introuvable après le run OLD"; return; }
-    local out2 rc2
-    out2=$(env GITEA_TOKEN="$GITEA_TOKEN" GIT_HOST="$GH" REQ_APP="$app" REQ_ENV=dev REQ_API=accounts-read \
+    [ -f "$GOLDEN_DIR/$golden" ] || { ko "$label : golden '$golden' absent de $GOLDEN_DIR"; return; }
+    local out rc
+    out=$(env GITEA_TOKEN="$GITEA_TOKEN" GIT_HOST="$GH" REQ_APP="$app" REQ_ENV=dev REQ_API=accounts-read \
       REQ_API_VER=1.0.0 REQ_CALLER="$caller" PROVISION_PLAN_INLINE=false "$@" bash "$S" 2>&1)
-    rc2=$?
-    if [ "$rc2" -ne 0 ]; then ko "$label : run NEW en échec — $(printf '%s' "$out2" | tail -3)"; return; fi
-    local mani2; mani2=$(raw_manifest "$branch" "$app")
-    if [ "$mani1" = "$mani2" ]; then
-      ok "$label : manifeste octet pour octet identique (OLD vs NEW, absent des REQ_* Task 4)"
+    rc=$?
+    if [ "$rc" -ne 0 ]; then ko "$label : run en échec — $(printf '%s' "$out" | tail -3)"; return; fi
+    local mani; mani=$(raw_manifest "$branch" "$app")
+    [ -n "$mani" ] || { ko "$label : manifeste introuvable après le run"; return; }
+    if diff -q "$GOLDEN_DIR/$golden" <(printf '%s\n' "$mani") >/dev/null; then
+      ok "$label : manifeste identique au golden $golden (script courant, entrées machine sans REQ_* Task 4)"
     else
-      ko "$label : le manifeste a changé — RÉGRESSION du rendu (absent des REQ_* Task 4)"
-      diff <(printf '%s' "$mani1") <(printf '%s' "$mani2")
+      ko "$label : le manifeste diverge du golden — RÉGRESSION du rendu machine"
+      diff "$GOLDEN_DIR/$golden" <(printf '%s\n' "$mani")
     fi
   }
-  nonreg_case "mode idp (voie OIG)"      "p3t4nridp$TS" "oig-provisioner"  REQ_CLIENT_ID="probe-client-$TS"
-  nonreg_case "mode internal (voie CLI2)" "p3t4nrint$TS" "cli2-provisioner"
+  # Apps FIXES (pas $TS) : elles doivent matcher les noms EMBARQUÉS dans les
+  # golden files (name:, commentaire d'en-tête, description) — cf. en-tête de
+  # cette section pour la commande de régénération.
+  nonreg_case "mode idp (voie OIG)"       "p3t4golden-idp" "oig-provisioner"  "golden-idp.ansible.yml"      REQ_CLIENT_ID="golden-client-id"
+  nonreg_case "mode internal (voie CLI2)" "p3t4golden-int" "cli2-provisioner" "golden-internal.ansible.yml"
 
   echo "── D. nominal enrichi (formulaire complet) ──"
   APP="p3t4nom$TS"; BR="provision/${APP}-dev"; CLEAN_BRANCHES+=("$BR")
@@ -231,11 +261,15 @@ for pr in d:
     MANI=$(raw_manifest "$BR" "$APP")
     CHECK=1
     printf '%s' "$MANI" | grep -q 'team: "banking-demo"'                          || { ko "nominal : team absent du manifeste"; CHECK=0; }
-    printf '%s' "$MANI" | grep -q 'enforce: \["ipAddressRange", "httpsCertificate"\]' || { ko "nominal : enforce incomplet"; CHECK=0; }
+    # Fix round 1 (revue, Critical) : enforce reste [] MÊME avec IP+cert fournis
+    # — dériver enforce arme un piège cross-consommateur (README §enforce),
+    # la décision d'opposer revient au MERGE, pas au formulaire. Contre-épreuve
+    # DIRECTE : enforce=[] est le signal attendu ICI, pas une régression.
+    printf '%s' "$MANI" | grep -q '  enforce: \[\]'                               || { ko "nominal : enforce n'est plus []  — dérivation réintroduite (régression du fix round 1)"; CHECK=0; }
     printf '%s' "$MANI" | grep -q 'cert_rotation: "overlap"'                       || { ko "nominal : cert_rotation absent/faux"; CHECK=0; }
     printf '%s' "$MANI" | grep -q 'ip_allowlist: \["10.77.5.1-10.77.5.9"\]'        || { ko "nominal : ip_allowlist absent"; CHECK=0; }
     printf '%s' "$MANI" | grep -q "public_cert_ref: \"clients/provisioned/certs/${APP}.crt\"" || { ko "nominal : public_cert_ref absent/faux"; CHECK=0; }
-    [ "$CHECK" = 1 ] && ok "nominal enrichi : manifeste porte team/enforce/cert_rotation/ip_allowlist/public_cert_ref"
+    [ "$CHECK" = 1 ] && ok "nominal enrichi : manifeste porte team/cert_rotation/ip_allowlist/public_cert_ref, enforce=[] intouché"
 
     CERTFILE=$(raw_cert "$BR" "$APP")
     if [ "$CERTFILE" = "$CERT_PEM_CONTENT" ]; then
@@ -249,6 +283,13 @@ for pr in d:
       ok "nominal enrichi : la PR mentionne team/IP pour le valideur"
     else
       ko "nominal enrichi : la PR ne mentionne pas les champs d'identité entrante"
+    fi
+    # Fix round 1 : l'avertissement des DEUX pièges doit être visible dans le
+    # corps de la PR dès qu'IP ou cert est fourni (ici les deux le sont).
+    if printf '%s' "$BODY" | grep -qi "enforce" && printf '%s' "$BODY" | grep -qi "merge"; then
+      ok "nominal enrichi : la PR porte l'avertissement enforce (identifiers posés, non opposés, décision au merge)"
+    else
+      ko "nominal enrichi : l'avertissement enforce est absent du corps de la PR"
     fi
   fi
 
