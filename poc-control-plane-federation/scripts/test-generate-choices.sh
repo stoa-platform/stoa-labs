@@ -239,11 +239,37 @@ echo "== 9. re-pose : preuve dynamique du SIGNAL d'échec dont team-apply.sh dé
 # BRIQUE dont il dépend : setup-team-onboard-jobs.sh échoue proprement
 # (rc≠0) quand JENKINS_UI est injoignable, et réussit (rc=0) sinon — exactement
 # les deux branches du `if ... ; then ... else REFRESH_NOTE=... ; fi` ajouté.
-OUT=$(cd "$REPO" && JENKINS_UI="http://127.0.0.1:1" JOBS="app-request api-request" ENVN=dev bash "$SETUP" 2>&1); RC=$?
+#
+# ÉCART (Task 5, palier 3) : à l'écriture de la Task 3, api-request.job.xml
+# n'existait pas encore — ce test-ci vérifiait donc la tolérance "job absent"
+# sur l'appel EXACT de team-apply.sh (JOBS="app-request api-request"). La
+# Task 5 a livré ce XML (avec placeholders CHOICES:TEAMS/APIS, comme
+# app-request) : l'assertion "api-request absent, toléré" est donc devenue
+# fausse par construction — mise à jour pour prouver la RÉALITÉ actuelle
+# (les DEUX jobs existent et sont posés, substitution réelle comprise) sans
+# perdre la couverture d'origine (rc≠0 si Jenkins injoignable, rc=0 sinon).
+# La tolérance "job absent" elle-même reste couverte par le test 6 ci-dessus,
+# avec un nom qui ne pourra jamais exister (api-request-inexistant-t3).
+GH9="$TMP/gitea9"; mk_platform_repo "$GH9/ci/stoa-labs.git" "$TWO_TEAMS" "$ONE_API"
+: > "$TMP/calls.log"; rm -rf "$BODYDIR"/*
+OUT=$(cd "$REPO" && JENKINS_UI="http://127.0.0.1:1" JOBS="app-request api-request" ENVN=dev \
+  GIT_HOST="$GH9" GIT_REPO=ci/stoa-labs GITEA_TOKEN=dummy bash "$SETUP" 2>&1); RC=$?
 [ "$RC" -ne 0 ] && ok "JENKINS_UI injoignable -> rc≠0 (déclenche REFRESH_NOTE côté team-apply.sh)" || ko "aurait dû échouer"
-OUT=$(cd "$REPO" && JENKINS_UI="$JU" JOBS="app-request api-request" ENVN=dev bash "$SETUP" 2>&1); RC=$?
-[ "$RC" -eq 0 ] && ok "Jenkins joignable, api-request absent toléré -> rc=0 (branche succès)" || ko "échec inattendu (rc=$RC) : $OUT"
-grep -q "api-request" <<<"$OUT" && grep -q "ignoré" <<<"$OUT" && ok "api-request signalé absent, pas fatal" || ko "signal d'absence manquant"
+: > "$TMP/calls.log"; rm -rf "$BODYDIR"/*
+OUT=$(cd "$REPO" && JENKINS_UI="$JU" JOBS="app-request api-request" ENVN=dev \
+  GIT_HOST="$GH9" GIT_REPO=ci/stoa-labs GITEA_TOKEN=dummy bash "$SETUP" 2>&1); RC=$?
+[ "$RC" -eq 0 ] && ok "Jenkins joignable, app-request+api-request posés -> rc=0 (branche succès)" || ko "échec inattendu (rc=$RC) : $OUT"
+if [ -f "$BODYDIR/app-request.posted.xml" ] && [ -f "$BODYDIR/api-request.posted.xml" ]; then
+  ok "les DEUX jobs de l'appel exact de team-apply.sh ont bien été posés"
+else
+  ko "un des deux jobs n'a pas été posé (app-request:$( [ -f "$BODYDIR/app-request.posted.xml" ] && echo oui || echo non ), api-request:$( [ -f "$BODYDIR/api-request.posted.xml" ] && echo oui || echo non ))"
+fi
+if grep -q '<string>banking-demo</string>' "$BODYDIR/api-request.posted.xml" 2>/dev/null \
+   && ! grep -q '<!--CHOICES:TEAMS-->\|<!--CHOICES:APIS-->' "$BODYDIR/api-request.posted.xml" 2>/dev/null; then
+  ok "api-request.job.xml : substitution réelle (banking-demo présent, aucun marqueur résiduel)"
+else
+  ko "api-request.job.xml : substitution absente ou incomplète"
+fi
 
 echo
 echo "== 10. re-pose : le SIGNAL 'dépôt d'équipe toléré/sauté' survit au succès (revue round 1) =="
