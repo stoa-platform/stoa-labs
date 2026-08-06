@@ -53,7 +53,7 @@ ko(){ FAIL=$((FAIL+1)); printf '  ❌ %s\n' "$*"; }
 # NB : ce total compte les contrôles exécutés AVANT le §16 lui-même (le sien
 # n'est pas encore compté quand la comparaison a lieu) — le `RÉSULTAT` final
 # affiche donc EXPECTED_CHECKS+1. Même convention que test-team-publish-wiring.sh.
-EXPECTED_CHECKS=67
+EXPECTED_CHECKS=71
 
 [ -f "$JOB" ] || { echo "job introuvable : $JOB"; exit 2; }
 [ -f "$JF" ]  || { echo "Jenkinsfile introuvable : $JF"; exit 2; }
@@ -371,13 +371,38 @@ else
   ok "aucun try/catch : le pipeline reste déclaratif"
 fi
 NODE_COUNT=$(grep -cE '^\s*node\(' "$JF")
-[ "$NODE_COUNT" -eq 0 ] \
-  && ok "aucun \`node(...)\` : le job n'a plus une ligne de pipeline scripté" \
-  || ko "nombre de \`node(...)\` inattendu (${NODE_COUNT}, attendu 0) — le pipeline redevient scripté"
+# Exactement 1 `node(...)` attendu : celui du `post{always}` (parité team-publish).
+# Avec `agent none`, le post n'a ni exécuteur ni workspace → un `node` explicite y
+# est OBLIGATOIRE (pas du pipeline scripté qui revient). Ailleurs qu'au post = 0.
+[ "$NODE_COUNT" -eq 1 ] \
+  && ok "exactement un \`node(...)\` — celui du \`post{always}\` (agent none l'exige), pas du Groovy scripté ailleurs" \
+  || ko "nombre de \`node(...)\` inattendu (${NODE_COUNT}, attendu 1 = celui du post) — le pipeline redevient scripté OU le post a perdu son node"
+POST_NODE=$(awk "NR>=${L_POST:-0}" "$JF" | grep -cE '^\s*node\(')
+[ "$POST_NODE" -eq 1 ] \
+  && ok "le seul \`node(...)\` est bien DANS le \`post{}\` — le corps du pipeline reste 100% déclaratif" \
+  || ko "le \`node(...)\` n'est pas dans le post (${POST_NODE} trouvé au post) — Groovy scripté hors post"
 SCRIPT_BLOCKS=$(grep -cE '^\s*script \{' "$JF")
 [ "$SCRIPT_BLOCKS" -le 1 ] \
   && ok "au plus un bloc \`script {}\` (le nommage du build) — le reste est déclaratif" \
   || ko "${SCRIPT_BLOCKS} blocs \`script {}\` — le Groovy revient par la fenêtre"
+
+echo
+echo "== 15b. post{always} de STATUT BUILD sur la PR (parité team-publish, dette I3 fermée) =="
+# team-apply.sh commente DÉJÀ la PR (✅/❌) mais SEULEMENT s'il tourne : un échec
+# AVANT lui (garde d'identité refusée, pause abandonnée/expirée, agent injoignable)
+# laissait la PR d'onboarding MUETTE — c'est la dette I3, longtemps ouverte pour
+# team-apply. Ce bloc `post{always}` de niveau PIPELINE la ferme.
+L_POST=$(grep -n '^  post {' "$JF" | head -1 | cut -d: -f1)
+[ -n "$L_POST" ] \
+  && ok "bloc \`post\` de niveau PIPELINE présent (ligne $L_POST) — un refus de garde ou une pause abandonnée est désormais commenté sur la PR (dette I3 FERMÉE)" \
+  || ko "aucun \`post\` de niveau pipeline — un refus de garde ou une pause abandonnée resterait muet sur la PR (dette I3 reproduite)"
+grep -qF 'COMMENT_MARKER="<!-- team-apply-build -->"' "$JF" \
+  && ok "marqueur DISTINCT \`team-apply-build\` — le statut build ne peut pas écraser le commentaire détaillé de team-apply.sh (chacun idempotent sous son marqueur)" \
+  || ko "marqueur de statut build absent ou non distinct — risque d'écrasement du commentaire de team-apply.sh"
+{ awk "NR>=${L_POST:-0}" "$JF" | grep -q 'gitea-pr-comment.sh' \
+  && awk "NR>=${L_POST:-0}" "$JF" | grep -q 'onboard/\*)'; } \
+  && ok "le post{} filtre \`onboard/*\` ET commente via gitea-pr-comment.sh (idempotent, une PR hors onboard/* n'est pas commentée)" \
+  || ko "le post{} ne filtre pas onboard/* ou n'appelle pas gitea-pr-comment.sh"
 
 echo
 echo "== 16. le total de contrôles exécutés correspond au total ATTENDU, écrit en dur =="

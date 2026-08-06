@@ -256,4 +256,60 @@ pipeline {
       }
     }
   }
+
+  // ── PARITÉ team-publish, dette I3 FERMÉE (2026-08-06). team-apply.sh commente
+  // DÉJÀ la PR (✅/❌) MAIS seulement s'il a tourné : un échec AVANT lui (garde
+  // d'identité refusée, pause abandonnée/expirée, agent injoignable) laissait la
+  // PR d'onboarding MUETTE. Ce `post{always}` pose un commentaire de STATUT BUILD
+  // dans TOUS les cas, sous un marqueur DISTINCT (`team-apply-build`, jamais celui
+  // de team-apply.sh) et idempotent via gitea-pr-comment.sh — les deux commentaires
+  // coexistent sans que l'un n'écrase l'autre. `agent none` au niveau pipeline →
+  // `node` explicite + `checkout scm` : ce bloc n'hérite ni exécuteur ni workspace.
+  post {
+    always {
+      node("${env.POST_AGENT_LABEL ?: ''}") {
+        checkout scm
+        withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')]) {
+          withEnv(["BUILD_RESULT=${currentBuild.currentResult}"]) {
+            dir('poc-control-plane-federation') {
+              sh '''
+                set +x
+                # La PR d'onboarding vit sur le dépôt PLATEFORME (GIT_REPO), pas
+                # sur un dépôt d'équipe : team-apply est déclenché par le merge
+                # d'une PR onboard/* de ci/stoa-labs.
+                if [ -z "${GIT_REPO:-}" ] || [ -z "${PR_NUMBER:-}" ]; then
+                  echo "commentaire de statut impossible (GIT_REPO/PR_NUMBER absents)"
+                  exit 0
+                fi
+                # Une PR hors onboard/* n'a rien déclenché (étape SAUTÉE) : ne pas commenter.
+                case "${PR_BRANCH:-}" in
+                  onboard/*) ;;
+                  *) echo "(branche hors onboard/* — aucun statut à commenter)"; exit 0 ;;
+                esac
+                # Corps SANS accents : ils traversent l'agent, un POST JSON et Gitea.
+                # BUILD_URL n'existe que si l'URL racine Jenkins est configurée (pas
+                # sur ce lab) → repli sur job#numéro, toujours disponible.
+                BUILD_REF="${BUILD_URL:-}"
+                [ -n "$BUILD_REF" ] || BUILD_REF="${JOB_NAME:-team-apply} #${BUILD_NUMBER:-?}"
+                BODYFILE="$(mktemp)"
+                case "${BUILD_RESULT:-FAILURE}" in
+                  SUCCESS)
+                    printf "team-apply (statut build) : build termine sans erreur -- voir le commentaire team-apply pour le resultat de l onboarding.\\n" > "$BODYFILE" ;;
+                  ABORTED)
+                    printf "team-apply (statut build) : la demande en attente a ete ABANDONNEE (ou a expire) -- RIEN n a ete onboarde. Rejouer le webhook pour rouvrir la demande. Build : %s\\n" "$BUILD_REF" > "$BODYFILE" ;;
+                  *)
+                    printf "team-apply (statut build) : le build a echoue avant ou pendant l onboarding. Si la garde d identite a refuse ou si la pause a ete abandonnee, RIEN n a ete onboarde -- voir le commentaire team-apply s il existe, sinon le log : %s\\n" "$BUILD_REF" > "$BODYFILE" ;;
+                esac
+                GIT_REPO="$GIT_REPO" PR_NUMBER="$PR_NUMBER" \
+                  COMMENT_MARKER="<!-- team-apply-build -->" \
+                  COMMENT_BODY_FILE="$BODYFILE" bash scripts/lib/gitea-pr-comment.sh \
+                  || echo "AVERTISSEMENT: commentaire de statut (post) en echec"
+                rm -f "$BODYFILE"
+              '''
+            }
+          }
+        }
+      }
+    }
+  }
 }
