@@ -29,7 +29,7 @@ ko(){ FAIL=$((FAIL+1)); printf '  ❌ %s\n' "$*"; }
 # section ajoutée/retirée DOIT mettre à jour ce nombre à la main — un oubli
 # fait virer le §23 au rouge, ce qui EST le comportement voulu (un rappel,
 # pas un bug).
-EXPECTED_CHECKS=74
+EXPECTED_CHECKS=89
 
 [ -f "$JOB" ] || { echo "job introuvable : $JOB"; exit 2; }
 
@@ -414,6 +414,75 @@ if [ -n "$L_TRY" ] && [ -n "$L_INPUT" ] && [ "$L_TRY" -lt "$L_INPUT" ]; then
 else
   ko "la pause input() n'est pas dans le try (try=${L_TRY} input=${L_INPUT}) — un abandon resterait muet sur la PR"
 fi
+
+echo
+echo "== 24. seconde couche fail-closed côté rôle (fix A1b, panel Fix round 2) — script externe, pas du Jinja inline =="
+SCAN_SCRIPT="$REPO/ansible/roles/apim_publish_api/files/scan-manifest-jinja.sh"
+[ -x "$SCAN_SCRIPT" ] \
+  && ok "scan-manifest-jinja.sh présent et exécutable" \
+  || ko "scan-manifest-jinja.sh absent ou non exécutable — appel mort"
+bash -n "$SCAN_SCRIPT" 2>/dev/null \
+  && ok "scan-manifest-jinja.sh : syntaxe shell valide" || ko "scan-manifest-jinja.sh non parsable"
+MANIFEST_GUARD="$REPO/ansible/roles/apim_publish_api/tasks/manifest-guard.yml"
+grep -qF 'scan-manifest-jinja.sh' "$MANIFEST_GUARD" \
+  && ok "manifest-guard.yml invoque scan-manifest-jinja.sh" \
+  || ko "manifest-guard.yml n'invoque pas scan-manifest-jinja.sh — la seconde couche n'est pas câblée"
+grep -qF "argv:" "$MANIFEST_GUARD" \
+  && ok "invocation en argv: (pas une chaîne shell templée qui re-exposerait le contenu au lexer Jinja)" \
+  || ko "invocation non trouvée en forme argv:"
+grep -qF "'UNSAFE' in apim_pub_manifest_scan.stdout" "$MANIFEST_GUARD" \
+  && ok "le fail-closed teste réellement le verdict du scan (UNSAFE dans stdout), pas juste sa présence" \
+  || ko "aucune condition réelle sur le verdict du scan — le fail-closed pourrait ne jamais se déclencher"
+grep -qF 'MANIFEST_JINJA_DETECTED' "$MANIFEST_GUARD" \
+  && ok "MANIFEST_JINJA_DETECTED nommé dans le refus" || ko "aucun message nommé pour ce refus"
+# Ordre structurel : le scan (manifest-guard.yml, importé en tête de
+# resolve-env.yml) doit rester AVANT include_vars — sinon la seconde couche
+# arriverait après que le manifeste ait déjà pu être référencé.
+RESOLVE_ENV="$REPO/ansible/roles/apim_publish_api/tasks/resolve-env.yml"
+L_GUARD_IMPORT=$(grep -n 'import_tasks: manifest-guard.yml' "$RESOLVE_ENV" | head -1 | cut -d: -f1)
+L_INCLUDE_VARS=$(grep -n 'include_vars:' "$RESOLVE_ENV" | head -1 | cut -d: -f1)
+if [ -n "$L_GUARD_IMPORT" ] && [ -n "$L_INCLUDE_VARS" ] && [ "$L_GUARD_IMPORT" -lt "$L_INCLUDE_VARS" ]; then
+  ok "manifest-guard.yml (donc le scan) importé AVANT include_vars (ligne ${L_GUARD_IMPORT} puis ${L_INCLUDE_VARS})"
+else
+  ko "ordre guard/include_vars non confirmé (guard=${L_GUARD_IMPORT} include_vars=${L_INCLUDE_VARS})"
+fi
+
+echo
+echo "== 25. le pin ne revendique plus une défense RCE qu'il n'assure pas (fix A1a, panel Fix round 2) =="
+grep -qF "GARANTIT L'INTÉGRITÉ du contract final" "$RESOLVE_ENV" \
+  && ok "resolve-env.yml : commentaire corrigé (intégrité, pas défense RCE)" \
+  || ko "resolve-env.yml : correction du commentaire du pin absente ou reformulée différemment"
+grep -qF "CE N'EST PAS UNE DÉFENSE" "$RESOLVE_ENV" \
+  && ok "resolve-env.yml : la non-défense RCE est dite explicitement" \
+  || ko "resolve-env.yml : absence de la clarification explicite"
+DEFAULTS_MAIN="$REPO/ansible/roles/apim_publish_api/defaults/main.yml"
+grep -qF "INTÉGRITÉ, PAS une défense RCE" "$DEFAULTS_MAIN" \
+  && ok "defaults/main.yml : commentaire corrigé (miroir de resolve-env.yml)" \
+  || ko "defaults/main.yml : correction du commentaire absente"
+
+echo
+echo "== 26. le finally (statut build) ne laisse plus un ⚠ contredire un ✅ (fix C régression, panel Fix round 2) =="
+# AVANT ce fix : le node{} du finally était NESTÉ dans
+# \`if (publishResult != 'SUCCESS') { node { ... } }\` -- il ne tournait
+# JAMAIS sur le chemin succès. Après : une SEULE occurrence de ce garde doit
+# rester dans tout le fichier, celle qui déclenche error() tout en bas (pas
+# celle qui gagnait le node{}, retirée).
+IF_SUCCESS_GUARD_COUNT=$(grep -cF "if (publishResult != 'SUCCESS') {" "$JOB")
+[ "$IF_SUCCESS_GUARD_COUNT" -eq 1 ] \
+  && ok "une seule occurrence de la garde succès/échec (celle qui déclenche error() en bas) — le node{} du finally n'est plus conditionné dessus" \
+  || ko "nombre de gardes if(publishResult!=SUCCESS) inattendu (${IF_SUCCESS_GUARD_COUNT}, attendu 1) — le node{} du finally pourrait encore être sauté au succès"
+grep -qF 'PUBLISH_RESULT=${publishResult}' "$JOB" \
+  && ok "PUBLISH_RESULT exporté vers le bloc sh du finally (pour brancher le message)" \
+  || ko "PUBLISH_RESULT non exporté — le bloc sh ne peut pas distinguer succès/échec"
+grep -qF "if [ \"\$PUBLISH_RESULT\" = \"SUCCESS\" ]; then" "$JOB" \
+  && ok "le bloc sh du finally branche réellement sur PUBLISH_RESULT" \
+  || ko "aucun branchement réel sur PUBLISH_RESULT dans le bloc sh"
+grep -qF 'team-publish (statut build) : build termine sans erreur' "$JOB" \
+  && ok "message NEUTRE posé sur le chemin succès (efface un ⚠ précédent au lieu de le laisser trainer)" \
+  || ko "aucun message de succès trouvé — un ⚠ antérieur resterait affiché à côté d'un ✅"
+grep -qF 'team-publish (statut build) : le build a echoue avant ou pendant' "$JOB" \
+  && ok "message d'échec toujours présent (branche else conservée)" \
+  || ko "message d'échec introuvable — régression du comportement d'origine"
 
 echo
 echo "== 23. le total de contrôles exécutés correspond au total ATTENDU, écrit en dur (fix F point 5, panel) =="
