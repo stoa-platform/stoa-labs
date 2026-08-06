@@ -29,7 +29,7 @@ ko(){ FAIL=$((FAIL+1)); printf '  ❌ %s\n' "$*"; }
 # section ajoutée/retirée DOIT mettre à jour ce nombre à la main — un oubli
 # fait virer le §23 au rouge, ce qui EST le comportement voulu (un rappel,
 # pas un bug).
-EXPECTED_CHECKS=89
+EXPECTED_CHECKS=85
 
 [ -f "$JOB" ] || { echo "job introuvable : $JOB"; exit 2; }
 
@@ -416,39 +416,32 @@ else
 fi
 
 echo
-echo "== 24. seconde couche fail-closed côté rôle (fix A1b, panel Fix round 2) — script externe, pas du Jinja inline =="
-SCAN_SCRIPT="$REPO/ansible/roles/apim_publish_api/files/scan-manifest-jinja.sh"
-[ -x "$SCAN_SCRIPT" ] \
-  && ok "scan-manifest-jinja.sh présent et exécutable" \
-  || ko "scan-manifest-jinja.sh absent ou non exécutable — appel mort"
-bash -n "$SCAN_SCRIPT" 2>/dev/null \
-  && ok "scan-manifest-jinja.sh : syntaxe shell valide" || ko "scan-manifest-jinja.sh non parsable"
-MANIFEST_GUARD="$REPO/ansible/roles/apim_publish_api/tasks/manifest-guard.yml"
-grep -qF 'scan-manifest-jinja.sh' "$MANIFEST_GUARD" \
-  && ok "manifest-guard.yml invoque scan-manifest-jinja.sh" \
-  || ko "manifest-guard.yml n'invoque pas scan-manifest-jinja.sh — la seconde couche n'est pas câblée"
-grep -qF "argv:" "$MANIFEST_GUARD" \
-  && ok "invocation en argv: (pas une chaîne shell templée qui re-exposerait le contenu au lexer Jinja)" \
-  || ko "invocation non trouvée en forme argv:"
-grep -qF "'UNSAFE' in apim_pub_manifest_scan.stdout" "$MANIFEST_GUARD" \
-  && ok "le fail-closed teste réellement le verdict du scan (UNSAFE dans stdout), pas juste sa présence" \
-  || ko "aucune condition réelle sur le verdict du scan — le fail-closed pourrait ne jamais se déclencher"
-grep -qF 'MANIFEST_JINJA_DETECTED' "$MANIFEST_GUARD" \
-  && ok "MANIFEST_JINJA_DETECTED nommé dans le refus" || ko "aucun message nommé pour ce refus"
-# Ordre structurel : le scan (manifest-guard.yml, importé en tête de
-# resolve-env.yml) doit rester AVANT include_vars — sinon la seconde couche
-# arriverait après que le manifeste ait déjà pu être référencé.
+echo "== 23. pas de second rempart côté rôle (fix round 3, panel) — retiré plutôt que rafistolé sous pression =="
+# [panel Fix round 3] Le rempart tenté au round 2 (scan-manifest-jinja.sh,
+# texte brut) était CONTOURNABLE (échappements YAML — hex/unicode/
+# backslash-saut-de-ligne — invisibles au texte brut, reconstitués par
+# yaml.safe_load/include_vars, prouvé par contre-épreuve touch-marker) ET
+# CASSAIT clients/_example (forme historique "{{ playbook_dir }}/…", hors
+# de son unique fragment blanchi) — retiré (revert 3b14c4d) plutôt que
+# rafistolé : un rempart contournable qui casse en plus un appelant
+# légitime nuit plus qu'il ne protège (faux sentiment de sécurité). CE
+# CONTRÔLE PROUVE L'ABSENCE, pas la présence — s'il devient rouge un jour
+# parce que le fichier existe de nouveau, c'est un SIGNAL (une éventuelle
+# réintroduction doit être une décision consciente, documentée, pas un
+# oubli de merge), pas nécessairement une régression en soi.
+[ ! -e "$REPO/ansible/roles/apim_publish_api/files/scan-manifest-jinja.sh" ] \
+  && ok "scan-manifest-jinja.sh absent (revert tenu)" \
+  || ko "scan-manifest-jinja.sh existe de nouveau — réintroduction du rempart contournable retiré au round 3 ?"
+grep -qF 'scan-manifest-jinja.sh' "$REPO/ansible/roles/apim_publish_api/tasks/manifest-guard.yml" \
+  && ko "manifest-guard.yml référence encore scan-manifest-jinja.sh alors que le fichier a été retiré" \
+  || ok "manifest-guard.yml ne référence plus scan-manifest-jinja.sh"
 RESOLVE_ENV="$REPO/ansible/roles/apim_publish_api/tasks/resolve-env.yml"
-L_GUARD_IMPORT=$(grep -n 'import_tasks: manifest-guard.yml' "$RESOLVE_ENV" | head -1 | cut -d: -f1)
-L_INCLUDE_VARS=$(grep -n 'include_vars:' "$RESOLVE_ENV" | head -1 | cut -d: -f1)
-if [ -n "$L_GUARD_IMPORT" ] && [ -n "$L_INCLUDE_VARS" ] && [ "$L_GUARD_IMPORT" -lt "$L_INCLUDE_VARS" ]; then
-  ok "manifest-guard.yml (donc le scan) importé AVANT include_vars (ligne ${L_GUARD_IMPORT} puis ${L_INCLUDE_VARS})"
-else
-  ko "ordre guard/include_vars non confirmé (guard=${L_GUARD_IMPORT} include_vars=${L_INCLUDE_VARS})"
-fi
+grep -qF "team-publish.sh §4" "$RESOLVE_ENV" \
+  && ok "resolve-env.yml documente team-publish.sh §4 comme la SEULE fermeture (pas de faux « en seconde couche »)" \
+  || ko "resolve-env.yml ne documente plus la fermeture réelle — le commentaire pourrait avoir dérivé"
 
 echo
-echo "== 25. le pin ne revendique plus une défense RCE qu'il n'assure pas (fix A1a, panel Fix round 2) =="
+echo "== 24. le pin ne revendique plus une défense RCE qu'il n'assure pas (fix A1a, panel Fix round 2) =="
 grep -qF "GARANTIT L'INTÉGRITÉ du contract final" "$RESOLVE_ENV" \
   && ok "resolve-env.yml : commentaire corrigé (intégrité, pas défense RCE)" \
   || ko "resolve-env.yml : correction du commentaire du pin absente ou reformulée différemment"
@@ -461,7 +454,7 @@ grep -qF "INTÉGRITÉ, PAS une défense RCE" "$DEFAULTS_MAIN" \
   || ko "defaults/main.yml : correction du commentaire absente"
 
 echo
-echo "== 26. le finally (statut build) ne laisse plus un ⚠ contredire un ✅ (fix C régression, panel Fix round 2) =="
+echo "== 25. le finally (statut build) ne laisse plus un ⚠ contredire un ✅ (fix C régression, panel Fix round 2) =="
 # AVANT ce fix : le node{} du finally était NESTÉ dans
 # \`if (publishResult != 'SUCCESS') { node { ... } }\` -- il ne tournait
 # JAMAIS sur le chemin succès. Après : une SEULE occurrence de ce garde doit
@@ -485,7 +478,7 @@ grep -qF 'team-publish (statut build) : le build a echoue avant ou pendant' "$JO
   || ko "message d'échec introuvable — régression du comportement d'origine"
 
 echo
-echo "== 23. le total de contrôles exécutés correspond au total ATTENDU, écrit en dur (fix F point 5, panel) =="
+echo "== 26. le total de contrôles exécutés correspond au total ATTENDU, écrit en dur (fix F point 5, panel) =="
 # Le \`RÉSULTAT : %d/%d\` final ci-dessous imprime PASS/(PASS+FAIL) — une
 # formule auto-référentielle qui devient vraie par construction. CE contrôle
 # compare plutôt contre EXPECTED_CHECKS, une CONSTANTE écrite en tête de ce
