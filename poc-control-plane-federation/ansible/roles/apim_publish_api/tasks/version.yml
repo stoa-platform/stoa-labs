@@ -126,16 +126,25 @@
 - name: "Version : AVERTISSEMENT — appartenance de la lignée NON vérifiée"
   ansible.builtin.debug:
     msg: >-
-      ⚠ VERSION_FOREIGN_UNCHECKED : apim_pub_version_require_team_match=false —
-      l'appartenance de la lignée '{{ apim_api.name }}' n'est PAS vérifiée
-      (équipe demandeuse : '{{ pub_team_name | default('(aucune)', true) }}',
-      feature Teams : {{ apim_teams_enabled | default(false) }} ; appartenance
-      relue : {{ pub_ver_owners }}). Une version peut donc être minée — ou
-      reprise — dans la lignée d'une AUTRE équipe, avec transport de ses
-      abonnés. Acceptable en lab sans feature Teams, JAMAIS chez un client.
+      ⚠ VERSION_FOREIGN_UNCHECKED : l'appartenance de '{{ apim_api.name }}' n'est
+      PAS vérifiée — raison :
+      {{ 'garde désactivée (apim_pub_version_require_team_match=false)'
+         if not (apim_pub_version_require_team_match | default(true) | bool)
+         else ('aucune équipe demandeuse (apim_ss_team vide)' if (pub_team_name | length == 0)
+               else 'feature Teams éteinte sur cette gateway') }}.
+      Appartenance relue : {{ pub_ver_owners }}. Une API existante peut donc être
+      RÉASSIGNÉE à l'appelant (owner + équipe + réactivation), et une version
+      minée — ou reprise — dans la lignée d'une AUTRE équipe avec transport de
+      ses abonnés. Acceptable en lab sans feature Teams, JAMAIS chez un client.
+  # Couvre les TROIS chemins qui touchent une API existante (mint, reprise,
+  # exact name+version) et les TROIS raisons de ne pas pouvoir confirmer. Sans
+  # ce message, la seule trace d'une capture non gardée serait un `skipping:`
+  # muet au milieu du log.
   when: >-
-    (pub_ver_any_path | bool)
-    and not (apim_pub_version_require_team_match | default(true) | bool)
+    (pub_ver_siblings | length > 0)
+    and (not (apim_pub_version_require_team_match | default(true) | bool)
+         or (pub_team_name | length == 0)
+         or not (apim_teams_enabled | default(false) | bool))
 
 # ===== 0a-bis. L'équipe demandeuse doit être une VRAIE équipe ================
 # `Administrators` est porté par TOUTE API (mesuré : une API importée naît
@@ -146,7 +155,7 @@
 # désormais que des équipes RÉELLES.
 - name: "Version : FAIL-CLOSED — l'équipe demandeuse ne peut pas être un profil SYSTÈME"
   when: >-
-    (pub_ver_any_path | bool)
+    (pub_ver_siblings | length > 0)
     and (apim_pub_version_require_team_match | default(true) | bool)
   ansible.builtin.assert:
     that: "pub_team_name not in apim_pub_system_profiles"
@@ -225,6 +234,53 @@
       ansible.builtin.set_fact:
         pub_version_minted: true
       when: "not (pub_ver_existing_get.json.apiResponse.api.isActive | default(false))"
+
+# ===== 0c. Chemin EXACT name+version : l'API trouvée est-elle la nôtre ? =====
+# LE TROU D'ASSEMBLAGE (revue finale, mesuré 3/3). `main.yml:61-67` résout
+# `apim_api_id` par name+version GLOBALEMENT. Quand l'API existe déjà et que la
+# lignée est mono-version, NI le chemin mint (apim_api_id vide) NI le chemin
+# reprise (lignée >= 2) ne s'arment : toutes les gardes d'appartenance étaient
+# sautées, puis main.yml enchaînait approvers.yml (écrase `owner`), team.yml
+# (RÉASSIGNE l'équipe) et l'activation. Une équipe onboardée capturait donc une
+# API PLATEFORME — `provisioning`, mesurée ACTIVE et en team `Default` sur la
+# gateway du lab — avec un simple `ACTION=create` sur SON dépôt, self-mergé.
+# La porte amont ne la voyait pas (son balayage de collision ignore gateways/).
+#
+# Cette garde est la fermeture AUTORITATIVE : elle vit AVANT le moindre geste
+# d'écriture (version.yml est importé avant le bloc Update, l'activation, les
+# approbateurs et le scoping d'équipe).
+#
+# `Default` NE VAUT PAS APPARTENANCE (c'est le sens même de Default : lisible
+# par toutes les équipes, mesuré le 2026-07-31). Une API qui n'appartient à
+# aucune équipe RÉELLE n'est donc pas réclamable — c'est très exactement l'état
+# de toutes les APIs plateforme du lab, `provisioning` comprise.
+#
+# NON-RÉGRESSION (vérifiée par exécution) : une API VRAIMENT nouvelle n'a pas de
+# sœur (garde sautée, rien à capturer) ; une équipe qui ré-applique SA PROPRE
+# API est confirmée par ses `teams` ; un appelant historique SANS équipe
+# demandeuse — ou une gateway dont la feature Teams est éteinte — ne déclenche
+# PAS le refus mais l'avertissement nommé ci-dessus (VERSION_FOREIGN_UNCHECKED).
+- name: "Version : FAIL-CLOSED — l'API trouvée par name+version appartient-elle à l'équipe ?"
+  when: >-
+    (apim_api_id | length > 0)
+    and (apim_pub_version_require_team_match | default(true) | bool)
+    and (pub_team_name | length > 0)
+    and (apim_teams_enabled | default(false) | bool)
+  ansible.builtin.assert:
+    that: "pub_ver_foreign | length == 0"
+    fail_msg: >-
+      API_OWNER_MISMATCH : '{{ apim_api.name }}' v{{ apim_api.version }} existe déjà
+      sur la gateway et n'appartient PAS à '{{ pub_team_name }}' — appartenance relue :
+      {{ pub_ver_owners }} (non confirmées : {{ pub_ver_foreign }}). Poursuivre
+      réécrirait `owner` (approbateurs), RÉASSIGNERAIT l'équipe et réactiverait une
+      API qui n'est pas la vôtre : c'est une capture d'actif, pas une publication.
+      Rien n'a été écrit. Si ce nom devait être le vôtre, choisissez-en un autre ;
+      s'il s'agit d'une API sans équipe (`Default` = lisible par toutes, donc
+      appartenant à personne), un administrateur doit d'abord l'assigner à
+      '{{ pub_team_name }}' — la chaîne ne se l'attribue pas d'elle-même.
+    success_msg: >-
+      API_OWNER_OK : '{{ apim_api.name }}' v{{ apim_api.version }} appartient bien à
+      '{{ pub_team_name }}' ({{ pub_ver_owners }}).
 
 # ⚠ `pub_ver_needed` est un FAIT FIGÉ (posé plus haut), PAS une expression vive.
 # Un `when` — sur une tâche, sur un bloc, ou porté par l'import_tasks de
