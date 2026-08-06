@@ -49,21 +49,36 @@
     apim_api: "{{ apim_api_base_m | combine(apim_api_over_m, recursive=True) }}"
   when: apim_api_has_per_env
 
-# ÉPINGLAGE (Task 7, ferme une RCE) : apim_api.contract est ÉCRIT par une
-# équipe dans SON PROPRE manifeste puis relu par lookup('file', …) plus bas
-# (tasks/main.yml) — Ansible re-template PARESSEUSEMENT toute chaîne qui
-# contient elle-même {{ }} au moment où elle est référencée à l'intérieur d'un
-# AUTRE bloc Jinja : un manifeste portant `contract: "{{ lookup('pipe','…') }}"`
-# EXÉCUTE ce pipe sur l'agent qui porte le token Vault nominatif ET
-# GITEA_TOKEN, au moment du premier lookup('file', apim_api.contract). La
-# liste blanche de manifest-guard.yml ne borne QUE les clés top-level, jamais
-# leur contenu — rien d'autre dans ce rôle ne fermait cette porte.
+# ÉPINGLAGE (Task 7) : GARANTIT L'INTÉGRITÉ du contract final (la valeur
+# résolue EST le chemin vérifié par l'appelant), CE N'EST PAS UNE DÉFENSE
+# CONTRE L'EXÉCUTION D'UN JINJA INJECTÉ — affirmation FAUSSE tenue par une
+# version précédente de ce commentaire, corrigée après contre-épreuve réelle
+# (panel Fix round 2, ansible 2.18 ET 2.19, marqueur touch) : le combine()
+# CI-DESSOUS référence `apim_api` (dict chargé par include_vars,
+# précédence 18) À L'INTÉRIEUR d'un bloc Jinja — Ansible re-template
+# PARESSEUSEMENT toute chaîne du dict qui contient elle-même {{ }} AU MOMENT
+# de cette résolution, AVANT que le combine() n'écrase la clé. Un manifeste
+# portant `contract: "{{ lookup('pipe','…') }}"` EXÉCUTE ce pipe PENDANT
+# CETTE TÂCHE — le pin ne l'empêche pas, il écrase seulement la valeur
+# APRÈS coup (la commande a déjà tourné). Vérifié : main.yml:51
+# (`apim_api.contract | length > 0`) et le combine per_env ci-dessus
+# détonent exactement pareil, pour la même raison — toute référence à
+# `apim_api` dans un bloc Jinja est un point de détonation potentiel, pas
+# seulement celui-ci.
+#
+# LA FERMETURE RÉELLE contre l'exécution : team-publish.sh §4
+# (MANIFEST_CONTRACT_INVALIDE + MANIFEST_UNSAFE, HORS LIGNE, avant tout
+# ansible-playbook — le manifeste n'atteint jamais ce rôle) et, en seconde
+# couche pour les appelants qui n'ont pas cette garde en amont,
+# manifest-guard.yml (scan-manifest-jinja.sh, texte brut, AVANT
+# include_vars — cf. son propre commentaire).
 #
 # Posé ICI, APRÈS le combine per_env ci-dessus : un contract dissimulé sous
 # `per_env.<env>.contract` écraserait sinon ce pin s'il était posé avant la
 # fusion — le pin doit gagner sur TOUTE source du manifeste, racine ou
-# per_env. Vide (défaut) = no-op, comportement inchangé pour les appelants
-# historiques (cf. defaults/main.yml, apim_ss_contract_pin).
+# per_env, POUR L'INTÉGRITÉ DE LA VALEUR FINALE. Vide (défaut) = no-op,
+# comportement inchangé pour les appelants historiques (cf. defaults/
+# main.yml, apim_ss_contract_pin).
 - name: "Env : contract ÉPINGLÉ par l'appelant (pipeline), jamais celui du manifeste"
   ansible.builtin.set_fact:
     apim_api: "{{ apim_api | combine({'contract': apim_ss_contract_pin}) }}"
