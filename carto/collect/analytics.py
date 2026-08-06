@@ -74,8 +74,12 @@ STATUS_OK = "SUCCESS"
 STATUS_SENTINELLE = "carto-sonde-statut-qui-n-existe-pas"
 
 # Valeur reellement ecrite par la gateway quand elle n'identifie pas
-# l'appelant (TERRAIN V5 : 100 % du trafic sur la gateway de mesure).
-# Sert d'identifiant du consommateur fantome qui porte le trafic residuel.
+# l'appelant. Sert d'identifiant du consommateur fantome qui porte le trafic
+# residuel.
+# NB : ce commentaire annoncait « 100 % du trafic » d'apres TERRAIN V5. REFUTE
+# le 2026-08-06 — un appel avec x-Gateway-APIKey ressort identifie, sans aucun
+# stage IAM. `Unknown` reste la valeur a reconnaitre, mais ce n'est plus le cas
+# nominal : c'est un signal.
 UNIDENTIFIED_CONSUMER_ID = "Unknown"
 
 # Borne haute reculee de 60 s. Le magasin d'evenements de la gateway n'est pas

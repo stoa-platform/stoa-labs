@@ -505,9 +505,20 @@ elif nonid > seuil:
         "'qui consomme quoi' est 'on ne sait pas' : le trafic s'agrege sur des "
         "noeuds '(inconnu)' et les consommateurs reels basculent en 'declare, "
         "inactif'. Les inventaires d'APIs et d'Applications, eux, restent "
-        "exacts. Cause connue et NON RESOLUE : la gateway ne renseigne pas "
-        "l'application appelante (applicationId = Unknown) - question ouverte "
-        "V5 de carto/TERRAIN.md, a trancher avec le client."
+        "exacts.\\n"
+        "    AVANT DE CHERCHER UNE PANNE : ce ratio porte sur la fenetre d90. "
+        "Un pic ancien d'appels non identifies pese donc 90 jours APRES sa "
+        "correction. Ventiler le trafic par jour (par applicationName sur "
+        "/transactionalEvents/_count) : si les jours RECENTS sont identifies, "
+        "il n'y a rien a reparer, seulement un heritage a laisser sortir de "
+        "la fenetre.\\n"
+        "    SI LES JOURS RECENTS SONT AUSSI NON IDENTIFIES : verifier que "
+        "l'appelant transmet bien sa cle API (en-tete x-Gateway-APIKey) et "
+        "que l'Application qui la porte est declaree consommatrice de l'API. "
+        "L'identification est NATIVE sur wM 10.15 - elle ne demande aucune "
+        "policy d'identification, et en ajouter une mal ajustee peut au "
+        "contraire l'empecher (mesure du 2026-08-06, cf. l'encadre en tete "
+        "de la section V5 de carto/TERRAIN.md)."
         % (nonid, seuil))
 
 if echecs:
