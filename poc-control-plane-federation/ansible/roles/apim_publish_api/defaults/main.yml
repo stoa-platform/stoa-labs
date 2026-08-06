@@ -37,19 +37,29 @@ apim_pub_deactivate_envs: ["dev", ""]
 # décision d'architecture, pas un réglage.
 apim_pub_manifest_allowed: ["apim_api"]
 
-# --- épinglage du contract (Task 7, ferme une RCE) ---------------------------
-# La liste blanche ci-dessus ne borne QUE les clés TOP-LEVEL du manifeste,
-# jamais leur CONTENU — `apim_api.contract` (relu par lookup('file', …) plus
-# bas, tasks/main.yml) peut donc porter N'IMPORTE QUELLE chaîne, y compris un
-# gabarit Jinja qu'Ansible réévalue paresseusement à la première référence
-# (`lookup('pipe', …)` = exécution de commande sur l'agent qui porte les
-# secrets du pipeline). Un appelant qui applique un manifeste écrit par un
-# TIERS non revu par la plateforme (team-publish.sh, Task 7) DOIT poser cette
-# variable — extra-var (précédence 22), bat le manifeste (include_vars,
-# précédence 18), même mécanique que apim_ss_team pour apim_api.team
-# (team-name.yml). Vide (défaut) = comportement INCHANGÉ pour les appelants
-# historiques (Jenkinsfile.publish-api, clients/_example, demo-multienv.sh),
-# où le manifeste est écrit/revu par la plateforme elle-même.
+# --- épinglage du contract (Task 7) — INTÉGRITÉ, PAS une défense RCE --------
+# CORRIGÉ (panel Fix round 2, après contre-épreuve réelle qui a réfuté
+# l'affirmation précédente de ce commentaire) : ce pin garantit que la
+# valeur FINALE de `apim_api.contract` est celle vérifiée par l'appelant —
+# il n'empêche PAS l'exécution d'un Jinja injecté, puisque la tâche qui pose
+# le pin (resolve-env.yml, `apim_api | combine({'contract': …})`) référence
+# `apim_api` tout entier À L'INTÉRIEUR d'un bloc Jinja, et Ansible re-
+# template alors paresseusement TOUTE chaîne du dict — y compris `contract`
+# — AVANT que le combine() n'écrase la clé (prouvé : un `lookup('pipe', …)`
+# injecté s'exécute PENDANT cette tâche, sur ansible 2.18 ET 2.19). La liste
+# blanche ci-dessus ne borne QUE les clés TOP-LEVEL du manifeste, jamais leur
+# CONTENU — la fermeture RÉELLE contre l'exécution est team-publish.sh §4
+# (hors ligne, avant tout ansible-playbook) et, en seconde couche,
+# manifest-guard.yml (scan-manifest-jinja.sh, texte brut, avant
+# include_vars). Un appelant qui applique un manifeste écrit par un TIERS
+# non revu par la plateforme (team-publish.sh, Task 7) DOIT quand même poser
+# cette variable — extra-var (précédence 22), bat le manifeste
+# (include_vars, précédence 18), même mécanique que apim_ss_team pour
+# apim_api.team (team-name.yml) — pour que la valeur FINALEMENT UTILISÉE
+# (après le passage, dangereux ou non, par le templating) soit la bonne.
+# Vide (défaut) = comportement INCHANGÉ pour les appelants historiques
+# (Jenkinsfile.publish-api, clients/_example, demo-multienv.sh), où le
+# manifeste est écrit/revu par la plateforme elle-même.
 apim_ss_contract_pin: ""
 
 # --- NOUVELLE VERSION (tasks/version.yml) ------------------------------------
