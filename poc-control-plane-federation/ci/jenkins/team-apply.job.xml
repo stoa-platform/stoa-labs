@@ -94,6 +94,12 @@ node {
             export VAULT_ADDR="${VAULT_ADDR:-http://vault:8200}"
             export VAULT_USER="$V_USER"
             export VAULT_USER_PASSWORD="$V_PASS"
+            # V_PASS ne doit PAS survivre au-dela de cette ligne : une variable
+            # EXPORTEE reste lisible dans /proc/PID/environ de TOUT process du
+            # meme noeud tant qu'elle est dans l'environnement du step sh --
+            # meme apres avoir ete copiee dans VAULT_USER_PASSWORD (Fix round 1
+            # T7, panel, applique ici en miroir de team-publish.job.xml).
+            unset V_PASS
             # CORRECTION INTER-TACHES (Task 8, gap trouve par execution REELLE
             # du chemin fort — jamais exerce avant : ci/lib/vault-login.sh
             # retombe sur son defaut ldap (la convention CLIENT — AD) si
