@@ -88,10 +88,11 @@ comportement produit à la prochaine montée de version :
 | policies **CLONÉES** (ids nouveaux), record né **inactif** | relu et asserté → `VERSION_CLONE_UNEXPECTED` |
 | duplication permise **depuis la DERNIÈRE version seulement**, et `GET /apis` n'expose aucun marqueur de « dernière » (le plus grand numéro n'est PAS la dernière : lignée `accounts-read` du lab, 1.0.0 minée depuis 1.0.1) | **plusieurs versions candidates ⇒ refus `VERSION_BASE_AMBIGUE`** avec la liste, jamais de devinette |
 
-Échecs nommés : `VERSION_BASE_FOREIGN`, `VERSION_BASE_AMBIGUE`,
-`VERSION_CREATE_FAILED`, `VERSION_UNCONFIRMED`, `VERSION_CLONE_UNEXPECTED`,
-`VERSION_SUBS_SHAPE_UNKNOWN`, `VERSION_SUBS_NOT_RETAINED`,
-`VERSION_MINTED_ACTIVE`, `VERSION_INCOMPLETE`.
+Échecs nommés : `TEAM_IS_SYSTEM_PROFILE`, `VERSION_BASE_FOREIGN`,
+`VERSION_RESUME_FOREIGN`, `VERSION_BASE_AMBIGUE`, `VERSION_CREATE_FAILED`,
+`VERSION_UNCONFIRMED`, `VERSION_CLONE_UNEXPECTED`, `VERSION_SUBS_SHAPE_UNKNOWN`,
+`VERSION_SUBS_NOT_RETAINED`, `VERSION_MINTED_ACTIVE`, `VERSION_INCOMPLETE`.
+Avertissement (non bloquant) : `VERSION_FOREIGN_UNCHECKED`.
 
 ### La lignée doit appartenir à l'équipe demandeuse (`VERSION_BASE_FOREIGN`)
 
@@ -106,7 +107,21 @@ La règle est **∀ et positive** : chaque version de la lignée doit être
 **confirmée** appartenir à l'équipe demandeuse (`apim_ss_team`, posée par le
 job). Une version en `Default`, une enveloppe sans `teams`, la feature Teams
 éteinte ou aucune équipe demandeuse ⇒ **refus** — ne pas savoir n'autorise pas.
-Knob de tolérance, lab uniquement : `apim_pub_version_require_team_match=false`.
+Knob de tolérance, lab uniquement : `apim_pub_version_require_team_match=false` ;
+il est **bruyant** (`VERSION_FOREIGN_UNCHECKED` à chaque run concerné), parce
+qu'une capture non gardée ne doit pas se déduire d'un `skipping:` muet.
+
+**Les DEUX chemins qui écrivent traversent cette confirmation** : le mint
+(`VERSION_BASE_FOREIGN`) et la **reprise** (`VERSION_RESUME_FOREIGN`). La
+reprise s'exécute quand `name`+`version` est trouvé par le matching **global**
+de `main.yml` : sans garde, elle poussait le contrat du demandeur sur la
+demi-version d'une autre équipe puis l'activait — ses consommateurs recevaient
+la mauvaise spec.
+
+**Un profil SYSTÈME n'est pas une équipe** (`TEAM_IS_SYSTEM_PROFILE`).
+`Administrators` est porté par TOUTE API : passé en `apim_ss_team`, il faisait
+confirmer l'appartenance de n'importe quelle lignée. La liste est un défaut
+nommé du rôle (`apim_pub_system_profiles`), pas une valeur en dur.
 
 ### Mint interrompu (`VERSION_INCOMPLETE`) — crash-consistance
 
@@ -129,7 +144,7 @@ reprend tout seul, comme avant.
 donc rien à couper (publier une nouvelle version EST la voie 0-coupure). L'exemption
 ne tient pas sur un booléen : l'état est **relu sur la gateway** avant le PUT
 (`VERSION_MINTED_ACTIVE` sinon). Preuve rejouable, hors ligne :
-`scripts/test-publish-version.sh` (44/44 contre le mock, témoins AVANT inclus).
+`scripts/test-publish-version.sh` (54/54 contre le mock, témoins AVANT inclus).
 
 > **Deux voies de naissance d'une version coexistent, une seule est prouvée.**
 > Le moteur Go (`labctl/internal/adapter/webmethods/publish.go`, `latestByName`),

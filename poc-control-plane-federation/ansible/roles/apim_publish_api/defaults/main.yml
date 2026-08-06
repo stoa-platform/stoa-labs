@@ -46,6 +46,14 @@ apim_pub_manifest_allowed: ["apim_api"]
 # refus. `false` = on assume la capture cross-équipe : lab uniquement.
 apim_pub_version_require_team_match: true
 
+# Profils SYSTÈME (systemDefined) : ils ne sont PAS des équipes. `Administrators`
+# est porté par TOUTE API (une API importée naît [Administrators, Default], et
+# l'assignation d'équipe le conserve — mesuré) : passé en équipe demandeuse, il
+# ferait confirmer l'appartenance de N'IMPORTE QUELLE lignée. Le rôle refuse
+# donc d'office qu'une équipe demandeuse soit l'un de ces noms
+# (TEAM_IS_SYSTEM_PROFILE). Relevés sur la gateway du lab le 2026-08-05.
+apim_pub_system_profiles: ["Administrators", "Default", "API-Gateway-Providers"]
+
 # Reprise d'un mint INTERROMPU entre la duplication et le push de la spec. Par
 # défaut le rôle REFUSE (VERSION_INCOMPLETE) plutôt que d'activer une version
 # qui porte encore la définition CLONÉE de sa base. `true` = geste explicite de
