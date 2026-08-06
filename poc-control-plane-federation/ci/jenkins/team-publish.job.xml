@@ -1,6 +1,26 @@
 <?xml version='1.1' encoding='UTF-8'?>
+<!--
+  team-publish — PIPELINE FROM SCM (plus de Groovy inline).
+
+  Ce fichier ne porte QUE la coquille du job : d'ou il charge son pipeline, et
+  le declencheur qui doit exister DES LA POSE du job. Le pipeline lui-meme vit
+  dans ci/Jenkinsfile.team-publish (declaratif, versionne, relisible par l'ops).
+
+  Le bloc <triggers> ci-dessous DOIT rester le miroir exact du bloc
+  `triggers { GenericTrigger(...) }` du Jenkinsfile. C'est CELUI-CI qui gagne,
+  et c'est contre-intuitif : Declarative ne remplace QUE les declencheurs
+  qu'il a lui-meme poses (DeclarativeJobPropertyTrackerAction) ; un
+  declencheur venu d'un config.xml est PRESERVE tel quel, indefiniment.
+  MESURE sur le lab (2026-08-06) : token du XML volontairement different de
+  celui du Jenkinsfile, 4 builds -> le XML n'a jamais bouge ; le meme XML
+  prive de son bloc <triggers> -> le Jenkinsfile a bien installe le sien.
+
+  Consequence : une divergence entre les deux fichiers est SILENCIEUSE, et
+  c'est le XML qui fait foi. test-team-publish-wiring.sh §3 compare les deux
+  et vire au rouge a la premiere divergence.
+-->
 <flow-definition plugin="workflow-job">
-  <description>Apply post-merge (publication d'API) : une PR api/&lt;name&gt;-&lt;version&gt; d'un DEPOT D'EQUIPE FUSIONNEE ouvre une DEMANDE EN ATTENTE dans Jenkins (input) ; sur validation + identite Vault -> apply nominatif via scripts/team-publish.sh (miroir de team-apply.job.xml, palier 2, pour le depot de l'equipe). L'equipe autorisee est derivee du DEPOT qui a declenche le webhook (topologie), croise avec providers.&lt;env&gt;.yml -- jamais du contenu du payload.</description>
+  <description>Apply post-merge (publication d'API) : une PR api/&lt;name&gt;-&lt;version&gt; d'un DEPOT D'EQUIPE FUSIONNEE ouvre une DEMANDE EN ATTENTE dans Jenkins (input) ; sur validation + identite Vault -> apply nominatif via scripts/team-publish.sh (miroir de team-apply.job.xml, palier 2, pour le depot de l'equipe). L'equipe autorisee est derivee du DEPOT qui a declenche le webhook (topologie), croise avec providers.&lt;env&gt;.yml -- jamais du contenu du payload. PIPELINE FROM SCM : le pipeline est ci/Jenkinsfile.team-publish, charge depuis le depot plateforme (branche main) -- ce job ne contient AUCUN Groovy.</description>
   <keepDependencies>false</keepDependencies>
   <properties>
     <org.jenkinsci.plugins.workflow.job.properties.DisableConcurrentBuildsJobProperty/>
@@ -39,183 +59,30 @@
       </triggers>
     </org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty>
   </properties>
-  <definition class="org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition" plugin="workflow-cps">
-    <script>
-def repo = env.WEBHOOK_REPO ?: ''
-def ref = env.PR_BRANCH ?: ''
-if (!ref.startsWith('api/')) { echo "branche '${ref}' hors api/* -- rien a publier"; return }
-currentBuild.displayName = "publish ${repo} (PR #${env.PR_NUMBER})"
-
-// ── FINALLY D'ENTREE (dette I3 du palier 2, reglee ici plutot que reproduite) :
-// le try commence AVANT la pause ET la garde d'identite, pas seulement autour
-// de l'apply. team-apply.job.xml/provision-apply.job.xml ne couvrent que
-// l'apply lui-meme -- un refus de LEUR garde (ou une pause JAMAIS repondue,
-// abandonnee/timeout) n'y laisse aucune trace sur la PR. Ici, TOUT ce qui
-// peut echouer est dans le try : la PR est commentee dans TOUS les cas,
-// jamais seulement quand team-publish.sh a eu la chance de tourner.
-// `creds` est declare AVANT (portee de bloc Groovy) mais ASSIGNE dans le
-// try, pour rester lisible apres (ligne finale) meme si le try echoue tot. ──
-def publishResult = 'SUCCESS'
-def failMsg = ''
-def creds = null
-try {
-  // ── DEMANDE EN ATTENTE, DANS LE TRY (mais HORS de tout node{} — un input()
-  // n'a pas besoin d'exécuteur, en réserver un juste pour attendre une
-  // réponse humaine gâcherait un slot) : la décision est déjà prise (le
-  // merge) — la pause ne re-décide pas, elle fournit l'identité NOMINATIVE
-  // qui portera l'apply (policy team-onboarder, posée par
-  // setup-team-onboard-prereqs.sh). Un ABANDON/timeout de cette pause EST
-  // désormais couvert par le finally (avant ce commit, hors du try : un
-  // abandon laissait la PR muette, aucun commentaire, aucune trace). ────────
-  creds = input(
-    id: 'publish', message: "Publier l'API portee par la PR #${env.PR_NUMBER} de ${repo} ? Fournissez VOTRE identite Vault (voie A).",
-    parameters: [
-      string(name: 'VAULT_USER', defaultValue: '', description: 'Login annuaire (ex. oscar)'),
-      password(name: 'VAULT_USER_PASSWORD', defaultValue: '', description: 'Mot de passe annuaire')
-    ])
-
-  node {
-    stage('garde identite du valideur') {
-      git url: 'http://gitea:3000/ci/stoa-labs.git', branch: 'main'
-      withEnv(["G_MERGED_BY=${env.PR_MERGED_BY ?: ''}",
-               "G_REQUESTER=${env.PR_REQUESTER ?: ''}",
-               "G_VAULT_USER=${creds.VAULT_USER ?: ''}"]) {
-        dir('poc-control-plane-federation') {
-          sh 'set +x; sh scripts/lib/assert-merge-identity.sh --merged-by "$G_MERGED_BY" --requester "$G_REQUESTER" --vault-user "$G_VAULT_USER"'
-        }
-      }
-    }
-
-    // ── APPLY NOMINATIF : identite -> token Vault (ci/lib/vault-login.sh, voie
-    // A) -> scripts/team-publish.sh. Login et apply dans UN SEUL step sh --
-    // team-publish.sh herite VAULT_TOKEN_FILE en sous-processus, et le trap de
-    // revocation (vault_trap_revoke, EXIT) ne revoque le token QU'APRES l'apply
-    // (deux steps sh separes rouvriraient un process par step ; le trap de la
-    // premiere revoquerait le token AVANT que la seconde ne le consomme --
-    // meme discipline que team-apply.job.xml). ────────────────────────────────
-    stage('team-publish') {
-      withCredentials([string(credentialsId: 'gitea-provision-token', variable: 'GITEA_TOKEN')]) {
-        withEnv(["V_USER=${creds.VAULT_USER ?: ''}",
-                 "V_PASS=${creds.VAULT_USER_PASSWORD ?: ''}",
-                 "WEBHOOK_REPO=${env.WEBHOOK_REPO ?: ''}",
-                 "PR_BRANCH=${env.PR_BRANCH ?: ''}", "PR_NUMBER=${env.PR_NUMBER ?: ''}",
-                 "MERGE_SHA=${env.MERGE_SHA ?: ''}"]) {
-          dir('poc-control-plane-federation') {
-            sh '''
-              set +x
-              export VAULT_ADDR="${VAULT_ADDR:-http://vault:8200}"
-              export VAULT_USER="$V_USER"
-              export VAULT_USER_PASSWORD="$V_PASS"
-              # V_PASS ne doit PAS survivre au-dela de cette ligne : une
-              # variable EXPORTEE reste lisible dans /proc/PID/environ de
-              # TOUT process du meme noeud tant qu'elle est dans l'environnement
-              # du step sh -- meme apres avoir ete copiee dans
-              # VAULT_USER_PASSWORD, et VIDE l'invariant "jamais en clair"
-              # que vault-login.sh (unset apres usage, cf. sa propre discipline)
-              # tient deja pour SES variables internes. unset ICI, avant tout
-              # appel reseau (login inclus).
-              unset V_PASS
-              # Meme calibrage lab/client que team-apply.job.xml (Task 8, palier 2) :
-              # ci/lib/vault-login.sh retombe sur son defaut ldap (convention CLIENT)
-              # si VAULT_USER_AUTH_MOUNT n'est pas fixe ; ce lab authentifie ses
-              # operateurs nominatifs en userpass. DOIT etre fixee AVANT de sourcer
-              # la lib (elle lit VAULT_USER_AUTH_MOUNT au moment du login).
-              export VAULT_USER_AUTH_MOUNT="${VAULT_USER_AUTH_MOUNT:-userpass}"
-              # shellcheck disable=SC1091
-              . ci/lib/vault-login.sh
-              trap vault_trap_revoke EXIT
-              RC=0; vault_login_nominative || RC=$?
-              if [ "$RC" != 0 ]; then
-                [ "$RC" = 2 ] || exit 1
-                echo "  (pas d'identite nominative -> rien a publier)"; exit 0
-              fi
-              # VAULT_TOKEN_FILE (token BRUT, cf. team-publish.sh) est exporte par
-              # la lib ci-dessus et herite par team-publish.sh en sous-processus.
-              # APIM_API_BASE cible le MOCK in-cluster (reseau compose 'poc',
-              # service webmethods-mock) -- JAMAIS 5555/le vrai gateway ici.
-              export APIM_API_BASE="${APIM_API_BASE:-http://webmethods-mock:8080/rest/apigateway}"
-              export GIT_WEB_HOST="${GIT_WEB_HOST:-http://localhost:13000}"
-              # JENKINS_UI : cible in-cluster pour la re-pose d'app-request
-              # (Interfaces du brief) -- "localhost" depuis CE conteneur ne
-              # designe PAS Jenkins (fix mesure : la re-pose etait injoignable
-              # en job reel avec le defaut localhost:18080, jamais vu depuis
-              # un poste). Meme alias que webmethods-mock/gitea.
-              export JENKINS_UI="${JENKINS_UI:-http://jenkins:8080}"
-              bash scripts/team-publish.sh
-            '''
-          }
-        }
-      }
-    }
-  }
-} catch (Exception e) {
-  publishResult = 'FAILURE'
-  failMsg = e.getMessage() ?: e.toString()
-  echo "team-publish en echec : ${failMsg}"
-} finally {
-  // [Important, panel] MARQUEUR DISTINCT du marqueur de team-publish.sh
-  // (comment-marker: team-publish). AVANT ce fix : les deux commentaires
-  // partageaient LE MÊME marqueur, donc la MÊME entrée gitea-pr-comment.sh
-  // -- sur un échec IN-SCRIPT (REPO_NON_DECLARE, MERGE_SHA_NON_ANCETRE,
-  // CONTRAT_ABSENT, fatal Ansible…), team-publish.sh commente D'ABORD la
-  // cause NOMMÉE, PUIS ce bloc finally ÉCRASAIT ce même commentaire (PATCH,
-  // pas un second post) avec un texte générique ("le build a échoué… exit
-  // code 1") -- la cause nommée disparaissait de la PR. Corrigé : marqueur
-  // comment-marker "team-publish-build", DISTINCT. Résultat : le commentaire
-  // détaillé de team-publish.sh (script, cause nommée) ET le statut build de
-  // CE bloc (garde d'identité refusée, pause abandonnée, agent injoignable —
-  // les cas où team-publish.sh n'a JAMAIS tourné) coexistent, chacun
-  // idempotent sous SON marqueur, sans que l'un n'écrase l'autre.
-  // Checkout PROPRE (pas une hypothèse de workspace hérité du try) : ce bloc
-  // est un `node {}` SÉPARÉ, potentiellement un exécuteur différent.
-  //
-  // [Minor, panel Fix round 2] TOURNE DÉSORMAIS DANS LES DEUX CAS (succès
-  // COMME échec) -- avant ce fix, seul le cas d'échec postait/mettait à
-  // jour ce commentaire (`if (publishResult != 'SUCCESS')`) : un run qui
-  // RÉUSSIT après un run précédent en échec sur la MÊME PR laissait le ⚠
-  // du run précédent affiché À CÔTÉ du ✅ du script -- deux verdicts
-  // contradictoires sur la même PR. gitea-pr-comment.sh n'a pas de mode
-  // suppression (PATCH/POST seulement) : le remède est de mettre À JOUR ce
-  // même commentaire (même marqueur) avec un texte NEUTRE sur le chemin
-  // succès plutôt que de le laisser muet. Contre-épreuve : échec puis
-  // succès sur la même PR -> un seul verdict cohérent (le ⚠ devient un
-  // texte neutre, le ✅ du script reste la seule alerte visible).
-  node {
-    git url: 'http://gitea:3000/ci/stoa-labs.git', branch: 'main'
-    withCredentials([string(credentialsId: 'gitea-provision-token', variable: 'GITEA_TOKEN')]) {
-      withEnv(["WEBHOOK_REPO=${env.WEBHOOK_REPO ?: ''}", "PR_NUMBER=${env.PR_NUMBER ?: ''}",
-               "FAIL_MSG=${failMsg}", "PUBLISH_RESULT=${publishResult}"]) {
-        dir('poc-control-plane-federation') {
-          sh '''
-            set +x
-            if [ -z "$WEBHOOK_REPO" ] || [ -z "$PR_NUMBER" ]; then
-              echo "commentaire de secours impossible (WEBHOOK_REPO/PR_NUMBER absents)"
-              exit 0
-            fi
-            BODYFILE="$(mktemp)"
-            if [ "$PUBLISH_RESULT" = "SUCCESS" ]; then
-              printf '✅ team-publish (statut build) : build termine sans erreur -- voir le commentaire team-publish ci-dessus pour le resultat de la publication.\n' \
-                > "$BODYFILE"
-            else
-              printf '⚠️ team-publish (statut build) : le build a echoue avant ou pendant la publication (%s). Si la garde d identite a refuse ou si la pause a ete abandonnee, RIEN n a ete publie -- voir le commentaire team-publish ci-dessus si le script a tourne.\n' \
-                "${FAIL_MSG:-voir le build Jenkins}" > "$BODYFILE"
-            fi
-            GIT_REPO="$WEBHOOK_REPO" PR_NUMBER="$PR_NUMBER" COMMENT_MARKER="&lt;!-- team-publish-build --&gt;" \
-              COMMENT_BODY_FILE="$BODYFILE" bash scripts/lib/gitea-pr-comment.sh \
-              || echo "AVERTISSEMENT: commentaire de secours (finally) en echec"
-            rm -f "$BODYFILE"
-          '''
-        }
-      }
-    }
-  }
-}
-if (publishResult != 'SUCCESS') {
-  error("team-publish en echec pour ${repo} -- PR #${env.PR_NUMBER} commentee (si possible).")
-}
-echo "team-publish reussi pour ${repo} par ${creds.VAULT_USER}"
-    </script>
-    <sandbox>true</sandbox>
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition" plugin="workflow-cps">
+    <scm class="hudson.plugins.git.GitSCM" plugin="git">
+      <configVersion>2</configVersion>
+      <userRemoteConfigs>
+        <hudson.plugins.git.UserRemoteConfig>
+          <!-- Depot PLATEFORME vu DEPUIS l'agent (reseau docker) : c'est aussi
+               celui que `checkout scm` repose dans le workspace, d'ou la
+               disparition des `git url:` explicites du pipeline. -->
+          <url>http://gitea:3000/ci/stoa-labs.git</url>
+        </hudson.plugins.git.UserRemoteConfig>
+      </userRemoteConfigs>
+      <branches>
+        <hudson.plugins.git.BranchSpec>
+          <name>*/main</name>
+        </hudson.plugins.git.BranchSpec>
+      </branches>
+      <doGenerateSubmoduleConfigurations>false</doGenerateSubmoduleConfigurations>
+      <submoduleCfg class="empty-list"/>
+      <extensions/>
+    </scm>
+    <scriptPath>poc-control-plane-federation/ci/Jenkinsfile.team-publish</scriptPath>
+    <!-- lightweight=false : le workspace de l'agent doit porter le depot
+         (scripts/, ansible/, ci/lib/), pas seulement le Jenkinsfile. -->
+    <lightweight>false</lightweight>
   </definition>
-  <triggers/>
+  <disabled>false</disabled>
 </flow-definition>
