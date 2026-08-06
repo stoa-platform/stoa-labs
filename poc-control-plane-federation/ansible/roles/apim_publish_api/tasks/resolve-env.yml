@@ -68,10 +68,25 @@
 #
 # LA FERMETURE RÉELLE contre l'exécution : team-publish.sh §4
 # (MANIFEST_CONTRACT_INVALIDE + MANIFEST_UNSAFE, HORS LIGNE, avant tout
-# ansible-playbook — le manifeste n'atteint jamais ce rôle) et, en seconde
-# couche pour les appelants qui n'ont pas cette garde en amont,
-# manifest-guard.yml (scan-manifest-jinja.sh, texte brut, AVANT
-# include_vars — cf. son propre commentaire).
+# ansible-playbook — le manifeste n'atteint jamais ce rôle).
+#
+# PAS DE SECONDE COUCHE CÔTÉ RÔLE (retrait acté, panel Fix round 3, revert
+# 3b14c4d) : une tentative de scan Jinja en texte brut dans manifest-
+# guard.yml a été essayée puis retirée — elle ÉTAIT CONTOURNABLE (un
+# manifeste échappe {{ }} en YAML — hex \x7b\x7b, unicode, backslash-saut-
+# de-ligne — la sous-chaîne littérale "{{" n'apparaît alors JAMAIS dans le
+# texte brut, mais `yaml.safe_load` — donc `include_vars` — la reconstitue
+# intacte, prouvé par contre-épreuve touch-marker) ET CASSAIT un appelant
+# LÉGITIME (`clients/_example/apis/accounts-read.publish.yml`, forme
+# historique `{{ playbook_dir }}/../apis/<fichier>.openapi.yaml`, DIFFÉRENTE
+# du seul fragment que ce scan blanchissait). Un rempart contournable qui
+# casse en plus un appelant légitime nuit plus qu'il ne protège (faux
+# sentiment de sécurité) — retiré plutôt que rafistolé sous pression de
+# calendrier. HANDOFF pour un futur appelant qui appliquerait un manifeste
+# NON REVU par la plateforme SANS passer par team-publish.sh §4 : il doit
+# fournir SON PROPRE scan conscient du YAML (charger via `yaml.safe_load`
+# et examiner les VALEURS RÉSOLUES, jamais grep le texte brut) — ce rôle
+# n'en fournit pas.
 #
 # Posé ICI, APRÈS le combine per_env ci-dessus : un contract dissimulé sous
 # `per_env.<env>.contract` écraserait sinon ce pin s'il était posé avant la
