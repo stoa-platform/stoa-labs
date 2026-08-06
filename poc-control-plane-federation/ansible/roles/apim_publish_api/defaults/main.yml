@@ -37,6 +37,21 @@ apim_pub_deactivate_envs: ["dev", ""]
 # décision d'architecture, pas un réglage.
 apim_pub_manifest_allowed: ["apim_api"]
 
+# --- épinglage du contract (Task 7, ferme une RCE) ---------------------------
+# La liste blanche ci-dessus ne borne QUE les clés TOP-LEVEL du manifeste,
+# jamais leur CONTENU — `apim_api.contract` (relu par lookup('file', …) plus
+# bas, tasks/main.yml) peut donc porter N'IMPORTE QUELLE chaîne, y compris un
+# gabarit Jinja qu'Ansible réévalue paresseusement à la première référence
+# (`lookup('pipe', …)` = exécution de commande sur l'agent qui porte les
+# secrets du pipeline). Un appelant qui applique un manifeste écrit par un
+# TIERS non revu par la plateforme (team-publish.sh, Task 7) DOIT poser cette
+# variable — extra-var (précédence 22), bat le manifeste (include_vars,
+# précédence 18), même mécanique que apim_ss_team pour apim_api.team
+# (team-name.yml). Vide (défaut) = comportement INCHANGÉ pour les appelants
+# historiques (Jenkinsfile.publish-api, clients/_example, demo-multienv.sh),
+# où le manifeste est écrit/revu par la plateforme elle-même.
+apim_ss_contract_pin: ""
+
 # --- NOUVELLE VERSION (tasks/version.yml) ------------------------------------
 # Miner une version dans la lignée d'une AUTRE équipe y dépose un actif (la
 # version minée hérite des teams de sa base, mesuré le 2026-08-05) et y

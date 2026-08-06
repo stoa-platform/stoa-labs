@@ -49,6 +49,26 @@
     apim_api: "{{ apim_api_base_m | combine(apim_api_over_m, recursive=True) }}"
   when: apim_api_has_per_env
 
+# ÉPINGLAGE (Task 7, ferme une RCE) : apim_api.contract est ÉCRIT par une
+# équipe dans SON PROPRE manifeste puis relu par lookup('file', …) plus bas
+# (tasks/main.yml) — Ansible re-template PARESSEUSEMENT toute chaîne qui
+# contient elle-même {{ }} au moment où elle est référencée à l'intérieur d'un
+# AUTRE bloc Jinja : un manifeste portant `contract: "{{ lookup('pipe','…') }}"`
+# EXÉCUTE ce pipe sur l'agent qui porte le token Vault nominatif ET
+# GITEA_TOKEN, au moment du premier lookup('file', apim_api.contract). La
+# liste blanche de manifest-guard.yml ne borne QUE les clés top-level, jamais
+# leur contenu — rien d'autre dans ce rôle ne fermait cette porte.
+#
+# Posé ICI, APRÈS le combine per_env ci-dessus : un contract dissimulé sous
+# `per_env.<env>.contract` écraserait sinon ce pin s'il était posé avant la
+# fusion — le pin doit gagner sur TOUTE source du manifeste, racine ou
+# per_env. Vide (défaut) = no-op, comportement inchangé pour les appelants
+# historiques (cf. defaults/main.yml, apim_ss_contract_pin).
+- name: "Env : contract ÉPINGLÉ par l'appelant (pipeline), jamais celui du manifeste"
+  ansible.builtin.set_fact:
+    apim_api: "{{ apim_api | combine({'contract': apim_ss_contract_pin}) }}"
+  when: "(apim_ss_contract_pin | default('')) | length > 0"
+
 - name: "Env : inbound résolu pour '{{ apim_ss_env | default('(mono-env)') }}'"
   ansible.builtin.debug:
     msg: >-
