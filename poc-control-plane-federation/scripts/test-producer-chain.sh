@@ -168,9 +168,25 @@ ORPH_REPO="${ORPH_ORG}/orphan-api"
 # matrice rejouable SANS exiger le redémarrage du conteneur du mock — au prix
 # d'objets qui s'accumulent dans son état en mémoire, disparaissant au
 # prochain redémarrage (état volatil, aucun disque).
-RUN_TAG="$(date +%s)"
+# RUN_TAG porte AUSSI le PID et un aléa, pas seulement l'horodatage : `date +%s`
+# résout à la SECONDE, donc deux runs démarrés dans la même seconde
+# obtiendraient le MÊME jeton — et `claim_build` accepterait alors le build de
+# l'autre run. Ce que la valeur garantit : deux runs qui coexistent ont des PID
+# DIFFÉRENTS (le système ne réattribue pas un PID vivant), ce qui suffit à
+# distinguer deux instances CONCURRENTES ; l'horodatage et l'aléa ne font que
+# réduire la collision avec un run PASSÉ dont le PID aurait été recyclé.
+# Format : uniquement [0-9-] — le nom d'API qui en dérive doit rester dans la
+# classe que la porte du producteur accepte (assertion ci-dessous).
+RUN_TAG="$(date +%s)-$$-${RANDOM}"
 API_NAME="t8api${RUN_TAG}"
 WITNESS_APP="t8consumer${RUN_TAG}"  # application témoin des souscriptions (preuve 6)
+# FAIL-CLOSED : le nom dérivé doit satisfaire la MÊME regex que la garde
+# API_NAME d'api-request.sh (^[a-z0-9][a-z0-9-]{1,30}$, donc 31 caractères au
+# plus). Sans ce contrôle, un futur changement de format de RUN_TAG ferait
+# échouer la preuve 2 sur un refus de la porte — un rouge qui accuserait la
+# chaîne pour un défaut du harnais.
+printf '%s' "$API_NAME" | grep -Eq '^[a-z0-9][a-z0-9-]{1,30}$' \
+  || { echo "API_NAME dérivé de RUN_TAG ('$API_NAME', ${#API_NAME} caractères) ne satisfait PAS la regex de la porte producteur ^[a-z0-9][a-z0-9-]{1,30}\$ — corriger le format de RUN_TAG" >&2; exit 2; }
 JOB="team-publish"
 
 PASS=0; FAIL=0
@@ -247,8 +263,9 @@ is_mine() { case " $MY_BUILDS " in *" $1 "*) return 0;; *) return 1;; esac; }
 # claim_build <job> <n> <motif> — n'enregistre <n> comme NÔTRE que si le log du
 # build PORTE <motif>, un jeton propre à ce run (le nom d'API horodaté, présent
 # dans la branche que le webhook transporte). Deux runs concurrents de cette
-# matrice ont des RUN_TAG différents : l'appartenance est donc DÉMONTRÉE, pas
-# supposée. Effet de bord voulu : si le créneau de build a été pris par un run
+# matrice ont des PID différents, donc des RUN_TAG différents (cf. la
+# construction de RUN_TAG) : l'appartenance est donc DÉMONTRÉE pour deux runs
+# CONCURRENTS, pas seulement supposée. Effet de bord voulu : si le créneau de build a été pris par un run
 # concurrent, on ne le revendique pas — et on n'ira pas répondre à SA pause
 # avec NOS identifiants.
 claim_build() {
