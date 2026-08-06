@@ -837,13 +837,25 @@ if [ "$JOB10_OK" = 1 ] && [ "$R10REQ" -eq 0 ] && [ "$MERGE10_HC" = 200 ] && [ -n
   #
   # SÛRETÉ MULTI-AGENTS : ce lab est PARTAGÉ. Une pause en cours peut être la
   # demande d'approbation 4-yeux LÉGITIME d'un run concurrent — l'abandonner
-  # détruirait le travail d'autrui. On n'abandonne donc QUE les pauses dont le
-  # `displayName` du build nomme une des équipes JETABLES de CE harnais
-  # (team-apply.job.xml pose « onboard <team>/<env> (PR #n) », et TEAM/TEAM10
-  # commencent tous deux par `probe-p2`). Une pause étrangère est LAISSÉE
-  # INTACTE et signalée bruyamment : la preuve 10 échouera alors avec une cause
-  # nommée plutôt qu'en piétinant l'approbation de quelqu'un d'autre. Chaque
-  # abandon est loggué avec son numéro ET son displayName — jamais silencieux.
+  # détruirait le travail d'autrui.
+  #
+  # L'APPARTENANCE EST PROUVÉE, PAS SUPPOSÉE (fix round 2). Une première version
+  # scopait sur `probe-p2`, le nom des équipes jetables : c'est l'identité du
+  # HARNAIS, pas celle de l'EXÉCUTION — deux runs concurrents de CETTE MÊME
+  # matrice produisent le même displayName, et le drain de l'un aurait abandonné
+  # la pause de l'autre en la déclarant sienne. On scope désormais sur les
+  # NUMÉROS DE PR que CE run a lui-même ouverts (preuve 3 et preuve 10) :
+  # team-apply.job.xml pose « onboard <team>/<env> (PR #n) », et ces numéros
+  # sont uniques sur le dépôt plateforme — deux runs concurrents en ont
+  # forcément de différents. Toute autre pause est LAISSÉE INTACTE et signalée
+  # bruyamment : la preuve 10 échouera avec une cause nommée plutôt qu'en
+  # piétinant l'approbation de quelqu'un d'autre. Chaque abandon est loggué avec
+  # son numéro de build ET son displayName — jamais silencieux.
+  # Les PR de CE run : celle de la preuve 3 (dont le merge de la preuve 5
+  # déclenche le webhook réel) et celle de la preuve 10.
+  _MINE_PRS=""
+  [ -n "${PR_ONBOARD_NUM:-}" ] && _MINE_PRS="(PR #${PR_ONBOARD_NUM})"
+  [ -n "${PR10_NUM:-}" ] && _MINE_PRS="${_MINE_PRS:+$_MINE_PRS }(PR #${PR10_NUM})"
   rm -f "$TMP/jck10p"
   _cj=$(curl -sf -c "$TMP/jck10p" "$JENKINS_UI/crumbIssuer/api/json")
   _jfp=$(printf '%s' "$_cj" | python3 -c 'import sys,json;print(json.load(sys.stdin)["crumbRequestField"])' 2>/dev/null)
@@ -866,13 +878,17 @@ for b in d.get('builds',[]):
       [ -n "$_n" ] || continue
       _st=$(curl -s "$JENKINS_UI/job/team-apply/$_n/wfapi/describe" 2>/dev/null | python3 -c 'import json,sys;print(json.load(sys.stdin).get("status",""))' 2>/dev/null)
       [ "$_st" = PAUSED_PENDING_INPUT ] || continue
-      case "$_dn" in
-        *probe-p2*)
+      _mine=0
+      for _pr in $_MINE_PRS; do
+        case "$_dn" in *"$_pr"*) _mine=1;; esac
+      done
+      case "$_mine" in
+        1)
           _iid=$(curl -s "$JENKINS_UI/job/team-apply/$_n/wfapi/pendingInputActions" | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["id"])' 2>/dev/null)
           if [ -n "$_iid" ]; then
             curl -s -b "$TMP/jck10p" -H "$_jfp: $_jcp" -X POST "$JENKINS_UI/job/team-apply/$_n/input/$_iid/abort" -o /dev/null
             _drained=$((_drained + 1))
-            echo "   team-apply #$_n « $_dn » : pause orpheline de CE harnais (webhook réel du merge de la preuve 5) — abandonnée"
+            echo "   team-apply #$_n « $_dn » : pause d'une PR ouverte par CE run (webhook réel du merge de la preuve 5) — abandonnée"
           fi
           ;;
         *) _foreign="${_foreign:+$_foreign, }#$_n « $_dn »" ;;
@@ -881,7 +897,7 @@ for b in d.get('builds',[]):
     [ -n "$_foreign" ] && break
     sleep 4
   done
-  [ -n "$_foreign" ] && echo "   ATTENTION : pause(s) team-apply ÉTRANGÈRE(S) au périmètre 'probe-p2' LAISSÉE(S) INTACTE(S) — $_foreign. Lab partagé : ce sont peut-être des approbations légitimes d'un autre run ; la file restera bloquée tant que leur propriétaire ne les a pas répondues." >&2
+  [ -n "$_foreign" ] && echo "   ATTENTION : pause(s) team-apply dont CE run ne peut PAS prouver qu'elles sont siennes — LAISSÉE(S) INTACTE(S) : $_foreign. PR ouvertes par ce run : ${_MINE_PRS:-aucune}. Lab PARTAGÉ : approbation d'un run concurrent, ou résidu d'un run antérieur ; la file restera bloquée tant que son propriétaire ne l'a pas soldée — ce harnais n'y touchera pas." >&2
   [ "$_drained" -gt 0 ] && echo "   ${_drained} pause(s) orpheline(s) de team-apply abandonnée(s) — la file du job est libre"
 
   # 10d. webhook RÉEL (mêmes clés que team-apply.job.xml genericVariables)
