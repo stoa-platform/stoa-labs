@@ -750,12 +750,42 @@ run_role "$REPO/ansible" "$TMP/plat.yml" >"$TMP/k1.log" 2>&1; RC=$?
 [ "$RC" -ne 0 ] && grep -q "API_OWNER_MISMATCH" "$TMP/k1.log" \
   && ok "K1 capture d'une API plateforme → API_OWNER_MISMATCH (refus nommé)" \
   || ko "K1 attendu API_OWNER_MISMATCH, rc=$RC"
+# L'autre branche du message (mono-version) : là, la version DEMANDÉE est bien
+# celle qui n'appartient pas à l'équipe — le message doit le dire ainsi.
+grep -q "La version demandée (v1.0) en fait partie" "$TMP/k1.log" \
+  && ok "K1b … et le message est juste dans CE cas aussi (la version demandée est la non confirmée)" \
+  || ko "K1b message inexact en mono-version : $(grep -o 'API_OWNER_MISMATCH.\{0,120\}' "$TMP/k1.log" | head -1)"
 [ "$(plat_teams)" = "Administrators Default" ] \
   && ok "K2 l'équipe de l'API plateforme n'a PAS bougé (teams=$(plat_teams))" \
   || ko "K2 l'équipe de l'API plateforme a été réécrite : $(plat_teams)"
 [ "$(api_field "$PLAT_ID" owner)" = "null" ] \
   && ok "K3 owner de l'API plateforme intact (approvers.yml n'a pas tourné)" \
   || ko "K3 owner réécrit : $(api_field "$PLAT_ID" owner)"
+
+# K6 — lignée à propriété MIXTE : la version DEMANDÉE appartient à l'équipe,
+# une version SŒUR est restée en Default (migration partielle). Le refus est le
+# même (la garde est ∀ sur la lignée, sémantique INCHANGÉE), mais le message
+# doit dire la VRAIE raison : sans ce correctif il titrait « v2.0 … n'appartient
+# PAS à payments-team » alors que v2.0 lui appartient — un diagnostic FAUX qu'un
+# opérateur en migration partielle lirait comme une perte de propriété.
+fresh_mock
+run_role "$REPO/ansible" "$TMP/v1.yml" >"$TMP/k6-prep1.log" 2>&1     # v1.0.0 -> payments-team
+run_role "$REPO/ansible" "$TMP/v2.yml" >"$TMP/k6-prep2.log" 2>&1     # v2.0 minée -> payments-team
+V1_MIX="$(api_id 1.0.0)"
+# on remet la SŒUR v1.0.0 en Default (assetType correct, aucune équipe réelle)
+adm -o /dev/null -H 'Content-Type: application/json' -X POST "$BASE/assets/team" \
+  -d "{\"assetIds\":[\"$V1_MIX\"],\"assetType\":\"API\",\"newTeams\":[]}"
+run_role "$REPO/ansible" "$TMP/v2.yml" >"$TMP/k6.log" 2>&1; RC=$?
+[ "$RC" -ne 0 ] && grep -q "API_OWNER_MISMATCH" "$TMP/k6.log" \
+  && ok "K6 lignée mixte : refus maintenu (la garde reste ∀ sur la lignée)" \
+  || ko "K6 attendu API_OWNER_MISMATCH sur lignée mixte, rc=$RC"
+if grep -q "SŒURS" "$TMP/k6.log" && ! grep -q "vous appartient, elle" /dev/null; then
+  grep -q "La version demandée (v2.0) vous appartient" "$TMP/k6.log" \
+    && ok "K7 … et le message dit la VRAIE raison (version demandée possédée, SŒUR non confirmée)" \
+    || ko "K7 le message ne dit pas que la version demandée appartient bien à l'équipe"
+else
+  ko "K7 le message ne mentionne pas la version sœur : diagnostic faux sur la version demandée"
+fi
 
 # K4 — profil système sur ce chemin aussi.
 seed_platform_api

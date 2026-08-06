@@ -269,15 +269,21 @@
   ansible.builtin.assert:
     that: "pub_ver_foreign | length == 0"
     fail_msg: >-
-      API_OWNER_MISMATCH : '{{ apim_api.name }}' v{{ apim_api.version }} existe déjà
-      sur la gateway et n'appartient PAS à '{{ pub_team_name }}' — appartenance relue :
-      {{ pub_ver_owners }} (non confirmées : {{ pub_ver_foreign }}). Poursuivre
-      réécrirait `owner` (approbateurs), RÉASSIGNERAIT l'équipe et réactiverait une
-      API qui n'est pas la vôtre : c'est une capture d'actif, pas une publication.
-      Rien n'a été écrit. Si ce nom devait être le vôtre, choisissez-en un autre ;
-      s'il s'agit d'une API sans équipe (`Default` = lisible par toutes, donc
-      appartenant à personne), un administrateur doit d'abord l'assigner à
-      '{{ pub_team_name }}' — la chaîne ne se l'attribue pas d'elle-même.
+      API_OWNER_MISMATCH : la chaîne ne peut pas agir sur le nom '{{ apim_api.name }}' —
+      la garde exige que TOUTE la lignée de ce nom appartienne à l'équipe demandeuse,
+      et {{ pub_ver_foreign | length }} version(s) ne sont PAS confirmées à
+      '{{ pub_team_name }}' : {{ pub_ver_foreign }}.
+      {{ 'La version demandée (v' ~ apim_api.version ~ ') en fait partie.'
+         if (apim_api.version | string) in pub_ver_foreign
+         else 'La version demandée (v' ~ apim_api.version ~ ') vous appartient, elle :
+               ce sont des versions SŒURS du même nom qui ne le sont pas — la lignée
+               est partagée, et le refus porte sur elle, pas sur votre version.' }}
+      Appartenance relue : {{ pub_ver_owners }}. Poursuivre réécrirait `owner`
+      (approbateurs), RÉASSIGNERAIT l'équipe et réactiverait une API dont la lignée
+      n'est pas entièrement la vôtre. Rien n'a été écrit. Un administrateur doit
+      assigner la ou les versions listées ci-dessus à '{{ pub_team_name }}' — une API
+      en `Default` est lisible par toutes les équipes, donc n'appartient à personne,
+      et la chaîne ne se l'attribue pas d'elle-même.
     success_msg: >-
       API_OWNER_OK : '{{ apim_api.name }}' v{{ apim_api.version }} appartient bien à
       '{{ pub_team_name }}' ({{ pub_ver_owners }}).

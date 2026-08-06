@@ -144,7 +144,7 @@ reprend tout seul, comme avant.
 donc rien à couper (publier une nouvelle version EST la voie 0-coupure). L'exemption
 ne tient pas sur un booléen : l'état est **relu sur la gateway** avant le PUT
 (`VERSION_MINTED_ACTIVE` sinon). Preuve rejouable, hors ligne :
-`scripts/test-publish-version.sh` (62/62 contre le mock, témoins AVANT inclus).
+`scripts/test-publish-version.sh` (65/65 contre le mock, témoins AVANT inclus).
 
 > **Deux voies de naissance d'une version coexistent, une seule est prouvée.**
 > Le moteur Go (`labctl/internal/adapter/webmethods/publish.go`, `latestByName`),
