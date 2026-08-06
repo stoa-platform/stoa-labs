@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 # test-api-request.sh — preuve X/X de la Task 5 (P3) : scripts/api-request.sh
-# (la porte du PRODUCTEUR) + ci/jenkins/api-request.job.xml.
+# (la porte du PRODUCTEUR) — le MOTEUR, et lui seul.
+#
+# ── CE QUE CE TEST NE COUVRE PAS (et où c'est couvert) ───────────────────────
+# Le CÂBLAGE du job Jenkins n'est pas ici : il vit dans
+# scripts/test-api-request-wiring.sh (analyse statique, 100% hors ligne). Cet
+# en-tête annonçait « + ci/jenkins/api-request.job.xml » alors qu'aucune de ses
+# sections n'a jamais lu ce fichier — corrigé plutôt que laissé mentir, d'autant
+# que le job a changé de nature : son pipeline ne vit plus en Groovy inline dans
+# le XML mais dans ci/Jenkinsfile.api-request (déclaratif), le XML n'étant plus
+# qu'une coquille « Pipeline from SCM » portant le FORMULAIRE (ses paramètres et
+# leurs marqueurs de listes déroulantes).
 #
 #   Section A — gardes d'entrée (HORS LIGNE, AVANT tout geste Git). GIT_HOST
 #     volontairement injoignable : un refus AVANT le message "[1/5]" prouve

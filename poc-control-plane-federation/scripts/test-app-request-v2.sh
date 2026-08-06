@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # test-app-request-v2.sh — preuve X/X de la Task 4 (P3) : app-request v2
 # (listes déroulantes + identité entrante) — scripts/provision-request.sh +
-# ci/jenkins/app-request.job.xml.
+# ci/jenkins/app-request.job.xml + ci/Jenkinsfile.app-request (le pipeline, sorti
+# du XML lors de la conversion en Jenkinsfile déclaratif : le XML ne porte plus
+# que la coquille « Pipeline from SCM » et les paramètres à marqueurs).
 #
 # DEUX TERRAINS :
 #   - Section A (gardes) et B (câblage placeholders) : HORS LIGNE — ni Gitea
@@ -154,16 +156,31 @@ else
     ko "câblage placeholders : marqueur résiduel non substitué"
   fi
   # Fix round 1 (revue, Important, static) : le refus loud API_FORMAT_INVALIDE
-  # (Groovy, fix 4) doit être PRÉSENT dans le XML réellement posté à Jenkins —
-  # PAS de fallback silencieux '1.0.0' pour une valeur non vide sans '@'.
+  # (fix 4) doit rester CÂBLÉ — PAS de fallback silencieux '1.0.0' pour une
+  # valeur non vide sans '@'.
   # Vérification STATIQUE (pas d'exécution Groovy réelle — aucun `groovy` CLI
   # dans ce lab, et le faux Jenkins ci-dessus n'exécute aucun pipeline, motif
-  # déjà accepté pour le reste de la logique Groovy de ce job dans ce test) :
-  # présence du garde-fou dans le corps posté.
-  if grep -q 'API_FORMAT_INVALIDE' "$POSTED" 2>/dev/null; then
-    ok "câblage placeholders : le garde-fou API_FORMAT_INVALIDE (fix 4) est bien dans le XML posté"
+  # déjà accepté pour le reste de la logique Groovy de ce job dans ce test).
+  #
+  # RE-POINTÉ (2026-08-06, conversion en Jenkinsfile déclaratif) : le pipeline
+  # ne vit PLUS en Groovy inline dans ci/jenkins/app-request.job.xml — il est
+  # dans ci/Jenkinsfile.app-request, et le XML posté n'est plus qu'une coquille
+  # « Pipeline from SCM » qui POINTE dessus. Le garde-fou est donc cherché dans
+  # le Jenkinsfile ; et comme un garde-fou vivant dans un fichier que le job ne
+  # charge pas serait un vert vacant, LES DEUX BOUTS de la chaîne sont vérifiés
+  # (le garde-fou d'un côté, le pointeur SCM de l'autre).
+  JF_APP="$REPO/ci/Jenkinsfile.app-request"
+  if grep -q 'API_FORMAT_INVALIDE' "$JF_APP" 2>/dev/null; then
+    ok "câblage placeholders : le garde-fou API_FORMAT_INVALIDE (fix 4) est bien dans ci/Jenkinsfile.app-request"
   else
-    ko "câblage placeholders : API_FORMAT_INVALIDE absent du XML posté"
+    ko "câblage placeholders : API_FORMAT_INVALIDE absent de ci/Jenkinsfile.app-request"
+  fi
+  if grep -qF '<scriptPath>poc-control-plane-federation/ci/Jenkinsfile.app-request</scriptPath>' "$POSTED" 2>/dev/null \
+     && grep -q 'CpsScmFlowDefinition' "$POSTED" 2>/dev/null \
+     && ! grep -q '<script>' "$POSTED" 2>/dev/null; then
+    ok "câblage placeholders : le job posé est un Pipeline from SCM pointant sur ci/Jenkinsfile.app-request (aucun Groovy inline résiduel)"
+  else
+    ko "câblage placeholders : le XML posté ne charge pas ci/Jenkinsfile.app-request (ou porte encore du Groovy inline) — le garde-fou ci-dessus ne serait jamais exécuté"
   fi
 
   # Fix round 2 (revue, casse nouvelle du round 1) : le sed double-forme ne

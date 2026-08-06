@@ -1,0 +1,157 @@
+// ci/Jenkinsfile.app-request — FORMULAIRE « demander une application » (palier 3).
+//
+// Conversion DÉCLARATIVE du pipeline qui vivait en Groovy inline dans
+// ci/jenkins/app-request.job.xml (<script>…</script>). Même modèle que
+// ci/Jenkinsfile.team-publish : le job est MINCE — il ROUTE des valeurs de
+// formulaire vers `scripts/provision-request.sh`, qui porte TOUTE la substance
+// (gardes d'entrée IP/cert/team, rendu du manifeste, branche, PR, plan
+// enchaîné). Aucune logique métier n'a migré ici, et aucune ne doit y migrer.
+//
+//   humain ──formulaire──▶ PR provision/<app>-<env> + plan enchaîné
+//
+// CE JOB N'APPLIQUE RIEN. Il est la DEUXIÈME PORTE, à côté de la voie machine
+// (OIG/CLI2) : même aval, mêmes gardes, même point de décision — le MERGE
+// (ADR-075/076/079/081). Un formulaire, comme un webhook, ne porte aucune
+// autorité ; il ouvre une demande, un humain la valide en fusionnant.
+//
+// ── POURQUOI IL N'Y A PAS DE BLOC `parameters {}` ICI ────────────────────────
+// C'est DÉLIBÉRÉ, et c'est la contrainte structurante de ce job. Les
+// <parameterDefinitions> restent dans ci/jenkins/app-request.job.xml parce que
+// DEUX d'entre eux (TEAM, API) portent les marqueurs <!--CHOICES:TEAMS--> /
+// <!--CHOICES:APIS-->, que setup-team-onboard-jobs.sh SUBSTITUE AU MOMENT DE LA
+// POSE du job (listes générées par scripts/lib/generate-choices.sh depuis
+// providers.<env>.yml et les APIs publiées). Déclarer ces paramètres ici les
+// figerait à ce qui est écrit dans le dépôt — c'est-à-dire à des listes VIDES :
+// les deux déroulantes seraient mortes, et le marqueur, invisible pour Jenkins,
+// ne serait plus jamais substitué.
+// Corollaire mesuré (lab, 2026-08-06) : Declarative ne remplace QUE les
+// propriétés qu'il a lui-même posées (DeclarativeJobPropertyTrackerAction) —
+// des <parameterDefinitions> venus du config.xml sont préservés indéfiniment et
+// GAGNENT. Le XML est donc la source de vérité des paramètres, ce fichier celle
+// du pipeline ; ils ne se recouvrent pas.
+pipeline {
+
+  // `agent any` — contrairement à Jenkinsfile.team-publish (`agent none`), ce
+  // job n'a AUCUNE demande en attente : rien n'attend un humain une fois lancé,
+  // donc rien ne gâche un exécuteur. Le checkout du dépôt plateforme est
+  // implicite en déclaratif (d'où la disparition du `stage('checkout')` et de
+  // son `git url:` en dur) : il vient de la définition SCM du job, qui pointe le
+  // MÊME dépôt/branche (http://gitea:3000/ci/stoa-labs.git, */main) et exige
+  // <lightweight>false</lightweight> pour que scripts/ soit dans le workspace.
+  agent any
+
+  // ── POINTS DE CONFIG CLIENT ────────────────────────────────────────────────
+  // Motif `env.X ?: défaut`, identique aux Jenkinsfile frères : le MÊME fichier
+  // sert le lab et le client, sans fork. Les DÉFAUTS ci-dessous reproduisent
+  // EXACTEMENT ceux que provision-request.sh applique déjà de lui-même
+  // (`${GIT_HOST:-http://gitea:3000}`, `${GIT_REPO:-ci/stoa-labs}`) : les poser
+  // ici ne change rien au comportement, cela rend seulement le point de bascule
+  // VISIBLE et surchargeable sans toucher au moteur.
+  //
+  // ⚠ Hôtes vus DEPUIS le conteneur de l'agent (réseau docker `poc`) :
+  // « localhost » n'y désigne PAS Gitea (fix mesuré ailleurs dans cette suite).
+  environment {
+    GIT_HOST             = "${env.GIT_HOST ?: 'http://gitea:3000'}"
+    GIT_REPO             = "${env.GIT_REPO ?: 'ci/stoa-labs'}"
+    // Credential Jenkins (secret text) portant le token Gitea du CI. Était en
+    // dur dans le Groovy ('gitea-provision-token') ; même valeur par défaut.
+    GITEA_CREDENTIALS_ID = "${env.GITEA_CREDENTIALS_ID ?: 'gitea-provision-token'}"
+  }
+
+  stages {
+
+    // Les deux SEULS calculs Groovy de ce job, regroupés dans un unique bloc
+    // `script{}` : l'identité du demandeur et la scission de la déroulante API.
+    // Tous deux produisent des variables d'ENVIRONNEMENT consommées par l'étape
+    // suivante — un `def` local à un `script{}` ne franchit pas la frontière
+    // d'étape, d'où le passage par `env`.
+    stage('Contexte de la demande') {
+      steps {
+        script {
+          // Traçabilité : l'identité Jenkins du demandeur remplace
+          // oig-/cli2-provisioner dans REQ_CALLER.
+          //
+          // PIÈGE constaté à l'exécution : sur un déclenchement anonyme, userId
+          // vaut JSON null MAIS getBuildCauses le rend sous forme d'un objet
+          // JSONNull non-null (net.sf.json), donc VRAI pour Groovy — un simple
+          // `cause[0].userId ? … : 'anonymous'` retombe alors sur la chaîne
+          // littérale "null" au lieu de 'anonymous'. On force la comparaison en
+          // TEXTE, c'est le seul test qui tienne.
+          //
+          // (Le job d'origine notait « getBuildCauses est approuvé en sandbox ».
+          // La question ne se pose plus : un Pipeline from SCM n'est pas
+          // sandboxé — le pipeline est du code VERSIONNÉ et relu, la protection
+          // est la revue de la PR sur le dépôt plateforme. Le piège JSONNull,
+          // lui, n'a rien à voir avec la sandbox et reste entier.)
+          def cause = currentBuild.getBuildCauses('hudson.model.Cause$UserIdCause')
+          def rawUid = (cause && !cause.isEmpty()) ? "${cause[0].userId}" : 'anonymous'
+          def uid = (rawUid == 'null' || rawUid == '') ? 'anonymous' : rawUid
+          env.REQ_CALLER = "jenkins-form:${uid}"
+
+          // API v2 (Task 4, P3) : la liste déroulante porte "nom@version"
+          // (généré par scripts/lib/generate-choices.sh) — scindé ICI, jamais
+          // dans provision-request.sh (qui continue de recevoir REQ_API /
+          // REQ_API_VER séparés, forme inchangée pour les voies machine
+          // OIG/CLI2). Premier '@' : name/version restent tous deux dans
+          // [A-Za-z0-9._-] (garde du script), donc jamais de '@' interne à lever.
+          //
+          // Fix round 1 (revue, Important) : PAS de repli silencieux '1.0.0'
+          // pour une valeur NON VIDE sans '@' — une première version retombait
+          // sur ce défaut, ce qui aurait rejoué SILENCIEUSEMENT une fausse
+          // version pour tout rejeu de l'ANCIEN contrat machine (API seul, sans
+          // '@') contre ce job. Les choix générés portent TOUJOURS '@' (contrat
+          // de generate_choices_apis) : un '@' absent sur une valeur non vide
+          // est donc un typo/contrat obsolète, jamais une soumission légitime —
+          // échec loud AVANT le sh. Le cas VIDE (choix par défaut du menu, cf.
+          // le commentaire XML du paramètre API) n'est PAS ce cas : il continue
+          // de tomber sur le refus loud existant de provision-request.sh
+          // (REQ_API:? requis), d'où le REQ_API vide — et non absent — posé
+          // ci-dessous : `${REQ_API:?}` refuse une valeur vide comme une
+          // variable non définie.
+          def apiChoice = params.API ?: ''
+          if (apiChoice != '' && !apiChoice.contains('@')) {
+            error("API_FORMAT_INVALIDE : '${apiChoice}' — attendu nom@version (liste déroulante générée), aucun repli silencieux.")
+          }
+          def atIdx = apiChoice.indexOf('@')
+          env.REQ_API     = atIdx >= 0 ? apiChoice.substring(0, atIdx) : apiChoice
+          env.REQ_API_VER = atIdx >= 0 ? apiChoice.substring(atIdx + 1) : '1.0.0'
+        }
+      }
+    }
+
+    stage('Ouvrir la demande (PR provision/<app>-<env>)') {
+      steps {
+        withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')]) {
+          // Les paramètres passent par l'ENVIRONNEMENT, jamais interpolés dans
+          // la chaîne sh : saisie humaine = donnée d'un tiers (même règle que
+          // team-request/provision-apply). MODE explicite prime toujours sur la
+          // dérivation par REQ_CALLER dans provision-request.sh. Les champs
+          // Task 4 (TEAM/IP_ALLOWLIST/CERT_PEM/CERT_ROTATION) sont TOUS
+          // optionnels côté script — un formulaire qui les laisse vides
+          // reproduit le comportement d'avant Task 4, octet pour octet.
+          //
+          // ⚠ TROIS variables attendues par le script ne sont PAS dans cette
+          // liste : REQ_API, REQ_API_VER et REQ_CALLER. Elles ne viennent pas du
+          // formulaire — elles sont DÉRIVÉES par l'étape précédente et posées
+          // dans `env`, donc déjà exportées à tout step `sh` de ce build.
+          withEnv(["REQ_APP=${params.APP}", "REQ_ENV=${params.REQ_ENV}",
+                   "REQ_CLIENT_ID=${params.CLIENT_ID ?: ''}", "REQ_MODE=${params.MODE}",
+                   "REQ_TEAM=${params.TEAM ?: ''}",
+                   "REQ_IP_ALLOWLIST=${params.IP_ALLOWLIST ?: ''}",
+                   "REQ_CERT_PEM=${params.CERT_PEM ?: ''}",
+                   "REQ_CERT_ROTATION=${params.CERT_ROTATION ?: 'replace'}"]) {
+            // Triple quotes SIMPLES : Groovy n'interpole RIEN dans cette chaîne
+            // (un `${…}` y serait du shell, pas du Groovy). `set +x` : le
+            // GITEA_TOKEN injecté par withCredentials ne doit pas être écho.
+            dir('poc-control-plane-federation') {
+              sh '''
+                set +x
+                bash scripts/provision-request.sh
+              '''
+            }
+          }
+        }
+      }
+    }
+  }
+}

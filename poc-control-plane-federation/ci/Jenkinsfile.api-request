@@ -1,0 +1,177 @@
+// ci/Jenkinsfile.api-request — FORMULAIRE « publier une API » (palier 3, la
+// porte du PRODUCTEUR ; pendant d'app-request, côté consommateur).
+//
+// Conversion DÉCLARATIVE du pipeline qui vivait en Groovy inline dans
+// ci/jenkins/api-request.job.xml (<script>…</script>). Même modèle que
+// ci/Jenkinsfile.team-publish et ci/Jenkinsfile.publish-api : le job est
+// MINCE — il ROUTE la saisie du formulaire vers `scripts/api-request.sh`, qui
+// porte TOUTE la substance (gardes d'entrée hors ligne, résolution
+// équipe -> dépôt lue sur Gitea main, collision cross-team, écriture de la
+// branche, PR, plan hors ligne commenté sur la PR).
+//
+//   formulaire Jenkins (paramètres du job, listes déroulantes générées à la
+//   pose par setup-team-onboard-jobs.sh)
+//     ──▶ scripts/api-request.sh
+//     ──▶ PR api/<name>-<version> sur le dépôt de l'ÉQUIPE (ADR-076),
+//         portant apis/<name>.publish.yml + apis/<name>.openapi.yaml,
+//         puis PLAN hors ligne (manifest-guard + team-name + syntax-check)
+//         commenté ✅/❌ sur cette PR.
+//
+// La DÉCISION reste le MERGE (ADR-081) : ce job ne publie RIEN sur la gateway,
+// ne touche ni Vault ni la gateway. La publication réelle vit dans le pipeline
+// post-merge (ci/Jenkinsfile.team-publish), déclenché par le webhook de merge.
+//
+// ── CE QUI A CHANGÉ, ET CE QUI N'A PAS BOUGÉ ─────────────────────────────────
+//   node { }               -> `agent any` de niveau pipeline (aucune pause
+//                             humaine dans ce job : rien n'attend, réserver un
+//                             exécuteur est exactement ce que faisait le node{}).
+//   stage('checkout')      -> checkout IMPLICITE de Declarative, piloté par le
+//     git url: …, branch:     bloc <scm> de la coquille XML (MÊME dépôt, MÊME
+//     'main'                  branche) — d'où la disparition du `git url:`.
+//   stage('api-request')   -> un unique `stage('api-request')` (nom conservé :
+//                             c'est ce qui s'affiche dans l'UI et les logs).
+//   withCredentials(…)     -> INCHANGÉ, credentialsId devenu surchargeable.
+//   withEnv([params…])     -> CONSERVÉ à l'identique. Le canal natif n'est PAS
+//                             équivalent : Jenkins résout les `${…}` des
+//                             paramètres de build avant de les exposer au `sh`
+//                             (mesuré). Détail au-dessus du bloc lui-même.
+//   sh 'set +x; bash …'    -> INCHANGÉ, à l'octet près.
+pipeline {
+
+  // Aucune demande en attente ici (pas de directive `input`) : une fois le
+  // formulaire soumis, le job va au bout sans jamais attendre un humain — donc
+  // aucune raison de passer par `agent none`, contrairement à team-publish et
+  // team-apply où un `agent any` de niveau pipeline gâcherait un exécuteur
+  // pendant toute l'attente.
+  agent any
+
+  // Volontairement PAS de bloc `options {}` : le job d'origine n'en portait
+  // aucun, et sa coquille XML ne pose pas DisableConcurrentBuildsJobProperty.
+  // Deux demandes simultanées (deux APIs, deux équipes) sont légitimes et
+  // n'écrivent jamais au même endroit — les sérialiser serait un CHANGEMENT de
+  // comportement, pas une conversion.
+
+  // ── CONTRAT D'ENTRÉE : les paramètres du formulaire ─────────────────────────
+  // Volontairement PAS de bloc `parameters {}` ici, et ce n'est pas un oubli :
+  // les huit paramètres (ACTION, TEAM, API_NAME, API_VERSION, API_BASE,
+  // NEW_VERSION, OPENAPI_SPEC, INBOUND_MODE) vivent dans
+  // ci/jenkins/api-request.job.xml parce que DEUX d'entre eux portent les
+  // marqueurs <!--CHOICES:TEAMS--> / <!--CHOICES:APIS--> que
+  // setup-team-onboard-jobs.sh substitue AU MOMENT DE LA POSE par les équipes
+  // et les APIs réellement trouvées sur Gitea main. Les redéclarer ici, c'est
+  // au mieux un doublon qui pourrit (des listes figées dans Git face à des
+  // listes générées), au pire l'écrasement des listes dynamiques : le
+  // formulaire deviendrait vide ou périmé. Ils restent donc dans le XML, seul
+  // endroit où la substitution a un sens.
+  //
+  // Comment les valeurs arrivent au script : par le `withEnv([params.…])` du
+  // stage, qui recopie les valeurs BRUTES — pas par le canal natif. Jenkins
+  // expose bien les paramètres de build au step `sh`, mais APRÈS
+  // EnvVars.resolve() : un `${JENKINS_HOME}` saisi par le demandeur y serait
+  // remplacé par sa valeur (mesuré sur ce Jenkins, cf. le commentaire au-dessus
+  // du withEnv). `params.X` est le seul accès à la valeur littérale.
+  //
+  // La saisie humaine reste une donnée d'un TIERS et ne traverse AUCUNE
+  // interpolation vers la chaîne shell : le `sh` est en quotes simples et ne
+  // nomme aucune variable — c'est le shell qui lit l'environnement.
+  //
+  // API_VERSION / API_BASE / NEW_VERSION vides selon ACTION sont passés TELS
+  // QUELS : c'est api-request.sh qui valide par mode (API_VERSION_REQUIS,
+  // API_BASE_REQUIS, NEW_VERSION_REQUIS, API_NAME_MISMATCH…), aucune
+  // dérivation Groovy silencieuse ici — inchangé.
+  //
+  // Si ce job était un jour posé SANS sa coquille XML (from-SCM seul), il
+  // n'aurait aucun paramètre : le formulaire serait vide, chaque build
+  // échouerait sur les `${VAR:?}` d'api-request.sh (ACTION requis, TEAM
+  // requis, …). Fail-closed et bruyant, jamais une demande à moitié remplie.
+
+  // ── POINTS DE CONFIG CLIENT ────────────────────────────────────────────────
+  // Tout est surchargeable par variable d'environnement du nœud ou paramètre de
+  // job (motif `env.X ?: défaut`, identique aux Jenkinsfile frères) : le MÊME
+  // fichier sert le lab et le client, sans fork. Les défauts reproduisent
+  // EXACTEMENT le comportement d'avant conversion — GIT_WEB_HOST était la seule
+  // valeur posée par le job Groovy, les trois autres étaient les défauts
+  // internes d'api-request.sh, remontés ici pour devenir configurables.
+  //
+  // ⚠ Les hôtes sont ceux vus DEPUIS le conteneur de l'agent (réseau docker
+  // `poc`) : `localhost` n'y désigne PAS Gitea — d'où gitea:3000 côté machine.
+  environment {
+    // Dépôt PLATEFORME : porte ansible/providers.<env>.yml (résolution
+    // équipe -> dépôt, lue FRAÎCHE sur main par le script) et les gardes hors
+    // ligne du plan. C'est aussi ce que la coquille XML checkoute.
+    GIT_HOST             = "${env.GIT_HOST ?: 'http://gitea:3000'}"
+    GIT_REPO             = "${env.GIT_REPO ?: 'ci/stoa-labs'}"
+    // Lien humain-cliquable dans le commentaire de PR (même convention que
+    // team-request.job.xml / team-apply.job.xml) : sans lui, api-request.sh
+    // retombe sur GIT_HOST (nom interne au cluster, non résolu hors des
+    // conteneurs) et le lien de la PR serait mort pour le demandeur.
+    GIT_WEB_HOST         = "${env.GIT_WEB_HOST ?: 'http://localhost:13000'}"
+    // Environnement dont providers.<env>.yml donne le dépôt de l'équipe. Sans
+    // rapport avec l'env de PUBLICATION (résolu par per_env au moment de
+    // l'apply réel, côté team-publish).
+    ENVN                 = "${env.ENVN ?: 'dev'}"
+    // Credential Jenkins (secret text) portant le token Gitea du service ci
+    // (write:repository, write:issue).
+    GITEA_CREDENTIALS_ID = "${env.GITEA_CREDENTIALS_ID ?: 'gitea-provision-token'}"
+  }
+
+  stages {
+
+    // Nom d'étape conservé depuis le job Groovy : c'est ce que l'ops lit dans
+    // l'UI. L'étape 'checkout' d'origine a disparu du fichier — elle est faite
+    // par le checkout implicite de Declarative (« Declarative: Checkout SCM »),
+    // sur le dépôt et la branche déclarés dans la coquille XML.
+    stage('api-request') {
+      steps {
+        // Le token n'existe QUE dans ce bloc, et jamais en argv : le script le
+        // lit dans son environnement (GITEA_TOKEN) et le convertit lui-même en
+        // en-tête Basic via GIT_CONFIG_COUNT/KEY_0 — jamais dans une URL de
+        // push (motif éprouvé, cf. scripts/api-request.sh §4).
+        withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')]) {
+          // ── RÉ-INJECTION DES VALEURS BRUTES — NE PAS RETIRER ────────────────
+          // Ce withEnv n'est PAS un doublon du canal natif : il est la seule
+          // chose qui livre au shell la valeur EXACTEMENT SAISIE.
+          //
+          // MESURÉ sur ce Jenkins (sonde jetable, 2026-08-06) : un paramètre de
+          // build valant `RAW>${JENKINS_HOME}<FIN` arrive au step `sh` en
+          // `RAW>/var/jenkins_home<FIN` — Jenkins applique EnvVars.resolve()
+          // aux valeurs de ParametersAction avant de composer l'environnement.
+          // `params.X`, lui, rend la valeur BRUTE. (Les paramètres d'une
+          // directive `input`, eux, ne sont PAS résolus — autre canal.)
+          //
+          // Sans cette ré-injection, OPENAPI_SPEC — champ libre, multi-lignes,
+          // entièrement contrôlé par le demandeur — serait RÉÉCRIT avant
+          // d'atteindre api-request.sh, qui l'écrit tel quel dans
+          // apis/<name>.openapi.yaml puis le committe : (1) le contrat publié
+          // ne serait plus celui qui a été soumis, en silence ; (2) coller
+          // `${JENKINS_HOME}` / `${PATH}` dans son « contrat » deviendrait une
+          // primitive de LECTURE de l'environnement du contrôleur vers un dépôt
+          // d'équipe. Idem pour API_NAME, qui serait expansé AVANT sa regex.
+          withEnv(["ACTION=${params.ACTION}", "TEAM=${params.TEAM ?: ''}",
+                   "API_NAME=${params.API_NAME}", "API_VERSION=${params.API_VERSION ?: ''}",
+                   "API_BASE=${params.API_BASE ?: ''}", "NEW_VERSION=${params.NEW_VERSION ?: ''}",
+                   "OPENAPI_SPEC=${params.OPENAPI_SPEC ?: ''}",
+                   "INBOUND_MODE=${params.INBOUND_MODE ?: ''}"]) {
+            // Le dépôt plateforme est checkouté à la RACINE du workspace ; tout
+            // le PoC vit dans ce sous-dossier (d'où lightweight=false côté XML :
+            // sans le dépôt entier, scripts/ et ansible/ seraient absents).
+            dir('poc-control-plane-federation') {
+              // Chaîne en quotes SIMPLES : Groovy n'y interpole rien. `set +x`
+              // conservé tel quel — aucune trace shell, le token ne doit pas
+              // fuiter dans le log même si le script était un jour lancé sous -x.
+              sh 'set +x; bash scripts/api-request.sh'
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Volontairement PAS de bloc `post` : le job d'origine n'avait ni try ni
+  // finally, et il n'y a rien à rattraper ici. Le verdict de CETTE demande est
+  // publié par api-request.sh lui-même, en commentaire sur la PR qu'il vient
+  // d'ouvrir (✅ PLAN OK / ❌ PLAN EN ÉCHEC), et un échec de ce commentaire est
+  // déjà signalé bruyamment par le script. Un `post` générique ici n'aurait
+  // aucune PR à commenter dans le cas le plus fréquent d'échec — un refus de
+  // garde d'entrée survient AVANT tout geste Git, donc avant qu'une PR existe.
+}

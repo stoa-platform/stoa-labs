@@ -1,0 +1,175 @@
+// ci/Jenkinsfile.team-request — FORMULAIRE « onboarder une équipe » (palier 2).
+//
+// Conversion DÉCLARATIVE du pipeline qui vivait en Groovy inline dans
+// ci/jenkins/team-request.job.xml (<script>…</script>). Même modèle que
+// ci/Jenkinsfile.team-publish : le job est MINCE — il ne fait que ROUTER les
+// champs du formulaire vers `scripts/team-request.sh`, qui porte TOUTE la
+// substance (gardes d'entrée, clone, ajout dans providers.<env>.yml, branche,
+// push authentifié, PR, plan Ansible, commentaire de PR).
+//
+//   formulaire Jenkins (TEAM / DESCRIPTION / APPROVERS / REPO / REQ_ENV)
+//     ──▶ scripts/team-request.sh
+//     ──▶ PR onboard/<team>-<env> + verdict de plan commenté sur la PR
+//
+// LA DÉCISION RESTE LE MERGE (ADR-081) : ce job n'applique RIEN — il ne crée ni
+// dépôt d'équipe, ni objet de gateway, ni secret Vault. Le privilège de création
+// vit dans le SEUL job post-merge (team-apply). C'est pourquoi on ne trouvera
+// ici ni demande en attente (`input`), ni identité nominative, ni login Vault :
+// il n'y a rien à autoriser, seulement une demande à déposer. Un formulaire
+// hostile ne peut donc RIEN faire d'autre qu'ouvrir une PR que quelqu'un devra
+// relire — et les gardes de valeur (TEAM_NAME_INVALID, ENV_NOT_OPEN,
+// YAML_UNSAFE_INPUT, TEAM_ALREADY_DECLARED) sont dans le script, pas ici.
+pipeline {
+
+  // `agent any` — et NON `agent none` comme team-publish : ce job n'a aucune
+  // demande en attente, donc rien n'immobilise un exécuteur en attendant une
+  // réponse humaine. Le pipeline d'origine ouvrait d'ailleurs directement sur
+  // `node { … }`.
+  //
+  // Le `stage('checkout') { git url: 'http://gitea:3000/ci/stoa-labs.git',
+  // branch: 'main' }` d'origine a disparu du fichier, PAS du build : sous
+  // Declarative, le checkout du dépôt qui porte CE Jenkinsfile est IMPLICITE
+  // (étape « Declarative: Checkout SCM ») et vise exactement la même URL et la
+  // même branche — celles déclarées dans <scm> de ci/jenkins/team-request.job.xml.
+  // D'où, aussi, l'absence de tout `git url:` explicite dans les étapes.
+  agent any
+
+  // ── LE FORMULAIRE ──────────────────────────────────────────────────────────
+  // ⚠ Ce bloc doit rester le MIROIR EXACT des <parameterDefinitions> de
+  // ci/jenkins/team-request.job.xml, et c'est le XML qui GAGNE : Declarative ne
+  // remplace que les propriétés qu'il a lui-même posées
+  // (DeclarativeJobPropertyTrackerAction) — un paramètre venu d'un config.xml
+  // est préservé indéfiniment et l'emporte, À NOM ÉGAL, sur celui déclaré ici
+  // (même mécanique que le déclencheur de team-publish, mesurée sur le lab le
+  // 2026-08-06 : 4 builds, le XML n'a jamais bougé). Une divergence entre les
+  // deux fichiers serait donc SILENCIEUSE : test-team-request-wiring.sh §2 et §3
+  // comparent les deux et virent au rouge à la première divergence de nom, de
+  // type ou de liste de choix.
+  //
+  // Ce bloc reste néanmoins ICI parce qu'il est le SEUL formulaire quand le job
+  // est posé SANS son XML (re-création depuis le seul dépôt, multibranch,
+  // organization folder) : sans lui le job n'aurait aucun champ et
+  // team-request.sh refuserait sur `${TEAM:?}` — fail-closed, mais un
+  // formulaire inutilisable.
+  parameters {
+    string(name: 'TEAM', defaultValue: '',
+           description: "Nom d'équipe — minuscules/chiffres/tirets (^[a-z0-9][a-z0-9-]{1,30}\$). Devient : svc-<team>, <team>-devs, deploy/<team>/wm-admin, deploy-<team>.")
+    // Le \\ est refusé par le script au même titre que le " : injecté dans
+    // `description: \"…\"`, un \\ final fait lire au parseur YAML la quote
+    // suivante comme ÉCHAPPÉE — le scalaire ne se ferme plus et avale tout le
+    // fichier providers.<env>.yml.
+    string(name: 'DESCRIPTION', defaultValue: '',
+           description: "Description de l'équipe (sans guillemets doubles, ni \\, ni retour à la ligne).")
+    string(name: 'APPROVERS', defaultValue: '',
+           description: "Matricules des approbateurs [A-Za-z0-9_-], séparés par des virgules. VIDE ACCEPTÉ : la projection owner ne fera rien tant que la liste n'est pas établie.")
+    string(name: 'REPO', defaultValue: '',
+           description: "Dépôt Git de l'équipe (org/nom). Vide = <team>/apis. Créé AU MERGE depuis le squelette ADR-076.")
+    // Les quatre environnements sont LISTÉS mais un seul est OUVERT : le refus
+    // est prononcé par le script (ENV_NOT_OPEN), avec sa raison — jamais par un
+    // choix amputé qui laisserait croire que rec/int/prod n'existent pas.
+    choice(name: 'REQ_ENV', choices: ['dev', 'rec', 'int', 'prod'],
+           description: "Environnement. Seul dev est ouvert au palier 2 — les autres sont refusés avec ENV_NOT_OPEN.")
+  }
+
+  // ── POINTS DE CONFIG CLIENT ────────────────────────────────────────────────
+  // Tout est surchargeable par variable d'environnement du nœud (motif
+  // `env.X ?: défaut`, identique aux Jenkinsfile frères) : le MÊME fichier sert
+  // le lab et le client, sans fork.
+  //
+  // ⚠ Les hôtes sont ceux vus DEPUIS le conteneur de l'agent (réseau docker
+  // `poc`) : « localhost » n'y désigne PAS Gitea — d'où GIT_HOST=gitea:3000 et,
+  // symétriquement, GIT_WEB_HOST=localhost:13000 pour ce qu'un HUMAIN clique.
+  environment {
+    // Dépôt PLATEFORME : il porte providers.<env>.yml, le fichier que la PR
+    // modifie. Ces deux valeurs sont EXACTEMENT les défauts que team-request.sh
+    // s'applique déjà à lui-même — les poser ici ne change donc rien au
+    // comportement ; ça rend le point de config VISIBLE et surchargeable, et ça
+    // garde l'URL du <scm> du job alignée avec celle que le script clone.
+    GIT_HOST             = "${env.GIT_HOST ?: 'http://gitea:3000'}"
+    GIT_REPO             = "${env.GIT_REPO ?: 'ci/stoa-labs'}"
+    // URL Gitea vue par l'HUMAIN : elle fabrique le lien cliquable annoncé sur
+    // la PR (« PR #N ouverte : … »). SANS elle, team-request.sh retombe sur
+    // GIT_HOST — http://gitea:3000, nom interne au réseau docker, non résolu
+    // depuis un poste — et le lien posté est mort. C'était déjà une valeur en
+    // dur dans le withEnv du job Groovy (même valeur que team-apply.job.xml et
+    // provision-plan.job.xml) ; elle devient ici un knob.
+    GIT_WEB_HOST         = "${env.GIT_WEB_HOST ?: 'http://localhost:13000'}"
+    // Credential Jenkins (secret text) portant le token Gitea du service ci
+    // (write:repository, write:issue) : c'est avec lui que le script pousse la
+    // branche et ouvre la PR.
+    GITEA_CREDENTIALS_ID = "${env.GITEA_CREDENTIALS_ID ?: 'gitea-provision-token'}"
+  }
+
+  stages {
+
+    stage('team-request') {
+      steps {
+        // Le token n'existe que dans ce bloc et JAMAIS en argv : withCredentials
+        // le pose dans l'environnement du step `sh`, où team-request.sh le lit
+        // (`${GITEA_TOKEN:?}`). Le pipeline ne le manipule pas, ne le
+        // concatène nulle part, ne le passe à aucune commande.
+        withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')]) {
+          // ── RÉ-INJECTION DES VALEURS BRUTES — NE PAS RETIRER ────────────────
+          // Ce withEnv n'est PAS un doublon du canal natif : il est la seule
+          // chose qui livre au shell la valeur EXACTEMENT SAISIE.
+          //
+          // MESURÉ sur ce Jenkins (sonde jetable, 2026-08-06) : un paramètre de
+          // build valant `RAW>${JENKINS_HOME}<FIN` arrive au step `sh` en
+          // `RAW>/var/jenkins_home<FIN` — Jenkins applique EnvVars.resolve()
+          // aux valeurs de ParametersAction avant de composer l'environnement.
+          // `params.X`, lui, rend la valeur BRUTE. (Les paramètres d'une
+          // directive `input`, eux, ne sont PAS résolus — autre canal.)
+          //
+          // Ici DESCRIPTION et APPROVERS sont du texte libre qui finit ÉCRIT
+          // dans providers.<env>.yml du dépôt plateforme, puis committé et
+          // proposé en PR. Sans cette ré-injection : (1) l'entrée déclarée ne
+          // serait plus celle qui a été demandée, en silence ; (2) saisir
+          // `${JENKINS_HOME}` dans une description deviendrait une primitive de
+          // lecture de l'environnement du contrôleur vers un dépôt Git. La
+          // garde YAML_UNSAFE_INPUT de team-request.sh ne l'attraperait pas :
+          // elle valide la valeur qu'elle REÇOIT, donc déjà expansée.
+          withEnv(["TEAM=${params.TEAM}", "DESCRIPTION=${params.DESCRIPTION}",
+                   "APPROVERS=${params.APPROVERS}", "REPO=${params.REPO ?: ''}",
+                   "REQ_ENV=${params.REQ_ENV}"]) {
+            dir('poc-control-plane-federation') {
+              // `sh` en triple quotes SIMPLES : Groovy n'interpole RIEN ici. Les
+              // champs du formulaire sont de la saisie humaine — donnée d'un
+              // tiers — et ne doivent jamais traverser une interpolation Groovy
+              // pour atterrir dans une chaîne shell (même règle que
+              // provision-apply et team-publish). C'est le SHELL qui lit
+              // l'environnement posé juste au-dessus.
+              sh '''
+                set +x
+                # REPO vide → on RETIRE la variable pour que le défaut du script
+                # (REPO="${REPO:-${TEAM}/apis}") s'applique sans ambiguïté.
+                # Ceinture explicite reprise TELLE QUELLE du job d'origine : le
+                # `:-` du script couvre déjà la chaîne vide, mais l'unset rend
+                # l'intention lisible et resterait correct même si le script
+                # passait un jour à `${REPO-…}` (sans les deux-points, qui, lui,
+                # ne traite PAS la chaîne vide comme une absence).
+                if [ -z "$REPO" ]; then unset REPO; fi
+                # Toute la substance est là-dedans : gardes d'entrée
+                # (TEAM_NAME_INVALID, ENV_NOT_OPEN, YAML_UNSAFE_INPUT,
+                # TEAM_ALREADY_DECLARED), clone du dépôt plateforme, ajout de
+                # l'entrée dans providers.<env>.yml, branche onboard/<team>-<env>,
+                # push authentifié par header HTTP (jamais de token en argv,
+                # invisible de `ps -Aww`), ouverture de la PR, plan Ansible contre
+                # le fichier MODIFIÉ, et commentaire ✅/❌ sur la PR. Le pipeline,
+                # lui, n'a fait que router des variables.
+                bash scripts/team-request.sh
+              '''
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Volontairement PAS de bloc `post` : le job d'origine n'avait ni try, ni
+  // finally, ni commentaire de statut de build — et il n'en a pas besoin. C'est
+  // team-request.sh qui commente la PR (verdict de plan ✅/❌), et il ne peut le
+  // faire qu'APRÈS avoir ouvert cette PR : tout échec antérieur (garde d'entrée,
+  // clone, push) survient alors qu'il n'existe encore AUCUNE PR à commenter. Un
+  // `post` ne pourrait donc rien dire de plus qu'un build rouge, et introduirait
+  // un second commentateur là où le job d'origine n'en avait qu'un.
+}

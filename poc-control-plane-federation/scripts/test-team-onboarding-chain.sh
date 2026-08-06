@@ -991,8 +991,14 @@ print(json.dumps({
     OSCAR_VAULT_PASS="$OSCAR_VAULT_PASS" python3 - > "$TMP/input10.json" <<'PY'
 import json, os
 print(json.dumps({'parameter': [
-  {'name': 'VAULT_USER', 'value': 'oscar'},
-  {'name': 'VAULT_USER_PASSWORD', 'value': os.environ['OSCAR_VAULT_PASS']}
+  # Noms imposés par la directive `input` de ci/Jenkinsfile.team-apply :
+  # V_USER / V_PASS, et NON VAULT_USER / VAULT_USER_PASSWORD. Ce n'est pas
+  # cosmétique — le mot de passe doit s'appeler V_PASS pour être recopié dans
+  # VAULT_USER_PASSWORD puis `unset` dans le seul `sh` qui en a besoin (les
+  # paramètres d'une pause deviennent des variables d'environnement de TOUTE
+  # l'étape ; les nommer VAULT_USER_PASSWORD rendrait cet unset inopérant).
+  {'name': 'V_USER', 'value': 'oscar'},
+  {'name': 'V_PASS', 'value': os.environ['OSCAR_VAULT_PASS']}
 ]}))
 PY
     SUB10_HC=$(curl -s -b "$TMP/jck10b" -H "$_jf: $_jc" -X POST \

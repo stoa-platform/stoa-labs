@@ -1,6 +1,26 @@
 <?xml version='1.1' encoding='UTF-8'?>
+<!--
+  api-request — PIPELINE FROM SCM (plus de Groovy inline).
+
+  Ce fichier ne porte QUE la coquille du job : ses PARAMETRES (le formulaire)
+  et d'ou il charge son pipeline. Le pipeline lui-meme vit dans
+  ci/Jenkinsfile.api-request (declaratif, versionne, relisible par l'ops).
+
+  POURQUOI LES PARAMETRES RESTENT ICI, et pas dans le Jenkinsfile : deux
+  d'entre eux portent les marqueurs CHOICES:TEAMS / CHOICES:APIS ci-dessous,
+  que scripts/setup-team-onboard-jobs.sh substitue AU MOMENT DE LA POSE par les
+  equipes et les APIs reellement presentes sur Gitea main
+  (scripts/lib/generate-choices.sh). Les deplacer dans le Jenkinsfile figerait
+  ces listes dans Git : le formulaire deviendrait vide ou perime. Le bloc
+  parameterDefinitions ci-dessous est donc conserve TEL QUEL, marqueurs
+  compris.
+
+  Pas de bloc <triggers> a mirroiter : ce job n'a aucun declencheur, il est
+  lance a la main par un humain qui remplit le formulaire. L'element
+  <triggers/> vide de l'original est conserve tel quel.
+-->
 <flow-definition plugin="workflow-job">
-  <description>Formulaire : publier une API (la porte du PRODUCTEUR) → PR api/&lt;name&gt;-&lt;version&gt; sur le dépôt de l'ÉQUIPE (ADR-076) + plan hors ligne (manifest-guard/team-name/syntax-check) enchaîné. La décision reste le MERGE (ADR-081) : cette PR ne publie rien elle-même, la publication réelle vit dans le pipeline post-merge.</description>
+  <description>Formulaire : publier une API (la porte du PRODUCTEUR) → PR api/&lt;name&gt;-&lt;version&gt; sur le dépôt de l'ÉQUIPE (ADR-076) + plan hors ligne (manifest-guard/team-name/syntax-check) enchaîné. La décision reste le MERGE (ADR-081) : cette PR ne publie rien elle-même, la publication réelle vit dans le pipeline post-merge. PIPELINE FROM SCM : le pipeline est ci/Jenkinsfile.api-request, chargé depuis le dépôt plateforme (branche main) — ce job ne contient AUCUN Groovy ; seuls ses paramètres (listes déroulantes générées à la pose) vivent ici.</description>
   <keepDependencies>false</keepDependencies>
   <properties>
     <hudson.model.ParametersDefinitionProperty>
@@ -52,33 +72,32 @@
       </parameterDefinitions>
     </hudson.model.ParametersDefinitionProperty>
   </properties>
-  <definition class="org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition" plugin="workflow-cps">
-    <script>
-node {
-  stage('checkout') { git url: 'http://gitea:3000/ci/stoa-labs.git', branch: 'main' }
-  stage('api-request') {
-    withCredentials([string(credentialsId: 'gitea-provision-token', variable: 'GITEA_TOKEN')]) {
-      // Les paramètres passent par l'ENVIRONNEMENT, jamais interpolés dans la
-      // chaîne sh : saisie humaine = donnée d'un tiers (même règle que
-      // team-request.sh/provision-request.sh). API_VERSION/API_BASE/NEW_VERSION
-      // vides selon ACTION sont passés tels quels — le script les valide par
-      // mode, aucune dérivation Groovy silencieuse ici.
-      withEnv(["ACTION=${params.ACTION}", "TEAM=${params.TEAM ?: ''}",
-               "API_NAME=${params.API_NAME}", "API_VERSION=${params.API_VERSION ?: ''}",
-               "API_BASE=${params.API_BASE ?: ''}", "NEW_VERSION=${params.NEW_VERSION ?: ''}",
-               "OPENAPI_SPEC=${params.OPENAPI_SPEC ?: ''}", "INBOUND_MODE=${params.INBOUND_MODE}",
-               // lien humain-cliquable dans le commentaire de PR (même
-               // convention que team-request.job.xml/team-apply.job.xml) :
-               // sans lui, api-request.sh retombe sur GIT_HOST (nom interne
-               // au cluster, non résolu hors des conteneurs).
-               "GIT_WEB_HOST=http://localhost:13000"]) {
-        dir('poc-control-plane-federation') { sh 'set +x; bash scripts/api-request.sh' }
-      }
-    }
-  }
-}
-    </script>
-    <sandbox>true</sandbox>
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition" plugin="workflow-cps">
+    <scm class="hudson.plugins.git.GitSCM" plugin="git">
+      <configVersion>2</configVersion>
+      <userRemoteConfigs>
+        <hudson.plugins.git.UserRemoteConfig>
+          <!-- Depot PLATEFORME vu DEPUIS l'agent (reseau docker) : c'est le
+               MEME couple depot/branche que le `git url: …, branch: 'main'`
+               du job Groovy d'origine, et c'est `checkout scm` (implicite en
+               declaratif) qui le repose desormais dans le workspace. -->
+          <url>http://gitea:3000/ci/stoa-labs.git</url>
+        </hudson.plugins.git.UserRemoteConfig>
+      </userRemoteConfigs>
+      <branches>
+        <hudson.plugins.git.BranchSpec>
+          <name>*/main</name>
+        </hudson.plugins.git.BranchSpec>
+      </branches>
+      <doGenerateSubmoduleConfigurations>false</doGenerateSubmoduleConfigurations>
+      <submoduleCfg class="empty-list"/>
+      <extensions/>
+    </scm>
+    <scriptPath>poc-control-plane-federation/ci/Jenkinsfile.api-request</scriptPath>
+    <!-- lightweight=false : le workspace de l'agent doit porter le depot
+         entier (scripts/api-request.sh, ansible/ pour le plan hors ligne,
+         gateways/templates/publish.yml.tmpl), pas seulement le Jenkinsfile. -->
+    <lightweight>false</lightweight>
   </definition>
   <triggers/>
   <disabled>false</disabled>

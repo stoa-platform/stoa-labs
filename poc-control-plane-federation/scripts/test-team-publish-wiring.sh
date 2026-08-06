@@ -37,7 +37,7 @@ set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 JOB="$REPO/ci/jenkins/team-publish.job.xml"
 JF="$REPO/ci/Jenkinsfile.team-publish"
-JOB_APPLY="$REPO/ci/jenkins/team-apply.job.xml"
+JOB_APPLY="$REPO/ci/Jenkinsfile.team-apply"   # converti en déclaratif comme team-publish
 PASS=0; FAIL=0
 ok(){ PASS=$((PASS+1)); printf '  ✅ %s\n' "$*"; }
 ko(){ FAIL=$((FAIL+1)); printf '  ❌ %s\n' "$*"; }
@@ -456,15 +456,15 @@ else
   ko "unset V_PASS après le login (unset=${L_UNSET_PUB} source=${L_SOURCE})"
 fi
 if [ -f "$JOB_APPLY" ]; then
-  L_EXPORT_APL=$(grep -n 'export VAULT_USER_PASSWORD="\$V_PASS"' "$JOB_APPLY" | head -1 | cut -d: -f1)
+  L_EXPORT_APL=$(grep -n 'export VAULT_USER_PASSWORD="\${V_PASS:-}"' "$JOB_APPLY" | head -1 | cut -d: -f1)
   L_UNSET_APL=$(grep -n '^ *unset V_PASS$' "$JOB_APPLY" | head -1 | cut -d: -f1)
   if [ -n "$L_EXPORT_APL" ] && [ -n "$L_UNSET_APL" ] && [ "$L_EXPORT_APL" -lt "$L_UNSET_APL" ]; then
-    ok "team-apply.job.xml : unset V_PASS après l'export (ligne ${L_EXPORT_APL} puis ${L_UNSET_APL}) — même correction, miroir"
+    ok "Jenkinsfile.team-apply : unset V_PASS après l'export (ligne ${L_EXPORT_APL} puis ${L_UNSET_APL}) — même correction, miroir"
   else
-    ko "team-apply.job.xml : unset V_PASS absent ou avant l'export (export=${L_EXPORT_APL} unset=${L_UNSET_APL})"
+    ko "Jenkinsfile.team-apply : unset V_PASS absent ou avant l'export (export=${L_EXPORT_APL} unset=${L_UNSET_APL})"
   fi
 else
-  ko "team-apply.job.xml introuvable — impossible de vérifier le miroir de la correction D"
+  ko "Jenkinsfile.team-apply introuvable — impossible de vérifier le miroir de la correction D"
 fi
 
 echo

@@ -1,6 +1,39 @@
 <?xml version='1.1' encoding='UTF-8'?>
+<!--
+  app-request — PIPELINE FROM SCM (plus de Groovy inline).
+
+  Ce fichier ne porte QUE la coquille du job : d'où il charge son pipeline, et
+  ses PARAMÈTRES. Le pipeline lui-même vit dans ci/Jenkinsfile.app-request
+  (déclaratif, versionné, relisible par l'ops).
+
+  POURQUOI LES PARAMÈTRES RESTENT ICI, et n'ont surtout PAS migré dans le
+  Jenkinsfile. Deux d'entre eux (TEAM, API) portent chacun un MARQUEUR DE LISTE
+  écrit en commentaire XML, visible plus bas à côté de leurs choix :
+  setup-team-onboard-jobs.sh le SUBSTITUE au moment de la pose du job par les
+  listes générées depuis providers.<env>.yml et les APIs publiées
+  (scripts/lib/generate-choices.sh). Les déclarer dans le Jenkinsfile les
+  figerait à ce qui est écrit dans le dépôt, c'est à dire à des listes VIDES :
+  les deux déroulantes seraient mortes, et le marqueur, devenu invisible pour
+  le poseur de job, ne serait plus jamais substitué.
+  Et c'est de toute façon CE fichier qui gagnerait : Declarative ne remplace QUE
+  les propriétés qu'il a lui-même posées (DeclarativeJobPropertyTrackerAction) ;
+  celles qui viennent d'un config.xml sont préservées telles quelles,
+  indéfiniment (mesuré sur le lab le 2026-08-06 sur les déclencheurs de
+  team-publish : même mécanisme, même conclusion). Une divergence entre les deux
+  fichiers serait donc SILENCIEUSE. D'où la répartition : le XML fait autorité
+  sur les PARAMÈTRES, le Jenkinsfile sur le PIPELINE, et ils ne se recouvrent
+  pas.
+
+  Le <sandbox>true</sandbox> de l'ancienne définition disparaît AVEC elle : un
+  Pipeline from SCM n'a pas de case sandbox. Le pipeline n'est plus du Groovy
+  saisi dans l'IHM mais du code VERSIONNÉ sur le dépôt plateforme : sa
+  protection est la revue de PR, pas la liste blanche d'approbations Groovy.
+
+  <triggers/> vide : miroir exact du Jenkinsfile, qui ne déclare lui non plus
+  aucun déclencheur. Ce job n'est lancé QUE par un humain, via son formulaire.
+-->
 <flow-definition plugin="workflow-job">
-  <description>Formulaire : demander une application (deuxième porte, à côté de la voie machine OIG/CLI2) → PR provision/&lt;app&gt;-&lt;env&gt; + plan enchaîné. Même aval que la voie machine (ADR-075/076/079/081) : un webhook ne porte aucun humain, la décision reste le MERGE.</description>
+  <description>Formulaire : demander une application (deuxième porte, à côté de la voie machine OIG/CLI2) → PR provision/&lt;app&gt;-&lt;env&gt; + plan enchaîné. Même aval que la voie machine (ADR-075/076/079/081) : un webhook ne porte aucun humain, la décision reste le MERGE. PIPELINE FROM SCM : le pipeline est ci/Jenkinsfile.app-request, chargé depuis le dépôt plateforme (branche main) — ce job ne contient AUCUN Groovy, seulement ses paramètres (dont les deux listes déroulantes générées à la pose).</description>
   <keepDependencies>false</keepDependencies>
   <properties>
     <hudson.model.ParametersDefinitionProperty>
@@ -78,66 +111,33 @@
       </parameterDefinitions>
     </hudson.model.ParametersDefinitionProperty>
   </properties>
-  <definition class="org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition" plugin="workflow-cps">
-    <script>
-node {
-  stage('checkout') { git url: 'http://gitea:3000/ci/stoa-labs.git', branch: 'main' }
-  stage('app-request') {
-    // Traçabilité : l'identité Jenkins du demandeur remplace oig-/cli2-provisioner.
-    // getBuildCauses est approuvé en sandbox. PIÈGE constaté à l'exécution : sur un
-    // déclenchement anonyme, userId vaut JSON null MAIS getBuildCauses le rend sous
-    // forme d'un objet JSONNull non-null (net.sf.json), donc VRAI pour Groovy — un
-    // simple `cause[0].userId ? ... : 'anonymous'` retombe alors sur la chaîne
-    // littérale "null" au lieu de 'anonymous'. On force la comparaison en texte.
-    def cause = currentBuild.getBuildCauses('hudson.model.Cause$UserIdCause')
-    def rawUid = (cause &amp;&amp; !cause.isEmpty()) ? "${cause[0].userId}" : 'anonymous'
-    def uid = (rawUid == 'null' || rawUid == '') ? 'anonymous' : rawUid
-    // API v2 (Task 4, P3) : la liste déroulante porte "nom@version" (généré par
-    // scripts/lib/generate-choices.sh) — scindé ICI, jamais dans provision-request.sh
-    // (qui continue de recevoir REQ_API/REQ_API_VER séparés, forme inchangée pour
-    // les voies machine OIG/CLI2). Premier '@' : name/version restent tous deux
-    // dans [A-Za-z0-9._-] (garde du script), donc jamais de '@' interne à lever.
-    //
-    // Fix round 1 (revue, Important) : PAS de repli silencieux '1.0.0' pour une
-    // valeur NON VIDE sans '@' — une première version retombait sur ce défaut,
-    // ce qui aurait rejoué SILENCIEUSEMENT une fausse version pour tout rejeu de
-    // l'ANCIEN contrat machine (API seul, sans '@') contre ce job. Les choix
-    // générés portent TOUJOURS '@' (contrat de generate_choices_apis) : un '@'
-    // absent sur une valeur non vide est donc un typo/contrat obsolète, jamais
-    // une soumission légitime — échec loud AVANT le sh. Le cas VIDE (choix par
-    // défaut du menu, cf. commentaire XML plus haut) n'est PAS ce cas : il
-    // continue de tomber sur le refus loud existant de provision-request.sh
-    // (REQ_API:? requis).
-    def apiChoice = params.API ?: ''
-    if (apiChoice != '' &amp;&amp; !apiChoice.contains('@')) {
-      error("API_FORMAT_INVALIDE : '${apiChoice}' — attendu nom@version (liste déroulante générée), aucun repli silencieux.")
-    }
-    def atIdx = apiChoice.indexOf('@')
-    def reqApi = atIdx &gt;= 0 ? apiChoice.substring(0, atIdx) : apiChoice
-    def reqApiVer = atIdx &gt;= 0 ? apiChoice.substring(atIdx + 1) : '1.0.0'
-    withCredentials([string(credentialsId: 'gitea-provision-token', variable: 'GITEA_TOKEN')]) {
-      // Les paramètres passent par l'ENVIRONNEMENT, jamais interpolés dans la
-      // chaîne sh : saisie humaine = donnée d'un tiers (même règle que
-      // team-request/provision-apply). MODE explicite prime toujours sur la
-      // dérivation par REQ_CALLER dans provision-request.sh. Les champs Task 4
-      // (TEAM/IP_ALLOWLIST/CERT_PEM/CERT_ROTATION) sont TOUS optionnels côté
-      // script — un formulaire qui les laisse vides reproduit le comportement
-      // d'avant Task 4, octet pour octet (cf. provision-request.sh).
-      withEnv(["REQ_APP=${params.APP}", "REQ_ENV=${params.REQ_ENV}",
-               "REQ_API=${reqApi}", "REQ_API_VER=${reqApiVer}",
-               "REQ_CLIENT_ID=${params.CLIENT_ID ?: ''}", "REQ_MODE=${params.MODE}",
-               "REQ_TEAM=${params.TEAM ?: ''}",
-               "REQ_IP_ALLOWLIST=${params.IP_ALLOWLIST ?: ''}",
-               "REQ_CERT_PEM=${params.CERT_PEM ?: ''}",
-               "REQ_CERT_ROTATION=${params.CERT_ROTATION ?: 'replace'}",
-               "REQ_CALLER=jenkins-form:${uid}"]) {
-        dir('poc-control-plane-federation') { sh 'set +x; bash scripts/provision-request.sh' }
-      }
-    }
-  }
-}
-    </script>
-    <sandbox>true</sandbox>
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition" plugin="workflow-cps">
+    <scm class="hudson.plugins.git.GitSCM" plugin="git">
+      <configVersion>2</configVersion>
+      <userRemoteConfigs>
+        <hudson.plugins.git.UserRemoteConfig>
+          <!-- Dépôt PLATEFORME vu DEPUIS l'agent (réseau docker) : c'est aussi
+               celui que le checkout implicite de `agent any` repose dans le
+               workspace. Le stage('checkout') du job Groovy et son `git url:`
+               en dur disparaissent donc SANS rien perdre : ils pointaient déjà
+               exactement cette URL et cette branche. -->
+          <url>http://gitea:3000/ci/stoa-labs.git</url>
+        </hudson.plugins.git.UserRemoteConfig>
+      </userRemoteConfigs>
+      <branches>
+        <hudson.plugins.git.BranchSpec>
+          <name>*/main</name>
+        </hudson.plugins.git.BranchSpec>
+      </branches>
+      <doGenerateSubmoduleConfigurations>false</doGenerateSubmoduleConfigurations>
+      <submoduleCfg class="empty-list"/>
+      <extensions/>
+    </scm>
+    <scriptPath>poc-control-plane-federation/ci/Jenkinsfile.app-request</scriptPath>
+    <!-- lightweight=false : le workspace de l'agent doit porter le dépôt
+         (scripts/provision-request.sh et sa suite), pas seulement le
+         Jenkinsfile. -->
+    <lightweight>false</lightweight>
   </definition>
   <triggers/>
   <disabled>false</disabled>

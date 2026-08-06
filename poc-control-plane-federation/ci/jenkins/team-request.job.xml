@@ -1,6 +1,35 @@
 <?xml version='1.1' encoding='UTF-8'?>
+<!--
+  team-request — PIPELINE FROM SCM (plus de Groovy inline).
+
+  Ce fichier ne porte QUE la coquille du job : le FORMULAIRE (ses champs) et
+  d'ou il charge son pipeline. Le pipeline lui-meme vit dans
+  ci/Jenkinsfile.team-request (declaratif, versionne, relisible par l'ops).
+
+  Le bloc <parameterDefinitions> ci-dessous DOIT rester le miroir exact du bloc
+  `parameters { … }` du Jenkinsfile. C'est CELUI-CI qui gagne, et c'est
+  contre-intuitif : Declarative ne remplace QUE les proprietes qu'il a
+  lui-meme posees (DeclarativeJobPropertyTrackerAction) ; un parametre venu
+  d'un config.xml est PRESERVE tel quel, indefiniment, et l'emporte a nom egal
+  sur celui du Jenkinsfile. Meme mecanique que le declencheur de team-publish,
+  MESUREE sur le lab (2026-08-06).
+
+  Consequence : une divergence entre les deux fichiers est SILENCIEUSE, et
+  c'est le XML qui fait foi. test-team-request-wiring.sh §2 et §3 comparent les
+  deux (noms, types, liste de choix) et virent au rouge a la premiere
+  divergence.
+
+  A NE PAS DEPLACER dans le Jenkinsfile : setup-team-onboard-jobs.sh pose ce
+  XML tel quel. Ce job ne porte AUCUN marqueur de liste dynamique (CHOICES,
+  variantes TEAMS et APIS) : il est donc copie octet pour octet, sans passer
+  par sed et sans dependre de Gitea ni d'un token (no-op de substitution
+  prouve par test-generate-choices.sh §5). Ecrire ici un tel marqueur, meme
+  dans un commentaire, suffirait a faire basculer le job en mode substitution
+  (la detection est un grep sur le fichier entier) et a lui imposer un Gitea
+  joignable a chaque pose.
+-->
 <flow-definition plugin="workflow-job">
-  <description>Formulaire : onboarder une équipe → PR onboard/* + plan commenté. La décision reste le MERGE (ADR-081) ; le dépôt et les objets naissent au merge (job team-apply).</description>
+  <description>Formulaire : onboarder une équipe → PR onboard/* + plan commenté. La décision reste le MERGE (ADR-081) ; le dépôt et les objets naissent au merge (job team-apply). PIPELINE FROM SCM : le pipeline est ci/Jenkinsfile.team-request, chargé depuis le dépôt plateforme (branche main) — ce job ne contient AUCUN Groovy.</description>
   <keepDependencies>false</keepDependencies>
   <properties>
     <hudson.model.ParametersDefinitionProperty>
@@ -33,34 +62,37 @@
       </parameterDefinitions>
     </hudson.model.ParametersDefinitionProperty>
   </properties>
-  <definition class="org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition" plugin="workflow-cps">
-    <script>
-node {
-  stage('checkout') { git url: 'http://gitea:3000/ci/stoa-labs.git', branch: 'main' }
-  stage('team-request') {
-    withCredentials([string(credentialsId: 'gitea-provision-token', variable: 'GITEA_TOKEN')]) {
-      // Les paramètres passent par l'ENVIRONNEMENT, jamais interpolés dans la
-      // chaîne sh : saisie humaine = donnée d'un tiers (même règle que
-      // provision-apply). REPO vide → défaut calculé par le script.
-      withEnv(["TEAM=${params.TEAM}", "DESCRIPTION=${params.DESCRIPTION}",
-               "APPROVERS=${params.APPROVERS}", "REPO=${params.REPO ?: ''}",
-               "REQ_ENV=${params.REQ_ENV}",
-               // lien humain-cliquable dans le commentaire de PR (revue finale
-               // de branche) : sans lui, team-request.sh retombe sur
-               // GIT_HOST (http://gitea:3000, nom interne au cluster, non
-               // résolu hors des conteneurs) — même valeur que
-               // team-apply.job.xml:127 et provision-plan.job.xml:35.
-               "GIT_WEB_HOST=http://localhost:13000"]) {
-        dir('poc-control-plane-federation') {
-          sh 'set +x; if [ -z "$REPO" ]; then unset REPO; fi; bash scripts/team-request.sh'
-        }
-      }
-    }
-  }
-}
-    </script>
-    <sandbox>true</sandbox>
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition" plugin="workflow-cps">
+    <scm class="hudson.plugins.git.GitSCM" plugin="git">
+      <configVersion>2</configVersion>
+      <userRemoteConfigs>
+        <hudson.plugins.git.UserRemoteConfig>
+          <!-- Depot PLATEFORME vu DEPUIS l'agent (reseau docker) : exactement
+               l'URL et la branche du `stage('checkout') { git url: … }` du job
+               Groovy d'origine. C'est aussi ce que le checkout implicite de
+               Declarative repose dans le workspace, d'ou la disparition du
+               `git url:` explicite du pipeline. -->
+          <url>http://gitea:3000/ci/stoa-labs.git</url>
+        </hudson.plugins.git.UserRemoteConfig>
+      </userRemoteConfigs>
+      <branches>
+        <hudson.plugins.git.BranchSpec>
+          <name>*/main</name>
+        </hudson.plugins.git.BranchSpec>
+      </branches>
+      <doGenerateSubmoduleConfigurations>false</doGenerateSubmoduleConfigurations>
+      <submoduleCfg class="empty-list"/>
+      <extensions/>
+    </scm>
+    <scriptPath>poc-control-plane-federation/ci/Jenkinsfile.team-request</scriptPath>
+    <!-- lightweight=false : le workspace de l'agent doit porter le depot
+         (scripts/, ansible/), pas seulement le Jenkinsfile. -->
+    <lightweight>false</lightweight>
   </definition>
+  <!-- Aucun declencheur : ce job est un FORMULAIRE, jamais un webhook. Le
+       Jenkinsfile n'a symetriquement aucun bloc `triggers { … }` (miroir de
+       l'absence). L'apply, lui, est declenche par le MERGE de la PR ouverte
+       ici, sur un AUTRE job (team-apply). -->
   <triggers/>
   <disabled>false</disabled>
 </flow-definition>
