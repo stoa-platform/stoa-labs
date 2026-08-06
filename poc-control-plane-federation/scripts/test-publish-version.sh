@@ -8,10 +8,10 @@
 # casse et silencieux quand mal casé, policies clonées, mint depuis la
 # DERNIÈRE version seulement). Aucun appel à la gateway réelle, aucun secret.
 #
-#   PORT : jamais 5555 (la vraie gateway du lab). Défaut 18790, surchargeable
-#   par MOCK_PORT. Le script REFUSE de démarrer si le port est déjà pris —
-#   leçon du rapport T2 (un mock d'une manche précédente resté vivant avait
-#   produit un diagnostic faux).
+#   PORT : jamais 5555 (la vraie gateway du lab). Un port LIBRE est demandé au
+#   noyau à chaque run (surchargeable par MOCK_PORT) ; le script REFUSE de
+#   démarrer si ce port répond déjà — leçon du rapport T2 (un mock d'une manche
+#   précédente resté vivant avait produit un diagnostic faux).
 #
 # Chaque section repart d'un mock VIERGE (store en mémoire) : les cas sont
 # hermétiques, l'ordre n'a pas d'importance, et une section qui échoue ne
@@ -20,10 +20,14 @@
 #   ./scripts/test-publish-version.sh
 set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-MOCK_PORT="${MOCK_PORT:-18790}"
+# Port LIBRE demandé au noyau plutôt qu'un numéro en dur : le scratchpad est
+# partagé entre agents et un 18790 figé a déjà provoqué des collisions. Tout le
+# reste (logs compris) vit dans $TMP, unique par run (mktemp).
+MOCK_PORT="${MOCK_PORT:-$(python3 -c "import socket
+s=socket.socket(); s.bind(('127.0.0.1', 0)); print(s.getsockname()[1]); s.close()")}"
 BASE="http://localhost:${MOCK_PORT}/rest/apigateway"
 DP="http://localhost:${MOCK_PORT}/gateway"
-TMP="$(mktemp -d /tmp/p3t6.XXXXXX)"
+TMP="$(mktemp -d "/tmp/p3t6-$$-XXXXXX")"
 PASS=0; FAIL=0
 ok(){ PASS=$((PASS+1)); printf '  ✅ %s\n' "$*"; }
 ko(){ FAIL=$((FAIL+1)); printf '  ❌ %s\n' "$*"; }
@@ -41,6 +45,8 @@ BASE_COMMIT="${BASE_COMMIT:-1cc0351}"
 # Tête du round 1 : sert de témoin AVANT pour les défauts trouvés en revue
 # (crash-consistance, capture cross-lignée) — le repro doit être VU rouge.
 ROUND1_COMMIT="${ROUND1_COMMIT:-bd65c43}"
+# Tête du round 1 fix : témoin AVANT des défauts que CE round ferme.
+ROUND1V2_COMMIT="${ROUND1V2_COMMIT:-f5d64f8}"
 # Équipe au nom de laquelle la chaîne publie (posée par le JOB en production,
 # `-e apim_ss_team` — jamais par le manifeste, cf. team-name.yml).
 TEAM="payments-team"
@@ -563,6 +569,104 @@ run_role "$REPO/ansible" "$TMP/v2.yml" >"$TMP/h.log" 2>&1; RC=$?
 [ "$RC" -eq 0 ] && grep -q "VERSION_SUBS_VACANT" "$TMP/h.log" \
   && ok "H1 application jamais associée : le mint passe et le témoin se déclare VACANT" \
   || ko "H1 le mint a été refusé (rc=$RC) ou le témoin vide est passé pour une preuve"
+
+echo "═══ Section I — la REPRISE n'est pas une porte de service ═══"
+# Défaut né du round 1 : la garde d'appartenance vivait dans le bloc du mint
+# (apim_api_id VIDE) ; la reprise s'exécute quand apim_api_id est TROUVÉ par le
+# matching name+version GLOBAL — elle ne la traversait donc jamais.
+
+# I0 — témoin AVANT (rôle du round 1, f5d64f8) : reprendre la demi-version
+# d'une AUTRE équipe pousse SA spec et l'active, en vert.
+R1_ANSIBLE="$TMP/ansible-r1v2"
+git -C "$REPO" archive "$ROUND1V2_COMMIT" ansible | tar -x -C "$TMP" -f - 2>/dev/null
+[ -f "$TMP/ansible/publish-api.yml" ] && mv "$TMP/ansible" "$R1_ANSIBLE"
+if [ -f "$R1_ANSIBLE/publish-api.yml" ]; then
+  TEAM="other-team"; half_born_v2
+  TEAM="payments-team"
+  run_role "$R1_ANSIBLE" "$TMP/v2.yml" -e apim_pub_resume_version=true >"$TMP/i0.log" 2>&1; RC=$?
+  C_V2=$(http_code "$DP/${API_NAME}/2.0/v2only")
+  if [ "$RC" -eq 0 ] && [ "$C_V2" != "404" ]; then
+    ok "I0 témoin AVANT ($ROUND1V2_COMMIT) : reprise sur la demi-version d'other-team → MA spec servie (HTTP $C_V2)"
+  else
+    ko "I0 le contournement ne se reproduit pas avec $ROUND1V2_COMMIT (rc=$RC, /v2only=$C_V2)"
+  fi
+else
+  ko "I0 rôle du round 1 v2 non extractible — témoin AVANT impossible"
+fi
+
+# I1 — avec la garde : refus, rien poussé, rien activé (état RELU).
+TEAM="other-team"; half_born_v2
+V2_HALF="$(api_id 2.0)"
+TEAM="payments-team"
+run_role "$REPO/ansible" "$TMP/v2.yml" -e apim_pub_resume_version=true >"$TMP/i1.log" 2>&1; RC=$?
+[ "$RC" -ne 0 ] && grep -q "VERSION_RESUME_FOREIGN" "$TMP/i1.log" \
+  && ok "I1 reprise sur la lignée d'autrui → VERSION_RESUME_FOREIGN" \
+  || ko "I1 attendu VERSION_RESUME_FOREIGN, rc=$RC"
+[ "$(api_field "$V2_HALF" isActive)" = "false" ] \
+  && ok "I2 rien n'a été ACTIVÉ sur la demi-version d'autrui" \
+  || ko "I2 la demi-version d'autrui a été activée"
+# « Rien poussé » n'est PAS observable sur un record inactif : le data-plane du
+# mock répond 503 (pas encore actif) AVANT même de regarder le contrat, donc un
+# 404 ne prouverait rien ici. On active donc la demi-version À LA MAIN, après le
+# refus, uniquement pour LIRE ce qu'elle sert — le rôle, lui, ne l'a pas activée
+# (I2 vient de le prouver sur l'état, avant cette manipulation).
+adm -o /dev/null -X PUT "$BASE/apis/$V2_HALF/activate"
+[ "$(http_code "$DP/${API_NAME}/2.0/v2only")" = "404" ] \
+  && ok "I3 rien n'a été POUSSÉ : leur version sert toujours le contrat cloné, pas ma spec" \
+  || ko "I3 ma spec a été poussée sur la version d'autrui"
+
+# I4 — contre-témoin VERT : reprendre SA propre demi-version marche toujours.
+TEAM="payments-team"; half_born_v2
+run_role "$REPO/ansible" "$TMP/v2.yml" -e apim_pub_resume_version=true >"$TMP/i4.log" 2>&1; RC=$?
+[ "$RC" -eq 0 ] && grep -q "VERSION_RESUME_OWNED" "$TMP/i4.log" \
+  && [ "$(http_code "$DP/${API_NAME}/2.0/v2only")" != "404" ] \
+  && ok "I4 reprise sur SA demi-version : VERSION_RESUME_OWNED, spec du manifeste servie" \
+  || ko "I4 la garde bloque aussi la reprise légitime (rc=$RC)"
+
+echo "═══ Section J — un profil SYSTÈME n'est pas une équipe ═══"
+# `Administrators` est porté par TOUTE API : passé en équipe demandeuse, il
+# obtenait un VERSION_BASE_OWNED affirmatif sur n'importe quelle lignée.
+if [ -f "$R1_ANSIBLE/publish-api.yml" ]; then
+  TEAM="other-team"; prep_v1_with_subscriber
+  APP_OTHER="$APPID"
+  TEAM="Administrators"
+  run_role "$R1_ANSIBLE" "$TMP/v2.yml" >"$TMP/j0.log" 2>&1; RC=$?
+  V2X="$(api_id 2.0)"
+  if [ "$RC" -eq 0 ] && [ -n "$V2X" ] && app_subs "$APP_OTHER" | grep -q "$V2X"; then
+    ok "J0 témoin AVANT ($ROUND1V2_COMMIT) : TEAM=Administrators mine dans la lignée d'other-team, abonnés transportés"
+  else
+    ko "J0 l'ouverture par profil système ne se reproduit pas (rc=$RC)"
+  fi
+else
+  ko "J0 rôle du round 1 v2 non extractible"
+fi
+
+TEAM="other-team"; prep_v1_with_subscriber
+N_BEFORE="$(api_count)"
+TEAM="Administrators"
+run_role "$REPO/ansible" "$TMP/v2.yml" >"$TMP/j1.log" 2>&1; RC=$?
+[ "$RC" -ne 0 ] && grep -q "TEAM_IS_SYSTEM_PROFILE" "$TMP/j1.log" \
+  && ok "J1 TEAM=Administrators → TEAM_IS_SYSTEM_PROFILE (refus nommé)" \
+  || ko "J1 attendu TEAM_IS_SYSTEM_PROFILE, rc=$RC"
+[ "$(api_count)" = "$N_BEFORE" ] \
+  && ok "J2 refus SANS TRACE (profil système)" \
+  || ko "J2 une version a été créée malgré le refus"
+
+# J3 — la garde couvre AUSSI le chemin reprise (même politique des deux côtés).
+TEAM="other-team"; half_born_v2
+TEAM="Administrators"
+run_role "$REPO/ansible" "$TMP/v2.yml" -e apim_pub_resume_version=true >"$TMP/j3.log" 2>&1; RC=$?
+[ "$RC" -ne 0 ] && grep -q "TEAM_IS_SYSTEM_PROFILE" "$TMP/j3.log" \
+  && ok "J3 profil système refusé AUSSI sur le chemin reprise" \
+  || ko "J3 le chemin reprise accepte un profil système (rc=$RC)"
+
+# J4 — tolérance VISIBLE : knob levé ⇒ avertissement nommé dans le log.
+TEAM="payments-team"; prep_v1_with_subscriber
+run_role "$REPO/ansible" "$TMP/v2.yml" -e apim_pub_version_require_team_match=false >"$TMP/j4.log" 2>&1; RC=$?
+[ "$RC" -eq 0 ] && grep -q "VERSION_FOREIGN_UNCHECKED" "$TMP/j4.log" \
+  && ok "J4 garde levée : VERSION_FOREIGN_UNCHECKED prononcé (la tolérance est VISIBLE)" \
+  || ko "J4 garde levée sans avertissement nommé (rc=$RC)"
+TEAM="payments-team"
 
 echo "═══════════════════════════════════════════"
 printf '  RÉSULTAT : %d/%d\n' "$PASS" "$((PASS+FAIL))"
