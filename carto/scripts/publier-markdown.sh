@@ -253,3 +253,52 @@ if ! git push origin "HEAD:$BRANCHE" 2>"$TRAVAIL/push.log"; then
   précédente reste en place, rien n'est corrompu."
 fi
 echo "publié sur $BRANCHE."
+
+# ─────────────────────────────────────────────────────────────────────────────
+# « PUBLIÉ, MAIS INVISIBLE » — LE DERNIER SILENCE POSSIBLE DE CETTE CHAÎNE
+# ─────────────────────────────────────────────────────────────────────────────
+# La poussée a réussi : les données SONT dans le dépôt, sur « $BRANCHE ». Mais
+# c'est la branche PAR DÉFAUT du dépôt qui décide de ce que voient ceux qui
+# viennent lire : `git clone` sans argument la sort, et la forge l'affiche.
+# Si elle diverge de « $BRANCHE », le clone rend un répertoire VIDE et la forge
+# montre un dépôt vide — alors que ce job vient d'écrire « publié ». Personne
+# ne rapproche jamais ces deux faits tout seul.
+#
+# Quand ça arrive : dépôt dédié créé nu à la main (`git init --bare` pose HEAD
+# sur la valeur de `init.defaultBranch` du serveur, `master` par défaut), ou
+# forge réglée sur `master` alors que ce job publie sur `main`. Les forges qui
+# règlent leur branche par défaut à la première poussée d'un dépôt vide ne sont
+# PAS concernées : c'est le cas fréquent, et il ne dit rien ici.
+#
+# Ce n'est pas un échec — les données sont saines et au bon endroit. C'est un
+# AVERTISSEMENT, qui nomme l'écart et les deux gestes qui le ferment.
+#
+# Lecture : `git ls-remote --symref` annonce « ref: refs/heads/X HEAD ». Un
+# dépôt dont la HEAD pointe une branche INEXISTANTE (le cas du dépôt nu jamais
+# poussé sur cette branche-là) n'annonce RIEN du tout : les deux formes sont
+# traitées ci-dessous, séparément, parce qu'elles ne se réparent pas pareil.
+DEFAUT="$(git ls-remote --symref origin HEAD 2>/dev/null \
+          | sed -n 's#^ref: refs/heads/\([^[:space:]]*\)[[:space:]].*#\1#p' | head -n1)"
+
+if [ -z "$DEFAUT" ]; then
+  echo ""
+  echo "AVERTISSEMENT : le dépôt dédié n'a AUCUNE branche par défaut utilisable."
+  echo "  Sa HEAD désigne une branche qui n'existe pas. Conséquence : « git clone »"
+  echo "  de ce dépôt rend un répertoire vide, et la forge l'affiche vide — alors"
+  echo "  que la carto vient bien d'être poussée sur « $BRANCHE »."
+  echo "  LE GESTE QUI RÉPARE (une seule fois, côté forge ou serveur git) :"
+  echo "    régler la branche par défaut du dépôt sur « $BRANCHE »"
+  echo "    (dépôt nu : git symbolic-ref HEAD refs/heads/$BRANCHE)."
+  echo "  Rien n'est perdu : les données sont sur « $BRANCHE » et le resteront."
+elif [ "$DEFAUT" != "$BRANCHE" ]; then
+  echo ""
+  echo "AVERTISSEMENT : la carto est publiée sur « $BRANCHE », mais la branche par"
+  echo "  défaut du dépôt dédié est « $DEFAUT ». Conséquence : « git clone » de ce"
+  echo "  dépôt rend un répertoire vide de carto, et c'est « $DEFAUT » que la forge"
+  echo "  affiche à qui vient la lire."
+  echo "  LE GESTE QUI RÉPARE (une seule fois, au choix) :"
+  echo "    - régler la branche par défaut du dépôt sur « $BRANCHE » ; ou"
+  echo "    - publier sur « $DEFAUT » : paramètre Jenkins CARTO_PAGES_BRANCH,"
+  echo "      variable d'environnement CARTO_PAGES_BRANCH, ou carto_pages_branch"
+  echo "      côté rôle Ansible."
+fi
