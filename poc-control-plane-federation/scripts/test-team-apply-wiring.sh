@@ -144,6 +144,13 @@ grep -qE '^ *export VAULT_USER_AUTH_MOUNT=' "$JOB" \
 grep -qE '^ *export APIM_API_BASE=' "$JOB" \
   && ok "APIM_API_BASE exporté (cible gateway explicite requise)" \
   || ko "APIM_API_BASE absent — le job doit le poser explicitement, sans lui team-apply.sh refuse de démarrer (\${APIM_API_BASE:?...}, team-apply.sh:32)"
+# JENKINS_UI : fix mesuré (Task 7) — "localhost" depuis le conteneur du job ne
+# désigne PAS Jenkins ; sans cet export, la re-pose événementielle (app-request/
+# api-request, Task 3) échoue systématiquement en job réel (curl "000"),
+# jamais vu en test depuis un poste (où "localhost" désigne bien Jenkins publié).
+grep -qE '^ *export JENKINS_UI=' "$JOB" \
+  && ok "JENKINS_UI exporté vers l'alias in-cluster (sinon : re-pose injoignable en job réel)" \
+  || ko "JENKINS_UI absent — la re-pose événementielle échouera systématiquement une fois jouée en job (défaut localhost:18080 invalide depuis le conteneur)"
 
 echo
 echo "======================================================================"

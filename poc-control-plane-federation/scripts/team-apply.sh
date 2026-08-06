@@ -168,6 +168,57 @@ if [ -n "$REPO_FULL" ]; then
       || { cat "$TMP/pe" >&2; fail "push du squelette"; }
     unset AUTH_B64
   fi
+
+  # ── webhook pull_request -> team-publish (Task 7, extension a) ────────────
+  # IDEMPOTENT (GET puis POST si absent) : un hook existant portant la MÊME
+  # URL cible est sauté et dit — jamais un doublon (un dépôt déjà réparé, ou
+  # un re-run après incident, ne double pas le déclenchement). Posé qu'il
+  # s'agisse d'un dépôt fraîchement créé OU déjà existant (pas seulement
+  # PUSH_SKELETON=1) : un dépôt onboardé AVANT que cette extension n'existe
+  # doit pouvoir rattraper son webhook au run suivant.
+  #
+  # ÉCHEC NOMMÉ, PAS SILENCIEUX (brief) — à la différence de la re-pose plus
+  # bas (⚠, purement best-effort) : un dépôt SANS ce webhook ne déclenchera
+  # JAMAIS team-publish tant que personne ne le répare à la main, ce n'est pas
+  # une liste qui se rafraîchit toute seule au run suivant. Marqué ❌ dans le
+  # commentaire — mais n'appelle PAS fail() : l'onboarding lui-même (le rôle
+  # Ansible, §3) est indépendant du webhook, et le retarder d'un geste manuel
+  # reste possible sans reprendre tout l'onboarding.
+  WEBHOOK_URL="${TEAM_PUBLISH_WEBHOOK_URL:-http://jenkins:8080/generic-webhook-trigger/invoke?token=stoa-team-publish}"
+  RC=$(gapi -o "$TMP/hooks" -w '%{http_code}' "${GIT_HOST}/api/v1/repos/${REPO_FULL}/hooks")
+  if [ "$RC" = 200 ]; then
+    HOOK_STATE=$(WEBHOOK_URL="$WEBHOOK_URL" python3 -c "
+import json, os
+hooks = json.load(open('$TMP/hooks'))
+target = os.environ['WEBHOOK_URL']
+print('FOUND' if any((h.get('config') or {}).get('url') == target for h in hooks) else 'ABSENT')
+" 2>"$TMP/hookperr")
+    case "$HOOK_STATE" in
+      FOUND)
+        WEBHOOK_NOTE=" ; webhook team-publish : déjà enregistré (idempotence)"
+        ;;
+      ABSENT)
+        HOOK_BODY="$TMP/hookbody.json"
+        printf '{"type":"gitea","config":{"url":"%s","content_type":"json"},"events":["pull_request"],"active":true}' \
+          "$WEBHOOK_URL" > "$HOOK_BODY"
+        RC2=$(gapi -X POST -d @"$HOOK_BODY" -o "$TMP/hookerr" -w '%{http_code}' "${GIT_HOST}/api/v1/repos/${REPO_FULL}/hooks")
+        if [ "$RC2" = 201 ]; then
+          WEBHOOK_NOTE=" ; webhook team-publish : enregistré"
+        else
+          WEBHOOK_NOTE=" ; ❌ webhook team-publish NON enregistré (HTTP ${RC2}) — team-publish ne se déclenchera pas sur ce dépôt tant qu'il n'est pas réparé à la main"
+          echo "AVERTISSEMENT: enregistrement du webhook team-publish en échec (HTTP ${RC2}) : $(cat "$TMP/hookerr")" >&2
+        fi
+        ;;
+      *)
+        WEBHOOK_NOTE=" ; ❌ webhook team-publish : état indéterminé (liste des hooks illisible) — vérifier à la main"
+        echo "AVERTISSEMENT: lecture des hooks existants du dépôt ${REPO_FULL} illisible : $(cat "$TMP/hookperr")" >&2
+        ;;
+    esac
+  else
+    WEBHOOK_NOTE=" ; ❌ webhook team-publish NON enregistré (liste des hooks illisible, HTTP ${RC}) — vérifier à la main"
+    echo "AVERTISSEMENT: lecture des hooks existants du dépôt ${REPO_FULL} en échec (HTTP ${RC})" >&2
+  fi
+  REPO_NOTE="${REPO_NOTE}${WEBHOOK_NOTE}"
 fi
 
 # REVUE (point hérité du brief de cette tâche) : GIT_WEB_HOST était déclaré
@@ -200,8 +251,17 @@ if [ "$ONB_RC" -eq 0 ]; then
   # sache qu'il doit relancer la pose à la main. api-request n'existe pas
   # encore (Task 5) : setup-team-onboard-jobs.sh tolère proprement son
   # absence (avertit, ignore), donc CE code est déjà prêt pour lui.
+  #
+  # DÉFAUT IN-CLUSTER (fix mesuré, Task 7) : ce script tourne comme process
+  # ENFANT du job Jenkins — "localhost" y désigne le CONTENEUR du job, pas
+  # l'hôte. `http://localhost:18080` rendait la re-pose systématiquement
+  # injoignable (curl "000") une fois JOUÉ EN JOB — jamais vu en test depuis
+  # un poste (où "localhost" désigne bien Jenkins publié), toujours vu en job
+  # réel. `jenkins:8080` est l'alias réseau in-cluster déjà utilisé pour
+  # webmethods-mock/gitea (même convention). Un poste hors du réseau compose
+  # surcharge JENKINS_UI explicitement (comme APIM_API_BASE).
   REFRESH_NOTE=""
-  if JENKINS_UI="${JENKINS_UI:-http://localhost:18080}" JOBS="app-request api-request" \
+  if JENKINS_UI="${JENKINS_UI:-http://jenkins:8080}" JOBS="app-request api-request" \
      ENVN="$ENVN" bash scripts/setup-team-onboard-jobs.sh >"$TMP/refresh.log" 2>&1
   then
     # REVUE (round 1, Important) : la re-pose peut RÉUSSIR tout en ayant

@@ -125,6 +125,12 @@ node {
             # nom interne au cluster, non resolu hors des conteneurs).
             export APIM_API_BASE="${APIM_API_BASE:-http://webmethods-mock:8080/rest/apigateway}"
             export GIT_WEB_HOST="${GIT_WEB_HOST:-http://localhost:13000}"
+            # JENKINS_UI : cible in-cluster pour la re-pose evenementielle des
+            # listes (Task 3) -- "localhost" depuis CE conteneur ne designe
+            # PAS Jenkins (fix mesure, Task 7 : la re-pose etait injoignable
+            # en job reel avec le defaut localhost:18080, jamais vu depuis un
+            # poste). Meme alias que webmethods-mock/gitea.
+            export JENKINS_UI="${JENKINS_UI:-http://jenkins:8080}"
             bash scripts/team-apply.sh
           '''
         }
