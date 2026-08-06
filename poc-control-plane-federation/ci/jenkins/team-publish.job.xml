@@ -46,26 +46,34 @@ def ref = env.PR_BRANCH ?: ''
 if (!ref.startsWith('api/')) { echo "branche '${ref}' hors api/* -- rien a publier"; return }
 currentBuild.displayName = "publish ${repo} (PR #${env.PR_NUMBER})"
 
-// ── DEMANDE EN ATTENTE : la decision est deja prise (le merge) — la pause ne
-// re-decide pas, elle fournit l'identite NOMINATIVE qui portera l'apply
-// (policy team-onboarder, posee par setup-team-onboard-prereqs.sh). ─────────
-def creds = input(
-  id: 'publish', message: "Publier l'API portee par la PR #${env.PR_NUMBER} de ${repo} ? Fournissez VOTRE identite Vault (voie A).",
-  parameters: [
-    string(name: 'VAULT_USER', defaultValue: '', description: 'Login annuaire (ex. oscar)'),
-    password(name: 'VAULT_USER_PASSWORD', defaultValue: '', description: 'Mot de passe annuaire')
-  ])
-
 // ── FINALLY D'ENTREE (dette I3 du palier 2, reglee ici plutot que reproduite) :
-// le try commence AVANT la garde d'identite, pas seulement autour de l'apply.
-// team-apply.job.xml/provision-apply.job.xml ne couvrent que l'apply lui-meme
-// -- un refus de LEUR garde n'y laisse aucune trace sur la PR. Ici, un refus
-// de garde EST aussi un echec couvert par le finally : la PR est commentee
-// dans TOUS les cas, jamais seulement quand team-publish.sh a eu la chance de
-// tourner. ──────────────────────────────────────────────────────────────────
+// le try commence AVANT la pause ET la garde d'identite, pas seulement autour
+// de l'apply. team-apply.job.xml/provision-apply.job.xml ne couvrent que
+// l'apply lui-meme -- un refus de LEUR garde (ou une pause JAMAIS repondue,
+// abandonnee/timeout) n'y laisse aucune trace sur la PR. Ici, TOUT ce qui
+// peut echouer est dans le try : la PR est commentee dans TOUS les cas,
+// jamais seulement quand team-publish.sh a eu la chance de tourner.
+// `creds` est declare AVANT (portee de bloc Groovy) mais ASSIGNE dans le
+// try, pour rester lisible apres (ligne finale) meme si le try echoue tot. ──
 def publishResult = 'SUCCESS'
 def failMsg = ''
+def creds = null
 try {
+  // ── DEMANDE EN ATTENTE, DANS LE TRY (mais HORS de tout node{} — un input()
+  // n'a pas besoin d'exécuteur, en réserver un juste pour attendre une
+  // réponse humaine gâcherait un slot) : la décision est déjà prise (le
+  // merge) — la pause ne re-décide pas, elle fournit l'identité NOMINATIVE
+  // qui portera l'apply (policy team-onboarder, posée par
+  // setup-team-onboard-prereqs.sh). Un ABANDON/timeout de cette pause EST
+  // désormais couvert par le finally (avant ce commit, hors du try : un
+  // abandon laissait la PR muette, aucun commentaire, aucune trace). ────────
+  creds = input(
+    id: 'publish', message: "Publier l'API portee par la PR #${env.PR_NUMBER} de ${repo} ? Fournissez VOTRE identite Vault (voie A).",
+    parameters: [
+      string(name: 'VAULT_USER', defaultValue: '', description: 'Login annuaire (ex. oscar)'),
+      password(name: 'VAULT_USER_PASSWORD', defaultValue: '', description: 'Mot de passe annuaire')
+    ])
+
   node {
     stage('garde identite du valideur') {
       git url: 'http://gitea:3000/ci/stoa-labs.git', branch: 'main'
@@ -98,6 +106,15 @@ try {
               export VAULT_ADDR="${VAULT_ADDR:-http://vault:8200}"
               export VAULT_USER="$V_USER"
               export VAULT_USER_PASSWORD="$V_PASS"
+              # V_PASS ne doit PAS survivre au-dela de cette ligne : une
+              # variable EXPORTEE reste lisible dans /proc/PID/environ de
+              # TOUT process du meme noeud tant qu'elle est dans l'environnement
+              # du step sh -- meme apres avoir ete copiee dans
+              # VAULT_USER_PASSWORD, et VIDE l'invariant "jamais en clair"
+              # que vault-login.sh (unset apres usage, cf. sa propre discipline)
+              # tient deja pour SES variables internes. unset ICI, avant tout
+              # appel reseau (login inclus).
+              unset V_PASS
               # Meme calibrage lab/client que team-apply.job.xml (Task 8, palier 2) :
               # ci/lib/vault-login.sh retombe sur son defaut ldap (convention CLIENT)
               # si VAULT_USER_AUTH_MOUNT n'est pas fixe ; ce lab authentifie ses
@@ -136,19 +153,19 @@ try {
   failMsg = e.getMessage() ?: e.toString()
   echo "team-publish en echec : ${failMsg}"
 } finally {
-  // Si team-publish.sh a tourne et echoue, il a DEJA commente en detail (son
-  // propre fail()). Si le refus vient de la garde d'identite (le script n'a
-  // JAMAIS tourne), RIEN n'a encore ete dit sur la PR -- c'est CE bloc, et lui
-  // seul, qui le fait. Un second commentaire generique quand team-publish.sh
-  // a deja parle n'est pas un probleme : ADR-081 exige au moins un commentaire
-  // sur tout echec, jamais au plus un.
-  // MÊME MARQUEUR que team-publish.sh (<!-- team-publish -->, via le MÊME
-  // scripts/lib/gitea-pr-comment.sh) : idempotent ET cohérent avec le script
-  // — si team-publish.sh a DÉJÀ posé un commentaire détaillé (garde passée,
-  // échec plus tard dans le script), ce bloc de secours METTRAIT À JOUR le
-  // même commentaire au lieu d'empiler un doublon générique en dessous. Et si
-  // un run ULTÉRIEUR réussit, son ✅ remplacera proprement cette trace
-  // d'échec plutôt que de la laisser trainer à côté d'un verdict contradictoire.
+  // [Important, panel] MARQUEUR DISTINCT du marqueur de team-publish.sh
+  // (comment-marker: team-publish). AVANT ce fix : les deux commentaires
+  // partageaient LE MÊME marqueur, donc la MÊME entrée gitea-pr-comment.sh
+  // -- sur un échec IN-SCRIPT (REPO_NON_DECLARE, MERGE_SHA_NON_ANCETRE,
+  // CONTRAT_ABSENT, fatal Ansible…), team-publish.sh commente D'ABORD la
+  // cause NOMMÉE, PUIS ce bloc finally ÉCRASAIT ce même commentaire (PATCH,
+  // pas un second post) avec un texte générique ("le build a échoué… exit
+  // code 1") -- la cause nommée disparaissait de la PR. Corrigé : marqueur
+  // comment-marker "team-publish-build", DISTINCT. Résultat : le commentaire
+  // détaillé de team-publish.sh (script, cause nommée) ET le statut build de
+  // CE bloc (garde d'identité refusée, pause abandonnée, agent injoignable —
+  // les cas où team-publish.sh n'a JAMAIS tourné) coexistent, chacun
+  // idempotent sous SON marqueur, sans que l'un n'écrase l'autre.
   // Checkout PROPRE (pas une hypothèse de workspace hérité du try) : ce bloc
   // est un `node {}` SÉPARÉ, potentiellement un exécuteur différent.
   if (publishResult != 'SUCCESS') {
@@ -165,9 +182,9 @@ try {
                 exit 0
               fi
               BODYFILE="$(mktemp)"
-              printf '❌ team-publish : le build a echoue avant ou pendant la publication (%s). Si la garde d identite a refuse, RIEN n a ete publie.\n' \
+              printf '⚠️ team-publish (statut build) : le build a echoue avant ou pendant la publication (%s). Si la garde d identite a refuse ou si la pause a ete abandonnee, RIEN n a ete publie -- voir le commentaire team-publish ci-dessus si le script a tourne.\n' \
                 "${FAIL_MSG:-voir le build Jenkins}" > "$BODYFILE"
-              GIT_REPO="$WEBHOOK_REPO" PR_NUMBER="$PR_NUMBER" COMMENT_MARKER="&lt;!-- team-publish --&gt;" \
+              GIT_REPO="$WEBHOOK_REPO" PR_NUMBER="$PR_NUMBER" COMMENT_MARKER="&lt;!-- team-publish-build --&gt;" \
                 COMMENT_BODY_FILE="$BODYFILE" bash scripts/lib/gitea-pr-comment.sh \
                 || echo "AVERTISSEMENT: commentaire de secours (finally) en echec"
               rm -f "$BODYFILE"
