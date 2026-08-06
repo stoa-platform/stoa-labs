@@ -555,10 +555,32 @@ if [ -n "${CJ:-}" ]; then
   JF=$(printf '%s' "$CJ" | python3 -c 'import sys,json;print(json.load(sys.stdin)["crumbRequestField"])')
   JC=$(printf '%s' "$CJ" | python3 -c 'import sys,json;print(json.load(sys.stdin)["crumb"])')
   N=$(curl -sf "$JENKINS_UI/job/app-request/api/json" 2>/dev/null | python3 -c 'import sys,json;print(json.load(sys.stdin)["nextBuildNumber"])' 2>/dev/null)
+  # API : LU dans le job POSÉ, jamais écrit en dur (adaptation P3-T8). Le
+  # palier 3 (Task 4, app-request v2) a délibérément FUSIONNÉ les deux anciens
+  # paramètres API + API_VER en UN choix `nom@version` alimenté dynamiquement
+  # (scripts/lib/generate-choices.sh). Cette preuve postait encore
+  # `API=accounts-api&API_VER=1.0.0` : `API_VER` n'existe plus, et
+  # `accounts-api` n'appartient plus à la liste de choix — Jenkins répondait
+  # HTTP 500 (valeur hors choix), preuve 7 rouge. Constaté en direct au
+  # premier rejeu de cette matrice depuis le palier 3. Prendre le PREMIER choix
+  # réellement offert par le job garde la preuve vraie quel que soit l'état du
+  # lab ; une valeur en dur redeviendrait périmée à la prochaine publication.
+  API7=$(curl -sf "$JENKINS_UI/job/app-request/api/json?depth=1" 2>/dev/null | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+for p in d.get("property", []):
+    for q in p.get("parameterDefinitions", []):
+        if q.get("name") == "API" and q.get("choices"):
+            print(q["choices"][0]); raise SystemExit
+' 2>/dev/null)
+  if [ -z "${API7:-}" ]; then
+    bad "7. le job app-request n'offre AUCUN choix d'API (liste vide ou paramètre absent) — la preuve ne peut pas soumettre de demande ; poser les jobs (setup-team-onboard-jobs.sh) avant de rejouer"
+    HC7=""; R7=""; PR7_NUM=""
+  else
   HC7=$(curl -s -b "$TMP/jck" -X POST "$JENKINS_UI/job/app-request/buildWithParameters" \
     -H "$JF: $JC" \
     --data-urlencode "APP=$APP7" --data-urlencode "REQ_ENV=dev" \
-    --data-urlencode "API=accounts-api" --data-urlencode "API_VER=1.0.0" \
+    --data-urlencode "API=$API7" \
     --data-urlencode "CLIENT_ID=" --data-urlencode "MODE=internal" \
     -o /dev/null -w '%{http_code}')
   R7=""; DEADLINE=$(( $(date +%s) + 120 ))
@@ -574,9 +596,10 @@ for pr in json.load(sys.stdin):
     if pr.get('head',{}).get('ref')=='provision/${APP7}-dev':
         print(pr['number']); break" 2>/dev/null)
   if [ "$HC7" = 201 ] && [ "$R7" = SUCCESS ] && [ -n "${PR7_NUM:-}" ]; then
-    ok "7. job app-request(MODE=internal) build #$N SUCCESS, PR provision/${APP7}-dev #$PR7_NUM ouverte"
+    ok "7. job app-request(MODE=internal, API=$API7 lu dans le job posé) build #$N SUCCESS, PR provision/${APP7}-dev #$PR7_NUM ouverte"
   else
-    bad "7. build_http=$HC7 build_result=$R7 PR7=${PR7_NUM:-absente} — voir $JENKINS_UI/job/app-request/${N:-?}/console"
+    bad "7. build_http=$HC7 build_result=$R7 PR7=${PR7_NUM:-absente} api=${API7:-?} — voir $JENKINS_UI/job/app-request/${N:-?}/console"
+  fi
   fi
 else
   bad "7. Jenkins injoignable ($JENKINS_UI) — crumbIssuer KO"
@@ -797,6 +820,40 @@ fi
 
 RESULT10="skip"; MSG10="prérequis non réunis (job=$JOB10_OK PR=$R10REQ merge=$MERGE10_HC)"
 if [ "$JOB10_OK" = 1 ] && [ "$R10REQ" -eq 0 ] && [ "$MERGE10_HC" = 200 ] && [ -n "$MERGE10_SHA" ]; then
+  # 10c-bis. PURGE DES PAUSES ORPHELINES — sans quoi la preuve 10 ne démarre
+  # JAMAIS. Cause mesurée en direct (P3-T8, premier rejeu de cette matrice) :
+  # le merge de la preuve 5 déclenche le VRAI webhook Gitea de ci/stoa-labs
+  # (hook `pull_request` -> stoa-team-apply, enregistré sur le dépôt
+  # plateforme) ; ce build-là s'arrête sur SA pause nominative, que PERSONNE
+  # ne répond jamais — la preuve 5 applique team-apply.sh EN DIRECT, elle
+  # n'attend rien du job. team-apply.job.xml porte
+  # DisableConcurrentBuildsJobProperty : ce build en pause bloque donc TOUT
+  # build suivant, dont celui de la preuve 10, qui reste en FILE (jamais
+  # démarré) et rend `status=` vide — un échec de la preuve 10 dont la cause
+  # n'est ni le webhook (HTTP 200) ni le job. Une pause laissée par un run
+  # ANTÉRIEUR du harnais produit exactement le même blocage.
+  # On abandonne donc les pauses en cours AVANT de tirer, et on attend que la
+  # file de CE job soit vide — puis seulement on lit nextBuildNumber.
+  rm -f "$TMP/jck10p"
+  _cj=$(curl -sf -c "$TMP/jck10p" "$JENKINS_UI/crumbIssuer/api/json")
+  _jfp=$(printf '%s' "$_cj" | python3 -c 'import sys,json;print(json.load(sys.stdin)["crumbRequestField"])' 2>/dev/null)
+  _jcp=$(printf '%s' "$_cj" | python3 -c 'import sys,json;print(json.load(sys.stdin)["crumb"])' 2>/dev/null)
+  _drained=0
+  for _ in $(seq 1 12); do
+    _last=$(curl -sf "$JENKINS_UI/job/team-apply/api/json" | python3 -c 'import sys,json;print(json.load(sys.stdin)["nextBuildNumber"]-1)' 2>/dev/null)
+    _st=$(curl -s "$JENKINS_UI/job/team-apply/${_last:-0}/wfapi/describe" 2>/dev/null | python3 -c 'import json,sys;print(json.load(sys.stdin).get("status",""))' 2>/dev/null)
+    _q=$(curl -s "$JENKINS_UI/queue/api/json" 2>/dev/null | python3 -c 'import json,sys;print(sum(1 for i in json.load(sys.stdin).get("items",[]) if (i.get("task") or {}).get("name")=="team-apply"))' 2>/dev/null)
+    if [ "$_st" = PAUSED_PENDING_INPUT ]; then
+      _iid=$(curl -s "$JENKINS_UI/job/team-apply/${_last}/wfapi/pendingInputActions" | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["id"])' 2>/dev/null)
+      curl -s -b "$TMP/jck10p" -H "$_jfp: $_jcp" -X POST "$JENKINS_UI/job/team-apply/${_last}/input/${_iid}/abort" -o /dev/null
+      _drained=$((_drained + 1))
+    elif [ "${_q:-0}" = 0 ] && [ "$_st" != IN_PROGRESS ] && [ -n "$_st" ]; then
+      break
+    fi
+    sleep 4
+  done
+  [ "$_drained" -gt 0 ] && echo "   ${_drained} pause(s) orpheline(s) de team-apply abandonnée(s) (déclenchées par le webhook réel du merge de la preuve 5) — la file du job est libre"
+
   # 10d. webhook RÉEL (mêmes clés que team-apply.job.xml genericVariables)
   N10=$(curl -sf "$JENKINS_UI/job/team-apply/api/json" | python3 -c 'import sys,json;print(json.load(sys.stdin)["nextBuildNumber"])')
   python3 -c "
