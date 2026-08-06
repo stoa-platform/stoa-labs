@@ -523,12 +523,29 @@ PY
         }
 
         stage('Publication — archivage des artefacts du build') {
-          // Le rendu est autonome : il lit carto.json et history.json posés à
-          // côté de lui. On archive donc les trois ensemble — un index.html
-          // sans son document, ou l'inverse, ne s'ouvre pas.
+          // `carto/render/index.html` n'est PAS une page : c'est un GABARIT.
+          // Depuis que la vue est autoportante, ses deux documents sont
+          // injectés dans le fichier lui-même par `carto/render/page.py` (à la
+          // place du marqueur `<!--CARTO_DATA-->`), et `boot()` ne fait plus
+          // AUCUN fetch — c'est ce qui lui permet de s'ouvrir en
+          // double-cliquant et d'être lisible publiée seule dans une forge.
+          //
+          // Ce stage copiait le gabarit tel quel à côté de carto.json, en
+          // croyant que la page irait le lire. Elle ne le lit plus : la page
+          // archivée affichait « ⚠ cette page n'embarque aucune donnée ». Un
+          // artefact vert, silencieusement inutile.
+          //
+          // On passe donc par le rendu, comme les DEUX autres voies de
+          // déploiement (rôle Ansible et dépôt de pages) : une seule fonction
+          // assemble la page, jamais une copie brute du gabarit. Le rendu
+          // tourne ICI, avant l'archivage et quel que soit l'état de la
+          // publication Markdown : il ne demande ni secret ni réseau, et c'est
+          // lui qui rend l'artefact utilisable. `carto-pages/` produit au
+          // passage sert tel quel au stage suivant quand il est actif.
           sh '''
             set -eu
-            cp carto/render/index.html carto-out/index.html
+            python3 -m carto.render --source carto-out --out carto-pages --message
+            cp carto-pages/index.html carto-out/index.html
             ls -l carto-out
           '''
           archiveArtifacts artifacts: 'carto-out/carto.json, carto-out/history.json, carto-out/index.html',
@@ -546,14 +563,12 @@ PY
             echo("Publication Markdown désactivée (CARTO_PAGES_REPO_URL vide) : " +
                  "rien n'est poussé. Ce n'est pas un échec, c'est le mode par défaut.")
           } else {
-            // Le rendu Markdown ne demande aucun secret : il est fait AVANT
-            // d'ouvrir la parenthèse `withCredentials`, pour que le jeton
+            // Le rendu a déjà eu lieu au stage précédent, qui en a besoin pour
+            // archiver une page utilisable : `carto-pages/` est prêt, avec son
+            // `.message`. Le rendu ne demande de toute façon aucun secret — il
+            // reste HORS de la parenthèse `withCredentials`, pour que le jeton
             // n'existe dans l'environnement que pendant les commandes git.
-            sh '''
-              set -eu
-              python3 -m carto.render --source carto-out --out carto-pages --message
-              ls -l carto-pages
-            '''
+            sh 'ls -l carto-pages'
             withCredentials([usernamePassword(credentialsId: PAGES_CREDS,
                                               usernameVariable: 'CARTO_PAGES_USER',
                                               passwordVariable: 'CARTO_PAGES_TOKEN')]) {
