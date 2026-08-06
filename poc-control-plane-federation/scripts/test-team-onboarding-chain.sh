@@ -853,9 +853,22 @@ if [ "$JOB10_OK" = 1 ] && [ "$R10REQ" -eq 0 ] && [ "$MERGE10_HC" = 200 ] && [ -n
   # son numéro de build ET son displayName — jamais silencieux.
   # Les PR de CE run : celle de la preuve 3 (dont le merge de la preuve 5
   # déclenche le webhook réel) et celle de la preuve 10.
+  #
+  # NUMÉROS NUS, séparés par des espaces — JAMAIS des jetons du genre
+  # « (PR #17) ». Un jeton à espace INTERNE, itéré par `for _pr in $LISTE`
+  # (non quoté), est découpé sur TOUT blanc : « (PR #17) (PR #23) » donne
+  # QUATRE mots — `(PR`, `#17)`, `(PR`, `#23)`. Et `(PR` seul est sous-chaîne
+  # de TOUT displayName de pause team-apply (« onboard <team>/<env> (PR #n) »),
+  # donc le test matchait INCONDITIONNELLEMENT : le drain abandonnait n'importe
+  # quelle pause en la déclarant sienne — pire que pas de scope du tout.
+  # Régression réelle, introduite au round précédent et mesurée en la
+  # reproduisant. shellcheck ne l'attrape pas (SC2086 ne se déclenche pas sur
+  # l'itérable d'un `for`). On compare donc des ENTIERS, par ÉGALITÉ exacte via
+  # l'idiome de liste rembourrée d'espaces — plus aucune sous-chaîne, plus
+  # aucun découpage possible.
   _MINE_PRS=""
-  [ -n "${PR_ONBOARD_NUM:-}" ] && _MINE_PRS="(PR #${PR_ONBOARD_NUM})"
-  [ -n "${PR10_NUM:-}" ] && _MINE_PRS="${_MINE_PRS:+$_MINE_PRS }(PR #${PR10_NUM})"
+  [ -n "${PR_ONBOARD_NUM:-}" ] && _MINE_PRS="${PR_ONBOARD_NUM}"
+  [ -n "${PR10_NUM:-}" ] && _MINE_PRS="${_MINE_PRS:+$_MINE_PRS }${PR10_NUM}"
   rm -f "$TMP/jck10p"
   _cj=$(curl -sf -c "$TMP/jck10p" "$JENKINS_UI/crumbIssuer/api/json")
   _jfp=$(printf '%s' "$_cj" | python3 -c 'import sys,json;print(json.load(sys.stdin)["crumbRequestField"])' 2>/dev/null)
@@ -878,10 +891,13 @@ for b in d.get('builds',[]):
       [ -n "$_n" ] || continue
       _st=$(curl -s "$JENKINS_UI/job/team-apply/$_n/wfapi/describe" 2>/dev/null | python3 -c 'import json,sys;print(json.load(sys.stdin).get("status",""))' 2>/dev/null)
       [ "$_st" = PAUSED_PENDING_INPUT ] || continue
+      # Le numéro de PR est EXTRAIT du displayName, puis comparé par ÉGALITÉ à
+      # l'ensemble des PR de ce run (liste rembourrée) — jamais par sous-chaîne.
+      _dnpr=$(printf '%s' "$_dn" | sed -n 's/.*(PR #\([0-9][0-9]*\)).*/\1/p')
       _mine=0
-      for _pr in $_MINE_PRS; do
-        case "$_dn" in *"$_pr"*) _mine=1;; esac
-      done
+      if [ -n "$_dnpr" ]; then
+        case " $_MINE_PRS " in *" $_dnpr "*) _mine=1;; esac
+      fi
       case "$_mine" in
         1)
           _iid=$(curl -s "$JENKINS_UI/job/team-apply/$_n/wfapi/pendingInputActions" | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["id"])' 2>/dev/null)
@@ -897,7 +913,7 @@ for b in d.get('builds',[]):
     [ -n "$_foreign" ] && break
     sleep 4
   done
-  [ -n "$_foreign" ] && echo "   ATTENTION : pause(s) team-apply dont CE run ne peut PAS prouver qu'elles sont siennes — LAISSÉE(S) INTACTE(S) : $_foreign. PR ouvertes par ce run : ${_MINE_PRS:-aucune}. Lab PARTAGÉ : approbation d'un run concurrent, ou résidu d'un run antérieur ; la file restera bloquée tant que son propriétaire ne l'a pas soldée — ce harnais n'y touchera pas." >&2
+  [ -n "$_foreign" ] && echo "   ATTENTION : pause(s) team-apply dont CE run ne peut PAS prouver qu'elles sont siennes — LAISSÉE(S) INTACTE(S) : $_foreign. PR ouvertes par ce run : #${_MINE_PRS:-aucune}. Lab PARTAGÉ : approbation d'un run concurrent, ou résidu d'un run antérieur ; la file restera bloquée tant que son propriétaire ne l'a pas soldée — ce harnais n'y touchera pas." >&2
   [ "$_drained" -gt 0 ] && echo "   ${_drained} pause(s) orpheline(s) de team-apply abandonnée(s) — la file du job est libre"
 
   # 10d. webhook RÉEL (mêmes clés que team-apply.job.xml genericVariables)
