@@ -184,6 +184,31 @@ if [ -n "$REPO_FULL" ]; then
   # commentaire — mais n'appelle PAS fail() : l'onboarding lui-même (le rôle
   # Ansible, §3) est indépendant du webhook, et le retarder d'un geste manuel
   # reste possible sans reprendre tout l'onboarding.
+  # [Important, panel Fix round 1] SECRET HMAC à l'enregistrement — ce que ce
+  # secret ferme et ce qu'il NE ferme PAS, pour ne pas ajouter un vert vacant
+  # de plus (cf. §F du même panel, sur test-team-publish-wiring.sh) :
+  #   - Gitea (côté ÉMETTEUR) signe chaque livraison avec ce secret
+  #     (en-tête X-Gitea-Signature, HMAC-SHA256 du corps BRUT) dès qu'il est
+  #     non vide — ceci est réel, vérifiable côté Gitea (Settings > Webhooks).
+  #   - Generic Webhook Trigger 2.4.2 (côté RÉCEPTEUR, ce job Jenkins) n'offre
+  #     PAS de vérification fiable de cette signature : sa seule fonction
+  #     "HMAC" documentée sert un allow-list d'hôte, pas la signature Gitea ;
+  #     et la seule façon de faire lire le corps par un step JSONPath ($) le
+  #     REsérialise (ordre de clés / espaces potentiellement différents des
+  #     octets bruts que Gitea a signés) — un HMAC calculé sur ce texte
+  #     resérialisé ne recalculerait PAS forcément la même signature, un faux
+  #     négatif possible sur un payload pourtant légitime. Vertifier ce
+  #     recalcul aurait pu être un vert vacant : un contrôle qui semble
+  #     fermer une porte mais échoue au hasard ou ne ferme rien.
+  #   - La garde RÉELLE contre un payload forgé/rejoué N'EST DONC PAS ce
+  #     secret : c'est la réconciliation Gitea de team-publish.sh (§2 —
+  #     merged/merge_commit_sha/head.ref/base.ref RELUS via GET
+  #     /repos/.../pulls/$PR_NUMBER avec GITEA_TOKEN, indépendamment de ce
+  #     que prétend le payload) + l'ancrage merge-base --is-ancestor (§4).
+  #     Le secret est enregistré ici en préparation d'une vérification future
+  #     (ex. step dédié captant l'en-tête ET le corps brut), vide par défaut
+  #     (comportement inchangé, mêmes dépôts existants non re-signés).
+  WEBHOOK_SECRET="${TEAM_PUBLISH_WEBHOOK_SECRET:-}"
   WEBHOOK_URL="${TEAM_PUBLISH_WEBHOOK_URL:-http://jenkins:8080/generic-webhook-trigger/invoke?token=stoa-team-publish}"
   RC=$(gapi -o "$TMP/hooks" -w '%{http_code}' "${GIT_HOST}/api/v1/repos/${REPO_FULL}/hooks")
   if [ "$RC" = 200 ]; then
@@ -199,8 +224,14 @@ print('FOUND' if any((h.get('config') or {}).get('url') == target for h in hooks
         ;;
       ABSENT)
         HOOK_BODY="$TMP/hookbody.json"
-        printf '{"type":"gitea","config":{"url":"%s","content_type":"json"},"events":["pull_request"],"active":true}' \
-          "$WEBHOOK_URL" > "$HOOK_BODY"
+        WEBHOOK_URL="$WEBHOOK_URL" WEBHOOK_SECRET="$WEBHOOK_SECRET" python3 -c "
+import json, os
+cfg = {'url': os.environ['WEBHOOK_URL'], 'content_type': 'json'}
+secret = os.environ.get('WEBHOOK_SECRET', '')
+if secret:
+    cfg['secret'] = secret
+print(json.dumps({'type': 'gitea', 'config': cfg, 'events': ['pull_request'], 'active': True}))
+" > "$HOOK_BODY"
         RC2=$(gapi -X POST -d @"$HOOK_BODY" -o "$TMP/hookerr" -w '%{http_code}' "${GIT_HOST}/api/v1/repos/${REPO_FULL}/hooks")
         if [ "$RC2" = 201 ]; then
           WEBHOOK_NOTE=" ; webhook team-publish : enregistré"
