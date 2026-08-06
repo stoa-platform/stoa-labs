@@ -35,10 +35,3 @@ providers:
     description: "Equipe paiements — virements sortants (cross-tenant vs banking-demo)"
     repo: ""          # inconnu — consomme au palier 2, a renseigner a ce moment
     approvers: []      # inconnu — la liste d'approbateurs n'est pas encore etablie
-
-  # Ajout par formulaire Jenkins team-request (palier 2) — la PR est l'acte
-  # d'autorisation (ADR-081) ; le dépôt et les objets naissent au merge.
-  - team: probe-p2j
-    description: "chemin fort job team-apply (preuve 10)"
-    repo: probe-p2j/apis
-    approvers: []
