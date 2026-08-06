@@ -197,13 +197,17 @@ périmée qui a l'air fraîche. `carto-collect.sh` :
   chose a bougé. `observed.json` n'est pas une capture brute : son bloc
   `_meta`, qui distingue le mesuré du substitué, est à réécrire à la main sur
   la nouvelle capture — le script le rappelle à la fin de son exécution.
-- **Question ouverte prioritaire (`TERRAIN.md`, V5) : vérifier chez le client
-  que l'identification de l'application appelante est effective dans les
-  événements transactionnels de LEUR gateway.** Dans le labo de mesure de ce
-  projet, `applicationName` valait `Unknown` sur 100 % du trafic authentifié
-  malgré dix tentatives de configuration — re-vérifié le 2026-07-31 par l'API
-  publique, même verdict. Sans cette identification, la carto observée n'a pas
-  de dimension consommateur, quel que soit le reste du pipeline de collecte.
+- **À vérifier chez le client (`TERRAIN.md`, V5) : que l'identification de
+  l'application appelante est effective dans les événements transactionnels de
+  LEUR gateway.** Sans elle, la carto observée n'a pas de dimension
+  consommateur, quel que soit le reste du pipeline de collecte.
+  Ce point a longtemps été porté ici comme un blocage majeur : le labo mesurait
+  `Unknown` sur 100 % du trafic authentifié malgré dix tentatives de
+  configuration. **Réfuté le 2026-08-06** — un appel portant
+  `x-Gateway-APIKey`, sur une gateway sans aucun stage IAM, ressort avec son
+  `applicationName` et son `applicationId` renseignés. L'identification est
+  native et ne demande pas de policy dédiée. Reste donc une vérification
+  ordinaire chez le client, pas un risque produit.
 - **Second point à mesurer chez le client (`TERRAIN.md`, V7) : le plafond de
   regroupement de `_count`.** Ce labo n'a que trois APIs ; impossible d'y
   établir combien de lignes cette route accepte de rendre. Un plafond franchi

@@ -79,11 +79,23 @@ def _check_windows(api_id, con_id, calls):
 def _unidentified_share(edges, ghost_consumer_ids):
     """Part des appels de la fenêtre longue imputés à un appelant NON IDENTIFIÉ.
 
-    Terrain mesuré (carto/TERRAIN.md, V5) : `applicationId` vaut `Unknown` sur
-    100 % du trafic authentifié de la gateway de mesure. Ce cas est le cas
-    MAJORITAIRE attendu, pas un résidu : sans ce chiffre porté au contrat de
-    données, tout le trafic s'agrège sur un nœud fantôme, chaque consommateur
-    réel bascule en « déclaré, inactif » — et rien ne l'annonce.
+    Ce chiffre existe parce qu'un appelant non identifié agrège tout le trafic
+    sur un nœud fantôme et fait basculer chaque consommateur réel en « déclaré,
+    inactif » : sans lui au contrat de données, rien ne l'annoncerait.
+
+    NE PAS LE LIRE comme « le cas majoritaire attendu ». Cette docstring
+    affirmait, sur la foi de TERRAIN V5, que `applicationId` valait `Unknown`
+    sur 100 % du trafic authentifié. **Réfuté par la mesure du 2026-08-06** :
+    un appel avec `x-Gateway-APIKey`, sur une gateway SANS aucun stage IAM,
+    ressort avec son `applicationName` et son `applicationId` renseignés.
+    L'identification est native ; une part élevée signale un vrai problème de
+    plateforme, pas une fatalité (cf. l'encadré en tête de TERRAIN V5).
+
+    Fenêtre : d90. Un pic d'appels non identifiés pèse donc 90 jours, bien
+    après que sa cause a été corrigée — c'est voulu (on ne veut pas qu'un
+    trou d'identification disparaisse du radar en une semaine), mais ça veut
+    dire qu'un ratio élevé peut être un HÉRITAGE et non un état courant.
+    Pour trancher, ventiler le trafic par jour avant de conclure.
 
     0.0 quand il n'y a aucun appel du tout : il n'y a alors rien à imputer,
     et c'est `coveredDays` qui porte ce diagnostic-là.

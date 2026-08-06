@@ -326,6 +326,46 @@ interne, CMDB, ou déclaratif au moment de l'enregistrement de l'Application.
 
 ## V5 — identification de l'appelant dans les événements
 
+> ### ⚠ RÉFUTÉ LE 2026-08-06 — LIRE CECI AVANT LA SUITE
+>
+> **L'identification par clé API FONCTIONNE sur cette gateway, et elle ne
+> demande AUCUNE policy d'identification.** Tout ce qui suit dans cette
+> section reste comme journal d'enquête, mais son verdict — « cause
+> structurelle non diagnostiquée », « à porter au support Software AG » — est
+> **retiré**. Ne pas ouvrir de ticket éditeur sur cette base.
+>
+> Mesure du 2026-08-06, un seul appel, tout vérifié dans la même minute :
+>
+> - état de la gateway au moment du test : `GET /policies` → **0 policy
+>   utilisateur** ; `GET /apis/{id}/globalPolicies` → `["GlobalLogInvocation
+>   Policy"]` et **rien d'autre**. Donc **aucun stage IAM**, aucune
+>   identification déclarée nulle part ;
+> - appel : `GET /gateway/carto-probe-api/1.0.0`, en-tête `x-Gateway-APIKey`
+>   portant la clé de l'Application `carto-probe-app-active` → **HTTP 200** ;
+> - événement produit, relu 90 s plus tard :
+>   `applicationName="carto-probe-app-active"`,
+>   `applicationId="4c329b2e-bcf7-45dc-996d-d5d9dfb538e0"`, `status=SUCCESS`.
+>
+> Ce n'était pas un coup isolé : **4 appels du 2026-08-03, entre 20:52 et
+> 20:59 UTC, portent déjà un appelant identifié** — soit trois jours APRÈS la
+> re-vérification du 2026-07-31 qui concluait à 100 % `Unknown`. Personne ne
+> l'a vu parce que plus rien ne relisait ce champ.
+>
+> **Ce que les 10 tentatives ci-dessous ont donc réellement fait :** s'acharner
+> à faire appliquer un mécanisme (policy `evaluatePolicy` / stage IAM) qui
+> n'est pas celui qui identifie l'appelant ici. Hypothèse plausible et NON
+> vérifiée, laissée telle quelle : ces stages IAM mal ajustés ont pu
+> *empêcher* l'identification native pendant la campagne de mesure — ce qui
+> expliquerait le 100 % observé alors, et sa disparition depuis que les
+> policies ont été supprimées.
+>
+> **Ce qui reste vrai :** les 805 événements du 2026-07-30 sont bel et bien
+> non identifiés. Comme `unidentifiedCallShare` se calcule sur la fenêtre
+> **d90** (`carto/collect/build.py`), ils maintiennent le ratio au-dessus de
+> la porte des 50 % jusqu'à leur sortie de fenêtre (~2026-10-28), quel que
+> soit le trafic identifié ajouté d'ici là. C'est la cause — entière — du
+> rouge du job Jenkins `carto`, et elle n'a rien d'un défaut produit.
+
 Le champ `applicationId` est-il toujours renseigné ? **Non — et après
 correction du blocage V3, c'est maintenant vérifié sur du trafic réussi et
 authentifié : `applicationId` vaut `"Unknown"` à 100 %, y compris pour des
