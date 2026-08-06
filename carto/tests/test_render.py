@@ -93,6 +93,21 @@ class RenderJsTestCase(unittest.TestCase):
         self.assertEqual(r.returncode, 0, f"node a echoue :\n{r.stderr}")
         return r.stdout
 
+    # Instant de reference de TOUTE la suite. La fixture ci-dessous porte un
+    # `generatedAt` FIXE, et `banner()` compare cette date a `Date.now()` pour
+    # decider l'alerte « perimee ». Un test qui traverse `banner()` sans figer
+    # l'horloge est donc vert le jour ou on l'ecrit, et rouge deux jours plus
+    # tard sans qu'une seule ligne de produit ait bouge : la suite pourrit
+    # toute seule. C'est exactement ce qui est arrive aux deux tests de
+    # `TestDonneesEmbarquees` (verts jusqu'au 2026-08-01, rouges ensuite).
+    # Regle : tout test qui appelle `banner()` ou `boot()` sur une carto saine
+    # fige l'horloge avec `fige_horloge()`.
+    MAINTENANT = "2026-07-30T06:00:00Z"
+
+    def fige_horloge(self, maintenant=None):
+        """Fragment JS qui rend le temps deterministe pour le test."""
+        return f'Date.now = () => Date.parse("{maintenant or self.MAINTENANT}");'
+
     def carto_js(self, **over):
         """Un document carto minimal mais VALIDE au sens du contrat."""
         doc = {
@@ -118,10 +133,10 @@ class TestBandeau(RenderJsTestCase):
     """Le bandeau existe pour crier quand la donnee est mauvaise : il ne doit
     jamais planter, jamais se taire, et jamais rester vert a tort."""
 
-    def bandeau(self, carto_js, maintenant="2026-07-30T06:00:00Z"):
+    def bandeau(self, carto_js, maintenant=None):
         return self.js(f"""
           S.carto = {carto_js};
-          Date.now = () => Date.parse("{maintenant}");
+          {self.fige_horloge(maintenant)}
           banner();
           console.log(JSON.stringify({{ cls: __el.className, html: __el.innerHTML }}));
         """)
@@ -281,6 +296,7 @@ class TestDonneesEmbarquees(RenderJsTestCase):
         out = self.js(f"""
           __el_for("carto-data").textContent = JSON.stringify({self.carto_js()});
           __el_for("carto-history").textContent = "[]";
+          {self.fige_horloge()}
           await boot();
           console.log(JSON.stringify({{ cls: __el.className, apis: S.carto.apis.length,
                                         history: S.history.length }}));
@@ -294,6 +310,7 @@ class TestDonneesEmbarquees(RenderJsTestCase):
         # Cas normal du tout premier passage : aucun bloc "carto-history".
         out = self.js(f"""
           __el_for("carto-data").textContent = JSON.stringify({self.carto_js()});
+          {self.fige_horloge()}
           await boot();
           console.log(JSON.stringify({{ cls: __el.className, history: S.history }}));
         """)
