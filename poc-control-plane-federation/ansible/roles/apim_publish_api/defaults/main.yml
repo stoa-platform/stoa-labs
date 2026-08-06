@@ -49,9 +49,15 @@ apim_pub_manifest_allowed: ["apim_api"]
 # injecté s'exécute PENDANT cette tâche, sur ansible 2.18 ET 2.19). La liste
 # blanche ci-dessus ne borne QUE les clés TOP-LEVEL du manifeste, jamais leur
 # CONTENU — la fermeture RÉELLE contre l'exécution est team-publish.sh §4
-# (hors ligne, avant tout ansible-playbook) et, en seconde couche,
-# manifest-guard.yml (scan-manifest-jinja.sh, texte brut, avant
-# include_vars). Un appelant qui applique un manifeste écrit par un TIERS
+# (hors ligne, avant tout ansible-playbook) SEULE : une seconde couche
+# côté rôle (manifest-guard.yml, scan texte brut) a été tentée puis
+# RETIRÉE (panel Fix round 3, revert 3b14c4d) — contournable via les
+# échappements YAML (hex/unicode/backslash-saut-de-ligne : "{{" absent du
+# texte brut mais reconstitué par yaml.safe_load/include_vars) ET cassait
+# un appelant légitime (clients/_example, forme historique
+# "{{ playbook_dir }}/../apis/…", hors de son unique fragment blanchi).
+# Voir resolve-env.yml pour le détail et le handoff. Un appelant qui
+# applique un manifeste écrit par un TIERS
 # non revu par la plateforme (team-publish.sh, Task 7) DOIT quand même poser
 # cette variable — extra-var (précédence 22), bat le manifeste
 # (include_vars, précédence 18), même mécanique que apim_ss_team pour
