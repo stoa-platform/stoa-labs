@@ -11,11 +11,15 @@
 #
 # JOBS liste les jobs du palier posés par CE script, un nom par mot. Le XML de
 # chacun est dérivé du nom (convention de setup-provision-jobs.sh) :
-#   team-request → ci/jenkins/team-request.job.xml
-#   app-request  → ci/jenkins/app-request.job.xml
-#   team-apply   → ci/jenkins/team-apply.job.xml
-#   api-request  → ci/jenkins/api-request.job.xml (Task 5, palier 3 — la porte
-#                  du PRODUCTEUR, pendant app-request côté consommateur)
+#   team-request  → ci/jenkins/team-request.job.xml
+#   app-request   → ci/jenkins/app-request.job.xml
+#   team-apply    → ci/jenkins/team-apply.job.xml
+#   api-request   → ci/jenkins/api-request.job.xml (Task 5, palier 3 — la porte
+#                   du PRODUCTEUR, pendant app-request côté consommateur)
+#   team-publish  → ci/jenkins/team-publish.job.xml (Task 7, palier 3 — l'APPLY
+#                   post-merge d'api-request ; JOB UNIQUE partagé par TOUS les
+#                   dépôts d'équipe, l'équipe autorisée étant dérivée du dépôt
+#                   déclencheur par topologie — pas de placeholder ici)
 #
 # ── LISTES DYNAMIQUES (Task 3, palier 3) ─────────────────────────────────────
 # Les XML de jobs à listes déroulantes portent des PLACEHOLDERS
@@ -60,7 +64,7 @@ cd "$(dirname "$0")/.."
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 JENKINS_UI="${JENKINS_UI:-http://localhost:18080}"
-JOBS="${JOBS:-team-request app-request team-apply api-request}"
+JOBS="${JOBS:-team-request app-request team-apply api-request team-publish}"
 ENVN="${ENVN:-dev}"
 
 ok(){   printf '  \033[32m✅\033[0m %s\n' "$*"; }
