@@ -168,28 +168,43 @@ try {
   // idempotent sous SON marqueur, sans que l'un n'écrase l'autre.
   // Checkout PROPRE (pas une hypothèse de workspace hérité du try) : ce bloc
   // est un `node {}` SÉPARÉ, potentiellement un exécuteur différent.
-  if (publishResult != 'SUCCESS') {
-    node {
-      git url: 'http://gitea:3000/ci/stoa-labs.git', branch: 'main'
-      withCredentials([string(credentialsId: 'gitea-provision-token', variable: 'GITEA_TOKEN')]) {
-        withEnv(["WEBHOOK_REPO=${env.WEBHOOK_REPO ?: ''}", "PR_NUMBER=${env.PR_NUMBER ?: ''}",
-                 "FAIL_MSG=${failMsg}"]) {
-          dir('poc-control-plane-federation') {
-            sh '''
-              set +x
-              if [ -z "$WEBHOOK_REPO" ] || [ -z "$PR_NUMBER" ]; then
-                echo "commentaire de secours impossible (WEBHOOK_REPO/PR_NUMBER absents)"
-                exit 0
-              fi
-              BODYFILE="$(mktemp)"
+  //
+  // [Minor, panel Fix round 2] TOURNE DÉSORMAIS DANS LES DEUX CAS (succès
+  // COMME échec) -- avant ce fix, seul le cas d'échec postait/mettait à
+  // jour ce commentaire (`if (publishResult != 'SUCCESS')`) : un run qui
+  // RÉUSSIT après un run précédent en échec sur la MÊME PR laissait le ⚠
+  // du run précédent affiché À CÔTÉ du ✅ du script -- deux verdicts
+  // contradictoires sur la même PR. gitea-pr-comment.sh n'a pas de mode
+  // suppression (PATCH/POST seulement) : le remède est de mettre À JOUR ce
+  // même commentaire (même marqueur) avec un texte NEUTRE sur le chemin
+  // succès plutôt que de le laisser muet. Contre-épreuve : échec puis
+  // succès sur la même PR -> un seul verdict cohérent (le ⚠ devient un
+  // texte neutre, le ✅ du script reste la seule alerte visible).
+  node {
+    git url: 'http://gitea:3000/ci/stoa-labs.git', branch: 'main'
+    withCredentials([string(credentialsId: 'gitea-provision-token', variable: 'GITEA_TOKEN')]) {
+      withEnv(["WEBHOOK_REPO=${env.WEBHOOK_REPO ?: ''}", "PR_NUMBER=${env.PR_NUMBER ?: ''}",
+               "FAIL_MSG=${failMsg}", "PUBLISH_RESULT=${publishResult}"]) {
+        dir('poc-control-plane-federation') {
+          sh '''
+            set +x
+            if [ -z "$WEBHOOK_REPO" ] || [ -z "$PR_NUMBER" ]; then
+              echo "commentaire de secours impossible (WEBHOOK_REPO/PR_NUMBER absents)"
+              exit 0
+            fi
+            BODYFILE="$(mktemp)"
+            if [ "$PUBLISH_RESULT" = "SUCCESS" ]; then
+              printf '✅ team-publish (statut build) : build termine sans erreur -- voir le commentaire team-publish ci-dessus pour le resultat de la publication.\n' \
+                > "$BODYFILE"
+            else
               printf '⚠️ team-publish (statut build) : le build a echoue avant ou pendant la publication (%s). Si la garde d identite a refuse ou si la pause a ete abandonnee, RIEN n a ete publie -- voir le commentaire team-publish ci-dessus si le script a tourne.\n' \
                 "${FAIL_MSG:-voir le build Jenkins}" > "$BODYFILE"
-              GIT_REPO="$WEBHOOK_REPO" PR_NUMBER="$PR_NUMBER" COMMENT_MARKER="&lt;!-- team-publish-build --&gt;" \
-                COMMENT_BODY_FILE="$BODYFILE" bash scripts/lib/gitea-pr-comment.sh \
-                || echo "AVERTISSEMENT: commentaire de secours (finally) en echec"
-              rm -f "$BODYFILE"
-            '''
-          }
+            fi
+            GIT_REPO="$WEBHOOK_REPO" PR_NUMBER="$PR_NUMBER" COMMENT_MARKER="&lt;!-- team-publish-build --&gt;" \
+              COMMENT_BODY_FILE="$BODYFILE" bash scripts/lib/gitea-pr-comment.sh \
+              || echo "AVERTISSEMENT: commentaire de secours (finally) en echec"
+            rm -f "$BODYFILE"
+          '''
         }
       }
     }
