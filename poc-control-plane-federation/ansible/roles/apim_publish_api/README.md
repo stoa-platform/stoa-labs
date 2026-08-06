@@ -88,7 +88,7 @@ comportement produit à la prochaine montée de version :
 | policies **CLONÉES** (ids nouveaux), record né **inactif** | relu et asserté → `VERSION_CLONE_UNEXPECTED` |
 | duplication permise **depuis la DERNIÈRE version seulement**, et `GET /apis` n'expose aucun marqueur de « dernière » (le plus grand numéro n'est PAS la dernière : lignée `accounts-read` du lab, 1.0.0 minée depuis 1.0.1) | **plusieurs versions candidates ⇒ refus `VERSION_BASE_AMBIGUE`** avec la liste, jamais de devinette |
 
-Échecs nommés : `TEAM_IS_SYSTEM_PROFILE`, `VERSION_BASE_FOREIGN`,
+Échecs nommés : `API_OWNER_MISMATCH`, `TEAM_IS_SYSTEM_PROFILE`, `VERSION_BASE_FOREIGN`,
 `VERSION_RESUME_FOREIGN`, `VERSION_BASE_AMBIGUE`, `VERSION_CREATE_FAILED`,
 `VERSION_UNCONFIRMED`, `VERSION_CLONE_UNEXPECTED`, `VERSION_SUBS_SHAPE_UNKNOWN`,
 `VERSION_SUBS_NOT_RETAINED`, `VERSION_MINTED_ACTIVE`, `VERSION_INCOMPLETE`.
@@ -144,7 +144,7 @@ reprend tout seul, comme avant.
 donc rien à couper (publier une nouvelle version EST la voie 0-coupure). L'exemption
 ne tient pas sur un booléen : l'état est **relu sur la gateway** avant le PUT
 (`VERSION_MINTED_ACTIVE` sinon). Preuve rejouable, hors ligne :
-`scripts/test-publish-version.sh` (54/54 contre le mock, témoins AVANT inclus).
+`scripts/test-publish-version.sh` (62/62 contre le mock, témoins AVANT inclus).
 
 > **Deux voies de naissance d'une version coexistent, une seule est prouvée.**
 > Le moteur Go (`labctl/internal/adapter/webmethods/publish.go`, `latestByName`),
@@ -154,11 +154,15 @@ ne tient pas sur un booléen : l'état est **relu sur la gateway** avant le PUT
 > « Versioning is allowed only from latest version ». Dette marquée, non
 > réécrite (hors périmètre) : voir le commentaire au-dessus de `latestByName`.
 
-> **Résiduel hérité** : la recherche `name`+`version` de `main.yml:61-67` reste
-> **globale**, sans filtre d'équipe. Le chemin nouvelle version, lui, ne l'est
-> plus : `VERSION_BASE_FOREIGN` exige que toute la lignée appartienne à
-> l'équipe demandeuse. Le chevillage du chemin `name`+`version` (une équipe qui
-> ré-applique une version portant le nom d'autrui) reste ouvert.
+> **Le chemin `name`+`version` est GARDÉ** (revue finale). La recherche de
+> `main.yml:61-67` reste globale — c'est le produit qui n'offre pas de filtre —
+> mais l'API trouvée doit désormais appartenir à l'équipe demandeuse
+> (`API_OWNER_MISMATCH`), garde évaluée **avant** le moindre geste d'écriture
+> (update, activation, approbateurs, scoping d'équipe). Sans elle, une équipe
+> onboardée capturait une API PLATEFORME — `provisioning`, mesurée ACTIVE et en
+> `Default` — par un simple `ACTION=create` avec le bon nom et la bonne version.
+> `Default` ne vaut pas appartenance : une API sans équipe réelle n'est pas
+> réclamable par la chaîne, un administrateur doit l'assigner d'abord.
 
 ## Port en Deny-by-Default : allow-list (IS-admin, opt-in) — prouvé live
 

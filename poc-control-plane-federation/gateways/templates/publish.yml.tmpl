@@ -27,8 +27,14 @@
 # team-name + syntax-check) reste VERT sur un tel manifeste, mesuré en direct
 # (per_env.dev.inbound.issuer basculé vers un hôte arbitraire -> toujours
 # MANIFEST_KEYS_OK). Chevillage du CONTENU d'apim_api à ces valeurs POSÉES
-# À LA GÉNÉRATION relève de l'aval (T6/T7), pas de ce gabarit ni des gardes
-# actuelles — tolérance visible, pas une promesse.
+# À LA GÉNÉRATION relève de l'aval, pas de ce gabarit — tolérance visible, pas
+# une promesse. CE QUI EST, LUI, GARDÉ À L'APPLY (revue finale, ne plus le
+# renvoyer à une tâche future) : l'APPARTENANCE. Le rôle apim_publish_api refuse
+# de toucher une API qui n'appartient pas à l'équipe demandeuse — sur les trois
+# chemins (API_OWNER_MISMATCH pour un name+version existant,
+# VERSION_BASE_FOREIGN pour un mint, VERSION_RESUME_FOREIGN pour une reprise),
+# AVANT toute écriture. Le reste du contenu d'apim_api (issuer/jwks/alias),
+# lui, n'est toujours pas chevillé aux valeurs posées ici.
 apim_api:
   name: "__API_NAME__"
   version: "__API_VERSION__"
