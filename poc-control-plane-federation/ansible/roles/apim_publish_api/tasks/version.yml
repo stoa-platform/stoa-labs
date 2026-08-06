@@ -63,6 +63,29 @@
     # supplémentaire), et n'accepte de miner que sur une base UNIQUE.
     pub_ver_siblings: "{{ pub_ver_sibling_items | map(attribute='api') | list }}"
 
+# ===== 0a. À QUI est cette lignée ? — calculé UNE fois, pour TOUS les chemins =
+# Ces faits vivent au niveau du FICHIER, pas dans un bloc : le round 1 les avait
+# enfermés dans le bloc du mint (`pub_ver_needed`, apim_api_id VIDE), si bien que
+# le chemin de REPRISE — qui s'exécute quand apim_api_id est TROUVÉ par le
+# matching name+version GLOBAL de main.yml — ne les évaluait jamais. Mesuré en
+# revue : on pouvait pousser SA spec sur la version à moitié née d'une AUTRE
+# équipe, puis l'activer, en vert. Une garde n'est une garde que si TOUS les
+# chemins qui écrivent la traversent.
+- name: "Version : appartenance de chaque version de la lignée (niveau enveloppe)"
+  ansible.builtin.set_fact:
+    pub_ver_owners: >-
+      {{ dict(pub_ver_sibling_items | map(attribute='api.apiVersion') | list
+              | zip(pub_ver_sibling_items | map(attribute='teams', default=[])
+                    | map('map', attribute='name') | map('list') | list)) }}
+
+- name: "Version : versions dont l'appartenance à l'équipe demandeuse n'est PAS confirmée"
+  ansible.builtin.set_fact:
+    # `teams` absente ⇒ liste vide ⇒ NON confirmée (fail-closed sur la forme,
+    # sans garde séparée) ; équipe demandeuse vide ⇒ tout est non confirmé.
+    pub_ver_foreign: >-
+      {{ pub_ver_owners | dict2items | rejectattr('value', 'contains', pub_team_name)
+         | map(attribute='key') | list }}
+
 # ===== 0. Le mint d'un run PRÉCÉDENT s'est-il arrêté en chemin ? =============
 # Le mint et le re-import de la spec sont DEUX appels : entre les deux, la
 # version existe avec la définition CLONÉE de la base, et `pub_version_minted`
@@ -79,15 +102,94 @@
 #     sa spec CORRECTE : le reprendre est légitime, et ce chemin-là ne change pas ;
 #   - `update` n'est pas demandé — sinon le re-import repousse la spec de toute
 #     façon avant l'activation, le danger n'existe pas.
-- name: "Version : une reprise est-elle à examiner ? (figé AVANT toute écriture)"
+# Les DEUX portes du fichier sont figées ICI, ensemble et avant toute écriture :
+# elles sont mutuellement exclusives (`apim_api_id` vide ou non) et les gardes
+# communes ci-dessous ont besoin des deux pour savoir « sommes-nous sur un
+# chemin qui écrit une version ? ».
+- name: "Version : les deux portes du fichier (figées AVANT toute écriture)"
   ansible.builtin.set_fact:
     pub_ver_resume_check: >-
       {{ (apim_api_id | length > 0) and (pub_ver_siblings | length >= 2)
          and not (apim_api['update'] | default(false) | bool) }}
+    pub_ver_needed: "{{ (apim_api_id | length == 0) and (pub_ver_siblings | length > 0) }}"
+
+- name: "Version : ce run est-il sur un chemin qui écrit une version ?"
+  ansible.builtin.set_fact:
+    pub_ver_any_path: "{{ (pub_ver_needed | bool) or (pub_ver_resume_check | bool) }}"
+
+# TOLÉRANCE VISIBLE (doctrine du palier). Quand la garde d'appartenance est
+# levée, la capture cross-lignée redevient possible — et la seule trace en
+# serait, sinon, un `skipping:` muet au milieu du log. Ce message la nomme.
+# NB : ce n'est PAS le cas « feature Teams éteinte + apim_pub_require_team=false »
+# tout seul — celui-là meurt bruyamment plus haut (TEAMS_DEROGATION_STALE si la
+# feature est active, teams-feature.yml). Ici on parle du knob de CE fichier.
+- name: "Version : AVERTISSEMENT — appartenance de la lignée NON vérifiée"
+  ansible.builtin.debug:
+    msg: >-
+      ⚠ VERSION_FOREIGN_UNCHECKED : apim_pub_version_require_team_match=false —
+      l'appartenance de la lignée '{{ apim_api.name }}' n'est PAS vérifiée
+      (équipe demandeuse : '{{ pub_team_name | default('(aucune)', true) }}',
+      feature Teams : {{ apim_teams_enabled | default(false) }} ; appartenance
+      relue : {{ pub_ver_owners }}). Une version peut donc être minée — ou
+      reprise — dans la lignée d'une AUTRE équipe, avec transport de ses
+      abonnés. Acceptable en lab sans feature Teams, JAMAIS chez un client.
+  when: >-
+    (pub_ver_any_path | bool)
+    and not (apim_pub_version_require_team_match | default(true) | bool)
+
+# ===== 0a-bis. L'équipe demandeuse doit être une VRAIE équipe ================
+# `Administrators` est porté par TOUTE API (mesuré : une API importée naît
+# [Administrators, Default], et l'assignation d'équipe conserve Administrators).
+# Un profil SYSTÈME passé en équipe demandeuse obtenait donc un
+# VERSION_BASE_OWNED **affirmatif** sur n'importe quelle lignée — la garde
+# d'appartenance s'ouvrait avec un nom, sans rien voler. Elle ne confirme
+# désormais que des équipes RÉELLES.
+- name: "Version : FAIL-CLOSED — l'équipe demandeuse ne peut pas être un profil SYSTÈME"
+  when: >-
+    (pub_ver_any_path | bool)
+    and (apim_pub_version_require_team_match | default(true) | bool)
+  ansible.builtin.assert:
+    that: "pub_team_name not in apim_pub_system_profiles"
+    fail_msg: >-
+      TEAM_IS_SYSTEM_PROFILE : '{{ pub_team_name }}' est un profil SYSTÈME
+      ({{ apim_pub_system_profiles }}), pas une équipe. Ces profils sont portés
+      par TOUTES les APIs — s'en servir comme équipe demandeuse ferait confirmer
+      l'appartenance de n'importe quelle lignée, y compris celle d'une autre
+      équipe, et permettrait d'y miner une version avec transport de ses abonnés.
+      Publier au nom d'une équipe réelle (-e apim_ss_team=<équipe>).
+    success_msg: >-
+      TEAM_IS_REAL : '{{ pub_team_name }}' n'est pas un profil système.
 
 - name: "Version : version deja presente dans une lignee multi-versions"
   when: "pub_ver_resume_check | bool"
   block:
+
+    # Demander une reprise, c'est demander à POUSSER une spec sur un record
+    # existant puis à l'ACTIVER : exactement les gestes que la garde
+    # d'appartenance protège sur le chemin du mint. Même confirmation, même
+    # politique fail-closed — sinon la reprise devient la porte de service de
+    # VERSION_BASE_FOREIGN (défaut du round 1, mesuré en revue).
+    - name: "Version : FAIL-CLOSED — reprendre le travail d'une AUTRE équipe"
+      when: >-
+        (apim_pub_resume_version | default(false) | bool)
+        and (apim_pub_version_require_team_match | default(true) | bool)
+      ansible.builtin.assert:
+        that:
+          - "pub_team_name | length > 0"
+          - "apim_teams_enabled | default(false) | bool"
+          - "pub_ver_foreign | length == 0"
+        fail_msg: >-
+          VERSION_RESUME_FOREIGN : refus de reprendre '{{ apim_api.name }}'
+          v{{ apim_api.version }} — l'appartenance de la lignée à l'équipe
+          demandeuse n'est pas CONFIRMÉE. Équipe demandeuse :
+          '{{ pub_team_name | default('(aucune)', true) }}' ; feature Teams :
+          {{ apim_teams_enabled | default(false) }} ; appartenance relue :
+          {{ pub_ver_owners }} ; non confirmées : {{ pub_ver_foreign }}.
+          Reprendre ici pousserait VOTRE contrat sur la version d'une autre
+          équipe, puis l'activerait : ses consommateurs recevraient votre spec.
+        success_msg: >-
+          VERSION_RESUME_OWNED : lignée '{{ apim_api.name }}' confirmée à
+          '{{ pub_team_name }}' — reprise autorisée.
 
     - name: "Version : état d'activation du record déjà présent"
       ansible.builtin.uri:
@@ -124,18 +226,15 @@
         pub_version_minted: true
       when: "not (pub_ver_existing_get.json.apiResponse.api.isActive | default(false))"
 
-# ⚠ FAIT FIGÉ, PAS UNE EXPRESSION VIVE. Un `when` — sur une tâche, sur un bloc,
-# ou porté par l'import_tasks de main.yml — est RÉÉVALUÉ à CHAQUE tâche qu'il
-# couvre. Or ce fichier POSE `apim_api_id` en cours de route (section 4) : une
-# condition qui lirait `apim_api_id | length == 0` deviendrait fausse juste
-# après, et TOUT ce qui suit serait skippé EN SILENCE — le mint réussirait, les
-# asserts M2/M3 ne tourneraient jamais, et le run serait vert. C'est
-# exactement ce qui est arrivé à la première version de ce fichier, détecté
-# parce que les contre-épreuves D1/D4 (gardes injectées) refusaient de rougir.
-- name: "Version : duplication à envisager ? (figé AVANT toute écriture)"
-  ansible.builtin.set_fact:
-    pub_ver_needed: "{{ (apim_api_id | length == 0) and (pub_ver_siblings | length > 0) }}"
-
+# ⚠ `pub_ver_needed` est un FAIT FIGÉ (posé plus haut), PAS une expression vive.
+# Un `when` — sur une tâche, sur un bloc, ou porté par l'import_tasks de
+# main.yml — est RÉÉVALUÉ à CHAQUE tâche qu'il couvre. Or ce fichier POSE
+# `apim_api_id` en cours de route (section 4) : une condition qui lirait
+# `apim_api_id | length == 0` deviendrait fausse juste après, et TOUT ce qui
+# suit serait skippé EN SILENCE — le mint réussirait, les asserts M2/M3 ne
+# tourneraient jamais, et le run serait vert. C'est exactement ce qui est arrivé
+# à la première version de ce fichier, détecté parce que les contre-épreuves
+# D1/D4 (gardes injectées) refusaient de rougir.
 - name: "Version : le nom existe deja sous une autre version — duplication produit"
   when: "pub_ver_needed | bool"
   block:
@@ -155,21 +254,9 @@
     # ne porte pas `teams`, ou qui vit en `Default` (donc lisible par tous),
     # n'est pas confirmée — donc refusée. Ne pas savoir n'est pas une
     # autorisation.
-    - name: "Version : appartenance de chaque version de la lignée (niveau enveloppe)"
-      ansible.builtin.set_fact:
-        pub_ver_owners: >-
-          {{ dict(pub_ver_sibling_items | map(attribute='api.apiVersion') | list
-                  | zip(pub_ver_sibling_items | map(attribute='teams', default=[])
-                        | map('map', attribute='name') | map('list') | list)) }}
-
-    - name: "Version : versions dont l'appartenance à l'équipe demandeuse n'est PAS confirmée"
-      ansible.builtin.set_fact:
-        # `teams` absente ⇒ liste vide ⇒ NON confirmée (fail-closed sur la forme,
-        # sans garde séparée) ; équipe demandeuse vide ⇒ tout est non confirmé.
-        pub_ver_foreign: >-
-          {{ pub_ver_owners | dict2items | rejectattr('value', 'contains', pub_team_name)
-             | map(attribute='key') | list }}
-
+    # `pub_ver_owners` / `pub_ver_foreign` sont calculés UNE fois en tête de
+    # fichier : le chemin du mint et celui de la reprise doivent confirmer
+    # EXACTEMENT la même chose, à partir de la même lecture.
     - name: "Version : FAIL-CLOSED — miner une nouvelle version dans la lignée d'autrui"
       when: "apim_pub_version_require_team_match | default(true) | bool"
       ansible.builtin.assert:
