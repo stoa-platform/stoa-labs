@@ -228,27 +228,69 @@ jwait_end() {
   printf '%s' "$st"
 }
 
-# jdrain <job> — abandonne les pauses ORPHELINES du job et attend que SA file
-# soit vide. Sans quoi la preuve suivante ne démarre JAMAIS : les jobs de cette
-# chaîne portent DisableConcurrentBuildsJobProperty, et un build resté en
-# pause (run précédent interrompu, webhook rejoué) bloque tout build suivant,
-# qui reste EN FILE — wfapi rend alors un statut VIDE, et l'échec ne
-# ressemblerait ni à un problème de webhook (HTTP 200) ni à un problème de job.
-# Cause constatée en direct sur ce lab (deux builds en pause depuis 10 h et
-# 12 jours bloquaient toute la file).
-# SÛRETÉ MULTI-AGENTS (fix round 1, Minor 2) — ce lab est PARTAGÉ. Une pause
-# en cours peut très bien être la demande d'approbation 4-yeux LÉGITIME d'un
-# run concurrent : l'abandonner détruirait le travail d'autrui. On n'abandonne
-# donc QUE les pauses dont le `displayName` du build NOMME un objet du
-# périmètre jetable de CE harnais (le job pose lui-même
-# `currentBuild.displayName = "publish <dépôt> (PR #n)"`, et notre dépôt
-# d'équipe jetable y apparaît en clair).
-# Une pause ÉTRANGÈRE n'est jamais touchée : elle est signalée BRUYAMMENT et
-# jdrain rend un code non nul, pour que la preuve appelante échoue avec une
-# cause NOMMÉE plutôt que de trépigner en file jusqu'au délai. Chaque abandon
-# est loggué avec son numéro de build ET son displayName — jamais silencieux.
+# ── APPARTENANCE PROUVÉE DES BUILDS (fix round 2) ───────────────────────────
+# MY_BUILDS : les numéros de build que CE RUN a fait naître, et dont
+# l'appartenance a été PROUVÉE (cf. claim_build). Déclaré ICI, avant le trap,
+# pour que cleanup_exit ne casse jamais sous `set -u`.
+#
+# POURQUOI un numéro de build et non plus un nom de périmètre (le fix du round
+# précédent, insuffisant) : `probe-p3/apis` est le nom du PÉRIMÈTRE du harnais,
+# pas de son EXÉCUTION. Deux runs CONCURRENTS de CETTE MÊME matrice produisent
+# exactement le même `displayName` — le drain de l'un aurait donc abandonné la
+# pause 4-yeux de l'autre, en annonçant « pause orpheline de CE harnais ».
+# C'était une revendication d'appartenance FAUSSE : précisément la classe de
+# défaut que ce palier traque partout ailleurs. Le numéro de build, lui, est
+# unique par job et connu de ce run seul.
+MY_BUILDS=""
+is_mine() { case " $MY_BUILDS " in *" $1 "*) return 0;; *) return 1;; esac; }
+
+# claim_build <job> <n> <motif> — n'enregistre <n> comme NÔTRE que si le log du
+# build PORTE <motif>, un jeton propre à ce run (le nom d'API horodaté, présent
+# dans la branche que le webhook transporte). Deux runs concurrents de cette
+# matrice ont des RUN_TAG différents : l'appartenance est donc DÉMONTRÉE, pas
+# supposée. Effet de bord voulu : si le créneau de build a été pris par un run
+# concurrent, on ne le revendique pas — et on n'ira pas répondre à SA pause
+# avec NOS identifiants.
+claim_build() {
+  local job="$1" n="$2" motif="$3"
+  [ -n "$n" ] || return 1
+  curl -s "$JENKINS_UI/job/$job/$n/consoleText" 2>/dev/null | grep -qF -- "$motif" || return 1
+  is_mine "$n" || MY_BUILDS="${MY_BUILDS:+$MY_BUILDS }$n"
+  return 0
+}
+
+# abort_pause <job> <n> — abandonne UNE pause. Appelée uniquement pour un build
+# de MY_BUILDS (jdrain) ou par le filet de secours du trap.
+abort_pause() {
+  local job="$1" n="$2" iid
+  jcrumb || return 1
+  iid=$(curl -s "$JENKINS_UI/job/$job/$n/wfapi/pendingInputActions" | python3 -c 'import json,sys;print(json.load(sys.stdin)[0]["id"])' 2>/dev/null)
+  [ -n "$iid" ] || return 1
+  curl -s -b "$JCK" -H "$JF: $JC" -X POST "$JENKINS_UI/job/$job/$n/input/$iid/abort" -o /dev/null
+}
+
+# jdrain <job> — libère la file de <job> pour que la preuve suivante puisse
+# démarrer. Les jobs de cette chaîne portent DisableConcurrentBuildsJobProperty :
+# un build resté en pause bloque tout build suivant, qui reste EN FILE — wfapi
+# rend alors un statut VIDE, et l'échec ne ressemble ni à un problème de webhook
+# (HTTP 200) ni à un problème de job.
+#
+# N'ABANDONNE QUE LES PAUSES DE MY_BUILDS — c'est-à-dire celles dont CE run a
+# PROUVÉ qu'il les a fait naître. Toute autre pause est LAISSÉE INTACTE, nommée
+# (numéro + displayName) sur stderr, et fait rendre un code non nul : la preuve
+# appelante échoue alors avec une cause NOMMÉE, au lieu de piétiner
+# l'approbation de quelqu'un d'autre puis de s'en attribuer le mérite.
+#
+# Conséquence assumée : au tout premier appel (avant le merge de la preuve 5),
+# MY_BUILDS est VIDE — ce run n'a encore rien déclenché, donc AUCUNE pause en
+# cours ne peut lui appartenir. jdrain n'y fait alors qu'une chose : vérifier
+# que la file est libre. Une pause laissée par un run ANTÉRIEUR de cette même
+# matrice n'est plus nettoyée automatiquement (elle ne serait pas prouvable) :
+# elle est signalée, et c'est à son propriétaire — ou à un opérateur — de la
+# solder. En contrepartie, ce run ne LAISSE plus d'orpheline derrière lui : le
+# trap solde les siennes (cleanup_exit).
 jdrain() {
-  local job="$1" scope="$2" drained=0 foreign="" info n dn st iid
+  local job="$1" drained=0 foreign="" info n dn st
   jcrumb || return 0
   for _ in $(seq 1 15); do
     # Les builds NON TERMINÉS de ce job (building=true), avec leur displayName :
@@ -274,25 +316,20 @@ print(sum(1 for i in json.load(sys.stdin).get('items',[]) if (i.get('task') or {
       [ -n "$n" ] || continue
       st=$(jstatus "$job" "$n")
       [ "$st" = PAUSED_PENDING_INPUT ] || continue
-      case "$dn" in
-        *"$scope"*)
-          iid=$(curl -s "$JENKINS_UI/job/$job/$n/wfapi/pendingInputActions" | python3 -c 'import json,sys;print(json.load(sys.stdin)[0]["id"])' 2>/dev/null)
-          if [ -n "$iid" ]; then
-            curl -s -b "$JCK" -H "$JF: $JC" -X POST "$JENKINS_UI/job/$job/$n/input/$iid/abort" -o /dev/null
-            drained=$((drained + 1))
-            echo "   ($job #$n « $dn » : pause orpheline de CE harnais — abandonnée)"
-          fi
-          ;;
-        *)
-          foreign="${foreign:+$foreign, }#$n « $dn »"
-          ;;
-      esac
+      if is_mine "$n"; then
+        if abort_pause "$job" "$n"; then
+          drained=$((drained + 1))
+          echo "   ($job #$n « $dn » : pause déclenchée par CE run (build enregistré comme nôtre) — abandonnée)"
+        fi
+      else
+        foreign="${foreign:+$foreign, }#$n « $dn »"
+      fi
     done <<<"$info"
     [ -n "$foreign" ] && break
     sleep 3
   done
   if [ -n "$foreign" ]; then
-    echo "   ($job : pause(s) ÉTRANGÈRE(S) au périmètre '$scope' LAISSÉE(S) INTACTE(S) — $foreign. Ce lab est partagé : ce sont peut-être des approbations légitimes d'un run concurrent. La file de ce job restera bloquée tant qu'elles ne sont pas répondues par leur propriétaire.)" >&2
+    echo "   ($job : pause(s) en attente dont CE run ne peut PAS prouver qu'elles sont siennes — LAISSÉE(S) INTACTE(S) : $foreign. Numéros de build de ce run : [${MY_BUILDS:-aucun}]. Lab PARTAGÉ : il peut s'agir de l'approbation 4-yeux d'un run concurrent, ou du résidu d'un run antérieur. La file de ce job reste bloquée tant que son propriétaire (ou un opérateur) ne l'a pas soldée — ce harnais ne la touchera pas.)" >&2
     return 1
   fi
   return 0
@@ -398,6 +435,15 @@ teardown() {
 
 cleanup_exit() {
   if [ -n "$SAMPLER_PID" ]; then kill "$SAMPLER_PID" 2>/dev/null; wait "$SAMPLER_PID" 2>/dev/null; fi
+  # Ce run SOLDE SES PROPRES pauses — et seulement les siennes. C'est la
+  # contrepartie de jdrain, qui ne nettoie plus les résidus d'autrui : pour que
+  # cette rigueur ne rende pas la matrice non rejouable, il faut que ce run ne
+  # LAISSE aucune orpheline derrière lui, y compris s'il meurt en route.
+  for _b in ${MY_BUILDS:-}; do
+    if [ "$(jstatus "$JOB" "$_b")" = PAUSED_PENDING_INPUT ]; then
+      abort_pause "$JOB" "$_b" && echo "   ($JOB #$_b : pause de CE run soldée à la sortie — aucune orpheline laissée derrière)" >&2
+    fi
+  done
   [ -n "${MOCK_PID:-}" ] && kill "$MOCK_PID" 2>/dev/null
   teardown >/dev/null 2>&1
   # Restauration d'une éventuelle mutation de la contre-épreuve rouge
@@ -887,17 +933,22 @@ fi
 # ─────────────────────────────────────────────────────────────────────────────
 echo
 echo "== 5. merge réel (oscar) -> webhook Gitea -> job $JOB -> pause -> apply =="
-# Périmètre du drain = NOTRE dépôt d'équipe jetable : le job nomme le dépôt
-# déclencheur dans son displayName. Une pause d'un autre run reste intacte
-# (et DRAIN5 le dit) — cf. jdrain.
-DRAIN5=0; jdrain "$JOB" "$TEAM_REPO" || DRAIN5=1
+# Au premier appel, MY_BUILDS est vide : jdrain ne fait donc que VÉRIFIER que
+# la file est libre, et refuse de toucher une pause qu'il ne peut pas prouver
+# sienne (DRAIN5 le dit, et le diagnostic de la preuve le relaie).
+DRAIN5=0; jdrain "$JOB" || DRAIN5=1
 N5=$(jnext "$JOB")
 MERGE5=$(merge_as_oscar "$TEAM_REPO" "${PR_V1:-0}")
 MERGED_BY5=$(gapi "$GITEA_URL/api/v1/repos/$TEAM_REPO/pulls/${PR_V1:-0}" \
   | python3 -c "import json,sys; d=json.load(sys.stdin); print((d.get('merged_by') or {}).get('login',''))" 2>/dev/null)
 ST5=$(jwait "$JOB" "${N5:-0}" 120)
-SUB5=""; ST5B=""
-if [ "$ST5" = PAUSED_PENDING_INPUT ]; then
+SUB5=""; ST5B=""; OWN5=non
+# On ne répond à une pause QU'APRÈS avoir prouvé qu'elle est la nôtre : son log
+# doit porter la branche de CE run (nom d'API horodaté). Sans cette preuve, le
+# créneau de build a pu être pris par un run concurrent — y injecter NOS
+# identifiants nominatifs serait répondre à l'approbation d'autrui.
+if [ "$ST5" = PAUSED_PENDING_INPUT ] && claim_build "$JOB" "$N5" "api/${API_NAME}-1.0.0"; then
+  OWN5=oui
   SUB5=$(answer_pause "$JOB" "$N5")
   ST5B=$(jwait_end "$JOB" "$N5" 300)
 fi
@@ -918,7 +969,7 @@ if [ "$MERGE5" = 200 ] && [ "$MERGED_BY5" = oscar ] && [ "$ST5" = PAUSED_PENDING
    && printf '%s' "$CB5" | grep -q '✅' && printf '%s' "$CB5" | grep -q "$API_NAME@1.0.0"; then
   ok "5. merge par oscar (HTTP $MERGE5) -> webhook Gitea -> build #$N5 en pause -> réponse API ($SUB5) -> MERGE_IDENTITY_OK -> $ST5B ; API $API_NAME@1.0.0 sur la gateway (id $API_V1), PR commentée ✅, mot de passe jamais loggé (0 occurrence)"
 else
-  bad "5. merge=$MERGE5 par='${MERGED_BY5:-?}' pause=$ST5 submit=$SUB5 fin=$ST5B api_id=${API_V1:-absente} fuite_mdp=${LEAK5:-?}$([ "$DRAIN5" = 1 ] && echo ' — CAUSE PROBABLE : une pause ÉTRANGÈRE bloque la file de ce job (laissée intacte à dessein, cf. le message ci-dessus)') — voir $JENKINS_UI/job/$JOB/${N5:-?}/console"
+  bad "5. merge=$MERGE5 par='${MERGED_BY5:-?}' pause=$ST5 build_prouvé_nôtre=$OWN5 submit=$SUB5 fin=$ST5B api_id=${API_V1:-absente} fuite_mdp=${LEAK5:-?}$([ "$DRAIN5" = 1 ] && echo ' — CAUSE PROBABLE : une pause ÉTRANGÈRE bloque la file de ce job (laissée intacte à dessein, cf. le message ci-dessus)') — voir $JENKINS_UI/job/$JOB/${N5:-?}/console"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -953,12 +1004,13 @@ ACTION=new-version TEAM="$TEAM" API_NAME="$API_NAME" API_BASE="$API_BASE_V1" NEW
   bash scripts/api-request.sh >"$TMP/p6req.log" 2>&1
 R6REQ=$?
 PR_V2=$(grep -oE 'PR #[0-9]+ ouverte' "$TMP/p6req.log" | grep -oE '[0-9]+' | head -1)
-DRAIN6=0; jdrain "$JOB" "$TEAM_REPO" || DRAIN6=1
+DRAIN6=0; jdrain "$JOB" || DRAIN6=1
 N6=$(jnext "$JOB")
 MERGE6=$(merge_as_oscar "$TEAM_REPO" "${PR_V2:-0}")
 ST6=$(jwait "$JOB" "${N6:-0}" 120)
-SUB6=""; ST6B=""
-if [ "$ST6" = PAUSED_PENDING_INPUT ]; then
+SUB6=""; ST6B=""; OWN6=non
+if [ "$ST6" = PAUSED_PENDING_INPUT ] && claim_build "$JOB" "$N6" "api/${API_NAME}-2.0.0"; then
+  OWN6=oui
   SUB6=$(answer_pause "$JOB" "$N6")
   ST6B=$(jwait_end "$JOB" "$N6" 300)
 fi
@@ -984,7 +1036,7 @@ if [ "$R6REQ" -eq 0 ] && [ "$MERGE6" = 200 ] && [ "$ST6B" = SUCCESS ] && [ -n "$
    && printf '%s' "$CB6" | grep -q VERSION_SUBS_RETAINED; then
   ok "6. v2 minée (id $API_V2) : policies [$POL_V2] DISJOINTES de la base [$POL_V1] (M2) ; souscriptions relues AVANT [$SUBS_V1_BEFORE] -> APRÈS v2 [$SUBS_V2_AFTER] et base [$SUBS_V1_AFTER] (M3, base jamais désabonnée) ; PR ✅ VERSION_CREATED + VERSION_CLONE_OK + VERSION_SUBS_RETAINED"
 else
-  bad "6. req=$R6REQ merge=$MERGE6 pause=$ST6 submit=$SUB6 fin=$ST6B v2=${API_V2:-absente} policies_disjointes=$DISJOINT subs_avant=[${SUBS_V1_BEFORE:-vide}] subs_v2=[${SUBS_V2_AFTER:-vide}] subs_base=[${SUBS_V1_AFTER:-vide}] commentaire=$(printf '%s' "$CB6" | head -c 160)$([ "$DRAIN6" = 1 ] && echo ' — CAUSE PROBABLE : une pause ÉTRANGÈRE bloque la file de ce job (laissée intacte à dessein)') — voir $JENKINS_UI/job/$JOB/${N6:-?}/console"
+  bad "6. req=$R6REQ merge=$MERGE6 pause=$ST6 build_prouvé_nôtre=$OWN6 submit=$SUB6 fin=$ST6B v2=${API_V2:-absente} policies_disjointes=$DISJOINT subs_avant=[${SUBS_V1_BEFORE:-vide}] subs_v2=[${SUBS_V2_AFTER:-vide}] subs_base=[${SUBS_V1_AFTER:-vide}] commentaire=$(printf '%s' "$CB6" | head -c 160)$([ "$DRAIN6" = 1 ] && echo ' — CAUSE PROBABLE : une pause ÉTRANGÈRE bloque la file de ce job (laissée intacte à dessein)') — voir $JENKINS_UI/job/$JOB/${N6:-?}/console"
 fi
 
 # fin de la fenêtre de sondage ps — ICI, avant toute lecture de ses résultats.
