@@ -47,6 +47,8 @@ BASE_COMMIT="${BASE_COMMIT:-1cc0351}"
 ROUND1_COMMIT="${ROUND1_COMMIT:-bd65c43}"
 # Tête du round 1 fix : témoin AVANT des défauts que CE round ferme.
 ROUND1V2_COMMIT="${ROUND1V2_COMMIT:-f5d64f8}"
+# Tête d'avant la revue FINALE : témoin AVANT de la capture exact-match.
+ROUND2_COMMIT="${ROUND2_COMMIT:-7b0d636}"
 # Équipe au nom de laquelle la chaîne publie (posée par le JOB en production,
 # `-e apim_ss_team` — jamais par le manifeste, cf. team-name.yml).
 TEAM="payments-team"
@@ -494,17 +496,40 @@ C_V2=$(http_code "$DP/${API_NAME}/2.0/v2only"); C_V1=$(http_code "$DP/${API_NAME
   && ok "F4 après reprise, la v2 sert la spec du MANIFESTE (/v2only $C_V2) et la base non ($C_V1)" \
   || ko "F4 spec non reprise : v2=$C_V2 v1=$C_V1"
 
-# F5 — non-régression du chemin voisin : un import initial interrompu AVANT
-# l'activate (lignée MONO-version, spec CORRECTE) doit toujours se reprendre
-# tout seul. La garde ne doit pas confondre les deux situations.
+# F5 — import initial interrompu AVANT l'activate (lignée MONO-version). Ce cas
+# a CHANGÉ avec la garde d'appartenance 0c, et c'est VOULU : l'API laissée
+# derrière vit en `Default`, donc elle n'appartient à AUCUNE équipe — c'est
+# l'état exact des APIs plateforme, `provisioning` comprise. La réclamer
+# automatiquement serait la capture même que 0c interdit. Le refus est nommé et
+# dit le geste (un administrateur assigne l'équipe).
 fresh_mock
-adm -o /dev/null -X POST "$BASE/apis" \
-  -F "file=@$TMP/v1.openapi.yaml;type=application/x-yaml" -F "type=openapi" \
-  -F "apiName=${API_NAME}" -F "apiVersion=1.0.0"
+import_v1_by_hand(){
+  adm -o /dev/null -X POST "$BASE/apis" \
+    -F "file=@$TMP/v1.openapi.yaml;type=application/x-yaml" -F "type=openapi" \
+    -F "apiName=${API_NAME}" -F "apiVersion=1.0.0"
+}
+import_v1_by_hand
 run_role "$REPO/ansible" "$TMP/v1.yml" >"$TMP/f5.log" 2>&1; RC=$?
+[ "$RC" -ne 0 ] && grep -q "API_OWNER_MISMATCH" "$TMP/f5.log" \
+  && ok "F5 import interrompu laissé en Default + équipe posée → API_OWNER_MISMATCH (une API sans équipe ne se réclame pas)" \
+  || ko "F5 attendu API_OWNER_MISMATCH, rc=$RC"
+
+# F5b — le MÊME état, mais par un appelant HISTORIQUE (aucune équipe demandeuse,
+# feature Teams éteinte) : la garde ne fire pas, la reprise se fait, et la
+# tolérance est VISIBLE. C'est la non-régression des appelants d'avant.
+adm -o /dev/null -H 'Content-Type: application/json' -X PUT \
+  "$BASE/configurations/extended" -d '{"enableTeamWork":"false"}'
+# Appel SANS -e apim_ss_team (donc sans équipe demandeuse) : c'est la forme des
+# appelants d'avant l'onboarding par équipe (apply-uac, clients/_example).
+ansible-playbook -i "$REPO/ansible/inventory.lab.ini" "$REPO/ansible/publish-api.yml" \
+  -e apim_ss_api_base="$BASE" -e apim_pub_require_team=false \
+  -e apim_ss_manifest="$TMP/v1.yml" >"$TMP/f5b.log" 2>&1; RC=$?
 [ "$RC" -eq 0 ] && [ "$(api_field "$(api_id 1.0.0)" isActive)" = "true" ] \
-  && ok "F5 import initial interrompu (mono-version) : repris et activé sans geste — chemin voisin intact" \
-  || ko "F5 la garde a bloqué un import initial interrompu (rc=$RC)"
+  && ok "F5b appelant historique (sans équipe, Teams éteinte) : repris et activé — non-régression" \
+  || ko "F5b la garde casse un appelant historique (rc=$RC)"
+grep -q "VERSION_FOREIGN_UNCHECKED" "$TMP/f5b.log" \
+  && ok "F5c … et la tolérance est VISIBLE (VERSION_FOREIGN_UNCHECKED)" \
+  || ko "F5c aucun avertissement nommé : la capture non gardée resterait invisible"
 
 echo "═══ Section G — la lignée d'une AUTRE équipe est intouchable ═══"
 # G0 — témoin AVANT : avec le rôle du round 1, un manifeste portant le nom
@@ -666,6 +691,93 @@ run_role "$REPO/ansible" "$TMP/v2.yml" -e apim_pub_version_require_team_match=fa
 [ "$RC" -eq 0 ] && grep -q "VERSION_FOREIGN_UNCHECKED" "$TMP/j4.log" \
   && ok "J4 garde levée : VERSION_FOREIGN_UNCHECKED prononcé (la tolérance est VISIBLE)" \
   || ko "J4 garde levée sans avertissement nommé (rc=$RC)"
+TEAM="payments-team"
+
+echo "═══ Section K — capture d'une API PLATEFORME sur le chemin EXACT name+version ═══"
+# Le trou d'assemblage de la revue finale : mono-version + id trouvé ⇒ ni mint
+# ni reprise ⇒ toutes les gardes sautaient, puis owner/équipe/activation étaient
+# réécrits. Reproduit avec une API « plateforme » dans l'état MESURÉ sur la
+# gateway du lab : ACTIVE et en `Default` (aucune équipe réelle).
+PLATFORM_API="p3t6-provisioning"
+seed_platform_api(){        # API plateforme active, en Default, hors de tout dépôt d'équipe
+  fresh_mock
+  adm -o /dev/null -X POST "$BASE/apis" \
+    -F "file=@$TMP/v1.openapi.yaml;type=application/x-yaml" -F "type=openapi" \
+    -F "apiName=${PLATFORM_API}" -F "apiVersion=1.0"
+  PLAT_ID=$(adm "$BASE/apis" | python3 -c "
+import sys,json
+for it in (json.load(sys.stdin).get('apiResponse') or []):
+    a=it.get('api') or {}
+    if a.get('apiName')=='${PLATFORM_API}': print(a['id']); break
+")
+  adm -o /dev/null -X PUT "$BASE/apis/$PLAT_ID/activate"
+  cat >"$TMP/plat.yml" <<EOF
+---
+apim_api:
+  name: "${PLATFORM_API}"
+  version: "1.0"
+  contract: "$TMP/v2.openapi.yaml"
+  team: ""
+  update: false
+  inbound: {}
+EOF
+}
+plat_teams(){ adm "$BASE/apis/$PLAT_ID" | python3 -c "
+import sys,json
+print(' '.join(sorted(t.get('name','') for t in ((json.load(sys.stdin).get('apiResponse') or {}).get('teams') or []))))"; }
+
+# K0 — témoin AVANT : avec le rôle du round 2 (7b0d636), l'équipe CAPTURE.
+K0_ANSIBLE="$TMP/ansible-r2"
+git -C "$REPO" archive "$ROUND2_COMMIT" ansible | tar -x -C "$TMP" -f - 2>/dev/null
+[ -f "$TMP/ansible/publish-api.yml" ] && mv "$TMP/ansible" "$K0_ANSIBLE"
+if [ -f "$K0_ANSIBLE/publish-api.yml" ]; then
+  seed_platform_api
+  TEAM="payments-team"
+  run_role "$K0_ANSIBLE" "$TMP/plat.yml" >"$TMP/k0.log" 2>&1; RC=$?
+  if [ "$RC" -eq 0 ] && plat_teams | grep -q "payments-team"; then
+    ok "K0 témoin AVANT ($ROUND2_COMMIT) : payments-team CAPTURE l'API plateforme (teams=$(plat_teams))"
+  else
+    ko "K0 la capture ne se reproduit pas avec $ROUND2_COMMIT (rc=$RC, teams=$(plat_teams))"
+  fi
+else
+  ko "K0 rôle du round 2 non extractible — témoin AVANT impossible"
+fi
+
+# K1 — avec la garde : refus AVANT tout geste d'écriture.
+seed_platform_api
+TEAM="payments-team"
+run_role "$REPO/ansible" "$TMP/plat.yml" >"$TMP/k1.log" 2>&1; RC=$?
+[ "$RC" -ne 0 ] && grep -q "API_OWNER_MISMATCH" "$TMP/k1.log" \
+  && ok "K1 capture d'une API plateforme → API_OWNER_MISMATCH (refus nommé)" \
+  || ko "K1 attendu API_OWNER_MISMATCH, rc=$RC"
+[ "$(plat_teams)" = "Administrators Default" ] \
+  && ok "K2 l'équipe de l'API plateforme n'a PAS bougé (teams=$(plat_teams))" \
+  || ko "K2 l'équipe de l'API plateforme a été réécrite : $(plat_teams)"
+[ "$(api_field "$PLAT_ID" owner)" = "null" ] \
+  && ok "K3 owner de l'API plateforme intact (approvers.yml n'a pas tourné)" \
+  || ko "K3 owner réécrit : $(api_field "$PLAT_ID" owner)"
+
+# K4 — profil système sur ce chemin aussi.
+seed_platform_api
+TEAM="Administrators"
+run_role "$REPO/ansible" "$TMP/plat.yml" >"$TMP/k4.log" 2>&1; RC=$?
+[ "$RC" -ne 0 ] && grep -q "TEAM_IS_SYSTEM_PROFILE" "$TMP/k4.log" \
+  && ok "K4 TEAM=Administrators sur le chemin exact-match → TEAM_IS_SYSTEM_PROFILE" \
+  || ko "K4 le chemin exact-match accepte un profil système (rc=$RC)"
+
+# K5 — contre-témoin VERT : l'équipe PROPRIÉTAIRE ré-applique SON API.
+seed_platform_api
+UUID=$(adm "$BASE/accessProfiles" | python3 -c "
+import sys,json
+d=json.load(sys.stdin); ps=d.get('accessProfiles') or d.get('accessProfile') or []
+print([p['id'] for p in ps if p.get('name')=='payments-team'][0])")
+adm -o /dev/null -H 'Content-Type: application/json' -X POST "$BASE/assets/team" \
+  -d "{\"assetIds\":[\"$PLAT_ID\"],\"assetType\":\"API\",\"newTeams\":[\"$UUID\"]}"
+TEAM="payments-team"
+run_role "$REPO/ansible" "$TMP/plat.yml" >"$TMP/k5.log" 2>&1; RC=$?
+[ "$RC" -eq 0 ] && grep -q "API_OWNER_OK" "$TMP/k5.log" \
+  && ok "K5 l'équipe PROPRIÉTAIRE ré-applique SON API : API_OWNER_OK, rien de bloqué" \
+  || ko "K5 la garde bloque le propriétaire légitime (rc=$RC)"
 TEAM="payments-team"
 
 echo "═══════════════════════════════════════════"
