@@ -6,21 +6,35 @@
 #   merge PR api/<name>-<version> (dépôt d'ÉQUIPE) → webhook → job team-publish
 #   (pause nominative + garde d'identité + finally D'ENTRÉE, cf. le job XML) →
 #   CE script :
-#     1. AUTORITÉ PAR TOPOLOGIE : le webhook dit QUEL DÉPÔT a mergé
+#     1. VALIDATION DE FORME de tout ce qui vient du webhook (owner/repo, SHA
+#        hex, branche, PR_NUMBER) — AVANT tout argv git/curl.
+#     2. RÉCONCILIATION AVEC GITEA : le webhook n'a pas de secret vérifié en
+#        aval — on redemande l'état RÉEL de la PR à Gitea (authentifié) et on
+#        refuse toute divergence (merged/merge_commit_sha/head.ref/base.ref).
+#     3. AUTORITÉ PAR TOPOLOGIE : le webhook dit QUEL DÉPÔT a mergé
 #        (repository.full_name) — jamais quelle équipe. Une "team" dans le
 #        payload serait une AFFIRMATION du dépôt de l'équipe lui-même (il
 #        pourrait mentir sur son propre nom). L'équipe est dérivée en CROISANT
 #        ce dépôt avec providers.<env>.yml — dépôt PLATEFORME, lu FRAIS sur
 #        main — la SEULE source qui dit VRAIMENT « ce dépôt appartient à
 #        cette équipe ». REPO_NON_DECLARE si aucune équipe ne le revendique.
-#     2. ANTI-TOCTOU : le manifeste (apis/<name>.publish.yml) est lu dans le
-#        dépôt de l'ÉQUIPE AU SHA DU MERGE — jamais dans le payload, jamais
-#        sur la branche courante d'un clone tardif.
-#     3. rôle apim_publish_api (palier 3, create-or-version idempotent).
-#     4. statut RÉEL sur la PR du dépôt d'ÉQUIPE — succès comme échec.
-#     5. après succès : re-pose app-request (Interfaces du brief) — la
-#        nouvelle version doit apparaître dans les listes déroulantes sans
-#        attendre une relance manuelle de setup-team-onboard-jobs.sh.
+#     4. ANTI-TOCTOU : le manifeste (apis/<name>.publish.yml) est lu dans le
+#        dépôt de l'ÉQUIPE AU SHA DU MERGE (clone AUTHENTIFIÉ, pas anonyme —
+#        un dépôt d'équipe PRIVÉ casserait sinon) — jamais dans le payload,
+#        jamais sur la branche courante d'un clone tardif. Le contenu N'EST
+#        PAS borné par la liste blanche des CLÉS (manifest-guard.yml, côté
+#        rôle), qui ne protège que la FORME, jamais le fond (RCE fermée, cf.
+#        §5) : `contract` est vérifié en LISTE BLANCHE EXACTE (le gabarit
+#        posé par api-request.sh PORTE lui-même un Jinja légitime dans ce
+#        champ — un scan Jinja nu l'aurait refusé) ; MANIFEST_UNSAFE scanne
+#        tout le RESTE du manifeste (inbound.*, team, …) pour tout {{/{%.
+#     5. rôle apim_publish_api (palier 3, create-or-version idempotent) —
+#        avec apim_ss_contract_pin qui ÉPINGLE le contract au chemin déjà
+#        vérifié (§4), jamais celui que le manifeste prétend porter.
+#     6. statut RÉEL sur la PR du dépôt d'ÉQUIPE — succès comme échec.
+#        après succès : re-pose app-request ET api-request (Interfaces du
+#        brief) — la nouvelle version doit apparaître dans les listes
+#        déroulantes sans attendre une relance manuelle.
 #
 # I2 (dette du palier 2, À NE PAS REPRODUIRE ICI) : team-apply.sh/
 # team-request.sh ne vérifient jamais le code de retour de leur propre POST de
@@ -76,6 +90,20 @@ comment(){
 }
 fail(){ comment "$WEBHOOK_REPO" "❌ team-publish : $*"; echo "ERREUR: $*" >&2; exit 1; }
 
+# Clone AUTHENTIFIÉ (GITEA_TOKEN, header injecté via variables d'ENVIRONNEMENT
+# GIT_CONFIG_COUNT/KEY/VALUE — jamais l'URL, jamais argv ; motif déjà établi
+# pour les push de ce dépôt, réutilisé ici pour les clones). Un clone ANONYME
+# casserait sur un dépôt PRIVÉ — le dépôt plateforme ET le dépôt d'équipe le
+# sont chez un client réel ; ce lab les a en lecture publique, ce qui
+# masquait le trou (les deux clones fonctionnaient "par accident").
+gclone(){
+  local auth_b64
+  auth_b64=$(printf 'x:%s' "$GITEA_TOKEN" | base64 | tr -d '\n')
+  GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader \
+    GIT_CONFIG_VALUE_0="Authorization: Basic ${auth_b64}" \
+    git clone -q "$@"
+}
+
 # ── 0. VALIDATION DE FORME — AVANT tout argv git/curl ────────────────────────
 # WEBHOOK_REPO et MERGE_SHA viennent d'un WEBHOOK (un tiers) et sont
 # interpolés tels quels dans des URLs git/curl et des arguments de commande
@@ -92,6 +120,12 @@ printf '%s' "$WEBHOOK_REPO" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' \
 case "$MERGE_SHA" in *[!0-9a-f]*) fail "MERGE_SHA_INVALIDE : '${MERGE_SHA}' — caractère hors classe hexadécimale";; esac
 printf '%s' "$MERGE_SHA" | grep -Eq '^[0-9a-f]{40}$' \
   || fail "MERGE_SHA_INVALIDE : '${MERGE_SHA}' — attendu 40 caractères hexadécimaux (SHA-1 git)"
+
+# Manqué au round précédent (revue) : PR_NUMBER sert de segment d'URL API
+# Gitea (réconciliation ci-dessous, commentaires) — même discipline.
+case "$PR_NUMBER" in *[!0-9]*) fail "PR_NUMBER_INVALIDE : '${PR_NUMBER}' — caractère hors classe numérique";; esac
+printf '%s' "$PR_NUMBER" | grep -Eq '^[1-9][0-9]*$' \
+  || fail "PR_NUMBER_INVALIDE : '${PR_NUMBER}' — attendu un entier positif"
 
 # ── 1. branche gardée à api/*, sinon rien à faire ────────────────────────────
 case "$PR_BRANCH" in api/*) ;; *) echo "hors api/* — rien à publier"; exit 0;; esac
@@ -114,13 +148,54 @@ case "$API_VERSION" in *[!0-9.]*) fail "API_VERSION_INVALIDE : '${API_VERSION}' 
 printf '%s' "$API_VERSION" | grep -Eq '^[0-9]+\.[0-9]+(\.[0-9]+)?$' \
   || fail "API_VERSION_INVALIDE : '${API_VERSION}' (branche '${PR_BRANCH}') — attendu X.Y ou X.Y.Z"
 
-# ── 2. AUTORITÉ PAR TOPOLOGIE : quelle équipe déclare CE dépôt ? ─────────────
+# ── 2. RÉCONCILIATION AVEC GITEA — le payload n'est pas la vérité ────────────
+# Le webhook n'a ni secret HMAC vérifié en aval (limite du plugin Generic
+# Webhook Trigger avec ce montage — cf. rapport) ni garantie de fraîcheur : un
+# tir manuel avec le token GWT partagé peut prétendre N'IMPORTE QUEL
+# merge_commit_sha/branche pour ce PR_NUMBER. La garde d'atteignabilité
+# (§4, plus bas) confirme que MERGE_SHA est UN ancêtre de main — pas
+# forcément CELUI de CETTE PR. On redemande donc l'état à GITEA LUI-MÊME
+# (authentifié par GITEA_TOKEN, donc pas falsifiable par le contenu d'un
+# payload) : la PR est-elle RÉELLEMENT fusionnée, avec CE SHA, CETTE branche,
+# sur main ? Un payload rejoué (SHA périmé, branche différente, PR pas encore
+# mergée) ne peut pas fabriquer une réponse Gitea qui concorde.
+PR_STATE=$(GIT_HOST="$GIT_HOST" WEBHOOK_REPO="$WEBHOOK_REPO" PR_NUMBER="$PR_NUMBER" \
+  GITEA_TOKEN="$GITEA_TOKEN" PR_BRANCH="$PR_BRANCH" MERGE_SHA="$MERGE_SHA" python3 - <<'PY'
+import os, json, urllib.request, urllib.error
+api = os.environ["GIT_HOST"] + "/api/v1"
+repo = os.environ["WEBHOOK_REPO"]
+pr = os.environ["PR_NUMBER"]
+req = urllib.request.Request(f"{api}/repos/{repo}/pulls/{pr}",
+    headers={"Authorization": "token " + os.environ["GITEA_TOKEN"]})
+try:
+    d = json.load(urllib.request.urlopen(req))
+except (urllib.error.URLError, ValueError) as e:
+    print("ERR=" + type(e).__name__)
+    raise SystemExit
+ok = (
+    d.get("merged") is True
+    and d.get("merge_commit_sha") == os.environ["MERGE_SHA"]
+    and (d.get("head") or {}).get("ref") == os.environ["PR_BRANCH"]
+    and (d.get("base") or {}).get("ref") == "main"
+)
+print("OK" if ok else "MISMATCH")
+PY
+) || fail "GITEA_RECONCILE_ECHEC : lecture de ${WEBHOOK_REPO}#${PR_NUMBER} sur Gitea en échec"
+case "$PR_STATE" in
+  OK) ;;
+  ERR=*) fail "GITEA_RECONCILE_ECHEC : appel Gitea en échec (${PR_STATE#ERR=}) pour ${WEBHOOK_REPO}#${PR_NUMBER}" ;;
+  MISMATCH) fail "PAYLOAD_PERIME : ${WEBHOOK_REPO}#${PR_NUMBER} sur Gitea (merged/merge_commit_sha/head.ref/base.ref) ne correspond pas au webhook — le payload ne fait pas foi, refus" ;;
+  *) fail "GITEA_RECONCILE_ECHEC : réponse inattendue de la réconciliation ('${PR_STATE}')" ;;
+esac
+echo "réconciliation Gitea OK : ${WEBHOOK_REPO}#${PR_NUMBER} merged, ${PR_BRANCH}->main"
+
+# ── 3. AUTORITÉ PAR TOPOLOGIE : quelle équipe déclare CE dépôt ? ─────────────
 # providers.<env>.yml est le dépôt PLATEFORME (GIT_REPO), lu FRAIS sur main —
 # jamais au MERGE_SHA (qui est celui du dépôt d'ÉQUIPE, un repo DIFFÉRENT, cf.
-# §3). Même discipline fail-closed que team-apply.sh REPO_FULL : un marqueur
+# §4). Même discipline fail-closed que team-apply.sh REPO_FULL : un marqueur
 # EXPLICITE (TEAM=) distingue « aucune équipe » (marqueur présent, valeur
 # vide) de « extraction cassée » (marqueur absent) — jamais confondus.
-git clone -q --depth 1 -b main "${GIT_HOST}/${GIT_REPO}.git" "$TMP/platform" \
+gclone --depth 1 -b main "${GIT_HOST}/${GIT_REPO}.git" "$TMP/platform" \
   || fail "clone ${GIT_REPO}@main (résolution dépôt -> équipe)"
 PROV="$TMP/platform/poc-control-plane-federation/ansible/providers.${ENVN}.yml"
 [ -f "$PROV" ] || fail "PROVIDERS_MISSING : ansible/providers.${ENVN}.yml absent sur main"
@@ -150,10 +225,10 @@ case "$TEAM" in
 esac
 echo "topologie : dépôt ${WEBHOOK_REPO} -> équipe '${TEAM}' (providers.${ENVN}.yml)"
 
-# ── 3. ANTI-TOCTOU : manifeste lu dans le dépôt d'ÉQUIPE AU SHA DU MERGE ─────
+# ── 4. ANTI-TOCTOU : manifeste lu dans le dépôt d'ÉQUIPE AU SHA DU MERGE ─────
 # Clone COMPLET (pas --depth 1) : le SHA de merge doit être atteignable par un
 # checkout, une profondeur tronquée pourrait ne pas le contenir.
-git clone -q "${GIT_HOST}/${WEBHOOK_REPO}.git" "$TMP/team" \
+gclone "${GIT_HOST}/${WEBHOOK_REPO}.git" "$TMP/team" \
   || fail "clone ${WEBHOOK_REPO} (dépôt de l'équipe)"
 git -C "$TMP/team" checkout -q "$MERGE_SHA" \
   || fail "checkout du SHA de merge ${MERGE_SHA} sur ${WEBHOOK_REPO}"
@@ -204,23 +279,86 @@ case "$MANIFEST_NV" in
   *)    fail "PARSE_MANIFEST : sortie inattendue de la lecture de ${PUB_REL}" ;;
 esac
 
-# ── 4. publication (rôle du palier 3, idempotent create-or-version) ─────────
+# [CRITICAL, panel] contract : LISTE BLANCHE EXACTE, pas un simple scan Jinja
+# — le gabarit LÉGITIME lui-même (gateways/templates/publish.yml.tmpl, posé
+# par api-request.sh) PORTE un Jinja dans ce champ :
+#   contract: "{{ (pub_manifest_path | dirname) }}/<name>.openapi.yaml"
+# réévalué PARESSEUSEMENT par le rôle au premier lookup('file',
+# apim_api.contract) — un grep Jinja nu sur tout le fichier (première version
+# de ce correctif, corrigée ici) aurait donc refusé TOUTE publication
+# légitime, gabarit compris. Un seul contenu de `contract` est légitime : ce
+# gabarit EXACT, paramétré par API_NAME (connu de la branche, jamais du
+# manifeste). TOUT AUTRE contenu — un payload `{{ lookup('pipe','…') }}`
+# (RCE) COMME un chemin absolu qui s'évaderait de l'arbre mergé — est un
+# manifeste qui MENT sur son propre contrat : REFUSÉ explicitement ici, AVANT
+# tout apply — pas seulement neutralisé en silence par le pin (§5, plus bas),
+# qui reste une SECONDE fermeture, défense en profondeur : même un bug ICI ne
+# rouvrirait pas la RCE, le pin gagne quoi qu'il arrive.
+EXPECTED_CONTRACT="{{ (pub_manifest_path | dirname) }}/${API_NAME}.openapi.yaml"
+MANIFEST_CONTRACT=$(PUB_PATH="$PUB_PATH" python3 - <<'PY'
+import os, yaml
+d = yaml.safe_load(open(os.environ["PUB_PATH"])) or {}
+a = d.get("apim_api") or {}
+print("CONTRACT=" + str(a.get("contract") or ""))
+PY
+) || fail "PARSE_MANIFEST : lecture du champ contract de ${PUB_REL}"
+case "$MANIFEST_CONTRACT" in
+  "CONTRACT=${EXPECTED_CONTRACT}") ;;
+  CONTRACT=*) fail "MANIFEST_CONTRACT_INVALIDE : ${PUB_REL} porte contract='${MANIFEST_CONTRACT#CONTRACT=}', attendu EXACTEMENT '${EXPECTED_CONTRACT}' (le gabarit posé par api-request.sh) — refus AVANT tout apply, que la divergence soit un Jinja injecté ou un chemin qui s'évaderait de l'arbre mergé" ;;
+  *) fail "PARSE_MANIFEST : sortie inattendue de la lecture du champ contract de ${PUB_REL}" ;;
+esac
+
+# [CRITICAL, panel] MANIFEST_UNSAFE — défense en profondeur SUR LE RESTE du
+# manifeste (inbound.*, team, …) : contract vient d'être validé en LISTE
+# BLANCHE ci-dessus, donc EXCLU de ce scan (sinon le gabarit légitime — qui
+# PORTE un Jinja dans ce seul champ — échouerait toujours ici). Le manifeste
+# est chargé par `include_vars` (précédence 18) dans le rôle Ansible, qui
+# re-template PARESSEUSEMENT toute chaîne portant elle-même {{ }} / {% %} —
+# aucun mécanisme équivalent au pin de contract ne neutralise un Jinja
+# injecté AILLEURS dans le manifeste.
+MANIFEST_REST_UNSAFE=$(PUB_PATH="$PUB_PATH" python3 - <<'PY'
+import os, yaml
+d = yaml.safe_load(open(os.environ["PUB_PATH"])) or {}
+a = d.get("apim_api")
+if isinstance(a, dict):
+    a = dict(a)
+    a.pop("contract", None)
+    d = dict(d)
+    d["apim_api"] = a
+dumped = yaml.safe_dump(d, default_flow_style=False, allow_unicode=True)
+print("UNSAFE" if ("{{" in dumped or "{%" in dumped) else "CLEAN")
+PY
+) || fail "PARSE_MANIFEST : scan Jinja de ${PUB_REL} (hors contract)"
+[ "$MANIFEST_REST_UNSAFE" = "CLEAN" ] \
+  || fail "MANIFEST_UNSAFE : ${PUB_REL} contient une expression Jinja ({{ ou {%) en dehors du champ contract (déjà validé en liste blanche ci-dessus) — un manifeste d'équipe ne doit jamais porter de gabarit ailleurs, seulement des valeurs littérales"
+
+# ── 5. publication (rôle du palier 3, idempotent create-or-version) ─────────
+# apim_ss_contract_pin (extra-var, précédence 22) ÉPINGLE le contract à
+# SPEC_PATH — le chemin qu'on vient SOI-MÊME de vérifier exister (§4,
+# CONTRAT_ABSENT) — jamais celui que le manifeste prétend porter (cf. le
+# scan MANIFEST_UNSAFE ci-dessus, défense en profondeur sur le RESTE du
+# manifeste ; ceci est la fermeture PRIMAIRE pour contract spécifiquement).
 ( ansible-playbook -i ansible/inventory.lab.ini ansible/publish-api.yml \
     -e apim_ss_manifest="$PUB_PATH" -e apim_ss_team="$TEAM" \
     -e apim_ss_api_base="$APIM_API_BASE" -e apim_ss_env="$ENVN" \
+    -e apim_ss_contract_pin="$SPEC_PATH" \
 ) >"$TMP/pub.log" 2>&1
 PUB_RC=$?
 
-# ── 5. le statut RÉEL sur la PR du dépôt d'ÉQUIPE — succès comme échec ───────
+# ── 6. le statut RÉEL sur la PR du dépôt d'ÉQUIPE — succès comme échec ───────
 if [ "$PUB_RC" -eq 0 ]; then
   SUMMARY=$(grep -oE '"msg": "(MANIFEST_KEYS_OK|TEAM_REQUESTED|ENV_OK|VERSION_[A-Z_]+)[^"]*"' "$TMP/pub.log" \
     | sed 's/^"msg": "//; s/"$//' | tail -3 | tr '\n' ' ; ')
 
-  # ── re-pose app-request (Interfaces du brief) — best-effort BRUYANT : à ce
-  # point la publication est DÉJÀ FAITE (PUB_RC=0, rôle idempotent convergé) ;
-  # un échec de re-pose ne l'annule pas et n'appelle jamais fail() ; il est
-  # seulement NOMMÉ dans le commentaire ✅, même discipline que le §re-pose de
-  # team-apply.sh (marqueur CHOICES_SKIPPED_REPOS, cf. generate-choices.sh).
+  # ── re-pose app-request ET api-request (revue : la liste API_BASE d'api-
+  # request restait périmée après chaque publication, bloquant le cycle
+  # create->new-version sur API_BASE_STALE tant qu'un humain ne relançait pas
+  # la pose à la main — même JOBS que team-apply.sh) — best-effort BRUYANT :
+  # à ce point la publication est DÉJÀ FAITE (PUB_RC=0, rôle idempotent
+  # convergé) ; un échec de re-pose ne l'annule pas et n'appelle jamais
+  # fail() ; il est seulement NOMMÉ dans le commentaire ✅, même discipline
+  # que le §re-pose de team-apply.sh (marqueur CHOICES_SKIPPED_REPOS, cf.
+  # generate-choices.sh).
   # DÉFAUT IN-CLUSTER (fix mesuré) : team-publish.sh tourne comme process
   # ENFANT du job Jenkins — "localhost" y désigne le CONTENEUR du job, pas
   # l'hôte. `http://localhost:18080` (le défaut hérité de Task 3, valable
@@ -230,21 +368,21 @@ if [ "$PUB_RC" -eq 0 ]; then
   # utilisé pour webmethods-mock/gitea (même convention). Un poste hors du
   # réseau compose surcharge JENKINS_UI explicitement (comme APIM_API_BASE).
   REFRESH_NOTE=""
-  if JENKINS_UI="${JENKINS_UI:-http://jenkins:8080}" JOBS="app-request" \
+  if JENKINS_UI="${JENKINS_UI:-http://jenkins:8080}" JOBS="app-request api-request" \
      ENVN="$ENVN" bash scripts/setup-team-onboard-jobs.sh >"$TMP/refresh.log" 2>&1
   then
     SKIPPED=$(grep -oE 'CHOICES_SKIPPED_REPOS=[0-9]+' "$TMP/refresh.log" | tail -1 | cut -d= -f2)
     if [ -n "$SKIPPED" ] && [ "$SKIPPED" -gt 0 ]; then
-      REFRESH_NOTE=" (app-request rafraîchi ; ⚠ ${SKIPPED} dépôt(s) d'équipe déclarés mais absents, sautés)"
-      echo "AVERTISSEMENT: app-request rafraîchi mais ${SKIPPED} dépôt(s) d'équipe déclarés absents/sautés :" >&2
+      REFRESH_NOTE=" (app-request/api-request rafraîchis ; ⚠ ${SKIPPED} dépôt(s) d'équipe déclarés mais absents, sautés)"
+      echo "AVERTISSEMENT: app-request/api-request rafraîchis mais ${SKIPPED} dépôt(s) d'équipe déclarés absents/sautés :" >&2
       tail -20 "$TMP/refresh.log" >&2
     else
-      REFRESH_NOTE=" (app-request rafraîchi)"
-      echo "app-request rafraîchi (nouvelle version visible dans les listes)"
+      REFRESH_NOTE=" (app-request/api-request rafraîchis)"
+      echo "app-request/api-request rafraîchis (nouvelle version visible dans les listes)"
     fi
   else
-    REFRESH_NOTE=" ⚠ app-request non rafraîchi — relancer setup-team-onboard-jobs.sh"
-    echo "AVERTISSEMENT: re-pose app-request en échec — la publication, elle, EST faite :" >&2
+    REFRESH_NOTE=" ⚠ app-request/api-request non rafraîchis — relancer setup-team-onboard-jobs.sh"
+    echo "AVERTISSEMENT: re-pose app-request/api-request en échec — la publication, elle, EST faite :" >&2
     tail -20 "$TMP/refresh.log" >&2
   fi
 
