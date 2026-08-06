@@ -194,6 +194,27 @@ grep -q 'REPO_AMBIGU' "$REPO/scripts/team-publish.sh" \
 grep -q 'CONTRAT_ABSENT' "$REPO/scripts/team-publish.sh" \
   && ok "CONTRAT_ABSENT présent (le contrat OpenAPI est vérifié tôt, pas laissé échouer au fond du rôle Ansible)" \
   || ko "CONTRAT_ABSENT absent — un contrat manquant échouerait loin de sa cause réelle"
+# Validation de FORME (leçon \Z du palier 1 : refus de CLASSE avant tout argv
+# git/curl) — WEBHOOK_REPO et MERGE_SHA viennent d'un webhook (un tiers).
+grep -q 'WEBHOOK_REPO_INVALIDE' "$REPO/scripts/team-publish.sh" \
+  && ok "WEBHOOK_REPO validé en forme AVANT tout argv git/curl" \
+  || ko "WEBHOOK_REPO jamais validé en forme — une valeur de webhook mal formée atteindrait argv sans avoir été regardée"
+grep -q 'MERGE_SHA_INVALIDE' "$REPO/scripts/team-publish.sh" \
+  && ok "MERGE_SHA validé en forme (40 hex) AVANT tout argv git" \
+  || ko "MERGE_SHA jamais validé en forme"
+grep -q 'API_NAME_INVALIDE' "$REPO/scripts/team-publish.sh" \
+  && ok "API_NAME (dérivé de la branche) validé en forme — devient un segment de CHEMIN (apis/<name>.publish.yml)" \
+  || ko "API_NAME jamais validé en forme — évasion de chemin possible via une branche malformée"
+# Ordre : le refus de CLASSE (case) doit précéder le refus de FORME complète
+# (grep ancré), même discipline que resolve.yml (palier 1) — sinon un \n final
+# passerait le grep ancré (piège \Z déjà documenté ailleurs dans ce dépôt).
+L_CASE=$(grep -n '\*\[!a-z0-9-\]\*' "$REPO/scripts/team-publish.sh" | head -1 | cut -d: -f1)
+L_GREPQ=$(grep -n "API_NAME_INVALIDE" "$REPO/scripts/team-publish.sh" | tail -1 | cut -d: -f1)
+if [ -n "$L_CASE" ] && [ -n "$L_GREPQ" ] && [ "$L_CASE" -lt "$L_GREPQ" ]; then
+  ok "le refus de classe (case, ligne $L_CASE) précède le refus de forme complète (ligne $L_GREPQ) pour API_NAME"
+else
+  ko "ordre case/grep pour API_NAME non confirmé (case=$L_CASE forme=$L_GREPQ)"
+fi
 
 echo
 echo "======================================================================"

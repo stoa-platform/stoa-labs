@@ -76,6 +76,23 @@ comment(){
 }
 fail(){ comment "$WEBHOOK_REPO" "❌ team-publish : $*"; echo "ERREUR: $*" >&2; exit 1; }
 
+# ── 0. VALIDATION DE FORME — AVANT tout argv git/curl ────────────────────────
+# WEBHOOK_REPO et MERGE_SHA viennent d'un WEBHOOK (un tiers) et sont
+# interpolés tels quels dans des URLs git/curl et des arguments de commande
+# juste en dessous. Un refus de FORME, D'ABORD (leçon \Z du palier 1 : le
+# refus de classe précède la garde de fond, jamais l'inverse), ferme la
+# classe de trou "valeur de webhook mal formée qui atteint argv/une URL sans
+# avoir été regardée" — indépendamment de ce que la garde de topologie ou
+# d'atteignabilité, plus bas, décideraient de cette même valeur si elle était
+# bien formée.
+case "$WEBHOOK_REPO" in *[!A-Za-z0-9_./-]*) fail "WEBHOOK_REPO_INVALIDE : '${WEBHOOK_REPO}' — caractère hors classe [A-Za-z0-9_./-]";; esac
+printf '%s' "$WEBHOOK_REPO" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' \
+  || fail "WEBHOOK_REPO_INVALIDE : '${WEBHOOK_REPO}' — attendu owner/repo"
+
+case "$MERGE_SHA" in *[!0-9a-f]*) fail "MERGE_SHA_INVALIDE : '${MERGE_SHA}' — caractère hors classe hexadécimale";; esac
+printf '%s' "$MERGE_SHA" | grep -Eq '^[0-9a-f]{40}$' \
+  || fail "MERGE_SHA_INVALIDE : '${MERGE_SHA}' — attendu 40 caractères hexadécimaux (SHA-1 git)"
+
 # ── 1. branche gardée à api/*, sinon rien à faire ────────────────────────────
 case "$PR_BRANCH" in api/*) ;; *) echo "hors api/* — rien à publier"; exit 0;; esac
 REST="${PR_BRANCH#api/}"
@@ -83,6 +100,19 @@ API_VERSION="${REST##*-}"
 API_NAME="${REST%-*}"
 [ -n "$API_NAME" ] && [ -n "$API_VERSION" ] && [ "$API_NAME" != "$REST" ] \
   || fail "BRANCH_FORMAT_INVALIDE : '${PR_BRANCH}' — attendu api/<name>-<version>"
+
+# Régime ancré (même classe et même ordre que TEAM dans team-apply.sh/
+# resolve.yml, et que api-request.sh pour ces mêmes deux champs) : le refus
+# de CLASSE d'abord (le `case`, contre \n et tout caractère hors alphabet),
+# PUIS la forme complète ancrée. API_NAME devient un segment de CHEMIN
+# (apis/<name>.publish.yml, plus bas) : un nom hors classe y serait une
+# évasion de chemin, pas une coquetterie de validation.
+case "$API_NAME" in *[!a-z0-9-]*) fail "API_NAME_INVALIDE : '${API_NAME}' (branche '${PR_BRANCH}') — attendu ^[a-z0-9][a-z0-9-]{1,30}\$";; esac
+printf '%s' "$API_NAME" | grep -Eq '^[a-z0-9][a-z0-9-]{1,30}$' \
+  || fail "API_NAME_INVALIDE : '${API_NAME}' (branche '${PR_BRANCH}') — attendu ^[a-z0-9][a-z0-9-]{1,30}\$"
+case "$API_VERSION" in *[!0-9.]*) fail "API_VERSION_INVALIDE : '${API_VERSION}' (branche '${PR_BRANCH}') — attendu X.Y ou X.Y.Z";; esac
+printf '%s' "$API_VERSION" | grep -Eq '^[0-9]+\.[0-9]+(\.[0-9]+)?$' \
+  || fail "API_VERSION_INVALIDE : '${API_VERSION}' (branche '${PR_BRANCH}') — attendu X.Y ou X.Y.Z"
 
 # ── 2. AUTORITÉ PAR TOPOLOGIE : quelle équipe déclare CE dépôt ? ─────────────
 # providers.<env>.yml est le dépôt PLATEFORME (GIT_REPO), lu FRAIS sur main —
