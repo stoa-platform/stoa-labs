@@ -236,26 +236,65 @@ jwait_end() {
 # ressemblerait ni à un problème de webhook (HTTP 200) ni à un problème de job.
 # Cause constatée en direct sur ce lab (deux builds en pause depuis 10 h et
 # 12 jours bloquaient toute la file).
+# SÛRETÉ MULTI-AGENTS (fix round 1, Minor 2) — ce lab est PARTAGÉ. Une pause
+# en cours peut très bien être la demande d'approbation 4-yeux LÉGITIME d'un
+# run concurrent : l'abandonner détruirait le travail d'autrui. On n'abandonne
+# donc QUE les pauses dont le `displayName` du build NOMME un objet du
+# périmètre jetable de CE harnais (le job pose lui-même
+# `currentBuild.displayName = "publish <dépôt> (PR #n)"`, et notre dépôt
+# d'équipe jetable y apparaît en clair).
+# Une pause ÉTRANGÈRE n'est jamais touchée : elle est signalée BRUYAMMENT et
+# jdrain rend un code non nul, pour que la preuve appelante échoue avec une
+# cause NOMMÉE plutôt que de trépigner en file jusqu'au délai. Chaque abandon
+# est loggué avec son numéro de build ET son displayName — jamais silencieux.
 jdrain() {
-  local job="$1" last st q drained=0
+  local job="$1" scope="$2" drained=0 foreign="" info n dn st iid
   jcrumb || return 0
   for _ in $(seq 1 15); do
-    last=$(jnext "$job"); last=$(( ${last:-1} - 1 ))
-    st=$(jstatus "$job" "$last")
-    q=$(curl -s "$JENKINS_UI/queue/api/json" 2>/dev/null | python3 -c "
+    # Les builds NON TERMINÉS de ce job (building=true), avec leur displayName :
+    # c'est l'un d'eux qui bloque, pas forcément le dernier numéro.
+    info=$(curl -s "$JENKINS_UI/job/$job/api/json?tree=builds%5Bnumber,building,displayName%5D" 2>/dev/null | python3 -c "
+import json,sys
+try: d=json.load(sys.stdin)
+except Exception: raise SystemExit
+for b in d.get('builds',[]):
+    if b.get('building'):
+        print(str(b['number']) + '\t' + (b.get('displayName') or ''))" 2>/dev/null)
+    if [ -z "$info" ]; then
+      # plus aucun build en cours ; reste à attendre que la file se vide
+      local q
+      q=$(curl -s "$JENKINS_UI/queue/api/json" 2>/dev/null | python3 -c "
 import json,sys
 print(sum(1 for i in json.load(sys.stdin).get('items',[]) if (i.get('task') or {}).get('name')=='$job'))" 2>/dev/null)
-    if [ "$st" = PAUSED_PENDING_INPUT ]; then
-      local iid
-      iid=$(curl -s "$JENKINS_UI/job/$job/$last/wfapi/pendingInputActions" | python3 -c 'import json,sys;print(json.load(sys.stdin)[0]["id"])' 2>/dev/null)
-      [ -n "$iid" ] && curl -s -b "$JCK" -H "$JF: $JC" -X POST "$JENKINS_UI/job/$job/$last/input/$iid/abort" -o /dev/null
-      drained=$((drained + 1))
-    elif [ "${q:-0}" = 0 ] && [ -n "$st" ] && [ "$st" != IN_PROGRESS ]; then
-      break
+      [ "${q:-0}" = 0 ] && break
+      sleep 3
+      continue
     fi
+    while IFS=$'\t' read -r n dn; do
+      [ -n "$n" ] || continue
+      st=$(jstatus "$job" "$n")
+      [ "$st" = PAUSED_PENDING_INPUT ] || continue
+      case "$dn" in
+        *"$scope"*)
+          iid=$(curl -s "$JENKINS_UI/job/$job/$n/wfapi/pendingInputActions" | python3 -c 'import json,sys;print(json.load(sys.stdin)[0]["id"])' 2>/dev/null)
+          if [ -n "$iid" ]; then
+            curl -s -b "$JCK" -H "$JF: $JC" -X POST "$JENKINS_UI/job/$job/$n/input/$iid/abort" -o /dev/null
+            drained=$((drained + 1))
+            echo "   ($job #$n « $dn » : pause orpheline de CE harnais — abandonnée)"
+          fi
+          ;;
+        *)
+          foreign="${foreign:+$foreign, }#$n « $dn »"
+          ;;
+      esac
+    done <<<"$info"
+    [ -n "$foreign" ] && break
     sleep 3
   done
-  [ "$drained" -gt 0 ] && echo "   ($job : $drained pause(s) orpheline(s) abandonnée(s) — la file du job est libre)"
+  if [ -n "$foreign" ]; then
+    echo "   ($job : pause(s) ÉTRANGÈRE(S) au périmètre '$scope' LAISSÉE(S) INTACTE(S) — $foreign. Ce lab est partagé : ce sont peut-être des approbations légitimes d'un run concurrent. La file de ce job restera bloquée tant qu'elles ne sont pas répondues par leur propriétaire.)" >&2
+    return 1
+  fi
   return 0
 }
 
@@ -519,10 +558,23 @@ R0B=$?
 V0B=$(grep -oE '[0-9]+ OK / [0-9]+ KO' "$TMP/p0-machine.log" | tail -1)
 GOLD=$(grep -c 'manifeste identique au golden' "$TMP/p0-machine.log")
 
-if [ "$R0A" -eq 0 ] && [ "$R0B" -eq 0 ] && [ "${GOLD:-0}" -eq 2 ]; then
-  ok "0. non-régression : matrice du palier 2 = $V0A ; voies machine OIG/CLI2 = $V0B dont $GOLD manifestes IDENTIQUES à leur golden (diff vide)"
+# TOTAUX ÉPINGLÉS, pas seulement l'absence d'échec (fix round 1, Minor 1).
+# Les deux sous-harnais finissent par `[ "$FAIL" -eq 0 ]` : leur code de retour
+# capte les ÉCHECS, jamais le PÉRIMÈTRE. Une future édition qui SUPPRIMERAIT
+# une preuve de la matrice du palier 2 (sans jamais appeler bad()) laisserait
+# cette preuve-ci VERTE en affichant « 10 PASS » au lieu de 11 — or le brief
+# exige la matrice EN ENTIER, pas un sous-ensemble. Les totaux sont donc écrits
+# EN DUR ici : s'ils évoluent légitimement (preuve ajoutée), ce rouge force à
+# le CONSTATER et à mettre à jour la constante, plutôt qu'à laisser un
+# rétrécissement passer inaperçu. Même intention que le compteur en dur de
+# test-team-publish-wiring.sh.
+P2_TOTAL_ATTENDU="11 PASS / 0 FAIL"
+MACHINE_TOTAL_ATTENDU="18 OK / 0 KO"
+if [ "$R0A" -eq 0 ] && [ "$R0B" -eq 0 ] && [ "${GOLD:-0}" -eq 2 ] \
+   && [ "$V0A" = "$P2_TOTAL_ATTENDU" ] && [ "$V0B" = "$MACHINE_TOTAL_ATTENDU" ]; then
+  ok "0. non-régression : matrice du palier 2 = $V0A (périmètre ATTENDU, épinglé) ; voies machine OIG/CLI2 = $V0B dont $GOLD manifestes IDENTIQUES à leur golden (diff vide)"
 else
-  bad "0. palier2_rc=$R0A ($V0A) machine_rc=$R0B ($V0B) goldens_diff_vides=${GOLD:-0}/2 — voir $TMP/p0-palier2.log et $TMP/p0-machine.log"
+  bad "0. palier2_rc=$R0A ($V0A, attendu '$P2_TOTAL_ATTENDU') machine_rc=$R0B ($V0B, attendu '$MACHINE_TOTAL_ATTENDU') goldens_diff_vides=${GOLD:-0}/2 — un total INFÉRIEUR à l'attendu signale une preuve DISPARUE, pas un échec : le rc des sous-harnais ne le voit pas. Voir $TMP/p0-palier2.log et $TMP/p0-machine.log"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -607,9 +659,16 @@ n = x.count(old)
 if n != 2:
     sys.exit(f"attendu 2 occurrences de '{old}' dans le XML du job, trouvé {n} — le XML a changé, revoir la substitution")
 x = x.replace(old, new)
+# MÊME rigueur fail-closed que la substitution ci-dessus (fix round 1, item 4) :
+# on EXIGE un compte EXACT, on ne se contente pas de la présence du marqueur
+# suivie d'un replace(..., 1). Une ancre qui se mettrait à apparaître DEUX fois
+# (un second export ajouté au job) rendrait le `1` silencieusement arbitraire :
+# la substitution s'appliquerait à la première occurrence rencontrée, pas
+# forcément la bonne, et rien ne le dirait.
 marker = "export APIM_API_BASE="
-if marker not in x:
-    sys.exit("ancre 'export APIM_API_BASE=' absente du XML du job — revoir la substitution")
+m = x.count(marker)
+if m != 1:
+    sys.exit(f"attendu 1 occurrence de l'ancre '{marker}' dans le XML du job, trouvé {m} — le XML a changé, revoir la substitution")
 x = x.replace(marker, f'export GIT_REPO="{os.environ["PLAT_REPO"]}"\n              ' + marker, 1)
 open(dst, "w", encoding="utf-8").write(x)
 PY
@@ -624,6 +683,24 @@ else
 fi
 [ "$HCJOB" = 200 ] || die "pose du job $JOB en échec (HTTP $HCJOB)"
 echo "   job $JOB posé (HTTP $HCJOB), checkout -> $PLAT_REPO"
+
+# ── TÉMOIN DU DÉPÔT PLATEFORME RÉEL (fix round 1, item 3) ───────────────────
+# L'en-tête de ce fichier AFFIRME que `ci/stoa-labs` n'est jamais touché par
+# les preuves 1 à 9. Une affirmation qui ne peut pas ROUGIR n'est pas une
+# preuve : si une régression future faisait fuiter un accès en écriture vers ce
+# dépôt (un GIT_REPO oublié, un défaut qui reprend le dessus), rien ici ne
+# l'aurait signalé. On capture donc la LISTE COMPLÈTE de ses heads (SHA ET
+# noms de branches, pas seulement leur nombre — un rename ou un échange de deux
+# branches laisserait le compte inchangé) et on la RELIT en preuve 9.
+#
+# PLACEMENT : ICI, c'est-à-dire APRÈS la preuve 0 et AVANT la preuve 1. La
+# preuve 0 travaille RÉELLEMENT sur ci/stoa-labs — c'est le contrat de la
+# matrice du palier 2, dont le job team-apply code ce dépôt en dur — et elle y
+# revient par son propre teardown (revert bit-à-bit de providers.<env>.yml).
+# La fenêtre surveillée est donc exactement celle que l'affirmation couvre :
+# les preuves 1 à 9, jamais la 0.
+CI_HEADS_BEFORE=$(git ls-remote --heads "$GITEA_URL/ci/stoa-labs.git" 2>/dev/null)
+[ -n "$CI_HEADS_BEFORE" ] || die "témoin ci/stoa-labs vide (ls-remote sans réponse) — sans point de comparaison, la preuve 9 ne pourrait rien affirmer sur l'intégrité du dépôt plateforme réel"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 1. gardes d'entrée d'api-request.sh — CHAQUE refus sans la moindre trace
@@ -729,6 +806,19 @@ gapi -X POST -H 'Content-Type: application/json' -d "{\"username\":\"$ORPH_ORG\"
 gapi -X POST -H 'Content-Type: application/json' \
   -d '{"name":"orphan-api","private":false,"auto_init":true,"default_branch":"main"}' \
   "$GITEA_URL/api/v1/orgs/$ORPH_ORG/repos" -o /dev/null
+# `auto_init` est ASYNCHRONE côté Gitea : cloner tout de suite peut rendre un
+# dépôt encore VIDE. La branche poussée juste après serait alors ORPHELINE (sans
+# ancêtre commun avec main), la PR jamais `mergeable`, et le merge rendrait 405
+# — un échec de mise en scène qui ressemble trait pour trait à un échec de la
+# garde qu'on veut prouver. Observé en direct (preuve 3 rouge sur un run, verte
+# sur les trois précédents : la définition même d'un flake). On attend donc que
+# `main` EXISTE réellement avant de cloner.
+ORPH_READY=0
+for _ in $(seq 1 30); do
+  if [ "$(ghc "$GITEA_URL/api/v1/repos/$ORPH_REPO/branches/main")" = 200 ]; then ORPH_READY=1; break; fi
+  sleep 1
+done
+[ "$ORPH_READY" = 1 ] || echo "   ATTENTION : $ORPH_REPO n'a pas de branche main après 30 s — la preuve 3 va probablement échouer sur sa mise en scène, pas sur sa garde" >&2
 rm -rf "$TMP/orph"
 git clone -q "$GITEA_URL/$ORPH_REPO.git" "$TMP/orph" 2>/dev/null
 mkdir -p "$TMP/orph/apis"
@@ -770,7 +860,7 @@ if [ "$R3" -ne 0 ] && [ "$M3HC" = 200 ] && grep -q REPO_NON_DECLARE "$TMP/p3.log
    && [ "${APIS3:-1}" = 0 ]; then
   ok "3. $ORPH_REPO (PR #$PR_ORPH réellement mergée) refusé REPO_NON_DECLARE, rc=$R3, PR commentée ❌ avec la cause NOMMÉE, 0 API 'orphan' sur la gateway"
 else
-  bad "3. rc=$R3 merge=$M3HC commentaire=$(printf '%s' "$CB3" | head -c 120) apis_orphan=${APIS3:-?} — voir $TMP/p3.log"
+  bad "3. rc=$R3 merge=$M3HC$([ "$M3HC" != 200 ] && echo " (mise en scène : main du dépôt orphelin prêt=$ORPH_READY — un merge 405 signale une PR jamais mergeable, donc un échec de MISE EN SCÈNE, pas de la garde)") commentaire=$(printf '%s' "$CB3" | head -c 120) apis_orphan=${APIS3:-?} — voir $TMP/p3.log"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -797,7 +887,10 @@ fi
 # ─────────────────────────────────────────────────────────────────────────────
 echo
 echo "== 5. merge réel (oscar) -> webhook Gitea -> job $JOB -> pause -> apply =="
-jdrain "$JOB"
+# Périmètre du drain = NOTRE dépôt d'équipe jetable : le job nomme le dépôt
+# déclencheur dans son displayName. Une pause d'un autre run reste intacte
+# (et DRAIN5 le dit) — cf. jdrain.
+DRAIN5=0; jdrain "$JOB" "$TEAM_REPO" || DRAIN5=1
 N5=$(jnext "$JOB")
 MERGE5=$(merge_as_oscar "$TEAM_REPO" "${PR_V1:-0}")
 MERGED_BY5=$(gapi "$GITEA_URL/api/v1/repos/$TEAM_REPO/pulls/${PR_V1:-0}" \
@@ -825,7 +918,7 @@ if [ "$MERGE5" = 200 ] && [ "$MERGED_BY5" = oscar ] && [ "$ST5" = PAUSED_PENDING
    && printf '%s' "$CB5" | grep -q '✅' && printf '%s' "$CB5" | grep -q "$API_NAME@1.0.0"; then
   ok "5. merge par oscar (HTTP $MERGE5) -> webhook Gitea -> build #$N5 en pause -> réponse API ($SUB5) -> MERGE_IDENTITY_OK -> $ST5B ; API $API_NAME@1.0.0 sur la gateway (id $API_V1), PR commentée ✅, mot de passe jamais loggé (0 occurrence)"
 else
-  bad "5. merge=$MERGE5 par='${MERGED_BY5:-?}' pause=$ST5 submit=$SUB5 fin=$ST5B api_id=${API_V1:-absente} fuite_mdp=${LEAK5:-?} — voir $JENKINS_UI/job/$JOB/${N5:-?}/console"
+  bad "5. merge=$MERGE5 par='${MERGED_BY5:-?}' pause=$ST5 submit=$SUB5 fin=$ST5B api_id=${API_V1:-absente} fuite_mdp=${LEAK5:-?}$([ "$DRAIN5" = 1 ] && echo ' — CAUSE PROBABLE : une pause ÉTRANGÈRE bloque la file de ce job (laissée intacte à dessein, cf. le message ci-dessus)') — voir $JENKINS_UI/job/$JOB/${N5:-?}/console"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -860,7 +953,7 @@ ACTION=new-version TEAM="$TEAM" API_NAME="$API_NAME" API_BASE="$API_BASE_V1" NEW
   bash scripts/api-request.sh >"$TMP/p6req.log" 2>&1
 R6REQ=$?
 PR_V2=$(grep -oE 'PR #[0-9]+ ouverte' "$TMP/p6req.log" | grep -oE '[0-9]+' | head -1)
-jdrain "$JOB"
+DRAIN6=0; jdrain "$JOB" "$TEAM_REPO" || DRAIN6=1
 N6=$(jnext "$JOB")
 MERGE6=$(merge_as_oscar "$TEAM_REPO" "${PR_V2:-0}")
 ST6=$(jwait "$JOB" "${N6:-0}" 120)
@@ -891,7 +984,7 @@ if [ "$R6REQ" -eq 0 ] && [ "$MERGE6" = 200 ] && [ "$ST6B" = SUCCESS ] && [ -n "$
    && printf '%s' "$CB6" | grep -q VERSION_SUBS_RETAINED; then
   ok "6. v2 minée (id $API_V2) : policies [$POL_V2] DISJOINTES de la base [$POL_V1] (M2) ; souscriptions relues AVANT [$SUBS_V1_BEFORE] -> APRÈS v2 [$SUBS_V2_AFTER] et base [$SUBS_V1_AFTER] (M3, base jamais désabonnée) ; PR ✅ VERSION_CREATED + VERSION_CLONE_OK + VERSION_SUBS_RETAINED"
 else
-  bad "6. req=$R6REQ merge=$MERGE6 pause=$ST6 submit=$SUB6 fin=$ST6B v2=${API_V2:-absente} policies_disjointes=$DISJOINT subs_avant=[${SUBS_V1_BEFORE:-vide}] subs_v2=[${SUBS_V2_AFTER:-vide}] subs_base=[${SUBS_V1_AFTER:-vide}] commentaire=$(printf '%s' "$CB6" | head -c 160) — voir $JENKINS_UI/job/$JOB/${N6:-?}/console"
+  bad "6. req=$R6REQ merge=$MERGE6 pause=$ST6 submit=$SUB6 fin=$ST6B v2=${API_V2:-absente} policies_disjointes=$DISJOINT subs_avant=[${SUBS_V1_BEFORE:-vide}] subs_v2=[${SUBS_V2_AFTER:-vide}] subs_base=[${SUBS_V1_AFTER:-vide}] commentaire=$(printf '%s' "$CB6" | head -c 160)$([ "$DRAIN6" = 1 ] && echo ' — CAUSE PROBABLE : une pause ÉTRANGÈRE bloque la file de ce job (laissée intacte à dessein)') — voir $JENKINS_UI/job/$JOB/${N6:-?}/console"
 fi
 
 # fin de la fenêtre de sondage ps — ICI, avant toute lecture de ses résultats.
@@ -999,6 +1092,16 @@ RC_ORPHORG=$(ghc "$GITEA_URL/api/v1/orgs/$ORPH_ORG")
 RC_KV=$(vlt "$VROOT" "secret/data/stoa/deploy/$TEAM/wm-admin")
 RC_POL=$(vlt "$VROOT" "sys/policies/acl/deploy-$TEAM")
 RC_JOB=$(curl -s -o /dev/null -w '%{http_code}' "$JENKINS_UI/job/$JOB/api/json")
+# Le témoin du dépôt plateforme RÉEL (capturé juste avant la preuve 1) : relu
+# ICI, après le teardown, pour que la fenêtre couverte soit exactement les
+# preuves 1 à 9.
+CI_HEADS_AFTER=$(git ls-remote --heads "$GITEA_URL/ci/stoa-labs.git" 2>/dev/null)
+CI_INTACT=oui
+[ "$CI_HEADS_BEFORE" = "$CI_HEADS_AFTER" ] || CI_INTACT=non
+CI_DELTA=""
+if [ "$CI_INTACT" = non ]; then
+  CI_DELTA=$(diff <(printf '%s\n' "$CI_HEADS_BEFORE") <(printf '%s\n' "$CI_HEADS_AFTER") 2>/dev/null | head -6 | tr '\n' ' ')
+fi
 TEAMWORK_NOW=$(wmapi configurations/extended | python3 -c "import json,sys; print(json.load(sys.stdin).get('enableTeamWork','?'))" 2>/dev/null)
 CFG_SAME=oui
 for j in app-request api-request; do
@@ -1016,10 +1119,11 @@ if [ "$RED_OK" = oui ] && [ "$RESTORED" = oui ] \
    && [ "$RC_ORPHREPO" = 404 ] && [ "$RC_ORPHORG" = 404 ] \
    && [ "$RC_KV" = 404 ] && [ "$RC_POL" = 404 ] \
    && [ "$JOB_OK" = oui ] && [ "$CFG_SAME" = oui ] \
+   && [ "$CI_INTACT" = oui ] \
    && [ "$TEAMWORK_NOW" = "$TEAMWORK_AT_ENTRY" ]; then
-  ok "9. contre-épreuve ROUGE tenue (tag renommé -> le critère de la preuve 1 ne matche plus, rc=$RED_RC) et garde restaurée à l'identique (git diff vide) ; teardown : dépôts/orgs jetables, KV et policy tous en 404 EXACT, job $JOB $([ "$CREATED_JOB" = 1 ] && echo 'supprimé (créé par ce run)' || echo 'laissé en place (préexistant)'), configs des 2 formulaires restaurées à l'octet près, enableTeamWork rendu à '$TEAMWORK_AT_ENTRY' — objets gateway NON supprimés (le mock n'expose aucune route DELETE : 405 mesuré ; sur la vraie 10.15 une ressource supprimée répondrait 401, pas 404)"
+  ok "9. contre-épreuve ROUGE tenue (tag renommé -> le critère de la preuve 1 ne matche plus, rc=$RED_RC) et garde restaurée à l'identique (git diff vide) ; ci/stoa-labs (dépôt plateforme RÉEL) INCHANGÉ sur toute la fenêtre des preuves 1-9 (heads identiques au témoin) ; teardown : dépôts/orgs jetables, KV et policy tous en 404 EXACT, job $JOB $([ "$CREATED_JOB" = 1 ] && echo 'supprimé (créé par ce run)' || echo 'laissé en place (préexistant)'), configs des 2 formulaires restaurées à l'octet près, enableTeamWork rendu à '$TEAMWORK_AT_ENTRY' — objets gateway NON supprimés (le mock n'expose aucune route DELETE : 405 mesuré ; sur la vraie 10.15 une ressource supprimée répondrait 401, pas 404)"
 else
-  bad "9. rouge=$RED_OK(rc=$RED_RC) restauré=$RESTORED | team_repo=$RC_TEAMREPO team_org=$RC_TEAMORG plat_repo=$RC_PLATREPO plat_org=$RC_PLATORG orph_repo=$RC_ORPHREPO orph_org=$RC_ORPHORG kv=$RC_KV policy=$RC_POL job=$RC_JOB(ok=$JOB_OK) configs_identiques=$CFG_SAME teamwork=$TEAMWORK_NOW(attendu $TEAMWORK_AT_ENTRY) — tous les codes Gitea/Vault attendus à 404 EXACT"
+  bad "9. rouge=$RED_OK(rc=$RED_RC) restauré=$RESTORED | team_repo=$RC_TEAMREPO team_org=$RC_TEAMORG plat_repo=$RC_PLATREPO plat_org=$RC_PLATORG orph_repo=$RC_ORPHREPO orph_org=$RC_ORPHORG kv=$RC_KV policy=$RC_POL job=$RC_JOB(ok=$JOB_OK) configs_identiques=$CFG_SAME teamwork=$TEAMWORK_NOW(attendu $TEAMWORK_AT_ENTRY)$([ "$CI_INTACT" = non ] && echo " | CI_STOA_LABS_MUTE_PAR_LES_PREUVES_1_9 : les heads de ci/stoa-labs ont CHANGÉ entre la fin de la preuve 0 et la fin de la preuve 9 — soit une régression fait fuiter un accès en écriture au dépôt plateforme RÉEL hors de la preuve 0, soit un run CONCURRENT y a poussé (lab partagé). Delta : $CI_DELTA") — tous les codes Gitea/Vault attendus à 404 EXACT"
 fi
 
 echo
