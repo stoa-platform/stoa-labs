@@ -207,11 +207,41 @@ echo "  équipe '${TEAM}' -> dépôt ${REPO_FULL}"
 if [ "$ACTION" = "create" ]; then
   echo "[1b/5] collision cross-team : '${API_NAME}' ailleurs sur la plateforme ?"
   COLLISION_OWNER=""
-  if [ -d "$WORK/platform/poc-control-plane-federation/clients" ]; then
-    COLLISION_FILE=$(find "$WORK/platform/poc-control-plane-federation/clients" -type f \
-      -path "*/apis/${API_NAME}.publish.yml" 2>/dev/null | head -1)
-    [ -n "$COLLISION_FILE" ] && COLLISION_OWNER="dépôt plateforme (${COLLISION_FILE#"$WORK/platform/poc-control-plane-federation/"})"
-  fi
+  # Balayage du dépôt PLATEFORME : `clients/` ET `gateways/`. `gateways/` était
+  # l'angle mort — c'est là que vivent les APIs de la plateforme elle-même
+  # (gateways/webmethods/provisioning/provisioning.publish.yml), invisibles à
+  # cette porte jusqu'à la revue finale : une équipe pouvait demander
+  # `API_NAME=provisioning` et, à l'apply, se voir réassigner l'API plateforme.
+  # Le refus AUTORITATIF est côté rôle (API_OWNER_MISMATCH, qui lit la gateway
+  # VIVE) ; ceci le double au plus tôt, sur ce que Git connaît.
+  #
+  # Le nom cherché est celui DÉCLARÉ dans le manifeste (`apim_api.name`), pas le
+  # nom de fichier : les deux peuvent diverger, et c'est le champ qui décide de
+  # l'objet créé sur la gateway.
+  PLATFORM_ROOT="$WORK/platform/poc-control-plane-federation"
+  for SCAN_DIR in clients gateways; do
+    [ -d "$PLATFORM_ROOT/$SCAN_DIR" ] || continue
+    [ -n "$COLLISION_OWNER" ] && break
+    COLLISION_FILE=$(API_NAME="$API_NAME" ROOT="$PLATFORM_ROOT/$SCAN_DIR" python3 - <<'PY'
+import os, sys, yaml
+want = os.environ["API_NAME"]
+for dirpath, _, files in os.walk(os.environ["ROOT"]):
+    for f in files:
+        if not f.endswith(".publish.yml"):
+            continue
+        p = os.path.join(dirpath, f)
+        try:
+            d = yaml.safe_load(open(p)) or {}
+        except Exception:
+            continue          # un manifeste illisible n'est pas une collision
+        if ((d.get("apim_api") or {}).get("name") or "") == want:
+            print(p)
+            sys.exit(0)
+PY
+)
+    [ -n "$COLLISION_FILE" ] \
+      && COLLISION_OWNER="dépôt plateforme (${COLLISION_FILE#"$PLATFORM_ROOT/"})"
+  done
   if [ -z "$COLLISION_OWNER" ]; then
     ALL_PROVIDERS=$(python3 -c "
 import yaml
@@ -225,15 +255,22 @@ for p in (d.get('providers') or []):
       [ -n "$OTHER_REPO" ] || continue
       [ "$OTHER_TEAM" = "$TEAM" ] && continue   # notre propre dépôt : couvert par API_ALREADY_EXISTS plus bas
       OW=$(mktemp -d)
-      if git clone -q --depth 1 -b main "${GIT_HOST}/${OTHER_REPO}.git" "$OW" 2>/dev/null; then
+      if git clone -q --depth 1 -b main "${GIT_HOST}/${OTHER_REPO}.git" "$OW" 2>"$OW.err"; then
         [ -f "$OW/apis/${API_NAME}.publish.yml" ] && COLLISION_OWNER="équipe '${OTHER_TEAM}' (${OTHER_REPO})"
+      else
+        # Un clone qui échoue n'est PAS une absence de collision : c'est une
+        # ABSENCE DE RÉPONSE. Le `2>/dev/null` sans `else` d'avant l'avalait, et
+        # le balayage rendait « aucune collision » avec la même assurance que
+        # s'il avait vraiment regardé. On ne bloque pas la demande là-dessus
+        # (le rôle reste autoritatif à l'apply), mais ça se voit.
+        echo "⚠ COLLISION_SCAN_INCOMPLET : dépôt '${OTHER_REPO}' (équipe '${OTHER_TEAM}') injoignable — non balayé : $(tail -1 "$OW.err" 2>/dev/null)" >&2
       fi
-      rm -rf "$OW"
+      rm -rf "$OW" "$OW.err"
       [ -n "$COLLISION_OWNER" ] && break
     done <<<"$ALL_PROVIDERS"
   fi
   [ -z "$COLLISION_OWNER" ] \
-    || fail "API_NAME_COLLISION : '${API_NAME}' est déjà publiée par ${COLLISION_OWNER} — choisir un autre nom, ou coordonner avec cette équipe (l'apply aval matche name+version GLOBALEMENT et réassignerait l'équipe au dernier publish, cf. roles/apim_publish_api/tasks/team.yml)"
+    || fail "API_NAME_COLLISION : '${API_NAME}' est déjà publiée par ${COLLISION_OWNER} — choisir un autre nom, ou coordonner avec cette équipe (l'apply aval matche name+version GLOBALEMENT ; il REFUSE désormais de toucher une API qui n'appartient pas à l'équipe demandeuse — API_OWNER_MISMATCH, roles/apim_publish_api/tasks/version.yml — mais un nom déjà pris reste à éviter ici)"
 fi
 
 # ── 3. clone du dépôt d'ÉQUIPE, écrit spec + manifeste ───────────────────────
