@@ -61,6 +61,35 @@
 // geste périodique à la charge de l'équipe de support (voir ci-dessous), là où
 // Vault la rendait implicite. C'est une dette d'exploitation, pas un détail.
 //
+// ── AMENDEMENT (2026-08-07) : VAULT REDEVIENT POSSIBLE, PAR APPROLE ──────────
+// L'arbitrage ci-dessus reste EXACT, mais il était plus large que son motif.
+// Ce qui a été refusé côté client, c'est l'authentification Vault PAR IDENTITÉ
+// DE POD (auth `kubernetes`) — pas Vault. Or les pipelines `prod` et `rollback`
+// de ce même dépôt lisent déjà leurs secrets dans Vault par APPROLE, et c'est
+// un chemin que le client exécute réellement. Le motif « ne pas éprouver un
+// chemin qu'il n'exécutera jamais » ne s'oppose donc pas à AppRole : il le
+// désigne.
+//
+// Ce job accepte désormais les DEUX voies, commandées par le seul paramètre
+// VAULT_ADDR :
+//   VAULT_ADDR vide      -> credentials Jenkins. Comportement INCHANGÉ, et
+//                           c'est le DÉFAUT : ce job est planifié toutes les
+//                           nuits, une voie d'authentification neuve activée
+//                           d'office se paierait en nuits rouges.
+//   VAULT_ADDR renseigné -> secrets lus dans Vault par AppRole, chemin par
+//                           chemin (un chemin vide laisse SON secret sur le
+//                           credential Jenkins : la bascule est graduelle).
+//
+// À dire honnêtement : AppRole ne supprime pas le secret zéro, il le déplace.
+// Jenkins ne détient plus trois secrets métier à longue vie mais un `secret_id`,
+// dont le pouvoir est borné par la policy Vault du rôle. C'est un vrai gain,
+// pas une élimination. Tout le raisonnement est en tête de
+// `ci/lib/carto-secrets.sh`, qui porte l'unique implémentation.
+//
+// ÉTAT DE PREUVE : cette voie est COMPILÉE et RELUE, elle n'a PAS encore tourné
+// contre un Vault réel — aucun chemin KV n'existe pour ce job à ce jour. Le
+// geste qui la met en service est décrit dans le handoff du 2026-08-07.
+//
 // ─────────────────────────────────────────────────────────────────────────────
 // GESTE EXPLOITANT — POSE DU CREDENTIAL (à faire AVANT le premier build)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -124,6 +153,42 @@
 // Le geste exploitant (dépôt dédié, compte de service, jeton) est décrit en
 // tête de `carto/scripts/publier-markdown.sh`, qui porte toute la logique de
 // commit : ce Jenkinsfile ne fait que lui passer des identifiants.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// ET ENFIN : LE MIROIR CONFLUENCE, ET POURQUOI SON ÉCHEC NE ROUGIT PAS LE BUILD
+// ─────────────────────────────────────────────────────────────────────────────
+// Une population lit la carto sans jamais aller dans une forge. Le dernier
+// stage publie donc les mêmes quatre pages dans un espace Confluence, converties
+// au format de stockage par `carto/render/confluence.py`.
+//
+// LE DÉPÔT GIT RESTE LA SOURCE DE VÉRITÉ, et ce n'est pas une formule : le
+// `git diff` répond à « qu'est-ce qui a bougé » de façon greppable et
+// scriptable, là où l'historique de versions de Confluence compare deux pages
+// RENDUES — illisible sur un tableau de neuf colonnes, et inexploitable par une
+// machine. Confluence est un MIROIR, pas un remplacement.
+//
+// D'où l'arbitrage central de ce stage : SON ÉCHEC REND LE BUILD « UNSTABLE »,
+// JAMAIS « FAILURE ». Quand il échoue — Confluence en panne, jeton expiré,
+// siège de licence retiré — la collecte a été faite, les quatre portes ont été
+// passées, l'archive existe et le dépôt git est à jour. LE TRAVAIL EST FAIT ;
+// seul le miroir n'a pas suivi. Marquer le build rouge dans ce cas apprendrait
+// à l'équipe que le rouge de ce job ne veut rien dire — et le jour où c'est la
+// COLLECTE qui casse, plus personne ne regarderait. Un jaune visible coûte
+// beaucoup moins cher qu'un rouge qu'on ignore.
+//
+// Ce stage est lui aussi FACULTATIF et désactivé par défaut : sans
+// CONFLUENCE_BASE_URL, il ne fait rien et le dit.
+//
+// UNE DIFFÉRENCE DE FORME AVEC LES DEUX AUTRES CREDENTIALS, ET SA RAISON : ici
+// le credential est un « Secret text » (le jeton SEUL), pas un « Username with
+// password ». Parce que la moitié « utilisateur » n'est un secret dans aucun des
+// deux cas, et n'existe même pas dans l'un : Confluence Cloud s'authentifie en
+// Basic avec un COURRIEL (public) plus un jeton, tandis que Confluence Data
+// Center — la cible banque — s'authentifie en Bearer avec le jeton SEUL, sans
+// aucun utilisateur. Forcer un couple utilisateur/mot de passe obligerait à
+// inventer un utilisateur bidon sur la voie Data Center. Le courriel est donc un
+// PARAMÈTRE (vide = Data Center, renseigné = Cloud), et seul le jeton est un
+// secret.
 
 properties([
   buildDiscarder(logRotator(numToKeepStr: '30')),
@@ -146,7 +211,41 @@ properties([
     string(name: 'CARTO_PAGES_CREDENTIALS_ID', defaultValue: 'carto-pages-git',
            description: "Identifiant du credential Jenkins « Username with password » portant le compte de SERVICE qui écrit dans le dépôt dédié (utilisateur = compte de service, mot de passe = jeton d'accès limité à ce dépôt). Distinct du credential de lecture de la gateway : lire l'inventaire et écrire la publication sont deux droits différents."),
     string(name: 'CARTO_PAGES_BRANCH', defaultValue: 'main',
-           description: "Branche du dépôt dédié qui porte la carto publiée.")
+           description: "Branche du dépôt dédié qui porte la carto publiée."),
+    // Miroir Confluence : VIDE = désactivé, et le build le dit. Même règle que
+    // pour le dépôt de pages — pas de valeur par défaut plausible, une URL
+    // inventée publierait la carto d'un client chez un autre.
+    string(name: 'CONFLUENCE_BASE_URL', defaultValue: '',
+           description: "URL de base Confluence. Cloud : https://<site>.atlassian.net/wiki (le /wiki final n'est PAS optionnel). Data Center : https://confluence.interne. Vide = miroir Confluence désactivé, le job se limite à l'archivage et au dépôt git."),
+    string(name: 'CONFLUENCE_SPACE_KEY', defaultValue: '',
+           description: "CLÉ de l'espace Confluence (pas son nom, pas son URL). Elle se lit dans l'URL, entre /spaces/ et /pages/."),
+    string(name: 'CONFLUENCE_USER', defaultValue: '',
+           description: "Confluence Cloud : le COURRIEL du compte de service (ce n'est pas un secret). Confluence Data Center : LAISSER VIDE — l'authentification bascule alors en Bearer, ce qu'attend un jeton d'accès personnel."),
+    string(name: 'CONFLUENCE_CREDENTIALS_ID', defaultValue: 'carto-confluence',
+           description: "Identifiant du credential Jenkins « Secret text » portant le JETON Confluence du compte de service. Secret text et non Username/password : sur Data Center le jeton s'utilise SEUL, sans utilisateur (voir l'en-tête de ce fichier)."),
+    string(name: 'CONFLUENCE_TITLE_PREFIX', defaultValue: 'Carto API',
+           description: "Préfixe des quatre titres de page. Le changer permet à deux cartos (par environnement, ou par plateforme) de cohabiter dans un même espace : les titres ET les liens internes suivent."),
+    string(name: 'CONFLUENCE_PARENT_ID', defaultValue: '',
+           description: "Identifiant de la page sous laquelle greffer la racine de la carto. Vide = à la racine de l'espace."),
+    string(name: 'CONFLUENCE_CA_FILE', defaultValue: '',
+           description: "Chemin d'un fichier PEM d'autorités de certification, DANS L'AGENT. Nécessaire quand le certificat Confluence est signé par une autorité interne, ou en cas d'inspection TLS d'entreprise. Vide = magasin par défaut. La vérification du certificat n'est JAMAIS désactivable."),
+    // ── Secrets par Vault (AppRole) — DÉSACTIVÉ PAR DÉFAUT ────────────────
+    // Vide = comportement strictement identique à avant : credentials Jenkins.
+    // Ce job est PLANIFIÉ toutes les nuits ; une voie d'authentification neuve
+    // activée d'office produirait une série de nuits rouges découvertes tard.
+    // Tout le raisonnement est en tête de ci/lib/carto-secrets.sh.
+    string(name: 'VAULT_ADDR', defaultValue: '',
+           description: "Adresse de Vault (ex. http://vault:8200). VIDE = secrets pris dans les credentials Jenkins, comme aujourd'hui. Renseigné = les secrets sont lus dans Vault par AppRole, et les credentials Jenkins correspondants ne sont plus nécessaires."),
+    string(name: 'VAULT_ROLE_ID', defaultValue: '',
+           description: "role_id AppRole du CI. Ce n'est PAS un secret (le secret_id l'est). Sans humain dans un build planifié, AppRole est la seule voie d'authentification qui puisse aboutir."),
+    string(name: 'VAULT_SECRET_ID_CREDENTIALS_ID', defaultValue: 'vault-ci-secret-id',
+           description: "Identifiant du credential Jenkins « Secret text » portant le secret_id AppRole. Même credential que les pipelines prod et rollback."),
+    string(name: 'CARTO_VAULT_GW_PATH', defaultValue: '',
+           description: "Chemin KV du compte technique LECTURE SEULE de la gateway (ex. secret/data/stoa/carto/gateway). Champs attendus : user, password (surchargeables par variables d'environnement du contrôleur). Vide = ce secret reste pris dans le credential Jenkins."),
+    string(name: 'CARTO_VAULT_PAGES_PATH', defaultValue: '',
+           description: "Chemin KV du compte de service qui écrit dans le dépôt de pages. Champs attendus : user, token. Vide = credential Jenkins."),
+    string(name: 'CARTO_VAULT_CONFLUENCE_PATH', defaultValue: '',
+           description: "Chemin KV du jeton Confluence. Champ attendu : token. Vide = credential Jenkins.")
   ]),
   // Planification quotidienne. `H` étale la charge : Jenkins choisit une minute
   // stable pour ce job dans l'heure indiquée, au lieu de faire partir tous les
@@ -175,6 +274,36 @@ def PAGES_URL     = (params.CARTO_PAGES_REPO_URL ?: '').trim()
 def PAGES_CREDS   = params.CARTO_PAGES_CREDENTIALS_ID ?: 'carto-pages-git'
 def PAGES_BRANCHE = params.CARTO_PAGES_BRANCH ?: 'main'
 
+// Miroir Confluence : entièrement piloté par paramètres, jamais en dur.
+def CONF_URL    = (params.CONFLUENCE_BASE_URL ?: '').trim()
+def CONF_ESPACE = (params.CONFLUENCE_SPACE_KEY ?: '').trim()
+def CONF_USER   = (params.CONFLUENCE_USER ?: '').trim()
+def CONF_CREDS  = params.CONFLUENCE_CREDENTIALS_ID ?: 'carto-confluence'
+def CONF_PREFIX = params.CONFLUENCE_TITLE_PREFIX ?: 'Carto API'
+def CONF_PARENT = (params.CONFLUENCE_PARENT_ID ?: '').trim()
+def CONF_CA     = (params.CONFLUENCE_CA_FILE ?: '').trim()
+
+// Vault : un seul booléen commande tout. Vide = on ne change rien à l'existant.
+def VAULT_URL     = (params.VAULT_ADDR ?: '').trim()
+def VAULT_ON      = VAULT_URL as Boolean
+def VAULT_RID     = (params.VAULT_ROLE_ID ?: '').trim()
+def VAULT_SID_CRD = params.VAULT_SECRET_ID_CREDENTIALS_ID ?: 'vault-ci-secret-id'
+def V_GW          = (params.CARTO_VAULT_GW_PATH ?: '').trim()
+def V_PAGES       = (params.CARTO_VAULT_PAGES_PATH ?: '').trim()
+def V_CONF        = (params.CARTO_VAULT_CONFLUENCE_PATH ?: '').trim()
+
+// Les liaisons de secret d'un stage, selon la source. Construire une LISTE
+// plutôt que dupliquer le corps du stage : le script shell reste écrit une
+// seule fois, et les deux voies ne peuvent pas diverger au premier correctif.
+// (Une closure serait plus élégante mais traverse mal la sérialisation CPS de
+// Jenkins ; une liste ne pose aucun problème.)
+def liaisons = { String credJenkins, String userVar, String passVar, String cheminVault ->
+  VAULT_ON && cheminVault
+    ? [string(credentialsId: VAULT_SID_CRD, variable: 'VAULT_SECRET_ID')]
+    : [usernamePassword(credentialsId: credJenkins,
+                        usernameVariable: userVar, passwordVariable: passVar)]
+}
+
 // AUCUN serviceAccount privilégié n'est demandé : ce pod ne parle ni à Vault ni
 // à l'API Kubernetes. C'est la contrepartie visible de l'arbitrage ci-dessus —
 // l'identité de pod ne sert plus à rien ici, on ne la réclame donc pas.
@@ -189,7 +318,23 @@ podTemplate(containers: [
       // son jeton, eux, n'entrent JAMAIS dans le pod par ici — ils sont
       // injectés le temps du seul stage qui pousse, par `withCredentials`.
       envVar(key: 'CARTO_PAGES_REPO_URL', value: PAGES_URL),
-      envVar(key: 'CARTO_PAGES_BRANCH', value: PAGES_BRANCHE)
+      envVar(key: 'CARTO_PAGES_BRANCH', value: PAGES_BRANCHE),
+      // Confluence : même règle. Rien de secret ici — l'URL, l'espace, le
+      // courriel et le préfixe sont publics. Le JETON n'entre dans le pod que
+      // le temps du seul stage qui publie, par `withCredentials`.
+      envVar(key: 'CONFLUENCE_BASE_URL', value: CONF_URL),
+      envVar(key: 'CONFLUENCE_SPACE_KEY', value: CONF_ESPACE),
+      envVar(key: 'CONFLUENCE_USER', value: CONF_USER),
+      envVar(key: 'CONFLUENCE_TITLE_PREFIX', value: CONF_PREFIX),
+      envVar(key: 'CONFLUENCE_PARENT_ID', value: CONF_PARENT),
+      envVar(key: 'CONFLUENCE_CA_FILE', value: CONF_CA),
+      // Vault : aucune de ces valeurs n'est un secret. Le `secret_id`, lui,
+      // n'entre dans le pod que par `withCredentials`, stage par stage.
+      envVar(key: 'VAULT_ADDR', value: VAULT_URL),
+      envVar(key: 'VAULT_ROLE_ID', value: VAULT_RID),
+      envVar(key: 'CARTO_VAULT_GW_PATH', value: V_GW),
+      envVar(key: 'CARTO_VAULT_PAGES_PATH', value: V_PAGES),
+      envVar(key: 'CARTO_VAULT_CONFLUENCE_PATH', value: V_CONF)
     ])
 ]) {
   node(POD_LABEL) {
@@ -287,6 +432,67 @@ podTemplate(containers: [
 """)
           }
         }
+
+        // Le jeton Confluence est vérifié ICI pour la même raison que les deux
+        // précédents : le découvrir absent après 20 minutes de collecte est le
+        // pire moment. MAIS son absence ne fait PAS échouer le build — elle le
+        // rend UNSTABLE. C'est l'arbitrage décrit en tête de ce fichier :
+        // Confluence est un miroir, et un miroir qui manque n'annule pas le
+        // travail. Le stage de publication tentera quand même, et rapportera.
+        if (CONF_URL) {
+          if (!CONF_ESPACE) {
+            currentBuild.result = 'UNSTABLE'
+            echo("MIROIR CONFLUENCE INCOMPLET : CONFLUENCE_BASE_URL est " +
+                 "renseigné mais CONFLUENCE_SPACE_KEY est vide. Renseigner la " +
+                 "CLÉ de l'espace (pas son nom). Le build continue : la carto " +
+                 "sera archivée et poussée dans git, seul le miroir manquera.")
+          }
+          try {
+            withCredentials([string(credentialsId: CONF_CREDS,
+                                    variable: 'CONFLUENCE_TOKEN')]) {
+              echo "Credential Confluence « ${CONF_CREDS} » présent : la carto sera aussi publiée sur ${CONF_URL} (espace ${CONF_ESPACE})."
+            }
+          } catch (Exception e) {
+            currentBuild.result = 'UNSTABLE'
+            echo("""
+╔══════════════════════════════════════════════════════════════════════════════
+║ JETON CONFLUENCE ABSENT — le miroir ne sera pas mis à jour. LE BUILD
+║ CONTINUE : la collecte, l'archivage et la publication git ne dépendent pas
+║ de Confluence. Ce build finira JAUNE, pas rouge.
+╚══════════════════════════════════════════════════════════════════════════════
+
+  CE QUI MANQUE : un credential Jenkins de type « Secret text » portant
+  l'identifiant  ${CONF_CREDS}
+
+  LE GESTE QUI RÉPARE (à faire une fois, par l'équipe de support) :
+    1. Dans Confluence : un compte de SERVICE (jamais celui d'une personne),
+       avec le droit d'ÉCRITURE sur le SEUL espace de la carto. Attention, en
+       Confluence Data Center la licence se compte PAR UTILISATEUR : un compte
+       de service consomme un siège, c'est un achat, pas une permission.
+    2. Générer son jeton :
+         Cloud : https://id.atlassian.com/manage-profile/security/api-tokens
+         DC    : Profil → Personal Access Tokens → Create token
+       (Sur Data Center, les jetons personnels peuvent avoir été DÉSACTIVÉS
+       globalement par l'administrateur : à vérifier avant de promettre une
+       date.)
+    3. Manage Jenkins → Credentials → System → Global credentials
+       « Add Credentials »
+         Kind   : Secret text
+         Scope  : Global
+         ID     : ${CONF_CREDS}
+         Secret : le jeton
+    4. Renseigner CONFLUENCE_USER (le courriel) SI la cible est du Cloud ;
+       le laisser VIDE si c'est du Data Center.
+    5. Relancer ce build.
+
+  Pour désactiver proprement le miroir en attendant : vider
+  CONFLUENCE_BASE_URL — le job n'en parlera plus et restera vert.
+""")
+          }
+        } else {
+          echo("Miroir Confluence DÉSACTIVÉ (paramètre CONFLUENCE_BASE_URL " +
+               "vide). Ce n'est pas un échec, c'est le mode par défaut.")
+        }
       }
 
       stage('Source') {
@@ -298,14 +504,16 @@ podTemplate(containers: [
       container('carto') {
 
         stage('Gateway disponible et credential accepté') {
-          withCredentials([usernamePassword(credentialsId: CREDS_ID,
-                                            usernameVariable: 'WM_USER',
-                                            passwordVariable: 'WM_PASS')]) {
+          withCredentials(liaisons(CREDS_ID, 'WM_USER', 'WM_PASS', V_GW)) {
             // Sonde écrite en Python et non en `curl -u` : `-u` ferait
             // apparaître le mot de passe dans la table des processus du nœud.
             // Ici les identifiants ne quittent pas l'environnement du processus.
             sh '''
               set -eu
+              set +x
+              . ci/lib/carto-secrets.sh
+              carto_secrets_resolve || exit 1
+              set -x
               python3 - <<'PY'
 import base64, os, sys, time, urllib.error, urllib.request
 
@@ -410,13 +618,15 @@ PY
         }
 
         stage('Collecte (lecture seule)') {
-          withCredentials([usernamePassword(credentialsId: CREDS_ID,
-                                            usernameVariable: 'WM_USER',
-                                            passwordVariable: 'WM_PASS')]) {
+          withCredentials(liaisons(CREDS_ID, 'WM_USER', 'WM_PASS', V_GW)) {
             // Les cinq variables attendues par le collecteur sont dans
             // l'environnement — aucune sur la ligne de commande.
             sh '''
               set -eu
+              set +x
+              . ci/lib/carto-secrets.sh
+              carto_secrets_resolve || exit 1
+              set -x
               umask 077
               if python3 -m carto.collect --out carto-out > collecte.log 2>&1; then
                 RC=0
@@ -607,17 +817,57 @@ PY
             // reste HORS de la parenthèse `withCredentials`, pour que le jeton
             // n'existe dans l'environnement que pendant les commandes git.
             sh 'ls -l carto-pages'
-            withCredentials([usernamePassword(credentialsId: PAGES_CREDS,
-                                              usernameVariable: 'CARTO_PAGES_USER',
-                                              passwordVariable: 'CARTO_PAGES_TOKEN')]) {
+            withCredentials(liaisons(PAGES_CREDS, 'CARTO_PAGES_USER', 'CARTO_PAGES_TOKEN', V_PAGES)) {
               // Toute la logique — clone, écriture, commit CONDITIONNEL, push,
               // et le raisonnement qui la justifie — vit dans ce script, partagé
               // avec l'enveloppe du rôle Ansible. Deux implémentations, en
               // Groovy et en Jinja, auraient divergé au premier correctif.
-              sh 'carto/scripts/publier-markdown.sh --source carto-pages'
+              sh '''
+                set -eu
+              set +x
+              . ci/lib/carto-secrets.sh
+              carto_secrets_resolve || exit 1
+              set -x
+                carto/scripts/publier-markdown.sh --source carto-pages
+              '''
             }
             echo "Carto publiée sur ${PAGES_URL} (branche ${PAGES_BRANCHE}). " +
                  "Le git diff de ce dépôt est le rapport de changement de la plateforme."
+          }
+        }
+
+        stage('Miroir Confluence') {
+          // EN DERNIER, et c'est délibéré : quand ce stage s'exécute, la carto
+          // est déjà archivée ET déjà dans git. Tout ce qui peut encore mal se
+          // passer ne fait donc perdre que le miroir.
+          if (!CONF_URL) {
+            echo("Miroir Confluence désactivé (CONFLUENCE_BASE_URL vide) : " +
+                 "rien n'est publié. Ce n'est pas un échec, c'est le mode par défaut.")
+          } else {
+            // `catchError` porte tout l'arbitrage de ce stage en une ligne :
+            // le STAGE est marqué en échec (donc visible et cliquable dans
+            // l'interface), mais le BUILD ne descend qu'à UNSTABLE. Voir
+            // l'en-tête de ce fichier pour le pourquoi.
+            catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE',
+                       message: 'Miroir Confluence non mis à jour — la carto ' +
+                                'reste archivée et publiée dans git.') {
+              withCredentials(VAULT_ON && V_CONF
+                  ? [string(credentialsId: VAULT_SID_CRD, variable: 'VAULT_SECRET_ID')]
+                  : [string(credentialsId: CONF_CREDS, variable: 'CONFLUENCE_TOKEN')]) {
+                // Le rendu `carto-pages/` est déjà produit deux stages plus
+                // haut : la conversion vers Confluence part des MÊMES fichiers
+                // Markdown que ceux poussés dans git. C'est ce qui garantit
+                // que les deux publications ne peuvent pas diverger.
+                sh '''
+                  set -eu
+              set +x
+              . ci/lib/carto-secrets.sh
+              carto_secrets_resolve || exit 1
+              set -x
+                  python3 carto/scripts/publier-confluence.py --source carto-pages
+                '''
+              }
+            }
           }
         }
       }
