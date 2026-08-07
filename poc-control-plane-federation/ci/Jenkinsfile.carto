@@ -461,7 +461,14 @@ def n(cle, defaut=None):
     return None
 
 def mot(cle):
-    m = re.search(cle + r"=(\w+)", ligne)
+    # ANTISLASH DOUBLE, et ce n'est pas une coquette : ce Python vit dans une
+    # chaine Groovy a triple apostrophe, ou les echappements SONT interpretes.
+    # Un antislash simple suivi de w n'est pas un echappement Groovy valide et
+    # fait echouer la COMPILATION du pipeline — donc avant toute collecte, avec
+    # un message qui designe cette ligne sans dire pourquoi. Meme regle que le
+    # saut de ligne du message d'indisponibilite, plus haut. Ne jamais ecrire
+    # d'antislash simple dans ce bloc, commentaires COMPRIS.
+    m = re.search(cle + r"=(\\w+)", ligne)
     return m.group(1) if m else None
 
 seuil   = float(os.environ.get("SEUIL_NON_IDENTIFIE_PCT") or 50)
