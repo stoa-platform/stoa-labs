@@ -3,7 +3,8 @@
 **Date** : 2026-08-07
 **Périmètre** : items 1 et 3 de l'incrément `app-request v3` (« identité entrante enrichie »).
 **Base** : `deliver/gitea-main` (= `gitea/main`, HEAD `6f5ae46`).
-**Statut** : spec validée, plan d'implémentation à écrire.
+**Statut** : **LIVRÉ** — `scripts/test-app-request-v3.sh` **34/34**,
+`scripts/test-app-request-v2.sh` **19/19** (non-régression).
 
 ---
 
@@ -174,6 +175,12 @@ clé **sortante** app→backend. Le rôle **refuse** `token` dans `enforce`
 - `BACKEND_KEY_FIELD` fourni **sans** `BACKEND_KEY_REF` → refus loud
   `BACKEND_KEY_FIELD_ORPHAN`. Sans cette garde on pose un champ inerte : le
   demandeur croit avoir configuré quelque chose, et rien n'est lu.
+- **Ajout à l'implémentation, au-delà du spec initial** : `BACKEND_KEY_FIELD`
+  reçoit lui aussi une classe de caractères, `[A-Za-z0-9._-]` (pas de `/` : ce
+  n'est pas un chemin) → `BACKEND_KEY_FIELD_INVALID`. Le spec initial ne la
+  prévoyait que pour `BACKEND_KEY_REF`, mais **les deux** sont interpolés tels
+  quels dans le YAML du manifeste : la laisser de côté aurait ouvert sur le
+  second champ exactement l'injection que la première ferme sur le premier.
 
 ### 4.3 Emplacement dans le manifeste
 
@@ -299,6 +306,45 @@ comportement que la suite existante).
 
 ---
 
+## 7 bis. Défaut préexistant trouvé pendant la preuve — clone en échec non fatal
+
+Découvert le 2026-08-07 **par** les contre-épreuves vertes de la Section A, et
+corrigé dans la foulée.
+
+`scripts/provision-request.sh` n'a délibérément pas `set -e` (les
+`[ -n "$X" ] && …` du rendu retournent faux sans être des erreurs). Le clone
+s'écrivait :
+
+```sh
+git clone … "$WORK/repo" 2>/dev/null || git clone … "$WORK/repo"
+cd "$WORK/repo"
+```
+
+Les deux clones échouant, `$WORK/repo` n'existait pas, le `cd` échouait — **et
+le script continuait dans le répertoire courant**. Il rendait le manifeste,
+faisait `git add` puis `git commit` : **dans le dépôt de travail de
+l'appelant**. Constaté en direct — six commits `provision(dev): application
+probe` créés dans le dépôt plateforme pendant le premier run de la suite v3,
+retirés depuis (`git reset --soft` puis suppression du manifeste parasite).
+
+Pourquoi la suite v2 ne pouvait pas le voir : **toutes** ses épreuves hors ligne
+sont des **refus**, qui sortent en `exit 2` avant d'atteindre le clone. Les
+contre-épreuves **vertes** de v3 sont les premières à franchir les gardes sans
+réseau — c'est-à-dire les premières à emprunter ce chemin.
+
+**Correctif** : les deux clones sont testés dans une condition explicite, un
+échec sort en `exit 1` avec un message clair, et le `cd` porte son propre
+`|| exit`. **Preuve** : `run_pass` compare le `HEAD` et le `git status
+--porcelain` du dépôt avant/après chaque contre-épreuve, et exige que le run
+échoue (un `rc=0` sans réseau signerait un clone en échec traité comme un
+succès). Six occurrences dans la suite.
+
+Portée : ce défaut touchait **les deux portes** (formulaire et voie machine),
+pour toute panne de Gitea. Il est sans rapport avec les items v3 — seulement mis
+au jour par eux.
+
+---
+
 ## 8. Hors périmètre
 
 Explicitement **non traités** ici, et non impactés :
@@ -315,6 +361,32 @@ Explicitement **non traités** ici, et non impactés :
   `backend_key_ref`, qui **stocke** la clé sur l'application.
 - Le rôle `apim_selfservice_app` : **aucune modification**. Tout ce que cet
   incrément expose y est déjà implémenté et prouvé.
+
+### Dette notée — trois jobs encore en Groovy inline
+
+Constat du 2026-08-07, **sans impact sur cet incrément** mais à traiter :
+
+| Job XML | Forme | Impact v3 |
+|---|---|---|
+| `ci/jenkins/app-request.job.xml` | ✅ Pipeline from SCM | les 3 champs |
+| `ci/jenkins/provisioning-request.job.xml` | ⚠️ `<script>` Groovy inline | **aucun** |
+| `ci/jenkins/provision-plan.job.xml` | ⚠️ `<script>` Groovy inline | aucun (en aval de la PR) |
+| `ci/jenkins/provision-apply.job.xml` | ⚠️ `<script>` Groovy inline | aucun (en aval du merge) |
+
+Le refactor du 2026-08-06 a converti les **5 jobs self-service** en Jenkinsfile
+déclaratifs ; ces trois-là sont restés.
+
+Pourquoi v3 ne les touche pas — et c'est la **validation empirique du §2** :
+`provisioning-request` (voie machine OIG/CLI2) se réduit à
+`sh 'set +x; bash scripts/provision-request.sh'`, **sans lister les champs** —
+les `REQ_*` lui viennent de son payload. Elle hérite donc du multi-IP et de la
+clé backend **sans une ligne de changement**. Toute la logique étant dans le
+script, la forme du job (Groovy ou déclaratif) n'entre pas en jeu.
+
+La conversion des trois reste un chantier **à risque propre** — `provision-apply`
+porte un `input` de validation 4-yeux et l'identité Vault nominative — qu'il
+faut mener séparément, sans le mêler à un changement de formulaire dont la
+preuve repose sur une identité de rendu octet pour octet.
 
 ---
 
