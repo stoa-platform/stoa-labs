@@ -112,10 +112,31 @@ def main(argv=None):
                             now.isoformat().replace("+00:00", "Z"))
     row = history.counters(doc)
 
+    # `trafic_non_identifie=` est LE compteur que lisent les deux portes de
+    # publication (le role Ansible et ci/Jenkinsfile.carto), toutes deux par
+    # une expression réguliere `trafic_non_identifie=([0-9.]+)`. Il porte
+    # depuis le 2026-08-07 la fenetre de PORTE — la plus courte qui porte du
+    # trafic servi — et non plus d90 : un pic ancien ne condamne plus la
+    # publication 90 jours apres sa correction (cf. `build.gating_share`).
+    #
+    # La fenetre retenue est NOMMEE entre parentheses : un chiffre dont le sens
+    # a change sans que la ligne le dise se relit de travers pendant des mois.
+    # Le chiffre d90 reste publie a cote, sous un nom que la regex des portes
+    # ne peut PAS attraper (`trafic_non_identifie_90j=`, pas de `=` apres le
+    # prefixe) : c'est ce qui rend l'heritage visible sans le rendre bloquant.
+    # Aucune fenetre ne porte de trafic servi : `trafic_non_identifie` n'est
+    # alors PAS un nombre, volontairement. Ecrire `0.0%` dirait « tout est
+    # identifie » alors qu'il n'y a rien a imputer — un vert obtenu par
+    # absence de mesure, indiscernable d'un vert merite. Les deux portes lisent
+    # `fenetre_de_porte=aucune` et le disent pour ce que c'est.
+    fenetre_porte, part = build.gating_share(doc)
+    d90 = doc["unidentifiedCallShareByWindow"]["d90"]
     print(f"apis={row['apis']} consommateurs={row['consumersRegistered']} "
           f"actifs={row['consumersActive']} aretes={len(doc['edges'])} "
           f"fenetre_couverte={doc['window']['coveredDays']}j "
-          f"trafic_non_identifie={round(doc['unidentifiedCallShare'] * 100, 1)}%")
+          f"trafic_non_identifie={'aucun' if part is None else str(round(part * 100, 1)) + '%'} "
+          f"fenetre_de_porte={fenetre_porte or 'aucune'} "
+          f"trafic_non_identifie_90j={'n/a' if d90 is None else str(round(d90 * 100, 1)) + '%'}")
 
     if args.dry_run:
         print("dry-run : rien n'a ete publie")

@@ -460,6 +460,10 @@ def n(cle, defaut=None):
         return defaut
     return None
 
+def mot(cle):
+    m = re.search(cle + r"=(\w+)", ligne)
+    return m.group(1) if m else None
+
 seuil   = float(os.environ.get("SEUIL_NON_IDENTIFIE_PCT") or 50)
 fenetre = float(os.environ.get("FENETRE_MIN_JOURS") or 1)
 
@@ -477,6 +481,8 @@ apis   = n("apis")
 aretes = n("aretes")
 couv   = n("fenetre_couverte")
 nonid  = n("trafic_non_identifie")
+porte  = mot("fenetre_de_porte")   # d7 | d30 | d90 | aucune | None (trop ancien)
+nonid90 = n("trafic_non_identifie_90j")
 
 if apis is None or apis == 0:
     echecs.append(
@@ -494,32 +500,46 @@ if couv is None or couv < fenetre:
         "evenements est insuffisante - soit aucun evenement n'est lu (meme "
         "causes que ci-dessus), soit la gateway ne conserve pas d'evenement "
         "aussi ancien que la fenetre demandee." % (couv if couv is not None else -1, fenetre))
-if nonid is None:
+if porte is None and nonid is None:
     echecs.append(
-        "compteur trafic_non_identifie absent : collecteur trop ancien pour "
-        "porter cette mesure - mettre a jour le paquet carto/.")
-elif nonid > seuil:
+        "compteurs trafic_non_identifie / fenetre_de_porte absents : "
+        "collecteur trop ancien pour porter cette mesure - mettre a jour le "
+        "paquet carto/.")
+elif porte == "aucune":
+    # Le collecteur ecrit `trafic_non_identifie=aucun` — volontairement pas un
+    # nombre. Publier un 0 % ici serait un vert obtenu par ABSENCE de mesure,
+    # indiscernable d'un vert merite.
     echecs.append(
-        "trafic_non_identifie=%g%% > %g%% : collecte PUBLIABLE MAIS NON FIABLE "
-        "sur la dimension consommateur. La reponse majoritaire a la question "
-        "'qui consomme quoi' est 'on ne sait pas' : le trafic s'agrege sur des "
-        "noeuds '(inconnu)' et les consommateurs reels basculent en 'declare, "
-        "inactif'. Les inventaires d'APIs et d'Applications, eux, restent "
-        "exacts.\\n"
-        "    AVANT DE CHERCHER UNE PANNE : ce ratio porte sur la fenetre d90. "
-        "Un pic ancien d'appels non identifies pese donc 90 jours APRES sa "
-        "correction. Ventiler le trafic par jour (par applicationName sur "
-        "/transactionalEvents/_count) : si les jours RECENTS sont identifies, "
-        "il n'y a rien a reparer, seulement un heritage a laisser sortir de "
-        "la fenetre.\\n"
-        "    SI LES JOURS RECENTS SONT AUSSI NON IDENTIFIES : verifier que "
-        "l'appelant transmet bien sa cle API (en-tete x-Gateway-APIKey) et "
-        "que l'Application qui la porte est declaree consommatrice de l'API. "
-        "L'identification est NATIVE sur wM 10.15 - elle ne demande aucune "
-        "policy d'identification, et en ajouter une mal ajustee peut au "
-        "contraire l'empecher (mesure du 2026-08-06, cf. l'encadre en tete "
-        "de la section V5 de carto/TERRAIN.md)."
-        % (nonid, seuil))
+        "aucune fenetre ne porte de trafic servi : impossible de conclure quoi "
+        "que ce soit sur la dimension consommateur. Soit la gateway n'a "
+        "encaisse aucun appel, soit ils ont TOUS ete rejetes (401/403). "
+        "Ventiler par statut sur /transactionalEvents/_count pour trancher.")
+elif nonid is not None and nonid > seuil:
+    # Ce ratio porte la fenetre nommee par `fenetre_de_porte` — la plus courte
+    # qui compte du trafic servi — et non plus d90 : c'est ce qui empeche un
+    # pic ancien de condamner la publication 90 jours apres sa correction.
+    # Les appels REJETES sont hors du calcul (un appel refuse n'a aucun
+    # consommateur a perdre).
+    echecs.append(
+        "trafic_non_identifie=%g%% > %g%% sur la fenetre %s : collecte "
+        "PUBLIABLE MAIS NON FIABLE sur la dimension consommateur. La reponse "
+        "majoritaire a la question 'qui consomme quoi' est 'on ne sait pas' : "
+        "le trafic s'agrege sur des noeuds '(inconnu)' et les consommateurs "
+        "reels basculent en 'declare, inactif'. Les inventaires d'APIs et "
+        "d'Applications, eux, restent exacts.\\n"
+        "    CE N'EST PLUS UN HERITAGE : la fenetre jugee est la plus COURTE "
+        "qui porte du trafic, et les appels rejetes n'y comptent pas. Le "
+        "chiffre sur 90 jours est donne a cote (trafic_non_identifie_90j=%s) "
+        "pour comparaison : s'il est bien plus haut, le reste est un passe en "
+        "train de sortir de la fenetre.\\n"
+        "    QUE VERIFIER : que l'appelant transmet bien sa cle API (en-tete "
+        "x-Gateway-APIKey) et que l'Application qui la porte est declaree "
+        "consommatrice de l'API. L'identification est NATIVE sur wM 10.15 - "
+        "elle ne demande aucune policy d'identification, et en ajouter une mal "
+        "ajustee peut au contraire l'empecher (mesure du 2026-08-06, cf. "
+        "l'encadre en tete de la section V5 de carto/TERRAIN.md)."
+        % (nonid, seuil, porte or "?",
+           "n/a" if nonid90 is None else "%g%%" % nonid90))
 
 if echecs:
     print("COLLECTE DEGRADEE - rien ne sera publie. La derniere carto archivee")

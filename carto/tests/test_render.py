@@ -116,6 +116,7 @@ class RenderJsTestCase(unittest.TestCase):
             "window": {"requestedDays": 90, "coveredDays": 34,
                        "oldestEvent": "2026-06-26T00:00:00Z"},
             "unidentifiedCallShare": 0.0,
+            "unidentifiedCallShareByWindow": {"d7": 0.0, "d30": 0.0, "d90": 0.0},
             "apis": [{"id": "a1", "name": "orders", "version": "1",
                       "owner": None, "active": True, "createdAt": None,
                       "ghost": False}],
@@ -123,10 +124,19 @@ class RenderJsTestCase(unittest.TestCase):
                            "contact": None, "createdAt": None, "ghost": False}],
             "edges": [{"apiId": "a1", "consumerId": "c1", "declared": True,
                        "calls": {"d7": 1, "d30": 2, "d90": 3},
+                       "errors": {"d7": 0, "d30": 0, "d90": 0},
                        "lastCall": "2026-07-29T00:00:00Z", "errorRate": 0.0}],
         }
         doc.update(over)
         return json.dumps(doc)
+
+    def part(self, valeur, **over):
+        """Document dont le trafic non identifie vaut `valeur` sur les TROIS
+        fenetres — la forme qui ne depend pas de celle que la porte retient."""
+        return self.carto_js(
+            unidentifiedCallShare=valeur,
+            unidentifiedCallShareByWindow={"d7": valeur, "d30": valeur, "d90": valeur},
+            **over)
 
 
 class TestBandeau(RenderJsTestCase):
@@ -164,7 +174,7 @@ class TestBandeau(RenderJsTestCase):
     def test_un_trafic_majoritairement_non_identifie_passe_en_alerte(self):
         # C2 : le pire mode de defaillance du produit. 87 % du trafic sur un
         # noeud fantome, et sans cette alerte le bandeau resterait vert.
-        r = json.loads(self.bandeau(self.carto_js(unidentifiedCallShare=0.87)))
+        r = json.loads(self.bandeau(self.part(0.87)))
         self.assertEqual(r["cls"], "stale")
         self.assertIn("87.0 %", r["html"])
         self.assertIn("n'est PAS fiable", r["html"])
@@ -172,21 +182,57 @@ class TestBandeau(RenderJsTestCase):
     def test_une_part_residuelle_est_dite_sans_crier_au_loup(self):
         # une alerte toujours allumee n'alerte plus : sous le seuil, on
         # informe, on n'alarme pas.
-        r = json.loads(self.bandeau(self.carto_js(unidentifiedCallShare=0.02)))
+        r = json.loads(self.bandeau(self.part(0.02)))
         self.assertEqual(r["cls"], "")
         self.assertIn("2.0 %", r["html"])
 
     def test_le_seuil_d_alerte_est_bien_a_la_moitie_du_trafic(self):
-        sous = json.loads(self.bandeau(self.carto_js(unidentifiedCallShare=0.5)))
-        au_dessus = json.loads(self.bandeau(self.carto_js(unidentifiedCallShare=0.51)))
+        sous = json.loads(self.bandeau(self.part(0.5)))
+        au_dessus = json.loads(self.bandeau(self.part(0.51)))
         self.assertEqual(sous["cls"], "")
         self.assertEqual(au_dessus["cls"], "stale")
 
     def test_un_document_sans_le_champ_dit_qu_il_ne_sait_pas(self):
         js = json.dumps({k: v for k, v in json.loads(self.carto_js()).items()
-                         if k != "unidentifiedCallShare"})
+                         if k not in ("unidentifiedCallShare",
+                                      "unidentifiedCallShareByWindow")})
         r = json.loads(self.bandeau(js))
         self.assertIn("inconnue", r["html"])
+
+    def test_un_heritage_ancien_ne_rend_plus_le_bandeau_rouge(self):
+        # Mesure du 2026-08-07 : 803 evenements non identifies du 2026-07-30
+        # tenaient le d90 a 99 % alors que les jours recents etaient
+        # identifies. Juger sur d90 seule, c'est afficher « non fiable » trois
+        # mois apres que la cause a ete corrigee.
+        r = json.loads(self.bandeau(self.carto_js(
+            unidentifiedCallShare=0.99,
+            unidentifiedCallShareByWindow={"d7": 0.0, "d30": 0.9, "d90": 0.99})))
+        self.assertEqual(r["cls"], "")
+        self.assertIn("7 derniers jours", r["html"])
+
+    def test_l_heritage_reste_dit_meme_quand_il_n_alerte_plus(self):
+        # ne plus condamner n'est pas se taire : le passe doit rester visible,
+        # sinon on aurait simplement rendu le produit aveugle.
+        r = json.loads(self.bandeau(self.carto_js(
+            unidentifiedCallShare=0.99,
+            unidentifiedCallShareByWindow={"d7": 0.0, "d30": 0.9, "d90": 0.99})))
+        self.assertIn("99.0 %", r["html"])
+
+    def test_le_bandeau_juge_la_plus_courte_fenetre_qui_porte_du_trafic(self):
+        # d7 sans trafic servi : on ne peut rien en conclure, on se rabat sur
+        # la fenetre suivante plutot que d'afficher un vert par absence.
+        r = json.loads(self.bandeau(self.carto_js(
+            unidentifiedCallShare=0.8,
+            unidentifiedCallShareByWindow={"d7": None, "d30": 0.8, "d90": 0.8})))
+        self.assertEqual(r["cls"], "stale")
+        self.assertIn("30 derniers jours", r["html"])
+
+    def test_aucun_trafic_servi_nulle_part_le_dit_au_lieu_de_verdir(self):
+        r = json.loads(self.bandeau(self.carto_js(
+            unidentifiedCallShare=0.0,
+            unidentifiedCallShareByWindow={"d7": None, "d30": None, "d90": None})))
+        self.assertIn("aucun trafic servi", r["html"])
+        self.assertNotIn("0.0 %", r["html"])
 
 
 class TestVersionDeSchema(RenderJsTestCase):
@@ -204,7 +250,7 @@ class TestVersionDeSchema(RenderJsTestCase):
         # degraderait en silence — `ghost` et `unidentifiedCallShare` absents,
         # donc bloc des objets disparus vide, fantomes reintegres a l'annuaire
         # (`!c.ghost` vaut vrai sur `undefined`), part non identifiee en gris.
-        self.assertEqual(SCHEMA_VERSION, 2, "ce test decrit la transition 1 -> 2")
+        self.assertEqual(SCHEMA_VERSION, 3, "ce test decrit la transition 2 -> 3")
         refuse = self.js("""
           console.log(JSON.stringify(versionSupportee({ schemaVersion: 1 })));
         """)

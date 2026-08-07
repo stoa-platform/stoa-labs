@@ -49,7 +49,12 @@ const S = { carto:null, history:[], idx:null, view:"table" };
 // sont devenus obligatoires. Sur un document de version 1, qui ne les porte
 // pas, cette page degraderait SANS UN MOT — c'est precisement pour ce
 // document-la que le refus ci-dessous existe.
-const SCHEMA_VERSION = 2;
+//
+// Version 3 : `unidentifiedCallShareByWindow` a la racine et `errors` par
+// fenetre sur chaque arete. Sur un document de version 2, le bandeau jugerait
+// la carto sur la seule fenetre d90 — donc sur un heritage vieux de trois
+// mois autant que sur l'etat courant.
+const SCHEMA_VERSION = 3;
 
 // Seuil d'alerte sur la part du trafic non rattachee a un consommateur
 // identifie. 50 % : au-dela, la reponse majoritaire a « qui consomme quoi »
@@ -137,8 +142,33 @@ function banner() {
   // noeud fantome, chaque consommateur reel bascule en « declare, inactif »,
   // l'annuaire annonce « N consommateurs dont N sans aucun appel » — et le
   // bandeau reste vert. C'est le pire mode de defaillance du produit.
-  const part = S.carto.unidentifiedCallShare;
-  const partConnue = Number.isFinite(part);
+  //
+  // JUGE sur la plus COURTE fenetre qui porte du trafic servi, pas sur d90 :
+  // le 2026-07-30, 803 evenements non identifies — le debris d'une campagne
+  // d'investigation — ont tenu le ratio d90 a 99 % alors que les jours
+  // recents etaient identifies a 2/2. Un bandeau qui juge sur d90 seule
+  // affiche « non fiable » trois mois apres que la cause a ete corrigee.
+  // Le chiffre d90 reste AFFICHE quand il differe : ne plus condamner n'est
+  // pas se taire.
+  const parFenetre = S.carto.unidentifiedCallShareByWindow;
+  const FENETRES = [["d7", "7 derniers jours"], ["d30", "30 derniers jours"],
+                    ["d90", "90 derniers jours"]];
+  let porte = null;      // [cle, libelle, valeur] retenu pour juger
+  let sansTrafic = false;
+  if (parFenetre && typeof parFenetre === "object") {
+    for (const [cle, libelle] of FENETRES) {
+      if (Number.isFinite(parFenetre[cle])) { porte = [cle, libelle, parFenetre[cle]]; break; }
+    }
+    // Le detail existe et ne designe AUCUNE fenetre : il n'y a rien a
+    // imputer nulle part. Afficher « 0.0 % » serait un vert obtenu par
+    // absence de mesure — on dit ce qu'on sait, c'est-a-dire rien.
+    sansTrafic = porte === null;
+  }
+  // Repli sur le chiffre scalaire : document de version anterieure, ou detail
+  // par fenetre illisible. Le contrat le refuserait, mais le bandeau est la
+  // derniere ligne — il ne doit jamais se taire.
+  const part = porte ? porte[2] : S.carto.unidentifiedCallShare;
+  const partConnue = !sansTrafic && Number.isFinite(part);
   const nonIdentifie = partConnue && part > SEUIL_NON_IDENTIFIE;
 
   const alerte = perime || nonIdentifie;
@@ -158,13 +188,23 @@ function banner() {
     : ` · <span class="muted">fenêtre couverte : profondeur inconnue (champ absent du document)</span>`;
 
   const pct = partConnue ? (part * 100).toFixed(1) : null;
-  const partTxt = !partConnue
-    ? ` · <span class="muted">part du trafic non identifié : inconnue (champ absent du document)</span>`
-    : nonIdentifie
-      ? ` · <b>${pct} % des appels ne sont rattachés à aucun consommateur identifié :`
-        + ` la dimension « qui consomme » de cette carto n'est PAS fiable</b>`
-        + ` <span class="muted">(la gateway ne renseigne pas l'application appelante)</span>`
-      : ` · <span class="muted">${pct} % des appels sans consommateur identifié</span>`;
+  const sur = porte ? ` sur les ${porte[1]}` : "";
+  // L'heritage : le chiffre de la fenetre longue quand il DIFFERE de celui
+  // qui a servi a juger. C'est ce qui distingue « le trou a ete corrige » de
+  // « il n'y en a jamais eu ».
+  const d90 = parFenetre && Number.isFinite(parFenetre.d90) ? parFenetre.d90 : null;
+  const heritage = (porte && porte[0] !== "d90" && d90 !== null && d90 !== part)
+    ? ` <span class="muted">(${(d90 * 100).toFixed(1)} % sur 90 jours : héritage`
+      + ` d'un trafic non identifié plus ancien)</span>` : "";
+  const partTxt = sansTrafic
+    ? ` · <span class="muted">part du trafic non identifié : aucun trafic servi sur la fenêtre, rien à imputer</span>`
+    : !partConnue
+      ? ` · <span class="muted">part du trafic non identifié : inconnue (champ absent du document)</span>`
+      : nonIdentifie
+        ? ` · <b>${pct} % des appels${sur} ne sont rattachés à aucun consommateur identifié :`
+          + ` la dimension « qui consomme » de cette carto n'est PAS fiable</b>`
+          + ` <span class="muted">(la gateway ne renseigne pas l'application appelante)</span>` + heritage
+        : ` · <span class="muted">${pct} % des appels${sur} sans consommateur identifié</span>` + heritage;
 
   b.innerHTML = (alerte ? "⚠ " : "") + dateTxt + fenetreTxt + partTxt;
 }

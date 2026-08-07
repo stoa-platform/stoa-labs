@@ -49,7 +49,41 @@ explique l'arbitrage complet du commit conditionnel.
 
 import datetime as dt
 
+from ..collect.build import gating_share
 from ..collect.model import SCHEMA_VERSION
+
+# Libelle humain de chaque fenetre, pour NOMMER celle sur laquelle la part non
+# identifiee a ete jugee. Sans le nom, le meme pourcentage veut dire deux
+# choses tres differentes selon la fenetre — et le lecteur ne peut pas savoir
+# laquelle.
+_LIBELLE_FENETRE = {"d7": "7 derniers jours", "d30": "30 derniers jours",
+                    "d90": "90 derniers jours"}
+
+
+def _part_jugee(carto):
+    """(part, libelle de la fenetre, heritage d90 a dire) — ou (None, ...).
+
+    Meme regle que le bandeau HTML, et pour la meme raison mesuree le
+    2026-08-07 : juger sur d90 seule, c'est ecrire « non fiable » trois mois
+    apres que la cause a ete corrigee. Le chiffre d90 reste dit quand il
+    differe : ne plus condamner n'est pas se taire.
+    """
+    par_fenetre = carto.get("unidentifiedCallShareByWindow")
+    if not isinstance(par_fenetre, dict):
+        # Repli sur le scalaire : document d'une version anterieure. Le
+        # contrat le refuserait, mais ce rendu ne doit jamais se taire.
+        brut = carto.get("unidentifiedCallShare")
+        if isinstance(brut, (int, float)) and not isinstance(brut, bool):
+            return brut, None, None
+        return None, None, None
+
+    fenetre, valeur = gating_share({"unidentifiedCallShareByWindow": par_fenetre})
+    if fenetre is None:
+        return None, "aucun trafic servi", None
+    d90 = par_fenetre.get("d90")
+    heritage = d90 if (fenetre != "d90" and isinstance(d90, (int, float))
+                       and d90 != valeur) else None
+    return valeur, _LIBELLE_FENETRE[fenetre], heritage
 
 # Ordre de generation ET ordre de citation dans le README. `README.md` en tete :
 # c'est l'entree de la publication.
@@ -288,7 +322,7 @@ def _entete_fraicheur(carto, page_courante):
     c = compteurs(carto)
     w = carto.get("window") or {}
     couverte, demandee = w.get("coveredDays"), w.get("requestedDays")
-    part = carto.get("unidentifiedCallShare")
+    part, libelle, heritage = _part_jugee(carto)
 
     lignes = [f"> ### Données collectées le **{c['date']}**", ">"]
 
@@ -304,16 +338,22 @@ def _entete_fraicheur(carto, page_courante):
                       "(le document ne la porte pas).")
 
     if isinstance(part, (int, float)) and not isinstance(part, bool):
+        sur = f" sur les {libelle}" if libelle else ""
+        suite = (f" *({_pct(heritage)} sur 90 jours : héritage d'un trafic non "
+                 "identifié plus ancien.)*") if heritage is not None else ""
         if part > SEUIL_NON_IDENTIFIE:
             lignes.append(
-                f"> - ⚠ **{_pct(part)} des appels ne sont rattachés à aucun "
+                f"> - ⚠ **{_pct(part)} des appels{sur} ne sont rattachés à aucun "
                 "consommateur identifié : la dimension « qui consomme » de "
                 "cette carto n'est PAS fiable.** La gateway ne renseigne pas "
                 "l'application appelante ; les inventaires d'APIs et de "
-                "consommateurs, eux, restent exacts.")
+                "consommateurs, eux, restent exacts." + suite)
         else:
-            lignes.append(f"> - Trafic sans consommateur identifié : "
-                          f"**{_pct(part)}**.")
+            lignes.append(f"> - Trafic sans consommateur identifié{sur} : "
+                          f"**{_pct(part)}**." + suite)
+    elif libelle:
+        lignes.append("> - **Part du trafic non identifié : aucun trafic servi "
+                      "sur la fenêtre**, il n'y a rien à imputer.")
     else:
         lignes.append("> - **Part du trafic non identifié : inconnue** "
                       "(le document ne la porte pas).")
@@ -669,10 +709,13 @@ def commit_message(carto, history):
     if isinstance(w.get("coveredDays"), int):
         corps.append(f"Fenêtre réellement couverte : {_jours(w['coveredDays'])} "
                      f"sur {w.get('requestedDays', '?')} demandés.")
-    part = carto.get("unidentifiedCallShare")
+    part, libelle, heritage = _part_jugee(carto)
     if isinstance(part, (int, float)) and not isinstance(part, bool):
         alerte = " — dimension consommateur NON fiable" if part > SEUIL_NON_IDENTIFIE else ""
-        corps.append(f"Trafic sans consommateur identifié : {_pct(part)}{alerte}.")
+        sur = f" ({libelle})" if libelle else ""
+        suite = f" Héritage : {_pct(heritage)} sur 90 jours." if heritage is not None else ""
+        corps.append(f"Trafic sans consommateur identifié{sur} : "
+                     f"{_pct(part)}{alerte}.{suite}")
 
     corps.append("")
     corps.append("Signaux :")

@@ -25,9 +25,14 @@ carto_alert_command: "logger -t carto -p user.err"   # a remplacer par le canal 
 # 50.0 : meme valeur que SEUIL_NON_IDENTIFIE (0.5) dans carto/render/index.html
 # — le role et la page doivent tomber d'accord sur le moment ou la dimension
 # consommateur cesse d'etre fiable. Les deux se modifient ensemble.
-# Terrain mesure (carto/TERRAIN.md, V5) : 100 % sur la gateway de mesure. La
-# valeur n'est donc PAS theorique, et ce seuil sera franchi tant que la
-# question ouverte de V5 n'est pas tranchee avec le client.
+# Le compteur compare a ce seuil porte, depuis le 2026-08-07, la plus COURTE
+# fenetre qui compte du trafic servi — plus la fenetre d90. Sinon un pic ancien
+# d'appels non identifies condamnait la publication 90 jours APRES la
+# correction de sa cause (mesure du 2026-08-07 : 803 evenements de debris du
+# 2026-07-30 tenaient le ratio a 99,3 % alors que les jours recents etaient
+# identifies a 2/2). Les appels REJETES (401/403) sont hors du calcul : un
+# appel refuse n'a aucun consommateur a perdre, et du bruit de scan de
+# credentials suffirait a rendre la carto rouge en permanence.
 carto_seuil_non_identifie_pct: 50.0
 
 # Identifiants : jamais dans le depot, jamais en dur ici. Fournis a l'execution

@@ -100,6 +100,33 @@ class TestBoutEnBout(unittest.TestCase):
         for champ in ("apis=", "aretes=", "fenetre_couverte=", "trafic_non_identifie="):
             self.assertIn(champ, out)
 
+    def test_les_compteurs_nomment_la_fenetre_qui_a_servi_a_juger(self):
+        # `trafic_non_identifie=` a change de sens le 2026-08-07 : ce n'est
+        # plus d90 mais la plus courte fenetre qui porte du trafic. Un chiffre
+        # dont le sens a change sans que la ligne le dise se relit de travers
+        # pendant des mois.
+        _, out = run(["--out", tempfile.mkdtemp(), "--dry-run", "--from-fixtures", FIX])
+        self.assertRegex(out, r"trafic_non_identifie=[0-9.]+% fenetre_de_porte=(d7|d30|d90)")
+
+    def test_le_compteur_d90_ne_se_fait_pas_lire_a_la_place_de_la_porte(self):
+        # la porte Ansible cherche `trafic_non_identifie=([0-9.]+)` : un second
+        # compteur nomme `trafic_non_identifie_90j=` ne peut pas matcher — mais
+        # `trafic_non_identifie_d90=` non plus, et l'inverse serait un piege
+        # silencieux. On verrouille la forme.
+        _, out = run(["--out", tempfile.mkdtemp(), "--dry-run", "--from-fixtures", FIX])
+        import re
+        self.assertEqual(len(re.findall(r"trafic_non_identifie=", out)), 1)
+        self.assertIn("trafic_non_identifie_90j=", out)
+
+    def test_sans_trafic_servi_le_compteur_n_annonce_pas_un_zero_flatteur(self):
+        # `0.0%` dirait « tout est identifie » ; il n'y a rien a imputer. Les
+        # deux portes doivent voir la difference, sinon un trou de mesure
+        # passe pour un succes.
+        doc = {"unidentifiedCallShareByWindow": {"d7": None, "d30": None, "d90": None},
+               "window": {"coveredDays": 3}, "edges": []}
+        from carto.collect import build
+        self.assertEqual(build.gating_share(doc), (None, None))
+
 
 if __name__ == "__main__":
     unittest.main()

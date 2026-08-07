@@ -24,7 +24,15 @@ import re
 # `undefined`, part non identifiee affichee « inconnue » en gris, sans alerte).
 # Ajouter un champ obligatoire au contrat, c'est incrementer ce numero : c'est
 # la seule chose qui permette au rendu de refuser au lieu de deviner.
-SCHEMA_VERSION = 2
+#
+# Version 3 (2026-08-07) : deux champs OBLIGATOIRES de plus —
+# `unidentifiedCallShareByWindow` a la racine et `errors` par fenetre sur
+# chaque arete. Un document de version 2 ne les porte pas ; lu par une porte
+# de publication neuve, il ferait taire cette porte au lieu de la faire
+# echouer. Les deux existent pour la meme raison, mesuree le 2026-08-07 :
+# le ratio calcule sur la SEULE fenetre d90 et sur TOUS les appels condamnait
+# la publication 90 jours pour un pic ancien de trafic rejete.
+SCHEMA_VERSION = 3
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _WINDOWS = ("d7", "d30", "d90")
 
@@ -74,6 +82,24 @@ def validate_carto(doc):
           "unidentifiedCallShare : nombre entre 0 et 1 attendu, "
           f"{part!r} recu")
 
+    # Le meme chiffre, fenetre par fenetre — c'est LUI que lit la porte de
+    # publication (`build.gating_share`). `null` y signifie « aucun trafic
+    # servi sur cette fenetre, rien a imputer », ce qui n'est pas 0.0
+    # (« tout est identifie ») : les confondre rendrait un vert obtenu par
+    # absence de mesure indiscernable d'un vert merite.
+    par_fenetre = doc.get("unidentifiedCallShareByWindow")
+    if not isinstance(par_fenetre, dict):
+        e.append("unidentifiedCallShareByWindow : objet attendu")
+    else:
+        for w_nom in _WINDOWS:
+            if w_nom not in par_fenetre:
+                e.append(f"unidentifiedCallShareByWindow.{w_nom} : fenetre manquante")
+                continue
+            v = par_fenetre[w_nom]
+            _need(e, v is None or (_is_number(v) and 0.0 <= v <= 1.0),
+                  f"unidentifiedCallShareByWindow.{w_nom} : nombre entre 0 et 1 "
+                  f"ou null attendu, {v!r} recu")
+
     apis, cons, edges = doc.get("apis"), doc.get("consumers"), doc.get("edges")
     _need(e, isinstance(apis, list) and len(apis) > 0,
           "apis : liste non vide attendue (une carto sans API est une collecte ratee)")
@@ -115,6 +141,22 @@ def validate_carto(doc):
         for k in _WINDOWS:
             _need(e, isinstance(calls.get(k), int) and not isinstance(calls.get(k), bool),
                   f"edges[{i}].calls.{k} : entier attendu")
+
+        # Les erreurs par fenetre : ce sont elles qui rendent le trafic SERVI
+        # (appels moins erreurs), donc le ratio publie, RECALCULABLE par le
+        # lecteur du document. Un compte superieur aux appels donnerait un
+        # trafic servi negatif — un ratio faux sans rien casser d'autre.
+        errors = ed.get("errors")
+        if not isinstance(errors, dict):
+            e.append(f"edges[{i}].errors : objet attendu")
+            continue
+        for k in _WINDOWS:
+            n = errors.get(k)
+            if not (isinstance(n, int) and not isinstance(n, bool) and n >= 0):
+                e.append(f"edges[{i}].errors.{k} : entier positif attendu")
+            elif isinstance(calls.get(k), int) and n > calls[k]:
+                e.append(f"edges[{i}].errors.{k} : {n} erreurs pour {calls[k]} "
+                         "appels — le trafic servi serait negatif")
     return e
 
 

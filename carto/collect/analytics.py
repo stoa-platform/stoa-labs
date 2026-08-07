@@ -363,7 +363,7 @@ def oldest_event(fetch, now, requested_days):
     return to_iso(haut.timestamp() * 1000)
 
 
-def observed_rows(fetch, apis, consumers, now, days, details):
+def observed_rows(fetch, apis, consumers, now, days, succes, dernier_appel):
     """Les aretes observees sur une fenetre, par comptages uniquement.
 
     Strategie (le coeur de la refonte) :
@@ -381,22 +381,34 @@ def observed_rows(fetch, apis, consumers, now, days, details):
     build.py compte deja comme non identifie tout trafic dont le consommateur
     n'est pas a l'inventaire.
 
-    `details` (fenetre longue seulement) ajoute le nombre d'appels en succes,
-    d'ou se deduit le nombre d'erreurs. Les comptages en succes sont demandes
-    AVANT les totaux : meme si la borne haute figee rend deja la soustraction
-    exacte, l'ordre garde le residu et le nombre d'erreurs non negatifs si
-    cette garantie venait a se relacher.
+    Deux details, achetes separement parce qu'ils n'ont ni le meme usage ni
+    le meme cout :
+
+    - `succes` : le nombre d'appels en succes, d'ou se deduit le nombre
+      d'erreurs. Achete sur CHAQUE fenetre depuis le 2026-08-07, parce que le
+      ratio de trafic non identifie se calcule desormais par fenetre et sur le
+      seul trafic SERVI (cf. `build._unidentified_share`). Ne l'acheter que
+      sur la fenetre longue laisserait `errors` a 0 en d7 et d30 PAR
+      CONSTRUCTION : le trafic servi y serait surestime du nombre d'appels
+      rejetes, et le ratio de la porte serait faux sans que rien ne le dise.
+      Cout : +2 x (nb_apis + nb_applications) requetes, toujours independant
+      du volume de trafic — la propriete de V7 tient.
+    - `dernier_appel` : un `_search` par arete observee, donc le detail cher.
+      Reserve a la fenetre longue, la seule dont build.py le lit.
+
+    Les comptages en succes sont demandes AVANT les totaux : meme si la borne
+    haute figee rend deja la soustraction exacte, l'ordre garde le residu et le
+    nombre d'erreurs non negatifs si cette garantie venait a se relacher.
     """
     par_nom = consumers_by_name(consumers)
 
     # 1. les applications d'abord (le residu reste positif, voir docstring)
     appels = {}   # nom -> {apiId: appels}
-    succes = {}   # nom -> {apiId: succes}
+    ok = {}       # nom -> {apiId: succes}
     for nom in par_nom:
         filtre = {"applicationName": escape_regex(nom)}
-        if details:
-            succes[nom] = _compter(fetch, filtre, now, days,
-                                   {STATUS_PARAM: STATUS_OK})
+        if succes:
+            ok[nom] = _compter(fetch, filtre, now, days, {STATUS_PARAM: STATUS_OK})
         appels[nom] = _compter(fetch, filtre, now, days)
 
     # 2. le total de chaque API
@@ -404,7 +416,7 @@ def observed_rows(fetch, apis, consumers, now, days, details):
     for api in apis:
         api_id = api["id"]
         filtre = {"apiId": escape_regex(api_id)}
-        if details:
+        if succes:
             totaux_ok[api_id] = _compter(fetch, filtre, now, days,
                                          {STATUS_PARAM: STATUS_OK}).get(api_id, 0)
         totaux[api_id] = _compter(fetch, filtre, now, days).get(api_id, 0)
@@ -419,15 +431,16 @@ def observed_rows(fetch, apis, consumers, now, days, details):
                 continue
             ligne = {"apiId": api_id, "consumerId": con_id, "calls": n,
                      "lastCall": None, "errors": 0}
-            if details:
-                ok = succes[nom].get(api_id, 0)
-                ligne["errors"] = _ecart(n, ok, api_id, con_id, "succes")
+            if succes:
+                ligne["errors"] = _ecart(n, ok[nom].get(api_id, 0),
+                                         api_id, con_id, "succes")
+            if dernier_appel:
                 ligne["lastCall"] = last_call(fetch, api_id, nom, now, days)
             lignes.append(ligne)
             if api_id in attribue:
                 attribue[api_id] += n
-                if details:
-                    attribue_ok[api_id] += succes[nom].get(api_id, 0)
+                if succes:
+                    attribue_ok[api_id] += ok[nom].get(api_id, 0)
 
     for api_id, total in totaux.items():
         residu = _ecart(total, attribue[api_id], api_id,
@@ -438,7 +451,7 @@ def observed_rows(fetch, apis, consumers, now, days, details):
         # « tout sauf ces applications-la ». Le contrat accepte un dernier
         # appel nul — l'inventer serait pire que l'ignorer.
         erreurs = 0
-        if details:
+        if succes:
             residu_ok = _ecart(totaux_ok[api_id], attribue_ok[api_id], api_id,
                                UNIDENTIFIED_CONSUMER_ID, "attribue en succes")
             erreurs = _ecart(residu, residu_ok, api_id,
@@ -465,8 +478,10 @@ def collect(fetch, apis, consumers, windows, requested_days, now):
     haute figee s'en charge — mais il reste la lecture la plus economique en
     cas d'interruption : on a alors la fenetre courte, la plus utile.
 
-    Les details (succes, donc erreurs, et date du dernier appel) ne sont lus
-    que sur la fenetre LONGUE, la seule dont build.py les lit.
+    Les succes (donc les erreurs) sont lus sur les TROIS fenetres : le ratio
+    de trafic non identifie se calcule par fenetre et sur le seul trafic
+    servi. La date du dernier appel, elle, reste lue de la seule fenetre
+    LONGUE — c'est un `_search` par arete, et build.py n'en lit qu'une.
     """
     longue = max(jours for _, jours in windows)
 
@@ -478,6 +493,7 @@ def collect(fetch, apis, consumers, windows, requested_days, now):
     observe = {}
     for nom, jours in windows:
         observe[nom] = observed_rows(fetch, apis, consumers, now, jours,
-                                     details=(jours == longue))
+                                     succes=True,
+                                     dernier_appel=(jours == longue))
     return observe, covered_window(oldest_event(fetch, now, requested_days),
                                    requested_days, now)

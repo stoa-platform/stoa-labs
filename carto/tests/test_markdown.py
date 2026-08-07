@@ -27,6 +27,7 @@ def carto(**surcharges):
         "window": {"requestedDays": 90, "coveredDays": 34,
                    "oldestEvent": "2026-06-27T17:17:29.637Z"},
         "unidentifiedCallShare": 0.1,
+        "unidentifiedCallShareByWindow": {"d7": 0.1, "d30": 0.1, "d90": 0.1},
         "apis": [
             {"id": "a-paie", "name": "paie", "version": "1.0.0", "owner": "RH",
              "active": True, "createdAt": None, "ghost": False},
@@ -63,9 +64,18 @@ def carto(**surcharges):
     return doc
 
 
+def part(valeur):
+    """La part non identifiee, posee sur les TROIS fenetres a la fois — la
+    forme qui ne depend pas de celle que la porte retient."""
+    return {"unidentifiedCallShare": valeur,
+            "unidentifiedCallShareByWindow": {"d7": valeur, "d30": valeur,
+                                              "d90": valeur}}
+
+
 def edge(api, conso, d90, declared=True, erreurs=0.0, last=None):
     return {"apiId": api, "consumerId": conso, "declared": declared,
             "calls": {"d7": d90 // 10, "d30": d90 // 2, "d90": d90},
+            "errors": {"d7": 0, "d30": 0, "d90": 0},
             "lastCall": last, "errorRate": erreurs}
 
 
@@ -185,14 +195,32 @@ class TestEnTeteDeFraicheur(unittest.TestCase):
         self.assertIn("ni celle d'aujourd'hui ni celle d'hier", page)
 
     def test_la_part_non_identifiee_alerte_au_dela_du_seuil(self):
-        doc = carto(unidentifiedCallShare=0.94)
+        doc = carto(**part(0.94))
         page = md.render_pages(doc, HISTORY)["README.md"]
         self.assertIn("n'est PAS fiable", page)
         self.assertIn("94,0", page)
 
     def test_la_part_non_identifiee_n_alerte_pas_en_deca_du_seuil(self):
-        page = md.render_pages(carto(unidentifiedCallShare=0.1), HISTORY)["README.md"]
+        page = md.render_pages(carto(**part(0.1)), HISTORY)["README.md"]
         self.assertNotIn("n'est PAS fiable", page)
+
+    def test_un_heritage_ancien_n_alerte_plus_mais_reste_ecrit(self):
+        # meme regle que le bandeau HTML : juger sur la plus courte fenetre
+        # qui porte du trafic, sans effacer le passe.
+        doc = carto(unidentifiedCallShare=0.99,
+                    unidentifiedCallShareByWindow={"d7": 0.0, "d30": 0.9,
+                                                   "d90": 0.99})
+        page = md.render_pages(doc, HISTORY)["README.md"]
+        self.assertNotIn("n'est PAS fiable", page)
+        self.assertIn("7 derniers jours", page)
+        self.assertIn("99,0", page)
+
+    def test_sans_trafic_servi_la_page_le_dit_au_lieu_d_ecrire_zero(self):
+        doc = carto(unidentifiedCallShare=0.0,
+                    unidentifiedCallShareByWindow={"d7": None, "d30": None,
+                                                   "d90": None})
+        page = md.render_pages(doc, HISTORY)["README.md"]
+        self.assertIn("aucun trafic servi", page)
 
     def test_le_seuil_est_celui_de_la_page_html(self):
         """Deux rendus du meme document ne doivent pas s'alarmer a des moments
@@ -346,7 +374,7 @@ class TestMessageDeCommit(unittest.TestCase):
         self.assertIn("Première collecte publiée", msg)
 
     def test_le_corps_porte_la_qualite_de_la_collecte_et_les_signaux(self):
-        msg = md.commit_message(carto(unidentifiedCallShare=0.94), HISTORY)
+        msg = md.commit_message(carto(**part(0.94)), HISTORY)
         self.assertIn("Fenêtre réellement couverte", msg)
         self.assertIn("NON fiable", msg)
         self.assertIn("Signaux :", msg)

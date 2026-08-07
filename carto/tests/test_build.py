@@ -1,5 +1,5 @@
 import unittest
-from carto.collect.build import build_carto, InconsistentWindows
+from carto.collect.build import build_carto, gating_share, InconsistentWindows
 from carto.collect.model import SCHEMA_VERSION, validate_carto
 
 APIS = [{"id": "a1", "name": "orders", "version": "1", "owner": "t",
@@ -112,6 +112,141 @@ class TestTraficNonIdentifie(unittest.TestCase):
         d = build_carto(APIS, CONS, set(),
                         obs([{"apiId": "a1", "consumerId": "Unknown", "calls": 5,
                               "lastCall": "x", "errors": 0}]),
+                        WIN, "2026-07-30T00:00:00Z")
+        self.assertEqual(validate_carto(d), [])
+
+
+class TestPartNonIdentifieeParFenetre(unittest.TestCase):
+    """La part non identifiee, mesuree sur CHAQUE fenetre et non sur d90 seule.
+
+    Mesure du 2026-08-07 sur le labo : 803 evenements non identifies du
+    2026-07-30 (debris d'une campagne d'investigation) maintenaient le ratio
+    d90 a 99,3 % — donc le job Jenkins au rouge — alors que les jours RECENTS
+    etaient identifies a 2/2. Un ratio d90 seul ne sait pas distinguer un
+    heritage d'un etat courant : il condamne la publication 90 jours apres la
+    correction de la cause.
+    """
+
+    def rows(self, *triplets):
+        return [{"apiId": "a1", "consumerId": c, "calls": n, "lastCall": "x",
+                 "errors": err} for c, n, err in triplets]
+
+    def test_la_part_est_calculee_pour_les_trois_fenetres(self):
+        d = build_carto(APIS, CONS, set(),
+                        {"d7": self.rows(("Unknown", 1, 0), ("c1", 9, 0)),
+                         "d30": self.rows(("Unknown", 5, 0), ("c1", 15, 0)),
+                         "d90": self.rows(("Unknown", 180, 0), ("c1", 20, 0))},
+                        WIN, "2026-07-30T00:00:00Z")
+        self.assertEqual(d["unidentifiedCallShareByWindow"],
+                         {"d7": 0.1, "d30": 0.25, "d90": 0.9})
+
+    def test_un_heritage_ancien_ne_condamne_plus_la_fenetre_courte(self):
+        # LE cas mesure : d90 pourri par un pic ancien, d7 propre.
+        d = build_carto(APIS, CONS, set(),
+                        {"d7": self.rows(("c1", 2, 0)),
+                         "d30": self.rows(("c1", 6, 0)),
+                         "d90": self.rows(("Unknown", 803, 0), ("c1", 6, 0))},
+                        WIN, "2026-07-30T00:00:00Z")
+        self.assertEqual(d["unidentifiedCallShareByWindow"]["d7"], 0.0)
+        self.assertEqual(gating_share(d), ("d7", 0.0))
+
+    def test_une_fenetre_sans_trafic_vaut_null_et_pas_zero(self):
+        # 0.0 dirait « tout est identifie » ; il n'y a rien a imputer du tout.
+        # Confondre les deux, c'est un vert obtenu par absence de mesure.
+        d = build_carto(APIS, CONS, set(),
+                        {"d7": [], "d30": [],
+                         "d90": self.rows(("Unknown", 50, 0))},
+                        WIN, "2026-07-30T00:00:00Z")
+        self.assertIsNone(d["unidentifiedCallShareByWindow"]["d7"])
+        self.assertIsNone(d["unidentifiedCallShareByWindow"]["d30"])
+        self.assertEqual(d["unidentifiedCallShareByWindow"]["d90"], 1.0)
+
+    def test_la_porte_lit_la_plus_courte_fenetre_qui_porte_du_trafic(self):
+        # sans ce repli, une carto entierement perimee passerait au vert par
+        # d7 vide : le trou de mesure serait lu comme un succes.
+        d = build_carto(APIS, CONS, set(),
+                        {"d7": [],
+                         "d30": self.rows(("Unknown", 8, 0), ("c1", 2, 0)),
+                         "d90": self.rows(("Unknown", 8, 0), ("c1", 2, 0))},
+                        WIN, "2026-07-30T00:00:00Z")
+        self.assertEqual(gating_share(d), ("d30", 0.8))
+
+    def test_sans_aucun_trafic_la_porte_ne_designe_aucune_fenetre(self):
+        d = build_carto(APIS, CONS, {("a1", "c1")}, obs([]), WIN,
+                        "2026-07-30T00:00:00Z")
+        self.assertEqual(gating_share(d), (None, None))
+
+
+class TestSeulLeTraficServiEstImputable(unittest.TestCase):
+    """Un appel REJETE n'a aucun consommateur a perdre.
+
+    Mesure du 2026-08-07 : 6 des 9 evenements non identifies restants etaient
+    des 401/403 — dont les controles negatifs anti-spoof emis volontairement.
+    Les compter au denominateur de « qui consomme quoi » melange deux signaux :
+    « on ne sait pas qui appelle » et « quelqu'un s'est fait refuser ». Chez un
+    client, du bruit de scan de credentials sur un endpoint public suffirait
+    alors a rendre la carto rouge en permanence, sans qu'aucun consommateur
+    reel ne manque. Le second signal a deja sa place : `errorRate` par arete.
+    """
+
+    def rows(self, *triplets):
+        return [{"apiId": "a1", "consumerId": c, "calls": n, "lastCall": "x",
+                 "errors": err} for c, n, err in triplets]
+
+    def win(self, rows):
+        return {"d7": rows, "d30": rows, "d90": rows}
+
+    def test_un_trafic_inconnu_entierement_rejete_ne_compte_pas(self):
+        d = build_carto(APIS, CONS, set(),
+                        self.win(self.rows(("Unknown", 10, 10), ("c1", 10, 0))),
+                        WIN, "2026-07-30T00:00:00Z")
+        self.assertEqual(d["unidentifiedCallShare"], 0.0)
+
+    def test_les_rejets_d_un_consommateur_identifie_ne_comptent_pas_non_plus(self):
+        # la regle porte sur le trafic SERVI, pas sur l'identite de l'appelant :
+        # l'appliquer d'un seul cote fabriquerait un ratio flatteur.
+        d = build_carto(APIS, CONS, set(),
+                        self.win(self.rows(("Unknown", 10, 0), ("c1", 10, 10))),
+                        WIN, "2026-07-30T00:00:00Z")
+        self.assertEqual(d["unidentifiedCallShare"], 1.0)
+
+    def test_une_fenetre_ou_tout_est_rejete_n_a_rien_a_imputer(self):
+        d = build_carto(APIS, CONS, set(),
+                        self.win(self.rows(("Unknown", 10, 10), ("c1", 4, 4))),
+                        WIN, "2026-07-30T00:00:00Z")
+        self.assertIsNone(d["unidentifiedCallShareByWindow"]["d90"])
+        self.assertEqual(gating_share(d), (None, None))
+
+    def test_le_taux_d_erreur_de_l_arete_reste_calcule_sur_tous_les_appels(self):
+        # ce que la regle ci-dessus retire du ratio ne doit disparaitre nulle
+        # part : le trafic rejete reste porte, ailleurs, par son taux d'erreur.
+        d = build_carto(APIS, CONS, set(),
+                        self.win(self.rows(("c1", 10, 4))),
+                        WIN, "2026-07-30T00:00:00Z")
+        self.assertEqual(edge(d, "a1", "c1")["errorRate"], 0.4)
+
+    def test_les_erreurs_sont_portees_par_fenetre_au_contrat(self):
+        # sans elles au document, le ratio publie n'est pas recalculable par
+        # son lecteur — il faudrait le croire sur parole.
+        d = build_carto(APIS, CONS, set(),
+                        {"d7": self.rows(("c1", 2, 1)),
+                         "d30": self.rows(("c1", 5, 2)),
+                         "d90": self.rows(("c1", 9, 3))},
+                        WIN, "2026-07-30T00:00:00Z")
+        self.assertEqual(edge(d, "a1", "c1")["errors"],
+                         {"d7": 1, "d30": 2, "d90": 3})
+
+    def test_des_erreurs_non_emboitees_font_echouer(self):
+        with self.assertRaises(InconsistentWindows):
+            build_carto(APIS, CONS, set(),
+                        {"d7": self.rows(("c1", 9, 5)),
+                         "d30": self.rows(("c1", 9, 1)),
+                         "d90": self.rows(("c1", 9, 1))},
+                        WIN, "2026-07-30T00:00:00Z")
+
+    def test_le_document_reste_valide(self):
+        d = build_carto(APIS, CONS, set(),
+                        self.win(self.rows(("Unknown", 7, 2), ("c1", 3, 0))),
                         WIN, "2026-07-30T00:00:00Z")
         self.assertEqual(validate_carto(d), [])
 

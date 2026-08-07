@@ -8,10 +8,12 @@ from carto.collect.publish import publish, RefusedPublication
 GOOD = {"schemaVersion": SCHEMA_VERSION, "generatedAt": "2026-07-30T00:00:00Z",
         "window": {"requestedDays": 90, "coveredDays": 90, "oldestEvent": None},
         "unidentifiedCallShare": 0.0,
+        "unidentifiedCallShareByWindow": {"d7": None, "d30": None, "d90": None},
         "apis": [{"id": "a1", "name": "orders", "ghost": False}],
         "consumers": [{"id": "c1", "name": "crm", "ghost": False}],
         "edges": [{"apiId": "a1", "consumerId": "c1", "declared": True,
                    "calls": {"d7": 0, "d30": 0, "d90": 0},
+                   "errors": {"d7": 0, "d30": 0, "d90": 0},
                    "lastCall": None, "errorRate": 0.0}]}
 HIST = [{"date": "2026-07-30", "apis": 1, "consumersRegistered": 1,
          "consumersActive": 0, "calls": 0}]

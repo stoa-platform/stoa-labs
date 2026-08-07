@@ -120,19 +120,45 @@
   #
   # Le seuil est celui du rendu (SEUIL_NON_IDENTIFIE dans index.html) : la
   # page et le déploiement doivent s'alarmer au même moment.
+  #
+  # CE QUE MESURE CE COMPTEUR A CHANGÉ LE 2026-08-07. Il portait la fenêtre
+  # d90 ; il porte désormais la plus COURTE fenêtre qui compte du trafic servi
+  # (`fenetre_de_porte=` le nomme dans la même ligne). Motif mesuré : 803
+  # événements non identifiés du 2026-07-30 — le débris d'une campagne
+  # d'investigation — tenaient le ratio d90 à 99,3 %, donc ce rôle en échec,
+  # alors que les jours récents étaient identifiés à 2/2. Une porte qui
+  # condamne 90 jours après la correction de la cause n'est plus une porte,
+  # c'est un rouge permanent qu'on finit par ignorer. Le chiffre d90 reste
+  # publié à côté (`trafic_non_identifie_90j=`) et reste visible dans la carto.
   vars:
     # Un `vars:` de tâche rend une CHAÎNE, même après `| float` : la
     # conversion doit être faite au point de comparaison, sinon Ansible
     # échoue sur « '<=' not supported between instances of 'str' and 'float' »
     # — une panne de rôle au lieu du diagnostic attendu. Vérifié.
+    #
+    # `default('', true)` : quand AUCUNE fenêtre ne porte de trafic servi, le
+    # collecteur écrit `trafic_non_identifie=aucun` — volontairement pas un
+    # nombre. `regex_search` rend alors `None`, et `| first` sur `None` ferait
+    # planter le rôle sur une erreur de gabarit au lieu de dire ce qui se
+    # passe. Le cas est traité explicitement ci-dessous.
+    carto_fenetre_de_porte: >-
+      {{ carto_verify.stdout | regex_search('fenetre_de_porte=(\w+)', '\1')
+         | default([''], true) | first }}
     carto_part_non_identifiee: >-
-      {{ carto_verify.stdout | regex_search('trafic_non_identifie=([0-9.]+)%', '\1') | first }}
+      {{ carto_verify.stdout | regex_search('trafic_non_identifie=([0-9.]+)%', '\1')
+         | default([''], true) | first }}
   ansible.builtin.assert:
     that:
       # D'abord la présence du compteur : un collecteur trop ancien pour le
       # porter doit être nommé comme tel, pas produire une erreur de gabarit.
       # L'ordre compte — `assert` s'arrête à la première condition fausse.
       - "'trafic_non_identifie=' in carto_verify.stdout"
+      # Puis le cas « rien à imputer » : aucune fenêtre ne porte de trafic
+      # servi. Ce n'est PAS un 0 % — on ne peut rien conclure sur la dimension
+      # consommateur, et un vert obtenu par absence de mesure ressemblerait
+      # trait pour trait à un vert mérité. C'est l'assertion « fenêtre
+      # couverte » ci-dessus qui porte le diagnostic d'une collecte vide.
+      - carto_fenetre_de_porte != 'aucune'
       - carto_part_non_identifiee | float <= carto_seuil_non_identifie_pct | float
     fail_msg: >-
       collecte publiable mais NON FIABLE sur la dimension consommateur
@@ -142,9 +168,17 @@
       majoritaire à « qui consomme quoi » est « on ne sait pas » : le trafic
       s'agrège sur des nœuds « (inconnu) », les consommateurs réels basculent
       en « déclaré, inactif », et l'annuaire les annonce sans appel. Les
-      inventaires d'APIs et d'Applications, eux, restent exacts. Cause connue
-      et NON RÉSOLUE : la gateway ne renseigne pas l'application appelante
-      (`applicationId` = `Unknown`) — question ouverte V5 de
-      carto/TERRAIN.md, à trancher avec le client avant de se fier à cette
-      dimension. Si ce message apparaît, la carto reste utile pour l'inventaire
-      et la fenêtre, pas pour « qui appelle qui ».
+      inventaires d'APIs et d'Applications, eux, restent exacts.
+      QUE VÉRIFIER : que l'appelant transmet bien sa clé API (en-tête
+      `x-Gateway-APIKey`) et que l'Application qui la porte est déclarée
+      consommatrice de l'API. L'identification est NATIVE sur webMethods 10.15
+      — elle ne demande AUCUNE policy d'identification, et en ajouter une mal
+      ajustée peut au contraire l'empêcher (mesure du 2026-08-06, encadré en
+      tête de la section V5 de carto/TERRAIN.md ; l'ancien verdict « la
+      gateway ne renseigne pas l'appelant, question ouverte à porter au
+      support » est RÉFUTÉ — ne pas ouvrir de ticket éditeur sur cette base).
+      Le chiffre porte la fenêtre nommée par `fenetre_de_porte=` ; comparez-le
+      à `trafic_non_identifie_90j=` : si le second est bien plus haut, ce qui
+      reste est un héritage en train de sortir de la fenêtre, pas une panne.
+      Si ce message apparaît, la carto reste utile pour l'inventaire et la
+      fenêtre, pas pour « qui appelle qui ».

@@ -289,7 +289,7 @@ class TestProfondeurCouverte(unittest.TestCase):
 class TestAretesObservees(unittest.TestCase):
     def test_attribue_le_trafic_aux_consommateurs_identifies(self):
         lignes = observed_rows(FausseGateway(labo()), APIS, CONSOS,
-                               MAINTENANT, 90, details=True)
+                               MAINTENANT, 90, succes=True, dernier_appel=True)
         par_clef = {(l["apiId"], l["consumerId"]): l for l in lignes}
         self.assertEqual(par_clef[("api-paie", "c-portail")]["calls"], 6)
         self.assertEqual(par_clef[("api-paie", "c-batch")]["calls"], 1)
@@ -298,39 +298,51 @@ class TestAretesObservees(unittest.TestCase):
         # total de l'API moins la somme de ses applications : aucun evenement
         # enumere pour l'obtenir.
         lignes = observed_rows(FausseGateway(labo()), APIS, CONSOS,
-                               MAINTENANT, 90, details=True)
+                               MAINTENANT, 90, succes=True, dernier_appel=True)
         residu = [l for l in lignes if l["consumerId"] == UNIDENTIFIED_CONSUMER_ID]
         self.assertEqual({l["apiId"]: l["calls"] for l in residu},
                          {"api-paie": 3, "api-rh": 1})
 
     def test_le_residu_ne_porte_pas_de_date_de_dernier_appel_inventee(self):
         lignes = observed_rows(FausseGateway(labo()), APIS, CONSOS,
-                               MAINTENANT, 90, details=True)
+                               MAINTENANT, 90, succes=True, dernier_appel=True)
         for l in lignes:
             if l["consumerId"] == UNIDENTIFIED_CONSUMER_ID:
                 self.assertIsNone(l["lastCall"])
 
     def test_les_erreurs_se_deduisent_du_comptage_en_succes(self):
         lignes = observed_rows(FausseGateway(labo()), APIS, CONSOS,
-                               MAINTENANT, 90, details=True)
+                               MAINTENANT, 90, succes=True, dernier_appel=True)
         par_clef = {(l["apiId"], l["consumerId"]): l for l in lignes}
         self.assertEqual(par_clef[("api-paie", "c-portail")]["errors"], 1)
         self.assertEqual(par_clef[("api-paie", "c-batch")]["errors"], 0)
 
-    def test_la_fenetre_courte_n_achete_pas_le_detail(self):
-        # le detail (succes, dernier appel) ne sert qu'a la fenetre longue :
-        # le payer trois fois serait du gaspillage sans usage.
+    def test_la_fenetre_courte_n_achete_pas_la_date_du_dernier_appel(self):
+        # `lastCall` est un `_search` par arete et ne sert qu'a la fenetre
+        # longue, la seule que build.py en lit : le payer trois fois serait
+        # du gaspillage sans usage. Les succes, eux, sont desormais achetes
+        # sur les trois fenetres (test suivant).
         gw = FausseGateway(labo())
-        observed_rows(gw, APIS, CONSOS, MAINTENANT, 7, details=False)
+        observed_rows(gw, APIS, CONSOS, MAINTENANT, 7,
+                      succes=True, dernier_appel=False)
         self.assertFalse([r for r in gw.requetes if r[0] == SEARCH_PATH])
-        self.assertFalse([r for r in gw.requetes if STATUS_PARAM in r[1]])
+
+    def test_les_succes_sont_comptes_sur_la_fenetre_courte_aussi(self):
+        # sans eux, `errors` vaudrait 0 en d7 et d30 par CONSTRUCTION : le
+        # trafic servi de ces fenetres serait surestime du nombre d'appels
+        # rejetes, et le ratio non identifie de la porte serait faux — en
+        # silence, ce qui est le pire des deux.
+        lignes = observed_rows(FausseGateway(labo()), APIS, CONSOS,
+                               MAINTENANT, 7, succes=True, dernier_appel=False)
+        par_clef = {(l["apiId"], l["consumerId"]): l for l in lignes}
+        self.assertEqual(par_clef[("api-paie", "c-portail")]["errors"], 1)
 
     def test_une_gateway_qui_se_contredit_echoue_bruyamment(self):
         # un total d'API inferieur a la somme de ses applications rendrait un
         # residu negatif : on refuse de publier plutot que de le rogner a zero.
         gw = FausseGateway(labo(), biais={"api-paie": -5})
         with self.assertRaises(InconsistentCounts):
-            observed_rows(gw, APIS, CONSOS, MAINTENANT, 90, details=True)
+            observed_rows(gw, APIS, CONSOS, MAINTENANT, 90, succes=True, dernier_appel=True)
 
 
 class TestCollecteComplete(unittest.TestCase):
@@ -347,6 +359,27 @@ class TestCollecteComplete(unittest.TestCase):
         d7 = {(l["apiId"], l["consumerId"]) for l in observe["d7"] if l["calls"]}
         self.assertNotIn(("api-paie", "c-batch"), d7)   # appel a 40 jours
         self.assertIn(("api-paie", "c-portail"), d7)
+
+    def test_chaque_fenetre_porte_ses_propres_erreurs(self):
+        # `labo()` place une FAILURE a 3 jours : elle doit apparaitre dans les
+        # trois fenetres, pas seulement dans la longue.
+        observe, _ = collect(FausseGateway(labo()), APIS, CONSOS, FENETRES, 90, MAINTENANT)
+        for nom in ("d7", "d30", "d90"):
+            erreurs = {(l["apiId"], l["consumerId"]): l["errors"] for l in observe[nom]}
+            self.assertEqual(erreurs[("api-paie", "c-portail")], 1,
+                             f"erreur perdue sur la fenetre {nom}")
+
+    def test_le_cout_ajoute_par_les_succes_reste_borne_par_la_configuration(self):
+        # V7 : la propriete qui rend ce job tenable chez un client, c'est que
+        # son cout ne depend QUE du nombre d'APIs et d'applications. Acheter
+        # les succes sur les trois fenetres ajoute 2 x (apis + apps) requetes
+        # — et pas une de plus par appel encaisse.
+        gw = FausseGateway(labo())
+        collect(gw, APIS, CONSOS, FENETRES, 90, MAINTENANT)
+        avec_statut = [r for r in gw.requetes
+                       if r[0] == COUNT_PATH and STATUS_PARAM in r[1]]
+        # 3 fenetres x (2 APIs + 2 applications), plus la sonde du filtre.
+        self.assertEqual(len(avec_statut), 3 * (len(APIS) + len(CONSOS)) + 1)
 
     def test_la_profondeur_couverte_est_mesuree_et_non_annoncee(self):
         _, fenetre = collect(FausseGateway(labo()), APIS, CONSOS, FENETRES, 90, MAINTENANT)
@@ -390,11 +423,18 @@ class TestJointureAvecLeContrat(unittest.TestCase):
             [dict(a, version=None, owner=None, active=True, createdAt=None) for a in APIS],
             [dict(c, owner=None, contact=None, createdAt=None) for c in CONSOS],
             {("api-paie", "c-portail")}, observe, fenetre, "2026-07-31T12:00:00Z")
-        total = sum(e["calls"]["d90"] for e in doc["edges"])
-        anonyme = sum(e["calls"]["d90"] for e in doc["edges"]
+        # Denominateur : le trafic SERVI (appels moins erreurs). Un appel
+        # rejete n'a aucun consommateur a perdre — cf. la docstring de
+        # `build._unidentified_share`.
+        def servi(e):
+            return e["calls"]["d90"] - e["errors"]["d90"]
+
+        total = sum(servi(e) for e in doc["edges"])
+        anonyme = sum(servi(e) for e in doc["edges"]
                       if e["consumerId"] == UNIDENTIFIED_CONSUMER_ID)
         self.assertEqual(doc["unidentifiedCallShare"], round(anonyme / total, 4))
-        self.assertEqual(anonyme, 4)
+        self.assertEqual(sum(e["calls"]["d90"] for e in doc["edges"]
+                             if e["consumerId"] == UNIDENTIFIED_CONSUMER_ID), 4)
 
     def test_le_consommateur_inconnu_devient_un_noeud_fantome(self):
         observe, fenetre = collect(FausseGateway(labo()), APIS, CONSOS,
