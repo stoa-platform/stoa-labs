@@ -25,12 +25,46 @@ trafic (formule et mesure : `TERRAIN.md`, V7).
 Deux informations demandent malgré tout de lire un événement ou un statut :
 la **date du dernier appel** d'une arête (une page `size=1`, l'ordre de
 `_search` étant décroissant) et le **taux d'erreur** (un second comptage
-filtré sur `status=SUCCESS`). `status` n'étant pas un paramètre documenté, une
-**sonde** vérifie à chaque collecte qu'il est toujours honoré : sans elle, sa
-disparition mettrait le taux d'erreur de toutes les arêtes à zéro sans un mot.
+filtré sur `status=SUCCESS`, sur **chacune** des trois fenêtres — c'est ce qui
+permet de ne compter que le trafic servi, voir ci-dessous). `status` n'étant
+pas un paramètre documenté, une **sonde** vérifie à chaque collecte qu'il est
+toujours honoré : sans elle, sa disparition mettrait le taux d'erreur de
+toutes les arêtes à zéro sans un mot.
 La date du dernier appel du trafic **non identifié** reste `null` : aucun
 filtre ne sait exprimer « tout sauf ces applications-là », et le contrat
 accepte `lastCall` nul — l'inventer serait pire.
+
+## La part de trafic non identifié, et ce qu'elle ne compte pas (2026-08-07)
+
+C'est le chiffre qui décide si la carto est fiable sur sa dimension
+consommateur, et donc si elle est publiée. Deux règles, toutes deux posées
+après une mesure de terrain.
+
+**Elle est calculée sur chaque fenêtre, pas sur la seule d90.** Le 2026-07-30,
+803 événements non identifiés — le débris d'une campagne d'investigation — ont
+tenu le ratio d90 à 99,3 %, donc le job Jenkins au rouge, alors que les jours
+récents étaient identifiés à 2/2. Un ratio d90 seul ne sait pas distinguer un
+héritage d'un état courant : il condamne la publication 90 jours **après** la
+correction de la cause, et un rouge permanent finit par ne plus être lu. La
+porte lit donc la plus **courte** fenêtre qui porte du trafic servi
+(`build.gating_share`), avec repli sur les plus longues — sans ce repli, une
+carto entièrement périmée passerait au vert par d7 vide, c'est-à-dire par
+absence de mesure. Le chiffre d90 reste publié à côté, dans le document
+(`unidentifiedCallShareByWindow`), dans le bandeau et dans le compteur
+`trafic_non_identifie_90j=` : ne plus condamner n'est pas se taire.
+
+**Seul le trafic servi entre dans le calcul** (appels moins erreurs). Un appel
+**rejeté** n'a aucun consommateur à perdre : il n'a jamais été le trafic de
+personne. Le compter mélangerait « on ne sait pas qui appelle » et « quelqu'un
+s'est fait refuser » — et chez un client, du simple bruit de scan de
+credentials sur un endpoint public suffirait à rendre la carto rouge en
+permanence sans qu'aucun consommateur réel ne manque. Ce second signal a déjà
+sa place : `errorRate` par arête, lui, reste calculé sur **tous** les appels.
+
+Quand aucune fenêtre ne porte de trafic servi, le chiffre vaut `null` et non
+`0.0` : il n'y a rien à imputer, et le dire par zéro (« tout est identifié »)
+serait un vert obtenu par absence de mesure, indiscernable d'un vert mérité.
+Les deux portes de publication refusent explicitement ce cas.
 
 ## Publication en Markdown dans un dépôt git dédié
 
@@ -175,7 +209,9 @@ périmée qui a l'air fraîche. `carto-collect.sh` :
 | Le dépôt Markdown ne reçoit plus de commit | soit la collecte ne tourne plus, soit rien n'a changé | **lire la date en tête du `README.md` publié**, pas la date du dernier commit : c'est elle qui distingue les deux cas. Si elle n'avance plus, c'est la collecte qu'il faut regarder (`last-failure.log`) |
 | `PUBLICATION MARKDOWN IMPOSSIBLE — configuration absente` | `CARTO_PAGES_REPO_URL`, `CARTO_PAGES_USER` ou `CARTO_PAGES_TOKEN` non fourni | poser le credential d'écriture (geste exploitant en tête de `carto/scripts/publier-markdown.sh`). Rien n'a été poussé, la carto déjà publiée est intacte |
 | `poussée refusée par la forge` | jeton expiré ou révoqué, droit d'écriture retiré, ou branche protégée | régénérer le jeton et le remettre au même endroit — aucune modification de code |
-| Bandeau en alerte « X % des appels ne sont rattachés à aucun consommateur identifié » | la gateway ne renseigne pas l'application appelante dans ses événements (`applicationName` = `Unknown`) — ce trafic est le **résidu** : total de l'API moins la somme de ses applications identifiées | c'est la vérité, pas un bug du collecteur : la carto reste juste sur les APIs, sa dimension consommateur ne l'est pas. Voir `TERRAIN.md` V5 et la question ouverte prioritaire ci-dessous. Le seuil d'alerte est de 50 % (`SEUIL_NON_IDENTIFIE` dans `render/index.html`) |
+| Bandeau en alerte « X % des appels ne sont rattachés à aucun consommateur identifié » | l'appelant n'est pas identifié dans les événements de la gateway (`applicationName` = `Unknown`) — ce trafic est le **résidu** : total de l'API moins la somme de ses applications identifiées | c'est la vérité, pas un bug du collecteur : la carto reste juste sur les APIs, sa dimension consommateur ne l'est pas. L'identification par clé API est **native** sur webMethods 10.15 et ne demande aucune policy (encadré en tête de `TERRAIN.md` V5) : vérifier que l'appelant envoie `x-Gateway-APIKey` et que son Application est déclarée consommatrice de l'API. Le seuil d'alerte est de 50 % (`SEUIL_NON_IDENTIFIE` dans `render/index.html`) |
+| Bandeau vert alors que la carto affiche beaucoup de « (inconnu) » | attendu : le bandeau juge la plus **courte** fenêtre qui porte du trafic servi, la table montre d90. Un pic ancien reste donc visible dans la table sans plus déclencher l'alerte | lire le chiffre entre parenthèses (« X % sur 90 jours : héritage ») : c'est lui qui dit combien de passé non identifié reste dans la fenêtre longue. Il s'éteindra de lui-même en sortant des 90 jours |
+| Bandeau « aucun trafic servi sur la fenêtre, rien à imputer » | la gateway n'a encaissé aucun appel, ou ils ont **tous** été rejetés (401/403) — les appels refusés sont hors du calcul, un appel refusé n'a aucun consommateur à perdre | ventiler par statut sur `/transactionalEvents/_count`. Ce n'est pas 0 % : c'est l'absence de mesure, et les deux portes de publication le refusent explicitement plutôt que de verdir |
 | Bandeau « version de schéma », page vide, **document plus ancien que la page** | fenêtre normale d'après-déploiement : le rôle dépose `index.html` et `collect/` ensemble, mais le `carto.json` déjà publié n'est réécrit qu'à la prochaine exécution planifiée | attendre la collecte suivante, ou la déclencher (`carto-collect.sh`). Le refus est volontaire : un document de version 1 lu par la page de version 2 dégraderait en silence (bloc des objets disparus vide, fantômes réintégrés à l'annuaire, part non identifiée en gris) |
 | Bandeau « version de schéma », page vide, **document plus récent que la page** | `carto.json` produit par un collecteur plus récent que la page | redéployer `index.html` en même temps que `collect/` — le rôle Ansible dépose les deux ensemble |
 | **Zéro arête et fenêtre couverte à zéro alors que le trafic existe** | sur webMethods 10.15, la policy système `GlobalLogInvocationPolicy` (Log Invocation) n'est pas active — sans elle, aucune API n'écrit jamais d'événement transactionnel, quel que soit le trafic | vérifier `GET /rest/apigateway/policies` et activer la policy (voir `TERRAIN.md`, V3). C'est **le mode de défaillance le plus sournois du produit** : la collecte publie sans erreur une carto où personne n'appelle personne. Il a survécu à la refonte du 2026-07-31 — il ne dépend pas de la façon de lire les événements, mais du fait que la gateway les écrive |

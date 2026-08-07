@@ -365,6 +365,48 @@ interne, CMDB, ou déclaratif au moment de l'enregistrement de l'Application.
 > la porte des 50 % jusqu'à leur sortie de fenêtre (~2026-10-28), quel que
 > soit le trafic identifié ajouté d'ici là. C'est la cause — entière — du
 > rouge du job Jenkins `carto`, et elle n'a rien d'un défaut produit.
+>
+> ### Suite du 2026-08-07 — ventilation complète, et deux défauts de la mesure
+>
+> Ventilation par jour de l'index (819 événements au total, lecture directe
+> `gateway_default_analytics_transactionalevents_*`) :
+>
+> | jour | total | identifiés |
+> |---|---|---|
+> | 2026-07-30 | 803 | 0 — 100 % `unknown` |
+> | 2026-07-31 | 5 | 0 (3 `unknown` 200, 2 `sys:defaultApplication` 403) |
+> | 08-01 → 08-02 | 0 | — |
+> | 2026-08-03 | 9 | **4** `carto-probe-app-active` 200 (+ 4 `sys:defaultApplication` 401, 1 `unknown` 200) |
+> | 08-04 → 08-05 | 0 | — |
+> | 2026-08-06 | 2 | **2/2** `carto-probe-app-active` |
+>
+> Total non imputable 813/819 = **99,3 %** — le chiffre exact du build. Les
+> jours RÉCENTS sont donc identifiés : la réfutation ci-dessus tient, et rien
+> n'est en panne. **Tout le trafic antérieur au 08-06 14:16 est du débris de
+> campagne V5** ; les 4 `sys:defaultApplication` 401 du 08-03 sont nos propres
+> contrôles négatifs anti-spoof.
+>
+> Deux défauts de la MESURE elle-même sont apparus à cette occasion, tous deux
+> corrigés le 2026-08-07 (contrat de données passé en version 3) :
+>
+> 1. **le ratio ne se calculait que sur d90** — donc un héritage condamnait la
+>    publication 90 jours après la correction de sa cause. Il est désormais
+>    calculé sur les trois fenêtres, et la porte lit la plus **courte** qui
+>    porte du trafic servi, avec repli sur les plus longues (sans repli, une
+>    carto entièrement périmée verdirait par d7 vide) ;
+> 2. **les appels REJETÉS comptaient au dénominateur** — 6 des 9 non
+>    identifiés restants après purge du 07-30 étaient des 401/403. Un appel
+>    refusé n'a aucun consommateur à perdre. Chez un client, du bruit de scan
+>    de credentials sur un endpoint public aurait suffi à rendre la carto rouge
+>    en permanence. Seul le trafic **servi** entre désormais dans le calcul ;
+>    `errorRate` par arête, lui, reste calculé sur tous les appels.
+>
+> Sans ces deux corrections, purger les 803 du 07-30 n'aurait PAS suffi :
+> mesuré, il serait resté 60 % (d7) et 62,5 % (d90). Avec elles, et sur le
+> seul trafic servi : 33 % (d7) et 40 % (d90).
+>
+> Le débris de campagne (817 événements antérieurs au 08-06) a été purgé de
+> l'index du labo à cette date ; ce tableau en est la trace durable.
 
 Le champ `applicationId` est-il toujours renseigné ? **Non — et après
 correction du blocage V3, c'est maintenant vérifié sur du trafic réussi et
@@ -582,14 +624,19 @@ STATUS_PARAM = "status"                        # non documenté mais filtre — 
 UNIDENTIFIED_CONSUMER_ID = "Unknown"           # ce que la gateway écrit faute d'identification (V5)
 ```
 
-**Question ouverte à vérifier en priorité absolue chez le client, avant
-toute promesse sur la dimension consommateur du produit** (voir V5) :
-*l'identification de l'application appelante est-elle effective dans les
-événements transactionnels de LEUR gateway ?* Si non, la cartographie
-observée (par opposition à la cartographie déclarée) n'a pas de dimension
-consommateur exploitable, quel que soit le reste du pipeline de collecte.
-La refonte du 2026-07-31 ne l'a pas levée : elle l'a **re-vérifiée par une
-autre route et confirmée**. Le filtre à interroger chez eux est
+**À vérifier chez le client avant toute promesse sur la dimension
+consommateur du produit** (voir V5) : *l'identification de l'application
+appelante est-elle effective dans les événements transactionnels de LEUR
+gateway ?* Si non, la cartographie observée (par opposition à la
+cartographie déclarée) n'a pas de dimension consommateur exploitable, quel
+que soit le reste du pipeline de collecte.
+
+**Ce n'est plus une question ouverte de priorité absolue, et surtout plus un
+défaut supposé du produit : l'identification par clé API est NATIVE sur
+webMethods 10.15 et ne demande AUCUNE policy** (mesure du 2026-08-06,
+encadré en tête de V5 ; les conclusions inverses du 2026-07-31 sont
+retirées). Il reste une vérification de bon sens à faire sur leur tenant,
+pas une inconnue de conception. Le filtre à interroger chez eux est
 `applicationName` (mesuré fonctionnel), pas `applicationId` (mesuré
 inopérant sur la valeur réellement écrite).
 
