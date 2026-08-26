@@ -78,16 +78,23 @@ change_ref: ""
 # sha256 de l'archive promue, émis par `apim_promote_action=export`
 # (EXPORT_CONFIRMED). OBLIGATOIRE dès que l'env n'est pas l'env d'authoring.
 #
-# ⚠ CE QUE CE CHAMP TIENT, EXACTEMENT : les octets importés en <env> == CE
-#   DIGEST-CI, celui que le demandeur a écrit ici. Rien de plus.
-#
-# ⚙ IL EST CHAÎNÉ D'UN PALIER À L'AUTRE (arbitré le 2026-08-26).
-#   Depuis l'env d'authoring (`dev`), le demandeur le saisit au formulaire —
-#   c'est la sortie d'EXPORT_CONFIRMED. Au-delà, il est HÉRITÉ du marqueur du
-#   palier source, en même temps que `commit` : un saut promeut ce que le palier
-#   précédent SERT, pas « le dernier main ». Un digest de formulaire qui
-#   contredirait celui du palier source est refusé (DIGEST_CONTREDIT_SOURCE) —
-#   un saut ne substitue pas les octets en cours de route.
+# ⚙ CE QUE CE CHAMP TIENT, ET COMMENT (arbitré le 2026-08-26).
+#   Les octets importés en <env> == CE DIGEST-CI. Ce qui a changé, c'est d'OÙ
+#   ce digest vient :
+#     - depuis l'env d'authoring (`dev`) : le demandeur le saisit au formulaire,
+#       c'est la sortie d'EXPORT_CONFIRMED ;
+#     - au-delà : il est HÉRITÉ du marqueur du palier source, en même temps que
+#       `commit`. Le demandeur le ressaisit quand même — la garde le lui impose —
+#       mais il n'est plus CRU : il est confronté à celui du palier source, et
+#       une divergence refuse (DIGEST_CONTREDIT_SOURCE).
+#   Ce qui tient la garantie, c'est donc le REFUS, pas l'héritage : le demandeur
+#   ne peut pas substituer les octets en cours de route ; il peut seulement se
+#   tromper de recopie, et il est refusé.
 #   C'est ce qui rend « build once, deploy many » vrai par le MÉCANISME : les
 #   mêmes octets voyagent de dev jusqu'à la prod.
+#
+# ⚠ CE QUE ÇA COÛTE, ET IL FAUT LE SAVOIR AVANT DE LE DÉCOUVRIR : une correction
+#   ne saute aucun palier. Un correctif urgent re-traverse depuis `dev` —
+#   dev → rec → int → homol → prod. C'est le prix de la garantie ; sans lui la
+#   chaîne documenterait un parcours au lieu de le prouver.
 archive_sha256: "0000000000000000000000000000000000000000000000000000000000000000"

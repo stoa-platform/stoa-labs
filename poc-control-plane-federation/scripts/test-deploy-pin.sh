@@ -683,7 +683,12 @@ echo "㉑ LE CHAÎNAGE — un saut promeut ce que le palier SOURCE exécute, pas
 # approuvée et pas "le dernier main" ».
 REPO="$TMP/team21"; make_team_repo "$REPO"
 # C1 = accounts-read 1.0.0 (ce que rec SERT) ; main est déjà à 2.0.0 (C2).
-SHA_A="$(sha_of "$REPO/dist/a.zip")"
+# ⚠ LE DIGEST DOIT ÊTRE CELUI DES OCTETS DE v1. `dist/a.zip` sur le disque porte
+# ceux de v2 (make_team_repo l'a réécrit au second commit) : le hacher ici
+# donnerait une fixture qui ANNONCE v1 et HACHE v2. L'assertion resterait
+# valide — elle mesure la propagation d'une valeur — mais le prochain lecteur
+# qui voudra la durcir tomberait dedans.
+SHA_A="$(printf 'archive-bytes-1.0.0' | shasum -a 256 | cut -d' ' -f1)"
 marker "$REPO" rec "$C1" "1.0.0" "$SHA_A"
 git -C "$REPO" add -A && git -C "$REPO" commit -qm "marqueur rec"
 
@@ -782,6 +787,31 @@ grep -q 'reconcile_promotion_digest' "$ACODE" \
 grep -qE 'log -1 --format=%H' "$ACODE" \
   && bad "l'ecrivain recalcule le pin depuis main — c'est exactement le defaut arbitre" \
   || ok "l'ecrivain ne recalcule PAS le pin depuis main (il delegue a la bibliotheque)"
+
+echo "㉔ SOURCE_VERSION_MISMATCH — un marqueur source incoherent ne se propage pas"
+# Le jumeau a PIN_VERSION_MISMATCH « pour attraper un marqueur edite a la main
+# apres coup ». Le meme risque existe au chainage : sans cette garde, un
+# marqueur annoncant une version et pinnant un commit qui en porte une autre
+# serait recopie en avant, la divergence emportee avec lui.
+REPO="$TMP/team24"; make_team_repo "$REPO"
+marker "$REPO" rec "$C1" "7.7.7" "$(printf 'archive-bytes-1.0.0' | shasum -a 256 | cut -d' ' -f1)"
+git -C "$REPO" add -A && git -C "$REPO" commit -qm "marqueur rec incoherent"
+resolve_promotion_pin "$REPO" accounts-read rec 2>"$TMP/e24" \
+  && bad "marqueur annoncant 7.7.7 sur un pin qui porte 1.0.0 ACCEPTE — l'incoherence se propage" \
+  || { grep -q SOURCE_VERSION_MISMATCH "$TMP/e24" && ok "SOURCE_VERSION_MISMATCH" || bad "refuse sans nommer SOURCE_VERSION_MISMATCH : $(cat "$TMP/e24")"; }
+
+echo "㉔bis un marqueur CORROMPU se dit autrement qu'un palier ETEINT"
+# Fondre les deux causes dans un seul jeton rendait un marqueur corrompu
+# indiscernable d'un palier volontairement arrete — et un grep de logs sur les
+# jetons ne les separait plus.
+REPO="$TMP/team24b"; make_team_repo "$REPO"
+printf 'ceci: [n est pas: du yaml valide\n' > "$REPO/apis/accounts-read.deploy.rec.yaml"
+git -C "$REPO" add -A && git -C "$REPO" commit -qm "marqueur rec corrompu"
+resolve_promotion_pin "$REPO" accounts-read rec 2>"$TMP/e24b" \
+  && bad "marqueur CORROMPU accepte" \
+  || { grep -q PARSE_MARQUEUR_SOURCE "$TMP/e24b" \
+       && ok "PARSE_MARQUEUR_SOURCE — distinct de SOURCE_NON_DEPLOYEE" \
+       || bad "un marqueur corrompu se presente comme 'pas deployee' : $(cat "$TMP/e24b")"; }
 
 printf '\n  %d PASS / %d FAIL\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

@@ -241,6 +241,10 @@ PY
   # palier au suivant : « build once, deploy many » est tenu par le MÉCANISME,
   # plus par la discipline du demandeur. Éprouvé par ㉑ (mutation : rétablir le
   # calcul depuis `main` fait rougir cinq assertions).
+  #
+  # ⚠ CE QUE ÇA COÛTE : une correction ne saute aucun palier. Un correctif
+  # urgent re-traverse depuis l'env d'authoring. C'est le prix de la garantie,
+  # et c'est ce que l'exploitant devra expliquer le jour où ça pressera.
   [ -n "$DEPLOY_PIN_SHA256" ] \
     || { _dp_fail "DIGEST_ABSENT : archive_sha256 vide pour l'env '$env' — hors authoring, les octets déployés doivent être pinnés"; return 1; }
 
@@ -331,6 +335,7 @@ resolve_promotion_pin() {
   local clone="$1" api="$2" from="$3"
 
   DEPLOY_PROMO_PIN=""; DEPLOY_PROMO_SHA256=""; DEPLOY_PROMO_VERSION=""
+  _src_version=""
   export DEPLOY_PROMO_PIN DEPLOY_PROMO_SHA256 DEPLOY_PROMO_VERSION
 
   case "$api" in
@@ -343,27 +348,43 @@ resolve_promotion_pin() {
   esac
 
   if [ "$from" = "$DEPLOY_PIN_AUTHORING_ENV" ]; then
+    # `git log -1` porte sur le HEAD du clone, pas litteralement sur `main` :
+    # c'est la meme chose chez l'appelant actuel (clone frais, donc HEAD == main)
+    # et ce serait faux ailleurs. Le refus le dit tel quel plutot que de promettre
+    # « main ».
     DEPLOY_PROMO_PIN=$(git -C "$clone" log -1 --format=%H -- "apis/${api}.*")
     [ -n "$DEPLOY_PROMO_PIN" ] \
-      || { _dp_fail "PIN_INTROUVABLE : aucun commit ne touche apis/${api}.* sur main"; return 1; }
+      || { _dp_fail "PIN_INTROUVABLE : aucun commit ne touche apis/${api}.* sur le HEAD du clone"; return 1; }
   else
     local rel; rel="$(deploy_pin_marker_path "$api" "$from")"
     [ -f "$clone/$rel" ] \
       || { _dp_fail "SOURCE_NON_DEPLOYEE : $rel absent — '$api' n'est pas deployee en '$from'"; return 1; }
     local raw
+    # DEUX CAUSES, DEUX JETONS. Fondre « marqueur illisible » et « palier eteint »
+    # dans un seul refus rendait un marqueur CORROMPU indiscernable d'un palier
+    # volontairement arrete — et un grep de logs sur les jetons ne separait plus
+    # les deux. Le python distingue donc par son CODE DE SORTIE : 3 = eteint,
+    # tout autre echec = illisible.
     raw=$(DP_FILE="$clone/$rel" python3 - <<'PY'
 import os, sys, yaml
 d = yaml.safe_load(open(os.environ["DP_FILE"])) or {}
-c = str(d.get("commit") or "")
-s = str(d.get("archive_sha256") or "")
 if not d.get("enabled"):
-    sys.exit("le marqueur source porte enabled: false")
-sys.stdout.write("SRC=%s\n%s\n%s\n" % ("1", c, s))
+    sys.exit(3)
+sys.stdout.write("SRC=1\n%s\n%s\n%s\n" % (
+    str(d.get("commit") or ""),
+    str(d.get("archive_sha256") or ""),
+    str(d.get("version") or "")))
 PY
-) || { _dp_fail "SOURCE_NON_DEPLOYEE : $rel illisible, ou enabled: false"; return 1; }
+)
+    case "$?" in
+      0) ;;
+      3) { _dp_fail "SOURCE_NON_DEPLOYEE : $rel porte enabled: false — '$from' n'execute rien"; return 1; };;
+      *) { _dp_fail "PARSE_MARQUEUR_SOURCE : $rel illisible (YAML)"; return 1; };;
+    esac
     case "$raw" in SRC=1*) ;; *) { _dp_fail "PARSE_MARQUEUR_SOURCE : sortie inattendue de $rel"; return 1; };; esac
     DEPLOY_PROMO_PIN=$(printf '%s\n' "$raw" | sed -n '2p')
     DEPLOY_PROMO_SHA256=$(printf '%s\n' "$raw" | sed -n '3p')
+    _src_version=$(printf '%s\n' "$raw" | sed -n '4p')
     # Le pin du palier source est celui qu'on RECOPIE : s'il est mal formé, on
     # ne le « corrige » pas en retombant sur main — ce serait rouvrir le défaut.
     case "$DEPLOY_PROMO_PIN" in
@@ -374,17 +395,38 @@ PY
     esac
     [ -n "$DEPLOY_PROMO_SHA256" ] \
       || { _dp_fail "SOURCE_DIGEST_ABSENT : le marqueur $rel ne porte pas d'archive_sha256 — impossible de faire voyager les memes octets"; return 1; }
+    # ⚠ PAS DE GARDE D'ANCETRETE ICI, ET C'EST DELIBERE MAIS PAS GRATUIT.
+    # Un marqueur source pinnant un commit vivant sur une branche jamais
+    # fusionnee serait recopie tel quel dans le marqueur d'arrivee. Le filet
+    # existe EN AVAL : resolve_deploy_pin refuse PIN_NON_ANCETRE a l'apply
+    # (team-publish.sh). Un lecteur de CETTE fonction ne peut pas le deviner —
+    # d'ou cette ligne. Poser la garde ici aussi serait mieux : il faudrait lui
+    # passer la reference de comparaison, que cette fonction ne prend pas.
   fi
 
   # La version se lit AU COMMIT RETENU, jamais sur l'arbre de travail : sinon on
   # ecrirait la version de main a cote d'un pin qui designe autre chose.
-  local mv
-  mv=$(git -C "$clone" show "${DEPLOY_PROMO_PIN}:apis/${api}.publish.yml" 2>/dev/null \
-       | python3 -c 'import sys,yaml; d=yaml.safe_load(sys.stdin) or {}; print("V=" + str((d.get("apim_api") or {}).get("version") or ""))') \
+  # ⚠ PAS DE PIPELINE ICI. Avec `git show … | python3 …`, le NOM du refus
+  # dependait de `pipefail` chez l'appelant : sans lui, un pin irresoluble
+  # faisait echouer `git show` en silence, python lisait un flux vide, et le cas
+  # se disait VERSION_ABSENTE au lieu de PIN irresoluble. Fail-closed, mais mal
+  # nomme — et un verdict trompeur coute plus cher qu'un refus brut. On separe.
+  local blob mv
+  blob=$(git -C "$clone" show "${DEPLOY_PROMO_PIN}:apis/${api}.publish.yml" 2>/dev/null) \
+    || { _dp_fail "PIN_UNREADABLE : apis/${api}.publish.yml introuvable au commit ${DEPLOY_PROMO_PIN}"; return 1; }
+  mv=$(printf '%s' "$blob" | python3 -c 'import sys,yaml; d=yaml.safe_load(sys.stdin) or {}; print("V=" + str((d.get("apim_api") or {}).get("version") or ""))') \
     || { _dp_fail "PARSE_MANIFEST : apis/${api}.publish.yml illisible au commit ${DEPLOY_PROMO_PIN}"; return 1; }
   case "$mv" in V=*) mv="${mv#V=}";; *) { _dp_fail "PARSE_MANIFEST : sortie inattendue"; return 1; };; esac
   [ -n "$mv" ] \
     || { _dp_fail "VERSION_ABSENTE : apis/${api}.publish.yml ne porte pas de version au commit retenu"; return 1; }
+  # M5 — le jumeau a PIN_VERSION_MISMATCH « pour attraper un marqueur edite a la
+  # main apres coup ». Le meme risque existe ici : sans cette comparaison, un
+  # marqueur source incoherent serait recopie en avant avec une version
+  # silencieusement autre. Les deux valeurs sont deja en main.
+  if [ -n "${_src_version:-}" ] && [ "$_src_version" != "$mv" ]; then
+    _dp_fail "SOURCE_VERSION_MISMATCH : le marqueur de '$from' annonce '$_src_version' mais son propre pin porte '$mv' — marqueur incoherent, on ne le propage pas"
+    return 1
+  fi
   DEPLOY_PROMO_VERSION="$mv"
   return 0
 }
