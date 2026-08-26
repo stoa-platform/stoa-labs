@@ -601,5 +601,21 @@ grep -q 'apis/<name>.deploy' "$ROOT/adr/adr-076-gitops-api-lifecycle-repo-per-pr
   && ok "ADR-076 amendé sur l'emplacement du marqueur" \
   || bad "ADR-076 dit toujours 'deploy.{env}.yaml' à la racine — la doc contredit le code"
 
+echo "⑳ le résolveur est BRANCHÉ — pas du code mort"
+TP="$ROOT/scripts/team-publish.sh"
+grep -q 'lib/deploy-pin.sh' "$TP" \
+  && ok "team-publish.sh source le résolveur" \
+  || bad "résolveur appelé par RIEN — code mort, comme labctl promote (reproche G8)"
+grep -q 'apim_ss_manifest="\$DEPLOY_PIN_PUBLISH"' "$TP" \
+  && ok "le manifeste passé au rôle est le RÉSOLU, pas le chemin brut du clone" \
+  || bad "team-publish.sh passe encore \$PUB_PATH — le résolveur ne sert à rien"
+grep -q 'apim_ss_contract_pin="\$DEPLOY_PIN_CONTRACT"' "$TP" \
+  && ok "le contrat épinglé est le RÉSOLU" \
+  || bad "contrat non issu du résolveur"
+# Le verrou dev-only appartient à G4 : cette tâche ne doit pas y toucher.
+grep -q 'ENVN="\${ENVN:-dev}"' "$TP" \
+  && ok "le verrou dev-only est INTACT (il appartient à G4)" \
+  || bad "le verrou dev-only a bougé — G3 ne doit pas livrer la moitié de G4"
+
 printf '\n  %d PASS / %d FAIL\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

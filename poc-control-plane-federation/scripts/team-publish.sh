@@ -57,6 +57,8 @@
 set -uo pipefail
 set +x   # jamais de trace : le token ne doit pas fuiter
 cd "$(dirname "$0")/.." || exit 1
+# shellcheck source=lib/deploy-pin.sh
+. scripts/lib/deploy-pin.sh
 
 WEBHOOK_REPO="${WEBHOOK_REPO:?WEBHOOK_REPO requis (repository.full_name du webhook)}"
 PR_BRANCH="${PR_BRANCH:?PR_BRANCH requis}"
@@ -332,16 +334,32 @@ PY
 [ "$MANIFEST_REST_UNSAFE" = "CLEAN" ] \
   || fail "MANIFEST_UNSAFE : ${PUB_REL} contient une expression Jinja ({{ ou {%) en dehors du champ contract (déjà validé en liste blanche ci-dessus) — un manifeste d'équipe ne doit jamais porter de gabarit ailleurs, seulement des valeurs littérales"
 
+# ── 5bis. RÉSOLUTION DE LA RÉFÉRENCE DE DÉPLOIEMENT (jalon G3) ───────────────
+# En env d'AUTHORING (dev), le résolveur matérialise HEAD : le comportement est
+# celui d'avant, à l'octet près. Il est branché ICI, sur le chemin vivant, pour
+# deux raisons : (1) un résolveur que personne n'appelle est du code mort qui
+# pourrit en silence — c'est le reproche fait à `labctl promote` (GOAL G8) ;
+# (2) le jour où G4 ouvre les paliers supérieurs, ce chemin PINNE déjà, sans
+# nouvelle plomberie à écrire sous pression.
+# Le clone est DÉJÀ positionné au SHA du merge (§4) — le résolveur lit donc
+# l'état revu, pas une branche courante.
+resolve_deploy_pin "$TMP/team" "$API_NAME" "$ENVN" "$TMP/resolved" \
+  || fail "PIN_NON_RESOLU : la référence de déploiement de ${API_NAME} en ${ENVN} n'a pas pu être résolue (voir le refus nommé ci-dessus)"
+
 # ── 5. publication (rôle du palier 3, idempotent create-or-version) ─────────
-# apim_ss_contract_pin (extra-var, précédence 22) ÉPINGLE le contract à
-# SPEC_PATH — le chemin qu'on vient SOI-MÊME de vérifier exister (§4,
-# CONTRAT_ABSENT) — jamais celui que le manifeste prétend porter (cf. le
-# scan MANIFEST_UNSAFE ci-dessus, défense en profondeur sur le RESTE du
-# manifeste ; ceci est la fermeture PRIMAIRE pour contract spécifiquement).
+# apim_ss_contract_pin (extra-var, précédence 22) ÉPINGLE le contract au
+# chemin RÉSOLU (DEPLOY_PIN_CONTRACT) — en dev, le résolveur matérialise
+# exactement SPEC_PATH (§4, CONTRAT_ABSENT) ; hors dev, il matérialise le pin
+# — jamais ce que le manifeste prétend porter (cf. le scan MANIFEST_UNSAFE
+# ci-dessus, défense en profondeur sur le RESTE du manifeste ; ceci est la
+# fermeture PRIMAIRE pour contract spécifiquement). $PUB_PATH et $SPEC_PATH
+# restent utilisés PLUS HAUT par les gardes (cohérence branche↔manifeste,
+# liste blanche du champ contract) : elles valident l'état mergé sur le
+# clone ; ce qui part au moteur est ce que le résolveur en a fait.
 ( ansible-playbook -i ansible/inventory.lab.ini ansible/publish-api.yml \
-    -e apim_ss_manifest="$PUB_PATH" -e apim_ss_team="$TEAM" \
+    -e apim_ss_manifest="$DEPLOY_PIN_PUBLISH" -e apim_ss_team="$TEAM" \
     -e apim_ss_api_base="$APIM_API_BASE" -e apim_ss_env="$ENVN" \
-    -e apim_ss_contract_pin="$SPEC_PATH" \
+    -e apim_ss_contract_pin="$DEPLOY_PIN_CONTRACT" \
 ) >"$TMP/pub.log" 2>&1
 PUB_RC=$?
 

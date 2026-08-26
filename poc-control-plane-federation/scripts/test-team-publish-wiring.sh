@@ -49,7 +49,7 @@ ko(){ FAIL=$((FAIL+1)); printf '  ❌ %s\n' "$*"; }
 # section ajoutée/retirée DOIT mettre à jour ce nombre à la main — un oubli
 # fait virer le §26 au rouge, ce qui EST le comportement voulu (un rappel,
 # pas un bug).
-EXPECTED_CHECKS=114
+EXPECTED_CHECKS=115
 
 [ -f "$JOB" ] || { echo "job introuvable : $JOB"; exit 2; }
 [ -f "$JF" ]  || { echo "Jenkinsfile introuvable : $JF"; exit 2; }
@@ -423,9 +423,20 @@ fi
 
 echo
 echo "== 17. apim_ss_contract_pin épingle le contract — câblé côté script ET côté rôle, dans le bon ordre =="
-grep -qF -- '-e apim_ss_contract_pin="$SPEC_PATH"' "$REPO/scripts/team-publish.sh" \
-  && ok "team-publish.sh passe apim_ss_contract_pin=SPEC_PATH (le chemin déjà VÉRIFIÉ, jamais celui du manifeste) en extra-var" \
+# Jalon G3 T10 : le résolveur est branché sur le chemin vivant — ce qui part
+# au rôle est DEPLOY_PIN_CONTRACT (le RÉSOLU), jamais \$SPEC_PATH (le chemin
+# brut du clone). En dev, resolve_deploy_pin matérialise exactement \$SPEC_PATH
+# (comportement inchangé à l'octet près) ; hors dev, il matérialise le pin.
+grep -qF -- '-e apim_ss_contract_pin="$DEPLOY_PIN_CONTRACT"' "$REPO/scripts/team-publish.sh" \
+  && ok "team-publish.sh passe apim_ss_contract_pin=DEPLOY_PIN_CONTRACT (le chemin RÉSOLU par le résolveur G3, jamais le manifeste ni le clone brut) en extra-var" \
   || ko "apim_ss_contract_pin non passé par team-publish.sh — le manifeste resterait maître du contract"
+# \$SPEC_PATH ne disparaît pas pour autant : la garde de liste blanche sur le
+# clone mergé (CONTRAT_ABSENT — l'existence du contrat AVANT tout apply, cf.
+# §4) continue de la lire. Le résolveur décide ce qui part au moteur ; il ne
+# remplace pas la garde qui valide l'état mergé.
+grep -qF '[ -f "$SPEC_PATH" ]' "$REPO/scripts/team-publish.sh" \
+  && ok "\$SPEC_PATH sert toujours à la garde de liste blanche (CONTRAT_ABSENT, existence du contrat sur le clone mergé) — le résolveur ne la remplace pas" \
+  || ko "\$SPEC_PATH n'est plus référencé par team-publish.sh — la garde d'existence du contrat sur le clone mergé aurait disparu"
 RESOLVE_ENV="$REPO/ansible/roles/apim_publish_api/tasks/resolve-env.yml"
 [ -f "$RESOLVE_ENV" ] && grep -qF "apim_api | combine({'contract': apim_ss_contract_pin})" "$RESOLVE_ENV" \
   && ok "le rôle applique réellement le pin (set_fact combine sur contract, pas juste une variable déclarée dans defaults/main.yml sans jamais être lue)" \
