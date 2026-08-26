@@ -1366,14 +1366,27 @@ else
     || bad "64 caractères non hexadécimaux ACCEPTÉS comme digest — un nom de branche passerait pour des octets"
 
   # `itsmCheck` IMPLIQUE une référence de changement : sans elle il n'y a rien
-  # à re-vérifier auprès de l'ITSM. C'est LA raison d'être d'env_chain_gate, et
-  # sans cette épreuve rien dans le dépôt ne rougirait si l'implication
-  # disparaissait — la divergence silencieuse exacte contre laquelle le
-  # commentaire de la fonction met en garde. homol -> prod SANS change n'est
-  # refusé QUE par elle.
-  run_w homol prod "" "PV-1" "$(printf 'a%.0s' $(seq 64))" | grep -q GATE_REFS_REQUIRED \
-    && ok "itsmCheck implique change_ref — homol -> prod sans change refusé" \
-    || bad "implication itsmCheck => requireChangeRef non appliquée"
+  # à re-vérifier auprès de l'ITSM. C'est LA raison d'être d'env_chain_gate.
+  #
+  # ⚠ ET ELLE NE PEUT PAS S'ÉPROUVER SUR LA CHAÎNE LIVRÉE. Mesuré en revue : la
+  # porte `prod` de clients/_example/environments.yaml déclare SIMULTANÉMENT
+  # `requireChangeRef: true` ET `itsmCheck: true`. Sur ce jeu-là, retirer
+  # l'implication ne change RIEN — `requireChangeRef` fait le même travail sur
+  # la même porte, et l'assertion reste verte en croyant mesurer l'implication.
+  # Il faut donc une chaîne JETABLE où `itsmCheck` est SEUL. `env-chain.sh`
+  # prévoit exactement ça : $STOA_ENV_CHAIN_FILE l'emporte sur le gabarit.
+  CHAIN_ITSM="$TMP/chain-itsm-seul.yaml"
+  printf 'environments: [dev, rec, int, homol, prod]\ngates:\n  - to: prod\n    itsmCheck: true\n' \
+    > "$CHAIN_ITSM"
+  run_wc() { ( cd "$ROOT" && env -i PATH="$PATH" HOME="$HOME" \
+      STOA_ENV_CHAIN_FILE="$CHAIN_ITSM" \
+      TEAM=accounts-team API_NAME=accounts-read \
+      FROM_ENV="$1" TO_ENV="$2" MESSAGE="m" \
+      CHANGE_REF="${3-}" PV_REF="${4-}" ARCHIVE_SHA256="${5-}" \
+      GITEA_TOKEN=x DRY_RUN=1 bash "$W" 2>&1 ); }
+  run_wc homol prod "" "" "$(printf 'a%.0s' $(seq 64))" | grep -q GATE_REFS_REQUIRED \
+    && ok "itsmCheck SEUL implique change_ref — refus sur une porte sans requireChangeRef" \
+    || bad "implication itsmCheck => requireChangeRef non appliquée (porte itsmCheck seul)"
 
   # ⚠ LE CHEMIN NOMINAL. Une suite dont toutes les épreuves sont des REFUS ne
   # teste jamais l'acceptation : une garde trop zélée — la boucle de chaîne
