@@ -129,6 +129,17 @@ print("V=" + str((d.get("apim_api") or {}).get("version") or ""))
 PY
 ) || { _dp_fail "PIN_MALFORMED : publish.yml résolu illisible"; return 1; }
   case "$mv" in V=*) mv="${mv#V=}";; *) { _dp_fail "PIN_MALFORMED : sortie inattendue de la lecture de version"; return 1; };; esac
+  # ⚠ COMPARER AVANT DE VÉRIFIER LA PRÉSENCE EST UN FAIL-OPEN. Les deux côtés
+  # sont extraits en `… or ""` : un marqueur sans `version:` et un manifeste
+  # sans `apim_api.version` donnent tous deux la chaîne vide, et `"" = ""`
+  # passerait pour une CORRESPONDANCE. Le résolveur accepterait alors un pin
+  # dont personne ne sait quelle version il déploie — exactement ce que ce
+  # garde-fou existe pour empêcher. On exige donc la présence des deux, puis
+  # seulement on compare.
+  [ -n "$DEPLOY_PIN_VERSION" ] \
+    || { _dp_fail "PIN_MALFORMED : le marqueur ne porte aucune version — impossible de vérifier ce qui serait déployé"; return 1; }
+  [ -n "$mv" ] \
+    || { _dp_fail "PIN_MALFORMED : le manifeste au SHA pinné ne porte aucune version (apim_api.version absent)"; return 1; }
   [ "$mv" = "$DEPLOY_PIN_VERSION" ] \
     || { _dp_fail "PIN_VERSION_MISMATCH : le marqueur annonce '$DEPLOY_PIN_VERSION' mais le manifeste au SHA pinné porte '$mv'"; return 1; }
 

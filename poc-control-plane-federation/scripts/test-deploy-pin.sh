@@ -141,6 +141,18 @@ resolve_deploy_pin "$REPO" accounts-read rec "$WORK" main 2>"$TMP/e6" \
   && bad "commit inexistant ACCEPTÉ" \
   || { grep -qE 'PIN_NON_ANCETRE|PIN_UNREADABLE' "$TMP/e6" && ok "refus nommé sur commit inexistant" || bad "refusé sans refus nommé : $(cat "$TMP/e6")"; }
 
+echo "⑥bis version absente des DEUX cotes — un fail-open si on compare avant de verifier"
+REPO="$TMP/team6b"; make_team_repo "$REPO"
+printf 'apim_api:\n  name: "accounts-read"\n' > "$REPO/apis/accounts-read.publish.yml"
+git -C "$REPO" add -A && git -C "$REPO" commit -qm "manifeste sans version"
+CNV=$(git -C "$REPO" rev-parse HEAD)
+printf 'version: ""\nenabled: true\npromoted_by: a\nmessage: t\ncommit: %s\nchange_ref: ""\narchive_sha256: "%s"\n' \
+  "$CNV" "$(sha_of "$REPO/dist/a.zip")" > "$REPO/apis/accounts-read.deploy.rec.yaml"
+WORK="$TMP/w6b"
+resolve_deploy_pin "$REPO" accounts-read rec "$WORK" main 2>"$TMP/e6b" \
+  && bad "marqueur SANS version + manifeste SANS version ACCEPTES — '\"\" = \"\"' est passe pour une correspondance" \
+  || { grep -q PIN_MALFORMED "$TMP/e6b" && ok "PIN_MALFORMED sur version absente" || bad "refuse sans nommer PIN_MALFORMED : $(cat "$TMP/e6b")"; }
+
 echo "⑦ PIN_VERSION_MISMATCH — le marqueur ment sur la version"
 REPO="$TMP/team7"; make_team_repo "$REPO"
 marker "$REPO" rec "$C1" "7.7.7" "$(sha_of "$REPO/dist/a.zip")"
