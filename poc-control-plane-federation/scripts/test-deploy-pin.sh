@@ -388,5 +388,48 @@ case "$IMPV" in
   *) bad "PARSE_IMPORT : sortie inattendue de la sonde" ;;
 esac
 
+echo "⑯ l'écrivain refuse AVANT tout geste Git"
+W="$ROOT/scripts/api-promote-request.sh"
+if [ ! -f "$W" ]; then
+  bad "api-promote-request.sh absent — rien ne produit de marqueur"
+else
+  run_w() { ( cd "$ROOT" && env -i PATH="$PATH" HOME="$HOME" \
+      STOA_ENV_CHAIN_FILE="$ROOT/clients/_example/environments.yaml" \
+      TEAM=accounts-team API_NAME=accounts-read \
+      FROM_ENV="$1" TO_ENV="$2" MESSAGE="m" \
+      CHANGE_REF="${3-}" PV_REF="${4-}" ARCHIVE_SHA256="${5-}" \
+      GITEA_TOKEN=x DRY_RUN=1 bash "$W" 2>&1 ); }
+
+  # ⚠ PAS DE PIPE DIRECT VERS grep -q ICI. Sous `pipefail` (actif en tête de
+  # ce fichier), le statut d'un pipeline est le DERNIER exit NON NUL en
+  # partant de la droite — pas forcément celui de la commande la plus à
+  # droite. `run_w` sort volontairement en erreur (1) sur chaque garde
+  # refusée (fail()) ; en pipe direct, ce 1 remonte et écrase le succès de
+  # `grep -q`, qui pourtant a bien trouvé le refus attendu. Mesuré : les
+  # quatre assertions ci-dessous restaient au rouge malgré un message
+  # correct. On capture donc la sortie dans un fichier puis on grep CE
+  # fichier — même discipline que le reste de ce script pour
+  # resolve_deploy_pin (épreuves ①bis, ③, ④, ⑤…).
+  run_w dev prod "" "" "$(printf 'a%.0s' $(seq 64))" > "$TMP/w16"
+  grep -q CHAINE_INVALIDE "$TMP/w16" \
+    && ok "CHAINE_INVALIDE — un saut dev→prod n'est pas exprimable" \
+    || bad "saut de palier ACCEPTÉ"
+
+  run_w int homol "" "" "$(printf 'a%.0s' $(seq 64))" > "$TMP/w16"
+  grep -q GATE_REFS_REQUIRED "$TMP/w16" \
+    && ok "GATE_REFS_REQUIRED — la porte homol exige un pv_ref, refusé À LA DEMANDE" \
+    || bad "promotion vers homol sans pv_ref ACCEPTÉE"
+
+  run_w dev rec "" "" "" > "$TMP/w16"
+  grep -q DIGEST_ABSENT "$TMP/w16" \
+    && ok "DIGEST_ABSENT — pas de promotion hors authoring sans digest" \
+    || bad "promotion hors dev sans digest ACCEPTÉE"
+
+  run_w dev rec "" "" "pas-un-digest" > "$TMP/w16"
+  grep -q DIGEST_MALFORMED "$TMP/w16" \
+    && ok "DIGEST_MALFORMED" \
+    || bad "digest de forme invalide ACCEPTÉ"
+fi
+
 printf '\n  %d PASS / %d FAIL\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

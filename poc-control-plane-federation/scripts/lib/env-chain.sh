@@ -81,3 +81,25 @@ print(next((g.get("approverGroup", "") for g in (d.get("gates") or [])
             if g.get("to") == sys.argv[2]), ""))
 PY
 }
+
+# Ce que la porte d'un palier EXIGE, en une lecture — prolongement de
+# env_chain_approver_group, qui ne disait que QUI approuve. Rend :
+#   GATE=<changeRef 0|1>|<pvRef 0|1>|<approverGroup>
+#
+# `itsmCheck` IMPLIQUE une référence de changement : il n'y a rien à
+# re-vérifier auprès de l'ITSM sans elle (même règle que
+# governance-api, handlers_promotions.go:77-89 — la porte est lue au même
+# endroit des deux côtés, sinon les deux divergent en silence).
+env_chain_gate() {
+  local f; f="$(_env_chain_file)"
+  [ -r "$f" ] || { echo "env-chain: source illisible : $f" >&2; return 1; }
+  python3 - "$f" "$1" <<'PY'
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1])) or {}
+g = next((x for x in (d.get("gates") or []) if x.get("to") == sys.argv[2]), {}) or {}
+print("GATE=%s|%s|%s" % (
+    "1" if (g.get("requireChangeRef") or g.get("itsmCheck")) else "0",
+    "1" if g.get("requirePVRef") else "0",
+    g.get("approverGroup") or ""))
+PY
+}
