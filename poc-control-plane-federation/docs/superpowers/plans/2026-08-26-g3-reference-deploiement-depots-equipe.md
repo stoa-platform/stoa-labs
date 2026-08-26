@@ -1843,17 +1843,31 @@ grep -q 'test-deploy-pin.sh' "$ROOT/Makefile" \
 # ne peut pas tourner. On exige donc que tout `credentialsId` littéral de ce
 # Jenkinsfile soit un ID déjà utilisé ailleurs dans le dépôt.
 JPR="$ROOT/ci/Jenkinsfile.api-promote-request"
-CRED_LIT=$(grep -oE "credentialsId: *'[^']+'" "$JPR" | sed "s/.*'\(.*\)'/\1/" | sort -u)
-if [ -z "$CRED_LIT" ]; then
-  ok "aucun ID de credential en dur — il passe par une variable surchargeable"
+# ⚠ DEUX TROUS MESURÉS DANS LA PREMIÈRE VERSION DE CETTE ASSERTION, ET ILS LA
+# RENDAIENT INUTILE :
+#  (A) AUTO-RÉFÉRENCE — elle cherchait l'ID dans tout le dépôt, Y COMPRIS le
+#      fichier sous test : un littéral inconnu se trouvait donc LUI-MÊME et
+#      l'assertion passait au vert. Le fichier est désormais EXCLU de son
+#      propre périmètre de recherche.
+#  (B) FORME VARIABLE — elle ne lisait que les littéraux `credentialsId: '…'`.
+#      Or l'ID vit maintenant dans le DÉFAUT du bloc environment{} : un nom
+#      inventé posé LÀ plutôt qu'ici serait passé sans un mot.
+# Une garde de non-régression qui ne peut pas rougir n'est pas une garde.
+CRED_IDS=$( { grep -oE "credentialsId: *'[^']+'" "$JPR"
+              grep -oE "GITEA_CREDENTIALS_ID[^']*'[^']+'" "$JPR"; } \
+            | sed "s/.*'\([^']*\)'.*/\1/" | grep -v '^$' | sort -u)
+if [ -z "$CRED_IDS" ]; then
+  bad "aucun ID de credential trouvé dans le job — ni littéral, ni défaut du bloc environment{} : l'assertion ne mesure rien"
 else
   CRED_ORPHELIN=""
-  for c in $CRED_LIT; do
-    grep -rqF "$c" "$ROOT/scripts" "$ROOT/ci" --include='*.sh' --include='Jenkinsfile*' 2>/dev/null \
+  for c in $CRED_IDS; do
+    grep -rqF "$c" "$ROOT/scripts" "$ROOT/ci" \
+      --include='*.sh' --include='Jenkinsfile*' \
+      --exclude='Jenkinsfile.api-promote-request' 2>/dev/null \
       || CRED_ORPHELIN="$CRED_ORPHELIN $c"
   done
-  [ -z "$CRED_ORPHELIN" ] && ok "les IDs de credential en dur existent ailleurs dans le depot" \
-                          || bad "credential(s) inconnu(s) du depot :$CRED_ORPHELIN — le build echouerait sur CredentialNotFoundException"
+  [ -z "$CRED_ORPHELIN" ] && ok "tout ID de credential du job (littéral ET défaut environment{}) existe AILLEURS dans le dépôt" \
+                          || bad "credential(s) inconnu(s) du dépôt :$CRED_ORPHELIN — le build échouerait sur CredentialNotFoundException"
 fi
 grep -q 'GITEA_CREDENTIALS_ID' "$JPR" \
   && ok "l'ID de credential est un point de bascule client (motif des Jenkinsfile freres)" \
