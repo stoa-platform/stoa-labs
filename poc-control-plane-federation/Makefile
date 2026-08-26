@@ -4,6 +4,8 @@
 #   make test      suite Go complète, air-gapped (GOPROXY=off, -mod=vendor)
 #   make release   dist/<version>/ : binaires MULTI-ARCH versionnés (ldflags -X)
 #                  + SHA256SUMS + SBOM SPDX — le tout SANS réseau (vendor/).
+#   make lint-ci   les portes de la chaîne CI : compilation des Jenkinsfile,
+#                  shellcheck des bibliothèques, épreuves de carto-secrets.
 #
 # Principe livrable (DELIVERY-PROCESS §4) : la release se construit HORS ZONE ;
 # l'agent Jenkins du client reçoit CES binaires + checksums + SBOM, jamais le
@@ -37,7 +39,7 @@ TRIAL_IMAGES  ?= ibmwebmethods.azurecr.io/apigateway:11.1 \
                  softwareag/apigateway-trial:10.15 \
                  softwareag/devportal:10.15
 
-.PHONY: build test release clean images-save images-restore images-check
+.PHONY: build test release clean lint-ci images-save images-restore images-check
 
 build:
 	cd labctl && $(GOENV) go build -trimpath -ldflags "$(LDFLAGS)" -o bin/labctl .
@@ -67,6 +69,25 @@ release:
 
 clean:
 	rm -rf dist labctl/bin
+
+# ── Portes de la chaîne CI ───────────────────────────────────────────────────
+# Rien ne compilait les Jenkinsfile jusqu'ici : un fichier qui ne parse plus ne
+# se voyait qu'à l'exécution, c'est-à-dire la nuit suivante sur un job planifié.
+# C'est arrivé deux fois (2026-08-07 échappement `\w` en chaîne Groovy,
+# 2026-08-26 chemin de `source` faux). Les deux portes sont COMPLÉMENTAIRES :
+# la première lit la SYNTAXE, la seconde le COMPORTEMENT — la seconde seule
+# attrape un chemin faux, qui parse parfaitement.
+#
+# `shellcheck` est lancé AU DIALECTE DU SHEBANG (jamais `-s sh`) : les libs
+# déclarent bash et usent de `local`, que `-s sh` noie sous 14 SC3043.
+lint-ci:
+	@echo "== [1/3] compilation des Jenkinsfile"
+	@ci/lint-jenkinsfiles.sh
+	@echo "== [2/3] shellcheck des bibliothèques ci/lib"
+	@command -v shellcheck >/dev/null || { echo "!! shellcheck absent — \`brew install shellcheck\`"; exit 2; }
+	@shellcheck ci/lib/*.sh && echo "  ✓ ci/lib propre"
+	@echo "== [3/3] épreuves de ci/lib/carto-secrets.sh"
+	@ci/test-carto-secrets.sh
 
 # Sauvegarde idempotente (ne re-save pas ce qui est déjà là) : `docker save` par
 # image → restauration unitaire possible. Pas de gzip : 2.4 To de libre, autant
