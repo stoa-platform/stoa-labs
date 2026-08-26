@@ -267,7 +267,8 @@ PY
     *) { _dp_fail "PIN_MALFORMED : commit='$DEPLOY_PIN_COMMIT' fait ${#DEPLOY_PIN_COMMIT} caractères — un identifiant d'objet complet en fait 40 (SHA-1) ou 64 (SHA-256)"; return 1; };;
   esac
 
-  mkdir -p "$work" || return 1
+  mkdir -p "$work" \
+    || { _dp_fail "WORKDIR_INCREABLE : impossible de creer '$work'"; return 1; }
   # publish.yml et openapi.yaml sont TOUJOURS présents — api-request.sh les pose
   # ENSEMBLE, au même commit (team-publish.sh:259 refuse déjà CONTRAT_ABSENT).
   local f
@@ -415,7 +416,21 @@ Dans `scripts/lib/deploy-pin.sh`, changer la signature et insérer les gardes.
 Remplacer la ligne `local clone="$1" api="$2" env="$3" work="$4"` par :
 
 ```bash
-  local clone="$1" api="$2" env="$3" work="$4" mainref="${5:-origin/main}"
+  local clone="$1" api="$2" env="$3" work="$4" mainref="${5:-origin/main}" archive_in="${6:-}"
+
+  # REMISE A ZERO DES SORTIES, AVANT TOUT REFUS.
+  # Sans elle, un appel qui ECHOUE laisse en place les valeurs du precedent :
+  # mesure en revue — apres un succes sur `bonapi` puis un echec sur
+  # `mauvaiseapi`, DEPLOY_PIN_PUBLISH designait le manifeste de la seconde et
+  # DEPLOY_PIN_ARCHIVE les octets de la PREMIERE. Un appelant qui ignore le code
+  # de retour (ou un wrapper Ansible en `ignore_errors`) deploierait les octets
+  # d'une API sous l'identite d'une autre. Un refus doit laisser un etat VIDE,
+  # jamais l'etat de quelqu'un d'autre.
+  DEPLOY_PIN_COMMIT=""; DEPLOY_PIN_VERSION=""; DEPLOY_PIN_SHA256=""
+  DEPLOY_PIN_PUBLISH=""; DEPLOY_PIN_PROMOTE=""; DEPLOY_PIN_CONTRACT=""
+  DEPLOY_PIN_ARCHIVE=""
+  export DEPLOY_PIN_COMMIT DEPLOY_PIN_VERSION DEPLOY_PIN_SHA256 \
+         DEPLOY_PIN_PUBLISH DEPLOY_PIN_PROMOTE DEPLOY_PIN_CONTRACT DEPLOY_PIN_ARCHIVE
 ```
 
 Insérer **après** la garde `PIN_MALFORMED` du SHA hexadécimal, **avant** le `mkdir -p "$work"` :
@@ -496,7 +511,7 @@ echo "⑧ DIGEST_ABSENT — pas de digest hors de l'environnement d'authoring"
 REPO="$TMP/team8"; make_team_repo "$REPO"
 marker "$REPO" rec "$C1" "1.0.0" ""
 WORK="$TMP/w8"
-resolve_deploy_pin "$REPO" accounts-read rec "$WORK" main 2>"$TMP/e8" \
+resolve_deploy_pin "$REPO" accounts-read rec "$WORK" main "$REPO/dist/a.zip" 2>"$TMP/e8" \
   && bad "promotion hors dev SANS digest ACCEPTÉE — les octets déployés ne sont pinnés par rien" \
   || { grep -q DIGEST_ABSENT "$TMP/e8" && ok "DIGEST_ABSENT" || bad "refusé sans nommer DIGEST_ABSENT : $(cat "$TMP/e8")"; }
 
@@ -504,7 +519,7 @@ echo "⑨ ARCHIVE_DIGEST_MISMATCH — le digest ne correspond pas aux octets"
 REPO="$TMP/team9"; make_team_repo "$REPO"
 marker "$REPO" rec "$C1" "1.0.0" "0000000000000000000000000000000000000000000000000000000000000000"
 WORK="$TMP/w9"
-resolve_deploy_pin "$REPO" accounts-read rec "$WORK" main 2>"$TMP/e9" \
+resolve_deploy_pin "$REPO" accounts-read rec "$WORK" main "$REPO/dist/a.zip" 2>"$TMP/e9" \
   && bad "digest faux ACCEPTÉ" \
   || { grep -q ARCHIVE_DIGEST_MISMATCH "$TMP/e9" && ok "ARCHIVE_DIGEST_MISMATCH" || bad "refusé sans nommer ARCHIVE_DIGEST_MISMATCH : $(cat "$TMP/e9")"; }
 
@@ -513,7 +528,7 @@ REPO="$TMP/team10"; make_team_repo "$REPO"
 marker "$REPO" rec "$C1" "1.0.0" "$(sha_of "$REPO/dist/a.zip")"
 rm -f "$REPO/dist/a.zip"
 WORK="$TMP/w10"
-resolve_deploy_pin "$REPO" accounts-read rec "$WORK" main 2>"$TMP/e10" \
+resolve_deploy_pin "$REPO" accounts-read rec "$WORK" main "$REPO/dist/a.zip" 2>"$TMP/e10" \
   && bad "archive absente ACCEPTÉE — la vérification a été SAUTÉE au lieu d'échouer" \
   || { grep -q ARCHIVE_ABSENT "$TMP/e10" && ok "ARCHIVE_ABSENT" || bad "refusé sans nommer ARCHIVE_ABSENT : $(cat "$TMP/e10")"; }
 
@@ -524,9 +539,25 @@ git -C "$REPO" commit -qm "sans manifeste de promotion"
 CNO=$(git -C "$REPO" rev-parse HEAD)
 marker "$REPO" rec "$CNO" "2.0.0" "$(sha_of "$REPO/dist/a.zip")"
 WORK="$TMP/w10b"
-resolve_deploy_pin "$REPO" accounts-read rec "$WORK" main 2>"$TMP/e10b" \
+resolve_deploy_pin "$REPO" accounts-read rec "$WORK" main "$REPO/dist/a.zip" 2>"$TMP/e10b" \
   && bad "promotion hors authoring ACCEPTÉE sans promote.yml — rien ne nomme l'archive" \
   || { grep -q PROMOTE_MANIFEST_ABSENT "$TMP/e10b" && ok "PROMOTE_MANIFEST_ABSENT" || bad "refusé sans nommer PROMOTE_MANIFEST_ABSENT : $(cat "$TMP/e10b")"; }
+
+echo "⑩ter ARCHIVE_PATH_RELATIVE — les octets verifies et consommes seraient resolus ailleurs"
+REPO="$TMP/team10t"; make_team_repo "$REPO"
+marker "$REPO" rec "$C1" "1.0.0" "$(sha_of "$REPO/dist/a.zip")"
+WORK="$TMP/w10t"
+resolve_deploy_pin "$REPO" accounts-read rec "$WORK" main "dist/a.zip" 2>"$TMP/e10t" \
+  && bad "chemin d'archive RELATIF accepte — le resolveur hache un fichier, le moteur en rouvre un autre" \
+  || { grep -q ARCHIVE_PATH_RELATIVE "$TMP/e10t" && ok "ARCHIVE_PATH_RELATIVE" || bad "refuse sans nommer ARCHIVE_PATH_RELATIVE : $(cat "$TMP/e10t")"; }
+
+echo "⑩quater MANIFESTE_ABSENT — dev sans manifeste de publication"
+REPO="$TMP/team10q"; make_team_repo "$REPO"
+rm -f "$REPO/apis/accounts-read.publish.yml"
+WORK="$TMP/w10q"
+resolve_deploy_pin "$REPO" accounts-read dev "$WORK" main 2>"$TMP/e10q" \
+  && bad "dev ACCEPTE sans manifeste de publication" \
+  || { grep -q MANIFESTE_ABSENT "$TMP/e10q" && ok "MANIFESTE_ABSENT" || bad "refuse sans nommer MANIFESTE_ABSENT : $(cat "$TMP/e10q")"; }
 
 echo "⑪ dev suit HEAD — l'environnement d'authoring n'exige ni marqueur ni digest"
 REPO="$TMP/team11"; make_team_repo "$REPO"
@@ -539,10 +570,21 @@ else
   bad "dev refusé alors qu'il doit suivre HEAD : $(cat "$TMP/e11")"
 fi
 
-echo "⑫ CONTRE-ÉPREUVE — retirer la garde d'ancêtreté doit faire ROUGIR l'épreuve ⑤"
+echo "⑫ CONTRE-ÉPREUVE — garde d'ancêtreté neutralisée ⇒ un SHA non mergé DOIT passer"
 LIB="$ROOT/scripts/lib/deploy-pin.sh"
 BAK="$(mktemp)"; cp "$LIB" "$BAK"
-restore_lib() { cp "$BAK" "$LIB"; rm -f "$BAK"; }
+# LA RESTAURATION SE VÉRIFIE. Un `cp` dont personne ne lit le statut, suivi d'un
+# `rm -f` inconditionnel de la sauvegarde, peut laisser la bibliothèque SABOTÉE
+# dans l'arbre de travail — sans sauvegarde — pendant que le script imprime
+# « N PASS / 0 FAIL ». Mesuré en revue. C'est très exactement « pire que pas de
+# contre-épreuve ». On relit donc le fichier après restauration, et la
+# sauvegarde ne disparaît qu'une fois la garde retrouvée.
+restore_lib() {
+  cp "$BAK" "$LIB" || { bad "RESTAURATION ECHOUEE : copie de $BAK vers $LIB"; return 1; }
+  grep -q 'merge-base --is-ancestor' "$LIB" \
+    || { bad "RESTAURATION ECHOUEE : la garde d'ancetrete est absente apres restauration — bibliotheque sabotee laissee sur disque"; return 1; }
+  rm -f "$BAK"
+}
 trap 'restore_lib; rm -rf "$TMP"' EXIT INT TERM
 # Sabotage : la garde devient un no-op QUI PASSE. Si l'épreuve ⑤ passe quand
 # même au vert, c'est qu'elle mesurait autre chose que la garde — un vert
@@ -557,7 +599,14 @@ trap 'restore_lib; rm -rf "$TMP"' EXIT INT TERM
 # On remplace donc la commande entière par `true`, ce qui laisse le `||` de la
 # ligne suivante intact et fait passer la garde.
 sed -i.tmp 's|git -C "$clone" merge-base --is-ancestor "$DEPLOY_PIN_COMMIT" "$mainref" 2>/dev/null|true|' "$LIB" && rm -f "$LIB.tmp"
-if ! grep -q 'merge-base --is-ancestor' "$LIB"; then
+# ⚠ TEST POSITIF, PAS NÉGATIF. Vérifier « la garde a disparu du fichier »
+# (`! grep -q …`) serait satisfait par une RÉGRESSION qui l'aurait supprimée :
+# le `sed` ne matcherait plus rien, aucun sabotage ne serait appliqué, et la
+# sonde tournerait contre une bibliothèque déjà sans garde en imprimant
+# « sabotage détecté ». Un vert vacant au cœur de l'épreuve écrite pour
+# détecter les verts vacants. On exige donc que le fichier ait RÉELLEMENT
+# changé.
+if ! cmp -s "$LIB" "$BAK"; then
   ( set +u; . "$LIB"
     REPO2="$TMP/sab"; mkdir -p "$REPO2/apis"
     git -C "$REPO2" init -q -b main
@@ -573,13 +622,15 @@ if ! grep -q 'merge-base --is-ancestor' "$LIB"; then
     E=$(git -C "$REPO2" rev-parse HEAD); git -C "$REPO2" checkout -q main
     printf 'version: "1.0.0"\nenabled: true\npromoted_by: a\nmessage: t\ncommit: %s\nchange_ref: ""\narchive_sha256: "%s"\n' \
       "$E" "$(shasum -a 256 "$REPO2/z" | cut -d' ' -f1)" > "$REPO2/apis/a.deploy.rec.yaml"
-    resolve_deploy_pin "$REPO2" a rec "$TMP/wsab" main 2>/dev/null ) \
+    resolve_deploy_pin "$REPO2" a rec "$TMP/wsab" main "$REPO2/z" 2>/dev/null ) \
     && ok "sabotage détecté : garde retirée ⇒ un SHA non mergé passe (la garde mesurait bien quelque chose)" \
     || bad "garde retirée et le refus persiste — l'épreuve ⑤ ne mesure PAS cette garde (vert vacant)"
 else
   bad "sabotage non appliqué — la contre-épreuve n'a rien prouvé"
 fi
 restore_lib
+# Le trap est reduit au nettoyage : restore_lib vient de tourner et a detruit
+# BAK, le rappeler echouerait sur un fichier absent.
 trap 'rm -rf "$TMP"' EXIT INT TERM
 ```
 
@@ -590,21 +641,65 @@ Expected: FAIL sur ⑧, ⑨, ⑩ (digest non vérifié), et ⑪ échoue aussi (`
 
 - [ ] **Step 3 : Ajouter le traitement de dev et la vérification du digest**
 
-Dans `scripts/lib/deploy-pin.sh`, ajouter en tête du fichier, après `_STOA_DEPLOY_PIN_ROOT` :
+**D'abord, trois modifications de la fonction EXISTANTE** (elles corrigent des défauts que les revues des tâches 1-2 ont mis au jour ; elles ne sont pas facultatives) :
+
+1. **Signature** — ajouter un 6e positionnel : `archive_in="${6:-}"`. La ligne devient
+   `local clone="$1" api="$2" env="$3" work="$4" mainref="${5:-origin/main}" archive_in="${6:-}"`.
+2. **Remise à zéro des sorties, avant tout refus.** Juste après la ligne `local`, avant les validations de `$api`/`$env` :
+
+```bash
+  # Sans elle, un appel qui ÉCHOUE laisse en place les valeurs du précédent :
+  # mesuré en revue — après un succès sur `bonapi` puis un échec sur
+  # `mauvaiseapi`, DEPLOY_PIN_PUBLISH désignait le manifeste de la seconde et
+  # DEPLOY_PIN_ARCHIVE les octets de la PREMIÈRE. Un appelant qui ignore le code
+  # de retour (ou un wrapper Ansible en `ignore_errors`) déploierait les octets
+  # d'une API sous l'identité d'une autre. Un refus doit laisser un état VIDE,
+  # jamais l'état de quelqu'un d'autre.
+  DEPLOY_PIN_COMMIT=""; DEPLOY_PIN_VERSION=""; DEPLOY_PIN_SHA256=""
+  DEPLOY_PIN_PUBLISH=""; DEPLOY_PIN_PROMOTE=""; DEPLOY_PIN_CONTRACT=""
+  DEPLOY_PIN_ARCHIVE=""
+  export DEPLOY_PIN_COMMIT DEPLOY_PIN_VERSION DEPLOY_PIN_SHA256 \
+         DEPLOY_PIN_PUBLISH DEPLOY_PIN_PROMOTE DEPLOY_PIN_CONTRACT DEPLOY_PIN_ARCHIVE
+```
+
+3. **Nommer le refus muet du `mkdir`** (le fichier affiche « toute anomalie est un refus **nommé** » ; celui-là ne l'était pas). Aux **deux** sites `mkdir -p "$work" || return 1` :
+
+```bash
+  mkdir -p "$work" \
+    || { _dp_fail "WORKDIR_INCREABLE : impossible de créer '$work'"; return 1; }
+```
+
+**Ensuite**, dans `scripts/lib/deploy-pin.sh`, ajouter en tête du fichier, après `_STOA_DEPLOY_PIN_ROOT` :
 
 ```bash
 # L'environnement d'AUTHORING — le seul palier sans marqueur, le seul qui suit
 # HEAD (labctl/internal/uac/pinned.go:15 : « publish writes no pin: the entry
 # environment follows HEAD by design »). ADR-079 : c'est le seul env où le blip
-# de première création est toléré.
-DEPLOY_PIN_AUTHORING_ENV="${DEPLOY_PIN_AUTHORING_ENV:-dev}"
+# de première création est toléré. C'est le PREMIER palier de la chaîne
+# `environments.yaml` (clients/_example/environments.yaml : [dev, rec, int,
+# homol, prod]).
+#
+# ⚠ AFFECTATION SÈCHE, PAS `${…:-dev}`. Une valeur surchargeable par
+# l'environnement serait le contournement de TOUT ce fichier : poser
+# `DEPLOY_PIN_AUTHORING_ENV=prod` ferait entrer la prod dans la branche
+# d'authoring, qui retourne AVANT le marqueur, le pin, l'ancêtreté, la version
+# et le digest — un repli total et silencieux sur HEAD, déclenché par un seul
+# mot. Et ce n'est pas théorique ici : les paramètres d'un build Jenkins
+# atterrissent dans l'environnement du job (fait mesuré lors du refactor des
+# Jenkinsfile). Le seul palier qui a le droit de suivre HEAD ne se choisit pas
+# depuis l'extérieur.
+DEPLOY_PIN_AUTHORING_ENV="dev"
 ```
 
 Remplacer la garde `PIN_ABSENT` par :
 
 ```bash
   if [ "$env" = "$DEPLOY_PIN_AUTHORING_ENV" ]; then
-    # dev : pas de marqueur, pas de digest — on matérialise HEAD tel quel.
+    # dev : pas de marqueur, pas de digest — on matérialise l'ARBRE DE TRAVAIL
+    # du clone tel quel. En CI c'est exactement l'état revu (l'appelant a fait
+    # `git checkout <MERGE_SHA>` avant d'appeler) ; hors CI, sur un clone sale,
+    # ce n'est PAS HEAD — dire « HEAD » ici serait décrire autre chose que le
+    # code.
     mkdir -p "$work" || return 1
     local g
     for g in publish.yml openapi.yaml; do
@@ -639,29 +734,52 @@ Ajouter **après** la garde `PIN_VERSION_MISMATCH**, en fin de fonction avant le
   [ -n "$DEPLOY_PIN_SHA256" ] \
     || { _dp_fail "DIGEST_ABSENT : archive_sha256 vide pour l'env '$env' — hors authoring, les octets déployés doivent être pinnés"; return 1; }
 
-  # C'EST ICI que promote.yml devient obligatoire, et pas plus tôt : hors de
-  # l'env d'authoring, le verbe est l'import d'archive (ADR-079) et c'est ce
-  # manifeste qui nomme l'archive. Une API sans promote.yml ne peut tout
-  # simplement pas voyager par archive.
+  # promote.yml devient obligatoire ICI, et pas plus tôt : hors de l'env
+  # d'authoring, le verbe est l'import d'archive (ADR-079) et c'est ce manifeste
+  # qui pilote le play. Une API sans promote.yml ne peut pas voyager par archive.
   [ -n "$DEPLOY_PIN_PROMOTE" ] \
     || { _dp_fail "PROMOTE_MANIFEST_ABSENT : apis/${api}.promote.yml absent au SHA pinné — hors de '$DEPLOY_PIN_AUTHORING_ENV', la promotion se fait par archive et exige ce manifeste"; return 1; }
 
-  local arch
-  arch=$(DP_FILE="$DEPLOY_PIN_PROMOTE" python3 - <<'PY'
-import os, yaml
-d = yaml.safe_load(open(os.environ["DP_FILE"])) or {}
-print("A=" + str((d.get("apim_promote") or {}).get("archive") or ""))
-PY
-) || { _dp_fail "PIN_MALFORMED : promote.yml résolu illisible"; return 1; }
-  case "$arch" in A=*) arch="${arch#A=}";; *) { _dp_fail "PIN_MALFORMED : sortie inattendue de la lecture de archive"; return 1; };; esac
+  # ⚠ LE CHEMIN DE L'ARCHIVE NE SE LIT PAS DANS promote.yml. Mesuré : le seul
+  # manifeste réel du dépôt y porte une EXPRESSION JINJA, pas un chemin —
+  #   clients/_example/apis/accounts-read.promote.yml:
+  #     archive: "{{ playbook_dir }}/../dist/accounts-read-1.0.0.archive.zip"
+  # que seul Ansible sait rendre, au moment du play. Un `stat` sur cette chaîne
+  # brute échoue TOUJOURS : une première version de ce bloc la lisait, et la
+  # promotion hors dev était donc morte au premier contact avec le format réel,
+  # pendant que six fixtures inventaient un format littéral pour rester vertes.
+  #
+  # L'archive est un ARTEFACT DE BUILD dont l'appelant (le CI) connaît
+  # l'emplacement — c'est lui qui l'a produite ou récupérée. Il le passe donc
+  # explicitement. Le lien « approuvé == déployé » n'est pas porté par le
+  # CHEMIN mais par le DIGEST, vérifié deux fois contre la même valeur pinnée :
+  # ici sur les octets que le CI détient, et de nouveau dans le rôle sur les
+  # octets qu'il s'apprête à POSTer (Task 6). Deux chemins, un invariant.
+  [ -n "$archive_in" ] \
+    || { _dp_fail "ARCHIVE_ABSENT : aucun chemin d'archive fourni (6e argument) — hors authoring le digest doit être vérifié, donc on ne promeut pas"; return 1; }
+  # ABSOLU EXIGÉ : l'en-tête de ce fichier documente que les appelants font un
+  # `cd` après le source. Un chemin relatif serait haché depuis le cwd du
+  # résolveur puis réexporté tel quel, et le moteur le rouvrirait depuis SON
+  # cwd : on vérifierait un fichier et on en déploierait un autre, sans aucun
+  # refus. Mesuré.
+  case "$archive_in" in
+    /*) ;;
+    *) { _dp_fail "ARCHIVE_PATH_RELATIVE : '$archive_in' n'est pas absolu — les octets vérifiés et les octets consommés seraient résolus depuis deux répertoires différents"; return 1; };;
+  esac
+  [ -f "$archive_in" ] \
+    || { _dp_fail "ARCHIVE_ABSENT : archive '$archive_in' introuvable — le digest ne peut pas être vérifié, donc on ne promeut pas"; return 1; }
 
-  [ -n "$arch" ] && [ -f "$arch" ] \
-    || { _dp_fail "ARCHIVE_ABSENT : archive '$arch' introuvable — le digest ne peut pas être vérifié, donc on ne promeut pas"; return 1; }
-
-  local actual; actual=$(shasum -a 256 "$arch" | cut -d' ' -f1)
+  local actual
+  actual=$(shasum -a 256 "$archive_in" 2>/dev/null | cut -d' ' -f1) \
+    || { _dp_fail "ARCHIVE_UNREADABLE : impossible de hacher '$archive_in' (droits ? fichier spécial ?)"; return 1; }
+  # `actual` vide ne doit JAMAIS retomber dans la comparaison : si le digest
+  # pinné pouvait l'être aussi, `"" = ""` passerait pour une correspondance —
+  # le fail-open déjà rencontré sur la version.
+  [ -n "$actual" ] \
+    || { _dp_fail "ARCHIVE_UNREADABLE : sha256 vide pour '$archive_in'"; return 1; }
   [ "$actual" = "$DEPLOY_PIN_SHA256" ] \
-    || { _dp_fail "ARCHIVE_DIGEST_MISMATCH : archive '$arch' porte $actual, le marqueur pinne $DEPLOY_PIN_SHA256"; return 1; }
-  DEPLOY_PIN_ARCHIVE="$arch"
+    || { _dp_fail "ARCHIVE_DIGEST_MISMATCH : archive '$archive_in' porte $actual, le marqueur pinne $DEPLOY_PIN_SHA256"; return 1; }
+  DEPLOY_PIN_ARCHIVE="$archive_in"
 ```
 
 Et ajouter `DEPLOY_PIN_ARCHIVE` à la ligne `export` finale.
@@ -669,7 +787,7 @@ Et ajouter `DEPLOY_PIN_ARCHIVE` à la ligne `export` finale.
 - [ ] **Step 4 : Lancer les tests pour vérifier qu'ils passent**
 
 Run: `bash scripts/test-deploy-pin.sh`
-Expected: PASS — `17 PASS / 0 FAIL`, contre-épreuve comprise.
+Expected: PASS — `19 PASS / 0 FAIL`, contre-épreuve comprise.
 
 - [ ] **Step 5 : Vérifier que shellcheck est propre**
 
@@ -785,7 +903,7 @@ archive_sha256: "000000000000000000000000000000000000000000000000000000000000000
 - [ ] **Step 4 : Lancer le test pour vérifier qu'il passe**
 
 Run: `bash scripts/test-deploy-pin.sh`
-Expected: PASS — `18 PASS / 0 FAIL`
+Expected: PASS — `20 PASS / 0 FAIL`
 
 - [ ] **Step 5 : Commit**
 
@@ -866,7 +984,7 @@ Puis, dans la tâche `"Export : FAIL-CLOSED — archive saine"`, remplacer le `s
 - [ ] **Step 4 : Lancer le test et le lint Ansible**
 
 Run: `bash scripts/test-deploy-pin.sh && ansible-playbook ansible/promote-api.yml --syntax-check 2>&1 | tail -3`
-Expected: `20 PASS / 0 FAIL`, et `playbook: ansible/promote-api.yml` (syntaxe acceptée).
+Expected: `22 PASS / 0 FAIL`, et `playbook: ansible/promote-api.yml` (syntaxe acceptée).
 
 - [ ] **Step 5 : Commit**
 
@@ -984,7 +1102,7 @@ Dans `ansible/roles/apim_promote_api/tasks/import.yml`, insérer **après** la t
 - [ ] **Step 5 : Lancer le test et le lint**
 
 Run: `bash scripts/test-deploy-pin.sh && bash scripts/test-jenkinsfile-lint.sh`
-Expected: `25 PASS / 0 FAIL` pour le premier ; le lint Jenkinsfile inchangé (12/12).
+Expected: `27 PASS / 0 FAIL` pour le premier ; le lint Jenkinsfile inchangé (12/12).
 
 - [ ] **Step 6 : Commit**
 
@@ -1179,7 +1297,7 @@ exit 1
 - [ ] **Step 5 : Lancer le test pour vérifier qu'il passe**
 
 Run: `bash scripts/test-deploy-pin.sh`
-Expected: PASS — `29 PASS / 0 FAIL`
+Expected: PASS — `31 PASS / 0 FAIL`
 
 - [ ] **Step 6 : Commit**
 
@@ -1356,7 +1474,7 @@ echo "PROMOTION_DEMANDEE : $PR_URL"
 - [ ] **Step 4 : Lancer les tests et shellcheck**
 
 Run: `bash scripts/test-deploy-pin.sh && shellcheck scripts/api-promote-request.sh scripts/lib/deploy-pin.sh`
-Expected: `34 PASS / 0 FAIL` ; shellcheck sans erreur (les `SC1091` de source non suivi sont acceptables).
+Expected: `36 PASS / 0 FAIL` ; shellcheck sans erreur (les `SC1091` de source non suivi sont acceptables).
 
 - [ ] **Step 5 : Commit**
 
@@ -1495,7 +1613,7 @@ Et mettre à jour le commentaire de tête du `Makefile` (ligne 8) :
 - [ ] **Step 6 : Lancer toutes les portes**
 
 Run: `bash scripts/test-deploy-pin.sh && bash scripts/test-jenkinsfile-lint.sh && bash scripts/test-env-chain.sh`
-Expected: `37 PASS / 0 FAIL` ; le lint Jenkinsfile passe à **13/13** (un Jenkinsfile de plus à compiler) ; `test-env-chain.sh` reste 4/4.
+Expected: `39 PASS / 0 FAIL` ; le lint Jenkinsfile passe à **13/13** (un Jenkinsfile de plus à compiler) ; `test-env-chain.sh` reste 4/4.
 
 - [ ] **Step 7 : Commit**
 
@@ -1585,7 +1703,7 @@ Enfin, remplacer les deux extra-vars de l'invocation :
 - [ ] **Step 4 : Lancer les tests**
 
 Run: `bash scripts/test-deploy-pin.sh && bash scripts/test-team-publish-wiring.sh && shellcheck scripts/team-publish.sh`
-Expected: `41 PASS / 0 FAIL` pour le premier ; `test-team-publish-wiring.sh` **inchangé** (aucune régression sur les 20+ épreuves existantes, dont le test 17 sur `apim_ss_contract_pin`) ; shellcheck propre.
+Expected: `43 PASS / 0 FAIL` pour le premier ; `test-team-publish-wiring.sh` **inchangé** (aucune régression sur les 20+ épreuves existantes, dont le test 17 sur `apim_ss_contract_pin`) ; shellcheck propre.
 
 > Si `test-team-publish-wiring.sh` rougit sur le test 17, c'est attendu et il faut le **mettre à jour** : il vérifie littéralement `-e apim_ss_contract_pin="$SPEC_PATH"`. Remplacer cette chaîne par `-e apim_ss_contract_pin="$DEPLOY_PIN_CONTRACT"` dans l'assertion, et ajouter une assertion que `$SPEC_PATH` sert toujours à la garde de liste blanche. **Ne pas supprimer l'épreuve** : c'est elle qui empêche le manifeste de redevenir maître du contrat.
 
@@ -1606,4 +1724,4 @@ git commit -m "feat(g3): brancher le resolveur sur team-publish — plus de code
 - **Il ne branche pas le verbe archive sur les sauts rec et au-delà.** C'est **G5**. Le résolveur produit les chemins ; aucun pipeline ne les consomme encore en dehors du chemin dev existant.
 - **Il ne transporte pas les octets de l'archive d'un palier à l'autre.** Pas de dépôt d'artefacts — c'est **G5**. Le digest lie l'approuvé au déployé ; il ne déplace rien.
 - **Il n'ajoute pas `DeployerGroup`** (« qui déploie » à côté de « qui approuve »). C'est **G2**.
-- **La porte G3 telle qu'écrite dans le GOAL** (« l'apply *en rec* projette ce contrat ») n'est donc **pas exerçable E2E** à l'issue de ce plan. Ce qui est prouvé : le résolveur, ses refus, le digest bout à bout, l'écrivain — 41/41 hors ligne sur dépôt Git réel, contre-épreuve par sabotage comprise.
+- **La porte G3 telle qu'écrite dans le GOAL** (« l'apply *en rec* projette ce contrat ») n'est donc **pas exerçable E2E** à l'issue de ce plan. Ce qui est prouvé : le résolveur, ses refus, le digest bout à bout, l'écrivain — 43/43 hors ligne sur dépôt Git réel, contre-épreuve par sabotage comprise.
