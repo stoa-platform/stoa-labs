@@ -1,0 +1,44 @@
+// Jenkinsfile.api-promote-request — formulaire « promouvoir une API » (G3).
+// Ouvre une PR portant apis/<name>.deploy.<TO_ENV>.yaml sur le dépôt d'ÉQUIPE.
+// NE DÉPLOIE RIEN : la décision est le merge de cette PR (ADR-081).
+//
+// ⚠ La liste TO_ENV est écrite À LA MAIN, et c'est documenté comme tel : un
+// bloc `parameters {}` déclaratif est évalué à la POSE du job, hors workspace —
+// il n'a aucun accès au clone governance, donc il ne peut pas dériver
+// d'environments.yaml. Même limite que ci/Jenkinsfile.selfservice:34.
+pipeline {
+  agent any
+  options { disableConcurrentBuilds() }
+  parameters {
+    string(name: 'TEAM',           defaultValue: '', description: 'Équipe propriétaire')
+    string(name: 'API_NAME',       defaultValue: '', description: "Nom de l'API")
+    choice(name: 'FROM_ENV',       choices: ['dev', 'rec', 'int', 'homol'], description: 'Palier source')
+    choice(name: 'TO_ENV',         choices: ['rec', 'int', 'homol', 'prod'], description: "Palier d'arrivée")
+    string(name: 'MESSAGE',        defaultValue: '', description: "Message d'audit (obligatoire)")
+    string(name: 'CHANGE_REF',     defaultValue: '', description: 'Référence de changement ITSM (selon la porte)')
+    string(name: 'PV_REF',         defaultValue: '', description: 'Référence de PV de recette (selon la porte)')
+    string(name: 'ARCHIVE_SHA256', defaultValue: '', description: "sha256 de l'archive (sortie EXPORT_CONFIRMED) — requis hors dev")
+  }
+  stages {
+    stage('Demande de promotion') {
+      steps {
+        // Les paramètres de build subissent EnvVars.resolve : withEnv est
+        // obligatoire pour qu'ils arrivent intacts au script (fait mesuré,
+        // cf. mémoire ci-jenkinsfile-refactor).
+        withCredentials([string(credentialsId: 'gitea-ci-token', variable: 'GITEA_TOKEN')]) {
+          withEnv([
+            "TEAM=${params.TEAM}", "API_NAME=${params.API_NAME}",
+            "FROM_ENV=${params.FROM_ENV}", "TO_ENV=${params.TO_ENV}",
+            "MESSAGE=${params.MESSAGE}", "CHANGE_REF=${params.CHANGE_REF}",
+            "PV_REF=${params.PV_REF}", "ARCHIVE_SHA256=${params.ARCHIVE_SHA256}",
+            "PROMOTED_BY=${env.BUILD_USER_ID ?: 'ci'}",
+          ]) {
+            dir('poc-control-plane-federation') {
+              sh 'bash scripts/api-promote-request.sh'
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -555,5 +555,16 @@ grep -q REF_INVALIDE "$TMP/w18ter" \
   && ok "REF_INVALIDE couvre aussi PV_REF" \
   || bad "PV_REF non contraint — la moitie du verrou de reference n'est tenue par rien"
 
+echo "⑲ le job existe, et la porte de preuve est branchée sur make lint-ci"
+[ -f "$ROOT/ci/Jenkinsfile.api-promote-request" ] \
+  && ok "Jenkinsfile.api-promote-request présent" \
+  || bad "aucun job — le formulaire de promotion n'existe pas"
+grep -q 'test-deploy-pin.sh' "$ROOT/Makefile" \
+  && ok "test-deploy-pin.sh branché sur le Makefile (la porte tourne en CI)" \
+  || bad "porte non branchée — elle ne tournera que si quelqu'un y pense"
+grep -q 'apis/<name>.deploy' "$ROOT/adr/adr-076-gitops-api-lifecycle-repo-per-project.md" \
+  && ok "ADR-076 amendé sur l'emplacement du marqueur" \
+  || bad "ADR-076 dit toujours 'deploy.{env}.yaml' à la racine — la doc contredit le code"
+
 printf '\n  %d PASS / %d FAIL\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

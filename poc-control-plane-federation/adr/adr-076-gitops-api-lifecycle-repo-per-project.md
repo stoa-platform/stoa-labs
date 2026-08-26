@@ -54,7 +54,15 @@ apis/{slug}/
   api.yaml              # manifeste UAC : classification d'intégrité + tags + exposure
                         #                 + RÉFÉRENCE (read-only) à la classification centrale
   target.yaml           # gateways cibles (réutilise le modèle FederationTarget)
-deploy.{env}.yaml       # marqueurs desired-state pinnés — ÉCRITS par la promotion, pas par l'équipe
+apis/<name>.deploy.{env}.yaml   # marqueurs desired-state pinnés — ÉCRITS par la
+                        #   promotion, jamais par l'équipe. AMENDÉ le 2026-08-26
+                        #   (jalon G3) : ces marqueurs étaient dessinés à la
+                        #   RACINE, ce qui supposait « un dépôt = une API ». Le
+                        #   squelette réellement livré (clients/_example) porte
+                        #   apis/ ET applications/ au pluriel : à la racine,
+                        #   deux APIs du même dépôt se disputeraient le même
+                        #   fichier. Le nom plat suit la famille en place
+                        #   (.publish.yml, .promote.yml, .openapi.yaml).
 strategy.lock           # bundle de policies DÉRIVÉ + épinglé (sortie de `labctl render`)
 ```
 

@@ -5,7 +5,8 @@
 #   make release   dist/<version>/ : binaires MULTI-ARCH versionnés (ldflags -X)
 #                  + SHA256SUMS + SBOM SPDX — le tout SANS réseau (vendor/).
 #   make lint-ci   les portes de la chaîne CI : compilation des Jenkinsfile,
-#                  shellcheck des bibliothèques, épreuves de carto-secrets.
+#                  shellcheck des bibliothèques, épreuves de carto-secrets et
+#                  du résolveur de pin.
 #
 # Principe livrable (DELIVERY-PROCESS §4) : la release se construit HORS ZONE ;
 # l'agent Jenkins du client reçoit CES binaires + checksums + SBOM, jamais le
@@ -81,13 +82,15 @@ clean:
 # `shellcheck` est lancé AU DIALECTE DU SHEBANG (jamais `-s sh`) : les libs
 # déclarent bash et usent de `local`, que `-s sh` noie sous 14 SC3043.
 lint-ci:
-	@echo "== [1/3] compilation des Jenkinsfile"
+	@echo "== [1/4] compilation des Jenkinsfile"
 	@ci/lint-jenkinsfiles.sh
-	@echo "== [2/3] shellcheck des bibliothèques ci/lib"
+	@echo "== [2/4] shellcheck des bibliothèques ci/lib"
 	@command -v shellcheck >/dev/null || { echo "!! shellcheck absent — \`brew install shellcheck\`"; exit 2; }
 	@shellcheck ci/lib/*.sh && echo "  ✓ ci/lib propre"
-	@echo "== [3/3] épreuves de ci/lib/carto-secrets.sh"
+	@echo "== [3/4] épreuves de ci/lib/carto-secrets.sh"
 	@ci/test-carto-secrets.sh
+	@echo "== [4/4] épreuves du résolveur de pin (G3)"
+	@bash scripts/test-deploy-pin.sh
 
 # Sauvegarde idempotente (ne re-save pas ce qui est déjà là) : `docker save` par
 # image → restauration unitaire possible. Pas de gzip : 2.4 To de libre, autant
