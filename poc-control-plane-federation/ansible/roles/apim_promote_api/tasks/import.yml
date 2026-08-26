@@ -29,6 +29,38 @@
           IMPORT_REFUSED : overwrite='{{ apim_promote.overwrite }}' écraserait les valeurs
           d'alias LOCALES de l'env (backend/creds per-env) — piège clobber prouvé (ADR-079).
 
+    # ===== 0bis. Digest de l'archive (jalon G3) =============================
+    # Défense en profondeur : le CI vérifie déjà ce digest AVANT de lancer ce
+    # play (scripts/lib/deploy-pin.sh — un refus doit être mécaniquement
+    # antérieur au play). Ce contrôle-ci existe pour les degrés D0/D2, où il
+    # n'y a pas de CI du tout.
+    - name: "Import : sha256 de l'archive à importer"
+      ansible.builtin.stat:
+        path: "{{ apim_promote.archive }}"
+        checksum_algorithm: sha256
+        get_checksum: true
+      register: imp_stat
+
+    - name: "Import : FAIL-CLOSED — digest EXIGÉ hors de l'environnement d'authoring"
+      ansible.builtin.assert:
+        that: "(apim_ss_archive_sha256 | default('')) | length == 64"
+        fail_msg: >-
+          ARCHIVE_DIGEST_REQUIRED : promotion vers '{{ apim_ss_env | default('') }}' sans
+          apim_ss_archive_sha256. Hors de l'environnement d'authoring
+          ('{{ apim_ss_authoring_env }}'), les octets déployés doivent être pinnés —
+          le digest est produit par apim_promote_action=export (EXPORT_CONFIRMED).
+      when: "apim_ss_env != apim_ss_authoring_env"
+
+    - name: "Import : FAIL-CLOSED — les octets sont bien ceux qui ont été approuvés"
+      ansible.builtin.assert:
+        that: "imp_stat.stat.checksum == apim_ss_archive_sha256"
+        fail_msg: >-
+          ARCHIVE_DIGEST_MISMATCH : {{ apim_promote.archive }} porte
+          {{ imp_stat.stat.checksum | default('(illisible)') }} mais le marqueur pinne
+          {{ apim_ss_archive_sha256 }} — ce ne sont pas les octets approuvés.
+        success_msg: "ARCHIVE_DIGEST_OK : {{ apim_ss_archive_sha256 }}"
+      when: "(apim_ss_archive_sha256 | default('')) | length == 64"
+
     - name: "Import : inventaire de l'archive"
       ansible.builtin.command:
         argv: ["unzip", "-l", "{{ apim_promote.archive }}"]

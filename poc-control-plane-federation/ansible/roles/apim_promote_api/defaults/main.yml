@@ -76,3 +76,19 @@ apim_promote:
   # surcharges par environnement (fusion récursive racine ⊕ per_env[env],
   # fail-closed si env non déclaré) — même modèle qu'apim_publish_api.
   per_env: {}
+
+# --- digest de l'archive (jalon G3) ------------------------------------------
+# sha256 de l'archive à importer, épinglé dans apis/<name>.deploy.<env>.yaml et
+# propagé par le CI. Le rôle le vérifie LUI AUSSI, et pas seulement le CI :
+# DELIVERY-PROCESS.md §3 définit les degrés D0 (runbook, l'opérateur joue les
+# scripts) et D2 (ansible-playbook --tags, sans orchestrateur) — à ces degrés il
+# n'existe AUCUN résolveur CI. Une vérification qui ne vivrait que dans le CI
+# serait absente précisément là où l'opérateur agit à la main.
+apim_ss_archive_sha256: ""
+
+# L'environnement d'AUTHORING — le seul qui n'exige pas de digest (il suit HEAD
+# par conception, ADR-079). La condition du garde-fou porte sur CE NOM, pas sur
+# la présence de apim_ss_archive_sha256 : un assert du genre « vérifie si on me
+# donne un digest » se désactive en oubliant l'extra-var, ce qui est un
+# fail-open déguisé en garde.
+apim_ss_authoring_env: "dev"

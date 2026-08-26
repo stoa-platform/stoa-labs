@@ -335,5 +335,27 @@ case "$EXPV" in
   *) bad "PARSE_EXPORT : sortie inattendue de la sonde d'ordre" ;;
 esac
 
+echo "⑮ le rôle vérifie le digest LUI-MÊME — la garde des degrés D0/D2 (sans CI)"
+IMP="$ROOT/ansible/roles/apim_promote_api/tasks/import.yml"
+DEF="$ROOT/ansible/roles/apim_promote_api/defaults/main.yml"
+grep -q 'apim_ss_archive_sha256' "$DEF" \
+  && ok "apim_ss_archive_sha256 déclaré dans les defaults" \
+  || bad "apim_ss_archive_sha256 absent des defaults"
+grep -q 'apim_ss_authoring_env' "$DEF" \
+  && ok "apim_ss_authoring_env déclaré (la condition n'est pas un nom d'env codé en dur)" \
+  || bad "apim_ss_authoring_env absent — 'dev' serait codé en dur dans une condition"
+grep -q 'ARCHIVE_DIGEST_REQUIRED' "$IMP" \
+  && ok "import.yml refuse une promotion hors authoring SANS digest" \
+  || bad "import.yml ne refuse pas l'absence de digest — fail-open aux degrés D0/D2"
+grep -q 'ARCHIVE_DIGEST_MISMATCH' "$IMP" \
+  && ok "import.yml refuse un digest qui ne correspond pas" \
+  || bad "import.yml ne compare jamais le digest aux octets"
+# La condition DOIT porter sur l'ENVIRONNEMENT, pas sur la présence de la var :
+# un assert conditionné par « la var est non vide » se désactive en oubliant la
+# var — c'est un fail-open déguisé en garde.
+grep -q "apim_ss_env != apim_ss_authoring_env" "$IMP" \
+  && ok "la condition porte sur l'environnement, pas sur la présence de la variable" \
+  || bad "condition fail-open : oublier l'extra-var suffirait à désactiver le contrôle"
+
 printf '\n  %d PASS / %d FAIL\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
