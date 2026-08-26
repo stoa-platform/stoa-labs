@@ -58,7 +58,7 @@ echo "① le pin gagne sur HEAD — main avance, le résolu reste au commit pinn
 REPO="$TMP/team1"; make_team_repo "$REPO"
 marker "$REPO" rec "$C1" "1.0.0" "$(sha_of "$REPO/dist/a.zip")"
 WORK="$TMP/w1"; mkdir -p "$WORK"
-if resolve_deploy_pin "$REPO" accounts-read rec "$WORK" 2>"$TMP/e1"; then
+if resolve_deploy_pin "$REPO" accounts-read rec "$WORK" main 2>"$TMP/e1"; then
   if grep -q 'version: "1.0.0"' "$WORK/accounts-read.publish.yml"; then
     ok "publish.yml résolu au SHA pinné (1.0.0), alors que main porte 2.0.0"
   else
@@ -92,6 +92,62 @@ WORK="$TMP/w1d"
 resolve_deploy_pin "$REPO" "../../etc/passwd" rec "$WORK" 2>"$TMP/e1d" \
   && bad "un nom d'API traversant ACCEPTÉ" \
   || { grep -q API_NAME_INVALIDE "$TMP/e1d" && ok "API_NAME_INVALIDE sur traversée de chemin" || bad "refusé sans nommer API_NAME_INVALIDE : $(cat "$TMP/e1d")"; }
+
+echo "② le pin couvre AUSSI promote.yml (pas seulement le contrat)"
+REPO="$TMP/team2"; make_team_repo "$REPO"
+marker "$REPO" rec "$C1" "1.0.0" "$(sha_of "$REPO/dist/a.zip")"
+WORK="$TMP/w2"; mkdir -p "$WORK"
+if resolve_deploy_pin "$REPO" accounts-read rec "$WORK" main 2>"$TMP/e2"; then
+  grep -q 'version: "1.0.0"' "$WORK/accounts-read.promote.yml" \
+    && ok "promote.yml résolu au SHA pinné — alias/GUID ne dérivent pas avec main" \
+    || bad "promote.yml suit HEAD — le contrat serait figé et la config de déploiement, non"
+else
+  bad "résolution refusée à tort : $(cat "$TMP/e2")"
+fi
+
+echo "③ PIN_ABSENT — marqueur absent hors dev"
+REPO="$TMP/team3"; make_team_repo "$REPO"
+WORK="$TMP/w3"
+resolve_deploy_pin "$REPO" accounts-read rec "$WORK" main 2>"$TMP/e3" \
+  && bad "résolution ACCEPTÉE sans marqueur — repli implicite sur HEAD" \
+  || { grep -q PIN_ABSENT "$TMP/e3" && ok "PIN_ABSENT" || bad "refusé mais sans nommer PIN_ABSENT : $(cat "$TMP/e3")"; }
+
+echo "④ PIN_MALFORMED — commit non hexadécimal"
+REPO="$TMP/team4"; make_team_repo "$REPO"
+marker "$REPO" rec "pas-un-sha" "1.0.0" "deadbeef"
+WORK="$TMP/w4"
+resolve_deploy_pin "$REPO" accounts-read rec "$WORK" main 2>"$TMP/e4" \
+  && bad "commit non hexadécimal ACCEPTÉ" \
+  || { grep -q PIN_MALFORMED "$TMP/e4" && ok "PIN_MALFORMED" || bad "refusé sans nommer PIN_MALFORMED : $(cat "$TMP/e4")"; }
+
+echo "⑤ PIN_NON_ANCETRE — un SHA vivant sur une branche JAMAIS mergée"
+REPO="$TMP/team5"; make_team_repo "$REPO"
+git -C "$REPO" checkout -q -b sournoise
+_write_api "$REPO" 9.9.9
+git -C "$REPO" add -A && git -C "$REPO" commit -qm "commit jamais mergé"
+EVIL=$(git -C "$REPO" rev-parse HEAD)
+git -C "$REPO" checkout -q main
+marker "$REPO" rec "$EVIL" "9.9.9" "$(sha_of "$REPO/dist/a.zip")"
+WORK="$TMP/w5"
+resolve_deploy_pin "$REPO" accounts-read rec "$WORK" main 2>"$TMP/e5" \
+  && bad "SHA non mergé ACCEPTÉ — le pin déplace la confiance du merge vers un champ que le demandeur remplit" \
+  || { grep -q PIN_NON_ANCETRE "$TMP/e5" && ok "PIN_NON_ANCETRE" || bad "refusé sans nommer PIN_NON_ANCETRE : $(cat "$TMP/e5")"; }
+
+echo "⑥ PIN_UNREADABLE — commit inexistant"
+REPO="$TMP/team6"; make_team_repo "$REPO"
+marker "$REPO" rec "0123456789abcdef0123456789abcdef01234567" "1.0.0" "deadbeef"
+WORK="$TMP/w6"
+resolve_deploy_pin "$REPO" accounts-read rec "$WORK" main 2>"$TMP/e6" \
+  && bad "commit inexistant ACCEPTÉ" \
+  || { grep -qE 'PIN_NON_ANCETRE|PIN_UNREADABLE' "$TMP/e6" && ok "refus nommé sur commit inexistant" || bad "refusé sans refus nommé : $(cat "$TMP/e6")"; }
+
+echo "⑦ PIN_VERSION_MISMATCH — le marqueur ment sur la version"
+REPO="$TMP/team7"; make_team_repo "$REPO"
+marker "$REPO" rec "$C1" "7.7.7" "$(sha_of "$REPO/dist/a.zip")"
+WORK="$TMP/w7"
+resolve_deploy_pin "$REPO" accounts-read rec "$WORK" main 2>"$TMP/e7" \
+  && bad "marqueur 7.7.7 vs manifeste 1.0.0 ACCEPTÉ" \
+  || { grep -q PIN_VERSION_MISMATCH "$TMP/e7" && ok "PIN_VERSION_MISMATCH" || bad "refusé sans nommer PIN_VERSION_MISMATCH : $(cat "$TMP/e7")"; }
 
 printf '\n  %d PASS / %d FAIL\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

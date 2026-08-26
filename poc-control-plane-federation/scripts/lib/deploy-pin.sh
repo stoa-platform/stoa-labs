@@ -29,9 +29,9 @@ deploy_pin_marker_path() { printf 'apis/%s.deploy.%s.yaml' "$1" "$2"; }
 # sortie absurde ou une erreur de syntaxe.
 _dp_fail() { printf 'deploy-pin: %s\n' "$*" >&2; }
 
-# resolve_deploy_pin <clone_dir> <api_name> <env> <workdir>
+# resolve_deploy_pin <clone_dir> <api_name> <env> <workdir> [main_ref=origin/main]
 resolve_deploy_pin() {
-  local clone="$1" api="$2" env="$3" work="$4"
+  local clone="$1" api="$2" env="$3" work="$4" mainref="${5:-origin/main}"
 
   # Le nom d'API construit des CHEMINS (`apis/<api>.publish.yml`) et des
   # arguments `git show`. On le contraint ici, indépendamment de ce que les
@@ -96,6 +96,17 @@ PY
     *) { _dp_fail "PIN_MALFORMED : commit='$DEPLOY_PIN_COMMIT' fait ${#DEPLOY_PIN_COMMIT} caractères — un identifiant d'objet complet en fait 40 (SHA-1) ou 64 (SHA-256)"; return 1; };;
   esac
 
+  # GARDE D'ATTEIGNABILITÉ — la garde qui ne se devine pas.
+  # `git show <sha>:<path>` réussit sur TOUT objet présent dans le clone, y
+  # compris un commit vivant sur une branche jamais mergée (un `git clone`
+  # sans --depth 1 récupère toutes les branches). Sans cette vérification, une
+  # PR de promotion irréprochable en apparence peut pinner un SHA jamais revu :
+  # le pin déplacerait alors la confiance du MERGE vers un champ que le
+  # demandeur remplit lui-même. Même intention que MERGE_SHA_NON_ANCETRE
+  # (team-publish.sh:246), un cran plus bas.
+  git -C "$clone" merge-base --is-ancestor "$DEPLOY_PIN_COMMIT" "$mainref" 2>/dev/null \
+    || { _dp_fail "PIN_NON_ANCETRE : $DEPLOY_PIN_COMMIT n'est pas un ancêtre de $mainref — refus de déployer depuis un état jamais fusionné"; return 1; }
+
   mkdir -p "$work" || return 1
   # publish.yml et openapi.yaml sont TOUJOURS présents — api-request.sh les pose
   # ENSEMBLE, au même commit (team-publish.sh:259 refuse déjà CONTRAT_ABSENT).
@@ -105,6 +116,21 @@ PY
     git -C "$clone" show "${DEPLOY_PIN_COMMIT}:${src}" > "$dst" 2>/dev/null \
       || { _dp_fail "PIN_UNREADABLE : git show ${DEPLOY_PIN_COMMIT}:${src} a échoué — le pin ne se résout pas, refus (jamais de repli sur HEAD)"; return 1; }
   done
+
+  # Le marqueur et le manifeste doivent parler de la MÊME version. Une
+  # divergence signale un marqueur édité à la main après coup, ou un pin posé
+  # sur le mauvais commit — dans les deux cas on déploierait une version que
+  # personne n'a demandée.
+  local mv
+  mv=$(DP_FILE="$work/${api}.publish.yml" python3 - <<'PY'
+import os, yaml
+d = yaml.safe_load(open(os.environ["DP_FILE"])) or {}
+print("V=" + str((d.get("apim_api") or {}).get("version") or ""))
+PY
+) || { _dp_fail "PIN_MALFORMED : publish.yml résolu illisible"; return 1; }
+  case "$mv" in V=*) mv="${mv#V=}";; *) { _dp_fail "PIN_MALFORMED : sortie inattendue de la lecture de version"; return 1; };; esac
+  [ "$mv" = "$DEPLOY_PIN_VERSION" ] \
+    || { _dp_fail "PIN_VERSION_MISMATCH : le marqueur annonce '$DEPLOY_PIN_VERSION' mais le manifeste au SHA pinné porte '$mv'"; return 1; }
 
   # promote.yml, LUI, peut légitimement manquer : api-request.sh n'écrit que
   # publish.yml + openapi.yaml (vérifié — scripts/api-request.sh:281-282). Le
