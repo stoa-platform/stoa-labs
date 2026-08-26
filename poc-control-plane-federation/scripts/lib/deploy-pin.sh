@@ -32,6 +32,19 @@ _dp_fail() { printf 'deploy-pin: %s\n' "$*" >&2; }
 # resolve_deploy_pin <clone_dir> <api_name> <env> <workdir>
 resolve_deploy_pin() {
   local clone="$1" api="$2" env="$3" work="$4"
+
+  # Le nom d'API construit des CHEMINS (`apis/<api>.publish.yml`) et des
+  # arguments `git show`. On le contraint ici, indépendamment de ce que les
+  # appelants valident de leur côté : une fonction qui fabrique des chemins à
+  # partir de son argument ne délègue pas sa sûreté à ses appelants — le jour
+  # où un nouvel appelant oublie de valider, c'est ce fichier qui tient.
+  case "$api" in
+    ""|*[!a-z0-9-]*) { _dp_fail "API_NAME_INVALIDE : '$api' — attendu des minuscules, chiffres et tirets (aucun '/', aucun '..')"; return 1; };;
+  esac
+  case "$env" in
+    ""|*[!a-z0-9-]*) { _dp_fail "ENV_INVALIDE : '$env' — attendu des minuscules, chiffres et tirets"; return 1; };;
+  esac
+
   local rel; rel="$(deploy_pin_marker_path "$api" "$env")"
 
   [ -f "$clone/$rel" ] || { _dp_fail "PIN_ABSENT : $rel absent — hors de l'environnement d'authoring, aucun repli sur HEAD"; return 1; }
@@ -43,18 +56,44 @@ d = yaml.safe_load(open(os.environ["DP_FILE"])) or {}
 c = str(d.get("commit") or "")
 v = str(d.get("version") or "")
 s = str(d.get("archive_sha256") or "")
+# Les trois champs voyagent dans UNE ligne délimitée par '|', que le shell
+# redécoupe. Un '|' présent dans une valeur décalerait silencieusement les
+# frontières de champ — une version « 1.0|0 » ferait fuiter du texte dans le
+# digest sans qu'aucun refus ne se déclenche. On REFUSE le délimiteur dans
+# les valeurs plutôt que d'espérer qu'il n'y soit pas.
+for name, val in (("commit", c), ("version", v), ("archive_sha256", s)):
+    if "|" in val:
+        sys.exit("le champ %s contient le délimiteur '|'" % name)
 print("PIN=%s|%s|%s" % (c, v, s))
 PY
-) || { _dp_fail "PIN_MALFORMED : $rel illisible (YAML)"; return 1; }
+) || { _dp_fail "PIN_MALFORMED : $rel illisible ou champ invalide (parse YAML, ou valeur contenant le délimiteur)"; return 1; }
   case "$raw" in PIN=*) raw="${raw#PIN=}";; *) { _dp_fail "PIN_MALFORMED : sortie inattendue de la lecture de $rel"; return 1; };; esac
 
   DEPLOY_PIN_COMMIT="${raw%%|*}"; raw="${raw#*|}"
   DEPLOY_PIN_VERSION="${raw%%|*}"
   DEPLOY_PIN_SHA256="${raw#*|}"
 
+  # LE PIN DOIT ÊTRE UN OBJET IMMUABLE, PAS UNE RÉFÉRENCE MOUVANTE.
+  #
+  # ⚠ Un motif de la forme `[0-9a-f]×7*` ne contraint que les SEPT premiers
+  # caractères : le `*` final accepte n'importe quoi ensuite. Reproduit en
+  # revue — un marqueur portant `commit: cafebabe-drift` (un NOM DE BRANCHE)
+  # passait, et `git show` résolvait la branche, donc la tête du moment. Le
+  # résolveur rendait alors silencieusement une AUTRE version que celle
+  # pinnée : précisément le mode de panne que ce fichier existe pour rendre
+  # impossible, atteint par une référence mouvante au lieu de HEAD.
+  #
+  # Deux verrous, pas un : (1) AUCUN caractère non hexadécimal, où qu'il soit ;
+  # (2) la longueur d'un identifiant d'objet COMPLET — 40 (SHA-1) ou 64
+  # (SHA-256). L'écrivain pose `git log -1 --format=%H`, donc 40. Exiger la
+  # forme complète ferme aussi le cas pathologique d'une branche dont le nom
+  # serait entièrement hexadécimal : elle n'aura pas cette longueur.
   case "$DEPLOY_PIN_COMMIT" in
-    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]*) ;;
-    *) { _dp_fail "PIN_MALFORMED : commit='$DEPLOY_PIN_COMMIT' n'est pas un SHA hexadécimal"; return 1; };;
+    *[!0-9a-f]*) { _dp_fail "PIN_MALFORMED : commit='$DEPLOY_PIN_COMMIT' contient un caractère non hexadécimal — un pin est un identifiant d'objet, jamais un nom de branche ou de tag (une référence mouvante ne pinne rien)"; return 1; };;
+  esac
+  case "${#DEPLOY_PIN_COMMIT}" in
+    40|64) ;;
+    *) { _dp_fail "PIN_MALFORMED : commit='$DEPLOY_PIN_COMMIT' fait ${#DEPLOY_PIN_COMMIT} caractères — un identifiant d'objet complet en fait 40 (SHA-1) ou 64 (SHA-256)"; return 1; };;
   esac
 
   mkdir -p "$work" || return 1

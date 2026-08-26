@@ -68,5 +68,30 @@ else
   bad "résolution refusée alors qu'elle devait réussir : $(cat "$TMP/e1")"
 fi
 
+echo "①bis un NOM DE BRANCHE ne pinne rien — le pin doit être un objet immuable"
+REPO="$TMP/team1b"; make_team_repo "$REPO"
+git -C "$REPO" branch cafebabe-drift "$C2"
+marker "$REPO" rec "cafebabe-drift" "1.0.0" "$(sha_of "$REPO/dist/a.zip")"
+WORK="$TMP/w1b"
+resolve_deploy_pin "$REPO" accounts-read rec "$WORK" 2>"$TMP/e1b" \
+  && bad "un nom de branche a été ACCEPTÉ comme pin — il résout la tête du moment, donc il ne pinne rien" \
+  || { grep -q PIN_MALFORMED "$TMP/e1b" && ok "PIN_MALFORMED sur une référence mouvante" || bad "refusé sans nommer PIN_MALFORMED : $(cat "$TMP/e1b")"; }
+
+echo "①ter le délimiteur ne peut pas se cacher dans une valeur"
+REPO="$TMP/team1c"; make_team_repo "$REPO"
+printf 'version: "1.0|0"\nenabled: true\npromoted_by: a\nmessage: t\ncommit: %s\nchange_ref: ""\narchive_sha256: "x"\n' \
+  "$C1" > "$REPO/apis/accounts-read.deploy.rec.yaml"
+WORK="$TMP/w1c"
+resolve_deploy_pin "$REPO" accounts-read rec "$WORK" 2>"$TMP/e1c" \
+  && bad "une valeur portant '|' a été ACCEPTÉE — les frontières de champ se décalent en silence" \
+  || { grep -q PIN_MALFORMED "$TMP/e1c" && ok "PIN_MALFORMED sur délimiteur dans une valeur" || bad "refusé sans nommer PIN_MALFORMED : $(cat "$TMP/e1c")"; }
+
+echo "①quater le nom d'API ne peut pas s'évader de apis/"
+REPO="$TMP/team1d"; make_team_repo "$REPO"
+WORK="$TMP/w1d"
+resolve_deploy_pin "$REPO" "../../etc/passwd" rec "$WORK" 2>"$TMP/e1d" \
+  && bad "un nom d'API traversant ACCEPTÉ" \
+  || { grep -q API_NAME_INVALIDE "$TMP/e1d" && ok "API_NAME_INVALIDE sur traversée de chemin" || bad "refusé sans nommer API_NAME_INVALIDE : $(cat "$TMP/e1d")"; }
+
 printf '\n  %d PASS / %d FAIL\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
