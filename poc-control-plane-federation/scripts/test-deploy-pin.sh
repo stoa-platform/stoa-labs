@@ -523,15 +523,37 @@ zz: "y' "" "$(printf 'a%.0s' $(seq 64))" > "$TMP/w18bis"
 grep -q REF_INVALIDE "$TMP/w18bis" \
   && ok "REF_INVALIDE — une reference qui tente d'ouvrir une ligne YAML est refusee" \
   || bad "un CHANGE_REF multiligne ACCEPTE — le demandeur choisirait le pin (derniere cle gagne)"
-grep -q 'yaml.safe_dump' "$ROOT/scripts/api-promote-request.sh" \
+
+# ⚠ ANCRER SUR LE CODE, PAS SUR LE TEXTE. Les trois correctifs ci-dessous sont
+# expliques par de longs commentaires qui CITENT le motif recherche — un
+# `grep` nu sur le fichier entier est donc satisfait par l'EXPLICATION du
+# correctif meme apres que le correctif a disparu. Mesure en re-revue sur
+# l'assertion `fail-with-body` : elle passait au vert sur le seul commentaire,
+# le correctif pouvait etre inverse sans faire rougir personne. C'est le
+# troisieme vert vacant de cette campagne. On retire donc les commentaires
+# avant de chercher — le grep porte alors sur le CODE, pas sur sa prose.
+WCODE="$TMP/apr-sans-commentaires.sh"
+sed 's/[[:space:]]*#.*$//' "$ROOT/scripts/api-promote-request.sh" > "$WCODE"
+grep -q 'yaml.safe_dump' "$WCODE" \
   && ok "le marqueur est SERIALISE, pas formate — une valeur ne peut pas fabriquer de cle" \
   || bad "marqueur produit par %-formatage : une valeur peut ouvrir une nouvelle ligne YAML"
-grep -q 'fail-with-body' "$ROOT/scripts/api-promote-request.sh" \
+grep -q -- '--fail-with-body' "$WCODE" \
   && ok "curl echoue vraiment sur un HTTP non-2xx (sinon LECTURE_PROVIDERS est du code mort)" \
   || bad "curl -s rend 0 sur un 404 : le refus emis serait un mensonge"
-grep -q 'raw/poc-control-plane-federation/ansible/providers' "$ROOT/scripts/api-promote-request.sh" \
+grep -q 'raw/poc-control-plane-federation/ansible/providers' "$WCODE" \
   && ok "le chemin providers porte le prefixe du sous-repertoire" \
   || bad "chemin providers sans prefixe — 404 a chaque execution hors DRY_RUN"
+
+# PV_REF passe par la meme garde que CHANGE_REF ; l'eprouver separement,
+# sinon la moitie du verrou de reference n'est tenue par rien. `homol` est le
+# premier palier de la chaine a exiger requirePVRef (int → homol) — CHANGE_REF
+# reste vide, homol ne l'exige pas. Meme discipline anti-pipefail que
+# l'epreuve juste au-dessus : capture fichier, grep separe.
+run_w int homol "" 'PV"
+commit: cccccccccccccccccccccccccccccccccccccccc' "$(printf 'a%.0s' $(seq 64))" > "$TMP/w18ter"
+grep -q REF_INVALIDE "$TMP/w18ter" \
+  && ok "REF_INVALIDE couvre aussi PV_REF" \
+  || bad "PV_REF non contraint — la moitie du verrou de reference n'est tenue par rien"
 
 printf '\n  %d PASS / %d FAIL\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

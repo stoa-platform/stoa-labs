@@ -235,6 +235,11 @@ with open(os.environ["OUT"], "w") as f:
         "archive_sha256": os.environ["SH"],
     }, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
 PY
+# Sans cette garde, un échec d'écriture (disque plein, chemin impossible) ne
+# se voit qu'au commit suivant, sous la forme trompeuse « COMMIT_VIDE : le
+# marqueur est déjà à cette valeur ». Nommer la vraie cause.
+[ -s "$TMP/team/$MARKER" ] \
+  || fail "MARQUEUR_NON_ECRIT : $MARKER vide ou absent après sérialisation"
 git -C "$TMP/team" add "$MARKER"
 git -C "$TMP/team" -c user.name=ci -c user.email=ci@stoa.lab \
   commit -qm "promote(${API_NAME}): ${FROM_ENV} -> ${TO_ENV} @ ${PIN}" \
