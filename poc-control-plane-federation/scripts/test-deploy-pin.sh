@@ -603,9 +603,29 @@ grep -q 'apis/<name>.deploy' "$ROOT/adr/adr-076-gitops-api-lifecycle-repo-per-pr
 
 echo "⑳ le résolveur est BRANCHÉ — pas du code mort"
 TP="$ROOT/scripts/team-publish.sh"
-grep -q 'lib/deploy-pin.sh' "$TP" \
-  && ok "team-publish.sh source le résolveur" \
-  || bad "résolveur appelé par RIEN — code mort, comme labctl promote (reproche G8)"
+# ⚠ CINQUIÈME VERT VACANT DE CETTE CAMPAGNE, ET LE PLUS IRONIQUE : l'assertion
+# censée prouver que le résolveur n'est PAS du code mort était satisfaite par le
+# COMMENTAIRE qui l'annonce. `team-publish.sh` porte deux fois la chaîne
+# « lib/deploy-pin.sh » : la directive `# shellcheck source=lib/deploy-pin.sh`
+# ET le `.` qui source réellement. Mutation-testé : retirer le source en
+# gardant la directive laissait l'assertion VERTE.
+#
+# Et surtout : SOURCER N'EST PAS APPELER. Supprimer la ligne
+# `resolve_deploy_pin …` laissait les QUATRE assertions vertes. Un
+# team-publish.sh sans aucun appel serait passé entièrement au vert hors ligne.
+# On ancre donc sur les lignes de CODE, et on exige l'APPEL, et son ORDRE.
+grep -qE '^\. scripts/lib/deploy-pin\.sh( \|\||$)' "$TP" \
+  && ok "team-publish.sh source réellement le résolveur (ligne de code, pas la directive shellcheck)" \
+  || bad "le résolveur n'est pas sourcé — seule la directive shellcheck le mentionne"
+grep -qE '^resolve_deploy_pin "\$TMP/team"' "$TP" \
+  && ok "le résolveur est réellement APPELÉ — sourcer n'est pas appeler" \
+  || bad "résolveur sourcé mais jamais appelé : code mort, exactement le reproche fait a labctl promote (G8)"
+# L'ORDRE : la résolution doit précéder le play, sinon le refus arrive trop tard.
+L_RESOLVE=$(grep -nE '^resolve_deploy_pin "\$TMP/team"' "$TP" | head -1 | cut -d: -f1)
+L_PLAY=$(grep -nE '^\( ansible-playbook' "$TP" | head -1 | cut -d: -f1)
+{ [ -n "$L_RESOLVE" ] && [ -n "$L_PLAY" ] && [ "$L_RESOLVE" -lt "$L_PLAY" ]; } \
+  && ok "la résolution précède le play (refus mécaniquement antérieur)" \
+  || bad "la résolution ne précède pas le play (resolve=$L_RESOLVE, play=$L_PLAY) — un refus arriverait après coup"
 grep -q 'apim_ss_manifest="\$DEPLOY_PIN_PUBLISH"' "$TP" \
   && ok "le manifeste passé au rôle est le RÉSOLU, pas le chemin brut du clone" \
   || bad "team-publish.sh passe encore \$PUB_PATH — le résolveur ne sert à rien"

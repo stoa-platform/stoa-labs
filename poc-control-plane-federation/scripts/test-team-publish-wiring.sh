@@ -430,13 +430,15 @@ echo "== 17. apim_ss_contract_pin épingle le contract — câblé côté script
 grep -qF -- '-e apim_ss_contract_pin="$DEPLOY_PIN_CONTRACT"' "$REPO/scripts/team-publish.sh" \
   && ok "team-publish.sh passe apim_ss_contract_pin=DEPLOY_PIN_CONTRACT (le chemin RÉSOLU par le résolveur G3, jamais le manifeste ni le clone brut) en extra-var" \
   || ko "apim_ss_contract_pin non passé par team-publish.sh — le manifeste resterait maître du contract"
-# \$SPEC_PATH ne disparaît pas pour autant : la garde de liste blanche sur le
-# clone mergé (CONTRAT_ABSENT — l'existence du contrat AVANT tout apply, cf.
-# §4) continue de la lire. Le résolveur décide ce qui part au moteur ; il ne
-# remplace pas la garde qui valide l'état mergé.
+# \$SPEC_PATH ne disparaît pas pour autant : c'est son SEUL usage dans ce
+# script — la garde d'EXISTENCE du contrat sur le clone mergé (CONTRAT_ABSENT,
+# §4, AVANT tout apply). La liste blanche du champ contract, elle, lit
+# \$PUB_PATH (le manifeste), pas \$SPEC_PATH — libeller cette assertion « liste
+# blanche » serait un message faux de plus. Le résolveur décide ce qui part
+# au moteur ; il ne remplace pas la garde qui valide l'état mergé.
 grep -qF '[ -f "$SPEC_PATH" ]' "$REPO/scripts/team-publish.sh" \
-  && ok "\$SPEC_PATH sert toujours à la garde de liste blanche (CONTRAT_ABSENT, existence du contrat sur le clone mergé) — le résolveur ne la remplace pas" \
-  || ko "\$SPEC_PATH n'est plus référencé par team-publish.sh — la garde d'existence du contrat sur le clone mergé aurait disparu"
+  && ok "\$SPEC_PATH sert toujours à la garde d'EXISTENCE du contrat (CONTRAT_ABSENT, sur le clone mergé) — le résolveur ne la remplace pas" \
+  || ko "\$SPEC_PATH n'est plus référencé par team-publish.sh — la garde CONTRAT_ABSENT (existence du contrat sur le clone mergé) aurait disparu"
 RESOLVE_ENV="$REPO/ansible/roles/apim_publish_api/tasks/resolve-env.yml"
 [ -f "$RESOLVE_ENV" ] && grep -qF "apim_api | combine({'contract': apim_ss_contract_pin})" "$RESOLVE_ENV" \
   && ok "le rôle applique réellement le pin (set_fact combine sur contract, pas juste une variable déclarée dans defaults/main.yml sans jamais être lue)" \
