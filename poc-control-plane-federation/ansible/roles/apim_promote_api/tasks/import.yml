@@ -49,11 +49,25 @@
           apim_ss_archive_sha256. Hors de l'environnement d'authoring
           ('{{ apim_ss_authoring_env }}'), les octets déployés doivent être pinnés —
           le digest est produit par apim_promote_action=export (EXPORT_CONFIRMED).
-      when: "apim_ss_env != apim_ss_authoring_env"
+      when: "(apim_ss_env | default('')) != apim_ss_authoring_env"
+
+    # Une archive absente doit se dire AVEC SON NOM. Sans cette garde,
+    # `imp_stat.stat` ne porte pas de clé `checksum` du tout et la comparaison
+    # ci-dessous explose en erreur Jinja brute (« 'dict object' has no attribute
+    # 'checksum' »). Le play s'arrête donc — la propriété fail-closed tient —
+    # mais l'opérateur D0/D2, celui qui n'a AUCUN CI en amont pour le rattraper,
+    # lit une trace de template au lieu de « l'archive est introuvable ». Or le
+    # chemin d'archive erroné est justement sa panne la plus probable.
+    - name: "Import : FAIL-CLOSED — l'archive existe"
+      ansible.builtin.assert:
+        that: "imp_stat.stat.exists | default(false)"
+        fail_msg: >-
+          ARCHIVE_ABSENT : {{ apim_promote.archive }} introuvable — le digest ne peut pas
+          être vérifié, donc on n'importe pas.
 
     - name: "Import : FAIL-CLOSED — les octets sont bien ceux qui ont été approuvés"
       ansible.builtin.assert:
-        that: "imp_stat.stat.checksum == apim_ss_archive_sha256"
+        that: "(imp_stat.stat.checksum | default('')) == apim_ss_archive_sha256"
         fail_msg: >-
           ARCHIVE_DIGEST_MISMATCH : {{ apim_promote.archive }} porte
           {{ imp_stat.stat.checksum | default('(illisible)') }} mais le marqueur pinne

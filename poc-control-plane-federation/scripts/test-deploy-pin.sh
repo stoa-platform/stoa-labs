@@ -336,26 +336,57 @@ case "$EXPV" in
 esac
 
 echo "⑮ le rôle vérifie le digest LUI-MÊME — la garde des degrés D0/D2 (sans CI)"
+# ⚠ MÊME LEÇON QU'À L'ÉPREUVE ⑭, ET IL FAUT LA RETENIR ICI AUSSI : cinq
+# `grep -q` ne prouveraient que la présence de sous-chaînes quelque part dans
+# le fichier. Une régression qui remplacerait le `when:` de l'assert par un
+# test de PRÉSENCE (`… | length == 0`) — c'est-à-dire précisément le fail-open
+# que cette tâche existe pour proscrire — laisserait les cinq greps VERTS tant
+# que la chaîne « apim_ss_env != apim_ss_authoring_env » traîne ailleurs, un
+# commentaire suffisant. On parse donc le YAML et on lit les champs `when:` et
+# `that:` des asserts NOMMÉS.
 IMP="$ROOT/ansible/roles/apim_promote_api/tasks/import.yml"
 DEF="$ROOT/ansible/roles/apim_promote_api/defaults/main.yml"
-grep -q 'apim_ss_archive_sha256' "$DEF" \
+grep -q '^apim_ss_archive_sha256:' "$DEF" \
   && ok "apim_ss_archive_sha256 déclaré dans les defaults" \
   || bad "apim_ss_archive_sha256 absent des defaults"
-grep -q 'apim_ss_authoring_env' "$DEF" \
+grep -q '^apim_ss_authoring_env:' "$DEF" \
   && ok "apim_ss_authoring_env déclaré (la condition n'est pas un nom d'env codé en dur)" \
   || bad "apim_ss_authoring_env absent — 'dev' serait codé en dur dans une condition"
-grep -q 'ARCHIVE_DIGEST_REQUIRED' "$IMP" \
-  && ok "import.yml refuse une promotion hors authoring SANS digest" \
-  || bad "import.yml ne refuse pas l'absence de digest — fail-open aux degrés D0/D2"
-grep -q 'ARCHIVE_DIGEST_MISMATCH' "$IMP" \
-  && ok "import.yml refuse un digest qui ne correspond pas" \
-  || bad "import.yml ne compare jamais le digest aux octets"
-# La condition DOIT porter sur l'ENVIRONNEMENT, pas sur la présence de la var :
-# un assert conditionné par « la var est non vide » se désactive en oubliant la
-# var — c'est un fail-open déguisé en garde.
-grep -q "apim_ss_env != apim_ss_authoring_env" "$IMP" \
-  && ok "la condition porte sur l'environnement, pas sur la présence de la variable" \
-  || bad "condition fail-open : oublier l'extra-var suffirait à désactiver le contrôle"
+
+IMPV=$(IMP="$IMP" python3 "$ROOT/scripts/lib/import-guard-probe.py") \
+  || bad "PARSE_IMPORT : import.yml illisible"
+case "$IMPV" in
+  I=*)
+    IMPV="${IMPV#I=}"
+    # Séparateur \x1f (PAS '|') : when:/that: portent eux-mêmes des filtres
+    # Jinja (`| default('')`) — un split sur '|' tronquerait le premier champ
+    # au premier filtre rencontré (mesuré : "(apim_ss_env " au lieu du when
+    # complet).
+    US=$'\x1f'
+    W_REQ="${IMPV%%$US*}"; IMPV="${IMPV#*$US}"
+    T_CMP="${IMPV%%$US*}"; IMPV="${IMPV#*$US}"
+    H_ABS="${IMPV%%$US*}"; O_ABS="${IMPV#*$US}"
+    # La condition du refus « digest obligatoire » doit porter sur l'ENV.
+    case "$W_REQ" in
+      *"apim_ss_env"*"!="*"apim_ss_authoring_env"*)
+        ok "ARCHIVE_DIGEST_REQUIRED est conditionné par l'ENVIRONNEMENT" ;;
+      "") bad "aucun assert ARCHIVE_DIGEST_REQUIRED trouvé — fail-open aux degrés D0/D2" ;;
+      *)  bad "ARCHIVE_DIGEST_REQUIRED conditionné par '$W_REQ' — s'il teste la PRÉSENCE de la variable, oublier l'extra-var desactive le controle" ;;
+    esac
+    case "$T_CMP" in
+      *apim_ss_archive_sha256*) ok "ARCHIVE_DIGEST_MISMATCH compare bien au digest pinné" ;;
+      "") bad "aucun assert ARCHIVE_DIGEST_MISMATCH — les octets ne sont jamais compares" ;;
+      *)  bad "ARCHIVE_DIGEST_MISMATCH compare '$T_CMP' — pas le digest pinné" ;;
+    esac
+    [ "$H_ABS" = 1 ] \
+      && ok "une archive absente se dit ARCHIVE_ABSENT (pas une erreur Jinja brute)" \
+      || bad "archive absente : la comparaison explose en 'dict object has no attribute checksum' au lieu de nommer la cause"
+    [ "$O_ABS" = 1 ] \
+      && ok "la garde d'existence precede la comparaison" \
+      || bad "la garde d'existence ne precede pas la comparaison — l'erreur Jinja gagne quand meme"
+    ;;
+  *) bad "PARSE_IMPORT : sortie inattendue de la sonde" ;;
+esac
 
 printf '\n  %d PASS / %d FAIL\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
