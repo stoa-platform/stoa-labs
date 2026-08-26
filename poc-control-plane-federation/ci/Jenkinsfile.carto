@@ -347,7 +347,14 @@ podTemplate(containers: [
         // Échouer TÔT et EN NOMMANT ce qui manque. Sans ce contrôle, un
         // credential absent produit une exception Jenkins au milieu du build,
         // que l'équipe de support ne sait pas traduire en geste.
-        try {
+        // Ne PAS exiger le credential Jenkins d'un secret que Vault fournit.
+        // La doc de VAULT_ADDR promet qu'un chemin renseigné rend le credential
+        // correspondant inutile : le vérifier quand même ici, c'est arrêter au
+        // préflight l'exploitant qui a suivi la consigne, avec une bannière qui
+        // lui demande de recréer ce qu'on venait de lui dire de supprimer.
+        if (VAULT_ON && V_GW) {
+          echo "Credential gateway : lu dans Vault (${V_GW}). Le credential Jenkins « ${CREDS_ID} » n'est pas requis pour ce build."
+        } else try {
           withCredentials([usernamePassword(credentialsId: CREDS_ID,
                                             usernameVariable: 'CARTO_U',
                                             passwordVariable: 'CARTO_P')]) {
@@ -390,6 +397,8 @@ podTemplate(containers: [
                "Ce build se limitera à l'archivage des artefacts. Pour l'activer : " +
                "renseigner l'URL du dépôt dédié et poser le credential d'écriture — " +
                "geste complet en tête de carto/scripts/publier-markdown.sh.")
+        } else if (VAULT_ON && V_PAGES) {
+          echo "Credential d'écriture : lu dans Vault (${V_PAGES}). La carto sera publiée sur ${PAGES_URL} (branche ${PAGES_BRANCHE}) ; le credential Jenkins « ${PAGES_CREDS} » n'est pas requis."
         } else {
           try {
             withCredentials([usernamePassword(credentialsId: PAGES_CREDS,
@@ -447,7 +456,9 @@ podTemplate(containers: [
                  "CLÉ de l'espace (pas son nom). Le build continue : la carto " +
                  "sera archivée et poussée dans git, seul le miroir manquera.")
           }
-          try {
+          if (VAULT_ON && V_CONF) {
+            echo "Jeton Confluence : lu dans Vault (${V_CONF}). Le miroir visera ${CONF_URL} (espace ${CONF_ESPACE}) ; le credential Jenkins « ${CONF_CREDS} » n'est pas requis."
+          } else try {
             withCredentials([string(credentialsId: CONF_CREDS,
                                     variable: 'CONFLUENCE_TOKEN')]) {
               echo "Credential Confluence « ${CONF_CREDS} » présent : la carto sera aussi publiée sur ${CONF_URL} (espace ${CONF_ESPACE})."
@@ -501,6 +512,16 @@ podTemplate(containers: [
         checkout scm
       }
 
+      // ATTENTION AU CHEMIN DES `source` DANS LES BLOCS `sh` CI-DESSOUS.
+      // Ce Jenkinsfile est le SEUL du dépôt à ne pas envelopper ses `sh` dans
+      // `dir('poc-control-plane-federation')` : `carto/` est à la RACINE du
+      // dépôt, et `python3 -m carto.collect` exige d'y être. Le cwd des blocs
+      // est donc la racine, et les bibliothèques de `ci/lib/` s'y sourcent par
+      // leur chemin COMPLET `poc-control-plane-federation/ci/lib/…`, pas par
+      // `ci/lib/…` comme dans les autres pipelines. Avec `set -eu`, sourcer un
+      // fichier absent tue le stage AVANT la moindre garde — un chemin faux ne
+      // dégrade pas, il éteint le job, y compris en mode par défaut.
+
       container('carto') {
 
         stage('Gateway disponible et credential accepté') {
@@ -511,7 +532,7 @@ podTemplate(containers: [
             sh '''
               set -eu
               set +x
-              . ci/lib/carto-secrets.sh
+              . poc-control-plane-federation/ci/lib/carto-secrets.sh
               carto_secrets_resolve || exit 1
               set -x
               python3 - <<'PY'
@@ -624,7 +645,7 @@ PY
             sh '''
               set -eu
               set +x
-              . ci/lib/carto-secrets.sh
+              . poc-control-plane-federation/ci/lib/carto-secrets.sh
               carto_secrets_resolve || exit 1
               set -x
               umask 077
@@ -825,7 +846,7 @@ PY
               sh '''
                 set -eu
               set +x
-              . ci/lib/carto-secrets.sh
+              . poc-control-plane-federation/ci/lib/carto-secrets.sh
               carto_secrets_resolve || exit 1
               set -x
                 carto/scripts/publier-markdown.sh --source carto-pages
@@ -861,7 +882,7 @@ PY
                 sh '''
                   set -eu
               set +x
-              . ci/lib/carto-secrets.sh
+              . poc-control-plane-federation/ci/lib/carto-secrets.sh
               carto_secrets_resolve || exit 1
               set -x
                   python3 carto/scripts/publier-confluence.py --source carto-pages

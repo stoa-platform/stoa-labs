@@ -76,7 +76,12 @@ _carto_vault_export() {
     echo "    pourquoi." >&2
     return 1
   }
-  eval "$_cv_var=\$_cv_val"; export "$_cv_var"
+  # SC2163 : faux positif. L'indirection est VOULUE — on exporte la variable
+  # DONT LE NOM est dans $_cv_var (WM_USER, CARTO_PAGES_TOKEN…), parce que le
+  # collecteur lit ses identifiants dans l'ENVIRONNEMENT et jamais en argv.
+  eval "$_cv_var=\$_cv_val"
+  # shellcheck disable=SC2163
+  export "$_cv_var"
   echo "  ✓ $_cv_var  ← $_cv_path ($_cv_field, ${#_cv_val} caractères)"
   unset _cv_val
 }
@@ -90,9 +95,34 @@ carto_secrets_resolve() {
     return 0
   fi
 
+  # VAULT_ADDR ne suffit PAS à décider : il est posé sur le POD, donc vu par
+  # tous les stages, alors que la bascule est voulue chemin par chemin. Le
+  # signal par stage, c'est la LIAISON : `liaisons()` dans le Jenkinsfile lie
+  # VAULT_SECRET_ID au stage qui passe par Vault, et le credential Jenkins à
+  # celui qui reste dessus — jamais les deux. Un stage sans VAULT_SECRET_ID est
+  # donc un stage resté sur Jenkins : tenter le login Vault ici le ferait
+  # échouer sur un `secret_id` vide, et la bascule graduelle documentée en tête
+  # de `Jenkinsfile.carto` (« un chemin vide laisse SON secret sur le credential
+  # Jenkins ») serait impossible à exécuter.
+  #
+  # Ce test ne masque pas un credential mal posé : si le stage passe par Vault
+  # et que `vault-ci-secret-id` manque, c'est `withCredentials` qui échoue, côté
+  # Jenkins, avant même d'entrer dans ce shell.
+  if [ -z "${VAULT_SECRET_ID:-}" ]; then
+    echo "Secrets : CREDENTIALS JENKINS (ce stage n'a pas de chemin Vault)."
+    echo "  VAULT_ADDR est renseigné, mais aucun secret_id n'est lié à ce"
+    echo "  stage : son chemin CARTO_VAULT_*_PATH est vide, il reste donc sur"
+    echo "  son credential Jenkins. C'est la bascule graduelle, pas un échec."
+    return 0
+  fi
+
   echo "Secrets : VAULT ($VAULT_ADDR)"
+  # Chemin COMPLET, et non `ci/lib/…` : ce fichier n'est sourcé que par
+  # `ci/Jenkinsfile.carto`, dont les blocs `sh` tournent à la RACINE du dépôt
+  # (voir le commentaire du stage `Source`). Sous `set -eu`, un chemin faux ne
+  # dégrade pas — il tue le stage avant la moindre garde.
   # shellcheck source=/dev/null
-  . ci/lib/vault-login.sh
+  . poc-control-plane-federation/ci/lib/vault-login.sh
   trap vault_trap_revoke EXIT
   vault_login_any || {
     echo "  ✗ Login Vault impossible." >&2
