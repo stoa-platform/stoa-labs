@@ -1353,8 +1353,35 @@ else
     || bad "promotion hors dev sans digest ACCEPTÉE"
 
   run_w dev rec "" "" "pas-un-digest" | grep -q DIGEST_MALFORMED \
-    && ok "DIGEST_MALFORMED" \
+    && ok "DIGEST_MALFORMED (longueur)" \
     || bad "digest de forme invalide ACCEPTÉ"
+
+  # ⚠ « DEUX VERROUS, PAS UN » — et il faut donc DEUX épreuves. L'assertion
+  # ci-dessus est interceptée par le verrou de LONGUEUR (13 caractères) et
+  # laisse le verrou de CLASSE DE CARACTÈRES sans aucune couverture : mesuré
+  # en revue, neutraliser ce dernier laissait les quatre assertions VERTES
+  # alors que le mutant acceptait 64 caractères non hexadécimaux comme digest.
+  run_w dev rec "" "" "$(printf 'z%.0s' $(seq 64))" | grep -q DIGEST_MALFORMED \
+    && ok "DIGEST_MALFORMED (classe de caractères, 64 non-hex)" \
+    || bad "64 caractères non hexadécimaux ACCEPTÉS comme digest — un nom de branche passerait pour des octets"
+
+  # `itsmCheck` IMPLIQUE une référence de changement : sans elle il n'y a rien
+  # à re-vérifier auprès de l'ITSM. C'est LA raison d'être d'env_chain_gate, et
+  # sans cette épreuve rien dans le dépôt ne rougirait si l'implication
+  # disparaissait — la divergence silencieuse exacte contre laquelle le
+  # commentaire de la fonction met en garde. homol -> prod SANS change n'est
+  # refusé QUE par elle.
+  run_w homol prod "" "PV-1" "$(printf 'a%.0s' $(seq 64))" | grep -q GATE_REFS_REQUIRED \
+    && ok "itsmCheck implique change_ref — homol -> prod sans change refusé" \
+    || bad "implication itsmCheck => requireChangeRef non appliquée"
+
+  # ⚠ LE CHEMIN NOMINAL. Une suite dont toutes les épreuves sont des REFUS ne
+  # teste jamais l'acceptation : une garde trop zélée — la boucle de chaîne
+  # cassée de sorte que NEXT soit toujours vide, une validation de nom durcie à
+  # l'excès — passerait au vert partout. Leçon déjà payée sur ce dépôt.
+  run_w homol prod "C-1" "PV-1" "$(printf 'a%.0s' $(seq 64))" | grep -q GARDES_OK \
+    && ok "chemin NOMINAL : une promotion complète et légitime est ACCEPTÉE" \
+    || bad "une promotion pourtant conforme est refusée — garde trop zélée"
 fi
 ```
 
@@ -1438,9 +1465,15 @@ PV_REF="${PV_REF:-}"
 ARCHIVE_SHA256="${ARCHIVE_SHA256:-}"
 AUTHORING_ENV="${DEPLOY_PIN_AUTHORING_ENV:-dev}"
 
+# ⚠ FORME NÉGATIVE, ET C'EST LA SEULE QUI MARCHE. Dans un motif de `case`,
+# `*` n'est pas un quantificateur mais le joker « n'importe quelle suite » :
+# `[a-z0-9][a-z0-9-]*` se lit donc « un caractère, puis un caractère, puis
+# ABSOLUMENT N'IMPORTE QUOI ». Mesuré en revue — cette forme acceptait
+# `ab/../../../etc/passwd`, `ab$(id)` et `ab;rm -rf /`. C'est la classe de
+# défaut que ce dépôt documente déjà noir sur blanc dans deploy-pin.sh, et
+# dont la garde sœur (`""|*[!a-z0-9-]*`) est la forme correcte.
 case "$API_NAME" in
-  [a-z0-9][a-z0-9-]*) ;;
-  *) fail "API_NAME_INVALIDE : '$API_NAME' — attendu ^[a-z0-9][a-z0-9-]+$" ;;
+  ""|-*|*[!a-z0-9-]*) fail "API_NAME_INVALIDE : '$API_NAME' — attendu des minuscules, chiffres et tirets, sans tiret initial" ;;
 esac
 [ "${#MESSAGE}" -le 1000 ] || fail "MESSAGE_TROP_LONG : le message d'audit dépasse 1000 caractères"
 
@@ -1493,7 +1526,7 @@ exit 1
 - [ ] **Step 5 : Lancer le test pour vérifier qu'il passe**
 
 Run: `bash scripts/test-deploy-pin.sh`
-Expected: PASS — `34 PASS / 0 FAIL`
+Expected: PASS — `37 PASS / 0 FAIL`
 
 - [ ] **Step 6 : Commit**
 
@@ -1670,7 +1703,7 @@ echo "PROMOTION_DEMANDEE : $PR_URL"
 - [ ] **Step 4 : Lancer les tests et shellcheck**
 
 Run: `bash scripts/test-deploy-pin.sh && shellcheck scripts/api-promote-request.sh scripts/lib/deploy-pin.sh`
-Expected: `39 PASS / 0 FAIL` ; shellcheck sans erreur (les `SC1091` de source non suivi sont acceptables).
+Expected: `42 PASS / 0 FAIL` ; shellcheck sans erreur (les `SC1091` de source non suivi sont acceptables).
 
 - [ ] **Step 5 : Commit**
 
@@ -1809,7 +1842,7 @@ Et mettre à jour le commentaire de tête du `Makefile` (ligne 8) :
 - [ ] **Step 6 : Lancer toutes les portes**
 
 Run: `bash scripts/test-deploy-pin.sh && bash scripts/test-jenkinsfile-lint.sh && bash scripts/test-env-chain.sh`
-Expected: `42 PASS / 0 FAIL` ; le lint Jenkinsfile passe à **13/13** (un Jenkinsfile de plus à compiler) ; `test-env-chain.sh` reste 4/4.
+Expected: `45 PASS / 0 FAIL` ; le lint Jenkinsfile passe à **13/13** (un Jenkinsfile de plus à compiler) ; `test-env-chain.sh` reste 4/4.
 
 - [ ] **Step 7 : Commit**
 
@@ -1899,7 +1932,7 @@ Enfin, remplacer les deux extra-vars de l'invocation :
 - [ ] **Step 4 : Lancer les tests**
 
 Run: `bash scripts/test-deploy-pin.sh && bash scripts/test-team-publish-wiring.sh && shellcheck scripts/team-publish.sh`
-Expected: `46 PASS / 0 FAIL` pour le premier ; `test-team-publish-wiring.sh` **inchangé** (aucune régression sur les 20+ épreuves existantes, dont le test 17 sur `apim_ss_contract_pin`) ; shellcheck propre.
+Expected: `49 PASS / 0 FAIL` pour le premier ; `test-team-publish-wiring.sh` **inchangé** (aucune régression sur les 20+ épreuves existantes, dont le test 17 sur `apim_ss_contract_pin`) ; shellcheck propre.
 
 > Si `test-team-publish-wiring.sh` rougit sur le test 17, c'est attendu et il faut le **mettre à jour** : il vérifie littéralement `-e apim_ss_contract_pin="$SPEC_PATH"`. Remplacer cette chaîne par `-e apim_ss_contract_pin="$DEPLOY_PIN_CONTRACT"` dans l'assertion, et ajouter une assertion que `$SPEC_PATH` sert toujours à la garde de liste blanche. **Ne pas supprimer l'épreuve** : c'est elle qui empêche le manifeste de redevenir maître du contrat.
 
@@ -1920,4 +1953,4 @@ git commit -m "feat(g3): brancher le resolveur sur team-publish — plus de code
 - **Il ne branche pas le verbe archive sur les sauts rec et au-delà.** C'est **G5**. Le résolveur produit les chemins ; aucun pipeline ne les consomme encore en dehors du chemin dev existant.
 - **Il ne transporte pas les octets de l'archive d'un palier à l'autre.** Pas de dépôt d'artefacts — c'est **G5**. Le digest lie l'approuvé au déployé ; il ne déplace rien.
 - **Il n'ajoute pas `DeployerGroup`** (« qui déploie » à côté de « qui approuve »). C'est **G2**.
-- **La porte G3 telle qu'écrite dans le GOAL** (« l'apply *en rec* projette ce contrat ») n'est donc **pas exerçable E2E** à l'issue de ce plan. Ce qui est prouvé : le résolveur, ses refus, le digest bout à bout, l'écrivain — 46/46 hors ligne sur dépôt Git réel, contre-épreuve par sabotage comprise.
+- **La porte G3 telle qu'écrite dans le GOAL** (« l'apply *en rec* projette ce contrat ») n'est donc **pas exerçable E2E** à l'issue de ce plan. Ce qui est prouvé : le résolveur, ses refus, le digest bout à bout, l'écrivain — 49/49 hors ligne sur dépôt Git réel, contre-épreuve par sabotage comprise.
