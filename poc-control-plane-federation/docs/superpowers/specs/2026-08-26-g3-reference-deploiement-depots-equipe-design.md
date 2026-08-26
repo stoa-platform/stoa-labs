@@ -163,12 +163,18 @@ Les chemins résolus sont passés en extra-vars aux moteurs, jamais lus depuis l
 `resolve-env.yml:99`) et sert au contrat ; deux extra-vars du même genre portent les manifestes
 résolus, plus une pour le digest :
 
-| Extra-var | Contenu |
-|---|---|
-| `apim_ss_contract_pin` | chemin du contrat résolu (existant, réutilisé tel quel) |
-| `apim_ss_publish_pin` | chemin du `publish.yml` résolu |
-| `apim_ss_promote_pin` | chemin du `promote.yml` résolu |
-| `apim_ss_archive_sha256` | le digest pinné, propagé au moteur |
+| Extra-var | Contenu | État |
+|---|---|---|
+| `apim_ss_manifest` | chemin du `publish.yml` résolu | **existe** (`team-publish.sh:342`, `apim_publish_api/resolve-env.yml:20`) |
+| `apim_promote_manifest` | chemin du `promote.yml` résolu | **existe** (`apim_promote_api/resolve-env.yml:19-22`) |
+| `apim_ss_contract_pin` | chemin du contrat résolu | **existe** (`apim_publish_api/defaults/main.yml:69`, `resolve-env.yml:99`) |
+| `apim_ss_archive_sha256` | le digest pinné, propagé au moteur | **nouveau** |
+| `apim_ss_authoring_env` | nom de l'env d'authoring (défaut `dev`) | **nouveau** |
+
+**Les trois premières existent déjà** : les deux moteurs chargent leur manifeste par **chemin**
+(`include_vars`, précédence 18 — jamais `-e @fichier`, qui masquerait la fusion `per_env`). Le
+résolveur n'a donc rien à inventer côté moteur : il produit des fichiers, et les vars qui les
+désignent sont celles déjà en service. Seuls le digest et le nom de l'env d'authoring sont neufs.
 
 Le rôle ne doit **jamais** retomber sur un chemin dérivé du manifeste lui-même.
 
