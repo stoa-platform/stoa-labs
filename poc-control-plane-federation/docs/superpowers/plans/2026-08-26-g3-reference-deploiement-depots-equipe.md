@@ -544,10 +544,20 @@ LIB="$ROOT/scripts/lib/deploy-pin.sh"
 BAK="$(mktemp)"; cp "$LIB" "$BAK"
 restore_lib() { cp "$BAK" "$LIB"; rm -f "$BAK"; }
 trap 'restore_lib; rm -rf "$TMP"' EXIT INT TERM
-# Sabotage : la garde devient un no-op. Si l'épreuve ⑤ passe quand même au
-# vert, c'est qu'elle mesurait autre chose que la garde — un vert vacant.
-sed -i.tmp 's|merge-base --is-ancestor|merge-base --is-ancestor-DISABLED|' "$LIB" && rm -f "$LIB.tmp"
-if grep -q 'is-ancestor-DISABLED' "$LIB"; then
+# Sabotage : la garde devient un no-op QUI PASSE. Si l'épreuve ⑤ passe quand
+# même au vert, c'est qu'elle mesurait autre chose que la garde — un vert
+# vacant.
+#
+# ⚠ PIÈGE MESURÉ (2026-08-26) : le premier jet remplaçait `--is-ancestor` par
+# un drapeau invalide (`--is-ancestor-DISABLED`). Ce n'est PAS un sabotage —
+# c'est l'inverse : `git` rend alors un code non nul, le `||` se déclenche, et
+# la garde REFUSE TOUJOURS. La contre-épreuve rougissait donc en annonçant
+# « garde retirée et le refus persiste », ce qui était vrai et ne prouvait
+# rien. Un sabotage doit OUVRIR la porte, jamais la souder fermée.
+# On remplace donc la commande entière par `true`, ce qui laisse le `||` de la
+# ligne suivante intact et fait passer la garde.
+sed -i.tmp 's|git -C "$clone" merge-base --is-ancestor "$DEPLOY_PIN_COMMIT" "$mainref" 2>/dev/null|true|' "$LIB" && rm -f "$LIB.tmp"
+if ! grep -q 'merge-base --is-ancestor' "$LIB"; then
   ( set +u; . "$LIB"
     REPO2="$TMP/sab"; mkdir -p "$REPO2/apis"
     git -C "$REPO2" init -q -b main
