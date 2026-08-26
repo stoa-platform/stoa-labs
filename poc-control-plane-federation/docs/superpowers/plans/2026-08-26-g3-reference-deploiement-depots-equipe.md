@@ -130,6 +130,31 @@ else
   bad "résolution refusée alors qu'elle devait réussir : $(cat "$TMP/e1")"
 fi
 
+echo "①bis un NOM DE BRANCHE ne pinne rien — le pin doit être un objet immuable"
+REPO="$TMP/team1b"; make_team_repo "$REPO"
+git -C "$REPO" branch cafebabe-drift "$C2"
+marker "$REPO" rec "cafebabe-drift" "1.0.0" "$(sha_of "$REPO/dist/a.zip")"
+WORK="$TMP/w1b"
+resolve_deploy_pin "$REPO" accounts-read rec "$WORK" 2>"$TMP/e1b" \
+  && bad "un nom de branche a été ACCEPTÉ comme pin — il résout la tête du moment, donc il ne pinne rien" \
+  || { grep -q PIN_MALFORMED "$TMP/e1b" && ok "PIN_MALFORMED sur une référence mouvante" || bad "refusé sans nommer PIN_MALFORMED : $(cat "$TMP/e1b")"; }
+
+echo "①ter le délimiteur ne peut pas se cacher dans une valeur"
+REPO="$TMP/team1c"; make_team_repo "$REPO"
+printf 'version: "1.0|0"\nenabled: true\npromoted_by: a\nmessage: t\ncommit: %s\nchange_ref: ""\narchive_sha256: "x"\n' \
+  "$C1" > "$REPO/apis/accounts-read.deploy.rec.yaml"
+WORK="$TMP/w1c"
+resolve_deploy_pin "$REPO" accounts-read rec "$WORK" 2>"$TMP/e1c" \
+  && bad "une valeur portant '|' a été ACCEPTÉE — les frontières de champ se décalent en silence" \
+  || { grep -q PIN_MALFORMED "$TMP/e1c" && ok "PIN_MALFORMED sur délimiteur dans une valeur" || bad "refusé sans nommer PIN_MALFORMED : $(cat "$TMP/e1c")"; }
+
+echo "①quater le nom d'API ne peut pas s'évader de apis/"
+REPO="$TMP/team1d"; make_team_repo "$REPO"
+WORK="$TMP/w1d"
+resolve_deploy_pin "$REPO" "../../etc/passwd" rec "$WORK" 2>"$TMP/e1d" \
+  && bad "un nom d'API traversant ACCEPTÉ" \
+  || { grep -q API_NAME_INVALIDE "$TMP/e1d" && ok "API_NAME_INVALIDE sur traversée de chemin" || bad "refusé sans nommer API_NAME_INVALIDE : $(cat "$TMP/e1d")"; }
+
 printf '\n  %d PASS / %d FAIL\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
 ```
@@ -178,6 +203,19 @@ _dp_fail() { printf 'deploy-pin: %s\n' "$*" >&2; }
 # resolve_deploy_pin <clone_dir> <api_name> <env> <workdir>
 resolve_deploy_pin() {
   local clone="$1" api="$2" env="$3" work="$4"
+
+  # Le nom d'API construit des CHEMINS (`apis/<api>.publish.yml`) et des
+  # arguments `git show`. On le contraint ici, indépendamment de ce que les
+  # appelants valident de leur côté : une fonction qui fabrique des chemins à
+  # partir de son argument ne délègue pas sa sûreté à ses appelants — le jour
+  # où un nouvel appelant oublie de valider, c'est ce fichier qui tient.
+  case "$api" in
+    ""|*[!a-z0-9-]*) { _dp_fail "API_NAME_INVALIDE : '$api' — attendu des minuscules, chiffres et tirets (aucun '/', aucun '..')"; return 1; };;
+  esac
+  case "$env" in
+    ""|*[!a-z0-9-]*) { _dp_fail "ENV_INVALIDE : '$env' — attendu des minuscules, chiffres et tirets"; return 1; };;
+  esac
+
   local rel; rel="$(deploy_pin_marker_path "$api" "$env")"
 
   [ -f "$clone/$rel" ] || { _dp_fail "PIN_ABSENT : $rel absent — hors de l'environnement d'authoring, aucun repli sur HEAD"; return 1; }
@@ -189,18 +227,44 @@ d = yaml.safe_load(open(os.environ["DP_FILE"])) or {}
 c = str(d.get("commit") or "")
 v = str(d.get("version") or "")
 s = str(d.get("archive_sha256") or "")
+# Les trois champs voyagent dans UNE ligne délimitée par '|', que le shell
+# redécoupe. Un '|' présent dans une valeur décalerait silencieusement les
+# frontières de champ — une version « 1.0|0 » ferait fuiter du texte dans le
+# digest sans qu'aucun refus ne se déclenche. On REFUSE le délimiteur dans
+# les valeurs plutôt que d'espérer qu'il n'y soit pas.
+for name, val in (("commit", c), ("version", v), ("archive_sha256", s)):
+    if "|" in val:
+        sys.exit("le champ %s contient le délimiteur '|'" % name)
 print("PIN=%s|%s|%s" % (c, v, s))
 PY
-) || { _dp_fail "PIN_MALFORMED : $rel illisible (YAML)"; return 1; }
+) || { _dp_fail "PIN_MALFORMED : $rel illisible ou champ invalide (parse YAML, ou valeur contenant le délimiteur)"; return 1; }
   case "$raw" in PIN=*) raw="${raw#PIN=}";; *) { _dp_fail "PIN_MALFORMED : sortie inattendue de la lecture de $rel"; return 1; };; esac
 
   DEPLOY_PIN_COMMIT="${raw%%|*}"; raw="${raw#*|}"
   DEPLOY_PIN_VERSION="${raw%%|*}"
   DEPLOY_PIN_SHA256="${raw#*|}"
 
+  # LE PIN DOIT ÊTRE UN OBJET IMMUABLE, PAS UNE RÉFÉRENCE MOUVANTE.
+  #
+  # ⚠ Un motif de la forme `[0-9a-f]×7*` ne contraint que les SEPT premiers
+  # caractères : le `*` final accepte n'importe quoi ensuite. Reproduit en
+  # revue — un marqueur portant `commit: cafebabe-drift` (un NOM DE BRANCHE)
+  # passait, et `git show` résolvait la branche, donc la tête du moment. Le
+  # résolveur rendait alors silencieusement une AUTRE version que celle
+  # pinnée : précisément le mode de panne que ce fichier existe pour rendre
+  # impossible, atteint par une référence mouvante au lieu de HEAD.
+  #
+  # Deux verrous, pas un : (1) AUCUN caractère non hexadécimal, où qu'il soit ;
+  # (2) la longueur d'un identifiant d'objet COMPLET — 40 (SHA-1) ou 64
+  # (SHA-256). L'écrivain pose `git log -1 --format=%H`, donc 40. Exiger la
+  # forme complète ferme aussi le cas pathologique d'une branche dont le nom
+  # serait entièrement hexadécimal : elle n'aura pas cette longueur.
   case "$DEPLOY_PIN_COMMIT" in
-    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]*) ;;
-    *) { _dp_fail "PIN_MALFORMED : commit='$DEPLOY_PIN_COMMIT' n'est pas un SHA hexadécimal"; return 1; };;
+    *[!0-9a-f]*) { _dp_fail "PIN_MALFORMED : commit='$DEPLOY_PIN_COMMIT' contient un caractère non hexadécimal — un pin est un identifiant d'objet, jamais un nom de branche ou de tag (une référence mouvante ne pinne rien)"; return 1; };;
+  esac
+  case "${#DEPLOY_PIN_COMMIT}" in
+    40|64) ;;
+    *) { _dp_fail "PIN_MALFORMED : commit='$DEPLOY_PIN_COMMIT' fait ${#DEPLOY_PIN_COMMIT} caractères — un identifiant d'objet complet en fait 40 (SHA-1) ou 64 (SHA-256)"; return 1; };;
   esac
 
   mkdir -p "$work" || return 1
@@ -238,7 +302,7 @@ PY
 - [ ] **Step 4 : Lancer le test pour vérifier qu'il passe**
 
 Run: `bash scripts/test-deploy-pin.sh`
-Expected: PASS — `1 PASS / 0 FAIL`
+Expected: PASS — `4 PASS / 0 FAIL`
 
 - [ ] **Step 5 : Commit**
 
@@ -379,7 +443,7 @@ PY
 - [ ] **Step 4 : Lancer les tests pour vérifier qu'ils passent**
 
 Run: `bash scripts/test-deploy-pin.sh`
-Expected: PASS — `7 PASS / 0 FAIL`
+Expected: PASS — `10 PASS / 0 FAIL`
 
 - [ ] **Step 5 : Commit**
 
@@ -572,7 +636,7 @@ Et ajouter `DEPLOY_PIN_ARCHIVE` à la ligne `export` finale.
 - [ ] **Step 4 : Lancer les tests pour vérifier qu'ils passent**
 
 Run: `bash scripts/test-deploy-pin.sh`
-Expected: PASS — `13 PASS / 0 FAIL`, contre-épreuve comprise.
+Expected: PASS — `16 PASS / 0 FAIL`, contre-épreuve comprise.
 
 - [ ] **Step 5 : Vérifier que shellcheck est propre**
 
@@ -688,7 +752,7 @@ archive_sha256: "000000000000000000000000000000000000000000000000000000000000000
 - [ ] **Step 4 : Lancer le test pour vérifier qu'il passe**
 
 Run: `bash scripts/test-deploy-pin.sh`
-Expected: PASS — `14 PASS / 0 FAIL`
+Expected: PASS — `17 PASS / 0 FAIL`
 
 - [ ] **Step 5 : Commit**
 
@@ -769,7 +833,7 @@ Puis, dans la tâche `"Export : FAIL-CLOSED — archive saine"`, remplacer le `s
 - [ ] **Step 4 : Lancer le test et le lint Ansible**
 
 Run: `bash scripts/test-deploy-pin.sh && ansible-playbook ansible/promote-api.yml --syntax-check 2>&1 | tail -3`
-Expected: `16 PASS / 0 FAIL`, et `playbook: ansible/promote-api.yml` (syntaxe acceptée).
+Expected: `19 PASS / 0 FAIL`, et `playbook: ansible/promote-api.yml` (syntaxe acceptée).
 
 - [ ] **Step 5 : Commit**
 
@@ -887,7 +951,7 @@ Dans `ansible/roles/apim_promote_api/tasks/import.yml`, insérer **après** la t
 - [ ] **Step 5 : Lancer le test et le lint**
 
 Run: `bash scripts/test-deploy-pin.sh && bash scripts/test-jenkinsfile-lint.sh`
-Expected: `21 PASS / 0 FAIL` pour le premier ; le lint Jenkinsfile inchangé (12/12).
+Expected: `24 PASS / 0 FAIL` pour le premier ; le lint Jenkinsfile inchangé (12/12).
 
 - [ ] **Step 6 : Commit**
 
@@ -1082,7 +1146,7 @@ exit 1
 - [ ] **Step 5 : Lancer le test pour vérifier qu'il passe**
 
 Run: `bash scripts/test-deploy-pin.sh`
-Expected: PASS — `25 PASS / 0 FAIL`
+Expected: PASS — `28 PASS / 0 FAIL`
 
 - [ ] **Step 6 : Commit**
 
@@ -1259,7 +1323,7 @@ echo "PROMOTION_DEMANDEE : $PR_URL"
 - [ ] **Step 4 : Lancer les tests et shellcheck**
 
 Run: `bash scripts/test-deploy-pin.sh && shellcheck scripts/api-promote-request.sh scripts/lib/deploy-pin.sh`
-Expected: `30 PASS / 0 FAIL` ; shellcheck sans erreur (les `SC1091` de source non suivi sont acceptables).
+Expected: `33 PASS / 0 FAIL` ; shellcheck sans erreur (les `SC1091` de source non suivi sont acceptables).
 
 - [ ] **Step 5 : Commit**
 
@@ -1398,7 +1462,7 @@ Et mettre à jour le commentaire de tête du `Makefile` (ligne 8) :
 - [ ] **Step 6 : Lancer toutes les portes**
 
 Run: `bash scripts/test-deploy-pin.sh && bash scripts/test-jenkinsfile-lint.sh && bash scripts/test-env-chain.sh`
-Expected: `33 PASS / 0 FAIL` ; le lint Jenkinsfile passe à **13/13** (un Jenkinsfile de plus à compiler) ; `test-env-chain.sh` reste 4/4.
+Expected: `36 PASS / 0 FAIL` ; le lint Jenkinsfile passe à **13/13** (un Jenkinsfile de plus à compiler) ; `test-env-chain.sh` reste 4/4.
 
 - [ ] **Step 7 : Commit**
 
@@ -1488,7 +1552,7 @@ Enfin, remplacer les deux extra-vars de l'invocation :
 - [ ] **Step 4 : Lancer les tests**
 
 Run: `bash scripts/test-deploy-pin.sh && bash scripts/test-team-publish-wiring.sh && shellcheck scripts/team-publish.sh`
-Expected: `37 PASS / 0 FAIL` pour le premier ; `test-team-publish-wiring.sh` **inchangé** (aucune régression sur les 20+ épreuves existantes, dont le test 17 sur `apim_ss_contract_pin`) ; shellcheck propre.
+Expected: `40 PASS / 0 FAIL` pour le premier ; `test-team-publish-wiring.sh` **inchangé** (aucune régression sur les 20+ épreuves existantes, dont le test 17 sur `apim_ss_contract_pin`) ; shellcheck propre.
 
 > Si `test-team-publish-wiring.sh` rougit sur le test 17, c'est attendu et il faut le **mettre à jour** : il vérifie littéralement `-e apim_ss_contract_pin="$SPEC_PATH"`. Remplacer cette chaîne par `-e apim_ss_contract_pin="$DEPLOY_PIN_CONTRACT"` dans l'assertion, et ajouter une assertion que `$SPEC_PATH` sert toujours à la garde de liste blanche. **Ne pas supprimer l'épreuve** : c'est elle qui empêche le manifeste de redevenir maître du contrat.
 
@@ -1509,4 +1573,4 @@ git commit -m "feat(g3): brancher le resolveur sur team-publish — plus de code
 - **Il ne branche pas le verbe archive sur les sauts rec et au-delà.** C'est **G5**. Le résolveur produit les chemins ; aucun pipeline ne les consomme encore en dehors du chemin dev existant.
 - **Il ne transporte pas les octets de l'archive d'un palier à l'autre.** Pas de dépôt d'artefacts — c'est **G5**. Le digest lie l'approuvé au déployé ; il ne déplace rien.
 - **Il n'ajoute pas `DeployerGroup`** (« qui déploie » à côté de « qui approuve »). C'est **G2**.
-- **La porte G3 telle qu'écrite dans le GOAL** (« l'apply *en rec* projette ce contrat ») n'est donc **pas exerçable E2E** à l'issue de ce plan. Ce qui est prouvé : le résolveur, ses refus, le digest bout à bout, l'écrivain — 37/37 hors ligne sur dépôt Git réel, contre-épreuve par sabotage comprise.
+- **La porte G3 telle qu'écrite dans le GOAL** (« l'apply *en rec* projette ce contrat ») n'est donc **pas exerçable E2E** à l'issue de ce plan. Ce qui est prouvé : le résolveur, ses refus, le digest bout à bout, l'écrivain — 40/40 hors ligne sur dépôt Git réel, contre-épreuve par sabotage comprise.
