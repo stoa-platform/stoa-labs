@@ -228,21 +228,19 @@ PY
   # commentaire affirmait le contraire — « cette vérification FORCE la
   # réutilisation des MÊMES octets d'un palier à l'autre… c'est ce qui distingue
   # “build once, deploy many” d'une intention ». C'était faux :
-  # `archive_sha256` est saisi au formulaire de promotion à CHAQUE saut,
-  # indépendamment, et personne ne compare le digest du palier N à celui du
-  # palier N−1. Le zip webMethods n'étant pas reproductible bit-à-bit
-  # (horodatages), un demandeur qui ré-exporte depuis la gateway du palier
-  # source obtient un zip NEUF, colle SON digest dans le marqueur, et cette
-  # vérification passe. Même dissymétrie sur le pin : il est calculé depuis le
-  # dernier `main` (api-promote-request.sh:188), jamais depuis le marqueur du
-  # palier source — une promotion rec → int peut donc pinner un état que rec n'a
-  # jamais servi.
+  # `archive_sha256` était saisi au formulaire à CHAQUE saut, indépendamment,
+  # et personne ne comparait le digest du palier N à celui du palier N−1 ; le
+  # pin, lui, venait du dernier `main`. Une promotion rec → int pouvait donc
+  # pinner un état que rec n'avait jamais servi.
   #
-  # « Build once, deploy many » est donc tenu par la DISCIPLINE du demandeur,
-  # pas par ce mécanisme. Chaîner le digest et le pin d'un palier au suivant est
-  # une question de conception OUVERTE, portée au jalon G4 : elle demande un
-  # arbitrage d'exploitant (« une promotion peut-elle embarquer un état plus
-  # récent que le palier source ? »), pas un correctif.
+  # ⚙ ARBITRÉ ET FERMÉ (2026-08-26) — chaînage strict. `resolve_promotion_pin`
+  # (plus bas dans ce fichier) prend le pin ET le digest dans le marqueur du
+  # palier SOURCE dès que l'on part d'autre chose que l'env d'authoring, et
+  # l'écrivain refuse un digest de formulaire qui les contredirait
+  # (DIGEST_CONTREDIT_SOURCE). Les mêmes octets voyagent donc réellement d'un
+  # palier au suivant : « build once, deploy many » est tenu par le MÉCANISME,
+  # plus par la discipline du demandeur. Éprouvé par ㉑ (mutation : rétablir le
+  # calcul depuis `main` fait rougir cinq assertions).
   [ -n "$DEPLOY_PIN_SHA256" ] \
     || { _dp_fail "DIGEST_ABSENT : archive_sha256 vide pour l'env '$env' — hors authoring, les octets déployés doivent être pinnés"; return 1; }
 
@@ -295,5 +293,127 @@ PY
 
   export DEPLOY_PIN_COMMIT DEPLOY_PIN_VERSION DEPLOY_PIN_SHA256 \
          DEPLOY_PIN_PUBLISH DEPLOY_PIN_PROMOTE DEPLOY_PIN_CONTRACT DEPLOY_PIN_ARCHIVE
+  return 0
+}
+
+# resolve_promotion_pin <clone> <api> <from_env>
+#
+# CE QU'UN SAUT PROMEUT : l'état que le palier SOURCE exécute — pas « le dernier
+# main ».
+#
+# ⚠ C'EST LA LETTRE DU GOAL, et le premier jet ne la tenait pas. Le pin était
+# `git log -1 main -- apis/<api>.*`, et le marqueur du palier source était
+# ouvert puis jeté sauf `enabled`. Mesuré : rec servant v1.0.0, main à v2.0.0,
+# une demande rec -> int écrivait v2.0.0 — un état que rec n'a JAMAIS servi, et
+# rien ne rougissait. La chaîne à cinq paliers ne garantissait plus que homol a
+# vu ce que int a vu.
+#
+# DEUX RÉGIMES, ET UN SEUL EST « le dernier main » :
+#   from == authoring  -> dev n'a pas de marqueur, il suit HEAD par conception
+#                         (pinned.go:15). Le pin est donc le dernier commit de
+#                         main touchant CETTE API — pas HEAD, sinon une API
+#                         soeur ferait bouger le pin. Le digest vient du
+#                         formulaire (sortie EXPORT_CONFIRMED).
+#   sinon              -> pin ET digest viennent du marqueur SOURCE. Le digest
+#                         voyage donc avec le pin : c'est ce qui rend « build
+#                         once, deploy many » VRAI plutôt que déclaratif.
+#
+# Exporte : DEPLOY_PROMO_PIN, DEPLOY_PROMO_SHA256, DEPLOY_PROMO_VERSION.
+#
+# Les deux valeurs remontent du python empaquetées PAR LIGNES, pas par un
+# caractère séparateur. Ce n'est pas de la coquetterie : un `|` a déjà décalé
+# des champs deux fois dans ce dépôt (marqueur, puis sonde d'import). Ici les
+# deux valeurs sont hexadécimales et sont validées comme telles juste après —
+# une nouvelle ligne ne peut donc pas s'y cacher. C'est ce qui rend le
+# découpage par ligne sûr, et il faut le dire plutôt que prétendre qu'aucun
+# empaquetage n'a lieu.
+resolve_promotion_pin() {
+  local clone="$1" api="$2" from="$3"
+
+  DEPLOY_PROMO_PIN=""; DEPLOY_PROMO_SHA256=""; DEPLOY_PROMO_VERSION=""
+  export DEPLOY_PROMO_PIN DEPLOY_PROMO_SHA256 DEPLOY_PROMO_VERSION
+
+  case "$api" in
+    ""|*[!a-z0-9-]*) { _dp_fail "API_NAME_INVALIDE : '$api'"; return 1; };;
+  esac
+  # `from` construit un chemin de marqueur, exactement comme `env` dans le
+  # jumeau — il se contraint donc au meme endroit et de la meme facon.
+  case "$from" in
+    ""|*[!a-z0-9-]*) { _dp_fail "ENV_INVALIDE : '$from'"; return 1; };;
+  esac
+
+  if [ "$from" = "$DEPLOY_PIN_AUTHORING_ENV" ]; then
+    DEPLOY_PROMO_PIN=$(git -C "$clone" log -1 --format=%H -- "apis/${api}.*")
+    [ -n "$DEPLOY_PROMO_PIN" ] \
+      || { _dp_fail "PIN_INTROUVABLE : aucun commit ne touche apis/${api}.* sur main"; return 1; }
+  else
+    local rel; rel="$(deploy_pin_marker_path "$api" "$from")"
+    [ -f "$clone/$rel" ] \
+      || { _dp_fail "SOURCE_NON_DEPLOYEE : $rel absent — '$api' n'est pas deployee en '$from'"; return 1; }
+    local raw
+    raw=$(DP_FILE="$clone/$rel" python3 - <<'PY'
+import os, sys, yaml
+d = yaml.safe_load(open(os.environ["DP_FILE"])) or {}
+c = str(d.get("commit") or "")
+s = str(d.get("archive_sha256") or "")
+if not d.get("enabled"):
+    sys.exit("le marqueur source porte enabled: false")
+sys.stdout.write("SRC=%s\n%s\n%s\n" % ("1", c, s))
+PY
+) || { _dp_fail "SOURCE_NON_DEPLOYEE : $rel illisible, ou enabled: false"; return 1; }
+    case "$raw" in SRC=1*) ;; *) { _dp_fail "PARSE_MARQUEUR_SOURCE : sortie inattendue de $rel"; return 1; };; esac
+    DEPLOY_PROMO_PIN=$(printf '%s\n' "$raw" | sed -n '2p')
+    DEPLOY_PROMO_SHA256=$(printf '%s\n' "$raw" | sed -n '3p')
+    # Le pin du palier source est celui qu'on RECOPIE : s'il est mal formé, on
+    # ne le « corrige » pas en retombant sur main — ce serait rouvrir le défaut.
+    case "$DEPLOY_PROMO_PIN" in
+      *[!0-9a-f]*|"") { _dp_fail "SOURCE_PIN_MALFORMED : le marqueur $rel porte commit='$DEPLOY_PROMO_PIN'"; return 1; };;
+    esac
+    case "${#DEPLOY_PROMO_PIN}" in 40|64) ;;
+      *) { _dp_fail "SOURCE_PIN_MALFORMED : commit de $rel long de ${#DEPLOY_PROMO_PIN} caracteres"; return 1; };;
+    esac
+    [ -n "$DEPLOY_PROMO_SHA256" ] \
+      || { _dp_fail "SOURCE_DIGEST_ABSENT : le marqueur $rel ne porte pas d'archive_sha256 — impossible de faire voyager les memes octets"; return 1; }
+  fi
+
+  # La version se lit AU COMMIT RETENU, jamais sur l'arbre de travail : sinon on
+  # ecrirait la version de main a cote d'un pin qui designe autre chose.
+  local mv
+  mv=$(git -C "$clone" show "${DEPLOY_PROMO_PIN}:apis/${api}.publish.yml" 2>/dev/null \
+       | python3 -c 'import sys,yaml; d=yaml.safe_load(sys.stdin) or {}; print("V=" + str((d.get("apim_api") or {}).get("version") or ""))') \
+    || { _dp_fail "PARSE_MANIFEST : apis/${api}.publish.yml illisible au commit ${DEPLOY_PROMO_PIN}"; return 1; }
+  case "$mv" in V=*) mv="${mv#V=}";; *) { _dp_fail "PARSE_MANIFEST : sortie inattendue"; return 1; };; esac
+  [ -n "$mv" ] \
+    || { _dp_fail "VERSION_ABSENTE : apis/${api}.publish.yml ne porte pas de version au commit retenu"; return 1; }
+  DEPLOY_PROMO_VERSION="$mv"
+  return 0
+}
+
+# reconcile_promotion_digest <digest du formulaire> <digest herite du palier source>
+#
+# CE QUI TIENT L'ARBITRAGE, C'EST LE REFUS, PAS L'HERITAGE.
+# Le digest reste EXIGE au formulaire a chaque saut (`TO_ENV` ne peut jamais
+# valoir l'env d'authoring : c'est la TETE de la chaine, et une promotion va
+# toujours vers le palier SUIVANT). Hors env d'authoring il n'est simplement
+# plus CRU : il est confronte a celui du palier source, et une divergence
+# refuse. Le demandeur ne peut donc pas substituer les octets en cours de
+# route ; il peut seulement se tromper de recopie, et il est refuse.
+#
+# Cette fonction vit ici, et non au site d'appel, pour la meme raison que
+# resolve_promotion_pin : au site d'appel elle serait dans le chemin
+# post-DRY_RUN, qu'aucune epreuve n'exerce — une garantie sans porte.
+#
+# Rend sur stdout le digest RETENU.
+reconcile_promotion_digest() {
+  local form="$1" inherited="$2"
+  if [ -z "$inherited" ]; then
+    printf '%s' "$form"          # depuis l'env d'authoring : le formulaire fait foi
+    return 0
+  fi
+  if [ -n "$form" ] && [ "$form" != "$inherited" ]; then
+    _dp_fail "DIGEST_CONTREDIT_SOURCE : le formulaire annonce $form mais le palier source execute $inherited — un saut ne substitue pas les octets"
+    return 1
+  fi
+  printf '%s' "$inherited"
   return 0
 }

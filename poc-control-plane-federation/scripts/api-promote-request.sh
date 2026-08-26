@@ -188,33 +188,29 @@ git clone -q "${GIT_HOST}/${REPO_FULL}.git" "$TMP/team" \
 if [ "$FROM_ENV" = "$AUTHORING_ENV" ]; then
   [ -f "$TMP/team/apis/${API_NAME}.publish.yml" ] \
     || fail "SOURCE_NON_DEPLOYEE : apis/${API_NAME}.publish.yml absent de ${REPO_FULL} — rien à promouvoir depuis '$FROM_ENV'"
-else
-  SRC_REL="$(deploy_pin_marker_path "$API_NAME" "$FROM_ENV")"
-  [ -f "$TMP/team/$SRC_REL" ] \
-    || fail "SOURCE_NON_DEPLOYEE : $SRC_REL absent — '$API_NAME' n'est pas déployée en '$FROM_ENV'"
-  SRC_ON=$(DP_FILE="$TMP/team/$SRC_REL" python3 - <<'PY'
-import os, yaml
-d = yaml.safe_load(open(os.environ["DP_FILE"])) or {}
-print("EN=" + ("1" if d.get("enabled") else "0"))
-PY
-) || fail "PARSE_MARQUEUR_SOURCE : $SRC_REL illisible"
-  case "$SRC_ON" in EN=1) ;; EN=0) fail "SOURCE_NON_DEPLOYEE : $SRC_REL porte enabled: false" ;;
-    *) fail "PARSE_MARQUEUR_SOURCE : sortie inattendue" ;; esac
 fi
+# Hors env d'authoring, l'etat du palier source est verifie par
+# resolve_promotion_pin ci-dessous — c'est LUI qui lit le marqueur, une seule
+# fois. Dupliquer cette lecture ici ferait deriver les deux copies.
 
-# ── le pin : DERNIER commit de main touchant CETTE API ──────────────────────
-# Pas HEAD : le pin d'une API ne doit pas bouger parce qu'une API SŒUR du même
-# dépôt a changé.
-PIN=$(git -C "$TMP/team" log -1 --format=%H -- "apis/${API_NAME}.*")
-[ -n "$PIN" ] || fail "PIN_INTROUVABLE : aucun commit ne touche apis/${API_NAME}.* sur ${REPO_FULL}@main"
-VERSION=$(DP_FILE="$TMP/team/apis/${API_NAME}.publish.yml" python3 - <<'PY'
-import os, yaml
-d = yaml.safe_load(open(os.environ["DP_FILE"])) or {}
-print("V=" + str((d.get("apim_api") or {}).get("version") or ""))
-PY
-) || fail "PARSE_MANIFEST : lecture de la version"
-case "$VERSION" in V=*) VERSION="${VERSION#V=}";; *) fail "PARSE_MANIFEST : sortie inattendue";; esac
-[ -n "$VERSION" ] || fail "VERSION_ABSENTE : apis/${API_NAME}.publish.yml ne porte pas de version"
+# ── LE PIN : ce que le palier SOURCE execute ────────────────────────────────
+# Depuis dev (env d'authoring, sans marqueur) : le dernier commit de main
+# touchant CETTE API. Au-dela : le pin ET le digest du marqueur SOURCE, pour
+# qu'un saut promeuve ce que le palier precedent sert reellement — la lettre du
+# GOAL, « chaque palier recevant exactement l'archive approuvee et pas le
+# dernier main ». La logique vit dans la bibliotheque parce qu'elle s'y eprouve
+# hors ligne ; ici elle serait dans le chemin post-DRY_RUN, que rien ne teste.
+resolve_promotion_pin "$TMP/team" "$API_NAME" "$FROM_ENV" \
+  || fail "PIN_NON_RESOLU : impossible de determiner ce que '$FROM_ENV' execute pour ${API_NAME} (voir le refus nomme ci-dessus)"
+PIN="$DEPLOY_PROMO_PIN"
+VERSION="$DEPLOY_PROMO_VERSION"
+
+# LE DIGEST. Depuis dev il vient du formulaire (sortie EXPORT_CONFIRMED) ; au
+# dela il est HERITE du palier source, et le formulaire ne peut pas le
+# contredire — sinon le demandeur substituerait les octets en cours de route,
+# ce que tout ce jalon existe pour empecher.
+ARCHIVE_SHA256=$(reconcile_promotion_digest "$ARCHIVE_SHA256" "$DEPLOY_PROMO_SHA256") \
+  || fail "DIGEST_CONTREDIT_SOURCE : le digest du formulaire contredit celui que '$FROM_ENV' execute (voir le refus nomme ci-dessus)"
 
 # ── branche, marqueur, commit, push, PR ─────────────────────────────────────
 BRANCH="promote/${API_NAME}-${TO_ENV}"

@@ -81,15 +81,13 @@ change_ref: ""
 # ⚠ CE QUE CE CHAMP TIENT, EXACTEMENT : les octets importés en <env> == CE
 #   DIGEST-CI, celui que le demandeur a écrit ici. Rien de plus.
 #
-# ⚠ IL N'EST PAS CHAÎNÉ D'UN PALIER À L'AUTRE. Il est saisi au formulaire de
-#   promotion à chaque saut, indépendamment, et rien ne compare le digest de ce
-#   palier à celui du précédent. Le zip webMethods n'étant pas reproductible
-#   bit-à-bit (horodatages), ré-exporter depuis la gateway du palier source
-#   donne un zip NEUF : y coller SON digest passe la vérification. Même
-#   dissymétrie sur `commit` ci-dessus — il est calculé depuis le dernier `main`
-#   du dépôt d'équipe, jamais depuis le marqueur du palier source, donc une
-#   promotion rec → int peut pinner un état que rec n'a jamais servi.
-#   « Build once, deploy many » tient donc à la DISCIPLINE du demandeur, pas au
-#   mécanisme. Chaîner digest et pin d'un palier au suivant est une question de
-#   conception OUVERTE, portée au jalon G4.
+# ⚙ IL EST CHAÎNÉ D'UN PALIER À L'AUTRE (arbitré le 2026-08-26).
+#   Depuis l'env d'authoring (`dev`), le demandeur le saisit au formulaire —
+#   c'est la sortie d'EXPORT_CONFIRMED. Au-delà, il est HÉRITÉ du marqueur du
+#   palier source, en même temps que `commit` : un saut promeut ce que le palier
+#   précédent SERT, pas « le dernier main ». Un digest de formulaire qui
+#   contredirait celui du palier source est refusé (DIGEST_CONTREDIT_SOURCE) —
+#   un saut ne substitue pas les octets en cours de route.
+#   C'est ce qui rend « build once, deploy many » vrai par le MÉCANISME : les
+#   mêmes octets voyagent de dev jusqu'à la prod.
 archive_sha256: "0000000000000000000000000000000000000000000000000000000000000000"

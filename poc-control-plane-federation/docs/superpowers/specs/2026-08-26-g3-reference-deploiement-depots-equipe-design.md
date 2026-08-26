@@ -255,23 +255,53 @@ l'extra-var suffirait à désactiver le contrôle. La condition est donc l'envir
 présence de la variable — `apim_ss_env != apim_ss_authoring_env` (nouveau knob, défaut `dev`)
 ⇒ digest **exigé**, absent ⇒ refus `ARCHIVE_DIGEST_REQUIRED`.
 
-**Ce que les deux vérifications tiennent, exactement — et ce qu'elles ne tiennent pas.** Elles
-tiennent : *les octets importés correspondent au digest que le demandeur a écrit dans le marqueur du
-palier d'arrivée*. Elles ne chaînent **rien** d'un palier à l'autre : `archive_sha256` est saisi au
-formulaire à chaque saut, indépendamment, et rien ne compare le digest du palier N à celui du palier
-N−1. Le zip webMethods n'étant pas reproductible bit-à-bit (horodatages), un demandeur qui
-ré-exporte depuis la gateway du palier source obtient un zip **neuf**, colle **son** digest, et la
-vérification passe.
+**Ce que les deux vérifications tiennent, exactement.** Elles tiennent : *les octets importés
+correspondent au digest pinné dans le marqueur du palier d'arrivée*.
 
-La même dissymétrie porte sur le **pin** : §5 le calcule depuis le dernier `main` du dépôt d'équipe,
-jamais depuis le marqueur du palier source — une promotion `rec → int` peut donc pinner un état que
-rec n'a jamais servi. Une version antérieure de ce paragraphe affirmait que la vérification
-« **force** la réutilisation des mêmes octets d'un palier à l'autre » : c'était faux. « Build once,
-deploy many » est tenu par la **discipline du demandeur**, pas par le mécanisme.
+Le digest reste **exigé au formulaire à chaque saut** (`DIGEST_ABSENT`) — `TO_ENV` ne peut jamais
+valoir l'env d'authoring, qui est la tête de la chaîne, donc cette garde est inconditionnelle en
+pratique. Hors env d'authoring, il n'est simplement plus **cru** : il est confronté à celui du
+palier source, et une divergence refuse (`DIGEST_CONTREDIT_SOURCE`). Ce qui est écrit dans le
+marqueur d'arrivée est celui du **palier source**. Le demandeur ne peut donc pas substituer les
+octets en cours de route ; il peut seulement se tromper de recopie, et il est refusé.
 
-Chaîner le digest et le pin d'un palier au suivant est une **question de conception ouverte**,
-portée au jalon G4 : elle demande l'arbitrage d'exploitant « une promotion peut-elle embarquer un
-état plus récent que le palier source ? », qui ne se tranche pas en revue.
+**Ce qui tient l'arbitrage, c'est le REFUS, pas l'héritage** — l'héritage seul décrirait un
+mécanisme qui ne se déclenche jamais.
+
+### 6.1 Le chaînage — arbitré et fermé le 2026-08-26
+
+**Ce qui était livré au premier jet, et pourquoi c'était faux.** Le pin venait du dernier `main` du
+dépôt d'équipe, et `archive_sha256` était saisi au formulaire à chaque saut, indépendamment. Rien
+ne comparait le palier N au palier N−1. Mesuré : rec servant v1.0.0 pendant que `main` porte
+v2.0.0, une demande `rec → int` écrivait v2.0.0 — **un état que rec n'a jamais servi**, sans qu'aucune
+garde ne rougisse. La chaîne à cinq paliers ne garantissait plus que homol a vu ce que int a vu.
+Une version antérieure de ce paragraphe affirmait pourtant que la vérification « **force** la
+réutilisation des mêmes octets d'un palier à l'autre » : c'était doublement faux.
+
+**L'arbitrage.** La question — *une promotion peut-elle embarquer un état plus récent que le palier
+source ?* — est d'exploitation, pas de revue. Elle a été posée à l'exploitant, qui a retenu le
+**chaînage strict**. Le GOAL l'exigeait d'ailleurs déjà mot pour mot dans son test de réussite :
+*« chaque palier recevant exactement l'archive approuvée et pas "le dernier main" »*.
+
+**Ce qui est livré depuis.** `resolve_promotion_pin` (`scripts/lib/deploy-pin.sh`) porte les deux
+régimes :
+
+| Saut | Pin | Digest |
+|---|---|---|
+| depuis `dev` (env d'authoring, sans marqueur) | dernier commit de `main` touchant **cette** API | saisi au formulaire (sortie `EXPORT_CONFIRMED`) |
+| tout autre saut | `commit` du marqueur **source** | `archive_sha256` du marqueur **source** |
+
+La version est relue **au commit retenu**, jamais sur l'arbre de travail — sinon on écrirait la
+version de `main` à côté d'un pin qui désigne autre chose. Un digest de formulaire qui
+contredirait celui du palier source est refusé (`DIGEST_CONTREDIT_SOURCE`) : un saut ne substitue
+pas les octets en cours de route. Un pin source mal formé est refusé (`SOURCE_PIN_MALFORMED`) et
+**ne retombe jamais sur `main`** — ce serait rouvrir le défaut par la porte de service.
+
+**Conséquence assumée :** une correction ne saute aucun palier ; elle re-traverse depuis `dev`.
+C'est le prix de la garantie, et c'est ce qui rend la chaîne opposable plutôt que déclarative.
+
+**Éprouvé** : ㉑, ㉑bis, ㉑ter, ㉑quater dans `scripts/test-deploy-pin.sh`, sur dépôt Git jetable.
+Contre-épreuve par mutation : rétablir le calcul depuis `main` fait rougir cinq assertions.
 
 **Hors périmètre, explicitement :** le **transport** de ces octets d'un palier à l'autre (dépôt
 d'artefacts, registre de paquets) appartient à G5, qui porte le verbe archive. G3 livre le lien

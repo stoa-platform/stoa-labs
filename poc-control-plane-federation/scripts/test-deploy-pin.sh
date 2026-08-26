@@ -527,7 +527,7 @@ AFTER=$(git -C "$REPO" log -1 --format=%H -- 'apis/accounts-read.*')
   || bad "le pin a suivi HEAD — deux APIs du même dépôt se contamineraient"
 
 echo "⑱ SOURCE_NON_DEPLOYEE — on ne promeut pas depuis un palier vide"
-grep -q SOURCE_NON_DEPLOYEE "$ROOT/scripts/api-promote-request.sh" \
+grep -q SOURCE_NON_DEPLOYEE "$ROOT/scripts/lib/deploy-pin.sh" \
   && ok "SOURCE_NON_DEPLOYEE présent dans l'écrivain" \
   || bad "aucune garde sur l'état du palier SOURCE — on promouvrait du néant"
 grep -q 'GIT_CONFIG_KEY_0=http.extraheader' "$ROOT/scripts/api-promote-request.sh" \
@@ -674,6 +674,114 @@ grep -q 'apim_ss_contract_pin="\$DEPLOY_PIN_CONTRACT"' "$TP" \
 grep -q 'ENVN="\${ENVN:-dev}"' "$TP" \
   && ok "le verrou dev-only est INTACT (il appartient à G4)" \
   || bad "le verrou dev-only a bougé — G3 ne doit pas livrer la moitié de G4"
+
+echo "㉑ LE CHAÎNAGE — un saut promeut ce que le palier SOURCE exécute, pas le dernier main"
+# ⚠ C'EST L'ÉPREUVE QUI MANQUAIT, et son absence a laissé passer le défaut le
+# plus grave du jalon. ⑰ vérifiait seulement qu'une API SŒUR ne fait pas bouger
+# le pin — jamais que le pin égale ce que le palier source sert. Le GOAL, lui,
+# l'exige mot pour mot : « chaque palier recevant exactement l'archive
+# approuvée et pas "le dernier main" ».
+REPO="$TMP/team21"; make_team_repo "$REPO"
+# C1 = accounts-read 1.0.0 (ce que rec SERT) ; main est déjà à 2.0.0 (C2).
+SHA_A="$(sha_of "$REPO/dist/a.zip")"
+marker "$REPO" rec "$C1" "1.0.0" "$SHA_A"
+git -C "$REPO" add -A && git -C "$REPO" commit -qm "marqueur rec"
+
+if resolve_promotion_pin "$REPO" accounts-read rec 2>"$TMP/e21"; then
+  [ "$DEPLOY_PROMO_PIN" = "$C1" ] \
+    && ok "rec -> int retient le pin du marqueur REC ($C1), pas le dernier main" \
+    || bad "rec -> int a retenu '$DEPLOY_PROMO_PIN' au lieu de $C1 — un etat que rec n'a jamais servi"
+  [ "$DEPLOY_PROMO_VERSION" = "1.0.0" ] \
+    && ok "la version est lue AU COMMIT RETENU (1.0.0), pas sur main (2.0.0)" \
+    || bad "version '$DEPLOY_PROMO_VERSION' — lue sur main au lieu du commit pinne"
+  [ "$DEPLOY_PROMO_SHA256" = "$SHA_A" ] \
+    && ok "le digest VOYAGE avec le pin — build once, deploy many devient vrai" \
+    || bad "digest '$DEPLOY_PROMO_SHA256' != celui du marqueur source"
+else
+  bad "chainage refuse a tort : $(cat "$TMP/e21")"
+fi
+
+echo "㉑bis dev -> rec suit le dernier main — dev n'a pas de marqueur, par conception"
+REPO="$TMP/team21b"; make_team_repo "$REPO"
+if resolve_promotion_pin "$REPO" accounts-read dev 2>"$TMP/e21b"; then
+  [ "$DEPLOY_PROMO_PIN" = "$C2" ] \
+    && ok "dev -> rec pinne le dernier commit de main (env d'authoring)" \
+    || bad "dev -> rec a retenu '$DEPLOY_PROMO_PIN' au lieu de $C2"
+  [ -z "$DEPLOY_PROMO_SHA256" ] \
+    && ok "aucun digest herite depuis dev — le demandeur le fournit (EXPORT_CONFIRMED)" \
+    || bad "un digest a ete herite alors que dev n'a pas de marqueur"
+else
+  bad "dev -> rec refuse a tort : $(cat "$TMP/e21b")"
+fi
+
+echo "㉑ter SOURCE_DIGEST_ABSENT — un marqueur source sans digest ne peut pas faire voyager d'octets"
+REPO="$TMP/team21c"; make_team_repo "$REPO"
+marker "$REPO" rec "$C1" "1.0.0" ""
+git -C "$REPO" add -A && git -C "$REPO" commit -qm "marqueur rec sans digest"
+resolve_promotion_pin "$REPO" accounts-read rec 2>"$TMP/e21c" \
+  && bad "marqueur source SANS digest accepte — les octets ne voyagent plus" \
+  || { grep -q SOURCE_DIGEST_ABSENT "$TMP/e21c" && ok "SOURCE_DIGEST_ABSENT" || bad "refuse sans nommer SOURCE_DIGEST_ABSENT : $(cat "$TMP/e21c")"; }
+
+echo "㉑quater SOURCE_PIN_MALFORMED — on ne retombe JAMAIS sur main pour reparer un pin casse"
+REPO="$TMP/team21d"; make_team_repo "$REPO"
+marker "$REPO" rec "pas-un-sha" "1.0.0" "$(sha_of "$REPO/dist/a.zip")"
+git -C "$REPO" add -A && git -C "$REPO" commit -qm "marqueur rec casse"
+resolve_promotion_pin "$REPO" accounts-read rec 2>"$TMP/e21d" \
+  && bad "pin source casse ACCEPTE — s'il retombait sur main, le defaut serait rouvert" \
+  || { grep -q SOURCE_PIN_MALFORMED "$TMP/e21d" && ok "SOURCE_PIN_MALFORMED" || bad "refuse sans nommer SOURCE_PIN_MALFORMED : $(cat "$TMP/e21d")"; }
+
+echo "㉑quinquies enabled: false — un palier source ETEINT ne promeut rien"
+REPO="$TMP/team21e"; make_team_repo "$REPO"
+marker "$REPO" rec "$C1" "1.0.0" "$(sha_of "$REPO/dist/a.zip")"
+sed -i.bak 's/^enabled: true/enabled: false/' "$REPO/apis/accounts-read.deploy.rec.yaml"
+rm -f "$REPO/apis/"*.bak
+git -C "$REPO" add -A && git -C "$REPO" commit -qm "rec eteint"
+resolve_promotion_pin "$REPO" accounts-read rec 2>"$TMP/e21e" \
+  && bad "un palier source ETEINT a promu — on promeut ce qui ne tourne pas" \
+  || { grep -q SOURCE_NON_DEPLOYEE "$TMP/e21e" && ok "SOURCE_NON_DEPLOYEE sur enabled: false" || bad "refuse sans nommer SOURCE_NON_DEPLOYEE : $(cat "$TMP/e21e")"; }
+
+echo "㉑sexies marqueur source ABSENT — surtout pas de repli sur main"
+# ⚠ C'est le defaut arbitre, rouvert par la porte de service : si l'absence de
+# marqueur retombait sur `git log -1 main`, un saut rec -> int repartirait du
+# dernier main sans que rien ne le dise.
+REPO="$TMP/team21f"; make_team_repo "$REPO"
+resolve_promotion_pin "$REPO" accounts-read rec 2>"$TMP/e21f" \
+  && bad "marqueur source ABSENT accepte — repli implicite sur main, le defaut est rouvert" \
+  || { grep -q SOURCE_NON_DEPLOYEE "$TMP/e21f" && ok "SOURCE_NON_DEPLOYEE sur marqueur absent" || bad "refuse sans nommer SOURCE_NON_DEPLOYEE : $(cat "$TMP/e21f")"; }
+
+echo "㉒ la reconciliation du digest — les trois cas, hors ligne"
+D_A="$(printf 'a%.0s' $(seq 64))"; D_B="$(printf 'b%.0s' $(seq 64))"
+R=$(reconcile_promotion_digest "$D_A" "" 2>/dev/null) \
+  && [ "$R" = "$D_A" ] && ok "depuis l'env d'authoring : le formulaire fait foi" \
+  || bad "digest du formulaire non retenu depuis l'authoring (rendu '$R')"
+R=$(reconcile_promotion_digest "$D_A" "$D_A" 2>/dev/null) \
+  && [ "$R" = "$D_A" ] && ok "recopie exacte : accepte" \
+  || bad "une recopie exacte a ete refusee (rendu '$R')"
+R=$(reconcile_promotion_digest "" "$D_A" 2>/dev/null) \
+  && [ "$R" = "$D_A" ] && ok "formulaire vide : l'herite est retenu" \
+  || bad "l'herite n'a pas ete retenu sur formulaire vide (rendu '$R')"
+reconcile_promotion_digest "$D_B" "$D_A" >/dev/null 2>"$TMP/e22" \
+  && bad "un digest CONTREDISANT le palier source a ete accepte — les octets seraient substitues" \
+  || { grep -q DIGEST_CONTREDIT_SOURCE "$TMP/e22" && ok "DIGEST_CONTREDIT_SOURCE" || bad "refuse sans nommer DIGEST_CONTREDIT_SOURCE : $(cat "$TMP/e22")"; }
+
+echo "㉓ le CABLAGE de l'arbitrage — sourcer et definir ne suffit pas, il faut APPELER"
+# ⚠ Mesure en revue : retirer l'appel a resolve_promotion_pin et retablir
+# `git log -1 main` laissait les TROIS portes vertes. La fonction devenait du
+# code mort et le defaut arbitre revenait sans qu'aucun voyant ne s'allume.
+# Meme lecon qu'a ⑳, appliquee au jumeau — et ancree sur le CODE decommente,
+# sinon le grep est satisfait par la prose qui cite le motif.
+APR="$ROOT/scripts/api-promote-request.sh"
+ACODE="$TMP/apr-code-only.sh"
+sed 's/[[:space:]]*#.*$//' "$APR" > "$ACODE"
+grep -qE '^resolve_promotion_pin "' "$ACODE" \
+  && ok "resolve_promotion_pin est reellement APPELE par l'ecrivain" \
+  || bad "l'arbitrage n'est branche sur rien : la fonction existe et personne ne l'appelle"
+grep -q 'reconcile_promotion_digest' "$ACODE" \
+  && ok "la reconciliation du digest est reellement APPELEE" \
+  || bad "DIGEST_CONTREDIT_SOURCE ne peut pas se declencher : la garde n'est pas cablee"
+grep -qE 'log -1 --format=%H' "$ACODE" \
+  && bad "l'ecrivain recalcule le pin depuis main — c'est exactement le defaut arbitre" \
+  || ok "l'ecrivain ne recalcule PAS le pin depuis main (il delegue a la bibliotheque)"
 
 printf '\n  %d PASS / %d FAIL\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
