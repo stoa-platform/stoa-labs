@@ -476,5 +476,35 @@ else
     || bad "une promotion pourtant conforme est refusée — garde trop zélée"
 fi
 
+echo "⑰ le pin écrit est le DERNIER COMMIT touchant l'API, pas HEAD"
+# On teste la fonction de calcul du pin isolément, sur un dépôt réel : l'équipe
+# modifie une AUTRE API après coup ; le pin d'accounts-read ne doit pas bouger.
+REPO="$TMP/team17"; make_team_repo "$REPO"
+TARGET=$(git -C "$REPO" log -1 --format=%H -- 'apis/accounts-read.*')
+printf 'apim_api:\n  name: "payments-read"\n  version: "1.0.0"\n' > "$REPO/apis/payments-read.publish.yml"
+git -C "$REPO" add -A && git -C "$REPO" commit -qm "autre API"
+AFTER=$(git -C "$REPO" log -1 --format=%H -- 'apis/accounts-read.*')
+[ "$TARGET" = "$AFTER" ] \
+  && ok "le pin d'accounts-read ne bouge pas quand payments-read change" \
+  || bad "le pin a suivi HEAD — deux APIs du même dépôt se contamineraient"
+
+echo "⑱ SOURCE_NON_DEPLOYEE — on ne promeut pas depuis un palier vide"
+grep -q SOURCE_NON_DEPLOYEE "$ROOT/scripts/api-promote-request.sh" \
+  && ok "SOURCE_NON_DEPLOYEE présent dans l'écrivain" \
+  || bad "aucune garde sur l'état du palier SOURCE — on promouvrait du néant"
+grep -q 'GIT_CONFIG_KEY_0=http.extraheader' "$ROOT/scripts/api-promote-request.sh" \
+  && ok "push par header injecté (jamais de token en URL/argv)" \
+  || bad "le token risque d'apparaître dans ps -Aww pendant le push"
+grep -q REPO_NON_DECLARE "$ROOT/scripts/api-promote-request.sh" \
+  && ok "REPO_NON_DECLARE — une équipe sans dépôt déclaré est refusée" \
+  || bad "aucune garde sur l'appartenance dépôt↔équipe"
+# L'équipe est dérivée de providers.<env>.yml lu sur GITEA MAIN — jamais du
+# worktree local (qui peut être en retard ou modifié). Même discipline que
+# team-publish.sh §3 : le seul énoncé qui fait autorité sur « ce dépôt
+# appartient à cette équipe » vit sur main du dépôt plateforme.
+grep -q 'repos/${GIT_REPO}/raw/ansible/providers' "$ROOT/scripts/api-promote-request.sh" \
+  && ok "providers lu sur Gitea main, pas sur le worktree local" \
+  || bad "providers lu localement — un worktree en retard déciderait de l'appartenance"
+
 printf '\n  %d PASS / %d FAIL\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

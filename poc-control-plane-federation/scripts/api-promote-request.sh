@@ -94,5 +94,107 @@ echo "GARDES_OK : $FROM_ENV -> $TO_ENV, groupe d'approbation='${APPROVER_GROUP:-
 [ "${DRY_RUN:-0}" = 1 ] && exit 0
 
 GITEA_TOKEN="${GITEA_TOKEN:?GITEA_TOKEN requis}"
-echo "GESTE_GIT_NON_IMPLEMENTE : voir Task 8" >&2
-exit 1
+GIT_HOST="${GIT_HOST:-http://gitea:3000}"
+GIT_REPO="${GIT_REPO:-ci/stoa-labs}"   # dépôt PLATEFORME — porte providers.<env>.yml
+TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT; umask 077
+printf 'Authorization: token %s\n' "$GITEA_TOKEN" > "$TMP/ghdr"
+gapi() { curl -s -H @"$TMP/ghdr" -H 'Content-Type: application/json' "$@"; }
+
+# ── team -> repo, lu sur GITEA MAIN (jamais le worktree local) ───────────────
+# Le worktree local peut être en retard, ou modifié : la seule source qui dit
+# VRAIMENT « ce dépôt appartient à cette équipe » est providers.<env>.yml sur
+# main du dépôt plateforme (même discipline que team-publish.sh §3).
+gapi "${GIT_HOST}/api/v1/repos/${GIT_REPO}/raw/ansible/providers.${AUTHORING_ENV}.yml" \
+  > "$TMP/providers.yml" || fail "LECTURE_PROVIDERS : providers.${AUTHORING_ENV}.yml illisible sur ${GIT_REPO}@main"
+REPO_FULL=$(TEAM="$TEAM" PROV="$TMP/providers.yml" python3 - <<'PY'
+import os, sys, yaml
+d = yaml.safe_load(open(os.environ["PROV"])) or {}
+e = next((p for p in (d.get("providers") or []) if p.get("team") == os.environ["TEAM"]), None)
+if e is None:
+    sys.exit("TEAM_NOT_FOUND")
+print("REPO=" + (e.get("repo") or ""))
+PY
+) || fail "REPO_NON_DECLARE : équipe '$TEAM' absente de providers.${AUTHORING_ENV}.yml"
+case "$REPO_FULL" in REPO=*) REPO_FULL="${REPO_FULL#REPO=}";; *) fail "PARSE_PROVIDERS : sortie inattendue";; esac
+[ -n "$REPO_FULL" ] || fail "REPO_NON_DECLARE : équipe '$TEAM' sans dépôt dans providers.${AUTHORING_ENV}.yml"
+
+# ── clone du dépôt d'équipe (authentifié — un dépôt privé casserait sinon) ───
+AUTH_B64=$(printf 'x:%s' "$GITEA_TOKEN" | base64 | tr -d '\n')
+export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader \
+       GIT_CONFIG_VALUE_0="Authorization: Basic ${AUTH_B64}"
+unset AUTH_B64
+git clone -q "${GIT_HOST}/${REPO_FULL}.git" "$TMP/team" \
+  || fail "CLONE_ECHEC : ${REPO_FULL}"
+
+# ── Garde 4 : LE PALIER SOURCE PORTE-T-IL QUELQUE CHOSE ? ───────────────────
+# Depuis l'env d'authoring, c'est la présence du manifeste de publication qui
+# en tient lieu : dev n'a PAS de marqueur, par conception.
+if [ "$FROM_ENV" = "$AUTHORING_ENV" ]; then
+  [ -f "$TMP/team/apis/${API_NAME}.publish.yml" ] \
+    || fail "SOURCE_NON_DEPLOYEE : apis/${API_NAME}.publish.yml absent de ${REPO_FULL} — rien à promouvoir depuis '$FROM_ENV'"
+else
+  SRC_REL="$(deploy_pin_marker_path "$API_NAME" "$FROM_ENV")"
+  [ -f "$TMP/team/$SRC_REL" ] \
+    || fail "SOURCE_NON_DEPLOYEE : $SRC_REL absent — '$API_NAME' n'est pas déployée en '$FROM_ENV'"
+  SRC_ON=$(DP_FILE="$TMP/team/$SRC_REL" python3 - <<'PY'
+import os, yaml
+d = yaml.safe_load(open(os.environ["DP_FILE"])) or {}
+print("EN=" + ("1" if d.get("enabled") else "0"))
+PY
+) || fail "PARSE_MARQUEUR_SOURCE : $SRC_REL illisible"
+  case "$SRC_ON" in EN=1) ;; EN=0) fail "SOURCE_NON_DEPLOYEE : $SRC_REL porte enabled: false" ;;
+    *) fail "PARSE_MARQUEUR_SOURCE : sortie inattendue" ;; esac
+fi
+
+# ── le pin : DERNIER commit de main touchant CETTE API ──────────────────────
+# Pas HEAD : le pin d'une API ne doit pas bouger parce qu'une API SŒUR du même
+# dépôt a changé.
+PIN=$(git -C "$TMP/team" log -1 --format=%H -- "apis/${API_NAME}.*")
+[ -n "$PIN" ] || fail "PIN_INTROUVABLE : aucun commit ne touche apis/${API_NAME}.* sur ${REPO_FULL}@main"
+VERSION=$(DP_FILE="$TMP/team/apis/${API_NAME}.publish.yml" python3 - <<'PY'
+import os, yaml
+d = yaml.safe_load(open(os.environ["DP_FILE"])) or {}
+print("V=" + str((d.get("apim_api") or {}).get("version") or ""))
+PY
+) || fail "PARSE_MANIFEST : lecture de la version"
+case "$VERSION" in V=*) VERSION="${VERSION#V=}";; *) fail "PARSE_MANIFEST : sortie inattendue";; esac
+[ -n "$VERSION" ] || fail "VERSION_ABSENTE : apis/${API_NAME}.publish.yml ne porte pas de version"
+
+# ── branche, marqueur, commit, push, PR ─────────────────────────────────────
+BRANCH="promote/${API_NAME}-${TO_ENV}"
+MARKER="$(deploy_pin_marker_path "$API_NAME" "$TO_ENV")"
+git -C "$TMP/team" checkout -q -b "$BRANCH"
+MSG="$MESSAGE" PB="${PROMOTED_BY:-ci}" V="$VERSION" P="$PIN" CR="$CHANGE_REF" \
+  SH="$ARCHIVE_SHA256" OUT="$TMP/team/$MARKER" python3 - <<'PY'
+import os
+open(os.environ["OUT"], "w").write(
+    'version: "%s"\nenabled: true\npromoted_by: %s\nmessage: "%s"\ncommit: %s\n'
+    'change_ref: "%s"\narchive_sha256: "%s"\n' % (
+        os.environ["V"], os.environ["PB"],
+        os.environ["MSG"].replace('"', "'"), os.environ["P"],
+        os.environ["CR"], os.environ["SH"]))
+PY
+git -C "$TMP/team" add "$MARKER"
+git -C "$TMP/team" -c user.name=ci -c user.email=ci@stoa.lab \
+  commit -qm "promote(${API_NAME}): ${FROM_ENV} -> ${TO_ENV} @ ${PIN}" \
+  || fail "COMMIT_VIDE : le marqueur est déjà à cette valeur (rien à promouvoir)"
+git -C "$TMP/team" push -q origin "$BRANCH" || fail "PUSH_ECHEC : $BRANCH sur $REPO_FULL"
+
+PR_URL=$(API="${GIT_HOST}/api/v1" R="$REPO_FULL" B="$BRANCH" \
+  T="promote(${API_NAME}): ${FROM_ENV} → ${TO_ENV}" \
+  BODY="Marqueur \`${MARKER}\` — pin \`${PIN}\`, sha256 \`${ARCHIVE_SHA256:-<authoring>}\`.
+
+La DÉCISION est le merge de cette PR (ADR-081). Groupe d'approbation attendu : \`${APPROVER_GROUP:-<aucun>}\`." \
+  HDR="$TMP/ghdr" python3 - <<'PY'
+import json, os, urllib.request
+h = dict(l.split(": ", 1) for l in open(os.environ["HDR"]).read().splitlines() if l)
+h["Content-Type"] = "application/json"
+req = urllib.request.Request(
+    f"{os.environ['API']}/repos/{os.environ['R']}/pulls", method="POST",
+    data=json.dumps({"head": os.environ["B"], "base": "main",
+                     "title": os.environ["T"], "body": os.environ["BODY"]}).encode(),
+    headers=h)
+print(json.load(urllib.request.urlopen(req))["html_url"])
+PY
+) || fail "PR_ECHEC : ouverture de la PR sur $REPO_FULL"
+echo "PROMOTION_DEMANDEE : $PR_URL"
