@@ -1517,6 +1517,17 @@ NEED_PV="${GATE%%|*}"; APPROVER_GROUP="${GATE#*|}"
 [ "$NEED_PV" = 0 ] || [ -n "$PV_REF" ] \
   || fail "GATE_REFS_REQUIRED : la porte vers '$TO_ENV' exige une référence de PV de recette (PV_REF)"
 
+# Les références sont des IDENTIFIANTS de ticket, pas du texte libre : les
+# contraindre ici est une seconde fermeture, indépendante du sérialiseur
+# ci-dessous. Deux verrous valent mieux qu'un quand le premier est un détail
+# d'implémentation d'une bibliothèque tierce.
+for _ref in "$CHANGE_REF" "$PV_REF"; do
+  case "$_ref" in
+    "") ;;
+    *[!A-Za-z0-9._/-]*) fail "REF_INVALIDE : '$_ref' — une référence de ticket ne porte que lettres, chiffres, point, tiret, souligné et barre oblique" ;;
+  esac
+done
+
 # ── Garde 3 : LE DIGEST ─────────────────────────────────────────────────────
 if [ "$TO_ENV" != "$AUTHORING_ENV" ]; then
   [ -n "$ARCHIVE_SHA256" ] \
@@ -1584,6 +1595,21 @@ grep -q SOURCE_NON_DEPLOYEE "$ROOT/scripts/api-promote-request.sh" \
 grep -q 'GIT_CONFIG_KEY_0=http.extraheader' "$ROOT/scripts/api-promote-request.sh" \
   && ok "push par header injecté (jamais de token en URL/argv)" \
   || bad "le token risque d'apparaître dans ps -Aww pendant le push"
+echo "⑱bis un CHANGE_REF ne peut pas fabriquer une cle du marqueur"
+run_w dev rec 'x"
+commit: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+zz: "y' "" "$(printf 'a%.0s' $(seq 64))" | grep -q REF_INVALIDE \
+  && ok "REF_INVALIDE — une reference qui tente d'ouvrir une ligne YAML est refusee" \
+  || bad "un CHANGE_REF multiligne ACCEPTE — le demandeur choisirait le pin (derniere cle gagne)"
+grep -q 'yaml.safe_dump' "$ROOT/scripts/api-promote-request.sh" \
+  && ok "le marqueur est SERIALISE, pas formate — une valeur ne peut pas fabriquer de cle" \
+  || bad "marqueur produit par %-formatage : une valeur peut ouvrir une nouvelle ligne YAML"
+grep -q 'fail-with-body' "$ROOT/scripts/api-promote-request.sh" \
+  && ok "curl echoue vraiment sur un HTTP non-2xx (sinon LECTURE_PROVIDERS est du code mort)" \
+  || bad "curl -s rend 0 sur un 404 : le refus emis serait un mensonge"
+grep -q 'raw/poc-control-plane-federation/ansible/providers' "$ROOT/scripts/api-promote-request.sh" \
+  && ok "le chemin providers porte le prefixe du sous-repertoire" \
+  || bad "chemin providers sans prefixe — 404 a chaque execution hors DRY_RUN"
 grep -q REPO_NON_DECLARE "$ROOT/scripts/api-promote-request.sh" \
   && ok "REPO_NON_DECLARE — une équipe sans dépôt déclaré est refusée" \
   || bad "aucune garde sur l'appartenance dépôt↔équipe"
@@ -1611,14 +1637,32 @@ GIT_HOST="${GIT_HOST:-http://gitea:3000}"
 GIT_REPO="${GIT_REPO:-ci/stoa-labs}"   # dépôt PLATEFORME — porte providers.<env>.yml
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT; umask 077
 printf 'Authorization: token %s\n' "$GITEA_TOKEN" > "$TMP/ghdr"
-gapi() { curl -s -H @"$TMP/ghdr" -H 'Content-Type: application/json' "$@"; }
+gapi() { curl -sS -H @"$TMP/ghdr" -H 'Content-Type: application/json' "$@"; }
 
 # ── team -> repo, lu sur GITEA MAIN (jamais le worktree local) ───────────────
 # Le worktree local peut être en retard, ou modifié : la seule source qui dit
 # VRAIMENT « ce dépôt appartient à cette équipe » est providers.<env>.yml sur
 # main du dépôt plateforme (même discipline que team-publish.sh §3).
-gapi "${GIT_HOST}/api/v1/repos/${GIT_REPO}/raw/ansible/providers.${AUTHORING_ENV}.yml" \
-  > "$TMP/providers.yml" || fail "LECTURE_PROVIDERS : providers.${AUTHORING_ENV}.yml illisible sur ${GIT_REPO}@main"
+# ⚠ DEUX PIÈGES ICI, MESURÉS TOUS LES DEUX.
+#
+# (1) LE CHEMIN. `providers.<env>.yml` ne vit pas à la racine du dépôt
+#     plateforme mais sous `poc-control-plane-federation/` — c'est ce que
+#     lisent les scripts frères. Sans ce préfixe, chaque exécution hors
+#     DRY_RUN tape un 404 et le chemin nominal est mort.
+#
+# (2) `curl -s` REND 0 SUR UN 404. Le `|| fail` ci-dessous ne se déclencherait
+#     donc jamais : le corps d'erreur JSON de Gitea atterrirait dans le
+#     fichier, `yaml.safe_load` le parserait sans broncher (JSON ⊂ YAML),
+#     `providers` vaudrait None — et l'opérateur lirait « équipe absente de
+#     providers » alors qu'elle y est. Un chemin cassé, un hôte injoignable,
+#     un token périmé et un dépôt privé se présenteraient TOUS comme un défaut
+#     de déclaration d'équipe. C'est la classe de panne que ce dépôt a déjà
+#     payée — une variable vide, une branche plausible, un verdict trompeur —
+#     ici en refus trompeur. `--fail-with-body` rend le statut HTTP au shell.
+gapi --fail-with-body --max-time 20 \
+  "${GIT_HOST}/api/v1/repos/${GIT_REPO}/raw/poc-control-plane-federation/ansible/providers.${AUTHORING_ENV}.yml" \
+  > "$TMP/providers.yml" \
+  || fail "LECTURE_PROVIDERS : poc-control-plane-federation/ansible/providers.${AUTHORING_ENV}.yml illisible sur ${GIT_REPO}@main (HTTP non-2xx, hote injoignable ou token refuse)"
 REPO_FULL=$(TEAM="$TEAM" PROV="$TMP/providers.yml" python3 - <<'PY'
 import os, sys, yaml
 d = yaml.safe_load(open(os.environ["PROV"])) or {}
@@ -1677,15 +1721,38 @@ case "$VERSION" in V=*) VERSION="${VERSION#V=}";; *) fail "PARSE_MANIFEST : sort
 BRANCH="promote/${API_NAME}-${TO_ENV}"
 MARKER="$(deploy_pin_marker_path "$API_NAME" "$TO_ENV")"
 git -C "$TMP/team" checkout -q -b "$BRANCH"
+# ⚠ LE MARQUEUR S'ÉCRIT AVEC UN SÉRIALISEUR, IL NE SE FORMATE PAS.
+#
+# Un `%`-formatage laisse chaque valeur libre d'ouvrir une NOUVELLE LIGNE dans
+# le YAML, et PyYAML applique « le dernier gagne » sur les clés dupliquées.
+# Reproduit en revue : un `change_ref` valant
+#     x"\ncommit: <40 hex>\nzz: "y
+# produit un marqueur qui PARSE PROPREMENT et dont le `commit` est celui que le
+# DEMANDEUR a choisi — pas celui que la ligne `git log` a calculé. C'est
+# exactement l'invariant que deploy-pin.sh existe pour tenir : « le pin
+# déplacerait la confiance du MERGE vers un champ que le demandeur remplit
+# lui-même ». Même faille, moindre portée, pour `promoted_by` (non quoté :
+# `ci\nenabled: false` ouvre une promotion DÉSACTIVÉE en silence) et pour
+# `message` (dont l'échappement `"` -> `'` ne couvrait pas l'antislash, donc
+# une PR s'ouvrait en portant un marqueur illisible que seul l'apply refusait).
+#
+# `safe_dump` ferme les trois d'un coup : il quote et échappe ce qu'il faut,
+# et une valeur ne peut plus fabriquer de clé.
 MSG="$MESSAGE" PB="${PROMOTED_BY:-ci}" V="$VERSION" P="$PIN" CR="$CHANGE_REF" \
   SH="$ARCHIVE_SHA256" OUT="$TMP/team/$MARKER" python3 - <<'PY'
 import os
-open(os.environ["OUT"], "w").write(
-    'version: "%s"\nenabled: true\npromoted_by: %s\nmessage: "%s"\ncommit: %s\n'
-    'change_ref: "%s"\narchive_sha256: "%s"\n' % (
-        os.environ["V"], os.environ["PB"],
-        os.environ["MSG"].replace('"', "'"), os.environ["P"],
-        os.environ["CR"], os.environ["SH"]))
+import yaml
+
+with open(os.environ["OUT"], "w") as f:
+    yaml.safe_dump({
+        "version": os.environ["V"],
+        "enabled": True,
+        "promoted_by": os.environ["PB"],
+        "message": os.environ["MSG"],
+        "commit": os.environ["P"],
+        "change_ref": os.environ["CR"],
+        "archive_sha256": os.environ["SH"],
+    }, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
 PY
 git -C "$TMP/team" add "$MARKER"
 git -C "$TMP/team" -c user.name=ci -c user.email=ci@stoa.lab \
@@ -1716,7 +1783,7 @@ echo "PROMOTION_DEMANDEE : $PR_URL"
 - [ ] **Step 4 : Lancer les tests et shellcheck**
 
 Run: `bash scripts/test-deploy-pin.sh && shellcheck scripts/api-promote-request.sh scripts/lib/deploy-pin.sh`
-Expected: `42 PASS / 0 FAIL` ; shellcheck sans erreur (les `SC1091` de source non suivi sont acceptables).
+Expected: `46 PASS / 0 FAIL` ; shellcheck sans erreur (les `SC1091` de source non suivi sont acceptables).
 
 - [ ] **Step 5 : Commit**
 
@@ -1855,7 +1922,7 @@ Et mettre à jour le commentaire de tête du `Makefile` (ligne 8) :
 - [ ] **Step 6 : Lancer toutes les portes**
 
 Run: `bash scripts/test-deploy-pin.sh && bash scripts/test-jenkinsfile-lint.sh && bash scripts/test-env-chain.sh`
-Expected: `45 PASS / 0 FAIL` ; le lint Jenkinsfile passe à **13/13** (un Jenkinsfile de plus à compiler) ; `test-env-chain.sh` reste 4/4.
+Expected: `49 PASS / 0 FAIL` ; le lint Jenkinsfile passe à **13/13** (un Jenkinsfile de plus à compiler) ; `test-env-chain.sh` reste 4/4.
 
 - [ ] **Step 7 : Commit**
 
@@ -1945,7 +2012,7 @@ Enfin, remplacer les deux extra-vars de l'invocation :
 - [ ] **Step 4 : Lancer les tests**
 
 Run: `bash scripts/test-deploy-pin.sh && bash scripts/test-team-publish-wiring.sh && shellcheck scripts/team-publish.sh`
-Expected: `49 PASS / 0 FAIL` pour le premier ; `test-team-publish-wiring.sh` **inchangé** (aucune régression sur les 20+ épreuves existantes, dont le test 17 sur `apim_ss_contract_pin`) ; shellcheck propre.
+Expected: `53 PASS / 0 FAIL` pour le premier ; `test-team-publish-wiring.sh` **inchangé** (aucune régression sur les 20+ épreuves existantes, dont le test 17 sur `apim_ss_contract_pin`) ; shellcheck propre.
 
 > Si `test-team-publish-wiring.sh` rougit sur le test 17, c'est attendu et il faut le **mettre à jour** : il vérifie littéralement `-e apim_ss_contract_pin="$SPEC_PATH"`. Remplacer cette chaîne par `-e apim_ss_contract_pin="$DEPLOY_PIN_CONTRACT"` dans l'assertion, et ajouter une assertion que `$SPEC_PATH` sert toujours à la garde de liste blanche. **Ne pas supprimer l'épreuve** : c'est elle qui empêche le manifeste de redevenir maître du contrat.
 
@@ -1966,4 +2033,4 @@ git commit -m "feat(g3): brancher le resolveur sur team-publish — plus de code
 - **Il ne branche pas le verbe archive sur les sauts rec et au-delà.** C'est **G5**. Le résolveur produit les chemins ; aucun pipeline ne les consomme encore en dehors du chemin dev existant.
 - **Il ne transporte pas les octets de l'archive d'un palier à l'autre.** Pas de dépôt d'artefacts — c'est **G5**. Le digest lie l'approuvé au déployé ; il ne déplace rien.
 - **Il n'ajoute pas `DeployerGroup`** (« qui déploie » à côté de « qui approuve »). C'est **G2**.
-- **La porte G3 telle qu'écrite dans le GOAL** (« l'apply *en rec* projette ce contrat ») n'est donc **pas exerçable E2E** à l'issue de ce plan. Ce qui est prouvé : le résolveur, ses refus, le digest bout à bout, l'écrivain — 49/49 hors ligne sur dépôt Git réel, contre-épreuve par sabotage comprise.
+- **La porte G3 telle qu'écrite dans le GOAL** (« l'apply *en rec* projette ce contrat ») n'est donc **pas exerçable E2E** à l'issue de ce plan. Ce qui est prouvé : le résolveur, ses refus, le digest bout à bout, l'écrivain — 53/53 hors ligne sur dépôt Git réel, contre-épreuve par sabotage comprise.
