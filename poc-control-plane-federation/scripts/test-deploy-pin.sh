@@ -287,5 +287,18 @@ restore_lib
 # BAK, le rappeler echouerait sur un fichier absent.
 trap 'rm -rf "$TMP"' EXIT INT TERM
 
+echo "⑬ le gabarit du marqueur est livré dans le squelette d'équipe"
+TPL="$ROOT/clients/_example/apis/accounts-read.deploy.rec.yaml.example"
+if [ -f "$TPL" ]; then
+  MISSING=""
+  for k in version enabled promoted_by message commit change_ref archive_sha256; do
+    grep -qE "^${k}:" "$TPL" || MISSING="$MISSING $k"
+  done
+  [ -z "$MISSING" ] && ok "gabarit présent et complet (7 champs)" \
+                    || bad "gabarit incomplet — champs manquants :$MISSING"
+else
+  bad "gabarit absent — un dépôt d'équipe créé par team-apply n'aurait aucun exemple de marqueur"
+fi
+
 printf '\n  %d PASS / %d FAIL\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

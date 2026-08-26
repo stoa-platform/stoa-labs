@@ -1,0 +1,56 @@
+# apis/<name>.deploy.<env>.yaml — LE MARQUEUR DE DÉPLOIEMENT (jalon G3).
+#
+# CE FICHIER EST LA RÉPONSE À « QU'EST-CE QUI TOURNE EXACTEMENT EN <env> ? ».
+# Ce n'est PAS une branche d'environnement : une branche est un pointeur
+# mouvant, elle ne peut pas répondre à cette question. Ici la réponse est
+# immuable — un SHA de commit et un digest d'archive.
+#
+# ⚠ IL EST ÉCRIT PAR LA PROMOTION, JAMAIS À LA MAIN par l'équipe :
+#   scripts/api-promote-request.sh ouvre une PR qui le porte ; la DÉCISION est
+#   le merge de cette PR (ADR-081). Ce fichier `.example` documente la forme,
+#   il n'est pas actif — renommez-le sans `.example` seulement pour un test.
+#
+# ⚠ AUCUN MARQUEUR POUR L'ENVIRONNEMENT D'AUTHORING (`dev`) : dev suit HEAD
+#   par conception (labctl/internal/uac/pinned.go:15). Un deploy.dev.yaml
+#   n'est pas une erreur, il est sans objet.
+
+# La version promue. Contrôle croisé : elle DOIT égaler la version du
+# manifeste lu au SHA pinné, sinon PIN_VERSION_MISMATCH (un marqueur qui ment
+# sur sa version déploierait une version que personne n'a demandée).
+version: "1.0.0"
+
+# Desired-state. `false` = le palier existe mais n'est pas servi.
+enabled: true
+
+# Le DEMANDEUR de la promotion. L'APPROBATEUR vit ailleurs (la porte de
+# environments.yaml, et la trace du merge) : ce champ ne l'exprime pas et ne
+# doit pas être lu comme tel.
+promoted_by: alice
+
+# Message d'audit — obligatoire côté écrivain.
+message: "promotion dev → rec"
+
+# ── LE PIN ───────────────────────────────────────────────────────────────────
+# Un SHA de COMMIT du dépôt d'équipe, pas le SHA d'un fichier. TOUS les
+# fichiers de cette API sont relus à ce commit : publish.yml, promote.yml,
+# openapi.yaml. Pinner le seul contrat laisserait les alias backend, le GUID
+# et le scope-mapping suivre main — le contrat serait figé et la configuration
+# de déploiement, elle, dériverait.
+#
+# Le résolveur REFUSE un SHA qui n'est pas ancêtre de main (PIN_NON_ANCETRE) :
+# `git show` réussit sur n'importe quel objet du clone, y compris un commit
+# d'une branche jamais fusionnée.
+commit: 0000000000000000000000000000000000000000
+
+# Référence de changement ITSM ancrée à CET état — la garde anti-TOCTOU du
+# dispatch (ADR-075) la re-vérifie au moment d'agir. Vide si la porte du
+# palier ne l'exige pas.
+change_ref: ""
+
+# ── LE DIGEST ────────────────────────────────────────────────────────────────
+# sha256 de l'archive promue, émis par `apim_promote_action=export`
+# (EXPORT_CONFIRMED). OBLIGATOIRE dès que l'env n'est pas l'env d'authoring.
+# Le zip webMethods n'étant pas reproductible bit-à-bit, cette vérification
+# FORCE la réutilisation des mêmes octets d'un palier à l'autre — c'est ce qui
+# fait de « build once, deploy many » autre chose qu'une intention.
+archive_sha256: "0000000000000000000000000000000000000000000000000000000000000000"
