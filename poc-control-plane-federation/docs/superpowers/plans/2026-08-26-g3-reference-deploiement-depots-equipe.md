@@ -167,14 +167,20 @@ export _STOA_DEPLOY_PIN_ROOT
 
 deploy_pin_marker_path() { printf 'apis/%s.deploy.%s.yaml' "$1" "$2"; }
 
-_dp_fail() { printf 'deploy-pin: %s\n' "$*" >&2; return 1; }
+# Nomme le refus sur stderr. Toujours appelé comme une INSTRUCTION suivie d'un
+# `return 1` explicite — jamais `return $(_dp_fail …)`. Cette dernière forme
+# « marche » (return sans argument rend le statut de la dernière commande) mais
+# elle est illisible et se casse au premier refactor : un message qui écrirait
+# par erreur sur stdout deviendrait l'argument de `return`, donc un code de
+# sortie absurde ou une erreur de syntaxe.
+_dp_fail() { printf 'deploy-pin: %s\n' "$*" >&2; }
 
 # resolve_deploy_pin <clone_dir> <api_name> <env> <workdir>
 resolve_deploy_pin() {
   local clone="$1" api="$2" env="$3" work="$4"
   local rel; rel="$(deploy_pin_marker_path "$api" "$env")"
 
-  [ -f "$clone/$rel" ] || return $(_dp_fail "PIN_ABSENT : $rel absent — hors de l'environnement d'authoring, aucun repli sur HEAD")
+  [ -f "$clone/$rel" ] || { _dp_fail "PIN_ABSENT : $rel absent — hors de l'environnement d'authoring, aucun repli sur HEAD"; return 1; }
 
   local raw
   raw=$(DP_FILE="$clone/$rel" python3 - <<'PY'
@@ -185,8 +191,8 @@ v = str(d.get("version") or "")
 s = str(d.get("archive_sha256") or "")
 print("PIN=%s|%s|%s" % (c, v, s))
 PY
-) || return $(_dp_fail "PIN_MALFORMED : $rel illisible (YAML)")
-  case "$raw" in PIN=*) raw="${raw#PIN=}";; *) return $(_dp_fail "PIN_MALFORMED : sortie inattendue de la lecture de $rel");; esac
+) || { _dp_fail "PIN_MALFORMED : $rel illisible (YAML)"; return 1; }
+  case "$raw" in PIN=*) raw="${raw#PIN=}";; *) { _dp_fail "PIN_MALFORMED : sortie inattendue de la lecture de $rel"; return 1; };; esac
 
   DEPLOY_PIN_COMMIT="${raw%%|*}"; raw="${raw#*|}"
   DEPLOY_PIN_VERSION="${raw%%|*}"
@@ -194,7 +200,7 @@ PY
 
   case "$DEPLOY_PIN_COMMIT" in
     [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]*) ;;
-    *) return $(_dp_fail "PIN_MALFORMED : commit='$DEPLOY_PIN_COMMIT' n'est pas un SHA hexadécimal");;
+    *) { _dp_fail "PIN_MALFORMED : commit='$DEPLOY_PIN_COMMIT' n'est pas un SHA hexadécimal"; return 1; };;
   esac
 
   mkdir -p "$work" || return 1
@@ -204,7 +210,7 @@ PY
   for f in publish.yml openapi.yaml; do
     local src="apis/${api}.${f}" dst="$work/${api}.${f}"
     git -C "$clone" show "${DEPLOY_PIN_COMMIT}:${src}" > "$dst" 2>/dev/null \
-      || return $(_dp_fail "PIN_UNREADABLE : git show ${DEPLOY_PIN_COMMIT}:${src} a échoué — le pin ne se résout pas, refus (jamais de repli sur HEAD)")
+      || { _dp_fail "PIN_UNREADABLE : git show ${DEPLOY_PIN_COMMIT}:${src} a échoué — le pin ne se résout pas, refus (jamais de repli sur HEAD)"; return 1; }
   done
 
   # promote.yml, LUI, peut légitimement manquer : api-request.sh n'écrit que
@@ -348,7 +354,7 @@ Insérer **après** la garde `PIN_MALFORMED` du SHA hexadécimal, **avant** le `
   # demandeur remplit lui-même. Même intention que MERGE_SHA_NON_ANCETRE
   # (team-publish.sh:246), un cran plus bas.
   git -C "$clone" merge-base --is-ancestor "$DEPLOY_PIN_COMMIT" "$mainref" 2>/dev/null \
-    || return $(_dp_fail "PIN_NON_ANCETRE : $DEPLOY_PIN_COMMIT n'est pas un ancêtre de $mainref — refus de déployer depuis un état jamais fusionné")
+    || { _dp_fail "PIN_NON_ANCETRE : $DEPLOY_PIN_COMMIT n'est pas un ancêtre de $mainref — refus de déployer depuis un état jamais fusionné"; return 1; }
 ```
 
 Insérer **après** la boucle `for f in publish.yml promote.yml openapi.yaml` :
@@ -364,10 +370,10 @@ import os, yaml
 d = yaml.safe_load(open(os.environ["DP_FILE"])) or {}
 print("V=" + str((d.get("apim_api") or {}).get("version") or ""))
 PY
-) || return $(_dp_fail "PIN_MALFORMED : publish.yml résolu illisible")
-  case "$mv" in V=*) mv="${mv#V=}";; *) return $(_dp_fail "PIN_MALFORMED : sortie inattendue de la lecture de version");; esac
+) || { _dp_fail "PIN_MALFORMED : publish.yml résolu illisible"; return 1; }
+  case "$mv" in V=*) mv="${mv#V=}";; *) { _dp_fail "PIN_MALFORMED : sortie inattendue de la lecture de version"; return 1; };; esac
   [ "$mv" = "$DEPLOY_PIN_VERSION" ] \
-    || return $(_dp_fail "PIN_VERSION_MISMATCH : le marqueur annonce '$DEPLOY_PIN_VERSION' mais le manifeste au SHA pinné porte '$mv'")
+    || { _dp_fail "PIN_VERSION_MISMATCH : le marqueur annonce '$DEPLOY_PIN_VERSION' mais le manifeste au SHA pinné porte '$mv'"; return 1; }
 ```
 
 - [ ] **Step 4 : Lancer les tests pour vérifier qu'ils passent**
@@ -506,7 +512,7 @@ Remplacer la garde `PIN_ABSENT` par :
     local g
     for g in publish.yml openapi.yaml; do
       cp "$clone/apis/${api}.${g}" "$work/${api}.${g}" \
-        || return $(_dp_fail "MANIFESTE_ABSENT : apis/${api}.${g} introuvable sur HEAD")
+        || { _dp_fail "MANIFESTE_ABSENT : apis/${api}.${g} introuvable sur HEAD"; return 1; }
     done
     DEPLOY_PIN_PROMOTE=""
     if [ -f "$clone/apis/${api}.promote.yml" ]; then
@@ -522,7 +528,7 @@ Remplacer la garde `PIN_ABSENT` par :
     return 0
   fi
 
-  [ -f "$clone/$rel" ] || return $(_dp_fail "PIN_ABSENT : $rel absent — hors de l'environnement d'authoring, aucun repli sur HEAD")
+  [ -f "$clone/$rel" ] || { _dp_fail "PIN_ABSENT : $rel absent — hors de l'environnement d'authoring, aucun repli sur HEAD"; return 1; }
 ```
 
 Ajouter **après** la garde `PIN_VERSION_MISMATCH**, en fin de fonction avant les `export` :
@@ -534,14 +540,14 @@ Ajouter **après** la garde `PIN_VERSION_MISMATCH**, en fin de fonction avant le
   # l'autre. C'est l'effet recherché — c'est ce qui distingue « build once,
   # deploy many » d'une intention.
   [ -n "$DEPLOY_PIN_SHA256" ] \
-    || return $(_dp_fail "DIGEST_ABSENT : archive_sha256 vide pour l'env '$env' — hors authoring, les octets déployés doivent être pinnés")
+    || { _dp_fail "DIGEST_ABSENT : archive_sha256 vide pour l'env '$env' — hors authoring, les octets déployés doivent être pinnés"; return 1; }
 
   # C'EST ICI que promote.yml devient obligatoire, et pas plus tôt : hors de
   # l'env d'authoring, le verbe est l'import d'archive (ADR-079) et c'est ce
   # manifeste qui nomme l'archive. Une API sans promote.yml ne peut tout
   # simplement pas voyager par archive.
   [ -n "$DEPLOY_PIN_PROMOTE" ] \
-    || return $(_dp_fail "PROMOTE_MANIFEST_ABSENT : apis/${api}.promote.yml absent au SHA pinné — hors de '$DEPLOY_PIN_AUTHORING_ENV', la promotion se fait par archive et exige ce manifeste")
+    || { _dp_fail "PROMOTE_MANIFEST_ABSENT : apis/${api}.promote.yml absent au SHA pinné — hors de '$DEPLOY_PIN_AUTHORING_ENV', la promotion se fait par archive et exige ce manifeste"; return 1; }
 
   local arch
   arch=$(DP_FILE="$DEPLOY_PIN_PROMOTE" python3 - <<'PY'
@@ -549,15 +555,15 @@ import os, yaml
 d = yaml.safe_load(open(os.environ["DP_FILE"])) or {}
 print("A=" + str((d.get("apim_promote") or {}).get("archive") or ""))
 PY
-) || return $(_dp_fail "PIN_MALFORMED : promote.yml résolu illisible")
-  case "$arch" in A=*) arch="${arch#A=}";; *) return $(_dp_fail "PIN_MALFORMED : sortie inattendue de la lecture de archive");; esac
+) || { _dp_fail "PIN_MALFORMED : promote.yml résolu illisible"; return 1; }
+  case "$arch" in A=*) arch="${arch#A=}";; *) { _dp_fail "PIN_MALFORMED : sortie inattendue de la lecture de archive"; return 1; };; esac
 
   [ -n "$arch" ] && [ -f "$arch" ] \
-    || return $(_dp_fail "ARCHIVE_ABSENT : archive '$arch' introuvable — le digest ne peut pas être vérifié, donc on ne promeut pas")
+    || { _dp_fail "ARCHIVE_ABSENT : archive '$arch' introuvable — le digest ne peut pas être vérifié, donc on ne promeut pas"; return 1; }
 
   local actual; actual=$(shasum -a 256 "$arch" | cut -d' ' -f1)
   [ "$actual" = "$DEPLOY_PIN_SHA256" ] \
-    || return $(_dp_fail "ARCHIVE_DIGEST_MISMATCH : archive '$arch' porte $actual, le marqueur pinne $DEPLOY_PIN_SHA256")
+    || { _dp_fail "ARCHIVE_DIGEST_MISMATCH : archive '$arch' porte $actual, le marqueur pinne $DEPLOY_PIN_SHA256"; return 1; }
   DEPLOY_PIN_ARCHIVE="$arch"
 ```
 
@@ -899,8 +905,12 @@ git commit -m "feat(g3): l'import verifie le digest — garde fail-closed des de
 - Test: `scripts/test-deploy-pin.sh`
 
 **Interfaces:**
-- Consumes: `env_chain` et `env_chain_approver_group` (`scripts/lib/env-chain.sh`, existant) ; `deploy_pin_marker_path` (Task 1).
-- Produces: refus `CHAINE_INVALIDE`, `GATE_REFS_REQUIRED`, `DIGEST_ABSENT`, `DIGEST_MALFORMED`, `SOURCE_NON_DEPLOYEE`. Le script s'arrête sur toute garde **avant tout geste Git**.
+- Consumes: `env_chain` (`scripts/lib/env-chain.sh`, existant) ; `deploy_pin_marker_path` (Task 1).
+- Produces:
+  - `env_chain_gate <env>` — **nouvelle fonction publique** de `scripts/lib/env-chain.sh`, rendant `GATE=<needChange 0|1>|<needPV 0|1>|<approverGroup>`.
+  - refus `CHAINE_INVALIDE`, `GATE_REFS_REQUIRED`, `DIGEST_ABSENT`, `DIGEST_MALFORMED`. Le script s'arrête sur toute garde **avant tout geste Git**.
+
+> **Pourquoi une nouvelle fonction plutôt que lire le fichier directement.** `env-chain.sh` expose déjà `env_chain_approver_group` mais rien qui dise ce que la porte **exige**. Sans ajout, `api-promote-request.sh` devrait soit atteindre la fonction privée `_env_chain_file`, soit redupliquer sa règle de préséance (`$STOA_ENV_CHAIN_FILE` puis le gabarit livré) — deux façons de laisser la source de la chaîne diverger. La lecture de la chaîne appartient à `env-chain.sh` ; `env_chain_gate` s'y range à côté de `env_chain_approver_group`, dont elle est le prolongement naturel.
 
 - [ ] **Step 1 : Écrire les épreuves qui échouent**
 
@@ -942,7 +952,35 @@ fi
 Run: `bash scripts/test-deploy-pin.sh`
 Expected: FAIL — `api-promote-request.sh absent`
 
-- [ ] **Step 3 : Écrire l'écrivain (gardes seulement, `DRY_RUN` s'arrête avant Git)**
+- [ ] **Step 3 : Ajouter `env_chain_gate` à `scripts/lib/env-chain.sh`**
+
+Ajouter à la fin de `scripts/lib/env-chain.sh`, juste après `env_chain_approver_group` :
+
+```bash
+# Ce que la porte d'un palier EXIGE, en une lecture — prolongement de
+# env_chain_approver_group, qui ne disait que QUI approuve. Rend :
+#   GATE=<changeRef 0|1>|<pvRef 0|1>|<approverGroup>
+#
+# `itsmCheck` IMPLIQUE une référence de changement : il n'y a rien à
+# re-vérifier auprès de l'ITSM sans elle (même règle que
+# governance-api, handlers_promotions.go:77-89 — la porte est lue au même
+# endroit des deux côtés, sinon les deux divergent en silence).
+env_chain_gate() {
+  local f; f="$(_env_chain_file)"
+  [ -r "$f" ] || { echo "env-chain: source illisible : $f" >&2; return 1; }
+  python3 - "$f" "$1" <<'PY'
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1])) or {}
+g = next((x for x in (d.get("gates") or []) if x.get("to") == sys.argv[2]), {}) or {}
+print("GATE=%s|%s|%s" % (
+    "1" if (g.get("requireChangeRef") or g.get("itsmCheck")) else "0",
+    "1" if g.get("requirePVRef") else "0",
+    g.get("approverGroup") or ""))
+PY
+}
+```
+
+- [ ] **Step 4 : Écrire l'écrivain (gardes seulement, `DRY_RUN` s'arrête avant Git)**
 
 Créer `scripts/api-promote-request.sh` :
 
@@ -1012,16 +1050,7 @@ done
 # Refusé À LA DEMANDE, jamais découvert à l'approbation — miroir de
 # handlers_promotions.go:77-89. itsmCheck IMPLIQUE change_ref : il n'y a rien à
 # re-vérifier auprès de l'ITSM sans une référence.
-GATE=$(STOA_GATE_ENV="$TO_ENV" STOA_CHAIN_FILE="$(_env_chain_file)" python3 - <<'PY'
-import os, yaml
-d = yaml.safe_load(open(os.environ["STOA_CHAIN_FILE"])) or {}
-g = next((x for x in (d.get("gates") or []) if x.get("to") == os.environ["STOA_GATE_ENV"]), {}) or {}
-print("GATE=%s|%s|%s" % (
-    "1" if (g.get("requireChangeRef") or g.get("itsmCheck")) else "0",
-    "1" if g.get("requirePVRef") else "0",
-    g.get("approverGroup") or ""))
-PY
-) || fail "PARSE_GATE : lecture de la porte vers '$TO_ENV'"
+GATE=$(env_chain_gate "$TO_ENV") || fail "PARSE_GATE : lecture de la porte vers '$TO_ENV'"
 case "$GATE" in GATE=*) GATE="${GATE#GATE=}";; *) fail "PARSE_GATE : sortie inattendue";; esac
 NEED_CHANGE="${GATE%%|*}"; GATE="${GATE#*|}"
 NEED_PV="${GATE%%|*}"; APPROVER_GROUP="${GATE#*|}"
@@ -1050,12 +1079,12 @@ echo "GESTE_GIT_NON_IMPLEMENTE : voir Task 8" >&2
 exit 1
 ```
 
-- [ ] **Step 4 : Lancer le test pour vérifier qu'il passe**
+- [ ] **Step 5 : Lancer le test pour vérifier qu'il passe**
 
 Run: `bash scripts/test-deploy-pin.sh`
 Expected: PASS — `25 PASS / 0 FAIL`
 
-- [ ] **Step 5 : Commit**
+- [ ] **Step 6 : Commit**
 
 ```bash
 git add scripts/api-promote-request.sh scripts/test-deploy-pin.sh
