@@ -1837,6 +1837,27 @@ echo "⑲ le job existe, et la porte de preuve est branchée sur make lint-ci"
 grep -q 'test-deploy-pin.sh' "$ROOT/Makefile" \
   && ok "test-deploy-pin.sh branché sur le Makefile (la porte tourne en CI)" \
   || bad "porte non branchée — elle ne tournera que si quelqu'un y pense"
+# ⚠ AUCUNE ÉPREUVE NE REGARDAIT LE NOM DU CREDENTIAL, et c'est ainsi qu'un
+# `gitea-ci-token` inexistant est passé sous 50 assertions vertes. Un ID
+# inconnu fait échouer le build sur CredentialNotFoundException — un job qui
+# ne peut pas tourner. On exige donc que tout `credentialsId` littéral de ce
+# Jenkinsfile soit un ID déjà utilisé ailleurs dans le dépôt.
+JPR="$ROOT/ci/Jenkinsfile.api-promote-request"
+CRED_LIT=$(grep -oE "credentialsId: *'[^']+'" "$JPR" | sed "s/.*'\(.*\)'/\1/" | sort -u)
+if [ -z "$CRED_LIT" ]; then
+  ok "aucun ID de credential en dur — il passe par une variable surchargeable"
+else
+  CRED_ORPHELIN=""
+  for c in $CRED_LIT; do
+    grep -rqF "$c" "$ROOT/scripts" "$ROOT/ci" --include='*.sh' --include='Jenkinsfile*' 2>/dev/null \
+      || CRED_ORPHELIN="$CRED_ORPHELIN $c"
+  done
+  [ -z "$CRED_ORPHELIN" ] && ok "les IDs de credential en dur existent ailleurs dans le depot" \
+                          || bad "credential(s) inconnu(s) du depot :$CRED_ORPHELIN — le build echouerait sur CredentialNotFoundException"
+fi
+grep -q 'GITEA_CREDENTIALS_ID' "$JPR" \
+  && ok "l'ID de credential est un point de bascule client (motif des Jenkinsfile freres)" \
+  || bad "ID de credential en dur — un client au nom different devrait forker le Jenkinsfile"
 grep -q 'apis/<name>.deploy' "$ROOT/adr/adr-076-gitops-api-lifecycle-repo-per-project.md" \
   && ok "ADR-076 amendé sur l'emplacement du marqueur" \
   || bad "ADR-076 dit toujours 'deploy.{env}.yaml' à la racine — la doc contredit le code"
@@ -1856,13 +1877,37 @@ Créer `ci/Jenkinsfile.api-promote-request` :
 // Ouvre une PR portant apis/<name>.deploy.<TO_ENV>.yaml sur le dépôt d'ÉQUIPE.
 // NE DÉPLOIE RIEN : la décision est le merge de cette PR (ADR-081).
 //
-// ⚠ La liste TO_ENV est écrite À LA MAIN, et c'est documenté comme tel : un
-// bloc `parameters {}` déclaratif est évalué à la POSE du job, hors workspace —
-// il n'a aucun accès au clone governance, donc il ne peut pas dériver
-// d'environments.yaml. Même limite que ci/Jenkinsfile.selfservice:34.
+// ⚠ Les listes FROM_ENV/TO_ENV sont écrites À LA MAIN, et c'est documenté comme
+// tel : un bloc `parameters {}` déclaratif est évalué à la POSE du job, hors
+// workspace — il n'a aucun accès au clone governance, donc il ne peut pas
+// dériver d'environments.yaml.
+//
+// ⚠ ET CE SONT DEUX LISTES INDÉPENDANTES : chaque valeur est un palier légal,
+// mais le FORMULAIRE n'empêche pas d'en composer une paire illégale (dev→prod,
+// rec→homol). C'est le SCRIPT qui la refuse, à la demande, par CHAINE_INVALIDE.
+// L'analogie avec ci/Jenkinsfile.selfservice:34 s'arrête là : celui-ci ne porte
+// qu'UN seul paramètre d'environnement, donc aucune paire à incohérer.
 pipeline {
   agent any
   options { disableConcurrentBuilds() }
+
+  // ── POINTS DE CONFIG CLIENT ────────────────────────────────────────────────
+  // Motif `env.X ?: défaut`, IDENTIQUE aux Jenkinsfile frères : le MÊME fichier
+  // sert le lab et le client, sans fork. Sans ce bloc, l'ID de credential serait
+  // un littéral Groovy en dur et un client dont le credential porte un autre nom
+  // devrait forker le Jenkinsfile — précisément ce que ce motif existe pour
+  // éviter. Les défauts reproduisent ceux que le script applique déjà lui-même.
+  //
+  // ⚠ `gitea-provision-token` est le SEUL credential réellement provisionné
+  // (scripts/setup-provision-request-job.sh) et celui qu'utilisent les cinq
+  // autres Jenkinsfile qui parlent à Gitea. Un ID inventé fait échouer le build
+  // sur CredentialNotFoundException, et aucune épreuve hors ligne ne le voit.
+  environment {
+    GIT_HOST             = "${env.GIT_HOST ?: 'http://gitea:3000'}"
+    GIT_REPO             = "${env.GIT_REPO ?: 'ci/stoa-labs'}"
+    GITEA_CREDENTIALS_ID = "${env.GITEA_CREDENTIALS_ID ?: 'gitea-provision-token'}"
+  }
+
   parameters {
     string(name: 'TEAM',           defaultValue: '', description: 'Équipe propriétaire')
     string(name: 'API_NAME',       defaultValue: '', description: "Nom de l'API")
@@ -1879,7 +1924,7 @@ pipeline {
         // Les paramètres de build subissent EnvVars.resolve : withEnv est
         // obligatoire pour qu'ils arrivent intacts au script (fait mesuré,
         // cf. mémoire ci-jenkinsfile-refactor).
-        withCredentials([string(credentialsId: 'gitea-ci-token', variable: 'GITEA_TOKEN')]) {
+        withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')]) {
           withEnv([
             "TEAM=${params.TEAM}", "API_NAME=${params.API_NAME}",
             "FROM_ENV=${params.FROM_ENV}", "TO_ENV=${params.TO_ENV}",
@@ -1941,7 +1986,7 @@ Et mettre à jour le commentaire de tête du `Makefile` (ligne 8) :
 - [ ] **Step 6 : Lancer toutes les portes**
 
 Run: `bash scripts/test-deploy-pin.sh && bash scripts/test-jenkinsfile-lint.sh && bash scripts/test-env-chain.sh`
-Expected: `50 PASS / 0 FAIL` ; le lint Jenkinsfile passe à **13/13** (un Jenkinsfile de plus à compiler) ; `test-env-chain.sh` reste 4/4.
+Expected: `52 PASS / 0 FAIL` ; le lint Jenkinsfile passe à **13/13** (un Jenkinsfile de plus à compiler) ; `test-env-chain.sh` reste 4/4.
 
 - [ ] **Step 7 : Commit**
 
@@ -2031,7 +2076,7 @@ Enfin, remplacer les deux extra-vars de l'invocation :
 - [ ] **Step 4 : Lancer les tests**
 
 Run: `bash scripts/test-deploy-pin.sh && bash scripts/test-team-publish-wiring.sh && shellcheck scripts/team-publish.sh`
-Expected: `54 PASS / 0 FAIL` pour le premier ; `test-team-publish-wiring.sh` **inchangé** (aucune régression sur les 20+ épreuves existantes, dont le test 17 sur `apim_ss_contract_pin`) ; shellcheck propre.
+Expected: `56 PASS / 0 FAIL` pour le premier ; `test-team-publish-wiring.sh` **inchangé** (aucune régression sur les 20+ épreuves existantes, dont le test 17 sur `apim_ss_contract_pin`) ; shellcheck propre.
 
 > Si `test-team-publish-wiring.sh` rougit sur le test 17, c'est attendu et il faut le **mettre à jour** : il vérifie littéralement `-e apim_ss_contract_pin="$SPEC_PATH"`. Remplacer cette chaîne par `-e apim_ss_contract_pin="$DEPLOY_PIN_CONTRACT"` dans l'assertion, et ajouter une assertion que `$SPEC_PATH` sert toujours à la garde de liste blanche. **Ne pas supprimer l'épreuve** : c'est elle qui empêche le manifeste de redevenir maître du contrat.
 
@@ -2052,4 +2097,4 @@ git commit -m "feat(g3): brancher le resolveur sur team-publish — plus de code
 - **Il ne branche pas le verbe archive sur les sauts rec et au-delà.** C'est **G5**. Le résolveur produit les chemins ; aucun pipeline ne les consomme encore en dehors du chemin dev existant.
 - **Il ne transporte pas les octets de l'archive d'un palier à l'autre.** Pas de dépôt d'artefacts — c'est **G5**. Le digest lie l'approuvé au déployé ; il ne déplace rien.
 - **Il n'ajoute pas `DeployerGroup`** (« qui déploie » à côté de « qui approuve »). C'est **G2**.
-- **La porte G3 telle qu'écrite dans le GOAL** (« l'apply *en rec* projette ce contrat ») n'est donc **pas exerçable E2E** à l'issue de ce plan. Ce qui est prouvé : le résolveur, ses refus, le digest bout à bout, l'écrivain — 54/54 hors ligne sur dépôt Git réel, contre-épreuve par sabotage comprise.
+- **La porte G3 telle qu'écrite dans le GOAL** (« l'apply *en rec* projette ce contrat ») n'est donc **pas exerçable E2E** à l'issue de ce plan. Ce qui est prouvé : le résolveur, ses refus, le digest bout à bout, l'écrivain — 56/56 hors ligne sur dépôt Git réel, contre-épreuve par sabotage comprise.
