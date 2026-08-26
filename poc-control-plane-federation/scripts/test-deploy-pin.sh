@@ -58,7 +58,7 @@ echo "① le pin gagne sur HEAD — main avance, le résolu reste au commit pinn
 REPO="$TMP/team1"; make_team_repo "$REPO"
 marker "$REPO" rec "$C1" "1.0.0" "$(sha_of "$REPO/dist/a.zip")"
 WORK="$TMP/w1"; mkdir -p "$WORK"
-if resolve_deploy_pin "$REPO" accounts-read rec "$WORK" main 2>"$TMP/e1"; then
+if resolve_deploy_pin "$REPO" accounts-read rec "$WORK" main "$REPO/dist/a.zip" 2>"$TMP/e1"; then
   if grep -q 'version: "1.0.0"' "$WORK/accounts-read.publish.yml"; then
     ok "publish.yml résolu au SHA pinné (1.0.0), alors que main porte 2.0.0"
   else
@@ -97,7 +97,7 @@ echo "② le pin couvre AUSSI promote.yml (pas seulement le contrat)"
 REPO="$TMP/team2"; make_team_repo "$REPO"
 marker "$REPO" rec "$C1" "1.0.0" "$(sha_of "$REPO/dist/a.zip")"
 WORK="$TMP/w2"; mkdir -p "$WORK"
-if resolve_deploy_pin "$REPO" accounts-read rec "$WORK" main 2>"$TMP/e2"; then
+if resolve_deploy_pin "$REPO" accounts-read rec "$WORK" main "$REPO/dist/a.zip" 2>"$TMP/e2"; then
   grep -q 'version: "1.0.0"' "$WORK/accounts-read.promote.yml" \
     && ok "promote.yml résolu au SHA pinné — alias/GUID ne dérivent pas avec main" \
     || bad "promote.yml suit HEAD — le contrat serait figé et la config de déploiement, non"
@@ -165,7 +165,7 @@ echo "⑧ DIGEST_ABSENT — pas de digest hors de l'environnement d'authoring"
 REPO="$TMP/team8"; make_team_repo "$REPO"
 marker "$REPO" rec "$C1" "1.0.0" ""
 WORK="$TMP/w8"
-resolve_deploy_pin "$REPO" accounts-read rec "$WORK" main 2>"$TMP/e8" \
+resolve_deploy_pin "$REPO" accounts-read rec "$WORK" main "$REPO/dist/a.zip" 2>"$TMP/e8" \
   && bad "promotion hors dev SANS digest ACCEPTÉE — les octets déployés ne sont pinnés par rien" \
   || { grep -q DIGEST_ABSENT "$TMP/e8" && ok "DIGEST_ABSENT" || bad "refusé sans nommer DIGEST_ABSENT : $(cat "$TMP/e8")"; }
 
@@ -173,7 +173,7 @@ echo "⑨ ARCHIVE_DIGEST_MISMATCH — le digest ne correspond pas aux octets"
 REPO="$TMP/team9"; make_team_repo "$REPO"
 marker "$REPO" rec "$C1" "1.0.0" "0000000000000000000000000000000000000000000000000000000000000000"
 WORK="$TMP/w9"
-resolve_deploy_pin "$REPO" accounts-read rec "$WORK" main 2>"$TMP/e9" \
+resolve_deploy_pin "$REPO" accounts-read rec "$WORK" main "$REPO/dist/a.zip" 2>"$TMP/e9" \
   && bad "digest faux ACCEPTÉ" \
   || { grep -q ARCHIVE_DIGEST_MISMATCH "$TMP/e9" && ok "ARCHIVE_DIGEST_MISMATCH" || bad "refusé sans nommer ARCHIVE_DIGEST_MISMATCH : $(cat "$TMP/e9")"; }
 
@@ -182,7 +182,7 @@ REPO="$TMP/team10"; make_team_repo "$REPO"
 marker "$REPO" rec "$C1" "1.0.0" "$(sha_of "$REPO/dist/a.zip")"
 rm -f "$REPO/dist/a.zip"
 WORK="$TMP/w10"
-resolve_deploy_pin "$REPO" accounts-read rec "$WORK" main 2>"$TMP/e10" \
+resolve_deploy_pin "$REPO" accounts-read rec "$WORK" main "$REPO/dist/a.zip" 2>"$TMP/e10" \
   && bad "archive absente ACCEPTÉE — la vérification a été SAUTÉE au lieu d'échouer" \
   || { grep -q ARCHIVE_ABSENT "$TMP/e10" && ok "ARCHIVE_ABSENT" || bad "refusé sans nommer ARCHIVE_ABSENT : $(cat "$TMP/e10")"; }
 
@@ -193,9 +193,25 @@ git -C "$REPO" commit -qm "sans manifeste de promotion"
 CNO=$(git -C "$REPO" rev-parse HEAD)
 marker "$REPO" rec "$CNO" "2.0.0" "$(sha_of "$REPO/dist/a.zip")"
 WORK="$TMP/w10b"
-resolve_deploy_pin "$REPO" accounts-read rec "$WORK" main 2>"$TMP/e10b" \
+resolve_deploy_pin "$REPO" accounts-read rec "$WORK" main "$REPO/dist/a.zip" 2>"$TMP/e10b" \
   && bad "promotion hors authoring ACCEPTÉE sans promote.yml — rien ne nomme l'archive" \
   || { grep -q PROMOTE_MANIFEST_ABSENT "$TMP/e10b" && ok "PROMOTE_MANIFEST_ABSENT" || bad "refusé sans nommer PROMOTE_MANIFEST_ABSENT : $(cat "$TMP/e10b")"; }
+
+echo "⑩ter ARCHIVE_PATH_RELATIVE — les octets verifies et consommes seraient resolus ailleurs"
+REPO="$TMP/team10t"; make_team_repo "$REPO"
+marker "$REPO" rec "$C1" "1.0.0" "$(sha_of "$REPO/dist/a.zip")"
+WORK="$TMP/w10t"
+resolve_deploy_pin "$REPO" accounts-read rec "$WORK" main "dist/a.zip" 2>"$TMP/e10t" \
+  && bad "chemin d'archive RELATIF accepte — le resolveur hache un fichier, le moteur en rouvre un autre" \
+  || { grep -q ARCHIVE_PATH_RELATIVE "$TMP/e10t" && ok "ARCHIVE_PATH_RELATIVE" || bad "refuse sans nommer ARCHIVE_PATH_RELATIVE : $(cat "$TMP/e10t")"; }
+
+echo "⑩quater MANIFESTE_ABSENT — dev sans manifeste de publication"
+REPO="$TMP/team10q"; make_team_repo "$REPO"
+rm -f "$REPO/apis/accounts-read.publish.yml"
+WORK="$TMP/w10q"
+resolve_deploy_pin "$REPO" accounts-read dev "$WORK" main 2>"$TMP/e10q" \
+  && bad "dev ACCEPTE sans manifeste de publication" \
+  || { grep -q MANIFESTE_ABSENT "$TMP/e10q" && ok "MANIFESTE_ABSENT" || bad "refuse sans nommer MANIFESTE_ABSENT : $(cat "$TMP/e10q")"; }
 
 echo "⑪ dev suit HEAD — l'environnement d'authoring n'exige ni marqueur ni digest"
 REPO="$TMP/team11"; make_team_repo "$REPO"
@@ -208,10 +224,21 @@ else
   bad "dev refusé alors qu'il doit suivre HEAD : $(cat "$TMP/e11")"
 fi
 
-echo "⑫ CONTRE-ÉPREUVE — retirer la garde d'ancêtreté doit faire ROUGIR l'épreuve ⑤"
+echo "⑫ CONTRE-ÉPREUVE — garde d'ancêtreté neutralisée ⇒ un SHA non mergé DOIT passer"
 LIB="$ROOT/scripts/lib/deploy-pin.sh"
 BAK="$(mktemp)"; cp "$LIB" "$BAK"
-restore_lib() { cp "$BAK" "$LIB"; rm -f "$BAK"; }
+# LA RESTAURATION SE VÉRIFIE. Un `cp` dont personne ne lit le statut, suivi d'un
+# `rm -f` inconditionnel de la sauvegarde, peut laisser la bibliothèque SABOTÉE
+# dans l'arbre de travail — sans sauvegarde — pendant que le script imprime
+# « N PASS / 0 FAIL ». Mesuré en revue. C'est très exactement « pire que pas de
+# contre-épreuve ». On relit donc le fichier après restauration, et la
+# sauvegarde ne disparaît qu'une fois la garde retrouvée.
+restore_lib() {
+  cp "$BAK" "$LIB" || { bad "RESTAURATION ECHOUEE : copie de $BAK vers $LIB"; return 1; }
+  grep -q 'merge-base --is-ancestor' "$LIB" \
+    || { bad "RESTAURATION ECHOUEE : la garde d'ancetrete est absente apres restauration — bibliotheque sabotee laissee sur disque"; return 1; }
+  rm -f "$BAK"
+}
 trap 'restore_lib; rm -rf "$TMP"' EXIT INT TERM
 # Sabotage : la garde devient un no-op QUI PASSE. Si l'épreuve ⑤ passe quand
 # même au vert, c'est qu'elle mesurait autre chose que la garde — un vert
@@ -226,7 +253,14 @@ trap 'restore_lib; rm -rf "$TMP"' EXIT INT TERM
 # On remplace donc la commande entière par `true`, ce qui laisse le `||` de la
 # ligne suivante intact et fait passer la garde.
 sed -i.tmp 's|git -C "$clone" merge-base --is-ancestor "$DEPLOY_PIN_COMMIT" "$mainref" 2>/dev/null|true|' "$LIB" && rm -f "$LIB.tmp"
-if ! grep -q 'merge-base --is-ancestor' "$LIB"; then
+# ⚠ TEST POSITIF, PAS NÉGATIF. Vérifier « la garde a disparu du fichier »
+# (`! grep -q …`) serait satisfait par une RÉGRESSION qui l'aurait supprimée :
+# le `sed` ne matcherait plus rien, aucun sabotage ne serait appliqué, et la
+# sonde tournerait contre une bibliothèque déjà sans garde en imprimant
+# « sabotage détecté ». Un vert vacant au cœur de l'épreuve écrite pour
+# détecter les verts vacants. On exige donc que le fichier ait RÉELLEMENT
+# changé.
+if ! cmp -s "$LIB" "$BAK"; then
   ( set +u; . "$LIB"
     REPO2="$TMP/sab"; mkdir -p "$REPO2/apis"
     git -C "$REPO2" init -q -b main
@@ -242,13 +276,15 @@ if ! grep -q 'merge-base --is-ancestor' "$LIB"; then
     E=$(git -C "$REPO2" rev-parse HEAD); git -C "$REPO2" checkout -q main
     printf 'version: "1.0.0"\nenabled: true\npromoted_by: a\nmessage: t\ncommit: %s\nchange_ref: ""\narchive_sha256: "%s"\n' \
       "$E" "$(shasum -a 256 "$REPO2/z" | cut -d' ' -f1)" > "$REPO2/apis/a.deploy.rec.yaml"
-    resolve_deploy_pin "$REPO2" a rec "$TMP/wsab" main 2>/dev/null ) \
+    resolve_deploy_pin "$REPO2" a rec "$TMP/wsab" main "$REPO2/z" 2>/dev/null ) \
     && ok "sabotage détecté : garde retirée ⇒ un SHA non mergé passe (la garde mesurait bien quelque chose)" \
     || bad "garde retirée et le refus persiste — l'épreuve ⑤ ne mesure PAS cette garde (vert vacant)"
 else
   bad "sabotage non appliqué — la contre-épreuve n'a rien prouvé"
 fi
 restore_lib
+# Le trap est reduit au nettoyage : restore_lib vient de tourner et a detruit
+# BAK, le rappeler echouerait sur un fichier absent.
 trap 'rm -rf "$TMP"' EXIT INT TERM
 
 printf '\n  %d PASS / %d FAIL\n' "$PASS" "$FAIL"

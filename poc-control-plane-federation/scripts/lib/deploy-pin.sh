@@ -22,8 +22,20 @@ export _STOA_DEPLOY_PIN_ROOT
 # L'environnement d'AUTHORING — le seul palier sans marqueur, le seul qui suit
 # HEAD (labctl/internal/uac/pinned.go:15 : « publish writes no pin: the entry
 # environment follows HEAD by design »). ADR-079 : c'est le seul env où le blip
-# de première création est toléré.
-DEPLOY_PIN_AUTHORING_ENV="${DEPLOY_PIN_AUTHORING_ENV:-dev}"
+# de première création est toléré. C'est le PREMIER palier de la chaîne
+# `environments.yaml` (clients/_example/environments.yaml : [dev, rec, int,
+# homol, prod]).
+#
+# ⚠ AFFECTATION SÈCHE, PAS `${…:-dev}`. Une valeur surchargeable par
+# l'environnement serait le contournement de TOUT ce fichier : poser
+# `DEPLOY_PIN_AUTHORING_ENV=prod` ferait entrer la prod dans la branche
+# d'authoring, qui retourne AVANT le marqueur, le pin, l'ancêtreté, la version
+# et le digest — un repli total et silencieux sur HEAD, déclenché par un seul
+# mot. Et ce n'est pas théorique ici : les paramètres d'un build Jenkins
+# atterrissent dans l'environnement du job (fait mesuré lors du refactor des
+# Jenkinsfile). Le seul palier qui a le droit de suivre HEAD ne se choisit pas
+# depuis l'extérieur.
+DEPLOY_PIN_AUTHORING_ENV="dev"
 
 deploy_pin_marker_path() { printf 'apis/%s.deploy.%s.yaml' "$1" "$2"; }
 
@@ -35,9 +47,22 @@ deploy_pin_marker_path() { printf 'apis/%s.deploy.%s.yaml' "$1" "$2"; }
 # sortie absurde ou une erreur de syntaxe.
 _dp_fail() { printf 'deploy-pin: %s\n' "$*" >&2; }
 
-# resolve_deploy_pin <clone_dir> <api_name> <env> <workdir> [main_ref=origin/main]
+# resolve_deploy_pin <clone_dir> <api_name> <env> <workdir> [main_ref=origin/main] [archive_in]
 resolve_deploy_pin() {
-  local clone="$1" api="$2" env="$3" work="$4" mainref="${5:-origin/main}"
+  local clone="$1" api="$2" env="$3" work="$4" mainref="${5:-origin/main}" archive_in="${6:-}"
+
+  # Sans elle, un appel qui ÉCHOUE laisse en place les valeurs du précédent :
+  # mesuré en revue — après un succès sur `bonapi` puis un échec sur
+  # `mauvaiseapi`, DEPLOY_PIN_PUBLISH désignait le manifeste de la seconde et
+  # DEPLOY_PIN_ARCHIVE les octets de la PREMIÈRE. Un appelant qui ignore le code
+  # de retour (ou un wrapper Ansible en `ignore_errors`) déploierait les octets
+  # d'une API sous l'identité d'une autre. Un refus doit laisser un état VIDE,
+  # jamais l'état de quelqu'un d'autre.
+  DEPLOY_PIN_COMMIT=""; DEPLOY_PIN_VERSION=""; DEPLOY_PIN_SHA256=""
+  DEPLOY_PIN_PUBLISH=""; DEPLOY_PIN_PROMOTE=""; DEPLOY_PIN_CONTRACT=""
+  DEPLOY_PIN_ARCHIVE=""
+  export DEPLOY_PIN_COMMIT DEPLOY_PIN_VERSION DEPLOY_PIN_SHA256 \
+         DEPLOY_PIN_PUBLISH DEPLOY_PIN_PROMOTE DEPLOY_PIN_CONTRACT DEPLOY_PIN_ARCHIVE
 
   # Le nom d'API construit des CHEMINS (`apis/<api>.publish.yml`) et des
   # arguments `git show`. On le contraint ici, indépendamment de ce que les
@@ -54,8 +79,13 @@ resolve_deploy_pin() {
   local rel; rel="$(deploy_pin_marker_path "$api" "$env")"
 
   if [ "$env" = "$DEPLOY_PIN_AUTHORING_ENV" ]; then
-    # dev : pas de marqueur, pas de digest — on matérialise HEAD tel quel.
-    mkdir -p "$work" || return 1
+    # dev : pas de marqueur, pas de digest — on matérialise l'ARBRE DE TRAVAIL
+    # du clone tel quel. En CI c'est exactement l'état revu (l'appelant a fait
+    # `git checkout <MERGE_SHA>` avant d'appeler) ; hors CI, sur un clone sale,
+    # ce n'est PAS HEAD — dire « HEAD » ici serait décrire autre chose que le
+    # code.
+    mkdir -p "$work" \
+      || { _dp_fail "WORKDIR_INCREABLE : impossible de créer '$work'"; return 1; }
     local g
     for g in publish.yml openapi.yaml; do
       cp "$clone/apis/${api}.${g}" "$work/${api}.${g}" \
@@ -135,7 +165,8 @@ PY
   git -C "$clone" merge-base --is-ancestor "$DEPLOY_PIN_COMMIT" "$mainref" 2>/dev/null \
     || { _dp_fail "PIN_NON_ANCETRE : $DEPLOY_PIN_COMMIT n'est pas un ancêtre de $mainref — refus de déployer depuis un état jamais fusionné"; return 1; }
 
-  mkdir -p "$work" || return 1
+  mkdir -p "$work" \
+    || { _dp_fail "WORKDIR_INCREABLE : impossible de créer '$work'"; return 1; }
   # publish.yml et openapi.yaml sont TOUJOURS présents — api-request.sh les pose
   # ENSEMBLE, au même commit (team-publish.sh:259 refuse déjà CONTRAT_ABSENT).
   local f
@@ -196,29 +227,52 @@ PY
   [ -n "$DEPLOY_PIN_SHA256" ] \
     || { _dp_fail "DIGEST_ABSENT : archive_sha256 vide pour l'env '$env' — hors authoring, les octets déployés doivent être pinnés"; return 1; }
 
-  # C'EST ICI que promote.yml devient obligatoire, et pas plus tôt : hors de
-  # l'env d'authoring, le verbe est l'import d'archive (ADR-079) et c'est ce
-  # manifeste qui nomme l'archive. Une API sans promote.yml ne peut tout
-  # simplement pas voyager par archive.
+  # promote.yml devient obligatoire ICI, et pas plus tôt : hors de l'env
+  # d'authoring, le verbe est l'import d'archive (ADR-079) et c'est ce manifeste
+  # qui pilote le play. Une API sans promote.yml ne peut pas voyager par archive.
   [ -n "$DEPLOY_PIN_PROMOTE" ] \
     || { _dp_fail "PROMOTE_MANIFEST_ABSENT : apis/${api}.promote.yml absent au SHA pinné — hors de '$DEPLOY_PIN_AUTHORING_ENV', la promotion se fait par archive et exige ce manifeste"; return 1; }
 
-  local arch
-  arch=$(DP_FILE="$DEPLOY_PIN_PROMOTE" python3 - <<'PY'
-import os, yaml
-d = yaml.safe_load(open(os.environ["DP_FILE"])) or {}
-print("A=" + str((d.get("apim_promote") or {}).get("archive") or ""))
-PY
-) || { _dp_fail "PIN_MALFORMED : promote.yml résolu illisible"; return 1; }
-  case "$arch" in A=*) arch="${arch#A=}";; *) { _dp_fail "PIN_MALFORMED : sortie inattendue de la lecture de archive"; return 1; };; esac
+  # ⚠ LE CHEMIN DE L'ARCHIVE NE SE LIT PAS DANS promote.yml. Mesuré : le seul
+  # manifeste réel du dépôt y porte une EXPRESSION JINJA, pas un chemin —
+  #   clients/_example/apis/accounts-read.promote.yml:
+  #     archive: "{{ playbook_dir }}/../dist/accounts-read-1.0.0.archive.zip"
+  # que seul Ansible sait rendre, au moment du play. Un `stat` sur cette chaîne
+  # brute échoue TOUJOURS : une première version de ce bloc la lisait, et la
+  # promotion hors dev était donc morte au premier contact avec le format réel,
+  # pendant que six fixtures inventaient un format littéral pour rester vertes.
+  #
+  # L'archive est un ARTEFACT DE BUILD dont l'appelant (le CI) connaît
+  # l'emplacement — c'est lui qui l'a produite ou récupérée. Il le passe donc
+  # explicitement. Le lien « approuvé == déployé » n'est pas porté par le
+  # CHEMIN mais par le DIGEST, vérifié deux fois contre la même valeur pinnée :
+  # ici sur les octets que le CI détient, et de nouveau dans le rôle sur les
+  # octets qu'il s'apprête à POSTer (Task 6). Deux chemins, un invariant.
+  [ -n "$archive_in" ] \
+    || { _dp_fail "ARCHIVE_ABSENT : aucun chemin d'archive fourni (6e argument) — hors authoring le digest doit être vérifié, donc on ne promeut pas"; return 1; }
+  # ABSOLU EXIGÉ : l'en-tête de ce fichier documente que les appelants font un
+  # `cd` après le source. Un chemin relatif serait haché depuis le cwd du
+  # résolveur puis réexporté tel quel, et le moteur le rouvrirait depuis SON
+  # cwd : on vérifierait un fichier et on en déploierait un autre, sans aucun
+  # refus. Mesuré.
+  case "$archive_in" in
+    /*) ;;
+    *) { _dp_fail "ARCHIVE_PATH_RELATIVE : '$archive_in' n'est pas absolu — les octets vérifiés et les octets consommés seraient résolus depuis deux répertoires différents"; return 1; };;
+  esac
+  [ -f "$archive_in" ] \
+    || { _dp_fail "ARCHIVE_ABSENT : archive '$archive_in' introuvable — le digest ne peut pas être vérifié, donc on ne promeut pas"; return 1; }
 
-  [ -n "$arch" ] && [ -f "$arch" ] \
-    || { _dp_fail "ARCHIVE_ABSENT : archive '$arch' introuvable — le digest ne peut pas être vérifié, donc on ne promeut pas"; return 1; }
-
-  local actual; actual=$(shasum -a 256 "$arch" | cut -d' ' -f1)
+  local actual
+  actual=$(shasum -a 256 "$archive_in" 2>/dev/null | cut -d' ' -f1) \
+    || { _dp_fail "ARCHIVE_UNREADABLE : impossible de hacher '$archive_in' (droits ? fichier spécial ?)"; return 1; }
+  # `actual` vide ne doit JAMAIS retomber dans la comparaison : si le digest
+  # pinné pouvait l'être aussi, `"" = ""` passerait pour une correspondance —
+  # le fail-open déjà rencontré sur la version.
+  [ -n "$actual" ] \
+    || { _dp_fail "ARCHIVE_UNREADABLE : sha256 vide pour '$archive_in'"; return 1; }
   [ "$actual" = "$DEPLOY_PIN_SHA256" ] \
-    || { _dp_fail "ARCHIVE_DIGEST_MISMATCH : archive '$arch' porte $actual, le marqueur pinne $DEPLOY_PIN_SHA256"; return 1; }
-  DEPLOY_PIN_ARCHIVE="$arch"
+    || { _dp_fail "ARCHIVE_DIGEST_MISMATCH : archive '$archive_in' porte $actual, le marqueur pinne $DEPLOY_PIN_SHA256"; return 1; }
+  DEPLOY_PIN_ARCHIVE="$archive_in"
 
   export DEPLOY_PIN_COMMIT DEPLOY_PIN_VERSION DEPLOY_PIN_SHA256 \
          DEPLOY_PIN_PUBLISH DEPLOY_PIN_PROMOTE DEPLOY_PIN_CONTRACT DEPLOY_PIN_ARCHIVE
