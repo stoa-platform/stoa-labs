@@ -30,6 +30,7 @@ Valeurs copiées telles quelles depuis la spec `docs/superpowers/specs/2026-08-2
 |---|---|---|
 | `scripts/lib/deploy-pin.sh` | **Créer** — le résolveur : lire le marqueur, résoudre au SHA, vérifier le digest. Aucune I/O réseau, aucun Ansible. | 1–3 |
 | `scripts/test-deploy-pin.sh` | **Créer** — la porte de preuve du résolveur, sur dépôt Git jetable, + sabotage. | 1–3 |
+| `scripts/lib/export-order-probe.py` | **Créer** — sonde d'ordre sur `export.yml` (un grep ne peut pas prouver un ordre). | 5 |
 | `clients/_example/apis/accounts-read.deploy.rec.yaml.example` | **Créer** — le gabarit documenté du marqueur (le squelette d'équipe le reçoit par `cp -R`). | 4 |
 | `ansible/roles/apim_promote_api/tasks/export.yml` | **Modifier** — émettre le sha256 après sanitisation. | 5 |
 | `ansible/roles/apim_promote_api/defaults/main.yml` | **Modifier** — `apim_ss_archive_sha256`, `apim_ss_authoring_env`. | 6 |
@@ -942,20 +943,106 @@ git commit -m "feat(g3): gabarit documente du marqueur dans le squelette d'equip
 Ajouter à `scripts/test-deploy-pin.sh` :
 
 ```bash
-echo "⑭ l'export ÉMET le sha256 — sans quoi personne ne peut remplir le marqueur"
+echo "⑭ l'export ÉMET le sha256 APRÈS sanitisation — l'ORDRE est la propriété qui compte"
+# ⚠ Un `grep` sur « checksum_algorithm: sha256 » ne prouverait RIEN d'utile : la
+# sous-chaîne peut exister n'importe où, y compris dans un commentaire, et
+# surtout elle ne dit pas si le digest est pris AVANT ou APRÈS la sanitisation.
+# Or c'est exactement là qu'est le défaut possible — un digest des octets bruts
+# pinnerait des octets que personne ne déploie. On PARSE donc le fichier et on
+# vérifie l'ordre RÉEL des tâches, plus le câblage des variables.
 EXP="$ROOT/ansible/roles/apim_promote_api/tasks/export.yml"
-grep -q 'checksum_algorithm: sha256' "$EXP" \
-  && ok "export.yml calcule le sha256 de l'archive" \
-  || bad "export.yml ne calcule aucun sha256 — le demandeur n'a rien à coller dans archive_sha256"
-grep -q 'sha256=' "$EXP" \
-  && ok "le sha256 est AFFICHÉ (EXPORT_CONFIRMED)" \
-  || bad "sha256 calculé mais jamais affiché — inutilisable par le demandeur"
+EXPV=$(EXP="$EXP" python3 "$ROOT/scripts/lib/export-order-probe.py") \
+  || bad "PARSE_EXPORT : export.yml illisible"
+case "$EXPV" in
+  E=*)
+    EXPV="${EXPV#E=}"
+    I_SAN="${EXPV%%|*}";  EXPV="${EXPV#*|}"
+    I_STAT="${EXPV%%|*}"; EXPV="${EXPV#*|}"
+    I_CONF="${EXPV%%|*}"; EXPV="${EXPV#*|}"
+    P_STAT="${EXPV%%|*}"; EXPV="${EXPV#*|}"
+    F_SHA="${EXPV%%|*}";  G_64="${EXPV#*|}"
+    { [ "$I_SAN" -ge 0 ] && [ "$I_STAT" -gt "$I_SAN" ] && [ "$I_CONF" -gt "$I_STAT" ]; } \
+      && ok "ordre RÉEL : sanitize -> sha256 -> EXPORT_CONFIRMED (digest des octets SANITIZÉS)" \
+      || bad "ordre FAUX (sanitize=$I_SAN, sha256=$I_STAT, confirmed=$I_CONF) — un digest pris avant sanitisation pinnerait des octets que personne ne déploie"
+    [ "$P_STAT" = "{{ apim_promote.archive }}" ] \
+      && ok "le stat cible bien l'archive du manifeste" \
+      || bad "le stat cible '$P_STAT' et non {{ apim_promote.archive }}"
+    case "$F_SHA" in
+      *exp_stat.stat.checksum*) ok "exp_sha256 est alimenté par le checksum réellement calculé" ;;
+      *) bad "exp_sha256 vient de '$F_SHA' — pas du stat : le sha256 affiché pourrait être sans rapport" ;;
+    esac
+    [ "$G_64" = 1 ] \
+      && ok "garde fail-closed sur une longueur de 64 (digest incalculable => refus)" \
+      || bad "aucune garde de longueur : un checksum vide partirait dans EXPORT_CONFIRMED"
+    ;;
+  *) bad "PARSE_EXPORT : sortie inattendue de la sonde d'ordre" ;;
+esac
+```
+
+Créer aussi `scripts/lib/export-order-probe.py`, que l'épreuve appelle :
+
+```python
+#!/usr/bin/env python3
+"""Sonde d'ORDRE sur export.yml (jalon G3, epreuve ⑭).
+
+Un grep ne peut pas repondre a la seule question qui compte ici : le digest
+est-il pris APRES la sanitisation ? Un digest des octets bruts pinnerait des
+octets que personne ne deploie, et la sous-chaine cherchee serait pourtant la.
+On parse donc le fichier et on rend les INDICES REELS des taches, plus le
+cablage des variables, pour que le shell puisse comparer.
+
+Sortie : E=<i_sanitize>|<i_stat>|<i_confirmed>|<chemin stat>|<source exp_sha256>|<garde 64 ? 0|1>
+Un indice a -1 signale une tache introuvable.
+"""
+import os
+import sys
+
+import yaml
+
+doc = yaml.safe_load(open(os.environ["EXP"])) or []
+
+tasks = []
+
+
+def walk(items):
+    """Les taches reelles vivent dans le `.block` de la tache-enveloppe."""
+    for t in items or []:
+        if isinstance(t, dict):
+            tasks.append(t)
+            walk(t.get("block"))
+
+
+walk(doc)
+names = [str(t.get("name") or "") for t in tasks]
+
+
+def idx(fragment):
+    for i, n in enumerate(names):
+        if fragment in n:
+            return i
+    return -1
+
+
+stat_path, sha_fact, guard = "", "", "0"
+for t in tasks:
+    n = str(t.get("name") or "")
+    if "sha256 de l" in n:
+        stat_path = str((t.get("ansible.builtin.stat") or {}).get("path") or "")
+    if "moriser le digest" in n:  # « mémoriser », sans l'accent pour la robustesse
+        sha_fact = str((t.get("ansible.builtin.set_fact") or {}).get("exp_sha256") or "")
+    if "digest calculable" in n:
+        that = (t.get("ansible.builtin.assert") or {}).get("that") or []
+        guard = "1" if any("64" in str(x) for x in that) else "0"
+
+print("E=%d|%d|%d|%s|%s|%s" % (
+    idx("sanitize de l"), idx("sha256 de l"), idx("archive saine"),
+    stat_path, sha_fact, guard))
 ```
 
 - [ ] **Step 2 : Lancer le test pour vérifier qu'il échoue**
 
 Run: `bash scripts/test-deploy-pin.sh`
-Expected: FAIL — `export.yml ne calcule aucun sha256`
+Expected: FAIL — la sonde rend `sha256=-1`, donc « ordre FAUX (sanitize=…, sha256=-1, …) », plus les trois autres assertions de ⑭ en échec.
 
 - [ ] **Step 3 : Ajouter le calcul et l'affichage**
 
@@ -997,12 +1084,12 @@ Puis, dans la tâche `"Export : FAIL-CLOSED — archive saine"`, remplacer le `s
 - [ ] **Step 4 : Lancer le test et le lint Ansible**
 
 Run: `bash scripts/test-deploy-pin.sh && ansible-playbook ansible/promote-api.yml --syntax-check 2>&1 | tail -3`
-Expected: `22 PASS / 0 FAIL`, et `playbook: ansible/promote-api.yml` (syntaxe acceptée).
+Expected: `24 PASS / 0 FAIL`, et `playbook: ansible/promote-api.yml` (syntaxe acceptée).
 
 - [ ] **Step 5 : Commit**
 
 ```bash
-git add ansible/roles/apim_promote_api/tasks/export.yml scripts/test-deploy-pin.sh
+git add ansible/roles/apim_promote_api/tasks/export.yml scripts/test-deploy-pin.sh scripts/lib/export-order-probe.py
 git commit -m "feat(g3): l'export emet le sha256 de l'archive sanitizee"
 ```
 
@@ -1115,7 +1202,7 @@ Dans `ansible/roles/apim_promote_api/tasks/import.yml`, insérer **après** la t
 - [ ] **Step 5 : Lancer le test et le lint**
 
 Run: `bash scripts/test-deploy-pin.sh && bash scripts/test-jenkinsfile-lint.sh`
-Expected: `27 PASS / 0 FAIL` pour le premier ; le lint Jenkinsfile inchangé (12/12).
+Expected: `29 PASS / 0 FAIL` pour le premier ; le lint Jenkinsfile inchangé (12/12).
 
 - [ ] **Step 6 : Commit**
 
@@ -1310,7 +1397,7 @@ exit 1
 - [ ] **Step 5 : Lancer le test pour vérifier qu'il passe**
 
 Run: `bash scripts/test-deploy-pin.sh`
-Expected: PASS — `31 PASS / 0 FAIL`
+Expected: PASS — `33 PASS / 0 FAIL`
 
 - [ ] **Step 6 : Commit**
 
@@ -1487,7 +1574,7 @@ echo "PROMOTION_DEMANDEE : $PR_URL"
 - [ ] **Step 4 : Lancer les tests et shellcheck**
 
 Run: `bash scripts/test-deploy-pin.sh && shellcheck scripts/api-promote-request.sh scripts/lib/deploy-pin.sh`
-Expected: `36 PASS / 0 FAIL` ; shellcheck sans erreur (les `SC1091` de source non suivi sont acceptables).
+Expected: `38 PASS / 0 FAIL` ; shellcheck sans erreur (les `SC1091` de source non suivi sont acceptables).
 
 - [ ] **Step 5 : Commit**
 
@@ -1626,7 +1713,7 @@ Et mettre à jour le commentaire de tête du `Makefile` (ligne 8) :
 - [ ] **Step 6 : Lancer toutes les portes**
 
 Run: `bash scripts/test-deploy-pin.sh && bash scripts/test-jenkinsfile-lint.sh && bash scripts/test-env-chain.sh`
-Expected: `39 PASS / 0 FAIL` ; le lint Jenkinsfile passe à **13/13** (un Jenkinsfile de plus à compiler) ; `test-env-chain.sh` reste 4/4.
+Expected: `41 PASS / 0 FAIL` ; le lint Jenkinsfile passe à **13/13** (un Jenkinsfile de plus à compiler) ; `test-env-chain.sh` reste 4/4.
 
 - [ ] **Step 7 : Commit**
 
@@ -1716,7 +1803,7 @@ Enfin, remplacer les deux extra-vars de l'invocation :
 - [ ] **Step 4 : Lancer les tests**
 
 Run: `bash scripts/test-deploy-pin.sh && bash scripts/test-team-publish-wiring.sh && shellcheck scripts/team-publish.sh`
-Expected: `43 PASS / 0 FAIL` pour le premier ; `test-team-publish-wiring.sh` **inchangé** (aucune régression sur les 20+ épreuves existantes, dont le test 17 sur `apim_ss_contract_pin`) ; shellcheck propre.
+Expected: `45 PASS / 0 FAIL` pour le premier ; `test-team-publish-wiring.sh` **inchangé** (aucune régression sur les 20+ épreuves existantes, dont le test 17 sur `apim_ss_contract_pin`) ; shellcheck propre.
 
 > Si `test-team-publish-wiring.sh` rougit sur le test 17, c'est attendu et il faut le **mettre à jour** : il vérifie littéralement `-e apim_ss_contract_pin="$SPEC_PATH"`. Remplacer cette chaîne par `-e apim_ss_contract_pin="$DEPLOY_PIN_CONTRACT"` dans l'assertion, et ajouter une assertion que `$SPEC_PATH` sert toujours à la garde de liste blanche. **Ne pas supprimer l'épreuve** : c'est elle qui empêche le manifeste de redevenir maître du contrat.
 
@@ -1737,4 +1824,4 @@ git commit -m "feat(g3): brancher le resolveur sur team-publish — plus de code
 - **Il ne branche pas le verbe archive sur les sauts rec et au-delà.** C'est **G5**. Le résolveur produit les chemins ; aucun pipeline ne les consomme encore en dehors du chemin dev existant.
 - **Il ne transporte pas les octets de l'archive d'un palier à l'autre.** Pas de dépôt d'artefacts — c'est **G5**. Le digest lie l'approuvé au déployé ; il ne déplace rien.
 - **Il n'ajoute pas `DeployerGroup`** (« qui déploie » à côté de « qui approuve »). C'est **G2**.
-- **La porte G3 telle qu'écrite dans le GOAL** (« l'apply *en rec* projette ce contrat ») n'est donc **pas exerçable E2E** à l'issue de ce plan. Ce qui est prouvé : le résolveur, ses refus, le digest bout à bout, l'écrivain — 43/43 hors ligne sur dépôt Git réel, contre-épreuve par sabotage comprise.
+- **La porte G3 telle qu'écrite dans le GOAL** (« l'apply *en rec* projette ce contrat ») n'est donc **pas exerçable E2E** à l'issue de ce plan. Ce qui est prouvé : le résolveur, ses refus, le digest bout à bout, l'écrivain — 45/45 hors ligne sur dépôt Git réel, contre-épreuve par sabotage comprise.
