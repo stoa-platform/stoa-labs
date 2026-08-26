@@ -161,5 +161,95 @@ resolve_deploy_pin "$REPO" accounts-read rec "$WORK" main 2>"$TMP/e7" \
   && bad "marqueur 7.7.7 vs manifeste 1.0.0 ACCEPTÉ" \
   || { grep -q PIN_VERSION_MISMATCH "$TMP/e7" && ok "PIN_VERSION_MISMATCH" || bad "refusé sans nommer PIN_VERSION_MISMATCH : $(cat "$TMP/e7")"; }
 
+echo "⑧ DIGEST_ABSENT — pas de digest hors de l'environnement d'authoring"
+REPO="$TMP/team8"; make_team_repo "$REPO"
+marker "$REPO" rec "$C1" "1.0.0" ""
+WORK="$TMP/w8"
+resolve_deploy_pin "$REPO" accounts-read rec "$WORK" main 2>"$TMP/e8" \
+  && bad "promotion hors dev SANS digest ACCEPTÉE — les octets déployés ne sont pinnés par rien" \
+  || { grep -q DIGEST_ABSENT "$TMP/e8" && ok "DIGEST_ABSENT" || bad "refusé sans nommer DIGEST_ABSENT : $(cat "$TMP/e8")"; }
+
+echo "⑨ ARCHIVE_DIGEST_MISMATCH — le digest ne correspond pas aux octets"
+REPO="$TMP/team9"; make_team_repo "$REPO"
+marker "$REPO" rec "$C1" "1.0.0" "0000000000000000000000000000000000000000000000000000000000000000"
+WORK="$TMP/w9"
+resolve_deploy_pin "$REPO" accounts-read rec "$WORK" main 2>"$TMP/e9" \
+  && bad "digest faux ACCEPTÉ" \
+  || { grep -q ARCHIVE_DIGEST_MISMATCH "$TMP/e9" && ok "ARCHIVE_DIGEST_MISMATCH" || bad "refusé sans nommer ARCHIVE_DIGEST_MISMATCH : $(cat "$TMP/e9")"; }
+
+echo "⑩ ARCHIVE_ABSENT — pas d'archive, donc pas de vérification possible"
+REPO="$TMP/team10"; make_team_repo "$REPO"
+marker "$REPO" rec "$C1" "1.0.0" "$(sha_of "$REPO/dist/a.zip")"
+rm -f "$REPO/dist/a.zip"
+WORK="$TMP/w10"
+resolve_deploy_pin "$REPO" accounts-read rec "$WORK" main 2>"$TMP/e10" \
+  && bad "archive absente ACCEPTÉE — la vérification a été SAUTÉE au lieu d'échouer" \
+  || { grep -q ARCHIVE_ABSENT "$TMP/e10" && ok "ARCHIVE_ABSENT" || bad "refusé sans nommer ARCHIVE_ABSENT : $(cat "$TMP/e10")"; }
+
+echo "⑩bis PROMOTE_MANIFEST_ABSENT — hors authoring, le verbe est l'archive"
+REPO="$TMP/team10b"; make_team_repo "$REPO"
+git -C "$REPO" rm -q "apis/accounts-read.promote.yml"
+git -C "$REPO" commit -qm "sans manifeste de promotion"
+CNO=$(git -C "$REPO" rev-parse HEAD)
+marker "$REPO" rec "$CNO" "2.0.0" "$(sha_of "$REPO/dist/a.zip")"
+WORK="$TMP/w10b"
+resolve_deploy_pin "$REPO" accounts-read rec "$WORK" main 2>"$TMP/e10b" \
+  && bad "promotion hors authoring ACCEPTÉE sans promote.yml — rien ne nomme l'archive" \
+  || { grep -q PROMOTE_MANIFEST_ABSENT "$TMP/e10b" && ok "PROMOTE_MANIFEST_ABSENT" || bad "refusé sans nommer PROMOTE_MANIFEST_ABSENT : $(cat "$TMP/e10b")"; }
+
+echo "⑪ dev suit HEAD — l'environnement d'authoring n'exige ni marqueur ni digest"
+REPO="$TMP/team11"; make_team_repo "$REPO"
+WORK="$TMP/w11"; mkdir -p "$WORK"
+if resolve_deploy_pin "$REPO" accounts-read dev "$WORK" main 2>"$TMP/e11"; then
+  grep -q 'version: "2.0.0"' "$WORK/accounts-read.publish.yml" \
+    && ok "dev résout depuis HEAD (2.0.0), sans marqueur — env d'authoring" \
+    || bad "dev n'a pas résolu HEAD : $(cat "$WORK/accounts-read.publish.yml")"
+else
+  bad "dev refusé alors qu'il doit suivre HEAD : $(cat "$TMP/e11")"
+fi
+
+echo "⑫ CONTRE-ÉPREUVE — retirer la garde d'ancêtreté doit faire ROUGIR l'épreuve ⑤"
+LIB="$ROOT/scripts/lib/deploy-pin.sh"
+BAK="$(mktemp)"; cp "$LIB" "$BAK"
+restore_lib() { cp "$BAK" "$LIB"; rm -f "$BAK"; }
+trap 'restore_lib; rm -rf "$TMP"' EXIT INT TERM
+# Sabotage : la garde devient un no-op QUI PASSE. Si l'épreuve ⑤ passe quand
+# même au vert, c'est qu'elle mesurait autre chose que la garde — un vert
+# vacant.
+#
+# ⚠ PIÈGE MESURÉ (2026-08-26) : le premier jet remplaçait `--is-ancestor` par
+# un drapeau invalide (`--is-ancestor-DISABLED`). Ce n'est PAS un sabotage —
+# c'est l'inverse : `git` rend alors un code non nul, le `||` se déclenche, et
+# la garde REFUSE TOUJOURS. La contre-épreuve rougissait donc en annonçant
+# « garde retirée et le refus persiste », ce qui était vrai et ne prouvait
+# rien. Un sabotage doit OUVRIR la porte, jamais la souder fermée.
+# On remplace donc la commande entière par `true`, ce qui laisse le `||` de la
+# ligne suivante intact et fait passer la garde.
+sed -i.tmp 's|git -C "$clone" merge-base --is-ancestor "$DEPLOY_PIN_COMMIT" "$mainref" 2>/dev/null|true|' "$LIB" && rm -f "$LIB.tmp"
+if ! grep -q 'merge-base --is-ancestor' "$LIB"; then
+  ( set +u; . "$LIB"
+    REPO2="$TMP/sab"; mkdir -p "$REPO2/apis"
+    git -C "$REPO2" init -q -b main
+    git -C "$REPO2" config user.email ci@stoa.lab; git -C "$REPO2" config user.name ci
+    printf 'apim_api:\n  name: "a"\n  version: "1.0.0"\n' > "$REPO2/apis/a.publish.yml"
+    printf 'apim_promote:\n  name: "a"\n  version: "1.0.0"\n  archive: "%s/z"\n' "$REPO2" > "$REPO2/apis/a.promote.yml"
+    printf 'openapi: 3.0.0\n' > "$REPO2/apis/a.openapi.yaml"
+    printf 'x' > "$REPO2/z"
+    git -C "$REPO2" add -A && git -C "$REPO2" commit -qm base
+    git -C "$REPO2" checkout -q -b evil
+    printf 'apim_api:\n  name: "a"\n  version: "1.0.0"\n# evil\n' > "$REPO2/apis/a.publish.yml"
+    git -C "$REPO2" add -A && git -C "$REPO2" commit -qm evil
+    E=$(git -C "$REPO2" rev-parse HEAD); git -C "$REPO2" checkout -q main
+    printf 'version: "1.0.0"\nenabled: true\npromoted_by: a\nmessage: t\ncommit: %s\nchange_ref: ""\narchive_sha256: "%s"\n' \
+      "$E" "$(shasum -a 256 "$REPO2/z" | cut -d' ' -f1)" > "$REPO2/apis/a.deploy.rec.yaml"
+    resolve_deploy_pin "$REPO2" a rec "$TMP/wsab" main 2>/dev/null ) \
+    && ok "sabotage détecté : garde retirée ⇒ un SHA non mergé passe (la garde mesurait bien quelque chose)" \
+    || bad "garde retirée et le refus persiste — l'épreuve ⑤ ne mesure PAS cette garde (vert vacant)"
+else
+  bad "sabotage non appliqué — la contre-épreuve n'a rien prouvé"
+fi
+restore_lib
+trap 'rm -rf "$TMP"' EXIT INT TERM
+
 printf '\n  %d PASS / %d FAIL\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

@@ -19,6 +19,12 @@
 _STOA_DEPLOY_PIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export _STOA_DEPLOY_PIN_ROOT
 
+# L'environnement d'AUTHORING — le seul palier sans marqueur, le seul qui suit
+# HEAD (labctl/internal/uac/pinned.go:15 : « publish writes no pin: the entry
+# environment follows HEAD by design »). ADR-079 : c'est le seul env où le blip
+# de première création est toléré.
+DEPLOY_PIN_AUTHORING_ENV="${DEPLOY_PIN_AUTHORING_ENV:-dev}"
+
 deploy_pin_marker_path() { printf 'apis/%s.deploy.%s.yaml' "$1" "$2"; }
 
 # Nomme le refus sur stderr. Toujours appelé comme une INSTRUCTION suivie d'un
@@ -46,6 +52,28 @@ resolve_deploy_pin() {
   esac
 
   local rel; rel="$(deploy_pin_marker_path "$api" "$env")"
+
+  if [ "$env" = "$DEPLOY_PIN_AUTHORING_ENV" ]; then
+    # dev : pas de marqueur, pas de digest — on matérialise HEAD tel quel.
+    mkdir -p "$work" || return 1
+    local g
+    for g in publish.yml openapi.yaml; do
+      cp "$clone/apis/${api}.${g}" "$work/${api}.${g}" \
+        || { _dp_fail "MANIFESTE_ABSENT : apis/${api}.${g} introuvable sur HEAD"; return 1; }
+    done
+    DEPLOY_PIN_PROMOTE=""
+    if [ -f "$clone/apis/${api}.promote.yml" ]; then
+      cp "$clone/apis/${api}.promote.yml" "$work/${api}.promote.yml" \
+        && DEPLOY_PIN_PROMOTE="$work/${api}.promote.yml"
+    fi
+    DEPLOY_PIN_COMMIT=""; DEPLOY_PIN_VERSION=""; DEPLOY_PIN_SHA256=""
+    DEPLOY_PIN_PUBLISH="$work/${api}.publish.yml"
+    DEPLOY_PIN_CONTRACT="$work/${api}.openapi.yaml"
+    DEPLOY_PIN_ARCHIVE=""
+    export DEPLOY_PIN_COMMIT DEPLOY_PIN_VERSION DEPLOY_PIN_SHA256 \
+           DEPLOY_PIN_PUBLISH DEPLOY_PIN_PROMOTE DEPLOY_PIN_CONTRACT DEPLOY_PIN_ARCHIVE
+    return 0
+  fi
 
   [ -f "$clone/$rel" ] || { _dp_fail "PIN_ABSENT : $rel absent — hors de l'environnement d'authoring, aucun repli sur HEAD"; return 1; }
 
@@ -159,7 +187,40 @@ PY
 
   DEPLOY_PIN_PUBLISH="$work/${api}.publish.yml"
   DEPLOY_PIN_CONTRACT="$work/${api}.openapi.yaml"
+
+  # ── LE DIGEST ────────────────────────────────────────────────────────────
+  # Le zip webMethods n'est pas reproductible bit-à-bit (horodatages) : cette
+  # vérification FORCE donc la réutilisation des MÊMES octets d'un palier à
+  # l'autre. C'est l'effet recherché — c'est ce qui distingue « build once,
+  # deploy many » d'une intention.
+  [ -n "$DEPLOY_PIN_SHA256" ] \
+    || { _dp_fail "DIGEST_ABSENT : archive_sha256 vide pour l'env '$env' — hors authoring, les octets déployés doivent être pinnés"; return 1; }
+
+  # C'EST ICI que promote.yml devient obligatoire, et pas plus tôt : hors de
+  # l'env d'authoring, le verbe est l'import d'archive (ADR-079) et c'est ce
+  # manifeste qui nomme l'archive. Une API sans promote.yml ne peut tout
+  # simplement pas voyager par archive.
+  [ -n "$DEPLOY_PIN_PROMOTE" ] \
+    || { _dp_fail "PROMOTE_MANIFEST_ABSENT : apis/${api}.promote.yml absent au SHA pinné — hors de '$DEPLOY_PIN_AUTHORING_ENV', la promotion se fait par archive et exige ce manifeste"; return 1; }
+
+  local arch
+  arch=$(DP_FILE="$DEPLOY_PIN_PROMOTE" python3 - <<'PY'
+import os, yaml
+d = yaml.safe_load(open(os.environ["DP_FILE"])) or {}
+print("A=" + str((d.get("apim_promote") or {}).get("archive") or ""))
+PY
+) || { _dp_fail "PIN_MALFORMED : promote.yml résolu illisible"; return 1; }
+  case "$arch" in A=*) arch="${arch#A=}";; *) { _dp_fail "PIN_MALFORMED : sortie inattendue de la lecture de archive"; return 1; };; esac
+
+  [ -n "$arch" ] && [ -f "$arch" ] \
+    || { _dp_fail "ARCHIVE_ABSENT : archive '$arch' introuvable — le digest ne peut pas être vérifié, donc on ne promeut pas"; return 1; }
+
+  local actual; actual=$(shasum -a 256 "$arch" | cut -d' ' -f1)
+  [ "$actual" = "$DEPLOY_PIN_SHA256" ] \
+    || { _dp_fail "ARCHIVE_DIGEST_MISMATCH : archive '$arch' porte $actual, le marqueur pinne $DEPLOY_PIN_SHA256"; return 1; }
+  DEPLOY_PIN_ARCHIVE="$arch"
+
   export DEPLOY_PIN_COMMIT DEPLOY_PIN_VERSION DEPLOY_PIN_SHA256 \
-         DEPLOY_PIN_PUBLISH DEPLOY_PIN_PROMOTE DEPLOY_PIN_CONTRACT
+         DEPLOY_PIN_PUBLISH DEPLOY_PIN_PROMOTE DEPLOY_PIN_CONTRACT DEPLOY_PIN_ARCHIVE
   return 0
 }
