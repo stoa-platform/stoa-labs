@@ -562,6 +562,27 @@ echo "⑲ le job existe, et la porte de preuve est branchée sur make lint-ci"
 grep -q 'test-deploy-pin.sh' "$ROOT/Makefile" \
   && ok "test-deploy-pin.sh branché sur le Makefile (la porte tourne en CI)" \
   || bad "porte non branchée — elle ne tournera que si quelqu'un y pense"
+# ⚠ AUCUNE ÉPREUVE NE REGARDAIT LE NOM DU CREDENTIAL, et c'est ainsi qu'un
+# `gitea-ci-token` inexistant est passé sous 50 assertions vertes. Un ID
+# inconnu fait échouer le build sur CredentialNotFoundException — un job qui
+# ne peut pas tourner. On exige donc que tout `credentialsId` littéral de ce
+# Jenkinsfile soit un ID déjà utilisé ailleurs dans le dépôt.
+JPR="$ROOT/ci/Jenkinsfile.api-promote-request"
+CRED_LIT=$(grep -oE "credentialsId: *'[^']+'" "$JPR" | sed "s/.*'\(.*\)'/\1/" | sort -u)
+if [ -z "$CRED_LIT" ]; then
+  ok "aucun ID de credential en dur — il passe par une variable surchargeable"
+else
+  CRED_ORPHELIN=""
+  for c in $CRED_LIT; do
+    grep -rqF "$c" "$ROOT/scripts" "$ROOT/ci" --include='*.sh' --include='Jenkinsfile*' 2>/dev/null \
+      || CRED_ORPHELIN="$CRED_ORPHELIN $c"
+  done
+  [ -z "$CRED_ORPHELIN" ] && ok "les IDs de credential en dur existent ailleurs dans le depot" \
+                          || bad "credential(s) inconnu(s) du depot :$CRED_ORPHELIN — le build echouerait sur CredentialNotFoundException"
+fi
+grep -q 'GITEA_CREDENTIALS_ID' "$JPR" \
+  && ok "l'ID de credential est un point de bascule client (motif des Jenkinsfile freres)" \
+  || bad "ID de credential en dur — un client au nom different devrait forker le Jenkinsfile"
 grep -q 'apis/<name>.deploy' "$ROOT/adr/adr-076-gitops-api-lifecycle-repo-per-project.md" \
   && ok "ADR-076 amendé sur l'emplacement du marqueur" \
   || bad "ADR-076 dit toujours 'deploy.{env}.yaml' à la racine — la doc contredit le code"

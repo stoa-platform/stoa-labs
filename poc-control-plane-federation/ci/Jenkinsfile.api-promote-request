@@ -2,13 +2,37 @@
 // Ouvre une PR portant apis/<name>.deploy.<TO_ENV>.yaml sur le dépôt d'ÉQUIPE.
 // NE DÉPLOIE RIEN : la décision est le merge de cette PR (ADR-081).
 //
-// ⚠ La liste TO_ENV est écrite À LA MAIN, et c'est documenté comme tel : un
-// bloc `parameters {}` déclaratif est évalué à la POSE du job, hors workspace —
-// il n'a aucun accès au clone governance, donc il ne peut pas dériver
-// d'environments.yaml. Même limite que ci/Jenkinsfile.selfservice:34.
+// ⚠ Les listes FROM_ENV/TO_ENV sont écrites À LA MAIN, et c'est documenté comme
+// tel : un bloc `parameters {}` déclaratif est évalué à la POSE du job, hors
+// workspace — il n'a aucun accès au clone governance, donc il ne peut pas
+// dériver d'environments.yaml.
+//
+// ⚠ ET CE SONT DEUX LISTES INDÉPENDANTES : chaque valeur est un palier légal,
+// mais le FORMULAIRE n'empêche pas d'en composer une paire illégale (dev→prod,
+// rec→homol). C'est le SCRIPT qui la refuse, à la demande, par CHAINE_INVALIDE.
+// L'analogie avec ci/Jenkinsfile.selfservice:34 s'arrête là : celui-ci ne porte
+// qu'UN seul paramètre d'environnement, donc aucune paire à incohérer.
 pipeline {
   agent any
   options { disableConcurrentBuilds() }
+
+  // ── POINTS DE CONFIG CLIENT ────────────────────────────────────────────────
+  // Motif `env.X ?: défaut`, IDENTIQUE aux Jenkinsfile frères : le MÊME fichier
+  // sert le lab et le client, sans fork. Sans ce bloc, l'ID de credential serait
+  // un littéral Groovy en dur et un client dont le credential porte un autre nom
+  // devrait forker le Jenkinsfile — précisément ce que ce motif existe pour
+  // éviter. Les défauts reproduisent ceux que le script applique déjà lui-même.
+  //
+  // ⚠ `gitea-provision-token` est le SEUL credential réellement provisionné
+  // (scripts/setup-provision-request-job.sh) et celui qu'utilisent les cinq
+  // autres Jenkinsfile qui parlent à Gitea. Un ID inventé fait échouer le build
+  // sur CredentialNotFoundException, et aucune épreuve hors ligne ne le voit.
+  environment {
+    GIT_HOST             = "${env.GIT_HOST ?: 'http://gitea:3000'}"
+    GIT_REPO             = "${env.GIT_REPO ?: 'ci/stoa-labs'}"
+    GITEA_CREDENTIALS_ID = "${env.GITEA_CREDENTIALS_ID ?: 'gitea-provision-token'}"
+  }
+
   parameters {
     string(name: 'TEAM',           defaultValue: '', description: 'Équipe propriétaire')
     string(name: 'API_NAME',       defaultValue: '', description: "Nom de l'API")
@@ -25,7 +49,7 @@ pipeline {
         // Les paramètres de build subissent EnvVars.resolve : withEnv est
         // obligatoire pour qu'ils arrivent intacts au script (fait mesuré,
         // cf. mémoire ci-jenkinsfile-refactor).
-        withCredentials([string(credentialsId: 'gitea-ci-token', variable: 'GITEA_TOKEN')]) {
+        withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')]) {
           withEnv([
             "TEAM=${params.TEAM}", "API_NAME=${params.API_NAME}",
             "FROM_ENV=${params.FROM_ENV}", "TO_ENV=${params.TO_ENV}",
