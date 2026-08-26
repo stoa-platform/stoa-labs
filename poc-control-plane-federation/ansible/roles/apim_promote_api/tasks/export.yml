@@ -77,6 +77,28 @@
       ansible.builtin.set_fact:
         exp_report: "{{ exp_sanitize.stdout | from_json }}"
 
+    # ===== 4bis. Digest de l'ARTEFACT FINAL =================================
+    # APRÈS la sanitisation, jamais avant : c'est l'archive sanitizée qui sera
+    # importée, donc c'est elle dont les octets doivent être pinnés. Un digest
+    # pris avant strippage pinnerait des octets que personne ne déploiera.
+    - name: "Export : sha256 de l'archive sanitizée"
+      ansible.builtin.stat:
+        path: "{{ apim_promote.archive }}"
+        checksum_algorithm: sha256
+        get_checksum: true
+      register: exp_stat
+
+    - name: "Export : fail-closed — digest calculable"
+      ansible.builtin.assert:
+        that: "(exp_stat.stat.checksum | default('')) | length == 64"
+        fail_msg: >-
+          EXPORT_UNCONFIRMED : sha256 de {{ apim_promote.archive }} non calculable —
+          sans digest, la promotion hors dev sera refusée (DIGEST_ABSENT).
+
+    - name: "Export : mémoriser le digest"
+      ansible.builtin.set_fact:
+        exp_sha256: "{{ exp_stat.stat.checksum }}"
+
     - name: "Export : FAIL-CLOSED — archive saine (API présente, active, sans résidu)"
       ansible.builtin.assert:
         that:
@@ -84,8 +106,9 @@
           - "(exp_report.apis | selectattr('id', 'equalto', exp_guid) | list) | length == 1"
         fail_msg: "EXPORT_UNCONFIRMED : {{ exp_report.error | default('GUID absent de l archive') }}"
         success_msg: >-
-          EXPORT_CONFIRMED : {{ apim_promote.archive }} — id-map à épingler dans le manifeste :
-          guid={{ exp_guid }} ; strippé : {{ exp_report.stripped | length }} entrée(s).
+          EXPORT_CONFIRMED : {{ apim_promote.archive }} — à épingler dans le manifeste et le
+          marqueur : guid={{ exp_guid }} ; sha256={{ exp_sha256 }} ;
+          strippé : {{ exp_report.stripped | length }} entrée(s).
 
     - name: "Export : id-map (à committer dans le manifeste de promotion)"
       ansible.builtin.debug:

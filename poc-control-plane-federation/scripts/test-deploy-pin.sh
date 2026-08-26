@@ -300,5 +300,14 @@ else
   bad "gabarit absent — un dépôt d'équipe créé par team-apply n'aurait aucun exemple de marqueur"
 fi
 
+echo "⑭ l'export ÉMET le sha256 — sans quoi personne ne peut remplir le marqueur"
+EXP="$ROOT/ansible/roles/apim_promote_api/tasks/export.yml"
+grep -q 'checksum_algorithm: sha256' "$EXP" \
+  && ok "export.yml calcule le sha256 de l'archive" \
+  || bad "export.yml ne calcule aucun sha256 — le demandeur n'a rien à coller dans archive_sha256"
+grep -q 'sha256=' "$EXP" \
+  && ok "le sha256 est AFFICHÉ (EXPORT_CONFIRMED)" \
+  || bad "sha256 calculé mais jamais affiché — inutilisable par le demandeur"
+
 printf '\n  %d PASS / %d FAIL\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
