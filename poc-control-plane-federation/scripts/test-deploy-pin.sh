@@ -502,9 +502,36 @@ grep -q REPO_NON_DECLARE "$ROOT/scripts/api-promote-request.sh" \
 # worktree local (qui peut être en retard ou modifié). Même discipline que
 # team-publish.sh §3 : le seul énoncé qui fait autorité sur « ce dépôt
 # appartient à cette équipe » vit sur main du dépôt plateforme.
-grep -q 'repos/${GIT_REPO}/raw/ansible/providers' "$ROOT/scripts/api-promote-request.sh" \
+# ⚠ Motif mis à jour avec le préfixe de sous-répertoire (cf. ⑱bis, deuxième
+# piège de LECTURE_PROVIDERS) : sans lui, cette assertion redevenait fausse
+# malgré une garde correcte — un cas de désaccord entre deux greps du même
+# fichier, l'un patché et l'autre laissé sur l'ancien chemin.
+grep -q 'repos/${GIT_REPO}/raw/poc-control-plane-federation/ansible/providers' "$ROOT/scripts/api-promote-request.sh" \
   && ok "providers lu sur Gitea main, pas sur le worktree local" \
   || bad "providers lu localement — un worktree en retard déciderait de l'appartenance"
+
+echo "⑱bis un CHANGE_REF ne peut pas fabriquer une cle du marqueur"
+# ⚠ MÊME PIÈGE PIPEFAIL QUE ⑯, UN CRAN PLUS LOIN. Un `run_w ... | grep -q ...`
+# EN PIPE DIRECT serait retombé exactement dans le trou documenté plus haut :
+# `run_w` sort en erreur (1, via fail()) sur ce refus attendu, et sous
+# `pipefail` c'est CE 1 qui gagne même quand `grep -q` trouve son motif — le
+# test resterait rouge à jamais, y compris avec la garde correctement posée.
+# Même discipline que ⑯ : capture fichier, grep séparé.
+run_w dev rec 'x"
+commit: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+zz: "y' "" "$(printf 'a%.0s' $(seq 64))" > "$TMP/w18bis"
+grep -q REF_INVALIDE "$TMP/w18bis" \
+  && ok "REF_INVALIDE — une reference qui tente d'ouvrir une ligne YAML est refusee" \
+  || bad "un CHANGE_REF multiligne ACCEPTE — le demandeur choisirait le pin (derniere cle gagne)"
+grep -q 'yaml.safe_dump' "$ROOT/scripts/api-promote-request.sh" \
+  && ok "le marqueur est SERIALISE, pas formate — une valeur ne peut pas fabriquer de cle" \
+  || bad "marqueur produit par %-formatage : une valeur peut ouvrir une nouvelle ligne YAML"
+grep -q 'fail-with-body' "$ROOT/scripts/api-promote-request.sh" \
+  && ok "curl echoue vraiment sur un HTTP non-2xx (sinon LECTURE_PROVIDERS est du code mort)" \
+  || bad "curl -s rend 0 sur un 404 : le refus emis serait un mensonge"
+grep -q 'raw/poc-control-plane-federation/ansible/providers' "$ROOT/scripts/api-promote-request.sh" \
+  && ok "le chemin providers porte le prefixe du sous-repertoire" \
+  || bad "chemin providers sans prefixe — 404 a chaque execution hors DRY_RUN"
 
 printf '\n  %d PASS / %d FAIL\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

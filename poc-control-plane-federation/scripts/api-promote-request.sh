@@ -79,6 +79,24 @@ NEED_PV="${GATE%%|*}"; APPROVER_GROUP="${GATE#*|}"
 [ "$NEED_PV" = 0 ] || [ -n "$PV_REF" ] \
   || fail "GATE_REFS_REQUIRED : la porte vers '$TO_ENV' exige une référence de PV de recette (PV_REF)"
 
+# ── Garde 2bis : LES RÉFÉRENCES SONT DES IDENTIFIANTS, PAS DU TEXTE LIBRE ────
+# Elles finissent embarquées telles quelles dans le marqueur YAML écrit plus
+# bas. Sans cette garde, un CHANGE_REF portant un saut de ligne et une clé
+# `commit:` fabrique un marqueur qui PARSE PROPREMENT mais dont le commit est
+# celui que le DEMANDEUR a choisi, pas celui que `git log` a calculé —
+# l'invariant même que deploy-pin.sh existe pour tenir, atteint par une porte
+# d'entrée que rien ne validait. On ferme donc ici, à la demande, avant tout
+# geste Git — une référence vide reste licite (toutes les portes n'en
+# exigent pas), seule sa FORME est contrainte quand elle est fournie.
+case "$CHANGE_REF" in
+  "") ;;
+  *[!A-Za-z0-9._-]*) fail "REF_INVALIDE : CHANGE_REF contient un caractère hors de [A-Za-z0-9._-] (une référence multi-ligne ou citée fabriquerait une clé dans le marqueur)" ;;
+esac
+case "$PV_REF" in
+  "") ;;
+  *[!A-Za-z0-9._-]*) fail "REF_INVALIDE : PV_REF contient un caractère hors de [A-Za-z0-9._-] (une référence multi-ligne ou citée fabriquerait une clé dans le marqueur)" ;;
+esac
+
 # ── Garde 3 : LE DIGEST ─────────────────────────────────────────────────────
 if [ "$TO_ENV" != "$AUTHORING_ENV" ]; then
   [ -n "$ARCHIVE_SHA256" ] \
@@ -98,14 +116,32 @@ GIT_HOST="${GIT_HOST:-http://gitea:3000}"
 GIT_REPO="${GIT_REPO:-ci/stoa-labs}"   # dépôt PLATEFORME — porte providers.<env>.yml
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT; umask 077
 printf 'Authorization: token %s\n' "$GITEA_TOKEN" > "$TMP/ghdr"
-gapi() { curl -s -H @"$TMP/ghdr" -H 'Content-Type: application/json' "$@"; }
+gapi() { curl -sS -H @"$TMP/ghdr" -H 'Content-Type: application/json' "$@"; }
 
 # ── team -> repo, lu sur GITEA MAIN (jamais le worktree local) ───────────────
 # Le worktree local peut être en retard, ou modifié : la seule source qui dit
 # VRAIMENT « ce dépôt appartient à cette équipe » est providers.<env>.yml sur
 # main du dépôt plateforme (même discipline que team-publish.sh §3).
-gapi "${GIT_HOST}/api/v1/repos/${GIT_REPO}/raw/ansible/providers.${AUTHORING_ENV}.yml" \
-  > "$TMP/providers.yml" || fail "LECTURE_PROVIDERS : providers.${AUTHORING_ENV}.yml illisible sur ${GIT_REPO}@main"
+# ⚠ DEUX PIÈGES ICI, MESURÉS TOUS LES DEUX.
+#
+# (1) LE CHEMIN. `providers.<env>.yml` ne vit pas à la racine du dépôt
+#     plateforme mais sous `poc-control-plane-federation/` — c'est ce que
+#     lisent les scripts frères. Sans ce préfixe, chaque exécution hors
+#     DRY_RUN tape un 404 et le chemin nominal est mort.
+#
+# (2) `curl -s` REND 0 SUR UN 404. Le `|| fail` ci-dessous ne se déclencherait
+#     donc jamais : le corps d'erreur JSON de Gitea atterrirait dans le
+#     fichier, `yaml.safe_load` le parserait sans broncher (JSON ⊂ YAML),
+#     `providers` vaudrait None — et l'opérateur lirait « équipe absente de
+#     providers » alors qu'elle y est. Un chemin cassé, un hôte injoignable,
+#     un token périmé et un dépôt privé se présenteraient TOUS comme un défaut
+#     de déclaration d'équipe. C'est la classe de panne que ce dépôt a déjà
+#     payée — une variable vide, une branche plausible, un verdict trompeur —
+#     ici en refus trompeur. `--fail-with-body` rend le statut HTTP au shell.
+gapi --fail-with-body --max-time 20 \
+  "${GIT_HOST}/api/v1/repos/${GIT_REPO}/raw/poc-control-plane-federation/ansible/providers.${AUTHORING_ENV}.yml" \
+  > "$TMP/providers.yml" \
+  || fail "LECTURE_PROVIDERS : poc-control-plane-federation/ansible/providers.${AUTHORING_ENV}.yml illisible sur ${GIT_REPO}@main (HTTP non-2xx, hote injoignable ou token refuse)"
 REPO_FULL=$(TEAM="$TEAM" PROV="$TMP/providers.yml" python3 - <<'PY'
 import os, sys, yaml
 d = yaml.safe_load(open(os.environ["PROV"])) or {}
@@ -164,15 +200,40 @@ case "$VERSION" in V=*) VERSION="${VERSION#V=}";; *) fail "PARSE_MANIFEST : sort
 BRANCH="promote/${API_NAME}-${TO_ENV}"
 MARKER="$(deploy_pin_marker_path "$API_NAME" "$TO_ENV")"
 git -C "$TMP/team" checkout -q -b "$BRANCH"
+# ⚠ LE MARQUEUR S'ÉCRIT AVEC UN SÉRIALISEUR, IL NE SE FORMATE PAS.
+#
+# Un `%`-formatage laisse chaque valeur libre d'ouvrir une NOUVELLE LIGNE dans
+# le YAML, et PyYAML applique « le dernier gagne » sur les clés dupliquées.
+# Reproduit en revue : un `change_ref` valant
+#     x"\ncommit: <40 hex>\nzz: "y
+# produit un marqueur qui PARSE PROPREMENT et dont le `commit` est celui que le
+# DEMANDEUR a choisi — pas celui que la ligne `git log` a calculé. C'est
+# exactement l'invariant que deploy-pin.sh existe pour tenir : « le pin
+# déplacerait la confiance du MERGE vers un champ que le demandeur remplit
+# lui-même ». Même faille, moindre portée, pour `promoted_by` (non quoté :
+# `ci\nenabled: false` ouvre une promotion DÉSACTIVÉE en silence) et pour
+# `message` (dont l'échappement `"` -> `'` ne couvrait pas l'antislash, donc
+# une PR s'ouvrait en portant un marqueur illisible que seul l'apply refusait).
+#
+# `safe_dump` ferme les trois d'un coup : il quote et échappe ce qu'il faut,
+# et une valeur ne peut plus fabriquer de clé. La garde REF_INVALIDE ci-dessus
+# ferme déjà CHANGE_REF/PV_REF en amont ; celle-ci est le second verrou,
+# indépendant, sur le point d'écriture lui-même.
 MSG="$MESSAGE" PB="${PROMOTED_BY:-ci}" V="$VERSION" P="$PIN" CR="$CHANGE_REF" \
   SH="$ARCHIVE_SHA256" OUT="$TMP/team/$MARKER" python3 - <<'PY'
 import os
-open(os.environ["OUT"], "w").write(
-    'version: "%s"\nenabled: true\npromoted_by: %s\nmessage: "%s"\ncommit: %s\n'
-    'change_ref: "%s"\narchive_sha256: "%s"\n' % (
-        os.environ["V"], os.environ["PB"],
-        os.environ["MSG"].replace('"', "'"), os.environ["P"],
-        os.environ["CR"], os.environ["SH"]))
+import yaml
+
+with open(os.environ["OUT"], "w") as f:
+    yaml.safe_dump({
+        "version": os.environ["V"],
+        "enabled": True,
+        "promoted_by": os.environ["PB"],
+        "message": os.environ["MSG"],
+        "commit": os.environ["P"],
+        "change_ref": os.environ["CR"],
+        "archive_sha256": os.environ["SH"],
+    }, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
 PY
 git -C "$TMP/team" add "$MARKER"
 git -C "$TMP/team" -c user.name=ci -c user.email=ci@stoa.lab \
