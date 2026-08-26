@@ -91,4 +91,21 @@ apim_ss_archive_sha256: ""
 # la présence de apim_ss_archive_sha256 : un assert du genre « vérifie si on me
 # donne un digest » se désactive en oubliant l'extra-var, ce qui est un
 # fail-open déguisé en garde.
+#
+# ⚠ DISSYMÉTRIE ASSUMÉE AVEC LE CÔTÉ CI. scripts/lib/deploy-pin.sh:29-37 passe
+# neuf lignes à expliquer pourquoi son DEPLOY_PIN_AUTHORING_ENV est une
+# affectation SÈCHE, jamais `${…:-dev}` : les paramètres d'un build Jenkins
+# atterrissent dans l'environnement du job, donc un tiers qui déclenche le job
+# choisirait le seul palier autorisé à suivre HEAD. Ici la variable est un
+# default de rôle, donc surchargeable par extra-var — et c'est VOULU : aux
+# degrés D0 et D2 (DELIVERY-PROCESS.md §3) c'est l'opérateur lui-même qui joue
+# le play, sur sa propre ligne de commande ; lui interdire de nommer son env
+# d'authoring reviendrait à coder « dev » en dur pour un client dont le premier
+# palier s'appelle autrement.
+#
+# ⚠ CE QUI ROUVRIRAIT LA QUESTION : que ce rôle devienne déclenchable par un
+# TIERS — un job dont les paramètres arrivent en extra-vars, un webhook, une
+# API de self-service. Le surchargeur cesserait alors d'être l'opérateur, et
+# ce default devrait suivre la discipline du côté CI (valeur figée, hors de
+# portée de l'appelant).
 apim_ss_authoring_env: "dev"

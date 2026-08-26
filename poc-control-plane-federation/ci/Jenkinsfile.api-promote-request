@@ -2,6 +2,14 @@
 // Ouvre une PR portant apis/<name>.deploy.<TO_ENV>.yaml sur le dépôt d'ÉQUIPE.
 // NE DÉPLOIE RIEN : la décision est le merge de cette PR (ADR-081).
 //
+// ⚠ ET LE MERGE N'APPLIQUE RIEN NON PLUS, AUJOURD'HUI. Le job post-merge du
+// dépôt d'équipe (ci/Jenkinsfile.team-publish) ne publie que les branches
+// `api/*` ; celle-ci est `promote/<name>-<env>`, donc le webhook part, le
+// build passe au VERT, et il ne s'est rien produit. C'est un TROISIÈME
+// blocage, distinct du verrou `ENVN` dev-only (G4) et du verbe archive (G5) —
+// et c'est celui qui RESTERA quand G4 aura levé le verrou. Le marqueur est
+// posé pour être consommé plus tard, pas pour déclencher un apply.
+//
 // ⚠ Les listes FROM_ENV/TO_ENV sont écrites À LA MAIN, et c'est documenté comme
 // tel : un bloc `parameters {}` déclaratif est évalué à la POSE du job, hors
 // workspace — il n'a aucun accès au clone governance, donc il ne peut pas

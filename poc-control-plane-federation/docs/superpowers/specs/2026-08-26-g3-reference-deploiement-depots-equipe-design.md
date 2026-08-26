@@ -208,9 +208,24 @@ en argv), PR par heredoc python, plan hors ligne commenté sur la PR.
 `promote/<name>-<TO_ENV>` ; commit ; push ; PR. Le script **n'importe rien** sur la gateway et ne
 touche ni Vault ni la publication réelle : la décision reste le merge (ADR-081).
 
-**Lecture de `environments.yaml` :** celui du **dépôt d'équipe** (posé par le squelette), lu au
-même titre que le reste. Une chaîne cassée ou absente est un refus fermé — `env-chain.sh` est
-déjà fail-closed sur source absente/vide/cassée.
+**Lecture de `environments.yaml` — corrigé à la livraison.** Ce paragraphe annonçait « celui du
+**dépôt d'équipe** (posé par le squelette) ». C'est **impossible** : les gardes 1 et 2 tournent
+*avant* le clone du dépôt d'équipe, par construction (le refus doit précéder tout geste Git). Ce
+qui est réellement lu est le gabarit du **dépôt plateforme**
+(`clients/_example/environments.yaml`, via `$STOA_ENV_CHAIN_FILE` sinon ce défaut). Une chaîne
+cassée ou absente reste un refus fermé — `env-chain.sh` est fail-closed sur source
+absente/vide/cassée.
+
+**Trois sources, deux existent, et elles peuvent diverger.** L'écrivain lit le gabarit plateforme ;
+`governance-api` — la porte réelle — lit `environments.yaml` sur `main` du dépôt **governance**
+(`labctl/internal/governance/envchain.go`) ; `seed-governance-chain.sh` copie le gabarit vers
+governance **une fois, dans un seul sens**. Une porte modifiée côté governance laisse donc les
+gardes de l'écrivain sur une copie périmée : elles refusent **tôt**, elles ne font pas autorité.
+Effet de bord assumé : `team-apply.sh` livre un `environments.yaml` dans chaque dépôt d'équipe, où
+**rien ne le lit** aujourd'hui. Unifier la source est un item de G4.
+
+Le point 2 des gardes d'entrée dit « miroir exact de `handlers_promotions.go:77-89` » : c'est vrai
+de la **règle**, faux de la **source**.
 
 ## 6. Le digest, bout à bout
 
@@ -240,9 +255,23 @@ l'extra-var suffirait à désactiver le contrôle. La condition est donc l'envir
 présence de la variable — `apim_ss_env != apim_ss_authoring_env` (nouveau knob, défaut `dev`)
 ⇒ digest **exigé**, absent ⇒ refus `ARCHIVE_DIGEST_REQUIRED`.
 
-Le zip webMethods n'est pas reproductible bit-à-bit (horodatages) : cette vérification **force**
-la réutilisation des mêmes octets d'un palier à l'autre. C'est l'effet recherché, pas un effet de
-bord — c'est ce qui fait de « build once, deploy many » autre chose qu'une intention.
+**Ce que les deux vérifications tiennent, exactement — et ce qu'elles ne tiennent pas.** Elles
+tiennent : *les octets importés correspondent au digest que le demandeur a écrit dans le marqueur du
+palier d'arrivée*. Elles ne chaînent **rien** d'un palier à l'autre : `archive_sha256` est saisi au
+formulaire à chaque saut, indépendamment, et rien ne compare le digest du palier N à celui du palier
+N−1. Le zip webMethods n'étant pas reproductible bit-à-bit (horodatages), un demandeur qui
+ré-exporte depuis la gateway du palier source obtient un zip **neuf**, colle **son** digest, et la
+vérification passe.
+
+La même dissymétrie porte sur le **pin** : §5 le calcule depuis le dernier `main` du dépôt d'équipe,
+jamais depuis le marqueur du palier source — une promotion `rec → int` peut donc pinner un état que
+rec n'a jamais servi. Une version antérieure de ce paragraphe affirmait que la vérification
+« **force** la réutilisation des mêmes octets d'un palier à l'autre » : c'était faux. « Build once,
+deploy many » est tenu par la **discipline du demandeur**, pas par le mécanisme.
+
+Chaîner le digest et le pin d'un palier au suivant est une **question de conception ouverte**,
+portée au jalon G4 : elle demande l'arbitrage d'exploitant « une promotion peut-elle embarquer un
+état plus récent que le palier source ? », qui ne se tranche pas en revue.
 
 **Hors périmètre, explicitement :** le **transport** de ces octets d'un palier à l'autre (dépôt
 d'artefacts, registre de paquets) appartient à G5, qui porte le verbe archive. G3 livre le lien

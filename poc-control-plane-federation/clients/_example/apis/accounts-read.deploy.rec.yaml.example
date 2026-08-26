@@ -23,12 +23,26 @@
 # sur sa version déploierait une version que personne n'a demandée).
 version: "1.0.0"
 
-# Desired-state. `false` = le palier existe mais n'est pas servi.
+# ⚠ CHAMP DÉCORATIF AUJOURD'HUI, ET IL FAUT LE LIRE COMME TEL. L'INTENTION est
+#   un desired-state (`false` = le palier existe mais n'est pas servi) ; le
+#   RÉSOLVEUR, lui, ne lit que `commit`, `version` et `archive_sha256` — un
+#   marqueur portant `enabled: false` est matérialisé et déployé exactement
+#   comme un marqueur à `true`. Son SEUL lecteur est l'écrivain de promotion, et
+#   sur le marqueur du palier SOURCE (refus SOURCE_NON_DEPLOYEE) : il refuse de
+#   promouvoir DEPUIS un palier désactivé, il n'empêche pas de déployer VERS
+#   un palier désactivé. Honorer ce champ reste à faire.
 enabled: true
 
 # Le DEMANDEUR de la promotion. L'APPROBATEUR vit ailleurs (la porte de
 # environments.yaml, et la trace du merge) : ce champ ne l'exprime pas et ne
 # doit pas être lu comme tel.
+#
+# ⚠ IL VAUT `ci` TANT QUE LE PLUGIN JENKINS `build-user-vars` N'EST PAS
+#   PROVISIONNÉ. ci/Jenkinsfile.api-promote-request pose
+#   `PROMOTED_BY=${BUILD_USER_ID ?: 'ci'}`, et rien dans ce dépôt n'installe ce
+#   plugin : sans lui la dégradation est SILENCIEUSE — un champ nominatif qui ne
+#   nomme personne, sans le moindre avertissement. Ne pas le lire comme une
+#   identité tant que le plugin n'est pas en place.
 promoted_by: alice
 
 # Message d'audit — obligatoire côté écrivain.
@@ -63,7 +77,19 @@ change_ref: ""
 # ── LE DIGEST ────────────────────────────────────────────────────────────────
 # sha256 de l'archive promue, émis par `apim_promote_action=export`
 # (EXPORT_CONFIRMED). OBLIGATOIRE dès que l'env n'est pas l'env d'authoring.
-# Le zip webMethods n'étant pas reproductible bit-à-bit, cette vérification
-# FORCE la réutilisation des mêmes octets d'un palier à l'autre — c'est ce qui
-# fait de « build once, deploy many » autre chose qu'une intention.
+#
+# ⚠ CE QUE CE CHAMP TIENT, EXACTEMENT : les octets importés en <env> == CE
+#   DIGEST-CI, celui que le demandeur a écrit ici. Rien de plus.
+#
+# ⚠ IL N'EST PAS CHAÎNÉ D'UN PALIER À L'AUTRE. Il est saisi au formulaire de
+#   promotion à chaque saut, indépendamment, et rien ne compare le digest de ce
+#   palier à celui du précédent. Le zip webMethods n'étant pas reproductible
+#   bit-à-bit (horodatages), ré-exporter depuis la gateway du palier source
+#   donne un zip NEUF : y coller SON digest passe la vérification. Même
+#   dissymétrie sur `commit` ci-dessus — il est calculé depuis le dernier `main`
+#   du dépôt d'équipe, jamais depuis le marqueur du palier source, donc une
+#   promotion rec → int peut pinner un état que rec n'a jamais servi.
+#   « Build once, deploy many » tient donc à la DISCIPLINE du demandeur, pas au
+#   mécanisme. Chaîner digest et pin d'un palier au suivant est une question de
+#   conception OUVERTE, portée au jalon G4.
 archive_sha256: "0000000000000000000000000000000000000000000000000000000000000000"

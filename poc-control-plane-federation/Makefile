@@ -80,13 +80,21 @@ clean:
 # attrape un chemin faux, qui parse parfaitement.
 #
 # `shellcheck` est lancé AU DIALECTE DU SHEBANG (jamais `-s sh`) : les libs
-# déclarent bash et usent de `local`, que `-s sh` noie sous 14 SC3043.
+# déclarent bash et usent de `local`, que `-s sh` noie sous 14 SC3043. Et avec
+# `-x`, qui SUIT les `source` : sans lui, un script qui en source un autre rend
+# un SC1091 (info) et la porte échoue sur une non-trouvaille, pas sur un défaut.
+#
+# ⚠ LE PÉRIMÈTRE N'EST PAS `ci/lib`, C'EST « TOUT LE SHELL QUI PART CHEZ LE
+# CLIENT ». Les trois livrables de G3 — résolveur de pin, chaîne
+# d'environnements, écrivain de promotion — vivent sous `scripts/` et sont
+# restés hors porte jusqu'ici : du shell livré que rien ne relisait.
 lint-ci:
 	@echo "== [1/4] compilation des Jenkinsfile"
 	@ci/lint-jenkinsfiles.sh
-	@echo "== [2/4] shellcheck des bibliothèques ci/lib"
+	@echo "== [2/4] shellcheck des bibliothèques shell (ci/lib + livrables G3)"
 	@command -v shellcheck >/dev/null || { echo "!! shellcheck absent — \`brew install shellcheck\`"; exit 2; }
-	@shellcheck ci/lib/*.sh && echo "  ✓ ci/lib propre"
+	@shellcheck -x ci/lib/*.sh scripts/lib/deploy-pin.sh scripts/lib/env-chain.sh \
+	  scripts/api-promote-request.sh && echo "  ✓ ci/lib + livrables shell G3 propres"
 	@echo "== [3/4] épreuves de ci/lib/carto-secrets.sh"
 	@ci/test-carto-secrets.sh
 	@echo "== [4/4] épreuves du résolveur de pin (G3)"

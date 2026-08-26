@@ -64,9 +64,6 @@ cd "$(dirname "$0")/.." || exit 1
 # — un fail-closed par accident, avec un message qui accuse la résolution au
 # lieu du fichier absent.
 . scripts/lib/deploy-pin.sh || { echo "ERREUR: scripts/lib/deploy-pin.sh introuvable ou illisible" >&2; exit 1; }
-DEPLOY_PIN_SOURCE_RC=$?
-[ "$DEPLOY_PIN_SOURCE_RC" -eq 0 ] \
-  || { echo "ERREUR: scripts/lib/deploy-pin.sh introuvable ou illisible (rc=${DEPLOY_PIN_SOURCE_RC})" >&2; exit 1; }
 
 WEBHOOK_REPO="${WEBHOOK_REPO:?WEBHOOK_REPO requis (repository.full_name du webhook)}"
 PR_BRANCH="${PR_BRANCH:?PR_BRANCH requis}"

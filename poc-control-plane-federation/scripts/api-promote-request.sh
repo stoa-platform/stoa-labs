@@ -6,12 +6,17 @@
 # en URL ni en argv), PR par heredoc python, plan commenté sur la PR.
 #
 # CE SCRIPT NE DÉPLOIE RIEN. Il ouvre une PR portant le marqueur
-# apis/<name>.deploy.<TO_ENV>.yaml. La DÉCISION est le merge (ADR-081) ; la
-# PORTE (4-yeux, ITSM, groupe d'approbation) est enforcée à l'apply par
-# labctl/governance-api, PAS ici — les gardes ci-dessous sont in-repo, donc
-# justiciables d'OWASP CICD-SEC-04 : elles rendent le refus LISIBLE TÔT, elles
-# ne le rendent pas INCONTOURNABLE. La fermeture réelle est le jalon G4
-# (rétention du credential par palier).
+# apis/<name>.deploy.<TO_ENV>.yaml. La DÉCISION est le merge (ADR-081).
+#
+# ⚠ ET SUR CE CHEMIN-CI, LA PORTE (4-yeux, ITSM, groupe d'approbation) N'EST
+# ENFORCÉE PAR PERSONNE. Une version antérieure de cet en-tête écrivait
+# « enforcée à l'apply par labctl/governance-api » : faux ici.
+# `labctl dispatch-gate` n'est appelé que par ci/Jenkinsfile.prod, avec
+# `--repo governance` — il garde le MONOREPO de gouvernance, pas un dépôt
+# d'équipe. Les gardes ci-dessous sont in-repo, donc justiciables d'OWASP
+# CICD-SEC-04 : elles rendent le refus LISIBLE TÔT, elles ne le rendent pas
+# INCONTOURNABLE. La fermeture réelle est le jalon G4 (rétention du credential
+# par palier).
 #
 # Entrées (env — mappées depuis les paramètres du job) :
 #   TEAM, API_NAME, FROM_ENV, TO_ENV, MESSAGE   (requis)
@@ -23,9 +28,9 @@ set -uo pipefail
 set +x   # jamais de trace : le token ne doit pas fuiter
 cd "$(dirname "$0")/.." || exit 1
 
-# shellcheck source=lib/env-chain.sh
+# shellcheck source=scripts/lib/env-chain.sh
 . scripts/lib/env-chain.sh
-# shellcheck source=lib/deploy-pin.sh
+# shellcheck source=scripts/lib/deploy-pin.sh
 . scripts/lib/deploy-pin.sh
 
 fail() { printf 'ERREUR: %s\n' "$*" >&2; exit 1; }
@@ -38,7 +43,12 @@ MESSAGE="${MESSAGE:?MESSAGE requis}"
 CHANGE_REF="${CHANGE_REF:-}"
 PV_REF="${PV_REF:-}"
 ARCHIVE_SHA256="${ARCHIVE_SHA256:-}"
-AUTHORING_ENV="${DEPLOY_PIN_AUTHORING_ENV:-dev}"
+# AFFECTATION SÈCHE, comme dans deploy-pin.sh : la source ci-dessus a défini la
+# variable, un `${…:-dev}` ne ferait que réintroduire visuellement le knob
+# surchargeable contre lequel deploy-pin.sh:29-37 met en garde sur neuf lignes.
+# Si la source disparaissait, `set -u` refuserait ici — direction sûre, plutôt
+# qu'un repli silencieux.
+AUTHORING_ENV="$DEPLOY_PIN_AUTHORING_ENV"
 
 # ⚠ FORME NÉGATIVE, ET C'EST LA SEULE QUI MARCHE. Dans un motif de `case`,
 # `*` n'est pas un quantificateur mais le joker « n'importe quelle suite » :
@@ -66,9 +76,19 @@ done
   || fail "CHAINE_INVALIDE : '$FROM_ENV' -> '$TO_ENV' n'est pas un saut de la chaîne ($CHAIN)"
 
 # ── Garde 2 : LES RÉFÉRENCES QUE LA PORTE D'ARRIVÉE EXIGE ───────────────────
-# Refusé À LA DEMANDE, jamais découvert à l'approbation — miroir de
+# Refusé À LA DEMANDE, jamais découvert à l'approbation — MÊME RÈGLE que
 # handlers_promotions.go:77-89. itsmCheck IMPLIQUE change_ref : il n'y a rien à
 # re-vérifier auprès de l'ITSM sans une référence.
+#
+# ⚠ MÊME RÈGLE, PAS MÊME SOURCE — donc pas le « miroir » que cet en-tête
+# annonçait. `env_chain()` lit le gabarit du dépôt PLATEFORME
+# (clients/_example/environments.yaml, cf. lib/env-chain.sh) : il est appelé
+# AVANT le clone du dépôt d'équipe, plus bas, donc lire la chaîne de l'équipe
+# est mécaniquement impossible ici. governance-api, lui, lit `environments.yaml`
+# sur `main` du dépôt GOVERNANCE (labctl/internal/governance/envchain.go), et
+# seed-governance-chain.sh y copie le gabarit UNE FOIS, dans UN SEUL SENS : une
+# porte modifiée côté governance laisse ces gardes-ci sur une copie périmée.
+# Elles refusent TÔT ; elles ne font pas autorité.
 GATE=$(env_chain_gate "$TO_ENV") || fail "PARSE_GATE : lecture de la porte vers '$TO_ENV'"
 case "$GATE" in GATE=*) GATE="${GATE#GATE=}";; *) fail "PARSE_GATE : sortie inattendue";; esac
 NEED_CHANGE="${GATE%%|*}"; GATE="${GATE#*|}"
@@ -210,8 +230,10 @@ git -C "$TMP/team" checkout -q -b "$BRANCH"
 # DEMANDEUR a choisi — pas celui que la ligne `git log` a calculé. C'est
 # exactement l'invariant que deploy-pin.sh existe pour tenir : « le pin
 # déplacerait la confiance du MERGE vers un champ que le demandeur remplit
-# lui-même ». Même faille, moindre portée, pour `promoted_by` (non quoté :
-# `ci\nenabled: false` ouvre une promotion DÉSACTIVÉE en silence) et pour
+# lui-même ». Même faille, moindre portée, pour `promoted_by` (non quoté,
+# `ci\nenabled: false` fabrique une clé que le demandeur choisit — la FAILLE
+# est réelle, sa conséquence beaucoup moins : rien ne lit `enabled` sur le
+# marqueur d'ARRIVÉE, cf. le gabarit) et pour
 # `message` (dont l'échappement `"` -> `'` ne couvrait pas l'antislash, donc
 # une PR s'ouvrait en portant un marqueur illisible que seul l'apply refusait).
 #
@@ -250,7 +272,9 @@ PR_URL=$(API="${GIT_HOST}/api/v1" R="$REPO_FULL" B="$BRANCH" \
   T="promote(${API_NAME}): ${FROM_ENV} → ${TO_ENV}" \
   BODY="Marqueur \`${MARKER}\` — pin \`${PIN}\`, sha256 \`${ARCHIVE_SHA256:-<authoring>}\`.
 
-La DÉCISION est le merge de cette PR (ADR-081). Groupe d'approbation attendu : \`${APPROVER_GROUP:-<aucun>}\`." \
+La DÉCISION est le merge de cette PR (ADR-081). Groupe d'approbation ATTENDU : \`${APPROVER_GROUP:-<aucun>}\` — attendu, **pas vérifié** : rien sur ce chemin ne contrôle qui approuve (jalon G4).
+
+⚠ **Ce merge n'applique rien aujourd'hui.** Le job post-merge du dépôt d'équipe ne publie que les branches \`api/*\` ; celle-ci est \`${BRANCH}\`, donc le build passera au vert sans rien déployer. Le marqueur est posé pour être consommé quand G4 (verrou dev-only) et G5 (verbe archive) auront ouvert le palier." \
   HDR="$TMP/ghdr" python3 - <<'PY'
 import json, os, urllib.request
 h = dict(l.split(": ", 1) for l in open(os.environ["HDR"]).read().splitlines() if l)

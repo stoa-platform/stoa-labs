@@ -133,13 +133,20 @@ resolve_deploy_pin "$REPO" accounts-read rec "$WORK" main 2>"$TMP/e5" \
   && bad "SHA non mergé ACCEPTÉ — le pin déplace la confiance du merge vers un champ que le demandeur remplit" \
   || { grep -q PIN_NON_ANCETRE "$TMP/e5" && ok "PIN_NON_ANCETRE" || bad "refusé sans nommer PIN_NON_ANCETRE : $(cat "$TMP/e5")"; }
 
-echo "⑥ PIN_UNREADABLE — commit inexistant"
+echo "⑥ PIN_NON_ANCETRE — commit inexistant (le refus REELLEMENT atteint)"
+# ⚠ LE TITRE DE CETTE ÉPREUVE ANNONÇAIT « PIN_UNREADABLE », ET C'ÉTAIT FAUX :
+# un commit inexistant échoue d'abord sur `merge-base --is-ancestor`, donc bien
+# avant le `git show`. L'alternation `PIN_NON_ANCETRE|PIN_UNREADABLE` rendait la
+# confusion invisible — et laissait PIN_UNREADABLE sans AUCUNE couverture
+# (mesuré en revue : renommer le jeton dans deploy-pin.sh ne faisait rougir
+# personne). On nomme donc ici le refus réellement atteint ; PIN_UNREADABLE a
+# désormais son épreuve propre, ⑥ter.
 REPO="$TMP/team6"; make_team_repo "$REPO"
 marker "$REPO" rec "0123456789abcdef0123456789abcdef01234567" "1.0.0" "deadbeef"
 WORK="$TMP/w6"
 resolve_deploy_pin "$REPO" accounts-read rec "$WORK" main 2>"$TMP/e6" \
   && bad "commit inexistant ACCEPTÉ" \
-  || { grep -qE 'PIN_NON_ANCETRE|PIN_UNREADABLE' "$TMP/e6" && ok "refus nommé sur commit inexistant" || bad "refusé sans refus nommé : $(cat "$TMP/e6")"; }
+  || { grep -q PIN_NON_ANCETRE "$TMP/e6" && ok "PIN_NON_ANCETRE sur commit inexistant" || bad "refusé sans nommer PIN_NON_ANCETRE : $(cat "$TMP/e6")"; }
 
 echo "⑥bis version absente des DEUX cotes — un fail-open si on compare avant de verifier"
 REPO="$TMP/team6b"; make_team_repo "$REPO"
@@ -152,6 +159,37 @@ WORK="$TMP/w6b"
 resolve_deploy_pin "$REPO" accounts-read rec "$WORK" main 2>"$TMP/e6b" \
   && bad "marqueur SANS version + manifeste SANS version ACCEPTES — '\"\" = \"\"' est passe pour une correspondance" \
   || { grep -q PIN_MALFORMED "$TMP/e6b" && ok "PIN_MALFORMED sur version absente" || bad "refuse sans nommer PIN_MALFORMED : $(cat "$TMP/e6b")"; }
+
+echo "⑥ter PIN_UNREADABLE — un ancetre de main ou le manifeste n'existait pas encore"
+# LE SEUL CHEMIN QUI ATTEINT CE REFUS. Il faut un pin qui PASSE l'ancetrete et
+# ECHOUE au `git show` : un commit anterieur a la creation de l'API. Ce n'est
+# pas un cas de laboratoire — un marqueur pointant un commit d'avant
+# l'onboarding de l'API produit exactement cet etat, et le resolveur doit alors
+# refuser plutot que materialiser un manifeste vide.
+REPO="$TMP/team6t"; mkdir -p "$REPO/apis"
+git -C "$REPO" init -q -b main
+git -C "$REPO" config user.email ci@stoa.lab
+git -C "$REPO" config user.name ci
+printf 'squelette d equipe\n' > "$REPO/README.md"
+git -C "$REPO" add -A && git -C "$REPO" commit -qm "C0 squelette — aucune API"
+C0=$(git -C "$REPO" rev-parse HEAD)
+_write_api "$REPO" 1.0.0
+git -C "$REPO" add -A && git -C "$REPO" commit -qm "C1 accounts-read 1.0.0"
+# ⚠ LA FABRIQUE S'ASSERTE. Sans cette ligne, un C0 qui cesserait d'etre ancetre
+# de main (fabrique remaniee, branche orpheline) ferait retomber l'epreuve sur
+# PIN_NON_ANCETRE — elle passerait au rouge sans dire pourquoi, ou pire,
+# passerait au vert sur un refus voisin si l'assertion tolerait l'alternation.
+# C'est exactement le defaut que ⑥ portait.
+git -C "$REPO" merge-base --is-ancestor "$C0" main \
+  && ok "fabrique : C0 EST ancetre de main — la garde d'ancetrete passe, le refus vient donc du git show" \
+  || bad "fabrique invalide : C0 n'est pas ancetre de main — l'epreuve n'atteindrait pas PIN_UNREADABLE"
+marker "$REPO" rec "$C0" "1.0.0" "$(sha_of "$REPO/dist/a.zip")"
+WORK="$TMP/w6t"
+resolve_deploy_pin "$REPO" accounts-read rec "$WORK" main "$REPO/dist/a.zip" 2>"$TMP/e6t" \
+  && bad "pin sur un commit SANS manifeste ACCEPTE — le resolveur a materialise un fichier vide" \
+  || { grep -q PIN_UNREADABLE "$TMP/e6t" \
+       && ok "PIN_UNREADABLE — nomme, et pas un refus voisin" \
+       || bad "refuse sans nommer PIN_UNREADABLE (refus voisin ?) : $(cat "$TMP/e6t")"; }
 
 echo "⑦ PIN_VERSION_MISMATCH — le marqueur ment sur la version"
 REPO="$TMP/team7"; make_team_repo "$REPO"

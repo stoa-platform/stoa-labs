@@ -220,10 +220,29 @@ PY
   DEPLOY_PIN_CONTRACT="$work/${api}.openapi.yaml"
 
   # ── LE DIGEST ────────────────────────────────────────────────────────────
-  # Le zip webMethods n'est pas reproductible bit-à-bit (horodatages) : cette
-  # vérification FORCE donc la réutilisation des MÊMES octets d'un palier à
-  # l'autre. C'est l'effet recherché — c'est ce qui distingue « build once,
-  # deploy many » d'une intention.
+  # CE QUE CETTE VÉRIFICATION TIENT, EXACTEMENT : les octets de l'archive
+  # fournie == le digest que LE DEMANDEUR a écrit dans le marqueur du palier
+  # d'arrivée. Rien de plus.
+  #
+  # ⚠ ELLE NE CHAÎNE RIEN D'UN PALIER À L'AUTRE, et la version précédente de ce
+  # commentaire affirmait le contraire — « cette vérification FORCE la
+  # réutilisation des MÊMES octets d'un palier à l'autre… c'est ce qui distingue
+  # “build once, deploy many” d'une intention ». C'était faux :
+  # `archive_sha256` est saisi au formulaire de promotion à CHAQUE saut,
+  # indépendamment, et personne ne compare le digest du palier N à celui du
+  # palier N−1. Le zip webMethods n'étant pas reproductible bit-à-bit
+  # (horodatages), un demandeur qui ré-exporte depuis la gateway du palier
+  # source obtient un zip NEUF, colle SON digest dans le marqueur, et cette
+  # vérification passe. Même dissymétrie sur le pin : il est calculé depuis le
+  # dernier `main` (api-promote-request.sh:188), jamais depuis le marqueur du
+  # palier source — une promotion rec → int peut donc pinner un état que rec n'a
+  # jamais servi.
+  #
+  # « Build once, deploy many » est donc tenu par la DISCIPLINE du demandeur,
+  # pas par ce mécanisme. Chaîner le digest et le pin d'un palier au suivant est
+  # une question de conception OUVERTE, portée au jalon G4 : elle demande un
+  # arbitrage d'exploitant (« une promotion peut-elle embarquer un état plus
+  # récent que le palier source ? »), pas un correctif.
   [ -n "$DEPLOY_PIN_SHA256" ] \
     || { _dp_fail "DIGEST_ABSENT : archive_sha256 vide pour l'env '$env' — hors authoring, les octets déployés doivent être pinnés"; return 1; }
 
