@@ -850,9 +850,13 @@ Créer `clients/_example/apis/accounts-read.deploy.rec.yaml.example` :
 # immuable — un SHA de commit et un digest d'archive.
 #
 # ⚠ IL EST ÉCRIT PAR LA PROMOTION, JAMAIS À LA MAIN par l'équipe :
-#   scripts/api-promote-request.sh ouvre une PR qui le porte ; la DÉCISION est
-#   le merge de cette PR (ADR-081). Ce fichier `.example` documente la forme,
-#   il n'est pas actif — renommez-le sans `.example` seulement pour un test.
+#   scripts/api-promote-request.sh ouvre une PR qui le porte. Le modèle retenu
+#   est celui d'ADR-081 — « la décision humaine est le merge » — et cet ADR est
+#   à ce jour au statut « Proposé, arbitrage client requis » : c'est le modèle
+#   PROPOSÉ, pas une décision actée. Le dire autrement présenterait comme réglé
+#   un point d'architecture que l'ADR lui-même laisse ouvert.
+#   Ce fichier `.example` documente la forme, il n'est pas actif — renommez-le
+#   sans `.example` seulement pour un test.
 #
 # ⚠ AUCUN MARQUEUR POUR L'ENVIRONNEMENT D'AUTHORING (`dev`) : dev suit HEAD
 #   par conception (labctl/internal/uac/pinned.go:15). Un deploy.dev.yaml
@@ -886,9 +890,18 @@ message: "promotion dev → rec"
 # d'une branche jamais fusionnée.
 commit: 0000000000000000000000000000000000000000
 
-# Référence de changement ITSM ancrée à CET état — la garde anti-TOCTOU du
-# dispatch (ADR-075) la re-vérifie au moment d'agir. Vide si la porte du
+# Référence de changement ITSM, exigée À LA DEMANDE par les portes qui la
+# réclament (`requireChangeRef` / `itsmCheck` dans environments.yaml) et
+# conservée ici pour que la trace accompagne l'état promu. Vide si la porte du
 # palier ne l'exige pas.
+#
+# ⚠ CE CHAMP N'EST PAS ENCORE RE-VÉRIFIÉ À L'APPLY pour ce marqueur-ci.
+#   La garde anti-TOCTOU d'ADR-075 (labctl/cmd/labctl/dispatchgate.go) existe
+#   bel et bien, mais elle porte sur l'AUTRE marqueur — celui du monorepo de
+#   gouvernance, `tenants/{tenant}/apis/{slug}/deploy.{env}.yaml`. Le résolveur
+#   de ce marqueur-ci ne lit que `commit`, `version` et `archive_sha256`.
+#   Étendre la re-vérification ITSM à ce chemin reste à faire ; ne pas compter
+#   dessus tant que ce n'est pas écrit.
 change_ref: ""
 
 # ── LE DIGEST ────────────────────────────────────────────────────────────────
