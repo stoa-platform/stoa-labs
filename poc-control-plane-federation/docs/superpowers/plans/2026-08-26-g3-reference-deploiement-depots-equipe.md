@@ -376,6 +376,18 @@ resolve_deploy_pin "$REPO" accounts-read rec "$WORK" main 2>"$TMP/e6" \
   && bad "commit inexistant ACCEPTÉ" \
   || { grep -qE 'PIN_NON_ANCETRE|PIN_UNREADABLE' "$TMP/e6" && ok "refus nommé sur commit inexistant" || bad "refusé sans refus nommé : $(cat "$TMP/e6")"; }
 
+echo "⑥bis version absente des DEUX cotes — un fail-open si on compare avant de verifier"
+REPO="$TMP/team6b"; make_team_repo "$REPO"
+printf 'apim_api:\n  name: "accounts-read"\n' > "$REPO/apis/accounts-read.publish.yml"
+git -C "$REPO" add -A && git -C "$REPO" commit -qm "manifeste sans version"
+CNV=$(git -C "$REPO" rev-parse HEAD)
+printf 'version: ""\nenabled: true\npromoted_by: a\nmessage: t\ncommit: %s\nchange_ref: ""\narchive_sha256: "%s"\n' \
+  "$CNV" "$(sha_of "$REPO/dist/a.zip")" > "$REPO/apis/accounts-read.deploy.rec.yaml"
+WORK="$TMP/w6b"
+resolve_deploy_pin "$REPO" accounts-read rec "$WORK" main 2>"$TMP/e6b" \
+  && bad "marqueur SANS version + manifeste SANS version ACCEPTES — '\"\" = \"\"' est passe pour une correspondance" \
+  || { grep -q PIN_MALFORMED "$TMP/e6b" && ok "PIN_MALFORMED sur version absente" || bad "refuse sans nommer PIN_MALFORMED : $(cat "$TMP/e6b")"; }
+
 echo "⑦ PIN_VERSION_MISMATCH — le marqueur ment sur la version"
 REPO="$TMP/team7"; make_team_repo "$REPO"
 marker "$REPO" rec "$C1" "7.7.7" "$(sha_of "$REPO/dist/a.zip")"
@@ -421,7 +433,7 @@ Insérer **après** la garde `PIN_MALFORMED` du SHA hexadécimal, **avant** le `
     || { _dp_fail "PIN_NON_ANCETRE : $DEPLOY_PIN_COMMIT n'est pas un ancêtre de $mainref — refus de déployer depuis un état jamais fusionné"; return 1; }
 ```
 
-Insérer **après** la boucle `for f in publish.yml promote.yml openapi.yaml` :
+Insérer **après** la boucle `for f in publish.yml openapi.yaml` (celle qui résout les deux fichiers TOUJOURS présents) et **avant** le bloc conditionnel qui résout `promote.yml` :
 
 ```bash
   # Le marqueur et le manifeste doivent parler de la MÊME version. Une
@@ -436,6 +448,17 @@ print("V=" + str((d.get("apim_api") or {}).get("version") or ""))
 PY
 ) || { _dp_fail "PIN_MALFORMED : publish.yml résolu illisible"; return 1; }
   case "$mv" in V=*) mv="${mv#V=}";; *) { _dp_fail "PIN_MALFORMED : sortie inattendue de la lecture de version"; return 1; };; esac
+  # ⚠ COMPARER AVANT DE VÉRIFIER LA PRÉSENCE EST UN FAIL-OPEN. Les deux côtés
+  # sont extraits en `… or ""` : un marqueur sans `version:` et un manifeste
+  # sans `apim_api.version` donnent tous deux la chaîne vide, et `"" = ""`
+  # passerait pour une CORRESPONDANCE. Le résolveur accepterait alors un pin
+  # dont personne ne sait quelle version il déploie — exactement ce que ce
+  # garde-fou existe pour empêcher. On exige donc la présence des deux, puis
+  # seulement on compare.
+  [ -n "$DEPLOY_PIN_VERSION" ] \
+    || { _dp_fail "PIN_MALFORMED : le marqueur ne porte aucune version — impossible de vérifier ce qui serait déployé"; return 1; }
+  [ -n "$mv" ] \
+    || { _dp_fail "PIN_MALFORMED : le manifeste au SHA pinné ne porte aucune version (apim_api.version absent)"; return 1; }
   [ "$mv" = "$DEPLOY_PIN_VERSION" ] \
     || { _dp_fail "PIN_VERSION_MISMATCH : le marqueur annonce '$DEPLOY_PIN_VERSION' mais le manifeste au SHA pinné porte '$mv'"; return 1; }
 ```
@@ -443,7 +466,7 @@ PY
 - [ ] **Step 4 : Lancer les tests pour vérifier qu'ils passent**
 
 Run: `bash scripts/test-deploy-pin.sh`
-Expected: PASS — `10 PASS / 0 FAIL`
+Expected: PASS — `11 PASS / 0 FAIL`
 
 - [ ] **Step 5 : Commit**
 
@@ -636,7 +659,7 @@ Et ajouter `DEPLOY_PIN_ARCHIVE` à la ligne `export` finale.
 - [ ] **Step 4 : Lancer les tests pour vérifier qu'ils passent**
 
 Run: `bash scripts/test-deploy-pin.sh`
-Expected: PASS — `16 PASS / 0 FAIL`, contre-épreuve comprise.
+Expected: PASS — `17 PASS / 0 FAIL`, contre-épreuve comprise.
 
 - [ ] **Step 5 : Vérifier que shellcheck est propre**
 
@@ -752,7 +775,7 @@ archive_sha256: "000000000000000000000000000000000000000000000000000000000000000
 - [ ] **Step 4 : Lancer le test pour vérifier qu'il passe**
 
 Run: `bash scripts/test-deploy-pin.sh`
-Expected: PASS — `17 PASS / 0 FAIL`
+Expected: PASS — `18 PASS / 0 FAIL`
 
 - [ ] **Step 5 : Commit**
 
@@ -833,7 +856,7 @@ Puis, dans la tâche `"Export : FAIL-CLOSED — archive saine"`, remplacer le `s
 - [ ] **Step 4 : Lancer le test et le lint Ansible**
 
 Run: `bash scripts/test-deploy-pin.sh && ansible-playbook ansible/promote-api.yml --syntax-check 2>&1 | tail -3`
-Expected: `19 PASS / 0 FAIL`, et `playbook: ansible/promote-api.yml` (syntaxe acceptée).
+Expected: `20 PASS / 0 FAIL`, et `playbook: ansible/promote-api.yml` (syntaxe acceptée).
 
 - [ ] **Step 5 : Commit**
 
@@ -951,7 +974,7 @@ Dans `ansible/roles/apim_promote_api/tasks/import.yml`, insérer **après** la t
 - [ ] **Step 5 : Lancer le test et le lint**
 
 Run: `bash scripts/test-deploy-pin.sh && bash scripts/test-jenkinsfile-lint.sh`
-Expected: `24 PASS / 0 FAIL` pour le premier ; le lint Jenkinsfile inchangé (12/12).
+Expected: `25 PASS / 0 FAIL` pour le premier ; le lint Jenkinsfile inchangé (12/12).
 
 - [ ] **Step 6 : Commit**
 
@@ -1146,7 +1169,7 @@ exit 1
 - [ ] **Step 5 : Lancer le test pour vérifier qu'il passe**
 
 Run: `bash scripts/test-deploy-pin.sh`
-Expected: PASS — `28 PASS / 0 FAIL`
+Expected: PASS — `29 PASS / 0 FAIL`
 
 - [ ] **Step 6 : Commit**
 
@@ -1323,7 +1346,7 @@ echo "PROMOTION_DEMANDEE : $PR_URL"
 - [ ] **Step 4 : Lancer les tests et shellcheck**
 
 Run: `bash scripts/test-deploy-pin.sh && shellcheck scripts/api-promote-request.sh scripts/lib/deploy-pin.sh`
-Expected: `33 PASS / 0 FAIL` ; shellcheck sans erreur (les `SC1091` de source non suivi sont acceptables).
+Expected: `34 PASS / 0 FAIL` ; shellcheck sans erreur (les `SC1091` de source non suivi sont acceptables).
 
 - [ ] **Step 5 : Commit**
 
@@ -1462,7 +1485,7 @@ Et mettre à jour le commentaire de tête du `Makefile` (ligne 8) :
 - [ ] **Step 6 : Lancer toutes les portes**
 
 Run: `bash scripts/test-deploy-pin.sh && bash scripts/test-jenkinsfile-lint.sh && bash scripts/test-env-chain.sh`
-Expected: `36 PASS / 0 FAIL` ; le lint Jenkinsfile passe à **13/13** (un Jenkinsfile de plus à compiler) ; `test-env-chain.sh` reste 4/4.
+Expected: `37 PASS / 0 FAIL` ; le lint Jenkinsfile passe à **13/13** (un Jenkinsfile de plus à compiler) ; `test-env-chain.sh` reste 4/4.
 
 - [ ] **Step 7 : Commit**
 
@@ -1552,7 +1575,7 @@ Enfin, remplacer les deux extra-vars de l'invocation :
 - [ ] **Step 4 : Lancer les tests**
 
 Run: `bash scripts/test-deploy-pin.sh && bash scripts/test-team-publish-wiring.sh && shellcheck scripts/team-publish.sh`
-Expected: `40 PASS / 0 FAIL` pour le premier ; `test-team-publish-wiring.sh` **inchangé** (aucune régression sur les 20+ épreuves existantes, dont le test 17 sur `apim_ss_contract_pin`) ; shellcheck propre.
+Expected: `41 PASS / 0 FAIL` pour le premier ; `test-team-publish-wiring.sh` **inchangé** (aucune régression sur les 20+ épreuves existantes, dont le test 17 sur `apim_ss_contract_pin`) ; shellcheck propre.
 
 > Si `test-team-publish-wiring.sh` rougit sur le test 17, c'est attendu et il faut le **mettre à jour** : il vérifie littéralement `-e apim_ss_contract_pin="$SPEC_PATH"`. Remplacer cette chaîne par `-e apim_ss_contract_pin="$DEPLOY_PIN_CONTRACT"` dans l'assertion, et ajouter une assertion que `$SPEC_PATH` sert toujours à la garde de liste blanche. **Ne pas supprimer l'épreuve** : c'est elle qui empêche le manifeste de redevenir maître du contrat.
 
@@ -1573,4 +1596,4 @@ git commit -m "feat(g3): brancher le resolveur sur team-publish — plus de code
 - **Il ne branche pas le verbe archive sur les sauts rec et au-delà.** C'est **G5**. Le résolveur produit les chemins ; aucun pipeline ne les consomme encore en dehors du chemin dev existant.
 - **Il ne transporte pas les octets de l'archive d'un palier à l'autre.** Pas de dépôt d'artefacts — c'est **G5**. Le digest lie l'approuvé au déployé ; il ne déplace rien.
 - **Il n'ajoute pas `DeployerGroup`** (« qui déploie » à côté de « qui approuve »). C'est **G2**.
-- **La porte G3 telle qu'écrite dans le GOAL** (« l'apply *en rec* projette ce contrat ») n'est donc **pas exerçable E2E** à l'issue de ce plan. Ce qui est prouvé : le résolveur, ses refus, le digest bout à bout, l'écrivain — 40/40 hors ligne sur dépôt Git réel, contre-épreuve par sabotage comprise.
+- **La porte G3 telle qu'écrite dans le GOAL** (« l'apply *en rec* projette ce contrat ») n'est donc **pas exerçable E2E** à l'issue de ce plan. Ce qui est prouvé : le résolveur, ses refus, le digest bout à bout, l'écrivain — 41/41 hors ligne sur dépôt Git réel, contre-épreuve par sabotage comprise.
