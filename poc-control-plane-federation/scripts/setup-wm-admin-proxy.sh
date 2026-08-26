@@ -29,7 +29,11 @@ cd "$(dirname "$0")/.."
 VAULT_ADDR="${VAULT_ADDR:-http://localhost:8200}"
 KC_BASE="${KC_BASE:-http://localhost:8480}"
 WM="${WM_GATEWAY_URL:-http://localhost:5555}"   # data-plane du wM réel (host)
-ENVS=(dev rec int)
+# Chaîne DÉRIVÉE (scripts/lib/env-chain.sh) — plus de liste en dur : ajouter
+# un palier à clients/_example/environments.yaml suffit. Hors-prod = la chaîne
+# PRIVÉE de son terminus (la gateway de prod n'a pas de proxy d'admin ici).
+. "$(dirname "$0")/lib/env-chain.sh"
+read -r -a ENVS <<< "$(env_chain_nonprod)" || { echo "✗ chaîne d'environnements illisible"; exit 1; }
 MANIFEST_DIR="gateways/webmethods/admin-proxy"
 PASS=0; FAIL=0
 ok()  { PASS=$((PASS+1)); printf '  \033[32mPASS\033[0m %s\n' "$*"; }

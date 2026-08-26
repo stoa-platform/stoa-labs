@@ -1,0 +1,62 @@
+# envs/homol/targets.yaml — cible de convergence HOMOL (ADR-075), perspective
+# HOST (labctl lancé sur le poste : tout passe par le port hôte 5555 du wM réel).
+#
+# HOMOL est le 4e palier de la chaîne à cinq (dev → rec → int → homol → prod,
+# clients/_example/environments.yaml). Il se comporte exactement comme rec et
+# int — env BAS, mock derrière un proxy allowlist — mais il porte la porte la
+# plus stricte avant la prod : approverGroup dédié, quatre yeux, ET preuve de
+# validation obligatoire à la demande (requirePVRef).
+#
+# L'env bas n'est PAS joignable directement : le mock wm-mock-homol vit sur le
+# réseau nonprod (internal) — l'UNIQUE chemin admin est le proxy allowlist
+# wm-admin-homol porté par le wM réel, OAuth2 scope deploy:homol.
+#
+# Usage : apply-uac --env homol --tenant banking-demo -f envs/homol/targets.yaml
+# (token ci-horsprod écrit au préalable dans /tmp/stoa-wm-admin-token).
+#
+# ⚠ PLOMBERIE DE LAB NON POSÉE à la création de ce fichier (2026-08-26) : le
+# proxy wm-admin-homol, le mock poc-wm-mock-homol, le scope deploy:homol et le
+# secret Vault envs/homol/wm-admin n'existent pas encore. Ce fichier est la
+# CIBLE déclarative ; tant que la plomberie n'est pas posée, un apply sur homol
+# échoue FERMÉ (proxy inconnu → 404 du wM réel), ce qui est le bon comportement.
+apiVersion: labctl.stoa.io/v1
+kind: FederationTarget
+name: accounts-read
+
+# Ignoré par apply-uac (le contrat servi vient du repo governance, UAC v1) —
+# requis par le loader, et utile pour un `labctl plan/apply` direct hors-UAC.
+contract: ../../apis/accounts-read.openapi.yaml
+
+# Informationnel : le routage effectif est l'${alias} accounts-read-backend.
+backendUrl: http://poc-token-echo:8080/backend/homol
+
+targets:
+  - name: wm-homol
+    type: webmethods
+    # adminUrl = le PROXY admin de l'env (allowlist + scope deploy:homol), PAS
+    # le mock : labctl parle « 10.15 » au proxy, le wM réel relaie vers
+    # wm-mock-homol.
+    adminUrl: http://localhost:5555/gateway/wm-admin-homol/1.0
+    # gatewayUrl = le MÊME proxy : le data-plane de l'env bas est le mock,
+    # injoignable du host (réseau nonprod interne). Même compromis assumé
+    # qu'en rec et en int.
+    gatewayUrl: http://localhost:5555/gateway/wm-admin-homol/1.0
+    # Différences PAR ENV = les aliases (ADR-075). Backend homol = un path
+    # DISTINCT de token-echo : c'est la VALEUR de l'alias qui prouve la
+    # projection per-env, pas un appel data-plane (le mock vit sur `nonprod`,
+    # token-echo sur `poc` — l'appel échoue réseau, fail-closed assumé).
+    routing:
+      endpointAlias:
+        name: accounts-read-backend
+        url: http://poc-token-echo:8080/backend/homol
+      credentialAlias:
+        name: accounts-read-backend-cred
+    credentials:
+      # Bearer ci-horsprod (scope deploy:homol) — XOR username/password : le
+      # pipeline hors-prod ne porte JAMAIS un credential admin gateway.
+      bearerTokenFile: /tmp/stoa-wm-admin-token
+      # Valeurs du credential alias backend — placeholders PoC (Vault en cible).
+      backendUsername: poc-backend-user
+      backendPassword: poc-backend-secret
+    # Pas d'inboundAuth en env bas : l'OAuth2 opposable est porté par le PROXY
+    # (wm-admin-homol) ; le mock derrière n'expose rien hors nonprod.

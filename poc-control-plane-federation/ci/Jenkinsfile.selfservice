@@ -31,7 +31,15 @@ pipeline {
            description: "Manifeste de demande (vars du rôle : apim_ss_app).")
     // Env cible : sélectionne per_env[ENVIRONMENT] du manifeste ET pose X-Environment
     // vers le proxy d'admin (endpoint unique multi-env). Vide = manifeste mono-env.
-    choice(name: 'ENVIRONMENT', choices: ['dev', 'rec', 'int', 'prod'],
+    // ⚠ Liste EN DUR, et c'est un choix contraint, pas un oubli : un bloc
+    // `parameters {}` déclaratif est évalué à la POSE du job, hors de tout
+    // workspace — il n'a donc pas accès au clone du dépôt governance d'où se
+    // dérive la chaîne (cf. ci/Jenkinsfile, qui la dérive parce que LUI a le
+    // clone sous la main). Le reste de la chaîne est dérivé de
+    // clients/_example/environments.yaml via scripts/lib/env-chain.sh ; cette
+    // liste-ci est la SEULE qui doive encore être tenue à la main, et elle doit
+    // rester alignée sur ce fichier. `homol` ajouté le 2026-08-26.
+    choice(name: 'ENVIRONMENT', choices: ['dev', 'rec', 'int', 'homol', 'prod'],
            description: "Environnement cible (identité IP/cert par env + header X-Environment).")
     // Mode d'accès à l'API d'admin. Chez le CLIENT il n'y a QUE proxy-oauth2 :
     // l'admin n'est jamais exposée en direct — elle est proxifiée SUR la gateway

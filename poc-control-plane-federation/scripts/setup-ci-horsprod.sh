@@ -28,7 +28,12 @@ ADMIN_USER="${ADMIN_USER:-admin}"; ADMIN_PASS="${ADMIN_PASS:-admin}"
 # crée le client Keycloak et celui que Vault distribue ensuite.
 CLIENT="${CI_CLIENT:-ci-horsprod}"; SECRET="${CI_SECRET:-${CI_HORSPROD_SECRET:?Variable CI_SECRET (ou CI_HORSPROD_SECRET) absente — définissez-la (voir poc-control-plane-federation/.env.example)}}"
 AUD="${AUDIENCE:-wm-admin}"
-SCOPES=(deploy:dev deploy:rec deploy:int)   # PAS deploy:prod (barrière)
+# Scopes DÉRIVÉS de la chaîne (scripts/lib/env-chain.sh) : un scope deploy:{env}
+# par palier HORS-PROD. La barrière « PAS deploy:prod » devient STRUCTURELLE —
+# c'est le terminus de la chaîne qui est exclu, pas un nom codé en dur.
+. "$(dirname "$0")/lib/env-chain.sh"
+read -r -a _HP <<< "$(env_chain_nonprod)" || { echo "✗ chaîne d'environnements illisible"; exit 1; }
+SCOPES=(); for _e in "${_HP[@]}"; do SCOPES+=("deploy:$_e"); done
 CURL=(/usr/bin/curl -s); JSON=(-H 'Content-Type: application/json')
 
 admin_token() {

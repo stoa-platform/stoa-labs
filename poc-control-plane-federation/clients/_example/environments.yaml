@@ -1,0 +1,111 @@
+# clients/_example/environments.yaml — LA CHAÎNE DE PROMOTION ET SES PORTES
+#
+# Couche CONFIG CLIENT (DELIVERY-PROCESS.md §1 et §3) : ce fichier est le seul
+# endroit où se déclarent les paliers d'un engagement et les contrôles de chaque
+# saut. Il est lu SUR `main` du dépôt governance, à chaque requête, par DEUX
+# consommateurs (aucun état hors de Git) :
+#   - governance-api  — refuse ou accepte une promotion (Store.EnvChain)
+#   - labctl apply-uac / dispatch-gate  — projette et garde le dispatch
+#
+# ⚠ FICHIER ABSENT ⇒ chaîne PAR DÉFAUT `dev → staging → production`
+# (labctl/internal/governance/store.go:24). Ce n'est PAS une chaîne neutre :
+# ce sont trois noms d'environnements qui n'existent chez personne ici. Un
+# déploiement qui « ne trouve pas son palier » vient presque toujours de là.
+#
+# ⚠ FICHIER PRÉSENT MAIS CASSÉ ⇒ ERREUR, jamais un repli silencieux sur le
+# défaut (ParseEnvChain est fail-closed). C'est voulu : une chaîne à moitié lue
+# est une chaîne dont les portes sont fausses.
+#
+# ── L'ORDRE DE LA LISTE EST LA CHAÎNE ────────────────────────────────────────
+# `environments` est ORDONNÉ : c'est lui qui définit ce qu'est « le palier
+# suivant » (EnvChain.NextOf). Un saut qui ne suit pas cet ordre — dev → prod
+# directement — n'est pas exprimable. La chaîne est strictement LINÉAIRE : il
+# n'y a pas de branche parallèle (cf. GOAL décision client n°4, si `homol` doit
+# un jour être parallèle à `int` plutôt que consécutif, c'est du CODE à écrire,
+# pas une ligne de ce fichier).
+environments: [dev, rec, int, homol, prod]
+
+# ── LES PORTES, UNE PAR SAUT, CLÉES PAR L'ENVIRONNEMENT D'ARRIVÉE ────────────
+# Champs disponibles (labctl/internal/governance/envchain.go) :
+#   to                — l'env d'arrivée gardé par cette porte (OBLIGATOIRE, et
+#                       il DOIT figurer dans `environments` ci-dessus)
+#   approverGroup     — restreint l'approbation aux membres de ce groupe, lu
+#                       dans la claim `groups` du jeton VÉRIFIÉ
+#   fourEyes          — bloque demandeur == approbateur
+#   requireChangeRef  — référence de changement (ITSM) obligatoire À LA DEMANDE
+#   requirePVRef      — référence de PV de validation obligatoire à la demande
+#   itsmCheck         — le change est re-vérifié « approved » auprès de l'ITSM
+#                       AU MOMENT DE L'APPROBATION (fail-closed : ITSM muet ou
+#                       injoignable ⇒ le saut est REFUSÉ)
+#   selfApproval      — DOCUMENTAIRE UNIQUEMENT. Ne relâche rien : l'auto-
+#                       approbation n'est BLOQUÉE que par `fourEyes`. On l'écrit
+#                       pour rendre l'intention lisible, jamais pour l'appliquer.
+#
+# Un palier SANS porte n'est pas un palier sans contrôle : c'est un palier où
+# quiconque détient `promotions:approve` approuve, y compris le demandeur.
+gates:
+
+  # dev → rec — AUTONOMIE DU DEMANDEUR.
+  #
+  # ⚠ DÉCISION CLIENT OUVERTE (GOAL décision n°1). Ce réglage applique le besoin
+  # tel qu'exprimé (« dev et rec peuvent se faire de manière autonome par celui
+  # qui remplit le formulaire »), et il est en TENSION avec l'art. 17(1)(b) du
+  # règlement délégué (UE) 2024/1774 (RTS DORA), applicable depuis le
+  # 2025-01-17, qui exige « des mécanismes garantissant l'indépendance des
+  # fonctions qui approuvent les changements et des fonctions responsables de
+  # les demander et de les mettre en œuvre » — pour « TOUS les changements »,
+  # sans palier exempté. Le texte est technologiquement neutre et la
+  # proportionnalité (art. 4 DORA) module la CONCEPTION du mécanisme, pas son
+  # EXISTENCE.
+  #
+  # Pour fermer : ajouter `fourEyes: true` (un pair de l'équipe approuve) —
+  # c'est une ligne, et c'est le seul changement nécessaire.
+  - to: rec
+    selfApproval: true
+
+  # rec → int — UNE AUTRE ÉQUIPE DÉCLENCHE.
+  # `approverGroup` porte l'exigence « une autre équipe » ; `fourEyes` interdit
+  # en plus au demandeur d'être l'approbateur, même s'il appartenait au groupe.
+  # Les deux sont cumulés délibérément : le groupe dit QUI, les quatre yeux
+  # disent PAS LUI.
+  - to: int
+    approverGroup: int-team
+    fourEyes: true
+
+  # int → homol — TROISIÈME ÉQUIPE, PROCESSUS PLUS STRICT.
+  # `release-team` est la MÊME équipe qu'en prod, délibérément : le besoin dit
+  # « l'homol et la prod toujours par une autre équipe, mais avec un process
+  # plus strict » — c'est donc le PROCESS qui durcit d'un palier à l'autre
+  # (ici le PV ; en prod le change + la re-vérification ITSM), pas l'équipe.
+  # Pour scinder en deux équipes distinctes : remplacer ce nom par
+  # `homol-team` et créer le groupe. C'est un mot, et rien d'autre à changer.
+  # `requirePVRef` fait du PV de validation une condition DE LA DEMANDE : une
+  # promotion sans lui n'est pas « en attente », elle n'existe pas.
+  - to: homol
+    approverGroup: release-team
+    fourEyes: true
+    requirePVRef: true
+
+  # homol → prod — LE RÉGIME COMPLET.
+  # `requireChangeRef` exige le change à la demande ; `itsmCheck` le re-vérifie
+  # « approved » auprès de l'ITSM au moment de l'approbation. Les deux, pas
+  # l'un : un change référencé à la demande peut avoir été rejeté depuis
+  # (c'est la garde anti-TOCTOU, ADR-075).
+  #
+  # ⚠ DEUX CONVENTIONS DE GROUPES COEXISTENT, NE PAS LES CONFONDRE :
+  #   - `approverGroup` ci-dessus est comparé à la claim **`groups` du jeton
+  #     Keycloak vérifié** → convention `<env>-team` (`int-team` existe déjà
+  #     dans le realm stoa-lab). C'est CELLE-CI qu'on écrit ici.
+  #   - `apim-operator-<env>` est un groupe **LDAP mappé sur une policy Vault**
+  #     (scripts/setup-vault-ldap.sh:156, policy `operator-deploy`) : il gouverne
+  #     l'accès aux SECRETS, pas l'approbation d'une promotion. Écrire un nom
+  #     `apim-operator-*` ici ne produit aucune erreur — juste une porte qui ne
+  #     matche JAMAIS, donc un saut impossible à approuver (fail-closed, mais
+  #     pour la mauvaise raison).
+  # Les noms RÉELS des groupes d'annuaire du client restent la décision n°2.
+  - to: prod
+    approverGroup: release-team
+    fourEyes: true
+    requireChangeRef: true
+    requirePVRef: true
+    itsmCheck: true

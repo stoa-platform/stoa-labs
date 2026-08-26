@@ -32,15 +32,22 @@ put() {
 
 # Secret values (PoC-disposable; override via env to inject real ones out-of-band).
 # DOIVENT matcher les ADMIN_USER/ADMIN_PASSWORD des mocks (docker-compose.envs.yml).
-WM_DEV_USER="${WM_DEV_USER:-wm-dev-admin}";  WM_DEV_PASS="${WM_DEV_PASS:-wm-dev-secret-poc}"
-WM_REC_USER="${WM_REC_USER:-wm-rec-admin}";  WM_REC_PASS="${WM_REC_PASS:-wm-rec-secret-poc}"
-WM_INT_USER="${WM_INT_USER:-wm-int-admin}";  WM_INT_PASS="${WM_INT_PASS:-wm-int-secret-poc}"
+# Chaîne DÉRIVÉE (scripts/lib/env-chain.sh) : un secret admin par palier
+# HORS-PROD, plus de bloc à recopier à chaque nouvel environnement. Les
+# surcharges nominatives historiques (WM_DEV_USER, WM_REC_PASS…) restent
+# honorées à l'identique — c'est ce que lit la boucle ci-dessous.
+. "$(dirname "$0")/lib/env-chain.sh"
+read -r -a HP_ENVS <<< "$(env_chain_nonprod)" || { echo "✗ chaîne d'environnements illisible" >&2; exit 1; }
 CI_HORSPROD_SECRET="${CI_HORSPROD_SECRET:?Variable CI_HORSPROD_SECRET absente — définissez-la (voir poc-control-plane-federation/.env.example)}"
 
 echo "Vault $VAULT_ADDR — provisioning secret/$PREFIX/envs/* (KV v2, ADR-075)"
-put envs/dev/wm-admin "{\"username\":\"$WM_DEV_USER\",\"password\":\"$WM_DEV_PASS\"}"
-put envs/rec/wm-admin "{\"username\":\"$WM_REC_USER\",\"password\":\"$WM_REC_PASS\"}"
-put envs/int/wm-admin "{\"username\":\"$WM_INT_USER\",\"password\":\"$WM_INT_PASS\"}"
+for E in "${HP_ENVS[@]}"; do
+  # Nom de variable historique par env : WM_<ENV>_USER / WM_<ENV>_PASS.
+  EU="WM_$(printf %s "$E" | tr '[:lower:]' '[:upper:]')_USER"
+  EP="WM_$(printf %s "$E" | tr '[:lower:]' '[:upper:]')_PASS"
+  U="${!EU:-wm-$E-admin}"; P="${!EP:-wm-$E-secret-poc}"
+  put "envs/$E/wm-admin" "{\"username\":\"$U\",\"password\":\"$P\"}"
+done
 
 # secret/stoa/ci : MERGE manuel — relire ciApplierSecret (posé par setup-vault.sh)
 # avant de réécrire l'objet complet (KV v2 ne merge pas).
