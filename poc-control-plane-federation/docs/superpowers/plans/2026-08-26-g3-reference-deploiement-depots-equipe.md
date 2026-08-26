@@ -1601,15 +1601,29 @@ commit: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 zz: "y' "" "$(printf 'a%.0s' $(seq 64))" | grep -q REF_INVALIDE \
   && ok "REF_INVALIDE — une reference qui tente d'ouvrir une ligne YAML est refusee" \
   || bad "un CHANGE_REF multiligne ACCEPTE — le demandeur choisirait le pin (derniere cle gagne)"
-grep -q 'yaml.safe_dump' "$ROOT/scripts/api-promote-request.sh" \
+# ⚠ ANCRER SUR LE CODE, PAS SUR LE TEXTE. Ces trois correctifs sont expliques
+# par de longs commentaires qui CITENT le motif recherche — un `grep` nu est
+# donc satisfait par l'explication du correctif meme apres que le correctif a
+# disparu. Mesure en re-revue sur l'assertion `fail-with-body` : elle passait
+# au vert sur le seul commentaire. C'est le troisieme vert vacant de cette
+# campagne ; on retire les commentaires avant de chercher.
+WCODE="$TMP/apr-sans-commentaires.sh"
+sed 's/[[:space:]]*#.*$//' "$ROOT/scripts/api-promote-request.sh" > "$WCODE"
+grep -q 'yaml.safe_dump' "$WCODE" \
   && ok "le marqueur est SERIALISE, pas formate — une valeur ne peut pas fabriquer de cle" \
   || bad "marqueur produit par %-formatage : une valeur peut ouvrir une nouvelle ligne YAML"
-grep -q 'fail-with-body' "$ROOT/scripts/api-promote-request.sh" \
+grep -q -- '--fail-with-body' "$WCODE" \
   && ok "curl echoue vraiment sur un HTTP non-2xx (sinon LECTURE_PROVIDERS est du code mort)" \
   || bad "curl -s rend 0 sur un 404 : le refus emis serait un mensonge"
-grep -q 'raw/poc-control-plane-federation/ansible/providers' "$ROOT/scripts/api-promote-request.sh" \
+grep -q 'raw/poc-control-plane-federation/ansible/providers' "$WCODE" \
   && ok "le chemin providers porte le prefixe du sous-repertoire" \
   || bad "chemin providers sans prefixe — 404 a chaque execution hors DRY_RUN"
+# PV_REF passe par la meme garde que CHANGE_REF ; l'eprouver separement, sinon
+# la moitie du verrou n'est tenue par rien.
+run_w int homol "" 'PV"
+commit: cccccccccccccccccccccccccccccccccccccccc' "$(printf 'a%.0s' $(seq 64))" | grep -q REF_INVALIDE \
+  && ok "REF_INVALIDE couvre aussi PV_REF" \
+  || bad "PV_REF non contraint — la moitie du verrou de reference n'est tenue par rien"
 grep -q REPO_NON_DECLARE "$ROOT/scripts/api-promote-request.sh" \
   && ok "REPO_NON_DECLARE — une équipe sans dépôt déclaré est refusée" \
   || bad "aucune garde sur l'appartenance dépôt↔équipe"
@@ -1754,6 +1768,11 @@ with open(os.environ["OUT"], "w") as f:
         "archive_sha256": os.environ["SH"],
     }, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
 PY
+# Sans cette garde, un echec d'ecriture (disque plein, chemin impossible) ne
+# se voit qu'au commit suivant, sous la forme trompeuse « COMMIT_VIDE : le
+# marqueur est deja a cette valeur ». Nommer la vraie cause.
+[ -s "$TMP/team/$MARKER" ] \
+  || fail "MARQUEUR_NON_ECRIT : $MARKER vide ou absent apres serialisation"
 git -C "$TMP/team" add "$MARKER"
 git -C "$TMP/team" -c user.name=ci -c user.email=ci@stoa.lab \
   commit -qm "promote(${API_NAME}): ${FROM_ENV} -> ${TO_ENV} @ ${PIN}" \
@@ -1783,7 +1802,7 @@ echo "PROMOTION_DEMANDEE : $PR_URL"
 - [ ] **Step 4 : Lancer les tests et shellcheck**
 
 Run: `bash scripts/test-deploy-pin.sh && shellcheck scripts/api-promote-request.sh scripts/lib/deploy-pin.sh`
-Expected: `46 PASS / 0 FAIL` ; shellcheck sans erreur (les `SC1091` de source non suivi sont acceptables).
+Expected: `47 PASS / 0 FAIL` ; shellcheck sans erreur (les `SC1091` de source non suivi sont acceptables).
 
 - [ ] **Step 5 : Commit**
 
@@ -1922,7 +1941,7 @@ Et mettre à jour le commentaire de tête du `Makefile` (ligne 8) :
 - [ ] **Step 6 : Lancer toutes les portes**
 
 Run: `bash scripts/test-deploy-pin.sh && bash scripts/test-jenkinsfile-lint.sh && bash scripts/test-env-chain.sh`
-Expected: `49 PASS / 0 FAIL` ; le lint Jenkinsfile passe à **13/13** (un Jenkinsfile de plus à compiler) ; `test-env-chain.sh` reste 4/4.
+Expected: `50 PASS / 0 FAIL` ; le lint Jenkinsfile passe à **13/13** (un Jenkinsfile de plus à compiler) ; `test-env-chain.sh` reste 4/4.
 
 - [ ] **Step 7 : Commit**
 
@@ -2012,7 +2031,7 @@ Enfin, remplacer les deux extra-vars de l'invocation :
 - [ ] **Step 4 : Lancer les tests**
 
 Run: `bash scripts/test-deploy-pin.sh && bash scripts/test-team-publish-wiring.sh && shellcheck scripts/team-publish.sh`
-Expected: `53 PASS / 0 FAIL` pour le premier ; `test-team-publish-wiring.sh` **inchangé** (aucune régression sur les 20+ épreuves existantes, dont le test 17 sur `apim_ss_contract_pin`) ; shellcheck propre.
+Expected: `54 PASS / 0 FAIL` pour le premier ; `test-team-publish-wiring.sh` **inchangé** (aucune régression sur les 20+ épreuves existantes, dont le test 17 sur `apim_ss_contract_pin`) ; shellcheck propre.
 
 > Si `test-team-publish-wiring.sh` rougit sur le test 17, c'est attendu et il faut le **mettre à jour** : il vérifie littéralement `-e apim_ss_contract_pin="$SPEC_PATH"`. Remplacer cette chaîne par `-e apim_ss_contract_pin="$DEPLOY_PIN_CONTRACT"` dans l'assertion, et ajouter une assertion que `$SPEC_PATH` sert toujours à la garde de liste blanche. **Ne pas supprimer l'épreuve** : c'est elle qui empêche le manifeste de redevenir maître du contrat.
 
@@ -2033,4 +2052,4 @@ git commit -m "feat(g3): brancher le resolveur sur team-publish — plus de code
 - **Il ne branche pas le verbe archive sur les sauts rec et au-delà.** C'est **G5**. Le résolveur produit les chemins ; aucun pipeline ne les consomme encore en dehors du chemin dev existant.
 - **Il ne transporte pas les octets de l'archive d'un palier à l'autre.** Pas de dépôt d'artefacts — c'est **G5**. Le digest lie l'approuvé au déployé ; il ne déplace rien.
 - **Il n'ajoute pas `DeployerGroup`** (« qui déploie » à côté de « qui approuve »). C'est **G2**.
-- **La porte G3 telle qu'écrite dans le GOAL** (« l'apply *en rec* projette ce contrat ») n'est donc **pas exerçable E2E** à l'issue de ce plan. Ce qui est prouvé : le résolveur, ses refus, le digest bout à bout, l'écrivain — 53/53 hors ligne sur dépôt Git réel, contre-épreuve par sabotage comprise.
+- **La porte G3 telle qu'écrite dans le GOAL** (« l'apply *en rec* projette ce contrat ») n'est donc **pas exerçable E2E** à l'issue de ce plan. Ce qui est prouvé : le résolveur, ses refus, le digest bout à bout, l'écrivain — 54/54 hors ligne sur dépôt Git réel, contre-épreuve par sabotage comprise.
