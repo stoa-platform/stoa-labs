@@ -31,6 +31,7 @@ Valeurs copiées telles quelles depuis la spec `docs/superpowers/specs/2026-08-2
 | `scripts/lib/deploy-pin.sh` | **Créer** — le résolveur : lire le marqueur, résoudre au SHA, vérifier le digest. Aucune I/O réseau, aucun Ansible. | 1–3 |
 | `scripts/test-deploy-pin.sh` | **Créer** — la porte de preuve du résolveur, sur dépôt Git jetable, + sabotage. | 1–3 |
 | `scripts/lib/export-order-probe.py` | **Créer** — sonde d'ordre sur `export.yml` (un grep ne peut pas prouver un ordre). | 5 |
+| `scripts/lib/import-guard-probe.py` | **Créer** — sonde de garde sur `import.yml` (un grep ne distingue pas un test d'env d'un test de présence). | 6 |
 | `clients/_example/apis/accounts-read.deploy.rec.yaml.example` | **Créer** — le gabarit documenté du marqueur (le squelette d'équipe le reçoit par `cp -R`). | 4 |
 | `ansible/roles/apim_promote_api/tasks/export.yml` | **Modifier** — émettre le sha256 après sanitisation. | 5 |
 | `ansible/roles/apim_promote_api/defaults/main.yml` | **Modifier** — `apim_ss_archive_sha256`, `apim_ss_authoring_env`. | 6 |
@@ -1112,26 +1113,52 @@ Ajouter à `scripts/test-deploy-pin.sh` :
 
 ```bash
 echo "⑮ le rôle vérifie le digest LUI-MÊME — la garde des degrés D0/D2 (sans CI)"
+# ⚠ MÊME LEÇON QU'À L'ÉPREUVE ⑭, ET IL FAUT LA RETENIR ICI AUSSI : cinq
+# `grep -q` ne prouveraient que la présence de sous-chaînes quelque part dans
+# le fichier. Une régression qui remplacerait le `when:` de l'assert par un
+# test de PRÉSENCE (`… | length == 0`) — c'est-à-dire précisément le fail-open
+# que cette tâche existe pour proscrire — laisserait les cinq greps VERTS tant
+# que la chaîne « apim_ss_env != apim_ss_authoring_env » traîne ailleurs, un
+# commentaire suffisant. On parse donc le YAML et on lit les champs `when:` et
+# `that:` des asserts NOMMÉS.
 IMP="$ROOT/ansible/roles/apim_promote_api/tasks/import.yml"
 DEF="$ROOT/ansible/roles/apim_promote_api/defaults/main.yml"
-grep -q 'apim_ss_archive_sha256' "$DEF" \
+grep -q '^apim_ss_archive_sha256:' "$DEF" \
   && ok "apim_ss_archive_sha256 déclaré dans les defaults" \
   || bad "apim_ss_archive_sha256 absent des defaults"
-grep -q 'apim_ss_authoring_env' "$DEF" \
+grep -q '^apim_ss_authoring_env:' "$DEF" \
   && ok "apim_ss_authoring_env déclaré (la condition n'est pas un nom d'env codé en dur)" \
   || bad "apim_ss_authoring_env absent — 'dev' serait codé en dur dans une condition"
-grep -q 'ARCHIVE_DIGEST_REQUIRED' "$IMP" \
-  && ok "import.yml refuse une promotion hors authoring SANS digest" \
-  || bad "import.yml ne refuse pas l'absence de digest — fail-open aux degrés D0/D2"
-grep -q 'ARCHIVE_DIGEST_MISMATCH' "$IMP" \
-  && ok "import.yml refuse un digest qui ne correspond pas" \
-  || bad "import.yml ne compare jamais le digest aux octets"
-# La condition DOIT porter sur l'ENVIRONNEMENT, pas sur la présence de la var :
-# un assert conditionné par « la var est non vide » se désactive en oubliant la
-# var — c'est un fail-open déguisé en garde.
-grep -q "apim_ss_env != apim_ss_authoring_env" "$IMP" \
-  && ok "la condition porte sur l'environnement, pas sur la présence de la variable" \
-  || bad "condition fail-open : oublier l'extra-var suffirait à désactiver le contrôle"
+
+IMPV=$(IMP="$IMP" python3 "$ROOT/scripts/lib/import-guard-probe.py") \
+  || bad "PARSE_IMPORT : import.yml illisible"
+case "$IMPV" in
+  I=*)
+    IMPV="${IMPV#I=}"
+    W_REQ="${IMPV%%|*}"; IMPV="${IMPV#*|}"
+    T_CMP="${IMPV%%|*}"; IMPV="${IMPV#*|}"
+    H_ABS="${IMPV%%|*}"; O_ABS="${IMPV#*|}"
+    # La condition du refus « digest obligatoire » doit porter sur l'ENV.
+    case "$W_REQ" in
+      *"apim_ss_env"*"!="*"apim_ss_authoring_env"*)
+        ok "ARCHIVE_DIGEST_REQUIRED est conditionné par l'ENVIRONNEMENT" ;;
+      "") bad "aucun assert ARCHIVE_DIGEST_REQUIRED trouvé — fail-open aux degrés D0/D2" ;;
+      *)  bad "ARCHIVE_DIGEST_REQUIRED conditionné par '$W_REQ' — s'il teste la PRÉSENCE de la variable, oublier l'extra-var desactive le controle" ;;
+    esac
+    case "$T_CMP" in
+      *apim_ss_archive_sha256*) ok "ARCHIVE_DIGEST_MISMATCH compare bien au digest pinné" ;;
+      "") bad "aucun assert ARCHIVE_DIGEST_MISMATCH — les octets ne sont jamais compares" ;;
+      *)  bad "ARCHIVE_DIGEST_MISMATCH compare '$T_CMP' — pas le digest pinné" ;;
+    esac
+    [ "$H_ABS" = 1 ] \
+      && ok "une archive absente se dit ARCHIVE_ABSENT (pas une erreur Jinja brute)" \
+      || bad "archive absente : la comparaison explose en 'dict object has no attribute checksum' au lieu de nommer la cause"
+    [ "$O_ABS" = 1 ] \
+      && ok "la garde d'existence precede la comparaison" \
+      || bad "la garde d'existence ne precede pas la comparaison — l'erreur Jinja gagne quand meme"
+    ;;
+  *) bad "PARSE_IMPORT : sortie inattendue de la sonde" ;;
+esac
 ```
 
 - [ ] **Step 2 : Lancer le test pour vérifier qu'il échoue**
@@ -1188,9 +1215,23 @@ Dans `ansible/roles/apim_promote_api/tasks/import.yml`, insérer **après** la t
           le digest est produit par apim_promote_action=export (EXPORT_CONFIRMED).
       when: "(apim_ss_env | default('')) != apim_ss_authoring_env"
 
+    # Une archive absente doit se dire AVEC SON NOM. Sans cette garde,
+    # `imp_stat.stat` ne porte pas de clé `checksum` du tout et la comparaison
+    # ci-dessous explose en erreur Jinja brute (« 'dict object' has no attribute
+    # 'checksum' »). Le play s'arrête donc — la propriété fail-closed tient —
+    # mais l'opérateur D0/D2, celui qui n'a AUCUN CI en amont pour le rattraper,
+    # lit une trace de template au lieu de « l'archive est introuvable ». Or le
+    # chemin d'archive erroné est justement sa panne la plus probable.
+    - name: "Import : FAIL-CLOSED — l'archive existe"
+      ansible.builtin.assert:
+        that: "imp_stat.stat.exists | default(false)"
+        fail_msg: >-
+          ARCHIVE_ABSENT : {{ apim_promote.archive }} introuvable — le digest ne peut pas
+          être vérifié, donc on n'importe pas.
+
     - name: "Import : FAIL-CLOSED — les octets sont bien ceux qui ont été approuvés"
       ansible.builtin.assert:
-        that: "imp_stat.stat.checksum == apim_ss_archive_sha256"
+        that: "(imp_stat.stat.checksum | default('')) == apim_ss_archive_sha256"
         fail_msg: >-
           ARCHIVE_DIGEST_MISMATCH : {{ apim_promote.archive }} porte
           {{ imp_stat.stat.checksum | default('(illisible)') }} mais le marqueur pinne
@@ -1199,15 +1240,70 @@ Dans `ansible/roles/apim_promote_api/tasks/import.yml`, insérer **après** la t
       when: "(apim_ss_archive_sha256 | default('')) | length == 64"
 ```
 
+Créer aussi `scripts/lib/import-guard-probe.py`, que l'épreuve appelle :
+
+```python
+#!/usr/bin/env python3
+"""Sonde de GARDE sur import.yml (jalon G3, epreuve ⑮).
+
+Un grep ne peut pas repondre a la question qui compte : le refus « digest
+obligatoire » est-il conditionne par l'ENVIRONNEMENT, ou par la PRESENCE de la
+variable ? La seconde forme est un fail-open — oublier l'extra-var desactive le
+controle — et les deux se ressemblent dans un grep. On lit donc les champs
+`when:` et `that:` des asserts NOMMES.
+
+Sortie : I=<when du refus digest>|<that de la comparaison>|<garde d'existence ? 0|1>|<elle precede ? 0|1>
+"""
+import os
+import sys
+
+import yaml
+
+doc = yaml.safe_load(open(os.environ["IMP"])) or []
+
+tasks = []
+
+
+def walk(items):
+    for t in items or []:
+        if isinstance(t, dict):
+            tasks.append(t)
+            walk(t.get("block"))
+
+
+walk(doc)
+
+
+def find(fragment):
+    """La tache dont le fail_msg porte ce fragment, avec son indice."""
+    for i, t in enumerate(tasks):
+        a = t.get("ansible.builtin.assert") or {}
+        if fragment in str(a.get("fail_msg") or ""):
+            return i, t, a
+    return -1, None, None
+
+
+i_req, _, a_req = find("ARCHIVE_DIGEST_REQUIRED")
+i_cmp, t_cmp, a_cmp = find("ARCHIVE_DIGEST_MISMATCH")
+i_abs, _, _ = find("ARCHIVE_ABSENT")
+
+when_req = str((tasks[i_req].get("when") if i_req >= 0 else "") or "")
+that_cmp = str((a_cmp.get("that") if a_cmp else "") or "")
+has_abs = "1" if i_abs >= 0 else "0"
+before = "1" if (i_abs >= 0 and i_cmp >= 0 and i_abs < i_cmp) else "0"
+
+print("I=%s|%s|%s|%s" % (when_req, that_cmp, has_abs, before))
+```
+
 - [ ] **Step 5 : Lancer le test et le lint**
 
 Run: `bash scripts/test-deploy-pin.sh && bash scripts/test-jenkinsfile-lint.sh`
-Expected: `29 PASS / 0 FAIL` pour le premier ; le lint Jenkinsfile inchangé (12/12).
+Expected: `30 PASS / 0 FAIL` pour le premier ; le lint Jenkinsfile inchangé (12/12).
 
 - [ ] **Step 6 : Commit**
 
 ```bash
-git add ansible/roles/apim_promote_api/defaults/main.yml ansible/roles/apim_promote_api/tasks/import.yml scripts/test-deploy-pin.sh
+git add ansible/roles/apim_promote_api/defaults/main.yml ansible/roles/apim_promote_api/tasks/import.yml scripts/test-deploy-pin.sh scripts/lib/import-guard-probe.py
 git commit -m "feat(g3): l'import verifie le digest — garde fail-closed des degres D0/D2"
 ```
 
@@ -1397,7 +1493,7 @@ exit 1
 - [ ] **Step 5 : Lancer le test pour vérifier qu'il passe**
 
 Run: `bash scripts/test-deploy-pin.sh`
-Expected: PASS — `33 PASS / 0 FAIL`
+Expected: PASS — `34 PASS / 0 FAIL`
 
 - [ ] **Step 6 : Commit**
 
@@ -1574,7 +1670,7 @@ echo "PROMOTION_DEMANDEE : $PR_URL"
 - [ ] **Step 4 : Lancer les tests et shellcheck**
 
 Run: `bash scripts/test-deploy-pin.sh && shellcheck scripts/api-promote-request.sh scripts/lib/deploy-pin.sh`
-Expected: `38 PASS / 0 FAIL` ; shellcheck sans erreur (les `SC1091` de source non suivi sont acceptables).
+Expected: `39 PASS / 0 FAIL` ; shellcheck sans erreur (les `SC1091` de source non suivi sont acceptables).
 
 - [ ] **Step 5 : Commit**
 
@@ -1713,7 +1809,7 @@ Et mettre à jour le commentaire de tête du `Makefile` (ligne 8) :
 - [ ] **Step 6 : Lancer toutes les portes**
 
 Run: `bash scripts/test-deploy-pin.sh && bash scripts/test-jenkinsfile-lint.sh && bash scripts/test-env-chain.sh`
-Expected: `41 PASS / 0 FAIL` ; le lint Jenkinsfile passe à **13/13** (un Jenkinsfile de plus à compiler) ; `test-env-chain.sh` reste 4/4.
+Expected: `42 PASS / 0 FAIL` ; le lint Jenkinsfile passe à **13/13** (un Jenkinsfile de plus à compiler) ; `test-env-chain.sh` reste 4/4.
 
 - [ ] **Step 7 : Commit**
 
@@ -1803,7 +1899,7 @@ Enfin, remplacer les deux extra-vars de l'invocation :
 - [ ] **Step 4 : Lancer les tests**
 
 Run: `bash scripts/test-deploy-pin.sh && bash scripts/test-team-publish-wiring.sh && shellcheck scripts/team-publish.sh`
-Expected: `45 PASS / 0 FAIL` pour le premier ; `test-team-publish-wiring.sh` **inchangé** (aucune régression sur les 20+ épreuves existantes, dont le test 17 sur `apim_ss_contract_pin`) ; shellcheck propre.
+Expected: `46 PASS / 0 FAIL` pour le premier ; `test-team-publish-wiring.sh` **inchangé** (aucune régression sur les 20+ épreuves existantes, dont le test 17 sur `apim_ss_contract_pin`) ; shellcheck propre.
 
 > Si `test-team-publish-wiring.sh` rougit sur le test 17, c'est attendu et il faut le **mettre à jour** : il vérifie littéralement `-e apim_ss_contract_pin="$SPEC_PATH"`. Remplacer cette chaîne par `-e apim_ss_contract_pin="$DEPLOY_PIN_CONTRACT"` dans l'assertion, et ajouter une assertion que `$SPEC_PATH` sert toujours à la garde de liste blanche. **Ne pas supprimer l'épreuve** : c'est elle qui empêche le manifeste de redevenir maître du contrat.
 
@@ -1824,4 +1920,4 @@ git commit -m "feat(g3): brancher le resolveur sur team-publish — plus de code
 - **Il ne branche pas le verbe archive sur les sauts rec et au-delà.** C'est **G5**. Le résolveur produit les chemins ; aucun pipeline ne les consomme encore en dehors du chemin dev existant.
 - **Il ne transporte pas les octets de l'archive d'un palier à l'autre.** Pas de dépôt d'artefacts — c'est **G5**. Le digest lie l'approuvé au déployé ; il ne déplace rien.
 - **Il n'ajoute pas `DeployerGroup`** (« qui déploie » à côté de « qui approuve »). C'est **G2**.
-- **La porte G3 telle qu'écrite dans le GOAL** (« l'apply *en rec* projette ce contrat ») n'est donc **pas exerçable E2E** à l'issue de ce plan. Ce qui est prouvé : le résolveur, ses refus, le digest bout à bout, l'écrivain — 45/45 hors ligne sur dépôt Git réel, contre-épreuve par sabotage comprise.
+- **La porte G3 telle qu'écrite dans le GOAL** (« l'apply *en rec* projette ce contrat ») n'est donc **pas exerçable E2E** à l'issue de ce plan. Ce qui est prouvé : le résolveur, ses refus, le digest bout à bout, l'écrivain — 46/46 hors ligne sur dépôt Git réel, contre-épreuve par sabotage comprise.
