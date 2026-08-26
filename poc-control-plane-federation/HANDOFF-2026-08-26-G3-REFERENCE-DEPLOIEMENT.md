@@ -1,11 +1,11 @@
 # HANDOFF — G3 : la référence de déploiement, portée aux dépôts d'équipe
 
-**Session du 2026-08-26.** Branche `provision/probe-dev`, **42 commits**, rien n'est poussé
-(ni `origin`, ni `gitea`). Arbre propre. Toutes les portes au vert.
+**Session du 2026-08-26.** Branche `provision/probe-dev`, **46 commits**, **poussés sur `origin`**
+(GitHub). `gitea` n'a **rien reçu** — voir plus bas, ça compte. Arbre propre.
 
 | Porte | Résultat |
 |---|---|
-| `scripts/test-deploy-pin.sh` *(nouvelle)* | **60 / 0** |
+| `scripts/test-deploy-pin.sh` *(nouvelle)* | **78 / 0** |
 | `scripts/test-team-publish-wiring.sh` | **116 / 116** |
 | `scripts/test-env-chain.sh` | **4 / 0** |
 | `scripts/test-jenkinsfile-lint.sh` | **13 / 13** |
@@ -13,50 +13,39 @@
 
 ---
 
-## À LIRE EN PREMIER — une décision t'attend, et elle bloque G4
+## À LIRE EN PREMIER — ce qui a été arbitré, et ce que ça te coûte
 
-**Le pin ne pinne pas ce que tu crois pour un saut au-delà du premier.**
+**La chaîne promeut désormais ce que le palier source exécute, pas « le dernier `main` ».**
 
-`scripts/api-promote-request.sh:208` calcule la référence ainsi :
+Le premier jet ne le faisait pas. Le pin était `git log -1 main -- apis/<api>.*`, et le marqueur du
+palier source était ouvert puis jeté sauf `enabled`. Mesuré sur dépôt jetable : rec servant v1.0.0
+pendant que `main` porte v2.0.0, une demande `rec → int` écrivait **v2.0.0** — un état que rec n'a
+jamais servi. La PR annonçait « rec → int », l'approbateur mergeait, **rien ne rougissait**.
 
-```bash
-PIN=$(git -C "$TMP/team" log -1 --format=%H -- "apis/${API_NAME}.*")
-```
+Ton GOAL l'exigeait pourtant mot pour mot dans son test de réussite — *« chaque palier recevant
+exactement l'archive approuvée et pas "le dernier main" »*. Le défaut était dans la **spécification**,
+qui ne raisonnait que sur `dev → rec`, où les deux coïncident par construction.
 
-C'est **le dernier commit de `main`** — jamais « ce que le palier source exécute ». La garde de
-source, juste au-dessus, ouvre bien le marqueur du palier de départ… et n'en lit que `enabled` :
-son `commit` et son `archive_sha256` ne sont lus par personne.
+**Arbitré : chaînage strict.** Au-delà de `dev`, le pin **et** le digest viennent du marqueur du
+palier source. La version est relue **au commit retenu**, jamais sur l'arbre de travail.
 
-**Mesuré** par la revue finale, sur dépôt jetable :
+### Ce que ça te coûte, et il faut le savoir avant de le découvrir
 
-```
-C1  accounts-read v1.0.0    ← ce que le marqueur rec pinne, ce que rec SERT
-C2  marqueur deploy.rec.yaml
-C3  accounts-read v2.0.0    ← poussée sur main, JAMAIS déployée en rec
-```
+**Une correction ne saute aucun palier.** Un correctif urgent re-traverse `dev → rec → int → homol
+→ prod`. C'est le prix de la garantie : sans lui, la chaîne documenterait un parcours au lieu de le
+prouver. C'est écrit aux trois endroits où quelqu'un le lira (résolveur, gabarit, spécification).
 
-Une demande `rec → int` retient `PIN = C3` et écrit `version: 2.0.0` dans le marqueur `int`.
-La PR annonce « promotion rec → int », l'approbateur merge, **int reçoit un état que rec n'a
-jamais servi**. Rien ne rougit, à aucun étage. Idem homol, idem prod.
+### Ce que ça te rend
 
-Le défaut est dans la **spécification**, pas dans le code : `design.md` §3.3 ne raisonne que sur
-`dev → rec`, où « le dernier `main` » et « ce que dev exécute » coïncident par construction. Le
-cas N > 1 n'y est traité nulle part.
+« Build once, deploy many » devient **vrai par le mécanisme**. Le digest voyage avec le pin, donc
+les mêmes octets vont de dev jusqu'en prod. On avait dû écrire l'inverse dans la doc quelques heures
+plus tôt — c'est annulé, et les trois textes sont à l'endroit.
 
-**Le correctif fait ~10 lignes** (lire `commit` dans le marqueur source quand
-`FROM_ENV != dev`, et refuser si `main` a divergé). **Mais la question est la tienne, pas la
-mienne** : *une promotion peut-elle embarquer un état plus récent que le palier source ?*
-Il y a de bonnes raisons de répondre oui (rattraper un correctif sans repasser par rec) comme
-non (la chaîne à cinq paliers ne garantit plus rien). Je ne l'ai pas tranchée.
-
-**Corollaire, déjà corrigé dans la doc.** Trois textes affirmaient mot pour mot que le digest
-« FORCE la réutilisation des MÊMES octets d'un palier à l'autre… c'est ce qui distingue
-*build once, deploy many* d'une intention ». **C'est faux tel que livré** : le digest n'est pas
-chaîné d'un palier à l'autre, et un demandeur qui ré-exporte depuis la gateway source obtient un
-zip neuf (horodatages) dont il colle le digest — la vérification passe. La propriété réellement
-tenue est *les octets importés correspondent au digest que le demandeur a écrit*. Les trois
-textes (`scripts/lib/deploy-pin.sh`, le gabarit, `design.md` §6) énoncent maintenant la propriété
-réelle et **nomment** les deux dissymétries. Ne pas réintroduire l'affirmation.
+**Nuance qui change la lecture du code :** ce qui tient la garantie, c'est le **refus**, pas
+l'héritage. Le demandeur ressaisit le digest à chaque saut (la garde le lui impose : `TO_ENV` ne peut
+jamais valoir `dev`, tête de chaîne). Il n'est simplement plus *cru* — il est confronté à celui du
+palier source, et une divergence refuse (`DIGEST_CONTREDIT_SOURCE`). Le demandeur ne peut pas
+substituer les octets en cours de route ; il peut seulement se tromper de recopie, et il est refusé.
 
 ---
 
@@ -88,10 +77,17 @@ Il lit le marqueur **au SHA mergé**, matérialise les manifestes **au SHA pinn�
 et vérifie le digest. Il vit **dans le CI, en amont des deux moteurs** : aucun moteur ne porte de
 logique de pin, et un refus est mécaniquement antérieur au play.
 
-Refus nommés, tous fail-closed : `PIN_ABSENT`, `PIN_MALFORMED`, `PIN_NON_ANCETRE`,
+Il porte aussi le **chaînage** (`resolve_promotion_pin`) et la **réconciliation du digest**
+(`reconcile_promotion_digest`). Ces deux-là vivent dans la bibliothèque **parce qu'elles s'y
+éprouvent hors ligne** : au site d'appel elles seraient dans le chemin post-`DRY_RUN`, qu'aucune
+épreuve n'exerce.
+
+Refus nommés, tous fail-closed — à l'apply : `PIN_ABSENT`, `PIN_MALFORMED`, `PIN_NON_ANCETRE`,
 `PIN_UNREADABLE`, `PIN_VERSION_MISMATCH`, `PROMOTE_MANIFEST_ABSENT`, `ARCHIVE_ABSENT`,
 `ARCHIVE_PATH_RELATIVE`, `ARCHIVE_UNREADABLE`, `ARCHIVE_DIGEST_MISMATCH`, `DIGEST_ABSENT`,
-`API_NAME_INVALIDE`, `ENV_INVALIDE`, `WORKDIR_INCREABLE`.
+`API_NAME_INVALIDE`, `ENV_INVALIDE`, `WORKDIR_INCREABLE` ; au chaînage : `SOURCE_NON_DEPLOYEE`,
+`PARSE_MARQUEUR_SOURCE`, `SOURCE_PIN_MALFORMED`, `SOURCE_DIGEST_ABSENT`, `SOURCE_VERSION_MISMATCH`,
+`DIGEST_CONTREDIT_SOURCE`, `PIN_INTROUVABLE`.
 
 **`PIN_NON_ANCETRE` est la garde qui ne se devine pas.** Un `git clone` sans `--depth 1` récupère
 **toutes** les branches, donc `git show <sha>:<path>` réussit sur un commit jamais mergé. Sans
@@ -114,6 +110,9 @@ personne ne déploie) ; le CI le vérifie avant tout play ; `import.yml` le re-v
 qu'il s'apprête à POSTer. **Deux fois, délibérément** : `DELIVERY-PROCESS.md` §3 définit les degrés
 D0 (runbook) et D2 (`ansible-playbook` sans orchestrateur), où il n'y a **aucun** CI. Une garde qui
 ne vivrait que dans le CI serait absente là où l'opérateur agit à la main.
+
+Et depuis l'arbitrage, il **se chaîne** : hors `dev`, il est hérité du marqueur du palier source, et
+`reconcile_promotion_digest` refuse un digest de formulaire qui le contredirait.
 
 ### Le reste
 
@@ -141,7 +140,7 @@ d'équipe via `team-apply.sh`.
 
 ---
 
-## Deux leçons à porter — elles ont coûté cher
+## Trois leçons à porter — elles ont coûté cher
 
 ### 1. Une assertion ne se relit pas, elle se MUTE
 
@@ -179,32 +178,50 @@ contient `| default('')` (cas réel des `when:`/`that:` Ansible). Délimiteur `\
 
 ---
 
+### 3. Rendre une logique testable ne suffit pas — il faut éprouver qu'elle est APPELÉE
+
+Le piège s'est refermé sur moi à la toute fin, et c'est le plus instructif. Constatant que le calcul
+du pin vivait dans le chemin post-`DRY_RUN` qu'aucune épreuve n'exerce, je l'ai déplacé dans la
+bibliothèque **pour qu'il devienne éprouvable** — et j'ai laissé le **seul appel** et la garde
+`DIGEST_CONTREDIT_SOURCE` dans ce même chemin non testé. Le relecteur a retiré l'appel : **les trois
+portes sont restées vertes**. La fonction devenait du code mort, le défaut qu'on venait d'arbitrer
+revenait, et aucun voyant ne s'allumait.
+
+C'est exactement ce que l'épreuve ⑳ existe pour empêcher sur le jumeau (« sourcer n'est pas
+appeler ») — je ne l'avais pas appliqué au nouveau. **Déplacer une garantie ne la garantit pas :
+il faut une épreuve sur le câblage, ancrée sur le code décommenté.**
+
 ## Points ouverts, par ordre de ce que je ferais
 
-1. **Trancher l'arbitrage du pin** (§ À LIRE EN PREMIER). Bloque G4.
-2. **Rouvrir la surchargeabilité d'`apim_ss_authoring_env` si le rôle devient déclenchable par un
+L'arbitrage du pin est **fermé** ; les neuf mineurs de sa revue aussi (aucun parqué). Reste :
+
+1. **Pousser sur `gitea` dès que le lab est relancé** — `git push gitea provision/probe-dev`.
+   `gitea` est **ce que lit le CI du lab**, et sa lignée n'a pas d'ancêtre commun avec GitHub. Tant
+   qu'il n'a rien, aucun job du lab ne voit G3. Il n'a pas répondu de toute la session (timeout sur
+   `localhost:13000`). Si le lot passe le mégaoctet, `http.postBuffer` est requis sur ce remote.
+2. **Poser les deux gestes de G1 restés en attente** (bloqués par le classifieur, à lancer en
+   `! bash`), dans cet ordre : `bash scripts/setup-release-team.sh` puis
+   `GITEA_TOKEN=<write:repository> bash scripts/seed-governance-chain.sh`. La porte prod nomme
+   `release-team` ; tant que le groupe n'existe pas, une promotion vers prod est inapprouvable —
+   fail-closed, mais bloquant, et il vaut mieux le savoir avant de le découvrir.
+3. **Rouvrir la surchargeabilité d'`apim_ss_authoring_env` si le rôle devient déclenchable par un
    tiers.** Un reviewer l'a classée **CRITIQUE** (`-e apim_ss_authoring_env=prod` désarme les deux
-   asserts d'un coup) ; **je l'ai parquée** en « réel, non bloquant » — aux degrés D0/D2
-   l'opérateur lance le play lui-même, et la garde équivalente côté CI est scellée par une
-   affectation sèche. La dissymétrie est nommée dans `defaults/main.yml`. **C'est mon arbitrage,
-   pas un consensus.**
-3. **Poser les deux gestes de G1 restés en attente** (bloqués par le classifieur, à lancer en
-   `! bash`) : `bash scripts/setup-release-team.sh` puis
-   `GITEA_TOKEN=<write:repository> bash scripts/seed-governance-chain.sh`. Dans cet ordre — la
-   porte prod nomme `release-team`, et tant que le groupe n'existe pas une promotion vers prod est
-   inapprouvable (fail-closed, mais bloquant).
-4. **`PIN_NON_RESOLU` n'atteint jamais le commentaire de PR** (`_dp_fail` écrit sur stderr,
-   `fail()` ne capture rien). Théorique aujourd'hui — tous les refus possibles en `dev` sont
-   pré-empêchés en amont. Ce sera **la** surface de diagnostic de l'équipe le jour où G4 ouvre
-   `rec` : à inscrire dans le brief G4, pas seulement dans un ledger.
+   asserts d'un coup) ; **je l'ai parquée** en « réel, non bloquant » — aux degrés D0/D2 l'opérateur
+   lance le play lui-même, et la garde équivalente côté CI est scellée par une affectation sèche.
+   La dissymétrie est nommée dans `defaults/main.yml`. **C'est mon arbitrage, pas un consensus.**
+4. **`PIN_NON_RESOLU` n'atteint jamais le commentaire de PR** (`_dp_fail` écrit sur stderr, `fail()`
+   ne capture rien). Théorique aujourd'hui — en `dev` tous les refus possibles sont pré-empêchés en
+   amont. Ce sera **la** surface de diagnostic de l'équipe le jour où G4 ouvre `rec` : à inscrire
+   dans le brief G4, pas seulement dans un ledger.
 5. **Hors `dev`, le branchement du résolveur est DURCISSANT, pas préservant** : avec `ENVN=rec` il
    exige marqueur + digest + archive là où la publication serait partie sur `per_env.rec`.
    Inatteignable aujourd'hui (seul `providers.dev.yml` existe), mais à dire avant G4.
 6. **La contre-épreuve ⑫ n'est pas *concurrency-safe*** : deux exécutions simultanées de
-   `test-deploy-pin.sh` se disputent la même fenêtre de sabotage. Observé en direct. En CI la
-   suite tourne une fois ; à garder à l'esprit.
-
----
+   `test-deploy-pin.sh` se disputent la même fenêtre de sabotage. Observé en direct. En CI la suite
+   tourne une fois ; à garder à l'esprit.
+7. **Pas de PR ouverte.** GitHub la propose :
+   `https://github.com/stoa-platform/stoa-labs/pull/new/provision/probe-dev`. Non ouverte, non
+   demandée.
 
 ## Deux écarts de processus, dits plutôt que masqués
 
@@ -227,4 +244,6 @@ contient `| default('')` (cas réel des `when:`/`that:` Ansible). Délimiteur `\
   `.superpowers/sdd/2026-08-26-g3-reference-deploiement-depots-equipe/progress.md`
 - **Revue finale de branche** (1 Critical, 6 Important, 6 Minor) et sa vague de correctifs :
   `final-review.md`, `final-fix-report.md`, `final-rereview.md` au même endroit.
+- **Revue de l'arbitrage** (1 Critique, 3 Important, 9 Mineurs — tous traités, aucun parqué) :
+  `arbitrage-review.md`, et le diff revu dans `arbitrage-chainage.diff`.
 - **GOAL** : `GOAL-cd-promotion-5-envs-2026-08-26.md` — G3 est fait, restent G2, G4, G5, G6, G7, G8.
