@@ -300,14 +300,40 @@ else
   bad "gabarit absent — un dépôt d'équipe créé par team-apply n'aurait aucun exemple de marqueur"
 fi
 
-echo "⑭ l'export ÉMET le sha256 — sans quoi personne ne peut remplir le marqueur"
+echo "⑭ l'export ÉMET le sha256 APRÈS sanitisation — l'ORDRE est la propriété qui compte"
+# ⚠ Un `grep` sur « checksum_algorithm: sha256 » ne prouverait RIEN d'utile : la
+# sous-chaîne peut exister n'importe où, y compris dans un commentaire, et
+# surtout elle ne dit pas si le digest est pris AVANT ou APRÈS la sanitisation.
+# Or c'est exactement là qu'est le défaut possible — un digest des octets bruts
+# pinnerait des octets que personne ne déploie. On PARSE donc le fichier et on
+# vérifie l'ordre RÉEL des tâches, plus le câblage des variables.
 EXP="$ROOT/ansible/roles/apim_promote_api/tasks/export.yml"
-grep -q 'checksum_algorithm: sha256' "$EXP" \
-  && ok "export.yml calcule le sha256 de l'archive" \
-  || bad "export.yml ne calcule aucun sha256 — le demandeur n'a rien à coller dans archive_sha256"
-grep -q 'sha256=' "$EXP" \
-  && ok "le sha256 est AFFICHÉ (EXPORT_CONFIRMED)" \
-  || bad "sha256 calculé mais jamais affiché — inutilisable par le demandeur"
+EXPV=$(EXP="$EXP" python3 "$ROOT/scripts/lib/export-order-probe.py") \
+  || bad "PARSE_EXPORT : export.yml illisible"
+case "$EXPV" in
+  E=*)
+    EXPV="${EXPV#E=}"
+    I_SAN="${EXPV%%|*}";  EXPV="${EXPV#*|}"
+    I_STAT="${EXPV%%|*}"; EXPV="${EXPV#*|}"
+    I_CONF="${EXPV%%|*}"; EXPV="${EXPV#*|}"
+    P_STAT="${EXPV%%|*}"; EXPV="${EXPV#*|}"
+    F_SHA="${EXPV%%|*}";  G_64="${EXPV#*|}"
+    { [ "$I_SAN" -ge 0 ] && [ "$I_STAT" -gt "$I_SAN" ] && [ "$I_CONF" -gt "$I_STAT" ]; } \
+      && ok "ordre RÉEL : sanitize -> sha256 -> EXPORT_CONFIRMED (digest des octets SANITIZÉS)" \
+      || bad "ordre FAUX (sanitize=$I_SAN, sha256=$I_STAT, confirmed=$I_CONF) — un digest pris avant sanitisation pinnerait des octets que personne ne déploie"
+    [ "$P_STAT" = "{{ apim_promote.archive }}" ] \
+      && ok "le stat cible bien l'archive du manifeste" \
+      || bad "le stat cible '$P_STAT' et non {{ apim_promote.archive }}"
+    case "$F_SHA" in
+      *exp_stat.stat.checksum*) ok "exp_sha256 est alimenté par le checksum réellement calculé" ;;
+      *) bad "exp_sha256 vient de '$F_SHA' — pas du stat : le sha256 affiché pourrait être sans rapport" ;;
+    esac
+    [ "$G_64" = 1 ] \
+      && ok "garde fail-closed sur une longueur de 64 (digest incalculable => refus)" \
+      || bad "aucune garde de longueur : un checksum vide partirait dans EXPORT_CONFIRMED"
+    ;;
+  *) bad "PARSE_EXPORT : sortie inattendue de la sonde d'ordre" ;;
+esac
 
 printf '\n  %d PASS / %d FAIL\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
