@@ -2030,9 +2030,29 @@ Ajouter à `scripts/test-deploy-pin.sh` :
 ```bash
 echo "⑳ le résolveur est BRANCHÉ — pas du code mort"
 TP="$ROOT/scripts/team-publish.sh"
-grep -q 'lib/deploy-pin.sh' "$TP" \
-  && ok "team-publish.sh source le résolveur" \
-  || bad "résolveur appelé par RIEN — code mort, comme labctl promote (reproche G8)"
+# ⚠ CINQUIÈME VERT VACANT DE CETTE CAMPAGNE, ET LE PLUS IRONIQUE : l'assertion
+# censée prouver que le résolveur n'est PAS du code mort était satisfaite par le
+# COMMENTAIRE qui l'annonce. `team-publish.sh` porte deux fois la chaîne
+# « lib/deploy-pin.sh » : la directive `# shellcheck source=lib/deploy-pin.sh`
+# ET le `.` qui source réellement. Mutation-testé : retirer le source en
+# gardant la directive laissait l'assertion VERTE.
+#
+# Et surtout : SOURCER N'EST PAS APPELER. Supprimer la ligne
+# `resolve_deploy_pin …` laissait les QUATRE assertions vertes. Un
+# team-publish.sh sans aucun appel serait passé entièrement au vert hors ligne.
+# On ancre donc sur les lignes de CODE, et on exige l'APPEL, et son ORDRE.
+grep -qE '^\. scripts/lib/deploy-pin\.sh$' "$TP" \
+  && ok "team-publish.sh source réellement le résolveur (ligne de code, pas la directive shellcheck)" \
+  || bad "le résolveur n'est pas sourcé — seule la directive shellcheck le mentionne"
+grep -qE '^resolve_deploy_pin "\$TMP/team"' "$TP" \
+  && ok "le résolveur est réellement APPELÉ — sourcer n'est pas appeler" \
+  || bad "résolveur sourcé mais jamais appelé : code mort, exactement le reproche fait a labctl promote (G8)"
+# L'ORDRE : la résolution doit précéder le play, sinon le refus arrive trop tard.
+L_RESOLVE=$(grep -nE '^resolve_deploy_pin "\$TMP/team"' "$TP" | head -1 | cut -d: -f1)
+L_PLAY=$(grep -nE '^\( ansible-playbook' "$TP" | head -1 | cut -d: -f1)
+{ [ -n "$L_RESOLVE" ] && [ -n "$L_PLAY" ] && [ "$L_RESOLVE" -lt "$L_PLAY" ]; } \
+  && ok "la résolution précède le play (refus mécaniquement antérieur)" \
+  || bad "la résolution ne précède pas le play (resolve=$L_RESOLVE, play=$L_PLAY) — un refus arriverait après coup"
 grep -q 'apim_ss_manifest="\$DEPLOY_PIN_PUBLISH"' "$TP" \
   && ok "le manifeste passé au rôle est le RÉSOLU, pas le chemin brut du clone" \
   || bad "team-publish.sh passe encore \$PUB_PATH — le résolveur ne sert à rien"
@@ -2056,7 +2076,12 @@ Dans `scripts/team-publish.sh`, ajouter le source juste après le `cd "$(dirname
 
 ```bash
 # shellcheck source=lib/deploy-pin.sh
-. scripts/lib/deploy-pin.sh
+# `set -e` n'est pas actif dans ce script : sans ce garde-fou, un fichier
+# manquant laisserait bash CONTINUER, et l'échec se présenterait bien plus bas
+# comme « resolve_deploy_pin: command not found » puis PIN_NON_RESOLU — un
+# fail-closed par accident, avec un message qui accuse la résolution au lieu du
+# fichier absent.
+. scripts/lib/deploy-pin.sh || { echo "ERREUR: scripts/lib/deploy-pin.sh introuvable ou illisible" >&2; exit 1; }
 ```
 
 Puis, **juste avant** le bloc `( ansible-playbook -i ansible/inventory.lab.ini ansible/publish-api.yml` (ligne 341), insérer :
@@ -2090,9 +2115,9 @@ Enfin, remplacer les deux extra-vars de l'invocation :
 - [ ] **Step 4 : Lancer les tests**
 
 Run: `bash scripts/test-deploy-pin.sh && bash scripts/test-team-publish-wiring.sh && shellcheck scripts/team-publish.sh`
-Expected: `56 PASS / 0 FAIL` pour le premier ; `test-team-publish-wiring.sh` **inchangé** (aucune régression sur les 20+ épreuves existantes, dont le test 17 sur `apim_ss_contract_pin`) ; shellcheck propre.
+Expected: `58 PASS / 0 FAIL` pour le premier ; `test-team-publish-wiring.sh` **inchangé** (aucune régression sur les 20+ épreuves existantes, dont le test 17 sur `apim_ss_contract_pin`) ; shellcheck propre.
 
-> Si `test-team-publish-wiring.sh` rougit sur le test 17, c'est attendu et il faut le **mettre à jour** : il vérifie littéralement `-e apim_ss_contract_pin="$SPEC_PATH"`. Remplacer cette chaîne par `-e apim_ss_contract_pin="$DEPLOY_PIN_CONTRACT"` dans l'assertion, et ajouter une assertion que `$SPEC_PATH` sert toujours à la garde de liste blanche. **Ne pas supprimer l'épreuve** : c'est elle qui empêche le manifeste de redevenir maître du contrat.
+> Si `test-team-publish-wiring.sh` rougit sur le test 17, c'est attendu et il faut le **mettre à jour** : il vérifie littéralement `-e apim_ss_contract_pin="$SPEC_PATH"`. Remplacer cette chaîne par `-e apim_ss_contract_pin="$DEPLOY_PIN_CONTRACT"` dans l'assertion, et ajouter une assertion que `$SPEC_PATH` sert toujours à la garde d'EXISTENCE du contrat (`CONTRAT_ABSENT`) — c'est son seul usage dans ce script ; la liste blanche, elle, lit `$PUB_PATH`, et libeller l'assertion autrement serait un message faux de plus. **Ne pas supprimer l'épreuve** : c'est elle qui empêche le manifeste de redevenir maître du contrat.
 
 - [ ] **Step 5 : Commit**
 
@@ -2111,4 +2136,4 @@ git commit -m "feat(g3): brancher le resolveur sur team-publish — plus de code
 - **Il ne branche pas le verbe archive sur les sauts rec et au-delà.** C'est **G5**. Le résolveur produit les chemins ; aucun pipeline ne les consomme encore en dehors du chemin dev existant.
 - **Il ne transporte pas les octets de l'archive d'un palier à l'autre.** Pas de dépôt d'artefacts — c'est **G5**. Le digest lie l'approuvé au déployé ; il ne déplace rien.
 - **Il n'ajoute pas `DeployerGroup`** (« qui déploie » à côté de « qui approuve »). C'est **G2**.
-- **La porte G3 telle qu'écrite dans le GOAL** (« l'apply *en rec* projette ce contrat ») n'est donc **pas exerçable E2E** à l'issue de ce plan. Ce qui est prouvé : le résolveur, ses refus, le digest bout à bout, l'écrivain — 56/56 hors ligne sur dépôt Git réel, contre-épreuve par sabotage comprise.
+- **La porte G3 telle qu'écrite dans le GOAL** (« l'apply *en rec* projette ce contrat ») n'est donc **pas exerçable E2E** à l'issue de ce plan. Ce qui est prouvé : le résolveur, ses refus, le digest bout à bout, l'écrivain — 58/58 hors ligne sur dépôt Git réel, contre-épreuve par sabotage comprise.
