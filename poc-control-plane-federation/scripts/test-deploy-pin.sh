@@ -427,8 +427,38 @@ else
 
   run_w dev rec "" "" "pas-un-digest" > "$TMP/w16"
   grep -q DIGEST_MALFORMED "$TMP/w16" \
-    && ok "DIGEST_MALFORMED" \
+    && ok "DIGEST_MALFORMED (longueur)" \
     || bad "digest de forme invalide ACCEPTÉ"
+
+  # ⚠ « DEUX VERROUS, PAS UN » — et il faut donc DEUX épreuves. L'assertion
+  # ci-dessus est interceptée par le verrou de LONGUEUR (13 caractères) et
+  # laisse le verrou de CLASSE DE CARACTÈRES sans aucune couverture : mesuré
+  # en revue, neutraliser ce dernier laissait les quatre assertions VERTES
+  # alors que le mutant acceptait 64 caractères non hexadécimaux comme digest.
+  run_w dev rec "" "" "$(printf 'z%.0s' $(seq 64))" > "$TMP/w16"
+  grep -q DIGEST_MALFORMED "$TMP/w16" \
+    && ok "DIGEST_MALFORMED (classe de caractères, 64 non-hex)" \
+    || bad "64 caractères non hexadécimaux ACCEPTÉS comme digest — un nom de branche passerait pour des octets"
+
+  # `itsmCheck` IMPLIQUE une référence de changement : sans elle il n'y a rien
+  # à re-vérifier auprès de l'ITSM. C'est LA raison d'être d'env_chain_gate, et
+  # sans cette épreuve rien dans le dépôt ne rougirait si l'implication
+  # disparaissait — la divergence silencieuse exacte contre laquelle le
+  # commentaire de la fonction met en garde. homol -> prod SANS change n'est
+  # refusé QUE par elle.
+  run_w homol prod "" "PV-1" "$(printf 'a%.0s' $(seq 64))" > "$TMP/w16"
+  grep -q GATE_REFS_REQUIRED "$TMP/w16" \
+    && ok "itsmCheck implique change_ref — homol -> prod sans change refusé" \
+    || bad "implication itsmCheck => requireChangeRef non appliquée"
+
+  # ⚠ LE CHEMIN NOMINAL. Une suite dont toutes les épreuves sont des REFUS ne
+  # teste jamais l'acceptation : une garde trop zélée — la boucle de chaîne
+  # cassée de sorte que NEXT soit toujours vide, une validation de nom durcie à
+  # l'excès — passerait au vert partout. Leçon déjà payée sur ce dépôt.
+  run_w homol prod "C-1" "PV-1" "$(printf 'a%.0s' $(seq 64))" > "$TMP/w16"
+  grep -q GARDES_OK "$TMP/w16" \
+    && ok "chemin NOMINAL : une promotion complète et légitime est ACCEPTÉE" \
+    || bad "une promotion pourtant conforme est refusée — garde trop zélée"
 fi
 
 printf '\n  %d PASS / %d FAIL\n' "$PASS" "$FAIL"

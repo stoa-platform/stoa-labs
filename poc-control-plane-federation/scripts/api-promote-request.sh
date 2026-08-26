@@ -40,9 +40,15 @@ PV_REF="${PV_REF:-}"
 ARCHIVE_SHA256="${ARCHIVE_SHA256:-}"
 AUTHORING_ENV="${DEPLOY_PIN_AUTHORING_ENV:-dev}"
 
+# ⚠ FORME NÉGATIVE, ET C'EST LA SEULE QUI MARCHE. Dans un motif de `case`,
+# `*` n'est pas un quantificateur mais le joker « n'importe quelle suite » :
+# `[a-z0-9][a-z0-9-]*` se lit donc « un caractère, puis un caractère, puis
+# ABSOLUMENT N'IMPORTE QUOI ». Mesuré en revue — cette forme acceptait
+# `ab/../../../etc/passwd`, `ab$(id)` et `ab;rm -rf /`. C'est la classe de
+# défaut que ce dépôt documente déjà noir sur blanc dans deploy-pin.sh, et
+# dont la garde sœur (`""|*[!a-z0-9-]*`) est la forme correcte.
 case "$API_NAME" in
-  [a-z0-9][a-z0-9-]*) ;;
-  *) fail "API_NAME_INVALIDE : '$API_NAME' — attendu ^[a-z0-9][a-z0-9-]+$" ;;
+  ""|-*|*[!a-z0-9-]*) fail "API_NAME_INVALIDE : '$API_NAME' — attendu des minuscules, chiffres et tirets, sans tiret initial" ;;
 esac
 [ "${#MESSAGE}" -le 1000 ] || fail "MESSAGE_TROP_LONG : le message d'audit dépasse 1000 caractères"
 
