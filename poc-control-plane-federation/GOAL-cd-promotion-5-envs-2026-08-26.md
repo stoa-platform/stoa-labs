@@ -263,6 +263,33 @@ ADR-081 tient : la décision est le **merge**, la PR est le tableau de bord. Le 
 **Porte G7 :** une promotion complète `dev → rec → int → homol → prod`, chaque saut visible sur sa PR, chaque apply commenté avec son résultat et l'identité qui l'a porté.
 **Contre-épreuve :** déclencher le job de promotion **sans** la PR mergée ⇒ refus (le gate Git est déjà celui-là : palier sans `deploy.<env>.yaml` mergé ⇒ skippé).
 
+> **FAIT le 2026-08-27** — ADR-086, spec
+> `docs/superpowers/specs/2026-08-27-g7-parcours-du-demandeur-design.md`.
+> **Porte tenue par BUILDS Jenkins réels** : quatre PRs de promotion
+> (`banking-demo/accounts-api` #22-25), builds `team-promote` #18 (rec, bob) /
+> #19 (int, bob — « bob porte apply-int » lisible au build) / #20 (homol,
+> carol, PV) / #24 (prod, oscar — itsm `approved` re-vérifié AU DISPATCH,
+> `operator-deploy`, VOIE DIRECTE) ; GUID `14c2529e-…003` actif et identique
+> sur les QUATRE paliers ; chaque PR porte plan / résultat (**demandée par /
+> mergée par / portée par**) / statut build.
+> **Contre-épreuves par builds** : #25 FAILURE `PAYLOAD_PERIME` (webhook forgé
+> sur une PR JAMAIS mergée — la réconciliation Gitea fait foi, moteur jamais
+> lancé, catalogue inchangé) ; #26 FAILURE `ITSM_NOT_APPROVED` (la MÊME PR
+> verte en #24 refuse dès que le change repasse `draft`).
+> **Hors-ligne** : wiring 160/0 (G7-a..g, ordre par mutation), env-chain 11/0,
+> `make lint-ci` 8/8.
+> **Livré en plus** : la voie du TERMINUS par POSITION (`TERMINUS_SANS_VOIE`,
+> labctl refusé, `EFFECTIVE_VIA`) ; §6ter ITSM au dispatch de la chaîne
+> d'équipe (trois refus distincts, fail-closed) ; ouverture du terminus =
+> geste de credential (seed dérivé + `operator-deploy` étendu) ; le corps du
+> refus produit remonte sur la PR (`return_content`).
+> **LIMITE MESURÉE (builds #21/#23)** : l'importeur du PRODUIT réel refuse une
+> archive fabriquée par le mock (« No assets found in the ACDL import file ») —
+> le terminus du LAB est donc `wm-mock-prod` (homogène, direct) et le verbe
+> réel→réel reste prouvé par ADR-079 ; chez un client tout-réel la question ne
+> se pose pas. Restes nommés : approverGroup au merge (ADR-081), 4-yeux
+> pipeline inerte sans build-user-vars, parité des moteurs = G8.
+
 ---
 
 ## Décisions client bloquantes

@@ -479,9 +479,16 @@ Le pas-à-pas, saut par saut :
    Porte `release-team` + 4-yeux + `itsmCheck` + `apim-operator-prod` — au
    lab : **oscar**. Deux différences PROPRES au terminus :
    - **la voie est DIRECTE** (pas de proxy `wm-admin-prod` — il n'existe pas,
-     par structure) : le moteur ansible attaque la gateway réelle en Basic,
-     creds `envs/prod/wm-admin` lus dans Vault par le rôle. Le moteur labctl
-     est refusé vers le terminus (`COMBINAISON_NON_SUPPORTEE`) ;
+     par structure) : le moteur ansible attaque la gateway du terminus en
+     Basic, creds `envs/prod/wm-admin` lus dans Vault par le rôle. Le moteur
+     labctl est refusé vers le terminus (`COMBINAISON_NON_SUPPORTEE`).
+     ⚠ **Au LAB, le terminus est `wm-mock-prod`** (seul mock joignable de
+     Jenkins — le contrat du terminus), pas la gateway réelle : l'importeur du
+     PRODUIT refuse une archive fabriquée par le mock d'authoring (« No assets
+     found in the ACDL import file », mesuré builds #21/#23) — la chaîne
+     d'équipe du lab est homogène mock→mock, et le verbe réel→réel reste
+     prouvé par ADR-079 sur la gateway réelle. Chez un client (tout-réel), le
+     gabarit `APIM_DIRECT_BASE_TPL` par défaut vise la gateway réelle ;
    - **l'ITSM est re-vérifié au dispatch** (§6ter) : le change du marqueur
      MERGÉ doit être `approved` À CE MOMENT-LÀ — `ITSM_NOT_APPROVED` sinon,
      `ITSM_UNAVAILABLE` si l'ITSM ne répond pas, fail-closed dans tous les cas
@@ -498,6 +505,18 @@ NON mergée refuse `PAYLOAD_PERIME` (la réconciliation Gitea fait foi, jamais
 le payload) ; un palier sans marqueur mergé refuse `PIN_ABSENT` ; un moteur
 jamais lancé sur refus est la propriété prouvée garde par garde
 (`test-team-promote-wiring.sh`, 160/0).
+
+**Preuve (2026-08-27, builds Jenkins réels).** Parcours complet sur
+`banking-demo/accounts-api`, API `t10-promote-api` : export `api-promote-export
+#2` (guid stable, digest frais), puis PRs #22/#23/#24/#25 mergées par
+bob/bob/carol/oscar, builds `team-promote` **#18/#19/#20/#24 SUCCESS** —
+GUID `14c2529e-…003` **actif et identique sur les quatre paliers**, chaque PR
+portant ses trois couches (plan / résultat avec les trois identités / statut
+build). Contre-épreuves par builds : **#25 FAILURE `PAYLOAD_PERIME`** (webhook
+forgé sur la PR #26 jamais mergée — moteur jamais lancé, catalogue inchangé) et
+**#26 FAILURE `ITSM_NOT_APPROVED`** (la même PR verte en #24 refuse dès que le
+change repasse `draft` — anti-TOCTOU au dispatch). Les builds #21/#23 sont la
+MESURE de la limite mock→réel citée plus haut.
 
 Détail des décisions et des refus nommés : **ADR-086 — Le parcours du
 demandeur : une PR, un tableau de bord**.

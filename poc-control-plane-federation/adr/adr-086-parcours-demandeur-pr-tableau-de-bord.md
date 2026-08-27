@@ -1,8 +1,8 @@
 ---
 title: "ADR-086 — Le parcours du demandeur : une PR par saut, la PR comme tableau de bord. Le formulaire n'a aucune autorité ; la décision est le merge, l'apply remonte sur la PR avec ses trois identités (demandeur / mergeur / porteur) ; le terminus s'atteint par POSITION (voie directe, jamais de proxy) et l'ITSM est re-vérifié au dispatch de la chaîne d'équipe."
 sidebar_label: "ADR-086 : le parcours du demandeur (G7)"
-status: "Acté et prouvé hors-ligne : test-team-promote-wiring.sh 160/0 (dont G7-a..g — voie du terminus par mutation, ITSM draft/inconnu/panne/non-configuré ⇒ moteur jamais lancé, commentaire RELU tel que posté), test-env-chain.sh 11/0 (lecteurs terminus/itsmCheck + contre-épreuves source cassée), make lint-ci 8/8. Live (builds Jenkins) : à jouer — le parcours complet dev→rec→int→homol→prod par builds réels est LA porte du GOAL, référencée ici une fois jouée, jamais avant."
-maturite_technique: "✅ Mécanisme prouvé hors-ligne (chaque refus nouveau ⇒ stub moteur JAMAIS invoqué, ordre prouvé par mutation et par la liste ordonnée des jetons). Résiduel nommé : le parcours live par builds n'était pas joué à l'écriture ; approverGroup toujours pas enforced au merge (protection de branche, ADR-081) ; 4-yeux pipeline inerte tant que build-user-vars manque (promoted_by=ci) ; parité d'état des deux moteurs = G8."
+status: "Acté et prouvé hors-ligne (test-team-promote-wiring.sh 160/0 dont G7-a..g, test-env-chain.sh 11/0, make lint-ci 8/8) ET par BUILDS JENKINS réels le 2026-08-27 : parcours complet dev→rec→int→homol→prod sur 4 PRs (banking-demo/accounts-api #22-25), builds team-promote #18 (rec, bob) / #19 (int, bob, apply-int déclaré) / #20 (homol, carol, apply-homol) / #24 (prod, oscar, operator-deploy + itsm approved au dispatch + VOIE DIRECTE), GUID iso 14c2529e-…003 actif sur les QUATRE paliers, chaque PR portant plan + résultat (demandée/mergée/portée) + statut build. Contre-épreuves par builds : #25 FAILURE PAYLOAD_PERIME (webhook forgé sur la PR #26 JAMAIS mergée, moteur jamais lancé, catalogue inchangé) ; #26 FAILURE ITSM_NOT_APPROVED (MÊME PR #25 verte en #24, change repassé draft ⇒ refus au dispatch, moteur jamais lancé — l'anti-TOCTOU montré, pas raconté)."
+maturite_technique: "✅ Mécanisme prouvé hors-ligne ET live par builds. LIMITE MESURÉE (builds #21/#23) : une archive fabriquée par le MOCK d'authoring est REFUSÉE par l'importeur du PRODUIT réel — HTTP 400 « No assets found in the ACDL import file » (l'ACDL du produit est un asset_composite aux namespaces SoftwareAG ; celui du mock une imitation minimale). La chaîne d'équipe du LAB est donc HOMOGÈNE mock→mock, terminus compris (wm-mock-prod, seul mock sur le réseau poc — attaqué en DIRECT par Jenkins, c'est le contrat du terminus) ; le verbe réel→réel reste prouvé par ADR-079 (22/22 sur la gateway réelle, rejoué G5). Résiduels nommés : approverGroup pas enforced au merge (ADR-081) ; 4-yeux pipeline inerte sans build-user-vars (promoted_by=ci) ; parité moteurs = G8."
 date: 2026-08-27
 adr_number: 86
 note: "Consomme ADR-081 (la décision EST le merge — ce jalon ne déplace aucune autorité, il rend le tableau de bord VRAI), ADR-083 (le verbe archive et ses gardes antérieures au moteur — G7 y ajoute deux gardes, mêmes règles), ADR-082 (ouvrir le terminus = un geste de credential, ici étendu au DERNIER palier), ADR-084 (le porteur est l'identité Vault de la pause — G7 la NOMME sur la PR), ADR-075/A6 (l'anti-TOCTOU ITSM au dispatch, porté au second monde — la chaîne d'équipe)."
@@ -124,6 +124,36 @@ AVANT Vault (§7 — aucun secret présenté avant ce verdict) :
 Le harnais du stub a un **défaut STRICT pour l'ITSM** : sans déclaration
 explicite du cas, `/changes/<id>` rend 404 — la valeur qui refuse le plus. Un
 cas nominal doit dire `set_itsm 200 approved` ; l'oublier ne peut pas verdir.
+
+## La preuve live — builds Jenkins du 2026-08-27, et la limite qu'elle a mesurée
+
+| build `team-promote` | saut | verdict | ce qu'il prouve |
+|---|---|---|---|
+| #18 | dev→rec (PR #22, bob) | SUCCESS | selfApproval + rétention apply-rec |
+| #19 | rec→int (PR #23, bob) | SUCCESS | §7.a « bob porte apply-int (apim-apply-int) » lisible au build |
+| #20 | int→homol (PR #24, carol) | SUCCESS | PV exigé à la demande, apply-homol |
+| #21 | homol→prod (PR #25, oscar) | FAILURE | TOUTES les portes passées (itsm approved, operator-deploy, palier ouvert, voie directe) — **le PRODUIT réel refuse l'archive du mock** (HTTP 400) |
+| #22-#23 | rejeux diagnostics | FAILURE | le CORPS du refus remonte sur la PR : **« No assets found in the ACDL import file »** |
+| #24 | homol→prod (PR #25, oscar) | SUCCESS | terminus servi en VOIE DIRECTE (wm-mock-prod), GUID iso 4/4 paliers |
+| #25 | contre-épreuve GOAL (PR #26 JAMAIS mergée, webhook forgé) | FAILURE | `PAYLOAD_PERIME`, moteur jamais lancé (`PLAY`=0), catalogue inchangé |
+| #26 | contre-épreuve ITSM (PR #25, change repassé `draft`) | FAILURE | `ITSM_NOT_APPROVED` au dispatch — la MÊME PR verte en #24 refuse dès que le change est révoqué |
+
+**La limite mesurée, et la décision qu'elle a forcée.** L'ACDL du produit est un
+`asset_composite` aux namespaces SoftwareAG avec des payloads d'assets de
+qualité produit ; celui du mock, une imitation minimale. Rendre l'export du
+mock importable par le produit reviendrait à réimplémenter le format de
+persistance du produit — refusé (non borné, et sans valeur client : chez un
+client, TOUS les paliers sont des gateways réelles, l'archive vient d'un
+export réel). Le LAB rend donc sa chaîne d'équipe HOMOGÈNE : le terminus est
+`wm-mock-prod` — **seul mock sur le réseau `poc`**, parce que le terminus
+s'attaque en direct par le pipeline de release (c'est le contrat de D1, pas
+une entorse à la ségrégation) — et la gateway RÉELLE garde ses trois rôles :
+routeur des proxies ADR-075, terminus de la chaîne governance (verbe
+apply-uac, qui régénère depuis Git et traverse les mondes), et banc de preuve
+du verbe archive réel→réel (ADR-079, 22/22). Au passage, le refus du produit
+remonte désormais AVEC SON CORPS sur la PR (`return_content` sur le POST
+/archive + capture `.{1,400}` — une classe sans-guillemet s'arrêtait au
+premier `\"` ré-échappé, mesuré build #22).
 
 ## Conséquences
 
