@@ -521,6 +521,51 @@ MESURE de la limite mock→réel citée plus haut.
 Détail des décisions et des refus nommés : **ADR-086 — Le parcours du
 demandeur : une PR, un tableau de bord**.
 
+## La parité des deux moteurs (G8)
+
+Le verbe archive est porté par **deux moteurs** (`apim_promote_api` côté
+client, `labctl promote` côté lab — ADR-083, décision n°6 du GOAL). Depuis G8
+(ADR-087), leur iso-sémantique n'est plus une promesse : c'est une **porte
+rejouable**, dont la définition exacte vit dans un registre versionné.
+
+**Rejouer la porte** (gateway réelle + Vault du lab requis, ~6 min) :
+
+```bash
+./scripts/test-parity-moteurs.sh          # 29/0 attendu
+```
+
+Le harnais exporte la même API par les deux moteurs (artefacts comparés entrée
+par entrée), importe la **même archive** par chacun sur un palier remis à
+vierge entre les deux, et **diffe les états** (API par GUID, graphe de
+politiques, aliases per-env — cred Vault compris —, scope-mapping, sonde
+data-plane). Il attend ensuite le ROUGE sur deux mutations volontaires (un
+moteur qui saute le scope-mapping doit se voir), et rejoue la porte en lecture
+seule par les deux moteurs :
+
+```bash
+# côté rôle (le --tags verify) :
+ansible-playbook ansible/promote-api-verify.yml -e apim_ss_env=rec \
+  -e apim_promote_manifest=<...>.promote.yml
+# côté lab :
+labctl promote --manifest <...>.promote.yml --env rec --action verify -f targets.yaml
+```
+
+**Le registre des écarts assumés** : `scripts/testdata/parity-ecarts.txt` —
+consommé PAR le harnais (lignes `state` = chemins exclus du diff, `artifact` =
+motifs normalisés, TAB-séparés, raison obligatoire). Un écart qui n'y est pas
+**rougit**. Registre humain complet (avec les mesures et les écarts de moteur
+hors état — digest rôle/CI seulement, terminus ansible-only, auth admin) :
+ADR-087.
+
+**Quand la parité rougit** : mesurer l'écart. Volatil et sans effet runtime ⇒
+il entre au registre AVEC sa raison. Sémantique ⇒ on répare le moteur fautif —
+la porte a attrapé `passSecurityHeaders` divergent à sa première exécution,
+c'est son travail. Jamais d'exclusion de confort.
+
+**Réflexe** : avant de toucher `ansible/roles/apim_promote_api/` ou
+`labctl/cmd/labctl/promote.go` (et ses primitives d'`archive.go`), rejouer la
+porte ; après, aussi.
+
 ## Résiduel
 
 - **Le lien entre le Jenkins local et celui du labs n'est pas établi.** Ce sont

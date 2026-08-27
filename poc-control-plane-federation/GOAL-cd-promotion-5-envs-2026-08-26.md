@@ -1,7 +1,7 @@
 ---
 title: "GOAL — La chaîne CD manquante : promouvoir APIs et applications de dev jusqu'en prod sur cinq paliers, par une référence pinnée et des portes dont l'autorité vit hors du pipeline"
 type: goal
-status: "Cadré sur relevé du dépôt (2026-08-26) + deep-research (105 agents, 11 claims vérifiés en 3-votes, 4 claims réglementaires RÉFUTÉS). Huit jalons G1..G8. Décision n°6 TRANCHÉE le 2026-08-26 (deux moteurs iso-sémantiques ⇒ G8 ; DELIVERY-PROCESS.md corrigé le même jour) ; cinq décisions client restent ouvertes, dont une qui touche le besoin tel qu'exprimé. À valider avant spécification."
+status: "SOLDÉ le 2026-08-27 : les HUIT jalons G1..G8 sont FAITS (voir l'encart FAIT de chaque section — G8 le 2026-08-27 : parité des moteurs 29/0 ×2, ADR-087). Restent les cinq décisions CLIENT ouvertes (§ Décisions client bloquantes), qui sont des réglages de politique, pas des jalons de construction."
 date: 2026-08-26
 lié: [GOAL-self-service-api-app-2026-07-09, GOAL-socle-vers-gateway-2026-07-28, adr-075-wm-admin-proxy-multienv, adr-076-gitops-api-lifecycle-repo-per-project, adr-078-livrable-self-service-app-wm1015, adr-079-deploiement-promotion-multienv-import-archive, adr-081-ou-vit-la-decision-humaine]
 note: "Le besoin remonté était « il manque un workflow git ». Le relevé montre autre chose : le moteur de promotion N-paliers avec portes par saut EST écrit et testé — il n'est simplement jamais configuré, jamais relié au self-service, et son verbe de déploiement n'est pas celui qu'ADR-079 a tranché."
@@ -226,6 +226,28 @@ Choisir (c) sans ce jalon, c'est maintenir deux chemins de déploiement dont rie
 **Porte G8 :** les deux moteurs, sur le même manifeste, produisent un état de gateway **identique** sur les champs du registre — rejouable en `--tags verify`.
 **Contre-épreuve :** introduire volontairement une divergence dans un moteur ⇒ le test de parité **rougit**. Une parité qui ne rougit jamais ne prouve rien (le motif F1 du GOAL socle).
 **Tant que G8 n'est pas fermé, le régime à deux moteurs est une dette ouverte, pas un acquis** — et c'est écrit comme tel dans `DELIVERY-PROCESS.md`.
+
+> **FAIT le 2026-08-27** — ADR-087, `ENVIRONNEMENTS.md` § « La parité des
+> deux moteurs (G8) ». Porte tenue LIVE contre la gateway réelle :
+> `scripts/test-parity-moteurs.sh` **29/0 ×2** (rejouabilité comprise) —
+> même `.promote.yml`, même archive, palier remis à vierge entre les deux
+> moteurs, DIFF des snapshots (API/policies/actions/aliases dont cred
+> Vault/scope/data-plane) sous registre MÉCANIQUE
+> (`scripts/testdata/parity-ecarts.txt`, consommé par le harnais : un écart
+> non listé rougit par construction). Les trois livrables : (1) `labctl
+> promote --action verify` (lecture seule, 5 tests dont la preuve GET-only)
+> — la porte se rejoue par les DEUX moteurs (`--tags verify` côté rôle) ;
+> (2) parité d'artefact en plus de l'état (exports comparés entrée par
+> entrée) ; (3) le registre, mécanique + humain (ADR-087).
+> **Contre-épreuve tenue ×2** : labctl muté (scope sauté, copie patchée,
+> ancre vérifiée) ⇒ parité ROUGE 5 écarts nommés ; rôle muté ⇒ ROUGE idem.
+> **La porte a pris le jour même** : labctl seedait l'alias promote avec la
+> shape du PROXY (`passSecurityHeaders: true`) là où le rôle laisse le
+> défaut produit — pass-through de headers de sécurité divergent sur palier
+> vierge, corrigé (création promote minimale, projection proxy inchangée).
+> Pièges mesurés : fenêtre trial ~25 min (import coupé en vol →
+> `fresh_window`), snapshot fantôme sur gateway en recyclage (fail-closed
+> `SNAPSHOT_UNREADABLE`).
 
 ### G6 — Le repli, comme composant du déploiement
 

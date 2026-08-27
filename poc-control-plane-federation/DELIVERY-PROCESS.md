@@ -107,18 +107,17 @@ Notes d'architecture (vérifiées) :
   - **`labctl`** (`apply`, `apply-uac`, `promote`) — le chemin **lab/gouvernance**, celui des
     pipelines `Jenkinsfile`, `.prod`, `.rollback`, et le seul qui porte les gates.
 
-  **Le prix de ce régime est un test de parité, et il n'est pas optionnel.** Aujourd'hui
-  l'iso-sémantique est une intention écrite dans un commentaire (`labctl/cmd/labctl/promote.go:1-3`,
-  *« one manifest, two engines »*) et **jamais mesurée** : `labctl promote` n'est appelé par aucun
-  pipeline ni aucun script, ses deux seuls tests portent sur le chargement du manifeste, et
-  `scripts/test-archive-promotion.sh` (22/22) tape en `curl` brut — il prouve le comportement de
-  **webMethods**, ni l'un ni l'autre moteur. Deux chemins non comparés ne sont pas deux moteurs
-  iso-sémantiques : ce sont deux comportements dont on **espère** qu'ils coïncident.
+  **Le prix de ce régime est un test de parité, et il est PAYÉ (G8, 2026-08-27, ADR-087).**
+  `scripts/test-parity-moteurs.sh` (29/0 ×2, live) compare l'ÉTAT produit par les deux moteurs sur
+  le même `.promote.yml` et la même archive — snapshot normalisé, diff sous le registre MÉCANIQUE
+  `scripts/testdata/parity-ecarts.txt` (un écart non listé rougit par construction), contre-épreuve
+  par MUTATION des deux moteurs (le rouge est prouvé, motif F1), et la porte se rejoue en lecture
+  seule par les deux (`promote-api-verify.yml` / `labctl promote --action verify`).
 
-  **Règle, donc :** un manifeste (`.promote.yml`, `.publish.yml`) est **une** source ; tout verbe
-  ajouté à un moteur est ajouté à l'autre **ou** documenté comme écart explicite ; et la parité est
-  une **preuve X/X livrée** au même titre que les autres (`--tags verify`), pas une intention.
-  Tant que ce test n'existe pas, le régime à deux moteurs est une **dette ouverte**, pas un acquis.
+  **Règle, inchangée :** un manifeste (`.promote.yml`, `.publish.yml`) est **une** source ; tout
+  verbe ajouté à un moteur est ajouté à l'autre **ou** entre au registre comme écart explicite AVEC
+  sa mesure ; et toute modification d'un moteur se rejoue contre la porte de parité — avant, après.
+  La dette est soldée ; la garder soldée est le prix courant.
 - **Rollback** : la promotion prod a le sien (revert Git + re-apply, jamais de DELETE). Pour les
   mutations de config (KC, Vault, WSO2, jobs), le rollback réaliste = **re-run du setup idempotent
   vers l'état voulu** — à documenter comme tel, pas à promettre autrement.
