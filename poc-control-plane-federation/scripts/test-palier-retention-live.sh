@@ -182,9 +182,12 @@ seed_env_secret "$SECOND" || { printf '\n  %d PASS / %d FAIL\n' "$PASS" "$FAIL";
 mint(){ bash scripts/setup-vault-paliers.sh --mint "$1" 2>"$TMP/mint.err"; }
 
 approle_token(){ # <role_id> <secret_id> -> imprime le client_token
+  # role_id/secret_id passés par ENV, jamais par argv : le secret_id est un
+  # credential, et `ps` sur cet hôte PARTAGÉ exposerait un argv de python3.
+  local body
+  body="$(ROLE_ID="$1" SECRET_ID="$2" python3 -c 'import json,os;print(json.dumps({"role_id":os.environ["ROLE_ID"],"secret_id":os.environ["SECRET_ID"]}))')"
   curl -s -m 20 -X POST "$VAULT_ADDR/v1/auth/approle/login" \
-    -H 'Content-Type: application/json' \
-    -d "$(python3 -c 'import json,sys;print(json.dumps({"role_id":sys.argv[1],"secret_id":sys.argv[2]}))' "$1" "$2")" \
+    -H 'Content-Type: application/json' -d "$body" \
     | python3 -c 'import sys,json;print(json.load(sys.stdin)["auth"]["client_token"])' 2>/dev/null
 }
 
@@ -283,8 +286,13 @@ try: sys.stdout.write(json.load(sys.stdin)["data"]["policy"])
 except Exception: sys.exit(1)' > "$POLICY_BAK" 2>/dev/null
 [ -s "$POLICY_BAK" ] || lab_absent "policy apply-$SECOND illisible — révoquer sans sauvegarde est exclu"
 
-vcurl -X DELETE "$VAULT_ADDR/v1/sys/policies/acl/apply-$SECOND" -o /dev/null
+# POLICY_REVOKED armé AVANT le DELETE : un SIGINT/SIGTERM reçu PENDANT le curl
+# du DELETE déclencherait teardown ; l'indicateur posé APRÈS, la restauration
+# serait SAUTÉE et apply-$SECOND resterait révoquée sur le lab PARTAGÉ. Le
+# backup ci-dessus est garanti non vide : si le DELETE n'a pas eu lieu,
+# restore_policy re-PUT un contenu IDENTIQUE et le cmp passe — strictement sûr.
 POLICY_REVOKED=1
+vcurl -X DELETE "$VAULT_ADDR/v1/sys/policies/acl/apply-$SECOND" -o /dev/null
 [ "$(vcurl -o /dev/null -w '%{http_code}' "$VAULT_ADDR/v1/sys/policies/acl/apply-$SECOND")" = 404 ] \
   && ok "④ter policy apply-$SECOND RÉVOQUÉE (404) — l'exploitant a fermé le palier" \
   || bad "④ter la policy apply-$SECOND répond encore après DELETE"
@@ -301,9 +309,10 @@ grep -q "apply-$SECOND" "$TMP/canary.log" \
 # MESURE (pas une assertion) : la révocation ferme l'AUTORISATION, pas
 # l'AUTHENTIFICATION. Un pipeline qui se contenterait de « j'ai obtenu un
 # token » poursuivrait jusqu'à la gateway. C'est ce que ④quinquies interdit.
+# Même discipline que approle_token : secret_id par ENV, hors argv (hôte partagé).
+LOGIN_BODY="$(ROLE_ID="$R2" SECRET_ID="$S2" python3 -c 'import json,os;print(json.dumps({"role_id":os.environ["ROLE_ID"],"secret_id":os.environ["SECRET_ID"]}))')"
 LOGIN_AFTER="$(curl -s -m 20 -o /dev/null -w '%{http_code}' -X POST "$VAULT_ADDR/v1/auth/approle/login" \
-  -H 'Content-Type: application/json' \
-  -d "$(python3 -c 'import json,sys;print(json.dumps({"role_id":sys.argv[1],"secret_id":sys.argv[2]}))' "$R2" "$S2")")"
+  -H 'Content-Type: application/json' -d "$LOGIN_BODY")"
 ok "MESURE : policy révoquée, le login AppRole apply-$SECOND rend HTTP $LOGIN_AFTER — Vault délivre encore un token porteur d'un NOM de policy disparu ; la fermeture se produit à la LECTURE (403), pas à l'authentification"
 
 echo

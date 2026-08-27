@@ -315,7 +315,9 @@ RORG="$(ac "$GIT_HOST/api/v1/orgs/$ORG")"
 RUSR="$(ac "$GIT_HOST/api/v1/users/$USR")"
 [ "$RREPO" = 404 ] && ok "⑥ dépôt jetable $REPO détruit (404)" || bad "⑥ le dépôt $REPO survit au nettoyage (HTTP $RREPO)"
 [ "$RORG" = 404 ] && ok "⑥bis org jetable $ORG détruit (404)" || bad "⑥bis l'org $ORG survit au nettoyage (HTTP $RORG)"
-{ [ "$RUSR" = 404 ] || [ "$RUSR" = 403 ]; } && ok "⑥ter user jetable $USR détruit (HTTP $RUSR)" || bad "⑥ter le user $USR survit au nettoyage (HTTP $RUSR)"
+# 404 STRICT : un 403 ne prouve PAS la destruction (droit refusé ≠ absence).
+# GET /users/<absent> rend 404 (mesuré, stable sur 1.22.6).
+[ "$RUSR" = 404 ] && ok "⑥ter user jetable $USR détruit (404)" || bad "⑥ter le user $USR non détruit (GET /users/$USR -> HTTP $RUSR, 404 STRICT attendu)"
 
 printf '\n  %d PASS / %d FAIL\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
