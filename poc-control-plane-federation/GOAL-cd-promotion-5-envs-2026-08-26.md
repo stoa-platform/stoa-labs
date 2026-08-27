@@ -145,6 +145,34 @@ Ajouter `DeployerGroup` au `Gate`, sur le modèle des deux tableaux indépendant
 **Porte G2 :** un membre du groupe int déclenche la promotion vers int ; un membre de l'équipe demandeuse ne le peut pas, **même en connaissant l'URL du job**.
 **Contre-épreuve :** jeton sans le groupe ⇒ refus ; le demandeur qui approuve son propre saut ⇒ refus 4-yeux, rejoué sur les **trois** nouveaux paliers (le motif est prouvé en prod, pas ailleurs).
 
+> **LIVRÉ le 2026-08-27** — ADR-084, spec `docs/superpowers/specs/2026-08-27-g2-axe-qui-deploie-design.md`.
+> `deployerGroup` vit dans l'**annuaire n°2** (LDAP→policy Vault, table de
+> projection à deux familles, fail-closed BRUYANT hors famille) — jamais la
+> claim KC : au dispatch, la seule identité vérifiée sur toutes les chaînes est
+> le token Vault du porteur. Trois codes identiques deux moteurs
+> (`DEPLOYER_GROUP_REQUIRED`/`UNSUPPORTED`/`UNVERIFIABLE`), enforcement aux
+> deux sites de dispatch (team-promote §7.a AVANT la rétention §7.b ; preflight
+> d'apply-uac avant toute écriture), jamais à l'approbation (l'évidence
+> MATÉRIALISE le champ, `gate.deployer_group`).
+> **Portes réelles** : test-env-chain.sh 6/6 ; go test (governance : 7 refus
+> par palier dont SELF_APPROVAL_BLOCKED int/homol et la variante rec+fourEyes
+> « une ligne qui mord » ; labctl : preflight 7 cas + voie `--env any` à deux
+> familles pinnée par mutation ; vault : lookup-self fail-closed corps vide
+> compris) ; wiring **137/0** (ordre prouvé par mutation ET par inversion
+> 7.a/7.b, stub lookup-self, zéro lookup sans déclaration, anti-dérive ldap) ;
+> **live 21/0** (bob porte apply-int ; alice rien ; le grant SUIT l'annuaire —
+> et la mesure clé : un token émis AVANT le retrait porte la policy jusqu'à son
+> TTL, retrait ≠ révocation ⇒ la vérification DOIT rester au dispatch) ;
+> make lint-ci 8/8. Deux bugs RÉELS attrapés par la porte live seulement
+> (printf mangeait le terminateur LDIF de la convergence ; user-lockout Vault
+> rendait le diagnostic de la porte menteur).
+> **La contre-épreuve 4-yeux sur rec** est prouvée sur variante de fixture
+> (rec du gabarit reste `selfApproval` — décision client n°1, inchangée).
+> **Restes nommés** (ADR-084 §Limites) : 4-yeux pipeline inerte
+> (build-user-vars), approverGroup toujours pas enforced au merge (= protection
+> de branche, ADR-081), `labctl apply` (flux manifeste) sans porte déployeur,
+> `/token-policies` (--grant-ci) non prouvé live, parité des moteurs = G8.
+
 ### G3 — La référence de déploiement, portée jusqu'aux dépôts d'équipe
 
 `deploy.<env>.yaml` avec commit pinné existe pour le dépôt governance. Le porter au modèle repo-par-projet (ADR-076) : promouvoir une API d'équipe = merger un `deploy.<env>.yaml` dans **son** dépôt, pinnant le SHA de `apis/<name>.publish.yml` **et** le digest de l'archive.

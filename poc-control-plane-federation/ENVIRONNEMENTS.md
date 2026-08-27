@@ -260,6 +260,44 @@ protection ou des paramètres de job :
   Jenkinsfile** — un scellement présent dans le Jenkinsfile mais absent du
   config.xml posé ne prend pas effet.
 
+## Qui déploie un palier (G2 — ADR-084)
+
+Depuis G2, ouvrir un palier a **deux moitiés**, et les deux se disent :
+
+1. **La rétention (G4, inchangée)** : mint AppRole / grant de la policy
+   `apply-<env>` — sans elle, `PALIER_FERME`.
+2. **La déclaration (G2, nouvelle)** : la porte du palier peut nommer un
+   `deployerGroup` dans `environments.yaml` — un groupe de l'**annuaire LDAP**
+   (familles `apim-apply-<x>` → policy `apply-<x>`, `apim-operator-<x>` →
+   `operator-deploy`, rien d'autre). Le porteur de l'apply — l'identité
+   nominative de la pause, qui DOIT être le mergeur — doit alors porter la
+   policy projetée dans son token Vault (`lookup-self`), sinon
+   **`DEPLOYER_GROUP_REQUIRED`**, avant tout moteur, gateway intouchée.
+
+**Les refus et leur remède** :
+
+| Refus | Cause | Remède |
+|---|---|---|
+| `DEPLOYER_GROUP_REQUIRED` | le porteur n'est pas du groupe déclaré | grant humain : l'ajouter au groupe LDAP (`setup-deployer-groups.sh`, knob `DEPLOYERS_<PALIER>`) — le droit suit l'ANNUAIRE ; machine : `setup-vault-paliers.sh --grant-ci` (déclare le CI porteur hors-prod) |
+| `DEPLOYER_GROUP_UNSUPPORTED` | `deployerGroup` hors des deux familles vérifiables | corriger la déclaration dans `environments.yaml` (un nom KC comme `int-team` n'est PAS un groupe déployeur) |
+| `DEPLOYER_GROUP_UNVERIFIABLE` | VAULT_ADDR absent, lookup-self en échec | rétablir Vault pour ce job — on ne déploie pas ce qu'on ne sait pas vérifier |
+
+Gestes et pièges :
+
+- **Poser l'annuaire du lab** : `bash scripts/setup-deployer-groups.sh`
+  (bob→int, carol→homol par défaut ; contre-épreuve alice incluse). Un uid
+  déclaré inexistant refuse le groupe entier (`MEMBRE_FANTOME`) ; un annuaire
+  muet refuse SANS déclarer d'uid fantôme (`ANNUAIRE_INJOIGNABLE`).
+- **Prod force l'imputabilité** : la porte déclare `apim-operator-prod` — le
+  repli AppRole de Jenkinsfile.prod est désormais REFUSÉ (le token machine ne
+  porte pas `operator-deploy`). Un humain du groupe (oscar), ou un grant
+  explicite à un AppRole dédié.
+- **Retrait ≠ révocation** (mesuré live) : un token émis AVANT le retrait du
+  groupe garde la policy jusqu'à son TTL. Le retrait d'un déployeur prend
+  effet au PROCHAIN login, pas sur les gestes en vol.
+- **Porte de preuve live rejouable** : `bash scripts/test-deployer-gate-live.sh`
+  (21/0, pose/mute/restaure l'annuaire lui-même — lab requis).
+
 ## Promouvoir une API (G5)
 
 Depuis G5 (ADR-083), promouvoir une API publiée d'un palier au suivant n'est
