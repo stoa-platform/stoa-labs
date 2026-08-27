@@ -99,9 +99,11 @@ documente pour qu'elle ne surprenne pas au premier rollback réel.
 Pour tout palier : `labctl get apis -f envs/<env>/targets.cluster.yaml` (via
 le proxy admin du palier — la seule voie que Jenkins atteint) doit montrer
 l'API du deploy restauré, à la version **N-1** (`restored.version` de la
-réponse du POST) — l'assertion porte sur le nom **et** la version, jamais une
-présence seule. Pour le terminus s'ajoute le smoke data-plane existant (401
-sans token). Le retour « au SHA N-1 » se prouve sur Git :
+réponse du POST) — la version est exigée dans l'assertion quand
+`restored.version` est renseignée (toujours le cas pour un deploy bien
+formé), la couche Git-verbatim portant le reste. Pour le terminus s'ajoute le
+smoke data-plane existant (401 sans token). Le retour « au SHA N-1 » se
+prouve sur Git :
 `deploy.<env>.yaml` sur main == contenu au SHA N-1 verbatim, pin compris —
 c'est la trace Git de l'acte, portée par le commit de rollback (trailers +
 evidence pack).
@@ -170,9 +172,9 @@ pipeline aller de sa chaîne — `apply-uac`, pas l'import d'archive à GUID
 stable d'ADR-079/ADR-083. La conversion du pipeline de gouvernance au verbe
 archive est une tension **parquée nommément** dans ADR-083 (« sa conversion se
 conçoit avec la parité G8, pas en silence ») : G6 n'y touche pas. La limite
-« zéro-coupure sur une API active » de ce verbe (`apply-uac` fait un PUT
-inconditionnel du contrat) est celle du pipeline aller — elle appartient à G8,
-pas à ce jalon.
+« zéro-coupure sur une API active » de ce verbe (`apply-uac` ne converge pas
+la définition d'une API active — la dérive appartient au verbe archive, G8)
+est celle du pipeline aller — elle appartient à G8, pas à ce jalon.
 
 ## Le défaut découvert en cours de route (T3a) : idempotence de `Publish`
 
