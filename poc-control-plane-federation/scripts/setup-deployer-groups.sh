@@ -112,7 +112,13 @@ ldif_replace_members() {  # ldif_replace_members <cn> <uid>…
   printf 'changetype: modify\n'
   printf 'replace: member\n'
   local u; for u in "$@"; do printf 'member: uid=%s,ou=People,%s\n' "$u" "$BASE_DN"; done
-  printf '-\n\n'
+  # `--` OBLIGATOIRE : le terminateur LDIF d'une modification EST un `-`, et un
+  # format qui COMMENCE par un tiret est mangé comme une OPTION par le printf de
+  # bash (« -\: invalid option »). Mesuré live le 2026-08-27 : sans lui, le LDIF
+  # part SANS terminateur, ldapmodify rend 2, et la convergence annoncée
+  # ci-dessus n'a jamais lieu — le premier passage (ldapadd) restait vert, seul
+  # le REJEU touchait cette branche. Défaut invisible hors-ligne.
+  printf -- '-\n\n'
 }
 
 # ── L'appel client LDAP, et le mot de passe de bind qui n'est nulle part ─────
