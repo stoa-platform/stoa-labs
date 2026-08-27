@@ -156,6 +156,8 @@ Ajouter `DeployerGroup` au `Gate`, sur le modèle des deux tableaux indépendant
 
 ### G4 — Lever le verrou dev-only, et le remplacer par un contrôle qui ne se lève pas lui-même
 
+> **LIVRÉ 2026-08-26** — ADR-082, `HANDOFF-2026-08-26-G4-RETENTION-CREDENTIAL.md` ; portes hors-ligne `test-palier-retention.sh` **126/0** + live Vault `test-palier-retention-live.sh` **24/24** + live Gitea `test-repo-protections-live.sh` **13/13**. Le verrou ne se « lève » pas, il se **scelle** : ouvrir un palier est un geste de credential (mint AppRole `apply-<env>` / grant humain), jamais un edit de code.
+
 `ENV_NOT_OPEN` et `ENVN="${ENVN:-dev}"` tombent. Ils sont remplacés par **trois** mécanismes, pas par un autre `if` :
 
 1. **Rétention du credential.** Chemins Vault, policies et AppRole **distincts par palier**, homol inclus. Le job de la voie self-service n'a **aucune policy** au-delà de dev. C'est l'analogue direct des environment secrets, et le seul contrôle qu'un pipeline compromis ne peut pas contourner.

@@ -208,6 +208,44 @@ Et pour le CI, la question qui compte n'est pas seulement « quel Jenkins » mai
 **« quel dépôt ce Jenkins clone-t-il »** : une config à jour qui exécute du code
 périmé donne un vert trompeur.
 
+## Ouvrir un palier (G4)
+
+Depuis G4 (ADR-082), **aucun edit de code n'ouvre un palier**. Les chemins
+d'authoring sont scellés sur `dev` par une constante de bibliothèque non
+surchargeable ; le seul palier qui existe au-delà vit sur la chaîne de
+promotion, et son autorité est un **credential Vault**, pas un `if`.
+
+Ouvrir `rec` (ou un autre palier non terminal) à un humain est un **geste
+d'exploitant**, en deux temps :
+
+```bash
+# 1. minter le secret-id de l'AppRole du palier (le poseur ne le fait JAMAIS par défaut)
+bash scripts/setup-vault-paliers.sh --mint apply-rec
+
+# 2. accorder la policy du palier à l'utilisateur nominatif
+#    voie userpass :
+vault write auth/userpass/users/<login> token_policies=+apply-rec
+#    ou voie LDAP : membre du groupe apim-apply-rec (mapping posé par le script, groupe côté annuaire)
+```
+
+L'état sorti de `setup-vault-paliers.sh` sans `--mint` est « tout fermé » : les
+policies et AppRoles `apply-<env>` existent, mais aucun secret-id ne circule.
+Un pipeline compromis ne peut pas s'accorder ce grant — il n'a pas la main sur
+Vault.
+
+**Geste de déploiement à ne pas oublier.** Après tout changement des listes de
+protection ou des paramètres de job :
+
+- **re-passer `bash scripts/setup-repo-protections.sh`** — la baseline de
+  branche Gitea (`ci/stoa-labs@main`, `ci/governance@main`, dépôts d'équipe) est
+  idempotente ; le PATCH 1.22 fusionne, donc le re-passage est non destructif.
+  Garder `PROTECT_PUSH_WHITELIST` aligné sur `GITEA_ADMIN_USER` (l'admin de site
+  n'est PAS exempté du push_whitelist).
+- **re-poser le job `selfservice`/`team-request`** si le `config.xml` doit
+  refléter les listes (choices, triggers, paramètres) : **le XML gagne sur le
+  Jenkinsfile** — un scellement présent dans le Jenkinsfile mais absent du
+  config.xml posé ne prend pas effet.
+
 ## Résiduel
 
 - **Le lien entre le Jenkins local et celui du labs n'est pas établi.** Ce sont
