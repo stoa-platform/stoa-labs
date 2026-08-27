@@ -352,13 +352,15 @@ func (s *Server) importArchive(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid multipart body: " + err.Error()})
 		return
 	}
-	file, _, err := r.FormFile("file")
+	file, fh, err := r.FormFile("file")
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": `archive import requires a "file" part carrying the zip`})
 		return
 	}
 	defer file.Close()
-	raw, err := io.ReadAll(file)
+	// readPart, not io.ReadAll: the Ansible engine sends the zip BASE64-ENCODED
+	// and says so in the part header (multipart.go).
+	raw, err := readPart(file, fh)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid multipart body: " + err.Error()})
 		return

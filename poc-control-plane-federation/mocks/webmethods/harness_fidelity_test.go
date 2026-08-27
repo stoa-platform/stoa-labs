@@ -13,8 +13,16 @@ package main
 //	      and the routed path reported as `.path`.
 
 import (
+	"bytes"
+	"encoding/base64"
+	"fmt"
+	"mime/multipart"
 	"net/http"
+	"net/http/httptest"
+	"net/textproto"
 	"regexp"
+	"sort"
+	"strings"
 	"testing"
 )
 
@@ -134,6 +142,178 @@ func TestDataPlane_ServesAnAPIImportedFromAFlowContract(t *testing.T) {
 	}
 	if got := body["alias_resolved"]; got != true {
 		t.Errorf("alias_resolved = %v", got)
+	}
+}
+
+// --- Content-Transfer-Encoding: base64 (the Ansible engine's wire format) -----
+
+// writeAnsibleFilePart writes one file part the way `ansible.builtin.uri` does
+// in body_format: form-multipart — body BASE64-ENCODED, announced by the part
+// header. Headers spelled as captured on the wire (G5 Task 10, écart É1).
+func writeAnsibleFilePart(t *testing.T, mw *multipart.Writer, field, filename, contentType string, payload []byte) {
+	t.Helper()
+	hdr := make(textproto.MIMEHeader)
+	hdr.Set("Content-Transfer-Encoding", "base64")
+	hdr.Set("Content-Type", contentType)
+	hdr.Set("Content-Disposition", fmt.Sprintf("form-data; name=%q; filename=%q", field, filename))
+	part, err := mw.CreatePart(hdr)
+	if err != nil {
+		t.Fatalf("create part: %v", err)
+	}
+	if _, err := part.Write([]byte(base64.StdEncoding.EncodeToString(payload))); err != nil {
+		t.Fatalf("write part: %v", err)
+	}
+}
+
+func TestReadPart_HonoursContentTransferEncoding(t *testing.T) {
+	payload := []byte("PK\x03\x04 the archive bytes")
+	b64 := base64.StdEncoding.EncodeToString(payload)
+	// RFC 2045 wraps base64 at 76 columns; the decoder must survive that.
+	wrapped := b64[:8] + "\r\n" + b64[8:16] + "\n" + b64[16:]
+
+	for _, tc := range []struct {
+		name, cte, body string
+		want            string
+		wantErr         bool
+	}{
+		{name: "absent", cte: "", body: string(payload), want: string(payload)},
+		{name: "binary", cte: "binary", body: string(payload), want: string(payload)},
+		{name: "7bit", cte: "7bit", body: string(payload), want: string(payload)},
+		{name: "8bit", cte: "8bit", body: string(payload), want: string(payload)},
+		{name: "base64", cte: "base64", body: b64, want: string(payload)},
+		{name: "base64 uppercase header value", cte: "BASE64", body: b64, want: string(payload)},
+		{name: "base64 line-wrapped", cte: "base64", body: wrapped, want: string(payload)},
+		{name: "base64 announced but not base64", cte: "base64", body: "PK\x03\x04not base64", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fh := &multipart.FileHeader{Header: textproto.MIMEHeader{}}
+			if tc.cte != "" {
+				fh.Header.Set("Content-Transfer-Encoding", tc.cte)
+			}
+			got, err := readPart(strings.NewReader(tc.body), fh)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("readPart = %q, want an error naming the encoding", got)
+				}
+				if !strings.Contains(err.Error(), "base64") {
+					t.Errorf("error = %v, want it to name the announced encoding", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("readPart: %v", err)
+			}
+			if string(got) != tc.want {
+				t.Errorf("readPart = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// importArchiveAsAnsible POSTs the archive the way the promotion role does.
+func importArchiveAsAnsible(t *testing.T, h http.Handler, query string, entries map[string][]byte) *httptest.ResponseRecorder {
+	t.Helper()
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	writeAnsibleFilePart(t, mw, "file", "archive.zip", "application/zip", zipEntries(t, entries))
+	if err := mw.Close(); err != nil {
+		t.Fatalf("close multipart: %v", err)
+	}
+	req := httptest.NewRequest("POST", "/rest/apigateway/archive"+query, &body)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.SetBasicAuth(testUser, testPass)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	return rr
+}
+
+// The client-facing engine (the Ansible role) must import EXACTLY like curl.
+// Before this, the mock read base64 text and answered
+// "not a zip: zip: not a valid zip file" — while the real gateway accepted it,
+// so the default engine could not deploy into any mock tier of the lab.
+func TestImportArchive_AcceptsABase64EncodedPart(t *testing.T) {
+	h := newTestServer(t)
+	apiID, _ := aliasRoutedAPI(t, h, "accounts-read", "env-backend", "http://dev.internal:8081/base")
+	entries := exportArchiveEntries(t, h, apiID)
+
+	fromCurl := archiveRows(t, importArchive(t, h, "?overwrite="+defaultOverwriteScope, entries))
+	fromAnsible := archiveRows(t, importArchiveAsAnsible(t, h, "?overwrite="+defaultOverwriteScope, entries))
+
+	if got := summariseRows(fromAnsible); got != summariseRows(fromCurl) {
+		t.Errorf("base64 part imported as %v, want the SAME outcome as the binary part %v",
+			summariseRows(fromAnsible), summariseRows(fromCurl))
+	}
+	for _, r := range fromAnsible {
+		if r.Status != "Success" {
+			t.Errorf("row %+v, want Success", r)
+		}
+	}
+	if !apiIsActive(t, h, apiID) {
+		t.Error("the API must still be active after the base64 import")
+	}
+}
+
+// summariseRows renders the rows as a stable, comparable string.
+func summariseRows(rows []archiveRow) string {
+	out := make([]string, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, fmt.Sprintf("%s/%s/%s/%t", r.Type, r.ID, r.Status, r.Overwritten))
+	}
+	sort.Strings(out)
+	return strings.Join(out, " ")
+}
+
+// Same fidelity on the OTHER multipart surface the role drives: publishing and
+// updating an API. A contract left base64-encoded would parse to an empty
+// definition — no backend, no allowlist — under a perfectly green 201.
+func TestCreateAndUpdateAPI_AcceptABase64ContractPart(t *testing.T) {
+	h := newTestServer(t)
+	post := func(method, path, version string) *httptest.ResponseRecorder {
+		var body bytes.Buffer
+		mw := multipart.NewWriter(&body)
+		for k, v := range map[string]string{"apiName": "spike079t-api", "apiVersion": version, "type": "openapi"} {
+			if err := mw.WriteField(k, v); err != nil {
+				t.Fatalf("write field: %v", err)
+			}
+		}
+		writeAnsibleFilePart(t, mw, "file", "contract.yaml", "application/x-yaml", []byte(harnessContract))
+		if err := mw.Close(); err != nil {
+			t.Fatalf("close multipart: %v", err)
+		}
+		req := httptest.NewRequest(method, path, &body)
+		req.Header.Set("Content-Type", mw.FormDataContentType())
+		req.SetBasicAuth(testUser, testPass)
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, req)
+		return rr
+	}
+
+	rr := post("POST", "/rest/apigateway/apis", "1.0.0")
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("import with a base64 contract part = %d body=%s", rr.Code, rr.Body)
+	}
+	id := decode(t, rr)["apiResponse"].(map[string]any)["api"].(map[string]any)["id"].(string)
+	if rr := doAdmin(t, h, "PUT", "/rest/apigateway/apis/"+id+"/activate", nil); rr.Code != http.StatusOK {
+		t.Fatalf("activate = %d", rr.Code)
+	}
+	// The contract was DECODED: the allowlist and the backend both exist.
+	rr = do(t, h, "GET", "/gateway/spike079t-api/1.0.0/ping", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("data-plane = %d body=%s (the contract stayed base64 text?)", rr.Code, rr.Body)
+	}
+	if got := decode(t, rr)["path"]; got != "/ping" {
+		t.Errorf("path = %v, want /ping", got)
+	}
+
+	if rr := doAdmin(t, h, "PUT", "/rest/apigateway/apis/"+id+"/deactivate", nil); rr.Code != http.StatusOK {
+		t.Fatalf("deactivate = %d", rr.Code)
+	}
+	if rr := post("PUT", "/rest/apigateway/apis/"+id, "2.0.0"); rr.Code != http.StatusOK {
+		t.Fatalf("update with a base64 contract part = %d body=%s", rr.Code, rr.Body)
+	}
+	api := decode(t, doAdmin(t, h, "GET", "/rest/apigateway/apis/"+id, nil))["apiResponse"].(map[string]any)["api"].(map[string]any)
+	if api["apiVersion"] != "2.0.0" {
+		t.Errorf("apiVersion = %v, want 2.0.0", api["apiVersion"])
 	}
 }
 

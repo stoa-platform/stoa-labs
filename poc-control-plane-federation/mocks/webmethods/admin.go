@@ -139,12 +139,14 @@ func decodeAPICreateBody(r *http.Request) (apiName, apiVersion string, definitio
 		}
 		apiName = r.FormValue("apiName")
 		apiVersion = r.FormValue("apiVersion")
-		file, _, err := r.FormFile("file")
+		file, fh, err := r.FormFile("file")
 		if err != nil {
 			return "", "", nil, `multipart body requires a "file" part with the OpenAPI contract`
 		}
 		defer file.Close()
-		raw, err := io.ReadAll(file)
+		// readPart honours Content-Transfer-Encoding: base64 (multipart.go) —
+		// the encoding ansible.builtin.uri applies to a binary part.
+		raw, err := readPart(file, fh)
 		if err != nil {
 			return "", "", nil, "invalid multipart body: " + err.Error()
 		}
@@ -437,12 +439,12 @@ func decodeAPIUpdateBody(r *http.Request) (apiVersion string, definition map[str
 			return "", nil, nil, false, "invalid multipart body: " + err.Error()
 		}
 		apiVersion = r.FormValue("apiVersion")
-		file, _, err := r.FormFile("file")
+		file, fh, err := r.FormFile("file")
 		if err != nil {
 			return "", nil, nil, false, `multipart body requires a "file" part with the OpenAPI contract`
 		}
 		defer file.Close()
-		raw, err := io.ReadAll(file)
+		raw, err := readPart(file, fh) // base64 part -> decoded (multipart.go)
 		if err != nil {
 			return "", nil, nil, false, "invalid multipart body: " + err.Error()
 		}
