@@ -94,7 +94,8 @@ lint-ci:
 	@echo "== [2/4] shellcheck des bibliothèques shell (ci/lib + livrables G3)"
 	@command -v shellcheck >/dev/null || { echo "!! shellcheck absent — \`brew install shellcheck\`"; exit 2; }
 	@shellcheck -x ci/lib/*.sh scripts/lib/deploy-pin.sh scripts/lib/env-chain.sh \
-	  scripts/api-promote-request.sh && echo "  ✓ ci/lib + livrables shell G3 propres"
+	  scripts/lib/repo-protection.sh scripts/setup-repo-protections.sh \
+	  scripts/api-promote-request.sh && echo "  ✓ ci/lib + livrables shell G3/G4 propres"
 	@echo "== [3/4] épreuves de ci/lib/carto-secrets.sh"
 	@ci/test-carto-secrets.sh
 	@echo "== [4/4] épreuves du résolveur de pin (G3)"

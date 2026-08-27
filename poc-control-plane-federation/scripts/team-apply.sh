@@ -35,6 +35,18 @@ _TA_LIB="$(dirname "${BASH_SOURCE[0]}")/lib/deploy-pin.sh"
 # shellcheck source=scripts/lib/deploy-pin.sh
 . "$_TA_LIB" || { echo "ERREUR: $_TA_LIB introuvable ou illisible" >&2; exit 1; }
 
+# G4 (ADR-082, M2/M3) : le poseur de protection de branche. Sourcé ICI, au même
+# endroit et pour la MÊME raison que deploy-pin.sh ci-dessus — AVANT le
+# `git checkout "$MERGE_SHA"`. Ce n'est pas du style : ce script tourne sur un
+# SHA de merge que le DEMANDEUR a contribué à produire. Sourcer le poseur APRÈS
+# le checkout exécuterait la version du poseur telle que CE SHA la porte — une
+# PR d'onboarding qui toucherait aussi scripts/lib/ se poserait alors ses
+# propres protections, exactement le périmètre que G4 lui retire.
+_TA_PROT="$(dirname "${BASH_SOURCE[0]}")/lib/repo-protection.sh"
+[ -f "$_TA_PROT" ] || _TA_PROT="scripts/lib/repo-protection.sh"
+# shellcheck source=scripts/lib/repo-protection.sh
+. "$_TA_PROT" || { echo "ERREUR: $_TA_PROT introuvable ou illisible" >&2; exit 1; }
+
 PR_BRANCH="${PR_BRANCH:?PR_BRANCH requis}"
 PR_NUMBER="${PR_NUMBER:?PR_NUMBER requis}"
 MERGE_SHA="${MERGE_SHA:?MERGE_SHA requis (merge_commit_sha du webhook)}"
@@ -187,6 +199,40 @@ if [ -n "$REPO_FULL" ]; then
       || { cat "$TMP/pe" >&2; fail "push du squelette"; }
     unset AUTH_B64
   fi
+
+  # ── protection de branche du dépôt d'équipe (G4, ADR-082, M2/M3) ─────────
+  # APRÈS le push du squelette : protéger AVANT aurait bloqué CE premier push
+  # (la whitelist ne porte que `ci`, et le squelette part sous le token
+  # org-admin). AVANT le webhook, pour que l'ordre du fichier soit l'ordre du
+  # raisonnement. Posée que le dépôt vienne d'être créé OU qu'il existât déjà —
+  # même raison que le webhook : un dépôt onboardé avant G4 rattrape sa
+  # protection au run suivant, sans geste manuel.
+  #
+  # BEST-EFFORT NOMMÉ, jamais `fail` (motif du webhook ci-dessous) : l'onboarding
+  # lui-même (le rôle Ansible, §3) ne dépend pas de la protection, et l'annuler
+  # pour elle coûterait plus qu'elle ne protège. Mais la note est repliée dans
+  # REPO_NOTE — donc elle rejoint le commentaire ✅ COMME le ❌ — pour que
+  # l'exploitant sache qu'il doit repasser setup-repo-protections.sh.
+  #
+  # La whitelist reste `ci` par défaut et se surcharge par une variable
+  # d'EXPLOITANT, pas par un champ de la demande : un demandeur qui pourrait
+  # s'y ajouter retrouverait le droit d'écriture directe que G4 lui retire.
+  # `ci` n'est PAS arbitraire : c'est le GITEA_ADMIN_USER de
+  # setup-team-onboard-prereqs.sh (« au lab ce n'est pas admin mais ci »), donc
+  # le porteur du token org-admin — l'identité sous laquelle le squelette est
+  # poussé juste au-dessus. Les deux DOIVENT rester alignées : si un déploiement
+  # client change l'admin sans changer PROTECT_PUSH_WHITELIST, c'est le chemin
+  # de RÉPARATION (dépôt existant VIDE, :169-174) qui casse — la protection
+  # posée au run précédent refuserait le push de rattrapage.
+  PROT_NOTE=""
+  if repo_protection_payload main "${PROTECT_PUSH_WHITELIST:-ci}" > "$TMP/prot.json" \
+     && pose_branch_protection "$GIT_HOST" "$TMP/ghdr" "$REPO_FULL" "$TMP/prot.json"; then
+    PROT_NOTE=" ; protection main posée (push whitelist: ${PROTECT_PUSH_WHITELIST:-ci})"
+  else
+    PROT_NOTE=" ; ⚠ protection main NON posée — repasser setup-repo-protections.sh"
+    echo "AVERTISSEMENT: protection de branche non posée sur ${REPO_FULL} — refus nommé ci-dessus (PROTECTION_NON_POSEE)" >&2
+  fi
+  REPO_NOTE="${REPO_NOTE}${PROT_NOTE}"
 
   # ── webhook pull_request -> team-publish (Task 7, extension a) ────────────
   # IDEMPOTENT (GET puis POST si absent) : un hook existant portant la MÊME

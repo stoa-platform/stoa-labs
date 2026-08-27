@@ -592,5 +592,218 @@ grep -q 'resolve_deploy_pin .* 2>' "$TMP/tp15_mut_nc" \
   && bad "⑮ter la mutation n'a pas retiré la capture — le détecteur ne protège rien" \
   || ok "⑮ter mutation efficace : sans capture, ⑮ verrait rouge"
 
+# ── G4 / D7 : les protections de branche Gitea (lib, poseur, pose au create) ──
+# NUMÉROTATION : le brief nommait ces épreuves ⑫ ⑬ ⑭ ; ⑫ était déjà pris (les
+# mutations de ⑪, Task 4). Renumérotées ⑬ ⑭ ⑯, plus ⑳ pour le poseur — les
+# seuls numéros libres. L'ordre du fichier n'a jamais été numérique de toute
+# façon (⑮ vit après ⑲).
+
+echo "== ⑬ payload de protection : JSON par python3, formé, complet =="
+PROT_LIB="scripts/lib/repo-protection.sh"
+if [ ! -f "$PROT_LIB" ]; then
+  # Garde d'EXISTENCE avant toute assertion : sans elle, un fichier absent
+  # ferait TAIRE les assertions du dessous au lieu de les faire rougir.
+  bad "⑬ $PROT_LIB introuvable — les assertions sur le payload seraient vaines"
+else
+  # shellcheck source=scripts/lib/repo-protection.sh
+  . "$PROT_LIB"
+  repo_protection_payload main ci > "$TMP/pp1" 2>&1
+  python3 - "$TMP/pp1" <<'PY' >"$TMP/pp1v" 2>&1
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["branch_name"] == "main"
+assert d["enable_push"] is True and d["enable_push_whitelist"] is True
+assert d["push_whitelist_usernames"] == ["ci"]
+assert "protected_file_patterns" not in d, "patterns émis sans être demandés"
+print("OK")
+PY
+  grep -q '^OK$' "$TMP/pp1v" \
+    && ok "⑬ payload baseline conforme (push whitelist, aucun pattern non demandé)" \
+    || bad "⑬ $(tail -1 "$TMP/pp1v")"
+  repo_protection_payload main "ci,oscar" 'environments.yaml' > "$TMP/pp2" 2>&1
+  python3 - "$TMP/pp2" <<'PY' >"$TMP/pp2v" 2>&1
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["push_whitelist_usernames"] == ["ci", "oscar"]
+assert d["protected_file_patterns"] == "environments.yaml"
+print("OK")
+PY
+  grep -q '^OK$' "$TMP/pp2v" \
+    && ok "⑬bis whitelist CSV éclatée en liste, patterns optionnels posés quand demandés" \
+    || bad "⑬bis $(tail -1 "$TMP/pp2v")"
+  # LA raison du python3 : le JSON n'est JAMAIS du formatage de chaîne. La
+  # contre-épreuve est une entrée HOSTILE — un printf naïf casserait le JSON ou,
+  # pire, injecterait une clé de protection que personne n'a demandée.
+  repo_protection_payload 'ma"in' 'ci","enable_push":false,"x":"' > "$TMP/pp3" 2>&1
+  python3 - "$TMP/pp3" <<'PY' >"$TMP/pp3v" 2>&1
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["branch_name"] == 'ma"in', d
+assert d["enable_push"] is True, "enable_push retourné par l'entrée : %r" % d["enable_push"]
+assert set(d) == {"branch_name", "enable_push", "enable_push_whitelist",
+                  "push_whitelist_usernames"}, "clé injectée : %r" % sorted(d)
+print("OK")
+PY
+  grep -q '^OK$' "$TMP/pp3v" \
+    && ok "⑬ter entrée hostile ⇒ JSON valide, AUCUNE clé injectée, enable_push non retourné" \
+    || bad "⑬ter $(tail -1 "$TMP/pp3v")"
+  # Le POSEUR lui-même, hors ligne : rien n'est posé nulle part (127.0.0.1:1
+  # refuse la connexion), mais la fonction est RÉELLEMENT exercée — c'est la
+  # seule façon de prouver que son refus est NOMMÉ plutôt que silencieux, et
+  # qu'un hôte injoignable ne la fait pas retourner 0. La sémantique LIVE
+  # (ce que Gitea fait vraiment d'un push/merge) reste la Task 9.
+  printf 'Authorization: token factice\n' > "$TMP/hdr_off"
+  repo_protection_payload main ci > "$TMP/pp_off"
+  pose_branch_protection "http://127.0.0.1:1" "$TMP/hdr_off" "ci/absent" "$TMP/pp_off" \
+    >"$TMP/off_out" 2>"$TMP/off_err"
+  RC=$?
+  # Motif EXACT, pas un `grep PROTECTION_NON_POSEE` fourre-tout : il prouve que
+  # la fonction a bien ATTEINT le GET (aucune garde d'entrée ne l'a court-
+  # circuitée) et que le code `000` de curl arrive INTACT dans le refus — ce que
+  # le `|| true` de la lib est là pour préserver.
+  { [ "$RC" -ne 0 ] && grep -q 'PROTECTION_NON_POSEE : GET ci/absent@main -> HTTP 000' "$TMP/off_err"; } \
+    && ok "⑬quater hôte injoignable ⇒ rc≠0 ET refus nommé PORTANT le code 000 (jamais un succès muet)" \
+    || { bad "⑬quater hôte injoignable : rc=$RC sans refus nommé"; sed 's/^/      /' "$TMP/off_err" | head -3; }
+  grep -q 'PROTECTION_NON_POSEE' "$TMP/off_out" \
+    && bad "⑬quinquies le refus part sur STDOUT — il se mêlerait au JSON/aux notes de l'appelant" \
+    || ok "⑬quinquies le refus part bien sur stderr, stdout reste propre"
+  # Payload absent : deuxième refus nommé, distinct — une garde d'entrée, pas
+  # un plantage python à mi-chemin.
+  pose_branch_protection "http://127.0.0.1:1" "$TMP/hdr_off" "ci/absent" "$TMP/pas-de-payload.json" \
+    >/dev/null 2>"$TMP/off_err2"
+  RC=$?
+  { [ "$RC" -ne 0 ] && grep -q 'PROTECTION_NON_POSEE : payload introuvable' "$TMP/off_err2"; } \
+    && ok "⑬sexies payload absent ⇒ refus nommé AVANT tout appel réseau" \
+    || { bad "⑬sexies payload absent : rc=$RC"; sed 's/^/      /' "$TMP/off_err2" | head -3; }
+fi
+
+echo "== ⑭ team-apply APPELLE la pose, APRÈS le push du squelette et AVANT le webhook =="
+nc_strict scripts/team-apply.sh > "$TMP/ta14_nc"
+grep -q 'repo-protection.sh' "$TMP/ta14_nc" \
+  && ok "⑭ la lib repo-protection est sourcée par team-apply" \
+  || bad "⑭ lib repo-protection non sourcée"
+grep -Eq '^[[:space:]]*pose_branch_protection |[^A-Za-z_]pose_branch_protection ' "$TMP/ta14_nc" \
+  && ok "⑭bis pose_branch_protection est APPELÉE (sourcer n'est pas appeler)" \
+  || bad "⑭bis aucun appel réel de pose_branch_protection"
+# ÉCART AU BRIEF (détecteur corrigé, MESURÉ) : le brief cherchait le littéral
+# `git push`. Il n'existe PAS dans team-apply.sh — le push du squelette s'écrit
+# `git -C "$SK" push -q …` (le credential passe par GIT_CONFIG_*, plus par
+# l'URL, cf. l'écart documenté :184-199). Écrit tel quel, L_PUSH restait VIDE
+# et ⑭ter tombait à jamais dans sa branche d'échec. Motif élargi, garde
+# d'existence CONSERVÉE : un push qui disparaîtrait rend l'ordre indémontrable,
+# pas vrai par défaut.
+L_PUSH=$(grep -nE 'git( -C [^ ]+)? push' "$TMP/ta14_nc" | head -1 | cut -d: -f1)
+L_POSE=$(grep -n 'pose_branch_protection' "$TMP/ta14_nc" | head -1 | cut -d: -f1)
+L_HOOK=$(grep -n 'TEAM_PUBLISH_WEBHOOK_URL' "$TMP/ta14_nc" | head -1 | cut -d: -f1)
+{ [ -n "$L_PUSH" ] && [ -n "$L_POSE" ] && [ "$L_POSE" -gt "$L_PUSH" ]; } \
+  && ok "⑭ter la pose vient APRÈS le push du squelette (protéger avant bloquerait le premier push)" \
+  || bad "⑭ter ordre pose/push non prouvé (push=${L_PUSH:-absent} pose=${L_POSE:-absent})"
+{ [ -n "$L_HOOK" ] && [ -n "$L_POSE" ] && [ "$L_POSE" -lt "$L_HOOK" ]; } \
+  && ok "⑭quater la pose vient AVANT la section webhook (l'ordre annoncé est l'ordre réel)" \
+  || bad "⑭quater ordre pose/webhook non prouvé (pose=${L_POSE:-absent} webhook=${L_HOOK:-absent})"
+# Best-effort NOMMÉ, comme le webhook : jamais fail() — sinon une protection
+# manquée annulerait un onboarding par ailleurs réussi.
+awk "NR>=${L_POSE:-0} && NR<=${L_POSE:-0}+6" "$TMP/ta14_nc" | grep -q 'fail ' \
+  && bad "⑭quinquies la pose appelle fail() — une protection manquée annulerait l'onboarding" \
+  || ok "⑭quinquies la pose n'appelle pas fail() (best-effort : l'onboarding survit)"
+# … mais NOMMÉ : la note est repliée dans REPO_NOTE (motif exact du webhook
+# :317), donc elle rejoint les commentaires ✅ ET ❌, pas seulement le job.
+grep -qF 'REPO_NOTE="${REPO_NOTE}${PROT_NOTE}"' "$TMP/ta14_nc" \
+  && ok "⑭sexies PROT_NOTE est replié dans REPO_NOTE (motif du webhook) — il sort du job" \
+  || bad "⑭sexies PROT_NOTE n'est pas replié dans REPO_NOTE — la note reste dans le job"
+grep -q 'comment "✅ team-apply.*REPO_NOTE' "$TMP/ta14_nc" \
+  && ok "⑭septies REPO_NOTE atteint bien le commentaire ✅ (le repli de ⑭sexies mène quelque part)" \
+  || bad "⑭septies REPO_NOTE n'atteint pas le commentaire ✅ — le repli est sans destination"
+
+echo "== ⑯ mutations : les trois façons de rendre ⑬/⑭ vacantes =="
+# (a) retirer l'APPEL — le contournement le plus direct.
+sed 's/pose_branch_protection /true /' scripts/team-apply.sh > "$TMP/ta16_mut"
+cmp -s scripts/team-apply.sh "$TMP/ta16_mut" \
+  && bad "⑯(a0) le mutant est IDENTIQUE au fichier — l'ancre de l'appel a bougé, la mutation ne mute rien" \
+  || ok "⑯(a0) le mutant diffère RÉELLEMENT du fichier (la mutation n'est pas un no-op)"
+nc_strict "$TMP/ta16_mut" > "$TMP/ta16_mut_nc"
+grep -Eq '^[[:space:]]*pose_branch_protection |[^A-Za-z_]pose_branch_protection ' "$TMP/ta16_mut_nc" \
+  && bad "⑯(a) la mutation n'a pas retiré l'appel — le détecteur de ⑭bis ne protège rien" \
+  || ok "⑯(a) mutation efficace : sans appel, ⑭bis verrait rouge"
+# (b) DÉPLACER la pose AVANT le push : elle bloquerait alors le premier push du
+# squelette. Le détecteur de PRÉSENCE de ⑭bis reste VERT sur ce mutant — seul
+# le détecteur d'ORDRE l'attrape. C'est la raison d'être de ⑭ter.
+if python3 - scripts/team-apply.sh "$TMP/ta16_ord" <<'PY'
+import re, sys
+src = open(sys.argv[1]).read().splitlines(True)
+call = [i for i, l in enumerate(src) if re.search(r'(^|[^A-Za-z_])pose_branch_protection ', l)]
+push = [i for i, l in enumerate(src) if re.search(r'git( -C \S+)? push', l)]
+if not call or not push or call[0] < push[0]:
+    sys.exit("ancres introuvables ou déjà inversées (call=%r push=%r)" % (call[:1], push[:1]))
+moved = src.pop(call[0])
+src.insert(push[0], moved)
+open(sys.argv[2], "w").write("".join(src))
+PY
+then
+  cmp -s scripts/team-apply.sh "$TMP/ta16_ord" \
+    && bad "⑯(b0) le mutant d'ORDRE est identique — le déplacement n'a rien déplacé" \
+    || ok "⑯(b0) le mutant d'ordre diffère RÉELLEMENT du fichier"
+  nc_strict "$TMP/ta16_ord" > "$TMP/ta16_ord_nc"
+  grep -Eq '^[[:space:]]*pose_branch_protection |[^A-Za-z_]pose_branch_protection ' "$TMP/ta16_ord_nc" \
+    && ok "⑯(b) sur ce mutant ⑭bis reste VERT — la présence seule ne prouve pas l'ordre" \
+    || bad "⑯(b) le déplacement a aussi supprimé l'appel — ce n'est pas le contournement visé"
+  M_PUSH=$(grep -nE 'git( -C [^ ]+)? push' "$TMP/ta16_ord_nc" | head -1 | cut -d: -f1)
+  M_POSE=$(grep -n 'pose_branch_protection' "$TMP/ta16_ord_nc" | head -1 | cut -d: -f1)
+  { [ -n "$M_PUSH" ] && [ -n "$M_POSE" ] && [ "$M_POSE" -lt "$M_PUSH" ]; } \
+    && ok "⑯(b bis) pose avant push ⇒ le détecteur d'ORDRE de ⑭ter le VOIT (pose=$M_POSE push=$M_PUSH)" \
+    || bad "⑯(b bis) l'inversion passe inaperçue — l'assertion d'ordre de ⑭ter est vacante"
+else
+  bad "⑯(b) mutation d'ordre impossible à construire — l'assertion d'ordre de ⑭ter reste non contre-prouvée"
+fi
+# (c) la pose se fait, mais son issue ne QUITTE PLUS le job : le repli dans
+# REPO_NOTE disparaît. Invisible pour ⑭bis comme pour ⑭ter.
+sed 's/REPO_NOTE="${REPO_NOTE}${PROT_NOTE}"/REPO_NOTE="${REPO_NOTE}"/' scripts/team-apply.sh > "$TMP/ta16_mute"
+cmp -s scripts/team-apply.sh "$TMP/ta16_mute" \
+  && bad "⑯(c0) le mutant MUET est identique — l'ancre du repli a bougé" \
+  || ok "⑯(c0) le mutant muet diffère RÉELLEMENT du fichier"
+nc_strict "$TMP/ta16_mute" > "$TMP/ta16_mute_nc"
+grep -qF 'REPO_NOTE="${REPO_NOTE}${PROT_NOTE}"' "$TMP/ta16_mute_nc" \
+  && bad "⑯(c) la mutation n'a pas retiré le repli — le détecteur de ⑭sexies ne protège rien" \
+  || ok "⑯(c) mutation efficace : sans repli, ⑭sexies verrait rouge"
+grep -Eq '^[[:space:]]*pose_branch_protection |[^A-Za-z_]pose_branch_protection ' "$TMP/ta16_mute_nc" \
+  && ok "⑯(c bis) et sur ce mutant ⑭bis reste VERT : une pose muette n'est PAS une pose absente" \
+  || bad "⑯(c bis) la mutation a aussi retiré l'appel — ce n'est pas le contournement visé"
+
+echo "== ⑳ le poseur setup-repo-protections.sh statue HORS LIGNE (--print) =="
+SRP="scripts/setup-repo-protections.sh"
+if [ ! -f "$SRP" ]; then
+  bad "⑳ $SRP introuvable — les assertions sur le poseur seraient vaines"
+else
+  # ÉCART AU BRIEF (ajout justifié) : le brief n'ouvrait aucun chemin sans
+  # GITEA_TOKEN ni réseau — la dérivation de la LISTE des dépôts (le seul
+  # calcul du script) serait alors restée entièrement non prouvée. `--print`
+  # l'émet sans rien poser. La sémantique LIVE, elle, reste la Task 9.
+  ( env -i PATH="$PATH" HOME="$HOME" bash "$SRP" --print ) >"$TMP/srp" 2>&1
+  RC=$?
+  [ "$RC" -eq 0 ] \
+    && ok "⑳ --print sort 0 sans GITEA_TOKEN ni réseau" \
+    || { bad "⑳ --print sort $RC"; sed 's/^/      /' "$TMP/srp" | head -5; }
+  { grep -q '^REPO=ci/stoa-labs$' "$TMP/srp" && grep -q '^REPO=ci/governance$' "$TMP/srp"; } \
+    && ok "⑳bis les deux dépôts de PLATEFORME sont visés (définition de pipeline + chaîne d'environnements)" \
+    || bad "⑳bis un dépôt de plateforme manque dans --print"
+  grep -q '^REPO=banking-demo/accounts-api$' "$TMP/srp" \
+    && ok "⑳ter le dépôt d'équipe déclaré est DÉRIVÉ de providers.dev.yml" \
+    || bad "⑳ter le dépôt d'équipe déclaré n'est pas dérivé"
+  # payments-team porte `repo: ""` : un champ vide ne doit PAS produire une
+  # cible vide (`…/repos//branch_protections`, qui viserait n'importe quoi).
+  grep -q '^REPO=$' "$TMP/srp" \
+    && bad "⑳quater un repo VIDE produit une cible — la pose viserait une URL sans dépôt" \
+    || ok "⑳quater le repo vide de payments-team est écarté, pas transformé en cible vide"
+  # Et la liste SUIT la source : retirer le repo dans providers le retire ici.
+  sed 's|repo: banking-demo/accounts-api|repo: ""|' ansible/providers.dev.yml > "$TMP/prov_mut.yml"
+  cmp -s ansible/providers.dev.yml "$TMP/prov_mut.yml" \
+    && bad "⑳quinquies(0) le providers muté est identique — l'ancre repo: a bougé" \
+    || ok "⑳quinquies(0) le providers muté diffère RÉELLEMENT"
+  ( env -i PATH="$PATH" HOME="$HOME" PROVIDERS_FILE="$TMP/prov_mut.yml" bash "$SRP" --print ) >"$TMP/srp2" 2>&1
+  grep -q '^REPO=banking-demo/accounts-api$' "$TMP/srp2" \
+    && bad "⑳quinquies la liste ne SUIT pas providers (dépôt d'équipe codé en dur ?)" \
+    || ok "⑳quinquies la liste SUIT providers : repo retiré ⇒ dépôt hors de la pose"
+fi
+
 printf '\n  %d PASS / %d FAIL\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
