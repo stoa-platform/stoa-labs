@@ -348,15 +348,21 @@ done
 # ═════════════════════════════════════════════════════════════════════════════
 # CONTRE-ÉPREUVE : la garde UPDATE_FORBIDDEN, hors env d'authoring
 # ═════════════════════════════════════════════════════════════════════════════
-# POURQUOI PAR LE RÔLE, ET PAS PAR labctl. Côté Go, la garde existe bien
-# (inboundauth.go:935) mais son interrupteur `allowDeactivate` n'est PAS
-# projetable depuis un fichier de cibles : Target.ToConfig() n'émet jamais cette
-# clé, donc `cfg.Opt("allowDeactivate","true")` rend toujours le défaut — la
-# garde est inatteignable par la CLI. Aucune commande n'expose non plus de
-# deactivate. La rejouer live côté labctl exigerait de la NOUVELLE plomberie ;
-# la voie qui s'exerce telle quelle est le rôle apim_publish_api, dont la garde
-# (main.yml:122) refuse le cycle deactivate→PUT→activate hors env d'authoring.
-# Le versant Go est couvert par son test unitaire, rejoué ci-dessous.
+# POURQUOI PAR LE RÔLE, ET PAS PAR labctl. Côté Go, la garde existe
+# (inboundauth.go:935) et son interrupteur `allowDeactivate` est désormais
+# projetable depuis un fichier de cibles — il ne l'était pas : `ToConfig()`
+# n'émettait jamais la clé, si bien qu'un targets déclarant
+# `allowDeactivate: false` ne fermait rien (fail-open corrigé par le lot).
+# Mais elle reste hors de portée d'une épreuve LIVE : `setAPIActive(false)`
+# n'est appelé que par les deux replis de mise à jour stricte
+# (inboundauth.go:909, routing.go:537), c'est-à-dire quand la gateway REFUSE un
+# PUT sur une API active — un accident qu'on ne provoque pas sur commande, et
+# que le verbe `promote` ne traverse jamais (il ne désactive rien, c'est tout
+# son propos). La voie qui s'exerce telle quelle est donc le rôle
+# apim_publish_api, dont la garde (main.yml:122) refuse le cycle
+# deactivate→PUT→activate hors env d'authoring. Le versant Go — comportement de
+# la garde ET projection de son interrupteur — est couvert par ses tests,
+# rejoués ci-dessous.
 say "contre-épreuve — UPDATE_FORBIDDEN : mettre à jour en place hors authoring est refusé"
 # Le témoin est l'asset du PREMIER moteur de la liste, pas un nom en dur : un
 # run partiel (ENGINES=labctl pour bisecter) verrait sinon U0 rougir pour une
@@ -395,11 +401,13 @@ EOF
   check "$(api_field "$CE_ID" isActive)" "true" "U2 l'API est restée ACTIVE malgré le refus (aucune coupure)"
   check "$(dp_path "$CE_API")" "/backend/dev/ping" "U3 le data-plane sert toujours après le refus"
 fi
-# Le versant Go de la même garde, là où il est atteignable.
+# Le versant Go de la même garde, là où il est atteignable. Les DEUX paquets :
+# `webmethods` porte le comportement de la garde, `targets` la projection de son
+# interrupteur — c'est la couture entre les deux qui abritait le fail-open.
 ( cd "$REPO/labctl" && GOPROXY=off GOFLAGS=-mod=vendor \
-    go test ./internal/adapter/webmethods/ -run TestArchive -count=1 ) >"$WORK/gotest.log" 2>&1 \
-  && ok "U4 côté labctl : la garde UPDATE_FORBIDDEN tient à son test (TestArchive*, archive_test.go)" \
-  || ko "U4 go test TestArchive en échec — $(tail -5 "$WORK/gotest.log" | tr '\n' ' ')"
+    go test ./internal/adapter/webmethods/ ./internal/targets/ -count=1 ) >"$WORK/gotest.log" 2>&1 \
+  && ok "U4 côté labctl : garde UPDATE_FORBIDDEN + projection d'allowDeactivate vertes (webmethods + targets)" \
+  || ko "U4 go test en échec — $(tail -5 "$WORK/gotest.log" | tr '\n' ' ')"
 
 # ── bilan ────────────────────────────────────────────────────────────────────
 say "BILAN"
