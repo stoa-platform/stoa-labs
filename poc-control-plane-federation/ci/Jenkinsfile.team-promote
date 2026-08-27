@@ -193,7 +193,22 @@ pipeline {
               LABCTL_BIN="${LABCTL_BIN:-$WORKSPACE/labctl}"
               if [ "${PROMOTE_ENGINE:-ansible}" = labctl ] && [ ! -x "$LABCTL_BIN" ]; then
                 echo "PROMOTE_ENGINE=labctl : binaire absent (${LABCTL_BIN}) -- build air-gapped/vendored"
-                ( cd labctl && go version && go build -trimpath -o "$LABCTL_BIN" . )
+                # Statut du sous-shell TESTÉ explicitement (revue round 2) :
+                # sans ce `||`, un `go` absent de l'agent ou un LABCTL_BIN sur
+                # un chemin non inscriptible laissait le sous-shell échouer en
+                # silence — la suite continuait (export Vault, login, puis
+                # `bash scripts/team-promote.sh`) jusqu'à ce que le MOTEUR,
+                # bien plus tard, tente d'exécuter un binaire absent/non
+                # exécutable. Le job finissait quand même rouge (le script a
+                # sa propre garde et poste un commentaire d'échec), mais le
+                # résumé PR nommait le SYMPTÔME aval (exec du binaire
+                # manquant), jamais la CAUSE (l'échec du build). Ici, le build
+                # meurt IMMÉDIATEMENT, nommé, AVANT tout appel Vault/Gitea — le
+                # script team-promote.sh n'a pas encore tourné, donc c'est le
+                # `post{}` de CE Jenkinsfile (toujours exécuté, cf. plus bas)
+                # qui commente la PR sur ce cas, pas `fail()` du script.
+                ( cd labctl && go version && go build -trimpath -o "$LABCTL_BIN" . ) \
+                  || { echo "ERREUR: build labctl en echec (go absent de l'agent ? chemin non inscriptible ?)" >&2; exit 1; }
               fi
 
               export VAULT_USER="${V_USER:-}"
