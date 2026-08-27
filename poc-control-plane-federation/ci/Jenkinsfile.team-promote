@@ -23,8 +23,9 @@ pipeline {
 
   // `agent none` — DÉLIBÉRÉ, cf. team-publish : la demande en attente est
   // évaluée AVANT que l'agent de l'étape ne soit alloué, une pause qui attend
-  // une réponse humaine ne réserve donc aucun exécuteur (sauf le cas
-  // PROMOTE_ENGINE=labctl, cf. §5 plus bas, qui construit AVANT la pause).
+  // une réponse humaine ne réserve donc AUCUN exécuteur, quel que soit le
+  // moteur (PROMOTE_ENGINE=labctl inclus — le build du binaire, s'il a lieu,
+  // se fait APRÈS la pause, dans le même agent que l'apply, cf. plus bas).
   agent none
   options { disableConcurrentBuilds() }   // un apply à la fois = régime bancaire
 
@@ -116,29 +117,17 @@ pipeline {
       }
     }
 
-    // Stage préalable : le binaire labctl doit exister À l'ENDROIT où
-    // team-promote.sh ira le chercher (LABCTL_BIN, défaut $WORKSPACE/labctl)
-    // AVANT que le script ne tourne — donc avant la pause d'identité, qui ne
-    // porte aucune décision sur le moteur. Copie de ci/Jenkinsfile:34-40.
-    // `agent any` ICI (le pipeline est `agent none`) : sur PROMOTE_ENGINE
-    // par défaut (ansible), le `when` saute le stage sans jamais allouer
-    // d'exécuteur — seul un déclencheur explicite en labctl en consomme un
-    // avant la réponse humaine.
-    stage('Build labctl (air-gapped, vendored)') {
-      when { environment name: 'PROMOTE_ENGINE', value: 'labctl' }
-      agent any
-      steps {
-        dir('poc-control-plane-federation/labctl') {
-          sh 'go version'
-          sh 'go build -trimpath -o "$WORKSPACE/labctl" .'   // aucun accès réseau
-        }
-      }
-    }
-
     stage('Promouvoir l\'API (identité nominative)') {
       // `beforeInput true` : la condition est évaluée AVANT la demande en
       // attente — une PR hors promote/* ne réveille personne, le job se
       // termine vert sans avoir rien demandé ni rien promu.
+      // PAS de `beforeAgent true` ICI (question posée en revue, tranchée par
+      // vérification) : `beforeInput` fait déjà gagner tout ce que
+      // `beforeAgent` apporterait — l'agent de CE stage est déclaré
+      // textuellement APRÈS `input`, et Declarative ne l'alloue qu'une fois
+      // la pause répondue (cf. commentaire sur `agent any` ci-dessous) ; il
+      // n'y a donc aucun agent à devancer. Identique à team-publish, qui ne
+      // pose pas non plus `beforeAgent` sur ce stage.
       when {
         beforeInput true
         expression { (env.PR_BRANCH ?: '').startsWith('promote/') }
@@ -180,6 +169,33 @@ pipeline {
           dir('poc-control-plane-federation') {
             sh '''
               set +x
+
+              # ── BUILD labctl, SI ET SEULEMENT SI le moteur l'exige ──────────
+              # ⚠ CHOIX DÉLIBÉRÉ (revue round 1) : PAS de stage `Build labctl`
+              # séparé à son propre `agent any` (motif initial, copie de
+              # ci/Jenkinsfile:34-40). Un stage à agent indépendant sous un
+              # pipeline `agent none`, sans `label` commun, peut être résolu par
+              # Declarative sur un AUTRE nœud que celui de CE stage
+              # (multi-exécuteurs) : le binaire $WORKSPACE/labctl du premier
+              # nœud ne serait alors pas visible dans le workspace du second, et
+              # team-promote.sh (LABCTL_BIN par défaut) échouerait à l'exécuter.
+              # Construire ICI, dans le MÊME `sh` que l'apply — donc sur le
+              # MÊME agent, MÊME workspace — élimine ce risque PAR CONSTRUCTION :
+              # un seul agent, zéro transfert (pas de stash/unstash à tenir
+              # synchronisé), auto-réparant si le binaire manque. Coût assumé :
+              # le build (vendored, air-gapped, donc rapide) tourne APRÈS que
+              # l'humain a répondu à la pause — ça n'allonge PAS son attente
+              # perçue (il a déjà validé), seulement la durée du build qui suit,
+              # SEULEMENT sur PROMOTE_ENGINE=labctl (moteur lab, pas le défaut
+              # client). `-x` sur LABCTL_BIN (et non un simple `-f`) : un
+              # fichier présent mais non exécutable serait un ancien artefact
+              # corrompu, pas un binaire utilisable — le rebuild le remplace.
+              LABCTL_BIN="${LABCTL_BIN:-$WORKSPACE/labctl}"
+              if [ "${PROMOTE_ENGINE:-ansible}" = labctl ] && [ ! -x "$LABCTL_BIN" ]; then
+                echo "PROMOTE_ENGINE=labctl : binaire absent (${LABCTL_BIN}) -- build air-gapped/vendored"
+                ( cd labctl && go version && go build -trimpath -o "$LABCTL_BIN" . )
+              fi
+
               export VAULT_USER="${V_USER:-}"
               export VAULT_USER_PASSWORD="${V_PASS:-}"
               # V_PASS ne doit PAS survivre au-delà de cette ligne : une variable
