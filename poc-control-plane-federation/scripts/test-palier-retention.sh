@@ -577,5 +577,20 @@ RC=$?
   && ok "⑲bis description hostile ⇒ YAML_UNSAFE_INPUT : le contrat est bien APRÈS toutes les gardes de forme" \
   || { bad "⑲bis DRY_RUN court-circuite la garde YAML (rc=$RC)"; sed 's/^/      /' "$TMP/tr_dry" | head -5; }
 
+echo "== ⑮ D9 : le refus nommé du résolveur rejoint le commentaire de PR =="
+sed 's/[[:space:]]*#.*$//' scripts/team-publish.sh > "$TMP/tp15_nc"
+grep -q 'resolve_deploy_pin .* 2>' "$TMP/tp15_nc" \
+  && ok "⑮ stderr du résolveur capturé dans un fichier (jamais un pipe)" \
+  || bad "⑮ pas de capture de stderr sur l'appel du résolveur"
+grep -qF 'deploy-pin: [A-Z_]*' "$TMP/tp15_nc" \
+  && ok "⑮bis le jeton deploy-pin: est extrait vers le message de fail" \
+  || bad "⑮bis rien n'extrait le jeton du fichier capturé (grep -o attendu)"
+# Mutation : retirer la capture ⇒ ⑮ rougirait.
+sed 's/ 2>"\$TMP\/pin.err"//' scripts/team-publish.sh > "$TMP/tp15_mut"
+sed 's/[[:space:]]*#.*$//' "$TMP/tp15_mut" > "$TMP/tp15_mut_nc"
+grep -q 'resolve_deploy_pin .* 2>' "$TMP/tp15_mut_nc" \
+  && bad "⑮ter la mutation n'a pas retiré la capture — le détecteur ne protège rien" \
+  || ok "⑮ter mutation efficace : sans capture, ⑮ verrait rouge"
+
 printf '\n  %d PASS / %d FAIL\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

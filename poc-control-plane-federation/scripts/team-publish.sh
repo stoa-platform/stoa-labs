@@ -352,8 +352,19 @@ PY
 # nouvelle plomberie à écrire sous pression.
 # Le clone est DÉJÀ positionné au SHA du merge (§4) — le résolveur lit donc
 # l'état revu, pas une branche courante.
-resolve_deploy_pin "$TMP/team" "$API_NAME" "$ENVN" "$TMP/resolved" \
-  || fail "PIN_NON_RESOLU : la référence de déploiement de ${API_NAME} en ${ENVN} n'a pas pu être résolue (voir le refus nommé ci-dessus)"
+# G4 (D9) : le refus PRÉCIS du résolveur (PIN_ABSENT, ARCHIVE_ABSENT, …)
+# part sur stderr (_dp_fail, deploy-pin.sh) — un lecteur de PR ne voit pas le
+# log Jenkins. On capture stderr en FICHIER (jamais un pipe : pipefail + le
+# résolveur sort 1) et le dernier jeton nommé rejoint le commentaire. C'est
+# LA surface de diagnostic de l'équipe le jour où la chaîne s'exerce.
+# Ligne D'APPEL laissée intacte (test-deploy-pin.sh ⑳ ancre
+# ^resolve_deploy_pin "\$TMP/team" en tête de ligne) : le branchement en
+# `|| { … }` porte la capture sans déplacer l'appel derrière un `if !`.
+resolve_deploy_pin "$TMP/team" "$API_NAME" "$ENVN" "$TMP/resolved" 2>"$TMP/pin.err" || {
+  cat "$TMP/pin.err" >&2   # le log de build garde TOUT le détail
+  REFUS="$(grep -o 'deploy-pin: [A-Z_]*' "$TMP/pin.err" | tail -1)"
+  fail "PIN_NON_RESOLU : la référence de déploiement de ${API_NAME} en ${ENVN} n'a pas pu être résolue (${REFUS:-refus non nommé — voir le log du build})"
+}
 
 # ── 5. publication (rôle du palier 3, idempotent create-or-version) ─────────
 # apim_ss_contract_pin (extra-var, précédence 22) ÉPINGLE le contract au
