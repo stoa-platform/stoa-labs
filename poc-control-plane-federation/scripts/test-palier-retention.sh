@@ -105,6 +105,44 @@ grep -q 'apps/\*"' "$TMP/vy_mut_cr" \
   && ok "⑥quater le retour à apps/* nu est DÉTECTÉ — l'épreuve ⑥ n'est pas vacante" \
   || bad "⑥quater la mutation ne produit pas de write nu — ⑥ est un vert vacant"
 
+# ── ⑥quinquies : le RENDU, pas la forme ──────────────────────────────────────
+# ⑥/⑥bis/⑥ter prouvent qu'un MOTIF est dans le fichier. Ils ne prouvent pas la
+# propriété D3 : « le terminus n'est inscriptible nulle part ». On rend donc le
+# scalaire Jinja avec la liste réellement dérivée d'une chaîne JETABLE, et on
+# asserte le résultat. Les deux volets comptent : sans le volet positif
+# (alpha/beta présents), un rendu VIDE passerait — vert vacant.
+NONPROD3=$(STOA_ENV_CHAIN_FILE="$TMP/chain3.yaml" bash -c '. scripts/lib/env-chain.sh && env_chain_nonprod')
+cat > "$TMP/render_vy.py" <<'PYR'
+import sys, yaml, jinja2
+tasks = yaml.safe_load(open(sys.argv[1]))
+pol = next(t["ansible.builtin.uri"]["body"]["policy"] for t in tasks
+           if isinstance(t.get("ansible.builtin.uri"), dict)
+           and isinstance(t["ansible.builtin.uri"].get("body"), dict)
+           and "policy" in t["ansible.builtin.uri"]["body"])
+# trim_blocks=True : le reglage du Templar d'Ansible (sinon la ligne du {% for %}
+# laisserait un saut de ligne que le vrai rendu n'a pas).
+env = jinja2.Environment(trim_blocks=True)
+sys.stdout.write(env.from_string(pol).render(
+    apim_ss_vault_kv_mount="secret", onb_tenant_root="stoa/deploy/t",
+    onb={"team": "t"}, apim_onb_write_envs=sys.argv[2:]))
+PYR
+# $NONPROD3 non quoté : le découpage par mots est l'effet voulu (un argv par palier).
+# shellcheck disable=SC2086
+python3 "$TMP/render_vy.py" "$VY" $NONPROD3 > "$TMP/rvy" 2>&1
+grep 'create' "$TMP/rvy" > "$TMP/rvy_cr"
+grep -q '/gamma/' "$TMP/rvy_cr" \
+  && bad "⑥quinquies le TERMINUS gamma est inscriptible dans le rendu — D3 est violée" \
+  || ok "⑥quinquies rendu : aucune ligne create ne porte le terminus gamma"
+grep -q '/alpha/' "$TMP/rvy_cr" && grep -q '/beta/' "$TMP/rvy_cr" \
+  && ok "⑥quinquies(b) rendu : alpha ET beta sont bien inscriptibles (le rendu n'est pas vide)" \
+  || bad "⑥quinquies(b) rendu sans ligne create pour alpha/beta : $(tail -1 "$TMP/rvy")"
+# Mutation : rendre avec la chaîne ENTIÈRE (terminus compris) ⇒ le détecteur DOIT voir.
+python3 "$TMP/render_vy.py" "$VY" alpha beta gamma > "$TMP/rvy_mut" 2>&1
+grep 'create' "$TMP/rvy_mut" > "$TMP/rvy_mut_cr"
+grep -q '/gamma/' "$TMP/rvy_mut_cr" \
+  && ok "⑥quinquies(c) un terminus dans la liste rend une ligne create — l'épreuve n'est pas vacante" \
+  || bad "⑥quinquies(c) même avec gamma dans la liste, rien n'est détecté — ⑥quinquies est un vert vacant"
+
 echo "== ⑦ le défaut d'apim_onb_write_envs est FAIL-CLOSED =="
 python3 - "ansible/roles/apim_team_onboard/defaults/main.yml" <<'PY' >"$TMP/p7" 2>&1
 import sys, yaml
@@ -121,6 +159,74 @@ sed 's/[[:space:]]*#.*$//' "ansible/onboard-team.yml" > "$TMP/ot_nc"
 grep -q 'env_chain_nonprod' "$TMP/ot_nc" \
   && ok "⑦bis onboard-team.yml dérive apim_onb_write_envs d'env_chain_nonprod" \
   || bad "⑦bis le playbook ne dérive pas la liste — la voie consommateur hors-prod régresserait"
+
+# ── ⑦ter : l'assert de liste non vide existe ET EST AU BON ENDROIT ───────────
+# Un grep dit qu'un assert EXISTE, jamais qu'il PRÉCÈDE ce qu'il protège. Placé
+# après la tâche uri, le refus tombe quand la policy est DÉJÀ chez Vault. Même
+# motif que scripts/lib/import-guard-probe.py (épreuve ⑮ de G3), même séparateur
+# \x1f : le champ `that:` porte lui-même des filtres Jinja (`| default([]) |
+# length > 0`), un séparateur '|' collisionnerait avec son contenu.
+US=$'\x1f'
+WV=$(VY="$VY" python3 scripts/lib/write-envs-guard-probe.py) \
+  || bad "⑦ter PARSE_VAULT : vault.yml illisible par la sonde"
+case "$WV" in
+  W=*)
+    WVR="${WV#W=}"
+    W_THAT="${WVR%%"$US"*}"; WVR="${WVR#*"$US"}"
+    W_HASPOL="${WVR%%"$US"*}"; W_BEFORE="${WVR#*"$US"}"
+    case "$W_THAT" in
+      *apim_onb_write_envs*length*) ok "⑦ter un assert borne la LONGUEUR d'apim_onb_write_envs" ;;
+      "")  bad "⑦ter aucun assert ne porte sur apim_onb_write_envs — une liste vide rendrait la policy muette en écriture" ;;
+      *)   bad "⑦ter l'assert porte « $W_THAT » — il ne borne pas la longueur de la liste" ;;
+    esac
+    [ "$W_HASPOL" = 1 ] \
+      && ok "⑦ter(b) la tâche qui POSE la policy est repérée par sa structure (uri + body.policy)" \
+      || bad "⑦ter(b) aucune tâche uri ne porte body.policy — la sonde ne mesure rien"
+    [ "$W_BEFORE" = 1 ] \
+      && ok "⑦ter(c) l'assert PRÉCÈDE la pose de la policy" \
+      || bad "⑦ter(c) l'assert vient APRÈS la policy — elle serait déjà partie chez Vault quand le refus tombe"
+    ;;
+  *) bad "⑦ter sortie de sonde inattendue : $WV" ;;
+esac
+# Mutations. La première (retirer l'assert) éprouve ⑦ter ; la SECONDE (le
+# déplacer après la policy) éprouve ⑦ter(c), qui sinon n'aurait jamais été vu
+# que dans le sens qui passe.
+python3 - "$VY" "$TMP/vy_noassert" "$TMP/vy_late" <<'PYM'
+import sys, yaml
+tasks = yaml.safe_load(open(sys.argv[1]))
+def is_guard(t):
+    return isinstance(t, dict) and "apim_onb_write_envs" in str(
+        (t.get("ansible.builtin.assert") or {}).get("that") or "")
+kept = [t for t in tasks if not is_guard(t)]
+yaml.safe_dump(kept, open(sys.argv[2], "w"))
+yaml.safe_dump(kept + [t for t in tasks if is_guard(t)], open(sys.argv[3], "w"))
+PYM
+W_NO=$(VY="$TMP/vy_noassert" python3 scripts/lib/write-envs-guard-probe.py)
+case "$W_NO" in
+  "W=$US"*"${US}0") ok "⑦quater retirer l'assert est DÉTECTÉ (that vide, précède=0)" ;;
+  *) bad "⑦quater l'assert retiré passe quand même — ⑦ter est un vert vacant : $W_NO" ;;
+esac
+W_LATE=$(VY="$TMP/vy_late" python3 scripts/lib/write-envs-guard-probe.py)
+case "$W_LATE" in
+  *"${US}0") ok "⑦quater(b) déplacer l'assert APRÈS la policy est DÉTECTÉ" ;;
+  *) bad "⑦quater(b) l'assert déplacé après la policy passe encore — ⑦ter(c) est un vert vacant : $W_LATE" ;;
+esac
+
+# ── ⑦quinquies : la SOURCE de chaîne est nommée par les deux écrivains ───────
+# Le repli d'env-chain.sh sur clients/_example/environments.yaml est fail-OPEN
+# pour un client dont la chaîne est plus courte : le dernier palier du gabarit
+# n'est pas son terminus, il deviendrait inscriptible SANS SYMPTÔME. On ne
+# refuse pas le repli (le gabarit est la source déclarée du lab) — on exige que
+# la source réellement lue soit NOMMÉE dans la sortie des deux poseurs de policy.
+# Grep sur code décommenté : les commentaires d'avertissement citent eux aussi
+# STOA_ENV_CHAIN_FILE, et un commentaire ne s'imprime dans aucun log.
+sed 's/[[:space:]]*#.*$//' "scripts/setup-user-vault-jwt.sh" > "$TMP/uvj_nc0"
+grep -q 'STOA_ENV_CHAIN_FILE' "$TMP/ot_nc" \
+  && ok "⑦quinquies onboard-team.yml NOMME la source de chaîne dans le log du play" \
+  || bad "⑦quinquies onboard-team.yml n'imprime pas sa source — rien ne distingue la chaîne du client du gabarit d'exemple"
+grep -q 'STOA_ENV_CHAIN_FILE' "$TMP/uvj_nc0" \
+  && ok "⑦quinquies(b) setup-user-vault-jwt.sh NOMME la source de chaîne" \
+  || bad "⑦quinquies(b) setup-user-vault-jwt.sh n'imprime pas sa source"
 
 echo "== ⑧ user-deploy (voie B) : même resserrage =="
 UVJ="scripts/setup-user-vault-jwt.sh"
@@ -141,35 +247,42 @@ grep -q 'apps/\*"' "$TMP/uvj_mut_cr" \
   && ok "⑧ter le retour à apps/* nu est DÉTECTÉ côté voie B — ⑧ n'est pas vacante" \
   || bad "⑧ter la mutation ne produit pas de write nu — ⑧ est un vert vacant"
 
-echo "== ⑨ une liste de paliers VIDE est refusée côté voie A (miroir de l'assert voie B) =="
-# Statique et sans ansible : la porte doit rester jouable sur un poste qui n'a
-# que bash + python3 (comme ①-⑧). Le comportement de l'assert lui-même a été
-# exercé pour de vrai avec ansible-playbook hors porte (cf. rapport de tâche).
-cat > "$TMP/chk9.py" <<'PY'
-import sys, yaml
-tasks = yaml.safe_load(open(sys.argv[1]))
-a = [t for t in tasks if isinstance(t, dict) and "ansible.builtin.assert" in t]
-assert a, "aucune tache assert dans le fichier"
-cond = " ".join(str(t["ansible.builtin.assert"].get("that")) for t in a)
-assert "apim_onb_write_envs" in cond, "aucun assert ne porte sur apim_onb_write_envs"
-assert "length > 0" in cond, "l'assert ne borne pas la liste par sa longueur"
-print("OK")
-PY
-python3 "$TMP/chk9.py" "$VY" >"$TMP/p9" 2>&1
-grep -q '^OK$' "$TMP/p9" \
-  && ok "⑨ vault.yml refuse une liste vide — la policy ne peut pas devenir muette en écriture" \
-  || bad "⑨ $(tail -1 "$TMP/p9")"
-# Mutation : retirer l'assert d'une copie ⇒ le détecteur DOIT voir rouge.
-python3 - "$VY" "$TMP/vy_noassert" <<'PY'
-import sys, yaml
-tasks = [t for t in yaml.safe_load(open(sys.argv[1]))
-         if not (isinstance(t, dict) and "ansible.builtin.assert" in t)]
-yaml.safe_dump(tasks, open(sys.argv[2], "w"))
-PY
-python3 "$TMP/chk9.py" "$TMP/vy_noassert" >"$TMP/p9m" 2>&1
-grep -q '^OK$' "$TMP/p9m" \
-  && bad "⑨bis l'assert retiré passe quand même — ⑨ est un vert vacant" \
-  || ok "⑨bis retirer l'assert est DÉTECTÉ — ⑨ n'est pas vacante"
+# ── ⑧quater : le RENDU de la voie B ──────────────────────────────────────────
+# Les deux voies sont un miroir de PÉRIMÈTRE, PAS de code : ici c'est un gabarit
+# python qui construit des chaînes, là-bas une boucle Jinja. Un défaut de l'un
+# ne se verrait donc pas dans l'autre — on rend les DEUX, jamais un seul.
+# Le gabarit est EXTRAIT du script livré (pas recopié) : il ne peut pas dériver.
+python3 - "$UVJ" "$TMP/uvj_tpl.py" <<'PYX'
+import sys, io
+s = io.open(sys.argv[1], encoding="utf-8").read()
+i = s.index("/tmp/uvj-pol.json <<'" + "PY'")
+j = s.index("\n", i) + 1
+k = s.index("\n" + "PY\n", j) + 1
+io.open(sys.argv[2], "w", encoding="utf-8").write(s[j:k])
+PYX
+# shellcheck disable=SC2086
+python3 "$TMP/uvj_tpl.py" "secret/data/stoa/deploy/T" "secret/metadata/stoa/deploy/T" $NONPROD3 > "$TMP/ruvj.json" 2>"$TMP/ruvj.err"
+python3 -c 'import json,sys;sys.stdout.write(json.load(open(sys.argv[1]))["policy"])' "$TMP/ruvj.json" > "$TMP/ruvj" 2>&1
+grep 'create' "$TMP/ruvj" > "$TMP/ruvj_cr"
+grep -q '/gamma/' "$TMP/ruvj_cr" \
+  && bad "⑧quater le TERMINUS gamma est inscriptible côté voie B — D3 est violée par la porte SSO" \
+  || ok "⑧quater rendu voie B : aucune ligne create ne porte le terminus gamma"
+grep -q '/alpha/' "$TMP/ruvj_cr" && grep -q '/beta/' "$TMP/ruvj_cr" \
+  && ok "⑧quater(b) rendu voie B : alpha ET beta inscriptibles (le rendu n'est pas vide)" \
+  || bad "⑧quater(b) rendu voie B sans ligne create : $(tail -1 "$TMP/ruvj") $(tail -1 "$TMP/ruvj.err")"
+# Mutation : la chaîne ENTIÈRE ⇒ le détecteur DOIT voir le terminus.
+python3 "$TMP/uvj_tpl.py" "secret/data/stoa/deploy/T" "secret/metadata/stoa/deploy/T" alpha beta gamma > "$TMP/ruvj_mut.json" 2>&1
+python3 -c 'import json,sys;sys.stdout.write(json.load(open(sys.argv[1]))["policy"])' "$TMP/ruvj_mut.json" > "$TMP/ruvj_mut" 2>&1
+grep 'create' "$TMP/ruvj_mut" > "$TMP/ruvj_mut_cr"
+grep -q '/gamma/' "$TMP/ruvj_mut_cr" \
+  && ok "⑧quater(c) un terminus dans la liste rend une ligne create côté voie B — l'épreuve n'est pas vacante" \
+  || bad "⑧quater(c) même avec gamma, rien n'est détecté — ⑧quater est un vert vacant"
+# La garde liste-vide du gabarit doit survivre à PYTHONOPTIMIZE=1 : un `assert`
+# python DISPARAÎT du bytecode sous -O, et la garde avec lui, en silence.
+PYTHONOPTIMIZE=1 python3 "$TMP/uvj_tpl.py" "d" "m" >"$TMP/uvj_opt" 2>&1
+[ -s "$TMP/uvj_opt" ] && ! grep -q '"policy"' "$TMP/uvj_opt" \
+  && ok "⑧quater(d) la garde liste-vide tient sous PYTHONOPTIMIZE=1 (pas un assert)" \
+  || bad "⑧quater(d) sous PYTHONOPTIMIZE=1 le gabarit produit une policy sans aucune ligne create — garde supprimée par -O"
 
 printf '\n  %d PASS / %d FAIL\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

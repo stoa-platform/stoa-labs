@@ -56,9 +56,19 @@ fail() { printf '\033[1;31m[user-vault]\033[0m %s\n' "$*"; exit 1; }
 # structure (env_chain_nonprod retire le DERNIER palier, pas « prod » par son
 # nom). Chaine illisible ⇒ on s'arrete : une policy posee sur une liste devinee
 # est pire que pas de policy du tout.
+#
+# ⚠ CHEZ UN CLIENT, POSER STOA_ENV_CHAIN_FILE SUR LA CHAINE REELLE — une policy
+# derivee du gabarit d'exemple peut rendre son terminus INSCRIPTIBLE (ADR-082).
+# env-chain.sh retombe sur clients/_example/environments.yaml quand la variable
+# est absente : c'est la source declaree du lab, mais chez un client dont la
+# chaine est plus COURTE, le dernier palier du gabarit n'est pas son terminus a
+# lui — il entrerait alors dans la liste hors-prod, donc dans les chemins
+# inscriptibles, SANS AUCUN SYMPTOME. D'ou la ligne qui suit : la source lue est
+# NOMMEE dans la sortie, pas devinee a la relecture.
 # shellcheck source=scripts/lib/env-chain.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib/env-chain.sh"
 UVJ_WRITE_ENVS="$(env_chain_nonprod)" || fail "CHAINE_ILLISIBLE : env_chain_nonprod"
+say "chaîne d'envs lue depuis : ${STOA_ENV_CHAIN_FILE:-<gabarit par défaut : clients/_example/environments.yaml>}"
 # Le token Vault part dans un header-FILE, jamais en argv (ps/cmdline) —
 # standard du repo depuis ADR-074 (« jamais en argv »).
 VHDR="$(mktemp)"; trap 'rm -f "$VHDR" /tmp/uvj-*.err' EXIT
@@ -147,7 +157,10 @@ python3 - "$VP" "$VM" $UVJ_WRITE_ENVS > /tmp/uvj-pol.json <<'PY' || fail "gabari
 import json, sys
 d, m = sys.argv[1], sys.argv[2]
 envs = sys.argv[3:]
-assert envs, "liste de paliers vide — fail-closed"
+# PAS un `assert` : PYTHONOPTIMIZE=1 (ou `python3 -O`) les SUPPRIME du bytecode,
+# et la garde disparaitrait sans bruit — exactement l'inverse d'un fail-closed.
+if not envs:
+    sys.exit("liste de paliers vide — fail-closed")
 lines = [
     '# Périmètre de déploiement du tenant porté par la claim (voie B, ADR-077).',
     '# LECTURE sur tout le sous-arbre ; ÉCRITURE limitée à apps/ PAR PALIER NON',
