@@ -48,3 +48,10 @@ apim_onb_password_bytes: 12
 # gateway comprise) reste inchange pour tout appelant qui ne surcharge pas
 # ce booleen.
 apim_onb_gateway: true
+
+# G4 (ADR-082) : paliers ou le tenant a le DROIT D'ECRIRE ses secrets d'app
+# (deploy/<t>/apps/<app>/<env>/...). Defaut FAIL-CLOSED : le palier d'authoring
+# seul. Le playbook onboard-team.yml derive la vraie liste d'env_chain_nonprod
+# — le terminus n'y entre JAMAIS (une ecriture d'app au terminus meurt en 403,
+# structurellement : c'est la retention de credential, pas un if).
+apim_onb_write_envs: ["dev"]

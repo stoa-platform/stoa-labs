@@ -11,6 +11,26 @@
 - name: "Onboarding d'equipe"
   hosts: webmethods
   gather_facts: false
+  vars:
+    # G4 (ADR-082) : la liste des paliers ou l'equipe a le DROIT D'ECRIRE ses
+    # secrets d'app est DERIVEE de la chaine — une seule source. Le defaut du
+    # role (["dev"]) est un filet fail-closed, pas la valeur de service : toute
+    # invocation documentee passe par ce play. Echec de la derivation = echec
+    # du play (le lookup remonte l'erreur), jamais une liste devinee.
+    #
+    # ⚠ LE CHEMIN EST ANCRE SUR playbook_dir, ET C'EST MESURE. Le lookup `pipe`
+    # lance sa commande avec cwd = basedir du loader, c'est-a-dire le REPERTOIRE
+    # DU PLAYBOOK (ansible/), PAS celui d'ou l'on a lance ansible-playbook
+    # (lookup/pipe.py:68, ansible-core 2.18.2 : `Popen(term,
+    # cwd=self._loader.get_basedir(), shell=True)`). Ecrit en relatif —
+    # `. scripts/lib/env-chain.sh` — le source echouait donc a TOUS les coups
+    # (« No such file or directory ») et le play mourait meme avec une chaine
+    # parfaitement lisible : un fail-closed permanent n'est pas un fail-closed.
+    # L'absolu est aussi ce que la lib demande, elle resout SA racine depuis
+    # BASH_SOURCE (piege documente en tete de scripts/lib/env-chain.sh).
+    # `| quote` (shlex.quote) pose les guillemets du `bash -c` — jamais nous.
+    apim_onb_write_envs: >-
+      {{ lookup('pipe', 'bash -c ' ~ (('. ' ~ playbook_dir ~ '/../scripts/lib/env-chain.sh && env_chain_nonprod') | quote)).split() }}
   tasks:
     - name: "FAIL-CLOSED — une equipe cible est obligatoire"
       ansible.builtin.assert:
