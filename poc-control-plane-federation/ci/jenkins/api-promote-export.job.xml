@@ -1,0 +1,90 @@
+<?xml version='1.1' encoding='UTF-8'?>
+<!--
+  api-promote-export — PIPELINE FROM SCM, job de FORMULAIRE (jalon G5, verbe
+  archive), calqué sur ci/jenkins/team-request.job.xml : ni webhook ni
+  <script> inline, le pipeline vit dans ci/Jenkinsfile.api-promote-export
+  (déclaratif, versionné, relisible par l'ops).
+
+  ⚠ MÉCANISME MESURÉ SUR LE FRÈRE LE PLUS PROCHE (api-promote-request, jalon
+  G3) : ce dernier n'a PAS de job.xml sous ci/jenkins/ et n'est posé par
+  AUCUN script de ce dépôt (ni setup-team-onboard-jobs.sh — absent de sa
+  liste JOBS —, ni un setup dédié comme setup-provision-request-job.sh en a
+  un pour provisioning-request). Sa seule preuve d'existence est
+  scripts/test-deploy-pin.sh ⑲, qui vérifie la présence du Jenkinsfile, pas
+  d'un job posé. C'est un job jamais câblé — dette silencieuse, pas un choix
+  déclaré ailleurs dans ce dépôt. Plutôt que reproduire ce trou pour
+  api-promote-export, CE fichier existe et rejoint setup-team-onboard-jobs.sh
+  (comme app-request/api-request avant lui) : le mécanisme imité est donc
+  celui de team-request, pas celui — absent — d'api-promote-request.
+
+  Le bloc <parameterDefinitions> ci-dessous DOIT rester le miroir exact du
+  bloc `parameters { … }` du Jenkinsfile — MÊME PIÈGE que team-request.job.xml
+  documente (DeclarativeJobPropertyTrackerAction : c'est le XML qui gagne, une
+  divergence entre les deux fichiers serait silencieuse).
+
+  AUCUN champ d'environnement (G4, ADR-082) : l'export tourne contre la
+  gateway D'AUTHORING, scellée dans scripts/api-promote-export.sh via
+  DEPLOY_PIN_AUTHORING_ENV — il n'y a pas de palier à choisir ici.
+
+  AUCUN marqueur de liste dynamique (CHOICES) : ce job n'a pas de champ
+  APIS/TEAMS à générer depuis Gitea (contrairement à app-request/api-request),
+  il est donc copié TEL QUEL par setup-team-onboard-jobs.sh, sans dépendre
+  d'un Gitea joignable pour être posé.
+-->
+<flow-definition plugin="workflow-job">
+  <description>Formulaire : exporter l'archive d'une API déjà publiée en authoring, la pousser au registre (Gitea packages) et imprimer guid/sha256/package (EXPORT_CONFIRMED_SUMMARY) — à recopier dans apis/&lt;api&gt;.promote.yml (guid) et dans le formulaire api-promote-request (ARCHIVE_SHA256). Ne publie rien, ne déploie rien : identité NOMINATIVE requise (login Vault). PIPELINE FROM SCM : le pipeline est ci/Jenkinsfile.api-promote-export, chargé depuis le dépôt plateforme (branche main) — ce job ne contient AUCUN Groovy.</description>
+  <keepDependencies>false</keepDependencies>
+  <properties>
+    <hudson.model.ParametersDefinitionProperty>
+      <parameterDefinitions>
+        <hudson.model.StringParameterDefinition>
+          <name>TEAM</name>
+          <description>Équipe propriétaire de l'API — minuscules/chiffres/tirets.</description>
+          <defaultValue></defaultValue>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>API_NAME</name>
+          <description>Nom de l'API à exporter (déjà publiée en authoring, avec un apis/&lt;api&gt;.promote.yml sur le dépôt d'équipe).</description>
+          <defaultValue></defaultValue>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>VAULT_USER</name>
+          <description>Login annuaire nominatif (ex. oscar) — identité qui exécute l'export.</description>
+          <defaultValue></defaultValue>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.PasswordParameterDefinition>
+          <name>V_PASS</name>
+          <description>Mot de passe annuaire. ⚠ Ne PAS relancer en boucle après un refus (lockout AD).</description>
+          <defaultValue></defaultValue>
+        </hudson.model.PasswordParameterDefinition>
+      </parameterDefinitions>
+    </hudson.model.ParametersDefinitionProperty>
+  </properties>
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition" plugin="workflow-cps">
+    <scm class="hudson.plugins.git.GitSCM" plugin="git">
+      <configVersion>2</configVersion>
+      <userRemoteConfigs>
+        <hudson.plugins.git.UserRemoteConfig>
+          <!-- Depot PLATEFORME vu DEPUIS l'agent (reseau docker), meme URL que
+               les jobs freres. -->
+          <url>http://gitea:3000/ci/stoa-labs.git</url>
+        </hudson.plugins.git.UserRemoteConfig>
+      </userRemoteConfigs>
+      <branches>
+        <hudson.plugins.git.BranchSpec>
+          <name>*/main</name>
+        </hudson.plugins.git.BranchSpec>
+      </branches>
+      <doGenerateSubmoduleConfigurations>false</doGenerateSubmoduleConfigurations>
+      <submoduleCfg class="empty-list"/>
+      <extensions/>
+    </scm>
+    <scriptPath>poc-control-plane-federation/ci/Jenkinsfile.api-promote-export</scriptPath>
+    <!-- lightweight=false : le workspace de l'agent doit porter le depot
+         (scripts/, ansible/), pas seulement le Jenkinsfile. -->
+    <lightweight>false</lightweight>
+  </definition>
+  <!-- Aucun declencheur : ce job est un FORMULAIRE, jamais un webhook. -->
+  <triggers/>
+  <disabled>false</disabled>
+</flow-definition>

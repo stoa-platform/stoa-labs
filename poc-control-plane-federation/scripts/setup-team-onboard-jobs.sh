@@ -20,6 +20,17 @@
 #                   post-merge d'api-request ; JOB UNIQUE partagé par TOUS les
 #                   dépôts d'équipe, l'équipe autorisée étant dérivée du dépôt
 #                   déclencheur par topologie — pas de placeholder ici)
+#   api-promote-export → ci/jenkins/api-promote-export.job.xml (Task 5, jalon
+#                   G5 — le chemin d'EXPORT : joue apim_promote_api en
+#                   action=export contre la gateway d'authoring, pousse
+#                   l'archive au registre Gitea, imprime guid/sha256/package.
+#                   Sans marqueur CHOICES (ni TEAMS ni APIS) : copié tel quel,
+#                   comme team-request/team-apply. ⚠ api-promote-request
+#                   (jalon G3, le formulaire DE PROMOTION lui-même) n'a PAS de
+#                   job.xml et n'est posé par AUCUN script de ce dépôt — dette
+#                   distincte, non comblée ici (cf. l'en-tête du job.xml
+#                   d'api-promote-export pour le détail de ce qui a été
+#                   vérifié).
 #
 # ── LISTES DYNAMIQUES (Task 3, palier 3) ─────────────────────────────────────
 # Les XML de jobs à listes déroulantes portent des PLACEHOLDERS
@@ -76,7 +87,7 @@ _STO_LIB="$(dirname "${BASH_SOURCE[0]}")/lib/deploy-pin.sh"
 . "$_STO_LIB" || { echo "ERREUR: $_STO_LIB introuvable ou illisible" >&2; exit 1; }
 
 JENKINS_UI="${JENKINS_UI:-http://localhost:18080}"
-JOBS="${JOBS:-team-request app-request team-apply api-request team-publish}"
+JOBS="${JOBS:-team-request app-request team-apply api-request team-publish api-promote-export}"
 # G4 (ADR-082) : ENVN est SCELLÉ sur l'env d'authoring — affectation sèche
 # depuis la constante de lib, jamais "${ENVN:-dev}" : les variables d'un job
 # Jenkins atterrissent dans l'environnement du process (fait mesuré, même
