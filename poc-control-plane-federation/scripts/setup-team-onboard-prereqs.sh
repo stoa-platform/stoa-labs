@@ -92,9 +92,11 @@ echo "2. token org-admin Gitea → Vault"
 # Accumulation de tokens `team-onboard-<ts>` assumée, même cycle de vie
 # « régénéré à chaque run, jamais révoqué individuellement » que documenté dans
 # setup-provision-request-job.sh (§1) — pas une régression introduite ici.
+# write:package : le registre d'archives G5 (scripts/lib/archive-store.sh) pousse
+# et refetche par CE token — mesuré, 401 dès la sonde sans lui, 201/200 avec.
 GTOK=$(docker exec -u git "$GITEA_CONTAINER" gitea admin user generate-access-token \
   --username "$GITEA_ADMIN_USER" --token-name "team-onboard-$(date +%s)" \
-  --scopes write:organization,write:repository 2>/dev/null | grep -oE '[0-9a-f]{40}' | head -1)
+  --scopes write:organization,write:repository,write:package 2>/dev/null | grep -oE '[0-9a-f]{40}' | head -1)
 [ -n "$GTOK" ] || ko "génération token Gitea (user $GITEA_ADMIN_USER)"
 printf '{"data":{"token":"%s"}}' "$GTOK" > "$TMP/kv.json"
 RC=$(vcurl -X POST "$VAULT_ADDR/v1/secret/data/stoa/ci/gitea-org-admin" --data-binary @"$TMP/kv.json" -o "$TMP/err" -w '%{http_code}')
