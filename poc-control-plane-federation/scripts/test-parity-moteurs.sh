@@ -422,6 +422,73 @@ else
   jq -r '.[] | "     \(.champ): avant=\(.gauche) après=\(.droite)"' "$WORK/parity.diff.json"
 fi
 
+# ═════════════════════════════════════════════════════════════════════════════
+# PHASE 6 — CONTRE-ÉPREUVES : un moteur muté DOIT faire rougir la parité
+# ═════════════════════════════════════════════════════════════════════════════
+# Motif F1 : une parité qui ne rougit jamais ne prouve rien. Deux mutations
+# volontaires (le scope-mapping sauté), une par moteur, sur des COPIES — le
+# diff doit être non vide ET nommer le champ muté.
+say "phase 6a — MUTATION labctl : parité attendue ROUGE"
+cp -R "$REPO/labctl" "$WORK/labctl-mut"
+MUT_GO='if spec.ScopeMapping.ExternalScope != "" || spec.ScopeMapping.AuthServerAlias != "" {'
+if grep -qF "$MUT_GO" "$WORK/labctl-mut/cmd/labctl/promote.go"; then
+  ok "M0a ancre de mutation labctl trouvée"
+else
+  ko "M0a motif de mutation introuvable — promote.go a changé, ré-ancrer la contre-épreuve"
+fi
+MUT_GO="$MUT_GO" python3 - "$WORK/labctl-mut/cmd/labctl/promote.go" <<'PYEOF'
+import os, sys
+p = sys.argv[1]; s = open(p).read()
+s = s.replace(os.environ["MUT_GO"], 'if false {', 1)
+open(p, 'w').write(s)
+PYEOF
+( cd "$WORK/labctl-mut" && GOPROXY=off GOFLAGS=-mod=vendor go build -o "$WORK/labctl-mutbin" . ) \
+  || ko "M0a build du labctl muté"
+wait_gw || ko "gateway indisponible avant l'import muté labctl"
+wipe_target
+engine_import labctl-mut > "$WORK/import.mut-labctl.log" 2>&1 \
+  || ko "M1 l'import muté labctl a échoué avant la mesure — $(tail -3 "$WORK/import.mut-labctl.log" | tr '\n' ' ')"
+snapshot "$WORK/snap-mut-labctl.json"
+if parity_diff "$WORK/snap-ansible.json" "$WORK/snap-mut-labctl.json"; then
+  ko "M1 la parité N'A PAS rougi sur un labctl muté (elle ne prouve rien — motif F1)"
+else
+  if jq -e '[.[] | select(.champ | startswith("scope"))] | length > 0' "$WORK/parity.diff.json" > /dev/null; then
+    ok "M1 mutation labctl (scope sauté) → parité ROUGE, champ nommé ($(jq -r 'length' "$WORK/parity.diff.json") écart(s))"
+  else
+    ko "M1 la parité a rougi, mais sans nommer le scope muté : $(jq -c '.' "$WORK/parity.diff.json" | head -c 300)"
+  fi
+fi
+
+say "phase 6b — MUTATION rôle : l'autre sens doit rougir aussi"
+cp -R "$REPO/ansible" "$WORK/ansible-mut"
+IMP="$WORK/ansible-mut/roles/apim_promote_api/tasks/import.yml"
+MUT_YML='when: "(apim_promote.scope_mapping | default({})) | length > 0"'
+if grep -qF "$MUT_YML" "$IMP"; then
+  ok "M0b ancre de mutation rôle trouvée"
+else
+  ko "M0b motif de mutation rôle introuvable — import.yml a changé, ré-ancrer la contre-épreuve"
+fi
+MUT_YML="$MUT_YML" python3 - "$IMP" <<'PYEOF'
+import os, sys
+p = sys.argv[1]; s = open(p).read()
+s = s.replace(os.environ["MUT_YML"], 'when: false', 1)
+open(p, 'w').write(s)
+PYEOF
+wait_gw || ko "gateway indisponible avant l'import muté ansible"
+wipe_target
+engine_import ansible-mut > "$WORK/import.mut-ansible.log" 2>&1 \
+  || ko "M2 l'import muté ansible a échoué avant la mesure — $(tail -3 "$WORK/import.mut-ansible.log" | tr '\n' ' ')"
+snapshot "$WORK/snap-mut-ansible.json"
+if parity_diff "$WORK/snap-mut-ansible.json" "$WORK/snap-labctl.json"; then
+  ko "M2 la parité N'A PAS rougi sur un rôle muté"
+else
+  if jq -e '[.[] | select(.champ | startswith("scope"))] | length > 0' "$WORK/parity.diff.json" > /dev/null; then
+    ok "M2 mutation rôle (scope sauté) → parité ROUGE, champ nommé ($(jq -r 'length' "$WORK/parity.diff.json") écart(s))"
+  else
+    ko "M2 la parité a rougi, mais sans nommer le scope muté : $(jq -c '.' "$WORK/parity.diff.json" | head -c 300)"
+  fi
+fi
+
 # ── bilan ────────────────────────────────────────────────────────────────────
 say "BILAN"
 [ "$GW_RECYCLES" -gt 0 ] && printf '  ⏳ recyclages de la gateway absorbés : %d\n' "$GW_RECYCLES"
