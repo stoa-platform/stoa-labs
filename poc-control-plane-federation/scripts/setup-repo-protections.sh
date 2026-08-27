@@ -11,14 +11,23 @@
 #
 # Baseline : push whitelist = ${PROTECT_PUSH_WHITELIST:-ci} ; tout le reste
 # passe par PR. PROTECT_FILE_PATTERNS (optionnel) n'est posé QUE si l'exploitant
-# le fournit — la sémantique des patterns est MESURÉE par
-# test-repo-protections-live.sh (Task 9) avant d'être engagée (spec G4 §4).
+# le fournit.
 #
-# ⚠ AVANT DE RE-PASSER CE SCRIPT sur un dépôt DÉJÀ protégé : la sémantique de
-# fusion du PATCH Gitea n'est pas mesurée (cf. l'en-tête de
-# scripts/lib/repo-protection.sh). Si Gitea remplace au lieu de fusionner, ce
-# passage EFFACERAIT en silence les options qu'un exploitant aurait posées à la
-# main (patterns, approbations). Attendre la mesure de la Task 9.
+# VERDICTS DE MESURE — test-repo-protections-live.sh, Gitea 1.22.6, 2026-08-27 :
+#   (a) protected_file_patterns est un gate de CONTENU, indépendant du rôle :
+#       il rejette le push direct du fichier couvert pour TOUT pousseur
+#       (whitelisté ET admin de site) et bloque le MERGE d'une PR qui le touche
+#       (HTTP 405 « Changed protected files »), admin compris. Un push d'un
+#       fichier NON couvert par un pousseur whitelisté passe. ⇒ une fois posé,
+#       PROTECT_FILE_PATTERNS est une garantie RÉELLE, pas décorative.
+#   (b) le PATCH branch_protection 1.22 FUSIONNE : un champ ABSENT du corps est
+#       PRÉSERVÉ. Re-passer cette baseline (sans patterns) sur un dépôt porteur
+#       d'options posées à la main NE LES EFFACE PAS ⇒ re-passage NON destructif.
+#       Corollaire : pour EFFACER un champ, il faut l'envoyer explicitement vide.
+#   (c) l'admin de site N'EST PAS exempté du push_whitelist : non whitelisté, il
+#       est rejeté (« Not allowed to push to protected branch »). ⇒ le défaut
+#       PROTECT_PUSH_WHITELIST=ci DOIT rester aligné sur GITEA_ADMIN_USER : c'est
+#       ce qui laisse le chemin de réparation de team-apply pousser. PORTANT.
 #
 #   bash scripts/setup-repo-protections.sh --print   # hors ligne : ce qui SERAIT posé
 #   GITEA_TOKEN=… bash scripts/setup-repo-protections.sh

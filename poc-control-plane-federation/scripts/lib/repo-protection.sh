@@ -7,29 +7,23 @@
 #   whitelist ne pousse la branche protégée ; tout le reste passe par PR. C'est
 #   ce qui sort la définition de pipeline et la référence de déploiement du
 #   périmètre d'ÉCRITURE DIRECTE du demandeur.
-#   La sémantique de `protected_file_patterns` (Gitea 1.22) n'est PAS SUPPOSÉE
-#   ici : personne n'a mesuré si elle bloque aussi le MERGE d'une PR, ou
-#   seulement le push direct, ni ce qu'elle fait d'un admin d'organisation.
-#   test-repo-protections-live.sh (Task 9) la MESURE ; le poseur n'émet des
-#   patterns que là où la mesure a statué. Tant qu'elle n'a pas statué, le
-#   champ reste ABSENT du payload — un champ posé « au cas où » se lit comme
-#   une garantie et n'en est pas une.
+#   La sémantique de `protected_file_patterns` (Gitea 1.22) est MESURÉE
+#   (test-repo-protections-live.sh, 1.22.6, 2026-08-27) : c'est un gate de
+#   CONTENU, indépendant du rôle — il rejette le push direct du fichier couvert
+#   pour TOUT pousseur (whitelisté ET admin de site) et bloque le MERGE d'une PR
+#   qui le touche (HTTP 405 « Changed protected files »), admin compris. Le
+#   poseur n'émet des patterns que là où l'exploitant les fournit : une fois
+#   posés, ils tiennent réellement (garantie, pas décor).
 #
-# HYPOTHÈSE NON MESURÉE — la sémantique de FUSION du PATCH (Gitea 1.22).
-#   `pose_branch_protection` est dit « idempotent » : GET, puis POST 201 si la
+# SÉMANTIQUE DE FUSION DU PATCH (Gitea 1.22) — MESURÉE.
+#   `pose_branch_protection` est « idempotent » : GET, puis POST 201 si la
 #   protection est absente, PATCH 200 si elle existe. Le PATCH n'envoie que les
-#   champs de CE payload. Personne n'a mesuré ce que Gitea fait des champs
-#   ABSENTS du corps : les PRÉSERVE-t-il (fusion), ou les RÉINITIALISE-t-il à
-#   leur défaut (remplacement) ?
-#   Conséquence si c'est un remplacement : un passage du poseur baseline
-#   (setup-repo-protections.sh, ou l'appel de team-apply) sur un dépôt dont un
-#   exploitant a posé À LA MAIN des options plus riches — protected_file_patterns,
-#   approbations requises, whitelist de merge — les EFFACERAIT EN SILENCE. Le
-#   PATCH rendrait 200, le poseur dirait ✅, et la protection serait plus faible
-#   qu'avant. « Idempotent » ne veut donc PAS encore dire « non destructif ».
-#   Sémantique de fusion du PATCH : MESURÉE PAR test-repo-protections-live.sh
-#   (T9) — tant que la mesure n'a pas tourné, ne pas re-passer le poseur baseline
-#   sur un dépôt porteur d'options posées à la main.
+#   champs de CE payload. MESURE (test-repo-protections-live.sh, 1.22.6,
+#   2026-08-27) : le PATCH FUSIONNE — un champ ABSENT du corps est PRÉSERVÉ.
+#   Re-passer le poseur baseline (sans patterns) sur un dépôt porteur d'options
+#   posées à la main NE LES EFFACE PAS : « idempotent » est ici AUSSI « non
+#   destructif ». Corollaire : pour EFFACER un champ, l'envoyer explicitement
+#   vide — l'omettre le conserve.
 #
 # Secrets : le token ne transite JAMAIS par argv ni par une URL — l'appelant
 # construit un fichier d'en-tête (`Authorization: token …`) que curl lit via
