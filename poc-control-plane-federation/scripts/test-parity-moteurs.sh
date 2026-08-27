@@ -396,6 +396,32 @@ jq -e '.api.id == "'"$PIN_GUID"'" and .api.isActive == true' "$WORK/snap-labctl.
 check "$(jq -r '.dp' "$WORK/snap-labctl.json")" "/backend/rec/ping" \
   "P3 le data-plane route par \${$BALS} vers le backend de rec (les deux snapshots l'ont déjà comparé)"
 
+# ═════════════════════════════════════════════════════════════════════════════
+# PHASE 5 — LA PORTE SE REJOUE : verify par les DEUX moteurs, sans écrire
+# ═════════════════════════════════════════════════════════════════════════════
+say "phase 5 — VERIFY rejouable : --tags verify (rôle) et --action verify (labctl)"
+wait_gw || ko "gateway indisponible avant verify"
+ansible-playbook -i "$REPO/ansible/inventory.lab.ini" "$REPO/ansible/promote-api-verify.yml" \
+  -e apim_promote_manifest="$WORK/parity.promote.yml" -e apim_ss_env=rec \
+  -e apim_ss_api_base="$GW" -e apim_ss_data_base="$DP" \
+  -e apim_ss_wm_user="$WM_USER" -e apim_ss_wm_password="$WM_PASS" \
+  -e apim_ss_vault_addr="" > "$WORK/verify.ansible.log" 2>&1; RC=$?
+[ "$RC" -eq 0 ] && grep -q "PROMOTE_CONFIRMED" "$WORK/verify.ansible.log" \
+  && ok "V1 rôle : le --tags verify rejoue PROMOTE_CONFIRMED" \
+  || ko "V1 verify ansible rc=$RC — $(tail -3 "$WORK/verify.ansible.log" | tr '\n' ' ')"
+"$WORK/labctl" promote --manifest "$WORK/parity.promote.yml" --env rec \
+  --action verify -f "$WORK/targets.yaml" > "$WORK/verify.labctl.log" 2>&1; RC=$?
+[ "$RC" -eq 0 ] && grep -q "PROMOTE_CONFIRMED" "$WORK/verify.labctl.log" \
+  && ok "V2 labctl : --action verify rejoue PROMOTE_CONFIRMED" \
+  || ko "V2 verify labctl rc=$RC — $(tail -3 "$WORK/verify.labctl.log" | tr '\n' ' ')"
+snapshot "$WORK/snap-after-verify.json"
+if parity_diff "$WORK/snap-labctl.json" "$WORK/snap-after-verify.json"; then
+  ok "V3 verify n'a RIEN écrit (snapshot identique avant/après)"
+else
+  ko "V3 verify a modifié l'état :"
+  jq -r '.[] | "     \(.champ): avant=\(.gauche) après=\(.droite)"' "$WORK/parity.diff.json"
+fi
+
 # ── bilan ────────────────────────────────────────────────────────────────────
 say "BILAN"
 [ "$GW_RECYCLES" -gt 0 ] && printf '  ⏳ recyclages de la gateway absorbés : %d\n' "$GW_RECYCLES"
