@@ -269,10 +269,12 @@ Depuis G2, ouvrir un palier a **deux moitiés**, et les deux se disent :
 2. **La déclaration (G2, nouvelle)** : la porte du palier peut nommer un
    `deployerGroup` dans `environments.yaml` — un groupe de l'**annuaire LDAP**
    (familles `apim-apply-<x>` → policy `apply-<x>`, `apim-operator-<x>` →
-   `operator-deploy`, rien d'autre). Le porteur de l'apply — l'identité
-   nominative de la pause, qui DOIT être le mergeur — doit alors porter la
-   policy projetée dans son token Vault (`lookup-self`), sinon
-   **`DEPLOYER_GROUP_REQUIRED`**, avant tout moteur, gateway intouchée.
+   `operator-deploy`, rien d'autre). Le porteur de l'apply — sur la chaîne
+   self-service : l'identité nominative de la pause, qui DOIT être le mergeur ;
+   sur la chaîne gouvernance : l'AppRole granté (`--grant-ci`) ou l'opérateur
+   prod — doit alors porter la policy projetée dans son token Vault
+   (`lookup-self`), sinon **`DEPLOYER_GROUP_REQUIRED`**, avant tout moteur,
+   gateway intouchée.
 
 **Les refus et leur remède** :
 

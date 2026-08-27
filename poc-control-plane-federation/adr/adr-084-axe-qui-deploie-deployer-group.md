@@ -90,8 +90,8 @@ dispatch, sur le token du geste** — jamais « à l'approbation » sur un droit
 constaté plus tôt. C'est une assertion de la porte (elle rougirait si Vault
 révoquait à chaud un jour), pas un commentaire. Corollaire non chiffré : la
 fenêtre pendant laquelle un porteur écarté reste capable de déployer est
-bornée par le TTL du token — courte dans le lab (TTL LDAP 600 s), à chiffrer
-chez un client.
+bornée par le TTL/max_ttl du token (un token renouvelé vit jusqu'à son
+max_ttl) — courte dans le lab, à chiffrer chez un client.
 
 ## Conséquences
 
