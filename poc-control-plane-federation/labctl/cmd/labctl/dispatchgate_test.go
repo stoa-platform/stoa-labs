@@ -330,3 +330,81 @@ func TestDeployerGate_OneLookupPerRun(t *testing.T) {
 		t.Errorf("lookup-self calls = %d, want 1 (un seul par run)", got)
 	}
 }
+
+// dgWriteTwoFamilyRepo : une chaîne dont DEUX paliers déclarent un groupe
+// déployeur des DEUX familles projetables distinctes (apply-<x> et
+// operator-deploy), un contrat activé sur les deux. C'est la forme qui épingle
+// à la fois la voie `--env any` et la re-dérivation de la policy attendue
+// PALIER PAR PALIER.
+func dgWriteTwoFamilyRepo(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "environments.yaml"),
+		"environments: [dev, beta, prod]\ngates:\n"+
+			"  - to: beta\n    deployerGroup: apim-apply-beta\n"+
+			"  - to: prod\n    fourEyes: true\n    deployerGroup: apim-operator-prod\n")
+	dir := filepath.Join(root, "tenants", "banking-demo", "apis", "accounts-read")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWriteFile(t, filepath.Join(dir, "api.yaml"),
+		"name: accounts-read\nversion: 1.0.0\ntenant_id: banking-demo\nstatus: published\n"+
+			"endpoints: [{path: /accounts, methods: [GET], backend_url: http://microcks:8080/x}]\n")
+	mustWriteFile(t, filepath.Join(dir, "deploy.beta.yaml"), "version: 1.0.0\nenabled: true\npromoted_by: alice\n")
+	mustWriteFile(t, filepath.Join(dir, "deploy.prod.yaml"), "version: 1.0.0\nenabled: true\npromoted_by: alice\n")
+	return root
+}
+
+// `--env any` ne contourne RIEN : chaque palier déclaré est vérifié avec SA
+// propre policy projetée — le porteur passe beta (apply-beta) et se fait
+// refuser sur prod (operator-deploy), ce qu'un `want` hissé hors de la boucle
+// des paliers laisserait filer. Un seul lookup-self couvre les deux. Le jumeau
+// ITSM épingle la même contrainte (TestDispatchGate_AnyReChecksGatedEnv).
+func TestDeployerGate_AnyChecksEveryDeclaredEnv(t *testing.T) {
+	repo := dgWriteTwoFamilyRepo(t)
+	for _, tc := range []struct {
+		name     string
+		policies string
+		wantCode string
+		wantIn   []string
+	}{
+		{name: "les_deux_familles_portees", policies: `["default","apply-beta","operator-deploy"]`},
+		{
+			name: "seule_la_famille_apply_portee", policies: `["default","apply-beta"]`,
+			wantCode: "DEPLOYER_GROUP_REQUIRED",
+			wantIn:   []string{"accounts-read→prod", `"apim-operator-prod"`, `"operator-deploy"`},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := dgVaultServer(t, http.StatusOK, `{"data":{"policies":`+tc.policies+`,"identity_policies":[]}}`)
+			t.Setenv("VAULT_ADDR", v.url)
+			t.Setenv("VAULT_TOKEN", "carrier-token")
+			t.Setenv("VAULT_TOKEN_FILE", "")
+
+			err := deployerGate(t, repo, uac.EnvAny)
+			if tc.wantCode == "" {
+				if err != nil {
+					t.Fatalf("les deux paliers sont portés, want pass, got %v", err)
+				}
+			} else {
+				var g *dispatchGateError
+				if !errors.As(err, &g) {
+					t.Fatalf("want *dispatchGateError %s, got %v", tc.wantCode, err)
+				}
+				if g.Code != tc.wantCode {
+					t.Fatalf("code = %q, want %q (msg %q)", g.Code, tc.wantCode, g.Msg)
+				}
+				// Le refus doit nommer LE palier operator et SA policy : c'est ce
+				// qui prouve que `want` est re-dérivé palier par palier.
+				for _, want := range tc.wantIn {
+					if !strings.Contains(g.Msg, want) {
+						t.Errorf("le message doit porter %q:\n%s", want, g.Msg)
+					}
+				}
+			}
+			if got := v.calls.Load(); got != 1 {
+				t.Errorf("lookup-self calls = %d, want 1 (un seul pour les deux paliers)", got)
+			}
+		})
+	}
+}

@@ -179,7 +179,9 @@ func preflightDeployerGate(ctx context.Context, gchain governance.EnvChain, apis
 			}
 			d, ok := a.Deploys[e]
 			if !ok || !d.Enabled {
-				continue // not actually dispatched to this env
+				// not actually dispatched to this env — kept for symmetry with the
+				// ITSM preflight; unreachable given uacSkipReason/EnabledEnvsIn
+				continue
 			}
 			want, err := gate.DeployerPolicy()
 			if err != nil {
