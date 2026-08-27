@@ -80,5 +80,30 @@ cp "$BAK" "$CHAIN"
 grep -q 'deployerGroup: apim-apply-int' "$CHAIN" && ok "chaîne restaurée (deployerGroup)" \
   || bad "restauration deployerGroup manquée"
 
+echo "⑦ lecteurs G7 — terminus par position, itsmCheck par porte"
+# shellcheck source=scripts/lib/env-chain.sh
+. "$ROOT/scripts/lib/env-chain.sh"
+T="$(env_chain_terminus)"
+[ "$T" = prod ] && ok "env_chain_terminus rend le DERNIER palier (prod)" \
+                || bad "env_chain_terminus rend '$T' (attendu prod)"
+I="$(env_chain_gate_itsm_check prod)"
+[ "$I" = "ITSMCHECK=1" ] && ok "la porte prod déclare itsmCheck (lu par la lib)" \
+                         || bad "itsmCheck prod non lu ($I)"
+I="$(env_chain_gate_itsm_check rec)"
+[ "$I" = "ITSMCHECK=0" ] && ok "la porte rec ne déclare PAS itsmCheck" \
+                         || bad "itsmCheck rec inattendu ($I)"
+# CONTRE-ÉPREUVE : source cassée ⇒ refus FERMÉ des deux lecteurs (jamais une
+# valeur devinée). On pointe un fichier ABSENT via STOA_ENV_CHAIN_FILE.
+if OUT=$(STOA_ENV_CHAIN_FILE="$ROOT/nexiste.pas.yaml" env_chain_terminus 2>&1); then
+  bad "env_chain_terminus a rendu '$OUT' sur source absente (fail-open)"
+else
+  ok "env_chain_terminus refuse FERMÉ sur source absente"
+fi
+if OUT=$(STOA_ENV_CHAIN_FILE="$ROOT/nexiste.pas.yaml" env_chain_gate_itsm_check prod 2>&1); then
+  bad "env_chain_gate_itsm_check a rendu '$OUT' sur source absente (fail-open)"
+else
+  ok "env_chain_gate_itsm_check refuse FERMÉ sur source absente"
+fi
+
 printf '\n%d PASS / %d FAIL\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

@@ -149,3 +149,30 @@ print("GATE=%s|%s|%s" % (
     g.get("approverGroup") or ""))
 PY
 }
+
+# env_chain_terminus — le DERNIER palier de la chaîne. C'est la POSITION qui
+# fait le terminus, jamais le nom « prod » (même règle que env_chain_nonprod,
+# qui retire ce même dernier élément) : un client qui nomme son terminus
+# autrement ne casse rien. FONCTION SŒUR (jamais un champ de env_chain_gate).
+env_chain_terminus() {
+  local all; all="$(env_chain)" || return 1
+  # shellcheck disable=SC2206
+  local a=($all)
+  [ "${#a[@]}" -ge 1 ] || { echo "env-chain: chaîne vide" >&2; return 1; }
+  printf '%s' "${a[$((${#a[@]}-1))]}"
+}
+
+# env_chain_gate_itsm_check <env> — la porte d'arrivée déclare-t-elle la
+# re-vérification ITSM au dispatch ? Rend ITSMCHECK=0|1. FONCTION SŒUR, même
+# motif que env_chain_gate_four_eyes (un 4e champ positionnel de
+# env_chain_gate relâcherait la porte EN SILENCE chez ses appelants).
+env_chain_gate_itsm_check() {
+  local f; f="$(_env_chain_file)"
+  [ -r "$f" ] || { echo "env-chain: source illisible : $f" >&2; return 1; }
+  python3 - "$f" "$1" <<'PY'
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1])) or {}
+g = next((x for x in (d.get("gates") or []) if x.get("to") == sys.argv[2]), {}) or {}
+print("ITSMCHECK=%s" % ("1" if g.get("itsmCheck") else "0"))
+PY
+}
