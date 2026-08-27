@@ -101,12 +101,30 @@ func (s *Server) dataPlane(w http.ResponseWriter, r *http.Request) {
 		"version":        api.APIVersion,
 		"resource":       resource,
 		"resolved_url":   resolved,
+		"path":           resolvedPath(resolved),
 		"alias_resolved": aliasResolved,
 	}
 	if outboundAuth != "" {
 		body["outbound_auth"] = outboundAuth
 	}
 	writeJSON(w, http.StatusOK, body)
+}
+
+// resolvedPath is the path portion of the resolved URL — i.e. WHAT THE BACKEND
+// WOULD SEE. It exists because the promotion proofs assert the routing by
+// reading `.path` off the echo backend (poc-token-echo) the real gateway
+// forwards to; the mock resolves instead of forwarding, so it reports the same
+// fact itself rather than forcing every proof to know which of the two it is
+// talking to. It is NOT a claim that a request was made.
+func resolvedPath(resolved string) string {
+	rest := resolved
+	if i := strings.Index(rest, "://"); i >= 0 {
+		rest = rest[i+3:] // drop scheme AND authority: the backend sees neither
+	}
+	if i := strings.IndexByte(rest, '/'); i >= 0 {
+		return rest[i:]
+	}
+	return "/"
 }
 
 // dpFail counts and renders one data-plane refusal.

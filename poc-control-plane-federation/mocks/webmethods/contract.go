@@ -11,9 +11,16 @@ package main
 // servers[0].url (defaultEndpointURI, admin.go) and the top-level keys of
 // `paths` (resourceInContract, dataplane.go — VALUES are never read, only
 // keys). contractFromYAML is scoped to extracting exactly those two things
-// from the block-style YAML this repo's contracts use (2-space mappings, "- "
-// sequences, unquoted scalars) — it is NOT a general YAML parser: no
-// anchors, no flow style ({}/[]), no multi-line scalars, no quoting rules.
+// from the YAML this repo's contracts use — it is NOT a general YAML parser:
+// no anchors, no multi-line scalars, no quoting rules. TWO layouts are read,
+// because two callers write them: the block style of apis/*.openapi.yaml
+// (2-space mappings, "- " sequences, unquoted scalars) and the SINGLE-LINE FLOW
+// style of scripts/test-archive-promotion.sh (`servers: [ { url: … } ]`,
+// `paths: { /ping: { … } }`). Flow style was long unsupported, and the failure
+// was SILENT and total: an unparsed document yields an empty apiDefinition, so
+// the routing loses its backend and the allowlist exposes NOTHING — every
+// data-plane call 404s while the admin surface looks perfectly healthy. A flow
+// collection spanning several lines is still out of scope.
 // Stdlib only (encoding/json + strings), so the mock keeps building
 // air-gapped.
 
@@ -66,16 +73,112 @@ func contractFromYAML(data []byte) map[string]any {
 	lines := yamlLines(data)
 	out := map[string]any{}
 	for i := 0; i < len(lines); i++ {
-		switch lines[i].text {
-		case "servers:":
-			if url := firstSeqURLAfter(lines, i); url != "" {
+		// "key:" alone opens a block collection; "key: <rest>" on one line is a
+		// flow collection (or a scalar, which yields nothing here).
+		key, rest, ok := strings.Cut(lines[i].text, ":")
+		if !ok {
+			continue
+		}
+		rest = strings.TrimSpace(rest)
+		switch key {
+		case "servers":
+			url := firstSeqURLAfter(lines, i)
+			if rest != "" {
+				url = flowSeqFirstField(rest, "url")
+			}
+			if url != "" {
 				out["servers"] = []any{map[string]any{"url": url}}
 			}
-		case "paths:":
+		case "paths":
+			if rest != "" {
+				out["paths"] = flowMapKeys(rest)
+				continue
+			}
 			out["paths"] = childKeysAfter(lines, i)
 		}
 	}
 	return out
+}
+
+// flowBody strips the delimiters of a flow collection, reporting whether s is
+// one at all.
+func flowBody(s string, open, close byte) (string, bool) {
+	s = strings.TrimSpace(s)
+	if len(s) < 2 || s[0] != open || s[len(s)-1] != close {
+		return "", false
+	}
+	return s[1 : len(s)-1], true
+}
+
+// flowSplit cuts a flow collection's body on its TOP-LEVEL commas — nested
+// collections and quoted scalars keep theirs (`{ /ping: { get: {…} } }` is ONE
+// item, and so is `{ '200': { description: ok } }`).
+func flowSplit(s string) []string {
+	var out []string
+	depth, start := 0, 0
+	var quote rune
+	for i, r := range s {
+		switch {
+		case quote != 0:
+			if r == quote {
+				quote = 0
+			}
+		case r == '\'' || r == '"':
+			quote = r
+		case r == '{' || r == '[':
+			depth++
+		case r == '}' || r == ']':
+			depth--
+		case r == ',' && depth == 0:
+			out = append(out, s[start:i])
+			start = i + 1
+		}
+	}
+	return append(out, s[start:])
+}
+
+// flowMapKeys collects the top-level keys of a flow mapping — the flow twin of
+// childKeysAfter (values ignored, resourceInContract never reads them).
+func flowMapKeys(s string) map[string]any {
+	out := map[string]any{}
+	body, ok := flowBody(s, '{', '}')
+	if !ok {
+		return out
+	}
+	for _, item := range flowSplit(body) {
+		k, _, ok := strings.Cut(item, ":")
+		if !ok {
+			continue
+		}
+		if k = strings.Trim(strings.TrimSpace(k), `"'`); k != "" {
+			out[k] = map[string]any{}
+		}
+	}
+	return out
+}
+
+// flowSeqFirstField returns a scalar field of the FIRST item of a flow sequence
+// — the flow twin of firstSeqURLAfter, and it stops at item 0 for the same
+// reason (only servers[0] feeds the routing).
+func flowSeqFirstField(s, field string) string {
+	body, ok := flowBody(s, '[', ']')
+	if !ok {
+		return ""
+	}
+	items := flowSplit(body)
+	if len(items) == 0 {
+		return ""
+	}
+	inner, ok := flowBody(items[0], '{', '}')
+	if !ok {
+		return ""
+	}
+	for _, kv := range flowSplit(inner) {
+		if v, ok := yamlScalarField(strings.TrimSpace(kv), field); ok {
+			return v
+		}
+	}
+	return ""
 }
 
 // firstSeqURLAfter looks at the sequence following a "servers:" header at

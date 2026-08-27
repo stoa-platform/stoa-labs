@@ -8,6 +8,8 @@ package main
 // touchent jamais une map sans verrou. // All access goes through the mutex.
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
 	"sync"
 )
@@ -129,11 +131,31 @@ func NewStore() *Store {
 	}
 }
 
-// nextID mints "wm-<kind>-NNNN" — stable, monotonic ids per object family,
-// the same style as the labctl test fixtures. Caller MUST hold the lock.
+// nextID mints the id of a new object: stable and monotonic per object family,
+// in the UUID SILHOUETTE the real gateway uses (8-4-4-4-12 lowercase hex).
+//
+// The shape is LOAD-BEARING, not cosmetic. Tooling that re-writes an archive's
+// id-map recognises a gateway id by that silhouette — scripts/test-archive-
+// promotion.sh (T10) re-keys a synthesised archive with
+// `^[A-Za-z]+\.([0-9a-f-]{36})$`, so ids like the former "wm-pol-0001" were
+// silently left alone and the "authored GUID" archive collided with the assets
+// it was supposed to replace.
+//
+// Determinism is kept (proofs must be reproducible): the id is derived from
+// (kind, sequence), never randomly. The first group is a digest of the family —
+// recover it with `printf 'api' | shasum -a 256 | cut -c1-8` — and the last
+// group carries the sequence in clear, so ids stay greppable and sort in
+// creation order within a family. Caller MUST hold the lock.
 func (s *Store) nextID(kind string) string {
 	s.seq[kind]++
-	return fmt.Sprintf("wm-%s-%04d", kind, s.seq[kind])
+	return guidForKind(kind, s.seq[kind])
+}
+
+// guidForKind renders the (kind, sequence) pair as a v4-shaped uuid. The "4" and
+// "8" nibbles are the version/variant markers of a real gateway guid.
+func guidForKind(kind string, seq int) string {
+	sum := sha256.Sum256([]byte(kind))
+	return fmt.Sprintf("%08x-0000-4000-8000-%012d", binary.BigEndian.Uint32(sum[:4]), seq)
 }
 
 // findAPIByName returns the first API with apiName (any version) — the 409
