@@ -217,7 +217,7 @@ PYCHAIN
               # sinon repli AppRole ci-pipeline — qui n'ouvre les paliers gardés
               # par deployerGroup que si --grant-ci a été déclaré (ADR-084).
               . ci/lib/vault-login.sh
-              trap 'vault_trap_revoke; rm -f /tmp/stoa-wm-admin-token' EXIT
+              trap 'rm -f /tmp/stoa-wm-admin-token; vault_trap_revoke' EXIT
               vault_login_any || exit 1
               CI_SECRET=$(vault_read secret/data/stoa/ci ciApplierSecret)
               HP_SECRET=$(vault_read secret/data/stoa/ci ciHorsprodSecret)
