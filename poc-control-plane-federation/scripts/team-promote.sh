@@ -74,6 +74,7 @@ GIT_WEB_HOST="${GIT_WEB_HOST:-$GIT_HOST}"
 VAULT_IDENTITY_USER="${VAULT_IDENTITY_USER:-}"
 PROMOTE_ENGINE="${PROMOTE_ENGINE:-ansible}"     # ansible|labctl — knob de PIPELINE (D6)
 ADMIN_VIA="${ADMIN_VIA:-proxy-oauth2}"          # proxy-oauth2|direct (D5)
+ITSM_URL="${ITSM_URL:-}"   # requis SEULEMENT si la porte d'arrivée déclare itsmCheck (§6ter)
 # Gabarits d'URL admin par palier (__ENV__ substitué) — config client au Jenkinsfile.
 APIM_API_BASE_TPL="${APIM_API_BASE_TPL:?APIM_API_BASE_TPL requis (ex: http://webmethods-real:5555/gateway/wm-admin-__ENV__/1.0/rest/apigateway)}"
 # Second gabarit, REQUIS SEULEMENT en ADMIN_VIA=direct (attaque directe de la
@@ -422,6 +423,12 @@ PY
        MKERR="$(tail -1 "$TMP/mkfields.err" 2>/dev/null)"
        fail "PIN_MALFORMED : relecture des références de ${MARKER_REL} — ${MKERR:-YAML illisible}"; }
 MK_CHANGE=$(printf '%s\n' "$MK_FIELDS" | sed -n 's/^CR=//p')
+# Le change_ref MERGÉ devient un segment d'URL ITSM (§6ter) : la classe exigée
+# à la demande (REF_INVALIDE, api-promote-request.sh) est RE-vérifiée sur ce
+# qui a été mergé — l'anti-TOCTOU vaut pour la FORME aussi.
+case "$MK_CHANGE" in
+  *[!A-Za-z0-9._-]*) fail "REF_INVALIDE : change_ref du marqueur MERGÉ contient un caractère hors de [A-Za-z0-9._-] — il deviendrait un segment d'URL ITSM, refus" ;;
+esac
 MK_PV=$(printf '%s\n' "$MK_FIELDS" | sed -n 's/^PV=//p')
 MK_PROMOTED_BY=$(printf '%s\n' "$MK_FIELDS" | sed -n 's/^PB=//p')
 [ "$NEED_CHANGE" = 0 ] || [ -n "$MK_CHANGE" ] \
@@ -483,6 +490,36 @@ fi
 sh scripts/lib/assert-merge-identity.sh --merged-by "$GITEA_MERGED_BY" \
   --requester "$MK_PROMOTED_BY" --vault-user "$VAULT_IDENTITY_USER" $AMI_ARGS \
   || fail "IDENTITE_REFUSEE : la garde d'identité a refusé (voir le log)"
+
+# ── 6ter. L'ITSM, RE-VÉRIFIÉ AU DISPATCH (A6/ADR-075 — miroir de labctl
+# dispatch-gate, au seul site de dispatch de la chaîne d'équipe) ─────────────
+# Sur cette chaîne, l'« approbation » est le MERGE : rien n'a interrogé l'ITSM
+# depuis la demande. Un change approuvé PUIS révoqué passerait — exactement la
+# fenêtre TOCTOU qu'A6 a fermée côté governance. Fail-closed, refus nommés,
+# et les trois causes restent distinctes (forensics ADR-070) : un ITSM muet
+# n'est pas une révocation, une URL absente n'est pas un ITSM en panne.
+# APRÈS §6bis (la garde d'identité ne touche rien d'externe, elle reste
+# première), AVANT §7 (aucun secret présenté à Vault avant ce verdict).
+ITSMC=$(env_chain_gate_itsm_check "$TO_ENV") || fail "PARSE_GATE : itsmCheck"
+case "$ITSMC" in
+  ITSMCHECK=0) ;;
+  ITSMCHECK=1)
+    [ -n "$ITSM_URL" ] \
+      || fail "ITSM_NOT_CONFIGURED : la porte vers '$TO_ENV' déclare itsmCheck mais ITSM_URL n'est pas posée — le contrôle déclaré doit pouvoir s'exécuter, refus fail-closed"
+    ITSM_CODE=$(curl -sS -o "$TMP/itsm.json" -w '%{http_code}' --max-time 20 \
+      "${ITSM_URL%/}/changes/${MK_CHANGE}") || ITSM_CODE=000
+    case "$ITSM_CODE" in
+      200) ITSM_STATUS=$(SRC="$TMP/itsm.json" python3 -c 'import json,os;print(str((json.load(open(os.environ["SRC"])) or {}).get("status") or ""))') \
+             || fail "ITSM_UNAVAILABLE : réponse ITSM illisible pour '${MK_CHANGE}'"
+           [ "$ITSM_STATUS" = approved ] \
+             || fail "ITSM_NOT_APPROVED : le change '${MK_CHANGE}' est '${ITSM_STATUS:-<sans statut>}' dans l'ITSM au moment du dispatch — approuvé hier n'est pas approuvé maintenant (anti-TOCTOU)" ;;
+      404) fail "ITSM_NOT_APPROVED : le change '${MK_CHANGE}' est INCONNU de l'ITSM (404) — un change inconnu n'est pas un change approuvé" ;;
+      *)   fail "ITSM_UNAVAILABLE : GET /changes/${MK_CHANGE} → HTTP ${ITSM_CODE} — statut invérifiable, refus fail-closed" ;;
+    esac
+    echo "itsm : change '${MK_CHANGE}' approved au moment du dispatch"
+    ;;
+  *) fail "PARSE_GATE : sortie inattendue ($ITSMC)" ;;
+esac
 
 # ── 7. LA PORTE DU PALIER : DÉCLARATION (G2) PUIS RÉTENTION (G4) ────────────
 # Le token ne transite ni par argv ni par l'environnement : `printf` est un

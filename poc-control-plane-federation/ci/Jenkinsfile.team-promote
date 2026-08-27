@@ -103,6 +103,9 @@ pipeline {
     // Voie DIRECTE du terminus (G7) : la gateway réelle elle-même, sans proxy
     // (__ENV__ absent du gabarit est licite — la substitution est un no-op).
     APIM_DIRECT_BASE_TPL = "${env.APIM_DIRECT_BASE_TPL ?: 'http://webmethods-real:5555/rest/apigateway'}"
+    // ITSM (G7 §6ter) : re-vérification du change au dispatch quand la porte
+    // du palier cible déclare itsmCheck. Même mock que la chaîne governance.
+    ITSM_URL           = "${env.ITSM_URL ?: 'http://itsm-mock:8788'}"
   }
 
   stages {

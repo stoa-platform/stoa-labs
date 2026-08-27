@@ -83,7 +83,9 @@ JF_NC="$TMP/jenkinsfile_nc"; nc_groovy "$JF" > "$JF_NC"
 # unique du moteur.
 ORDRE_TOKENS="BRANCH_FORMAT_INVALIDE TERMINUS_SANS_VOIE PAYLOAD_PERIME REPO_NON_DECLARE \
 MERGE_SHA_NON_ANCETRE PIN_ABSENT ARCHIVE_INTROUVABLE PIN_NON_RESOLU \
-GATE_REFS_REQUIRED IDENTITE_REFUSEE DEPLOYER_GROUP_UNSUPPORTED \
+GATE_REFS_REQUIRED IDENTITE_REFUSEE \
+ITSM_NOT_CONFIGURED ITSM_UNAVAILABLE ITSM_NOT_APPROVED \
+DEPLOYER_GROUP_UNSUPPORTED \
 DEPLOYER_GROUP_UNVERIFIABLE DEPLOYER_GROUP_REQUIRED PALIER_FERME"
 
 # ordre_verdict <fichier-décommenté> — rend "OK" ou "KO: <détail>" sur stdout.
@@ -725,6 +727,22 @@ class H(BaseHTTPRequestHandler):
                 self._send(200, body, "application/octet-stream")
             return
 
+        # ITSM (G7 §6ter). DÉFAUT STRICT : sans clé "itsm" au ctl, 404 (change
+        # inconnu) — la valeur qui refuse le plus. Un cas nominal itsm doit le
+        # DIRE (set_itsm 200 approved), jamais en hériter.
+        m = re.match(r"^/changes/([A-Za-z0-9._-]+)$", path)
+        if m:
+            it = c.get("itsm")
+            if it is None:
+                self._send(404, json.dumps({"message": "stub itsm: change inconnu"}))
+                return
+            code = int(it.get("code", 200))
+            if code != 200:
+                self._send(code, json.dumps({"message": "stub itsm: indisponible"}))
+                return
+            self._send(200, json.dumps({"id": m.group(1), "status": it.get("status", "")}))
+            return
+
         if ".git/" in path:
             self._git(method)
             return
@@ -851,6 +869,15 @@ set_ctl() { # <merged true|false> <merge_sha> <head_ref> <merged_by> <user> <wm-
     "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$pols" "$ipols" > "$STUB_CTL"
 }
 
+set_itsm() { # <code http> <status> — fusionne la clé "itsm" au ctl COURANT
+  python3 - "$STUB_CTL" "$1" "$2" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["itsm"] = {"code": int(sys.argv[2]), "status": sys.argv[3]}
+json.dump(d, open(sys.argv[1], "w"))
+PY
+}
+
 # run_promote <outfile> <branche> [PROMOTE_ENGINE] [WEBHOOK_REPO] [chaîne d'env]
 # — rend le rc. Le moteur de paille est en TÊTE de PATH ; $STUB_LOG est effacé
 # juste avant, pour que « absent » signifie « jamais invoqué » et rien d'autre.
@@ -863,8 +890,11 @@ set_ctl() { # <merged true|false> <merge_sha> <head_ref> <merged_by> <user> <wm-
 run_promote() {
   # ⚠ 6e argument SANS deux-points (`${6-défaut}`) : passer explicitement ""
   # doit donner la chaîne VIDE (cas TERMINUS_SANS_VOIE), l'omettre le défaut.
+  # 7e argument (même régime `${7-défaut}`) : l'ITSM du stub, "" pour éprouver
+  # ITSM_NOT_CONFIGURED.
   local out="$1" branch="$2" engine="${3:-ansible}" repo="${4:-$TEAM_REPO}" chain="${5:-}" \
-        direct_tpl="${6-http://webmethods-real:5555/rest/apigateway}" rc
+        direct_tpl="${6-http://webmethods-real:5555/rest/apigateway}" \
+        itsm_url="${7-$GIT_HOST}" rc
   rm -f "$STUB_LOG"
   ( cd "$ROOT" && env \
       PATH="$STUBBIN:$PATH" \
@@ -885,6 +915,7 @@ run_promote() {
       LABCTL_BIN="$STUBBIN/labctl" \
       APIM_API_BASE_TPL='http://webmethods-real:5555/gateway/wm-admin-__ENV__/1.0/rest/apigateway' \
       APIM_DIRECT_BASE_TPL="$direct_tpl" \
+      ITSM_URL="$itsm_url" \
       bash scripts/team-promote.sh ) >"$out" 2>&1
   rc=$?
   return "$rc"
@@ -1364,6 +1395,47 @@ run_promote "$TMP/og7d" "promote/accounts-read-int"; RC=$?
   && ok "G7-d int reste en proxy-oauth2 (EFFECTIVE_VIA ne déborde pas)" \
   || bad "G7-d rc=$RC, extra-vars : $(cat "$STUB_LOG" 2>/dev/null)"
 
+echo
+echo "== G7-e ITSM approved au dispatch : le terminus passe (chaîne LIVRÉE) =="
+D="$TMP/tg7e"; mk_team "$D"
+write_marker "$D" prod "$PIN_C1" "1.0.0" "$ARCH_SHA" "CHG-0001" "PV-1" alice
+seal_team "$D"
+set_ctl true "$MERGE_SHA" "promote/accounts-read-prod" oscar ci 200 200 default,operator-deploy
+set_itsm 200 approved
+run_promote "$TMP/og7e" "promote/accounts-read-prod"; RC=$?
+[ "$RC" -eq 0 ] && grep -q "itsm : change 'CHG-0001' approved" "$TMP/og7e" \
+  && ok "G7-e itsmCheck déclaré + approved ⇒ dispatch" \
+  || bad "G7-e rc=$RC : $(tail -3 "$TMP/og7e" | tr '\n' ' ')"
+
+echo
+echo "== G7-f ITSM : draft / inconnu / en panne / non configuré ⇒ refus, moteur jamais lancé =="
+set_itsm 200 draft
+run_promote "$TMP/og7f1" "promote/accounts-read-prod"; RC=$?
+refus_attendu "G7-f(i)" "change draft au dispatch" ITSM_NOT_APPROVED "$TMP/og7f1" "$RC"
+python3 - "$STUB_CTL" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); d.pop("itsm", None); json.dump(d, open(sys.argv[1], "w"))
+PY
+run_promote "$TMP/og7f2" "promote/accounts-read-prod"; RC=$?
+refus_attendu "G7-f(ii)" "change INCONNU (404, défaut strict du stub)" ITSM_NOT_APPROVED "$TMP/og7f2" "$RC"
+set_itsm 503 x
+run_promote "$TMP/og7f3" "promote/accounts-read-prod"; RC=$?
+refus_attendu "G7-f(iii)" "ITSM en panne (503)" ITSM_UNAVAILABLE "$TMP/og7f3" "$RC"
+set_itsm 200 approved
+run_promote "$TMP/og7f4" "promote/accounts-read-prod" ansible "$TEAM_REPO" "" \
+  "http://webmethods-real:5555/rest/apigateway" ""; RC=$?
+refus_attendu "G7-f(iv)" "ITSM_URL absente + porte itsmCheck" ITSM_NOT_CONFIGURED "$TMP/og7f4" "$RC"
+
+echo
+echo "== G7-g anti-TOCTOU de FORME : change_ref mergé hors classe ⇒ REF_INVALIDE =="
+D="$TMP/tg7g"; mk_team "$D"
+write_marker "$D" prod "$PIN_C1" "1.0.0" "$ARCH_SHA" 'CHG-1/../admin' "PV-1" alice
+seal_team "$D"
+set_ctl true "$MERGE_SHA" "promote/accounts-read-prod" oscar ci 200 200 default,operator-deploy
+set_itsm 200 approved
+run_promote "$TMP/og7g" "promote/accounts-read-prod"; RC=$?
+refus_attendu "G7-g" "change_ref mergé portant '/'" REF_INVALIDE "$TMP/og7g" "$RC"
+
 # ── Garde-fou : verdicts rendus == cas attendus ─────────────────────────────
 # Compte EXACT mesuré par un run complet, jamais déduit de tête. Si une section
 # tombe en silence (branche jamais évaluée, script tronqué, cas sauté), ce
@@ -1375,7 +1447,10 @@ run_promote "$TMP/og7d" "promote/accounts-read-int"; RC=$?
 # 136 → 146 le 2026-08-27 (G7, voie du terminus) : +5 G7-a (nominal direct),
 # +2 G7-b (TERMINUS_SANS_VOIE), +2 G7-c (labctl+terminus), +1 G7-d
 # (l'intermédiaire reste oauth2). Re-mesuré par un run complet (146 != 136).
-EXPECTED_ASSERTIONS=146
+# 146 → 157 le 2026-08-27 (G7 §6ter, ITSM au dispatch) : +1 G7-e (approved
+# passe), +8 G7-f (draft/inconnu/panne/non-configuré × moteur jamais lancé),
+# +2 G7-g (REF_INVALIDE sur la valeur MERGÉE). Re-mesuré (157 != 146).
+EXPECTED_ASSERTIONS=157
 TOTAL_BEFORE_GUARD=$((PASS+FAIL))
 echo
 [ "$TOTAL_BEFORE_GUARD" -eq "$EXPECTED_ASSERTIONS" ] \
