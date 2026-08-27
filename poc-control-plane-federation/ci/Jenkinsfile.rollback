@@ -73,7 +73,7 @@ pipeline {
               # CHANGE_REF n'est requis que si le gate du palier de la promotion
               # l'exige (prod aujourd'hui) — c'est governance-api qui le sait et
               # refuse GATE_REFS_REQUIRED fail-closed. Le job ne devine pas.
-              [ -n "$PROMOTION_ID" ] && [ -n "$REASON" ] \
+              [ -n "${PROMOTION_ID:-}" ] && [ -n "${REASON:-}" ] \
                 || { echo 'PROMOTION_ID et REASON sont requis'; exit 1; }
               # Token compte de SERVICE (client_credentials ci-applier — même
               # pattern que les autres jobs : le job ne porte aucun mot de passe
@@ -97,7 +97,9 @@ pipeline {
               [ -n "$SA_TOKEN" ] || { echo 'no service-account token'; exit 1; }
               # Le revert est fait PAR governance-api (commit Git attribué +
               # marker rolled_back) — le job ne touche jamais le repo à la main.
-              BODY=$(printf '{"reason":"%s","change_ref":"%s"}' "$REASON" "$CHANGE_REF")
+              # paramètre de build VIDE ⇒ RETIRÉ de l'env par Jenkins ⇒ unbound
+              # sous set -u (mesuré par build, stoa-prod-rollback #4).
+              BODY=$(printf '{"reason":"%s","change_ref":"%s"}' "$REASON" "${CHANGE_REF:-}")
               CODE=$(curl -s -o /tmp/rollback-resp.json -w '%{http_code}' \
                 -X POST "$GOVERNANCE_API_URL/api/v1/tenants/$APPLY_TENANT/promotions/$PROMOTION_ID/rollback" \
                 -H "Authorization: Bearer $SA_TOKEN" -H 'Content-Type: application/json' -d "$BODY")
