@@ -112,3 +112,95 @@ func TestRollbackRequiresApprovedPromotion(t *testing.T) {
 		t.Fatalf("rollback without approve permission = %d %v", code, body)
 	}
 }
+
+// Contre-épreuve G6 (GOAL) : un palier dont le gate exige un change_ref
+// l'exige AUSSI au rollback — refus nommé, avant toute lecture d'historique.
+func TestRollbackRequiresChangeRefWhenGateDemandsIt(t *testing.T) {
+	chain := "environments: [dev, rec]\ngates:\n  - {to: rec, requireChangeRef: true}\n"
+	_, h, fix := newChainServer(t, map[string]string{
+		"environments.yaml": chain,
+		"tenants/banking-demo/apis/payments-initiation/deploy.rec.yaml": chainSeedDeploy,
+	}, "")
+	carol := fix.sign(t, "carol", "Carol Admin", "", []string{"cpi-admin"})
+	promoID := requestPromotion(t, h, carol,
+		map[string]any{"slug": "payments-initiation", "from": "dev", "to": "rec",
+			"message": "vers rec", "change_ref": "CHG-0007"})
+	if code, body := do(t, h, "POST", "/api/v1/tenants/banking-demo/promotions/"+promoID+"/approve", carol,
+		map[string]any{"message": "ok"}); code != 200 {
+		t.Fatalf("approve = %d %v", code, body)
+	}
+	if code, body := do(t, h, "POST", "/api/v1/tenants/banking-demo/promotions/"+promoID+"/rollback", carol,
+		map[string]any{"reason": "régression"}); code != 400 || errCode(body) != "GATE_REFS_REQUIRED" {
+		t.Fatalf("rollback sans change_ref = %d %v (attendu 400 GATE_REFS_REQUIRED)", code, body)
+	}
+	if code, body := do(t, h, "POST", "/api/v1/tenants/banking-demo/promotions/"+promoID+"/rollback", carol,
+		map[string]any{"reason": "régression", "change_ref": "CHG-0008"}); code != 200 {
+		t.Fatalf("rollback avec change_ref = %d %v", code, body)
+	}
+}
+
+// Trou de symétrie (spec D3) : à la DEMANDE le change_ref est exigé dès que
+// itsmCheck est posé (rien à vérifier sans lui) ; le rollback doit faire de
+// même. Ce test ROUGIT sur le code d'avant G6 (seul RequireChangeRef testé).
+func TestRollbackChangeRefAlignedWithITSMCheck(t *testing.T) {
+	_, itsm := newITSMStub(t, map[string]string{"CHG-0007": "approved"})
+	chain := "environments: [dev, rec]\ngates:\n  - {to: rec, itsmCheck: true}\n"
+	_, h, fix := newChainServer(t, map[string]string{
+		"environments.yaml": chain,
+		"tenants/banking-demo/apis/payments-initiation/deploy.rec.yaml": chainSeedDeploy,
+	}, itsm.URL)
+	carol := fix.sign(t, "carol", "Carol Admin", "", []string{"cpi-admin"})
+	promoID := requestPromotion(t, h, carol,
+		map[string]any{"slug": "payments-initiation", "from": "dev", "to": "rec",
+			"message": "vers rec", "change_ref": "CHG-0007"})
+	if code, body := do(t, h, "POST", "/api/v1/tenants/banking-demo/promotions/"+promoID+"/approve", carol,
+		map[string]any{"message": "ok"}); code != 200 {
+		t.Fatalf("approve = %d %v", code, body)
+	}
+	if code, body := do(t, h, "POST", "/api/v1/tenants/banking-demo/promotions/"+promoID+"/rollback", carol,
+		map[string]any{"reason": "régression"}); code != 400 || errCode(body) != "GATE_REFS_REQUIRED" {
+		t.Fatalf("rollback sans change_ref (gate itsmCheck) = %d %v (attendu 400)", code, body)
+	}
+}
+
+// Décision D3 (spec) : le pv_ref n'est PAS exigé au rollback — l'état restauré
+// a porté le sien quand il a été promu. Chaîne 5 paliers, palier homol pv-only ;
+// la restauration est VERBATIM, pin `commit` du N-1 compris.
+func TestRollbackHomolPVOnlyRestoresVerbatimPin(t *testing.T) {
+	const homolSeed = "version: 0.9.0\nenabled: true\npromoted_by: seed\ncommit: deadbeef00\n"
+	chain := "environments: [dev, rec, int, homol, prod]\ngates:\n  - {to: homol, requirePVRef: true}\n"
+	srv, h, fix := newChainServer(t, map[string]string{
+		"environments.yaml": chain,
+		"tenants/banking-demo/apis/payments-initiation/deploy.rec.yaml":   chainSeedDeploy,
+		"tenants/banking-demo/apis/payments-initiation/deploy.int.yaml":   chainSeedDeploy,
+		"tenants/banking-demo/apis/payments-initiation/deploy.homol.yaml": homolSeed,
+	}, "")
+	carol := fix.sign(t, "carol", "Carol Admin", "", []string{"cpi-admin"})
+	// Garde de la DEMANDE (déjà en place) : sans pv_ref, refus.
+	if code, body := do(t, h, "POST", "/api/v1/tenants/banking-demo/promotions", carol,
+		map[string]any{"slug": "payments-initiation", "from": "int", "to": "homol",
+			"message": "vers homol"}); code != 400 || errCode(body) != "GATE_REFS_REQUIRED" {
+		t.Fatalf("request homol sans pv_ref = %d %v", code, body)
+	}
+	promoID := requestPromotion(t, h, carol,
+		map[string]any{"slug": "payments-initiation", "from": "int", "to": "homol",
+			"message": "vers homol", "pv_ref": "PV-2026-099"})
+	if code, body := do(t, h, "POST", "/api/v1/tenants/banking-demo/promotions/"+promoID+"/approve", carol,
+		map[string]any{"message": "ok"}); code != 200 {
+		t.Fatalf("approve = %d %v", code, body)
+	}
+	// Rollback avec la seule reason : ni change_ref ni pv_ref exigés ici.
+	code, body := do(t, h, "POST", "/api/v1/tenants/banking-demo/promotions/"+promoID+"/rollback", carol,
+		map[string]any{"reason": "KO recette homol"})
+	if code != 200 {
+		t.Fatalf("rollback homol = %d %v", code, body)
+	}
+	restored := body["restored"].(map[string]any)
+	if restored["environment"] != "homol" || restored["version"] != "0.9.0" || restored["commit"] != "deadbeef00" {
+		t.Fatalf("restored state wrong: %v", restored)
+	}
+	deployRaw := gitT(t, srv.Store.Repo.Dir, "show", "main:tenants/banking-demo/apis/payments-initiation/deploy.homol.yaml")
+	if deployRaw != homolSeed {
+		t.Fatalf("deploy.homol.yaml pas restauré verbatim:\n%q\nwant\n%q", deployRaw, homolSeed)
+	}
+}

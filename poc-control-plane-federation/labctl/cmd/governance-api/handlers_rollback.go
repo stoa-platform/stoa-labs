@@ -49,9 +49,12 @@ func (s *Server) handlePromotionRollback(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	// The rollback of a gated environment is itself a change: same change_ref
-	// requirement as the forward hop (fail at the earliest).
+	// requirement as the forward hop (fail at the earliest) — itsmCheck implies
+	// a change_ref there too, so it does here. pv_ref is deliberately NOT
+	// demanded: the restored state carried its own when it was promoted (D3,
+	// adr-085); the motivation lives in `reason` + change_ref.
 	gate := chain.Gates[promo.To]
-	if gate.RequireChangeRef && body.ChangeRef == "" {
+	if (gate.RequireChangeRef || gate.ITSMCheck) && body.ChangeRef == "" {
 		apiError(w, http.StatusBadRequest, "GATE_REFS_REQUIRED",
 			fmt.Sprintf("le gate vers %s exige une référence de changement ('change_ref') pour un rollback", promo.To))
 		return
