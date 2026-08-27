@@ -310,10 +310,15 @@ done
 # sans lui, un $JF introuvable faisait sortir sed en 1 en laissant un rendu
 # VIDE ; le grep d'ABSENCE n'y trouvait évidemment rien et l'épreuve passait au
 # vert sans avoir RIEN regardé. Renommer le Jenkinsfile gardait ⑨a verte.
-jf_axe_verdict(){ # <chemin> -> ABSENT | ROUTE | PROPRE
+#
+# Le NOM de l'axe est un paramètre (défaut ENVN) : ⑰ scelle le MÊME genre d'axe
+# sur un autre nom (REQ_ENV, côté demande). Un second détecteur copié-collé
+# aurait pu diverger de celui-ci en silence — c'est exactement ce que la
+# factorisation existe pour empêcher.
+jf_axe_verdict(){ # <chemin> [axe=ENVN] -> ABSENT | ROUTE | PROPRE
   [ -f "$1" ] || { printf 'ABSENT\n'; return; }
   sed 's|[[:space:]]*//.*$||' "$1" > "$TMP/jf9"
-  grep -q 'ENVN' "$TMP/jf9" && printf 'ROUTE\n' || printf 'PROPRE\n'
+  grep -q "${2:-ENVN}" "$TMP/jf9" && printf 'ROUTE\n' || printf 'PROPRE\n'
 }
 for JF in ci/Jenkinsfile.team-publish ci/Jenkinsfile.api-request; do
   case "$(jf_axe_verdict "$JF")" in
@@ -370,6 +375,207 @@ NDUP=$(grep -c 'ENVN=' "$TMP/tp_dup_nc")
 grep -q 'ENVN="\${ENVN:-' "$TMP/tp_dup_nc" \
   && bad "⑩ter(b) la mutation a introduit un défaut surchargeable — ce n'est pas le contournement visé" \
   || ok "⑩ter(b) ce contournement ne porte AUCUN défaut surchargeable : seule l'unicité pouvait l'attraper"
+
+
+# ── Décommenteur STRICT, partagé par ⑨b et ⑪ ────────────────────────────────
+# PAS le `sed 's/[[:space:]]*#.*$//'` des épreuves du dessus : `[[:space:]]*`
+# accepte ZÉRO blanc avant le `#`, donc il coupe aussi au `#` d'une EXPANSION DE
+# PARAMÈTRE. Mesuré sur team-apply.sh :
+#   REST="${PR_BRANCH#onboard/}"; ENVN="${REST##*-}"; TEAM="${REST%-*}"
+# est tronqué à `REST="${PR_BRANCH` — l'affectation ENVN= qu'on veut COMPTER
+# disparaît, le compte tombe à 0 et l'assertion d'unicité devient vraie par
+# vacuité. Ici le `#` doit être en TÊTE DE LIGNE ou précédé d'un blanc, ce qui
+# est la forme de tous les commentaires de ces deux fichiers (vérifié : ce motif
+# ne laisse AUCUNE ligne de commentaire résiduelle dans l'un ni dans l'autre).
+nc_strict(){ sed -e 's/^[[:space:]]*#.*$//' -e 's/[[:space:]][[:space:]]*#.*$//' "$1"; }
+
+echo "== ⑨b scellement demande : REQ_ENV vient de la constante, plus du formulaire =="
+nc_strict scripts/team-request.sh > "$TMP/tr_nc"
+grep -q 'REQ_ENV="\$DEPLOY_PIN_AUTHORING_ENV"' "$TMP/tr_nc" \
+  && ok "⑨b team-request scelle REQ_ENV sur DEPLOY_PIN_AUTHORING_ENV" \
+  || bad "⑨b team-request ne scelle pas REQ_ENV"
+grep -q 'REQ_ENV="\${REQ_ENV:-' "$TMP/tr_nc" \
+  && bad "⑨b team-request garde un défaut surchargeable REQ_ENV:- (le formulaire décide encore)" \
+  || ok "⑨b team-request n'a plus de défaut surchargeable"
+grep -q 'ENV_NOT_OPEN' "$TMP/tr_nc" \
+  && bad "⑨b ENV_NOT_OPEN subsiste dans team-request — le refus n'a plus d'objet une fois l'axe scellé" \
+  || ok "⑨b ENV_NOT_OPEN a disparu de team-request (plus de choix à refuser)"
+# UNICITÉ, adaptée au compte RÉEL de ce fichier — 2, pas 1 comme en ⑨a : le
+# scellement, ET le passage de la valeur SCELLÉE à python3 pour le TITRE de la
+# PR (`REQ_ENV="$REQ_ENV" python3 -`). Cette seconde ligne ne réaffecte rien,
+# elle propage ; la nommer ici évite de la confondre avec un contournement.
+NTR=$(grep -c 'REQ_ENV=' "$TMP/tr_nc")
+[ "$NTR" -eq 2 ] \
+  && ok "⑨b team-request porte exactement 2 lignes REQ_ENV= (le scellement + la propagation au titre de PR)" \
+  || bad "⑨b team-request porte $NTR lignes REQ_ENV= (attendu 2) — une ligne de plus réaffecte l'env APRÈS le scellement"
+[ "$(grep -c 'REQ_ENV="\$REQ_ENV" python3' "$TMP/tr_nc")" -eq 1 ] \
+  && ok "⑨b la seconde ligne EST la propagation à python3 (donc les 2 lignes sont bien celles attendues)" \
+  || bad "⑨b la propagation à python3 n'est plus la seconde ligne REQ_ENV= — le compte de 2 couvre autre chose"
+
+echo "== ⑨bter mutations : les trois façons de rendre ⑨b vacante =="
+# (a) le défaut surchargeable REVIENT (miroir de ⑩ pour team-publish).
+sed 's/REQ_ENV="\$DEPLOY_PIN_AUTHORING_ENV"/REQ_ENV="\${REQ_ENV:-dev}"/' scripts/team-request.sh > "$TMP/tr_mut"
+cmp -s scripts/team-request.sh "$TMP/tr_mut" \
+  && bad "⑨bter(a0) le mutant est IDENTIQUE au fichier — l'ancre du scellement a bougé, la mutation ne mute rien" \
+  || ok "⑨bter(a0) le mutant diffère RÉELLEMENT du fichier (la mutation n'est pas un no-op)"
+nc_strict "$TMP/tr_mut" > "$TMP/tr_mut_nc"
+grep -q 'REQ_ENV="\${REQ_ENV:-' "$TMP/tr_mut_nc" \
+  && ok "⑨bter(a) le défaut réintroduit ⇒ le détecteur de ⑨b le VOIT" \
+  || bad "⑨bter(a) le défaut réintroduit passe inaperçu — l'assertion de ⑨b est vacante"
+# (b) une TROISIÈME ligne REQ_ENV= : la réaffectation silencieuse après le
+# scellement, invisible pour les greps de présence/absence.
+cp scripts/team-request.sh "$TMP/tr_dup"
+printf 'REQ_ENV="${REQ_ENV_OVERRIDE:-prod}"\n' >> "$TMP/tr_dup"
+nc_strict "$TMP/tr_dup" > "$TMP/tr_dup_nc"
+NDUP=$(grep -c 'REQ_ENV=' "$TMP/tr_dup_nc")
+[ "$NDUP" -eq 3 ] \
+  && ok "⑨bter(b) troisième affectation ⇒ compte 3 : le détecteur d'unicité la verrait" \
+  || bad "⑨bter(b) le compte reste $NDUP — l'assertion d'unicité de ⑨b est vacante"
+# (c) le décommenteur NAÏF sur ce même fichier : contre-preuve du choix de
+# nc_strict — si un `#` d'expansion mangeait la ligne comptée, on le saurait.
+sed 's/[[:space:]]*#.*$//' scripts/team-request.sh > "$TMP/tr_naif"
+[ "$(grep -c 'REQ_ENV=' "$TMP/tr_naif")" -eq "$NTR" ] \
+  && ok "⑨bter(c) sur team-request les deux décommenteurs comptent pareil (aucun # d'expansion sur ces lignes)" \
+  || bad "⑨bter(c) les deux décommenteurs divergent sur team-request — le compte dépend du motif, pas du code"
+
+echo "== ⑪ team-apply : ENV_MISMATCH contre la CONSTANTE, pas un littéral =="
+nc_strict scripts/team-apply.sh > "$TMP/ta_nc"
+grep -q 'ENV_MISMATCH' "$TMP/ta_nc" \
+  && ok "⑪ le refus ENV_MISMATCH existe" || bad "⑪ pas de refus ENV_MISMATCH"
+grep -Eq '\[ "\$ENVN" = "\$DEPLOY_PIN_AUTHORING_ENV" \]' "$TMP/ta_nc" \
+  && ok "⑪bis la comparaison vise la constante d'authoring" \
+  || bad "⑪bis la comparaison ne vise pas la constante (littéral ?)"
+grep -q 'ENV_NOT_OPEN' "$TMP/ta_nc" \
+  && bad "⑪ter ENV_NOT_OPEN subsiste dans team-apply" \
+  || ok "⑪ter ENV_NOT_OPEN a disparu de team-apply"
+# UNICITÉ côté apply : ici l'env n'est pas scellé mais DÉRIVÉ de la branche
+# (`ENVN="${REST##*-}"`) puis confronté à la constante. Une seule ligne ENVN=
+# est donc attendue — le repassage `ENVN="$ENVN" bash …` à un enfant qui SCELLE
+# déjà le sien (setup-team-onboard-jobs.sh:87) est du câblage mort qui suggère
+# le contraire.
+NTA=$(grep -c 'ENVN=' "$TMP/ta_nc")
+[ "$NTA" -eq 1 ] \
+  && ok "⑪quater team-apply ne porte QU'UNE ligne ENVN= (la dérivation depuis la branche) — plus de repassage à un enfant" \
+  || bad "⑪quater team-apply porte $NTA lignes ENVN= (attendu 1) — l'env est encore repassé à un enfant qui le scelle lui-même"
+
+echo "== ⑫ mutations : les trois façons de rendre ⑪ vacante =="
+# (a) la constante redevient le littéral `dev` — même valeur AUJOURD'HUI, mais
+# plus aucun lien avec la source qui la définit.
+sed 's/\[ "\$ENVN" = "\$DEPLOY_PIN_AUTHORING_ENV" \]/[ "$ENVN" = dev ]/' scripts/team-apply.sh > "$TMP/ta_mut"
+cmp -s scripts/team-apply.sh "$TMP/ta_mut" \
+  && bad "⑫(a0) le mutant est IDENTIQUE au fichier — l'ancre de la comparaison a bougé, la mutation ne mute rien" \
+  || ok "⑫(a0) le mutant diffère RÉELLEMENT du fichier (la mutation n'est pas un no-op)"
+nc_strict "$TMP/ta_mut" > "$TMP/ta_mut_nc"
+grep -Eq '\[ "\$ENVN" = "\$DEPLOY_PIN_AUTHORING_ENV" \]' "$TMP/ta_mut_nc" \
+  && bad "⑫(a) la mutation n'a pas retiré la constante — le détecteur ⑪bis ne protège rien" \
+  || ok "⑫(a) mutation efficace : le détecteur ⑪bis verrait rouge"
+# (b) le câblage mort REVIENT — invisible pour ⑪/⑪bis/⑪ter.
+cp scripts/team-apply.sh "$TMP/ta_dup"
+printf '     ENVN="$ENVN" bash scripts/setup-team-onboard-jobs.sh\n' >> "$TMP/ta_dup"
+nc_strict "$TMP/ta_dup" > "$TMP/ta_dup_nc"
+NADUP=$(grep -c 'ENVN=' "$TMP/ta_dup_nc")
+[ "$NADUP" -eq 2 ] \
+  && ok "⑫(b) repassage réinjecté ⇒ compte 2 : le détecteur d'unicité de ⑪quater le verrait" \
+  || bad "⑫(b) le compte reste $NADUP — l'assertion d'unicité de ⑪quater est vacante"
+# (c) LA raison d'être de nc_strict, prouvée sur le fichier réel : le
+# décommenteur naïf tronque la dérivation au `#` de ${PR_BRANCH#onboard/} et
+# fait perdre UNE ligne au compte. Écrit ⑪quater avec lui, l'unicité passait au
+# vert même avec le câblage mort en place.
+sed 's/[[:space:]]*#.*$//' scripts/team-apply.sh > "$TMP/ta_naif"
+[ "$(grep -c 'ENVN=' "$TMP/ta_naif")" -lt "$NTA" ] \
+  && ok "⑫(c) le décommenteur naïf perd bien la dérivation (# d'expansion) — nc_strict n'est pas un caprice de style" \
+  || bad "⑫(c) le décommenteur naïf ne perd rien ici — vérifier l'hypothèse qui motive nc_strict"
+
+echo "== ⑰ le formulaire team-request n'a plus d'axe env (Jenkinsfile ET XML) =="
+# Détecteur FACTORISÉ de ⑨a (jf_axe_verdict), appelé sur l'axe REQ_ENV : la
+# contre-épreuve ⑰bis exerce EXACTEMENT le code qui rend le verdict ici, et le
+# cas ABSENT interdit le vert par fichier manquant.
+JTR="ci/Jenkinsfile.team-request"
+case "$(jf_axe_verdict "$JTR" REQ_ENV)" in
+  ABSENT) bad "⑰ $JTR introuvable — l'assertion d'absence serait vraie par vacuité" ;;
+  ROUTE)  bad "⑰ $JTR paramètre/route encore un axe REQ_ENV vers le script" ;;
+  PROPRE) ok  "⑰ $JTR ne porte plus d'axe env" ;;
+esac
+XTR="ci/jenkins/team-request.job.xml"
+if [ ! -f "$XTR" ]; then
+  bad "⑰bis $XTR introuvable — l'assertion d'absence serait vraie par vacuité"
+else
+  grep -q 'REQ_ENV' "$XTR" \
+    && bad "⑰bis REQ_ENV encore dans le job.xml — et le XML GAGNE sur le Jenkinsfile" \
+    || ok "⑰bis job.xml sans axe env"
+  # Absence STRUCTURELLE, pas seulement textuelle : le formulaire posé compte
+  # 4 champs et aucun n'est une liste fermée (la seule qui existait était l'env).
+  python3 - "$XTR" <<'PY' >"$TMP/xtr_params" 2>&1
+import sys, xml.etree.ElementTree as T
+root = T.parse(sys.argv[1]).getroot()
+names, choices = [], []
+for p in root.iter():
+    n = p.findtext('name') if p.tag.startswith('hudson.model.') and p.tag.endswith('ParameterDefinition') else None
+    if n is not None:
+        names.append(n)
+        if p.tag.endswith('ChoiceParameterDefinition'):
+            choices.append(n)
+print("PARAMS=%d CHOICES=%d REQ_ENV=%s" % (len(names), len(choices), 'REQ_ENV' in names))
+PY
+  grep -q '^PARAMS=4 CHOICES=0 REQ_ENV=False$' "$TMP/xtr_params" \
+    && ok "⑰bis le XML déclare 4 paramètres, 0 liste fermée, aucun REQ_ENV (lu par ElementTree, pas par grep)" \
+    || { bad "⑰bis structure du formulaire XML inattendue"; sed 's/^/      /' "$TMP/xtr_params" | head -3; }
+fi
+
+echo "== ⑰ter mutation : l'axe REVIENT dans le Jenkinsfile ⇒ ⑰ rougirait =="
+# Réinjection À SA PLACE RÉELLE (le bloc `parameters`), pas en queue de fichier.
+sed 's|^  parameters {$|  parameters {\n    choice(name: '"'"'REQ_ENV'"'"', choices: ['"'"'dev'"'"'], description: "")|' \
+  "$JTR" > "$TMP/jtr_mut"
+cmp -s "$JTR" "$TMP/jtr_mut" \
+  && bad "⑰ter(a0) le mutant est IDENTIQUE au fichier — l'ancre ^  parameters { a bougé, la mutation ne mute rien" \
+  || ok "⑰ter(a0) le mutant diffère RÉELLEMENT du fichier (la mutation n'est pas un no-op)"
+[ "$(jf_axe_verdict "$TMP/jtr_mut" REQ_ENV)" = ROUTE ] \
+  && ok "⑰ter(a) axe env réinjecté ⇒ le détecteur de ⑰ REND ROUTE (il n'est pas aveugle)" \
+  || bad "⑰ter(a) l'axe réinjecté passe inaperçu — l'assertion Jenkinsfile de ⑰ est vacante"
+# Et la même chose côté XML, où la réinjection est CELLE QUI COMPTE (il gagne).
+sed 's|</parameterDefinitions>|<hudson.model.ChoiceParameterDefinition><name>REQ_ENV</name><choices class="java.util.Arrays$ArrayList"><a class="string-array"><string>dev</string></a></choices></hudson.model.ChoiceParameterDefinition></parameterDefinitions>|' \
+  "$XTR" > "$TMP/xtr_mut"
+cmp -s "$XTR" "$TMP/xtr_mut" \
+  && bad "⑰ter(b0) le mutant XML est IDENTIQUE — l'ancre </parameterDefinitions> a bougé" \
+  || ok "⑰ter(b0) le mutant XML diffère RÉELLEMENT du fichier"
+grep -q 'REQ_ENV' "$TMP/xtr_mut" \
+  && ok "⑰ter(b) axe env réinjecté dans le XML ⇒ le détecteur de ⑰bis le VOIT" \
+  || bad "⑰ter(b) l'axe réinjecté dans le XML passe inaperçu — ⑰bis est vacante"
+
+echo "== ⑱ chemin nominal : gardes de team-request traversées VERTES en DRY_RUN =="
+# GITEA_TOKEN est exigé EN TÊTE (`${GITEA_TOKEN:?}`), avant les gardes : sans
+# lui le script refuserait pour une raison sans rapport. Valeur factice — le
+# contrat DRY_RUN sort AVANT tout appel réseau (motif run_w de
+# test-deploy-pin.sh:434-439, qui passe le même GITEA_TOKEN=x).
+tr_dry(){ ( cd "$ROOT" && env -i PATH="$PATH" HOME="$HOME" \
+    TEAM="$1" DESCRIPTION="$2" APPROVERS="A1,B2" \
+    GITEA_TOKEN=x DRY_RUN=1 bash scripts/team-request.sh ) >"$TMP/tr_dry" 2>&1; }
+tr_dry preuve-g4 "equipe de preuve"
+RC=$?
+grep -q 'GARDES_OK' "$TMP/tr_dry" && [ "$RC" -eq 0 ] \
+  && ok "⑱ DRY_RUN traverse les gardes et sort 0" \
+  || { bad "⑱ le chemin nominal ne passe pas (rc=$RC)"; sed 's/^/      /' "$TMP/tr_dry" | head -5; }
+# AVANT tout geste Git : le premier geste du script s'annonce « [1/4] clone ».
+# Son absence est la preuve que la sortie a eu lieu en amont — pas seulement
+# que le script a fini par sortir 0.
+grep -q '\[1/4\] clone' "$TMP/tr_dry" \
+  && bad "⑱bis le clone a été tenté malgré DRY_RUN — le contrat n'est pas placé avant les gestes Git" \
+  || ok "⑱bis aucun clone tenté : la sortie est en AMONT de tout geste Git/réseau"
+
+echo "== ⑲ DRY_RUN n'est pas un laissez-passer : les gardes statuent quand même =="
+# Un contrat DRY_RUN placé AVANT les gardes imprimerait GARDES_OK sans avoir
+# rien vérifié — ⑱ serait alors un vert vacant. Deux gardes, l'une AVANT et
+# l'autre APRÈS la position de l'ancien refus d'env, doivent encore refuser.
+tr_dry 'Bad_Name' "equipe de preuve"
+RC=$?
+{ [ "$RC" -ne 0 ] && grep -q 'TEAM_NAME_INVALID' "$TMP/tr_dry" && ! grep -q 'GARDES_OK' "$TMP/tr_dry"; } \
+  && ok "⑲ TEAM invalide ⇒ refus nommé même en DRY_RUN (garde AMONT franchie, pas court-circuitée)" \
+  || { bad "⑲ DRY_RUN court-circuite la garde de nom (rc=$RC)"; sed 's/^/      /' "$TMP/tr_dry" | head -5; }
+tr_dry preuve-g4 'desc avec " guillemet'
+RC=$?
+{ [ "$RC" -ne 0 ] && grep -q 'YAML_UNSAFE_INPUT' "$TMP/tr_dry" && ! grep -q 'GARDES_OK' "$TMP/tr_dry"; } \
+  && ok "⑲bis description hostile ⇒ YAML_UNSAFE_INPUT : le contrat est bien APRÈS toutes les gardes de forme" \
+  || { bad "⑲bis DRY_RUN court-circuite la garde YAML (rc=$RC)"; sed 's/^/      /' "$TMP/tr_dry" | head -5; }
 
 printf '\n  %d PASS / %d FAIL\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

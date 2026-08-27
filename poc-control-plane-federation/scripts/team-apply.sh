@@ -23,6 +23,18 @@ set -uo pipefail
 set +x   # jamais de trace : le token ne doit pas fuiter
 cd "$(dirname "$0")/.." || exit 1
 
+# Auto-localisation par BASH_SOURCE quand le fichier vit dans son arbre ; repli
+# sur le cwd — qui est ICI la racine du PoC, le `cd` ci-dessus venant de
+# s'exécuter (motif de setup-vault-paliers.sh:26-38 et api-request.sh:58-66).
+# Sourcé AVANT le `git checkout "$MERGE_SHA"` plus bas : la constante ne doit
+# pas dépendre de l'état de l'arbre au SHA mergé.
+_TA_LIB="$(dirname "${BASH_SOURCE[0]}")/lib/deploy-pin.sh"
+[ -f "$_TA_LIB" ] || _TA_LIB="scripts/lib/deploy-pin.sh"
+# `set -e` n'est pas actif ici : sans garde explicite, un fichier manquant
+# laisserait bash continuer jusqu'à un « unbound variable » sur la constante.
+# shellcheck source=scripts/lib/deploy-pin.sh
+. "$_TA_LIB" || { echo "ERREUR: $_TA_LIB introuvable ou illisible" >&2; exit 1; }
+
 PR_BRANCH="${PR_BRANCH:?PR_BRANCH requis}"
 PR_NUMBER="${PR_NUMBER:?PR_NUMBER requis}"
 MERGE_SHA="${MERGE_SHA:?MERGE_SHA requis (merge_commit_sha du webhook)}"
@@ -50,7 +62,14 @@ PY
 # ── 1. équipe et env depuis la branche ; anti-TOCTOU sur le contenu ──────────
 case "$PR_BRANCH" in onboard/*) ;; *) echo "hors onboard/* — rien à faire"; exit 0;; esac
 REST="${PR_BRANCH#onboard/}"; ENVN="${REST##*-}"; TEAM="${REST%-*}"
-[ "$ENVN" = dev ] || fail "ENV_NOT_OPEN : $ENVN"
+# G4 (ADR-082, D5) : la branche onboard/<team>-<env> porte l'env par
+# CONSTRUCTION (team-request le scelle sur la même constante) — un suffixe
+# étranger n'est donc pas un palier fermé qu'on refuserait d'ouvrir, c'est une
+# branche FORGÉE : le refus change de NOM parce qu'il change de nature.
+# Comparaison contre la constante et non contre le littéral `dev` : les deux ont
+# la même valeur aujourd'hui, mais seule la première suit la source si l'env
+# d'authoring bouge — un littéral serait un second point de vérité muet.
+[ "$ENVN" = "$DEPLOY_PIN_AUTHORING_ENV" ] || fail "ENV_MISMATCH : ${ENVN} ≠ ${DEPLOY_PIN_AUTHORING_ENV} — l'onboarding est un geste d'authoring ; la tenancy aux paliers supérieurs vient du chemin de promotion (ADR-082)"
 
 git fetch -q origin main && git checkout -q "$MERGE_SHA" \
   || fail "checkout du SHA de merge $MERGE_SHA"
@@ -292,8 +311,12 @@ if [ "$ONB_RC" -eq 0 ]; then
   # webmethods-mock/gitea (même convention). Un poste hors du réseau compose
   # surcharge JENKINS_UI explicitement (comme APIM_API_BASE).
   REFRESH_NOTE=""
+  # AUCUN ENVN passé au délégué, et c'est délibéré : depuis G4 il SCELLE
+  # lui-même son env sur la même constante d'authoring
+  # (setup-team-onboard-jobs.sh:87). Le lui repasser serait du câblage mort qui
+  # suggère qu'il obéit à son appelant.
   if JENKINS_UI="${JENKINS_UI:-http://jenkins:8080}" JOBS="app-request api-request" \
-     ENVN="$ENVN" bash scripts/setup-team-onboard-jobs.sh >"$TMP/refresh.log" 2>&1
+     bash scripts/setup-team-onboard-jobs.sh >"$TMP/refresh.log" 2>&1
   then
     # REVUE (round 1, Important) : la re-pose peut RÉUSSIR tout en ayant
     # toléré/sauté un dépôt d'équipe déclaré mais introuvable sur Gitea

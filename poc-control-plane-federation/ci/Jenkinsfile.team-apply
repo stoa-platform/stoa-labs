@@ -133,7 +133,8 @@ pipeline {
           // re-dérivés par le script, dans l'état MERGÉ. Écrit sans
           // `substring(0, -1)` : le Groovy d'origine levait une exception sur
           // une branche `onboard/x` sans tiret, là où le shell, lui, dégrade
-          // proprement (ENV_NOT_OPEN dit alors la vraie cause).
+          // proprement (ENV_MISMATCH dit alors la vraie cause : depuis G4, le
+          // script confronte le suffixe à la constante d'authoring).
           def ref = env.PR_BRANCH ?: ''
           if (ref.startsWith('onboard/')) {
             def rest = ref.substring('onboard/'.length())
