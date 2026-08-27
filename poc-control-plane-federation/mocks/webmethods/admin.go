@@ -527,11 +527,35 @@ func (s *Server) deleteAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	delete(s.store.apis, id)
 	if s.store.latestVersionID[rec.APIName] == id {
-		// The lineage pointer dies with its last known record: a later import
-		// (or POST) re-establishes it, like a gateway that never saw the name.
-		delete(s.store.latestVersionID, rec.APIName)
+		s.repointLineage(rec.APIName)
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// repointLineage re-establishes latestVersionID for a name whose pointed record
+// was just destroyed. Dropping the key outright would DEAD-END the lineage
+// whenever older versions survive: createVersionAPI only accepts the id the
+// pointer names ("Versioning is allowed only from latest version") and createAPI
+// 409s on the name, so nothing could version the survivors and nothing could
+// re-create the name either. The pointer is therefore deleted only when the name
+// is gone entirely, and otherwise moved to the most recently MINTED survivor —
+// ids of one family sort in creation order (nextID, store.go), so the greatest
+// id is the newest record. Deliberately NOT the highest apiVersion: this product
+// mints versions in any order (1.0.0 versioned FROM 1.0.1 was measured live,
+// 2026-08-06), so "latest" is a chronology, never a semver comparison.
+// Caller MUST hold the store lock.
+func (s *Server) repointLineage(apiName string) {
+	newest := ""
+	for _, other := range s.store.apis {
+		if other.APIName == apiName && other.ID > newest {
+			newest = other.ID
+		}
+	}
+	if newest == "" {
+		delete(s.store.latestVersionID, apiName)
+		return
+	}
+	s.store.latestVersionID[apiName] = newest
 }
 
 // appsSubscribedTo lists the application ids currently bound to an API.

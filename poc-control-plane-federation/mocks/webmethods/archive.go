@@ -497,6 +497,22 @@ func (s *Server) applyArchiveEntry(e archiveEntry, covered map[string]bool) map[
 
 	switch e.typ {
 	case "API":
+		// FAIL CLOSED on a (apiName, apiVersion) already held under ANOTHER id.
+		// Letting it through would leave the store with two records answering
+		// the same data-plane coordinates, and findAPIByNameVersion resolves by
+		// MAP ITERATION — so /gateway/<name>/<version> would serve one or the
+		// other at random and every measurement taken on it would float. The
+		// scenario is a real G5 one: a tier where the API was published natively
+		// (local guid) receiving the source tier's archive (source guid).
+		// The house rule applies — never pick an identity in silence
+		// (VERSION_BASE_AMBIGUE, SCOPE_AMBIGU, CERT_PATH_AMBIGUOUS): refuse and
+		// name the collision. The real product's behaviour here is NOT pinned by
+		// any spike; the mock chooses refusal rather than a guess.
+		if other := s.apiHoldingNameVersion(e.id, rec); other != nil {
+			return row(name, "Failed", fmt.Sprintf(
+				"Asset refused: %s v%s already exists under guid %s — importing it as %s would create two records for the same name and version",
+				other.APIName, other.APIVersion, other.ID, e.id), false)
+		}
 		s.importAPIRecord(e.id, rec)
 	case "Policy":
 		s.store.policies[e.id] = rec
@@ -509,6 +525,21 @@ func (s *Server) applyArchiveEntry(e archiveEntry, covered map[string]bool) map[
 		return row(name, "Success", "Asset overwritten", true)
 	}
 	return row(name, "Success", "Asset created", false)
+}
+
+// apiHoldingNameVersion returns the API record already holding the (apiName,
+// apiVersion) the entry carries, when it is NOT the entry's own id — i.e. the
+// record an import would collide with. Caller MUST hold the store lock.
+func (s *Server) apiHoldingNameVersion(id string, rec map[string]any) *apiRecord {
+	name := stringOf(rec["apiName"])
+	if name == "" {
+		return nil
+	}
+	other := s.store.findAPIByNameVersion(name, stringOf(rec["apiVersion"]))
+	if other == nil || other.ID == id {
+		return nil // free coordinates, or the very record being overwritten
+	}
+	return other
 }
 
 // archiveAssetExists reports whether the target already holds that asset id.

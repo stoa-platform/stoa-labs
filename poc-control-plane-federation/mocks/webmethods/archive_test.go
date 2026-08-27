@@ -725,6 +725,127 @@ func TestSubscriptionSurvivesOverwrite(t *testing.T) {
 	}
 }
 
+// mintVersion asks for a new version of a lineage and returns (status, newID).
+func mintVersion(t *testing.T, h http.Handler, baseID, version string) (int, string) {
+	t.Helper()
+	rr := doAdmin(t, h, "POST", "/rest/apigateway/apis/"+baseID+"/versions",
+		map[string]any{"newApiVersion": version})
+	if rr.Code != http.StatusCreated {
+		return rr.Code, ""
+	}
+	api := decode(t, rr)["apiResponse"].(map[string]any)["api"].(map[string]any)
+	return rr.Code, api["id"].(string)
+}
+
+func deleteInactiveAPI(t *testing.T, h http.Handler, id string) {
+	t.Helper()
+	if rr := doAdmin(t, h, "PUT", "/rest/apigateway/apis/"+id+"/deactivate", nil); rr.Code != http.StatusOK {
+		t.Fatalf("deactivate %s = %d", id, rr.Code)
+	}
+	if rr := doAdmin(t, h, "DELETE", "/rest/apigateway/apis/"+id, nil); rr.Code != http.StatusNoContent {
+		t.Fatalf("delete %s = %d body=%s", id, rr.Code, rr.Body)
+	}
+}
+
+// Deleting the record the lineage pointer names must not strand the survivors:
+// they would be unversionable ("latest version" gate) AND un-recreatable (409 on
+// the name) — a dead end.
+func TestDeleteAPI_KeepsTheVersionLineageAlive(t *testing.T) {
+	h := newTestServer(t)
+	// A three-version lineage, so deleting the latest leaves TWO survivors and
+	// "which one the pointer lands on" is an observable choice.
+	v1, _ := importAPI(t, h, "accounts-read", "1.0.0")
+	_, v2 := mintVersion(t, h, v1, "2.0.0")
+	_, v3 := mintVersion(t, h, v2, "3.0.0")
+	if v2 == "" || v3 == "" {
+		t.Fatalf("lineage setup failed (v2=%q v3=%q)", v2, v3)
+	}
+
+	deleteInactiveAPI(t, h, v3)
+
+	// The pointer must land on the most recently minted SURVIVOR (v2), not on
+	// v1 and not nowhere.
+	if code, id := mintVersion(t, h, v2, "4.0.0"); code != http.StatusCreated {
+		t.Errorf("versioning from the surviving latest = %d, want 201 (the lineage is stranded)", code)
+	} else if id == "" {
+		t.Error("mint from v2 returned no id")
+	}
+	if code, _ := mintVersion(t, h, v1, "5.0.0"); code != http.StatusBadRequest {
+		t.Errorf("versioning from an OLDER survivor = %d, want 400 (the pointer must name the newest)", code)
+	}
+
+	// And when the name disappears entirely, the pointer must go with it: the
+	// name becomes free for a fresh POST /apis again.
+	for _, id := range apiIDsOfName(t, h, "accounts-read") {
+		deleteInactiveAPI(t, h, id)
+	}
+	rr := doAdmin(t, h, "POST", "/rest/apigateway/apis", importBody("accounts-read", "1.0.0"))
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("re-creating a fully deleted name = %d body=%s, want 201", rr.Code, rr.Body)
+	}
+}
+
+// apiIDsOfName lists the catalogue ids carrying an apiName.
+func apiIDsOfName(t *testing.T, h http.Handler, name string) []string {
+	t.Helper()
+	rr := doAdmin(t, h, "GET", "/rest/apigateway/apis", nil)
+	var out []string
+	for _, it := range decode(t, rr)["apiResponse"].([]any) {
+		api := it.(map[string]any)["api"].(map[string]any)
+		if api["apiName"] == name {
+			out = append(out, api["id"].(string))
+		}
+	}
+	return out
+}
+
+// The G5 collision: a tier where the API was published NATIVELY (local guid)
+// receives the source tier's archive (source guid). Two records for one
+// name+version would make findAPIByNameVersion — a map iteration — serve one or
+// the other at random, so the import refuses that line and mutates nothing.
+func TestImportRefusesNameVersionHeldByAnotherGUID(t *testing.T) {
+	h := newTestServer(t)
+	sourceID, _ := aliasRoutedAPI(t, h, "accounts-read", "env-backend", "http://dev.internal:8081/base")
+	entries := exportArchiveEntries(t, h, sourceID)
+
+	// The target tier: same name+version, minted locally under its OWN guid.
+	deleteInactiveAPI(t, h, sourceID)
+	rr := doAdmin(t, h, "POST", "/rest/apigateway/apis", importBody("accounts-read", "1.0.0"))
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("local publish = %d body=%s", rr.Code, rr.Body)
+	}
+	localID := decode(t, rr)["apiResponse"].(map[string]any)["api"].(map[string]any)["id"].(string)
+	if localID == sourceID {
+		t.Fatal("the local record must carry a DIFFERENT guid for this test to mean anything")
+	}
+
+	rows := archiveRows(t, importArchive(t, h, "?overwrite="+defaultOverwriteScope, entries))
+	api := rowOfType(t, rows, "API")
+	if api.Status != "Failed" {
+		t.Errorf("API row = %+v, want Failed (the name+version is held by another guid)", api)
+	}
+	if !strings.Contains(api.Explanation, localID) {
+		t.Errorf("explanation = %q, want it to NAME the colliding guid %s", api.Explanation, localID)
+	}
+	if api.Overwritten {
+		t.Errorf("a refused line must not report overwritten:true (%+v)", api)
+	}
+	// Nothing mutated for that line: the source guid was NOT created…
+	if rr := doAdmin(t, h, "GET", "/rest/apigateway/apis/"+sourceID, nil); rr.Code != http.StatusNotFound {
+		t.Errorf("source guid after the refusal = %d, want 404 (nothing must be created)", rr.Code)
+	}
+	// …and the local record still holds the coordinates, alone.
+	if ids := apiIDsOfName(t, h, "accounts-read"); len(ids) != 1 || ids[0] != localID {
+		t.Errorf("catalogue = %v, want the local record %s alone", ids, localID)
+	}
+	// The rest of the archive follows the normal semantics (fresh ids here).
+	for _, r := range rows {
+		if r.Type != "API" && r.Status != "Success" {
+			t.Errorf("row %+v: the other assets must follow the normal semantics", r)
+		}
+	}
+}
+
 func TestDeleteAPI_DropsItsPolicyGraph(t *testing.T) {
 	h := newTestServer(t)
 	apiID, polID := importAPI(t, h, "accounts-read", "1.0.0")
