@@ -40,17 +40,12 @@ put() {
 read -r -a HP_ENVS <<< "$(env_chain_nonprod)" || { echo "✗ chaîne d'environnements illisible" >&2; exit 1; }
 CI_HORSPROD_SECRET="${CI_HORSPROD_SECRET:?Variable CI_HORSPROD_SECRET absente — définissez-la (voir poc-control-plane-federation/.env.example)}"
 
-echo "Vault $VAULT_ADDR — provisioning secret/$PREFIX/envs/* (KV v2, ADR-075)"
-for E in "${HP_ENVS[@]}"; do
-  # Nom de variable historique par env : WM_<ENV>_USER / WM_<ENV>_PASS.
-  EU="WM_$(printf %s "$E" | tr '[:lower:]' '[:upper:]')_USER"
-  EP="WM_$(printf %s "$E" | tr '[:lower:]' '[:upper:]')_PASS"
-  U="${!EU:-wm-$E-admin}"; P="${!EP:-wm-$E-secret-poc}"
-  put "envs/$E/wm-admin" "{\"username\":\"$U\",\"password\":\"$P\"}"
-done
-
 # secret/stoa/ci : MERGE manuel — relire ciApplierSecret (posé par setup-vault.sh)
-# avant de réécrire l'objet complet (KV v2 ne merge pas).
+# avant de réécrire l'objet complet (KV v2 ne merge pas). Posé AVANT la boucle
+# par palier (G5) : le sub envs/<env>/admin-oauth qu'elle seed a besoin de
+# RELIRE ciHorsprodSecret depuis ce même secret, pas de le prendre directement
+# de la variable d'environnement — la valeur qui compte pour les autres
+# consommateurs (Task 6) est celle PERSISTÉE dans Vault.
 CUR_APPLIER="$("${CURL[@]}" "$VAULT_ADDR/v1/$MOUNT/data/$PREFIX/ci" \
   | python3 -c 'import sys,json
 try: print(json.load(sys.stdin)["data"]["data"].get("ciApplierSecret",""))
@@ -63,6 +58,33 @@ CI_APPLIER_SECRET="${CI_APPLIER_SECRET:-$CUR_APPLIER}"
   exit 1
 }
 put ci "{\"ciApplierSecret\":\"$CI_APPLIER_SECRET\",\"ciHorsprodSecret\":\"$CI_HORSPROD_SECRET\"}"
+
+# Round-trip : c'est CETTE valeur (relue, pas $CI_HORSPROD_SECRET) qui alimente
+# admin-oauth ci-dessous.
+CI_HORSPROD_FROM_VAULT="$("${CURL[@]}" "$VAULT_ADDR/v1/$MOUNT/data/$PREFIX/ci" \
+  | python3 -c 'import sys,json
+try: print(json.load(sys.stdin)["data"]["data"].get("ciHorsprodSecret",""))
+except Exception: print("")' 2>/dev/null || true)"
+if [ -z "$CI_HORSPROD_FROM_VAULT" ]; then
+  echo "✗ CI_SECRET_ABSENT : ciHorsprodSecret absent de secret/$PREFIX/ci après écriture —" >&2
+  echo "  envs/<env>/admin-oauth NON seedé (le reste du plan continue)." >&2
+fi
+# ADR-079/G5 : le client OAuth des proxies admin est commun à tous les
+# paliers hors-prod (ci-horsprod) — token_url par défaut = la vue in-cluster
+# (agents Jenkins), surchargeable pour un lab dont Keycloak est ailleurs.
+ADMIN_OAUTH_TOKEN_URL="${ADMIN_OAUTH_TOKEN_URL:-http://keycloak:8080/realms/stoa-lab/protocol/openid-connect/token}"
+
+echo "Vault $VAULT_ADDR — provisioning secret/$PREFIX/envs/* (KV v2, ADR-075)"
+for E in "${HP_ENVS[@]}"; do
+  # Nom de variable historique par env : WM_<ENV>_USER / WM_<ENV>_PASS.
+  EU="WM_$(printf %s "$E" | tr '[:lower:]' '[:upper:]')_USER"
+  EP="WM_$(printf %s "$E" | tr '[:lower:]' '[:upper:]')_PASS"
+  U="${!EU:-wm-$E-admin}"; P="${!EP:-wm-$E-secret-poc}"
+  put "envs/$E/wm-admin" "{\"username\":\"$U\",\"password\":\"$P\"}"
+  if [ -n "$CI_HORSPROD_FROM_VAULT" ]; then
+    put "envs/$E/admin-oauth" "{\"token_url\":\"$ADMIN_OAUTH_TOKEN_URL\",\"client_id\":\"ci-horsprod\",\"client_secret\":\"$CI_HORSPROD_FROM_VAULT\",\"scope\":\"deploy:$E\"}"
+  fi
+done
 
 echo "done. Vérif (re-lecture d'un secret) :"
 "${CURL[@]}" "$VAULT_ADDR/v1/$MOUNT/data/$PREFIX/envs/dev/wm-admin" \

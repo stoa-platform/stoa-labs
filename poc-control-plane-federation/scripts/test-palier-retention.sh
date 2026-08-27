@@ -45,6 +45,26 @@ grep -q 'apply-gamma' "$TMP/p1" \
 grep -q 'envs/alpha/wm-admin' "$TMP/p1" \
   && ok "① le périmètre est le secret d'admin du palier" \
   || bad "① le chemin envs/<e>/wm-admin n'apparaît pas dans la policy"
+grep -q 'envs/alpha/admin-oauth' "$TMP/p1" \
+  && ok "① le périmètre inclut aussi le client OAuth du palier (admin-oauth, G5)" \
+  || bad "① le chemin envs/<e>/admin-oauth n'apparaît pas dans la policy"
+N_PATHS_ALPHA=$(grep -c 'secret/\(data\|metadata\)/stoa/envs/alpha/' "$TMP/p1")
+[ "$N_PATHS_ALPHA" -eq 4 ] \
+  && ok "① policy apply-alpha porte exactement 4 chemins (wm-admin + admin-oauth, data+metadata)" \
+  || bad "① policy apply-alpha porte $N_PATHS_ALPHA chemins (attendu 4)"
+
+echo "== ①bis mutation : retirer le sub admin-oauth de policy_hcl ⇒ rouge =="
+# Substitution du littéral, PAS suppression de ligne : policy_hcl écrit ses
+# arguments avec des continuations `\` — supprimer une ligne au sed casserait
+# la syntaxe du printf plutôt que de simplement faire disparaître le chemin.
+sed 's/admin-oauth/OAUTH-RETIRE/g' "$SVP" > "$TMP/svp_mut_oauth"
+cmp -s "$SVP" "$TMP/svp_mut_oauth" \
+  && bad "①bis(0) le mutant est IDENTIQUE au fichier — le littéral admin-oauth a disparu du fichier, la mutation ne mute rien" \
+  || ok "①bis(0) le mutant diffère RÉELLEMENT du fichier (la mutation n'est pas un no-op)"
+( STOA_ENV_CHAIN_FILE="$TMP/chain3.yaml" bash "$TMP/svp_mut_oauth" --print ) >"$TMP/p1_mut_oauth" 2>&1
+grep -q 'envs/alpha/admin-oauth' "$TMP/p1_mut_oauth" \
+  && bad "①bis la mutation n'a pas retiré le chemin admin-oauth — le détecteur ne protège rien" \
+  || ok "①bis mutation efficace : sans le sub admin-oauth, le détecteur (①) verrait rouge"
 
 echo "== ② la dérivation SUIT la source (chaîne réduite ⇒ set réduit) =="
 ( STOA_ENV_CHAIN_FILE="$TMP/chain2.yaml" bash "$SVP" --print ) >"$TMP/p2" 2>&1

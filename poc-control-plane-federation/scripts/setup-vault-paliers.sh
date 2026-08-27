@@ -46,7 +46,14 @@ policy_hcl() { # <env> — le périmètre est le SECRET D'ADMIN DU PALIER, rien 
   # la porte mute le littéral envs/$1/ en envs/+/ — la forme est un contrat.
   printf '%s\n' \
     "path \"secret/data/stoa/envs/$1/wm-admin\" { capabilities = [\"read\"] }" \
-    "path \"secret/metadata/stoa/envs/$1/wm-admin\" { capabilities = [\"read\"] }"
+    "path \"secret/metadata/stoa/envs/$1/wm-admin\" { capabilities = [\"read\"] }" \
+    "# LIMITE « valeur partagée entre paliers » (spec G5 D5, parking n°2) :" \
+    "# le client OAuth ci-horsprod est le MÊME pour tous les paliers hors-prod ;" \
+    "# un client par palier reste à faire. La rétention mécanique reste ICI —" \
+    "# le chemin Vault PAR PALIER (envs/$1/admin-oauth) + le scope deploy:$1" \
+    "# vérifié par le proxy, pas un client OAuth distinct par palier." \
+    "path \"secret/data/stoa/envs/$1/admin-oauth\" { capabilities = [\"read\"] }" \
+    "path \"secret/metadata/stoa/envs/$1/admin-oauth\" { capabilities = [\"read\"] }"
 }
 
 MODE="${1:-pose}"
