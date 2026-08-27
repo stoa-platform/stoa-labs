@@ -174,7 +174,14 @@ func (c *Client) TokenPolicies(ctx context.Context) ([]string, error) {
 	if _, err := httpx.JSON(ctx, c.hc, http.MethodGet, url, headers, nil, &out); err != nil {
 		return nil, fmt.Errorf("vault lookup-self: %w", err)
 	}
-	return append(append([]string(nil), out.Data.Policies...), out.Data.IdentityPolicies...), nil
+	policies := append(append([]string(nil), out.Data.Policies...), out.Data.IdentityPolicies...)
+	// A real Vault token always carries at least one policy (default, or root).
+	// An empty union means an empty/unexpected body slipped through as a 200 —
+	// that must never read as "a token legitimately holding zero policies".
+	if len(policies) == 0 {
+		return nil, fmt.Errorf("vault lookup-self: no policies in response (empty or unexpected body)")
+	}
+	return policies, nil
 }
 
 func envOr(key, def string) string {

@@ -211,3 +211,21 @@ func TestTokenPolicies_AuthFailureErrors(t *testing.T) {
 		t.Fatal("expected error on 403 lookup-self, got nil (fail-open)")
 	}
 }
+
+// Fail-closed : un 200 à corps vide (ou {"data":{}}) n'est jamais « zéro
+// policy » — un token Vault réel porte toujours au moins une policy
+// (default/root) ; l'union vide signale un corps illisible/inattendu, pas un
+// token légitimement dépourvu de policies.
+func TestTokenPolicies_EmptyBodyErrors(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{}}`))
+	}))
+	defer srv.Close()
+	t.Setenv("VAULT_ADDR", srv.URL)
+	t.Setenv("VAULT_TOKEN", "tok")
+	c, _ := FromEnv()
+	if _, err := c.TokenPolicies(context.Background()); err == nil {
+		t.Fatal("expected error on empty policies/identity_policies, got nil (fail-open)")
+	}
+}
