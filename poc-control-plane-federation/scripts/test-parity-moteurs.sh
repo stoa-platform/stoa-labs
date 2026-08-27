@@ -1,0 +1,314 @@
+#!/usr/bin/env bash
+# test-parity-moteurs.sh — LA porte du GOAL G8 : les deux moteurs du verbe
+# archive (`apim_promote_api` côté client, `labctl promote` côté lab), sur le
+# MÊME manifeste, produisent un état de gateway IDENTIQUE sur les champs du
+# registre — et un moteur volontairement muté fait ROUGIR la parité.
+#
+# CE QUE G5 NE PROUVAIT PAS. test-promote-verb-live.sh éprouve chaque moteur
+# sur des assets SÉPARÉS avec les mêmes assertions : il prouve que chacun
+# tient le contrat du verbe, jamais que les deux produisent le même état. Ici,
+# UN seul manifeste, UNE seule archive d'import, et le verdict est un DIFF de
+# snapshots — pas une liste d'assertions par moteur.
+#
+# LE REGISTRE. scripts/testdata/parity-ecarts.txt liste les écarts ASSUMÉS
+# (chemins d'état exclus du diff, motifs volatils des artefacts), chacun avec
+# sa raison mesurée. Un écart inconnu n'est PAS dans le fichier, donc il
+# rougit : « un écart documenté est acceptable, un écart inconnu ne l'est
+# pas » (GOAL G8) devient une propriété mécanique.
+#
+#   ./scripts/test-parity-moteurs.sh
+#   GW_ADMIN=http://localhost:5555/rest/apigateway GW_DATA=http://localhost:5555/gateway \
+#   WM_USER=Administrator WM_PASS=manage VAULT_ADDR=http://localhost:8200 \
+#   VAULT_TOKEN=... ./scripts/test-parity-moteurs.sh
+#
+# ⚠ La gateway du lab est recyclée par un keepalive (~20 min) : wait_gw avant
+# chaque phase — un rouge doit vouloir dire « la parité est cassée », jamais
+# « le conteneur redémarrait ».
+set -u
+
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+GW="${GW_ADMIN:-http://localhost:5555/rest/apigateway}"
+DP="${GW_DATA:-http://localhost:5555/gateway}"
+WM_USER="${WM_USER:-Administrator}"
+WM_PASS="${WM_PASS:-manage}"
+AUTH="$WM_USER:$WM_PASS"
+# adminUrl de labctl : SANS /rest/apigateway (l'adaptateur l'ajoute) — piège §8
+# de team-promote.sh.
+ADMIN_ROOT="${GW%/}"; ADMIN_ROOT="${ADMIN_ROOT%/rest/apigateway}"
+# Le backend per-env, joignable depuis la GATEWAY (réseau compose).
+BACKEND_URL="${BACKEND_URL:-http://poc-token-echo:8080/backend/rec}"
+VAULT="${VAULT_ADDR:-http://localhost:8200}"
+VTOK="${VAULT_TOKEN:-stoa-root-token}"
+REG="$REPO/scripts/testdata/parity-ecarts.txt"
+
+WORK="$(mktemp -d /tmp/g8par.XXXXXX)"
+PASS=0; FAIL=0
+API=g8par-api; BALS=g8par-backend; CALS=g8par-backend-creds
+GALS=g8par-flag; AS=g8par-as; SCOPE_NAME="g8par-api:1.0.0"
+PIN_GUID=""
+
+say()  { printf '\n== %s ==\n' "$*"; }
+ok()   { PASS=$((PASS+1)); printf '  ✅ %s\n' "$*"; }
+ko()   { FAIL=$((FAIL+1)); printf '  ❌ %s\n' "$*"; }
+check(){ if [ "$1" = "$2" ]; then ok "$3"; else ko "$3 (attendu '$2', obtenu '$1')"; fi; }
+adm()  { curl -sS -u "$AUTH" -H "Accept: application/json" "$@"; }
+
+# ── outillage gateway (motif G5) ─────────────────────────────────────────────
+api_id()   { adm "$GW/apis" | jq -r --arg n "$1" --arg v "$2" \
+               '[.apiResponse[].api | select(.apiName==$n and .apiVersion==$v) | .id][0] // empty'; }
+alias_id() { adm "$GW/alias" | jq -r --arg n "$1" '[(.alias // [])[] | select(.name==$n) | .id][0] // empty'; }
+dp_path()  { curl -sS -m 8 "$DP/$API/1.0.0/ping" | jq -r '.path // empty'; }
+
+GW_RECYCLES=0
+wait_gw() {
+  local i=0
+  while [ "$i" -lt 60 ]; do
+    [ "$(curl -s -o /dev/null -w '%{http_code}' -m 5 -u "$AUTH" "$GW/apis")" = "200" ] && {
+      [ "$i" -gt 0 ] && { GW_RECYCLES=$((GW_RECYCLES+1)); printf '  ⏳ gateway revenue après %ds (recyclage keepalive)\n' "$((i*3))"; }
+      return 0
+    }
+    i=$((i+1)); sleep 3
+  done
+  return 1
+}
+
+scope_id() { adm "$GW/scopes" | jq -r --arg n "$SCOPE_NAME" '[.scopes[]? | select(.scopeName==$n) | .id][0] // empty'; }
+
+# wipe_target — remet le palier à VIERGE pour l'API du manifeste : API,
+# aliases per-env (backend/creds/générique) et scope-mapping. L'AS reste :
+# il est env-local, posé par l'init d'env, pas par le moteur.
+wipe_target() {
+  local id n
+  id="$(api_id "$API" 1.0.0)"
+  if [ -n "$id" ]; then
+    adm -X PUT "$GW/apis/$id/deactivate" -o /dev/null
+    adm -X DELETE "$GW/apis/$id" -o /dev/null
+  fi
+  for n in "$BALS" "$CALS" "$GALS"; do
+    id="$(alias_id "$n")"; [ -n "$id" ] && adm -X DELETE "$GW/alias/$id" -o /dev/null
+  done
+  id="$(scope_id)"; [ -n "$id" ] && adm -X DELETE "$GW/scopes/$id" -o /dev/null
+  return 0
+}
+
+cleanup() {
+  say "cleanup (assets jetables g8par-*)"
+  wipe_target
+  local id
+  id="$(alias_id "$AS")"; [ -n "$id" ] && adm -X DELETE "$GW/alias/$id" -o /dev/null
+  rm -rf "$WORK"
+}
+trap cleanup EXIT
+
+# ── préflight ────────────────────────────────────────────────────────────────
+say "préflight : gateway, Vault, outils, moteurs"
+wait_gw || { ko "la gateway d'admin ne répond pas sur $GW"; exit 1; }
+ok "gateway d'admin joignable ($GW)"
+for T in jq zip unzip zipinfo python3 ansible-playbook go; do
+  command -v "$T" >/dev/null 2>&1 || { ko "outil requis absent : $T"; exit 1; }
+done
+[ -f "$REG" ] || { ko "registre absent : $REG"; exit 1; }
+ok "registre des écarts présent ($REG)"
+VH="$(curl -s -o /dev/null -w '%{http_code}' -m 5 "$VAULT/v1/sys/health")"
+[ "$VH" = "200" ] || { ko "Vault injoignable sur $VAULT (http $VH) — la parité couvre cred_alias, Vault est requis"; exit 1; }
+ok "Vault joignable ($VAULT)"
+( cd "$REPO/labctl" && GOPROXY=off GOFLAGS=-mod=vendor go build -o "$WORK/labctl" . ) \
+  || { ko "build de labctl"; exit 1; }
+ok "labctl construit ($WORK/labctl)"
+
+# ── seed Vault : creds backend jetables de l'env rec ─────────────────────────
+SEED="$(curl -sS -o /dev/null -w '%{http_code}' -H "X-Vault-Token: $VTOK" -X POST \
+  -d '{"data":{"username":"g8par-user","password":"g8par-pass"}}' \
+  "$VAULT/v1/secret/data/stoa/envs/rec/backends/g8par")"
+{ [ "$SEED" = "200" ] || [ "$SEED" = "204" ]; } \
+  && ok "Vault seedé : stoa/envs/rec/backends/g8par (http $SEED)" \
+  || { ko "seed Vault refusé (http $SEED)"; exit 1; }
+
+# ── setup : AS env-local + API source ACTIVE routée backend littéral ─────────
+say "setup : purge g8par-*, AS env-local, API source active"
+wipe_target
+ASID="$(alias_id "$AS")"
+if [ -z "$ASID" ]; then
+  # Shape authServerAlias : celle que labctl projette (inboundauth.go:441) —
+  # l'AS n'est référencé par le scope-mapping QUE par nom.
+  ASID="$(adm -H "Content-Type: application/json" -X POST "$GW/alias" -d '{
+    "name":"'"$AS"'","type":"authServerAlias",
+    "localIntrospectionConfig":{"issuer":"https://g8par.invalid","jwksuri":"https://g8par.invalid/jwks"}}' \
+    | jq -r '.id // .alias.id // empty')"
+fi
+[ -n "$ASID" ] && ok "AS env-local présent ($AS, $ASID)" || { ko "création de l'AS $AS"; exit 1; }
+
+# Le contrat : servers LITTÉRAL — c'est l'export du moteur qui re-pointe le
+# routing sur ${alias} (lui voler ce geste fausserait la mesure, motif G5).
+cat > "$WORK/contract.yaml" <<'EOF'
+openapi: 3.0.0
+info: { title: g8par, version: 1.0.0 }
+servers: [ { url: "http://poc-token-echo:8080" } ]
+paths: { /ping: { get: { operationId: ping, responses: { '200': { description: ok } } } } }
+EOF
+
+SRC_ID=$(adm -F "file=@$WORK/contract.yaml;type=application/x-yaml" -F type=openapi \
+  -F "apiName=$API" -F apiVersion=1.0.0 "$GW/apis" \
+  | jq -r '.apiResponse.api.id // empty')
+[ -n "$SRC_ID" ] || { ko "création de l'API source $API"; exit 1; }
+adm -X PUT "$GW/apis/$SRC_ID/activate" -o /dev/null
+ok "API source ACTIVE $API ($SRC_ID)"
+
+# ── LE manifeste partagé — un seul fichier pour les deux moteurs ─────────────
+cat > "$WORK/parity.promote.yml" <<EOF
+---
+apim_promote:
+  name: "$API"
+  version: "1.0.0"
+  guid: ""
+  overwrite: "apis,policies,policyactions"
+  backend_alias:
+    name: "$BALS"
+  cred_alias:
+    name: "$CALS"
+    auth_type: "HTTP_BASIC"
+  aliases:
+    - name: "$GALS"
+      record: { type: "simple", value: "g8par" }
+  scope_mapping:
+    external_scope: "g8par.read"
+    auth_server_alias: "$AS"
+  per_env:
+    rec:
+      backend_alias: { url: "$BACKEND_URL" }
+      cred_alias:    { vault_sub: "envs/rec/backends/g8par" }
+EOF
+
+cat > "$WORK/targets.yaml" <<EOF
+apiVersion: labctl.stoa.io/v1
+kind: FederationTarget
+name: $API
+contract: $WORK/contract.yaml
+targets:
+  - name: wm-rec
+    type: webmethods
+    adminUrl: $ADMIN_ROOT
+    gatewayUrl: $ADMIN_ROOT
+    credentials:
+      username: $WM_USER
+      password: $WM_PASS
+EOF
+
+# ── les invocations des moteurs, et elles seules ─────────────────────────────
+engine_export() { # $1 = ansible|labctl ; $2 = archive de sortie
+  case "$1" in
+    ansible)
+      ansible-playbook -i "$REPO/ansible/inventory.lab.ini" "$REPO/ansible/promote-api.yml" \
+        -e apim_promote_action=export \
+        -e apim_promote_manifest="$WORK/parity.promote.yml" \
+        -e apim_ss_archive_pin="$2" \
+        -e apim_ss_env=rec \
+        -e apim_ss_api_base="$GW" -e apim_ss_data_base="$DP" \
+        -e apim_ss_wm_user="$WM_USER" -e apim_ss_wm_password="$WM_PASS" \
+        -e apim_ss_vault_addr=""
+      ;;
+    labctl)
+      "$WORK/labctl" promote --manifest "$WORK/parity.promote.yml" --env rec \
+        --action export --archive "$2" -f "$WORK/targets.yaml"
+      ;;
+  esac
+}
+
+engine_import() { # $1 = ansible|labctl|ansible-mut|labctl-mut ; archive = A.zip
+  case "$1" in
+    ansible|ansible-mut)
+      local PB="$REPO/ansible/promote-api.yml"
+      [ "$1" = "ansible-mut" ] && PB="$WORK/ansible-mut/promote-api.yml"
+      VAULT_ADDR="" VAULT_TOKEN="" ansible-playbook -i "$REPO/ansible/inventory.lab.ini" "$PB" \
+        -e apim_promote_action=import \
+        -e apim_promote_manifest="$WORK/parity.promote.yml" \
+        -e apim_ss_archive_pin="$WORK/A.zip" \
+        -e apim_ss_archive_sha256="$(cat "$WORK/A.sha256")" \
+        -e apim_ss_env=rec -e apim_ss_authoring_env=dev \
+        -e apim_ss_api_base="$GW" -e apim_ss_data_base="$DP" \
+        -e apim_ss_wm_user="$WM_USER" -e apim_ss_wm_password="$WM_PASS" \
+        -e apim_ss_vault_addr="$VAULT" -e apim_ss_vault_token="$VTOK"
+      ;;
+    labctl|labctl-mut)
+      local BIN="$WORK/labctl"
+      [ "$1" = "labctl-mut" ] && BIN="$WORK/labctl-mutbin"
+      VAULT_ADDR="$VAULT" VAULT_TOKEN="$VTOK" \
+        "$BIN" promote --manifest "$WORK/parity.promote.yml" --env rec \
+        --action import --archive "$WORK/A.zip" -f "$WORK/targets.yaml"
+      ;;
+  esac
+}
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PHASE 1 — EXPORT PAR LES DEUX MOTEURS : parité d'ARTEFACT
+# ═════════════════════════════════════════════════════════════════════════════
+say "phase 1 — EXPORT ×2 : même API source, deux sanitizers, artefacts comparés"
+wait_gw || ko "gateway indisponible avant l'export"
+engine_export ansible "$WORK/A.zip" > "$WORK/export.ansible.log" 2>&1; RCA=$?
+engine_export labctl  "$WORK/B.zip" > "$WORK/export.labctl.log"  2>&1; RCB=$?
+[ "$RCA" -eq 0 ] && ok "E1 export ansible rc=0" || ko "E1 export ansible rc=$RCA — $(tail -3 "$WORK/export.ansible.log" | tr '\n' ' ')"
+[ "$RCB" -eq 0 ] && ok "E2 export labctl rc=0"  || ko "E2 export labctl rc=$RCB — $(tail -3 "$WORK/export.labctl.log" | tr '\n' ' ')"
+[ -s "$WORK/A.zip" ] && [ -s "$WORK/B.zip" ] || { ko "E3 artefact manquant"; exit 1; }
+ok "E3 deux artefacts produits"
+
+# norm — applique aux entrées TEXTE les motifs `artifact` du registre.
+norm() { # $1 = fichier
+  local kind pat _reason
+  while IFS=$'\t' read -r kind pat _reason; do
+    case "$kind" in \#*|"") continue ;; esac
+    [ "$kind" = "artifact" ] || continue
+    LC_ALL=C sed -E -i.bak "$pat" "$1" && rm -f "$1.bak"
+  done < "$REG"
+}
+
+zipinfo -1 "$WORK/A.zip" | sort > "$WORK/A.toc"
+zipinfo -1 "$WORK/B.zip" | sort > "$WORK/B.toc"
+if diff -u "$WORK/A.toc" "$WORK/B.toc" > "$WORK/toc.diff"; then
+  ok "E4 même liste d'entrées ($(wc -l < "$WORK/A.toc" | tr -d ' ') entrées)"
+else
+  ko "E4 listes d'entrées divergentes — $(tr '\n' ' ' < "$WORK/toc.diff")"
+fi
+ENTRY_DIVERGENT=0
+while IFS= read -r entry; do
+  case "$entry" in */) continue ;; esac
+  unzip -p "$WORK/A.zip" "$entry" > "$WORK/ea" 2>/dev/null
+  unzip -p "$WORK/B.zip" "$entry" > "$WORK/eb" 2>/dev/null
+  # Les entrées JSON se comparent en DOCUMENTS (clés triées), pas en octets :
+  # les deux sanitizers ré-écrivent le routing avec un ordre de clés qui leur
+  # est propre (python dict vs Go map, mesuré 2026-08-27) — l'ordre des clés
+  # JSON n'est pas un contenu. Tout le reste se compare octet à octet.
+  if jq -e . "$WORK/ea" > "$WORK/ea.c" 2>/dev/null && jq -e . "$WORK/eb" > "$WORK/eb.c" 2>/dev/null; then
+    jq -S . "$WORK/ea" > "$WORK/ea.c"; mv "$WORK/ea.c" "$WORK/ea"
+    jq -S . "$WORK/eb" > "$WORK/eb.c"; mv "$WORK/eb.c" "$WORK/eb"
+  fi
+  rm -f "$WORK/ea.c" "$WORK/eb.c"
+  norm "$WORK/ea"; norm "$WORK/eb"
+  if ! cmp -s "$WORK/ea" "$WORK/eb"; then
+    ENTRY_DIVERGENT=$((ENTRY_DIVERGENT+1))
+    printf '  ↯ ARTIFACT_DIVERGENT: %s\n' "$entry"
+    diff <(head -c 2000 "$WORK/ea") <(head -c 2000 "$WORK/eb") | head -10
+  fi
+done < "$WORK/A.toc"
+[ "$ENTRY_DIVERGENT" -eq 0 ] \
+  && ok "E5 contenu identique entrée par entrée (sous registre artifact)" \
+  || ko "E5 $ENTRY_DIVERGENT entrée(s) divergente(s) hors registre"
+
+# GUID porté par l'artefact d'import (A.zip) — relu du zip, épinglé au manifeste.
+PIN_GUID="$(unzip -l "$WORK/A.zip" 2>/dev/null \
+  | sed -n 's|.*API/API\.\([0-9a-f-]\{36\}\)/API\..*|\1|p' | head -1)"
+check "$PIN_GUID" "$SRC_ID" "E6 le GUID de l'artefact est celui de la gateway source"
+[ -n "$PIN_GUID" ] || { ko "GUID introuvable — suite impossible"; exit 1; }
+sed -i.bak "s|guid: \"\"|guid: \"$PIN_GUID\"|" "$WORK/parity.promote.yml" && rm -f "$WORK/parity.promote.yml.bak"
+grep -q "guid: \"$PIN_GUID\"" "$WORK/parity.promote.yml" \
+  && ok "E7 id-map épinglé au manifeste partagé" || { ko "E7 épinglage raté"; exit 1; }
+shasum -a 256 "$WORK/A.zip" 2>/dev/null | awk '{print $1}' > "$WORK/A.sha256" \
+  || sha256sum "$WORK/A.zip" | awk '{print $1}' > "$WORK/A.sha256"
+[ "$(wc -c < "$WORK/A.sha256" | tr -d ' ')" = "65" ] \
+  && ok "E8 digest de l'archive d'import pinné ($(cat "$WORK/A.sha256"))" \
+  || ko "E8 digest illisible"
+
+# ── bilan ────────────────────────────────────────────────────────────────────
+say "BILAN"
+[ "$GW_RECYCLES" -gt 0 ] && printf '  ⏳ recyclages de la gateway absorbés : %d\n' "$GW_RECYCLES"
+printf '  PASS=%d FAIL=%d\n' "$PASS" "$FAIL"
+[ "$FAIL" -eq 0 ]

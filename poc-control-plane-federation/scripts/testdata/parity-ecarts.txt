@@ -1,0 +1,12 @@
+# parity-ecarts.txt — registre MÉCANIQUE des écarts assumés entre les deux
+# moteurs de promotion (ADR-087, jalon G8).
+#
+# Consommé par scripts/test-parity-moteurs.sh : un écart d'état ou d'artefact
+# NON listé ici fait ROUGIR la parité. Chaque ligne DOIT porter une raison
+# MESURÉE (jamais « par confort ») — le registre humain complet, avec les
+# mesures, vit dans adr/adr-087-parite-des-moteurs.md.
+#
+# Format (séparateur TAB) :
+#   state	<chemin jq supprimé des DEUX snapshots avant diff>	<raison>
+#   artifact	<motif sed -E appliqué aux entrées texte des DEUX archives>	<raison>
+artifact	s|<buildInfo name="BuildTimestamp" value="[^"]*"/>|<buildInfo name="BuildTimestamp" value="NORMALISE"/>|	horodatage d'export posé par le produit dans l'ACDL — varie à chaque GET /archive, mesuré 2026-08-27 (21:20:44 vs 21:20:48 à 4 s d'écart)
