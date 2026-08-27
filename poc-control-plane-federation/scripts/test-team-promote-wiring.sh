@@ -83,7 +83,8 @@ JF_NC="$TMP/jenkinsfile_nc"; nc_groovy "$JF" > "$JF_NC"
 # unique du moteur.
 ORDRE_TOKENS="BRANCH_FORMAT_INVALIDE PAYLOAD_PERIME REPO_NON_DECLARE \
 MERGE_SHA_NON_ANCETRE PIN_ABSENT ARCHIVE_INTROUVABLE PIN_NON_RESOLU \
-GATE_REFS_REQUIRED IDENTITE_REFUSEE PALIER_FERME"
+GATE_REFS_REQUIRED IDENTITE_REFUSEE DEPLOYER_GROUP_UNSUPPORTED \
+DEPLOYER_GROUP_UNVERIFIABLE DEPLOYER_GROUP_REQUIRED PALIER_FERME"
 
 # ordre_verdict <fichier-décommenté> — rend "OK" ou "KO: <détail>" sur stdout.
 # Prédicat PUR (n'appelle ni ok() ni bad()) : c'est ce qui permet au cas ⑲ de le
@@ -96,6 +97,33 @@ ordre_verdict() {
     l=$(grep -n -F "fail \"$tok" "$f" | head -1 | cut -d: -f1)
     [ -n "$l" ] || { echo "KO: garde $tok absente de tout fail() réel"; return 0; }
     [ "$l" -lt "$call" ] || { echo "KO: $tok en ligne $l, APRÈS l'appel du moteur (ligne $call)"; return 0; }
+  done
+  echo "OK"
+}
+
+# ordre_relatif_verdict <fichier-décommenté> — les jetons se suivent-ils DANS
+# L'ORDRE de $ORDRE_TOKENS ? Rend "OK" ou "KO: <détail>". Prédicat PUR, rejoué
+# sur mutant au cas G2(vi).
+#
+# ⚠ POURQUOI UN SECOND PRÉDICAT, ET PAS UN CONTRÔLE DE PLUS DANS LE PREMIER.
+# `ordre_verdict` ne compare chaque jeton qu'à UN SEUL point : le site d'appel du
+# moteur. Il reste donc VERT quand deux gardes permutent ENTRE ELLES — mesuré au
+# cas G2(vi). Or §7 est précisément une paire ordonnée : d'abord « la chaîne dit
+# QUI déploie » (7.a), ensuite « ton ticket ouvre-t-il ce palier » (7.b). Une
+# rétention évaluée d'abord refuserait PALIER_FERME là où la vraie cause est que
+# le porteur n'est pas du groupe déployeur : le refus MENTIRAIT sur sa raison, et
+# l'exploitant irait rouvrir un palier déjà ouvert. Les deux prédicats mesurent
+# donc deux propriétés distinctes ; les fondre en un seul rendrait l'un des deux
+# rouges impossibles à nommer.
+ordre_relatif_verdict() {
+  local f="$1" prev="" prev_l=0 tok l
+  for tok in $ORDRE_TOKENS; do
+    l=$(grep -n -F "fail \"$tok" "$f" | head -1 | cut -d: -f1)
+    [ -n "$l" ] || { echo "KO: garde $tok absente de tout fail() réel"; return 0; }
+    if [ -n "$prev" ] && [ "$prev_l" -ge "$l" ]; then
+      echo "KO: $prev (ligne $prev_l) n'est pas AVANT $tok (ligne $l)"; return 0
+    fi
+    prev="$tok"; prev_l="$l"
   done
   echo "OK"
 }
@@ -356,6 +384,105 @@ else
 fi
 
 echo
+echo "== G2 l'axe DÉPLOYEUR : la DÉCLARATION (7.a) précède la RÉTENTION (7.b) =="
+# G2 (ADR-084) ajoute au §7 une SECONDE sous-porte, et c'est une PAIRE ORDONNÉE :
+# 7.a lit ce que la chaîne DÉCLARE (quel groupe porte l'apply vers ce palier),
+# 7.b vérifie ce que le credential RETIENT (le palier est-il ouvert ?). Les deux
+# refusent avant le moteur — ④ le couvre déjà — mais leur ordre RELATIF est une
+# propriété à part : c'est lui qui décide de quoi le refus PARLE.
+L_ENGINE=$(grep -nE '^[[:space:]]*run_engine ' "$SC_NC" | head -1 | cut -d: -f1)
+L_GATEFN=$(grep -n -F 'env_chain_gate_deployer_group "$TO_ENV"' "$SC_NC" | head -1 | cut -d: -f1)
+L_POLFN=$(grep -n -F 'deployer_group_policy "$DEPLOYER_GROUP"' "$SC_NC" | head -1 | cut -d: -f1)
+L_LOOKUP=$(grep -n -F '/v1/auth/token/lookup-self' "$SC_NC" | head -1 | cut -d: -f1)
+if [ -n "$L_GATEFN" ] && [ -n "$L_POLFN" ] && [ -n "$L_ENGINE" ] \
+   && [ "$L_GATEFN" -lt "$L_ENGINE" ] && [ "$L_POLFN" -lt "$L_ENGINE" ]; then
+  ok "G2(i) la porte est LUE (\`env_chain_gate_deployer_group\`, ligne $L_GATEFN) et sa policy PROJETÉE (\`deployer_group_policy\`, ligne $L_POLFN) AVANT le moteur (ligne $L_ENGINE) — la déclaration n'est pas un constat d'après-coup"
+else
+  bad "G2(i) les deux fonctions de l'axe déployeur ne sont pas appelées avant le moteur (gate=$L_GATEFN policy=$L_POLFN moteur=$L_ENGINE)"
+fi
+if [ -n "$L_LOOKUP" ] && [ -n "$L_ENGINE" ] && [ "$L_LOOKUP" -lt "$L_ENGINE" ]; then
+  ok "G2(i) le lookup-self du porteur (ligne $L_LOOKUP) est lui aussi antérieur au moteur — l'identité est établie avant l'acte, jamais pendant"
+else
+  bad "G2(i) aucun \`/v1/auth/token/lookup-self\` avant le moteur (lookup=$L_LOOKUP moteur=$L_ENGINE)"
+fi
+grep -q -F 'vcurl -o "$TMP/lookup.json"' "$SC_NC" \
+  && ok "G2(i) le lookup passe par \`vcurl\` (header-file) — le token du porteur ne touche ni argv ni l'environnement d'un process, comme les deux autres lectures Vault" \
+  || bad "G2(i) le lookup n'emprunte pas \`vcurl\` — le token risquerait de partir en argv"
+[ "$(ordre_relatif_verdict "$SC_NC")" = OK ] \
+  && ok "G2(ii) les $(printf '%s\n' $ORDRE_TOKENS | wc -l | tr -d ' ') gardes se suivent DANS L'ORDRE annoncé — 7.a avant 7.b, et tout le reste avant elles" \
+  || bad "G2(ii) $(ordre_relatif_verdict "$SC_NC")"
+# LE GABARIT LIVRÉ EST L'ENTRÉE DES CAS G2-a/b/d : on le LIT plutôt que de le
+# supposer. Si Task 2 était défaite, ces cas mesureraient une porte muette et
+# passeraient au vert pour rien.
+GAB_INT="$(env_chain_gate_deployer_group int)"
+GAB_REC="$(env_chain_gate_deployer_group rec)"
+[ "$GAB_INT" = "apim-apply-int" ] \
+  && ok "G2(iii) le gabarit livré déclare bien \`deployerGroup: apim-apply-int\` sur int (l'entrée des cas d'exécution est VÉRIFIÉE, pas supposée)" \
+  || bad "G2(iii) la porte int déclare '$GAB_INT' (attendu apim-apply-int) — les cas G2-a/b/d ne mesureraient plus la déclaration"
+[ -z "$GAB_REC" ] \
+  && ok "G2(iii) la porte rec ne déclare AUCUN groupe déployeur — c'est ce qui rend l'assertion « zéro lookup » du chemin nominal (⑰) signifiante" \
+  || bad "G2(iii) la porte rec déclare '$GAB_REC' — rec cesserait d'être le palier autonome, et ⑰ mesurerait autre chose"
+# MUTATION G2(iv) : le bloc 7.a SUPPRIMÉ de la copie doit faire rougir ④ — et
+# rougir en NOMMANT une garde absente, pas en se taisant. (L'arbre n'est jamais
+# touché : la copie vit dans $TMP.)
+sed '/7\.a LA DÉCLARATION/,/^fi$/d' "$SC" > "$TMP/sc_mutG2a"
+cmp -s "$SC" "$TMP/sc_mutG2a" \
+  && bad "G2(iv) MUTATION no-op : le mutant est identique — l'ancre du bloc 7.a a bougé, rien n'est éprouvé" \
+  || ok "G2(iv) le mutant sans bloc 7.a diffère RÉELLEMENT de l'original (anti-no-op cmp)"
+bash -n "$TMP/sc_mutG2a" 2>"$TMP/mutG2a.err" \
+  && ok "G2(iv) le mutant PARSE toujours (le rouge qui suit vient des gardes RETIRÉES, pas d'un \`fi\` orphelin)" \
+  || bad "G2(iv) le mutant ne parse plus : $(cat "$TMP/mutG2a.err")"
+nc_strict "$TMP/sc_mutG2a" > "$TMP/sc_mutG2a_nc"
+case "$(ordre_verdict "$TMP/sc_mutG2a_nc")" in
+  "KO: garde DEPLOYER_GROUP_"*absente*)
+    ok "G2(iv) MUTATION : bloc 7.a retiré ⇒ ④ ROUGIT en nommant la garde disparue — $(ordre_verdict "$TMP/sc_mutG2a_nc")" ;;
+  OK)
+    bad "G2(iv) MUTATION : ④ reste VERT sans le bloc 7.a — les trois jetons de l'axe déployeur ne sont éprouvés par personne" ;;
+  *)
+    bad "G2(iv) MUTATION : ④ rougit, mais pas sur une garde de l'axe déployeur : $(ordre_verdict "$TMP/sc_mutG2a_nc")" ;;
+esac
+# MUTATION G2(v)/(vi) : 7.a et 7.b INVERSÉS. Le bloc de rétention est déplacé
+# AVANT le bloc de déclaration (motif awk du cas ⑲ : on insère à une ancre de
+# début d'INSTRUCTION et on retire l'original, jamais un sed qui couperait entre
+# un test et son `|| fail`).
+awk '/^WM_ADMIN_CODE=/,/^echo "palier ouvert/' "$SC" > "$TMP/blk7b"
+grep -q -F 'PALIER_FERME' "$TMP/blk7b" \
+  && ok "G2(v) le bloc 7.b extrait porte bien son refus ($(wc -l < "$TMP/blk7b" | tr -d ' ') lignes) — une extraction muette ferait une « inversion » qui n'inverse rien" \
+  || bad "G2(v) le bloc 7.b extrait est vide ou sans PALIER_FERME — la mutation d'inversion serait vacante"
+awk -v B="$TMP/blk7b" '
+  /7\.a LA DÉCLARATION/ && !ins { while ((getline l < B) > 0) print l; close(B); ins=1 }
+  /^WM_ADMIN_CODE=/ { skip=1 }
+  skip { if (/^echo "palier ouvert/) skip=0; next }
+  { print }' "$SC" > "$TMP/sc_mutG2b"
+cmp -s "$SC" "$TMP/sc_mutG2b" \
+  && bad "G2(v) MUTATION no-op : le mutant inversé est identique à l'original" \
+  || ok "G2(v) le mutant inversé diffère RÉELLEMENT de l'original (anti-no-op cmp)"
+bash -n "$TMP/sc_mutG2b" 2>"$TMP/mutG2b.err" \
+  && ok "G2(v) le mutant inversé PARSE toujours (le rouge qui suit vient de l'ORDRE, pas d'une coquille d'awk)" \
+  || bad "G2(v) le mutant inversé ne parse plus : $(cat "$TMP/mutG2b.err")"
+nc_strict "$TMP/sc_mutG2b" > "$TMP/sc_mutG2b_nc"
+# ⚠ ET C'EST ICI QUE ④ MONTRE SA LIMITE, MESURÉE PLUTÔT QU'AFFIRMÉE : sur ce
+# mutant, TOUTES les gardes restent avant le moteur, donc ④ reste VERT. Un
+# harnais qui n'aurait que ④ aurait déclaré l'inversion inoffensive.
+[ "$(ordre_verdict "$TMP/sc_mutG2b_nc")" = OK ] \
+  && ok "G2(vi) sur le mutant inversé, ④ reste VERT (tous les jetons restent avant le moteur) — la preuve que le verdict RELATIF mesure autre chose" \
+  || bad "G2(vi) ④ rougit sur le mutant inversé : $(ordre_verdict "$TMP/sc_mutG2b_nc") — l'inversion a fait plus que permuter, la contre-épreuve n'isole plus l'ordre relatif"
+VG2="$(ordre_relatif_verdict "$TMP/sc_mutG2b_nc")"
+case "$VG2" in
+  "KO: DEPLOYER_GROUP_REQUIRED"*"n'est pas AVANT PALIER_FERME"*)
+    ok "G2(vi) MUTATION : 7.b joué avant 7.a ⇒ l'ordre RELATIF rougit pour la BONNE raison — ${VG2}" ;;
+  *absente*)
+    bad "G2(vi) le verdict rougit sur une garde ABSENTE, pas sur un ordre permuté — ce n'est pas ce que la mutation a posé : ${VG2}" ;;
+  OK)
+    bad "G2(vi) l'ordre relatif reste VERT alors que la rétention précède la déclaration — l'épreuve est VACANTE" ;;
+  *)
+    bad "G2(vi) le verdict rougit, mais pas sur la paire attendue : ${VG2}" ;;
+esac
+[ "$(ordre_relatif_verdict "$SC_NC")" = OK ] \
+  && ok "G2(vii) l'ORIGINAL est intact et toujours vert sur l'ordre relatif (les deux mutations ont vécu dans \$TMP)" \
+  || bad "G2(vii) l'original ne passe plus l'ordre relatif — une mutation a fui hors de \$TMP"
+
+echo
 echo "======================================================================"
 echo "VOLET B — exécution réelle : chaque refus, moteur JAMAIS invoqué"
 echo "======================================================================"
@@ -470,6 +597,26 @@ class H(BaseHTTPRequestHandler):
         self._log(method)
         path = self.path.split("?")[0]
         c = ctl()
+
+        # Vault : la DÉCLARATION du porteur (§7.a) — quelles policies porte le
+        # token de la pause ? Piloté par ctl.json ("lookup" = le code HTTP,
+        # "lookup_policies" = les policies DU TOKEN, "lookup_identity_policies"
+        # = celles héritées de l'ENTITÉ). Vault rend les deux listes et le
+        # script en fait l'UNION : les servir séparément est ce qui permet au
+        # cas G2-e d'éprouver cette union plutôt que de la supposer.
+        if path == "/v1/auth/token/lookup-self":
+            v = c.get("vault") or {}
+            code = int(v.get("lookup", 200))
+            if code != 200:
+                self._send(code, json.dumps({"errors": ["permission denied"]}))
+                return
+            pols = v.get("lookup_policies")
+            if pols is None:
+                pols = ["default"]
+            self._send(200, json.dumps(
+                {"data": {"policies": pols,
+                          "identity_policies": v.get("lookup_identity_policies") or []}}))
+            return
 
         # Vault : le palier est-il ouvert ?
         m = re.match(r"^/v1/secret/data/stoa/envs/([a-z0-9-]+)/([a-z0-9-]+)$", path)
@@ -634,19 +781,41 @@ SEED=$(store_seed "$ARCH_SHA" "$ARCHIVE")
   && ok "volet B : l'archive légitime est au registre (201), semée UNE fois en tête — aucun cas ne dépend de l'ordre des autres" \
   || bad "volet B : le pré-semage de l'archive légitime a échoué (code=$SEED) — les cas ⑬ à ⑱ ne peuvent pas être joués"
 
-set_ctl() { # <merged true|false> <merge_sha> <head_ref> <merged_by> <user> <wm-admin code>
-  printf '{"pr":{"merged":%s,"merge_commit_sha":"%s","head_ref":"%s","base_ref":"main","merged_by":"%s","user":"%s"},"vault":{"wm-admin":%s,"admin-oauth":200}}\n' \
-    "$1" "$2" "$3" "$4" "$5" "$6" > "$STUB_CTL"
+set_ctl() { # <merged true|false> <merge_sha> <head_ref> <merged_by> <user> <wm-admin code> <lookup code> <policies du token> [policies d'entité]
+  # ⚠ LES ARGUMENTS 7 ET 8 SONT OBLIGATOIRES, ET C'EST DÉLIBÉRÉ (G2). Un défaut
+  # « lookup 200 + apply-int » aurait fait passer §7.a EN SILENCE dans tout cas
+  # visant int : chaque cas dit donc ce qu'il présente au lookup-self, y compris
+  # les cas rec où la porte ne déclare RIEN — leur token n'y porte que `default`,
+  # si bien qu'une déclaration apparue un jour sur rec les ferait ROUGIR au lieu
+  # de passer sans que personne l'apprenne. Sous `set -u`, un appelant qui les
+  # oublierait tue le harnais sur place : bruyant, jamais muet.
+  #
+  # Le 9e, lui, a un défaut VIDE — et la règle qui l'autorise est simple : un
+  # défaut n'est acceptable que du côté STRICT. Des policies d'entité en plus ne
+  # peuvent qu'ÉLARGIR ce que le porteur projette, donc « aucune » est la valeur
+  # qui refuse le plus. L'oublier ne peut pas verdir un cas.
+  local pols ipols
+  pols=$(printf '%s' "$8" | awk -F, '{for(i=1;i<=NF;i++) printf "%s\"%s\"", (i>1?",":""), $i}')
+  ipols=$(printf '%s' "${9:-}" | awk -F, '{for(i=1;i<=NF;i++) printf "%s\"%s\"", (i>1?",":""), $i}')
+  printf '{"pr":{"merged":%s,"merge_commit_sha":"%s","head_ref":"%s","base_ref":"main","merged_by":"%s","user":"%s"},"vault":{"wm-admin":%s,"admin-oauth":200,"lookup":%s,"lookup_policies":[%s],"lookup_identity_policies":[%s]}}\n' \
+    "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$pols" "$ipols" > "$STUB_CTL"
 }
 
-# run_promote <outfile> <branche> [PROMOTE_ENGINE] [WEBHOOK_REPO] — rend le rc.
-# Le moteur de paille est en TÊTE de PATH ; $STUB_LOG est effacé juste avant,
-# pour que « absent » signifie « jamais invoqué » et rien d'autre.
+# run_promote <outfile> <branche> [PROMOTE_ENGINE] [WEBHOOK_REPO] [chaîne d'env]
+# — rend le rc. Le moteur de paille est en TÊTE de PATH ; $STUB_LOG est effacé
+# juste avant, pour que « absent » signifie « jamais invoqué » et rien d'autre.
+#
+# Le 5e argument est le chemin d'un environments.yaml VARIANTE
+# ($STOA_ENV_CHAIN_FILE, scripts/lib/env-chain.sh) : il n'est passé qu'aux cas
+# qui éprouvent une porte que le gabarit LIVRÉ ne déclare pas. Vide (le défaut),
+# la variable est posée mais vide, et la lib retombe sur le gabarit — c'est sa
+# condition d'entrée (`[ -n "${STOA_ENV_CHAIN_FILE:-}" ]`), pas un hasard.
 run_promote() {
-  local out="$1" branch="$2" engine="${3:-ansible}" repo="${4:-$TEAM_REPO}" rc
+  local out="$1" branch="$2" engine="${3:-ansible}" repo="${4:-$TEAM_REPO}" chain="${5:-}" rc
   rm -f "$STUB_LOG"
   ( cd "$ROOT" && env \
       PATH="$STUBBIN:$PATH" \
+      STOA_ENV_CHAIN_FILE="$chain" \
       STUB_LOG="$STUB_LOG" \
       WEBHOOK_REPO="$repo" \
       PR_BRANCH="$branch" \
@@ -683,7 +852,7 @@ echo "== ⑧ WEBHOOK_REPO malformé : refus de FORME, avant tout argv git/curl =
 D="$TMP/t8"; mk_team "$D"
 write_marker "$D" rec "$PIN_C1" "1.0.0" "$ARCH_SHA" "" "" alice
 seal_team "$D"
-set_ctl true "$MERGE_SHA" "promote/accounts-read-rec" oscar ci 200
+set_ctl true "$MERGE_SHA" "promote/accounts-read-rec" oscar ci 200 200 default
 HTTP_BEFORE=$(wc -l < "$STUB_HTTPLOG" | tr -d ' ')
 run_promote "$TMP/o8" "promote/accounts-read-rec" ansible 'equipe/paiements;rm'; RC=$?
 refus_attendu "⑧" "WEBHOOK_REPO hors classe" "WEBHOOK_REPO_INVALIDE" "$TMP/o8" "$RC"
@@ -701,7 +870,7 @@ fi
 
 echo
 echo "== ⑨ PR non mergée côté Gitea : le payload n'est pas la vérité =="
-set_ctl false "$MERGE_SHA" "promote/accounts-read-rec" oscar ci 200
+set_ctl false "$MERGE_SHA" "promote/accounts-read-rec" oscar ci 200 200 default
 run_promote "$TMP/o9" "promote/accounts-read-rec"; RC=$?
 refus_attendu "⑨" "réconciliation Gitea : PR non mergée" "PAYLOAD_PERIME" "$TMP/o9" "$RC"
 
@@ -710,7 +879,7 @@ echo "== ⑩ branche promote/<api>-prod, marqueur ABSENT : aucun repli sur HEAD 
 D="$TMP/t10"; mk_team "$D"
 write_marker "$D" rec "$PIN_C1" "1.0.0" "$ARCH_SHA" "" "" alice
 seal_team "$D"
-set_ctl true "$MERGE_SHA" "promote/accounts-read-prod" oscar ci 200
+set_ctl true "$MERGE_SHA" "promote/accounts-read-prod" oscar ci 200 200 default
 run_promote "$TMP/o10" "promote/accounts-read-prod"; RC=$?
 refus_attendu "⑩" "aucun marqueur pour le palier visé" "PIN_ABSENT" "$TMP/o10" "$RC"
 
@@ -719,7 +888,7 @@ echo "== ⑪ digest absent du marqueur : hors authoring, les octets doivent êtr
 D="$TMP/t11"; mk_team "$D"
 write_marker "$D" rec "$PIN_C1" "1.0.0" "" "" "" alice
 seal_team "$D"
-set_ctl true "$MERGE_SHA" "promote/accounts-read-rec" oscar ci 200
+set_ctl true "$MERGE_SHA" "promote/accounts-read-rec" oscar ci 200 200 default
 run_promote "$TMP/o11" "promote/accounts-read-rec"; RC=$?
 refus_attendu "⑪" "archive_sha256 vide" "DIGEST_ABSENT" "$TMP/o11" "$RC"
 
@@ -729,7 +898,7 @@ NEVER="1111111111111111111111111111111111111111111111111111111111111111"
 D="$TMP/t12"; mk_team "$D"
 write_marker "$D" rec "$PIN_C1" "1.0.0" "$NEVER" "" "" alice
 seal_team "$D"
-set_ctl true "$MERGE_SHA" "promote/accounts-read-rec" oscar ci 200
+set_ctl true "$MERGE_SHA" "promote/accounts-read-rec" oscar ci 200 200 default
 run_promote "$TMP/o12" "promote/accounts-read-rec"; RC=$?
 refus_attendu "⑫" "digest jamais poussé" "ARCHIVE_INTROUVABLE" "$TMP/o12" "$RC"
 grep -q 'STORE_HTTP_404' "$TMP/o12" \
@@ -746,7 +915,7 @@ SEED=$(store_seed "$BADSHA" "$OTHER")
 D="$TMP/t12c"; mk_team "$D"
 write_marker "$D" rec "$PIN_C1" "1.0.0" "$BADSHA" "" "" alice
 seal_team "$D"
-set_ctl true "$MERGE_SHA" "promote/accounts-read-rec" oscar ci 200
+set_ctl true "$MERGE_SHA" "promote/accounts-read-rec" oscar ci 200 200 default
 run_promote "$TMP/o12c" "promote/accounts-read-rec"; RC=$?
 refus_attendu "⑫ter" "octets servis != digest pinné" "STORE_DIGEST_MISMATCH" "$TMP/o12c" "$RC"
 
@@ -775,7 +944,7 @@ GET13=$(curl -sS -H @"$HDR13" -o /dev/null -w '%{http_code}' "${GIT_HOST}$(store
 [ "$GET13" = 200 ] \
   && ok "⑬ l'archive légitime est servie par le registre (200) — ce qui suit est un refus du RÉSOLVEUR, pas du transport" \
   || bad "⑬ le registre ne sert pas l'archive légitime (code=$GET13) — le cas mesurerait le transport, pas le résolveur"
-set_ctl true "$MERGE_SHA" "promote/accounts-read-rec" oscar ci 200
+set_ctl true "$MERGE_SHA" "promote/accounts-read-rec" oscar ci 200 200 default
 run_promote "$TMP/o13" "promote/accounts-read-rec"; RC=$?
 refus_attendu "⑬" "pin non ancêtre de main" "PIN_NON_RESOLU" "$TMP/o13" "$RC"
 grep -q 'PIN_NON_ANCETRE' "$TMP/o13" \
@@ -787,7 +956,7 @@ echo "== ⑭ porte prod sans change_ref au marqueur MERGÉ =="
 D="$TMP/t14"; mk_team "$D"
 write_marker "$D" prod "$PIN_C1" "1.0.0" "$ARCH_SHA" "" "PV-1" alice
 seal_team "$D"
-set_ctl true "$MERGE_SHA" "promote/accounts-read-prod" oscar ci 200
+set_ctl true "$MERGE_SHA" "promote/accounts-read-prod" oscar ci 200 200 default
 run_promote "$TMP/o14" "promote/accounts-read-prod"; RC=$?
 refus_attendu "⑭" "la porte exige change_ref" "GATE_REFS_REQUIRED" "$TMP/o14" "$RC"
 
@@ -796,7 +965,7 @@ echo "== ⑮ porte int, quatre yeux : le mergeur EST le demandeur =="
 D="$TMP/t15"; mk_team "$D"
 write_marker "$D" int "$PIN_C1" "1.0.0" "$ARCH_SHA" "" "" oscar
 seal_team "$D"
-set_ctl true "$MERGE_SHA" "promote/accounts-read-int" oscar ci 200
+set_ctl true "$MERGE_SHA" "promote/accounts-read-int" oscar ci 200 200 default
 run_promote "$TMP/o15" "promote/accounts-read-int"; RC=$?
 refus_attendu "⑮" "merger == promoted_by sur une porte à quatre yeux" "IDENTITE_REFUSEE" "$TMP/o15" "$RC"
 grep -q 'FOUR_EYES_VIOLATION' "$TMP/o15" \
@@ -804,20 +973,160 @@ grep -q 'FOUR_EYES_VIOLATION' "$TMP/o15" \
   || bad "⑮bis FOUR_EYES_VIOLATION absent : $(tail -5 "$TMP/o15" | tr '\n' ' ')"
 
 echo
+echo "== ⑮ter LE MÊME REFUS, REJOUÉ SUR homol : les quatre yeux ne sont pas une propriété de 'int' =="
+# G2 ajoute deux paliers à la chaîne (homol, et int/prod redéfinis). Une garde
+# éprouvée sur UN palier ne dit rien des autres : ce qu'on veut savoir, c'est que
+# la garde suit la PORTE, pas qu'elle a été codée en dur pour 'int'. On rejoue
+# donc ⑮ à l'identique sur homol.
+D="$TMP/t15h"; mk_team "$D"
+# ⚠ LE PV EST OBLIGATOIRE À LA DEMANDE SUR homol (requirePVRef). Sans lui, le
+# refus viendrait du §6 (GATE_REFS_REQUIRED) et ce cas mesurerait la porte, pas
+# les quatre yeux — un vert qui parlerait d'autre chose.
+write_marker "$D" homol "$PIN_C1" "1.0.0" "$ARCH_SHA" "" "PV-1" oscar
+seal_team "$D"
+set_ctl true "$MERGE_SHA" "promote/accounts-read-homol" oscar ci 200 200 default
+run_promote "$TMP/o15h" "promote/accounts-read-homol"; RC=$?
+refus_attendu "⑮ter" "merger == promoted_by sur la porte homol" "IDENTITE_REFUSEE" "$TMP/o15h" "$RC"
+grep -q 'FOUR_EYES_VIOLATION' "$TMP/o15h" \
+  && ok "⑮ter la cause exacte est nommée sur homol aussi (FOUR_EYES_VIOLATION) — la garde lit la porte, elle ne connaît pas les noms de paliers" \
+  || bad "⑮ter FOUR_EYES_VIOLATION absent : $(tail -5 "$TMP/o15h" | tr '\n' ' ')"
+grep -q 'GATE_REFS_REQUIRED' "$TMP/o15h" \
+  && bad "⑮ter le refus vient de la PORTE (PV manquant), pas des quatre yeux — le cas mesure autre chose que ce qu'il annonce" \
+  || ok "⑮ter le PV exigé par homol est bien SATISFAIT (aucun GATE_REFS_REQUIRED) : le refus mesuré est bien celui de l'identité"
+
+echo
 echo "== ⑯ Vault refuse le secret d'admin du palier : le palier n'est pas ouvert =="
 D="$TMP/t16"; mk_team "$D"
 write_marker "$D" rec "$PIN_C1" "1.0.0" "$ARCH_SHA" "" "" alice
 seal_team "$D"
-set_ctl true "$MERGE_SHA" "promote/accounts-read-rec" oscar ci 403
+set_ctl true "$MERGE_SHA" "promote/accounts-read-rec" oscar ci 403 200 default
 run_promote "$TMP/o16" "promote/accounts-read-rec"; RC=$?
 refus_attendu "⑯" "lecture de envs/rec/wm-admin refusée (403)" "PALIER_FERME" "$TMP/o16" "$RC"
+
+echo
+echo "== G2-a porte int : le porteur n'est PAS du groupe déployeur (palier pourtant OUVERT) =="
+# La porte int déclare `deployerGroup: apim-apply-int` ⇒ policy projetée
+# `apply-int`. Le token du porteur ne la porte pas — et le palier, lui, est
+# OUVERT (wm-admin=200) : c'est ce qui rend le cas discriminant. Si 7.a
+# n'existait pas, cette promotion PASSERAIT.
+D="$TMP/tg2a"; mk_team "$D"
+write_marker "$D" int "$PIN_C1" "1.0.0" "$ARCH_SHA" "" "" alice
+seal_team "$D"
+set_ctl true "$MERGE_SHA" "promote/accounts-read-int" oscar ci 200 200 "default,apply-rec"
+run_promote "$TMP/og2a" "promote/accounts-read-int"; RC=$?
+refus_attendu "G2-a" "token sans la policy apply-int" "DEPLOYER_GROUP_REQUIRED" "$TMP/og2a" "$RC"
+grep -q 'PALIER_FERME' "$TMP/og2a" \
+  && bad "G2-a le refus rendu est la RÉTENTION alors que le palier est ouvert — 7.b s'est exécuté avant 7.a" \
+  || ok "G2-a aucun PALIER_FERME : le palier est ouvert (wm-admin=200) et c'est bien la DÉCLARATION qui refuse — 7.a mord AVANT 7.b"
+# ⚠ DEUX MOTIFS DISJOINTS, PAS DEUX FOIS LE MÊME : « apply-int » est une
+# SOUS-CHAÎNE de « apim-apply-int » — chercher les deux nus reviendrait à
+# chercher le groupe deux fois et à ne jamais éprouver la policy projetée. On
+# ancre donc chacun sur son libellé.
+grep -q -F "groupe déployeur 'apim-apply-int'" "$TMP/og2a" \
+  && grep -q -F "policy projetée 'apply-int'" "$TMP/og2a" \
+  && ok "G2-a le refus NOMME le groupe déclaré ET la policy projetée — l'exploitant sait quel grant demander, il n'a pas à le deviner" \
+  || bad "G2-a le refus ne nomme pas le groupe et sa policy : $(tail -3 "$TMP/og2a" | tr '\n' ' ')"
+
+echo
+echo "== G2-b porte int : le lookup-self est REFUSÉ (403) — identité invérifiable, fail-closed =="
+D="$TMP/tg2b"; mk_team "$D"
+write_marker "$D" int "$PIN_C1" "1.0.0" "$ARCH_SHA" "" "" alice
+seal_team "$D"
+set_ctl true "$MERGE_SHA" "promote/accounts-read-int" oscar ci 200 403 default
+run_promote "$TMP/og2b" "promote/accounts-read-int"; RC=$?
+refus_attendu "G2-b" "lookup-self HTTP 403" "DEPLOYER_GROUP_UNVERIFIABLE" "$TMP/og2b" "$RC"
+grep -q 'lookup-self HTTP 403' "$TMP/og2b" \
+  && ok "G2-b le CODE HTTP figure dans le refus (403) — « invérifiable » reste distinguable de « refusé », comme STORE_HTTP_404 l'est de STORE_DIGEST_MISMATCH" \
+  || bad "G2-b le code HTTP du lookup n'est pas rapporté : $(tail -3 "$TMP/og2b" | tr '\n' ' ')"
+
+echo
+echo "== G2-c chaîne VARIANTE : la porte int déclare un groupe hors des deux familles =="
+# Le gabarit livré ne peut pas porter ce cas (il déclare des noms VALIDES).
+# On sert donc au script une chaîne variante par $STOA_ENV_CHAIN_FILE, où int
+# déclare `int-team` — un nom de l'annuaire KC (`approverGroup`) écrit dans le
+# champ de l'annuaire LDAP→Vault. C'est LE lapsus que ADR-084 veut voir refusé
+# BRUYAMMENT plutôt que produire une porte qui ne matche jamais.
+CHAIN_VAR="$TMP/environments.variante.yaml"
+SRC="$ROOT/clients/_example/environments.yaml" OUT="$CHAIN_VAR" python3 - <<'PY'
+import os, yaml
+d = yaml.safe_load(open(os.environ["SRC"])) or {}
+for g in d.get("gates") or []:
+    if g.get("to") == "int":
+        g["deployerGroup"] = "int-team"
+with open(os.environ["OUT"], "w") as f:
+    yaml.safe_dump(d, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+PY
+# LE SEMIS EST VÉRIFIÉ, PAS SUPPOSÉ (motif ⑬) : une variante mal écrite
+# retomberait sur le gabarit et le cas mesurerait la porte livrée.
+VARG=$(STOA_ENV_CHAIN_FILE="$CHAIN_VAR" env_chain_gate_deployer_group int)
+[ "$VARG" = "int-team" ] \
+  && ok "G2-c la chaîne variante déclare bien \`deployerGroup: int-team\` sur int (semis relu par la lib elle-même)" \
+  || bad "G2-c la variante déclare '$VARG' (attendu int-team) — le cas mesurerait le gabarit livré, pas la variante"
+D="$TMP/tg2c"; mk_team "$D"
+write_marker "$D" int "$PIN_C1" "1.0.0" "$ARCH_SHA" "" "" alice
+seal_team "$D"
+# ⚠ LE TOKEN PORTE apply-int ICI, DÉLIBÉRÉMENT : le refus qui suit ne peut donc
+# pas venir du porteur. Il vient de la DÉCLARATION elle-même, invérifiable.
+set_ctl true "$MERGE_SHA" "promote/accounts-read-int" oscar ci 200 200 "default,apply-int"
+HTTP_BEFORE=$(wc -l < "$STUB_HTTPLOG" | tr -d ' ')
+run_promote "$TMP/og2c" "promote/accounts-read-int" ansible "$TEAM_REPO" "$CHAIN_VAR"; RC=$?
+refus_attendu "G2-c" "groupe hors des deux familles vérifiables" "DEPLOYER_GROUP_UNSUPPORTED" "$TMP/og2c" "$RC"
+awk -v n="$HTTP_BEFORE" 'NR>n' "$STUB_HTTPLOG" > "$TMP/httpg2c"
+grep -q 'lookup-self' "$TMP/httpg2c" \
+  && bad "G2-c le token a été présenté à Vault AVANT d'avoir su quoi y chercher — une déclaration invérifiable doit refuser sans interroger personne" \
+  || ok "G2-c AUCUN lookup-self : la projection échoue AVANT de présenter le token (refuser d'abord, demander ensuite)"
+
+echo
+echo "== G2-d la déclaration PASSE, la rétention mord : l'ordre 7.a → 7.b OBSERVÉ à l'exécution =="
+D="$TMP/tg2d"; mk_team "$D"
+write_marker "$D" int "$PIN_C1" "1.0.0" "$ARCH_SHA" "" "" alice
+seal_team "$D"
+set_ctl true "$MERGE_SHA" "promote/accounts-read-int" oscar ci 403 200 "default,apply-int"
+run_promote "$TMP/og2d" "promote/accounts-read-int"; RC=$?
+refus_attendu "G2-d" "porteur déclaré, palier fermé" "PALIER_FERME" "$TMP/og2d" "$RC"
+grep -q 'DEPLOYER_GROUP' "$TMP/og2d" \
+  && bad "G2-d un jeton DEPLOYER_GROUP_* est apparu alors que le token porte apply-int : $(grep -o 'DEPLOYER_GROUP[A-Z_]*' "$TMP/og2d" | head -1)" \
+  || ok "G2-d aucun jeton DEPLOYER_GROUP_* : la déclaration a réellement PASSÉ, le refus est celui de la rétention"
+L_DECL=$(grep -n 'déclaration déployeur' "$TMP/og2d" | head -1 | cut -d: -f1)
+L_PF=$(grep -n 'PALIER_FERME' "$TMP/og2d" | head -1 | cut -d: -f1)
+if [ -n "$L_DECL" ] && [ -n "$L_PF" ] && [ "$L_DECL" -lt "$L_PF" ]; then
+  ok "G2-d la ligne de succès de 7.a est SORTIE (ligne $L_DECL du log) avant le refus de 7.b (ligne $L_PF) — l'ordre des deux sous-portes est observé À L'EXÉCUTION, pas seulement dans le texte du script"
+else
+  bad "G2-d ordre 7.a→7.b non observé dans le log (déclaration=$L_DECL PALIER_FERME=$L_PF) : $(tail -3 "$TMP/og2d" | tr '\n' ' ')"
+fi
+
+echo
+echo "== G2-e porte int OUVERTE : la policy vient de l'ENTITÉ, et la promotion VA JUSQU'AU MOTEUR =="
+# ⚠ UNE PORTE QUI NE S'OUVRE JAMAIS N'EST PAS UNE PORTE ÉPROUVÉE. Les quatre cas
+# ci-dessus refusent tous : sans celui-ci, le harnais serait compatible avec un
+# §7.a qui interdit int À TOUT LE MONDE, et personne ne s'en apercevrait avant le
+# premier vrai déploiement.
+# Il éprouve EN PLUS l'UNION des deux listes de Vault : le token ne porte que
+# `default`, et c'est l'ENTITÉ qui porte `apply-int` (le cas réel du groupe LDAP
+# mappé sur une policy, ADR-084). Retirer `identity_policies` de la lecture du
+# §7.a — un caractère — ferait rougir CE cas et lui seul.
+D="$TMP/tg2e"; mk_team "$D"
+write_marker "$D" int "$PIN_C1" "1.0.0" "$ARCH_SHA" "" "" alice
+seal_team "$D"
+set_ctl true "$MERGE_SHA" "promote/accounts-read-int" oscar ci 200 200 "default" "apply-int"
+run_promote "$TMP/og2e" "promote/accounts-read-int"; RC=$?
+[ "$RC" -eq 0 ] \
+  && ok "G2-e la promotion vers un palier DÉCLARÉ aboutit (rc=0) — l'axe déployeur ouvre, il ne fait pas que fermer" \
+  || bad "G2-e la promotion vers int a échoué (rc=$RC) : $(tail -5 "$TMP/og2e" | tr '\n' ' ')"
+grep -q "porte 'apply-int'" "$TMP/og2e" \
+  && ok "G2-e la policy projetée est reconnue alors qu'elle vient des \`identity_policies\` — l'union des deux listes de Vault est ÉPROUVÉE, pas supposée" \
+  || bad "G2-e la déclaration n'a pas été reconnue via les policies d'entité : $(tail -5 "$TMP/og2e" | tr '\n' ' ')"
+grep -q -F -- '-e apim_ss_env=int' "$STUB_LOG" 2>/dev/null \
+  && ok "G2-e le moteur a été invoqué sur le palier VISÉ (apim_ss_env=int) — la chaîne complète, déclaration comprise, mène bien à l'acte" \
+  || bad "G2-e le moteur n'a pas reçu apim_ss_env=int : $(cat "$STUB_LOG" 2>/dev/null)"
 
 echo
 echo "== ⑰ CHEMIN NOMINAL (porte rec selfApproval, Vault 200, moteur ansible) =="
 D="$TMP/t17"; mk_team "$D"
 write_marker "$D" rec "$PIN_C1" "1.0.0" "$ARCH_SHA" "" "" alice
 seal_team "$D"
-set_ctl true "$MERGE_SHA" "promote/accounts-read-rec" oscar ci 200
+set_ctl true "$MERGE_SHA" "promote/accounts-read-rec" oscar ci 200 200 default
+HTTP_BEFORE=$(wc -l < "$STUB_HTTPLOG" | tr -d ' ')
 run_promote "$TMP/o17" "promote/accounts-read-rec"; RC=$?
 [ "$RC" -eq 0 ] \
   && ok "⑰ le chemin nominal sort 0" \
@@ -844,13 +1153,24 @@ grep -q -F -- '-e apim_ss_authoring_env=dev' "$STUB_LOG" 2>/dev/null \
 grep -q -F -- '-e apim_promote_action=import' "$STUB_LOG" 2>/dev/null \
   && ok "⑰ le VERBE est \`import\` (ADR-079 : hors authoring, on importe une archive, on ne re-POSTe pas le contrat)" \
   || bad "⑰ apim_promote_action=import absent"
+# ⚠ CE QUE LE CHEMIN NOMINAL rec NE FAIT PAS : interroger Vault sur QUI DÉPLOIE.
+# La porte rec ne déclare aucun `deployerGroup` (vérifié en G2(iii)), donc §7.a
+# ne doit RIEN demander — pas même un lookup « pour voir ». Un lookup émis ici
+# serait invisible au vert : il ne refuserait rien aujourd'hui, mais il ferait
+# dépendre le palier AUTONOME d'une réponse de Vault, et le jour où ce token
+# n'aurait pas le droit de se relire lui-même, rec refuserait sans qu'aucune
+# porte ne l'ait décidé.
+awk -v n="$HTTP_BEFORE" 'NR>n' "$STUB_HTTPLOG" > "$TMP/http17"
+grep -q 'lookup-self' "$TMP/http17" \
+  && bad "⑰ un /v1/auth/token/lookup-self a eu lieu alors que la porte rec ne déclare AUCUN groupe déployeur — la chaîne interroge Vault pour rien" \
+  || ok "⑰ AUCUN appel /v1/auth/token/lookup-self sur les $(wc -l < "$TMP/http17" | tr -d ' ') requêtes du run — pas de déclaration, pas d'interrogation (rec : autonomie du demandeur)"
 
 echo
 echo "== ⑱ CHEMIN NOMINAL, moteur labctl : --archive sur la ligne de commande =="
 D="$TMP/t18"; mk_team "$D"
 write_marker "$D" rec "$PIN_C1" "1.0.0" "$ARCH_SHA" "" "" alice
 seal_team "$D"
-set_ctl true "$MERGE_SHA" "promote/accounts-read-rec" oscar ci 200
+set_ctl true "$MERGE_SHA" "promote/accounts-read-rec" oscar ci 200 200 default
 run_promote "$TMP/o18" "promote/accounts-read-rec" labctl; RC=$?
 [ "$RC" -eq 0 ] \
   && ok "⑱ le chemin labctl sort 0" \
@@ -873,15 +1193,23 @@ grep -q -F -- '--env rec' "$STUB_LOG" 2>/dev/null \
   || bad "⑱ --env rec absent de la ligne labctl"
 
 echo
-echo "== ⑲ MUTATION FINALE : déplacer l'appel du moteur AVANT la garde PALIER_FERME =="
+echo "== ⑲ MUTATION FINALE : déplacer l'appel du moteur AVANT TOUT le §7 =="
 # La contre-épreuve de l'épreuve : si ④ restait vert sur un script où le moteur
-# tourne AVANT la dernière garde, ④ ne mesurerait rien. La mutation s'applique à
-# une COPIE (jamais à l'arbre), et l'ancre est un début d'INSTRUCTION — insérer
+# tourne AVANT les dernières gardes, ④ ne mesurerait rien. La mutation s'applique
+# à une COPIE (jamais à l'arbre), et l'ancre est un début d'INSTRUCTION — insérer
 # entre un test et son `|| fail` produirait un fichier qui ne parse même pas,
 # donc un rouge pour la mauvaise raison.
+#
+# ⚠ LA GARDE NOMMÉE PAR LE VERDICT A CHANGÉ AVEC G2, ET L'ANCRE N'A PAS BOUGÉ.
+# L'ancre est le début du §7 ; jusqu'à G2 ce §7 ne contenait qu'une garde
+# (PALIER_FERME), et c'est elle que le verdict nommait. Le §7 en contient
+# désormais QUATRE — la déclaration (7.a) précède la rétention (7.b) — et
+# `ordre_verdict` nomme la PREMIÈRE trouvée après l'appel, donc
+# DEPLOYER_GROUP_UNSUPPORTED. Les autres sont franchies aussi : ⑲bis le vérifie
+# sur la DERNIÈRE, pour que ce cas continue de dire ce qu'il disait avant.
 ANCHOR=$(grep -n -F '[ -s "$VAULT_TOKEN_FILE" ]' "$SC" | head -1 | cut -d: -f1)
 [ -n "$ANCHOR" ] \
-  && ok "⑲ ancre de mutation trouvée (ligne $ANCHOR de team-promote.sh : début du §7, avant PALIER_FERME)" \
+  && ok "⑲ ancre de mutation trouvée (ligne $ANCHOR de team-promote.sh : début du §7, avant la déclaration ET la rétention)" \
   || bad "⑲ ancre de mutation introuvable — la mutation ne peut pas être posée"
 awk -v n="${ANCHOR:-0}" '
   NR==n { print "run_engine >\"$TMP/promote.log\" 2>&1" }
@@ -902,15 +1230,25 @@ V19="$(ordre_verdict "$TMP/sc_mut19_nc")"
 # qui NEUTRALISE la garde, l'ancien glob passait au vert et prétendait avoir
 # prouvé l'ordre. On discrimine donc sur « APRÈS l'appel ».
 case "$V19" in
-  "KO: PALIER_FERME en ligne "*"APRÈS l'appel du moteur"*)
+  "KO: DEPLOYER_GROUP_UNSUPPORTED en ligne "*"APRÈS l'appel du moteur"*)
     ok "⑲ ④ ROUGIT sur le mutant pour la BONNE raison — ordre violé, garde nommée : ${V19}" ;;
   *absente*)
     bad "⑲ ④ rougit sur une garde ABSENTE, pas sur un ordre violé — la mutation d'ordre n'est pas ce qui a été mesuré : ${V19}" ;;
   OK)
-    bad "⑲ ④ reste VERT sur un script où le moteur tourne avant PALIER_FERME — l'épreuve d'ordre est VACANTE" ;;
+    bad "⑲ ④ reste VERT sur un script où le moteur tourne avant tout le §7 — l'épreuve d'ordre est VACANTE" ;;
   *)
     bad "⑲ ④ rougit, mais pas sur la garde attendue : ${V19}" ;;
 esac
+# ⑲bis LA DERNIÈRE GARDE AUSSI. `ordre_verdict` s'arrête au premier jeton fautif
+# ; sans ce contrôle, ⑲ ne dirait plus rien de PALIER_FERME — la garde que ce cas
+# existait pour éprouver avant que le §7 n'en accueille trois autres.
+L_MUT_CALL=$(grep -nE '^[[:space:]]*run_engine ' "$TMP/sc_mut19_nc" | head -1 | cut -d: -f1)
+L_MUT_PF=$(grep -n -F 'fail "PALIER_FERME' "$TMP/sc_mut19_nc" | head -1 | cut -d: -f1)
+if [ -n "$L_MUT_CALL" ] && [ -n "$L_MUT_PF" ] && [ "$L_MUT_PF" -gt "$L_MUT_CALL" ]; then
+  ok "⑲bis dans ce mutant, la RÉTENTION est franchie elle aussi (PALIER_FERME ligne $L_MUT_PF, appel ligne $L_MUT_CALL) — le moteur passe devant les QUATRE gardes du §7, pas seulement la première"
+else
+  bad "⑲bis PALIER_FERME n'est pas après l'appel dans le mutant (garde=$L_MUT_PF appel=$L_MUT_CALL) — la mutation ne franchit plus la rétention"
+fi
 # ET L'ARBRE N'A PAS BOUGÉ : la mutation vivait dans $TMP, l'original est intact.
 [ "$(ordre_verdict "$SC_NC")" = OK ] \
   && ok "⑲ l'ORIGINAL est intact et toujours vert (la mutation n'a jamais touché l'arbre)" \
@@ -921,7 +1259,7 @@ esac
 # tombe en silence (branche jamais évaluée, script tronqué, cas sauté), ce
 # nombre bouge et CE garde-fou rougit : un vert sur un sous-ensemble ne peut
 # plus se faire passer pour le vert complet.
-EXPECTED_ASSERTIONS=89
+EXPECTED_ASSERTIONS=128
 TOTAL_BEFORE_GUARD=$((PASS+FAIL))
 echo
 [ "$TOTAL_BEFORE_GUARD" -eq "$EXPECTED_ASSERTIONS" ] \
