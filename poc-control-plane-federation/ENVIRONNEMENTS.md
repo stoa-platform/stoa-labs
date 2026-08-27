@@ -454,6 +454,54 @@ catalogue à la version N-1, contre-épreuves prod (400 `GATE_REFS_REQUIRED`
 sans change_ref, 409 double rollback, 409 `NO_PREVIOUS_STATE`). Détail complet
 et décisions D1-D7 : **ADR-085 — Le repli, comme composant du déploiement**.
 
+## Le parcours du demandeur (G7)
+
+Depuis G7 (ADR-086), un producteur fait passer une API de dev à la prod en
+**quatre PRs de promotion** — une par saut, chacune dans SON dépôt d'équipe,
+chacune tableau de bord de son saut (ADR-081 : la décision est le merge ; le
+formulaire Jenkins reste une porte d'entrée, il ne porte **aucune** autorité).
+
+Le pas-à-pas, saut par saut :
+
+1. **dev** (authoring) : publier via `team-publish`, exporter l'archive
+   (`api-promote-export` ⇒ `EXPORT_CONFIRMED_SUMMARY guid=… sha256=…`),
+   épingler le guid dans `apis/<api>.promote.yml` — inchangé depuis G5.
+2. **dev → rec** : formulaire `api-promote-request` ⇒ PR `promote/<api>-rec`.
+   Porte `selfApproval` (décision client n°1) : le demandeur merge lui-même,
+   répond à la pause avec SA propre identité — qui doit porter `apply-rec`
+   (palier ouvert au sens G4).
+3. **rec → int** : PR `promote/<api>-int`. Porte `int-team` + 4-yeux + groupe
+   déployeur `apim-apply-int` — au lab : **bob** merge, bob répond à la pause
+   (le mergeur est le seul login que la pause accepte, `MERGER_MISMATCH`).
+4. **int → homol** : PR `promote/<api>-homol`, `PV_REF` exigé À LA DEMANDE.
+   Porte `release-team` + 4-yeux + `apim-apply-homol` — au lab : **carol**.
+5. **homol → prod** : PR `promote/<api>-prod`, `CHANGE_REF` + `PV_REF` exigés.
+   Porte `release-team` + 4-yeux + `itsmCheck` + `apim-operator-prod` — au
+   lab : **oscar**. Deux différences PROPRES au terminus :
+   - **la voie est DIRECTE** (pas de proxy `wm-admin-prod` — il n'existe pas,
+     par structure) : le moteur ansible attaque la gateway réelle en Basic,
+     creds `envs/prod/wm-admin` lus dans Vault par le rôle. Le moteur labctl
+     est refusé vers le terminus (`COMBINAISON_NON_SUPPORTEE`) ;
+   - **l'ITSM est re-vérifié au dispatch** (§6ter) : le change du marqueur
+     MERGÉ doit être `approved` À CE MOMENT-LÀ — `ITSM_NOT_APPROVED` sinon,
+     `ITSM_UNAVAILABLE` si l'ITSM ne répond pas, fail-closed dans tous les cas
+     (anti-TOCTOU A6, porté à la chaîne d'équipe).
+
+**Ce que chaque PR porte** (le tableau de bord) : le corps de la demande (pin,
+digest, groupes attendus/vérifiés, et — quand la porte le déclare — l'annonce
+de la re-vérification ITSM), puis le commentaire d'apply (pin, version,
+sha256, moteur, et les **trois identités : demandée par / mergée par / portée
+par**), puis le statut du build (succès, échec, ou pause abandonnée).
+
+**Refuser est un commentaire, pas un silence.** Tirer le webhook sur une PR
+NON mergée refuse `PAYLOAD_PERIME` (la réconciliation Gitea fait foi, jamais
+le payload) ; un palier sans marqueur mergé refuse `PIN_ABSENT` ; un moteur
+jamais lancé sur refus est la propriété prouvée garde par garde
+(`test-team-promote-wiring.sh`, 160/0).
+
+Détail des décisions et des refus nommés : **ADR-086 — Le parcours du
+demandeur : une PR, un tableau de bord**.
+
 ## Résiduel
 
 - **Le lien entre le Jenkins local et celui du labs n'est pas établi.** Ce sont
