@@ -14,11 +14,9 @@
 # Usage : apply-uac --env homol --tenant banking-demo -f envs/homol/targets.yaml
 # (token ci-horsprod écrit au préalable dans /tmp/stoa-wm-admin-token).
 #
-# ⚠ PLOMBERIE DE LAB NON POSÉE à la création de ce fichier (2026-08-26) : le
-# proxy wm-admin-homol, le mock poc-wm-mock-homol, le scope deploy:homol et le
-# secret Vault envs/homol/wm-admin n'existent pas encore. Ce fichier est la
-# CIBLE déclarative ; tant que la plomberie n'est pas posée, un apply sur homol
-# échoue FERMÉ (proxy inconnu → 404 du wM réel), ce qui est le bon comportement.
+# Plomberie posée depuis G5 (2026-08-27) : proxy wm-admin-homol (matrice
+# 20/0), scope deploy:homol dérivé de la chaîne, secret Vault
+# envs/homol/wm-admin.
 apiVersion: labctl.stoa.io/v1
 kind: FederationTarget
 name: accounts-read

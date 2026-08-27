@@ -50,6 +50,17 @@ environments: [dev, rec, int, homol, prod]
 #                       Absent ⇒ pas de déclaration : la rétention de credential
 #                       (ADR-082, PALIER_FERME) reste le seul « qui ».
 #
+# AU ROLLBACK (adr-085) : les gates ci-dessus ne s'appliquent pas TOUTES de la
+# même façon à un rollback. `requireChangeRef` et `itsmCheck` exigent le
+# change_ref DU ROLLBACK LUI-MÊME (même code GATE_REFS_REQUIRED qu'à la
+# demande — le motif change, la garde non). `requirePVRef` n'exige RIEN au
+# rollback : l'état restauré a déjà porté son PV de validation au moment où
+# il a été promu, ré-exiger une preuve d'une chose déjà prouvée n'ajoute rien.
+# Le reste des gates (approverGroup, fourEyes, selfApproval) ne s'applique
+# pas : un rollback ne demande aucune approbation — on revient à un état déjà
+# approuvé, pas un nouveau. `deployerGroup` reste vérifié, mais au DISPATCH du
+# re-apply, jamais différemment de l'aller (G2, ADR-084).
+#
 # Un palier SANS porte n'est pas un palier sans contrôle : c'est un palier où
 # quiconque détient `promotions:approve` approuve, y compris le demandeur.
 gates:

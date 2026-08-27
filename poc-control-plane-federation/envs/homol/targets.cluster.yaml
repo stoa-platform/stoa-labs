@@ -3,9 +3,9 @@
 # Même contenu que envs/homol/targets.yaml, seuls les hosts changent :
 # webmethods-real:5555 au lieu de localhost:5555.
 #
-# ⚠ PLOMBERIE DE LAB NON POSÉE à la création (2026-08-26) : proxy
-# wm-admin-homol, mock poc-wm-mock-homol, scope deploy:homol et secret Vault
-# envs/homol/wm-admin restent à créer. Voir l'en-tête de targets.yaml.
+# Plomberie posée depuis G5 (2026-08-27) : proxy wm-admin-homol (matrice
+# 20/0), scope deploy:homol dérivé de la chaîne, secret Vault
+# envs/homol/wm-admin. Voir l'en-tête de targets.yaml.
 apiVersion: labctl.stoa.io/v1
 kind: FederationTarget
 name: accounts-read

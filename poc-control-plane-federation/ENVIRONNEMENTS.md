@@ -385,6 +385,75 @@ détail du mécanisme, l'ordre des gardes et les limites nommées (dont le
 sans porte déclarée) sont dans **ADR-083 — Le verbe archive et son
 transport**.
 
+## Revenir en arrière (G6)
+
+Depuis G6 (ADR-085), annuler une promotion approuvée n'est **jamais** prod-only
+et **jamais** une suppression sur la gateway : c'est un revert Git de
+`deploy.<env>.yaml` à son contenu N-1 **verbatim** (pin `commit` compris),
+suivi d'un re-apply idempotent de l'état restauré. Aucun DELETE (ADR-075) — le
+rollback restaure l'état désiré, il ne supprime pas la version N de la
+gateway.
+
+**Le palier n'est jamais saisi : c'est celui de la promotion.** Le job
+`stoa-prod-rollback` ne demande pas d'environnement — la réponse du POST
+gouvernance (`restored.environment`) le porte, et le Jenkinsfile la propage
+lui-même à tous les stages aval. Saisir un palier recréerait une classe
+d'erreurs (rollback de la promotion X « au nom » du palier Y) que la source
+de vérité rend structurellement impossible.
+
+Paramètres du job :
+
+| Paramètre | Rôle |
+|---|---|
+| `PROMOTION_ID` | l'ID de la promotion à annuler (`obligatoire`) |
+| `REASON` | le motif du rollback, audité (`obligatoire`) |
+| `CHANGE_REF` | référence de changement ITSM — REQUISE seulement si le gate du palier de la promotion l'exige (`requireChangeRef` ou `itsmCheck`) ; sinon vide, sans effet |
+| `VAULT_USER` / `VAULT_USER_PASSWORD` | identité NOMINATIVE de l'opérateur (voie A, ADR-078 §3) — pour l'acte imputable ; vides ⇒ repli AppRole (acte non imputable, refusé au terminus si `deployerGroup` y est déclaré, ADR-084) |
+
+**Ce que fait chaque stage** :
+
+1. **Rollback governance** — `POST .../promotions/{id}/rollback` en identité
+   de service (`ci-applier`) : le corps porte `reason` et `change_ref`. Un
+   palier qui exige une référence de changement (`requireChangeRef` ou
+   `itsmCheck`) et n'en reçoit pas est refusé `GATE_REFS_REQUIRED` — **le job
+   ne devine jamais** si une référence est requise, c'est governance-api qui
+   le sait et refuse au plus tôt, avant toute lecture d'historique. La
+   réponse (`restored.environment`, `restored.version`, `promotion.slug`) est
+   capturée dans le workspace ; son absence est un échec fail-closed avant
+   tout apply.
+2. **Checkout governance (post-revert)** — re-clone COMPLET du dépôt
+   governance : l'état à appliquer est l'état Git **après** le revert, jamais
+   l'état lu avant l'appel.
+3. **Palier du rollback** — la chaîne est dérivée du `environments.yaml` de
+   CE clone (jamais une liste en dur, même motif que le pipeline aller) ; le
+   palier restauré doit y figurer (`ROLLBACK_ENV_INCONNU` sinon) et ne peut
+   pas être le palier d'authoring (`ROLLBACK_ENV_INELIGIBLE`, défense en
+   profondeur). Le palier est déclaré **terminus** ou **intermédiaire** par sa
+   POSITION dans la chaîne (dernier élément), pas par son nom.
+4. **Re-apply** — deux voies, exactement celles du pipeline aller : le
+   terminus re-applique en admin direct (ci-applier + secrets Vault) ; un
+   palier intermédiaire re-applique via SON proxy `wm-admin-<env>` (Bearer
+   `ci-horsprod`, scope `deploy:<env>`). Les deux voies passent par le MÊME
+   preflight déployeur que l'aller (G2, ADR-084) : un re-apply machine vers
+   int/homol exige `--grant-ci` ; un repli AppRole au terminus est refusé
+   `DEPLOYER_GROUP_REQUIRED` si la porte y déclare `deployerGroup`.
+5. **Smoke** — mesure l'ÉTAT restauré, pas un ping : le catalogue du palier
+   (lu via son proxy admin) doit porter l'API restaurée **à la version N-1**
+   (`restored.version`). Au terminus s'ajoute le smoke data-plane existant
+   (401 sans token).
+
+**Preuve.** Offline : 3 tests nouveaux sur `handlers_rollback_test.go` (dont
+un qui rougit sur le code d'avant G6 — le trou de symétrie change_ref /
+itsmCheck) ; 6 tests préexistants de fidélité `labctl Publish` réparés (défaut
+découvert en cours de route : PUT inconditionnel sur une API active, que le
+produit refuse — corrigé en sautant le PUT de définition quand l'API trouvée
+est déjà active). Live : `scripts/test-rollback-paliers.sh`, 22/0, rejoué deux
+fois plus un rejeu contrôleur (22/0) — rollback homol réel contre le wM du
+lab, `deploy.homol.yaml` restauré verbatim, re-apply idempotent, smoke
+catalogue à la version N-1, contre-épreuves prod (400 `GATE_REFS_REQUIRED`
+sans change_ref, 409 double rollback, 409 `NO_PREVIOUS_STATE`). Détail complet
+et décisions D1-D7 : **ADR-085 — Le repli, comme composant du déploiement**.
+
 ## Résiduel
 
 - **Le lien entre le Jenkins local et celui du labs n'est pas établi.** Ce sont
