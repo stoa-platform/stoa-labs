@@ -90,6 +90,24 @@ PY
 # re-vérifier auprès de l'ITSM sans elle (même règle que
 # governance-api, handlers_promotions.go:77-89 — la porte est lue au même
 # endroit des deux côtés, sinon les deux divergent en silence).
+# La porte d'arrivée exige-t-elle les quatre yeux ? Rend FOUREYES=0|1.
+#
+# FONCTION SŒUR, PAS UN CHAMP DE PLUS. `env_chain_gate` rend trois champs
+# POSITIONNELS que ses appelants redécoupent à la main (api-promote-request.sh,
+# team-promote.sh) : y ajouter un quatrième ferait lire `fourEyes` là où ils
+# lisent aujourd'hui `approverGroup`, sans qu'aucun refus ne se déclenche — une
+# porte relâchée en silence. On ajoute donc une lecture séparée.
+env_chain_gate_four_eyes() {
+  local f; f="$(_env_chain_file)"
+  [ -r "$f" ] || { echo "env-chain: source illisible : $f" >&2; return 1; }
+  python3 - "$f" "$1" <<'PY'
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1])) or {}
+g = next((x for x in (d.get("gates") or []) if x.get("to") == sys.argv[2]), {}) or {}
+print("FOUREYES=%s" % ("1" if g.get("fourEyes") else "0"))
+PY
+}
+
 env_chain_gate() {
   local f; f="$(_env_chain_file)"
   [ -r "$f" ] || { echo "env-chain: source illisible : $f" >&2; return 1; }

@@ -237,8 +237,16 @@ git -C "$TMP/team" checkout -q -b "$BRANCH"
 # et une valeur ne peut plus fabriquer de clé. La garde REF_INVALIDE ci-dessus
 # ferme déjà CHANGE_REF/PV_REF en amont ; celle-ci est le second verrou,
 # indépendant, sur le point d'écriture lui-même.
+#
+# ⚠ `pv_ref` VOYAGE DANS LE MARQUEUR, ET C'EST UN TROU MESURÉ QU'ON FERME ICI
+# (G5). La Garde 2 ci-dessus exige un PV_REF quand la porte d'arrivée le
+# réclame — mais le marqueur ne le TRANSPORTAIT pas, alors que `change_ref`, si.
+# L'apply de promotion (team-promote.sh §6) re-vérifie les exigences de la porte
+# sur le marqueur MERGÉ, anti-TOCTOU : sans ce champ, la re-vérification du PV
+# ne pouvait que refuser TOUTE promotion vers `homol`/`prod`, ou — pire — être
+# écrite comme une garde qui ne regarde rien.
 MSG="$MESSAGE" PB="${PROMOTED_BY:-ci}" V="$VERSION" P="$PIN" CR="$CHANGE_REF" \
-  SH="$ARCHIVE_SHA256" OUT="$TMP/team/$MARKER" python3 - <<'PY'
+  PV="$PV_REF" SH="$ARCHIVE_SHA256" OUT="$TMP/team/$MARKER" python3 - <<'PY'
 import os
 import yaml
 
@@ -250,6 +258,7 @@ with open(os.environ["OUT"], "w") as f:
         "message": os.environ["MSG"],
         "commit": os.environ["P"],
         "change_ref": os.environ["CR"],
+        "pv_ref": os.environ["PV"],
         "archive_sha256": os.environ["SH"],
     }, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
 PY
