@@ -103,6 +103,22 @@ case "$MODE" in
   # ce fichier : la machine ne peut pas se voir accorder le palier de prod par
   # ce chemin, quel que soit le nom que le client donne à son dernier palier.
   #
+  # ⚠ CE QUE CE GESTE COÛTE, ET IL FAUT LE DIRE PLUTÔT QUE LE PRÉSENTER COMME
+  # ANODIN. Sur les paliers qui DÉCLARENT un `deployerGroup` (int, homol dans le
+  # gabarit), le grant ne fait pas qu'« ouvrir » : il installe la machine du CI
+  # comme chemin déployeur ALTERNATIF au groupe humain. Après ce geste, l'apply
+  # vers int est porté soit par un membre d'`apim-apply-int`, soit par le
+  # pipeline sous AppRole — la porte est satisfaite dans les deux cas, et le
+  # second n'est imputable à personne. C'est VOULU (c'est même l'un des remèdes
+  # du plan : sans lui le CI hors-prod ne déploie plus rien), mais ce n'est pas
+  # neutre, et l'exploitant doit le choisir en le sachant.
+  #
+  # L'EXCLUSIVITÉ HUMAINE N'EXISTE DONC QU'AU TERMINUS, et elle y tient par
+  # STRUCTURE, pas par discipline : ce mode ne peut pas l'atteindre. Vouloir la
+  # même exclusivité sur un palier hors-prod signifie NE PAS jouer ce geste
+  # pour ce palier — pas l'attendre de la déclaration, qui vérifie une policy
+  # portée, jamais l'humanité de qui la porte.
+  #
   # ⚠ ÉCRITURE CHIRURGICALE, ET C'EST DÉLIBÉRÉ. Le read-modify-write vise le
   # sous-chemin `/token-policies`, PAS la racine du rôle : un POST sur la racine
   # est un create-or-replace COMPLET, et tout champ non fourni y reprend sa

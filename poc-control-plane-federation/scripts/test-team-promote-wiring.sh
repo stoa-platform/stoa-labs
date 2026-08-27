@@ -483,6 +483,56 @@ esac
   || bad "G2(vii) l'original ne passe plus l'ordre relatif — une mutation a fui hors de \$TMP"
 
 echo
+echo "== G2(viii) ANTI-DÉRIVE : le mot de passe de bind ne repasse JAMAIS en argv =="
+# Les DEUX fichiers qui parlent à l'annuaire — le POSEUR et la PORTE LIVE — font
+# transiter le mot de passe de bind par l'ENVIRONNEMENT (`docker exec -e VAR`
+# SANS valeur), puis par un fichier `-y` détruit derrière. Jamais par
+# `-w <mot de passe>`, qui l'exposerait dans le `ps` de l'HÔTE (argv de docker)
+# comme dans celui du CONTENEUR (argv de l'outil).
+#
+# POURQUOI UNE ÉPREUVE, ET PAS SEULEMENT UN COMMENTAIRE : c'est un écart ASSUMÉ
+# avec setup-vault-ldap.sh, qui, LUI, passe `-w "$BIND_PW"`. Le modèle qu'on a
+# volontairement quitté est donc toujours là, à côté, et c'est exactement le
+# genre de détail qu'un copier-coller depuis l'ancien réintroduirait sans bruit
+# — sans casser un seul test, puisque le résultat fonctionnel est identique.
+#
+# Épreuve STATIQUE (aucun lab requis) et sur code DÉCOMMENTÉ : les deux fichiers
+# CITENT `-w "$BIND_PW"` dans le commentaire qui justifie l'écart, un grep sur
+# le fichier brut serait rouge à jamais.
+for F in scripts/setup-deployer-groups.sh scripts/test-deployer-gate-live.sh; do
+  if [ ! -f "$ROOT/$F" ]; then
+    bad "G2(viii) $F introuvable — les assertions d'argv seraient vraies par vacuité"
+    continue
+  fi
+  nc_strict "$ROOT/$F" > "$TMP/ldapnc"
+  # ANTI-VACANCE EN PREMIER : on exige de TROUVER les invocations LDAP. Sans ce
+  # compte, un fichier vidé de tout appel à l'annuaire — ou dont le helper
+  # aurait été renommé — passerait les deux assertions suivantes haut la main.
+  grep -nE '(^|[^A-Za-z_])ldap(add|modify|search|delete)([^A-Za-z_]|$)|-x -D ' "$TMP/ldapnc" > "$TMP/ldaplines"
+  N_LDAP=$(grep -c . "$TMP/ldaplines")
+  [ "$N_LDAP" -ge 1 ] \
+    && ok "G2(viii) $F : $N_LDAP ligne(s) d'invocation LDAP trouvée(s) — ce qui suit porte sur du code RÉEL" \
+    || bad "G2(viii) $F ne contient AUCUNE invocation LDAP — les assertions d'argv seraient vraies par vacuité"
+  grep -q -F -- '-e LDAP_BIND_PW' "$TMP/ldapnc" && ! grep -q -F -- '-e LDAP_BIND_PW=' "$TMP/ldapnc" \
+    && ok "G2(viii) $F passe le bind par l'ENVIRONNEMENT (\`-e LDAP_BIND_PW\` nu) — rien dans l'argv de docker exec" \
+    || bad "G2(viii) $F ne passe plus le bind par \`-e LDAP_BIND_PW\` nu (absent, ou écrit \`=valeur\` — ce qui le remet dans l'argv de l'hôte)"
+  grep -q -F -- ' -w "$' "$TMP/ldaplines" \
+    && bad "G2(viii) $F remet le mot de passe en argv sur une invocation LDAP : $(grep -F -- ' -w "$' "$TMP/ldaplines" | head -1)" \
+    || ok "G2(viii) $F : aucune invocation LDAP ne porte \` -w \"\$…\"\` — le secret n'est ni dans le \`ps\` de l'hôte ni dans celui du conteneur"
+done
+# MUTATION : `-y "$f"` redevient `-w "$LDAP_BIND_PW"` dans le poseur, c'est-à-dire
+# EXACTEMENT la régression que la relecture du modèle historique produirait.
+sed 's|-y "$f"|-w "$LDAP_BIND_PW"|' "$ROOT/scripts/setup-deployer-groups.sh" > "$TMP/sdg_mut"
+cmp -s "$ROOT/scripts/setup-deployer-groups.sh" "$TMP/sdg_mut" \
+  && bad "G2(viii) MUTATION no-op : le mutant est identique — l'ancre \`-y \"\$f\"\` a bougé, l'anti-dérive n'est éprouvée par rien" \
+  || ok "G2(viii) le mutant qui remet \`-w\` diffère RÉELLEMENT du fichier (anti-no-op cmp)"
+nc_strict "$TMP/sdg_mut" > "$TMP/sdg_mut_nc"
+grep -nE '(^|[^A-Za-z_])ldap(add|modify|search|delete)([^A-Za-z_]|$)|-x -D ' "$TMP/sdg_mut_nc" > "$TMP/sdg_mut_lines"
+grep -q -F -- ' -w "$' "$TMP/sdg_mut_lines" \
+  && ok "G2(viii) MUTATION : le retour à \` -w \"\$…\"\` est DÉTECTÉ — le détecteur n'est pas aveugle" \
+  || bad "G2(viii) MUTATION : le retour à \` -w\` passe inaperçu — l'anti-dérive est un vert vacant"
+
+echo
 echo "======================================================================"
 echo "VOLET B — exécution réelle : chaque refus, moteur JAMAIS invoqué"
 echo "======================================================================"
@@ -1259,7 +1309,10 @@ fi
 # tombe en silence (branche jamais évaluée, script tronqué, cas sauté), ce
 # nombre bouge et CE garde-fou rougit : un vert sur un sous-ensemble ne peut
 # plus se faire passer pour le vert complet.
-EXPECTED_ASSERTIONS=128
+# 128 → 136 le 2026-08-27 : +8 verdicts G2(viii) (anti-dérive de l'argv du bind,
+# 3 par fichier × 2 fichiers + 2 de mutation). Re-mesuré par un run complet, pas
+# calculé — c'est ce garde-fou lui-même qui a rendu l'écart (136 != 128).
+EXPECTED_ASSERTIONS=136
 TOTAL_BEFORE_GUARD=$((PASS+FAIL))
 echo
 [ "$TOTAL_BEFORE_GUARD" -eq "$EXPECTED_ASSERTIONS" ] \

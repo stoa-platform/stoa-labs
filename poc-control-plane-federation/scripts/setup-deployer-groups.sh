@@ -151,9 +151,29 @@ group_members() {  # group_members <cn> — un uid par ligne ; VIDE si absent
     | sed -n 's/^member: uid=\([^,]*\),.*/\1/p'
 }
 
+# uid_exists <uid> — l'entrée existe-t-elle vraiment sous ou=People ?
+uid_exists() {
+  ldap_run ldapsearch -LLL -o ldif-wrap=no \
+      -b "uid=$1,ou=People,$BASE_DN" -s base dn >/dev/null 2>&1
+}
+
 pose_group() {   # pose_group <cn> <uid>…
   local cn="$1"; shift
-  local out rc
+  local out rc u missing=""
+  # ── MEMBRE FANTÔME : LA GARDE QUE `ldapadd` NE FAIT PAS ────────────────────
+  # Cet annuaire n'a AUCUNE intégrité référentielle (pas d'overlay refint) : un
+  # `member: uid=bbo,ou=People,…` dont l'uid n'existe pas est accepté SANS UN
+  # MOT. Conséquence exacte, et elle est vicieuse : le run sort VERT, le groupe
+  # est bien là, le read-back confirme le membre — et le palier est en réalité
+  # FERMÉ, parce que personne ne se connectera jamais sous ce nom. Une typo
+  # d'uid produit donc un lab qu'on croit ouvert. C'est la garde que
+  # setup-vault-ldap.sh:138-141 pose en amont de ses propres groupes, pour la
+  # même raison et dans les mêmes termes.
+  for u in "$@"; do uid_exists "$u" || missing="$missing $u"; done
+  if [ -n "$missing" ]; then
+    bad "groupe $cn NON POSÉ — uid inexistant dans l'annuaire :$missing (typo, ou annuaire non semé : jouer scripts/setup-vault-ldap.sh). Un membre fantôme rendrait ce run VERT sur un palier RÉELLEMENT FERMÉ."
+    return 0
+  fi
   out=$(ldif_group "$cn" "$@" | ldap_run ldapadd 2>&1); rc=$?
   if [ "$rc" -eq 0 ]; then ok "groupe $cn CRÉÉ (membres déclarés : $*)"; return 0; fi
   # 68 « Already exists » est le cas NOMINAL du rejeu, pas une erreur — mais on
@@ -271,6 +291,14 @@ else
   ok "$OPERATOR_GROUP existe déjà (posé par setup-vault-ldap.sh)"
   case " $OGOT " in *" $LAB_OSCAR_USER "*) ok "$LAB_OSCAR_USER est bien membre de $OPERATOR_GROUP" ;;
                     *) bad "$LAB_OSCAR_USER ABSENT de $OPERATOR_GROUP — personne ne peut porter l'apply prod" ;; esac
+  # MÊME CONTRE-ÉPREUVE QU'AU ②, et elle compte DAVANTAGE ici : le terminus est
+  # le seul palier dont l'exclusivité humaine est structurelle (--grant-ci ne
+  # l'atteint jamais). alice membre de ce groupe-là, et la demandeuse déploie
+  # la PROD — le seul endroit où plus rien d'autre ne l'en empêcherait.
+  case " $OGOT " in
+    *" $LAB_ALICE_USER "*) bad "$LAB_ALICE_USER (demandeuse) est membre de $OPERATOR_GROUP — la demandeuse porterait l'apply PROD ; à retirer de l'annuaire" ;;
+    *)                     ok "$LAB_ALICE_USER (demandeuse) n'est PAS dans $OPERATOR_GROUP" ;;
+  esac
 fi
 
 printf '\n%d PASS / %d FAIL\n' "$PASS" "$FAIL"

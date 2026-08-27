@@ -99,10 +99,21 @@ NEED_PV="${GATE%%|*}"; APPROVER_GROUP="${GATE#*|}"
 # redécoupés à la main : un champ inséré dans GATE ferait lire le déployeur là
 # où ce code lit l'approbateur, et la porte se relâcherait EN SILENCE (le motif
 # est documenté sur la lib elle-même).
-# `|| true` : une porte SANS `deployerGroup` est le cas normal (dev, rec) — le
-# champ est optionnel, son absence n'est pas une erreur de lecture. Et rien
-# n'est refusé ici sur cette base : contrairement aux références, cet axe-là
-# n'est pas une garde de la DEMANDE, il est vérifié à l'APPLY.
+# Une porte SANS `deployerGroup` est le cas normal (dev, rec) : le champ est
+# optionnel et rien n'est refusé ici sur cette base — contrairement aux
+# références, cet axe-là n'est pas une garde de la DEMANDE, il est vérifié à
+# l'APPLY.
+#
+# ⚠ MAIS CE N'EST PAS CE QUE `|| true` COUVRE, et le croire mène à l'erreur
+# inverse. `env_chain_gate_deployer_group` rend 0 et une chaîne VIDE quand le
+# champ est absent : ce cas-là passe déjà, sans lui. Le SEUL rc=1 qu'elle
+# produise est une SOURCE ILLISIBLE — c'est donc exactement cela que ce
+# `|| true` avalerait. Inoffensif aujourd'hui : `env_chain_gate`, trois lignes
+# plus haut, a déjà refusé PARSE_GATE sur la MÊME source, et ce script tourne
+# sous `set -uo` (pas `-e`), où une substitution en échec n'interrompt rien.
+# Il cesserait de l'être le jour où `-e` arriverait ici — le `|| true`
+# transformerait alors le seul refus utile en silence. Écrit pour que ce
+# jour-là se voie plutôt qu'il ne se découvre.
 DEPLOYER_GROUP=$(env_chain_gate_deployer_group "$TO_ENV" || true)
 
 [ "$NEED_CHANGE" = 0 ] || [ -n "$CHANGE_REF" ] \

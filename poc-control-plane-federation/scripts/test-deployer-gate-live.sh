@@ -83,6 +83,11 @@ MUTATED=0        # 1 dès que l'annuaire est touché
 MUT_GROUP=""     # le groupe muté
 MUT_USER=""      # le membre retiré
 RESTORE_KO=0     # 1 si la restauration a échoué — le verdict final le reflète
+# La commande de réparation EXACTE, calculée au moment de la mutation (elle a
+# besoin du palier et de la liste des membres d'AVANT). Défaut : l'invocation
+# nue du poseur, qui suffit tant que la cible est l'un de ses membres par
+# défaut. Voir le calcul en ⑤ pour le cas où elle ne l'est pas.
+MUT_REPAIR="bash scripts/setup-deployer-groups.sh"
 
 # ── L'appel client LDAP ─────────────────────────────────────────────────────
 # MÊME PLOMBERIE que setup-deployer-groups.sh:129 (mot de passe de bind ni dans
@@ -127,7 +132,20 @@ restore_group(){
       return 0 ;;
   esac
   RESTORE_KO=1
-  echo "RESTAURATION ECHOUEE : $MUT_USER n'est PAS revenu dans $MUT_GROUP (poseur rc=$rc) — lab laissé AMPUTÉ ; rejouer : bash scripts/setup-deployer-groups.sh ; dernières lignes :" >&2
+  # La commande de réparation est IMPRIMÉE TELLE QUELLE, prête à coller. Le
+  # poseur nu ne suffit PAS toujours : il repose ses membres PAR DÉFAUT, et la
+  # cible de cette porte est dérivée de l'ANNUAIRE (elle peut donc être
+  # quelqu'un que les défauts ne nomment pas). D'où le knob DEPLOYERS_<PALIER>
+  # calculé en ⑤ sur la liste d'AVANT la mutation. Un exploitant qui lit
+  # « lab laissé AMPUTÉ » doit pouvoir réparer sans relire le script.
+  {
+    echo "RESTAURATION ECHOUEE : $MUT_USER n'est PAS revenu dans $MUT_GROUP (poseur rc=$rc) — lab laissé AMPUTÉ."
+    echo "  RÉPARER (commande exacte, à coller depuis $(pwd)) :"
+    echo "      $MUT_REPAIR"
+    echo "  VÉRIFIER ensuite que le membre est bien revenu :"
+    echo "      docker exec $LDAP_CONTAINER ldapsearch -x -b 'cn=$MUT_GROUP,ou=Groups,$BASE_DN' -s base member"
+    echo "  dernières lignes du poseur :"
+  } >&2
   tail -5 "$TMP/restore.log" >&2
   return 1
 }
@@ -373,6 +391,14 @@ echo "== ⑤ CONTRE-ÉPREUVE DU GRANT VIVANT : retirer de l'annuaire ⇒ perdre 
 MEMBERS="$(group_members "$TARGET_GROUP" | tr '\n' ' ')"
 NMEM="$(group_members "$TARGET_GROUP" | grep -c .)"
 MUT_GROUP="$TARGET_GROUP"; MUT_USER="$TARGET_USER"
+# La commande de réparation EXACTE, calculée ICI parce que c'est le seul endroit
+# où la liste d'AVANT est connue. Le knob est nommé d'après le palier, comme le
+# poseur le dérive lui-même (`DEPLOYERS_<PALIER>`) : il rend la réparation
+# correcte même quand la cible, dérivée de l'ANNUAIRE, n'est pas un membre par
+# défaut du poseur — cas où l'invocation nue reposerait quelqu'un d'AUTRE et
+# laisserait le lab amputé en annonçant un succès.
+MUT_KEY="$(printf '%s' "$TARGET_ENV" | tr 'a-z-' 'A-Z_')"
+MUT_REPAIR="DEPLOYERS_${MUT_KEY}=\"$(printf '%s' "$MEMBERS" | tr -s ' ' | sed 's/ *$//')\" bash scripts/setup-deployer-groups.sh"
 # MUTATED armé AVANT l'écriture : une interruption REÇUE PENDANT le docker exec
 # déclencherait le trap ; l'indicateur posé APRÈS, la restauration serait sautée
 # et le lab PARTAGÉ resterait amputé. Posé avant, une restauration « pour rien »
