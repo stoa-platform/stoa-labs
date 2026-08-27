@@ -1,7 +1,7 @@
 ---
 title: "ADR-085 — Le repli, comme composant du déploiement. Le rollback d'une promotion n'est ni prod-only ni un DELETE : c'est un re-apply Git sur le PALIER DE LA PROMOTION (jamais saisi), qui restaure l'état désiré N-1 verbatim — pin compris — par le même verbe et le même preflight déployeur que l'aller."
 sidebar_label: "ADR-085 : le rollback des paliers (G6)"
-status: "Acté et prouvé hors-ligne + par script live. Offline : 3 tests nouveaux sur `handlers_rollback_test.go` (dont un qui rougit sur le code d'avant G6 — le trou de symétrie change_ref/itsmCheck) + 6 tests préexistants de fidélité `labctl Publish` réparés (T3a, défaut découvert : PUT inconditionnel sur une API ACTIVE, que le produit refuse — ADR-079). Live : `scripts/test-rollback-paliers.sh` 22/0, rejoué deux fois plus un rejeu contrôleur (22/0) — chaîne 5 paliers sur un repo scratch, rollback homol réel contre le wM du lab via `wm-admin-homol`, deploy.homol.yaml == N-1 verbatim au retour, re-apply idempotent, smoke catalogue à la version N-1, contre-épreuves prod (400 sans change_ref, 409 double rollback, 409 sans état antérieur). Builds Jenkins : en vol au moment de cet ADR — non référencés ici tant que non joués."
+status: "Acté et prouvé hors-ligne + par script live. Offline : 3 tests nouveaux sur `handlers_rollback_test.go` (dont un qui rougit sur le code d'avant G6 — le trou de symétrie change_ref/itsmCheck) + 6 tests préexistants de fidélité `labctl Publish` réparés (T3a, défaut découvert : PUT inconditionnel sur une API ACTIVE, que le produit refuse — ADR-079). Live : `scripts/test-rollback-paliers.sh` 22/0 ×2 + rejeu contrôleur (22/0) — chaîne 5 paliers sur un repo scratch, rollback homol réel contre le wM du lab via `wm-admin-homol`, deploy.homol.yaml == N-1 verbatim au retour, re-apply idempotent, smoke catalogue à la version N-1, contre-épreuves prod (400 sans change_ref, 409 double rollback, 409 sans état antérieur). Builds Jenkins : en vol au moment de cet ADR — non référencés ici tant que non joués."
 maturite_technique: "✅ Mécanisme prouvé hors-ligne (les deux gardes du trou de symétrie testées par mutation) et par script live sur homol (le seul palier intermédiaire porté par la porte du GOAL). Résiduel nommé : la fidélité du mock wM sur PUT-refusé-si-actif n'est pas re-mesurée contre le wM réel dans CE jalon (héritée d'ADR-078/079) ; les builds Jenkins de la porte n'étaient pas encore joués à l'écriture."
 date: 2026-08-27
 adr_number: 85
@@ -120,8 +120,8 @@ evidence pack).
   `rolled_back`, evidence commitée, re-apply `--env homol` contre le wM réel
   du lab via `wm-admin-homol`, catalogue à la version N-1. Contre-épreuves
   live : rollback prod sans change_ref ⇒ 400 `GATE_REFS_REQUIRED` ; double
-  rollback ⇒ 409 `NOT_APPROVED` ; état unique ⇒ 409 `NO_PREVIOUS_STATE`. 22/0,
-  rejoué deux fois plus un rejeu contrôleur (22/0). Lab remis à l'identique.
+  rollback ⇒ 409 `NOT_APPROVED` ; état unique ⇒ 409 `NO_PREVIOUS_STATE`. 22/0
+  ×2 + rejeu contrôleur (22/0). Lab remis à l'identique.
 - **Builds Jenkins** (la porte du GOAL au sens G5 : par les jobs réels) : le
   job rollback, `PROMOTION_ID` d'une promotion homol réelle du dépôt
   governance du lab, build vert attendu = re-apply homol + smoke ; un build

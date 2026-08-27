@@ -447,8 +447,8 @@ un qui rougit sur le code d'avant G6 — le trou de symétrie change_ref /
 itsmCheck) ; 6 tests préexistants de fidélité `labctl Publish` réparés (défaut
 découvert en cours de route : PUT inconditionnel sur une API active, que le
 produit refuse — corrigé en sautant le PUT de définition quand l'API trouvée
-est déjà active). Live : `scripts/test-rollback-paliers.sh`, 22/0, rejoué deux
-fois plus un rejeu contrôleur (22/0) — rollback homol réel contre le wM du
+est déjà active). Live : `scripts/test-rollback-paliers.sh`, 22/0 ×2 + rejeu
+contrôleur (22/0) — rollback homol réel contre le wM du
 lab, `deploy.homol.yaml` restauré verbatim, re-apply idempotent, smoke
 catalogue à la version N-1, contre-épreuves prod (400 `GATE_REFS_REQUIRED`
 sans change_ref, 409 double rollback, 409 `NO_PREVIOUS_STATE`). Détail complet
