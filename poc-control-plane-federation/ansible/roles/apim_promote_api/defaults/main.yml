@@ -109,3 +109,10 @@ apim_ss_archive_sha256: ""
 # ce default devrait suivre la discipline du côté CI (valeur figée, hors de
 # portée de l'appelant).
 apim_ss_authoring_env: "dev"
+
+# --- archive épinglée par le CI (jalon G5) ------------------------------------
+# Chemin ABSOLU de l'archive fetchée au registre (adressée par archive_sha256 du
+# marqueur). Non vide => REMPLACE apim_promote.archive après la fusion per_env —
+# même motif que apim_ss_contract_pin (G3) : ce qui part au moteur est ce que le
+# résolveur/le store ont vérifié, jamais ce que le manifeste prétend porter.
+apim_ss_archive_pin: ""

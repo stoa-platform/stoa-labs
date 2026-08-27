@@ -28,6 +28,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 	sigsyaml "sigs.k8s.io/yaml"
@@ -43,6 +44,7 @@ var (
 	promoteActionFlag   string
 	promoteEnvFlag      string
 	promoteTargetFlag   string
+	promoteArchiveFlag  string
 )
 
 var promoteCmd = &cobra.Command{
@@ -61,6 +63,7 @@ func init() {
 	promoteCmd.Flags().StringVar(&promoteActionFlag, "action", "import", "export | import")
 	promoteCmd.Flags().StringVar(&promoteEnvFlag, "env", "", "environment key for the per_env merge (required when the manifest declares per_env)")
 	promoteCmd.Flags().StringVar(&promoteTargetFlag, "target", "", "targets.yaml entry to drive (default: the first webmethods target)")
+	promoteCmd.Flags().StringVar(&promoteArchiveFlag, "archive", "", "absolute path of the artifact fetched by the CI (overrides the manifest's archive field); required when the manifest's archive is a Jinja template ({{ ... }}) only Ansible can render")
 	rootCmd.AddCommand(promoteCmd)
 }
 
@@ -153,6 +156,25 @@ func loadPromoteManifest(path, env string) (promoteSpec, error) {
 	return spec, nil
 }
 
+// applyArchiveOverride pins the CI-fetched artifact path over the manifest's
+// archive field. The real manifests carry a Jinja expression only Ansible can
+// render (measured: clients/_example/apis/accounts-read.promote.yml) — reading
+// it raw would always fail, so a templated path WITHOUT an override is refused
+// by name instead of surfacing as a confusing open() error.
+func applyArchiveOverride(spec *promoteSpec, override string) error {
+	if override != "" {
+		if !strings.HasPrefix(override, "/") {
+			return fmt.Errorf("promote: ARCHIVE_PATH_RELATIVE — --archive %q must be absolute", override)
+		}
+		spec.Archive = override
+		return nil
+	}
+	if strings.Contains(spec.Archive, "{{") {
+		return fmt.Errorf("promote: ARCHIVE_PATH_TEMPLATED — the manifest carries %q (a template only Ansible renders); pass --archive with the fetched artifact", spec.Archive)
+	}
+	return nil
+}
+
 // deepMerge merges src into dst recursively (maps merge, scalars/lists replace)
 // — the same combine(recursive=True) the Ansible resolve-env uses.
 func deepMerge(dst, src map[string]any) {
@@ -211,6 +233,9 @@ func runPromote(cmd *cobra.Command, _ []string) error {
 	}
 	spec, err := loadPromoteManifest(promoteManifestFlag, promoteEnvFlag)
 	if err != nil {
+		return err
+	}
+	if err := applyArchiveOverride(&spec, promoteArchiveFlag); err != nil {
 		return err
 	}
 	if spec.Archive == "" {

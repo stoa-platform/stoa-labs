@@ -78,3 +78,18 @@ func TestLoadPromoteManifest_FailsClosedOnUnknownEnv(t *testing.T) {
 		}
 	}
 }
+
+func TestPromoteArchiveOverride(t *testing.T) {
+	spec := promoteSpec{Archive: "{{ playbook_dir }}/../dist/x.zip"}
+	if err := applyArchiveOverride(&spec, "/tmp/fetched.zip"); err != nil || spec.Archive != "/tmp/fetched.zip" {
+		t.Fatalf("override: %v / %q", err, spec.Archive)
+	}
+	spec = promoteSpec{Archive: "{{ playbook_dir }}/../dist/x.zip"}
+	if err := applyArchiveOverride(&spec, ""); err == nil {
+		t.Fatal("un chemin templaté sans --archive doit refuser (ARCHIVE_PATH_TEMPLATED)")
+	}
+	spec = promoteSpec{Archive: "/deja/absolu.zip"}
+	if err := applyArchiveOverride(&spec, ""); err != nil || spec.Archive != "/deja/absolu.zip" {
+		t.Fatalf("chemin littéral sans flag: %v", err)
+	}
+}

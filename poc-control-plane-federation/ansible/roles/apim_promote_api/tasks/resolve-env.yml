@@ -48,6 +48,11 @@
     apim_promote: "{{ apim_promote_base_m | combine(apim_promote_over_m, recursive=True) }}"
   when: apim_promote_has_per_env
 
+- name: "Env : épingler l'archive fetchée par le CI (apim_ss_archive_pin, G5)"
+  ansible.builtin.set_fact:
+    apim_promote: "{{ apim_promote | combine({'archive': apim_ss_archive_pin}) }}"
+  when: "(apim_ss_archive_pin | default('')) | length > 0"
+
 - name: "Env : promotion résolue pour '{{ apim_ss_env | default('(mono-env)') }}'"
   ansible.builtin.debug:
     msg: >-
