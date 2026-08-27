@@ -260,6 +260,62 @@ protection ou des paramètres de job :
   Jenkinsfile** — un scellement présent dans le Jenkinsfile mais absent du
   config.xml posé ne prend pas effet.
 
+## Promouvoir une API (G5)
+
+Depuis G5 (ADR-083), promouvoir une API publiée d'un palier au suivant n'est
+**jamais** un re-POST du contrat : c'est un **import d'archive à GUID stable**
+(ADR-079), transporté par le registre de packages génériques de Gitea,
+adressé par le contenu (la version du package **est** le sha256 de
+l'archive). Le palier cible doit être **ouvert** au sens de G4 — voir
+« Ouvrir un palier (G4) » ci-dessus, ce geste n'est pas répété ici.
+
+Le parcours opérateur, pas à pas :
+
+1. **Publier en authoring** (`dev`) — inchangé, via `team-publish` (§ ce
+   qui précède). L'API doit être active et déclarée dans un
+   `apis/<api>.promote.yml` du dépôt d'équipe.
+2. **Exporter l'archive** — lancer le job `api-promote-export` (paramètres
+   `TEAM`, `API_NAME`, identité nominative). Il joue l'export contre la
+   gateway d'authoring, pousse l'archive sanitisée au registre et imprime :
+
+   ```
+   EXPORT_CONFIRMED_SUMMARY guid=<guid> sha256=<sha256> package=<url>
+   ```
+
+3. **Épingler le guid** — recopier `guid=` dans `apis/<api>.promote.yml`
+   (champ `apim_promote.guid`) et pousser une PR sur le dépôt d'équipe.
+   Sans guid pinné, l'import se refuse (`IMPORT_REFUSED`) : fail-closed, ce
+   n'est pas un oubli à contourner.
+4. **Demander la promotion** — lancer le job `api-promote-request` (G3,
+   inchangé) avec `ARCHIVE_SHA256=<sha256>` de l'étape 2. Il ouvre une PR
+   `promote/<api>-<env>` sur le dépôt d'équipe.
+5. **Merger la PR** — sous protection de branche (ADR-081/ADR-082) : c'est
+   la décision humaine. Le merge déclenche `team-promote` via le **même**
+   webhook que `team-publish` (aucun geste supplémentaire sur le dépôt
+   d'équipe).
+6. **Répondre à la pause** — le job `team-promote` demande une identité
+   d'annuaire nominative. Elle **doit être celle qui a fusionné la PR** ; si
+   la porte du palier cible exige les quatre yeux, elle sera comparée au
+   demandeur (`promoted_by` du marqueur mergé).
+7. **Vérifier** — le commentaire posé sur la PR (succès ou échec) porte le
+   pin, la version, le sha256, le moteur utilisé, et les deux identités
+   (demandeur, mergeur).
+
+**Repli si l'archive n'a jamais été poussée.** Un refus
+`ARCHIVE_INTROUVABLE` au moment du merge signifie que l'export (étape 2) n'a
+jamais été rejoué depuis, ou a été rejoué avec un digest différent de celui
+épinglé — **rejouer l'export** (étape 2), reprendre le `sha256` produit, et
+soit corriger `ARCHIVE_SHA256` dans une nouvelle demande, soit republier au
+même contenu si le digest attendu est simplement absent du registre.
+
+Deux moteurs jouent ce verbe derrière le même manifeste — le rôle Ansible
+(défaut, chemin client) et `labctl` (moteur du lab) — sélectionnés par un
+knob de pipeline (`PROMOTE_ENGINE`), jamais par un paramètre de build. Le
+détail du mécanisme, l'ordre des gardes et les limites nommées (dont le
+4-yeux inerte tant qu'un plugin Jenkins manque, et le fail-open par palier
+sans porte déclarée) sont dans **ADR-083 — Le verbe archive et son
+transport**.
+
 ## Résiduel
 
 - **Le lien entre le Jenkins local et celui du labs n'est pas établi.** Ce sont
