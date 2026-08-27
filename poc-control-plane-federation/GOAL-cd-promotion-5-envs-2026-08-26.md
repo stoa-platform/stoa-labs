@@ -235,6 +235,27 @@ Art. 17(1)(e) : les procédures de repli et les **responsabilités** associées 
 **Contre-épreuve :** rollback sans référence de changement sur un palier qui l'exige ⇒ refus.
 **Qualification à ne pas dépasser :** (e) exige d'**identifier** les procédures, pas de les tester. L'obligation de tester le repli s'argumente depuis (c) *« controlled testing »* ou depuis DORA niveau 1, **pas** depuis (e) seul. On teste parce que c'est sérieux, pas en citant le mauvais article.
 
+> **FAIT le 2026-08-27** — ADR-085, `ENVIRONNEMENTS.md` § « Revenir en
+> arrière (G6) ». Porte tenue à trois étages : **offline** (3 tests nouveaux
+> `handlers_rollback_test.go`, dont un qui rougissait sur l'ancien code) ;
+> **live** `scripts/test-rollback-paliers.sh` **22/0 ×2 + rejeu contrôleur
+> (22/0)** ; et par **builds Jenkins réels** — `stoa-prod-rollback` **#6
+> SUCCESS** (rollback homol `pr-aa26f598` — palier **DÉRIVÉ** de la
+> promotion, terminus:no, `restored` homol@1.0.1, commit gouverné `a87ebc4` +
+> evidence, SMOKE catalogue N-1 via `wm-admin-homol`, `deploy.homol.yaml`
+> verbatim pin compris).
+> **Contre-épreuve tenue** : build **#5 FAILURE attendue** — `CHANGE_REF`
+> vide sur une promotion prod approuvée ⇒ HTTP 400 `GATE_REFS_REQUIRED` de
+> l'API (même job, même champ vide, verdict **opposé** selon le palier : la
+> porte décide, jamais le formulaire).
+> **Deux défauts découverts et fermés en route** : `apply-uac` non idempotent
+> sur une API wM **ACTIVE** (PUT refusé par le produit — le PUT de
+> définition est désormais **sauté** quand l'API est active ; la dérive de
+> définition sur une API active reste au verbe archive, G8 ; 6 tests
+> préexistants n'étaient verts que par infidélité du harnais, réparés) ; un
+> paramètre de build Jenkins **VIDE** est **retiré** de l'environnement
+> (`${CHANGE_REF:-}` sous `set -u`, mesuré par le build #4).
+
 ### G7 — Le parcours du demandeur : une PR, un tableau de bord
 
 ADR-081 tient : la décision est le **merge**, la PR est le tableau de bord. Le demandeur ne « lance pas un job de déploiement en rec » — il ouvre une **PR de promotion** portant `deploy.rec.yaml`, et le statut de l'apply y remonte. Le formulaire Jenkins reste une porte d'entrée ; il ne porte **aucune autorité**.
