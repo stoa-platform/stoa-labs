@@ -24,6 +24,10 @@
 # ⚠ La gateway du lab est recyclée par un keepalive (~20 min) : wait_gw avant
 # chaque phase — un rouge doit vouloir dire « la parité est cassée », jamais
 # « le conteneur redémarrait ».
+# L'idiome `test && ok || ko` du harnais est voulu : `ok` (printf+compteur) ne
+# peut pas échouer, donc le `||` ne double-compte jamais — même régime que
+# test-deployer-gate-live.sh.
+# shellcheck disable=SC2015
 set -u
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
@@ -74,6 +78,38 @@ wait_gw() {
 
 scope_id() { adm "$GW/scopes" | jq -r --arg n "$SCOPE_NAME" '[.scopes[]? | select(.scopeName==$n) | .id][0] // empty'; }
 
+# fresh_window — le trial wM expire ~25 min et le keepalive le recycle à
+# 23 min d'uptime (wm-keepalive.sh) : un run lancé tard dans la fenêtre voit
+# la gateway mourir EN PLEIN import (mesuré : run du 2026-08-27, rc=2 au
+# milieu du play). Si l'uptime dépasse le seuil, on attend le recyclage et on
+# repart d'une fenêtre fraîche — motif G7 (saut #21 lancé après cycle frais).
+fresh_window() {
+  local dk="" c="${WM_CONTAINER:-poc-webmethods-real}" st ep up i
+  command -v docker >/dev/null 2>&1 && dk=docker
+  [ -z "$dk" ] && [ -x /opt/homebrew/bin/docker ] && dk=/opt/homebrew/bin/docker
+  [ -z "$dk" ] && { printf '  ⚠ docker introuvable — fenêtre keepalive non mesurable, on tente\n'; return 0; }
+  st="$("$dk" inspect "$c" --format '{{.State.StartedAt}}' 2>/dev/null)" || return 0
+  st="${st%.*}"; st="${st%Z}"
+  ep="$(date -u -j -f "%Y-%m-%dT%H:%M:%S" "$st" +%s 2>/dev/null || date -u -d "$st" +%s 2>/dev/null || echo 0)"
+  [ "$ep" = "0" ] && return 0
+  up=$(( ( $(date +%s) - ep ) / 60 ))
+  if [ "$up" -lt 12 ]; then
+    printf '  ⏱ fenêtre keepalive fraîche (uptime %dmin)\n' "$up"
+    return 0
+  fi
+  printf '  ⏱ uptime %dmin ≥ 12 — attente du recyclage keepalive avant de lancer le verbe…\n' "$up"
+  i=0
+  while [ "$i" -lt 200 ]; do
+    sleep 9
+    local st2
+    st2="$("$dk" inspect "$c" --format '{{.State.StartedAt}}' 2>/dev/null)"; st2="${st2%.*}"; st2="${st2%Z}"
+    [ "$st2" != "$st" ] && { printf '  ⏱ gateway recyclée, attente du retour de service…\n'; wait_gw; return 0; }
+    i=$((i+1))
+  done
+  printf '  ⚠ pas de recyclage observé en 30 min — on tente dans la fenêtre courante\n'
+  return 0
+}
+
 # wipe_target — remet le palier à VIERGE pour l'API du manifeste : API,
 # aliases per-env (backend/creds/générique) et scope-mapping. L'AS reste :
 # il est env-local, posé par l'init d'env, pas par le moteur.
@@ -104,6 +140,7 @@ trap cleanup EXIT
 say "préflight : gateway, Vault, outils, moteurs"
 wait_gw || { ko "la gateway d'admin ne répond pas sur $GW"; exit 1; }
 ok "gateway d'admin joignable ($GW)"
+fresh_window
 for T in jq zip unzip zipinfo python3 ansible-playbook go; do
   command -v "$T" >/dev/null 2>&1 || { ko "outil requis absent : $T"; exit 1; }
 done
@@ -322,7 +359,16 @@ strip_registered() { # $1 = snapshot json, modifié en place
 
 snapshot() { # $1 = fichier de sortie
   local api actions policies aliases scope dp pol prec act
-  api="$(adm "$GW/apis/$PIN_GUID" | jq '.apiResponse.api')"
+  api="$(adm "$GW/apis/$PIN_GUID" | jq '.apiResponse.api // empty')"
+  if [ -z "$api" ]; then
+    # FAIL-CLOSED : un snapshot pris pendant un recyclage serait un état
+    # fantôme qui fausserait le diff dans un sens ou l'autre (mesuré :
+    # « snapshot A pris ( actions, dp=) » sur gateway morte). On attend le
+    # retour et on relit UNE fois ; sinon rouge.
+    wait_gw
+    api="$(adm "$GW/apis/$PIN_GUID" | jq '.apiResponse.api // empty')"
+    [ -z "$api" ] && { ko "SNAPSHOT_UNREADABLE : /apis/$PIN_GUID illisible ($1)"; printf '{}' > "$1"; return 1; }
+  fi
   # Le graphe de politiques — shapes MESURÉES 2026-08-27 sur le produit :
   # /policies/{id} → .policy.policyEnforcements[].enforcements[]
   #   .enforcementObjectId ; /policyActions/{id} → .policyAction (templateKey,
@@ -428,6 +474,7 @@ fi
 # Motif F1 : une parité qui ne rougit jamais ne prouve rien. Deux mutations
 # volontaires (le scope-mapping sauté), une par moteur, sur des COPIES — le
 # diff doit être non vide ET nommer le champ muté.
+fresh_window
 say "phase 6a — MUTATION labctl : parité attendue ROUGE"
 cp -R "$REPO/labctl" "$WORK/labctl-mut"
 MUT_GO='if spec.ScopeMapping.ExternalScope != "" || spec.ScopeMapping.AuthServerAlias != "" {'
