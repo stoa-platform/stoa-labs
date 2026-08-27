@@ -336,9 +336,16 @@ echo "== ⑩bis mutation de l'axe Jenkinsfile : les DEUX façons de rendre ⑨a 
 AXE='    ENVN = "${env.ENVN ?: '\''dev'\''}"'
 awk -v l="$AXE" '{print} /^  environment \{/ && !d {print l; d=1}' \
   ci/Jenkinsfile.team-publish > "$TMP/jf_mut"
-grep -q 'ENVN' "$TMP/jf_mut" \
-  && ok "⑩bis(a0) la mutation a bien réinjecté un axe env (elle n'est pas un no-op)" \
-  || bad "⑩bis(a0) la mutation n'a rien injecté — l'ancre ^  environment { a bougé"
+# ⚠ ANTI-NO-OP par `cmp`, PAS par un grep du fichier brut. Ce contrôle lisait
+# naguère `grep -q 'ENVN' "$TMP/jf_mut"` sur le fichier BRUT — or le Jenkinsfile
+# porte depuis G4 un COMMENTAIRE « … SCELLE ENVN » (ligne 105) : le grep matchait
+# donc TOUJOURS, ancre awk cassée ou non, et l'anti-no-op était vacant à son tour
+# (la classe de bug de ⑨a, une marche plus haut — mesuré : ancre inexistante ⇒
+# mutant identique au réel ⇒ l'ancien a0 rendait quand même ok). `cmp` compare
+# les octets : il ne peut pas être satisfait par de la prose.
+cmp -s ci/Jenkinsfile.team-publish "$TMP/jf_mut" \
+  && bad "⑩bis(a0) le mutant est IDENTIQUE au fichier — l'ancre ^  environment { a bougé, la mutation ne mute rien" \
+  || ok "⑩bis(a0) le mutant diffère RÉELLEMENT du fichier (la mutation n'est pas un no-op)"
 [ "$(jf_axe_verdict "$TMP/jf_mut")" = ROUTE ] \
   && ok "⑩bis(a) axe env réinjecté ⇒ le détecteur de ⑨a REND ROUTE (il n'est pas aveugle)" \
   || bad "⑩bis(a) l'axe réinjecté passe inaperçu — l'assertion Jenkinsfile de ⑨a est vacante"
