@@ -236,7 +236,9 @@ la voie et qu'il faut passer par userpass, réécrire la liste **complète** : l
 l'existant, puis tout réécrire en y ajoutant `apply-rec`.
 
 ```bash
-existing=$(vault read -field=token_policies auth/userpass/users/<login>)
+# lire les policies existantes en JSON (le champ brut rend la représentation Go
+# du slice « [default extra1] », crochets et espaces compris — inutilisable tel quel) :
+existing=$(vault read -format=json auth/userpass/users/<login> | jq -r '.data.token_policies | join(",")')
 vault write auth/userpass/users/<login> token_policies="${existing},apply-rec"
 ```
 
