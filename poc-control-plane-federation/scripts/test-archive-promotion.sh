@@ -36,6 +36,42 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# ---------- purge de l'ACDL (le manifeste de l'import) -----------------------
+# POURQUOI. Ce harnais re-zippe des archives à la main, et ne réempaquette que
+# `APIGatewayAssets.acdl` + `API/`. Or l'ACDL est le MANIFESTE de l'import : un
+# asset qu'il DÉCLARE mais que le zip ne PORTE PAS fait échouer toute sa branche
+# de dépendances. Tant que `enableTeamWork` était éteint, l'export ne contenait
+# rien d'autre et le raccourci passait ; depuis qu'il est allumé, l'export
+# embarque `AccessProfile/`, `AccessControlList/` et une entrée `Team`, et
+# l'import répond « Unable to find AccessProfile.Administrators Asset
+# AccessProfile while importing the ACDL file » sur CHAQUE ligne.
+#
+# La purge ci-dessous est la MÊME que celle des deux moteurs — étape 2 de
+# roles/apim_promote_api/files/sanitize_archive.py et
+# labctl/internal/adapter/webmethods/archive.go:157-164 — donc le harnais cesse
+# d'être plus fragile que ce qu'il éprouve. Whitelist {API, Policy,
+# PolicyAction}, et les `<dependsOn>` qui pointent ailleurs disparaissent avec.
+# AUCUNE assertion ne change : le harnais compte toujours 22 épreuves.
+#
+# Idempotente : la rejouer sur un ACDL déjà purgé ne fait rien. Les trois sites
+# de re-zip l'appellent, bien que deux d'entre eux héritent d'une archive déjà
+# purgée — un futur changement de leur source ne doit pas rouvrir le trou en
+# silence.
+cat > "$WORK/purge_acdl.py" <<'PYEOF'
+import re, sys
+KEEP = {"API", "Policy", "PolicyAction"}
+path = sys.argv[1]
+s = open(path, encoding="utf-8").read()
+for t in set(re.findall(r'<asset name="([A-Za-z]+)\.', s)):
+    if t in KEEP:
+        continue
+    s = re.sub(r'\s*<asset name="' + re.escape(t) + r'\.[^"]*".*?</asset>', "", s, flags=re.S)
+    s = re.sub(r'\s*<asset name="' + re.escape(t) + r'\.[^"]*"[^>]*/>', "", s)
+    s = re.sub(r"\s*<dependsOn>APIGateway:" + re.escape(t) + r"\.[^<]*</dependsOn>", "", s)
+open(path, "w", encoding="utf-8").write(s)
+PYEOF
+purge_acdl() { python3 "$WORK/purge_acdl.py" "$1/APIGatewayAssets.acdl"; }
+
 # ---------- setup : API jetable routée ${alias}, alias-first -----------------
 say "setup : alias-first + API jetable + routing \${$ALIAS}"
 ALIAS_ID=$(adm -H "Content-Type: application/json" -X POST "$GW/alias" \
@@ -60,6 +96,7 @@ mkdir -p "$WORK/a0" && unzip -qo "$WORK/a0.zip" -d "$WORK/a0"
 RPA=$(grep -rl straightThroughRouting "$WORK/a0/API"); [ -n "$RPA" ] || { ko "routing action introuvable"; exit 1; }
 jq --arg u "\${$ALIAS}/\${sys:resource_path}" \
   '(.parameters[] | select(.templateKey=="endpointUri") | .values) = [$u]' "$RPA" > "$RPA.n" && mv "$RPA.n" "$RPA"
+purge_acdl "$WORK/a0"
 ( cd "$WORK/a0" && zip -qrX ../a1.zip APIGatewayAssets.acdl API )
 R=$(adm -F "file=@$WORK/a1.zip;type=application/zip" "$GW/archive?overwrite=apis,policies,policyactions" \
   | jq -r '[.ArchiveResult[]|to_entries[]|select(.value.status!="Success")]|length')
@@ -98,6 +135,7 @@ python3 - "$APIREC" <<'EOF'
 import json,sys
 r=json.load(open(sys.argv[1])); r["isActive"]=False; json.dump(r,open(sys.argv[1],"w"))
 EOF
+purge_acdl "$WORK/inact"
 ( cd "$WORK/inact" && zip -qrX ../inact.zip APIGatewayAssets.acdl API )
 adm -F "file=@$WORK/inact.zip;type=application/zip" "$GW/archive?overwrite=apis,policies,policyactions" -o /dev/null
 A=$(adm "$GW/apis/$API_ID" | jq -r '.apiResponse.api.isActive')
@@ -175,6 +213,7 @@ for r,_,fs in os.walk(os.path.join(src,"API")):
     for f in fs:
         p=os.path.join(r,f); rel=sub(os.path.relpath(p,src)); op=os.path.join(dst,rel)
         os.makedirs(os.path.dirname(op),exist_ok=True); open(op,"w").write(sub(open(p).read()))
+subprocess.run([sys.executable,os.path.join(work,"purge_acdl.py"),os.path.join(dst,"APIGatewayAssets.acdl")],check=True)
 os.chdir(dst); subprocess.run(["zip","-qrX",os.path.join(work,"l2.zip"),"APIGatewayAssets.acdl","API"],check=True)
 print(ids[api_id])
 EOF
