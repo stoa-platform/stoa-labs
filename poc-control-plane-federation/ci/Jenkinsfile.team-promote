@@ -100,6 +100,9 @@ pipeline {
     ADMIN_VIA          = "${env.ADMIN_VIA ?: 'proxy-oauth2'}"
     // Gabarit d'URL admin par palier — __ENV__ substitué par team-promote.sh.
     APIM_API_BASE_TPL  = "${env.APIM_API_BASE_TPL ?: 'http://webmethods-real:5555/gateway/wm-admin-__ENV__/1.0/rest/apigateway'}"
+    // Voie DIRECTE du terminus (G7) : la gateway réelle elle-même, sans proxy
+    // (__ENV__ absent du gabarit est licite — la substitution est un no-op).
+    APIM_DIRECT_BASE_TPL = "${env.APIM_DIRECT_BASE_TPL ?: 'http://webmethods-real:5555/rest/apigateway'}"
   }
 
   stages {

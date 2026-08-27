@@ -192,6 +192,24 @@ case " $CHAIN " in *" $TO_ENV "*) ;; *) fail "ENV_INVALIDE : '$TO_ENV' hors de l
 [ "$TO_ENV" != "$ENVN_AUTH" ] \
   || fail "ENV_INVALIDE : '$TO_ENV' est l'environnement d'authoring — rien ne s'y promeut (il suit HEAD par conception, ADR-079)"
 
+# ── 1bis. LA VOIE DU TERMINUS — dérivée de la POSITION, jamais du nom ────────
+# Aucun proxy wm-admin-<env> n'existe devant le DERNIER palier : l'exclusion
+# est STRUCTURELLE (G4 — env_chain_nonprod partout, ci-horsprod sans le
+# terminus). La voie y est donc DIRECTE (Basic, creds lus dans Vault par le
+# rôle), quelle que soit la valeur du knob ADMIN_VIA — qui ne pilote QUE les
+# paliers intermédiaires. Même dessin que ci/Jenkinsfile.rollback (G6) :
+# terminus par position, deux voies.
+TERMINUS="$(env_chain_terminus)" || fail "CHAINE_ILLISIBLE : terminus indéterminable (environments.yaml)"
+if [ "$TO_ENV" = "$TERMINUS" ]; then
+  [ -n "$APIM_DIRECT_BASE_TPL" ] \
+    || fail "TERMINUS_SANS_VOIE : '$TO_ENV' est le terminus de la chaîne — pas de proxy wm-admin-<env> devant lui (exclusion structurelle G4) ; la voie directe exige APIM_DIRECT_BASE_TPL, et dire sa cible est volontaire"
+  [ "$PROMOTE_ENGINE" != labctl ] \
+    || fail "COMBINAISON_NON_SUPPORTEE : PROMOTE_ENGINE=labctl vers le terminus '$TO_ENV' — pas de proxy OAuth2 devant le terminus, et le moteur labctl ne s'authentifie que par bearer ; utiliser le moteur ansible (voie directe, creds lus dans Vault par le rôle, jamais écrits sur disque)"
+  EFFECTIVE_VIA=direct
+else
+  EFFECTIVE_VIA="$ADMIN_VIA"
+fi
+
 # ── 2. RÉCONCILIATION AVEC GITEA — le payload n'est pas la vérité ────────────
 # Le webhook n'a ni secret HMAC vérifié en aval ni garantie de fraîcheur : un
 # tir manuel avec le token GWT partagé peut prétendre N'IMPORTE QUEL
@@ -528,8 +546,9 @@ echo "palier ouvert : envs/${TO_ENV}/wm-admin lisible par l'identité du build"
 
 # ── 8. LE MOTEUR — UN SEUL SITE D'APPEL, APRÈS TOUT ─────────────────────────
 # La base d'admin du palier. En proxy-oauth2 c'est le proxy d'admin (qui porte
-# lui-même l'authentification) ; en direct c'est la gateway.
-if [ "$ADMIN_VIA" = direct ]; then
+# lui-même l'authentification) ; en direct c'est la gateway. EFFECTIVE_VIA
+# (§1bis) : direct FORCÉ pour le terminus, sinon le knob ADMIN_VIA.
+if [ "$EFFECTIVE_VIA" = direct ]; then
   APIM_BASE="$(printf '%s' "$APIM_DIRECT_BASE_TPL" | sed "s/__ENV__/${TO_ENV}/g")"
 else
   APIM_BASE="$(printf '%s' "$APIM_API_BASE_TPL" | sed "s/__ENV__/${TO_ENV}/g")"
@@ -543,7 +562,7 @@ esac
 # bash 3.2 un tableau VIDE est un piège, mais les deux branches en posent
 # toujours deux — et un tableau ne se fait pas redécouper par le shell le jour
 # où une valeur portera un caractère inattendu.
-if [ "$ADMIN_VIA" = direct ]; then
+if [ "$EFFECTIVE_VIA" = direct ]; then
   ENGINE_AUTH_ARGS=(-e apim_ss_auth_mode=basic -e "apim_ss_vault_wm_creds_sub=envs/${TO_ENV}/wm-admin")
 else
   ENGINE_AUTH_ARGS=(-e apim_ss_auth_mode=oauth2 -e "apim_ss_vault_oauth_sub=envs/${TO_ENV}/admin-oauth")

@@ -81,7 +81,7 @@ JF_NC="$TMP/jenkinsfile_nc"; nc_groovy "$JF" > "$JF_NC"
 # ORDRE_TOKENS : la liste ORDONNÉE des jetons de refus de team-promote.sh, dans
 # l'ordre où le script les pose. Chacun doit se trouver AVANT le site d'appel
 # unique du moteur.
-ORDRE_TOKENS="BRANCH_FORMAT_INVALIDE PAYLOAD_PERIME REPO_NON_DECLARE \
+ORDRE_TOKENS="BRANCH_FORMAT_INVALIDE TERMINUS_SANS_VOIE PAYLOAD_PERIME REPO_NON_DECLARE \
 MERGE_SHA_NON_ANCETRE PIN_ABSENT ARCHIVE_INTROUVABLE PIN_NON_RESOLU \
 GATE_REFS_REQUIRED IDENTITE_REFUSEE DEPLOYER_GROUP_UNSUPPORTED \
 DEPLOYER_GROUP_UNVERIFIABLE DEPLOYER_GROUP_REQUIRED PALIER_FERME"
@@ -861,7 +861,10 @@ set_ctl() { # <merged true|false> <merge_sha> <head_ref> <merged_by> <user> <wm-
 # la variable est posée mais vide, et la lib retombe sur le gabarit — c'est sa
 # condition d'entrée (`[ -n "${STOA_ENV_CHAIN_FILE:-}" ]`), pas un hasard.
 run_promote() {
-  local out="$1" branch="$2" engine="${3:-ansible}" repo="${4:-$TEAM_REPO}" chain="${5:-}" rc
+  # ⚠ 6e argument SANS deux-points (`${6-défaut}`) : passer explicitement ""
+  # doit donner la chaîne VIDE (cas TERMINUS_SANS_VOIE), l'omettre le défaut.
+  local out="$1" branch="$2" engine="${3:-ansible}" repo="${4:-$TEAM_REPO}" chain="${5:-}" \
+        direct_tpl="${6-http://webmethods-real:5555/rest/apigateway}" rc
   rm -f "$STUB_LOG"
   ( cd "$ROOT" && env \
       PATH="$STUBBIN:$PATH" \
@@ -881,6 +884,7 @@ run_promote() {
       ADMIN_VIA=proxy-oauth2 \
       LABCTL_BIN="$STUBBIN/labctl" \
       APIM_API_BASE_TPL='http://webmethods-real:5555/gateway/wm-admin-__ENV__/1.0/rest/apigateway' \
+      APIM_DIRECT_BASE_TPL="$direct_tpl" \
       bash scripts/team-promote.sh ) >"$out" 2>&1
   rc=$?
   return "$rc"
@@ -1304,6 +1308,62 @@ fi
   && ok "⑲ l'ORIGINAL est intact et toujours vert (la mutation n'a jamais touché l'arbre)" \
   || bad "⑲ l'original ne passe plus l'épreuve d'ordre — la mutation a fui hors de \$TMP"
 
+echo
+echo "== G7-a nominal TERMINUS : voie DIRECTE, moteur basic, jamais oauth2 =="
+# La chaîne VARIANTE retire itsmCheck de la porte prod : l'ITSM au dispatch est
+# éprouvé par ses propres cas (G7-e/f, Task 3) — ici on isole LA VOIE.
+CHAIN_G7="$TMP/chain-g7.yaml"
+python3 - "$ROOT/clients/_example/environments.yaml" "$CHAIN_G7" <<'PY'
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+for g in d["gates"]:
+    if g.get("to") == "prod":
+        g.pop("itsmCheck", None)
+yaml.safe_dump(d, open(sys.argv[2], "w"), sort_keys=False)
+PY
+D="$TMP/tg7a"; mk_team "$D"
+write_marker "$D" prod "$PIN_C1" "1.0.0" "$ARCH_SHA" "CHG-0001" "PV-1" alice
+seal_team "$D"
+set_ctl true "$MERGE_SHA" "promote/accounts-read-prod" oscar ci 200 200 default,operator-deploy
+run_promote "$TMP/og7a" "promote/accounts-read-prod" ansible "$TEAM_REPO" "$CHAIN_G7"; RC=$?
+[ "$RC" -eq 0 ] && ok "G7-a rc=0 (nominal terminus)" \
+                || bad "G7-a rc=$RC : $(tail -3 "$TMP/og7a" | tr '\n' ' ')"
+[ "$(wc -l < "$STUB_LOG" 2>/dev/null | tr -d ' ')" = 1 ] \
+  && ok "G7-a moteur invoqué EXACTEMENT une fois" \
+  || bad "G7-a invocations moteur : $(cat "$STUB_LOG" 2>/dev/null)"
+grep -q 'apim_ss_auth_mode=basic' "$STUB_LOG" \
+  && grep -q 'apim_ss_vault_wm_creds_sub=envs/prod/wm-admin' "$STUB_LOG" \
+  && ok "G7-a voie directe : basic + creds du palier lus dans Vault par le rôle" \
+  || bad "G7-a extra-vars inattendues : $(cat "$STUB_LOG")"
+grep -q 'apim_ss_auth_mode=oauth2' "$STUB_LOG" \
+  && bad "G7-a la voie oauth2 a fuité vers le terminus" \
+  || ok "G7-a jamais oauth2 vers le terminus"
+grep -q 'apim_ss_api_base=http://webmethods-real:5555/rest/apigateway' "$STUB_LOG" \
+  && ok "G7-a base d'admin = le gabarit DIRECT (pas le proxy)" \
+  || bad "G7-a base d'admin inattendue : $(cat "$STUB_LOG")"
+
+echo
+echo "== G7-b terminus SANS gabarit direct : refus nommé, moteur jamais lancé =="
+set_ctl true "$MERGE_SHA" "promote/accounts-read-prod" oscar ci 200 200 default,operator-deploy
+run_promote "$TMP/og7b" "promote/accounts-read-prod" ansible "$TEAM_REPO" "$CHAIN_G7" ""; RC=$?
+refus_attendu "G7-b" "APIM_DIRECT_BASE_TPL vide + terminus" TERMINUS_SANS_VOIE "$TMP/og7b" "$RC"
+
+echo
+echo "== G7-c labctl vers le terminus : COMBINAISON_NON_SUPPORTEE =="
+run_promote "$TMP/og7c" "promote/accounts-read-prod" labctl "$TEAM_REPO" "$CHAIN_G7"; RC=$?
+refus_attendu "G7-c" "labctl + terminus" COMBINAISON_NON_SUPPORTEE "$TMP/og7c" "$RC"
+
+echo
+echo "== G7-d un palier INTERMÉDIAIRE n'emprunte JAMAIS la voie directe =="
+D="$TMP/tg7d"; mk_team "$D"
+write_marker "$D" int "$PIN_C1" "1.0.0" "$ARCH_SHA" "" "" alice
+seal_team "$D"
+set_ctl true "$MERGE_SHA" "promote/accounts-read-int" oscar ci 200 200 default,apply-int
+run_promote "$TMP/og7d" "promote/accounts-read-int"; RC=$?
+[ "$RC" -eq 0 ] && grep -q 'apim_ss_auth_mode=oauth2' "$STUB_LOG" \
+  && ok "G7-d int reste en proxy-oauth2 (EFFECTIVE_VIA ne déborde pas)" \
+  || bad "G7-d rc=$RC, extra-vars : $(cat "$STUB_LOG" 2>/dev/null)"
+
 # ── Garde-fou : verdicts rendus == cas attendus ─────────────────────────────
 # Compte EXACT mesuré par un run complet, jamais déduit de tête. Si une section
 # tombe en silence (branche jamais évaluée, script tronqué, cas sauté), ce
@@ -1312,7 +1372,10 @@ fi
 # 128 → 136 le 2026-08-27 : +8 verdicts G2(viii) (anti-dérive de l'argv du bind,
 # 3 par fichier × 2 fichiers + 2 de mutation). Re-mesuré par un run complet, pas
 # calculé — c'est ce garde-fou lui-même qui a rendu l'écart (136 != 128).
-EXPECTED_ASSERTIONS=136
+# 136 → 146 le 2026-08-27 (G7, voie du terminus) : +5 G7-a (nominal direct),
+# +2 G7-b (TERMINUS_SANS_VOIE), +2 G7-c (labctl+terminus), +1 G7-d
+# (l'intermédiaire reste oauth2). Re-mesuré par un run complet (146 != 136).
+EXPECTED_ASSERTIONS=146
 TOTAL_BEFORE_GUARD=$((PASS+FAIL))
 echo
 [ "$TOTAL_BEFORE_GUARD" -eq "$EXPECTED_ASSERTIONS" ] \
