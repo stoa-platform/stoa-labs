@@ -10,7 +10,9 @@
 #        git/curl — et des KNOBS de pipeline (moteur, voie d'admin).
 #     1. la branche dit QUOI et OÙ : promote/<api>-<env>, l'env doit être un
 #        palier de la chaîne et jamais l'authoring.
-#     2. RÉCONCILIATION AVEC GITEA : le payload du webhook n'est pas la vérité.
+#     2. RÉCONCILIATION AVEC GITEA : le payload du webhook n'est pas la vérité —
+#        l'état de la PR, ET les deux identités (mergeur, demandeur), sont relus
+#        auprès de Gitea, authentifiés.
 #     3. AUTORITÉ PAR TOPOLOGIE : l'équipe se dérive du dépôt, jamais du payload.
 #     4. ANTI-TOCTOU : le dépôt d'équipe est lu AU SHA DU MERGE, et ce SHA doit
 #        être un ancêtre de main.
@@ -18,7 +20,7 @@
 #        registre, puis résolveur complet (pin, ancêtreté, version, digest).
 #     6. LES EXIGENCES DE LA PORTE, RELUES SUR LE MARQUEUR MERGÉ.
 #     6bis. LA GARDE D'IDENTITÉ : qui a mergé == qui répond à la pause, et les
-#        quatre yeux si la porte les exige.
+#        quatre yeux si la porte les exige — sur les identités RÉCONCILIÉES (§2).
 #     7. LE PALIER EST-IL OUVERT ? — la lecture du secret d'admin du palier EST
 #        le ticket d'entrée (rétention G4, ADR-082).
 #     8. LE MOTEUR — un SEUL site d'appel, après TOUT le reste.
@@ -61,6 +63,12 @@ VAULT_TOKEN_FILE="${VAULT_TOKEN_FILE:?VAULT_TOKEN_FILE requis (jamais le token e
 GIT_HOST="${GIT_HOST:-http://gitea:3000}"
 GIT_REPO="${GIT_REPO:-ci/stoa-labs}"        # dépôt PLATEFORME — porte providers.<env>.yml
 GIT_WEB_HOST="${GIT_WEB_HOST:-$GIT_HOST}"
+# L'identité PROUVÉE (le login Vault de la pause nominative), posée par le
+# Jenkinsfile depuis V_USER. Repli VIDE ici, refus NOMMÉ au §0bis : un `:?` posé
+# dans les arguments de la garde d'identité tuerait bash sur place, sans passer
+# par fail(), donc sans commenter la PR — la dette I2 que l'en-tête de
+# team-publish.sh:39-51 déclare « À NE PAS REPRODUIRE ICI ».
+VAULT_IDENTITY_USER="${VAULT_IDENTITY_USER:-}"
 PROMOTE_ENGINE="${PROMOTE_ENGINE:-ansible}"     # ansible|labctl — knob de PIPELINE (D6)
 ADMIN_VIA="${ADMIN_VIA:-proxy-oauth2}"          # proxy-oauth2|direct (D5)
 # Gabarits d'URL admin par palier (__ENV__ substitué) — config client au Jenkinsfile.
@@ -133,6 +141,11 @@ printf '%s' "$PR_NUMBER" | grep -Eq '^[1-9][0-9]*$' \
 # knob inconnu doit se dire ICI, en haut, avec les autres refus de forme et
 # AVANT le moindre appel réseau — pas au fond d'un `case` où il ressemblerait à
 # un code de retour de moteur.
+# Le câblage du Jenkinsfile se refuse ICI, avec les autres knobs : une variable
+# de pipeline absente est une erreur d'exploitant, elle doit se dire SUR LA PR
+# comme n'importe quel refus — jamais par une mort silencieuse du shell.
+[ -n "$VAULT_IDENTITY_USER" ] \
+  || fail "IDENTITE_ABSENTE : VAULT_IDENTITY_USER n'est pas posée — le job doit l'exporter depuis V_USER (ci/lib/vault-login.sh) ; sans identité prouvée, la garde des quatre yeux ne compare rien"
 case "$PROMOTE_ENGINE" in ansible|labctl) ;; *) fail "ENGINE_INCONNU : '$PROMOTE_ENGINE' — attendu 'ansible' ou 'labctl'";; esac
 case "$ADMIN_VIA" in proxy-oauth2|direct) ;; *) fail "ADMIN_VIA_INCONNU : '$ADMIN_VIA' — attendu 'proxy-oauth2' ou 'direct'";; esac
 if [ "$ADMIN_VIA" = direct ]; then
@@ -183,6 +196,25 @@ case " $CHAIN " in *" $TO_ENV "*) ;; *) fail "ENV_INVALIDE : '$TO_ENV' hors de l
 # confirme que MERGE_SHA est UN ancêtre de main — pas forcément CELUI de CETTE
 # PR. On redemande donc l'état à GITEA LUI-MÊME (authentifié par GITEA_TOKEN,
 # donc pas falsifiable par le contenu d'un payload).
+#
+# ⚠ ET ON EN RAMÈNE AUSSI LES DEUX IDENTITÉS. C'est l'écart délibéré avec les
+# scripts frères : team-publish.sh, team-apply.sh et provision-apply.job.xml
+# passent encore `PR_MERGED_BY`/`PR_REQUESTER` du PAYLOAD à la garde d'identité.
+# Or `merged_by.login` dans une charge utile de webhook est une AFFIRMATION, pas
+# un credential : un porteur du token GWT peut tirer le webhook sur une PR
+# RÉELLEMENT mergée (donc la réconciliation ci-dessous passe) en s'annonçant
+# lui-même comme mergeur et en inventant un demandeur — MERGER_MISMATCH et
+# FOUR_EYES_VIOLATION passent tous les deux, et les quatre yeux ne sont plus
+# qu'un décor. Ici cette classe est fermée : `merged_by.login` et `user.login`
+# sont lus dans la MÊME réponse authentifiée, déjà en main.
+# POURQUOI ICI ET PAS CHEZ LES FRÈRES : §6bis est la SEULE garde humaine de ce
+# jalon, et sa cible est la prod. Le motif hérité reste à corriger ailleurs —
+# c'est un périmètre, pas un oubli.
+#
+# Les deux logins remontent EMPAQUETÉS PAR LIGNES et sont donc, eux aussi,
+# forgeables par un saut de ligne (même classe que le §6 et que
+# deploy-pin.sh:117-125) : on REFUSE le délimiteur dans la valeur plutôt que
+# d'espérer qu'il n'y soit pas.
 PR_STATE=$(GIT_HOST="$GIT_HOST" WEBHOOK_REPO="$WEBHOOK_REPO" PR_NUMBER="$PR_NUMBER" \
   GITEA_TOKEN="$GITEA_TOKEN" PR_BRANCH="$PR_BRANCH" MERGE_SHA="$MERGE_SHA" python3 - <<'PY'
 import os, json, urllib.request, urllib.error
@@ -202,16 +234,39 @@ ok = (
     and (d.get("head") or {}).get("ref") == os.environ["PR_BRANCH"]
     and (d.get("base") or {}).get("ref") == "main"
 )
+mb = str((d.get("merged_by") or {}).get("login") or "")
+rq = str((d.get("user") or {}).get("login") or "")
+for name, val in (("merged_by.login", mb), ("user.login", rq)):
+    if "\n" in val or "\r" in val:
+        print("FORGE=" + name)
+        raise SystemExit
 print("OK" if ok else "MISMATCH")
+print("MB=" + mb)
+print("RQ=" + rq)
 PY
 ) || fail "GITEA_RECONCILE_ECHEC : lecture de ${WEBHOOK_REPO}#${PR_NUMBER} sur Gitea en échec"
-case "$PR_STATE" in
+PR_VERDICT=$(printf '%s\n' "$PR_STATE" | sed -n '1p')
+# Les identités RÉCONCILIÉES — ce sont ELLES, et jamais $PR_MERGED_BY /
+# $PR_REQUESTER du webhook, qui alimentent la garde d'identité (§6bis).
+GITEA_MERGED_BY=$(printf '%s\n' "$PR_STATE" | sed -n 's/^MB=//p')
+GITEA_REQUESTER=$(printf '%s\n' "$PR_STATE" | sed -n 's/^RQ=//p')
+case "$PR_VERDICT" in
   OK) ;;
-  ERR=*) fail "GITEA_RECONCILE_ECHEC : appel Gitea en échec (${PR_STATE#ERR=}) pour ${WEBHOOK_REPO}#${PR_NUMBER}" ;;
+  ERR=*) fail "GITEA_RECONCILE_ECHEC : appel Gitea en échec (${PR_VERDICT#ERR=}) pour ${WEBHOOK_REPO}#${PR_NUMBER}" ;;
+  FORGE=*) fail "GITEA_RECONCILE_ECHEC : le champ ${PR_VERDICT#FORGE=} de ${WEBHOOK_REPO}#${PR_NUMBER} contient un saut de ligne — une identité ne fabrique pas de champ, refus" ;;
   MISMATCH) fail "PAYLOAD_PERIME : ${WEBHOOK_REPO}#${PR_NUMBER} sur Gitea (merged/merge_commit_sha/head.ref/base.ref) ne correspond pas au webhook — le payload ne fait pas foi, refus" ;;
-  *) fail "GITEA_RECONCILE_ECHEC : réponse inattendue de la réconciliation ('${PR_STATE}')" ;;
+  *) fail "GITEA_RECONCILE_ECHEC : réponse inattendue de la réconciliation ('${PR_VERDICT}')" ;;
 esac
-echo "réconciliation Gitea OK : ${WEBHOOK_REPO}#${PR_NUMBER} merged, ${PR_BRANCH}->main"
+# FAIL-CLOSED, ET REFUSÉ ICI PLUTÔT QU'AU §6bis. La bibliothèque d'identité
+# refuse déjà MERGER_UNKNOWN sur un mergeur vide — mais son message accuse le
+# CÂBLAGE du webhook (« ajouter le champ aux genericVariables »), alors que la
+# cause est ici tout autre : Gitea LUI-MÊME ne nomme aucun mergeur sur cette PR.
+# On le dit donc à l'endroit exact où on l'apprend, ce qui refuse en prime AVANT
+# les trois clones et le fetch d'archive qui séparent §2 de §6bis — un refus qui
+# ne peut pas ne pas arriver n'a aucune raison d'attendre.
+[ -n "$GITEA_MERGED_BY" ] \
+  || fail "MERGER_UNKNOWN : Gitea ne nomme aucun mergeur sur ${WEBHOOK_REPO}#${PR_NUMBER} (merged_by absent de la réponse) — la garde d'identité ne pourrait RIEN vérifier, refus"
+echo "réconciliation Gitea OK : ${WEBHOOK_REPO}#${PR_NUMBER} merged, ${PR_BRANCH}->main, mergeur '${GITEA_MERGED_BY}'"
 
 # ── 3. AUTORITÉ PAR TOPOLOGIE : quelle équipe déclare CE dépôt ? ─────────────
 # Le webhook dit QUEL DÉPÔT a mergé (repository.full_name) — jamais quelle
@@ -304,8 +359,39 @@ resolve_deploy_pin "$TMP/team" "$API_NAME" "$TO_ENV" "$TMP/resolved" origin/main
 GATE=$(env_chain_gate "$TO_ENV") || fail "PARSE_GATE : lecture de la porte vers '$TO_ENV'"
 case "$GATE" in GATE=*) GATE="${GATE#GATE=}";; *) fail "PARSE_GATE : sortie inattendue";; esac
 NEED_CHANGE="${GATE%%|*}"; GATE="${GATE#*|}"; NEED_PV="${GATE%%|*}"
-MK_FIELDS=$(DP_FILE="$TMP/marker.yaml" python3 -c 'import os,yaml;d=yaml.safe_load(open(os.environ["DP_FILE"])) or {};print("CR=%s\nPV=%s" % (str(d.get("change_ref") or ""), str(d.get("pv_ref") or "")))') \
-  || fail "PIN_MALFORMED : relecture des références du marqueur"
+#
+# ⚠ LES DEUX VALEURS VOYAGENT EMPAQUETÉES PAR LIGNES, DONC LE SAUT DE LIGNE EST
+# UN DÉLIMITEUR — et un délimiteur qu'on laisse passer dans une valeur décale
+# les frontières de champ. Mesuré : un marqueur portant
+#   change_ref: "CHG-1\nPV=FORGE"
+# produisait `CR=CHG-1`, puis `PV=FORGE` (injectée) AVANT le vrai `PV=` vide ;
+# `sed -n 's/^PV=//p'` rendait les deux, `[ -n … ]` voyait du texte, et la porte
+# homol/prod acceptait une promotion SANS PV. Le fail-open exact que ce §6
+# existe pour fermer.
+#
+# ⚠ ET « REF_INVALIDE le ferme déjà à la demande » NE RÉPOND PAS : cette garde-ci
+# n'existe QUE parce que le marqueur peut être édité entre la demande et le
+# merge. La valider au formulaire ne dit rien de ce qui a été MERGÉ.
+#
+# On REFUSE donc le délimiteur dans la valeur plutôt que d'espérer qu'il n'y
+# soit pas — la règle que deploy-pin.sh:117-125 applique déjà au '|', et la
+# condition que deploy-pin.sh:327-333 invoque pour s'autoriser le découpage par
+# ligne (« les deux valeurs sont hexadécimales … une nouvelle ligne ne peut donc
+# pas s'y cacher »). Ici les valeurs sont du texte libre : il faut le verrou.
+MK_FIELDS=$(DP_FILE="$TMP/marker.yaml" python3 - 2>"$TMP/mkfields.err" <<'PY'
+import os, sys, yaml
+d = yaml.safe_load(open(os.environ["DP_FILE"])) or {}
+out = []
+for key in ("change_ref", "pv_ref"):
+    v = str(d.get(key) or "")
+    if "\n" in v or "\r" in v:
+        sys.exit("le champ %s contient un saut de ligne (il fabriquerait un champ)" % key)
+    out.append(v)
+sys.stdout.write("CR=%s\nPV=%s\n" % (out[0], out[1]))
+PY
+) || { cat "$TMP/mkfields.err" >&2
+       MKERR="$(tail -1 "$TMP/mkfields.err" 2>/dev/null)"
+       fail "PIN_MALFORMED : relecture des références de ${MARKER_REL} — ${MKERR:-YAML illisible}"; }
 MK_CHANGE=$(printf '%s\n' "$MK_FIELDS" | sed -n 's/^CR=//p')
 MK_PV=$(printf '%s\n' "$MK_FIELDS" | sed -n 's/^PV=//p')
 [ "$NEED_CHANGE" = 0 ] || [ -n "$MK_CHANGE" ] \
@@ -325,9 +411,13 @@ case "$FE" in
   FOUREYES=0) AMI_ARGS="--allow-self-approval";;
   *) fail "PARSE_GATE : sortie inattendue ($FE)";;
 esac
+# ⚠ LES IDENTITÉS VIENNENT DE GITEA (§2), PAS DU WEBHOOK. $PR_MERGED_BY et
+# $PR_REQUESTER ne sont volontairement pas lus dans ce script : ce sont des
+# affirmations d'un payload non authentifié, et les faire piloter la garde
+# reviendrait à laisser l'attaquant choisir les deux termes de la comparaison.
 # shellcheck disable=SC2086
-sh scripts/lib/assert-merge-identity.sh --merged-by "${PR_MERGED_BY:-}" \
-  --requester "${PR_REQUESTER:-}" --vault-user "${VAULT_IDENTITY_USER:?VAULT_IDENTITY_USER requis (posé par le Jenkinsfile depuis V_USER)}" $AMI_ARGS \
+sh scripts/lib/assert-merge-identity.sh --merged-by "$GITEA_MERGED_BY" \
+  --requester "$GITEA_REQUESTER" --vault-user "$VAULT_IDENTITY_USER" $AMI_ARGS \
   || fail "IDENTITE_REFUSEE : la garde d'identité a refusé (voir le log)"
 
 # ── 7. LE PALIER EST-IL OUVERT ? (rétention G4 — ADR-082) ───────────────────
