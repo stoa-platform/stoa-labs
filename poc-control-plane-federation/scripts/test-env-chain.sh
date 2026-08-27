@@ -68,5 +68,17 @@ cp "$BAK" "$CHAIN"
 grep -q 'itsmCheck: true' "$CHAIN" && ok "chaîne restaurée à l'identique" \
                                    || bad "RESTAURATION KO — vérifier $CHAIN à la main"
 
+echo "⑤ CONTRE-ÉPREUVE n°2 — retirer QUI PORTE l'apply doit aussi faire ROUGIR"
+# ── contre-épreuve n°2 (G2) : retirer la déclaration déployeur de int ────────
+sed -i.tmp 's/^    deployerGroup: apim-apply-int$//' "$CHAIN" && rm -f "$CHAIN.tmp"
+if gotest >/dev/null 2>&1; then
+  bad "sabotage deployerGroup NON détecté — le gabarit n'épingle pas l'axe (vert vacant)"
+else
+  ok "porte relâchée (deployerGroup int retiré) => test Go ROUGE"
+fi
+cp "$BAK" "$CHAIN"
+grep -q 'deployerGroup: apim-apply-int' "$CHAIN" && ok "chaîne restaurée (deployerGroup)" \
+  || bad "restauration deployerGroup manquée"
+
 printf '\n%d PASS / %d FAIL\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

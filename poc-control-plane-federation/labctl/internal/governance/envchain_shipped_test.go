@@ -74,11 +74,11 @@ func TestShippedExampleChain_GatesMatchTheStatedPolicy(t *testing.T) {
 		// blocks self-approval). Adding fourEyes here is the one-line change
 		// that closes the DORA art. 17(1)(b) tension noted in the file.
 		{"rec", Gate{To: "rec", SelfApproval: true}},
-		{"int", Gate{To: "int", ApproverGroup: "int-team", FourEyes: true}},
-		{"homol", Gate{To: "homol", ApproverGroup: "release-team", FourEyes: true, RequirePVRef: true}},
+		{"int", Gate{To: "int", ApproverGroup: "int-team", FourEyes: true, DeployerGroup: "apim-apply-int"}},
+		{"homol", Gate{To: "homol", ApproverGroup: "release-team", FourEyes: true, RequirePVRef: true, DeployerGroup: "apim-apply-homol"}},
 		{"prod", Gate{
 			To: "prod", ApproverGroup: "release-team", FourEyes: true,
-			RequireChangeRef: true, RequirePVRef: true, ITSMCheck: true,
+			RequireChangeRef: true, RequirePVRef: true, ITSMCheck: true, DeployerGroup: "apim-operator-prod",
 		}},
 	} {
 		got, ok := c.Gates[tc.env]
@@ -101,6 +101,15 @@ func TestShippedExampleChain_GatesMatchTheStatedPolicy(t *testing.T) {
 		g := c.Gates[e]
 		if g.ApproverGroup == "" && !g.FourEyes && !g.SelfApproval {
 			t.Errorf("%s: hop is ungated and undocumented — set approverGroup, fourEyes, or an explicit selfApproval", e)
+		}
+	}
+
+	// Every declared deployerGroup must be PROJECTABLE: a group outside the two
+	// verifiable families would ship a gate nothing can check (fail-closed by
+	// construction — but we refuse to ship it at all).
+	for env, g := range c.Gates {
+		if _, err := g.DeployerPolicy(); err != nil {
+			t.Errorf("%s: %v", env, err)
 		}
 	}
 }

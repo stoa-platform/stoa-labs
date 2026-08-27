@@ -40,6 +40,15 @@ environments: [dev, rec, int, homol, prod]
 #   selfApproval      — DOCUMENTAIRE UNIQUEMENT. Ne relâche rien : l'auto-
 #                       approbation n'est BLOQUÉE que par `fourEyes`. On l'écrit
 #                       pour rendre l'intention lisible, jamais pour l'appliquer.
+#   deployerGroup     — QUI PORTE l'apply vers ce palier (G2, ADR-084). Nom d'un
+#                       groupe de l'ANNUAIRE N°2 (LDAP → policy Vault), vérifié au
+#                       DISPATCH par la policy projetée du token Vault du porteur —
+#                       jamais à l'approbation. Deux familles vérifiables :
+#                       apim-apply-<x> → apply-<x> ; apim-operator-<x> →
+#                       operator-deploy. Hors famille ⇒ refus BRUYANT
+#                       (DEPLOYER_GROUP_UNSUPPORTED), jamais un silence.
+#                       Absent ⇒ pas de déclaration : la rétention de credential
+#                       (ADR-082, PALIER_FERME) reste le seul « qui ».
 #
 # Un palier SANS porte n'est pas un palier sans contrôle : c'est un palier où
 # quiconque détient `promotions:approve` approuve, y compris le demandeur.
@@ -68,9 +77,15 @@ gates:
   # en plus au demandeur d'être l'approbateur, même s'il appartenait au groupe.
   # Les deux sont cumulés délibérément : le groupe dit QUI, les quatre yeux
   # disent PAS LUI.
+  #
+  # `deployerGroup` (G2) : QUI PORTE l'apply vers int — l'axe GitLab
+  # deploy_access_levels, indépendant de l'approbation. bob approuve (int-team,
+  # claim KC) ET déploie (apim-apply-int, LDAP→Vault) dans le lab ; deux
+  # personnes distinctes chez un client, sans rien changer ici.
   - to: int
     approverGroup: int-team
     fourEyes: true
+    deployerGroup: apim-apply-int
 
   # int → homol — TROISIÈME ÉQUIPE, PROCESSUS PLUS STRICT.
   # `release-team` est la MÊME équipe qu'en prod, délibérément : le besoin dit
@@ -85,6 +100,7 @@ gates:
     approverGroup: release-team
     fourEyes: true
     requirePVRef: true
+    deployerGroup: apim-apply-homol
 
   # homol → prod — LE RÉGIME COMPLET.
   # `requireChangeRef` exige le change à la demande ; `itsmCheck` le re-vérifie
@@ -92,20 +108,32 @@ gates:
   # l'un : un change référencé à la demande peut avoir été rejeté depuis
   # (c'est la garde anti-TOCTOU, ADR-075).
   #
-  # ⚠ DEUX CONVENTIONS DE GROUPES COEXISTENT, NE PAS LES CONFONDRE :
+  # ⚠ TROIS AXES, DEUX ANNUAIRES — CHAQUE CHAMP EST ÉPINGLÉ AU SIEN :
   #   - `approverGroup` ci-dessus est comparé à la claim **`groups` du jeton
   #     Keycloak vérifié** → convention `<env>-team` (`int-team` existe déjà
   #     dans le realm stoa-lab). C'est CELLE-CI qu'on écrit ici.
-  #   - `apim-operator-<env>` est un groupe **LDAP mappé sur une policy Vault**
-  #     (scripts/setup-vault-ldap.sh:156, policy `operator-deploy`) : il gouverne
-  #     l'accès aux SECRETS, pas l'approbation d'une promotion. Écrire un nom
-  #     `apim-operator-*` ici ne produit aucune erreur — juste une porte qui ne
-  #     matche JAMAIS, donc un saut impossible à approuver (fail-closed, mais
-  #     pour la mauvaise raison).
+  #   - `deployerGroup` (voir Champs disponibles) est un nom de l'annuaire
+  #     **LDAP mappé sur une policy Vault**, jamais la claim KC — deux familles
+  #     vérifiables : `apim-apply-<x>` → policy `apply-<x>` (par palier) et
+  #     `apim-operator-<x>` → policy `operator-deploy` (terminus, DÉSORMAIS
+  #     déclarable ici plutôt que seulement subi).
+  #   - Écrire un nom KC (`<env>-team`) dans `deployerGroup` refuse BRUYAMMENT
+  #     (DEPLOYER_GROUP_UNSUPPORTED) — une AMÉLIORATION sur le piège silencieux
+  #     d'`approverGroup` : un nom `apim-operator-*` écrit là-haut ne produit
+  #     aucune erreur, juste une porte qui ne matche JAMAIS, donc un saut
+  #     impossible à approuver (fail-closed, mais pour la mauvaise raison) —
+  #     ce piège-là, on le garde tel quel.
   # Les noms RÉELS des groupes d'annuaire du client restent la décision n°2.
+  #
+  # ⚠ CONSÉQUENCE ASSUMÉE : avec cette déclaration, le repli AppRole de
+  # Jenkinsfile.prod (« acte non imputable ») est REFUSÉ fail-closed
+  # (DEPLOYER_GROUP_REQUIRED — son token ne porte pas operator-deploy).
+  # Déployer prod exige un humain du groupe, ou un grant EXPLICITE de la
+  # policy à un AppRole dédié (geste exploitant, jamais un défaut).
   - to: prod
     approverGroup: release-team
     fourEyes: true
     requireChangeRef: true
     requirePVRef: true
     itsmCheck: true
+    deployerGroup: apim-operator-prod
