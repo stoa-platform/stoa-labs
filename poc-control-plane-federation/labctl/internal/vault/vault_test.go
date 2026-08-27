@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -161,5 +162,52 @@ func TestReadKV_AuthFailureErrors(t *testing.T) {
 	c, _ := FromEnv()
 	if _, err := c.ReadKV(context.Background(), "gateways/apisix"); err == nil {
 		t.Error("a 403 (configured-but-broken Vault) must surface as an error")
+	}
+}
+
+func TestTokenPolicies(t *testing.T) {
+	var gotPath, gotToken string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotToken = r.Header.Get("X-Vault-Token")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"policies":["default","apply-int"],"identity_policies":["ldap-derived"]}}`))
+	}))
+	defer srv.Close()
+
+	t.Setenv("VAULT_ADDR", srv.URL)
+	t.Setenv("VAULT_TOKEN", "unit-test-token")
+
+	c, ok := FromEnv()
+	if !ok {
+		t.Fatal("FromEnv ok=false")
+	}
+	got, err := c.TokenPolicies(context.Background())
+	if err != nil {
+		t.Fatalf("TokenPolicies: %v", err)
+	}
+	want := []string{"default", "apply-int", "ldap-derived"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("policies = %v, want %v", got, want)
+	}
+	if gotPath != "/v1/auth/token/lookup-self" {
+		t.Errorf("path = %q, want /v1/auth/token/lookup-self", gotPath)
+	}
+	if gotToken != "unit-test-token" {
+		t.Errorf("X-Vault-Token = %q, want unit-test-token", gotToken)
+	}
+}
+
+// Fail-closed : un lookup refusé n'est jamais « pas de policies », c'est une erreur.
+func TestTokenPolicies_AuthFailureErrors(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+	t.Setenv("VAULT_ADDR", srv.URL)
+	t.Setenv("VAULT_TOKEN", "bad")
+	c, _ := FromEnv()
+	if _, err := c.TokenPolicies(context.Background()); err == nil {
+		t.Fatal("expected error on 403 lookup-self, got nil (fail-open)")
 	}
 }
