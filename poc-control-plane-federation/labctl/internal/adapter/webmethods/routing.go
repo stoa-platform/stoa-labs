@@ -162,7 +162,13 @@ func (a *Adapter) ensureRouting(ctx context.Context, apiID, apiName string) erro
 // spike-pinned shape, PUT-converge on drift, read-back asserted on the
 // endPointURI casing trap, never delete/recreate).
 func (a *Adapter) ensureEndpointAlias(ctx context.Context, name string) error {
-	if err := a.EnsureEndpointAliasValue(ctx, name, a.routing.endpointAliasURL); err != nil {
+	// The PROXY projection's spike-pinned creation shape: pass-through of the
+	// security headers is REQUIRED here (proven pass-through Basic, spike
+	// 2026-07-09) — promote-seeded aliases deliberately do NOT carry it.
+	if err := a.ensureEndpointAliasValueWith(ctx, name, a.routing.endpointAliasURL, map[string]any{
+		"optimizationTechnique": "None",
+		"passSecurityHeaders":   true,
+	}); err != nil {
 		return fmt.Errorf("routing: %w", err)
 	}
 	return nil

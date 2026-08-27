@@ -307,6 +307,95 @@ shasum -a 256 "$WORK/A.zip" 2>/dev/null | awk '{print $1}' > "$WORK/A.sha256" \
   && ok "E8 digest de l'archive d'import pinné ($(cat "$WORK/A.sha256"))" \
   || ko "E8 digest illisible"
 
+# ═════════════════════════════════════════════════════════════════════════════
+# LE SNAPSHOT — les champs du registre, mêmes lectures pour A et B
+# ═════════════════════════════════════════════════════════════════════════════
+# strip_registered — retire des snapshots les chemins `state` du registre.
+strip_registered() { # $1 = snapshot json, modifié en place
+  local kind p _reason
+  while IFS=$'\t' read -r kind p _reason; do
+    case "$kind" in \#*|"") continue ;; esac
+    [ "$kind" = "state" ] || continue
+    jq "del($p)" "$1" > "$1.t" && mv "$1.t" "$1"
+  done < "$REG"
+}
+
+snapshot() { # $1 = fichier de sortie
+  local api actions policies aliases scope dp pol prec act
+  api="$(adm "$GW/apis/$PIN_GUID" | jq '.apiResponse.api')"
+  # Le graphe de politiques — shapes MESURÉES 2026-08-27 sur le produit :
+  # /policies/{id} → .policy.policyEnforcements[].enforcements[]
+  #   .enforcementObjectId ; /policyActions/{id} → .policyAction (templateKey,
+  # parameters — dont le routing ${alias}).
+  policies='[]'; actions='[]'
+  for pol in $(printf '%s' "$api" | jq -r '.policies[]?' | sort); do
+    prec="$(adm "$GW/policies/$pol" | jq '.policy')"
+    policies="$(printf '%s' "$policies" | jq --argjson p "$prec" '. + [$p]')"
+    for act in $(printf '%s' "$prec" \
+      | jq -r '[.policyEnforcements[]?.enforcements[]?.enforcementObjectId] | sort | .[]'); do
+      actions="$(printf '%s' "$actions" \
+        | jq --argjson a "$(adm "$GW/policyActions/$act" | jq '.policyAction')" '. + [$a]')"
+    done
+  done
+  aliases="$(adm "$GW/alias" | jq --arg b "$BALS" --arg c "$CALS" --arg g "$GALS" \
+    '[.alias[] | select(.name==$b or .name==$c or .name==$g)] | sort_by(.name)')"
+  scope="$(adm "$GW/scopes" | jq --arg n "$SCOPE_NAME" \
+    '[.scopes[]? | select(.scopeName==$n)] | first // {}')"
+  dp="$(curl -sS -m 8 "$DP/$API/1.0.0/ping" | jq -c '.path // ""')"
+  jq -n --argjson api "$api" --argjson policies "$policies" --argjson actions "$actions" \
+        --argjson aliases "$aliases" --argjson scope "$scope" --argjson dp "${dp:-\"\"}" \
+        '{api:$api, policies:($policies|sort_by(.id)), actions:($actions|sort_by(.id)),
+          aliases:$aliases, scope:$scope, dp:$dp}' > "$1"
+  strip_registered "$1"
+}
+
+# parity_diff — le verdict : chemins feuilles qui divergent, rc≠0 si écart.
+parity_diff() { # $1=snapshot A  $2=snapshot B
+  jq -n --slurpfile a "$1" --slurpfile b "$2" '
+    def leaves: paths(scalars) as $p | {($p|map(tostring)|join(".")): getpath($p)};
+    ([$a[0]|leaves] | add // {}) as $A | ([$b[0]|leaves] | add // {}) as $B
+    | [ ((($A|keys) + ($B|keys))|unique[]) | select($A[.] != $B[.])
+        | {champ:., gauche:$A[.], droite:$B[.]} ]' > "$WORK/parity.diff.json"
+  jq -e 'length == 0' "$WORK/parity.diff.json" > /dev/null
+}
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PHASES 2-3 — IMPORT PAR CHAQUE MOTEUR, à ARCHIVE ÉGALE, palier vierge
+# ═════════════════════════════════════════════════════════════════════════════
+say "phase 2 — palier VIERGE puis import par le RÔLE (archive A, digest pinné)"
+wait_gw || ko "gateway indisponible avant l'import ansible"
+wipe_target
+engine_import ansible > "$WORK/import.ansible.log" 2>&1; RC=$?
+[ "$RC" -eq 0 ] && ok "I1 le rôle rend 0 (PROMOTE_CONFIRMED)" \
+                || ko "I1 import ansible rc=$RC — $(tail -3 "$WORK/import.ansible.log" | tr '\n' ' ')"
+snapshot "$WORK/snap-ansible.json"
+ok "I2 snapshot A pris ($(jq -r '.actions|length' "$WORK/snap-ansible.json") actions, dp=$(jq -r '.dp' "$WORK/snap-ansible.json"))"
+
+say "phase 3 — palier remis à VIERGE puis import par LABCTL (même archive A)"
+wait_gw || ko "gateway indisponible avant l'import labctl"
+wipe_target
+engine_import labctl > "$WORK/import.labctl.log" 2>&1; RC=$?
+[ "$RC" -eq 0 ] && ok "I3 labctl rend 0 (PROMOTE_CONFIRMED)" \
+                || ko "I3 import labctl rc=$RC — $(tail -3 "$WORK/import.labctl.log" | tr '\n' ' ')"
+snapshot "$WORK/snap-labctl.json"
+ok "I4 snapshot B pris ($(jq -r '.actions|length' "$WORK/snap-labctl.json") actions, dp=$(jq -r '.dp' "$WORK/snap-labctl.json"))"
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PHASE 4 — LA PORTE : un seul état
+# ═════════════════════════════════════════════════════════════════════════════
+say "phase 4 — PARITÉ : diff des snapshots sous registre"
+if parity_diff "$WORK/snap-ansible.json" "$WORK/snap-labctl.json"; then
+  ok "P1 les deux moteurs produisent le MÊME état de gateway (champs du registre)"
+else
+  ko "P1 écart(s) hors registre :"
+  jq -r '.[] | "     \(.champ): ansible=\(.gauche) labctl=\(.droite)"' "$WORK/parity.diff.json"
+fi
+jq -e '.api.id == "'"$PIN_GUID"'" and .api.isActive == true' "$WORK/snap-labctl.json" > /dev/null \
+  && ok "P2 l'état commun est bien le GUID épinglé, ACTIF" \
+  || ko "P2 l'état final ne porte pas le guid épinglé actif"
+check "$(jq -r '.dp' "$WORK/snap-labctl.json")" "/backend/rec/ping" \
+  "P3 le data-plane route par \${$BALS} vers le backend de rec (les deux snapshots l'ont déjà comparé)"
+
 # ── bilan ────────────────────────────────────────────────────────────────────
 say "BILAN"
 [ "$GW_RECYCLES" -gt 0 ] && printf '  ⏳ recyclages de la gateway absorbés : %d\n' "$GW_RECYCLES"

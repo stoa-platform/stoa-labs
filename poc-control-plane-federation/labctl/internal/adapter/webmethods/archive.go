@@ -397,6 +397,17 @@ func (a *Adapter) InvokeSmoke(ctx context.Context, path string) error {
 // (the ${alias} binding is resolved name->id at deploy time — a recreated id
 // breaks routing durably). Read-back asserted, fail closed.
 func (a *Adapter) EnsureEndpointAliasValue(ctx context.Context, name, url string) error {
+	// Minimal creation shape — the SAME body the client engine (Ansible role)
+	// POSTs. passSecurityHeaders/optimizationTechnique are the self-service
+	// PROXY projection's shape and must NOT leak into promote-seeded aliases
+	// (measured G8 divergence 2026-08-27: a promote alias would silently pass
+	// security headers to the backend where the role's would not).
+	return a.ensureEndpointAliasValueWith(ctx, name, url, nil)
+}
+
+// ensureEndpointAliasValueWith is the shared converge; extra adds
+// projection-specific creation fields (proxy: passSecurityHeaders, ...).
+func (a *Adapter) ensureEndpointAliasValueWith(ctx context.Context, name, url string, extra map[string]any) error {
 	if name == "" || url == "" {
 		return fmt.Errorf("endpoint alias: name and url are both required (got name=%q url set=%t)", name, url != "")
 	}
@@ -421,12 +432,13 @@ func (a *Adapter) EnsureEndpointAliasValue(ctx context.Context, name, url string
 		return a.assertEndpointAliasValue(ctx, al.ID, name, url)
 	}
 	body := map[string]any{
-		"name":                  name,
-		"description":           "labctl promote: per-env backend endpoint alias (ADR-079, alias-first)",
-		"type":                  "endpoint",
-		"endPointURI":           url,
-		"optimizationTechnique": "None",
-		"passSecurityHeaders":   true,
+		"name":        name,
+		"description": "labctl promote: per-env backend endpoint alias (ADR-079, alias-first)",
+		"type":        "endpoint",
+		"endPointURI": url,
+	}
+	for k, v := range extra {
+		body[k] = v
 	}
 	code, raw, err := a.sendJSON(ctx, http.MethodPost, a.adminPath("/alias"), body)
 	if err != nil {

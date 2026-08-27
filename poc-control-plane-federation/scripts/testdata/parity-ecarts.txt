@@ -10,3 +10,7 @@
 #   state	<chemin jq supprimé des DEUX snapshots avant diff>	<raison>
 #   artifact	<motif sed -E appliqué aux entrées texte des DEUX archives>	<raison>
 artifact	s|<buildInfo name="BuildTimestamp" value="[^"]*"/>|<buildInfo name="BuildTimestamp" value="NORMALISE"/>|	horodatage d'export posé par le produit dans l'ACDL — varie à chaque GET /archive, mesuré 2026-08-27 (21:20:44 vs 21:20:48 à 4 s d'écart)
+state	.aliases[].id	identité générée par le POST du moteur qui crée l'alias sur le palier vierge — le binding ${alias} résout NOM→id au déploiement, l'id n'est jamais référencé (mesuré 2026-08-27 : ids distincts, data-plane identique)
+state	.scope.id	identité générée par le POST /scopes — le mapping lie l'API par GUID et l'AS par NOM, l'id du record n'est jamais référencé (mesuré 2026-08-27)
+state	.aliases[].description	auto-étiquette du moteur créateur (« apim_promote_api : … » vs « labctl promote: … ») — cosmétique, dit QUI a créé le record, aucun effet runtime (mesuré 2026-08-27)
+state	.scope.scopeDescription	même auto-étiquette, côté scope-mapping (mesuré 2026-08-27)
