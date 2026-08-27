@@ -11,16 +11,17 @@
 #     1. la branche dit QUOI et OÙ : promote/<api>-<env>, l'env doit être un
 #        palier de la chaîne et jamais l'authoring.
 #     2. RÉCONCILIATION AVEC GITEA : le payload du webhook n'est pas la vérité —
-#        l'état de la PR, ET les deux identités (mergeur, demandeur), sont relus
-#        auprès de Gitea, authentifiés.
+#        l'état de la PR ET l'identité du MERGEUR sont relus auprès de Gitea,
+#        authentifiés (le DEMANDEUR, lui, vient du marqueur mergé, cf. §6bis).
 #     3. AUTORITÉ PAR TOPOLOGIE : l'équipe se dérive du dépôt, jamais du payload.
 #     4. ANTI-TOCTOU : le dépôt d'équipe est lu AU SHA DU MERGE, et ce SHA doit
 #        être un ancêtre de main.
 #     5. LE MARQUEUR : digest pré-lu, archive fetchée PAR SON CONTENU au
 #        registre, puis résolveur complet (pin, ancêtreté, version, digest).
 #     6. LES EXIGENCES DE LA PORTE, RELUES SUR LE MARQUEUR MERGÉ.
-#     6bis. LA GARDE D'IDENTITÉ : qui a mergé == qui répond à la pause, et les
-#        quatre yeux si la porte les exige — sur les identités RÉCONCILIÉES (§2).
+#     6bis. LA GARDE D'IDENTITÉ : qui a mergé (Gitea, §2) == qui répond à la
+#        pause, et les quatre yeux contre le DEMANDEUR (`promoted_by` du
+#        marqueur mergé) si la porte les exige.
 #     7. LE PALIER EST-IL OUVERT ? — la lecture du secret d'admin du palier EST
 #        le ticket d'entrée (rétention G4, ADR-082).
 #     8. LE MOTEUR — un SEUL site d'appel, après TOUT le reste.
@@ -266,7 +267,11 @@ esac
 # ne peut pas ne pas arriver n'a aucune raison d'attendre.
 [ -n "$GITEA_MERGED_BY" ] \
   || fail "MERGER_UNKNOWN : Gitea ne nomme aucun mergeur sur ${WEBHOOK_REPO}#${PR_NUMBER} (merged_by absent de la réponse) — la garde d'identité ne pourrait RIEN vérifier, refus"
-echo "réconciliation Gitea OK : ${WEBHOOK_REPO}#${PR_NUMBER} merged, ${PR_BRANCH}->main, mergeur '${GITEA_MERGED_BY}'"
+# L'auteur de la PR n'alimente AUCUNE garde (cf. §6bis : le demandeur, c'est
+# `promoted_by` du marqueur) — il est journalisé comme diagnostic, et parce que
+# le voir valoir `ci` build après build est la façon la plus rapide de
+# comprendre pourquoi les quatre yeux ne mordent pas encore.
+echo "réconciliation Gitea OK : ${WEBHOOK_REPO}#${PR_NUMBER} merged, ${PR_BRANCH}->main, mergeur '${GITEA_MERGED_BY}', PR ouverte par '${GITEA_REQUESTER}'"
 
 # ── 3. AUTORITÉ PAR TOPOLOGIE : quelle équipe déclare CE dépôt ? ─────────────
 # Le webhook dit QUEL DÉPÔT a mergé (repository.full_name) — jamais quelle
@@ -378,22 +383,27 @@ NEED_CHANGE="${GATE%%|*}"; GATE="${GATE#*|}"; NEED_PV="${GATE%%|*}"
 # condition que deploy-pin.sh:327-333 invoque pour s'autoriser le découpage par
 # ligne (« les deux valeurs sont hexadécimales … une nouvelle ligne ne peut donc
 # pas s'y cacher »). Ici les valeurs sont du texte libre : il faut le verrou.
+#
+# `promoted_by` est lu ICI AUSSI, et c'est LUI le demandeur de la promotion —
+# voir la garde d'identité (§6bis) pour ce que ça change et ce que ça ne change
+# pas encore.
 MK_FIELDS=$(DP_FILE="$TMP/marker.yaml" python3 - 2>"$TMP/mkfields.err" <<'PY'
 import os, sys, yaml
 d = yaml.safe_load(open(os.environ["DP_FILE"])) or {}
 out = []
-for key in ("change_ref", "pv_ref"):
+for key in ("change_ref", "pv_ref", "promoted_by"):
     v = str(d.get(key) or "")
     if "\n" in v or "\r" in v:
         sys.exit("le champ %s contient un saut de ligne (il fabriquerait un champ)" % key)
     out.append(v)
-sys.stdout.write("CR=%s\nPV=%s\n" % (out[0], out[1]))
+sys.stdout.write("CR=%s\nPV=%s\nPB=%s\n" % (out[0], out[1], out[2]))
 PY
 ) || { cat "$TMP/mkfields.err" >&2
        MKERR="$(tail -1 "$TMP/mkfields.err" 2>/dev/null)"
        fail "PIN_MALFORMED : relecture des références de ${MARKER_REL} — ${MKERR:-YAML illisible}"; }
 MK_CHANGE=$(printf '%s\n' "$MK_FIELDS" | sed -n 's/^CR=//p')
 MK_PV=$(printf '%s\n' "$MK_FIELDS" | sed -n 's/^PV=//p')
+MK_PROMOTED_BY=$(printf '%s\n' "$MK_FIELDS" | sed -n 's/^PB=//p')
 [ "$NEED_CHANGE" = 0 ] || [ -n "$MK_CHANGE" ] \
   || fail "GATE_REFS_REQUIRED : la porte vers '$TO_ENV' exige change_ref — absent du marqueur mergé"
 [ "$NEED_PV" = 0 ] || [ -n "$MK_PV" ] \
@@ -411,13 +421,47 @@ case "$FE" in
   FOUREYES=0) AMI_ARGS="--allow-self-approval";;
   *) fail "PARSE_GATE : sortie inattendue ($FE)";;
 esac
-# ⚠ LES IDENTITÉS VIENNENT DE GITEA (§2), PAS DU WEBHOOK. $PR_MERGED_BY et
-# $PR_REQUESTER ne sont volontairement pas lus dans ce script : ce sont des
-# affirmations d'un payload non authentifié, et les faire piloter la garde
-# reviendrait à laisser l'attaquant choisir les deux termes de la comparaison.
+
+# ⚠ LE DEMANDEUR EST `promoted_by` DU MARQUEUR MERGÉ, PAS L'AUTEUR DE LA PR.
+# La distinction n'est pas cosmétique : `api-promote-request.sh` ouvre la PR
+# avec GITEA_TOKEN, donc son AUTEUR (`user.login`, réconcilié en §2) est le
+# COMPTE DE SERVICE du CI, pas l'humain qui a rempli le formulaire. Comparer
+# mergeur et auteur de PR reviendrait à comparer un humain à `ci` : la
+# comparaison ne serait jamais vraie, et les quatre yeux ne refuseraient
+# JAMAIS — une garde verte qui ne garde rien. Le seul champ qui prétend nommer
+# le demandeur est `promoted_by`, écrit dans le marqueur au moment de la
+# demande, relu ici sur l'état MERGÉ (donc soumis au même anti-TOCTOU que les
+# références de porte, et au même refus de saut de ligne).
+#
+# ⚠ ET IL FAUT DIRE JUSQU'OÙ ÇA VA AUJOURD'HUI, SANS LE MAQUILLER : `promoted_by`
+# vaut `ci` tant que le plugin Jenkins `build-user-vars` n'est pas provisionné
+# (ci/Jenkinsfile.api-promote-request pose `PROMOTED_BY=${BUILD_USER_ID ?: 'ci'}`
+# et rien dans ce dépôt n'installe ce plugin — le gabarit
+# clients/_example/apis/accounts-read.deploy.rec.yaml.example le documente
+# déjà). Donc : LE CONTRÔLE À QUATRE YEUX RESTE INERTE TANT QUE CE PLUGIN
+# MANQUE. Ce n'est pas un défaut de ce fichier et ce n'est pas réparable ici ;
+# c'est écrit là pour être LU avant d'être découvert en audit.
+# Ce que ce câblage garantit en revanche dès maintenant : aucun FAUX refus. Le
+# mergeur est un humain réconcilié auprès de Gitea, donc `merger == "ci"` ne
+# peut pas se produire par accident — le jour où `promoted_by` nommera
+# quelqu'un, la garde se mettra à mordre sans qu'une ligne change ici.
+if [ "$AMI_ARGS" = "" ] && [ -z "$MK_PROMOTED_BY" ]; then
+  # Porte à quatre yeux + marqueur sans demandeur : il n'y a rien à comparer,
+  # et une chaîne vide passerait pour « différente du mergeur », donc pour un
+  # succès. Refus — le fail-open classique des deux vides (même piège que
+  # MERGER_UNKNOWN dans la bibliothèque). Sur une porte selfApproval, au
+  # contraire, un promoted_by vide ne bloque rien : le bloc quatre yeux est
+  # sauté de toute façon, exiger le champ n'y protégerait personne.
+  fail "MERGER_UNKNOWN : la porte vers '$TO_ENV' exige les quatre yeux, mais ${MARKER_REL} ne porte aucun promoted_by — impossible de vérifier que le mergeur n'est pas le demandeur, refus"
+fi
+# ⚠ LES IDENTITÉS NE VIENNENT PAS DU WEBHOOK. $PR_MERGED_BY et $PR_REQUESTER ne
+# sont volontairement pas lus dans ce script : ce sont des affirmations d'un
+# payload non authentifié, et les faire piloter la garde reviendrait à laisser
+# l'attaquant choisir les deux termes de la comparaison. Le mergeur vient de
+# Gitea (§2, authentifié) ; le demandeur, du marqueur mergé (§6).
 # shellcheck disable=SC2086
 sh scripts/lib/assert-merge-identity.sh --merged-by "$GITEA_MERGED_BY" \
-  --requester "$GITEA_REQUESTER" --vault-user "$VAULT_IDENTITY_USER" $AMI_ARGS \
+  --requester "$MK_PROMOTED_BY" --vault-user "$VAULT_IDENTITY_USER" $AMI_ARGS \
   || fail "IDENTITE_REFUSEE : la garde d'identité a refusé (voir le log)"
 
 # ── 7. LE PALIER EST-IL OUVERT ? (rétention G4 — ADR-082) ───────────────────
@@ -604,7 +648,10 @@ if [ "$PROMO_RC" -eq 0 ]; then
   # d'Ansible sur les msg multi-lignes.
   SUMMARY=$(grep -oE '(PROMOTE_CONFIRMED|IMPORT_OK|ARCHIVE_DIGEST_OK)[^"]{0,140}' "$TMP/promote.log" \
     | sed 's/\\n/ /g' | tail -3 | tr '\n' ';')
-  comment "$WEBHOOK_REPO" "✅ team-promote ${TEAM}/${API_NAME} → ${TO_ENV} ([PR #${PR_NUMBER}](${GIT_WEB_HOST}/${WEBHOOK_REPO}/pulls/${PR_NUMBER})) — pin \`${DEPLOY_PIN_COMMIT}\`, v${DEPLOY_PIN_VERSION}, sha256 \`${DEPLOY_PIN_SHA256}\` (moteur ${PROMOTE_ENGINE}) — ${SUMMARY:-PROMOTE_CONFIRMED}"
+  # Les deux identités figurent au commentaire : c'est la trace d'audit que le
+  # lecteur de la PR doit pouvoir relire sans ouvrir le log Jenkins — et voir
+  # « demandée par ci » y est un signal, pas un détail (cf. §6bis).
+  comment "$WEBHOOK_REPO" "✅ team-promote ${TEAM}/${API_NAME} → ${TO_ENV} ([PR #${PR_NUMBER}](${GIT_WEB_HOST}/${WEBHOOK_REPO}/pulls/${PR_NUMBER})) — pin \`${DEPLOY_PIN_COMMIT}\`, v${DEPLOY_PIN_VERSION}, sha256 \`${DEPLOY_PIN_SHA256}\` (moteur ${PROMOTE_ENGINE}) — demandée par \`${MK_PROMOTED_BY:-<non nommé>}\`, mergée par \`${GITEA_MERGED_BY}\` — ${SUMMARY:-PROMOTE_CONFIRMED}"
 else
   # Hiérarchie fatal > msg > tail-3 (leçon du palier 2, cf. team-apply.sh §4 /
   # team-publish.sh §6) : le dernier tag OK vu AVANT un échec réel situé
