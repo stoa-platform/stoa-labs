@@ -23,15 +23,15 @@
 #   bash scripts/setup-vault-paliers.sh --print    # émet SANS réseau (preuve)
 #   bash scripts/setup-vault-paliers.sh --mint apply-rec   # geste d'OUVERTURE
 set -euo pipefail
-# Pas de cd(dirname "$0")/.. ici : ce script n'a besoin d'aucun fichier hors
-# cette lib, et la porte (test-palier-retention.sh, épreuves ③bis/⑤) exécute
-# des COPIES mutées de ce fichier depuis un répertoire temporaire — un cd
-# basé sur $0 y résoudrait un mauvais répertoire racine. On source donc
-# relativement au cwd d'invocation, qui est TOUJOURS la racine du dépôt
-# poc-control-plane-federation (convention de tous les appels documentés
-# ci-dessus : `bash scripts/setup-vault-paliers.sh`).
+# Auto-localisation par BASH_SOURCE quand le fichier vit dans son arbre ;
+# repli sur le cwd pour la copie mutée en $TMP (la porte exécute des copies
+# hors arbre — leur dirname ne contient pas lib/). Aucun `cd` : un cd basé
+# sur $0/BASH_SOURCE d'une copie mutée résoudrait un mauvais répertoire
+# racine (mesuré : test-palier-retention.sh épreuves ③bis/⑤).
+_SVP_LIB="$(dirname "${BASH_SOURCE[0]}")/lib/env-chain.sh"
+[ -f "$_SVP_LIB" ] || _SVP_LIB="scripts/lib/env-chain.sh"
 # shellcheck source=scripts/lib/env-chain.sh
-. "scripts/lib/env-chain.sh"
+. "$_SVP_LIB"
 
 VAULT_ADDR="${VAULT_ADDR:-http://localhost:8200}"
 TOKEN_TTL="${TOKEN_TTL:-3m}"
@@ -91,13 +91,15 @@ for e in $ENVS_NONPROD; do
     -H 'Content-Type: application/json' \
     -d "{\"policy\":$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$HCL")}" \
     -o /dev/null -w "  policy apply-$e -> HTTP %{http_code}\n"
+  ROLE_BODY="$(python3 -c 'import json,sys;print(json.dumps({"token_policies":sys.argv[1],"token_ttl":sys.argv[2],"token_max_ttl":sys.argv[2],"secret_id_ttl":sys.argv[3],"secret_id_num_uses":int(sys.argv[4])}))' "apply-$e" "$TOKEN_TTL" "$SECRET_ID_TTL" "$SECRET_ID_USES")"
   "${CURL[@]}" -X POST "$VAULT_ADDR/v1/auth/approle/role/apply-$e" -H 'Content-Type: application/json' \
-    -d "{\"token_policies\":\"apply-$e\",\"token_ttl\":\"$TOKEN_TTL\",\"token_max_ttl\":\"$TOKEN_TTL\",\"secret_id_ttl\":\"$SECRET_ID_TTL\",\"secret_id_num_uses\":$SECRET_ID_USES}" \
+    -d "$ROLE_BODY" \
     -o /dev/null -w "  approle apply-$e -> HTTP %{http_code}\n"
   # Mapping de GRANT humain — inerte tant que le groupe LDAP n'existe pas.
   # Tolérance NOMMÉE : sans mount ldap (lab partiel), on le dit, on ne casse pas.
+  LDAP_BODY="$(python3 -c 'import json,sys;print(json.dumps({"policies":sys.argv[1]}))' "apply-$e")"
   LC="$("${CURL[@]}" -X PUT "$VAULT_ADDR/v1/auth/ldap/groups/apim-apply-$e" \
-    -H 'Content-Type: application/json' -d "{\"policies\":\"apply-$e\"}" \
+    -H 'Content-Type: application/json' -d "$LDAP_BODY" \
     -o /dev/null -w '%{http_code}')"
   case "$LC" in 2*) echo "  ldap apim-apply-$e -> apply-$e (HTTP $LC)";;
                  *) echo "  ldap apim-apply-$e NON posé (HTTP $LC — mount ldap absent ? grant humain à poser autrement)";; esac
