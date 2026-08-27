@@ -1,8 +1,9 @@
 # HANDOFF — G4 : la rétention de credential par palier
 
-**Session du 2026-08-26.** Branche `provision/probe-dev`, **23 commits** de G4 (dont ce
-handoff). **Rien n'est poussé :** `origin` est resté au handoff G3 (`3b3a1ba`) — la branche est
-**23 commits devant** — et `gitea` n'a rien reçu (lignée disjointe, jamais poussée). Voir les
+**Session du 2026-08-26.** Branche `provision/probe-dev`, **24 commits** de G4 (spec, plan, dix
+tâches et leurs revues, dont ce handoff et le polish de revue finale). **Rien n'est poussé :**
+`origin` est resté au handoff G3 (`3b3a1ba`) ; la branche porte tout G4 au-dessus, rien n'est
+poussé sur `origin` ni `gitea` (lignée disjointe côté `gitea`, jamais poussée). Voir les
 points ouverts : sans la poussée sur `gitea`, aucun job du lab ne voit G4. Arbre propre.
 
 | Porte | Nature | Résultat |
@@ -119,8 +120,8 @@ Mesurées sur le lab, elles font autorité — la doc n'y accédait pas avant :
    pour le contrôleur ; à lancer par l'exploitant en `! bash`. `gitea` est **ce que lit le CI du
    lab**, sa lignée n'a pas d'ancêtre commun avec GitHub : tant qu'il n'a rien, **aucun job du
    lab ne voit G4**. Si le lot passe le mégaoctet, `http.postBuffer` est requis sur ce remote.
-   (Accessoirement, `origin` non plus n'a G4 — la branche est 23 commits devant ; à pousser si
-   l'on veut GitHub à jour.)
+   (Accessoirement, `origin` non plus n'a G4 — rien n'est poussé au-dessus du handoff G3 ; à
+   pousser si l'on veut GitHub à jour.)
 2. **Poser les deux gestes de G1 restés en attente** (bloqués classifieur, `! bash`), dans cet
    ordre : `bash scripts/setup-release-team.sh` puis
    `GITEA_TOKEN=<write:repository> bash scripts/seed-governance-chain.sh`. Sans le groupe
