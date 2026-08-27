@@ -458,6 +458,27 @@ func (a *Adapter) assertEndpointAliasValue(ctx context.Context, aliasID, name, w
 	return nil
 }
 
+// VerifyEndpointAliasValue re-reads the env-local backend alias WITHOUT
+// writing: the verify half of the alias-first contract (mirror of the Ansible
+// role's tasks/verify.yml ALIAS_DRIFT check — the G8 replayable gate).
+func (a *Adapter) VerifyEndpointAliasValue(ctx context.Context, name, want string) error {
+	aliases, err := a.listAliases(ctx)
+	if err != nil {
+		return err
+	}
+	for _, al := range aliases {
+		if al.Name != name {
+			continue
+		}
+		got, _ := al.Raw["endPointURI"].(string)
+		if got != want {
+			return fmt.Errorf("verify: ALIAS_DRIFT — alias %q carries %q, the env declares %q", name, got, want)
+		}
+		return nil
+	}
+	return fmt.Errorf("verify: ALIAS_MISSING — endpoint alias %q not found", name)
+}
+
 // EnsureCredentialAliasValue converges the httpTransportSecurityAlias NAME
 // WRITE-ALWAYS (the stored password reads back masked — the only sound
 // convergence is to re-emit the desired credentials on every apply).

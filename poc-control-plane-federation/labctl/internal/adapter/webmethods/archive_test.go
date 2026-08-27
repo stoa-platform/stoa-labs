@@ -255,3 +255,26 @@ func TestSetAPIActive_DeactivateGate(t *testing.T) {
 		t.Fatalf("deactivate with the gate open: %v", err)
 	}
 }
+
+func TestVerifyEndpointAliasValue(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/rest/apigateway/alias" {
+			t.Errorf("unexpected call %s %s (verify must be read-only)", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`{"alias":[{"id":"a1","name":"g8par-backend","type":"endpoint","endPointURI":"http://poc-token-echo:8080/backend/rec"}]}`))
+	}))
+	defer srv.Close()
+	a := &Adapter{adminURL: srv.URL, username: "u", password: "p", http: srv.Client()}
+
+	if err := a.VerifyEndpointAliasValue(context.Background(), "g8par-backend", "http://poc-token-echo:8080/backend/rec"); err != nil {
+		t.Fatalf("nominal: %v", err)
+	}
+	if err := a.VerifyEndpointAliasValue(context.Background(), "g8par-backend", "http://autre"); err == nil || !strings.Contains(err.Error(), "ALIAS_DRIFT") {
+		t.Fatalf("want ALIAS_DRIFT, got %v", err)
+	}
+	if err := a.VerifyEndpointAliasValue(context.Background(), "absent", "x"); err == nil || !strings.Contains(err.Error(), "ALIAS_MISSING") {
+		t.Fatalf("want ALIAS_MISSING, got %v", err)
+	}
+}
