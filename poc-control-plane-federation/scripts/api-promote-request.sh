@@ -116,6 +116,11 @@ NEED_PV="${GATE%%|*}"; APPROVER_GROUP="${GATE#*|}"
 # jour-là se voie plutôt qu'il ne se découvre.
 DEPLOYER_GROUP=$(env_chain_gate_deployer_group "$TO_ENV" || true)
 
+# itsmCheck (G7) : lu ICI pour que le CORPS DE LA PR l'annonce — le contrôle
+# lui-même vit au dispatch (team-promote.sh §6ter), jamais à la demande. Le
+# lecteur de la PR doit savoir AVANT de merger que le change sera re-vérifié.
+ITSMC=$(env_chain_gate_itsm_check "$TO_ENV") || fail "PARSE_GATE : itsmCheck vers '$TO_ENV'"
+
 [ "$NEED_CHANGE" = 0 ] || [ -n "$CHANGE_REF" ] \
   || fail "GATE_REFS_REQUIRED : la porte vers '$TO_ENV' exige une référence de changement (CHANGE_REF)"
 [ "$NEED_PV" = 0 ] || [ -n "$PV_REF" ] \
@@ -301,6 +306,13 @@ git -C "$TMP/team" push -q origin "$BRANCH" || fail "PUSH_ECHEC : $BRANCH sur $R
 # dans la même page évite de laisser croire que l'un vaut l'autre.
 DEPLOYER_GROUP_LINE="Groupe déployeur DÉCLARÉ : \`${DEPLOYER_GROUP:-<aucun>}\` — VÉRIFIÉ à l'apply (team-promote §7.a, refus DEPLOYER_GROUP_REQUIRED ; G2/ADR-084). L'approbation, elle, reste le MERGE, protégé par la branche (ADR-081)."
 
+# La ligne ITSM n'apparaît QUE si la porte d'arrivée déclare itsmCheck : le
+# tableau de bord annonce les contrôles RÉELS de CE saut, jamais un boilerplate.
+ITSM_LINE=""
+[ "$ITSMC" != "ITSMCHECK=1" ] || ITSM_LINE="
+
+⚠ La porte de \`${TO_ENV}\` déclare **itsmCheck** : au dispatch (post-merge), le change \`${CHANGE_REF}\` sera RE-vérifié \`approved\` auprès de l'ITSM — un change révoqué entre demande et merge refuse (\`ITSM_NOT_APPROVED\`, anti-TOCTOU A6)."
+
 PR_URL=$(API="${GIT_HOST}/api/v1" R="$REPO_FULL" B="$BRANCH" \
   T="promote(${API_NAME}): ${FROM_ENV} → ${TO_ENV}" \
   BODY="Marqueur \`${MARKER}\` — pin \`${PIN}\`, sha256 \`${ARCHIVE_SHA256:-<authoring>}\`.
@@ -309,7 +321,7 @@ La DÉCISION est le merge de cette PR (ADR-081). Groupe d'approbation ATTENDU : 
 
 ${DEPLOYER_GROUP_LINE}
 
-⚠ **Ce merge n'applique rien aujourd'hui.** Le job post-merge du dépôt d'équipe ne publie que les branches \`api/*\` ; celle-ci est \`${BRANCH}\`, donc le build passera au vert sans rien déployer. Le marqueur est posé pour être consommé quand G4 (verrou dev-only) et G5 (verbe archive) auront ouvert le palier." \
+**Ce merge DÉCLENCHE l'apply de promotion** (webhook → job \`team-promote\`, G5/ADR-083) : une pause nominative demandera l'identité du MERGEUR, puis l'import d'archive (GUID stable, 0-coupure — ADR-079) tournera vers \`${TO_ENV}\` et son résultat sera commenté ICI — pin, digest, moteur, et les trois identités (demandeur / mergeur / porteur).${ITSM_LINE}" \
   HDR="$TMP/ghdr" python3 - <<'PY'
 import json, os, urllib.request
 h = dict(l.split(": ", 1) for l in open(os.environ["HDR"]).read().splitlines() if l)

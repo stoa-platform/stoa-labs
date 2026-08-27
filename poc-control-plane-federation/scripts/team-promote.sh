@@ -736,10 +736,14 @@ if [ "$PROMO_RC" -eq 0 ]; then
   # d'Ansible sur les msg multi-lignes.
   SUMMARY=$(grep -oE '(PROMOTE_CONFIRMED|IMPORT_OK|ARCHIVE_DIGEST_OK)[^"]{0,140}' "$TMP/promote.log" \
     | sed 's/\\n/ /g' | tail -3 | tr '\n' ';')
-  # Les deux identités figurent au commentaire : c'est la trace d'audit que le
-  # lecteur de la PR doit pouvoir relire sans ouvrir le log Jenkins — et voir
-  # « demandée par ci » y est un signal, pas un détail (cf. §6bis).
-  comment "$WEBHOOK_REPO" "✅ team-promote ${TEAM}/${API_NAME} → ${TO_ENV} ([PR #${PR_NUMBER}](${GIT_WEB_HOST}/${WEBHOOK_REPO}/pulls/${PR_NUMBER})) — pin \`${DEPLOY_PIN_COMMIT}\`, v${DEPLOY_PIN_VERSION}, sha256 \`${DEPLOY_PIN_SHA256}\` (moteur ${PROMOTE_ENGINE}) — demandée par \`${MK_PROMOTED_BY:-<non nommé>}\`, mergée par \`${GITEA_MERGED_BY}\` — ${SUMMARY:-PROMOTE_CONFIRMED}"
+  # Les TROIS identités figurent au commentaire — trois statuts distincts :
+  # demandé / mergé / PORTÉ (G7 : « l'identité qui a porté l'apply »). Le
+  # porteur est l'identité Vault de la pause — égale au mergeur par
+  # MERGER_MISMATCH, mais « égal par une garde » doit se LIRE sur la PR, pas
+  # se déduire du code. C'est la trace d'audit que le lecteur de la PR doit
+  # pouvoir relire sans ouvrir le log Jenkins — et voir « demandée par ci » y
+  # est un signal, pas un détail (cf. §6bis).
+  comment "$WEBHOOK_REPO" "✅ team-promote ${TEAM}/${API_NAME} → ${TO_ENV} ([PR #${PR_NUMBER}](${GIT_WEB_HOST}/${WEBHOOK_REPO}/pulls/${PR_NUMBER})) — pin \`${DEPLOY_PIN_COMMIT}\`, v${DEPLOY_PIN_VERSION}, sha256 \`${DEPLOY_PIN_SHA256}\` (moteur ${PROMOTE_ENGINE}) — demandée par \`${MK_PROMOTED_BY:-<non nommé>}\`, mergée par \`${GITEA_MERGED_BY}\`, portée par \`${VAULT_IDENTITY_USER}\` — ${SUMMARY:-PROMOTE_CONFIRMED}"
 else
   # Hiérarchie fatal > msg > tail-3 (leçon du palier 2, cf. team-apply.sh §4 /
   # team-publish.sh §6) : le dernier tag OK vu AVANT un échec réel situé

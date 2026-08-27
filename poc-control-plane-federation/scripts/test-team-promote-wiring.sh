@@ -705,9 +705,21 @@ class H(BaseHTTPRequestHandler):
             }))
             return
 
-        # Gitea : les commentaires de PR (gitea-pr-comment.sh)
+        # Gitea : les commentaires de PR (gitea-pr-comment.sh). Les corps sont
+        # CAPTURÉS (G7) : le harnais relit ce que le lecteur de la PR verrait —
+        # le tableau de bord s'éprouve, il ne se suppose pas.
         if re.match(r"^/api/v1/repos/[^/]+/[^/]+/issues/", path):
-            self._body()
+            body = self._body()
+            if method != "GET":
+                # Le champ "body" DÉCODÉ (les échappements \uXXXX du JSON
+                # rendraient les accents introuvables au grep) — repli sur le
+                # brut si le corps n'est pas le JSON attendu.
+                try:
+                    text = json.loads(body.decode("utf-8", "replace"))["body"]
+                except Exception:
+                    text = body.decode("utf-8", "replace")
+                with open(os.environ.get("STUB_COMMENTS", "/dev/null"), "a") as f:
+                    f.write(text + "\n---\n")
             if method == "GET":
                 self._send(200, "[]")
             else:
@@ -762,7 +774,9 @@ sys.stdout.flush()
 srv.serve_forever()
 PY
 
+STUB_COMMENTS="$TMP/comments.log"; : > "$STUB_COMMENTS"
 STUB_REPOS="$STUB_REPOS" STUB_CTL="$STUB_CTL" STUB_HTTPLOG="$STUB_HTTPLOG" \
+  STUB_COMMENTS="$STUB_COMMENTS" \
   python3 "$TMP/stub.py" >"$TMP/stub.port" 2>"$TMP/stub.err" &
 STUB_PID=$!
 printf '{}\n' > "$STUB_CTL"
@@ -1356,6 +1370,7 @@ D="$TMP/tg7a"; mk_team "$D"
 write_marker "$D" prod "$PIN_C1" "1.0.0" "$ARCH_SHA" "CHG-0001" "PV-1" alice
 seal_team "$D"
 set_ctl true "$MERGE_SHA" "promote/accounts-read-prod" oscar ci 200 200 default,operator-deploy
+: > "$STUB_COMMENTS"   # l'assertion « porteur » porte sur CE run, pas l'historique
 run_promote "$TMP/og7a" "promote/accounts-read-prod" ansible "$TEAM_REPO" "$CHAIN_G7"; RC=$?
 [ "$RC" -eq 0 ] && ok "G7-a rc=0 (nominal terminus)" \
                 || bad "G7-a rc=$RC : $(tail -3 "$TMP/og7a" | tr '\n' ' ')"
@@ -1372,6 +1387,14 @@ grep -q 'apim_ss_auth_mode=oauth2' "$STUB_LOG" \
 grep -q 'apim_ss_api_base=http://webmethods-real:5555/rest/apigateway' "$STUB_LOG" \
   && ok "G7-a base d'admin = le gabarit DIRECT (pas le proxy)" \
   || bad "G7-a base d'admin inattendue : $(cat "$STUB_LOG")"
+# G7 (tableau de bord) : le commentaire de PR nomme les TROIS identités —
+# relu tel que POSTÉ (corps capturé par le stub), pas déduit du code.
+grep -q 'portée par `oscar`' "$STUB_COMMENTS" \
+  && ok "G7-a le commentaire de PR nomme le PORTEUR (identité Vault de la pause)" \
+  || bad "G7-a porteur absent du commentaire : $(tail -5 "$STUB_COMMENTS" 2>/dev/null | tr '\n' ' ')"
+grep -q 'demandée par `alice`, mergée par `oscar`' "$STUB_COMMENTS" \
+  && ok "G7-a demandeur et mergeur nommés eux aussi (trois statuts distincts)" \
+  || bad "G7-a demandeur/mergeur absents du commentaire posté"
 
 echo
 echo "== G7-b terminus SANS gabarit direct : refus nommé, moteur jamais lancé =="
@@ -1450,7 +1473,9 @@ refus_attendu "G7-g" "change_ref mergé portant '/'" REF_INVALIDE "$TMP/og7g" "$
 # 146 → 157 le 2026-08-27 (G7 §6ter, ITSM au dispatch) : +1 G7-e (approved
 # passe), +8 G7-f (draft/inconnu/panne/non-configuré × moteur jamais lancé),
 # +2 G7-g (REF_INVALIDE sur la valeur MERGÉE). Re-mesuré (157 != 146).
-EXPECTED_ASSERTIONS=157
+# 157 → 159 le 2026-08-27 (G7, tableau de bord) : +2 G7-a (porteur nommé,
+# trois identités relues sur le commentaire POSTÉ). Re-mesuré (159 != 157).
+EXPECTED_ASSERTIONS=159
 TOTAL_BEFORE_GUARD=$((PASS+FAIL))
 echo
 [ "$TOTAL_BEFORE_GUARD" -eq "$EXPECTED_ASSERTIONS" ] \
