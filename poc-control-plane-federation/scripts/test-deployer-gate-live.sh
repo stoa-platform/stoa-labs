@@ -327,10 +327,22 @@ TOK_DEP="$(login_token "$TARGET_USER" "$TARGET_PV")"
   && ok "② login LDAP de $TARGET_USER accepté" \
   || bad "② login LDAP de $TARGET_USER REFUSÉ — mot de passe de lab périmé (re-seed : scripts/setup-vault-ldap.sh), OU compte VERROUILLÉ par Vault après 5 échecs en 15 min (user lockout : GET sys/locked-users, puis POST — et non DELETE, qui rend 405 — sys/locked-users/<accessor>/unlock/$TARGET_USER)"
 POL_DEP="$TMP/pol.dep"
-lookup_policies "$TOK_DEP" "$POL_DEP" \
-  && ok "②bis lookup-self répond pour $TARGET_USER : [$(policies_line "$POL_DEP")]" \
-  || bad "②bis lookup-self en échec pour $TARGET_USER"
-if has_policy "$POL_DEP" "$TARGET_POLICY"; then
+# LOOKUP_OK sépare « la MESURE a réussi » de « la mesure dit non » : sans lui,
+# un login refusé (TOK_DEP vide) ou un lookup en échec vidait POL_DEP, le
+# ②ter tombait dans la branche « mapping Vault absent » et envoyait
+# l'exploitant rejouer setup-vault-paliers.sh — le mauvais remède pour un
+# mot de passe périmé ou un compte verrouillé. Le diagnostic d'une porte de
+# diagnostic ne doit jamais mentir (revue T9, medium).
+LOOKUP_OK=0
+if [ -n "$TOK_DEP" ] && lookup_policies "$TOK_DEP" "$POL_DEP"; then
+  LOOKUP_OK=1
+  ok "②bis lookup-self répond pour $TARGET_USER : [$(policies_line "$POL_DEP")]"
+else
+  bad "②bis lookup-self impossible pour $TARGET_USER (login refusé ou lookup en échec — voir ②)"
+fi
+if [ "$LOOKUP_OK" -ne 1 ]; then
+  bad "②ter mesure impossible — le login/lookup a échoué (voir ②/②bis) ; ni la pose ni le mapping Vault ne sont mis en cause sur cette base"
+elif has_policy "$POL_DEP" "$TARGET_POLICY"; then
   ok "②ter le token de $TARGET_USER PORTE '$TARGET_POLICY' — annuaire → mapping → policy, la chaîne complète tient"
 elif group_members "$TARGET_GROUP" | grep -qx "$TARGET_USER"; then
   # L'annuaire dit membre, Vault ne projette rien : ce n'est pas la pose qui a

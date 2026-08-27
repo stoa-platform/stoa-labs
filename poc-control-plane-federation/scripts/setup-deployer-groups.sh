@@ -152,9 +152,17 @@ group_members() {  # group_members <cn> — un uid par ligne ; VIDE si absent
 }
 
 # uid_exists <uid> — l'entrée existe-t-elle vraiment sous ou=People ?
+# Rend : 0 = existe ; 32 = ABSENT (« No such object », le seul rc qui dise
+# vraiment ça) ; tout autre rc = MESURE IMPOSSIBLE (49 bind refusé, 255
+# conteneur muet, 127 outil absent…). Les confondre ferait passer TOUS les uid
+# pour fantômes sur un simple bind cassé — un diagnostic qui MENT, fail-closed
+# mais envoyant chasser une typo qui n'existe pas. Mesuré live 2026-08-27 :
+# bob/0, bpb/32, mauvais mdp/49. Même discipline que read_back_group plus bas,
+# qui refuse déjà de confondre « rien posé » et « relecture en échec ».
 uid_exists() {
   ldap_run ldapsearch -LLL -o ldif-wrap=no \
       -b "uid=$1,ou=People,$BASE_DN" -s base dn >/dev/null 2>&1
+  case $? in 0) return 0 ;; 32) return 32 ;; *) return 1 ;; esac
 }
 
 pose_group() {   # pose_group <cn> <uid>…
@@ -169,7 +177,22 @@ pose_group() {   # pose_group <cn> <uid>…
   # d'uid produit donc un lab qu'on croit ouvert. C'est la garde que
   # setup-vault-ldap.sh:138-141 pose en amont de ses propres groupes, pour la
   # même raison et dans les mêmes termes.
-  for u in "$@"; do uid_exists "$u" || missing="$missing $u"; done
+  local unreachable=""
+  for u in "$@"; do
+    uid_exists "$u"
+    case $? in
+      0)  : ;;
+      32) missing="$missing $u" ;;
+      *)  unreachable="$unreachable $u" ;;
+    esac
+  done
+  if [ -n "$unreachable" ]; then
+    # ANNUAIRE_INJOIGNABLE ≠ membre fantôme : ici la MESURE a échoué (bind
+    # refusé, conteneur muet, outil absent) — aucun uid n'est déclaré fantôme
+    # sur cette base, et on n'écrit rien tant qu'on ne sait pas lire.
+    bad "groupe $cn NON POSÉ — ANNUAIRE_INJOIGNABLE : impossible de vérifier$unreachable (bind refusé ? conteneur muet ? ldapsearch absent ?) — vérifier LDAP_ADMIN_PASSWORD et docker exec $LDAP_CONTAINER ldapsearch"
+    return 0
+  fi
   if [ -n "$missing" ]; then
     bad "groupe $cn NON POSÉ — uid inexistant dans l'annuaire :$missing (typo, ou annuaire non semé : jouer scripts/setup-vault-ldap.sh). Un membre fantôme rendrait ce run VERT sur un palier RÉELLEMENT FERMÉ."
     return 0
