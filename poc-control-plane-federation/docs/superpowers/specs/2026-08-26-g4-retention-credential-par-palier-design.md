@@ -127,10 +127,14 @@ Nouveau script, même famille que `setup-vault-approle.sh` (idempotent, rejouabl
 - **AppRole `apply-<e>`** : `token_policies=apply-<e>`, TTL courts (mêmes ordres que
   `setup-vault-approle.sh:27-29`). **Aucun `--mint` au premier passage** : le script imprime le
   geste d'ouverture (`setup-vault-paliers.sh --mint apply-rec`) sans l'exécuter.
-- **Grant nominatif** : l'ouverture d'un palier à un humain = `vault write auth/userpass/users/<u>
-  token_policies=+apply-<e>` (ou groupe LDAP `apim-apply-<e>` → policy `apply-<e>`, mapping posé
-  par le script, groupes non créés — le mapping seul est inerte). Le script N'ACCORDE RIEN par
-  défaut : l'état sorti du script est « tout fermé ».
+- **Grant nominatif** : l'ouverture d'un palier à un humain passe par le **groupe annuaire
+  `apim-apply-<e>`** (mapping `auth/ldap/groups/apim-apply-<e>` → policy `apply-<e>` posé par le
+  script, groupes non créés — le mapping seul est inerte) : y ajouter l'humain accorde la policy
+  **sans écraser** ses policies existantes. La voie userpass directe est possible mais NON
+  additive — `vault write auth/userpass/users/<u> token_policies=…` **remplace** la liste (il
+  n'existe pas de syntaxe d'append `+`) : il faut lire l'existant et réécrire la liste COMPLÈTE
+  incluant `apply-<e>`. Le script N'ACCORDE RIEN par défaut : l'état sorti du script est « tout
+  fermé ».
 - **`--print` (mode hors-ligne)** : émet sur stdout les policies HCL et la liste des gestes
   SANS toucher Vault — c'est la surface que l'épreuve hors-ligne mute.
 - **Interdit vérifié** : aucun `envs/+` (wildcard multi-palier) dans ce que le script émet.
