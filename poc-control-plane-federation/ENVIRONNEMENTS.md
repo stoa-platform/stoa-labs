@@ -269,14 +269,34 @@ adressé par le contenu (la version du package **est** le sha256 de
 l'archive). Le palier cible doit être **ouvert** au sens de G4 — voir
 « Ouvrir un palier (G4) » ci-dessus, ce geste n'est pas répété ici.
 
-**Statut E2E.** La couche Jenkins (webhook → build → pause d'approbation)
-n'a jamais tourné verte sur ce lab — le gitea date d'avant G3 et le push
-exploitant qui y rebrancherait le webhook reste à faire. Chaque script du
-parcours ci-dessous a été rejoué directement contre le lab vivant (T10) :
-pour le moteur `labctl`, en chaîne script-par-script ; le moteur Ansible
-vers un palier mocké n'est rejouable que depuis le correctif de fidélité
-base64 (`0a1ac86`). Le rejeu du geste Jenkins lui-même est à la charge de
-l'exploitant, suivant la checklist du rapport T10.
+**Statut E2E.** La couche Jenkins (webhook → build → pause d'approbation) a
+tourné **verte** sur ce lab (T10, 2026-08-27, après le push exploitant
+`gitea/main = 646bf7b`). Le parcours ci-dessous est celui des builds réels :
+`api-promote-export #1` pour l'export, puis `team-promote #13` (moteur
+`ansible`, le défaut) et `#14` (moteur `labctl`) — **pause nominative
+comprise**. Les deux contre-épreuves sont passées par des builds elles aussi :
+`#15` refuse en `PALIER_FERME`, `#16` en `ARCHIVE_INTROUVABLE`, moteur jamais
+lancé, catalogue du palier inchangé. La première preuve fut script-par-script
+contre le même lab — c'est là qu'ont été isolés les écarts, dont la fidélité
+base64 du mock (`0a1ac86`).
+
+⚠ **Deux pièges d'exploitation mesurés pendant ce rejeu**, à connaître avant de
+relancer une promotion :
+
+- **La fenêtre keepalive du wM réel** (`restart-wm.sh`, cron `*/5`,
+  `WM_MAX_MIN=20`) coupe les builds en vol : `team-promote #12` a passé toutes
+  les gardes puis rendu `Connection refused` sur `webmethods-real:5555`, le
+  conteneur ayant redémarré 2 minutes plus tôt. Le rejeu immédiat est vert.
+  **Lancer les promotions juste après un cycle** — `docker inspect
+  poc-webmethods-real` → `StartedAt` récent et `healthy`.
+- **Gitea ferme la PR si sa branche est supprimée puis recréée trop vite**
+  (course mesurée : `pull_push` puis `close`, alors qu'aucun script du dépôt ne
+  ferme de PR). Le merge rend alors un `404 The target couldn't be found`
+  opaque. Remède : relire l'état de la PR, `PATCH {"state":"open"}` (→ 201),
+  puis merger. Et **ne jamais rejouer le webhook d'une PR dont la branche est
+  supprimée** : `head.ref` devient `refs/pull/N/head`, le build répond
+  `hors promote/* — rien à promouvoir` et sort **rc=0** — un no-op silencieux
+  qui ressemble à une réussite.
 
 Le parcours opérateur, pas à pas :
 

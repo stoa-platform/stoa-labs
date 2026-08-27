@@ -14,7 +14,7 @@ conditionne tout le rejeu). Arbre propre.
 | `scripts/test-archive-store.sh` *(nouvelle)* | hors-ligne, [6/8] | **24 assertions + garde de compte** |
 | `go test ./mocks/webmethods -count=1` | hors-ligne, [8/8] *(nouvelle étape)* | **68 tests, 0 échec** |
 | `make lint-ci` | intégral | **8/8 étapes vertes, rc=0** |
-| E2E chaîne sur le lab (rapport T10) | live, script-par-script | merge PR → API active en `rec`, GUID iso via proxy — **par les DEUX moteurs** (PR #17 labctl, PR #18 ansible) ; F4 et TOCTOU fermées |
+| E2E chaîne sur le lab (rapport T10) | live, **builds Jenkins** | merge PR → API active en `rec`, GUID iso via proxy — **par les DEUX moteurs** (`team-promote #13` ansible, `#14` labctl), pause `input` comprise ; F4 (`#15`) et TOCTOU (`#16`) fermées par builds |
 
 ---
 
@@ -27,35 +27,53 @@ TOUTES les gardes mécaniquement antérieures à l'unique site moteur, import
 PR. Les deux moteurs (`apim_promote_api` / `labctl promote`) sont vivants et ont
 chacun prouvé la porte du GOAL sur le wM réel ET la chaîne complète sur le lab.
 
-**La ligne d'honnêteté** (elle est aussi dans ADR-083 et ENVIRONNEMENTS.md) :
-l'E2E a tourné **script-par-script** contre le vrai lab (Vault, Gitea, registre,
-proxies, mocks) — **pas par des builds Jenkins**. Les jobs clonent un Gitea
-resté pré-G3 ; la pause nominative (`input`) n'est donc pas exercée. Deux gestes
-d'exploitant la débloquent (ci-dessous), puis la **checklist de rejeu**
-(rapport T10, ligne 448, étapes 0-10, commandes prêtes) rejoue tout par les
-builds réels.
+**L'E2E est prouvé PAR DES BUILDS JENKINS RÉELS** (elle est aussi dans ADR-083 et
+ENVIRONNEMENTS.md). Le push exploitant a été fait EN SESSION — `gitea/main =
+646bf7b`, fast-forward `06afc4c..646bf7b` — et la chaîne a été rejouée en entier
+par les jobs, **pause nominative (`input`) comprise** :
+
+| build | verdict | ce qu'il prouve |
+|---|---|---|
+| `api-promote-export` **#1** | SUCCESS | export + push au registre, par le job |
+| `team-promote` **#13** | SUCCESS | nominal, moteur **ansible** (le défaut) |
+| `team-promote` **#14** | SUCCESS | moteur **labctl**, en overwrite du précédent |
+| `team-promote` **#15** | FAILURE *attendue* | rétention **F4** (`PALIER_FERME`) |
+| `team-promote` **#16** | FAILURE *attendue* | **TOCTOU** (`ARCHIVE_INTROUVABLE`) |
+| `team-promote` **#17** | SUCCESS | remise en état nominale |
+
+La pause est réelle : `input` id=`Promote`, `V_USER` (String) +
+`V_PASS` (**PasswordParameterDefinition** — jamais posée sur un Jenkins réel
+avant ce jour), répondue par `POST …/input/Promote/proceed`. Sur **#15** et
+**#16**, le moteur n'a **jamais** été lancé (`grep -c 'PLAY \['` = 0) et le
+catalogue de `rec` est resté à `n=0` — la référence avait été remise à vide
+exprès, pour que « inchangé » veuille dire quelque chose.
+
+La première preuve, elle, fut **script-par-script** contre le même lab : c'est
+ce qui a permis d'isoler les écarts avant que la couche Jenkins n'existe. La
+trace en reste au rapport T10 (§1 et POST-SCRIPTUM).
 
 ---
 
-## Les gestes exploitant (`! bash`) — dans cet ordre
+## Les gestes exploitant — **1 et 2 sont FAITS**
 
-1. **Pousser G5 sur Gitea** (fast-forward pur mesuré : `0 102`, aucun fichier
-   propre à la lignée Gitea en jeu) :
-   `git push gitea provision/probe-dev:main` — depuis `/Users/torpedo/hlfh-repos/stoa-labs`,
-   avec le token du compte `ci` et `http.postBuffer` relevé (le lot passe le Mo).
-   Script prêt : voir la checklist T10 étape 0. **Sans lui, aucun job du lab ne
-   voit G3, G4 ni G5.**
-2. **Le credential Jenkins `gitea-provision-token`** doit porter `write:package`
-   (le registre d'archives le refuse sinon en 401 — mesuré dans les deux sens).
-   Depuis `f144ebb` la convention de mint du dépôt est corrigée : **re-passer
-   `bash scripts/setup-provision-request-job.sh` suffit** (le script `! bash
-   update-jenkins-cred.sh` du scratchpad reste le raccourci sans re-pose).
-3. Puis dérouler la **checklist de rejeu** (rapport T10 §CHECKLIST, étapes 1-10) :
-   jobs re-posés, palier ouvert, export par le job, PR fraîche
-   (⚠ **jamais rejouer une vieille PR dont la branche est supprimée** : Gitea
-   rend alors `head.ref=refs/pull/N/head` et le build sort VERT sans rien faire
-   — piège mesuré), merge humain, pause répondue, assertions, F4, TOCTOU.
-   (Accessoirement : `origin` non plus n'a rien reçu — à pousser pour GitHub.)
+1. ~~**Pousser G5 sur Gitea**~~ — **FAIT en session par l'exploitant.**
+   `gitea/main = 646bf7b` (fast-forward `06afc4c..646bf7b`, `0 102` mesuré avant,
+   aucun fichier propre à la lignée Gitea perdu). Les jobs voient désormais G3,
+   G4 et G5.
+2. ~~**Donner `write:package` au credential `gitea-provision-token`**~~ —
+   **FAIT, et par la voie du dépôt** : depuis `f144ebb` la convention de mint est
+   corrigée, donc `bash scripts/setup-provision-request-job.sh` a suffi
+   (`✅ credential posé (HTTP 302)`). Le correctif in-repo a rendu le geste
+   bloqué inutile — c'est le bon dénouement, et le raccourci
+   `update-jenkins-cred.sh` du scratchpad n'a pas servi. ⚠ Ce poseur re-pose
+   aussi le job `provisioning-request` (effet de bord assumé).
+3. **Reste, optionnel : pousser sur `origin` (GitHub)** — `origin` n'a rien
+   reçu de G5. Sans conséquence pour le lab (le CI lit Gitea) ; à faire pour
+   que GitHub reflète le jalon.
+
+La **checklist de rejeu** (rapport T10 §CHECKLIST, étapes 0-10, commandes prêtes)
+reste valable telle quelle pour rejouer la chaîne — ses étapes 0a/0b sont
+désormais sans objet.
 
 ---
 
@@ -110,6 +128,33 @@ builds réels.
 
 ## Dettes et pièges consignés (à ne pas redécouvrir)
 
+- **L'export n'est PAS reproductible bit-à-bit.** Ré-exporter la MÊME API
+  produit un digest différent (`6a2ced5c…` puis `c9de1818…` sur deux exports
+  consécutifs) alors que **le GUID, lui, ne bouge pas**
+  (`14c2529e-0000-4000-8000-000000000003`). Ce n'est pas un défaut : c'est la
+  conception — le GUID porte l'iso inter-gateways, le digest ne chaîne que *ces*
+  octets-là d'un palier au suivant. **Conséquence d'exploitation : tout
+  ré-export impose une PR de promotion NEUVE**, un marqueur ne se recycle pas.
+- **Fenêtre keepalive du wM réel** (`restart-wm.sh`, cron `*/5`, `WM_MAX_MIN=20`) :
+  elle coupe les builds en vol. Mesuré — `team-promote #12` a passé TOUTES les
+  gardes puis `Connection refused` sur `webmethods-real:5555` ; le conteneur
+  avait redémarré 2 min plus tôt. Le rejeu immédiat (`#13`) est vert. **Lancer
+  les promotions juste après un cycle** : `docker inspect poc-webmethods-real`
+  → `StartedAt` récent + `healthy`.
+- **Gitea ferme la PR si on supprime puis recrée sa branche trop vite.** La PR
+  #20 est ressortie `state=closed, merged=False` AVANT toute tentative de merge
+  (timeline : `pull_push` puis `close`, par `ci`) — aucun script du dépôt ne
+  ferme de PR, vérifié. Course entre le `DELETE` de la branche `promote/*` et sa
+  recréation immédiate ; confirmé par différence (avec un `sleep` intercalé, la
+  PR #21 est restée `open`). Remède : relire l'état, `PATCH {"state":"open"}`
+  (→ 201), puis merger. Sans le savoir, on n'a qu'un `404 The target couldn't be
+  found` parfaitement opaque.
+- ⚠ **Ne jamais rejouer le webhook d'une PR dont la branche est supprimée** :
+  Gitea rend alors `head.ref=refs/pull/N/head`, `team-promote` répond
+  `hors promote/* — rien à promouvoir` et sort **rc=0** — un no-op SILENCIEUX qui
+  ressemble à une réussite.
+- **Build fantôme** : `team-publish #4` est resté « building » depuis 12:56Z,
+  antérieur à la campagne de rejeu et non investigué. À tuer ou diagnostiquer.
 - **Frère du C1** : `team-publish`/`team-apply`/`provision-apply` font TOUJOURS
   confiance aux identités du payload webhook (`PR_MERGED_BY`) — un porteur du
   token GWT peut y auto-attester le mergeur. `team-promote` réconcilie, ses
@@ -131,14 +176,17 @@ builds réels.
 
 ## État du lab à la fin de session
 
-Fermé et propre : les 4 paliers à **403** pour oscar (`token_policies=
-[operator-deploy]`, re-mesuré par le contrôleur), aucun asset jetable
-(`g5live-*`, sondes registre, branches de preuve purgés), marqueur au digest
-réel, catalogues dev=…/int=0/homol=0 et **rec=1 — l'API promue `t10-promote-api`
-y est active, c'est l'état nominal de la preuve**. wM réel réparé (NPE), proxys
-20/0, mocks rebuildés (homol compris). Vault dev re-seedé en session (il avait
-tout perdu — il est EN MÉMOIRE : tout restart exige le re-seed, séquence connue
-du jalon userpass).
+Fermé et propre, **re-mesuré après le rejeu Jenkins** : les 4 paliers à **403**
+pour oscar (`token_policies=['operator-deploy']`), aucun asset jetable
+(`g5live-*`, sondes registre, branches de preuve purgés — **aucune branche
+`promote/*` ne subsiste**), marqueur au digest réel (`c9de1818…238eb`, celui du
+dernier export), catalogues **dev=0 / int=0 / homol=0** et **rec=1 — l'API
+promue `t10-promote-api` v1.0.0 y est active, `id==guid`, c'est l'état nominal
+de la preuve**. `PROMOTE_ENGINE` **retiré** des variables globales du nœud →
+retour au défaut `ansible`. Jobs alignés sur `gitea/main = 646bf7b`. wM réel
+réparé (NPE), proxys **20/0** (homol compris depuis `e128c77`), mocks rebuildés.
+Vault dev re-seedé en session (il avait tout perdu — il est EN MÉMOIRE : tout
+restart exige le re-seed, séquence connue du jalon userpass).
 
 ## Où lire le détail
 
