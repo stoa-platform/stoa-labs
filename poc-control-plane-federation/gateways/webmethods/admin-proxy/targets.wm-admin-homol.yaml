@@ -1,0 +1,65 @@
+# targets.wm-admin-homol.yaml — proxy admin HOMOL (ADR-075), appliqué sur le wM
+# RÉEL par scripts/setup-wm-admin-proxy.sh (perspective HOST : adminUrl localhost).
+#
+# CE FICHIER MANQUAIT (mesuré T10, jalon G5) : `env_chain_nonprod` dérive
+# `dev rec int homol` de clients/_example/environments.yaml, mais ce répertoire
+# ne portait que dev/rec/int. La boucle du poseur mourait donc sur homol à
+# CHAQUE run (`sed: … targets.wm-admin-homol.yaml: No such file or directory`,
+# puis `error: … 'contract' is required`) et la matrice ne pouvait jamais être
+# verte : 18 PASS / 3 FAIL, les 3 FAIL toujours les mêmes. La chaîne avait un
+# palier de plus que ses manifests.
+#
+# Donne l'API sœur wm-admin-homol v1.0 :
+#   data-plane  http://localhost:5555/gateway/wm-admin-homol/1.0/rest/apigateway/...
+#   → routée ${wm-admin-homol}/${sys:resource_path} → http://wm-mock-homol:8080
+#     (réseau nonprod interne — le wM réel est le SEUL pont)
+#   entrée : Bearer Keycloak, scope deploy:homol exigé (client ci-horsprod)
+#   sortie : Basic depuis le credential alias wm-admin-homol-cred (valeurs Vault
+#            secret/stoa/envs/homol/wm-admin, injectées PAR LE SCRIPT — les
+#            placeholders __FROM_VAULT__ ne sont JAMAIS commités en vrai)
+apiVersion: labctl.stoa.io/v1
+kind: FederationTarget
+name: wm-admin-homol
+
+contract: ./wm-admin-proxy.openapi.yaml
+
+# Informationnel : le routage effectif est l'${alias} ci-dessous (per-request).
+backendUrl: http://wm-mock-homol:8080
+
+targets:
+  - name: webmethods
+    type: webmethods
+    adminUrl: http://localhost:5555      # le wM RÉEL (host) — c'est LUI qui porte le proxy
+    gatewayUrl: http://localhost:5555
+    # Différence par env = UNIQUEMENT ces deux aliases (ADR-075) : même contrat,
+    # même policy, seul l'endpoint/credential cible change.
+    routing:
+      endpointAlias:
+        name: wm-admin-homol
+        url: http://wm-mock-homol:8080   # nom docker-INTERNE, réseau nonprod
+      credentialAlias:
+        name: wm-admin-homol-cred
+    # OAuth2 entrant — copié de targets.yaml (mêmes horizons réseau Keycloak),
+    # SAUF audience/scope/clientId propres au proxy. ⚠ l'audience est fail-OPEN
+    # sur le trial (LIVE FINDING targets.yaml) : la barrière opposable est le
+    # SCOPE deploy:homol + l'azp ci-horsprod.
+    inboundAuth:
+      issuer: http://localhost:8480/realms/stoa-lab
+      jwksUri: http://keycloak:8080/realms/stoa-lab/protocol/openid-connect/certs
+      aliasName: KeycloakStoaLab
+      audience: wm-admin-homol
+      scope: deploy:homol
+      clientId: ci-horsprod
+      introspectionEndpoint: http://keycloak:8080/realms/stoa-lab/protocol/openid-connect/token/introspect
+      introspectionClientId: poc-gateways
+      introspectionClientSecret: poc-gateways-secret
+      introspectionUser: Administrator
+    credentials:
+      # Admin du wM RÉEL — placeholders ; avec VAULT_ADDR, labctl les résout
+      # depuis secret/stoa/gateways/webmethods (ADR-074).
+      username: Administrator
+      password: manage
+      # Valeurs du credential alias (admin du MOCK homol) — substituées depuis
+      # Vault secret/stoa/envs/homol/wm-admin par setup-wm-admin-proxy.sh.
+      backendUsername: __FROM_VAULT__
+      backendPassword: __FROM_VAULT__
