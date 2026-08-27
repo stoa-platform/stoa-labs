@@ -222,10 +222,22 @@ d'exploitant**, en deux temps :
 # 1. minter le secret-id de l'AppRole du palier (le poseur ne le fait JAMAIS par défaut)
 bash scripts/setup-vault-paliers.sh --mint apply-rec
 
-# 2. accorder la policy du palier à l'utilisateur nominatif
-#    voie userpass :
-vault write auth/userpass/users/<login> token_policies=+apply-rec
-#    ou voie LDAP : membre du groupe apim-apply-rec (mapping posé par le script, groupe côté annuaire)
+# 2. accorder la policy apply-rec à l'humain — VOIE RECOMMANDÉE, additive :
+#    setup-vault-paliers.sh a déjà posé le mapping auth/ldap/groups/apim-apply-rec -> policy apply-rec.
+#    Il suffit d'ajouter l'utilisateur au GROUPE annuaire apim-apply-rec (côté OpenLDAP) ;
+#    le mapping accorde la policy SANS toucher aux policies déjà attachées à l'utilisateur.
+```
+
+⚠️ **Ne PAS ouvrir un palier par `vault write auth/userpass/users/<login>
+token_policies=apply-rec`.** `vault write` **remplace** `token_policies` — il
+n'existe pas de syntaxe d'append `+…` — donc cette forme **efface** les policies
+déjà attachées à l'utilisateur (`default`, etc.). Si l'annuaire LDAP n'est pas
+la voie et qu'il faut passer par userpass, réécrire la liste **complète** : lire
+l'existant, puis tout réécrire en y ajoutant `apply-rec`.
+
+```bash
+existing=$(vault read -field=token_policies auth/userpass/users/<login>)
+vault write auth/userpass/users/<login> token_policies="${existing},apply-rec"
 ```
 
 L'état sorti de `setup-vault-paliers.sh` sans `--mint` est « tout fermé » : les

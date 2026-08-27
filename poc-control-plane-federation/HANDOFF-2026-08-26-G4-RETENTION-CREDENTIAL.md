@@ -2,7 +2,7 @@
 
 **Session du 2026-08-26.** Branche `provision/probe-dev`, **19 commits** de G4 (dont ce
 handoff). **Rien n'est poussé :** `origin` est resté au handoff G3 (`3b3a1ba`) — la branche est
-**18 commits devant** — et `gitea` n'a rien reçu (lignée disjointe, jamais poussée). Voir les
+**19 commits devant** — et `gitea` n'a rien reçu (lignée disjointe, jamais poussée). Voir les
 points ouverts : sans la poussée sur `gitea`, aucun job du lab ne voit G4. Arbre propre.
 
 | Porte | Nature | Résultat |
@@ -13,7 +13,7 @@ points ouverts : sans la poussée sur `gitea`, aucun job du lab ne voit G4. Arbr
 | `make lint-ci` | 11 Jenkinsfile compilés + shellcheck + épreuves | vert `[1/5]`→`[5/5]`, `rc=0` |
 | `scripts/test-deploy-pin.sh` (⑳ retournée) | hors-ligne, asserte le scellement | **79 / 0** |
 | `scripts/test-team-publish-wiring.sh` | wiring, EXPECTED_CHECKS mis à jour | **116 / 116** |
-| `scripts/test-team-request-wiring.sh` | wiring | **65 / 65** |
+| `scripts/test-team-request-wiring.sh` | wiring (après fix round T4) | **66 / 66** |
 | `scripts/test-team-apply-wiring.sh` | wiring | **72 / 72** |
 | `scripts/test-api-request-wiring.sh` | wiring | **52 / 52** |
 
@@ -119,7 +119,7 @@ Mesurées sur le lab, elles font autorité — la doc n'y accédait pas avant :
    pour le contrôleur ; à lancer par l'exploitant en `! bash`. `gitea` est **ce que lit le CI du
    lab**, sa lignée n'a pas d'ancêtre commun avec GitHub : tant qu'il n'a rien, **aucun job du
    lab ne voit G4**. Si le lot passe le mégaoctet, `http.postBuffer` est requis sur ce remote.
-   (Accessoirement, `origin` non plus n'a G4 — la branche est 18 commits devant ; à pousser si
+   (Accessoirement, `origin` non plus n'a G4 — la branche est 19 commits devant ; à pousser si
    l'on veut GitHub à jour.)
 2. **Poser les deux gestes de G1 restés en attente** (bloqués classifieur, `! bash`), dans cet
    ordre : `bash scripts/setup-release-team.sh` puis
