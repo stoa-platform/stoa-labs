@@ -74,6 +74,14 @@ commit: 0000000000000000000000000000000000000000
 #   dessus tant que ce n'est pas écrit.
 change_ref: ""
 
+# Référence du PV de validation, exigée À LA DEMANDE par `requirePVRef`
+# (`homol`, `prod`). Elle VOYAGE ici pour que l'apply de promotion la
+# re-vérifie sur le marqueur MERGÉ (team-promote.sh §6, anti-TOCTOU) : sans ce
+# champ, cette re-vérification refuserait toute promotion vers homol/prod, ou —
+# pire — serait écrite comme une garde qui ne regarde rien. Vide si la porte du
+# palier ne l'exige pas.
+pv_ref: ""
+
 # ── LE DIGEST ────────────────────────────────────────────────────────────────
 # sha256 de l'archive promue, émis par `apim_promote_action=export`
 # (EXPORT_CONFIRMED). OBLIGATOIRE dès que l'env n'est pas l'env d'authoring.

@@ -329,10 +329,13 @@ echo "⑬ le gabarit du marqueur est livré dans le squelette d'équipe"
 TPL="$ROOT/clients/_example/apis/accounts-read.deploy.rec.yaml.example"
 if [ -f "$TPL" ]; then
   MISSING=""
-  for k in version enabled promoted_by message commit change_ref archive_sha256; do
+  # 8 champs depuis G5 : `pv_ref` a rejoint la liste (l'écrivain le pose déjà —
+  # api-promote-request.sh:261 — et team-promote.sh §6 le re-vérifie sur le
+  # marqueur MERGÉ ; un gabarit qui l'omet documenterait une forme périmée).
+  for k in version enabled promoted_by message commit change_ref pv_ref archive_sha256; do
     grep -qE "^${k}:" "$TPL" || MISSING="$MISSING $k"
   done
-  [ -z "$MISSING" ] && ok "gabarit présent et complet (7 champs)" \
+  [ -z "$MISSING" ] && ok "gabarit présent et complet (8 champs)" \
                     || bad "gabarit incomplet — champs manquants :$MISSING"
 else
   bad "gabarit absent — un dépôt d'équipe créé par team-apply n'aurait aucun exemple de marqueur"
