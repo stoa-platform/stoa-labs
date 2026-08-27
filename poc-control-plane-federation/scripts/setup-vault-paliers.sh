@@ -69,7 +69,11 @@ case "$MODE" in
     for e in $ENVS_NONPROD; do [ "$ROLE" = "apply-$e" ] && KNOWN=1; done
     [ "$KNOWN" -eq 1 ] || { echo "MINT_ROLE_INCONNU : '$ROLE' hors du set dérivé (apply-{$(echo "$ENVS_NONPROD" | tr ' ' ',')})" >&2; exit 1; }
     VAULT_TOKEN="${VAULT_TOKEN:?VAULT_TOKEN requis pour --mint}"
-    CURL=(/usr/bin/curl -s -H "X-Vault-Token: $VAULT_TOKEN")
+    # Le token part dans un header-FILE, jamais en argv (ps/cmdline) — standard
+    # du repo depuis ADR-074 (« jamais en argv »).
+    HDR="$(mktemp)"; trap 'rm -f "$HDR"' EXIT
+    printf 'X-Vault-Token: %s\n' "$VAULT_TOKEN" > "$HDR"
+    CURL=(/usr/bin/curl -s -H @"$HDR")
     RID="$("${CURL[@]}" "$VAULT_ADDR/v1/auth/approle/role/$ROLE/role-id" | python3 -c 'import sys,json;print(json.load(sys.stdin)["data"]["role_id"])')"
     SID="$("${CURL[@]}" -X POST "$VAULT_ADDR/v1/auth/approle/role/$ROLE/secret-id" | python3 -c 'import sys,json;print(json.load(sys.stdin)["data"]["secret_id"])')"
     printf '%s\t%s\n' "$RID" "$SID"
@@ -79,7 +83,11 @@ case "$MODE" in
 esac
 
 VAULT_TOKEN="${VAULT_TOKEN:?VAULT_TOKEN requis pour poser (voir .env.example)}"
-CURL=(/usr/bin/curl -s -H "X-Vault-Token: $VAULT_TOKEN")
+# Le token part dans un header-FILE, jamais en argv (ps/cmdline) — standard
+# du repo depuis ADR-074 (« jamais en argv »).
+HDR="$(mktemp)"; trap 'rm -f "$HDR"' EXIT
+printf 'X-Vault-Token: %s\n' "$VAULT_TOKEN" > "$HDR"
+CURL=(/usr/bin/curl -s -H @"$HDR")
 
 echo "Vault $VAULT_ADDR — plan de credential par palier ($ENVS_NONPROD)"
 "${CURL[@]}" -X POST "$VAULT_ADDR/v1/sys/auth/approle" -H 'Content-Type: application/json' \
