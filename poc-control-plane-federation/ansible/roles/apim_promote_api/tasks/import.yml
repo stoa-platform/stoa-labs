@@ -107,6 +107,11 @@
             filename: "{{ apim_promote.archive }}"
             mime_type: "application/zip"
         status_code: [200, 201]
+        # Le CORPS de la réponse, même en échec : un refus du produit (400) sans
+        # son corps est un diagnostic qui ment par omission — le lecteur de la
+        # PR n'a que « Bad Request » et va chercher la cause au mauvais endroit
+        # (mesuré : saut terminus G7, produit réel refusant une archive).
+        return_content: true
       register: imp_post
 
     # ===== 3. Read-back fail-closed ==========================================
