@@ -17,13 +17,26 @@
 # Entrées (env — mappées depuis les paramètres du job) :
 #   TEAM, API_NAME                        (requis, classe [a-z0-9-])
 #   GITEA_TOKEN                           (requis — lecture providers.yml + clone)
-#   VAULT_ADDR, VAULT_TOKEN_FILE          (requis — preuve qu'une identité
-#                                          nominative a loggé avant ce geste ;
-#                                          même discipline que team-publish.sh,
-#                                          même si CE script ne lit rien dans
-#                                          Vault lui-même : l'export contre une
-#                                          gateway d'authoring reste un acte
-#                                          privilégié, jamais anonyme)
+#   VAULT_ADDR, VAULT_TOKEN_FILE          (requis — CE script ne les lit jamais
+#                                          lui-même, mais `ansible-playbook` les
+#                                          HÉRITE en sous-processus : le rôle
+#                                          apim_promote_api importe
+#                                          apim_common/tasks/secrets.yml
+#                                          INCONDITIONNELLEMENT (main.yml), qui
+#                                          lit VAULT_ADDR/VAULT_TOKEN_FILE pour
+#                                          aller chercher le user/password admin
+#                                          dans Vault et les pose en
+#                                          module_defaults (apim_ss_uri_defaults,
+#                                          consommé par TOUS les appels `uri` de
+#                                          export.yml — /apis, /apis/<guid>,
+#                                          /archive?apis=<guid>). Sans identité
+#                                          nominative valide ici, l'export
+#                                          n'authentifie PAS contre la gateway :
+#                                          ce ne sont donc PAS de simples jetons
+#                                          de preuve, ce SONT les creds
+#                                          réellement utilisées par le moteur.
+#                                          [corrigé — une version antérieure de
+#                                          ce commentaire affirmait le contraire]
 #   APIM_API_BASE                         (requis, PAS de défaut ICI — la cible
 #                                          se dit, elle ne se devine pas ; le
 #                                          Jenkinsfile, lui, en pose un)
@@ -135,9 +148,43 @@ ARCHIVE_OUT="$TMP/export.zip"
 SHA=$(shasum -a 256 "$ARCHIVE_OUT" | cut -d' ' -f1)
 [ "${#SHA}" -eq 64 ] || fail "EXPORT_UNCONFIRMED : sha256 de ${ARCHIVE_OUT} incalculable"
 
-GUID=$(grep -o 'guid=[0-9a-f-]*' "$TMP/export.log" | tail -1)
+# ⚠ NE PAS grep 'guid=[0-9a-f-]*' SUR TOUT LE LOG — SECOND ÉMETTEUR MESURÉ EN
+# RÉEL (mock local, ansible-playbook réel, pas une lecture de code à froid).
+# roles/apim_promote_api/tasks/resolve-env.yml:56-62 imprime un DEBUG
+# INCONDITIONNEL (pas gaté par stoa_debug, tourne à CHAQUE appel du rôle,
+# export COMME import) qui porte LUI AUSSI le littéral 'guid=' :
+#   guid={{ apim_promote.guid | default('(à épingler)') }}
+# Tant que le manifeste ne pin pas encore de guid (le cas NOMINAL du premier
+# export, `guid: ""` dans le manifeste comme dans clients/_example/apis/
+# accounts-read.promote.yml), `default()` SANS son second argument booléen ne
+# remplace que l'UNDEFINED, jamais une chaîne vide déjà présente — la ligne
+# réellement observée est donc `guid=, backend_alias=…` (rien du tout entre
+# `=` et la virgule), et non le texte `(à épingler)` qu'on pourrait attendre
+# à la lecture seule du template. Dans les DEUX cas (chaîne vide OU parenthèse
+# du texte de repli, si la clé est un jour absente plutôt que vide), le
+# caractère qui suit `guid=` est hors de la classe [0-9a-f-] :
+# `grep -o 'guid=[0-9a-f-]*'` y capture donc 'guid=' SEUL (le '*' autorise
+# zéro caractère), un match VIDE qui se glisserait comme un guid si on s'y
+# fiait. Un `tail -1` sur TOUT le log ne "marchait" que parce que ce debug de
+# resolve-env.yml s'exécute AVANT le succès d'export.yml (main.yml importe
+# resolve-env.yml PUIS export.yml, dans cet ordre) — un ORDRE D'IMPRESSION
+# IMPLICITE, jamais garanti par une interface, pas une preuve. On ancre donc
+# l'extraction sur la ligne EXPORT_CONFIRMED elle-même (le success_msg de
+# l'assert final d'export.yml — seul émetteur qui garantit un guid RÉELLEMENT
+# résolu, relu et vérifié contre le catalogue) et on exige une forme plausible
+# avant de le rendre : un UUID wM fait 36 caractères [0-9a-f-] (mesuré :
+# mocks/webmethods/store.go:guidForKind — 8-4-4-4-12, et confirmé par un run
+# réel du play contre ce mock, cf. l'addendum du rapport de cette tâche).
+CONFIRM_LINE=$(grep 'EXPORT_CONFIRMED' "$TMP/export.log" | tail -1)
+[ -n "$CONFIRM_LINE" ] \
+  || fail "EXPORT_UNCONFIRMED : aucune ligne EXPORT_CONFIRMED dans le log d'export — le rôle n'a pas confirmé l'export"
+GUID=$(printf '%s\n' "$CONFIRM_LINE" | grep -o 'guid=[0-9a-f-]*' | tail -1)
 GUID="${GUID#guid=}"
-[ -n "$GUID" ] || fail "EXPORT_UNCONFIRMED : aucun guid trouvé dans le log d'export — le rôle n'a pas confirmé l'export"
+case "$GUID" in
+  ""|*[!0-9a-f-]*) fail "EXPORT_UNCONFIRMED : guid absent ou de forme invalide ('${GUID}') sur la ligne EXPORT_CONFIRMED" ;;
+esac
+[ "${#GUID}" -eq 36 ] \
+  || fail "EXPORT_UNCONFIRMED : guid '${GUID}' fait ${#GUID} caractères — un identifiant wM complet en fait 36 (forme UUID)"
 
 # ── LE REGISTRE : pousser l'archive (idempotence PAR LE CONTENU, cf. la lib) ──
 # TOCTOU bénin sonde-GET/PUT documenté par Task 2 (archive-store.sh) : aucune
