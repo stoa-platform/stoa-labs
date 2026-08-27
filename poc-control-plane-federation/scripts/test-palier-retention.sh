@@ -905,5 +905,45 @@ else
     || bad "㉑septies le terminus réinjecté passe inaperçu — ㉑sexies est vacante"
 fi
 
+echo "== ㉑octies app-request.job.xml : la choices RÉELLE de REQ_ENV suit la chaîne (ElementTree, pas grep XML brut) =="
+# Fix round 1 : le reviewer a noté que seul le texte descriptif de ㉑ avait
+# changé — la <choices> réelle de ce formulaire (job app-request, DISTINCT du
+# job provisioning-request webhook-only) proposait encore le terminus. Corrigé
+# dans ci/jenkins/app-request.job.xml (prod → homol) ; cette épreuve statue sur
+# la liste structurée (via ElementTree), jamais sur le texte brut du XML.
+ARJ="ci/jenkins/app-request.job.xml"
+if [ ! -f "$ARJ" ]; then
+  bad "㉑octies $ARJ introuvable — l'assertion serait vaine"
+else
+  CHAIN_NONPROD_REAL="$(bash -c '. scripts/lib/env-chain.sh && env_chain_nonprod' 2>/dev/null)" || CHAIN_NONPROD_REAL=""
+  TERMINUS_REAL="$(bash -c '. scripts/lib/env-chain.sh && env_chain' 2>/dev/null | awk '{print $NF}')"
+  CHAIN_NONPROD="$CHAIN_NONPROD_REAL" TERMINUS="$TERMINUS_REAL" python3 - "$ARJ" <<'PY' >"$TMP/arj21" 2>&1
+import sys, os, xml.etree.ElementTree as T
+root = T.parse(sys.argv[1]).getroot()
+choices = []
+for p in root.iter():
+    if p.tag.endswith('ChoiceParameterDefinition') and p.findtext('name') == 'REQ_ENV':
+        choices = [s.text for s in p.iter('string')]
+nonprod = set(os.environ.get('CHAIN_NONPROD', '').split())
+terminus = os.environ.get('TERMINUS', '')
+print("CHOICES=%s" % ",".join(choices))
+print("HAS_TERMINUS=%s" % (terminus in choices))
+print("HAS_HOMOL=%s" % ('homol' in choices))
+print("SUBSET_OF_NONPROD=%s" % (bool(choices) and all(c in nonprod for c in choices)))
+PY
+  grep -q '^CHOICES=' "$TMP/arj21" \
+    && ok "㉑octies REQ_ENV lu par ElementTree ($(grep '^CHOICES=' "$TMP/arj21"))" \
+    || { bad "㉑octies parse ElementTree en échec"; sed 's/^/      /' "$TMP/arj21"; }
+  grep -q '^HAS_TERMINUS=False$' "$TMP/arj21" \
+    && ok "㉑octies la choices REQ_ENV ne contient PAS le terminus '$TERMINUS_REAL'" \
+    || bad "㉑octies la choices REQ_ENV contient encore le terminus '$TERMINUS_REAL'"
+  grep -q '^HAS_HOMOL=True$' "$TMP/arj21" \
+    && ok "㉑octies la choices REQ_ENV contient homol" \
+    || bad "㉑octies la choices REQ_ENV ne contient pas homol"
+  grep -q '^SUBSET_OF_NONPROD=True$' "$TMP/arj21" \
+    && ok "㉑octies la choices REQ_ENV est un sous-ensemble de env_chain_nonprod ($CHAIN_NONPROD_REAL)" \
+    || bad "㉑octies la choices REQ_ENV n'est pas alignée sur env_chain_nonprod"
+fi
+
 printf '\n  %d PASS / %d FAIL\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
