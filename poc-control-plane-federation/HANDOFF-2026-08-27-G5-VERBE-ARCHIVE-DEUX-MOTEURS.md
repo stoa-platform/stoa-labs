@@ -1,10 +1,11 @@
 # HANDOFF — G5 : le verbe archive, porté par les deux moteurs
 
-**Session du 2026-08-27.** Branche `provision/probe-dev`, **27 commits** de G5
-(spec, plan, 11 tâches, leurs revues et la revue finale — `935bb07..8cd48b5`),
-43 fichiers, +7133/−52. **Rien n'est poussé** : ni `origin` (resté au lot G4),
-ni `gitea` (resté à `06afc4c` du 2026-08-07, PRÉ-G3 — voir le geste n°1, il
-conditionne tout le rejeu). Arbre propre.
+**Session du 2026-08-27.** Branche `provision/probe-dev`, lot G5 `935bb07..08e171b`
+(spec, plan, 11 tâches, leurs revues, la revue finale et les docs du rejeu),
+46 fichiers touchés. **`gitea` est À JOUR** : l'exploitant a poussé en session
+(`gitea/main = 646bf7b`, fast-forward depuis `06afc4c` — les deux derniers
+commits de docs suivent au prochain push). **`origin` (GitHub) n'a rien reçu**
+depuis le lot G4 — push optionnel, le CI du lab lit Gitea. Arbre propre.
 
 | Porte | Nature | Résultat |
 |---|---|---|
