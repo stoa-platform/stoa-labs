@@ -484,6 +484,72 @@ func (s *Server) setActive(w http.ResponseWriter, r *http.Request, active bool) 
 	writeJSON(w, http.StatusOK, map[string]any{"apiResponse": apiEnvelope(rec)})
 }
 
+// deleteAPI is the teardown leg of the archive verb (ADR-079): an environment is
+// wiped API-first, then aliases. Two refusals are REAL ordering constraints the
+// promotion harness relies on (scripts/test-archive-promotion.sh, T9) — a delete
+// that silently no-ops would make the "virgin gateway" proof lie:
+//   - an ACTIVE API is not deletable (deactivate first);
+//   - an API a live application subscribes to is not deletable (un-subscribe, or
+//     delete the application, first).
+//
+// The delete CASCADES to the API's own policy graph (policies + their
+// enforcement actions): they are minted per API by the import, and a leftover
+// would make the next fresh import report "Asset already exists" for assets the
+// gateway is supposed to have forgotten.
+func (s *Server) deleteAPI(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	s.store.mu.Lock()
+	defer s.store.mu.Unlock()
+	rec, ok := s.store.apis[id]
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "api not found"})
+		return
+	}
+	if rec.IsActive {
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"errorDetails": "API " + rec.APIName + " is active — deactivate it before deleting",
+		})
+		return
+	}
+	if apps := s.appsSubscribedTo(id); len(apps) > 0 {
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"errorDetails": "API " + rec.APIName + " is used by application(s) " + strings.Join(apps, ", ") + " — remove the subscription first",
+		})
+		return
+	}
+	for _, polID := range rec.Policies {
+		if pol := s.store.policies[polID]; pol != nil {
+			for _, actID := range policyActionIDs(pol) {
+				delete(s.store.actions, actID)
+			}
+		}
+		delete(s.store.policies, polID)
+	}
+	delete(s.store.apis, id)
+	if s.store.latestVersionID[rec.APIName] == id {
+		// The lineage pointer dies with its last known record: a later import
+		// (or POST) re-establishes it, like a gateway that never saw the name.
+		delete(s.store.latestVersionID, rec.APIName)
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// appsSubscribedTo lists the application ids currently bound to an API.
+// Caller MUST hold the store lock.
+func (s *Server) appsSubscribedTo(apiID string) []string {
+	var out []string
+	for appID, ids := range s.store.appAPIs {
+		for _, id := range ids {
+			if id == apiID {
+				out = append(out, appID)
+				break
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // --- aliases (endpoint / credential / auth-server) ---------------------------
 
 // localISAlias is the built-in LOCAL_IS alias the real gateway always carries —
@@ -593,6 +659,22 @@ func (s *Server) updateAlias(w http.ResponseWriter, r *http.Request) {
 	in["id"] = id
 	s.store.aliases[id] = in
 	writeJSON(w, http.StatusOK, map[string]any{"alias": maskAlias(in)})
+}
+
+// deleteAlias removes a per-env alias (the last teardown step, after the APIs
+// that route through it). The mock does NOT refuse a still-referenced alias: on
+// the product a routing pointing at a ghost alias fails at request time, which
+// the data-plane already reproduces (502, fail closed).
+func (s *Server) deleteAlias(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	s.store.mu.Lock()
+	defer s.store.mu.Unlock()
+	if _, ok := s.store.aliases[id]; !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "alias not found"})
+		return
+	}
+	delete(s.store.aliases, id)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // validateAliasBody enforces the per-type required fields the spike pinned:
@@ -966,6 +1048,40 @@ func (s *Server) associateAPIs(w http.ResponseWriter, r *http.Request) {
 	}
 	s.store.appAPIs[id] = in.APIIDs
 	app["consumingAPIs"] = in.APIIDs
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// listAppAPIs serves GET /applications/{id}/apis {"apiIDs":[...]} — the read
+// side of associateAPIs, and the ONLY witness that a subscription survived an
+// archive overwrite (scripts/test-archive-promotion.sh, T8). Without it the
+// promotion harness cannot tell "still subscribed" from "silently unsubscribed".
+func (s *Server) listAppAPIs(w http.ResponseWriter, r *http.Request) {
+	s.store.mu.RLock()
+	defer s.store.mu.RUnlock()
+	if _, ok := s.store.apps[r.PathValue("id")]; !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "application not found"})
+		return
+	}
+	ids := s.store.appAPIs[r.PathValue("id")]
+	if ids == nil {
+		ids = []string{} // present-and-empty, like consumingAPIs on a fresh app
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"apiIDs": ids})
+}
+
+// deleteApp removes an application AND its subscriptions — the first teardown
+// step: while it exists, the APIs it consumes cannot be deleted (deleteAPI's
+// 409), which is the ordering the promotion harness follows.
+func (s *Server) deleteApp(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	s.store.mu.Lock()
+	defer s.store.mu.Unlock()
+	if _, ok := s.store.apps[id]; !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "application not found"})
+		return
+	}
+	delete(s.store.apps, id)
+	delete(s.store.appAPIs, id)
 	w.WriteHeader(http.StatusNoContent)
 }
 
