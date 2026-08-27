@@ -293,12 +293,34 @@ for F in scripts/team-publish.sh scripts/api-request.sh scripts/setup-team-onboa
   grep -q 'ENVN="\${ENVN:-' "$TMP/nc9" \
     && bad "⑨a $F garde un défaut surchargeable ENVN:- (l'env du job décide encore)" \
     || ok "⑨a $F n'a plus de défaut surchargeable"
+  # UNICITÉ de l'affectation. Les deux greps ci-dessus restent verts si une
+  # SECONDE affectation de ENVN apparaît plus bas (réaffectation, ou passage
+  # d'env à un enfant `ENVN="$ENVN" bash …`) : le scellement serait alors
+  # contourné sans qu'aucun voyant ne s'allume. Le compte le refuse.
+  N9=$(grep -c 'ENVN=' "$TMP/nc9")
+  [ "$N9" -eq 1 ] \
+    && ok "⑨a $F ne porte QU'UNE affectation ENVN= — le scellement est la seule" \
+    || bad "⑨a $F porte $N9 lignes ENVN= (attendu 1) — une seconde affectation contourne le scellement"
 done
+# Détecteur d'axe env dans un Jenkinsfile, TROIS verdicts — factorisé exprès
+# pour que la contre-épreuve ⑩bis exerce EXACTEMENT le code que ⑨a utilise, et
+# non une copie qui pourrait diverger de lui en silence.
+#
+# ⚠ Le verdict ABSENT est la correction d'un vert VACANT (mesuré en revue) :
+# sans lui, un $JF introuvable faisait sortir sed en 1 en laissant un rendu
+# VIDE ; le grep d'ABSENCE n'y trouvait évidemment rien et l'épreuve passait au
+# vert sans avoir RIEN regardé. Renommer le Jenkinsfile gardait ⑨a verte.
+jf_axe_verdict(){ # <chemin> -> ABSENT | ROUTE | PROPRE
+  [ -f "$1" ] || { printf 'ABSENT\n'; return; }
+  sed 's|[[:space:]]*//.*$||' "$1" > "$TMP/jf9"
+  grep -q 'ENVN' "$TMP/jf9" && printf 'ROUTE\n' || printf 'PROPRE\n'
+}
 for JF in ci/Jenkinsfile.team-publish ci/Jenkinsfile.api-request; do
-  sed 's|[[:space:]]*//.*$||' "$JF" > "$TMP/jf9"
-  grep -q 'ENVN' "$TMP/jf9" \
-    && bad "⑨a $JF route encore un axe ENVN vers le script" \
-    || ok "⑨a $JF ne route plus d'axe env"
+  case "$(jf_axe_verdict "$JF")" in
+    ABSENT) bad "⑨a $JF introuvable — l'assertion d'absence serait vraie par vacuité" ;;
+    ROUTE)  bad "⑨a $JF route encore un axe ENVN vers le script" ;;
+    PROPRE) ok  "⑨a $JF ne route plus d'axe env" ;;
+  esac
 done
 
 echo "== ⑩ mutation : remettre le défaut surchargeable ⇒ l'épreuve ⑨a rougirait =="
@@ -307,6 +329,40 @@ sed 's/[[:space:]]*#.*$//' "$TMP/tp_mut" > "$TMP/tp_mut_nc"
 grep -q 'ENVN="\${ENVN:-' "$TMP/tp_mut_nc" \
   && ok "⑩ la mutation réintroduit le défaut et le détecteur ⑨a le verrait" \
   || bad "⑩ la mutation n'a rien changé — ⑨a est un vert vacant"
+
+echo "== ⑩bis mutation de l'axe Jenkinsfile : les DEUX façons de rendre ⑨a vacante =="
+# (a) l'axe REVIENT dans le code du Jenkinsfile — à sa place réelle, dans le
+# bloc `environment`, pas en queue de fichier : le détecteur doit le VOIR.
+AXE='    ENVN = "${env.ENVN ?: '\''dev'\''}"'
+awk -v l="$AXE" '{print} /^  environment \{/ && !d {print l; d=1}' \
+  ci/Jenkinsfile.team-publish > "$TMP/jf_mut"
+grep -q 'ENVN' "$TMP/jf_mut" \
+  && ok "⑩bis(a0) la mutation a bien réinjecté un axe env (elle n'est pas un no-op)" \
+  || bad "⑩bis(a0) la mutation n'a rien injecté — l'ancre ^  environment { a bougé"
+[ "$(jf_axe_verdict "$TMP/jf_mut")" = ROUTE ] \
+  && ok "⑩bis(a) axe env réinjecté ⇒ le détecteur de ⑨a REND ROUTE (il n'est pas aveugle)" \
+  || bad "⑩bis(a) l'axe réinjecté passe inaperçu — l'assertion Jenkinsfile de ⑨a est vacante"
+# (b) le fichier DISPARAÎT — le cas qui passait au vert avant la garde.
+[ "$(jf_axe_verdict "ci/Jenkinsfile.NEXISTE-PAS")" = ABSENT ] \
+  && ok "⑩bis(b) Jenkinsfile absent ⇒ ABSENT (refus), plus jamais un vert par vacuité" \
+  || bad "⑩bis(b) un Jenkinsfile absent ne déclenche pas le refus — la garde d'existence ne tient pas"
+
+echo "== ⑩ter mutation : une SECONDE affectation ENVN= ⇒ l'unicité de ⑨a rougirait =="
+# La mutation reproduit EXACTEMENT le câblage mort retiré de team-publish.sh :
+# l'env repassé à un enfant. C'est le contournement réaliste, et il est
+# INVISIBLE pour les deux premiers greps de ⑨a — d'où l'assertion d'unicité.
+cp scripts/team-publish.sh "$TMP/tp_dup"
+printf '     ENVN="$ENVN" bash scripts/setup-team-onboard-jobs.sh\n' >> "$TMP/tp_dup"
+sed 's/[[:space:]]*#.*$//' "$TMP/tp_dup" > "$TMP/tp_dup_nc"
+NDUP=$(grep -c 'ENVN=' "$TMP/tp_dup_nc")
+[ "$NDUP" -eq 2 ] \
+  && ok "⑩ter seconde affectation ⇒ compte 2 : le détecteur d'unicité la verrait" \
+  || bad "⑩ter le compte reste $NDUP — l'assertion d'unicité de ⑨a est vacante"
+# Contre-preuve du BESOIN de l'unicité : sur cette même mutation, les deux
+# autres greps de ⑨a restent VERTS. Sans le compte, le contournement passait.
+grep -q 'ENVN="\${ENVN:-' "$TMP/tp_dup_nc" \
+  && bad "⑩ter(b) la mutation a introduit un défaut surchargeable — ce n'est pas le contournement visé" \
+  || ok "⑩ter(b) ce contournement ne porte AUCUN défaut surchargeable : seule l'unicité pouvait l'attraper"
 
 printf '\n  %d PASS / %d FAIL\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

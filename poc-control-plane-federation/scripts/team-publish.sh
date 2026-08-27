@@ -395,8 +395,11 @@ if [ "$PUB_RC" -eq 0 ]; then
   # utilisé pour webmethods-mock/gitea (même convention). Un poste hors du
   # réseau compose surcharge JENKINS_UI explicitement (comme APIM_API_BASE).
   REFRESH_NOTE=""
+  # AUCUN ENVN passé au délégué, et c'est délibéré : depuis G4 il SCELLE
+  # lui-même son env sur la même constante d'authoring. Le lui repasser serait
+  # du câblage mort qui suggère qu'il obéit à son appelant.
   if JENKINS_UI="${JENKINS_UI:-http://jenkins:8080}" JOBS="app-request api-request" \
-     ENVN="$ENVN" bash scripts/setup-team-onboard-jobs.sh >"$TMP/refresh.log" 2>&1
+     bash scripts/setup-team-onboard-jobs.sh >"$TMP/refresh.log" 2>&1
   then
     SKIPPED=$(grep -oE 'CHOICES_SKIPPED_REPOS=[0-9]+' "$TMP/refresh.log" | tail -1 | cut -d= -f2)
     if [ -n "$SKIPPED" ] && [ "$SKIPPED" -gt 0 ]; then
