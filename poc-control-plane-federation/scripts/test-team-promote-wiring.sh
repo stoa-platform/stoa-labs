@@ -51,7 +51,12 @@ for f in "$SC" "$JF" "$JOB" "$PROXY" "$AMI"; do
 done
 
 TMP="$(mktemp -d)"
-trap 'kill "${STUB_PID:-0}" 2>/dev/null; rm -rf "$TMP"' EXIT INT TERM
+# ⚠ `kill "${STUB_PID:-0}"` SERAIT LE PIRE DÉFAUT POSSIBLE ICI (revue F4). Ce
+# trap est armé bien AVANT que $STUB_PID n'existe (le stub ne démarre qu'au
+# volet B, ~450 lignes plus bas) : un SIGINT reçu pendant le volet A le
+# déclencherait avec la variable non définie, et `kill 0` signale TOUT LE GROUPE
+# DE PROCESSUS — le `make lint-ci` appelant compris. On teste donc la présence.
+trap '[ -n "${STUB_PID:-}" ] && kill "$STUB_PID" 2>/dev/null; rm -rf "$TMP"' EXIT INT TERM
 umask 077
 
 # ── Décommenteurs ────────────────────────────────────────────────────────────
@@ -85,7 +90,7 @@ GATE_REFS_REQUIRED IDENTITE_REFUSEE PALIER_FERME"
 # rejouer sur un MUTANT et d'exiger un KO.
 ordre_verdict() {
   local f="$1" call tok l
-  call=$(grep -n '^run_engine ' "$f" | head -1 | cut -d: -f1)
+  call=$(grep -nE '^[[:space:]]*run_engine ' "$f" | head -1 | cut -d: -f1)
   [ -n "$call" ] || { echo "KO: aucun site d'appel \`run_engine\` trouvé"; return 0; }
   for tok in $ORDRE_TOKENS; do
     l=$(grep -n -F "fail \"$tok" "$f" | head -1 | cut -d: -f1)
@@ -99,6 +104,31 @@ ordre_verdict() {
 # d'authoring est-elle réellement passée au moteur ansible ?
 scellement_verdict() {
   grep -q -F -- '-e apim_ss_authoring_env=' "$1" && echo "OK" || echo "KO"
+}
+
+# params_verdict <Jenkinsfile décommenté> — la pause n'expose-t-elle QUE
+# l'identité ? Rend "OK" ou "KO: <détail>". Prédicat PUR, pour la même raison
+# que ordre_verdict : la mutation ②bis le rejoue sur une copie.
+#
+# ⚠ L'ALPHABET DES TYPES DE PARAMÈTRES EST LARGE, ET C'EST TOUT L'ENJEU (revue
+# F1). Une première version listait `(string|password)` — elle laissait donc
+# passer un `choice(name: 'PROMOTE_ENGINE', choices: [...])` ajouté DANS le bloc
+# `input`, c'est-à-dire EXACTEMENT le geste que cette assertion existe pour
+# interdire (le moteur deviendrait choisissable par quiconque répond à la
+# pause, alors que la définition du job, elle, est protégée — G4 D7). Jenkins
+# déclaratif connaît aussi `booleanParam`, `text`, `file`, `choice`,
+# `credentials` : on prend donc TOUT identifiant suivi de `(name: '…'`, et on
+# exige que la liste obtenue soit exactement V_PASS/V_USER.
+params_verdict() {
+  local f="$1" names k
+  names=$(grep -oE "[A-Za-z]+\(name: '[A-Z_]+'" "$f" | sed -E "s/.*name: '//; s/'\$//" | sort | tr '\n' ' ')
+  [ "$names" = "V_PASS V_USER " ] \
+    || { echo "KO: paramètres de pause = '${names}' (attendu 'V_PASS V_USER ')"; return 0; }
+  for k in PROMOTE_ENGINE ADMIN_VIA; do
+    grep -oE "[A-Za-z]+\(name: '$k'" "$f" | grep -q . \
+      && { echo "KO: $k est exposé en paramètre — le knob de pipeline devient saisissable"; return 0; }
+  done
+  echo "OK"
 }
 
 echo "======================================================================"
@@ -146,17 +176,25 @@ if [ -n "$L_INPUT" ] && [ -n "$L_PARAMS" ] && [ "$L_PARAMS" -gt "$L_INPUT" ]; th
 else
   bad "② le bloc \`parameters\` n'est pas celui de l'input (input=$L_INPUT parameters=$L_PARAMS)"
 fi
-PARAM_NAMES=$(grep -oE "(string|password)\(name: '[A-Z_]+'" "$JF_NC" | sed -E "s/.*name: '//; s/'$//" | sort | tr '\n' ' ')
-[ "$PARAM_NAMES" = "V_PASS V_USER " ] \
-  && ok "② les paramètres de la pause sont EXACTEMENT V_USER et V_PASS" \
-  || bad "② paramètres de pause inattendus : '$PARAM_NAMES' (attendu 'V_PASS V_USER ')"
-for K in PROMOTE_ENGINE ADMIN_VIA; do
-  if grep -oE "(string|password)\(name: '$K'" "$JF_NC" | grep -q .; then
-    bad "② $K est exposé en paramètre de la pause — le moteur serait choisi par le répondant"
-  else
-    ok "② $K n'est PAS un paramètre du Jenkinsfile"
-  fi
-done
+V2="$(params_verdict "$JF_NC")"
+[ "$V2" = OK ] \
+  && ok "② la pause n'expose QUE l'identité : paramètres exactement V_USER/V_PASS, et ni PROMOTE_ENGINE ni ADMIN_VIA (tous types de paramètres déclaratifs confondus)" \
+  || bad "② $V2"
+# MUTATION anti-vacuité (revue F1) : un `choice()` injecté DANS le bloc `input`
+# doit faire rougir ②. C'est le contournement réel — un `parameters {}` de
+# NIVEAU PIPELINE, lui, est déjà attrapé par le compte ci-dessus.
+awk '{ print }
+     /^[[:space:]]*parameters \{$/ && !done { print "          choice(name: '\''PROMOTE_ENGINE'\'', choices: ['\''ansible'\'','\''labctl'\''], description: '\''mutant'\'')"; done=1 }' \
+  "$JF" > "$TMP/jf_mut2"
+cmp -s "$JF" "$TMP/jf_mut2" \
+  && bad "②bis MUTATION no-op : le mutant est identique au Jenkinsfile — l'ancre du bloc \`parameters\` a bougé" \
+  || ok "②bis le mutant diffère RÉELLEMENT du Jenkinsfile (anti-no-op cmp)"
+nc_groovy "$TMP/jf_mut2" > "$TMP/jf_mut2_nc"
+case "$(params_verdict "$TMP/jf_mut2_nc")" in
+  KO*PROMOTE_ENGINE*) ok "②bis MUTATION : un \`choice(name: 'PROMOTE_ENGINE')\` glissé dans l'\`input\` fait ROUGIR ② en le nommant (l'assertion n'est pas vacante)" ;;
+  OK)                 bad "②bis MUTATION : le \`choice()\` injecté passe au VERT — ② ne couvre pas les types de paramètres autres que string/password" ;;
+  *)                  bad "②bis MUTATION : ② rougit, mais sans nommer le paramètre injecté : $(params_verdict "$TMP/jf_mut2_nc")" ;;
+esac
 if grep -q 'ParametersDefinitionProperty' "$JOB"; then
   bad "② le XML porte une ParametersDefinitionProperty — le job exposerait des paramètres de build"
 else
@@ -175,8 +213,12 @@ done
 
 echo
 echo "== ③ le filtre promote/ est présent aux TROIS sites (contexte, when, post) =="
-grep -q -F "startsWith('promote/')" "$JF_NC" \
-  && ok "③ site 1 (stage Contexte) : la branche est testée avant tout" \
+# ⚠ ANCRE PROPRE AU SITE 1 (revue F2). Un `startsWith('promote/')` nu est une
+# SOUS-CHAÎNE du motif du site 2 : l'assertion restait verte après suppression
+# complète du stage Contexte — un vert vacant, mesuré. On ancre donc sur la
+# forme NÉGATIVE, qui n'existe qu'ici.
+grep -q -F "if (!(env.PR_BRANCH ?: '').startsWith('promote/'))" "$JF_NC" \
+  && ok "③ site 1 (stage Contexte) : la branche est testée avant tout, et le build DIT pourquoi il n'y a rien à promouvoir" \
   || bad "③ site 1 absent — le build ne dirait pas pourquoi il n'y a rien à promouvoir"
 grep -q -F "expression { (env.PR_BRANCH ?: '').startsWith('promote/') }" "$JF_NC" \
   && ok "③ site 2 (\`when\`) : la condition garde l'étape d'apply" \
@@ -195,13 +237,13 @@ NDEF=$(grep -cE '^run_engine\(\) \{' "$SC_NC")
 [ "$NDEF" -eq 1 ] \
   && ok "④ \`run_engine\` défini exactement 1 fois" \
   || bad "④ $NDEF définition(s) de \`run_engine\` (attendu 1)"
-NCALL=$(grep -cE '^run_engine ' "$SC_NC")
+NCALL=$(grep -cE '^[[:space:]]*run_engine ' "$SC_NC")
 [ "$NCALL" -eq 1 ] \
   && ok "④ \`run_engine\` appelé exactement 1 fois — deux sites d'appel rouvriraient la question à chaque relecture" \
   || bad "④ $NCALL site(s) d'appel de \`run_engine\` (attendu 1)"
 V4="$(ordre_verdict "$SC_NC")"
 if [ "$V4" = OK ]; then
-  L_CALL=$(grep -n '^run_engine ' "$SC_NC" | head -1 | cut -d: -f1)
+  L_CALL=$(grep -nE '^[[:space:]]*run_engine ' "$SC_NC" | head -1 | cut -d: -f1)
   ok "④ les $(printf '%s\n' $ORDRE_TOKENS | wc -l | tr -d ' ') gardes nommées sont TOUTES avant le site d'appel (ligne $L_CALL, code décommenté)"
 else
   bad "④ $V4"
@@ -579,6 +621,19 @@ seal_team() { # <dir> — commit final + publication ; laisse $MERGE_SHA
 
 VAULT_TOKEN_FILE="$TMP/vault.token"; printf 'hvs.stub-token\n' > "$VAULT_TOKEN_FILE"
 
+# ⚠ L'ARCHIVE LÉGITIME EST SEMÉE ICI, UNE FOIS, ET PAS DANS UN CAS (revue F5).
+# Le registre du stub vit EN MÉMOIRE et persiste d'un cas à l'autre — c'est la
+# seule chose qui survive (le journal du moteur, le fichier de contrôle et les
+# dépôts bare sont tous remis à zéro par cas). La semer au fond d'un cas créait
+# un couplage NON DÉCLARÉ : cinq cas en aval avaient besoin que celui-là ait
+# tourné d'abord. Le couplage penchait du bon côté (son absence fait rougir,
+# pas verdir), mais c'était le seul point du harnais où l'ordre des cas
+# comptait sans le dire.
+SEED=$(store_seed "$ARCH_SHA" "$ARCHIVE")
+[ "$SEED" = 201 ] \
+  && ok "volet B : l'archive légitime est au registre (201), semée UNE fois en tête — aucun cas ne dépend de l'ordre des autres" \
+  || bad "volet B : le pré-semage de l'archive légitime a échoué (code=$SEED) — les cas ⑬ à ⑱ ne peuvent pas être joués"
+
 set_ctl() { # <merged true|false> <merge_sha> <head_ref> <merged_by> <user> <wm-admin code>
   printf '{"pr":{"merged":%s,"merge_commit_sha":"%s","head_ref":"%s","base_ref":"main","merged_by":"%s","user":"%s"},"vault":{"wm-admin":%s,"admin-oauth":200}}\n' \
     "$1" "$2" "$3" "$4" "$5" "$6" > "$STUB_CTL"
@@ -712,10 +767,14 @@ EVIL="$(git -C "$D" rev-parse HEAD)"
 git -C "$D" checkout -q main
 write_marker "$D" rec "$EVIL" "1.0.0" "$ARCH_SHA" "" "" alice
 seal_team "$D"
-SEED=$(store_seed "$ARCH_SHA" "$ARCHIVE")
-[ "$SEED" = 201 ] || [ "$SEED" = 409 ] \
-  && ok "⑬ l'archive légitime est bien au registre (code $SEED) — le refus qui suit ne peut pas venir du transport" \
-  || bad "⑬ pré-semage de l'archive légitime en échec (code=$SEED)"
+# L'archive légitime est déjà au registre (semée en tête de volet B) : le refus
+# qui suit ne peut donc pas venir du transport. On le VÉRIFIE plutôt que de
+# l'affirmer — un GET direct, hors du script éprouvé.
+HDR13="$TMP/hdr13"; printf 'Authorization: token stub\n' > "$HDR13"
+GET13=$(curl -sS -H @"$HDR13" -o /dev/null -w '%{http_code}' "${GIT_HOST}$(store_path "$ARCH_SHA")")
+[ "$GET13" = 200 ] \
+  && ok "⑬ l'archive légitime est servie par le registre (200) — ce qui suit est un refus du RÉSOLVEUR, pas du transport" \
+  || bad "⑬ le registre ne sert pas l'archive légitime (code=$GET13) — le cas mesurerait le transport, pas le résolveur"
 set_ctl true "$MERGE_SHA" "promote/accounts-read-rec" oscar ci 200
 run_promote "$TMP/o13" "promote/accounts-read-rec"; RC=$?
 refus_attendu "⑬" "pin non ancêtre de main" "PIN_NON_RESOLU" "$TMP/o13" "$RC"
@@ -836,10 +895,21 @@ bash -n "$TMP/sc_mut19" 2>"$TMP/mut19.err" \
   || bad "⑲ le mutant ne parse plus : $(cat "$TMP/mut19.err")"
 nc_strict "$TMP/sc_mut19" > "$TMP/sc_mut19_nc"
 V19="$(ordre_verdict "$TMP/sc_mut19_nc")"
+# ⚠ « ROUGE » NE SUFFIT PAS : IL FAUT LE BON ROUGE (revue F3). Un glob
+# `KO*PALIER_FERME*` matcherait aussi bien « ordre violé » que « garde ABSENTE »
+# — et ce cas-là est produit par un tout autre défaut (une garde supprimée),
+# pas par la mutation d'ordre qu'on vient de poser. Mesuré : sous un sabotage
+# qui NEUTRALISE la garde, l'ancien glob passait au vert et prétendait avoir
+# prouvé l'ordre. On discrimine donc sur « APRÈS l'appel ».
 case "$V19" in
-  KO*PALIER_FERME*) ok "⑲ ④ ROUGIT sur le mutant en nommant la garde franchie : ${V19}" ;;
-  OK)               bad "⑲ ④ reste VERT sur un script où le moteur tourne avant PALIER_FERME — l'épreuve d'ordre est VACANTE" ;;
-  *)                bad "⑲ ④ rougit, mais pas sur la garde attendue : ${V19}" ;;
+  "KO: PALIER_FERME en ligne "*"APRÈS l'appel du moteur"*)
+    ok "⑲ ④ ROUGIT sur le mutant pour la BONNE raison — ordre violé, garde nommée : ${V19}" ;;
+  *absente*)
+    bad "⑲ ④ rougit sur une garde ABSENTE, pas sur un ordre violé — la mutation d'ordre n'est pas ce qui a été mesuré : ${V19}" ;;
+  OK)
+    bad "⑲ ④ reste VERT sur un script où le moteur tourne avant PALIER_FERME — l'épreuve d'ordre est VACANTE" ;;
+  *)
+    bad "⑲ ④ rougit, mais pas sur la garde attendue : ${V19}" ;;
 esac
 # ET L'ARBRE N'A PAS BOUGÉ : la mutation vivait dans $TMP, l'original est intact.
 [ "$(ordre_verdict "$SC_NC")" = OK ] \
@@ -851,7 +921,7 @@ esac
 # tombe en silence (branche jamais évaluée, script tronqué, cas sauté), ce
 # nombre bouge et CE garde-fou rougit : un vert sur un sous-ensemble ne peut
 # plus se faire passer pour le vert complet.
-EXPECTED_ASSERTIONS=88
+EXPECTED_ASSERTIONS=89
 TOTAL_BEFORE_GUARD=$((PASS+FAIL))
 echo
 [ "$TOTAL_BEFORE_GUARD" -eq "$EXPECTED_ASSERTIONS" ] \
