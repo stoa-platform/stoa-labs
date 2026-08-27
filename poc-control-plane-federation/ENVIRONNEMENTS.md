@@ -269,6 +269,15 @@ adressé par le contenu (la version du package **est** le sha256 de
 l'archive). Le palier cible doit être **ouvert** au sens de G4 — voir
 « Ouvrir un palier (G4) » ci-dessus, ce geste n'est pas répété ici.
 
+**Statut E2E.** La couche Jenkins (webhook → build → pause d'approbation)
+n'a jamais tourné verte sur ce lab — le gitea date d'avant G3 et le push
+exploitant qui y rebrancherait le webhook reste à faire. Chaque script du
+parcours ci-dessous a été rejoué directement contre le lab vivant (T10) :
+pour le moteur `labctl`, en chaîne script-par-script ; le moteur Ansible
+vers un palier mocké n'est rejouable que depuis le correctif de fidélité
+base64 (`0a1ac86`). Le rejeu du geste Jenkins lui-même est à la charge de
+l'exploitant, suivant la checklist du rapport T10.
+
 Le parcours opérateur, pas à pas :
 
 1. **Publier en authoring** (`dev`) — inchangé, via `team-publish` (§ ce

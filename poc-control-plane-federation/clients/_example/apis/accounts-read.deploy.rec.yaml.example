@@ -65,13 +65,17 @@ commit: 0000000000000000000000000000000000000000
 # conservée ici pour que la trace accompagne l'état promu. Vide si la porte du
 # palier ne l'exige pas.
 #
-# ⚠ CE CHAMP N'EST PAS ENCORE RE-VÉRIFIÉ À L'APPLY pour ce marqueur-ci.
-#   La garde anti-TOCTOU d'ADR-075 (labctl/cmd/labctl/dispatchgate.go) existe
-#   bel et bien, mais elle porte sur l'AUTRE marqueur — celui du monorepo de
-#   gouvernance, `tenants/{tenant}/apis/{slug}/deploy.{env}.yaml`. Le résolveur
-#   de ce marqueur-ci ne lit que `commit`, `version` et `archive_sha256`.
-#   Étendre la re-vérification ITSM à ce chemin reste à faire ; ne pas compter
-#   dessus tant que ce n'est pas écrit.
+# ⚠ SA PRÉSENCE EST RE-VÉRIFIÉE À L'APPLY sur ce marqueur-ci — team-promote.sh
+#   §6 refuse GATE_REFS_REQUIRED si la porte du palier cible exige change_ref
+#   et qu'il est vide sur le marqueur MERGÉ (anti-TOCTOU, même mécanisme que
+#   pv_ref ci-dessous). Ce qui n'est PAS re-vérifié à l'apply, c'est la
+#   VALIDITÉ ITSM du contenu : la garde anti-TOCTOU d'ADR-075
+#   (labctl/cmd/labctl/dispatchgate.go) existe bel et bien, mais elle porte sur
+#   l'AUTRE marqueur — celui du monorepo de gouvernance,
+#   `tenants/{tenant}/apis/{slug}/deploy.{env}.yaml`. Le résolveur de ce
+#   marqueur-ci ne lit que `commit`, `version` et `archive_sha256`. Étendre la
+#   re-vérification de VALIDITÉ ITSM à ce chemin reste à faire ; ne pas
+#   compter dessus tant que ce n'est pas écrit.
 change_ref: ""
 
 # Référence du PV de validation, exigée À LA DEMANDE par `requirePVRef`

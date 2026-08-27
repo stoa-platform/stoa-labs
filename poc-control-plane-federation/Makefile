@@ -89,9 +89,9 @@ clean:
 # d'environnements, écrivain de promotion — vivent sous `scripts/` et sont
 # restés hors porte jusqu'ici : du shell livré que rien ne relisait.
 lint-ci:
-	@echo "== [1/7] compilation des Jenkinsfile"
+	@echo "== [1/8] compilation des Jenkinsfile"
 	@ci/lint-jenkinsfiles.sh
-	@echo "== [2/7] shellcheck des bibliothèques shell (ci/lib + livrables G3/G4/G5)"
+	@echo "== [2/8] shellcheck des bibliothèques shell (ci/lib + livrables G3/G4/G5)"
 	@command -v shellcheck >/dev/null || { echo "!! shellcheck absent — \`brew install shellcheck\`"; exit 2; }
 	@shellcheck -x ci/lib/*.sh scripts/lib/deploy-pin.sh scripts/lib/env-chain.sh \
 	  scripts/lib/repo-protection.sh scripts/lib/archive-store.sh \
@@ -100,19 +100,24 @@ lint-ci:
 	  scripts/setup-vault-paliers.sh scripts/setup-user-vault-jwt.sh \
 	  scripts/api-promote-request.sh scripts/api-promote-export.sh \
 	  scripts/team-promote.sh && echo "  ✓ ci/lib + livrables shell G3/G4/G5 propres"
-	@echo "== [3/7] épreuves de ci/lib/carto-secrets.sh"
+	@echo "== [3/8] épreuves de ci/lib/carto-secrets.sh"
 	@ci/test-carto-secrets.sh
-	@echo "== [4/7] épreuves du résolveur de pin (G3)"
+	@echo "== [4/8] épreuves du résolveur de pin (G3)"
 	@bash scripts/test-deploy-pin.sh
-	@echo "== [5/7] épreuves de la rétention par palier (G4)"
+	@echo "== [5/8] épreuves de la rétention par palier (G4)"
 	@bash scripts/test-palier-retention.sh
-	@echo "== [6/7] épreuves du transport d'archives adressé par le contenu (G5)"
+	@echo "== [6/8] épreuves du transport d'archives adressé par le contenu (G5)"
 	@bash scripts/test-archive-store.sh
 	@# LA porte du jalon G5 : « porte refusée ⇒ moteur jamais lancé ». Comme
 	@# test-deploy-pin (précédent endossé en G4), ce harnais est EXÉCUTÉ, pas
 	@# shellchecké — c'est son verdict qui compte, pas son style.
-	@echo "== [7/7] épreuves du câblage de promotion — porte refusée ⇒ moteur jamais lancé (G5)"
+	@echo "== [7/8] épreuves du câblage de promotion — porte refusée ⇒ moteur jamais lancé (G5)"
 	@bash scripts/test-team-promote-wiring.sh
+	@# mocks/webmethods n'est PAS vendored (dépend du module cache Go, comme
+	@# labctl NE l'est PAS ici) : pas de GOPROXY=off. Spec §4.3 promettait
+	@# cette porte hors-ligne branchée dans lint-ci — restée débranchée jusqu'ici.
+	@echo "== [8/8] go test du mock webMethods (fidélité + archive, G5)"
+	@cd mocks/webmethods && go test ./... -count=1
 
 # Sauvegarde idempotente (ne re-save pas ce qui est déjà là) : `docker save` par
 # image → restauration unitaire possible. Pas de gzip : 2.4 To de libre, autant
