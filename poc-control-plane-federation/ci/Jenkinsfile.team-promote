@@ -1,0 +1,298 @@
+// ci/Jenkinsfile.team-promote — APPLY post-merge de PROMOTION (palier >
+// authoring, ADR-081/ADR-079). MIROIR de ci/Jenkinsfile.team-publish : mêmes
+// principes (agent none pendant l'attente, garde d'identité, révocation
+// systématique du token Vault), déclencheur PARTAGÉ avec team-publish (D1,
+// ci-dessous) — seule la substance de l'apply change : team-promote.sh fait
+// l'IMPORT D'ARCHIVE (verbe G5), jamais un re-POST du contrat.
+//
+//   merge d'une PR promote/<api>-<env> dans un DÉPÔT D'ÉQUIPE
+//     ──webhook──▶ demande EN ATTENTE (input) : la décision est DÉJÀ prise (le
+//                  merge) — la pause ne re-décide pas, elle fournit l'identité
+//                  NOMINATIVE qui portera l'apply.
+//        humain ──▶ scripts/team-promote.sh, qui EST la garde d'identité (cf.
+//                  §4 ci-dessous — délibérément PAS ici, contrairement à
+//                  team-publish).
+//
+// AUTORITÉ PAR TOPOLOGIE, ANTI-TOCTOU au SHA de merge, marqueur promote.yml
+// mergé comme SEULE source des exigences de porte : tout ça vit dans
+// scripts/team-promote.sh (Task 6) — ce pipeline ne fait que router des
+// variables de webhook, exactement comme team-publish.
+//
+// Login, révocation et preuve de mort du token : ci/lib/vault-login.sh (ADR-078 §2).
+pipeline {
+
+  // `agent none` — DÉLIBÉRÉ, cf. team-publish : la demande en attente est
+  // évaluée AVANT que l'agent de l'étape ne soit alloué, une pause qui attend
+  // une réponse humaine ne réserve donc aucun exécuteur (sauf le cas
+  // PROMOTE_ENGINE=labctl, cf. §5 plus bas, qui construit AVANT la pause).
+  agent none
+  options { disableConcurrentBuilds() }   // un apply à la fois = régime bancaire
+
+  // ── D1 : MÊME TOKEN QUE team-publish ────────────────────────────────────
+  // `stoa-team-publish`, PAS un nouveau token : le plugin generic-webhook-trigger
+  // déclenche TOUS les jobs enregistrés sur un token donné (un seul webhook
+  // POST vers /generic-webhook-trigger/invoke?token=stoa-team-publish réveille
+  // team-publish ET team-promote) — AUCUN geste sur les dépôts d'équipe, leur
+  // webhook existant suffit. Ce bloc doit rester le MIROIR EXACT de celui de
+  // ci/jenkins/team-promote.job.xml, et c'est le XML qui gagne (même piège que
+  // team-publish, mesuré sur le lab 2026-08-06 : DeclarativeJobPropertyTrackerAction
+  // ne remplace que les déclencheurs posés par Declarative lui-même — un
+  // déclencheur venu d'un config.xml est préservé indéfiniment). Ce bloc reste
+  // ici parce qu'il est le seul déclencheur quand le job est posé SANS XML.
+  // Volontairement PAS de bloc `parameters {}` : ces valeurs ne doivent venir
+  // QUE du webhook — un build manuel n'a donc aucune de ces variables →
+  // `${VAR:?}` côté script → refus nommé.
+  triggers {
+    GenericTrigger(
+      token: 'stoa-team-publish',
+      genericVariables: [
+        // AUTORITÉ PAR TOPOLOGIE (cf. en-tête) : c'est CE champ, pas un champ
+        // « team » du payload, qui dit qui a le droit de promouvoir.
+        [key: 'WEBHOOK_REPO',  value: '$.repository.full_name'],
+        [key: 'PR_BRANCH',     value: '$.pull_request.head.ref'],
+        [key: 'PR_NUMBER',     value: '$.pull_request.number'],
+        [key: 'PR_ACTION',     value: '$.action'],
+        [key: 'PR_MERGED',     value: '$.pull_request.merged'],
+        // Qui a validé, et qui avait demandé. Ne servent PLUS aux gardes
+        // (team-promote.sh réconcilie ces deux identités auprès de Gitea,
+        // authentifié) mais restent publiés — miroir de team-publish, sans
+        // danger : le script ne leur fait confiance qu'après réconciliation.
+        [key: 'PR_MERGED_BY',  value: '$.pull_request.merged_by.login'],
+        [key: 'PR_REQUESTER',  value: '$.pull_request.user.login'],
+        // ANTI-TOCTOU (team-promote.sh) : le manifeste est lu dans le dépôt
+        // d'ÉQUIPE TEL QUE MERGÉ, jamais dans la charge utile du webhook.
+        [key: 'MERGE_SHA',     value: '$.pull_request.merge_commit_sha'],
+      ],
+      // Ne déclenche que sur une PR RÉELLEMENT fusionnée (fermée sans merge = rien).
+      regexpFilterText: '$PR_ACTION|$PR_MERGED',
+      regexpFilterExpression: '^closed\\|true$',
+      printContributedVariables: true,
+      printPostContent: false)
+  }
+
+  // ── POINTS DE CONFIG CLIENT ────────────────────────────────────────────────
+  // Tout est surchargeable par variable d'environnement du nœud (motif
+  // `env.X ?: défaut`, identique aux Jenkinsfile frères) : le MÊME fichier
+  // sert le lab et le client, sans fork.
+  environment {
+    VAULT_ADDR            = "${env.VAULT_ADDR ?: 'http://vault:8200'}"
+    // Mount de l'auth user/mot de passe — `userpass` en lab, `ldap` (AD) chez
+    // le client. Posé ICI, exporté au shell AVANT que ci/lib/vault-login.sh
+    // ne soit sourcé.
+    VAULT_USER_AUTH_MOUNT = "${env.VAULT_USER_AUTH_MOUNT ?: 'userpass'}"
+    // Dépôt PLATEFORME (porte providers.<env>.yml, la source d'autorité) et son
+    // hôte, vus depuis l'agent ; GIT_WEB_HOST est l'URL CLIQUABLE mise dans les
+    // commentaires de PR (vue depuis un poste, pas depuis le conteneur).
+    GIT_HOST              = "${env.GIT_HOST ?: 'http://gitea:3000'}"
+    GIT_REPO              = "${env.GIT_REPO ?: 'ci/stoa-labs'}"
+    GIT_WEB_HOST          = "${env.GIT_WEB_HOST ?: 'http://localhost:13000'}"
+    // Credential Jenkins (secret text) portant le token Gitea du CI.
+    GITEA_CREDENTIALS_ID  = "${env.GITEA_CREDENTIALS_ID ?: 'gitea-provision-token'}"
+    // APIM_API_BASE / JENKINS_UI de team-publish n'ont pas de sens ici : la
+    // promotion vise un PALIER (le gabarit ci-dessous, résolu par env), pas
+    // l'authoring unique, et n'a pas de formulaire à reposer.
+
+    // Knob de PIPELINE (jamais un paramètre de build : la définition est
+    // protégée — G4 D7 ; un paramètre rendrait le moteur choisissable par
+    // quiconque déclenche). ansible = chemin client ; labctl = moteur lab.
+    PROMOTE_ENGINE     = "${env.PROMOTE_ENGINE ?: 'ansible'}"
+    ADMIN_VIA          = "${env.ADMIN_VIA ?: 'proxy-oauth2'}"
+    // Gabarit d'URL admin par palier — __ENV__ substitué par team-promote.sh.
+    APIM_API_BASE_TPL  = "${env.APIM_API_BASE_TPL ?: 'http://webmethods-real:5555/gateway/wm-admin-__ENV__/1.0/rest/apigateway'}"
+  }
+
+  stages {
+
+    // Étape SANS agent (aucun exécuteur consommé) : nomme le build et dit
+    // pourquoi, le cas échéant, il n'y a rien à promouvoir.
+    stage('Contexte du webhook') {
+      steps {
+        script {
+          currentBuild.displayName = "promote ${env.WEBHOOK_REPO ?: '?'} (PR #${env.PR_NUMBER ?: '?'})"
+          if (!(env.PR_BRANCH ?: '').startsWith('promote/')) {
+            echo "branche '${env.PR_BRANCH ?: ''}' hors promote/* — rien à promouvoir."
+          }
+        }
+      }
+    }
+
+    // Stage préalable : le binaire labctl doit exister À l'ENDROIT où
+    // team-promote.sh ira le chercher (LABCTL_BIN, défaut $WORKSPACE/labctl)
+    // AVANT que le script ne tourne — donc avant la pause d'identité, qui ne
+    // porte aucune décision sur le moteur. Copie de ci/Jenkinsfile:34-40.
+    // `agent any` ICI (le pipeline est `agent none`) : sur PROMOTE_ENGINE
+    // par défaut (ansible), le `when` saute le stage sans jamais allouer
+    // d'exécuteur — seul un déclencheur explicite en labctl en consomme un
+    // avant la réponse humaine.
+    stage('Build labctl (air-gapped, vendored)') {
+      when { environment name: 'PROMOTE_ENGINE', value: 'labctl' }
+      agent any
+      steps {
+        dir('poc-control-plane-federation/labctl') {
+          sh 'go version'
+          sh 'go build -trimpath -o "$WORKSPACE/labctl" .'   // aucun accès réseau
+        }
+      }
+    }
+
+    stage('Promouvoir l\'API (identité nominative)') {
+      // `beforeInput true` : la condition est évaluée AVANT la demande en
+      // attente — une PR hors promote/* ne réveille personne, le job se
+      // termine vert sans avoir rien demandé ni rien promu.
+      when {
+        beforeInput true
+        expression { (env.PR_BRANCH ?: '').startsWith('promote/') }
+      }
+
+      // ── LA DEMANDE EN ATTENTE ────────────────────────────────────────────
+      // Mêmes V_USER / V_PASS que team-publish, même motif de recopie/unset.
+      input {
+        id 'promote'
+        message "Promouvoir l'API portée par la PR fusionnée ? Fournissez VOTRE identité d'annuaire (voie A) — elle sera confrontée à l'auteur du merge."
+        parameters {
+          string(name: 'V_USER', defaultValue: '',
+                 description: "Login annuaire (ex. oscar) — DOIT être celui qui a fusionné la PR.")
+          password(name: 'V_PASS', defaultValue: '',
+                   description: "Mot de passe annuaire. ⚠ Ne PAS relancer en boucle après un refus (lockout AD).")
+        }
+      }
+
+      // L'agent n'est alloué qu'APRÈS la réponse. Le checkout du dépôt portant
+      // ce Jenkinsfile est implicite (Declarative) — d'où l'absence de `git url:`.
+      agent any
+
+      steps {
+        // ── APPLY NOMINATIF ──────────────────────────────────────────────
+        // ⚠ DIFFÉRENCE DÉLIBÉRÉE vs team-publish : PAS d'appel à
+        // assert-merge-identity.sh ICI. La garde des quatre yeux vit DANS
+        // scripts/team-promote.sh (§6bis, Task 6), CONDITIONNÉE à la porte du
+        // palier cible — seul le script sait, après avoir lu le marqueur
+        // promote.yml mergé et la porte du palier, si les quatre yeux sont
+        // exigés. Un appel ICI, avant que le script n'ait rien lu, imposerait
+        // une garde uniforme que la porte pourrait justement ne pas requérir.
+        //
+        // Login Vault ET apply dans UN SEUL step `sh` : team-promote.sh
+        // hérite VAULT_TOKEN_FILE en sous-processus, et le trap de révocation
+        // (vault_trap_revoke, EXIT) ne révoque le token QU'APRÈS l'apply. Deux
+        // steps `sh` séparés rouvriraient un process par step — le trap du
+        // premier révoquerait le token AVANT que le second ne le consomme.
+        withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')]) {
+          dir('poc-control-plane-federation') {
+            sh '''
+              set +x
+              export VAULT_USER="${V_USER:-}"
+              export VAULT_USER_PASSWORD="${V_PASS:-}"
+              # V_PASS ne doit PAS survivre au-delà de cette ligne : une variable
+              # EXPORTÉE reste lisible dans /proc/PID/environ de TOUT process du
+              # même nœud — même après avoir été recopiée dans
+              # VAULT_USER_PASSWORD, que vault-login.sh `unset` après usage.
+              # `unset` ICI, avant tout appel réseau (login inclus).
+              unset V_PASS
+
+              # shellcheck disable=SC1091
+              . ci/lib/vault-login.sh
+              # Trap armé AVANT le login : révoque + prouve la mort du token
+              # MÊME si la promotion échoue.
+              trap vault_trap_revoke EXIT
+              # `RC=0; cmd || RC=$?` et NON `if ! cmd` : après un `!`, $? vaut 0.
+              RC=0; vault_login_nominative || RC=$?
+              if [ "$RC" != 0 ]; then
+                # ⚠ ARBITRAGE, DIFFÉRENT DE team-publish (qui fait
+                # `[ "$RC" = 2 ] || exit 1; echo …; exit 0` — RC=2 y est un
+                # NO-OP vert). Ici la pause d'identité A DÉJÀ ÉTÉ RÉPONDUE
+                # (l'input est plus haut, avant l'allocation de CET agent) :
+                # arriver ici avec RC=2 signifie qu'un humain a validé la
+                # demande mais n'a fourni AUCUNE identité exploitable pour
+                # vault-login.sh — ce n'est pas « rien à promouvoir », c'est une
+                # pause répondue sans identité, donc un ÉCHEC (même logique que
+                # ci/Jenkinsfile.api-promote-export, qui a le même ordre
+                # input-avant-login). RC=1 (identité fournie mais refusée) est
+                # déjà rouge chez team-publish comme ici.
+                [ "$RC" = 2 ] || exit 1
+                echo "  (pause répondue sans identité nominative exploitable — échec)"; exit 1
+              fi
+
+              # Exporté APRÈS le login réussi, AVANT team-promote.sh : le
+              # script en a besoin pour sa propre garde des quatre yeux
+              # (§6bis) — c'est la SEULE identité prouvée dont il dispose,
+              # puisque ce Jenkinsfile n'appelle pas assert-merge-identity.sh.
+              export VAULT_IDENTITY_USER="${V_USER:-}"
+
+              # Toute la substance est là-dedans : réconciliation Gitea, autorité
+              # par topologie, anti-TOCTOU au MERGE_SHA, marqueur promote.yml
+              # mergé, porte du palier, garde des quatre yeux, moteur
+              # (ansible|labctl), commentaire de PR. Le pipeline, lui, n'a fait
+              # que router des variables. VAULT_TOKEN_FILE est exporté par la
+              # lib ci-dessus et hérité en sous-processus (jamais en argv).
+              bash scripts/team-promote.sh
+            '''
+          }
+        }
+      }
+    }
+  }
+
+  // ── STATUT DU BUILD SUR LA PR, DANS TOUS LES CAS ──────────────────────────
+  // Motif identique à team-publish : `post` couvre succès, échec, MAIS AUSSI
+  // pause jamais répondue (abandon/timeout) et refus survenus AVANT que
+  // team-promote.sh n'ait jamais tourné.
+  //
+  // MARQUEUR DISTINCT (`team-promote-build`) de celui de team-promote.sh
+  // (`team-promote`) : les deux commentaires COEXISTENT, chacun idempotent
+  // sous SON marqueur — même raison que team-publish/team-publish-build.
+  post {
+    always {
+      // `node` explicite : avec `agent none`, `post` n'a ni exécuteur ni
+      // workspace. Checkout PROPRE — ce bloc peut tourner sur un AUTRE
+      // exécuteur que l'étape d'apply, rien n'est hérité.
+      node("${env.POST_AGENT_LABEL ?: ''}") {
+        checkout scm
+        withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')]) {
+          withEnv(["BUILD_RESULT=${currentBuild.currentResult}"]) {
+            dir('poc-control-plane-federation') {
+              sh '''
+                set +x
+                if [ -z "${WEBHOOK_REPO:-}" ] || [ -z "${PR_NUMBER:-}" ]; then
+                  echo "commentaire de statut impossible (WEBHOOK_REPO/PR_NUMBER absents)"
+                  exit 0
+                fi
+                # Une PR hors promote/* n'a rien déclenché : ne pas la commenter
+                # (l'étape de promotion a été SAUTÉE, pas exécutée).
+                case "${PR_BRANCH:-}" in
+                  promote/*) ;;
+                  *) echo "(branche hors promote/* — aucun statut à commenter)"; exit 0 ;;
+                esac
+
+                # Corps de commentaire SANS accents (motif du job d'origine) :
+                # ils traversent le script d'agent, un POST JSON et Gitea, dans
+                # une chaine dont le charset depend du parametrage de l'agent.
+                # Vers QUEL build pointer. BUILD_URL n'existe que si l'URL
+                # racine de Jenkins est configuree (elle ne l'est pas sur le
+                # lab : le commentaire disait alors « voir Jenkins », inutile).
+                # Repli sur job#numero, TOUJOURS disponible.
+                BUILD_REF="${BUILD_URL:-}"
+                [ -n "$BUILD_REF" ] || BUILD_REF="${JOB_NAME:-team-promote} #${BUILD_NUMBER:-?}"
+
+                BODYFILE="$(mktemp)"
+                case "${BUILD_RESULT:-FAILURE}" in
+                  SUCCESS)
+                    printf "✅ team-promote (statut build) : build termine sans erreur -- voir le commentaire team-promote pour le resultat de la promotion.\\n" > "$BODYFILE" ;;
+                  ABORTED)
+                    printf "⚠️ team-promote (statut build) : la demande en attente a ete ABANDONNEE (ou a expire) -- RIEN n a ete promu. Rejouer le webhook pour rouvrir la demande. Build : %s\\n" "$BUILD_REF" > "$BODYFILE" ;;
+                  *)
+                    printf "⚠️ team-promote (statut build) : le build a echoue avant ou pendant la promotion. Si la garde d identite a refuse ou si la pause a ete abandonnee, RIEN n a ete promu -- voir le commentaire team-promote s il existe, sinon le log : %s\\n" "$BUILD_REF" > "$BODYFILE" ;;
+                esac
+
+                GIT_REPO="$WEBHOOK_REPO" PR_NUMBER="$PR_NUMBER" \
+                  COMMENT_MARKER="<!-- team-promote-build -->" \
+                  COMMENT_BODY_FILE="$BODYFILE" bash scripts/lib/gitea-pr-comment.sh \
+                  || echo "AVERTISSEMENT: commentaire de statut (post) en échec"
+                rm -f "$BODYFILE"
+              '''
+            }
+          }
+        }
+      }
+    }
+  }
+}

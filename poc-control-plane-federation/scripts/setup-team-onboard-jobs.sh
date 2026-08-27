@@ -31,6 +31,13 @@
 #                   distincte, non comblée ici (cf. l'en-tête du job.xml
 #                   d'api-promote-export pour le détail de ce qui a été
 #                   vérifié).
+#   team-promote  → ci/jenkins/team-promote.job.xml (Task 7, jalon G5 — l'APPLY
+#                   post-merge d'une PR promote/<api>-<env> : JOB UNIQUE
+#                   partagé par TOUS les dépôts d'équipe, MÊME token webhook
+#                   que team-publish (D1 — le plugin generic-webhook-trigger
+#                   déclenche tous les jobs enregistrés sur un token donné,
+#                   aucun geste sur les dépôts d'équipe). Sans marqueur
+#                   CHOICES : copié tel quel, comme team-publish.
 #
 # ── LISTES DYNAMIQUES (Task 3, palier 3) ─────────────────────────────────────
 # Les XML de jobs à listes déroulantes portent des PLACEHOLDERS
@@ -87,7 +94,7 @@ _STO_LIB="$(dirname "${BASH_SOURCE[0]}")/lib/deploy-pin.sh"
 . "$_STO_LIB" || { echo "ERREUR: $_STO_LIB introuvable ou illisible" >&2; exit 1; }
 
 JENKINS_UI="${JENKINS_UI:-http://localhost:18080}"
-JOBS="${JOBS:-team-request app-request team-apply api-request team-publish api-promote-export}"
+JOBS="${JOBS:-team-request app-request team-apply api-request team-publish api-promote-export team-promote}"
 # G4 (ADR-082) : ENVN est SCELLÉ sur l'env d'authoring — affectation sèche
 # depuis la constante de lib, jamais "${ENVN:-dev}" : les variables d'un job
 # Jenkins atterrissent dans l'environnement du process (fait mesuré, même
