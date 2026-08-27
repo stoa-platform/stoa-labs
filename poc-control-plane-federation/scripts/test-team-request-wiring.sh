@@ -46,7 +46,7 @@ ko(){ FAIL=$((FAIL+1)); printf '  ❌ %s\n' "$*"; }
 # total affiché SANS jamais faire échouer ce script). Toute section
 # ajoutée/retirée DOIT mettre à jour ce nombre à la main — un oubli fait virer
 # le §13 au rouge, ce qui EST le comportement voulu (un rappel, pas un bug).
-EXPECTED_CHECKS=64
+EXPECTED_CHECKS=65
 
 [ -f "$JOB" ] || { echo "job introuvable : $JOB"; exit 2; }
 [ -f "$JF" ]  || { echo "Jenkinsfile introuvable : $JF"; exit 2; }
@@ -60,6 +60,9 @@ jf(){ printf '%s\n' "$JF_N" | grep -qF "$1"; }
 # contrôles qui doivent porter sur le shell RÉELLEMENT exécuté, pas sur le
 # Groovy qui l'entoure ni sur les commentaires du fichier.
 SH_BODY="$(awk "/sh '''/{f=1;next} f&&/'''/{exit} f" "$JF")"
+# Le même corps SANS ses commentaires shell : une ceinture doit être EXÉCUTÉE,
+# pas citée (même règle que JF_CODE pour le Groovy, juste en dessous).
+SH_CODE="$(printf '%s\n' "$SH_BODY" | grep -vE '^[[:space:]]*#')"
 # Lignes de CODE du Jenkinsfile (commentaires Groovy retirés) : un motif cité
 # dans un commentaire ne doit jamais suffire à un vert.
 JF_CODE="$(grep -vE '^[[:space:]]*//' "$JF")"
@@ -298,7 +301,7 @@ fi
   || ko "corps du bloc \`sh\` introuvable — les contrôles de shell ci-dessous seraient vides (vert vacant)"
 
 echo
-echo "== 8. la garde « REPO vide » survit, et AVANT l'appel au script =="
+echo "== 8. les ceintures du shell survivent (REPO vide, dry-run désarmé), et AVANT l'appel au script =="
 # `if [ -z \"\$REPO\" ]; then unset REPO; fi` : reprise TELLE QUELLE du job
 # d'origine. Le `\${REPO:-<team>/apis}` du script couvre déjà la chaîne vide,
 # mais l'unset rend l'intention explicite et resterait correct même si le script
@@ -316,6 +319,21 @@ if [ -n "$L_UNSET" ] && [ -n "$L_RUN" ] && [ "$L_UNSET" -lt "$L_RUN" ]; then
   ok "unset ligne $L_UNSET, appel ligne $L_RUN (la garde précède l'appel)"
 else
   ko "garde APRÈS l'appel (ou introuvable) : unset=$L_UNSET appel=$L_RUN"
+fi
+# LE DRY-RUN EST UN CONTRAT D'ÉPREUVE, PAS UN MODE DU JOB. team-request.sh sort 0
+# sur `DRY_RUN=1` après ses gardes et AVANT le clone — c'est la surface
+# qu'éprouve test-palier-retention.sh ⑱. Mais les variables d'un nœud Jenkins
+# atterrissent dans l'environnement du step `sh` : sans ce désarmement, poser
+# DRY_RUN=1 sur le nœud rendrait le formulaire MUET — build VERT, `GARDES_OK`
+# dans le log, aucune PR ouverte. C'est la classe de contournement que le
+# scellement de l'axe env ferme par ailleurs. Présence ET position : un `unset`
+# placé après l'appel ne désarmerait plus rien.
+L_DRY=$(grep -n 'unset DRY_RUN' "$JF" | head -1 | cut -d: -f1)
+if printf '%s\n' "$SH_CODE" | grep -qF 'unset DRY_RUN' \
+   && [ -n "$L_DRY" ] && [ -n "$L_RUN" ] && [ "$L_DRY" -lt "$L_RUN" ]; then
+  ok "\`unset DRY_RUN\` dans le code du shell (ligne $L_DRY), avant l'appel (ligne $L_RUN) : une variable de nœud ne peut pas rendre le formulaire muet"
+else
+  ko "\`unset DRY_RUN\` absent du code du \`sh\` (ou placé après l'appel : dry=$L_DRY appel=$L_RUN) — DRY_RUN=1 sur le nœud donnerait un build VERT sans aucune PR"
 fi
 printf '%s\n' "$SH_BODY" | grep -qE '^ *set \+x' \
   && ok "\`set +x\` en tête du bloc shell : aucune trace d'exécution (le token du credential ne doit jamais être tracé)" \

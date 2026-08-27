@@ -156,6 +156,10 @@ pipeline {
                 # passait un jour à `${REPO-…}` (sans les deux-points, qui, lui,
                 # ne traite PAS la chaîne vide comme une absence).
                 if [ -z "$REPO" ]; then unset REPO; fi
+                # Le dry-run est un contrat d'ÉPREUVE, jamais un mode du job — une
+                # variable de nœud ne doit pas rendre le formulaire muet (build
+                # vert, aucune PR ouverte).
+                unset DRY_RUN
                 # Toute la substance est là-dedans : gardes d'entrée
                 # (TEAM_NAME_INVALID, YAML_UNSAFE_INPUT,
                 # TEAM_ALREADY_DECLARED), clone du dépôt plateforme, ajout de
