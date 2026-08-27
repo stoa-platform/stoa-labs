@@ -106,10 +106,10 @@ pipeline {
     // retombe sur GIT_HOST (nom interne au cluster, non résolu hors des
     // conteneurs) et le lien de la PR serait mort pour le demandeur.
     GIT_WEB_HOST         = "${env.GIT_WEB_HOST ?: 'http://localhost:13000'}"
-    // Environnement dont providers.<env>.yml donne le dépôt de l'équipe. Sans
-    // rapport avec l'env de PUBLICATION (résolu par per_env au moment de
-    // l'apply réel, côté team-publish).
-    ENVN                 = "${env.ENVN ?: 'dev'}"
+    // Aucun axe d'environnement n'est routé ici : G4 (ADR-082) SCELLE ENVN
+    // dans le script, sur la constante d'authoring de scripts/lib/deploy-pin.sh.
+    // Le repasser depuis le pipeline redonnerait à l'environnement du job le
+    // pouvoir que le scellement lui retire.
     // Credential Jenkins (secret text) portant le token Gitea du service ci
     // (write:repository, write:issue).
     GITEA_CREDENTIALS_ID = "${env.GITEA_CREDENTIALS_ID ?: 'gitea-provision-token'}"

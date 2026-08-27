@@ -102,8 +102,10 @@ pipeline {
     // Cible in-cluster pour la RE-POSE des formulaires app-request/api-request
     // après publication (la nouvelle version doit apparaître dans les listes).
     JENKINS_UI            = "${env.JENKINS_UI ?: 'http://jenkins:8080'}"
-    // Environnement dont providers.<env>.yml fait autorité.
-    ENVN                  = "${env.ENVN ?: 'dev'}"
+    // Aucun axe d'environnement n'est routé ici : G4 (ADR-082) SCELLE ENVN
+    // dans le script, sur la constante d'authoring de scripts/lib/deploy-pin.sh.
+    // Le repasser depuis le pipeline redonnerait à l'environnement du job le
+    // pouvoir que le scellement lui retire.
     // Credential Jenkins (secret text) portant le token Gitea du CI.
     GITEA_CREDENTIALS_ID  = "${env.GITEA_CREDENTIALS_ID ?: 'gitea-provision-token'}"
   }

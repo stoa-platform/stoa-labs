@@ -670,10 +670,15 @@ grep -q 'apim_ss_manifest="\$DEPLOY_PIN_PUBLISH"' "$TP" \
 grep -q 'apim_ss_contract_pin="\$DEPLOY_PIN_CONTRACT"' "$TP" \
   && ok "le contrat épinglé est le RÉSOLU" \
   || bad "contrat non issu du résolveur"
-# Le verrou dev-only appartient à G4 : cette tâche ne doit pas y toucher.
-grep -q 'ENVN="\${ENVN:-dev}"' "$TP" \
-  && ok "le verrou dev-only est INTACT (il appartient à G4)" \
-  || bad "le verrou dev-only a bougé — G3 ne doit pas livrer la moitié de G4"
+# G4 a REMPLACÉ le verrou dev-only par le scellement : l'épreuve garde
+# désormais le remplacement (l'affectation sèche), pas l'ancien défaut.
+sed 's/[[:space:]]*#.*$//' "$TP" > "$TMP/tp20_nc"
+grep -q 'ENVN="\$DEPLOY_PIN_AUTHORING_ENV"' "$TMP/tp20_nc" \
+  && ok "⑳ ENVN est scellé sur la constante d'authoring (G4)" \
+  || bad "⑳ team-publish.sh ne scelle plus ENVN — le remplacement du verrou a sauté"
+grep -q 'ENVN="\${ENVN:-' "$TMP/tp20_nc" \
+  && bad "⑳bis un défaut surchargeable ENVN:- est revenu (l'env du job déciderait)" \
+  || ok "⑳bis aucun défaut surchargeable ne subsiste"
 
 echo "㉑ LE CHAÎNAGE — un saut promeut ce que le palier SOURCE exécute, pas le dernier main"
 # ⚠ C'EST L'ÉPREUVE QUI MANQUAIT, et son absence a laissé passer le défaut le

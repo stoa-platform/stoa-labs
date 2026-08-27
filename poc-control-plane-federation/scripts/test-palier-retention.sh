@@ -284,5 +284,29 @@ PYTHONOPTIMIZE=1 python3 "$TMP/uvj_tpl.py" "d" "m" >"$TMP/uvj_opt" 2>&1
   && ok "⑧quater(d) la garde liste-vide tient sous PYTHONOPTIMIZE=1 (pas un assert)" \
   || bad "⑧quater(d) sous PYTHONOPTIMIZE=1 le gabarit produit une policy sans aucune ligne create — garde supprimée par -O"
 
+echo "== ⑨a scellement publication : ENVN vient de la constante, plus du job =="
+for F in scripts/team-publish.sh scripts/api-request.sh scripts/setup-team-onboard-jobs.sh; do
+  sed 's/[[:space:]]*#.*$//' "$F" > "$TMP/nc9"
+  grep -q 'ENVN="\$DEPLOY_PIN_AUTHORING_ENV"' "$TMP/nc9" \
+    && ok "⑨a $F scelle ENVN sur DEPLOY_PIN_AUTHORING_ENV" \
+    || bad "⑨a $F ne scelle pas ENVN"
+  grep -q 'ENVN="\${ENVN:-' "$TMP/nc9" \
+    && bad "⑨a $F garde un défaut surchargeable ENVN:- (l'env du job décide encore)" \
+    || ok "⑨a $F n'a plus de défaut surchargeable"
+done
+for JF in ci/Jenkinsfile.team-publish ci/Jenkinsfile.api-request; do
+  sed 's|[[:space:]]*//.*$||' "$JF" > "$TMP/jf9"
+  grep -q 'ENVN' "$TMP/jf9" \
+    && bad "⑨a $JF route encore un axe ENVN vers le script" \
+    || ok "⑨a $JF ne route plus d'axe env"
+done
+
+echo "== ⑩ mutation : remettre le défaut surchargeable ⇒ l'épreuve ⑨a rougirait =="
+sed 's/ENVN="\$DEPLOY_PIN_AUTHORING_ENV"/ENVN="\${ENVN:-dev}"/' scripts/team-publish.sh > "$TMP/tp_mut"
+sed 's/[[:space:]]*#.*$//' "$TMP/tp_mut" > "$TMP/tp_mut_nc"
+grep -q 'ENVN="\${ENVN:-' "$TMP/tp_mut_nc" \
+  && ok "⑩ la mutation réintroduit le défaut et le détecteur ⑨a le verrait" \
+  || bad "⑩ la mutation n'a rien changé — ⑨a est un vert vacant"
+
 printf '\n  %d PASS / %d FAIL\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
