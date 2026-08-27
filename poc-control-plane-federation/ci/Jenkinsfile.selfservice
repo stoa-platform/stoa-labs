@@ -38,8 +38,10 @@ pipeline {
     // clone sous la main). Le reste de la chaîne est dérivé de
     // clients/_example/environments.yaml via scripts/lib/env-chain.sh ; cette
     // liste-ci est la SEULE qui doive encore être tenue à la main, et elle doit
-    // rester alignée sur ce fichier. `homol` ajouté le 2026-08-26.
-    choice(name: 'ENVIRONMENT', choices: ['dev', 'rec', 'int', 'homol', 'prod'],
+    // rester alignée sur ce fichier. `homol` ajouté le 2026-08-26. `prod` retiré
+    // par G4/D6 : l'écriture d'app au terminus est structurellement fermée
+    // (403 depuis D3) — le formulaire consommateur ne doit plus la proposer.
+    choice(name: 'ENVIRONMENT', choices: ['dev', 'rec', 'int', 'homol'],
            description: "Environnement cible (identité IP/cert par env + header X-Environment).")
     // Mode d'accès à l'API d'admin. Chez le CLIENT il n'y a QUE proxy-oauth2 :
     // l'admin n'est jamais exposée en direct — elle est proxifiée SUR la gateway

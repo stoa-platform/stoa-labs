@@ -14,10 +14,17 @@
   sur celui du Jenkinsfile. Meme mecanique que le declencheur de team-publish,
   MESUREE sur le lab (2026-08-06).
 
+  AUCUN champ d'environnement (G4, ADR-082, D5) : onboarder une equipe est un
+  geste d'AUTHORING, et scripts/team-request.sh scelle son env sur la constante
+  DEPLOY_PIN_AUTHORING_ENV de scripts/lib/deploy-pin.sh. Le champ a ete retire
+  d'ICI EN PREMIER : un parametre de config.xml est preserve indefiniment et
+  l'emporte a nom egal, donc l'oter du seul Jenkinsfile n'aurait rien ote au
+  formulaire reellement pose.
+
   Consequence : une divergence entre les deux fichiers est SILENCIEUSE, et
   c'est le XML qui fait foi. test-team-request-wiring.sh §2 et §3 comparent les
-  deux (noms, types, liste de choix) et virent au rouge a la premiere
-  divergence.
+  deux (noms et types, et l'absence de toute liste fermee depuis que l'axe env
+  est parti) et virent au rouge a la premiere divergence.
 
   A NE PAS DEPLACER dans le Jenkinsfile : setup-team-onboard-jobs.sh pose ce
   XML tel quel. Ce job ne porte AUCUN marqueur de liste dynamique (CHOICES,
@@ -54,11 +61,6 @@
           <description>Dépôt Git de l'équipe (org/nom). Vide = &lt;team&gt;/apis. Créé AU MERGE depuis le squelette ADR-076.</description>
           <defaultValue></defaultValue>
         </hudson.model.StringParameterDefinition>
-        <hudson.model.ChoiceParameterDefinition>
-          <name>REQ_ENV</name>
-          <description>Environnement. Seul dev est ouvert au palier 2 — les autres sont refusés avec ENV_NOT_OPEN.</description>
-          <choices class="java.util.Arrays$ArrayList"><a class="string-array"><string>dev</string><string>rec</string><string>int</string><string>prod</string></a></choices>
-        </hudson.model.ChoiceParameterDefinition>
       </parameterDefinitions>
     </hudson.model.ParametersDefinitionProperty>
   </properties>

@@ -18,7 +18,8 @@
 #
 # Entrées (variables d'env — mappées depuis le body du webhook par le GWT du job) :
 #   REQ_APP        (req) nom de l'application demandée
-#   REQ_ENV        (req) dev|rec|int|prod — pilote le nom de branche + la cible
+#   REQ_ENV        (req) palier non terminal de la chaîne (env_chain_nonprod,
+#                  dev/rec/int/homol aujourd'hui) — pilote le nom de branche + la cible
 #   REQ_CLIENT_ID  (req) le client OAuth2 de l'appelant (= valeur de claim azp)
 #   REQ_API        (req) l'API que l'application consomme
 #   REQ_API_VER    api version (défaut 1.0.0)
@@ -67,6 +68,14 @@
 #                          BACKEND_KEY_MISSING alors que l'entrée existe.
 set -uo pipefail
 set +x   # jamais de trace : le token ne doit pas fuiter
+
+# G4 (D6) : la liste d'environnements valides suit LA chaîne, jamais une liste
+# en dur. Aucun `cd` n'a encore eu lieu ici (le clone/cd n'arrive qu'au [1/4],
+# bien plus bas) : la source relative résout depuis le cwd d'appel, qui est
+# `poc-control-plane-federation` (le job fait `dir('poc-control-plane-federation')`
+# avant `bash scripts/provision-request.sh` — ci/Jenkinsfile.app-request,
+# ci/jenkins/provisioning-request.job.xml).
+. "scripts/lib/env-chain.sh" || { echo "ERREUR: scripts/lib/env-chain.sh introuvable ou illisible" >&2; exit 1; }
 
 REQ_APP="${REQ_APP:?REQ_APP requis}"
 REQ_ENV="${REQ_ENV:?REQ_ENV requis}"
@@ -124,7 +133,15 @@ for v in REQ_APP REQ_ENV REQ_API REQ_CLIENT_ID; do
     *[!A-Za-z0-9._-]*) echo "REFUS: $v='$val' contient un caractère non autorisé ([A-Za-z0-9._-])" >&2; exit 2;;
   esac
 done
-case "$REQ_ENV" in dev|rec|int|prod) ;; *) echo "REFUS: REQ_ENV='$REQ_ENV' (attendu dev|rec|int|prod)" >&2; exit 2;; esac
+# G4 (D6) : la liste suit la CHAÎNE, terminus exclu par structure (l'écriture
+# d'app au terminus meurt en 403 depuis D3 — le formulaire ne ment plus).
+# `fail()` n'est défini que plus bas : garde en echo/exit inline, comme le
+# reste des gardes de ce bloc avant cette ligne.
+CHAIN_NONPROD="$(env_chain_nonprod)" || { echo "REFUS: CHAINE_ILLISIBLE : env_chain_nonprod" >&2; exit 2; }
+case " $CHAIN_NONPROD " in
+  *" $REQ_ENV "*) : ;;
+  *) echo "REFUS: ENV_INVALIDE : '$REQ_ENV' hors de la chaîne hors-terminus ($CHAIN_NONPROD)" >&2; exit 2;;
+esac
 
 # ── Task 4 (P3) — identité entrante : gardes AVANT tout geste Git ────────────
 # Reprises verbatim du brief (tags d'échec inclus) : chaque garde est un no-op

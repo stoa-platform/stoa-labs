@@ -62,6 +62,23 @@
   no_log: true
   when: "onb_password_created | bool"
 
+# FAIL-CLOSED, MIROIR de l'`assert envs` du gabarit de la voie B
+# (scripts/setup-user-vault-jwt.sh, bloc uvj-pol) : les deux voies menent a la
+# meme personne, elles doivent refuser la meme chose. Une liste vide n'emettrait
+# AUCUNE ligne `create` — la policy serait muette en ecriture et les
+# deploiements d'app de l'equipe casseraient EN SILENCE, exactement le piege
+# documente juste en dessous. Un vide ne peut venir que d'un appelant qui
+# surcharge explicitement la variable : la derivation, elle, echoue bruyamment
+# (env_chain_nonprod est fail-closed, et le lookup remonte son erreur).
+- name: "FAIL-CLOSED — au moins un palier d'ecriture d'app"
+  ansible.builtin.assert:
+    that: "apim_onb_write_envs | default([]) | length > 0"
+    fail_msg: >-
+      apim_onb_write_envs est vide : la policy de cette equipe n'aurait aucune
+      capacite `create` et tout deploiement d'une de ses applications
+      echouerait en 403. Passer la liste des paliers NON terminaux —
+      onboard-team.yml la derive d'env_chain_nonprod.
+
 # La policy borne le perimetre au SEUL sous-arbre de l'equipe. C'est la douve :
 # se reclamer de l'equipe X exige de savoir lire deploy/X/wm-admin (ADR-077).
 #
@@ -72,13 +89,17 @@
 # tenant y stocke le client genere par la gateway. Une policy en LECTURE SEULE
 # — ce que ce plan proposait avant la revue du 2026-08-04 — casserait ces
 # deploiements EN SILENCE, et le symptome apparaitrait loin de la cause.
+# G4 (ADR-082) : ce write n'est plus `apps/*` mais `apps/+/<palier>/*`, boucle
+# sur apim_onb_write_envs (paliers NON terminaux, derives de la chaine par
+# onboard-team.yml). Meme lecture du piege ci-dessus : une liste vide rendrait
+# la policy muette en ecriture, donc les memes deploiements casses en silence.
 # CORRECTION INTER-TACHES (Task 8, ansible-core 2.19.4 — meme classe que
 # main.yml:31, cf. son commentaire). `onb.policy` remplace par `apim_onb_team`
 # (le parametre d'entree, disponible des le parse) plutot que de recomposer le
 # gabarit `apim_onb_policy_tpl` ici (dupliquerait sa forme, divergerait si le
 # gabarit est surcharge cote client) — un nom de tache est cosmetique, le
 # perimetre reel de la policy est dans son HCL plus bas, jamais dans son nom.
-- name: "Vault : policy deploy de l'equipe '{{ apim_onb_team }}' (lecture du sous-arbre, ecriture bornee a apps/)"
+- name: "Vault : policy deploy de l'equipe '{{ apim_onb_team }}' (lecture du sous-arbre, ecriture bornee a apps/ par palier non terminal)"
   vars:
     # DERIVE de onb.kv_sub, JAMAIS reconstruit (I4, revue finale 2026-08-04).
     # Avant ce correctif, onb_tenant_root recomposait le chemin en dur
@@ -102,14 +123,15 @@
       policy: |
         # Perimetre de deploiement du tenant {{ onb.team }}.
         # LECTURE sur tout le sous-arbre du tenant ; ECRITURE limitee au seul
-        # sous-arbre apps/ (mode OAuth2 internal : celui qui deploie une app de
-        # SON tenant y stocke le client genere par la gateway — jamais ailleurs,
-        # jamais un autre tenant). La segregation reste ENFORCEE ici, pas dans
-        # le pipeline.
+        # sous-arbre apps/, PAR PALIER NON TERMINAL (G4, ADR-082) : celui qui
+        # deploie une app de SON tenant y stocke le client genere — jamais
+        # ailleurs, jamais un autre tenant, JAMAIS le terminus.
         path "{{ apim_ss_vault_kv_mount }}/data/{{ onb_tenant_root }}/*"          { capabilities = ["read"] }
         path "{{ apim_ss_vault_kv_mount }}/metadata/{{ onb_tenant_root }}/*"      { capabilities = ["read", "list"] }
-        path "{{ apim_ss_vault_kv_mount }}/data/{{ onb_tenant_root }}/apps/*"     { capabilities = ["create", "update", "read"] }
-        path "{{ apim_ss_vault_kv_mount }}/metadata/{{ onb_tenant_root }}/apps/*" { capabilities = ["read", "list"] }
+        {% for e in apim_onb_write_envs %}
+        path "{{ apim_ss_vault_kv_mount }}/data/{{ onb_tenant_root }}/apps/+/{{ e }}/*"     { capabilities = ["create", "update", "read"] }
+        path "{{ apim_ss_vault_kv_mount }}/metadata/{{ onb_tenant_root }}/apps/+/{{ e }}/*" { capabilities = ["read", "list"] }
+        {% endfor %}
     status_code: [200, 204]
     ca_path: "{{ apim_ss_ca_path | default('') or omit }}"
   delegate_to: localhost

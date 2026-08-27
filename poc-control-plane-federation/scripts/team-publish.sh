@@ -76,10 +76,14 @@ APIM_API_BASE="${APIM_API_BASE:?APIM_API_BASE requis — pas de défaut : dire s
 GIT_HOST="${GIT_HOST:-http://gitea:3000}"
 GIT_REPO="${GIT_REPO:-ci/stoa-labs}"        # dépôt PLATEFORME — porte providers.<env>.yml
 GIT_WEB_HOST="${GIT_WEB_HOST:-$GIT_HOST}"
-# Fixe (pas dérivé de la branche, contrairement à team-apply.sh/onboard-<team>-<env>) :
-# api/<name>-<version> ne porte aucun axe d'environnement — le seul palier où
-# des équipes sont déclarées à ce jour est dev (cf. team-apply.sh, api-request.sh).
-ENVN="${ENVN:-dev}"
+# G4 (ADR-082) : ENVN est SCELLÉ sur l'env d'authoring — affectation sèche
+# depuis la constante de lib, jamais "${ENVN:-dev}" : les variables d'un job
+# Jenkins atterrissent dans l'environnement du process (fait mesuré, même
+# raison que deploy-pin.sh:29-37). La publication est un geste d'AUTHORING
+# par conception (ADR-079) ; au-delà, c'est la promotion (marqueurs G3,
+# verbe archive G5) — et son autorité est la rétention de credential, pas
+# une variable.
+ENVN="$DEPLOY_PIN_AUTHORING_ENV"
 
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT; umask 077
 
@@ -348,8 +352,19 @@ PY
 # nouvelle plomberie à écrire sous pression.
 # Le clone est DÉJÀ positionné au SHA du merge (§4) — le résolveur lit donc
 # l'état revu, pas une branche courante.
-resolve_deploy_pin "$TMP/team" "$API_NAME" "$ENVN" "$TMP/resolved" \
-  || fail "PIN_NON_RESOLU : la référence de déploiement de ${API_NAME} en ${ENVN} n'a pas pu être résolue (voir le refus nommé ci-dessus)"
+# G4 (D9) : le refus PRÉCIS du résolveur (PIN_ABSENT, ARCHIVE_ABSENT, …)
+# part sur stderr (_dp_fail, deploy-pin.sh) — un lecteur de PR ne voit pas le
+# log Jenkins. On capture stderr en FICHIER (jamais un pipe : pipefail + le
+# résolveur sort 1) et le dernier jeton nommé rejoint le commentaire. C'est
+# LA surface de diagnostic de l'équipe le jour où la chaîne s'exerce.
+# Ligne D'APPEL laissée intacte (test-deploy-pin.sh ⑳ ancre
+# ^resolve_deploy_pin "\$TMP/team" en tête de ligne) : le branchement en
+# `|| { … }` porte la capture sans déplacer l'appel derrière un `if !`.
+resolve_deploy_pin "$TMP/team" "$API_NAME" "$ENVN" "$TMP/resolved" 2>"$TMP/pin.err" || {
+  cat "$TMP/pin.err" >&2   # le log de build garde TOUT le détail
+  REFUS="$(grep -o 'deploy-pin: [A-Z_]*' "$TMP/pin.err" | tail -1)"
+  fail "PIN_NON_RESOLU : la référence de déploiement de ${API_NAME} en ${ENVN} n'a pas pu être résolue (${REFUS:-refus non nommé — voir le log du build})"
+}
 
 # ── 5. publication (rôle du palier 3, idempotent create-or-version) ─────────
 # apim_ss_contract_pin (extra-var, précédence 22) ÉPINGLE le contract au
@@ -391,8 +406,11 @@ if [ "$PUB_RC" -eq 0 ]; then
   # utilisé pour webmethods-mock/gitea (même convention). Un poste hors du
   # réseau compose surcharge JENKINS_UI explicitement (comme APIM_API_BASE).
   REFRESH_NOTE=""
+  # AUCUN ENVN passé au délégué, et c'est délibéré : depuis G4 il SCELLE
+  # lui-même son env sur la même constante d'authoring. Le lui repasser serait
+  # du câblage mort qui suggère qu'il obéit à son appelant.
   if JENKINS_UI="${JENKINS_UI:-http://jenkins:8080}" JOBS="app-request api-request" \
-     ENVN="$ENVN" bash scripts/setup-team-onboard-jobs.sh >"$TMP/refresh.log" 2>&1
+     bash scripts/setup-team-onboard-jobs.sh >"$TMP/refresh.log" 2>&1
   then
     SKIPPED=$(grep -oE 'CHOICES_SKIPPED_REPOS=[0-9]+' "$TMP/refresh.log" | tail -1 | cut -d= -f2)
     if [ -n "$SKIPPED" ] && [ "$SKIPPED" -gt 0 ]; then

@@ -56,7 +56,15 @@ MAN=$(git diff --name-only "origin/${GIT_BASE}...HEAD" -- "${MANIFEST_DIR}/*.ans
 if [ -z "$MAN" ]; then echo "IGNORE: aucun manifeste ajouté sous ${MANIFEST_DIR}" >&2; exit 0; fi
 echo "  manifeste : $MAN"
 # env = suffixe de la branche provision/<app>-<env>
-ENVV="${PR_BRANCH##*-}"; case "$ENVV" in dev|rec|int|prod) ;; *) ENVV="";; esac
+# G4 (D6) : même geste que provision-request.sh — la liste suit LA chaîne,
+# jamais une liste en dur. On est déjà DANS le clone ($WORK/repo, cd plus haut) :
+# `scripts/lib/env-chain.sh` relatif au cwd viserait le mauvais dépôt (celui-ci
+# n'a que ci/stoa-labs à la racine) — d'où $SELF_DIR, résolu par rapport à CE
+# script AVANT le cd (même piège que documenté au-dessus pour SELF_DIR lui-même).
+# shellcheck source=scripts/lib/env-chain.sh
+. "$SELF_DIR/lib/env-chain.sh" || { echo "ERREUR: $SELF_DIR/lib/env-chain.sh introuvable ou illisible" >&2; exit 1; }
+CHAIN_NONPROD="$(env_chain_nonprod)" || { echo "ERREUR: CHAINE_ILLISIBLE : env_chain_nonprod" >&2; exit 1; }
+ENVV="${PR_BRANCH##*-}"; case " $CHAIN_NONPROD " in *" $ENVV "*) ;; *) ENVV="";; esac
 
 echo "[3/4] PLAN (lecture seule) sur $MAN"
 PLAN_LOG="$WORK/plan.log"; VERDICT="ok"

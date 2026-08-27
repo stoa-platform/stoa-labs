@@ -47,7 +47,7 @@ ko(){ FAIL=$((FAIL+1)); printf '  ❌ %s\n' "$*"; }
 # PASS+FAIL (qui devient vrai par construction : une section entière sautée
 # silencieusement ferait baisser le total affiché SANS jamais faire échouer ce
 # script). Toute section ajoutée/retirée DOIT mettre à jour ce nombre à la main.
-EXPECTED_CHECKS=50
+EXPECTED_CHECKS=51
 
 [ -f "$JOB" ] || { echo "job introuvable : $JOB"; exit 2; }
 [ -f "$JF" ]  || { echo "Jenkinsfile introuvable : $JF"; exit 2; }
@@ -216,9 +216,16 @@ jf "GIT_HOST = \"\${env.GIT_HOST ?: 'http://gitea:3000'}\"" \
 jf "GIT_REPO = \"\${env.GIT_REPO ?: 'ci/stoa-labs'}\"" \
   && ok "valeur littérale de GIT_REPO = ci/stoa-labs (dépôt plateforme : providers.<env>.yml + gardes du plan)" \
   || ko "GIT_REPO : valeur par défaut inattendue ou absente"
-jf "ENVN = \"\${env.ENVN ?: 'dev'}\"" \
-  && ok "valeur littérale de ENVN = dev (env dont providers.<env>.yml donne le dépôt de l'équipe)" \
-  || ko "ENVN : valeur par défaut inattendue ou absente"
+# G4 (ADR-082) : le Jenkinsfile ne route PLUS d'axe env — le script scelle ENVN
+# sur la constante d'authoring. L'épreuve garde le remplacement, des deux côtés.
+sed 's|[[:space:]]*//.*$||' "$JF" > "$TMP/jf_envn"
+grep -q 'ENVN' "$TMP/jf_envn" \
+  && ko "le Jenkinsfile route encore un axe ENVN — G4 l'a scellé dans le script" \
+  || ok "aucun axe ENVN routé par le Jenkinsfile (scellé côté script, G4)"
+sed 's/[[:space:]]*#.*$//' "$REPO/scripts/api-request.sh" > "$TMP/ar_envn"
+grep -q 'ENVN="\$DEPLOY_PIN_AUTHORING_ENV"' "$TMP/ar_envn" \
+  && ok "api-request.sh scelle ENVN sur DEPLOY_PIN_AUTHORING_ENV" \
+  || ko "api-request.sh ne scelle pas ENVN"
 # L'ordre compte : `environment` doit précéder `stages` pour que les valeurs
 # soient dans l'environnement de TOUS les steps.
 L_ENV=$(grep -n '^  environment {' "$JF" | head -1 | cut -d: -f1)

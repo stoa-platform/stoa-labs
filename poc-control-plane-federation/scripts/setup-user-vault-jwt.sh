@@ -51,6 +51,24 @@ KC_ISSUER_PINNED="${KC_ISSUER_PINNED:-${KC_BASE}/realms/${REALM}}"
 
 say()  { printf '\033[1;36m[user-vault]\033[0m %s\n' "$*"; }
 fail() { printf '\033[1;31m[user-vault]\033[0m %s\n' "$*"; exit 1; }
+# G4 (ADR-082) : les paliers ou la voie B a le droit d'ECRIRE un secret d'app,
+# derives de LA chaine — jamais reecrits ici. Le terminus n'y est pas, par
+# structure (env_chain_nonprod retire le DERNIER palier, pas « prod » par son
+# nom). Chaine illisible ⇒ on s'arrete : une policy posee sur une liste devinee
+# est pire que pas de policy du tout.
+#
+# ⚠ CHEZ UN CLIENT, POSER STOA_ENV_CHAIN_FILE SUR LA CHAINE REELLE — une policy
+# derivee du gabarit d'exemple peut rendre son terminus INSCRIPTIBLE (ADR-082).
+# env-chain.sh retombe sur clients/_example/environments.yaml quand la variable
+# est absente : c'est la source declaree du lab, mais chez un client dont la
+# chaine est plus COURTE, le dernier palier du gabarit n'est pas son terminus a
+# lui — il entrerait alors dans la liste hors-prod, donc dans les chemins
+# inscriptibles, SANS AUCUN SYMPTOME. D'ou la ligne qui suit : la source lue est
+# NOMMEE dans la sortie, pas devinee a la relecture.
+# shellcheck source=scripts/lib/env-chain.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib/env-chain.sh"
+UVJ_WRITE_ENVS="$(env_chain_nonprod)" || fail "CHAINE_ILLISIBLE : env_chain_nonprod"
+say "chaîne d'envs lue depuis : ${STOA_ENV_CHAIN_FILE:-<gabarit par défaut : clients/_example/environments.yaml>}"
 # Le token Vault part dans un header-FILE, jamais en argv (ps/cmdline) —
 # standard du repo depuis ADR-074 (« jamais en argv »).
 VHDR="$(mktemp)"; trap 'rm -f "$VHDR" /tmp/uvj-*.err' EXIT
@@ -109,12 +127,15 @@ say "config jwt : jwks=${KC_JWKS_INTERNAL} / issuer épinglé ${KC_ISSUER_PINNED
 
 # ═══ 4. policy user-deploy TEMPLATÉE (voie B) ════════════════════════════════
 # PÉRIMÈTRE : lecture sur tout le sous-arbre du tenant, ÉCRITURE bornée au seul
-# sous-arbre `apps/`. STRICTEMENT LE MÊME que la policy statique deploy-<tenant>
-# de la voie A (setup-vault-userpass.sh) : les deux voies mènent à la même
-# personne, elles doivent donner le même pouvoir. Jusqu'au 2026-08-03 la voie B
-# était en LECTURE SEULE — un même humain pouvait donc écrire la clé d'une
-# application en se connectant par mot de passe, et ne le pouvait plus en
-# arrivant par le SSO. Écart silencieux, corrigé ici.
+# sous-arbre `apps/`, ET PAR PALIER NON TERMINAL (G4, ADR-082 : `apps/+/<env>/*`,
+# un bloc par palier de $UVJ_WRITE_ENVS). STRICTEMENT LE MÊME que la policy
+# deploy-<tenant> de la voie A (rôle apim_team_onboard, tasks/vault.yml) : les
+# deux voies mènent à la même personne, elles doivent donner le même pouvoir —
+# le resserrage par palier DOIT donc rester appliqué des deux côtés, sinon la
+# rétention de credential se contourne en changeant de porte d'entrée.
+# Jusqu'au 2026-08-03 la voie B était en LECTURE SEULE — un même humain pouvait
+# donc écrire la clé d'une application en se connectant par mot de passe, et ne
+# le pouvait plus en arrivant par le SSO. Écart silencieux, corrigé ici.
 #
 # POURQUOI L'ÉCRITURE. Le valideur d'une PR initialise les secrets de
 # l'application qu'il approuve (clé backend, client OAuth2 interne) sous SON
@@ -129,23 +150,32 @@ say "config jwt : jwks=${KC_JWKS_INTERNAL} / issuer épinglé ${KC_ISSUER_PINNED
 # LECTURE dont l'apply a besoin pour ces mêmes secrets.
 VP="secret/data/stoa/deploy/{{identity.entity.aliases.${JWT_ACCESSOR}.metadata.tenant}}"
 VM="secret/metadata/stoa/deploy/{{identity.entity.aliases.${JWT_ACCESSOR}.metadata.tenant}}"
-python3 - "$VP" "$VM" > /tmp/uvj-pol.json <<'PY'
+# $UVJ_WRITE_ENVS est volontairement NON quoté : le découpage par mots est
+# l'effet VOULU (un argv par palier), pas un oubli.
+# shellcheck disable=SC2086
+python3 - "$VP" "$VM" $UVJ_WRITE_ENVS > /tmp/uvj-pol.json <<'PY' || fail "gabarit de policy user-deploy KO"
 import json, sys
 d, m = sys.argv[1], sys.argv[2]
-hcl = (
-    '# Périmètre de déploiement du tenant porté par la claim (voie B, ADR-077).\n'
-    '# LECTURE sur tout le sous-arbre ; ÉCRITURE limitée à apps/ — miroir exact\n'
-    '# de la policy statique deploy-<tenant> de la voie A.\n'
-    'path "%s/*"          { capabilities = ["read"] }\n'
-    'path "%s/*"          { capabilities = ["read", "list"] }\n'
-    'path "%s/apps/*"     { capabilities = ["create", "update", "read"] }\n'
-    'path "%s/apps/*"     { capabilities = ["read", "list"] }\n'
-) % (d, m, d, m)
-json.dump({"policy": hcl}, sys.stdout)
+envs = sys.argv[3:]
+# PAS un `assert` : PYTHONOPTIMIZE=1 (ou `python3 -O`) les SUPPRIME du bytecode,
+# et la garde disparaitrait sans bruit — exactement l'inverse d'un fail-closed.
+if not envs:
+    sys.exit("liste de paliers vide — fail-closed")
+lines = [
+    '# Périmètre de déploiement du tenant porté par la claim (voie B, ADR-077).',
+    '# LECTURE sur tout le sous-arbre ; ÉCRITURE limitée à apps/ PAR PALIER NON',
+    '# TERMINAL (G4, ADR-082) — miroir exact de la policy deploy-<tenant> voie A.',
+    'path "%s/*"          { capabilities = ["read"] }' % d,
+    'path "%s/*"          { capabilities = ["read", "list"] }' % m,
+]
+for e in envs:
+    lines.append('path "%s/apps/+/%s/*"     { capabilities = ["create", "update", "read"] }' % (d, e))
+    lines.append('path "%s/apps/+/%s/*"     { capabilities = ["read", "list"] }' % (m, e))
+json.dump({"policy": "\n".join(lines) + "\n"}, sys.stdout)
 PY
 RC=$(vcurl -X PUT "$VADDR/v1/sys/policies/acl/user-deploy" --data-binary @/tmp/uvj-pol.json -o /tmp/uvj-pol.err -w '%{http_code}')
 [ "$RC" = 204 ] || [ "$RC" = 200 ] || fail "policy user-deploy KO (HTTP $RC): $(cat /tmp/uvj-pol.err)"
-say "policy user-deploy templatée (READ deploy/<tenant>/*, WRITE deploy/<tenant>/apps/* uniquement)"
+say "policy user-deploy templatée (READ deploy/<tenant>/*, WRITE deploy/<tenant>/apps/+/<palier>/* pour : $UVJ_WRITE_ENVS)"
 
 # ═══ 5. rôle jwt user-deploy ═════════════════════════════════════════════════
 RC=$(vcurl -X POST "$VADDR/v1/auth/jwt/role/user-deploy" -d '{

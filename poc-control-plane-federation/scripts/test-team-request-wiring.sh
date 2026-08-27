@@ -46,7 +46,7 @@ ko(){ FAIL=$((FAIL+1)); printf '  ❌ %s\n' "$*"; }
 # total affiché SANS jamais faire échouer ce script). Toute section
 # ajoutée/retirée DOIT mettre à jour ce nombre à la main — un oubli fait virer
 # le §13 au rouge, ce qui EST le comportement voulu (un rappel, pas un bug).
-EXPECTED_CHECKS=63
+EXPECTED_CHECKS=65
 
 [ -f "$JOB" ] || { echo "job introuvable : $JOB"; exit 2; }
 [ -f "$JF" ]  || { echo "Jenkinsfile introuvable : $JF"; exit 2; }
@@ -60,9 +60,19 @@ jf(){ printf '%s\n' "$JF_N" | grep -qF "$1"; }
 # contrôles qui doivent porter sur le shell RÉELLEMENT exécuté, pas sur le
 # Groovy qui l'entoure ni sur les commentaires du fichier.
 SH_BODY="$(awk "/sh '''/{f=1;next} f&&/'''/{exit} f" "$JF")"
+# Le même corps SANS ses commentaires shell : une ceinture doit être EXÉCUTÉE,
+# pas citée (même règle que JF_CODE pour le Groovy, juste en dessous).
+SH_CODE="$(printf '%s\n' "$SH_BODY" | grep -vE '^[[:space:]]*#')"
 # Lignes de CODE du Jenkinsfile (commentaires Groovy retirés) : un motif cité
 # dans un commentaire ne doit jamais suffire à un vert.
 JF_CODE="$(grep -vE '^[[:space:]]*//' "$JF")"
+# Lignes de CODE de team-request.sh (commentaires pleine ligne retirés) : depuis
+# G4, ce fichier PARLE d'ENV_NOT_OPEN dans un commentaire — pour dire que le
+# refus a disparu avec l'axe env. Un grep sur le fichier brut prendrait cette
+# prose pour la garde elle-même : c'est exactement le vert vacant que ce dépôt a
+# mesuré trois fois sur ce jalon. Vérifié : aucun commentaire de FIN DE LIGNE de
+# ce fichier ne cite REQ_ENV ni ENV_NOT_OPEN.
+SCRIPT_CODE="$(grep -vE '^[[:space:]]*#' "$SCRIPT")"
 
 echo "== 1. le XML reste bien formé, et le Jenkinsfile est bien un pipeline DÉCLARATIF =="
 python3 -c "import xml.etree.ElementTree as T; T.parse('$JOB')" 2>/dev/null \
@@ -92,12 +102,12 @@ grep -qE '^  parameters \{' "$JF" \
   && ok "bloc \`parameters\` de niveau pipeline présent (le formulaire survit à une pose sans XML)" \
   || ko "aucun bloc \`parameters\` — un job créé depuis le seul dépôt n'aurait aucun champ"
 MIRROR_KO=""
-for P in TEAM DESCRIPTION APPROVERS REPO REQ_ENV; do
+for P in TEAM DESCRIPTION APPROVERS REPO; do
   grep -q "<name>${P}</name>" "$JOB" || MIRROR_KO="${MIRROR_KO} XML:${P}"
   jf "(name: '${P}'" || MIRROR_KO="${MIRROR_KO} JF:${P}"
 done
 [ -z "$MIRROR_KO" ] \
-  && ok "les 5 champs (TEAM, DESCRIPTION, APPROVERS, REPO, REQ_ENV) sont présents dans le XML ET dans le Jenkinsfile" \
+  && ok "les 4 champs (TEAM, DESCRIPTION, APPROVERS, REPO) sont présents dans le XML ET dans le Jenkinsfile" \
   || ko "champ(s) manquant(s) :${MIRROR_KO} — divergence SILENCIEUSE entre le formulaire posé et le formulaire versionné"
 # ANTI-ÉLARGISSEMENT : pas UN champ de plus d'un côté que de l'autre. Un champ
 # surnuméraire dans le Jenkinsfile serait ajouté au formulaire réel (il n'entre
@@ -107,15 +117,21 @@ N_XML_STR=$(grep -c '<hudson.model.StringParameterDefinition>' "$JOB")
 N_XML_CHO=$(grep -c '<hudson.model.ChoiceParameterDefinition>' "$JOB")
 N_XML=$((N_XML_STR + N_XML_CHO))
 N_JF=$(printf '%s\n' "$JF_N" | grep -cE "^ *(string|choice)\(name: '")
-[ "$N_XML" -eq 5 ] && ok "le XML déclare exactement 5 paramètres (4 string + 1 choice)" \
-  || ko "le XML déclare ${N_XML} paramètres, attendu 5"
-[ "$N_JF" -eq 5 ] && ok "le Jenkinsfile déclare exactement 5 paramètres" \
-  || ko "le Jenkinsfile déclare ${N_JF} paramètres, attendu 5"
+[ "$N_XML" -eq 4 ] && ok "le XML déclare exactement 4 paramètres (4 string, 0 choice — l'axe env est parti, G4/ADR-082 D5)" \
+  || ko "le XML déclare ${N_XML} paramètres, attendu 4"
+[ "$N_JF" -eq 4 ] && ok "le Jenkinsfile déclare exactement 4 paramètres" \
+  || ko "le Jenkinsfile déclare ${N_JF} paramètres, attendu 4"
+# ANTI-RETOUR DE L'AXE : le seul `choice` qu'ait jamais porté ce formulaire était
+# l'environnement. Zéro liste fermée est donc la forme la plus tenace de
+# l'assertion — elle rougit même si l'axe revient sous un AUTRE nom.
+[ "$N_XML_CHO" -eq 0 ] \
+  && ok "aucune ChoiceParameterDefinition dans le XML : plus une seule liste fermée à ce formulaire" \
+  || ko "${N_XML_CHO} liste(s) fermée(s) dans le XML — la seule qu'il ait eue était l'axe env (et le XML GAGNE)"
 [ "$N_XML" -eq "$N_JF" ] && ok "même NOMBRE de paramètres des deux côtés (aucun champ surnuméraire d'un seul côté)" \
   || ko "XML=${N_XML} paramètres, Jenkinsfile=${N_JF} — l'un des deux formulaires est plus large que l'autre"
 
 echo
-echo "== 3. les TYPES et la liste de choix concordent, champ par champ =="
+echo "== 3. les TYPES concordent, et l'axe env a disparu des deux côtés =="
 # Un `string` là où le XML met un `choice` (ou l'inverse) passerait le §2 : le
 # nom serait bien des deux côtés, mais le formulaire posé sans XML offrirait une
 # saisie libre là où le XML impose une liste fermée.
@@ -128,36 +144,51 @@ done
 [ -z "$TYPE_KO" ] \
   && ok "TEAM/DESCRIPTION/APPROVERS/REPO sont des champs texte des DEUX côtés" \
   || ko "type(s) divergent(s) :${TYPE_KO}"
-grep -A1 '<hudson.model.ChoiceParameterDefinition>' "$JOB" | grep -q '<name>REQ_ENV</name>' \
-  && ok "REQ_ENV est une liste fermée dans le XML" || ko "REQ_ENV n'est pas une ChoiceParameterDefinition dans le XML"
-jf "choice(name: 'REQ_ENV'" \
-  && ok "REQ_ENV est une liste fermée dans le Jenkinsfile" || ko "REQ_ENV n'est pas un \`choice\` dans le Jenkinsfile"
-# Comparaison LITTÉRALE des valeurs, dans l'ORDRE (le premier choix est la
-# valeur par défaut du formulaire : un ordre inversé ferait de `rec` — refusé
-# par ENV_NOT_OPEN — le défaut proposé à l'utilisateur).
-XML_CHOICES=$(python3 - "$JOB" <<'PY'
+# L'AXE ENV A QUITTÉ LE FORMULAIRE (G4, ADR-082, D5). Absence lue par
+# ElementTree et non par grep : la LISTE ORDONNÉE des noms prouve que le parse a
+# bien eu lieu — un fichier renommé ou un XML vidé rendrait une liste vide, qui
+# ne ressemble à rien d'attendu. Une assertion d'absence seule (« REQ_ENV n'y est
+# pas ») serait vraie de n'importe quel fichier, y compris inexistant.
+XML_PARAMS=$(python3 - "$JOB" <<'PY'
 import sys, xml.etree.ElementTree as T
 root = T.parse(sys.argv[1]).getroot()
-for p in root.iter('hudson.model.ChoiceParameterDefinition'):
-    if p.findtext('name') == 'REQ_ENV':
-        print(','.join(s.text or '' for s in p.iter('string')))
-        break
+names = [p.findtext('name') or ''
+         for p in root.iter()
+         if p.tag.startswith('hudson.model.') and p.tag.endswith('ParameterDefinition')]
+print(','.join(names))
 PY
 )
-JF_CHOICES=$(printf '%s\n' "$JF_N" | sed -n "s/.*choice(name: 'REQ_ENV', choices: \[\(.*\)\],.*/\1/p" \
-  | tr -d " '" )
-[ "$XML_CHOICES" = "dev,rec,int,prod" ] \
-  && ok "choix REQ_ENV du XML = dev,rec,int,prod (dev en tête = défaut du formulaire)" \
-  || ko "choix REQ_ENV du XML inattendus : '${XML_CHOICES}'"
-[ "$JF_CHOICES" = "$XML_CHOICES" ] \
-  && ok "choix REQ_ENV identiques dans le Jenkinsfile ('${JF_CHOICES}')" \
-  || ko "choix REQ_ENV divergents : XML='${XML_CHOICES}' Jenkinsfile='${JF_CHOICES}'"
-# Les 4 envs restent LISTÉS alors qu'un seul est ouvert : le refus doit venir du
-# script, avec sa raison, jamais d'un choix amputé qui laisserait croire que
-# rec/int/prod n'existent pas.
-grep -qF 'ENV_NOT_OPEN' "$SCRIPT" \
-  && ok "le refus des envs non ouverts est prononcé par team-request.sh (ENV_NOT_OPEN), pas par une liste amputée" \
-  || ko "ENV_NOT_OPEN absent de team-request.sh — la liste à 4 choix n'aurait plus de garde derrière elle"
+[ "$XML_PARAMS" = "TEAM,DESCRIPTION,APPROVERS,REPO" ] \
+  && ok "le formulaire XML est exactement TEAM,DESCRIPTION,APPROVERS,REPO — aucun axe env (et c'est le XML qui GAGNE)" \
+  || ko "formulaire XML inattendu : '${XML_PARAMS}' (attendu TEAM,DESCRIPTION,APPROVERS,REPO)"
+if printf '%s\n' "$JF_CODE" | grep -q 'choice(name:'; then
+  ko "un \`choice(name: …)\` subsiste dans le CODE du Jenkinsfile — le seul qu'ait eu ce formulaire était l'axe env"
+else
+  ok "aucun \`choice(name: …)\` dans le code du Jenkinsfile : le formulaire versionné a perdu le même champ que le XML"
+fi
+# Le champ n'est pas seulement retiré : sa valeur est SCELLÉE côté script, sur la
+# constante d'authoring — sans quoi le retrait ne ferait que déplacer la décision
+# vers une variable d'environnement du nœud (les paramètres d'un build Jenkins
+# atterrissent dans l'environnement du process : fait mesuré, 2026-08-06).
+printf '%s\n' "$SCRIPT_CODE" | grep -q 'REQ_ENV="\$DEPLOY_PIN_AUTHORING_ENV"' \
+  && ok "team-request.sh scelle REQ_ENV sur la constante d'authoring (affectation sèche, pas un défaut)" \
+  || ko "team-request.sh ne scelle pas REQ_ENV sur DEPLOY_PIN_AUTHORING_ENV — le retrait du champ ne garantirait rien"
+if printf '%s\n' "$SCRIPT_CODE" | grep -q 'REQ_ENV="\${REQ_ENV:-'; then
+  ko "team-request.sh garde un défaut surchargeable \`REQ_ENV:-\` — une variable de nœud rouvrirait l'axe que le formulaire vient de perdre"
+else
+  ok "aucun défaut surchargeable \`REQ_ENV:-\` : l'axe ne peut pas rentrer par l'environnement"
+fi
+# ENV_NOT_OPEN a disparu AVEC l'axe : ce refus gardait un CHOIX du formulaire, et
+# il n'y a plus de choix à refuser (REQ_ENV ne peut plus valoir que la
+# constante). Le garder aurait été une garde structurellement invérifiable —
+# aucune saisie ne pouvant plus la déclencher. L'équivalent côté APPLY, lui,
+# reste nécessaire et s'appelle désormais ENV_MISMATCH : la branche
+# onboard/<team>-<env> traverse Git, où un suffixe peut être FORGÉ.
+if printf '%s\n' "$SCRIPT_CODE" | grep -q 'ENV_NOT_OPEN'; then
+  ko "ENV_NOT_OPEN subsiste dans le CODE de team-request.sh — un refus sans objet depuis que l'axe est scellé (G4 D5)"
+else
+  ok "ENV_NOT_OPEN a disparu du code de team-request.sh : plus de choix d'env, donc plus de choix à refuser"
+fi
 
 echo
 echo "== 4. aucun déclencheur, des deux côtés : ce job est un FORMULAIRE, pas un webhook =="
@@ -254,11 +285,11 @@ else
   ko "le withEnv([...params...]) de ré-injection a disparu — Jenkins résoudrait les \${…} de DESCRIPTION/APPROVERS avant le script (corruption silencieuse + lecture de l'env du contrôleur)"
 fi
 MISSING_RAW=""
-for P in TEAM DESCRIPTION APPROVERS REPO REQ_ENV; do
+for P in TEAM DESCRIPTION APPROVERS REPO; do
   printf '%s\n' "$JF_CODE" | grep -q "${P}=\${params\.${P}" || MISSING_RAW="${MISSING_RAW} ${P}"
 done
 [ -z "$MISSING_RAW" ] \
-  && ok "les 5 champs du formulaire sont ré-injectés en valeur brute" \
+  && ok "les 4 champs du formulaire sont ré-injectés en valeur brute" \
   || ko "champs NON ré-injectés en brut :${MISSING_RAW} — ceux-là subiraient EnvVars.resolve()"
 if [ -n "$SH_BODY" ] && printf '%s\n' "$SH_BODY" | grep -q 'params\.'; then
   ko "un \`params.\` apparaît DANS la chaîne sh — la saisie traverserait une interpolation Groovy"
@@ -270,7 +301,7 @@ fi
   || ko "corps du bloc \`sh\` introuvable — les contrôles de shell ci-dessous seraient vides (vert vacant)"
 
 echo
-echo "== 8. la garde « REPO vide » survit, et AVANT l'appel au script =="
+echo "== 8. les ceintures du shell survivent (REPO vide, dry-run désarmé), et AVANT l'appel au script =="
 # `if [ -z \"\$REPO\" ]; then unset REPO; fi` : reprise TELLE QUELLE du job
 # d'origine. Le `\${REPO:-<team>/apis}` du script couvre déjà la chaîne vide,
 # mais l'unset rend l'intention explicite et resterait correct même si le script
@@ -288,6 +319,21 @@ if [ -n "$L_UNSET" ] && [ -n "$L_RUN" ] && [ "$L_UNSET" -lt "$L_RUN" ]; then
   ok "unset ligne $L_UNSET, appel ligne $L_RUN (la garde précède l'appel)"
 else
   ko "garde APRÈS l'appel (ou introuvable) : unset=$L_UNSET appel=$L_RUN"
+fi
+# LE DRY-RUN EST UN CONTRAT D'ÉPREUVE, PAS UN MODE DU JOB. team-request.sh sort 0
+# sur `DRY_RUN=1` après ses gardes et AVANT le clone — c'est la surface
+# qu'éprouve test-palier-retention.sh ⑱. Mais les variables d'un nœud Jenkins
+# atterrissent dans l'environnement du step `sh` : sans ce désarmement, poser
+# DRY_RUN=1 sur le nœud rendrait le formulaire MUET — build VERT, `GARDES_OK`
+# dans le log, aucune PR ouverte. C'est la classe de contournement que le
+# scellement de l'axe env ferme par ailleurs. Présence ET position : un `unset`
+# placé après l'appel ne désarmerait plus rien.
+L_DRY=$(grep -n 'unset DRY_RUN' "$JF" | head -1 | cut -d: -f1)
+if printf '%s\n' "$SH_CODE" | grep -qF 'unset DRY_RUN' \
+   && [ -n "$L_DRY" ] && [ -n "$L_RUN" ] && [ "$L_DRY" -lt "$L_RUN" ]; then
+  ok "\`unset DRY_RUN\` dans le code du shell (ligne $L_DRY), avant l'appel (ligne $L_RUN) : une variable de nœud ne peut pas rendre le formulaire muet"
+else
+  ko "\`unset DRY_RUN\` absent du code du \`sh\` (ou placé après l'appel : dry=$L_DRY appel=$L_RUN) — DRY_RUN=1 sur le nœud donnerait un build VERT sans aucune PR"
 fi
 printf '%s\n' "$SH_BODY" | grep -qE '^ *set \+x' \
   && ok "\`set +x\` en tête du bloc shell : aucune trace d'exécution (le token du credential ne doit jamais être tracé)" \

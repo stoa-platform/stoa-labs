@@ -55,7 +55,9 @@
 #     ./scripts/setup-team-onboard-jobs.sh
 #
 #   DRY_RUN=true / ALLOW_RECREATE=true : transmis tels quels au délégué.
-#   ENVN=dev              env dont les listes sont dérivées (providers.<env>.yml).
+#   (ENVN n'est PLUS une entrée : G4/ADR-082 le SCELLE sur l'env d'authoring,
+#    voir plus bas. Il ne désigne que l'env dont les listes sont dérivées,
+#    providers.<env>.yml.)
 #   GITEA_TOKEN / GIT_HOST / GIT_REPO : requis SEULEMENT si un job posé ce run
 #     porte un placeholder (cf. scripts/lib/generate-choices.sh).
 set -uo pipefail
@@ -63,9 +65,26 @@ set +x
 cd "$(dirname "$0")/.."
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# Auto-localisation par BASH_SOURCE quand le fichier vit dans son arbre ; repli
+# sur le cwd (fixé par le `cd` ci-dessus) pour les invocations où le dirname ne
+# contient pas lib/ — même motif que setup-vault-paliers.sh:26-38.
+_STO_LIB="$(dirname "${BASH_SOURCE[0]}")/lib/deploy-pin.sh"
+[ -f "$_STO_LIB" ] || _STO_LIB="scripts/lib/deploy-pin.sh"
+# `set -e` n'est pas actif ici : sans garde explicite, un fichier manquant
+# laisserait bash continuer jusqu'à un « unbound variable » sur la constante.
+# shellcheck source=scripts/lib/deploy-pin.sh
+. "$_STO_LIB" || { echo "ERREUR: $_STO_LIB introuvable ou illisible" >&2; exit 1; }
+
 JENKINS_UI="${JENKINS_UI:-http://localhost:18080}"
 JOBS="${JOBS:-team-request app-request team-apply api-request team-publish}"
-ENVN="${ENVN:-dev}"
+# G4 (ADR-082) : ENVN est SCELLÉ sur l'env d'authoring — affectation sèche
+# depuis la constante de lib, jamais "${ENVN:-dev}" : les variables d'un job
+# Jenkins atterrissent dans l'environnement du process (fait mesuré, même
+# raison que deploy-pin.sh:29-37). Les listes que ce poseur dérive sont celles
+# du palier d'AUTHORING (ADR-079) ; au-delà, c'est la promotion (marqueurs G3,
+# verbe archive G5) — et son autorité est la rétention de credential, pas une
+# variable.
+ENVN="$DEPLOY_PIN_AUTHORING_ENV"
 
 ok(){   printf '  \033[32m✅\033[0m %s\n' "$*"; }
 warn(){ printf '  \033[33m⚠️\033[0m  %s\n' "$*"; }
