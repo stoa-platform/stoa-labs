@@ -22,7 +22,9 @@
 #     6bis. LA GARDE D'IDENTITÉ : qui a mergé (Gitea, §2) == qui répond à la
 #        pause, et les quatre yeux contre le DEMANDEUR (`promoted_by` du
 #        marqueur mergé) si la porte les exige.
-#     7. LE PALIER EST-IL OUVERT ? — la lecture du secret d'admin du palier EST
+#     7a. LA DÉCLARATION : si la porte nomme un groupe déployeur, le token
+#        Vault du porteur doit projeter la policy correspondante (G2, ADR-084).
+#     7b. LE PALIER EST-IL OUVERT ? — la lecture du secret d'admin du palier EST
 #        le ticket d'entrée (rétention G4, ADR-082).
 #     8. LE MOTEUR — un SEUL site d'appel, après TOUT le reste.
 #     9. le statut RÉEL sur la PR du dépôt d'équipe — succès comme échec.
@@ -464,7 +466,47 @@ sh scripts/lib/assert-merge-identity.sh --merged-by "$GITEA_MERGED_BY" \
   --requester "$MK_PROMOTED_BY" --vault-user "$VAULT_IDENTITY_USER" $AMI_ARGS \
   || fail "IDENTITE_REFUSEE : la garde d'identité a refusé (voir le log)"
 
-# ── 7. LE PALIER EST-IL OUVERT ? (rétention G4 — ADR-082) ───────────────────
+# ── 7. LA PORTE DU PALIER : DÉCLARATION (G2) PUIS RÉTENTION (G4) ────────────
+# Le token ne transite ni par argv ni par l'environnement : `printf` est un
+# BUILTIN et `tr` lit le fichier sur son stdin — la valeur ne touche jamais la
+# ligne de commande d'un process exécuté (motif header-file d'archive-store.sh,
+# durci d'un cran). `vcurl`/`$TMP/vhdr`, construits ici, servent aux deux
+# sous-portes qui suivent : 7.a (déclaration du déployeur) et 7.b (rétention
+# du palier).
+[ -s "$VAULT_TOKEN_FILE" ] || fail "VAULT_TOKEN_ILLISIBLE : ${VAULT_TOKEN_FILE} vide ou absent"
+{ printf 'X-Vault-Token: '; tr -d '\r\n' < "$VAULT_TOKEN_FILE"; printf '\n'; } > "$TMP/vhdr" \
+  || fail "VAULT_TOKEN_ILLISIBLE : ${VAULT_TOKEN_FILE}"
+vcurl(){ curl -sS -H @"$TMP/vhdr" "$@"; }
+
+# ── 7.a LA DÉCLARATION : QUI DÉPLOIE CE PALIER ? (G2 — ADR-084) ──────────────
+# La porte peut nommer un groupe déployeur (annuaire n°2, LDAP→policy Vault —
+# jamais la claim KC : ici, la seule identité vérifiée est le token Vault de la
+# pause, et V_USER == mergeur est déjà scellé par MERGER_MISMATCH en §6bis).
+# Le refus est DÉCLARATIF et NOMMÉ, et précède la rétention (§7.b) : d'abord
+# « la chaîne dit QUI », ensuite « ton ticket ouvre-t-il ». Pas de déclaration
+# ⇒ AUCUN lookup (rec : autonomie du demandeur, décision client n°1) — la
+# rétention §7.b reste inconditionnelle dans tous les cas.
+DEPLOYER_GROUP=$(env_chain_gate_deployer_group "$TO_ENV") || fail "PARSE_GATE : deployerGroup"
+if [ -n "$DEPLOYER_GROUP" ]; then
+  DEPLOYER_POLICY=$(deployer_group_policy "$DEPLOYER_GROUP") \
+    || fail "DEPLOYER_GROUP_UNSUPPORTED : '$DEPLOYER_GROUP' est hors des deux familles vérifiables (apim-apply-<x> | apim-operator-<x>) — déclaration invérifiable, refus fail-closed"
+  LOOKUP_CODE=$(vcurl -o "$TMP/lookup.json" -w '%{http_code}' --max-time 20 \
+    "${VAULT_ADDR}/v1/auth/token/lookup-self") || LOOKUP_CODE=000
+  [ "$LOOKUP_CODE" = 200 ] \
+    || fail "DEPLOYER_GROUP_UNVERIFIABLE : lookup-self HTTP ${LOOKUP_CODE} — l'identité du porteur est invérifiable, refus fail-closed"
+  DEPPOL_VERDICT=$(SRC="$TMP/lookup.json" POL="$DEPLOYER_POLICY" python3 - <<'PY'
+import json, os
+d = (json.load(open(os.environ["SRC"])) or {}).get("data") or {}
+pols = set((d.get("policies") or []) + (d.get("identity_policies") or []))
+print("OK" if os.environ["POL"] in pols else "KO")
+PY
+) || fail "DEPLOYER_GROUP_UNVERIFIABLE : lookup-self illisible"
+  [ "$DEPPOL_VERDICT" = OK ] \
+    || fail "DEPLOYER_GROUP_REQUIRED : la porte vers '$TO_ENV' déclare le groupe déployeur '$DEPLOYER_GROUP' (policy projetée '$DEPLOYER_POLICY') — le token de l'identité '$VAULT_IDENTITY_USER' ne la porte pas, refus"
+  echo "déclaration déployeur : '$VAULT_IDENTITY_USER' porte '$DEPLOYER_POLICY' (groupe '$DEPLOYER_GROUP')"
+fi
+
+# ── 7.b LE PALIER EST-IL OUVERT ? (rétention G4 — ADR-082) ──────────────────
 # La lecture du secret d'admin du palier EST le ticket d'entrée : palier jamais
 # ouvert (policy apply-<env> non accordée / AppRole non minté) => 403 Vault =>
 # refus nommé, gateway JAMAIS touchée. C'est le seul contrôle qu'un pipeline
@@ -478,16 +520,6 @@ sh scripts/lib/assert-merge-identity.sh --merged-by "$GITEA_MERGED_BY" \
 # converti en porte — exactement le modèle des « environment secrets » GitHub :
 # le palier est ouvert parce que l'identité peut lire son secret, pas parce
 # qu'un booléen quelque part le dit.
-#
-# Le token ne transite ni par argv ni par l'environnement : `printf` est un
-# BUILTIN et `tr` lit le fichier sur son stdin — la valeur ne touche jamais la
-# ligne de commande d'un process exécuté (motif header-file d'archive-store.sh,
-# durci d'un cran).
-[ -s "$VAULT_TOKEN_FILE" ] || fail "VAULT_TOKEN_ILLISIBLE : ${VAULT_TOKEN_FILE} vide ou absent"
-{ printf 'X-Vault-Token: '; tr -d '\r\n' < "$VAULT_TOKEN_FILE"; printf '\n'; } > "$TMP/vhdr" \
-  || fail "VAULT_TOKEN_ILLISIBLE : ${VAULT_TOKEN_FILE}"
-vcurl(){ curl -sS -H @"$TMP/vhdr" "$@"; }
-
 WM_ADMIN_CODE=$(vcurl -o "$TMP/wmadmin.json" -w '%{http_code}' --max-time 20 \
   "${VAULT_ADDR}/v1/secret/data/stoa/envs/${TO_ENV}/wm-admin") || WM_ADMIN_CODE=000
 [ "$WM_ADMIN_CODE" = 200 ] \

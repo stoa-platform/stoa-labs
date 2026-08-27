@@ -108,6 +108,34 @@ print("FOUREYES=%s" % ("1" if g.get("fourEyes") else "0"))
 PY
 }
 
+# env_chain_gate_deployer_group <env> — le groupe déployeur de la porte, chaîne
+# vide si non déclaré. FONCTION SŒUR, comme fourEyes : JAMAIS un 4e champ de
+# env_chain_gate — les appelants lisent GATE=| positionnellement, un champ
+# inséré ferait lire deployerGroup là où ils lisent approverGroup, porte
+# relâchée EN SILENCE (le motif est documenté sur env_chain_gate_four_eyes).
+env_chain_gate_deployer_group() {
+  local f; f="$(_env_chain_file)"
+  [ -r "$f" ] || { echo "env-chain: source illisible : $f" >&2; return 1; }
+  python3 - "$f" "$1" <<'PY'
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1])) or {}
+print(next((g.get("deployerGroup", "") or "" for g in (d.get("gates") or [])
+            if g.get("to") == sys.argv[2]), ""))
+PY
+}
+
+# deployer_group_policy <groupe> — la policy Vault projetée. MIROIR EXACT de
+# Gate.DeployerPolicy() (labctl/internal/governance/envchain.go) : deux
+# familles vérifiables, rc=1 au-delà (fail-closed BRUYANT). Toute divergence
+# Go/shell est un bug — régime deux moteurs, ADR-083/ADR-084.
+deployer_group_policy() {
+  case "${1:-}" in
+    apim-apply-?*)    printf 'apply-%s' "${1#apim-apply-}" ;;
+    apim-operator-?*) printf 'operator-deploy' ;;
+    *) return 1 ;;
+  esac
+}
+
 env_chain_gate() {
   local f; f="$(_env_chain_file)"
   [ -r "$f" ] || { echo "env-chain: source illisible : $f" >&2; return 1; }
