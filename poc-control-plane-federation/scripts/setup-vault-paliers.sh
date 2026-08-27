@@ -22,6 +22,7 @@
 #   bash scripts/setup-vault-paliers.sh            # pose (exige VAULT_TOKEN)
 #   bash scripts/setup-vault-paliers.sh --print    # émet SANS réseau (preuve)
 #   bash scripts/setup-vault-paliers.sh --mint apply-rec   # geste d'OUVERTURE
+#   bash scripts/setup-vault-paliers.sh --grant-ci # DÉCLARE la machine du CI
 set -euo pipefail
 # Auto-localisation par BASH_SOURCE quand le fichier vit dans son arbre ;
 # repli sur le cwd pour la copie mutée en $TMP (la porte exécute des copies
@@ -37,6 +38,10 @@ VAULT_ADDR="${VAULT_ADDR:-http://localhost:8200}"
 TOKEN_TTL="${TOKEN_TTL:-3m}"
 SECRET_ID_TTL="${SECRET_ID_TTL:-10m}"
 SECRET_ID_USES="${SECRET_ID_USES:-0}"
+# L'identité MACHINE du CI de gouvernance hors-prod (ADR-074,
+# setup-vault-approle.sh:86 — policies stoa-ci + stoa-labctl). C'est ELLE que
+# --grant-ci déclare déployeuse, jamais un rôle inventé ici.
+CI_ROLE="${CI_ROLE:-ci-pipeline}"
 
 ENVS_NONPROD="$(env_chain_nonprod)" || { echo "CHAINE_ILLISIBLE : env_chain_nonprod a échoué" >&2; exit 1; }
 [ -n "$ENVS_NONPROD" ] || { echo "CHAINE_VIDE : aucun palier non terminal" >&2; exit 1; }
@@ -69,6 +74,8 @@ case "$MODE" in
     for e in $ENVS_NONPROD; do
       printf '#   %s --mint apply-%s\n' "$0" "$e"
     done
+    echo "# Geste de DÉCLARATION de la MACHINE (G2/ADR-084, exploitant lui aussi) :"
+    printf '#   %s --grant-ci   # policies apply-<palier> hors-prod sur le rôle %s\n' "$0" "$CI_ROLE"
     exit 0 ;;
   --mint)
     ROLE="${2:?usage: --mint apply-<env>}"
@@ -85,8 +92,91 @@ case "$MODE" in
     SID="$("${CURL[@]}" -X POST "$VAULT_ADDR/v1/auth/approle/role/$ROLE/secret-id" | python3 -c 'import sys,json;print(json.load(sys.stdin)["data"]["secret_id"])')"
     printf '%s\t%s\n' "$RID" "$SID"
     exit 0 ;;
+  # ── DÉCLARATION DE LA MACHINE (G2 / ADR-084, D6) ───────────────────────────
+  # C'est la DÉCLARATION EXPLICITE que la machine du CI gouvernance est le
+  # déployeur hors-prod. Sans ce geste, le pipeline hors-prod refuse
+  # DEPLOYER_GROUP_REQUIRED sur les paliers déclarés — comportement VOULU d'une
+  # déclaration qui vient d'apparaître : une porte neuve ferme d'abord, on
+  # l'ouvre ensuite, à la main, et l'ouverture se voit.
+  #
+  # Le terminus est exclu par STRUCTURE (env_chain_nonprod), comme partout dans
+  # ce fichier : la machine ne peut pas se voir accorder le palier de prod par
+  # ce chemin, quel que soit le nom que le client donne à son dernier palier.
+  #
+  # ⚠ ÉCRITURE CHIRURGICALE, ET C'EST DÉLIBÉRÉ. Le read-modify-write vise le
+  # sous-chemin `/token-policies`, PAS la racine du rôle : un POST sur la racine
+  # est un create-or-replace COMPLET, et tout champ non fourni y reprend sa
+  # valeur par DÉFAUT — token_ttl et secret_id_ttl compris. Accorder une policy
+  # aurait alors rendu ÉTERNEL le token que tout ADR-074 existe pour garder
+  # éphémère, sans qu'aucun message ne le dise. Le read-back ci-dessous ne se
+  # contente pas de le croire : il RELIT les deux TTL et refuse s'ils ont bougé.
+  --grant-ci)
+    VAULT_TOKEN="${VAULT_TOKEN:?VAULT_TOKEN requis pour --grant-ci}"
+    # Le token part dans un header-FILE, jamais en argv (ps/cmdline) — standard
+    # du repo depuis ADR-074 (« jamais en argv »).
+    HDR="$(mktemp)"; ROLE_JSON="$(mktemp)"; BODY="$(mktemp)"; AFTER_JSON="$(mktemp)"
+    trap 'rm -f "$HDR" "$ROLE_JSON" "$BODY" "$AFTER_JSON"' EXIT
+    printf 'X-Vault-Token: %s\n' "$VAULT_TOKEN" > "$HDR"
+    CURL=(/usr/bin/curl -s -H @"$HDR")
+
+    GRC="$("${CURL[@]}" "$VAULT_ADDR/v1/auth/approle/role/$CI_ROLE" -o "$ROLE_JSON" -w '%{http_code}')"
+    [ "$GRC" = 200 ] \
+      || { echo "ROLE_ABSENT : GET auth/approle/role/$CI_ROLE -> HTTP $GRC (jouer scripts/setup-vault-approle.sh d'abord)" >&2; exit 1; }
+
+    echo "AppRole $CI_ROLE — déclaration déployeur hors-prod ($ENVS_NONPROD)"
+    # Le JSON n'est JAMAIS du formatage de chaîne : union dédoublonnée, ORDRE
+    # STABLE (les policies existantes d'abord, les nôtres ensuite), et le corps
+    # écrit par json.dump. Aucune valeur imprimée ici n'est un secret : un nom
+    # de policy n'en est pas un, et ni role_id ni le moindre identifiant de
+    # secret ne sortent de cet appel.
+    # shellcheck disable=SC2086  # $ENVS_NONPROD : le découpage par mots est voulu (un argv par palier)
+    python3 - "$ROLE_JSON" "$BODY" $ENVS_NONPROD <<'PY' || { echo "PARSE_ROLE : réponse Vault illisible" >&2; exit 1; }
+import json, sys
+d = json.load(open(sys.argv[1])).get("data") or {}
+cur = list(d.get("token_policies") or [])
+out = list(cur)
+for e in sys.argv[3:]:
+    p = "apply-" + e
+    if p not in out:
+        out.append(p)
+json.dump({"token_policies": out}, open(sys.argv[2], "w"))
+print("  AVANT : " + (",".join(cur) or "<aucune>"))
+print("  APRÈS : " + (",".join(out) or "<aucune>"))
+print("  AJOUTÉES : %d" % (len(out) - len(cur)))
+print("  TTL avant : token_ttl=%s secret_id_ttl=%s" % (d.get("token_ttl"), d.get("secret_id_ttl")))
+PY
+
+    PRC="$("${CURL[@]}" -X POST "$VAULT_ADDR/v1/auth/approle/role/$CI_ROLE/token-policies" \
+      -H 'Content-Type: application/json' --data-binary @"$BODY" -o /dev/null -w '%{http_code}')"
+    case "$PRC" in 2*) echo "  write token-policies -> HTTP $PRC" ;;
+      *) echo "GRANT_REFUSE : POST auth/approle/role/$CI_ROLE/token-policies -> HTTP $PRC" >&2; exit 1 ;; esac
+
+    # READ-BACK fail-closed : on ne croit pas le code de retour, on relit le
+    # rôle. Deux propriétés, pas une — les policies SONT là, et les TTL n'ont
+    # PAS bougé (cf. l'avertissement « écriture chirurgicale » ci-dessus).
+    ARC="$("${CURL[@]}" "$VAULT_ADDR/v1/auth/approle/role/$CI_ROLE" -o "$AFTER_JSON" -w '%{http_code}')"
+    [ "$ARC" = 200 ] || { echo "READBACK_KO : GET auth/approle/role/$CI_ROLE -> HTTP $ARC" >&2; exit 1; }
+    # shellcheck disable=SC2086  # idem : un argv par palier
+    python3 - "$ROLE_JSON" "$AFTER_JSON" $ENVS_NONPROD <<'PY' || exit 1
+import json, sys
+before = json.load(open(sys.argv[1])).get("data") or {}
+after = json.load(open(sys.argv[2])).get("data") or {}
+got = list(after.get("token_policies") or [])
+print("  RELU  : " + (",".join(got) or "<aucune>"))
+missing = [("apply-" + e) for e in sys.argv[3:] if ("apply-" + e) not in got]
+if missing:
+    sys.exit("GRANT_NON_RELU : %s absentes du rôle après écriture" % ",".join(missing))
+for k in ("token_ttl", "secret_id_ttl", "token_max_ttl"):
+    if before.get(k) != after.get(k):
+        sys.exit("TTL_CLOBBER : %s est passé de %r à %r — l'écriture a débordé "
+                 "sur les champs d'éphémérité du rôle" % (k, before.get(k), after.get(k)))
+print("  TTL après : inchangés (token_ttl=%s secret_id_ttl=%s)"
+      % (after.get("token_ttl"), after.get("secret_id_ttl")))
+PY
+    echo "done. La machine $CI_ROLE est DÉCLARÉE déployeuse hors-prod. Le terminus, lui, reste hors de portée de ce geste."
+    exit 0 ;;
   pose) : ;;
-  *) echo "usage: $0 [--print | --mint apply-<env>]" >&2; exit 2 ;;
+  *) echo "usage: $0 [--print | --mint apply-<env> | --grant-ci]" >&2; exit 2 ;;
 esac
 
 VAULT_TOKEN="${VAULT_TOKEN:?VAULT_TOKEN requis pour poser (voir .env.example)}"
@@ -123,3 +213,5 @@ done
 echo "done. RIEN n'est accordé : l'état sorti de ce script est « tout fermé »."
 echo "Ouvrir un palier = "
 for e in $ENVS_NONPROD; do echo "    $0 --mint apply-$e"; done
+echo "Déclarer la MACHINE du CI déployeuse hors-prod (G2/ADR-084) ="
+echo "    $0 --grant-ci"

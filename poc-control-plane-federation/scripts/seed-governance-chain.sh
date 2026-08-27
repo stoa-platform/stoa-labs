@@ -106,5 +106,26 @@ print(next((g.get('approverGroup','') for g in (d.get('gates') or []) if g.get('
   [ -n "$G" ] && ok "porte $E : approverGroup=$G" || bad "porte $E : approverGroup ABSENT sur main"
 done
 
+# L'AUTRE axe de la porte (G2/ADR-084) : `deployerGroup` dit QUI PORTE l'apply,
+# et il se lit dans l'ANNUAIRE LDAP → policy Vault, jamais dans la claim
+# Keycloak de `approverGroup`. Il se relit ici pour exactement la même raison
+# que l'approbateur : une chaîne au bon nombre de paliers dont l'axe déployeur
+# serait tombé passerait pour verte alors que plus personne n'est nommé pour
+# déployer — et le refus, lui, n'arriverait qu'au dispatch.
+#
+# ⚠ LES VALEURS ATTENDUES SONT ÉCRITES ICI, EN DUR, ET C'EST LE POINT. Les
+# comparer au gabarit local (comme la chaîne juste au-dessus) resterait VERT si
+# quelqu'un retirait `deployerGroup` du gabarit : c'est LUI qu'on pousse, les
+# deux côtés bougeraient ensemble. Une attente indépendante de la source est la
+# seule qui survive à une régression de la source.
+for PAIR in int:apim-apply-int homol:apim-apply-homol prod:apim-operator-prod; do
+  E="${PAIR%%:*}"; WANT_D="${PAIR#*:}"
+  D=$(printf '%s' "$RAW" | python3 -c "import sys,yaml
+d=yaml.safe_load(sys.stdin) or {}
+print(next((g.get('deployerGroup','') or '' for g in (d.get('gates') or []) if g.get('to')=='$E'), ''))" 2>/dev/null)
+  [ "$D" = "$WANT_D" ] && ok "porte $E : deployerGroup=$D" \
+                       || bad "porte $E : deployerGroup='${D:-<absent>}' sur main, attendu '$WANT_D'"
+done
+
 printf '\n%d PASS / %d FAIL\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

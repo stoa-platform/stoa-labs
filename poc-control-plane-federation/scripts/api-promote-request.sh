@@ -94,6 +94,17 @@ case "$GATE" in GATE=*) GATE="${GATE#GATE=}";; *) fail "PARSE_GATE : sortie inat
 NEED_CHANGE="${GATE%%|*}"; GATE="${GATE#*|}"
 NEED_PV="${GATE%%|*}"; APPROVER_GROUP="${GATE#*|}"
 
+# L'AXE DÉPLOYEUR (G2/ADR-084), lu par une FONCTION SŒUR — jamais comme un 4e
+# champ de `env_chain_gate`. Les trois champs ci-dessus sont POSITIONNELS et
+# redécoupés à la main : un champ inséré dans GATE ferait lire le déployeur là
+# où ce code lit l'approbateur, et la porte se relâcherait EN SILENCE (le motif
+# est documenté sur la lib elle-même).
+# `|| true` : une porte SANS `deployerGroup` est le cas normal (dev, rec) — le
+# champ est optionnel, son absence n'est pas une erreur de lecture. Et rien
+# n'est refusé ici sur cette base : contrairement aux références, cet axe-là
+# n'est pas une garde de la DEMANDE, il est vérifié à l'APPLY.
+DEPLOYER_GROUP=$(env_chain_gate_deployer_group "$TO_ENV" || true)
+
 [ "$NEED_CHANGE" = 0 ] || [ -n "$CHANGE_REF" ] \
   || fail "GATE_REFS_REQUIRED : la porte vers '$TO_ENV' exige une référence de changement (CHANGE_REF)"
 [ "$NEED_PV" = 0 ] || [ -n "$PV_REF" ] \
@@ -128,7 +139,7 @@ if [ "$TO_ENV" != "$AUTHORING_ENV" ]; then
     || fail "DIGEST_MALFORMED : sha256 attendu sur 64 caractères, reçu ${#ARCHIVE_SHA256}"
 fi
 
-echo "GARDES_OK : $FROM_ENV -> $TO_ENV, groupe d'approbation='${APPROVER_GROUP:-<aucun>}'"
+echo "GARDES_OK : $FROM_ENV -> $TO_ENV, groupe d'approbation='${APPROVER_GROUP:-<aucun>}', groupe déployeur='${DEPLOYER_GROUP:-<aucun>}'"
 [ "${DRY_RUN:-0}" = 1 ] && exit 0
 
 GITEA_TOKEN="${GITEA_TOKEN:?GITEA_TOKEN requis}"
@@ -273,11 +284,19 @@ git -C "$TMP/team" -c user.name=ci -c user.email=ci@stoa.lab \
   || fail "COMMIT_VIDE : le marqueur est déjà à cette valeur (rien à promouvoir)"
 git -C "$TMP/team" push -q origin "$BRANCH" || fail "PUSH_ECHEC : $BRANCH sur $REPO_FULL"
 
+# LES DEUX AXES, CÔTE À CÔTE DANS LA PR, PARCE QU'ILS N'ONT PAS LE MÊME STATUT :
+# l'approbateur est ATTENDU (personne ne le vérifie sur ce chemin), le déployeur
+# est VÉRIFIÉ (team-promote §7.a refuse DEPLOYER_GROUP_REQUIRED). Les écrire
+# dans la même page évite de laisser croire que l'un vaut l'autre.
+DEPLOYER_GROUP_LINE="Groupe déployeur DÉCLARÉ : \`${DEPLOYER_GROUP:-<aucun>}\` — VÉRIFIÉ à l'apply (team-promote §7.a, refus DEPLOYER_GROUP_REQUIRED ; G2/ADR-084). L'approbation, elle, reste le MERGE, protégé par la branche (ADR-081)."
+
 PR_URL=$(API="${GIT_HOST}/api/v1" R="$REPO_FULL" B="$BRANCH" \
   T="promote(${API_NAME}): ${FROM_ENV} → ${TO_ENV}" \
   BODY="Marqueur \`${MARKER}\` — pin \`${PIN}\`, sha256 \`${ARCHIVE_SHA256:-<authoring>}\`.
 
 La DÉCISION est le merge de cette PR (ADR-081). Groupe d'approbation ATTENDU : \`${APPROVER_GROUP:-<aucun>}\` — attendu, **pas vérifié** : rien sur ce chemin ne contrôle qui approuve (jalon G4).
+
+${DEPLOYER_GROUP_LINE}
 
 ⚠ **Ce merge n'applique rien aujourd'hui.** Le job post-merge du dépôt d'équipe ne publie que les branches \`api/*\` ; celle-ci est \`${BRANCH}\`, donc le build passera au vert sans rien déployer. Le marqueur est posé pour être consommé quand G4 (verrou dev-only) et G5 (verbe archive) auront ouvert le palier." \
   HDR="$TMP/ghdr" python3 - <<'PY'

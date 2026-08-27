@@ -96,7 +96,7 @@ lint-ci:
 	@shellcheck -x ci/lib/*.sh scripts/lib/deploy-pin.sh scripts/lib/env-chain.sh \
 	  scripts/lib/repo-protection.sh scripts/lib/archive-store.sh \
 	  scripts/lib/assert-merge-identity.sh \
-	  scripts/setup-repo-protections.sh \
+	  scripts/setup-repo-protections.sh scripts/setup-deployer-groups.sh \
 	  scripts/setup-vault-paliers.sh scripts/setup-user-vault-jwt.sh \
 	  scripts/api-promote-request.sh scripts/api-promote-export.sh \
 	  scripts/team-promote.sh && echo "  ✓ ci/lib + livrables shell G3/G4/G5 propres"
