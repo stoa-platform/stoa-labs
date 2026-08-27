@@ -68,6 +68,10 @@ TOKEN_TTL="${TOKEN_TTL:-600}"; TOKEN_MAX_TTL="${TOKEN_MAX_TTL:-900}"
 # Identités de démo — SOURCE UNIQUE partagée avec la preuve (aucune dérive possible).
 # shellcheck source=scripts/lib/lab-vault-users.sh
 . "$(dirname "$0")/lib/lab-vault-users.sh"
+# La chaîne d'environnements (G7) : la policy operator-deploy nomme le secret
+# d'admin du TERMINUS — dérivé d'environments.yaml, jamais un nom en dur.
+# shellcheck source=scripts/lib/env-chain.sh
+. "$(dirname "$0")/lib/env-chain.sh"
 
 say()  { printf '\033[1;36m[vault-userpass]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[vault-userpass]\033[0m %s\n' "$*"; }
@@ -139,8 +143,13 @@ done
 # l'AppRole (identité de machine, acte non imputable à un humain).
 # HCL généré en python (comme les policies de tenant) : le faire transiter par un
 # printf shell casserait ses guillemets à la première expansion.
-python3 - > "$TMP/pol.json" <<'POLICY'
-import json, sys
+# G7 : le TERMINUS de la chaîne (dérivé, fail bruyant si la source est cassée) —
+# son secret d'admin est le ticket d'entrée du palier (ADR-082), lu par
+# team-promote.sh §7.b et consommé par le rôle Ansible en voie directe.
+OPERATOR_TERMINUS="$(env_chain_terminus)" || fail "CHAINE_ILLISIBLE : terminus indéterminable (environments.yaml)"
+OPERATOR_TERMINUS="$OPERATOR_TERMINUS" python3 - > "$TMP/pol.json" <<'POLICY'
+import json, os, sys
+term = os.environ["OPERATOR_TERMINUS"]
 hcl = (
     "# Perimetre PLATEFORME de l'operateur de mise en prod - READ SEULE.\n"
     "# /!\\ Donne a un HUMAIN la lecture des secrets de service (jeton du compte\n"
@@ -150,6 +159,11 @@ hcl = (
     'path "secret/data/stoa/opensearch"     { capabilities = ["read"] }\n'
     'path "secret/data/stoa/gateways/*"     { capabilities = ["read"] }\n'
     'path "secret/metadata/stoa/gateways/*" { capabilities = ["read", "list"] }\n'
+    "# G7 : le secret d'admin du TERMINUS de la chaine (derive de\n"
+    "# environments.yaml, jamais un nom en dur) - le ticket d'entree du palier\n"
+    "# (ADR-082), lu par team-promote.sh §7.b, consomme par le role en direct.\n"
+    + 'path "secret/data/stoa/envs/%s/wm-admin"     { capabilities = ["read"] }\n' % term
+    + 'path "secret/metadata/stoa/envs/%s/wm-admin" { capabilities = ["read"] }\n' % term
 )
 json.dump({"policy": hcl}, sys.stdout)
 POLICY

@@ -86,6 +86,18 @@ for E in "${HP_ENVS[@]}"; do
   fi
 done
 
+# ── LE TERMINUS (G7) : son secret d'admin — JAMAIS de admin-oauth ────────────
+# La gateway du terminus est la gateway RÉELLE, attaquée en DIRECT (pas de
+# proxy wm-admin-<env> devant elle, exclusion structurelle G4). Défauts alignés
+# sur setup-vault.sh (WM_USER/WM_PASS), surchargeables par WM_<TERMINUS>_*.
+# On ne seed PAS envs/<terminus>/admin-oauth : il n'existe aucune voie OAuth2
+# vers le terminus, et en seeder une laisserait croire le contraire.
+TERMINUS="$(env_chain_terminus)" || { echo "✗ CHAINE_ILLISIBLE : terminus indéterminable" >&2; exit 1; }
+TU="WM_$(printf %s "$TERMINUS" | tr '[:lower:]' '[:upper:]')_USER"
+TP="WM_$(printf %s "$TERMINUS" | tr '[:lower:]' '[:upper:]')_PASS"
+U="${!TU:-${WM_USER:-Administrator}}"; P="${!TP:-${WM_PASS:-manage}}"
+put "envs/$TERMINUS/wm-admin" "{\"username\":\"$U\",\"password\":\"$P\"}"
+
 echo "done. Vérif (re-lecture d'un secret) :"
 "${CURL[@]}" "$VAULT_ADDR/v1/$MOUNT/data/$PREFIX/envs/dev/wm-admin" \
   | python3 -c 'import sys,json;d=json.load(sys.stdin);print("  envs/dev/wm-admin.username =", d["data"]["data"].get("username"))' 2>/dev/null \
