@@ -307,6 +307,13 @@ func (s *Server) handlePromotionApprove(w http.ResponseWriter, r *http.Request, 
 		"four_eyes":      gate.FourEyes,
 		"approver_group": gate.ApproverGroup,
 		"pv_ref":         promo.PVRef,
+		// deployer_group is MATERIALIZED here, never EVALUATED here: carrying the
+		// deploy is a dispatch-time act (ADR-084) — the refusal lives at the two
+		// dispatch sites, where the carrier's Vault token exists. The only identity
+		// this handler holds is the Keycloak one, which says nothing about that
+		// OTHER directory; recording the group the deploy is OWED to is what this
+		// site can honestly do.
+		"deployer_group": gate.DeployerGroup,
 	}
 	if gate.ITSMCheck {
 		gateCheck["itsm"] = map[string]any{"change_ref": promo.ChangeRef, "status": itsmStatus}
