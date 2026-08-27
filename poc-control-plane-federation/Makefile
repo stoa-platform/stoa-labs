@@ -91,7 +91,11 @@ clean:
 lint-ci:
 	@echo "== [1/8] compilation des Jenkinsfile"
 	@ci/lint-jenkinsfiles.sh
-	@echo "== [2/8] shellcheck des bibliothèques shell (ci/lib + livrables G3/G4/G5)"
+	@# La porte LIVE du grant déployeur (G2) est SHELLCHECKÉE ici mais jamais
+	@# EXÉCUTÉE par lint-ci : elle exige le lab (annuaire + Vault) et mute
+	@# l'annuaire. Même régime que les autres `-live` — son verdict se rend à la
+	@# main, sa syntaxe se relit à chaque passage.
+	@echo "== [2/8] shellcheck des bibliothèques shell (ci/lib + livrables G2/G3/G4/G5)"
 	@command -v shellcheck >/dev/null || { echo "!! shellcheck absent — \`brew install shellcheck\`"; exit 2; }
 	@shellcheck -x ci/lib/*.sh scripts/lib/deploy-pin.sh scripts/lib/env-chain.sh \
 	  scripts/lib/repo-protection.sh scripts/lib/archive-store.sh \
@@ -99,7 +103,8 @@ lint-ci:
 	  scripts/setup-repo-protections.sh scripts/setup-deployer-groups.sh \
 	  scripts/setup-vault-paliers.sh scripts/setup-user-vault-jwt.sh \
 	  scripts/api-promote-request.sh scripts/api-promote-export.sh \
-	  scripts/team-promote.sh && echo "  ✓ ci/lib + livrables shell G3/G4/G5 propres"
+	  scripts/team-promote.sh scripts/test-deployer-gate-live.sh \
+	  && echo "  ✓ ci/lib + livrables shell G2/G3/G4/G5 propres"
 	@echo "== [3/8] épreuves de ci/lib/carto-secrets.sh"
 	@ci/test-carto-secrets.sh
 	@echo "== [4/8] épreuves du résolveur de pin (G3)"
