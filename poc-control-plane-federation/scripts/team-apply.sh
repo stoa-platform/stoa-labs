@@ -36,12 +36,27 @@ _TA_LIB="$(dirname "${BASH_SOURCE[0]}")/lib/deploy-pin.sh"
 . "$_TA_LIB" || { echo "ERREUR: $_TA_LIB introuvable ou illisible" >&2; exit 1; }
 
 # G4 (ADR-082, M2/M3) : le poseur de protection de branche. Sourcé ICI, au même
-# endroit et pour la MÊME raison que deploy-pin.sh ci-dessus — AVANT le
-# `git checkout "$MERGE_SHA"`. Ce n'est pas du style : ce script tourne sur un
-# SHA de merge que le DEMANDEUR a contribué à produire. Sourcer le poseur APRÈS
-# le checkout exécuterait la version du poseur telle que CE SHA la porte — une
-# PR d'onboarding qui toucherait aussi scripts/lib/ se poserait alors ses
-# propres protections, exactement le périmètre que G4 lui retire.
+# endroit et sous la même garde que deploy-pin.sh ci-dessus, pour deux raisons
+# ORDINAIRES : la cohérence (un seul endroit où ce script prend ses libs) et le
+# fichier manquant (`set -e` n'est pas actif — sans le `|| { …; exit 1; }`,
+# bash continuerait jusqu'à un `command not found` au point de pose).
+#
+# CE QUE CE PLACEMENT NE FAIT PAS (revue round 1 — une version antérieure de ce
+# commentaire le prétendait, à tort) : il ne met PAS le poseur hors de portée du
+# demandeur. Le workspace du job est checkouté sur */main de ci/stoa-labs
+# (team-apply.job.xml:73-77) et le webhook ne part qu'APRÈS le merge : l'arbre
+# d'AVANT le `git checkout "$MERGE_SHA"` porte DÉJÀ la PR du demandeur. Sourcer
+# tôt ou tard n'y change donc RIEN.
+#
+# La vraie mitigation du trou « le demandeur peut éditer le poseur » est la
+# protection de ci/stoa-labs@main que CETTE tâche livre
+# (setup-repo-protections.sh) : plus de push direct, tout passe par une PR
+# revue. C'est un contrôle de dépôt, pas un contrôle de ce script.
+#
+# Même frontière pour la CIBLE de la pose : $REPO_FULL est lu dans
+# providers.<env>.yml TEL QUE MERGÉ (§1 ci-dessous). Rien dans ce code
+# n'empêche une PR d'onboarding de pointer un dépôt qui n'est pas le sien —
+# c'est la revue de la PR qui le tient, pas le code (ADR-082).
 _TA_PROT="$(dirname "${BASH_SOURCE[0]}")/lib/repo-protection.sh"
 [ -f "$_TA_PROT" ] || _TA_PROT="scripts/lib/repo-protection.sh"
 # shellcheck source=scripts/lib/repo-protection.sh
@@ -222,7 +237,7 @@ if [ -n "$REPO_FULL" ]; then
   # le porteur du token org-admin — l'identité sous laquelle le squelette est
   # poussé juste au-dessus. Les deux DOIVENT rester alignées : si un déploiement
   # client change l'admin sans changer PROTECT_PUSH_WHITELIST, c'est le chemin
-  # de RÉPARATION (dépôt existant VIDE, :169-174) qui casse — la protection
+  # de RÉPARATION (dépôt existant VIDE, :184-189) qui casse — la protection
   # posée au run précédent refuserait le push de rattrapage.
   PROT_NOTE=""
   if repo_protection_payload main "${PROTECT_PUSH_WHITELIST:-ci}" > "$TMP/prot.json" \

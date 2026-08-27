@@ -15,9 +15,25 @@
 #   champ reste ABSENT du payload — un champ posé « au cas où » se lit comme
 #   une garantie et n'en est pas une.
 #
+# HYPOTHÈSE NON MESURÉE — la sémantique de FUSION du PATCH (Gitea 1.22).
+#   `pose_branch_protection` est dit « idempotent » : GET, puis POST 201 si la
+#   protection est absente, PATCH 200 si elle existe. Le PATCH n'envoie que les
+#   champs de CE payload. Personne n'a mesuré ce que Gitea fait des champs
+#   ABSENTS du corps : les PRÉSERVE-t-il (fusion), ou les RÉINITIALISE-t-il à
+#   leur défaut (remplacement) ?
+#   Conséquence si c'est un remplacement : un passage du poseur baseline
+#   (setup-repo-protections.sh, ou l'appel de team-apply) sur un dépôt dont un
+#   exploitant a posé À LA MAIN des options plus riches — protected_file_patterns,
+#   approbations requises, whitelist de merge — les EFFACERAIT EN SILENCE. Le
+#   PATCH rendrait 200, le poseur dirait ✅, et la protection serait plus faible
+#   qu'avant. « Idempotent » ne veut donc PAS encore dire « non destructif ».
+#   Sémantique de fusion du PATCH : MESURÉE PAR test-repo-protections-live.sh
+#   (T9) — tant que la mesure n'a pas tourné, ne pas re-passer le poseur baseline
+#   sur un dépôt porteur d'options posées à la main.
+#
 # Secrets : le token ne transite JAMAIS par argv ni par une URL — l'appelant
 # construit un fichier d'en-tête (`Authorization: token …`) que curl lit via
-# `-H @fichier`, motif déjà en place dans team-apply.sh (:134) et ailleurs.
+# `-H @fichier`, motif déjà en place dans team-apply.sh (:149) et ailleurs.
 
 repo_protection_payload() { # <branch> <push_whitelist_csv> [file_patterns]
   # JSON émis par python3/json.dumps, JAMAIS par formatage de chaîne : un nom

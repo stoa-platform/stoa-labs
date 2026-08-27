@@ -688,7 +688,7 @@ grep -Eq '^[[:space:]]*pose_branch_protection |[^A-Za-z_]pose_branch_protection 
 # ÉCART AU BRIEF (détecteur corrigé, MESURÉ) : le brief cherchait le littéral
 # `git push`. Il n'existe PAS dans team-apply.sh — le push du squelette s'écrit
 # `git -C "$SK" push -q …` (le credential passe par GIT_CONFIG_*, plus par
-# l'URL, cf. l'écart documenté :184-199). Écrit tel quel, L_PUSH restait VIDE
+# l'URL, cf. l'écart documenté :199-214). Écrit tel quel, L_PUSH restait VIDE
 # et ⑭ter tombait à jamais dans sa branche d'échec. Motif élargi, garde
 # d'existence CONSERVÉE : un push qui disparaîtrait rend l'ordre indémontrable,
 # pas vrai par défaut.
@@ -703,17 +703,32 @@ L_HOOK=$(grep -n 'TEAM_PUBLISH_WEBHOOK_URL' "$TMP/ta14_nc" | head -1 | cut -d: -
   || bad "⑭quater ordre pose/webhook non prouvé (pose=${L_POSE:-absent} webhook=${L_HOOK:-absent})"
 # Best-effort NOMMÉ, comme le webhook : jamais fail() — sinon une protection
 # manquée annulerait un onboarding par ailleurs réussi.
-awk "NR>=${L_POSE:-0} && NR<=${L_POSE:-0}+6" "$TMP/ta14_nc" | grep -q 'fail ' \
-  && bad "⑭quinquies la pose appelle fail() — une protection manquée annulerait l'onboarding" \
-  || ok "⑭quinquies la pose n'appelle pas fail() (best-effort : l'onboarding survit)"
+# REVUE round 1 (Minor 3) : sans la garde d'existence, un L_POSE VIDE faisait
+# lire `NR>=0 && NR<=6` — les six premières lignes du fichier, qui ne portent
+# évidemment aucun `fail ` — et l'épreuve virait au VERT alors que la pose avait
+# disparu. Vert par vacuité, exactement le motif que ce fichier traque ailleurs.
+if [ -z "$L_POSE" ]; then
+  bad "⑭quinquies pose introuvable — l'assertion « pas de fail() » serait vraie par vacuité"
+else
+  awk "NR>=$L_POSE && NR<=$L_POSE+6" "$TMP/ta14_nc" | grep -q 'fail ' \
+    && bad "⑭quinquies la pose appelle fail() — une protection manquée annulerait l'onboarding" \
+    || ok "⑭quinquies la pose n'appelle pas fail() (best-effort : l'onboarding survit)"
+fi
 # … mais NOMMÉ : la note est repliée dans REPO_NOTE (motif exact du webhook
-# :317), donc elle rejoint les commentaires ✅ ET ❌, pas seulement le job.
+# :332), donc elle rejoint les commentaires ✅ ET ❌, pas seulement le job.
 grep -qF 'REPO_NOTE="${REPO_NOTE}${PROT_NOTE}"' "$TMP/ta14_nc" \
   && ok "⑭sexies PROT_NOTE est replié dans REPO_NOTE (motif du webhook) — il sort du job" \
   || bad "⑭sexies PROT_NOTE n'est pas replié dans REPO_NOTE — la note reste dans le job"
 grep -q 'comment "✅ team-apply.*REPO_NOTE' "$TMP/ta14_nc" \
   && ok "⑭septies REPO_NOTE atteint bien le commentaire ✅ (le repli de ⑭sexies mène quelque part)" \
   || bad "⑭septies REPO_NOTE n'atteint pas le commentaire ✅ — le repli est sans destination"
+# REVUE round 1 (Minor 4) : le repli dans REPO_NOTE a DEUX destinations, et
+# seule la première était détectée. Le ❌ est la moitié qui compte le plus — un
+# onboarding qui rate est justement le moment où l'exploitant a besoin de savoir
+# si la protection est posée ou non.
+grep -q 'comment "❌ team-apply.*REPO_NOTE' "$TMP/ta14_nc" \
+  && ok "⑭octies REPO_NOTE atteint AUSSI le commentaire ❌ (l'état de la protection est dit même quand l'onboarding rate)" \
+  || bad "⑭octies REPO_NOTE n'atteint pas le commentaire ❌ — la note se perd sur le chemin d'échec"
 
 echo "== ⑯ mutations : les trois façons de rendre ⑬/⑭ vacantes =="
 # (a) retirer l'APPEL — le contournement le plus direct.

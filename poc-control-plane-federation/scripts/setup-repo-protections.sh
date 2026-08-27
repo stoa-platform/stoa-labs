@@ -4,12 +4,21 @@
 # référence de déploiement sortent du périmètre d'écriture du demandeur.
 #   - ci/stoa-labs@main   (plateforme : Jenkinsfiles, scripts/, ansible/)
 #   - ci/governance@main  (chaîne d'environnements : environments.yaml)
-#   - chaque dépôt d'équipe DÉCLARÉ (providers.<env>.yml, champ `repo` non vide)
+#   - chaque dépôt d'équipe DÉCLARÉ dans UN SEUL fichier providers — celui de
+#     $PROVIDERS_FILE, par défaut ansible/providers.dev.yml — champ `repo` non
+#     vide. Ce script ne balaie PAS tous les paliers : un `repo` d'équipe est
+#     le même quel que soit l'env, la chaîne d'envs est une affaire de branches.
 #
 # Baseline : push whitelist = ${PROTECT_PUSH_WHITELIST:-ci} ; tout le reste
 # passe par PR. PROTECT_FILE_PATTERNS (optionnel) n'est posé QUE si l'exploitant
 # le fournit — la sémantique des patterns est MESURÉE par
 # test-repo-protections-live.sh (Task 9) avant d'être engagée (spec G4 §4).
+#
+# ⚠ AVANT DE RE-PASSER CE SCRIPT sur un dépôt DÉJÀ protégé : la sémantique de
+# fusion du PATCH Gitea n'est pas mesurée (cf. l'en-tête de
+# scripts/lib/repo-protection.sh). Si Gitea remplace au lieu de fusionner, ce
+# passage EFFACERAIT en silence les options qu'un exploitant aurait posées à la
+# main (patterns, approbations). Attendre la mesure de la Task 9.
 #
 #   bash scripts/setup-repo-protections.sh --print   # hors ligne : ce qui SERAIT posé
 #   GITEA_TOKEN=… bash scripts/setup-repo-protections.sh
@@ -25,7 +34,11 @@ cd "$(dirname "$0")/.." || exit 1
 . "scripts/lib/repo-protection.sh"
 
 usage() {
-  sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
+  # REVUE round 1 (Minor 6) : plage ANCRÉE, plus `sed -n '2,18p'`. Le numéro
+  # figé coupait en pleine phrase et aurait dérivé à la première ligne ajoutée
+  # à l'en-tête. Ici on imprime le bloc de commentaire de tête ENTIER : de la
+  # ligne 2 jusqu'à la première ligne qui n'est pas un commentaire (`set -e…`).
+  awk 'NR > 1 { if (/^#/) { sub(/^# ?/, ""); print; next } exit }' "$0"
 }
 
 MODE=pose
