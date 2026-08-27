@@ -72,6 +72,11 @@ vert), un test unitaire ancre l'interdiction
   final propre, catalogue inchangé hors runs.
 - Aucun build Jenkins requis (la porte G8 est un harnais rejouable ; les
   moteurs sont déjà branchés aux pipelines depuis G5-G7).
+- **Gitea servi** : `main` avancé `e492b2e..72886fa` (le lot G8 entier, le CI
+  lit cette lignée). ⚠ Une branche `provision/probe-dev` a aussi été créée
+  par erreur sur gitea (même contenu, fast-forward) — sa suppression a été
+  bloquée par le classifieur : `! git push gitea --delete provision/probe-dev`
+  pour la retirer, ou l'ignorer (aucun job ne la lit).
 
 ## Restes (après G8)
 
