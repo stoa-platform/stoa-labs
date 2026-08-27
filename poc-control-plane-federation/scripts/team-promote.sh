@@ -753,7 +753,10 @@ else
   # Le CORPS de la réponse refusée, s'il existe (return_content du POST
   # /archive) : c'est LUI qui dit pourquoi le PRODUIT a refusé — sans lui, un
   # 400 du terminus se lit « Bad Request » et s'enquête au mauvais endroit.
-  BODY=$(grep -oE '"content": *"[^"]{1,400}' "$TMP/promote.log" | tail -1 | cut -c1-400)
+  # `.{1,400}` et non `[^"]` : le corps est du JSON RÉ-ÉCHAPPÉ dans la ligne
+  # fatale (`{\"...`), une classe sans-guillemet s'arrêterait au premier `\"`
+  # (mesuré : build #22 ne remontait que `{\`).
+  BODY=$(grep -oE '"content": *".{1,400}' "$TMP/promote.log" | tail -1 | cut -c1-400)
   [ -z "$BODY" ] || SUMMARY="${SUMMARY} — réponse gateway: ${BODY#\"content\": }"
   # UN SEUL commentaire d'échec (via fail(), pas comment()+fail()).
   fail "promotion ${TEAM}/${API_NAME} → ${TO_ENV} en échec : ${SUMMARY:-voir le build}. Re-run possible : l'import d'archive est idempotent (GUID stable, 0-coupure)."
