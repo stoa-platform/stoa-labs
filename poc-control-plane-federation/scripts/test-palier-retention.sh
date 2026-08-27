@@ -820,5 +820,90 @@ else
     || ok "⑳quinquies la liste SUIT providers : repo retiré ⇒ dépôt hors de la pose"
 fi
 
+echo "== ㉑ la voie consommateur valide l'env par la CHAÎNE, terminus exclu =="
+# Numérotation : ⑫..⑳ sont tous pris (cf. le commentaire de numérotation à
+# ⑨bter) ; le brief Task 7 (D6/D8) appelait ces épreuves ⑯ ⑯bis ⑯ter ⑯quater,
+# déjà pris par les mutations de ⑬/⑭ plus haut. ㉑ est la première étiquette
+# libre — renumérotées ㉑.. en conséquence, plus une contre-épreuve de
+# mutation par garde neuve (anti-no-op cmp -s) pour chacune.
+for F in scripts/provision-request.sh scripts/provision-plan.sh; do
+  if [ ! -f "$F" ]; then
+    bad "㉑ $F introuvable — les assertions consommateur seraient vaines"
+    continue
+  fi
+  nc_strict "$F" > "$TMP/c21_nc"
+  grep -q 'env_chain_nonprod' "$TMP/c21_nc" \
+    && ok "㉑ $F dérive la liste de la chaîne" \
+    || bad "㉑ $F ne dérive pas (liste en dur ?)"
+  grep -Eq 'dev\|rec\|int\|prod' "$TMP/c21_nc" \
+    && bad "㉑bis $F garde la liste en dur dev|rec|int|prod (sans homol, avec terminus)" \
+    || ok "㉑bis $F n'a plus la liste en dur"
+done
+
+echo "== ㉑ter mutation : la liste en dur REVIENT ⇒ ㉑bis rougirait =="
+sed 's/set +x   # jamais de trace : le token ne doit pas fuiter/&\ncase "$REQ_ENV" in dev|rec|int|prod) : ;; esac/' \
+  scripts/provision-request.sh > "$TMP/c21_mut_req"
+cmp -s scripts/provision-request.sh "$TMP/c21_mut_req" \
+  && bad "㉑ter(0a) le mutant provision-request est IDENTIQUE — l'ancre \`set +x\` a bougé" \
+  || ok "㉑ter(0a) le mutant provision-request diffère RÉELLEMENT du fichier"
+nc_strict "$TMP/c21_mut_req" > "$TMP/c21_mut_req_nc"
+grep -Eq 'dev\|rec\|int\|prod' "$TMP/c21_mut_req_nc" \
+  && ok "㉑ter(a) liste en dur réinjectée dans provision-request.sh ⇒ le détecteur de ㉑bis la VOIT" \
+  || bad "㉑ter(a) la réinjection passe inaperçue — ㉑bis est vacante sur provision-request.sh"
+
+sed 's/PR_BRANCH="\${PR_BRANCH:?PR_BRANCH requis}"/&\nENVVDUR=""; case "$ENVVDUR" in dev|rec|int|prod) : ;; esac/' \
+  scripts/provision-plan.sh > "$TMP/c21_mut_plan"
+cmp -s scripts/provision-plan.sh "$TMP/c21_mut_plan" \
+  && bad "㉑ter(0b) le mutant provision-plan est IDENTIQUE — l'ancre PR_BRANCH= a bougé" \
+  || ok "㉑ter(0b) le mutant provision-plan diffère RÉELLEMENT du fichier"
+nc_strict "$TMP/c21_mut_plan" > "$TMP/c21_mut_plan_nc"
+grep -Eq 'dev\|rec\|int\|prod' "$TMP/c21_mut_plan_nc" \
+  && ok "㉑ter(b) liste en dur réinjectée dans provision-plan.sh ⇒ le détecteur de ㉑bis la VOIT" \
+  || bad "㉑ter(b) la réinjection passe inaperçue — ㉑bis est vacante sur provision-plan.sh"
+
+echo "== ㉑quater le job selfservice ride main, plus une branche de feature (M2) =="
+SSJ="scripts/setup-selfservice-job.sh"
+if [ ! -f "$SSJ" ]; then
+  bad "㉑quater $SSJ introuvable — les assertions BRANCH seraient vaines"
+else
+  nc_strict "$SSJ" > "$TMP/ssj21_nc"
+  grep -q 'BRANCH="${BRANCH:-main}"' "$TMP/ssj21_nc" \
+    && ok "㉑quater défaut BRANCH=main (un pipeline sur branche non protégée est éditable hors revue)" \
+    || bad "㉑quater le job selfservice ride encore une branche de feature par défaut"
+
+  echo "== ㉑quinquies mutation : BRANCH régresse vers une branche de feature ⇒ ㉑quater rougirait =="
+  sed 's/BRANCH="\${BRANCH:-main}"/BRANCH="\${BRANCH:-feat\/selfservice-app-adr078}"/' "$SSJ" > "$TMP/ssj21_mut"
+  cmp -s "$SSJ" "$TMP/ssj21_mut" \
+    && bad "㉑quinquies(0) le mutant est IDENTIQUE — l'ancre BRANCH= a bougé" \
+    || ok "㉑quinquies(0) le mutant diffère RÉELLEMENT du fichier"
+  nc_strict "$TMP/ssj21_mut" > "$TMP/ssj21_mut_nc"
+  grep -q 'BRANCH="${BRANCH:-main}"' "$TMP/ssj21_mut_nc" \
+    && bad "㉑quinquies la régression vers une branche de feature passe inaperçue — détecteur aveugle" \
+    || ok "㉑quinquies régression vers une branche de feature ⇒ le détecteur de ㉑quater la VOIT"
+fi
+
+echo "== ㉑sexies le terminus a quitté le formulaire consommateur (setup-selfservice-job.sh + Jenkinsfile) =="
+JSF="ci/Jenkinsfile.selfservice"
+if [ ! -f "$SSJ" ] || [ ! -f "$JSF" ]; then
+  bad "㉑sexies $SSJ ou $JSF introuvable — l'assertion d'absence du terminus serait vaine"
+else
+  nc_strict "$SSJ" > "$TMP/ssj21t_nc"
+  nc_strict "$JSF" > "$TMP/jsf21t_nc"
+  grep -Eq "choices.*'prod'|>prod<" "$TMP/ssj21t_nc" "$TMP/jsf21t_nc" \
+    && bad "㉑sexies le formulaire consommateur propose encore le terminus" \
+    || ok "㉑sexies le terminus a quitté le formulaire consommateur (D3/D6 : l'écriture y meurt de toute façon)"
+
+  echo "== ㉑septies mutation : le terminus REVIENT dans le Jenkinsfile ⇒ ㉑sexies rougirait =="
+  sed "s/choices: \['dev', 'rec', 'int', 'homol'\]/choices: ['dev', 'rec', 'int', 'homol', 'prod']/" \
+    "$JSF" > "$TMP/jsf21_mut"
+  cmp -s "$JSF" "$TMP/jsf21_mut" \
+    && bad "㉑septies(0) le mutant est IDENTIQUE — l'ancre choices: a bougé" \
+    || ok "㉑septies(0) le mutant diffère RÉELLEMENT du fichier"
+  nc_strict "$TMP/jsf21_mut" > "$TMP/jsf21_mut_nc"
+  grep -Eq "choices.*'prod'|>prod<" "$TMP/jsf21_mut_nc" \
+    && ok "㉑septies le terminus réinjecté dans le Jenkinsfile ⇒ le détecteur de ㉑sexies le VOIT" \
+    || bad "㉑septies le terminus réinjecté passe inaperçu — ㉑sexies est vacante"
+fi
+
 printf '\n  %d PASS / %d FAIL\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

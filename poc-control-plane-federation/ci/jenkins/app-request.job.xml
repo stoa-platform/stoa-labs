@@ -45,7 +45,7 @@
         </hudson.model.StringParameterDefinition>
         <hudson.model.ChoiceParameterDefinition>
           <name>REQ_ENV</name>
-          <description>Environnement cible (dev|rec|int|prod) — pilote le nom de branche provision/&lt;app&gt;-&lt;env&gt; et l'env du manifeste.</description>
+          <description>Environnement cible (paliers non terminaux de la chaîne — dev/rec/int/homol aujourd'hui) — pilote le nom de branche provision/&lt;app&gt;-&lt;env&gt; et l'env du manifeste.</description>
           <choices class="java.util.Arrays$ArrayList"><a class="string-array"><string>dev</string><string>rec</string><string>int</string><string>prod</string></a></choices>
         </hudson.model.ChoiceParameterDefinition>
         <hudson.model.ChoiceParameterDefinition>

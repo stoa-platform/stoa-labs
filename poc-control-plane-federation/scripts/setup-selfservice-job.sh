@@ -23,7 +23,10 @@ JENKINS="${JENKINS:-http://localhost:18080}"
 JOB="${JOB:-selfservice-app-deploy}"
 TRIGGER_TOKEN="${TRIGGER_TOKEN:-stoa-selfservice-plan}"
 GIT_URL="${GIT_URL:-http://gitea:3000/ci/stoa-labs.git}"   # vu DEPUIS l'agent (réseau docker)
-BRANCH="${BRANCH:-feat/selfservice-app-adr078}"
+# G4 (M2) : défaut sur main — un pipeline qui ride encore une branche de
+# feature après merge est éditable HORS revue (quiconque pousse sur cette
+# branche change le pipeline sans passer par une PR sur main).
+BRANCH="${BRANCH:-main}"
 SCRIPT_PATH="${SCRIPT_PATH:-poc-control-plane-federation/ci/Jenkinsfile.selfservice}"
 MANIFEST_DEFAULT="${MANIFEST_DEFAULT:-clients/_example/applications/demo-consumer.ansible.yml}"
 JOB_DESC="${JOB_DESC:-self-service creation d application - CONSOMMATEUR}"
@@ -76,7 +79,7 @@ cat > "$XML" <<JOBXML
             <string>dev</string>
             <string>rec</string>
             <string>int</string>
-            <string>prod</string>
+            <string>homol</string>
           </choices>
         </hudson.model.ChoiceParameterDefinition>
         <hudson.model.StringParameterDefinition>
