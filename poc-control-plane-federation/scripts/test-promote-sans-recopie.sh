@@ -73,12 +73,44 @@ pin_promote_manifest "$M" "14c2529e-0000-4000-8000-00000000aaaa" \
   "1111111111111111111111111111111111111111111111111111111111111111"
 [ "$(cat "$M")" = "$COPIE" ] && ok "second pin = aucun diff" || ko "pin non idempotent"
 pin_promote_manifest "$M" "14c2529e-0000-4000-8000-00000000aaaa" \
-  "2222222222222222222222222222222222222222222222222222222222222222" "2.2.0"
+  "2222222222222222222222222222222222222222222222222222222222222222" "2.2.0" \
+  && ok "pin versionné rc=0 (relecture interne version+archive passée)" || ko "pin versionné refusé à tort"
 grep -q 'version: "2.2.0"' "$M" && grep -q 'demo-api-2.2.0.archive.zip' "$M" \
   && ok "version+archive réalignés" || ko "réalignement version manquant"
 
-echo "== 5. manifest_pinned_digest : présent / absent / illisible =="
-[ "$(manifest_pinned_digest "$M")" = "$(printf '2%.0s' $(seq 64))" ] \
+echo "== 5. réalignement version+archive : relu par YAML après un pin versionné (pas juste grep) =="
+pin_promote_manifest "$M" "14c2529e-0000-4000-8000-00000000aaaa" \
+  "3333333333333333333333333333333333333333333333333333333333333333" "2.3.0" \
+  && ok "second pin versionné rc=0" || ko "second pin versionné refusé à tort"
+python3 - "$M" <<'PY' && ok "version+archive relus par yaml (pas seulement grep)" || ko "version+archive non relus"
+import sys, yaml
+p = yaml.safe_load(open(sys.argv[1]))["apim_promote"]
+assert p["version"] == "2.3.0"
+assert p["archive"].endswith("/demo-api-2.3.0.archive.zip")
+PY
+
+echo "== 6. archive hors-forme (suffixe pré-release résiduel) ⇒ refus nommé, jamais silencieux =="
+# reproduit le piège de la revue : la ligne archive: porte déjà un suffixe que
+# le sed de réalignement (classe [0-9][0-9.]* seulement) ne sait pas matcher —
+# sans la relecture, version: changerait et archive: resterait périmée SANS
+# aucun signal.
+HF="$TMP/hors-forme.promote.yml"
+cp "$M" "$HF"
+python3 - "$HF" <<'PY'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace(
+    'archive: "{{ playbook_dir }}/../dist/demo-api-2.3.0.archive.zip"',
+    'archive: "{{ playbook_dir }}/../dist/demo-api-2.3.0-rc1.archive.zip"')
+open(p, "w").write(s)
+PY
+OUT=$(pin_promote_manifest "$HF" "14c2529e-0000-4000-8000-00000000aaaa" \
+  "4444444444444444444444444444444444444444444444444444444444444444" "2.4.0" 2>&1) \
+  && ko "pin accepté malgré l'archive hors-forme (silencieux — le bug de la revue)" \
+  || { echo "$OUT" | grep -q REALIGNEMENT_NON_APPLIQUE && ok "REALIGNEMENT_NON_APPLIQUE" || ko "refus sans nom ($OUT)"; }
+
+echo "== 7. manifest_pinned_digest : présent / absent / illisible =="
+[ "$(manifest_pinned_digest "$M")" = "$(printf '3%.0s' $(seq 64))" ] \
   && ok "digest lu" || ko "digest non lu"
 [ -z "$(manifest_pinned_digest "$TMP/team/apis/inexistant.promote.yml")" ] \
   && ok "fichier absent ⇒ chaîne vide, rc=0" || ko "fichier absent mal géré"
@@ -86,7 +118,7 @@ printf '{{invalide' > "$TMP/cassé.yml"
 manifest_pinned_digest "$TMP/cassé.yml" 2>/dev/null \
   && ko "YAML illisible accepté" || ok "YAML illisible ⇒ rc=1 (MANIFESTE_ILLISIBLE)"
 
-echo "== 6. publish_manifest_version =="
+echo "== 8. publish_manifest_version =="
 [ "$(publish_manifest_version "$TMP/team" demo-api)" = "2.1.0" ] \
   && ok "version du publish.yml lue" || ko "version non lue"
 

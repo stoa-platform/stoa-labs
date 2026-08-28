@@ -16,12 +16,23 @@
 # BSD sed (macOS, hôte de cette suite) et GNU sed 4.9 (CI Linux) — vérifié en
 # direct sur les deux (conteneur debian:12-slim) : même indentation à 2
 # espaces préservée des deux côtés. Pas de bascule python nécessaire ici.
+#
+# `local` (fix round 1, IMPORTANT 2) : cette lib est SOURCÉE par des scripts
+# appelants — sans portée locale, ses variables tampon (_dir/_api/_m/_v/…)
+# écrasent celles de l'appelant. `local` n'est pas POSIX strict (shellcheck
+# SC3043) mais c'est une extension quasi universelle des sh réels — vérifié
+# ici sous bash ET dash (le /bin/sh de fait sur Debian/Ubuntu, cible réelle de
+# ce shebang) : comportement identique, aucune fuite de portée. Les seuls
+# appelants actuels (api-promote-export.sh, api-promote-request.sh,
+# team-promote.sh) sont `#!/usr/bin/env bash` de toute façon.
+# shellcheck disable=SC3043
 
 _pm_fail() { printf 'ERREUR: %s\n' "$*" >&2; return 1; }
 
 # publish_manifest_version <team_dir> <api_name> — version portée par le
 # publish.yml d'authoring (la vérité de ce qui est publié en dev).
 publish_manifest_version() {
+  local _pub _v
   _pub="$1/apis/$2.publish.yml"
   [ -f "$_pub" ] || { _pm_fail "PUBLISH_MANIFEST_ABSENT : $_pub — cette API n'est pas publiée en authoring"; return 1; }
   _v=$(python3 - "$_pub" <<'PY' 2>/dev/null
@@ -40,6 +51,7 @@ PY
 # Rend apis/<api>.promote.yml depuis le gabarit, name/version dérivés du
 # publish.yml — même motif de substitution que api-request.sh:323-326.
 render_promote_manifest() {
+  local _dir _api _tmpl _ver
   _dir="$1"; _api="$2"; _tmpl="$3"
   _ver=$(publish_manifest_version "$_dir" "$_api") || return 1
   [ -f "$_tmpl" ] || { _pm_fail "GABARIT_ABSENT : $_tmpl"; return 1; }
@@ -64,7 +76,18 @@ PY
 # sed chirurgical sur NOS lignes (gabarit : indentation 2 espaces). La ligne
 # archive_sha256 est insérée après guid si le manifeste (antérieur au gabarit,
 # ex. t10) ne la porte pas encore.
+#
+# RELECTURE FAIL-CLOSED, PAS SEULEMENT SUR LE SHA (fix round 1, IMPORTANT 1) :
+# le sed de réalignement archive (`/${_api}-[0-9][0-9.]*\.archive\.zip`) ne
+# matche QUE des versions purement numériques dans la ligne archive:
+# EXISTANTE — une version pré-release déjà en place (ex. archive:
+# .../demo-api-2.1.0-rc1.archive.zip) ou une ligne éditée à la main fait
+# échouer le sed EN SILENCE (rc=0, zéro substitution) : version: change,
+# archive: reste périmée, le manifeste devient incohérent sans qu'aucun signal
+# ne sorte. On relit donc AUSSI version: et archive: après un pin versionné —
+# même principe que la relecture du sha juste en dessous.
 pin_promote_manifest() {
+  local _m _g _s _v _api _lu _rv _ra
   _m="$1"; _g="$2"; _s="$3"; _v="${4:-}"
   [ -f "$_m" ] || { _pm_fail "MANIFESTE_ABSENT : $_m"; return 1; }
   sed -i.bak -e "s|^\(  guid:\).*|\1 \"${_g}\"|" "$_m"
@@ -86,5 +109,32 @@ PY
   rm -f "$_m.bak"
   # relecture fail-closed : l'épinglage doit se RELIRE, pas se supposer
   _lu=$(manifest_pinned_digest "$_m") || return 1
-  [ "$_lu" = "$_s" ] || _pm_fail "PIN_NON_RELU : écrit ${_s}, relu '${_lu}' — édition chirurgicale en échec"
+  if [ "$_lu" != "$_s" ]; then
+    _pm_fail "PIN_NON_RELU : écrit ${_s}, relu '${_lu}' — édition chirurgicale en échec"
+    return 1
+  fi
+  if [ -n "$_v" ]; then
+    _rv=$(python3 - "$_m" <<'PY'
+import sys, yaml
+print((yaml.safe_load(open(sys.argv[1])) or {}).get("apim_promote", {}).get("version", ""))
+PY
+) || { _pm_fail "REALIGNEMENT_NON_RELU : $_m illisible après le pin de version"; return 1; }
+    if [ "$_rv" != "$_v" ]; then
+      _pm_fail "REALIGNEMENT_NON_APPLIQUE : version relue '${_rv}', attendue '${_v}' — la ligne version: n'a pas été trouvée par sed"
+      return 1
+    fi
+    _ra=$(python3 - "$_m" <<'PY'
+import sys, yaml
+print((yaml.safe_load(open(sys.argv[1])) or {}).get("apim_promote", {}).get("archive", ""))
+PY
+) || { _pm_fail "REALIGNEMENT_NON_RELU : $_m illisible après le pin de version"; return 1; }
+    case "$_ra" in
+      */"${_api}-${_v}.archive.zip") ;;
+      *)
+        _pm_fail "REALIGNEMENT_NON_APPLIQUE : archive relue '${_ra}' ne porte pas /${_api}-${_v}.archive.zip — forme inattendue (version pré-release déjà en place, ligne éditée à la main), le sed de réalignement n'a rien substitué"
+        return 1
+        ;;
+    esac
+  fi
+  return 0
 }
