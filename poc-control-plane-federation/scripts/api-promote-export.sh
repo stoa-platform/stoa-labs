@@ -299,6 +299,6 @@ except urllib.error.HTTPError as e:
     print(n)
 PY
 ) || fail "PIN_PR_ECHEC : ouverture/retrouvaille de la PR d'épinglage"
-  echo "PR d'épinglage : ${GIT_WEB_HOST:-$GIT_HOST}/${REPO_FULL}/pulls/${PIN_PR}"
+  echo "PR d'épinglage : ${GIT_WEB_HOST}/${REPO_FULL}/pulls/${PIN_PR}"
   echo "geste suivant : MERGER cette PR, puis formulaire api-promote-request (ARCHIVE_SHA256 facultatif — lu sur main)"
 fi

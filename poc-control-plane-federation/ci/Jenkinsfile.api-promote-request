@@ -46,7 +46,7 @@ pipeline {
     string(name: 'MESSAGE',        defaultValue: '', description: "Message d'audit (obligatoire)")
     string(name: 'CHANGE_REF',     defaultValue: '', description: 'Référence de changement ITSM (selon la porte)')
     string(name: 'PV_REF',         defaultValue: '', description: 'Référence de PV de recette (selon la porte)')
-    string(name: 'ARCHIVE_SHA256', defaultValue: '', description: "FACULTATIF — vide : lu sur main (manifeste épinglé) ou hérité du palier source ; renseigné : désignation explicite")
+    string(name: 'ARCHIVE_SHA256', defaultValue: '', description: "FACULTATIF. Vide : lu sur main (manifeste épinglé) depuis dev, hérité du palier source au-delà. Renseigné : depuis dev il gagne avec avertissement (re-promotion d'une archive antérieure) ; au-delà, une contradiction avec la source est refusée (DIGEST_CONTREDIT_SOURCE).")
   }
   stages {
     stage('Demande de promotion') {

@@ -60,7 +60,7 @@
         </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>
           <name>ARCHIVE_SHA256</name>
-          <description>FACULTATIF. Vide : lu sur main (manifeste épinglé, depuis dev) ou hérité du palier source. Renseigné : désignation explicite — il gagne, une contradiction avec la source est refusée (DIGEST_CONTREDIT_SOURCE).</description>
+          <description>FACULTATIF. Vide : lu sur main (manifeste épinglé) depuis dev, hérité du palier source au-delà. Renseigné : depuis dev il gagne avec avertissement (re-promotion d'une archive antérieure) ; au-delà, une contradiction avec la source est refusée (DIGEST_CONTREDIT_SOURCE).</description>
           <defaultValue></defaultValue>
         </hudson.model.StringParameterDefinition>
       </parameterDefinitions>
