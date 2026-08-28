@@ -92,6 +92,10 @@ noyau que le rendu peut affirmer :
   aussi ⇒ refus nommé `PUBLISH_MANIFEST_ABSENT` (l'API n'est pas publiée en
   authoring, rien à exporter). Le manifeste rendu sert à l'export du run
   courant (pas d'aller-retour « merge d'abord, relance ensuite »).
+- Manifeste **présent** mais `version` en retard sur `publish.yml` (nouvelle
+  version publiée depuis) ⇒ l'export réaligne `version:` et `archive:` AVANT
+  d'exporter, et la PR d'épinglage porte aussi ce réalignement — sinon la
+  main revient à chaque nouvelle version.
 - Après `EXPORT_CONFIRMED` ⇒ écrire `guid:` et `archive_sha256:` dans le
   manifeste (rendu ou existant), pousser la branche
   `chore/promote-manifest-<api>` et ouvrir la PR sur le dépôt d'équipe.
@@ -115,8 +119,10 @@ noyau que le rendu peut affirmer :
   manifeste : avertissement bruyant (sortie + corps de PR), pas de refus — le
   marqueur mergé porte le sha, et c'est le merge qui l'approuve. Cas légitime :
   re-promouvoir une archive antérieure au dernier export.
-- Hors dev : rien ne change — digest hérité du palier source, incontestable
-  (`DIGEST_CONTREDIT_SOURCE`).
+- Hors dev : le champ vide HÉRITE du palier source — c'est déjà ce que fait
+  `reconcile_promotion_digest` (forme vide ⇒ digest hérité) ; seule la garde
+  amont exigeait encore la recopie, elle ne l'exige plus. Un digest explicite
+  qui contredit la source reste refusé (`DIGEST_CONTREDIT_SOURCE`, inchangé).
 
 ### 4. Poser le job, corriger les textes qui mentent
 
