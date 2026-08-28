@@ -122,5 +122,12 @@ echo "== 8. publish_manifest_version =="
 [ "$(publish_manifest_version "$TMP/team" demo-api)" = "2.1.0" ] \
   && ok "version du publish.yml lue" || ko "version non lue"
 
+echo "== 9. labctl tolère la clé épinglée (parse non strict FIGÉ par le test Go) =="
+command -v go >/dev/null 2>&1 || { ko "go absent — l'épreuve labctl ne peut pas se rendre (ne PAS sauter en silence)"; }
+if command -v go >/dev/null 2>&1; then
+  ( cd labctl && go test ./cmd/labctl -run TestPromoteSpecToleratesPinnedSha >/dev/null 2>&1 ) \
+    && ok "TestPromoteSpecToleratesPinnedSha PASS" || ko "labctl refuse archive_sha256"
+fi
+
 echo; echo "bilan : $PASS ✅  $FAIL ❌"
 [ "$FAIL" -eq 0 ]
