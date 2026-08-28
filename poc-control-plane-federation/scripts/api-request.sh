@@ -46,14 +46,24 @@
 #                       ansible/providers.<env>.yml ET les gardes hors ligne
 #   GIT_HOST            défaut http://gitea:3000
 #   GIT_WEB_HOST         URL Gitea vue par l'HUMAIN (liens des commentaires)
-#   ENVN                env dont providers.<env>.yml donne le dépôt d'équipe
-#                       (défaut dev — seul palier où les équipes sont déclarées
-#                       à ce jour ; sans rapport avec l'env de PUBLICATION,
-#                       résolu plus tard par per_env au moment de l'apply réel)
+#   (ENVN n'est PLUS une entrée : G4/ADR-082 le SCELLE sur l'env d'authoring,
+#    voir plus bas. Il ne désigne que l'env dont providers.<env>.yml donne le
+#    dépôt d'équipe — sans rapport avec l'env de PUBLICATION, résolu plus tard
+#    par per_env au moment de l'apply réel.)
 set -uo pipefail
 set +x   # jamais de trace : le token ne doit pas fuiter
 cd "$(dirname "$0")/.." || exit 1
 REPO_ROOT="$(pwd)"
+
+# Auto-localisation par BASH_SOURCE quand le fichier vit dans son arbre ; repli
+# sur le cwd (fixé par le `cd` ci-dessus) pour les invocations où le dirname ne
+# contient pas lib/ — même motif que setup-vault-paliers.sh:26-38.
+_AR_LIB="$(dirname "${BASH_SOURCE[0]}")/lib/deploy-pin.sh"
+[ -f "$_AR_LIB" ] || _AR_LIB="scripts/lib/deploy-pin.sh"
+# `set -e` n'est pas actif ici : sans garde explicite, un fichier manquant
+# laisserait bash continuer jusqu'à un « unbound variable » sur la constante.
+# shellcheck source=scripts/lib/deploy-pin.sh
+. "$_AR_LIB" || { echo "ERREUR: $_AR_LIB introuvable ou illisible" >&2; exit 1; }
 
 ACTION="${ACTION:?ACTION requis (create|new-version)}"
 TEAM="${TEAM:?TEAM requis}"
@@ -67,7 +77,14 @@ GITEA_TOKEN="${GITEA_TOKEN:?GITEA_TOKEN requis}"
 GIT_REPO="${GIT_REPO:-ci/stoa-labs}"
 GIT_HOST="${GIT_HOST:-http://gitea:3000}"
 GIT_WEB_HOST="${GIT_WEB_HOST:-$GIT_HOST}"
-ENVN="${ENVN:-dev}"
+# G4 (ADR-082) : ENVN est SCELLÉ sur l'env d'authoring — affectation sèche
+# depuis la constante de lib, jamais "${ENVN:-dev}" : les variables d'un job
+# Jenkins atterrissent dans l'environnement du process (fait mesuré, même
+# raison que deploy-pin.sh:29-37). Demander une API est un geste d'AUTHORING
+# par conception (ADR-079) ; au-delà, c'est la promotion (marqueurs G3, verbe
+# archive G5) — et son autorité est la rétention de credential, pas une
+# variable.
+ENVN="$DEPLOY_PIN_AUTHORING_ENV"
 
 fail(){ echo "ERREUR: $*" >&2; exit 1; }
 

@@ -255,3 +255,66 @@ func TestSetAPIActive_DeactivateGate(t *testing.T) {
 		t.Fatalf("deactivate with the gate open: %v", err)
 	}
 }
+
+func TestVerifyEndpointAliasValue(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/rest/apigateway/alias" {
+			t.Errorf("unexpected call %s %s (verify must be read-only)", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`{"alias":[{"id":"a1","name":"g8par-backend","type":"endpoint","endPointURI":"http://poc-token-echo:8080/backend/rec"}]}`))
+	}))
+	defer srv.Close()
+	a := &Adapter{adminURL: srv.URL, username: "u", password: "p", http: srv.Client()}
+
+	if err := a.VerifyEndpointAliasValue(context.Background(), "g8par-backend", "http://poc-token-echo:8080/backend/rec"); err != nil {
+		t.Fatalf("nominal: %v", err)
+	}
+	if err := a.VerifyEndpointAliasValue(context.Background(), "g8par-backend", "http://autre"); err == nil || !strings.Contains(err.Error(), "ALIAS_DRIFT") {
+		t.Fatalf("want ALIAS_DRIFT, got %v", err)
+	}
+	if err := a.VerifyEndpointAliasValue(context.Background(), "absent", "x"); err == nil || !strings.Contains(err.Error(), "ALIAS_MISSING") {
+		t.Fatalf("want ALIAS_MISSING, got %v", err)
+	}
+}
+
+// The PROMOTE-path alias creation must seed the ROLE's minimal shape: no
+// passSecurityHeaders, no optimizationTechnique. Those belong to the routing
+// (self-service proxy) projection ONLY — measured G8 divergence 2026-08-27:
+// a promote-seeded alias must not pass security headers the client engine's
+// alias would not pass.
+func TestEnsureEndpointAliasValue_PromoteShapeIsMinimal(t *testing.T) {
+	var posted map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/rest/apigateway/alias":
+			if posted == nil {
+				_, _ = w.Write([]byte(`{"alias":[]}`))
+			} else {
+				_, _ = w.Write([]byte(`{"alias":[{"id":"a9","name":"g8par-backend","type":"endpoint","endPointURI":"http://poc-token-echo:8080/backend/rec"}]}`))
+			}
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/rest/apigateway/alias/"):
+			_, _ = w.Write([]byte(`{"alias":{"id":"a9","name":"g8par-backend","endPointURI":"http://poc-token-echo:8080/backend/rec"}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/rest/apigateway/alias":
+			_ = json.NewDecoder(r.Body).Decode(&posted)
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"id":"a9","name":"g8par-backend"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	a := &Adapter{adminURL: srv.URL, username: "u", password: "p", http: srv.Client()}
+	if err := a.EnsureEndpointAliasValue(context.Background(), "g8par-backend", "http://poc-token-echo:8080/backend/rec"); err != nil {
+		t.Fatalf("EnsureEndpointAliasValue: %v", err)
+	}
+	if posted == nil {
+		t.Fatal("no POST captured")
+	}
+	for _, k := range []string{"passSecurityHeaders", "optimizationTechnique"} {
+		if _, present := posted[k]; present {
+			t.Errorf("promote-path POST carries %q — that is the proxy projection's shape, not the role's", k)
+		}
+	}
+}

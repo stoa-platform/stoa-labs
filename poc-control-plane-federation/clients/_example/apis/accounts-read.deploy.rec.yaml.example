@@ -1,0 +1,112 @@
+# apis/<name>.deploy.<env>.yaml — LE MARQUEUR DE DÉPLOIEMENT (jalon G3).
+#
+# CE FICHIER EST LA RÉPONSE À « QU'EST-CE QUI TOURNE EXACTEMENT EN <env> ? ».
+# Ce n'est PAS une branche d'environnement : une branche est un pointeur
+# mouvant, elle ne peut pas répondre à cette question. Ici la réponse est
+# immuable — un SHA de commit et un digest d'archive.
+#
+# ⚠ IL EST ÉCRIT PAR LA PROMOTION, JAMAIS À LA MAIN par l'équipe :
+#   scripts/api-promote-request.sh ouvre une PR qui le porte. Le modèle retenu
+#   est celui d'ADR-081 — « la décision humaine est le merge » — et cet ADR est
+#   à ce jour au statut « Proposé, arbitrage client requis » : c'est le modèle
+#   PROPOSÉ, pas une décision actée. Le dire autrement présenterait comme réglé
+#   un point d'architecture que l'ADR lui-même laisse ouvert.
+#   Ce fichier `.example` documente la forme, il n'est pas actif — renommez-le
+#   sans `.example` seulement pour un test.
+#
+# ⚠ AUCUN MARQUEUR POUR L'ENVIRONNEMENT D'AUTHORING (`dev`) : dev suit HEAD
+#   par conception (labctl/internal/uac/pinned.go:15). Un deploy.dev.yaml
+#   n'est pas une erreur, il est sans objet.
+
+# La version promue. Contrôle croisé : elle DOIT égaler la version du
+# manifeste lu au SHA pinné, sinon PIN_VERSION_MISMATCH (un marqueur qui ment
+# sur sa version déploierait une version que personne n'a demandée).
+version: "1.0.0"
+
+# ⚠ CHAMP DÉCORATIF AUJOURD'HUI, ET IL FAUT LE LIRE COMME TEL. L'INTENTION est
+#   un desired-state (`false` = le palier existe mais n'est pas servi) ; le
+#   RÉSOLVEUR, lui, ne lit que `commit`, `version` et `archive_sha256` — un
+#   marqueur portant `enabled: false` est matérialisé et déployé exactement
+#   comme un marqueur à `true`. Son SEUL lecteur est l'écrivain de promotion, et
+#   sur le marqueur du palier SOURCE (refus SOURCE_NON_DEPLOYEE) : il refuse de
+#   promouvoir DEPUIS un palier désactivé, il n'empêche pas de déployer VERS
+#   un palier désactivé. Honorer ce champ reste à faire.
+enabled: true
+
+# Le DEMANDEUR de la promotion. L'APPROBATEUR vit ailleurs (la porte de
+# environments.yaml, et la trace du merge) : ce champ ne l'exprime pas et ne
+# doit pas être lu comme tel.
+#
+# ⚠ IL VAUT `ci` TANT QUE LE PLUGIN JENKINS `build-user-vars` N'EST PAS
+#   PROVISIONNÉ. ci/Jenkinsfile.api-promote-request pose
+#   `PROMOTED_BY=${BUILD_USER_ID ?: 'ci'}`, et rien dans ce dépôt n'installe ce
+#   plugin : sans lui la dégradation est SILENCIEUSE — un champ nominatif qui ne
+#   nomme personne, sans le moindre avertissement. Ne pas le lire comme une
+#   identité tant que le plugin n'est pas en place.
+promoted_by: alice
+
+# Message d'audit — obligatoire côté écrivain.
+message: "promotion dev → rec"
+
+# ── LE PIN ───────────────────────────────────────────────────────────────────
+# Un SHA de COMMIT du dépôt d'équipe, pas le SHA d'un fichier. TOUS les
+# fichiers de cette API sont relus à ce commit : publish.yml, promote.yml,
+# openapi.yaml. Pinner le seul contrat laisserait les alias backend, le GUID
+# et le scope-mapping suivre main — le contrat serait figé et la configuration
+# de déploiement, elle, dériverait.
+#
+# Le résolveur REFUSE un SHA qui n'est pas ancêtre de main (PIN_NON_ANCETRE) :
+# `git show` réussit sur n'importe quel objet du clone, y compris un commit
+# d'une branche jamais fusionnée.
+commit: 0000000000000000000000000000000000000000
+
+# Référence de changement ITSM, exigée À LA DEMANDE par les portes qui la
+# réclament (`requireChangeRef` / `itsmCheck` dans environments.yaml) et
+# conservée ici pour que la trace accompagne l'état promu. Vide si la porte du
+# palier ne l'exige pas.
+#
+# ⚠ SA PRÉSENCE EST RE-VÉRIFIÉE À L'APPLY sur ce marqueur-ci — team-promote.sh
+#   §6 refuse GATE_REFS_REQUIRED si la porte du palier cible exige change_ref
+#   et qu'il est vide sur le marqueur MERGÉ (anti-TOCTOU, même mécanisme que
+#   pv_ref ci-dessous). Ce qui n'est PAS re-vérifié à l'apply, c'est la
+#   VALIDITÉ ITSM du contenu : la garde anti-TOCTOU d'ADR-075
+#   (labctl/cmd/labctl/dispatchgate.go) existe bel et bien, mais elle porte sur
+#   l'AUTRE marqueur — celui du monorepo de gouvernance,
+#   `tenants/{tenant}/apis/{slug}/deploy.{env}.yaml`. Le résolveur de ce
+#   marqueur-ci ne lit que `commit`, `version` et `archive_sha256`. Étendre la
+#   re-vérification de VALIDITÉ ITSM à ce chemin reste à faire ; ne pas
+#   compter dessus tant que ce n'est pas écrit.
+change_ref: ""
+
+# Référence du PV de validation, exigée À LA DEMANDE par `requirePVRef`
+# (`homol`, `prod`). Elle VOYAGE ici pour que l'apply de promotion la
+# re-vérifie sur le marqueur MERGÉ (team-promote.sh §6, anti-TOCTOU) : sans ce
+# champ, cette re-vérification refuserait toute promotion vers homol/prod, ou —
+# pire — serait écrite comme une garde qui ne regarde rien. Vide si la porte du
+# palier ne l'exige pas.
+pv_ref: ""
+
+# ── LE DIGEST ────────────────────────────────────────────────────────────────
+# sha256 de l'archive promue, émis par `apim_promote_action=export`
+# (EXPORT_CONFIRMED). OBLIGATOIRE dès que l'env n'est pas l'env d'authoring.
+#
+# ⚙ CE QUE CE CHAMP TIENT, ET COMMENT (arbitré le 2026-08-26).
+#   Les octets importés en <env> == CE DIGEST-CI. Ce qui a changé, c'est d'OÙ
+#   ce digest vient :
+#     - depuis l'env d'authoring (`dev`) : le demandeur le saisit au formulaire,
+#       c'est la sortie d'EXPORT_CONFIRMED ;
+#     - au-delà : il est HÉRITÉ du marqueur du palier source, en même temps que
+#       `commit`. Le demandeur le ressaisit quand même — la garde le lui impose —
+#       mais il n'est plus CRU : il est confronté à celui du palier source, et
+#       une divergence refuse (DIGEST_CONTREDIT_SOURCE).
+#   Ce qui tient la garantie, c'est donc le REFUS, pas l'héritage : le demandeur
+#   ne peut pas substituer les octets en cours de route ; il peut seulement se
+#   tromper de recopie, et il est refusé.
+#   C'est ce qui rend « build once, deploy many » vrai par le MÉCANISME : les
+#   mêmes octets voyagent de dev jusqu'à la prod.
+#
+# ⚠ CE QUE ÇA COÛTE, ET IL FAUT LE SAVOIR AVANT DE LE DÉCOUVRIR : une correction
+#   ne saute aucun palier. Un correctif urgent re-traverse depuis `dev` —
+#   dev → rec → int → homol → prod. C'est le prix de la garantie ; sans lui la
+#   chaîne documenterait un parcours au lieu de le prouver.
+archive_sha256: "0000000000000000000000000000000000000000000000000000000000000000"

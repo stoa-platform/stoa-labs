@@ -7,9 +7,15 @@
 // substance (gardes d'entrée, clone, ajout dans providers.<env>.yml, branche,
 // push authentifié, PR, plan Ansible, commentaire de PR).
 //
-//   formulaire Jenkins (TEAM / DESCRIPTION / APPROVERS / REPO / REQ_ENV)
+//   formulaire Jenkins (TEAM / DESCRIPTION / APPROVERS / REPO)
 //     ──▶ scripts/team-request.sh
 //     ──▶ PR onboard/<team>-<env> + verdict de plan commenté sur la PR
+//
+// L'AXE ENV A QUITTÉ CE FORMULAIRE (G4, ADR-082, D5) : l'onboarding d'équipe
+// est un geste d'AUTHORING, et team-request.sh scelle son env sur la constante
+// DEPLOY_PIN_AUTHORING_ENV de scripts/lib/deploy-pin.sh. Le champ a été retiré
+// des DEUX descriptions du formulaire — celle-ci et celle du job.xml, qui est
+// celle qui GAGNE (cf. le bloc `parameters` plus bas).
 //
 // LA DÉCISION RESTE LE MERGE (ADR-081) : ce job n'applique RIEN — il ne crée ni
 // dépôt d'équipe, ni objet de gateway, ni secret Vault. Le privilège de création
@@ -17,8 +23,8 @@
 // ici ni demande en attente (`input`), ni identité nominative, ni login Vault :
 // il n'y a rien à autoriser, seulement une demande à déposer. Un formulaire
 // hostile ne peut donc RIEN faire d'autre qu'ouvrir une PR que quelqu'un devra
-// relire — et les gardes de valeur (TEAM_NAME_INVALID, ENV_NOT_OPEN,
-// YAML_UNSAFE_INPUT, TEAM_ALREADY_DECLARED) sont dans le script, pas ici.
+// relire — et les gardes de valeur (TEAM_NAME_INVALID, YAML_UNSAFE_INPUT,
+// TEAM_ALREADY_DECLARED) sont dans le script, pas ici.
 pipeline {
 
   // `agent any` — et NON `agent none` comme team-publish : ce job n'a aucune
@@ -43,8 +49,9 @@ pipeline {
   // (même mécanique que le déclencheur de team-publish, mesurée sur le lab le
   // 2026-08-06 : 4 builds, le XML n'a jamais bougé). Une divergence entre les
   // deux fichiers serait donc SILENCIEUSE : test-team-request-wiring.sh §2 et §3
-  // comparent les deux et virent au rouge à la première divergence de nom, de
-  // type ou de liste de choix.
+  // comparent les deux et virent au rouge à la première divergence de nom ou de
+  // type — et sur le retour de toute liste fermée, la seule qu'ait eue ce
+  // formulaire étant l'axe env.
   //
   // Ce bloc reste néanmoins ICI parce qu'il est le SEUL formulaire quand le job
   // est posé SANS son XML (re-création depuis le seul dépôt, multibranch,
@@ -64,11 +71,13 @@ pipeline {
            description: "Matricules des approbateurs [A-Za-z0-9_-], séparés par des virgules. VIDE ACCEPTÉ : la projection owner ne fera rien tant que la liste n'est pas établie.")
     string(name: 'REPO', defaultValue: '',
            description: "Dépôt Git de l'équipe (org/nom). Vide = <team>/apis. Créé AU MERGE depuis le squelette ADR-076.")
-    // Les quatre environnements sont LISTÉS mais un seul est OUVERT : le refus
-    // est prononcé par le script (ENV_NOT_OPEN), avec sa raison — jamais par un
-    // choix amputé qui laisserait croire que rec/int/prod n'existent pas.
-    choice(name: 'REQ_ENV', choices: ['dev', 'rec', 'int', 'prod'],
-           description: "Environnement. Seul dev est ouvert au palier 2 — les autres sont refusés avec ENV_NOT_OPEN.")
+    // AUCUN champ d'environnement, et c'est délibéré (G4, ADR-082, D5) : une
+    // liste à quatre entrées dont une seule était acceptée offrait un choix qui
+    // n'en était pas un, et faisait croire que le palier de destination se
+    // décide au formulaire. Il se décide par la NATURE du geste — onboarder une
+    // équipe est de l'authoring — et la tenancy aux paliers supérieurs vient du
+    // chemin de promotion, jamais d'ici. Ce bloc doit rester le miroir exact du
+    // XML, qui a perdu le même champ.
   }
 
   // ── POINTS DE CONFIG CLIENT ────────────────────────────────────────────────
@@ -129,8 +138,7 @@ pipeline {
           // garde YAML_UNSAFE_INPUT de team-request.sh ne l'attraperait pas :
           // elle valide la valeur qu'elle REÇOIT, donc déjà expansée.
           withEnv(["TEAM=${params.TEAM}", "DESCRIPTION=${params.DESCRIPTION}",
-                   "APPROVERS=${params.APPROVERS}", "REPO=${params.REPO ?: ''}",
-                   "REQ_ENV=${params.REQ_ENV}"]) {
+                   "APPROVERS=${params.APPROVERS}", "REPO=${params.REPO ?: ''}"]) {
             dir('poc-control-plane-federation') {
               // `sh` en triple quotes SIMPLES : Groovy n'interpole RIEN ici. Les
               // champs du formulaire sont de la saisie humaine — donnée d'un
@@ -148,8 +156,12 @@ pipeline {
                 # passait un jour à `${REPO-…}` (sans les deux-points, qui, lui,
                 # ne traite PAS la chaîne vide comme une absence).
                 if [ -z "$REPO" ]; then unset REPO; fi
+                # Le dry-run est un contrat d'ÉPREUVE, jamais un mode du job — une
+                # variable de nœud ne doit pas rendre le formulaire muet (build
+                # vert, aucune PR ouverte).
+                unset DRY_RUN
                 # Toute la substance est là-dedans : gardes d'entrée
-                # (TEAM_NAME_INVALID, ENV_NOT_OPEN, YAML_UNSAFE_INPUT,
+                # (TEAM_NAME_INVALID, YAML_UNSAFE_INPUT,
                 # TEAM_ALREADY_DECLARED), clone du dépôt plateforme, ajout de
                 # l'entrée dans providers.<env>.yml, branche onboard/<team>-<env>,
                 # push authentifié par header HTTP (jamais de token en argv,

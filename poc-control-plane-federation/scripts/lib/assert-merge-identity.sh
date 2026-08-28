@@ -18,25 +18,43 @@
 #
 # Usage :
 #   assert-merge-identity.sh --merged-by <login> --requester <login> \
-#                            --vault-user <login> [--map <fichier>]
+#                            --vault-user <login> [--map <fichier>] \
+#                            [--allow-self-approval]
 #
 #   --map : correspondances « loginGitea:loginAnnuaire », une par ligne, quand
 #           les deux annuaires ne portent pas les mêmes identifiants. Les lignes
 #           vides et celles commençant par # sont ignorées.
 #
+#   --allow-self-approval : la PORTE du palier d'arrivée n'exige PAS les quatre
+#           yeux (environments.yaml, `fourEyes` absent / `selfApproval: true`) —
+#           le seul bloc SAUTÉ est FOUR_EYES_VIOLATION.
+#
+#           ⚠ CE QUE CE DRAPEAU NE RELÂCHE PAS, ET C'EST L'ESSENTIEL :
+#           MERGER_UNKNOWN et MERGER_MISMATCH restent INCONDITIONNELS. « Le
+#           demandeur peut approuver lui-même » ne veut jamais dire « on ne
+#           vérifie plus qui répond à la pause » : sans ces deux blocs, un tiers
+#           quelconque disposant du droit `input` sur Jenkins écrirait sous une
+#           identité qui n'a rien validé. Le drapeau exprime UNE décision de
+#           porte, pas une dispense de garde.
+#
+#           DÉFAUT OFF : les appelants historiques (team-publish, team-apply,
+#           provision-apply) ne le posent pas et ne changent donc pas de
+#           comportement.
+#
 # Codes d'échec (stables, greppables dans un log de build) :
 #   MERGER_UNKNOWN        : merged_by absent — le webhook ne l'a pas fourni
 #   MERGER_MISMATCH       : le répondant n'est pas celui qui a mergé
-#   FOUR_EYES_VIOLATION   : le valideur est le demandeur
+#   FOUR_EYES_VIOLATION   : le valideur est le demandeur (sauf --allow-self-approval)
 set -eu
 
-MERGED_BY=""; REQUESTER=""; VAULT_USER=""; MAPFILE=""
+MERGED_BY=""; REQUESTER=""; VAULT_USER=""; MAP_FILE=""; ALLOW_SELF=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --merged-by)  MERGED_BY="${2:-}"; shift 2 ;;
     --requester)  REQUESTER="${2:-}"; shift 2 ;;
     --vault-user) VAULT_USER="${2:-}"; shift 2 ;;
-    --map)        MAPFILE="${2:-}"; shift 2 ;;
+    --map)        MAP_FILE="${2:-}"; shift 2 ;;
+    --allow-self-approval) ALLOW_SELF=1; shift 1 ;;
     *) echo "argument inconnu : $1" >&2; exit 2 ;;
   esac
 done
@@ -57,8 +75,8 @@ norm() {
 # c'est le login Gitea BRUT qui sert de clé.
 map_login() {
   _raw="${1:-}"
-  if [ -n "$MAPFILE" ] && [ -f "$MAPFILE" ]; then
-    _hit=$(grep -v '^[[:space:]]*#' "$MAPFILE" 2>/dev/null \
+  if [ -n "$MAP_FILE" ] && [ -f "$MAP_FILE" ]; then
+    _hit=$(grep -v '^[[:space:]]*#' "$MAP_FILE" 2>/dev/null \
            | grep -v '^[[:space:]]*$' \
            | awk -F: -v k="$_raw" '$1==k {print $2; exit}')
     [ -n "$_hit" ] && { printf '%s' "$_hit"; return; }
@@ -98,7 +116,14 @@ fi
 # Défense en profondeur : la règle se pose D'ABORD dans la protection de branche
 # Gitea. Une garde de pipeline seule se contourne en déclenchant le job
 # directement — elle complète le contrôle amont, elle ne le remplace pas.
-if [ -n "$N_REQ" ] && [ "$N_REQ" = "$N_MERGER" ]; then
+#
+# La PORTE du palier décide (environments.yaml) ; ce script ne fait qu'appliquer
+# ce que l'appelant a lu. On le DIT dans le log : un lecteur qui voit une
+# auto-approbation passer doit pouvoir distinguer « la porte l'admet » d'« une
+# garde a été oubliée ».
+if [ "$ALLOW_SELF" = 1 ]; then
+  echo "auto-approbation admise par la porte (selfApproval) — le contrôle quatre yeux n'est pas exigé pour ce palier ; l'identité du répondant, elle, reste vérifiée."
+elif [ -n "$N_REQ" ] && [ "$N_REQ" = "$N_MERGER" ]; then
   echo "FOUR_EYES_VIOLATION : '$MERGED_BY' a validé sa propre demande" >&2
   echo "  (demandeur '$REQUESTER'). À imposer aussi dans la protection de" >&2
   echo "  branche Gitea : une garde de pipeline se contourne." >&2

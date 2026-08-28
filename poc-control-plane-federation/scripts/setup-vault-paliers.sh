@@ -1,0 +1,233 @@
+#!/usr/bin/env bash
+# setup-vault-paliers.sh — G4 (ADR-082) : le plan de credential PAR PALIER.
+#
+# « Ouvrir un palier » n'est PAS un edit de code : c'est un geste Vault de
+# l'exploitant (mint d'un secret_id, grant d'une policy à un humain). Ce
+# script pose le MÉCANISME, fermé par défaut :
+#   - une policy apply-<env> par palier NON terminal (read du seul secret
+#     d'admin du palier : envs/<env>/wm-admin) — dérivée d'env_chain_nonprod,
+#     JAMAIS de nom de palier en dur, le terminus est exclu par STRUCTURE
+#     (le dernier de la chaîne, pas « prod ») ;
+#   - un AppRole apply-<env> lié 1:1 à sa policy — AUCUN secret_id minté ici :
+#     le mint est le geste d'ouverture, séparé, explicite ;
+#   - le mapping LDAP apim-apply-<env> → apply-<env> (inerte tant que le
+#     groupe n'existe pas dans l'annuaire — le grant humain reste un geste).
+#
+# DISSYMÉTRIE NOMMÉE : stoa-proxy-provision (setup-vault-approle.sh) garde
+# son wildcard envs/+/wm-admin — c'est l'outillage OPÉRATEUR de pose des
+# proxies ADR-075, pas une identité de pipeline. Clause de réouverture : le
+# jour où la pose de proxy devient déclenchable par un tiers, elle suit la
+# discipline par palier posée ici.
+#
+#   bash scripts/setup-vault-paliers.sh            # pose (exige VAULT_TOKEN)
+#   bash scripts/setup-vault-paliers.sh --print    # émet SANS réseau (preuve)
+#   bash scripts/setup-vault-paliers.sh --mint apply-rec   # geste d'OUVERTURE
+#   bash scripts/setup-vault-paliers.sh --grant-ci # DÉCLARE la machine du CI
+set -euo pipefail
+# Auto-localisation par BASH_SOURCE quand le fichier vit dans son arbre ;
+# repli sur le cwd pour la copie mutée en $TMP (la porte exécute des copies
+# hors arbre — leur dirname ne contient pas lib/). Aucun `cd` : un cd basé
+# sur $0/BASH_SOURCE d'une copie mutée résoudrait un mauvais répertoire
+# racine (mesuré : test-palier-retention.sh épreuves ③bis/⑤).
+_SVP_LIB="$(dirname "${BASH_SOURCE[0]}")/lib/env-chain.sh"
+[ -f "$_SVP_LIB" ] || _SVP_LIB="scripts/lib/env-chain.sh"
+# shellcheck source=scripts/lib/env-chain.sh
+. "$_SVP_LIB"
+
+VAULT_ADDR="${VAULT_ADDR:-http://localhost:8200}"
+TOKEN_TTL="${TOKEN_TTL:-3m}"
+SECRET_ID_TTL="${SECRET_ID_TTL:-10m}"
+SECRET_ID_USES="${SECRET_ID_USES:-0}"
+# L'identité MACHINE du CI de gouvernance hors-prod (ADR-074,
+# setup-vault-approle.sh:86 — policies stoa-ci + stoa-labctl). C'est ELLE que
+# --grant-ci déclare déployeuse, jamais un rôle inventé ici.
+CI_ROLE="${CI_ROLE:-ci-pipeline}"
+
+ENVS_NONPROD="$(env_chain_nonprod)" || { echo "CHAINE_ILLISIBLE : env_chain_nonprod a échoué" >&2; exit 1; }
+[ -n "$ENVS_NONPROD" ] || { echo "CHAINE_VIDE : aucun palier non terminal" >&2; exit 1; }
+
+policy_hcl() { # <env> — le périmètre est le SECRET D'ADMIN DU PALIER, rien d'autre
+  # Interpolation directe de $1 (pas de printf %s) : la contre-épreuve ③bis de
+  # la porte mute le littéral envs/$1/ en envs/+/ — la forme est un contrat.
+  printf '%s\n' \
+    "path \"secret/data/stoa/envs/$1/wm-admin\" { capabilities = [\"read\"] }" \
+    "path \"secret/metadata/stoa/envs/$1/wm-admin\" { capabilities = [\"read\"] }" \
+    "# LIMITE « valeur partagée entre paliers » (spec G5 D5, parking n°2) :" \
+    "# le client OAuth ci-horsprod est le MÊME pour tous les paliers hors-prod ;" \
+    "# un client par palier reste à faire. La rétention mécanique reste ICI —" \
+    "# le chemin Vault PAR PALIER (envs/$1/admin-oauth) + le scope deploy:$1" \
+    "# vérifié par le proxy, pas un client OAuth distinct par palier." \
+    "path \"secret/data/stoa/envs/$1/admin-oauth\" { capabilities = [\"read\"] }" \
+    "path \"secret/metadata/stoa/envs/$1/admin-oauth\" { capabilities = [\"read\"] }"
+}
+
+MODE="${1:-pose}"
+case "$MODE" in
+  --print)
+    for e in $ENVS_NONPROD; do
+      printf '# ── policy apply-%s ──\n' "$e"
+      policy_hcl "$e"
+      printf '# ── approle apply-%s (token_policies=apply-%s, token_ttl=%s) ──\n' "$e" "$e" "$TOKEN_TTL"
+      printf '# ── mapping ldap apim-apply-%s -> apply-%s (inerte sans groupe) ──\n' "$e" "$e"
+    done
+    echo "# Geste d'OUVERTURE d'un palier (exploitant, hors pipeline) :"
+    for e in $ENVS_NONPROD; do
+      printf '#   %s --mint apply-%s\n' "$0" "$e"
+    done
+    echo "# Geste de DÉCLARATION de la MACHINE (G2/ADR-084, exploitant lui aussi) :"
+    printf '#   %s --grant-ci   # policies apply-<palier> hors-prod sur le rôle %s\n' "$0" "$CI_ROLE"
+    exit 0 ;;
+  --mint)
+    ROLE="${2:?usage: --mint apply-<env>}"
+    KNOWN=0
+    for e in $ENVS_NONPROD; do [ "$ROLE" = "apply-$e" ] && KNOWN=1; done
+    [ "$KNOWN" -eq 1 ] || { echo "MINT_ROLE_INCONNU : '$ROLE' hors du set dérivé (apply-{$(echo "$ENVS_NONPROD" | tr ' ' ',')})" >&2; exit 1; }
+    VAULT_TOKEN="${VAULT_TOKEN:?VAULT_TOKEN requis pour --mint}"
+    # Le token part dans un header-FILE, jamais en argv (ps/cmdline) — standard
+    # du repo depuis ADR-074 (« jamais en argv »).
+    HDR="$(mktemp)"; trap 'rm -f "$HDR"' EXIT
+    printf 'X-Vault-Token: %s\n' "$VAULT_TOKEN" > "$HDR"
+    CURL=(/usr/bin/curl -s -H @"$HDR")
+    RID="$("${CURL[@]}" "$VAULT_ADDR/v1/auth/approle/role/$ROLE/role-id" | python3 -c 'import sys,json;print(json.load(sys.stdin)["data"]["role_id"])')"
+    SID="$("${CURL[@]}" -X POST "$VAULT_ADDR/v1/auth/approle/role/$ROLE/secret-id" | python3 -c 'import sys,json;print(json.load(sys.stdin)["data"]["secret_id"])')"
+    printf '%s\t%s\n' "$RID" "$SID"
+    exit 0 ;;
+  # ── DÉCLARATION DE LA MACHINE (G2 / ADR-084, D6) ───────────────────────────
+  # C'est la DÉCLARATION EXPLICITE que la machine du CI gouvernance est le
+  # déployeur hors-prod. Sans ce geste, le pipeline hors-prod refuse
+  # DEPLOYER_GROUP_REQUIRED sur les paliers déclarés — comportement VOULU d'une
+  # déclaration qui vient d'apparaître : une porte neuve ferme d'abord, on
+  # l'ouvre ensuite, à la main, et l'ouverture se voit.
+  #
+  # Le terminus est exclu par STRUCTURE (env_chain_nonprod), comme partout dans
+  # ce fichier : la machine ne peut pas se voir accorder le palier de prod par
+  # ce chemin, quel que soit le nom que le client donne à son dernier palier.
+  #
+  # ⚠ CE QUE CE GESTE COÛTE, ET IL FAUT LE DIRE PLUTÔT QUE LE PRÉSENTER COMME
+  # ANODIN. Sur les paliers qui DÉCLARENT un `deployerGroup` (int, homol dans le
+  # gabarit), le grant ne fait pas qu'« ouvrir » : il installe la machine du CI
+  # comme chemin déployeur ALTERNATIF au groupe humain. Après ce geste, l'apply
+  # vers int est porté soit par un membre d'`apim-apply-int`, soit par le
+  # pipeline sous AppRole — la porte est satisfaite dans les deux cas, et le
+  # second n'est imputable à personne. C'est VOULU (c'est même l'un des remèdes
+  # du plan : sans lui le CI hors-prod ne déploie plus rien), mais ce n'est pas
+  # neutre, et l'exploitant doit le choisir en le sachant.
+  #
+  # L'EXCLUSIVITÉ HUMAINE N'EXISTE DONC QU'AU TERMINUS, et elle y tient par
+  # STRUCTURE, pas par discipline : ce mode ne peut pas l'atteindre. Vouloir la
+  # même exclusivité sur un palier hors-prod signifie NE PAS jouer ce geste
+  # pour ce palier — pas l'attendre de la déclaration, qui vérifie une policy
+  # portée, jamais l'humanité de qui la porte.
+  #
+  # ⚠ ÉCRITURE CHIRURGICALE, ET C'EST DÉLIBÉRÉ. Le read-modify-write vise le
+  # sous-chemin `/token-policies`, PAS la racine du rôle : un POST sur la racine
+  # est un create-or-replace COMPLET, et tout champ non fourni y reprend sa
+  # valeur par DÉFAUT — token_ttl et secret_id_ttl compris. Accorder une policy
+  # aurait alors rendu ÉTERNEL le token que tout ADR-074 existe pour garder
+  # éphémère, sans qu'aucun message ne le dise. Le read-back ci-dessous ne se
+  # contente pas de le croire : il RELIT les deux TTL et refuse s'ils ont bougé.
+  --grant-ci)
+    VAULT_TOKEN="${VAULT_TOKEN:?VAULT_TOKEN requis pour --grant-ci}"
+    # Le token part dans un header-FILE, jamais en argv (ps/cmdline) — standard
+    # du repo depuis ADR-074 (« jamais en argv »).
+    HDR="$(mktemp)"; ROLE_JSON="$(mktemp)"; BODY="$(mktemp)"; AFTER_JSON="$(mktemp)"
+    trap 'rm -f "$HDR" "$ROLE_JSON" "$BODY" "$AFTER_JSON"' EXIT
+    printf 'X-Vault-Token: %s\n' "$VAULT_TOKEN" > "$HDR"
+    CURL=(/usr/bin/curl -s -H @"$HDR")
+
+    GRC="$("${CURL[@]}" "$VAULT_ADDR/v1/auth/approle/role/$CI_ROLE" -o "$ROLE_JSON" -w '%{http_code}')"
+    [ "$GRC" = 200 ] \
+      || { echo "ROLE_ABSENT : GET auth/approle/role/$CI_ROLE -> HTTP $GRC (jouer scripts/setup-vault-approle.sh d'abord)" >&2; exit 1; }
+
+    echo "AppRole $CI_ROLE — déclaration déployeur hors-prod ($ENVS_NONPROD)"
+    # Le JSON n'est JAMAIS du formatage de chaîne : union dédoublonnée, ORDRE
+    # STABLE (les policies existantes d'abord, les nôtres ensuite), et le corps
+    # écrit par json.dump. Aucune valeur imprimée ici n'est un secret : un nom
+    # de policy n'en est pas un, et ni role_id ni le moindre identifiant de
+    # secret ne sortent de cet appel.
+    # shellcheck disable=SC2086  # $ENVS_NONPROD : le découpage par mots est voulu (un argv par palier)
+    python3 - "$ROLE_JSON" "$BODY" $ENVS_NONPROD <<'PY' || { echo "PARSE_ROLE : réponse Vault illisible" >&2; exit 1; }
+import json, sys
+d = json.load(open(sys.argv[1])).get("data") or {}
+cur = list(d.get("token_policies") or [])
+out = list(cur)
+for e in sys.argv[3:]:
+    p = "apply-" + e
+    if p not in out:
+        out.append(p)
+json.dump({"token_policies": out}, open(sys.argv[2], "w"))
+print("  AVANT : " + (",".join(cur) or "<aucune>"))
+print("  APRÈS : " + (",".join(out) or "<aucune>"))
+print("  AJOUTÉES : %d" % (len(out) - len(cur)))
+print("  TTL avant : token_ttl=%s secret_id_ttl=%s" % (d.get("token_ttl"), d.get("secret_id_ttl")))
+PY
+
+    PRC="$("${CURL[@]}" -X POST "$VAULT_ADDR/v1/auth/approle/role/$CI_ROLE/token-policies" \
+      -H 'Content-Type: application/json' --data-binary @"$BODY" -o /dev/null -w '%{http_code}')"
+    case "$PRC" in 2*) echo "  write token-policies -> HTTP $PRC" ;;
+      *) echo "GRANT_REFUSE : POST auth/approle/role/$CI_ROLE/token-policies -> HTTP $PRC" >&2; exit 1 ;; esac
+
+    # READ-BACK fail-closed : on ne croit pas le code de retour, on relit le
+    # rôle. Deux propriétés, pas une — les policies SONT là, et les TTL n'ont
+    # PAS bougé (cf. l'avertissement « écriture chirurgicale » ci-dessus).
+    ARC="$("${CURL[@]}" "$VAULT_ADDR/v1/auth/approle/role/$CI_ROLE" -o "$AFTER_JSON" -w '%{http_code}')"
+    [ "$ARC" = 200 ] || { echo "READBACK_KO : GET auth/approle/role/$CI_ROLE -> HTTP $ARC" >&2; exit 1; }
+    # shellcheck disable=SC2086  # idem : un argv par palier
+    python3 - "$ROLE_JSON" "$AFTER_JSON" $ENVS_NONPROD <<'PY' || exit 1
+import json, sys
+before = json.load(open(sys.argv[1])).get("data") or {}
+after = json.load(open(sys.argv[2])).get("data") or {}
+got = list(after.get("token_policies") or [])
+print("  RELU  : " + (",".join(got) or "<aucune>"))
+missing = [("apply-" + e) for e in sys.argv[3:] if ("apply-" + e) not in got]
+if missing:
+    sys.exit("GRANT_NON_RELU : %s absentes du rôle après écriture" % ",".join(missing))
+for k in ("token_ttl", "secret_id_ttl", "token_max_ttl"):
+    if before.get(k) != after.get(k):
+        sys.exit("TTL_CLOBBER : %s est passé de %r à %r — l'écriture a débordé "
+                 "sur les champs d'éphémérité du rôle" % (k, before.get(k), after.get(k)))
+print("  TTL après : inchangés (token_ttl=%s secret_id_ttl=%s)"
+      % (after.get("token_ttl"), after.get("secret_id_ttl")))
+PY
+    echo "done. La machine $CI_ROLE est DÉCLARÉE déployeuse hors-prod. Le terminus, lui, reste hors de portée de ce geste."
+    exit 0 ;;
+  pose) : ;;
+  *) echo "usage: $0 [--print | --mint apply-<env> | --grant-ci]" >&2; exit 2 ;;
+esac
+
+VAULT_TOKEN="${VAULT_TOKEN:?VAULT_TOKEN requis pour poser (voir .env.example)}"
+# Le token part dans un header-FILE, jamais en argv (ps/cmdline) — standard
+# du repo depuis ADR-074 (« jamais en argv »).
+HDR="$(mktemp)"; trap 'rm -f "$HDR"' EXIT
+printf 'X-Vault-Token: %s\n' "$VAULT_TOKEN" > "$HDR"
+CURL=(/usr/bin/curl -s -H @"$HDR")
+
+echo "Vault $VAULT_ADDR — plan de credential par palier ($ENVS_NONPROD)"
+"${CURL[@]}" -X POST "$VAULT_ADDR/v1/sys/auth/approle" -H 'Content-Type: application/json' \
+  -d '{"type":"approle"}' -o /dev/null -w "  enable approle -> HTTP %{http_code} (204 ok / 400 déjà actif)\n" || true
+
+for e in $ENVS_NONPROD; do
+  HCL="$(policy_hcl "$e")"
+  "${CURL[@]}" -X PUT "$VAULT_ADDR/v1/sys/policies/acl/apply-$e" \
+    -H 'Content-Type: application/json' \
+    -d "{\"policy\":$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$HCL")}" \
+    -o /dev/null -w "  policy apply-$e -> HTTP %{http_code}\n"
+  ROLE_BODY="$(python3 -c 'import json,sys;print(json.dumps({"token_policies":sys.argv[1],"token_ttl":sys.argv[2],"token_max_ttl":sys.argv[2],"secret_id_ttl":sys.argv[3],"secret_id_num_uses":int(sys.argv[4])}))' "apply-$e" "$TOKEN_TTL" "$SECRET_ID_TTL" "$SECRET_ID_USES")"
+  "${CURL[@]}" -X POST "$VAULT_ADDR/v1/auth/approle/role/apply-$e" -H 'Content-Type: application/json' \
+    -d "$ROLE_BODY" \
+    -o /dev/null -w "  approle apply-$e -> HTTP %{http_code}\n"
+  # Mapping de GRANT humain — inerte tant que le groupe LDAP n'existe pas.
+  # Tolérance NOMMÉE : sans mount ldap (lab partiel), on le dit, on ne casse pas.
+  LDAP_BODY="$(python3 -c 'import json,sys;print(json.dumps({"policies":sys.argv[1]}))' "apply-$e")"
+  LC="$("${CURL[@]}" -X PUT "$VAULT_ADDR/v1/auth/ldap/groups/apim-apply-$e" \
+    -H 'Content-Type: application/json' -d "$LDAP_BODY" \
+    -o /dev/null -w '%{http_code}')"
+  case "$LC" in 2*) echo "  ldap apim-apply-$e -> apply-$e (HTTP $LC)";;
+                 *) echo "  ldap apim-apply-$e NON posé (HTTP $LC — mount ldap absent ? grant humain à poser autrement)";; esac
+done
+
+echo "done. RIEN n'est accordé : l'état sorti de ce script est « tout fermé »."
+echo "Ouvrir un palier = "
+for e in $ENVS_NONPROD; do echo "    $0 --mint apply-$e"; done
+echo "Déclarer la MACHINE du CI déployeuse hors-prod (G2/ADR-084) ="
+echo "    $0 --grant-ci"

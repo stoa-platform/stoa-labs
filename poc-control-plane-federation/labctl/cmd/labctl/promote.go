@@ -28,6 +28,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 	sigsyaml "sigs.k8s.io/yaml"
@@ -43,6 +44,7 @@ var (
 	promoteActionFlag   string
 	promoteEnvFlag      string
 	promoteTargetFlag   string
+	promoteArchiveFlag  string
 )
 
 var promoteCmd = &cobra.Command{
@@ -61,6 +63,7 @@ func init() {
 	promoteCmd.Flags().StringVar(&promoteActionFlag, "action", "import", "export | import")
 	promoteCmd.Flags().StringVar(&promoteEnvFlag, "env", "", "environment key for the per_env merge (required when the manifest declares per_env)")
 	promoteCmd.Flags().StringVar(&promoteTargetFlag, "target", "", "targets.yaml entry to drive (default: the first webmethods target)")
+	promoteCmd.Flags().StringVar(&promoteArchiveFlag, "archive", "", "absolute path of the artifact fetched by the CI (overrides the manifest's archive field); required when the manifest's archive is a Jinja template ({{ ... }}) only Ansible can render")
 	rootCmd.AddCommand(promoteCmd)
 }
 
@@ -153,6 +156,25 @@ func loadPromoteManifest(path, env string) (promoteSpec, error) {
 	return spec, nil
 }
 
+// applyArchiveOverride pins the CI-fetched artifact path over the manifest's
+// archive field. The real manifests carry a Jinja expression only Ansible can
+// render (measured: clients/_example/apis/accounts-read.promote.yml) — reading
+// it raw would always fail, so a templated path WITHOUT an override is refused
+// by name instead of surfacing as a confusing open() error.
+func applyArchiveOverride(spec *promoteSpec, override string) error {
+	if override != "" {
+		if !strings.HasPrefix(override, "/") {
+			return fmt.Errorf("promote: ARCHIVE_PATH_RELATIVE — --archive %q must be absolute", override)
+		}
+		spec.Archive = override
+		return nil
+	}
+	if strings.Contains(spec.Archive, "{{") {
+		return fmt.Errorf("promote: ARCHIVE_PATH_TEMPLATED — the manifest carries %q (a template only Ansible renders); pass --archive with the fetched artifact", spec.Archive)
+	}
+	return nil
+}
+
 // deepMerge merges src into dst recursively (maps merge, scalars/lists replace)
 // — the same combine(recursive=True) the Ansible resolve-env uses.
 func deepMerge(dst, src map[string]any) {
@@ -206,15 +228,27 @@ func runPromote(cmd *cobra.Command, _ []string) error {
 	if promoteManifestFlag == "" {
 		return fmt.Errorf("promote: --manifest is required")
 	}
-	if promoteActionFlag != "export" && promoteActionFlag != "import" {
-		return fmt.Errorf("promote: --action must be export or import (got %q)", promoteActionFlag)
+	if promoteActionFlag != "export" && promoteActionFlag != "import" && promoteActionFlag != "verify" {
+		return fmt.Errorf("promote: --action must be export, import or verify (got %q)", promoteActionFlag)
 	}
 	spec, err := loadPromoteManifest(promoteManifestFlag, promoteEnvFlag)
 	if err != nil {
 		return err
 	}
-	if spec.Archive == "" {
-		return fmt.Errorf("promote: manifest needs archive (the artifact path)")
+	// verify is a pure read-back (the G8 replayable gate): no artifact is
+	// involved, so the archive plumbing must not be able to refuse it.
+	if promoteActionFlag != "verify" {
+		if err := applyArchiveOverride(&spec, promoteArchiveFlag); err != nil {
+			return err
+		}
+		if spec.Archive == "" {
+			return fmt.Errorf("promote: manifest needs archive (the artifact path)")
+		}
+	}
+	if promoteActionFlag == "verify" && spec.GUID == "" {
+		// refused BEFORE building any adapter: a verify without the pinned
+		// id-map would fall back on name lookups, which can lie across envs.
+		return fmt.Errorf("promote: VERIFY_REFUSED — guid (the pinned id-map) is required to verify (name+version lookups can lie across envs)")
 	}
 	tf, err := targets.Load(fileFlag)
 	if err != nil {
@@ -225,10 +259,44 @@ func runPromote(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	if promoteActionFlag == "export" {
+	switch promoteActionFlag {
+	case "export":
 		return runPromoteExport(ctx, out, wm, targetName, spec)
+	case "verify":
+		return runPromoteVerify(ctx, out, wm, targetName, spec)
 	}
 	return runPromoteImport(ctx, out, wm, targetName, spec)
+}
+
+// runPromoteVerify replays the promotion gate WITHOUT writing — the labctl
+// side of the role's `--tags verify` (tasks/verify.yml), so the G8 parity
+// gate is replayable by BOTH engines: API by pinned guid present+active and
+// carrying the manifest's name, env-local backend alias value, optional
+// data-plane smoke.
+func runPromoteVerify(ctx context.Context, out interface{ Write([]byte) (int, error) }, wm *webmethods.Adapter, targetName string, spec promoteSpec) error {
+	rec, err := wm.VerifyAPIActive(ctx, spec.GUID)
+	if err != nil {
+		return fmt.Errorf("promote: PROMOTE_UNCONFIRMED — %w", err)
+	}
+	if rec.APIName != spec.Name {
+		return fmt.Errorf("promote: PROMOTE_UNCONFIRMED — guid=%s carries %q, the manifest declares %q", spec.GUID, rec.APIName, spec.Name)
+	}
+	if spec.BackendAlias.Name != "" {
+		if spec.BackendAlias.URL == "" {
+			return fmt.Errorf("promote: ALIAS_UNDEFINED — backend_alias %q has no url for env %q (declare it under per_env)", spec.BackendAlias.Name, promoteEnvFlag)
+		}
+		if err := wm.VerifyEndpointAliasValue(ctx, spec.BackendAlias.Name, spec.BackendAlias.URL); err != nil {
+			return err
+		}
+	}
+	if spec.SmokePath != "" {
+		if err := wm.InvokeSmoke(ctx, spec.SmokePath); err != nil {
+			return err
+		}
+	}
+	fmt.Fprintf(out, "PROMOTE_CONFIRMED: %s v%s guid=%s active on %s (env %q, verify read-only)\n",
+		rec.APIName, rec.APIVersion, spec.GUID, targetName, promoteEnvFlag)
+	return nil
 }
 
 func runPromoteExport(ctx context.Context, out interface{ Write([]byte) (int, error) }, wm *webmethods.Adapter, targetName string, spec promoteSpec) error {

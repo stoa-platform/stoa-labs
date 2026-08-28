@@ -34,6 +34,12 @@ type Gate struct {
 	// ITSMCheck verifies change_ref is "approved" in the ITSM at approval
 	// time — fail-closed: no client or unreachable ITSM refuses the hop.
 	ITSMCheck bool `json:"itsmCheck"`
+	// DeployerGroup, when set, names WHO may CARRY the apply toward this
+	// environment — the OTHER directory (LDAP group → Vault policy), never the
+	// KC `groups` claim: at dispatch time the only verified identity available
+	// on every chain is the Vault token (ADR-084). Enforced at the two dispatch
+	// sites (team-promote.sh §7.a, apply-uac preflight), NEVER at approve.
+	DeployerGroup string `json:"deployerGroup"`
 }
 
 // EnvChain is the ordered promotion pipeline plus the per-hop gates
@@ -90,6 +96,30 @@ func ParseEnvChain(raw []byte) (EnvChain, error) {
 		gates[g.To] = g
 	}
 	return EnvChain{Envs: f.Environments, Gates: gates}, nil
+}
+
+// DeployerPolicy projects a deployerGroup name onto the Vault policy the
+// carrier's token must hold. TWO verifiable families, fail-closed beyond them
+// (a name outside the table is a declaration nothing can check — refuse LOUDLY,
+// unlike approverGroup whose wrong name silently never matches):
+//
+//	apim-apply-<x>    → policy "apply-<x>"     (setup-vault-paliers.sh, per-palier)
+//	apim-operator-<x> → policy "operator-deploy" (setup-vault-ldap.sh, terminus)
+//
+// The shell mirror is deployer_group_policy() in scripts/lib/env-chain.sh —
+// same table, same refusals; any divergence is a bug (ADR-083 regime).
+func (g Gate) DeployerPolicy() (string, error) {
+	dg := g.DeployerGroup
+	switch {
+	case dg == "":
+		return "", nil
+	case strings.HasPrefix(dg, "apim-apply-") && dg != "apim-apply-":
+		return "apply-" + strings.TrimPrefix(dg, "apim-apply-"), nil
+	case strings.HasPrefix(dg, "apim-operator-") && dg != "apim-operator-":
+		return "operator-deploy", nil
+	default:
+		return "", fmt.Errorf("deployerGroup %q: outside the two verifiable families (apim-apply-<x> | apim-operator-<x>)", dg)
+	}
 }
 
 // EnvChain reads environments.yaml ON MAIN per request (no state outside Git).

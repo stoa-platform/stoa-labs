@@ -389,3 +389,153 @@ func mustJSON(t *testing.T, v any) []byte {
 	}
 	return raw
 }
+
+// ---- the SHIPPED 5-hop chain, hop by hop (G2, ADR-084) ----
+
+// shippedChainTemplate is the chain template that ACTUALLY ships (couche CONFIG
+// CLIENT). envchain_shipped_test.go proves that file PARSES; the tests below run
+// its gates through the real approve handler, so a relaxed gate stops REFUSING
+// here — which is what a client would actually feel.
+const shippedChainTemplate = "../../../clients/_example/environments.yaml"
+
+func shippedChainYAML(t *testing.T) string {
+	t.Helper()
+	raw, err := os.ReadFile(shippedChainTemplate)
+	if err != nil {
+		t.Fatalf("read %s: %v", shippedChainTemplate, err)
+	}
+	return string(raw)
+}
+
+// newShippedChainServer wires a Server whose environments.yaml is the given
+// chain (the shipped template, or a variant of it), with deploy.<from>.yaml
+// seeded so the hop under test has something to promote. The seed already
+// carries deploy.dev.yaml, the head of the chain.
+func newShippedChainServer(t *testing.T, chain, from string) (*Server, http.Handler, *authFixture) {
+	t.Helper()
+	extra := map[string]string{"environments.yaml": chain}
+	if from != "dev" {
+		extra["tenants/banking-demo/apis/payments-initiation/deploy."+from+".yaml"] = chainSeedDeploy
+	}
+	return newChainServer(t, extra, "")
+}
+
+// TestShippedChainPerHopGateRefusals replays the two approval refusals on EVERY
+// hop the shipped chain adds. A gate is per-hop DATA, not code: proving 4-eyes
+// on production proves nothing about int or homol — each new palier gets its own
+// row, or it ships unproven.
+func TestShippedChainPerHopGateRefusals(t *testing.T) {
+	chain := shippedChainYAML(t)
+	for _, tc := range []struct {
+		name           string
+		from, to       string
+		refs           bool     // this hop demands change_ref/pv_ref AT REQUEST
+		selfApprove    bool     // the requester approves their own promotion
+		approverGroups []string // `groups` claim (Keycloak) of whoever approves
+		wantErr        string
+	}{
+		// 4-eyes bites even when the approver IS in the gate's group: being
+		// entitled to approve this hop never means approving one's own.
+		{"int/self-approval-though-in-int-team", "rec", "int", false, true, []string{"int-team"}, "SELF_APPROVAL_BLOCKED"},
+		{"homol/self-approval-though-in-release-team", "int", "homol", true, true, []string{"release-team"}, "SELF_APPROVAL_BLOCKED"},
+		// The group names WHO. A distinct third party outside it is refused —
+		// and holding the NEIGHBOURING hop's group is not holding this one's.
+		{"int/third-party-without-int-team", "rec", "int", false, false, []string{"release-team"}, "GATE_GROUP_REQUIRED"},
+		{"homol/third-party-without-release-team", "int", "homol", true, false, []string{"int-team"}, "GATE_GROUP_REQUIRED"},
+		{"prod/third-party-without-release-team", "homol", "prod", true, false, []string{"int-team"}, "GATE_GROUP_REQUIRED"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, h, fix := newShippedChainServer(t, chain, tc.from)
+			// cpi-admin is the only role holding request AND approve, so the
+			// only principal who can even ATTEMPT a self-approval.
+			carol := signGroups(t, fix, "carol", "Carol Admin", "", []string{"cpi-admin"}, tc.approverGroups)
+			alice := fix.sign(t, "alice", "Alice Martin", "banking-demo", []string{"tenant-admin"})
+			bob := signGroups(t, fix, "bob", "Bob Approver", "banking-demo", []string{"devops"}, tc.approverGroups)
+
+			req := map[string]any{"slug": "payments-initiation", "from": tc.from, "to": tc.to, "message": "vers " + tc.to}
+			if tc.refs {
+				req["change_ref"], req["pv_ref"] = "CHG-0042", "PV-2026-17"
+			}
+			requester, approver := alice, bob
+			if tc.selfApprove {
+				requester, approver = carol, carol
+			}
+			promoID := requestPromotion(t, h, requester, req)
+
+			code, body := do(t, h, "POST", "/api/v1/tenants/banking-demo/promotions/"+promoID+"/approve", approver,
+				map[string]any{"message": "j'approuve"})
+			if code != 403 || errCode(body) != tc.wantErr {
+				t.Fatalf("approve %s→%s = %d %v, want 403 %s", tc.from, tc.to, code, body, tc.wantErr)
+			}
+			// A gate that refuses silently is a gate nobody can prove refused.
+			srv.WaitDenials()
+			raw, err := os.ReadFile(filepath.Join(srv.Store.Repo.Dir, filepath.FromSlash(governance.DenialsPath)))
+			if err != nil || !strings.Contains(string(raw), tc.wantErr) {
+				t.Fatalf("%s not audited in denials.jsonl: %v %q", tc.wantErr, err, raw)
+			}
+		})
+	}
+}
+
+// TestShippedChainRecFourEyesVariant exercises DÉCISION CLIENT n°1. The template
+// ships `rec` autonomous (selfApproval, documentary only) and its comment claims
+// that closing the DORA art. 17(1)(b) tension is "une ligne". This test adds
+// exactly that line and checks it BITES — a promise about a config line is worth
+// what its refusal is worth.
+func TestShippedChainRecFourEyesVariant(t *testing.T) {
+	const recGate = "  - to: rec\n    selfApproval: true\n"
+	chain := shippedChainYAML(t)
+	if !strings.Contains(chain, recGate) {
+		t.Fatalf("the shipped rec gate no longer reads:\n%s— re-anchor this variant on the template", recGate)
+	}
+	variant := strings.Replace(chain, recGate, recGate+"    fourEyes: true\n", 1)
+
+	srv, h, fix := newShippedChainServer(t, variant, "dev")
+	carol := signGroups(t, fix, "carol", "Carol Admin", "", []string{"cpi-admin"}, nil)
+	promoID := requestPromotion(t, h, carol,
+		map[string]any{"slug": "payments-initiation", "from": "dev", "to": "rec", "message": "vers rec"})
+	code, body := do(t, h, "POST", "/api/v1/tenants/banking-demo/promotions/"+promoID+"/approve", carol,
+		map[string]any{"message": "je m'auto-approuve comme avant"})
+	if code != 403 || errCode(body) != "SELF_APPROVAL_BLOCKED" {
+		t.Fatalf("rec self-approve WITH fourEyes = %d %v, want 403 SELF_APPROVAL_BLOCKED", code, body)
+	}
+	srv.WaitDenials()
+
+	// Contre-épreuve on the UNMODIFIED template: the very same self-approval
+	// passes. The refusal above comes from that one line and nothing else.
+	_, h2, fix2 := newShippedChainServer(t, chain, "dev")
+	carol2 := signGroups(t, fix2, "carol", "Carol Admin", "", []string{"cpi-admin"}, nil)
+	promoID2 := requestPromotion(t, h2, carol2,
+		map[string]any{"slug": "payments-initiation", "from": "dev", "to": "rec", "message": "vers rec"})
+	code, body = do(t, h2, "POST", "/api/v1/tenants/banking-demo/promotions/"+promoID2+"/approve", carol2,
+		map[string]any{"message": "auto-approbation autorisée vers rec"})
+	if code != 200 || body["promotion"].(map[string]any)["status"] != "approved" {
+		t.Fatalf("rec self-approve on the shipped chain = %d %v, want 200 approved", code, body)
+	}
+}
+
+// TestShippedChainApproveEvidenceNamesTheDeployer proves the approval record
+// carries the THIRD axis: WHO may carry the apply. bob holds int-team (the
+// Keycloak claim the gate reads) and NOT apim-apply-int (the LDAP group behind
+// the Vault policy) — and his approval passes: the deployer axis is MATERIALISED
+// in the evidence, never EVALUATED here. The refusal lives at dispatch.
+func TestShippedChainApproveEvidenceNamesTheDeployer(t *testing.T) {
+	srv, h, fix := newShippedChainServer(t, shippedChainYAML(t), "rec")
+	alice := fix.sign(t, "alice", "Alice Martin", "banking-demo", []string{"tenant-admin"})
+	bob := signGroups(t, fix, "bob", "Bob Approver", "banking-demo", []string{"devops"}, []string{"int-team"})
+
+	promoID := requestPromotion(t, h, alice,
+		map[string]any{"slug": "payments-initiation", "from": "rec", "to": "int", "message": "vers int"})
+	code, body := do(t, h, "POST", "/api/v1/tenants/banking-demo/promotions/"+promoID+"/approve", bob,
+		map[string]any{"message": "revue intégration OK"})
+	if code != 200 {
+		t.Fatalf("approve rec→int = %d %v", code, body)
+	}
+	evPath, _ := body["evidence"].(string)
+	evRaw := gitT(t, srv.Store.Repo.Dir, "show", "main:"+evPath)
+	for _, want := range []string{`"hop": "rec→int"`, `"approver_group": "int-team"`, `"deployer_group": "apim-apply-int"`} {
+		if !strings.Contains(evRaw, want) {
+			t.Fatalf("evidence gate check missing %q:\n%s", want, evRaw)
+		}
+	}
+}

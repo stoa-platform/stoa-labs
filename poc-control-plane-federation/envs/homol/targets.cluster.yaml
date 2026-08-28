@@ -1,0 +1,36 @@
+# envs/homol/targets.cluster.yaml — cible de convergence HOMOL (ADR-075),
+# perspective CI (Jenkins DANS le réseau poc : noms docker internes).
+# Même contenu que envs/homol/targets.yaml, seuls les hosts changent :
+# webmethods-real:5555 au lieu de localhost:5555.
+#
+# Plomberie posée depuis G5 (2026-08-27) : proxy wm-admin-homol (matrice
+# 20/0), scope deploy:homol dérivé de la chaîne, secret Vault
+# envs/homol/wm-admin. Voir l'en-tête de targets.yaml.
+apiVersion: labctl.stoa.io/v1
+kind: FederationTarget
+name: accounts-read
+
+# Ignoré par apply-uac (contrat servi par le repo governance, UAC v1).
+contract: ../../apis/accounts-read.openapi.yaml
+
+backendUrl: http://poc-token-echo:8080/backend/homol
+
+targets:
+  - name: wm-homol
+    type: webmethods
+    # Le proxy admin de l'env — Jenkins n'atteint JAMAIS wm-mock-homol
+    # directement (contre-épreuve : docker exec poc-jenkins getent hosts
+    # wm-mock-homol → KO, comme pour dev/rec/int).
+    adminUrl: http://webmethods-real:5555/gateway/wm-admin-homol/1.0
+    gatewayUrl: http://webmethods-real:5555/gateway/wm-admin-homol/1.0
+    routing:
+      endpointAlias:
+        name: accounts-read-backend
+        url: http://poc-token-echo:8080/backend/homol
+      credentialAlias:
+        name: accounts-read-backend-cred
+    credentials:
+      # Bearer ci-horsprod (scope deploy:homol), écrit 0600 par le stage Jenkins.
+      bearerTokenFile: /tmp/stoa-wm-admin-token
+      backendUsername: poc-backend-user      # placeholder, Vault en cible
+      backendPassword: poc-backend-secret    # placeholder, Vault en cible

@@ -454,13 +454,20 @@ vault_revoke_proof() {
   return "$rc"
 }
 
-# vault_trap_revoke — à poser en `trap vault_trap_revoke EXIT` juste après le login.
+# vault_trap_revoke [rc] — à poser en `trap vault_trap_revoke EXIT` juste après le login.
 # Révoque MÊME quand le build échoue (le revoke en dernière instruction sous `set -e`
 # est sauté dès qu'une étape rate, et le token survit alors jusqu'à son TTL).
 # Préserve le code de sortie d'origine ; ne rougit un build vert que si la révocation
 # ou la preuve de mort a échoué.
+#
+# Argument optionnel $1 : le rc à préserver, pour les traps composés qui doivent
+# faire un nettoyage AVANT cet appel (ex. `rm -f` d'un fichier de token annexe) —
+# toute commande interposée entre le déclenchement du trap et cet appel écrase
+# $? avant que la fonction ait pu le lire. L'appelant capture donc $? EN PREMIER
+# dans son propre trap et le passe ici ; sans argument (tous les appelants
+# existants, `trap vault_trap_revoke EXIT` nu), $? est encore celui du build.
 vault_trap_revoke() {
-  local rc=$?
+  local rc=${1:-$?}
   if ! vault_revoke_proof; then
     if [ "$rc" -eq 0 ]; then
       rc=1

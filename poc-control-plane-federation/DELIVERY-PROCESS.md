@@ -94,7 +94,30 @@ Notes d'architecture (vérifiées) :
 - **D3 n'ajoute AUCUN risque de contournement** : les gates (`INTEGRITY_UNFULFILLED`,
   `CLASSIFICATION_SPOOFED/UNGOVERNED`, ITSM au dispatch, 4-yeux) vivent dans `labctl`/governance-api,
   pas dans l'orchestrateur. Ansible peut rester bête ; le binaire porte la politique. **C'est
-  l'argument de vente du D3.**
+  l'argument de vente du D3.** ⚠️ Cette phrase parle de la **POLITIQUE**, pas du **VERBE** : elle
+  reste vraie sous le régime à deux moteurs ci-dessous. Ce qui vit obligatoirement dans le binaire,
+  c'est la **décision** (porte, 4-yeux, ITSM, pin) ; le **geste** de mutation gateway, lui, peut
+  partir de l'un ou l'autre moteur. Corollaire à tenir : un refus de porte doit être
+  **mécaniquement antérieur** au play — jamais un simple ordre de stages dans un Jenkinsfile.
+- **Deux moteurs gateway ISO-SÉMANTIQUES — régime tranché le 2026-08-26** (option (c) du GOAL
+  `GOAL-cd-promotion-5-envs-2026-08-26.md`, décision n°6). Le livrable porte **deux** chemins de
+  mutation webMethods, et c'est assumé :
+  - **`ansible/roles/apim_*`** — le chemin **client**, celui qui a tourné E2E, celui sur lequel
+    repose tout le self-service (`.publish-api`, `.team-publish`, `.selfservice`, `.team-apply`).
+  - **`labctl`** (`apply`, `apply-uac`, `promote`) — le chemin **lab/gouvernance**, celui des
+    pipelines `Jenkinsfile`, `.prod`, `.rollback`, et le seul qui porte les gates.
+
+  **Le prix de ce régime est un test de parité, et il est PAYÉ (G8, 2026-08-27, ADR-087).**
+  `scripts/test-parity-moteurs.sh` (29/0 ×2, live) compare l'ÉTAT produit par les deux moteurs sur
+  le même `.promote.yml` et la même archive — snapshot normalisé, diff sous le registre MÉCANIQUE
+  `scripts/testdata/parity-ecarts.txt` (un écart non listé rougit par construction), contre-épreuve
+  par MUTATION des deux moteurs (le rouge est prouvé, motif F1), et la porte se rejoue en lecture
+  seule par les deux (`promote-api-verify.yml` / `labctl promote --action verify`).
+
+  **Règle, inchangée :** un manifeste (`.promote.yml`, `.publish.yml`) est **une** source ; tout
+  verbe ajouté à un moteur est ajouté à l'autre **ou** entre au registre comme écart explicite AVEC
+  sa mesure ; et toute modification d'un moteur se rejoue contre la porte de parité — avant, après.
+  La dette est soldée ; la garder soldée est le prix courant.
 - **Rollback** : la promotion prod a le sien (revert Git + re-apply, jamais de DELETE). Pour les
   mutations de config (KC, Vault, WSO2, jobs), le rollback réaliste = **re-run du setup idempotent
   vers l'état voulu** — à documenter comme tel, pas à promettre autrement.
@@ -141,8 +164,16 @@ binaire, jamais le toolchain.
 > produise un palier livrable** avec sa preuve convertie. Conventions à prolonger (elles existent
 > déjà dans `is-mtls-setup.yml` et `deploy/*.yml`) : read-modify-write idempotent, read-back
 > fail-closed après chaque mutation, asserts pédagogiques en tête de play, secrets Vault en pur
-> `uri` + `no_log`, fallback total sans `VAULT_ADDR`, `ansible.builtin` uniquement, **Ansible =
-> orchestrateur / labctl = moteur gateway unique** (aucun `uri` de mutation wM dans les plays).
+> `uri` + `no_log`, fallback total sans `VAULT_ADDR`, `ansible.builtin` uniquement, **deux moteurs
+> gateway ISO-SÉMANTIQUES** (voir la note « Deux moteurs » ci-dessous).
+
+> ⚠️ **CORRIGÉ le 2026-08-26.** Cette ligne posait auparavant **« Ansible = orchestrateur / labctl =
+> moteur gateway unique (aucun `uri` de mutation wM dans les plays) »**. La règle était **fausse à
+> l'écriture et démentie par la mesure** : les rôles `apim_*` portent **53 mutations REST contre
+> webMethods** (`apim_selfservice_app` 18, `apim_publish_api` 14, `apim_promote_api` 9,
+> `apim_team_onboard` 8, `apim_common` 4), et toute la chaîne self-service repose dessus. Une règle
+> qu'aucun code n'applique et qu'aucune porte ne vérifie n'est pas une règle : c'est un piège pour
+> le prochain lecteur, qui s'appuiera dessus pour concevoir. Elle est remplacée, pas assouplie.
 
 | Ét. | Rôle | Brique | Absorbe (bash → Ansible) | Verify (`--tags verify`) | Effort |
 |---|---|---|---|---|---|

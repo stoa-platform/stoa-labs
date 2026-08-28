@@ -154,10 +154,35 @@ pipeline {
               #    gateway depuis Vault avec le MÊME token éphémère (VAULT_TOKEN_FILE).
               ( umask 077; printf %s "$CI_TOKEN" > "$TOKFILE"; printf %s "$WM_TOKEN" > "$WMTOKFILE" )
               unset CI_TOKEN WM_TOKEN CI_SECRET HP_SECRET
-              # 4) chaîne hors-prod dev -> rec -> int. Gate GIT : un env sans
-              #    deploy.{env}.yaml mergé est SKIPPÉ par apply-uac (narration) ;
-              #    verify par env (get apis via le MÊME proxy/Bearer).
-              for E in dev rec int; do
+              # 4) chaîne hors-prod, DÉRIVÉE de governance/environments.yaml —
+              #    la MÊME source que celle dont apply-uac et governance-api
+              #    tirent leurs portes. Était `for E in dev rec int` en dur :
+              #    ajouter un palier obligeait à éditer ce fichier, et l'oubli
+              #    ne se voyait nulle part (le palier était juste... absent).
+              #
+              #    HORS-PROD = la chaîne PRIVÉE DE SON TERMINUS. La barrière est
+              #    donc STRUCTURELLE et non nominale : ce pipeline ne peut pas
+              #    servir le dernier palier même si quelqu'un le renommait.
+              #    (Défense en profondeur : le client ci-horsprod n'a de toute
+              #    façon pas le scope du terminus — cf. setup-ci-horsprod.sh.)
+              #
+              #    ⚠ dash, pas bash : pas de tableaux, on reste en découpage de
+              #    mots sur une ligne — d'où le `for E in $CHAIN` ci-dessous.
+              #    FAIL-CLOSED : chaîne illisible => on sort, on ne devine pas.
+              CHAIN=$(python3 - governance/environments.yaml <<'PYCHAIN'
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1])) or {}
+e = d.get("environments") or []
+if len(e) < 2:
+    sys.exit("environments.yaml: chaine trop courte ou absente")
+print(" ".join(e[:-1]))
+PYCHAIN
+              ) || { echo "chaine d environnements illisible (governance/environments.yaml)"; exit 1; }
+              echo "=== chaine hors-prod deduite : $CHAIN ==="
+              # Gate GIT inchangé : un env sans deploy.{env}.yaml mergé est
+              # SKIPPÉ par apply-uac (narration) ; verify par env (get apis via
+              # le MÊME proxy/Bearer).
+              for E in $CHAIN; do
                 echo "=== env $E — apply-uac (proxy wm-admin-$E) ==="
                 LABCTL_TOKEN_FILE="$TOKFILE" VAULT_TOKEN_FILE="$VTOKFILE" "$WORKSPACE/labctl" apply-uac \
                   --repo governance --env "$E" --tenant "$APPLY_TENANT" -f "envs/$E/targets.cluster.yaml"

@@ -1,0 +1,96 @@
+// Jenkinsfile.api-promote-export — formulaire « exporter l'archive d'une API »
+// (jalon G5, verbe archive). Joue apim_promote_api en action=export contre la
+// gateway D'AUTHORING (scripts/api-promote-export.sh), pousse l'archive
+// produite au registre Gitea (dépôt d'artefacts adressé par contenu,
+// scripts/lib/archive-store.sh) et imprime EXPORT_CONFIRMED_SUMMARY —
+// guid/sha256/package que le demandeur recopie ENSUITE dans
+// apis/<api>.promote.yml (PR) et dans le formulaire api-promote-request
+// (ARCHIVE_SHA256).
+//
+// CE JOB N'ÉCRIT AUCUN MARQUEUR, NE PUBLIE RIEN : il matérialise les octets
+// qu'une promotion ultérieure épinglera. C'est un geste PRIVILÉGIÉ contre la
+// gateway (lecture d'une API déjà publiée, export de son archive) : il exige
+// donc une identité NOMINATIVE, exactement comme l'apply de team-publish —
+// même motif de login Vault (ci/lib/vault-login.sh), même trap de révocation.
+pipeline {
+  agent any
+  options { disableConcurrentBuilds() }
+
+  // ── POINTS DE CONFIG CLIENT ────────────────────────────────────────────────
+  // Motif `env.X ?: défaut`, identique aux Jenkinsfile frères : le MÊME
+  // fichier sert le lab et le client, sans fork.
+  environment {
+    GIT_HOST              = "${env.GIT_HOST ?: 'http://gitea:3000'}"
+    GIT_REPO              = "${env.GIT_REPO ?: 'ci/stoa-labs'}"
+    GITEA_CREDENTIALS_ID  = "${env.GITEA_CREDENTIALS_ID ?: 'gitea-provision-token'}"
+    VAULT_ADDR            = "${env.VAULT_ADDR ?: 'http://vault:8200'}"
+    // Mount de l'auth user/mot de passe — `userpass` en lab, `ldap` (AD) chez
+    // le client. Posé ICI, donc exporté au shell AVANT que
+    // ci/lib/vault-login.sh ne soit sourcé (elle le lit au moment du login).
+    VAULT_USER_AUTH_MOUNT = "${env.VAULT_USER_AUTH_MOUNT ?: 'userpass'}"
+    // Base de l'API d'admin de la gateway D'AUTHORING. Défaut = le MOCK
+    // in-cluster ; chez le client → la vraie gateway (ou son self-proxy OAuth2).
+    APIM_API_BASE         = "${env.APIM_API_BASE ?: 'http://webmethods-mock:8080/rest/apigateway'}"
+  }
+
+  parameters {
+    string(name: 'TEAM',       defaultValue: '', description: 'Équipe propriétaire de l\'API')
+    string(name: 'API_NAME',   defaultValue: '', description: "Nom de l'API à exporter (déjà publiée en authoring, avec un apis/<api>.promote.yml)")
+    string(name: 'VAULT_USER', defaultValue: '', description: "Login annuaire nominatif (ex. oscar) — identité qui exécute l'export.")
+    password(name: 'V_PASS',   defaultValue: '', description: "Mot de passe annuaire. ⚠ Ne PAS relancer en boucle après un refus (lockout AD).")
+  }
+
+  stages {
+    stage('Export de l\'archive (identité nominative)') {
+      steps {
+        // Les paramètres de build subissent EnvVars.resolve : withEnv est
+        // obligatoire pour qu'ils arrivent intacts au script (fait mesuré,
+        // cf. mémoire ci-jenkinsfile-refactor, déjà appliqué par
+        // ci/Jenkinsfile.api-promote-request).
+        withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')]) {
+          withEnv([
+            "TEAM=${params.TEAM}", "API_NAME=${params.API_NAME}",
+            "VAULT_USER=${params.VAULT_USER}", "V_PASS=${params.V_PASS}",
+          ]) {
+            dir('poc-control-plane-federation') {
+              // Login ET export dans UN SEUL step `sh` : le script hérite
+              // VAULT_TOKEN_FILE en sous-processus, et le trap de révocation
+              // (vault_trap_revoke, EXIT) ne révoque le token QU'APRÈS
+              // l'export. Deux steps `sh` séparés rouvriraient un process par
+              // step — le trap du premier révoquerait le token AVANT que le
+              // second ne le consomme (même piège que team-publish.sh).
+              sh '''
+                set +x
+                export VAULT_USER_PASSWORD="${V_PASS:-}"
+                # V_PASS ne doit PAS survivre au-delà de cette ligne : une
+                # variable EXPORTÉE reste lisible dans /proc/PID/environ de
+                # TOUT process du même nœud, même après recopie dans
+                # VAULT_USER_PASSWORD (que vault-login.sh unset après usage).
+                unset V_PASS
+
+                # shellcheck disable=SC1091
+                . ci/lib/vault-login.sh
+                # Trap armé AVANT le login : révoque + prouve la mort du token
+                # MÊME si l'export échoue.
+                trap vault_trap_revoke EXIT
+                # `RC=0; cmd || RC=$?` et NON `if ! cmd` : après un `!`, $? vaut 0.
+                RC=0; vault_login_nominative || RC=$?
+                if [ "$RC" != 0 ]; then
+                  [ "$RC" = 2 ] || exit 1     # identité fournie mais refusée = rouge
+                  echo "  (aucune identité nominative fournie — rien à exporter)"; exit 1
+                fi
+
+                bash scripts/api-promote-export.sh
+              '''
+            }
+          }
+        }
+      }
+    }
+  }
+
+  post {
+    success { echo '✓ archive exportée et poussée au registre — voir EXPORT_CONFIRMED_SUMMARY ci-dessus (guid/sha256/package) pour la suite du geste.' }
+    failure { echo '✗ pipeline KO — voir le log de l\'étape.' }
+  }
+}

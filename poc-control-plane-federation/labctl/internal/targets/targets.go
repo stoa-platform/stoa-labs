@@ -107,6 +107,23 @@ type Target struct {
 	// for this API. Empty = leave the import default (http) untouched.
 	TransportProtocol string `json:"transportProtocol"`
 
+	// AllowDeactivate is the ADR-079 gate of a webMethods target: deactivating
+	// an API CUTS its data plane, so outside the authoring environment the
+	// adapter must refuse it (UPDATE_FORBIDDEN) and send the change through the
+	// archive import verb instead.
+	//
+	// POINTER, NOT bool, ON PURPOSE. The default is TRUE (authoring behaviour,
+	// unchanged), and a plain bool would decode an ABSENT key as false — that
+	// would silently flip every existing targets file to the closed gate. Three
+	// states, all meaningful: nil = absent, use the default; &true = explicitly
+	// open; &false = closed, the deactivate is refused.
+	//
+	// This field exists because the knob was previously UNREACHABLE: the adapter
+	// read Opt("allowDeactivate") but ToConfig never emitted that key, so a
+	// targets file saying `allowDeactivate: false` looked like it closed a gate
+	// that stayed open — a fail-open with a reassuring name.
+	AllowDeactivate *bool `json:"allowDeactivate"`
+
 	Credentials map[string]string `json:"credentials"`
 }
 
@@ -296,6 +313,12 @@ func (t Target) ToConfig() adapter.Config {
 		"gatewayEnv":   t.GatewayEnv,
 		"vhost":        t.Vhost,
 		"consumerAuth": t.ConsumerAuth,
+	}
+	// ADR-079 gate. Emitted ONLY when the target states it: an absent key lets
+	// the adapter apply its documented default (true), so files that never
+	// mention the knob keep the behaviour they have today.
+	if t.AllowDeactivate != nil {
+		opts["allowDeactivate"] = strconv.FormatBool(*t.AllowDeactivate)
 	}
 	if t.InboundAuth != nil {
 		opts["inboundAuthIssuer"] = t.InboundAuth.Issuer

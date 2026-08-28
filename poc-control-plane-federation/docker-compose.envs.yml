@@ -7,7 +7,7 @@
 #
 #   docker compose -p stoa-labs-poc \
 #     -f docker-compose.poc.yml -f docker-compose.wm.yml -f docker-compose.envs.yml \
-#     up -d --build wm-mock-dev wm-mock-rec wm-mock-int itsm-mock webmethods-real
+#     up -d --build wm-mock-dev wm-mock-rec wm-mock-int wm-mock-homol itsm-mock webmethods-real
 #
 # Topologie (la contrainte réseau EST la preuve) :
 #   - réseau `nonprod` INTERNE (internal: true) : les 3 mocks wM dev/rec/int y
@@ -106,6 +106,59 @@ services:
       retries: 5
       start_period: 5s
     networks: [nonprod]
+    restart: unless-stopped
+
+  # 4e palier de la chaîne (clients/_example/environments.yaml) — même forme que
+  # dev/rec/int : réseau `nonprod` INTERNE, donc injoignable de Jenkins comme du
+  # host. L'unique chemin d'admin est le proxy allowlist wm-admin-homol porté
+  # par le wM réel (scope deploy:homol). Les identifiants doivent matcher ce que
+  # scripts/setup-vault-envs.sh écrit sous secret/stoa/envs/homol/wm-admin —
+  # aujourd'hui dérivé de la chaîne, donc wm-homol-admin / wm-homol-secret-poc.
+  wm-mock-homol:
+    build:
+      context: ./mocks/webmethods
+    image: stoa-labs/webmethods-mock:dev
+    container_name: poc-wm-mock-homol
+    environment:
+      LISTEN_ADDR: ":8080"
+      ADMIN_USER: "wm-homol-admin"            # placeholder, Vault en cible
+      ADMIN_PASSWORD: "wm-homol-secret-poc"   # placeholder, Vault en cible
+    healthcheck:
+      test: ["CMD", "/webmethods-mock", "-healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks: [nonprod]
+    restart: unless-stopped
+
+  # TERMINUS de la chaîne d'ÉQUIPE (G7, ADR-086) — SEUL mock sur le réseau
+  # `poc`, et c'est le CONTRAT du terminus, pas une entorse : le dernier palier
+  # s'attaque en VOIE DIRECTE par le pipeline de release (aucun proxy
+  # wm-admin-<env> devant lui, exclusion structurelle G4), donc sa surface
+  # d'admin doit être joignable de Jenkins — contrairement à ses frères, dont
+  # l'unique chemin est le proxy du wM réel. Le monde reste HOMOGÈNE : une
+  # archive fabriquée par le mock ne passe PAS l'importeur du produit réel
+  # (« No assets found in the ACDL import file », HTTP 400 — MESURÉ, build
+  # team-promote #23 du 2026-08-27) ; le verbe réel→réel, lui, est prouvé par
+  # ADR-079 (22/22) sur la gateway réelle. Identifiants alignés sur
+  # scripts/setup-vault-envs.sh (WM_PROD_USER/PASS → envs/prod/wm-admin).
+  wm-mock-prod:
+    build:
+      context: ./mocks/webmethods
+    image: stoa-labs/webmethods-mock:dev
+    container_name: poc-wm-mock-prod
+    environment:
+      LISTEN_ADDR: ":8080"
+      ADMIN_USER: "wm-prod-admin"             # placeholder, Vault en cible
+      ADMIN_PASSWORD: "wm-prod-secret-poc"    # placeholder, Vault en cible
+    healthcheck:
+      test: ["CMD", "/webmethods-mock", "-healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks: [poc]
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------

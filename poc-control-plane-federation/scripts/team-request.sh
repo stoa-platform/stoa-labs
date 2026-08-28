@@ -16,20 +16,43 @@
 #   DESCRIPTION        libre (sans " ni \ ni retour ligne — YAML_UNSAFE_INPUT sinon)
 #   APPROVERS          matricules CSV ; VIDE ACCEPTÉ (cas payments-team)
 #   REPO               full-name org/nom (défaut <TEAM>/apis)
-#   REQ_ENV            dev|rec|int|prod — seul dev est OUVERT au palier 2
+#   (REQ_ENV n'est PLUS une entrée : G4/ADR-082 le SCELLE sur l'env
+#    d'authoring — l'axe env a quitté le formulaire, cf. plus bas.)
 #   GITEA_TOKEN  (req) token du service ci (write:repository, write:issue)
 #   GIT_REPO           défaut ci/stoa-labs   GIT_HOST  défaut http://gitea:3000
 #   GIT_WEB_HOST       URL Gitea vue par l'HUMAIN (liens des commentaires)
+#   DRY_RUN=1          les gardes statuent, puis exit 0 AVANT tout geste
+#                      Git/réseau (motif api-promote-request.sh) — la surface
+#                      qu'éprouve la porte hors ligne, jamais un laissez-passer
 set -uo pipefail
 set +x   # jamais de trace : le token ne doit pas fuiter
 cd "$(dirname "$0")/.." || exit 1
+
+# Auto-localisation par BASH_SOURCE quand le fichier vit dans son arbre ; repli
+# sur le cwd (fixé par le `cd` ci-dessus) pour les invocations où le dirname ne
+# contient pas lib/ — même motif que setup-vault-paliers.sh:26-38 et
+# api-request.sh:58-66.
+_TR_LIB="$(dirname "${BASH_SOURCE[0]}")/lib/deploy-pin.sh"
+[ -f "$_TR_LIB" ] || _TR_LIB="scripts/lib/deploy-pin.sh"
+# `set -e` n'est pas actif ici : sans garde explicite, un fichier manquant
+# laisserait bash continuer jusqu'à un « unbound variable » sur la constante.
+# shellcheck source=scripts/lib/deploy-pin.sh
+. "$_TR_LIB" || { echo "ERREUR: $_TR_LIB introuvable ou illisible" >&2; exit 1; }
 
 TEAM="${TEAM:?TEAM requis}"
 GITEA_TOKEN="${GITEA_TOKEN:?GITEA_TOKEN requis}"
 DESCRIPTION="${DESCRIPTION:-}"
 APPROVERS="${APPROVERS:-}"
 REPO="${REPO:-${TEAM}/apis}"
-REQ_ENV="${REQ_ENV:-dev}"
+# G4 (ADR-082, D5) : l'onboarding d'équipe est un geste d'AUTHORING — l'axe env
+# a disparu du formulaire (Jenkinsfile ET job.xml). Affectation SÈCHE depuis la
+# constante de lib, jamais "${REQ_ENV:-dev}" : les paramètres d'un build Jenkins
+# atterrissent dans l'environnement du process (fait mesuré, même raison que
+# deploy-pin.sh:29-37), donc un défaut surchargeable rendrait le formulaire
+# retiré au-dessus contournable par une simple variable de nœud. La tenancy aux
+# paliers supérieurs viendra du chemin de promotion (G5) ou d'un geste opérateur
+# D0/D2, jamais d'ici.
+REQ_ENV="$DEPLOY_PIN_AUTHORING_ENV"
 GIT_REPO="${GIT_REPO:-ci/stoa-labs}"
 GIT_HOST="${GIT_HOST:-http://gitea:3000}"
 GIT_WEB_HOST="${GIT_WEB_HOST:-$GIT_HOST}"
@@ -44,9 +67,12 @@ case "$TEAM" in *[!a-z0-9-]*) fail "TEAM_NAME_INVALID : '$TEAM' — ^[a-z0-9][a-
 printf '%s' "$TEAM" | grep -Eq '^[a-z0-9][a-z0-9-]{1,30}$' \
   || fail "TEAM_NAME_INVALID : '$TEAM' — ^[a-z0-9][a-z0-9-]{1,30}\$ requis"
 
-# Palier 2 : seul dev est ouvert. Les autres envs sont listés au formulaire
-# mais GARDÉS ici — le message dit pourquoi, pas juste « non ».
-[ "$REQ_ENV" = "dev" ] || fail "ENV_NOT_OPEN : '$REQ_ENV' — seul dev est ouvert au palier 2 (rec/int/prod : gouvernance à cadrer)"
+# (Le refus ENV_NOT_OPEN qui vivait ici a disparu avec l'axe env : il gardait un
+# CHOIX du formulaire, et il n'y a plus de choix à refuser — REQ_ENV ne peut
+# plus valoir que la constante d'authoring. Le garder aurait été une garde
+# structurellement invérifiable : aucune saisie ne peut plus la déclencher.
+# L'équivalent côté APPLY, lui, reste NÉCESSAIRE et devient ENV_MISMATCH : la
+# branche onboard/<team>-<env> traverse Git, où un suffixe peut être FORGÉ.)
 
 # Ces valeurs sont INJECTÉES dans un YAML : un " ou un retour ligne dans la
 # description casserait ou détournerait le fichier — même classe d'attaque que
@@ -96,6 +122,13 @@ if [ -n "$APPROVERS" ]; then
     APPROVERS_YAML="${APPROVERS_YAML:+$APPROVERS_YAML, }\"$a\""
   done
 fi
+
+# Contrat DRY_RUN (motif api-promote-request.sh:131-132) : les gardes ont
+# statué, AUCUN geste Git/réseau n'a eu lieu — c'est exactement la surface
+# qu'éprouve la porte hors ligne (test-palier-retention.sh ⑱). Placé APRÈS la
+# dernière garde de forme et AVANT le premier mktemp/clone : un contrat posé
+# plus haut imprimerait GARDES_OK sans avoir rien vérifié.
+[ "${DRY_RUN:-0}" = 1 ] && { echo "GARDES_OK : team-request (env d'authoring scellé : ${REQ_ENV})"; exit 0; }
 
 # ── 2. clone + édition de providers.<env>.yml ────────────────────────────────
 WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT

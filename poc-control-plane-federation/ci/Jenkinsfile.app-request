@@ -139,7 +139,16 @@ pipeline {
                    "REQ_TEAM=${params.TEAM ?: ''}",
                    "REQ_IP_ALLOWLIST=${params.IP_ALLOWLIST ?: ''}",
                    "REQ_CERT_PEM=${params.CERT_PEM ?: ''}",
-                   "REQ_CERT_ROTATION=${params.CERT_ROTATION ?: 'replace'}"]) {
+                   "REQ_CERT_ROTATION=${params.CERT_ROTATION ?: 'replace'}",
+                   // v3 : IP_ALLOWLIST est devenu MULTILIGNE et la clé backend
+                   // s'ajoute. Aucun découpage ici — la valeur multiligne
+                   // traverse telle quelle, c'est provision-request.sh qui
+                   // découpe et valide entrée par entrée. La voie machine
+                   // (provisioning-request) hérite donc du multi-IP et de la
+                   // clé backend SANS une ligne de changement : elle appelle le
+                   // même script.
+                   "REQ_BACKEND_KEY_REF=${params.BACKEND_KEY_REF ?: ''}",
+                   "REQ_BACKEND_KEY_FIELD=${params.BACKEND_KEY_FIELD ?: ''}"]) {
             // Triple quotes SIMPLES : Groovy n'interpole RIEN dans cette chaîne
             // (un `${…}` y serait du shell, pas du Groovy). `set +x` : le
             // GITEA_TOKEN injecté par withCredentials ne doit pas être écho.

@@ -172,6 +172,17 @@ func runApplyUAC(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
+	// G2 (ADR-084): WHO carries this run — the deployer gate, same placement
+	// (before any write), same fail-closed regime as the ITSM preflight.
+	if err := preflightDeployerGate(ctx, gchain, apis, scope, uacEnvFlag); err != nil {
+		auditor.record(ctx, audit.Event{
+			Actor: auditor.actorFor(""), Action: audit.ActionApply,
+			Tenant: scope, Resource: uacEnvFlag, Decision: audit.Deny,
+			Reason: dispatchGateReason(err), TraceID: audit.NewTraceID(),
+		})
+		return err
+	}
+
 	report := uacReport{OK: true, Env: uacEnvFlag, APIs: make([]uacAPIReport, 0, len(apis))}
 	var rows [][]string
 	published, total, projected, skipped := 0, 0, 0, 0

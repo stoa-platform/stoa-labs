@@ -23,6 +23,45 @@ set -uo pipefail
 set +x   # jamais de trace : le token ne doit pas fuiter
 cd "$(dirname "$0")/.." || exit 1
 
+# Auto-localisation par BASH_SOURCE quand le fichier vit dans son arbre ; repli
+# sur le cwd — qui est ICI la racine du PoC, le `cd` ci-dessus venant de
+# s'exécuter (motif de setup-vault-paliers.sh:26-38 et api-request.sh:58-66).
+# Sourcé AVANT le `git checkout "$MERGE_SHA"` plus bas : la constante ne doit
+# pas dépendre de l'état de l'arbre au SHA mergé.
+_TA_LIB="$(dirname "${BASH_SOURCE[0]}")/lib/deploy-pin.sh"
+[ -f "$_TA_LIB" ] || _TA_LIB="scripts/lib/deploy-pin.sh"
+# `set -e` n'est pas actif ici : sans garde explicite, un fichier manquant
+# laisserait bash continuer jusqu'à un « unbound variable » sur la constante.
+# shellcheck source=scripts/lib/deploy-pin.sh
+. "$_TA_LIB" || { echo "ERREUR: $_TA_LIB introuvable ou illisible" >&2; exit 1; }
+
+# G4 (ADR-082, M2/M3) : le poseur de protection de branche. Sourcé ICI, au même
+# endroit et sous la même garde que deploy-pin.sh ci-dessus, pour deux raisons
+# ORDINAIRES : la cohérence (un seul endroit où ce script prend ses libs) et le
+# fichier manquant (`set -e` n'est pas actif — sans le `|| { …; exit 1; }`,
+# bash continuerait jusqu'à un `command not found` au point de pose).
+#
+# CE QUE CE PLACEMENT NE FAIT PAS (revue round 1 — une version antérieure de ce
+# commentaire le prétendait, à tort) : il ne met PAS le poseur hors de portée du
+# demandeur. Le workspace du job est checkouté sur */main de ci/stoa-labs
+# (team-apply.job.xml:73-77) et le webhook ne part qu'APRÈS le merge : l'arbre
+# d'AVANT le `git checkout "$MERGE_SHA"` porte DÉJÀ la PR du demandeur. Sourcer
+# tôt ou tard n'y change donc RIEN.
+#
+# La vraie mitigation du trou « le demandeur peut éditer le poseur » est la
+# protection de ci/stoa-labs@main que CETTE tâche livre
+# (setup-repo-protections.sh) : plus de push direct, tout passe par une PR
+# revue. C'est un contrôle de dépôt, pas un contrôle de ce script.
+#
+# Même frontière pour la CIBLE de la pose : $REPO_FULL est lu dans
+# providers.<env>.yml TEL QUE MERGÉ (§1 ci-dessous). Rien dans ce code
+# n'empêche une PR d'onboarding de pointer un dépôt qui n'est pas le sien —
+# c'est la revue de la PR qui le tient, pas le code (ADR-082).
+_TA_PROT="$(dirname "${BASH_SOURCE[0]}")/lib/repo-protection.sh"
+[ -f "$_TA_PROT" ] || _TA_PROT="scripts/lib/repo-protection.sh"
+# shellcheck source=scripts/lib/repo-protection.sh
+. "$_TA_PROT" || { echo "ERREUR: $_TA_PROT introuvable ou illisible" >&2; exit 1; }
+
 PR_BRANCH="${PR_BRANCH:?PR_BRANCH requis}"
 PR_NUMBER="${PR_NUMBER:?PR_NUMBER requis}"
 MERGE_SHA="${MERGE_SHA:?MERGE_SHA requis (merge_commit_sha du webhook)}"
@@ -50,7 +89,14 @@ PY
 # ── 1. équipe et env depuis la branche ; anti-TOCTOU sur le contenu ──────────
 case "$PR_BRANCH" in onboard/*) ;; *) echo "hors onboard/* — rien à faire"; exit 0;; esac
 REST="${PR_BRANCH#onboard/}"; ENVN="${REST##*-}"; TEAM="${REST%-*}"
-[ "$ENVN" = dev ] || fail "ENV_NOT_OPEN : $ENVN"
+# G4 (ADR-082, D5) : la branche onboard/<team>-<env> porte l'env par
+# CONSTRUCTION (team-request le scelle sur la même constante) — un suffixe
+# étranger n'est donc pas un palier fermé qu'on refuserait d'ouvrir, c'est une
+# branche FORGÉE : le refus change de NOM parce qu'il change de nature.
+# Comparaison contre la constante et non contre le littéral `dev` : les deux ont
+# la même valeur aujourd'hui, mais seule la première suit la source si l'env
+# d'authoring bouge — un littéral serait un second point de vérité muet.
+[ "$ENVN" = "$DEPLOY_PIN_AUTHORING_ENV" ] || fail "ENV_MISMATCH : ${ENVN} ≠ ${DEPLOY_PIN_AUTHORING_ENV} — l'onboarding est un geste d'authoring ; la tenancy aux paliers supérieurs vient du chemin de promotion (ADR-082)"
 
 git fetch -q origin main && git checkout -q "$MERGE_SHA" \
   || fail "checkout du SHA de merge $MERGE_SHA"
@@ -168,6 +214,40 @@ if [ -n "$REPO_FULL" ]; then
       || { cat "$TMP/pe" >&2; fail "push du squelette"; }
     unset AUTH_B64
   fi
+
+  # ── protection de branche du dépôt d'équipe (G4, ADR-082, M2/M3) ─────────
+  # APRÈS le push du squelette : protéger AVANT aurait bloqué CE premier push
+  # (la whitelist ne porte que `ci`, et le squelette part sous le token
+  # org-admin). AVANT le webhook, pour que l'ordre du fichier soit l'ordre du
+  # raisonnement. Posée que le dépôt vienne d'être créé OU qu'il existât déjà —
+  # même raison que le webhook : un dépôt onboardé avant G4 rattrape sa
+  # protection au run suivant, sans geste manuel.
+  #
+  # BEST-EFFORT NOMMÉ, jamais `fail` (motif du webhook ci-dessous) : l'onboarding
+  # lui-même (le rôle Ansible, §3) ne dépend pas de la protection, et l'annuler
+  # pour elle coûterait plus qu'elle ne protège. Mais la note est repliée dans
+  # REPO_NOTE — donc elle rejoint le commentaire ✅ COMME le ❌ — pour que
+  # l'exploitant sache qu'il doit repasser setup-repo-protections.sh.
+  #
+  # La whitelist reste `ci` par défaut et se surcharge par une variable
+  # d'EXPLOITANT, pas par un champ de la demande : un demandeur qui pourrait
+  # s'y ajouter retrouverait le droit d'écriture directe que G4 lui retire.
+  # `ci` n'est PAS arbitraire : c'est le GITEA_ADMIN_USER de
+  # setup-team-onboard-prereqs.sh (« au lab ce n'est pas admin mais ci »), donc
+  # le porteur du token org-admin — l'identité sous laquelle le squelette est
+  # poussé juste au-dessus. Les deux DOIVENT rester alignées : si un déploiement
+  # client change l'admin sans changer PROTECT_PUSH_WHITELIST, c'est le chemin
+  # de RÉPARATION (dépôt existant VIDE, :184-189) qui casse — la protection
+  # posée au run précédent refuserait le push de rattrapage.
+  PROT_NOTE=""
+  if repo_protection_payload main "${PROTECT_PUSH_WHITELIST:-ci}" > "$TMP/prot.json" \
+     && pose_branch_protection "$GIT_HOST" "$TMP/ghdr" "$REPO_FULL" "$TMP/prot.json"; then
+    PROT_NOTE=" ; protection main posée (push whitelist: ${PROTECT_PUSH_WHITELIST:-ci})"
+  else
+    PROT_NOTE=" ; ⚠ protection main NON posée — repasser setup-repo-protections.sh"
+    echo "AVERTISSEMENT: protection de branche non posée sur ${REPO_FULL} — refus nommé ci-dessus (PROTECTION_NON_POSEE)" >&2
+  fi
+  REPO_NOTE="${REPO_NOTE}${PROT_NOTE}"
 
   # ── webhook pull_request -> team-publish (Task 7, extension a) ────────────
   # IDEMPOTENT (GET puis POST si absent) : un hook existant portant la MÊME
@@ -292,8 +372,12 @@ if [ "$ONB_RC" -eq 0 ]; then
   # webmethods-mock/gitea (même convention). Un poste hors du réseau compose
   # surcharge JENKINS_UI explicitement (comme APIM_API_BASE).
   REFRESH_NOTE=""
+  # AUCUN ENVN passé au délégué, et c'est délibéré : depuis G4 il SCELLE
+  # lui-même son env sur la même constante d'authoring
+  # (setup-team-onboard-jobs.sh:87). Le lui repasser serait du câblage mort qui
+  # suggère qu'il obéit à son appelant.
   if JENKINS_UI="${JENKINS_UI:-http://jenkins:8080}" JOBS="app-request api-request" \
-     ENVN="$ENVN" bash scripts/setup-team-onboard-jobs.sh >"$TMP/refresh.log" 2>&1
+     bash scripts/setup-team-onboard-jobs.sh >"$TMP/refresh.log" 2>&1
   then
     # REVUE (round 1, Important) : la re-pose peut RÉUSSIR tout en ayant
     # toléré/sauté un dépôt d'équipe déclaré mais introuvable sur Gitea

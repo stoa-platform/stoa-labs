@@ -4,6 +4,9 @@
 #   make test      suite Go complète, air-gapped (GOPROXY=off, -mod=vendor)
 #   make release   dist/<version>/ : binaires MULTI-ARCH versionnés (ldflags -X)
 #                  + SHA256SUMS + SBOM SPDX — le tout SANS réseau (vendor/).
+#   make lint-ci   les portes de la chaîne CI : compilation des Jenkinsfile,
+#                  shellcheck des bibliothèques, épreuves de carto-secrets et
+#                  du résolveur de pin.
 #
 # Principe livrable (DELIVERY-PROCESS §4) : la release se construit HORS ZONE ;
 # l'agent Jenkins du client reçoit CES binaires + checksums + SBOM, jamais le
@@ -37,7 +40,7 @@ TRIAL_IMAGES  ?= ibmwebmethods.azurecr.io/apigateway:11.1 \
                  softwareag/apigateway-trial:10.15 \
                  softwareag/devportal:10.15
 
-.PHONY: build test release clean images-save images-restore images-check
+.PHONY: build test release clean lint-ci images-save images-restore images-check
 
 build:
 	cd labctl && $(GOENV) go build -trimpath -ldflags "$(LDFLAGS)" -o bin/labctl .
@@ -67,6 +70,60 @@ release:
 
 clean:
 	rm -rf dist labctl/bin
+
+# ── Portes de la chaîne CI ───────────────────────────────────────────────────
+# Rien ne compilait les Jenkinsfile jusqu'ici : un fichier qui ne parse plus ne
+# se voyait qu'à l'exécution, c'est-à-dire la nuit suivante sur un job planifié.
+# C'est arrivé deux fois (2026-08-07 échappement `\w` en chaîne Groovy,
+# 2026-08-26 chemin de `source` faux). Les deux portes sont COMPLÉMENTAIRES :
+# la première lit la SYNTAXE, la seconde le COMPORTEMENT — la seconde seule
+# attrape un chemin faux, qui parse parfaitement.
+#
+# `shellcheck` est lancé AU DIALECTE DU SHEBANG (jamais `-s sh`) : les libs
+# déclarent bash et usent de `local`, que `-s sh` noie sous 14 SC3043. Et avec
+# `-x`, qui SUIT les `source` : sans lui, un script qui en source un autre rend
+# un SC1091 (info) et la porte échoue sur une non-trouvaille, pas sur un défaut.
+#
+# ⚠ LE PÉRIMÈTRE N'EST PAS `ci/lib`, C'EST « TOUT LE SHELL QUI PART CHEZ LE
+# CLIENT ». Les trois livrables de G3 — résolveur de pin, chaîne
+# d'environnements, écrivain de promotion — vivent sous `scripts/` et sont
+# restés hors porte jusqu'ici : du shell livré que rien ne relisait.
+lint-ci:
+	@echo "== [1/8] compilation des Jenkinsfile"
+	@ci/lint-jenkinsfiles.sh
+	@# La porte LIVE du grant déployeur (G2) est SHELLCHECKÉE ici mais jamais
+	@# EXÉCUTÉE par lint-ci : elle exige le lab (annuaire + Vault) et mute
+	@# l'annuaire. Même régime que les autres `-live` — son verdict se rend à la
+	@# main, sa syntaxe se relit à chaque passage.
+	@echo "== [2/8] shellcheck des bibliothèques shell (ci/lib + livrables G2..G8)"
+	@command -v shellcheck >/dev/null || { echo "!! shellcheck absent — \`brew install shellcheck\`"; exit 2; }
+	@shellcheck -x ci/lib/*.sh scripts/lib/deploy-pin.sh scripts/lib/env-chain.sh \
+	  scripts/lib/repo-protection.sh scripts/lib/archive-store.sh \
+	  scripts/lib/assert-merge-identity.sh \
+	  scripts/setup-repo-protections.sh scripts/setup-deployer-groups.sh \
+	  scripts/setup-vault-paliers.sh scripts/setup-user-vault-jwt.sh \
+	  scripts/api-promote-request.sh scripts/api-promote-export.sh \
+	  scripts/team-promote.sh scripts/test-deployer-gate-live.sh \
+	  scripts/test-rollback-paliers.sh scripts/test-parity-moteurs.sh \
+	  && echo "  ✓ ci/lib + livrables shell G2..G8 propres"
+	@echo "== [3/8] épreuves de ci/lib/carto-secrets.sh"
+	@ci/test-carto-secrets.sh
+	@echo "== [4/8] épreuves du résolveur de pin (G3)"
+	@bash scripts/test-deploy-pin.sh
+	@echo "== [5/8] épreuves de la rétention par palier (G4)"
+	@bash scripts/test-palier-retention.sh
+	@echo "== [6/8] épreuves du transport d'archives adressé par le contenu (G5)"
+	@bash scripts/test-archive-store.sh
+	@# LA porte du jalon G5 : « porte refusée ⇒ moteur jamais lancé ». Comme
+	@# test-deploy-pin (précédent endossé en G4), ce harnais est EXÉCUTÉ, pas
+	@# shellchecké — c'est son verdict qui compte, pas son style.
+	@echo "== [7/8] épreuves du câblage de promotion — porte refusée ⇒ moteur jamais lancé (G5)"
+	@bash scripts/test-team-promote-wiring.sh
+	@# mocks/webmethods n'est PAS vendored (dépend du module cache Go, comme
+	@# labctl NE l'est PAS ici) : pas de GOPROXY=off. Spec §4.3 promettait
+	@# cette porte hors-ligne branchée dans lint-ci — restée débranchée jusqu'ici.
+	@echo "== [8/8] go test du mock webMethods (fidélité + archive, G5)"
+	@cd mocks/webmethods && go test ./... -count=1
 
 # Sauvegarde idempotente (ne re-save pas ce qui est déjà là) : `docker save` par
 # image → restauration unitaire possible. Pas de gzip : 2.4 To de libre, autant

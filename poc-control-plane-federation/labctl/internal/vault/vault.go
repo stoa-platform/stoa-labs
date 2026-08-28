@@ -153,6 +153,37 @@ func (c *Client) ReadKV(ctx context.Context, sub string) (map[string]string, err
 	return out.Data.Data, nil
 }
 
+// TokenPolicies returns the policies attached to the CALLER's own token
+// (GET /v1/auth/token/lookup-self): direct token_policies plus identity-derived
+// policies. Fail-closed on ANY failure — a dispatch gate consumes this to decide
+// WHO may carry an apply (ADR-084), and an unverifiable identity must refuse,
+// never pass. (Contrast ReadKV, where a 404 falls back by design.)
+func (c *Client) TokenPolicies(ctx context.Context) ([]string, error) {
+	tok, err := c.ensureToken(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var out struct {
+		Data struct {
+			Policies         []string `json:"policies"`
+			IdentityPolicies []string `json:"identity_policies"`
+		} `json:"data"`
+	}
+	url := c.addr + "/v1/auth/token/lookup-self"
+	headers := map[string]string{"X-Vault-Token": tok}
+	if _, err := httpx.JSON(ctx, c.hc, http.MethodGet, url, headers, nil, &out); err != nil {
+		return nil, fmt.Errorf("vault lookup-self: %w", err)
+	}
+	policies := append(append([]string(nil), out.Data.Policies...), out.Data.IdentityPolicies...)
+	// A real Vault token always carries at least one policy (default, or root).
+	// An empty union means an empty/unexpected body slipped through as a 200 —
+	// that must never read as "a token legitimately holding zero policies".
+	if len(policies) == 0 {
+		return nil, fmt.Errorf("vault lookup-self: no policies in response (empty or unexpected body)")
+	}
+	return policies, nil
+}
+
 func envOr(key, def string) string {
 	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
 		return v

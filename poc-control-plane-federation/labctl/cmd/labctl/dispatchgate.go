@@ -26,13 +26,18 @@ import (
 
 	"github.com/stoa-platform/stoa-labs/poc/labctl/internal/governance"
 	"github.com/stoa-platform/stoa-labs/poc/labctl/internal/uac"
+	"github.com/stoa-platform/stoa-labs/poc/labctl/internal/vault"
 )
 
 // dispatchGateError is a typed failure of the dispatch gate so callers derive a
 // PRECISE audit reason: an ITSM outage or a missing change_ref must never be
 // archived as an "itsm revocation" (forensics, ADR-070 — review of the A6 design).
 type dispatchGateError struct {
-	Code string // ITSM_NOT_APPROVED | ITSM_UNAVAILABLE | ITSM_NOT_CONFIGURED | NO_CHANGE_REF | ENVCHAIN_INVALID
+	// Code is the refusal family — WHAT was refused, never merged into one
+	// bucket: ITSM_NOT_APPROVED | ITSM_UNAVAILABLE | ITSM_NOT_CONFIGURED |
+	// NO_CHANGE_REF | ENVCHAIN_INVALID, plus the deployer gate (G2, ADR-084):
+	// DEPLOYER_GROUP_REQUIRED | DEPLOYER_GROUP_UNSUPPORTED | DEPLOYER_GROUP_UNVERIFIABLE.
+	Code string
 	Msg  string
 }
 
@@ -54,6 +59,12 @@ func dispatchGateReason(err error) string {
 			return "no_change_ref_in_dispatched_state"
 		case "ENVCHAIN_INVALID":
 			return "envchain_invalid"
+		case "DEPLOYER_GROUP_REQUIRED":
+			return "deployer_group_required_at_dispatch"
+		case "DEPLOYER_GROUP_UNSUPPORTED":
+			return "deployer_group_unsupported"
+		case "DEPLOYER_GROUP_UNVERIFIABLE":
+			return "deployer_group_unverifiable"
 		}
 	}
 	return "dispatch_gate_error"
@@ -133,6 +144,77 @@ func preflightDispatchGate(ctx context.Context, gchain governance.EnvChain, apis
 				return &dispatchGateError{Code: "ITSM_NOT_APPROVED", Msg: fmt.Sprintf(
 					"[409 ITSM_NOT_APPROVED] %s/%s→%s: le change %s est %q à l'instant du dispatch (approuvé au merge, révoqué depuis) — AUCUN apply",
 					a.Tenant, a.Slug, e, d.ChangeRef, st)}
+			}
+		}
+	}
+	return nil
+}
+
+// preflightDeployerGate enforces WHO may CARRY this run (G2, ADR-084): for every
+// gated+enabled env this run would actually dispatch whose gate declares a
+// deployerGroup, the CALLER's Vault token must hold the projected policy. Same
+// derivation as the ITSM preflight (scope + enabled deploys, not --env alone),
+// same placement: BEFORE any gateway write, zero partial dispatch. One
+// lookup-self per run. `labctl dispatch-gate` (standalone stage) deliberately
+// does NOT run this: its stage executes before the Vault login exists — the
+// refusal lives here, at the moment the carrier's identity exists.
+func preflightDeployerGate(ctx context.Context, gchain governance.EnvChain, apis []uac.API, scope, env string) error {
+	var policies []string
+	looked := false
+	for _, a := range apis {
+		if !inScope(scope, a.Tenant) {
+			continue
+		}
+		if _, skip := uacSkipReason(a, env, gchain.Envs); skip {
+			continue
+		}
+		envs := []string{env}
+		if env == uac.EnvAny {
+			envs = a.EnabledEnvsIn(uac.EnvAny, gchain.Envs)
+		}
+		for _, e := range envs {
+			gate, ok := gchain.Gates[e]
+			if !ok || gate.DeployerGroup == "" {
+				continue // no declaration — credential retention stays the only "who"
+			}
+			d, ok := a.Deploys[e]
+			if !ok || !d.Enabled {
+				// not actually dispatched to this env — kept for symmetry with the
+				// ITSM preflight; unreachable given uacSkipReason/EnabledEnvsIn
+				continue
+			}
+			want, err := gate.DeployerPolicy()
+			if err != nil {
+				return &dispatchGateError{Code: "DEPLOYER_GROUP_UNSUPPORTED", Msg: fmt.Sprintf(
+					"[DEPLOYER_GROUP_UNSUPPORTED] %s/%s→%s: %v — déclaration invérifiable, refus fail-closed",
+					a.Tenant, a.Slug, e, err)}
+			}
+			if !looked {
+				vc, enabled := vault.FromEnv()
+				if !enabled {
+					return &dispatchGateError{Code: "DEPLOYER_GROUP_UNVERIFIABLE", Msg: fmt.Sprintf(
+						"[DEPLOYER_GROUP_UNVERIFIABLE] %s/%s→%s: la porte déclare le groupe déployeur %q mais VAULT_ADDR est vide — identité du porteur invérifiable, refus fail-closed",
+						a.Tenant, a.Slug, e, gate.DeployerGroup)}
+				}
+				policies, err = vc.TokenPolicies(ctx)
+				if err != nil {
+					return &dispatchGateError{Code: "DEPLOYER_GROUP_UNVERIFIABLE", Msg: fmt.Sprintf(
+						"[DEPLOYER_GROUP_UNVERIFIABLE] %s/%s→%s: lookup-self en échec (%v) — refus fail-closed",
+						a.Tenant, a.Slug, e, err)}
+				}
+				looked = true
+			}
+			found := false
+			for _, p := range policies {
+				if p == want {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return &dispatchGateError{Code: "DEPLOYER_GROUP_REQUIRED", Msg: fmt.Sprintf(
+					"[DEPLOYER_GROUP_REQUIRED] %s/%s→%s: la porte déclare le groupe déployeur %q (policy projetée %q) — le token du porteur ne la porte pas, AUCUN apply",
+					a.Tenant, a.Slug, e, gate.DeployerGroup, want)}
 			}
 		}
 	}

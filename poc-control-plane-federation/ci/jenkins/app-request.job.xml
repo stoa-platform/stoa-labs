@@ -45,8 +45,8 @@
         </hudson.model.StringParameterDefinition>
         <hudson.model.ChoiceParameterDefinition>
           <name>REQ_ENV</name>
-          <description>Environnement cible (dev|rec|int|prod) — pilote le nom de branche provision/&lt;app&gt;-&lt;env&gt; et l'env du manifeste.</description>
-          <choices class="java.util.Arrays$ArrayList"><a class="string-array"><string>dev</string><string>rec</string><string>int</string><string>prod</string></a></choices>
+          <description>Environnement cible (paliers non terminaux de la chaîne — dev/rec/int/homol aujourd'hui) — pilote le nom de branche provision/&lt;app&gt;-&lt;env&gt; et l'env du manifeste.</description>
+          <choices class="java.util.Arrays$ArrayList"><a class="string-array"><string>dev</string><string>rec</string><string>int</string><string>homol</string></a></choices>
         </hudson.model.ChoiceParameterDefinition>
         <hudson.model.ChoiceParameterDefinition>
           <name>TEAM</name>
@@ -93,11 +93,19 @@
           <description>idp : le client OAuth2 existe déjà côté IdP, CLIENT_ID obligatoire. internal : la gateway wM est l'authorization server, elle génère le client (stocké dans Vault par env) — CLIENT_ID sans objet. Une demande MODE=idp sans CLIENT_ID est REFUSÉE avant toute écriture Git.</description>
           <choices class="java.util.Arrays$ArrayList"><a class="string-array"><string>idp</string><string>internal</string></a></choices>
         </hudson.model.ChoiceParameterDefinition>
-        <hudson.model.StringParameterDefinition>
+        <!-- v3 : TextParameterDefinition (zone multiligne) et non plus
+             StringParameterDefinition. Le rôle apim_selfservice_app accepte une
+             LISTE ip_allowlist depuis toujours (defaults/main.yml) ; seuls ce
+             formulaire et l'emballage du script la réduisaient à une valeur
+             unique. Le précédent du multiligne est CERT_PEM ci-dessous : sa
+             valeur traverse déjà withEnv([params…]) → sh sans dommage (le piège
+             mesuré « les paramètres de build subissent EnvVars.resolve » est
+             couvert par ce motif, en place dans le Jenkinsfile). -->
+        <hudson.model.TextParameterDefinition>
           <name>IP_ALLOWLIST</name>
-          <description>Plage IP autorisée (identité entrante), optionnel — une IP unique (ex. 10.0.0.1) ou une plage A-B (ex. 10.0.0.1-10.0.0.5). Le CIDR (ex. 10.0.0.0/24) est REFUSÉ (IP_CIDR_REFUSE — la gateway le drop en silence) ; seuls les caractères [0-9A-Za-z.-] sont acceptés (IP_ALLOWLIST_INVALID sinon).</description>
+          <description>Plages IP autorisées (identité entrante), optionnel — UNE ENTRÉE PAR LIGNE (la virgule est aussi acceptée comme séparateur). Chaque entrée est une IP unique (ex. 10.0.0.1) ou une plage A-B (ex. 10.0.0.1-10.0.0.5). Le CIDR (ex. 10.0.0.0/24) est REFUSÉ (IP_CIDR_REFUSE — la gateway le drop en silence) ; seuls les caractères [0-9A-Za-z.-] sont acceptés (IP_ALLOWLIST_INVALID sinon). La validation s'applique ENTRÉE PAR ENTRÉE et le message de refus nomme l'entrée fautive ; les doublons exacts sont écartés et l'ordre de saisie est préservé.</description>
           <defaultValue></defaultValue>
-        </hudson.model.StringParameterDefinition>
+        </hudson.model.TextParameterDefinition>
         <hudson.model.TextParameterDefinition>
           <name>CERT_PEM</name>
           <description>Certificat public X.509 (identité entrante mTLS), optionnel — coller un bloc PEM complet (-----BEGIN CERTIFICATE----- … -----END CERTIFICATE-----). Toute CLÉ PRIVÉE collée est REFUSÉE (CERT_PRIVATE_KEY_REFUSE) — ce champ n'accepte QUE le certificat public ; un bloc PEM incomplet est REFUSÉ (CERT_SANS_BLOC). Devient un fichier .crt versionné dans la PR (clients/provisioned/certs/&lt;app&gt;.crt), jamais une valeur en clair dans le manifeste.</description>
@@ -108,6 +116,22 @@
           <description>Stratégie de rotation du certificat — sans objet si CERT_PEM est vide. replace : la valeur remplace la dimension existante. overlap : ajout aux certificats existants encore valides (fenêtre de chevauchement) + purge automatique des valeurs expirées/illisibles.</description>
           <choices class="java.util.Arrays$ArrayList"><a class="string-array"><string>replace</string><string>overlap</string></a></choices>
         </hudson.model.ChoiceParameterDefinition>
+        <!-- v3 — CLÉ BACKEND (identifier `token`). ATTENTION AU SENS, c'est le
+             contresens le plus facile à faire ici : ce `token` n'est PAS une
+             identité ENTRANTE comme IP_ALLOWLIST/CERT_PEM ci-dessus, c'est une
+             clé SORTANTE app→backend. Le rôle REFUSE `token` dans `enforce`
+             (BACKEND_KEY_ENFORCED) — ces deux champs ne déclenchent donc PAS
+             l'avertissement enforce du corps de PR, délibérément. -->
+        <hudson.model.StringParameterDefinition>
+          <name>BACKEND_KEY_REF</name>
+          <description>CHEMIN Vault de la clé backend (identifier `token`), optionnel — sous-chemin KV v2, ex. deploy/banking-demo/apps/mon-app/dev/backend-key. ⚠ Ce champ attend un CHEMIN, JAMAIS la valeur de la clé : Git ne porte jamais le secret, il est lu dans Vault à l'apply. L'entrée doit EXISTER dans Vault avant l'apply — sinon BACKEND_KEY_MISSING et rien n'est posé sur la gateway. Caractères [A-Za-z0-9._/-] ; chemin absolu, '//' et traversée '..' sont refusés (BACKEND_KEY_REF_INVALID). N'est PAS une identité entrante : c'est une clé sortante app→backend, non opposable par enforce.</description>
+          <defaultValue></defaultValue>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>BACKEND_KEY_FIELD</name>
+          <description>Champ à lire DANS l'entrée Vault, optionnel — laisser VIDE pour le défaut du rôle (api_key). ⚠ PIÈGE MESURÉ : le nom doit correspondre EXACTEMENT au champ de l'entrée KV — une entrée dont la clé s'appelle `api-key` (avec un TIRET) est lue vide et échoue en BACKEND_KEY_MISSING alors que l'entrée existe bel et bien. Renseigné sans BACKEND_KEY_REF, ce champ serait inerte : la demande est alors REFUSÉE (BACKEND_KEY_FIELD_ORPHAN).</description>
+          <defaultValue></defaultValue>
+        </hudson.model.StringParameterDefinition>
       </parameterDefinitions>
     </hudson.model.ParametersDefinitionProperty>
   </properties>

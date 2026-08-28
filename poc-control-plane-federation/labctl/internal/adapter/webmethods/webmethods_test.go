@@ -90,6 +90,11 @@ type mockGateway struct {
 	// transport projection pinned live; the enforcement read-back must accept
 	// both.
 	nakedActionGet bool
+	// hideNextList makes the NEXT GET /apis answer an EMPTY envelope, without
+	// touching the store — the only way to reproduce deterministically the
+	// TOCTOU the 409 fallback exists for: the pre-list misses a record the POST
+	// then collides with, and the re-list sees it.
+	hideNextList bool
 }
 
 func newMockGateway() *mockGateway {
@@ -222,6 +227,11 @@ func (m *mockGateway) health(w http.ResponseWriter, _ *http.Request) {
 func (m *mockGateway) listAPIs(w http.ResponseWriter, _ *http.Request) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.hideNextList {
+		m.hideNextList = false
+		m.writeJSON(w, http.StatusOK, map[string]any{"apiResponse": []any{}})
+		return
+	}
 	items := make([]any, 0, len(m.apis))
 	for _, a := range m.apis {
 		items = append(items, map[string]any{"api": a.rec, "responseStatus": "SUCCESS"})
@@ -406,6 +416,18 @@ func (m *mockGateway) updateAPI(w http.ResponseWriter, r *http.Request) {
 	a, ok := m.apis[id]
 	if !ok {
 		m.writeJSON(w, http.StatusNotFound, map[string]string{"error": "api not found"})
+		return
+	}
+	// Le produit REFUSE (400) un PUT de définition sur une API ACTIVE — prouvé
+	// live, gardé par le rôle apim_publish_api (UPDATE_FORBIDDEN) et reproduit
+	// par le mock de référence (mocks/webmethods/admin.go, commit 09a4e5b). Ce
+	// stand-in l'ignorait : un « publish deux fois » passait au vert ici et
+	// échouait 400 sur la vraie gateway — le défaut mesuré en G6 (le re-apply
+	// d'un rollback vise TOUJOURS un record déjà publié et actif).
+	if a.rec.IsActive && (in["apiDefinition"] != nil || in["apiVersion"] != nil) {
+		m.writeJSON(w, http.StatusBadRequest, map[string]string{
+			"errorDetails": "Api is Active, please deactivate before update",
+		})
 		return
 	}
 	a.payload = in
@@ -1043,6 +1065,22 @@ func (m *mockGateway) countRequests(prefix string) int {
 	return n
 }
 
+// countExactRequests counts requests whose "METHOD path" matches EXACTLY.
+// countRequests is a PREFIX match, so "PUT …/apis/wm-api-0001" also swallows
+// ".../activate" and ".../deactivate" — useless to prove a definition PUT was
+// never issued.
+func (m *mockGateway) countExactRequests(line string) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := 0
+	for _, r := range m.requests {
+		if r == line {
+			n++
+		}
+	}
+	return n
+}
+
 // sampleSpec is a minimal OpenAPI 3.0 contract carrying the constructs the
 // 10.15 compatibility layer must fix: a $ref response schema (RefProperty
 // crash) and a path-only servers[].url (no real upstream).
@@ -1210,12 +1248,89 @@ func TestPublish_IdempotentUpdatesInPlace(t *testing.T) {
 	if got := mock.countRequests("POST /rest/apigateway/apis"); got != 1 {
 		t.Errorf("create POST count = %d over two publishes, want 1", got)
 	}
-	if got := mock.countRequests("PUT /rest/apigateway/apis/" + first.APIID); got < 1 {
-		t.Errorf("update PUT count = %d, want >= 1 (re-apply converges via PUT)", got)
+	// The record is ACTIVE after the first publish: the product REFUSES a
+	// definition PUT on it (ADR-079, never deactivate outside authoring), so
+	// the second publish must not even try. Zero PUT /apis/{id} overall.
+	if got := mock.countExactRequests("PUT /rest/apigateway/apis/" + first.APIID); got != 0 {
+		t.Errorf("definition PUT count = %d over two publishes, want 0 (the product refuses it on an active API)", got)
 	}
 	// Already active after the first publish: no second activate call.
 	if got := mock.countRequests("PUT /rest/apigateway/apis/" + first.APIID + "/activate"); got != 1 {
 		t.Errorf("activate count = %d over two publishes, want 1 (already-active is left untouched)", got)
+	}
+}
+
+// TestPublish_InactiveExistingStillReceivesDefinitionPUT pins the OTHER half of
+// the guard: on an INACTIVE existing record the definition PUT is the normal
+// convergence path and must keep running (the skip is gated on isActive, it is
+// not a blanket removal of the update).
+func TestPublish_InactiveExistingStillReceivesDefinitionPUT(t *testing.T) {
+	mock := newMockGateway()
+	srv := httptest.NewServer(mock.handler())
+	defer srv.Close()
+
+	a, api := newAdapter(t, srv)
+	first, err := a.Publish(context.Background(), api)
+	if err != nil {
+		t.Fatalf("first Publish: %v", err)
+	}
+
+	// Take the record out of service the way an operator would (authoring), so
+	// the re-apply meets an INACTIVE existing API.
+	mock.mu.Lock()
+	mock.apis[first.APIID].rec.IsActive = false
+	mock.mu.Unlock()
+
+	second, err := a.Publish(context.Background(), api)
+	if err != nil {
+		t.Fatalf("second Publish on an inactive record: %v", err)
+	}
+	if second.Created {
+		t.Error("second publish Created = true, want false (existing record)")
+	}
+	if got := mock.countExactRequests("PUT /rest/apigateway/apis/" + first.APIID); got != 1 {
+		t.Errorf("definition PUT count = %d, want 1 (an inactive record still converges via PUT)", got)
+	}
+	if !second.Published {
+		t.Error("Published = false, want true (the inactive record is re-activated)")
+	}
+}
+
+// TestPublish_Conflict409OnActiveRecordSkipsPUT covers the 409 fallback, the
+// SECOND site that PUTs a definition: pre-list misses (TOCTOU), POST collides,
+// the re-list finds the SAME name+version — and that record is ACTIVE. The
+// fallback must converge without the refused PUT, not fail 400.
+func TestPublish_Conflict409OnActiveRecordSkipsPUT(t *testing.T) {
+	mock := newMockGateway()
+	srv := httptest.NewServer(mock.handler())
+	defer srv.Close()
+
+	a, api := newAdapter(t, srv)
+	first, err := a.Publish(context.Background(), api)
+	if err != nil {
+		t.Fatalf("seed Publish: %v", err)
+	}
+
+	// Pre-list blind (the record exists but is not served once), POST collides.
+	mock.mu.Lock()
+	mock.hideNextList = true
+	mock.mu.Unlock()
+
+	res, err := a.Publish(context.Background(), api)
+	if err != nil {
+		t.Fatalf("Publish through the 409 fallback on an active record: %v", err)
+	}
+	if res.APIID != first.APIID {
+		t.Errorf("apiId drifted through the fallback: %q -> %q", first.APIID, res.APIID)
+	}
+	if res.Created {
+		t.Error("Created = true through the conflict fallback, want false (existing record)")
+	}
+	if got := mock.countExactRequests("PUT /rest/apigateway/apis/" + first.APIID); got != 0 {
+		t.Errorf("definition PUT count = %d, want 0 (the conflicting record is active)", got)
+	}
+	if len(mock.apis) != 1 {
+		t.Errorf("server holds %d apis, want 1 (no duplicate minted)", len(mock.apis))
 	}
 }
 

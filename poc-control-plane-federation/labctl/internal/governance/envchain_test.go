@@ -61,6 +61,43 @@ gates:
 	}
 }
 
+func TestParseEnvChainDeployerGroup(t *testing.T) {
+	c, err := ParseEnvChain([]byte(
+		"environments: [dev, rec]\ngates:\n  - to: rec\n    deployerGroup: apim-apply-rec\n"))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got := c.Gates["rec"].DeployerGroup; got != "apim-apply-rec" {
+		t.Fatalf("DeployerGroup = %q, want apim-apply-rec", got)
+	}
+}
+
+// La table de projection est FAIL-CLOSED hors des deux familles : un nom
+// invérifiable doit refuser BRUYAMMENT (contrairement à approverGroup, dont le
+// mauvais nom ne matche jamais en silence).
+func TestGateDeployerPolicy(t *testing.T) {
+	cases := []struct {
+		group, want string
+		wantErr     bool
+	}{
+		{"", "", false},                        // pas de déclaration => pas de check
+		{"apim-apply-int", "apply-int", false}, // famille paliers (setup-vault-paliers.sh)
+		{"apim-apply-homol", "apply-homol", false},
+		{"apim-operator-prod", "operator-deploy", false}, // famille terminus (setup-vault-ldap.sh:156)
+		{"apim-operator-dr", "operator-deploy", false},
+		{"int-team", "", true},    // annuaire KC : PAS un groupe déployeur
+		{"apim-apply-", "", true}, // suffixe vide = invérifiable
+		{"apim-operator-", "", true},
+		{"release-team", "", true},
+	}
+	for _, tc := range cases {
+		got, err := (Gate{DeployerGroup: tc.group}).DeployerPolicy()
+		if (err != nil) != tc.wantErr || got != tc.want {
+			t.Errorf("DeployerPolicy(%q) = (%q, %v), want (%q, err=%v)", tc.group, got, err, tc.want, tc.wantErr)
+		}
+	}
+}
+
 func TestParseEnvChainFailsClosed(t *testing.T) {
 	cases := map[string]string{
 		"empty environments": "environments: []\n",

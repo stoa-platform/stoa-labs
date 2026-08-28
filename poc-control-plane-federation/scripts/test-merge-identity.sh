@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 # test-merge-identity.sh — preuve X/X de la garde assert-merge-identity.sh.
 # HORS LIGNE : ni Jenkins, ni Gitea, ni Vault. Pur shell.
+#
+# `A && B || C` (SC2015) est l'idiome des scripts de preuve de ce dépôt (même
+# pragma et même raison que scripts/lib/archive-store.sh:10-15) : `ok`/`ko` ne
+# produisent aucun effet de bord qui rendrait la branche C ambiguë — seul un
+# `printf` sur un tube fermé pourrait échouer. Sans ce pragma, shellcheck rend
+# 1 sur dix-neuf informations qui décrivent toutes la même construction voulue.
+# shellcheck disable=SC2015
 set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 G="$REPO/scripts/lib/assert-merge-identity.sh"
@@ -72,6 +79,49 @@ echo
 echo "== 9. table absente ou illisible : on ne triche pas, on compare brut =="
 run --merged-by alice --requester bob --vault-user alice --map "$TMP/nexiste-pas"
 [ $RC -eq 0 ] && ok "table absente = comparaison directe" || ko "échec sur table absente"
+
+echo
+echo "== 10. --allow-self-approval : la porte relâche les QUATRE YEUX, rien d'autre =="
+# Un drapeau dont le métier est de relâcher une garde de sécurité est le dernier
+# qu'on laisse sans épreuve. Les cas encodent la frontière EXACTE, et chacun tue
+# une MUTATION précise (leçon G3 : une assertion se règle par mutation, pas par
+# intention) :
+#   (a)     le drapeau ne fait RIEN         -> rougit
+#   (a bis) il relâche EN SILENCE           -> rougit
+#   (b)     il est actif PAR DÉFAUT         -> rougit
+#   (c)     il court-circuite MERGER_MISMATCH -> rougit
+#   (c bis) il court-circuite MERGER_UNKNOWN  -> rougit
+# Vérifié par DEUX mutations réelles, et les comptes ne sont pas les mêmes — ce
+# qui est justement la preuve que les cas mesurent des choses distinctes :
+#   `[ "$ALLOW_SELF" = 1 ] && exit 0` placé AVANT les comparaisons  -> 16/19
+#     (a, a bis, c rougissent ; c bis reste vert : MERGER_UNKNOWN est évalué
+#      plus haut, la mutation ne l'atteint pas)
+#   la même ligne placée avant MERGER_UNKNOWN, tout en haut          -> 15/19
+#     (c bis rougit à son tour)
+# (b) reste vert dans les deux : il ne mesure PAS le drapeau, il mesure que le
+# défaut est resté fermé — c'est son rôle, et c'est pour ça qu'il y est.
+run --merged-by alice --requester alice --vault-user alice --allow-self-approval
+[ $RC -eq 0 ] && grep -q "MERGE_IDENTITY_OK" <<<"$OUT" \
+  && ok "(a) auto-approbation ACCEPTÉE quand la porte l'admet" \
+  || ko "(a) le drapeau ne relâche pas les quatre yeux (rc=$RC) : $OUT"
+grep -q "selfApproval" <<<"$OUT" \
+  && ok "(a bis) le relâchement est DIT dans le log (pas une garde oubliée en silence)" \
+  || ko "(a bis) auto-approbation silencieuse — indiscernable d'une garde absente"
+
+run --merged-by alice --requester alice --vault-user alice
+[ $RC -ne 0 ] && grep -q "FOUR_EYES_VIOLATION" <<<"$OUT" \
+  && ok "(b) MÊME triplet SANS le drapeau : FOUR_EYES_VIOLATION (le défaut reste OFF)" \
+  || ko "(b) auto-approbation acceptée sans drapeau — le défaut n'est pas fermé"
+
+run --merged-by alice --requester bob --vault-user carol --allow-self-approval
+[ $RC -ne 0 ] && grep -q "MERGER_MISMATCH" <<<"$OUT" \
+  && ok "(c) le drapeau ne dispense PAS de MERGER_MISMATCH" \
+  || ko "(c) FAIL-OPEN : le drapeau laisse passer une identité qui n'a pas mergé"
+
+run --merged-by "" --requester bob --vault-user carol --allow-self-approval
+[ $RC -ne 0 ] && grep -q "MERGER_UNKNOWN" <<<"$OUT" \
+  && ok "(c bis) le drapeau ne dispense PAS de MERGER_UNKNOWN" \
+  || ko "(c bis) FAIL-OPEN : le drapeau laisse passer un mergeur inconnu"
 
 echo
 echo "======================================================================"

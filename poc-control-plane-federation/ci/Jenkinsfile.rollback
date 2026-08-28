@@ -1,9 +1,11 @@
-// ci/Jenkinsfile.rollback — pipeline ROLLBACK PROD (ADR-075). AUCUN trigger :
-// lancé À LA MAIN avec l'ID de la promotion à annuler + une raison + un change
-// ITSM. Le rollback N'EST PAS une suppression (aucun DELETE n'existe, ni dans
-// labctl ni dans l'allowlist des proxies) : c'est un REVERT GIT ordonné par
-// governance-api (POST .../promotions/{id}/rollback — revert du deploy.prod.yaml,
-// audité, attribué) suivi d'un RE-APPLY idempotent de l'état Git résultant.
+// ci/Jenkinsfile.rollback — pipeline ROLLBACK DU PALIER DE LA PROMOTION (G6,
+// ADR-085) — prod ET paliers intermédiaires. AUCUN trigger : lancé À LA MAIN
+// avec l'ID de la promotion à annuler + une raison (+ un change ITSM si le
+// gate du palier l'exige). Le rollback N'EST PAS une suppression (aucun
+// DELETE n'existe, ni dans labctl ni dans l'allowlist des proxies) : c'est un
+// REVERT GIT ordonné par governance-api (POST .../promotions/{id}/rollback —
+// revert du deploy.<env>.yaml, audité, attribué) suivi d'un RE-APPLY
+// idempotent de l'état Git résultant, sur le palier RELU depuis la réponse.
 // Rollback = re-apply Git, jamais une mutation manuelle de la gateway.
 pipeline {
   agent any
@@ -12,9 +14,9 @@ pipeline {
   options { disableConcurrentBuilds() }
   // PAS de triggers {} : un rollback prod est un acte opéré, jamais un webhook.
   parameters {
-    string(name: 'PROMOTION_ID', defaultValue: '', description: 'ID de la promotion prod à annuler')
+    string(name: 'PROMOTION_ID', defaultValue: '', description: 'ID de la promotion à annuler — le palier est celui de la promotion')
     string(name: 'REASON',       defaultValue: '', description: 'Raison du rollback (audit)')
-    string(name: 'CHANGE_REF',   defaultValue: '', description: 'Change ITSM couvrant le rollback (ex. CHG-0003)')
+    string(name: 'CHANGE_REF',   defaultValue: '', description: 'Change ITSM couvrant le rollback — REQUIS si le gate du palier de la promotion exige une référence de changement (prod), refusé GATE_REFS_REQUIRED sinon vide')
     // Identité NOMINATIVE de l'opérateur (voie A, ADR-078 §3). Vides → repli
     // AppRole : identité de MACHINE, acte non imputable — comportement historique.
     // Le token nominatif exige la policy `operator-deploy` (secrets de PLATEFORME) :
@@ -68,8 +70,11 @@ pipeline {
             sh '''
               set +x          # NEVER echo: secret_id, vault token, OAuth token
               set -eu
-              [ -n "$PROMOTION_ID" ] && [ -n "$REASON" ] && [ -n "$CHANGE_REF" ] \
-                || { echo 'PROMOTION_ID, REASON et CHANGE_REF sont requis'; exit 1; }
+              # CHANGE_REF n'est requis que si le gate du palier de la promotion
+              # l'exige (prod aujourd'hui) — c'est governance-api qui le sait et
+              # refuse GATE_REFS_REQUIRED fail-closed. Le job ne devine pas.
+              [ -n "${PROMOTION_ID:-}" ] && [ -n "${REASON:-}" ] \
+                || { echo 'PROMOTION_ID et REASON sont requis'; exit 1; }
               # Token compte de SERVICE (client_credentials ci-applier — même
               # pattern que les autres jobs : le job ne porte aucun mot de passe
               # utilisateur ; le secret du client vient de Vault).
@@ -92,14 +97,30 @@ pipeline {
               [ -n "$SA_TOKEN" ] || { echo 'no service-account token'; exit 1; }
               # Le revert est fait PAR governance-api (commit Git attribué +
               # marker rolled_back) — le job ne touche jamais le repo à la main.
-              BODY=$(printf '{"reason":"%s","change_ref":"%s"}' "$REASON" "$CHANGE_REF")
+              # paramètre de build VIDE ⇒ RETIRÉ de l'env par Jenkins ⇒ unbound
+              # sous set -u (mesuré par build, stoa-prod-rollback #4).
+              BODY=$(printf '{"reason":"%s","change_ref":"%s"}' "$REASON" "${CHANGE_REF:-}")
               CODE=$(curl -s -o /tmp/rollback-resp.json -w '%{http_code}' \
                 -X POST "$GOVERNANCE_API_URL/api/v1/tenants/$APPLY_TENANT/promotions/$PROMOTION_ID/rollback" \
                 -H "Authorization: Bearer $SA_TOKEN" -H 'Content-Type: application/json' -d "$BODY")
               unset SA_TOKEN
               cat /tmp/rollback-resp.json; echo
               [ "$CODE" = 200 ] || [ "$CODE" = 201 ] || { echo "rollback governance KO (HTTP $CODE)"; exit 1; }
-              echo "✓ promotion $PROMOTION_ID annulée côté governance (raison: $REASON, change: $CHANGE_REF)"
+              # D1 (adr-085) : le palier du rollback n'est JAMAIS saisi — il est
+              # celui de la promotion, relu dans la réponse. Absent => refus.
+              python3 - /tmp/rollback-resp.json "$WORKSPACE" <<'PYCAP'
+import json, sys
+d = json.load(open(sys.argv[1])); ws = sys.argv[2]
+env = (d.get("restored") or {}).get("environment") or ""
+ver = (d.get("restored") or {}).get("version") or ""
+slug = (d.get("promotion") or {}).get("slug") or ""
+if not env or not slug:
+    sys.exit("reponse rollback sans restored.environment / promotion.slug — refus fail-closed")
+open(ws + "/rollback-env.txt", "w").write(env)
+open(ws + "/rollback-version.txt", "w").write(ver)
+open(ws + "/rollback-slug.txt", "w").write(slug)
+PYCAP
+              echo "✓ promotion $PROMOTION_ID annulée côté governance (palier: $(cat "$WORKSPACE/rollback-env.txt"), raison: $REASON)"
             '''
           }
         }
@@ -116,7 +137,40 @@ pipeline {
         }
       }
     }
-    stage('Re-apply PROD — convergence de l\'état Git reverté') {
+    stage('Palier du rollback — chaîne dérivée, fail-closed') {
+      steps {
+        dir('poc-control-plane-federation') {
+          sh '''
+            set -eu
+            RENV=$(cat "$WORKSPACE/rollback-env.txt")
+            # Même dérivation que ci/Jenkinsfile : la chaîne vient du clone
+            # governance post-revert, jamais d'une liste en dur.
+            CHAIN=$(python3 - governance/environments.yaml <<'PYCHAIN'
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1])) or {}
+e = d.get("environments") or []
+if len(e) < 2:
+    sys.exit("environments.yaml: chaine trop courte ou absente")
+print(" ".join(e))
+PYCHAIN
+            ) || { echo "chaine d environnements illisible (governance/environments.yaml)"; exit 1; }
+            FIRST=${CHAIN%% *}; LAST=${CHAIN##* }
+            echo "$CHAIN" | tr ' ' '\\n' | grep -qx "$RENV" \
+              || { echo "ROLLBACK_ENV_INCONNU: $RENV hors chaine ($CHAIN)"; exit 1; }
+            # Défense en profondeur : structurellement aucune promotion n'a
+            # To == premier palier (NextOf ne rend jamais chain[0]).
+            [ "$RENV" != "$FIRST" ] \
+              || { echo "ROLLBACK_ENV_INELIGIBLE: $RENV est le palier d authoring"; exit 1; }
+            # Terminus par POSITION, pas par nom (motif env_chain_nonprod).
+            if [ "$RENV" = "$LAST" ]; then printf yes > "$WORKSPACE/rollback-terminus.flag"
+            else printf no > "$WORKSPACE/rollback-terminus.flag"; fi
+            echo "=== palier du rollback: $RENV (terminus: $(cat "$WORKSPACE/rollback-terminus.flag")) ==="
+          '''
+        }
+      }
+    }
+    stage('Re-apply terminus — convergence de l\'état Git reverté') {
+      when { expression { readFile('rollback-terminus.flag').trim() == 'yes' } }
       steps {
         dir('poc-control-plane-federation') {
           withCredentials([string(credentialsId: 'vault-ci-secret-id', variable: 'VAULT_SECRET_ID')]) {
@@ -141,31 +195,108 @@ pipeline {
               # Le repo governance post-revert a été cloné par le stage
               # 'Checkout governance (post-revert)' (auth Git É0).
               [ -d governance/.git ] || { echo 'governance/ absent (stage Checkout KO ?)'; exit 1; }
+              RENV=$(cat "$WORKSPACE/rollback-env.txt")
               LABCTL_TOKEN_FILE="$TOKFILE" "$WORKSPACE/labctl" apply-uac \
-                --repo governance --env prod --tenant "$APPLY_TENANT" -f envs/prod/targets.cluster.yaml
+                --repo governance --env "$RENV" --tenant "$APPLY_TENANT" -f "envs/$RENV/targets.cluster.yaml"
             '''
           }
         }
       }
     }
-    stage('Smoke test — data-plane prod (état reverté)') {
+    stage('Re-apply + smoke palier intermédiaire — via wm-admin-<env>') {
+      when { expression { readFile('rollback-terminus.flag').trim() == 'no' } }
+      steps {
+        dir('poc-control-plane-federation') {
+          withCredentials([string(credentialsId: 'vault-ci-secret-id', variable: 'VAULT_SECRET_ID')]) {
+            sh '''
+              set +x
+              set -eu
+              RENV=$(cat "$WORKSPACE/rollback-env.txt")
+              RVER=$(cat "$WORKSPACE/rollback-version.txt")
+              RSLUG=$(cat "$WORKSPACE/rollback-slug.txt")
+              # Même login mutualisé que le terminus : NOMINATIF si l'opérateur a
+              # saisi VAULT_USER (G2 : son token porte apply-<env> via l'annuaire),
+              # sinon repli AppRole ci-pipeline — qui n'ouvre les paliers gardés
+              # par deployerGroup que si --grant-ci a été déclaré (ADR-084).
+              . ci/lib/vault-login.sh
+              # le rm réussi écrase $? — capturer AVANT (revue finale G6).
+              trap 'rc=$?; rm -f /tmp/stoa-wm-admin-token; vault_trap_revoke "$rc"' EXIT
+              vault_login_any || exit 1
+              CI_SECRET=$(vault_read secret/data/stoa/ci ciApplierSecret)
+              HP_SECRET=$(vault_read secret/data/stoa/ci ciHorsprodSecret)
+              OPENSEARCH_PASSWORD=$(vault_read secret/data/stoa/opensearch adminPassword)
+              export OPENSEARCH_PASSWORD
+              # ci-applier -> mediation apply-uac ; ci-horsprod -> Bearer des
+              # proxies wm-admin-<env> (scope deploy:<env>, jamais le terminus).
+              KCRESP=$(vault_tmpfile kc-resp.json)
+              printf 'client_id=ci-applier\\ngrant_type=client_credentials\\nclient_secret=%s\\n' "$CI_SECRET" \\
+                | form_post_no_argv "$KCRESP" http://keycloak:8080/realms/stoa-lab/protocol/openid-connect/token >/dev/null
+              unset CI_SECRET
+              TOKFILE=$(vault_tmpfile labctl-token)
+              python3 -c 'import json,sys;open(sys.argv[2],"w").write(json.load(open(sys.argv[1]))["access_token"])' \\
+                "$KCRESP" "$TOKFILE"
+              [ -s "$TOKFILE" ] || { echo 'no CI token'; exit 1; }
+              HPRESP=$(vault_tmpfile hp-resp.json)
+              printf 'client_id=ci-horsprod\\ngrant_type=client_credentials\\nclient_secret=%s\\n' "$HP_SECRET" \\
+                | form_post_no_argv "$HPRESP" http://keycloak:8080/realms/stoa-lab/protocol/openid-connect/token >/dev/null
+              unset HP_SECRET
+              # bearerTokenFile déclaré par envs/*/targets.cluster.yaml — chemin FIXE.
+              ( umask 077; python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["access_token"],end="")' \\
+                  "$HPRESP" > /tmp/stoa-wm-admin-token )
+              [ -s /tmp/stoa-wm-admin-token ] || { echo 'no ci-horsprod token'; exit 1; }
+              [ -d governance/.git ] || { echo 'governance/ absent (stage Checkout KO ?)'; exit 1; }
+              LABCTL_TOKEN_FILE="$TOKFILE" VAULT_TOKEN_FILE="$VAULT_TOKEN_FILE" "$WORKSPACE/labctl" apply-uac \\
+                --repo governance --env "$RENV" --tenant "$APPLY_TENANT" -f "envs/$RENV/targets.cluster.yaml"
+              # SMOKE D5 : le catalogue du palier, via SON proxy admin, doit
+              # porter l'API restaurée A LA VERSION N-1 — l'état, pas un ping.
+              "$WORKSPACE/labctl" get apis -f "envs/$RENV/targets.cluster.yaml" -o json > /tmp/rollback-catalog.json
+              python3 - /tmp/rollback-catalog.json "$RSLUG" "$RVER" <<'PYSMOKE'
+import json, sys
+d = json.load(open(sys.argv[1])); slug, ver = sys.argv[2], sys.argv[3]
+apis = [a for t in d.get("targets", []) for a in (t.get("apis") or [])]
+hit = [a for a in apis if a.get("name") == slug and (not ver or a.get("version") == ver)]
+if not hit:
+    sys.exit("SMOKE KO: %s@%s absent du catalogue restaure (%s)" % (slug, ver or "?",
+             ", ".join("%s@%s" % (a.get("name"), a.get("version")) for a in apis) or "vide"))
+print("SMOKE OK — %s@%s present dans le catalogue du palier" % (slug, ver or "?"))
+PYSMOKE
+              echo "✓ rollback $RENV converge — etat N-1 servi via wm-admin-$RENV"
+            '''
+          }
+        }
+      }
+    }
+    stage('Smoke terminus — data-plane + catalogue N-1') {
+      when { expression { readFile('rollback-terminus.flag').trim() == 'yes' } }
       steps {
         dir('poc-control-plane-federation') {
           sh '''
             set -eu
-            "$WORKSPACE/labctl" get apis -f envs/prod/targets.cluster.yaml
+            RENV=$(cat "$WORKSPACE/rollback-env.txt")
+            RVER=$(cat "$WORKSPACE/rollback-version.txt")
+            RSLUG=$(cat "$WORKSPACE/rollback-slug.txt")
+            "$WORKSPACE/labctl" get apis -f "envs/$RENV/targets.cluster.yaml" -o json > /tmp/rollback-catalog.json
+            python3 - /tmp/rollback-catalog.json "$RSLUG" "$RVER" <<'PYSMOKE'
+import json, sys
+d = json.load(open(sys.argv[1])); slug, ver = sys.argv[2], sys.argv[3]
+apis = [a for t in d.get("targets", []) for a in (t.get("apis") or [])]
+hit = [a for a in apis if a.get("name") == slug and (not ver or a.get("version") == ver)]
+if not hit:
+    sys.exit("SMOKE KO: %s@%s absent du catalogue restaure" % (slug, ver or "?"))
+print("SMOKE OK — %s@%s present dans le catalogue du palier" % (slug, ver or "?"))
+PYSMOKE
             CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 \
               "http://webmethods-real:5555/gateway/accounts-read/1.0.0/accounts")
             echo "data-plane sans token -> HTTP $CODE"
-            [ "$CODE" = 401 ] || { echo "SMOKE KO: attendu 401 sans token (reçu $CODE)"; exit 1; }
-            echo 'SMOKE OK — rollback convergé, barrière OAuth2 active.'
+            [ "$CODE" = 401 ] || { echo "SMOKE KO: attendu 401 sans token (recu $CODE)"; exit 1; }
+            echo 'SMOKE OK — rollback converge, barriere OAuth2 active.'
           '''
         }
       }
     }
   }
   post {
-    success { echo '✓ rollback prod = revert Git audité + re-apply idempotent (jamais de DELETE gateway).' }
+    success { echo '✓ rollback = revert Git audité + re-apply idempotent du PALIER DE LA PROMOTION (jamais de DELETE gateway).' }
     failure { echo '✗ rollback KO — voir le log de l\'étape.' }
   }
 }

@@ -25,9 +25,11 @@ ko(){ printf '  \033[31m❌\033[0m %s\n' "$*"; exit 1; }
 
 # 1. token Gitea (idempotent : regénéré à chaque run, TTL du lab)
 echo "1. token Gitea (service ci)"
+# write:package : le registre d'archives G5 (scripts/lib/archive-store.sh) pousse
+# et refetche par CE token — mesuré, 401 dès la sonde sans lui, 201/200 avec.
 TOKEN=$(docker exec -u git "$GITEA_CONTAINER" gitea admin user generate-access-token \
   --username ci --token-name "provision-mr-$(date +%s 2>/dev/null || echo x)" \
-  --scopes write:repository,write:issue 2>/dev/null | grep -oE '[0-9a-f]{40}' | head -1)
+  --scopes write:repository,write:issue,write:package 2>/dev/null | grep -oE '[0-9a-f]{40}' | head -1)
 [ -n "$TOKEN" ] || ko "génération token Gitea (user ci ?)"
 ok "token Gitea acquis"
 

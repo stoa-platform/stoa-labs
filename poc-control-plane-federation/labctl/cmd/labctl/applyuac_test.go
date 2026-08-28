@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -163,6 +164,57 @@ func TestRunApplyUAC_EnvGating(t *testing.T) {
 			}
 			if !strings.Contains(out, tc.wantSummary) {
 				t.Errorf("env=%s: output missing summary %q:\n%s", tc.env, tc.wantSummary, out)
+			}
+		})
+	}
+}
+
+// G2 (ADR-084) de bout en bout : le porteur hors du groupe déployeur est refusé
+// AVANT toute écriture — l'apply s'arrête sur DEPLOYER_GROUP_REQUIRED et aucune
+// gateway n'est publiée. Le contre-exemple (même run, token dans le groupe)
+// publie : sans lui, un refus pour n'importe quelle autre raison passerait vert.
+func TestRunApplyUAC_DeployerGateBlocksBeforeAnyWrite(t *testing.T) {
+	repo := writeGovRepo(t, map[string]string{
+		"environments.yaml": "environments: [dev, beta, prod]\ngates:\n  - to: beta\n    deployerGroup: apim-apply-beta\n",
+		"tenants/banking-demo/apis/accounts-read/api.yaml":         uacAccountsRead,
+		"tenants/banking-demo/apis/accounts-read/deploy.beta.yaml": uacEnabledDeploy,
+	})
+	manifest := `targets:
+  - {name: gw-a, type: faketgt, adminUrl: http://a}
+`
+	for _, tc := range []struct {
+		name        string
+		policies    string
+		wantRefusal bool
+	}{
+		{name: "porteur_hors_groupe", policies: `["default"]`, wantRefusal: true},
+		{name: "porteur_dans_le_groupe", policies: `["default","apply-beta"]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := dgVaultServer(t, http.StatusOK, `{"data":{"policies":`+tc.policies+`,"identity_policies":[]}}`)
+			t.Setenv("VAULT_ADDR", v.url)
+			t.Setenv("VAULT_TOKEN", "carrier-token")
+			t.Setenv("VAULT_TOKEN_FILE", "")
+			p := writeUACManifest(t, manifest)
+			out, _, err := runApplyUACFormat(t, repo, "beta", p, "table")
+
+			if !tc.wantRefusal {
+				if err != nil {
+					t.Fatalf("le porteur dans le groupe doit publier: %v\n%s", err, out)
+				}
+				if !strings.Contains(out, "1/1 gateway publications from 1 projected UAC contracts") {
+					t.Errorf("publication attendue:\n%s", out)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), "DEPLOYER_GROUP_REQUIRED") {
+				t.Fatalf("porteur hors groupe: want DEPLOYER_GROUP_REQUIRED, got %v\n%s", err, out)
+			}
+			// « Avant toute écriture » : aucune projection, aucune publication.
+			for _, forbidden := range []string{"accounts-read v1.0.0", "gateway publications"} {
+				if strings.Contains(out, forbidden) {
+					t.Errorf("le refus doit précéder toute écriture, or la sortie porte %q:\n%s", forbidden, out)
+				}
 			}
 		})
 	}

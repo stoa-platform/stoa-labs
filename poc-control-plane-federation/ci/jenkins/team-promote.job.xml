@@ -1,0 +1,97 @@
+<?xml version='1.1' encoding='UTF-8'?>
+<!--
+  team-promote — PIPELINE FROM SCM (miroir de team-publish.job.xml).
+
+  Ce fichier ne porte QUE la coquille du job : d'ou il charge son pipeline, et
+  le declencheur qui doit exister DES LA POSE du job. Le pipeline lui-meme vit
+  dans ci/Jenkinsfile.team-promote (declaratif, versionne, relisible par l'ops).
+
+  Le bloc <triggers> ci-dessous DOIT rester le miroir exact du bloc
+  `triggers { GenericTrigger(...) }` du Jenkinsfile. C'est CELUI-CI qui gagne,
+  et c'est contre-intuitif : Declarative ne remplace QUE les declencheurs
+  qu'il a lui-meme poses (DeclarativeJobPropertyTrackerAction) ; un
+  declencheur venu d'un config.xml est PRESERVE tel quel, indefiniment.
+  MESURE sur le lab (2026-08-06, sur team-publish) : token du XML
+  volontairement different de celui du Jenkinsfile, 4 builds -> le XML n'a
+  jamais bouge ; le meme XML prive de son bloc <triggers> -> le Jenkinsfile a
+  bien installe le sien.
+
+  Consequence : une divergence entre les deux fichiers est SILENCIEUSE, et
+  c'est le XML qui fait foi. La porte de la Task 8 compare les deux et vire
+  au rouge a la premiere divergence (meme motif que
+  test-team-publish-wiring.sh §3 pour team-publish).
+
+  Token IDENTIQUE a celui de team-publish.job.xml (stoa-team-publish) : D1 de
+  la spec G5, le plugin generic-webhook-trigger declenche TOUS les jobs
+  enregistres sur un token donne, un seul webhook POST reveille donc
+  team-publish ET team-promote. AUCUN geste sur les depots d'equipe, leur
+  webhook existant suffit.
+-->
+<flow-definition plugin="workflow-job">
+  <description>Apply post-merge (promotion d'API, ADR-081/ADR-079) : une PR promote/&lt;api&gt;-&lt;env&gt; d'un DEPOT D'EQUIPE FUSIONNEE ouvre une DEMANDE EN ATTENTE dans Jenkins (input) ; sur validation + identite Vault -> apply nominatif via scripts/team-promote.sh (miroir de team-publish.job.xml, palier authoring, pour le depot de l'equipe). L'equipe autorisee est derivee du DEPOT qui a declenche le webhook (topologie), croise avec providers.&lt;env&gt;.yml -- jamais du contenu du payload. Verbe G5 : IMPORT D'ARCHIVE, jamais un re-POST du contrat. PIPELINE FROM SCM : le pipeline est ci/Jenkinsfile.team-promote, charge depuis le depot plateforme (branche main) -- ce job ne contient AUCUN Groovy.</description>
+  <keepDependencies>false</keepDependencies>
+  <properties>
+    <org.jenkinsci.plugins.workflow.job.properties.DisableConcurrentBuildsJobProperty/>
+    <org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty>
+      <triggers>
+        <org.jenkinsci.plugins.gwt.GenericTrigger plugin="generic-webhook-trigger@2.4.2">
+          <spec></spec>
+          <genericVariables>
+            <!-- AUTORITE PAR TOPOLOGIE : c'est CE champ, pas un champ "team" du
+                 payload, qui dit qui a le droit de promouvoir : team-promote.sh le
+                 croise avec providers.<env>.yml (REPO_NON_DECLARE sinon). -->
+            <org.jenkinsci.plugins.gwt.GenericVariable><key>WEBHOOK_REPO</key><value>$.repository.full_name</value></org.jenkinsci.plugins.gwt.GenericVariable>
+            <org.jenkinsci.plugins.gwt.GenericVariable><key>PR_BRANCH</key><value>$.pull_request.head.ref</value></org.jenkinsci.plugins.gwt.GenericVariable>
+            <org.jenkinsci.plugins.gwt.GenericVariable><key>PR_NUMBER</key><value>$.pull_request.number</value></org.jenkinsci.plugins.gwt.GenericVariable>
+            <org.jenkinsci.plugins.gwt.GenericVariable><key>PR_ACTION</key><value>$.action</value></org.jenkinsci.plugins.gwt.GenericVariable>
+            <org.jenkinsci.plugins.gwt.GenericVariable><key>PR_MERGED</key><value>$.pull_request.merged</value></org.jenkinsci.plugins.gwt.GenericVariable>
+            <!-- Qui a valide, et qui avait demande. Ne servent PLUS aux gardes
+                 (team-promote.sh reconcilie ces deux identites aupres de Gitea,
+                 authentifie) mais restent publies, memes cles que
+                 team-publish.job.xml / team-apply.job.xml. -->
+            <org.jenkinsci.plugins.gwt.GenericVariable><key>PR_MERGED_BY</key><value>$.pull_request.merged_by.login</value></org.jenkinsci.plugins.gwt.GenericVariable>
+            <org.jenkinsci.plugins.gwt.GenericVariable><key>PR_REQUESTER</key><value>$.pull_request.user.login</value></org.jenkinsci.plugins.gwt.GenericVariable>
+            <!-- ANTI-TOCTOU (team-promote.sh) : le manifeste est lu dans le depot
+                 d'EQUIPE TEL QUE MERGE, jamais dans le payload du webhook. -->
+            <org.jenkinsci.plugins.gwt.GenericVariable><key>MERGE_SHA</key><value>$.pull_request.merge_commit_sha</value></org.jenkinsci.plugins.gwt.GenericVariable>
+          </genericVariables>
+          <printContributedVariables>true</printContributedVariables>
+          <printPostContent>false</printPostContent>
+          <token>stoa-team-publish</token>
+          <silentResponse>false</silentResponse>
+          <regexpFilterText>$PR_ACTION|$PR_MERGED</regexpFilterText>
+          <regexpFilterExpression>^closed\|true$</regexpFilterExpression>
+          <overrideQuietPeriod>false</overrideQuietPeriod>
+          <shouldNotFlattern>false</shouldNotFlattern>
+          <allowSeveralTriggersPerBuild>false</allowSeveralTriggersPerBuild>
+        </org.jenkinsci.plugins.gwt.GenericTrigger>
+      </triggers>
+    </org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty>
+  </properties>
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition" plugin="workflow-cps">
+    <scm class="hudson.plugins.git.GitSCM" plugin="git">
+      <configVersion>2</configVersion>
+      <userRemoteConfigs>
+        <hudson.plugins.git.UserRemoteConfig>
+          <!-- Depot PLATEFORME vu DEPUIS l'agent (reseau docker) : c'est aussi
+               celui que `checkout scm` repose dans le workspace, d'ou la
+               disparition des `git url:` explicites du pipeline. -->
+          <url>http://gitea:3000/ci/stoa-labs.git</url>
+        </hudson.plugins.git.UserRemoteConfig>
+      </userRemoteConfigs>
+      <branches>
+        <hudson.plugins.git.BranchSpec>
+          <name>*/main</name>
+        </hudson.plugins.git.BranchSpec>
+      </branches>
+      <doGenerateSubmoduleConfigurations>false</doGenerateSubmoduleConfigurations>
+      <submoduleCfg class="empty-list"/>
+      <extensions/>
+    </scm>
+    <scriptPath>poc-control-plane-federation/ci/Jenkinsfile.team-promote</scriptPath>
+    <!-- lightweight=false : le workspace de l'agent doit porter le depot
+         (scripts/, ansible/, ci/lib/), pas seulement le Jenkinsfile. -->
+    <lightweight>false</lightweight>
+  </definition>
+  <disabled>false</disabled>
+</flow-definition>

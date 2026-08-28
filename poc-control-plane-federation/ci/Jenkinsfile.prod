@@ -30,6 +30,13 @@ pipeline {
     // PLATEFORME (stoa/ci, stoa/opensearch, stoa/gateways/*), pas seulement un
     // périmètre deploy-<tenant> : c'est la policy `operator-deploy`, dont
     // l'octroi à des humains est une DÉCISION CLIENT (ADR-078 § Décisions, n°9).
+    //
+    // ⚠ G2 (ADR-084) : la porte prod déclare deployerGroup=apim-operator-prod.
+    // Le repli AppRole ci-dessous est donc REFUSÉ par apply-uac
+    // (DEPLOYER_GROUP_REQUIRED : le token AppRole ne porte pas operator-deploy).
+    // Déployer prod exige un humain du groupe — l'imputabilité n'est plus un
+    // vœu, c'est la déclaration qui la force. Pour un compte de service
+    // d'exception : grant EXPLICITE de la policy (geste exploitant).
     string(name: 'VAULT_USER', defaultValue: '',
            description: "Identité NOMINATIVE de l'opérateur : login annuaire. Vide = repli AppRole (acte non imputable).")
     password(name: 'VAULT_USER_PASSWORD', defaultValue: '',

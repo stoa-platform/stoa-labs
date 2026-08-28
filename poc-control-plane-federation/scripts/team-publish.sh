@@ -57,6 +57,13 @@
 set -uo pipefail
 set +x   # jamais de trace : le token ne doit pas fuiter
 cd "$(dirname "$0")/.." || exit 1
+# shellcheck source=lib/deploy-pin.sh
+# `set -e` n'est pas actif dans ce script : sans ce garde-fou explicite, un
+# fichier manquant laisserait bash CONTINUER, et l'échec se présenterait bien
+# plus bas comme « resolve_deploy_pin: command not found » puis PIN_NON_RESOLU
+# — un fail-closed par accident, avec un message qui accuse la résolution au
+# lieu du fichier absent.
+. scripts/lib/deploy-pin.sh || { echo "ERREUR: scripts/lib/deploy-pin.sh introuvable ou illisible" >&2; exit 1; }
 
 WEBHOOK_REPO="${WEBHOOK_REPO:?WEBHOOK_REPO requis (repository.full_name du webhook)}"
 PR_BRANCH="${PR_BRANCH:?PR_BRANCH requis}"
@@ -69,10 +76,14 @@ APIM_API_BASE="${APIM_API_BASE:?APIM_API_BASE requis — pas de défaut : dire s
 GIT_HOST="${GIT_HOST:-http://gitea:3000}"
 GIT_REPO="${GIT_REPO:-ci/stoa-labs}"        # dépôt PLATEFORME — porte providers.<env>.yml
 GIT_WEB_HOST="${GIT_WEB_HOST:-$GIT_HOST}"
-# Fixe (pas dérivé de la branche, contrairement à team-apply.sh/onboard-<team>-<env>) :
-# api/<name>-<version> ne porte aucun axe d'environnement — le seul palier où
-# des équipes sont déclarées à ce jour est dev (cf. team-apply.sh, api-request.sh).
-ENVN="${ENVN:-dev}"
+# G4 (ADR-082) : ENVN est SCELLÉ sur l'env d'authoring — affectation sèche
+# depuis la constante de lib, jamais "${ENVN:-dev}" : les variables d'un job
+# Jenkins atterrissent dans l'environnement du process (fait mesuré, même
+# raison que deploy-pin.sh:29-37). La publication est un geste d'AUTHORING
+# par conception (ADR-079) ; au-delà, c'est la promotion (marqueurs G3,
+# verbe archive G5) — et son autorité est la rétention de credential, pas
+# une variable.
+ENVN="$DEPLOY_PIN_AUTHORING_ENV"
 
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT; umask 077
 
@@ -332,16 +343,43 @@ PY
 [ "$MANIFEST_REST_UNSAFE" = "CLEAN" ] \
   || fail "MANIFEST_UNSAFE : ${PUB_REL} contient une expression Jinja ({{ ou {%) en dehors du champ contract (déjà validé en liste blanche ci-dessus) — un manifeste d'équipe ne doit jamais porter de gabarit ailleurs, seulement des valeurs littérales"
 
+# ── 5bis. RÉSOLUTION DE LA RÉFÉRENCE DE DÉPLOIEMENT (jalon G3) ───────────────
+# En env d'AUTHORING (dev), le résolveur matérialise HEAD : le comportement est
+# celui d'avant, à l'octet près. Il est branché ICI, sur le chemin vivant, pour
+# deux raisons : (1) un résolveur que personne n'appelle est du code mort qui
+# pourrit en silence — c'est le reproche fait à `labctl promote` (GOAL G8) ;
+# (2) le jour où G4 ouvre les paliers supérieurs, ce chemin PINNE déjà, sans
+# nouvelle plomberie à écrire sous pression.
+# Le clone est DÉJÀ positionné au SHA du merge (§4) — le résolveur lit donc
+# l'état revu, pas une branche courante.
+# G4 (D9) : le refus PRÉCIS du résolveur (PIN_ABSENT, ARCHIVE_ABSENT, …)
+# part sur stderr (_dp_fail, deploy-pin.sh) — un lecteur de PR ne voit pas le
+# log Jenkins. On capture stderr en FICHIER (jamais un pipe : pipefail + le
+# résolveur sort 1) et le dernier jeton nommé rejoint le commentaire. C'est
+# LA surface de diagnostic de l'équipe le jour où la chaîne s'exerce.
+# Ligne D'APPEL laissée intacte (test-deploy-pin.sh ⑳ ancre
+# ^resolve_deploy_pin "\$TMP/team" en tête de ligne) : le branchement en
+# `|| { … }` porte la capture sans déplacer l'appel derrière un `if !`.
+resolve_deploy_pin "$TMP/team" "$API_NAME" "$ENVN" "$TMP/resolved" 2>"$TMP/pin.err" || {
+  cat "$TMP/pin.err" >&2   # le log de build garde TOUT le détail
+  REFUS="$(grep -o 'deploy-pin: [A-Z_]*' "$TMP/pin.err" | tail -1)"
+  fail "PIN_NON_RESOLU : la référence de déploiement de ${API_NAME} en ${ENVN} n'a pas pu être résolue (${REFUS:-refus non nommé — voir le log du build})"
+}
+
 # ── 5. publication (rôle du palier 3, idempotent create-or-version) ─────────
-# apim_ss_contract_pin (extra-var, précédence 22) ÉPINGLE le contract à
-# SPEC_PATH — le chemin qu'on vient SOI-MÊME de vérifier exister (§4,
-# CONTRAT_ABSENT) — jamais celui que le manifeste prétend porter (cf. le
-# scan MANIFEST_UNSAFE ci-dessus, défense en profondeur sur le RESTE du
-# manifeste ; ceci est la fermeture PRIMAIRE pour contract spécifiquement).
+# apim_ss_contract_pin (extra-var, précédence 22) ÉPINGLE le contract au
+# chemin RÉSOLU (DEPLOY_PIN_CONTRACT) — en dev, le résolveur matérialise
+# exactement SPEC_PATH (§4, CONTRAT_ABSENT) ; hors dev, il matérialise le pin
+# — jamais ce que le manifeste prétend porter (cf. le scan MANIFEST_UNSAFE
+# ci-dessus, défense en profondeur sur le RESTE du manifeste ; ceci est la
+# fermeture PRIMAIRE pour contract spécifiquement). $PUB_PATH et $SPEC_PATH
+# restent utilisés PLUS HAUT par les gardes (cohérence branche↔manifeste,
+# liste blanche du champ contract) : elles valident l'état mergé sur le
+# clone ; ce qui part au moteur est ce que le résolveur en a fait.
 ( ansible-playbook -i ansible/inventory.lab.ini ansible/publish-api.yml \
-    -e apim_ss_manifest="$PUB_PATH" -e apim_ss_team="$TEAM" \
+    -e apim_ss_manifest="$DEPLOY_PIN_PUBLISH" -e apim_ss_team="$TEAM" \
     -e apim_ss_api_base="$APIM_API_BASE" -e apim_ss_env="$ENVN" \
-    -e apim_ss_contract_pin="$SPEC_PATH" \
+    -e apim_ss_contract_pin="$DEPLOY_PIN_CONTRACT" \
 ) >"$TMP/pub.log" 2>&1
 PUB_RC=$?
 
@@ -368,8 +406,11 @@ if [ "$PUB_RC" -eq 0 ]; then
   # utilisé pour webmethods-mock/gitea (même convention). Un poste hors du
   # réseau compose surcharge JENKINS_UI explicitement (comme APIM_API_BASE).
   REFRESH_NOTE=""
+  # AUCUN ENVN passé au délégué, et c'est délibéré : depuis G4 il SCELLE
+  # lui-même son env sur la même constante d'authoring. Le lui repasser serait
+  # du câblage mort qui suggère qu'il obéit à son appelant.
   if JENKINS_UI="${JENKINS_UI:-http://jenkins:8080}" JOBS="app-request api-request" \
-     ENVN="$ENVN" bash scripts/setup-team-onboard-jobs.sh >"$TMP/refresh.log" 2>&1
+     bash scripts/setup-team-onboard-jobs.sh >"$TMP/refresh.log" 2>&1
   then
     SKIPPED=$(grep -oE 'CHOICES_SKIPPED_REPOS=[0-9]+' "$TMP/refresh.log" | tail -1 | cut -d= -f2)
     if [ -n "$SKIPPED" ] && [ "$SKIPPED" -gt 0 ]; then

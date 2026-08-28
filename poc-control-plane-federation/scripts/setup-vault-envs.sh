@@ -32,18 +32,20 @@ put() {
 
 # Secret values (PoC-disposable; override via env to inject real ones out-of-band).
 # DOIVENT matcher les ADMIN_USER/ADMIN_PASSWORD des mocks (docker-compose.envs.yml).
-WM_DEV_USER="${WM_DEV_USER:-wm-dev-admin}";  WM_DEV_PASS="${WM_DEV_PASS:-wm-dev-secret-poc}"
-WM_REC_USER="${WM_REC_USER:-wm-rec-admin}";  WM_REC_PASS="${WM_REC_PASS:-wm-rec-secret-poc}"
-WM_INT_USER="${WM_INT_USER:-wm-int-admin}";  WM_INT_PASS="${WM_INT_PASS:-wm-int-secret-poc}"
+# Chaîne DÉRIVÉE (scripts/lib/env-chain.sh) : un secret admin par palier
+# HORS-PROD, plus de bloc à recopier à chaque nouvel environnement. Les
+# surcharges nominatives historiques (WM_DEV_USER, WM_REC_PASS…) restent
+# honorées à l'identique — c'est ce que lit la boucle ci-dessous.
+. "$(dirname "$0")/lib/env-chain.sh"
+read -r -a HP_ENVS <<< "$(env_chain_nonprod)" || { echo "✗ chaîne d'environnements illisible" >&2; exit 1; }
 CI_HORSPROD_SECRET="${CI_HORSPROD_SECRET:?Variable CI_HORSPROD_SECRET absente — définissez-la (voir poc-control-plane-federation/.env.example)}"
 
-echo "Vault $VAULT_ADDR — provisioning secret/$PREFIX/envs/* (KV v2, ADR-075)"
-put envs/dev/wm-admin "{\"username\":\"$WM_DEV_USER\",\"password\":\"$WM_DEV_PASS\"}"
-put envs/rec/wm-admin "{\"username\":\"$WM_REC_USER\",\"password\":\"$WM_REC_PASS\"}"
-put envs/int/wm-admin "{\"username\":\"$WM_INT_USER\",\"password\":\"$WM_INT_PASS\"}"
-
 # secret/stoa/ci : MERGE manuel — relire ciApplierSecret (posé par setup-vault.sh)
-# avant de réécrire l'objet complet (KV v2 ne merge pas).
+# avant de réécrire l'objet complet (KV v2 ne merge pas). Posé AVANT la boucle
+# par palier (G5) : le sub envs/<env>/admin-oauth qu'elle seed a besoin de
+# RELIRE ciHorsprodSecret depuis ce même secret, pas de le prendre directement
+# de la variable d'environnement — la valeur qui compte pour les autres
+# consommateurs (Task 6) est celle PERSISTÉE dans Vault.
 CUR_APPLIER="$("${CURL[@]}" "$VAULT_ADDR/v1/$MOUNT/data/$PREFIX/ci" \
   | python3 -c 'import sys,json
 try: print(json.load(sys.stdin)["data"]["data"].get("ciApplierSecret",""))
@@ -56,6 +58,45 @@ CI_APPLIER_SECRET="${CI_APPLIER_SECRET:-$CUR_APPLIER}"
   exit 1
 }
 put ci "{\"ciApplierSecret\":\"$CI_APPLIER_SECRET\",\"ciHorsprodSecret\":\"$CI_HORSPROD_SECRET\"}"
+
+# Round-trip : c'est CETTE valeur (relue, pas $CI_HORSPROD_SECRET) qui alimente
+# admin-oauth ci-dessous.
+CI_HORSPROD_FROM_VAULT="$("${CURL[@]}" "$VAULT_ADDR/v1/$MOUNT/data/$PREFIX/ci" \
+  | python3 -c 'import sys,json
+try: print(json.load(sys.stdin)["data"]["data"].get("ciHorsprodSecret",""))
+except Exception: print("")' 2>/dev/null || true)"
+if [ -z "$CI_HORSPROD_FROM_VAULT" ]; then
+  echo "✗ CI_SECRET_ABSENT : ciHorsprodSecret absent de secret/$PREFIX/ci après écriture —" >&2
+  echo "  envs/<env>/admin-oauth NON seedé (le reste du plan continue)." >&2
+fi
+# ADR-079/G5 : le client OAuth des proxies admin est commun à tous les
+# paliers hors-prod (ci-horsprod) — token_url par défaut = la vue in-cluster
+# (agents Jenkins), surchargeable pour un lab dont Keycloak est ailleurs.
+ADMIN_OAUTH_TOKEN_URL="${ADMIN_OAUTH_TOKEN_URL:-http://keycloak:8080/realms/stoa-lab/protocol/openid-connect/token}"
+
+echo "Vault $VAULT_ADDR — provisioning secret/$PREFIX/envs/* (KV v2, ADR-075)"
+for E in "${HP_ENVS[@]}"; do
+  # Nom de variable historique par env : WM_<ENV>_USER / WM_<ENV>_PASS.
+  EU="WM_$(printf %s "$E" | tr '[:lower:]' '[:upper:]')_USER"
+  EP="WM_$(printf %s "$E" | tr '[:lower:]' '[:upper:]')_PASS"
+  U="${!EU:-wm-$E-admin}"; P="${!EP:-wm-$E-secret-poc}"
+  put "envs/$E/wm-admin" "{\"username\":\"$U\",\"password\":\"$P\"}"
+  if [ -n "$CI_HORSPROD_FROM_VAULT" ]; then
+    put "envs/$E/admin-oauth" "{\"token_url\":\"$ADMIN_OAUTH_TOKEN_URL\",\"client_id\":\"ci-horsprod\",\"client_secret\":\"$CI_HORSPROD_FROM_VAULT\",\"scope\":\"deploy:$E\"}"
+  fi
+done
+
+# ── LE TERMINUS (G7) : son secret d'admin — JAMAIS de admin-oauth ────────────
+# La gateway du terminus est la gateway RÉELLE, attaquée en DIRECT (pas de
+# proxy wm-admin-<env> devant elle, exclusion structurelle G4). Défauts alignés
+# sur setup-vault.sh (WM_USER/WM_PASS), surchargeables par WM_<TERMINUS>_*.
+# On ne seed PAS envs/<terminus>/admin-oauth : il n'existe aucune voie OAuth2
+# vers le terminus, et en seeder une laisserait croire le contraire.
+TERMINUS="$(env_chain_terminus)" || { echo "✗ CHAINE_ILLISIBLE : terminus indéterminable" >&2; exit 1; }
+TU="WM_$(printf %s "$TERMINUS" | tr '[:lower:]' '[:upper:]')_USER"
+TP="WM_$(printf %s "$TERMINUS" | tr '[:lower:]' '[:upper:]')_PASS"
+U="${!TU:-${WM_USER:-Administrator}}"; P="${!TP:-${WM_PASS:-manage}}"
+put "envs/$TERMINUS/wm-admin" "{\"username\":\"$U\",\"password\":\"$P\"}"
 
 echo "done. Vérif (re-lecture d'un secret) :"
 "${CURL[@]}" "$VAULT_ADDR/v1/$MOUNT/data/$PREFIX/envs/dev/wm-admin" \

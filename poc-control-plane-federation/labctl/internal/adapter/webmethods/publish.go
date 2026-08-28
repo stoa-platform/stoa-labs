@@ -177,7 +177,10 @@ func importPayload(api *adapter.NormalizedAPI) (map[string]any, error) {
 //  1. PREFLIGHT health (reachability + Basic auth accepted) so we never
 //     half-publish with a clear per-gateway diagnostic.
 //  2. IDEMPOTENCY: list APIs, find one with the same apiName+apiVersion.
-//     Found    -> PUT /apis/{id} with the import payload (update, Created=false).
+//     Found INACTIVE -> PUT /apis/{id} with the import payload (Created=false).
+//     Found ACTIVE   -> the definition PUT is SKIPPED (the product refuses it,
+//     ADR-079 forbids deactivating to work around it); Created=false and the
+//     steps below still converge the configuration.
 //     Not found-> POST /apis (create, Created=true). A 409 on POST means a
 //     concurrent/stale name conflict: re-list once and fall back to PUT on the
 //     conflicting record (career C.2 pattern — one retry, no loop).
@@ -208,8 +211,26 @@ func (a *Adapter) Publish(ctx context.Context, api *adapter.NormalizedAPI) (*ada
 	var apiID string
 	created := false
 	if cur, ok := findByNameVersion(existing, wmName, api.Version); ok {
-		if err := a.updateAPI(ctx, cur.ID, payload); err != nil {
-			return nil, fmt.Errorf("webmethods publish: update api %q (%s): %w", wmName, cur.ID, err)
+		// ⚠ Le PUT de définition est SAUTÉ quand le record est ACTIF : le
+		// produit le REFUSE (400 « Api is Active, please deactivate before
+		// update », prouvé live et reproduit par mocks/webmethods). Le sauter
+		// est la SEULE issue tenable ici — désactiver pour mettre à jour est
+		// interdit hors authoring (ADR-079, zéro coupure), et forcer ne ferait
+		// que rendre le 400 plus tard. Sans ce saut, un simple re-apply du MÊME
+		// env/version échoue (mesuré en G6 : le re-apply d'un rollback vise par
+		// construction une version déjà publiée et active).
+		//
+		// Conséquence assumée : une DÉRIVE de définition sur une API active
+		// n'est pas convergée ici. Ce n'est pas un oubli — c'est le travail du
+		// VERBE ARCHIVE (jalon G8, adapter archive.go), jamais d'un PUT à cet
+		// endroit. Les étapes 3-7 ci-dessous (activation no-op, inbound auth,
+		// routing/alias, throttle, transport) tournent quand même : leurs
+		// endpoints acceptent une API active (prouvé par les travaux de
+		// rotation zéro-coupure), donc la projection de configuration converge.
+		if !cur.IsActive {
+			if err := a.updateAPI(ctx, cur.ID, payload); err != nil {
+				return nil, fmt.Errorf("webmethods publish: update api %q (%s): %w", wmName, cur.ID, err)
+			}
 		}
 		apiID = cur.ID
 	} else {
@@ -294,8 +315,14 @@ func (a *Adapter) createAPI(ctx context.Context, wmName string, payload map[stri
 		}
 		wantVersion, _ := payload["apiVersion"].(string)
 		if cur, ok := findByNameVersion(refreshed, wmName, wantVersion); ok {
-			if uerr := a.updateAPI(ctx, cur.ID, payload); uerr != nil {
-				return "", false, fmt.Errorf("create api %q: conflict→PUT fallback on %s: %w", wmName, cur.ID, uerr)
+			// Même garde qu'au chemin nominal de Publish : sur un record ACTIF
+			// le produit refuse le PUT de définition (ADR-079). On converge
+			// sans lui — la dérive de définition reste le travail du verbe
+			// archive (G8).
+			if !cur.IsActive {
+				if uerr := a.updateAPI(ctx, cur.ID, payload); uerr != nil {
+					return "", false, fmt.Errorf("create api %q: conflict→PUT fallback on %s: %w", wmName, cur.ID, uerr)
+				}
 			}
 			return cur.ID, false, nil
 		}

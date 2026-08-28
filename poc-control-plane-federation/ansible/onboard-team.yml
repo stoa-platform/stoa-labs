@@ -11,7 +11,56 @@
 - name: "Onboarding d'equipe"
   hosts: webmethods
   gather_facts: false
+  vars:
+    # G4 (ADR-082) : la liste des paliers ou l'equipe a le DROIT D'ECRIRE ses
+    # secrets d'app est DERIVEE de la chaine — une seule source. Le defaut du
+    # role (["dev"]) est un filet fail-closed, pas la valeur de service : toute
+    # invocation documentee passe par ce play. Echec de la derivation = echec
+    # du play (le lookup remonte l'erreur), jamais une liste devinee.
+    #
+    # ⚠ CHEZ UN CLIENT, POSER STOA_ENV_CHAIN_FILE SUR LA CHAINE REELLE — une
+    # policy derivee du gabarit d'exemple peut rendre son terminus INSCRIPTIBLE
+    # (ADR-082). env-chain.sh retombe sur clients/_example/environments.yaml
+    # quand la variable est absente : c'est la source declaree du lab, mais chez
+    # un client dont la chaine est plus COURTE, le dernier palier du gabarit
+    # n'est pas son terminus a lui — la liste hors-prod contiendrait alors un
+    # palier qu'il considere comme terminal, sans le moindre symptome. La tache
+    # de debug ci-dessous NOMME la source effectivement lue, pour que ce cas se
+    # voie dans le log au lieu de se decouvrir en audit.
+    #
+    # ⚠ LE CHEMIN EST ANCRE SUR playbook_dir, ET C'EST MESURE. Le lookup `pipe`
+    # lance sa commande avec cwd = basedir du loader, c'est-a-dire le REPERTOIRE
+    # DU PLAYBOOK (ansible/), PAS celui d'ou l'on a lance ansible-playbook
+    # (lookup/pipe.py:68, ansible-core 2.18.2 : `Popen(term,
+    # cwd=self._loader.get_basedir(), shell=True)`). Ecrit en relatif —
+    # `. scripts/lib/env-chain.sh` — le source echouait donc a TOUS les coups
+    # (« No such file or directory ») et le play mourait meme avec une chaine
+    # parfaitement lisible : un fail-closed permanent n'est pas un fail-closed.
+    # L'absolu est aussi ce que la lib demande, elle resout SA racine depuis
+    # BASH_SOURCE (piege documente en tete de scripts/lib/env-chain.sh).
+    #
+    # DEUX `| quote`, PAS UN. Le `quote` externe protege la commande passee a
+    # `bash -c` ; le `quote` sur playbook_dir protege le CHEMIN a l'interieur de
+    # cette commande. N'en poser qu'un seul ne couvre que la couche externe : un
+    # chemin de depot contenant une apostrophe (ou pire) se retrouverait alors
+    # interprete par le shell interne. Ce n'est pas theorique — le chemin vient
+    # de l'environnement, pas du depot.
+    apim_onb_write_envs: >-
+      {{ lookup('pipe', 'bash -c ' ~ (('. ' ~ (playbook_dir | quote) ~ '/../scripts/lib/env-chain.sh && env_chain_nonprod') | quote)).split() }}
   tasks:
+    # La source de chaine est NOMMEE dans le log du play (revue G4) : sans elle,
+    # rien ne distingue « derive de la chaine du client » de « derive du gabarit
+    # d'exemple », et les deux produisent une policy d'apparence identique.
+    # Le `join` force au passage l'evaluation du lookup : une chaine illisible
+    # tue le play ICI, avant la moindre ecriture.
+    - name: "G4 — d'ou vient la chaine d'environnements, et ce qu'elle donne"
+      ansible.builtin.debug:
+        msg: >-
+          chaine d'envs lue depuis :
+          {{ lookup('env', 'STOA_ENV_CHAIN_FILE') | default('<gabarit par defaut : clients/_example/environments.yaml>', true) }}
+          — paliers d'ecriture d'app (hors terminus) :
+          {{ apim_onb_write_envs | join(', ') }}
+
     - name: "FAIL-CLOSED — une equipe cible est obligatoire"
       ansible.builtin.assert:
         that: "apim_onb_team | default('') | length > 0"
