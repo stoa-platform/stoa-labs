@@ -461,10 +461,17 @@ else
     && ok "GATE_REFS_REQUIRED — la porte homol exige un pv_ref, refusé À LA DEMANDE" \
     || bad "promotion vers homol sans pv_ref ACCEPTÉE"
 
+  # ⚠ RÉÉCRIT (spec promotion-sans-recopie, 2026-08-28) : ARCHIVE_SHA256 est
+  # désormais FACULTATIF au formulaire — sa résolution (manifeste épinglé
+  # depuis dev, palier source au-delà) n'a lieu qu'APRÈS le clone, donc jamais
+  # en DRY_RUN. DIGEST_ABSENT n'a pas disparu, il a déménagé après cette
+  # résolution (cf. api-promote-request.sh et scripts/test-promote-sans-recopie.sh
+  # épreuve 10) : ce qui reste vérifiable ici, hors ligne, c'est que la garde
+  # amont ne bloque plus et annonce le report.
   run_w dev rec "" "" "" > "$TMP/w16"
-  grep -q DIGEST_ABSENT "$TMP/w16" \
-    && ok "DIGEST_ABSENT — pas de promotion hors authoring sans digest" \
-    || bad "promotion hors dev sans digest ACCEPTÉE"
+  grep -q GARDES_OK "$TMP/w16" && grep -q DIGEST_DIFFERE "$TMP/w16" \
+    && ok "DIGEST_DIFFERE — digest facultatif en amont, résolu après clone (spec promotion-sans-recopie)" \
+    || bad "digest vide encore refusé en amont (DIGEST_ABSENT devrait avoir déménagé après résolution)"
 
   run_w dev rec "" "" "pas-un-digest" > "$TMP/w16"
   grep -q DIGEST_MALFORMED "$TMP/w16" \

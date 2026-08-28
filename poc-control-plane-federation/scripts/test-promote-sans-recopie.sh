@@ -129,5 +129,27 @@ if command -v go >/dev/null 2>&1; then
     && ok "TestPromoteSpecToleratesPinnedSha PASS" || ko "labctl refuse archive_sha256"
 fi
 
+echo "== 10. request DRY_RUN : ARCHIVE_SHA256 vide ne bloque plus les gardes amont =="
+OUT=$(TEAM=banking-demo API_NAME=demo-api FROM_ENV=dev TO_ENV=rec \
+      MESSAGE="épreuve 10" ARCHIVE_SHA256='' DRY_RUN=1 \
+      bash scripts/api-promote-request.sh 2>&1)
+echo "$OUT" | grep -q "GARDES_OK" && echo "$OUT" | grep -q "DIGEST_DIFFERE" \
+  && ok "champ vide ⇒ DIGEST_DIFFERE + gardes vertes" \
+  || ko "champ vide encore refusé en amont : $OUT"
+
+# un manifeste épinglé MALFORMÉ ne doit pas passer pour une désignation
+mkdir -p "$TMP/team2/apis"; cp "$TMP/team/apis/demo-api.promote.yml" "$TMP/team2/apis/"
+sed -i.bak 's|^\(  archive_sha256:\).*|\1 "zz"|' "$TMP/team2/apis/demo-api.promote.yml"
+[ "$(manifest_pinned_digest "$TMP/team2/apis/demo-api.promote.yml")" = "zz" ] \
+  && ok "digest malformé LU par la lib (le refus de forme appartient au script après résolution)" \
+  || ko "lecture du digest malformé incohérente"
+
+echo "== 11. request DRY_RUN : forme invalide toujours refusée TÔT =="
+OUT=$(TEAM=banking-demo API_NAME=demo-api FROM_ENV=dev TO_ENV=rec \
+      MESSAGE="épreuve 11" ARCHIVE_SHA256=zz DRY_RUN=1 \
+      bash scripts/api-promote-request.sh 2>&1) \
+  && ko "sha 'zz' accepté" \
+  || { echo "$OUT" | grep -q DIGEST_MALFORMED && ok "DIGEST_MALFORMED" || ko "refus sans nom : $OUT"; }
+
 echo; echo "bilan : $PASS ✅  $FAIL ❌"
 [ "$FAIL" -eq 0 ]
