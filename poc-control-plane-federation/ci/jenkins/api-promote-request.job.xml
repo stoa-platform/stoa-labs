@@ -1,0 +1,95 @@
+<?xml version='1.1' encoding='UTF-8'?>
+<!--
+  api-promote-request — PIPELINE FROM SCM, job de FORMULAIRE (jalon G3 ; posé
+  le 2026-08-28, spec promotion-sans-recopie — ce fichier solde la « dette
+  silencieuse » que l'en-tête d'api-promote-export.job.xml documentait).
+  Calqué sur ce dernier : ni webhook ni <script> inline, le pipeline vit dans
+  ci/Jenkinsfile.api-promote-request (déclaratif, versionné).
+
+  Le bloc <parameterDefinitions> DOIT rester le miroir exact du bloc
+  `parameters { … }` du Jenkinsfile — MÊME PIÈGE que team-request.job.xml
+  documente (DeclarativeJobPropertyTrackerAction : le XML gagne, une
+  divergence serait silencieuse). test-promote-sans-recopie.sh épreuve 13
+  compare les deux, noms ET ordre.
+
+  AUCUN marqueur CHOICES : les listes FROM_ENV/TO_ENV sont écrites à la main
+  (mêmes valeurs que le Jenkinsfile — un bloc parameters{} est évalué à la
+  pose, hors workspace, il ne peut pas dériver d'environments.yaml) ; le job
+  est donc copié TEL QUEL par setup-team-onboard-jobs.sh.
+-->
+<flow-definition plugin="workflow-job">
+  <description>Formulaire : demander la PROMOTION d'une API — ouvre la PR promote/&lt;api&gt;-&lt;env&gt; portant le marqueur apis/&lt;api&gt;.deploy.&lt;env&gt;.yaml sur le dépôt d'équipe. NE DÉPLOIE RIEN : la décision est le merge (ADR-081) ; le merge déclenche team-promote (pause nominative + garde d'identité). ARCHIVE_SHA256 est FACULTATIF : vide, il est lu sur main (manifeste épinglé par api-promote-export) ou hérité du palier source. PIPELINE FROM SCM : le pipeline est ci/Jenkinsfile.api-promote-request (branche main) — ce job ne contient AUCUN Groovy.</description>
+  <keepDependencies>false</keepDependencies>
+  <properties>
+    <hudson.model.ParametersDefinitionProperty>
+      <parameterDefinitions>
+        <hudson.model.StringParameterDefinition>
+          <name>TEAM</name>
+          <description>Équipe propriétaire — doit revendiquer le dépôt dans providers.&lt;env&gt;.yml (REPO_NON_DECLARE sinon).</description>
+          <defaultValue></defaultValue>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>API_NAME</name>
+          <description>Nom de l'API ([a-z0-9-]) — publiée en authoring, manifeste de promotion épinglé (PR d'api-promote-export mergée).</description>
+          <defaultValue></defaultValue>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.ChoiceParameterDefinition>
+          <name>FROM_ENV</name>
+          <description>Palier source. La paire (FROM_ENV,TO_ENV) est validée par le script (CHAINE_INVALIDE si le saut n'est pas le suivant de la chaîne).</description>
+          <choices class="java.util.Arrays$ArrayList"><a class="string-array"><string>dev</string><string>rec</string><string>int</string><string>homol</string></a></choices>
+        </hudson.model.ChoiceParameterDefinition>
+        <hudson.model.ChoiceParameterDefinition>
+          <name>TO_ENV</name>
+          <description>Palier d'arrivée. Sa porte (environments.yaml) décide des références exigées (CHANGE_REF/PV_REF).</description>
+          <choices class="java.util.Arrays$ArrayList"><a class="string-array"><string>rec</string><string>int</string><string>homol</string><string>prod</string></a></choices>
+        </hudson.model.ChoiceParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>MESSAGE</name>
+          <description>Message d'audit (obligatoire) — voyage dans le marqueur mergé.</description>
+          <defaultValue></defaultValue>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>CHANGE_REF</name>
+          <description>Référence de changement ITSM — exigée par la porte de certains paliers ([A-Za-z0-9._-]).</description>
+          <defaultValue></defaultValue>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>PV_REF</name>
+          <description>Référence de PV de recette — exigée par la porte de certains paliers ([A-Za-z0-9._-]).</description>
+          <defaultValue></defaultValue>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.StringParameterDefinition>
+          <name>ARCHIVE_SHA256</name>
+          <description>FACULTATIF. Vide : lu sur main (manifeste épinglé, depuis dev) ou hérité du palier source. Renseigné : désignation explicite — il gagne, une contradiction avec la source est refusée (DIGEST_CONTREDIT_SOURCE).</description>
+          <defaultValue></defaultValue>
+        </hudson.model.StringParameterDefinition>
+      </parameterDefinitions>
+    </hudson.model.ParametersDefinitionProperty>
+  </properties>
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition" plugin="workflow-cps">
+    <scm class="hudson.plugins.git.GitSCM" plugin="git">
+      <configVersion>2</configVersion>
+      <userRemoteConfigs>
+        <hudson.plugins.git.UserRemoteConfig>
+          <url>http://gitea:3000/ci/stoa-labs.git</url>
+        </hudson.plugins.git.UserRemoteConfig>
+      </userRemoteConfigs>
+      <branches>
+        <hudson.plugins.git.BranchSpec>
+          <name>*/main</name>
+        </hudson.plugins.git.BranchSpec>
+      </branches>
+      <doGenerateSubmoduleConfigurations>false</doGenerateSubmoduleConfigurations>
+      <submoduleCfg class="empty-list"/>
+      <extensions/>
+    </scm>
+    <scriptPath>poc-control-plane-federation/ci/Jenkinsfile.api-promote-request</scriptPath>
+    <!-- lightweight=false : le workspace de l'agent doit porter le depot
+         (scripts/, scripts/lib/, clients/_example/environments.yaml), pas
+         seulement le Jenkinsfile. -->
+    <lightweight>false</lightweight>
+  </definition>
+  <!-- Aucun declencheur : ce job est un FORMULAIRE, jamais un webhook. -->
+  <triggers/>
+  <disabled>false</disabled>
+</flow-definition>

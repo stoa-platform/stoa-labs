@@ -5,16 +5,12 @@
   <script> inline, le pipeline vit dans ci/Jenkinsfile.api-promote-export
   (déclaratif, versionné, relisible par l'ops).
 
-  ⚠ MÉCANISME MESURÉ SUR LE FRÈRE LE PLUS PROCHE (api-promote-request, jalon
-  G3) : ce dernier n'a TOUJOURS PAS de job.xml sous ci/jenkins/ ni de pose par
-  aucun script de ce dépôt (ni setup-team-onboard-jobs.sh — absent de sa
-  liste JOBS —, ni un setup dédié). Sa seule preuve d'existence reste
-  scripts/test-deploy-pin.sh ⑲, qui vérifie la présence du Jenkinsfile, pas
-  d'un job posé — dette silencieuse encore ouverte au 2026-08-28. Plutôt que
-  reproduire ce trou pour api-promote-export, CE fichier existe et rejoint
-  setup-team-onboard-jobs.sh (comme app-request/api-request avant lui) : le
-  mécanisme imité est donc celui de team-request, pas celui — toujours absent
-  — d'api-promote-request.
+  MÉCANISME IMITÉ : team-request.job.xml, pas api-promote-request — au moment
+  où CE fichier a été écrit, le frère le plus proche (api-promote-request,
+  jalon G3) n'avait pas encore de job.xml sous ci/jenkins/. Il existe
+  désormais : ci/jenkins/api-promote-request.job.xml, posé par
+  setup-team-onboard-jobs.sh depuis le 2026-08-28 (dette G3 soldée, spec
+  promotion-sans-recopie).
 
   Le bloc <parameterDefinitions> ci-dessous DOIT rester le miroir exact du
   bloc `parameters { … }` du Jenkinsfile — MÊME PIÈGE que team-request.job.xml

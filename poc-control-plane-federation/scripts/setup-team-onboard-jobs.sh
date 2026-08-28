@@ -25,12 +25,10 @@
 #                   action=export contre la gateway d'authoring, pousse
 #                   l'archive au registre Gitea, imprime guid/sha256/package.
 #                   Sans marqueur CHOICES (ni TEAMS ni APIS) : copié tel quel,
-#                   comme team-request/team-apply. ⚠ api-promote-request
-#                   (jalon G3, le formulaire DE PROMOTION lui-même) n'a PAS de
-#                   job.xml et n'est posé par AUCUN script de ce dépôt — dette
-#                   distincte, non comblée ici (cf. l'en-tête du job.xml
-#                   d'api-promote-export pour le détail de ce qui a été
-#                   vérifié).
+#                   comme team-request/team-apply.
+#   api-promote-request → ci/jenkins/api-promote-request.job.xml (dette G3
+#                   soldée le 2026-08-28, spec promotion-sans-recopie) : sans
+#                   marqueur CHOICES, copié tel quel, comme api-promote-export.
 #   team-promote  → ci/jenkins/team-promote.job.xml (Task 7, jalon G5 — l'APPLY
 #                   post-merge d'une PR promote/<api>-<env> : JOB UNIQUE
 #                   partagé par TOUS les dépôts d'équipe, MÊME token webhook
@@ -94,7 +92,7 @@ _STO_LIB="$(dirname "${BASH_SOURCE[0]}")/lib/deploy-pin.sh"
 . "$_STO_LIB" || { echo "ERREUR: $_STO_LIB introuvable ou illisible" >&2; exit 1; }
 
 JENKINS_UI="${JENKINS_UI:-http://localhost:18080}"
-JOBS="${JOBS:-team-request app-request team-apply api-request team-publish api-promote-export team-promote}"
+JOBS="${JOBS:-team-request app-request team-apply api-request team-publish api-promote-export api-promote-request team-promote}"
 # G4 (ADR-082) : ENVN est SCELLÉ sur l'env d'authoring — affectation sèche
 # depuis la constante de lib, jamais "${ENVN:-dev}" : les variables d'un job
 # Jenkins atterrissent dans l'environnement du process (fait mesuré, même

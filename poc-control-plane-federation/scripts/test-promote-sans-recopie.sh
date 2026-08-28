@@ -165,5 +165,23 @@ grep -q "PROMOTE_MANIFEST_ABSENT" scripts/api-promote-export.sh \
   && ko "l'export refuse encore un manifeste absent (doit le RENDRE)" \
   || ok "le refus PROMOTE_MANIFEST_ABSENT a disparu de l'export (remplacé par le rendu)"
 
+echo "== 13. miroir job.xml ↔ Jenkinsfile (api-promote-request) =="
+XML=ci/jenkins/api-promote-request.job.xml
+JF=ci/Jenkinsfile.api-promote-request
+if [ -f "$XML" ]; then
+  P_XML=$(grep -oE '<name>[A-Z_0-9]+</name>' "$XML" | sed 's/<[^>]*>//g' | tr '\n' ' ')
+  P_JF=$(grep -oE "(string|choice)\(name: '[A-Z_0-9]+'" "$JF" | grep -oE "'[A-Z_0-9]+'" | tr -d "'" | tr '\n' ' ')
+  [ "$P_XML" = "$P_JF" ] \
+    && ok "params identiques et DANS LE MÊME ORDRE ($P_JF)" \
+    || ko "divergence params — XML: [$P_XML] vs Jenkinsfile: [$P_JF] (le XML gagne, la divergence serait silencieuse)"
+  grep -q '<scriptPath>poc-control-plane-federation/ci/Jenkinsfile.api-promote-request</scriptPath>' "$XML" \
+    && ok "scriptPath pointe le bon Jenkinsfile" || ko "scriptPath faux"
+  grep -q "api-promote-request" scripts/setup-team-onboard-jobs.sh \
+    && grep -E '^JOBS=' scripts/setup-team-onboard-jobs.sh | grep -q api-promote-request \
+    && ok "posé par setup-team-onboard-jobs.sh (liste JOBS)" || ko "absent de la liste JOBS"
+else
+  ko "$XML absent — le job n'est toujours pas posable"
+fi
+
 echo; echo "bilan : $PASS ✅  $FAIL ❌"
 [ "$FAIL" -eq 0 ]
