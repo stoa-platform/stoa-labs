@@ -99,6 +99,7 @@ lint-ci:
 	@command -v shellcheck >/dev/null || { echo "!! shellcheck absent — \`brew install shellcheck\`"; exit 2; }
 	@shellcheck -x ci/lib/*.sh scripts/lib/deploy-pin.sh scripts/lib/env-chain.sh \
 	  scripts/lib/repo-protection.sh scripts/lib/archive-store.sh \
+	  scripts/lib/promote-manifest.sh scripts/test-promote-sans-recopie.sh \
 	  scripts/lib/assert-merge-identity.sh \
 	  scripts/setup-repo-protections.sh scripts/setup-deployer-groups.sh \
 	  scripts/setup-vault-paliers.sh scripts/setup-user-vault-jwt.sh \

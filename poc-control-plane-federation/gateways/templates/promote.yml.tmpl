@@ -1,0 +1,24 @@
+---
+# apis/__API_NAME__.promote.yml — manifeste de PROMOTION (vars du rôle
+# apim_promote_api, ADR-079). RENDU par scripts/api-promote-export.sh depuis
+# gateways/templates/promote.yml.tmpl ; guid, archive_sha256 et version sont
+# ÉPINGLÉS par l'export (PR) — jamais recopiés à la main (spec
+# 2026-08-28-promotion-sans-recopie).
+#
+# AUTHORING LÉGITIME (à la main, PR sur ce dépôt) : ajouter backend_alias /
+# cred_alias / scope_mapping / per_env pour une API à backend aliasé — forme
+# de référence : clients/_example/apis/accounts-read.promote.yml. Les AJOUTER,
+# jamais les poser vides : champ vide ≠ absence (ansible le traverse, labctl
+# refuse — piège mesuré T10).
+apim_promote:
+  name: "__API_NAME__"
+  version: "__API_VERSION__"
+  # id-map (ADR-079) : GUID épinglé à l'export, IDENTIQUE sur toutes les gateways.
+  guid: ""
+  # sha256 de l'archive au registre (adressage par le contenu : la version du
+  # package EST ce sha) — lu par api-promote-request quand ARCHIVE_SHA256 est vide.
+  archive_sha256: ""
+  # Usage hors-CI seulement : le CI épingle l'archive fetchée via apim_ss_archive_pin.
+  archive: "{{ playbook_dir }}/../dist/__API_NAME__-__API_VERSION__.archive.zip"
+  overwrite: "apis,policies,policyactions"   # JAMAIS aliases ni * (clobber per-env)
+  smoke_path: ""
