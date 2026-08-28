@@ -151,5 +151,19 @@ OUT=$(TEAM=banking-demo API_NAME=demo-api FROM_ENV=dev TO_ENV=rec \
   && ko "sha 'zz' accepté" \
   || { echo "$OUT" | grep -q DIGEST_MALFORMED && ok "DIGEST_MALFORMED" || ko "refus sans nom : $OUT"; }
 
+echo "== 12. export : les briques rendu→pin s'enchaînent sur fixture (sans réseau) =="
+mkdir -p "$TMP/team3/apis"
+cp "$TMP/team/apis/demo-api.publish.yml" "$TMP/team3/apis/"
+render_promote_manifest "$TMP/team3" demo-api gateways/templates/promote.yml.tmpl \
+  && pin_promote_manifest "$TMP/team3/apis/demo-api.promote.yml" \
+       "14c2529e-0000-4000-8000-00000000bbbb" \
+       "3333333333333333333333333333333333333333333333333333333333333333" "2.1.0" \
+  && [ "$(manifest_pinned_digest "$TMP/team3/apis/demo-api.promote.yml")" = "$(printf '3%.0s' $(seq 64))" ] \
+  && ok "rendu → pin → relecture, la chaîne que l'export joue" \
+  || ko "chaîne rendu→pin en échec"
+grep -q "PROMOTE_MANIFEST_ABSENT" scripts/api-promote-export.sh \
+  && ko "l'export refuse encore un manifeste absent (doit le RENDRE)" \
+  || ok "le refus PROMOTE_MANIFEST_ABSENT a disparu de l'export (remplacé par le rendu)"
+
 echo; echo "bilan : $PASS ✅  $FAIL ❌"
 [ "$FAIL" -eq 0 ]

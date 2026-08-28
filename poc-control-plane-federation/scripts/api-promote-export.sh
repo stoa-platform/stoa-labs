@@ -49,6 +49,8 @@ cd "$(dirname "$0")/.." || exit 1
 . scripts/lib/deploy-pin.sh || { echo "ERREUR: scripts/lib/deploy-pin.sh introuvable ou illisible" >&2; exit 1; }
 # shellcheck source=scripts/lib/archive-store.sh
 . scripts/lib/archive-store.sh || { echo "ERREUR: scripts/lib/archive-store.sh introuvable ou illisible" >&2; exit 1; }
+# shellcheck source=scripts/lib/promote-manifest.sh
+. scripts/lib/promote-manifest.sh || { echo "ERREUR: scripts/lib/promote-manifest.sh introuvable ou illisible" >&2; exit 1; }
 
 fail() { printf 'ERREUR: %s\n' "$*" >&2; exit 1; }
 
@@ -80,6 +82,7 @@ VAULT_ADDR="${VAULT_ADDR:?VAULT_ADDR requis}"
 VAULT_TOKEN_FILE="${VAULT_TOKEN_FILE:?VAULT_TOKEN_FILE requis (jamais le token en env/argv)}"
 APIM_API_BASE="${APIM_API_BASE:?APIM_API_BASE requis — pas de défaut : dire sa cible est volontaire}"
 GIT_HOST="${GIT_HOST:-http://gitea:3000}"
+GIT_WEB_HOST="${GIT_WEB_HOST:-$GIT_HOST}"   # défaut : même hôte, sauf reverse-proxy dédié à l'affichage
 GIT_REPO="${GIT_REPO:-ci/stoa-labs}"   # dépôt PLATEFORME — porte providers.<env>.yml
 
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT; umask 077
@@ -122,8 +125,37 @@ gclone --depth 1 -b main "${GIT_HOST}/${REPO_FULL}.git" "$TMP/team" \
   || fail "CLONE_ECHEC : ${REPO_FULL}"
 
 PROMOTE_REL="apis/${API_NAME}.promote.yml"
-[ -f "$TMP/team/$PROMOTE_REL" ] \
-  || fail "PROMOTE_MANIFEST_ABSENT : ${PROMOTE_REL} absent de ${REPO_FULL}@main — cette API n'est pas déclarée pour voyager par archive"
+# La version d'AUTHORING (publish.yml sur main) est la vérité de ce qui se
+# publie en dev — le manifeste de promotion la SUIT, il ne la précède pas.
+PUB_VERSION=$(publish_manifest_version "$TMP/team" "$API_NAME") \
+  || fail "PUBLISH_MANIFEST_ABSENT : apis/${API_NAME}.publish.yml absent ou illisible sur ${REPO_FULL}@main — publier l'API d'abord (formulaire api-request)"
+MANIFEST_RENDU=0
+if [ ! -f "$TMP/team/$PROMOTE_REL" ]; then
+  # Spec promotion-sans-recopie (2026-08-28) : le manifeste absent n'est plus
+  # un refus, c'est le CAS NOMINAL du premier export — on le REND (gabarit),
+  # et la PR d'épinglage ci-dessous le portera, guid et sha déjà remplis.
+  render_promote_manifest "$TMP/team" "$API_NAME" gateways/templates/promote.yml.tmpl \
+    || fail "RENDU_ECHEC : gabarit gateways/templates/promote.yml.tmpl -> ${PROMOTE_REL}"
+  MANIFEST_RENDU=1
+  echo "manifeste absent de main — RENDU depuis le gabarit (name=${API_NAME}, version=${PUB_VERSION})"
+else
+  # Manifeste présent mais version en retard sur l'authoring (new-version
+  # publiée depuis) : réaligner AVANT l'export — sinon le play ci-dessous
+  # résout l'API par le COUPLE name+version du manifeste, donc exporterait
+  # l'ancienne version, et la main reviendrait à chaque montée de version.
+  M_VERSION=$(python3 -c "import sys,yaml; print((yaml.safe_load(open(sys.argv[1])) or {}).get('apim_promote',{}).get('version',''))" "$TMP/team/$PROMOTE_REL" 2>/dev/null || printf '')
+  if [ -n "$M_VERSION" ] && [ "$M_VERSION" != "$PUB_VERSION" ]; then
+    # Réutilise pin_promote_manifest (guid/sha déjà portés, INCHANGÉS) pour ne
+    # toucher QUE version:/archive: — même relecture fail-closed que
+    # l'épinglage final, sur la COPIE DE TRAVAIL que le play va lire.
+    M_GUID=$(python3 -c "import sys,yaml; print((yaml.safe_load(open(sys.argv[1])) or {}).get('apim_promote',{}).get('guid',''))" "$TMP/team/$PROMOTE_REL" 2>/dev/null || printf '')
+    M_SHA=$(manifest_pinned_digest "$TMP/team/$PROMOTE_REL") \
+      || fail "MANIFESTE_ILLISIBLE : ${PROMOTE_REL} — relecture du sha épinglé en échec avant réalignement de version"
+    pin_promote_manifest "$TMP/team/$PROMOTE_REL" "$M_GUID" "$M_SHA" "$PUB_VERSION" \
+      || fail "REALIGNEMENT_EXPORT_ECHEC : version du manifeste (${M_VERSION}) non réalignée sur l'authoring (${PUB_VERSION}) avant l'export"
+    echo "version du manifeste (${M_VERSION}) en retard sur l'authoring (${PUB_VERSION}) — réalignée AVANT l'export (la PR d'épinglage la portera aussi)"
+  fi
+fi
 
 # ── LE MOTEUR : export via le rôle apim_promote_api (action=export) ─────────
 # apim_ss_archive_pin sert ICI de DESTINATION (le rôle y écrit l'archive) —
@@ -202,5 +234,71 @@ URL="${PUSH_LINE#*url=}"
 [ "$PUSHED_SHA" = "$SHA" ] \
   || fail "EXPORT_STORE_INCOHERENT : le registre rend sha256=${PUSHED_SHA}, le calcul local rend ${SHA}"
 
+# ── ÉPINGLAGE (spec promotion-sans-recopie) : guid + sha + version, par PR ──
+# Le fichier de travail est celui que l'export vient de JOUER ($TMP/team) —
+# épingler autre chose serait épingler ce qu'on n'a pas exporté.
+pin_promote_manifest "$TMP/team/$PROMOTE_REL" "$GUID" "$SHA" "$PUB_VERSION" \
+  || fail "PIN_ECHEC : épinglage de ${PROMOTE_REL}"
+
 printf 'EXPORT_CONFIRMED_SUMMARY guid=%s sha256=%s package=%s\n' "$GUID" "$SHA" "$URL"
-echo "geste suivant : épingler guid=${GUID} dans ${PROMOTE_REL} (PR) ; recopier sha256=${SHA} dans le formulaire api-promote-request (ARCHIVE_SHA256)"
+
+if git -C "$TMP/team" diff --quiet -- "$PROMOTE_REL" && [ "$MANIFEST_RENDU" = 0 ]; then
+  # main porte déjà exactement ces valeurs : ré-export au contenu identique
+  # (registre idempotent par le contenu) — aucune PR à ouvrir, et on le DIT.
+  echo "PIN_DEJA_A_JOUR : ${PROMOTE_REL} sur main porte déjà guid/sha/version — pas de PR"
+  echo "geste suivant : formulaire api-promote-request (ARCHIVE_SHA256 facultatif — lu sur main)"
+else
+  PIN_BRANCH="chore/promote-manifest-${API_NAME}"
+  git -C "$TMP/team" checkout -q -B "$PIN_BRANCH"
+  git -C "$TMP/team" add "$PROMOTE_REL"
+  git -C "$TMP/team" -c user.name=ci -c user.email=ci@stoa.lab \
+    commit -qm "promo(${API_NAME}): épingle guid/sha256/version ${PUB_VERSION} (export $(printf '%.12s' "$SHA"))" \
+    || fail "PIN_COMMIT_VIDE : rien à committer alors qu'un diff était attendu"
+  # push FORCÉ délibéré : la branche d'épinglage n'a qu'UN commit de tête et
+  # appartient à l'export — un ré-export la REMPLACE (la PR ouverte suit),
+  # jamais d'empilement (piège G5 « ré-export ⇒ PR neuve » fermé ici).
+  AUTH_B64=$(printf 'x:%s' "$GITEA_TOKEN" | base64 | tr -d '\n')
+  GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader \
+    GIT_CONFIG_VALUE_0="Authorization: Basic ${AUTH_B64}" \
+    git -C "$TMP/team" push -q -f "${GIT_HOST}/${REPO_FULL}.git" "$PIN_BRANCH" \
+    || fail "PIN_PUSH_ECHEC : push de ${PIN_BRANCH} sur ${REPO_FULL}"
+  unset AUTH_B64
+  PIN_PR=$(API="${GIT_HOST}/api/v1" REPO_FULL="$REPO_FULL" GITEA_TOKEN="$GITEA_TOKEN" \
+    BRANCH="$PIN_BRANCH" API_NAME="$API_NAME" GUID="$GUID" SHA="$SHA" VER="$PUB_VERSION" \
+    python3 - <<'PY'
+import json, os, urllib.error, urllib.request
+api, repo, tok = os.environ["API"], os.environ["REPO_FULL"], os.environ["GITEA_TOKEN"]
+head = os.environ["BRANCH"]
+hdrs = {"Authorization": f"token {tok}", "Content-Type": "application/json"}
+body = (
+    "Épinglage du manifeste de promotion (formulaire api-promote-export).\n\n"
+    f"- API : {os.environ['API_NAME']} v{os.environ['VER']}\n"
+    f"- guid (id-map, ADR-079) : {os.environ['GUID']}\n"
+    f"- archive_sha256 (registre, adressé par le contenu) : {os.environ['SHA']}\n\n"
+    "Merger cette PR épingle CE guid et CES octets pour la promotion. "
+    "Geste suivant : formulaire api-promote-request — ARCHIVE_SHA256 peut "
+    "rester vide, il sera lu ici, sur main (ADR-081 : la décision est le merge)."
+)
+req = urllib.request.Request(f"{api}/repos/{repo}/pulls", method="POST",
+    data=json.dumps({"base": "main", "head": head,
+        "title": f"promo({os.environ['API_NAME']}): épinglage guid/sha v{os.environ['VER']}",
+        "body": body}).encode(), headers=hdrs)
+try:
+    print(json.load(urllib.request.urlopen(req))["number"])
+except urllib.error.HTTPError as e:
+    if e.code != 409:
+        raise
+    # PR déjà ouverte pour cette branche : le push -f vient de la mettre à
+    # jour — on retrouve son numéro au lieu d'échouer.
+    with urllib.request.urlopen(urllib.request.Request(
+            f"{api}/repos/{repo}/pulls?state=open", headers=hdrs)) as r:
+        prs = json.load(r)
+    n = next((p["number"] for p in prs if p["head"]["ref"] == head), None)
+    if n is None:
+        raise SystemExit("PR 409 mais introuvable parmi les PRs ouvertes")
+    print(n)
+PY
+) || fail "PIN_PR_ECHEC : ouverture/retrouvaille de la PR d'épinglage"
+  echo "PR d'épinglage : ${GIT_WEB_HOST:-$GIT_HOST}/${REPO_FULL}/pulls/${PIN_PR}"
+  echo "geste suivant : MERGER cette PR, puis formulaire api-promote-request (ARCHIVE_SHA256 facultatif — lu sur main)"
+fi

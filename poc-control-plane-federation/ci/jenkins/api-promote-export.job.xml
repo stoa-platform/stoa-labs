@@ -6,16 +6,15 @@
   (déclaratif, versionné, relisible par l'ops).
 
   ⚠ MÉCANISME MESURÉ SUR LE FRÈRE LE PLUS PROCHE (api-promote-request, jalon
-  G3) : ce dernier n'a PAS de job.xml sous ci/jenkins/ et n'est posé par
-  AUCUN script de ce dépôt (ni setup-team-onboard-jobs.sh — absent de sa
-  liste JOBS —, ni un setup dédié comme setup-provision-request-job.sh en a
-  un pour provisioning-request). Sa seule preuve d'existence est
+  G3) : ce dernier n'a TOUJOURS PAS de job.xml sous ci/jenkins/ ni de pose par
+  aucun script de ce dépôt (ni setup-team-onboard-jobs.sh — absent de sa
+  liste JOBS —, ni un setup dédié). Sa seule preuve d'existence reste
   scripts/test-deploy-pin.sh ⑲, qui vérifie la présence du Jenkinsfile, pas
-  d'un job posé. C'est un job jamais câblé — dette silencieuse, pas un choix
-  déclaré ailleurs dans ce dépôt. Plutôt que reproduire ce trou pour
-  api-promote-export, CE fichier existe et rejoint setup-team-onboard-jobs.sh
-  (comme app-request/api-request avant lui) : le mécanisme imité est donc
-  celui de team-request, pas celui — absent — d'api-promote-request.
+  d'un job posé — dette silencieuse encore ouverte au 2026-08-28. Plutôt que
+  reproduire ce trou pour api-promote-export, CE fichier existe et rejoint
+  setup-team-onboard-jobs.sh (comme app-request/api-request avant lui) : le
+  mécanisme imité est donc celui de team-request, pas celui — toujours absent
+  — d'api-promote-request.
 
   Le bloc <parameterDefinitions> ci-dessous DOIT rester le miroir exact du
   bloc `parameters { … }` du Jenkinsfile — MÊME PIÈGE que team-request.job.xml
@@ -32,7 +31,7 @@
   d'un Gitea joignable pour être posé.
 -->
 <flow-definition plugin="workflow-job">
-  <description>Formulaire : exporter l'archive d'une API déjà publiée en authoring, la pousser au registre (Gitea packages) et imprimer guid/sha256/package (EXPORT_CONFIRMED_SUMMARY) — à recopier dans apis/&lt;api&gt;.promote.yml (guid) et dans le formulaire api-promote-request (ARCHIVE_SHA256). Ne publie rien, ne déploie rien : identité NOMINATIVE requise (login Vault). PIPELINE FROM SCM : le pipeline est ci/Jenkinsfile.api-promote-export, chargé depuis le dépôt plateforme (branche main) — ce job ne contient AUCUN Groovy.</description>
+  <description>Formulaire : exporter l'archive d'une API déjà publiée en authoring, la pousser au registre (Gitea packages) et imprimer guid/sha256/package (EXPORT_CONFIRMED_SUMMARY) — rend apis/&lt;api&gt;.promote.yml s'il est absent (gabarit), puis ouvre la PR d'épinglage guid/sha256/version sur le dépôt d'équipe — AUCUNE recopie : api-promote-request lit le sha sur main. Ne publie rien, ne déploie rien : identité NOMINATIVE requise (login Vault). PIPELINE FROM SCM : le pipeline est ci/Jenkinsfile.api-promote-export, chargé depuis le dépôt plateforme (branche main) — ce job ne contient AUCUN Groovy.</description>
   <keepDependencies>false</keepDependencies>
   <properties>
     <hudson.model.ParametersDefinitionProperty>
@@ -44,7 +43,7 @@
         </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>
           <name>API_NAME</name>
-          <description>Nom de l'API à exporter (déjà publiée en authoring, avec un apis/&lt;api&gt;.promote.yml sur le dépôt d'équipe).</description>
+          <description>Nom de l'API à exporter (déjà publiée en authoring — le manifeste de promotion est rendu par ce job s'il n'existe pas encore).</description>
           <defaultValue></defaultValue>
         </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>
