@@ -340,40 +340,34 @@ relancer une promotion :
 
 Le parcours opérateur, pas à pas :
 
-1. **Publier en authoring** (`dev`) — inchangé, via `team-publish` (§ ce
-   qui précède). L'API doit être active et déclarée dans un
-   `apis/<api>.promote.yml` du dépôt d'équipe.
-2. **Exporter l'archive** — lancer le job `api-promote-export` (paramètres
-   `TEAM`, `API_NAME`, identité nominative). Il joue l'export contre la
-   gateway d'authoring, pousse l'archive sanitisée au registre et imprime :
-
-   ```
-   EXPORT_CONFIRMED_SUMMARY guid=<guid> sha256=<sha256> package=<url>
-   ```
-
-3. **Épingler le guid** — recopier `guid=` dans `apis/<api>.promote.yml`
-   (champ `apim_promote.guid`) et pousser une PR sur le dépôt d'équipe.
-   Sans guid pinné, l'import se refuse (`IMPORT_REFUSED`) : fail-closed, ce
-   n'est pas un oubli à contourner.
-4. **Demander la promotion** — lancer le job `api-promote-request` (G3,
-   inchangé) avec `ARCHIVE_SHA256=<sha256>` de l'étape 2. Il ouvre une PR
-   `promote/<api>-<env>` sur le dépôt d'équipe.
-5. **Merger la PR** — sous protection de branche (ADR-081/ADR-082) : c'est
+1. **Exporter** — job `api-promote-export` (TEAM, API_NAME, identité Vault
+   nominative). Le job REND `apis/<api>.promote.yml` s'il est absent (gabarit
+   `gateways/templates/promote.yml.tmpl`), exporte l'archive vers le registre
+   (adressé par le contenu), puis ouvre la PR d'épinglage guid/sha256/version
+   sur le dépôt d'équipe. Aucune recopie.
+2. **Merger la PR d'épinglage** — c'est elle qui fixe l'id-map (guid) et les
+   octets (sha256) que la promotion désignera (ADR-081 : la décision est le
+   merge). Ré-export ⇒ la même PR est mise à jour, jamais empilée.
+3. **Demander la promotion** — job `api-promote-request` (posé depuis le
+   2026-08-28). `ARCHIVE_SHA256` FACULTATIF : vide, il est lu sur main
+   (manifeste épinglé) depuis dev, hérité du palier source au-delà. Ouvre la
+   PR `promote/<api>-<env>`.
+4. **Merger la PR** — sous protection de branche (ADR-081/ADR-082) : c'est
    la décision humaine. Le merge déclenche `team-promote` via le **même**
    webhook que `team-publish` (aucun geste supplémentaire sur le dépôt
    d'équipe).
-6. **Répondre à la pause** — le job `team-promote` demande une identité
+5. **Répondre à la pause** — le job `team-promote` demande une identité
    d'annuaire nominative. Elle **doit être celle qui a fusionné la PR** ; si
    la porte du palier cible exige les quatre yeux, elle sera comparée au
    demandeur (`promoted_by` du marqueur mergé).
-7. **Vérifier** — le commentaire posé sur la PR (succès ou échec) porte le
+6. **Vérifier** — le commentaire posé sur la PR (succès ou échec) porte le
    pin, la version, le sha256, le moteur utilisé, et les deux identités
    (demandeur, mergeur).
 
 **Repli si l'archive n'a jamais été poussée.** Un refus
-`ARCHIVE_INTROUVABLE` au moment du merge signifie que l'export (étape 2) n'a
+`ARCHIVE_INTROUVABLE` au moment du merge signifie que l'export (étape 1) n'a
 jamais été rejoué depuis, ou a été rejoué avec un digest différent de celui
-épinglé — **rejouer l'export** (étape 2), reprendre le `sha256` produit, et
+épinglé — **rejouer l'export** (étape 1), reprendre le `sha256` produit, et
 soit corriger `ARCHIVE_SHA256` dans une nouvelle demande, soit republier au
 même contenu si le digest attendu est simplement absent du registre.
 
