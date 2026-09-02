@@ -9,7 +9,8 @@ Gateway 10.15, avec identité **entrante** opposée (certificat client dans l'as
 
 | Fichier | Rôle |
 |---|---|
-| `ci/Jenkinsfile.selfservice` | Pipeline **plan** (webhook, identité de job, lecture seule) / **apply** (build humain, identité nominative → Vault → gateway). |
+| `ci/Jenkinsfile.selfservice` | Pipeline **plan** (webhook, identité de job, lecture seule) / **apply** (build humain, identité nominative → Vault → gateway). Depuis A2 : paramètre **`MERGE_SHA`** (la référence, posée par `provision-apply`) — stage « Référence » : `fetch main` → `merge-base --is-ancestor` → `checkout` du SHA mergé AVANT le plan, puis `APPLIED_SHA` / `APPLIED_DIGEST` annoncés (relus par l'amont, `SHA_NON_CONFIRME` sinon). Vide = HEAD (voie humaine directe). |
+| `ci/Jenkinsfile.provision-apply` | **Apply post-merge d'une demande** (A2) : réconciliation Gitea avant la pause (`PAYLOAD_PERIME`), pause nominative, garde d'identité nourrie par la forge, `build selfservice-app-deploy` au `MERGE_SHA`, confrontation, rapport de PR (SHA + digest). Coquille : `ci/jenkins/provision-apply.job.xml`. |
 | `scripts/apply-selfservice-application.py` | **Apply engine** (prototype → cible `labctl apply-consumer`). Crée/converge l'app depuis un manifeste. Idempotent. |
 | `clients/_example/applications/demo-consumer.json` | Manifeste de **demande** (name, api, ipAllowlist, publicCertRef, backend). |
 

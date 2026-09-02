@@ -560,6 +560,122 @@ c'est son travail. Jamais d'exclusion de confort.
 `labctl/cmd/labctl/promote.go` (et ses primitives d'`archive.go`), rejouer la
 porte ; après, aussi.
 
+## La référence d'une application (A2 — GOAL cd-applications)
+
+Pour une **API**, la référence de déploiement est le pin `deploy.<env>.yaml`
+(G3). Pour une **application**, il n'y a ni archive ni pin : la PR
+`provision/<app>-<env>` **est** le fichier de déploiement du palier, et son
+**SHA de merge** est la référence. Depuis A2 (2026-09-02), `provision-apply`
+ne projette plus « le dernier `main` » :
+
+1. **Réconciliation, AVANT la pause** (`scripts/provision-apply-reconcile.sh`)
+   — le webhook (token GWT partagé, HMAC non vérifié) ne fait pas foi. La PR
+   est relue sur la **forge** : `merged` / `merge_commit_sha` / `head.ref` /
+   `base.ref == main` doivent concorder, sinon **`PAYLOAD_PERIME`** ; la PR ne
+   doit toucher QUE son manifeste et son certificat de palier, sinon
+   **`PR_HORS_PERIMETRE`** (l'aval checkoute l'arbre entier au SHA mergé). Puis
+   `main` est relu par **git** : le SHA est un ancêtre de `main`
+   (`MERGE_SHA_NON_ANCETRE`) et le manifeste effectif du palier au SHA mergé est
+   encore celui que `main` porte pour ce palier, sinon **`PALIER_SUPPLANTE`** —
+   le rejeu (« Redeliver ») d'une PR ancienne ne re-projette jamais un état
+   dépassé. Personne n'est réveillé pour un refus. Les identités
+   mergeur/demandeur viennent de la forge, jamais du payload : la garde
+   d'identité (`MERGER_MISMATCH`, `FOUR_EYES_VIOLATION`) ne peut plus être passée
+   par un tir manuel qui « s'annonce » mergeur. Un refus n'est commenté que si
+   la forge a confirmé une PR `provision/*`, sous le marqueur
+   `<!-- provision-apply-refus -->` — distinct de celui du résultat d'apply : un
+   webhook forgé ne peut pas réécrire l'enregistrement SHA/digest d'un apply réel.
+2. **La pause nominative** (V_USER / V_PASS), sans exécuteur réservé.
+3. **L'apply au SHA mergé** : `selfservice-app-deploy` reçoit `MERGE_SHA` ;
+   appelé par un job amont SANS référence, il refuse **`MERGE_SHA_REQUIS`**
+   (paramètre non matérialisé, appelant d'avant A2) ; sinon `git fetch origin
+   main` → `merge-base --is-ancestor` (`MERGE_SHA_NON_ANCETRE`) → lignée
+   first-parent (`MERGE_SHA_HORS_LIGNEE`) → `git checkout` — le PLAN et l'APPLY
+   lisent le manifeste **dans cet arbre** — puis, **après converge + verify**,
+   annonce `APPLIED_MODE=pinned` / `APPLIED_SHA` (= `git rev-parse HEAD`) /
+   `APPLIED_DIGEST`. L'amont **confronte** l'annonce à sa demande, hors de tout
+   nœud (aucun exécuteur tenu pendant l'aval) : un aval vert qui n'a pas projeté
+   `MERGE_SHA` en mode `pinned` est un échec nommé **`SHA_NON_CONFIRME`**, et le
+   commentaire dit alors ce qui a été projeté (jamais « pas déployé »).
+4. **La PR comme tableau de bord** : le commentaire d'apply porte l'identité,
+   le **SHA appliqué** (lien cliquable) et le **digest du manifeste effectif
+   du palier** (racine ⊕ `per_env.<env>`, la fusion du rôle) à ce SHA — la
+   réponse à « qu'est-ce qui tourne en rec ? ». Le digest est le SHA-256 du
+   JSON canonique (`app_manifest_digest_env`, lib `scripts/lib/app-manifest.sh`) :
+   insensible à la forme, sensible au fond (palier ET racine), un autre palier
+   n'y entre pas. Trois marqueurs cohabitent sur la PR : `provision-apply`
+   (résultat d'un apply réel), `provision-apply-refus` (refus avant la pause),
+   `provision-apply-build` (statut build, posé seulement si la forge a confirmé
+   une PR `provision/*`).
+
+Le job `provision-apply` est désormais un **Jenkinsfile déclaratif from SCM**
+(`ci/Jenkinsfile.provision-apply`) ; `ci/jenkins/provision-apply.job.xml` n'est
+qu'une coquille (pointeur SCM + miroir du bloc `<triggers>`, qui gagne).
+`provision-plan` et `provisioning-request` restent en Groovy inline (A0).
+
+**Rollout sur un Jenkins existant — l'ordre est une contrainte :**
+
+```bash
+git push gitea HEAD:main                                   # le CI lit gitea
+bash scripts/setup-selfservice-job.sh                      # l'AVAL d'abord : déclare MERGE_SHA + build d'amorçage
+# vérifier : selfservice-app-deploy déclare MERGE_SHA (sinon un `build job:` le
+# retirerait EN SILENCE — SECURITY-170 — ; l'aval refuserait MERGE_SHA_REQUIS)
+curl -s "$JENKINS/job/selfservice-app-deploy/api/json?tree=property[parameterDefinitions[name]]"
+JOBS=provision-apply bash scripts/setup-provision-jobs.sh  # puis l'AMONT : la coquille from SCM (historique conservé)
+```
+
+**Knob de lab `APPLY_ADMIN_VIA`** : le défaut du Jenkinsfile est
+`proxy-oauth2` (le modèle client, celui que le Groovy codait en dur). Sur le
+lab local, `wm-admin-self` est inactif et `deploy/banking-demo/admin-oauth`
+n'est pas seedé : la voie qui aboutit est `direct`. Variable d'environnement
+**globale** Jenkins, posée par la console de script (même geste
+qu'`APIM_DIRECT_BASE_TPL`) :
+
+```groovy
+import jenkins.model.Jenkins; import hudson.slaves.EnvironmentVariablesNodeProperty
+def j = Jenkins.instance; def p = j.globalNodeProperties.get(EnvironmentVariablesNodeProperty)
+if (p == null) { p = new EnvironmentVariablesNodeProperty(); j.globalNodeProperties.add(p) }
+p.envVars.put('APPLY_ADMIN_VIA', 'direct'); j.save()
+```
+
+**Identités** : la garde exige mergeur == répondant de la pause, et l'aval lit
+les creds du tenant dans Vault avec l'identité de la pause. Sur ce lab, c'est
+**alice** (Vault `deploy-banking-demo`, ldap et userpass) — créée dans Gitea et
+collaboratrice `write` de `ci/stoa-labs` par la suite live si absente. `oscar`
+merge mais porte `operator-deploy` (403 sur le tenant) : un 403 KV avec un token
+vivant = mauvais user pour le job, pas un bug.
+
+**Rejouer la porte et la contre-épreuve par builds réels** (Gitea + Jenkins +
+Vault + 10.15 réelle ; écrit deux PR jetables, merge la première sur `main` et
+retire son manifeste à la fin) :
+
+```bash
+set -a; . ./.env.lab-users; set +a
+JENKINS_UI=http://localhost:18080 GITEA_URL=http://localhost:13000 \
+GW_ADMIN=http://localhost:5555/rest/apigateway WM_USER=Administrator WM_PASS=manage \
+  bash scripts/test-provision-apply-a2-live.sh
+```
+
+La suite live joue aussi la **seconde contre-épreuve** : le rejeu du webhook
+réel de la porte après que `main` a dépassé le palier ⇒ `PALIER_SUPPLANTE`,
+gateway inchangée, le ✅ de l'apply réel intact sur la PR.
+
+Hors ligne (`make lint-ci` `[10/10]`) : `scripts/test-provision-apply-a2.sh`
+(digest, réconciliation contre un stub Gitea ET un dépôt git local, rapport de
+PR, mutations) et `scripts/test-provision-apply-wiring.sh` (câblage
+amont/coquille/aval, sur une vue code sans commentaires).
+
+**Limites écrites d'avance** : en `rec`, l'apply atteint la même 10.15 que
+`dev` (le palier est encore un en-tête `X-Environment` : A3) ; le quatre-yeux
+du maillon 2 compare le mergeur au compte de service `ci` (auteur de toute PR
+de provisioning) — le demandeur humain n'est que dans le corps de la PR, le
+contrôle réel est le merge par un tiers (protection de branche, G4) ; la garde
+de périmètre vit dans le dépôt que la PR modifie et n'est fermée que par la
+protection de `ci/stoa-labs@main` (`setup-repo-protections.sh`) ; un
+`MERGE_SHA` saisi à la main sur l'aval est accepté s'il est sur la lignée de
+`main` — c'est le levier du repli (A6), borné par l'identité nominative et
+Vault comme aujourd'hui.
+
 ## Résiduel
 
 - **Le lien entre le Jenkins local et celui du labs n'est pas établi.** Ce sont

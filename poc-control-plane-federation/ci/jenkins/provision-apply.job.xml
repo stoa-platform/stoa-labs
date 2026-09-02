@@ -1,6 +1,27 @@
 <?xml version='1.1' encoding='UTF-8'?>
+<!--
+  provision-apply — PIPELINE FROM SCM (plus de Groovy inline, A2 / A0 du GOAL
+  cd-applications 2026-09-02).
+
+  Ce fichier ne porte QUE la coquille du job : d'ou il charge son pipeline, et
+  le declencheur qui doit exister DES LA POSE du job. Le pipeline lui-meme vit
+  dans ci/Jenkinsfile.provision-apply (declaratif, versionne, relisible par
+  l'ops, compile par `make lint-ci`).
+
+  Le bloc <triggers> ci-dessous DOIT rester le miroir exact du bloc
+  `triggers { GenericTrigger(...) }` du Jenkinsfile. C'est CELUI-CI qui gagne,
+  et c'est contre-intuitif : Declarative ne remplace QUE les declencheurs
+  qu'il a lui-meme poses (DeclarativeJobPropertyTrackerAction) ; un
+  declencheur venu d'un config.xml est PRESERVE tel quel, indefiniment
+  (mesure sur le lab 2026-08-06). Une divergence entre les deux fichiers est
+  SILENCIEUSE, et c'est le XML qui fait foi. test-provision-apply-wiring.sh
+  compare les deux et vire au rouge a la premiere divergence.
+
+  Re-pose : scripts/setup-provision-jobs.sh (POST config.xml, historique des
+  builds conserve).
+-->
 <flow-definition plugin="workflow-job">
-  <description>Apply post-merge : une PR de provisioning FUSIONNÉE ouvre une DEMANDE EN ATTENTE dans Jenkins (input) ; sur validation + identité Vault → apply nominatif via selfservice-app-deploy.</description>
+  <description>Apply post-merge d'une DEMANDE D'APPLICATION : une PR provision/&lt;app&gt;-&lt;env&gt; FUSIONNEE est RECONCILIEE avec Gitea (le payload ne fait pas foi), ouvre une DEMANDE EN ATTENTE (input), puis -- identite Vault nominative confrontee a l'auteur du merge -- apply via selfservice-app-deploy AU SHA MERGE (A2), jamais au dernier main ; la PR recoit resultat, identite, SHA et digest. PIPELINE FROM SCM : ci/Jenkinsfile.provision-apply, charge depuis le depot plateforme (branche main) -- ce job ne contient AUCUN Groovy.</description>
   <keepDependencies>false</keepDependencies>
   <properties>
     <org.jenkinsci.plugins.workflow.job.properties.DisableConcurrentBuildsJobProperty/>
@@ -13,11 +34,14 @@
             <org.jenkinsci.plugins.gwt.GenericVariable><key>PR_NUMBER</key><value>$.pull_request.number</value></org.jenkinsci.plugins.gwt.GenericVariable>
             <org.jenkinsci.plugins.gwt.GenericVariable><key>PR_ACTION</key><value>$.action</value></org.jenkinsci.plugins.gwt.GenericVariable>
             <org.jenkinsci.plugins.gwt.GenericVariable><key>PR_MERGED</key><value>$.pull_request.merged</value></org.jenkinsci.plugins.gwt.GenericVariable>
-            <!-- Qui a validé, et qui avait demandé. SANS eux la garde d'identité
-                 ne peut RIEN vérifier et refuse (MERGER_UNKNOWN) : ces deux
-                 lignes ne sont pas décoratives, elles sont la garde. -->
+            <!-- Captes pour le journal du build ; la garde d'identite, elle,
+                 recoit les identites RELUES SUR LA FORGE par la reconciliation
+                 (GITEA_MERGED_BY / GITEA_REQUESTER) - jamais celles-ci. -->
             <org.jenkinsci.plugins.gwt.GenericVariable><key>PR_MERGED_BY</key><value>$.pull_request.merged_by.login</value></org.jenkinsci.plugins.gwt.GenericVariable>
             <org.jenkinsci.plugins.gwt.GenericVariable><key>PR_REQUESTER</key><value>$.pull_request.user.login</value></org.jenkinsci.plugins.gwt.GenericVariable>
+            <!-- A2 - LA REFERENCE : le SHA de merge, reconcilie avec Gitea puis
+                 projete par selfservice-app-deploy (checkout de CE SHA). -->
+            <org.jenkinsci.plugins.gwt.GenericVariable><key>MERGE_SHA</key><value>$.pull_request.merge_commit_sha</value></org.jenkinsci.plugins.gwt.GenericVariable>
           </genericVariables>
           <printContributedVariables>true</printContributedVariables>
           <printPostContent>false</printPostContent>
@@ -32,92 +56,29 @@
       </triggers>
     </org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty>
   </properties>
-  <definition class="org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition" plugin="workflow-cps">
-    <script>
-def ref = env.PR_BRANCH ?: ''
-if (!ref.startsWith('provision/')) { echo "branche '${ref}' hors provision/* — rien a appliquer"; return }
-def rest = ref.substring('provision/'.length())
-def envName = rest.substring(rest.lastIndexOf('-') + 1)
-def appName = rest.substring(0, rest.lastIndexOf('-'))
-def manifest = "clients/provisioned/applications/${appName}.ansible.yml"
-currentBuild.displayName = "apply ${appName}/${envName} (PR #${env.PR_NUMBER})"
-echo "Demande FUSIONNEE — application=${appName} env=${envName} manifeste=${manifest}"
-
-// ── DEMANDE EN ATTENTE : validation humaine + identite Vault ──────────────
-def creds = input(
-  id: 'apply', message: "Appliquer l'application ${appName} en ${envName} ? Fournissez VOTRE identite Vault (voie A).",
-  parameters: [
-    string(name: 'VAULT_USER', defaultValue: '', description: 'Login annuaire (ex. oscar)'),
-    password(name: 'VAULT_USER_PASSWORD', defaultValue: '', description: 'Mot de passe annuaire')
-  ])
-
-// ── GARDE : celui qui repond EST-IL celui qui a valide la PR ? ────────────
-// L'input authentifie personne : quiconque a le droit `input` sur Jenkins peut
-// y repondre. Le webhook, lui, dit QUI a merge — mais c'est une affirmation,
-// pas un credential. La garde relie les deux et refuse si elles divergent.
-// Elle tourne AVANT le build aval : rien n'est ecrit ni applique sur un refus.
-//
-// Les valeurs passent par l'ENVIRONNEMENT, jamais par interpolation Groovy dans
-// la chaine sh : elles viennent d'un webhook et d'une saisie humaine, donc d'un
-// tiers. La chaine sh est en quotes SIMPLES cote Groovy pour qu'il n'y touche
-// pas, et c'est le shell qui developpe les variables, entre guillemets.
-node {
-  stage('garde identite du valideur') {
-    git url: 'http://gitea:3000/ci/stoa-labs.git', branch: 'main'
-    withEnv(["G_MERGED_BY=${env.PR_MERGED_BY ?: ''}",
-             "G_REQUESTER=${env.PR_REQUESTER ?: ''}",
-             "G_VAULT_USER=${creds.VAULT_USER ?: ''}"]) {
-      dir('poc-control-plane-federation') {
-        sh 'set +x; sh scripts/lib/assert-merge-identity.sh --merged-by "$G_MERGED_BY" --requester "$G_REQUESTER" --vault-user "$G_VAULT_USER"'
-      }
-    }
-  }
-}
-
-// ── APPLY NOMINATIF : delegue au job prouve selfservice-app-deploy ────────
-// Le resultat est CAPTURE puis remonte sur la PR (ADR-081, corollaire 2) : la
-// PR porte alors le plan, la decision (le merge) et le resultat au meme endroit
-// — pour le demandeur, le valideur et l'auditeur. Sans ca, l'apply ne laissait
-// de trace que dans un log de build, volatil et introuvable pour eux.
-def applyResult = 'SUCCESS'
-try {
-  build job: 'selfservice-app-deploy', wait: true, parameters: [
-    string(name: 'MANIFEST', value: manifest),
-    string(name: 'ENVIRONMENT', value: envName),
-    string(name: 'ADMIN_VIA', value: 'proxy-oauth2'),
-    string(name: 'VAULT_USER', value: creds.VAULT_USER),
-    [$class: 'PasswordParameterValue', name: 'VAULT_USER_PASSWORD', value: creds.VAULT_USER_PASSWORD]
-  ]
-} catch (Exception e) {
-  applyResult = 'FAILURE'
-  echo "Apply en echec : ${e.getMessage()}"
-} finally {
-  // Le commentaire est un RAPPORT, jamais un verdict : `|| true` pour qu'une
-  // panne de la forge ne transforme pas un apply reussi en build rouge. Le
-  // resultat reel est reaffirme juste apres, hors du finally.
-  node {
-    stage('statut sur la PR') {
-      git url: 'http://gitea:3000/ci/stoa-labs.git', branch: 'main'
-      withCredentials([string(credentialsId: 'gitea-provision-token', variable: 'GITEA_TOKEN')]) {
-        withEnv(["PR_NUMBER=${env.PR_NUMBER ?: ''}",
-                 "APPLY_RESULT=${applyResult}",
-                 "APP_NAME=${appName}",
-                 "ENV_NAME=${envName}",
-                 "VALIDATOR=${creds.VAULT_USER ?: ''}"]) {
-          dir('poc-control-plane-federation') {
-            sh 'set +x; bash scripts/provision-apply-comment.sh || true'
-          }
-        }
-      }
-    }
-  }
-}
-if (applyResult != 'SUCCESS') {
-  error("Apply nominatif en echec pour ${appName}/${envName} — PR #${env.PR_NUMBER} commentee.")
-}
-echo "Apply nominatif reussi pour ${appName}/${envName} par ${creds.VAULT_USER}"
-    </script>
-    <sandbox>true</sandbox>
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition" plugin="workflow-cps">
+    <scm class="hudson.plugins.git.GitSCM" plugin="git">
+      <configVersion>2</configVersion>
+      <userRemoteConfigs>
+        <hudson.plugins.git.UserRemoteConfig>
+          <!-- Depot PLATEFORME vu DEPUIS l'agent (reseau docker) : c'est celui
+               que `checkout scm` repose dans le workspace. -->
+          <url>http://gitea:3000/ci/stoa-labs.git</url>
+        </hudson.plugins.git.UserRemoteConfig>
+      </userRemoteConfigs>
+      <branches>
+        <hudson.plugins.git.BranchSpec>
+          <name>*/main</name>
+        </hudson.plugins.git.BranchSpec>
+      </branches>
+      <doGenerateSubmoduleConfigurations>false</doGenerateSubmoduleConfigurations>
+      <submoduleCfg class="empty-list"/>
+      <extensions/>
+    </scm>
+    <scriptPath>poc-control-plane-federation/ci/Jenkinsfile.provision-apply</scriptPath>
+    <!-- lightweight=false : le workspace de l'agent doit porter le depot
+         (scripts/, ci/lib/), pas seulement le Jenkinsfile. -->
+    <lightweight>false</lightweight>
   </definition>
-  <triggers/>
+  <disabled>false</disabled>
 </flow-definition>

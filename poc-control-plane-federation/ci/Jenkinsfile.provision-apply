@@ -1,0 +1,347 @@
+// ci/Jenkinsfile.provision-apply — APPLY post-merge d'une DEMANDE D'APPLICATION
+// (maillon 2 du self-service consommateur, ADR-078/081) — la RÉFÉRENCE est le
+// SHA mergé (A2, GOAL cd-applications), jamais le dernier `main`.
+//
+// Conversion DÉCLARATIVE du pipeline qui vivait en Groovy inline dans
+// ci/jenkins/provision-apply.job.xml (<script>…</script>) — la contrainte du
+// GOAL : aucun job.xml porteur de logique, QUE des Jenkinsfile from SCM (modèle
+// ci/Jenkinsfile.team-apply). Le job est MINCE : réconcilier, mettre en pause,
+// garder l'identité, déléguer à selfservice-app-deploy, rapporter sur la PR.
+//
+//   merge d'une PR provision/<app>-<env> dans le DÉPÔT PLATEFORME
+//     ──webhook──▶ 1. RÉCONCILIATION (agent court, sans humain) : le payload ne
+//                     fait pas foi — la PR est relue sur la FORGE (merged /
+//                     merge_commit_sha / head / base, périmètre des fichiers) et
+//                     `main` est relu par GIT (le SHA est sur main, le palier n'a
+//                     pas été supplanté depuis) — scripts/provision-apply-reconcile.sh.
+//                     Les identités mergeur/demandeur viennent de la forge, jamais
+//                     du payload. Refus nommé (PAYLOAD_PERIME, PALIER_SUPPLANTE,
+//                     PR_HORS_PERIMETRE…) AVANT de réveiller quiconque.
+//                  2. DEMANDE EN ATTENTE (aucun exécuteur réservé) : la décision
+//                     est déjà prise (le merge) — la pause fournit l'identité
+//                     NOMINATIVE qui portera l'apply.
+//        humain ──▶ 3. garde d'identité (assert-merge-identity.sh, nourrie par
+//                     les identités RÉCONCILIÉES) puis `build selfservice-app-deploy`
+//                     avec MERGE_SHA — HORS de tout nœud, comme le Groovy d'origine :
+//                     aucun exécuteur n'est tenu pendant l'apply aval. L'aval
+//                     checkoute CE SHA et annonce ce qu'il a projeté
+//                     (APPLIED_MODE/APPLIED_SHA/APPLIED_DIGEST) — l'amont le
+//                     CONFRONTE à sa demande (SHA_NON_CONFIRME sinon) et pose sur
+//                     la PR : résultat, identité, SHA, digest.
+//
+// Trois faits Jenkins mesurés sur ce lab s'appliquent (mémoire ci-jenkinsfile-refactor) :
+// `input { message }` n'interpole pas (contexte dans displayName) ; le
+// <triggers> du XML gagne sur celui-ci (miroir exact, test de câblage) ; un
+// paramètre inconnu du job aval est retiré en silence (d'où MERGE_SHA_REQUIS
+// côté aval ET la confrontation côté amont).
+pipeline {
+
+  // `agent none` — DÉLIBÉRÉ : la pause (directive `input` de stage) est
+  // évaluée AVANT l'allocation de tout agent, et le stage d'apply n'a PAS
+  // d'agent : la garde et le rapport prennent un `node` le temps d'un `sh`,
+  // l'appel `build` de l'aval se fait hors nœud. Ni l'attente humaine
+  // (minutes, heures) ni l'apply aval (préflight, login, converge, verify) ne
+  // réservent un exécuteur — le lab n'en a que deux.
+  agent none
+  options { disableConcurrentBuilds() }   // un apply à la fois = régime bancaire
+
+  // Aucune charge utile n'est de confiance : ces clés ne servent qu'à NOMMER ce
+  // qu'il faut relire sur la forge (PR_NUMBER) et dans l'état mergé (MERGE_SHA).
+  //
+  // ⚠ Ce bloc doit rester le MIROIR EXACT de celui de
+  // ci/jenkins/provision-apply.job.xml, et c'est le XML qui gagne : Declarative
+  // ne remplace que les déclencheurs qu'il a lui-même posés
+  // (DeclarativeJobPropertyTrackerAction) — mesuré sur le lab 2026-08-06.
+  // test-provision-apply-wiring.sh compare les deux.
+  // Volontairement PAS de bloc `parameters {}` : ces valeurs ne doivent venir
+  // QUE du webhook (un paramètre de build permettrait à quiconque lance le job
+  // de nommer lui-même MERGE_SHA ou PR_NUMBER — la réconciliation refuserait
+  // l'incohérence, mais on ne lui donne pas ce travail). Un build manuel n'a
+  // donc aucune de ces variables → refus nommé dès la réconciliation.
+  triggers {
+    GenericTrigger(
+      token: 'stoa-provision-apply',
+      genericVariables: [
+        [key: 'PR_BRANCH',    value: '$.pull_request.head.ref'],
+        [key: 'PR_NUMBER',    value: '$.pull_request.number'],
+        [key: 'PR_ACTION',    value: '$.action'],
+        [key: 'PR_MERGED',    value: '$.pull_request.merged'],
+        // Captés pour le journal (printContributedVariables) — mais JAMAIS lus
+        // par la garde d'identité : elle reçoit GITEA_MERGED_BY / GITEA_REQUESTER,
+        // relus sur la forge par la réconciliation (le payload est une AFFIRMATION).
+        [key: 'PR_MERGED_BY', value: '$.pull_request.merged_by.login'],
+        [key: 'PR_REQUESTER', value: '$.pull_request.user.login'],
+        // A2 — LA RÉFÉRENCE : le SHA de merge, réconcilié puis projeté par l'aval.
+        [key: 'MERGE_SHA',    value: '$.pull_request.merge_commit_sha'],
+      ],
+      // Ne déclenche que sur une PR RÉELLEMENT fusionnée (fermée sans merge = rien).
+      regexpFilterText: '$PR_ACTION|$PR_MERGED',
+      regexpFilterExpression: '^closed\\|true$',
+      printContributedVariables: true,
+      printPostContent: false)
+  }
+
+  // ── POINTS DE CONFIG CLIENT (motif `env.X ?: défaut`, comme les Jenkinsfile frères) ──
+  // ⚠ Hôtes vus DEPUIS le conteneur de l'agent (réseau docker `poc`).
+  environment {
+    GIT_HOST              = "${env.GIT_HOST ?: 'http://gitea:3000'}"
+    GIT_REPO              = "${env.GIT_REPO ?: 'ci/stoa-labs'}"
+    // Lien humain-CLIQUABLE dans le commentaire de PR (split-horizon lab :
+    // jenkins→gitea:3000, navigateur→localhost:13000).
+    GIT_WEB_HOST          = "${env.GIT_WEB_HOST ?: 'http://localhost:13000'}"
+    GITEA_CREDENTIALS_ID  = "${env.GITEA_CREDENTIALS_ID ?: 'gitea-provision-token'}"
+    // Le job aval, prouvé (ADR-078) : convergence + verify sous identité nominative.
+    APPLY_JOB             = "${env.APPLY_JOB ?: 'selfservice-app-deploy'}"
+    // Accès à l'API d'admin par l'aval. DÉFAUT = celui que le job Groovy codait
+    // en dur : le modèle CLIENT (admin proxifiée sur la gateway, OAuth2 devant).
+    // Sur le lab, `direct` (wm-admin-self inactif, deploy/<tenant>/admin-oauth
+    // absent — mesuré 2026-09-02) : variable d'environnement GLOBALE Jenkins,
+    // même classe de geste qu'APIM_DIRECT_BASE_TPL (G7), cf. ENVIRONNEMENTS.md.
+    // Ce n'est PAS A3 : le credential reste deploy/<tenant>/wm-admin + X-Environment.
+    APPLY_ADMIN_VIA       = "${env.APPLY_ADMIN_VIA ?: 'proxy-oauth2'}"
+  }
+
+  stages {
+
+    // Étape SANS agent : nomme le build. FORMAT À NE PAS CHANGER —
+    // « apply <app>/<env> (PR #n) » : le harnais test-provision-apply-a2-live.sh
+    // en EXTRAIT le numéro de PR pour ne solder que SES pauses (lab partagé).
+    // app/env ne servent qu'à nommer : ceux qui font foi sont re-dérivés par la
+    // réconciliation, dans les bornes de forme du script. Le hook Gitea tire sur
+    // TOUTES les PR fusionnées du dépôt plateforme (onboard/*, docs…) : hors
+    // provision/*, le build sort VERT sans rien faire — comme le Groovy d'origine.
+    stage('Contexte du webhook') {
+      steps {
+        script {
+          def ref = env.PR_BRANCH ?: ''
+          if (ref.startsWith('provision/')) {
+            def rest = ref.substring('provision/'.length())
+            def i    = rest.lastIndexOf('-')
+            def app  = (i >= 0) ? rest.substring(0, i) : rest
+            def envn = (i >= 0) ? rest.substring(i + 1) : rest
+            currentBuild.displayName = "apply ${app}/${envn} (PR #${env.PR_NUMBER ?: '?'})"
+            echo "Demande FUSIONNEE — application=${app} env=${envn} merge_sha=${env.MERGE_SHA ?: '(absent)'}"
+          } else {
+            currentBuild.displayName = "hors provision/* (PR #${env.PR_NUMBER ?: '?'})"
+            echo "branche '${ref}' hors provision/* — rien à appliquer."
+          }
+        }
+      }
+    }
+
+    // ── 1. RÉCONCILIATION — AVANT la pause, sans identité humaine ────────────
+    // Le webhook (token GWT partagé, HMAC non vérifié en aval) peut prétendre
+    // n'importe quoi. On relit la PR sur la forge ET main par git : merged,
+    // merge_commit_sha, head.ref, base.ref, périmètre des fichiers, ancêtre de
+    // main, palier non supplanté — sinon refus nommé, commenté (si la forge a
+    // confirmé une PR provision/*), build rouge, PERSONNE n'est réveillé. Les
+    // identités réconciliées (GITEA_MERGED_BY / GITEA_REQUESTER), APP_NAME,
+    // ENV_NAME, MANIFEST et MERGED_DIGEST sont chargés dans l'environnement.
+    // `beforeAgent true` : une PR hors provision/* n'alloue aucun exécuteur.
+    stage('Réconciliation — le payload ne fait pas foi') {
+      when {
+        beforeAgent true
+        expression { (env.PR_BRANCH ?: '').startsWith('provision/') }
+      }
+      agent any
+      steps {
+        withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')]) {
+          dir('poc-control-plane-federation') {
+            // Chaîne sh en quotes SIMPLES : PR_BRANCH/PR_NUMBER/MERGE_SHA viennent
+            // du webhook (tiers) et sont lus par le SHELL, jamais interpolés par Groovy.
+            sh 'set +x; RECONCILE_OUT="$WORKSPACE/.a2-reconcile.env" RECONCILE_FACTS="$WORKSPACE/.a2-reconcile.facts" bash scripts/provision-apply-reconcile.sh'
+            // Relu par `readFile` (workflow-basic-steps ; pipeline-utility-steps
+            // et son `readProperties` ne sont pas installés sur ce lab), éclaté
+            // sur le premier `=`, puis CINQ assignations explicites — pas de
+            // `env."$k"` dynamique (surface sandbox inutile).
+            script {
+              def kv = [:]
+              readFile("${env.WORKSPACE}/.a2-reconcile.env").readLines().each { line ->
+                def i = line.indexOf('=')
+                if (i > 0) { kv[line.substring(0, i)] = line.substring(i + 1) }
+              }
+              env.GITEA_MERGED_BY = kv.GITEA_MERGED_BY ?: ''
+              env.GITEA_REQUESTER = kv.GITEA_REQUESTER ?: ''
+              env.APP_NAME        = kv.APP_NAME ?: ''
+              env.ENV_NAME        = kv.ENV_NAME ?: ''
+              env.MANIFEST        = kv.MANIFEST ?: ''
+              env.MERGED_DIGEST   = kv.MERGED_DIGEST ?: ''
+              echo "réconcilié : ${env.APP_NAME}/${env.ENV_NAME} mergée par '${env.GITEA_MERGED_BY}' (demandeur '${env.GITEA_REQUESTER}'), manifeste ${env.MANIFEST}, digest ${env.MERGED_DIGEST}"
+            }
+          }
+        }
+      }
+      // Les FAITS relus sur la forge (GITEA_HEAD_REF), écrits par la
+      // réconciliation succès COMME échec : c'est eux — jamais PR_BRANCH du
+      // payload — qui autoriseront le statut build du post{always} à parler.
+      post {
+        always {
+          script {
+            def f = "${env.WORKSPACE}/.a2-reconcile.facts"
+            if (fileExists(f)) {
+              readFile(f).readLines().each { line ->
+                if (line.startsWith('GITEA_HEAD_REF=')) { env.GITEA_HEAD_REF = line.substring('GITEA_HEAD_REF='.length()) }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // ── 2. + 3. DEMANDE EN ATTENTE, garde d'identité, apply au SHA mergé ─────
+    // SANS agent (hérite `agent none`) : les paramètres de la directive `input`
+    // sont dans l'environnement du stage même sans agent ; la garde et le
+    // rapport prennent un `node` le temps d'un `sh`, l'appel `build` de l'aval
+    // se fait HORS nœud — la parité exacte du Groovy d'origine (node l.64-75,
+    // build l.84, node l.98-113), et la raison pour laquelle l'apply aval ne
+    // tient jamais l'exécuteur de l'amont.
+    stage('Appliquer au SHA mergé (identité nominative)') {
+      // `beforeInput true` : une PR hors provision/* ne réveille personne.
+      when {
+        beforeInput true
+        expression { (env.PR_BRANCH ?: '').startsWith('provision/') }
+      }
+
+      // Nommées V_USER / V_PASS (et non VAULT_USER / VAULT_USER_PASSWORD). Le
+      // mot de passe ne sert qu'au paramètre `password` du build aval (lu en
+      // Groovy) : les DEUX `sh` de ce stage tournent sous `withEnv(['V_PASS='])`
+      // pour qu'il n'entre dans l'environnement d'aucun process shell (ps,
+      // /proc/PID/environ). Le contexte (app/env/PR) est dans le NOM DU BUILD :
+      // une directive `input` n'interpole pas `${env.X}` (fait mesuré 2026-08-06).
+      input {
+        id 'apply'
+        message "Appliquer l'application de la PR fusionnée (voir le nom du build) AU SHA MERGÉ ? Fournissez VOTRE identité d'annuaire (voie A) — elle sera confrontée à l'auteur du merge relu sur la forge."
+        parameters {
+          string(name: 'V_USER', defaultValue: '',
+                 description: "Login annuaire (ex. alice) — DOIT être celui qui a fusionné la PR.")
+          password(name: 'V_PASS', defaultValue: '',
+                   description: "Mot de passe annuaire. ⚠ Ne PAS relancer en boucle après un refus (lockout AD).")
+        }
+      }
+
+      steps {
+        script {
+          // ── GARDE D'IDENTITÉ, AVANT tout apply ──────────────────────────
+          // Relie l'identité PROUVÉE (le login Vault, fait par l'aval) à l'identité
+          // RÉCONCILIÉE (qui a mergé, relu sur la forge — jamais le payload) et
+          // refuse si elles divergent ou si le valideur est le demandeur
+          // (MERGER_UNKNOWN / MERGER_MISMATCH / FOUR_EYES_VIOLATION). Quotes
+          // SIMPLES : aucune valeur externe ne traverse une interpolation Groovy.
+          withEnv(['V_PASS=']) {
+            node("${env.POST_AGENT_LABEL ?: ''}") {
+              checkout scm
+              dir('poc-control-plane-federation') {
+                sh 'set +x; sh scripts/lib/assert-merge-identity.sh --merged-by "${GITEA_MERGED_BY:-}" --requester "${GITEA_REQUESTER:-}" --vault-user "${V_USER:-}"'
+              }
+            }
+          }
+
+          // ── APPLY DÉLÉGUÉ, au SHA mergé, HORS nœud, puis CONFRONTATION ─────
+          // `propagate: false` : le verdict est rendu ICI, après lecture de ce que
+          // l'aval a RÉELLEMENT projeté (buildVariables). Deux conditions : le
+          // mode `pinned` (l'aval a REÇU MERGE_SHA et l'a checkouté — sans lui,
+          // HEAD == MERGE_SHA « par coïncidence » passerait) ET l'égalité des
+          // SHA. Un aval vert qui n'annonce pas la référence — paramètre non
+          // matérialisé retiré en silence, plan-only, Jenkinsfile aval d'avant
+          // A2 — est un ÉCHEC nommé SHA_NON_CONFIRME : ce qu'il a projeté est
+          // dit sur la PR, pas maquillé en « pas déployé ».
+          def b = build(job: env.APPLY_JOB, wait: true, propagate: false, parameters: [
+            string(name: 'MANIFEST',    value: env.MANIFEST),
+            string(name: 'ENVIRONMENT', value: env.ENV_NAME),
+            string(name: 'ADMIN_VIA',   value: env.APPLY_ADMIN_VIA),
+            string(name: 'MERGE_SHA',   value: env.MERGE_SHA),
+            string(name: 'VAULT_USER',  value: env.V_USER),
+            [$class: 'PasswordParameterValue', name: 'VAULT_USER_PASSWORD', value: env.V_PASS]
+          ])
+          def vars = b.buildVariables ?: [:]
+          env.APPLIED_SHA     = vars.APPLIED_SHA ?: ''
+          env.APPLIED_MODE    = vars.APPLIED_MODE ?: ''
+          env.APPLIED_DIGEST  = vars.APPLIED_DIGEST ?: ''
+          env.APPLY_BUILD     = "${env.APPLY_JOB} #${b.number}"
+          env.APPLY_BUILD_URL = b.absoluteUrl ?: ''
+          env.APPLY_RESULT    = b.result ?: 'FAILURE'
+          env.REFUSAL         = ''
+          env.REFUSAL_DETAIL  = ''
+          if (env.APPLY_RESULT == 'SUCCESS' && !(env.APPLIED_MODE == 'pinned' && env.APPLIED_SHA == env.MERGE_SHA)) {
+            env.APPLY_RESULT   = 'FAILURE'
+            env.REFUSAL        = 'SHA_NON_CONFIRME'
+            env.REFUSAL_DETAIL = "l'aval ${env.APPLY_BUILD} annonce APPLIED_MODE='${env.APPLIED_MODE ?: '(rien)'}' APPLIED_SHA='${env.APPLIED_SHA ?: '(rien)'}' pour MERGE_SHA ${env.MERGE_SHA} — l'état projeté n'est pas la référence mergée"
+          }
+          echo "aval ${env.APPLY_BUILD} : ${b.result} — APPLIED_MODE=${env.APPLIED_MODE ?: '(rien)'} APPLIED_SHA=${env.APPLIED_SHA ?: '(rien)'} APPLIED_DIGEST=${env.APPLIED_DIGEST ?: '(rien)'} — verdict amont : ${env.APPLY_RESULT}${env.REFUSAL ? ' (' + env.REFUSAL + ')' : ''}"
+
+          // ── RAPPORT sur la PR (ADR-081 coroll. 2) — jamais un verdict ───────
+          // `|| true` : une forge en panne ne transforme pas un apply réussi en
+          // build rouge. Le résultat réel est réaffirmé juste après. Toutes les
+          // valeurs sont lues par le SHELL depuis l'environnement du build.
+          withEnv(['V_PASS=']) {
+            node("${env.POST_AGENT_LABEL ?: ''}") {
+              checkout scm
+              withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')]) {
+                dir('poc-control-plane-federation') {
+                  sh 'set +x; VALIDATOR="${V_USER:-}" EXPECTED_SHA="${MERGE_SHA:-}" BUILD_URL="${APPLY_BUILD_URL:-}" bash scripts/provision-apply-comment.sh || true'
+                }
+              }
+            }
+          }
+          if (env.APPLY_RESULT != 'SUCCESS') {
+            error("Apply nominatif en échec pour ${env.APP_NAME}/${env.ENV_NAME} (${env.REFUSAL ?: env.APPLY_RESULT}) — PR #${env.PR_NUMBER} commentée.")
+          }
+          echo "Apply nominatif réussi pour ${env.APP_NAME}/${env.ENV_NAME} par ${env.V_USER} — référence ${env.APPLIED_SHA}, digest ${env.APPLIED_DIGEST}"
+        }
+      }
+    }
+  }
+
+  // ── STATUT BUILD sur la PR, dans TOUS les cas (parité team-apply, dette I3) ──
+  // Le rapport d'apply ne part que si l'étape 3 a tourné ; un refus de
+  // réconciliation commente déjà (marqueur provision-apply-refus). Ce
+  // post{always} pose le STATUT BUILD sous un troisième marqueur
+  // (`provision-apply-build`) : pause abandonnée/expirée, agent injoignable,
+  // garde refusée — la PR n'est jamais muette. Il ne parle que si la FORGE a
+  // confirmé une PR provision/* (GITEA_HEAD_REF relu, écrit par la
+  // réconciliation) : jamais sur la foi du PR_BRANCH du payload — un PR_NUMBER
+  // forgé ne fait pas publier le compte de service sur une PR étrangère.
+  // `agent none` au niveau pipeline → `node` + `checkout scm`.
+  post {
+    always {
+      node("${env.POST_AGENT_LABEL ?: ''}") {
+        checkout scm
+        withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')]) {
+          withEnv(["BUILD_RESULT=${currentBuild.currentResult}"]) {
+            dir('poc-control-plane-federation') {
+              sh '''
+                set +x
+                if [ -z "${GIT_REPO:-}" ] || [ -z "${PR_NUMBER:-}" ]; then
+                  echo "commentaire de statut impossible (GIT_REPO/PR_NUMBER absents)"
+                  exit 0
+                fi
+                case "${PR_NUMBER}" in ''|*[!0-9]*) echo "(PR_NUMBER non numérique — aucun statut à commenter)"; exit 0 ;; esac
+                case "${GITEA_HEAD_REF:-}" in
+                  provision/*) ;;
+                  *) echo "(la forge n'a pas confirmé une PR provision/* — aucun statut à commenter, quoi qu'ait dit le payload)"; exit 0 ;;
+                esac
+                # Corps SANS accents : ils traversent l'agent, un POST JSON et Gitea.
+                BUILD_REF="${BUILD_URL:-}"
+                [ -n "$BUILD_REF" ] || BUILD_REF="${JOB_NAME:-provision-apply} #${BUILD_NUMBER:-?}"
+                BODYFILE="$(mktemp)"
+                case "${BUILD_RESULT:-FAILURE}" in
+                  SUCCESS)
+                    printf "provision-apply (statut build) : build termine sans erreur -- voir le commentaire provision-apply pour le resultat, la reference (SHA de merge) et le digest appliques.\\n" > "$BODYFILE" ;;
+                  ABORTED)
+                    printf "provision-apply (statut build) : la demande en attente a ete ABANDONNEE (ou a expire) -- RIEN n a ete applique. Rejouer le webhook pour rouvrir la demande. Build : %s\\n" "$BUILD_REF" > "$BODYFILE" ;;
+                  *)
+                    printf "provision-apply (statut build) : le build a echoue avant ou pendant l apply (reconciliation refusee, garde d identite, SHA non confirme, apply aval en echec). Voir les commentaires provision-apply / provision-apply-refus s ils existent, sinon le log : %s\\n" "$BUILD_REF" > "$BODYFILE" ;;
+                esac
+                GIT_REPO="$GIT_REPO" PR_NUMBER="$PR_NUMBER" \
+                  COMMENT_MARKER="<!-- provision-apply-build -->" \
+                  COMMENT_BODY_FILE="$BODYFILE" bash scripts/lib/gitea-pr-comment.sh \
+                  || echo "AVERTISSEMENT: commentaire de statut (post) en echec"
+                rm -f "$BODYFILE"
+              '''
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -6,12 +6,14 @@
 # GÉNÉRIQUE — setup-provision-request-job.sh l'appelle ainsi pour son propre job
 # plutôt que de réécrire la même logique.
 #
-# POURQUOI CE SCRIPT EXISTE. Ces deux jobs portent leur script Groovy EN LIGNE
-# dans leur XML (CpsFlowDefinition). Contrairement à leurs voisins, qui ne font
-# que checkouter le dépôt et lancer un `.sh`, une modification de leur logique
-# n'atteint PAS l'instance par un simple `git push` : leur configuration doit
-# être repoussée. Jusqu'ici aucun script ne le faisait — ils avaient été créés à
-# la main, et l'écart entre le dépôt et l'instance était invisible.
+# POURQUOI CE SCRIPT EXISTE. `provision-plan` porte encore son script Groovy EN
+# LIGNE dans son XML (CpsFlowDefinition) : une modification de sa logique
+# n'atteint PAS l'instance par un simple `git push`, sa configuration doit être
+# repoussée. `provision-apply`, lui, est depuis A2 (2026-09-02) une COQUILLE
+# « Pipeline from SCM » (ci/Jenkinsfile.provision-apply) : sa logique suit
+# `git push`, mais la coquille — pointeur SCM + miroir du bloc <triggers>, qui
+# GAGNE sur le Jenkinsfile — se (re)pose toujours par ce script (une fois, à la
+# conversion, puis à chaque changement de clé du webhook).
 #
 # ─────────────────────────────────────────────────────────────────────────────
 # CE SCRIPT MET À JOUR EN PLACE, IL NE SUPPRIME PAS

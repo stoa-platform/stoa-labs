@@ -29,6 +29,20 @@ pipeline {
   parameters {
     string(name: 'MANIFEST', defaultValue: 'clients/_example/applications/demo-consumer.ansible.yml',
            description: "Manifeste de demande (vars du rôle : apim_ss_app).")
+    // A2 (GOAL cd-applications) — LA RÉFÉRENCE. Fourni par provision-apply :
+    // le SHA de merge de la PR provision/<app>-<env>. Le stage « Référence »
+    // checkoute CE SHA (après `merge-base --is-ancestor main`) et tout ce qui
+    // suit — PLAN, APPLY, VERIFY — lit le manifeste DANS CET ARBRE, jamais dans
+    // le dernier `main`. Vide = comportement d'avant A2 (HEAD du checkout SCM :
+    // voie humaine directe, PLAN par webhook, build d'amorçage). Le SHA
+    // réellement projeté est annoncé en `APPLIED_SHA` (+ `APPLIED_DIGEST`),
+    // que l'appelant relit et CONFRONTE à ce qu'il a demandé (SHA_NON_CONFIRME).
+    // ⚠ Un paramètre inconnu du job aval est RETIRÉ EN SILENCE par Jenkins
+    // (SECURITY-170) : ce paramètre doit être MATÉRIALISÉ (build d'amorçage
+    // après pose) avant que provision-apply ne compte dessus — d'où la
+    // confirmation côté appelant, qui rougit si l'aval a projeté autre chose.
+    string(name: 'MERGE_SHA', defaultValue: '',
+           description: "A2 — SHA de merge à projeter (40 hex, ancêtre de main). Vide = HEAD du checkout SCM. Posé par provision-apply, jamais à la main sauf repli (A6).")
     // Env cible : sélectionne per_env[ENVIRONMENT] du manifeste ET pose X-Environment
     // vers le proxy d'admin (endpoint unique multi-env). Vide = manifeste mono-env.
     // ⚠ Liste EN DUR, et c'est un choix contraint, pas un oubli : un bloc
@@ -137,6 +151,85 @@ pipeline {
   }
 
   stages {
+
+    // ── RÉFÉRENCE (A2) ───────────────────────────────────────────────────────
+    // AVANT le PLAN : c'est ici que l'on décide QUEL ARBRE les deux étapes
+    // suivantes lisent. Avec MERGE_SHA : fetch de main, garde d'atteignabilité
+    // (un `git checkout` réussi prouve que l'OBJET existe, jamais qu'il est
+    // fusionné sur la branche protégée — team-promote.sh §4), checkout, puis
+    // digest du bloc per_env.<env> AU SHA MERGÉ (refus fermé si le palier n'y
+    // est pas déclaré — avant tout appel gateway et avant d'avoir consommé
+    // l'identité nominative ; plus tôt que le ENV_UNDEFINED du rôle). Sans
+    // MERGE_SHA : on ANNONCE seulement la référence (HEAD) et le digest est
+    // best-effort (manifeste mono-env, ENVIRONMENT vide : note, pas refus).
+    //
+    // La définition de CE pipeline vient de main (from SCM) ; l'arbre — rôle,
+    // scripts, ci/lib, manifeste — est celui du SHA mergé, comme team-apply.sh.
+    // Le shell de l'agent est dash : la lib (bash) est appelée via `bash -c`.
+    stage('Référence — le SHA mergé, jamais le dernier main (A2)') {
+      steps {
+        // FAIL-CLOSED AVANT TOUT : un appelant AMONT (provision-apply) qui
+        // n'a pas transmis MERGE_SHA — paramètre pas encore matérialisé et
+        // retiré en silence (SECURITY-170), appelant d'avant A2, câblage
+        // cassé — ne doit pas faire appliquer HEAD « par défaut ». Un build
+        // amont porte une UpstreamCause (BuildUpstreamCause du step `build`) ;
+        // `upstreamBuilds` filtre par instanceof, donc l'attrape. Le PLAN par
+        // webhook (GenericCause), l'amorçage par REST et la voie humaine directe
+        // n'ont pas d'amont : ils gardent le comportement d'aujourd'hui.
+        script {
+          if (!currentBuild.upstreamBuilds.isEmpty() && !((params.MERGE_SHA ?: '').trim())) {
+            error("REFUS: MERGE_SHA_REQUIS — appelé par un job amont sans référence (paramètre MERGE_SHA non matérialisé sur ce job ? appelant d'avant A2 ?) ; rien n'est appliqué")
+          }
+        }
+        dir('poc-control-plane-federation') {
+          // Deux gardes d'ancrage, dans cet ordre : `merge-base --is-ancestor`
+          // (l'objet est-il sur main ? refus rapide) puis la LIGNÉE first-parent
+          // (est-ce un commit ATTERRI sur main — merge, squash ou rebase — et
+          // non un commit intérieur à une branche de PR, ancêtre lui aussi une
+          // fois la PR mergée mais qui projetterait l'état de la branche sans
+          // le reste de main ?). APPLIED_SHA sort de `git rev-parse HEAD` APRÈS
+          // le checkout — jamais l'écho du paramètre : c'est l'arbre réellement
+          // en place que l'amont confronte.
+          sh '''
+            set -eu
+            REF="${MERGE_SHA:-}"
+            MODE=head
+            if [ -n "$REF" ]; then
+              printf '%s' "$REF" | grep -Eq '^[0-9a-f]{40}$' \
+                || { echo "REFUS: MERGE_SHA_INVALIDE : MERGE_SHA hors de ^[0-9a-f]{40}$ — rien n'est appliqué"; exit 1; }
+              git fetch -q origin main
+              git merge-base --is-ancestor "$REF" origin/main \
+                || { echo "REFUS: MERGE_SHA_NON_ANCETRE : $REF n'est pas un ancêtre de main — le SHA ne correspond pas à un commit fusionné sur la branche protégée, refus de projeter un état non revu"; exit 1; }
+              git rev-list --first-parent origin/main | grep -qx "$REF" \
+                || { echo "REFUS: MERGE_SHA_HORS_LIGNEE : $REF est un ancêtre de main mais pas sur sa lignée first-parent (commit intérieur à une branche, pas un état atterri sur main) — refus"; exit 1; }
+              git checkout -q "$REF"
+              MODE=pinned
+              echo "  référence : SHA mergé $REF checkouté — manifeste, rôle et scripts sont ceux du merge"
+            else
+              echo "  référence : aucun MERGE_SHA — HEAD du checkout SCM : voie humaine directe / PLAN"
+            fi
+            REF="$(git rev-parse HEAD)"
+            printf '%s\\n' "$REF"  > .a2-reference-sha
+            printf '%s\\n' "$MODE" > .a2-reference-mode
+            DIGEST=""
+            MAN="${MANIFEST:-clients/_example/applications/demo-consumer.ansible.yml}"
+            if [ -n "${ENVIRONMENT:-}" ] && [ -f "$MAN" ]; then
+              if [ "$MODE" = pinned ]; then
+                DIGEST="$(bash -c '. scripts/lib/app-manifest.sh && app_manifest_digest_env "$1" "$2"' _ "$MAN" "$ENVIRONMENT")" \
+                  || { echo "REFUS: le manifeste $MAN au SHA mergé ne déclare pas le palier '$ENVIRONMENT' (ou est illisible) — rien n'est appliqué"; exit 1; }
+              else
+                DIGEST="$(bash -c '. scripts/lib/app-manifest.sh && app_manifest_digest_env "$1" "$2"' _ "$MAN" "$ENVIRONMENT" 2>/dev/null || true)"
+              fi
+            fi
+            printf '%s\\n' "$DIGEST" > .a2-reference-digest
+            rm -f .a2-applied-sha .a2-applied-digest .a2-applied-mode
+            echo "REFERENCE_SHA=$REF"
+            echo "REFERENCE_MODE=$MODE"
+            echo "REFERENCE_DIGEST=${DIGEST:-(aucun : manifeste sans per_env, ou ENVIRONMENT vide)}"
+          '''
+        }
+      }
+    }
 
     // ── PLAN ─────────────────────────────────────────────────────────────────
     stage('Plan — valider la demande (lecture seule, identité de job)') {
@@ -353,7 +446,29 @@ pipeline {
 
             # 4) le token nominatif meurt avec le build — révocation + PREUVE DE MORT
             #    (lookup-self -> 403) exécutées par le trap, succès comme échec.
+
+            # 5) A2 — ce qui a RÉELLEMENT été projeté, annoncé SEULEMENT ici, après
+            #    converge + verify : un PLAN-only (sortie 0 plus haut, sans identité)
+            #    ou un échec n'annonce rien, et l'amont ne peut pas prendre une
+            #    référence calculée pour un apply qui n'a pas eu lieu.
+            cp .a2-reference-sha .a2-applied-sha
+            cp .a2-reference-mode .a2-applied-mode
+            cp .a2-reference-digest .a2-applied-digest
+            echo "APPLIED_SHA=$(cat .a2-applied-sha)"
+            echo "APPLIED_MODE=$(cat .a2-applied-mode)"
+            echo "APPLIED_DIGEST=$(cat .a2-applied-digest)"
           '''
+          // Relus dans l'environnement du build : c'est ce que provision-apply
+          // lit dans build(...).buildVariables pour CONFRONTER l'annonce à sa
+          // demande (mode `pinned` ET SHA égal). Un aval qui ne les pose pas —
+          // plan-only, échec avant la fin — ⇒ SHA_NON_CONFIRME côté amont.
+          script {
+            if (fileExists('.a2-applied-sha')) {
+              env.APPLIED_SHA    = readFile('.a2-applied-sha').trim()
+              env.APPLIED_MODE   = readFile('.a2-applied-mode').trim()
+              env.APPLIED_DIGEST = readFile('.a2-applied-digest').trim()
+            }
+          }
         }
       }
     }

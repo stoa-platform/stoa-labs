@@ -12,7 +12,7 @@
 # sous per_env (tasks/consumer-auth.yml:61). Le manque était dans le script de
 # demande, pas dans le rôle.
 #
-# TROIS FONCTIONS, chacune un `python3 - <<'PY'` (PyYAML est présent dans le
+# QUATRE FONCTIONS, chacune un `python3 - <<'PY'` (PyYAML est présent dans le
 # conteneur Jenkins comme sur le poste — env-chain.sh en dépend déjà) :
 #
 #   app_manifest_read <fichier>
@@ -47,6 +47,12 @@
 #       rc 2 + MANIFESTE_INVALIDE et le fichier n'est PAS écrit (c'est aussi ce
 #       qui refuse un palier écrit en style block à la main : le remplacer par
 #       une ligne flow laisserait ses sous-lignes orphelines).
+#
+#   app_manifest_digest_env <fichier> <env>                         (A2)
+#       Imprime `sha256:<hex>` du JSON canonique du MANIFESTE EFFECTIF du palier
+#       (racine ⊕ per_env.<env>, la fusion du rôle) — la référence « qu'est-ce
+#       qui tourne en <env> » que provision-apply pose sur la PR à côté du SHA
+#       mergé. Détail et refus en tête de la fonction.
 #
 # CONVENTIONS : les fonctions ÉCRIVENT leur refus sur stderr et RENDENT 2
 # (jamais `exit` : la lib est sourcée). L'appelant tourne sans `set -e`
@@ -306,5 +312,54 @@ tmp = path + ".a1tmp"
 with open(tmp, "w", encoding="utf-8") as fh:
     fh.write(out)
 os.replace(tmp, path)
+PY
+}
+
+# app_manifest_digest_env <fichier> <env>
+#   Imprime `sha256:<hex>` = SHA-256 du JSON CANONIQUE du MANIFESTE EFFECTIF du
+#   palier — la racine (sans per_env) fusionnée avec per_env.<env> selon la
+#   sémantique EXACTE du rôle (resolve-env.yml : `combine(recursive=True)` —
+#   mappings fusionnés récursivement, listes et scalaires REMPLACÉS) — tel que
+#   RELU par la lib (BaseLoader : aucun typage), `sort_keys`, séparateurs
+#   compacts, UTF-8. Deux manifestes qui ne diffèrent que par l'ordre des clés,
+#   les guillemets ou les espaces ⇒ même digest : il répond à « qu'est-ce qui
+#   tourne en <env> ? » (A2), pas à « quels octets ? » (ça, c'est le SHA de
+#   merge). Il couvre la racine (une édition manuelle d'`enforce`, de la
+#   description ou de l'audience change ce qui tourne — critique de la spec
+#   2026-09-02) et le SEUL palier demandé (un autre palier ne le change pas).
+#   Refus : PALIER_INVALIDE (clé hors classe, avant toute lecture),
+#   MANIFESTE_INVALIDE / MANIFESTE_LEGACY (par app_manifest_read : mêmes bornes,
+#   même refus de la forme d'avant A1 — le digest ne les contourne pas),
+#   PALIER_ABSENT (per_env.<env> n'existe pas ; les paliers déclarés sont nommés).
+#   Recalculable sans la lib (contrôle positif dans test-provision-apply-a2.sh A.3).
+app_manifest_digest_env() {
+  local f="${1:?app_manifest_digest_env <fichier> <env>}" e="${2:?app_manifest_digest_env <fichier> <env>}"
+  _app_manifest_env_ok "$e" || { echo "REFUS: PALIER_INVALIDE : '$e' hors de [A-Za-z0-9._-]" >&2; return 2; }
+  # La lecture porte les bornes et le refus legacy ; sa sortie KEY=VALUE n'est
+  # pas voulue ici (l'appelant capture stdout dans une variable).
+  app_manifest_read "$f" >/dev/null || return 2
+  python3 - "$f" "$e" <<'PY'
+import sys, json, hashlib, yaml
+path, env = sys.argv[1], sys.argv[2]
+doc = yaml.load(open(path, encoding="utf-8"), Loader=yaml.BaseLoader)
+app = doc["apim_ss_app"]
+per_env = app.get("per_env") if isinstance(app.get("per_env"), dict) else {}
+if env not in per_env:
+    sys.stderr.write("REFUS: PALIER_ABSENT : %s : per_env.%s absent (paliers déclarés : %s)\n"
+                     % (path, env, ", ".join(str(k) for k in per_env.keys()) or "aucun"))
+    sys.exit(2)
+def combine(base, over):
+    # Ansible combine(recursive=True) : dict⊕dict récursif ; toute autre valeur REMPLACE.
+    out = dict(base)
+    for k, v in over.items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = combine(out[k], v)
+        else:
+            out[k] = v
+    return out
+root = {k: v for k, v in app.items() if k != "per_env"}
+effective = combine(root, per_env[env])
+canon = json.dumps(effective, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+print("sha256:" + hashlib.sha256(canon).hexdigest())
 PY
 }

@@ -82,6 +82,30 @@ cat > "$XML" <<JOBXML
             <string>homol</string>
           </choices>
         </hudson.model.ChoiceParameterDefinition>
+        <!-- A2 : la RÉFÉRENCE. Déclarée ICI aussi (pas seulement dans le
+             Jenkinsfile) : un paramètre absent de la définition du job est
+             RETIRÉ EN SILENCE d'un `build job:` amont (SECURITY-170) — l'aval
+             appliquerait HEAD et provision-apply rougirait SHA_NON_CONFIRME.
+             La pose du job doit donc le porter dès le premier build. -->
+        <hudson.model.StringParameterDefinition>
+          <name>MERGE_SHA</name>
+          <description>A2 &#8212; SHA de merge &#224; projeter (40 hex, anc&#234;tre de main). Vide = HEAD du checkout SCM. Pos&#233; par provision-apply.</description>
+          <defaultValue></defaultValue>
+          <trim>true</trim>
+        </hudson.model.StringParameterDefinition>
+        <hudson.model.ChoiceParameterDefinition>
+          <name>ADMIN_VIA</name>
+          <description>Acc&#232;s &#224; l'API d'admin : direct (lab, Basic) ou proxy-oauth2 (mod&#232;le client).</description>
+          <choices>
+            <string>direct</string>
+            <string>proxy-oauth2</string>
+          </choices>
+        </hudson.model.ChoiceParameterDefinition>
+        <hudson.model.BooleanParameterDefinition>
+          <name>DEBUG</name>
+          <description>Trace d&#233;taill&#233;e (appels, codes HTTP, erreurs redact&#233;es) &#8212; aucun secret expos&#233;.</description>
+          <defaultValue>false</defaultValue>
+        </hudson.model.BooleanParameterDefinition>
         <hudson.model.StringParameterDefinition>
           <name>VAULT_USER</name>
           <description>VOIE A &#8212; identit&#233; NOMINATIVE : votre login annuaire (sAMAccountName, UPN user@domaine, ou DOMAIN\user). Vide sur le PLAN.</description>

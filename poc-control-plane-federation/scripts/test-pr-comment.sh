@@ -145,14 +145,23 @@ grep -q 'PR_BRANCH="\$BRANCH" PR_NUMBER="\$PR_NUM"' "$REPO/scripts/provision-req
 
 echo
 echo "== 8. CÂBLAGE corollaire 2 : le job rapporte, succès COMME échec =="
+# A2 : le job provision-apply vit dans ci/Jenkinsfile.provision-apply
+# (déclaratif, from SCM) — le XML n'est plus qu'une coquille sans Groovy.
+# L'équivalent déclaratif du `try/finally` : le rapport est appelé dans le
+# step d'apply avec `propagate: false` (l'amont voit l'échec de l'aval SANS
+# lever), puis `error()` réaffirme l'échec ; et un `post { always }` pose le
+# statut build dans TOUS les cas (marqueur distinct).
 JOB="$REPO/ci/jenkins/provision-apply.job.xml"
+JF="$REPO/ci/Jenkinsfile.provision-apply"
 python3 -c "import xml.etree.ElementTree as T; T.parse('$JOB')" 2>/dev/null \
   && ok "XML bien formé" || ko "XML cassé"
-grep -q 'provision-apply-comment.sh' "$JOB" && ok "script appelé" || ko "rapport non câblé"
-grep -q 'finally' "$JOB" && ok "dans un finally (rapporte aussi sur échec)" || ko "pas de finally — un échec ne serait pas rapporté"
-grep -q 'provision-apply-comment.sh || true' "$JOB" \
+grep -q '<script>' "$JOB" && ko "le XML porte du Groovy inline (contrainte du GOAL)" || ok "XML sans Groovy (coquille from SCM)"
+grep -F 'bash scripts/provision-apply-comment.sh' "$JF" | grep -qv '^\s*//' && ok "script appelé (Jenkinsfile)" || ko "rapport non câblé"
+grep -q 'propagate: false' "$JF" && ok "propagate: false (l'échec de l'aval est VU, pas levé — le rapport part aussi sur échec)" || ko "pas de propagate: false — un échec aval sauterait le rapport"
+grep -F 'bash scripts/provision-apply-comment.sh' "$JF" | grep -q '|| true' \
   && ok "|| true : une forge en panne ne rougit pas un apply vert" || ko "le rapport peut faire échouer un apply réussi"
-grep -q "error(" "$JOB" && ok "l'échec réel est réaffirmé hors du finally" || ko "un apply en échec finirait vert"
+grep -q 'error("Apply nominatif en échec' "$JF" && ok "l'échec réel est réaffirmé (error) après le rapport" || ko "un apply en échec finirait vert"
+grep -q 'always {' "$JF" && ok "post { always } : statut build dans tous les cas" || ko "pas de post always"
 
 echo
 echo "== 9. les scripts sont syntaxiquement valides =="
