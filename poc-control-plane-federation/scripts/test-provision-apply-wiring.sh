@@ -44,7 +44,7 @@ TMP="$(mktemp -d /tmp/pa-wiring.XXXXXX)"; trap 'rm -rf "$TMP"' EXIT
 # quel que soit le nombre de contrôles exécutés : une section sautée en silence
 # ferait baisser le total SANS rougir). Toute section ajoutée/retirée DOIT le
 # mettre à jour à la main. Le contrôle final n'est pas compté dedans.
-EXPECTED_CHECKS=137
+EXPECTED_CHECKS=139
 
 [ -f "$JOB" ] || { echo "job introuvable : $JOB"; exit 2; }
 [ -f "$JF" ]  || { echo "Jenkinsfile introuvable : $JF"; exit 2; }
@@ -118,8 +118,9 @@ echo
 echo "== 3. la RÉCONCILIATION : appelée AVANT la pause, agent propre, faits relus, sans interpolation =="
 L_REC=$(code_line "$TMP/jf.code" 'bash scripts/provision-apply-reconcile.sh')
 [ -n "$L_REC" ] && ok "provision-apply-reconcile.sh réellement invoqué (ligne $L_REC, vue code)" || ko "réconciliation non appelée"
-L_INPUT=$(code_line "$TMP/jf.code" 'input {')
-[ -n "$L_INPUT" ] && ok "directive \`input\` de stage présente (ligne $L_INPUT)" || ko "aucune directive input — plus de pause nominative"
+L_INPUT=$(code_line "$TMP/jf.code" 'def creds = input(')
+[ -n "$L_INPUT" ] && ok "pause nominative = \`input()\` SCRIPTÉ (ligne $L_INPUT) : rend le mot de passe en Secret, transmissible au build aval" || ko "aucun input() scripté — plus de pause nominative (ou directive déclarative : String, intransmissible en PasswordParameterValue)"
+grep -qE '^\s*input \{' "$TMP/jf.code" && ko "une directive \`input {\` déclarative subsiste — son V_PASS serait une String d'environnement (ClassCastException au build aval, mesuré #75)" || ok "aucune directive input déclarative (le mot de passe ne devient jamais une variable d'environnement)"
 if [ -n "$L_REC" ] && [ -n "$L_INPUT" ] && [ "$L_REC" -lt "$L_INPUT" ]; then
   ok "réconciliation (ligne $L_REC) AVANT la pause (ligne $L_INPUT) : personne n'est réveillé pour un payload forgé ou périmé"
 else
@@ -143,7 +144,7 @@ grep -q 'env\."\$' "$TMP/jf.code" || grep -q 'env.setProperty' "$TMP/jf.code" \
 jf "withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')])" \
   && ok "token Gitea lu via env.GITEA_CREDENTIALS_ID, exposé en GITEA_TOKEN (jamais en argv)" || ko "withCredentials n'utilise pas env.GITEA_CREDENTIALS_ID"
 jf "beforeAgent true" && ok "\`beforeAgent true\` : une PR hors provision/* n'alloue pas d'agent pour rien" || ko "beforeAgent absent"
-jf "beforeInput true" && ok "\`beforeInput true\` : une PR hors provision/* ne réveille personne" || ko "beforeInput absent — la directive input passe AVANT when par défaut"
+[ "$(grep -c 'beforeAgent true' "$TMP/jf.norm")" -ge 2 ] && ok "\`beforeAgent true\` sur les DEUX stages gardés (pause scriptée sans agent : la condition passe avant toute allocation)" || ko "beforeAgent true absent d'un des deux stages gardés"
 [ "$(grep -cF "expression { (env.PR_BRANCH ?: '').startsWith('provision/') }" "$TMP/jf.norm")" -ge 2 ] \
   && ok "garde de branche provision/* sur les DEUX stages (réconciliation et apply)" || ko "garde de branche provision/* absente d'un stage"
 L_ST_REC=$(code_line "$TMP/jf.code" "stage('Réconciliation")
@@ -187,13 +188,18 @@ fi
 # La garde tourne SOUS un node ouvert entre la pause et elle, et sous withEnv(['V_PASS=']).
 L_NODE1=$(awk "NR>${L_INPUT:-0} && NR<${L_GUARD:-0} && /node\(\"\\\$\{env.POST_AGENT_LABEL/ {n=NR} END {print n}" "$TMP/jf.code")
 [ -n "$L_NODE1" ] && ok "la garde tourne sous un \`node(\` ouvert après la pause (ligne $L_NODE1)" || ko "aucun node( entre la pause et la garde — le sh de la garde n'aurait pas de workspace"
-L_WE1=$(awk "NR>${L_INPUT:-0} && NR<${L_GUARD:-0} && /withEnv\(\['V_PASS='\]\)/ {n=NR} END {print n}" "$TMP/jf.code")
-[ -n "$L_WE1" ] && ok "…et sous withEnv(['V_PASS=']) (ligne $L_WE1) : le mot de passe n'entre pas dans l'environnement du shell" || ko "la garde tourne sans withEnv(['V_PASS=']) — V_PASS lisible dans /proc/PID/environ"
+L_WE1=$(awk "NR>${L_INPUT:-0} && NR<${L_GUARD:-0} && /withEnv\(\[\"V_USER=/ {n=NR} END {print n}" "$TMP/jf.code")
+[ -n "$L_WE1" ] && ok "…et sous withEnv([\"V_USER=…\"]) (ligne $L_WE1) : seul le LOGIN entre dans l'environnement du shell" || ko "la garde ne reçoit pas V_USER par withEnv"
+if grep -E 'withEnv|^\s*sh ' "$TMP/jf.code" | grep -q 'V_PASS'; then
+  ko "V_PASS apparaît dans un withEnv ou un sh — le mot de passe entrerait dans l'environnement d'un process shell"
+else
+  ok "V_PASS n'apparaît dans AUCUN withEnv ni sh : le Secret ne traverse que Groovy, de input() au build aval"
+fi
 grep -q "password(name: 'V_PASS'" "$TMP/jf.code" && ok "le mot de passe de la pause est un paramètre \`password\` nommé V_PASS" || ko "V_PASS non déclaré en \`password\`"
 grep -q "string(name: 'V_USER'" "$TMP/jf.code" && ok "le login de la pause est un paramètre \`string\` nommé V_USER" || ko "V_USER absent"
-grep -A4 'input {' "$TMP/jf.code" | grep -q '\${env\.' \
-  && ko "le message de la pause tente une interpolation \${env.} — il rendrait null" \
-  || ok "le message de la pause n'interpole aucun \${env.} (une directive input n'interpole pas — fait mesuré)"
+grep -q 'Secret.fromString' "$TMP/jf.code" \
+  && ko "Secret.fromString utilisé — NON whitelisté dans le sandbox (mesuré build #78)" \
+  || ok "aucun Secret.fromString (non whitelisté) : le Secret vient de input() lui-même"
 
 echo
 echo "== 5. l'apply : HORS nœud, passe MERGE_SHA, CONFRONTE mode+SHA, rapporte puis rend le verdict =="
@@ -212,9 +218,9 @@ jf "string(name: 'MERGE_SHA', value: env.MERGE_SHA)" \
 jf "string(name: 'MANIFEST', value: env.MANIFEST)" && ok "MANIFEST passé (celui dérivé par la réconciliation)" || ko "MANIFEST non passé"
 jf "string(name: 'ENVIRONMENT', value: env.ENV_NAME)" && ok "ENVIRONMENT passé (ENV_NAME réconcilié)" || ko "ENVIRONMENT non passé"
 jf "string(name: 'ADMIN_VIA', value: env.APPLY_ADMIN_VIA)" && ok "ADMIN_VIA passé depuis APPLY_ADMIN_VIA (point de config, plus une constante)" || ko "ADMIN_VIA non passé depuis APPLY_ADMIN_VIA"
-jf "string(name: 'VAULT_USER', value: env.V_USER)" && ok "VAULT_USER = V_USER de la pause" || ko "VAULT_USER non passé"
-jf "[\$class: 'PasswordParameterValue', name: 'VAULT_USER_PASSWORD', value: hudson.util.Secret.fromString(env.V_PASS ?: '')]" \
-  && ok "mot de passe passé en PasswordParameterValue via hudson.util.Secret.fromString (une String nue lève ClassCastException — mesuré build #75)" || ko "VAULT_USER_PASSWORD non passé en PasswordParameterValue(Secret) — une String nue casse le build après la pause"
+jf "string(name: 'VAULT_USER', value: vUser)" && ok "VAULT_USER = le login saisi à la pause (vUser)" || ko "VAULT_USER non passé"
+jf "[\$class: 'PasswordParameterValue', name: 'VAULT_USER_PASSWORD', value: creds.V_PASS]" \
+  && ok "mot de passe passé en PasswordParameterValue avec le Secret rendu par input() (String nue = ClassCastException #75, Secret.fromString = sandbox #78)" || ko "VAULT_USER_PASSWORD non passé depuis creds.V_PASS (le Secret d'input())"
 jf "propagate: false" && ok "propagate: false — le verdict est rendu par l'amont après confrontation" || ko "propagate absent/true : l'amont ne confronterait rien"
 jf "env.APPLIED_SHA = vars.APPLIED_SHA" && ok "APPLIED_SHA relu dans buildVariables de l'aval" || ko "APPLIED_SHA non relu"
 jf "env.APPLIED_MODE = vars.APPLIED_MODE" && ok "APPLIED_MODE relu dans buildVariables de l'aval" || ko "APPLIED_MODE non relu"
@@ -230,9 +236,9 @@ CMT_LINE=$(sed -n "${L_CMT:-0}p" "$TMP/jf.code")
 printf '%s' "$CMT_LINE" | grep -q '|| true' && ok "|| true : une forge en panne ne rougit pas un apply vert" || ko "le rapport peut faire échouer un apply réussi"
 printf '%s' "$CMT_LINE" | grep -q 'VALIDATOR="${V_USER:-}"' && ok "VALIDATOR lu par le shell depuis V_USER (pas d'interpolation Groovy)" || ko "VALIDATOR non alimenté depuis V_USER par le shell"
 printf '%s' "$CMT_LINE" | grep -q 'EXPECTED_SHA="${MERGE_SHA:-}"' && ok "EXPECTED_SHA = MERGE_SHA transmis au rapport (la référence DEMANDÉE est écrite à côté de celle projetée)" || ko "EXPECTED_SHA non transmis"
-L_WE2=$(awk "NR>${L_BUILD:-0} && NR<${L_CMT:-0} && /withEnv\(\['V_PASS='\]\)/ {n=NR} END {print n}" "$TMP/jf.code")
+L_WE2=$(awk "NR>${L_BUILD:-0} && NR<${L_CMT:-0} && /withEnv\(\[\"V_USER=/ {n=NR} END {print n}" "$TMP/jf.code")
 L_NODE2=$(awk "NR>${L_BUILD:-0} && NR<${L_CMT:-0} && /node\(\"\\\$\{env.POST_AGENT_LABEL/ {n=NR} END {print n}" "$TMP/jf.code")
-[ -n "$L_WE2" ] && [ -n "$L_NODE2" ] && ok "le rapport tourne sous withEnv(['V_PASS=']) (ligne $L_WE2) et un node( (ligne $L_NODE2)" || ko "le rapport ne tourne pas sous withEnv(['V_PASS=']) + node("
+[ -n "$L_WE2" ] && [ -n "$L_NODE2" ] && ok "le rapport tourne sous withEnv([\"V_USER=…\"]) (ligne $L_WE2) et un node( (ligne $L_NODE2)" || ko "le rapport ne tourne pas sous withEnv(V_USER) + node("
 L_ERR=$(code_line "$TMP/jf.code" 'error("Apply nominatif en échec')
 if [ -n "$L_CMT" ] && [ -n "$L_ERR" ] && [ "$L_CMT" -lt "$L_ERR" ]; then
   ok "le rapport (ligne $L_CMT) précède le verdict error() (ligne $L_ERR) : commenté PUIS rouge"

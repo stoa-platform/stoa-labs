@@ -189,45 +189,52 @@ pipeline {
     }
 
     // ── 2. + 3. DEMANDE EN ATTENTE, garde d'identité, apply au SHA mergé ─────
-    // SANS agent (hérite `agent none`) : les paramètres de la directive `input`
-    // sont dans l'environnement du stage même sans agent ; la garde et le
-    // rapport prennent un `node` le temps d'un `sh`, l'appel `build` de l'aval
-    // se fait HORS nœud — la parité exacte du Groovy d'origine (node l.64-75,
-    // build l.84, node l.98-113), et la raison pour laquelle l'apply aval ne
-    // tient jamais l'exécuteur de l'amont.
+    // SANS agent (hérite `agent none`) : la pause est un `input()` SCRIPTÉ dans
+    // un `script{}` — pas la directive déclarative — parce que le mot de passe
+    // doit être TRANSMIS au job aval en paramètre `password`, et que depuis
+    // Jenkins 2.236 PasswordParameterValue exige un hudson.util.Secret :
+    // l'`input()` scripté rend ce Secret tel quel (c'est ce que faisait le
+    // Groovy d'origine, `creds.VAULT_USER_PASSWORD`), là où la directive
+    // n'expose qu'une String d'environnement, et `Secret.fromString` n'est pas
+    // permis dans le sandbox (mesuré : builds #75 et #78). Le Secret ne traverse
+    // AUCUN shell ni AUCUNE variable d'environnement : seul le login V_USER est
+    // posé dans l'environnement des deux `sh`. La garde et le rapport prennent
+    // un `node` le temps d'un `sh`, l'appel `build` de l'aval se fait HORS nœud
+    // — parité exacte du Groovy d'origine (node l.64-75, build l.84, node
+    // l.98-113) : l'apply aval ne tient jamais l'exécuteur de l'amont.
     stage('Appliquer au SHA mergé (identité nominative)') {
-      // `beforeInput true` : une PR hors provision/* ne réveille personne.
+      // `beforeAgent true` sans agent : la condition est évaluée avant tout ;
+      // une PR hors provision/* ne réveille personne.
       when {
-        beforeInput true
+        beforeAgent true
         expression { (env.PR_BRANCH ?: '').startsWith('provision/') }
-      }
-
-      // Nommées V_USER / V_PASS (et non VAULT_USER / VAULT_USER_PASSWORD). Le
-      // mot de passe ne sert qu'au paramètre `password` du build aval (lu en
-      // Groovy) : les DEUX `sh` de ce stage tournent sous `withEnv(['V_PASS='])`
-      // pour qu'il n'entre dans l'environnement d'aucun process shell (ps,
-      // /proc/PID/environ). Le contexte (app/env/PR) est dans le NOM DU BUILD :
-      // une directive `input` n'interpole pas `${env.X}` (fait mesuré 2026-08-06).
-      input {
-        id 'apply'
-        message "Appliquer l'application de la PR fusionnée (voir le nom du build) AU SHA MERGÉ ? Fournissez VOTRE identité d'annuaire (voie A) — elle sera confrontée à l'auteur du merge relu sur la forge."
-        parameters {
-          string(name: 'V_USER', defaultValue: '',
-                 description: "Login annuaire (ex. alice) — DOIT être celui qui a fusionné la PR.")
-          password(name: 'V_PASS', defaultValue: '',
-                   description: "Mot de passe annuaire. ⚠ Ne PAS relancer en boucle après un refus (lockout AD).")
-        }
       }
 
       steps {
         script {
+          // ── LA DEMANDE EN ATTENTE (aucun exécuteur réservé) ──────────────
+          // Nommées V_USER / V_PASS (les noms que le harnais live poste sur
+          // wfapi/inputSubmit). Le contexte est dans le message ET dans le nom
+          // du build.
+          def creds = input(
+            id: 'apply',
+            message: "Appliquer ${env.APP_NAME}/${env.ENV_NAME} (PR #${env.PR_NUMBER}) AU SHA MERGÉ ${env.MERGE_SHA} ? Fournissez VOTRE identité d'annuaire (voie A) — elle sera confrontée à l'auteur du merge relu sur la forge (${env.GITEA_MERGED_BY}).",
+            parameters: [
+              string(name: 'V_USER', defaultValue: '',
+                     description: "Login annuaire (ex. alice) — DOIT être celui qui a fusionné la PR."),
+              password(name: 'V_PASS', defaultValue: '',
+                       description: "Mot de passe annuaire. ⚠ Ne PAS relancer en boucle après un refus (lockout AD).")
+            ])
+          def vUser = (creds.V_USER ?: '').toString()
+
           // ── GARDE D'IDENTITÉ, AVANT tout apply ──────────────────────────
           // Relie l'identité PROUVÉE (le login Vault, fait par l'aval) à l'identité
           // RÉCONCILIÉE (qui a mergé, relu sur la forge — jamais le payload) et
           // refuse si elles divergent ou si le valideur est le demandeur
           // (MERGER_UNKNOWN / MERGER_MISMATCH / FOUR_EYES_VIOLATION). Quotes
-          // SIMPLES : aucune valeur externe ne traverse une interpolation Groovy.
-          withEnv(['V_PASS=']) {
+          // SIMPLES : aucune valeur externe ne traverse une interpolation Groovy
+          // vers le shell — V_USER est posé par withEnv (assignation, pas parsing).
+          withEnv(["V_USER=${vUser}"]) {
             node("${env.POST_AGENT_LABEL ?: ''}") {
               checkout scm
               dir('poc-control-plane-federation') {
@@ -250,13 +257,9 @@ pipeline {
             string(name: 'ENVIRONMENT', value: env.ENV_NAME),
             string(name: 'ADMIN_VIA',   value: env.APPLY_ADMIN_VIA),
             string(name: 'MERGE_SHA',   value: env.MERGE_SHA),
-            string(name: 'VAULT_USER',  value: env.V_USER),
-            // MESURÉ (build #75) : depuis Jenkins 2.236 le constructeur de
-            // PasswordParameterValue prend un hudson.util.Secret ; une String
-            // (ce qu'est env.V_PASS en déclaratif) lève ClassCastException —
-            // le Groovy d'origine passait le Secret rendu par input(). D'où
-            // Secret.fromString (whitelisté), jamais la String nue.
-            [$class: 'PasswordParameterValue', name: 'VAULT_USER_PASSWORD', value: hudson.util.Secret.fromString(env.V_PASS ?: '')]
+            string(name: 'VAULT_USER',  value: vUser),
+            // Le Secret rendu par input(), tel quel — jamais une String.
+            [$class: 'PasswordParameterValue', name: 'VAULT_USER_PASSWORD', value: creds.V_PASS]
           ])
           def vars = b.buildVariables ?: [:]
           env.APPLIED_SHA     = vars.APPLIED_SHA ?: ''
@@ -278,7 +281,7 @@ pipeline {
           // `|| true` : une forge en panne ne transforme pas un apply réussi en
           // build rouge. Le résultat réel est réaffirmé juste après. Toutes les
           // valeurs sont lues par le SHELL depuis l'environnement du build.
-          withEnv(['V_PASS=']) {
+          withEnv(["V_USER=${vUser}"]) {
             node("${env.POST_AGENT_LABEL ?: ''}") {
               checkout scm
               withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')]) {
@@ -291,7 +294,7 @@ pipeline {
           if (env.APPLY_RESULT != 'SUCCESS') {
             error("Apply nominatif en échec pour ${env.APP_NAME}/${env.ENV_NAME} (${env.REFUSAL ?: env.APPLY_RESULT}) — PR #${env.PR_NUMBER} commentée.")
           }
-          echo "Apply nominatif réussi pour ${env.APP_NAME}/${env.ENV_NAME} par ${env.V_USER} — référence ${env.APPLIED_SHA}, digest ${env.APPLIED_DIGEST}"
+          echo "Apply nominatif réussi pour ${env.APP_NAME}/${env.ENV_NAME} par ${vUser} — référence ${env.APPLIED_SHA}, digest ${env.APPLIED_DIGEST}"
         }
       }
     }
