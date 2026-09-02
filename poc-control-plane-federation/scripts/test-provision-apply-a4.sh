@@ -39,7 +39,7 @@ TMP="$(mktemp -d)"; umask 077
 IPID=""
 cleanup(){ [ -n "$IPID" ] && kill "$IPID" 2>/dev/null; rm -rf "$TMP"; }
 trap cleanup EXIT INT TERM
-EXPECTED_CHECKS=83   # sections 0 + A + D (B, C, E s'ajoutent en T2/T3/T4)
+EXPECTED_CHECKS=121  # sections 0 + A + B + D (C, E s ajoutent en T3/T4)
 
 GATE_SRC="scripts/provision-apply-gate.sh"
 CMT_SRC="scripts/provision-apply-comment.sh"
@@ -355,6 +355,115 @@ if mutant 's@^env_chain_validate 2>@true 2>@' val; then
   [ "$(grc)" = 0 ] && [ "$(out_val GATE_FOUR_EYES)" = 0 ] && ok "A.M6 validation retirée ⇒ la clé mal orthographiée passe ET int n'a plus de porte (GATE_FOUR_EYES=0) : le vert vacant que D0 ferme" || bad "A.M6 mutant : rc $(grc) fourEyes=$(out_val GATE_FOUR_EYES) : $(gout | tail -1)"
   run_gate int alice alice "STOA_ENV_CHAIN_FILE=$CH_KEY"; refus CHAINE_INVALIDE && ok "A.M6' l'original refuse toujours" || bad "A.M6' l'original a dérivé"
 fi
+
+echo
+echo "═══ B. le câblage de ci/Jenkinsfile.provision-apply (vue code, ordre par lignes, fragment EXÉCUTÉ) ═══"
+JF="ci/Jenkinsfile.provision-apply"
+code_view(){ awk '{ if ($0 ~ /^[[:space:]]*(\/\/|#)/) print ""; else print }' "$1"; }
+code_view "$JF" > "$TMP/jf.code"; tr -s ' ' < "$TMP/jf.code" > "$TMP/jf.norm"
+jf(){ grep -qF -- "$1" "$TMP/jf.norm"; }
+code_line(){ grep -n -F -- "$2" "$1" | head -1 | cut -d: -f1; }
+line_after(){ awk -v s="$1" -v pat="$2" 'NR>s && index($0, pat) { print NR; exit }' "$3"; }
+GATE_CALL='bash scripts/provision-apply-gate.sh'
+L_REC=$(code_line "$TMP/jf.code" 'bash scripts/provision-apply-reconcile.sh')
+L_DIG=$(code_line "$TMP/jf.norm" 'env.MERGED_DIGEST = kv.MERGED_DIGEST')
+L_INPUT=$(code_line "$TMP/jf.code" 'def creds = input(')
+L_GUARD=$(code_line "$TMP/jf.code" 'sh scripts/lib/assert-merge-identity.sh')
+L_BUILD=$(code_line "$TMP/jf.code" 'def b = build(job: env.APPLY_JOB')
+L_PRE=$(code_line "$TMP/jf.code" "GATE_STAGE=pre GATE_OUT=")
+L_DISP=$(code_line "$TMP/jf.code" "GATE_STAGE=dispatch GATE_OUT=")
+[ "$(grep -c -F -- "$GATE_CALL" "$TMP/jf.code")" = 2 ] && ok "B.1 la porte est invoquée DEUX fois (pré-pause, dispatch)" || bad "B.1 invocations : $(grep -c -F -- "$GATE_CALL" "$TMP/jf.code")"
+[ -n "$L_PRE" ] && [ -n "$L_REC" ] && [ -n "$L_DIG" ] && [ -n "$L_INPUT" ] && [ "$L_REC" -lt "$L_PRE" ] && [ "$L_DIG" -lt "$L_PRE" ] && [ "$L_PRE" -lt "$L_INPUT" ] \
+  && ok "B.2 pré-pause (ligne $L_PRE) : après la réconciliation ($L_REC) et le chargement des six clés ($L_DIG), AVANT la pause ($L_INPUT)" || bad "B.2 ordre pré-pause : rec=$L_REC dig=$L_DIG pre=$L_PRE input=$L_INPUT"
+[ -n "$L_DISP" ] && [ -n "$L_GUARD" ] && [ "$L_INPUT" -lt "$L_DISP" ] && [ "$L_DISP" -lt "$L_GUARD" ] && [ "$L_GUARD" -lt "$L_BUILD" ] \
+  && ok "B.3 dispatch (ligne $L_DISP) : après la pause ($L_INPUT), AVANT la garde d'identité ($L_GUARD) et le build ($L_BUILD)" || bad "B.3 ordre dispatch : input=$L_INPUT disp=$L_DISP guard=$L_GUARD build=$L_BUILD"
+L_NODE=$(awk "NR>${L_INPUT:-0} && NR<${L_DISP:-0} && /node\(\"\\\$\{env.POST_AGENT_LABEL/ {n=NR} END {print n}" "$TMP/jf.code")
+[ -n "$L_NODE" ] && ok "B.3b le passage au dispatch tourne sous le node( post-pause (ligne $L_NODE)" || bad "B.3b aucun node( entre la pause et le dispatch"
+for L in "$L_PRE" "$L_DISP"; do
+  LINE=$(sed -n "${L:-0}p" "$TMP/jf.code")
+  printf '%s' "$LINE" | grep -qF 'STOA_ENV_CHAIN_FILE="$PWD/clients/_example/environments.yaml"' \
+    && ok "B.4 ligne $L : STOA_ENV_CHAIN_FILE épinglé sur le clone (une globale Jenkins ne gagne pas)" || bad "B.4 ligne $L sans STOA_ENV_CHAIN_FILE épinglé : $LINE"
+  printf '%s' "$LINE" | grep -q "^ *sh '" && ok "B.4b ligne $L en quotes SIMPLES" || bad "B.4b ligne $L en quotes doubles"
+  printf '%s' "$LINE" | grep -qF 'GATE_OUT="$WORKSPACE/.a4-gate.env"' && ok "B.4c ligne $L : GATE_OUT=\$WORKSPACE/.a4-gate.env" || bad "B.4c ligne $L : GATE_OUT absent"
+done
+L_WC2=$(awk "NR>${L_INPUT:-0} && NR<${L_DISP:-0} && /withCredentials\(\[string\(credentialsId: env.GITEA_CREDENTIALS_ID/ {n=NR} END {print n}" "$TMP/jf.code")
+[ -n "$L_WC2" ] && ok "B.4d le passage au dispatch tient GITEA_TOKEN (withCredentials, ligne $L_WC2) : un refus au dispatch est commenté" || bad "B.4d pas de withCredentials avant le dispatch"
+L_RD=$(line_after "${L_DISP:-0}" 'readFile("${env.WORKSPACE}/.a4-gate.env")' "$TMP/jf.code")
+[ -n "$L_RD" ] && [ "$L_RD" -lt "$L_GUARD" ] && ok "B.5 GATE_OUT relu par readFile (ligne $L_RD) avant la garde" || bad "B.5 GATE_OUT non relu avant la garde (rd=$L_RD)"
+MISS=""; for K in GATE_ENV GATE_STAGE GATE_ALLOW_SELF GATE_FOUR_EYES GATE_APPROVER_GROUP GATE_DEPLOYER_GROUP GATE_DEPLOYER_POLICY GATE_CHANGE_REF GATE_PV_REF GATE_ITSM; do jf "env.$K = gk.$K" || MISS="$MISS $K"; done
+[ -z "$MISS" ] && ok "B.5b dix assignations explicites env.GATE_* = gk.GATE_*" || bad "B.5b assignations absentes :$MISS"
+jf 'PORTE_ILLISIBLE' && jf '==~ /[A-Za-z0-9_.@:+-]*/' && ok "B.5c classe re-vérifiée à la lecture (==~), sinon PORTE_ILLISIBLE" || bad "B.5c pas de contrôle de classe à la lecture"
+grep -q 'env\."\$' "$TMP/jf.code" && bad "B.5d assignation dynamique env.\"\$k\" présente" || ok "B.5d aucune assignation dynamique d'env"
+GUARD_LINE=$(sed -n "${L_GUARD:-0}p" "$TMP/jf.code")
+printf '%s' "$GUARD_LINE" | grep -qF -- '$AMI' && printf '%s' "$GUARD_LINE" | grep -qF -- '${GATE_ALLOW_SELF:-0}' \
+  && ok "B.6 la ligne de garde porte \$AMI dérivé de GATE_ALLOW_SELF (défaut 0 = quatre yeux exigés)" || bad "B.6 ligne de garde sans \$AMI/GATE_ALLOW_SELF"
+printf '%s' "$GUARD_LINE" | grep -qF 'PORTE_INCOHERENTE' && printf '%s' "$GUARD_LINE" | grep -qF -- '${GATE_ENV:-}' \
+  && ok "B.6b la ligne de garde exige GATE_ENV == ENV_NAME (PORTE_INCOHERENTE sinon)" || bad "B.6b PORTE_INCOHERENTE absent de la ligne de garde"
+printf '%s' "$GUARD_LINE" | grep -qF -- '--merged-by "${GITEA_MERGED_BY:-}" --requester "${GITEA_REQUESTER:-}" --vault-user "${V_USER:-}"' \
+  && ok "B.6c les trois arguments de la garde sont intacts (ancres de test-provision-apply-wiring §4)" || bad "B.6c arguments de la garde altérés"
+# LE FRAGMENT EST EXÉCUTÉ : la chaîne sh '…' de la ligne de garde, jouée sous sh
+# contre un stub de la garde qui journalise argv (critique preuve n°5).
+FRAG=$(printf '%s' "$GUARD_LINE" | sed -E "s/^ *sh '(.*)'\$/\1/")
+mkdir -p "$TMP/frag/scripts/lib"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "${FRAG_LOG:?}"\n' > "$TMP/frag/scripts/lib/assert-merge-identity.sh"
+run_frag(){ # <GATE_ENV> <ENV_NAME> <GATE_ALLOW_SELF> → rc ; journal dans $TMP/frag.log
+  : > "$TMP/frag.log"
+  ( cd "$TMP/frag" && FRAG_LOG="$TMP/frag.log" GATE_ENV="$1" ENV_NAME="$2" GATE_ALLOW_SELF="$3" GITEA_MERGED_BY=alice GITEA_REQUESTER=carol V_USER=alice sh -c "$FRAG" ) >"$TMP/frag.out" 2>&1; echo $?
+}
+[ -n "$FRAG" ] && [ "$FRAG" != "$GUARD_LINE" ] && ok "B.7 fragment sh de la garde extrait de la vue code" || bad "B.7 fragment non extrait"
+RC=$(run_frag int int 1); [ "$RC" = 0 ] && grep -q -- '--allow-self-approval' "$TMP/frag.log" && ok "B.7a EXÉCUTÉ : GATE_ALLOW_SELF=1 ⇒ la garde reçoit --allow-self-approval" || bad "B.7a rc=$RC journal : $(cat "$TMP/frag.log")"
+RC=$(run_frag int int 0); [ "$RC" = 0 ] && grep -q -- '--merged-by alice' "$TMP/frag.log" && ! grep -q -- '--allow-self-approval' "$TMP/frag.log" && ok "B.7b EXÉCUTÉ : GATE_ALLOW_SELF=0 ⇒ garde appelée SANS le drapeau" || bad "B.7b rc=$RC journal : $(cat "$TMP/frag.log")"
+RC=$(run_frag rec int 1); [ "$RC" = 1 ] && grep -q 'PORTE_INCOHERENTE' "$TMP/frag.out" && [ ! -s "$TMP/frag.log" ] && ok "B.7c EXÉCUTÉ : GATE_ENV≠ENV_NAME ⇒ PORTE_INCOHERENTE, garde jamais appelée" || bad "B.7c rc=$RC out=$(cat "$TMP/frag.out") journal=$(cat "$TMP/frag.log")"
+( cd "$TMP/frag" && FRAG_LOG="$TMP/frag.log" ENV_NAME=int GITEA_MERGED_BY=alice GITEA_REQUESTER=carol V_USER=alice sh -c "$FRAG" ) >"$TMP/frag.out" 2>&1; RC=$?
+[ "$RC" = 1 ] && grep -q 'PORTE_INCOHERENTE' "$TMP/frag.out" && ok "B.7d EXÉCUTÉ : GATE_ENV ABSENT (porte jamais relue) ⇒ PORTE_INCOHERENTE, fail-closed" || bad "B.7d rc=$RC out=$(cat "$TMP/frag.out")"
+for K in "ITSM_URL = \"\${env.ITSM_URL ?: 'http://itsm-mock:8788'}\"" "ITSM_CACERT = \"\${env.ITSM_CACERT ?: ''}\"" "APIM_TERMINUS_BASE = \"\${env.APIM_TERMINUS_BASE ?: ''}\"" "GITEA_SERVICE_LOGINS = \"\${env.GITEA_SERVICE_LOGINS ?: 'ci'}\""; do
+  jf "$K" && ok "B.8 knob : ${K%% =*}" || bad "B.8 knob absent/divergent : $K"
+done
+jf "env.APPLIED_REFUSAL = " && jf '==~ /[A-Z][A-Z0-9_]{2,40}/' && ok "B.9 APPLIED_REFUSAL relu depuis buildVariables sous contrôle de classe" || bad "B.9 APPLIED_REFUSAL non relu / sans classe"
+jf "env.REFUSAL = env.APPLIED_REFUSAL" && ok "B.9b le refus de l'aval devient le REFUSAL du rapport" || bad "B.9b REFUSAL non alimenté par APPLIED_REFUSAL"
+L_ARF=$(code_line "$TMP/jf.norm" 'env.REFUSAL = env.APPLIED_REFUSAL'); L_SNC=$(code_line "$TMP/jf.norm" "env.REFUSAL = 'SHA_NON_CONFIRME'")
+[ -n "$L_ARF" ] && [ -n "$L_SNC" ] && [ "$L_SNC" -lt "$L_ARF" ] && ok "B.9c SHA_NON_CONFIRME (ligne $L_SNC) prime sur le refus relayé (ligne $L_ARF)" || bad "B.9c ordre des verdicts : snc=$L_SNC arf=$L_ARF"
+grep -q 'porte du palier' "$JF" && ok "B.10 le message FAILURE du post nomme la porte du palier" || bad "B.10 post{always} muet sur la porte"
+grep -E "^\s*sh " "$TMP/jf.code" | grep -q '\${env\.' && bad "B.11 une commande sh interpole \${env.…}" || ok "B.11 aucune commande sh n'interpole \${env.…} (les deux nouveaux sh lisent l'environnement)"
+grep -q 'sh """' "$TMP/jf.code" && bad "B.11b un bloc sh \"\"\" existe" || ok "B.11b aucun bloc sh \"\"\""
+# mutations d'ordre / de contenu
+mut_jf(){ # <nom> <awk-or-sed program via python> — produit $TMP/jf-<nom> ; rc 1 si no-op
+  cmp -s "$JF" "$TMP/jf-$1" && { bad "B.M mutation $1 NO-OP"; return 1; }; return 0
+}
+python3 - "$JF" "$TMP/jf-mv" "$L_PRE" "$L_INPUT" <<'PY2'
+import sys
+src, dst, lpre, linput = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
+lines = open(src, encoding="utf-8").read().splitlines(True)
+moved = lines[lpre-1]; del lines[lpre-1]
+# après la ligne input( (indices décalés d'un)
+lines.insert(linput-1, moved)
+open(dst, "w", encoding="utf-8").write("".join(lines))
+PY2
+if mut_jf mv; then
+  code_view "$TMP/jf-mv" > "$TMP/jfm.code"
+  M_PRE=$(code_line "$TMP/jfm.code" "GATE_STAGE=pre GATE_OUT="); M_IN=$(code_line "$TMP/jfm.code" 'def creds = input(')
+  [ -n "$M_PRE" ] && [ -n "$M_IN" ] && [ "$M_IN" -lt "$M_PRE" ] && ok "B.M1 porte pré-pause déplacée APRÈS la pause ⇒ le détecteur B.2 verrait rouge (pre=$M_PRE input=$M_IN)" || bad "B.M1 mutation d'ordre inopérante (pre=$M_PRE input=$M_IN)"
+fi
+grep -v 'GATE_STAGE=dispatch GATE_OUT=' "$JF" > "$TMP/jf-nodisp"
+if mut_jf nodisp; then
+  code_view "$TMP/jf-nodisp" > "$TMP/jfm.code"
+  [ -z "$(code_line "$TMP/jfm.code" "GATE_STAGE=dispatch GATE_OUT=")" ] && ok "B.M2 passage au dispatch retiré ⇒ B.3 verrait rouge (aucune porte au geste)" || bad "B.M2 mutation inopérante"
+fi
+sed 's#STOA_ENV_CHAIN_FILE="$PWD/clients/_example/environments.yaml" GATE_STAGE=dispatch#GATE_STAGE=dispatch#' "$JF" > "$TMP/jf-nopin"
+if mut_jf nopin; then
+  code_view "$TMP/jf-nopin" > "$TMP/jfm.code"; M_D=$(code_line "$TMP/jfm.code" "GATE_STAGE=dispatch GATE_OUT=")
+  sed -n "${M_D:-0}p" "$TMP/jfm.code" | grep -qF 'STOA_ENV_CHAIN_FILE=' && bad "B.M3 mutation inopérante" || ok "B.M3 STOA_ENV_CHAIN_FILE retiré de la ligne dispatch ⇒ B.4 verrait rouge (une globale rédirigerait la porte)"
+fi
+sed 's/ \$AMI'"'"'$/'"'"'/' "$JF" > "$TMP/jf-noami"
+if mut_jf noami; then
+  code_view "$TMP/jf-noami" > "$TMP/jfm.code"; M_G=$(code_line "$TMP/jfm.code" 'sh scripts/lib/assert-merge-identity.sh')
+  MFRAG=$(sed -n "${M_G:-0}p" "$TMP/jfm.code" | sed -E "s/^ *sh '(.*)'\$/\1/")
+  : > "$TMP/frag.log"; ( cd "$TMP/frag" && FRAG_LOG="$TMP/frag.log" GATE_ENV=int ENV_NAME=int GATE_ALLOW_SELF=1 GITEA_MERGED_BY=alice GITEA_REQUESTER=carol V_USER=alice sh -c "$MFRAG" ) >/dev/null 2>&1
+  grep -q -- '--allow-self-approval' "$TMP/frag.log" && bad "B.M4 mutation inopérante (le drapeau passe encore)" || ok "B.M4 \$AMI retiré de la garde ⇒ le fragment EXÉCUTÉ ne porte plus le drapeau (B.7a verrait rouge)"
+fi
+echo "── B.12 la suite de câblage A2 rejouée sans modifier ses assertions ──"
+bash scripts/test-provision-apply-wiring.sh > "$TMP/wiring.log" 2>&1 && grep -q 'RÉSULTAT : 142/142' "$TMP/wiring.log" \
+  && ok "B.12 test-provision-apply-wiring.sh 142/142" || bad "B.12 test-provision-apply-wiring.sh : $(tail -1 "$TMP/wiring.log")"
 
 echo
 echo "═══ D. le rapport de PR (provision-apply-comment.sh) : REFUSAL_KIND=porte, la ligne « porte du palier » ═══"
