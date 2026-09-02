@@ -20,7 +20,10 @@
 # properties() en AJOUTE une seconde et le job CASSE (buildWithParameters ⇒ 500).
 # D'où le knob XML_PARAMS :
 #   auto (défaut) : `no` quand SCRIPT_PATH est Jenkinsfile.selfservice, `yes` sinon
-#   no            : aucun paramètre dans le XML ; amorçage par POST /build (201)
+#   no            : AUCUNE propriété dans le XML (ni paramètre, ni trigger, ni
+#                   option — fait 10 : un XML avec trigger + properties() scripté
+#                   = doublon sur un job neuf, PERTE au premier build d'un job
+#                   re-posé) ; le Jenkinsfile pose tout ; amorçage par POST /build (201)
 #   yes           : les huit <parameterDefinitions> restent (publish-api-deploy garde
 #                   son bloc parameters{} déclaratif — ceinture SECURITY-170 entre
 #                   la pose et l'amorçage), la liste ENVIRONMENT étant DÉRIVÉE À LA
@@ -144,17 +147,18 @@ ${ENV_CHOICES_XML}          </choices>
 PARAMS
   PARAMS_XML="$(cat "$PARAMS_TMP")"; rm -f "$PARAMS_TMP"
 else
-  PARAMS_XML="    <!-- XML_PARAMS=no (A0 dettes, fait 6) : AUCUN parametre ici. Le formulaire
-         est pose par le Jenkinsfile a chaque build (properties([parameters]),
-         paliers derives de la chaine) ; un parametre XML en doublerait la
-         propriete et casserait le job. Amorcage : POST /build. -->"
+  PARAMS_XML=""
 fi
 
-cat > "$XML" <<JOBXML
-<?xml version='1.1' encoding='UTF-8'?>
-<flow-definition plugin="workflow-job">
-  <description>ADR-078 — ${JOB_DESC} via son r&#244;le Ansible. PLAN (webhook stoa-selfservice-plan, lecture seule, identit&#233; de job) / APPLY (build param&#233;tr&#233;, identit&#233; nominative USER_VAULT_JWT &#8594; Vault &#8594; convergence + verify fail-closed).</description>
-  <keepDependencies>false</keepDependencies>
+# ── <properties> : TOUT ou RIEN (fait 10, mesuré 2026-09-02) ────────────────
+# Mode yes (publish-api-deploy) : trigger + disableConcurrentBuilds + les huit
+# parametres — le job garde son bloc declaratif. Mode no (selfservice-app-deploy) :
+# AUCUNE propriete dans le XML : le Jenkinsfile les pose TOUTES par properties()
+# au premier stage (trigger compris). Un XML qui en porterait une seule ferait
+# soit un DOUBLON (job neuf), soit une PERTE au premier build (job re-pose).
+if [ "$XML_PARAMS" = yes ]; then
+  PROPS_TMP="$(mktemp)"
+  cat > "$PROPS_TMP" <<PROPS
   <properties>
     <org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty>
       <triggers>
@@ -181,6 +185,21 @@ cat > "$XML" <<JOBXML
     </org.jenkinsci.plugins.workflow.job.properties.DisableConcurrentBuildsJobProperty>
 ${PARAMS_XML}
   </properties>
+PROPS
+  PROPS_XML="$(cat "$PROPS_TMP")"; rm -f "$PROPS_TMP"
+else
+  PROPS_XML="  <!-- XML_PARAMS=no (A0 dettes, faits 6 et 10) : AUCUNE propriete ici — ni
+       parametre, ni trigger, ni option. Le Jenkinsfile les pose TOUTES par
+       properties() au premier stage ; le webhook PLAN n'existe qu'apres
+       l'amorcage (enchaine par le poseur). -->
+  <properties/>"
+fi
+cat > "$XML" <<JOBXML
+<?xml version='1.1' encoding='UTF-8'?>
+<flow-definition plugin="workflow-job">
+  <description>ADR-078 — ${JOB_DESC} via son r&#244;le Ansible. PLAN (webhook stoa-selfservice-plan, lecture seule, identit&#233; de job) / APPLY (build param&#233;tr&#233;, identit&#233; nominative USER_VAULT_JWT &#8594; Vault &#8594; convergence + verify fail-closed).</description>
+  <keepDependencies>false</keepDependencies>
+${PROPS_XML}
   <definition class="org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition" plugin="workflow-cps">
     <scm class="hudson.plugins.git.GitSCM" plugin="git">
       <configVersion>2</configVersion>
@@ -272,7 +291,10 @@ for p in r.iter():
     if p.tag.endswith('ChoiceParameterDefinition') and p.findtext('name') == 'ENVIRONMENT':
         print(' '.join(s.text or '' for s in p.iter('string')))" "$XML.relu")
   [ "$GOT" = "$WANT" ] || fail "ENVIRONMENT pose par le build = [$GOT], chaine locale = [$WANT] — le build derive la liste de gitea main : pousser le depot, ou relire apres le prochain build"
-  say "relecture : 1 propriete de parametres, ENVIRONMENT == env_chain_nonprod [$GOT]"
+  TRIG=$(python3 -c "import sys,xml.etree.ElementTree as T; r=T.parse(sys.argv[1]).getroot(); print(','.join(t.findtext('token') or '' for t in r.iter() if t.tag.endswith('GenericTrigger')))" "$XML.relu")
+  NDIS=$(python3 -c "import sys,xml.etree.ElementTree as T; r=T.parse(sys.argv[1]).getroot(); print(sum(1 for e in r.iter() if e.tag.endswith('DisableConcurrentBuildsJobProperty')))" "$XML.relu")
+  [ "$TRIG" = "$TRIGGER_TOKEN" ] && [ "$NDIS" = 1 ] || fail "apres l'amorcage : trigger=[$TRIG] disableConcurrentBuilds=$NDIS — attendu UN trigger $TRIGGER_TOKEN et UNE option, poses par properties() (fait 10)"
+  say "relecture : 1 propriete de parametres, trigger $TRIGGER_TOKEN + disableConcurrentBuilds poses par le Jenkinsfile, ENVIRONMENT == env_chain_nonprod [$GOT]"
 else
   say "relecture : 1 propriete de parametres (XML_PARAMS=yes)"
 fi

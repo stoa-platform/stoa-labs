@@ -43,6 +43,9 @@
 //      essai). Les trois stages lisent les valeurs BRUTES par
 //      `withEnv([params…])` — SAUF le mot de passe (fait 9) : il reste sur le
 //      canal natif et son altération est détectée, fermée (MOT_DE_PASSE_ALTERE).
+//  10. Un job RE-POSÉ perd ses `options{}`/`triggers{}` déclaratifs au premier
+//      build quand un properties() scripté s'y ajoute (trackers) ; tout dans
+//      properties() + XML sans propriété est stable dans les deux chemins.
 //   9. Un secret interpolé dans un argument de step (withEnv) est PERSISTÉ EN
 //      CLAIR dans flowNodeStore.xml quand il diffère de la valeur résolue
 //      (masquage par égalité) — mesuré ; `params.X` d'un password est un
@@ -50,12 +53,10 @@
 // Limite : la liste montrée est celle du build PRÉCÉDENT (amorçage à la pose).
 pipeline {
   agent any
-  options { disableConcurrentBuilds() }   // un apply à la fois = régime bancaire
+  // PAS d'`options{}` ni de `triggers{}` déclaratifs ici (fait 10) : ils sont
+  // posés par le stage Formulaire, avec les paramètres, dans le MÊME
+  // properties([…]) — la seule combinaison stable sur un job RE-POSÉ.
 
-
-  triggers { GenericTrigger(token: 'stoa-selfservice-plan',
-             genericVariables: [[key: 'MANIFEST', value: '$.manifest']],
-             printContributedVariables: false, printPostContent: false) }
 
   environment {
     VAULT_ADDR        = "${env.VAULT_ADDR ?: 'http://vault:8200'}"
@@ -119,12 +120,21 @@ pipeline {
 
   stages {
 
-    // ── FORMULAIRE — les paliers dérivés de la chaîne, le reste verbatim ────
+    // ── FORMULAIRE — TOUTE la configuration du job, posée par ce fichier ────
     // Toujours en premier : même un build de PLAN par webhook ou un apply
     // rafraîchit la liste pour le suivant. Fail-closed : liste vide ou palier
     // hors ^[a-z0-9]+$ ⇒ FORMULAIRE_INVALIDE, rien n'est posé, les définitions
-    // précédentes restent en place. SEULS les paramètres sont listés ici :
-    // options{} et triggers{} restent déclaratifs (fait 6).
+    // précédentes restent en place.
+    // FAIT 10 (mesuré, 2026-09-02) : `options{}`/`triggers{}` DÉCLARATIFS +
+    // properties([parameters]) scripté survivent sur un job NEUF (fait 6) mais
+    // un job RE-POSÉ (POST config.xml, déjà amorcé une fois) PERD trigger et
+    // option au premier build — webhook mort jusqu'au build suivant (mesuré
+    // sur selfservice-app-deploy #34 et #36). Tout dans properties() avec un
+    // XML qui porte déjà trigger+option ⇒ DOUBLON sur un job neuf. La seule
+    // combinaison stable dans les deux chemins : les TROIS propriétés posées
+    // ici, et un XML SANS AUCUNE propriété (setup-selfservice-job.sh, mode
+    // XML_PARAMS=no). Le webhook n'existe donc qu'après l'amorçage — que le
+    // poseur enchaîne et attend.
     stage('Formulaire — paliers dérivés de la chaîne') {
       steps {
         dir('poc-control-plane-federation') {
@@ -135,7 +145,14 @@ pipeline {
           if (envs.isEmpty() || !envs.every { it ==~ /[a-z0-9]+/ }) {
             error("FORMULAIRE_INVALIDE : paliers dérivés = ${envs} — rien n'est posé, le formulaire précédent reste en place.")
           }
-          properties([parameters([
+          properties([
+            disableConcurrentBuilds(),   // un apply à la fois = régime bancaire
+            // PLAN par webhook : le GWT contribue MANIFEST (même token que la
+            // coquille d'avant A0 ; le XML n'en porte plus — fait 10).
+            pipelineTriggers([GenericTrigger(token: 'stoa-selfservice-plan',
+              genericVariables: [[key: 'MANIFEST', value: '$.manifest']],
+              printContributedVariables: false, printPostContent: false)]),
+            parameters([
             string(name: 'MANIFEST', defaultValue: 'clients/_example/applications/demo-consumer.ansible.yml',
                    description: "Manifeste de demande (vars du rôle : apim_ss_app)."),
             // A2 (GOAL cd-applications) — LA RÉFÉRENCE. Fourni par provision-apply :

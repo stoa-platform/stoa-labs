@@ -59,7 +59,7 @@ cfg > "$TMP/after1"
 grep -qx 'NPROP=1' "$TMP/after1" && ok "config relue : UNE propriété de paramètres (fait 6 sur le job réel)" || ko "config : $(grep NPROP "$TMP/after1")"
 grep -qx 'PARAMS=MANIFEST MERGE_SHA ENVIRONMENT ADMIN_VIA DEBUG VAULT_USER VAULT_USER_PASSWORD USER_VAULT_JWT' "$TMP/after1" && ok "les 8 paramètres, dans l'ordre du Jenkinsfile" || ko "paramètres : $(grep PARAMS "$TMP/after1")"
 grep -qx "ENV=$CHAIN_MAIN" "$TMP/after1" && ok "ENVIRONMENT == env_chain_nonprod de gitea main [$CHAIN_MAIN] — plus aucune liste en dur" || ko "ENVIRONMENT : $(grep ENV= "$TMP/after1") ≠ [$CHAIN_MAIN]"
-grep -qx 'TOKEN=stoa-selfservice-plan' "$TMP/after1" && grep -qx 'DISABLE=1' "$TMP/after1" && ok "trigger stoa-selfservice-plan et disableConcurrentBuilds PRÉSERVÉS (déclaratifs + properties() scripté)" || ko "trigger/option : $(grep -E 'TOKEN|DISABLE' "$TMP/after1" | tr '\n' ' ')"
+grep -qx 'TOKEN=stoa-selfservice-plan' "$TMP/after1" && grep -qx 'DISABLE=1' "$TMP/after1" && ok "trigger stoa-selfservice-plan et disableConcurrentBuilds POSÉS par properties() (fait 10 : le XML n en porte aucun)" || ko "trigger/option : $(grep -E 'TOKEN|DISABLE' "$TMP/after1" | tr '\n' ' ')"
 rm -f /tmp/wm-keepalive.pause; PAUSED=0
 
 echo

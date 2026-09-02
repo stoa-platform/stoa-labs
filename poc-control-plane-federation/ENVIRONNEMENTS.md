@@ -672,9 +672,14 @@ sinon refus nommé **`FORGE_NON_CONFIRMEE`**, rc 1, aucun commentaire, aucun
 clone ; le clone checkoute le **SHA de tête relu** (une branche
 `provision/<app>-<env>` réutilisée après merge ne fait jamais commenter la PR
 mergée) ; un clone ou un checkout raté est un refus (`CLONE_ECHEC`,
-`BRANCHE_INTROUVABLE` — avant, vert par « IGNORE »). Le script écrit ses
-**faits** (`PLAN_FACTS` : tête relue, `PLAN_VERDICT=ok|fail|ignore|refus`,
-raison) ; le `post{always}` de stage les charge dans l'environnement, et le
+`BRANCHE_INTROUVABLE` — avant, vert par « IGNORE ») ; une PR depuis un fork ou
+un `head.sha` non hexadécimal sont refusés par la lib. Le bloc de plan est un
+**sous-shell** (une PR qui supprime un manifeste rend un ❌ commenté, plus un
+rc 1 muet), le verdict cite la tête relue et lie `src/commit/<sha>`. Le script
+écrit ses **faits** (`PLAN_FACTS` : numéro de PR, tête relue,
+`PLAN_VERDICT=ok|fail|ignore|refus`, raison — initialisés à `SCRIPT_INTERROMPU`
+dès le prologue, purgés par le Jenkinsfile avant l'appel : jamais les faits du
+build précédent) ; le `post{always}` de stage les charge dans l'environnement, et le
 `post{always}` de pipeline pose le **statut de build** sous le marqueur
 distinct `<!-- provision-plan-build -->` (`scripts/provision-plan-status.sh`) :
 `ABORTED` ⇒ « abandonné, aucun verdict » ; `FAILURE` ⇒ « verdict négatif » /
@@ -701,20 +706,38 @@ rollout :
 
 - **Fait 6** — si le XML du job porte déjà une `ParametersDefinitionProperty`,
   `properties()` en **ajoute une seconde** et le job casse
-  (`buildWithParameters` ⇒ 500). Avec un XML **sans** paramètre, une seule
-  propriété ; `options{}` / `triggers{}` déclaratifs sont préservés. D'où
+  (`buildWithParameters` ⇒ 500). **La conversion passe par une re-pose, jamais
+  par un simple push** : un push seul sur un XML paramétré produit le doublon.
+- **Fait 10** — sur un job **re-posé** (déjà amorcé une fois), le premier build
+  **perd** les `options{}`/`triggers{}` déclaratifs dès qu'un `properties()`
+  scripté s'y ajoute (webhook 404 jusqu'au build suivant — mesuré sur
+  `selfservice-app-deploy` #34 et #36) ; sur un job neuf ils survivent. Tout
+  dans `properties()` avec un XML qui porte déjà le trigger ⇒ doublon sur un
+  job neuf. D'où le design : **le Jenkinsfile pose les trois propriétés**
+  (`disableConcurrentBuilds()`, `pipelineTriggers([GenericTrigger…])`,
+  `parameters([…])`) et **le XML posé n'en porte aucune**. Le webhook PLAN
+  n'existe qu'après l'amorçage, que le poseur enchaîne et attend.
   `setup-selfservice-job.sh` : `XML_PARAMS=auto` (`no` pour
-  `Jenkinsfile.selfservice`, `yes` pour `publish-api-deploy` qui garde son bloc
-  déclaratif — liste alors dérivée à la pose), amorçage `POST /build`,
-  `BOOTSTRAP_WAIT` (360 s : le préflight gateway peut durer 300 s), relecture
-  « une propriété + `ENVIRONMENT == env_chain_nonprod` ». **La conversion
-  passe par une re-pose, jamais par un simple push** : un push seul sur un XML
-  paramétré produit le doublon.
+  `Jenkinsfile.selfservice` ⇒ `<properties/>` ; `yes` pour `publish-api-deploy`
+  qui garde son bloc déclaratif — trigger, option et paramètres dans le XML,
+  liste dérivée à la pose), amorçage `POST /build`, `BOOTSTRAP_WAIT` (360 s :
+  le préflight gateway peut durer 300 s), relecture « une propriété, un
+  trigger, une option, `ENVIRONMENT == env_chain_nonprod` ».
 - **Fait 7** — `EnvVars.resolve()` frappe aussi un paramètre `password` : un
   mot de passe annuaire portant `$$` ou `${` arrivait **altéré** à Vault
-  (lockout au second essai). `withEnv(["VAULT_USER_PASSWORD=${params.…}"])`
-  dans l'Apply le livre intact ; une valeur vide retire la variable (PLAN-only
-  inchangé).
+  (lockout au second essai). Les sept paramètres non secrets passent par
+  `withEnv([params…])` ; une valeur vide retire la variable (PLAN-only inchangé).
+- **Fait 9** (revue adverse du commit livré) — un secret interpolé dans un
+  argument de step (`withEnv`) est **persisté en clair** dans
+  `flowNodeStore.xml` dès qu'il diffère de la valeur résolue — précisément les
+  mots de passe que le fait 7 vise — et Jenkins l'écrit dans la console (« A
+  secret was passed to withEnv using Groovy String interpolation, which is
+  insecure »). Le mot de passe reste donc sur le canal natif, et l'Apply ouvre
+  par une **garde fermée** : `"${params.VAULT_USER_PASSWORD}"` (brut, `params`
+  rend un `hudson.util.Secret`) ≠ `env.VAULT_USER_PASSWORD` (résolu) ⇒
+  `REFUS: MOT_DE_PASSE_ALTERE` **avant tout appel à Vault** (aucun lockout),
+  issue : voie B (JWT) ou un mot de passe sans `$`. Aucun step ne reçoit le
+  secret.
 
 Hors périmètre, nommé : `ci/Jenkinsfile.publish-api:24` garde sa liste
 littérale avec le terminus (formulaire producteur, chaîne des APIs) — sur ce

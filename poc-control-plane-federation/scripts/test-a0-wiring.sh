@@ -39,7 +39,7 @@ ko(){ FAIL=$((FAIL+1)); printf '  ❌ %s\n' "$*"; }
 
 # Total ATTENDU, ÉCRIT EN DUR — indépendant de PASS+FAIL. Toute section
 # ajoutée/retirée DOIT le mettre à jour : un oubli fait rougir le dernier §.
-EXPECTED_CHECKS=174
+EXPECTED_CHECKS=175
 
 # shellcheck source=scripts/lib/gwt-mirror.sh
 . scripts/lib/gwt-mirror.sh || { echo "lib gwt-mirror.sh introuvable"; exit 2; }
@@ -647,7 +647,7 @@ echo "== 10. DETTE 2 — selfservice-app-deploy : formulaire posé par le Jenkin
 JSF="ci/Jenkinsfile.selfservice"; SSJ="scripts/setup-selfservice-job.sh"; code_view "$JSF" > "$TMP/jsf.code"
 jss(){ grep -qF -- "$1" "$TMP/jsf.code"; }
 grep -qE '^\s*parameters \{' "$TMP/jsf.code" && ko "un bloc parameters{} déclaratif subsiste (il fusionnerait par nom avec properties() : formulaire flottant)" || ok "aucun bloc parameters{} déclaratif"
-L_FORM=$(code_line "$TMP/jsf.code" "stage('Formulaire — paliers dérivés de la chaîne')"); L_PROPS=$(code_line "$TMP/jsf.code" 'properties([parameters([')
+L_FORM=$(code_line "$TMP/jsf.code" "stage('Formulaire — paliers dérivés de la chaîne')"); L_PROPS=$(code_line "$TMP/jsf.code" 'properties([')
 L_REF=$(code_line "$TMP/jsf.code" "stage('Référence — le SHA mergé"); L_REQ=$(code_line "$TMP/jsf.code" 'MERGE_SHA_REQUIS'); L_PLAN=$(code_line "$TMP/jsf.code" "stage('Plan — valider"); L_APPLY=$(code_line "$TMP/jsf.code" "stage('Apply — converge")
 [ -n "$L_FORM" ] && [ -n "$L_PROPS" ] && [ -n "$L_REF" ] && [ -n "$L_REQ" ] && [ -n "$L_PLAN" ] && [ -n "$L_APPLY" ] && [ "$L_FORM" -lt "$L_PROPS" ] && [ "$L_PROPS" -lt "$L_REF" ] && [ "$L_REF" -lt "$L_REQ" ] && [ "$L_REQ" -lt "$L_PLAN" ] && [ "$L_PLAN" -lt "$L_APPLY" ] \
   && ok "ordre Formulaire ($L_FORM) < properties ($L_PROPS) < Référence ($L_REF) < MERGE_SHA_REQUIS ($L_REQ) < Plan ($L_PLAN) < Apply ($L_APPLY)" || ko "ordre des stages cassé (form=$L_FORM props=$L_PROPS ref=$L_REF req=$L_REQ plan=$L_PLAN apply=$L_APPLY)"
@@ -674,22 +674,23 @@ L_GARDE=$(code_line "$TMP/jsf.code" "MOT_DE_PASSE_ALTERE"); L_BRUT=$(code_line "
   && ok "garde MOT_DE_PASSE_ALTERE (ligne $L_GARDE) : « \${params} » brut ≠ env résolu ⇒ refus fermé AVANT le withEnv de l'Apply (ligne $L_W3), aucun step ne reçoit le secret" || ko "garde du mot de passe absente/mal placée (apply=$L_APPLY brut=$L_BRUT garde=$L_GARDE w3=$L_W3)"
 jss '"DEBUG=${params.DEBUG ?: false}"' && ok "DEBUG=\${params.DEBUG ?: false} (jamais la chaîne « null » sur un job non matérialisé)" || ko "DEBUG sans repli"
 jss '"MANIFEST=${params.MANIFEST ?: (env.MANIFEST ?: '"''"')}"' && ok "MANIFEST retombe sur env.MANIFEST (valeur GWT) quand le paramètre n'est pas matérialisé : un PLAN par webhook ne tourne jamais sur le manifeste par défaut" || ko "MANIFEST sans repli env.MANIFEST"
-grep -qE '^  options \{' "$TMP/jsf.code" && grep -qE '^  triggers \{' "$TMP/jsf.code" && ok "options{} et triggers{} restent déclaratifs (fait 6 : préservés par properties())" || ko "options/triggers déclaratifs absents"
+if grep -qE '^  (options|triggers) \{' "$TMP/jsf.code"; then ko "options{}/triggers{} déclaratifs présents — fait 10 : PERDUS au premier build d'un job re-posé"; else ok "aucun options{}/triggers{} déclaratif (fait 10)"; fi
+jss 'disableConcurrentBuilds(),' && jss "pipelineTriggers([GenericTrigger(token: 'stoa-selfservice-plan'," && ok "properties() pose AUSSI disableConcurrentBuilds et le trigger PLAN (stoa-selfservice-plan) — les trois propriétés en un seul pas (fait 10)" || ko "trigger/option absents de properties()"
 # ── le poseur ──
 printf 'environments: [alpha, beta, gamma, delta, eps, zeta]\n' > "$TMP/chain10.yaml"
 STOA_ENV_CHAIN_FILE="$TMP/chain10.yaml" bash "$SSJ" --print > "$TMP/ss-no.xml" 2>"$TMP/ss.err"; RC=$?
-NP=$(python3 -c "import sys,xml.etree.ElementTree as T; r=T.parse(sys.argv[1]).getroot(); print(sum(1 for e in r.iter() if e.tag.endswith('ParameterDefinition')), sum(1 for e in r.iter() if e.tag.endswith('ParametersDefinitionProperty')))" "$TMP/ss-no.xml" 2>/dev/null)
-[ "$RC" -eq 0 ] && [ "$NP" = "0 0" ] && grep -q '<scriptPath>poc-control-plane-federation/ci/Jenkinsfile.selfservice</scriptPath>' "$TMP/ss-no.xml" \
-  && ok "setup-selfservice-job.sh --print (auto ⇒ XML_PARAMS=no) : ZÉRO paramètre, zéro propriété — le doublon du fait 6 est impossible" || ko "--print mode no : rc=$RC params/prop=$NP $(tail -2 "$TMP/ss.err")"
-OUT=$(gwt_mirror_diff "$TMP/ss-no.xml" "$JSF" 2>&1); [ "$OUT" = "MIROIR_OK token=stoa-selfservice-plan vars=1" ] && ok "miroir du trigger PLAN entre le XML rendu et Jenkinsfile.selfservice : $OUT" || ko "miroir XML rendu / Jenkinsfile.selfservice : $OUT"
+NP=$(python3 -c "import sys,xml.etree.ElementTree as T; r=T.parse(sys.argv[1]).getroot(); print(sum(1 for e in r.iter() if e.tag.endswith('ParameterDefinition')), sum(1 for e in r.iter() if e.tag.endswith('ParametersDefinitionProperty')), sum(1 for e in r.iter() if e.tag.endswith('GenericTrigger')), sum(1 for e in r.iter() if e.tag.endswith('DisableConcurrentBuildsJobProperty')))" "$TMP/ss-no.xml" 2>/dev/null)
+[ "$RC" -eq 0 ] && [ "$NP" = "0 0 0 0" ] && grep -q '<scriptPath>poc-control-plane-federation/ci/Jenkinsfile.selfservice</scriptPath>' "$TMP/ss-no.xml" \
+  && ok "setup-selfservice-job.sh --print (auto ⇒ XML_PARAMS=no) : AUCUNE propriété — ni paramètre, ni trigger, ni option (faits 6 et 10 : ni doublon, ni perte)" || ko "--print mode no : rc=$RC params/prop/trig/dis=$NP $(tail -2 "$TMP/ss.err")"
+OUT=$(gwt_mirror_diff "$TMP/ss-no.xml" "$JSF" 2>&1); RC=$?; [ "$RC" -eq 2 ] && [ "$OUT" = "DIVERGENCE trigger xml=absent jenkinsfile=present" ] && ok "miroir : le trigger PLAN n'est QUE dans le Jenkinsfile (xml=absent jenkinsfile=present) — l'état voulu pour ce job (fait 10), pas une divergence" || ko "miroir XML rendu / Jenkinsfile.selfservice : $OUT (rc=$RC)"
 STOA_ENV_CHAIN_FILE="$TMP/chain10.yaml" JOB=publish-api-deploy TRIGGER_TOKEN=stoa-publish-api-plan SCRIPT_PATH=poc-control-plane-federation/ci/Jenkinsfile.publish-api bash "$SSJ" --print > "$TMP/ss-yes.xml" 2>"$TMP/ss.err"; RC=$?
 ENVX=$(python3 -c "
 import sys, xml.etree.ElementTree as T
 r = T.parse(sys.argv[1]).getroot()
 for p in r.iter():
     if p.tag.endswith('ChoiceParameterDefinition') and p.findtext('name') == 'ENVIRONMENT': print(' '.join(s.text or '' for s in p.iter('string')))" "$TMP/ss-yes.xml" 2>/dev/null)
-[ "$RC" -eq 0 ] && [ "$ENVX" = "alpha beta gamma delta eps" ] && grep -q '<name>MERGE_SHA</name>' "$TMP/ss-yes.xml" \
-  && ok "--print publish-api-deploy (XML_PARAMS=yes) : ENVIRONMENT DÉRIVÉE à la pose [$ENVX], terminus zeta absent, MERGE_SHA présent (ceinture SECURITY-170)" || ko "--print mode yes : rc=$RC ENVIRONMENT=[$ENVX]"
+[ "$RC" -eq 0 ] && [ "$ENVX" = "alpha beta gamma delta eps" ] && grep -q '<name>MERGE_SHA</name>' "$TMP/ss-yes.xml" && grep -q '<token>stoa-publish-api-plan</token>' "$TMP/ss-yes.xml" && grep -q 'DisableConcurrentBuildsJobProperty' "$TMP/ss-yes.xml" \
+  && ok "--print publish-api-deploy (XML_PARAMS=yes) : ENVIRONMENT DÉRIVÉE à la pose [$ENVX], terminus zeta absent, MERGE_SHA présent (ceinture SECURITY-170), trigger + option dans le XML (bloc déclaratif côté Jenkinsfile)" || ko "--print mode yes : rc=$RC ENVIRONMENT=[$ENVX]"
 sed 's/ENVS_NONPROD="$(env_chain_nonprod)"/ENVS_NONPROD="$(env_chain)"/' "$SSJ" > "$TMP/ssj_mut.sh"; cp -R scripts/lib "$TMP/" 2>/dev/null; mkdir -p "$TMP/scripts"; cp "$TMP/ssj_mut.sh" "$TMP/scripts/setup-selfservice-job.sh"; cp -R scripts/lib "$TMP/scripts/"
 ENVM=$(STOA_ENV_CHAIN_FILE="$TMP/chain10.yaml" JOB=publish-api-deploy SCRIPT_PATH=poc-control-plane-federation/ci/Jenkinsfile.publish-api bash "$TMP/scripts/setup-selfservice-job.sh" --print 2>/dev/null | python3 -c "
 import sys, xml.etree.ElementTree as T
@@ -697,8 +698,8 @@ r = T.fromstring(sys.stdin.read())
 for p in r.iter():
     if p.tag.endswith('ChoiceParameterDefinition') and p.findtext('name') == 'ENVIRONMENT': print(' '.join(s.text or '' for s in p.iter('string')))")
 [ "$ENVM" = "alpha beta gamma delta eps zeta" ] && ok "mutation env_chain_nonprod→env_chain dans le poseur ⇒ le TERMINUS apparaît (zeta) : la dérivation est bien ce qui l'exclut" || ko "mutation du poseur sans effet : [$ENVM]"
-grep -vE '^\s*#' "$SSJ" | grep -q 'BUILD_EP="build"' && grep -vE '^\s*#' "$SSJ" | grep -q "ParametersDefinitionProperty'))" && grep -q 'BOOTSTRAP_WAIT="${BOOTSTRAP_WAIT:-360}"' "$SSJ" \
-  && ok "poseur : amorçage POST /build en mode no, relecture « UNE propriété » après l'amorçage (fait 6), BOOTSTRAP_WAIT 360 s" || ko "poseur : amorçage/relecture/attente non câblés"
+grep -vE '^\s*#' "$SSJ" | grep -q 'BUILD_EP="build"' && grep -vE '^\s*#' "$SSJ" | grep -q "ParametersDefinitionProperty'))" && grep -q 'BOOTSTRAP_WAIT="${BOOTSTRAP_WAIT:-360}"' "$SSJ" && grep -vE '^\s*#' "$SSJ" | grep -q 'attendu UN trigger $TRIGGER_TOKEN et UNE option' \
+  && ok "poseur : amorçage POST /build en mode no, relecture « UNE propriété + trigger + option posés par le build » (faits 6/10), BOOTSTRAP_WAIT 360 s" || ko "poseur : amorçage/relecture/attente non câblés"
 printf 'environments: [alpha, Beta, gamma]\n' > "$TMP/chain10b.yaml"
 OUTB=$(STOA_ENV_CHAIN_FILE="$TMP/chain10b.yaml" JOB=publish-api-deploy SCRIPT_PATH=poc-control-plane-federation/ci/Jenkinsfile.publish-api bash "$SSJ" --print 2>"$TMP/ss.err"); RC=$?
 [ "$RC" -ne 0 ] && [ -z "$OUTB" ] && grep -q 'PALIER_INVALIDE' "$TMP/ss.err" && ok "--print mode yes avec un palier invalide (Beta) ⇒ rc 1, PALIER_INVALIDE sur stderr, stdout VIDE (jamais un message pris pour du XML)" || ko "palier invalide : rc=$RC stdout=$(printf '%s' "$OUTB" | head -c 60) err=$(tail -1 "$TMP/ss.err")"
