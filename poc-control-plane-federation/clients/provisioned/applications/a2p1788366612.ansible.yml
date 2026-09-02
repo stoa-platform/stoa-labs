@@ -17,4 +17,4 @@ apim_ss_app:
     audience: "demo-selfservice"
     claim: { name: "azp" }
   per_env:
-    rec: { auth: { claim: { value: "a2p1788366612-rec" } }, ip_allowlist: ["10.42.0.1"] }
+    rec: { auth: { claim: { value: "a2p1788366612-rec" } }, ip_allowlist: ["10.42.0.2"] }
