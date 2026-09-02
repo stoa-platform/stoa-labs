@@ -235,13 +235,17 @@ wait_amont(){ # <N_PA> <PAUSE|NOPAUSE>
     jconsole provision-apply "$n" > "$TMP/pa.$n.console"
   fi
 }
-finish_amont(){ # <N_PA> → résultat, console dans $TMP/pa.<N>.console, S_NUM = build aval
+# finish_amont <N_PA> : pose RES (résultat de l'amont) et S_NUM (build aval) en
+# GLOBALES — jamais appelée en $( ) : une variable posée dans un sous-shell meurt
+# avec lui (mesuré au passage 2 : S_NUM vide, 1.7/4.6 vacants).
+RES=""
+finish_amont(){
   local n="$1"
   wait_until 1800 provision-apply "$n" FINISHED >/dev/null
   jconsole provision-apply "$n" > "$TMP/pa.$n.console"
   S_NUM=$(grep -oE "aval selfservice-app-deploy #[0-9]+" "$TMP/pa.$n.console" | grep -oE '[0-9]+$' | head -1)
   [ -n "$S_NUM" ] && jconsole selfservice-app-deploy "$S_NUM" > "$TMP/ss.$S_NUM.console"
-  jresult provision-apply "$n"
+  RES=$(jresult provision-apply "$n")
 }
 console_order(){ # <fichier console> <motif1> <motif2> … → OK si chaque motif apparaît, dans l'ordre
   local f="$1" prev=0 l; shift
@@ -276,15 +280,19 @@ for i in a.get('identifiers') or []:
     if i.get('key')=='openIdClaims': print(','.join(i.get('value') or [])); break" 2>/dev/null; }
 gw_state(){ local j; j=$(gw_app "$APP"); printf '%s|%s' "$(gw_app_claims "$j")" "$(gw_app_ip "$j")"; }
 # ── helpers LDAP (motif test-deployer-gate-live.sh : bind par fichier, jamais argv) ──
-ldap_run(){ # <ldapadd|ldapmodify|ldapsearch> [args…] < LDIF
-  local cmd="$1"; shift
+ldap_run(){ # <ldapadd|ldapmodify|ldapsearch> [args…] < LDIF — verbatim test-deployer-gate-live.sh (sh POSIX du conteneur : shift 2, jamais ${@:3})
+  local tool="$1"; shift
   LDAP_BIND_PW="$BIND_PW" docker exec -i -e LDAP_BIND_PW "$LDAP_CONTAINER" \
     sh -c 'umask 077; f=/tmp/.ldap-bind.$$
            printf %s "$LDAP_BIND_PW" > "$f"
-           "$1" -x -H ldap://localhost -D "$2" -y "$f" "${@:3}"; rc=$?; rm -f "$f"; exit $rc' \
-    sh "$cmd" "$BIND_DN" "$@"
+           t="$1"; d="$2"; shift 2
+           "$t" -x -D "$d" -y "$f" "$@"; rc=$?
+           rm -f "$f"; exit $rc' sh "$tool" "$BIND_DN" "$@"
 }
-alice_in_int(){ ldap_run ldapsearch -LLL -b "cn=apim-apply-int,ou=Groups,$BASE_DN" -s base member 2>/dev/null | grep -q "uid=alice,ou=People"; }
+# CAPTURÉ dans un fichier avant grep : sous pipefail, `… | grep -q` ferme le tube
+# au premier match, docker exec meurt en SIGPIPE et le pipeline rend FAUX alors
+# qu'alice EST membre — mesuré au passage 2 (le trap l'a laissée dans le groupe).
+alice_in_int(){ ldap_run ldapsearch -LLL -o ldif-wrap=no -b "cn=apim-apply-int,ou=Groups,$BASE_DN" -s base member > "$TMP/ldap.members" 2>/dev/null; grep -q "uid=alice,ou=People" "$TMP/ldap.members"; }
 ldap_alice_int(){ # add|delete
   # `--` OBLIGATOIRE : le terminateur LDIF est un `-`, qu'un printf mangerait comme option (piège G2).
   printf 'dn: cn=apim-apply-int,ou=Groups,%s\nchangetype: modify\n%s: member\nmember: uid=alice,ou=People,%s\n%s\n\n' "$BASE_DN" "$1" "$BASE_DN" '-' \
@@ -412,7 +420,7 @@ jconsole provision-apply "$N_PA" > "$TMP/pa.pre.console"
 grep -q '^PORTE_OK(pre) : palier rec — fourEyes=non' "$TMP/pa.pre.console" && ok "1.3b console : PORTE_OK(pre) : palier rec — fourEyes=non" || ko "1.3b PORTE_OK(pre) absent : $(grep -E 'PORTE_OK|REFUS' "$TMP/pa.pre.console" | head -2 | tr '\n' ' ')"
 grep -q "^chaîne : " "$TMP/pa.pre.console" && ok "1.3c console : « chaîne : <chemin du clone> » (source épinglée, auditable)" || ko "1.3c chemin de chaîne absent"
 answer_pause "$N_PA"; ok "1.4 pause #$N_PA répondue par alice"
-RES=$(finish_amont "$N_PA")
+finish_amont "$N_PA"
 [ "$RES" = SUCCESS ] && ok "1.5 provision-apply #$N_PA : SUCCESS" || ko "1.5 provision-apply #$N_PA : $RES — $(grep -E 'REFUS|SHA_NON|error' "$TMP/pa.$N_PA.console" | tail -3 | tr '\n' ' ')"
 grep -q '^PORTE_OK(dispatch) : palier rec' "$TMP/pa.$N_PA.console" && ok "1.6 console : PORTE_OK(dispatch) — la porte relue AU GESTE" || ko "1.6 PORTE_OK(dispatch) absent"
 grep -q 'auto-approbation admise par la porte' "$TMP/pa.$N_PA.console" && ok "1.6b la garde post-pause : « auto-approbation admise par la porte » (drapeau venu de la porte)" || ko "1.6b drapeau non transmis"
@@ -431,8 +439,9 @@ read -r PR2 BR <<< "$(request_branch int 10.42.0.3)"; PRS="$PRS $PR2"
 N_PA=$(jnext provision-apply); MS2=$(merge_as_alice "$PR2"); ok "2.2 mergée par alice — $MS2"
 wait_amont "$N_PA" NOPAUSE
 [ "$(jresult provision-apply "$N_PA")" = FAILURE ] && grep -q '^REFUS: REQUESTER_UNKNOWN' "$TMP/pa.$N_PA.console" && ok "2.3 provision-apply #$N_PA : FAILURE REQUESTER_UNKNOWN (une PR de compte de service ne nomme aucun demandeur)" || ko "2.3 #$N_PA : $(jresult provision-apply "$N_PA") — $(grep -E 'REFUS|PORTE' "$TMP/pa.$N_PA.console" | head -2 | tr '\n' ' ')"
-[ "$(jstage provision-apply "$N_PA" 'Réconciliation')" = FAILED ] && [ "$(jstage provision-apply "$N_PA" 'Appliquer')" = NOT_EXECUTED ] && ! grep -q 'Input requested' "$TMP/pa.$N_PA.console" \
-  && ok "2.4 SANS PAUSE : stage Réconciliation FAILED, stage Appliquer NOT_EXECUTED, aucun « Input requested »" || ko "2.4 stages : rec=$(jstage provision-apply "$N_PA" 'Réconciliation') apply=$(jstage provision-apply "$N_PA" 'Appliquer')"
+ST_A=$(jstage provision-apply "$N_PA" 'Appliquer')
+[ "$(jstage provision-apply "$N_PA" 'Réconciliation')" = FAILED ] && { [ "$ST_A" = NOT_EXECUTED ] || [ "$ST_A" = FAILED ]; } && ! grep -q 'Input requested' "$TMP/pa.$N_PA.console" \
+  && ok "2.4 SANS PAUSE : stage Réconciliation FAILED, stage Appliquer $ST_A (sauté), aucun « Input requested »" || ko "2.4 stages : rec=$(jstage provision-apply "$N_PA" 'Réconciliation') apply=$ST_A"
 CM=$(pr_comments "$PR2"); printf '%s' "$CM" | grep -q 'REQUESTER_UNKNOWN' && printf '%s' "$CM" | grep -q 'porte du palier' && ok "2.5 PR #$PR2 : refus commenté (REQUESTER_UNKNOWN, la phrase de la porte)" || ko "2.5 commentaire : $(printf '%s' "$CM" | tail -c 300)"
 ST=$(gw_state); [ "$ST" = "${APP}-rec|10.42.0.1-10.42.0.1" ] && ok "2.6 gateway inchangée (claim ${APP}-rec, IP .1)" || ko "2.6 gateway : $ST"
 
@@ -443,7 +452,8 @@ PR3=$(reopen_as "$TMP/alice.hdr" alice "$PRCI" "$BR"); ok "3.1 PR #$PR3 ouverte 
 N_PA=$(jnext provision-apply); MS3=$(merge_as_alice "$PR3"); ok "3.2 mergée par alice — $MS3"
 wait_amont "$N_PA" NOPAUSE
 [ "$(jresult provision-apply "$N_PA")" = FAILURE ] && grep -q '^REFUS: FOUR_EYES_VIOLATION' "$TMP/pa.$N_PA.console" && ok "3.3 provision-apply #$N_PA : FAILURE FOUR_EYES_VIOLATION — « le demandeur qui approuve sa propre demande rec→int »" || ko "3.3 #$N_PA : $(jresult provision-apply "$N_PA") — $(grep -E 'REFUS|PORTE' "$TMP/pa.$N_PA.console" | head -2 | tr '\n' ' ')"
-[ "$(jstage provision-apply "$N_PA" 'Appliquer')" = NOT_EXECUTED ] && ! grep -q 'Input requested' "$TMP/pa.$N_PA.console" && ok "3.4 SANS PAUSE (personne réveillé)" || ko "3.4 une pause a existé"
+ST_A=$(jstage provision-apply "$N_PA" 'Appliquer')
+{ [ "$ST_A" = NOT_EXECUTED ] || [ "$ST_A" = FAILED ]; } && ! grep -q 'Input requested' "$TMP/pa.$N_PA.console" && ok "3.4 SANS PAUSE (personne réveillé ; stage Appliquer $ST_A)" || ko "3.4 une pause a existé (stage Appliquer $ST_A)"
 CM=$(pr_comments "$PR3"); printf '%s' "$CM" | grep -q 'FOUR_EYES_VIOLATION' && ok "3.5 PR #$PR3 : refus commenté FOUR_EYES_VIOLATION" || ko "3.5 commentaire : $(printf '%s' "$CM" | tail -c 200)"
 ST=$(gw_state); [ "$ST" = "${APP}-rec|10.42.0.1-10.42.0.1" ] && ok "3.6 gateway inchangée" || ko "3.6 gateway : $ST"
 
@@ -453,7 +463,7 @@ read -r PRCI BR <<< "$(request_branch int 10.42.0.5)"
 PR4=$(reopen_as "$TMP/carol.hdr" carol "$PRCI" "$BR"); ok "4.1 PR #$PR4 ouverte par carol (un autre humain — « même équipe » n'est PAS vérifié : mesuré)"
 N_PA=$(jnext provision-apply); MS4=$(merge_as_alice "$PR4"); ok "4.2 mergée par alice — $MS4"
 wait_amont "$N_PA" PAUSE; ok "4.3 provision-apply #$N_PA en PAUSE (quatre yeux OK : carol ≠ alice)"
-answer_pause "$N_PA"; RES=$(finish_amont "$N_PA")
+answer_pause "$N_PA"; finish_amont "$N_PA"
 grep -q 'PORTE_OK(dispatch) : palier int — fourEyes=oui approverGroup=int-team (attendu — NON vérifié' "$TMP/pa.$N_PA.console" && grep -q 'deployerGroup=apim-apply-int→apply-int' "$TMP/pa.$N_PA.console" \
   && ok "4.4 console amont : PORTE_OK(dispatch) int — fourEyes=oui, approverGroup=int-team NON vérifié, deployerGroup=apim-apply-int→apply-int" || ko "4.4 PORTE_OK(dispatch) : $(grep 'PORTE_OK(dispatch)' "$TMP/pa.$N_PA.console")"
 [ "$RES" = FAILURE ] && ok "4.5 provision-apply #$N_PA : FAILURE (l'aval a refusé)" || ko "4.5 #$N_PA : $RES"
@@ -473,7 +483,7 @@ MUTATED=1
 ldap_alice_int add; alice_in_int && ok "5.1 alice ajoutée à cn=apim-apply-int (annuaire — restauré par le trap)" || die "PREREQUIS : ajout LDAP d'alice à apim-apply-int en échec"
 read -r PRCI BR <<< "$(request_branch int 10.42.0.6)"
 PR5=$(reopen_as "$TMP/carol.hdr" carol "$PRCI" "$BR"); N_PA=$(jnext provision-apply); MS5=$(merge_as_alice "$PR5"); ok "5.2 PR #$PR5 (carol) mergée par alice — $MS5"
-wait_amont "$N_PA" PAUSE; answer_pause "$N_PA"; RES=$(finish_amont "$N_PA")
+wait_amont "$N_PA" PAUSE; answer_pause "$N_PA"; finish_amont "$N_PA"
 [ "$RES" = SUCCESS ] && ok "5.3 provision-apply #$N_PA : SUCCESS — la chaîne entière d'un palier à deployerGroup" || ko "5.3 #$N_PA : $RES — $(grep -E 'REFUS|SHA_NON|error' "$TMP/pa.$N_PA.console" | tail -2 | tr '\n' ' ')"
 [ -n "$S_NUM" ] && [ "$(jresult selfservice-app-deploy "$S_NUM")" = SUCCESS ] && ok "5.4 aval #$S_NUM : SUCCESS" || ko "5.4 aval : $(jresult selfservice-app-deploy "${S_NUM:-0}")"
 grep -q "^déclaration déployeur : 'alice' porte 'apply-int' (groupe 'apim-apply-int')$" "$TMP/ss.$S_NUM.console" && ok "5.5 aval : « déclaration déployeur : 'alice' porte 'apply-int' (groupe 'apim-apply-int') »" || ko "5.5 déclaration absente : $(grep 'déclaration' "$TMP/ss.$S_NUM.console")"
