@@ -612,6 +612,74 @@ Le job `provision-apply` est désormais un **Jenkinsfile déclaratif from SCM**
 (`ci/Jenkinsfile.provision-apply`) ; `ci/jenkins/provision-apply.job.xml` n'est
 qu'une coquille (pointeur SCM + miroir du bloc `<triggers>`, qui gagne).
 
+## Le credential du seul palier (A3 — GOAL cd-applications, 2026-09-02)
+
+**Ce qui a changé.** `selfservice-app-deploy` ne lit plus
+`deploy/<tenant>/wm-admin` avec un en-tête `X-Environment` qui « choisissait »
+le palier : il lit **`envs/<env>/wm-admin`** (voie directe, Basic) ou
+**`envs/<env>/admin-oauth`** (voie proxy, Bearer via `wm-admin-<env>`) avec le
+token nominatif de la pause — et **la lecture d'`envs/<env>/wm-admin` EST le
+ticket d'entrée** (ADR-082, le même qu'en `team-promote` §7.b). Une identité
+qui ne porte pas `apply-<env>` est refusée `PALIER_FERME` **avant** tout
+contact avec la gateway ; l'équipe de cloisonnement est **décidée par le
+token** (policies `deploy-<tenant>`), le manifeste et `APIM_TEAM` ne peuvent
+que concorder (`TEAM_NON_PORTEE` sinon). Spec :
+`docs/superpowers/specs/2026-09-02-a3-credential-du-seul-palier-design.md`.
+
+**Le dessin de l'Apply** (ordre = la propriété) : `MOT_DE_PASSE_ALTERE` → login
+nominatif → **la garde** `scripts/selfservice-palier-gate.sh`, extraite de
+`origin/main` (`git show`, jamais l'arbre pinné au `MERGE_SHA` — le levier A6
+pinnerait la garde avec) → préflight de joignabilité **annoncé** (`préflight de
+joignabilité :`) → `TTL_INSUFFISANT` (le mount ldap tune les tokens à 600 s, le
+préflight peut durer autant) → converge → verify → annonce A2. La garde ne
+parle qu'à Vault : forme (`ENV_INVALIDE`, `VIA_INCONNU`,
+`CREDS_SUB_SANS_PALIER`), voie par POSITION (`TERMINUS_SANS_VOIE`), équipe par
+le token (`TEAM_INDETERMINEE` / `TEAM_AMBIGUE` / `TEAM_NON_PORTEE` /
+`IDENTITE_INVERIFIABLE`), capacités en un appel (`TICKET_INSCRIPTIBLE` — un
+ticket qu'on peut s'écrire n'est pas un ticket ; `TENANT_NON_PORTE` en mode
+`internal` sur le `vault_sub` du palier ; `CAPACITES_INVERIFIABLES`), puis le
+ticket (`PALIER_FERME`), puis `PALIER_OUT` (forme contrôlée, relue par le shell
+sans `eval`).
+
+**Knobs (bloc `environment{}` du Jenkinsfile, surchargeables par variable
+globale)** : `APIM_WM_CREDS_SUB_TPL` (`envs/__ENV__/wm-admin`) et
+`APIM_OAUTH_SUB_TPL` (`envs/__ENV__/admin-oauth`) — `__ENV__` **obligatoire** ;
+`APIM_API_BASE` (voie directe hors terminus, `__ENV__` optionnel — une gateway
+par palier chez un client, une seule sur ce lab) ; `APIM_PROXY_API`
+(`wm-admin-__ENV__`) ; **`APIM_TERMINUS_BASE`, sans défaut** — tant qu'elle
+n'est pas déclarée, le terminus n'a pas de voie (par position, pas par son
+nom) ; `APIM_TEAM` (borné par le token) ; `APIM_TOKEN_TTL_MIN` (180 s). ⚠ Ne
+PAS réutiliser `APIM_DIRECT_BASE_TPL` (chaîne des APIs) pour les applications :
+sur ce lab elle vise `wm-mock-prod`.
+
+**Rollout sur ce lab (l'ordre compte)** — joué le 2026-09-02 :
+
+```bash
+git push gitea HEAD:main                                  # la garde est extraite de gitea main
+VAULT_TOKEN=… GW_ADMIN=http://localhost:5555/rest/apigateway WM_USER=Administrator WM_PASS=… \
+  bash scripts/setup-wm-palier-admins.sh                  # wm-<env>-admin sur la gateway réelle (12/0 ; perdus au re-seed)
+DEPLOYERS_DEV=alice DEPLOYERS_REC=alice bash scripts/setup-deployer-groups.sh   # le grant nominatif (15/0)
+VAULT_TOKEN=… bash scripts/test-palier-retention-live.sh  # la porte du GOAL : ⑦ la voie application (37/0)
+bash scripts/test-a3-live.sh                              # par builds réels (voir la spec, D7)
+```
+
+Le grant `DEPLOYERS_DEV/REC=alice` est un **geste explicite** (les défauts du
+poseur restent fermés pour dev/rec) : c'est la décision client n°1 (dev et rec
+autonomes pour qui remplit le formulaire) appliquée à l'identité qui demande
+sur ce lab — et il ouvre `rec` **aux deux objets** (le même ticket sert la
+promotion d'API vers rec : le credential est par palier, pas par objet).
+
+**Limites, mesurées** : sur ce lab **mono-gateway**, les quatre comptes
+`wm-<env>-admin` sont tous `API-Gateway-Administrators` de la même 10.15 —
+détenir `apply-dev` administre les objets de tous les paliers ; la porte A3
+mesure la rétention côté Vault (Vault refuse), pas le cloisonnement au plan de
+données (celui-ci est topologique : une gateway par palier chez un client).
+`X-Environment` est toujours émis par le rôle (transport redondant). Le
+terminus n'est fermé ni par un `if` ni par un nom : `TERMINUS_SANS_VOIE` tant
+qu'aucune voie n'est déclarée, puis le credential ; A4 (groupe déployeur, ITSM)
+et A7 (ouverture) posent le reste. `USER_VAULT_JWT` (voie B) reste un
+paramètre `string` sur le canal `withEnv` (état A0, nommé).
+
 ## Tout en Jenkinsfile (A0 — GOAL cd-applications, 2026-09-02)
 
 Depuis A0, **plus un seul `job.xml` de l'aval applicatif ne porte de logique** :
@@ -804,7 +872,8 @@ PR, mutations) et `scripts/test-provision-apply-wiring.sh` (câblage
 amont/coquille/aval, sur une vue code sans commentaires).
 
 **Limites écrites d'avance** : en `rec`, l'apply atteint la même 10.15 que
-`dev` (le palier est encore un en-tête `X-Environment` : A3) ; le quatre-yeux
+`dev` (la 10.15 unique du lab ; depuis A3 le palier est un CREDENTIAL,
+`envs/rec/wm-admin`, plus un en-tête — voir la section A3 ci-dessous) ; le quatre-yeux
 du maillon 2 compare le mergeur au compte de service `ci` (auteur de toute PR
 de provisioning) — le demandeur humain n'est que dans le corps de la PR, le
 contrôle réel est le merge par un tiers (protection de branche, G4) ; la garde
