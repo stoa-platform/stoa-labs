@@ -330,6 +330,80 @@ N=$(grep -c "apply-$SECOND" "$TMP/canary.log")
   || bad "⑤ter canari: $N hits (attendu 1)"
 
 echo
+echo "== ⑦ la voie APPLICATION (A3) : matrice 403 sur l'identité de l'apply d'app, la garde, le F4 sur cette voie =="
+# La PORTE du GOAL cd-applications A3 : « matrice 403 par palier rejouée sur la
+# voie application : le job de rec ne peut lire aucun envs/int/* ». L'identité
+# de l'apply d'application est un token NOMINATIF qui projette la policy du
+# tenant (deploy-<tenant>) ET celle du palier (apply-<SECOND>) — le grant
+# nominatif d'ADR-082 par groupe d'annuaire. Un token enfant portant exactement
+# ces deux policies en est le modèle fidèle (lookup-self : `policies`, pas
+# `identity_policies` — même forme qu'un login LDAP de ce lab).
+THIRD="$(echo "$ENVS" | awk '{print $3}')"
+[ -n "$THIRD" ] || lab_absent "la porte ⑦ exige au moins TROIS paliers hors-prod (rec ne doit pas lire int) : '$ENVS'"
+APPTOK="$TMP/apptok"
+vcurl -X POST -H 'Content-Type: application/json' \
+  -d "$(python3 -c 'import json,sys;print(json.dumps({"policies":[sys.argv[1],sys.argv[2]],"ttl":"5m"}))' "deploy-$TENANT" "apply-$SECOND")" \
+  "$VAULT_ADDR/v1/auth/token/create" \
+  | python3 -c 'import json,os,sys
+t=json.load(sys.stdin)["auth"]["client_token"]
+fd=os.open(sys.argv[1], os.O_WRONLY|os.O_CREAT|os.O_TRUNC, 0o600)
+with os.fdopen(fd,"w") as f: f.write(t)' "$APPTOK" 2>/dev/null
+[ -s "$APPTOK" ] && ok "⑦ token modèle de l'apply d'application minté (deploy-$TENANT + apply-$SECOND, ttl 5m) — écrit en fichier, jamais en variable" \
+                 || lab_absent "mint du token modèle de l'apply d'application en échec"
+APPHDR="$TMP/apphdr"; { printf 'X-Vault-Token: '; cat "$APPTOK"; printf '\n'; } > "$APPHDR"
+rdo(){ curl -s -m 20 -o /dev/null -w '%{http_code}' -H @"$1" "$VAULT_ADDR/v1/secret/data/stoa/envs/$2/admin-oauth"; }
+A1="$(rd "$APPHDR" "$SECOND")"; A2="$(rd "$APPHDR" "$THIRD")"; A3="$(rdo "$APPHDR" "$THIRD")"; A4="$(rd "$APPHDR" "$TERM_ENV")"
+[ "$A1" = 200 ] && ok "⑦a l'identité de l'apply d'app lit envs/$SECOND/wm-admin (200)" || bad "⑦a lecture du propre palier : $A1 (attendu 200)"
+[ "$A2" = 403 ] && ok "⑦b …et NE lit PAS envs/$THIRD/wm-admin (403) — « le job de $SECOND ne peut lire aucun envs/$THIRD/* »" || bad "⑦b fuite inter-palier sur la voie application : $A2 (attendu 403)"
+[ "$A3" = 403 ] && ok "⑦c …ni envs/$THIRD/admin-oauth (403)" || bad "⑦c fuite admin-oauth : $A3 (attendu 403)"
+[ "$A4" = 403 ] && ok "⑦d …ni le terminus envs/$TERM_ENV (403)" || bad "⑦d fuite vers le terminus : $A4 (attendu 403)"
+
+# La GARDE elle-même (scripts/selfservice-palier-gate.sh), avec ce token et un
+# manifeste jetable ; la base d'admin vise le CANARI de ④ (toujours vivant) :
+# le geste minimal de l'Apply = gate && curl canari.
+printf -- '---\napim_ss_app:\n  name: "%s"\n  team: "%s"\n  api: "probe"\n  api_version: "1"\n  per_env:\n    %s: {}\n    %s: {}\n' "$PROBE_APP" "$TENANT" "$SECOND" "$THIRD" > "$TMP/probe.yml"
+app_gesture(){ # <env> → rc de la garde ; touche le canari si elle a ouvert
+  local rc
+  rm -f "$TMP/p.out"
+  ENVIRONMENT="$1" ADMIN_VIA=direct MANIFEST="$TMP/probe.yml" VAULT_TOKEN_FILE="$APPTOK" PALIER_OUT="$TMP/p.out" \
+    APIM_KV_PREFIX=stoa APIM_API_BASE="http://127.0.0.1:$CANARY_PORT/rest/apigateway" \
+    bash scripts/selfservice-palier-gate.sh > "$TMP/p.$1.out" 2>&1; rc=$?
+  [ "$rc" -eq 0 ] && curl -s -m 5 -o /dev/null "http://127.0.0.1:$CANARY_PORT/apply-app-$1"
+  return "$rc"
+}
+app_gesture "$SECOND"; RC7=$?
+[ "$RC7" -eq 0 ] && grep -q "^APIM_WM_CREDS_SUB=envs/$SECOND/wm-admin$" "$TMP/p.out" && grep -q "^PALIER_TEAM=$TENANT$" "$TMP/p.out" \
+  && ok "⑦e la garde OUVRE $SECOND : APIM_WM_CREDS_SUB=envs/$SECOND/wm-admin, PALIER_TEAM=$TENANT (décidée par le token)" \
+  || bad "⑦e la garde refuse $SECOND (rc=$RC7) : $(grep REFUS "$TMP/p.$SECOND.out" | head -1)"
+[ "$(grep -c "apply-app-$SECOND" "$TMP/canary.log")" -eq 1 ] && ok "⑦e' canari : un hit (la gate a ouvert, la gateway a été touchée)" || bad "⑦e' canari : $(grep -c "apply-app-$SECOND" "$TMP/canary.log") hit(s)"
+app_gesture "$THIRD"; RC7=$?
+[ "$RC7" -ne 0 ] && grep -q "^REFUS: PALIER_FERME :" "$TMP/p.$THIRD.out" && [ ! -f "$TMP/p.out" ] \
+  && ok "⑦f la garde REFUSE $THIRD : PALIER_FERME (HTTP 403), aucun PALIER_OUT — la voie application ne lit pas envs/$THIRD/*" \
+  || bad "⑦f la garde ouvre $THIRD (rc=$RC7) : $(tail -1 "$TMP/p.$THIRD.out")"
+grep -q "apply-app-$THIRD" "$TMP/canary.log" && bad "⑦f' le canari a vu passer une requête pour $THIRD" || ok "⑦f' canari MUET pour $THIRD"
+
+# F4 SUR CETTE VOIE : la policy du palier révoquée ⇒ la garde ferme, canari muet ;
+# restaurée (octet à octet) ⇒ vert, canari à EXACTEMENT un hit de plus.
+[ -s "$POLICY_BAK" ] || lab_absent "sauvegarde de apply-$SECOND vide — révoquer sans sauvegarde est exclu"
+POLICY_REVOKED=1
+vcurl -X DELETE "$VAULT_ADDR/v1/sys/policies/acl/apply-$SECOND" -o /dev/null
+[ "$(vcurl -o /dev/null -w '%{http_code}' "$VAULT_ADDR/v1/sys/policies/acl/apply-$SECOND")" = 404 ] \
+  && ok "⑦g policy apply-$SECOND RÉVOQUÉE (404)" || bad "⑦g la policy apply-$SECOND répond encore après DELETE"
+app_gesture "$SECOND"; RC7=$?
+[ "$RC7" -ne 0 ] && grep -q "^REFUS: PALIER_FERME :" "$TMP/p.$SECOND.out" \
+  && ok "⑦g' policy révoquée ⇒ la garde de la voie application FERME (PALIER_FERME) — le token porte encore le NOM de la policy, la fermeture est à la lecture" \
+  || bad "⑦g' la garde ouvre sans policy (rc=$RC7)"
+[ "$(grep -c "apply-app-$SECOND" "$TMP/canary.log")" -eq 1 ] && ok "⑦g'' canari inchangé (un seul hit, celui de ⑦e) : la gateway n'a PAS été touchée sans le credential du palier" || bad "⑦g'' canari : $(grep -c "apply-app-$SECOND" "$TMP/canary.log") hits"
+restore_policy && ok "⑦h policy apply-$SECOND restaurée et RELUE identique à l'octet près" || bad "⑦h restauration en échec"
+app_gesture "$SECOND"; RC7=$?
+[ "$RC7" -eq 0 ] && [ "$(grep -c "apply-app-$SECOND" "$TMP/canary.log")" -eq 2 ] \
+  && ok "⑦h' policy restaurée ⇒ la garde ouvre, canari à EXACTEMENT deux hits (le geste restauré, et lui seul)" \
+  || bad "⑦h' après restauration : rc=$RC7, canari $(grep -c "apply-app-$SECOND" "$TMP/canary.log") hits"
+curl -s -m 20 -H @"$APPHDR" -X POST "$VAULT_ADDR/v1/auth/token/revoke-self" -o /dev/null
+[ "$(curl -s -m 20 -o /dev/null -w '%{http_code}' -H @"$APPHDR" "$VAULT_ADDR/v1/auth/token/lookup-self")" = 403 ] \
+  && ok "⑦i token modèle révoqué — mort prouvée (lookup-self 403)" || bad "⑦i le token modèle répond encore"
+
+echo
 echo "== ⑥ nettoyage vérifié =="
 kill "$CPID" 2>/dev/null; CPID=""
 probe_purge
