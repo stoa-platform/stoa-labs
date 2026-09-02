@@ -23,6 +23,19 @@
 // L'identité user ne sert QU'À obtenir le token Vault nominatif ; les appels wM se
 // font avec le COMPTE DE SERVICE (creds lus dans Vault par le rôle). Voir adr/adr-078.
 //
+// ── LE CREDENTIAL DU SEUL PALIER (A3, GOAL cd-applications, 2026-09-02) ──────
+// Le compte de service que le rôle lit dans Vault est celui DU PALIER :
+// envs/<env>/wm-admin (voie directe, Basic) ou envs/<env>/admin-oauth (voie
+// proxy, Bearer) — jamais deploy/<tenant>/wm-admin, jamais un en-tête
+// X-Environment qui « choisirait » le palier sur un credential unique. La
+// lecture d'envs/<env>/wm-admin EST le ticket d'entrée (ADR-082, PALIER_FERME
+// sinon), jouée par scripts/selfservice-palier-gate.sh APRÈS le login et AVANT
+// tout contact avec la gateway (préflight compris) ; l'équipe de cloisonnement
+// est DÉCIDÉE par le token (policies deploy-<tenant>), le manifeste ne peut que
+// concorder. La garde est extraite de origin/main — la lignée de CE fichier —
+// jamais de l'arbre pinné au MERGE_SHA (le levier A6 pinnerait la garde avec).
+// Le terminus n'a pas de voie tant qu'APIM_TERMINUS_BASE n'est pas déclarée.
+//
 // ── LE FORMULAIRE EST POSÉ PAR CE FICHIER (A0 dettes, 2026-09-02) ───────────
 // Plus de bloc `parameters {}` déclaratif : le premier stage dérive la liste
 // des paliers de la CHAÎNE (scripts/lib/env-chain.sh, env_chain_nonprod — la
@@ -63,27 +76,41 @@ pipeline {
     // Mount de l'auth user/password : `ldap` chez le client (AD ; peut s'appeler
     // ad, ldap-corp…), `userpass` en lab. MÊME requête REST — seul ce mount change.
     VAULT_USER_AUTH_MOUNT = "${env.VAULT_USER_AUTH_MOUNT ?: 'ldap'}"
-    // Base de l'API d'admin vue DEPUIS l'agent (réseau docker) ; chez le client = le proxy.
+    // Base de l'API d'admin des paliers NON terminaux en voie directe, vue DEPUIS
+    // l'agent (réseau docker). GABARIT : __ENV__ y est OPTIONNEL — une gateway
+    // par palier chez un client (https://apim-__ENV__.corp/rest/apigateway), une
+    // seule gateway servant dev/rec/int/homol avec des identités distinctes sur
+    // ce lab. Ce n'est PAS APIM_DIRECT_BASE_TPL (chaîne des APIs, variable
+    // globale du lab qui vise wm-mock-prod) : un nom partagé ferait atterrir une
+    // application sur le mock du terminus des APIs.
     APIM_API_BASE     = "${env.APIM_API_BASE  ?: 'http://webmethods-real:5555/rest/apigateway'}"
     APIM_DATA_BASE    = "${env.APIM_DATA_BASE ?: 'http://webmethods-real:5555/gateway'}"
-    // Chemin KV du compte de service gateway, TENANT-SCOPÉ (la policy user-deploy
-    // du token nominatif n'autorise que secret/stoa/deploy/<tenant>/* — ADR-077).
-    APIM_WM_CREDS_SUB = "${env.APIM_WM_CREDS_SUB ?: 'deploy/banking-demo/wm-admin'}"
-    // Self-proxy OAuth2 de l'admin (ADMIN_VIA=proxy-oauth2) + chemin KV TENANT-scopé
-    // des creds OAuth2 du pipeline ({token_url, client_id, client_secret, scope} —
-    // sous deploy/<tenant>/ : le token nominatif ne lit QUE son périmètre).
-    // Le proxy se décrit par MORCEAUX. Le NOM de l'API d'admin proxifiée change
-    // d'un client à l'autre et n'avait aucune variable à lui : il était noyé au
-    // milieu d'une URL entière, impossible à surcharger seul. APIM_PROXY_BASE
-    // reste l'échappatoire (override complet) pour un reverse proxy dont le
-    // chemin ne suit pas la convention wM /gateway/<api>/<version>. Vide par
-    // défaut → composé côté shell, et le composé vaut EXACTEMENT l'ancien défaut.
+    // La voie directe du TERMINUS — SANS défaut : pas de proxy devant le dernier
+    // palier (structurel, G4), et dire sa cible est volontaire (G7). Vide ⇒ la
+    // garde refuse TERMINUS_SANS_VOIE par POSITION, jamais par le nom du palier.
+    // L'ouvrir (A7) = déclarer cette cible + accorder le credential + la porte.
+    APIM_TERMINUS_BASE = "${env.APIM_TERMINUS_BASE ?: ''}"
+    // ── LE CREDENTIAL DU PALIER (A3) : GABARITS de sous-chemin KV, __ENV__
+    // OBLIGATOIRE (la garde refuse CREDS_SUB_SANS_PALIER sinon — un credential
+    // qui ne varie pas par palier ne décide d'aucun palier). Voie directe :
+    // {username, password} ; voie proxy : {token_url, client_id, client_secret,
+    // scope}. Le chemin effectif = <APIM_KV_MOUNT>/data/<APIM_KV_PREFIX>/<sub>.
+    // La policy apply-<env> (setup-vault-paliers.sh) porte EXACTEMENT ces deux
+    // chemins par palier, et rien d'autre.
+    APIM_WM_CREDS_SUB_TPL = "${env.APIM_WM_CREDS_SUB_TPL ?: 'envs/__ENV__/wm-admin'}"
+    APIM_OAUTH_SUB_TPL    = "${env.APIM_OAUTH_SUB_TPL ?: 'envs/__ENV__/admin-oauth'}"
+    // Le proxy d'admin DU PALIER (ADMIN_VIA=proxy-oauth2) se décrit par MORCEAUX :
+    // le composé vaut <host>/gateway/<api>/<ver><path> avec __ENV__ substitué —
+    // par défaut EXACTEMENT le gabarit APIM_API_BASE_TPL de team-promote
+    // (wm-admin-__ENV__, les quatre proxies du lab). APIM_PROXY_BASE reste
+    // l'échappatoire (override complet, __ENV__ optionnel) pour un reverse proxy
+    // dont le chemin ne suit pas la convention wM /gateway/<api>/<version>.
+    // Vide par défaut → composé par la garde.
     APIM_PROXY_HOST   = "${env.APIM_PROXY_HOST ?: 'http://webmethods-real:5555'}"
-    APIM_PROXY_API    = "${env.APIM_PROXY_API  ?: 'wm-admin-self'}"
+    APIM_PROXY_API    = "${env.APIM_PROXY_API  ?: 'wm-admin-__ENV__'}"
     APIM_PROXY_VER    = "${env.APIM_PROXY_VER  ?: '1.0'}"
     APIM_PROXY_PATH   = "${env.APIM_PROXY_PATH ?: '/rest/apigateway'}"
     APIM_PROXY_BASE   = "${env.APIM_PROXY_BASE ?: ''}"
-    APIM_OAUTH_SUB    = "${env.APIM_OAUTH_SUB  ?: 'deploy/banking-demo/admin-oauth'}"
     // ── Organisation du VAULT CLIENT (le namespace passe par VAULT_NAMESPACE,
     // consommé par ci/lib/vault-login.sh ET le rôle ; variante « namespace dans
     // le chemin » : APIM_KV_MOUNT=<ORG>/APP/ESB/secret_DEV sans VAULT_NAMESPACE).
@@ -106,14 +133,13 @@ pipeline {
     // passe alors PAS en -e (extra-var > set_fact : un -e vide masquerait Vault).
     APIM_OAUTH_TOKEN_URL   = "${env.APIM_OAUTH_TOKEN_URL ?: ''}"
     APIM_OAUTH_CLIENT_AUTH = "${env.APIM_OAUTH_CLIENT_AUTH ?: 'post'}"
-    // ── Équipe qui CLOISONNE l'application (E3 geste 1). Vide = DÉRIVÉE du
-    // chemin KV du compte de service (`deploy/<tenant>/wm-admin` -> <tenant>).
-    // Cette dérivation n'est pas une commodité : elle lie la team au SEUL
-    // périmètre où le token nominatif a le droit d'écrire (policy Vault
-    // tenant-scopée, ADR-077). L'appelant ne peut donc pas cloisonner son
-    // application sous la team d'une autre équipe — il ne pourrait de toute
-    // façon pas en lire les creds. Surcharger APIM_TEAM reste possible quand
-    // le chemin KV ne suit pas cette convention.
+    // ── Équipe qui CLOISONNE l'application (E3 geste 1). DÉCIDÉE PAR LE TOKEN
+    // (A3) : la garde lit les policies deploy-<tenant> du token nominatif ; ce
+    // knob (ou `team:` du manifeste) ne peut que CONCORDER avec elles
+    // (TEAM_NON_PORTEE sinon). Vide = l'unique tenant du token (TEAM_AMBIGUE
+    // s'il en porte plusieurs). L'appelant ne choisit donc pas sous quelle
+    // équipe son application est cloisonnée — team-name.yml, l'invariant tenu
+    // jusqu'ici par le chemin du credential du tenant, qu'A3 retire.
     APIM_TEAM         = "${env.APIM_TEAM ?: ''}"
     INVENTORY         = 'ansible/inventory.lab.ini'
   }
@@ -167,12 +193,12 @@ pipeline {
             // avant que provision-apply ne compte dessus.
             string(name: 'MERGE_SHA', defaultValue: '',
                    description: "A2 — SHA de merge à projeter (40 hex, ancêtre de main). Vide = HEAD du checkout SCM. Posé par provision-apply, jamais à la main sauf repli (A6)."),
-            // Env cible : sélectionne per_env[ENVIRONMENT] du manifeste ET pose
-            // X-Environment vers le proxy d'admin. La liste vient de la CHAÎNE
+            // Env cible : sélectionne per_env[ENVIRONMENT] du manifeste ET le
+            // credential du palier (A3 : envs/<env>/wm-admin ou admin-oauth). La liste vient de la CHAÎNE
             // (clients/_example/environments.yaml, terminus exclu par structure — G4/D6),
             // relue à chaque build : plus aucune liste en dur.
             choice(name: 'ENVIRONMENT', choices: envs,
-                   description: "Environnement cible (identité IP/cert par env + header X-Environment)."),
+                   description: "Environnement cible : sélectionne per_env[ENVIRONMENT] du manifeste ET le credential du palier (envs/<env>/…, A3)."),
             // Mode d'accès à l'API d'admin. Chez le CLIENT il n'y a QUE proxy-oauth2.
             choice(name: 'ADMIN_VIA', choices: ['direct', 'proxy-oauth2'],
                    description: "Accès à l'API d'admin : direct (lab, Basic) ou proxy-oauth2 (modèle client : self-proxy + Bearer client_credentials)."),
@@ -365,40 +391,83 @@ pipeline {
               set -eu
               MANIFEST="${MANIFEST:-clients/_example/applications/demo-consumer.ansible.yml}"
 
-              # Mode d'accès à l'admin : chez le client, TOUJOURS proxy-oauth2 —
-              # l'API d'admin est derrière son self-proxy, le rôle obtient un Bearer
-              # (client_credentials, creds lus dans Vault) au lieu du Basic direct.
-              # Équipe de cloisonnement (E3 geste 1) — dérivée du chemin KV du
-              # compte de service, borné par la policy Vault du token nominatif.
-              TEAM="${APIM_TEAM:-$(printf '%s' "$APIM_WM_CREDS_SUB" | cut -d/ -f2)}"
-              echo "  (cloisonnement de l'application sur la team : ${TEAM})"
-
-              if [ "${ADMIN_VIA:-direct}" = "proxy-oauth2" ]; then
-                # Override complet s'il est fourni, sinon composition depuis les
-                # morceaux. `${VAR:-}` obligatoire : Jenkins n'EXPORTE PAS au shell
-                # une variable d'environnement vide (même piège qu'APIM_KV_PREFIX).
-                PROXY_BASE="${APIM_PROXY_BASE:-}"
-                if [ -z "$PROXY_BASE" ]; then
-                  PROXY_BASE="${APIM_PROXY_HOST}/gateway/${APIM_PROXY_API}/${APIM_PROXY_VER}${APIM_PROXY_PATH}"
-                fi
-                APIM_API_BASE="$PROXY_BASE"
-                APIM_AUTH_MODE="oauth2"
-                echo "  (API d'admin via le proxy OAuth2 : $APIM_API_BASE)"
-              else
-                APIM_AUTH_MODE="basic"
-              fi
-
               # token_url : passé en -e SEULEMENT si non vide (sinon résolution Vault).
               TOKEN_URL_OPT=""
               [ -n "${APIM_OAUTH_TOKEN_URL:-}" ] && TOKEN_URL_OPT="-e apim_ss_oauth_token_url=${APIM_OAUTH_TOKEN_URL}"
 
-              # oauth_sub : même règle. En mode basic il n'est JAMAIS lu — le laisser
-              # vide (ou non défini) ne doit pas tuer l'étape, et surtout ne doit pas
-              # écraser le défaut du rôle par un `-e apim_ss_vault_oauth_sub=` vide.
-              OAUTH_SUB_OPT=""
-              [ -n "${APIM_OAUTH_SUB:-}" ] && OAUTH_SUB_OPT="-e apim_ss_vault_oauth_sub=${APIM_OAUTH_SUB}"
+              # La voie (direct | proxy du palier), la base d'admin, le mode
+              # d'auth, les sous-chemins Vault et l'ÉQUIPE ne se composent plus
+              # ici : ils sortent de la garde du palier (2), APRÈS le login —
+              # le credential décide, le Jenkinsfile route.
 
-              # 0) GATEWAY DISPONIBLE ? Le lab la recycle toutes les ~20 min (keepalive
+              # 1) IDENTITÉ NOMINATIVE → TOKEN VAULT. Voie B (JWT) si fournie, sinon
+              #    voie A (VAULT_USER + mot de passe annuaire). Le détail — corps JSON
+              #    non forgé en shell, user URL-encodé, rien en argv — est dans la lib.
+              # DEBUG : exporte STOA_DEBUG (lib + rôle Ansible) et pose la verbosité ansible.
+              VOPT=""
+              if [ "${DEBUG:-false}" = "true" ]; then
+                export STOA_DEBUG=1
+                VOPT="-v"
+                echo "  [DEBUG activé] appels Vault/HTTP tracés, erreurs redactées — aucun secret n'est imprimé."
+              fi
+              . ci/lib/vault-login.sh
+              # Le trap est armé AVANT tout : il révoque MÊME si la convergence échoue.
+              # Sans lui, un `revoke` en dernière instruction est sauté par `set -e` dès
+              # qu'une étape rate, et le token nominatif survit jusqu'à son TTL.
+              trap vault_trap_revoke EXIT
+              # `RC=0; cmd || RC=$?` et NON `if ! cmd; then RC=$?` : après un `!`, $?
+              # vaut 0 (la négation a réussi) et le code de retour est perdu.
+              RC=0; vault_login_nominative || RC=$?
+              if [ "$RC" != 0 ]; then
+                # Barrière humaine : aucune identité fournie (build webhook = ACL.SYSTEM,
+                # aucun humain) → on s'arrête VERT, en plan-only. Une identité fournie
+                # mais REFUSÉE, elle, est une erreur : build rouge (fail-closed).
+                [ "$RC" = 2 ] || exit 1
+                echo "  (pas d'identité nominative → PLAN-only, apply sauté)"; exit 0
+              fi
+
+              # 2) A3 — LA GARDE DU PALIER, depuis la LIGNÉE DE MAIN (jamais l'arbre pinné).
+              #    Le stage Référence a checkouté l'arbre ENTIER au MERGE_SHA demandé ;
+              #    une garde lue dans cet arbre serait épinglée par la partie qu'elle
+              #    contrôle (build direct + MERGE_SHA ancien : le levier A6). Les trois
+              #    fichiers (script, lib, chaîne) sont extraits de origin/main dans un
+              #    répertoire qui CONSERVE l'arborescence (la lib se résout par
+              #    BASH_SOURCE, la chaîne par la lib). Le manifeste, lui, reste lu dans
+              #    l'arbre pinné : c'est la DONNÉE, pas la garde.
+              GATE_DIR="$WORKSPACE/.a3-gate"; rm -rf "$GATE_DIR"
+              PFX="$(git rev-parse --show-prefix)"
+              git fetch -q origin main
+              for f in scripts/selfservice-palier-gate.sh scripts/lib/env-chain.sh clients/_example/environments.yaml; do
+                mkdir -p "$GATE_DIR/$(dirname "$f")"
+                git show "origin/main:${PFX}${f}" > "$GATE_DIR/$f" 2>/dev/null \
+                  || { echo "REFUS: GATE_ABSENTE : ${PFX}${f} absent de origin/main — la garde du palier vient de la lignée de la définition du pipeline, jamais de l'arbre pinné ; rien n'est appliqué"; exit 1; }
+              done
+              #    Un refus tue l'étape ICI : le trap révoque le token (preuve de mort
+              #    comprise), la gateway n'a pas été touchée. La sortie est relue par
+              #    le shell UNE clé à la fois, valeur re-vérifiée contre la classe
+              #    [A-Za-z0-9_./:@+-] — jamais `eval`, jamais sourcée.
+              PALIER_OUT="$WORKSPACE/.a3-palier.env"; rm -f "$PALIER_OUT"
+              PALIER_OUT="$PALIER_OUT" MANIFEST="$MANIFEST" bash "$GATE_DIR/scripts/selfservice-palier-gate.sh" || exit 1
+              PALIER_ENV=""; PALIER_VIA=""; PALIER_TEAM=""; APIM_AUTH_MODE=""; APIM_WM_CREDS_SUB=""; APIM_OAUTH_SUB=""
+              while IFS='=' read -r k v; do
+                case "$v" in ''|*[!A-Za-z0-9_./:@+-]*) echo "REFUS: SORTIE_INVALIDE : valeur hors classe pour $k"; exit 1;; esac
+                case "$k" in
+                  PALIER_ENV) PALIER_ENV="$v";; PALIER_VIA) PALIER_VIA="$v";; PALIER_TEAM) PALIER_TEAM="$v";;
+                  APIM_API_BASE) APIM_API_BASE="$v";; APIM_AUTH_MODE) APIM_AUTH_MODE="$v";;
+                  APIM_WM_CREDS_SUB) APIM_WM_CREDS_SUB="$v";; APIM_OAUTH_SUB) APIM_OAUTH_SUB="$v";; PALIER_TICKET) ;;
+                  *) echo "REFUS: SORTIE_INVALIDE : clé inconnue $k"; exit 1;;
+                esac
+              done < "$PALIER_OUT"
+              [ -n "$PALIER_TEAM" ] && [ -n "$APIM_AUTH_MODE" ] && [ -n "$APIM_WM_CREDS_SUB" ] && [ -n "$APIM_OAUTH_SUB" ] && [ -n "$PALIER_VIA" ] \
+                || { echo "REFUS: SORTIE_INVALIDE : PALIER_OUT incomplet"; exit 1; }
+              echo "  (cloisonnement de l'application sur la team : ${PALIER_TEAM} — décidée par le token)"
+              echo "  (API d'admin du palier ${PALIER_ENV} via ${PALIER_VIA} : ${APIM_API_BASE})"
+
+              # 3) GATEWAY DISPONIBLE ? — APRÈS la garde du palier (aucune connexion à la
+              #    gateway sans le credential du palier — le F4-canari) et ANNONCÉ par une
+              #    ligne inconditionnelle (un préflight qui réussit du premier coup
+              #    n'imprimait rien : la preuve live s'ancre sur ce marqueur).
+              #    Le lab la recycle toutes les ~20 min (keepalive
               #    licence trial) et un rolling restart chez le client produit la même
               #    fenêtre : attendre son retour AVANT de consommer l'identité —
               #    plutôt qu'échouer au milieu du play sur un « Connection refused »
@@ -447,6 +516,7 @@ pipeline {
                   echo "  ⚠ APIM_PREFLIGHT_TRIES='$PF_MAX' dépasse la borne raisonnable — repli sur 3600"
                   PF_MAX=3600
                 fi
+                echo "  préflight de joignabilité : $PF_URL (codes attendus : $PF_CODES, max $PF_MAX essais)"
                 i=0
                 while :; do
                   HC="$(curl -s -o /dev/null -m 5 -w '%{http_code}' "$PF_URL" || true)"
@@ -460,73 +530,60 @@ pipeline {
                 done
               fi
 
-              # 1) IDENTITÉ NOMINATIVE → TOKEN VAULT. Voie B (JWT) si fournie, sinon
-              #    voie A (VAULT_USER + mot de passe annuaire). Le détail — corps JSON
-              #    non forgé en shell, user URL-encodé, rien en argv — est dans la lib.
-              # DEBUG : exporte STOA_DEBUG (lib + rôle Ansible) et pose la verbosité ansible.
-              VOPT=""
-              if [ "${DEBUG:-false}" = "true" ]; then
-                export STOA_DEBUG=1
-                VOPT="-v"
-                echo "  [DEBUG activé] appels Vault/HTTP tracés, erreurs redactées — aucun secret n'est imprimé."
-              fi
-              . ci/lib/vault-login.sh
-              # Le trap est armé AVANT tout : il révoque MÊME si la convergence échoue.
-              # Sans lui, un `revoke` en dernière instruction est sauté par `set -e` dès
-              # qu'une étape rate, et le token nominatif survit jusqu'à son TTL.
-              trap vault_trap_revoke EXIT
-              # `RC=0; cmd || RC=$?` et NON `if ! cmd; then RC=$?` : après un `!`, $?
-              # vaut 0 (la négation a réussi) et le code de retour est perdu.
-              RC=0; vault_login_nominative || RC=$?
-              if [ "$RC" != 0 ]; then
-                # Barrière humaine : aucune identité fournie (build webhook = ACL.SYSTEM,
-                # aucun humain) → on s'arrête VERT, en plan-only. Une identité fournie
-                # mais REFUSÉE, elle, est une erreur : build rouge (fail-closed).
-                [ "$RC" = 2 ] || exit 1
-                echo "  (pas d'identité nominative → PLAN-only, apply sauté)"; exit 0
-              fi
 
-              # 2) CONVERGE via le RÔLE : le rôle lit les creds gateway dans Vault
-              #    avec le token nominatif (VAULT_TOKEN_FILE exporté par la lib),
-              #    chemin tenant-scopé.
+              # 4) TTL — le préflight a pu durer (10 s par essai au pire) ; le mount ldap
+              #    du lab tune les tokens à 600 s et le rôle relit Vault au début de
+              #    CHAQUE play : un token mort ferait un 403 « policy/chemin » loin de
+              #    sa cause. Refus nommé AVANT le premier play.
+              TTL="$(vault_token_ttl || true)"
+              case "$TTL" in ''|*[!0-9]*) echo "REFUS: TTL_INSUFFISANT : durée de vie du token nominatif invérifiable (lookup-self) — rien n'est appliqué"; exit 1;; esac
+              [ "$TTL" -ge "${APIM_TOKEN_TTL_MIN:-180}" ] \
+                || { echo "REFUS: TTL_INSUFFISANT : le token nominatif n'a plus que ${TTL}s (minimum ${APIM_TOKEN_TTL_MIN:-180}s pour converge + verify) — relancer l'apply, la gateway est joignable maintenant"; exit 1; }
+
+
+              # 5) CONVERGE via le RÔLE : le rôle lit les creds d'admin DU PALIER dans
+              #    Vault avec le token nominatif (VAULT_TOKEN_FILE exporté par la lib),
+              #    chemins envs/<env>/… sortis de la garde ; l'équipe est celle du token.
               # Le manifeste est passé en CHEMIN (apim_ss_manifest → include_vars dans le
               # rôle), PAS en `-e @` : un extra-var masquerait la fusion per_env (précédence).
               ansible-playbook ${VOPT:-} -e stoa_debug="${DEBUG:-false}" -i "$INVENTORY" ansible/selfservice-app.yml \
                 -e apim_ss_manifest="$MANIFEST" \
                 -e apim_ss_env="${ENVIRONMENT:-}" \
-                -e apim_ss_team="$TEAM" \
+                -e apim_ss_team="$PALIER_TEAM" \
                 -e apim_ss_api_base="$APIM_API_BASE" \
                 -e apim_ss_data_base="$APIM_DATA_BASE" \
                 -e apim_ss_vault_wm_creds_sub="$APIM_WM_CREDS_SUB" \
+                -e apim_ss_vault_oauth_sub="$APIM_OAUTH_SUB" \
                 -e apim_ss_auth_mode="$APIM_AUTH_MODE" \
                 -e apim_ss_vault_kv_mount="$APIM_KV_MOUNT" \
                 -e apim_ss_vault_prefix="${APIM_KV_PREFIX:-}" \
                 -e apim_ss_oauth_client_auth="$APIM_OAUTH_CLIENT_AUTH" \
                 -e apim_ss_vault_oauth_client_id_key="$APIM_OAUTH_CID_KEY" \
                 -e apim_ss_vault_oauth_client_secret_key="$APIM_OAUTH_CSECRET_KEY" \
-                ${OAUTH_SUB_OPT:-} ${TOKEN_URL_OPT:-}
+                ${TOKEN_URL_OPT:-}
 
-              # 3) VERIFY fail-closed (structurel : ENFORCEMENT_CONFIRMED + OUTBOUND_CONFIRMED ;
+              # 6) VERIFY fail-closed (structurel : ENFORCEMENT_CONFIRMED + OUTBOUND_CONFIRMED ;
               #    le check data-plane live reste off — l'IP de l'agent ≠ l'allowlist).
               ansible-playbook ${VOPT:-} -e stoa_debug="${DEBUG:-false}" -i "$INVENTORY" ansible/selfservice-app-verify.yml \
                 -e apim_ss_manifest="$MANIFEST" \
                 -e apim_ss_env="${ENVIRONMENT:-}" \
-                -e apim_ss_team="$TEAM" \
+                -e apim_ss_team="$PALIER_TEAM" \
                 -e apim_ss_api_base="$APIM_API_BASE" \
                 -e apim_ss_data_base="$APIM_DATA_BASE" \
                 -e apim_ss_vault_wm_creds_sub="$APIM_WM_CREDS_SUB" \
+                -e apim_ss_vault_oauth_sub="$APIM_OAUTH_SUB" \
                 -e apim_ss_auth_mode="$APIM_AUTH_MODE" \
                 -e apim_ss_vault_kv_mount="$APIM_KV_MOUNT" \
                 -e apim_ss_vault_prefix="${APIM_KV_PREFIX:-}" \
                 -e apim_ss_oauth_client_auth="$APIM_OAUTH_CLIENT_AUTH" \
                 -e apim_ss_vault_oauth_client_id_key="$APIM_OAUTH_CID_KEY" \
                 -e apim_ss_vault_oauth_client_secret_key="$APIM_OAUTH_CSECRET_KEY" \
-                ${OAUTH_SUB_OPT:-} ${TOKEN_URL_OPT:-}
+                ${TOKEN_URL_OPT:-}
 
-              # 4) le token nominatif meurt avec le build — révocation + PREUVE DE MORT
+              # 7) le token nominatif meurt avec le build — révocation + PREUVE DE MORT
               #    (lookup-self -> 403) exécutées par le trap, succès comme échec.
 
-              # 5) A2 — ce qui a RÉELLEMENT été projeté, annoncé SEULEMENT ici, après
+              # 8) A2 — ce qui a RÉELLEMENT été projeté, annoncé SEULEMENT ici, après
               #    converge + verify : un PLAN-only (sortie 0 plus haut, sans identité)
               #    ou un échec n'annonce rien, et l'amont ne peut pas prendre une
               #    référence calculée pour un apply qui n'a pas eu lieu.

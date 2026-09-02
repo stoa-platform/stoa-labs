@@ -355,6 +355,94 @@ if mutant 's@^if \[ "\$ENVIRONMENT" = "\$TERMINUS" \]; then$@if false; then@' m_
 fi
 
 echo
+echo "═══ B. le câblage de ci/Jenkinsfile.selfservice (vue code) ═══"
+JF="ci/Jenkinsfile.selfservice"
+code_view(){ awk '{ if ($0 ~ /^[[:space:]]*(\/\/|#)/) print ""; else print }' "$1"; }
+code_view "$JF" > "$TMP/jf.code"; tr -s ' ' < "$TMP/jf.code" > "$TMP/jf.norm"
+jf(){ grep -qF -- "$1" "$TMP/jf.norm"; }
+code_line(){ grep -n -F -- "$2" "$1" | head -1 | cut -d: -f1; }
+line_after(){ awk -v s="$1" -v pat="$2" 'NR>s && index($0, pat) { print NR; exit }' "$3"; }
+grep -q 'deploy/banking-demo' "$TMP/jf.code" && bad "B.1 un chemin deploy/banking-demo subsiste dans le code du Jenkinsfile (credential de tenant)" || ok "B.1 aucun deploy/banking-demo dans le code"
+grep -Eq 'env\.APIM_WM_CREDS_SUB \?:|env\.APIM_OAUTH_SUB \?:' "$TMP/jf.code" && bad "B.1b les anciens knobs tenant APIM_WM_CREDS_SUB/APIM_OAUTH_SUB sont encore posés" || ok "B.1b plus de knob APIM_WM_CREDS_SUB / APIM_OAUTH_SUB (tenant)"
+jf "APIM_WM_CREDS_SUB_TPL = \"\${env.APIM_WM_CREDS_SUB_TPL ?: 'envs/__ENV__/wm-admin'}\"" && jf "APIM_OAUTH_SUB_TPL = \"\${env.APIM_OAUTH_SUB_TPL ?: 'envs/__ENV__/admin-oauth'}\"" \
+  && ok "B.2 gabarits APIM_WM_CREDS_SUB_TPL / APIM_OAUTH_SUB_TPL = envs/__ENV__/… (le palier est dans le chemin)" || bad "B.2 gabarits _TPL absents ou défauts inattendus"
+jf "APIM_PROXY_API = \"\${env.APIM_PROXY_API ?: 'wm-admin-__ENV__'}\"" && ok "B.3 APIM_PROXY_API défaut wm-admin-__ENV__ (le proxy du palier, plus wm-admin-self)" || bad "B.3 APIM_PROXY_API : défaut inattendu"
+grep -q 'wm-admin-self' "$TMP/jf.code" && bad "B.3b wm-admin-self subsiste dans le code" || ok "B.3b aucun wm-admin-self dans le code"
+jf "APIM_TERMINUS_BASE = \"\${env.APIM_TERMINUS_BASE ?: ''}\"" && ok "B.4 APIM_TERMINUS_BASE posé SANS défaut" || bad "B.4 APIM_TERMINUS_BASE absent ou avec un défaut"
+grep -q 'cut -d/ -f2' "$TMP/jf.code" && bad "B.5 la dérivation de TEAM par le chemin du credential subsiste" || ok "B.5 plus de dérivation de TEAM par cut -d/ -f2"
+L_LOGIN=$(code_line "$TMP/jf.code" 'RC=0; vault_login_nominative || RC=$?')
+L_FETCH=$(line_after "${L_LOGIN:-0}" 'git fetch -q origin main' "$TMP/jf.code")
+L_FOR=$(line_after "${L_LOGIN:-0}" 'for f in scripts/selfservice-palier-gate.sh scripts/lib/env-chain.sh clients/_example/environments.yaml; do' "$TMP/jf.code")
+L_SHOW=$(line_after "${L_LOGIN:-0}" 'git show "origin/main:${PFX}${f}"' "$TMP/jf.code")
+L_ABS=$(line_after "${L_LOGIN:-0}" 'REFUS: GATE_ABSENTE' "$TMP/jf.code")
+L_GATE=$(line_after "${L_LOGIN:-0}" 'bash "$GATE_DIR/scripts/selfservice-palier-gate.sh"' "$TMP/jf.code")
+L_READ=$(line_after "${L_LOGIN:-0}" "while IFS='=' read -r k v; do" "$TMP/jf.code")
+L_PF=$(line_after "${L_LOGIN:-0}" 'préflight de joignabilité :' "$TMP/jf.code")
+L_TTL=$(line_after "${L_LOGIN:-0}" 'vault_token_ttl' "$TMP/jf.code")
+L_CONV=$(line_after "${L_LOGIN:-0}" 'ansible/selfservice-app.yml' "$TMP/jf.code")
+L_VERIFY=$(line_after "${L_LOGIN:-0}" 'ansible/selfservice-app-verify.yml' "$TMP/jf.code")
+L_CP=$(line_after "${L_LOGIN:-0}" 'cp .a2-reference-sha .a2-applied-sha' "$TMP/jf.code")
+ordre_verdict(){ # <fichier code> → OK | KO: …
+  local f="$1" l_login l_fetch l_show l_gate l_read l_pf l_ttl l_conv l_verify l_cp
+  l_login=$(code_line "$f" 'RC=0; vault_login_nominative || RC=$?'); [ -n "$l_login" ] || { echo "KO: login absent"; return; }
+  l_fetch=$(line_after "$l_login" 'git fetch -q origin main' "$f"); [ -n "$l_fetch" ] || { echo "KO: fetch de main absent après le login"; return; }
+  l_show=$(line_after "$l_login" 'git show "origin/main:${PFX}${f}"' "$f"); [ -n "$l_show" ] || { echo "KO: extraction git show origin/main absente"; return; }
+  l_gate=$(line_after "$l_login" 'bash "$GATE_DIR/scripts/selfservice-palier-gate.sh"' "$f"); [ -n "$l_gate" ] || { echo "KO: garde absente (aucun appel de selfservice-palier-gate.sh)"; return; }
+  l_read=$(line_after "$l_login" "while IFS='=' read -r k v; do" "$f"); [ -n "$l_read" ] || { echo "KO: relecture de PALIER_OUT absente"; return; }
+  l_pf=$(line_after "$l_login" 'préflight de joignabilité :' "$f"); [ -n "$l_pf" ] || { echo "KO: préflight non annoncé"; return; }
+  l_ttl=$(line_after "$l_login" 'vault_token_ttl' "$f"); [ -n "$l_ttl" ] || { echo "KO: TTL non relu"; return; }
+  l_conv=$(line_after "$l_login" 'ansible/selfservice-app.yml' "$f"); l_verify=$(line_after "$l_login" 'ansible/selfservice-app-verify.yml' "$f"); l_cp=$(line_after "$l_login" 'cp .a2-reference-sha .a2-applied-sha' "$f")
+  [ -n "$l_conv" ] && [ -n "$l_verify" ] && [ -n "$l_cp" ] || { echo "KO: converge/verify/annonce A2 introuvables après le login"; return; }
+  [ "$l_login" -lt "$l_fetch" ] && [ "$l_fetch" -lt "$l_show" ] && [ "$l_show" -lt "$l_gate" ] && [ "$l_gate" -lt "$l_read" ] || { echo "KO: login < fetch < git show < garde < relecture non respecté"; return; }
+  [ "$l_read" -lt "$l_pf" ] || { echo "KO: la garde ($l_gate) n'est pas AVANT le préflight ($l_pf) — la gateway serait touchée sans le credential du palier"; return; }
+  [ "$l_pf" -lt "$l_ttl" ] && [ "$l_ttl" -lt "$l_conv" ] && [ "$l_conv" -lt "$l_verify" ] && [ "$l_verify" -lt "$l_cp" ] || { echo "KO: préflight < TTL < converge < verify < annonce A2 non respecté"; return; }
+  echo OK
+}
+V="$(ordre_verdict "$TMP/jf.code")"
+[ "$V" = OK ] && ok "B.6 ordre : login ($L_LOGIN) < fetch ($L_FETCH) < git show ($L_SHOW) < garde ($L_GATE) < relecture ($L_READ) < préflight ($L_PF) < TTL ($L_TTL) < converge ($L_CONV) < verify ($L_VERIFY) < annonce A2 ($L_CP)" || bad "B.6 $V"
+[ -n "$L_FOR" ] && [ -n "$L_ABS" ] && ok "B.7 les TROIS fichiers de la garde (script, lib, chaîne) sont extraits de origin/main, refus GATE_ABSENTE" || bad "B.7 extraction incomplète (for=$L_FOR abs=$L_ABS)"
+[ -n "$L_FETCH" ] && [ -n "$L_SHOW" ] && [ "$L_FETCH" -lt "$L_SHOW" ] && ok "B.8 git fetch origin main AVANT git show" || bad "B.8 fetch/show (fetch=$L_FETCH show=$L_SHOW)"
+grep -q '\*\[!A-Za-z0-9_./:@+-\]\*' "$TMP/jf.code" && grep -q 'REFUS: SORTIE_INVALIDE' "$TMP/jf.code" && ok "B.9 relecture : classe [A-Za-z0-9_./:@+-] re-vérifiée par le shell, SORTIE_INVALIDE" || bad "B.9 relecture sans contrôle de classe"
+grep -Eq '(^|[^A-Za-z_])eval([^A-Za-z_]|$)' "$TMP/jf.code" && bad "B.9b eval présent dans le Jenkinsfile" || ok "B.9b aucun eval"
+grep -Eq '(^|[[:space:]])(\.|source) +"?\$PALIER_OUT' "$TMP/jf.code" && bad "B.9c PALIER_OUT est sourcé" || ok "B.9c PALIER_OUT n'est jamais sourcé"
+for kv in 'apim_ss_team="$PALIER_TEAM"' 'apim_ss_api_base="$APIM_API_BASE"' 'apim_ss_auth_mode="$APIM_AUTH_MODE"' 'apim_ss_vault_wm_creds_sub="$APIM_WM_CREDS_SUB"' 'apim_ss_vault_oauth_sub="$APIM_OAUTH_SUB"'; do
+  n=$(grep -cF -- "-e $kv" "$TMP/jf.code")
+  [ "$n" = 2 ] && ok "B.10 -e $kv passé au converge ET au verify" || bad "B.10 -e $kv : $n occurrence(s) (attendu 2)"
+done
+grep -q 'OAUTH_SUB_OPT' "$TMP/jf.code" && bad "B.10b OAUTH_SUB_OPT conditionnel subsiste" || ok "B.10b plus d'OAUTH_SUB_OPT conditionnel (les deux subs viennent de la garde)"
+grep -q 'REFUS: TTL_INSUFFISANT' "$TMP/jf.code" && grep -q 'APIM_TOKEN_TTL_MIN' "$TMP/jf.code" && ok "B.11 TTL_INSUFFISANT sous APIM_TOKEN_TTL_MIN" || bad "B.11 garde de TTL absente"
+wenv_names(){ awk -v s="$1" 'NR>=s { print; if ($0 ~ /\]\) \{/) exit }' "$TMP/jf.code" | grep -oE '"[A-Z_]+=\$\{params\.' | sed -E 's/^"([A-Z_]+)=.*/\1/' | tr '\n' ' ' | sed 's/ $//'; }
+L_REF=$(code_line "$TMP/jf.code" "stage('Référence — le SHA mergé"); L_PLAN=$(code_line "$TMP/jf.code" "stage('Plan — valider"); L_APPLY=$(code_line "$TMP/jf.code" "stage('Apply — converge")
+L_W1=$(awk "NR>${L_REF:-0} && /withEnv\(\[/ {print NR; exit}" "$TMP/jf.code"); L_W2=$(awk "NR>${L_PLAN:-0} && /withEnv\(\[/ {print NR; exit}" "$TMP/jf.code"); L_W3=$(awk "NR>${L_APPLY:-0} && /withEnv\(\[/ {print NR; exit}" "$TMP/jf.code")
+[ "$(wenv_names "$L_W1")" = "MANIFEST MERGE_SHA ENVIRONMENT" ] && [ "$(wenv_names "$L_W2")" = "MANIFEST MERGE_SHA ENVIRONMENT" ] && [ "$(wenv_names "$L_W3")" = "MANIFEST MERGE_SHA ENVIRONMENT ADMIN_VIA DEBUG VAULT_USER USER_VAULT_JWT" ] \
+  && ok "B.12 les listes withEnv des trois stages sont INCHANGÉES (A0 dettes)" || bad "B.12 withEnv : Référence=[$(wenv_names "$L_W1")] Plan=[$(wenv_names "$L_W2")] Apply=[$(wenv_names "$L_W3")]"
+grep -q 'rm -f "$PALIER_OUT"' "$TMP/jf.code" && ok "B.13 PALIER_OUT purgé avant l'appel" || bad "B.13 pas de purge de PALIER_OUT"
+grep -nE '^[[:space:]]*sh "' "$TMP/jf.code" | grep -q 'PALIER_' && bad "B.14 une valeur PALIER_* est interpolée par Groovy dans un sh" || ok "B.14 les PALIER_* sont lues par le shell, jamais interpolées par Groovy"
+grep -Eq 'bash +scripts/selfservice-palier-gate.sh' "$TMP/jf.code" && bad "B.15 la garde est appelée depuis l'arbre pinné (scripts/… relatif)" || ok "B.15 la garde n'est jamais appelée depuis l'arbre pinné"
+# B.16 mutation d'ordre : le bloc de garde déplacé APRÈS le préflight (ancre d'instruction, awk)
+if [ -n "$L_GATE" ] && [ -n "$L_PF" ]; then
+  awk '/^ *GATE_DIR="\$WORKSPACE\/.a3-gate"/,/API d.admin du palier/' "$TMP/jf.code" > "$TMP/blk-gate"
+  [ -s "$TMP/blk-gate" ] && grep -q 'selfservice-palier-gate.sh' "$TMP/blk-gate" && ok "B.16a bloc de garde extrait ($(wc -l < "$TMP/blk-gate" | tr -d ' ') lignes)" || bad "B.16a extraction du bloc de garde vide"
+  awk -v B="$TMP/blk-gate" '
+    /^ *GATE_DIR="\$WORKSPACE\/.a3-gate"/ { skip=1 }
+    skip { if (/API d.admin du palier/) skip=0; next }
+    /TTL="\$\(vault_token_ttl \|\| true\)"/ && !ins { while ((getline l < B) > 0) print l; close(B); ins=1 }
+    { print }' "$TMP/jf.code" > "$TMP/jf.mut16"
+  cmp -s "$TMP/jf.code" "$TMP/jf.mut16" && bad "B.16b mutation d'ordre NO-OP" || ok "B.16b le mutant d'ordre diffère de l'original"
+  V16="$(ordre_verdict "$TMP/jf.mut16")"
+  case "$V16" in "KO: la garde"*"AVANT le préflight"*) ok "B.16c MUTATION : garde après le préflight ⇒ le verdict d'ordre rougit pour la BONNE raison" ;; *) bad "B.16c verdict inattendu sur le mutant d'ordre : $V16" ;; esac
+  grep -v 'bash "$GATE_DIR/scripts/selfservice-palier-gate.sh"' "$TMP/jf.code" > "$TMP/jf.mut17"
+  V17="$(ordre_verdict "$TMP/jf.mut17")"
+  case "$V17" in "KO: garde absente"*) ok "B.17 MUTATION : appel retiré ⇒ le verdict nomme la garde absente" ;; *) bad "B.17 verdict inattendu : $V17" ;; esac
+else
+  bad "B.16/B.17 non joués (garde ou préflight introuvables)"
+fi
+ci/lint-jenkinsfiles.sh > "$TMP/lint.jf" 2>&1 && ok "B.18 ci/lint-jenkinsfiles.sh : $(grep -o 'PORTE VERTE.*' "$TMP/lint.jf")" || bad "B.18 un Jenkinsfile ne compile plus : $(grep -i 'rouge\|error' "$TMP/lint.jf" | head -2 | tr '\n' ' ')"
+bash scripts/test-a0-wiring.sh > "$TMP/a0.out" 2>&1 && ok "B.19 test-a0-wiring : $(tail -1 "$TMP/a0.out")" || bad "B.19 test-a0-wiring rouge : $(grep FAIL "$TMP/a0.out" | head -3 | tr '\n' ' ')"
+bash scripts/test-provision-apply-wiring.sh > "$TMP/pa.out" 2>&1 && ok "B.19b test-provision-apply-wiring : $(tail -1 "$TMP/pa.out")" || bad "B.19b test-provision-apply-wiring rouge : $(grep -E 'FAIL|✗' "$TMP/pa.out" | head -3 | tr '\n' ' ')"
+bash scripts/test-palier-retention.sh > "$TMP/g4.out" 2>&1 && ok "B.20 test-palier-retention (G4) : $(tail -1 "$TMP/g4.out" | tr -d '\n')" || bad "B.20 test-palier-retention rouge : $(grep FAIL "$TMP/g4.out" | head -3 | tr '\n' ' ')"
+
+echo
 echo "═══ E. vault_token_ttl (ci/lib/vault-login.sh) contre le stub ═══"
 # La lib est POSIX et sourcée par le pipeline ; ici sourcée dans un sous-shell
 # bash avec un « login simulé » : _VAULT_TMPDIR + token.hdr posés à la main
