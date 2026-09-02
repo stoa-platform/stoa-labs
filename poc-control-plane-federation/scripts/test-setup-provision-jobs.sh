@@ -30,6 +30,7 @@ UPDATE_CODE = int(os.environ.get("UPDATE_CODE", "200"))
 NEED_AUTH = os.environ.get("NEED_AUTH", "") == "1"
 CRUMB_CODE = int(os.environ.get("CRUMB_CODE", "200"))   # 302 = portail devant Jenkins
 NEED_CF = os.environ.get("NEED_CF", "") == "1"          # exige le service token
+BUILD_CODE = int(os.environ.get("BUILD_CODE", "201"))   # reponse a POST /job/<j>/build (A0)
 def log(line):
     with open(LOG, "a") as f: f.write(line + "\n")
 class H(BaseHTTPRequestHandler):
@@ -72,6 +73,11 @@ class H(BaseHTTPRequestHandler):
             log("POST update " + self.path); return self._send(UPDATE_CODE)
         if re.match(r"^/job/[^/]+/doDelete$", self.path):
             log("POST DELETE " + self.path); return self._send(200)
+        mb = re.match(r"^/job/([^/]+)/build$", self.path)
+        if mb:
+            # A0 : build d'AMORCAGE. 201 = accepte (job sans parametre) ;
+            # 400 = le vrai Jenkins refuse POST /build sur un job PARAMETRE (mesure).
+            log("POST build " + mb.group(1)); return self._send(BUILD_CODE)
         if self.path.startswith("/createItem"):
             log("POST create " + self.path); return self._send(200)
         self._send(404)
@@ -83,7 +89,7 @@ start(){ # $1=jobs existants (csv) $2=code MAJ $3=auth(0/1) $4=code crumb $5=CF 
   [ -n "$PID" ] && kill "$PID" 2>/dev/null
   : > "$TMP/calls.log"
   CALLLOG="$TMP/calls.log" EXISTING_JOBS="$1" UPDATE_CODE="$2" NEED_AUTH="${3:-0}" \
-  CRUMB_CODE="${4:-200}" NEED_CF="${5:-0}" \
+  CRUMB_CODE="${4:-200}" NEED_CF="${5:-0}" BUILD_CODE="${BUILD_CODE:-201}" \
     python3 "$TMP/fakejenkins.py" "$PORT" >/dev/null 2>&1 &
   PID=$!
   for _ in $(seq 1 40); do curl -s "http://127.0.0.1:$PORT/x" >/dev/null 2>&1 && return; sleep 0.1; done
@@ -206,6 +212,35 @@ echo
 echo "== 13. instance injoignable : échec net =="
 OUT=$(cd "$REPO" && JENKINS_UI="http://127.0.0.1:1" JOBS=provision-apply bash "$S" 2>&1); RC=$?
 [ $RC -ne 0 ] && grep -q "injoignable" <<<"$OUT" && ok "diagnostic explicite" || ko "échec silencieux ou obscur"
+
+echo
+echo "== 14. BOOTSTRAP_JOBS (A0) : le build d'amorçage suit la pose — et seulement elle =="
+# app-request pose son formulaire depuis son Jenkinsfile ; re-poser son XML
+# EFFACE les paramètres (mesuré 2026-09-02). Le poseur doit donc amorcer d'un
+# build les jobs qu'on lui nomme, APRÈS une pose réussie, jamais en dry-run,
+# jamais sans demande — et dire si Jenkins refuse (400 = déjà paramétré).
+start "provision-apply,provision-plan" 200
+OUT=$(cd "$REPO" && JENKINS_UI="$JU" BOOTSTRAP_JOBS=provision-plan bash "$S" 2>&1); RC=$?
+[ $RC -eq 0 ] && ok "succès avec BOOTSTRAP_JOBS" || ko "échec (rc=$RC) : $OUT"
+[ "$(calls | grep -c 'POST build provision-plan')" = "1" ] && ok "UN build d'amorçage demandé pour le job nommé" || ko "amorçage absent ou répété : $(calls | grep -c 'POST build')"
+calls | grep -q 'POST build provision-apply' && ko "amorçage sur un job NON nommé" || ok "aucun amorçage sur le job non nommé"
+L_POSE=$(calls | grep -n 'POST update /job/provision-plan' | cut -d: -f1); L_BOOT=$(calls | grep -n 'POST build provision-plan' | cut -d: -f1)
+[ -n "$L_POSE" ] && [ -n "$L_BOOT" ] && [ "$L_POSE" -lt "$L_BOOT" ] && ok "l'amorçage vient APRÈS la pose (appels $L_POSE puis $L_BOOT)" || ko "ordre pose/amorçage cassé (pose=$L_POSE boot=$L_BOOT)"
+grep -q "build d'amorçage déclenché" <<<"$OUT" && ok "annoncé dans la sortie" || ko "amorçage muet"
+start "provision-apply,provision-plan" 200
+OUT=$(cd "$REPO" && JENKINS_UI="$JU" bash "$S" 2>&1); RC=$?
+calls | grep -q 'POST build' && ko "amorçage sans BOOTSTRAP_JOBS" || ok "sans BOOTSTRAP_JOBS : aucun build demandé (défaut inchangé)"
+start "provision-apply,provision-plan" 200
+OUT=$(cd "$REPO" && JENKINS_UI="$JU" DRY_RUN=true BOOTSTRAP_JOBS=provision-plan bash "$S" 2>&1); RC=$?
+calls | grep -q 'POST build' && ko "DRY_RUN a amorcé un build !" || ok "DRY_RUN : aucun build demandé"
+grep -q "serait AMORCÉ" <<<"$OUT" && ok "DRY_RUN annonce l'amorçage qui serait fait" || ko "DRY_RUN muet sur l'amorçage"
+start "provision-plan" 500
+OUT=$(cd "$REPO" && JENKINS_UI="$JU" JOBS=provision-plan BOOTSTRAP_JOBS=provision-plan bash "$S" 2>&1); RC=$?
+calls | grep -q 'POST build' && ko "amorçage tenté alors que la POSE a échoué" || ok "pose refusée ⇒ amorçage NON tenté (et dit)"
+grep -q "amorçage NON tenté" <<<"$OUT" && ok "le refus d'amorçage est nommé" || ko "refus d'amorçage muet"
+BUILD_CODE=400 start "provision-plan" 200
+OUT=$(cd "$REPO" && JENKINS_UI="$JU" JOBS=provision-plan BOOTSTRAP_JOBS=provision-plan bash "$S" 2>&1); RC=$?
+[ $RC -ne 0 ] && grep -q "DÉJÀ paramétré" <<<"$OUT" && ok "Jenkins répond 400 ⇒ échec du run, nommé « déjà paramétré » (jamais silencieux)" || ko "400 sur l'amorçage avalé (rc=$RC)"
 
 echo
 echo "======================================================================"

@@ -1,0 +1,101 @@
+// ci/Jenkinsfile.provisioning-request — MAILLON 1, VOIE MACHINE : une demande
+// d'application venue de l'API provisioning (OIG / CLI2, authentifiée + scope
+// sur la gateway) devient un manifeste + une Pull Request provision/<app>-<env>
+// sur le dépôt plateforme (ADR-078 §2 : un webhook ne porte aucun humain, la
+// décision reste le MERGE).
+//
+// Conversion DÉCLARATIVE du pipeline qui vivait en Groovy inline dans
+// ci/jenkins/provisioning-request.job.xml (<script>…</script>) — jalon A0 du
+// GOAL cd-applications 2026-09-02 : aucun job.xml porteur de logique, QUE des
+// Jenkinsfile from SCM. PARITÉ STRICTE avec le Groovy d'origine.
+//
+//   appel gateway (OIG/CLI2) ──webhook──▶ scripts/provision-request.sh
+//     ──▶ manifeste (fusion per_env.<env>, A1) + branche + PR ; le plan
+//         (provision-plan) se déclenche sur la PR ouverte.
+//
+// ── POURQUOI CE JOB NE LISTE AUCUN CHAMP, ET NE DOIT JAMAIS EN LISTER ──────
+// Il se réduit à `bash scripts/provision-request.sh` : les sept clés du
+// webhook (REQ_*) sont contribuées à l'ENVIRONNEMENT par le plugin
+// generic-webhook-trigger et lues par le SHELL du script. Toute évolution du
+// contrat (multi-IP et clé backend v3, palier multi-manifeste A1, demain un
+// champ de plus) est héritée SANS une ligne de changement ici — c'est
+// l'argument empirique pour garder la substance dans scripts/*.sh, jamais
+// dans le Groovy (mémoire ci-jenkinsfile-refactor). La voie HUMAINE, elle, est
+// ci/Jenkinsfile.app-request (formulaire) : même script, même aval.
+//
+// Le <triggers> du XML GAGNE sur celui-ci (fait mesuré) : miroir exact,
+// vérifié par scripts/lib/gwt-mirror.sh dans test-a0-wiring.sh.
+pipeline {
+
+  // `agent any` : aucune pause, le job travaille dès qu'il démarre ; le
+  // checkout du dépôt plateforme est implicite (définition SCM de la
+  // coquille, lightweight=false pour que scripts/ soit dans le workspace).
+  // Pas d'`options { disableConcurrentBuilds() }` — PARITÉ : le XML d'origine
+  // n'en avait pas, deux demandes concurrentes visent deux branches distinctes.
+  agent any
+
+  // ⚠ Ce bloc doit rester le MIROIR EXACT de celui de
+  // ci/jenkins/provisioning-request.job.xml. Token = celui que
+  // setup-provisioning-api.sh route depuis l'API provisioning de la gateway.
+  // Sans filtre (parité) : tout appel authentifié sur l'API est une demande.
+  // printPostContent: true (parité) : le corps de la demande est journalisé
+  // dans le build — il ne porte aucun secret (app, env, clientId, api…).
+  // Volontairement PAS de bloc `parameters {}` : ces valeurs ne viennent QUE
+  // du webhook ; la porte humaine est le formulaire app-request.
+  triggers {
+    GenericTrigger(
+      token: 'stoa-provision-request',
+      genericVariables: [
+        [key: 'REQ_APP',       value: '$.app'],
+        [key: 'REQ_ENV',       value: '$.env'],
+        [key: 'REQ_CLIENT_ID', value: '$.clientId'],
+        [key: 'REQ_API',       value: '$.api'],
+        [key: 'REQ_API_VER',   value: '$.apiVersion'],
+        [key: 'REQ_AUDIENCE',  value: '$.audience'],
+        [key: 'REQ_CALLER',    value: '$.caller'],
+      ],
+      printContributedVariables: true,
+      printPostContent: true)
+  }
+
+  // ── POINTS DE CONFIG CLIENT (motif `env.X ?: défaut`) ───────────────────
+  // Les défauts reproduisent EXACTEMENT ceux que provision-request.sh applique
+  // déjà de lui-même : les poser ici rend seulement le point de bascule
+  // VISIBLE et surchargeable sans toucher au moteur.
+  // ⚠ Hôtes vus DEPUIS le conteneur de l'agent (réseau docker `poc`).
+  environment {
+    GIT_HOST             = "${env.GIT_HOST ?: 'http://gitea:3000'}"
+    GIT_REPO             = "${env.GIT_REPO ?: 'ci/stoa-labs'}"
+    // Credential Jenkins (secret text) portant le token Gitea du CI (push +
+    // PR). Était en dur dans le Groovy ('gitea-provision-token') ; même défaut.
+    GITEA_CREDENTIALS_ID = "${env.GITEA_CREDENTIALS_ID ?: 'gitea-provision-token'}"
+  }
+
+  stages {
+
+    // Nomme le build « demande <app>/<env> (<caller>) » — valeurs du webhook,
+    // utilisées ICI pour nommer seulement (jamais dans un shell interpolé) ;
+    // ce sont les gardes de provision-request.sh qui font foi sur leur forme.
+    stage('Contexte du webhook') {
+      steps {
+        script {
+          currentBuild.displayName = "demande ${env.REQ_APP ?: '?'}/${env.REQ_ENV ?: '?'} (${env.REQ_CALLER ?: 'appelant inconnu'})"
+          echo "Demande MACHINE — application=${env.REQ_APP ?: '(absent)'} env=${env.REQ_ENV ?: '(absent)'} api=${env.REQ_API ?: '(absent)'}@${env.REQ_API_VER ?: '(défaut)'} appelant=${env.REQ_CALLER ?: '(absent)'}"
+        }
+      }
+    }
+
+    stage('Ouvrir la demande (PR provision/<app>-<env>)') {
+      steps {
+        withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')]) {
+          // Chaîne sh en quotes SIMPLES : les REQ_* (tiers) sont lus par le
+          // SHELL depuis l'environnement, jamais interpolés par Groovy.
+          // `set +x` : le GITEA_TOKEN injecté par withCredentials ne s'écho pas.
+          dir('poc-control-plane-federation') {
+            sh 'set +x; bash scripts/provision-request.sh'
+          }
+        }
+      }
+    }
+  }
+}

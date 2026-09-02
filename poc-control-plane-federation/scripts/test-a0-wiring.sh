@@ -1,0 +1,379 @@
+#!/usr/bin/env bash
+# test-a0-wiring.sh — preuve X/X du jalon A0 (GOAL cd-applications) : TOUT EN
+# JENKINSFILE. Analyse statique + épreuves fonctionnelles HORS LIGNE : ni
+# Jenkins, ni Gitea réels.
+#
+# ── CE QUE CE TEST DÉFEND ────────────────────────────────────────────────────
+# Les trois jobs de l'aval applicatif (provision-apply, provision-plan,
+# provisioning-request) et le formulaire app-request ne portent PLUS une ligne
+# de Groovy dans leur job.xml : chaque XML est une COQUILLE « Pipeline from
+# SCM » (pointeur + miroir des triggers), le pipeline vit dans ci/Jenkinsfile.*
+# (compilé par `make lint-ci`), et le formulaire d'app-request est POSÉ par son
+# Jenkinsfile (properties([parameters([…])])) depuis des listes dérivées du
+# dépôt — plus aucun paramètre dans le XML, plus aucun marqueur substitué à la
+# pose.
+#
+# Quatre faits mesurés sur ce lab (2026-08-06, 2026-09-02) gouvernent ce que le
+# test exige : (1) le <triggers> du XML GAGNE sur le Jenkinsfile — d'où le
+# miroir structuré (scripts/lib/gwt-mirror.sh) sur les trois jobs à webhook ;
+# (2) un paramètre de build subit EnvVars.resolve() — d'où la ré-injection
+# brute withEnv([params…]) conservée ; (3) re-poser le XML EFFACE les
+# paramètres posés par un build — d'où le build d'amorçage câblé dans la pose ;
+# (4) un build sur un job sans paramètre lie ZÉRO paramètre — d'où le signal
+# d'amorçage capturé AVANT properties().
+#
+# Motif anti « vert vacant » : les ancres portent sur une vue CODE des
+# Jenkinsfile (lignes `//` blanchies, numérotation conservée) ; les ORDRES sont
+# vérifiés par numéros de ligne ; les mutations (§8) prouvent que le miroir
+# ROUGIT quand on retire ou altère le bloc <triggers>.
+#
+#   ./scripts/test-a0-wiring.sh
+set -uo pipefail
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$REPO" || exit 2
+TMP="$(mktemp -d /tmp/a0wiring.XXXXXX)"; trap 'rm -rf "$TMP"' EXIT
+PASS=0; FAIL=0
+ok(){ PASS=$((PASS+1)); printf '  ✅ %s\n' "$*"; }
+ko(){ FAIL=$((FAIL+1)); printf '  ❌ %s\n' "$*"; }
+
+# Total ATTENDU, ÉCRIT EN DUR — indépendant de PASS+FAIL. Toute section
+# ajoutée/retirée DOIT le mettre à jour : un oubli fait rougir le dernier §.
+EXPECTED_CHECKS=82
+
+# shellcheck source=scripts/lib/gwt-mirror.sh
+. scripts/lib/gwt-mirror.sh || { echo "lib gwt-mirror.sh introuvable"; exit 2; }
+
+# Vue CODE d'un Jenkinsfile : commentaires `//` blanchis (ligne vide), lignes
+# `#` d'un shell embarqué aussi ; numérotation conservée.
+code_view(){ sed -E 's@^[[:space:]]*(//|#).*$@@' "$1"; }
+code_line(){ grep -nF -- "$2" "$1" | head -1 | cut -d: -f1; }   # $1=vue code $2=motif → n° de ligne
+
+JOBS_SCM="provision-apply provision-plan provisioning-request app-request"
+
+echo "== 1. les QUATRE XML sont des coquilles « Pipeline from SCM » : zéro Groovy =="
+for J in $JOBS_SCM; do
+  X="ci/jenkins/$J.job.xml"
+  if [ ! -f "$X" ]; then ko "$J : XML introuvable ($X)"; ko "$J : (from SCM non vérifiable)"; ko "$J : (pointeur non vérifiable)"; continue; fi
+  python3 -c "import xml.etree.ElementTree as T; T.parse('$X')" 2>/dev/null \
+    && ok "$J : XML parsable" || ko "$J : XML cassé"
+  # STRUCTUREL (ElementTree), jamais textuel : les en-têtes XML de ce dépôt
+  # CITENT « <script> » et « <sandbox> » dans leurs commentaires — un grep nu
+  # rougirait sur un commentaire (mesuré en écrivant ce test).
+  RES=$(python3 - "$X" <<'PY'
+import sys, xml.etree.ElementTree as T
+r = T.parse(sys.argv[1]).getroot()
+d = r.find('definition'); pb = []
+if d is None or d.get('class') != 'org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition': pb.append('pas-CpsScmFlowDefinition')
+if d is not None and d.get('class') == 'org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition': pb.append('CpsFlowDefinition-residuelle')
+if r.find('.//script') is not None: pb.append('<script>-present')
+if r.find('.//sandbox') is not None: pb.append('<sandbox>-present')
+print(' '.join(pb))
+PY
+)
+  [ -z "$RES" ] && ok "$J : Pipeline from SCM — aucun élément <script>, aucune CpsFlowDefinition, aucun <sandbox> (structurel)" \
+                || ko "$J : encore du Groovy inline : $RES"
+  RES=""
+  grep -qF "<scriptPath>poc-control-plane-federation/ci/Jenkinsfile.$J</scriptPath>" "$X" || RES="$RES scriptPath"
+  grep -qF '<lightweight>false</lightweight>' "$X" || RES="$RES lightweight"
+  grep -qF '<url>http://gitea:3000/ci/stoa-labs.git</url>' "$X" || RES="$RES url"
+  grep -qF '<name>*/main</name>' "$X" || RES="$RES branche"
+  [ -z "$RES" ] && ok "$J : pointeur SCM complet (scriptPath ci/Jenkinsfile.$J, lightweight=false, gitea main)" \
+                || ko "$J : pointeur SCM incomplet :$RES"
+done
+
+echo
+echo "== 2. le MIROIR XML/Jenkinsfile des triggers, par la lib, sur les TROIS jobs à webhook (+ app-request sans trigger) =="
+shellcheck -x scripts/lib/gwt-mirror.sh >/dev/null 2>&1 \
+  && ok "scripts/lib/gwt-mirror.sh : shellcheck propre" || ko "scripts/lib/gwt-mirror.sh : shellcheck en échec"
+mirror_expect(){ # $1=job $2=nb de clés attendu
+  local out rc
+  out=$(gwt_mirror_diff "ci/jenkins/$1.job.xml" "ci/Jenkinsfile.$1" 2>&1); rc=$?
+  if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q '^MIROIR_OK'; then
+    ok "$1 : $out"
+  else
+    ko "$1 : miroir NON exact (rc=$rc) — $(printf '%s' "$out" | tr '\n' ' ')"
+  fi
+  printf '%s' "$out" | grep -q "vars=$2\$" \
+    && ok "$1 : $2 genericVariables, à l'identique des deux côtés" \
+    || ko "$1 : nombre de genericVariables inattendu (attendu $2) — $(printf '%s' "$out" | tr '\n' ' ')"
+}
+mirror_expect provision-apply 7
+mirror_expect provision-plan 3
+mirror_expect provisioning-request 7
+OUT=$(gwt_mirror_diff ci/jenkins/app-request.job.xml ci/Jenkinsfile.app-request 2>&1); RC=$?
+[ "$RC" -eq 0 ] && [ "$OUT" = "AUCUN_TRIGGER" ] \
+  && ok "app-request : AUCUN trigger des deux côtés (formulaire humain, <triggers/> vide)" \
+  || ko "app-request : un déclencheur est apparu d'un côté (rc=$RC : $OUT)"
+
+echo
+echo "== 3. ci/Jenkinsfile.provision-plan : parité stricte avec le Groovy d'origine, sans exécuteur pour rien =="
+JFP="ci/Jenkinsfile.provision-plan"; code_view "$JFP" > "$TMP/jf-plan.code"
+jfp(){ grep -qF -- "$1" "$TMP/jf-plan.code"; }
+grep -qE '^pipeline \{' "$JFP" && grep -qE '^  agent none' "$TMP/jf-plan.code" \
+  && ok "déclaratif, \`agent none\` au niveau pipeline (la PR étrangère n'alloue rien)" || ko "pas déclaratif / agent none absent au niveau pipeline"
+jfp 'disableConcurrentBuilds()' && ok "options { disableConcurrentBuilds() } — miroir de la propriété du XML" || ko "disableConcurrentBuilds absent (le XML l'a : divergence)"
+jfp "regexpFilterExpression: '^(opened|reopened|synchronized)\$'" && jfp "regexpFilterText: '\$PR_ACTION'" \
+  && ok "filtre GWT exact : \$PR_ACTION ~ ^(opened|reopened|synchronized)\$ (jamais la fermeture)" || ko "filtre GWT inattendu"
+jfp 'beforeAgent true' && jfp "expression { (env.PR_BRANCH ?: '').startsWith('provision/') }" \
+  && ok "garde provision/* AVANT l'agent (beforeAgent true)" || ko "garde provision/* ou beforeAgent absents"
+L_WHEN=$(code_line "$TMP/jf-plan.code" 'beforeAgent true'); L_AG=$(awk "NR>${L_WHEN:-0} && /^ *agent any/ {print NR; exit}" "$TMP/jf-plan.code")
+[ -n "$L_WHEN" ] && [ -n "$L_AG" ] && ok "le stage de plan a son propre \`agent any\` (ligne $L_AG) après la garde (ligne $L_WHEN)" || ko "agent any du stage de plan introuvable après la garde"
+L_SH=$(code_line "$TMP/jf-plan.code" "sh 'set +x; bash scripts/provision-plan.sh'")
+[ -n "$L_SH" ] && ok "scripts/provision-plan.sh invoqué en quotes SIMPLES avec set +x (ligne $L_SH)" || ko "invocation du script absente ou en quotes doubles"
+L_WC=$(code_line "$TMP/jf-plan.code" "withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')])")
+L_DIR=$(code_line "$TMP/jf-plan.code" "dir('poc-control-plane-federation')")
+[ -n "$L_WC" ] && [ -n "$L_DIR" ] && [ -n "$L_SH" ] && [ "$L_WC" -lt "$L_DIR" ] && [ "$L_DIR" -lt "$L_SH" ] \
+  && ok "ordre withCredentials ($L_WC) < dir ($L_DIR) < sh ($L_SH) : token présent, chemins relatifs justes" || ko "ordre withCredentials/dir/sh cassé (wc=$L_WC dir=$L_DIR sh=$L_SH)"
+MISS=""
+jfp "GIT_WEB_HOST         = \"\${env.GIT_WEB_HOST ?: 'http://localhost:13000'}\"" || MISS="$MISS GIT_WEB_HOST"
+jfp "GITEA_CREDENTIALS_ID = \"\${env.GITEA_CREDENTIALS_ID ?: 'gitea-provision-token'}\"" || MISS="$MISS GITEA_CREDENTIALS_ID"
+jfp "GIT_HOST             = \"\${env.GIT_HOST ?: 'http://gitea:3000'}\"" || MISS="$MISS GIT_HOST"
+jfp "GIT_REPO             = \"\${env.GIT_REPO ?: 'ci/stoa-labs'}\"" || MISS="$MISS GIT_REPO"
+[ -z "$MISS" ] && ok "points de config (défauts = ceux du Groovy : GIT_WEB_HOST localhost:13000, credential gitea-provision-token)" || ko "points de config absents/divergents :$MISS"
+BAD=""
+jfp 'git url:' && BAD="$BAD git-url"; grep -qE '^\s*parameters \{' "$TMP/jf-plan.code" && BAD="$BAD parameters{}"
+grep -q 'sh """' "$TMP/jf-plan.code" && BAD="$BAD sh-triple-double"; grep -qE '\binput\b' "$TMP/jf-plan.code" && BAD="$BAD input"
+grep -qE '^\s*(try \{|\} catch)' "$TMP/jf-plan.code" && BAD="$BAD try/catch"
+[ -z "$BAD" ] && ok "aucun git url:, parameters{}, sh \"\"\", input, try/catch" || ko "présent(s) :$BAD"
+jfp 'currentBuild.displayName = "plan ${app}/${envn} (PR #' && ok "le build est nommé « plan <app>/<env> (PR #n) »" || ko "displayName absent/divergent"
+[ -x scripts/provision-plan.sh ] && bash -n scripts/provision-plan.sh 2>/dev/null && ok "scripts/provision-plan.sh existe, exécutable, parsable" || ko "scripts/provision-plan.sh absent ou cassé"
+grep -q 'bash scripts/provision-plan.sh' "$TMP/jf-plan.code" && [ "$(grep -c 'provision-plan.sh' "$TMP/jf-plan.code")" -eq 1 ] \
+  && ok "le moteur est invoqué UNE fois : le pipeline route, la substance reste dans scripts/" || ko "invocations du moteur : $(grep -c 'provision-plan.sh' "$TMP/jf-plan.code")"
+
+echo
+echo "== 4. ci/Jenkinsfile.provisioning-request : la voie machine, sans un seul champ listé =="
+JFR="ci/Jenkinsfile.provisioning-request"; code_view "$JFR" > "$TMP/jf-req.code"
+jfr(){ grep -qF -- "$1" "$TMP/jf-req.code"; }
+grep -qE '^pipeline \{' "$JFR" && grep -qE '^  agent any' "$TMP/jf-req.code" \
+  && ok "déclaratif, \`agent any\` au niveau pipeline (aucune pause, travaille dès le départ)" || ko "pas déclaratif / agent any absent"
+jfr 'disableConcurrentBuilds' && ko "disableConcurrentBuilds présent — PARITÉ rompue (le XML d'origine n'en avait pas)" || ok "pas de disableConcurrentBuilds (parité : deux demandes visent deux branches)"
+jfr "token: 'stoa-provision-request'" && jfr "printPostContent: true" && ! jfr "regexpFilterExpression" \
+  && ok "token stoa-provision-request, printPostContent: true, SANS filtre (parité)" || ko "token/printPostContent/filtre divergents du Groovy d'origine"
+MISS=""
+for KV in "REQ_APP:\$.app" "REQ_ENV:\$.env" "REQ_CLIENT_ID:\$.clientId" "REQ_API:\$.api" "REQ_API_VER:\$.apiVersion" "REQ_AUDIENCE:\$.audience" "REQ_CALLER:\$.caller"; do
+  K="${KV%%:*}"; V="${KV#*:}"
+  grep -qE "\[key: '$K', *value: '\\$V'\]" "$TMP/jf-req.code" || MISS="$MISS $K"
+done
+[ -z "$MISS" ] && ok "les 7 clés REQ_* pointent les chemins JSON du contrat machine (\$.app … \$.caller)" || ko "clés absentes/divergentes :$MISS"
+L_SH=$(code_line "$TMP/jf-req.code" "sh 'set +x; bash scripts/provision-request.sh'")
+[ -n "$L_SH" ] && ok "scripts/provision-request.sh invoqué en quotes SIMPLES avec set +x (ligne $L_SH)" || ko "invocation du script absente ou en quotes doubles"
+L_WC=$(code_line "$TMP/jf-req.code" "withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')])")
+L_DIR=$(code_line "$TMP/jf-req.code" "dir('poc-control-plane-federation')")
+[ -n "$L_WC" ] && [ -n "$L_DIR" ] && [ -n "$L_SH" ] && [ "$L_WC" -lt "$L_DIR" ] && [ "$L_DIR" -lt "$L_SH" ] \
+  && ok "ordre withCredentials ($L_WC) < dir ($L_DIR) < sh ($L_SH)" || ko "ordre withCredentials/dir/sh cassé (wc=$L_WC dir=$L_DIR sh=$L_SH)"
+if jfr 'withEnv(' || jfr 'params.'; then
+  ko "withEnv( ou params. présents — la voie machine ne doit lister AUCUN champ (elle hérite du script)"
+else
+  ok "aucun withEnv(, aucun params. : la voie machine n'énumère aucun champ, elle hérite de tout enrichissement du script"
+fi
+BAD=""
+jfr 'git url:' && BAD="$BAD git-url"; grep -qE '^\s*parameters \{' "$TMP/jf-req.code" && BAD="$BAD parameters{}"
+grep -q 'sh """' "$TMP/jf-req.code" && BAD="$BAD sh-triple-double"; grep -qE '^\s*(try \{|\} catch)' "$TMP/jf-req.code" && BAD="$BAD try/catch"
+[ -z "$BAD" ] && ok "aucun git url:, parameters{}, sh \"\"\", try/catch" || ko "présent(s) :$BAD"
+MISS=""
+jfr "GITEA_CREDENTIALS_ID = \"\${env.GITEA_CREDENTIALS_ID ?: 'gitea-provision-token'}\"" || MISS="$MISS GITEA_CREDENTIALS_ID"
+jfr "GIT_HOST             = \"\${env.GIT_HOST ?: 'http://gitea:3000'}\"" || MISS="$MISS GIT_HOST"
+jfr "GIT_REPO             = \"\${env.GIT_REPO ?: 'ci/stoa-labs'}\"" || MISS="$MISS GIT_REPO"
+[ -z "$MISS" ] && ok "points de config (défauts = ceux du script)" || ko "points de config absents/divergents :$MISS"
+jfr 'currentBuild.displayName = "demande ${env.REQ_APP' && ok "le build est nommé « demande <app>/<env> (<caller>) »" || ko "displayName absent/divergent"
+[ -x scripts/provision-request.sh ] && bash -n scripts/provision-request.sh 2>/dev/null && ok "scripts/provision-request.sh existe, exécutable, parsable" || ko "scripts/provision-request.sh absent ou cassé"
+[ "$(grep -c 'provision-request.sh' "$TMP/jf-req.code")" -eq 1 ] && ok "le moteur est invoqué UNE fois" || ko "invocations du moteur : $(grep -c 'provision-request.sh' "$TMP/jf-req.code")"
+
+echo
+echo "== 6. scripts/app-request-choices.sh — les listes du formulaire, HORS LIGNE (bare repos = Gitea, chaîne de test), fail-closed =="
+CH="scripts/app-request-choices.sh"
+[ -x "$CH" ] && shellcheck -x "$CH" >/dev/null 2>&1 && ok "app-request-choices.sh : exécutable, shellcheck propre" || ko "app-request-choices.sh : absent, non exécutable ou shellcheck en échec"
+# « Gitea » local : un bare repo servi comme chemin fichier (motif test-generate-choices.sh).
+mk_platform(){ # $1=racine bare $2=providers.dev.yml
+  local bare="$1" src="$TMP/src-$RANDOM"
+  mkdir -p "$src/poc-control-plane-federation/ansible" "$src/poc-control-plane-federation/clients/_example/apis"
+  printf '%s' "$2" > "$src/poc-control-plane-federation/ansible/providers.dev.yml"
+  printf 'apim_api:\n  name: accounts-read\n  version: 1.0.0\n' > "$src/poc-control-plane-federation/clients/_example/apis/accounts-read.publish.yml"
+  ( cd "$src" && git init -q -b main && git -c user.name=t -c user.email=t@t add -A && git -c user.name=t -c user.email=t commit -qm init >/dev/null )
+  mkdir -p "$(dirname "$bare")"; git clone -q --bare "$src" "$bare" >/dev/null
+}
+PROV_OK=$'providers:\n  - team: banking-demo\n    repo: acme/depot-absent\n    approvers: []\n  - team: payments-team\n    repo: ""\n    approvers: []\n  - team: banking-demo\n    repo: ""\n    approvers: []\n'
+PROV_EMPTY=$'providers: []\n'
+GH6="$TMP/gitea6"; mk_platform "$GH6/ci/stoa-labs.git" "$PROV_OK"
+printf 'environments: [dev, rec, prod]\n' > "$TMP/chain6.yaml"
+run_choices(){ # $1=gitea root $2=chain file $3=out file (vide = non posé)
+  if [ -n "$3" ]; then
+    CHOICES_OUT="$3" STOA_ENV_CHAIN_FILE="$2" GIT_HOST="$1" GIT_REPO=ci/stoa-labs GITEA_TOKEN=dummy bash "$CH" >"$TMP/ch.out" 2>"$TMP/ch.err"
+  else
+    STOA_ENV_CHAIN_FILE="$2" GIT_HOST="$1" GIT_REPO=ci/stoa-labs GITEA_TOKEN=dummy bash "$CH" >"$TMP/ch.out" 2>"$TMP/ch.err"
+  fi
+}
+OUT6="$TMP/choices6.env"; rm -f "$OUT6"
+run_choices "$GH6" "$TMP/chain6.yaml" "$OUT6"; RC=$?
+[ "$RC" -eq 0 ] && [ -f "$OUT6" ] && [ "$(wc -l < "$OUT6" | tr -d ' ')" -eq 3 ] \
+  && ok "nominal : rc 0, fichier de TROIS lignes écrit" || ko "nominal : rc=$RC, fichier=$([ -f "$OUT6" ] && wc -l < "$OUT6" || echo absent) — $(cat "$TMP/ch.err" 2>/dev/null | tail -3)"
+grep -qx 'ENVS=dev rec' "$OUT6" 2>/dev/null && ok "ENVS=dev rec — la chaîne SANS son terminus (structure, pas nom : prod exclu)" || ko "ENVS inattendu : $(grep '^ENVS=' "$OUT6" 2>/dev/null)"
+grep -qx 'TEAMS=banking-demo payments-team' "$OUT6" 2>/dev/null && ok "TEAMS=banking-demo payments-team — ordre de déclaration, doublon exact écarté" || ko "TEAMS inattendu : $(grep '^TEAMS=' "$OUT6" 2>/dev/null)"
+grep -qx 'APIS=accounts-read@1.0.0' "$OUT6" 2>/dev/null && ok "APIS=accounts-read@1.0.0 — nom@version des publish.yml relus" || ko "APIS inattendu : $(grep '^APIS=' "$OUT6" 2>/dev/null)"
+grep -q '^CHOICES_SKIPPED_REPOS=1$' "$TMP/ch.err" && ok "marqueur CHOICES_SKIPPED_REPOS=1 sur stderr (dépôt d'équipe déclaré mais absent, toléré ET signalé)" || ko "marqueur CHOICES_SKIPPED_REPOS absent/inattendu sur stderr"
+# Mutation 1 : aucune équipe déclarée ⇒ refus, AUCUN fichier (même pré-existant).
+GH6E="$TMP/gitea6e"; mk_platform "$GH6E/ci/stoa-labs.git" "$PROV_EMPTY"
+printf 'ENVS=perime\nTEAMS=perime\nAPIS=perime\n' > "$OUT6"
+run_choices "$GH6E" "$TMP/chain6.yaml" "$OUT6"; RC=$?
+[ "$RC" -ne 0 ] && [ ! -f "$OUT6" ] && grep -q 'EQUIPES_INDISPONIBLES' "$TMP/ch.err" \
+  && ok "providers vide ⇒ rc≠0 EQUIPES_INDISPONIBLES, et le fichier PÉRIMÉ pré-existant a été retiré (jamais relu comme frais)" \
+  || ko "providers vide : rc=$RC fichier=$([ -f "$OUT6" ] && echo présent || echo absent) — $(tail -2 "$TMP/ch.err")"
+# Mutation 2 : chaîne illisible ⇒ refus nommé, aucun fichier.
+run_choices "$GH6" "$TMP/inexistant.yaml" "$OUT6"; RC=$?
+[ "$RC" -ne 0 ] && [ ! -f "$OUT6" ] && grep -q 'CHAINE_ILLISIBLE' "$TMP/ch.err" \
+  && ok "chaîne d'environnements illisible ⇒ rc≠0 CHAINE_ILLISIBLE, aucun fichier" || ko "chaîne illisible : rc=$RC — $(tail -2 "$TMP/ch.err")"
+# Mutation 3 : CHOICES_OUT non posé ⇒ refus.
+run_choices "$GH6" "$TMP/chain6.yaml" ""; RC=$?
+[ "$RC" -ne 0 ] && grep -q 'CHOICES_OUT requis' "$TMP/ch.err" && ok "CHOICES_OUT absent ⇒ rc≠0 nommé" || ko "CHOICES_OUT absent : rc=$RC"
+# Mutation 4 : Gitea injoignable ⇒ refus, aucun fichier.
+run_choices "$TMP/nulle-part" "$TMP/chain6.yaml" "$OUT6"; RC=$?
+[ "$RC" -ne 0 ] && [ ! -f "$OUT6" ] && ok "Gitea injoignable ⇒ rc≠0, aucun fichier (fail-closed)" || ko "Gitea injoignable : rc=$RC fichier=$([ -f "$OUT6" ] && echo présent || echo absent)"
+
+echo
+echo "== 5. app-request : le formulaire est POSÉ PAR LE JENKINSFILE — plus un paramètre dans le XML =="
+JFA="ci/Jenkinsfile.app-request"; XA="ci/jenkins/app-request.job.xml"; code_view "$JFA" > "$TMP/jf-app.code"
+jfa(){ grep -qF -- "$1" "$TMP/jf-app.code"; }
+NP=$(python3 -c "
+import xml.etree.ElementTree as T
+r = T.parse('$XA').getroot()
+print(sum(1 for e in r.iter() if e.tag.endswith('ParameterDefinition')) + sum(1 for e in r.iter() if e.tag.endswith('ParametersDefinitionProperty')))")
+[ "$NP" = 0 ] && ok "XML : ZÉRO ParameterDefinition / ParametersDefinitionProperty (structurel)" || ko "XML : $NP définition(s) de paramètre résiduelle(s)"
+grep -q 'CHOICES:' "$XA" && ko "XML : un marqueur CHOICES: subsiste (setup-team-onboard-jobs.sh tenterait une substitution)" || ok "XML : aucun marqueur CHOICES: — setup-team-onboard-jobs.sh le copie tel quel (NO-OP garanti)"
+L_BOOT=$(code_line "$TMP/jf-app.code" "env.FORM_BOOTSTRAP = (params.size() == 0)")
+L_PROPS=$(code_line "$TMP/jf-app.code" "properties([parameters([")
+[ -n "$L_BOOT" ] && [ -n "$L_PROPS" ] && [ "$L_BOOT" -lt "$L_PROPS" ] \
+  && ok "FORM_BOOTSTRAP capturé (ligne $L_BOOT) AVANT properties() (ligne $L_PROPS) — fait 4 : après, params retombe sur les défauts" \
+  || ko "signal d'amorçage absent ou capturé après properties() (boot=$L_BOOT props=$L_PROPS)"
+[ -n "$L_PROPS" ] && ok "properties([parameters([ … ])]) en vue CODE : le formulaire est posé par le pipeline" || ko "properties([parameters([ absent"
+MISS=""
+for P in "string(name: 'APP'" "choice(name: 'REQ_ENV', choices: envs" "choice(name: 'TEAM', choices: [''] + teams" "choice(name: 'API', choices: apis" \
+         "string(name: 'CLIENT_ID'" "choice(name: 'MODE', choices: ['idp', 'internal']" "text(name: 'IP_ALLOWLIST'" "text(name: 'CERT_PEM'" \
+         "choice(name: 'CERT_ROTATION', choices: ['replace', 'overlap']" "string(name: 'BACKEND_KEY_REF'" "string(name: 'BACKEND_KEY_FIELD'"; do
+  jfa "$P" || MISS="$MISS [$P]"
+done
+[ -z "$MISS" ] && ok "les 11 paramètres posés avec leur TYPE (string/choice/text) et leurs listes (envs, ''+teams, apis, idp/internal, replace/overlap)" || ko "paramètres absents/divergents :$MISS"
+if grep -qE "\['dev'|'homol'|'rec', 'int'" "$TMP/jf-app.code"; then ko "une liste de paliers LITTÉRALE subsiste dans le Jenkinsfile"; else ok "aucune liste de paliers littérale : REQ_ENV vient d'env_chain_nonprod (une seule source, celle du script)"; fi
+L_SH=$(code_line "$TMP/jf-app.code" "sh 'set +x; CHOICES_OUT=\"\$WORKSPACE/.a0-choices.env\" bash scripts/app-request-choices.sh'")
+L_WC=$(code_line "$TMP/jf-app.code" "withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')])")
+[ -n "$L_SH" ] && [ -n "$L_WC" ] && [ "$L_WC" -lt "$L_SH" ] && [ "$L_SH" -lt "$L_PROPS" ] \
+  && ok "app-request-choices.sh invoqué en quotes SIMPLES sous credential (ligne $L_SH), AVANT properties()" || ko "invocation du script de listes absente/mal placée (sh=$L_SH wc=$L_WC props=$L_PROPS)"
+jfa 'readFile("${env.WORKSPACE}/.a0-choices.env")' && jfa 'FORMULAIRE_VIDE' \
+  && ok "listes relues par readFile, refus FORMULAIRE_VIDE si l'une est vide (double du refus du script)" || ko "readFile / FORMULAIRE_VIDE absents"
+[ "$(grep -cF "when { expression { env.FORM_BOOTSTRAP != 'true' } }" "$TMP/jf-app.code")" -eq 2 ] \
+  && ok "les DEUX stages de demande sont gardés par FORM_BOOTSTRAP != 'true' (l'amorçage n'ouvre rien)" || ko "garde FORM_BOOTSTRAP absente d'un stage de demande"
+L_CTX=$(code_line "$TMP/jf-app.code" "stage('Contexte de la demande')")
+[ -n "$L_CTX" ] && [ "$L_PROPS" -lt "$L_CTX" ] && ok "le stage Formulaire précède le stage Contexte : même un build de demande rafraîchit les listes" || ko "ordre des stages inattendu (props=$L_PROPS ctx=$L_CTX)"
+MISS=""
+for M in "REQ_APP=\${params.APP}" "REQ_ENV=\${params.REQ_ENV}" "REQ_CLIENT_ID=\${params.CLIENT_ID" "REQ_MODE=\${params.MODE}" "REQ_TEAM=\${params.TEAM" \
+         "REQ_IP_ALLOWLIST=\${params.IP_ALLOWLIST" "REQ_CERT_PEM=\${params.CERT_PEM" "REQ_CERT_ROTATION=\${params.CERT_ROTATION" \
+         "REQ_BACKEND_KEY_REF=\${params.BACKEND_KEY_REF" "REQ_BACKEND_KEY_FIELD=\${params.BACKEND_KEY_FIELD"; do
+  jfa "$M" || MISS="$MISS ${M%%=*}"
+done
+[ -z "$MISS" ] && ok "ré-injection BRUTE withEnv([params…]) des 10 champs conservée (fait 5 : EnvVars.resolve)" || ko "champs non ré-injectés en brut :$MISS"
+grep -qE '^  parameters \{' "$TMP/jf-app.code" && ko "une directive déclarative \`parameters {\` de niveau pipeline existe — elle figerait les listes à la pose" || ok "aucune directive déclarative \`parameters {\` : le formulaire est le pas scripté, évalué à chaque build"
+jfa 'currentBuild.displayName = "amorçage du formulaire (aucune demande)"' && ok "le build d'amorçage se NOMME (seul build vert sans demande)" || ko "displayName d'amorçage absent"
+jfa 'API_FORMAT_INVALIDE' && jfa 'getBuildCauses' && ok "gardes d'origine tenues : API_FORMAT_INVALIDE (pas de repli 1.0.0), REQ_CALLER dérivé de la cause du build" || ko "une garde d'origine a disparu"
+
+echo
+echo "== 7. la POSE : coquille copiée telle quelle, build d'amorçage câblé, deux mécanismes qui coexistent =="
+SPJ="scripts/setup-provision-jobs.sh"; STO="scripts/setup-team-onboard-jobs.sh"
+code_sh(){ grep -vE '^\s*#' "$1"; }
+code_sh "$SPJ" | grep -q 'BOOTSTRAP_JOBS="${BOOTSTRAP_JOBS:-}"' && code_sh "$SPJ" | grep -qF '"$JENKINS_UI/job/$J/build"' \
+  && ok "setup-provision-jobs.sh : knob BOOTSTRAP_JOBS + POST /job/<j>/build" || ko "setup-provision-jobs.sh : BOOTSTRAP_JOBS ou POST /build absents"
+code_sh "$SPJ" | grep -q '400) warn "amorçage refusé' && code_sh "$SPJ" | grep -q 'if \[ "$POSED" = true \]; then' \
+  && ok "amorçage gaté sur une pose RÉUSSIE, 400 (déjà paramétré) nommé et rc≠0" || ko "amorçage non gaté sur la pose, ou 400 avalé"
+code_sh "$STO" | grep -q 'case " $JOBS " in \*" app-request "\*) BOOTSTRAP="app-request";; esac' && code_sh "$STO" | grep -q 'BOOTSTRAP_JOBS="$BOOTSTRAP"' \
+  && ok "setup-team-onboard-jobs.sh : BOOTSTRAP_JOBS=app-request dérivé de JOBS et transmis au délégué" || ko "setup-team-onboard-jobs.sh ne demande pas l'amorçage d'app-request"
+grep -Eq '<!--CHOICES:(TEAMS|APIS)-->' ci/jenkins/app-request.job.xml && ko "app-request.job.xml porte encore un marqueur : la substitution serait tentée" \
+  || ok "app-request.job.xml sans marqueur : la recherche statique de setup-team-onboard-jobs.sh ne le passe jamais à sed (NO-OP)"
+grep -Eq '<!--CHOICES:(TEAMS|APIS)-->' ci/jenkins/api-request.job.xml \
+  && ok "api-request.job.xml (chaîne des APIs, hors périmètre) garde ses marqueurs : les deux mécanismes coexistent, dit dans les en-têtes" \
+  || ko "api-request.job.xml a perdu ses marqueurs — hors périmètre A0, régression"
+grep -q 'A0 (2026-09-02)' "$STO" && grep -q 'DEUX MÉCANISMES COEXISTENT' "$STO" && ok "la coexistence est documentée dans setup-team-onboard-jobs.sh" || ko "coexistence non documentée"
+grep -qF 'JOBS="app-request api-request"' scripts/team-apply.sh && grep -qF 'JOBS="app-request api-request"' scripts/team-publish.sh \
+  && ok "team-apply.sh / team-publish.sh re-posent toujours app-request après un onboarding/une publication (⇒ amorçage ⇒ listes rafraîchies)" \
+  || ko "la re-pose événementielle d'app-request a disparu d'un des deux scripts"
+# Fonctionnel HORS LIGNE : setup-team-onboard-jobs.sh JOBS=app-request contre un faux Jenkins.
+cat > "$TMP/fakejenkins.py" <<'PY'
+import os, re, sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+D = os.environ["BODYDIR"]
+class H(BaseHTTPRequestHandler):
+    def _send(self, code, body=b"{}"):
+        self.send_response(code); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+    def do_GET(self):
+        if self.path.startswith("/crumbIssuer"): return self._send(200, b'{"crumbRequestField":"Jenkins-Crumb","crumb":"abc"}')
+        return self._send(404)
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length", 0)); body = self.rfile.read(n) if n else b""
+        mb = re.match(r"^/job/([^/]+)/build$", self.path)
+        if mb: open(os.path.join(D, mb.group(1) + ".build"), "w").close(); return self._send(201)
+        if self.path.startswith("/createItem"):
+            name = re.search(r"name=([^&]+)", self.path).group(1)
+            open(os.path.join(D, name + ".posted.xml"), "wb").write(body); return self._send(200)
+        self._send(404)
+    def log_message(self, *a): pass
+HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
+PY
+BODYDIR="$TMP/posted"; mkdir -p "$BODYDIR"; PORT="${FAKE_JENKINS_PORT:-18470}"
+BODYDIR="$BODYDIR" python3 "$TMP/fakejenkins.py" "$PORT" >/dev/null 2>&1 & FAKE_PID=$!
+for _ in $(seq 1 40); do curl -s "http://127.0.0.1:$PORT/x" >/dev/null 2>&1 && break; sleep 0.1; done
+# SANS GITEA_TOKEN ni Gitea : app-request n'a plus de marqueur, la pose ne doit rien demander à Gitea.
+OUT=$(JENKINS_UI="http://127.0.0.1:$PORT" JOBS="app-request" bash "$STO" 2>&1); RC=$?
+kill "$FAKE_PID" 2>/dev/null
+[ "$RC" -eq 0 ] && cmp -s "$BODYDIR/app-request.posted.xml" ci/jenkins/app-request.job.xml \
+  && ok "pose d'app-request SANS Gitea ni token : rc 0, XML posté octet pour octet identique à la source" \
+  || ko "pose d'app-request : rc=$RC, ou XML posté divergent — $(printf '%s' "$OUT" | tail -3 | tr '\n' ' ')"
+[ -f "$BODYDIR/app-request.build" ] && ok "le build d'amorçage a été demandé juste après la pose (POST /job/app-request/build)" || ko "aucun build d'amorçage demandé"
+
+echo
+echo "== 8. contre-épreuve du miroir, par MUTATION (le test de miroir ROUGIT) =="
+# (a) le XML privé de son bloc <triggers> ⇒ rc 2, un seul côté déclare.
+# Mutation STRUCTURELLE (l'en-tête du XML cite « <triggers> » en commentaire :
+# un `sed` par plage l'aurait éventré).
+python3 - ci/jenkins/provision-apply.job.xml "$TMP/pa-sans-triggers.xml" <<'PY'
+import sys, xml.etree.ElementTree as T
+t = T.parse(sys.argv[1]); r = t.getroot(); p = r.find('properties')
+for el in list(p):
+    if el.tag.endswith('PipelineTriggersJobProperty'): p.remove(el)
+t.write(sys.argv[2], encoding='unicode')
+PY
+OUT=$(gwt_mirror_diff "$TMP/pa-sans-triggers.xml" ci/Jenkinsfile.provision-apply 2>&1); RC=$?
+[ "$RC" -eq 2 ] && printf '%s' "$OUT" | grep -q '^DIVERGENCE trigger xml=absent jenkinsfile=present' \
+  && ok "XML sans <triggers> ⇒ rc 2 « DIVERGENCE trigger xml=absent » (le webhook serait borgne dès la pose)" \
+  || ko "XML sans <triggers> non détecté (rc=$RC : $OUT)"
+# (b) token altéré dans le XML ⇒ rc 1, champ nommé.
+sed 's#<token>stoa-provision-apply</token>#<token>stoa-provision-apply-MUTE</token>#' ci/jenkins/provision-apply.job.xml > "$TMP/pa-token.xml"
+OUT=$(gwt_mirror_diff "$TMP/pa-token.xml" ci/Jenkinsfile.provision-apply 2>&1); RC=$?
+[ "$RC" -eq 1 ] && printf '%s' "$OUT" | grep -q '^DIVERGENCE token' \
+  && ok "token altéré dans le XML ⇒ rc 1 « DIVERGENCE token »" || ko "token altéré non détecté (rc=$RC : $OUT)"
+# (c) la VALEUR d'une clé altérée dans le XML (même clé, autre chemin JSON) ⇒ rc 1.
+sed 's#<key>MERGE_SHA</key><value>$.pull_request.merge_commit_sha</value>#<key>MERGE_SHA</key><value>$.pull_request.head.sha</value>#' ci/jenkins/provision-apply.job.xml > "$TMP/pa-val.xml"
+OUT=$(gwt_mirror_diff "$TMP/pa-val.xml" ci/Jenkinsfile.provision-apply 2>&1); RC=$?
+[ "$RC" -eq 1 ] && printf '%s' "$OUT" | grep -q '^DIVERGENCE vars' && printf '%s' "$OUT" | grep -q 'head.sha' \
+  && ok "valeur de MERGE_SHA altérée (head.sha) ⇒ rc 1 « DIVERGENCE vars » nommant la clé" \
+  || ko "valeur altérée non détectée (rc=$RC : $OUT)"
+# (d) le filtre altéré côté JENKINSFILE (fermeture sans merge) ⇒ rc 1.
+sed "s#regexpFilterExpression: '^closed\\\\\\\\|true\$'#regexpFilterExpression: '^closed'#" ci/Jenkinsfile.provision-apply > "$TMP/jf-filtre"
+grep -q "regexpFilterExpression: '^closed'" "$TMP/jf-filtre" || echo "  (avertissement : mutation (d) non appliquée)"
+OUT=$(gwt_mirror_diff ci/jenkins/provision-apply.job.xml "$TMP/jf-filtre" 2>&1); RC=$?
+[ "$RC" -eq 1 ] && printf '%s' "$OUT" | grep -q '^DIVERGENCE regexpFilterExpression' \
+  && ok "filtre altéré côté Jenkinsfile (^closed) ⇒ rc 1 « DIVERGENCE regexpFilterExpression »" \
+  || ko "filtre altéré côté Jenkinsfile non détecté (rc=$RC : $OUT)"
+# (e) un commentaire qui NOMME un autre token ne verdit ni ne rougit rien (vue code).
+{ echo "// token: 'stoa-un-autre-token' — commentaire, pas du code"; cat ci/Jenkinsfile.provision-apply; } > "$TMP/jf-comm"
+OUT=$(gwt_mirror_diff ci/jenkins/provision-apply.job.xml "$TMP/jf-comm" 2>&1); RC=$?
+[ "$RC" -eq 0 ] && ok "un token cité dans un COMMENTAIRE Groovy est ignoré (vue code) : miroir toujours exact" \
+  || ko "un commentaire a fait diverger le miroir (rc=$RC : $OUT)"
+
+echo
+echo "== 10. le total de contrôles exécutés correspond au total ATTENDU, écrit en dur =="
+ACTUAL=$((PASS+FAIL))
+[ "$ACTUAL" -eq "$EXPECTED_CHECKS" ] \
+  && ok "nombre de contrôles exécutés = ${EXPECTED_CHECKS}" \
+  || ko "nombre de contrôles exécutés = ${ACTUAL}, attendu ${EXPECTED_CHECKS} — une section a été sautée ou le total n'a pas été mis à jour"
+
+echo
+echo "======================================================================"
+printf 'RÉSULTAT : %d/%d\n' "$PASS" "$((PASS+FAIL))"
+[ "$FAIL" -eq 0 ] || exit 1

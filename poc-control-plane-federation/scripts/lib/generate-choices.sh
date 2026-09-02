@@ -6,6 +6,8 @@
 #
 # generate_choices_teams <env> : une <string>…</string> par équipe déclarée
 #   dans ansible/providers.<env>.yml.
+# generate_choices_teams_raw / generate_choices_apis_raw <env> : les MÊMES
+#   listes, une VALEUR brute par ligne (A0 : formulaire posé par le Jenkinsfile).
 # generate_choices_apis  <env> : une <string>nom@version</string> par API
 #   trouvée dans clients/*/apis/*.publish.yml (dépôt plateforme, squelettes
 #   déjà onboardés) UNION apis/*.publish.yml des dépôts d'équipe déclarés
@@ -117,8 +119,12 @@ PY
   done < <(find "$dir" -type f -path '*/apis/*.publish.yml' 2>/dev/null | sort)
 }
 
-# generate_choices_teams <env> — cf. en-tête.
-generate_choices_teams(){
+# generate_choices_teams_raw <env> — une équipe par ligne, NON échappée, dans
+# l'ordre de providers.<env>.yml. A0 (2026-09-02) : consommée par
+# scripts/app-request-choices.sh, qui pose le formulaire app-request depuis son
+# Jenkinsfile — il lui faut des VALEURS, pas des fragments XML. Même contrat
+# fail-closed que le wrapper XML ci-dessous (qui n'est plus qu'un habillage).
+generate_choices_teams_raw(){
   local envn="${1:?env requis (generate_choices_teams)}"
   local work
   work=$(mktemp -d) || { echo "MKTEMP : impossible de créer un répertoire de travail" >&2; return 1; }
@@ -134,7 +140,7 @@ generate_choices_teams(){
   fi
 
   local perr="$work/.perr" out
-  out=$(python3 - "$prov" <<'PY' 2>"$perr"
+  if ! out=$(python3 - "$prov" <<'PY' 2>"$perr"
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1])) or {}
 for p in (d.get("providers") or []):
@@ -142,8 +148,7 @@ for p in (d.get("providers") or []):
     if t:
         print(t)
 PY
-)
-  if [ $? -ne 0 ]; then
+  ); then
     echo "PROVIDERS_PARSE : providers.${envn}.yml illisible — $(cat "$perr" 2>/dev/null)" >&2
     rm -rf "$work"; return 1
   fi
@@ -153,13 +158,23 @@ PY
     echo "PROVIDERS_EMPTY : aucune équipe déclarée dans providers.${envn}.yml" >&2
     return 1
   fi
+  printf '%s\n' "$out"
+}
+
+# generate_choices_teams <env> — cf. en-tête : fragments <string>…</string>
+# (habillage XML de la variante brute, sortie IDENTIQUE à celle d'avant A0).
+generate_choices_teams(){
+  local out
+  out=$(generate_choices_teams_raw "$1") || return 1
   while IFS= read -r t; do
     [ -n "$t" ] && printf '<string>%s</string>\n' "$(_gc_escape "$t")"
   done <<<"$out"
 }
 
-# generate_choices_apis <env> — cf. en-tête.
-generate_choices_apis(){
+# generate_choices_apis_raw <env> — un « nom@version » par ligne, NON échappé,
+# trié (sort -u). Même rôle que generate_choices_teams_raw ; le marqueur
+# CHOICES_SKIPPED_REPOS=<n> (stderr) est émis ICI, donc aussi par le wrapper.
+generate_choices_apis_raw(){
   local envn="${1:?env requis (generate_choices_apis)}"
   local work
   work=$(mktemp -d) || { echo "MKTEMP : impossible de créer un répertoire de travail" >&2; return 1; }
@@ -176,7 +191,7 @@ generate_choices_apis(){
   fi
 
   local perr="$work/.perr" repos
-  repos=$(python3 - "$prov" <<'PY' 2>"$perr"
+  if ! repos=$(python3 - "$prov" <<'PY' 2>"$perr"
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1])) or {}
 for p in (d.get("providers") or []):
@@ -184,8 +199,7 @@ for p in (d.get("providers") or []):
     if r:
         print(r)
 PY
-)
-  if [ $? -ne 0 ]; then
+  ); then
     echo "PROVIDERS_PARSE : providers.${envn}.yml illisible — $(cat "$perr" 2>/dev/null)" >&2
     rm -rf "$work"; return 1
   fi
@@ -231,7 +245,15 @@ PY
   # jamais dépendre de l'ordre d'un flush partiel côté appelant ; sur stderr,
   # jamais mêlé au fragment stdout.
   echo "CHOICES_SKIPPED_REPOS=${skipped}" >&2
+  printf '%s\n' "$result"
+}
+
+# generate_choices_apis <env> — cf. en-tête : fragments <string>…</string>
+# (habillage XML de la variante brute, sortie IDENTIQUE à celle d'avant A0).
+generate_choices_apis(){
+  local out
+  out=$(generate_choices_apis_raw "$1") || return 1
   while IFS= read -r n; do
     [ -n "$n" ] && printf '<string>%s</string>\n' "$(_gc_escape "$n")"
-  done <<<"$result"
+  done <<<"$out"
 }

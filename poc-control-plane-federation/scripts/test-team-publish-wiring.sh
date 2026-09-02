@@ -49,7 +49,7 @@ ko(){ FAIL=$((FAIL+1)); printf '  ❌ %s\n' "$*"; }
 # section ajoutée/retirée DOIT mettre à jour ce nombre à la main — un oubli
 # fait virer le §26 au rouge, ce qui EST le comportement voulu (un rappel,
 # pas un bug).
-EXPECTED_CHECKS=115
+EXPECTED_CHECKS=118
 
 [ -f "$JOB" ] || { echo "job introuvable : $JOB"; exit 2; }
 [ -f "$JF" ]  || { echo "Jenkinsfile introuvable : $JF"; exit 2; }
@@ -123,6 +123,23 @@ done
 [ -z "$MIRROR_KO" ] \
   && ok "les 8 genericVariables du Jenkinsfile sont présentes à l'identique dans le XML" \
   || ko "clés absentes du XML :${MIRROR_KO} — le webhook serait borgne jusqu'au premier build"
+
+echo
+echo "== 3ter. le MIROIR, par la lib, étendu aux TROIS jobs de l'aval applicatif (porte A0) =="
+# A0 (GOAL cd-applications) : la comparaison XML/Jenkinsfile du §3 est devenue
+# une LIB (scripts/lib/gwt-mirror.sh, structurée champ à champ) ; la porte du
+# GOAL demande que CE test la joue sur provision-apply, provision-plan et
+# provisioning-request. test-a0-wiring.sh la joue aussi, avec les mutations.
+# shellcheck source=scripts/lib/gwt-mirror.sh
+if . "$REPO/scripts/lib/gwt-mirror.sh" 2>/dev/null; then
+  for J3 in provision-apply provision-plan provisioning-request; do
+    OUT3=$(gwt_mirror_diff "$REPO/ci/jenkins/$J3.job.xml" "$REPO/ci/Jenkinsfile.$J3" 2>&1); RC3=$?
+    [ "$RC3" -eq 0 ] && printf '%s' "$OUT3" | grep -q '^MIROIR_OK' \
+      && ok "$J3 : $OUT3" || ko "$J3 : miroir NON exact (rc=$RC3) — $(printf '%s' "$OUT3" | tr '\n' ' ')"
+  done
+else
+  ko "scripts/lib/gwt-mirror.sh introuvable"; ko "(provision-plan non vérifié)"; ko "(provisioning-request non vérifié)"
+fi
 
 echo
 echo "== 4. la branche est gardée à api/*, AVANT la pause (personne n'est réveillé pour rien) =="

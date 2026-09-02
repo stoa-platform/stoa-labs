@@ -47,6 +47,13 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         n = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(n) if n else b""
+        # A0 : le build d'AMORCAGE d'un job qui pose son formulaire depuis son
+        # Jenkinsfile (app-request) — trace <job>.build, 201 comme le vrai Jenkins.
+        mb = re.match(r"^/job/([^/]+)/build$", self.path)
+        if mb:
+            open(os.path.join(BODYDIR, mb.group(1) + ".build"), "w").close()
+            log("POST build " + mb.group(1))
+            return self._send(201)
         if self.path.startswith("/createItem"):
             name = re.search(r"name=([^&]+)", self.path).group(1)
             with open(os.path.join(BODYDIR, name + ".posted.xml"), "wb") as f:

@@ -1,64 +1,145 @@
-// ci/Jenkinsfile.app-request — FORMULAIRE « demander une application » (palier 3).
+// ci/Jenkinsfile.app-request — FORMULAIRE « demander une application » (palier 3,
+// voie HUMAINE ; la voie machine OIG/CLI2 est ci/Jenkinsfile.provisioning-request).
 //
-// Conversion DÉCLARATIVE du pipeline qui vivait en Groovy inline dans
-// ci/jenkins/app-request.job.xml (<script>…</script>). Même modèle que
-// ci/Jenkinsfile.team-publish : le job est MINCE — il ROUTE des valeurs de
-// formulaire vers `scripts/provision-request.sh`, qui porte TOUTE la substance
-// (gardes d'entrée IP/cert/team, rendu du manifeste, branche, PR, plan
-// enchaîné). Aucune logique métier n'a migré ici, et aucune ne doit y migrer.
+// Même modèle que ci/Jenkinsfile.team-publish : le job est MINCE — il ROUTE des
+// valeurs de formulaire vers `scripts/provision-request.sh`, qui porte TOUTE la
+// substance (gardes d'entrée IP/cert/team, rendu du manifeste — fusion
+// per_env.<env>, A1 —, branche, PR, plan enchaîné). Aucune logique métier n'a
+// migré ici, et aucune ne doit y migrer.
 //
 //   humain ──formulaire──▶ PR provision/<app>-<env> + plan enchaîné
 //
-// CE JOB N'APPLIQUE RIEN. Il est la DEUXIÈME PORTE, à côté de la voie machine
-// (OIG/CLI2) : même aval, mêmes gardes, même point de décision — le MERGE
+// CE JOB N'APPLIQUE RIEN. Il est la DEUXIÈME PORTE, à côté de la voie machine :
+// même aval, mêmes gardes, même point de décision — le MERGE
 // (ADR-075/076/079/081). Un formulaire, comme un webhook, ne porte aucune
 // autorité ; il ouvre une demande, un humain la valide en fusionnant.
 //
-// ── POURQUOI IL N'Y A PAS DE BLOC `parameters {}` ICI ────────────────────────
-// C'est DÉLIBÉRÉ, et c'est la contrainte structurante de ce job. Les
-// <parameterDefinitions> restent dans ci/jenkins/app-request.job.xml parce que
-// DEUX d'entre eux (TEAM, API) portent les marqueurs <!--CHOICES:TEAMS--> /
-// <!--CHOICES:APIS-->, que setup-team-onboard-jobs.sh SUBSTITUE AU MOMENT DE LA
-// POSE du job (listes générées par scripts/lib/generate-choices.sh depuis
-// providers.<env>.yml et les APIs publiées). Déclarer ces paramètres ici les
-// figerait à ce qui est écrit dans le dépôt — c'est-à-dire à des listes VIDES :
-// les deux déroulantes seraient mortes, et le marqueur, invisible pour Jenkins,
-// ne serait plus jamais substitué.
-// Corollaire mesuré (lab, 2026-08-06) : Declarative ne remplace QUE les
-// propriétés qu'il a lui-même posées (DeclarativeJobPropertyTrackerAction) —
-// des <parameterDefinitions> venus du config.xml sont préservés indéfiniment et
-// GAGNENT. Le XML est donc la source de vérité des paramètres, ce fichier celle
-// du pipeline ; ils ne se recouvrent pas.
+// ── LE FORMULAIRE EST POSÉ PAR CE FICHIER, DEPUIS LE DÉPÔT (A0, 2026-09-02) ──
+// Jusqu'à A0, les onze paramètres vivaient dans ci/jenkins/app-request.job.xml,
+// deux d'entre eux (TEAM, API) sous des marqueurs substitués À LA POSE par
+// setup-team-onboard-jobs.sh, et REQ_ENV en liste EN DUR. Ils sont désormais
+// posés par un pas scripté `properties([parameters([…])])` au premier stage,
+// depuis des listes calculées DANS LE BUILD par scripts/app-request-choices.sh :
+//   REQ_ENV ← env_chain_nonprod (clients/_example/environments.yaml du clone —
+//             la MÊME source que provision-request.sh, qui refuse ENV_INVALIDE) ;
+//   TEAM    ← providers.<env d'authoring>.yml relu sur Gitea main ;
+//   API     ← les publish.yml (dépôt plateforme + dépôts d'équipe déclarés).
+// Le XML n'est plus qu'une COQUILLE (pointeur SCM, <triggers/> vide) : la seule
+// source de vérité du formulaire est ce fichier, versionné, relu, linté.
+//
+// CINQ FAITS MESURÉS sur ce lab (2026-09-02, job jetable) fondent ce mécanisme :
+//   1. `properties([parameters([…])])` pose les paramètres sur un job dont le
+//      XML n'en déclare aucun, et les builds suivants les CONSERVENT
+//      (Declarative ne retire que ce qu'il a lui-même posé).
+//   2. Il PRÉSERVE les propriétés venues du XML et non listées (triggers,
+//      disableConcurrentBuilds) — le miroir <triggers> garde son régime.
+//   3. Re-poser le XML (POST config.xml) EFFACE ces paramètres ⇒ un build
+//      d'AMORÇAGE suit chaque pose (setup-provision-jobs.sh, BOOTSTRAP_JOBS).
+//   4. Un build lancé sur un job SANS définition lie ZÉRO paramètre
+//      (params.size()==0) ; après properties() dans le même build, params.X
+//      retombe sur le défaut ; buildWithParameters remplit les champs omis
+//      ('' , jamais null). D'où FORM_BOOTSTRAP capturé AVANT properties() :
+//      c'est le SEUL build vert sans demande, et il se nomme. Une saisie
+//      humaine à APP vide reste refusée par le script (REQ_APP requis), rouge.
+//   5. Les valeurs posées ainsi subissent toujours EnvVars.resolve() : la
+//      ré-injection brute withEnv([params…]) ci-dessous reste OBLIGATOIRE.
+// LIMITE ÉCRITE D'AVANCE : le formulaire montre les listes du build PRÉCÉDENT.
+// C'est acceptable parce que les listes sont de l'ERGONOMIE, pas de l'autorité :
+// un choix périmé meurt fermé dans le script (ENV_INVALIDE, TEAM_NOT_DECLARED,
+// REQ_API requis / API_FORMAT_INVALIDE).
+//
+// Un Pipeline from SCM tourne dans le SANDBOX Groovy (mesuré A2 : Secret.fromString
+// refusé, #78) ; tout ce qui est appelé ici est dans la liste blanche
+// (getBuildCauses, readFile, properties, params.size).
 pipeline {
 
-  // `agent any` — contrairement à Jenkinsfile.team-publish (`agent none`), ce
-  // job n'a AUCUNE demande en attente : rien n'attend un humain une fois lancé,
-  // donc rien ne gâche un exécuteur. Le checkout du dépôt plateforme est
-  // implicite en déclaratif (d'où la disparition du `stage('checkout')` et de
-  // son `git url:` en dur) : il vient de la définition SCM du job, qui pointe le
-  // MÊME dépôt/branche (http://gitea:3000/ci/stoa-labs.git, */main) et exige
-  // <lightweight>false</lightweight> pour que scripts/ soit dans le workspace.
+  // `agent any` : ce job n'a AUCUNE demande en attente, rien ne gâche un
+  // exécuteur ; le checkout du dépôt plateforme est implicite (définition SCM
+  // de la coquille, lightweight=false pour que scripts/ soit dans le workspace).
   agent any
 
   // ── POINTS DE CONFIG CLIENT ────────────────────────────────────────────────
   // Motif `env.X ?: défaut`, identique aux Jenkinsfile frères : le MÊME fichier
-  // sert le lab et le client, sans fork. Les DÉFAUTS ci-dessous reproduisent
-  // EXACTEMENT ceux que provision-request.sh applique déjà de lui-même
-  // (`${GIT_HOST:-http://gitea:3000}`, `${GIT_REPO:-ci/stoa-labs}`) : les poser
-  // ici ne change rien au comportement, cela rend seulement le point de bascule
-  // VISIBLE et surchargeable sans toucher au moteur.
-  //
-  // ⚠ Hôtes vus DEPUIS le conteneur de l'agent (réseau docker `poc`) :
-  // « localhost » n'y désigne PAS Gitea (fix mesuré ailleurs dans cette suite).
+  // sert le lab et le client, sans fork. Les DÉFAUTS reproduisent EXACTEMENT
+  // ceux que provision-request.sh applique déjà de lui-même.
+  // ⚠ Hôtes vus DEPUIS le conteneur de l'agent (réseau docker `poc`).
   environment {
     GIT_HOST             = "${env.GIT_HOST ?: 'http://gitea:3000'}"
     GIT_REPO             = "${env.GIT_REPO ?: 'ci/stoa-labs'}"
-    // Credential Jenkins (secret text) portant le token Gitea du CI. Était en
-    // dur dans le Groovy ('gitea-provision-token') ; même valeur par défaut.
+    // Credential Jenkins (secret text) portant le token Gitea du CI : push + PR,
+    // ET la lecture des dépôts d'équipe pour la liste API.
     GITEA_CREDENTIALS_ID = "${env.GITEA_CREDENTIALS_ID ?: 'gitea-provision-token'}"
   }
 
   stages {
+
+    // ── 1. LE FORMULAIRE, posé depuis le dépôt ───────────────────────────────
+    // Toujours en premier : même un build de demande rafraîchit les listes
+    // pour le suivant. Fail-closed : une liste vide ⇒ rien n'est posé, le
+    // formulaire précédent reste en place, le build est rouge et le dit.
+    stage('Formulaire — listes dérivées du dépôt') {
+      steps {
+        script {
+          // FAIT 4 : le signal d'amorçage se lit AVANT properties() — après,
+          // params retombe sur les défauts et ne distingue plus rien.
+          env.FORM_BOOTSTRAP = (params.size() == 0) ? 'true' : 'false'
+        }
+        withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')]) {
+          dir('poc-control-plane-federation') {
+            // Quotes SIMPLES ; `set +x` : le token ne s'écho pas. Le script
+            // RETIRE tout fichier périmé avant de travailler.
+            sh 'set +x; CHOICES_OUT="$WORKSPACE/.a0-choices.env" bash scripts/app-request-choices.sh'
+          }
+        }
+        script {
+          // Relu par `readFile` (pipeline-utility-steps et son readProperties
+          // ne sont pas installés sur ce lab), éclaté sur le premier `=`.
+          def kv = [:]
+          readFile("${env.WORKSPACE}/.a0-choices.env").readLines().each { line ->
+            def i = line.indexOf('=')
+            if (i > 0) { kv[line.substring(0, i)] = line.substring(i + 1) }
+          }
+          def envs  = (kv.ENVS  ?: '').tokenize(' ')
+          def teams = (kv.TEAMS ?: '').tokenize(' ')
+          def apis  = (kv.APIS  ?: '').tokenize(' ')
+          if (envs.isEmpty() || teams.isEmpty() || apis.isEmpty()) {
+            error("FORMULAIRE_VIDE : paliers=${envs.size()} équipes=${teams.size()} APIs=${apis.size()} — rien n'est posé, le formulaire précédent reste en place.")
+          }
+          // SEULS les paramètres sont listés ici — jamais triggers ni options :
+          // ce job n'en a pas, et le step préserve de toute façon ceux du XML
+          // (fait 2). Descriptions = celles du formulaire d'avant A0, verbatim.
+          properties([parameters([
+            string(name: 'APP', defaultValue: '',
+                   description: "Nom de l'application demandée [A-Za-z0-9._-] uniquement."),
+            choice(name: 'REQ_ENV', choices: envs,
+                   description: "Environnement cible (paliers non terminaux de la chaîne, dérivés d'environments.yaml à chaque build) — pilote le nom de branche provision/<app>-<env> et l'env du manifeste."),
+            choice(name: 'TEAM', choices: [''] + teams,
+                   description: "Équipe propriétaire de l'application (cloisonnement), optionnel — laisser le premier choix (vide) pour ne rien assigner (comportement historique, non cloisonné). Doit être une équipe DÉJÀ onboardée (providers.<env>.yml) ; une valeur non déclarée est refusée (TEAM_NOT_DECLARED) avant toute écriture Git."),
+            choice(name: 'API', choices: apis,
+                   description: "API consommée par l'application, sous la forme nom@version (liste des APIs publiées sur le dépôt plateforme + les dépôts d'équipe déclarés). Scindée côté job en REQ_API/REQ_API_VER."),
+            string(name: 'CLIENT_ID', defaultValue: '',
+                   description: "Claim azp du client OAuth2 [A-Za-z0-9._-] uniquement. REQUIS si MODE=idp (le client existe déjà côté IdP — cette valeur l'identifie sur la gateway) ; sans objet et laissable vide si MODE=internal (la gateway wM génère le client, rien à fournir ici)."),
+            choice(name: 'MODE', choices: ['idp', 'internal'],
+                   description: "idp : le client OAuth2 existe déjà côté IdP, CLIENT_ID obligatoire. internal : la gateway wM est l'authorization server, elle génère le client (stocké dans Vault par env) — CLIENT_ID sans objet. Une demande MODE=idp sans CLIENT_ID est REFUSÉE avant toute écriture Git."),
+            text(name: 'IP_ALLOWLIST', defaultValue: '',
+                 description: "Plages IP autorisées (identité entrante), optionnel — UNE ENTRÉE PAR LIGNE (la virgule est aussi acceptée comme séparateur). Chaque entrée est une IP unique (ex. 10.0.0.1) ou une plage A-B (ex. 10.0.0.1-10.0.0.5). Le CIDR (ex. 10.0.0.0/24) est REFUSÉ (IP_CIDR_REFUSE — la gateway le drop en silence) ; seuls les caractères [0-9A-Za-z.-] sont acceptés (IP_ALLOWLIST_INVALID sinon). La validation s'applique ENTRÉE PAR ENTRÉE et le message de refus nomme l'entrée fautive ; les doublons exacts sont écartés et l'ordre de saisie est préservé."),
+            text(name: 'CERT_PEM', defaultValue: '',
+                 description: "Certificat public X.509 (identité entrante mTLS), optionnel — coller un bloc PEM complet (-----BEGIN CERTIFICATE----- … -----END CERTIFICATE-----). Toute CLÉ PRIVÉE collée est REFUSÉE (CERT_PRIVATE_KEY_REFUSE) — ce champ n'accepte QUE le certificat public ; un bloc PEM incomplet est REFUSÉ (CERT_SANS_BLOC). Devient un fichier .crt versionné dans la PR (clients/provisioned/certs/<app>-<env>.crt), jamais une valeur en clair dans le manifeste."),
+            choice(name: 'CERT_ROTATION', choices: ['replace', 'overlap'],
+                   description: "Stratégie de rotation du certificat — sans objet si CERT_PEM est vide. replace : la valeur remplace la dimension existante. overlap : ajout aux certificats existants encore valides (fenêtre de chevauchement) + purge automatique des valeurs expirées/illisibles."),
+            string(name: 'BACKEND_KEY_REF', defaultValue: '',
+                   description: "CHEMIN Vault de la clé backend (identifier `token`), optionnel — sous-chemin KV v2, ex. deploy/banking-demo/apps/mon-app/dev/backend-key. ⚠ Ce champ attend un CHEMIN, JAMAIS la valeur de la clé : Git ne porte jamais le secret, il est lu dans Vault à l'apply. L'entrée doit EXISTER dans Vault avant l'apply — sinon BACKEND_KEY_MISSING et rien n'est posé sur la gateway. Caractères [A-Za-z0-9._/-] ; chemin absolu, '//' et traversée '..' sont refusés (BACKEND_KEY_REF_INVALID). N'est PAS une identité entrante : c'est une clé sortante app→backend, non opposable par enforce."),
+            string(name: 'BACKEND_KEY_FIELD', defaultValue: '',
+                   description: "Champ à lire DANS l'entrée Vault, optionnel — laisser VIDE pour le défaut du rôle (api_key). ⚠ PIÈGE MESURÉ : le nom doit correspondre EXACTEMENT au champ de l'entrée KV — une entrée dont la clé s'appelle `api-key` (avec un TIRET) est lue vide et échoue en BACKEND_KEY_MISSING alors que l'entrée existe bel et bien. Renseigné sans BACKEND_KEY_REF, ce champ serait inerte : la demande est alors REFUSÉE (BACKEND_KEY_FIELD_ORPHAN).")
+          ])])
+          echo "formulaire posé : paliers ${envs} ; équipes ${teams} ; APIs ${apis}"
+          if (env.FORM_BOOTSTRAP == 'true') {
+            currentBuild.displayName = "amorçage du formulaire (aucune demande)"
+            echo "AMORÇAGE : ce build n'a reçu aucun paramètre (job posé sans formulaire) — le formulaire est désormais posé ; aucune demande n'est ouverte. Les stages suivants sont sautés."
+          }
+        }
+      }
+    }
 
     // Les deux SEULS calculs Groovy de ce job, regroupés dans un unique bloc
     // `script{}` : l'identité du demandeur et la scission de la déroulante API.
@@ -66,6 +147,7 @@ pipeline {
     // suivante — un `def` local à un `script{}` ne franchit pas la frontière
     // d'étape, d'où le passage par `env`.
     stage('Contexte de la demande') {
+      when { expression { env.FORM_BOOTSTRAP != 'true' } }
       steps {
         script {
           // Traçabilité : l'identité Jenkins du demandeur remplace
@@ -77,37 +159,24 @@ pipeline {
           // `cause[0].userId ? … : 'anonymous'` retombe alors sur la chaîne
           // littérale "null" au lieu de 'anonymous'. On force la comparaison en
           // TEXTE, c'est le seul test qui tienne.
-          //
-          // (Le job d'origine notait « getBuildCauses est approuvé en sandbox ».
-          // La question ne se pose plus : un Pipeline from SCM n'est pas
-          // sandboxé — le pipeline est du code VERSIONNÉ et relu, la protection
-          // est la revue de la PR sur le dépôt plateforme. Le piège JSONNull,
-          // lui, n'a rien à voir avec la sandbox et reste entier.)
           def cause = currentBuild.getBuildCauses('hudson.model.Cause$UserIdCause')
           def rawUid = (cause && !cause.isEmpty()) ? "${cause[0].userId}" : 'anonymous'
           def uid = (rawUid == 'null' || rawUid == '') ? 'anonymous' : rawUid
           env.REQ_CALLER = "jenkins-form:${uid}"
 
           // API v2 (Task 4, P3) : la liste déroulante porte "nom@version"
-          // (généré par scripts/lib/generate-choices.sh) — scindé ICI, jamais
-          // dans provision-request.sh (qui continue de recevoir REQ_API /
-          // REQ_API_VER séparés, forme inchangée pour les voies machine
-          // OIG/CLI2). Premier '@' : name/version restent tous deux dans
-          // [A-Za-z0-9._-] (garde du script), donc jamais de '@' interne à lever.
+          // (scripts/lib/generate-choices.sh) — scindé ICI, jamais dans
+          // provision-request.sh (qui continue de recevoir REQ_API /
+          // REQ_API_VER séparés, forme inchangée pour la voie machine).
+          // Premier '@' : name/version restent tous deux dans [A-Za-z0-9._-]
+          // (garde du script), donc jamais de '@' interne à lever.
           //
-          // Fix round 1 (revue, Important) : PAS de repli silencieux '1.0.0'
-          // pour une valeur NON VIDE sans '@' — une première version retombait
-          // sur ce défaut, ce qui aurait rejoué SILENCIEUSEMENT une fausse
-          // version pour tout rejeu de l'ANCIEN contrat machine (API seul, sans
-          // '@') contre ce job. Les choix générés portent TOUJOURS '@' (contrat
-          // de generate_choices_apis) : un '@' absent sur une valeur non vide
-          // est donc un typo/contrat obsolète, jamais une soumission légitime —
-          // échec loud AVANT le sh. Le cas VIDE (choix par défaut du menu, cf.
-          // le commentaire XML du paramètre API) n'est PAS ce cas : il continue
-          // de tomber sur le refus loud existant de provision-request.sh
-          // (REQ_API:? requis), d'où le REQ_API vide — et non absent — posé
-          // ci-dessous : `${REQ_API:?}` refuse une valeur vide comme une
-          // variable non définie.
+          // PAS de repli silencieux '1.0.0' pour une valeur NON VIDE sans '@'
+          // (fix round 1 de la revue Task 4) : les choix générés portent
+          // TOUJOURS '@', un '@' absent sur une valeur non vide est un typo ou
+          // un contrat obsolète — échec loud AVANT le sh. Le cas VIDE tombe sur
+          // le refus loud de provision-request.sh (REQ_API requis) : REQ_API
+          // vide — et non absent — est posé ci-dessous, `${REQ_API:?}` le refuse.
           def apiChoice = params.API ?: ''
           if (apiChoice != '' && !apiChoice.contains('@')) {
             error("API_FORMAT_INVALIDE : '${apiChoice}' — attendu nom@version (liste déroulante générée), aucun repli silencieux.")
@@ -120,6 +189,7 @@ pipeline {
     }
 
     stage('Ouvrir la demande (PR provision/<app>-<env>)') {
+      when { expression { env.FORM_BOOTSTRAP != 'true' } }
       steps {
         withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')]) {
           // Les paramètres passent par l'ENVIRONNEMENT, jamais interpolés dans
@@ -130,23 +200,24 @@ pipeline {
           // optionnels côté script — un formulaire qui les laisse vides
           // reproduit le comportement d'avant Task 4, octet pour octet.
           //
+          // ⚠ FAIT 5 : ce withEnv n'est PAS décoratif — sans lui, Jenkins
+          // résout les `${…}` de CERT_PEM/IP_ALLOWLIST avant le script
+          // (mesuré : `RAW>${JENKINS_HOME}<FIN` → `RAW>/var/jenkins_home<FIN`).
           // ⚠ TROIS variables attendues par le script ne sont PAS dans cette
-          // liste : REQ_API, REQ_API_VER et REQ_CALLER. Elles ne viennent pas du
-          // formulaire — elles sont DÉRIVÉES par l'étape précédente et posées
-          // dans `env`, donc déjà exportées à tout step `sh` de ce build.
+          // liste : REQ_API, REQ_API_VER et REQ_CALLER — DÉRIVÉES par l'étape
+          // précédente et posées dans `env`, donc déjà exportées à tout `sh`.
           withEnv(["REQ_APP=${params.APP}", "REQ_ENV=${params.REQ_ENV}",
                    "REQ_CLIENT_ID=${params.CLIENT_ID ?: ''}", "REQ_MODE=${params.MODE}",
                    "REQ_TEAM=${params.TEAM ?: ''}",
                    "REQ_IP_ALLOWLIST=${params.IP_ALLOWLIST ?: ''}",
                    "REQ_CERT_PEM=${params.CERT_PEM ?: ''}",
                    "REQ_CERT_ROTATION=${params.CERT_ROTATION ?: 'replace'}",
-                   // v3 : IP_ALLOWLIST est devenu MULTILIGNE et la clé backend
+                   // v3 : IP_ALLOWLIST est MULTILIGNE et la clé backend
                    // s'ajoute. Aucun découpage ici — la valeur multiligne
                    // traverse telle quelle, c'est provision-request.sh qui
                    // découpe et valide entrée par entrée. La voie machine
                    // (provisioning-request) hérite donc du multi-IP et de la
-                   // clé backend SANS une ligne de changement : elle appelle le
-                   // même script.
+                   // clé backend SANS une ligne de changement : même script.
                    "REQ_BACKEND_KEY_REF=${params.BACKEND_KEY_REF ?: ''}",
                    "REQ_BACKEND_KEY_FIELD=${params.BACKEND_KEY_FIELD ?: ''}"]) {
             // Triple quotes SIMPLES : Groovy n'interpole RIEN dans cette chaîne

@@ -1,150 +1,39 @@
 <?xml version='1.1' encoding='UTF-8'?>
 <!--
-  app-request — PIPELINE FROM SCM (plus de Groovy inline).
+  app-request — PIPELINE FROM SCM, COQUILLE PURE (A0 du GOAL cd-applications
+  2026-09-02).
 
-  Ce fichier ne porte QUE la coquille du job : d'où il charge son pipeline, et
-  ses PARAMÈTRES. Le pipeline lui-même vit dans ci/Jenkinsfile.app-request
-  (déclaratif, versionné, relisible par l'ops).
+  Ce fichier ne porte QUE le pointeur SCM du job. Le pipeline vit dans
+  ci/Jenkinsfile.app-request (déclaratif, versionné, compilé par `make lint-ci`)
+  — et depuis A0, LE FORMULAIRE AUSSI : les onze paramètres sont POSÉS PAR LE
+  JENKINSFILE (`properties([parameters([…])])`) depuis des listes calculées
+  dans le build (scripts/app-request-choices.sh : paliers ← environments.yaml,
+  équipes ← providers.<env>.yml, APIs ← publish.yml). Plus aucun
+  <parameterDefinitions> ici, plus aucun marqueur de liste substitué à la pose.
 
-  POURQUOI LES PARAMÈTRES RESTENT ICI, et n'ont surtout PAS migré dans le
-  Jenkinsfile. Deux d'entre eux (TEAM, API) portent chacun un MARQUEUR DE LISTE
-  écrit en commentaire XML, visible plus bas à côté de leurs choix :
-  setup-team-onboard-jobs.sh le SUBSTITUE au moment de la pose du job par les
-  listes générées depuis providers.<env>.yml et les APIs publiées
-  (scripts/lib/generate-choices.sh). Les déclarer dans le Jenkinsfile les
-  figerait à ce qui est écrit dans le dépôt, c'est à dire à des listes VIDES :
-  les deux déroulantes seraient mortes, et le marqueur, devenu invisible pour
-  le poseur de job, ne serait plus jamais substitué.
-  Et c'est de toute façon CE fichier qui gagnerait : Declarative ne remplace QUE
-  les propriétés qu'il a lui-même posées (DeclarativeJobPropertyTrackerAction) ;
-  celles qui viennent d'un config.xml sont préservées telles quelles,
-  indéfiniment (mesuré sur le lab le 2026-08-06 sur les déclencheurs de
-  team-publish : même mécanisme, même conclusion). Une divergence entre les deux
-  fichiers serait donc SILENCIEUSE. D'où la répartition : le XML fait autorité
-  sur les PARAMÈTRES, le Jenkinsfile sur le PIPELINE, et ils ne se recouvrent
-  pas.
-
-  Le <sandbox>true</sandbox> de l'ancienne définition disparaît AVEC elle : un
-  Pipeline from SCM n'a pas de case sandbox. Le pipeline n'est plus du Groovy
-  saisi dans l'IHM mais du code VERSIONNÉ sur le dépôt plateforme : sa
-  protection est la revue de PR, pas la liste blanche d'approbations Groovy.
+  CONSÉQUENCE MESURÉE (2026-09-02) : re-poser ce XML EFFACE les paramètres que
+  le build avait posés (POST config.xml remplace la configuration). Un build
+  d'AMORÇAGE suit donc chaque pose — setup-provision-jobs.sh le déclenche
+  (BOOTSTRAP_JOBS, passé par setup-team-onboard-jobs.sh). Sur un job posé
+  sans amorçage, le bouton « Build » (sans paramètre) EST l'amorçage : le
+  formulaire apparaît au build suivant. Le pas properties() PRÉSERVE les
+  propriétés venues du XML (mesuré) : il n'y en a aucune ici, volontairement.
 
   <triggers/> vide : miroir exact du Jenkinsfile, qui ne déclare lui non plus
-  aucun déclencheur. Ce job n'est lancé QUE par un humain, via son formulaire.
+  aucun déclencheur. Ce job n'est lancé QUE par un humain, via son formulaire
+  (ou par l'amorçage).
 -->
 <flow-definition plugin="workflow-job">
-  <description>Formulaire : demander une application (deuxième porte, à côté de la voie machine OIG/CLI2) → PR provision/&lt;app&gt;-&lt;env&gt; + plan enchaîné. Même aval que la voie machine (ADR-075/076/079/081) : un webhook ne porte aucun humain, la décision reste le MERGE. PIPELINE FROM SCM : le pipeline est ci/Jenkinsfile.app-request, chargé depuis le dépôt plateforme (branche main) — ce job ne contient AUCUN Groovy, seulement ses paramètres (dont les deux listes déroulantes générées à la pose).</description>
+  <description>Formulaire : demander une application (deuxième porte, à côté de la voie machine OIG/CLI2) → PR provision/&lt;app&gt;-&lt;env&gt; + plan enchaîné. Même aval que la voie machine (ADR-075/076/079/081) : un formulaire ne porte aucun humain de plus qu'un webhook, la décision reste le MERGE. PIPELINE FROM SCM : ci/Jenkinsfile.app-request, chargé depuis le dépôt plateforme (branche main) — ce job ne contient AUCUN Groovy ni AUCUN paramètre : le formulaire est posé par le Jenkinsfile à chaque build (A0), depuis les listes du dépôt.</description>
   <keepDependencies>false</keepDependencies>
-  <properties>
-    <hudson.model.ParametersDefinitionProperty>
-      <parameterDefinitions>
-        <hudson.model.StringParameterDefinition>
-          <name>APP</name>
-          <description>Nom de l'application demandée [A-Za-z0-9._-] uniquement.</description>
-          <defaultValue></defaultValue>
-        </hudson.model.StringParameterDefinition>
-        <hudson.model.ChoiceParameterDefinition>
-          <name>REQ_ENV</name>
-          <description>Environnement cible (paliers non terminaux de la chaîne — dev/rec/int/homol aujourd'hui) — pilote le nom de branche provision/&lt;app&gt;-&lt;env&gt; et l'env du manifeste.</description>
-          <choices class="java.util.Arrays$ArrayList"><a class="string-array"><string>dev</string><string>rec</string><string>int</string><string>homol</string></a></choices>
-        </hudson.model.ChoiceParameterDefinition>
-        <hudson.model.ChoiceParameterDefinition>
-          <name>TEAM</name>
-          <description>Équipe propriétaire de l'application (cloisonnement), optionnel — laisser le premier choix (vide) pour ne rien assigner (comportement historique, non cloisonné). Doit être une équipe DÉJÀ onboardée (providers.&lt;env&gt;.yml) ; une valeur non déclarée est refusée (TEAM_NOT_DECLARED) avant toute écriture Git.</description>
-          <choices class="java.util.Arrays$ArrayList"><a class="string-array"><string></string>
-<!--CHOICES:TEAMS-->
-</a></choices>
-        </hudson.model.ChoiceParameterDefinition>
-        <hudson.model.ChoiceParameterDefinition>
-          <name>API</name>
-          <description>API consommée par l'application, sous la forme nom@version (liste des APIs publiées sur le dépôt plateforme + les dépôts d'équipe déclarés). Scindée côté job en REQ_API/REQ_API_VER.</description>
-          <!-- Premier choix VIDE en dur : SANS lui, un job posé sans passer
-               par setup-team-onboard-jobs.sh (ex. setup-provision-jobs.sh
-               appelé directement, JOBS=app-request) laisse le marqueur de
-               liste non substitué, choices vide, menu INUTILISABLE (vérifié
-               en revue). La vraie liste vit UNIQUEMENT via
-               setup-team-onboard-jobs.sh (scripts/lib/generate-choices.sh,
-               Task 3) ; une soumission avec le choix vide échoue quand même
-               loud plus loin (REQ_API:? dans provision-request.sh).
-               DIFFÉRENCE avec TEAM (ci-dessus) : ici API est un champ
-               REQUIS (pas de "ne rien assigner" légitime), donc ce choix de
-               secours ne doit PAS survivre à une substitution PROPRE — fix
-               round 2 (revue) : la balise string vide et le marqueur de
-               liste sont posés SUR LA MÊME LIGNE ci-dessous, pour que le sed
-               double-forme de setup-team-onboard-jobs.sh (insertion du
-               fragment après la ligne du marqueur, PUIS suppression de
-               cette même ligne, adressage par SOUS-CHAÎNE, pas ligne
-               exacte) supprime la ligne ENTIÈRE — secours ET marqueur — au
-               profit des VRAIS choix insérés juste après. Sur un job posé
-               BRUT (sans substitution), la ligne survit telle quelle :
-               exactement UN choix vide (le commentaire du marqueur est
-               ignoré par le parseur XML), jamais un choices vide. -->
-          <choices class="java.util.Arrays$ArrayList"><a class="string-array">
-<string></string><!--CHOICES:APIS-->
-</a></choices>
-        </hudson.model.ChoiceParameterDefinition>
-        <hudson.model.StringParameterDefinition>
-          <name>CLIENT_ID</name>
-          <description>Claim azp du client OAuth2 [A-Za-z0-9._-] uniquement. REQUIS si MODE=idp (le client existe déjà côté IdP — cette valeur l'identifie sur la gateway) ; sans objet et laissable vide si MODE=internal (la gateway wM génère le client, rien à fournir ici).</description>
-          <defaultValue></defaultValue>
-        </hudson.model.StringParameterDefinition>
-        <hudson.model.ChoiceParameterDefinition>
-          <name>MODE</name>
-          <description>idp : le client OAuth2 existe déjà côté IdP, CLIENT_ID obligatoire. internal : la gateway wM est l'authorization server, elle génère le client (stocké dans Vault par env) — CLIENT_ID sans objet. Une demande MODE=idp sans CLIENT_ID est REFUSÉE avant toute écriture Git.</description>
-          <choices class="java.util.Arrays$ArrayList"><a class="string-array"><string>idp</string><string>internal</string></a></choices>
-        </hudson.model.ChoiceParameterDefinition>
-        <!-- v3 : TextParameterDefinition (zone multiligne) et non plus
-             StringParameterDefinition. Le rôle apim_selfservice_app accepte une
-             LISTE ip_allowlist depuis toujours (defaults/main.yml) ; seuls ce
-             formulaire et l'emballage du script la réduisaient à une valeur
-             unique. Le précédent du multiligne est CERT_PEM ci-dessous : sa
-             valeur traverse déjà withEnv([params…]) → sh sans dommage (le piège
-             mesuré « les paramètres de build subissent EnvVars.resolve » est
-             couvert par ce motif, en place dans le Jenkinsfile). -->
-        <hudson.model.TextParameterDefinition>
-          <name>IP_ALLOWLIST</name>
-          <description>Plages IP autorisées (identité entrante), optionnel — UNE ENTRÉE PAR LIGNE (la virgule est aussi acceptée comme séparateur). Chaque entrée est une IP unique (ex. 10.0.0.1) ou une plage A-B (ex. 10.0.0.1-10.0.0.5). Le CIDR (ex. 10.0.0.0/24) est REFUSÉ (IP_CIDR_REFUSE — la gateway le drop en silence) ; seuls les caractères [0-9A-Za-z.-] sont acceptés (IP_ALLOWLIST_INVALID sinon). La validation s'applique ENTRÉE PAR ENTRÉE et le message de refus nomme l'entrée fautive ; les doublons exacts sont écartés et l'ordre de saisie est préservé.</description>
-          <defaultValue></defaultValue>
-        </hudson.model.TextParameterDefinition>
-        <hudson.model.TextParameterDefinition>
-          <name>CERT_PEM</name>
-          <description>Certificat public X.509 (identité entrante mTLS), optionnel — coller un bloc PEM complet (-----BEGIN CERTIFICATE----- … -----END CERTIFICATE-----). Toute CLÉ PRIVÉE collée est REFUSÉE (CERT_PRIVATE_KEY_REFUSE) — ce champ n'accepte QUE le certificat public ; un bloc PEM incomplet est REFUSÉ (CERT_SANS_BLOC). Devient un fichier .crt versionné dans la PR (clients/provisioned/certs/&lt;app&gt;-&lt;env&gt;.crt), jamais une valeur en clair dans le manifeste.</description>
-          <defaultValue></defaultValue>
-        </hudson.model.TextParameterDefinition>
-        <hudson.model.ChoiceParameterDefinition>
-          <name>CERT_ROTATION</name>
-          <description>Stratégie de rotation du certificat — sans objet si CERT_PEM est vide. replace : la valeur remplace la dimension existante. overlap : ajout aux certificats existants encore valides (fenêtre de chevauchement) + purge automatique des valeurs expirées/illisibles.</description>
-          <choices class="java.util.Arrays$ArrayList"><a class="string-array"><string>replace</string><string>overlap</string></a></choices>
-        </hudson.model.ChoiceParameterDefinition>
-        <!-- v3 — CLÉ BACKEND (identifier `token`). ATTENTION AU SENS, c'est le
-             contresens le plus facile à faire ici : ce `token` n'est PAS une
-             identité ENTRANTE comme IP_ALLOWLIST/CERT_PEM ci-dessus, c'est une
-             clé SORTANTE app→backend. Le rôle REFUSE `token` dans `enforce`
-             (BACKEND_KEY_ENFORCED) — ces deux champs ne déclenchent donc PAS
-             l'avertissement enforce du corps de PR, délibérément. -->
-        <hudson.model.StringParameterDefinition>
-          <name>BACKEND_KEY_REF</name>
-          <description>CHEMIN Vault de la clé backend (identifier `token`), optionnel — sous-chemin KV v2, ex. deploy/banking-demo/apps/mon-app/dev/backend-key. ⚠ Ce champ attend un CHEMIN, JAMAIS la valeur de la clé : Git ne porte jamais le secret, il est lu dans Vault à l'apply. L'entrée doit EXISTER dans Vault avant l'apply — sinon BACKEND_KEY_MISSING et rien n'est posé sur la gateway. Caractères [A-Za-z0-9._/-] ; chemin absolu, '//' et traversée '..' sont refusés (BACKEND_KEY_REF_INVALID). N'est PAS une identité entrante : c'est une clé sortante app→backend, non opposable par enforce.</description>
-          <defaultValue></defaultValue>
-        </hudson.model.StringParameterDefinition>
-        <hudson.model.StringParameterDefinition>
-          <name>BACKEND_KEY_FIELD</name>
-          <description>Champ à lire DANS l'entrée Vault, optionnel — laisser VIDE pour le défaut du rôle (api_key). ⚠ PIÈGE MESURÉ : le nom doit correspondre EXACTEMENT au champ de l'entrée KV — une entrée dont la clé s'appelle `api-key` (avec un TIRET) est lue vide et échoue en BACKEND_KEY_MISSING alors que l'entrée existe bel et bien. Renseigné sans BACKEND_KEY_REF, ce champ serait inerte : la demande est alors REFUSÉE (BACKEND_KEY_FIELD_ORPHAN).</description>
-          <defaultValue></defaultValue>
-        </hudson.model.StringParameterDefinition>
-      </parameterDefinitions>
-    </hudson.model.ParametersDefinitionProperty>
-  </properties>
+  <properties/>
   <definition class="org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition" plugin="workflow-cps">
     <scm class="hudson.plugins.git.GitSCM" plugin="git">
       <configVersion>2</configVersion>
       <userRemoteConfigs>
         <hudson.plugins.git.UserRemoteConfig>
-          <!-- Dépôt PLATEFORME vu DEPUIS l'agent (réseau docker) : c'est aussi
-               celui que le checkout implicite de `agent any` repose dans le
-               workspace. Le stage('checkout') du job Groovy et son `git url:`
-               en dur disparaissent donc SANS rien perdre : ils pointaient déjà
-               exactement cette URL et cette branche. -->
+          <!-- Dépôt PLATEFORME vu DEPUIS l'agent (réseau docker) : c'est celui
+               que le checkout implicite de `agent any` repose dans le workspace. -->
           <url>http://gitea:3000/ci/stoa-labs.git</url>
         </hudson.plugins.git.UserRemoteConfig>
       </userRemoteConfigs>
@@ -159,8 +48,8 @@
     </scm>
     <scriptPath>poc-control-plane-federation/ci/Jenkinsfile.app-request</scriptPath>
     <!-- lightweight=false : le workspace de l'agent doit porter le dépôt
-         (scripts/provision-request.sh et sa suite), pas seulement le
-         Jenkinsfile. -->
+         (scripts/provision-request.sh, scripts/app-request-choices.sh et leurs
+         libs), pas seulement le Jenkinsfile. -->
     <lightweight>false</lightweight>
   </definition>
   <triggers/>

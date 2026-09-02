@@ -89,13 +89,13 @@ clean:
 # d'environnements, écrivain de promotion — vivent sous `scripts/` et sont
 # restés hors porte jusqu'ici : du shell livré que rien ne relisait.
 lint-ci:
-	@echo "== [1/10] compilation des Jenkinsfile"
+	@echo "== [1/11] compilation des Jenkinsfile"
 	@ci/lint-jenkinsfiles.sh
 	@# La porte LIVE du grant déployeur (G2) est SHELLCHECKÉE ici mais jamais
 	@# EXÉCUTÉE par lint-ci : elle exige le lab (annuaire + Vault) et mute
 	@# l'annuaire. Même régime que les autres `-live` — son verdict se rend à la
 	@# main, sa syntaxe se relit à chaque passage.
-	@echo "== [2/10] shellcheck des bibliothèques shell (ci/lib + livrables G2..G8, A1, A2)"
+	@echo "== [2/11] shellcheck des bibliothèques shell (ci/lib + livrables G2..G8, A1, A2)"
 	@command -v shellcheck >/dev/null || { echo "!! shellcheck absent — \`brew install shellcheck\`"; exit 2; }
 	@shellcheck -x ci/lib/*.sh scripts/lib/deploy-pin.sh scripts/lib/env-chain.sh \
 	  scripts/lib/repo-protection.sh scripts/lib/archive-store.sh \
@@ -107,37 +107,45 @@ lint-ci:
 	  scripts/api-promote-request.sh scripts/api-promote-export.sh \
 	  scripts/team-promote.sh scripts/test-deployer-gate-live.sh \
 	  scripts/test-rollback-paliers.sh scripts/test-parity-moteurs.sh \
-	  && echo "  ✓ ci/lib + livrables shell G2..G8 + A1 + A2 propres"
-	@echo "== [3/10] épreuves de ci/lib/carto-secrets.sh"
+	  scripts/lib/gwt-mirror.sh scripts/lib/generate-choices.sh scripts/app-request-choices.sh \
+	  && echo "  ✓ ci/lib + livrables shell G2..G8 + A1 + A2 + A0 propres"
+	@echo "== [3/11] épreuves de ci/lib/carto-secrets.sh"
 	@ci/test-carto-secrets.sh
-	@echo "== [4/10] épreuves du résolveur de pin (G3)"
+	@echo "== [4/11] épreuves du résolveur de pin (G3)"
 	@bash scripts/test-deploy-pin.sh
-	@echo "== [5/10] épreuves de la rétention par palier (G4)"
+	@echo "== [5/11] épreuves de la rétention par palier (G4)"
 	@bash scripts/test-palier-retention.sh
-	@echo "== [6/10] épreuves du transport d'archives adressé par le contenu (G5)"
+	@echo "== [6/11] épreuves du transport d'archives adressé par le contenu (G5)"
 	@bash scripts/test-archive-store.sh
 	@# LA porte du jalon G5 : « porte refusée ⇒ moteur jamais lancé ». Comme
 	@# test-deploy-pin (précédent endossé en G4), ce harnais est EXÉCUTÉ, pas
 	@# shellchecké — c'est son verdict qui compte, pas son style.
-	@echo "== [7/10] épreuves du câblage de promotion — porte refusée ⇒ moteur jamais lancé (G5)"
+	@echo "== [7/11] épreuves du câblage de promotion — porte refusée ⇒ moteur jamais lancé (G5)"
 	@bash scripts/test-team-promote-wiring.sh
 	@# mocks/webmethods n'est PAS vendored (dépend du module cache Go, comme
 	@# labctl NE l'est PAS ici) : pas de GOPROXY=off. Spec §4.3 promettait
 	@# cette porte hors-ligne branchée dans lint-ci — restée débranchée jusqu'ici.
-	@echo "== [8/10] go test du mock webMethods (fidélité + archive, G5)"
+	@echo "== [8/11] go test du mock webMethods (fidélité + archive, G5)"
 	@cd mocks/webmethods && go test ./... -count=1
 	@# A1 (CD des applications) : la fusion multi-palier du manifeste et le
 	@# contrat figé, HORS LIGNE (sections A/B) — la section C, contre le Gitea
 	@# du lab, se rend à la main comme les autres suites `-v2/-v3`.
-	@echo "== [9/10] épreuves du manifeste multi-palier — lib seule + gardes hors ligne (A1)"
+	@echo "== [9/11] épreuves du manifeste multi-palier — lib seule + gardes hors ligne (A1)"
 	@A1_OFFLINE=1 bash scripts/test-app-request-a1.sh
 	@# A2 (CD des applications) : la référence est le SHA mergé — digest du
 	@# palier (lib), réconciliation Gitea contre un stub (le payload ne fait pas
 	@# foi), rapport de PR, mutations ; puis le CÂBLAGE du job provision-apply
 	@# (Jenkinsfile déclaratif + coquille XML miroir + aval). La preuve par
 	@# builds réels (test-provision-apply-a2-live.sh) se rend à la main.
-	@echo "== [10/10] épreuves de la référence SHA mergé — lib, réconciliation, rapport, câblage (A2)"
+	@echo "== [10/11] épreuves de la référence SHA mergé — lib, réconciliation, rapport, câblage (A2)"
 	@bash scripts/test-provision-apply-a2.sh
+	@# A0 (CD des applications) : plus un seul job.xml porteur de logique —
+	@# coquilles from SCM, miroir des triggers par la lib (mutations comprises),
+	@# formulaire app-request posé par son Jenkinsfile depuis les listes du dépôt
+	@# (script fonctionnel hors ligne), amorçage câblé dans la pose. La preuve par
+	@# builds réels (test-a0-live.sh) se rend à la main.
+	@echo "== [11/11] épreuves « tout en Jenkinsfile » — coquilles, miroir, formulaire posé, pose (A0)"
+	@bash scripts/test-a0-wiring.sh
 	@bash scripts/test-provision-apply-wiring.sh
 
 # Sauvegarde idempotente (ne re-save pas ce qui est déjà là) : `docker save` par

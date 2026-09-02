@@ -376,6 +376,9 @@ if [ "$ONB_RC" -eq 0 ]; then
   # lui-même son env sur la même constante d'authoring
   # (setup-team-onboard-jobs.sh:87). Le lui repasser serait du câblage mort qui
   # suggère qu'il obéit à son appelant.
+  # A0 (2026-09-02) : app-request n'a plus de marqueur — sa re-pose est une
+  # copie tel quel suivie d'un build d'AMORÇAGE (BOOTSTRAP_JOBS, délégué) :
+  # c'est ce build qui recalcule ses listes ; api-request garde la substitution.
   if JENKINS_UI="${JENKINS_UI:-http://jenkins:8080}" JOBS="app-request api-request" \
      bash scripts/setup-team-onboard-jobs.sh >"$TMP/refresh.log" 2>&1
   then

@@ -1,6 +1,26 @@
 <?xml version='1.1' encoding='UTF-8'?>
+<!--
+  provisioning-request — PIPELINE FROM SCM (plus de Groovy inline, A0 du GOAL
+  cd-applications 2026-09-02).
+
+  Ce fichier ne porte QUE la coquille du job : d'ou il charge son pipeline, et
+  le declencheur qui doit exister DES LA POSE du job (c'est lui que l'API
+  provisioning de la gateway appelle, cf. scripts/setup-provisioning-api.sh).
+  Le pipeline lui-meme vit dans ci/Jenkinsfile.provisioning-request
+  (declaratif, versionne, compile par `make lint-ci`).
+
+  Le bloc <triggers> ci-dessous DOIT rester le miroir exact du bloc
+  `triggers { GenericTrigger(...) }` du Jenkinsfile : c'est CELUI-CI qui gagne
+  (Declarative ne remplace que les declencheurs qu'il a lui-meme poses, mesure
+  sur le lab 2026-08-06). scripts/lib/gwt-mirror.sh (test-a0-wiring.sh) compare
+  les deux champ a champ.
+
+  Re-pose : scripts/setup-provision-request-job.sh (token Gitea + credential +
+  job) ou, pour la coquille seule, JOBS=provisioning-request
+  scripts/setup-provision-jobs.sh (POST config.xml, historique conserve).
+-->
 <flow-definition plugin="workflow-job">
-  <description>Maillon 1 : demande OIG/CLI2 (via API provisioning) → manifeste + Merge Request sur ci/stoa-labs.</description>
+  <description>Maillon 1, VOIE MACHINE : demande OIG/CLI2 (via l'API provisioning de la gateway, authentifiee + scope) -&gt; manifeste (fusion per_env, A1) + Pull Request provision/&lt;app&gt;-&lt;env&gt; sur ci/stoa-labs ; le plan (provision-plan) se declenche sur la PR, la decision reste le MERGE (ADR-078 : un webhook ne porte aucun humain). PIPELINE FROM SCM : ci/Jenkinsfile.provisioning-request, charge depuis le depot plateforme (branche main) -- ce job ne contient AUCUN Groovy et ne liste AUCUN champ : il herite de tout enrichissement de scripts/provision-request.sh.</description>
   <keepDependencies>false</keepDependencies>
   <properties>
     <org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty>
@@ -27,22 +47,29 @@
       </triggers>
     </org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty>
   </properties>
-  <definition class="org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition" plugin="workflow-cps">
-    <script>
-node {
-  stage('checkout') {
-    git url: 'http://gitea:3000/ci/stoa-labs.git', branch: 'main'
-  }
-  stage('provision-request') {
-    withCredentials([string(credentialsId: 'gitea-provision-token', variable: 'GITEA_TOKEN')]) {
-      dir('poc-control-plane-federation') {
-        sh 'set +x; bash scripts/provision-request.sh'
-      }
-    }
-  }
-}
-    </script>
-    <sandbox>true</sandbox>
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition" plugin="workflow-cps">
+    <scm class="hudson.plugins.git.GitSCM" plugin="git">
+      <configVersion>2</configVersion>
+      <userRemoteConfigs>
+        <hudson.plugins.git.UserRemoteConfig>
+          <!-- Depot PLATEFORME vu DEPUIS l'agent (reseau docker) : c'est celui
+               que le checkout implicite de `agent any` repose dans le workspace. -->
+          <url>http://gitea:3000/ci/stoa-labs.git</url>
+        </hudson.plugins.git.UserRemoteConfig>
+      </userRemoteConfigs>
+      <branches>
+        <hudson.plugins.git.BranchSpec>
+          <name>*/main</name>
+        </hudson.plugins.git.BranchSpec>
+      </branches>
+      <doGenerateSubmoduleConfigurations>false</doGenerateSubmoduleConfigurations>
+      <submoduleCfg class="empty-list"/>
+      <extensions/>
+    </scm>
+    <scriptPath>poc-control-plane-federation/ci/Jenkinsfile.provisioning-request</scriptPath>
+    <!-- lightweight=false : le workspace de l'agent doit porter le depot
+         (scripts/provision-request.sh et sa lib), pas seulement le Jenkinsfile. -->
+    <lightweight>false</lightweight>
   </definition>
-  <triggers/>
+  <disabled>false</disabled>
 </flow-definition>

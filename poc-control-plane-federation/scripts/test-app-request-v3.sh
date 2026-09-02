@@ -7,7 +7,7 @@
 #            CHEMIN Vault, jamais par sa valeur.
 #
 # Fichiers couverts : scripts/provision-request.sh (la substance),
-# ci/jenkins/app-request.job.xml (les paramètres) et ci/Jenkinsfile.app-request
+# ci/Jenkinsfile.app-request (le pipeline ET, depuis A0, les paramètres) + la coquille XML
 # (le pipeline — 2 lignes de routage, aucune logique).
 #
 # DEUX TERRAINS, comme test-app-request-v2.sh dont ce script reprend le patron :
@@ -163,28 +163,40 @@ for pd in root.iter():
         print(pd.tag); break
 " "$1" "$2" 2>/dev/null
 }
-if [ "$(param_class "$XML" IP_ALLOWLIST)" = "hudson.model.TextParameterDefinition" ]; then
-  ok "IP_ALLOWLIST est un TextParameterDefinition (zone multiligne)"
+# A0 (2026-09-02) : les paramètres sont POSÉS PAR LE JENKINSFILE
+# (properties([parameters([…])])), plus par le XML — la classe se lit donc dans
+# le pas scripté : text(...) = zone multiligne, string(...) = une ligne.
+JF_CODE_V3="$(grep -vE '^[[:space:]]*//' "$JF")"
+if printf '%s\n' "$JF_CODE_V3" | grep -qF "text(name: 'IP_ALLOWLIST'"; then
+  ok "IP_ALLOWLIST est posé en text(...) par le Jenkinsfile (zone multiligne)"
 else
-  ko "IP_ALLOWLIST n'est pas multiligne — classe=$(param_class "$XML" IP_ALLOWLIST)"
+  ko "IP_ALLOWLIST n'est pas un text(...) dans le Jenkinsfile — l'IHM n'accepterait qu'une ligne"
 fi
 for p in BACKEND_KEY_REF BACKEND_KEY_FIELD; do
-  if [ "$(param_class "$XML" "$p")" = "hudson.model.StringParameterDefinition" ]; then
-    ok "$p présent dans le XML (StringParameterDefinition)"
+  if printf '%s\n' "$JF_CODE_V3" | grep -qF "string(name: '$p'"; then
+    ok "$p posé en string(...) par le Jenkinsfile"
   else
-    ko "$p absent du XML (ou mauvaise classe : $(param_class "$XML" "$p"))"
+    ko "$p absent du formulaire posé par le Jenkinsfile"
   fi
 done
-
-# B2 — DOCTRINE : le XML fait autorité sur les PARAMÈTRES, le Jenkinsfile sur le
-# PIPELINE. Declarative ne remplace QUE les propriétés qu'il a lui-même posées
-# (DeclarativeJobPropertyTrackerAction) : un bloc `parameters {}` dans le
-# Jenkinsfile ne gagnerait PAS contre le config.xml — la divergence serait
-# SILENCIEUSE. D'où : aucun `parameters` côté Jenkinsfile, mais bien le routage.
-if grep -qE '^\s*parameters\s*\{' "$JF"; then
-  ko "le Jenkinsfile déclare un bloc parameters{} — divergence silencieuse avec le XML (les listes générées mourraient)"
+if [ "$(python3 -c "
+import xml.etree.ElementTree as ET, sys
+r = ET.parse(sys.argv[1]).getroot()
+print(sum(1 for e in r.iter() if e.tag.endswith('ParameterDefinition')))" "$XML")" = "0" ]; then
+  ok "le XML ne porte plus AUCUN paramètre (A0 : coquille pure)"
 else
-  ok "le Jenkinsfile ne déclare AUCUN bloc parameters{} (le XML reste la source de vérité)"
+  ko "le XML porte encore des paramètres — ils GAGNERAIENT sur le Jenkinsfile (divergence silencieuse)"
+fi
+
+# B2 — DOCTRINE (A0) : le Jenkinsfile fait autorité sur TOUT — pipeline ET
+# formulaire — par le pas scripté properties([parameters([…])]), réévalué à
+# chaque build ; jamais par une directive déclarative `parameters {}` (figée à
+# la pose, listes mortes). Le routage withEnv reste, c'est lui qui livre les
+# valeurs BRUTES au script.
+if grep -qE '^\s*parameters\s*\{' "$JF"; then
+  ko "le Jenkinsfile déclare une directive parameters{} — elle figerait les listes (le mécanisme A0 est le pas scripté)"
+else
+  ok "le Jenkinsfile ne déclare AUCUNE directive parameters{} (formulaire = pas scripté, réévalué à chaque build)"
 fi
 for v in REQ_BACKEND_KEY_REF REQ_BACKEND_KEY_FIELD REQ_IP_ALLOWLIST; do
   if grep -q "\"$v=" "$JF"; then
@@ -200,9 +212,9 @@ else
   ok "le Jenkinsfile ne découpe pas IP_ALLOWLIST (substance dans le script, voie machine servie)"
 fi
 
-# B3 — les marqueurs de liste doivent SURVIVRE aux modifications du XML : sans
-# eux, setup-team-onboard-jobs.sh ne substitue plus rien et les deux déroulantes
-# (TEAM, API) meurent. Preuve de bout en bout contre un faux Jenkins.
+# B3 — A0 : la pose d'app-request est une COPIE OCTET POUR OCTET suivie d'un
+# build d'AMORÇAGE (c'est le build qui pose le formulaire). Preuve de bout en
+# bout contre un faux Jenkins : plus aucune substitution, l'amorçage demandé.
 PLAT="$TMP/platform.git"; git init -q --bare "$PLAT"
 WPLAT="$TMP/wplat"; git clone -q "$PLAT" "$WPLAT"
 mkdir -p "$WPLAT/poc-control-plane-federation/ansible" "$WPLAT/poc-control-plane-federation/clients/teamx/apis"
@@ -236,6 +248,12 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         n = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(n) if n else b""
+        # A0 : le build d'AMORCAGE d'un job qui pose son formulaire depuis son
+        # Jenkinsfile (app-request) — trace <job>.build, 201 comme le vrai Jenkins.
+        mb = re.match(r"^/job/([^/]+)/build$", self.path)
+        if mb:
+            open(os.path.join(BODYDIR, mb.group(1) + ".build"), "w").close()
+            return self._send(201)
         if self.path.startswith("/createItem"):
             name = re.search(r"name=([^&]+)", self.path).group(1)
             with open(os.path.join(BODYDIR, name + ".posted.xml"), "wb") as f:
@@ -258,18 +276,15 @@ if [ $? -ne 0 ]; then
   ko "pose du job : setup-team-onboard-jobs.sh a échoué — $(printf '%s' "$OUT" | tail -5)"
 else
   POSTED="$TMP/posted/app-request.posted.xml"
-  if [ -f "$POSTED" ] && grep -q '<string>teamx</string>' "$POSTED" && grep -q '<string>foo@2.0.0</string>' "$POSTED" \
-     && ! grep -q 'CHOICES:TEAMS\|CHOICES:APIS' "$POSTED"; then
-    ok "les modifications v3 du XML n'ont pas cassé la substitution des listes (TEAM=teamx, API=foo@2.0.0, aucun marqueur résiduel)"
+  if [ -f "$POSTED" ] && cmp -s "$POSTED" "$XML" && ! grep -q 'CHOICES:' "$POSTED"; then
+    ok "job POSÉ octet pour octet identique à la source (A0 : coquille pure, aucune substitution)"
   else
-    ko "substitution des listes cassée par les modifications v3 du XML"
+    ko "job POSÉ divergent de la source — une substitution a eu lieu sur une coquille sans marqueur ?"
   fi
-  if [ "$(param_class "$POSTED" IP_ALLOWLIST)" = "hudson.model.TextParameterDefinition" ] \
-     && [ "$(param_class "$POSTED" BACKEND_KEY_REF)" = "hudson.model.StringParameterDefinition" ] \
-     && [ "$(param_class "$POSTED" BACKEND_KEY_FIELD)" = "hudson.model.StringParameterDefinition" ]; then
-    ok "job POSÉ : les trois champs v3 arrivent bien jusqu'à Jenkins"
+  if [ -f "$TMP/posted/app-request.build" ]; then
+    ok "job POSÉ puis AMORCÉ (POST /job/app-request/build) : les trois champs v3 arrivent à Jenkins par le build, pas par le XML"
   else
-    ko "job POSÉ : un champ v3 manque dans le XML réellement envoyé à Jenkins"
+    ko "aucun build d'amorçage demandé — le formulaire (dont les champs v3) n'existerait pas avant un clic Build"
   fi
   # Un pipeline resté en Groovy inline ne chargerait pas le Jenkinsfile où vit
   # le routage des deux nouvelles variables : le vert de B2 serait vacant.

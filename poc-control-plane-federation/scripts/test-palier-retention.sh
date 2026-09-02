@@ -931,38 +931,36 @@ echo "== ㉑octies app-request.job.xml : la choices RÉELLE de REQ_ENV suit la c
 # job provisioning-request webhook-only) proposait encore le terminus. Corrigé
 # dans ci/jenkins/app-request.job.xml (prod → homol) ; cette épreuve statue sur
 # la liste structurée (via ElementTree), jamais sur le texte brut du XML.
-ARJ="ci/jenkins/app-request.job.xml"
-if [ ! -f "$ARJ" ]; then
-  bad "㉑octies $ARJ introuvable — l'assertion serait vaine"
+# A0 (2026-09-02) : la liste REQ_ENV a QUITTÉ le XML — elle est posée par
+# ci/Jenkinsfile.app-request depuis scripts/app-request-choices.sh, qui la
+# dérive d'env_chain_nonprod à chaque build. L'épreuve statue donc sur la
+# CHAÎNE de dérivation (XML sans liste, script sur la bonne fonction,
+# Jenkinsfile sans liste littérale), et sur le résultat de la fonction.
+ARJ="ci/jenkins/app-request.job.xml"; ARC="scripts/app-request-choices.sh"; ARF="ci/Jenkinsfile.app-request"
+if [ ! -f "$ARJ" ] || [ ! -f "$ARC" ] || [ ! -f "$ARF" ]; then
+  bad "㉑octies $ARJ / $ARC / $ARF introuvable — l'assertion serait vaine"
 else
   CHAIN_NONPROD_REAL="$(bash -c '. scripts/lib/env-chain.sh && env_chain_nonprod' 2>/dev/null)" || CHAIN_NONPROD_REAL=""
   TERMINUS_REAL="$(bash -c '. scripts/lib/env-chain.sh && env_chain' 2>/dev/null | awk '{print $NF}')"
-  CHAIN_NONPROD="$CHAIN_NONPROD_REAL" TERMINUS="$TERMINUS_REAL" python3 - "$ARJ" <<'PY' >"$TMP/arj21" 2>&1
-import sys, os, xml.etree.ElementTree as T
-root = T.parse(sys.argv[1]).getroot()
-choices = []
-for p in root.iter():
-    if p.tag.endswith('ChoiceParameterDefinition') and p.findtext('name') == 'REQ_ENV':
-        choices = [s.text for s in p.iter('string')]
-nonprod = set(os.environ.get('CHAIN_NONPROD', '').split())
-terminus = os.environ.get('TERMINUS', '')
-print("CHOICES=%s" % ",".join(choices))
-print("HAS_TERMINUS=%s" % (terminus in choices))
-print("HAS_HOMOL=%s" % ('homol' in choices))
-print("SUBSET_OF_NONPROD=%s" % (bool(choices) and all(c in nonprod for c in choices)))
-PY
-  grep -q '^CHOICES=' "$TMP/arj21" \
-    && ok "㉑octies REQ_ENV lu par ElementTree ($(grep '^CHOICES=' "$TMP/arj21"))" \
-    || { bad "㉑octies parse ElementTree en échec"; sed 's/^/      /' "$TMP/arj21"; }
-  grep -q '^HAS_TERMINUS=False$' "$TMP/arj21" \
-    && ok "㉑octies la choices REQ_ENV ne contient PAS le terminus '$TERMINUS_REAL'" \
-    || bad "㉑octies la choices REQ_ENV contient encore le terminus '$TERMINUS_REAL'"
-  grep -q '^HAS_HOMOL=True$' "$TMP/arj21" \
-    && ok "㉑octies la choices REQ_ENV contient homol" \
-    || bad "㉑octies la choices REQ_ENV ne contient pas homol"
-  grep -q '^SUBSET_OF_NONPROD=True$' "$TMP/arj21" \
-    && ok "㉑octies la choices REQ_ENV est un sous-ensemble de env_chain_nonprod ($CHAIN_NONPROD_REAL)" \
-    || bad "㉑octies la choices REQ_ENV n'est pas alignée sur env_chain_nonprod"
+  N21=$(python3 -c "
+import xml.etree.ElementTree as T
+r = T.parse('$ARJ').getroot()
+print(sum(1 for p in r.iter() if p.tag.endswith('ChoiceParameterDefinition') and p.findtext('name') == 'REQ_ENV'))")
+  [ "$N21" = "0" ] \
+    && ok "㉑octies le XML ne porte plus AUCUNE liste REQ_ENV (A0 : posée par le Jenkinsfile, jamais en dur)" \
+    || bad "㉑octies une liste REQ_ENV subsiste dans le XML — elle GAGNERAIT sur le Jenkinsfile"
+  grep -vE '^\s*#' "$ARC" | grep -q 'ENVS="$(env_chain_nonprod)"' \
+    && ok "㉑octies app-request-choices.sh dérive ENVS d'env_chain_nonprod (terminus exclu par STRUCTURE)" \
+    || bad "㉑octies app-request-choices.sh ne dérive pas ENVS d'env_chain_nonprod"
+  if grep -vE '^\s*//' "$ARF" | grep -qE "'homol'|'$TERMINUS_REAL'|\['dev'"; then
+    bad "㉑octies une liste de paliers LITTÉRALE subsiste dans ci/Jenkinsfile.app-request"
+  else
+    ok "㉑octies ci/Jenkinsfile.app-request ne porte aucune liste de paliers littérale (choices: envs)"
+  fi
+  case " $CHAIN_NONPROD_REAL " in
+    *" $TERMINUS_REAL "*) bad "㉑octies env_chain_nonprod contient le terminus '$TERMINUS_REAL'";;
+    *) [ -n "$CHAIN_NONPROD_REAL" ] && case " $CHAIN_NONPROD_REAL " in *" homol "*) ok "㉑octies env_chain_nonprod = ($CHAIN_NONPROD_REAL) : homol présent, terminus '$TERMINUS_REAL' absent — ce que le formulaire proposera";; *) bad "㉑octies env_chain_nonprod ne contient pas homol";; esac || bad "㉑octies env_chain_nonprod illisible";;
+  esac
 fi
 
 printf '\n  %d PASS / %d FAIL\n' "$PASS" "$FAIL"

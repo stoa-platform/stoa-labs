@@ -20,7 +20,7 @@ ko(){ FAIL=$((FAIL+1)); printf '  ❌ %s\n' "$*"; }
 # Total ATTENDU, ÉCRIT EN DUR — indépendant de PASS+FAIL (auto-référentiel, donc
 # vrai par construction). Toute section ajoutée/retirée DOIT mettre ce nombre à
 # jour : un oubli fait virer le §9 au rouge, ce qui EST le comportement voulu.
-EXPECTED_CHECKS=34
+EXPECTED_CHECKS=35
 
 [ -f "$JOB" ] || { echo "job introuvable : $JOB"; exit 2; }
 [ -f "$JF" ]  || { echo "Jenkinsfile introuvable : $JF"; exit 2; }
@@ -65,28 +65,36 @@ else
 fi
 
 echo
-echo "== 3. LES LISTES DÉROULANTES RESTENT DANS LE XML (le point qui casse le plus vite) =="
-# setup-team-onboard-jobs.sh substitue ces marqueurs par les <string>…</string>
-# RÉELLEMENT trouvés sur Gitea main, AU MOMENT DE LA POSE. Déplacer ces
-# paramètres dans le Jenkinsfile (bloc `parameters {}`) tuerait la substitution :
-# les menus seraient vides ou figés. Ils DOIVENT rester ici.
-grep -q '<!--CHOICES:TEAMS-->' "$JOB" \
-  && ok "marqueur <!--CHOICES:TEAMS--> toujours présent dans le XML" \
-  || ko "marqueur CHOICES:TEAMS disparu — la liste des équipes ne serait plus générée"
-grep -q '<!--CHOICES:APIS-->' "$JOB" \
-  && ok "marqueur <!--CHOICES:APIS--> toujours présent dans le XML" \
-  || ko "marqueur CHOICES:APIS disparu — la liste des APIs ne serait plus générée"
+echo "== 3. LES PARAMÈTRES SONT SORTIS DU XML : le formulaire est posé par le Jenkinsfile (A0) =="
+# A0 (2026-09-02) : inversion de l'ancien §3. Les onze paramètres — listes
+# déroulantes comprises — sont posés par `properties([parameters([…])])` depuis
+# des listes calculées dans le build (scripts/app-request-choices.sh). Le XML
+# ne porte plus ni <parameterDefinitions> ni marqueur substitué à la pose ;
+# test-a0-wiring.sh §5/§6 prouve le mécanisme, ici on ne vérifie que l'inversion.
+if grep -q 'CHOICES:' "$JOB"; then
+  ko "un marqueur CHOICES: subsiste dans le XML — setup-team-onboard-jobs.sh tenterait encore une substitution"
+else
+  ok "aucun marqueur CHOICES: dans le XML (copié tel quel à la pose, NO-OP garanti)"
+fi
+NP=$(python3 -c "
+import xml.etree.ElementTree as T
+r = T.parse('$JOB').getroot()
+print(sum(1 for e in r.iter() if e.tag.endswith('ParameterDefinition')))")
+[ "$NP" = 0 ] && ok "ZÉRO ParameterDefinition dans le XML (structurel)" || ko "$NP ParameterDefinition résiduelle(s) dans le XML — elles GAGNERAIENT sur le Jenkinsfile (divergence silencieuse)"
+jfc 'properties([parameters([' \
+  && ok "le Jenkinsfile pose le formulaire par properties([parameters([ (vue code)" \
+  || ko "properties([parameters([ absent du Jenkinsfile — le job n'aurait plus de formulaire"
 MISSING_P=""
-for P in APP REQ_ENV API CLIENT_ID MODE TEAM IP_ALLOWLIST CERT_PEM CERT_ROTATION; do
-  grep -q "<name>${P}</name>" "$JOB" || MISSING_P="${MISSING_P} ${P}"
+for P in APP REQ_ENV TEAM API CLIENT_ID MODE IP_ALLOWLIST CERT_PEM CERT_ROTATION BACKEND_KEY_REF BACKEND_KEY_FIELD; do
+  jfc "(name: '${P}'" || MISSING_P="${MISSING_P} ${P}"
 done
 [ -z "$MISSING_P" ] \
-  && ok "les 9 paramètres du formulaire sont toujours déclarés dans le XML" \
-  || ko "paramètres absents du XML :${MISSING_P}"
+  && ok "les 11 paramètres du formulaire sont posés par le Jenkinsfile" \
+  || ko "paramètres absents du Jenkinsfile :${MISSING_P}"
 if grep -qE '^  parameters \{' "$JF"; then
-  ko "le Jenkinsfile déclare un bloc \`parameters {}\` — il entrerait en concurrence avec ceux du XML, qui portent les marqueurs de liste"
+  ko "le Jenkinsfile déclare une directive \`parameters {}\` — elle figerait les listes à la pose (le mécanisme A0 est le pas scripté)"
 else
-  ok "le Jenkinsfile ne déclare AUCUN paramètre : le formulaire reste défini par le XML substitué"
+  ok "aucune directive déclarative \`parameters {}\` : le formulaire est le pas scripté, réévalué à chaque build"
 fi
 
 echo

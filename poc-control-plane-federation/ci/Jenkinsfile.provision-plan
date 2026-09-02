@@ -1,0 +1,125 @@
+// ci/Jenkinsfile.provision-plan — PLAN LECTURE SEULE d'une DEMANDE D'APPLICATION
+// (fermeture de boucle du maillon 1, ADR-078 §2) : une PR provision/<app>-<env>
+// OUVERTE (ou resynchronisée) déclenche le plan self-service sur sa branche et
+// le verdict est posté en commentaire sur la PR, visible AVANT la décision
+// humaine (le merge).
+//
+// Conversion DÉCLARATIVE du pipeline qui vivait en Groovy inline dans
+// ci/jenkins/provision-plan.job.xml (<script>…</script>) — jalon A0 du GOAL
+// cd-applications 2026-09-02 : aucun job.xml porteur de logique, QUE des
+// Jenkinsfile from SCM (modèle ci/Jenkinsfile.provision-apply). PARITÉ STRICTE
+// avec le Groovy d'origine : ce job ROUTE trois clés de webhook vers
+// scripts/provision-plan.sh, qui porte TOUTE la substance (checkout de la
+// branche, localisation du manifeste, plan Ansible en lecture seule,
+// commentaire). Aucune logique métier n'a migré ici, aucune ne doit y migrer.
+//
+//   PR provision/<app>-<env> ouverte ──webhook Gitea──▶ plan (identité de JOB,
+//   aucune mutation, aucun secret) ──▶ commentaire ✅/❌ sur la PR
+//
+// CE JOB N'APPLIQUE RIEN. L'apply est le job provision-apply (au merge,
+// identité nominative, ADR-081).
+//
+// Trois faits Jenkins mesurés sur ce lab s'appliquent (mémoire
+// ci-jenkinsfile-refactor) : le <triggers> du XML GAGNE sur celui-ci (miroir
+// exact, vérifié par scripts/lib/gwt-mirror.sh dans test-a0-wiring.sh) ;
+// `input { message }` n'interpole pas (sans objet ici) ; un paramètre de build
+// subit EnvVars.resolve() (sans objet ici : aucun paramètre, les valeurs
+// viennent du webhook et sont lues par le SHELL).
+pipeline {
+
+  // `agent none` au niveau pipeline, `agent any` sur le SEUL stage qui travaille :
+  // le hook Gitea du dépôt plateforme tire sur TOUTES les PR (onboard/*,
+  // promote/*, docs…) — une PR hors provision/* ne doit allouer AUCUN exécuteur
+  // (le lab n'en a que deux). Le Groovy d'origine clonait puis laissait le
+  // script rendre `IGNORE … exit 0` : même résultat (build vert, rien fait),
+  // sans le clone.
+  agent none
+  options { disableConcurrentBuilds() }   // miroir du XML (un plan à la fois)
+
+  // ⚠ Ce bloc doit rester le MIROIR EXACT de celui de
+  // ci/jenkins/provision-plan.job.xml, et c'est le XML qui gagne. Le token est
+  // celui que le hook Gitea `stoa-provision-plan` du dépôt plateforme appelle.
+  // Volontairement PAS de bloc `parameters {}` : PR_BRANCH / PR_NUMBER ne
+  // viennent QUE du webhook (un build manuel n'a aucune de ces variables →
+  // le stage de plan ne s'exécute pas).
+  triggers {
+    GenericTrigger(
+      token: 'stoa-provision-plan',
+      genericVariables: [
+        [key: 'PR_BRANCH', value: '$.pull_request.head.ref'],
+        [key: 'PR_NUMBER', value: '$.pull_request.number'],
+        [key: 'PR_ACTION', value: '$.action'],
+      ],
+      // Ouverture, réouverture, nouveau push sur la branche — jamais la
+      // fermeture (c'est provision-apply qui écoute `closed` + `merged`).
+      regexpFilterText: '$PR_ACTION',
+      regexpFilterExpression: '^(opened|reopened|synchronized)$',
+      printContributedVariables: true,
+      printPostContent: false)
+  }
+
+  // ── POINTS DE CONFIG CLIENT (motif `env.X ?: défaut`, comme les Jenkinsfile frères) ──
+  // ⚠ Hôtes vus DEPUIS le conteneur de l'agent (réseau docker `poc`).
+  environment {
+    GIT_HOST             = "${env.GIT_HOST ?: 'http://gitea:3000'}"
+    GIT_REPO             = "${env.GIT_REPO ?: 'ci/stoa-labs'}"
+    // Lien humain-CLIQUABLE dans le commentaire de PR (split-horizon lab :
+    // jenkins→gitea:3000, navigateur→localhost:13000). Le Groovy d'origine le
+    // codait EN DUR dans la ligne sh ; c'est désormais un point de config.
+    GIT_WEB_HOST         = "${env.GIT_WEB_HOST ?: 'http://localhost:13000'}"
+    // Credential Jenkins (secret text) portant le token Gitea du CI
+    // (scopes write:issue pour commenter). Même identifiant qu'avant.
+    GITEA_CREDENTIALS_ID = "${env.GITEA_CREDENTIALS_ID ?: 'gitea-provision-token'}"
+  }
+
+  stages {
+
+    // Étape SANS agent : nomme le build « plan <app>/<env> (PR #n) » — même
+    // format que provision-apply (« apply <app>/<env> (PR #n) »), lisible dans
+    // la file et par les harnais. app/env ne servent qu'à nommer : le script
+    // re-dérive le palier de la branche ET le confronte à la chaîne
+    // (env_chain_nonprod), jamais depuis ce nom.
+    stage('Contexte du webhook') {
+      steps {
+        script {
+          def ref = env.PR_BRANCH ?: ''
+          if (ref.startsWith('provision/')) {
+            def rest = ref.substring('provision/'.length())
+            def i    = rest.lastIndexOf('-')
+            def app  = (i >= 0) ? rest.substring(0, i) : rest
+            def envn = (i >= 0) ? rest.substring(i + 1) : rest
+            currentBuild.displayName = "plan ${app}/${envn} (PR #${env.PR_NUMBER ?: '?'})"
+            echo "Demande OUVERTE — application=${app} env=${envn} action=${env.PR_ACTION ?: '(absent)'}"
+          } else {
+            currentBuild.displayName = "hors provision/* (PR #${env.PR_NUMBER ?: '?'})"
+            echo "branche '${ref}' hors provision/* — rien à planifier."
+          }
+        }
+      }
+    }
+
+    // ── LE PLAN, lecture seule, identité de JOB ────────────────────────────
+    // `beforeAgent true` : une PR hors provision/* n'alloue pas d'exécuteur.
+    // Le script garde SA propre garde provision/* (IGNORE, exit 0) : le pipeline
+    // filtre, le script refuse — deux portes, jamais une seule.
+    stage('Plan lecture seule (commenté sur la PR)') {
+      when {
+        beforeAgent true
+        expression { (env.PR_BRANCH ?: '').startsWith('provision/') }
+      }
+      agent any
+      steps {
+        withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')]) {
+          // Le checkout du dépôt plateforme est IMPLICITE (agent de stage en
+          // déclaratif) : il vient du <scm> de la coquille — d'où la
+          // disparition du `git url:` en dur du Groovy. Chaîne sh en quotes
+          // SIMPLES : PR_BRANCH / PR_NUMBER (tiers) sont lus par le SHELL,
+          // jamais interpolés par Groovy. `set +x` : le token ne s'écho pas.
+          dir('poc-control-plane-federation') {
+            sh 'set +x; bash scripts/provision-plan.sh'
+          }
+        }
+      }
+    }
+  }
+}

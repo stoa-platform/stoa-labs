@@ -6,14 +6,29 @@
 # GÉNÉRIQUE — setup-provision-request-job.sh l'appelle ainsi pour son propre job
 # plutôt que de réécrire la même logique.
 #
-# POURQUOI CE SCRIPT EXISTE. `provision-plan` porte encore son script Groovy EN
-# LIGNE dans son XML (CpsFlowDefinition) : une modification de sa logique
-# n'atteint PAS l'instance par un simple `git push`, sa configuration doit être
-# repoussée. `provision-apply`, lui, est depuis A2 (2026-09-02) une COQUILLE
-# « Pipeline from SCM » (ci/Jenkinsfile.provision-apply) : sa logique suit
-# `git push`, mais la coquille — pointeur SCM + miroir du bloc <triggers>, qui
-# GAGNE sur le Jenkinsfile — se (re)pose toujours par ce script (une fois, à la
-# conversion, puis à chaque changement de clé du webhook).
+# POURQUOI CE SCRIPT EXISTE. Depuis A0 (2026-09-02), PLUS AUCUN job de cette
+# chaîne ne porte de Groovy dans son XML : `provision-apply` (A2),
+# `provision-plan` et `provisioning-request` (A0) sont des COQUILLES « Pipeline
+# from SCM » (ci/Jenkinsfile.<job>) — leur logique suit `git push gitea main`.
+# Mais la coquille — pointeur SCM + miroir du bloc <triggers>, qui GAGNE sur le
+# Jenkinsfile — se (re)pose toujours par ce script : une fois à la conversion,
+# puis à chaque changement de clé du webhook.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# BOOTSTRAP_JOBS : LE BUILD D'AMORÇAGE, POUR LES JOBS QUI POSENT LEUR FORMULAIRE
+# ─────────────────────────────────────────────────────────────────────────────
+# `app-request` (A0) pose ses onze paramètres DEPUIS SON JENKINSFILE
+# (`properties([parameters([…])])`, listes dérivées du dépôt à chaque build).
+# MESURÉ le 2026-09-02 : re-poser son XML (POST config.xml) EFFACE ces
+# paramètres. Un build d'amorçage doit donc suivre CHAQUE pose, sinon le job
+# n'a plus de formulaire jusqu'au premier clic « Build ». Les jobs nommés dans
+# BOOTSTRAP_JOBS reçoivent, après une pose RÉUSSIE, un `POST /job/<nom>/build`
+# (201 attendu — sans paramètre, c'est précisément ce qu'un job fraîchement
+# posé accepte ; 400 signifierait « déjà paramétré », donc une pose qui n'a pas
+# eu lieu : avertissement ET échec du run, jamais silencieux). Le build n'est
+# PAS attendu (fire-and-forget) : le formulaire existe dès sa fin.
+# setup-team-onboard-jobs.sh le demande pour app-request ; un appelant direct
+# doit le demander explicitement.
 #
 # ─────────────────────────────────────────────────────────────────────────────
 # CE SCRIPT MET À JOUR EN PLACE, IL NE SUPPRIME PAS
@@ -35,6 +50,8 @@
 #   DRY_RUN=true    n'envoie AUCUNE écriture — affiche ce qui serait fait.
 #   JOBS="provision-apply"   restreint aux jobs nommés (défaut : les deux).
 #   ALLOW_RECREATE=true      autorise delete+create si la mise à jour échoue.
+#   BOOTSTRAP_JOBS="app-request"  jobs à AMORCER d'un build après leur pose
+#                            (cf. ci-dessus) ; défaut : aucun.
 #
 # Les identifiants ne transitent JAMAIS par le dépôt ni par argv : uniquement
 # par l'environnement, et `set +x` empêche leur écho.
@@ -48,6 +65,7 @@ JENKINS_TOKEN="${JENKINS_TOKEN:-}"
 DRY_RUN="${DRY_RUN:-false}"
 ALLOW_RECREATE="${ALLOW_RECREATE:-false}"
 JOBS="${JOBS:-provision-apply provision-plan}"
+BOOTSTRAP_JOBS="${BOOTSTRAP_JOBS:-}"
 # ÉCART Task 3 (palier 3, déclaré) : JOBS_SRC_DIR permet à un appelant de
 # poser des XML PRÉ-RENDUS (setup-team-onboard-jobs.sh y substitue les
 # placeholders <!--CHOICES:*--> avant l'appel, dans un dossier de mise en
@@ -180,6 +198,7 @@ for J in $JOBS; do
       404) ok "absent → serait CRÉÉ depuis $X";;
       *)   warn "état indéterminé (HTTP $EXISTS) — vérifier les droits";;
     esac
+    case " $BOOTSTRAP_JOBS " in *" $J "*) ok "puis serait AMORCÉ d'un build (POST /job/$J/build)";; esac
     continue
   fi
 
@@ -200,18 +219,19 @@ for J in $JOBS; do
   # quelle, échouait — c'est ce contrôle qui a écarté le contenu et désigné
   # l'en-tête. setup-provision-request-job.sh, lui, contournait ce 500 par un
   # delete+create destructeur : il était le seul à ne pas avoir eu le mémo.)
+  POSED=false
   if [ "$EXISTS" = "200" ]; then
     HC=$(jcurl -s -b "$CK" -X POST "$JENKINS_UI/job/$J/config.xml" \
          -H "$F: $C" -H "Content-Type: application/xml; charset=utf-8" \
          --data-binary @"$X" -o /dev/null -w '%{http_code}')
     if [ "$HC" = "200" ]; then
-      ok "configuration mise à jour en place (HTTP $HC) — historique conservé"
+      ok "configuration mise à jour en place (HTTP $HC) — historique conservé"; POSED=true
     elif [ "$ALLOW_RECREATE" = "true" ]; then
       warn "mise à jour refusée (HTTP $HC) — repli delete+create DEMANDÉ, l'historique sera PERDU"
       jcurl -s -b "$CK" -X POST "$JENKINS_UI/job/$J/doDelete" -H "$F: $C" -o /dev/null
       HC=$(jcurl -s -b "$CK" -X POST "$JENKINS_UI/createItem?name=$J" \
            -H "$F: $C" -H "Content-Type: application/xml; charset=utf-8" --data-binary @"$X" -o /dev/null -w '%{http_code}')
-      [ "$HC" = "200" ] && ok "job recréé (HTTP $HC)" || { warn "recréation échouée (HTTP $HC)"; RC=1; }
+      [ "$HC" = "200" ] && { ok "job recréé (HTTP $HC)"; POSED=true; } || { warn "recréation échouée (HTTP $HC)"; RC=1; }
     else
       warn "mise à jour refusée (HTTP $HC). Le job est INCHANGÉ."
       warn "  Relancer avec ALLOW_RECREATE=true pour delete+create — DÉTRUIT l'historique de builds."
@@ -220,11 +240,26 @@ for J in $JOBS; do
   elif [ "$EXISTS" = "404" ]; then
     HC=$(jcurl -s -b "$CK" -X POST "$JENKINS_UI/createItem?name=$J" \
          -H "$F: $C" -H "Content-Type: application/xml; charset=utf-8" --data-binary @"$X" -o /dev/null -w '%{http_code}')
-    [ "$HC" = "200" ] && ok "job créé (HTTP $HC)" || { warn "création échouée (HTTP $HC)"; RC=1; }
+    [ "$HC" = "200" ] && { ok "job créé (HTTP $HC)"; POSED=true; } || { warn "création échouée (HTTP $HC)"; RC=1; }
   else
     warn "état du job indéterminé (HTTP $EXISTS) — ni mis à jour ni créé"
     RC=1
   fi
+
+  # ── build d'AMORÇAGE, seulement après une pose RÉUSSIE (cf. en-tête) ──────
+  case " $BOOTSTRAP_JOBS " in
+    *" $J "*)
+      if [ "$POSED" = true ]; then
+        HC=$(jcurl -s -b "$CK" -X POST "$JENKINS_UI/job/$J/build" -H "$F: $C" -o /dev/null -w '%{http_code}')
+        case "$HC" in
+          201) ok "build d'amorçage déclenché (HTTP $HC) — le formulaire existe dès sa fin (non attendu ici)";;
+          400) warn "amorçage refusé (HTTP 400) : le job est DÉJÀ paramétré — la pose n'a pas remplacé sa configuration ?"; RC=1;;
+          *)   warn "amorçage en échec (HTTP $HC) — le job n'a PAS de formulaire tant qu'un build n'a pas tourné (bouton « Build »)"; RC=1;;
+        esac
+      else
+        warn "amorçage NON tenté : la pose de $J a échoué"
+      fi;;
+  esac
 done
 
 echo
