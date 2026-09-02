@@ -443,6 +443,60 @@ bash scripts/test-provision-apply-wiring.sh > "$TMP/pa.out" 2>&1 && ok "B.19b te
 bash scripts/test-palier-retention.sh > "$TMP/g4.out" 2>&1 && ok "B.20 test-palier-retention (G4) : $(tail -1 "$TMP/g4.out" | tr -d '\n')" || bad "B.20 test-palier-retention rouge : $(grep FAIL "$TMP/g4.out" | head -3 | tr '\n' ' ')"
 
 echo
+echo "═══ C. le poseur des comptes gateway par palier (setup-wm-palier-admins.sh, --print hors ligne) ═══"
+SWA="scripts/setup-wm-palier-admins.sh"
+cat > "$TMP/chain3.yaml" <<'EOF'
+environments: [alpha, beta, gamma]
+gates: []
+EOF
+[ -f "$SWA" ] && bash -n "$SWA" 2>/dev/null && ok "C.0 $SWA existe et parse" || bad "C.0 $SWA absent ou ne parse pas"
+( STOA_ENV_CHAIN_FILE="$TMP/chain3.yaml" VAULT_ADDR="http://127.0.0.1:1" bash "$SWA" --print ) > "$TMP/c1" 2>&1; RC=$?
+[ "$RC" -eq 0 ] && grep -q 'envs/alpha/wm-admin' "$TMP/c1" && grep -q 'envs/beta/wm-admin' "$TMP/c1" && ok "C.1 --print dérive les paliers non terminaux (alpha, beta)" || bad "C.1 --print rc=$RC : $(tail -2 "$TMP/c1" | tr '\n' ' ')"
+grep -q 'gamma' "$TMP/c1" && bad "C.1b le TERMINUS gamma apparaît — l'exclusion structurelle a sauté" || ok "C.1b le terminus gamma est absent (env_chain_nonprod)"
+[ "$RC" -eq 0 ] && ok "C.2 --print réussit avec un VAULT_ADDR mort — aucun réseau" || bad "C.2 --print touche le réseau"
+grep -qi 'secret-poc\|password *=' "$TMP/c1" && bad "C.3 --print imprime un mot de passe" || ok "C.3 --print n'imprime aucun mot de passe"
+grep -q 'API-Gateway-Administrators' "$TMP/c1" && ok "C.3b --print nomme le groupe d'admin attendu" || bad "C.3b groupe d'admin absent de --print"
+sed -E 's@^[[:space:]]*#.*$@@' "$SWA" > "$TMP/swa.code"
+grep -Eq -- '-u +"\$[A-Z_]+:\$[A-Z_]+"' "$TMP/swa.code" && bad "C.4 un mot de passe gateway part en argv (-u user:pass)" || ok "C.4 aucun -u \"\$U:\$P\" : les creds gateway partent par fichier -K"
+grep -q -- '-K "\$TMP/' "$TMP/swa.code" && grep -q 'X-Vault-Token' "$TMP/swa.code" && ! grep -q -- '-H "X-Vault-Token' "$TMP/swa.code" \
+  && ok "C.4b curl -K fichier pour la gateway, en-tête par fichier pour Vault" || bad "C.4b plomberie des secrets inattendue"
+sed 's/env_chain_nonprod/env_chain/g' "$SWA" > "$TMP/swa_mut.sh"
+cmp -s "$SWA" "$TMP/swa_mut.sh" && bad "C.5 mutation NO-OP" || { mkdir -p "$TMP/swm/scripts/lib"; cp scripts/lib/env-chain.sh "$TMP/swm/scripts/lib/"; cp "$TMP/swa_mut.sh" "$TMP/swm/scripts/x.sh"
+  ( STOA_ENV_CHAIN_FILE="$TMP/chain3.yaml" bash "$TMP/swm/scripts/x.sh" --print ) > "$TMP/c5" 2>&1
+  grep -q 'gamma' "$TMP/c5" && ok "C.5 mutation env_chain_nonprod→env_chain ⇒ le terminus apparaît (l'exclusion vient de la dérivation)" || bad "C.5 la mutation ne fait pas apparaître gamma : $(tail -2 "$TMP/c5" | tr '\n' ' ')"; }
+
+echo
+echo "═══ D. le poseur LDAP : read-back demandeuse conditionné au deployerGroup (setup-deployer-groups.sh) ═══"
+SDG="scripts/setup-deployer-groups.sh"
+cat > "$TMP/chain-d.yaml" <<'EOF'
+environments: [alpha, beta, gamma]
+gates:
+  - to: beta
+    deployerGroup: apim-apply-beta
+EOF
+( STOA_ENV_CHAIN_FILE="$TMP/chain-d.yaml" DEPLOYERS_ALPHA=alice DEPLOYERS_BETA=bob bash "$SDG" --print ) > "$TMP/d1" 2>&1; RC=$?
+[ "$RC" -eq 0 ] && ok "D.0 --print rc 0" || bad "D.0 --print rc=$RC : $(tail -2 "$TMP/d1" | tr '\n' ' ')"
+grep -q 'palier alpha' "$TMP/d1" && grep -Eq 'read-back demandeuse absente : NON' "$TMP/d1" && ok "D.1 alpha (sans deployerGroup) : read-back demandeuse absente = NON" || bad "D.1 ligne de plan alpha absente : $(grep -i 'alpha\|read-back' "$TMP/d1" | head -3 | tr '\n' ' ')"
+grep -Eq 'read-back demandeuse absente : OUI \(deployerGroup=apim-apply-beta\)' "$TMP/d1" && ok "D.1b beta (deployerGroup déclaré) : read-back demandeuse absente = OUI (deployerGroup=apim-apply-beta)" || bad "D.1b ligne de plan beta absente"
+[ "$(grep -c 'read-back demandeuse absente : OUI' "$TMP/d1")" = 1 ] && ok "D.1c un seul OUI (le seul palier à deployerGroup)" || bad "D.1c $(grep -c 'read-back demandeuse absente : OUI' "$TMP/d1") OUI"
+# la fonction pure, extraite et jouée seule
+sed -n '/^demandeuse_exclue()/,/^}/p' "$SDG" > "$TMP/de.fn"
+[ -s "$TMP/de.fn" ] && ok "D.2 demandeuse_exclue() est définie" || bad "D.2 demandeuse_exclue() absente"
+de_rc(){ ( . scripts/lib/env-chain.sh; . "$TMP/de.fn"; STOA_ENV_CHAIN_FILE="$1" demandeuse_exclue "$2" >/dev/null 2>&1; echo $? ); }
+[ "$(de_rc "$TMP/chain-d.yaml" alpha)" = 1 ] && ok "D.2a demandeuse_exclue alpha ⇒ 1 (ne s'applique pas)" || bad "D.2a rc $(de_rc "$TMP/chain-d.yaml" alpha)"
+[ "$(de_rc "$TMP/chain-d.yaml" beta)" = 0 ] && ok "D.2b demandeuse_exclue beta ⇒ 0 (s'applique)" || bad "D.2b rc $(de_rc "$TMP/chain-d.yaml" beta)"
+[ "$(de_rc "$TMP/absent.yaml" beta)" = 2 ] && ok "D.2c chaîne illisible ⇒ 2 (jamais un 1 silencieux)" || bad "D.2c rc $(de_rc "$TMP/absent.yaml" beta)"
+sed -E 's@^[[:space:]]*#.*$@@' "$SDG" > "$TMP/sdg.code"
+grep -q 'DEPLOYER_GROUP_REQUIRED' "$TMP/sdg.code" && grep -q 'PALIER_FERME' "$TMP/sdg.code" && ok "D.3 l'avertissement d'un palier sans déployeur nomme DEPLOYER_GROUP_REQUIRED ET PALIER_FERME" || bad "D.3 avertissement à un seul refus"
+grep -q 'env_chain_gate_four_eyes' "$TMP/sdg.code" && bad "D.3b le poseur lit fourEyes (axe d'approbation) — il ne doit lire que deployerGroup" || ok "D.3b le poseur ne confond pas les deux annuaires (aucun fourEyes)"
+sed -E 's@^demandeuse_exclue\(\) \{$@demandeuse_exclue() { return 0; }\ndemandeuse_exclue_orig() {@' "$SDG" > "$TMP/sdg_mut.sh"
+cmp -s "$SDG" "$TMP/sdg_mut.sh" && bad "D.4 mutation NO-OP" || { bash -n "$TMP/sdg_mut.sh" 2>/dev/null && ok "D.4a le mutant parse" || bad "D.4a le mutant ne parse pas"
+  mkdir -p "$TMP/sdm/scripts/lib"; cp scripts/lib/env-chain.sh scripts/lib/lab-vault-users.sh "$TMP/sdm/scripts/lib/"; cp "$TMP/sdg_mut.sh" "$TMP/sdm/scripts/x.sh"
+  ( STOA_ENV_CHAIN_FILE="$TMP/chain-d.yaml" DEPLOYERS_ALPHA=alice DEPLOYERS_BETA=bob bash "$TMP/sdm/scripts/x.sh" --print ) > "$TMP/d4" 2>&1
+  [ "$(grep -c 'read-back demandeuse absente : OUI' "$TMP/d4")" = 2 ] && ok "D.4 MUTATION : demandeuse_exclue forcée à 0 ⇒ OUI sur alpha aussi (le détecteur D.1 verrait rouge)" || bad "D.4 la mutation ne change pas le plan : $(grep 'read-back' "$TMP/d4" | tr '\n' ' ')"; }
+grep -q 'docker' "$TMP/d1" && bad "D.5 --print a touché docker" || ok "D.5 --print ne touche ni docker ni l'annuaire"
+
+echo
 echo "═══ E. vault_token_ttl (ci/lib/vault-login.sh) contre le stub ═══"
 # La lib est POSIX et sourcée par le pipeline ; ici sourcée dans un sous-shell
 # bash avec un « login simulé » : _VAULT_TMPDIR + token.hdr posés à la main

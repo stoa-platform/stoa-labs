@@ -35,7 +35,9 @@
 # boucle par STRUCTURE, pas par son nom.
 #
 # Membres par défaut, tous surchargeables par l'environnement :
-#   DEPLOYERS_INT=bob     DEPLOYERS_HOMOL=carol     dev/rec : VIDES (fermés)
+#   DEPLOYERS_INT=bob     DEPLOYERS_HOMOL=carol     dev/rec : VIDES par défaut (fermés)
+#   Le grant nominatif d'A3 (ADR-082 : l'humain rejoint apim-apply-<palier>) est un
+#   geste EXPLICITE, jamais un défaut : DEPLOYERS_DEV=alice DEPLOYERS_REC=alice $0
 # Le nom de la variable est dérivé du palier (`DEPLOYERS_<PALIER>`), donc une
 # chaîne qui gagne un palier gagne son knob sans toucher à ce fichier.
 #
@@ -94,6 +96,21 @@ deployers_for() {
 }
 
 # ── LDIF ─────────────────────────────────────────────────────────────────────
+# demandeuse_exclue <palier> — le read-back « la demandeuse n'est PAS membre »
+# ne s'applique qu'aux paliers dont la PORTE déclare un deployerGroup : c'est
+# l'axe (annuaire n°2, LDAP→Vault) que ce poseur protège. JAMAIS fourEyes (axe
+# d'approbation, claim Keycloak — les deux annuaires que l'en-tête interdit de
+# confondre) : un palier déclarant deployerGroup sans fourEyes est légal. Sur
+# dev/rec (sans deployerGroup), la demandeuse membre d'apim-apply-<palier> est
+# l'état voulu — le grant nominatif d'A3/ADR-082, décision client n°1 (rec
+# autonome). rc 0 = s'applique · 1 = ne s'applique pas · 2 = chaîne illisible
+# (jamais un 1 silencieux : une chaîne cassée ne relâche rien).
+demandeuse_exclue() {
+  local g
+  g="$(env_chain_gate_deployer_group "$1")" || return 2
+  [ -n "$g" ]
+}
+
 ldif_group() {   # ldif_group <cn> <uid>…
   local cn="$1"; shift
   printf 'dn: cn=%s,ou=Groups,%s\n' "$cn" "$BASE_DN"
@@ -215,7 +232,8 @@ pose_group() {   # pose_group <cn> <uid>…
 
 # READ-BACK fail-closed : on ne croit pas les codes de retour, on RELIT
 # l'annuaire (motif de setup-release-team.sh §③).
-read_back_group() {   # read_back_group <cn> <uid attendu>…
+read_back_group() {   # read_back_group <palier> <cn> <uid attendu>…
+  local palier="$1"; shift
   local cn="$1"; shift
   local got u
   got=$(group_members "$cn" | tr '\n' ' ')
@@ -236,15 +254,34 @@ read_back_group() {   # read_back_group <cn> <uid attendu>…
   # DEMANDEUSE : un annuaire qui la met parmi les déployeurs rendrait la
   # déclaration `deployerGroup` décorative — la porte serait « satisfaite » par
   # la personne même qu'elle est censée écarter du geste d'apply.
-  case " $got " in
-    *" $LAB_ALICE_USER "*) bad "$LAB_ALICE_USER (demandeuse) est membre de $cn — à retirer" ;;
-    *)                     ok "$LAB_ALICE_USER (demandeuse) n'est PAS dans $cn" ;;
+  demandeuse_exclue "$palier"; local de=$?
+  case "$de" in
+    0) case " $got " in
+         *" $LAB_ALICE_USER "*) bad "$LAB_ALICE_USER (demandeuse) est membre de $cn — la porte de $palier déclare un deployerGroup, à retirer" ;;
+         *)                     ok "$LAB_ALICE_USER (demandeuse) n'est PAS dans $cn (deployerGroup déclaré pour $palier)" ;;
+       esac ;;
+    1) ok "$LAB_ALICE_USER (demandeuse) peut être membre de $cn — aucun deployerGroup déclaré pour $palier (grant nominatif A3)" ;;
+    *) bad "chaîne d'environnements illisible : le contrôle demandeuse de $palier ne peut pas statuer" ;;
   esac
 }
 
 # ── Dérivation de la chaîne ──────────────────────────────────────────────────
 ENVS_NONPROD="$(env_chain_nonprod)" || { echo "CHAINE_ILLISIBLE : env_chain_nonprod a échoué" >&2; exit 1; }
 [ -n "$ENVS_NONPROD" ] || { echo "CHAINE_VIDE : aucun palier non terminal" >&2; exit 1; }
+
+# print_plan_line <palier> — ce que le read-back FERAIT à la pose (le mode --print
+# sort avant toute pose : c'est cette ligne que la porte hors ligne assert).
+print_plan_line() {
+  local g
+  if demandeuse_exclue "$1"; then
+    g="$(env_chain_gate_deployer_group "$1")"
+    printf '#   read-back demandeuse absente : OUI (deployerGroup=%s)\n' "$g"
+  elif [ $? -eq 1 ]; then
+    printf '#   read-back demandeuse absente : NON (aucun deployerGroup)\n'
+  else
+    printf '#   read-back demandeuse absente : INDÉTERMINÉ (chaîne illisible)\n'
+  fi
+}
 
 MODE="${1:-pose}"
 case "$MODE" in
@@ -257,7 +294,8 @@ case "$MODE" in
         printf '# ── palier %s : AUCUN GROUPE ──\n' "$e"
         printf '#   aucun déployeur nommé (DEPLOYERS_%s vide) ⇒ groupOfNames impossible.\n' \
           "$(printf '%s' "$e" | tr 'a-z-' 'A-Z_')"
-        printf '#   Le palier reste FERMÉ : apply refusé DEPLOYER_GROUP_REQUIRED.\n'
+        printf '#   Le palier reste FERMÉ : DEPLOYER_GROUP_REQUIRED si la porte déclare le groupe (G2), PALIER_FERME pour toute identité humaine sans le grant (A3).\n'
+        print_plan_line "$e"
         printf '#   Ouvrir : DEPLOYERS_%s="<uid>" %s\n' \
           "$(printf '%s' "$e" | tr 'a-z-' 'A-Z_')" "$0"
       else
@@ -265,6 +303,7 @@ case "$MODE" in
         # $M non quoté : le découpage par mots est l'effet voulu (un uid par membre).
         # shellcheck disable=SC2086
         ldif_group "apim-apply-$e" $M | sed 's/^/#   /'
+        print_plan_line "$e"
       fi
     done
     printf '# ── terminus : %s est VÉRIFIÉ (présence + %s membre), jamais reposé ──\n' \
@@ -287,7 +326,7 @@ for e in $ENVS_NONPROD; do
   M="$(deployers_for "$e")"
   if [ -z "$M" ]; then
     # Ce n'est PAS un échec : c'est l'état fermé par défaut, et il est DIT.
-    warn "palier $e : aucun déployeur nommé ⇒ pas de groupe apim-apply-$e (palier FERMÉ, apply refusera DEPLOYER_GROUP_REQUIRED ; ouvrir avec DEPLOYERS_$(printf '%s' "$e" | tr 'a-z-' 'A-Z_'))"
+    warn "palier $e : aucun déployeur nommé ⇒ pas de groupe apim-apply-$e (palier FERMÉ : DEPLOYER_GROUP_REQUIRED si la porte déclare le groupe, PALIER_FERME pour toute identité humaine sans le grant — A3 ; ouvrir avec DEPLOYERS_$(printf '%s' "$e" | tr 'a-z-' 'A-Z_'))"
     continue
   fi
   # $M non quoté : le découpage par mots est l'effet voulu (un uid par membre).
@@ -301,7 +340,7 @@ echo "② read-back depuis l'annuaire (ce que Vault LIRA, pas ce qu'on croit avo
 for e in $POSED; do
   M="$(deployers_for "$e")"
   # shellcheck disable=SC2086
-  read_back_group "apim-apply-$e" $M
+  read_back_group "$e" "apim-apply-$e" $M
 done
 
 echo "③ terminus : $OPERATOR_GROUP est VÉRIFIÉ, pas reposé"
