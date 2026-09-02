@@ -676,9 +676,107 @@ mesure la rétention côté Vault (Vault refuse), pas le cloisonnement au plan d
 données (celui-ci est topologique : une gateway par palier chez un client).
 `X-Environment` est toujours émis par le rôle (transport redondant). Le
 terminus n'est fermé ni par un `if` ni par un nom : `TERMINUS_SANS_VOIE` tant
-qu'aucune voie n'est déclarée, puis le credential ; A4 (groupe déployeur, ITSM)
-et A7 (ouverture) posent le reste. `USER_VAULT_JWT` (voie B) reste un
+qu'aucune voie n'est déclarée, puis le credential ; A4 (la porte de la chaîne :
+groupe déployeur, quatre yeux, refs/ITSM — section suivante) et A7 (ouverture)
+posent le reste. `USER_VAULT_JWT` (voie B) reste un
 paramètre `string` sur le canal `withEnv` (état A0, nommé).
+
+## Les portes de la chaîne au dispatch (A4 — GOAL cd-applications, 2026-09-02)
+
+**Ce qui a changé.** `provision-apply` lit désormais `environments.yaml` par la
+même lib que `team-promote` (`scripts/lib/env-chain.sh`), et la porte du
+palier **décide** : quatre yeux, références (`change_ref`/`pv_ref`) et ITSM,
+terminus par position, déclaration déployeur. Aucun mécanisme neuf : la §6 /
+§6bis / §6ter / §7.a de `team-promote.sh` portées au second objet. Spec :
+`docs/superpowers/specs/2026-09-02-a4-portes-de-la-chaine-au-dispatch-design.md` ;
+ADR-084 étendu (« Extension 2026-09-02 (A4) »).
+
+**Le dessin** (ordre = la propriété) :
+
+1. **La porte de l'amont** (`scripts/provision-apply-gate.sh`) est jouée
+   **deux fois** par `ci/Jenkinsfile.provision-apply` : `GATE_STAGE=pre` après
+   la réconciliation et **avant la pause** (un refus ne réveille personne),
+   puis `GATE_STAGE=dispatch` sous le nœud post-pause, **avant la garde
+   d'identité** — c'est ce passage qui fait foi (anti-TOCTOU, ADR-075), qui
+   donne `--allow-self-approval` à `assert-merge-identity.sh` quand la porte le
+   déclare (`GATE_ALLOW_SELF`, sentinelle `GATE_ENV` : `PORTE_INCOHERENTE`
+   sinon) et qui nourrit la ligne « porte du palier » du rapport de PR. La
+   chaîne est **épinglée** sur le clone par la ligne d'appel
+   (`STOA_ENV_CHAIN_FILE="$PWD/clients/_example/environments.yaml"`) et son
+   chemin est imprimé (`chaîne : …`) : une variable globale Jenkins ne peut
+   plus rediriger la politique. Refus, dans l'ordre : `CHAINE_INVALIDE`
+   (`env_chain_validate` — une porte `to: itn` ou une clé mal orthographiée ne
+   relâche rien en silence), `ENV_INVALIDE`, `PARSE_GATE`,
+   `DEPLOYER_GROUP_UNSUPPORTED` (hors famille, ou `apim-apply-<x>` qui ne nomme
+   pas le palier de sa porte), `MANIFESTE_ABSENT`/`MANIFESTE_ILLISIBLE`,
+   `REF_INVALIDE`, `GATE_REFS_REQUIRED`, `REQUESTER_UNKNOWN` (la porte exige
+   les quatre yeux mais la PR a été ouverte par un compte de service — la forge
+   ne nomme aucun demandeur humain : refus, jamais un silence),
+   `FOUR_EYES_VIOLATION`, `ITSM_NOT_CONFIGURED`/`ITSM_NOT_APPROVED`/`ITSM_UNAVAILABLE`,
+   `TERMINUS_SANS_VOIE` (par position, **après** l'ITSM). Le refus est commenté
+   sur la PR (`REFUSAL_KIND=porte`, marqueur `provision-apply-refus`).
+2. **La déclaration déployeur est vérifiée à l'aval, sur le token de la
+   pause** — le seul site qui le tient : `scripts/selfservice-palier-gate.sh`
+   §2bis, entre l'équipe (§2) et les capacités (§3), **avant le ticket** —
+   `DEPLOYER_GROUP_REQUIRED` (le nom de la politique), jamais le 403 de
+   capacité. Console : `déclaration déployeur : 'alice' porte 'apply-int'
+   (groupe 'apim-apply-int')`. Le tag du refus remonte jusqu'à la PR
+   (`REFUS_OUT="$WORKSPACE/.a3-refus"` → `post{always}` du stage Apply →
+   `buildVariables.APPLIED_REFUSAL`, fait Jenkins 11 mesuré) ; la garde valide
+   la chaîne (`CHAINE_INVALIDE`) et l'aval l'épingle sur son extraction de
+   `origin/main`.
+3. **`approverGroup` est matérialisé, vérifié par personne** — console,
+   `GATE_OUT`, PR : « approbation attendue `int-team` — non vérifiée (aucun
+   mécanisme ne la tient sur cette chaîne) ». La protection de branche du lab
+   ne borne que le push direct. **Et approuver = porter** sur les deux chaînes
+   Gitea : le mergeur d'`int` doit être membre d'`apim-apply-int`.
+
+**Knobs (bloc `environment{}` de `Jenkinsfile.provision-apply`, surchargeables
+par variable globale)** : `ITSM_URL` (défaut `http://itsm-mock:8788`, le
+défaut de `team-promote` — un client sans la globale obtient `ITSM_UNAVAILABLE`),
+`ITSM_CACERT`, `APIM_TERMINUS_BASE` (**sans défaut**, le nom de l'aval — tant
+qu'elle n'est pas déclarée, le terminus est refusé avant la pause),
+`GITEA_SERVICE_LOGINS` (défaut `ci` : les comptes de service de la forge).
+Les listes des formulaires (`app-request`, `selfservice-app-deploy`) dérivent
+toujours de la chaîne (A0) ; `app-request-choices.sh` refuse désormais une
+chaîne invalide (`CHAINE_INVALIDE`) — « deux portes, une source » est prouvé
+hors ligne (retirer `int` de la chaîne ⇒ le formulaire ne le propose plus, la
+demande, la porte amont et la garde aval le refusent `ENV_INVALIDE`).
+
+**Rollout sur ce lab** — `git push gitea HEAD:main` et rien d'autre : l'amont
+est from SCM, l'aval extrait sa garde et la lib de `origin/main` ; aucune
+re-pose (aucun paramètre nouveau), l'annuaire et les comptes gateway sont ceux
+d'A3. `bash scripts/test-a4-live.sh` joue et restaure lui-même la seule
+mutation d'annuaire de la preuve (alice ↔ `apim-apply-int`) et crée le compte
+de forge humain `carol` s'il manque.
+
+**Limites, mesurées** :
+
+- **Sur les voies livrées, `int` refuse `REQUESTER_UNKNOWN`** : `app-request`
+  et `provisioning-request` ouvrent la PR sous `ci`, la forge ne nomme aucun
+  demandeur humain — la porte à quatre yeux, inerte avant A4 (`ci ≠ alice`
+  passait toujours), est **fermée**. A7 ouvre la PR sous l'identité humaine.
+  Un `requested_by` dans le manifeste n'est pas une réponse (forgeable dans
+  la PR par son auteur).
+- **`rec` est relâché au sens de la porte** (`selfApproval: true`, décision
+  client n°1) : avant A4 les quatre yeux y étaient exigés (inertes). La
+  fermeture est une ligne (`fourEyes: true`) — et rend alors `rec`
+  `REQUESTER_UNKNOWN` sur les voies livrées jusqu'à A7.
+- **`homol` refuse `GATE_REFS_REQUIRED`** tant que la demande ne porte pas
+  `per_env.<env>.pv_ref` (A7 ajoute le champ) ; avant A4, `homol` s'appliquait
+  sans aucune porte.
+- **« Même équipe » n'est pas vérifié** : un autre humain de l'équipe (carol)
+  qui merge la PR d'alice passe la porte — mesuré ; c'est l'axe `approverGroup`.
+- **Le terminus est refusé avant la pause, par position, après l'ITSM** ; A7
+  déclare `APIM_TERMINUS_BASE` aux deux sites.
+- **Mono-gateway** : appliquer `int` **écrase** l'état `rec` du même objet
+  (un objet par nom sur la 10.15 unique) — chez un client, un objet par
+  gateway de palier.
+- Seuls les refus de la GARDE de l'aval portent un tag jusqu'à la PR
+  (`TTL_INSUFFISANT`, login refusé, `GATE_ABSENTE`… restent « EN ÉCHEC — voir
+  la console ») ; `--map` n'est pas supporté par l'appel pré-pause ; le
+  parseur Go accepte les clés inconnues d'`environments.yaml`, le shell les
+  refuse (écart enregistré).
 
 ## Tout en Jenkinsfile (A0 — GOAL cd-applications, 2026-09-02)
 
