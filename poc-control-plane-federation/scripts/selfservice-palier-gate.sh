@@ -39,11 +39,18 @@ SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib/env-chain.sh
 . "$SELF_DIR/lib/env-chain.sh" || { echo "REFUS: CABLAGE_INCOMPLET : scripts/lib/env-chain.sh introuvable à côté de la garde"; exit 1; }
 
-refus(){ printf 'REFUS: %s : %s\n' "$1" "$2"; exit 1; }
+# REFUS_OUT (A4, optionnel) : sur refus, le TAG y est écrit — une ligne — pour
+# que le post{always} de l'aval le relaie à l'amont (buildVariables, fait 11) et
+# que la PR le nomme. Lu ${REFUS_OUT:-} AVANT refus() : sous set -u une lecture
+# nue tuerait toute exécution sans la variable SANS ligne `REFUS:` (critique
+# adverse A4) ; purgé en tête comme PALIER_OUT (un tag périmé serait relayé).
+REFUS_OUT="${REFUS_OUT:-}"
+refus(){ printf 'REFUS: %s : %s\n' "$1" "$2"; [ -n "$REFUS_OUT" ] && printf '%s\n' "$1" > "$REFUS_OUT"; exit 1; }
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT; umask 077
 
 PALIER_OUT="${PALIER_OUT:-}"; [ -n "$PALIER_OUT" ] || refus CABLAGE_INCOMPLET "PALIER_OUT absent (le Jenkinsfile doit nommer le fichier de sortie)"
 rm -f "$PALIER_OUT"
+[ -n "$REFUS_OUT" ] && rm -f "$REFUS_OUT"
 VAULT_ADDR="${VAULT_ADDR:-}"; [ -n "$VAULT_ADDR" ] || refus CABLAGE_INCOMPLET "VAULT_ADDR absent"
 VAULT_TOKEN_FILE="${VAULT_TOKEN_FILE:-}"; [ -n "$VAULT_TOKEN_FILE" ] || refus CABLAGE_INCOMPLET "VAULT_TOKEN_FILE absent (login nominatif non fait ?)"
 MANIFEST="${MANIFEST:-}"; [ -n "$MANIFEST" ] || refus CABLAGE_INCOMPLET "MANIFEST absent"
@@ -65,6 +72,11 @@ APIM_TEAM="${APIM_TEAM:-}"
 # ── 0. FORME, avant tout appel réseau ────────────────────────────────────────
 [ -n "$ENVIRONMENT" ] || refus ENV_INVALIDE "ENVIRONMENT vide — un apply vise un palier"
 case "$ENVIRONMENT" in *[!a-z0-9]*) refus ENV_INVALIDE "'${ENVIRONMENT}' hors de ^[a-z0-9]+\$";; esac
+# A4 (D0) : la chaîne est VALIDÉE avant d'être lue — une porte `to: itn` ou une
+# clé mal orthographiée ne relâche rien en silence — et sa source est imprimée
+# (épinglée par le Jenkinsfile sur l'extraction de origin/main).
+echo "chaîne : $(_env_chain_file)"
+env_chain_validate 2>"$TMP/validate.err" || refus CHAINE_INVALIDE "$(tail -1 "$TMP/validate.err" | tr -d '\r')"
 CHAIN="$(env_chain)" || refus ENV_INVALIDE "chaîne d'environnements illisible"
 case " $CHAIN " in *" $ENVIRONMENT "*) ;; *) refus ENV_INVALIDE "'${ENVIRONMENT}' hors de la chaîne ($CHAIN)";; esac
 case "$ADMIN_VIA" in direct|proxy-oauth2) ;; *) refus VIA_INCONNU "'${ADMIN_VIA}' — attendu direct ou proxy-oauth2";; esac
@@ -152,6 +164,37 @@ fi
 case "$TEAM" in *[!a-z0-9-]*) refus TEAM_INVALIDE "'${TEAM}' hors de la classe [a-z0-9-] — un nom d'équipe entre dans un chemin Vault qui porte une décision de tenant : refusé, jamais assaini";; esac
 printf '%s\n' "$S" | grep -qx -- "$TEAM" \
   || refus TEAM_NON_PORTEE "l'équipe '${TEAM}' n'est pas parmi les tenants que le token porte ($(printf '%s' "$S" | tr '\n' ' ' | sed 's/ $//')) — l'appelant ne choisit pas sous quelle équipe son application est cloisonnée"
+
+# ── 2bis. LA DÉCLARATION : QUI DÉPLOIE CE PALIER ? (A4 — ADR-084, la §7.a de team-promote) ──
+# La porte peut nommer un groupe déployeur (annuaire n°2, LDAP→policy Vault —
+# jamais la claim KC) : le token de la pause doit porter la policy projetée.
+# Vérifié ICI, sur le token du geste (retrait ≠ révocation, mesuré G2), AVANT
+# les capacités et le ticket : « d'abord la chaîne dit QUI, ensuite ton ticket
+# ouvre-t-il » — le refus est DÉCLARATIF (DEPLOYER_GROUP_REQUIRED, le nom de la
+# politique), jamais le 403 de capacité. Le lookup-self de §2 est réutilisé
+# (aucun second appel). Pas de déclaration ⇒ rien (rec : autonomie du
+# demandeur, décision client n°1). Famille apim-apply-<x> : <x> DOIT être le
+# palier de la porte — sinon la déclaration « passerait » puis retomberait sur
+# PALIER_FERME, et le refus déclaratif mentirait.
+DEPLOYER_GROUP="$(env_chain_gate_deployer_group "$ENVIRONMENT")" || refus PARSE_GATE "deployerGroup de la porte '${ENVIRONMENT}'"
+if [ -n "$DEPLOYER_GROUP" ]; then
+  DEPLOYER_POLICY="$(deployer_group_policy "$DEPLOYER_GROUP")" \
+    || refus DEPLOYER_GROUP_UNSUPPORTED "'${DEPLOYER_GROUP}' est hors des deux familles vérifiables (apim-apply-<x> | apim-operator-<x>) — déclaration invérifiable, refus fail-closed"
+  case "$DEPLOYER_GROUP" in
+    apim-apply-*) [ "${DEPLOYER_GROUP#apim-apply-}" = "$ENVIRONMENT" ] \
+      || refus DEPLOYER_GROUP_UNSUPPORTED "'${DEPLOYER_GROUP}' déclaré sur la porte '${ENVIRONMENT}' — la famille apim-apply-<x> doit nommer le palier de sa porte (apim-apply-${ENVIRONMENT})" ;;
+  esac
+  DEPPOL="$(SRC="$TMP/lookup.json" POL="$DEPLOYER_POLICY" python3 -c 'import json,os
+d=(json.load(open(os.environ["SRC"])) or {}).get("data") or {}
+p=set((d.get("policies") or [])+(d.get("identity_policies") or []))
+print("OK" if os.environ["POL"] in p else "KO")' 2>/dev/null)" \
+    || refus DEPLOYER_GROUP_UNVERIFIABLE "lookup-self illisible — l'identité du porteur est invérifiable, refus fail-closed"
+  WHO="${VAULT_USER:-}"
+  [ -n "$WHO" ] || WHO="$(SRC="$TMP/lookup.json" python3 -c 'import json,os;print(str(((json.load(open(os.environ["SRC"])) or {}).get("data") or {}).get("display_name") or "(identite)"))' 2>/dev/null || echo "(identite)")"
+  [ "$DEPPOL" = OK ] \
+    || refus DEPLOYER_GROUP_REQUIRED "la porte vers '${ENVIRONMENT}' déclare le groupe déployeur '${DEPLOYER_GROUP}' (policy projetée '${DEPLOYER_POLICY}') — le token de l'identité '${WHO}' ne la porte pas, refus"
+  echo "déclaration déployeur : '${WHO}' porte '${DEPLOYER_POLICY}' (groupe '${DEPLOYER_GROUP}')"
+fi
 
 # ── 3. LES CAPACITÉS, en un appel, AVANT de lire quoi que ce soit ────────────
 VSUB_PATH=""

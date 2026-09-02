@@ -297,6 +297,10 @@ pipeline {
               fi
               printf '%s\\n' "$DIGEST" > .a2-reference-digest
               rm -f .a2-applied-sha .a2-applied-digest .a2-applied-mode
+              # A4 : le tag de refus d'un build précédent est purgé au même chemin
+              # ABSOLU que la garde l'écrit (REFUS_OUT="$WORKSPACE/.a3-refus") — une
+              # purge relative ici viserait poc-control-plane-federation/.a3-refus.
+              rm -f "$WORKSPACE/.a3-refus"
               echo "REFERENCE_SHA=$REF"
               echo "REFERENCE_MODE=$MODE"
               echo "REFERENCE_DIGEST=${DIGEST:-(aucun : manifeste sans per_env, ou ENVIRONMENT vide)}"
@@ -447,7 +451,14 @@ pipeline {
               #    le shell UNE clé à la fois, valeur re-vérifiée contre la classe
               #    [A-Za-z0-9_./:@+-] — jamais `eval`, jamais sourcée.
               PALIER_OUT="$WORKSPACE/.a3-palier.env"; rm -f "$PALIER_OUT"
-              PALIER_OUT="$PALIER_OUT" MANIFEST="$MANIFEST" bash "$GATE_DIR/scripts/selfservice-palier-gate.sh" || exit 1
+              #    A4 : la chaîne est ÉPINGLÉE sur l'extraction de origin/main (une
+              #    globale STOA_ENV_CHAIN_FILE ne redirige pas la porte) ; le TAG d'un
+              #    refus est écrit dans REFUS_OUT (chemin absolu, purgé ici et au
+              #    stage Référence) et relayé à l'amont par le post{always} du stage
+              #    (buildVariables, fait 11) — la PR nomme DEPLOYER_GROUP_REQUIRED,
+              #    PALIER_FERME, TERMINUS_SANS_VOIE… au lieu d'un « EN ÉCHEC » muet.
+              rm -f "$WORKSPACE/.a3-refus"
+              STOA_ENV_CHAIN_FILE="$GATE_DIR/clients/_example/environments.yaml" REFUS_OUT="$WORKSPACE/.a3-refus" PALIER_OUT="$PALIER_OUT" MANIFEST="$MANIFEST" bash "$GATE_DIR/scripts/selfservice-palier-gate.sh" || exit 1
               PALIER_ENV=""; PALIER_VIA=""; PALIER_TEAM=""; APIM_AUTH_MODE=""; APIM_WM_CREDS_SUB=""; APIM_OAUTH_SUB=""
               while IFS='=' read -r k v; do
                 case "$v" in ''|*[!A-Za-z0-9_./:@+-]*) echo "REFUS: SORTIE_INVALIDE : valeur hors classe pour $k"; exit 1;; esac
@@ -604,6 +615,23 @@ pipeline {
                 env.APPLIED_MODE   = readFile('.a2-applied-mode').trim()
                 env.APPLIED_DIGEST = readFile('.a2-applied-digest').trim()
               }
+            }
+          }
+        }
+      }
+      // A4 — LE REFUS DE LA GARDE, RELAYÉ (fait 11 mesuré) : le tag écrit par
+      // selfservice-palier-gate.sh dans $WORKSPACE/.a3-refus (avant son exit 1)
+      // devient env.APPLIED_REFUSAL, que provision-apply lit dans buildVariables
+      // et pose sur la PR. Classe re-vérifiée : un tag hors forme est ignoré.
+      // Seuls les refus de la GARDE portent un tag (TTL_INSUFFISANT, GATE_ABSENTE,
+      // login refusé… restent « EN ÉCHEC — voir la console », spec A4 D9).
+      post {
+        always {
+          script {
+            if (fileExists("${env.WORKSPACE}/.a3-refus")) {
+              def t = readFile("${env.WORKSPACE}/.a3-refus").trim()
+              env.APPLIED_REFUSAL = (t ==~ /[A-Z][A-Z0-9_]{2,40}/) ? t : ''
+              echo "refus de la garde du palier relayé à l'amont : ${env.APPLIED_REFUSAL ?: '(tag hors classe, ignoré)'}"
             }
           }
         }

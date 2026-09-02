@@ -361,6 +361,67 @@ if mutant 's@^if \[ "\$ENVIRONMENT" = "\$TERMINUS" \]; then$@if false; then@' m_
   [ "$(grc)" = 0 ] && [ "$(out_val PALIER_VIA)" = proxy-oauth2 ] && ok "A.27vi position du terminus retirée ⇒ le terminus compose une base PROXY sur le mutant (l'original force direct)" || bad "A.27vi mutant : rc $(grc) via $(out_val PALIER_VIA)"
 fi
 
+echo "── A.30–A.37 (A4) §2bis : la déclaration déployeur, vérifiée sur le TOKEN, AVANT les capacités et le ticket ──"
+cp clients/_example/environments.yaml "$TMP/chain-gab.yaml"   # le gabarit : int déclare apim-apply-int, prod apim-operator-prod
+chain_var(){ sed -E "$2" "$TMP/chain-gab.yaml" > "$TMP/chain-$1.yaml"; cmp -s "$TMP/chain-gab.yaml" "$TMP/chain-$1.yaml" && { echo "!! chaîne $1 NO-OP"; exit 2; }; printf '%s' "$TMP/chain-$1.yaml"; }
+CTL_INT_OK='{"lookup":{"policies":["deploy-banking-demo","apply-int","default"]},"caps":{"paths":{"secret/data/stoa/envs/int/wm-admin":["read"]}},"kv":{"secret/data/stoa/envs/int/wm-admin":200}}'
+CTL_INT_NO='{"lookup":{"policies":["deploy-banking-demo","apply-rec","default"]},"caps":{"paths":{"secret/data/stoa/envs/int/wm-admin":["read"]}},"kv":{"secret/data/stoa/envs/int/wm-admin":200}}'
+set_ctl "$CTL_INT_OK"; rm -f "$TMP/refus"
+run_gate int "STOA_ENV_CHAIN_FILE=$TMP/chain-gab.yaml" VAULT_USER=alice "REFUS_OUT=$TMP/refus"
+[ "$(grc)" = 0 ] && grep -q "^déclaration déployeur : 'alice' porte 'apply-int' (groupe 'apim-apply-int')$" "$TMP/g.out" \
+  && ok "A.30 int déclaré apim-apply-int, token porte apply-int ⇒ rc 0, « déclaration déployeur : 'alice' porte 'apply-int' »" || bad "A.30 rc $(grc) : $(gout | tail -2 | tr '\n' ' ')"
+[ "$(out_val APIM_WM_CREDS_SUB)" = envs/int/wm-admin ] && [ "$(jcount '"m": "GET", "p": "/v1/secret/data/stoa/envs/int/wm-admin"')" = 1 ] && ok "A.30b puis le ticket int est lu (une fois)" || bad "A.30b ticket : $(jcount '/v1/secret/data/stoa/envs/int/wm-admin') lecture(s)"
+[ ! -f "$TMP/refus" ] && ok "A.30c aucun REFUS_OUT après un succès" || bad "A.30c REFUS_OUT présent après un succès : $(cat "$TMP/refus")"
+set_ctl "$CTL_INT_NO"
+geste int "STOA_ENV_CHAIN_FILE=$TMP/chain-gab.yaml" VAULT_USER=alice "REFUS_OUT=$TMP/refus"
+refus DEPLOYER_GROUP_REQUIRED && grep -q "apim-apply-int" "$TMP/g.out" && grep -q "'alice'" "$TMP/g.out" \
+  && ok "A.31 token sans apply-int ⇒ DEPLOYER_GROUP_REQUIRED nommant le groupe, la policy et alice" || bad "A.31 rc $(grc) : $(gout | tail -1)"
+[ "$(jcount capabilities-self)" = 0 ] && [ "$(jcount '"m": "GET", "p": "/v1/secret')" = 0 ] && ok "A.31b AUCUN capabilities-self, AUCUNE lecture KV après le refus déclaratif" || bad "A.31b journal : caps=$(jcount capabilities-self) kv=$(jcount '"m": "GET", "p": "/v1/secret')"
+[ "$(canary_hits int)" = 0 ] && ok "A.31c canari muet (rien écrit)" || bad "A.31c canari touché"
+[ -f "$TMP/refus" ] && [ "$(cat "$TMP/refus")" = DEPLOYER_GROUP_REQUIRED ] && ok "A.31d REFUS_OUT porte le tag DEPLOYER_GROUP_REQUIRED (relayé à l'amont)" || bad "A.31d REFUS_OUT : $(cat "$TMP/refus" 2>/dev/null || echo absent)"
+[ ! -f "$OUTF" ] && ok "A.31e PALIER_OUT jamais écrit" || bad "A.31e PALIER_OUT écrit malgré le refus"
+rm -f "$TMP/refus"
+run_gate int "STOA_ENV_CHAIN_FILE=$TMP/chain-gab.yaml" VAULT_USER=alice
+refus DEPLOYER_GROUP_REQUIRED && [ ! -f "$TMP/refus" ] && ok "A.31f sans REFUS_OUT posé : même refus, même ligne, aucun fichier (l'optionnel est optionnel — jamais « unbound variable »)" || bad "A.31f rc $(grc) : $(gout | tail -1)"
+CH_KC="$(chain_var kc 's/^    deployerGroup: apim-apply-int$/    deployerGroup: int-team/')"
+run_gate int "STOA_ENV_CHAIN_FILE=$CH_KC" VAULT_USER=alice
+refus DEPLOYER_GROUP_UNSUPPORTED && ok "A.32 deployerGroup: int-team (nom KC) ⇒ DEPLOYER_GROUP_UNSUPPORTED" || bad "A.32 rc $(grc) : $(gout | tail -1)"
+CH_REC="$(chain_var rec 's/^    deployerGroup: apim-apply-int$/    deployerGroup: apim-apply-rec/')"
+set_ctl "$CTL_INT_NO"   # le token porte apply-rec : la déclaration apim-apply-rec « passerait » sans la confrontation au palier
+run_gate int "STOA_ENV_CHAIN_FILE=$CH_REC" VAULT_USER=alice
+refus DEPLOYER_GROUP_UNSUPPORTED && ok "A.33 int: deployerGroup: apim-apply-rec ⇒ DEPLOYER_GROUP_UNSUPPORTED (apim-apply-<x> doit nommer le palier de sa porte)" || bad "A.33 rc $(grc) : $(gout | tail -1)"
+set_ctl "$CTL_OK"
+run_gate rec "STOA_ENV_CHAIN_FILE=$TMP/chain-gab.yaml"
+[ "$(grc)" = 0 ] && [ "$(jcount lookup-self)" = 1 ] && ! grep -q 'déclaration déployeur' "$TMP/g.out" && ok "A.34 rec sans déclaration ⇒ rc 0, un seul lookup-self, aucune ligne de déclaration" || bad "A.34 rc $(grc) lookups=$(jcount lookup-self)"
+set_ctl '{"lookup":{"policies":["deploy-banking-demo","default"]},"caps":{"paths":{"secret/data/stoa/envs/prod/wm-admin":["read"]}},"kv":{"secret/data/stoa/envs/prod/wm-admin":200}}'
+run_gate prod "STOA_ENV_CHAIN_FILE=$TMP/chain-gab.yaml" VAULT_USER=alice "APIM_TERMINUS_BASE=http://prod-gw/rest/apigateway"
+refus DEPLOYER_GROUP_REQUIRED && grep -q 'operator-deploy' "$TMP/g.out" && ok "A.35 terminus AVEC voie déclarée, token sans operator-deploy ⇒ DEPLOYER_GROUP_REQUIRED (la déclaration du terminus est lue dès qu'une voie existe)" || bad "A.35 rc $(grc) : $(gout | tail -1)"
+CH_ITN="$(chain_var itn 's/^  - to: int$/  - to: itn/')"
+set_ctl "$CTL_INT_OK"
+run_gate int "STOA_ENV_CHAIN_FILE=$CH_ITN" VAULT_USER=alice
+refus CHAINE_INVALIDE && [ "$(jcount lookup-self)" = 0 ] && ok "A.36 chaîne to: itn ⇒ CHAINE_INVALIDE, avant tout appel Vault" || bad "A.36 rc $(grc) lookups=$(jcount lookup-self) : $(gout | tail -1)"
+run_gate int "STOA_ENV_CHAIN_FILE=$TMP/chain-gab.yaml" VAULT_USER=alice
+grep -q "^chaîne : $TMP/chain-gab.yaml$" "$TMP/g.out" && ok "A.37 « chaîne : <chemin posé> » imprimé (la source est auditable)" || bad "A.37 chemin absent : $(grep '^chaîne' "$TMP/g.out")"
+if mutant 's@^if \[ -n "\$DEPLOYER_GROUP" \]; then$@if false; then@' m_dep; then
+  set_ctl "$CTL_INT_NO"
+  run_mut m_dep int "STOA_ENV_CHAIN_FILE=$TMP/chain-gab.yaml" VAULT_USER=alice
+  [ "$(grc)" = 0 ] && ok "A.M7 §2bis retiré ⇒ le token sans apply-int PASSE la déclaration sur le mutant (et lit le ticket : le 403 de capacité qu'ADR-084 remplace)" || bad "A.M7 le mutant refuse encore : $(gout | tail -1)"
+  run_gate int "STOA_ENV_CHAIN_FILE=$TMP/chain-gab.yaml" VAULT_USER=alice; refus DEPLOYER_GROUP_REQUIRED && ok "A.M7' l'original refuse toujours DEPLOYER_GROUP_REQUIRED" || bad "A.M7' l'original a dérivé"
+fi
+# A.M8 mutation d'ORDRE : le bloc §2bis déplacé APRÈS le ticket — l'ordre se
+# mesure à l'EXÉCUTION (le journal du stub : une lecture KV avant le refus).
+awk '/^# ── 2bis\./,/^# ── 3\./' "$GATE" | sed '$d' > "$TMP/blk-2bis"
+awk '/^# ── 2bis\./ { skip=1 } skip && /^# ── 3\./ { skip=0 } skip { next } /^# ── 5\./ && !ins { while ((getline l < B) > 0) print l; close(B); ins=1 } { print }' B="$TMP/blk-2bis" "$GATE" > "$TMP/m_order.sh"
+if [ -s "$TMP/blk-2bis" ] && ! cmp -s "$GATE" "$TMP/m_order.sh" && bash -n "$TMP/m_order.sh" 2>/dev/null; then
+  set_ctl "$CTL_INT_NO"
+  run_mut m_order int "STOA_ENV_CHAIN_FILE=$TMP/chain-gab.yaml" VAULT_USER=alice
+  refus DEPLOYER_GROUP_REQUIRED && [ "$(jcount '"m": "GET", "p": "/v1/secret/data/stoa/envs/int/wm-admin"')" = 1 ] \
+    && ok "A.M8 §2bis déplacé après le ticket ⇒ le mutant LIT le ticket avant de refuser (journal : 1 lecture KV) — l'ordre est mesuré, pas supposé" || bad "A.M8 mutant : rc $(grc) kv=$(jcount '/v1/secret/data/stoa/envs/int/wm-admin')"
+  set_ctl "$CTL_INT_NO"; run_gate int "STOA_ENV_CHAIN_FILE=$TMP/chain-gab.yaml" VAULT_USER=alice; [ "$(jcount '"m": "GET", "p": "/v1/secret')" = 0 ] && ok "A.M8' l'original ne lit rien avant le refus" || bad "A.M8' l'original lit le KV avant de refuser"
+else
+  bad "A.M8 mutation d'ordre non construite (bloc §2bis introuvable ou mutant cassé)"
+fi
+
 echo
 echo "═══ B. le câblage de ci/Jenkinsfile.selfservice (vue code) ═══"
 JF="ci/Jenkinsfile.selfservice"
@@ -448,6 +509,27 @@ if [ -n "$L_GATE" ] && [ -n "$L_PF" ]; then
 else
   bad "B.16/B.17 non joués (garde ou préflight introuvables)"
 fi
+echo "── B.21–B.25 (A4) : REFUS_OUT relayé, chaîne épinglée, purges ABSOLUES, post{always} du stage Apply ──"
+GATE_LINE=$(sed -n "${L_GATE:-0}p" "$TMP/jf.code")
+printf '%s' "$GATE_LINE" | grep -qF 'REFUS_OUT="$WORKSPACE/.a3-refus"' && ok "B.21 la ligne d'appel de la garde porte REFUS_OUT=\$WORKSPACE/.a3-refus" || bad "B.21 REFUS_OUT absent de la ligne d'appel : $GATE_LINE"
+printf '%s' "$GATE_LINE" | grep -qF 'STOA_ENV_CHAIN_FILE="$GATE_DIR/clients/_example/environments.yaml"' && ok "B.22 la chaîne est ÉPINGLÉE sur l'extraction de origin/main (une globale ne gagne pas)" || bad "B.22 STOA_ENV_CHAIN_FILE non épinglé : $GATE_LINE"
+L_RMA=$(line_after "${L_LOGIN:-0}" 'rm -f "$WORKSPACE/.a3-refus"' "$TMP/jf.code")
+[ -n "$L_RMA" ] && [ "$L_RMA" -lt "${L_GATE:-0}" ] && ok "B.23 purge ABSOLUE de \$WORKSPACE/.a3-refus avant l'appel (ligne $L_RMA)" || bad "B.23 pas de purge absolue avant l'appel (rm=$L_RMA gate=$L_GATE)"
+L_RMR=$(awk "NR>${L_REF:-0} && NR<${L_PLAN:-0} && index(\$0, \"rm -f \\\"\$WORKSPACE/.a3-refus\\\"\") { print NR; exit }" "$TMP/jf.code")
+[ -n "$L_RMR" ] && ok "B.23b purge ABSOLUE au stage Référence aussi (ligne $L_RMR) — un tag périmé d'un build refusé n'est jamais relayé" || bad "B.23b pas de purge absolue au stage Référence"
+grep -q 'rm -f .a3-refus' "$TMP/jf.code" && bad "B.23c une purge RELATIVE de .a3-refus subsiste (elle viserait poc-control-plane-federation/.a3-refus)" || ok "B.23c aucune purge relative de .a3-refus"
+L_POSTA=$(awk "NR>${L_APPLY:-0} && /^      post \{/ {print NR; exit}" "$TMP/jf.code")
+[ -n "$L_POSTA" ] && ok "B.24 le stage Apply a un post{} (ligne $L_POSTA)" || bad "B.24 aucun post{} de stage après Apply"
+awk "NR>${L_POSTA:-0}" "$TMP/jf.code" > "$TMP/posta.code"
+grep -q 'fileExists("${env.WORKSPACE}/.a3-refus")' "$TMP/posta.code" && grep -q 'env.APPLIED_REFUSAL = ' "$TMP/posta.code" && grep -q '==~ /\[A-Z\]\[A-Z0-9_\]{2,40}/' "$TMP/posta.code" \
+  && ok "B.25 post{always} : fileExists(.a3-refus) → classe [A-Z][A-Z0-9_]{2,40} → env.APPLIED_REFUSAL (fait 11)" || bad "B.25 post{always} incomplet : $(grep -E 'a3-refus|APPLIED_REFUSAL' "$TMP/posta.code" | tr '\n' ' ')"
+# le SCRIPT : ordre §2bis < capabilities-self < ticket, sur la vue code
+sed -E 's@^[[:space:]]*#.*$@@' "$GATE" > "$TMP/gate.code"
+L_G2B=$(code_line "$TMP/gate.code" 'env_chain_gate_deployer_group "$ENVIRONMENT"'); L_GCAPS=$(code_line "$TMP/gate.code" 'sys/capabilities-self'); L_GTK=$(code_line "$TMP/gate.code" '/v1/${TICKET_PATH}')
+[ -n "$L_G2B" ] && [ -n "$L_GCAPS" ] && [ -n "$L_GTK" ] && [ "$L_G2B" -lt "$L_GCAPS" ] && [ "$L_GCAPS" -lt "$L_GTK" ] && ok "B.26 script : déclaration ($L_G2B) < capacités ($L_GCAPS) < ticket ($L_GTK)" || bad "B.26 ordre du script : 2bis=$L_G2B caps=$L_GCAPS ticket=$L_GTK"
+L_GVAL=$(code_line "$TMP/gate.code" 'env_chain_validate'); L_GLK=$(code_line "$TMP/gate.code" 'lookup-self')
+[ -n "$L_GVAL" ] && [ -n "$L_GLK" ] && [ "$L_GVAL" -lt "$L_GLK" ] && ok "B.26b script : env_chain_validate ($L_GVAL) avant tout appel Vault ($L_GLK)" || bad "B.26b validate=$L_GVAL lookup=$L_GLK"
+grep -q 'REFUS_OUT="${REFUS_OUT:-}"' "$GATE" && ok "B.27 REFUS_OUT lu \${REFUS_OUT:-} (jamais « unbound variable » sous set -u)" || bad "B.27 REFUS_OUT lu sans défaut"
 ci/lint-jenkinsfiles.sh > "$TMP/lint.jf" 2>&1 && ok "B.18 ci/lint-jenkinsfiles.sh : $(grep -o 'PORTE VERTE.*' "$TMP/lint.jf")" || bad "B.18 un Jenkinsfile ne compile plus : $(grep -i 'rouge\|error' "$TMP/lint.jf" | head -2 | tr '\n' ' ')"
 bash scripts/test-a0-wiring.sh > "$TMP/a0.out" 2>&1 && ok "B.19 test-a0-wiring : $(tail -1 "$TMP/a0.out")" || bad "B.19 test-a0-wiring rouge : $(grep FAIL "$TMP/a0.out" | head -3 | tr '\n' ' ')"
 bash scripts/test-provision-apply-wiring.sh > "$TMP/pa.out" 2>&1 && ok "B.19b test-provision-apply-wiring : $(tail -1 "$TMP/pa.out")" || bad "B.19b test-provision-apply-wiring rouge : $(grep -E 'FAIL|✗' "$TMP/pa.out" | head -3 | tr '\n' ' ')"
@@ -537,7 +619,7 @@ grep -q '^vault_token_ttl()' "$TMP/lib.code" && ok "E.6 la fonction est définie
 
 # Le compte des contrôles est lui-même un contrôle : une section sautée (stub
 # mort, chemin absent) ne doit pas passer pour un vert plus court.
-EXPECTED_CHECKS=145
+EXPECTED_CHECKS=174
 TOTAL=$((PASS+FAIL))
 [ "$TOTAL" -eq "$((EXPECTED_CHECKS-1))" ] \
   && ok "$((TOTAL+1)) contrôles exécutés = $EXPECTED_CHECKS attendus (aucune section sautée)" \
