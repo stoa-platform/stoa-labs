@@ -524,6 +524,14 @@ ttl_call 1
 sed -E 's@^[[:space:]]*#.*$@@' "$LIB" > "$TMP/lib.code"
 grep -q '^vault_token_ttl()' "$TMP/lib.code" && ok "E.6 la fonction est définie dans la lib" || bad "E.6 vault_token_ttl absente de $LIB"
 
+# Le compte des contrôles est lui-même un contrôle : une section sautée (stub
+# mort, chemin absent) ne doit pas passer pour un vert plus court.
+EXPECTED_CHECKS=141
+TOTAL=$((PASS+FAIL))
+[ "$TOTAL" -eq "$((EXPECTED_CHECKS-1))" ] \
+  && ok "$((TOTAL+1)) contrôles exécutés = $EXPECTED_CHECKS attendus (aucune section sautée)" \
+  || bad "$((TOTAL+1)) contrôles exécutés, $EXPECTED_CHECKS attendus — une section a été sautée ou ajoutée sans mettre EXPECTED_CHECKS à jour"
+
 echo
 echo "======================================================================"
 printf 'RÉSULTAT : %d/%d\n' "$PASS" "$((PASS+FAIL))"
