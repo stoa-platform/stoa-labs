@@ -1,7 +1,7 @@
 ---
 title: "GOAL — La chaîne CD des applications : porter la DEMANDE d'une application de dev jusqu'en prod sur cinq paliers, par le même gitflow que les APIs — sans archive, parce que l'identité d'une application est par palier"
 type: goal
-status: "OUVERT le 2026-09-02 — relevé fait, huit jalons A0..A7 à livrer (A0 = tout en Jenkinsfile, aucun job.xml porteur de logique), quatre décisions client. Aucun code modifié par ce document."
+status: "OUVERT le 2026-09-02 — relevé fait, DEUX SPIKES JOUÉS le même jour (34/0, convergence 0-coupure, désinscription irréversible, A5 à écrire), huit jalons A0..A7 à livrer (A0 = tout en Jenkinsfile, aucun job.xml porteur de logique), quatre décisions client. Aucun code de chaîne modifié par ce document."
 date: 2026-09-02
 lié: [GOAL-cd-promotion-5-envs-2026-08-26, GOAL-self-service-api-app-2026-07-09, adr-078-livrable-self-service-app-wm1015, adr-079-deploiement-promotion-multienv-import-archive, adr-081-ou-vit-la-decision-humaine, adr-082-ouverture-palier-retention-credential, adr-084-axe-qui-deploie-deployer-group, adr-085-rollback-des-paliers, adr-086-parcours-demandeur-pr-tableau-de-bord]
 note: "Le GOAL CD du 2026-08-26 promettait dans son titre « APIs et applications » et a été soldé le 2026-08-27 avec huit jalons qui ne parlent que d'APIs. Ce document est la moitié manquante. Le relevé montre que le gitflow d'entrée (PR, merge, apply nominatif) existe pour les applications, mais qu'aucune des briques de la chaîne CD (référence pinnée, credential par palier, axe déployeur, rollback, terminus) n'y est branchée — et que le manifeste d'application n'est même pas multi-palier."
@@ -73,10 +73,13 @@ note: "Le GOAL CD du 2026-08-26 promettait dans son titre « APIs et application
 
 **Tranché : « build once, deploy many » ne s'applique pas, et il ne faut pas le simuler.** Ce qui est promu est le **contrat de consommation** ; l'identité change par palier par conception (segmentation, révocation locale sans effet sur les autres paliers). Prétendre transporter « la même application » masquerait cette différence au lieu de la gouverner.
 
-**PAS tranché — à mesurer avant de l'écrire :**
-- L'effet **en vol** d'une convergence d'application sur la 10.15 (trou n°3). C'est un spike, pas une opinion, et il conditionne A6.
-- Ce que fait la gateway quand une application souscrit à une API **absente** du palier (trou n°2) : refus REST propre, ou souscription fantôme ? À mesurer avant d'écrire la porte A5, pour qu'elle refuse **avant** la gateway et non après.
-- Aucune source réglementaire propre aux applications n'a été cherchée : l'art. 17(1)(b) du RTS DORA (indépendance approbateur/demandeur, « all changes ») s'applique à l'identique, et le GOAL du 2026-08-26 l'a déjà sourcé. Ne pas chercher un appui supplémentaire qu'on n'a pas.
+**TRANCHÉ par spike le 2026-09-02** — `scripts/spike-cd-applications.py`, **34/0** contre la 10.15 réelle, assets jetables ; compte rendu `SPIKE-2026-09-02-cd-applications-convergence-et-souscription.md`. Ce que les deux trous sont devenus :
+
+- **Trou n°3, effet en vol de la convergence : FERMÉ, 0-coupure.** Trafic 4 voies pendant PUT application ×2 (identifiers), PUT policyAction IAM et PUT policy : **4822 requêtes, 0 non-200** (trois passes concordantes : 278/0, 3679/0, 1869/0), GUID d'application et clé inchangés au read-back. Le verbe de convergence est un verbe de prod.
+- **Retrait ≠ désinscription.** La **suspension** (`isSuspended`) est immédiate (403, **0 fantôme** sur 3338 requêtes) et réversible sans refus tardif. La **désinscription** (`DELETE …/apis?apiIDs=`, 204) est immédiate aussi (401, 0 fantôme) — mais **la paire application/API qui a servi du trafic ne se ré-inscrit plus** : HTTP 500 `errorDetails: null`, pendant 150 s, par PUT, POST et PUT de remplacement, trafic post-retrait sans effet ; l'API accepte une nouvelle application et l'application une nouvelle API ; sans trafic préalable, 200 immédiat. Une seule fois sur cinq essais la paire s'est ré-inscrite (après ~45 s et ~1300 refus). **Vu de l'opérateur, c'est irréversible** : la chaîne ne désinscrit jamais, le retrait est une suspension.
+- **`PUT …/apis` REMPLACE la liste des souscriptions**, il n'ajoute pas. Le moteur fait exactement ce PUT avec une seule API (`apply-selfservice-application.py:125`) : une application qui consommerait deux APIs perdrait la première à chaque convergence de la seconde — et, la paire étant alors brûlée, sans retour. Une application = une API par manifeste (A1), ou le moteur pose la liste **complète**.
+- **Trou n°2, API absente ou inactive : FERMÉ, la gateway ne garde pas la porte, le moteur non plus.** UUID inexistant ⇒ 400 « One (or) more API(s) doesn't exist », aucun fantôme. API **inactive** ⇒ souscription **acceptée** (200, relue), trafic 404 tant qu'inactive, souscription **survit** à l'activation et sert. Le moteur : API absente ⇒ rc 1 (fermé) ; API inactive ⇒ **rc 0, il pose tout** ; sa résolution compare `apiName` **seul**, ni version ni `isActive`. La porte A5 est donc entièrement à écrire côté chaîne, et elle doit être **antérieure** au PUT.
+- Aucune source réglementaire propre aux applications n'a été cherchée : l'art. 17(1)(b) du RTS DORA (indépendance approbateur/demandeur, « all changes ») s'applique à l'identique, et le GOAL du 2026-08-26 l'a déjà sourcé.
 
 ---
 
@@ -95,7 +98,7 @@ Convertir `provision-apply`, `provision-plan` et `provisioning-request` en `ci/J
 
 `provision-request.sh` cesse de réécrire le fichier. Une demande `<app>` en `<env>` **fusionne** `per_env.<env>` dans le manifeste existant (ou le crée s'il n'existe pas), et ne touche à rien d'autre. Les champs trans-paliers (`name`, `api`, `api_version`, `audience`, `mode`, `team`) sont **figés à la première demande** : une demande ultérieure qui les changerait est refusée (`CONTRAT_DIVERGENT`) — changer d'API consommée est une **nouvelle** application, pas une promotion.
 
-Ce jalon règle au passage l'item 2 de `app-request-v3-increment` (app-liste) : le manifeste devient la liste.
+Ce jalon règle au passage l'item 2 de `app-request-v3-increment` (app-liste) : le manifeste devient la liste. **Contrainte mesurée (spike S1-T4)** : `PUT …/apis` remplace la liste des souscriptions — le contrat « une application = une API » figé ici n'est pas une simplification, c'est ce qui empêche une convergence de désinscrire en silence, donc de brûler une paire.
 
 **Porte A1 :** demande `dev` puis demande `rec` ⇒ le manifeste porte **deux** clés `per_env`, avec des `vault_sub` / `client_id` distincts.
 **Contre-épreuve :** la demande `rec` ne modifie **aucun octet** hors de `per_env.rec` (diff vide ailleurs) ; une demande `rec` avec une autre `api` ⇒ `CONTRAT_DIVERGENT`, aucune branche créée.
@@ -131,7 +134,7 @@ Les deux listes en dur tombent par le mécanisme d'A0 : la liste des paliers d'`
 
 Avant tout geste sur la gateway, l'apply vérifie que `api@api_version` **existe et est active** dans la gateway du palier. Sinon `API_NOT_PROMOTED`, rien écrit, message sur la PR nommant la promotion d'API manquante.
 
-Prérequis : le spike du trou n°2 (que fait la gateway sur souscription à une API absente), pour que la porte soit **antérieure** à tout comportement gateway mal connu.
+**Spike joué (S2)** : la gateway refuse l'UUID inexistant (400, sans fantôme) mais **accepte** la souscription à une API inactive ; le moteur refuse l'absente (rc 1) mais **accepte** l'inactive (rc 0) et résout par `apiName` seul. La porte est donc à écrire **avant** le PUT du moteur, sur `name + version + isActive` — et le refus doit précéder toute écriture, parce qu'une souscription posée puis retirée brûle la paire (S1-T3).
 
 **Porte A5 :** application en rec, API jamais promue en rec ⇒ `API_NOT_PROMOTED`, aucune application créée ; promouvoir l'API (G5) puis rejouer ⇒ application créée, **souscrite au GUID promu** (le même qu'en dev, ADR-079 A3).
 **Contre-épreuve :** API présente mais **inactive** en rec ⇒ refus (une souscription à une API inactive est une souscription à rien).
@@ -140,7 +143,7 @@ Prérequis : le spike du trou n°2 (que fait la gateway sur souscription à une 
 
 `Jenkinsfile.rollback` (ADR-085) apprend l'objet application : re-appliquer le SHA de merge **précédent** de `provision/<app>-<env>` au palier. Le verbe étant la convergence idempotente, le rollback est un apply comme un autre — à condition que la convergence **préserve** le GUID de l'application et sa clé.
 
-Prérequis : le spike du trou n°3 (effet en vol de la convergence). Si la 10.15 recycle la clé ou le cache d'identification pendant un `PUT`, ce jalon doit le dire et le mesurer, pas le supposer.
+**Spike joué (S1)** : la convergence est 0-coupure (4822/0), GUID et clé stables — le repli par re-convergence est fondé. **Deux règles mesurées, non négociables** : (1) la chaîne **ne désinscrit jamais** (`DELETE …/apis` sur une paire qui a servi est irréversible en 10.15) — un rollback re-converge les identifiers et la policy, jamais la souscription ; (2) le **retrait** d'une application (fin de vie, incident) est une **suspension** (`isSuspended`, immédiate, réversible, 0 fantôme), pas une désinscription.
 
 **Porte A6 :** deux applies successifs de la même application ⇒ **même GUID d'application, même clé** ; rollback rec ⇒ état de la gateway = état au SHA N-1 (identifiers, IP, cert), vérifié par lecture, pas par log.
 **Contre-épreuve :** rollback vers un SHA dont l'API n'est plus au palier ⇒ `API_NOT_PROMOTED` (A5 tient aussi en repli) ; rollback au terminus sans référence ITSM ⇒ refus (le motif G6).
