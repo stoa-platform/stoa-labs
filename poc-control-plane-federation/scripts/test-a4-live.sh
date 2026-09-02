@@ -162,8 +162,16 @@ merge_as_alice(){
   dl=$(( $(date +%s) + 45 )); m=false
   while [ "$(date +%s)" -lt "$dl" ]; do m=$(pr_field "$pr" ".get('mergeable')"); [ "$m" = True ] && break; sleep 1; done
   [ "$m" = True ] || die "PREREQUIS : PR #$pr non mergeable"
-  hc=$(aapi -X POST -d '{"Do":"merge"}' -o "$TMP/merge.out" -w '%{http_code}' "$API/repos/$GIT_REPO/pulls/$pr/merge")
-  [ "$hc" = 200 ] || die "PREREQUIS : merge par alice refusé (HTTP $hc) : $(head -c 200 "$TMP/merge.out")"
+  # Gitea répond 405 « Please try again later » tant que son contrôle de merge
+  # n'est pas fini — `mergeable: true` ne le garantit pas (mesuré, passage 3) :
+  # rejeu jusqu'à 12 fois, 5 s d'écart.
+  local try=0
+  while :; do
+    hc=$(aapi -X POST -d '{"Do":"merge"}' -o "$TMP/merge.out" -w '%{http_code}' "$API/repos/$GIT_REPO/pulls/$pr/merge")
+    [ "$hc" = 200 ] && break
+    try=$((try+1)); [ "$hc" = 405 ] && [ "$try" -lt 12 ] && { sleep 5; continue; }
+    die "PREREQUIS : merge par alice refusé (HTTP $hc, essai $try) : $(head -c 200 "$TMP/merge.out")"
+  done
   [ "$(pr_field "$pr" "['merged_by']['login']")" = alice ] || die "PREREQUIS : merged_by ≠ alice sur #$pr"
   pr_field "$pr" "['merge_commit_sha']"
 }
