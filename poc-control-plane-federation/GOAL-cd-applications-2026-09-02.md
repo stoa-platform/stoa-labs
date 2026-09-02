@@ -1,7 +1,7 @@
 ---
 title: "GOAL — La chaîne CD des applications : porter la DEMANDE d'une application de dev jusqu'en prod sur cinq paliers, par le même gitflow que les APIs — sans archive, parce que l'identité d'une application est par palier"
 type: goal
-status: "OUVERT le 2026-09-02 — relevé fait, sept jalons A1..A7 à livrer, quatre décisions client. Aucun code modifié par ce document."
+status: "OUVERT le 2026-09-02 — relevé fait, huit jalons A0..A7 à livrer (A0 = tout en Jenkinsfile, aucun job.xml porteur de logique), quatre décisions client. Aucun code modifié par ce document."
 date: 2026-09-02
 lié: [GOAL-cd-promotion-5-envs-2026-08-26, GOAL-self-service-api-app-2026-07-09, adr-078-livrable-self-service-app-wm1015, adr-079-deploiement-promotion-multienv-import-archive, adr-081-ou-vit-la-decision-humaine, adr-082-ouverture-palier-retention-credential, adr-084-axe-qui-deploie-deployer-group, adr-085-rollback-des-paliers, adr-086-parcours-demandeur-pr-tableau-de-bord]
 note: "Le GOAL CD du 2026-08-26 promettait dans son titre « APIs et applications » et a été soldé le 2026-08-27 avec huit jalons qui ne parlent que d'APIs. Ce document est la moitié manquante. Le relevé montre que le gitflow d'entrée (PR, merge, apply nominatif) existe pour les applications, mais qu'aucune des briques de la chaîne CD (référence pinnée, credential par palier, axe déployeur, rollback, terminus) n'y est branchée — et que le manifeste d'application n'est même pas multi-palier."
@@ -20,6 +20,8 @@ note: "Le GOAL CD du 2026-08-26 promettait dans son titre « APIs et application
 > **Le verbe des applications est la convergence idempotente au palier**, portée par le moteur déjà prouvé (`apply-selfservice-application.py`, « crée/converge », identifiers opposés par règle IAM strict) — jamais un delete/create qui régénérerait la clé du consommateur. Ce verbe est acceptable là où le re-`POST` d'API ne l'est pas : une application n'est pas en ligne de trafic, c'est l'API qui l'est, et le lien app→API par GUID **survit** à la promotion de l'API (ADR-079, A3 mesuré).
 >
 > **Le gitflow est le même que pour les APIs, appliqué au manifeste.** Une PR par palier (`provision/<app>-<env>`, existante), la décision au merge (ADR-081), l'apply au **SHA mergé** et pas au dernier `main`, le credential du **seul** palier (AppRoles `apply-<env>` déjà posés par G4, jamais consommés par cette voie), l'axe « qui déploie » (ADR-084), un repli par palier (ADR-085), la PR comme tableau de bord (ADR-086). Rien de neuf à inventer : **sept briques existent pour les APIs, zéro n'est branchée sur les applications.**
+>
+> **Aucune logique dans un `job.xml`.** La chaîne des applications vit dans des **Jenkinsfile chargés depuis le dépôt** (pipeline from SCM), comme `team-promote`, `prod`, `rollback` et les deux `api-promote-*`. Le `job.xml` d'un job n'est qu'une **coquille** : le pointeur SCM et le miroir du bloc `triggers` (mesuré : le `<triggers>` du XML gagne sur le Jenkinsfile, `ci/jenkins/team-promote.job.xml:9-16`). Trois raisons, toutes déjà actées ailleurs : (a) OWASP CICD-SEC-04 — une définition de pipeline hors Git n'est ni revue ni protégée par les protections de branche de G4 ; (b) ADR-082 nomme « le config.xml Jenkins qui gagne sur le Jenkinsfile » comme frontière hors Git **non fermée** — on ne construit pas une chaîne neuve dessus ; (c) la porte de lint (`make lint-ci`) ne compile **que** les Jenkinsfile — un Groovy inline n'est jamais linté, et c'est ainsi que `Jenkinsfile.carto` a cessé de compiler sans que rien ne rougisse (2026-08-07). Aujourd'hui les **trois** jobs de l'aval applicatif (`provision-apply`, `provision-plan`, `provisioning-request`) sont du Groovy inline **sans** from-SCM, et `app-request` porte ses onze paramètres dans son XML. C'est le jalon A0, préalable à tous les autres.
 >
 > **L'ordre est une porte, pas une convention.** Une application consomme une API par `name + version`, résolue dans la gateway du palier. Si l'API n'a pas encore été promue au palier, l'apply de l'application doit **refuser, fermé**, et non créer une souscription orpheline ou tomber sur `sys:defaultApplication`.
 >
@@ -53,6 +55,7 @@ note: "Le GOAL CD du 2026-08-26 promettait dans son titre « APIs et application
 | Terminus | voie directe prouvée (build #24, `operator-deploy`) | 403 structurel — **aucune voie prod n'existe** pour une application |
 | Liste des paliers | dérivée d'`environments.yaml` | **deux listes en dur** : `ci/jenkins/app-request.job.xml:49`, `ci/Jenkinsfile.selfservice:44` |
 | Preuve E2E | builds #18 à #24, GUID iso 4/4 | **zéro** épreuve avec `REQ_ENV ≠ dev` (`test-app-request-v*.sh`, `test-provision-apply-wiring.sh`) |
+| Définition de pipeline | Jenkinsfile from SCM, XML = coquille (`team-promote`, `api-promote-*`, `prod`, `rollback`) | **Groovy inline sans from-SCM** ×3 : `provision-apply.job.xml`, `provision-plan.job.xml`, `provisioning-request.job.xml` ; `app-request` from SCM mais **onze paramètres dans le XML** (`app-request.job.xml:42-131`) |
 
 **Les trois trous propres aux applications — ceux que G1..G8 n'avaient pas à voir :**
 
@@ -78,6 +81,15 @@ note: "Le GOAL CD du 2026-08-26 promettait dans son titre « APIs et application
 ---
 
 ## Jalons — chacun avec sa porte de preuve et sa contre-épreuve
+
+### A0 — Tout en Jenkinsfile : les trois jobs de l'aval applicatif sortent du XML
+
+Convertir `provision-apply`, `provision-plan` et `provisioning-request` en `ci/Jenkinsfile.provision-apply`, `.provision-plan`, `.provisioning-request` — déclaratifs, from SCM, sur le modèle exact de `Jenkinsfile.team-promote` (triggers `GenericTrigger` dans le Jenkinsfile, XML réduit au pointeur SCM + miroir des triggers). C'est la dette nommée dans la mémoire `ci-jenkinsfile-refactor` (« sans urgence ») ; elle cesse d'être sans urgence le jour où l'on bâtit dessus. Les trois faits Jenkins mesurés s'appliquent (`withEnv([params…])` obligatoire, `input{message}` n'interpole pas, le `<triggers>` du XML gagne).
+
+**Les paramètres sortent aussi du XML — y compris les listes déroulantes.** La contrainte documentée dans `Jenkinsfile.app-request:17-31` (les marqueurs `<!--CHOICES:…-->` substitués à la pose) n'oblige pas à garder les paramètres dans le XML : un pas scripté `properties([parameters([…])])` **posé depuis le Jenkinsfile** (précédent : `ci/Jenkinsfile.carto:193`) recalcule les choix à chaque build depuis le clone — `env_chain_nonprod` pour les paliers, `providers.<env>.yml` pour les équipes, les APIs publiées pour la liste `API`. Limite à écrire d'avance : les listes sont **rafraîchies au build précédent** (un build d'amorçage à la pose). C'est acceptable parce que les listes sont de l'ergonomie, pas de l'autorité : les gardes qui décident sont dans le script et existent déjà (`ENV_INVALIDE`, `TEAM_NOT_DECLARED`, `API_FORMAT_INVALIDE`) — un choix périmé meurt fermé. `setup-team-onboard-jobs.sh` cesse de substituer des marqueurs pour ces jobs.
+
+**Porte A0 :** `make lint-ci` compile les trois nouveaux Jenkinsfile ; les trois XML ne contiennent **aucun** `<script>` ; le miroir XML/Jenkinsfile des triggers est vérifié par le test de miroir existant (`scripts/test-team-publish-wiring.sh`), étendu aux trois jobs ; un build réel de chaque job sur la voie dev rend le **même** résultat qu'avant conversion (PR, plan commenté, apply).
+**Contre-épreuve :** un paramètre saisi `RAW>${JENKINS_HOME}<FIN` arrive **intact** au script (le fait mesuré du 2026-08-06, rejoué) ; retirer le bloc `triggers` du XML ⇒ le test de miroir rougit.
 
 ### A1 — Le manifeste devient multi-palier : une demande n'écrit que sa clé
 
@@ -110,7 +122,7 @@ Le terminus ne reçoit rien : ouvrir `prod` aux applications est un geste de cre
 
 `provision-apply` lit `environments.yaml` par la même lib que `team-promote` (`env-chain.sh` / dispatch gate) : `approverGroup`, `fourEyes`, `deployerGroup` (ADR-084, les trois refus nommés), ITSM au terminus. La garde `assert-merge-identity.sh` reste, et prend `--allow-self-approval` de la porte du palier au lieu d'un défaut.
 
-Les deux listes en dur tombent : `app-request.job.xml:49` est **substituée à la pose** par `setup-team-onboard-jobs.sh` depuis `env_chain_nonprod` (le motif `<!--CHOICES:…-->` existe déjà pour `TEAMS` et `APIS`) ; `Jenkinsfile.selfservice:44` reste la seule liste manuelle, **documentée comme telle** (contrainte Declarative mesurée en G1).
+Les deux listes en dur tombent par le mécanisme d'A0 : la liste des paliers d'`app-request` et celle de `Jenkinsfile.selfservice:44` sont posées par `properties([parameters([…])])` depuis `env_chain_nonprod`, plus aucune liste manuelle nulle part — la note « seule liste à tenir à la main » de G1 devient caduque.
 
 **Porte A4 :** un demandeur sans `deployerGroup` du palier ⇒ refus nommé au dispatch, **rien écrit** ; membre de l'équipe demandeuse qui approuve rec→int ⇒ `FOUR_EYES_VIOLATION`.
 **Contre-épreuve :** retirer un palier d'`environments.yaml` ⇒ le formulaire posé ne le propose plus **et** `provision-request.sh` le refuse (`ENV_INVALIDE`) — deux portes, une source.
@@ -157,4 +169,4 @@ Et la dette de preuve qui a permis ce trou d'exister : la suite `test-app-reques
 
 ## Ce que ce GOAL ne fait pas
 
-Il ne modifie rien. Il ne rouvre pas le verbe archive (ADR-079, ADR-083) et ne touche pas à la chaîne des APIs. Il ne ferme pas les deux fail-open natifs d'ADR-078 (TTL de clé global, `ipAllowlist` — ce dernier en cours de fermeture par la règle IAM strict) : ils sont des propriétés du palier, pas de la promotion, et restent tracés là où ils sont. Il ne fold pas `apply-selfservice-application.py` dans `labctl apply-consumer` : c'est la cible déclarée du prototype, et un jalon de parité (le motif G8) le jour où deux moteurs existeront pour les applications — aujourd'hui il n'y en a qu'un, ce qui est la seule situation où la parité ne coûte rien.
+Il ne modifie rien. Il ne convertit pas les Jenkinsfile de la chaîne des APIs (déjà from SCM) et ne touche pas aux coquilles XML au-delà du strict miroir des triggers. Il ne rouvre pas le verbe archive (ADR-079, ADR-083) et ne touche pas à la chaîne des APIs. Il ne ferme pas les deux fail-open natifs d'ADR-078 (TTL de clé global, `ipAllowlist` — ce dernier en cours de fermeture par la règle IAM strict) : ils sont des propriétés du palier, pas de la promotion, et restent tracés là où ils sont. Il ne fold pas `apply-selfservice-application.py` dans `labctl apply-consumer` : c'est la cible déclarée du prototype, et un jalon de parité (le motif G8) le jour où deux moteurs existeront pour les applications — aujourd'hui il n'y en a qu'un, ce qui est la seule situation où la parité ne coûte rien.
