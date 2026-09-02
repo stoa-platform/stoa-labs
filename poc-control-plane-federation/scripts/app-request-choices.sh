@@ -62,6 +62,13 @@ rm -f "$CHOICES_OUT"
 
 ENVN="${DEPLOY_PIN_AUTHORING_ENV:?DEPLOY_PIN_AUTHORING_ENV non posé par deploy-pin.sh}"
 
+# A4 (D0) : la chaîne est VALIDÉE avant d'être dérivée — une porte `to: itn`
+# ou une clé mal orthographiée ne pose pas un formulaire sur une politique
+# fausse (fail-closed : les listes précédentes restent en place).
+[ -r "$(_env_chain_file)" ] || refus "CHAINE_ILLISIBLE : source illisible $(_env_chain_file)"
+env_chain_validate 2>"${CHOICES_OUT}.validate.err" \
+  || { refus "CHAINE_INVALIDE : $(tail -1 "${CHOICES_OUT}.validate.err" 2>/dev/null) (source $(_env_chain_file))"; }
+rm -f "${CHOICES_OUT}.validate.err"
 ENVS="$(env_chain_nonprod)" || refus "CHAINE_ILLISIBLE : env_chain_nonprod (source $(_env_chain_file))"
 [ -n "$ENVS" ] || refus "CHAINE_VIDE : aucun palier hors terminus"
 

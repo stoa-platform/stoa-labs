@@ -39,7 +39,7 @@ TMP="$(mktemp -d)"; umask 077
 IPID=""
 cleanup(){ [ -n "$IPID" ] && kill "$IPID" 2>/dev/null; rm -rf "$TMP"; }
 trap cleanup EXIT INT TERM
-EXPECTED_CHECKS=126  # sections 0 + A + B + C + D (E s ajoute en T4)
+EXPECTED_CHECKS=132  # sections 0 + A + B + C + D + E
 
 GATE_SRC="scripts/provision-apply-gate.sh"
 CMT_SRC="scripts/provision-apply-comment.sh"
@@ -501,6 +501,38 @@ run_rpt APPLY_RESULT=SUCCESS VALIDATOR=alice
 ! grep -q 'porte du palier' "$BODY" && grep -q 'RÉUSSI' "$BODY" && ok "D.5 sans GATE_ENV, aucune ligne « porte du palier » (compatibilité A2)" || bad "D.5 texte : $(tr '\n' ' ' < "$BODY" | head -c 300)"
 run_rpt APPLY_RESULT=SUCCESS VALIDATOR=alice 'GATE_ENV=int;rm' GATE_FOUR_EYES=1
 ! grep -q 'porte du palier' "$BODY" && ok "D.6 GATE_ENV hors classe ⇒ ligne non rendue (le rapport se défend)" || bad "D.6 texte : $(grep 'porte du palier' "$BODY")"
+
+echo
+echo "═══ E. deux portes, une source : une chaîne SANS int ⇒ formulaire, demande, porte amont, garde aval le refusent ; une chaîne INVALIDE ⇒ le formulaire n'est pas posé ═══"
+printf 'environments: [dev, rec, homol, prod]\ngates: []\n' > "$TMP/chain-sans-int.yaml"
+# « Gitea » local pour app-request-choices.sh : un bare repo servi comme chemin (motif test-a0-wiring §6)
+mk_platform(){ # $1=racine bare $2=providers.dev.yml
+  local bare="$1" src="$TMP/src-$RANDOM"
+  mkdir -p "$src/poc-control-plane-federation/ansible" "$src/poc-control-plane-federation/clients/_example/apis"
+  printf '%s' "$2" > "$src/poc-control-plane-federation/ansible/providers.dev.yml"
+  printf 'apim_api:\n  name: accounts-read\n  version: 1.0.0\n' > "$src/poc-control-plane-federation/clients/_example/apis/accounts-read.publish.yml"
+  ( cd "$src" && git init -q -b main && git -c user.name=t -c user.email=t@t add -A && git -c user.name=t -c user.email=t@t commit -qm init >/dev/null )
+  mkdir -p "$(dirname "$bare")"; git clone -q --bare "$src" "$bare" >/dev/null
+}
+GHE="$TMP/giteaE"; mk_platform "$GHE/ci/stoa-labs.git" $'providers:\n  - team: banking-demo\n    repo: ""\n    approvers: []\n'
+CHO="$TMP/choicesE.env"; rm -f "$CHO"
+CHOICES_OUT="$CHO" STOA_ENV_CHAIN_FILE="$TMP/chain-sans-int.yaml" GIT_HOST="$GHE" GIT_REPO=ci/stoa-labs GITEA_TOKEN=dummy bash scripts/app-request-choices.sh >"$TMP/e.out" 2>"$TMP/e.err"; RC=$?
+[ "$RC" -eq 0 ] && grep -qx 'ENVS=dev rec homol' "$CHO" 2>/dev/null && ok "E.1 le FORMULAIRE dérive ENVS=dev rec homol — int retiré de la chaîne n'est plus proposé" || bad "E.1 rc=$RC : $(cat "$CHO" 2>/dev/null | tr '\n' ' ') $(tail -2 "$TMP/e.err" | tr '\n' ' ')"
+: > "$TMP/git.log"
+( PATH="$TMP/bin:$PATH" GIT_LOG="$TMP/git.log" REAL_GIT="$REAL_GIT" STOA_ENV_CHAIN_FILE="$TMP/chain-sans-int.yaml" GIT_HOST=http://127.0.0.1:1 GITEA_TOKEN=dummy \
+  REQ_APP=appe REQ_ENV=int REQ_API=demo-selfservice REQ_CLIENT_ID=appe-int REQ_CALLER=oig-provisioner bash scripts/provision-request.sh ) >"$TMP/e2.out" 2>"$TMP/e2.err"; RC=$?
+[ "$RC" -eq 2 ] && grep -q 'REFUS: ENV_INVALIDE' "$TMP/e2.err" && ok "E.2 la DEMANDE refuse REQ_ENV=int (rc 2, ENV_INVALIDE) sur la même source" || bad "E.2 rc=$RC : $(tail -2 "$TMP/e2.err" | tr '\n' ' ')"
+[ ! -s "$TMP/git.log" ] && ok "E.2b …AVANT tout geste Git (le shim git n'a rien vu)" || bad "E.2b git invoqué : $(head -3 "$TMP/git.log" | tr '\n' ' ')"
+run_gate int alice carol "STOA_ENV_CHAIN_FILE=$TMP/chain-sans-int.yaml"
+refus ENV_INVALIDE && [ "$(git_shows)" = 0 ] && ok "E.3 la PORTE AMONT refuse provision/appa-int (ENV_INVALIDE), sans git show" || bad "E.3 rc $(grc) : $(gout | tail -1)"
+mkdir -p "$TMP/gA3/scripts/lib"; cp scripts/selfservice-palier-gate.sh "$TMP/gA3/scripts/"; cp scripts/lib/env-chain.sh "$TMP/gA3/scripts/lib/"
+printf 'x' > "$TMP/tokE"
+( ENVIRONMENT=int STOA_ENV_CHAIN_FILE="$TMP/chain-sans-int.yaml" VAULT_ADDR=http://127.0.0.1:1 VAULT_TOKEN_FILE="$TMP/tokE" MANIFEST="$MANP" PALIER_OUT="$TMP/pE.env" bash "$TMP/gA3/scripts/selfservice-palier-gate.sh" ) >"$TMP/e4.out" 2>&1; RC=$?
+[ "$RC" -eq 1 ] && grep -q '^REFUS: ENV_INVALIDE' "$TMP/e4.out" && ok "E.4 la GARDE AVAL refuse ENVIRONMENT=int (ENV_INVALIDE) — quatre portes, une source" || bad "E.4 rc=$RC : $(tail -1 "$TMP/e4.out")"
+CH_ITN_E="$(chain_variant itnE 's/^  - to: int$/  - to: itn/')"
+rm -f "$CHO"
+CHOICES_OUT="$CHO" STOA_ENV_CHAIN_FILE="$CH_ITN_E" GIT_HOST="$GHE" GIT_REPO=ci/stoa-labs GITEA_TOKEN=dummy bash scripts/app-request-choices.sh >"$TMP/e5.out" 2>"$TMP/e5.err"; RC=$?
+[ "$RC" -ne 0 ] && grep -q 'CHAINE_INVALIDE' "$TMP/e5.err" && [ ! -f "$CHO" ] && ok "E.5 chaîne INVALIDE (to: itn) ⇒ le formulaire n'est PAS posé (CHAINE_INVALIDE, aucun CHOICES_OUT)" || bad "E.5 rc=$RC fichier=$([ -f "$CHO" ] && echo présent || echo absent) : $(tail -1 "$TMP/e5.err")"
 
 echo
 echo "═══ Z. total attendu ═══"
