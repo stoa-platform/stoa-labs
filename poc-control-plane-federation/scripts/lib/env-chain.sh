@@ -176,3 +176,70 @@ g = next((x for x in (d.get("gates") or []) if x.get("to") == sys.argv[2]), {}) 
 print("ITSMCHECK=%s" % ("1" if g.get("itsmCheck") else "0"))
 PY
 }
+
+# env_chain_validate — VALIDE la chaîne AVANT qu'un lecteur ne la lise (A4, D0).
+#
+# POURQUOI : env_chain_gate fait `next((x for x in gates if x.get("to") == env), {})`
+# — une porte `to: itn` ou une clé `foureyes:` mal orthographiée rend un palier
+# SANS AUCUN CONTRÔLE, sans aucun journal : le vert vacant parfait (critique
+# adverse A4, 2026-09-02). Le parseur Go (ParseEnvChain) refuse un `to` non
+# déclaré ou dupliqué mais n'est pas dans la boucle des applications, et n'est
+# pas strict sur les clés inconnues. Ici le shell est PLUS strict (liste blanche
+# des clés de porte, booléens YAML, forme des noms, environnements [a-z0-9]+) :
+# une chaîne acceptée ici l'est par Go — le sens sûr. Écart enregistré (ADR-087).
+# rc 0 ; rc 1 + `env-chain: <fichier> : <cause>` sur stderr. Aucun repli.
+# Appelée en tête des portes (provision-apply-gate.sh, selfservice-palier-gate.sh)
+# et du poseur de formulaire (app-request-choices.sh) : refus CHAINE_INVALIDE.
+env_chain_validate() {
+  local f; f="$(_env_chain_file)"
+  [ -r "$f" ] || { echo "env-chain: source illisible : $f" >&2; return 1; }
+  python3 - "$f" <<'PY' || return 1
+import re, sys, yaml
+p = sys.argv[1]
+def bad(msg):
+    sys.stderr.write("env-chain: %s : %s\n" % (p, msg)); sys.exit(1)
+try:
+    d = yaml.safe_load(open(p, encoding="utf-8"))
+except Exception as e:
+    bad("YAML illisible (%s)" % type(e).__name__)
+if not isinstance(d, dict):
+    bad("document racine : mapping attendu")
+envs = d.get("environments")
+if not isinstance(envs, list) or not envs:
+    bad("'environments' absent ou vide")
+seen = set()
+for e in envs:
+    if not isinstance(e, str) or not re.fullmatch(r"[a-z0-9]+", e):
+        bad("environnement %r hors de [a-z0-9]+" % (e,))
+    if e in seen:
+        bad("environnement '%s' declare deux fois" % e)
+    seen.add(e)
+gates = d.get("gates")
+if gates is None:
+    gates = []
+if not isinstance(gates, list):
+    bad("'gates' : liste attendue")
+ALLOWED = ("to", "selfApproval", "approverGroup", "fourEyes", "requireChangeRef", "requirePVRef", "itsmCheck", "deployerGroup")
+BOOLS = ("selfApproval", "fourEyes", "requireChangeRef", "requirePVRef", "itsmCheck")
+NAMES = ("approverGroup", "deployerGroup")
+tos = set()
+for i, g in enumerate(gates):
+    if not isinstance(g, dict):
+        bad("gates[%d] : mapping attendu" % i)
+    unknown = sorted(str(k) for k in g if k not in ALLOWED)
+    if unknown:
+        bad("gates[%d] : cle(s) inconnue(s) %s (attendu : %s)" % (i, ", ".join(unknown), ", ".join(ALLOWED)))
+    to = g.get("to")
+    if not isinstance(to, str) or to not in seen:
+        bad("gates[%d] : 'to: %s' ne nomme aucun environnement declare" % (i, to))
+    if to in tos:
+        bad("porte '%s' declaree deux fois" % to)
+    tos.add(to)
+    for k in BOOLS:
+        if k in g and not isinstance(g[k], bool):
+            bad("porte '%s' : %s doit etre un booleen YAML (true/false), pas %r" % (to, k, g[k]))
+    for k in NAMES:
+        if k in g and (not isinstance(g[k], str) or not re.fullmatch(r"[A-Za-z0-9._-]+", g[k])):
+            bad("porte '%s' : %s hors de [A-Za-z0-9._-] (%r)" % (to, k, g[k]))
+PY
+}
