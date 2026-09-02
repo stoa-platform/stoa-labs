@@ -1,7 +1,7 @@
 ---
 title: "Plan — A2, la référence : l'apply d'application projette le SHA mergé"
 type: plan
-status: "EN COURS le 2026-09-02 — T1..T6 exécutées et AMENDÉES après critique adverse (hors ligne 148/148, câblage 138/138, lint-ci 10/10), T7 rollout lab + preuve par builds"
+status: "EXÉCUTÉ le 2026-09-02 — T1..T7, preuve par builds réels 60/60 (5 exécutions live : 3 défauts de mécanique Jenkins trouvés et corrigés par les builds)"
 date: 2026-09-02
 spec: docs/superpowers/specs/2026-09-02-a2-reference-sha-merge-design.md
 ---
@@ -74,7 +74,7 @@ spec: docs/superpowers/specs/2026-09-02-a2-reference-sha-merge-design.md
 ## T6 — Documents — FAIT (statut GOAL après la preuve)
 
 - [x] `ENVIRONNEMENTS.md` : section « La référence d'une application (A2) » — mécanisme, rollout (D9), knob `APPLY_ADMIN_VIA`, identité alice, marqueurs, limites.
-- [ ] `GOAL-cd-applications-2026-09-02.md` : A2 LIVRÉ (chiffres), statut en tête — après T7.
+- [x] `GOAL-cd-applications-2026-09-02.md` : A2 LIVRÉ (chiffres), statut en tête.
 - [x] `ci/README.selfservice.md` : `MERGE_SHA`, stage Référence, `Jenkinsfile.provision-apply`.
 - [x] Spec : statut + amendements de la critique adverse.
 
@@ -82,10 +82,10 @@ spec: docs/superpowers/specs/2026-09-02-a2-reference-sha-merge-design.md
 
 Ordre contraint (spec D9) :
 
-- [ ] 1. commit + `git push gitea HEAD:main` (le CI lit gitea).
-- [ ] 2. `bash scripts/setup-selfservice-job.sh` (l'AVAL d'abord : config + build d'amorçage PLAN-only) puis vérifier par l'API que `selfservice-app-deploy` déclare `MERGE_SHA`, `ADMIN_VIA`, `DEBUG`.
-- [ ] 3. `JOBS=provision-apply bash scripts/setup-provision-jobs.sh` (puis l'AMONT : coquille from SCM ; historique conservé).
-- [ ] 4. `APPLY_ADMIN_VIA=direct` en variable globale Jenkins (script console, comme `APIM_DIRECT_BASE_TPL`).
-- [ ] 5. Identité alice côté Gitea (compte + collaboratrice `write` de `ci/stoa-labs`) — posée par la suite live si absente.
-- [ ] 6. Suite live : porte (demande rec `a2p<ts>`, merge par alice, pause atteinte, commit API sur `main` changeant `per_env.rec`, réponse V_USER=alice, build vert ; vérités : log aval `APPLIED_SHA=<MERGE_SHA>`, commentaire = SHA + digest du bloc mergé (recalculé localement) ≠ digest HEAD, gateway : identifier `ipAddressRange` = `10.42.0.1-10.42.0.1`) ; contre-épreuve (PR `a2q<ts>` ouverte, webhook forgé ⇒ FAILURE `PAYLOAD_PERIME`, jamais en pause, compte des builds aval inchangé, aucune app `a2q` sur la gateway, PR commentée) ; nettoyage.
-- [ ] 7. `HANDOFF`/mémoire : chiffres, pièges mesurés.
+- [x] 1. commit + `git push gitea HEAD:main` (le CI lit gitea) — `75a42e6`, puis correctifs rebasés sur les commits d'artefacts de la suite live.
+- [x] 2. `bash scripts/setup-selfservice-job.sh` — amorçage #28 SUCCESS (`REFERENCE_MODE=head`), 8 paramètres dont `MERGE_SHA`.
+- [x] 3. `JOBS=provision-apply bash scripts/setup-provision-jobs.sh` — coquille from SCM posée (HTTP 200, historique conservé).
+- [x] 4. `APPLY_ADMIN_VIA=direct` en variable globale Jenkins (script console).
+- [x] 5. alice créée dans Gitea + collaboratrice `write` par la suite live (laissée en place).
+- [x] 6. Suite live **60/60** (5e exécution ; #74 harnais RAW_HC, #75 PasswordParameterValue/String, #78 Secret.fromString hors sandbox, #81 b.absoluteUrl sans URL racine — chacun corrigé, câblage ancré) : porte (demande rec `a2p<ts>`, merge par alice, pause atteinte, commit API sur `main` changeant `per_env.rec`, réponse V_USER=alice, build vert ; vérités : log aval `APPLIED_SHA=<MERGE_SHA>`, commentaire = SHA + digest du bloc mergé (recalculé localement) ≠ digest HEAD, gateway : identifier `ipAddressRange` = `10.42.0.1-10.42.0.1`) ; contre-épreuve (PR `a2q<ts>` ouverte, webhook forgé ⇒ FAILURE `PAYLOAD_PERIME`, jamais en pause, compte des builds aval inchangé, aucune app `a2q` sur la gateway, PR commentée) ; nettoyage.
+- [x] 7. mémoire `a2-reference-sha-merge` : chiffres, pièges mesurés.

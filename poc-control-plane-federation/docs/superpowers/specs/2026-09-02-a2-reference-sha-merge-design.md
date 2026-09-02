@@ -1,7 +1,7 @@
 ---
 title: "A2 — La référence : l'apply d'une application projette le SHA mergé, jamais le dernier `main`"
 type: design
-status: "EN COURS 2026-09-02 — spec amendée après critique adverse (4 lentilles, 32 points confirmés sur 40, 1 bloquant : le rejeu d'une PR ancienne) ; hors ligne vert (148/148 + câblage 137/137 + lint-ci) ; preuve par builds réels à jouer (D8)"
+status: "LIVRÉ 2026-09-02 — spec amendée après critique adverse (4 lentilles, 32 points confirmés sur 40, 1 bloquant : le rejeu d'une PR ancienne) ; hors ligne 148/148 + câblage 141/141 + lint-ci 10/10 ; builds réels 60/60 (porte provision-apply #84 / aval #30, contre-épreuves #85 PAYLOAD_PERIME, #86 PALIER_SUPPLANTE) ; trois défauts trouvés PAR les builds et corrigés : PasswordParameterValue exige un Secret (input() scripté), Secret.fromString hors sandbox, b.absoluteUrl sans URL racine"
 date: 2026-09-02
 lié: [GOAL-cd-applications-2026-09-02, 2026-09-02-a1-manifeste-multi-palier-design, adr-081-ou-vit-la-decision-humaine, adr-082-ouverture-palier-retention-credential, adr-086-parcours-demandeur-pr-tableau-de-bord, 2026-08-27-g7-parcours-du-demandeur-design]
 ---
