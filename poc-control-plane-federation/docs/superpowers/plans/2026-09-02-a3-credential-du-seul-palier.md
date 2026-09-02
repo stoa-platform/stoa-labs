@@ -1,7 +1,7 @@
 ---
 title: "Plan — A3, le credential du seul palier : l'apply d'application lit envs/<env>/wm-admin avec l'identité qui porte apply-<env>"
 type: plan
-status: "EN COURS 2026-09-02 — T1..T9, exécution inline (un seul écrivain), TDD, preuve par builds réels en T8"
+status: "EXÉCUTÉ le 2026-09-02 — T1..T9 inline, TDD (chaque suite vue rouge avant le code) ; hors ligne 145/145, G4 live ⑦ 37/0, builds réels 54/54 (#98 → #50/#51/#52/#53) ; deux défauts de harnais trouvés par les builds (urlencode exige des tuples ⇒ build sans paramètre ; préflight muet au premier essai) ; rollout lab joué (comptes gateway 12/0, grant LDAP 15/0)"
 date: 2026-09-02
 spec: docs/superpowers/specs/2026-09-02-a3-credential-du-seul-palier-design.md
 ---
@@ -56,7 +56,7 @@ spec: docs/superpowers/specs/2026-09-02-a3-credential-du-seul-palier-design.md
 
 **Interface produite :** entrées env (spec D1) ; sortie `PALIER_OUT` = lignes `PALIER_ENV= PALIER_VIA= APIM_API_BASE= APIM_AUTH_MODE= APIM_WM_CREDS_SUB= APIM_OAUTH_SUB= PALIER_TEAM= PALIER_TICKET=` ; stdout `palier ouvert : <wm-sub> lisible par l'identité du build`, `PALIER_CREDS=`, `PALIER_TEAM=`, `PALIER_BASE=`, `PALIER_VIA=` ; rc 0/1 ; `REFUS: <TAG> : …`.
 
-- [ ] **Step 1 : le stub Vault et le canari (plomberie de la suite), puis les épreuves A.0–A.40 écrites AVANT le script.**
+- [x] **Step 1 : le stub Vault et le canari (plomberie de la suite), puis les épreuves A.0–A.40 écrites AVANT le script.**
 
 Plomberie (motif `test-provision-apply-a2.sh` section B) — `$TMP/stub.py` :
 
@@ -130,11 +130,11 @@ Helpers de la suite : `set_ctl <json>` (écrit `ctl.json`), `run_gate <env> [VAR
 - A.26 vue code du script : toute occurrence de `X-Vault-Token` est dans un `printf` vers le fichier d'en-tête ; aucun `-H "X-Vault-Token` ; le GET du ticket porte `-o /dev/null` ; aucun `eval`.
 - A.27 mutations (chacune : `cmp` anti-no-op, `bash -n`, puis le scénario visé passe sur le mutant ET l'original refuse toujours) : (i) ticket retiré ⇒ A.16 passe ; (ii) contrôle `__ENV__` retiré ⇒ A.20 passe ; (iii) contrôle d'inscriptibilité retiré ⇒ A.13 passe ; (iv) `TEAM ∈ S` retiré ⇒ A.8 passe ; (v) sonde `vault_sub` retirée ⇒ A.14b passe ; (vi) `EFFECTIVE_VIA` forcé à `ADMIN_VIA` ⇒ A.17c rend `PALIER_VIA=proxy-oauth2` (le terminus compose une base proxy).
 
-- [ ] **Step 2 : lancer la suite ⇒ rouge (script absent : A.0 rouge, tout le reste rouge ou non joué).**
+- [x] **Step 2 : lancer la suite ⇒ rouge (script absent : A.0 rouge, tout le reste rouge ou non joué).**
 
 Run : `bash scripts/test-selfservice-palier-a3.sh` — attendu : `RÉSULTAT : x/N` avec x < N, première ligne rouge « script absent ».
 
-- [ ] **Step 3 : écrire le script.**
+- [x] **Step 3 : écrire le script.**
 
 ```bash
 #!/usr/bin/env bash
@@ -312,9 +312,9 @@ echo "PALIER_BASE=${BASE}"
 echo "PALIER_VIA=${EFFECTIVE_VIA}"
 ```
 
-- [ ] **Step 4 : lancer la suite ⇒ vert (section A entière), `shellcheck -x scripts/selfservice-palier-gate.sh` propre, bash 3.2 (`bash --version`) et `python3 -c 'import yaml'` OK.**
+- [x] **Step 4 : lancer la suite ⇒ vert (section A entière), `shellcheck -x scripts/selfservice-palier-gate.sh` propre, bash 3.2 (`bash --version`) et `python3 -c 'import yaml'` OK.**
 
-- [ ] **Step 5 : commit** — `git add scripts/selfservice-palier-gate.sh scripts/test-selfservice-palier-a3.sh && git commit -m "feat(cd-apps): A3 — garde du palier : envs/<env>/wm-admin comme ticket, équipe décidée par le token, capacités avant lecture (suite hors ligne, stub Vault + canari + mutations)"`.
+- [x] **Step 5 : commit** — `git add scripts/selfservice-palier-gate.sh scripts/test-selfservice-palier-a3.sh && git commit -m "feat(cd-apps): A3 — garde du palier : envs/<env>/wm-admin comme ticket, équipe décidée par le token, capacités avant lecture (suite hors ligne, stub Vault + canari + mutations)"`.
 
 ---
 
@@ -324,9 +324,9 @@ echo "PALIER_VIA=${EFFECTIVE_VIA}"
 
 **Interface produite :** `vault_token_ttl` — imprime le `ttl` entier (secondes) de `auth/token/lookup-self` pour le token de la lib ; rc 1 sans login préalable ou si lookup ≠ 200 ou `ttl` absent. POSIX (dash), token par fichier d'en-tête.
 
-- [ ] **Step 1 : épreuves E.1–E.4 écrites** : E.1 sans login ⇒ rc 1, stderr « sans login préalable » ; E.2 après un login simulé (fonction `vault_login_approle` contre le stub ? non — plus simple : poser `_VAULT_TMPDIR` et `token.hdr` à la main dans un sous-shell qui source la lib, motif de `test-vault-user-login.sh`) et stub lookup `ttl=299` ⇒ imprime `299`, rc 0 ; E.3 stub lookup 403 ⇒ rc 1, rien sur stdout ; E.4 journal : l'appel porte `X-Vault-Token` par en-tête, aucun token dans l'URL.
-- [ ] **Step 2 : rouge** (fonction absente : `command not found`).
-- [ ] **Step 3 : implémenter**
+- [x] **Step 1 : épreuves E.1–E.4 écrites** : E.1 sans login ⇒ rc 1, stderr « sans login préalable » ; E.2 après un login simulé (fonction `vault_login_approle` contre le stub ? non — plus simple : poser `_VAULT_TMPDIR` et `token.hdr` à la main dans un sous-shell qui source la lib, motif de `test-vault-user-login.sh`) et stub lookup `ttl=299` ⇒ imprime `299`, rc 0 ; E.3 stub lookup 403 ⇒ rc 1, rien sur stdout ; E.4 journal : l'appel porte `X-Vault-Token` par en-tête, aucun token dans l'URL.
+- [x] **Step 2 : rouge** (fonction absente : `command not found`).
+- [x] **Step 3 : implémenter**
 
 ```sh
 # vault_token_ttl — imprime le TTL restant (secondes, entier) du token de la lib,
@@ -355,8 +355,8 @@ print(int(t))' "$resp"
 }
 ```
 
-- [ ] **Step 4 : vert** ; `shellcheck -x ci/lib/vault-login.sh` ; `bash scripts/test-vault-user-login.sh` inchangé (34/34 — si la suite exige le lab, la noter comme non rejouée ici et la rejouer en T7).
-- [ ] **Step 5 : commit** — `feat(cd-apps): A3 — vault_token_ttl (lib de login, additif)`.
+- [x] **Step 4 : vert** ; `shellcheck -x ci/lib/vault-login.sh` ; `bash scripts/test-vault-user-login.sh` inchangé (34/34 — si la suite exige le lab, la noter comme non rejouée ici et la rejouer en T7).
+- [x] **Step 5 : commit** — `feat(cd-apps): A3 — vault_token_ttl (lib de login, additif)`.
 
 ---
 
@@ -366,10 +366,10 @@ print(int(t))' "$resp"
 
 **Interfaces consommées :** T1 (`PALIER_OUT`, marqueurs), T2 (`vault_token_ttl`).
 
-- [ ] **Step 1 : épreuves B.1–B.20 écrites** (vue code `code_view` = commentaires `//`/`#` blanchis, `code_line`, motif `test-provision-apply-wiring.sh`) :
+- [x] **Step 1 : épreuves B.1–B.20 écrites** (vue code `code_view` = commentaires `//`/`#` blanchis, `code_line`, motif `test-provision-apply-wiring.sh`) :
   - B.1 aucun `deploy/banking-demo` ; aucun `APIM_WM_CREDS_SUB =` ni `APIM_OAUTH_SUB =` (les anciens knobs tenant) ; B.2 `APIM_WM_CREDS_SUB_TPL = "${env.APIM_WM_CREDS_SUB_TPL ?: 'envs/__ENV__/wm-admin'}"` et `APIM_OAUTH_SUB_TPL = … 'envs/__ENV__/admin-oauth'` ; B.3 `APIM_PROXY_API = … 'wm-admin-__ENV__'` ; B.4 `APIM_TERMINUS_BASE = "${env.APIM_TERMINUS_BASE ?: ''}"` ; B.5 plus aucun `cut -d/ -f2` ; B.6 ordre par lignes : `vault_login_nominative` < `git show "origin/main:${PFX}scripts/selfservice-palier-gate.sh"` < `selfservice-palier-gate.sh"` (appel) < `préflight de joignabilité :` < `vault_token_ttl` < `ansible/selfservice-app.yml` < `ansible/selfservice-app-verify.yml` < `cp .a2-reference-sha .a2-applied-sha` ; B.7 les trois `git show` (script, `scripts/lib/env-chain.sh`, `clients/_example/environments.yaml`) et `REFUS: GATE_ABSENTE` ; B.8 `git fetch -q origin main` précède les `git show` ; B.9 relecture : `while IFS='=' read -r k v` + `case "$v" in *[!A-Za-z0-9_./:@+-]*` + `REFUS: SORTIE_INVALIDE`, aucun `eval`, aucun `. "$PALIER_OUT"`/`source` ; B.10 `-e apim_ss_team="$PALIER_TEAM"`, `-e apim_ss_api_base="$APIM_API_BASE"`, `-e apim_ss_auth_mode="$APIM_AUTH_MODE"`, `-e apim_ss_vault_wm_creds_sub="$APIM_WM_CREDS_SUB"`, `-e apim_ss_vault_oauth_sub="$APIM_OAUTH_SUB"` présents **deux fois** (converge et verify) ; plus d'`OAUTH_SUB_OPT` ; B.11 `REFUS: TTL_INSUFFISANT` et `APIM_TOKEN_TTL_MIN` ; B.12 les listes `withEnv` des trois stages inchangées (re-jouées ici avec l'extracteur `wenv_names` de `test-a0-wiring`) ; B.13 `rm -f "$PALIER_OUT"` avant l'appel ; B.14 le `sh` de l'Apply reste en `'''` (aucune interpolation Groovy de PALIER_*) ; B.15 la garde est appelée par `bash "$GATE_DIR/scripts/selfservice-palier-gate.sh"` (jamais `scripts/selfservice-palier-gate.sh` relatif à l'arbre) ; B.16 mutation d'ordre : bloc d'appel de la garde déplacé (awk, ancre d'instruction) APRÈS la boucle de préflight ⇒ B.6 rougit en nommant l'ordre ; B.17 mutation : appel retiré ⇒ B.6 rougit en nommant la garde absente ; B.18 `ci/lint-jenkinsfiles.sh` compile ; B.19 `bash scripts/test-a0-wiring.sh` 175/175 et `bash scripts/test-provision-apply-wiring.sh` 141/141 rejoués (par la suite, en sous-process, résultat capturé) ; B.20 `bash scripts/test-palier-retention.sh` vert.
-- [ ] **Step 2 : rouge.**
-- [ ] **Step 3 : modifier le Jenkinsfile.** `environment{}` : remplacer les deux lignes `APIM_WM_CREDS_SUB`/`APIM_OAUTH_SUB` (et leurs commentaires) par les `_TPL`, `APIM_PROXY_API` défaut `wm-admin-__ENV__`, ajouter `APIM_TERMINUS_BASE`, reformuler le commentaire d'`APIM_TEAM` (borné par le token) et d'`APIM_API_BASE` (gabarit, `__ENV__` optionnel). Stage Apply, dans le `sh '''` : retirer le bloc `TEAM=…cut`, le bloc `if [ "${ADMIN_VIA:-direct}" = "proxy-oauth2" ]…` (composition), `OAUTH_SUB_OPT` ; déplacer le préflight APRÈS le login ; insérer après le login réussi :
+- [x] **Step 2 : rouge.**
+- [x] **Step 3 : modifier le Jenkinsfile.** `environment{}` : remplacer les deux lignes `APIM_WM_CREDS_SUB`/`APIM_OAUTH_SUB` (et leurs commentaires) par les `_TPL`, `APIM_PROXY_API` défaut `wm-admin-__ENV__`, ajouter `APIM_TERMINUS_BASE`, reformuler le commentaire d'`APIM_TEAM` (borné par le token) et d'`APIM_API_BASE` (gabarit, `__ENV__` optionnel). Stage Apply, dans le `sh '''` : retirer le bloc `TEAM=…cut`, le bloc `if [ "${ADMIN_VIA:-direct}" = "proxy-oauth2" ]…` (composition), `OAUTH_SUB_OPT` ; déplacer le préflight APRÈS le login ; insérer après le login réussi :
 
 ```sh
               # 2) A3 — LA GARDE DU PALIER, depuis la LIGNÉE DE MAIN (jamais l'arbre pinné) …
@@ -411,8 +411,8 @@ puis le préflight (inchangé) précédé de `echo "  préflight de joignabilit�
 
 puis les deux `ansible-playbook` avec `-e apim_ss_team="$PALIER_TEAM" -e apim_ss_api_base="$APIM_API_BASE" -e apim_ss_auth_mode="$APIM_AUTH_MODE" -e apim_ss_vault_wm_creds_sub="$APIM_WM_CREDS_SUB" -e apim_ss_vault_oauth_sub="$APIM_OAUTH_SUB"` (les autres `-e` inchangés, `TOKEN_URL_OPT` conservé). En-tête du fichier : paragraphe A3 (« le palier est un credential ») remplaçant les mentions `X-Environment`/tenant.
 
-- [ ] **Step 4 : vert** : section B, `ci/lint-jenkinsfiles.sh`, `test-a0-wiring` 175/175, `test-provision-apply-wiring` 141/141, `test-palier-retention` vert, `test-selfservice-form-live` non rejoué (live, T8).
-- [ ] **Step 5 : commit** — `feat(cd-apps): A3 — selfservice-app-deploy lit envs/<env>/wm-admin par la garde chargée depuis main ; préflight annoncé ; TTL_INSUFFISANT`.
+- [x] **Step 4 : vert** : section B, `ci/lint-jenkinsfiles.sh`, `test-a0-wiring` 175/175, `test-provision-apply-wiring` 141/141, `test-palier-retention` vert, `test-selfservice-form-live` non rejoué (live, T8).
+- [x] **Step 5 : commit** — `feat(cd-apps): A3 — selfservice-app-deploy lit envs/<env>/wm-admin par la garde chargée depuis main ; préflight annoncé ; TTL_INSUFFISANT`.
 
 ---
 
@@ -422,9 +422,9 @@ puis les deux `ansible-playbook` avec `-e apim_ss_team="$PALIER_TEAM" -e apim_ss
 
 **Interface produite :** `bash scripts/setup-wm-palier-admins.sh` (pose : `VAULT_TOKEN`, `VAULT_ADDR`, `GW_ADMIN`, `WM_USER`, `WM_PASS` requis ; `ADMIN_GROUP` défaut `API-Gateway-Administrators` ; `APIM_KV_MOUNT`/`APIM_KV_PREFIX` défauts `secret`/`stoa`) ; `--print` (hors ligne : paliers et loginIds attendus, aucun réseau, aucun secret) ; rc 0 = chaque compte s'authentifie (`GET /applications` ⇒ 200) et est membre du groupe (relu).
 
-- [ ] **Step 1 : épreuves C.1–C.5** : C.1 `--print` avec chaîne jetable `[alpha, beta, gamma]` ⇒ mentionne `envs/alpha/wm-admin` et `envs/beta/wm-admin`, jamais `gamma` ; C.2 `--print` avec `VAULT_ADDR=http://127.0.0.1:1` réussit (aucun réseau) ; C.3 `--print` n'imprime aucun mot de passe (grep `password`/`secret-poc` absent) ; C.4 vue code : le mot de passe gateway part par `-K` fichier (jamais `-u "$U:$P"`), le token Vault par `-H @` ; C.5 mutation `env_chain_nonprod`→`env_chain` ⇒ `gamma` apparaît (le terminus est exclu par la dérivation).
-- [ ] **Step 2 : rouge.**
-- [ ] **Step 3 : implémenter** (forme `setup-vault-paliers.sh`) :
+- [x] **Step 1 : épreuves C.1–C.5** : C.1 `--print` avec chaîne jetable `[alpha, beta, gamma]` ⇒ mentionne `envs/alpha/wm-admin` et `envs/beta/wm-admin`, jamais `gamma` ; C.2 `--print` avec `VAULT_ADDR=http://127.0.0.1:1` réussit (aucun réseau) ; C.3 `--print` n'imprime aucun mot de passe (grep `password`/`secret-poc` absent) ; C.4 vue code : le mot de passe gateway part par `-K` fichier (jamais `-u "$U:$P"`), le token Vault par `-H @` ; C.5 mutation `env_chain_nonprod`→`env_chain` ⇒ `gamma` apparaît (le terminus est exclu par la dérivation).
+- [x] **Step 2 : rouge.**
+- [x] **Step 3 : implémenter** (forme `setup-vault-paliers.sh`) :
 
 ```bash
 #!/usr/bin/env bash
@@ -503,8 +503,8 @@ done
 printf '\n%d PASS / %d FAIL\n' "$PASS" "$FAIL"; [ "$FAIL" -eq 0 ]
 ```
 
-- [ ] **Step 4 : vert** (section C) ; `shellcheck -x` propre. La pose réelle est jouée en T8 (rollout).
-- [ ] **Step 5 : commit** — `feat(lab): setup-wm-palier-admins.sh — comptes wm-<env>-admin sur la gateway réelle, login prouvé (A3, prérequis de la preuve live)`.
+- [x] **Step 4 : vert** (section C) ; `shellcheck -x` propre. La pose réelle est jouée en T8 (rollout).
+- [x] **Step 5 : commit** — `feat(lab): setup-wm-palier-admins.sh — comptes wm-<env>-admin sur la gateway réelle, login prouvé (A3, prérequis de la preuve live)`.
 
 ---
 
@@ -514,9 +514,9 @@ printf '\n%d PASS / %d FAIL\n' "$PASS" "$FAIL"; [ "$FAIL" -eq 0 ]
 
 **Interface produite :** `demandeuse_exclue <palier>` (rc 0 = le read-back « demandeuse absente » s'applique — la porte déclare `deployerGroup` ; rc 1 = non ; rc 2 = chaîne illisible) ; `--print` émet `#   read-back demandeuse absente : OUI (deployerGroup=<g>)` / `: NON (aucun deployerGroup)` par palier ; `read_back_group <palier> <cn> <uid>…`.
 
-- [ ] **Step 1 : épreuves D.1–D.6** : D.1 chaîne jetable `[alpha, beta, gamma]`, gates `[{to: beta, deployerGroup: apim-apply-beta}]`, `DEPLOYERS_ALPHA=alice DEPLOYERS_BETA=bob` ⇒ `--print` : `alpha … NON`, `beta … OUI (deployerGroup=apim-apply-beta)` ; D.2 `demandeuse_exclue alpha` ⇒ rc 1, `beta` ⇒ rc 0, chaîne illisible ⇒ rc 2 (sourcé dans un sous-shell qui `return` avant le `MODE`, ou extrait par `sed -n '/^demandeuse_exclue()/,/^}/p'`) ; D.3 l'avertissement d'un palier sans déployeur cite `DEPLOYER_GROUP_REQUIRED` ET `PALIER_FERME` (vue code) ; D.4 mutation : `demandeuse_exclue` forcé à `return 0` ⇒ `alpha … OUI` (le détecteur verrait rouge) ; D.5 `--print` sans docker ni réseau ; D.6 `test-team-promote-wiring.sh` G2(viii) toujours vert (le bind reste `-e LDAP_BIND_PW` nu, `-y "$f"`).
-- [ ] **Step 2 : rouge.**
-- [ ] **Step 3 : implémenter** — après `deployers_for` :
+- [x] **Step 1 : épreuves D.1–D.6** : D.1 chaîne jetable `[alpha, beta, gamma]`, gates `[{to: beta, deployerGroup: apim-apply-beta}]`, `DEPLOYERS_ALPHA=alice DEPLOYERS_BETA=bob` ⇒ `--print` : `alpha … NON`, `beta … OUI (deployerGroup=apim-apply-beta)` ; D.2 `demandeuse_exclue alpha` ⇒ rc 1, `beta` ⇒ rc 0, chaîne illisible ⇒ rc 2 (sourcé dans un sous-shell qui `return` avant le `MODE`, ou extrait par `sed -n '/^demandeuse_exclue()/,/^}/p'`) ; D.3 l'avertissement d'un palier sans déployeur cite `DEPLOYER_GROUP_REQUIRED` ET `PALIER_FERME` (vue code) ; D.4 mutation : `demandeuse_exclue` forcé à `return 0` ⇒ `alpha … OUI` (le détecteur verrait rouge) ; D.5 `--print` sans docker ni réseau ; D.6 `test-team-promote-wiring.sh` G2(viii) toujours vert (le bind reste `-e LDAP_BIND_PW` nu, `-y "$f"`).
+- [x] **Step 2 : rouge.**
+- [x] **Step 3 : implémenter** — après `deployers_for` :
 
 ```bash
 # demandeuse_exclue <palier> — le read-back « la demandeuse n'est PAS membre »
@@ -535,16 +535,16 @@ demandeuse_exclue() {
 
 `read_back_group` prend le palier en premier argument ; le `case` alice est enveloppé : `if demandeuse_exclue "$palier"; then <case existant> ; else ok "$LAB_ALICE_USER membre autorisé de $cn (aucun deployerGroup déclaré pour $palier — grant nominatif A3)" ; fi` (rc 2 ⇒ `bad "chaîne illisible"`). `--print` : après le LDIF de chaque palier, la ligne de plan. L'avertissement « palier FERMÉ » : `apply refusera DEPLOYER_GROUP_REQUIRED si la porte déclare le groupe, PALIER_FERME pour toute identité sans le grant (A3)`. En-tête : remplacer « dev/rec : VIDES (fermés) » par « dev/rec : VIDES par défaut (fermés) — le grant A3 est `DEPLOYERS_DEV=alice DEPLOYERS_REC=alice …` ».
 
-- [ ] **Step 4 : vert** (section D, `test-team-promote-wiring.sh` 159, `shellcheck`).
-- [ ] **Step 5 : commit** — `feat(lab): setup-deployer-groups — read-back demandeuse conditionné au deployerGroup déclaré, ligne de plan --print (grant nominatif A3)`.
+- [x] **Step 4 : vert** (section D, `test-team-promote-wiring.sh` 159, `shellcheck`).
+- [x] **Step 5 : commit** — `feat(lab): setup-deployer-groups — read-back demandeuse conditionné au deployerGroup déclaré, ligne de plan --print (grant nominatif A3)`.
 
 ---
 
 ## T6 — `Makefile` `[12/12]` + passage complet hors ligne
 
-- [ ] **Step 1 :** renuméroter `[k/11]` → `[k/12]` ; ajouter `scripts/selfservice-palier-gate.sh scripts/setup-wm-palier-admins.sh scripts/test-a3-live.sh` (T8 le crée — l'ajouter à T8 si absent à ce stade) à la ligne shellcheck ; ajouter `@echo "== [12/12] épreuves du credential du seul palier — garde, câblage, poseurs (A3)"` + `@bash scripts/test-selfservice-palier-a3.sh`.
-- [ ] **Step 2 :** `make lint-ci` ⇒ `[12/12]` vert ; `EXPECTED_CHECKS` de la suite posé et vérifié.
-- [ ] **Step 3 : commit** — `build(lint-ci): [12/12] — suite A3`.
+- [x] **Step 1 :** renuméroter `[k/11]` → `[k/12]` ; ajouter `scripts/selfservice-palier-gate.sh scripts/setup-wm-palier-admins.sh scripts/test-a3-live.sh` (T8 le crée — l'ajouter à T8 si absent à ce stade) à la ligne shellcheck ; ajouter `@echo "== [12/12] épreuves du credential du seul palier — garde, câblage, poseurs (A3)"` + `@bash scripts/test-selfservice-palier-a3.sh`.
+- [x] **Step 2 :** `make lint-ci` ⇒ `[12/12]` vert ; `EXPECTED_CHECKS` de la suite posé et vérifié.
+- [x] **Step 3 : commit** — `build(lint-ci): [12/12] — suite A3`.
 
 ---
 
@@ -552,9 +552,9 @@ demandeuse_exclue() {
 
 **Fichiers :** modifier `scripts/test-palier-retention-live.sh` (après ⑤, avant ⑥ ; helpers, teardown).
 
-- [ ] **Step 1 : écrire ⑦.** `THIRD="$(echo "$ENVS" | awk '{print $3}')"` ; `[ -n "$THIRD" ] || lab_absent "…au moins trois paliers hors-prod…"` ; token modèle : `auth/token/create` `{"policies":["deploy-$TENANT","apply-$SECOND"],"ttl":"5m"}` (fichier d'en-tête `$TMP/apphdr`) ; ⑦a `rd apphdr SECOND` = 200 ; ⑦b `rd apphdr THIRD` = 403 ; ⑦c `envs/$THIRD/admin-oauth` = 403 ; ⑦d terminus = 403 ; manifeste jetable `$TMP/probe.yml` (`apim_ss_app: {name: probe-g4, team: $TENANT, api: x, api_version: "1", per_env: {$SECOND: {}, $THIRD: {}}}`) ; token du modèle écrit dans `$TMP/apptok` (0600, via python depuis la réponse, jamais en variable interpolée) ; ⑦e `ENVIRONMENT=$SECOND ADMIN_VIA=direct MANIFEST=… VAULT_TOKEN_FILE=$TMP/apptok PALIER_OUT=$TMP/p.out APIM_KV_PREFIX=stoa bash scripts/selfservice-palier-gate.sh` ⇒ rc 0, `APIM_WM_CREDS_SUB=envs/$SECOND/wm-admin`, `PALIER_TEAM=$TENANT` ; ⑦f `ENVIRONMENT=$THIRD` ⇒ rc 1 `PALIER_FERME`, pas de `$TMP/p.out` ; ⑦g F4 : `POLICY_REVOKED=1`, `DELETE apply-$SECOND`, geste (`gate && curl canari/apply-app-$SECOND`) ⇒ fermé, canari sans `apply-app-` ; ⑦h `restore_policy` ⇒ geste vert, canari exactement 1 `apply-app-$SECOND` ; ⑦i révocation du token modèle (`revoke-self`) ; ⑦j rejeu de `restore_policy` sans effet (idempotent). Le canari de ④ est réutilisé (encore vivant : `kill "$CPID"` n'a lieu qu'en ⑥).
-- [ ] **Step 2 :** rouge tant que T1 n'est pas dans l'arbre (déjà fait) — vérifier en lançant contre le lab : `VAULT_TOKEN=$(docker exec poc-vault printenv VAULT_DEV_ROOT_TOKEN_ID) bash scripts/test-palier-retention-live.sh` ⇒ tout ⑦ vert, total `N PASS / 0 FAIL` (N = 24 + les nouvelles).
-- [ ] **Step 3 : commit** — `test(g4-live): ⑦ la voie application — matrice 403 sur l'identité de l'apply d'app, garde A3 jouée, F4 sur cette voie`.
+- [x] **Step 1 : écrire ⑦.** `THIRD="$(echo "$ENVS" | awk '{print $3}')"` ; `[ -n "$THIRD" ] || lab_absent "…au moins trois paliers hors-prod…"` ; token modèle : `auth/token/create` `{"policies":["deploy-$TENANT","apply-$SECOND"],"ttl":"5m"}` (fichier d'en-tête `$TMP/apphdr`) ; ⑦a `rd apphdr SECOND` = 200 ; ⑦b `rd apphdr THIRD` = 403 ; ⑦c `envs/$THIRD/admin-oauth` = 403 ; ⑦d terminus = 403 ; manifeste jetable `$TMP/probe.yml` (`apim_ss_app: {name: probe-g4, team: $TENANT, api: x, api_version: "1", per_env: {$SECOND: {}, $THIRD: {}}}`) ; token du modèle écrit dans `$TMP/apptok` (0600, via python depuis la réponse, jamais en variable interpolée) ; ⑦e `ENVIRONMENT=$SECOND ADMIN_VIA=direct MANIFEST=… VAULT_TOKEN_FILE=$TMP/apptok PALIER_OUT=$TMP/p.out APIM_KV_PREFIX=stoa bash scripts/selfservice-palier-gate.sh` ⇒ rc 0, `APIM_WM_CREDS_SUB=envs/$SECOND/wm-admin`, `PALIER_TEAM=$TENANT` ; ⑦f `ENVIRONMENT=$THIRD` ⇒ rc 1 `PALIER_FERME`, pas de `$TMP/p.out` ; ⑦g F4 : `POLICY_REVOKED=1`, `DELETE apply-$SECOND`, geste (`gate && curl canari/apply-app-$SECOND`) ⇒ fermé, canari sans `apply-app-` ; ⑦h `restore_policy` ⇒ geste vert, canari exactement 1 `apply-app-$SECOND` ; ⑦i révocation du token modèle (`revoke-self`) ; ⑦j rejeu de `restore_policy` sans effet (idempotent). Le canari de ④ est réutilisé (encore vivant : `kill "$CPID"` n'a lieu qu'en ⑥).
+- [x] **Step 2 :** rouge tant que T1 n'est pas dans l'arbre (déjà fait) — vérifier en lançant contre le lab : `VAULT_TOKEN=$(docker exec poc-vault printenv VAULT_DEV_ROOT_TOKEN_ID) bash scripts/test-palier-retention-live.sh` ⇒ tout ⑦ vert, total `N PASS / 0 FAIL` (N = 24 + les nouvelles).
+- [x] **Step 3 : commit** — `test(g4-live): ⑦ la voie application — matrice 403 sur l'identité de l'apply d'app, garde A3 jouée, F4 sur cette voie`.
 
 ---
 
@@ -562,8 +562,8 @@ demandeuse_exclue() {
 
 **Fichiers :** créer `scripts/test-a3-live.sh` (base : `test-provision-apply-a2-live.sh` — helpers copiés : `gapi`, `aapi`, `jcrumb`, `jstatus`, `jresult`, `jnext`, `jconsole`, `jinput_id`, `wait_until`, `fire_webhook`, `gw`, `gw_app`, `gw_app_ip`, cleanup) ; modifier `scripts/test-provision-apply-a2-live.sh` 0.9.
 
-- [ ] **Step 1 : rollout (l'ordre est une contrainte)** : `git push gitea HEAD:main` ; `VAULT_TOKEN=… GW_ADMIN=http://localhost:5555/rest/apigateway WM_USER=Administrator WM_PASS=manage bash scripts/setup-wm-palier-admins.sh` ⇒ 4 comptes, login prouvé ; `DEPLOYERS_DEV=alice DEPLOYERS_REC=alice bash scripts/setup-deployer-groups.sh` ⇒ rc 0 ; contrôle : login LDAP alice ⇒ policies contiennent `apply-rec` (via `.env.lab-users`, `set -a`).
-- [ ] **Step 2 : écrire `test-a3-live.sh`** (spec D7, marqueurs) :
+- [x] **Step 1 : rollout (l'ordre est une contrainte)** : `git push gitea HEAD:main` ; `VAULT_TOKEN=… GW_ADMIN=http://localhost:5555/rest/apigateway WM_USER=Administrator WM_PASS=manage bash scripts/setup-wm-palier-admins.sh` ⇒ 4 comptes, login prouvé ; `DEPLOYERS_DEV=alice DEPLOYERS_REC=alice bash scripts/setup-deployer-groups.sh` ⇒ rc 0 ; contrôle : login LDAP alice ⇒ policies contiennent `apply-rec` (via `.env.lab-users`, `set -a`).
+- [x] **Step 2 : écrire `test-a3-live.sh`** (spec D7, marqueurs) :
   - 0.x préconditions : Jenkins/Gitea/gateway ; token ci ; `selfservice-app-deploy` from SCM et ses 8 paramètres ; `APPLY_ADMIN_VIA=direct` global ; aucune pause ; API active ; alice Gitea (créée/collab si absente) ; **alice Vault LDAP** : login ⇒ lookup-self policies ⊇ `{deploy-banking-demo, apply-rec}` (sinon `PREREQUIS : jouer DEPLOYERS_REC=alice scripts/setup-deployer-groups.sh`), lit `envs/rec/wm-admin` 200, **ne lit pas** `envs/int/wm-admin` 403 (la matrice sur l'identité réelle) ; `envs/rec/wm-admin` s'authentifie sur la gateway (lecture par root Vault, `-K`, `GET /applications` ⇒ 200, sinon `PREREQUIS : jouer scripts/setup-wm-palier-admins.sh`) ; tête de main ; aucune app homonyme.
   - 1.x PORTE : `provision-request.sh` rec `a3p$TS` (`10.42.0.1`, idp, sans team) ⇒ PR ; merge alice ; pause ; réponse ; SUCCESS amont/aval ; console aval : `palier ouvert : envs/rec/wm-admin`, `PALIER_CREDS=envs/rec/wm-admin`, `PALIER_TEAM=banking-demo`, ordre `palier ouvert` < `préflight de joignabilité` < `PLAY [Self-service application — converge` < `PLAY [Self-service application — verify` (`grep -n` + comparaison), aucune occurrence `deploy/banking-demo/wm-admin`, `failed=0` ; gateway : app présente (id capturé), claim `a3p$TS-rec`, IP `10.42.0.1-10.42.0.1` ; PR ✅ + SHA.
   - 2.x MATRICE PAR BUILD : `main` reçoit `per_env.int` (API contents PUT : ligne `    int: { auth: { claim: { value: "a3p$TS-int" } }, ip_allowlist: ["10.42.0.3"] }` insérée après la ligne `rec:`) ; `buildWithParameters` direct (crumb, form : `MANIFEST`, `ENVIRONMENT=int`, `ADMIN_VIA=direct`, `MERGE_SHA=`, `VAULT_USER=alice`, `VAULT_USER_PASSWORD`) ⇒ numéro via `nextBuildNumber` avant/après ; FAILURE ; console : `REFUS: PALIER_FERME`, `envs/int/wm-admin`, `HTTP 403`, aucun `préflight de joignabilité`, aucun `PLAY [Self-service application`, `mort PROUVÉE` ; gateway : claims == `[a3p$TS-rec]`, IP inchangée.
@@ -571,17 +571,17 @@ demandeuse_exclue() {
   - 4.x REJEU : build direct rec `MERGE_SHA=$MERGE_SHA` ⇒ SUCCESS, `palier ouvert`, `gw_app` id == id de 1.x.
   - 5.x MESURE : `envs/rec/wm-admin` lit `paiements-sepa` (dev) sur la gateway unique ⇒ ligne `MESURE :` (jamais un `ko`).
   - cleanup : PR/branches, manifeste retiré de main, app supprimée, policy restaurée (trap, motif G4 : `POLICY_REVOKED` déclaré avant le trap).
-- [ ] **Step 3 : jouer** : `set -a; . ./.env.lab-users; set +a; JENKINS_UI=http://localhost:18080 GITEA_URL=http://localhost:13000 GW_ADMIN=http://localhost:5555/rest/apigateway WM_USER=Administrator WM_PASS=manage VAULT_TOKEN=… bash scripts/test-a3-live.sh` (recycler `poc-webmethods-real` avant si uptime ≥ 20 min) ⇒ `RÉSULTAT : N/N`.
-- [ ] **Step 4 : régression** : `test-provision-apply-a2-live.sh` 0.9 complété (`envs/rec/wm-admin` lisible par alice) puis rejoué ⇒ 60/60 ; `test-selfservice-form-live.sh` rejoué ⇒ 14/14.
-- [ ] **Step 5 : commit** — `test(a3-live): porte + matrice par build + F4 + rejeu, par builds réels ; régression A2 rejouée` (les commits d'artefacts des suites — merges de PR jetables, retraits — sont ceux de la forge, à rapatrier par `git pull gitea main` comme pour A2).
+- [x] **Step 3 : jouer** : `set -a; . ./.env.lab-users; set +a; JENKINS_UI=http://localhost:18080 GITEA_URL=http://localhost:13000 GW_ADMIN=http://localhost:5555/rest/apigateway WM_USER=Administrator WM_PASS=manage VAULT_TOKEN=… bash scripts/test-a3-live.sh` (recycler `poc-webmethods-real` avant si uptime ≥ 20 min) ⇒ `RÉSULTAT : N/N`.
+- [x] **Step 4 : régression** : `test-provision-apply-a2-live.sh` 0.9 complété (`envs/rec/wm-admin` lisible par alice) puis rejoué ⇒ 60/60 ; `test-selfservice-form-live.sh` rejoué ⇒ 14/14.
+- [x] **Step 5 : commit** — `test(a3-live): porte + matrice par build + F4 + rejeu, par builds réels ; régression A2 rejouée` (les commits d'artefacts des suites — merges de PR jetables, retraits — sont ceux de la forge, à rapatrier par `git pull gitea main` comme pour A2).
 
 ---
 
 ## T9 — Documentation, statuts, mémoire
 
-- [ ] `ENVIRONNEMENTS.md` : section « Le credential du seul palier (A3 — GOAL cd-applications) » après « La référence d'une application (A2) » : le dessin, les knobs (`APIM_WM_CREDS_SUB_TPL`, `APIM_OAUTH_SUB_TPL`, `APIM_TERMINUS_BASE`, `APIM_TOKEN_TTL_MIN`, `APIM_TEAM` borné), les refus, le rollout (D8), le grant de lab, les limites (D9) ; corriger la « limite écrite d'avance » d'A2 (ligne ~807 : le palier n'est plus un en-tête).
-- [ ] `adr/adr-082-…md` : section « Extension 2026-09-02 (A3) — le second objet » : le ticket `PALIER_FERME` porté à l'apply d'application, la garde depuis la lignée de main, l'équipe décidée par le token, `TICKET_INSCRIPTIBLE`, `TERMINUS_SANS_VOIE`, les limites (mono-gateway du lab, ticket par palier et non par objet).
-- [ ] `GOAL-cd-applications-2026-09-02.md` : bloc « LIVRÉ le 2026-09-02 » sous A3 (résumé + chiffres des suites + numéros de builds) ; tableau des trous (ligne « Credential par palier ») mis à jour.
-- [ ] Spec et plan : statuts `LIVRÉ`.
-- [ ] Mémoire : `a3-credential-du-seul-palier.md` + index ; `cd-applications-goal.md` (A3 livré, prochain A4).
-- [ ] Commits docs ; `git push gitea HEAD:main`.
+- [x] `ENVIRONNEMENTS.md` : section « Le credential du seul palier (A3 — GOAL cd-applications) » après « La référence d'une application (A2) » : le dessin, les knobs (`APIM_WM_CREDS_SUB_TPL`, `APIM_OAUTH_SUB_TPL`, `APIM_TERMINUS_BASE`, `APIM_TOKEN_TTL_MIN`, `APIM_TEAM` borné), les refus, le rollout (D8), le grant de lab, les limites (D9) ; corriger la « limite écrite d'avance » d'A2 (ligne ~807 : le palier n'est plus un en-tête).
+- [x] `adr/adr-082-…md` : section « Extension 2026-09-02 (A3) — le second objet » : le ticket `PALIER_FERME` porté à l'apply d'application, la garde depuis la lignée de main, l'équipe décidée par le token, `TICKET_INSCRIPTIBLE`, `TERMINUS_SANS_VOIE`, les limites (mono-gateway du lab, ticket par palier et non par objet).
+- [x] `GOAL-cd-applications-2026-09-02.md` : bloc « LIVRÉ le 2026-09-02 » sous A3 (résumé + chiffres des suites + numéros de builds) ; tableau des trous (ligne « Credential par palier ») mis à jour.
+- [x] Spec et plan : statuts `LIVRÉ`.
+- [x] Mémoire : `a3-credential-du-seul-palier.md` + index ; `cd-applications-goal.md` (A3 livré, prochain A4).
+- [x] Commits docs ; `git push gitea HEAD:main`.

@@ -1,7 +1,7 @@
 ---
 title: "A3 — Le credential du seul palier : l'apply d'une application lit `envs/<env>/wm-admin` avec l'identité qui porte `apply-<env>`, jamais le credential du tenant ni un en-tête"
 type: design
-status: "EN COURS 2026-09-02 — spec écrite, à soumettre à la critique adverse puis au plan"
+status: "LIVRÉ 2026-09-02 — spec amendée après critique adverse (3 relecteurs, ~37 constats : garde épinglée par l'arbre pinné, terminus admis par la chaîne entière, équipe choisie par le manifeste — 3 bloquants fermés ; refus TEAM_INVALIDE/VAULT_SUB_INVALIDE, complétude des 7 clés, limites proxy/root/JWT) ; hors ligne 145/145 (lint-ci [12/12]) ; porte du GOAL G4 live ⑦ 37/0 ; builds réels 54/54 sur la version livrée (provision-apply #98 → aval #50, #51 PALIER_FERME int, #52 PALIER_FERME policy révoquée, #53 rejeu même id) après 52/52 sur l'avant-dernière (#97 → #46-#49) ; G2 live 21/0 ; deux défauts trouvés PAR les builds : formulaire urlencode (tuples), préflight muet"
 date: 2026-09-02
 lié: [GOAL-cd-applications-2026-09-02, 2026-09-02-a2-reference-sha-merge-design, adr-082-ouverture-palier-retention-credential, adr-084-axe-qui-deploie-deployer-group, adr-078-livrable-self-service-app-wm1015, 2026-08-26-g4-retention-credential-design]
 ---
