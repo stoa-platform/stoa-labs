@@ -376,8 +376,14 @@ N_RJ=$(jbuild selfservice-app-deploy "$TMP/form.rec"); rm -f "$TMP/form.rec"
 ST=$(wait_until 1500 selfservice-app-deploy "$N_RJ" FINISHED); RES=$(jresult selfservice-app-deploy "$N_RJ")
 jconsole selfservice-app-deploy "$N_RJ" > "$TMP/rj.console"
 [ "$RES" = SUCCESS ] && grep -q '^palier ouvert : envs/rec/wm-admin' "$TMP/rj.console" && ok "4.2 build #$N_RJ : SUCCESS, palier ouvert" || ko "4.2 build #$N_RJ : $RES — $(grep -E 'REFUS|fatal|error' "$TMP/rj.console" | head -3 | tr '\n' ' ')"
+# « même id » seul serait aussi ce qu'on observe si RIEN n'avait été réappliqué :
+# la convergence doit avoir TOURNÉ (les deux plays, failed=0) et l'état relu
+# être celui du bloc mergé.
+[ "$(grep -c 'failed=0' "$TMP/rj.console")" -ge 2 ] && grep -q 'PLAY \[Self-service application — converge' "$TMP/rj.console" \
+  && ok "4.2b le rejeu a RÉELLEMENT convergé (play converge + verify, failed=0 ×2)" || ko "4.2b le rejeu n'a pas convergé : failed=0 ×$(grep -c 'failed=0' "$TMP/rj.console")"
 APPJ4=$(gw_app "$APP_P"); ID4=$(printf '%s' "$APPJ4" | jq_ "print(d.get('id',''))" 2>/dev/null || true)
 [ -n "$ID4" ] && [ "$ID4" = "$APP_P_ID" ] && ok "4.3 MÊME id d'application ($ID4) : la convergence ne recrée pas (la propriété qu'A6 attend)" || ko "4.3 id divergent : $ID4 ≠ $APP_P_ID"
+[ "$(gw_app_claims "$APPJ4")" = "${APP_P}-rec" ] && [ "$(gw_app_ip "$APPJ4")" = "10.42.0.1-10.42.0.1" ] && ok "4.3b état relu après rejeu : claim ${APP_P}-rec, IP 10.42.0.1 (le bloc mergé, re-projeté à l'identique)" || ko "4.3b état relu divergent : claims=$(gw_app_claims "$APPJ4") ip=$(gw_app_ip "$APPJ4")"
 
 echo
 echo "═══ 5. MESURE (limite D9) — la gateway unique du lab ═══"

@@ -149,7 +149,7 @@ if [ -z "$TEAM" ]; then
   [ "$N" -eq 1 ] || refus TEAM_AMBIGUE "le token porte plusieurs tenants ($(printf '%s' "$S" | tr '\n' ' ' | sed 's/ $//')) — nommer l'équipe (APIM_TEAM ou team: du manifeste)"
   TEAM="$S"
 fi
-case "$TEAM" in *[!a-z0-9-]*) refus TEAM_NON_PORTEE "'${TEAM}' hors de la classe [a-z0-9-]";; esac
+case "$TEAM" in *[!a-z0-9-]*) refus TEAM_INVALIDE "'${TEAM}' hors de la classe [a-z0-9-] — un nom d'équipe entre dans un chemin Vault qui porte une décision de tenant : refusé, jamais assaini";; esac
 printf '%s\n' "$S" | grep -qx -- "$TEAM" \
   || refus TEAM_NON_PORTEE "l'équipe '${TEAM}' n'est pas parmi les tenants que le token porte ($(printf '%s' "$S" | tr '\n' ' ' | sed 's/ $//')) — l'appelant ne choisit pas sous quelle équipe son application est cloisonnée"
 
@@ -157,6 +157,10 @@ printf '%s\n' "$S" | grep -qx -- "$TEAM" \
 VSUB_PATH=""
 if [ "$MAN_MODE" = internal ]; then
   [ -n "$MAN_VSUB" ] || refus TENANT_NON_PORTE "mode internal sans auth.vault_sub (racine ou per_env.${ENVIRONMENT}) — le rôle ne saurait pas où écrire le client généré"
+  # Le vault_sub vient du manifeste (le demandeur) et entre dans le chemin sondé
+  # ET dans celui que le rôle écrira : forme contrôlée, refus nommé, jamais un
+  # assainissement silencieux qui découplerait le chemin prouvé du chemin écrit.
+  case "$MAN_VSUB" in *[!A-Za-z0-9_./-]*|*..*) refus VAULT_SUB_INVALIDE "auth.vault_sub='${MAN_VSUB}' hors de la classe [A-Za-z0-9_./-] (ou porte '..') — refusé";; esac
   VSUB_PATH="$(kv_data_path "$MAN_VSUB")"
 fi
 CAPS_BODY="$(T="$TICKET_PATH" V="$VSUB_PATH" python3 -c 'import json,os;ps=[os.environ["T"]]

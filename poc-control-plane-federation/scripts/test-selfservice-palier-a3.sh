@@ -298,6 +298,13 @@ printf 'PALIER_TEAM=faux\n' > "$OUTF"
 env ENVIRONMENT=int ADMIN_VIA=direct VAULT_ADDR="$VA" VAULT_TOKEN_FILE="$TMP/tok" PALIER_OUT="$OUTF" MANIFEST="$MAN" APIM_KV_PREFIX=stoa STOA_ENV_CHAIN_FILE="$TMP/chain.yaml" bash "$GATE" > "$TMP/g.out" 2>&1; echo $? > "$TMP/g.rc"
 refus PALIER_FERME && [ ! -f "$OUTF" ] && ok "A.24 un PALIER_OUT périmé est RETIRÉ avant le verdict (aucun fichier après un refus)" || bad "A.24 rc $(grc), fichier $( [ -f "$OUTF" ] && echo présent || echo absent )"
 
+echo "── A.28/A.29 team et vault_sub hors charset : refus nommés, AVANT tout appel Vault ──"
+set_ctl "$CTL_OK"
+run_gate rec "APIM_TEAM=bank;ing"; refus TEAM_INVALIDE && [ "$(jcount capabilities-self)" = 0 ] && ok "A.28 APIM_TEAM hors de [a-z0-9-] ⇒ TEAM_INVALIDE, aucun capabilities-self" || bad "A.28 rc $(grc) : $(gout | tail -1)"
+man_idp "$TMP/man-badteam.yml" 'Bank Ing'; run_gate rec "MANIFEST=$TMP/man-badteam.yml"; refus TEAM_INVALIDE && ok "A.28b team du manifeste hors charset ⇒ TEAM_INVALIDE" || bad "A.28b rc $(grc) : $(gout | tail -1)"
+man_internal "$TMP/man-badvsub.yml" 'deploy/banking-demo/apps/appa/dev/oauth-client' 'deploy/banking-demo/apps/appa/rec/oauth client'
+run_gate rec "MANIFEST=$TMP/man-badvsub.yml"; refus VAULT_SUB_INVALIDE && [ "$(jcount capabilities-self)" = 0 ] && ok "A.29 vault_sub hors de [A-Za-z0-9_./-] ⇒ VAULT_SUB_INVALIDE, aucun capabilities-self" || bad "A.29 rc $(grc) : $(gout | tail -1)"
+
 echo "── A.25 concordance avec la rétention posée (G4) ──"
 bash scripts/setup-vault-paliers.sh --print > "$TMP/svp.print" 2>&1
 grep -q 'path "secret/data/stoa/envs/rec/wm-admin" { capabilities = \["read"\] }' "$TMP/svp.print" \
@@ -404,6 +411,10 @@ V="$(ordre_verdict "$TMP/jf.code")"
 [ -n "$L_FETCH" ] && [ -n "$L_SHOW" ] && [ "$L_FETCH" -lt "$L_SHOW" ] && ok "B.8 git fetch origin main AVANT git show" || bad "B.8 fetch/show (fetch=$L_FETCH show=$L_SHOW)"
 grep -q '\*\[!A-Za-z0-9_./:@+-\]\*' "$TMP/jf.code" && grep -q 'REFUS: SORTIE_INVALIDE' "$TMP/jf.code" && ok "B.9 relecture : classe [A-Za-z0-9_./:@+-] re-vérifiée par le shell, SORTIE_INVALIDE" || bad "B.9 relecture sans contrôle de classe"
 grep -Eq '(^|[^A-Za-z_])eval([^A-Za-z_]|$)' "$TMP/jf.code" && bad "B.9b eval présent dans le Jenkinsfile" || ok "B.9b aucun eval"
+L_CPL=$(line_after "${L_LOGIN:-0}" 'PALIER_OUT incomplet' "$TMP/jf.code")
+CPL_LINE=$(awk -v s="$L_CPL" 'NR==s-1' "$TMP/jf.code")
+MISS=""; for v in PALIER_ENV PALIER_VIA PALIER_TEAM APIM_API_BASE APIM_AUTH_MODE APIM_WM_CREDS_SUB APIM_OAUTH_SUB; do printf '%s' "$CPL_LINE" | grep -qF "[ -n \"\$$v\" ]" || MISS="$MISS $v"; done
+[ -n "$L_CPL" ] && [ -z "$MISS" ] && ok "B.9d complétude : les 7 clés consommées sont exigées non vides avant usage (PALIER_OUT incomplet sinon)" || bad "B.9d complétude incomplète (ligne $L_CPL) — clés non exigées :${MISS:- (ligne introuvable)}"
 grep -Eq '(^|[[:space:]])(\.|source) +"?\$PALIER_OUT' "$TMP/jf.code" && bad "B.9c PALIER_OUT est sourcé" || ok "B.9c PALIER_OUT n'est jamais sourcé"
 for kv in 'apim_ss_team="$PALIER_TEAM"' 'apim_ss_api_base="$APIM_API_BASE"' 'apim_ss_auth_mode="$APIM_AUTH_MODE"' 'apim_ss_vault_wm_creds_sub="$APIM_WM_CREDS_SUB"' 'apim_ss_vault_oauth_sub="$APIM_OAUTH_SUB"'; do
   n=$(grep -cF -- "-e $kv" "$TMP/jf.code")
@@ -526,7 +537,7 @@ grep -q '^vault_token_ttl()' "$TMP/lib.code" && ok "E.6 la fonction est définie
 
 # Le compte des contrôles est lui-même un contrôle : une section sautée (stub
 # mort, chemin absent) ne doit pas passer pour un vert plus court.
-EXPECTED_CHECKS=141
+EXPECTED_CHECKS=145
 TOTAL=$((PASS+FAIL))
 [ "$TOTAL" -eq "$((EXPECTED_CHECKS-1))" ] \
   && ok "$((TOTAL+1)) contrôles exécutés = $EXPECTED_CHECKS attendus (aucune section sautée)" \

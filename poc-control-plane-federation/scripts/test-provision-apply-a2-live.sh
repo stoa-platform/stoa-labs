@@ -237,9 +237,21 @@ for mount in ("ldap", "userpass"):
     try:
         r = urllib.request.Request(f"{va}/v1/auth/{mount}/login/alice", data=json.dumps({"password": os.environ["P"]}).encode(), headers={"Content-Type": "application/json"})
         t = json.load(urllib.request.urlopen(r, timeout=10))["auth"]["client_token"]
-        rr = urllib.request.Request(f"{va}/v1/secret/data/stoa/deploy/banking-demo/wm-admin", headers={"X-Vault-Token": t})
+        # A3 : l'aval lit le credential du PALIER (envs/rec/wm-admin) avec le token de
+        # la pause — plus deploy/<tenant>/wm-admin. La précondition mesure donc le
+        # ticket du palier rec (200) ET son refus sur int (403, la matrice sur
+        # l'identité réelle) : sans le grant apply-rec, l'apply mourrait PALIER_FERME
+        # pour une raison étrangère à A2.
+        rr = urllib.request.Request(f"{va}/v1/secret/data/stoa/envs/rec/wm-admin", headers={"X-Vault-Token": t})
         urllib.request.urlopen(rr, timeout=10)
+        try:
+            urllib.request.urlopen(urllib.request.Request(f"{va}/v1/secret/data/stoa/envs/int/wm-admin", headers={"X-Vault-Token": t}), timeout=10)
+            code_int = 200
+        except urllib.error.HTTPError as e:
+            code_int = e.code
         urllib.request.urlopen(urllib.request.Request(f"{va}/v1/auth/token/revoke-self", data=b"", headers={"X-Vault-Token": t}), timeout=10)
+        if code_int != 403:
+            print("FUITE " + mount); break
         print("OK " + mount); break
     except Exception as e:
         continue
@@ -247,7 +259,11 @@ else:
     print("KO")
 PY
 )
-case "$VPROBE" in OK*) ok "0.9 alice se connecte à Vault (${VPROBE#OK }) et lit deploy/banking-demo/wm-admin (l'identité de la pause peut porter l'apply)";; *) die "LAB_ABSENT : alice ne peut pas lire deploy/banking-demo/wm-admin via Vault ($VAULT_ADDR_LAB) — l'apply échouerait pour une raison étrangère à A2";; esac
+case "$VPROBE" in
+  OK*) ok "0.9 alice se connecte à Vault (${VPROBE#OK }), lit envs/rec/wm-admin (200) et NE lit PAS envs/int/wm-admin (403) — le ticket du palier (A3) est ouvert pour l'identité de la pause";;
+  FUITE*) die "PREREQUIS : alice lit envs/int/wm-admin (${VPROBE#FUITE }) — la rétention par palier est trouée sur ce lab, l'apply A2 ne prouverait rien de sain";;
+  *) die "PREREQUIS : alice ne peut pas lire envs/rec/wm-admin via Vault ($VAULT_ADDR_LAB) — jouer DEPLOYERS_REC=alice bash scripts/setup-deployer-groups.sh (grant A3) ; sinon l'apply mourrait PALIER_FERME pour une raison étrangère à A2";;
+esac
 
 MAIN_BEFORE=$(gapi "$API/repos/$GIT_REPO/branches/main" | jq_ "print(d['commit']['id'])")
 [ -n "$MAIN_BEFORE" ] || die "LAB_ABSENT : tête de main illisible"

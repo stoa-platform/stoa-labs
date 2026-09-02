@@ -458,8 +458,8 @@ pipeline {
                   *) echo "REFUS: SORTIE_INVALIDE : clé inconnue $k"; exit 1;;
                 esac
               done < "$PALIER_OUT"
-              [ -n "$PALIER_TEAM" ] && [ -n "$APIM_AUTH_MODE" ] && [ -n "$APIM_WM_CREDS_SUB" ] && [ -n "$APIM_OAUTH_SUB" ] && [ -n "$PALIER_VIA" ] \
-                || { echo "REFUS: SORTIE_INVALIDE : PALIER_OUT incomplet"; exit 1; }
+              [ -n "$PALIER_ENV" ] && [ -n "$PALIER_VIA" ] && [ -n "$PALIER_TEAM" ] && [ -n "$APIM_API_BASE" ] && [ -n "$APIM_AUTH_MODE" ] && [ -n "$APIM_WM_CREDS_SUB" ] && [ -n "$APIM_OAUTH_SUB" ] \
+                || { echo "REFUS: SORTIE_INVALIDE : PALIER_OUT incomplet (une clé vide rendrait au rôle ses défauts — le manifeste pour l'équipe, le gabarit pour la base)"; exit 1; }
               echo "  (cloisonnement de l'application sur la team : ${PALIER_TEAM} — décidée par le token)"
               echo "  (API d'admin du palier ${PALIER_ENV} via ${PALIER_VIA} : ${APIM_API_BASE})"
 
