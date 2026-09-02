@@ -169,6 +169,8 @@ merge_as_alice(){
   while :; do
     hc=$(aapi -X POST -d '{"Do":"merge"}' -o "$TMP/merge.out" -w '%{http_code}' "$API/repos/$GIT_REPO/pulls/$pr/merge")
     [ "$hc" = 200 ] && break
+    # Mesuré (passage 3) : un 405 peut ÊTRE un merge effectué — relire `merged` avant de rejouer.
+    [ "$(pr_field "$pr" ".get('merged')")" = True ] && break
     try=$((try+1)); [ "$hc" = 405 ] && [ "$try" -lt 12 ] && { sleep 5; continue; }
     die "PREREQUIS : merge par alice refusé (HTTP $hc, essai $try) : $(head -c 200 "$TMP/merge.out")"
   done
@@ -312,8 +314,17 @@ restore_ldap(){
   if alice_in_int; then echo "  ⚠ alice est ENCORE dans apim-apply-int — retirer à la main" >&2; return 1; fi
   MUTATED=0; return 0
 }
+jabort_own_pauses(){ # abandonne les pauses provision-apply dont le nom porte $APP (jamais celles des autres)
+  local jar="$TMP/jar.abort" cr n iid
+  cr=$(jcrumb "$jar") || return 0
+  for n in $(curl -s "$JENKINS_UI/job/provision-apply/api/json?tree=builds%5Bnumber,building,displayName%5D" | APP="$APP" python3 -c 'import json,os,sys
+d=json.load(sys.stdin); print(" ".join(str(b["number"]) for b in d.get("builds",[]) if b.get("building") and os.environ["APP"] in (b.get("displayName") or "")))' 2>/dev/null); do
+    iid=$(jinput_id provision-apply "$n"); [ -n "$iid" ] && curl -s -b "$jar" -H "$cr" -X POST "$JENKINS_UI/job/provision-apply/$n/input/$iid/abort" -o /dev/null && echo "  pause orpheline provision-apply #$n abandonnée"
+  done
+}
 cleanup(){
   echo; echo "── nettoyage ──"
+  jabort_own_pauses
   restore_ldap && echo "  annuaire : alice hors d'apim-apply-int (restauré)" || echo "  ⚠ annuaire NON restauré"
   if [ -n "$CI_TOKEN" ]; then
     for n in $PRS; do close_pr "$n" >/dev/null 2>&1; done
