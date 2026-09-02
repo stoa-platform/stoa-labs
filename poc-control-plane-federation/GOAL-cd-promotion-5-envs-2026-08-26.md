@@ -9,7 +9,7 @@ note: "Le besoin remonté était « il manque un workflow git ». Le relevé mon
 
 # GOAL — La chaîne CD des cinq paliers
 
-**Origine.** Le self-service produit des APIs et des applications, mais **rien ne les déplace**. Le diagnostic exact n'est pas « il manque un workflow git » : il manque **quatre pièces distinctes**, et l'une d'elles est déjà construite à 80 %.
+**Origine.** Le self-service produit des APIs et des applications, mais **rien ne les déplace**. *(Renvoi du 2026-09-02 : les jalons G1..G8 ne couvrent que les APIs ; le volet **applications** est traité dans `GOAL-cd-applications-2026-09-02.md`.)* Le diagnostic exact n'est pas « il manque un workflow git » : il manque **quatre pièces distinctes**, et l'une d'elles est déjà construite à 80 %.
 
 ---
 
