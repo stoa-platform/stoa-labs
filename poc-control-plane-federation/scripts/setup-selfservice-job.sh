@@ -57,7 +57,9 @@ JOB_DESC="${JOB_DESC:-self-service creation d application - CONSOMMATEUR}"
 BOOTSTRAP_WAIT="${BOOTSTRAP_WAIT:-360}"
 
 say()  { printf '\033[1;36m[selfservice-job]\033[0m %s\n' "$*"; }
-fail() { printf '\033[1;31m[selfservice-job]\033[0m %s\n' "$*"; exit 1; }
+fail() { printf '\033[1;31m[selfservice-job]\033[0m %s\n' "$*" >&2; exit 1; }   # stderr : --print rend le XML SEUL sur stdout
+# Temporaires : UN trap, posé avant le premier mktemp (revue 2026-09-02).
+XML="$(mktemp)"; CK="$(mktemp)"; PARAMS_TMP=""; trap 'rm -f "$XML" "$CK" "$XML.relu" "${PARAMS_TMP:-}"' EXIT
 
 # ── XML_PARAMS (A0 dettes, cf. en-tête) ──────────────────────────────────────
 XML_PARAMS="${XML_PARAMS:-auto}"
@@ -81,7 +83,7 @@ if [ "$XML_PARAMS" = yes ]; then
   done
   # Heredoc rendu dans un FICHIER puis relu : un heredoc DANS `$( )` casse le
   # parseur de bash 3.2 (macOS) sur les apostrophes du texte (mesuré ici).
-  PARAMS_TMP="$(mktemp)"
+  PARAMS_TMP="$(mktemp)"   # couvert par le trap ci-dessus
   cat > "$PARAMS_TMP" <<PARAMS
     <!-- XML_PARAMS=yes : ce job garde ses parametres dans le XML (bloc
          parameters{} declaratif cote Jenkinsfile, fusion par nom) ; la liste
@@ -148,7 +150,6 @@ else
          propriete et casserait le job. Amorcage : POST /build. -->"
 fi
 
-XML="$(mktemp)"; CK="$(mktemp)"; trap 'rm -f "$XML" "$CK"' EXIT
 cat > "$XML" <<JOBXML
 <?xml version='1.1' encoding='UTF-8'?>
 <flow-definition plugin="workflow-job">
@@ -227,6 +228,7 @@ fi
 # --- build d'amorçage : checkoute le Jenkinsfile, matérialise trigger+params --
 # Sans USER_VAULT_JWT → PLAN-only (syntax-check), aucune mutation, doit finir SUCCESS.
 N=$(curl -sf "$JENKINS/job/$JOB/api/json" | python3 -c 'import sys,json;print(json.load(sys.stdin)["nextBuildNumber"])')
+[ -n "$N" ] || fail "nextBuildNumber illisible ($JENKINS/job/$JOB/api/json)"
 say "build d'amorçage #$N (PLAN-only, enregistre le trigger $TRIGGER_TOKEN, XML_PARAMS=$XML_PARAMS)"
 # XML sans paramètre (mode no) → POST /build (201 ; buildWithParameters serait
 # aussi accepté, /build est le geste d'un job non paramétré) ; XML paramétré
@@ -245,12 +247,19 @@ done
 if [ -z "$R" ]; then
   fail "build d'amorçage #$N ENCORE EN COURS après ${BOOTSTRAP_WAIT} s (préflight gateway ? recyclage keepalive ?) — NE PAS re-poser (la re-pose effacerait le formulaire) : attendre sa fin sur $JENKINS/job/$JOB/$N/console, puis relire la config"
 fi
-[ "$R" = "SUCCESS" ] || fail "build d'amorçage #$N : $R — voir $JENKINS/job/$JOB/$N/console"
-say "build d'amorçage #$N : SUCCESS (trigger enregistré, params matérialisés)"
-
 # --- relecture (fait 6) : UNE propriété de paramètres, et la liste attendue ---
-curl -s "$JENKINS/job/$JOB/config.xml" > "$XML.relu" || fail "config.xml illisible après l'amorçage"
+# Relue QUEL QUE SOIT le résultat de l'amorçage : le stage Formulaire est le
+# premier ; un rouge plus loin (préflight gateway, sonde cert) laisse le
+# formulaire POSÉ — re-poser effacerait ce qui est bon (revue 2026-09-02).
+curl -sf "$JENKINS/job/$JOB/config.xml" > "$XML.relu" || fail "config.xml illisible après l'amorçage (HTTP ≠ 200)"
 NPROP=$(python3 -c "import sys,xml.etree.ElementTree as T; r=T.parse(sys.argv[1]).getroot(); print(sum(1 for e in r.iter() if e.tag.endswith('ParametersDefinitionProperty')))" "$XML.relu")
+if [ "$R" != "SUCCESS" ]; then
+  if [ "$NPROP" = 1 ]; then
+    fail "build d'amorçage #$N : $R — mais le FORMULAIRE EST POSÉ (1 propriété) : l'échec vient d'un stage ultérieur (préflight gateway ? sonde cert ?), voir $JENKINS/job/$JOB/$N/console — NE PAS re-poser"
+  fi
+  fail "build d'amorçage #$N : $R et aucun formulaire posé — voir $JENKINS/job/$JOB/$N/console"
+fi
+say "build d'amorçage #$N : SUCCESS (trigger enregistré, params matérialisés)"
 [ "$NPROP" = 1 ] || fail "le job porte $NPROP proprietes de parametres apres l'amorcage (fait 6 : un push sans re-pose sur un XML parametre ?) — re-poser par CE script"
 if [ "$XML_PARAMS" = no ]; then
   # shellcheck source=scripts/lib/env-chain.sh
@@ -267,6 +276,5 @@ for p in r.iter():
 else
   say "relecture : 1 propriete de parametres (XML_PARAMS=yes)"
 fi
-rm -f "$XML.relu"
 say "OK — webhook PLAN : POST $JENKINS/generic-webhook-trigger/invoke?token=$TRIGGER_TOKEN  body {\"manifest\":\"<chemin>\"}"
 say "     APPLY manuel : $JENKINS/job/$JOB/build?delay=0sec (fournir USER_VAULT_JWT via scripts/mint-selfservice-jwt.sh)"

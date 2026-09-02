@@ -371,7 +371,7 @@ pipeline {
               }
             }
           } catch (e) {
-            echo "AVERTISSEMENT: statut de build non poste (${e.message})"
+            echo "AVERTISSEMENT: statut de build non poste (${e})"
           }
         }
       }

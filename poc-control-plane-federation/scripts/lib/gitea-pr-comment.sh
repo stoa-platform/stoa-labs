@@ -29,8 +29,9 @@
 #
 # Sortie : "COMMENT_UPDATED <id>", "COMMENT_CREATED <id>" ou "COMMENT_SKIPPED".
 # Échec = code 1. Réseau : timeout 30 s par appel ; la recherche du marqueur
-# PAGINE (limit=50&page=N — Gitea pagine par défaut, un marqueur au-delà de la
-# première page était invisible et le commentaire se serait EMPILÉ).
+# PAGINE jusqu'à une page VIDE (limit=50&page=N — Gitea pagine par défaut ET
+# plafonne `limit` : un marqueur au-delà de la première page était invisible
+# et le commentaire se serait EMPILÉ).
 set -uo pipefail
 set +x
 
@@ -69,18 +70,26 @@ def call(method, url, data=None):
 try:
     # Le commentaire de CE rôle existe-t-il déjà ? On ne regarde que le marqueur :
     # ni l'auteur (le compte de service peut changer) ni la position (d'autres
-    # commentaires s'intercalent) ne sont des clés fiables. PAGINÉ : une page
-    # plus courte que `limit` est la dernière (une forge qui ignore `page`
-    # rend tout d'un coup et s'arrête là aussi) ; borne haute de 40 pages.
+    # commentaires s'intercalent) ne sont des clés fiables. PAGINÉ jusqu'à une
+    # page VIDE — jamais « plus courte que limit » : Gitea PLAFONNE `limit` à
+    # api.MAX_RESPONSE_ITEMS (50 par défaut, souvent moins chez un client), une
+    # page pleine de 30 aurait été prise pour la dernière (revue 2026-09-02).
+    # Une forge qui ignorerait `page` rend la même page : détectée par ses ids,
+    # on s'arrête. Borne haute de 40 pages.
     existing = None
     LIMIT = 50
+    seen_ids = set()
     for page in range(1, 41):
         chunk = call("GET", f"{api}/repos/{repo}/issues/{prn}/comments?limit={LIMIT}&page={page}") or []
+        ids = {c.get("id") for c in chunk}
+        if not chunk or ids <= seen_ids:
+            break
+        seen_ids |= ids
         for c in chunk:
             if mark in (c.get("body") or ""):
                 existing = c["id"]
                 break
-        if existing is not None or len(chunk) < LIMIT:
+        if existing is not None:
             break
     if existing is not None:
         call("PATCH", f"{api}/repos/{repo}/issues/comments/{existing}", {"body": body})

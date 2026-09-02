@@ -50,7 +50,10 @@ class H(BaseHTTPRequestHandler):
         path, _, qs = self.path.partition("?")
         if re.match(r"^/api/v1/repos/.+/issues/\d+/comments$", path):
             q = dict(kv.split("=", 1) for kv in qs.split("&") if "=" in kv)
-            lim, page = int(q.get("limit", 50)), int(q.get("page", 1))
+            # PLAFOND serveur (api.MAX_RESPONSE_ITEMS chez Gitea) : `limit` est
+            # ECRETE, une page pleine peut donc etre plus courte que demande.
+            cap = int(os.environ.get("PAGE_CAP", "50"))
+            lim, page = min(int(q.get("limit", 50)), cap), int(q.get("page", 1))
             allc = load()
             return self._send(200, allc[(page - 1) * lim: page * lim])
         self._send(404, {"message": "not found"})
@@ -75,7 +78,7 @@ PY
 startgitea(){ # $1 = token attendu
   [ -n "$GITEA_PID" ] && kill "$GITEA_PID" 2>/dev/null
   printf '[]' > "$TMP/comments.json"
-  STORE="$TMP/comments.json" EXPECT_TOKEN="$1" python3 "$TMP/fakegitea.py" "$PORT" >/dev/null 2>&1 &
+  STORE="$TMP/comments.json" EXPECT_TOKEN="$1" PAGE_CAP="${PAGE_CAP:-50}" python3 "$TMP/fakegitea.py" "$PORT" >/dev/null 2>&1 &
   GITEA_PID=$!
   for _ in $(seq 1 40); do curl -s "http://127.0.0.1:$PORT/x" >/dev/null 2>&1 && return; sleep 0.1; done
 }
@@ -238,7 +241,23 @@ OUT=$(GIT_REPO=ci/stoa-labs GITEA_TOKEN=tok-ok PR_NUMBER=7 GIT_HOST="$GH" COMMEN
 [ "$RC" -eq 0 ] && [ "$OUT" = "COMMENT_UPDATED 55" ] && [ "$(count)" = 60 ] \
   && ok "marqueur au-delà de la première page ⇒ COMMENT_UPDATED 55 (pagination), 60 commentaires, aucun empilement" \
   || ko "pagination cassée (rc=$RC : $OUT, n=$(count)) — le commentaire se serait EMPILÉ"
-grep -q 'timeout=30' "$LIB" && ok "urlopen(timeout=30) : un post{always} ne tient plus l'exécuteur indéfiniment sur une forge muette" || ko "aucun timeout réseau dans la lib"
+grep -q 'timeout=30)' "$LIB" && ok "urlopen(timeout=30) : un post{always} ne tient plus l'exécuteur indéfiniment sur une forge muette" || ko "aucun timeout réseau dans la lib"
+
+echo
+echo "== 12bis. PLAFOND serveur (revue 2026-09-02) : la forge écrête limit à 20, marqueur en 25e position ⇒ TROUVÉ (arrêt sur page VIDE, jamais sur « page courte ») =="
+PAGE_CAP=20 startgitea tok-ok
+python3 - "$TMP/comments.json" <<'PY'
+import json, sys
+cs = [{"id": i, "body": f"bruit {i}"} for i in range(1, 31)]
+cs[24]["body"] = "<!-- provision-plan -->\nancien verdict"
+json.dump(cs, open(sys.argv[1], "w"))
+PY
+printf 'nouveau verdict\n' > "$TMP/b12b"
+OUT=$(GIT_REPO=ci/stoa-labs GITEA_TOKEN=tok-ok PR_NUMBER=7 GIT_HOST="$GH" COMMENT_MARKER='<!-- provision-plan -->' COMMENT_BODY_FILE="$TMP/b12b" bash "$LIB" 2>&1); RC=$?
+[ "$RC" -eq 0 ] && [ "$OUT" = "COMMENT_UPDATED 25" ] && [ "$(count)" = 30 ] \
+  && ok "plafond 20, marqueur en 25e ⇒ COMMENT_UPDATED 25, aucun empilement (une page pleine de 20 n'est PAS la dernière)" \
+  || ko "plafond serveur : rc=$RC $OUT n=$(count) — le commentaire s'est EMPILÉ (arrêt sur page courte)"
+unset PAGE_CAP
 
 echo
 echo "======================================================================"

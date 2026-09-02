@@ -24,7 +24,8 @@
 #   SUCCESS + ignore       ⇒ « demande IGNOREE (<raison>) : aucun verdict » —
 #                            c'est l'information que le vert cachait ;
 #   ABORTED                ⇒ « abandonne : aucun verdict, rejouer » ;
-#   FAILURE + fail         ⇒ « verdict NEGATIF, voir provision-plan » ;
+#   * + fail               ⇒ « verdict NEGATIF, voir provision-plan » ;
+#   ABORTED/FAILURE + ok   ⇒ « verdict RENDU, build termine <resultat> apres coup » ;
 #   FAILURE + refus        ⇒ « refus avant le verdict : <raison> » (la forge a
 #                            confirmé la PR, le clone/checkout a refusé) ;
 #   FAILURE sans faits     ⇒ « echec avant le plan (agent ?), voir le log ».
@@ -50,12 +51,18 @@ case "$PR_NUMBER" in ''|*[!0-9]*) echo "(PR_NUMBER non numerique — aucun statu
 case "$PR_BRANCH" in provision/*) ;; *) echo "(branche hors provision/* — aucun statut a commenter)"; exit 0;; esac
 
 # ── la vérité : les faits du plan, sinon la forge ────────────────────────────
-HEAD_REF=""; VERDICT=""; REASON=""; SOURCE=""
+HEAD_REF=""; VERDICT=""; REASON=""; SOURCE=""; FACTS_PR=""
 if [ -n "$PLAN_FACTS" ] && [ -f "$PLAN_FACTS" ]; then
   HEAD_REF="$(sed -n 's/^GITEA_HEAD_REF=//p' "$PLAN_FACTS" | head -1)"
   VERDICT="$(sed -n 's/^PLAN_VERDICT=//p' "$PLAN_FACTS" | head -1)"
   REASON="$(sed -n 's/^PLAN_REASON=//p' "$PLAN_FACTS" | head -1)"
+  FACTS_PR="$(sed -n 's/^PLAN_PR_NUMBER=//p' "$PLAN_FACTS" | head -1)"
   SOURCE="faits du plan (fichier)"
+  # Des faits qui ne nomment pas CETTE PR sont ceux d'un autre build (workspace
+  # persistant) : on ne parle pas sur leur foi.
+  if [ -n "$FACTS_PR" ] && [ "$FACTS_PR" != "$PR_NUMBER" ]; then
+    echo "(faits d'une autre PR (#$FACTS_PR) — perimes, aucun statut a commenter)"; exit 0
+  fi
   if [ -z "$HEAD_REF" ]; then
     echo "(le plan n'a pas obtenu la confirmation de la forge — ${VERDICT:-?} : ${REASON:-?} — aucun statut a commenter)"; exit 0
   fi
@@ -63,8 +70,11 @@ elif [ -n "${PLAN_VERDICT:-}" ]; then
   # Les faits chargés dans l'ENVIRONNEMENT par le post{always} du STAGE de plan
   # (ci/Jenkinsfile.provision-plan) : le nœud du post de pipeline n'a pas
   # forcement le workspace du stage, mais il a son environnement.
-  HEAD_REF="${GITEA_HEAD_REF:-}"; VERDICT="$PLAN_VERDICT"; REASON="${PLAN_REASON:-}"
+  HEAD_REF="${GITEA_HEAD_REF:-}"; VERDICT="$PLAN_VERDICT"; REASON="${PLAN_REASON:-}"; FACTS_PR="${PLAN_PR_NUMBER:-}"
   SOURCE="faits du plan (environnement)"
+  if [ -n "$FACTS_PR" ] && [ "$FACTS_PR" != "$PR_NUMBER" ]; then
+    echo "(faits d'une autre PR (#$FACTS_PR) — perimes, aucun statut a commenter)"; exit 0
+  fi
   if [ -z "$HEAD_REF" ]; then
     echo "(le plan n'a pas obtenu la confirmation de la forge — ${VERDICT} : ${REASON:-?} — aucun statut a commenter)"; exit 0
   fi
@@ -82,23 +92,30 @@ fi
 BUILD_REF="${BUILD_URL:-}"
 [ -n "$BUILD_REF" ] || BUILD_REF="${JOB_NAME:-provision-plan} #${BUILD_NUMBER:-?}"
 
-# ── le corps, selon (resultat, verdict) ─────────────────────────────────────
+# ── le corps : le VERDICT d'abord (s'il existe), le résultat du build ensuite ──
+# (revue 2026-09-02 : ABORTED/FAILURE/UNSTABLE APRÈS un verdict rendu ne doivent
+# jamais dire « aucun verdict » ni « agent injoignable » à côté d'un ✅/❌.)
 ONLY_IF_EXISTS=0
 BODYFILE="$(mktemp)"; trap 'rm -f "$BODYFILE"' EXIT
-case "${BUILD_RESULT}:${VERDICT}" in
-  SUCCESS:ignore)
-    printf 'provision-plan (statut build) : demande IGNOREE -- %s. AUCUN verdict n a ete rendu : rien a valider sur cette PR en l etat. Build : %s\n' "${REASON:-raison inconnue}" "$BUILD_REF" > "$BODYFILE" ;;
-  SUCCESS:*)
+case "${VERDICT}:${BUILD_RESULT}" in
+  ok:SUCCESS)
     ONLY_IF_EXISTS=1
     printf 'provision-plan (statut build) : build termine sans erreur -- le verdict est dans le commentaire provision-plan ci-dessus. Build : %s\n' "$BUILD_REF" > "$BODYFILE" ;;
-  ABORTED:*)
-    printf 'provision-plan (statut build) : le build de plan a ete ABANDONNE (ou a expire) -- AUCUN verdict. Rejouer le webhook (ou pousser sur la branche) pour obtenir un plan. Build : %s\n' "$BUILD_REF" > "$BODYFILE" ;;
-  *:fail)
+  ok:*)
+    printf 'provision-plan (statut build) : le verdict a ete RENDU (voir le commentaire provision-plan ci-dessus), puis le build s est termine %s apres coup -- le verdict reste valable. Build : %s\n' "$BUILD_RESULT" "$BUILD_REF" > "$BODYFILE" ;;
+  fail:*)
     printf 'provision-plan (statut build) : le plan a rendu un verdict NEGATIF -- voir le commentaire provision-plan ci-dessus et corriger la demande avant validation. Build : %s\n' "$BUILD_REF" > "$BODYFILE" ;;
-  *:refus)
-    printf 'provision-plan (statut build) : REFUS avant le verdict -- %s. Aucun plan n a ete joue. Build : %s\n' "${REASON:-raison inconnue}" "$BUILD_REF" > "$BODYFILE" ;;
+  ignore:*)
+    printf 'provision-plan (statut build) : demande IGNOREE -- %s. AUCUN verdict n a ete rendu : rien a valider sur cette PR en l etat (build %s). Build : %s\n' "${REASON:-raison inconnue}" "$BUILD_RESULT" "$BUILD_REF" > "$BODYFILE" ;;
+  refus:*)
+    printf 'provision-plan (statut build) : REFUS avant le verdict -- %s. Aucun verdict n a ete pose. Build : %s\n' "${REASON:-raison inconnue}" "$BUILD_REF" > "$BODYFILE" ;;
+  :ABORTED)
+    printf 'provision-plan (statut build) : le build de plan a ete ABANDONNE (ou a expire) -- AUCUN verdict. Rejouer le webhook (ou pousser sur la branche) pour obtenir un plan. Build : %s\n' "$BUILD_REF" > "$BODYFILE" ;;
+  :SUCCESS)
+    ONLY_IF_EXISTS=1
+    printf 'provision-plan (statut build) : build termine sans erreur, sans faits de plan (source : %s). Build : %s\n' "$SOURCE" "$BUILD_REF" > "$BODYFILE" ;;
   *)
-    printf 'provision-plan (statut build) : le build a ECHOUE avant le plan (agent injoignable, depot plateforme non clonable) -- AUCUN verdict. Source : %s. Voir le log : %s\n' "$SOURCE" "$BUILD_REF" > "$BODYFILE" ;;
+    printf 'provision-plan (statut build) : le build a ECHOUE (%s) avant le plan (agent injoignable, depot plateforme non clonable) -- AUCUN verdict. Source : %s. Voir le log : %s\n' "$BUILD_RESULT" "$SOURCE" "$BUILD_REF" > "$BODYFILE" ;;
 esac
 
 GIT_REPO="$GIT_REPO" GITEA_TOKEN="$GITEA_TOKEN" PR_NUMBER="$PR_NUMBER" GIT_HOST="$GIT_HOST" \

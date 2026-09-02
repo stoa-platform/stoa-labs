@@ -40,8 +40,13 @@
 //      jamais par un simple push.
 //   7. EnvVars.resolve() frappe aussi les paramètres `password` : un mot de
 //      passe portant `$$` ou `${` arrivait ALTÉRÉ à Vault (lockout au second
-//      essai). Les trois stages lisent donc les valeurs BRUTES par
-//      `withEnv([params…])` — le mot de passe dans l'Apply seul.
+//      essai). Les trois stages lisent les valeurs BRUTES par
+//      `withEnv([params…])` — SAUF le mot de passe (fait 9) : il reste sur le
+//      canal natif et son altération est détectée, fermée (MOT_DE_PASSE_ALTERE).
+//   9. Un secret interpolé dans un argument de step (withEnv) est PERSISTÉ EN
+//      CLAIR dans flowNodeStore.xml quand il diffère de la valeur résolue
+//      (masquage par égalité) — mesuré ; `params.X` d'un password est un
+//      hudson.util.Secret (toString = clair), `env.X` la valeur résolue.
 // Limite : la liste montrée est celle du build PRÉCÉDENT (amorçage à la pose).
 pipeline {
   agent any
@@ -193,7 +198,7 @@ pipeline {
         // frappe le canal natif (mesuré : `${JENKINS_HOME}` résolu, mot de passe
         // altéré). Une valeur vide retire la variable : les `${X:-défaut}` du
         // shell restent valides.
-        withEnv(["MANIFEST=${params.MANIFEST ?: ''}", "MERGE_SHA=${params.MERGE_SHA ?: ''}", "ENVIRONMENT=${params.ENVIRONMENT ?: ''}"]) {
+        withEnv(["MANIFEST=${params.MANIFEST ?: (env.MANIFEST ?: '')}", "MERGE_SHA=${params.MERGE_SHA ?: ''}", "ENVIRONMENT=${params.ENVIRONMENT ?: ''}"]) {
           // FAIL-CLOSED AVANT TOUT : un appelant AMONT (provision-apply) qui
           // n'a pas transmis MERGE_SHA — paramètre pas encore matérialisé et
           // retiré en silence (SECURITY-170), appelant d'avant A2, câblage
@@ -265,7 +270,7 @@ pipeline {
         // frappe le canal natif (mesuré : `${JENKINS_HOME}` résolu, mot de passe
         // altéré). Une valeur vide retire la variable : les `${X:-défaut}` du
         // shell restent valides.
-        withEnv(["MANIFEST=${params.MANIFEST ?: ''}", "MERGE_SHA=${params.MERGE_SHA ?: ''}", "ENVIRONMENT=${params.ENVIRONMENT ?: ''}"]) {
+        withEnv(["MANIFEST=${params.MANIFEST ?: (env.MANIFEST ?: '')}", "MERGE_SHA=${params.MERGE_SHA ?: ''}", "ENVIRONMENT=${params.ENVIRONMENT ?: ''}"]) {
           dir('poc-control-plane-federation') {
             sh '''
               set -eu
@@ -313,17 +318,30 @@ pipeline {
     // ── APPLY ────────────────────────────────────────────────────────────────
     stage('Apply — converge + verify via le rôle Ansible (identité nominative → Vault)') {
       steps {
+        // ── LE MOT DE PASSE NE TRAVERSE AUCUN STEP (faits 7 et 9) ──────────────
+        // Fait 7 : EnvVars.resolve() altère un mot de passe portant `$$`/`${…}`
+        // sur le canal natif. Fait 9 (mesuré) : le faire passer par withEnv le
+        // PERSISTE EN CLAIR dans les nœuds de flux du build (flowNodeStore.xml)
+        // dès qu'il diffère de la valeur résolue — précisément ces mots de
+        // passe-là ; Jenkins l'écrit lui-même (« A secret was passed to withEnv
+        // using Groovy String interpolation, which is insecure »). Le canal
+        // natif reste donc le seul canal, et l'altération est DÉTECTÉE ici,
+        // fermée, AVANT tout appel à Vault (aucun lockout) : `"${params.X}"`
+        // est la valeur brute (params.X est un hudson.util.Secret), `env.X` la
+        // valeur résolue — inégales ⇔ altérées. Rien n'est passé à un step.
+        script {
+          def brut = "${params.VAULT_USER_PASSWORD ?: ''}"
+          if (brut && brut != "${env.VAULT_USER_PASSWORD ?: ''}") {
+            error('REFUS: MOT_DE_PASSE_ALTERE — le mot de passe contient une sequence ($$ ou ${…}) que Jenkins resout avant le shell ; il arriverait altere a Vault (lockout au second essai) et ne peut pas etre re-injecte sans etre persiste en clair. Utiliser la voie B (USER_VAULT_JWT) ou un mot de passe sans le caractere dollar. Rien n a ete tente aupres de Vault.')
+          }
+        }
         // FAIT 7 (A0 dettes) : valeurs BRUTES des paramètres — EnvVars.resolve()
         // frappe le canal natif (mesuré : `${JENKINS_HOME}` résolu, mot de passe
         // altéré). Une valeur vide retire la variable : les `${X:-défaut}` du
         // shell restent valides.
-        withEnv(["MANIFEST=${params.MANIFEST ?: ''}", "MERGE_SHA=${params.MERGE_SHA ?: ''}", "ENVIRONMENT=${params.ENVIRONMENT ?: ''}",
-                 "ADMIN_VIA=${params.ADMIN_VIA ?: ''}", "DEBUG=${params.DEBUG}",
-                 "VAULT_USER=${params.VAULT_USER ?: ''}", "USER_VAULT_JWT=${params.USER_VAULT_JWT ?: ''}",
-                 // FAIT 7 : le mot de passe passe par withEnv, jamais par le canal natif
-                 // (EnvVars.resolve altère `$$` / `${`). Une valeur VIDE retire la
-                 // variable (PLAN-only inchangé : la lib lit ${VAULT_USER_PASSWORD:-}).
-                 "VAULT_USER_PASSWORD=${params.VAULT_USER_PASSWORD ?: ''}"]) {
+        withEnv(["MANIFEST=${params.MANIFEST ?: (env.MANIFEST ?: '')}", "MERGE_SHA=${params.MERGE_SHA ?: ''}", "ENVIRONMENT=${params.ENVIRONMENT ?: ''}",
+                 "ADMIN_VIA=${params.ADMIN_VIA ?: ''}", "DEBUG=${params.DEBUG ?: false}",
+                 "VAULT_USER=${params.VAULT_USER ?: ''}", "USER_VAULT_JWT=${params.USER_VAULT_JWT ?: ''}"]) {
           dir('poc-control-plane-federation') {
             sh '''
               set +x            # NE JAMAIS écho : mot de passe, JWT, token Vault, creds gateway

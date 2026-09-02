@@ -126,7 +126,9 @@ pipeline {
           // FORGE_NON_CONFIRMEE) et écrit ses FAITS (tête relue, verdict,
           // raison) dans PLAN_FACTS, succès comme échec.
           dir('poc-control-plane-federation') {
-            sh 'set +x; PLAN_FACTS="$WORKSPACE/.plan.facts" bash scripts/provision-plan.sh'
+            // rm -f AVANT : le workspace persiste d'un build à l'autre — sans purge,
+            // un script mort avant ses faits laisserait ceux du build precedent.
+            sh 'set +x; rm -f "$WORKSPACE/.plan.facts"; PLAN_FACTS="$WORKSPACE/.plan.facts" bash scripts/provision-plan.sh'
           }
         }
       }
@@ -146,6 +148,7 @@ pipeline {
                   if (k == 'GITEA_HEAD_REF') { env.GITEA_HEAD_REF = v }
                   if (k == 'PLAN_VERDICT')   { env.PLAN_VERDICT = v }
                   if (k == 'PLAN_REASON')    { env.PLAN_REASON = v }
+                  if (k == 'PLAN_PR_NUMBER') { env.PLAN_PR_NUMBER = v }
                 }
               }
               echo "faits du plan : tete='${env.GITEA_HEAD_REF ?: ''}' verdict='${env.PLAN_VERDICT ?: ''}' (${env.PLAN_REASON ?: ''})"
@@ -196,7 +199,7 @@ pipeline {
               }
             }
           } catch (e) {
-            echo "AVERTISSEMENT: statut de build non poste (${e.message})"
+            echo "AVERTISSEMENT: statut de build non poste (${e})"
           }
         }
       }

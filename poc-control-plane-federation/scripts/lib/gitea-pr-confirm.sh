@@ -23,7 +23,9 @@
 #   SEULEMENT si : state == open, head.ref == attendu, head.ref ~ ^provision/,
 #   base.ref == base attendue, et aucune valeur ne porte de retour-ligne.
 #   Sinon rc 1 et `FORGE_NON_CONFIRMEE : <raison>` sur stderr — 404 (PR
-#   inconnue), 5xx, timeout, réponse non-objet, champ absent, PR fermée ou
+#   inconnue), 5xx, timeout, réponse non-objet, champ absent, head.sha non
+#   hexadécimal (jamais un argument libre pour git), PR depuis un FORK
+#   (head.repo ≠ dépôt : sa tête n'est pas dans le clone), PR fermée ou
 #   mergée (une branche provision/<app>-<env> RÉUTILISÉE après merge ne doit
 #   pas faire commenter la PR mergée), tête ou base divergente.
 #   Le numéro est validé ^[0-9]+$ AVANT de composer l'URL (jamais un chemin
@@ -65,6 +67,12 @@ for name, v in (("state", state), ("head.ref", href), ("head.sha", hsha), ("base
         refuse(f"champ {name} absent de la PR #{n}")
     if "\n" in v or "\r" in v:
         refuse(f"champ {name} porte un retour-ligne")
+import re as _re
+if not _re.fullmatch(r"[0-9a-f]{40}", hsha):
+    refuse(f"head.sha de la PR #{n} n'est pas un SHA hexadecimal de 40 caracteres")
+head_repo = ((head.get("repo") or {}).get("full_name")) if isinstance(head.get("repo"), dict) else None
+if head_repo is not None and head_repo != repo:
+    refuse(f"PR #{n} vient d'un FORK ({head_repo}) — sa tete n'est pas dans le depot {repo}")
 if state != "open":
     refuse(f"PR #{n} n'est pas ouverte (state={state}) — une PR fermee ou mergee ne recoit plus de plan")
 if href != want_head:
