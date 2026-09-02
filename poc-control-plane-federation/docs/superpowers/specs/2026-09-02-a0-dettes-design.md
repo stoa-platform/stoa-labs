@@ -1,7 +1,7 @@
 ---
 title: "A0 — les deux dettes : statut de build sur provision-plan (forge relue AVANT le verdict) et formulaire de selfservice-app-deploy posé par son Jenkinsfile"
 type: design
-status: "LIVRÉ 2026-09-02 — design amendé après critique adverse (4 lentilles, 48 constats : 2 bloquants, 14 importants) et trois faits mesurés sur jobs jetables ; PUIS revue adverse du commit livré (4 lentilles : 2 bloquants — exit 1 dans un groupe { }, faits périmés du workspace — et le fait 9 : un password en withEnv est persisté en clair ⇒ garde MOT_DE_PASSE_ALTERE sur le canal natif) ; hors ligne test-a0-wiring 154/154 + lint-ci [11/11] ; live test-a0-dettes-live 22/22 (plan #723, forgés #727/#728, hors provision #729), test-selfservice-form-live 14/14 (amorçage #31, webhook #32), rejeu A2 60/60 (#87 → aval #33)"
+status: "LIVRÉ 2026-09-02 — design amendé après critique adverse (4 lentilles, 48 constats : 2 bloquants, 14 importants) et trois faits mesurés sur jobs jetables ; PUIS revue adverse du commit livré (4 lentilles : 2 bloquants — exit 1 dans un groupe { }, faits périmés du workspace — et le fait 9 : un password en withEnv est persisté en clair ⇒ garde MOT_DE_PASSE_ALTERE sur le canal natif) ; hors ligne test-a0-wiring 154/154 + lint-ci [11/11] ; live test-a0-dettes-live 22/22 (rejeux : plan #723/#734, forgés #727-728/#738-739, hors provision #729/#740), test-selfservice-form-live 14/14 sur le chemin de RE-POSE (amorçage #39, webhook #40 — fait 10), rejeu A2 60/60 ×3 (#87→#33, #90→#35 garde du mot de passe, #93→#41 properties() complet)"
 date: 2026-09-02
 lié: [2026-09-02-a0-tout-en-jenkinsfile-design, 2026-09-02-a2-reference-sha-merge-design, GOAL-cd-applications-2026-09-02, adr-081-ou-vit-la-decision-humaine]
 ---
