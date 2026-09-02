@@ -907,22 +907,50 @@ JSF="ci/Jenkinsfile.selfservice"
 if [ ! -f "$SSJ" ] || [ ! -f "$JSF" ]; then
   bad "㉑sexies $SSJ ou $JSF introuvable — l'assertion d'absence du terminus serait vaine"
 else
+  # A0 dettes (2026-09-02) : la liste des paliers n'est PLUS écrite nulle part
+  # dans ce formulaire — le Jenkinsfile la DÉRIVE de env_chain_nonprod à chaque
+  # build (properties([parameters])), le poseur la dérive à la pose (mode yes)
+  # ou n'écrit aucun paramètre (mode no). Vue CODE Groovy pour le Jenkinsfile
+  # (les commentaires `//` sont blanchis), nc_strict pour le shell.
   nc_strict "$SSJ" > "$TMP/ssj21t_nc"
-  nc_strict "$JSF" > "$TMP/jsf21t_nc"
-  grep -Eq "choices.*'prod'|>prod<" "$TMP/ssj21t_nc" "$TMP/jsf21t_nc" \
+  sed -E 's@^[[:space:]]*(//|#).*$@@' "$JSF" > "$TMP/jsf21t_nc"
+  grep -Eq "choices.*'prod'|>prod<|<string>prod</string>" "$TMP/ssj21t_nc" "$TMP/jsf21t_nc" \
     && bad "㉑sexies le formulaire consommateur propose encore le terminus" \
     || ok "㉑sexies le terminus a quitté le formulaire consommateur (D3/D6 : l'écriture y meurt de toute façon)"
+  grep -q "choice(name: 'ENVIRONMENT', choices: envs" "$TMP/jsf21t_nc" && grep -q 'env_chain_nonprod' "$TMP/jsf21t_nc" \
+    && ok "㉑sexies-bis Jenkinsfile.selfservice DÉRIVE ENVIRONMENT de env_chain_nonprod (choices: envs) — plus aucune liste en dur" \
+    || bad "㉑sexies-bis Jenkinsfile.selfservice ne dérive pas ENVIRONMENT de env_chain_nonprod"
+  grep -q 'ENVS_NONPROD="$(env_chain_nonprod)"' "$TMP/ssj21t_nc" && ! grep -q '<string>dev</string>' "$TMP/ssj21t_nc" \
+    && ok "㉑sexies-ter setup-selfservice-job.sh dérive la liste à la pose (env_chain_nonprod), aucun <string>dev</string> littéral" \
+    || bad "㉑sexies-ter setup-selfservice-job.sh porte encore une liste littérale ou ne dérive pas"
 
   echo "== ㉑septies mutation : le terminus REVIENT dans le Jenkinsfile ⇒ ㉑sexies rougirait =="
-  sed "s/choices: \['dev', 'rec', 'int', 'homol'\]/choices: ['dev', 'rec', 'int', 'homol', 'prod']/" \
+  sed "s/choice(name: 'ENVIRONMENT', choices: envs,/choice(name: 'ENVIRONMENT', choices: envs + ['prod'],/" \
     "$JSF" > "$TMP/jsf21_mut"
   cmp -s "$JSF" "$TMP/jsf21_mut" \
-    && bad "㉑septies(0) le mutant est IDENTIQUE — l'ancre choices: a bougé" \
+    && bad "㉑septies(0) le mutant est IDENTIQUE — l'ancre choices: envs a bougé" \
     || ok "㉑septies(0) le mutant diffère RÉELLEMENT du fichier"
-  nc_strict "$TMP/jsf21_mut" > "$TMP/jsf21_mut_nc"
+  sed -E 's@^[[:space:]]*(//|#).*$@@' "$TMP/jsf21_mut" > "$TMP/jsf21_mut_nc"
   grep -Eq "choices.*'prod'|>prod<" "$TMP/jsf21_mut_nc" \
     && ok "㉑septies le terminus réinjecté dans le Jenkinsfile ⇒ le détecteur de ㉑sexies le VOIT" \
     || bad "㉑septies le terminus réinjecté passe inaperçu — ㉑sexies est vacante"
+
+  echo "== ㉑septies-bis mutation STRUCTURELLE : la dérivation perd son nonprod ⇒ ㉑sexies-bis/ter rougissent =="
+  sed 's/env_chain_nonprod" > "$WORKSPACE\/.a0-envs"/env_chain" > "$WORKSPACE\/.a0-envs"/' "$JSF" > "$TMP/jsf21_mut2"
+  cmp -s "$JSF" "$TMP/jsf21_mut2" && bad "㉑septies-bis(0) mutant Jenkinsfile identique — l'ancre de dérivation a bougé" || ok "㉑septies-bis(0) le mutant Jenkinsfile diffère"
+  sed -E 's@^[[:space:]]*(//|#).*$@@' "$TMP/jsf21_mut2" | grep -q 'env_chain_nonprod' \
+    && bad "㉑septies-bis env_chain_nonprod→env_chain dans le Jenkinsfile passe inaperçu" \
+    || ok "㉑septies-bis env_chain_nonprod→env_chain dans le Jenkinsfile ⇒ le détecteur de ㉑sexies-bis le VOIT (le terminus reviendrait au build)"
+  sed 's/ENVS_NONPROD="$(env_chain_nonprod)"/ENVS_NONPROD="$(env_chain)"/' "$SSJ" > "$TMP/ssj21_mut2"
+  cmp -s "$SSJ" "$TMP/ssj21_mut2" && bad "㉑septies-ter(0) mutant poseur identique" || ok "㉑septies-ter(0) le mutant poseur diffère"
+  nc_strict "$TMP/ssj21_mut2" | grep -q 'ENVS_NONPROD="$(env_chain_nonprod)"' \
+    && bad "㉑septies-ter la dérivation mutée du poseur passe inaperçue" \
+    || ok "㉑septies-ter env_chain_nonprod→env_chain dans le poseur ⇒ le détecteur de ㉑sexies-ter le VOIT"
+
+  echo "== ㉑nonies l'exception est NOMMÉE : Jenkinsfile.publish-api (chaîne des APIs) garde une liste littérale AVEC le terminus =="
+  grep -q "choices: \['dev', 'rec', 'int', 'prod'\]" ci/Jenkinsfile.publish-api \
+    && ok "㉑nonies ci/Jenkinsfile.publish-api porte ['dev','rec','int','prod'] — formulaire PRODUCTEUR, hors périmètre A0/A4, décision à trancher dans la chaîne des APIs (le XML posé par le même template n'y a pas autorité : fusion par nom)" \
+    || bad "㉑nonies la liste de ci/Jenkinsfile.publish-api a changé : mettre à jour cette exception (spec 2026-09-02-a0-dettes-design)"
 fi
 
 echo "== ㉑octies app-request.job.xml : la choices RÉELLE de REQ_ENV suit la chaîne (ElementTree, pas grep XML brut) =="

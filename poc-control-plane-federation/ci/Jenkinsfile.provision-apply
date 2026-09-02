@@ -313,14 +313,30 @@ pipeline {
   // réconciliation) : jamais sur la foi du PR_BRANCH du payload — un PR_NUMBER
   // forgé ne fait pas publier le compte de service sur une PR étrangère.
   // `agent none` au niveau pipeline → `node` + `checkout scm`.
+  // A0 dettes (2026-09-02, critique adverse) : les gardes bon marché sont en
+  // Groovy AVANT le `node` — le hook Gitea tire sur TOUTES les PR du dépôt
+  // plateforme, et un post{always} qui prenait un nœud + un clone
+  // inconditionnellement contredisait l'argument même d'`agent none` (le lab
+  // n'a que deux exécuteurs). Le gate de FORGE (GITEA_HEAD_REF) reste dans le
+  // sh : la garde Groovy économise l'exécuteur, elle n'accorde aucune
+  // confiance au payload. try/catch + timeout : le statut ne rougit jamais un
+  // build et ne tient jamais l'exécuteur sur une forge muette.
   post {
     always {
-      node("${env.POST_AGENT_LABEL ?: ''}") {
-        checkout scm
-        withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')]) {
-          withEnv(["BUILD_RESULT=${currentBuild.currentResult}"]) {
-            dir('poc-control-plane-federation') {
-              sh '''
+      script {
+        def ref = env.PR_BRANCH ?: ''
+        def num = env.PR_NUMBER ?: ''
+        if (!ref.startsWith('provision/') || !(num ==~ /[0-9]+/)) {
+          echo "(hors provision/* ou PR_NUMBER non numerique — aucun statut a commenter, aucun executeur alloue)"
+        } else {
+          try {
+            timeout(time: 2, unit: 'MINUTES') {
+              node("${env.POST_AGENT_LABEL ?: ''}") {
+                checkout scm
+                withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')]) {
+                  withEnv(["BUILD_RESULT=${currentBuild.currentResult}"]) {
+                    dir('poc-control-plane-federation') {
+                      sh '''
                 set +x
                 if [ -z "${GIT_REPO:-}" ] || [ -z "${PR_NUMBER:-}" ]; then
                   echo "commentaire de statut impossible (GIT_REPO/PR_NUMBER absents)"
@@ -349,7 +365,13 @@ pipeline {
                   || echo "AVERTISSEMENT: commentaire de statut (post) en echec"
                 rm -f "$BODYFILE"
               '''
+                    }
+                  }
+                }
+              }
             }
+          } catch (e) {
+            echo "AVERTISSEMENT: statut de build non poste (${e.message})"
           }
         }
       }

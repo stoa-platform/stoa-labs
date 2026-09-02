@@ -25,6 +25,23 @@
 //
 // Le <triggers> du XML GAGNE sur celui-ci (fait mesuré) : miroir exact,
 // vérifié par scripts/lib/gwt-mirror.sh dans test-a0-wiring.sh.
+//
+// ── POURQUOI CE JOB N'A PAS DE post{always} « STATUT DE BUILD » (A0 dettes) ─
+// provision-plan et provision-apply commentent la PR dans tous les cas ; ici
+// il n'y a RIEN à commenter avant le succès : la PR naît en toute fin du
+// script ([4/5]) et l'étape suivante — le plan enchaîné [5/5] — n'est PAS
+// fatale (PLAN_INLINE=fail laisse la demande valide, la PR est ouverte et
+// commentée par le plan lui-même). Le statut d'une demande machine réussie
+// EST la PR et son marqueur provision-plan ; une demande refusée (garde
+// ENV_INVALIDE, IP_CIDR_REFUSE…, push impossible) est un build ROUGE dont la
+// seule trace est le log — l'appelant machine (OIG/CLI2) n'a reçu que le 200
+// du webhook, c'est la dette d'APIsation (mémoire apisation-declencheur),
+// hors périmètre ici.
+// LIMITES ÉCRITES D'AVANCE : (1) au REJEU d'une demande, une PR de la demande
+// antérieure peut PRÉEXISTER (idempotence EXIST) — un échec avant [4/5] la
+// laisse muette ; (2) une réponse de forge illisible APRÈS le POST /pulls
+// (ERR) rend rouge alors que la PR a pu être créée. Aucune des deux n'est
+// couverte par un statut, et ce fichier ne le prétend pas.
 pipeline {
 
   // `agent any` : aucune pause, le job travaille dès qu'il démarre ; le

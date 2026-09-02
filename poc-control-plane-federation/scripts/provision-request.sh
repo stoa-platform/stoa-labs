@@ -576,7 +576,7 @@ else
   fi
 fi
 
-echo "[4/4] ouverture de la Pull Request ${BRANCH} → ${GIT_BASE}"
+echo "[4/5] ouverture de la Pull Request ${BRANCH} → ${GIT_BASE}"
 # Interaction PR en PYTHON3 (portable — le conteneur Jenkins n'a pas jq) : liste
 # idempotente (filtre côté client sur head.ref), création sinon. Le token n'est
 # PAS en argv (passé par env GITEA_TOKEN) ; aucun secret imprimé.

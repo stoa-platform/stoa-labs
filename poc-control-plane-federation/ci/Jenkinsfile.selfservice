@@ -22,69 +22,31 @@
 //
 // L'identité user ne sert QU'À obtenir le token Vault nominatif ; les appels wM se
 // font avec le COMPTE DE SERVICE (creds lus dans Vault par le rôle). Voir adr/adr-078.
+//
+// ── LE FORMULAIRE EST POSÉ PAR CE FICHIER (A0 dettes, 2026-09-02) ───────────
+// Plus de bloc `parameters {}` déclaratif : le premier stage dérive la liste
+// des paliers de la CHAÎNE (scripts/lib/env-chain.sh, env_chain_nonprod — la
+// source de provision-request.sh, terminus exclu par structure) et pose les
+// huit paramètres par `properties([parameters([…])])`, à chaque build. C'était
+// la SEULE liste de paliers encore tenue à la main (« choix contraint » : un
+// bloc déclaratif est évalué hors de tout workspace) ; le pas scripté, lui,
+// tourne dans le clone. Faits mesurés (spec 2026-09-02-a0-dettes-design) :
+//   6. `options{}`/`triggers{}` déclaratifs + properties([parameters]) scripté
+//      coexistent (trigger et option préservés, une seule propriété de
+//      paramètres) — À CONDITION que le XML du job ne porte AUCUN paramètre :
+//      sinon properties() en AJOUTE une seconde et le job casse (500). D'où
+//      setup-selfservice-job.sh : XML sans paramètre + amorçage ; la
+//      conversion passe par une RE-POSE (qui efface paramètres et trackers),
+//      jamais par un simple push.
+//   7. EnvVars.resolve() frappe aussi les paramètres `password` : un mot de
+//      passe portant `$$` ou `${` arrivait ALTÉRÉ à Vault (lockout au second
+//      essai). Les trois stages lisent donc les valeurs BRUTES par
+//      `withEnv([params…])` — le mot de passe dans l'Apply seul.
+// Limite : la liste montrée est celle du build PRÉCÉDENT (amorçage à la pose).
 pipeline {
   agent any
   options { disableConcurrentBuilds() }   // un apply à la fois = régime bancaire
 
-  parameters {
-    string(name: 'MANIFEST', defaultValue: 'clients/_example/applications/demo-consumer.ansible.yml',
-           description: "Manifeste de demande (vars du rôle : apim_ss_app).")
-    // A2 (GOAL cd-applications) — LA RÉFÉRENCE. Fourni par provision-apply :
-    // le SHA de merge de la PR provision/<app>-<env>. Le stage « Référence »
-    // checkoute CE SHA (après `merge-base --is-ancestor main`) et tout ce qui
-    // suit — PLAN, APPLY, VERIFY — lit le manifeste DANS CET ARBRE, jamais dans
-    // le dernier `main`. Vide = comportement d'avant A2 (HEAD du checkout SCM :
-    // voie humaine directe, PLAN par webhook, build d'amorçage). Le SHA
-    // réellement projeté est annoncé en `APPLIED_SHA` (+ `APPLIED_DIGEST`),
-    // que l'appelant relit et CONFRONTE à ce qu'il a demandé (SHA_NON_CONFIRME).
-    // ⚠ Un paramètre inconnu du job aval est RETIRÉ EN SILENCE par Jenkins
-    // (SECURITY-170) : ce paramètre doit être MATÉRIALISÉ (build d'amorçage
-    // après pose) avant que provision-apply ne compte dessus — d'où la
-    // confirmation côté appelant, qui rougit si l'aval a projeté autre chose.
-    string(name: 'MERGE_SHA', defaultValue: '',
-           description: "A2 — SHA de merge à projeter (40 hex, ancêtre de main). Vide = HEAD du checkout SCM. Posé par provision-apply, jamais à la main sauf repli (A6).")
-    // Env cible : sélectionne per_env[ENVIRONMENT] du manifeste ET pose X-Environment
-    // vers le proxy d'admin (endpoint unique multi-env). Vide = manifeste mono-env.
-    // ⚠ Liste EN DUR, et c'est un choix contraint, pas un oubli : un bloc
-    // `parameters {}` déclaratif est évalué à la POSE du job, hors de tout
-    // workspace — il n'a donc pas accès au clone du dépôt governance d'où se
-    // dérive la chaîne (cf. ci/Jenkinsfile, qui la dérive parce que LUI a le
-    // clone sous la main). Le reste de la chaîne est dérivé de
-    // clients/_example/environments.yaml via scripts/lib/env-chain.sh ; cette
-    // liste-ci est la SEULE qui doive encore être tenue à la main, et elle doit
-    // rester alignée sur ce fichier. `homol` ajouté le 2026-08-26. `prod` retiré
-    // par G4/D6 : l'écriture d'app au terminus est structurellement fermée
-    // (403 depuis D3) — le formulaire consommateur ne doit plus la proposer.
-    choice(name: 'ENVIRONMENT', choices: ['dev', 'rec', 'int', 'homol'],
-           description: "Environnement cible (identité IP/cert par env + header X-Environment).")
-    // Mode d'accès à l'API d'admin. Chez le CLIENT il n'y a QUE proxy-oauth2 :
-    // l'admin n'est jamais exposée en direct — elle est proxifiée SUR la gateway
-    // avec OAuth2 devant (self-proxy wm-admin-self, scripts/setup-wm-admin-self-proxy.sh).
-    choice(name: 'ADMIN_VIA', choices: ['direct', 'proxy-oauth2'],
-           description: "Accès à l'API d'admin : direct (lab, Basic) ou proxy-oauth2 (modèle client : self-proxy + Bearer client_credentials).")
-    // ── DEBUG (opt-in) : rend VISIBLE ce que le pipeline fait — appels Vault
-    // (méthode/URL/code HTTP), erreurs de Vault/Keycloak/gateway, verbosité
-    // Ansible. Pour localiser « est-ce MA config ou LA LEUR qui plante ». Ne
-    // fuite AUCUN secret : mot de passe/token/corps-de-succès jamais imprimés,
-    // corps d'erreur rédactés (STOA_DEBUG → ci/lib/vault-login.sh + rôle).
-    booleanParam(name: 'DEBUG', defaultValue: false,
-                 description: "Trace détaillée (appels, codes HTTP, erreurs redactées) — aucun secret exposé.")
-    // ── VOIE A (retenue pour la V1, ADR-078 §3) : l'humain saisit SON identité
-    // d'annuaire au moment de l'apply. Le mot de passe n'est JAMAIS persisté hors
-    // du build : ni dans le credentials store, ni dans Git, ni sur disque.
-    // ⚠ Un paramètre `password` est chiffré dans le build.xml avec la clé de
-    // l'instance — c'est-à-dire lisible par un admin Jenkins. Ce n'est PAS une
-    // frontière de confinement (ADR-078 §2) : ce qui borne le risque, c'est le TTL
-    // court du token, sa révocation en fin de build, et les agents éphémères.
-    string(name: 'VAULT_USER', defaultValue: '',
-           description: "Identité NOMINATIVE (voie A) : votre login annuaire. Format imposé par le mount Vault — sAMAccountName, UPN user@domaine, ou DOMAIN\\\\user. Vide sur le PLAN.")
-    password(name: 'VAULT_USER_PASSWORD', defaultValue: '',
-             description: "Mot de passe annuaire, saisi À CHAQUE apply. ⚠ Ne PAS relancer en boucle après un refus : la politique de lockout AD verrouille le compte. NB : le bouton « Change Password » est un libellé Jenkins (SECURITY-1721) — il signifie « saisir la valeur du champ », RIEN ne modifie votre mot de passe annuaire ; cliquez-le puis tapez votre mot de passe.")
-    // ── VOIE B (cible quand le SSO Keycloak sera en place, ADR-077) : JWT court
-    // aud=vault issu de l'exchange RFC 8693. Prioritaire s'il est fourni.
-    string(name: 'USER_VAULT_JWT', defaultValue: '',
-           description: "Identité NOMINATIVE (voie B) : JWT court aud=vault. Prioritaire sur la voie A. Vide sur le PLAN.")
-  }
 
   triggers { GenericTrigger(token: 'stoa-selfservice-plan',
              genericVariables: [[key: 'MANIFEST', value: '$.manifest']],
@@ -152,6 +114,65 @@ pipeline {
 
   stages {
 
+    // ── FORMULAIRE — les paliers dérivés de la chaîne, le reste verbatim ────
+    // Toujours en premier : même un build de PLAN par webhook ou un apply
+    // rafraîchit la liste pour le suivant. Fail-closed : liste vide ou palier
+    // hors ^[a-z0-9]+$ ⇒ FORMULAIRE_INVALIDE, rien n'est posé, les définitions
+    // précédentes restent en place. SEULS les paramètres sont listés ici :
+    // options{} et triggers{} restent déclaratifs (fait 6).
+    stage('Formulaire — paliers dérivés de la chaîne') {
+      steps {
+        dir('poc-control-plane-federation') {
+          sh 'set +x; bash -c ". scripts/lib/env-chain.sh && env_chain_nonprod" > "$WORKSPACE/.a0-envs"'
+        }
+        script {
+          def envs = readFile("${env.WORKSPACE}/.a0-envs").trim().tokenize(' ')
+          if (envs.isEmpty() || !envs.every { it ==~ /[a-z0-9]+/ }) {
+            error("FORMULAIRE_INVALIDE : paliers dérivés = ${envs} — rien n'est posé, le formulaire précédent reste en place.")
+          }
+          properties([parameters([
+            string(name: 'MANIFEST', defaultValue: 'clients/_example/applications/demo-consumer.ansible.yml',
+                   description: "Manifeste de demande (vars du rôle : apim_ss_app)."),
+            // A2 (GOAL cd-applications) — LA RÉFÉRENCE. Fourni par provision-apply :
+            // le SHA de merge de la PR provision/<app>-<env>. Le stage « Référence »
+            // checkoute CE SHA (après `merge-base --is-ancestor main`) et tout ce qui
+            // suit — PLAN, APPLY, VERIFY — lit le manifeste DANS CET ARBRE, jamais dans
+            // le dernier `main`. Vide = HEAD du checkout SCM (voie humaine directe, PLAN
+            // par webhook, amorçage). Le SHA réellement projeté est annoncé en
+            // `APPLIED_SHA` (+ `APPLIED_DIGEST`), que l'appelant CONFRONTE
+            // (SHA_NON_CONFIRME). ⚠ Un paramètre inconnu du job aval est RETIRÉ EN
+            // SILENCE (SECURITY-170) : il doit être MATÉRIALISÉ (amorçage après pose)
+            // avant que provision-apply ne compte dessus.
+            string(name: 'MERGE_SHA', defaultValue: '',
+                   description: "A2 — SHA de merge à projeter (40 hex, ancêtre de main). Vide = HEAD du checkout SCM. Posé par provision-apply, jamais à la main sauf repli (A6)."),
+            // Env cible : sélectionne per_env[ENVIRONMENT] du manifeste ET pose
+            // X-Environment vers le proxy d'admin. La liste vient de la CHAÎNE
+            // (clients/_example/environments.yaml, terminus exclu par structure — G4/D6),
+            // relue à chaque build : plus aucune liste en dur.
+            choice(name: 'ENVIRONMENT', choices: envs,
+                   description: "Environnement cible (identité IP/cert par env + header X-Environment)."),
+            // Mode d'accès à l'API d'admin. Chez le CLIENT il n'y a QUE proxy-oauth2.
+            choice(name: 'ADMIN_VIA', choices: ['direct', 'proxy-oauth2'],
+                   description: "Accès à l'API d'admin : direct (lab, Basic) ou proxy-oauth2 (modèle client : self-proxy + Bearer client_credentials)."),
+            // DEBUG (opt-in) : trace détaillée, aucun secret exposé (STOA_DEBUG).
+            booleanParam(name: 'DEBUG', defaultValue: false,
+                         description: "Trace détaillée (appels, codes HTTP, erreurs redactées) — aucun secret exposé."),
+            // VOIE A (ADR-078 §3) : identité d'annuaire saisie à l'apply, jamais
+            // persistée hors du build (chiffrée dans le build.xml : lisible par un admin
+            // Jenkins — ce n'est PAS une frontière ; TTL court + révocation le sont).
+            string(name: 'VAULT_USER', defaultValue: '',
+                   description: "Identité NOMINATIVE (voie A) : votre login annuaire. Format imposé par le mount Vault — sAMAccountName, UPN user@domaine, ou DOMAIN\\\\user. Vide sur le PLAN."),
+            password(name: 'VAULT_USER_PASSWORD', defaultValue: '',
+                     description: "Mot de passe annuaire, saisi À CHAQUE apply. ⚠ Ne PAS relancer en boucle après un refus : la politique de lockout AD verrouille le compte. NB : le bouton « Change Password » est un libellé Jenkins (SECURITY-1721) — il signifie « saisir la valeur du champ », RIEN ne modifie votre mot de passe annuaire ; cliquez-le puis tapez votre mot de passe."),
+            // VOIE B (ADR-077) : JWT court aud=vault, prioritaire s'il est fourni.
+            string(name: 'USER_VAULT_JWT', defaultValue: '',
+                   description: "Identité NOMINATIVE (voie B) : JWT court aud=vault. Prioritaire sur la voie A. Vide sur le PLAN.")
+          ])])
+          echo "formulaire posé : paliers ${envs} (chaîne hors terminus)"
+        }
+      }
+    }
+
     // ── RÉFÉRENCE (A2) ───────────────────────────────────────────────────────
     // AVANT le PLAN : c'est ici que l'on décide QUEL ARBRE les deux étapes
     // suivantes lisent. Avec MERGE_SHA : fetch de main, garde d'atteignabilité
@@ -168,65 +189,71 @@ pipeline {
     // Le shell de l'agent est dash : la lib (bash) est appelée via `bash -c`.
     stage('Référence — le SHA mergé, jamais le dernier main (A2)') {
       steps {
-        // FAIL-CLOSED AVANT TOUT : un appelant AMONT (provision-apply) qui
-        // n'a pas transmis MERGE_SHA — paramètre pas encore matérialisé et
-        // retiré en silence (SECURITY-170), appelant d'avant A2, câblage
-        // cassé — ne doit pas faire appliquer HEAD « par défaut ». Un build
-        // amont porte une UpstreamCause (BuildUpstreamCause du step `build`) ;
-        // `upstreamBuilds` filtre par instanceof, donc l'attrape. Le PLAN par
-        // webhook (GenericCause), l'amorçage par REST et la voie humaine directe
-        // n'ont pas d'amont : ils gardent le comportement d'aujourd'hui.
-        script {
-          if (!currentBuild.upstreamBuilds.isEmpty() && !((params.MERGE_SHA ?: '').trim())) {
-            error("REFUS: MERGE_SHA_REQUIS — appelé par un job amont sans référence (paramètre MERGE_SHA non matérialisé sur ce job ? appelant d'avant A2 ?) ; rien n'est appliqué")
+        // FAIT 7 (A0 dettes) : valeurs BRUTES des paramètres — EnvVars.resolve()
+        // frappe le canal natif (mesuré : `${JENKINS_HOME}` résolu, mot de passe
+        // altéré). Une valeur vide retire la variable : les `${X:-défaut}` du
+        // shell restent valides.
+        withEnv(["MANIFEST=${params.MANIFEST ?: ''}", "MERGE_SHA=${params.MERGE_SHA ?: ''}", "ENVIRONMENT=${params.ENVIRONMENT ?: ''}"]) {
+          // FAIL-CLOSED AVANT TOUT : un appelant AMONT (provision-apply) qui
+          // n'a pas transmis MERGE_SHA — paramètre pas encore matérialisé et
+          // retiré en silence (SECURITY-170), appelant d'avant A2, câblage
+          // cassé — ne doit pas faire appliquer HEAD « par défaut ». Un build
+          // amont porte une UpstreamCause (BuildUpstreamCause du step `build`) ;
+          // `upstreamBuilds` filtre par instanceof, donc l'attrape. Le PLAN par
+          // webhook (GenericCause), l'amorçage par REST et la voie humaine directe
+          // n'ont pas d'amont : ils gardent le comportement d'aujourd'hui.
+          script {
+            if (!currentBuild.upstreamBuilds.isEmpty() && !((params.MERGE_SHA ?: '').trim())) {
+              error("REFUS: MERGE_SHA_REQUIS — appelé par un job amont sans référence (paramètre MERGE_SHA non matérialisé sur ce job ? appelant d'avant A2 ?) ; rien n'est appliqué")
+            }
           }
-        }
-        dir('poc-control-plane-federation') {
-          // Deux gardes d'ancrage, dans cet ordre : `merge-base --is-ancestor`
-          // (l'objet est-il sur main ? refus rapide) puis la LIGNÉE first-parent
-          // (est-ce un commit ATTERRI sur main — merge, squash ou rebase — et
-          // non un commit intérieur à une branche de PR, ancêtre lui aussi une
-          // fois la PR mergée mais qui projetterait l'état de la branche sans
-          // le reste de main ?). APPLIED_SHA sort de `git rev-parse HEAD` APRÈS
-          // le checkout — jamais l'écho du paramètre : c'est l'arbre réellement
-          // en place que l'amont confronte.
-          sh '''
-            set -eu
-            REF="${MERGE_SHA:-}"
-            MODE=head
-            if [ -n "$REF" ]; then
-              printf '%s' "$REF" | grep -Eq '^[0-9a-f]{40}$' \
-                || { echo "REFUS: MERGE_SHA_INVALIDE : MERGE_SHA hors de ^[0-9a-f]{40}$ — rien n'est appliqué"; exit 1; }
-              git fetch -q origin main
-              git merge-base --is-ancestor "$REF" origin/main \
-                || { echo "REFUS: MERGE_SHA_NON_ANCETRE : $REF n'est pas un ancêtre de main — le SHA ne correspond pas à un commit fusionné sur la branche protégée, refus de projeter un état non revu"; exit 1; }
-              git rev-list --first-parent origin/main | grep -qx "$REF" \
-                || { echo "REFUS: MERGE_SHA_HORS_LIGNEE : $REF est un ancêtre de main mais pas sur sa lignée first-parent (commit intérieur à une branche, pas un état atterri sur main) — refus"; exit 1; }
-              git checkout -q "$REF"
-              MODE=pinned
-              echo "  référence : SHA mergé $REF checkouté — manifeste, rôle et scripts sont ceux du merge"
-            else
-              echo "  référence : aucun MERGE_SHA — HEAD du checkout SCM : voie humaine directe / PLAN"
-            fi
-            REF="$(git rev-parse HEAD)"
-            printf '%s\\n' "$REF"  > .a2-reference-sha
-            printf '%s\\n' "$MODE" > .a2-reference-mode
-            DIGEST=""
-            MAN="${MANIFEST:-clients/_example/applications/demo-consumer.ansible.yml}"
-            if [ -n "${ENVIRONMENT:-}" ] && [ -f "$MAN" ]; then
-              if [ "$MODE" = pinned ]; then
-                DIGEST="$(bash -c '. scripts/lib/app-manifest.sh && app_manifest_digest_env "$1" "$2"' _ "$MAN" "$ENVIRONMENT")" \
-                  || { echo "REFUS: le manifeste $MAN au SHA mergé ne déclare pas le palier '$ENVIRONMENT' (ou est illisible) — rien n'est appliqué"; exit 1; }
+          dir('poc-control-plane-federation') {
+            // Deux gardes d'ancrage, dans cet ordre : `merge-base --is-ancestor`
+            // (l'objet est-il sur main ? refus rapide) puis la LIGNÉE first-parent
+            // (est-ce un commit ATTERRI sur main — merge, squash ou rebase — et
+            // non un commit intérieur à une branche de PR, ancêtre lui aussi une
+            // fois la PR mergée mais qui projetterait l'état de la branche sans
+            // le reste de main ?). APPLIED_SHA sort de `git rev-parse HEAD` APRÈS
+            // le checkout — jamais l'écho du paramètre : c'est l'arbre réellement
+            // en place que l'amont confronte.
+            sh '''
+              set -eu
+              REF="${MERGE_SHA:-}"
+              MODE=head
+              if [ -n "$REF" ]; then
+                printf '%s' "$REF" | grep -Eq '^[0-9a-f]{40}$' \
+                  || { echo "REFUS: MERGE_SHA_INVALIDE : MERGE_SHA hors de ^[0-9a-f]{40}$ — rien n'est appliqué"; exit 1; }
+                git fetch -q origin main
+                git merge-base --is-ancestor "$REF" origin/main \
+                  || { echo "REFUS: MERGE_SHA_NON_ANCETRE : $REF n'est pas un ancêtre de main — le SHA ne correspond pas à un commit fusionné sur la branche protégée, refus de projeter un état non revu"; exit 1; }
+                git rev-list --first-parent origin/main | grep -qx "$REF" \
+                  || { echo "REFUS: MERGE_SHA_HORS_LIGNEE : $REF est un ancêtre de main mais pas sur sa lignée first-parent (commit intérieur à une branche, pas un état atterri sur main) — refus"; exit 1; }
+                git checkout -q "$REF"
+                MODE=pinned
+                echo "  référence : SHA mergé $REF checkouté — manifeste, rôle et scripts sont ceux du merge"
               else
-                DIGEST="$(bash -c '. scripts/lib/app-manifest.sh && app_manifest_digest_env "$1" "$2"' _ "$MAN" "$ENVIRONMENT" 2>/dev/null || true)"
+                echo "  référence : aucun MERGE_SHA — HEAD du checkout SCM : voie humaine directe / PLAN"
               fi
-            fi
-            printf '%s\\n' "$DIGEST" > .a2-reference-digest
-            rm -f .a2-applied-sha .a2-applied-digest .a2-applied-mode
-            echo "REFERENCE_SHA=$REF"
-            echo "REFERENCE_MODE=$MODE"
-            echo "REFERENCE_DIGEST=${DIGEST:-(aucun : manifeste sans per_env, ou ENVIRONMENT vide)}"
-          '''
+              REF="$(git rev-parse HEAD)"
+              printf '%s\\n' "$REF"  > .a2-reference-sha
+              printf '%s\\n' "$MODE" > .a2-reference-mode
+              DIGEST=""
+              MAN="${MANIFEST:-clients/_example/applications/demo-consumer.ansible.yml}"
+              if [ -n "${ENVIRONMENT:-}" ] && [ -f "$MAN" ]; then
+                if [ "$MODE" = pinned ]; then
+                  DIGEST="$(bash -c '. scripts/lib/app-manifest.sh && app_manifest_digest_env "$1" "$2"' _ "$MAN" "$ENVIRONMENT")" \
+                    || { echo "REFUS: le manifeste $MAN au SHA mergé ne déclare pas le palier '$ENVIRONMENT' (ou est illisible) — rien n'est appliqué"; exit 1; }
+                else
+                  DIGEST="$(bash -c '. scripts/lib/app-manifest.sh && app_manifest_digest_env "$1" "$2"' _ "$MAN" "$ENVIRONMENT" 2>/dev/null || true)"
+                fi
+              fi
+              printf '%s\\n' "$DIGEST" > .a2-reference-digest
+              rm -f .a2-applied-sha .a2-applied-digest .a2-applied-mode
+              echo "REFERENCE_SHA=$REF"
+              echo "REFERENCE_MODE=$MODE"
+              echo "REFERENCE_DIGEST=${DIGEST:-(aucun : manifeste sans per_env, ou ENVIRONMENT vide)}"
+            '''
+          }
         }
       }
     }
@@ -234,45 +261,51 @@ pipeline {
     // ── PLAN ─────────────────────────────────────────────────────────────────
     stage('Plan — valider la demande (lecture seule, identité de job)') {
       steps {
-        dir('poc-control-plane-federation') {
-          sh '''
-            set -eu
-            MANIFEST="${MANIFEST:-clients/_example/applications/demo-consumer.ansible.yml}"
-            echo "=== PLAN : manifeste ${MANIFEST} ==="
-            test -f "$MANIFEST" || { echo "manifeste introuvable : $MANIFEST"; exit 1; }
-            grep -qE '^[[:space:]]*name:' "$MANIFEST" && grep -qE '^[[:space:]]*api:' "$MANIFEST" \
-              || { echo "manifeste incomplet (name/api requis)"; exit 1; }
-            ansible-playbook -i "$INVENTORY" ansible/selfservice-app.yml --syntax-check
-            echo "  ✓ demande valide + playbook syntaxiquement correct (aucune mutation)"
+        // FAIT 7 (A0 dettes) : valeurs BRUTES des paramètres — EnvVars.resolve()
+        // frappe le canal natif (mesuré : `${JENKINS_HOME}` résolu, mot de passe
+        // altéré). Une valeur vide retire la variable : les `${X:-défaut}` du
+        // shell restent valides.
+        withEnv(["MANIFEST=${params.MANIFEST ?: ''}", "MERGE_SHA=${params.MERGE_SHA ?: ''}", "ENVIRONMENT=${params.ENVIRONMENT ?: ''}"]) {
+          dir('poc-control-plane-federation') {
+            sh '''
+              set -eu
+              MANIFEST="${MANIFEST:-clients/_example/applications/demo-consumer.ansible.yml}"
+              echo "=== PLAN : manifeste ${MANIFEST} ==="
+              test -f "$MANIFEST" || { echo "manifeste introuvable : $MANIFEST"; exit 1; }
+              grep -qE '^[[:space:]]*name:' "$MANIFEST" && grep -qE '^[[:space:]]*api:' "$MANIFEST" \
+                || { echo "manifeste incomplet (name/api requis)"; exit 1; }
+              ansible-playbook -i "$INVENTORY" ansible/selfservice-app.yml --syntax-check
+              echo "  ✓ demande valide + playbook syntaxiquement correct (aucune mutation)"
 
-            # ── Certificat : résoudre ICI, pas en plein apply ─────────────────
-            # La sonde rejoue EXACTEMENT les tâches du rôle qui résolvent, lisent
-            # et ré-encodent public_cert_ref (resolve-env + cert-der), sans
-            # toucher à la gateway ni à Vault : elle a donc sa place au PLAN, et
-            # y répond à la seule question que le PLAN ne savait pas poser —
-            # « ce certificat existe-t-il, et est-il exploitable ? ». Avant, un
-            # chemin faux passait le PLAN au vert et n'échouait qu'à l'apply,
-            # après authentification nominative et après les premières écritures
-            # (application créée, cloisonnée, associée à l'API).
-            #
-            # Ce qui devient fail-closed au plan : CERT_NOT_FOUND (introuvable
-            # dans les deux bases), CERT_PATH_AMBIGUOUS (même nom, deux
-            # contenus), CERT_INVALID (pas de bloc CERTIFICATE, ou base64(DER)
-            # mal formé) et le refus ADR-071 d'une CLÉ PRIVÉE dans le manifeste.
-            # Sur une demande sans certificat (identité par IP seule), la sonde
-            # annonce PROBE_SKIP et rend 0 — le manifeste par défaut ci-dessus
-            # en est une (couvert : scripts/test-cert-path-resolution.sh, 16/16).
-            #
-            # Aucun secret : le manifeste ne porte que du certificat PUBLIC.
-            # NB : requiert `openssl` sur l'agent — c'est déjà une dépendance de
-            # l'APPLY (le rôle y ré-encode le DER), elle est simplement exigée
-            # plus tôt.
-            ansible-playbook -i localhost, ansible/test-cert-path.yml \
-              -e apim_ss_manifest="$MANIFEST" \
-              -e apim_ss_env="${ENVIRONMENT:-}" \
-              || { echo "  ✗ certificat du manifeste NON résoluble — corriger public_cert_ref avant l'apply"; exit 1; }
-            echo "  ✓ certificat du manifeste résolu et exploitable (ou absent, assumé)"
-          '''
+              # ── Certificat : résoudre ICI, pas en plein apply ─────────────────
+              # La sonde rejoue EXACTEMENT les tâches du rôle qui résolvent, lisent
+              # et ré-encodent public_cert_ref (resolve-env + cert-der), sans
+              # toucher à la gateway ni à Vault : elle a donc sa place au PLAN, et
+              # y répond à la seule question que le PLAN ne savait pas poser —
+              # « ce certificat existe-t-il, et est-il exploitable ? ». Avant, un
+              # chemin faux passait le PLAN au vert et n'échouait qu'à l'apply,
+              # après authentification nominative et après les premières écritures
+              # (application créée, cloisonnée, associée à l'API).
+              #
+              # Ce qui devient fail-closed au plan : CERT_NOT_FOUND (introuvable
+              # dans les deux bases), CERT_PATH_AMBIGUOUS (même nom, deux
+              # contenus), CERT_INVALID (pas de bloc CERTIFICATE, ou base64(DER)
+              # mal formé) et le refus ADR-071 d'une CLÉ PRIVÉE dans le manifeste.
+              # Sur une demande sans certificat (identité par IP seule), la sonde
+              # annonce PROBE_SKIP et rend 0 — le manifeste par défaut ci-dessus
+              # en est une (couvert : scripts/test-cert-path-resolution.sh, 16/16).
+              #
+              # Aucun secret : le manifeste ne porte que du certificat PUBLIC.
+              # NB : requiert `openssl` sur l'agent — c'est déjà une dépendance de
+              # l'APPLY (le rôle y ré-encode le DER), elle est simplement exigée
+              # plus tôt.
+              ansible-playbook -i localhost, ansible/test-cert-path.yml \
+                -e apim_ss_manifest="$MANIFEST" \
+                -e apim_ss_env="${ENVIRONMENT:-}" \
+                || { echo "  ✗ certificat du manifeste NON résoluble — corriger public_cert_ref avant l'apply"; exit 1; }
+              echo "  ✓ certificat du manifeste résolu et exploitable (ou absent, assumé)"
+            '''
+          }
         }
       }
     }
@@ -280,193 +313,205 @@ pipeline {
     // ── APPLY ────────────────────────────────────────────────────────────────
     stage('Apply — converge + verify via le rôle Ansible (identité nominative → Vault)') {
       steps {
-        dir('poc-control-plane-federation') {
-          sh '''
-            set +x            # NE JAMAIS écho : mot de passe, JWT, token Vault, creds gateway
-            set -eu
-            MANIFEST="${MANIFEST:-clients/_example/applications/demo-consumer.ansible.yml}"
+        // FAIT 7 (A0 dettes) : valeurs BRUTES des paramètres — EnvVars.resolve()
+        // frappe le canal natif (mesuré : `${JENKINS_HOME}` résolu, mot de passe
+        // altéré). Une valeur vide retire la variable : les `${X:-défaut}` du
+        // shell restent valides.
+        withEnv(["MANIFEST=${params.MANIFEST ?: ''}", "MERGE_SHA=${params.MERGE_SHA ?: ''}", "ENVIRONMENT=${params.ENVIRONMENT ?: ''}",
+                 "ADMIN_VIA=${params.ADMIN_VIA ?: ''}", "DEBUG=${params.DEBUG}",
+                 "VAULT_USER=${params.VAULT_USER ?: ''}", "USER_VAULT_JWT=${params.USER_VAULT_JWT ?: ''}",
+                 // FAIT 7 : le mot de passe passe par withEnv, jamais par le canal natif
+                 // (EnvVars.resolve altère `$$` / `${`). Une valeur VIDE retire la
+                 // variable (PLAN-only inchangé : la lib lit ${VAULT_USER_PASSWORD:-}).
+                 "VAULT_USER_PASSWORD=${params.VAULT_USER_PASSWORD ?: ''}"]) {
+          dir('poc-control-plane-federation') {
+            sh '''
+              set +x            # NE JAMAIS écho : mot de passe, JWT, token Vault, creds gateway
+              set -eu
+              MANIFEST="${MANIFEST:-clients/_example/applications/demo-consumer.ansible.yml}"
 
-            # Mode d'accès à l'admin : chez le client, TOUJOURS proxy-oauth2 —
-            # l'API d'admin est derrière son self-proxy, le rôle obtient un Bearer
-            # (client_credentials, creds lus dans Vault) au lieu du Basic direct.
-            # Équipe de cloisonnement (E3 geste 1) — dérivée du chemin KV du
-            # compte de service, borné par la policy Vault du token nominatif.
-            TEAM="${APIM_TEAM:-$(printf '%s' "$APIM_WM_CREDS_SUB" | cut -d/ -f2)}"
-            echo "  (cloisonnement de l'application sur la team : ${TEAM})"
+              # Mode d'accès à l'admin : chez le client, TOUJOURS proxy-oauth2 —
+              # l'API d'admin est derrière son self-proxy, le rôle obtient un Bearer
+              # (client_credentials, creds lus dans Vault) au lieu du Basic direct.
+              # Équipe de cloisonnement (E3 geste 1) — dérivée du chemin KV du
+              # compte de service, borné par la policy Vault du token nominatif.
+              TEAM="${APIM_TEAM:-$(printf '%s' "$APIM_WM_CREDS_SUB" | cut -d/ -f2)}"
+              echo "  (cloisonnement de l'application sur la team : ${TEAM})"
 
-            if [ "${ADMIN_VIA:-direct}" = "proxy-oauth2" ]; then
-              # Override complet s'il est fourni, sinon composition depuis les
-              # morceaux. `${VAR:-}` obligatoire : Jenkins n'EXPORTE PAS au shell
-              # une variable d'environnement vide (même piège qu'APIM_KV_PREFIX).
-              PROXY_BASE="${APIM_PROXY_BASE:-}"
-              if [ -z "$PROXY_BASE" ]; then
-                PROXY_BASE="${APIM_PROXY_HOST}/gateway/${APIM_PROXY_API}/${APIM_PROXY_VER}${APIM_PROXY_PATH}"
+              if [ "${ADMIN_VIA:-direct}" = "proxy-oauth2" ]; then
+                # Override complet s'il est fourni, sinon composition depuis les
+                # morceaux. `${VAR:-}` obligatoire : Jenkins n'EXPORTE PAS au shell
+                # une variable d'environnement vide (même piège qu'APIM_KV_PREFIX).
+                PROXY_BASE="${APIM_PROXY_BASE:-}"
+                if [ -z "$PROXY_BASE" ]; then
+                  PROXY_BASE="${APIM_PROXY_HOST}/gateway/${APIM_PROXY_API}/${APIM_PROXY_VER}${APIM_PROXY_PATH}"
+                fi
+                APIM_API_BASE="$PROXY_BASE"
+                APIM_AUTH_MODE="oauth2"
+                echo "  (API d'admin via le proxy OAuth2 : $APIM_API_BASE)"
+              else
+                APIM_AUTH_MODE="basic"
               fi
-              APIM_API_BASE="$PROXY_BASE"
-              APIM_AUTH_MODE="oauth2"
-              echo "  (API d'admin via le proxy OAuth2 : $APIM_API_BASE)"
-            else
-              APIM_AUTH_MODE="basic"
-            fi
 
-            # token_url : passé en -e SEULEMENT si non vide (sinon résolution Vault).
-            TOKEN_URL_OPT=""
-            [ -n "${APIM_OAUTH_TOKEN_URL:-}" ] && TOKEN_URL_OPT="-e apim_ss_oauth_token_url=${APIM_OAUTH_TOKEN_URL}"
+              # token_url : passé en -e SEULEMENT si non vide (sinon résolution Vault).
+              TOKEN_URL_OPT=""
+              [ -n "${APIM_OAUTH_TOKEN_URL:-}" ] && TOKEN_URL_OPT="-e apim_ss_oauth_token_url=${APIM_OAUTH_TOKEN_URL}"
 
-            # oauth_sub : même règle. En mode basic il n'est JAMAIS lu — le laisser
-            # vide (ou non défini) ne doit pas tuer l'étape, et surtout ne doit pas
-            # écraser le défaut du rôle par un `-e apim_ss_vault_oauth_sub=` vide.
-            OAUTH_SUB_OPT=""
-            [ -n "${APIM_OAUTH_SUB:-}" ] && OAUTH_SUB_OPT="-e apim_ss_vault_oauth_sub=${APIM_OAUTH_SUB}"
+              # oauth_sub : même règle. En mode basic il n'est JAMAIS lu — le laisser
+              # vide (ou non défini) ne doit pas tuer l'étape, et surtout ne doit pas
+              # écraser le défaut du rôle par un `-e apim_ss_vault_oauth_sub=` vide.
+              OAUTH_SUB_OPT=""
+              [ -n "${APIM_OAUTH_SUB:-}" ] && OAUTH_SUB_OPT="-e apim_ss_vault_oauth_sub=${APIM_OAUTH_SUB}"
 
-            # 0) GATEWAY DISPONIBLE ? Le lab la recycle toutes les ~20 min (keepalive
-            #    licence trial) et un rolling restart chez le client produit la même
-            #    fenêtre : attendre son retour AVANT de consommer l'identité —
-            #    plutôt qu'échouer au milieu du play sur un « Connection refused »
-            #    cryptique.
-            #
-            #    OPTIONNEL — APIM_PREFLIGHT=off. Chez un client, /health peut être
-            #    injoignable depuis la VIP, ou filtré en amont : le build mourrait
-            #    alors plusieurs minutes durant pour une raison étrangère au travail
-            #    demandé. Plutôt que de renoncer au bénéfice, APIM_PREFLIGHT_URL et
-            #    APIM_PREFLIGHT_CODES permettent de viser UNE AUTRE sonde de vie.
-            # Comparaison insensible à la casse : Jenkins ne normalise pas la
-            # casse d'un paramètre `string`, et "Off"/"OFF" ne désactivaient
-            # rien avant ce correctif — silencieusement.
-            APIM_PREFLIGHT_LC="$(printf '%s' "${APIM_PREFLIGHT:-on}" | tr '[:upper:]' '[:lower:]')"
-            if [ "$APIM_PREFLIGHT_LC" = "off" ]; then
-              echo "  (préflight de joignabilité désactivé — APIM_PREFLIGHT=off)"
-            else
-              PF_URL="${APIM_PREFLIGHT_URL:-}"
-              [ -n "$PF_URL" ] || PF_URL="$APIM_API_BASE/health"
-              # 200 = up (accès direct) ; 401 = up ET l'OAuth2 du proxy est déjà
-              # enforce (on sonde SANS token — le 401 est la preuve de vie du proxy).
-              PF_CODES="${APIM_PREFLIGHT_CODES:-200 401}"
-              PF_MAX="${APIM_PREFLIGHT_TRIES:-60}"
-              # `[ "$i" -ge "$PF_MAX" ]` sous sh : si PF_MAX n'est pas un entier
-              # décimal canonique, `-ge` rend soit 2 (ni vrai ni faux — la
-              # branche de sortie n'est JAMAIS prise, boucle à l'infini), soit
-              # une interprétation OCTALE surprenante dans `$((PF_MAX*5))` plus
-              # bas (`08` : arithmétique invalide, l'étape meurt sur un message
-              # cryptique — exactement ce que ce garde-fou doit éviter). `0*`
-              # rejette `0`/`00` ET tout zéro en tête (`08`, `060`). On valide
-              # AVANT d'entrer dans la boucle ; repli sur le défaut, avec avertissement.
-              case "$PF_MAX" in
-                ''|*[!0-9]*|0*) echo "  ⚠ APIM_PREFLIGHT_TRIES='$PF_MAX' n'est pas un entier positif — repli sur le défaut (60)"; PF_MAX=60 ;;
-              esac
-              # Borne haute : une valeur énorme mais numérique (ex.
-              # 99999999999999999999) passe le garde-fou ci-dessus et rouvre
-              # le même mode de panne — une boucle non bornée en pratique
-              # (aucun timeout de build n'est posé dans les job XML). La
-              # LONGUEUR est testée avant toute comparaison arithmétique :
-              # au-delà de 4 chiffres la valeur dépasse déjà 3600, sans
-              # risquer un débordement de `-gt` sur un entier à 20 chiffres.
-              case "$PF_MAX" in
-                ?????*) echo "  ⚠ APIM_PREFLIGHT_TRIES='$PF_MAX' dépasse la borne raisonnable — repli sur 3600"; PF_MAX=3600 ;;
-              esac
-              if [ "$PF_MAX" -gt 3600 ]; then
-                echo "  ⚠ APIM_PREFLIGHT_TRIES='$PF_MAX' dépasse la borne raisonnable — repli sur 3600"
-                PF_MAX=3600
-              fi
-              i=0
-              while :; do
-                HC="$(curl -s -o /dev/null -m 5 -w '%{http_code}' "$PF_URL" || true)"
-                for C in $PF_CODES; do
-                  if [ "$HC" = "$C" ]; then break 2; fi
+              # 0) GATEWAY DISPONIBLE ? Le lab la recycle toutes les ~20 min (keepalive
+              #    licence trial) et un rolling restart chez le client produit la même
+              #    fenêtre : attendre son retour AVANT de consommer l'identité —
+              #    plutôt qu'échouer au milieu du play sur un « Connection refused »
+              #    cryptique.
+              #
+              #    OPTIONNEL — APIM_PREFLIGHT=off. Chez un client, /health peut être
+              #    injoignable depuis la VIP, ou filtré en amont : le build mourrait
+              #    alors plusieurs minutes durant pour une raison étrangère au travail
+              #    demandé. Plutôt que de renoncer au bénéfice, APIM_PREFLIGHT_URL et
+              #    APIM_PREFLIGHT_CODES permettent de viser UNE AUTRE sonde de vie.
+              # Comparaison insensible à la casse : Jenkins ne normalise pas la
+              # casse d'un paramètre `string`, et "Off"/"OFF" ne désactivaient
+              # rien avant ce correctif — silencieusement.
+              APIM_PREFLIGHT_LC="$(printf '%s' "${APIM_PREFLIGHT:-on}" | tr '[:upper:]' '[:lower:]')"
+              if [ "$APIM_PREFLIGHT_LC" = "off" ]; then
+                echo "  (préflight de joignabilité désactivé — APIM_PREFLIGHT=off)"
+              else
+                PF_URL="${APIM_PREFLIGHT_URL:-}"
+                [ -n "$PF_URL" ] || PF_URL="$APIM_API_BASE/health"
+                # 200 = up (accès direct) ; 401 = up ET l'OAuth2 du proxy est déjà
+                # enforce (on sonde SANS token — le 401 est la preuve de vie du proxy).
+                PF_CODES="${APIM_PREFLIGHT_CODES:-200 401}"
+                PF_MAX="${APIM_PREFLIGHT_TRIES:-60}"
+                # `[ "$i" -ge "$PF_MAX" ]` sous sh : si PF_MAX n'est pas un entier
+                # décimal canonique, `-ge` rend soit 2 (ni vrai ni faux — la
+                # branche de sortie n'est JAMAIS prise, boucle à l'infini), soit
+                # une interprétation OCTALE surprenante dans `$((PF_MAX*5))` plus
+                # bas (`08` : arithmétique invalide, l'étape meurt sur un message
+                # cryptique — exactement ce que ce garde-fou doit éviter). `0*`
+                # rejette `0`/`00` ET tout zéro en tête (`08`, `060`). On valide
+                # AVANT d'entrer dans la boucle ; repli sur le défaut, avec avertissement.
+                case "$PF_MAX" in
+                  ''|*[!0-9]*|0*) echo "  ⚠ APIM_PREFLIGHT_TRIES='$PF_MAX' n'est pas un entier positif — repli sur le défaut (60)"; PF_MAX=60 ;;
+                esac
+                # Borne haute : une valeur énorme mais numérique (ex.
+                # 99999999999999999999) passe le garde-fou ci-dessus et rouvre
+                # le même mode de panne — une boucle non bornée en pratique
+                # (aucun timeout de build n'est posé dans les job XML). La
+                # LONGUEUR est testée avant toute comparaison arithmétique :
+                # au-delà de 4 chiffres la valeur dépasse déjà 3600, sans
+                # risquer un débordement de `-gt` sur un entier à 20 chiffres.
+                case "$PF_MAX" in
+                  ?????*) echo "  ⚠ APIM_PREFLIGHT_TRIES='$PF_MAX' dépasse la borne raisonnable — repli sur 3600"; PF_MAX=3600 ;;
+                esac
+                if [ "$PF_MAX" -gt 3600 ]; then
+                  echo "  ⚠ APIM_PREFLIGHT_TRIES='$PF_MAX' dépasse la borne raisonnable — repli sur 3600"
+                  PF_MAX=3600
+                fi
+                i=0
+                while :; do
+                  HC="$(curl -s -o /dev/null -m 5 -w '%{http_code}' "$PF_URL" || true)"
+                  for C in $PF_CODES; do
+                    if [ "$HC" = "$C" ]; then break 2; fi
+                  done
+                  i=$((i+1))
+                  if [ "$i" -ge "$PF_MAX" ]; then echo "  ✗ gateway toujours injoignable après $((PF_MAX*5))s ($PF_URL -> $HC ; attendu : $PF_CODES)"; exit 1; fi
+                  if [ "$i" -eq 1 ]; then echo "  (gateway indisponible — recyclage en cours ? attente du retour, max $((PF_MAX*5))s…)"; fi
+                  sleep 5
                 done
-                i=$((i+1))
-                if [ "$i" -ge "$PF_MAX" ]; then echo "  ✗ gateway toujours injoignable après $((PF_MAX*5))s ($PF_URL -> $HC ; attendu : $PF_CODES)"; exit 1; fi
-                if [ "$i" -eq 1 ]; then echo "  (gateway indisponible — recyclage en cours ? attente du retour, max $((PF_MAX*5))s…)"; fi
-                sleep 5
-              done
-            fi
+              fi
 
-            # 1) IDENTITÉ NOMINATIVE → TOKEN VAULT. Voie B (JWT) si fournie, sinon
-            #    voie A (VAULT_USER + mot de passe annuaire). Le détail — corps JSON
-            #    non forgé en shell, user URL-encodé, rien en argv — est dans la lib.
-            # DEBUG : exporte STOA_DEBUG (lib + rôle Ansible) et pose la verbosité ansible.
-            VOPT=""
-            if [ "${DEBUG:-false}" = "true" ]; then
-              export STOA_DEBUG=1
-              VOPT="-v"
-              echo "  [DEBUG activé] appels Vault/HTTP tracés, erreurs redactées — aucun secret n'est imprimé."
-            fi
-            . ci/lib/vault-login.sh
-            # Le trap est armé AVANT tout : il révoque MÊME si la convergence échoue.
-            # Sans lui, un `revoke` en dernière instruction est sauté par `set -e` dès
-            # qu'une étape rate, et le token nominatif survit jusqu'à son TTL.
-            trap vault_trap_revoke EXIT
-            # `RC=0; cmd || RC=$?` et NON `if ! cmd; then RC=$?` : après un `!`, $?
-            # vaut 0 (la négation a réussi) et le code de retour est perdu.
-            RC=0; vault_login_nominative || RC=$?
-            if [ "$RC" != 0 ]; then
-              # Barrière humaine : aucune identité fournie (build webhook = ACL.SYSTEM,
-              # aucun humain) → on s'arrête VERT, en plan-only. Une identité fournie
-              # mais REFUSÉE, elle, est une erreur : build rouge (fail-closed).
-              [ "$RC" = 2 ] || exit 1
-              echo "  (pas d'identité nominative → PLAN-only, apply sauté)"; exit 0
-            fi
+              # 1) IDENTITÉ NOMINATIVE → TOKEN VAULT. Voie B (JWT) si fournie, sinon
+              #    voie A (VAULT_USER + mot de passe annuaire). Le détail — corps JSON
+              #    non forgé en shell, user URL-encodé, rien en argv — est dans la lib.
+              # DEBUG : exporte STOA_DEBUG (lib + rôle Ansible) et pose la verbosité ansible.
+              VOPT=""
+              if [ "${DEBUG:-false}" = "true" ]; then
+                export STOA_DEBUG=1
+                VOPT="-v"
+                echo "  [DEBUG activé] appels Vault/HTTP tracés, erreurs redactées — aucun secret n'est imprimé."
+              fi
+              . ci/lib/vault-login.sh
+              # Le trap est armé AVANT tout : il révoque MÊME si la convergence échoue.
+              # Sans lui, un `revoke` en dernière instruction est sauté par `set -e` dès
+              # qu'une étape rate, et le token nominatif survit jusqu'à son TTL.
+              trap vault_trap_revoke EXIT
+              # `RC=0; cmd || RC=$?` et NON `if ! cmd; then RC=$?` : après un `!`, $?
+              # vaut 0 (la négation a réussi) et le code de retour est perdu.
+              RC=0; vault_login_nominative || RC=$?
+              if [ "$RC" != 0 ]; then
+                # Barrière humaine : aucune identité fournie (build webhook = ACL.SYSTEM,
+                # aucun humain) → on s'arrête VERT, en plan-only. Une identité fournie
+                # mais REFUSÉE, elle, est une erreur : build rouge (fail-closed).
+                [ "$RC" = 2 ] || exit 1
+                echo "  (pas d'identité nominative → PLAN-only, apply sauté)"; exit 0
+              fi
 
-            # 2) CONVERGE via le RÔLE : le rôle lit les creds gateway dans Vault
-            #    avec le token nominatif (VAULT_TOKEN_FILE exporté par la lib),
-            #    chemin tenant-scopé.
-            # Le manifeste est passé en CHEMIN (apim_ss_manifest → include_vars dans le
-            # rôle), PAS en `-e @` : un extra-var masquerait la fusion per_env (précédence).
-            ansible-playbook ${VOPT:-} -e stoa_debug="${DEBUG:-false}" -i "$INVENTORY" ansible/selfservice-app.yml \
-              -e apim_ss_manifest="$MANIFEST" \
-              -e apim_ss_env="${ENVIRONMENT:-}" \
-              -e apim_ss_team="$TEAM" \
-              -e apim_ss_api_base="$APIM_API_BASE" \
-              -e apim_ss_data_base="$APIM_DATA_BASE" \
-              -e apim_ss_vault_wm_creds_sub="$APIM_WM_CREDS_SUB" \
-              -e apim_ss_auth_mode="$APIM_AUTH_MODE" \
-              -e apim_ss_vault_kv_mount="$APIM_KV_MOUNT" \
-              -e apim_ss_vault_prefix="${APIM_KV_PREFIX:-}" \
-              -e apim_ss_oauth_client_auth="$APIM_OAUTH_CLIENT_AUTH" \
-              -e apim_ss_vault_oauth_client_id_key="$APIM_OAUTH_CID_KEY" \
-              -e apim_ss_vault_oauth_client_secret_key="$APIM_OAUTH_CSECRET_KEY" \
-              ${OAUTH_SUB_OPT:-} ${TOKEN_URL_OPT:-}
+              # 2) CONVERGE via le RÔLE : le rôle lit les creds gateway dans Vault
+              #    avec le token nominatif (VAULT_TOKEN_FILE exporté par la lib),
+              #    chemin tenant-scopé.
+              # Le manifeste est passé en CHEMIN (apim_ss_manifest → include_vars dans le
+              # rôle), PAS en `-e @` : un extra-var masquerait la fusion per_env (précédence).
+              ansible-playbook ${VOPT:-} -e stoa_debug="${DEBUG:-false}" -i "$INVENTORY" ansible/selfservice-app.yml \
+                -e apim_ss_manifest="$MANIFEST" \
+                -e apim_ss_env="${ENVIRONMENT:-}" \
+                -e apim_ss_team="$TEAM" \
+                -e apim_ss_api_base="$APIM_API_BASE" \
+                -e apim_ss_data_base="$APIM_DATA_BASE" \
+                -e apim_ss_vault_wm_creds_sub="$APIM_WM_CREDS_SUB" \
+                -e apim_ss_auth_mode="$APIM_AUTH_MODE" \
+                -e apim_ss_vault_kv_mount="$APIM_KV_MOUNT" \
+                -e apim_ss_vault_prefix="${APIM_KV_PREFIX:-}" \
+                -e apim_ss_oauth_client_auth="$APIM_OAUTH_CLIENT_AUTH" \
+                -e apim_ss_vault_oauth_client_id_key="$APIM_OAUTH_CID_KEY" \
+                -e apim_ss_vault_oauth_client_secret_key="$APIM_OAUTH_CSECRET_KEY" \
+                ${OAUTH_SUB_OPT:-} ${TOKEN_URL_OPT:-}
 
-            # 3) VERIFY fail-closed (structurel : ENFORCEMENT_CONFIRMED + OUTBOUND_CONFIRMED ;
-            #    le check data-plane live reste off — l'IP de l'agent ≠ l'allowlist).
-            ansible-playbook ${VOPT:-} -e stoa_debug="${DEBUG:-false}" -i "$INVENTORY" ansible/selfservice-app-verify.yml \
-              -e apim_ss_manifest="$MANIFEST" \
-              -e apim_ss_env="${ENVIRONMENT:-}" \
-              -e apim_ss_team="$TEAM" \
-              -e apim_ss_api_base="$APIM_API_BASE" \
-              -e apim_ss_data_base="$APIM_DATA_BASE" \
-              -e apim_ss_vault_wm_creds_sub="$APIM_WM_CREDS_SUB" \
-              -e apim_ss_auth_mode="$APIM_AUTH_MODE" \
-              -e apim_ss_vault_kv_mount="$APIM_KV_MOUNT" \
-              -e apim_ss_vault_prefix="${APIM_KV_PREFIX:-}" \
-              -e apim_ss_oauth_client_auth="$APIM_OAUTH_CLIENT_AUTH" \
-              -e apim_ss_vault_oauth_client_id_key="$APIM_OAUTH_CID_KEY" \
-              -e apim_ss_vault_oauth_client_secret_key="$APIM_OAUTH_CSECRET_KEY" \
-              ${OAUTH_SUB_OPT:-} ${TOKEN_URL_OPT:-}
+              # 3) VERIFY fail-closed (structurel : ENFORCEMENT_CONFIRMED + OUTBOUND_CONFIRMED ;
+              #    le check data-plane live reste off — l'IP de l'agent ≠ l'allowlist).
+              ansible-playbook ${VOPT:-} -e stoa_debug="${DEBUG:-false}" -i "$INVENTORY" ansible/selfservice-app-verify.yml \
+                -e apim_ss_manifest="$MANIFEST" \
+                -e apim_ss_env="${ENVIRONMENT:-}" \
+                -e apim_ss_team="$TEAM" \
+                -e apim_ss_api_base="$APIM_API_BASE" \
+                -e apim_ss_data_base="$APIM_DATA_BASE" \
+                -e apim_ss_vault_wm_creds_sub="$APIM_WM_CREDS_SUB" \
+                -e apim_ss_auth_mode="$APIM_AUTH_MODE" \
+                -e apim_ss_vault_kv_mount="$APIM_KV_MOUNT" \
+                -e apim_ss_vault_prefix="${APIM_KV_PREFIX:-}" \
+                -e apim_ss_oauth_client_auth="$APIM_OAUTH_CLIENT_AUTH" \
+                -e apim_ss_vault_oauth_client_id_key="$APIM_OAUTH_CID_KEY" \
+                -e apim_ss_vault_oauth_client_secret_key="$APIM_OAUTH_CSECRET_KEY" \
+                ${OAUTH_SUB_OPT:-} ${TOKEN_URL_OPT:-}
 
-            # 4) le token nominatif meurt avec le build — révocation + PREUVE DE MORT
-            #    (lookup-self -> 403) exécutées par le trap, succès comme échec.
+              # 4) le token nominatif meurt avec le build — révocation + PREUVE DE MORT
+              #    (lookup-self -> 403) exécutées par le trap, succès comme échec.
 
-            # 5) A2 — ce qui a RÉELLEMENT été projeté, annoncé SEULEMENT ici, après
-            #    converge + verify : un PLAN-only (sortie 0 plus haut, sans identité)
-            #    ou un échec n'annonce rien, et l'amont ne peut pas prendre une
-            #    référence calculée pour un apply qui n'a pas eu lieu.
-            cp .a2-reference-sha .a2-applied-sha
-            cp .a2-reference-mode .a2-applied-mode
-            cp .a2-reference-digest .a2-applied-digest
-            echo "APPLIED_SHA=$(cat .a2-applied-sha)"
-            echo "APPLIED_MODE=$(cat .a2-applied-mode)"
-            echo "APPLIED_DIGEST=$(cat .a2-applied-digest)"
-          '''
-          // Relus dans l'environnement du build : c'est ce que provision-apply
-          // lit dans build(...).buildVariables pour CONFRONTER l'annonce à sa
-          // demande (mode `pinned` ET SHA égal). Un aval qui ne les pose pas —
-          // plan-only, échec avant la fin — ⇒ SHA_NON_CONFIRME côté amont.
-          script {
-            if (fileExists('.a2-applied-sha')) {
-              env.APPLIED_SHA    = readFile('.a2-applied-sha').trim()
-              env.APPLIED_MODE   = readFile('.a2-applied-mode').trim()
-              env.APPLIED_DIGEST = readFile('.a2-applied-digest').trim()
+              # 5) A2 — ce qui a RÉELLEMENT été projeté, annoncé SEULEMENT ici, après
+              #    converge + verify : un PLAN-only (sortie 0 plus haut, sans identité)
+              #    ou un échec n'annonce rien, et l'amont ne peut pas prendre une
+              #    référence calculée pour un apply qui n'a pas eu lieu.
+              cp .a2-reference-sha .a2-applied-sha
+              cp .a2-reference-mode .a2-applied-mode
+              cp .a2-reference-digest .a2-applied-digest
+              echo "APPLIED_SHA=$(cat .a2-applied-sha)"
+              echo "APPLIED_MODE=$(cat .a2-applied-mode)"
+              echo "APPLIED_DIGEST=$(cat .a2-applied-digest)"
+            '''
+            // Relus dans l'environnement du build : c'est ce que provision-apply
+            // lit dans build(...).buildVariables pour CONFRONTER l'annonce à sa
+            // demande (mode `pinned` ET SHA égal). Un aval qui ne les pose pas —
+            // plan-only, échec avant la fin — ⇒ SHA_NON_CONFIRME côté amont.
+            script {
+              if (fileExists('.a2-applied-sha')) {
+                env.APPLIED_SHA    = readFile('.a2-applied-sha').trim()
+                env.APPLIED_MODE   = readFile('.a2-applied-mode').trim()
+                env.APPLIED_DIGEST = readFile('.a2-applied-digest').trim()
+              }
             }
           }
         }

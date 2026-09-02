@@ -45,8 +45,14 @@ class H(BaseHTTPRequestHandler):
         return self.headers.get("Authorization") == "token " + TOKEN
     def do_GET(self):
         if not self._auth(): return self._send(401, {"message": "unauthorized"})
-        if re.match(r"^/api/v1/repos/.+/issues/\d+/comments$", self.path):
-            return self._send(200, load())
+        # A0 dettes : la lib PAGINE (?limit=50&page=N) — le faux honore les deux
+        # paramètres, comme le vrai Gitea (limit max 50 par défaut).
+        path, _, qs = self.path.partition("?")
+        if re.match(r"^/api/v1/repos/.+/issues/\d+/comments$", path):
+            q = dict(kv.split("=", 1) for kv in qs.split("&") if "=" in kv)
+            lim, page = int(q.get("limit", 50)), int(q.get("page", 1))
+            allc = load()
+            return self._send(200, allc[(page - 1) * lim: page * lim])
         self._send(404, {"message": "not found"})
     def do_POST(self):
         if not self._auth(): return self._send(401, {"message": "unauthorized"})
@@ -202,6 +208,37 @@ for f in "$REPO"/scripts/provision-*.sh; do
     ok "$b : appel par chemin absolu mémorisé"
   fi
 done
+
+echo
+echo "== 11. COMMENT_ONLY_IF_EXISTS=1 (A0 dettes) : met à jour un commentaire présent, n'en CRÉE jamais =="
+startgitea tok-ok
+printf 'statut vert\n' > "$TMP/b11"
+OUT=$(GIT_REPO=ci/stoa-labs GITEA_TOKEN=tok-ok PR_NUMBER=7 GIT_HOST="$GH" COMMENT_MARKER='<!-- provision-plan-build -->' \
+      COMMENT_BODY_FILE="$TMP/b11" COMMENT_ONLY_IF_EXISTS=1 bash "$LIB" 2>&1); RC=$?
+[ "$RC" -eq 0 ] && [ "$OUT" = "COMMENT_SKIPPED" ] && [ "$(count)" = 0 ] \
+  && ok "marqueur absent ⇒ COMMENT_SKIPPED, rc 0, ZÉRO commentaire créé" || ko "ONLY_IF_EXISTS a créé ou échoué (rc=$RC : $OUT, n=$(count))"
+printf 'statut rouge perime\n' > "$TMP/b11r"
+GIT_REPO=ci/stoa-labs GITEA_TOKEN=tok-ok PR_NUMBER=7 GIT_HOST="$GH" COMMENT_MARKER='<!-- provision-plan-build -->' COMMENT_BODY_FILE="$TMP/b11r" bash "$LIB" >/dev/null 2>&1
+OUT=$(GIT_REPO=ci/stoa-labs GITEA_TOKEN=tok-ok PR_NUMBER=7 GIT_HOST="$GH" COMMENT_MARKER='<!-- provision-plan-build -->' \
+      COMMENT_BODY_FILE="$TMP/b11" COMMENT_ONLY_IF_EXISTS=1 bash "$LIB" 2>&1); RC=$?
+[ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -q '^COMMENT_UPDATED' && [ "$(count)" = 1 ] && bodies | grep -q 'statut vert' \
+  && ok "marqueur présent ⇒ COMMENT_UPDATED (le rouge périmé est effacé), toujours UN seul commentaire" || ko "ONLY_IF_EXISTS n'a pas mis à jour (rc=$RC : $OUT, n=$(count))"
+
+echo
+echo "== 12. PAGINATION (A0 dettes) : un marqueur en 55e position sur 60 est TROUVÉ, pas empilé =="
+startgitea tok-ok
+python3 - "$TMP/comments.json" <<'PY'
+import json, sys
+cs = [{"id": i, "body": f"bruit {i}"} for i in range(1, 61)]
+cs[54]["body"] = "<!-- provision-plan -->\nancien verdict"
+json.dump(cs, open(sys.argv[1], "w"))
+PY
+printf 'nouveau verdict\n' > "$TMP/b12"
+OUT=$(GIT_REPO=ci/stoa-labs GITEA_TOKEN=tok-ok PR_NUMBER=7 GIT_HOST="$GH" COMMENT_MARKER='<!-- provision-plan -->' COMMENT_BODY_FILE="$TMP/b12" bash "$LIB" 2>&1); RC=$?
+[ "$RC" -eq 0 ] && [ "$OUT" = "COMMENT_UPDATED 55" ] && [ "$(count)" = 60 ] \
+  && ok "marqueur au-delà de la première page ⇒ COMMENT_UPDATED 55 (pagination), 60 commentaires, aucun empilement" \
+  || ko "pagination cassée (rc=$RC : $OUT, n=$(count)) — le commentaire se serait EMPILÉ"
+grep -q 'timeout=30' "$LIB" && ok "urlopen(timeout=30) : un post{always} ne tient plus l'exécuteur indéfiniment sur une forge muette" || ko "aucun timeout réseau dans la lib"
 
 echo
 echo "======================================================================"

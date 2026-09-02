@@ -44,7 +44,7 @@ TMP="$(mktemp -d /tmp/pa-wiring.XXXXXX)"; trap 'rm -rf "$TMP"' EXIT
 # quel que soit le nombre de contrôles exécutés : une section sautée en silence
 # ferait baisser le total SANS rougir). Toute section ajoutée/retirée DOIT le
 # mettre à jour à la main. Le contrôle final n'est pas compté dedans.
-EXPECTED_CHECKS=140
+EXPECTED_CHECKS=141
 
 [ -f "$JOB" ] || { echo "job introuvable : $JOB"; exit 2; }
 [ -f "$JF" ]  || { echo "Jenkinsfile introuvable : $JF"; exit 2; }
@@ -302,6 +302,10 @@ L_APPLY=$(code_line "$TMP/jfd.code" "stage('Apply")
 L_VERIFY=$(code_line "$TMP/jfd.code" 'ansible/selfservice-app-verify.yml')
 L_CP=$(code_line "$TMP/jfd.code" 'cp .a2-reference-sha .a2-applied-sha')
 [ -n "$L_REQ" ] && [ -n "$L_PLAN" ] && [ "$L_REQ" -lt "$L_PLAN" ] && ok "MERGE_SHA_REQUIS (ligne $L_REQ) avant le stage Plan (ligne $L_PLAN)" || ko "MERGE_SHA_REQUIS absent ou après le plan"
+# A0 dettes : le formulaire de l'aval est posé par properties([parameters]) au
+# PREMIER stage — AVANT la garde MERGE_SHA_REQUIS qui lit params.MERGE_SHA.
+L_PROPS=$(code_line "$TMP/jfd.code" 'properties([parameters([')
+[ -n "$L_PROPS" ] && [ -n "$L_REQ" ] && [ "$L_PROPS" -lt "$L_REQ" ] && ok "properties([parameters([ (ligne $L_PROPS) AVANT MERGE_SHA_REQUIS (ligne $L_REQ) : le formulaire est posé avant d'être lu" || ko "properties() absent ou après MERGE_SHA_REQUIS (props=$L_PROPS req=$L_REQ)"
 [ -n "$L_FETCH" ] && ok "git fetch origin main (ligne $L_FETCH)" || ko "aucun fetch de main"
 [ -n "$L_ANC" ] && ok "garde d'atteignabilité merge-base --is-ancestor (ligne $L_ANC)" || ko "aucun merge-base --is-ancestor — un SHA hors main serait appliqué"
 [ -n "$L_FP" ] && ok "garde de LIGNÉE first-parent (ligne $L_FP) : un commit intérieur à une branche de PR est refusé" || ko "aucune garde first-parent"

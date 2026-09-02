@@ -19,6 +19,11 @@
 // CE JOB N'APPLIQUE RIEN. L'apply est le job provision-apply (au merge,
 // identité nominative, ADR-081).
 //
+// A0 dettes (2026-09-02) : la forge est RELUE par le script avant tout geste
+// (provision-plan.sh, lib gitea-pr-confirm.sh) ; un post{always} de pipeline
+// pose le STATUT du build sur la PR sous un marqueur distinct, nourri par les
+// FAITS du stage, gardé en Groovy avant tout nœud.
+//
 // Trois faits Jenkins mesurés sur ce lab s'appliquent (mémoire
 // ci-jenkinsfile-refactor) : le <triggers> du XML GAGNE sur celui-ci (miroir
 // exact, vérifié par scripts/lib/gwt-mirror.sh dans test-a0-wiring.sh) ;
@@ -115,8 +120,83 @@ pipeline {
           // disparition du `git url:` en dur du Groovy. Chaîne sh en quotes
           // SIMPLES : PR_BRANCH / PR_NUMBER (tiers) sont lus par le SHELL,
           // jamais interpolés par Groovy. `set +x` : le token ne s'écho pas.
+          //
+          // A0 dettes : le script RELIT LA FORGE avant tout geste (une PR
+          // seulement NOMMÉE par le payload n'est jamais clonée ni commentée —
+          // FORGE_NON_CONFIRMEE) et écrit ses FAITS (tête relue, verdict,
+          // raison) dans PLAN_FACTS, succès comme échec.
           dir('poc-control-plane-federation') {
-            sh 'set +x; bash scripts/provision-plan.sh'
+            sh 'set +x; PLAN_FACTS="$WORKSPACE/.plan.facts" bash scripts/provision-plan.sh'
+          }
+        }
+      }
+      // Les FAITS du plan, chargés dans l'environnement du build — c'est EUX,
+      // jamais le payload, qui autoriseront le statut de build à parler (et
+      // lui diront quoi dire : ok / ignore / fail / refus). Écrits succès
+      // COMME échec par le script ; absents si le stage n'a pas tourné.
+      post {
+        always {
+          script {
+            def f = "${env.WORKSPACE}/.plan.facts"
+            if (fileExists(f)) {
+              readFile(f).readLines().each { line ->
+                def i = line.indexOf('=')
+                if (i > 0) {
+                  def k = line.substring(0, i); def v = line.substring(i + 1)
+                  if (k == 'GITEA_HEAD_REF') { env.GITEA_HEAD_REF = v }
+                  if (k == 'PLAN_VERDICT')   { env.PLAN_VERDICT = v }
+                  if (k == 'PLAN_REASON')    { env.PLAN_REASON = v }
+                }
+              }
+              echo "faits du plan : tete='${env.GITEA_HEAD_REF ?: ''}' verdict='${env.PLAN_VERDICT ?: ''}' (${env.PLAN_REASON ?: ''})"
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // ── STATUT DE BUILD sur la PR, dans TOUS les cas (A0 dettes ; parité avec
+  // provision-apply et team-apply, dette I3) ──────────────────────────────
+  // Pause abandonnée, agent injoignable, clone raté, demande IGNORÉE : la PR
+  // n'est jamais muette — sous un marqueur DISTINCT du verdict
+  // (`provision-plan-build`), et SEULEMENT si la forge a confirmé la PR (faits
+  // du stage, sinon relecture par la même lib dans le script). En SUCCESS avec
+  // verdict, le script ne pose rien de neuf (il n'efface qu'un rouge périmé).
+  //
+  // Les DEUX gardes bon marché sont en Groovy, AVANT tout `node` : le hook
+  // Gitea tire sur TOUTES les PR du dépôt plateforme (onboard/*, promote/*,
+  // docs…) et `agent none` existe précisément pour qu'une PR étrangère
+  // n'alloue AUCUN exécuteur (le lab n'en a que deux) — un post{always} qui
+  // prendrait un nœud inconditionnellement contredirait cet argument (critique
+  // adverse, 2026-09-02). Le script garde ses propres gardes (défense en
+  // profondeur). try/catch + timeout : le statut ne rougit jamais un build et
+  // ne tient jamais l'exécuteur sur une forge muette.
+  post {
+    always {
+      script {
+        def ref = env.PR_BRANCH ?: ''
+        def num = env.PR_NUMBER ?: ''
+        if (!ref.startsWith('provision/') || !(num ==~ /[0-9]+/)) {
+          echo "(hors provision/* ou PR_NUMBER non numerique — aucun statut a commenter, aucun executeur alloue)"
+        } else {
+          try {
+            timeout(time: 2, unit: 'MINUTES') {
+              node("${env.POST_AGENT_LABEL ?: ''}") {
+                checkout scm
+                withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')]) {
+                  withEnv(["BUILD_RESULT=${currentBuild.currentResult}"]) {
+                    dir('poc-control-plane-federation') {
+                      // Les faits (GITEA_HEAD_REF / PLAN_VERDICT / PLAN_REASON)
+                      // sont dans l'environnement, charges par le post du stage.
+                      sh 'set +x; bash scripts/provision-plan-status.sh || echo "AVERTISSEMENT: statut de build non poste"'
+                    }
+                  }
+                }
+              }
+            }
+          } catch (e) {
+            echo "AVERTISSEMENT: statut de build non poste (${e.message})"
           }
         }
       }

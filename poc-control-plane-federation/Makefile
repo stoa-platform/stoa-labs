@@ -108,6 +108,7 @@ lint-ci:
 	  scripts/team-promote.sh scripts/test-deployer-gate-live.sh \
 	  scripts/test-rollback-paliers.sh scripts/test-parity-moteurs.sh \
 	  scripts/lib/gwt-mirror.sh scripts/lib/generate-choices.sh scripts/app-request-choices.sh \
+	  scripts/lib/gitea-pr-confirm.sh scripts/provision-plan-status.sh scripts/setup-selfservice-job.sh \
 	  && echo "  ✓ ci/lib + livrables shell G2..G8 + A1 + A2 + A0 propres"
 	@echo "== [3/11] épreuves de ci/lib/carto-secrets.sh"
 	@ci/test-carto-secrets.sh

@@ -13,10 +13,31 @@
 # L'apply reste séparé (build nominatif au merge) : ici on ne fait que DONNER À
 # VOIR au valideur que la demande passe le plan. Token jamais loggé (set +x).
 #
+# ── LA FORGE EST RELUE AVANT TOUT GESTE (A0 dettes, 2026-09-02) ─────────────
+# Le payload d'un webhook est une AFFIRMATION (token GWT partagé, HMAC non
+# vérifié) : jusqu'ici ce script clonait la branche PR_BRANCH et commentait la
+# PR PR_NUMBER telles que NOMMÉES — un payload forgé (branche réelle de la PR A,
+# numéro de la PR B) faisait poser un verdict du compte de service sur une PR
+# étrangère. Désormais, AVANT le clone : scripts/lib/gitea-pr-confirm.sh relit
+# la PR sur la forge et exige state=open, head.ref == PR_BRANCH (provision/*),
+# base.ref == GIT_BASE — sinon refus nommé FORGE_NON_CONFIRMEE, rc 1, AUCUN
+# commentaire. Le clone checkoute ensuite le SHA de tête RELU (pas le nom de
+# branche : une branche provision/<app>-<env> réutilisée après merge ne fait
+# jamais commenter la PR mergée). Un clone ou un checkout raté est un REFUS
+# (CLONE_ECHEC / BRANCHE_INTROUVABLE, rc 1) — changement de parité assumé : il
+# rendait vert par « IGNORE » (diff vide) avant.
+#
+# FAITS (PLAN_FACTS, optionnel) : si posé, un fichier KEY=VALUE est écrit sur
+# CHAQUE sortie — GITEA_HEAD_REF / GITEA_HEAD_SHA (vides si la forge n'a pas
+# confirmé), PLAN_VERDICT=refus|ignore|ok|fail, PLAN_REASON. C'est ce que le
+# statut de build du job (scripts/provision-plan-status.sh) consomme : une
+# seule relecture de la forge, jamais une seconde indépendante (pas de TOCTOU).
+#
 # Entrées (env — mappées depuis le payload webhook Gitea par le GWT du job) :
 #   PR_BRANCH   (req) ref de la branche de la PR (ex. provision/credit-scoring-dev)
 #   PR_NUMBER   (req) numéro de la PR (pour le commentaire)
 #   GITEA_TOKEN (req) token (scopes write:issue pour commenter)
+#   PLAN_FACTS  fichier de faits (cf. ci-dessus) — vide = pas de faits écrits
 #   GIT_REPO    full-name (défaut ci/stoa-labs)
 #   GIT_BASE    branche cible (défaut main) — base du diff
 #   GIT_HOST    base Gitea vue de l'agent (défaut http://gitea:3000)
@@ -40,20 +61,44 @@ GIT_WEB_HOST="${GIT_WEB_HOST:-$GIT_HOST}"
 # Chemin du script résolu AVANT tout `cd` : ce script se déplace dans le clone de
 # la PR ($WORK/repo) en [1/4], et un `dirname "$0"` relatif n'y résoudrait plus.
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+PLAN_FACTS="${PLAN_FACTS:-}"
+GITEA_HEAD_REF=""; GITEA_HEAD_SHA=""
 
-case "$PR_BRANCH" in provision/*) ;; *) echo "IGNORE: branche '$PR_BRANCH' hors provision/* — pas une demande" >&2; exit 0;; esac
+# facts <verdict> <raison> — écrit le fichier de faits (si demandé), à CHAQUE
+# sortie. Résolu par rapport au cwd D'ORIGINE : le script fait un `cd` dans le
+# clone plus bas, un chemin relatif serait alors faux — d'où la résolution ici.
+ORIG_PWD="$PWD"
+facts(){
+  [ -n "$PLAN_FACTS" ] || return 0
+  local f="$PLAN_FACTS"; case "$f" in /*) ;; *) f="$ORIG_PWD/$f";; esac
+  printf 'GITEA_HEAD_REF=%s\nGITEA_HEAD_SHA=%s\nPLAN_VERDICT=%s\nPLAN_REASON=%s\n' \
+    "$GITEA_HEAD_REF" "$GITEA_HEAD_SHA" "$1" "$(printf '%s' "$2" | tr '\n\r' '  ')" > "$f"
+}
+refus(){ echo "REFUS: $1 : $2" >&2; facts refus "$1 : $2"; exit 1; }
+
+case "$PR_BRANCH" in provision/*) ;; *) echo "IGNORE: branche '$PR_BRANCH' hors provision/* — pas une demande" >&2; facts ignore "branche '$PR_BRANCH' hors provision/*"; exit 0;; esac
 WORK="$(mktemp -d /tmp/provplan.XXXXXX)"; trap 'rm -rf "$WORK"' EXIT
-API="${GIT_HOST}/api/v1"
 
-echo "[1/4] checkout ${PR_BRANCH}"
-git clone -q "http://${GIT_HOST#http://}/${GIT_REPO}.git" "$WORK/repo"
-cd "$WORK/repo"
-git checkout -q "$PR_BRANCH"
+# ── [0/4] LA FORGE, AVANT LE CLONE ────────────────────────────────────────────
+# shellcheck source=scripts/lib/gitea-pr-confirm.sh
+. "$SELF_DIR/lib/gitea-pr-confirm.sh" || { echo "ERREUR: $SELF_DIR/lib/gitea-pr-confirm.sh introuvable" >&2; facts refus "LIB_ABSENTE"; exit 1; }
+echo "[0/4] relecture de la PR #${PR_NUMBER} sur la forge (tete attendue ${PR_BRANCH}, base ${GIT_BASE})"
+if ! CONFIRM="$(gitea_pr_confirm "$PR_NUMBER" "$PR_BRANCH" "$GIT_BASE" 2>"$WORK/confirm.err")"; then
+  refus FORGE_NON_CONFIRMEE "$(cat "$WORK/confirm.err") — aucun commentaire, aucun clone"
+fi
+GITEA_HEAD_REF="$(printf '%s\n' "$CONFIRM" | sed -n 's/^GITEA_HEAD_REF=//p')"
+GITEA_HEAD_SHA="$(printf '%s\n' "$CONFIRM" | sed -n 's/^GITEA_HEAD_SHA=//p')"
+echo "  forge : PR #${PR_NUMBER} ouverte, tete ${GITEA_HEAD_REF} @ ${GITEA_HEAD_SHA}"
+
+echo "[1/4] checkout ${PR_BRANCH} @ ${GITEA_HEAD_SHA} (la tete RELUE, pas le nom)"
+git clone -q "http://${GIT_HOST#http://}/${GIT_REPO}.git" "$WORK/repo" || refus CLONE_ECHEC "clone de ${GIT_REPO} en echec"
+cd "$WORK/repo" || refus CLONE_ECHEC "clone incomplet"
+git checkout -q "$GITEA_HEAD_SHA" 2>/dev/null || refus BRANCHE_INTROUVABLE "la tete ${GITEA_HEAD_SHA} de ${PR_BRANCH} n'est pas dans le clone"
 
 echo "[2/4] localisation du manifeste (diff vs ${GIT_BASE})"
 MAN=$(git diff --name-only "origin/${GIT_BASE}...HEAD" -- "${MANIFEST_DIR}/*.ansible.yml" 2>/dev/null | head -1)
 [ -n "$MAN" ] || MAN=$(git diff --name-only "origin/${GIT_BASE}...HEAD" 2>/dev/null | grep -E "^${MANIFEST_DIR}/.*\.ansible\.yml$" | head -1)
-if [ -z "$MAN" ]; then echo "IGNORE: aucun manifeste ajouté sous ${MANIFEST_DIR}" >&2; exit 0; fi
+if [ -z "$MAN" ]; then echo "IGNORE: aucun manifeste ajouté sous ${MANIFEST_DIR}" >&2; facts ignore "aucun manifeste ajoute sous ${MANIFEST_DIR}"; exit 0; fi
 echo "  manifeste : $MAN"
 # env = suffixe de la branche provision/<app>-<env>
 # G4 (D6) : même geste que provision-request.sh — la liste suit LA chaîne,
@@ -104,6 +149,10 @@ open(os.environ["BODY_OUT"], "w").write(body)
 PY
 GIT_REPO="$GIT_REPO" GITEA_TOKEN="$GITEA_TOKEN" PR_NUMBER="$PR_NUMBER" GIT_HOST="$GIT_HOST" \
 COMMENT_MARKER='<!-- provision-plan -->' COMMENT_BODY_FILE="$WORK/comment.md" \
-  bash "$SELF_DIR/lib/gitea-pr-comment.sh" || { echo "  ERREUR commentaire" >&2; exit 1; }
+  bash "$SELF_DIR/lib/gitea-pr-comment.sh" || { echo "  ERREUR commentaire" >&2; facts "$VERDICT" "plan ${VERDICT} sur ${MAN} mais commentaire en echec"; exit 1; }
 
-[ "$VERDICT" = "ok" ] && echo "OK: plan vert, PR #${PR_NUMBER} commentée" || { echo "PLAN EN ÉCHEC (PR commentée)"; exit 1; }
+if [ "$VERDICT" = "ok" ]; then
+  facts ok "plan vert sur ${MAN}"; echo "OK: plan vert, PR #${PR_NUMBER} commentée"
+else
+  facts fail "plan en echec sur ${MAN} (voir le commentaire provision-plan)"; echo "PLAN EN ÉCHEC (PR commentée)"; exit 1
+fi
