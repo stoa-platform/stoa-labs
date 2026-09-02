@@ -1,7 +1,7 @@
 ---
 title: "GOAL — La chaîne CD des applications : porter la DEMANDE d'une application de dev jusqu'en prod sur cinq paliers, par le même gitflow que les APIs — sans archive, parce que l'identité d'une application est par palier"
 type: goal
-status: "OUVERT le 2026-09-02 — relevé fait, DEUX SPIKES JOUÉS le même jour (34/0, convergence 0-coupure, désinscription irréversible, A5 à écrire), huit jalons A0..A7 à livrer (A0 = tout en Jenkinsfile, aucun job.xml porteur de logique), quatre décisions client. Aucun code de chaîne modifié par ce document."
+status: "OUVERT le 2026-09-02 — relevé fait, DEUX SPIKES JOUÉS le même jour (34/0, convergence 0-coupure, désinscription irréversible, A5 à écrire), huit jalons A0..A7 à livrer (A0 = tout en Jenkinsfile, aucun job.xml porteur de logique) — **A1 LIVRÉ le 2026-09-02 (71/71)**, quatre décisions client. Aucun code de chaîne modifié par ce document."
 date: 2026-09-02
 lié: [GOAL-cd-promotion-5-envs-2026-08-26, GOAL-self-service-api-app-2026-07-09, adr-078-livrable-self-service-app-wm1015, adr-079-deploiement-promotion-multienv-import-archive, adr-081-ou-vit-la-decision-humaine, adr-082-ouverture-palier-retention-credential, adr-084-axe-qui-deploie-deployer-group, adr-085-rollback-des-paliers, adr-086-parcours-demandeur-pr-tableau-de-bord]
 note: "Le GOAL CD du 2026-08-26 promettait dans son titre « APIs et applications » et a été soldé le 2026-08-27 avec huit jalons qui ne parlent que d'APIs. Ce document est la moitié manquante. Le relevé montre que le gitflow d'entrée (PR, merge, apply nominatif) existe pour les applications, mais qu'aucune des briques de la chaîne CD (référence pinnée, credential par palier, axe déployeur, rollback, terminus) n'y est branchée — et que le manifeste d'application n'est même pas multi-palier."
@@ -95,6 +95,8 @@ Convertir `provision-apply`, `provision-plan` et `provisioning-request` en `ci/J
 **Contre-épreuve :** un paramètre saisi `RAW>${JENKINS_HOME}<FIN` arrive **intact** au script (le fait mesuré du 2026-08-06, rejoué) ; retirer le bloc `triggers` du XML ⇒ le test de miroir rougit.
 
 ### A1 — Le manifeste devient multi-palier : une demande n'écrit que sa clé
+
+> **LIVRÉ le 2026-09-02** — `scripts/lib/app-manifest.sh` (lecture / contrat figé / fusion textuelle d'un palier) branchée dans `provision-request.sh` ; preuve `scripts/test-app-request-a1.sh` **71/71** (lib hors ligne 41, gardes 8, parcours dev → rec contre le Gitea du lab 22 : porte + deux contre-épreuves, idempotence par SHA, mode internal, certificat par palier `<app>-<env>.crt`, forme ancienne refusée, team héritée + garde du palier visé) ; non-régression v2 19/19, v3 34/34 avec les golden files régénérés (contrat machine changé : claim par palier, description sans palier). Spec : `docs/superpowers/specs/2026-09-02-a1-manifeste-multi-palier-design.md`.
 
 `provision-request.sh` cesse de réécrire le fichier. Une demande `<app>` en `<env>` **fusionne** `per_env.<env>` dans le manifeste existant (ou le crée s'il n'existe pas), et ne touche à rien d'autre. Les champs trans-paliers (`name`, `api`, `api_version`, `audience`, `mode`, `team`) sont **figés à la première demande** : une demande ultérieure qui les changerait est refusée (`CONTRAT_DIVERGENT`) — changer d'API consommée est une **nouvelle** application, pas une promotion.
 

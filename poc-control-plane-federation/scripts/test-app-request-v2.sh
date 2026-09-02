@@ -256,32 +256,47 @@ for pr in d:
   # Fix round 1 (revue, Important) : la preuve C comparait AVANT/APRÈS en
   # extrayant le script PRÉ-Task-4 via `git show HEAD:...` — valeur probante
   # ÉTEINTE dès que ce commit devient HEAD (HEAD compare alors le script à
-  # lui-même, toujours vert). Remède : GOLDEN FILES committés, rendus UNE FOIS
-  # avec le script d'AVANT Task 4 (commit b39aee1, parent direct de la
-  # première livraison 2a3d58b), pour des entrées machine FIXES
-  # (REQ_APP=p3t4golden-idp/p3t4golden-int, REQ_ENV=dev, REQ_API=accounts-read
-  # v1.0.0, REQ_CALLER=oig-provisioner/cli2-provisioner, sans aucun REQ_*
-  # Task 4). La preuve compare désormais le manifeste produit PAR LE SCRIPT
-  # COURANT à ces fixtures — un octet qui bouge dans le rendu machine (absent
-  # des REQ_* Task 4) fait rougir la preuve, peu importe l'état de HEAD.
+  # lui-même, toujours vert). Remède : GOLDEN FILES committés, pour des entrées
+  # machine FIXES (REQ_APP=p3t4golden-idp/p3t4golden-int, REQ_ENV=dev,
+  # REQ_API=accounts-read v1.0.0, REQ_CALLER=oig-provisioner/cli2-provisioner,
+  # sans aucun REQ_* Task 4). La preuve compare le manifeste produit PAR LE
+  # SCRIPT COURANT à ces fixtures — un octet qui bouge dans le rendu machine
+  # (absent des REQ_* Task 4) fait rougir la preuve, peu importe l'état de HEAD.
+  #
+  # PROVENANCE : rendus une première fois avec le script d'AVANT Task 4 (commit
+  # b39aee1) ; RÉGÉNÉRÉS le 2026-09-02 pour le jalon A1 (GOAL cd-applications),
+  # qui change le CONTRAT MACHINE intentionnellement : claim `{ name }` à la
+  # racine et sa VALEUR sous per_env.<env> (mode idp), description sans palier,
+  # deux lignes d'en-tête « MULTI-PALIER (A1) » — forme D1 de la spec
+  # docs/superpowers/specs/2026-09-02-a1-manifeste-multi-palier-design.md.
   #
   # QUAND RÉGÉNÉRER LÉGITIMEMENT : uniquement si le CONTRAT MACHINE lui-même
   # change intentionnellement (ex. nouveau champ ajouté au template idp/
   # internal, hors périmètre Task 4/REQ_* additifs) — jamais pour faire
   # passer une régression au vert. Régénération :
-  #   git show <commit-avant-le-changement>:poc-control-plane-federation/scripts/provision-request.sh > /tmp/old.sh
-  #   GITEA_TOKEN=... GIT_HOST=http://localhost:13000 REQ_APP=p3t4golden-idp \
-  #     REQ_ENV=dev REQ_API=accounts-read REQ_API_VER=1.0.0 \
+  #   GITEA_TOKEN=... GIT_HOST=http://localhost:13000 GIT_BASE=<base jetable> \
+  #     REQ_APP=p3t4golden-idp REQ_ENV=dev REQ_API=accounts-read REQ_API_VER=1.0.0 \
   #     REQ_CALLER=oig-provisioner REQ_CLIENT_ID=golden-client-id \
-  #     PROVISION_PLAN_INLINE=false bash /tmp/old.sh
-  #   (puis récupérer le manifeste rendu via l'API Gitea raw et l'écrire dans
+  #     PROVISION_PLAN_INLINE=false bash scripts/provision-request.sh
+  #   (idem p3t4golden-int avec REQ_CALLER=cli2-provisioner, sans REQ_CLIENT_ID ;
+  #   puis récupérer le manifeste rendu via l'API Gitea raw et l'écrire dans
   #   scripts/testdata/app-request-v2/golden-*.ansible.yml) — geste EXPLICITE,
-  #   jamais automatisé par ce test.
+  #   jamais automatisé par ce test. PRÉCONDITION : l'app golden n'existe pas
+  #   sur la base (sinon le script FUSIONNE au lieu de créer — cf. nonreg_case).
   GOLDEN_DIR="$REPO/scripts/testdata/app-request-v2"
+  GIT_BASE_GOLDEN="main"
   nonreg_case(){
     local label="$1" app="$2" caller="$3" golden="$4"; shift 4
     local branch="provision/${app}-dev"
     CLEAN_BRANCHES+=("$branch")
+    # A1 (2026-09-02) : le rendu compare un manifeste CRÉÉ ; si l'app golden
+    # existait sur main, le script FUSIONNERAIT (per_env seule) et le diff
+    # mentirait sur la cause. Précondition nommée plutôt que rouge opaque.
+    # (par code HTTP : le raw d'un fichier absent rend un corps JSON non vide)
+    if [ "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: token $GITEA_TOKEN" \
+          "$GH/api/v1/repos/ci/stoa-labs/raw/${GIT_BASE_GOLDEN}/poc-control-plane-federation/clients/provisioned/applications/${app}.ansible.yml")" = 200 ]; then
+      ko "$label : le manifeste $app existe déjà sur ${GIT_BASE_GOLDEN} — le golden compare une CRÉATION, pas une fusion (retirer le fichier de main)"; return
+    fi
     [ -f "$GOLDEN_DIR/$golden" ] || { ko "$label : golden '$golden' absent de $GOLDEN_DIR"; return; }
     local out rc
     out=$(env GITEA_TOKEN="$GITEA_TOKEN" GIT_HOST="$GH" REQ_APP="$app" REQ_ENV=dev REQ_API=accounts-read \
@@ -325,12 +340,12 @@ for pr in d:
     printf '%s' "$MANI" | grep -q '  enforce: \[\]'                               || { ko "nominal : enforce n'est plus []  — dérivation réintroduite (régression du fix round 1)"; CHECK=0; }
     printf '%s' "$MANI" | grep -q 'cert_rotation: "overlap"'                       || { ko "nominal : cert_rotation absent/faux"; CHECK=0; }
     printf '%s' "$MANI" | grep -q 'ip_allowlist: \["10.77.5.1-10.77.5.9"\]'        || { ko "nominal : ip_allowlist absent"; CHECK=0; }
-    printf '%s' "$MANI" | grep -q "public_cert_ref: \"clients/provisioned/certs/${APP}.crt\"" || { ko "nominal : public_cert_ref absent/faux"; CHECK=0; }
+    printf '%s' "$MANI" | grep -q "public_cert_ref: \"clients/provisioned/certs/${APP}-dev.crt\"" || { ko "nominal : public_cert_ref absent/faux"; CHECK=0; }
     [ "$CHECK" = 1 ] && ok "nominal enrichi : manifeste porte team/cert_rotation/ip_allowlist/public_cert_ref, enforce=[] intouché"
 
-    CERTFILE=$(raw_cert "$BR" "$APP")
+    CERTFILE=$(raw_cert "$BR" "${APP}-dev")
     if [ "$CERTFILE" = "$CERT_PEM_CONTENT" ]; then
-      ok "nominal enrichi : clients/provisioned/certs/${APP}.crt versionné, contenu identique au PEM soumis"
+      ok "nominal enrichi : clients/provisioned/certs/${APP}-dev.crt versionné, contenu identique au PEM soumis"
     else
       ko "nominal enrichi : fichier .crt absent ou contenu différent"
     fi

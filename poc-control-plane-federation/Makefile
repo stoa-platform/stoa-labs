@@ -89,42 +89,47 @@ clean:
 # d'environnements, écrivain de promotion — vivent sous `scripts/` et sont
 # restés hors porte jusqu'ici : du shell livré que rien ne relisait.
 lint-ci:
-	@echo "== [1/8] compilation des Jenkinsfile"
+	@echo "== [1/9] compilation des Jenkinsfile"
 	@ci/lint-jenkinsfiles.sh
 	@# La porte LIVE du grant déployeur (G2) est SHELLCHECKÉE ici mais jamais
 	@# EXÉCUTÉE par lint-ci : elle exige le lab (annuaire + Vault) et mute
 	@# l'annuaire. Même régime que les autres `-live` — son verdict se rend à la
 	@# main, sa syntaxe se relit à chaque passage.
-	@echo "== [2/8] shellcheck des bibliothèques shell (ci/lib + livrables G2..G8)"
+	@echo "== [2/9] shellcheck des bibliothèques shell (ci/lib + livrables G2..G8, A1)"
 	@command -v shellcheck >/dev/null || { echo "!! shellcheck absent — \`brew install shellcheck\`"; exit 2; }
 	@shellcheck -x ci/lib/*.sh scripts/lib/deploy-pin.sh scripts/lib/env-chain.sh \
 	  scripts/lib/repo-protection.sh scripts/lib/archive-store.sh \
 	  scripts/lib/promote-manifest.sh scripts/test-promote-sans-recopie.sh \
-	  scripts/lib/assert-merge-identity.sh \
+	  scripts/lib/assert-merge-identity.sh scripts/lib/app-manifest.sh \
 	  scripts/setup-repo-protections.sh scripts/setup-deployer-groups.sh \
 	  scripts/setup-vault-paliers.sh scripts/setup-user-vault-jwt.sh \
 	  scripts/api-promote-request.sh scripts/api-promote-export.sh \
 	  scripts/team-promote.sh scripts/test-deployer-gate-live.sh \
 	  scripts/test-rollback-paliers.sh scripts/test-parity-moteurs.sh \
-	  && echo "  ✓ ci/lib + livrables shell G2..G8 propres"
-	@echo "== [3/8] épreuves de ci/lib/carto-secrets.sh"
+	  && echo "  ✓ ci/lib + livrables shell G2..G8 + A1 propres"
+	@echo "== [3/9] épreuves de ci/lib/carto-secrets.sh"
 	@ci/test-carto-secrets.sh
-	@echo "== [4/8] épreuves du résolveur de pin (G3)"
+	@echo "== [4/9] épreuves du résolveur de pin (G3)"
 	@bash scripts/test-deploy-pin.sh
-	@echo "== [5/8] épreuves de la rétention par palier (G4)"
+	@echo "== [5/9] épreuves de la rétention par palier (G4)"
 	@bash scripts/test-palier-retention.sh
-	@echo "== [6/8] épreuves du transport d'archives adressé par le contenu (G5)"
+	@echo "== [6/9] épreuves du transport d'archives adressé par le contenu (G5)"
 	@bash scripts/test-archive-store.sh
 	@# LA porte du jalon G5 : « porte refusée ⇒ moteur jamais lancé ». Comme
 	@# test-deploy-pin (précédent endossé en G4), ce harnais est EXÉCUTÉ, pas
 	@# shellchecké — c'est son verdict qui compte, pas son style.
-	@echo "== [7/8] épreuves du câblage de promotion — porte refusée ⇒ moteur jamais lancé (G5)"
+	@echo "== [7/9] épreuves du câblage de promotion — porte refusée ⇒ moteur jamais lancé (G5)"
 	@bash scripts/test-team-promote-wiring.sh
 	@# mocks/webmethods n'est PAS vendored (dépend du module cache Go, comme
 	@# labctl NE l'est PAS ici) : pas de GOPROXY=off. Spec §4.3 promettait
 	@# cette porte hors-ligne branchée dans lint-ci — restée débranchée jusqu'ici.
-	@echo "== [8/8] go test du mock webMethods (fidélité + archive, G5)"
+	@echo "== [8/9] go test du mock webMethods (fidélité + archive, G5)"
 	@cd mocks/webmethods && go test ./... -count=1
+	@# A1 (CD des applications) : la fusion multi-palier du manifeste et le
+	@# contrat figé, HORS LIGNE (sections A/B) — la section C, contre le Gitea
+	@# du lab, se rend à la main comme les autres suites `-v2/-v3`.
+	@echo "== [9/9] épreuves du manifeste multi-palier — lib seule + gardes hors ligne (A1)"
+	@A1_OFFLINE=1 bash scripts/test-app-request-a1.sh
 
 # Sauvegarde idempotente (ne re-save pas ce qui est déjà là) : `docker save` par
 # image → restauration unitaire possible. Pas de gzip : 2.4 To de libre, autant

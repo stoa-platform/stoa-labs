@@ -2,15 +2,20 @@
 # paiements-sepa.ansible.yml — GÉNÉRÉ par une demande de provisioning (maillon 1).
 # Appelant : oig-provisioner (azp). Ne PAS éditer à la main : re-générer via la demande.
 # Mode IDP : le client OAuth2 existe côté IdP ; Git porte la CLAIM qui identifie l'app.
+# MULTI-PALIER (A1) : la racine est FIGÉE à la première demande ; chaque demande
+# n'écrit que sa clé per_env.<env> (identité par palier : claim, IP, cert, clé backend).
+# (migré à la main le 2026-09-02 depuis la forme mono-palier : claim.value → per_env.dev)
 apim_ss_app:
   name: "paiements-sepa"
   api: "demo-selfservice"
   api_version: "1.0.0"
-  description: "Provisioned via oig-provisioner — demande dev (idp)"
+  description: "Provisioned via oig-provisioner (idp)"
   contact_emails: []
   enforce: []
   auth:
     mode: "idp"
     server_alias: "KeycloakStoaLab"
     audience: "demo-selfservice"
-    claim: { name: "azp", value: "paiements-sepa-dev" }
+    claim: { name: "azp" }
+  per_env:
+    dev: { auth: { claim: { value: "paiements-sepa-dev" } } }

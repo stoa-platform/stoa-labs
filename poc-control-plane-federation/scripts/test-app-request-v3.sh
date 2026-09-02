@@ -306,16 +306,27 @@ for pr in d:
 " 2>/dev/null; }
 
   echo "── C. non-régression du rendu (golden files, apps FIXES) ──"
-  # Mêmes fixtures que test-app-request-v2.sh : rendues UNE FOIS par le script
-  # d'AVANT Task 4, pour des entrées MACHINE sans aucun REQ_* optionnel. Elles
-  # prouvent que l'inversion des gardes v3 n'a pas bougé un octet du contrat
-  # machine. Régénération : cf. l'en-tête de la section C de v2 — geste
-  # EXPLICITE, jamais automatisé ici.
+  # Mêmes fixtures que test-app-request-v2.sh, pour des entrées MACHINE sans
+  # aucun REQ_* optionnel — RÉGÉNÉRÉES le 2026-09-02 pour le jalon A1 (forme
+  # multi-palier : claim { name } racine + valeur sous per_env.dev, description
+  # sans palier, en-tête « MULTI-PALIER (A1) »). Elles prouvent que le rendu
+  # machine n'a pas bougé d'un octet depuis. Provenance, régénération et
+  # précondition : cf. l'en-tête de la section C de v2 — geste EXPLICITE,
+  # jamais automatisé ici.
   GOLDEN_DIR="$REPO/scripts/testdata/app-request-v2"
+  GIT_BASE_GOLDEN="main"
   nonreg_case(){
     local label="$1" app="$2" caller="$3" golden="$4"; shift 4
     local branch="provision/${app}-dev"
     CLEAN_BRANCHES+=("$branch")
+    # A1 (2026-09-02) : le rendu compare un manifeste CRÉÉ ; si l'app golden
+    # existait sur main, le script FUSIONNERAIT (per_env seule) et le diff
+    # mentirait sur la cause. Précondition nommée plutôt que rouge opaque.
+    # (par code HTTP : le raw d'un fichier absent rend un corps JSON non vide)
+    if [ "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: token $GITEA_TOKEN" \
+          "$GH/api/v1/repos/ci/stoa-labs/raw/${GIT_BASE_GOLDEN}/poc-control-plane-federation/clients/provisioned/applications/${app}.ansible.yml")" = 200 ]; then
+      ko "$label : le manifeste $app existe déjà sur ${GIT_BASE_GOLDEN} — le golden compare une CRÉATION, pas une fusion (retirer le fichier de main)"; return
+    fi
     [ -f "$GOLDEN_DIR/$golden" ] || { ko "$label : golden '$golden' absent"; return; }
     local out rc mani
     out=$(env GITEA_TOKEN="$GITEA_TOKEN" GIT_HOST="$GH" REQ_APP="$app" REQ_ENV=dev REQ_API=accounts-read \

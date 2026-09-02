@@ -3,11 +3,13 @@
 # Appelant : cli2-provisioner (azp). Ne PAS éditer à la main : re-générer via la demande.
 # Mode INTERNAL : la gateway wM est l'authorization server ; elle génère le client
 # (client_id/secret), le pipeline le STOCKE dans Vault par env — jamais dans Git.
+# MULTI-PALIER (A1) : la racine est FIGÉE à la première demande ; chaque demande
+# n'écrit que sa clé per_env.<env> (identité par palier : client, IP, cert, clé backend).
 apim_ss_app:
   name: "p3t4golden-int"
   api: "accounts-read"
   api_version: "1.0.0"
-  description: "Provisioned via cli2-provisioner — demande dev (internal)"
+  description: "Provisioned via cli2-provisioner (internal)"
   contact_emails: []
   enforce: []
   auth:
