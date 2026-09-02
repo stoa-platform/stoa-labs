@@ -84,7 +84,7 @@ cat > "$XML" <<JOBXML
         </hudson.model.ChoiceParameterDefinition>
         <!-- A2 : la RÉFÉRENCE. Déclarée ICI aussi (pas seulement dans le
              Jenkinsfile) : un paramètre absent de la définition du job est
-             RETIRÉ EN SILENCE d'un `build job:` amont (SECURITY-170) — l'aval
+             RETIRÉ EN SILENCE d'un « build job: » amont (SECURITY-170) — l'aval
              appliquerait HEAD et provision-apply rougirait SHA_NON_CONFIRME.
              La pose du job doit donc le porter dès le premier build. -->
         <hudson.model.StringParameterDefinition>

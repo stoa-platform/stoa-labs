@@ -213,8 +213,8 @@ jf "string(name: 'MANIFEST', value: env.MANIFEST)" && ok "MANIFEST passé (celui
 jf "string(name: 'ENVIRONMENT', value: env.ENV_NAME)" && ok "ENVIRONMENT passé (ENV_NAME réconcilié)" || ko "ENVIRONMENT non passé"
 jf "string(name: 'ADMIN_VIA', value: env.APPLY_ADMIN_VIA)" && ok "ADMIN_VIA passé depuis APPLY_ADMIN_VIA (point de config, plus une constante)" || ko "ADMIN_VIA non passé depuis APPLY_ADMIN_VIA"
 jf "string(name: 'VAULT_USER', value: env.V_USER)" && ok "VAULT_USER = V_USER de la pause" || ko "VAULT_USER non passé"
-jf "[\$class: 'PasswordParameterValue', name: 'VAULT_USER_PASSWORD', value: env.V_PASS]" \
-  && ok "mot de passe passé en PasswordParameterValue (masqué), depuis V_PASS" || ko "VAULT_USER_PASSWORD non passé en PasswordParameterValue"
+jf "[\$class: 'PasswordParameterValue', name: 'VAULT_USER_PASSWORD', value: hudson.util.Secret.fromString(env.V_PASS ?: '')]" \
+  && ok "mot de passe passé en PasswordParameterValue via hudson.util.Secret.fromString (une String nue lève ClassCastException — mesuré build #75)" || ko "VAULT_USER_PASSWORD non passé en PasswordParameterValue(Secret) — une String nue casse le build après la pause"
 jf "propagate: false" && ok "propagate: false — le verdict est rendu par l'amont après confrontation" || ko "propagate absent/true : l'amont ne confronterait rien"
 jf "env.APPLIED_SHA = vars.APPLIED_SHA" && ok "APPLIED_SHA relu dans buildVariables de l'aval" || ko "APPLIED_SHA non relu"
 jf "env.APPLIED_MODE = vars.APPLIED_MODE" && ok "APPLIED_MODE relu dans buildVariables de l'aval" || ko "APPLIED_MODE non relu"

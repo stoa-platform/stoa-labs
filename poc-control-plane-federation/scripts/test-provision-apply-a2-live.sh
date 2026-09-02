@@ -89,9 +89,12 @@ jq_(){ python3 -c "import json,sys
 try: d=json.load(sys.stdin)
 except Exception: sys.exit(1)
 $1"; }
-raw_at(){ # $1=ref $2=path → stdout (code HTTP dans $RAW_HC)
-  RAW_HC=$(gapi -o "$TMP/raw.out" -w '%{http_code}' "$API/repos/$GIT_REPO/raw/$1/$2"); cat "$TMP/raw.out"
+# ⚠ appelé dans un $( ) : une variable posée ICI meurt avec le sous-shell —
+# le code HTTP passe par un FICHIER, relu par l'appelant (raw_hc).
+raw_at(){ # $1=ref $2=path → stdout ; code HTTP dans $TMP/raw.hc
+  gapi -o "$TMP/raw.out" -w '%{http_code}' "$API/repos/$GIT_REPO/raw/$1/$2" > "$TMP/raw.hc"; cat "$TMP/raw.out"
 }
+raw_hc(){ cat "$TMP/raw.hc" 2>/dev/null; }
 pr_field(){ gapi "$API/repos/$GIT_REPO/pulls/$1" | jq_ "print(d$2)"; }
 pr_comments(){ gapi "$API/repos/$GIT_REPO/issues/$1/comments" | jq_ "print('\n=====\n'.join(c.get('body','') for c in d))"; }
 # ── helpers Jenkins (crumb + cookie du MÊME appel, sinon « Rejected ») ────────
@@ -277,7 +280,7 @@ grep -q 'RECONCILE_OK' "$TMP/pa.console" && ok "1.3c RECONCILE_OK dans le log (G
 grep -q "mergée par 'alice' (demandeur 'ci')" "$TMP/pa.console" && ok "1.3d identités réconciliées = alice / ci (relues sur la forge)" || ko "1.3d identités réconciliées absentes du log"
 
 # ── déplacer HEAD : un commit sur main qui change per_env.rec AVANT de répondre ──
-MERGED_MAN=$(raw_at "$MERGE_SHA" "$MAN_DIR/${APP_P}.ansible.yml"); [ "$RAW_HC" = 200 ] || die "PREREQUIS : manifeste illisible au SHA mergé (HTTP $RAW_HC)"
+MERGED_MAN=$(raw_at "$MERGE_SHA" "$MAN_DIR/${APP_P}.ansible.yml"); [ "$(raw_hc)" = 200 ] || die "PREREQUIS : manifeste illisible au SHA mergé (HTTP $(raw_hc))"
 printf '%s\n' "$MERGED_MAN" > "$TMP/merged.yml"
 printf '%s\n' "$MERGED_MAN" | sed 's/"10\.42\.0\.1"/"10.42.0.2"/' > "$TMP/head.yml"
 cmp -s "$TMP/merged.yml" "$TMP/head.yml" && die "PREREQUIS : la substitution d'IP n'a rien changé (forme du manifeste inattendue)"
@@ -354,8 +357,9 @@ print(json.dumps({"action": "closed", "pull_request": {"head": {"ref": sys.argv[
 PY
 # Le build de CE tir est résolu depuis la réponse GWT (item de file → executable.number),
 # jamais « le dernier build » : sur un lab partagé, un autre tir pourrait fournir l'ancre.
-fire_webhook(){ # $1=fichier payload → imprime le numéro de build, ou vide ; HC dans $WH_HC
-  WH_HC=$(curl -s -X POST -H 'Content-Type: application/json' --data-binary @"$1" "$JENKINS_UI/generic-webhook-trigger/invoke?token=stoa-provision-apply" -o "$TMP/wh.out" -w '%{http_code}')
+# ⚠ appelé dans un $( ) : le code HTTP passe par un fichier (wh_hc), pas par une variable.
+fire_webhook(){ # $1=fichier payload → imprime le numéro de build, ou vide ; code HTTP dans $TMP/wh.hc
+  curl -s -X POST -H 'Content-Type: application/json' --data-binary @"$1" "$JENKINS_UI/generic-webhook-trigger/invoke?token=stoa-provision-apply" -o "$TMP/wh.out" -w '%{http_code}' > "$TMP/wh.hc"
   local qid n dl
   qid=$(jq_ "print((d.get('jobs') or {}).get('provision-apply', {}).get('id', ''))" < "$TMP/wh.out" 2>/dev/null || true)
   [ -n "$qid" ] || { echo ""; return; }
@@ -368,7 +372,8 @@ fire_webhook(){ # $1=fichier payload → imprime le numéro de build, ou vide ; 
   echo ""
 }
 N_PA2=$(fire_webhook "$TMP/forged.json")
-[ "$WH_HC" = 200 ] && ok "2.2 webhook forgé accepté par GWT (HTTP 200 — le filtre ne voit que le payload) : merged:true, SHA réel de main $MAIN_NOW" || ko "2.2 webhook forgé refusé (HTTP $WH_HC) : $(head -c 200 "$TMP/wh.out")"
+wh_hc(){ cat "$TMP/wh.hc" 2>/dev/null; }
+[ "$(wh_hc)" = 200 ] && ok "2.2 webhook forgé accepté par GWT (HTTP 200 — le filtre ne voit que le payload) : merged:true, SHA réel de main $MAIN_NOW" || ko "2.2 webhook forgé refusé (HTTP $(wh_hc)) : $(head -c 200 "$TMP/wh.out")"
 [ -n "$N_PA2" ] && ok "2.2b build résolu depuis l'item de file GWT : provision-apply #$N_PA2" || die "BUILD_EN_FILE : le tir forgé n'a pas produit de build (item de file sans executable) — file bloquée ?"
 ST=$(wait_until 300 provision-apply "$N_PA2" FINISHED); RES=$(jresult provision-apply "$N_PA2")
 DN2=$(curl -s "$JENKINS_UI/job/provision-apply/$N_PA2/api/json?tree=displayName" | jq_ "print(d.get('displayName',''))")
@@ -402,7 +407,7 @@ print(json.dumps({"action": "closed", "pull_request": {"head": {"ref": sys.argv[
 PY
 N_SS3=$(jnext selfservice-app-deploy)
 N_PA3=$(fire_webhook "$TMP/replay.json")
-[ "$WH_HC" = 200 ] && [ -n "$N_PA3" ] && ok "3.1 rejeu accepté par GWT, build provision-apply #$N_PA3 (item de file résolu)" || die "BUILD_EN_FILE : rejeu sans build (HTTP $WH_HC)"
+[ "$(wh_hc)" = 200 ] && [ -n "$N_PA3" ] && ok "3.1 rejeu accepté par GWT, build provision-apply #$N_PA3 (item de file résolu)" || die "BUILD_EN_FILE : rejeu sans build (HTTP $(wh_hc))"
 ST=$(wait_until 300 provision-apply "$N_PA3" FINISHED); RES=$(jresult provision-apply "$N_PA3")
 if [ "$ST" = PAUSED_PENDING_INPUT ]; then
   jabort_input provision-apply "$N_PA3"; ko "3.2 le rejeu #$N_PA3 a atteint la PAUSE (régression) — pause abandonnée par ce harnais"

@@ -251,7 +251,12 @@ pipeline {
             string(name: 'ADMIN_VIA',   value: env.APPLY_ADMIN_VIA),
             string(name: 'MERGE_SHA',   value: env.MERGE_SHA),
             string(name: 'VAULT_USER',  value: env.V_USER),
-            [$class: 'PasswordParameterValue', name: 'VAULT_USER_PASSWORD', value: env.V_PASS]
+            // MESURÉ (build #75) : depuis Jenkins 2.236 le constructeur de
+            // PasswordParameterValue prend un hudson.util.Secret ; une String
+            // (ce qu'est env.V_PASS en déclaratif) lève ClassCastException —
+            // le Groovy d'origine passait le Secret rendu par input(). D'où
+            // Secret.fromString (whitelisté), jamais la String nue.
+            [$class: 'PasswordParameterValue', name: 'VAULT_USER_PASSWORD', value: hudson.util.Secret.fromString(env.V_PASS ?: '')]
           ])
           def vars = b.buildVariables ?: [:]
           env.APPLIED_SHA     = vars.APPLIED_SHA ?: ''
