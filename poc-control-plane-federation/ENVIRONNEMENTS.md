@@ -611,7 +611,52 @@ ne projette plus « le dernier `main` » :
 Le job `provision-apply` est désormais un **Jenkinsfile déclaratif from SCM**
 (`ci/Jenkinsfile.provision-apply`) ; `ci/jenkins/provision-apply.job.xml` n'est
 qu'une coquille (pointeur SCM + miroir du bloc `<triggers>`, qui gagne).
-`provision-plan` et `provisioning-request` restent en Groovy inline (A0).
+
+## Tout en Jenkinsfile (A0 — GOAL cd-applications, 2026-09-02)
+
+Depuis A0, **plus un seul `job.xml` de l'aval applicatif ne porte de logique** :
+`provision-plan` et `provisioning-request` ont rejoint `provision-apply` en
+Jenkinsfile déclaratif from SCM (`ci/Jenkinsfile.provision-plan`,
+`ci/Jenkinsfile.provisioning-request`, parité stricte avec le Groovy d'origine :
+le pipeline route trois ou sept clés de webhook vers le script, rien d'autre).
+Le miroir `<triggers>` XML/Jenkinsfile est vérifié **champ à champ** par la lib
+`scripts/lib/gwt-mirror.sh` (token, filtres, `printPostContent`, l'ensemble des
+couples clé/valeur) sur les trois jobs, mutations comprises (`test-a0-wiring.sh`,
+porte `make lint-ci` [11/11]).
+
+**Le formulaire `app-request` est posé par son Jenkinsfile.** Ses onze
+paramètres ne sont plus dans le XML : un pas scripté
+`properties([parameters([…])])` les pose au premier stage, depuis des listes
+calculées **dans le build** par `scripts/app-request-choices.sh` — paliers =
+`env_chain_nonprod` (la source de `provision-request.sh`, terminus exclu par
+structure), équipes = `providers.<env d'authoring>.yml` relu sur Gitea main,
+APIs = les `publish.yml` (plateforme + dépôts d'équipe déclarés), fail-closed.
+Cinq faits mesurés sur ce lab le 2026-09-02 fondent le mécanisme :
+`properties()` pose des paramètres sur un job dont le XML n'en a aucun et les
+builds suivants les conservent ; il **préserve** les propriétés venues du XML
+(triggers, `disableConcurrentBuilds`) ; **re-poser le XML les efface** ⇒ un
+build d'amorçage suit chaque pose (`setup-provision-jobs.sh`, knob
+`BOOTSTRAP_JOBS`, passé par `setup-team-onboard-jobs.sh`) ; un build sur un job
+sans définition lie **zéro** paramètre (`params.size()==0`, le signal
+d'amorçage, capturé AVANT `properties()`) ; les valeurs posées ainsi subissent
+toujours `EnvVars.resolve()` (le `withEnv([params…])` reste obligatoire).
+Limite écrite d'avance : le formulaire montre les listes du build **précédent**
+— acceptable parce que les listes sont de l'ergonomie, l'autorité est dans les
+gardes du script (`ENV_INVALIDE`, `TEAM_NOT_DECLARED`, `REQ_API` requis).
+`api-request` (chaîne des APIs, hors périmètre) garde ses marqueurs substitués à
+la pose : deux mécanismes coexistent, délibérément.
+
+**Rollout A0 sur un Jenkins existant :**
+
+```bash
+git push gitea HEAD:main                                          # le CI lit gitea
+JOBS="provision-plan provisioning-request" bash scripts/setup-provision-jobs.sh   # coquilles (historique conservé)
+JOBS=app-request bash scripts/setup-team-onboard-jobs.sh          # coquille + build d'AMORÇAGE (sans token Gitea)
+curl -sg "$JENKINS/job/app-request/api/json?tree=property[parameterDefinitions[name]]"   # 11 paramètres après l'amorçage
+```
+
+Sur un job `app-request` posé sans amorçage, le bouton « Build » (sans
+paramètre) **est** l'amorçage : le formulaire apparaît au build suivant.
 
 **Rollout sur un Jenkins existant — l'ordre est une contrainte :**
 

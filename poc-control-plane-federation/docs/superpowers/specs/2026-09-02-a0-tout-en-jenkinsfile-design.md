@@ -1,7 +1,7 @@
 ---
 title: "A0 — Tout en Jenkinsfile : les trois jobs de l'aval applicatif sortent du XML, le formulaire app-request aussi"
 type: design
-status: "EN COURS 2026-09-02 — spec écrite après deux spikes de mesure sur le lab (properties() scripté dans un pipeline déclaratif)"
+status: "LIVRÉ 2026-09-02 — hors ligne test-a0-wiring.sh 83/83 + make lint-ci [11/11] ; builds réels test-a0-live.sh 32/32 (amorçage app-request #34, voie machine provisioning-request #11 → PR #384 → provision-plan #710, voie humaine app-request #35 → PR #385 → provision-plan #712, contre-épreuve #36 IP_ALLOWLIST_INVALID littérale) ; faits mesurés par job jetable AVANT la conception"
 date: 2026-09-02
 lié: [GOAL-cd-applications-2026-09-02, 2026-09-02-a2-reference-sha-merge-design, adr-082-ouverture-palier-retention-credential]
 ---
