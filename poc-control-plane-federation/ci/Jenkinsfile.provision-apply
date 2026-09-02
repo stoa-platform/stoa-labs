@@ -266,7 +266,10 @@ pipeline {
           env.APPLIED_MODE    = vars.APPLIED_MODE ?: ''
           env.APPLIED_DIGEST  = vars.APPLIED_DIGEST ?: ''
           env.APPLY_BUILD     = "${env.APPLY_JOB} #${b.number}"
-          env.APPLY_BUILD_URL = b.absoluteUrl ?: ''
+          // PAS `b.absoluteUrl` : sans URL racine Jenkins configurée (ce lab),
+          // il lève IllegalStateException APRÈS un apply réussi (mesuré #81).
+          // JENKINS_URL n'est posé que si la racine l'est ; repli textuel sinon.
+          env.APPLY_BUILD_URL = env.JENKINS_URL ? "${env.JENKINS_URL}job/${env.APPLY_JOB}/${b.number}/" : "${env.APPLY_JOB} #${b.number}"
           env.APPLY_RESULT    = b.result ?: 'FAILURE'
           env.REFUSAL         = ''
           env.REFUSAL_DETAIL  = ''

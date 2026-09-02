@@ -44,7 +44,7 @@ TMP="$(mktemp -d /tmp/pa-wiring.XXXXXX)"; trap 'rm -rf "$TMP"' EXIT
 # quel que soit le nombre de contrôles exécutés : une section sautée en silence
 # ferait baisser le total SANS rougir). Toute section ajoutée/retirée DOIT le
 # mettre à jour à la main. Le contrôle final n'est pas compté dedans.
-EXPECTED_CHECKS=139
+EXPECTED_CHECKS=140
 
 [ -f "$JOB" ] || { echo "job introuvable : $JOB"; exit 2; }
 [ -f "$JF" ]  || { echo "Jenkinsfile introuvable : $JF"; exit 2; }
@@ -222,6 +222,7 @@ jf "string(name: 'VAULT_USER', value: vUser)" && ok "VAULT_USER = le login saisi
 jf "[\$class: 'PasswordParameterValue', name: 'VAULT_USER_PASSWORD', value: creds.V_PASS]" \
   && ok "mot de passe passé en PasswordParameterValue avec le Secret rendu par input() (String nue = ClassCastException #75, Secret.fromString = sandbox #78)" || ko "VAULT_USER_PASSWORD non passé depuis creds.V_PASS (le Secret d'input())"
 jf "propagate: false" && ok "propagate: false — le verdict est rendu par l'amont après confrontation" || ko "propagate absent/true : l'amont ne confronterait rien"
+grep -q 'absoluteUrl' "$TMP/jf.code" && ko "b.absoluteUrl utilisé — lève IllegalStateException sans URL racine Jenkins (mesuré #81, APRÈS l'apply)" || ok "aucun b.absoluteUrl (sans URL racine Jenkins il lève après l'apply — mesuré #81) : repli JENKINS_URL/textuel"
 jf "env.APPLIED_SHA = vars.APPLIED_SHA" && ok "APPLIED_SHA relu dans buildVariables de l'aval" || ko "APPLIED_SHA non relu"
 jf "env.APPLIED_MODE = vars.APPLIED_MODE" && ok "APPLIED_MODE relu dans buildVariables de l'aval" || ko "APPLIED_MODE non relu"
 jf "env.APPLIED_DIGEST = vars.APPLIED_DIGEST" && ok "APPLIED_DIGEST relu dans buildVariables de l'aval" || ko "APPLIED_DIGEST non relu"
