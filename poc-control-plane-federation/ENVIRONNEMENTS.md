@@ -658,6 +658,76 @@ curl -sg "$JENKINS/job/app-request/api/json?tree=property[parameterDefinitions[n
 Sur un job `app-request` posé sans amorçage, le bouton « Build » (sans
 paramètre) **est** l'amorçage : le formulaire apparaît au build suivant.
 
+### Les deux dettes d'A0, fermées le 2026-09-02
+
+**Dette 1 — la forge est relue AVANT le verdict du plan, et la PR n'est jamais
+muette.** Le payload d'un webhook est une affirmation : `provision-plan.sh`
+clonait la branche `PR_BRANCH` et commentait la PR `PR_NUMBER` telles que
+nommées — un payload forgé (branche réelle de la PR A, numéro de la PR B)
+faisait poser un *verdict* du compte de service sur une PR étrangère
+(constat bloquant de la critique adverse). Désormais
+`scripts/lib/gitea-pr-confirm.sh` relit la PR sur la forge **avant le clone**
+(`state=open`, `head.ref == PR_BRANCH` sous `provision/*`, `base.ref == main`),
+sinon refus nommé **`FORGE_NON_CONFIRMEE`**, rc 1, aucun commentaire, aucun
+clone ; le clone checkoute le **SHA de tête relu** (une branche
+`provision/<app>-<env>` réutilisée après merge ne fait jamais commenter la PR
+mergée) ; un clone ou un checkout raté est un refus (`CLONE_ECHEC`,
+`BRANCHE_INTROUVABLE` — avant, vert par « IGNORE »). Le script écrit ses
+**faits** (`PLAN_FACTS` : tête relue, `PLAN_VERDICT=ok|fail|ignore|refus`,
+raison) ; le `post{always}` de stage les charge dans l'environnement, et le
+`post{always}` de pipeline pose le **statut de build** sous le marqueur
+distinct `<!-- provision-plan-build -->` (`scripts/provision-plan-status.sh`) :
+`ABORTED` ⇒ « abandonné, aucun verdict » ; `FAILURE` ⇒ « verdict négatif » /
+« refus avant le verdict : raison » / « échec avant le plan » ; `SUCCESS` +
+`ignore` ⇒ « demande IGNORÉE (raison) : aucun verdict » ; `SUCCESS` + `ok` ⇒
+**rien de neuf** (le verdict ✅ suffit ; un statut rouge périmé est seulement
+effacé — `COMMENT_ONLY_IF_EXISTS`). Sans faits (le stage n'a pas tourné), le
+statut relit la forge par la même lib ; non confirmée ⇒ silence. Les gardes bon
+marché (`provision/*`, `PR_NUMBER` numérique) sont en Groovy **avant** tout
+`node` — le hook Gitea tire sur toutes les PR du dépôt, `agent none` existe
+pour qu'une PR étrangère n'alloue aucun exécuteur (même correctif sur
+`provision-apply`). `provisioning-request` n'a **pas** de statut : la PR naît en
+toute fin du script, le plan enchaîné n'est pas fatal ; une demande machine
+refusée est un build rouge dont la seule trace est le log (le 200 aveugle rendu
+au caller OIG est la dette d'APIsation, distincte).
+
+**Dette 2 — `selfservice-app-deploy` pose son formulaire depuis son
+Jenkinsfile.** Le bloc `parameters{}` déclaratif et sa liste `ENVIRONMENT` en
+dur ont disparu : un premier stage « Formulaire » dérive les paliers de
+`env_chain_nonprod` (clone du build) et pose les huit paramètres par
+`properties([parameters([…])])` ; les trois stages lisent les valeurs brutes
+par `withEnv([params…])`. Deux faits mesurés (jobs jetables) gouvernent le
+rollout :
+
+- **Fait 6** — si le XML du job porte déjà une `ParametersDefinitionProperty`,
+  `properties()` en **ajoute une seconde** et le job casse
+  (`buildWithParameters` ⇒ 500). Avec un XML **sans** paramètre, une seule
+  propriété ; `options{}` / `triggers{}` déclaratifs sont préservés. D'où
+  `setup-selfservice-job.sh` : `XML_PARAMS=auto` (`no` pour
+  `Jenkinsfile.selfservice`, `yes` pour `publish-api-deploy` qui garde son bloc
+  déclaratif — liste alors dérivée à la pose), amorçage `POST /build`,
+  `BOOTSTRAP_WAIT` (360 s : le préflight gateway peut durer 300 s), relecture
+  « une propriété + `ENVIRONMENT == env_chain_nonprod` ». **La conversion
+  passe par une re-pose, jamais par un simple push** : un push seul sur un XML
+  paramétré produit le doublon.
+- **Fait 7** — `EnvVars.resolve()` frappe aussi un paramètre `password` : un
+  mot de passe annuaire portant `$$` ou `${` arrivait **altéré** à Vault
+  (lockout au second essai). `withEnv(["VAULT_USER_PASSWORD=${params.…}"])`
+  dans l'Apply le livre intact ; une valeur vide retire la variable (PLAN-only
+  inchangé).
+
+Hors périmètre, nommé : `ci/Jenkinsfile.publish-api:24` garde sa liste
+littérale avec le terminus (formulaire producteur, chaîne des APIs) — sur ce
+job le XML n'a pas autorité (fusion par nom), la décision est à prendre là-bas.
+Résiduel : `setup-selfservice-job.sh` n'a ni auth Jenkins ni portail (parité
+avec `setup-provision-jobs.sh` le jour du rollout client).
+
+```bash
+git push gitea HEAD:main
+bash scripts/setup-selfservice-job.sh          # RE-POSE (XML sans paramètre) + amorçage + relecture
+bash scripts/setup-selfservice-job.sh --print  # le XML rendu, zéro réseau (épreuves)
+```
+
 **Rollout sur un Jenkins existant — l'ordre est une contrainte :**
 
 ```bash

@@ -57,7 +57,7 @@ jq_(){ python3 -c "import sys,json; d=json.load(sys.stdin); $1"; }
 # ── helpers Jenkins ──────────────────────────────────────────────────────────
 jcrumb(){ curl -sf -c "$1" "$JENKINS_UI/crumbIssuer/api/json" | jq_ 'print(d["crumbRequestField"]+": "+d["crumb"])'; }
 jnext(){ curl -sfg "$JENKINS_UI/job/$1/api/json?tree=nextBuildNumber" | jq_ 'print(d["nextBuildNumber"])'; }
-jresult(){ curl -sg "$JENKINS_UI/job/$1/$2/api/json?tree=result,building" 2>/dev/null | jq_ 'print(d.get("result") or ("building" if d.get("building") else ""))' 2>/dev/null || true; }
+jresult(){ curl -sg "$JENKINS_UI/job/$1/$2/api/json?tree=result,building" 2>/dev/null | jq_ 'print("building" if d.get("building") else (d.get("result") or ""))' 2>/dev/null || true; }
 jname(){ curl -sg "$JENKINS_UI/job/$1/$2/api/json?tree=displayName" 2>/dev/null | jq_ 'print(d.get("displayName",""))' 2>/dev/null || true; }
 wait_build(){ # $1=job $2=n $3=secondes → imprime le résultat final ('' si jamais fini)
   local i r; for i in $(seq 1 "$(( $3 / 3 ))"); do r=$(jresult "$1" "$2"); [ -n "$r" ] && [ "$r" != "building" ] && { printf '%s' "$r"; return 0; }; sleep 3; done; printf '%s' "$(jresult "$1" "$2")"; return 1
