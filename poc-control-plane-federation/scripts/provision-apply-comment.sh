@@ -50,6 +50,14 @@
 #   EXPECTED_SHA   (opt) la référence DEMANDÉE (MERGE_SHA) — écrite quand elle diffère de APPLIED_SHA
 #   REFUSAL        (opt) tag d'un refus (PAYLOAD_PERIME, SHA_NON_CONFIRME, …) ;
 #   REFUSAL_DETAIL (opt) sa phrase — assainie ici
+#   REFUSAL_KIND   (opt) `porte` = refus de LA PORTE DE LA CHAÎNE (A4 : fourEyes, refs/ITSM,
+#                        terminus, déclaration déployeur) avant ou au dispatch — la phrase du
+#                        refus le dit ; absent = refus de réconciliation (A2), texte inchangé
+#   GATE_ENV, GATE_FOUR_EYES, GATE_APPROVER_GROUP, GATE_DEPLOYER_GROUP, GATE_DEPLOYER_POLICY, GATE_ITSM
+#                  (opt, A4) la porte relue AU DISPATCH — rendue en une ligne « porte du palier »
+#                        SEULEMENT si GATE_ENV est posé (la sentinelle « la porte a tourné ») ;
+#                        l'approbation attendue y est dite NON vérifiée (aucun mécanisme ne la
+#                        tient sur cette chaîne — ADR-084)
 #   BUILD_URL      (opt) lien du build (Jenkins le fournit)
 #   GIT_WEB_HOST   (opt) base Gitea vue de l'HUMAIN : rend le SHA cliquable
 #   GIT_REPO / GITEA_TOKEN / GIT_HOST — cf. lib/gitea-pr-comment.sh
@@ -73,7 +81,9 @@ WORK="$(mktemp -d /tmp/applycmt.XXXXXX)"; trap 'rm -rf "$WORK"' EXIT
 APPLY_RESULT="$RES_UC" APP_NAME="$APP_NAME" ENV_NAME="$ENV_NAME" \
 VALIDATOR="$VALIDATOR" BUILD_URL="$BUILD_URL" BODY_OUT="$WORK/comment.md" \
 APPLIED_SHA="${APPLIED_SHA:-}" APPLIED_DIGEST="${APPLIED_DIGEST:-}" EXPECTED_SHA="${EXPECTED_SHA:-}" \
-REFUSAL="${REFUSAL:-}" REFUSAL_DETAIL="${REFUSAL_DETAIL:-}" \
+REFUSAL="${REFUSAL:-}" REFUSAL_DETAIL="${REFUSAL_DETAIL:-}" REFUSAL_KIND="${REFUSAL_KIND:-}" \
+GATE_ENV="${GATE_ENV:-}" GATE_FOUR_EYES="${GATE_FOUR_EYES:-}" GATE_APPROVER_GROUP="${GATE_APPROVER_GROUP:-}" \
+GATE_DEPLOYER_GROUP="${GATE_DEPLOYER_GROUP:-}" GATE_DEPLOYER_POLICY="${GATE_DEPLOYER_POLICY:-}" GATE_ITSM="${GATE_ITSM:-}" \
 GIT_WEB_HOST="${GIT_WEB_HOST:-}" GIT_REPO="$GIT_REPO" python3 - <<'PY'
 import os, re
 res = os.environ["APPLY_RESULT"]
@@ -125,6 +135,22 @@ if digest:
     lines.append(f"- digest du manifeste effectif `per_env.{clean(os.environ['ENV_NAME'], 40)}` à ce SHA : `{digest}`")
 if os.environ.get("BUILD_URL"):
     lines.append(f"- build : {clean(os.environ['BUILD_URL'], 200)}")
+# A4 — LA PORTE DU PALIER, relue au dispatch : ce qui a été EXIGÉ, à côté de ce
+# qui a été fait. Rendue seulement si GATE_ENV est posé (la porte a tourné) et de
+# forme sûre ; l'approbation attendue est dite NON vérifiée — aucun mécanisme ne
+# la tient sur cette chaîne (ADR-084, limite nommée) ; le porteur, lui, est
+# vérifié au dispatch de l'aval sur le token de la pause (§2bis).
+gate_env = os.environ.get("GATE_ENV", "").strip()
+if re.fullmatch(r"[a-z0-9]+", gate_env):
+    def g(k, n=60):
+        v = os.environ.get(k, "").strip()
+        return clean(v, n) if re.fullmatch(r"[A-Za-z0-9_.@:+-]*", v) else ""
+    oui = lambda k: "oui" if g(k) == "1" else "non"
+    approver = g("GATE_APPROVER_GROUP"); deployer = g("GATE_DEPLOYER_GROUP"); policy = g("GATE_DEPLOYER_POLICY")
+    lines.append(f"- porte du palier `{gate_env}` (relue au dispatch) : quatre yeux : {oui('GATE_FOUR_EYES')}"
+                 + (f" · approbation attendue `{approver}` — **non vérifiée** (aucun mécanisme ne la tient sur cette chaîne)" if approver else " · approbation : aucun groupe déclaré")
+                 + (f" · porteur attendu `{deployer}` → `{policy}` (vérifié au dispatch sur le token)" if deployer else " · porteur : aucune déclaration (la rétention du credential décide)")
+                 + f" · ITSM re-vérifié au dispatch : {'oui' if g('GATE_ITSM') == 'checked' else 'non'}")
 lines.append("")
 if res == "SUCCESS":
     lines.append("La convergence et le `verify` fail-closed sont passés. "
@@ -133,9 +159,16 @@ if res == "SUCCESS":
 elif res == "REFUSED":
     lines.append(f"**CE webhook n'a rien appliqué.** Refus `{refusal or 'REFUSED'}`"
                  + (f" : `{detail}`" if detail else "") + ".")
-    lines.append("Le webhook ne fait pas foi : la PR et `main` ont été relus (forge, git) et ne "
-                 "correspondent pas — aucune identité n'a été demandée. Un apply antérieur de cette PR, "
-                 "s'il existe, reste celui que le commentaire « Apply nominatif » décrit.")
+    if os.environ.get("REFUSAL_KIND", "").strip() == "porte":
+        lines.append("La porte du palier (`environments.yaml` : quatre yeux, références/ITSM, terminus, "
+                     "déclaration déployeur) a refusé avant la demande en attente — aucune identité n'a été "
+                     "demandée, rien n'a été écrit. Corriger la cause (identité du demandeur, référence de "
+                     "changement ou de PV, statut ITSM, déclaration de la porte) puis rejouer le webhook. "
+                     "Un apply antérieur de cette PR, s'il existe, reste celui que le commentaire « Apply nominatif » décrit.")
+    else:
+        lines.append("Le webhook ne fait pas foi : la PR et `main` ont été relus (forge, git) et ne "
+                     "correspondent pas — aucune identité n'a été demandée. Un apply antérieur de cette PR, "
+                     "s'il existe, reste celui que le commentaire « Apply nominatif » décrit.")
 elif refusal == "SHA_NON_CONFIRME":
     lines.append("**L'aval a projeté " + (f"`{sha}`" if sha else "un état non annoncé")
                  + ", PAS la référence demandée" + (f" `{expected}`" if expected else "") + ".** "
