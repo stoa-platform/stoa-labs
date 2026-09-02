@@ -355,6 +355,34 @@ if mutant 's@^if \[ "\$ENVIRONMENT" = "\$TERMINUS" \]; then$@if false; then@' m_
 fi
 
 echo
+echo "═══ E. vault_token_ttl (ci/lib/vault-login.sh) contre le stub ═══"
+# La lib est POSIX et sourcée par le pipeline ; ici sourcée dans un sous-shell
+# bash avec un « login simulé » : _VAULT_TMPDIR + token.hdr posés à la main
+# (motif test-vault-user-login.sh) — aucun login réel, aucun réseau hors stub.
+LIB="ci/lib/vault-login.sh"
+ttl_call(){ # <token.hdr présent 1|0> → stdout/rc dans $TMP/e.out / $TMP/e.rc
+  ( set +e; VAULT_ADDR="$VA"; export VAULT_ADDR
+    # shellcheck disable=SC1090
+    . "$LIB"
+    if [ "$1" = 1 ]; then _VAULT_TMPDIR="$TMP/vlib"; mkdir -p "$_VAULT_TMPDIR"; printf 'X-Vault-Token: stub-token-abc\n' > "$_VAULT_TMPDIR/token.hdr"; fi
+    vault_token_ttl > "$TMP/e.out" 2>"$TMP/e.err"; echo $? > "$TMP/e.rc" )
+}
+set_ctl '{"lookup":{"policies":["deploy-banking-demo","default"],"ttl":299}}'
+ttl_call 0
+[ "$(cat "$TMP/e.rc")" != 0 ] && grep -q 'sans login préalable' "$TMP/e.err" && [ ! -s "$TMP/e.out" ] && ok "E.1 sans login ⇒ rc≠0, « sans login préalable », rien sur stdout" || bad "E.1 rc $(cat "$TMP/e.rc") out='$(cat "$TMP/e.out")' err='$(cat "$TMP/e.err")'"
+ttl_call 1
+[ "$(cat "$TMP/e.rc")" = 0 ] && [ "$(cat "$TMP/e.out")" = 299 ] && ok "E.2 après login : imprime le ttl relu (299)" || bad "E.2 rc $(cat "$TMP/e.rc") out='$(cat "$TMP/e.out")' err='$(cat "$TMP/e.err")'"
+[ "$(jcount '"m": "GET", "p": "/v1/auth/token/lookup-self", "tok": "stub-token-abc"')" = 1 ] && ok "E.3 un seul lookup-self, token par en-tête" || bad "E.3 journal : $(cat "$STUB_LOG")"
+set_ctl '{"lookup":{"code":403}}'
+ttl_call 1
+[ "$(cat "$TMP/e.rc")" != 0 ] && [ ! -s "$TMP/e.out" ] && ok "E.4 lookup-self 403 ⇒ rc≠0, rien sur stdout" || bad "E.4 rc $(cat "$TMP/e.rc") out='$(cat "$TMP/e.out")'"
+set_ctl '{"lookup":{"policies":["default"],"ttl":"12x"}}'
+ttl_call 1
+[ "$(cat "$TMP/e.rc")" != 0 ] && ok "E.5 ttl non entier ⇒ rc≠0 (l'appelant refuse TTL_INSUFFISANT sur une valeur vide)" || bad "E.5 rc $(cat "$TMP/e.rc") out='$(cat "$TMP/e.out")'"
+sed -E 's@^[[:space:]]*#.*$@@' "$LIB" > "$TMP/lib.code"
+grep -q '^vault_token_ttl()' "$TMP/lib.code" && ok "E.6 la fonction est définie dans la lib" || bad "E.6 vault_token_ttl absente de $LIB"
+
+echo
 echo "======================================================================"
 printf 'RÉSULTAT : %d/%d\n' "$PASS" "$((PASS+FAIL))"
 [ "$FAIL" -eq 0 ] || exit 1
