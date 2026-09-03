@@ -6,12 +6,12 @@
 # ⇒ 201) ; un shim `git` qui journalise chaque verbe et peut déplacer la branche
 # distante entre le bail et le push. Toute sortie va dans un fichier avant grep.
 # `A && ok || ko` (SC2015) est l'idiome des scripts de preuve du repo.
-# shellcheck disable=SC2015,SC2034
+# shellcheck disable=SC2015,SC2034,SC2016
 set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 TMP="$(mktemp -d)"; umask 077
 PIDS=""
-cleanup(){ for p in $PIDS; do kill "$p" 2>/dev/null; wait "$p" 2>/dev/null; done; rm -rf "$TMP"; }
+cleanup(){ for p in $PIDS; do kill "$p" 2>/dev/null; wait "$p" 2>/dev/null; done; rm -rf "$TMP" "$REPO"/scripts/.a6-mut-*.sh; }
 trap cleanup EXIT
 PASS=0; FAIL=0
 ok(){ PASS=$((PASS+1)); printf '  ✅ %s\n' "$*"; }
@@ -349,7 +349,36 @@ SHA_DK2=$(pr_merge 12 rec "$LINE_D" "CERT-D") || { echo "!! fixture : pr_merge" 
 run_rb "$TMP/b32.out" STOA_ENV_CHAIN_FILE="$CHAIN_REC_GATED" REQ_CHANGE_REF=CHG-0009; b_refus B.32 "N-1 avec deux change_ref" LIGNE_AMBIGUE "$TMP/b32.out"
 gw reset -q --hard "$MAIN0"; gw push -q -f origin main; CLOSED="$CL_SAVE"; gw branch -q -D provision/appa-rec 2>/dev/null || true
 
-EXPECTED_CHECKS=57
+echo "══ C. mutations : la suite mord ══"
+mutate(){ # <nom> <python transformant stdin→stdout> → chemin du mutant
+  local m="$REPO/scripts/.a6-mut-$1.sh"; python3 -c "$2" < "$SCRIPT" > "$m"; chmod 700 "$m"   # à côté du script : il fait cd "$(dirname "$0")/.." et source ses libs
+  cmp -s "$m" "$SCRIPT" && { ko "C.$1 mutant identique à l'original (mutation sans effet)"; return 1; }; printf '%s' "$m"
+}
+run_mut(){ SCRIPT="$1" run_rb "$2" "${@:3}"; }   # NB bash 3.2 : "${@:3}" est valide en bash (pas en sh)
+# M1 : filtre head.ref par PRÉFIXE ⇒ dev#14 devient N ⇒ N-1 = rec#13 = main ⇒ ETAT_IDENTIQUE ⇒ A rougit
+M1=$(mutate M1 'import sys; s=sys.stdin.read(); assert "head_ref != BRANCH" in s; print(s.replace("head_ref != BRANCH", "not head_ref.startswith(BRANCH.rsplit(\"-\",1)[0] + \"-\")"), end="")') && {
+  set_ctl "$(ctl_json)"; reset_origin; run_mut "$M1" "$TMP/m1.out"
+  [ "$(rrc)" != 0 ] && grep -q 'ETAT_IDENTIQUE\|RESTAURATION_INFIDELE' "$TMP/m1.out" && ok "C.M1 clé de lignée par préfixe ⇒ le nominal rougit (dev#14 pris pour N)" || ko "C.M1 le mutant passe : rc $(rrc)"; }
+# M2 : la porte (#3) déplacée APRÈS la lignée ⇒ A'.1 journalise un GET avant GATE_REFS_REQUIRED
+M2=$(mutate M2 'import sys; s=sys.stdin.read(); a=s.index("etape porte"); b=s.index("etape clone"); c=s.index("etape coherence"); print(s[:a]+s[b:c]+s[a:b]+s[c:], end="")') && {
+  set_ctl "$(ctl_json)"; reset_origin; run_mut "$M2" "$TMP/m2.out" STOA_ENV_CHAIN_FILE="$CHAIN_REC_GATED"
+  refus GATE_REFS_REQUIRED "$TMP/m2.out" && [ -s "$STUB_LOG" ] && ok "C.M2 porte après la lignée ⇒ la forge est appelée avant le refus (la suite le voit)" || ko "C.M2 : forge=$(wc -l < "$STUB_LOG")"; }
+# M3 : auto-vérification retirée + ligne altérée avant le push ⇒ restauration infidèle poussée
+M3=$(mutate M3 'import sys; s=sys.stdin.read(); assert "RESTAURATION_INFIDELE" in s; s=s.replace("[ \"$D_GOT\" = \"$D_EXPECT\" ] || refus RESTAURATION_INFIDELE", "sed -i.bak \"s/10.42.0.2/10.42.0.66/\" \"$R/$MAN_PATH\"; rm -f \"$R/$MAN_PATH.bak\"; git -C \"$R\" add \"$MAN_PATH\"; true"); print(s, end="")') && {
+  set_ctl "$(ctl_json)"; reset_origin; run_mut "$M3" "$TMP/m3.out"; RB=$(remote_branch)
+  [ "$(rrc)" = 0 ] && [ "$(git -C "$ORIGIN" show "$RB:$MAN" 2>/dev/null | grep -E '^    rec: ')" != "$LINE_B" ] && ok "C.M3 sans auto-vérification une ligne altérée est poussée — A.4 l'attrape" || ko "C.M3 rc $(rrc)"; }
+# M4 : remplacement de change_ref retiré ⇒ A'.2 garde CHG-0001
+M4=$(mutate M4 'import sys; s=sys.stdin.read(); assert "REQ_CHANGE_REF" in s; print(s.replace("CANDIDATE_REF=\"$REQ_CHANGE_REF\"", "CANDIDATE_REF=\"\""), end="")') && {
+  set_ctl "$(ctl_json)"; reset_origin; run_mut "$M4" "$TMP/m4.out" STOA_ENV_CHAIN_FILE="$CHAIN_REC_GATED" REQ_CHANGE_REF=CHG-0009; RB=$(remote_branch)
+  [ "$(rrc)" = 0 ] && git -C "$ORIGIN" show "$RB:$MAN" | grep -q 'change_ref: "CHG-0001"' && ok "C.M4 sans remplacement, CHG-0001 reste — A'.2 l'attrape" || ko "C.M4 rc $(rrc)"; }
+# M5 : borne BIRTH retirée ⇒ le scénario « manifeste recréé » ouvre une PR vers une vie antérieure
+M5=$(mutate M5 'import sys; s=sys.stdin.read(); assert "is-ancestor \"$BIRTH\"" in s; print(s.replace("is-ancestor \"$BIRTH\"", "is-ancestor \"$BIRTH\" \"$BIRTH\" || true; true"), end="")') && {
+  gw rm -q "$MAN"; gw commit -qm "retrait"; gw push -q origin main; SHA_R2=$(pr_merge 20 rec '    rec: { auth: { claim: { value: "appa-rec" } }, ip_allowlist: ["10.42.0.20"] }' "CERT-R") || { echo "!! fixture : pr_merge" >&2; exit 2; }; CLOSED=$(closed_add); gw push -q origin main
+  set_ctl "$(ctl_json)"; git -C "$ORIGIN" update-ref -d refs/heads/provision/appa-rec 2>/dev/null || true
+  run_mut "$M5" "$TMP/m5.out"; [ "$(rrc)" = 0 ] && [ "$(posts)" = 1 ] && ok "C.M5 sans la borne BIRTH, une PR vers la vie antérieure (#13) s'ouvre — B.3 l'attrape" || ko "C.M5 rc $(rrc) posts=$(posts) : $(grep -E 'REFUS|LIGNEE' "$TMP/m5.out" | head -2 | tr '\n' ' ')"
+  gw reset -q --hard "$MAIN0"; gw push -q -f origin main; CLOSED="$SAVE_CLOSED"; }
+
+EXPECTED_CHECKS=62
 TOTAL=$((PASS+FAIL))
 if [ "$EXPECTED_CHECKS" -gt 0 ] && [ "$TOTAL" -ne "$EXPECTED_CHECKS" ]; then
   printf '❌ %d contrôles exécutés, %d attendus — une section a été sautée ou ajoutée sans mettre EXPECTED_CHECKS à jour\n' "$TOTAL" "$EXPECTED_CHECKS"; FAIL=$((FAIL+1))
