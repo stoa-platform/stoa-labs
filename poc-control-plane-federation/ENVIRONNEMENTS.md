@@ -948,7 +948,13 @@ mono-gateway hors terminus ; `APIM_TERMINUS_BASE` restaurée après le passage.
 `test-selfservice-palier-a3.sh` 191/191, `test-app-rollback-a6.sh` 92/92,
 `test-provision-apply-a4.sh` 138/138, `test-pr-comment.sh` 47/47,
 `test-a0-wiring.sh` 183/183, `test-palier-retention.sh` 137/0, `go test` du mock) ;
-par builds réels `scripts/test-a7-live.sh` — chiffres dans le GOAL, §A7.
+par builds réels `scripts/test-a7-live.sh` **99/99 au 5e passage** (2026-09-03 : cinq
+paliers #176→#119, #177→#120, #178→#121 bob, #179→#122 carol, #182→#125 oscar après
+`ITSM_NOT_APPROVED` #180, `PAYLOAD_PERIME` #181, `API_NOT_PROMOTED` #123 et
+`API_INACTIVE` #124 au terminus ; formulaires #43-#46 ; repli #23 `ETAT_IDENTIQUE`) —
+détail dans le GOAL, §A7. **Fait mesuré au passage** : la 10.15 masque l'`apiAccessKey`
+(32 astérisques) à tout lecteur qui n'est pas le propriétaire de l'application,
+Administrator compris — toute preuve de clé se lit en propriétaire (ADR-090).
 
 ## Tout en Jenkinsfile (A0 — GOAL cd-applications, 2026-09-02)
 

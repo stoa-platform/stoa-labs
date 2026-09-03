@@ -435,11 +435,11 @@ ok "0.3 gitea main porte A6 (script, Jenkinsfile, coquille, gardes de fenêtre)"
 curl -sf "$JENKINS_UI/job/app-rollback/config.xml" > "$TMP/rb.xml" || die "PREREQUIS : job app-rollback absent — JOBS=app-rollback BOOTSTRAP_JOBS=app-rollback scripts/setup-provision-jobs.sh"
 grep -q 'ci/Jenkinsfile.app-rollback' "$TMP/rb.xml" || die "PREREQUIS : app-rollback n'est pas from SCM"
 PARAMS=$(curl -s "$JENKINS_UI/job/app-rollback/api/json?tree=property%5BparameterDefinitions%5Bname%5D%5D" | jq_ "print(' '.join(p['name'] for pr in d.get('property',[]) for p in pr.get('parameterDefinitions',[])))")
-[ "$PARAMS" = "APP ENV REASON CHANGE_REF" ] || die "PREREQUIS : formulaire app-rollback non posé (paramètres : '$PARAMS') — amorcer le job"
+[ "$PARAMS" = "APP ENV REASON CHANGE_REF FORGE_TOKEN" ] || die "PREREQUIS : formulaire app-rollback non posé (paramètres : '$PARAMS') — amorcer le job"
 raw_at main "$SUBDIR/clients/_example/environments.yaml" > "$TMP/chain.yaml"; [ "$(raw_hc)" = 200 ] || die "PREREQUIS : chaîne illisible sur gitea main"
 CHAIN_ALL=$(STOA_ENV_CHAIN_FILE="$TMP/chain.yaml" env_chain); TERM=$(STOA_ENV_CHAIN_FILE="$TMP/chain.yaml" env_chain_terminus)
 ENVS_FORM=$(curl -s "$JENKINS_UI/job/app-rollback/api/json?tree=property%5BparameterDefinitions%5Bname,choices%5D%5D" | jq_ "print(' '.join(next((p.get('choices') or []) for pr in d.get('property',[]) for p in pr.get('parameterDefinitions',[]) if p.get('name')=='ENV')))")
-[ "$ENVS_FORM" = "$CHAIN_ALL" ] && ok "0.4 job app-rollback posé, formulaire APP ENV REASON CHANGE_REF, ENV == chaîne entière ($CHAIN_ALL)" || ko "0.4 formulaire ENV='$ENVS_FORM' ≠ chaîne '$CHAIN_ALL'"
+[ "$ENVS_FORM" = "$CHAIN_ALL" ] && ok "0.4 job app-rollback posé, formulaire APP ENV REASON CHANGE_REF FORGE_TOKEN (A7), ENV == chaîne entière ($CHAIN_ALL)" || ko "0.4 formulaire ENV='$ENVS_FORM' ≠ chaîne '$CHAIN_ALL'"
 case "$(STOA_ENV_CHAIN_FILE="$TMP/chain.yaml" env_chain_gate "$TERM")" in GATE=1\|*) ok "0.5 la porte du terminus ($TERM) exige change_ref (requireChangeRef/itsmCheck)";; *) die "PREREQUIS : la porte du terminus n'exige pas change_ref — §7 rougirait pour une mauvaise raison";; esac
 case "$(STOA_ENV_CHAIN_FILE="$TMP/chain.yaml" env_chain_gate rec)" in GATE=0\|*) ok "0.6 rec n'exige pas de change_ref";; *) die "PREREQUIS : rec exige change_ref";; esac
 ensure_human alice "$TMP/alice.hdr"; ok "0.7 alice : compte Gitea humain, collaboratrice write, token jetable"

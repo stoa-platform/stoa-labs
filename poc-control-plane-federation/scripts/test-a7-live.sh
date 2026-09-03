@@ -264,11 +264,29 @@ gw_wait(){ local hc dl; dl=$(( $(date +%s) + 300 )); while :; do hc=$(gw -o /dev
 gw_app_id(){ gw_wait; gw "$GW_ADMIN/applications" | N="$1" jq_ "import os
 for a in d.get('applications',[]):
     if a.get('name')==os.environ['N']: print(a.get('id','')); break"; }
+# ── la clé suit le PROPRIÉTAIRE (fait mesuré 2026-09-03 : la 10.15 rend « ******************************** »
+#    à tout autre lecteur, Administrator compris — un harnais qui lit en Administrator mesure le masque, pas la clé) ──
+ticket_cfg(){ # <env> → $TMP/wm.<env>.cfg (Basic du ticket envs/<env>/wm-admin, 0600) ; imprime son username
+  vcurl "$VAULT_ADDR_LAB/v1/secret/data/stoa/envs/$1/wm-admin" | F="$TMP/wm.$1.cfg" python3 -c 'import json,sys,os
+d=(json.load(sys.stdin).get("data") or {}).get("data") or {}
+u=d.get("username") or ""; p=d.get("password") or ""
+if not (u and p): sys.exit(1)
+e=lambda s: s.replace("\\","\\\\").replace("\"","\\\"")
+fd=os.open(os.environ["F"], os.O_WRONLY|os.O_CREAT|os.O_TRUNC, 0o600)
+with os.fdopen(fd,"w") as f: f.write("user = \"%s:%s\"\n" % (e(u), e(p)))
+print(u)'; }
+gw_owner(){ gw "$GW_ADMIN/applications/$1" | jq_ "a=(d.get('applications') or [d])[0]; print(a.get('owner') or '')"; }
+gw_as_owner(){ # <id> <curl…> : lit en PROPRIÉTAIRE — le ticket envs/<env>/wm-admin dont le username est l'owner de l'objet
+  local id="$1" own e u; shift; own=$(gw_owner "$id")
+  for e in dev rec int homol prod; do u=$(ticket_cfg "$e" 2>/dev/null) || continue; [ "$u" = "$own" ] || continue
+    curl -s -m 20 -K "$TMP/wm.$e.cfg" -H 'Accept: application/json' "$@"; return; done
+  die "PREREQUIS : propriétaire '${own:-?}' de $id sans ticket envs/*/wm-admin — la clé ne se lit qu'en propriétaire"; }
 gw_app_obj(){ # <id> → GUID= KEY= IDS= SUBS= CLAIM= IP= TEAMS= KEYLEN=
-  gw "$GW_ADMIN/applications/$1" | python3 -c '
+  gw_as_owner "$1" "$GW_ADMIN/applications/$1" | python3 -c '
 import json,sys,hashlib
 d=json.load(sys.stdin); a=(d.get("applications") or [d])[0]
 key=((a.get("accessTokens") or {}).get("apiAccessKey_credentials") or {}).get("apiAccessKey") or ""
+print("OWNER=%s" % (a.get("owner") or "")); print("KEYMASKED=%s" % ("1" if key and set(key) == {"*"} else "0"))
 ids=sorted((i.get("key",""), i.get("name",""), sorted(i.get("value") or [])) for i in (a.get("identifiers") or []) if i.get("key") in ("httpsCertificate","ipAddressRange","openIdClaims","token"))
 claim=",".join(sorted(next(((i.get("value") or []) for i in (a.get("identifiers") or []) if i.get("key")=="openIdClaims"), [])))
 ip=",".join(sorted(next(((i.get("value") or []) for i in (a.get("identifiers") or []) if i.get("key")=="ipAddressRange"), [])))
@@ -276,7 +294,7 @@ print("GUID=%s" % a.get("id")); print("KEY=%s" % hashlib.sha256(key.encode()).he
 print("IDS=%s" % hashlib.sha256(json.dumps(ids, sort_keys=True).encode()).hexdigest())
 print("SUBS=%s" % ",".join(sorted(a.get("consumingAPIs") or []))); print("CLAIM=%s" % claim); print("IP=%s" % ip)
 print("TEAMS=%s" % ",".join(sorted(t.get("name","") for t in (a.get("teams") or []) if isinstance(t, dict))))'; }
-gw_key_raw(){ gw "$GW_ADMIN/applications/$1" | python3 -c 'import json,sys
+gw_key_raw(){ gw_as_owner "$1" "$GW_ADMIN/applications/$1" | python3 -c 'import json,sys
 d=json.load(sys.stdin); a=(d.get("applications") or [d])[0]
 print(((a.get("accessTokens") or {}).get("apiAccessKey_credentials") or {}).get("apiAccessKey") or "")'; }
 obj_field(){ printf '%s\n' "$1" | sed -n "s/^$2=//p"; }
@@ -369,7 +387,7 @@ palier(){ # <env> <ip> <mergeur/porteur> [change_ref] [pv_ref] : demande alice �
 read_step(){ # <env> <ip> <n°> : la 10.15 par l'OBJET — claim mutée, IP du palier, G_APP/KEY/SUBS stables
   local e="$1" ip="$2" n="$3" o
   o=$(gw_app_obj "$G_APP")
-  [ "$(obj_field "$o" GUID)" = "$G_APP" ] && [ "$(obj_field "$o" KEY)" = "$KEY1" ] && ok "$n.a même GUID d'application ($G_APP), même clé (empreinte)" || ko "$n.a GUID/clé : $(obj_field "$o" GUID) / $(obj_field "$o" KEY | cut -c1-12)"
+  [ "$(obj_field "$o" GUID)" = "$G_APP" ] && [ "$(obj_field "$o" KEY)" = "$KEY1" ] && ok "$n.a même GUID d'application ($G_APP), même clé (empreinte, lue en propriétaire '$(obj_field "$o" OWNER)')" || ko "$n.a GUID/clé : $(obj_field "$o" GUID) / $(obj_field "$o" KEY | cut -c1-12)"
   case "$(obj_field "$o" CLAIM)" in *"${APP}-${e}"*) ok "$n.b claim = ${APP}-${e} (mutation lue : le palier $e a écrit)";; *) ko "$n.b claim : $(obj_field "$o" CLAIM)";; esac
   [ "$(obj_field "$o" IP)" = "${ip}-${ip}" ] && ok "$n.c IP ${ip} (distincte par palier)" || ko "$n.c IP : $(obj_field "$o" IP)"
   case ",$(obj_field "$o" SUBS)," in *",$G_API,"*) ok "$n.d souscrite à G_API $G_API";; *) ko "$n.d SUBS : $(obj_field "$o" SUBS)";; esac
@@ -498,7 +516,10 @@ console_order "$TMP/pa.$N_PA.console" 'RECONCILE_OK' 'PORTE_OK(pre)' 'Input requ
 grep -q 'décidée par le token' "$TMP/ss.$S_NUM.console" && ! grep -q 'celle du manifeste mergé' "$TMP/ss.$S_NUM.console" && ok "1.5 aval dev : équipe décidée par le token (palier autonome — contrôle positif)" || ko "1.5 aval dev : $(grep -E 'équipe|décidée' "$TMP/ss.$S_NUM.console" | head -2 | tr '\n' ' ')"
 G_APP=$(gw_app_id "$APP"); [ -n "$G_APP" ] || die "PREREQUIS : application $APP absente de la 10.15 après dev"
 O1=$(gw_app_obj "$G_APP"); KEY1=$(obj_field "$O1" KEY); KEY_RAW=$(gw_key_raw "$G_APP")
-[ "${#KEY_RAW}" -ge 32 ] && ok "1.6 la clé de l'application est NON VIDE (${#KEY_RAW} caractères — jamais imprimée)" || die "PREREQUIS : la 10.15 ne rend pas d'apiAccessKey sur l'objet (${#KEY_RAW}) — « clé jamais transportée » serait vacant"
+case "$KEY_RAW" in *"*"*) die "PREREQUIS : clé MASQUÉE (${#KEY_RAW} car.) même lue en propriétaire '$(obj_field "$O1" OWNER)' — « clé jamais transportée » serait vacant";; esac
+printf '%s' "$KEY_RAW" | grep -qE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' && ok "1.6 la clé de l'application est une UUID EN CLAIR, lue en PROPRIÉTAIRE ('$(obj_field "$O1" OWNER)' — jamais imprimée)" || die "PREREQUIS : la 10.15 ne rend pas d'apiAccessKey UUID sur l'objet (${#KEY_RAW} car.) — « clé jamais transportée » serait vacant"
+KA=$(gw "$GW_ADMIN/applications/$G_APP" | jq_ "a=(d.get('applications') or [d])[0]; print(((a.get('accessTokens') or {}).get('apiAccessKey_credentials') or {}).get('apiAccessKey') or '')")
+printf '%s' "$KA" | grep -qE '^\*{8,}$' && ok "1.6b lue en Administrator (non propriétaire), la 10.15 MASQUE la clé (${#KA} astérisques) — la clé suit le propriétaire, pas le privilège" || ko "1.6b Administrator lit : $(printf '%s' "$KA" | sed -E 's/[0-9a-f]/h/g' | cut -c1-40)"
 read_step dev 10.42.0.11 1.7
 pr_dashboard "$PR_N" 1.8 alice alice alice
 PR_DEV="$PR_N"
@@ -592,7 +613,7 @@ replay_pr "$PR5" "$BR5" "$MS5" oscar alice; wait_amont "$N_PA" PAUSE
 console_order "$TMP/pa.$N_PA.console" 'RECONCILE_OK' "itsm : change 'CHG-0001' approved" 'PORTE_OK(pre)' 'Input requested' 2>/dev/null || jconsole provision-apply "$N_PA" > "$TMP/pa.$N_PA.console"
 grep -q "$MS5" "$TMP/pa.$N_PA.console" && console_order "$TMP/pa.$N_PA.console" 'RECONCILE_OK' "itsm : change 'CHG-0001' approved" 'PORTE_OK(pre)' 'Input requested' && ok "5.10 rejeu #$N_PA : même MERGE_SHA ($MS5), ITSM re-vérifié, PORTE_OK(pre), pause" || ko "5.10 rejeu : $(grep -E 'REFUS|PORTE|itsm' "$TMP/pa.$N_PA.console" | head -2 | tr '\n' ' ')"
 answer_pause "$N_PA" oscar "$LAB_OSCAR_PASS"; finish_amont "$N_PA"
-[ "$RES" = SUCCESS ] && console_order "$TMP/ss.$S_NUM.console" "API_AT_PALIER" "TEAM_CONFIRMED" "SUBSCRIPTION_CONFIRMED (id=$G_API)" \
+[ "$RES" = SUCCESS ] && console_order "$TMP/ss.$S_NUM.console" "API_AT_PALIER : '$REQ_API'" "TEAM_CONFIRMED : '$APP'" "SUBSCRIPTION_CONFIRMED : '$APP' souscrite" && grep -F "SUBSCRIPTION_CONFIRMED : '$APP' souscrite" "$TMP/ss.$S_NUM.console" | grep -qF "(id=$G_API)" \
   && ok "5.11 aval #$S_NUM SUCCESS : API_AT_PALIER < TEAM_CONFIRMED < SUBSCRIPTION_CONFIRMED (id=$G_API) — l'application est au terminus" || ko "5.11 aval #${S_NUM:-?} : $RES — $(grep -E 'REFUS|CONFIRMED' "$TMP/ss.${S_NUM:-0}.console" 2>/dev/null | head -3 | tr '\n' ' ')"
 G_APP_T=$(t_app_id "$APP"); [ -n "$G_APP_T" ] || die "PREREQUIS : $APP absente du terminus après SUCCESS"
 OT=$(t_app_obj "$G_APP_T")
@@ -614,7 +635,8 @@ O6=$(gw_app_obj "$G_APP"); [ "$(obj_field "$O6" GUID)" = "$G_APP" ] && [ "$(obj_
 : > "$TMP/haystack"
 for n in $PRS; do pr_body "$n" >> "$TMP/haystack"; pr_comments "$n" >> "$TMP/haystack"; done
 cat "$TMP"/pa.*.console "$TMP"/ss.*.console "$TMP"/fb.*.console "$TMP/req.all.out" >> "$TMP/haystack" 2>/dev/null
-[ "${#KEY_RAW}" -ge 32 ] && [ "$(grep -c -F -- "$KEY_RAW" "$TMP/haystack")" = 0 ] && ok "6.4 clé jamais transportée : 0 occurrence de la clé (${#KEY_RAW} car.) dans $(printf '%s' "$PRS" | wc -w | tr -d ' ') PR (corps + commentaires), les consoles amont/aval/formulaires et les sorties de demande" || ko "6.4 la clé apparaît $(grep -c -F -- "$KEY_RAW" "$TMP/haystack") fois"
+[ "${#KEY_RAW}" = 36 ] && [ "$(grep -c -F -- "$KEY_RAW" "$TMP/haystack")" = 0 ] && ok "6.4 clé jamais transportée : 0 occurrence de la clé (${#KEY_RAW} car.) dans $(printf '%s' "$PRS" | wc -w | tr -d ' ') PR (corps + commentaires), les consoles amont/aval/formulaires et les sorties de demande" || ko "6.4 la clé apparaît $(grep -c -F -- "$KEY_RAW" "$TMP/haystack") fois"
+[ "$(grep -c -F -- "apiAccessKey" "$TMP/haystack")" = 0 ] && ok "6.4b l'objet application n'est jamais imprimé : 0 « apiAccessKey » dans le même corpus (le masque n'y est pour rien : les consoles ne montrent ni clé ni masque)" || ko "6.4b « apiAccessKey » apparaît $(grep -c -F -- "apiAccessKey" "$TMP/haystack") fois"
 LK=$(vcurl -X LIST "$VAULT_ADDR_LAB/v1/secret/metadata/stoa/deploy/$TEAM/apps" | jq_ "print(' '.join((d.get('data') or {}).get('keys') or []))" 2>/dev/null || true)
 case " $LK " in *" $APP/"*|*" $APP "*) ko "6.5 Vault : une entrée sous deploy/$TEAM/apps/$APP (mode idp : aucun secret attendu)";; *) ok "6.5 Vault : rien sous deploy/$TEAM/apps pour $APP (mode idp — entrées voisines : ${LK:-aucune})";; esac
 
