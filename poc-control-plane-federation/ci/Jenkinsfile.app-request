@@ -20,8 +20,9 @@
 // setup-team-onboard-jobs.sh, et REQ_ENV en liste EN DUR. Ils sont désormais
 // posés par un pas scripté `properties([parameters([…])])` au premier stage,
 // depuis des listes calculées DANS LE BUILD par scripts/app-request-choices.sh :
-//   REQ_ENV ← env_chain_nonprod (clients/_example/environments.yaml du clone —
-//             la MÊME source que provision-request.sh, qui refuse ENV_INVALIDE) ;
+//   REQ_ENV ← env_chain (clients/_example/environments.yaml du clone — la chaîne
+//             ENTIÈRE, terminus compris : A7 — la MÊME source que
+//             provision-request.sh, qui refuse ENV_INVALIDE ; les portes décident) ;
 //   TEAM    ← providers.<env d'authoring>.yml relu sur Gitea main ;
 //   API     ← les publish.yml (dépôt plateforme + dépôts d'équipe déclarés).
 // Le XML n'est plus qu'une COQUILLE (pointeur SCM, <triggers/> vide) : la seule
@@ -88,7 +89,7 @@ pipeline {
           dir('poc-control-plane-federation') {
             // Quotes SIMPLES ; `set +x` : le token ne s'écho pas. Le script
             // RETIRE tout fichier périmé avant de travailler.
-            sh 'set +x; CHOICES_OUT="$WORKSPACE/.a0-choices.env" bash scripts/app-request-choices.sh'
+            sh 'set +x; STOA_ENV_CHAIN_FILE="$WORKSPACE/poc-control-plane-federation/clients/_example/environments.yaml" CHOICES_OUT="$WORKSPACE/.a0-choices.env" bash scripts/app-request-choices.sh'
           }
         }
         script {
@@ -112,7 +113,7 @@ pipeline {
             string(name: 'APP', defaultValue: '',
                    description: "Nom de l'application demandée [A-Za-z0-9._-] uniquement."),
             choice(name: 'REQ_ENV', choices: envs,
-                   description: "Environnement cible (paliers non terminaux de la chaîne, dérivés d'environments.yaml à chaque build) — pilote le nom de branche provision/<app>-<env> et l'env du manifeste."),
+                   description: "Environnement cible — la chaîne ENTIÈRE, terminus compris (environments.yaml, relue à chaque build) : les portes du palier décident (références, quatre yeux — FORGE_TOKEN requis dès qu'une porte les exige —, ITSM, voie et credential du terminus). Pilote le nom de branche provision/<app>-<env> et l'env du manifeste."),
             choice(name: 'TEAM', choices: [''] + teams,
                    description: "Équipe propriétaire de l'application (cloisonnement), optionnel — laisser le premier choix (vide) pour ne rien assigner (comportement historique, non cloisonné). Doit être une équipe DÉJÀ onboardée (providers.<env>.yml) ; une valeur non déclarée est refusée (TEAM_NOT_DECLARED) avant toute écriture Git."),
             choice(name: 'API', choices: apis,
@@ -130,7 +131,17 @@ pipeline {
             string(name: 'BACKEND_KEY_REF', defaultValue: '',
                    description: "CHEMIN Vault de la clé backend (identifier `token`), optionnel — sous-chemin KV v2, ex. deploy/banking-demo/apps/mon-app/dev/backend-key. ⚠ Ce champ attend un CHEMIN, JAMAIS la valeur de la clé : Git ne porte jamais le secret, il est lu dans Vault à l'apply. L'entrée doit EXISTER dans Vault avant l'apply — sinon BACKEND_KEY_MISSING et rien n'est posé sur la gateway. Caractères [A-Za-z0-9._/-] ; chemin absolu, '//' et traversée '..' sont refusés (BACKEND_KEY_REF_INVALID). N'est PAS une identité entrante : c'est une clé sortante app→backend, non opposable par enforce."),
             string(name: 'BACKEND_KEY_FIELD', defaultValue: '',
-                   description: "Champ à lire DANS l'entrée Vault, optionnel — laisser VIDE pour le défaut du rôle (api_key). ⚠ PIÈGE MESURÉ : le nom doit correspondre EXACTEMENT au champ de l'entrée KV — une entrée dont la clé s'appelle `api-key` (avec un TIRET) est lue vide et échoue en BACKEND_KEY_MISSING alors que l'entrée existe bel et bien. Renseigné sans BACKEND_KEY_REF, ce champ serait inerte : la demande est alors REFUSÉE (BACKEND_KEY_FIELD_ORPHAN).")
+                   description: "Champ à lire DANS l'entrée Vault, optionnel — laisser VIDE pour le défaut du rôle (api_key). ⚠ PIÈGE MESURÉ : le nom doit correspondre EXACTEMENT au champ de l'entrée KV — une entrée dont la clé s'appelle `api-key` (avec un TIRET) est lue vide et échoue en BACKEND_KEY_MISSING alors que l'entrée existe bel et bien. Renseigné sans BACKEND_KEY_REF, ce champ serait inerte : la demande est alors REFUSÉE (BACKEND_KEY_FIELD_ORPHAN)."),
+            // ── A7 (ADR-090) : l'identité de forge et les références de la porte ──
+            // FORGE_TOKEN est un `password` : canal natif (jamais dans un withEnv,
+            // fait 9 — il serait persisté en clair), altération détectée
+            // (TOKEN_ALTERE), héritage d'une globale refusé (TOKEN_GLOBAL_REFUSE).
+            password(name: 'FORGE_TOKEN', defaultValue: '',
+                     description: "Votre token d'accès personnel de la forge (Gitea : Settings → Applications), scopes EXACTEMENT read:user + write:repository — la PR est ouverte SOUS VOTRE identité : c'est elle que la porte à quatre yeux confronte au mergeur. Token dédié, à révoquer après. Vide : le compte de service ouvre la PR — refusée (REQUESTER_UNKNOWN) dès qu'une porte exige les quatre yeux."),
+            string(name: 'CHANGE_REF', defaultValue: '',
+                   description: "Référence de changement (ITSM) [A-Za-z0-9._-], EXIGÉE si la porte du palier porte requireChangeRef ou itsmCheck (GATE_REFS_REQUIRED sinon, aucune PR ouverte) — écrite dans per_env.<env>.change_ref, re-vérifiée « approved » au dispatch quand la porte le déclare."),
+            string(name: 'PV_REF', defaultValue: '',
+                   description: "Référence du PV de validation [A-Za-z0-9._-], EXIGÉE si la porte du palier porte requirePVRef (GATE_REFS_REQUIRED sinon) — écrite dans per_env.<env>.pv_ref.")
           ])])
           echo "formulaire posé : paliers ${envs} ; équipes ${teams} ; APIs ${apis}"
           if (env.FORM_BOOTSTRAP == 'true') {
@@ -184,6 +195,21 @@ pipeline {
           def atIdx = apiChoice.indexOf('@')
           env.REQ_API     = atIdx >= 0 ? apiChoice.substring(0, atIdx) : apiChoice
           env.REQ_API_VER = atIdx >= 0 ? apiChoice.substring(atIdx + 1) : '1.0.0'
+
+          // ── A7 : le token de forge, deux gardes, rien de la valeur dans un message ──
+          // FAIT 7/9 (A0) : EnvVars.resolve() frappe aussi un `password` — `"${params.X}"`
+          // est la valeur brute (hudson.util.Secret), `env.X` la valeur résolue : inégales
+          // ⇔ altérées, et un token altéré ouvrirait une PR sous une identité fausse ou
+          // brûlerait le token. Un champ VIDE avec `env.FORGE_TOKEN` non vide = une
+          // globale du nœud : une identité de forge ne s'hérite pas.
+          def brutTok = "${params.FORGE_TOKEN ?: ''}"
+          def resoluTok = "${env.FORGE_TOKEN ?: ''}"
+          if (brutTok && brutTok != resoluTok) {
+            error('REFUS: TOKEN_ALTERE — le token de forge contient une sequence ($$ ou ${…}) que Jenkins resout avant le shell ; il arriverait altere a la forge et ne peut pas etre re-injecte sans etre persiste en clair. Utiliser un token sans le caractere dollar. Rien n a ete tente.')
+          }
+          if (!brutTok && resoluTok) {
+            error('REFUS: TOKEN_GLOBAL_REFUSE — FORGE_TOKEN est pose par une variable d environnement du noeud alors que le champ du formulaire est vide : une identite de forge ne s herite pas. Rien n a ete tente.')
+          }
         }
       }
     }
@@ -219,14 +245,18 @@ pipeline {
                    // (provisioning-request) hérite donc du multi-IP et de la
                    // clé backend SANS une ligne de changement : même script.
                    "REQ_BACKEND_KEY_REF=${params.BACKEND_KEY_REF ?: ''}",
-                   "REQ_BACKEND_KEY_FIELD=${params.BACKEND_KEY_FIELD ?: ''}"]) {
+                   "REQ_BACKEND_KEY_FIELD=${params.BACKEND_KEY_FIELD ?: ''}",
+                   // A7 : les références de la porte — FORGE_TOKEN n'est PAS ici (fait 9 :
+                   // canal natif seulement ; le script le lit dans l'env et le retire).
+                   "REQ_CHANGE_REF=${params.CHANGE_REF ?: ''}",
+                   "REQ_PV_REF=${params.PV_REF ?: ''}"]) {
             // Triple quotes SIMPLES : Groovy n'interpole RIEN dans cette chaîne
             // (un `${…}` y serait du shell, pas du Groovy). `set +x` : le
             // GITEA_TOKEN injecté par withCredentials ne doit pas être écho.
             dir('poc-control-plane-federation') {
               sh '''
                 set +x
-                bash scripts/provision-request.sh
+                STOA_ENV_CHAIN_FILE="$WORKSPACE/poc-control-plane-federation/clients/_example/environments.yaml" bash scripts/provision-request.sh
               '''
             }
           }

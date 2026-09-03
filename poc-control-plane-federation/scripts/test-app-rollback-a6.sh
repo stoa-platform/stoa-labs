@@ -460,7 +460,8 @@ echo "══ D. câblage : le formulaire, la coquille, le Makefile, les commenta
 JF="$REPO/ci/Jenkinsfile.app-rollback"; XML="$REPO/ci/jenkins/app-rollback.job.xml"; MK="$REPO/Makefile"
 [ -f "$JF" ] && grep -q 'properties(\[parameters(\[' "$JF" && ok "D.1 Jenkinsfile.app-rollback pose son formulaire par properties()" || ko "D.1 Jenkinsfile absent ou sans properties()"
 NAMES=$(sed -n '/properties(\[parameters(\[/,/\])\])/p' "$JF" | grep -oE "name: '[A-Z_]+'" | sed "s/name: '//;s/'//" | tr '\n' ' ')
-[ "$NAMES" = "APP ENV REASON CHANGE_REF " ] && ok "D.2 exactement quatre champs : APP ENV REASON CHANGE_REF" || ko "D.2 champs : $NAMES"
+[ "$NAMES" = "APP ENV REASON CHANGE_REF FORGE_TOKEN " ] && ok "D.2 exactement cinq champs : APP ENV REASON CHANGE_REF FORGE_TOKEN (A7)" || ko "D.2 champs : $NAMES"
+grep -q "password(name: 'FORGE_TOKEN'" "$JF" && ! grep -q 'FORGE_TOKEN=${params' "$JF" && grep -q 'TOKEN_ALTERE' "$JF" && grep -q 'TOKEN_GLOBAL_REFUSE' "$JF" && ok "D.2b FORGE_TOKEN est un password, hors de tout withEnv (fait 9), gardes TOKEN_ALTERE / TOKEN_GLOBAL_REFUSE" || ko "D.2b câblage FORGE_TOKEN"
 [ "$(grep -n 'FORM_BOOTSTRAP = ' "$JF" | head -1 | cut -d: -f1)" -lt "$(grep -n 'properties(\[parameters' "$JF" | cut -d: -f1)" ] && ok "D.3 FORM_BOOTSTRAP lu AVANT properties()" || ko "D.3 ordre FORM_BOOTSTRAP/properties"
 grep -q 'env_chain_validate && env_chain"' "$JF" && ok "D.4 la liste ENV vient de env_chain ENTIÈRE, validée" || ko "D.4 liste ENV"
 [ "$(grep -c 'STOA_ENV_CHAIN_FILE="\$WORKSPACE/poc-control-plane-federation/clients/_example/environments.yaml"' "$JF")" = 2 ] && ok "D.5 la chaîne est épinglée sur les DEUX lignes sh" || ko "D.5 épinglages : $(grep -c 'STOA_ENV_CHAIN_FILE=' "$JF")"
@@ -470,12 +471,12 @@ grep -q 'UserIdCause' "$JF" && grep -q 'jenkins-form:' "$JF" && ok "D.8 identit�
 ! grep -qE '^\s*triggers \{|^\s*parameters \{' "$JF" && ok "D.9 ni triggers{} ni parameters{} déclaratifs" || ko "D.9 triggers/parameters déclaratifs présents"
 grep -q 'CpsScmFlowDefinition' "$XML" && grep -q '<scriptPath>poc-control-plane-federation/ci/Jenkinsfile.app-rollback</scriptPath>' "$XML" && grep -q '<properties/>' "$XML" && grep -q '<triggers/>' "$XML" && ! grep -q '<script>' "$XML" \
   && ok "D.10 coquille XML pure : SCM, scriptPath, aucune propriété, aucun trigger, aucun Groovy" || ko "D.10 coquille XML"
-grep -q 'scripts/app-rollback-request.sh scripts/test-app-rollback-a6.sh' "$MK" && grep -q '\[15/15\]' "$MK" && grep -q 'bash scripts/test-app-rollback-a6.sh' "$MK" && ! grep -q '/14\]' "$MK" \
-  && ok "D.11 Makefile : shellcheck des scripts A6, [15/15], la suite câblée" || ko "D.11 Makefile"
+grep -q 'scripts/app-rollback-request.sh scripts/test-app-rollback-a6.sh' "$MK" && grep -q '\[16/16\]' "$MK" && grep -q 'bash scripts/test-app-rollback-a6.sh' "$MK" && ! grep -q '/15\]' "$MK" \
+  && ok "D.11 Makefile : shellcheck des scripts A6, [16/16] (A7 branché), la suite câblée" || ko "D.11 Makefile"
 ! grep -q 'sauf repli (A6)' "$REPO/ci/Jenkinsfile.selfservice" && grep -q 'le repli (A6) est une PR' "$REPO/ci/Jenkinsfile.selfservice" && ok "D.12 Jenkinsfile.selfservice : le levier n'est plus « le repli »" || ko "D.12 commentaire selfservice"
 ! grep -q 'levier du repli (A6)' "$REPO/ENVIRONNEMENTS.md" && grep -q 'le repli est une PR' "$REPO/ENVIRONNEMENTS.md" && ok "D.13 ENVIRONNEMENTS.md : idem" || ko "D.13 ENVIRONNEMENTS.md"
 
-EXPECTED_CHECKS=91
+EXPECTED_CHECKS=92
 TOTAL=$((PASS+FAIL))
 if [ "$EXPECTED_CHECKS" -gt 0 ] && [ "$TOTAL" -ne "$EXPECTED_CHECKS" ]; then
   printf '❌ %d contrôles exécutés, %d attendus — une section a été sautée ou ajoutée sans mettre EXPECTED_CHECKS à jour\n' "$TOTAL" "$EXPECTED_CHECKS"; FAIL=$((FAIL+1))

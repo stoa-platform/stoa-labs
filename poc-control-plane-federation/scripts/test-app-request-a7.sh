@@ -213,7 +213,6 @@ post_body | grep -q 'ouverte par : alice (identite de forge' && ok "E4.3 corps :
 ! grep -qE 'ENV FORGE_TOKEN=[^ ]+' "$SHIM_LOG" && ! grep -qE 'PUSH_TOKEN=[^ ]+ ' "$SHIM_LOG" && ok "E4.6 aucun processus git n'hérite FORGE_TOKEN/PUSH_TOKEN (unset avant tout enfant)" || ko "E4.6 env hérité : $(grep -E 'ENV ' "$SHIM_LOG" | grep -vE 'FORGE_TOKEN= PUSH_TOKEN= ' | head -1)"
 [ -f "$PLAN_ENV" ] && grep -qx 'FORGE_TOKEN=' "$PLAN_ENV" && grep -qx 'GITEA_TOKEN=t-ci' "$PLAN_ENV" && ok "E4.7 le plan enchaîné voit GITEA_TOKEN (ci) et PAS le token humain" || ko "E4.7 env du plan : $(cat "$PLAN_ENV" 2>/dev/null | tr '\n' ' ')"
 ! grep -q 't-alice' "$TMP/req.out" && ok "E4.8 la sortie du script ne porte pas le token" || ko "E4.8 token dans la sortie"
-TIP4=$(tip int)
 set_ctl '{"open":[]}'; git -C "$ORIGIN" update-ref -d refs/heads/provision/appa-int
 printf 't-alice' > "$TMP/tokfile"; req int "FORGE_TOKEN_FILE=$TMP/tokfile"
 [ "$(rrc)" = 0 ] && [ "$(post_auth)" = "token t-alice" ] && [ "$(trailer_at int)" = alice ] && ok "E4b FORGE_TOKEN_FILE ⇒ même identité (alice)" || ko "E4b rc $(rrc) auth='$(post_auth)'"

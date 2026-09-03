@@ -164,7 +164,11 @@ pipeline {
     stage('Formulaire — paliers dérivés de la chaîne') {
       steps {
         dir('poc-control-plane-federation') {
-          sh 'set +x; bash -c ". scripts/lib/env-chain.sh && env_chain_nonprod" > "$WORKSPACE/.a0-envs"'
+          // A7 : la chaîne ENTIÈRE, terminus compris — MESURÉ : `build job:` valide
+          // la valeur contre la liste d'un `choice` (« Invalid parameter value »), donc
+          // le dispatch de prod par provision-apply exige que le terminus soit listé.
+          // Les portes décident (TERMINUS_SANS_VOIE / PALIER_FERME / DEPLOYER_GROUP_REQUIRED).
+          sh 'set +x; bash -c ". scripts/lib/env-chain.sh && env_chain_validate && env_chain" > "$WORKSPACE/.a0-envs"'
         }
         script {
           def envs = readFile("${env.WORKSPACE}/.a0-envs").trim().tokenize(' ')
@@ -195,8 +199,8 @@ pipeline {
                    description: "A2 — SHA de merge à projeter (40 hex, ancêtre de main). Vide = HEAD du checkout SCM. Posé par provision-apply, jamais à la main — le repli (A6) est une PR, pas un SHA saisi ; un SHA de la lignée saisi ici est un rejeu hors chaîne, borné par A3 (jamais les portes A4)."),
             // Env cible : sélectionne per_env[ENVIRONMENT] du manifeste ET le
             // credential du palier (A3 : envs/<env>/wm-admin ou admin-oauth). La liste vient de la CHAÎNE
-            // (clients/_example/environments.yaml, terminus exclu par structure — G4/D6),
-            // relue à chaque build : plus aucune liste en dur.
+            // ENTIÈRE (clients/_example/environments.yaml, terminus compris — A7 : les
+            // portes décident), relue à chaque build : plus aucune liste en dur.
             choice(name: 'ENVIRONMENT', choices: envs,
                    description: "Environnement cible : sélectionne per_env[ENVIRONMENT] du manifeste ET le credential du palier (envs/<env>/…, A3)."),
             // Mode d'accès à l'API d'admin. Chez le CLIENT il n'y a QUE proxy-oauth2.
@@ -216,7 +220,7 @@ pipeline {
             string(name: 'USER_VAULT_JWT', defaultValue: '',
                    description: "Identité NOMINATIVE (voie B) : JWT court aud=vault. Prioritaire sur la voie A. Vide sur le PLAN.")
           ])])
-          echo "formulaire posé : paliers ${envs} (chaîne hors terminus)"
+          echo "formulaire posé : paliers ${envs} (la chaîne entière — les portes décident)"
         }
       }
     }

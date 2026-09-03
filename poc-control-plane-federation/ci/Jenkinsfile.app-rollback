@@ -57,7 +57,10 @@ pipeline {
             string(name: 'REASON', defaultValue: '',
                    description: "Motif du repli — 1 à 300 caractères, sans retour-ligne ni ` < > # @ [ ] \\ (il entre dans le commit, trailer Repli-Motif, et dans la PR)."),
             string(name: 'CHANGE_REF', defaultValue: '',
-                   description: "Référence de changement [A-Za-z0-9._-] — EXIGÉE si la porte du palier porte requireChangeRef ou itsmCheck (refus GATE_REFS_REQUIRED sans elle, aucune PR ouverte) ; elle REMPLACE change_ref dans la ligne restaurée (un repli d'urgence porte SON change, jamais celui de l'état restauré). pv_ref n'est jamais exigé : l'état restauré a porté le sien.")
+                   description: "Référence de changement [A-Za-z0-9._-] — EXIGÉE si la porte du palier porte requireChangeRef ou itsmCheck (refus GATE_REFS_REQUIRED sans elle, aucune PR ouverte) ; elle REMPLACE change_ref dans la ligne restaurée (un repli d'urgence porte SON change, jamais celui de l'état restauré). pv_ref n'est jamais exigé : l'état restauré a porté le sien."),
+            // A7 (ADR-090) : l'identité de forge — canal natif, jamais dans un withEnv (fait 9).
+            password(name: 'FORGE_TOKEN', defaultValue: '',
+                     description: "Votre token d'accès personnel de la forge, scopes EXACTEMENT read:user + write:repository — la PR de repli est ouverte SOUS VOTRE identité (la porte à quatre yeux la confronte au mergeur). Token dédié, à révoquer après. Vide : le compte de service ouvre — refusée (REQUESTER_UNKNOWN) dès qu'une porte exige les quatre yeux.")
           ])])
           echo "formulaire posé : paliers ${envs}"
           if (env.FORM_BOOTSTRAP == 'true') {
@@ -80,6 +83,16 @@ pipeline {
           def uid = (rawUid && rawUid != 'null') ? rawUid : 'anonymous'
           env.REQ_CALLER = "jenkins-form:${uid}"
           currentBuild.displayName = "repli ${params.APP ?: '?'}/${params.ENV ?: '?'} (par ${uid})"
+          // A7 : le token de forge — deux gardes, rien de la valeur dans un message
+          // (fait 7/9 d'A0 : brut ≠ résolu ⇔ altéré ; champ vide + env non vide = globale).
+          def brutTok = "${params.FORGE_TOKEN ?: ''}"
+          def resoluTok = "${env.FORGE_TOKEN ?: ''}"
+          if (brutTok && brutTok != resoluTok) {
+            error('REFUS: TOKEN_ALTERE — le token de forge contient une sequence ($$ ou ${…}) que Jenkins resout avant le shell. Utiliser un token sans le caractere dollar. Rien n a ete tente.')
+          }
+          if (!brutTok && resoluTok) {
+            error('REFUS: TOKEN_GLOBAL_REFUSE — FORGE_TOKEN est pose par une variable d environnement du noeud alors que le champ est vide : une identite de forge ne s herite pas. Rien n a ete tente.')
+          }
         }
         withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')]) {
           // FAIT 5 (A0) : les valeurs de formulaire subissent EnvVars.resolve —

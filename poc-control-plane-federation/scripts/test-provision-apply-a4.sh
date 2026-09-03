@@ -536,7 +536,7 @@ mk_platform(){ # $1=racine bare $2=providers.dev.yml
 GHE="$TMP/giteaE"; mk_platform "$GHE/ci/stoa-labs.git" $'providers:\n  - team: banking-demo\n    repo: ""\n    approvers: []\n'
 CHO="$TMP/choicesE.env"; rm -f "$CHO"
 CHOICES_OUT="$CHO" STOA_ENV_CHAIN_FILE="$TMP/chain-sans-int.yaml" GIT_HOST="$GHE" GIT_REPO=ci/stoa-labs GITEA_TOKEN=dummy bash scripts/app-request-choices.sh >"$TMP/e.out" 2>"$TMP/e.err"; RC=$?
-[ "$RC" -eq 0 ] && grep -qx 'ENVS=dev rec homol' "$CHO" 2>/dev/null && ok "E.1 le FORMULAIRE dérive ENVS=dev rec homol — int retiré de la chaîne n'est plus proposé" || bad "E.1 rc=$RC : $(cat "$CHO" 2>/dev/null | tr '\n' ' ') $(tail -2 "$TMP/e.err" | tr '\n' ' ')"
+[ "$RC" -eq 0 ] && grep -qx 'ENVS=dev rec homol prod' "$CHO" 2>/dev/null && ok "E.1 le FORMULAIRE dérive ENVS=dev rec homol prod — int retiré de la chaîne n'est plus proposé (A7 : le terminus l'est)" || bad "E.1 rc=$RC : $(cat "$CHO" 2>/dev/null | tr '\n' ' ') $(tail -2 "$TMP/e.err" | tr '\n' ' ')"
 : > "$TMP/git.log"
 ( PATH="$TMP/bin:$PATH" GIT_LOG="$TMP/git.log" REAL_GIT="$REAL_GIT" STOA_ENV_CHAIN_FILE="$TMP/chain-sans-int.yaml" GIT_HOST=http://127.0.0.1:1 GITEA_TOKEN=dummy \
   REQ_APP=appe REQ_ENV=int REQ_API=demo-selfservice REQ_CLIENT_ID=appe-int REQ_CALLER=oig-provisioner bash scripts/provision-request.sh ) >"$TMP/e2.out" 2>"$TMP/e2.err"; RC=$?
