@@ -1,7 +1,7 @@
 ---
 title: "A5 — L'ordre app/API : refus fermé si l'API n'est pas au palier (`API_NOT_PROMOTED` / `API_VERSION_MISMATCH` / `API_INACTIVE`), AVANT toute écriture, relayé jusqu'à la PR"
 type: design
-status: "RÉDIGÉ 2026-09-03 — approbation humaine remplacée par la directive /goal A5 (session autonome) : hypothèses écrites d'avance (§ Hypothèses), à contester au premier retour"
+status: "LIVRÉ 2026-09-03 — hors ligne test-selfservice-api-gate-a5.sh 48/48 (stub à journal + 3 mutations, mock Go, câblage, rapport, prototype), A3 177/177, make lint-ci [14/14] ; builds réels test-a5-live.sh 33/33 au 1er passage (#135→#78 API_INACTIVE rien écrit PR #450, rejeu #136→#79 SUCCESS même GUID, #80 API_NOT_PROMOTED PR #451, #81 API_VERSION_MISMATCH PR #452) ; approbation humaine remplacée par la directive /goal A5 (six hypothèses écrites, à contester au premier retour) ; mesure : quatre sondes mock souscrivaient à une API jamais activée (fixtures corrigées)"
 date: 2026-09-03
 lié: [GOAL-cd-applications-2026-09-02, SPIKE-2026-09-02-cd-applications-convergence-et-souscription, 2026-09-02-a4-portes-de-la-chaine-au-dispatch-design, 2026-09-02-a3-credential-du-seul-palier-design, 2026-09-02-a2-reference-sha-merge-design, adr-078 (self-service application), adr-079 (GUID stable à la promotion), adr-083 (le verbe archive), adr-088 (cette décision)]
 ---

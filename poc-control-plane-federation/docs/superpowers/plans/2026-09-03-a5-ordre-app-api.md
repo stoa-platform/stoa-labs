@@ -1,7 +1,7 @@
 ---
 title: "Plan — A5, l'ordre app/API : refus fermé si l'API n'est pas au palier"
 type: plan
-status: "RÉDIGÉ 2026-09-03 — exécution inline (un seul écrivain), TDD : chaque suite vue rouge avant le code"
+status: "EXÉCUTÉ le 2026-09-03 — T0..T8 inline, TDD (chaque section vue rouge avant le code) ; 48/48 (lint-ci [14/14]), A3 177/177, live 33/33 au 1er passage ; écarts au plan : le mutant d'ordre A.M2 déplace la porte ET la garde de visibilité §1b (sinon variable indéfinie avant toute écriture) ; test-pr-comment vaut 44 (pas 41) ; quatre sondes mock activent désormais leur API (le mock crée inactif)"
 date: 2026-09-03
 spec: docs/superpowers/specs/2026-09-03-a5-ordre-app-api-design.md
 ---
