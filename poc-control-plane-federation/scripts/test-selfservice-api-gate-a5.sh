@@ -212,9 +212,28 @@ else
   for _ in 1 2 3 4 5; do bad "B.x section sautée"; done
 fi
 
-# (sections C..E ajoutées par T3..T5)
+echo
+echo "══ C. le câblage (vue code) ══"
+JFS="$REPO/ci/Jenkinsfile.selfservice"; JFA="$REPO/ci/Jenkinsfile.provision-apply"; GATE="$REPO/scripts/selfservice-palier-gate.sh"
+sed -E 's@^[[:space:]]*(//|#).*$@@' "$JFS" > "$TMP/jfs.code"; sed -E 's@^[[:space:]]*//.*$@@' "$JFA" > "$TMP/jfa.code"
+[ "$(grep -c -- '-e apim_ss_refus_out="\$WORKSPACE/.a3-refus" -e apim_ss_refus_detail_out="\$WORKSPACE/.a3-refus-detail"' "$TMP/jfs.code")" = 2 ] && ok "C.1 les DEUX plays (converge, verify) reçoivent apim_ss_refus_out + apim_ss_refus_detail_out" || bad "C.1 lignes -e apim_ss_refus_* : $(grep -c 'apim_ss_refus_out' "$TMP/jfs.code")"
+grep 'selfservice-palier-gate.sh' "$TMP/jfs.code" | grep -q 'REFUS_DETAIL_OUT="\$WORKSPACE/.a3-refus-detail"' && ok "C.2 la garde A3 reçoit REFUS_DETAIL_OUT sur sa ligne d'appel" || bad "C.2 REFUS_DETAIL_OUT absent de la ligne de la garde"
+[ "$(grep -c 'rm -f "\$WORKSPACE/.a3-refus" "\$WORKSPACE/.a3-refus-detail"' "$TMP/jfs.code")" -ge 2 ] && ok "C.3 deux purges ABSOLUES du tag ET du détail" || bad "C.3 purges : $(grep -c 'a3-refus-detail' "$TMP/jfs.code")"
+grep -q 'env.APPLIED_REFUSAL_DETAIL = (env.APPLIED_REFUSAL && d ==~ /\[^\\r\\n\]{1,300}/) ? d : ' "$TMP/jfs.code" && ok "C.4 post{always} relit le détail sous [^\\r\\n]{1,300} et seulement avec un tag" || bad "C.4 relais du détail absent ou sans classe"
+grep -q "vars.APPLIED_REFUSAL_DETAIL" "$TMP/jfa.code" && grep -q 'env.APPLIED_REFUSAL_DETAIL = (env.APPLIED_REFUSAL && ad ==~ /\[^\\r\\n\]{1,300}/) ? ad : ' "$TMP/jfa.code" && grep -q 'env.REFUSAL_DETAIL = env.APPLIED_REFUSAL_DETAIL ? "aval ${env.APPLY_BUILD} : ${env.APPLIED_REFUSAL_DETAIL}"' "$TMP/jfa.code" \
+  && ok "C.5 provision-apply relit APPLIED_REFUSAL_DETAIL sous classe et compose « aval #n : <détail> »" || bad "C.5 composition du détail absente"
+L_G=$(grep -n 'selfservice-palier-gate.sh" || exit 1' "$TMP/jfs.code" | head -1 | cut -d: -f1); L_P=$(grep -n 'préflight de joignabilité :' "$JFS" | head -1 | cut -d: -f1); L_C=$(grep -n 'ansible/selfservice-app.yml \\' "$TMP/jfs.code" | head -1 | cut -d: -f1); L_V=$(grep -n 'ansible/selfservice-app-verify.yml \\' "$TMP/jfs.code" | head -1 | cut -d: -f1)
+[ -n "$L_G" ] && [ -n "$L_P" ] && [ -n "$L_C" ] && [ -n "$L_V" ] && [ "$L_G" -lt "$L_P" ] && [ "$L_P" -lt "$L_C" ] && [ "$L_C" -lt "$L_V" ] && ok "C.6 ORDRE inchangé : garde ($L_G) < préflight ($L_P) < converge ($L_C) < verify ($L_V)" || bad "C.6 ordre : garde=$L_G préflight=$L_P converge=$L_C verify=$L_V"
+L_A5=$(grep -n '^    # ── A5 porte : début' "$MAIN" | cut -d: -f1); L_CR=$(grep -n 'App : créer si absente' "$MAIN" | head -1 | cut -d: -f1); L_VIS=$(grep -n 'import_tasks: api-visibility.yml' "$MAIN" | head -1 | cut -d: -f1)
+[ -n "$L_A5" ] && [ "$L_A5" -lt "$L_VIS" ] && [ "$L_VIS" -lt "$L_CR" ] && ok "C.7 rôle : porte A5 ($L_A5) < visibilité ($L_VIS) < création ($L_CR)" || bad "C.7 rôle : a5=$L_A5 vis=$L_VIS create=$L_CR"
+grep -q 'tasks_from: refus.yml' "$MAIN" && grep -q 'tasks_from: refus.yml' "$REPO/ansible/roles/apim_selfservice_app/tasks/verify.yml" && ok "C.8 main.yml ET verify.yml passent par refus.yml" || bad "C.8 refus.yml non consommé"
+sed -E 's@^[[:space:]]*#.*$@@' "$GATE" > "$TMP/gate.code"
+L_RD=$(grep -n '^REFUS_DETAIL_OUT="\${REFUS_DETAIL_OUT:-}"' "$TMP/gate.code" | cut -d: -f1); L_RF=$(grep -n '^refus()' "$TMP/gate.code" | cut -d: -f1)
+[ -n "$L_RD" ] && [ -n "$L_RF" ] && [ "$L_RD" -lt "$L_RF" ] && grep -q 'rm -f "\$REFUS_DETAIL_OUT"' "$TMP/gate.code" && ok "C.9 garde A3 : REFUS_DETAIL_OUT lu AVANT refus(), purgé en tête" || bad "C.9 garde : lu=$L_RD refus=$L_RF"
 
-EXPECTED_CHECKS=29
+# (sections D..E ajoutées par T4..T5)
+
+EXPECTED_CHECKS=38
 TOTAL=$((PASS+FAIL))
 [ "$TOTAL" -eq "$((EXPECTED_CHECKS-1))" ] \
   && ok "$((TOTAL+1)) contrôles exécutés = $EXPECTED_CHECKS attendus (aucune section sautée)" \

@@ -402,6 +402,16 @@ run_gate int "STOA_ENV_CHAIN_FILE=$CH_ITN" VAULT_USER=alice
 refus CHAINE_INVALIDE && [ "$(jcount lookup-self)" = 0 ] && ok "A.36 chaîne to: itn ⇒ CHAINE_INVALIDE, avant tout appel Vault" || bad "A.36 rc $(grc) lookups=$(jcount lookup-self) : $(gout | tail -1)"
 run_gate int "STOA_ENV_CHAIN_FILE=$TMP/chain-gab.yaml" VAULT_USER=alice
 grep -q "^chaîne : $TMP/chain-gab.yaml$" "$TMP/g.out" && ok "A.37 « chaîne : <chemin posé> » imprimé (la source est auditable)" || bad "A.37 chemin absent : $(grep '^chaîne' "$TMP/g.out")"
+set_ctl '{"lookup":{"policies":["deploy-banking-demo","default"]},"caps":{"paths":{"secret/data/stoa/envs/int/wm-admin":["deny"]}},"kv":{"secret/data/stoa/envs/int/wm-admin":403}}'
+run_gate int "STOA_ENV_CHAIN_FILE=$TMP/chain.yaml" "REFUS_OUT=$TMP/refus" "REFUS_DETAIL_OUT=$TMP/refus.detail"
+refus PALIER_FERME && [ "$(cat "$TMP/refus")" = PALIER_FERME ] && [ "$(wc -l < "$TMP/refus.detail" | tr -d ' ')" = 1 ] && grep -q "envs/int/wm-admin" "$TMP/refus.detail" \
+  && ok "A.38 REFUS_DETAIL_OUT : la PHRASE du refus, une ligne, à côté du tag (A5 — la PR nomme la cause)" || bad "A.38 rc $(grc) tag=$(cat "$TMP/refus" 2>/dev/null) détail=$(cat "$TMP/refus.detail" 2>/dev/null)"
+printf 'perime\n' > "$TMP/refus.detail"
+set_ctl "$CTL_INT_OK"; run_gate int "STOA_ENV_CHAIN_FILE=$TMP/chain-gab.yaml" VAULT_USER=alice "REFUS_OUT=$TMP/refus" "REFUS_DETAIL_OUT=$TMP/refus.detail"
+[ "$(grc)" = 0 ] && [ ! -e "$TMP/refus.detail" ] && ok "A.39 REFUS_DETAIL_OUT purgé en tête (un détail périmé n'est pas relayé)" || bad "A.39 rc $(grc) détail=$(cat "$TMP/refus.detail" 2>/dev/null)"
+set_ctl '{"lookup":{"policies":["deploy-banking-demo","default"]},"caps":{"paths":{"secret/data/stoa/envs/int/wm-admin":["deny"]}},"kv":{"secret/data/stoa/envs/int/wm-admin":403}}'
+run_gate int "STOA_ENV_CHAIN_FILE=$TMP/chain.yaml" "REFUS_OUT=$TMP/refus" UNSET:REFUS_DETAIL_OUT
+refus PALIER_FERME && [ ! -e "$TMP/refus.detail" ] && ok "A.40 sans REFUS_DETAIL_OUT : aucun fichier de détail (le tag seul)" || bad "A.40 rc $(grc) détail présent"
 if mutant 's@^if \[ -n "\$DEPLOYER_GROUP" \]; then$@if false; then@' m_dep; then
   set_ctl "$CTL_INT_NO"
   run_mut m_dep int "STOA_ENV_CHAIN_FILE=$TMP/chain-gab.yaml" VAULT_USER=alice
@@ -619,7 +629,7 @@ grep -q '^vault_token_ttl()' "$TMP/lib.code" && ok "E.6 la fonction est définie
 
 # Le compte des contrôles est lui-même un contrôle : une section sautée (stub
 # mort, chemin absent) ne doit pas passer pour un vert plus court.
-EXPECTED_CHECKS=174
+EXPECTED_CHECKS=177
 TOTAL=$((PASS+FAIL))
 [ "$TOTAL" -eq "$((EXPECTED_CHECKS-1))" ] \
   && ok "$((TOTAL+1)) contrôles exécutés = $EXPECTED_CHECKS attendus (aucune section sautée)" \

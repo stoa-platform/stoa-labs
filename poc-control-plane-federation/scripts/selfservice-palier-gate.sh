@@ -45,12 +45,16 @@ SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # nue tuerait toute exécution sans la variable SANS ligne `REFUS:` (critique
 # adverse A4) ; purgé en tête comme PALIER_OUT (un tag périmé serait relayé).
 REFUS_OUT="${REFUS_OUT:-}"
-refus(){ printf 'REFUS: %s : %s\n' "$1" "$2"; [ -n "$REFUS_OUT" ] && printf '%s\n' "$1" > "$REFUS_OUT"; exit 1; }
+# A5 : la PHRASE du refus, à côté du tag (REFUS_DETAIL_OUT, optionnel, une ligne
+# bornée à 300) — même relais jusqu'à la PR, qui nomme désormais la CAUSE.
+REFUS_DETAIL_OUT="${REFUS_DETAIL_OUT:-}"
+refus(){ printf 'REFUS: %s : %s\n' "$1" "$2"; [ -n "$REFUS_OUT" ] && printf '%s\n' "$1" > "$REFUS_OUT"; [ -n "$REFUS_DETAIL_OUT" ] && printf '%.300s\n' "$2" | tr -d '\r' > "$REFUS_DETAIL_OUT"; exit 1; }
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT; umask 077
 
 PALIER_OUT="${PALIER_OUT:-}"; [ -n "$PALIER_OUT" ] || refus CABLAGE_INCOMPLET "PALIER_OUT absent (le Jenkinsfile doit nommer le fichier de sortie)"
 rm -f "$PALIER_OUT"
 [ -n "$REFUS_OUT" ] && rm -f "$REFUS_OUT"
+[ -n "$REFUS_DETAIL_OUT" ] && rm -f "$REFUS_DETAIL_OUT"
 VAULT_ADDR="${VAULT_ADDR:-}"; [ -n "$VAULT_ADDR" ] || refus CABLAGE_INCOMPLET "VAULT_ADDR absent"
 VAULT_TOKEN_FILE="${VAULT_TOKEN_FILE:-}"; [ -n "$VAULT_TOKEN_FILE" ] || refus CABLAGE_INCOMPLET "VAULT_TOKEN_FILE absent (login nominatif non fait ?)"
 MANIFEST="${MANIFEST:-}"; [ -n "$MANIFEST" ] || refus CABLAGE_INCOMPLET "MANIFEST absent"

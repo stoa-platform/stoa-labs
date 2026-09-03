@@ -331,13 +331,16 @@ pipeline {
           // sinon vide. Un aval en échec SANS tag reste « EN ÉCHEC — voir la console ».
           def ar = (vars.APPLIED_REFUSAL ?: '').toString()
           env.APPLIED_REFUSAL = (ar ==~ /[A-Z][A-Z0-9_]{2,40}/) ? ar : ''
+          // A5 — la PHRASE du refus de l'aval (garde A3 ou rôle), sous classe, avec son tag seulement.
+          def ad = (vars.APPLIED_REFUSAL_DETAIL ?: '').toString()
+          env.APPLIED_REFUSAL_DETAIL = (env.APPLIED_REFUSAL && ad ==~ /[^\r\n]{1,300}/) ? ad : ''
           if (env.APPLY_RESULT == 'SUCCESS' && !(env.APPLIED_MODE == 'pinned' && env.APPLIED_SHA == env.MERGE_SHA)) {
             env.APPLY_RESULT   = 'FAILURE'
             env.REFUSAL        = 'SHA_NON_CONFIRME'
             env.REFUSAL_DETAIL = "l'aval ${env.APPLY_BUILD} annonce APPLIED_MODE='${env.APPLIED_MODE ?: '(rien)'}' APPLIED_SHA='${env.APPLIED_SHA ?: '(rien)'}' pour MERGE_SHA ${env.MERGE_SHA} — l'état projeté n'est pas la référence mergée"
           } else if (env.APPLY_RESULT != 'SUCCESS' && env.APPLIED_REFUSAL) {
             env.REFUSAL        = env.APPLIED_REFUSAL
-            env.REFUSAL_DETAIL = "refus de la garde du palier dans l'aval ${env.APPLY_BUILD} — voir sa console (rien n'a été écrit sur la gateway)"
+            env.REFUSAL_DETAIL = env.APPLIED_REFUSAL_DETAIL ? "aval ${env.APPLY_BUILD} : ${env.APPLIED_REFUSAL_DETAIL}" : "refus de la garde du palier dans l'aval ${env.APPLY_BUILD} — voir sa console (rien n'a été écrit sur la gateway)"
           }
           echo "aval ${env.APPLY_BUILD} : ${b.result} — APPLIED_MODE=${env.APPLIED_MODE ?: '(rien)'} APPLIED_SHA=${env.APPLIED_SHA ?: '(rien)'} APPLIED_DIGEST=${env.APPLIED_DIGEST ?: '(rien)'} — verdict amont : ${env.APPLY_RESULT}${env.REFUSAL ? ' (' + env.REFUSAL + ')' : ''}"
 

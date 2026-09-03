@@ -300,7 +300,7 @@ pipeline {
               # A4 : le tag de refus d'un build précédent est purgé au même chemin
               # ABSOLU que la garde l'écrit (REFUS_OUT="$WORKSPACE/.a3-refus") — une
               # purge relative ici viserait poc-control-plane-federation/.a3-refus.
-              rm -f "$WORKSPACE/.a3-refus"
+              rm -f "$WORKSPACE/.a3-refus" "$WORKSPACE/.a3-refus-detail"
               echo "REFERENCE_SHA=$REF"
               echo "REFERENCE_MODE=$MODE"
               echo "REFERENCE_DIGEST=${DIGEST:-(aucun : manifeste sans per_env, ou ENVIRONMENT vide)}"
@@ -457,8 +457,8 @@ pipeline {
               #    stage Référence) et relayé à l'amont par le post{always} du stage
               #    (buildVariables, fait 11) — la PR nomme DEPLOYER_GROUP_REQUIRED,
               #    PALIER_FERME, TERMINUS_SANS_VOIE… au lieu d'un « EN ÉCHEC » muet.
-              rm -f "$WORKSPACE/.a3-refus"
-              STOA_ENV_CHAIN_FILE="$GATE_DIR/clients/_example/environments.yaml" REFUS_OUT="$WORKSPACE/.a3-refus" PALIER_OUT="$PALIER_OUT" MANIFEST="$MANIFEST" bash "$GATE_DIR/scripts/selfservice-palier-gate.sh" || exit 1
+              rm -f "$WORKSPACE/.a3-refus" "$WORKSPACE/.a3-refus-detail"
+              STOA_ENV_CHAIN_FILE="$GATE_DIR/clients/_example/environments.yaml" REFUS_OUT="$WORKSPACE/.a3-refus" REFUS_DETAIL_OUT="$WORKSPACE/.a3-refus-detail" PALIER_OUT="$PALIER_OUT" MANIFEST="$MANIFEST" bash "$GATE_DIR/scripts/selfservice-palier-gate.sh" || exit 1
               PALIER_ENV=""; PALIER_VIA=""; PALIER_TEAM=""; APIM_AUTH_MODE=""; APIM_WM_CREDS_SUB=""; APIM_OAUTH_SUB=""
               while IFS='=' read -r k v; do
                 case "$v" in ''|*[!A-Za-z0-9_./:@+-]*) echo "REFUS: SORTIE_INVALIDE : valeur hors classe pour $k"; exit 1;; esac
@@ -560,6 +560,7 @@ pipeline {
               ansible-playbook ${VOPT:-} -e stoa_debug="${DEBUG:-false}" -i "$INVENTORY" ansible/selfservice-app.yml \
                 -e apim_ss_manifest="$MANIFEST" \
                 -e apim_ss_env="${ENVIRONMENT:-}" \
+                -e apim_ss_refus_out="$WORKSPACE/.a3-refus" -e apim_ss_refus_detail_out="$WORKSPACE/.a3-refus-detail" \
                 -e apim_ss_team="$PALIER_TEAM" \
                 -e apim_ss_api_base="$APIM_API_BASE" \
                 -e apim_ss_data_base="$APIM_DATA_BASE" \
@@ -578,6 +579,7 @@ pipeline {
               ansible-playbook ${VOPT:-} -e stoa_debug="${DEBUG:-false}" -i "$INVENTORY" ansible/selfservice-app-verify.yml \
                 -e apim_ss_manifest="$MANIFEST" \
                 -e apim_ss_env="${ENVIRONMENT:-}" \
+                -e apim_ss_refus_out="$WORKSPACE/.a3-refus" -e apim_ss_refus_detail_out="$WORKSPACE/.a3-refus-detail" \
                 -e apim_ss_team="$PALIER_TEAM" \
                 -e apim_ss_api_base="$APIM_API_BASE" \
                 -e apim_ss_data_base="$APIM_DATA_BASE" \
@@ -619,19 +621,25 @@ pipeline {
           }
         }
       }
-      // A4 — LE REFUS DE LA GARDE, RELAYÉ (fait 11 mesuré) : le tag écrit par
-      // selfservice-palier-gate.sh dans $WORKSPACE/.a3-refus (avant son exit 1)
-      // devient env.APPLIED_REFUSAL, que provision-apply lit dans buildVariables
-      // et pose sur la PR. Classe re-vérifiée : un tag hors forme est ignoré.
-      // Seuls les refus de la GARDE portent un tag (TTL_INSUFFISANT, GATE_ABSENTE,
-      // login refusé… restent « EN ÉCHEC — voir la console », spec A4 D9).
+      // A4/A5 — LE REFUS NOMMÉ, RELAYÉ (fait 11 mesuré) : le tag écrit dans
+      // $WORKSPACE/.a3-refus — par la garde du palier AVANT son exit 1, ou par le
+      // rôle via apim_common/tasks/refus.yml AVANT son fail (A5 : API_NOT_PROMOTED,
+      // API_VERSION_MISMATCH, API_AMBIGUE, API_INACTIVE ; verify :
+      // API_AT_PALIER_UNCONFIRMED, SUBSCRIPTION_UNCONFIRMED) — devient
+      // env.APPLIED_REFUSAL ; sa PHRASE (.a3-refus-detail) devient
+      // env.APPLIED_REFUSAL_DETAIL, relayée SEULEMENT avec un tag, sous classe
+      // (une ligne, 300). provision-apply les lit dans buildVariables et la PR
+      // nomme le refus ET sa cause. Restent « EN ÉCHEC — voir la console » :
+      // TTL_INSUFFISANT, GATE_ABSENTE, login refusé (spec A4 D9).
       post {
         always {
           script {
             if (fileExists("${env.WORKSPACE}/.a3-refus")) {
               def t = readFile("${env.WORKSPACE}/.a3-refus").trim()
               env.APPLIED_REFUSAL = (t ==~ /[A-Z][A-Z0-9_]{2,40}/) ? t : ''
-              echo "refus de la garde du palier relayé à l'amont : ${env.APPLIED_REFUSAL ?: '(tag hors classe, ignoré)'}"
+              def d = fileExists("${env.WORKSPACE}/.a3-refus-detail") ? readFile("${env.WORKSPACE}/.a3-refus-detail").trim() : ''
+              env.APPLIED_REFUSAL_DETAIL = (env.APPLIED_REFUSAL && d ==~ /[^\r\n]{1,300}/) ? d : ''
+              echo "refus relayé à l'amont : ${env.APPLIED_REFUSAL ?: '(tag hors classe, ignoré)'}${env.APPLIED_REFUSAL_DETAIL ? ' — ' + env.APPLIED_REFUSAL_DETAIL : ''}"
             }
           }
         }
