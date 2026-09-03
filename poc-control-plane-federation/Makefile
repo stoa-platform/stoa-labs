@@ -113,7 +113,7 @@ lint-ci:
 	  scripts/provision-apply-gate.sh scripts/test-a4-live.sh \
 	  scripts/test-selfservice-api-gate-a5.sh scripts/test-a5-live.sh \
   scripts/app-rollback-request.sh scripts/test-app-rollback-a6.sh scripts/test-a6-live.sh \
-	  scripts/lib/forge-identity.sh scripts/test-app-request-a7.sh scripts/setup-terminus-apps.sh \
+	  scripts/lib/forge-identity.sh scripts/test-app-request-a7.sh scripts/setup-terminus-apps.sh scripts/test-a7-live.sh \
 	  && echo "  ✓ ci/lib + livrables shell G2..G8 + A1 + A2 + A0 + A3 + A4 + A5 + A6 + A7 propres"
 	@echo "== [3/16] épreuves de ci/lib/carto-secrets.sh"
 	@ci/test-carto-secrets.sh

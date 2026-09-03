@@ -106,9 +106,10 @@ ensure_human(){
   fi
   hc=$(gapi -o /dev/null -w '%{http_code}' "$API/repos/$GIT_REPO/collaborators/$u")
   [ "$hc" = 204 ] || gapi -X PUT -d '{"permission":"write"}' -o /dev/null "$API/repos/$GIT_REPO/collaborators/$u"
-  tok=$(docker exec -u git "$GITEA_CONTAINER" gitea admin user generate-access-token --username "$u" --token-name "a6-live-$u-$TS" --scopes write:repository,write:issue 2>/dev/null | grep -oE '[0-9a-f]{40}' | head -1)
+  tok=$(docker exec -u git "$GITEA_CONTAINER" gitea admin user generate-access-token --username "$u" --token-name "a6-live-$u-$TS" --scopes read:user,write:repository,write:issue 2>/dev/null | grep -oE '[0-9a-f]{40}' | head -1)
   [ -n "$tok" ] || die "PREREQUIS : token Gitea de $u non minté"
   printf 'Authorization: token %s\n' "$tok" > "$hdr"; chmod 600 "$hdr"
+  printf '%s' "$tok" > "${hdr%.hdr}.tok"; chmod 600 "${hdr%.hdr}.tok"   # A7 : FORGE_TOKEN_FILE du formulaire app-rollback
 }
 # request_branch <app> <env> <api> <ver> <ip> → "<PR de ci> <branche>" (la demande de la CHAÎNE, sous ci, manifeste sans team)
 # ⚠ appelé dans un $( ) : un `die` ici ne tue que le sous-shell — l'appelant re-vérifie.
@@ -375,8 +376,8 @@ with os.fdopen(fd,"w") as f: f.write(urllib.parse.urlencode(pairs))' "$1"
   [ -s "$1" ] || die "HARNAIS : formulaire de build non écrit ($1)"
 }
 RB_NUM=""; RB_RES=""; RB_PR=""
-rollback_build(){ # <app> <env> <motif> [change_ref] : pose RB_NUM RB_RES RB_PR (et la console dans $TMP/rb.<n>.console)
-  printf 'APP=%s\nENV=%s\nREASON=%s\nCHANGE_REF=%s\n' "$1" "$2" "$3" "${4:-}" | form_file_any "$TMP/rb.form"
+rollback_build(){ # <app> <env> <motif> [change_ref] [fichier token de forge] : pose RB_NUM RB_RES RB_PR (console dans $TMP/rb.<n>.console)
+  { printf 'APP=%s\nENV=%s\nREASON=%s\nCHANGE_REF=%s\n' "$1" "$2" "$3" "${4:-}"; [ -n "${5:-}" ] && printf 'FORGE_TOKEN=%s\n' "$(cat "$5")"; } | form_file_any "$TMP/rb.form"
   RB_NUM=$(jbuild app-rollback "$TMP/rb.form"); [ -n "$RB_NUM" ] || die "BUILD_EN_FILE : app-rollback n'a pas produit de build"
   wait_until 600 app-rollback "$RB_NUM" FINISHED >/dev/null; wait_built app-rollback "$RB_NUM" || true; sleep 2
   jconsole app-rollback "$RB_NUM" > "$TMP/rb.$RB_NUM.console"
@@ -527,13 +528,16 @@ reactivate; [ "$DEACTIVATED" = 0 ] || die "PREREQUIS : réactivation"
 replay_pr "$R3" "provision/$APP-rec" "$MSR3"; wait_amont "$N_PA" PAUSE; answer_pause "$N_PA"; finish_amont "$N_PA"
 [ "$RES" = SUCCESS ] && [ "$(gw_app_ip_of "$APP_ID")" = "10.42.0.1-10.42.0.1" ] && [ "$(obj_field "$(gw_app_obj "$APP_ID")" KEY)" = "$KEY1" ] && ok "6.6 après réactivation, le REJEU du webhook de la PR de repli #$R3 (motif A2) projette l'état : IP .1, même clé" || ko "6.6 rejeu : $RES, IP $(gw_app_ip_of "$APP_ID")"
 
-echo "═══ 7. Contre-épreuve terminus ($TERM) : sans change_ref ⇒ GATE_REFS_REQUIRED avant tout clone ; avec ⇒ PALIER_ABSENT après le clone ═══"
+echo "═══ 7. Contre-épreuve terminus ($TERM) : sans change_ref ⇒ GATE_REFS_REQUIRED avant tout clone ; sans humain ⇒ REQUESTER_UNKNOWN (A7) ; sous alice ⇒ PALIER_ABSENT après le clone ═══"
 rollback_build "$APP" "$TERM" "repli terminus a6"
 [ "$RB_RES" = FAILURE ] && grep -q '^REFUS: GATE_REFS_REQUIRED' "$TMP/rb.$RB_NUM.console" && ! grep -q '^ETAPE clone' "$TMP/rb.$RB_NUM.console" && [ -z "$RB_PR" ] \
   && ok "7.1 #$RB_NUM FAILURE GATE_REFS_REQUIRED, aucun ETAPE clone, aucune PR" || ko "7.1 #$RB_NUM $RB_RES : $(grep -E 'REFUS|ETAPE' "$TMP/rb.$RB_NUM.console" | tail -3 | tr '\n' ' ')"
 rollback_build "$APP" "$TERM" "repli terminus a6" CHG-0001
-[ "$RB_RES" = FAILURE ] && grep -q '^REFUS: PALIER_ABSENT' "$TMP/rb.$RB_NUM.console" && console_order "$TMP/rb.$RB_NUM.console" 'ETAPE porte' 'ETAPE clone' 'REFUS: PALIER_ABSENT' \
-  && ok "7.2 #$RB_NUM avec CHG-0001 : porte < clone < PALIER_ABSENT (la paire prouve l'ordre, motif G6)" || ko "7.2 #$RB_NUM $RB_RES : $(grep -E 'REFUS|ETAPE' "$TMP/rb.$RB_NUM.console" | tail -3 | tr '\n' ' ')"
+[ "$RB_RES" = FAILURE ] && grep -q '^REFUS: REQUESTER_UNKNOWN' "$TMP/rb.$RB_NUM.console" && grep -q '^ETAPE porte' "$TMP/rb.$RB_NUM.console" && ! grep -q '^ETAPE clone' "$TMP/rb.$RB_NUM.console" && [ -z "$RB_PR" ] \
+  && ok "7.2 #$RB_NUM avec CHG-0001 SANS token humain : porte < REQUESTER_UNKNOWN (fourEyes au terminus), aucun clone, aucune PR (A7)" || ko "7.2 #$RB_NUM $RB_RES : $(grep -E 'REFUS|ETAPE' "$TMP/rb.$RB_NUM.console" | tail -3 | tr '\n' ' ')"
+rollback_build "$APP" "$TERM" "repli terminus a6" CHG-0001 "$TMP/alice.tok"
+[ "$RB_RES" = FAILURE ] && grep -q '^REFUS: PALIER_ABSENT' "$TMP/rb.$RB_NUM.console" && console_order "$TMP/rb.$RB_NUM.console" 'ETAPE porte' 'ETAPE identite' 'ETAPE clone' 'REFUS: PALIER_ABSENT' \
+  && ok "7.3 #$RB_NUM avec CHG-0001 SOUS alice (FORGE_TOKEN) : porte < identité < clone < PALIER_ABSENT (la paire prouve l'ordre, motif G6)" || ko "7.3 #$RB_NUM $RB_RES : $(grep -E 'REFUS|ETAPE' "$TMP/rb.$RB_NUM.console" | tail -3 | tr '\n' ' ')"
 
 echo
 echo "═══════════════════════════════════════════════════"
