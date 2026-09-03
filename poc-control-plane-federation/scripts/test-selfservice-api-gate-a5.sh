@@ -231,9 +231,87 @@ sed -E 's@^[[:space:]]*#.*$@@' "$GATE" > "$TMP/gate.code"
 L_RD=$(grep -n '^REFUS_DETAIL_OUT="\${REFUS_DETAIL_OUT:-}"' "$TMP/gate.code" | cut -d: -f1); L_RF=$(grep -n '^refus()' "$TMP/gate.code" | cut -d: -f1)
 [ -n "$L_RD" ] && [ -n "$L_RF" ] && [ "$L_RD" -lt "$L_RF" ] && grep -q 'rm -f "\$REFUS_DETAIL_OUT"' "$TMP/gate.code" && ok "C.9 garde A3 : REFUS_DETAIL_OUT lu AVANT refus(), purgé en tête" || bad "C.9 garde : lu=$L_RD refus=$L_RF"
 
-# (sections D..E ajoutées par T4..T5)
+# ── faux Gitea (verbatim test-pr-comment.sh) ────────────────────────────────
+cat > "$TMP/fakegitea.py" <<'PY'
+import json, re, os, sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+STORE = os.environ["STORE"]          # fichier JSON : liste de commentaires
+TOKEN = os.environ.get("EXPECT_TOKEN", "tok-ok")
+def load():
+    try: return json.load(open(STORE))
+    except Exception: return []
+def save(c): json.dump(c, open(STORE, "w"))
+class H(BaseHTTPRequestHandler):
+    def _send(self, code, obj):
+        b = json.dumps(obj).encode()
+        self.send_response(code); self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
+    def _auth(self):
+        # Le token doit arriver en EN-TÊTE. S'il était en argv ou en query, il
+        # finirait dans une liste de processus ou un log d'accès.
+        return self.headers.get("Authorization") == "token " + TOKEN
+    def do_GET(self):
+        if not self._auth(): return self._send(401, {"message": "unauthorized"})
+        # A0 dettes : la lib PAGINE (?limit=50&page=N) — le faux honore les deux
+        # paramètres, comme le vrai Gitea (limit max 50 par défaut).
+        path, _, qs = self.path.partition("?")
+        if re.match(r"^/api/v1/repos/.+/issues/\d+/comments$", path):
+            q = dict(kv.split("=", 1) for kv in qs.split("&") if "=" in kv)
+            # PLAFOND serveur (api.MAX_RESPONSE_ITEMS chez Gitea) : `limit` est
+            # ECRETE, une page pleine peut donc etre plus courte que demande.
+            cap = int(os.environ.get("PAGE_CAP", "50"))
+            lim, page = min(int(q.get("limit", 50)), cap), int(q.get("page", 1))
+            allc = load()
+            return self._send(200, allc[(page - 1) * lim: page * lim])
+        self._send(404, {"message": "not found"})
+    def do_POST(self):
+        if not self._auth(): return self._send(401, {"message": "unauthorized"})
+        n = int(self.headers.get("Content-Length", 0)); body = json.loads(self.rfile.read(n) or "{}")
+        c = load(); new = {"id": len(c) + 1, "body": body.get("body", "")}
+        c.append(new); save(c); return self._send(201, new)
+    def do_PATCH(self):
+        if not self._auth(): return self._send(401, {"message": "unauthorized"})
+        m = re.match(r"^/api/v1/repos/.+/issues/comments/(\d+)$", self.path)
+        if not m: return self._send(404, {"message": "not found"})
+        n = int(self.headers.get("Content-Length", 0)); body = json.loads(self.rfile.read(n) or "{}")
+        cid = int(m.group(1)); c = load()
+        for e in c:
+            if e["id"] == cid: e["body"] = body.get("body", "")
+        save(c); return self._send(200, {"id": cid})
+    def log_message(self, *a): pass
+HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
+PY
 
-EXPECTED_CHECKS=38
+echo
+echo "══ D. le rapport de PR ══"
+GPORT="$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')"
+printf '[]' > "$TMP/comments.json"
+STORE="$TMP/comments.json" EXPECT_TOKEN=tok-ok python3 "$TMP/fakegitea.py" "$GPORT" >/dev/null 2>&1 &
+PIDS="$PIDS $!"; for _ in $(seq 1 40); do curl -s -o /dev/null "http://127.0.0.1:$GPORT/" 2>/dev/null && break; sleep 0.1; done
+GH="http://127.0.0.1:$GPORT"
+bodies(){ python3 -c 'import json,sys;print("\n".join(c["body"] for c in json.load(open(sys.argv[1]))))' "$TMP/comments.json"; }
+report(){ # <REFUSAL> <REFUSAL_DETAIL> → $TMP/d.out
+  printf '[]' > "$TMP/comments.json"
+  ( cd "$REPO" && PR_NUMBER=7 APPLY_RESULT=FAILURE APP_NAME=a5app ENV_NAME=rec VALIDATOR=alice REFUSAL="$1" REFUSAL_DETAIL="$2" \
+      GIT_REPO=ci/stoa-labs GITEA_TOKEN=tok-ok GIT_HOST="$GH" bash scripts/provision-apply-comment.sh ) > "$TMP/d.out" 2>&1; echo $? > "$TMP/d.rc"
+}
+report API_NOT_PROMOTED "l'API 'demo-selfservice' n'est pas au palier 'rec' — promouvoir l'API vers rec (PR promote/demo-selfservice-rec, G5) puis rejouer l'apply ; rien n'a été écrit"
+bodies > "$TMP/d.body"
+[ "$(cat "$TMP/d.rc")" = 0 ] && grep -q 'API_NOT_PROMOTED' "$TMP/d.body" && grep -q "L'ordre app/API" "$TMP/d.body" && grep -q 'promote/<api>-rec' "$TMP/d.body" && grep -q 'promote/demo-selfservice-rec' "$TMP/d.body" && grep -q 'rejouer ce webhook' "$TMP/d.body" \
+  && ok "D.1 API_NOT_PROMOTED : tag, détail (promote/demo-selfservice-rec), paragraphe « L'ordre app/API » avec le remède" || bad "D.1 rc $(cat "$TMP/d.rc") : $(tr '\n' ' ' < "$TMP/d.body" | cut -c1-400)"
+report PALIER_FERME "lecture de envs/int/wm-admin refusée (HTTP 403)"
+bodies > "$TMP/d.body"
+grep -q 'PALIER_FERME' "$TMP/d.body" && grep -q 'envs/int/wm-admin' "$TMP/d.body" && ! grep -q "L'ordre app/API" "$TMP/d.body" && ok "D.2 PALIER_FERME : la phrase de la garde sur la PR, PAS le paragraphe A5" || bad "D.2 : $(tr '\n' ' ' < "$TMP/d.body" | cut -c1-300)"
+report SUBSCRIPTION_UNCONFIRMED "consumingAPIs=['x']"
+bodies > "$TMP/d.body"
+grep -q "la convergence a eu lieu" "$TMP/d.body" && ! grep -q "rien n'a été écrit sur la gateway, cette PR" "$TMP/d.body" && ok "D.3 SUBSCRIPTION_UNCONFIRMED : variante « la convergence a eu lieu » (jamais « rien n'a été écrit »)" || bad "D.3 : $(tr '\n' ' ' < "$TMP/d.body" | cut -c1-300)"
+report API_INACTIVE "$(printf 'x [lien](http://e) `code` *gras*\nseconde ligne')"
+bodies > "$TMP/d.body"
+grep -q 'API_INACTIVE' "$TMP/d.body" && ! grep -q '\[lien\]' "$TMP/d.body" && ! grep -q '\*gras\*' "$TMP/d.body" && [ "$(grep -c 'seconde ligne' "$TMP/d.body")" = 1 ] && ok "D.4 détail hostile nettoyé (markdown inerte, une ligne)" || bad "D.4 : $(tr '\n' ' ' < "$TMP/d.body" | cut -c1-300)"
+
+# (section E ajoutée par T5)
+
+EXPECTED_CHECKS=42
 TOTAL=$((PASS+FAIL))
 [ "$TOTAL" -eq "$((EXPECTED_CHECKS-1))" ] \
   && ok "$((TOTAL+1)) contrôles exécutés = $EXPECTED_CHECKS attendus (aucune section sautée)" \

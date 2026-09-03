@@ -177,7 +177,20 @@ elif refusal == "SHA_NON_CONFIRME":
 elif refusal:
     lines.append(f"**L'application n'est PAS déployée.** Refus `{refusal}`"
                  + (f" : `{detail}`" if detail else "") + ".")
-    lines.append("Le merge a eu lieu, l'apply non — corriger puis relancer l'apply ; inutile de rouvrir une demande.")
+    env_name = clean(os.environ["ENV_NAME"], 40)
+    # A5 — L'ORDRE APP/API : le remède est nommé (ensemble EXPLICITE de tags, jamais
+    # un préfixe), et il n'est pas « rouvrir une demande » : rejouer CE webhook.
+    if refusal in ("API_NOT_PROMOTED", "API_VERSION_MISMATCH", "API_INACTIVE", "API_AMBIGUE"):
+        lines.append(f"**L'ordre app/API** (A5) : une application ne précède jamais son API au palier. "
+                     f"Promouvoir l'API vers `{env_name}` par la chaîne des APIs (`api-promote-request` → PR `promote/<api>-{env_name}` → merge → `team-promote`), "
+                     "ou l'activer au palier, puis **rejouer ce webhook** : rien n'a été écrit sur la gateway, cette PR reste la référence — "
+                     "inutile de rouvrir une demande.")
+    elif refusal in ("API_AT_PALIER_UNCONFIRMED", "SUBSCRIPTION_UNCONFIRMED"):
+        lines.append(f"**L'ordre app/API** (A5, au `verify`) : la convergence a eu lieu, mais la relecture ne confirme pas l'API au palier `{env_name}` "
+                     "ou la souscription au GUID attendu — l'API a bougé entre l'apply et sa relecture (désactivée, remplacée). "
+                     "Rétablir l'API au palier puis **rejouer ce webhook** ; l'état de la gateway est à vérifier avant tout trafic.")
+    else:
+        lines.append("Le merge a eu lieu, l'apply non — corriger puis relancer l'apply ; inutile de rouvrir une demande.")
 else:
     lines.append("**L'application n'est PAS déployée.** Le merge a eu lieu, l'apply non — "
                  "corriger puis relancer l'apply ; inutile de rouvrir une demande.")
