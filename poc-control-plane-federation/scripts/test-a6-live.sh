@@ -319,11 +319,23 @@ chain_rec_cert(){
   PRS="$PRS $PR_N"
   N_PA=$(jnext provision-apply); MS_N=$(merge_as_alice "$PR_N")
   wait_amont "$N_PA" PAUSE; answer_pause "$N_PA"; finish_amont "$N_PA"
+  retry_on_gateway_reset "$PR_N" "$BR_N"
+}
+# retry_on_gateway_reset <pr> <branche> : la 10.15 du lab est recyclée ~toutes les 20-25 min ; un aval coupé
+# EN PLEIN PLAY (« Connection reset by peer », aucune ligne REFUS: <TAG>) est un incident de lab, pas un verdict —
+# le remède de l'opérateur est le REJEU du webhook (motif A2). Une seule fois, annoncé dans le journal.
+retry_on_gateway_reset(){
+  [ "$RES" != SUCCESS ] && [ -n "$S_NUM" ] || return 0
+  grep -qE 'Connection reset by peer|Connection failure|Connection refused' "$TMP/ss.$S_NUM.console" 2>/dev/null || return 0
+  grep -qE 'REFUS: [A-Z_]+ :' "$TMP/ss.$S_NUM.console" 2>/dev/null && return 0
+  echo "  (incident lab : gateway recyclée pendant l'aval #$S_NUM — rejeu du webhook de la PR #$1, motif A2)"
+  replay_pr "$1" "$2" "$MS_N"; wait_amont "$N_PA" PAUSE; answer_pause "$N_PA"; finish_amont "$N_PA"
 }
 # merge_pause_apply <pr> : merge alice → pause → alice → fin (pour une PR déjà ouverte : la PR de repli) ; pose MS_N N_PA RES S_NUM
 merge_pause_apply(){
   N_PA=$(jnext provision-apply); MS_N=$(merge_as_alice "$1")
   wait_amont "$N_PA" PAUSE; answer_pause "$N_PA"; finish_amont "$N_PA"
+  retry_on_gateway_reset "$1" "provision/$APP-rec"
 }
 # ── lectures gateway par l'OBJET (jamais la liste), clé jamais imprimée ──────
 gw_app_id(){ gw_app "$1" | jq_ "print(d.get('id',''))" 2>/dev/null; }
