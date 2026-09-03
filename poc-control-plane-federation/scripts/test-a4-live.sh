@@ -236,12 +236,18 @@ with os.fdopen(fd,"w") as f: f.write(urllib.parse.urlencode(pairs))' "$1"
 }
 # run_apply <pr> <merge_sha> <attendu : PAUSE|NOPAUSE> → N_PA (le build amont) ; console amont dans $TMP/pa.<N>.console
 N_PA=""; S_NUM=""
+# wait_built <job> <build> : wfapi dit FINISHED AVANT que api/json ne dise
+# building=false (le post{} tourne encore : console partielle, commentaire de PR
+# pas encore posé — mesuré passage 5, 6.2/6.3). On attend les deux.
+wait_built(){ local dl=$(( $(date +%s) + 240 )) r; while [ "$(date +%s)" -lt "$dl" ]; do r=$(jresult "$1" "$2"); [ -n "$r" ] && [ "$r" != BUILDING ] && return 0; sleep 3; done; return 1; }
 wait_amont(){ # <N_PA> <PAUSE|NOPAUSE>
   local n="$1" st
   if [ "$2" = PAUSE ]; then
     st=$(wait_until 300 provision-apply "$n" PAUSED_PENDING_INPUT) || die "PREREQUIS : provision-apply #$n n'atteint pas la pause ($st) — $(jconsole provision-apply "$n" | grep -E 'REFUS|error' | tail -2 | tr '\n' ' ')"
   else
     st=$(wait_until 300 provision-apply "$n" FINISHED)
+    wait_built provision-apply "$n" || echo "  (avertissement : #$n encore building après le FINISHED de wfapi)"
+    sleep 3
     jconsole provision-apply "$n" > "$TMP/pa.$n.console"
   fi
 }
@@ -252,9 +258,11 @@ RES=""
 finish_amont(){
   local n="$1"
   wait_until 1800 provision-apply "$n" FINISHED >/dev/null
+  wait_built provision-apply "$n" || echo "  (avertissement : #$n encore building après le FINISHED de wfapi)"
+  sleep 3
   jconsole provision-apply "$n" > "$TMP/pa.$n.console"
   S_NUM=$(grep -oE "aval selfservice-app-deploy #[0-9]+" "$TMP/pa.$n.console" | grep -oE '[0-9]+$' | head -1)
-  [ -n "$S_NUM" ] && jconsole selfservice-app-deploy "$S_NUM" > "$TMP/ss.$S_NUM.console"
+  [ -n "$S_NUM" ] && { wait_built selfservice-app-deploy "$S_NUM" || true; jconsole selfservice-app-deploy "$S_NUM" > "$TMP/ss.$S_NUM.console"; }
   RES=$(jresult provision-apply "$n")
 }
 console_order(){ # <fichier console> <motif1> <motif2> … → OK si chaque motif apparaît, dans l'ordre
@@ -517,7 +525,7 @@ MUTATED=0
 printf 'MANIFEST=clients/provisioned/applications/%s.ansible.yml\nENVIRONMENT=int\nADMIN_VIA=%s\nMERGE_SHA=%s\nDEBUG=false\nVAULT_USER=alice\nVAULT_USER_PASSWORD=%s\nUSER_VAULT_JWT=\n' "$APP" "$EXPECT_ADMIN_VIA" "$MS5" "$LAB_ALICE_PASS" | form_file "$TMP/form.int"
 N_D=$(jbuild selfservice-app-deploy "$TMP/form.int"); rm -f "$TMP/form.int"
 [ -n "$N_D" ] && ok "5.10 build direct selfservice-app-deploy #$N_D (int, MERGE_SHA de #$PR5, alice hors du groupe)" || die "BUILD_EN_FILE : aucun build résolu"
-wait_until 900 selfservice-app-deploy "$N_D" FINISHED >/dev/null; jconsole selfservice-app-deploy "$N_D" > "$TMP/ss.$N_D.console"
+wait_until 900 selfservice-app-deploy "$N_D" FINISHED >/dev/null; wait_built selfservice-app-deploy "$N_D" || true; sleep 3; jconsole selfservice-app-deploy "$N_D" > "$TMP/ss.$N_D.console"
 [ "$(jresult selfservice-app-deploy "$N_D")" = FAILURE ] && grep -q '^REFUS: DEPLOYER_GROUP_REQUIRED' "$TMP/ss.$N_D.console" && ok "5.11 #$N_D : FAILURE DEPLOYER_GROUP_REQUIRED — le retrait est visible au geste suivant (login frais)" || ko "5.11 #$N_D : $(jresult selfservice-app-deploy "$N_D") — $(grep -E 'REFUS|error' "$TMP/ss.$N_D.console" | head -2 | tr '\n' ' ')"
 ! grep -q '^palier ouvert' "$TMP/ss.$N_D.console" && ! grep -q 'PLAY \[Self-service application' "$TMP/ss.$N_D.console" && ok "5.12 aucun ticket, aucun play" || ko "5.12 l'aval est allé plus loin"
 ST=$(gw_state); [ "$ST" = "${APP}-int|10.42.0.6-10.42.0.6" ] && ok "5.13 gateway inchangée (int .6)" || ko "5.13 gateway : $ST"
