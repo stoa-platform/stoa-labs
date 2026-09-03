@@ -13,7 +13,7 @@
 # être poussé (git push gitea main). Aucune identité humaine (webhook) : le commit
 # est signé par `ci`, la PR reste à valider (4-yeux, ADR-078).
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || { echo "REFUS: racine du depot introuvable" >&2; exit 2; }
 JENKINS_UI="${JENKINS_UI:-http://localhost:18080}"
 GITEA_CONTAINER="${GITEA_CONTAINER:-poc-gitea}"
 JOB=provisioning-request
@@ -40,8 +40,10 @@ F=$(printf '%s' "$CJ" | python3 -c 'import sys,json;print(json.load(sys.stdin)["
 C=$(printf '%s' "$CJ" | python3 -c 'import sys,json;print(json.load(sys.stdin)["crumb"])')
 # supprimer un éventuel ancien credential (rotation), puis (re)créer
 curl -s -b "$CK" -X POST "$JENKINS_UI/credentials/store/system/domain/_/credential/gitea-provision-token/doDelete" -H "$F: $C" -o /dev/null
+# shellcheck disable=SC2016  # le programme python est en quotes SIMPLES a dessein : rien ne doit s'expanser cote shell
 JSON=$(python3 -c 'import json,sys; print(json.dumps({"":"0","credentials":{"scope":"GLOBAL","id":"gitea-provision-token","secret":sys.argv[1],"description":"Gitea token maillon1 provisioning","$class":"org.jenkinsci.plugins.plaincredentials.impl.StringCredentialsImpl"}}))' "$TOKEN")
 HC=$(curl -s -b "$CK" -X POST "$JENKINS_UI/credentials/store/system/domain/_/createCredentials" -H "$F: $C" --data-urlencode "json=$JSON" -o /dev/null -w '%{http_code}')
+# shellcheck disable=SC2015  # A && B || C est ICI un si-alors-sinon valide : ok/warn/ko rendent toujours 0
 { [ "$HC" = "200" ] || [ "$HC" = "302" ]; } && ok "credential posé (HTTP $HC)" || ko "createCredentials (HTTP $HC)"
 
 # 3. job pipeline provisioning-request

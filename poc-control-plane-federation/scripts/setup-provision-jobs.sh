@@ -57,7 +57,7 @@
 # par l'environnement, et `set +x` empêche leur écho.
 set -uo pipefail
 set +x
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || { echo "REFUS: racine du depot introuvable" >&2; exit 2; }
 
 JENKINS_UI="${JENKINS_UI:-http://localhost:18080}"
 JENKINS_USER="${JENKINS_USER:-}"
@@ -231,6 +231,7 @@ for J in $JOBS; do
       jcurl -s -b "$CK" -X POST "$JENKINS_UI/job/$J/doDelete" -H "$F: $C" -o /dev/null
       HC=$(jcurl -s -b "$CK" -X POST "$JENKINS_UI/createItem?name=$J" \
            -H "$F: $C" -H "Content-Type: application/xml; charset=utf-8" --data-binary @"$X" -o /dev/null -w '%{http_code}')
+      # shellcheck disable=SC2015  # A && B || C est ICI un si-alors-sinon valide : ok/warn/ko rendent toujours 0
       [ "$HC" = "200" ] && { ok "job recréé (HTTP $HC)"; POSED=true; } || { warn "recréation échouée (HTTP $HC)"; RC=1; }
     else
       warn "mise à jour refusée (HTTP $HC). Le job est INCHANGÉ."
@@ -240,6 +241,7 @@ for J in $JOBS; do
   elif [ "$EXISTS" = "404" ]; then
     HC=$(jcurl -s -b "$CK" -X POST "$JENKINS_UI/createItem?name=$J" \
          -H "$F: $C" -H "Content-Type: application/xml; charset=utf-8" --data-binary @"$X" -o /dev/null -w '%{http_code}')
+    # shellcheck disable=SC2015  # A && B || C est ICI un si-alors-sinon valide : ok/warn/ko rendent toujours 0
     [ "$HC" = "200" ] && { ok "job créé (HTTP $HC)"; POSED=true; } || { warn "création échouée (HTTP $HC)"; RC=1; }
   else
     warn "état du job indéterminé (HTTP $EXISTS) — ni mis à jour ni créé"
