@@ -15,8 +15,10 @@
 # Discipline A3 : toute sortie capturée dans un fichier avant grep ; mutations =
 # copie, `cmp` anti-no-op, le scénario visé PASSE sur le mutant ET l'original
 # refuse toujours ; le total des contrôles est asserté en dur.
-# `A && ok || bad` (SC2015) est l'idiome des scripts de preuve du repo.
-# shellcheck disable=SC2015
+# `A && ok || bad` (SC2015) est l'idiome des scripts de preuve du repo ; les
+# motifs grep citent des `$WORKSPACE` et des `\\` LITTÉRAUX des Jenkinsfile
+# (SC2016, SC1003) — c'est le texte cherché, pas une expansion voulue.
+# shellcheck disable=SC2015,SC2016,SC1003
 set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 TMP="$(mktemp -d)"; umask 077
@@ -135,14 +137,14 @@ L_GATE=$(grep -n "API_AT_PALIER :" "$TMP/r.out" | head -1 | cut -d: -f1); L_POST
 grep -qE "^GET .*/apis/$ID_A$" "$STUB_LOG" && ok "A.7d la garde de visibilité a relu l'id résolu (GET /apis/{id}) — la porte lui fournit ss_api_id" || bad "A.7d GET /apis/{id} absent du journal"
 [ ! -e "$TMP/refus" ] && [ ! -e "$TMP/refus.detail" ] && ok "A.7e chemin nominal : aucun fichier de refus" || bad "A.7e fichiers de refus présents sur le nominal"
 run_role "$CTL_INACTIVE" -e apim_ss_refus_out= -e apim_ss_refus_detail_out=
-refus API_INACTIVE && [ ! -e "$TMP/refus" ] && [ ! -e "$TMP/refus.detail" ] && ok "A.8 apply manuel (sans apim_ss_refus_*) : même REFUS:, aucun fichier" || bad "A.8 rc $(rrc) fichiers=$(ls "$TMP"/refus* 2>/dev/null | tr '\n' ' ')"
+refus API_INACTIVE && [ ! -e "$TMP/refus" ] && [ ! -e "$TMP/refus.detail" ] && ok "A.8 apply manuel (sans apim_ss_refus_*) : même REFUS:, aucun fichier" || bad "A.8 rc $(rrc) fichiers=$(find "$TMP" -maxdepth 1 -name 'refus*' | tr '\n' ' ')"
 run_role "$CTL_INACTIVE"
 [ "$(stat -f '%Lp' "$TMP/refus" 2>/dev/null || stat -c '%a' "$TMP/refus")" = 600 ] && ok "A.9 fichier de tag en 0600" || bad "A.9 mode : $(stat -f '%Lp' "$TMP/refus" 2>/dev/null || stat -c '%a' "$TMP/refus")"
 
 # ── mutations : copie de l'arbre ansible, cmp anti-no-op, run depuis la copie ──
-MAIN="$REPO/ansible/roles/apim_selfservice_app/tasks/main.yml"; REFUS="$REPO/ansible/roles/apim_common/tasks/refus.yml"
+MAIN="$REPO/ansible/roles/apim_selfservice_app/tasks/main.yml"
 mutant(){ # <nom> <fichier relatif à ansible/> <sed -E expr> → $TMP/<nom>/ansible
-  rm -rf "$TMP/$1"; mkdir -p "$TMP/$1"; cp -R "$REPO/ansible" "$TMP/$1/ansible"
+  rm -rf "${TMP:?}/$1"; mkdir -p "$TMP/$1"; cp -R "$REPO/ansible" "$TMP/$1/ansible"
   sed -E "$3" "$REPO/ansible/$2" > "$TMP/$1/ansible/$2"
   ! cmp -s "$REPO/ansible/$2" "$TMP/$1/ansible/$2" || { bad "mutation $1 = no-op (l'ancre a bougé)"; return 1; }
 }
@@ -157,7 +159,7 @@ fi
 # ss_api_id) : sans elle, le mutant mourrait sur une variable indéfinie AVANT
 # d'écrire — un mutant qui ne peut pas écrire ne prouve rien (mesuré, T1).
 awk '/^    # ── A5 porte : début/ { on=1 } /^    # ===== 2\. Application/ { on=0 } on' "$MAIN" > "$TMP/blk-a5"
-rm -rf "$TMP/m_order"; mkdir -p "$TMP/m_order"; cp -R "$REPO/ansible" "$TMP/m_order/ansible"
+rm -rf "${TMP:?}/m_order"; mkdir -p "$TMP/m_order"; cp -R "$REPO/ansible" "$TMP/m_order/ansible"
 awk '/^    # ── A5 porte : début/ { skip=1 } /^    # ===== 2\. Application/ { skip=0 } skip { next } { print } /^    - name: "App : fail-closed — un id d.application est obligatoire pour la suite"/ { getline; print; getline; print; getline; print; while ((getline l < B) > 0) print l; close(B) }' B="$TMP/blk-a5" "$MAIN" > "$TMP/m_order/ansible/roles/apim_selfservice_app/tasks/main.yml"
 if [ -s "$TMP/blk-a5" ] && ! cmp -s "$MAIN" "$TMP/m_order/ansible/roles/apim_selfservice_app/tasks/main.yml" && python3 -c "import yaml,sys; yaml.safe_load(open(sys.argv[1]))" "$TMP/m_order/ansible/roles/apim_selfservice_app/tasks/main.yml" 2>/dev/null; then
   run_mut m_order "$CTL_ABSENT"
