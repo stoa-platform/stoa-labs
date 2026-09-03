@@ -309,9 +309,27 @@ report API_INACTIVE "$(printf 'x [lien](http://e) `code` *gras*\nseconde ligne')
 bodies > "$TMP/d.body"
 grep -q 'API_INACTIVE' "$TMP/d.body" && ! grep -q '\[lien\]' "$TMP/d.body" && ! grep -q '\*gras\*' "$TMP/d.body" && [ "$(grep -c 'seconde ligne' "$TMP/d.body")" = 1 ] && ok "D.4 détail hostile nettoyé (markdown inerte, une ligne)" || bad "D.4 : $(tr '\n' ' ' < "$TMP/d.body" | cut -c1-300)"
 
-# (section E ajoutée par T5)
+echo
+echo "══ E. le prototype Python (spec du fold-in) contre le stub ══"
+ENG="$REPO/scripts/apply-selfservice-application.py"
+run_eng(){ # <ctl> <manifest json> → $TMP/e.rc $TMP/e.out
+  printf '%s\n' "$1" > "$STUB_CTL"; : > "$STUB_LOG"; printf '%s' "$2" > "$TMP/e.json"
+  ( WM_ADMIN_URL="$GW" WM_USER=Administrator WM_PASS=manage python3 "$ENG" "$TMP/e.json" ) > "$TMP/e.out" 2>&1; echo $? > "$TMP/e.rc"
+}
+run_eng "$CTL_ABSENT" '{"name":"a5app","api":"demo-selfservice","api_version":"1.0.0"}'
+[ "$(cat "$TMP/e.rc")" = 1 ] && grep -q '^REFUS: API_NOT_PROMOTED' "$TMP/e.out" && [ "$(writes)" = 0 ] && ok "E.1 prototype : nom absent ⇒ rc 1, REFUS: API_NOT_PROMOTED, aucune écriture" || bad "E.1 rc $(cat "$TMP/e.rc") writes=$(writes) : $(tail -1 "$TMP/e.out")"
+run_eng "$CTL_INACTIVE" '{"name":"a5app","api":"demo-selfservice","api_version":"1.0.0"}'
+[ "$(cat "$TMP/e.rc")" = 1 ] && grep -q '^REFUS: API_INACTIVE' "$TMP/e.out" && [ "$(writes)" = 0 ] && ok "E.2 prototype : inactive ⇒ REFUS: API_INACTIVE, aucune écriture (la dette du spike est fermée)" || bad "E.2 rc $(cat "$TMP/e.rc") writes=$(writes) : $(tail -1 "$TMP/e.out")"
+run_eng "$CTL_OTHER_VERSION" '{"name":"a5app","api":"demo-selfservice","api_version":"2.0.0"}'
+[ "$(cat "$TMP/e.rc")" = 1 ] && grep -q '^REFUS: API_VERSION_MISMATCH' "$TMP/e.out" && grep -q '1.0.0' "$TMP/e.out" && ok "E.3 prototype : version absente ⇒ API_VERSION_MISMATCH citant 1.0.0" || bad "E.3 : $(tail -1 "$TMP/e.out")"
+run_eng "$CTL_ACTIVE" '{"name":"a5app","api":"demo-selfservice","api_version":"1.0.0"}'
+grep -q "^POST .*/applications$" "$STUB_LOG" && ok "E.4 prototype : active ⇒ la porte laisse passer (POST /applications atteint le canari)" || bad "E.4 aucun POST : $(tail -2 "$TMP/e.out" | tr '\n' ' ')"
+run_eng "$CTL_ACTIVE" '{"name":"a5app","api":"demo-selfservice"}'
+[ "$(cat "$TMP/e.rc")" != 0 ] && grep -q 'CABLAGE_INCOMPLET' "$TMP/e.out" && [ "$(writes)" = 0 ] && ok "E.5 prototype : api_version absent ⇒ CABLAGE_INCOMPLET (la résolution par nom seul n'est plus admise)" || bad "E.5 rc $(cat "$TMP/e.rc") : $(tail -1 "$TMP/e.out")"
+SPIKE="$REPO/scripts/spike-cd-applications.py"
+grep -q "API_INACTIVE" "$SPIKE" && ! grep -q 'compare apiName SEUL' "$SPIKE" && ok "E.6 le spike attend désormais le refus (S2-T3 réaligné : il reste rejouable et dit l'état vrai)" || bad "E.6 spike non réaligné"
 
-EXPECTED_CHECKS=42
+EXPECTED_CHECKS=48
 TOTAL=$((PASS+FAIL))
 [ "$TOTAL" -eq "$((EXPECTED_CHECKS-1))" ] \
   && ok "$((TOTAL+1)) contrôles exécutés = $EXPECTED_CHECKS attendus (aucune section sautée)" \

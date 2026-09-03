@@ -280,20 +280,21 @@ def main():
     say("S2-T3 : apply-selfservice-application.py — API absente / API inactive (par nom)")
     eng = os.path.join(os.path.dirname(os.path.abspath(__file__)), "apply-selfservice-application.py")
     env = dict(os.environ, WM_ADMIN_URL=GW, WM_USER=os.environ.get("WM_USER", "Administrator"), WM_PASS=os.environ.get("WM_PASS", "manage"))
-    json.dump({"name": APP, "api": "spikecd-nope"}, open("/tmp/spikecd-nope.json", "w"))
+    json.dump({"name": APP, "api": "spikecd-nope", "api_version": "1.0.0"}, open("/tmp/spikecd-nope.json", "w"))
     p = subprocess.run([sys.executable, eng, "/tmp/spikecd-nope.json"], env=env, capture_output=True, text=True, timeout=120)
     mes("S2-T3 API absente → rc", f"{p.returncode} | {p.stdout.strip().splitlines()[-1][:120] if p.stdout.strip() else p.stderr[:120]}")
     check("S2-T3 moteur : API absente ⇒ échec fermé (rc≠0)", p.returncode != 0)
     if ina_id:
         adm("PUT", f"/apis/{ina_id}/deactivate"); time.sleep(1)
-        json.dump({"name": APP, "api": API_INACTIVE}, open("/tmp/spikecd-inactive.json", "w"))
+        json.dump({"name": APP, "api": API_INACTIVE, "api_version": "1.0.0"}, open("/tmp/spikecd-inactive.json", "w"))
         p = subprocess.run([sys.executable, eng, "/tmp/spikecd-inactive.json"], env=env, capture_output=True, text=True, timeout=120)
         mes("S2-T3 API inactive → rc", f"{p.returncode} | {p.stdout.strip().splitlines()[-1][:120] if p.stdout.strip() else p.stderr[:120]}")
-        mes("S2-T3 VERDICT moteur", "ACCEPTE une API inactive (rc=0) — la porte A5 n'existe pas" if p.returncode == 0 else "refuse une API inactive")
-        # Fait de code, pas de run : la résolution ignore la VERSION (apiName seul).
+        mes("S2-T3 VERDICT moteur", "ACCEPTE une API inactive (rc=0) — RÉGRESSION de la porte A5" if p.returncode == 0 else "refuse une API inactive (porte A5, 2026-09-03)")
+        check("S2-T3 moteur : API inactive ⇒ refus fermé API_INACTIVE (porte A5, 2026-09-03)", p.returncode != 0 and "REFUS: API_INACTIVE" in p.stdout)
+        # Fait de code, pas de run : depuis A5 la résolution est nom + version + isActive.
         src = open(eng, encoding="utf-8").read()
-        check("S2-T3 (lecture) la résolution du moteur compare apiName SEUL — ni version ni isActive",
-              'get("apiName") == api_name' in src and "isActive" not in src.split("def main")[1][:1500])
+        check("S2-T3 (lecture) la résolution du moteur compare nom + version + isActive (porte A5)",
+              'is not True' in src and "API_VERSION_MISMATCH" in src and "API_NOT_PROMOTED" in src)
 
     print("\n== MESURES ==")
     for l, v in MES: print(f"  {l}: {v}")
