@@ -12,7 +12,12 @@
 # JOBS liste les jobs du palier posés par CE script, un nom par mot. Le XML de
 # chacun est dérivé du nom (convention de setup-provision-jobs.sh) :
 #   team-request  → ci/jenkins/team-request.job.xml
-#   app-request   → ci/jenkins/app-request.job.xml
+#   app-request   → ci/jenkins/app-request.job.xml (A0, 2026-09-02 : COQUILLE
+#                   PURE, sans paramètre ni marqueur — le formulaire est posé
+#                   par ci/Jenkinsfile.app-request à chaque build, listes
+#                   dérivées du dépôt. Copié TEL QUEL, puis AMORCÉ d'un build
+#                   (BOOTSTRAP_JOBS → setup-provision-jobs.sh) : re-poser le
+#                   XML efface les paramètres posés par le build, mesuré.)
 #   team-apply    → ci/jenkins/team-apply.job.xml
 #   api-request   → ci/jenkins/api-request.job.xml (Task 5, palier 3 — la porte
 #                   du PRODUCTEUR, pendant app-request côté consommateur)
@@ -25,12 +30,10 @@
 #                   action=export contre la gateway d'authoring, pousse
 #                   l'archive au registre Gitea, imprime guid/sha256/package.
 #                   Sans marqueur CHOICES (ni TEAMS ni APIS) : copié tel quel,
-#                   comme team-request/team-apply. ⚠ api-promote-request
-#                   (jalon G3, le formulaire DE PROMOTION lui-même) n'a PAS de
-#                   job.xml et n'est posé par AUCUN script de ce dépôt — dette
-#                   distincte, non comblée ici (cf. l'en-tête du job.xml
-#                   d'api-promote-export pour le détail de ce qui a été
-#                   vérifié).
+#                   comme team-request/team-apply.
+#   api-promote-request → ci/jenkins/api-promote-request.job.xml (dette G3
+#                   soldée le 2026-08-28, spec promotion-sans-recopie) : sans
+#                   marqueur CHOICES, copié tel quel, comme api-promote-export.
 #   team-promote  → ci/jenkins/team-promote.job.xml (Task 7, jalon G5 — l'APPLY
 #                   post-merge d'une PR promote/<api>-<env> : JOB UNIQUE
 #                   partagé par TOUS les dépôts d'équipe, MÊME token webhook
@@ -49,10 +52,14 @@
 # QUE sur les XML qui contiennent au moins un des deux marqueurs (recherche
 # statique, avant tout réseau) — team-request/team-apply en ressortent donc
 # une copie strictement identique, jamais touchés par sed, jamais dépendants
-# de Gitea. app-request.job.xml (Task 4) et api-request.job.xml (Task 5) sont
-# les deux consommateurs réels des marqueurs — le premier pour TEAMS+APIS
-# (côté consommateur), le second pour TEAMS+APIS aussi (côté producteur,
-# API_BASE en mode nouvelle-version).
+# de Gitea. Depuis A0 (2026-09-02), api-request.job.xml (Task 5, chaîne des
+# APIs) est le SEUL consommateur réel des marqueurs (TEAMS+APIS, côté
+# producteur, API_BASE en mode nouvelle-version) : app-request n'en porte plus,
+# ses listes sont calculées dans le build par scripts/app-request-choices.sh.
+# DEUX MÉCANISMES COEXISTENT donc, délibérément : la substitution à la pose
+# pour la chaîne des APIs, le formulaire posé par le Jenkinsfile pour la chaîne
+# des applications (A0) — le second est la cible, le premier n'est pas dans le
+# périmètre du GOAL cd-applications.
 #
 # FAIL-CLOSED : si au moins un job POSÉ CE RUN porte un placeholder, la
 # génération correspondante (Gitea injoignable, providers.<env>.yml absent/
@@ -94,7 +101,7 @@ _STO_LIB="$(dirname "${BASH_SOURCE[0]}")/lib/deploy-pin.sh"
 . "$_STO_LIB" || { echo "ERREUR: $_STO_LIB introuvable ou illisible" >&2; exit 1; }
 
 JENKINS_UI="${JENKINS_UI:-http://localhost:18080}"
-JOBS="${JOBS:-team-request app-request team-apply api-request team-publish api-promote-export team-promote}"
+JOBS="${JOBS:-team-request app-request team-apply api-request team-publish api-promote-export api-promote-request team-promote}"
 # G4 (ADR-082) : ENVN est SCELLÉ sur l'env d'authoring — affectation sèche
 # depuis la constante de lib, jamais "${ENVN:-dev}" : les variables d'un job
 # Jenkins atterrissent dans l'environnement du process (fait mesuré, même
@@ -196,8 +203,14 @@ done
 # setup-provision-jobs.sh porte le mécanisme réseau (crumb, auth, charset,
 # update-en-place/create) : on ne le duplique pas ici, on lui donne juste une
 # SOURCE différente pour les XML déjà rendus (ÉCART déclaré, cf. son en-tête).
-echo "Jobs du palier onboarding équipe à poser : $JOBS"
-JENKINS_UI="$JENKINS_UI" JOBS="$JOBS" JOBS_SRC_DIR="$STAGE" \
+# A0 : app-request pose son formulaire depuis son Jenkinsfile ; sa pose EFFACE
+# les paramètres du build précédent (mesuré) — le délégué l'amorce d'un build
+# juste après (BOOTSTRAP_JOBS). C'est aussi ce qui RAFRAÎCHIT ses listes après
+# un onboarding (team-apply.sh re-pose « app-request api-request »).
+BOOTSTRAP=""
+case " $JOBS " in *" app-request "*) BOOTSTRAP="app-request";; esac
+echo "Jobs du palier onboarding équipe à poser : $JOBS${BOOTSTRAP:+ (amorçage : $BOOTSTRAP)}"
+JENKINS_UI="$JENKINS_UI" JOBS="$JOBS" JOBS_SRC_DIR="$STAGE" BOOTSTRAP_JOBS="$BOOTSTRAP" \
   bash "$SCRIPT_DIR/setup-provision-jobs.sh" \
   && ok "jobs du palier alignés sur le dépôt ($JOBS)" \
   || ko "pose des jobs du palier en échec"

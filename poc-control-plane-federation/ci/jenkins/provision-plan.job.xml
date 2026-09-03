@@ -1,6 +1,28 @@
 <?xml version='1.1' encoding='UTF-8'?>
+<!--
+  provision-plan — PIPELINE FROM SCM (plus de Groovy inline, A0 du GOAL
+  cd-applications 2026-09-02).
+
+  Ce fichier ne porte QUE la coquille du job : d'ou il charge son pipeline, et
+  le declencheur qui doit exister DES LA POSE du job. Le pipeline lui-meme vit
+  dans ci/Jenkinsfile.provision-plan (declaratif, versionne, relisible par
+  l'ops, compile par `make lint-ci`).
+
+  Le bloc <triggers> ci-dessous DOIT rester le miroir exact du bloc
+  `triggers { GenericTrigger(...) }` du Jenkinsfile. C'est CELUI-CI qui gagne,
+  et c'est contre-intuitif : Declarative ne remplace QUE les declencheurs
+  qu'il a lui-meme poses (DeclarativeJobPropertyTrackerAction) ; un
+  declencheur venu d'un config.xml est PRESERVE tel quel, indefiniment
+  (mesure sur le lab 2026-08-06). Une divergence entre les deux fichiers est
+  SILENCIEUSE, et c'est le XML qui fait foi. scripts/lib/gwt-mirror.sh
+  (test-a0-wiring.sh) compare les deux champ a champ et vire au rouge a la
+  premiere divergence.
+
+  Re-pose : scripts/setup-provision-jobs.sh (POST config.xml, historique des
+  builds conserve).
+-->
 <flow-definition plugin="workflow-job">
-  <description>Fermeture de boucle : PR de provisioning ouverte (webhook Gitea) → plan self-service lecture seule → commentaire sur la PR.</description>
+  <description>Fermeture de boucle : PR de provisioning OUVERTE (webhook Gitea) -&gt; plan self-service LECTURE SEULE sur la branche (identite de job, aucune mutation, aucun secret) -&gt; verdict commente sur la PR, visible AVANT la decision humaine (le merge). PIPELINE FROM SCM : ci/Jenkinsfile.provision-plan, charge depuis le depot plateforme (branche main) -- ce job ne contient AUCUN Groovy.</description>
   <keepDependencies>false</keepDependencies>
   <properties>
     <org.jenkinsci.plugins.workflow.job.properties.DisableConcurrentBuildsJobProperty/>
@@ -26,18 +48,29 @@
       </triggers>
     </org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty>
   </properties>
-  <definition class="org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition" plugin="workflow-cps">
-    <script>
-node {
-  stage('checkout') { git url: 'http://gitea:3000/ci/stoa-labs.git', branch: 'main' }
-  stage('plan') {
-    withCredentials([string(credentialsId: 'gitea-provision-token', variable: 'GITEA_TOKEN')]) {
-      dir('poc-control-plane-federation') { sh 'set +x; GIT_WEB_HOST=http://localhost:13000 bash scripts/provision-plan.sh' }
-    }
-  }
-}
-    </script>
-    <sandbox>true</sandbox>
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition" plugin="workflow-cps">
+    <scm class="hudson.plugins.git.GitSCM" plugin="git">
+      <configVersion>2</configVersion>
+      <userRemoteConfigs>
+        <hudson.plugins.git.UserRemoteConfig>
+          <!-- Depot PLATEFORME vu DEPUIS l'agent (reseau docker) : c'est celui
+               que le checkout implicite du stage repose dans le workspace. -->
+          <url>http://gitea:3000/ci/stoa-labs.git</url>
+        </hudson.plugins.git.UserRemoteConfig>
+      </userRemoteConfigs>
+      <branches>
+        <hudson.plugins.git.BranchSpec>
+          <name>*/main</name>
+        </hudson.plugins.git.BranchSpec>
+      </branches>
+      <doGenerateSubmoduleConfigurations>false</doGenerateSubmoduleConfigurations>
+      <submoduleCfg class="empty-list"/>
+      <extensions/>
+    </scm>
+    <scriptPath>poc-control-plane-federation/ci/Jenkinsfile.provision-plan</scriptPath>
+    <!-- lightweight=false : le workspace de l'agent doit porter le depot
+         (scripts/, ansible/, ci/lib/), pas seulement le Jenkinsfile. -->
+    <lightweight>false</lightweight>
   </definition>
-  <triggers/>
+  <disabled>false</disabled>
 </flow-definition>

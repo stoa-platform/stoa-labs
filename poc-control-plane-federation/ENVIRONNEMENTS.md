@@ -340,40 +340,34 @@ relancer une promotion :
 
 Le parcours opérateur, pas à pas :
 
-1. **Publier en authoring** (`dev`) — inchangé, via `team-publish` (§ ce
-   qui précède). L'API doit être active et déclarée dans un
-   `apis/<api>.promote.yml` du dépôt d'équipe.
-2. **Exporter l'archive** — lancer le job `api-promote-export` (paramètres
-   `TEAM`, `API_NAME`, identité nominative). Il joue l'export contre la
-   gateway d'authoring, pousse l'archive sanitisée au registre et imprime :
-
-   ```
-   EXPORT_CONFIRMED_SUMMARY guid=<guid> sha256=<sha256> package=<url>
-   ```
-
-3. **Épingler le guid** — recopier `guid=` dans `apis/<api>.promote.yml`
-   (champ `apim_promote.guid`) et pousser une PR sur le dépôt d'équipe.
-   Sans guid pinné, l'import se refuse (`IMPORT_REFUSED`) : fail-closed, ce
-   n'est pas un oubli à contourner.
-4. **Demander la promotion** — lancer le job `api-promote-request` (G3,
-   inchangé) avec `ARCHIVE_SHA256=<sha256>` de l'étape 2. Il ouvre une PR
-   `promote/<api>-<env>` sur le dépôt d'équipe.
-5. **Merger la PR** — sous protection de branche (ADR-081/ADR-082) : c'est
+1. **Exporter** — job `api-promote-export` (TEAM, API_NAME, identité Vault
+   nominative). Le job REND `apis/<api>.promote.yml` s'il est absent (gabarit
+   `gateways/templates/promote.yml.tmpl`), exporte l'archive vers le registre
+   (adressé par le contenu), puis ouvre la PR d'épinglage guid/sha256/version
+   sur le dépôt d'équipe. Aucune recopie.
+2. **Merger la PR d'épinglage** — c'est elle qui fixe l'id-map (guid) et les
+   octets (sha256) que la promotion désignera (ADR-081 : la décision est le
+   merge). Ré-export ⇒ la même PR est mise à jour, jamais empilée.
+3. **Demander la promotion** — job `api-promote-request` (posé depuis le
+   2026-08-28). `ARCHIVE_SHA256` FACULTATIF : vide, il est lu sur main
+   (manifeste épinglé) depuis dev, hérité du palier source au-delà. Ouvre la
+   PR `promote/<api>-<env>`.
+4. **Merger la PR** — sous protection de branche (ADR-081/ADR-082) : c'est
    la décision humaine. Le merge déclenche `team-promote` via le **même**
    webhook que `team-publish` (aucun geste supplémentaire sur le dépôt
    d'équipe).
-6. **Répondre à la pause** — le job `team-promote` demande une identité
+5. **Répondre à la pause** — le job `team-promote` demande une identité
    d'annuaire nominative. Elle **doit être celle qui a fusionné la PR** ; si
    la porte du palier cible exige les quatre yeux, elle sera comparée au
    demandeur (`promoted_by` du marqueur mergé).
-7. **Vérifier** — le commentaire posé sur la PR (succès ou échec) porte le
+6. **Vérifier** — le commentaire posé sur la PR (succès ou échec) porte le
    pin, la version, le sha256, le moteur utilisé, et les deux identités
    (demandeur, mergeur).
 
 **Repli si l'archive n'a jamais été poussée.** Un refus
-`ARCHIVE_INTROUVABLE` au moment du merge signifie que l'export (étape 2) n'a
+`ARCHIVE_INTROUVABLE` au moment du merge signifie que l'export (étape 1) n'a
 jamais été rejoué depuis, ou a été rejoué avec un digest différent de celui
-épinglé — **rejouer l'export** (étape 2), reprendre le `sha256` produit, et
+épinglé — **rejouer l'export** (étape 1), reprendre le `sha256` produit, et
 soit corriger `ARCHIVE_SHA256` dans une nouvelle demande, soit republier au
 même contenu si le digest attendu est simplement absent du registre.
 
@@ -565,6 +559,505 @@ c'est son travail. Jamais d'exclusion de confort.
 **Réflexe** : avant de toucher `ansible/roles/apim_promote_api/` ou
 `labctl/cmd/labctl/promote.go` (et ses primitives d'`archive.go`), rejouer la
 porte ; après, aussi.
+
+## La référence d'une application (A2 — GOAL cd-applications)
+
+Pour une **API**, la référence de déploiement est le pin `deploy.<env>.yaml`
+(G3). Pour une **application**, il n'y a ni archive ni pin : la PR
+`provision/<app>-<env>` **est** le fichier de déploiement du palier, et son
+**SHA de merge** est la référence. Depuis A2 (2026-09-02), `provision-apply`
+ne projette plus « le dernier `main` » :
+
+1. **Réconciliation, AVANT la pause** (`scripts/provision-apply-reconcile.sh`)
+   — le webhook (token GWT partagé, HMAC non vérifié) ne fait pas foi. La PR
+   est relue sur la **forge** : `merged` / `merge_commit_sha` / `head.ref` /
+   `base.ref == main` doivent concorder, sinon **`PAYLOAD_PERIME`** ; la PR ne
+   doit toucher QUE son manifeste et son certificat de palier, sinon
+   **`PR_HORS_PERIMETRE`** (l'aval checkoute l'arbre entier au SHA mergé). Puis
+   `main` est relu par **git** : le SHA est un ancêtre de `main`
+   (`MERGE_SHA_NON_ANCETRE`) et le manifeste effectif du palier au SHA mergé est
+   encore celui que `main` porte pour ce palier, sinon **`PALIER_SUPPLANTE`** —
+   le rejeu (« Redeliver ») d'une PR ancienne ne re-projette jamais un état
+   dépassé. Personne n'est réveillé pour un refus. Les identités
+   mergeur/demandeur viennent de la forge, jamais du payload : la garde
+   d'identité (`MERGER_MISMATCH`, `FOUR_EYES_VIOLATION`) ne peut plus être passée
+   par un tir manuel qui « s'annonce » mergeur. Un refus n'est commenté que si
+   la forge a confirmé une PR `provision/*`, sous le marqueur
+   `<!-- provision-apply-refus -->` — distinct de celui du résultat d'apply : un
+   webhook forgé ne peut pas réécrire l'enregistrement SHA/digest d'un apply réel.
+2. **La pause nominative** (V_USER / V_PASS), sans exécuteur réservé.
+3. **L'apply au SHA mergé** : `selfservice-app-deploy` reçoit `MERGE_SHA` ;
+   appelé par un job amont SANS référence, il refuse **`MERGE_SHA_REQUIS`**
+   (paramètre non matérialisé, appelant d'avant A2) ; sinon `git fetch origin
+   main` → `merge-base --is-ancestor` (`MERGE_SHA_NON_ANCETRE`) → lignée
+   first-parent (`MERGE_SHA_HORS_LIGNEE`) → `git checkout` — le PLAN et l'APPLY
+   lisent le manifeste **dans cet arbre** — puis, **après converge + verify**,
+   annonce `APPLIED_MODE=pinned` / `APPLIED_SHA` (= `git rev-parse HEAD`) /
+   `APPLIED_DIGEST`. L'amont **confronte** l'annonce à sa demande, hors de tout
+   nœud (aucun exécuteur tenu pendant l'aval) : un aval vert qui n'a pas projeté
+   `MERGE_SHA` en mode `pinned` est un échec nommé **`SHA_NON_CONFIRME`**, et le
+   commentaire dit alors ce qui a été projeté (jamais « pas déployé »).
+4. **La PR comme tableau de bord** : le commentaire d'apply porte l'identité,
+   le **SHA appliqué** (lien cliquable) et le **digest du manifeste effectif
+   du palier** (racine ⊕ `per_env.<env>`, la fusion du rôle) à ce SHA — la
+   réponse à « qu'est-ce qui tourne en rec ? ». Le digest est le SHA-256 du
+   JSON canonique (`app_manifest_digest_env`, lib `scripts/lib/app-manifest.sh`) :
+   insensible à la forme, sensible au fond (palier ET racine), un autre palier
+   n'y entre pas. Trois marqueurs cohabitent sur la PR : `provision-apply`
+   (résultat d'un apply réel), `provision-apply-refus` (refus avant la pause),
+   `provision-apply-build` (statut build, posé seulement si la forge a confirmé
+   une PR `provision/*`).
+
+Le job `provision-apply` est désormais un **Jenkinsfile déclaratif from SCM**
+(`ci/Jenkinsfile.provision-apply`) ; `ci/jenkins/provision-apply.job.xml` n'est
+qu'une coquille (pointeur SCM + miroir du bloc `<triggers>`, qui gagne).
+
+## Le credential du seul palier (A3 — GOAL cd-applications, 2026-09-02)
+
+**Ce qui a changé.** `selfservice-app-deploy` ne lit plus
+`deploy/<tenant>/wm-admin` avec un en-tête `X-Environment` qui « choisissait »
+le palier : il lit **`envs/<env>/wm-admin`** (voie directe, Basic) ou
+**`envs/<env>/admin-oauth`** (voie proxy, Bearer via `wm-admin-<env>`) avec le
+token nominatif de la pause — et **la lecture d'`envs/<env>/wm-admin` EST le
+ticket d'entrée** (ADR-082, le même qu'en `team-promote` §7.b). Une identité
+qui ne porte pas `apply-<env>` est refusée `PALIER_FERME` **avant** tout
+contact avec la gateway ; l'équipe de cloisonnement est **décidée par le
+token** (policies `deploy-<tenant>`), le manifeste et `APIM_TEAM` ne peuvent
+que concorder (`TEAM_NON_PORTEE` sinon). Spec :
+`docs/superpowers/specs/2026-09-02-a3-credential-du-seul-palier-design.md`.
+
+**Le dessin de l'Apply** (ordre = la propriété) : `MOT_DE_PASSE_ALTERE` → login
+nominatif → **la garde** `scripts/selfservice-palier-gate.sh`, extraite de
+`origin/main` (`git show`, jamais l'arbre pinné au `MERGE_SHA` — le levier A6
+pinnerait la garde avec) → préflight de joignabilité **annoncé** (`préflight de
+joignabilité :`) → `TTL_INSUFFISANT` (le mount ldap tune les tokens à 600 s, le
+préflight peut durer autant) → converge → verify → annonce A2. La garde ne
+parle qu'à Vault : forme (`ENV_INVALIDE`, `VIA_INCONNU`,
+`CREDS_SUB_SANS_PALIER`), voie par POSITION (`TERMINUS_SANS_VOIE`), équipe par
+le token (`TEAM_INDETERMINEE` / `TEAM_AMBIGUE` / `TEAM_NON_PORTEE` /
+`IDENTITE_INVERIFIABLE`), capacités en un appel (`TICKET_INSCRIPTIBLE` — un
+ticket qu'on peut s'écrire n'est pas un ticket ; `TENANT_NON_PORTE` en mode
+`internal` sur le `vault_sub` du palier ; `CAPACITES_INVERIFIABLES`), puis le
+ticket (`PALIER_FERME`), puis `PALIER_OUT` (forme contrôlée, relue par le shell
+sans `eval`).
+
+**Knobs (bloc `environment{}` du Jenkinsfile, surchargeables par variable
+globale)** : `APIM_WM_CREDS_SUB_TPL` (`envs/__ENV__/wm-admin`) et
+`APIM_OAUTH_SUB_TPL` (`envs/__ENV__/admin-oauth`) — `__ENV__` **obligatoire** ;
+`APIM_API_BASE` (voie directe hors terminus, `__ENV__` optionnel — une gateway
+par palier chez un client, une seule sur ce lab) ; `APIM_PROXY_API`
+(`wm-admin-__ENV__`) ; **`APIM_TERMINUS_BASE`, sans défaut** — tant qu'elle
+n'est pas déclarée, le terminus n'a pas de voie (par position, pas par son
+nom) ; `APIM_TEAM` (borné par le token) ; `APIM_TOKEN_TTL_MIN` (180 s). ⚠ Ne
+PAS réutiliser `APIM_DIRECT_BASE_TPL` (chaîne des APIs) pour les applications :
+sur ce lab elle vise `wm-mock-prod`.
+
+**Rollout sur ce lab (l'ordre compte)** — joué le 2026-09-02 :
+
+```bash
+git push gitea HEAD:main                                  # la garde est extraite de gitea main
+VAULT_TOKEN=… GW_ADMIN=http://localhost:5555/rest/apigateway WM_USER=Administrator WM_PASS=… \
+  bash scripts/setup-wm-palier-admins.sh                  # wm-<env>-admin sur la gateway réelle (12/0 ; perdus au re-seed)
+DEPLOYERS_DEV=alice DEPLOYERS_REC=alice bash scripts/setup-deployer-groups.sh   # le grant nominatif (15/0)
+VAULT_TOKEN=… bash scripts/test-palier-retention-live.sh  # la porte du GOAL : ⑦ la voie application (37/0)
+bash scripts/test-a3-live.sh                              # par builds réels (voir la spec, D7)
+```
+
+Le grant `DEPLOYERS_DEV/REC=alice` est un **geste explicite** (les défauts du
+poseur restent fermés pour dev/rec) : c'est la décision client n°1 (dev et rec
+autonomes pour qui remplit le formulaire) appliquée à l'identité qui demande
+sur ce lab — et il ouvre `rec` **aux deux objets** (le même ticket sert la
+promotion d'API vers rec : le credential est par palier, pas par objet).
+
+**Limites, mesurées** : sur ce lab **mono-gateway**, les quatre comptes
+`wm-<env>-admin` sont tous `API-Gateway-Administrators` de la même 10.15 —
+détenir `apply-dev` administre les objets de tous les paliers ; la porte A3
+mesure la rétention côté Vault (Vault refuse), pas le cloisonnement au plan de
+données (celui-ci est topologique : une gateway par palier chez un client).
+`X-Environment` est toujours émis par le rôle (transport redondant). Le
+terminus n'est fermé ni par un `if` ni par un nom : `TERMINUS_SANS_VOIE` tant
+qu'aucune voie n'est déclarée, puis le credential ; A4 (la porte de la chaîne :
+groupe déployeur, quatre yeux, refs/ITSM — section suivante) et A7 (ouverture)
+posent le reste. `USER_VAULT_JWT` (voie B) reste un
+paramètre `string` sur le canal `withEnv` (état A0, nommé).
+
+## Les portes de la chaîne au dispatch (A4 — GOAL cd-applications, 2026-09-02)
+
+**Ce qui a changé.** `provision-apply` lit désormais `environments.yaml` par la
+même lib que `team-promote` (`scripts/lib/env-chain.sh`), et la porte du
+palier **décide** : quatre yeux, références (`change_ref`/`pv_ref`) et ITSM,
+terminus par position, déclaration déployeur. Aucun mécanisme neuf : la §6 /
+§6bis / §6ter / §7.a de `team-promote.sh` portées au second objet. Spec :
+`docs/superpowers/specs/2026-09-02-a4-portes-de-la-chaine-au-dispatch-design.md` ;
+ADR-084 étendu (« Extension 2026-09-02 (A4) »).
+
+**Le dessin** (ordre = la propriété) :
+
+1. **La porte de l'amont** (`scripts/provision-apply-gate.sh`) est jouée
+   **deux fois** par `ci/Jenkinsfile.provision-apply` : `GATE_STAGE=pre` après
+   la réconciliation et **avant la pause** (un refus ne réveille personne),
+   puis `GATE_STAGE=dispatch` sous le nœud post-pause, **avant la garde
+   d'identité** — c'est ce passage qui fait foi (anti-TOCTOU, ADR-075), qui
+   donne `--allow-self-approval` à `assert-merge-identity.sh` quand la porte le
+   déclare (`GATE_ALLOW_SELF`, sentinelle `GATE_ENV` : `PORTE_INCOHERENTE`
+   sinon) et qui nourrit la ligne « porte du palier » du rapport de PR. La
+   chaîne est **épinglée** sur le clone par la ligne d'appel
+   (`STOA_ENV_CHAIN_FILE="$PWD/clients/_example/environments.yaml"`) et son
+   chemin est imprimé (`chaîne : …`) : une variable globale Jenkins ne peut
+   plus rediriger la politique. Refus, dans l'ordre : `CHAINE_INVALIDE`
+   (`env_chain_validate` — une porte `to: itn` ou une clé mal orthographiée ne
+   relâche rien en silence), `ENV_INVALIDE`, `PARSE_GATE`,
+   `DEPLOYER_GROUP_UNSUPPORTED` (hors famille, ou `apim-apply-<x>` qui ne nomme
+   pas le palier de sa porte), `MANIFESTE_ABSENT`/`MANIFESTE_ILLISIBLE`,
+   `REF_INVALIDE`, `GATE_REFS_REQUIRED`, `REQUESTER_UNKNOWN` (la porte exige
+   les quatre yeux mais la PR a été ouverte par un compte de service — la forge
+   ne nomme aucun demandeur humain : refus, jamais un silence),
+   `FOUR_EYES_VIOLATION`, `ITSM_NOT_CONFIGURED`/`ITSM_NOT_APPROVED`/`ITSM_UNAVAILABLE`,
+   `TERMINUS_SANS_VOIE` (par position, **après** l'ITSM). Le refus est commenté
+   sur la PR (`REFUSAL_KIND=porte`, marqueur `provision-apply-refus`).
+2. **La déclaration déployeur est vérifiée à l'aval, sur le token de la
+   pause** — le seul site qui le tient : `scripts/selfservice-palier-gate.sh`
+   §2bis, entre l'équipe (§2) et les capacités (§3), **avant le ticket** —
+   `DEPLOYER_GROUP_REQUIRED` (le nom de la politique), jamais le 403 de
+   capacité. Console : `déclaration déployeur : 'alice' porte 'apply-int'
+   (groupe 'apim-apply-int')`. Le tag du refus remonte jusqu'à la PR
+   (`REFUS_OUT="$WORKSPACE/.a3-refus"` → `post{always}` du stage Apply →
+   `buildVariables.APPLIED_REFUSAL`, fait Jenkins 11 mesuré) ; la garde valide
+   la chaîne (`CHAINE_INVALIDE`) et l'aval l'épingle sur son extraction de
+   `origin/main`.
+3. **`approverGroup` est matérialisé, vérifié par personne** — console,
+   `GATE_OUT`, PR : « approbation attendue `int-team` — non vérifiée (aucun
+   mécanisme ne la tient sur cette chaîne) ». La protection de branche du lab
+   ne borne que le push direct. **Et approuver = porter** sur les deux chaînes
+   Gitea : le mergeur d'`int` doit être membre d'`apim-apply-int`.
+
+**Knobs (bloc `environment{}` de `Jenkinsfile.provision-apply`, surchargeables
+par variable globale)** : `ITSM_URL` (défaut `http://itsm-mock:8788`, le
+défaut de `team-promote` — un client sans la globale obtient `ITSM_UNAVAILABLE`),
+`ITSM_CACERT`, `APIM_TERMINUS_BASE` (**sans défaut**, le nom de l'aval — tant
+qu'elle n'est pas déclarée, le terminus est refusé avant la pause),
+`GITEA_SERVICE_LOGINS` (défaut `ci` : les comptes de service de la forge).
+Les listes des formulaires (`app-request`, `selfservice-app-deploy`) dérivent
+toujours de la chaîne (A0) ; `app-request-choices.sh` refuse désormais une
+chaîne invalide (`CHAINE_INVALIDE`) — « deux portes, une source » est prouvé
+hors ligne (retirer `int` de la chaîne ⇒ le formulaire ne le propose plus, la
+demande, la porte amont et la garde aval le refusent `ENV_INVALIDE`).
+
+**Rollout sur ce lab** — `git push gitea HEAD:main` et rien d'autre : l'amont
+est from SCM, l'aval extrait sa garde et la lib de `origin/main` ; aucune
+re-pose (aucun paramètre nouveau), l'annuaire et les comptes gateway sont ceux
+d'A3. `bash scripts/test-a4-live.sh` joue et restaure lui-même la seule
+mutation d'annuaire de la preuve (alice ↔ `apim-apply-int`) et crée le compte
+de forge humain `carol` s'il manque.
+
+**Limites, mesurées** :
+
+- **Sur les voies livrées, `int` refuse `REQUESTER_UNKNOWN`** : `app-request`
+  et `provisioning-request` ouvrent la PR sous `ci`, la forge ne nomme aucun
+  demandeur humain — la porte à quatre yeux, inerte avant A4 (`ci ≠ alice`
+  passait toujours), est **fermée**. A7 ouvre la PR sous l'identité humaine.
+  Un `requested_by` dans le manifeste n'est pas une réponse (forgeable dans
+  la PR par son auteur).
+- **`rec` est relâché au sens de la porte** (`selfApproval: true`, décision
+  client n°1) : avant A4 les quatre yeux y étaient exigés (inertes). La
+  fermeture est une ligne (`fourEyes: true`) — et rend alors `rec`
+  `REQUESTER_UNKNOWN` sur les voies livrées jusqu'à A7.
+- **`homol` refuse `GATE_REFS_REQUIRED`** tant que la demande ne porte pas
+  `per_env.<env>.pv_ref` (A7 ajoute le champ) ; avant A4, `homol` s'appliquait
+  sans aucune porte.
+- **« Même équipe » n'est pas vérifié** : un autre humain de l'équipe (carol)
+  qui merge la PR d'alice passe la porte — mesuré ; c'est l'axe `approverGroup`.
+- **Le terminus est refusé avant la pause, par position, après l'ITSM** ; A7
+  déclare `APIM_TERMINUS_BASE` aux deux sites.
+- **Mono-gateway** : appliquer `int` **écrase** l'état `rec` du même objet
+  (un objet par nom sur la 10.15 unique) — chez un client, un objet par
+  gateway de palier.
+- Seuls les refus de la GARDE de l'aval portent un tag jusqu'à la PR
+  (`TTL_INSUFFISANT`, login refusé, `GATE_ABSENTE`… restent « EN ÉCHEC — voir
+  la console ») ; `--map` n'est pas supporté par l'appel pré-pause ; le
+  parseur Go accepte les clés inconnues d'`environments.yaml`, le shell les
+  refuse (écart enregistré).
+
+## L'ordre app/API (A5 — GOAL cd-applications, 2026-09-03)
+
+Depuis A5 (ADR-088), **une application ne précède jamais son API au palier**.
+Avant sa première écriture, l'apply d'application (le rôle
+`apim_selfservice_app`, §1) relit la liste des APIs de la gateway du palier
+et refuse, nommément, si l'API du manifeste n'y est pas **dans cette version,
+active** :
+
+| Ce que la gateway du palier présente | Refus | Le remède, nommé sur la PR |
+|---|---|---|
+| aucune API de ce nom | `API_NOT_PROMOTED` | promouvoir l'API vers le palier par la chaîne des APIs (`api-promote-request` → PR `promote/<api>-<env>` → merge → `team-promote`, G5) |
+| le nom, mais pas cette version | `API_VERSION_MISMATCH` (les versions présentes sont citées) | promouvoir cette version, ou corriger la demande — `api_version` est figé (A1) : une autre version est une NOUVELLE application |
+| plus d'une entrée nom+version | `API_AMBIGUE` | un état de gateway à corriger à la main (la 10.15 ne devrait pas le produire) |
+| présente mais **inactive** (`isActive` faux, absent ou non booléen) | `API_INACTIVE` (valeur vue et id cités) | activer l'API au palier — geste producteur |
+
+Puis **rejouer le webhook** de la PR mergée (`generic-webhook-trigger`, token
+`stoa-provision-apply`, le payload de fusion) : rien n'a été écrit sur la
+gateway, la PR reste la référence, inutile de rouvrir une demande. Le
+commentaire de PR porte le tag, **la phrase** (« aval selfservice-app-deploy
+#n : … ») et le paragraphe « L'ordre app/API ». Depuis A5, les refus de la
+garde A3 (`PALIER_FERME`, `DEPLOYER_GROUP_REQUIRED`…) arrivent eux aussi avec
+leur phrase.
+
+**Ce que la console de l'aval montre** : `palier ouvert : envs/<env>/wm-admin`
+< `préflight de joignabilité :` < `PLAY [Self-service application — converge`
+< `REFUS: API_INACTIVE : …` (aucune tâche « App : créer », aucun verify) ; sur
+le chemin nominal `API_AT_PALIER : '<api>' v<ver> active au palier '<env>'
+(id=<uuid>)`, puis au verify `API_AT_PALIER_CONFIRMED` et
+`SUBSCRIPTION_CONFIRMED : '<app>' souscrite à '<api>' v<ver> (id=<uuid>)` —
+le GUID promu, relu. Un verify rejoué après une désactivation rougit
+(`API_AT_PALIER_UNCONFIRMED`), une souscription remplacée aussi
+(`SUBSCRIPTION_UNCONFIRMED`) : le rapport dit alors « la convergence a eu
+lieu », jamais « rien n'a été écrit ».
+
+**Pourquoi avant l'écriture, et pas « poser puis défaire »** : le spike du
+2026-09-02 a mesuré qu'une paire application/API qui a servi du trafic ne se
+ré-inscrit plus après désinscription (500 irréversible). La porte est donc la
+dernière lecture avant `POST /applications`, et les preuves hors ligne le
+tiennent par mutation (porte déplacée après la création ⇒ une écriture part
+avant le refus ⇒ rouge).
+
+**Limites, mesurées** : sur ce lab **mono-gateway**, « promouvoir vers rec »
+n'est pas jouable (dev/rec/int = la même 10.15) — la porte est prouvée sur les
+trois situations que la gateway du palier peut présenter, et le « rejeu après
+promotion » est le rejeu après **réactivation** du même objet, GUID identique
+relu. Le plan (`provision-plan`) ne sait pas : lecture seule, sans credential
+gateway — le demandeur apprend le refus à l'apply, sur la PR. La porte suit la
+**lignée du rôle**, épinglée au SHA appliqué (A2) : un repli vers un SHA
+antérieur à A5 rejouerait le rôle d'alors, sans porte (artefact du lab — A6 le
+dira). Le formulaire `app-request` propose les APIs de `publish.yml`
+(authoring), pas celles du palier : ergonomie, pas autorité.
+
+**Rollout sur ce lab** : `git push gitea HEAD:main` suffit — le rôle appliqué
+est celui de l'arbre pinné au `MERGE_SHA` (une PR mergée après le push porte
+A5), la garde A3 est extraite de `origin/main`, aucun job re-posé, aucune
+globale. Preuve : `bash scripts/test-a5-live.sh` (≈ 25 min ; désactive puis
+réactive `demo-selfservice`, trap inconditionnel).
+
+## Revenir en arrière — applications (A6 — GOAL cd-applications, 2026-09-03)
+
+**Le repli d'une application est une PR** (ADR-089). Le formulaire Jenkins `app-rollback` (APP, ENV, REASON, CHANGE_REF) ouvre une PR `provision/<app>-<env>` dont la ligne `per_env.<env>` et le certificat `certs/<app>-<env>.crt` redeviennent, **à l'octet**, ceux du merge **précédent** (N-1) de cette même branche ; puis la chaîne de tous les jours l'applique — merge, `provision-apply` (portes A4 deux fois, pause nominative), `selfservice-app-deploy` (garde A3, rôle avec porte A5, verify). Le verbe est la convergence : **même GUID, même clé** (spike S1). C'est le port de G6 (ADR-085 : N-1 verbatim dans un commit neuf, puis re-apply) à l'objet dont la PR est le fichier de déploiement.
+
+**Parcours opérateur.**
+1. `app-rollback` → Build with Parameters : `APP`, `ENV` (la chaîne entière — terminus compris —, ce sont les portes qui décident), `REASON`, `CHANGE_REF` (exigé si la porte du palier porte `requireChangeRef` ou `itsmCheck` : `GATE_REFS_REQUIRED` sinon, **aucune PR ouverte**, aucun clone).
+2. Le build imprime `ETAPE …` (forme → chaîne → porte → clone → manifeste → lignée → cohérence → candidate → identique → restauration → vérification → pr-en-cours → tête distante → commit → push → pr), `LIGNEE : #N (…) #N-1 (…)`, puis `PR_URL=…` et `REPLI_DE=<sha N> REPLI_VERS=<sha N-1> REPLI_DIGEST=<sha256:…>`. La description du build porte la PR.
+3. **La PR de repli** montre la lignée (#N remplacé, #N-1 restauré), **la ligne restaurée**, le cert (restauré / supprimé / inchangé), le **digest attendu** — à comparer à la ligne « digest du manifeste effectif » du rapport de `provision-apply` après l'apply —, le `change_ref` s'il y en a un, et `REPLI_DU_REPLI` si #N est lui-même un repli. Le commit de branche porte les trailers `Repli-De`, `Repli-Vers`, `Repli-Motif`, `Repli-Par`, `Repli-Digest`, `Change-Ref`.
+4. **Merger** (les portes du palier : en `rec` le demandeur peut merger lui-même ; en `int`+ quatre-yeux, `deployerGroup`, refs, ITSM ; jusqu'à A7 une PR ouverte par `ci` refuse `REQUESTER_UNKNOWN` sur `int`+) → `provision-apply` : `RECONCILE_OK`, **`REPLI_OK`** (main n'a pas bougé pour ce palier entre la demande de repli et le merge — sinon **`REPLI_PERIME`**, rejouer la demande), `PORTE_OK(pre)`, pause → identité → `PORTE_OK(dispatch)` → aval.
+5. **La lecture qui prouve** : `GET /applications/{id}` — même `id`, même `apiAccessKey`, mêmes `consumingAPIs`, identifiers (IP `X-X`, cert `name`/`value`, claims) == ceux de l'état N-1 ; verify : `API_AT_PALIER_CONFIRMED`, `SUBSCRIPTION_CONFIRMED (id=…)`, `CERT_NAME_CONFIRMED` ; Git : la ligne `per_env.<env>` de `main` == celle du merge N-1 ; PR : ✅ et le digest annoncé.
+
+**Les refus de la demande, et leurs remèdes** : `GATE_REFS_REQUIRED` (fournir `CHANGE_REF`) ; `AUCUNE_LIGNEE` (aucune PR `provision/<app>-<env>` mergée depuis la création du manifeste) ; `AUCUN_ETAT_PRECEDENT` (un seul état : le retrait est une **suspension**, pas un repli) ; `REFERENCE_DIVERGENTE` (main écrit hors flux : corriger par une demande) ; `RACINE_DIVERGENTE` ; `ETAT_IDENTIQUE` (rien à replier — une dérive de la gateway se corrige en rejouant le webhook de #N, A2) ; `PR_EN_COURS` (une PR est ouverte sur la branche : la merger ou la fermer) ; `BRANCHE_NON_MERGEE` (des commits poussés à la main sans PR) ; `FORGE_INCOHERENTE` / `LIGNEE_AMBIGUE` / `FORGE_ILLISIBLE` ; `LIGNEE_TRONQUEE` ; `LIGNE_AMBIGUE` / `REF_DUPLIQUEE` ; `PUSH_ECHEC` (bail perdu : rejouer). Une demande émise pendant qu'une PR de repli est ouverte est refusée `REPLI_EN_COURS` par `provision-request.sh` (rien poussé).
+
+**Le repli du repli** restaure N (profondeur 1, jamais N-2) — la demande l'annonce (`REPLI_DU_REPLI`) ; si l'apply de #N a été refusé, le remède est le rejeu de son webhook, pas un repli de plus. **Le levier direct** (un `MERGE_SHA` de la lignée saisi sur l'aval) n'est **pas** le repli : c'est un rejeu hors chaîne, borné par A3, sans les portes A4.
+
+**Limites écrites** : l'état restauré est l'état **déclaré** (Git), pas l'état servi (un N-1 mergé puis refusé à l'apply est restauré tel que déclaré et repasse les portes) ; un repli vers « sans cert » retire le fichier de Git mais **laisse le cert de N sur la gateway** (le rôle préserve les dimensions absentes du manifeste — dette du rôle) ; mono-gateway sur le lab ; la suspension (verbe de retrait) n'est pas écrite.
+
+**Preuves** : hors ligne `scripts/test-app-rollback-a6.sh` 82/82 (`make lint-ci` [15/15]) ; par builds réels `scripts/test-a6-live.sh` **49/49** au 4e passage (repli #16 → PR #511 → provision-apply #156 → aval #102 SUCCESS, gateway lue à l'état N-1 : même GUID, même clé, IP et cert de N-1 ; chiffres complets dans le GOAL). Pose du job : `JOBS=app-rollback BOOTSTRAP_JOBS=app-rollback scripts/setup-provision-jobs.sh`.
+
+## Tout en Jenkinsfile (A0 — GOAL cd-applications, 2026-09-02)
+
+Depuis A0, **plus un seul `job.xml` de l'aval applicatif ne porte de logique** :
+`provision-plan` et `provisioning-request` ont rejoint `provision-apply` en
+Jenkinsfile déclaratif from SCM (`ci/Jenkinsfile.provision-plan`,
+`ci/Jenkinsfile.provisioning-request`, parité stricte avec le Groovy d'origine :
+le pipeline route trois ou sept clés de webhook vers le script, rien d'autre).
+Le miroir `<triggers>` XML/Jenkinsfile est vérifié **champ à champ** par la lib
+`scripts/lib/gwt-mirror.sh` (token, filtres, `printPostContent`, l'ensemble des
+couples clé/valeur) sur les trois jobs, mutations comprises (`test-a0-wiring.sh`,
+porte `make lint-ci` [11/11]).
+
+**Le formulaire `app-request` est posé par son Jenkinsfile.** Ses onze
+paramètres ne sont plus dans le XML : un pas scripté
+`properties([parameters([…])])` les pose au premier stage, depuis des listes
+calculées **dans le build** par `scripts/app-request-choices.sh` — paliers =
+`env_chain_nonprod` (la source de `provision-request.sh`, terminus exclu par
+structure), équipes = `providers.<env d'authoring>.yml` relu sur Gitea main,
+APIs = les `publish.yml` (plateforme + dépôts d'équipe déclarés), fail-closed.
+Cinq faits mesurés sur ce lab le 2026-09-02 fondent le mécanisme :
+`properties()` pose des paramètres sur un job dont le XML n'en a aucun et les
+builds suivants les conservent ; il **préserve** les propriétés venues du XML
+(triggers, `disableConcurrentBuilds`) ; **re-poser le XML les efface** ⇒ un
+build d'amorçage suit chaque pose (`setup-provision-jobs.sh`, knob
+`BOOTSTRAP_JOBS`, passé par `setup-team-onboard-jobs.sh`) ; un build sur un job
+sans définition lie **zéro** paramètre (`params.size()==0`, le signal
+d'amorçage, capturé AVANT `properties()`) ; les valeurs posées ainsi subissent
+toujours `EnvVars.resolve()` (le `withEnv([params…])` reste obligatoire).
+Limite écrite d'avance : le formulaire montre les listes du build **précédent**
+— acceptable parce que les listes sont de l'ergonomie, l'autorité est dans les
+gardes du script (`ENV_INVALIDE`, `TEAM_NOT_DECLARED`, `REQ_API` requis).
+`api-request` (chaîne des APIs, hors périmètre) garde ses marqueurs substitués à
+la pose : deux mécanismes coexistent, délibérément.
+
+**Rollout A0 sur un Jenkins existant :**
+
+```bash
+git push gitea HEAD:main                                          # le CI lit gitea
+JOBS="provision-plan provisioning-request" bash scripts/setup-provision-jobs.sh   # coquilles (historique conservé)
+JOBS=app-request bash scripts/setup-team-onboard-jobs.sh          # coquille + build d'AMORÇAGE (sans token Gitea)
+curl -sg "$JENKINS/job/app-request/api/json?tree=property[parameterDefinitions[name]]"   # 11 paramètres après l'amorçage
+```
+
+Sur un job `app-request` posé sans amorçage, le bouton « Build » (sans
+paramètre) **est** l'amorçage : le formulaire apparaît au build suivant.
+
+### Les deux dettes d'A0, fermées le 2026-09-02
+
+**Dette 1 — la forge est relue AVANT le verdict du plan, et la PR n'est jamais
+muette.** Le payload d'un webhook est une affirmation : `provision-plan.sh`
+clonait la branche `PR_BRANCH` et commentait la PR `PR_NUMBER` telles que
+nommées — un payload forgé (branche réelle de la PR A, numéro de la PR B)
+faisait poser un *verdict* du compte de service sur une PR étrangère
+(constat bloquant de la critique adverse). Désormais
+`scripts/lib/gitea-pr-confirm.sh` relit la PR sur la forge **avant le clone**
+(`state=open`, `head.ref == PR_BRANCH` sous `provision/*`, `base.ref == main`),
+sinon refus nommé **`FORGE_NON_CONFIRMEE`**, rc 1, aucun commentaire, aucun
+clone ; le clone checkoute le **SHA de tête relu** (une branche
+`provision/<app>-<env>` réutilisée après merge ne fait jamais commenter la PR
+mergée) ; un clone ou un checkout raté est un refus (`CLONE_ECHEC`,
+`BRANCHE_INTROUVABLE` — avant, vert par « IGNORE ») ; une PR depuis un fork ou
+un `head.sha` non hexadécimal sont refusés par la lib. Le bloc de plan est un
+**sous-shell** (une PR qui supprime un manifeste rend un ❌ commenté, plus un
+rc 1 muet), le verdict cite la tête relue et lie `src/commit/<sha>`. Le script
+écrit ses **faits** (`PLAN_FACTS` : numéro de PR, tête relue,
+`PLAN_VERDICT=ok|fail|ignore|refus`, raison — initialisés à `SCRIPT_INTERROMPU`
+dès le prologue, purgés par le Jenkinsfile avant l'appel : jamais les faits du
+build précédent) ; le `post{always}` de stage les charge dans l'environnement, et le
+`post{always}` de pipeline pose le **statut de build** sous le marqueur
+distinct `<!-- provision-plan-build -->` (`scripts/provision-plan-status.sh`) :
+`ABORTED` ⇒ « abandonné, aucun verdict » ; `FAILURE` ⇒ « verdict négatif » /
+« refus avant le verdict : raison » / « échec avant le plan » ; `SUCCESS` +
+`ignore` ⇒ « demande IGNORÉE (raison) : aucun verdict » ; `SUCCESS` + `ok` ⇒
+**rien de neuf** (le verdict ✅ suffit ; un statut rouge périmé est seulement
+effacé — `COMMENT_ONLY_IF_EXISTS`). Sans faits (le stage n'a pas tourné), le
+statut relit la forge par la même lib ; non confirmée ⇒ silence. Les gardes bon
+marché (`provision/*`, `PR_NUMBER` numérique) sont en Groovy **avant** tout
+`node` — le hook Gitea tire sur toutes les PR du dépôt, `agent none` existe
+pour qu'une PR étrangère n'alloue aucun exécuteur (même correctif sur
+`provision-apply`). `provisioning-request` n'a **pas** de statut : la PR naît en
+toute fin du script, le plan enchaîné n'est pas fatal ; une demande machine
+refusée est un build rouge dont la seule trace est le log (le 200 aveugle rendu
+au caller OIG est la dette d'APIsation, distincte).
+
+**Dette 2 — `selfservice-app-deploy` pose son formulaire depuis son
+Jenkinsfile.** Le bloc `parameters{}` déclaratif et sa liste `ENVIRONMENT` en
+dur ont disparu : un premier stage « Formulaire » dérive les paliers de
+`env_chain_nonprod` (clone du build) et pose les huit paramètres par
+`properties([parameters([…])])` ; les trois stages lisent les valeurs brutes
+par `withEnv([params…])`. Deux faits mesurés (jobs jetables) gouvernent le
+rollout :
+
+- **Fait 6** — si le XML du job porte déjà une `ParametersDefinitionProperty`,
+  `properties()` en **ajoute une seconde** et le job casse
+  (`buildWithParameters` ⇒ 500). **La conversion passe par une re-pose, jamais
+  par un simple push** : un push seul sur un XML paramétré produit le doublon.
+- **Fait 10** — sur un job **re-posé** (déjà amorcé une fois), le premier build
+  **perd** les `options{}`/`triggers{}` déclaratifs dès qu'un `properties()`
+  scripté s'y ajoute (webhook 404 jusqu'au build suivant — mesuré sur
+  `selfservice-app-deploy` #34 et #36) ; sur un job neuf ils survivent. Tout
+  dans `properties()` avec un XML qui porte déjà le trigger ⇒ doublon sur un
+  job neuf. D'où le design : **le Jenkinsfile pose les trois propriétés**
+  (`disableConcurrentBuilds()`, `pipelineTriggers([GenericTrigger…])`,
+  `parameters([…])`) et **le XML posé n'en porte aucune**. Le webhook PLAN
+  n'existe qu'après l'amorçage, que le poseur enchaîne et attend.
+  `setup-selfservice-job.sh` : `XML_PARAMS=auto` (`no` pour
+  `Jenkinsfile.selfservice` ⇒ `<properties/>` ; `yes` pour `publish-api-deploy`
+  qui garde son bloc déclaratif — trigger, option et paramètres dans le XML,
+  liste dérivée à la pose), amorçage `POST /build`, `BOOTSTRAP_WAIT` (360 s :
+  le préflight gateway peut durer 300 s), relecture « une propriété, un
+  trigger, une option, `ENVIRONMENT == env_chain_nonprod` ».
+- **Fait 7** — `EnvVars.resolve()` frappe aussi un paramètre `password` : un
+  mot de passe annuaire portant `$$` ou `${` arrivait **altéré** à Vault
+  (lockout au second essai). Les sept paramètres non secrets passent par
+  `withEnv([params…])` ; une valeur vide retire la variable (PLAN-only inchangé).
+- **Fait 9** (revue adverse du commit livré) — un secret interpolé dans un
+  argument de step (`withEnv`) est **persisté en clair** dans
+  `flowNodeStore.xml` dès qu'il diffère de la valeur résolue — précisément les
+  mots de passe que le fait 7 vise — et Jenkins l'écrit dans la console (« A
+  secret was passed to withEnv using Groovy String interpolation, which is
+  insecure »). Le mot de passe reste donc sur le canal natif, et l'Apply ouvre
+  par une **garde fermée** : `"${params.VAULT_USER_PASSWORD}"` (brut, `params`
+  rend un `hudson.util.Secret`) ≠ `env.VAULT_USER_PASSWORD` (résolu) ⇒
+  `REFUS: MOT_DE_PASSE_ALTERE` **avant tout appel à Vault** (aucun lockout),
+  issue : voie B (JWT) ou un mot de passe sans `$`. Aucun step ne reçoit le
+  secret.
+
+Hors périmètre, nommé : `ci/Jenkinsfile.publish-api:24` garde sa liste
+littérale avec le terminus (formulaire producteur, chaîne des APIs) — sur ce
+job le XML n'a pas autorité (fusion par nom), la décision est à prendre là-bas.
+Résiduel : `setup-selfservice-job.sh` n'a ni auth Jenkins ni portail (parité
+avec `setup-provision-jobs.sh` le jour du rollout client).
+
+```bash
+git push gitea HEAD:main
+bash scripts/setup-selfservice-job.sh          # RE-POSE (XML sans paramètre) + amorçage + relecture
+bash scripts/setup-selfservice-job.sh --print  # le XML rendu, zéro réseau (épreuves)
+```
+
+**Rollout sur un Jenkins existant — l'ordre est une contrainte :**
+
+```bash
+git push gitea HEAD:main                                   # le CI lit gitea
+bash scripts/setup-selfservice-job.sh                      # l'AVAL d'abord : déclare MERGE_SHA + build d'amorçage
+# vérifier : selfservice-app-deploy déclare MERGE_SHA (sinon un `build job:` le
+# retirerait EN SILENCE — SECURITY-170 — ; l'aval refuserait MERGE_SHA_REQUIS)
+curl -s "$JENKINS/job/selfservice-app-deploy/api/json?tree=property[parameterDefinitions[name]]"
+JOBS=provision-apply bash scripts/setup-provision-jobs.sh  # puis l'AMONT : la coquille from SCM (historique conservé)
+```
+
+**Knob de lab `APPLY_ADMIN_VIA`** : le défaut du Jenkinsfile est
+`proxy-oauth2` (le modèle client, celui que le Groovy codait en dur). Sur le
+lab local, `wm-admin-self` est inactif et `deploy/banking-demo/admin-oauth`
+n'est pas seedé : la voie qui aboutit est `direct`. Variable d'environnement
+**globale** Jenkins, posée par la console de script (même geste
+qu'`APIM_DIRECT_BASE_TPL`) :
+
+```groovy
+import jenkins.model.Jenkins; import hudson.slaves.EnvironmentVariablesNodeProperty
+def j = Jenkins.instance; def p = j.globalNodeProperties.get(EnvironmentVariablesNodeProperty)
+if (p == null) { p = new EnvironmentVariablesNodeProperty(); j.globalNodeProperties.add(p) }
+p.envVars.put('APPLY_ADMIN_VIA', 'direct'); j.save()
+```
+
+**Identités** : la garde exige mergeur == répondant de la pause, et l'aval lit
+les creds du tenant dans Vault avec l'identité de la pause. Sur ce lab, c'est
+**alice** (Vault `deploy-banking-demo`, ldap et userpass) — créée dans Gitea et
+collaboratrice `write` de `ci/stoa-labs` par la suite live si absente. `oscar`
+merge mais porte `operator-deploy` (403 sur le tenant) : un 403 KV avec un token
+vivant = mauvais user pour le job, pas un bug.
+
+**Rejouer la porte et la contre-épreuve par builds réels** (Gitea + Jenkins +
+Vault + 10.15 réelle ; écrit deux PR jetables, merge la première sur `main` et
+retire son manifeste à la fin) :
+
+```bash
+set -a; . ./.env.lab-users; set +a
+JENKINS_UI=http://localhost:18080 GITEA_URL=http://localhost:13000 \
+GW_ADMIN=http://localhost:5555/rest/apigateway WM_USER=Administrator WM_PASS=manage \
+  bash scripts/test-provision-apply-a2-live.sh
+```
+
+La suite live joue aussi la **seconde contre-épreuve** : le rejeu du webhook
+réel de la porte après que `main` a dépassé le palier ⇒ `PALIER_SUPPLANTE`,
+gateway inchangée, le ✅ de l'apply réel intact sur la PR.
+
+Hors ligne (`make lint-ci` `[10/10]`) : `scripts/test-provision-apply-a2.sh`
+(digest, réconciliation contre un stub Gitea ET un dépôt git local, rapport de
+PR, mutations) et `scripts/test-provision-apply-wiring.sh` (câblage
+amont/coquille/aval, sur une vue code sans commentaires).
+
+**Limites écrites d'avance** : en `rec`, l'apply atteint la même 10.15 que
+`dev` (la 10.15 unique du lab ; depuis A3 le palier est un CREDENTIAL,
+`envs/rec/wm-admin`, plus un en-tête — voir la section A3 ci-dessous) ; le quatre-yeux
+du maillon 2 compare le mergeur au compte de service `ci` (auteur de toute PR
+de provisioning) — le demandeur humain n'est que dans le corps de la PR, le
+contrôle réel est le merge par un tiers (protection de branche, G4) ; la garde
+de périmètre vit dans le dépôt que la PR modifie et n'est fermée que par la
+protection de `ci/stoa-labs@main` (`setup-repo-protections.sh`) ; un
+`MERGE_SHA` saisi à la main sur l'aval est accepté s'il est sur la lignée de
+`main` — ce n'est PAS le repli (A6 : le repli est une PR, section « Revenir en
+arrière — applications (A6) » ci-dessous), c'est un rejeu hors chaîne borné par
+l'identité nominative et Vault comme aujourd'hui.
 
 ## Résiduel
 

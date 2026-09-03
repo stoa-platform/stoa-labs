@@ -73,10 +73,15 @@ curl -sf "http://127.0.0.1:$GW_PORT/health" >/dev/null 2>&1 \
   || { echo "mock injoignable"; sed -n '1,20p' "$TMP/mock.log"; exit 2; }
 GW="http://127.0.0.1:$GW_PORT/rest/apigateway"
 VAULT="http://127.0.0.1:$VA_PORT"
-curl -sf -u Administrator:manage -X POST "$GW/apis" -H 'Content-Type: application/json' \
-  -d '{"apiName":"probe","apiVersion":"1.0.0","type":"REST","apiDefinition":{"openapi":"3.0.0"}}' >/dev/null \
+# A5 (2026-09-03) : le mock crée l'API INACTIVE (« import does NOT activate ») et
+# le rôle refuse désormais API_INACTIVE avant toute écriture — la sonde ACTIVE
+# son API, comme un producteur le ferait avant qu'un consommateur s'y souscrive.
+PROBE_API_ID=$(curl -sf -u Administrator:manage -X POST "$GW/apis" -H 'Content-Type: application/json' -H 'Accept: application/json' \
+  -d '{"apiName":"probe","apiVersion":"1.0.0","type":"REST","apiDefinition":{"openapi":"3.0.0"}}' \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin)["apiResponse"]["api"]["id"])') \
   || { echo "création de l'API de sonde échouée"; exit 2; }
-echo "  gateway :$GW_PORT — vault :$VA_PORT — API 'probe' v1.0.0 publiée"
+curl -sf -u Administrator:manage -X PUT -o /dev/null "$GW/apis/$PROBE_API_ID/activate" || { echo "activation de l'API de sonde échouée"; exit 2; }
+echo "  gateway :$GW_PORT — vault :$VA_PORT — API 'probe' v1.0.0 publiée et ACTIVÉE"
 
 mkmanifest(){ # $1=sortie $2=app $3=ref $4=enforce $5=inject $6=cert_ref
 cat > "$1" <<EOF

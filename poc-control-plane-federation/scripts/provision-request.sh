@@ -66,6 +66,25 @@
 #                          (`api_key`). PIÈGE MESURÉ : une entrée dont la clé
 #                          s'appelle `api-key` (avec un TIRET) est lue vide →
 #                          BACKEND_KEY_MISSING alors que l'entrée existe.
+#
+# A1 (GOAL-cd-applications-2026-09-02) — LE MANIFESTE EST MULTI-PALIER. Ce
+# script ne RÉÉCRIT plus le fichier : une demande `<app>` en `<env>` FUSIONNE sa
+# clé `per_env.<env>` dans le manifeste lu sur GIT_BASE (ou le crée s'il
+# n'existe pas) et ne touche à rien d'autre — pas un octet hors de cette ligne.
+# L'identité d'une application est PAR PALIER (client_id `<app>-<env>`, cert,
+# IP, clé backend), donc en mode idp la VALEUR de la claim vit sous
+# `per_env.<env>.auth.claim.value` (le rôle la fusionne, consumer-auth.yml:61) ;
+# la racine ne garde que `claim: { name: "azp" }`. Les champs TRANS-PALIERS
+# (name, api, api_version, audience, mode, team) sont FIGÉS à la première
+# demande : une demande qui les changerait est refusée (CONTRAT_DIVERGENT) —
+# changer d'API consommée est une NOUVELLE application, pas une promotion
+# (spike S1-T4 : `PUT …/apis` remplace la liste ; « une application = une API »
+# est ce qui empêche une convergence de désinscrire en silence). Héritage :
+# REQ_API_VER / REQ_AUDIENCE / REQ_TEAM ABSENTS sont hérités du manifeste
+# existant (fournis = comparés). Un manifeste d'AVANT A1 (claim.value à la
+# racine) est refusé (MANIFESTE_LEGACY), jamais migré par devinette. La
+# substance vit dans scripts/lib/app-manifest.sh ; preuve :
+# scripts/test-app-request-a1.sh.
 set -uo pipefail
 set +x   # jamais de trace : le token ne doit pas fuiter
 
@@ -76,12 +95,21 @@ set +x   # jamais de trace : le token ne doit pas fuiter
 # avant `bash scripts/provision-request.sh` — ci/Jenkinsfile.app-request,
 # ci/jenkins/provisioning-request.job.xml).
 . "scripts/lib/env-chain.sh" || { echo "ERREUR: scripts/lib/env-chain.sh introuvable ou illisible" >&2; exit 1; }
+# A1 : lecture / contrat figé / fusion d'un palier du manifeste (même base
+# de résolution que env-chain.sh : le cwd d'appel, avant tout cd).
+. "scripts/lib/app-manifest.sh" || { echo "ERREUR: scripts/lib/app-manifest.sh introuvable ou illisible" >&2; exit 1; }
 
 REQ_APP="${REQ_APP:?REQ_APP requis}"
 REQ_ENV="${REQ_ENV:?REQ_ENV requis}"
 REQ_API="${REQ_API:?REQ_API requis}"
-REQ_API_VER="${REQ_API_VER:-1.0.0}"
-REQ_AUDIENCE="${REQ_AUDIENCE:-$REQ_API}"
+# A1 : les défauts de version/audience ne valent que pour une PREMIÈRE demande ;
+# sur un manifeste existant, absent = HÉRITÉ (résolu après le clone, [1/4]).
+# On garde donc la saisie BRUTE à part — c'est elle qui décide « fourni » (donc
+# comparé au contrat figé) ou « absent » (donc hérité).
+REQ_API_VER_IN="${REQ_API_VER:-}"
+REQ_AUDIENCE_IN="${REQ_AUDIENCE:-}"
+REQ_API_VER="${REQ_API_VER_IN:-1.0.0}"
+REQ_AUDIENCE="${REQ_AUDIENCE_IN:-$REQ_API}"
 REQ_CALLER="${REQ_CALLER:-unknown}"
 REQ_CLIENT_ID="${REQ_CLIENT_ID:-}"
 REQ_TEAM="${REQ_TEAM:-}"
@@ -93,6 +121,9 @@ REQ_BACKEND_KEY_FIELD="${REQ_BACKEND_KEY_FIELD:-}"
 TENANT="${TENANT:-banking-demo}"
 
 # MODE = propriété de l'APPELANT, jamais du body (anti-spoof) : OIG provisionne
+# (NB mesuré 2026-09-02 : sur la voie machine, REQ_CALLER est aujourd'hui `$.caller`
+# du body — la gateway ne l'injecte pas encore depuis `azp` ; l'anti-spoof réel
+# est la « step d'APIsation », cf. GOAL cd-applications / apisation-declencheur.)
 # des apps mode IDP (client OAuth2 externe déjà sur l'IdP → Git porte la claim) ;
 # CLI2 provisionne des apps mode INTERNAL (la gateway wM EST l'AS local, elle
 # génère le client → le pipeline l'écrit dans Vault par env). La correspondance
@@ -147,6 +178,31 @@ esac
 # Reprises verbatim du brief (tags d'échec inclus) : chaque garde est un no-op
 # tant que le champ correspondant est vide (absent = comportement actuel).
 fail(){ echo "REFUS: $*" >&2; exit 2; }
+
+# ── A1 — champs FIGÉS interpolés dans une chaîne YAML entre guillemets ───────
+# REQ_AUDIENCE n'était validée nulle part (elle héritait de REQ_API par défaut,
+# validée, mais une valeur FOURNIE passait telle quelle dans `audience: "…"`) ;
+# REQ_API_VER non plus. Désormais figées et COMPARÉES au contrat, elles doivent
+# être sûres : l'audience admet `:` et `/` (une audience peut être une URI),
+# jamais un guillemet, un antislash ni un retour-ligne.
+if [ -n "$REQ_AUDIENCE_IN" ]; then
+  case "$REQ_AUDIENCE_IN" in
+    *[!A-Za-z0-9._:/-]*) fail "AUDIENCE_INVALID : '$REQ_AUDIENCE_IN' — caractères autorisés [A-Za-z0-9._:/-] uniquement";;
+  esac
+fi
+if [ -n "$REQ_API_VER_IN" ]; then
+  case "$REQ_API_VER_IN" in
+    *[!A-Za-z0-9._-]*) fail "API_VERSION_INVALID : '$REQ_API_VER_IN' — caractères autorisés [A-Za-z0-9._-] uniquement";;
+  esac
+fi
+# REQ_CALLER est interpolé dans l'en-tête ET la description du manifeste ; il
+# vient du BODY du webhook (`$.caller`, provisioning-request.job.xml) ou du
+# formulaire (`jenkins-form:<uid>`). Un retour-ligne ou un guillemet y
+# injecterait des clés racine dans le YAML — que A1 figerait ensuite comme
+# contrat. Classe : identifiants, `:` (jenkins-form:uid), `@` (uid mail).
+case "$REQ_CALLER" in
+  *[!A-Za-z0-9._:@-]*) fail "CALLER_INVALID : '$REQ_CALLER' — caractères autorisés [A-Za-z0-9._:@-] uniquement";;
+esac
 
 # ── v3 — IP ALLOWLIST MULTI-VALEURS ─────────────────────────────────────────
 # Le rôle accepte une LISTE depuis toujours (defaults/main.yml : ip_allowlist:
@@ -225,7 +281,8 @@ case "${REQ_CERT_ROTATION:-replace}" in replace|overlap) ;; *) fail "CERT_ROTATI
 # REQ_TEAM : format identique à team-request.sh (^[a-z0-9][a-z0-9-]{1,30}$).
 # L'appartenance (déclarée dans providers.<env>.yml) ne peut être vérifiée
 # qu'après le clone (Step 2, il faut lire le fichier du dépôt) ; absent =
-# TENANT reste "banking-demo" (défaut actuel, voie machine intacte).
+# hérité du manifeste s'il en porte une (A1), sinon TENANT reste "banking-demo"
+# (défaut actuel, voie machine intacte).
 if [ -n "$REQ_TEAM" ]; then
   case "$REQ_TEAM" in *[!a-z0-9-]*) fail "TEAM_NAME_INVALID : '$REQ_TEAM' — ^[a-z0-9][a-z0-9-]{1,30}\$ requis";; esac
   printf '%s' "$REQ_TEAM" | grep -Eq '^[a-z0-9][a-z0-9-]{1,30}$' \
@@ -247,6 +304,9 @@ API="${GIT_HOST}/api/v1"
 
 echo "[1/4] clone ${GIT_REPO} (base ${GIT_BASE})"
 CLONE_URL="http://${GIT_HOST#http://}/${GIT_REPO}.git"
+# A6 : les deux URL git sont surchargeables (épreuves hors ligne sur un dépôt nu en file://) — défauts = inchangés.
+CLONE_URL="${GIT_CLONE_URL:-$CLONE_URL}"; PUSH_URL="${GIT_PUSH_URL:-$PUSH_URL}"
+GITEA_SERVICE_LOGINS="${GITEA_SERVICE_LOGINS:-ci}"
 # ÉCHEC NET SI LE CLONE RATE. Ce script n'a pas `set -e` (délibérément : les
 # `[ -n "$X" ] && …` du rendu retournent faux sans être des erreurs). Sans la
 # garde ci-dessous, un clone en échec laissait $WORK/repo INEXISTANT, le `cd`
@@ -265,21 +325,64 @@ fi
 cd "$WORK/repo" || { echo "ERREUR: clone absent après succès annoncé — abandon avant toute écriture" >&2; exit 1; }
 git config user.email "ci@bc.example"; git config user.name "provisioning (service ci)"
 
+# ── A1 — le manifeste EXISTE-T-IL déjà sur GIT_BASE ? ───────────────────────
+# Si oui : ses champs trans-paliers font CONTRAT. Absents de la demande,
+# version / audience / team sont HÉRITÉS (un défaut dérivé à froid — `1.0.0`
+# face à un manifeste en `2.0.0` — produirait une divergence mensongère) ;
+# fournis, ils sont COMPARÉS. Tout ceci AVANT `git checkout -B` : un refus ne
+# laisse ni branche locale ni distante — seul $WORK est jeté par le trap EXIT.
+# La lib ÉCRIT son refus (REFUS: CONTRAT_DIVERGENT / MANIFESTE_LEGACY /
+# MANIFESTE_INVALIDE) et rend 2 ; ce script tourne sans `set -e`, d'où le
+# `|| exit 2` explicite sur chaque appel.
+MAN_EXISTS=0; MAN_ENVS=""; TEAM_INHERITED=0
+if [ -f "$REL_PATH" ]; then
+  MAN_EXISTS=1
+  MAN_OUT="$(app_manifest_read "$REL_PATH")" || exit 2
+  MAN_API_VER=""; MAN_AUDIENCE=""; MAN_TEAM=""
+  while IFS= read -r _l; do
+    case "$_l" in
+      MAN_API_VER=*)  MAN_API_VER="${_l#MAN_API_VER=}";;
+      MAN_AUDIENCE=*) MAN_AUDIENCE="${_l#MAN_AUDIENCE=}";;
+      MAN_TEAM=*)     MAN_TEAM="${_l#MAN_TEAM=}";;
+      MAN_ENVS=*)     MAN_ENVS="${_l#MAN_ENVS=}";;
+    esac
+  done <<< "$MAN_OUT"
+  # Héritage EXACT : la valeur du manifeste, même vide — un défaut « à froid »
+  # (1.0.0, REQ_API) face à une valeur vide produirait une divergence mensongère.
+  # (api/api_version ne peuvent pas être vides : bornés par la lib à la lecture.)
+  [ -n "$REQ_API_VER_IN" ]  || REQ_API_VER="$MAN_API_VER"
+  [ -n "$REQ_AUDIENCE_IN" ] || REQ_AUDIENCE="$MAN_AUDIENCE"
+  TEAM_INHERITED=0
+  if [ -z "$REQ_TEAM" ] && [ -n "$MAN_TEAM" ]; then
+    REQ_TEAM="$MAN_TEAM"; TEAM_INHERITED=1
+    echo "  team héritée du manifeste : ${REQ_TEAM} (figée à la première demande)"
+  fi
+  echo "  manifeste existant sur ${GIT_BASE} — paliers déclarés : ${MAN_ENVS:-(aucun)}"
+  app_manifest_check_contract "$REL_PATH" "$REQ_APP" "$REQ_API" "$REQ_API_VER" "$REQ_AUDIENCE" "$MODE" "$REQ_TEAM" || exit 2
+fi
+
 # REQ_TEAM (suite) : l'appartenance ne se vérifie qu'ici — MAIS avant tout
 # geste Git qui compte (aucune branche créée, aucun push tenté). Un échec ici
 # laisse le dépôt distant intact (ls-remote inchangé), seul $WORK est jeté par
-# le trap EXIT.
+# le trap EXIT. S'applique à la team HÉRITÉE comme à une team fournie : le
+# palier VISÉ doit la déclarer (providers.<env>.yml de CE palier).
 if [ -n "$REQ_TEAM" ]; then
   PROV_FILE="poc-control-plane-federation/ansible/providers.${REQ_ENV}.yml"
   [ -f "$PROV_FILE" ] || fail "PROVIDERS_MISSING : ansible/providers.${REQ_ENV}.yml absent sur ${GIT_BASE}"
-  grep -Eq "^  - team: ${REQ_TEAM}\$" "$PROV_FILE" \
+  # Chaîne FIXE, ligne ENTIÈRE (-Fx) : la team (fournie ou héritée) n'est
+  # jamais interprétée comme regex — une valeur `.*` ou `(a|b)` ne matche rien.
+  grep -Fxq -- "  - team: ${REQ_TEAM}" "$PROV_FILE" \
     || fail "TEAM_NOT_DECLARED : '${REQ_TEAM}' absent de providers.${REQ_ENV}.yml"
   TENANT="$REQ_TEAM"
 fi
 
 git checkout -q -B "$BRANCH"
 
-echo "[2/4] rendu du manifeste ${REL_PATH} (mode ${MODE})"
+if [ "$MAN_EXISTS" = 1 ]; then
+  echo "[2/4] fusion de per_env.${REQ_ENV} dans ${REL_PATH} (mode ${MODE})"
+else
+  echo "[2/4] rendu du manifeste ${REL_PATH} (mode ${MODE}, première demande)"
+fi
 mkdir -p "$(dirname "$REL_PATH")"
 
 # ── Task 4 (P3) — le certificat devient un fichier VERSIONNÉ dans la PR ─────
@@ -302,8 +405,11 @@ mkdir -p "$(dirname "$REL_PATH")"
 # que de forcer `git add -f` (qui court-circuiterait sans le dire une garde
 # d'hygiène "jamais de secret" que ce dépôt public applique délibérément) :
 # extension .crt, jamais .pem, pour un certificat destiné à être versionné.
+# A1 : le certificat est une identité PAR PALIER (per_env.<env>.public_cert_ref)
+# — le fichier l'est donc aussi (`<app>-<env>.crt`) : une demande `rec` avec
+# son propre certificat n'écrase jamais celui de `dev`.
 CERT_DIR="$(dirname "$MANIFEST_DIR")/certs"
-CERT_FILE="${CERT_DIR}/${REQ_APP}.crt"
+CERT_FILE="${CERT_DIR}/${REQ_APP}-${REQ_ENV}.crt"
 CERT_REL="${CERT_FILE#poc-control-plane-federation/}"
 if [ -n "$REQ_CERT_PEM" ]; then
   mkdir -p "$CERT_DIR"
@@ -334,9 +440,6 @@ fi
 TEAM_LINE=""
 [ -n "$REQ_TEAM" ] && TEAM_LINE=$'  team: "'"${REQ_TEAM}"$'"\n'
 
-CERT_ROTATION_LINE=""
-[ -n "$REQ_CERT_PEM" ] && CERT_ROTATION_LINE=$'  cert_rotation: "'"${REQ_CERT_ROTATION:-replace}"$'"\n'
-
 # v3 — la liste validée est rendue en items YAML inline. NON-RÉGRESSION OCTET
 # POUR OCTET : une entrée unique rend EXACTEMENT ip_allowlist: ["10.0.0.1"],
 # comme la version mono-valeur (mêmes guillemets, même espacement), et une
@@ -352,31 +455,36 @@ for _e in ${IP_LIST[@]+"${IP_LIST[@]}"}; do
   IP_JOINED="${IP_JOINED:+$IP_JOINED, }${_e}"
 done
 
+# ── A1 — LA ligne du palier, commune aux deux modes ─────────────────────────
+# Tout ce qui identifie l'application SUR CE PALIER tient sur UNE ligne YAML
+# flow `    <env>: { … }` : c'est l'unité que la fusion remplace ou insère, et
+# ce que la contre-épreuve « aucun octet hors de per_env.<env> » mesure.
+#   idp      : la VALEUR de la claim (client_id du palier) — le rôle la fusionne
+#              sous la racine `claim: { name }` (consumer-auth.yml:61) ;
+#   internal : la gateway wM EST l'AS local, elle génère le client — le pipeline
+#              l'écrit dans Vault PAR ENV au chemin conventionnel apps/<app>/<env>.
+# Puis, seulement si fournis : ip_allowlist, public_cert_ref + cert_rotation
+# (la rotation est une propriété du certificat, donc du palier — le rôle la lit
+# APRÈS fusion, tasks/main.yml:222), backend_key_ref, backend_key_field (le
+# principe de resolve-env.yml : IP, certificat et clé backend DIFFÈRENT par
+# environnement, seule l'identité de l'app est invariante).
+if [ "$MODE" = "internal" ]; then
+  PER_ENV_AUTH="auth: { vault_sub: \"deploy/${TENANT}/apps/${REQ_APP}/${REQ_ENV}/oauth-client\" }"
+else
+  PER_ENV_AUTH="auth: { claim: { value: \"${REQ_CLIENT_ID}\" } }"
+fi
 PER_ENV_ITEMS=""
 [ -n "$IP_ITEMS" ] && PER_ENV_ITEMS="${PER_ENV_ITEMS:+$PER_ENV_ITEMS, }ip_allowlist: [${IP_ITEMS}]"
-[ -n "$REQ_CERT_PEM" ] && PER_ENV_ITEMS="${PER_ENV_ITEMS:+$PER_ENV_ITEMS, }public_cert_ref: \"${CERT_REL}\""
-# v3 — clé backend PAR ENV : « un secret d'un environnement n'est jamais celui
-# d'un autre » (resolve-env.yml). backend_key_field suit ici plutôt qu'à la
-# racine : le rôle le lit à l'identique (la fusion racine ⊕ per_env[env] est
-# RÉCURSIVE et précède la lecture dans backend-key.yml), et la racine
-# obligerait à toucher les DEUX branches de rendu — le heredoc `internal` ET la
-# variable IDP_TAIL — sur un template qui revendique une identité octet pour
-# octet. PER_ENV_ITEMS, lui, est déjà consommé par les deux, à un seul point.
+[ -n "$REQ_CERT_PEM" ] && PER_ENV_ITEMS="${PER_ENV_ITEMS:+$PER_ENV_ITEMS, }public_cert_ref: \"${CERT_REL}\", cert_rotation: \"${REQ_CERT_ROTATION:-replace}\""
 [ -n "$REQ_BACKEND_KEY_REF" ] && PER_ENV_ITEMS="${PER_ENV_ITEMS:+$PER_ENV_ITEMS, }backend_key_ref: \"${REQ_BACKEND_KEY_REF}\""
 [ -n "$REQ_BACKEND_KEY_FIELD" ] && PER_ENV_ITEMS="${PER_ENV_ITEMS:+$PER_ENV_ITEMS, }backend_key_field: \"${REQ_BACKEND_KEY_FIELD}\""
+PER_ENV_INLINE="{ ${PER_ENV_AUTH}${PER_ENV_ITEMS:+, $PER_ENV_ITEMS} }"
 
-# Mode idp n'a, avant Task 4, AUCUN bloc per_env : IDP_TAIL n'ajoute quoi que
-# ce soit qu'à partir d'un \n initial (jamais de ligne vide en trop) — resp.
-# jamais de \n final (c'est la propre fin de ligne du heredoc qui le fournit),
-# pour rester octet pour octet identique quand REQ_CERT_PEM/REQ_IP_ALLOWLIST
-# sont absents (Step 4 du brief : la ligne "claim: {...}" reste alors seule,
-# suivie immédiatement du terminateur YAML — EXACTEMENT comme avant Task 4).
-IDP_TAIL=""
-[ -n "$REQ_CERT_PEM" ] && IDP_TAIL="${IDP_TAIL}"$'\n  cert_rotation: "'"${REQ_CERT_ROTATION:-replace}"$'"'
-if [ -n "$PER_ENV_ITEMS" ]; then
-  IDP_TAIL="${IDP_TAIL}"$'\n  per_env:\n    '"${REQ_ENV}"$': { '"${PER_ENV_ITEMS}"$' }'
-fi
-if [ "$MODE" = "internal" ]; then
+if [ "$MAN_EXISTS" = 1 ]; then
+  # FUSION : seule la ligne `    <env>: …` bouge (remplacée si le palier était
+  # déjà déclaré — re-demande —, insérée sinon). Refus = rien n'est écrit.
+  app_manifest_merge_env "$REL_PATH" "$REQ_ENV" "$PER_ENV_INLINE" || exit 2
+elif [ "$MODE" = "internal" ]; then
   # CLI2 : la gateway wM EST l'AS local ('local'), elle génère le client — le
   # pipeline l'écrit dans Vault PAR ENV (tenant+app+env-scopé). Pas de claim, pas
   # de secret dans Git ; vault_sub généré au chemin conventionnel apps/<app>/<env>.
@@ -386,69 +494,134 @@ if [ "$MODE" = "internal" ]; then
 # Appelant : ${REQ_CALLER} (azp). Ne PAS éditer à la main : re-générer via la demande.
 # Mode INTERNAL : la gateway wM est l'authorization server ; elle génère le client
 # (client_id/secret), le pipeline le STOCKE dans Vault par env — jamais dans Git.
+# MULTI-PALIER (A1) : la racine est FIGÉE à la première demande ; chaque demande
+# n'écrit que sa clé per_env.<env> (identité par palier : client, IP, cert, clé backend).
 apim_ss_app:
   name: "${REQ_APP}"
   api: "${REQ_API}"
   api_version: "${REQ_API_VER}"
-  description: "Provisioned via ${REQ_CALLER} — demande ${REQ_ENV} (internal)"
+  description: "Provisioned via ${REQ_CALLER} (internal)"
   contact_emails: []
 ${TEAM_LINE}  enforce: []
   auth:
     mode: "internal"
     audience: "${REQ_AUDIENCE}"
-${CERT_ROTATION_LINE}  per_env:
-    ${REQ_ENV}: { auth: { vault_sub: "deploy/${TENANT}/apps/${REQ_APP}/${REQ_ENV}/oauth-client" }${PER_ENV_ITEMS:+, $PER_ENV_ITEMS} }
+  per_env:
+    ${REQ_ENV}: ${PER_ENV_INLINE}
 YAML
 else
   # OIG : le client OAuth2 existe DÉJÀ côté IdP ; Git porte la CLAIM (azp) qui
-  # identifie l'application sur la gateway. Aucun secret (il vit sur l'IdP).
+  # identifie l'application sur la gateway — son NOM à la racine (trans-palier),
+  # sa VALEUR par palier. Aucun secret (il vit sur l'IdP).
   cat > "$REL_PATH" <<YAML
 ---
 # ${REQ_APP}.ansible.yml — GÉNÉRÉ par une demande de provisioning (maillon 1).
 # Appelant : ${REQ_CALLER} (azp). Ne PAS éditer à la main : re-générer via la demande.
 # Mode IDP : le client OAuth2 existe côté IdP ; Git porte la CLAIM qui identifie l'app.
+# MULTI-PALIER (A1) : la racine est FIGÉE à la première demande ; chaque demande
+# n'écrit que sa clé per_env.<env> (identité par palier : claim, IP, cert, clé backend).
 apim_ss_app:
   name: "${REQ_APP}"
   api: "${REQ_API}"
   api_version: "${REQ_API_VER}"
-  description: "Provisioned via ${REQ_CALLER} — demande ${REQ_ENV} (idp)"
+  description: "Provisioned via ${REQ_CALLER} (idp)"
   contact_emails: []
 ${TEAM_LINE}  enforce: []
   auth:
     mode: "idp"
     server_alias: "KeycloakStoaLab"
     audience: "${REQ_AUDIENCE}"
-    claim: { name: "azp", value: "${REQ_CLIENT_ID}" }${IDP_TAIL}
+    claim: { name: "azp" }
+  per_env:
+    ${REQ_ENV}: ${PER_ENV_INLINE}
 YAML
 fi
+# Le manifeste CRÉÉ est relu par la même lecture que celle qui gouverne la
+# fusion : ce que ce script rend doit être exactement ce qu'il saura relire
+# (bornes, identité du palier, aucune clé racine parasite). Refus = rien n'est
+# committé — un heredoc n'est pas une preuve.
+app_manifest_read "$REL_PATH" >/dev/null || exit 2
 
 if git diff --quiet -- "$REL_PATH" 2>/dev/null && git ls-files --error-unmatch "$REL_PATH" >/dev/null 2>&1; then
   echo "  (manifeste inchangé — demande idempotente)"
 fi
 git add "$REL_PATH"
 [ -n "$REQ_CERT_PEM" ] && git add "$CERT_FILE"
+# A1 — REJEU : la branche `provision/<app>-<env>` est recréée depuis GIT_BASE à
+# chaque demande ; sans ce test, une demande rejouée à l'identique produisait
+# un NOUVEAU commit (même arbre, autre date) et un push forcé — donc un
+# événement `synchronized` et un plan de plus pour rien. Si la branche distante
+# existe et porte déjà EXACTEMENT cet arbre, on ne commite ni ne pousse : la
+# PR est réutilisée telle quelle. Lecture anonyme (comme le clone) ; branche
+# absente = premier passage, on continue.
+# ── A6 (D1bis) — une demande ne réécrit JAMAIS une PR de repli ouverte ────────
+# La branche provision/<app>-<env> est poussée en force plus bas : si une PR de
+# REPLI y est ouverte (auteur = compte de service, tête portant le trailer
+# Repli-Vers: — relu par git sur FETCH_HEAD, jamais dans le corps éditable de la
+# PR), la réécrire ferait merger une demande sous un titre « repli ». Refus,
+# rien poussé. La tête relue devient le BAIL du push (--force-with-lease).
+REMOTE_TIP=""
+if git fetch -q --depth 1 "$CLONE_URL" "refs/heads/${BRANCH}" 2>/dev/null; then REMOTE_TIP=$(git rev-parse FETCH_HEAD 2>/dev/null || true); fi
+if [ -n "$REMOTE_TIP" ] && git log -1 --format=%B "$REMOTE_TIP" 2>/dev/null | grep -q '^Repli-Vers: '; then
+  OPEN_BY=$(API="$API" GIT_REPO="$GIT_REPO" GITEA_TOKEN="$GITEA_TOKEN" BRANCH="$BRANCH" python3 - <<'PY2'
+import os, json, urllib.request
+api, repo, tok, br = os.environ["API"], os.environ["GIT_REPO"], os.environ["GITEA_TOKEN"], os.environ["BRANCH"]
+page = 1
+while True:
+    r = urllib.request.Request(f"{api}/repos/{repo}/pulls?state=open&limit=50&page={page}", headers={"Authorization": "token " + tok})
+    with urllib.request.urlopen(r, timeout=30) as resp: prs = json.load(resp)
+    if not isinstance(prs, list) or not prs: break
+    for pr in prs:
+        h = pr.get("head") or {}
+        if h.get("ref") == br and (h.get("repo") or {}).get("full_name") == repo:
+            print("%s %s" % (pr.get("number"), (pr.get("user") or {}).get("login", ""))); raise SystemExit
+    page += 1
+PY2
+) || OPEN_BY=""
+  # Fail-closed : le trailer EST la preuve ; la forge ne fait que nommer la PR.
+  OPEN_NUM="${OPEN_BY%% *}"; OPEN_LOGIN="${OPEN_BY#* }"
+  case "$OPEN_BY" in
+    "") fail "REPLI_EN_COURS : la branche ${BRANCH} porte un repli (Repli-Vers) et la forge n'a pas pu être relue — la merger ou la fermer avant une nouvelle demande" ;;
+    *) case " ${GITEA_SERVICE_LOGINS} " in
+         *" ${OPEN_LOGIN} "*) fail "REPLI_EN_COURS : la PR #${OPEN_NUM} est un repli ouvert sur ${BRANCH} — la merger ou la fermer avant une nouvelle demande" ;;
+       esac ;;
+  esac
+fi
+REMOTE_UP_TO_DATE=0
+if git fetch -q --depth 1 "$CLONE_URL" "refs/heads/${BRANCH}" 2>/dev/null \
+   && git diff --cached --quiet FETCH_HEAD -- . 2>/dev/null; then
+  REMOTE_UP_TO_DATE=1
+fi
 if git diff --cached --quiet; then
-  echo "[3/4] aucun changement à committer (demande déjà à jour)"
+  # L'index est IDENTIQUE à GIT_BASE : la demande est déjà mergée (per_env.<env>
+  # présent sur la base). Il n'y a ni commit ni PR à ouvrir — et surtout pas de
+  # POST /pulls sur une branche de tête qui n'existe plus (404 mesuré à la
+  # critique : « supprimer la branche après merge » est un réglage courant).
+  echo "[3/4] aucun changement : ${REQ_APP}/${REQ_ENV} est déjà sur ${GIT_BASE} (per_env.${REQ_ENV} présent) — aucune PR à ouvrir"
+  echo "OK: demande ${REQ_APP}/${REQ_ENV} déjà mergée sur ${GIT_BASE}"
+  exit 0
+elif [ "$REMOTE_UP_TO_DATE" = 1 ]; then
+  echo "[3/4] aucun changement à committer (branche ${BRANCH} déjà à jour — demande rejouée)"
 else
   git commit -q -m "provision(${REQ_ENV}): application ${REQ_APP} (demande ${REQ_CALLER})"
   echo "[3/4] push ${BRANCH}"
   # Branche machine-owned (provision/*) : push explicite forcé, sûr ici (le flux
   # est le seul écrivain). 2>err pour ne jamais laisser le token fuiter au log.
-  if ! git push -q --force "$PUSH_URL" "HEAD:refs/heads/${BRANCH}" 2>"$WORK/pusherr"; then
+  if ! git push -q "--force-with-lease=refs/heads/${BRANCH}:${REMOTE_TIP}" "$PUSH_URL" "HEAD:refs/heads/${BRANCH}" 2>"$WORK/pusherr"; then
     echo "ERREUR push (détail masqué — token)" >&2; grep -v "$GITEA_TOKEN" "$WORK/pusherr" >&2 || true; exit 1
   fi
 fi
 
-echo "[4/4] ouverture de la Pull Request ${BRANCH} → ${GIT_BASE}"
+echo "[4/5] ouverture de la Pull Request ${BRANCH} → ${GIT_BASE}"
 # Interaction PR en PYTHON3 (portable — le conteneur Jenkins n'a pas jq) : liste
 # idempotente (filtre côté client sur head.ref), création sinon. Le token n'est
 # PAS en argv (passé par env GITEA_TOKEN) ; aucun secret imprimé.
 PR_OUT=$(REQ_APP="$REQ_APP" REQ_ENV="$REQ_ENV" REQ_API="$REQ_API" REQ_API_VER="$REQ_API_VER" \
   REQ_CLIENT_ID="$REQ_CLIENT_ID" REQ_CALLER="$REQ_CALLER" MODE="$MODE" BRANCH="$BRANCH" GIT_BASE="$GIT_BASE" \
   API="$API" GIT_REPO="$GIT_REPO" GITEA_TOKEN="$GITEA_TOKEN" \
-  REQ_TEAM="$REQ_TEAM" REQ_IP_ALLOWLIST="$IP_JOINED" REQ_CERT_ROTATION="${REQ_CERT_ROTATION:-}" \
+  REQ_TEAM="$REQ_TEAM" TEAM_INHERITED="$TEAM_INHERITED" REQ_IP_ALLOWLIST="$IP_JOINED" REQ_CERT_ROTATION="${REQ_CERT_ROTATION:-}" \
   REQ_CERT_PRESENT="$([ -n "$REQ_CERT_PEM" ] && echo 1 || echo 0)" CERT_REL="$CERT_REL" \
-  REQ_BACKEND_KEY_REF="$REQ_BACKEND_KEY_REF" \
+  REQ_BACKEND_KEY_REF="$REQ_BACKEND_KEY_REF" MAN_EXISTS="$MAN_EXISTS" MAN_ENVS="$MAN_ENVS" \
   python3 - <<'PY'
 import os, json, urllib.request, urllib.error, sys
 api, repo, tok = os.environ["API"], os.environ["GIT_REPO"], os.environ["GITEA_TOKEN"]
@@ -475,7 +648,8 @@ ident = (f"- claim azp : {os.environ['REQ_CLIENT_ID']}" if mode == "idp"
 # manifeste). Jamais le PEM en clair ici (deja dans le fichier de la PR).
 extra = []
 if os.environ.get("REQ_TEAM"):
-    extra.append(f"- equipe (cloisonnement) : {os.environ['REQ_TEAM']}")
+    inh = " (heritee du manifeste, figee a la premiere demande)" if os.environ.get("TEAM_INHERITED") == "1" else ""
+    extra.append(f"- equipe (cloisonnement) : {os.environ['REQ_TEAM']}{inh}")
 if os.environ.get("REQ_IP_ALLOWLIST"):
     extra.append(f"- IP allowlist : {os.environ['REQ_IP_ALLOWLIST']}")
 if os.environ.get("REQ_CERT_PRESENT") == "1":
@@ -491,6 +665,14 @@ if os.environ.get("REQ_BACKEND_KEY_REF"):
     extra.append(f"- cle backend (sortante, identifier token) : "
                  f"{os.environ['REQ_BACKEND_KEY_REF']} (valeur JAMAIS en Git, "
                  f"lue dans Vault a l'apply)")
+# A1 — le valideur voit si la PR CRÉE le manifeste ou n'y FUSIONNE qu'un
+# palier, et lesquels étaient déjà déclarés (le manifeste est la liste des
+# paliers d'une application).
+if os.environ.get("MAN_EXISTS") == "1":
+    envs = ", ".join(os.environ.get("MAN_ENVS", "").split()) or "(aucun)"
+    extra.append(f"- manifeste : per_env.{os.environ['REQ_ENV']} fusionné — paliers déjà déclarés : {envs}")
+else:
+    extra.append("- manifeste : première demande (créé)")
 extra_txt = ("\n" + "\n".join(extra)) if extra else ""
 # Fix round 1 (revue) — AVERTISSEMENT DES DEUX PIEGES, visible pour
 # l'approbateur, seulement si une dimension d'identite entrante est fournie

@@ -1,0 +1,40 @@
+---
+# roles/apim_common/tasks/refus.yml — UN refus nommé, RELAYÉ (A5, GOAL cd-applications).
+#
+# Entrées : refus_tag (classe [A-Z][A-Z0-9_]{2,40}), refus_msg (une phrase).
+# Effets, dans l'ordre : (1) le TAG dans apim_ss_refus_out s'il est posé ;
+# (2) la phrase dans apim_ss_refus_detail_out s'il est posé (une ligne, ≤ 300) ;
+# (3) fail « REFUS: <TAG> : <phrase> » — la ligne que consoles et suites lisent.
+# AUCUN appel gateway. Le relais jusqu'à la PR est celui d'A4 (fait Jenkins 11
+# mesuré) : post{always} de stage → buildVariables → provision-apply →
+# provision-apply-comment.sh. Sans les deux variables (apply manuel) : rien
+# n'est écrit, la ligne REFUS: suffit.
+- name: "Refus : le tag est de la classe [A-Z][A-Z0-9_]{2,40}"
+  ansible.builtin.assert:
+    that: "(refus_tag | default('') | string) is match('^[A-Z][A-Z0-9_]{2,40}$')"
+    fail_msg: "REFUS: CABLAGE_INCOMPLET : refus.yml appelé avec un tag hors classe ('{{ refus_tag | default('') }}')"
+
+- name: "Refus : la phrase, une ligne, bornée"
+  ansible.builtin.set_fact:
+    refus_line: >-
+      {{ ((refus_msg | default('') | string) | regex_replace('[\r\n\t]+', ' ') | regex_replace(' {2,}', ' ') | trim)[:300] }}
+
+- name: "Refus : écrire le tag pour l'amont"
+  ansible.builtin.copy:
+    content: "{{ refus_tag }}\n"
+    dest: "{{ apim_ss_refus_out }}"
+    mode: "0600"
+  when: "(apim_ss_refus_out | default('') | string) | length > 0"
+  delegate_to: localhost
+
+- name: "Refus : écrire la phrase pour la PR"
+  ansible.builtin.copy:
+    content: "{{ refus_line }}\n"
+    dest: "{{ apim_ss_refus_detail_out }}"
+    mode: "0600"
+  when: "(apim_ss_refus_detail_out | default('') | string) | length > 0"
+  delegate_to: localhost
+
+- name: "REFUS: {{ refus_tag }}"
+  ansible.builtin.fail:
+    msg: "REFUS: {{ refus_tag }} : {{ refus_line }}"

@@ -229,3 +229,34 @@ func TestPromoteVerify_RequiresPinnedGUID(t *testing.T) {
 		t.Fatalf("refusal must precede any network call, saw %v", *calls)
 	}
 }
+
+// TestPromoteSpecToleratesPinnedSha fige un fait que la spec « promotion sans
+// recopie » (2026-08-28) exploite : le manifeste porte désormais une clé
+// archive_sha256 épinglée par l'export, lue par api-promote-request.sh —
+// jamais par ce moteur. loadPromoteManifest décode en NON-strict
+// (sigsyaml.Unmarshal + json.Unmarshal) : la clé doit passer sans erreur.
+// Si quelqu'un rend un jour ce décodage strict, CE test rougit et nomme la
+// dépendance — au lieu d'un formulaire de promotion qui casse en silence.
+func TestPromoteSpecToleratesPinnedSha(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "demo.promote.yml")
+	manifest := `apim_promote:
+  name: "demo-api"
+  version: "2.1.0"
+  guid: "14c2529e-0000-4000-8000-00000000aaaa"
+  archive_sha256: "1111111111111111111111111111111111111111111111111111111111111111"
+  archive: "/tmp/demo.zip"
+  overwrite: "apis,policies,policyactions"
+  smoke_path: ""
+`
+	if err := os.WriteFile(p, []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	spec, err := loadPromoteManifest(p, "")
+	if err != nil {
+		t.Fatalf("archive_sha256 doit être tolérée par le décodage non strict : %v", err)
+	}
+	if spec.Name != "demo-api" || spec.GUID != "14c2529e-0000-4000-8000-00000000aaaa" {
+		t.Fatalf("spec mal décodée : %+v", spec)
+	}
+}

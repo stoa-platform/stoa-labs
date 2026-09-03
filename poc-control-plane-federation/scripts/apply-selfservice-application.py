@@ -21,6 +21,9 @@ Config (env) :
                  dans Jenkins : http://webmethods-real:5555/rest/apigateway)
   WM_USER/WM_PASS  compte de service gateway (en CI : lus depuis Vault)
 Usage : apply-selfservice-application.py <manifest.json> [--verify-ip]
+  Le manifeste porte `api_version` (OBLIGATOIRE depuis A5, 2026-09-03) : la
+  résolution est nom + version + isActive, refus nommés AVANT tout POST
+  (API_NOT_PROMOTED / API_VERSION_MISMATCH / API_AMBIGUE / API_INACTIVE).
 """
 import json, urllib.request, base64, sys, os, re, time
 
@@ -107,11 +110,23 @@ def main():
 
     print(f"=== apply self-service application '{name}' → API '{api_name}' ({WM})")
 
-    # résoudre l'API publiée
+    # A5 — LA PORTE : l'API est-elle AU PALIER (ce nom, cette version, ACTIVE) ?
+    # Même prédicat, mêmes tags que le rôle Ansible (la chaîne) — AVANT tout
+    # POST : une souscription posée puis retirée brûle la paire (spike S1-T3).
+    def refus(tag, msg):
+        print(f"REFUS: {tag} : {msg}"); sys.exit(1)
+    api_ver = str(m.get("api_version") or "")
+    if not api_ver: refus("CABLAGE_INCOMPLET", "api_version absent du manifeste — la résolution par nom seul n'est plus admise (A5)")
     _, r = call("GET", f"{WM}/apis")
-    api_id = next((e.get("api", {}).get("id") for e in r.get("apiResponse", [])
-                   if e.get("api", {}).get("apiName") == api_name), None)
-    if not check(f"API '{api_name}' publiée résolue", api_id): sys.exit(1)
+    apis = [e.get("api", {}) for e in (r.get("apiResponse", []) if isinstance(r, dict) else [])]
+    by_name = [a for a in apis if a.get("apiName") == api_name]
+    match = [a for a in by_name if str(a.get("apiVersion")) == api_ver]
+    if not by_name: refus("API_NOT_PROMOTED", f"l'API '{api_name}' n'est pas sur {WM} (aucune version publiée) — la promouvoir d'abord ; rien n'a été écrit")
+    if not match: refus("API_VERSION_MISMATCH", f"l'API '{api_name}' est présente en version(s) {', '.join(str(a.get('apiVersion')) for a in by_name)}, pas en '{api_ver}' ; rien n'a été écrit")
+    if len(match) > 1: refus("API_AMBIGUE", f"{len(match)} entrées '{api_name}' v{api_ver} — résolution impossible sans choisir ; rien n'a été écrit")
+    if match[0].get("isActive") is not True: refus("API_INACTIVE", f"l'API '{api_name}' v{api_ver} est INACTIVE (isActive={match[0].get('isActive')!r}, id={match[0].get('id')}) — une souscription à une API inactive est une souscription à rien ; rien n'a été écrit")
+    api_id = match[0].get("id")
+    check(f"API '{api_name}' v{api_ver} active résolue (id={api_id})", api_id)
 
     # 1) application (idempotent par nom)
     _, r = call("GET", f"{WM}/applications")

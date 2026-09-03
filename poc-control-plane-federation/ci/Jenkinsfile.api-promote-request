@@ -2,13 +2,10 @@
 // Ouvre une PR portant apis/<name>.deploy.<TO_ENV>.yaml sur le dépôt d'ÉQUIPE.
 // NE DÉPLOIE RIEN : la décision est le merge de cette PR (ADR-081).
 //
-// ⚠ ET LE MERGE N'APPLIQUE RIEN NON PLUS, AUJOURD'HUI. Le job post-merge du
-// dépôt d'équipe (ci/Jenkinsfile.team-publish) ne publie que les branches
-// `api/*` ; celle-ci est `promote/<name>-<env>`, donc le webhook part, le
-// build passe au VERT, et il ne s'est rien produit. C'est un TROISIÈME
-// blocage, distinct du verrou `ENVN` dev-only (G4) et du verbe archive (G5) —
-// et c'est celui qui RESTERA quand G4 aura levé le verrou. Le marqueur est
-// posé pour être consommé plus tard, pas pour déclencher un apply.
+// Le merge de la PR promote/<name>-<env> déclenche team-promote (G5) : pause
+// nominative, garde d'identité, pin de l'archive par sha256, apply réel.
+// (Une version antérieure de cet en-tête décrivait l'époque — G3 — où ce
+// merge ne déclenchait rien ; périmée depuis G5, corrigée le 2026-08-28.)
 //
 // ⚠ Les listes FROM_ENV/TO_ENV sont écrites À LA MAIN, et c'est documenté comme
 // tel : un bloc `parameters {}` déclaratif est évalué à la POSE du job, hors
@@ -49,7 +46,7 @@ pipeline {
     string(name: 'MESSAGE',        defaultValue: '', description: "Message d'audit (obligatoire)")
     string(name: 'CHANGE_REF',     defaultValue: '', description: 'Référence de changement ITSM (selon la porte)')
     string(name: 'PV_REF',         defaultValue: '', description: 'Référence de PV de recette (selon la porte)')
-    string(name: 'ARCHIVE_SHA256', defaultValue: '', description: "sha256 de l'archive (sortie EXPORT_CONFIRMED) — requis hors dev")
+    string(name: 'ARCHIVE_SHA256', defaultValue: '', description: "FACULTATIF. Vide : lu sur main (manifeste épinglé) depuis dev, hérité du palier source au-delà. Renseigné : depuis dev il gagne avec avertissement (re-promotion d'une archive antérieure) ; au-delà, une contradiction avec la source est refusée (DIGEST_CONTREDIT_SOURCE).")
   }
   stages {
     stage('Demande de promotion') {

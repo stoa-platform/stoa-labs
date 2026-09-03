@@ -2,8 +2,9 @@
 # test-app-request-v2.sh — preuve X/X de la Task 4 (P3) : app-request v2
 # (listes déroulantes + identité entrante) — scripts/provision-request.sh +
 # ci/jenkins/app-request.job.xml + ci/Jenkinsfile.app-request (le pipeline, sorti
-# du XML lors de la conversion en Jenkinsfile déclaratif : le XML ne porte plus
-# que la coquille « Pipeline from SCM » et les paramètres à marqueurs).
+# du XML lors de la conversion en Jenkinsfile déclaratif ; depuis A0 le XML
+# n'est plus qu'une coquille « Pipeline from SCM », le FORMULAIRE aussi est posé
+# par le Jenkinsfile — section B réécrite en conséquence).
 #
 # DEUX TERRAINS :
 #   - Section A (gardes) et B (câblage placeholders) : HORS LIGNE — ni Gitea
@@ -81,7 +82,7 @@ run_guard "team format invalide"  "TEAM_NAME_INVALID"      REQ_TEAM='Not Valid!'
 # une valeur légitime (à distinguer d'un simple "grep absent" qui passerait
 # aussi si le script plantait ailleurs) — vérifiée en section C/D (réseau réel).
 echo
-echo "═══ Section B — câblage des placeholders app-request.job.xml (HORS LIGNE) ═══"
+echo "═══ Section B — câblage de la pose d'app-request (A0 : coquille pure + amorçage, HORS LIGNE) ═══"
 # Bare repos locaux = "Gitea" (clone accepte un chemin fichier) ; faux Jenkins
 # = même serveur minimal que test-generate-choices.sh, étendu pour enregistrer
 # le corps POSTé (nécessaire pour vérifier que TEAM/API sont bien substitués
@@ -119,6 +120,12 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         n = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(n) if n else b""
+        # A0 : le build d'AMORCAGE d'un job qui pose son formulaire depuis son
+        # Jenkinsfile (app-request) — trace <job>.build, 201 comme le vrai Jenkins.
+        mb = re.match(r"^/job/([^/]+)/build$", self.path)
+        if mb:
+            open(os.path.join(BODYDIR, mb.group(1) + ".build"), "w").close()
+            return self._send(201)
         if self.path.startswith("/createItem"):
             name = re.search(r"name=([^&]+)", self.path).group(1)
             with open(os.path.join(BODYDIR, name + ".posted.xml"), "wb") as f:
@@ -145,15 +152,19 @@ if [ "$RC" -ne 0 ]; then
   ko "câblage placeholders : setup-team-onboard-jobs.sh a échoué — $(printf '%s' "$OUT" | tail -5)"
 else
   POSTED="$TMP/posted/app-request.posted.xml"
-  if [ -f "$POSTED" ] && grep -q '<string>teamx</string>' "$POSTED" && grep -q '<string>foo@2.0.0</string>' "$POSTED"; then
-    ok "câblage placeholders : app-request posté avec TEAM=teamx et API=foo@2.0.0"
+  # A0 (2026-09-02) : app-request.job.xml est une COQUILLE PURE — plus de
+  # marqueur, plus de paramètre. La pose le copie TEL QUEL (octet pour octet)
+  # puis l'AMORCE d'un build : c'est le build qui pose le formulaire, depuis
+  # scripts/app-request-choices.sh (listes teamx / foo@2.0.0 relues alors).
+  if [ -f "$POSTED" ] && cmp -s "$POSTED" "$REPO/ci/jenkins/app-request.job.xml"; then
+    ok "câblage A0 : app-request posté OCTET POUR OCTET identique à la source (aucune substitution, NO-OP garanti)"
   else
-    ko "câblage placeholders : fragments attendus absents du XML posté"
+    ko "câblage A0 : le XML posté diffère de la source (une substitution a eu lieu sur une coquille sans marqueur ?)"
   fi
-  if ! grep -q 'CHOICES:TEAMS\|CHOICES:APIS' "$POSTED" 2>/dev/null; then
-    ok "câblage placeholders : aucun marqueur résiduel dans le XML posté"
+  if [ -f "$TMP/posted/app-request.build" ]; then
+    ok "câblage A0 : le build d'AMORÇAGE a été demandé après la pose (POST /job/app-request/build) — sans lui, la pose efface le formulaire"
   else
-    ko "câblage placeholders : marqueur résiduel non substitué"
+    ko "câblage A0 : aucun build d'amorçage demandé — le job resterait sans formulaire jusqu'au premier clic Build"
   fi
   # Fix round 1 (revue, Important, static) : le refus loud API_FORMAT_INVALIDE
   # (fix 4) doit rester CÂBLÉ — PAS de fallback silencieux '1.0.0' pour une
@@ -183,44 +194,24 @@ else
     ko "câblage placeholders : le XML posté ne charge pas ci/Jenkinsfile.app-request (ou porte encore du Groovy inline) — le garde-fou ci-dessus ne serait jamais exécuté"
   fi
 
-  # Fix round 2 (revue, casse nouvelle du round 1) : le sed double-forme ne
-  # supprime QUE la ligne du marqueur — un choix de secours posé sur une
-  # ligne SÉPARÉE (round 1) survivait donc à une substitution PROPRE
-  # (choices -> ['', 'foo@2.0.0'], choix par défaut VIDE sur un champ requis
-  # — reproduit live par le revieweur). Remède : secours + marqueur sur la
-  # MÊME ligne (round 2). Preuve dans LES DEUX SENS :
-  #   (a) job POSÉ (substitué) : le choix de secours a disparu AVEC le
-  #       marqueur — premier (et seul, ici) choix = le vrai nom@version.
-  api_choices(){ # $1 = fichier XML -> une valeur de <string> par ligne, pour le
-                 # ChoiceParameterDefinition nommé API (jamais TEAM/REQ_ENV/...)
-    python3 -c "
+  # A0 : les listes déroulantes ne sont PLUS dans le XML — ni posé, ni source.
+  # Elles sont posées par ci/Jenkinsfile.app-request (properties([parameters]))
+  # depuis les listes calculées dans le build ; test-a0-wiring.sh §5/§6 prouve
+  # le mécanisme et le contenu (teams/APIs/paliers).
+  n_choices(){ python3 -c "
 import xml.etree.ElementTree as ET, sys
 root = ET.parse(sys.argv[1]).getroot()
-for pd in root.iter('hudson.model.ChoiceParameterDefinition'):
-    name = pd.findtext('name')
-    if name != 'API':
-        continue
-    for s in pd.iter('string'):
-        print(s.text if s.text is not None else '')
-" "$1" 2>/dev/null
-  }
-  API_CHOICES_POSTED=$(api_choices "$POSTED")
-  if [ "$(printf '%s\n' "$API_CHOICES_POSTED" | grep -c '^$')" -eq 0 ] \
-     && [ "$(printf '%s\n' "$API_CHOICES_POSTED" | head -1)" = "foo@2.0.0" ]; then
-    ok "câblage placeholders : job POSÉ — aucun choix vide résiduel, premier choix = foo@2.0.0"
+print(sum(1 for e in root.iter() if e.tag.endswith('ParameterDefinition')))" "$1" 2>/dev/null; }
+  if [ "$(n_choices "$POSTED")" = "0" ]; then
+    ok "câblage A0 : job POSÉ — ZÉRO définition de paramètre dans le XML (le formulaire vient du Jenkinsfile)"
   else
-    ko "câblage placeholders : job POSÉ — choix API inattendus : [$(printf '%s,' "$API_CHOICES_POSTED")]"
+    ko "câblage A0 : job POSÉ — $(n_choices "$POSTED") définition(s) de paramètre résiduelle(s) dans le XML"
   fi
-  #   (b) XML SOURCE du dépôt, BRUT (jamais substitué — ex. job posé sans
-  #       passer par setup-team-onboard-jobs.sh) : EXACTEMENT un choix vide,
-  #       jamais zéro (sinon menu inutilisable, round 1) ni deux (round 2).
-  API_CHOICES_RAW=$(api_choices "$REPO/ci/jenkins/app-request.job.xml")
-  N_EMPTY=$(printf '%s\n' "$API_CHOICES_RAW" | grep -c '^$')
-  N_TOTAL=$(printf '%s\n' "$API_CHOICES_RAW" | grep -c '.*')
-  if [ "$N_EMPTY" -eq 1 ] && [ "$N_TOTAL" -eq 1 ]; then
-    ok "câblage placeholders : XML source BRUT — exactement UN choix vide (jamais choices=[])"
+  if [ "$(n_choices "$REPO/ci/jenkins/app-request.job.xml")" = "0" ] \
+     && grep -q "choice(name: 'API', choices: apis" "$REPO/ci/Jenkinsfile.app-request"; then
+    ok "câblage A0 : XML source sans paramètre, liste API posée par le Jenkinsfile depuis \`apis\` (relue à chaque build)"
   else
-    ko "câblage placeholders : XML source BRUT — attendu 1 choix vide et rien d'autre, obtenu $N_TOTAL choix ($N_EMPTY vide(s))"
+    ko "câblage A0 : XML source ou Jenkinsfile divergents (paramètre résiduel, ou liste API non posée)"
   fi
 fi
 
@@ -256,32 +247,47 @@ for pr in d:
   # Fix round 1 (revue, Important) : la preuve C comparait AVANT/APRÈS en
   # extrayant le script PRÉ-Task-4 via `git show HEAD:...` — valeur probante
   # ÉTEINTE dès que ce commit devient HEAD (HEAD compare alors le script à
-  # lui-même, toujours vert). Remède : GOLDEN FILES committés, rendus UNE FOIS
-  # avec le script d'AVANT Task 4 (commit b39aee1, parent direct de la
-  # première livraison 2a3d58b), pour des entrées machine FIXES
-  # (REQ_APP=p3t4golden-idp/p3t4golden-int, REQ_ENV=dev, REQ_API=accounts-read
-  # v1.0.0, REQ_CALLER=oig-provisioner/cli2-provisioner, sans aucun REQ_*
-  # Task 4). La preuve compare désormais le manifeste produit PAR LE SCRIPT
-  # COURANT à ces fixtures — un octet qui bouge dans le rendu machine (absent
-  # des REQ_* Task 4) fait rougir la preuve, peu importe l'état de HEAD.
+  # lui-même, toujours vert). Remède : GOLDEN FILES committés, pour des entrées
+  # machine FIXES (REQ_APP=p3t4golden-idp/p3t4golden-int, REQ_ENV=dev,
+  # REQ_API=accounts-read v1.0.0, REQ_CALLER=oig-provisioner/cli2-provisioner,
+  # sans aucun REQ_* Task 4). La preuve compare le manifeste produit PAR LE
+  # SCRIPT COURANT à ces fixtures — un octet qui bouge dans le rendu machine
+  # (absent des REQ_* Task 4) fait rougir la preuve, peu importe l'état de HEAD.
+  #
+  # PROVENANCE : rendus une première fois avec le script d'AVANT Task 4 (commit
+  # b39aee1) ; RÉGÉNÉRÉS le 2026-09-02 pour le jalon A1 (GOAL cd-applications),
+  # qui change le CONTRAT MACHINE intentionnellement : claim `{ name }` à la
+  # racine et sa VALEUR sous per_env.<env> (mode idp), description sans palier,
+  # deux lignes d'en-tête « MULTI-PALIER (A1) » — forme D1 de la spec
+  # docs/superpowers/specs/2026-09-02-a1-manifeste-multi-palier-design.md.
   #
   # QUAND RÉGÉNÉRER LÉGITIMEMENT : uniquement si le CONTRAT MACHINE lui-même
   # change intentionnellement (ex. nouveau champ ajouté au template idp/
   # internal, hors périmètre Task 4/REQ_* additifs) — jamais pour faire
   # passer une régression au vert. Régénération :
-  #   git show <commit-avant-le-changement>:poc-control-plane-federation/scripts/provision-request.sh > /tmp/old.sh
-  #   GITEA_TOKEN=... GIT_HOST=http://localhost:13000 REQ_APP=p3t4golden-idp \
-  #     REQ_ENV=dev REQ_API=accounts-read REQ_API_VER=1.0.0 \
+  #   GITEA_TOKEN=... GIT_HOST=http://localhost:13000 GIT_BASE=<base jetable> \
+  #     REQ_APP=p3t4golden-idp REQ_ENV=dev REQ_API=accounts-read REQ_API_VER=1.0.0 \
   #     REQ_CALLER=oig-provisioner REQ_CLIENT_ID=golden-client-id \
-  #     PROVISION_PLAN_INLINE=false bash /tmp/old.sh
-  #   (puis récupérer le manifeste rendu via l'API Gitea raw et l'écrire dans
+  #     PROVISION_PLAN_INLINE=false bash scripts/provision-request.sh
+  #   (idem p3t4golden-int avec REQ_CALLER=cli2-provisioner, sans REQ_CLIENT_ID ;
+  #   puis récupérer le manifeste rendu via l'API Gitea raw et l'écrire dans
   #   scripts/testdata/app-request-v2/golden-*.ansible.yml) — geste EXPLICITE,
-  #   jamais automatisé par ce test.
+  #   jamais automatisé par ce test. PRÉCONDITION : l'app golden n'existe pas
+  #   sur la base (sinon le script FUSIONNE au lieu de créer — cf. nonreg_case).
   GOLDEN_DIR="$REPO/scripts/testdata/app-request-v2"
+  GIT_BASE_GOLDEN="main"
   nonreg_case(){
     local label="$1" app="$2" caller="$3" golden="$4"; shift 4
     local branch="provision/${app}-dev"
     CLEAN_BRANCHES+=("$branch")
+    # A1 (2026-09-02) : le rendu compare un manifeste CRÉÉ ; si l'app golden
+    # existait sur main, le script FUSIONNERAIT (per_env seule) et le diff
+    # mentirait sur la cause. Précondition nommée plutôt que rouge opaque.
+    # (par code HTTP : le raw d'un fichier absent rend un corps JSON non vide)
+    if [ "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: token $GITEA_TOKEN" \
+          "$GH/api/v1/repos/ci/stoa-labs/raw/${GIT_BASE_GOLDEN}/poc-control-plane-federation/clients/provisioned/applications/${app}.ansible.yml")" = 200 ]; then
+      ko "$label : le manifeste $app existe déjà sur ${GIT_BASE_GOLDEN} — le golden compare une CRÉATION, pas une fusion (retirer le fichier de main)"; return
+    fi
     [ -f "$GOLDEN_DIR/$golden" ] || { ko "$label : golden '$golden' absent de $GOLDEN_DIR"; return; }
     local out rc
     out=$(env GITEA_TOKEN="$GITEA_TOKEN" GIT_HOST="$GH" REQ_APP="$app" REQ_ENV=dev REQ_API=accounts-read \
@@ -325,12 +331,12 @@ for pr in d:
     printf '%s' "$MANI" | grep -q '  enforce: \[\]'                               || { ko "nominal : enforce n'est plus []  — dérivation réintroduite (régression du fix round 1)"; CHECK=0; }
     printf '%s' "$MANI" | grep -q 'cert_rotation: "overlap"'                       || { ko "nominal : cert_rotation absent/faux"; CHECK=0; }
     printf '%s' "$MANI" | grep -q 'ip_allowlist: \["10.77.5.1-10.77.5.9"\]'        || { ko "nominal : ip_allowlist absent"; CHECK=0; }
-    printf '%s' "$MANI" | grep -q "public_cert_ref: \"clients/provisioned/certs/${APP}.crt\"" || { ko "nominal : public_cert_ref absent/faux"; CHECK=0; }
+    printf '%s' "$MANI" | grep -q "public_cert_ref: \"clients/provisioned/certs/${APP}-dev.crt\"" || { ko "nominal : public_cert_ref absent/faux"; CHECK=0; }
     [ "$CHECK" = 1 ] && ok "nominal enrichi : manifeste porte team/cert_rotation/ip_allowlist/public_cert_ref, enforce=[] intouché"
 
-    CERTFILE=$(raw_cert "$BR" "$APP")
+    CERTFILE=$(raw_cert "$BR" "${APP}-dev")
     if [ "$CERTFILE" = "$CERT_PEM_CONTENT" ]; then
-      ok "nominal enrichi : clients/provisioned/certs/${APP}.crt versionné, contenu identique au PEM soumis"
+      ok "nominal enrichi : clients/provisioned/certs/${APP}-dev.crt versionné, contenu identique au PEM soumis"
     else
       ko "nominal enrichi : fichier .crt absent ou contenu différent"
     fi

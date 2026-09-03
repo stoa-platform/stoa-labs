@@ -1,0 +1,107 @@
+// ci/Jenkinsfile.app-rollback — LE REPLI D'UNE APPLICATION EST UNE PR (A6, ADR-089).
+//
+// Formulaire humain : APP + ENV (la chaîne ENTIÈRE, terminus compris — ce sont
+// les portes du palier qui décident : GATE_REFS_REQUIRED à la demande, puis
+// quatre-yeux / deployerGroup / ITSM / voie du terminus à l'apply) + REASON +
+// CHANGE_REF (exigé à la demande si la porte du palier porte requireChangeRef ou
+// itsmCheck — un repli d'urgence porte SON change, jamais celui de l'état
+// restauré ; pv_ref n'est jamais exigé). Le script scripts/app-rollback-request.sh
+// ouvre une PR provision/<app>-<env> dont la ligne per_env.<env> et le cert du
+// palier sont, à l'octet, ceux du merge PRÉCÉDENT (N-1) ; la chaîne existante
+// (merge → provision-apply → selfservice-app-deploy) l'applique comme tout apply
+// — même GUID, même clé (spike S1). Ce fichier ROUTE ; le script DÉCIDE.
+//
+// Coquille XML sans propriété ni trigger (ci/jenkins/app-rollback.job.xml) ; le
+// formulaire est posé ICI (motif A0 — les cinq faits mesurés en tête de
+// ci/Jenkinsfile.app-request s'appliquent : properties() pose et conserve,
+// re-poser le XML efface ⇒ amorçage, FORM_BOOTSTRAP lu AVANT properties(),
+// withEnv([params…]) obligatoire contre EnvVars.resolve). La chaîne est ÉPINGLÉE
+// sur les deux lignes sh (A4 : une globale STOA_ENV_CHAIN_FILE ne redirige ni la
+// liste ENV ni la porte GATE_REFS_REQUIRED). Sandbox Groovy : getBuildCauses,
+// readFile, properties, params.size, take sont en liste blanche (mesuré A0/A2).
+pipeline {
+
+  agent any
+
+  // ── POINTS DE CONFIG CLIENT (motif `env.X ?: défaut`) ───────────────────
+  environment {
+    GIT_HOST             = "${env.GIT_HOST ?: 'http://gitea:3000'}"
+    GIT_REPO             = "${env.GIT_REPO ?: 'ci/stoa-labs'}"
+    GITEA_CREDENTIALS_ID = "${env.GITEA_CREDENTIALS_ID ?: 'gitea-provision-token'}"
+  }
+
+  stages {
+
+    // ── 1. LE FORMULAIRE : la chaîne ENTIÈRE, relue à chaque build ─────────
+    stage('Formulaire — la chaîne entière') {
+      steps {
+        script {
+          // FAIT 4 (A0) : le signal d'amorçage se lit AVANT properties().
+          env.FORM_BOOTSTRAP = (params.size() == 0) ? 'true' : 'false'
+        }
+        dir('poc-control-plane-federation') {
+          // Une seule liste (les paliers) : la lib suffit, aucun script de choix.
+          // Fail-closed : chaîne illisible ⇒ fichier retiré ⇒ FORMULAIRE_VIDE.
+          sh 'set +x; STOA_ENV_CHAIN_FILE="$WORKSPACE/poc-control-plane-federation/clients/_example/environments.yaml" bash -c ". scripts/lib/env-chain.sh && env_chain_validate && env_chain" > "$WORKSPACE/.a6-envs" || { rm -f "$WORKSPACE/.a6-envs"; exit 1; }'
+        }
+        script {
+          def envs = readFile("${env.WORKSPACE}/.a6-envs").trim().tokenize(' ')
+          if (envs.isEmpty()) {
+            error("FORMULAIRE_VIDE : chaîne illisible — rien n'est posé, le formulaire précédent reste en place.")
+          }
+          properties([parameters([
+            string(name: 'APP', defaultValue: '',
+                   description: "Application à replier [a-z0-9-] — la paire (APP, ENV) EST la branche provision/<app>-<env> dont le merge PRÉCÉDENT est restauré (per_env.<env> et cert du palier, à l'octet)."),
+            choice(name: 'ENV', choices: envs,
+                   description: "Palier à replier — la chaîne ENTIÈRE, terminus compris (environments.yaml, relue à chaque build) : les portes du palier décident (GATE_REFS_REQUIRED à la demande, quatre-yeux, deployerGroup, ITSM, voie du terminus à l'apply)."),
+            string(name: 'REASON', defaultValue: '',
+                   description: "Motif du repli — 1 à 300 caractères, sans retour-ligne ni ` < > # @ [ ] \\ (il entre dans le commit, trailer Repli-Motif, et dans la PR)."),
+            string(name: 'CHANGE_REF', defaultValue: '',
+                   description: "Référence de changement [A-Za-z0-9._-] — EXIGÉE si la porte du palier porte requireChangeRef ou itsmCheck (refus GATE_REFS_REQUIRED sans elle, aucune PR ouverte) ; elle REMPLACE change_ref dans la ligne restaurée (un repli d'urgence porte SON change, jamais celui de l'état restauré). pv_ref n'est jamais exigé : l'état restauré a porté le sien.")
+          ])])
+          echo "formulaire posé : paliers ${envs}"
+          if (env.FORM_BOOTSTRAP == 'true') {
+            currentBuild.displayName = "amorçage du formulaire (aucun repli)"
+            echo "AMORÇAGE : ce build n'a reçu aucun paramètre (job posé sans formulaire) — le formulaire est désormais posé ; aucun repli n'est demandé."
+          }
+        }
+      }
+    }
+
+    // ── 2. OUVRIR LA PR DE REPLI ────────────────────────────────────────────
+    stage('Ouvrir la PR de repli') {
+      when { expression { env.FORM_BOOTSTRAP != 'true' } }
+      steps {
+        script {
+          // Identité du demandeur : informative (trailer Repli-Par, displayName) —
+          // rien de sécuritaire n'en dérive. PIÈGE A0 : userId nul ⇒ chaîne 'null'.
+          def cause = currentBuild.getBuildCauses('hudson.model.Cause$UserIdCause')
+          def rawUid = (cause && !cause.isEmpty()) ? "${cause[0].userId}" : 'anonymous'
+          def uid = (rawUid && rawUid != 'null') ? rawUid : 'anonymous'
+          env.REQ_CALLER = "jenkins-form:${uid}"
+          currentBuild.displayName = "repli ${params.APP ?: '?'}/${params.ENV ?: '?'} (par ${uid})"
+        }
+        withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')]) {
+          // FAIT 5 (A0) : les valeurs de formulaire subissent EnvVars.resolve —
+          // ré-injection brute par withEnv, lues par le SHELL, jamais interpolées
+          // dans la chaîne sh (quotes simples ; `set +x` : le token ne s'écho pas).
+          withEnv(["REQ_APP=${params.APP}", "REQ_ENV=${params.ENV}", "REQ_REASON=${params.REASON}", "REQ_CHANGE_REF=${params.CHANGE_REF}"]) {
+            dir('poc-control-plane-federation') {
+              sh 'set +x; STOA_ENV_CHAIN_FILE="$WORKSPACE/poc-control-plane-federation/clients/_example/environments.yaml" ROLLBACK_OUT="$WORKSPACE/.a6-rollback.env" bash scripts/app-rollback-request.sh'
+            }
+          }
+        }
+        script {
+          def kv = [:]
+          readFile("${env.WORKSPACE}/.a6-rollback.env").readLines().each { l ->
+            def i = l.indexOf('=')
+            if (i > 0) { kv[l.substring(0, i)] = l.substring(i + 1) }
+          }
+          if (kv.PR_URL) {
+            currentBuild.description = "PR de repli : ${kv.PR_URL} (restaure ${(kv.REPLI_VERS ?: '').take(7)}, remplace ${(kv.REPLI_DE ?: '').take(7)})"
+          }
+        }
+      }
+    }
+  }
+}

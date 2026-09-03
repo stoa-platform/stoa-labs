@@ -105,5 +105,26 @@ else
   ok "env_chain_gate_itsm_check refuse FERMÉ sur source absente"
 fi
 
+echo "⑧ env_chain_validate — le gabarit livré est valide, cinq sabotages sont REFUSÉS (A4, D0)"
+# POURQUOI : env_chain_gate rend {} pour une porte `to: itn` ou une clé mal
+# orthographiée — un palier SANS contrôle, sans journal (critique adverse A4).
+# Le lecteur de validation doit refuser la chaîne AVANT qu'une porte ne la lise.
+if type env_chain_validate >/dev/null 2>&1; then ok "env_chain_validate existe dans la lib"; else bad "env_chain_validate ABSENTE de la lib"; fi
+V="$(mktemp -d)"; trap 'cp "$BAK" "$CHAIN"; rm -f "$BAK"; rm -rf "$V"' EXIT INT TERM
+cp "$CHAIN" "$V/ok.yaml"
+if ( STOA_ENV_CHAIN_FILE="$V/ok.yaml" env_chain_validate ) 2>"$V/err"; then ok "gabarit livré : valide"; else bad "gabarit livré REFUSÉ : $(cat "$V/err")"; fi
+sab(){ # <nom> <sed-expr> <fragment de cause attendu>
+  sed -E "$2" "$CHAIN" > "$V/$1.yaml"
+  if cmp -s "$CHAIN" "$V/$1.yaml"; then bad "sabotage $1 NO-OP (l'ancre a bougé)"; return; fi
+  if ( STOA_ENV_CHAIN_FILE="$V/$1.yaml" env_chain_validate ) 2>"$V/err"; then bad "sabotage $1 ACCEPTÉ (vert vacant)"
+  elif grep -q "$3" "$V/err"; then ok "sabotage $1 refusé : $(tail -1 "$V/err" | cut -c1-100)"
+  else bad "sabotage $1 refusé pour une autre cause : $(cat "$V/err")"; fi
+}
+sab to-inconnu    's/^  - to: int$/  - to: itn/'                     "ne nomme aucun environnement"
+sab cle-inconnue  's/^    fourEyes: true$/    foureyes: true/'        "inconnue"
+sab bool-texte    's/^    itsmCheck: true$/    itsmCheck: "true"/'    "booleen"
+sab to-double     's/^  - to: homol$/  - to: int/'                   "deux fois"
+sab env-majuscule 's/^environments: \[dev, rec, int, homol, prod\]$/environments: [dev, rec, int, homol, Prod]/' "hors de"
+
 printf '\n%d PASS / %d FAIL\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

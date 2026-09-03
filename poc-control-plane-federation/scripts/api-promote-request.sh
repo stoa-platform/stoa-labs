@@ -21,7 +21,7 @@
 # Entrées (env — mappées depuis les paramètres du job) :
 #   TEAM, API_NAME, FROM_ENV, TO_ENV, MESSAGE   (requis)
 #   CHANGE_REF, PV_REF                          (selon la porte d'arrivée)
-#   ARCHIVE_SHA256                              (requis si TO_ENV != authoring)
+#   ARCHIVE_SHA256  (facultatif — résolu depuis le manifeste épinglé (dev) ou hérité du palier source)
 #   GITEA_TOKEN                                 (requis hors DRY_RUN)
 #   DRY_RUN=1                                   (s'arrête après les gardes)
 set -uo pipefail
@@ -32,6 +32,8 @@ cd "$(dirname "$0")/.." || exit 1
 . scripts/lib/env-chain.sh
 # shellcheck source=scripts/lib/deploy-pin.sh
 . scripts/lib/deploy-pin.sh
+# shellcheck source=scripts/lib/promote-manifest.sh
+. scripts/lib/promote-manifest.sh
 
 fail() { printf 'ERREUR: %s\n' "$*" >&2; exit 1; }
 
@@ -145,14 +147,30 @@ case "$PV_REF" in
 esac
 
 # ── Garde 3 : LE DIGEST ─────────────────────────────────────────────────────
-if [ "$TO_ENV" != "$AUTHORING_ENV" ]; then
-  [ -n "$ARCHIVE_SHA256" ] \
-    || fail "DIGEST_ABSENT : promotion vers '$TO_ENV' sans ARCHIVE_SHA256 — les octets déployés doivent être pinnés (sortie EXPORT_CONFIRMED)"
-  case "$ARCHIVE_SHA256" in
-    *[!0-9a-f]* | "") fail "DIGEST_MALFORMED : '$ARCHIVE_SHA256' n'est pas un sha256 hexadécimal minuscule" ;;
+# FACULTATIF depuis la spec « promotion sans recopie » (2026-08-28) : vide, il
+# sera RÉSOLU après le clone — depuis dev, le sha épinglé du manifeste
+# (apim_promote.archive_sha256, posé par la PR d'export) ; au-delà, le digest
+# HÉRITÉ du palier source (reconcile_promotion_digest, comportement existant).
+# Ce qui reste amont : la FORME d'une valeur explicite (refus tôt, hors ligne),
+# et l'avertissement qu'une résolution est différée. Le refus DIGEST_ABSENT
+# n'a pas disparu — il a déménagé APRÈS la résolution, où il a le droit de
+# conclure (ici, conclure serait exiger la recopie que la spec supprime).
+#
+# `valider_digest` factorise la forme parce qu'elle se rejoue deux fois : ici
+# sur une valeur EXPLICITE (refus tôt, hors ligne), et plus bas sur la valeur
+# RÉSOLUE (un manifeste ou un marqueur source corrompu ne doit pas passer pour
+# une désignation valide juste parce que la forme n'a jamais été revérifiée).
+valider_digest() {
+  case "$1" in
+    *[!0-9a-f]*) fail "DIGEST_MALFORMED : '$1' n'est pas un sha256 hexadécimal minuscule" ;;
   esac
-  [ "${#ARCHIVE_SHA256}" -eq 64 ] \
-    || fail "DIGEST_MALFORMED : sha256 attendu sur 64 caractères, reçu ${#ARCHIVE_SHA256}"
+  [ "${#1}" -eq 64 ] \
+    || fail "DIGEST_MALFORMED : sha256 attendu sur 64 caractères, reçu ${#1}"
+}
+if [ -n "$ARCHIVE_SHA256" ]; then
+  valider_digest "$ARCHIVE_SHA256"
+elif [ "$TO_ENV" != "$AUTHORING_ENV" ]; then
+  echo "DIGEST_DIFFERE : ARCHIVE_SHA256 vide — sera lu après clone (manifeste épinglé depuis dev, palier source au-delà)"
 fi
 
 echo "GARDES_OK : $FROM_ENV -> $TO_ENV, groupe d'approbation='${APPROVER_GROUP:-<aucun>}', groupe déployeur='${DEPLOYER_GROUP:-<aucun>}'"
@@ -232,12 +250,31 @@ resolve_promotion_pin "$TMP/team" "$API_NAME" "$FROM_ENV" \
 PIN="$DEPLOY_PROMO_PIN"
 VERSION="$DEPLOY_PROMO_VERSION"
 
+# ── LE DIGEST, RÉSOLU (spec promotion-sans-recopie) ─────────────────────────
+# Depuis dev : le manifeste épinglé par la PR d'export fait foi quand le
+# formulaire est vide. Un formulaire explicite GAGNE (désignation d'une archive
+# antérieure, cas légitime) — mais une contradiction se DIT, bruyamment : le
+# marqueur mergé portera le sha retenu, et c'est le merge qui l'approuve.
+if [ "$FROM_ENV" = "$AUTHORING_ENV" ]; then
+  MANIFEST_SHA=$(manifest_pinned_digest "$TMP/team/apis/${API_NAME}.promote.yml") \
+    || fail "MANIFESTE_ILLISIBLE : apis/${API_NAME}.promote.yml ne se lit pas — impossible de résoudre le digest"
+  if [ -z "$ARCHIVE_SHA256" ]; then
+    ARCHIVE_SHA256="$MANIFEST_SHA"
+    [ -n "$ARCHIVE_SHA256" ] && echo "DIGEST_RESOLU : archive_sha256 lu sur main (manifeste épinglé) = ${ARCHIVE_SHA256}"
+  elif [ -n "$MANIFEST_SHA" ] && [ "$ARCHIVE_SHA256" != "$MANIFEST_SHA" ]; then
+    echo "AVERTISSEMENT DIGEST_EXPLICITE : le formulaire (${ARCHIVE_SHA256}) remplace la valeur épinglée du manifeste (${MANIFEST_SHA}) — désignation explicite, le merge de la PR l'approuvera" >&2
+  fi
+fi
+
 # LE DIGEST. Depuis dev il vient du formulaire (sortie EXPORT_CONFIRMED) ; au
 # dela il est HERITE du palier source, et le formulaire ne peut pas le
 # contredire — sinon le demandeur substituerait les octets en cours de route,
 # ce que tout ce jalon existe pour empecher.
 ARCHIVE_SHA256=$(reconcile_promotion_digest "$ARCHIVE_SHA256" "$DEPLOY_PROMO_SHA256") \
   || fail "DIGEST_CONTREDIT_SOURCE : le digest du formulaire contredit celui que '$FROM_ENV' execute (voir le refus nomme ci-dessus)"
+[ -n "$ARCHIVE_SHA256" ] \
+  || fail "DIGEST_ABSENT : promotion vers '$TO_ENV' sans digest — ni formulaire, ni manifeste épinglé (mergez la PR d'api-promote-export d'abord), ni palier source"
+valider_digest "$ARCHIVE_SHA256"
 
 # ── branche, marqueur, commit, push, PR ─────────────────────────────────────
 BRANCH="promote/${API_NAME}-${TO_ENV}"

@@ -423,6 +423,35 @@ PY
   return "$rc"
 }
 
+# vault_token_ttl — imprime le TTL RESTANT (secondes, entier) du token de la lib,
+# relu par lookup-self. A3 (GOAL cd-applications) : le préflight de joignabilité
+# de l'apply peut durer plus que le TTL d'un token LDAP (600 s sur ce lab, tune
+# de setup-vault-ldap.sh) ; l'appelant refuse TTL_INSUFFISANT AVANT de lancer un
+# play qui relirait Vault avec un token mort (403 « policy/chemin » loin de sa
+# cause). Token par fichier d'en-tête, jamais argv. rc 1 = pas de login,
+# lookup refusé, ou ttl absent/non entier (l'appelant traite « vide » comme un
+# refus, jamais comme « illimité »).
+vault_token_ttl() {
+  if [ -z "$_VAULT_TMPDIR" ] || [ ! -f "$_VAULT_TMPDIR/token.hdr" ]; then
+    echo "  ✗ vault_token_ttl appelé sans login préalable" >&2
+    return 1
+  fi
+  local resp="$_VAULT_TMPDIR/ttl.json" code rc
+  code="$(_vault_curl "$resp" GET "$VAULT_ADDR/v1/auth/token/lookup-self" -H "@$_VAULT_TMPDIR/token.hdr" || true)"
+  if [ "$code" != "200" ]; then
+    rm -f "$resp"
+    return 1
+  fi
+  python3 -c 'import json, sys
+t = (json.load(open(sys.argv[1])).get("data") or {}).get("ttl")
+if t is None or isinstance(t, bool): sys.exit(1)
+try: print(int(t))
+except (TypeError, ValueError): sys.exit(1)' "$resp"
+  rc=$?
+  rm -f "$resp"
+  return "$rc"
+}
+
 # vault_revoke_proof — révoque le token ET PROUVE sa mort (lookup-self doit répondre
 # 403). Idempotent, sans effet si aucun login n'a eu lieu. 0 = révoqué et prouvé mort.
 vault_revoke_proof() {

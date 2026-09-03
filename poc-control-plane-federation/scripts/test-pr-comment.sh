@@ -45,8 +45,17 @@ class H(BaseHTTPRequestHandler):
         return self.headers.get("Authorization") == "token " + TOKEN
     def do_GET(self):
         if not self._auth(): return self._send(401, {"message": "unauthorized"})
-        if re.match(r"^/api/v1/repos/.+/issues/\d+/comments$", self.path):
-            return self._send(200, load())
+        # A0 dettes : la lib PAGINE (?limit=50&page=N) — le faux honore les deux
+        # paramètres, comme le vrai Gitea (limit max 50 par défaut).
+        path, _, qs = self.path.partition("?")
+        if re.match(r"^/api/v1/repos/.+/issues/\d+/comments$", path):
+            q = dict(kv.split("=", 1) for kv in qs.split("&") if "=" in kv)
+            # PLAFOND serveur (api.MAX_RESPONSE_ITEMS chez Gitea) : `limit` est
+            # ECRETE, une page pleine peut donc etre plus courte que demande.
+            cap = int(os.environ.get("PAGE_CAP", "50"))
+            lim, page = min(int(q.get("limit", 50)), cap), int(q.get("page", 1))
+            allc = load()
+            return self._send(200, allc[(page - 1) * lim: page * lim])
         self._send(404, {"message": "not found"})
     def do_POST(self):
         if not self._auth(): return self._send(401, {"message": "unauthorized"})
@@ -69,7 +78,7 @@ PY
 startgitea(){ # $1 = token attendu
   [ -n "$GITEA_PID" ] && kill "$GITEA_PID" 2>/dev/null
   printf '[]' > "$TMP/comments.json"
-  STORE="$TMP/comments.json" EXPECT_TOKEN="$1" python3 "$TMP/fakegitea.py" "$PORT" >/dev/null 2>&1 &
+  STORE="$TMP/comments.json" EXPECT_TOKEN="$1" PAGE_CAP="${PAGE_CAP:-50}" python3 "$TMP/fakegitea.py" "$PORT" >/dev/null 2>&1 &
   GITEA_PID=$!
   for _ in $(seq 1 40); do curl -s "http://127.0.0.1:$PORT/x" >/dev/null 2>&1 && return; sleep 0.1; done
 }
@@ -145,14 +154,23 @@ grep -q 'PR_BRANCH="\$BRANCH" PR_NUMBER="\$PR_NUM"' "$REPO/scripts/provision-req
 
 echo
 echo "== 8. CÂBLAGE corollaire 2 : le job rapporte, succès COMME échec =="
+# A2 : le job provision-apply vit dans ci/Jenkinsfile.provision-apply
+# (déclaratif, from SCM) — le XML n'est plus qu'une coquille sans Groovy.
+# L'équivalent déclaratif du `try/finally` : le rapport est appelé dans le
+# step d'apply avec `propagate: false` (l'amont voit l'échec de l'aval SANS
+# lever), puis `error()` réaffirme l'échec ; et un `post { always }` pose le
+# statut build dans TOUS les cas (marqueur distinct).
 JOB="$REPO/ci/jenkins/provision-apply.job.xml"
+JF="$REPO/ci/Jenkinsfile.provision-apply"
 python3 -c "import xml.etree.ElementTree as T; T.parse('$JOB')" 2>/dev/null \
   && ok "XML bien formé" || ko "XML cassé"
-grep -q 'provision-apply-comment.sh' "$JOB" && ok "script appelé" || ko "rapport non câblé"
-grep -q 'finally' "$JOB" && ok "dans un finally (rapporte aussi sur échec)" || ko "pas de finally — un échec ne serait pas rapporté"
-grep -q 'provision-apply-comment.sh || true' "$JOB" \
+grep -q '<script>' "$JOB" && ko "le XML porte du Groovy inline (contrainte du GOAL)" || ok "XML sans Groovy (coquille from SCM)"
+grep -F 'bash scripts/provision-apply-comment.sh' "$JF" | grep -qv '^\s*//' && ok "script appelé (Jenkinsfile)" || ko "rapport non câblé"
+grep -q 'propagate: false' "$JF" && ok "propagate: false (l'échec de l'aval est VU, pas levé — le rapport part aussi sur échec)" || ko "pas de propagate: false — un échec aval sauterait le rapport"
+grep -F 'bash scripts/provision-apply-comment.sh' "$JF" | grep -q '|| true' \
   && ok "|| true : une forge en panne ne rougit pas un apply vert" || ko "le rapport peut faire échouer un apply réussi"
-grep -q "error(" "$JOB" && ok "l'échec réel est réaffirmé hors du finally" || ko "un apply en échec finirait vert"
+grep -q 'error("Apply nominatif en échec' "$JF" && ok "l'échec réel est réaffirmé (error) après le rapport" || ko "un apply en échec finirait vert"
+grep -q 'always {' "$JF" && ok "post { always } : statut build dans tous les cas" || ko "pas de post always"
 
 echo
 echo "== 9. les scripts sont syntaxiquement valides =="
@@ -193,6 +211,53 @@ for f in "$REPO"/scripts/provision-*.sh; do
     ok "$b : appel par chemin absolu mémorisé"
   fi
 done
+
+echo
+echo "== 11. COMMENT_ONLY_IF_EXISTS=1 (A0 dettes) : met à jour un commentaire présent, n'en CRÉE jamais =="
+startgitea tok-ok
+printf 'statut vert\n' > "$TMP/b11"
+OUT=$(GIT_REPO=ci/stoa-labs GITEA_TOKEN=tok-ok PR_NUMBER=7 GIT_HOST="$GH" COMMENT_MARKER='<!-- provision-plan-build -->' \
+      COMMENT_BODY_FILE="$TMP/b11" COMMENT_ONLY_IF_EXISTS=1 bash "$LIB" 2>&1); RC=$?
+[ "$RC" -eq 0 ] && [ "$OUT" = "COMMENT_SKIPPED" ] && [ "$(count)" = 0 ] \
+  && ok "marqueur absent ⇒ COMMENT_SKIPPED, rc 0, ZÉRO commentaire créé" || ko "ONLY_IF_EXISTS a créé ou échoué (rc=$RC : $OUT, n=$(count))"
+printf 'statut rouge perime\n' > "$TMP/b11r"
+GIT_REPO=ci/stoa-labs GITEA_TOKEN=tok-ok PR_NUMBER=7 GIT_HOST="$GH" COMMENT_MARKER='<!-- provision-plan-build -->' COMMENT_BODY_FILE="$TMP/b11r" bash "$LIB" >/dev/null 2>&1
+OUT=$(GIT_REPO=ci/stoa-labs GITEA_TOKEN=tok-ok PR_NUMBER=7 GIT_HOST="$GH" COMMENT_MARKER='<!-- provision-plan-build -->' \
+      COMMENT_BODY_FILE="$TMP/b11" COMMENT_ONLY_IF_EXISTS=1 bash "$LIB" 2>&1); RC=$?
+[ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -q '^COMMENT_UPDATED' && [ "$(count)" = 1 ] && bodies | grep -q 'statut vert' \
+  && ok "marqueur présent ⇒ COMMENT_UPDATED (le rouge périmé est effacé), toujours UN seul commentaire" || ko "ONLY_IF_EXISTS n'a pas mis à jour (rc=$RC : $OUT, n=$(count))"
+
+echo
+echo "== 12. PAGINATION (A0 dettes) : un marqueur en 55e position sur 60 est TROUVÉ, pas empilé =="
+startgitea tok-ok
+python3 - "$TMP/comments.json" <<'PY'
+import json, sys
+cs = [{"id": i, "body": f"bruit {i}"} for i in range(1, 61)]
+cs[54]["body"] = "<!-- provision-plan -->\nancien verdict"
+json.dump(cs, open(sys.argv[1], "w"))
+PY
+printf 'nouveau verdict\n' > "$TMP/b12"
+OUT=$(GIT_REPO=ci/stoa-labs GITEA_TOKEN=tok-ok PR_NUMBER=7 GIT_HOST="$GH" COMMENT_MARKER='<!-- provision-plan -->' COMMENT_BODY_FILE="$TMP/b12" bash "$LIB" 2>&1); RC=$?
+[ "$RC" -eq 0 ] && [ "$OUT" = "COMMENT_UPDATED 55" ] && [ "$(count)" = 60 ] \
+  && ok "marqueur au-delà de la première page ⇒ COMMENT_UPDATED 55 (pagination), 60 commentaires, aucun empilement" \
+  || ko "pagination cassée (rc=$RC : $OUT, n=$(count)) — le commentaire se serait EMPILÉ"
+grep -q 'timeout=30)' "$LIB" && ok "urlopen(timeout=30) : un post{always} ne tient plus l'exécuteur indéfiniment sur une forge muette" || ko "aucun timeout réseau dans la lib"
+
+echo
+echo "== 12bis. PLAFOND serveur (revue 2026-09-02) : la forge écrête limit à 20, marqueur en 25e position ⇒ TROUVÉ (arrêt sur page VIDE, jamais sur « page courte ») =="
+PAGE_CAP=20 startgitea tok-ok
+python3 - "$TMP/comments.json" <<'PY'
+import json, sys
+cs = [{"id": i, "body": f"bruit {i}"} for i in range(1, 31)]
+cs[24]["body"] = "<!-- provision-plan -->\nancien verdict"
+json.dump(cs, open(sys.argv[1], "w"))
+PY
+printf 'nouveau verdict\n' > "$TMP/b12b"
+OUT=$(GIT_REPO=ci/stoa-labs GITEA_TOKEN=tok-ok PR_NUMBER=7 GIT_HOST="$GH" COMMENT_MARKER='<!-- provision-plan -->' COMMENT_BODY_FILE="$TMP/b12b" bash "$LIB" 2>&1); RC=$?
+[ "$RC" -eq 0 ] && [ "$OUT" = "COMMENT_UPDATED 25" ] && [ "$(count)" = 30 ] \
+  && ok "plafond 20, marqueur en 25e ⇒ COMMENT_UPDATED 25, aucun empilement (une page pleine de 20 n'est PAS la dernière)" \
+  || ko "plafond serveur : rc=$RC $OUT n=$(count) — le commentaire s'est EMPILÉ (arrêt sur page courte)"
+unset PAGE_CAP
 
 echo
 echo "======================================================================"

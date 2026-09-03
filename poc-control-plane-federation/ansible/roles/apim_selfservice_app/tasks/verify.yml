@@ -175,6 +175,52 @@
               | selectattr('apiVersion', 'equalto', apim_ss_app.api_version)
               | map(attribute='id') | list | first) | default('') }}
 
+    # ── A5 : l'API est-elle AU PALIER (nom, version, unique, ACTIVE) ? Même
+    # prédicat qu'à l'apply — rejouable : une API désactivée APRÈS l'apply
+    # rougit ici (l'apply seul ne le verrait plus). Refus relayé (refus.yml).
+    - name: "Verify : entrées nom+version de l'API"
+      ansible.builtin.set_fact:
+        v_api_match: >-
+          {{ (v_apis.json.apiResponse | default([])) | map(attribute='api')
+             | selectattr('apiName', 'defined') | selectattr('apiName', 'equalto', apim_ss_app.api)
+             | selectattr('apiVersion', 'defined') | selectattr('apiVersion', 'equalto', apim_ss_app.api_version | string) | list }}
+        v_env: "{{ (apim_ss_env | default('', true)) or '(mono-env)' }}"
+
+    - name: "Verify : REFUS API_AT_PALIER_UNCONFIRMED"
+      ansible.builtin.include_role:
+        name: apim_common
+        tasks_from: refus.yml
+      vars:
+        refus_tag: API_AT_PALIER_UNCONFIRMED
+        refus_msg: >-
+          l'API '{{ apim_ss_app.api }}' v{{ apim_ss_app.api_version }} n'est pas (ou plus) active au palier '{{ v_env }}' :
+          {{ v_api_match | length }} entrée(s), isActive={{ ((v_api_match | first).isActive | default('absent')) if (v_api_match | length == 1) else 'n/a' }}
+          — l'application est convergée mais sa souscription ne sert rien ; promouvoir/activer l'API au palier puis rejouer verify
+      when: "not ((v_api_match | length == 1) and (((v_api_match | first).isActive | default(none)) is sameas true))"
+
+    - ansible.builtin.debug:
+        msg: "API_AT_PALIER_CONFIRMED : '{{ apim_ss_app.api }}' v{{ apim_ss_app.api_version }} active au palier '{{ v_env }}' (id={{ v_api_id }})"
+
+    # ── A5 : la souscription au GUID, RELUE (ce qu'A6 comparera avant/après repli)
+    - name: "Verify : APIs consommées par l'application (liste relue en tête)"
+      ansible.builtin.set_fact:
+        v_app_apis: >-
+          {{ ((v_apps.json.applications | selectattr('name', 'equalto', apim_ss_app.name) | list | first | default({})).consumingAPIs) | default([], true) }}
+
+    - name: "Verify : REFUS SUBSCRIPTION_UNCONFIRMED"
+      ansible.builtin.include_role:
+        name: apim_common
+        tasks_from: refus.yml
+      vars:
+        refus_tag: SUBSCRIPTION_UNCONFIRMED
+        refus_msg: >-
+          l'application '{{ apim_ss_app.name }}' n'est pas souscrite à '{{ apim_ss_app.api }}' v{{ apim_ss_app.api_version }} (id={{ v_api_id }}) —
+          consumingAPIs={{ v_app_apis | list }} ; la convergence a eu lieu mais la souscription relue n'est pas celle du manifeste
+      when: "v_api_id not in (v_app_apis | list)"
+
+    - ansible.builtin.debug:
+        msg: "SUBSCRIPTION_CONFIRMED : '{{ apim_ss_app.name }}' souscrite à '{{ apim_ss_app.api }}' v{{ apim_ss_app.api_version }} (id={{ v_api_id }})"
+
     # ----- garde du register : l'équipe a-t-elle le droit de consommer l'API ? --
     # Même oracle qu'à l'apply, même fichier — sinon leur accord ne prouverait
     # rien. Rejouable : c'est une propriété de l'état, pas du déroulé de l'apply.
