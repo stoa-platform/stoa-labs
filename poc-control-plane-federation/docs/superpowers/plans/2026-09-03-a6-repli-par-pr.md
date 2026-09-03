@@ -762,3 +762,19 @@ Scénarios 0-8 de la spec D5, chacun avec ses assertions écrites comme dans `te
 - **Placeholders** : le code du script n'est pas dans le plan (décision d'exécution notée sous T1) — son contrat est la table D1 ; les ANCRES de mutation (`head_ref == BRANCH`, `CANDIDATE_REF=`, `is-ancestor "$BIRTH"`, `refus RESTAURATION_INFIDELE`, `etape porte|clone|coherence`) sont des exigences littérales du script.
 - **Cohérence des noms** : `GIT_CLONE_URL` (script + suite + `provision-request.sh` T3), `GIT_PUSH_URL` (T3 seulement), `ROLLBACK_OUT` (script, Jenkinsfile), `STUB_POSTED`/`open_pr`/`ctl_json`/`reset_origin`/`run_rb`/`refus`/`posts`/`remote_branch`/`etapes` (suite), `gw_app_obj`/`gw_app_ip`/`gw_app_cert`/`create_api`/`delete_api`/`rollback_build`/`form_file_any` (live).
 - **Écart connu** : la suite B.28 (`LIGNEE_TRONQUEE`) construit une origine shallow ; si `git clone --bare --depth 1 file://` refuse (git ancien), remplacer par `git clone --depth 1` + `git -C … config core.bare true` et noter.
+
+---
+
+## Écarts au plan (mesurés à l'exécution, 2026-09-03)
+
+- **Pas de `--filter=blob:none`** : contre une origine shallow, le clone partiel boucle en fetchs paresseux (`git fetch … --filter=blob:none --stdin` ×8, mesuré) ; clone complet mono-branche (0,8 s sur le lab). `LIGNEE_TRONQUEE` reste testé par une origine `--bare --depth 1`.
+- **Les mutants vivent à côté du script** (`scripts/.a6-mut-*.sh`, retirés par le trap) : le script fait `cd "$(dirname "$0")/.."` et source ses libs — copié dans `$TMP`, il meurt en rc 1 avant toute mutation.
+- **`pr_merge` dans un `$( )`** : la variable `CLOSED` ne remonte pas d'un sous-shell (le même piège que `die`) — l'entrée de forge transite par un fichier + `closed_add` après chaque capture ; toute capture teste son rc (`|| exit 2`).
+- **Ancres de mutation** : M1 vise `head_ref != BRANCH` (filtre par exclusion), pas `==`.
+- **Stub pour le réconciliateur** : les fichiers de PR portent le préfixe `poc-control-plane-federation/` (le réconciliateur remet `GIT_SUBDIR` par défaut `:-`, une chaîne vide ne l'annule pas).
+- **`json.dumps(…, ensure_ascii=False)`** pour le corps de PR (« supprimé » sinon échappé).
+- **Section A5 en repli** (D5 §6) : jouée par **désactivation** de `demo-selfservice` (`API_INACTIVE`, proxy mono-gateway comme A5) — pas d'API jetable (visibilité d'équipe, IAM à recréer, `forceDelete` sur un lab partagé : trois risques neufs) ; `API_NOT_PROMOTED` est prouvé par A5 #80 sur la même porte.
+- **Cinq défauts de harnais live**, corrigés entre les passages : la précondition 0.1 ne tolérait pas le recyclage keepalive (000) ; `grep 'suspension'` vs « SUSPENSION » ; `console_order` avec un motif répété (`PORTE_OK` ×2 : la première occurrence ne peut pas suivre la pause — `PORTE_OK(pre)`/`(dispatch)`) ; `isSuspended` absent de l'objet (`None`, pas `False`) ; `^REFUS: API_INACTIVE` ancré en tête de ligne alors que la phrase est dans le `msg` du `fail` Ansible.
+- **Ne jamais éditer un script bash pendant qu'il tourne** (bash lit par offsets) : le passage 1 a exécuté des fragments décalés (« repli: command not found », 5.2 rejoué, pause répondue sur #143 puis attente de #144) — les corrections étaient bonnes, le passage ne l'était plus.
+- **Le recyclage keepalive coupe un aval en plein play** (« Connection reset by peer » sur le `GET /apis` de la porte A5, passage 3 §5) : ce n'est pas un verdict — le harnais rejoue le webhook (motif A2), une fois, en l'annonçant.
+- **`pgrep -f "scripts/test-a6-live.sh"` se trouve lui-même** dans un moniteur dont le texte porte le motif : `[.]` dans le motif.
