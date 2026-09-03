@@ -126,6 +126,7 @@ echo
 echo "== 5. rapport d'apply RÉUSSI : identité nominative visible =="
 startgitea tok-ok
 OUT=$(PR_NUMBER=7 APPLY_RESULT=SUCCESS APP_NAME=credit-scoring ENV_NAME=dev VALIDATOR=alice \
+      GITEA_REQUESTER=carol GITEA_MERGED_BY=bob \
       BUILD_URL=http://jenkins/job/42/ GIT_REPO=ci/stoa-labs GITEA_TOKEN=tok-ok GIT_HOST="$GH" \
       bash "$REPO/scripts/provision-apply-comment.sh" 2>&1); RC=$?
 [ $RC -eq 0 ] && ok "commentaire posté" || ko "échec (rc=$RC) : $OUT"
@@ -134,6 +135,17 @@ grep -q "Apply nominatif RÉUSSI" <<<"$B" && ok "verdict de succès" || ko "verd
 grep -q "alice" <<<"$B" && ok "identité du valideur présente (c'est ce que l'auditeur cherche)" || ko "identité absente"
 grep -q "credit-scoring" <<<"$B" && grep -q "dev" <<<"$B" && ok "application et env cités" || ko "contexte absent"
 grep -q "provision-apply" <<<"$B" && ok "marqueur présent (rejouable sans doublon)" || ko "marqueur absent"
+# A7 : les trois identités (G7 D4 porté aux applications) — demandée / mergée / portée
+grep -qF -- '- identités : demandée par `carol` · mergée par `bob` · portée par `alice`' <<<"$B" && ok "A7 : la ligne des trois identités (demandée par carol · mergée par bob · portée par alice)" || ko "A7 : ligne des identités absente ou fausse : $(grep -F 'identités' <<<"$B")"
+startgitea tok-ok
+OUT=$(PR_NUMBER=7 APPLY_RESULT=REFUSED REFUSAL=PAYLOAD_PERIME APP_NAME=credit-scoring ENV_NAME=dev \
+      GITEA_REQUESTER=carol GITEA_MERGED_BY=bob GIT_REPO=ci/stoa-labs GITEA_TOKEN=tok-ok GIT_HOST="$GH" \
+      bash "$REPO/scripts/provision-apply-comment.sh" 2>&1); RC=$?
+[ $RC -eq 0 ] && ! bodies | grep -qF 'identités :' && bodies | grep -q 'aucune consommée' && ok "A7 : sur REFUSED, aucune ligne d'identités (aucune identité consommée)" || ko "A7 : REFUSED porte une ligne d'identités (rc=$RC)"
+startgitea tok-ok
+OUT=$(PR_NUMBER=7 APPLY_RESULT=FAILURE APP_NAME=credit-scoring ENV_NAME=dev VALIDATOR=alice \
+      GIT_REPO=ci/stoa-labs GITEA_TOKEN=tok-ok GIT_HOST="$GH" bash "$REPO/scripts/provision-apply-comment.sh" 2>&1); RC=$?
+bodies | grep -qF -- '- identités : demandée par `(inconnu)` · mergée par `(inconnu)` · portée par `alice`' && ok "A7 : identités absentes de l'env ⇒ (inconnu), jamais une ligne vide" || ko "A7 : (inconnu) attendu : $(bodies | grep -F 'identités')"
 
 echo
 echo "== 6. rapport d'apply EN ÉCHEC : dit que RIEN n'est déployé =="

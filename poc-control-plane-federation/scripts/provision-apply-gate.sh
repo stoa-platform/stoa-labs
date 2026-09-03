@@ -182,6 +182,46 @@ ref_ok "$MK_PV" || refus REF_INVALIDE "pv_ref du manifeste MERGÉ hors de ^[A-Za
 [ "$NEED_PV" = 0 ] || [ -n "$MK_PV" ] \
   || refus GATE_REFS_REQUIRED "la porte vers '$ENV_NAME' exige pv_ref — absent de per_env.${ENV_NAME} du manifeste mergé" "la porte vers ${ENV_NAME} exige une référence de PV de validation (per_env.${ENV_NAME}.pv_ref) — absente du manifeste mergé"
 
+# ── 2ter. LE CONTRAT FIGÉ, relu au dispatch (A7 D4bis) ─────────────────────────
+# A1 fige la racine du manifeste à la demande (CONTRAT_DIVERGENT dans
+# provision-request.sh) — mais un commit manuel sur provision/* passe
+# PR_HORS_PERIMETRE, qui ne regarde que la liste des fichiers. Ici la garde de
+# la demande devient une porte : la racine (name api api_version team
+# description enforce contact_emails, auth.{mode,audience,server_alias}) du
+# manifeste MERGÉ doit égaler celle du PARENT du merge (MERGE_SHA^1) ; un
+# manifeste NEUF (absent du parent) n'a rien à comparer. Changer d'API ou
+# d'équipe est une NOUVELLE application, jamais une promotion.
+if git -C "$GIT_WORKTREE" show "${MERGE_SHA}^1:./${MANIFEST}" > "$TMP/parent.yml" 2>/dev/null; then
+  DIVERG=$(A="$TMP/parent.yml" B="$TMP/merged.yml" python3 - 2>"$TMP/contrat.err" <<'PY'
+import json, os, sys, yaml
+ROOT = ("name", "api", "api_version", "team", "description", "enforce", "contact_emails")
+AUTH = ("mode", "audience", "server_alias")
+def load(p):
+    try:
+        d = yaml.safe_load(open(p, encoding="utf-8")) or {}
+    except Exception as e:
+        sys.exit("YAML illisible (%s) : %s" % (p, type(e).__name__))
+    app = d.get("apim_ss_app") if isinstance(d, dict) else None
+    if not isinstance(app, dict):
+        sys.exit("apim_ss_app absent (%s)" % p)
+    auth = app.get("auth") if isinstance(app.get("auth"), dict) else {}
+    def norm(v):
+        return json.dumps(v, sort_keys=True, ensure_ascii=False) if isinstance(v, (list, dict)) else ("" if v is None else str(v))
+    out = {k: norm(app.get(k)) for k in ROOT}
+    out.update({"auth." + k: norm(auth.get(k)) for k in AUTH})
+    return out
+a, b = load(os.environ["A"]), load(os.environ["B"])
+print(" ".join(k for k in a if a[k] != b[k]))
+PY
+) || refus MANIFESTE_ILLISIBLE "contrat figé : $(tail -1 "$TMP/contrat.err")" "le manifeste (parent ou mergé) est illisible pour la relecture du contrat"
+  [ -z "$DIVERG" ] \
+    || refus CONTRAT_DIVERGENT "le merge ${MERGE_SHA} change la racine figée du manifeste (${DIVERG}) — une PR provision/* ne fusionne qu'un palier (A1) ; changer d'API ou d'équipe est une NOUVELLE application, jamais une promotion" \
+             "la racine figée du manifeste a changé au merge (${DIVERG}) — une PR provision/* ne fusionne qu'un palier"
+  echo "contrat figé : racine du manifeste identique à celle du parent du merge"
+else
+  echo "contrat figé : manifeste créé par ce merge (rien à comparer)"
+fi
+
 # ── 3. LES QUATRE YEUX — par la garde existante, FAIL-CLOSED sur un demandeur de service ──
 # Le demandeur est l'AUTEUR DE LA PR relu sur la forge : la seule identité de
 # demandeur que la forge garantit (un champ du manifeste serait forgeable dans

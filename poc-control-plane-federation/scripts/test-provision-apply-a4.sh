@@ -39,7 +39,7 @@ TMP="$(mktemp -d)"; umask 077
 IPID=""
 cleanup(){ [ -n "$IPID" ] && kill "$IPID" 2>/dev/null; rm -rf "$TMP"; }
 trap cleanup EXIT INT TERM
-EXPECTED_CHECKS=132  # sections 0 + A + B + C + D + E
+EXPECTED_CHECKS=137  # sections 0 + A (+ A7 D4bis : 5) + B + C + D + E
 
 GATE_SRC="scripts/provision-apply-gate.sh"
 CMT_SRC="scripts/provision-apply-comment.sh"
@@ -101,6 +101,10 @@ C_DOTDOT=$(variant prod-dotdot "$(pe_with "$H0" '    prod: { auth: { claim: { va
 C_DOTX=$(variant prod-dotx "$(pe_with "$H0" '    prod: { auth: { claim: { value: "appa-prod" } }, change_ref: ".x", pv_ref: "PV-1" }')")
 C_SEMI=$(variant prod-semi "$(pe_with "$H0" '    prod: { auth: { claim: { value: "appa-prod" } }, change_ref: "CHG;1", pv_ref: "PV-1" }')")
 C_NL=$(variant prod-nl "$(pe_with "$H0" '    prod: { auth: { claim: { value: "appa-prod" } }, change_ref: "CHG\n1", pv_ref: "PV-1" }')")
+# A7 (D4bis) : une variante qui change la RACINE figée (api) — le parent du merge
+# garde la racine standard ; le contrat doit le voir au dispatch.
+gitc show "$C1:./clients/provisioned/applications/appa.ansible.yml" | sed 's/  api: "demo-selfservice"/  api: "payments-initiation"/' > "$MANP"
+gitc add -A; gitc commit -qm root-api >/dev/null; C_ROOT=$(gitc rev-parse HEAD)
 gitc remote add origin "$ORIGIN"; gitc push -q origin main
 [ "$(gitc show "$C_NL:./clients/provisioned/applications/appa.ansible.yml" | grep -c 'CHG\\n1')" = 1 ] || { echo "!! fixture : la variante saut-de-ligne n'est pas écrite"; exit 2; }
 
@@ -357,6 +361,21 @@ if mutant 's@^env_chain_validate 2>@true 2>@' val; then
 fi
 
 echo
+echo "── A.60–A.62 (A7 D4bis) §2ter : le contrat figé, relu au dispatch ──"
+set_itsm "$ITSM_OK"
+run_gate int alice carol "MERGE_SHA=$C_ROOT"
+refus CONTRAT_DIVERGENT && grep -q '(api)' "$TMP/g.out" && grep -q 'REFUSAL=CONTRAT_DIVERGENT' "$COMMENT_LOG" && [ ! -f "$OUTF" ] \
+  && ok "A.60 le merge change la racine (api) ⇒ CONTRAT_DIVERGENT nommant le champ, commenté, GATE_OUT jamais écrit" || bad "A.60 rc $(grc) : $(gout | tail -1)"
+run_gate int alice carol "MERGE_SHA=$C_HPV"
+[ "$(grc)" = 0 ] && grep -q '^contrat figé : racine du manifeste identique' "$TMP/g.out" && ok "A.61 un merge qui ne touche qu'un palier ⇒ contrat identique, rc 0" || bad "A.61 rc $(grc) : $(gout | tail -1)"
+run_gate rec alice alice "MERGE_SHA=$C1"
+[ "$(grc)" = 0 ] && grep -q '^contrat figé : manifeste créé par ce merge' "$TMP/g.out" && ok "A.62 manifeste créé par le merge (aucun parent) ⇒ rien à comparer, rc 0" || bad "A.62 rc $(grc) : $(gout | tail -1)"
+if mutant '/^# ── 2ter\./,/^# ── 3\. LES QUATRE YEUX/{/^# ── 3\. LES QUATRE YEUX/!d;}' contrat; then
+  GATE_BIN="$TMP/mut-contrat/scripts/provision-apply-gate.sh" run_gate int alice carol "MERGE_SHA=$C_ROOT"
+  [ "$(grc)" = 0 ] && ok "A.M11 §2ter retiré ⇒ la racine changée PASSE sur le mutant (A.60 rougit)" || bad "A.M11 le mutant refuse encore : $(gout | tail -1)"
+  run_gate int alice carol "MERGE_SHA=$C_ROOT"; refus CONTRAT_DIVERGENT && ok "A.M11' l'original refuse toujours" || bad "A.M11' l'original a dérivé"
+fi
+
 echo "═══ B. le câblage de ci/Jenkinsfile.provision-apply (vue code, ordre par lignes, fragment EXÉCUTÉ) ═══"
 JF="ci/Jenkinsfile.provision-apply"
 code_view(){ awk '{ if ($0 ~ /^[[:space:]]*(\/\/|#)/) print ""; else print }' "$1"; }
