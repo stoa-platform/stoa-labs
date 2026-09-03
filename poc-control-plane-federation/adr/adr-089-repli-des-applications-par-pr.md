@@ -1,7 +1,7 @@
 ---
 title: "ADR-089 — Le repli d'une application est une PR : `provision/<app>-<env>` dont la ligne `per_env.<env>` et le certificat du palier redeviennent, à l'octet, ceux du merge précédent (N-1), appliquée par la chaîne comme tout apply — même GUID, même clé. Lignée = PR mergées de la branche (forge) ordonnées par Git et bornées à la naissance du manifeste ; change_ref exigé au repli comme à la demande ; deux gardes de fenêtre (REPLI_EN_COURS, REPLI_PERIME)."
 sidebar_label: "ADR-089 : le repli est une PR (A6)"
-status: "Acté et prouvé le 2026-09-03 — hors ligne scripts/test-app-rollback-a6.sh 82/82 (fixture git + stub forge à journal + shim git, 5 mutations, gardes de fenêtre, câblage), make lint-ci [15/15] (18 Jenkinsfile compilent) ; suites voisines intactes (a0 176, wiring 142, a2 148, a4 133, a3 177, a5 48, pr-comment 44, a1 71, v3 35) ; par builds réels scripts/test-a6-live.sh — voir GOAL."
+status: "Acté et prouvé le 2026-09-03 — hors ligne scripts/test-app-rollback-a6.sh 82/82 (fixture git + stub forge à journal + shim git, 5 mutations, gardes de fenêtre, câblage), make lint-ci [15/15] (18 Jenkinsfile compilent) ; suites voisines intactes (a0 176, wiring 142, a2 148, a4 133, a3 177, a5 48, pr-comment 44, a1 71, v3 35) ; par builds réels scripts/test-a6-live.sh 49/49 au 4e passage (état N-1 #154→#100, AUCUN_ETAT_PRECEDENT #15, état N #155→#101 même GUID/clé, repli #16→PR #511→#156→#102 SUCCESS gateway lue == N-1, repli du repli #17→#103, A5 en repli #18→#104 API_INACTIVE rien écrit puis rejeu SUCCESS, terminus #19 GATE_REFS_REQUIRED / #20 PALIER_ABSENT)."
 maturite_technique: "✅ Script de demande de repli + formulaire Jenkins from SCM (coquille XML pure) ; aucune brique nouvelle en aval : la PR de repli est une PR provision/* comme les autres (réconciliation A2, portes A4, garde A3, rôle avec porte A5, verify). Limite structurelle : profondeur 1 (le repli du repli restaure N, jamais N-2) ; l'état restauré est l'état DÉCLARÉ par Git, pas l'état servi."
 date: 2026-09-03
 adr_number: 89
@@ -11,7 +11,7 @@ lié: "[[adr-085-rollback-des-paliers]], [[adr-088-ordre-app-api]], [[adr-081-de
 
 # ADR-089 — Le repli d'une application est une PR (A6)
 
-**Statut :** Acté, prouvé hors ligne 82/82 + `make lint-ci` [15/15] ; par builds réels sur le lab `scripts/test-a6-live.sh` (chiffres dans le GOAL).
+**Statut :** Acté, prouvé hors ligne 82/82 + `make lint-ci` [15/15] ; par builds réels sur le lab `scripts/test-a6-live.sh` **49/49** au 4e passage (chiffres dans le GOAL).
 
 **Lié à :** [[adr-085-rollback-des-paliers]], [[adr-088-ordre-app-api]], [[adr-084-axe-qui-deploie-deployer-group]].
 
@@ -65,7 +65,7 @@ Le commit de branche porte `Repli-De`, `Repli-Vers`, `Repli-Motif`, `Repli-Par` 
 ## Ce qui est prouvé
 
 - **Hors ligne** `scripts/test-app-rollback-a6.sh` **82/82** (`make lint-ci` [15/15]) : fixture git réelle (`merge --no-ff`, ordre `rec#10 rec#11 dev#12 rec#13 dev#14`), stub forge paginé à journal, shim git ; A nominal (ligne et cert de N-1 à l'octet, diff d'une ligne, digest recalculé par la lib, trailers, corps, bail, jamais le token en argv) ; A' `change_ref` (porte avant tout clone, remplacement quoté et nu, `pv_ref` intact, le cas « ne diffère que par `change_ref` ») ; B vingt-neuf refus nommés, rien poussé ; B' `REPLI_EN_COURS` ; B'' `REPLI_PERIME` (quatre cas) ; C cinq mutations qui rougissent (préfixe de lignée, porte après la lignée, auto-vérification, `change_ref`, borne `BIRTH`) ; D câblage.
-- **Par builds réels** `scripts/test-a6-live.sh` : voir le GOAL (état N-1, `AUCUN_ETAT_PRECEDENT` par build, état N, le repli — gateway lue sur l'objet : même GUID, même clé, identifiers == N-1, IP, cert ; Git ; PR —, le repli du repli, A5 en repli, le terminus).
+- **Par builds réels** `scripts/test-a6-live.sh` **49/49** au 4e passage — trois passages de mise au point du harnais, aucun défaut de code livré (état N-1, `AUCUN_ETAT_PRECEDENT` par build, état N, le repli — gateway lue sur l'objet : même GUID, même clé, identifiers == N-1, IP, cert ; Git ; PR —, le repli du repli, A5 en repli, le terminus).
 
 ## Limites nommées
 

@@ -1,7 +1,7 @@
 ---
 title: "Plan — A6, le repli d'une application est une PR"
 type: plan
-status: "EN COURS 2026-09-03 — T0..T7 inline, TDD (chaque section vue rouge avant le code)"
+status: "EXÉCUTÉ le 2026-09-03 — T0..T7 inline, TDD (chaque section vue rouge avant le code) ; 82/82 (lint-ci [15/15]), suites voisines intactes, live 49/49 au 4e passage ; écarts : voir la section en fin de plan"
 date: 2026-09-03
 spec: docs/superpowers/specs/2026-09-03-a6-repli-par-pr-design.md
 ---
