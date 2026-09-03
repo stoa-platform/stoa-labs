@@ -62,7 +62,7 @@ Le mock du dépôt crée les APIs **inactives** (« import does NOT activate »)
 
 ## Limites nommées
 
-- **La lignée de la porte** : le rôle est celui de l'arbre pinné au `MERGE_SHA` (A2). Un repli (A6) vers un SHA **antérieur à A5** rejoue le rôle d'alors, sans porte — artefact du lab ; chez un client le rôle est livré avec A5 dès le premier SHA. Ce que le périmètre tient déjà : une PR `provision/*` ne peut pas modifier le rôle (`PR_HORS_PERIMETRE`), `main` n'est poussé que par `ci`. A6 devra le dire.
+- **La lignée de la porte** : le rôle est celui de l'arbre pinné au `MERGE_SHA` (A2). Un repli (A6) vers un SHA **antérieur à A5** rejoue le rôle d'alors, sans porte — artefact du lab ; chez un client le rôle est livré avec A5 dès le premier SHA. Ce que le périmètre tient déjà : une PR `provision/*` ne peut pas modifier le rôle (`PR_HORS_PERIMETRE`), `main` n'est poussé que par `ci`. A6 devra le dire. — **Résolu le 2026-09-03 (ADR-089)** : le repli est une **PR** appliquée à **son** SHA de merge (arbre d'aujourd'hui, rôle d'aujourd'hui) — un repli ne rejoue jamais un vieux rôle ; aucun « plancher de SHA » n'est nécessaire.
 - **Le plan ne sait pas** : `provision-plan` est en lecture seule, sans credential gateway ; le refus arrive à l'apply, sur la PR, avec le remède.
 - **TOCTOU de quelques secondes** entre la porte et le `PUT …/apis` : la course propre de la gateway ; la souscription survit à l'activation (spike), verify le dit au rejeu.
 - **Mono-gateway du lab** : « au palier rec » = « sur la 10.15 unique » ; « promouvoir vers rec » se joue par **réactivation** du même objet (GUID identique relu). La topologie par palier est celle du client.

@@ -836,6 +836,25 @@ A5), la garde A3 est extraite de `origin/main`, aucun job re-posé, aucune
 globale. Preuve : `bash scripts/test-a5-live.sh` (≈ 25 min ; désactive puis
 réactive `demo-selfservice`, trap inconditionnel).
 
+## Revenir en arrière — applications (A6 — GOAL cd-applications, 2026-09-03)
+
+**Le repli d'une application est une PR** (ADR-089). Le formulaire Jenkins `app-rollback` (APP, ENV, REASON, CHANGE_REF) ouvre une PR `provision/<app>-<env>` dont la ligne `per_env.<env>` et le certificat `certs/<app>-<env>.crt` redeviennent, **à l'octet**, ceux du merge **précédent** (N-1) de cette même branche ; puis la chaîne de tous les jours l'applique — merge, `provision-apply` (portes A4 deux fois, pause nominative), `selfservice-app-deploy` (garde A3, rôle avec porte A5, verify). Le verbe est la convergence : **même GUID, même clé** (spike S1). C'est le port de G6 (ADR-085 : N-1 verbatim dans un commit neuf, puis re-apply) à l'objet dont la PR est le fichier de déploiement.
+
+**Parcours opérateur.**
+1. `app-rollback` → Build with Parameters : `APP`, `ENV` (la chaîne entière — terminus compris —, ce sont les portes qui décident), `REASON`, `CHANGE_REF` (exigé si la porte du palier porte `requireChangeRef` ou `itsmCheck` : `GATE_REFS_REQUIRED` sinon, **aucune PR ouverte**, aucun clone).
+2. Le build imprime `ETAPE …` (forme → chaîne → porte → clone → manifeste → lignée → cohérence → candidate → identique → restauration → vérification → pr-en-cours → tête distante → commit → push → pr), `LIGNEE : #N (…) #N-1 (…)`, puis `PR_URL=…` et `REPLI_DE=<sha N> REPLI_VERS=<sha N-1> REPLI_DIGEST=<sha256:…>`. La description du build porte la PR.
+3. **La PR de repli** montre la lignée (#N remplacé, #N-1 restauré), **la ligne restaurée**, le cert (restauré / supprimé / inchangé), le **digest attendu** — à comparer à la ligne « digest du manifeste effectif » du rapport de `provision-apply` après l'apply —, le `change_ref` s'il y en a un, et `REPLI_DU_REPLI` si #N est lui-même un repli. Le commit de branche porte les trailers `Repli-De`, `Repli-Vers`, `Repli-Motif`, `Repli-Par`, `Repli-Digest`, `Change-Ref`.
+4. **Merger** (les portes du palier : en `rec` le demandeur peut merger lui-même ; en `int`+ quatre-yeux, `deployerGroup`, refs, ITSM ; jusqu'à A7 une PR ouverte par `ci` refuse `REQUESTER_UNKNOWN` sur `int`+) → `provision-apply` : `RECONCILE_OK`, **`REPLI_OK`** (main n'a pas bougé pour ce palier entre la demande de repli et le merge — sinon **`REPLI_PERIME`**, rejouer la demande), `PORTE_OK(pre)`, pause → identité → `PORTE_OK(dispatch)` → aval.
+5. **La lecture qui prouve** : `GET /applications/{id}` — même `id`, même `apiAccessKey`, mêmes `consumingAPIs`, identifiers (IP `X-X`, cert `name`/`value`, claims) == ceux de l'état N-1 ; verify : `API_AT_PALIER_CONFIRMED`, `SUBSCRIPTION_CONFIRMED (id=…)`, `CERT_NAME_CONFIRMED` ; Git : la ligne `per_env.<env>` de `main` == celle du merge N-1 ; PR : ✅ et le digest annoncé.
+
+**Les refus de la demande, et leurs remèdes** : `GATE_REFS_REQUIRED` (fournir `CHANGE_REF`) ; `AUCUNE_LIGNEE` (aucune PR `provision/<app>-<env>` mergée depuis la création du manifeste) ; `AUCUN_ETAT_PRECEDENT` (un seul état : le retrait est une **suspension**, pas un repli) ; `REFERENCE_DIVERGENTE` (main écrit hors flux : corriger par une demande) ; `RACINE_DIVERGENTE` ; `ETAT_IDENTIQUE` (rien à replier — une dérive de la gateway se corrige en rejouant le webhook de #N, A2) ; `PR_EN_COURS` (une PR est ouverte sur la branche : la merger ou la fermer) ; `BRANCHE_NON_MERGEE` (des commits poussés à la main sans PR) ; `FORGE_INCOHERENTE` / `LIGNEE_AMBIGUE` / `FORGE_ILLISIBLE` ; `LIGNEE_TRONQUEE` ; `LIGNE_AMBIGUE` / `REF_DUPLIQUEE` ; `PUSH_ECHEC` (bail perdu : rejouer). Une demande émise pendant qu'une PR de repli est ouverte est refusée `REPLI_EN_COURS` par `provision-request.sh` (rien poussé).
+
+**Le repli du repli** restaure N (profondeur 1, jamais N-2) — la demande l'annonce (`REPLI_DU_REPLI`) ; si l'apply de #N a été refusé, le remède est le rejeu de son webhook, pas un repli de plus. **Le levier direct** (un `MERGE_SHA` de la lignée saisi sur l'aval) n'est **pas** le repli : c'est un rejeu hors chaîne, borné par A3, sans les portes A4.
+
+**Limites écrites** : l'état restauré est l'état **déclaré** (Git), pas l'état servi (un N-1 mergé puis refusé à l'apply est restauré tel que déclaré et repasse les portes) ; un repli vers « sans cert » retire le fichier de Git mais **laisse le cert de N sur la gateway** (le rôle préserve les dimensions absentes du manifeste — dette du rôle) ; mono-gateway sur le lab ; la suspension (verbe de retrait) n'est pas écrite.
+
+**Preuves** : hors ligne `scripts/test-app-rollback-a6.sh` 82/82 (`make lint-ci` [15/15]) ; par builds réels `scripts/test-a6-live.sh` (chiffres dans le GOAL). Pose du job : `JOBS=app-rollback BOOTSTRAP_JOBS=app-rollback scripts/setup-provision-jobs.sh`.
+
 ## Tout en Jenkinsfile (A0 — GOAL cd-applications, 2026-09-02)
 
 Depuis A0, **plus un seul `job.xml` de l'aval applicatif ne porte de logique** :

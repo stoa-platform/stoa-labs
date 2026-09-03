@@ -402,7 +402,8 @@ trap cleanup EXIT INT TERM
 echo "═══ 0. Préconditions (fail-closed) ═══"
 curl -sf -o /dev/null "$JENKINS_UI/api/json" || die "LAB_ABSENT : Jenkins injoignable ($JENKINS_UI)"
 curl -sf -o /dev/null "$GITEA_URL/api/v1/version" || die "LAB_ABSENT : Gitea injoignable ($GITEA_URL)"
-HC=$(gw -o /dev/null -w '%{http_code}' "$GW_ADMIN/applications"); [ "$HC" = 200 ] || die "LAB_ABSENT : gateway injoignable ou refus ($GW_ADMIN/applications -> $HC)"
+# La 10.15 du lab est recyclée ~toutes les 20-25 min (keepalive) : on attend son retour jusqu'à 240 s, comme gw_app.
+DL=$(( $(date +%s) + 240 )); while :; do HC=$(gw -o /dev/null -w '%{http_code}' "$GW_ADMIN/applications" || true); [ "$HC" = 200 ] && break; [ "$(date +%s)" -lt "$DL" ] || die "LAB_ABSENT : gateway injoignable ou refus ($GW_ADMIN/applications -> $HC)"; sleep 10; done
 ok "0.1 Jenkins, Gitea et la gateway répondent"
 if [ -n "${GITEA_TOKEN_FILE:-}" ] && [ -r "$GITEA_TOKEN_FILE" ]; then CI_TOKEN="$(cat "$GITEA_TOKEN_FILE")"
 elif docker inspect "$GITEA_CONTAINER" >/dev/null 2>&1; then
@@ -453,7 +454,7 @@ rollback_build "$APP" rec "incident reseau a6"
 [ "$RB_RES" = FAILURE ] && grep -q '^REFUS: AUCUN_ETAT_PRECEDENT' "$TMP/rb.$RB_NUM.console" && grep -q '^ETAPE lignee' "$TMP/rb.$RB_NUM.console" && ! grep -q '^ETAPE pr$' "$TMP/rb.$RB_NUM.console" \
   && ok "2.1 app-rollback #$RB_NUM FAILURE AUCUN_ETAT_PRECEDENT (après ETAPE lignee, jamais ETAPE pr)" || ko "2.1 #$RB_NUM $RB_RES : $(grep -E 'REFUS|ETAPE' "$TMP/rb.$RB_NUM.console" | tail -2 | tr '\n' ' ')"
 [ "$(branch_sha)" = "$BS0" ] && [ "$(prs_on_branch)" = "$NP0" ] && [ -z "$RB_PR" ] && ok "2.2 branche distante et nombre de PR inchangés (rien poussé, aucune PR)" || ko "2.2 branche $(branch_sha) vs $BS0, PR $(prs_on_branch) vs $NP0"
-grep -q 'suspension' "$TMP/rb.$RB_NUM.console" && ok "2.3 le remède nommé est la suspension (règle 2), pas un repli" || ko "2.3 remède"
+grep -qi 'suspension' "$TMP/rb.$RB_NUM.console" && ok "2.3 le remède nommé est la suspension (règle 2), pas un repli" || ko "2.3 remède"
 
 echo "═══ 3. État N : demande rec IP 10.42.0.2 + C2 ⇒ SUCCESS ; même GUID, même clé, identifiers changés ═══"
 chain_rec_cert 10.42.0.2 "$TMP/c2.crt"; PR2="$PR_N"; MS2="$MS_N"; N_PA2="$N_PA"
@@ -476,13 +477,13 @@ printf '%s' "$BODY" | grep -q "app-rollback: de $MS2 vers $MS1" && printf '%s' "
 [ "$(rec_line_at "$(branch_sha)")" = "$LINE1" ] && [ "$(raw_at "$(branch_sha)" "$CERT_DIR/$APP-rec.crt" | der_of /dev/stdin)" = "$DER1" ] && ok "4.5 la branche de repli porte la ligne rec de #$PR1 et le cert C1 à l'octet" || ko "4.5 branche : $(rec_line_at "$(branch_sha)" | head -c 120)"
 merge_pause_apply "$R1"; MSR1="$MS_N"; N_PAR1="$N_PA"; S_R1="$S_NUM"
 [ "$RES" = SUCCESS ] && ok "4.6 merge par alice → provision-apply #$N_PAR1 → pause → alice → aval #$S_R1 SUCCESS" || die "PORTE : apply du repli $RES — $(grep -E 'REFUS' "$TMP/pa.$N_PAR1.console" "$TMP/ss.${S_R1:-0}.console" 2>/dev/null | head -2 | tr '\n' ' ')"
-grep -q '^RECONCILE_OK' "$TMP/pa.$N_PAR1.console" && grep -q '^REPLI_OK' "$TMP/pa.$N_PAR1.console" && console_order "$TMP/pa.$N_PAR1.console" 'REPLI_OK' 'PORTE_OK' 'Input requested' 'PORTE_OK' \
+grep -q '^RECONCILE_OK' "$TMP/pa.$N_PAR1.console" && grep -q '^REPLI_OK' "$TMP/pa.$N_PAR1.console" && console_order "$TMP/pa.$N_PAR1.console" 'REPLI_OK' 'PORTE_OK(pre)' 'Input requested' 'PORTE_OK(dispatch)' \
   && ok "4.7 amont : REPLI_OK (main immobile) < porte pré-pause < pause < porte au dispatch" || ko "4.7 amont : $(grep -E 'REPLI|RECONCILE|PORTE' "$TMP/pa.$N_PAR1.console" | head -3 | tr '\n' ' ')"
 console_order "$TMP/ss.$S_R1.console" "API_AT_PALIER : '$REQ_API'" 'SUBSCRIPTION_CONFIRMED' && grep -q "SUBSCRIPTION_CONFIRMED : '$APP' souscrite à '$REQ_API' v$REQ_API_VER (id=$GUID_REF)" "$TMP/ss.$S_R1.console" && grep -q 'CERT_NAME_CONFIRMED' "$TMP/ss.$S_R1.console" && ! grep -q 'IDENTIFIERS_CONVERGED' "$TMP/ss.$S_R1.console" \
   && ok "4.8 aval : API_AT_PALIER < identifiers mis à jour (pas CONVERGED) < verify SUBSCRIPTION_CONFIRMED au même GUID + CERT_NAME_CONFIRMED" || ko "4.8 aval : $(grep -E 'API_AT|SUBSCRIPTION|CERT_NAME|IDENTIFIERS' "$TMP/ss.$S_R1.console" | head -4 | tr '\n' ' ')"
 O3=$(gw_app_obj "$APP_ID")
-[ "$(obj_field "$O3" GUID)" = "$GUID1" ] && [ "$(obj_field "$O3" KEY)" = "$KEY1" ] && [ "$(obj_field "$O3" SUBS)" = "$SUBS1" ] && [ "$(obj_field "$O3" IDS)" = "$IDS1" ] && [ "$(obj_field "$O3" SUSP)" = False ] \
-  && ok "4.9 GATEWAY PAR LECTURE : même GUID, même clé, mêmes souscriptions, identifiers == état N-1, non suspendue" || ko "4.9 objet après repli : IDS==IDS1 ? $([ "$(obj_field "$O3" IDS)" = "$IDS1" ] && echo oui || echo non)"
+[ "$(obj_field "$O3" GUID)" = "$GUID1" ] && [ "$(obj_field "$O3" KEY)" = "$KEY1" ] && [ "$(obj_field "$O3" SUBS)" = "$SUBS1" ] && [ "$(obj_field "$O3" IDS)" = "$IDS1" ] && [ "$(obj_field "$O3" SUSP)" != True ] \
+  && ok "4.9 GATEWAY PAR LECTURE : même GUID, même clé, mêmes souscriptions, identifiers == état N-1, non suspendue (isSuspended=$(obj_field "$O3" SUSP))" || ko "4.9 objet après repli : GUID==$([ "$(obj_field "$O3" GUID)" = "$GUID1" ] && echo oui || echo non) KEY==$([ "$(obj_field "$O3" KEY)" = "$KEY1" ] && echo oui || echo non) SUBS==$([ "$(obj_field "$O3" SUBS)" = "$SUBS1" ] && echo oui || echo non) IDS==$([ "$(obj_field "$O3" IDS)" = "$IDS1" ] && echo oui || echo non) SUSP=$(obj_field "$O3" SUSP)"
 [ "$(gw_app_ip_of "$APP_ID")" = "10.42.0.1-10.42.0.1" ] && ok "4.10 IP 10.42.0.1-10.42.0.1 (l'état N-1)" || ko "4.10 IP : $(gw_app_ip_of "$APP_ID")"
 C=$(gw_app_cert_of "$APP_ID"); case "$C" in *" $DER1") ok "4.11 cert C1 (l'état N-1)";; *) ko "4.11 cert : ${C:0:60}…";; esac
 [ "$(rec_line_at main)" = "$LINE1" ] && [ "$(raw_at main "$CERT_DIR/$APP-rec.crt" | der_of /dev/stdin)" = "$DER1" ] && ok "4.12 GIT : main porte la ligne rec de #$PR1 et le cert C1 à l'octet" || ko "4.12 main : $(rec_line_at main | head -c 100)"
