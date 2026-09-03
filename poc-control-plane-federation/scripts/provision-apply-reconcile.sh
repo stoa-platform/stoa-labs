@@ -276,6 +276,37 @@ MAIN_DIGEST=$(app_manifest_digest_env "$TMP/main.yml" "$ENV_NAME" 2>"$TMP/dg2.er
   || fail PALIER_SUPPLANTE "main porte un état plus récent de ${APP_NAME}/${ENV_NAME} que ${GIT_REPO}#${PR_NUMBER} (digest mergé ${MERGED_DIGEST} ≠ main ${MAIN_DIGEST}) — un rejeu ne re-projette jamais un état dépassé : rejouer une demande, ou le repli (A6)" \
                            "main porte un état plus récent de ce palier que cette PR (rejeu d'un webhook ancien ?) — rejouer une demande, ou le repli A6"
 
+# ── 4bis. A6 (D1ter) — un REPLI ne restaure que l'état d'avant le MERGE ──────
+# PALIER_SUPPLANTE compare le SHA mergé à main : pour la PR qui vient d'être
+# mergée ce sont le même commit. Si main a bougé pour ce palier ENTRE la
+# demande de repli (trailer `Repli-De: <sha>` du commit de branche, MERGE_SHA^2)
+# et le merge (MERGE_SHA^1 = main juste avant), la PR restaure « l'état d'avant »
+# d'un main qui n'existe plus : refus, avant la pause. Certificat comparé par
+# identifiant de blob (aucun contenu lu). INERTE sans trailer (toute PR non-repli,
+# un squash) : rien d'autre ne change dans ce script.
+P2=$(git -C "$GIT_WORKTREE" rev-parse -q --verify "${MERGE_SHA}^2" 2>/dev/null || true)
+REPLI_DE=""
+[ -n "$P2" ] && REPLI_DE=$(git -C "$GIT_WORKTREE" log -1 --format=%B "$P2" | sed -n 's/^Repli-De: \([0-9a-f]\{40\}\).*/\1/p' | head -1)
+if [ -n "$REPLI_DE" ]; then
+  P1=$(git -C "$GIT_WORKTREE" rev-parse "${MERGE_SHA}^1")
+  CERT_REL="clients/provisioned/certs/${APP_NAME}-${ENV_NAME}.crt"
+  git -C "$GIT_WORKTREE" show "${P1}:./${MANIFEST}" > "$TMP/p1.yml" 2>/dev/null \
+    || fail REPLI_PERIME "${MANIFEST} absent de main juste avant le merge (${P1}) — main a bougé depuis la demande de repli ; rejouer la demande de repli" \
+                         "main a bougé pour ce palier entre la demande de repli et son merge (manifeste absent avant le merge) — rejouer la demande de repli"
+  git -C "$GIT_WORKTREE" show "${REPLI_DE}:./${MANIFEST}" > "$TMP/de.yml" 2>/dev/null \
+    || fail REPLI_PERIME "la référence Repli-De ${REPLI_DE} ne porte pas ${MANIFEST}" "la référence Repli-De de la PR est illisible — rejouer la demande de repli"
+  D_P1=$(app_manifest_digest_env "$TMP/p1.yml" "$ENV_NAME" 2>/dev/null); D_DE=$(app_manifest_digest_env "$TMP/de.yml" "$ENV_NAME" 2>/dev/null)
+  [ -n "$D_P1" ] && [ "$D_P1" = "$D_DE" ] \
+    || fail REPLI_PERIME "main a bougé pour ${APP_NAME}/${ENV_NAME} entre la demande de repli (${REPLI_DE}) et le merge (${P1}) : digest ${D_DE:-illisible} → ${D_P1:-illisible} — rejouer la demande de repli" \
+                         "main a bougé pour ce palier entre la demande de repli et son merge — rejouer la demande de repli"
+  B1=$(git -C "$GIT_WORKTREE" rev-parse -q --verify "${P1}:./${CERT_REL}" 2>/dev/null || true)
+  B2=$(git -C "$GIT_WORKTREE" rev-parse -q --verify "${REPLI_DE}:./${CERT_REL}" 2>/dev/null || true)
+  [ "$B1" = "$B2" ] \
+    || fail REPLI_PERIME "le certificat ${CERT_REL} a changé sur main entre la demande de repli et le merge — rejouer la demande de repli" \
+                         "le certificat du palier a changé sur main entre la demande de repli et son merge — rejouer la demande de repli"
+  echo "REPLI_OK : la PR est un repli (Repli-De ${REPLI_DE}) et main n'a pas bougé pour ${APP_NAME}/${ENV_NAME} avant le merge"
+fi
+
 # ── 5. SORTIE : ce que le pipeline charge dans son environnement ─────────────
 {
   printf 'GITEA_MERGED_BY=%s\n' "$GITEA_MERGED_BY"

@@ -304,6 +304,9 @@ API="${GIT_HOST}/api/v1"
 
 echo "[1/4] clone ${GIT_REPO} (base ${GIT_BASE})"
 CLONE_URL="http://${GIT_HOST#http://}/${GIT_REPO}.git"
+# A6 : les deux URL git sont surchargeables (épreuves hors ligne sur un dépôt nu en file://) — défauts = inchangés.
+CLONE_URL="${GIT_CLONE_URL:-$CLONE_URL}"; PUSH_URL="${GIT_PUSH_URL:-$PUSH_URL}"
+GITEA_SERVICE_LOGINS="${GITEA_SERVICE_LOGINS:-ci}"
 # ÉCHEC NET SI LE CLONE RATE. Ce script n'a pas `set -e` (délibérément : les
 # `[ -n "$X" ] && …` du rendu retournent faux sans être des erreurs). Sans la
 # garde ci-dessous, un clone en échec laissait $WORK/repo INEXISTANT, le `cd`
@@ -551,6 +554,39 @@ git add "$REL_PATH"
 # existe et porte déjà EXACTEMENT cet arbre, on ne commite ni ne pousse : la
 # PR est réutilisée telle quelle. Lecture anonyme (comme le clone) ; branche
 # absente = premier passage, on continue.
+# ── A6 (D1bis) — une demande ne réécrit JAMAIS une PR de repli ouverte ────────
+# La branche provision/<app>-<env> est poussée en force plus bas : si une PR de
+# REPLI y est ouverte (auteur = compte de service, tête portant le trailer
+# Repli-Vers: — relu par git sur FETCH_HEAD, jamais dans le corps éditable de la
+# PR), la réécrire ferait merger une demande sous un titre « repli ». Refus,
+# rien poussé. La tête relue devient le BAIL du push (--force-with-lease).
+REMOTE_TIP=""
+if git fetch -q --depth 1 "$CLONE_URL" "refs/heads/${BRANCH}" 2>/dev/null; then REMOTE_TIP=$(git rev-parse FETCH_HEAD 2>/dev/null || true); fi
+if [ -n "$REMOTE_TIP" ] && git log -1 --format=%B "$REMOTE_TIP" 2>/dev/null | grep -q '^Repli-Vers: '; then
+  OPEN_BY=$(API="$API" GIT_REPO="$GIT_REPO" GITEA_TOKEN="$GITEA_TOKEN" BRANCH="$BRANCH" python3 - <<'PY2'
+import os, json, urllib.request
+api, repo, tok, br = os.environ["API"], os.environ["GIT_REPO"], os.environ["GITEA_TOKEN"], os.environ["BRANCH"]
+page = 1
+while True:
+    r = urllib.request.Request(f"{api}/repos/{repo}/pulls?state=open&limit=50&page={page}", headers={"Authorization": "token " + tok})
+    with urllib.request.urlopen(r, timeout=30) as resp: prs = json.load(resp)
+    if not isinstance(prs, list) or not prs: break
+    for pr in prs:
+        h = pr.get("head") or {}
+        if h.get("ref") == br and (h.get("repo") or {}).get("full_name") == repo:
+            print("%s %s" % (pr.get("number"), (pr.get("user") or {}).get("login", ""))); raise SystemExit
+    page += 1
+PY2
+) || OPEN_BY=""
+  # Fail-closed : le trailer EST la preuve ; la forge ne fait que nommer la PR.
+  OPEN_NUM="${OPEN_BY%% *}"; OPEN_LOGIN="${OPEN_BY#* }"
+  case "$OPEN_BY" in
+    "") fail "REPLI_EN_COURS : la branche ${BRANCH} porte un repli (Repli-Vers) et la forge n'a pas pu être relue — la merger ou la fermer avant une nouvelle demande" ;;
+    *) case " ${GITEA_SERVICE_LOGINS} " in
+         *" ${OPEN_LOGIN} "*) fail "REPLI_EN_COURS : la PR #${OPEN_NUM} est un repli ouvert sur ${BRANCH} — la merger ou la fermer avant une nouvelle demande" ;;
+       esac ;;
+  esac
+fi
 REMOTE_UP_TO_DATE=0
 if git fetch -q --depth 1 "$CLONE_URL" "refs/heads/${BRANCH}" 2>/dev/null \
    && git diff --cached --quiet FETCH_HEAD -- . 2>/dev/null; then
@@ -571,7 +607,7 @@ else
   echo "[3/4] push ${BRANCH}"
   # Branche machine-owned (provision/*) : push explicite forcé, sûr ici (le flux
   # est le seul écrivain). 2>err pour ne jamais laisser le token fuiter au log.
-  if ! git push -q --force "$PUSH_URL" "HEAD:refs/heads/${BRANCH}" 2>"$WORK/pusherr"; then
+  if ! git push -q "--force-with-lease=refs/heads/${BRANCH}:${REMOTE_TIP}" "$PUSH_URL" "HEAD:refs/heads/${BRANCH}" 2>"$WORK/pusherr"; then
     echo "ERREUR push (détail masqué — token)" >&2; grep -v "$GITEA_TOKEN" "$WORK/pusherr" >&2 || true; exit 1
   fi
 fi

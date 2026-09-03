@@ -62,6 +62,9 @@ class H(BaseHTTPRequestHandler):
             if c.get("raw_list") is not None: return self._send(200, c["raw_list"])
             items = c.get(state, [])
             return self._send(200, items[(page-1)*limit: page*limit])
+        mf = re.match(r"^/api/v1/repos/[^/]+/[^/]+/pulls/([0-9]+)/files$", path)
+        if mf and method == "GET":
+            return self._send(200, [{"filename": f} for f in c.get("files", ["poc-control-plane-federation/clients/provisioned/applications/appa.ansible.yml", "poc-control-plane-federation/clients/provisioned/certs/appa-rec.crt"])])
         m = re.match(r"^/api/v1/repos/[^/]+/[^/]+/pulls/([0-9]+)$", path)
         if m and method == "GET":
             for pr in c.get("closed", []) + c.get("open", []):
@@ -378,7 +381,55 @@ M5=$(mutate M5 'import sys; s=sys.stdin.read(); assert "is-ancestor \"$BIRTH\"" 
   run_mut "$M5" "$TMP/m5.out"; [ "$(rrc)" = 0 ] && [ "$(posts)" = 1 ] && ok "C.M5 sans la borne BIRTH, une PR vers la vie antérieure (#13) s'ouvre — B.3 l'attrape" || ko "C.M5 rc $(rrc) posts=$(posts) : $(grep -E 'REFUS|LIGNEE' "$TMP/m5.out" | head -2 | tr '\n' ' ')"
   gw reset -q --hard "$MAIN0"; gw push -q -f origin main; CLOSED="$SAVE_CLOSED"; }
 
-EXPECTED_CHECKS=62
+echo "══ B'. la garde symétrique : une demande ne réécrit pas une PR de repli ouverte ══"
+set_ctl "$(ctl_json)"; reset_origin; run_rb "$TMP/bp0.out"; RB=$(remote_branch)   # une PR de repli « ouverte » : sa branche existe sur le nu
+run_req(){ ( cd "$REPO" && env -i PATH="$SHIM:$PATH" HOME="$HOME" GITEA_TOKEN="$STUB_TOKEN" GIT_HOST="$GH" GIT_REPO=ci/stoa-labs GIT_CLONE_URL="file://$ORIGIN" GIT_PUSH_URL="file://$ORIGIN" \
+   MANIFEST_DIR=clients/provisioned/applications STOA_ENV_CHAIN_FILE="$CHAIN" PROVISION_PLAN_INLINE=false REQ_APP=appa REQ_ENV=rec REQ_API=demo-selfservice REQ_CLIENT_ID=appa-rec REQ_CALLER=oig-provisioner REQ_IP_ALLOWLIST=10.42.0.44 bash scripts/provision-request.sh ) > "$1" 2>&1; echo $? > "$TMP/req.rc"; }
+set_ctl "$(ctl_json "$(open_pr ci ci/stoa-labs "$RB")")"; run_req "$TMP/bp1.out"
+[ "$(cat "$TMP/req.rc")" = 2 ] && grep -q 'REFUS: REPLI_EN_COURS' "$TMP/bp1.out" && [ "$(remote_branch)" = "$RB" ] && [ "$(posts)" = 0 ] && ok "B'.1 demande pendant un repli ouvert ⇒ REPLI_EN_COURS, branche intacte" || ko "B'.1 rc $(cat "$TMP/req.rc") branche=$(remote_branch) : $(grep -E 'REFUS|ERREUR' "$TMP/bp1.out" | head -1)"
+git -C "$ORIGIN" update-ref refs/heads/provision/appa-rec "$SHA_D"; set_ctl "$(ctl_json "$(open_pr ci ci/stoa-labs "$SHA_D")")"; run_req "$TMP/bp2.out"
+[ "$(cat "$TMP/req.rc")" = 0 ] && grep -q 'PR déjà ouverte: #77' "$TMP/bp2.out" && grep -q -- '--force-with-lease=refs/heads/provision/appa-rec:' "$SHIM_LOG" && ok "B'.2 PR ouverte sans trailer ⇒ EXIST comme avant, push en bail" || ko "B'.2 rc $(cat "$TMP/req.rc") : $(grep -E 'PR |EXIST|push|REFUS' "$TMP/bp2.out" | head -3 | tr '\n' ' ') / bail=$(grep -c -- '--force-with-lease' "$SHIM_LOG") / $(grep -E 'push' "$SHIM_LOG" | head -1 | cut -c1-120)"
+
+echo "══ B''. REPLI_PERIME au réconciliateur : un repli ne restaure que l'état d'avant le merge ══"
+RECONCILE="$REPO/scripts/provision-apply-reconcile.sh"
+reset_origin; W2="$TMP/w2"; rm -rf "$W2"; git clone -q "file://$ORIGIN" "$W2"
+gw2(){ git -C "$W2" -c user.name=t -c user.email=t@t "$@"; }
+# build_repli <trailer 0|1> [commit direct sur main : "" | "rec" | "cert"] → MERGE_SHA (main de W2 et d'origin avancés)
+build_repli(){
+  local trailer="$1" direct="${2:-}" msg
+  gw2 checkout -q main; gw2 reset -q --hard "$MAIN0"
+  case "$direct" in
+    rec) app_manifest_merge_env "$W2/$MAN" rec '{ auth: { claim: { value: "appa-rec" } }, ip_allowlist: ["10.42.0.77"] }' >/dev/null; gw2 commit -qam "hors flux rec" ;;
+    cert) printf 'CERT-X\n' > "$W2/$CERT"; gw2 commit -qam "hors flux cert" ;;
+  esac
+  gw2 checkout -q -B provision/appa-rec main
+  app_manifest_merge_env "$W2/$MAN" rec "$(printf '%s' "$LINE_B" | sed -E 's/^    rec: //')" >/dev/null; printf 'CERT-B\n' > "$W2/$CERT"; gw2 add -A
+  if [ "$trailer" = 1 ]; then msg="$(printf 'provision(rec): repli de appa vers #11\n\nRepli-De: %s (PR #13)\nRepli-Vers: %s (PR #11)\n' "$SHA_D" "$SHA_B")"; else msg="provision(rec): application appa (demande t)"; fi
+  gw2 commit -qm "$msg"; gw2 checkout -q main
+  gw2 merge -q --no-ff -m "Merge pull request 'provision(rec): appa' (#42) from provision/appa-rec into main" provision/appa-rec
+  gw2 push -q -f origin main; gw2 rev-parse HEAD
+}
+run_rec(){ # <MERGE_SHA> <sortie>
+  local ms="$1"
+  printf '{"closed":[{"number":42,"merged":true,"state":"closed","merge_commit_sha":"%s","merged_by":{"login":"alice"},"user":{"login":"ci"},"head":{"ref":"provision/appa-rec","sha":"x","repo":{"full_name":"ci/stoa-labs"}},"base":{"ref":"main"}}],"open":[]}' "$ms" > "$STUB_CTL"; : > "$STUB_LOG"
+  ( cd "$REPO" && env -i PATH="$PATH" HOME="$HOME" GITEA_TOKEN="$STUB_TOKEN" GIT_HOST="$GH" GIT_REPO=ci/stoa-labs GIT_WORKTREE="$W2" \
+      PR_BRANCH=provision/appa-rec PR_NUMBER=42 MERGE_SHA="$ms" RECONCILE_OUT="$TMP/rec.env" bash "$RECONCILE" ) > "$2" 2>&1; echo $? > "$TMP/rec.rc"
+}
+MS=$(build_repli 1); run_rec "$MS" "$TMP/bpp1.out"
+[ "$(cat "$TMP/rec.rc")" = 0 ] && grep -q '^REPLI_OK' "$TMP/bpp1.out" && grep -q '^RECONCILE_OK' "$TMP/bpp1.out" && ok "B''.1 PR de repli, main immobile ⇒ REPLI_OK puis RECONCILE_OK" || ko "B''.1 rc $(cat "$TMP/rec.rc") : $(grep -E 'REFUS|REPLI|RECONCILE' "$TMP/bpp1.out" | head -2 | tr '\n' ' ')"
+MS=$(build_repli 1 rec); run_rec "$MS" "$TMP/bpp2.out"
+[ "$(cat "$TMP/rec.rc")" != 0 ] && grep -q 'REFUS: REPLI_PERIME' "$TMP/bpp2.out" && grep -q 'digest' "$TMP/bpp2.out" && ok "B''.2 main a bougé (ligne rec) entre la demande et le merge ⇒ REPLI_PERIME" || ko "B''.2 rc $(cat "$TMP/rec.rc") : $(grep -E 'REFUS|REPLI|RECONCILE' "$TMP/bpp2.out" | head -2 | tr '\n' ' ')"
+MS=$(build_repli 1 cert); run_rec "$MS" "$TMP/bpp3.out"
+[ "$(cat "$TMP/rec.rc")" != 0 ] && grep -q 'REFUS: REPLI_PERIME' "$TMP/bpp3.out" && grep -q 'certificat' "$TMP/bpp3.out" && ok "B''.3 seul le cert a bougé ⇒ REPLI_PERIME (blob comparé)" || ko "B''.3 rc $(cat "$TMP/rec.rc") : $(grep -E 'REFUS|REPLI|RECONCILE' "$TMP/bpp3.out" | head -2 | tr '\n' ' ')"
+MS=$(build_repli 0 rec); run_rec "$MS" "$TMP/bpp4.out"
+[ "$(cat "$TMP/rec.rc")" = 0 ] && ! grep -q 'REPLI' "$TMP/bpp4.out" && grep -q '^RECONCILE_OK' "$TMP/bpp4.out" && ok "B''.4 sans trailer le bloc est inerte (verdict d'avant, main ayant bougé ou non)" || ko "B''.4 rc $(cat "$TMP/rec.rc") : $(grep -E 'REFUS|REPLI|RECONCILE' "$TMP/bpp4.out" | head -2 | tr '\n' ' ')"
+N4B=$(grep -c '^# ── 4bis\. A6' "$RECONCILE"); grep -q 'if \[ -n "\$REPLI_DE" \]; then' "$RECONCILE" && [ "$N4B" = 1 ] \
+  && [ "$(grep -n '^# ── 4bis\. A6' "$RECONCILE" | cut -d: -f1)" -gt "$(grep -n 'fail PALIER_SUPPLANTE' "$RECONCILE" | tail -1 | cut -d: -f1)" ] \
+  && [ "$(grep -n '^# ── 4bis\. A6' "$RECONCILE" | cut -d: -f1)" -lt "$(grep -n '^# ── 5\. SORTIE' "$RECONCILE" | cut -d: -f1)" ] \
+  && ok "B''.5 le bloc 4bis est UN bloc conditionnel, entre PALIER_SUPPLANTE et la sortie" || ko "B''.5 structure du bloc 4bis"
+reset_origin
+
+EXPECTED_CHECKS=69
 TOTAL=$((PASS+FAIL))
 if [ "$EXPECTED_CHECKS" -gt 0 ] && [ "$TOTAL" -ne "$EXPECTED_CHECKS" ]; then
   printf '❌ %d contrôles exécutés, %d attendus — une section a été sautée ou ajoutée sans mettre EXPECTED_CHECKS à jour\n' "$TOTAL" "$EXPECTED_CHECKS"; FAIL=$((FAIL+1))
