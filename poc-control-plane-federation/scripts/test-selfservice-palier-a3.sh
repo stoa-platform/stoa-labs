@@ -313,6 +313,12 @@ grep -q 'path "secret/data/stoa/envs/rec/wm-admin" { capabilities = \["read"\] }
   && ok "A.25 le ticket par défaut (secret/data/stoa/envs/rec/wm-admin) est EXACTEMENT le chemin read de la policy apply-rec émise par setup-vault-paliers.sh" \
   || bad "A.25 la policy apply-rec émise ne porte pas ce chemin : $(grep 'envs/rec' "$TMP/svp.print" | head -2 | tr '\n' ' ')"
 
+# A7 : le poseur du terminus, hors ligne (--print) — le terminus est dérivé, les valeurs exigées
+bash scripts/setup-terminus-apps.sh --print > "$TMP/sta.print" 2>&1; RC_STA=$?
+[ "$RC_STA" = 0 ] && grep -q 'secret/data/stoa/envs/prod/wm-admin' "$TMP/sta.print" && grep -q "jamais copié" "$TMP/sta.print" && ok "A.25b setup-terminus-apps.sh --print : terminus dérivé (prod), ticket envs/prod/wm-admin, alias jamais copié, aucun réseau" || bad "A.25b --print rc $RC_STA : $(head -2 "$TMP/sta.print" | tr '\n' ' ')"
+( VAULT_TOKEN=x TERMINUS_ADMIN=http://x bash scripts/setup-terminus-apps.sh ) > "$TMP/sta.nouser" 2>&1; RC_STA=$?
+[ "$RC_STA" != 0 ] && grep -q 'TERMINUS_WM_USER requis' "$TMP/sta.nouser" && ok "A.25c la pose sans TERMINUS_WM_USER refuse (jamais un défaut de mot de passe pour le terminus)" || bad "A.25c rc $RC_STA : $(head -1 "$TMP/sta.nouser")"
+
 echo "── A.26 vue code du script ──"
 sed -E 's@^[[:space:]]*#.*$@@' "$GATE" > "$TMP/gate.code"
 grep -q 'X-Vault-Token' "$TMP/gate.code" && ! grep -q -- '-H "X-Vault-Token\|-H '"'"'X-Vault-Token' "$TMP/gate.code" \
@@ -670,7 +676,7 @@ grep -q '^vault_token_ttl()' "$TMP/lib.code" && ok "E.6 la fonction est définie
 
 # Le compte des contrôles est lui-même un contrôle : une section sautée (stub
 # mort, chemin absent) ne doit pas passer pour un vert plus court.
-EXPECTED_CHECKS=189
+EXPECTED_CHECKS=191
 TOTAL=$((PASS+FAIL))
 [ "$TOTAL" -eq "$((EXPECTED_CHECKS-1))" ] \
   && ok "$((TOTAL+1)) contrôles exécutés = $EXPECTED_CHECKS attendus (aucune section sautée)" \
