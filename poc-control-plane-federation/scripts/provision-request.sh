@@ -95,6 +95,9 @@ set +x   # jamais de trace : le token ne doit pas fuiter
 # avant `bash scripts/provision-request.sh` — ci/Jenkinsfile.app-request,
 # ci/jenkins/provisioning-request.job.xml).
 . "scripts/lib/env-chain.sh" || { echo "ERREUR: scripts/lib/env-chain.sh introuvable ou illisible" >&2; exit 1; }
+# A7 : l'identité de forge (login du token nominatif, askpass par fichier).
+# shellcheck source=scripts/lib/forge-identity.sh
+. "scripts/lib/forge-identity.sh" || { echo "ERREUR: scripts/lib/forge-identity.sh introuvable ou illisible" >&2; exit 1; }
 # A1 : lecture / contrat figé / fusion d'un palier du manifeste (même base
 # de résolution que env-chain.sh : le cwd d'appel, avant tout cd).
 . "scripts/lib/app-manifest.sh" || { echo "ERREUR: scripts/lib/app-manifest.sh introuvable ou illisible" >&2; exit 1; }
@@ -150,6 +153,25 @@ if [ "$MODE" = "idp" ] && [ -z "$REQ_CLIENT_ID" ]; then
   echo "REFUS: mode idp exige REQ_CLIENT_ID (la claim azp qui identifie l'app)" >&2; exit 2
 fi
 GITEA_TOKEN="${GITEA_TOKEN:?GITEA_TOKEN requis}"
+# ── A7 — LES TOKENS, par FICHIER, et le token humain RETIRÉ de l'environnement ──
+# FORGE_TOKEN (formulaire, canal natif Jenkins) ou FORGE_TOKEN_FILE : l'identité
+# de forge du demandeur. Copié dans un fichier 0600 puis `unset` AVANT tout
+# processus enfant (python, git, le plan enchaîné) : aucun d'eux ne doit le voir.
+# Le token de service (GITEA_TOKEN) reste celui des lectures et du plan.
+umask 077
+TOKENS_DIR="$(mktemp -d /tmp/provreq-tok.XXXXXX)"
+trap 'rm -rf "$TOKENS_DIR"' EXIT
+FORGE_TF=""
+if [ -n "${FORGE_TOKEN_FILE:-}" ] && [ -s "${FORGE_TOKEN_FILE}" ]; then
+  FORGE_TF="$TOKENS_DIR/forge"; tr -d '\r\n' < "$FORGE_TOKEN_FILE" > "$FORGE_TF"
+elif [ -n "${FORGE_TOKEN:-}" ]; then
+  FORGE_TF="$TOKENS_DIR/forge"; printf '%s' "$FORGE_TOKEN" > "$FORGE_TF"
+fi
+unset FORGE_TOKEN FORGE_TOKEN_FILE
+CI_TF="$TOKENS_DIR/ci"; printf '%s' "$GITEA_TOKEN" > "$CI_TF"
+GITEA_SERVICE_LOGINS="${GITEA_SERVICE_LOGINS:-ci}"
+REQ_CHANGE_REF="${REQ_CHANGE_REF:-}"
+REQ_PV_REF="${REQ_PV_REF:-}"
 GIT_REPO="${GIT_REPO:-ci/stoa-labs}"
 GIT_BASE="${GIT_BASE:-main}"
 GIT_HOST="${GIT_HOST:-http://gitea:3000}"
@@ -164,14 +186,15 @@ for v in REQ_APP REQ_ENV REQ_API REQ_CLIENT_ID; do
     *[!A-Za-z0-9._-]*) echo "REFUS: $v='$val' contient un caractère non autorisé ([A-Za-z0-9._-])" >&2; exit 2;;
   esac
 done
-# G4 (D6) : la liste suit la CHAÎNE, terminus exclu par structure (l'écriture
-# d'app au terminus meurt en 403 depuis D3 — le formulaire ne ment plus).
-# `fail()` n'est défini que plus bas : garde en echo/exit inline, comme le
-# reste des gardes de ce bloc avant cette ligne.
-CHAIN_NONPROD="$(env_chain_nonprod)" || { echo "REFUS: CHAINE_ILLISIBLE : env_chain_nonprod" >&2; exit 2; }
-case " $CHAIN_NONPROD " in
+# A7 (D5) : la liste est la chaîne ENTIÈRE, terminus compris — le terminus n'est
+# plus exclu par structure, il est gardé par ses portes (refs, quatre yeux, ITSM,
+# voie déclarée, credential, déployeur). La chaîne est VALIDÉE avant d'être lue
+# (A4 D0) ; `fail()` n'est défini que plus bas : garde en echo/exit inline.
+env_chain_validate 2>/dev/null || { echo "REFUS: CHAINE_INVALIDE : environments.yaml ne passe pas env_chain_validate" >&2; exit 2; }
+CHAIN="$(env_chain)" || { echo "REFUS: CHAINE_ILLISIBLE : env_chain" >&2; exit 2; }
+case " $CHAIN " in
   *" $REQ_ENV "*) : ;;
-  *) echo "REFUS: ENV_INVALIDE : '$REQ_ENV' hors de la chaîne hors-terminus ($CHAIN_NONPROD)" >&2; exit 2;;
+  *) echo "REFUS: ENV_INVALIDE : '$REQ_ENV' hors de la chaîne ($CHAIN)" >&2; exit 2;;
 esac
 
 # ── Task 4 (P3) — identité entrante : gardes AVANT tout geste Git ────────────
@@ -289,6 +312,45 @@ if [ -n "$REQ_TEAM" ]; then
     || fail "TEAM_NAME_INVALID : '$REQ_TEAM' — ^[a-z0-9][a-z0-9-]{1,30}\$ requis"
 fi
 
+# ── A7 (D4) — LES RÉFÉRENCES À LA DEMANDE : la classe de la porte A4, mot pour mot ──
+# change_ref / pv_ref deviennent un segment d'URL ITSM (porte A4 §2) : classe
+# ^[A-Za-z0-9][A-Za-z0-9._-]*$, jamais `.`, `..` ni un segment commençant par `.`.
+# Si la porte du palier les exige (requireChangeRef|itsmCheck, requirePVRef) et
+# qu'ils manquent : GATE_REFS_REQUIRED au plus tôt — aucune PR ouverte (motif A6).
+ref_ok(){ [ -z "$1" ] && return 0; printf '%s' "$1" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]*$' && ! printf '%s' "$1" | grep -Eq '(^|/)\.'; }
+ref_ok "$REQ_CHANGE_REF" || fail "REF_INVALIDE : change_ref '$REQ_CHANGE_REF' hors de ^[A-Za-z0-9][A-Za-z0-9._-]*\$ (il deviendrait un segment d'URL ITSM)"
+ref_ok "$REQ_PV_REF"     || fail "REF_INVALIDE : pv_ref '$REQ_PV_REF' hors de ^[A-Za-z0-9][A-Za-z0-9._-]*\$"
+GATE="$(env_chain_gate "$REQ_ENV")" || fail "CHAINE_INVALIDE : porte de '$REQ_ENV' illisible"
+NEED_CHANGE="${GATE#GATE=}"; NEED_CHANGE="${NEED_CHANGE%%|*}"
+NEED_PV="${GATE#GATE=*|}";   NEED_PV="${NEED_PV%%|*}"
+[ "$NEED_CHANGE" != 1 ] || [ -n "$REQ_CHANGE_REF" ] \
+  || fail "GATE_REFS_REQUIRED : la porte vers '$REQ_ENV' exige change_ref à la demande (requireChangeRef ou itsmCheck) — aucune PR ouverte"
+[ "$NEED_PV" != 1 ] || [ -n "$REQ_PV_REF" ] \
+  || fail "GATE_REFS_REQUIRED : la porte vers '$REQ_ENV' exige pv_ref à la demande (requirePVRef) — aucune PR ouverte"
+FOUREYES="$(env_chain_gate_four_eyes "$REQ_ENV")" || fail "CHAINE_INVALIDE : fourEyes de '$REQ_ENV' illisible"
+FOUREYES="${FOUREYES#FOUREYES=}"
+
+# ── A7 (D3) — L'IDENTITÉ DE FORGE : le porteur du token nominatif EST l'auteur ──
+# Sans token humain, il n'y a pas d'humain : le job n'a qu'un token de service,
+# aucun appel n'est fait, l'identité vaut `(service)`. Avec : GET /user (scope
+# read:user) — un refus nommé (rc 2 : token invalide, scope insuffisant, login
+# hors classe) ou une ERREUR (rc 1 : réseau). Sous fourEyes, une demande sans
+# humain est refusée ICI, au plus tôt : la porte A4 la refuserait REQUESTER_UNKNOWN
+# au dispatch, après avoir réveillé un mergeur pour rien.
+API="${GIT_HOST}/api/v1"
+FORGE_LOGIN="(service)"
+if [ -n "$FORGE_TF" ]; then
+  FORGE_LOGIN="$(forge_login "$API" "$FORGE_TF")" || { rc=$?; [ "$rc" = 2 ] && exit 2; exit 1; }
+  forge_is_service "$FORGE_LOGIN" "$GITEA_SERVICE_LOGINS" && FORGE_LOGIN="(service)"
+fi
+if [ "$FOUREYES" = 1 ] && [ "$FORGE_LOGIN" = "(service)" ]; then
+  fail "REQUESTER_UNKNOWN : la porte vers '$REQ_ENV' exige les quatre yeux ; une PR ouverte par un compte de service (${GITEA_SERVICE_LOGINS}) serait refusée REQUESTER_UNKNOWN à l'apply — fournir FORGE_TOKEN (formulaire : votre token de forge, scopes read:user + write:repository) ; voie machine : décision client n°3 — aucune PR ouverte"
+fi
+# Le login du pousseur : l'humain, ou `ci` (le compte de service de ce lab) — il
+# n'entre que dans l'askpass et le trailer, jamais dans une URL.
+PUSH_LOGIN="$FORGE_LOGIN"; [ "$PUSH_LOGIN" = "(service)" ] && PUSH_LOGIN=ci
+PUSH_TF="${FORGE_TF:-$CI_TF}"
+
 BRANCH="provision/${REQ_APP}-${REQ_ENV}"
 REL_PATH="${MANIFEST_DIR}/${REQ_APP}.ansible.yml"
 WORK="$(mktemp -d /tmp/provreq.XXXXXX)"
@@ -297,16 +359,18 @@ WORK="$(mktemp -d /tmp/provreq.XXXXXX)"
 # résout plus. Piège déjà documenté dans provision-plan.sh — et reproduit ici
 # malgré ça, parce que la garde du test ne couvrait que l'autre fichier.
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
-trap 'rm -rf "$WORK"' EXIT
-# URL avec token EN MÉMOIRE seulement (jamais écrite dans le clone ni loggée).
-PUSH_URL="http://ci:${GITEA_TOKEN}@${GIT_HOST#http://}/${GIT_REPO}.git"
-API="${GIT_HOST}/api/v1"
+trap 'rm -rf "$WORK" "$TOKENS_DIR"' EXIT
+# A7 : AUCUNE URL ne porte de credential. Le push s'authentifie par GIT_ASKPASS
+# (login du pousseur + token lu dans le fichier) — jamais en argv, jamais dans un
+# message d'erreur, jamais dans l'environnement d'un enfant.
+PUSH_URL="http://${GIT_HOST#http://}/${GIT_REPO}.git"
+GIT_ASKPASS="$(forge_askpass "$TOKENS_DIR" "$PUSH_LOGIN" "$PUSH_TF")" || { echo "ERREUR: askpass" >&2; exit 1; }
+export GIT_ASKPASS GIT_TERMINAL_PROMPT=0
 
 echo "[1/4] clone ${GIT_REPO} (base ${GIT_BASE})"
 CLONE_URL="http://${GIT_HOST#http://}/${GIT_REPO}.git"
 # A6 : les deux URL git sont surchargeables (épreuves hors ligne sur un dépôt nu en file://) — défauts = inchangés.
 CLONE_URL="${GIT_CLONE_URL:-$CLONE_URL}"; PUSH_URL="${GIT_PUSH_URL:-$PUSH_URL}"
-GITEA_SERVICE_LOGINS="${GITEA_SERVICE_LOGINS:-ci}"
 # ÉCHEC NET SI LE CLONE RATE. Ce script n'a pas `set -e` (délibérément : les
 # `[ -n "$X" ] && …` du rendu retournent faux sans être des erreurs). Sans la
 # garde ci-dessous, un clone en échec laissait $WORK/repo INEXISTANT, le `cd`
@@ -478,6 +542,11 @@ PER_ENV_ITEMS=""
 [ -n "$REQ_CERT_PEM" ] && PER_ENV_ITEMS="${PER_ENV_ITEMS:+$PER_ENV_ITEMS, }public_cert_ref: \"${CERT_REL}\", cert_rotation: \"${REQ_CERT_ROTATION:-replace}\""
 [ -n "$REQ_BACKEND_KEY_REF" ] && PER_ENV_ITEMS="${PER_ENV_ITEMS:+$PER_ENV_ITEMS, }backend_key_ref: \"${REQ_BACKEND_KEY_REF}\""
 [ -n "$REQ_BACKEND_KEY_FIELD" ] && PER_ENV_ITEMS="${PER_ENV_ITEMS:+$PER_ENV_ITEMS, }backend_key_field: \"${REQ_BACKEND_KEY_FIELD}\""
+# A7 (D4) : les références de la porte, PAR PALIER, seulement si fournies (octet
+# pour octet sinon) — la forme quotée que la porte A4 relit (safe_load) et que le
+# repli (A6) remplace.
+[ -n "$REQ_CHANGE_REF" ] && PER_ENV_ITEMS="${PER_ENV_ITEMS:+$PER_ENV_ITEMS, }change_ref: \"${REQ_CHANGE_REF}\""
+[ -n "$REQ_PV_REF" ] && PER_ENV_ITEMS="${PER_ENV_ITEMS:+$PER_ENV_ITEMS, }pv_ref: \"${REQ_PV_REF}\""
 PER_ENV_INLINE="{ ${PER_ENV_AUTH}${PER_ENV_ITEMS:+, $PER_ENV_ITEMS} }"
 
 if [ "$MAN_EXISTS" = 1 ]; then
@@ -562,10 +631,18 @@ git add "$REL_PATH"
 # rien poussé. La tête relue devient le BAIL du push (--force-with-lease).
 REMOTE_TIP=""
 if git fetch -q --depth 1 "$CLONE_URL" "refs/heads/${BRANCH}" 2>/dev/null; then REMOTE_TIP=$(git rev-parse FETCH_HEAD 2>/dev/null || true); fi
-if [ -n "$REMOTE_TIP" ] && git log -1 --format=%B "$REMOTE_TIP" 2>/dev/null | grep -q '^Repli-Vers: '; then
-  OPEN_BY=$(API="$API" GIT_REPO="$GIT_REPO" GITEA_TOKEN="$GITEA_TOKEN" BRANCH="$BRANCH" python3 - <<'PY2'
+# ── A7 (hypothèse 10) — LA PR OUVERTE DE LA BRANCHE, relue AVANT le push ──────
+# Une PR ouverte n'appartient qu'à son auteur : la réutiliser (EXIST) sous une
+# autre identité ferait signer par un tiers un contenu poussé par un autre (le
+# force-push réécrirait la branche sous le nom d'autrui). La forge est relue
+# avec le token de SERVICE (par fichier), paginée, head.ref exact, même dépôt ;
+# illisible ⇒ fail-closed (une PR ouverte pourrait exister). Ordre : d'abord
+# REPLI_EN_COURS (A6 — désormais quel que soit l'auteur : A7 rend les PR de
+# repli humaines), puis PR_D_AUTRUI.
+OPEN_BY=$(API="$API" GIT_REPO="$GIT_REPO" CI_TOKEN_FILE="$CI_TF" BRANCH="$BRANCH" python3 - <<'PY2'
 import os, json, urllib.request
-api, repo, tok, br = os.environ["API"], os.environ["GIT_REPO"], os.environ["GITEA_TOKEN"], os.environ["BRANCH"]
+api, repo, br = os.environ["API"], os.environ["GIT_REPO"], os.environ["BRANCH"]
+tok = open(os.environ["CI_TOKEN_FILE"]).read().strip()
 page = 1
 while True:
     r = urllib.request.Request(f"{api}/repos/{repo}/pulls?state=open&limit=50&page={page}", headers={"Authorization": "token " + tok})
@@ -576,16 +653,19 @@ while True:
         if h.get("ref") == br and (h.get("repo") or {}).get("full_name") == repo:
             print("%s %s" % (pr.get("number"), (pr.get("user") or {}).get("login", ""))); raise SystemExit
     page += 1
+print("")
 PY2
-) || OPEN_BY=""
-  # Fail-closed : le trailer EST la preuve ; la forge ne fait que nommer la PR.
-  OPEN_NUM="${OPEN_BY%% *}"; OPEN_LOGIN="${OPEN_BY#* }"
-  case "$OPEN_BY" in
-    "") fail "REPLI_EN_COURS : la branche ${BRANCH} porte un repli (Repli-Vers) et la forge n'a pas pu être relue — la merger ou la fermer avant une nouvelle demande" ;;
-    *) case " ${GITEA_SERVICE_LOGINS} " in
-         *" ${OPEN_LOGIN} "*) fail "REPLI_EN_COURS : la PR #${OPEN_NUM} est un repli ouvert sur ${BRANCH} — la merger ou la fermer avant une nouvelle demande" ;;
-       esac ;;
-  esac
+) || fail "FORGE_ILLISIBLE : la forge n'a pas pu être relue — une PR ouverte pourrait exister sur ${BRANCH}, rien n'est poussé"
+OPEN_NUM="${OPEN_BY%% *}"; OPEN_LOGIN="${OPEN_BY#* }"
+if [ -n "$REMOTE_TIP" ] && git log -1 --format=%B "$REMOTE_TIP" 2>/dev/null | grep -q '^Repli-Vers: '; then
+  # Le trailer EST la preuve ; la forge ne fait que nommer la PR (A6 D1bis).
+  [ -z "$OPEN_NUM" ] || fail "REPLI_EN_COURS : la PR #${OPEN_NUM} (${OPEN_LOGIN:-auteur inconnu}) est un repli ouvert sur ${BRANCH} — la merger ou la fermer avant une nouvelle demande"
+fi
+if [ -n "$OPEN_NUM" ]; then
+  MINE=0
+  if [ "$FORGE_LOGIN" = "(service)" ]; then forge_is_service "$OPEN_LOGIN" "$GITEA_SERVICE_LOGINS" && MINE=1
+  else [ "$OPEN_LOGIN" = "$FORGE_LOGIN" ] && MINE=1; fi
+  [ "$MINE" = 1 ] || fail "PR_D_AUTRUI : la PR #${OPEN_NUM} ouverte sur ${BRANCH} appartient à '${OPEN_LOGIN}' — la fermer, ou la merger si le palier l'admet, avant de redemander sous une autre identité ; rien n'est poussé"
 fi
 REMOTE_UP_TO_DATE=0
 if git fetch -q --depth 1 "$CLONE_URL" "refs/heads/${BRANCH}" 2>/dev/null \
@@ -603,12 +683,16 @@ if git diff --cached --quiet; then
 elif [ "$REMOTE_UP_TO_DATE" = 1 ]; then
   echo "[3/4] aucun changement à committer (branche ${BRANCH} déjà à jour — demande rejouée)"
 else
-  git commit -q -m "provision(${REQ_ENV}): application ${REQ_APP} (demande ${REQ_CALLER})"
+  # A7 : le trailer Demande-Par nomme le pousseur (informatif — l'autorité est
+  # l'auteur de la PR relu sur la forge par la porte A4).
+  git commit -q -m "provision(${REQ_ENV}): application ${REQ_APP} (demande ${REQ_CALLER})" -m "Demande-Par: ${PUSH_LOGIN}"
   echo "[3/4] push ${BRANCH}"
   # Branche machine-owned (provision/*) : push explicite forcé, sûr ici (le flux
-  # est le seul écrivain). 2>err pour ne jamais laisser le token fuiter au log.
+  # est le seul écrivain). 2>err pour ne jamais laisser un token fuiter au log —
+  # l'erreur est filtrée des DEUX tokens (celui qui a poussé, celui du service).
   if ! git push -q "--force-with-lease=refs/heads/${BRANCH}:${REMOTE_TIP}" "$PUSH_URL" "HEAD:refs/heads/${BRANCH}" 2>"$WORK/pusherr"; then
-    echo "ERREUR push (détail masqué — token)" >&2; grep -v "$GITEA_TOKEN" "$WORK/pusherr" >&2 || true; exit 1
+    echo "ERREUR push (détail masqué — token)" >&2
+    grep -v -F -- "$(cat "$PUSH_TF")" "$WORK/pusherr" | grep -v -F -- "$GITEA_TOKEN" >&2 || true; exit 1
   fi
 fi
 
@@ -618,15 +702,20 @@ echo "[4/5] ouverture de la Pull Request ${BRANCH} → ${GIT_BASE}"
 # PAS en argv (passé par env GITEA_TOKEN) ; aucun secret imprimé.
 PR_OUT=$(REQ_APP="$REQ_APP" REQ_ENV="$REQ_ENV" REQ_API="$REQ_API" REQ_API_VER="$REQ_API_VER" \
   REQ_CLIENT_ID="$REQ_CLIENT_ID" REQ_CALLER="$REQ_CALLER" MODE="$MODE" BRANCH="$BRANCH" GIT_BASE="$GIT_BASE" \
-  API="$API" GIT_REPO="$GIT_REPO" GITEA_TOKEN="$GITEA_TOKEN" \
+  API="$API" GIT_REPO="$GIT_REPO" CI_TOKEN_FILE="$CI_TF" PR_TOKEN_FILE="$PUSH_TF" PUSH_LOGIN="$PUSH_LOGIN" \
+  REQ_CHANGE_REF="$REQ_CHANGE_REF" REQ_PV_REF="$REQ_PV_REF" \
   REQ_TEAM="$REQ_TEAM" TEAM_INHERITED="$TEAM_INHERITED" REQ_IP_ALLOWLIST="$IP_JOINED" REQ_CERT_ROTATION="${REQ_CERT_ROTATION:-}" \
   REQ_CERT_PRESENT="$([ -n "$REQ_CERT_PEM" ] && echo 1 || echo 0)" CERT_REL="$CERT_REL" \
   REQ_BACKEND_KEY_REF="$REQ_BACKEND_KEY_REF" MAN_EXISTS="$MAN_EXISTS" MAN_ENVS="$MAN_ENVS" \
   python3 - <<'PY'
 import os, json, urllib.request, urllib.error, sys
-api, repo, tok = os.environ["API"], os.environ["GIT_REPO"], os.environ["GITEA_TOKEN"]
+api, repo = os.environ["API"], os.environ["GIT_REPO"]
+# A7 : les lectures sous le token de SERVICE, le POST /pulls sous celui du
+# POUSSEUR (l'humain quand il y en a un) — l'auteur de la PR est son identité.
+ci_tok = open(os.environ["CI_TOKEN_FILE"]).read().strip()
+pr_tok = open(os.environ["PR_TOKEN_FILE"]).read().strip()
 branch, base = os.environ["BRANCH"], os.environ["GIT_BASE"]
-def req(method, url, data=None):
+def req(method, url, data=None, tok=ci_tok):
     body = json.dumps(data).encode() if data is not None else None
     r = urllib.request.Request(url, data=body, method=method,
         headers={"Authorization": "token "+tok, "Content-Type": "application/json"})
@@ -647,6 +736,17 @@ ident = (f"- claim azp : {os.environ['REQ_CLIENT_ID']}" if mode == "idp"
 # si fournie (les champs absents ne produisent aucune ligne, symetrique au
 # manifeste). Jamais le PEM en clair ici (deja dans le fichier de la PR).
 extra = []
+# A7 : l'identite de forge qui a ouvert la PR — c'est elle que la porte a quatre
+# yeux (A4) confronte au mergeur ; un compte de service ne nomme personne.
+who = os.environ.get("PUSH_LOGIN", "ci")
+if who != "ci":
+    extra.append("- ouverte par : %s (identite de forge — c'est elle que la porte a quatre yeux confronte au mergeur)" % who)
+else:
+    extra.append("- ouverte par : compte de service (une porte a quatre yeux refusera REQUESTER_UNKNOWN)")
+if os.environ.get("REQ_CHANGE_REF"):
+    extra.append("- change_ref : %s" % os.environ["REQ_CHANGE_REF"])
+if os.environ.get("REQ_PV_REF"):
+    extra.append("- pv_ref : %s" % os.environ["REQ_PV_REF"])
 if os.environ.get("REQ_TEAM"):
     inh = " (heritee du manifeste, figee a la premiere demande)" if os.environ.get("TEAM_INHERITED") == "1" else ""
     extra.append(f"- equipe (cloisonnement) : {os.environ['REQ_TEAM']}{inh}")
@@ -700,7 +800,7 @@ bodytxt = ("Demande de provisioning application.\n\n"
     "un webhook ne porte aucun humain (ADR-078).")
 try:
     pr = req("POST", f"{api}/repos/{repo}/pulls",
-             {"title": title, "head": branch, "base": base, "body": bodytxt})
+             {"title": title, "head": branch, "base": base, "body": bodytxt}, tok=pr_tok)
     print("CREATED", pr["number"])
 except urllib.error.HTTPError as e:
     print("ERR", e.code, e.read().decode()[:200]); sys.exit(1)
@@ -736,8 +836,10 @@ echo "PR_URL=${PR_URL}"
 # puis repousser. Le verdict est repris dans la sortie ci-dessous.
 if [ "${PROVISION_PLAN_INLINE:-true}" = "true" ]; then
   echo "[5/5] plan enchaîné sur la PR #${PR_NUM}"
+  # A7 : le plan tourne sous GITEA_TOKEN (service) — le token humain a été retiré
+  # de l'environnement en tête de script ; PROVISION_PLAN_BIN = stub des épreuves.
   if PR_BRANCH="$BRANCH" PR_NUMBER="$PR_NUM" \
-     bash "$SELF_DIR/provision-plan.sh"; then
+     bash "${PROVISION_PLAN_BIN:-$SELF_DIR/provision-plan.sh}"; then
     echo "  PLAN_INLINE=ok"
   else
     echo "  PLAN_INLINE=fail — la PR est ouverte et commentée, la demande reste valide" >&2
