@@ -45,18 +45,63 @@
       register: ss_apis
       changed_when: false
 
-    - name: "API : résoudre l'id de {{ apim_ss_app.api }} v{{ apim_ss_app.api_version }}"
+    # ── A5 porte : début ──────────────────────────────────────────────────
+    # ===== 1. LA PORTE A5 — l'API est-elle AU PALIER : ce nom, cette version, ACTIVE ? =====
+    # Spike S2 (2026-09-02, 10.15 réelle) : la gateway ACCEPTE la souscription
+    # à une API inactive (200, trafic 404) et une paire posée puis retirée est
+    # BRÛLÉE (S1-T3, ré-inscription 500). La porte précède donc la PREMIÈRE
+    # écriture (§2, POST /applications) et ne se rattrape jamais après coup.
+    # Quatre refus nommés, relayés jusqu'à la PR (apim_common/tasks/refus.yml).
+    # `isActive` : booléen JSON strict — absent, null, "true" (chaîne) ou 1 sont
+    # INACTIFS (ne pas savoir n'est pas une raison de passer). Le marqueur
+    # `API_AT_PALIER :` est celui que les preuves live lisent.
+    - name: "API : entrées de ce nom, puis de cette version"
       ansible.builtin.set_fact:
-        ss_api_id: >-
-          {{ (ss_apis.json.apiResponse | map(attribute='api')
-              | selectattr('apiName', 'equalto', apim_ss_app.api)
-              | selectattr('apiVersion', 'equalto', apim_ss_app.api_version)
-              | map(attribute='id') | list | first) | default('') }}
+        ss_api_by_name: >-
+          {{ (ss_apis.json.apiResponse | default([])) | map(attribute='api')
+             | selectattr('apiName', 'defined') | selectattr('apiName', 'equalto', apim_ss_app.api) | list }}
 
-    - name: "API : fail-closed si non publiée"
-      ansible.builtin.assert:
-        that: "ss_api_id | length > 0"
-        fail_msg: "API {{ apim_ss_app.api }} v{{ apim_ss_app.api_version }} absente — la publier d'abord."
+    - ansible.builtin.set_fact:
+        ss_api_match: >-
+          {{ ss_api_by_name | selectattr('apiVersion', 'defined')
+             | selectattr('apiVersion', 'equalto', apim_ss_app.api_version | string) | list }}
+
+    - name: "API : verdict de la porte (nom → version → unicité → activité)"
+      ansible.builtin.set_fact:
+        ss_api_refus: >-
+          {{ 'API_NOT_PROMOTED' if (ss_api_by_name | length == 0)
+             else ('API_VERSION_MISMATCH' if (ss_api_match | length == 0)
+             else ('API_AMBIGUE' if (ss_api_match | length > 1)
+             else ('' if (((ss_api_match | first).isActive | default(none)) is sameas true) else 'API_INACTIVE'))) }}
+        ss_api_env: "{{ (apim_ss_env | default('', true)) or '(mono-env)' }}"
+
+    - name: "API : la phrase du refus (nomme l'API, la version, le palier, le remède)"
+      ansible.builtin.set_fact:
+        ss_api_refus_msg: >-
+          {% if ss_api_refus == 'API_NOT_PROMOTED' %}l'API '{{ apim_ss_app.api }}' n'est pas au palier '{{ ss_api_env }}' (aucune version publiée sur {{ apim_ss_api_base }}) — promouvoir l'API vers {{ ss_api_env }} (chaîne des APIs : PR promote/{{ apim_ss_app.api }}-{{ ss_api_env }}, G5) puis rejouer l'apply ; rien n'a été écrit
+          {%- elif ss_api_refus == 'API_VERSION_MISMATCH' %}l'API '{{ apim_ss_app.api }}' est au palier '{{ ss_api_env }}' en version(s) {{ ss_api_by_name | map(attribute='apiVersion') | map('string') | list | join(', ') }}, pas en '{{ apim_ss_app.api_version }}' — promouvoir cette version vers {{ ss_api_env }} (G5) ou corriger la demande (api_version est figé : une autre version est une NOUVELLE application, A1) ; rien n'a été écrit
+          {%- elif ss_api_refus == 'API_AMBIGUE' %}{{ ss_api_match | length }} entrées '{{ apim_ss_app.api }}' v{{ apim_ss_app.api_version }} sur {{ apim_ss_api_base }} — résolution impossible sans choisir, refus fail-closed ; rien n'a été écrit
+          {%- elif ss_api_refus == 'API_INACTIVE' %}l'API '{{ apim_ss_app.api }}' v{{ apim_ss_app.api_version }} est au palier '{{ ss_api_env }}' mais INACTIVE (isActive={{ (ss_api_match | first).isActive | default('absent') }}, id={{ (ss_api_match | first).id | default('?') }}) — une souscription à une API inactive est une souscription à rien (spike S2 : acceptée par la gateway, trafic 404) ; activer l'API au palier (geste producteur) puis rejouer l'apply ; rien n'a été écrit
+          {%- endif %}
+      when: "ss_api_refus | length > 0"
+
+    - name: "API : REFUS {{ ss_api_refus }} — la porte A5, avant la première écriture"
+      ansible.builtin.include_role:
+        name: apim_common
+        tasks_from: refus.yml
+      vars:
+        refus_tag: "{{ ss_api_refus }}"
+        refus_msg: "{{ ss_api_refus_msg }}"
+      when: "ss_api_refus | length > 0"
+
+    - name: "API : id résolu — ce nom, cette version, active"
+      ansible.builtin.set_fact:
+        ss_api_id: "{{ (ss_api_match | first).id }}"
+
+    - name: "API : au palier"
+      ansible.builtin.debug:
+        msg: "API_AT_PALIER : '{{ apim_ss_app.api }}' v{{ apim_ss_app.api_version }} active au palier '{{ ss_api_env }}' (id={{ ss_api_id }})"
+    # ── A5 porte : fin ────────────────────────────────────────────────────
 
     # ===== 1b. GARDE DU REGISTER (« garde 3 ») ================================
     # AVANT de créer quoi que ce soit : l'équipe a-t-elle le droit de consommer

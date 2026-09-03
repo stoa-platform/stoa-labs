@@ -87,10 +87,17 @@ for _ in $(seq 1 40); do curl -s "http://127.0.0.1:$VA_PORT/v1/nope" >/dev/null 
 GW="http://127.0.0.1:$GW_PORT/rest/apigateway"
 GWM="http://127.0.0.1:$MASK_PORT/rest/apigateway"
 VAULT="http://127.0.0.1:$VA_PORT"
+# A5 (2026-09-03) : le mock crée l'API INACTIVE et le rôle refuse API_INACTIVE
+# avant toute écriture — chaque sonde ACTIVE son API après l'avoir publiée.
+publish_probe(){ # <base admin> → publie ET active 'probe' 1.0.0 (rc≠0 si l'un des deux échoue)
+  local id
+  id=$(curl -sf -u Administrator:manage -X POST "$1/apis" -H 'Content-Type: application/json' -H 'Accept: application/json' \
+    -d '{"apiName":"probe","apiVersion":"1.0.0","type":"REST","apiDefinition":{"openapi":"3.0.0"}}' \
+    | python3 -c 'import sys,json;print(json.load(sys.stdin)["apiResponse"]["api"]["id"])') || return 1
+  curl -sf -u Administrator:manage -X PUT -o /dev/null "$1/apis/$id/activate"
+}
 for base in "$GW" "$GWM"; do
-  curl -sf -u Administrator:manage -X POST "$base/apis" -H 'Content-Type: application/json' \
-    -d '{"apiName":"probe","apiVersion":"1.0.0","type":"REST","apiDefinition":{"openapi":"3.0.0"}}' >/dev/null \
-    || { echo "création de l'API de sonde échouée ($base)"; exit 2; }
+  publish_probe "$base" || { echo "création/activation de l'API de sonde échouée ($base)"; exit 2; }
 done
 echo "  gateway :$GW_PORT — gateway masquée :$MASK_PORT — vault :$VA_PORT"
 
@@ -261,9 +268,7 @@ AMB_PORT=$((MASK_PORT+10))
 WM_LOCAL_SCOPES="lecture,ecriture" LISTEN_ADDR=":$AMB_PORT" "$TMP/wm-mock" >"$TMP/mock-amb.log" 2>&1 &
 AMB_PID=$!
 for _ in $(seq 1 50); do curl -sf "http://127.0.0.1:$AMB_PORT/health" >/dev/null 2>&1 && break; sleep 0.2; done
-curl -sf -u Administrator:manage -X POST "http://127.0.0.1:$AMB_PORT/rest/apigateway/apis" \
-  -H 'Content-Type: application/json' \
-  -d '{"apiName":"probe","apiVersion":"1.0.0","type":"REST","apiDefinition":{"openapi":"3.0.0"}}' >/dev/null
+publish_probe "http://127.0.0.1:$AMB_PORT/rest/apigateway" || { echo "création/activation de l'API de sonde échouée (amb)"; exit 2; }
 mkmanifest "$TMP/m-amb.yml" "probe-amb" "internal" "CONFIDENTIAL" '["client_credentials"]' '[]'
 probe "$TMP/m-amb.yml" "http://127.0.0.1:$AMB_PORT/rest/apigateway"
 [ $RC -ne 0 ] && ok "refusé (on ne choisit pas les droits du client en silence)" || ko "un scope a été choisi arbitrairement"
@@ -282,9 +287,7 @@ SCA_PORT=$((MASK_PORT+11))
 WM_LOCAL_SCOPES="lecture,ecriture" LISTEN_ADDR=":$SCA_PORT" "$TMP/wm-mock" >"$TMP/mock-sca.log" 2>&1 &
 SCA_PID=$!
 for _ in $(seq 1 50); do curl -sf "http://127.0.0.1:$SCA_PORT/health" >/dev/null 2>&1 && break; sleep 0.2; done
-curl -sf -u Administrator:manage -X POST "http://127.0.0.1:$SCA_PORT/rest/apigateway/apis" \
-  -H 'Content-Type: application/json' \
-  -d '{"apiName":"probe","apiVersion":"1.0.0","type":"REST","apiDefinition":{"openapi":"3.0.0"}}' >/dev/null
+publish_probe "http://127.0.0.1:$SCA_PORT/rest/apigateway" || { echo "création/activation de l'API de sonde échouée (scalar)"; exit 2; }
 mkmanifest "$TMP/m-scalar.yml" "probe-scalar" "internal" "CONFIDENTIAL" 'client_credentials' 'lecture'
 probe "$TMP/m-scalar.yml" "http://127.0.0.1:$SCA_PORT/rest/apigateway"
 [ $RC -eq 0 ] && ok "apply vert (scalaire = liste à un élément)" || { ko "scalaire refusé (rc=$RC)"; echo "$OUT" | tail -25; }
