@@ -455,7 +455,11 @@ for i in d.get('apiResponse',[]):
     if x.get('apiName')==os.environ['A'] and x.get('apiVersion')==os.environ['V'] and x.get('isActive') is True: print(x.get('id','')); break" < "$TMP/apis.json")
 [ -n "$G_API" ] && ok "0.11 10.15 : $REQ_API@$REQ_API_VER active — G_API=$G_API" || die "PREREQUIS : $REQ_API@$REQ_API_VER absente/inactive sur la 10.15"
 TA=$(t_api "$REQ_API" "$REQ_API_VER")
-if [ -n "$TA" ]; then tcall DELETE "/apis/${TA%% *}"; [ "$(tcode)" = 200 ] || [ "$(tcode)" = 204 ] || die "PREREQUIS : impossible de retirer $REQ_API du terminus (HTTP $(tcode)) — la contre-épreuve A5 en dépend"; fi
+if [ -n "$TA" ]; then
+  # une API ACTIVE ne se supprime pas (409, comme le produit) : désactiver d'abord
+  tcall PUT "/apis/${TA%% *}/deactivate"
+  tcall DELETE "/apis/${TA%% *}"; [ "$(tcode)" = 200 ] || [ "$(tcode)" = 204 ] || die "PREREQUIS : impossible de retirer $REQ_API du terminus (HTTP $(tcode)) — la contre-épreuve A5 en dépend"
+fi
 [ -z "$(t_api "$REQ_API" "$REQ_API_VER")" ] && ok "0.12 terminus : $REQ_API ABSENTE (la contre-épreuve « l'API n'est qu'en homol » est possible)" || die "PREREQUIS : $REQ_API encore présente sur le terminus"
 RES_10=$(gw "$GW_ADMIN/applications" | jq_ "print(' '.join(a.get('name','') for a in d.get('applications',[]) if a.get('name','').startswith('a7p')))")
 [ -z "$RES_10" ] && ok "0.13 aucune application résiduelle a7p* sur la 10.15" || die "PREREQUIS : résidus sur la 10.15 : $RES_10"
