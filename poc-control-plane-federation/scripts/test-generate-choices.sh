@@ -150,7 +150,19 @@ python3 -c "import xml.etree.ElementTree as T; T.parse('$REPO/ci/jenkins/p3t3-di
 OUT=$(cd "$REPO" && JENKINS_UI="$JU" JOBS="p3t3-disposable" GIT_HOST="/nonexistent/nope" GIT_REPO=ci/stoa-labs GITEA_TOKEN=dummy ENVN=dev \
   bash "$SETUP" 2>&1); RC=$?
 [ "$RC" -ne 0 ] && ok "refusé (rc=$RC)" || ko "aurait dû échouer : $OUT"
-grep -q "GITEA_UNREACHABLE" <<<"$OUT" && ok "cause explicite (GITEA_UNREACHABLE)" || ko "cause absente : $OUT"
+grep -q "GIT_UNREACHABLE" <<<"$OUT" && ok "cause explicite (GIT_UNREACHABLE)" || ko "cause absente : $OUT"
+
+# 2026-09-03 (déploiement client) : le refus doit porter la CAUSE de git, pas
+# seulement le tag — avant, `2>/dev/null` avalait tout et un hôte injoignable,
+# un jeton refusé et une branche `main` absente rendaient le même refus muet.
+grep -qE "en échec — .+" <<<"$OUT" && ok "le refus cite la sortie de git (diagnostic possible chez un client)" || ko "refus sans cause : $OUT"
+# et il ne relaie JAMAIS des identifiants glissés dans GIT_HOST (mesuré : la
+# première version fuyait par le message lui-même, pas par la sortie de git).
+OUTC=$(cd "$REPO" && GIT_HOST="http://u:MOTDEPASSE-CANARI@127.0.0.1:1/x" GIT_REPO=org/depot GITEA_TOKEN=dummy \
+  bash -c ". '$LIB'; generate_choices_teams_raw dev" 2>&1)
+! grep -q "MOTDEPASSE-CANARI" <<<"$OUTC" && grep -q "identifiants masqués" <<<"$OUTC" \
+  && ok "identifiants d'une URL expurgés du refus (les deux canaux : message et sortie de git)" \
+  || ko "fuite d'identifiants dans le refus : $(sed -E 's/MOTDEPASSE-CANARI/<FUITE>/g' <<<"$OUTC" | head -1)"
 [ -z "$(grep 'POST create' "$TMP/calls.log" 2>/dev/null)" ] && ok "AUCUN POST envoyé à Jenkins" || ko "un POST a quand même eu lieu"
 
 echo
