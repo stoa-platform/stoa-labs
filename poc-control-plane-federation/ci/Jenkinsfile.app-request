@@ -89,7 +89,12 @@ pipeline {
           dir('poc-control-plane-federation') {
             // Quotes SIMPLES ; `set +x` : le token ne s'écho pas. Le script
             // RETIRE tout fichier périmé avant de travailler.
-            sh 'set +x; STOA_ENV_CHAIN_FILE="$WORKSPACE/poc-control-plane-federation/clients/_example/environments.yaml" CHOICES_OUT="$WORKSPACE/.a0-choices.env" bash scripts/app-request-choices.sh'
+            // GC_PLATFORM_DIR : le dépôt plateforme est DÉJÀ là (définition SCM
+            // du job, lightweight=false) — la lib le lit au lieu de le re-cloner
+            // par le réseau. Un geste réseau, un jeton, une branche et une
+            // traversée de proxy en moins sur le PREMIER stage de la chaîne ;
+            // les dépôts d'ÉQUIPE, eux, restent découverts et clonés à l'exécution.
+            sh 'set +x; GC_PLATFORM_DIR="$WORKSPACE" STOA_ENV_CHAIN_FILE="$WORKSPACE/poc-control-plane-federation/clients/_example/environments.yaml" CHOICES_OUT="$WORKSPACE/.a0-choices.env" bash scripts/app-request-choices.sh'
           }
         }
         script {

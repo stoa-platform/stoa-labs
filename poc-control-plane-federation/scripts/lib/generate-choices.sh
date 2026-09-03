@@ -90,12 +90,18 @@ _gc_clone(){
   local repo="$1" dest="$2"
   local token="${GITEA_TOKEN:?GITEA_TOKEN requis (generate-choices)}"
   local host="${GIT_HOST:-http://gitea:3000}"
+  # GIT_USER : l'utilisateur du Basic. Gitea accepte n'importe lequel avec un
+  # PAT, d'où le « x » historique — GitLab et Bitbucket, NON (401). Knob, défaut
+  # inchangé. GIT_BASE : la branche de base, knob d'ADR-075 honoré partout
+  # ailleurs (provision-request.sh:393) et jusqu'ici IGNORÉ ici — un client dont
+  # la branche est `master`/`develop` voyait donc échouer CE clone, et lui seul.
+  local user="${GIT_USER:-x}" base="${GIT_BASE:-main}"
   local auth_b64 err rc
-  auth_b64=$(printf 'x:%s' "$token" | base64 | tr -d '\n')
+  auth_b64=$(printf '%s:%s' "$user" "$token" | base64 | tr -d '\n')
   err=$(mktemp) || { _GC_CLONE_ERR="mktemp indisponible"; return 1; }
   GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader \
     GIT_CONFIG_VALUE_0="Authorization: Basic ${auth_b64}" \
-    git clone -q --depth 1 -b main "${host}/${repo}.git" "$dest" 2>"$err"
+    git clone -q --depth 1 -b "$base" "${host}/${repo}.git" "$dest" 2>"$err"
   rc=$?
   # expurgation : un identifiant glissé dans GIT_HOST (http://user:jeton@hote)
   # ressortirait par stderr — on ne relaie jamais la partie userinfo d'une URL.
@@ -103,7 +109,32 @@ _gc_clone(){
   rm -f "$err"
   return "$rc"
 }
-_gc_fetch_main(){ _gc_clone "${GIT_REPO:-ci/stoa-labs}" "$1"; }        # dépôt plateforme
+# _gc_fetch_main <dest> — le dépôt PLATEFORME, par le réseau… ou pas.
+# GC_PLATFORM_DIR : racine d'un dépôt plateforme DÉJÀ présent (opt-in). Un job
+# « pipeline from SCM » sur ce dépôt l'a déjà dans le workspace de l'agent
+# (lightweight=false) : le re-cloner exige d'un client un hôte joignable, un
+# jeton, une branche de base et une traversée de proxy pour lire un fichier
+# qu'il a sous la main — et c'est le PREMIER geste réseau de la chaîne, donc le
+# premier à tomber (déploiement client 2026-09-03 : EQUIPES_INDISPONIBLES sans
+# cause). L'appelant qui pose ce knob AFFIRME que ce répertoire est le dépôt
+# plateforme à la bonne révision ; en Jenkins c'est la définition SCM du job qui
+# l'assure. Les listes restent de l'ERGONOMIE (l'autorité est dans les gardes).
+# FAIL-CLOSED : un knob qui ne porte pas le dépôt ne retombe JAMAIS sur un
+# clone — un repli masquerait la méprise de configuration.
+_gc_fetch_main(){
+  local dest="$1"
+  if [ -n "${GC_PLATFORM_DIR:-}" ]; then
+    if [ ! -d "${GC_PLATFORM_DIR}/poc-control-plane-federation/ansible" ]; then
+      _GC_CLONE_ERR="GC_PLATFORM_DIR=$(_gc_redact "$GC_PLATFORM_DIR") ne porte pas poc-control-plane-federation/ansible — répertoire fourni par l'appelant, aucun repli sur un clone"
+      return 1
+    fi
+    rm -df "$dest" 2>/dev/null
+    ln -s "$GC_PLATFORM_DIR" "$dest" 2>/dev/null || {
+      _GC_CLONE_ERR="lien vers GC_PLATFORM_DIR impossible ($dest)"; return 1; }
+    return 0
+  fi
+  _gc_clone "${GIT_REPO:-ci/stoa-labs}" "$dest"
+}
 _gc_fetch_team_repo(){ _gc_clone "$1" "$2"; }                          # dépôt d'équipe
 
 # _gc_collect_publish_yml <dir> <outfile> — ajoute "nom@version" (une ligne
@@ -148,7 +179,7 @@ generate_choices_teams_raw(){
   work=$(mktemp -d) || { echo "MKTEMP : impossible de créer un répertoire de travail" >&2; return 1; }
 
   if ! _gc_fetch_main "$work"; then
-    echo "GIT_UNREACHABLE : clone de ${GIT_REPO:-ci/stoa-labs}@main depuis $(_gc_redact "${GIT_HOST:-http://gitea:3000}") en échec — ${_GC_CLONE_ERR:-aucune sortie de git}" >&2
+    echo "GIT_UNREACHABLE : accès au dépôt plateforme ${GIT_REPO:-ci/stoa-labs}@${GIT_BASE:-main} (${GC_PLATFORM_DIR:+répertoire fourni}${GC_PLATFORM_DIR:-clone depuis $(_gc_redact "${GIT_HOST:-http://gitea:3000}")}) en échec — ${_GC_CLONE_ERR:-aucune sortie de git}" >&2
     rm -rf "$work"; return 1
   fi
   local prov="$work/poc-control-plane-federation/ansible/providers.${envn}.yml"
@@ -198,7 +229,7 @@ generate_choices_apis_raw(){
   work=$(mktemp -d) || { echo "MKTEMP : impossible de créer un répertoire de travail" >&2; return 1; }
 
   if ! _gc_fetch_main "$work/platform"; then
-    echo "GIT_UNREACHABLE : clone de ${GIT_REPO:-ci/stoa-labs}@main depuis $(_gc_redact "${GIT_HOST:-http://gitea:3000}") en échec — ${_GC_CLONE_ERR:-aucune sortie de git}" >&2
+    echo "GIT_UNREACHABLE : accès au dépôt plateforme ${GIT_REPO:-ci/stoa-labs}@${GIT_BASE:-main} (${GC_PLATFORM_DIR:+répertoire fourni}${GC_PLATFORM_DIR:-clone depuis $(_gc_redact "${GIT_HOST:-http://gitea:3000}")}) en échec — ${_GC_CLONE_ERR:-aucune sortie de git}" >&2
     rm -rf "$work"; return 1
   fi
   local root="$work/platform/poc-control-plane-federation"

@@ -39,7 +39,7 @@ ko(){ FAIL=$((FAIL+1)); printf '  ❌ %s\n' "$*"; }
 
 # Total ATTENDU, ÉCRIT EN DUR — indépendant de PASS+FAIL. Toute section
 # ajoutée/retirée DOIT le mettre à jour : un oubli fait rougir le dernier §.
-EXPECTED_CHECKS=183
+EXPECTED_CHECKS=184
 
 # shellcheck source=scripts/lib/gwt-mirror.sh
 . scripts/lib/gwt-mirror.sh || { echo "lib gwt-mirror.sh introuvable"; exit 2; }
@@ -250,6 +250,7 @@ L_PROPS=$(code_line "$TMP/jf-app.code" "properties([parameters([")
 [ -n "$L_PROPS" ] && ok "properties([parameters([ … ])]) en vue CODE : le formulaire est posé par le pipeline" || ko "properties([parameters([ absent"
 # Le champ obligatoire se refuse DANS le pipeline, avant le workspace et le clone
 # (mesuré app-request #47 : APP vide ⇒ message brut de bash au fond du script).
+jfa 'GC_PLATFORM_DIR="$WORKSPACE"' && ok "le stage Formulaire passe GC_PLATFORM_DIR=\$WORKSPACE : le dépôt plateforme du workspace est lu, pas re-cloné" || ko "GC_PLATFORM_DIR non passé au script de listes (le premier stage re-clone par le réseau)"
 L_REQ=$(code_line "$TMP/jf-app.code" "CHAMP_REQUIS"); L_SH=$(code_line "$TMP/jf-app.code" "bash scripts/provision-request.sh")
 [ -n "$L_REQ" ] && [ -n "$L_SH" ] && [ "$L_REQ" -lt "$L_SH" ] \
   && ok "garde CHAMP_REQUIS (ligne $L_REQ) AVANT l'appel de provision-request.sh (ligne $L_SH) : un champ obligatoire vide se nomme sans cloner" \
@@ -273,7 +274,7 @@ L_ALT=$(code_line "$TMP/jf-app.code" 'TOKEN_ALTERE'); L_GLB=$(code_line "$TMP/jf
 grep -qE "error\('REFUS: TOKEN_(ALTERE|GLOBAL_REFUSE)[^']*\\\$\{(params|env)" "$TMP/jf-app.code" && ko "A7 : un message d'erreur interpole la valeur du token" || ok "A7 : aucun message d'erreur n'interpole le token"
 [ "$(grep -c 'STOA_ENV_CHAIN_FILE="\$WORKSPACE/poc-control-plane-federation/clients/_example/environments.yaml"' "$TMP/jf-app.code")" = 2 ] && ok "A7 : la chaîne est ÉPINGLÉE sur les deux sh (listes et demande) — une globale ne redirige plus la porte à la demande" || ko "A7 : épinglages STOA_ENV_CHAIN_FILE : $(grep -c 'STOA_ENV_CHAIN_FILE=' "$TMP/jf-app.code")"
 grep -v '^\s*//' ci/Jenkinsfile.provisioning-request | grep -qE "^\s*FORGE_TOKEN\s*=\s*''" && ok "A7 : la voie machine VIDE FORGE_TOKEN dans son bloc environment (une globale du nœud ne lui prête aucune identité de forge)" || ko "A7 : Jenkinsfile.provisioning-request ne vide pas FORGE_TOKEN"
-L_SH=$(code_line "$TMP/jf-app.code" "sh 'set +x; STOA_ENV_CHAIN_FILE=\"\$WORKSPACE/poc-control-plane-federation/clients/_example/environments.yaml\" CHOICES_OUT=\"\$WORKSPACE/.a0-choices.env\" bash scripts/app-request-choices.sh'")
+L_SH=$(code_line "$TMP/jf-app.code" "sh 'set +x; GC_PLATFORM_DIR=\"\$WORKSPACE\" STOA_ENV_CHAIN_FILE=\"\$WORKSPACE/poc-control-plane-federation/clients/_example/environments.yaml\" CHOICES_OUT=\"\$WORKSPACE/.a0-choices.env\" bash scripts/app-request-choices.sh'")
 L_WC=$(code_line "$TMP/jf-app.code" "withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')])")
 [ -n "$L_SH" ] && [ -n "$L_WC" ] && [ "$L_WC" -lt "$L_SH" ] && [ "$L_SH" -lt "$L_PROPS" ] \
   && ok "app-request-choices.sh invoqué en quotes SIMPLES sous credential (ligne $L_SH), AVANT properties()" || ko "invocation du script de listes absente/mal placée (sh=$L_SH wc=$L_WC props=$L_PROPS)"

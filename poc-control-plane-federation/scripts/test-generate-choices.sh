@@ -367,6 +367,55 @@ else
 fi
 
 echo
+echo "== 12. le dépôt plateforme DÉJÀ dans le workspace (GC_PLATFORM_DIR) : aucun réseau =="
+# Un job « pipeline from SCM » sur le dépôt plateforme a DÉJÀ ce dépôt dans le
+# workspace de l'agent (lightweight=false). Le re-cloner par le réseau, c'est
+# exiger d'un client un hôte joignable, un jeton, une branche `main` et une
+# traversée de proxy pour lire un fichier qu'il a sous la main — et c'est là que
+# ça casse en premier (déploiement client, 2026-09-03 : EQUIPES_INDISPONIBLES).
+WSP="$TMP/ws-platform"; mkdir -p "$WSP/poc-control-plane-federation/ansible"
+printf '%s' "$TWO_TEAMS" > "$WSP/poc-control-plane-federation/ansible/providers.dev.yml"
+OUT=$(GC_PLATFORM_DIR="$WSP" GIT_HOST="/nonexistent/nope" GIT_REPO=ci/stoa-labs \
+  bash -c ". '$LIB'; generate_choices_teams_raw dev" 2>&1); RC=$?
+[ "$RC" -eq 0 ] && [ "$(printf '%s\n' "$OUT" | grep -c .)" = 2 ] && ok "GC_PLATFORM_DIR ⇒ 2 équipes lues SANS clone, SANS GITEA_TOKEN, hôte injoignable" || ko "rc=$RC out=$(tr '\n' ' ' <<<"$OUT")"
+# Fail-closed : un répertoire fourni mais qui ne porte pas le dépôt ne retombe
+# JAMAIS sur un clone (ici l'hôte est VALIDE — un repli réussirait et masquerait
+# la méprise de configuration).
+GHK="$TMP/gitea-knob"; mk_platform_repo "$GHK/ci/stoa-labs.git" "$TWO_TEAMS" ""
+OUT=$(GC_PLATFORM_DIR="$TMP/vide-$$" GIT_HOST="$GHK" GIT_REPO=ci/stoa-labs GITEA_TOKEN=dummy \
+  bash -c ". '$LIB'; generate_choices_teams_raw dev" 2>&1); RC=$?
+[ "$RC" -ne 0 ] && grep -q 'GC_PLATFORM_DIR' <<<"$OUT" && ok "GC_PLATFORM_DIR invalide ⇒ refus nommant le knob, AUCUN repli sur le clone (fail-closed)" || ko "rc=$RC (repli silencieux ?) : $(tr '\n' ' ' <<<"$OUT")"
+
+echo
+echo "== 13. la branche de base est un knob (GIT_BASE), plus « main » en dur =="
+# dépôt dont la SEULE branche est `develop` (aucune `main`) — le cas d'un client
+GHD="$TMP/gitea-develop"; SRCD="$TMP/src-develop"
+mkdir -p "$SRCD/poc-control-plane-federation/ansible" "$GHD/ci"
+printf '%s' "$TWO_TEAMS" > "$SRCD/poc-control-plane-federation/ansible/providers.dev.yml"
+( cd "$SRCD" && git init -q -b develop && git -c user.name=t -c user.email=t@t add -A \
+  && git -c user.name=t -c user.email=t@t commit -qm init ) >/dev/null 2>&1
+git clone -q --bare "$SRCD" "$GHD/ci/stoa-labs.git" >/dev/null 2>&1
+OUT=$(GIT_HOST="$GHD" GIT_REPO=ci/stoa-labs GITEA_TOKEN=dummy \
+  bash -c ". '$LIB'; generate_choices_teams_raw dev" 2>&1); RC=$?
+[ "$RC" -ne 0 ] && grep -q 'GIT_UNREACHABLE' <<<"$OUT" && grep -qiE 'branch|branche' <<<"$OUT" && ok "branche de base absente ⇒ refus citant git (« Remote branch … not found »), diagnosticable" || ko "rc=$RC : $(tr '\n' ' ' <<<"$OUT")"
+OUT=$(GIT_BASE=develop GIT_HOST="$GHD" GIT_REPO=ci/stoa-labs GITEA_TOKEN=dummy \
+  bash -c ". '$LIB'; generate_choices_teams_raw dev" 2>&1); RC=$?
+[ "$RC" -eq 0 ] && [ "$(printf '%s\n' "$OUT" | grep -c .)" = 2 ] && ok "GIT_BASE=develop ⇒ les listes sortent (le knob d'ADR-075 atteint ENFIN ce clone)" || ko "GIT_BASE ignoré : rc=$RC $(tr '\n' ' ' <<<"$OUT")"
+
+echo
+echo "== 14. l'utilisateur du Basic est un knob (GIT_USER), plus « x » en dur =="
+SHIMD="$TMP/shim"; mkdir -p "$SHIMD"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$GIT_CONFIG_VALUE_0" > "%s/hdr.txt"\nexit 128\n' "$TMP" > "$SHIMD/git"; chmod 700 "$SHIMD/git"
+PATH="$SHIMD:$PATH" GIT_USER=sof_svc GIT_HOST="https://scm.example/" GIT_REPO=org/depot GITEA_TOKEN=JETON \
+  bash -c ". '$LIB'; generate_choices_teams_raw dev" >/dev/null 2>&1
+HDR=$(sed -E 's/^Authorization: Basic //' "$TMP/hdr.txt" 2>/dev/null | base64 -d 2>/dev/null)
+[ "$HDR" = "sof_svc:JETON" ] && ok "GIT_USER=sof_svc ⇒ en-tête Basic « sof_svc:JETON » (un SCM qui refuse l'utilisateur « x » passe)" || ko "en-tête construit : '${HDR:-vide}'"
+PATH="$SHIMD:$PATH" GIT_HOST="https://scm.example/" GIT_REPO=org/depot GITEA_TOKEN=JETON \
+  bash -c ". '$LIB'; generate_choices_teams_raw dev" >/dev/null 2>&1
+HDR=$(sed -E 's/^Authorization: Basic //' "$TMP/hdr.txt" 2>/dev/null | base64 -d 2>/dev/null)
+[ "$HDR" = "x:JETON" ] && ok "sans GIT_USER ⇒ « x:JETON », comportement d'avant octet pour octet" || ko "défaut altéré : '${HDR:-vide}'"
+
+echo
 echo "======================================================================"
 printf 'RÉSULTAT : %d/%d\n' "$PASS" "$((PASS+FAIL))"
 [ "$FAIL" -eq 0 ] || exit 1

@@ -14,7 +14,11 @@
 #            provision-request.sh, qui refuse ENV_INVALIDE hors de cette liste ;
 #            le terminus est exclu par STRUCTURE (G4/D6), pas par son nom.
 #   TEAMS  = generate_choices_teams_raw  (scripts/lib/generate-choices.sh) —
-#            providers.<env>.yml relu sur GITEA MAIN, jamais le worktree.
+#            providers.<env>.yml relu sur la branche de base (GIT_BASE) du dépôt
+#            plateforme ; avec GC_PLATFORM_DIR, lu dans le répertoire FOURNI (le
+#            workspace de l'agent, que la définition SCM du job a déjà posé à la
+#            bonne révision) — un geste réseau en moins, et le premier stage ne
+#            dépend plus d'un jeton ni d'un proxy.
 #   APIS   = generate_choices_apis_raw — APIs publiées (dépôt plateforme +
 #            dépôts d'équipe déclarés), même tolérance « dépôt déclaré mais
 #            absent » et même marqueur CHOICES_SKIPPED_REPOS=<n> sur stderr.
@@ -38,7 +42,11 @@
 #                 `APIS=…`, valeurs séparées par UN espace (les gardes amont
 #                 garantissent des noms sans espace : [a-z0-9-] côté équipe,
 #                 [A-Za-z0-9._-]@version côté API, palier alphanumérique).
-#   GIT_HOST / GIT_REPO / GITEA_TOKEN : cf. generate-choices.sh (token requis).
+#   GIT_HOST / GIT_REPO / GITEA_TOKEN / GIT_USER / GIT_BASE : cf.
+#                 generate-choices.sh (jeton requis DÈS QU'un clone a lieu).
+#   GC_PLATFORM_DIR (opt.) racine d'un dépôt plateforme déjà présent — le clone
+#                 du dépôt plateforme est alors SAUTÉ (fail-closed si le
+#                 répertoire ne le porte pas : jamais de repli sur un clone).
 #   STOA_ENV_CHAIN_FILE : surcharge de la source de la chaîne (tests).
 #
 #   CHOICES_OUT=/tmp/choices.env GITEA_TOKEN=… bash scripts/app-request-choices.sh
