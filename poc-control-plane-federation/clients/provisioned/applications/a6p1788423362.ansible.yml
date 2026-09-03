@@ -17,4 +17,4 @@ apim_ss_app:
     audience: "demo-selfservice"
     claim: { name: "azp" }
   per_env:
-    rec: { auth: { claim: { value: "a6p1788423362-rec" } }, ip_allowlist: ["10.42.0.1"], public_cert_ref: "clients/provisioned/certs/a6p1788423362-rec.crt", cert_rotation: "replace" }
+    rec: { auth: { claim: { value: "a6p1788423362-rec" } }, ip_allowlist: ["10.42.0.2"], public_cert_ref: "clients/provisioned/certs/a6p1788423362-rec.crt", cert_rotation: "replace" }
