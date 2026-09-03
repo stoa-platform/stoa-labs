@@ -1,7 +1,7 @@
 ---
 title: "A4 — Les portes de la chaîne et l'axe déployeur, au dispatch de `provision-apply` : `environments.yaml` décide (fourEyes, approverGroup, refs/ITSM, deployerGroup) — deux portes, une source, aucun mécanisme neuf"
 type: design
-status: "LIVRÉ 2026-09-03 — spec amendée après critique adverse à trois lentilles (53 constats, 5 bloquants intégrés) ; hors ligne 133/133 (lint-ci [13/13]) + A3 174/174 + env-chain 18/18 ; builds réels 80/80 au 6e passage (#119→#64, #120 REQUESTER_UNKNOWN, #121 FOUR_EYES_VIOLATION, #122→#65 DEPLOYER_GROUP_REQUIRED, #123→#66 chaîne entière int, #67 après retrait, #124 GATE_REFS_REQUIRED, #125 ITSM_NOT_APPROVED, TERMINUS_SANS_VOIE après ITSM approved) ; cinq défauts de harnais trouvés PAR les passages 2-5 (voir D9 « mesures live »)"
+status: "LIVRÉ 2026-09-03 — spec amendée après critique adverse à trois lentilles (53 constats, 5 bloquants intégrés) ; hors ligne 133/133 (lint-ci [13/13]) + A3 174/174 + env-chain 18/18 ; builds réels 80/80 au 6e passage (#119→#64, #120 REQUESTER_UNKNOWN, #121 FOUR_EYES_VIOLATION, #122→#65 DEPLOYER_GROUP_REQUIRED, #123→#66 chaîne entière int, #67 après retrait, #124 GATE_REFS_REQUIRED, #125 ITSM_NOT_APPROVED, TERMINUS_SANS_VOIE après ITSM approved) ; régressions live A3 54/54 (2.4 réaligné) et A2 60/60 ; cinq défauts de harnais trouvés PAR les passages 2-5 (voir D10)"
 date: 2026-09-02
 lié: [GOAL-cd-applications-2026-09-02, 2026-09-02-a3-credential-du-seul-palier-design, 2026-09-02-a2-reference-sha-merge-design, 2026-08-27-g2-axe-qui-deploie-design, adr-084-axe-qui-deploie-deployer-group, adr-082-ouverture-palier-retention-credential, adr-081-ou-vit-la-decision-humaine, adr-075 (anti-TOCTOU ITSM au dispatch)]
 ---
