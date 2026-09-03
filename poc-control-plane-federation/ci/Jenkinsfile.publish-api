@@ -17,7 +17,7 @@ pipeline {
   options { disableConcurrentBuilds() }
 
   parameters {
-    string(name: 'MANIFEST', defaultValue: 'clients/_example/apis/accounts-read.publish.yml',
+    string(name: 'MANIFEST', defaultValue: '',
            description: "Manifeste de publication (vars du rôle : apim_api).")
     // Env cible : sélectionne per_env[ENVIRONMENT] (inbound issuer/JWKS/audience par
     // env) ET pose X-Environment vers le proxy d'admin. Vide = API mono-env.
@@ -87,7 +87,7 @@ pipeline {
         dir('poc-control-plane-federation') {
           sh '''
             set -eu
-            MANIFEST="${MANIFEST:-clients/_example/apis/accounts-read.publish.yml}"
+            MANIFEST="${MANIFEST:?MANIFEST requis (manifeste de l'API a publier) — aucune API par defaut}"
             echo "=== PLAN : manifeste ${MANIFEST} ==="
             test -f "$MANIFEST" || { echo "manifeste introuvable : $MANIFEST"; exit 1; }
             grep -qE '^[[:space:]]*name:' "$MANIFEST" && grep -qE '^[[:space:]]*contract:' "$MANIFEST" \
@@ -105,7 +105,7 @@ pipeline {
           sh '''
             set +x
             set -eu
-            MANIFEST="${MANIFEST:-clients/_example/apis/accounts-read.publish.yml}"
+            MANIFEST="${MANIFEST:?MANIFEST requis (manifeste de l'API a publier) — aucune API par defaut}"
 
             # Équipe de cloisonnement de l'API (E1) — DÉRIVÉE du chemin KV du
             # compte de service, comme le fait déjà le chemin consommateur.

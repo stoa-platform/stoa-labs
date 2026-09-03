@@ -130,7 +130,9 @@ REQ_CERT_PEM="${REQ_CERT_PEM:-}"
 REQ_CERT_ROTATION="${REQ_CERT_ROTATION:-}"
 REQ_BACKEND_KEY_REF="${REQ_BACKEND_KEY_REF:-}"
 REQ_BACKEND_KEY_FIELD="${REQ_BACKEND_KEY_FIELD:-}"
-TENANT="${TENANT:-banking-demo}"
+# Pas de tenant par défaut : cette valeur entre dans `auth.vault_sub` du manifeste,
+# qui est COMMITÉ — un défaut de lab s'écrirait dans le dépôt du client.
+TENANT="${TENANT:-}"
 
 # MODE = propriété de l'APPELANT, jamais du body (anti-spoof) : OIG provisionne
 # (NB mesuré 2026-09-02 : sur la voie machine, REQ_CALLER est aujourd'hui `$.caller`
@@ -183,7 +185,10 @@ REQ_CHANGE_REF="${REQ_CHANGE_REF:-}"
 REQ_PV_REF="${REQ_PV_REF:-}"
 GIT_REPO="${GIT_REPO:-ci/stoa-labs}"
 GIT_BASE="${GIT_BASE:-main}"
-GIT_HOST="${GIT_HOST:-http://gitea:3000}"
+# Aucun repli vers le lab : un client dont le pipeline ne transmet pas la variable
+# doit le lire ici, pas découvrir plus tard que la chaîne a visé « gitea:3000 ».
+GIT_HOST="${GIT_HOST:?GIT_HOST requis (base de la forge, ex. https://forge.client) — aucun repli}"
+GIT_WEB_HOST="${GIT_WEB_HOST:-$GIT_HOST}"   # l'adresse HUMAINE, si elle diffère de celle vue par le CI
 MANIFEST_DIR="${MANIFEST_DIR:-poc-control-plane-federation/clients/provisioned/applications}"
 
 # Garde-fous d'entrée : noms sûrs (pas d'injection dans un path/branche/YAML).
@@ -372,12 +377,18 @@ trap 'rm -rf "$WORK" "$TOKENS_DIR"' EXIT
 # A7 : AUCUNE URL ne porte de credential. Le push s'authentifie par GIT_ASKPASS
 # (login du pousseur + token lu dans le fichier) — jamais en argv, jamais dans un
 # message d'erreur, jamais dans l'environnement d'un enfant.
-PUSH_URL="http://${GIT_HOST#http://}/${GIT_REPO}.git"
+# Le schéma de GIT_HOST est CONSERVÉ (2026-09-03) : « http:// » était forcé en
+# tête après avoir retiré le seul préfixe http://, ce qui produisait littéralement
+# « http://https://forge.client/... » sur une forge en TLS — et l'erreur de push
+# étant filtrée des deux jetons, le message n'en disait rien. Forme reprise mot
+# pour mot de provision-plan.sh (même dépôt, bug déjà nommé là-bas).
+case "$GIT_HOST" in http://*|https://*|file://*) GIT_BASE_URL="${GIT_HOST%/}";; *) GIT_BASE_URL="http://${GIT_HOST%/}";; esac
+PUSH_URL="${GIT_BASE_URL}/${GIT_REPO}.git"
 GIT_ASKPASS="$(forge_askpass "$TOKENS_DIR" "$PUSH_LOGIN" "$PUSH_TF")" || { echo "ERREUR: askpass" >&2; exit 1; }
 export GIT_ASKPASS GIT_TERMINAL_PROMPT=0
 
 echo "[1/4] clone ${GIT_REPO} (base ${GIT_BASE})"
-CLONE_URL="http://${GIT_HOST#http://}/${GIT_REPO}.git"
+CLONE_URL="${GIT_BASE_URL}/${GIT_REPO}.git"
 # A6 : les deux URL git sont surchargeables (épreuves hors ligne sur un dépôt nu en file://) — défauts = inchangés.
 CLONE_URL="${GIT_CLONE_URL:-$CLONE_URL}"; PUSH_URL="${GIT_PUSH_URL:-$PUSH_URL}"
 # ÉCHEC NET SI LE CLONE RATE. Ce script n'a pas `set -e` (délibérément : les
@@ -396,7 +407,7 @@ if ! git clone -q --depth 1 -b "$GIT_BASE" "$CLONE_URL" "$WORK/repo" 2>/dev/null
   exit 1
 fi
 cd "$WORK/repo" || { echo "ERREUR: clone absent après succès annoncé — abandon avant toute écriture" >&2; exit 1; }
-git config user.email "ci@bc.example"; git config user.name "provisioning (service ci)"
+git config user.email "${CI_COMMIT_EMAIL:-ci@bc.example}"; git config user.name "${CI_COMMIT_NAME:-provisioning (service ci)}"
 
 # ── A1 — le manifeste EXISTE-T-IL déjà sur GIT_BASE ? ───────────────────────
 # Si oui : ses champs trans-paliers font CONTRAT. Absents de la demande,
@@ -542,6 +553,9 @@ done
 # principe de resolve-env.yml : IP, certificat et clé backend DIFFÈRENT par
 # environnement, seule l'identité de l'app est invariante).
 if [ "$MODE" = "internal" ]; then
+  # TENANT n'a plus de valeur par défaut (2026-09-03) : elle s'écrivait dans le
+  # manifeste COMMITÉ. Sans équipe déclarée, le chemin de coffre serait « deploy//apps/… ».
+  [ -n "$TENANT" ] || fail "TENANT_INDETERMINE : mode internal sans equipe — le chemin de coffre du client ne peut pas etre derive (fournir TEAM, ou TENANT au job)"
   PER_ENV_AUTH="auth: { vault_sub: \"deploy/${TENANT}/apps/${REQ_APP}/${REQ_ENV}/oauth-client\" }"
 else
   PER_ENV_AUTH="auth: { claim: { value: \"${REQ_CLIENT_ID}\" } }"
@@ -821,7 +835,7 @@ case "$PR_OUT" in
   CREATED*) echo "  PR créée: #${PR_NUM}";;
   *)        echo "ERREUR: réponse inattendue: ${PR_OUT}" >&2; exit 1;;
 esac
-PR_URL="${GIT_HOST}/${GIT_REPO}/pulls/${PR_NUM}"
+PR_URL="${GIT_WEB_HOST}/${GIT_REPO}/pulls/${PR_NUM}"
 echo "PR_URL=${PR_URL}"
 
 # ── PLAN ENCHAÎNÉ (ADR-081, corollaire 1) ────────────────────────────────────

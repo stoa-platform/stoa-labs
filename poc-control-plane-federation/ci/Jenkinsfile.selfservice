@@ -183,7 +183,7 @@ pipeline {
               genericVariables: [[key: 'MANIFEST', value: '$.manifest']],
               printContributedVariables: false, printPostContent: false)]),
             parameters([
-            string(name: 'MANIFEST', defaultValue: 'clients/_example/applications/demo-consumer.ansible.yml',
+            string(name: 'MANIFEST', defaultValue: '',
                    description: "Manifeste de demande (vars du rôle : apim_ss_app)."),
             // A2 (GOAL cd-applications) — LA RÉFÉRENCE. Fourni par provision-apply :
             // le SHA de merge de la PR provision/<app>-<env>. Le stage « Référence »
@@ -290,7 +290,7 @@ pipeline {
               printf '%s\\n' "$REF"  > .a2-reference-sha
               printf '%s\\n' "$MODE" > .a2-reference-mode
               DIGEST=""
-              MAN="${MANIFEST:-clients/_example/applications/demo-consumer.ansible.yml}"
+              MAN="${MANIFEST:?MANIFEST requis (manifeste de l'application a deployer) — aucune application par defaut}"
               if [ -n "${ENVIRONMENT:-}" ] && [ -f "$MAN" ]; then
                 if [ "$MODE" = pinned ]; then
                   DIGEST="$(bash -c '. scripts/lib/app-manifest.sh && app_manifest_digest_env "$1" "$2"' _ "$MAN" "$ENVIRONMENT")" \
@@ -325,7 +325,7 @@ pipeline {
           dir('poc-control-plane-federation') {
             sh '''
               set -eu
-              MANIFEST="${MANIFEST:-clients/_example/applications/demo-consumer.ansible.yml}"
+              MANIFEST="${MANIFEST:?MANIFEST requis (manifeste de l'application a deployer) — aucune application par defaut}"
               echo "=== PLAN : manifeste ${MANIFEST} ==="
               test -f "$MANIFEST" || { echo "manifeste introuvable : $MANIFEST"; exit 1; }
               grep -qE '^[[:space:]]*name:' "$MANIFEST" && grep -qE '^[[:space:]]*api:' "$MANIFEST" \
@@ -397,7 +397,7 @@ pipeline {
             sh '''
               set +x            # NE JAMAIS écho : mot de passe, JWT, token Vault, creds gateway
               set -eu
-              MANIFEST="${MANIFEST:-clients/_example/applications/demo-consumer.ansible.yml}"
+              MANIFEST="${MANIFEST:?MANIFEST requis (manifeste de l'application a deployer) — aucune application par defaut}"
 
               # token_url : passé en -e SEULEMENT si non vide (sinon résolution Vault).
               TOKEN_URL_OPT=""

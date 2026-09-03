@@ -48,11 +48,14 @@ REQ_REASON="${REQ_REASON:-}"; requis REQ_REASON "$REQ_REASON" "formulaire app-ro
 REQ_CHANGE_REF="${REQ_CHANGE_REF:-}"
 REQ_CALLER="${REQ_CALLER:-unknown}"
 GITEA_TOKEN="${GITEA_TOKEN:?GITEA_TOKEN requis}"; export GITEA_TOKEN
-GIT_HOST="${GIT_HOST:-http://gitea:3000}"
+GIT_HOST="${GIT_HOST:?GIT_HOST requis (base de la forge, ex. https://forge.client) — aucun repli}"
+GIT_WEB_HOST="${GIT_WEB_HOST:-$GIT_HOST}"   # l'adresse HUMAINE, si elle diffère de celle vue par le CI
 GIT_REPO="${GIT_REPO:-ci/stoa-labs}"
 GIT_BASE="${GIT_BASE:-main}"
 GIT_SUBDIR="${GIT_SUBDIR-poc-control-plane-federation}"
-GIT_CLONE_URL="${GIT_CLONE_URL:-http://${GIT_HOST#http://}/${GIT_REPO}.git}"
+# schéma conservé (cf. provision-request.sh) : « http:// » forcé cassait toute forge TLS
+case "$GIT_HOST" in http://*|https://*|file://*) GIT_BASE_URL="${GIT_HOST%/}";; *) GIT_BASE_URL="http://${GIT_HOST%/}";; esac
+GIT_CLONE_URL="${GIT_CLONE_URL:-${GIT_BASE_URL}/${GIT_REPO}.git}"
 GITEA_SERVICE_LOGINS="${GITEA_SERVICE_LOGINS:-ci}"
 PROVISION_PLAN_INLINE="${PROVISION_PLAN_INLINE:-true}"
 ROLLBACK_OUT="${ROLLBACK_OUT:-}"
@@ -169,7 +172,7 @@ git clone -q --single-branch --branch "$GIT_BASE" "$GIT_CLONE_URL" "$R" 2>"$WORK
 [ "$(git -C "$R" rev-parse --is-shallow-repository)" = false ] \
   || refus LIGNEE_TRONQUEE "le clone de ${GIT_BASE} est shallow — un historique tronqué ne peut pas prouver l'absence d'un état précédent"
 g(){ git -C "$R" "$@"; }
-g config user.email "ci@bc.example"; g config user.name "provisioning (service ci)"
+g config user.email "${CI_COMMIT_EMAIL:-ci@bc.example}"; g config user.name "${CI_COMMIT_NAME:-provisioning (service ci)}"
 
 # ── 5. MANIFESTE sur main, palier déclaré, naissance courante ─────────────────
 etape manifeste
@@ -350,7 +353,7 @@ case "$OPEN_LINE" in
       fi
     fi
     if [ "$SAME" = 1 ]; then
-      [ "$O_URL" != "-" ] || O_URL="${GIT_HOST}/${GIT_REPO}/pulls/${O_NUM}"
+      [ "$O_URL" != "-" ] || O_URL="${GIT_WEB_HOST}/${GIT_REPO}/pulls/${O_NUM}"
       echo "EXIST : la PR #${O_NUM} (${O_LOGIN}) porte déjà exactement cette restauration — rien à pousser"
       echo "PR_URL=${O_URL}"; echo "REPLI_DE=${SHA_N} REPLI_VERS=${SHA_N1} REPLI_DIGEST=${D_EXPECT}"
       [ -n "$ROLLBACK_OUT" ] && printf 'PR_URL=%s\nPR_NUMBER=%s\nREPLI_DE=%s\nREPLI_VERS=%s\nREPLI_DIGEST=%s\nREPLI_DU_REPLI=%s\n' "$O_URL" "$O_NUM" "$SHA_N" "$SHA_N1" "$D_EXPECT" "0" > "$ROLLBACK_OUT"
