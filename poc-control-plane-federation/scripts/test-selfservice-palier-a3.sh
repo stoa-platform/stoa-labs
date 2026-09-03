@@ -112,10 +112,12 @@ environments: [dev, rec, int, homol, prod]
 gates: []
 EOF
 MAN="$TMP/man.yml"
-man_idp(){ # <fichier> <team|''>
+man_idp(){ # <fichier> <team|''> [paliers déclarés, défaut "rec int"]
+  local e
   { printf -- '---\napim_ss_app:\n  name: "appa"\n  api: "demo-selfservice"\n  api_version: "1.0.0"\n'
     [ -n "$2" ] && printf '  team: "%s"\n' "$2"
-    printf '  auth:\n    mode: "idp"\n    claim: { name: "azp" }\n  per_env:\n    rec: { auth: { claim: { value: "appa-rec" } } }\n    int: { auth: { claim: { value: "appa-int" } } }\n'; } > "$1"
+    printf '  auth:\n    mode: "idp"\n    claim: { name: "azp" }\n  per_env:\n'
+    for e in ${3:-rec int}; do printf '    %s: { auth: { claim: { value: "appa-%s" } } }\n' "$e" "$e"; done; } > "$1"
 }
 man_internal(){ # <fichier> <vault_sub racine> <vault_sub rec>
   printf -- '---\napim_ss_app:\n  name: "appa"\n  api: "demo-selfservice"\n  api_version: "1.0.0"\n  team: "banking-demo"\n  auth:\n    mode: "internal"\n    vault_sub: "%s"\n  per_env:\n    rec: { auth: { vault_sub: "%s" } }\n' "$2" "$3" > "$1"
@@ -345,7 +347,7 @@ if mutant 's@if t \& \{"create", "update", "delete", "patch"\}: print\("TICKET_I
   run_mut m_inscr rec; [ "$(grc)" = 0 ] && ok "A.27iii contrôle d'inscriptibilité retiré ⇒ le ticket auto-fabriqué PASSE sur le mutant" || bad "A.27iii le mutant refuse encore : $(gout | tail -1)"
   run_gate rec; refus TICKET_INSCRIPTIBLE && ok "A.27iii' l'original refuse toujours" || bad "A.27iii' l'original a dérivé"
 fi
-if mutant 's@^printf .%s\\n. "\$S" \| grep -qx -- "\$TEAM" \\$@true \\@' m_team; then
+if mutant 's@^ *printf .%s\\n. "\$S" \| grep -qx -- "\$TEAM" \\$@true \\@' m_team; then
   set_ctl "$CTL_OK"
   run_mut m_team rec "MANIFEST=$TMP/man-pt.yml"; [ "$(grc)" = 0 ] && ok "A.27iv TEAM ∈ S retiré ⇒ le manifeste d'une autre équipe PASSE sur le mutant" || bad "A.27iv le mutant refuse encore : $(gout | tail -1)"
   run_gate rec "MANIFEST=$TMP/man-pt.yml"; refus TEAM_NON_PORTEE && ok "A.27iv' l'original refuse toujours" || bad "A.27iv' l'original a dérivé"
@@ -420,8 +422,8 @@ if mutant 's@^if \[ -n "\$DEPLOYER_GROUP" \]; then$@if false; then@' m_dep; then
 fi
 # A.M8 mutation d'ORDRE : le bloc §2bis déplacé APRÈS le ticket — l'ordre se
 # mesure à l'EXÉCUTION (le journal du stub : une lecture KV avant le refus).
-awk '/^# ── 2bis\./,/^# ── 3\./' "$GATE" | sed '$d' > "$TMP/blk-2bis"
-awk '/^# ── 2bis\./ { skip=1 } skip && /^# ── 3\./ { skip=0 } skip { next } /^# ── 5\./ && !ins { while ((getline l < B) > 0) print l; close(B); ins=1 } { print }' B="$TMP/blk-2bis" "$GATE" > "$TMP/m_order.sh"
+awk '/^# ── 2bis\./,/^# ── 2ter\./' "$GATE" | sed '$d' > "$TMP/blk-2bis"
+awk '/^# ── 2bis\./ { skip=1 } skip && /^# ── 2ter\./ { skip=0 } skip { next } /^# ── 5\./ && !ins { while ((getline l < B) > 0) print l; close(B); ins=1 } { print }' B="$TMP/blk-2bis" "$GATE" > "$TMP/m_order.sh"
 if [ -s "$TMP/blk-2bis" ] && ! cmp -s "$GATE" "$TMP/m_order.sh" && bash -n "$TMP/m_order.sh" 2>/dev/null; then
   set_ctl "$CTL_INT_NO"
   run_mut m_order int "STOA_ENV_CHAIN_FILE=$TMP/chain-gab.yaml" VAULT_USER=alice
@@ -431,6 +433,45 @@ if [ -s "$TMP/blk-2bis" ] && ! cmp -s "$GATE" "$TMP/m_order.sh" && bash -n "$TMP
 else
   bad "A.M8 mutation d'ordre non construite (bloc §2bis introuvable ou mutant cassé)"
 fi
+
+echo "── A.46–A.53 (A7, ADR-090) §2ter : l'équipe vient de Git sous une déclaration PROUVÉE ──"
+CTL_BOB_INT='{"lookup":{"policies":["deploy-payments-team","apply-int","default"]},"caps":{"paths":{"secret/data/stoa/envs/int/wm-admin":["read"]}},"kv":{"secret/data/stoa/envs/int/wm-admin":200}}'
+CTL_OSCAR_PROD='{"lookup":{"policies":["operator-deploy","default"]},"caps":{"paths":{"secret/data/stoa/envs/prod/wm-admin":["read"]}},"kv":{"secret/data/stoa/envs/prod/wm-admin":200}}'
+man_idp "$TMP/man-bd.yml" banking-demo "rec int"
+set_ctl "$CTL_BOB_INT"; run_gate int "STOA_ENV_CHAIN_FILE=$TMP/chain-gab.yaml" VAULT_USER=bob "MANIFEST=$TMP/man-bd.yml"
+[ "$(grc)" = 0 ] && [ "$(out_val PALIER_TEAM)" = banking-demo ] && grep -q "^équipe : 'banking-demo' — celle du manifeste mergé (la porte vers int nomme le déployeur 'apim-apply-int') ; tenants du porteur : payments-team$" "$TMP/g.out" \
+  && ok "A.46 int déclaré, bob (deploy-payments-team + apply-int), manifeste banking-demo ⇒ rc 0, PALIER_TEAM=banking-demo (Git), tenants du porteur journalisés" || bad "A.46 rc $(grc) team=$(out_val PALIER_TEAM) : $(gout | grep -E 'REFUS|équipe' | head -1)"
+L_DECL=$(grep -n '^déclaration déployeur' "$TMP/g.out" | head -1 | cut -d: -f1); L_TEAM=$(grep -n '^équipe :' "$TMP/g.out" | head -1 | cut -d: -f1)
+[ -n "$L_DECL" ] && [ -n "$L_TEAM" ] && [ "$L_DECL" -lt "$L_TEAM" ] && [ "$(jcount '"m": "GET", "p": "/v1/secret/data/stoa/envs/int/wm-admin"')" = 1 ] && ok "A.46b la déclaration est PROUVÉE avant que l'équipe soit décidée ; puis le ticket int est lu (une fois)" || bad "A.46b ordre decl=$L_DECL team=$L_TEAM kv=$(jcount '/v1/secret/data/stoa/envs/int/wm-admin')"
+man_idp "$TMP/man-noteam2.yml" "" "rec int"
+set_ctl "$CTL_BOB_INT"; run_gate int "STOA_ENV_CHAIN_FILE=$TMP/chain-gab.yaml" VAULT_USER=bob "MANIFEST=$TMP/man-noteam2.yml"
+refus TEAM_INDETERMINEE && grep -q 'nommer team:' "$TMP/g.out" && [ "$(jcount capabilities-self)" = 0 ] && ok "A.47 sous déclaration, manifeste SANS team ⇒ TEAM_INDETERMINEE + remède « nommer team: » (jamais le tenant du déployeur), aucune capacité sondée" || bad "A.47 rc $(grc) : $(gout | tail -1)"
+run_gate int "STOA_ENV_CHAIN_FILE=$TMP/chain-gab.yaml" VAULT_USER=bob "MANIFEST=$TMP/man-bd.yml" APIM_TEAM=payments-team
+refus TEAM_DIVERGENTE && ok "A.48 APIM_TEAM=payments-team ≠ manifeste banking-demo sous déclaration ⇒ TEAM_DIVERGENTE (le knob ne comble pas)" || bad "A.48 rc $(grc) : $(gout | tail -1)"
+run_gate int "STOA_ENV_CHAIN_FILE=$TMP/chain-gab.yaml" VAULT_USER=bob "MANIFEST=$TMP/man-bd.yml" APIM_TEAM=banking-demo
+[ "$(grc)" = 0 ] && [ "$(out_val PALIER_TEAM)" = banking-demo ] && ok "A.48b APIM_TEAM concordant ⇒ rc 0" || bad "A.48b rc $(grc) : $(gout | tail -1)"
+man_idp "$TMP/man-intonly.yml" banking-demo "int"
+run_gate int "STOA_ENV_CHAIN_FILE=$TMP/chain-gab.yaml" VAULT_USER=bob "MANIFEST=$TMP/man-intonly.yml"
+refus TEAM_NON_ATTESTEE && grep -q "ne naît pas à 'int'" "$TMP/g.out" && ok "A.49 manifeste ne déclarant que int (aucun palier sans déclaration) ⇒ TEAM_NON_ATTESTEE" || bad "A.49 rc $(grc) : $(gout | tail -1)"
+man_idp "$TMP/man-bd3.yml" banking-demo "rec int homol"
+set_ctl "$CTL_OSCAR_PROD"; run_gate prod "STOA_ENV_CHAIN_FILE=$TMP/chain-gab.yaml" VAULT_USER=oscar "MANIFEST=$TMP/man-bd3.yml" "APIM_TERMINUS_BASE=http://prod-gw/rest/apigateway"
+[ "$(grc)" = 0 ] && [ "$(out_val PALIER_TEAM)" = banking-demo ] && [ "$(out_val PALIER_VIA)" = direct ] && grep -q "tenants du porteur : aucun$" "$TMP/g.out" && grep -q "^déclaration déployeur : 'oscar' porte 'operator-deploy'" "$TMP/g.out" && [ "$(jcount '"m": "GET", "p": "/v1/secret/data/stoa/envs/prod/wm-admin"')" = 1 ] \
+  && ok "A.50 LA PORTE DU GOAL hors ligne : terminus avec voie, oscar (operator-deploy, aucun tenant), manifeste banking-demo ⇒ rc 0, équipe de Git, ticket envs/prod/wm-admin lu une fois, voie directe" || bad "A.50 rc $(grc) team=$(out_val PALIER_TEAM) : $(gout | grep -E 'REFUS|équipe|déclaration' | head -2 | tr '\n' ' ')"
+set_ctl "$CTL_BOB_INT"; run_gate rec "STOA_ENV_CHAIN_FILE=$TMP/chain-gab.yaml" VAULT_USER=bob "MANIFEST=$TMP/man-bd.yml"
+refus TEAM_NON_PORTEE && ok "A.51 rec (sans déclaration), bob, manifeste banking-demo ⇒ TEAM_NON_PORTEE (A3 intact sur les paliers autonomes)" || bad "A.51 rc $(grc) : $(gout | tail -1)"
+man_internal "$TMP/man-vs.yml" deploy/payments-team/apps/appa/dev/oauth-client deploy/payments-team/apps/appa/rec/oauth-client
+set_ctl "$CTL_OK"; run_gate rec "MANIFEST=$TMP/man-vs.yml"
+refus VAULT_SUB_HORS_TENANT && [ "$(jcount capabilities-self)" = 0 ] && ok "A.52 mode internal, vault_sub sous payments-team pour une application banking-demo ⇒ VAULT_SUB_HORS_TENANT avant toute capacité" || bad "A.52 rc $(grc) : $(gout | tail -1)"
+set_ctl "$CTL_INT_NO"; run_gate int "STOA_ENV_CHAIN_FILE=$TMP/chain-gab.yaml" VAULT_USER=alice "MANIFEST=$TMP/man-bd.yml"
+refus DEPLOYER_GROUP_REQUIRED && ! grep -q '^équipe :' "$TMP/g.out" && ok "A.53 porteur NON prouvé (sans apply-int) ⇒ DEPLOYER_GROUP_REQUIRED, et aucune ligne d'équipe (rien n'est décidé sur un porteur non prouvé)" || bad "A.53 rc $(grc) : $(gout | grep -E 'REFUS|équipe' | head -2 | tr '\n' ' ')"
+if mutant 's@^DEPLOYER_GROUP="\$\(env_chain_gate_deployer_group "\$ENVIRONMENT"\)".*$@DEPLOYER_GROUP=""@' m_nodep; then
+  set_ctl "$CTL_OSCAR_PROD"; run_mut m_nodep prod "STOA_ENV_CHAIN_FILE=$TMP/chain-gab.yaml" VAULT_USER=oscar "MANIFEST=$TMP/man-bd3.yml" "APIM_TERMINUS_BASE=http://prod-gw/rest/apigateway"
+  refus TEAM_NON_PORTEE && ok "A.M9 lecture de la porte neutralisée ⇒ le mutant retombe sur A3 et refuse oscar TEAM_NON_PORTEE (A.50 rougit)" || bad "A.M9 mutant : rc $(grc) : $(gout | tail -1)"
+else bad "A.M9 mutant non construit"; fi
+if mutant '/TEAM_DIVERGENTE/d' m_nodiv; then
+  set_ctl "$CTL_BOB_INT"; run_mut m_nodiv int "STOA_ENV_CHAIN_FILE=$TMP/chain-gab.yaml" VAULT_USER=bob "MANIFEST=$TMP/man-bd.yml" APIM_TEAM=payments-team
+  [ "$(grc)" = 0 ] && ok "A.M10 TEAM_DIVERGENTE retiré ⇒ le knob discordant passe (A.48 rougit)" || bad "A.M10 mutant : rc $(grc)"
+else bad "A.M10 mutant non construit"; fi
 
 echo
 echo "═══ B. le câblage de ci/Jenkinsfile.selfservice (vue code) ═══"
@@ -629,7 +670,7 @@ grep -q '^vault_token_ttl()' "$TMP/lib.code" && ok "E.6 la fonction est définie
 
 # Le compte des contrôles est lui-même un contrôle : une section sautée (stub
 # mort, chemin absent) ne doit pas passer pour un vert plus court.
-EXPECTED_CHECKS=177
+EXPECTED_CHECKS=189
 TOTAL=$((PASS+FAIL))
 [ "$TOTAL" -eq "$((EXPECTED_CHECKS-1))" ] \
   && ok "$((TOTAL+1)) contrôles exécutés = $EXPECTED_CHECKS attendus (aucune section sautée)" \

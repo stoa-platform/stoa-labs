@@ -840,7 +840,7 @@ else
     || ok "⑳quinquies la liste SUIT providers : repo retiré ⇒ dépôt hors de la pose"
 fi
 
-echo "== ㉑ la voie consommateur valide l'env par la CHAÎNE, terminus exclu =="
+echo "== ㉑ la voie consommateur valide l'env par la CHAÎNE (A7 : la demande admet la chaîne ENTIÈRE, terminus compris — les portes décident) =="
 # Numérotation : ⑫..⑳ sont tous pris (cf. le commentaire de numérotation à
 # ⑨bter) ; le brief Task 7 (D6/D8) appelait ces épreuves ⑯ ⑯bis ⑯ter ⑯quater,
 # déjà pris par les mutations de ⑬/⑭ plus haut. ㉑ est la première étiquette
@@ -852,7 +852,7 @@ for F in scripts/provision-request.sh scripts/provision-plan.sh; do
     continue
   fi
   nc_strict "$F" > "$TMP/c21_nc"
-  grep -q 'env_chain_nonprod' "$TMP/c21_nc" \
+  grep -Eq '(^|[^_a-z])env_chain(_nonprod)?([^_a-z]|$)' "$TMP/c21_nc" \
     && ok "㉑ $F dérive la liste de la chaîne" \
     || bad "㉑ $F ne dérive pas (liste en dur ?)"
   grep -Eq 'dev\|rec\|int\|prod' "$TMP/c21_nc" \

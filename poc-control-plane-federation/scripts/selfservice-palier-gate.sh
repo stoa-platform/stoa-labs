@@ -128,7 +128,9 @@ over = ((app.get("per_env") or {}).get(os.environ["MAN_ENV"]) or {}) if isinstan
 oauth = over.get("auth") if isinstance(over, dict) and isinstance(over.get("auth"), dict) else {}
 mode = str(oauth.get("mode") or auth.get("mode") or "idp")
 vsub = str(oauth.get("vault_sub") or auth.get("vault_sub") or "")
-vals = {"NAME": str(app.get("name")), "TEAM": str(app.get("team") or ""), "MODE": mode, "VSUB": vsub}
+pe = app.get("per_env") if isinstance(app.get("per_env"), dict) else {}
+vals = {"NAME": str(app.get("name")), "TEAM": str(app.get("team") or ""), "MODE": mode, "VSUB": vsub,
+        "ENVS": " ".join(str(k) for k in pe.keys())}
 for k, v in vals.items():
     if "\n" in v or "\r" in v:
         sys.exit("le champ %s contient un saut de ligne" % k)
@@ -139,6 +141,7 @@ PY
 MAN_TEAM="$(printf '%s\n' "$MAN" | sed -n 's/^TEAM=//p')"
 MAN_MODE="$(printf '%s\n' "$MAN" | sed -n 's/^MODE=//p')"
 MAN_VSUB="$(printf '%s\n' "$MAN" | sed -n 's/^VSUB=//p')"
+MAN_ENVS="$(printf '%s\n' "$MAN" | sed -n 's/^ENVS=//p')"
 
 # ── le token : fichier d'en-tête, jamais argv ────────────────────────────────
 [ -s "$VAULT_TOKEN_FILE" ] || refus VAULT_TOKEN_ILLISIBLE "${VAULT_TOKEN_FILE} vide ou absent"
@@ -148,7 +151,7 @@ CA_ARGS=(); CA="${VAULT_CACERT:-${LABCTL_CA_FILE:-}}"; [ -n "$CA" ] && [ -f "$CA
 # `${CA_ARGS[@]+"${CA_ARGS[@]}"}` : un tableau VIDE sous `set -u` en bash 3.2 est « unbound ».
 vcurl(){ curl -sS --max-time 20 -H @"$TMP/vhdr" ${CA_ARGS[@]+"${CA_ARGS[@]}"} "$@"; }
 
-# ── 2. L'ÉQUIPE, décidée par le TOKEN ────────────────────────────────────────
+# ── 2. L'IDENTITÉ (lookup-self, une fois) et LA PORTE (lecture de fichier) ─────
 # team-name.yml : « l'appelant l'écrit — il ne doit pas pouvoir choisir sous
 # quelle équipe son application est cloisonnée ». La chaîne le tenait par le
 # chemin du credential du tenant, qu'A3 retire : repris SUR LE TOKEN.
@@ -158,16 +161,11 @@ S="$(SRC="$TMP/lookup.json" python3 -c 'import json,os
 d=(json.load(open(os.environ["SRC"])) or {}).get("data") or {}
 p=set((d.get("policies") or [])+(d.get("identity_policies") or []))
 print("\n".join(sorted(x[len("deploy-"):] for x in p if x.startswith("deploy-") and len(x)>len("deploy-"))))')" || refus IDENTITE_INVERIFIABLE "lookup-self illisible"
-TEAM="$APIM_TEAM"; [ -n "$TEAM" ] || TEAM="$MAN_TEAM"
-if [ -z "$TEAM" ]; then
-  N="$(printf '%s\n' "$S" | grep -c .)"
-  [ "$N" -ge 1 ] || refus TEAM_INDETERMINEE "le token ne porte aucune policy deploy-<tenant> et ni APIM_TEAM ni le manifeste ne nomment d'équipe"
-  [ "$N" -eq 1 ] || refus TEAM_AMBIGUE "le token porte plusieurs tenants ($(printf '%s' "$S" | tr '\n' ' ' | sed 's/ $//')) — nommer l'équipe (APIM_TEAM ou team: du manifeste)"
-  TEAM="$S"
-fi
-case "$TEAM" in *[!a-z0-9-]*) refus TEAM_INVALIDE "'${TEAM}' hors de la classe [a-z0-9-] — un nom d'équipe entre dans un chemin Vault qui porte une décision de tenant : refusé, jamais assaini";; esac
-printf '%s\n' "$S" | grep -qx -- "$TEAM" \
-  || refus TEAM_NON_PORTEE "l'équipe '${TEAM}' n'est pas parmi les tenants que le token porte ($(printf '%s' "$S" | tr '\n' ' ' | sed 's/ $//')) — l'appelant ne choisit pas sous quelle équipe son application est cloisonnée"
+# A7 (ADR-090) : la porte est lue ICI (fichier), la déclaration est PROUVÉE en
+# §2bis, et l'équipe se décide en §2ter — celle de Git sous une déclaration
+# prouvée, celle du token sinon (A3). Rien n'est décidé sur un porteur non prouvé.
+DEPLOYER_GROUP="$(env_chain_gate_deployer_group "$ENVIRONMENT")" || refus PARSE_GATE "deployerGroup de la porte '${ENVIRONMENT}'"
+DEPLOYER_DECLARED=0
 
 # ── 2bis. LA DÉCLARATION : QUI DÉPLOIE CE PALIER ? (A4 — ADR-084, la §7.a de team-promote) ──
 # La porte peut nommer un groupe déployeur (annuaire n°2, LDAP→policy Vault —
@@ -180,7 +178,6 @@ printf '%s\n' "$S" | grep -qx -- "$TEAM" \
 # demandeur, décision client n°1). Famille apim-apply-<x> : <x> DOIT être le
 # palier de la porte — sinon la déclaration « passerait » puis retomberait sur
 # PALIER_FERME, et le refus déclaratif mentirait.
-DEPLOYER_GROUP="$(env_chain_gate_deployer_group "$ENVIRONMENT")" || refus PARSE_GATE "deployerGroup de la porte '${ENVIRONMENT}'"
 if [ -n "$DEPLOYER_GROUP" ]; then
   DEPLOYER_POLICY="$(deployer_group_policy "$DEPLOYER_GROUP")" \
     || refus DEPLOYER_GROUP_UNSUPPORTED "'${DEPLOYER_GROUP}' est hors des deux familles vérifiables (apim-apply-<x> | apim-operator-<x>) — déclaration invérifiable, refus fail-closed"
@@ -198,6 +195,43 @@ print("OK" if os.environ["POL"] in p else "KO")' 2>/dev/null)" \
   [ "$DEPPOL" = OK ] \
     || refus DEPLOYER_GROUP_REQUIRED "la porte vers '${ENVIRONMENT}' déclare le groupe déployeur '${DEPLOYER_GROUP}' (policy projetée '${DEPLOYER_POLICY}') — le token de l'identité '${WHO}' ne la porte pas, refus"
   echo "déclaration déployeur : '${WHO}' porte '${DEPLOYER_POLICY}' (groupe '${DEPLOYER_GROUP}')"
+  DEPLOYER_DECLARED=1
+fi
+
+
+# ── 2ter. L'ÉQUIPE : celle de Git sous une déclaration PROUVÉE, celle du token sinon (A7, ADR-090) ──
+# Sous une déclaration de déployeur, le porteur n'est pas un tenant (bob, carol,
+# oscar : équipes release, opérateur de prod) : lui exiger deploy-<tenant>
+# refuserait tout déploiement par une équipe release, ou donnerait à l'opérateur
+# la policy d'ÉCRITURE de chaque tenant. L'équipe est alors celle du manifeste
+# MERGÉ (team:, figée à la première demande — A1 —, approuvée au merge par la
+# porte) ; absente ⇒ refus (jamais le tenant du déployeur du moment) ; APIM_TEAM
+# ne peut que concorder ; et un palier SANS déclaration doit déjà être déclaré
+# (une application ne naît pas à int — attestation partielle, dite dans l'ADR).
+if [ "$DEPLOYER_DECLARED" = 1 ]; then
+  TEAM="$MAN_TEAM"
+  [ -n "$TEAM" ] || refus TEAM_INDETERMINEE "la porte vers '${ENVIRONMENT}' nomme le déployeur '${DEPLOYER_GROUP}', qui n'est pas l'équipe : l'équipe vient du manifeste mergé, et il n'en nomme aucune — nommer team: à la demande (une application sans équipe est confinée aux paliers autonomes)"
+  [ -z "$APIM_TEAM" ] || [ "$APIM_TEAM" = "$TEAM" ] || refus TEAM_DIVERGENTE "APIM_TEAM='${APIM_TEAM}' ≠ team du manifeste '${TEAM}' — sous une déclaration de déployeur, le knob ne peut que concorder, jamais choisir"
+  case "$TEAM" in *[!a-z0-9-]*) refus TEAM_INVALIDE "'${TEAM}' hors de la classe [a-z0-9-] — un nom d'équipe entre dans un chemin Vault qui porte une décision de tenant : refusé, jamais assaini";; esac
+  ATTESTED=0
+  for e in $CHAIN; do
+    g="$(env_chain_gate_deployer_group "$e")" || refus PARSE_GATE "deployerGroup de la porte '${e}'"
+    if [ -z "$g" ]; then case " $MAN_ENVS " in *" $e "*) ATTESTED=1;; esac; fi
+  done
+  [ "$ATTESTED" = 1 ] || refus TEAM_NON_ATTESTEE "aucun palier sans déclaration de déployeur n'est déclaré dans per_env (${MAN_ENVS:-aucun}) — une application ne naît pas à '${ENVIRONMENT}' : l'équipe '${TEAM}' n'a été attestée par aucun tenant"
+  TENANTS="$(printf '%s' "$S" | tr '\n' ' ' | sed 's/ $//')"; [ -n "$TENANTS" ] || TENANTS=aucun
+  echo "équipe : '${TEAM}' — celle du manifeste mergé (la porte vers ${ENVIRONMENT} nomme le déployeur '${DEPLOYER_GROUP}') ; tenants du porteur : ${TENANTS}"
+else
+  TEAM="$APIM_TEAM"; [ -n "$TEAM" ] || TEAM="$MAN_TEAM"
+  if [ -z "$TEAM" ]; then
+    N="$(printf '%s\n' "$S" | grep -c .)"
+    [ "$N" -ge 1 ] || refus TEAM_INDETERMINEE "le token ne porte aucune policy deploy-<tenant> et ni APIM_TEAM ni le manifeste ne nomment d'équipe"
+    [ "$N" -eq 1 ] || refus TEAM_AMBIGUE "le token porte plusieurs tenants ($(printf '%s' "$S" | tr '\n' ' ' | sed 's/ $//')) — nommer l'équipe (APIM_TEAM ou team: du manifeste)"
+    TEAM="$S"
+  fi
+  case "$TEAM" in *[!a-z0-9-]*) refus TEAM_INVALIDE "'${TEAM}' hors de la classe [a-z0-9-] — un nom d'équipe entre dans un chemin Vault qui porte une décision de tenant : refusé, jamais assaini";; esac
+  printf '%s\n' "$S" | grep -qx -- "$TEAM" \
+    || refus TEAM_NON_PORTEE "l'équipe '${TEAM}' n'est pas parmi les tenants que le token porte ($(printf '%s' "$S" | tr '\n' ' ' | sed 's/ $//')) — l'appelant ne choisit pas sous quelle équipe son application est cloisonnée"
 fi
 
 # ── 3. LES CAPACITÉS, en un appel, AVANT de lire quoi que ce soit ────────────
@@ -208,6 +242,10 @@ if [ "$MAN_MODE" = internal ]; then
   # ET dans celui que le rôle écrira : forme contrôlée, refus nommé, jamais un
   # assainissement silencieux qui découplerait le chemin prouvé du chemin écrit.
   case "$MAN_VSUB" in *[!A-Za-z0-9_./-]*|*..*) refus VAULT_SUB_INVALIDE "auth.vault_sub='${MAN_VSUB}' hors de la classe [A-Za-z0-9_./-] (ou porte '..') — refusé";; esac
+  # A7 : le chemin du client généré est LIÉ au tenant — sans ce lien, un vault_sub
+  # édité à la main sous un autre tenant serait inscriptible par un déployeur de
+  # cet autre tenant (critique sécurité A7 n°4).
+  case "$MAN_VSUB" in "deploy/${TEAM}/"*) ;; *) refus VAULT_SUB_HORS_TENANT "auth.vault_sub='${MAN_VSUB}' n'est pas sous deploy/${TEAM}/ — le client généré d'une application de '${TEAM}' ne s'écrit que sous son tenant";; esac
   VSUB_PATH="$(kv_data_path "$MAN_VSUB")"
 fi
 CAPS_BODY="$(T="$TICKET_PATH" V="$VSUB_PATH" python3 -c 'import json,os;ps=[os.environ["T"]]
