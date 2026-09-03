@@ -565,6 +565,11 @@ except Exception: print("")' 2>/dev/null; }
   else
     ok "C.0 base jetable $BASE créée depuis main (aucune écriture sur main pendant cette suite)"
     COMMON=(GITEA_TOKEN="$GITEA_TOKEN" GIT_HOST="$GH" GIT_BASE="$BASE" PROVISION_PLAN_INLINE=false)
+    # A7 : une chaîne SANS porte pour les demandes int de C.5 — sous le gabarit réel,
+    # int exige les quatre yeux et la demande sous ci refuse REQUESTER_UNKNOWN avant
+    # le clone ; C.5 mesure le CONTRAT (après le clone), pas la porte.
+    printf 'environments: [dev, rec, int, homol, prod]\ngates: []\n' > "$TMP/chain-libre.yaml"
+    LIBRE=("STOA_ENV_CHAIN_FILE=$TMP/chain-libre.yaml")
 
     # ── C.1 demande dev (idp) ──
     APP="p3a1idp$TS"; BD="provision/${APP}-dev"; BR="provision/${APP}-rec"; CLEAN_BRANCHES+=("$BD" "$BR")
@@ -633,7 +638,7 @@ except Exception: print("")' 2>/dev/null; }
 
     # ── C.5 CONTRE-ÉPREUVE 2 : autre api ⇒ CONTRAT_DIVERGENT, aucune branche ──
     BI="provision/${APP}-int"; CLEAN_BRANCHES+=("$BI")
-    OUT=$(env "${COMMON[@]}" REQ_APP="$APP" REQ_ENV=int REQ_API=payments-initiation \
+    OUT=$(env "${COMMON[@]}" "${LIBRE[@]}" REQ_APP="$APP" REQ_ENV=int REQ_API=payments-initiation \
           REQ_CALLER=oig-provisioner REQ_CLIENT_ID="${APP}-int" bash "$S" 2>&1); RC=$?
     if [ "$RC" -eq 2 ] && printf '%s' "$OUT" | grep -q 'CONTRAT_DIVERGENT' \
        && printf '%s' "$OUT" | grep -q "api : manifeste='accounts-read' demande='payments-initiation'" \
@@ -642,12 +647,12 @@ except Exception: print("")' 2>/dev/null; }
     else
       ko "C.5 api divergente : rc=$RC branche=$(branch_exists "$BI" && echo EXISTE || echo absente) — $(printf '%s' "$OUT" | tail -2)"
     fi
-    OUT=$(env "${COMMON[@]}" REQ_APP="$APP" REQ_ENV=int REQ_API=accounts-read REQ_API_VER=1.0.0 \
+    OUT=$(env "${COMMON[@]}" "${LIBRE[@]}" REQ_APP="$APP" REQ_ENV=int REQ_API=accounts-read REQ_API_VER=1.0.0 \
           REQ_CALLER=oig-provisioner REQ_CLIENT_ID="${APP}-int" bash "$S" 2>&1); RC=$?
     [ "$RC" -eq 2 ] && printf '%s' "$OUT" | grep -q "api_version : manifeste='2.0.0' demande='1.0.0'" && ! branch_exists "$BI" \
       && ok "C.5b version FOURNIE différente (1.0.0 vs 2.0.0) : CONTRAT_DIVERGENT, aucune branche" \
       || ko "C.5b version divergente : rc=$RC — $(printf '%s' "$OUT" | tail -2)"
-    OUT=$(env "${COMMON[@]}" REQ_APP="$APP" REQ_ENV=int REQ_API=accounts-read \
+    OUT=$(env "${COMMON[@]}" "${LIBRE[@]}" REQ_APP="$APP" REQ_ENV=int REQ_API=accounts-read \
           REQ_CALLER=cli2-provisioner bash "$S" 2>&1); RC=$?
     [ "$RC" -eq 2 ] && printf '%s' "$OUT" | grep -q "mode : manifeste='idp' demande='internal'" && ! branch_exists "$BI" \
       && ok "C.5c appelant cli2 (mode internal) sur une app idp : CONTRAT_DIVERGENT sur le mode (anti-spoof conservé)" \
@@ -773,11 +778,13 @@ YAML
       printf '%s' "$PRB" | grep -q "equipe (cloisonnement) : $TEAM (heritee du manifeste" \
         && ok "C.9e corps de PR rec : la team héritée est NOMMÉE au valideur (« heritee du manifeste »)" \
         || ko "C.9e corps de PR rec sans mention de la team héritée : $(printf '%s' "$PRB" | grep -i equipe)"
-      OUT4=$(env "${COMMON[@]}" REQ_APP="$APPT" REQ_ENV=int REQ_API=accounts-read REQ_CALLER=oig-provisioner \
+      OUT4=$(env "${COMMON[@]}" "${LIBRE[@]}" REQ_APP="$APPT" REQ_ENV=int REQ_API=accounts-read REQ_CALLER=oig-provisioner \
              REQ_CLIENT_ID="${APPT}-int" bash "$S" 2>&1); RC4=$?
+      # A7 : providers.int.yml existe désormais (banking-demo seule) ⇒ la team héritée
+      # payments-team y est ABSENTE : TEAM_NOT_DECLARED ; sur une base d'avant A7 : PROVIDERS_MISSING.
       [ "$RC4" -eq 2 ] && printf '%s' "$OUT4" | grep -q "team héritée du manifeste : $TEAM" \
-        && printf '%s' "$OUT4" | grep -q "PROVIDERS_MISSING" && ! branch_exists "$BTI" \
-        && ok "C.9c team héritée mais palier int sans providers.int.yml ⇒ PROVIDERS_MISSING (la garde du palier VISÉ s'applique à la team héritée), aucune branche" \
+        && printf '%s' "$OUT4" | grep -qE "PROVIDERS_MISSING|TEAM_NOT_DECLARED" && ! branch_exists "$BTI" \
+        && ok "C.9c team héritée (payments-team) sur int ⇒ la garde du palier VISÉ s'applique (TEAM_NOT_DECLARED — providers.int.yml ne la déclare pas ; PROVIDERS_MISSING sur une base d'avant A7), aucune branche" \
         || ko "C.9c garde du palier visé sur team héritée : rc=$RC4 branche=$(branch_exists "$BTI" && echo EXISTE || echo absente) — $(printf '%s' "$OUT4" | tail -2)"
     fi
   fi

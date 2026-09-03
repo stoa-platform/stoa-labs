@@ -77,9 +77,11 @@ if [ "$XML_PARAMS" = yes ]; then
   # palier est validé avant d'entrer dans du XML (jamais une valeur libre).
   # shellcheck source=scripts/lib/env-chain.sh
   . "$SELF_DIR/lib/env-chain.sh" || fail "LIB_ABSENTE : $SELF_DIR/lib/env-chain.sh"
-  ENVS_NONPROD="$(env_chain_nonprod)" || fail "CHAINE_ILLISIBLE : env_chain_nonprod"
+  # A7 : la chaîne ENTIÈRE (le dispatch de prod par `build job:` exige que le
+  # terminus soit listé — mesuré) ; les portes décident.
+  ENVS="$(env_chain)" || fail "CHAINE_ILLISIBLE : env_chain"
   ENV_CHOICES_XML=""
-  for e in $ENVS_NONPROD; do
+  for e in $ENVS; do
     case "$e" in ''|*[!a-z0-9]*) fail "PALIER_INVALIDE : '$e' hors de ^[a-z0-9]+$";; esac
     ENV_CHOICES_XML="${ENV_CHOICES_XML}            <string>${e}</string>
 "
@@ -90,7 +92,7 @@ if [ "$XML_PARAMS" = yes ]; then
   cat > "$PARAMS_TMP" <<PARAMS
     <!-- XML_PARAMS=yes : ce job garde ses parametres dans le XML (bloc
          parameters{} declaratif cote Jenkinsfile, fusion par nom) ; la liste
-         ENVIRONMENT est DERIVEE A LA POSE de env_chain_nonprod (A0 dettes). -->
+         ENVIRONMENT est DERIVEE A LA POSE de env_chain (A0 dettes ; A7 : chaine entiere). -->
     <hudson.model.ParametersDefinitionProperty>
       <parameterDefinitions>
         <hudson.model.StringParameterDefinition>
@@ -283,7 +285,7 @@ say "build d'amorçage #$N : SUCCESS (trigger enregistré, params matérialisés
 if [ "$XML_PARAMS" = no ]; then
   # shellcheck source=scripts/lib/env-chain.sh
   . "$SELF_DIR/lib/env-chain.sh" || fail "LIB_ABSENTE : $SELF_DIR/lib/env-chain.sh"
-  WANT="$(env_chain_nonprod)" || fail "CHAINE_ILLISIBLE"
+  WANT="$(env_chain)" || fail "CHAINE_ILLISIBLE"
   GOT=$(python3 -c "
 import sys, xml.etree.ElementTree as T
 r = T.parse(sys.argv[1]).getroot()
@@ -294,7 +296,7 @@ for p in r.iter():
   TRIG=$(python3 -c "import sys,xml.etree.ElementTree as T; r=T.parse(sys.argv[1]).getroot(); print(','.join(t.findtext('token') or '' for t in r.iter() if t.tag.endswith('GenericTrigger')))" "$XML.relu")
   NDIS=$(python3 -c "import sys,xml.etree.ElementTree as T; r=T.parse(sys.argv[1]).getroot(); print(sum(1 for e in r.iter() if e.tag.endswith('DisableConcurrentBuildsJobProperty')))" "$XML.relu")
   [ "$TRIG" = "$TRIGGER_TOKEN" ] && [ "$NDIS" = 1 ] || fail "apres l'amorcage : trigger=[$TRIG] disableConcurrentBuilds=$NDIS — attendu UN trigger $TRIGGER_TOKEN et UNE option, poses par properties() (fait 10)"
-  say "relecture : 1 propriete de parametres, trigger $TRIGGER_TOKEN + disableConcurrentBuilds poses par le Jenkinsfile, ENVIRONMENT == env_chain_nonprod [$GOT]"
+  say "relecture : 1 propriete de parametres, trigger $TRIGGER_TOKEN + disableConcurrentBuilds poses par le Jenkinsfile, ENVIRONMENT == env_chain [$GOT]"
 else
   say "relecture : 1 propriete de parametres (XML_PARAMS=yes)"
 fi

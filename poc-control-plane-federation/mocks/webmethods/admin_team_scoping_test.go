@@ -258,3 +258,114 @@ func TestCreateVersionAPI_UnknownBase_Is401(t *testing.T) {
 		t.Errorf("POST /versions sur un id inconnu = %d, attendu 401 (fait mesuré, pas 404)", rr.Code)
 	}
 }
+
+// ── A7 (ADR-090) : le produit assigne aussi les APPLICATIONS ────────────────
+//
+// Spike ownership du 2026-08-04 (mémoire wm-1015-app-ownership-team) :
+// POST /assets/team avec assetType "Application" cloisonne l'application ;
+// le rôle apim_selfservice_app (team.yml) relit teams[] juste après et EXIGE
+// la team présente ET `Default` partie — mesuré le 2026-09-03 : sans cette
+// fidélité, le rôle réel s'arrêtait sur TEAM_UNCONFIRMED contre ce mock,
+// après avoir passé la porte A5 et créé l'application.
+
+func teamsOfApp(t *testing.T, h http.Handler, appID string) []string {
+	t.Helper()
+	rr := doAdmin(t, h, "GET", "/rest/apigateway/applications/"+appID, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("GET application = %d body=%s", rr.Code, rr.Body)
+	}
+	apps, _ := decode(t, rr)["applications"].([]any)
+	if len(apps) != 1 {
+		t.Fatalf("enveloppe applications[] attendue, reçu %s", rr.Body)
+	}
+	return teamNamesOf(apps[0])
+}
+
+func teamsOfAppInList(t *testing.T, h http.Handler, appID string) []string {
+	t.Helper()
+	rr := doAdmin(t, h, "GET", "/rest/apigateway/applications", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("GET applications = %d", rr.Code)
+	}
+	apps, _ := decode(t, rr)["applications"].([]any)
+	for _, a := range apps {
+		if m, _ := a.(map[string]any); m != nil && m["id"] == appID {
+			return teamNamesOf(m)
+		}
+	}
+	t.Fatalf("application %s absente de la liste", appID)
+	return nil
+}
+
+func teamNamesOf(app any) []string {
+	m, _ := app.(map[string]any)
+	refs, _ := m["teams"].([]any)
+	out := []string{}
+	for _, r := range refs {
+		if rm, _ := r.(map[string]any); rm != nil {
+			if n, _ := rm["name"].(string); n != "" {
+				out = append(out, n)
+			}
+		}
+	}
+	return out
+}
+
+func TestAssignTeam_Application_SetsTeams(t *testing.T) {
+	h := newTestServer(t)
+	rr := doAdmin(t, h, "POST", "/rest/apigateway/applications", map[string]any{"name": "a7-app"})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("POST application = %d body=%s", rr.Code, rr.Body)
+	}
+	appID, _ := decode(t, rr)["id"].(string)
+	if appID == "" {
+		t.Fatalf("application créée sans id : %s", rr.Body)
+	}
+	// Une application NEUVE est visible de toutes les équipes : Default + Administrators
+	// (c'est ce que ss_team_converged du rôle teste avant d'écrire).
+	if got := teamsOfApp(t, h, appID); !containsStr(got, "Default") || !containsStr(got, "Administrators") {
+		t.Errorf("teams d'une application neuve = %v, attendu [Administrators, Default]", got)
+	}
+	profID := mkProfile(t, h, "banking-demo")
+
+	// Le piège reste reproduit : sans assetType, 200 et RIEN ne se passe.
+	rr = doAdmin(t, h, "POST", "/rest/apigateway/assets/team", map[string]any{
+		"assetIds": []string{appID}, "newTeams": []string{profID},
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("assetType manquant = %d, attendu 200 (refus silencieux)", rr.Code)
+	}
+	if got := teamsOfApp(t, h, appID); containsStr(got, "banking-demo") {
+		t.Errorf("teams = %v : l'assignation a pris effet SANS assetType", got)
+	}
+
+	// Avec assetType Application : la team est posée, Default part — relu sur
+	// l'objet ET sur la liste (le rôle relit l'objet ; verify relit la liste).
+	rr = doAdmin(t, h, "POST", "/rest/apigateway/assets/team", map[string]any{
+		"assetIds": []string{appID}, "assetType": "Application", "newTeams": []string{profID},
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("assignation Application = %d body=%s", rr.Code, rr.Body)
+	}
+	for what, got := range map[string][]string{"objet": teamsOfApp(t, h, appID), "liste": teamsOfAppInList(t, h, appID)} {
+		if !containsStr(got, "banking-demo") {
+			t.Errorf("teams (%s) = %v, attendu banking-demo présente", what, got)
+		}
+		if containsStr(got, "Default") {
+			t.Errorf("teams (%s) = %v : Default doit PARTIR dès qu'une équipe est posée", what, got)
+		}
+		if !containsStr(got, "Administrators") {
+			t.Errorf("teams (%s) = %v : Administrators est conservée (mesuré sur le produit)", what, got)
+		}
+	}
+
+	// Un PUT de convergence sans `teams` (le rôle peut en émettre) les CONSERVE,
+	// comme consumingAPIs — le produit ne les édite pas par PUT.
+	rr = doAdmin(t, h, "PUT", "/rest/apigateway/applications/"+appID, map[string]any{"name": "a7-app", "identifiers": []any{}})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("PUT application = %d body=%s", rr.Code, rr.Body)
+	}
+	if got := teamsOfApp(t, h, appID); !containsStr(got, "banking-demo") || containsStr(got, "Default") {
+		t.Errorf("teams après PUT sans teams = %v : elles devaient être conservées", got)
+	}
+}

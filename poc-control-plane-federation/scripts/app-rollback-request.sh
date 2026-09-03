@@ -36,6 +36,8 @@ SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SELF_DIR/lib/env-chain.sh" || { echo "ERREUR: $SELF_DIR/lib/env-chain.sh introuvable" >&2; exit 1; }
 # shellcheck source=scripts/lib/app-manifest.sh
 . "$SELF_DIR/lib/app-manifest.sh" || { echo "ERREUR: $SELF_DIR/lib/app-manifest.sh introuvable" >&2; exit 1; }
+# shellcheck source=scripts/lib/forge-identity.sh
+. "$SELF_DIR/lib/forge-identity.sh" || { echo "ERREUR: $SELF_DIR/lib/forge-identity.sh introuvable" >&2; exit 1; }
 
 REQ_APP="${REQ_APP:?REQ_APP requis}"
 REQ_ENV="${REQ_ENV:?REQ_ENV requis}"
@@ -57,13 +59,26 @@ CERT_PATH="${GIT_SUBDIR:+$GIT_SUBDIR/}clients/provisioned/certs/${REQ_APP}-${REQ
 BRANCH="provision/${REQ_APP}-${REQ_ENV}"
 [ -n "$ROLLBACK_OUT" ] && rm -f "$ROLLBACK_OUT"
 WORK="$(mktemp -d /tmp/approll.XXXXXX)"; trap 'rm -rf "$WORK"' EXIT
+# ── A7 — les tokens par FICHIER ; le token humain (FORGE_TOKEN / FORGE_TOKEN_FILE)
+# est copié puis RETIRÉ de l'environnement avant tout processus enfant.
+umask 077
+FORGE_TF=""
+if [ -n "${FORGE_TOKEN_FILE:-}" ] && [ -s "${FORGE_TOKEN_FILE}" ]; then
+  FORGE_TF="$WORK/forge-token"; tr -d '\r\n' < "$FORGE_TOKEN_FILE" > "$FORGE_TF"
+elif [ -n "${FORGE_TOKEN:-}" ]; then
+  FORGE_TF="$WORK/forge-token"; printf '%s' "$FORGE_TOKEN" > "$FORGE_TF"
+fi
+unset FORGE_TOKEN FORGE_TOKEN_FILE
+CI_TF="$WORK/ci-token"; printf '%s' "$GITEA_TOKEN" > "$CI_TF"
+# Défauts = le compte de service ; l'identité (§3bis) les remplace quand un token humain existe.
+FORGE_LOGIN="(service)"; PUSH_LOGIN=ci; PUSH_TF="$CI_TF"
 
 etape(){ echo "ETAPE $*"; }
 refus(){ echo "REFUS: $1 : $2" >&2; exit 2; }
 shown(){ printf '%q' "$(printf '%s' "${1:-}" | head -c 80)"; }
 # Un appel de forge : token PAR ENV, jamais en argv ; rc ≠ 0 = illisible.
 forge(){ # <script python> — les variables d'entrée sont dans l'environnement
-  F_API="$API" F_REPO="$GIT_REPO" F_TOKEN="$GITEA_TOKEN" F_BRANCH="$BRANCH" F_BASE="$GIT_BASE" python3 -c "$1"
+  F_API="$API" F_REPO="$GIT_REPO" F_TOKEN="$GITEA_TOKEN" F_BRANCH="$BRANCH" F_BASE="$GIT_BASE" F_PR_TOKEN_FILE="${PUSH_TF:-$CI_TF}" F_PUSH_LOGIN="${PUSH_LOGIN:-ci}" python3 -c "$1"
 }
 PY_FORGE_COMMON='
 import json, os, sys, urllib.request, urllib.error
@@ -123,14 +138,31 @@ case "$GATE" in
   *) refus CHAINE_INVALIDE "porte illisible ($(shown "$GATE"))" ;;
 esac
 
+# ── 3bis. L'IDENTITÉ DE FORGE (A7) — après la porte, AVANT tout clone et toute forge ──
+# Sans token humain, il n'y a pas d'humain (le job n'a qu'un token de service) :
+# sous fourEyes, la PR de repli serait refusée REQUESTER_UNKNOWN à l'apply — refus
+# ici, au plus tôt, aucune PR ouverte. Avec un token : GET /user (read:user).
+FOUREYES="$(env_chain_gate_four_eyes "$REQ_ENV")" || refus CHAINE_INVALIDE "fourEyes de '$REQ_ENV' illisible"
+FOUREYES="${FOUREYES#FOUREYES=}"
+if [ -n "$FORGE_TF" ]; then
+  etape identite
+  FORGE_LOGIN="$(forge_login "$API" "$FORGE_TF")" || { rc=$?; [ "$rc" = 2 ] && exit 2; exit 1; }
+  forge_is_service "$FORGE_LOGIN" "$GITEA_SERVICE_LOGINS" && FORGE_LOGIN="(service)"
+fi
+[ "$FOUREYES" != 1 ] || [ "$FORGE_LOGIN" != "(service)" ] \
+  || refus REQUESTER_UNKNOWN "la porte vers '$REQ_ENV' exige les quatre yeux ; une PR de repli ouverte par un compte de service (${GITEA_SERVICE_LOGINS}) serait refusée REQUESTER_UNKNOWN à l'apply — fournir FORGE_TOKEN (votre token de forge, scopes read:user + write:repository) ; aucune PR ouverte"
+PUSH_LOGIN="$FORGE_LOGIN"; [ "$PUSH_LOGIN" = "(service)" ] && PUSH_LOGIN=ci
+PUSH_TF="${FORGE_TF:-$CI_TF}"
+
 # ── 4. CLONE avec historique (jamais --depth, jamais --filter : la lignée se lit sur main ; un clone partiel boucle en fetchs paresseux contre une origine shallow — mesuré) ─────
 etape clone "$GIT_BASE"
-ASKPASS="$WORK/askpass"
-printf '#!/bin/sh\ncase "$1" in Username*) printf %%s ci ;; *) printf %%s "$GITEA_TOKEN" ;; esac\n' > "$ASKPASS"; chmod 700 "$ASKPASS"
+# A7 : l'askpass rend le login du POUSSEUR et le token lu dans son fichier (humain
+# s'il y en a un, service sinon) — jamais en argv, jamais dans une URL.
+ASKPASS="$(forge_askpass "$WORK" "$PUSH_LOGIN" "$PUSH_TF")" || refus CABLAGE_INCOMPLET "askpass"
 export GIT_ASKPASS="$ASKPASS" GIT_TERMINAL_PROMPT=0
 R="$WORK/repo"
 git clone -q --single-branch --branch "$GIT_BASE" "$GIT_CLONE_URL" "$R" 2>"$WORK/clone.err" \
-  || refus CLONE_ECHEC "clone de ${GIT_REPO} (${GIT_BASE}) impossible : $(grep -v -- "$GITEA_TOKEN" "$WORK/clone.err" | head -c 200 | tr '\n' ' ')"
+  || refus CLONE_ECHEC "clone de ${GIT_REPO} (${GIT_BASE}) impossible : $(grep -v -F -- "$(cat "$PUSH_TF")" "$WORK/clone.err" | grep -v -F -- "$GITEA_TOKEN" | head -c 200 | tr '\n' ' ')"
 [ "$(git -C "$R" rev-parse --is-shallow-repository)" = false ] \
   || refus LIGNEE_TRONQUEE "le clone de ${GIT_BASE} est shallow — un historique tronqué ne peut pas prouver l'absence d'un état précédent"
 g(){ git -C "$R" "$@"; }
@@ -300,9 +332,13 @@ case "$OPEN_LINE" in
   NONE) ;;
   OPEN*)
     O_NUM=$(printf '%s' "$OPEN_LINE" | cut -d' ' -f2); O_LOGIN=$(printf '%s' "$OPEN_LINE" | cut -d' ' -f3); O_URL=$(printf '%s' "$OPEN_LINE" | cut -d' ' -f5)
-    IS_SERVICE=0; case " $GITEA_SERVICE_LOGINS " in *" $O_LOGIN "*) IS_SERVICE=1;; esac
+    # A7 : une PR ouverte n'appartient qu'à son auteur — « la sienne » = même
+    # identité que le pousseur (service ↔ service, humain ↔ ce même humain).
+    MINE=0
+    if [ "$FORGE_LOGIN" = "(service)" ]; then case " $GITEA_SERVICE_LOGINS " in *" $O_LOGIN "*) MINE=1;; esac
+    else [ "$O_LOGIN" = "$FORGE_LOGIN" ] && MINE=1; fi
     SAME=0
-    if [ "$IS_SERVICE" = 1 ] && g fetch -q origin "refs/heads/${BRANCH}" 2>/dev/null; then
+    if [ "$MINE" = 1 ] && g fetch -q origin "refs/heads/${BRANCH}" 2>/dev/null; then
       g show "FETCH_HEAD:${MAN_PATH}" > "$WORK/open.yml" 2>/dev/null \
         && [ "$(app_manifest_digest_env "$WORK/open.yml" "$REQ_ENV" 2>/dev/null)" = "$D_EXPECT" ] && SAME=1
       if [ "$SAME" = 1 ]; then
@@ -344,7 +380,7 @@ printf '%s' "$N_MSG" | grep -q '^Repli-Vers: ' && REPLI_DU_REPLI=1
 g commit -q -F "$WORK/msg" || refus PUSH_ECHEC "commit impossible dans le clone"
 etape push
 if ! g push -q "--force-with-lease=refs/heads/${BRANCH}:${TIP}" origin "HEAD:refs/heads/${BRANCH}" 2>"$WORK/push.err"; then
-  refus PUSH_ECHEC "push de ${BRANCH} refusé (bail perdu ou droits) : $(grep -v -- "$GITEA_TOKEN" "$WORK/push.err" | head -c 200 | tr '\n' ' ')"
+  refus PUSH_ECHEC "push de ${BRANCH} refusé (bail perdu ou droits) : $(grep -v -F -- "$(cat "$PUSH_TF")" "$WORK/push.err" | grep -v -F -- "$GITEA_TOKEN" | head -c 200 | tr '\n' ' ')"
 fi
 etape pr
 PR_OUT=$(F_NUM_N="$NUM_N" F_NUM_N1="$NUM_N1" F_SHA_N="$SHA_N" F_SHA_N1="$SHA_N1" F_DIGEST="$D_EXPECT" F_LINE="$CANDIDATE" F_CERT="$CERT_ACTION" \
@@ -361,12 +397,14 @@ body = ["<!-- app-rollback: de %s vers %s -->" % (e["F_SHA_N"], e["F_SHA_N1"]),
         "- cert : %s" % e["F_CERT"],
         "- digest attendu apres apply : `%s` (a comparer a la ligne « digest du manifeste effectif » du rapport de provision-apply)" % e["F_DIGEST"],
         "- demandeur du repli : %s" % e["F_CALLER"],
+        ("- ouverte par : %s (identite de forge — c est elle que la porte a quatre yeux confronte au mergeur)" % e["F_PUSH_LOGIN"]) if e["F_PUSH_LOGIN"] != "ci" else "- ouverte par : compte de service (une porte a quatre yeux refusera REQUESTER_UNKNOWN)",
         "- motif : %s" % e["F_REASON"]]
 if e["F_REF"]: body.append("- change_ref : %s (remplace celui de l etat restaure — un repli porte SON change)" % e["F_REF"])
 if e["F_RDR"] == "1": body.append("- REPLI_DU_REPLI : #%s est lui-meme un repli ; si son apply a ete REFUSE, le remede est le rejeu de son webhook (A2), pas ce repli" % e["F_NUM_N"])
 body += ["", "Toutes les portes du palier s appliquent (merge, provision-apply, garde du palier, ordre app/API). Rien n est jamais desinscrit : la convergence garde le GUID et la cle de l application."]
 data = json.dumps({"title": title, "head": BRANCH, "base": base, "body": "\n".join(body)}, ensure_ascii=False).encode("utf-8")
-r = urllib.request.Request("%s/repos/%s/pulls" % (api, repo), data=data, method="POST", headers={"Authorization": "token " + tok, "Content-Type": "application/json"})
+ptok = open(e["F_PR_TOKEN_FILE"]).read().strip()   # A7 : la PR est ouverte SOUS le pousseur (l humain quand il y en a un)
+r = urllib.request.Request("%s/repos/%s/pulls" % (api, repo), data=data, method="POST", headers={"Authorization": "token " + ptok, "Content-Type": "application/json"})
 try:
     with urllib.request.urlopen(r, timeout=30) as resp: pr = json.load(resp)
 except urllib.error.HTTPError as ex: refuse("PR_ECHEC", "POST /pulls HTTP %d — la branche %s est poussee, rejouer la demande (EXIST la reconnaitra par son contenu)" % (ex.code, BRANCH))

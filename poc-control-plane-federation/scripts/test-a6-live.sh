@@ -106,9 +106,10 @@ ensure_human(){
   fi
   hc=$(gapi -o /dev/null -w '%{http_code}' "$API/repos/$GIT_REPO/collaborators/$u")
   [ "$hc" = 204 ] || gapi -X PUT -d '{"permission":"write"}' -o /dev/null "$API/repos/$GIT_REPO/collaborators/$u"
-  tok=$(docker exec -u git "$GITEA_CONTAINER" gitea admin user generate-access-token --username "$u" --token-name "a6-live-$u-$TS" --scopes write:repository,write:issue 2>/dev/null | grep -oE '[0-9a-f]{40}' | head -1)
+  tok=$(docker exec -u git "$GITEA_CONTAINER" gitea admin user generate-access-token --username "$u" --token-name "a6-live-$u-$TS" --scopes read:user,write:repository,write:issue 2>/dev/null | grep -oE '[0-9a-f]{40}' | head -1)
   [ -n "$tok" ] || die "PREREQUIS : token Gitea de $u non minté"
   printf 'Authorization: token %s\n' "$tok" > "$hdr"; chmod 600 "$hdr"
+  printf '%s' "$tok" > "${hdr%.hdr}.tok"; chmod 600 "${hdr%.hdr}.tok"   # A7 : FORGE_TOKEN_FILE du formulaire app-rollback
 }
 # request_branch <app> <env> <api> <ver> <ip> → "<PR de ci> <branche>" (la demande de la CHAÎNE, sous ci, manifeste sans team)
 # ⚠ appelé dans un $( ) : un `die` ici ne tue que le sous-shell — l'appelant re-vérifie.
@@ -375,8 +376,8 @@ with os.fdopen(fd,"w") as f: f.write(urllib.parse.urlencode(pairs))' "$1"
   [ -s "$1" ] || die "HARNAIS : formulaire de build non écrit ($1)"
 }
 RB_NUM=""; RB_RES=""; RB_PR=""
-rollback_build(){ # <app> <env> <motif> [change_ref] : pose RB_NUM RB_RES RB_PR (et la console dans $TMP/rb.<n>.console)
-  printf 'APP=%s\nENV=%s\nREASON=%s\nCHANGE_REF=%s\n' "$1" "$2" "$3" "${4:-}" | form_file_any "$TMP/rb.form"
+rollback_build(){ # <app> <env> <motif> [change_ref] [fichier token de forge] : pose RB_NUM RB_RES RB_PR (console dans $TMP/rb.<n>.console)
+  { printf 'APP=%s\nENV=%s\nREASON=%s\nCHANGE_REF=%s\n' "$1" "$2" "$3" "${4:-}"; [ -n "${5:-}" ] && printf 'FORGE_TOKEN=%s\n' "$(cat "$5")"; } | form_file_any "$TMP/rb.form"
   RB_NUM=$(jbuild app-rollback "$TMP/rb.form"); [ -n "$RB_NUM" ] || die "BUILD_EN_FILE : app-rollback n'a pas produit de build"
   wait_until 600 app-rollback "$RB_NUM" FINISHED >/dev/null; wait_built app-rollback "$RB_NUM" || true; sleep 2
   jconsole app-rollback "$RB_NUM" > "$TMP/rb.$RB_NUM.console"
@@ -434,11 +435,11 @@ ok "0.3 gitea main porte A6 (script, Jenkinsfile, coquille, gardes de fenêtre)"
 curl -sf "$JENKINS_UI/job/app-rollback/config.xml" > "$TMP/rb.xml" || die "PREREQUIS : job app-rollback absent — JOBS=app-rollback BOOTSTRAP_JOBS=app-rollback scripts/setup-provision-jobs.sh"
 grep -q 'ci/Jenkinsfile.app-rollback' "$TMP/rb.xml" || die "PREREQUIS : app-rollback n'est pas from SCM"
 PARAMS=$(curl -s "$JENKINS_UI/job/app-rollback/api/json?tree=property%5BparameterDefinitions%5Bname%5D%5D" | jq_ "print(' '.join(p['name'] for pr in d.get('property',[]) for p in pr.get('parameterDefinitions',[])))")
-[ "$PARAMS" = "APP ENV REASON CHANGE_REF" ] || die "PREREQUIS : formulaire app-rollback non posé (paramètres : '$PARAMS') — amorcer le job"
+[ "$PARAMS" = "APP ENV REASON CHANGE_REF FORGE_TOKEN" ] || die "PREREQUIS : formulaire app-rollback non posé (paramètres : '$PARAMS') — amorcer le job"
 raw_at main "$SUBDIR/clients/_example/environments.yaml" > "$TMP/chain.yaml"; [ "$(raw_hc)" = 200 ] || die "PREREQUIS : chaîne illisible sur gitea main"
 CHAIN_ALL=$(STOA_ENV_CHAIN_FILE="$TMP/chain.yaml" env_chain); TERM=$(STOA_ENV_CHAIN_FILE="$TMP/chain.yaml" env_chain_terminus)
 ENVS_FORM=$(curl -s "$JENKINS_UI/job/app-rollback/api/json?tree=property%5BparameterDefinitions%5Bname,choices%5D%5D" | jq_ "print(' '.join(next((p.get('choices') or []) for pr in d.get('property',[]) for p in pr.get('parameterDefinitions',[]) if p.get('name')=='ENV')))")
-[ "$ENVS_FORM" = "$CHAIN_ALL" ] && ok "0.4 job app-rollback posé, formulaire APP ENV REASON CHANGE_REF, ENV == chaîne entière ($CHAIN_ALL)" || ko "0.4 formulaire ENV='$ENVS_FORM' ≠ chaîne '$CHAIN_ALL'"
+[ "$ENVS_FORM" = "$CHAIN_ALL" ] && ok "0.4 job app-rollback posé, formulaire APP ENV REASON CHANGE_REF FORGE_TOKEN (A7), ENV == chaîne entière ($CHAIN_ALL)" || ko "0.4 formulaire ENV='$ENVS_FORM' ≠ chaîne '$CHAIN_ALL'"
 case "$(STOA_ENV_CHAIN_FILE="$TMP/chain.yaml" env_chain_gate "$TERM")" in GATE=1\|*) ok "0.5 la porte du terminus ($TERM) exige change_ref (requireChangeRef/itsmCheck)";; *) die "PREREQUIS : la porte du terminus n'exige pas change_ref — §7 rougirait pour une mauvaise raison";; esac
 case "$(STOA_ENV_CHAIN_FILE="$TMP/chain.yaml" env_chain_gate rec)" in GATE=0\|*) ok "0.6 rec n'exige pas de change_ref";; *) die "PREREQUIS : rec exige change_ref";; esac
 ensure_human alice "$TMP/alice.hdr"; ok "0.7 alice : compte Gitea humain, collaboratrice write, token jetable"
@@ -527,13 +528,16 @@ reactivate; [ "$DEACTIVATED" = 0 ] || die "PREREQUIS : réactivation"
 replay_pr "$R3" "provision/$APP-rec" "$MSR3"; wait_amont "$N_PA" PAUSE; answer_pause "$N_PA"; finish_amont "$N_PA"
 [ "$RES" = SUCCESS ] && [ "$(gw_app_ip_of "$APP_ID")" = "10.42.0.1-10.42.0.1" ] && [ "$(obj_field "$(gw_app_obj "$APP_ID")" KEY)" = "$KEY1" ] && ok "6.6 après réactivation, le REJEU du webhook de la PR de repli #$R3 (motif A2) projette l'état : IP .1, même clé" || ko "6.6 rejeu : $RES, IP $(gw_app_ip_of "$APP_ID")"
 
-echo "═══ 7. Contre-épreuve terminus ($TERM) : sans change_ref ⇒ GATE_REFS_REQUIRED avant tout clone ; avec ⇒ PALIER_ABSENT après le clone ═══"
+echo "═══ 7. Contre-épreuve terminus ($TERM) : sans change_ref ⇒ GATE_REFS_REQUIRED avant tout clone ; sans humain ⇒ REQUESTER_UNKNOWN (A7) ; sous alice ⇒ PALIER_ABSENT après le clone ═══"
 rollback_build "$APP" "$TERM" "repli terminus a6"
 [ "$RB_RES" = FAILURE ] && grep -q '^REFUS: GATE_REFS_REQUIRED' "$TMP/rb.$RB_NUM.console" && ! grep -q '^ETAPE clone' "$TMP/rb.$RB_NUM.console" && [ -z "$RB_PR" ] \
   && ok "7.1 #$RB_NUM FAILURE GATE_REFS_REQUIRED, aucun ETAPE clone, aucune PR" || ko "7.1 #$RB_NUM $RB_RES : $(grep -E 'REFUS|ETAPE' "$TMP/rb.$RB_NUM.console" | tail -3 | tr '\n' ' ')"
 rollback_build "$APP" "$TERM" "repli terminus a6" CHG-0001
-[ "$RB_RES" = FAILURE ] && grep -q '^REFUS: PALIER_ABSENT' "$TMP/rb.$RB_NUM.console" && console_order "$TMP/rb.$RB_NUM.console" 'ETAPE porte' 'ETAPE clone' 'REFUS: PALIER_ABSENT' \
-  && ok "7.2 #$RB_NUM avec CHG-0001 : porte < clone < PALIER_ABSENT (la paire prouve l'ordre, motif G6)" || ko "7.2 #$RB_NUM $RB_RES : $(grep -E 'REFUS|ETAPE' "$TMP/rb.$RB_NUM.console" | tail -3 | tr '\n' ' ')"
+[ "$RB_RES" = FAILURE ] && grep -q '^REFUS: REQUESTER_UNKNOWN' "$TMP/rb.$RB_NUM.console" && grep -q '^ETAPE porte' "$TMP/rb.$RB_NUM.console" && ! grep -q '^ETAPE clone' "$TMP/rb.$RB_NUM.console" && [ -z "$RB_PR" ] \
+  && ok "7.2 #$RB_NUM avec CHG-0001 SANS token humain : porte < REQUESTER_UNKNOWN (fourEyes au terminus), aucun clone, aucune PR (A7)" || ko "7.2 #$RB_NUM $RB_RES : $(grep -E 'REFUS|ETAPE' "$TMP/rb.$RB_NUM.console" | tail -3 | tr '\n' ' ')"
+rollback_build "$APP" "$TERM" "repli terminus a6" CHG-0001 "$TMP/alice.tok"
+[ "$RB_RES" = FAILURE ] && grep -q '^REFUS: PALIER_ABSENT' "$TMP/rb.$RB_NUM.console" && console_order "$TMP/rb.$RB_NUM.console" 'ETAPE porte' 'ETAPE identite' 'ETAPE clone' 'REFUS: PALIER_ABSENT' \
+  && ok "7.3 #$RB_NUM avec CHG-0001 SOUS alice (FORGE_TOKEN) : porte < identité < clone < PALIER_ABSENT (la paire prouve l'ordre, motif G6)" || ko "7.3 #$RB_NUM $RB_RES : $(grep -E 'REFUS|ETAPE' "$TMP/rb.$RB_NUM.console" | tail -3 | tr '\n' ' ')"
 
 echo
 echo "═══════════════════════════════════════════════════"

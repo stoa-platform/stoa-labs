@@ -86,6 +86,11 @@ pipeline {
     // Credential Jenkins (secret text) portant le token Gitea du CI (push +
     // PR). Était en dur dans le Groovy ('gitea-provision-token') ; même défaut.
     GITEA_CREDENTIALS_ID = "${env.GITEA_CREDENTIALS_ID ?: 'gitea-provision-token'}"
+    // A7 : la voie machine n'a PAS d'identité de forge — une globale FORGE_TOKEN
+    // du nœud ne doit pas la lui prêter : vidée ici (le script lit `${FORGE_TOKEN:-}`
+    // et ne résout aucune identité sur une valeur vide ; sous fourEyes il refuse
+    // REQUESTER_UNKNOWN à la demande — décision client n°3).
+    FORGE_TOKEN          = ''
   }
 
   stages {

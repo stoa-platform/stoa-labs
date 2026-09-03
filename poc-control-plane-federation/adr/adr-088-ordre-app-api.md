@@ -75,3 +75,7 @@ Le mock du dépôt crée les APIs **inactives** (« import does NOT activate »)
 - **A6 hérite** : le repli est un apply comme un autre — « rollback vers un SHA dont l'API n'est plus au palier ⇒ `API_NOT_PROMOTED` » tient par construction, et `SUBSCRIPTION_CONFIRMED` donne le GUID à comparer avant/après.
 - **A7 hérite** : au terminus, `apim_ss_api_base` est la base du terminus — « une application dont l'API n'est qu'en homol ne peut pas atteindre prod ». Le mock du terminus sert `isActive` booléen (mesuré en B.4) ; A7 le prouvera par build.
 - Le formulaire `app-request` propose les APIs de `publish.yml` (chaîne d'authoring) — ergonomie ; la porte A5 est l'autorité.
+
+## Note 2026-09-03 (A7, ADR-090) — le terminus, prouvé par build
+
+La porte de ce rôle tient au terminus : `apim_ss_api_base` y est la base de la gateway du terminus (`APIM_TERMINUS_BASE`), et c'est elle que la porte relit — mesuré par `scripts/test-a7-live.sh` : sur un terminus qui ne porte pas l'API, l'apply de `prod` refuse `API_NOT_PROMOTED` en citant la base du terminus alors que la 10.15 sert l'API active (« une application dont l'API n'est qu'en homol ne peut pas atteindre prod ») ; l'API désactivée **sur le terminus** refuse `API_INACTIVE` (id cité) ; le remède est la promotion par archive (export de la source, import au terminus — GUID et `isActive` conservés) puis le rejeu du webhook. Le mock du terminus sert `isActive` booléen et, depuis A7, assigne aussi les applications (`POST /assets/team`).

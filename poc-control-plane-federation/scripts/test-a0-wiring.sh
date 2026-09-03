@@ -39,7 +39,7 @@ ko(){ FAIL=$((FAIL+1)); printf '  ❌ %s\n' "$*"; }
 
 # Total ATTENDU, ÉCRIT EN DUR — indépendant de PASS+FAIL. Toute section
 # ajoutée/retirée DOIT le mettre à jour : un oubli fait rougir le dernier §.
-EXPECTED_CHECKS=175
+EXPECTED_CHECKS=182
 
 # shellcheck source=scripts/lib/gwt-mirror.sh
 . scripts/lib/gwt-mirror.sh || { echo "lib gwt-mirror.sh introuvable"; exit 2; }
@@ -210,7 +210,7 @@ OUT6="$TMP/choices6.env"; rm -f "$OUT6"
 run_choices "$GH6" "$TMP/chain6.yaml" "$OUT6"; RC=$?
 [ "$RC" -eq 0 ] && [ -f "$OUT6" ] && [ "$(wc -l < "$OUT6" | tr -d ' ')" -eq 3 ] \
   && ok "nominal : rc 0, fichier de TROIS lignes écrit" || ko "nominal : rc=$RC, fichier=$([ -f "$OUT6" ] && wc -l < "$OUT6" || echo absent) — $(cat "$TMP/ch.err" 2>/dev/null | tail -3)"
-grep -qx 'ENVS=dev rec' "$OUT6" 2>/dev/null && ok "ENVS=dev rec — la chaîne SANS son terminus (structure, pas nom : prod exclu)" || ko "ENVS inattendu : $(grep '^ENVS=' "$OUT6" 2>/dev/null)"
+grep -qx 'ENVS=dev rec prod' "$OUT6" 2>/dev/null && ok "ENVS=dev rec prod — la chaîne ENTIÈRE, terminus COMPRIS (A7 : gardé par ses portes, plus exclu par structure)" || ko "ENVS inattendu : $(grep '^ENVS=' "$OUT6" 2>/dev/null)"
 grep -qx 'TEAMS=banking-demo payments-team' "$OUT6" 2>/dev/null && ok "TEAMS=banking-demo payments-team — ordre de déclaration, doublon exact écarté" || ko "TEAMS inattendu : $(grep '^TEAMS=' "$OUT6" 2>/dev/null)"
 grep -qx 'APIS=accounts-read@1.0.0' "$OUT6" 2>/dev/null && ok "APIS=accounts-read@1.0.0 — nom@version des publish.yml relus" || ko "APIS inattendu : $(grep '^APIS=' "$OUT6" 2>/dev/null)"
 grep -q '^CHOICES_SKIPPED_REPOS=1$' "$TMP/ch.err" && ok "marqueur CHOICES_SKIPPED_REPOS=1 sur stderr (dépôt d'équipe déclaré mais absent, toléré ET signalé)" || ko "marqueur CHOICES_SKIPPED_REPOS absent/inattendu sur stderr"
@@ -255,8 +255,19 @@ for P in "string(name: 'APP'" "choice(name: 'REQ_ENV', choices: envs" "choice(na
   jfa "$P" || MISS="$MISS [$P]"
 done
 [ -z "$MISS" ] && ok "les 11 paramètres posés avec leur TYPE (string/choice/text) et leurs listes (envs, ''+teams, apis, idp/internal, replace/overlap)" || ko "paramètres absents/divergents :$MISS"
-if grep -qE "\['dev'|'homol'|'rec', 'int'" "$TMP/jf-app.code"; then ko "une liste de paliers LITTÉRALE subsiste dans le Jenkinsfile"; else ok "aucune liste de paliers littérale : REQ_ENV vient d'env_chain_nonprod (une seule source, celle du script)"; fi
-L_SH=$(code_line "$TMP/jf-app.code" "sh 'set +x; CHOICES_OUT=\"\$WORKSPACE/.a0-choices.env\" bash scripts/app-request-choices.sh'")
+if grep -qE "\['dev'|'homol'|'rec', 'int'" "$TMP/jf-app.code"; then ko "une liste de paliers LITTÉRALE subsiste dans le Jenkinsfile"; else ok "aucune liste de paliers littérale : REQ_ENV vient d'env_chain (une seule source, celle du script — A7 : la chaîne entière)"; fi
+# ── A7 : l'identité de forge et les références, câblées dans le formulaire ──
+MISS7=""; for P in "password(name: 'FORGE_TOKEN'" "string(name: 'CHANGE_REF'" "string(name: 'PV_REF'"; do jfa "$P" || MISS7="$MISS7 [$P]"; done
+[ -z "$MISS7" ] && ok "A7 : trois paramètres de plus — FORGE_TOKEN (password), CHANGE_REF, PV_REF" || ko "A7 paramètres absents :$MISS7"
+grep -q 'FORGE_TOKEN=${params' "$TMP/jf-app.code" && ko "A7 : FORGE_TOKEN traverse un withEnv — il serait PERSISTÉ EN CLAIR (fait 9)" || ok "A7 : FORGE_TOKEN ne traverse AUCUN step (canal natif seulement, fait 9)"
+jfa '"REQ_CHANGE_REF=${params.CHANGE_REF ?: '"''"'}"' && jfa '"REQ_PV_REF=${params.PV_REF ?: '"''"'}"' && ok "A7 : REQ_CHANGE_REF / REQ_PV_REF passent par le withEnv brut (fait 5)" || ko "A7 : refs absentes du withEnv"
+L_ALT=$(code_line "$TMP/jf-app.code" 'TOKEN_ALTERE'); L_GLB=$(code_line "$TMP/jf-app.code" 'TOKEN_GLOBAL_REFUSE'); L_SHREQ=$(code_line "$TMP/jf-app.code" 'bash scripts/provision-request.sh')
+[ -n "$L_ALT" ] && [ -n "$L_GLB" ] && [ -n "$L_SHREQ" ] && [ "$L_ALT" -lt "$L_SHREQ" ] && [ "$L_GLB" -lt "$L_SHREQ" ] && jfa 'brutTok != resoluTok' \
+  && ok "A7 : gardes TOKEN_ALTERE ($L_ALT) et TOKEN_GLOBAL_REFUSE ($L_GLB) AVANT l'appel du script ($L_SHREQ) — brut ≠ résolu ⇔ altéré, champ vide + env non vide ⇔ globale" || ko "A7 : gardes du token absentes/mal placées (alt=$L_ALT glb=$L_GLB sh=$L_SHREQ)"
+grep -qE "error\('REFUS: TOKEN_(ALTERE|GLOBAL_REFUSE)[^']*\\\$\{(params|env)" "$TMP/jf-app.code" && ko "A7 : un message d'erreur interpole la valeur du token" || ok "A7 : aucun message d'erreur n'interpole le token"
+[ "$(grep -c 'STOA_ENV_CHAIN_FILE="\$WORKSPACE/poc-control-plane-federation/clients/_example/environments.yaml"' "$TMP/jf-app.code")" = 2 ] && ok "A7 : la chaîne est ÉPINGLÉE sur les deux sh (listes et demande) — une globale ne redirige plus la porte à la demande" || ko "A7 : épinglages STOA_ENV_CHAIN_FILE : $(grep -c 'STOA_ENV_CHAIN_FILE=' "$TMP/jf-app.code")"
+grep -v '^\s*//' ci/Jenkinsfile.provisioning-request | grep -qE "^\s*FORGE_TOKEN\s*=\s*''" && ok "A7 : la voie machine VIDE FORGE_TOKEN dans son bloc environment (une globale du nœud ne lui prête aucune identité de forge)" || ko "A7 : Jenkinsfile.provisioning-request ne vide pas FORGE_TOKEN"
+L_SH=$(code_line "$TMP/jf-app.code" "sh 'set +x; STOA_ENV_CHAIN_FILE=\"\$WORKSPACE/poc-control-plane-federation/clients/_example/environments.yaml\" CHOICES_OUT=\"\$WORKSPACE/.a0-choices.env\" bash scripts/app-request-choices.sh'")
 L_WC=$(code_line "$TMP/jf-app.code" "withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')])")
 [ -n "$L_SH" ] && [ -n "$L_WC" ] && [ "$L_WC" -lt "$L_SH" ] && [ "$L_SH" -lt "$L_PROPS" ] \
   && ok "app-request-choices.sh invoqué en quotes SIMPLES sous credential (ligne $L_SH), AVANT properties()" || ko "invocation du script de listes absente/mal placée (sh=$L_SH wc=$L_WC props=$L_PROPS)"
@@ -655,8 +666,8 @@ MISS=""; for P in MANIFEST MERGE_SHA ENVIRONMENT ADMIN_VIA DEBUG VAULT_USER VAUL
 [ -z "$MISS" ] && ok "les 8 paramètres sont posés par properties()" || ko "paramètres absents :$MISS"
 jss "choice(name: 'ENVIRONMENT', choices: envs" && ok "ENVIRONMENT : choices: envs (dérivée)" || ko "ENVIRONMENT n'est pas dérivée"
 grep -qE "\['dev'|'homol'|'rec', 'int'" "$TMP/jsf.code" && ko "une liste de paliers LITTÉRALE subsiste" || ok "aucune liste de paliers littérale dans Jenkinsfile.selfservice"
-L_DIRF=$(awk "NR>${L_FORM:-0} && /dir\('poc-control-plane-federation'\)/ {print NR; exit}" "$TMP/jsf.code"); L_DER=$(code_line "$TMP/jsf.code" 'env-chain.sh && env_chain_nonprod" > "$WORKSPACE/.a0-envs"')
-[ -n "$L_DIRF" ] && [ -n "$L_DER" ] && [ "$L_DIRF" -lt "$L_DER" ] && [ "$L_DER" -lt "$L_PROPS" ] && ok "dérivation env_chain_nonprod sous dir() (ligne $L_DER), avant properties()" || ko "dérivation absente/mal placée (dir=$L_DIRF der=$L_DER)"
+L_DIRF=$(awk "NR>${L_FORM:-0} && /dir\('poc-control-plane-federation'\)/ {print NR; exit}" "$TMP/jsf.code"); L_DER=$(code_line "$TMP/jsf.code" 'env-chain.sh && env_chain_validate && env_chain" > "$WORKSPACE/.a0-envs"')
+[ -n "$L_DIRF" ] && [ -n "$L_DER" ] && [ "$L_DIRF" -lt "$L_DER" ] && [ "$L_DER" -lt "$L_PROPS" ] && ok "dérivation env_chain (validée, chaîne ENTIÈRE — A7) sous dir() (ligne $L_DER), avant properties()" || ko "dérivation absente/mal placée (dir=$L_DIRF der=$L_DER)"
 jss 'envs.every { it ==~ /[a-z0-9]+/ }' && jss 'FORMULAIRE_INVALIDE' && ok "paliers validés ^[a-z0-9]+$, refus FORMULAIRE_INVALIDE (définitions précédentes conservées)" || ko "validation des paliers absente"
 # Les listes withEnv EXACTES par stage (revue : compter MANIFEST ne prouvait rien
 # pour les 6 autres) — extraites de la vue code jusqu'au `]) {` de chaque withEnv.
@@ -689,15 +700,15 @@ import sys, xml.etree.ElementTree as T
 r = T.parse(sys.argv[1]).getroot()
 for p in r.iter():
     if p.tag.endswith('ChoiceParameterDefinition') and p.findtext('name') == 'ENVIRONMENT': print(' '.join(s.text or '' for s in p.iter('string')))" "$TMP/ss-yes.xml" 2>/dev/null)
-[ "$RC" -eq 0 ] && [ "$ENVX" = "alpha beta gamma delta eps" ] && grep -q '<name>MERGE_SHA</name>' "$TMP/ss-yes.xml" && grep -q '<token>stoa-publish-api-plan</token>' "$TMP/ss-yes.xml" && grep -q 'DisableConcurrentBuildsJobProperty' "$TMP/ss-yes.xml" \
-  && ok "--print publish-api-deploy (XML_PARAMS=yes) : ENVIRONMENT DÉRIVÉE à la pose [$ENVX], terminus zeta absent, MERGE_SHA présent (ceinture SECURITY-170), trigger + option dans le XML (bloc déclaratif côté Jenkinsfile)" || ko "--print mode yes : rc=$RC ENVIRONMENT=[$ENVX]"
-sed 's/ENVS_NONPROD="$(env_chain_nonprod)"/ENVS_NONPROD="$(env_chain)"/' "$SSJ" > "$TMP/ssj_mut.sh"; cp -R scripts/lib "$TMP/" 2>/dev/null; mkdir -p "$TMP/scripts"; cp "$TMP/ssj_mut.sh" "$TMP/scripts/setup-selfservice-job.sh"; cp -R scripts/lib "$TMP/scripts/"
+[ "$RC" -eq 0 ] && [ "$ENVX" = "alpha beta gamma delta eps zeta" ] && grep -q '<name>MERGE_SHA</name>' "$TMP/ss-yes.xml" && grep -q '<token>stoa-publish-api-plan</token>' "$TMP/ss-yes.xml" && grep -q 'DisableConcurrentBuildsJobProperty' "$TMP/ss-yes.xml" \
+  && ok "--print publish-api-deploy (XML_PARAMS=yes) : ENVIRONMENT DÉRIVÉE à la pose [$ENVX], terminus zeta PRÉSENT (A7 : build job: valide les choice, mesuré), MERGE_SHA présent (ceinture SECURITY-170), trigger + option dans le XML (bloc déclaratif côté Jenkinsfile)" || ko "--print mode yes : rc=$RC ENVIRONMENT=[$ENVX]"
+sed 's/ENVS="$(env_chain)"/ENVS="$(env_chain_nonprod)"/' "$SSJ" > "$TMP/ssj_mut.sh"; cp -R scripts/lib "$TMP/" 2>/dev/null; mkdir -p "$TMP/scripts"; cp "$TMP/ssj_mut.sh" "$TMP/scripts/setup-selfservice-job.sh"; cp -R scripts/lib "$TMP/scripts/"
 ENVM=$(STOA_ENV_CHAIN_FILE="$TMP/chain10.yaml" JOB=publish-api-deploy SCRIPT_PATH=poc-control-plane-federation/ci/Jenkinsfile.publish-api bash "$TMP/scripts/setup-selfservice-job.sh" --print 2>/dev/null | python3 -c "
 import sys, xml.etree.ElementTree as T
 r = T.fromstring(sys.stdin.read())
 for p in r.iter():
     if p.tag.endswith('ChoiceParameterDefinition') and p.findtext('name') == 'ENVIRONMENT': print(' '.join(s.text or '' for s in p.iter('string')))")
-[ "$ENVM" = "alpha beta gamma delta eps zeta" ] && ok "mutation env_chain_nonprod→env_chain dans le poseur ⇒ le TERMINUS apparaît (zeta) : la dérivation est bien ce qui l'exclut" || ko "mutation du poseur sans effet : [$ENVM]"
+[ "$ENVM" = "alpha beta gamma delta eps" ] && ok "mutation env_chain→env_chain_nonprod dans le poseur ⇒ le TERMINUS disparaît (zeta) : la dérivation est bien ce qui l'inclut (A7)" || ko "mutation du poseur sans effet : [$ENVM]"
 grep -vE '^\s*#' "$SSJ" | grep -q 'BUILD_EP="build"' && grep -vE '^\s*#' "$SSJ" | grep -q "ParametersDefinitionProperty'))" && grep -q 'BOOTSTRAP_WAIT="${BOOTSTRAP_WAIT:-360}"' "$SSJ" && grep -vE '^\s*#' "$SSJ" | grep -q 'attendu UN trigger $TRIGGER_TOKEN et UNE option' \
   && ok "poseur : amorçage POST /build en mode no, relecture « UNE propriété + trigger + option posés par le build » (faits 6/10), BOOTSTRAP_WAIT 360 s" || ko "poseur : amorçage/relecture/attente non câblés"
 printf 'environments: [alpha, Beta, gamma]\n' > "$TMP/chain10b.yaml"

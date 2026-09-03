@@ -133,6 +133,14 @@ if expected and expected != sha:
 digest = digest_ok(os.environ.get("APPLIED_DIGEST", "").strip())
 if digest:
     lines.append(f"- digest du manifeste effectif `per_env.{clean(os.environ['ENV_NAME'], 40)}` à ce SHA : `{digest}`")
+# A7 (G7 D4 porté aux applications) — les TROIS identités, trois statuts :
+# demandée (l'auteur de la PR, relu sur la forge), mergée (le mergeur relu sur
+# la forge), portée (l'identité nominative de la pause). Jamais sur REFUSED :
+# aucune identité n'a été consommée.
+if res != "REFUSED":
+    def who(k):
+        return clean(os.environ.get(k, ""), 80) or "(inconnu)"
+    lines.append(f"- identités : demandée par `{who('GITEA_REQUESTER')}` · mergée par `{who('GITEA_MERGED_BY')}` · portée par `{validator or '(inconnu)'}`")
 if os.environ.get("BUILD_URL"):
     lines.append(f"- build : {clean(os.environ['BUILD_URL'], 200)}")
 # A4 — LA PORTE DU PALIER, relue au dispatch : ce qui a été EXIGÉ, à côté de ce

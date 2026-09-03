@@ -10,7 +10,7 @@
 # ci/Jenkinsfile.app-request) : il lui faut les valeurs, calculées dans le
 # build, depuis le dépôt. C'est ce script — et rien d'autre dans le Groovy.
 #
-#   ENVS   = env_chain_nonprod (scripts/lib/env-chain.sh) — la MÊME source que
+#   ENVS   = env_chain (scripts/lib/env-chain.sh — la chaîne ENTIÈRE, A7) — la MÊME source que
 #            provision-request.sh, qui refuse ENV_INVALIDE hors de cette liste ;
 #            le terminus est exclu par STRUCTURE (G4/D6), pas par son nom.
 #   TEAMS  = generate_choices_teams_raw  (scripts/lib/generate-choices.sh) —
@@ -69,8 +69,10 @@ ENVN="${DEPLOY_PIN_AUTHORING_ENV:?DEPLOY_PIN_AUTHORING_ENV non posé par deploy-
 env_chain_validate 2>"${CHOICES_OUT}.validate.err" \
   || { refus "CHAINE_INVALIDE : $(tail -1 "${CHOICES_OUT}.validate.err" 2>/dev/null) (source $(_env_chain_file))"; }
 rm -f "${CHOICES_OUT}.validate.err"
-ENVS="$(env_chain_nonprod)" || refus "CHAINE_ILLISIBLE : env_chain_nonprod (source $(_env_chain_file))"
-[ -n "$ENVS" ] || refus "CHAINE_VIDE : aucun palier hors terminus"
+# A7 : la chaîne ENTIÈRE, terminus compris — le terminus n'est plus exclu par
+# structure, il est gardé par ses portes (refs, quatre yeux, ITSM, voie, credential).
+ENVS="$(env_chain)" || refus "CHAINE_ILLISIBLE : env_chain (source $(_env_chain_file))"
+[ -n "$ENVS" ] || refus "CHAINE_VIDE : chaîne vide"
 
 # Sous-shell : le ${GITEA_TOKEN:?} de la lib n'abat que lui, le message reste le nôtre.
 TEAMS_RAW="$(generate_choices_teams_raw "$ENVN")" || refus "EQUIPES_INDISPONIBLES : providers.${ENVN}.yml sur Gitea main (voir ci-dessus)"

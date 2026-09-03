@@ -985,6 +985,12 @@ func (s *Server) createApp(w http.ResponseWriter, r *http.Request) {
 	if _, ok := in["consumingAPIs"]; !ok {
 		in["consumingAPIs"] = []any{}
 	}
+	// A7 : une application NEUVE est visible de toutes les équipes — teams
+	// [Administrators, Default] inflatés, comme une API importée (defaultTeams).
+	// C'est ce que ss_team_converged du rôle lit avant d'écrire.
+	if _, ok := in["teams"]; !ok {
+		in["teams"] = teamRefs(defaultTeams())
+	}
 	s.store.apps[in["id"].(string)] = in
 	// The real create response is the FLAT application object.
 	writeJSON(w, http.StatusCreated, in)
@@ -1048,6 +1054,13 @@ func (s *Server) updateApp(w http.ResponseWriter, r *http.Request) {
 	in["id"] = id
 	if v, had := prev["consumingAPIs"]; had {
 		in["consumingAPIs"] = v // gateway-preserved across the PUT
+	}
+	// A7 : teams[] est posée par POST /assets/team, jamais éditée par PUT — un
+	// corps qui ne la porte pas la conserve (comme consumingAPIs).
+	if v, had := prev["teams"]; had {
+		if _, given := in["teams"]; !given {
+			in["teams"] = v
+		}
 	}
 	s.store.apps[id] = in
 	writeJSON(w, http.StatusOK, map[string]any{"applications": []any{in}})

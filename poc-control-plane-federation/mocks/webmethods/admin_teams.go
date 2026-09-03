@@ -236,8 +236,10 @@ func (s *Server) assignTeam(w http.ResponseWriter, r *http.Request) {
 	}
 	s.store.mu.Lock()
 	defer s.store.mu.Unlock()
-	if in.AssetType != "API" {
-		// Le no-op silencieux : 200, aucune écriture.
+	// A7 (ADR-090) : le produit assigne les APIs ET les applications (spike
+	// ownership 2026-08-04) — tout autre assetType, ou son absence, reste le
+	// no-op silencieux : 200, aucune écriture.
+	if in.AssetType != "API" && in.AssetType != "Application" {
 		writeJSON(w, http.StatusOK, map[string]any{"responseStatus": "SUCCESS"})
 		return
 	}
@@ -252,8 +254,16 @@ func (s *Server) assignTeam(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	for _, id := range in.AssetIDs {
-		if api := s.store.apis[id]; api != nil {
-			api.Teams = append([]string{}, names...)
+		if in.AssetType == "API" {
+			if api := s.store.apis[id]; api != nil {
+				api.Teams = append([]string{}, names...)
+			}
+			continue
+		}
+		// Application : teams[] sous la forme {id, name, source} que le rôle relit
+		// (team.yml / verify.yml : `map(attribute='name')`), Default retirée.
+		if app, ok := s.store.apps[id]; ok {
+			app["teams"] = teamRefs(names)
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"responseStatus": "SUCCESS"})

@@ -84,3 +84,7 @@ Le commit de branche porte `Repli-De`, `Repli-Vers`, `Repli-Motif`, `Repli-Par` 
 - Un opérateur replie une application par un formulaire ; le mergeur voit **ce qui est restauré** (ligne, cert, digest, lignée) avant de décider ; l'apply est celui de tous les jours.
 - A7 hérite : ouvrir les PR sous identité humaine lève `REQUESTER_UNKNOWN` sur les replis comme sur les demandes ; le terminus reçoit ses replis par le même formulaire.
 - ADR-088 : la limite « lignée du rôle » est résolue (note datée dans l'ADR).
+
+## Note 2026-09-03 (A7, ADR-090) — le repli sous identité de forge
+
+`app-rollback` porte `FORGE_TOKEN` : la PR de repli est ouverte sous l'identité de l'humain (après la porte, avant tout clone — `ETAPE identite`) ; sous `fourEyes` sans humain, la demande de repli refuse `REQUESTER_UNKNOWN` avant le clone (la limite « `REQUESTER_UNKNOWN` sur `int`+ » est levée). Deux gardes changent de portée : `REPLI_EN_COURS` refuse quel que soit l'auteur de la PR de repli ouverte (A7 rend ces PR humaines), et `EXIST` strict s'étend à l'humain (une PR de repli identique ouverte par le même humain est réutilisée ; par un autre, `PR_EN_COURS`). Au terminus, le repli est reçu par le même formulaire et refuse juste : après le parcours A7, les deux PR `prod` mergées ne diffèrent que par `change_ref` ⇒ `ETAT_IDENTIQUE` (mesuré par build).

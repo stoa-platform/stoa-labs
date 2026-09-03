@@ -840,7 +840,7 @@ else
     || ok "⑳quinquies la liste SUIT providers : repo retiré ⇒ dépôt hors de la pose"
 fi
 
-echo "== ㉑ la voie consommateur valide l'env par la CHAÎNE, terminus exclu =="
+echo "== ㉑ la voie consommateur valide l'env par la CHAÎNE (A7 : la demande admet la chaîne ENTIÈRE, terminus compris — les portes décident) =="
 # Numérotation : ⑫..⑳ sont tous pris (cf. le commentaire de numérotation à
 # ⑨bter) ; le brief Task 7 (D6/D8) appelait ces épreuves ⑯ ⑯bis ⑯ter ⑯quater,
 # déjà pris par les mutations de ⑬/⑭ plus haut. ㉑ est la première étiquette
@@ -852,7 +852,7 @@ for F in scripts/provision-request.sh scripts/provision-plan.sh; do
     continue
   fi
   nc_strict "$F" > "$TMP/c21_nc"
-  grep -q 'env_chain_nonprod' "$TMP/c21_nc" \
+  grep -Eq '(^|[^_a-z])env_chain(_nonprod)?([^_a-z]|$)' "$TMP/c21_nc" \
     && ok "㉑ $F dérive la liste de la chaîne" \
     || bad "㉑ $F ne dérive pas (liste en dur ?)"
   grep -Eq 'dev\|rec\|int\|prod' "$TMP/c21_nc" \
@@ -902,7 +902,7 @@ else
     || ok "㉑quinquies régression vers une branche de feature ⇒ le détecteur de ㉑quater la VOIT"
 fi
 
-echo "== ㉑sexies le terminus a quitté le formulaire consommateur (setup-selfservice-job.sh + Jenkinsfile) =="
+echo "== ㉑sexies le formulaire consommateur n'écrit AUCUN palier en dur (A7 : la liste est la chaîne ENTIÈRE, dérivée ; le terminus est gardé par ses portes) =="
 JSF="ci/Jenkinsfile.selfservice"
 if [ ! -f "$SSJ" ] || [ ! -f "$JSF" ]; then
   bad "㉑sexies $SSJ ou $JSF introuvable — l'assertion d'absence du terminus serait vaine"
@@ -915,13 +915,13 @@ else
   nc_strict "$SSJ" > "$TMP/ssj21t_nc"
   sed -E 's@^[[:space:]]*(//|#).*$@@' "$JSF" > "$TMP/jsf21t_nc"
   grep -Eq "choices.*'prod'|>prod<|<string>prod</string>" "$TMP/ssj21t_nc" "$TMP/jsf21t_nc" \
-    && bad "㉑sexies le formulaire consommateur propose encore le terminus" \
-    || ok "㉑sexies le terminus a quitté le formulaire consommateur (D3/D6 : l'écriture y meurt de toute façon)"
-  grep -q "choice(name: 'ENVIRONMENT', choices: envs" "$TMP/jsf21t_nc" && grep -q 'env_chain_nonprod' "$TMP/jsf21t_nc" \
-    && ok "㉑sexies-bis Jenkinsfile.selfservice DÉRIVE ENVIRONMENT de env_chain_nonprod (choices: envs) — plus aucune liste en dur" \
-    || bad "㉑sexies-bis Jenkinsfile.selfservice ne dérive pas ENVIRONMENT de env_chain_nonprod"
-  grep -q 'ENVS_NONPROD="$(env_chain_nonprod)"' "$TMP/ssj21t_nc" && ! grep -q '<string>dev</string>' "$TMP/ssj21t_nc" \
-    && ok "㉑sexies-ter setup-selfservice-job.sh dérive la liste à la pose (env_chain_nonprod), aucun <string>dev</string> littéral" \
+    && bad "㉑sexies le formulaire consommateur porte un palier LITTÉRAL (prod) — la liste doit être dérivée" \
+    || ok "㉑sexies aucun palier littéral dans le formulaire consommateur (la liste est dérivée — A0 ; chaîne entière — A7)"
+  grep -q "choice(name: 'ENVIRONMENT', choices: envs" "$TMP/jsf21t_nc" && grep -q 'env_chain_validate && env_chain"' "$TMP/jsf21t_nc" \
+    && ok "㉑sexies-bis Jenkinsfile.selfservice DÉRIVE ENVIRONMENT de env_chain validée (choices: envs — A7 : chaîne entière) — plus aucune liste en dur" \
+    || bad "㉑sexies-bis Jenkinsfile.selfservice ne dérive pas ENVIRONMENT de env_chain (validée)"
+  grep -q 'ENVS="$(env_chain)"' "$TMP/ssj21t_nc" && ! grep -q '<string>dev</string>' "$TMP/ssj21t_nc" \
+    && ok "㉑sexies-ter setup-selfservice-job.sh dérive la liste à la pose (env_chain — A7), aucun <string>dev</string> littéral" \
     || bad "㉑sexies-ter setup-selfservice-job.sh porte encore une liste littérale ou ne dérive pas"
 
   echo "== ㉑septies mutation : le terminus REVIENT dans le Jenkinsfile ⇒ ㉑sexies rougirait =="
@@ -935,17 +935,17 @@ else
     && ok "㉑septies le terminus réinjecté dans le Jenkinsfile ⇒ le détecteur de ㉑sexies le VOIT" \
     || bad "㉑septies le terminus réinjecté passe inaperçu — ㉑sexies est vacante"
 
-  echo "== ㉑septies-bis mutation STRUCTURELLE : la dérivation perd son nonprod ⇒ ㉑sexies-bis/ter rougissent =="
-  sed 's/env_chain_nonprod" > "$WORKSPACE\/.a0-envs"/env_chain" > "$WORKSPACE\/.a0-envs"/' "$JSF" > "$TMP/jsf21_mut2"
+  echo "== ㉑septies-bis mutation STRUCTURELLE : la dérivation perd le terminus (env_chain → env_chain_nonprod) ⇒ ㉑sexies-bis/ter rougissent (A7) =="
+  sed 's/env_chain_validate && env_chain" > "$WORKSPACE\/.a0-envs"/env_chain_validate \&\& env_chain_nonprod" > "$WORKSPACE\/.a0-envs"/' "$JSF" > "$TMP/jsf21_mut2"
   cmp -s "$JSF" "$TMP/jsf21_mut2" && bad "㉑septies-bis(0) mutant Jenkinsfile identique — l'ancre de dérivation a bougé" || ok "㉑septies-bis(0) le mutant Jenkinsfile diffère"
-  sed -E 's@^[[:space:]]*(//|#).*$@@' "$TMP/jsf21_mut2" | grep -q 'env_chain_nonprod' \
-    && bad "㉑septies-bis env_chain_nonprod→env_chain dans le Jenkinsfile passe inaperçu" \
-    || ok "㉑septies-bis env_chain_nonprod→env_chain dans le Jenkinsfile ⇒ le détecteur de ㉑sexies-bis le VOIT (le terminus reviendrait au build)"
-  sed 's/ENVS_NONPROD="$(env_chain_nonprod)"/ENVS_NONPROD="$(env_chain)"/' "$SSJ" > "$TMP/ssj21_mut2"
+  sed -E 's@^[[:space:]]*(//|#).*$@@' "$TMP/jsf21_mut2" | grep -q 'env_chain_validate && env_chain"' \
+    && bad "㉑septies-bis env_chain→env_chain_nonprod dans le Jenkinsfile passe inaperçu" \
+    || ok "㉑septies-bis env_chain→env_chain_nonprod dans le Jenkinsfile ⇒ le détecteur de ㉑sexies-bis le VOIT (le terminus quitterait la liste, et le dispatch de prod mourrait après la pause — mesuré A7)"
+  sed 's/ENVS="$(env_chain)"/ENVS="$(env_chain_nonprod)"/' "$SSJ" > "$TMP/ssj21_mut2"
   cmp -s "$SSJ" "$TMP/ssj21_mut2" && bad "㉑septies-ter(0) mutant poseur identique" || ok "㉑septies-ter(0) le mutant poseur diffère"
-  nc_strict "$TMP/ssj21_mut2" | grep -q 'ENVS_NONPROD="$(env_chain_nonprod)"' \
+  nc_strict "$TMP/ssj21_mut2" | grep -q 'ENVS="$(env_chain)"' \
     && bad "㉑septies-ter la dérivation mutée du poseur passe inaperçue" \
-    || ok "㉑septies-ter env_chain_nonprod→env_chain dans le poseur ⇒ le détecteur de ㉑sexies-ter le VOIT"
+    || ok "㉑septies-ter env_chain→env_chain_nonprod dans le poseur ⇒ le détecteur de ㉑sexies-ter le VOIT"
 
   echo "== ㉑nonies l'exception est NOMMÉE : Jenkinsfile.publish-api (chaîne des APIs) garde une liste littérale AVEC le terminus =="
   grep -q "choices: \['dev', 'rec', 'int', 'prod'\]" ci/Jenkinsfile.publish-api \
@@ -977,9 +977,9 @@ print(sum(1 for p in r.iter() if p.tag.endswith('ChoiceParameterDefinition') and
   [ "$N21" = "0" ] \
     && ok "㉑octies le XML ne porte plus AUCUNE liste REQ_ENV (A0 : posée par le Jenkinsfile, jamais en dur)" \
     || bad "㉑octies une liste REQ_ENV subsiste dans le XML — elle GAGNERAIT sur le Jenkinsfile"
-  grep -vE '^\s*#' "$ARC" | grep -q 'ENVS="$(env_chain_nonprod)"' \
-    && ok "㉑octies app-request-choices.sh dérive ENVS d'env_chain_nonprod (terminus exclu par STRUCTURE)" \
-    || bad "㉑octies app-request-choices.sh ne dérive pas ENVS d'env_chain_nonprod"
+  grep -vE '^\s*#' "$ARC" | grep -q 'ENVS="$(env_chain)"' \
+    && ok "㉑octies app-request-choices.sh dérive ENVS d'env_chain (A7 : la chaîne ENTIÈRE, le terminus gardé par ses portes)" \
+    || bad "㉑octies app-request-choices.sh ne dérive pas ENVS d'env_chain"
   if grep -vE '^\s*//' "$ARF" | grep -qE "'homol'|'$TERMINUS_REAL'|\['dev'"; then
     bad "㉑octies une liste de paliers LITTÉRALE subsiste dans ci/Jenkinsfile.app-request"
   else
@@ -987,7 +987,7 @@ print(sum(1 for p in r.iter() if p.tag.endswith('ChoiceParameterDefinition') and
   fi
   case " $CHAIN_NONPROD_REAL " in
     *" $TERMINUS_REAL "*) bad "㉑octies env_chain_nonprod contient le terminus '$TERMINUS_REAL'";;
-    *) [ -n "$CHAIN_NONPROD_REAL" ] && case " $CHAIN_NONPROD_REAL " in *" homol "*) ok "㉑octies env_chain_nonprod = ($CHAIN_NONPROD_REAL) : homol présent, terminus '$TERMINUS_REAL' absent — ce que le formulaire proposera";; *) bad "㉑octies env_chain_nonprod ne contient pas homol";; esac || bad "㉑octies env_chain_nonprod illisible";;
+    *) [ -n "$CHAIN_NONPROD_REAL" ] && case " $CHAIN_NONPROD_REAL " in *" homol "*) ok "㉑octies env_chain_nonprod = ($CHAIN_NONPROD_REAL) : homol présent, terminus '$TERMINUS_REAL' absent — la structure tient ; le formulaire propose la chaîne ENTIÈRE (A7), les portes décident";; *) bad "㉑octies env_chain_nonprod ne contient pas homol";; esac || bad "㉑octies env_chain_nonprod illisible";;
   esac
 fi
 

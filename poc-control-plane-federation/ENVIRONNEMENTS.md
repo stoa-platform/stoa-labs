@@ -677,7 +677,7 @@ données (celui-ci est topologique : une gateway par palier chez un client).
 `X-Environment` est toujours émis par le rôle (transport redondant). Le
 terminus n'est fermé ni par un `if` ni par un nom : `TERMINUS_SANS_VOIE` tant
 qu'aucune voie n'est déclarée, puis le credential ; A4 (la porte de la chaîne :
-groupe déployeur, quatre yeux, refs/ITSM — section suivante) et A7 (ouverture)
+groupe déployeur, quatre yeux, refs/ITSM — section suivante) et A7 (ouverture — FAIT le 2026-09-03, section « Le terminus et le parcours complet »)
 posent le reste. `USER_VAULT_JWT` (voie B) reste un
 paramètre `string` sur le canal `withEnv` (état A0, nommé).
 
@@ -755,7 +755,7 @@ de forge humain `carol` s'il manque.
 - **Sur les voies livrées, `int` refuse `REQUESTER_UNKNOWN`** : `app-request`
   et `provisioning-request` ouvrent la PR sous `ci`, la forge ne nomme aucun
   demandeur humain — la porte à quatre yeux, inerte avant A4 (`ci ≠ alice`
-  passait toujours), est **fermée**. A7 ouvre la PR sous l'identité humaine.
+  passait toujours), est **fermée**. A7 ouvre la PR sous l'identité humaine (FAIT : `FORGE_TOKEN`, ADR-090).
   Un `requested_by` dans le manifeste n'est pas une réponse (forgeable dans
   la PR par son auteur).
 - **`rec` est relâché au sens de la porte** (`selfApproval: true`, décision
@@ -763,7 +763,7 @@ de forge humain `carol` s'il manque.
   fermeture est une ligne (`fourEyes: true`) — et rend alors `rec`
   `REQUESTER_UNKNOWN` sur les voies livrées jusqu'à A7.
 - **`homol` refuse `GATE_REFS_REQUIRED`** tant que la demande ne porte pas
-  `per_env.<env>.pv_ref` (A7 ajoute le champ) ; avant A4, `homol` s'appliquait
+  `per_env.<env>.pv_ref` (A7 ajoute le champ — FAIT : `PV_REF` au formulaire) ; avant A4, `homol` s'appliquait
   sans aucune porte.
 - **« Même équipe » n'est pas vérifié** : un autre humain de l'équipe (carol)
   qui merge la PR d'alice passe la porte — mesuré ; c'est l'axe `approverGroup`.
@@ -854,6 +854,107 @@ réactive `demo-selfservice`, trap inconditionnel).
 **Limites écrites** : l'état restauré est l'état **déclaré** (Git), pas l'état servi (un N-1 mergé puis refusé à l'apply est restauré tel que déclaré et repasse les portes) ; un repli vers « sans cert » retire le fichier de Git mais **laisse le cert de N sur la gateway** (le rôle préserve les dimensions absentes du manifeste — dette du rôle) ; mono-gateway sur le lab ; la suspension (verbe de retrait) n'est pas écrite.
 
 **Preuves** : hors ligne `scripts/test-app-rollback-a6.sh` 82/82 (`make lint-ci` [15/15]) ; par builds réels `scripts/test-a6-live.sh` **49/49** au 4e passage (repli #16 → PR #511 → provision-apply #156 → aval #102 SUCCESS, gateway lue à l'état N-1 : même GUID, même clé, IP et cert de N-1 ; chiffres complets dans le GOAL). Pose du job : `JOBS=app-rollback BOOTSTRAP_JOBS=app-rollback scripts/setup-provision-jobs.sh`.
+
+## Le terminus et le parcours complet — applications (A7 — GOAL cd-applications, 2026-09-03)
+
+**Ouvrir `prod` aux applications n'est pas un edit** (ADR-090) : c'est **déclarer**
+la voie (`APIM_TERMINUS_BASE`, globale Jenkins lue par les deux sites — sur ce lab
+`http://wm-mock-prod:8080/rest/apigateway`, posée par le harnais et restaurée
+après le passage), **accorder** le credential (`envs/<terminus>/wm-admin` = l'admin
+de la gateway du terminus, posé par `scripts/setup-terminus-apps.sh`, lu par
+`operator-deploy` depuis G7) et laisser la **porte** décider (`deployerGroup:
+apim-operator-prod` — oscar —, ITSM re-vérifié au dispatch). Ce qui manquait pour
+parcourir les cinq paliers était ailleurs, et A7 le ferme :
+
+- **la demande sous identité de forge** : le formulaire `app-request` (et
+  `app-rollback`) porte `FORGE_TOKEN` — votre token d'accès personnel de la forge,
+  scopes **`read:user + write:repository`**, token dédié, à révoquer après. La PR
+  est ouverte **sous votre identité** (c'est elle que la porte à quatre yeux
+  confronte au mergeur) ; le compte de service reste celui des lectures et du
+  plan. Sans token, vers un palier à `fourEyes` : `REQUESTER_UNKNOWN` **à la
+  demande**, aucune PR. `TOKEN_ALTERE` (un `$` dans le token, résolu par Jenkins)
+  et `TOKEN_GLOBAL_REFUSE` (champ vide, globale posée) ferment les deux pièges du
+  canal ; la voie machine (`provisioning-request`) vide `FORGE_TOKEN` — elle ne
+  demande pas au-delà des paliers autonomes (décision client n°3) ;
+- **l'équipe sous une déclaration de déployeur vient de Git** : bob, carol et
+  oscar ne sont pas tenants ; la garde du palier (`selfservice-palier-gate.sh`
+  §2ter) lit `team:` du manifeste mergé quand la porte nomme un déployeur
+  **prouvé** (§2bis d'abord), et refuse `TEAM_INDETERMINEE` si le manifeste n'en
+  nomme aucune (nommer l'équipe **dès la première demande** : une application sans
+  équipe est confinée aux paliers autonomes), `TEAM_DIVERGENTE` si `APIM_TEAM`
+  discorde, `TEAM_NON_ATTESTEE` si aucun palier autonome n'est déclaré ; en mode
+  `internal`, `VAULT_SUB_HORS_TENANT` lie le chemin au tenant ;
+- **les références de la porte** : `CHANGE_REF` / `PV_REF` au formulaire ⇒
+  `per_env.<env>.change_ref` / `pv_ref` ; `GATE_REFS_REQUIRED` à la demande quand
+  la porte l'exige ;
+- **la chaîne entière** aux deux formulaires (mesuré : `build job:` valide la
+  valeur d'un `choice` — le terminus doit être listé, les portes décident) ;
+- **une PR ouverte n'appartient qu'à son auteur** : `PR_D_AUTRUI` sinon ;
+  `REPLI_EN_COURS` quel que soit l'auteur ;
+- **le contrat figé relu au dispatch** : `CONTRAT_DIVERGENT` si un merge change la
+  racine du manifeste ; **les trois identités** sur la PR (demandée · mergée ·
+  portée).
+
+**Le pas-à-pas des cinq paliers** (qui demande, qui merge, qui répond à la pause) :
+
+1. **dev** : alice demande (`FORGE_TOKEN`), alice merge, alice répond — palier
+   sans porte ; l'équipe est décidée par le token (A3).
+2. **rec** : alice / alice / alice (`selfApproval`, décision client n°1).
+3. **int** : alice demande, **bob** merge (quatre yeux : alice ≠ bob), **bob**
+   répond à la pause (`apim-apply-int` → `apply-int`) ; l'aval imprime « équipe :
+   'banking-demo' — celle du manifeste mergé … ; tenants du porteur :
+   payments-team » puis « déclaration déployeur : 'bob' porte 'apply-int' ».
+4. **homol** : alice demande **avec `PV_REF`**, **carol** merge et répond
+   (`apim-apply-homol`).
+5. **prod** : alice demande avec `CHANGE_REF` + `PV_REF`, **oscar** merge et
+   répond (`apim-operator-prod` → `operator-deploy`) ; l'ITSM est re-vérifié au
+   dispatch ; la voie est **directe** sur la gateway du terminus, ticket
+   `envs/prod/wm-admin` ; **l'API doit y être** (A5 au terminus : `API_NOT_PROMOTED`
+   / `API_INACTIVE` lus sur la gateway du terminus, rien écrit) — la promouvoir par
+   archive (`api-promote-request` → `team-promote` ; sur ce lab, l'export de la
+   10.15 importé dans `wm-mock-prod` conserve GUID et `isActive`), puis **rejouer
+   le webhook** de la PR mergée.
+
+**Gestes du lab (l'ordre compte)** :
+
+```bash
+git push gitea HEAD:main                                   # le CI lit gitea
+docker build -t stoa-labs/webmethods-mock:dev mocks/webmethods && (recréer poc-wm-mock-prod)   # mock fidèle (assets/team Application)
+VAULT_TOKEN=… TERMINUS_ADMIN=http://wm-mock-prod:8080/rest/apigateway TERMINUS_CURL="docker exec -i poc-jenkins curl" \
+  TERMINUS_WM_USER=… TERMINUS_WM_PASS=… TERMINUS_ISSUER=http://localhost:8480/realms/stoa-lab \
+  TERMINUS_JWKS=http://keycloak:8080/realms/stoa-lab/protocol/openid-connect/certs \
+  bash scripts/setup-terminus-apps.sh                      # ticket, Teams, accessProfile, alias (valeurs locales), login prouvé
+# amorçage des trois formulaires (un paramètre posé par properties() n'existe qu'après un build — SECURITY-170)
+set -a; . ./.env.lab-users; set +a
+JENKINS_UI=http://localhost:18080 GITEA_URL=http://localhost:13000 \
+GW_ADMIN=http://localhost:5555/rest/apigateway WM_USER=Administrator WM_PASS=manage \
+  bash scripts/test-a7-live.sh                             # pose APIM_TERMINUS_BASE, joue le parcours, la restaure
+```
+
+**Knobs** : `APIM_TERMINUS_BASE` (sans défaut — la déclaration) ; `FORGE_TOKEN` /
+`CHANGE_REF` / `PV_REF` (formulaires) ; `GITEA_SERVICE_LOGINS` (défaut `ci`) ;
+`APIM_TEAM` (ne peut que concorder sous déclaration) ; `KEEP_TERMINUS=1` (harnais).
+
+**Limites écrites** : une application sans `team:` reste aux paliers autonomes ;
+l'attestation de l'équipe est partielle (« déclaré » ≠ « appliqué par un tenant » —
+l'approbateur, ou une organisation de forge, la tiendrait) ; mode `internal`
+au-delà des paliers autonomes ⇒ `TENANT_NON_PORTE` ; un PAT Gitea n'expire pas
+(token dédié, révoqué après ; la pause nominative est la barrière) ; les globales
+choisissent les hôtes ; `pv_ref` n'est vérifié par personne ; le mock ne mint
+aucune clé (« clé de la 10.15 jamais transportée », pas « une clé par gateway ») ;
+mono-gateway hors terminus ; `APIM_TERMINUS_BASE` restaurée après le passage.
+
+**Preuves** : hors ligne `make lint-ci` [16/16] (`test-app-request-a7.sh` 50/50,
+`test-selfservice-palier-a3.sh` 191/191, `test-app-rollback-a6.sh` 92/92,
+`test-provision-apply-a4.sh` 138/138, `test-pr-comment.sh` 47/47,
+`test-a0-wiring.sh` 183/183, `test-palier-retention.sh` 137/0, `go test` du mock) ;
+par builds réels `scripts/test-a7-live.sh` **99/99 au 5e passage** (2026-09-03 : cinq
+paliers #176→#119, #177→#120, #178→#121 bob, #179→#122 carol, #182→#125 oscar après
+`ITSM_NOT_APPROVED` #180, `PAYLOAD_PERIME` #181, `API_NOT_PROMOTED` #123 et
+`API_INACTIVE` #124 au terminus ; formulaires #43-#46 ; repli #23 `ETAT_IDENTIQUE`) —
+détail dans le GOAL, §A7. **Fait mesuré au passage** : la 10.15 masque l'`apiAccessKey`
+(32 astérisques) à tout lecteur qui n'est pas le propriétaire de l'application,
+Administrator compris — toute preuve de clé se lit en propriétaire (ADR-090).
 
 ## Tout en Jenkinsfile (A0 — GOAL cd-applications, 2026-09-02)
 

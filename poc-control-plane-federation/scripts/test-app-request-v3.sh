@@ -127,6 +127,13 @@ run_guard "caractère interdit noyé parmi des entrées valides" "IP_ALLOWLIST_I
 run_guard "CIDR seul (contrat v2)"        "IP_CIDR_REFUSE"       "10.0.0.0/24"  REQ_IP_ALLOWLIST="10.0.0.0/24"
 run_guard "caractère invalide seul (v2)"  "IP_ALLOWLIST_INVALID" "10.0.0.1;evil" REQ_IP_ALLOWLIST='10.0.0.1;evil'
 
+echo "── A1bis (A7). références de la porte : classe et exigence, AVANT tout réseau ──"
+run_guard "change_ref avec traversée .." "REF_INVALIDE" "../x"    REQ_CHANGE_REF="../x"
+run_guard "change_ref segment caché"     "REF_INVALIDE" ".hidden" REQ_CHANGE_REF=".hidden"
+run_guard "pv_ref avec espace"           "REF_INVALIDE" "a b"     REQ_PV_REF="a b"
+run_guard "homol sans pv_ref (requirePVRef)" "GATE_REFS_REQUIRED" "pv_ref" REQ_ENV=homol
+run_pass "refs légitimes (rec)" REQ_ENV=rec REQ_CHANGE_REF="CHG-0001" REQ_PV_REF="PV-A7"
+
 echo "── A2. clé backend (chemin Vault) ──"
 run_pass "chemin KV nominal" \
   REQ_BACKEND_KEY_REF="deploy/banking-demo/apps/probe/dev/backend-key"
@@ -307,7 +314,8 @@ elif docker inspect poc-gitea >/dev/null 2>&1; then
     --scopes write:repository,write:issue 2>/dev/null | grep -oE '[0-9a-f]{40}' | head -1)
 fi
 if [ -z "$GITEA_TOKEN" ] || ! curl -s -o /dev/null "http://localhost:13000" 2>/dev/null; then
-  echo "  (sections C/D sautées — Gitea du lab (poc-gitea:13000) ou token indisponible)"
+  if [ -n "${V3_REQUIRE_LAB:-}" ]; then echo "SECTIONS_C_D_IMPOSSIBLES : Gitea du lab (poc-gitea:13000) ou token indisponible — V3_REQUIRE_LAB posé, refus fermé" >&2; exit 2; fi
+  echo "  (sections C/D sautées — Gitea du lab (poc-gitea:13000) ou token indisponible ; V3_REQUIRE_LAB=1 pour en faire un refus)"
 else
   GH="http://localhost:13000"
   raw_manifest(){ curl -s -H "Authorization: token $GITEA_TOKEN" "$GH/api/v1/repos/ci/stoa-labs/raw/${1}/poc-control-plane-federation/clients/provisioned/applications/${2}.ansible.yml"; }

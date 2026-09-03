@@ -1,0 +1,19 @@
+---
+# Les equipes de l'environnement int — ONBOARDING PAR PALIER (A7, ADR-090).
+#
+# A1 exige que le palier VISE declare l'equipe d'une demande (fournie ou
+# heritee du manifeste) : sans ce fichier, aucune application d'equipe ne
+# pouvait etre demandee au-dela de dev (PROVIDERS_MISSING) — seul dev existait.
+# C'est la CONFIG DU LAB, pas un mecanisme : chez un client, chaque palier
+# declare les equipes qui y sont onboardees. Meme forme que providers.dev.yml
+# (UNE LIGNE PAR EQUIPE ; tout le reste est derive des gabarits du role
+# apim_team_onboard). `repo` et `approvers` ne sont pas consommes a ce palier
+# (a renseigner par qui detient ces faits, jamais inventes ici).
+#
+# payments-team n'y figure PAS : sur ce lab bob est DEPLOYEUR d'int
+# (apim-apply-int), pas demandeur au-dela de dev.
+providers:
+  - team: banking-demo
+    description: "Equipe paiements — comptes et virements"
+    repo: banking-demo/accounts-api
+    approvers: []
