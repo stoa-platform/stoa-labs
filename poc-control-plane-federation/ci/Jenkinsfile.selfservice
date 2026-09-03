@@ -192,7 +192,7 @@ pipeline {
             // SILENCE (SECURITY-170) : il doit être MATÉRIALISÉ (amorçage après pose)
             // avant que provision-apply ne compte dessus.
             string(name: 'MERGE_SHA', defaultValue: '',
-                   description: "A2 — SHA de merge à projeter (40 hex, ancêtre de main). Vide = HEAD du checkout SCM. Posé par provision-apply, jamais à la main sauf repli (A6)."),
+                   description: "A2 — SHA de merge à projeter (40 hex, ancêtre de main). Vide = HEAD du checkout SCM. Posé par provision-apply, jamais à la main — le repli (A6) est une PR, pas un SHA saisi ; un SHA de la lignée saisi ici est un rejeu hors chaîne, borné par A3 (jamais les portes A4)."),
             // Env cible : sélectionne per_env[ENVIRONMENT] du manifeste ET le
             // credential du palier (A3 : envs/<env>/wm-admin ou admin-oauth). La liste vient de la CHAÎNE
             // (clients/_example/environments.yaml, terminus exclu par structure — G4/D6),

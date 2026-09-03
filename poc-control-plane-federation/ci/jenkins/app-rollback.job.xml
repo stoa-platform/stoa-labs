@@ -1,0 +1,49 @@
+<?xml version='1.1' encoding='UTF-8'?>
+<!--
+  app-rollback — PIPELINE FROM SCM, COQUILLE PURE (A6 du GOAL cd-applications
+  2026-09-03, ADR-089 : le repli d'une application est une PR).
+
+  Ce fichier ne porte QUE le pointeur SCM du job. Le pipeline vit dans
+  ci/Jenkinsfile.app-rollback (déclaratif, versionné, compilé par `make lint-ci`)
+  — et LE FORMULAIRE AUSSI : les quatre paramètres (APP, ENV, REASON, CHANGE_REF)
+  sont POSÉS PAR LE JENKINSFILE (`properties([parameters([…])])`), la liste ENV
+  dérivée de la chaîne ENTIÈRE (environments.yaml) à chaque build.
+  CONSÉQUENCE MESURÉE (A0, 2026-09-02) : re-poser ce XML EFFACE les paramètres
+  que le build avait posés — un build d'AMORÇAGE suit chaque pose
+  (JOBS=app-rollback BOOTSTRAP_JOBS=app-rollback scripts/setup-provision-jobs.sh).
+  Sur un job posé sans amorçage, le bouton « Build » (sans paramètre) EST
+  l'amorçage : le formulaire apparaît au build suivant.
+  <properties/> et <triggers/> vides : ce job n'est lancé QUE par un humain, via
+  son formulaire (ou par l'amorçage) ; aucun webhook.
+-->
+<flow-definition plugin="workflow-job">
+  <description>Repli d'une application (A6, ADR-089) : formulaire (APP, ENV, REASON, CHANGE_REF) → PR provision/&lt;app&gt;-&lt;env&gt; dont la ligne per_env.&lt;env&gt; et le certificat du palier redeviennent, à l'octet, ceux du merge PRÉCÉDENT ; même aval que toute demande (merge → provision-apply → selfservice-app-deploy), mêmes portes, même GUID, même clé. PIPELINE FROM SCM : ci/Jenkinsfile.app-rollback, chargé depuis le dépôt plateforme (branche main) — ce job ne contient AUCUN Groovy ni AUCUN paramètre : le formulaire est posé par le Jenkinsfile à chaque build.</description>
+  <keepDependencies>false</keepDependencies>
+  <properties/>
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition" plugin="workflow-cps">
+    <scm class="hudson.plugins.git.GitSCM" plugin="git">
+      <configVersion>2</configVersion>
+      <userRemoteConfigs>
+        <hudson.plugins.git.UserRemoteConfig>
+          <!-- Dépôt PLATEFORME vu DEPUIS l'agent (réseau docker) : c'est celui
+               que le checkout implicite de `agent any` repose dans le workspace. -->
+          <url>http://gitea:3000/ci/stoa-labs.git</url>
+        </hudson.plugins.git.UserRemoteConfig>
+      </userRemoteConfigs>
+      <branches>
+        <hudson.plugins.git.BranchSpec>
+          <name>*/main</name>
+        </hudson.plugins.git.BranchSpec>
+      </branches>
+      <doGenerateSubmoduleConfigurations>false</doGenerateSubmoduleConfigurations>
+      <submoduleCfg class="empty-list"/>
+      <extensions/>
+    </scm>
+    <scriptPath>poc-control-plane-federation/ci/Jenkinsfile.app-rollback</scriptPath>
+    <!-- lightweight=false : le workspace de l'agent doit porter le dépôt
+         (scripts/app-rollback-request.sh et ses libs), pas seulement le Jenkinsfile. -->
+    <lightweight>false</lightweight>
+  </definition>
+  <triggers/>
+  <disabled>false</disabled>
+</flow-definition>

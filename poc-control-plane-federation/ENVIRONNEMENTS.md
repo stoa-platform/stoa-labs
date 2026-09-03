@@ -1036,8 +1036,9 @@ contrôle réel est le merge par un tiers (protection de branche, G4) ; la garde
 de périmètre vit dans le dépôt que la PR modifie et n'est fermée que par la
 protection de `ci/stoa-labs@main` (`setup-repo-protections.sh`) ; un
 `MERGE_SHA` saisi à la main sur l'aval est accepté s'il est sur la lignée de
-`main` — c'est le levier du repli (A6), borné par l'identité nominative et
-Vault comme aujourd'hui.
+`main` — ce n'est PAS le repli (A6 : le repli est une PR, section « Revenir en
+arrière — applications (A6) » ci-dessous), c'est un rejeu hors chaîne borné par
+l'identité nominative et Vault comme aujourd'hui.
 
 ## Résiduel
 
