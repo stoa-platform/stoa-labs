@@ -82,6 +82,14 @@ _gc_escape(){
 # pouvait pas distinguer un hôte injoignable d'un jeton refusé, d'une branche
 # `main` absente ou d'un dépôt privé — tous rendus par le même refus muet.
 _GC_CLONE_ERR=""
+# Disposition du dépôt (2026-09-03) : le préfixe du livrable n'est plus écrit en
+# dur ici. La lib voisine le normalise (sentinelle « . », tiret nu) ; elle est
+# localisée par le chemin de CE fichier, la lib pouvant être sourcée depuis
+# n'importe quel répertoire de travail.
+# shellcheck source=scripts/lib/repo-layout.sh
+# (cette lib est TOUJOURS sourcée : `return` est la seule sortie correcte ici)
+. "${BASH_SOURCE[0]%/*}/repo-layout.sh" || { echo "LIB_ABSENTE : repo-layout.sh (voisine de generate-choices.sh)" >&2; return 1; }
+repo_layout_init || { echo "GIT_SUBDIR_INVALIDE : voir scripts/lib/repo-layout.sh" >&2; return 1; }
 # _gc_redact <texte> — retire la partie userinfo de toute URL (http://user:jeton@hote).
 # Vaut pour la sortie de git ET pour GIT_HOST lui-même : un opérateur qui met ses
 # identifiants dans GIT_HOST les verrait sinon ressortir par le refus (mesuré).
@@ -124,8 +132,8 @@ _gc_clone(){
 _gc_fetch_main(){
   local dest="$1"
   if [ -n "${GC_PLATFORM_DIR:-}" ]; then
-    if [ ! -d "${GC_PLATFORM_DIR}/poc-control-plane-federation/ansible" ]; then
-      _GC_CLONE_ERR="GC_PLATFORM_DIR=$(_gc_redact "$GC_PLATFORM_DIR") ne porte pas poc-control-plane-federation/ansible — répertoire fourni par l'appelant, aucun repli sur un clone"
+    if [ ! -d "${GC_PLATFORM_DIR}/${SUB_PFX}ansible" ]; then
+      _GC_CLONE_ERR="GC_PLATFORM_DIR=$(_gc_redact "$GC_PLATFORM_DIR") ne porte pas ${SUB_PFX}ansible — répertoire fourni par l'appelant, aucun repli sur un clone"
       return 1
     fi
     rm -df "$dest" 2>/dev/null
@@ -182,7 +190,7 @@ generate_choices_teams_raw(){
     echo "GIT_UNREACHABLE : accès au dépôt plateforme ${GIT_REPO:-ci/stoa-labs}@${GIT_BASE:-main} (${GC_PLATFORM_DIR:+répertoire fourni}${GC_PLATFORM_DIR:-clone depuis $(_gc_redact "${GIT_HOST:-http://gitea:3000}")}) en échec — ${_GC_CLONE_ERR:-aucune sortie de git}" >&2
     rm -rf "$work"; return 1
   fi
-  local prov="$work/poc-control-plane-federation/ansible/providers.${envn}.yml"
+  local prov="$work/${SUB_PFX}ansible/providers.${envn}.yml"
   if [ ! -f "$prov" ]; then
     echo "PROVIDERS_MISSING : ansible/providers.${envn}.yml absent sur main" >&2
     rm -rf "$work"; return 1
@@ -232,7 +240,7 @@ generate_choices_apis_raw(){
     echo "GIT_UNREACHABLE : accès au dépôt plateforme ${GIT_REPO:-ci/stoa-labs}@${GIT_BASE:-main} (${GC_PLATFORM_DIR:+répertoire fourni}${GC_PLATFORM_DIR:-clone depuis $(_gc_redact "${GIT_HOST:-http://gitea:3000}")}) en échec — ${_GC_CLONE_ERR:-aucune sortie de git}" >&2
     rm -rf "$work"; return 1
   fi
-  local root="$work/platform/poc-control-plane-federation"
+  local root="$work/platform/${SUB_PFX%/}"
   local prov="$root/ansible/providers.${envn}.yml"
   if [ ! -f "$prov" ]; then
     echo "PROVIDERS_MISSING : ansible/providers.${envn}.yml absent sur main" >&2

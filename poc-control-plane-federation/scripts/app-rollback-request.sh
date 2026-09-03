@@ -52,7 +52,9 @@ GIT_HOST="${GIT_HOST:?GIT_HOST requis (base de la forge, ex. https://forge.clien
 GIT_WEB_HOST="${GIT_WEB_HOST:-$GIT_HOST}"   # l'adresse HUMAINE, si elle diffère de celle vue par le CI
 GIT_REPO="${GIT_REPO:-ci/stoa-labs}"
 GIT_BASE="${GIT_BASE:-main}"
-GIT_SUBDIR="${GIT_SUBDIR-poc-control-plane-federation}"
+# shellcheck source=scripts/lib/repo-layout.sh
+. "$(dirname "$0")/lib/repo-layout.sh" || { echo "ERREUR: lib/repo-layout.sh introuvable" >&2; exit 1; }
+repo_layout_init || exit 2
 # schéma conservé (cf. provision-request.sh) : « http:// » forcé cassait toute forge TLS
 case "$GIT_HOST" in http://*|https://*|file://*) GIT_BASE_URL="${GIT_HOST%/}";; *) GIT_BASE_URL="http://${GIT_HOST%/}";; esac
 GIT_CLONE_URL="${GIT_CLONE_URL:-${GIT_BASE_URL}/${GIT_REPO}.git}"
@@ -60,8 +62,8 @@ GITEA_SERVICE_LOGINS="${GITEA_SERVICE_LOGINS:-ci}"
 PROVISION_PLAN_INLINE="${PROVISION_PLAN_INLINE:-true}"
 ROLLBACK_OUT="${ROLLBACK_OUT:-}"
 API="${GIT_HOST}/api/v1"
-MAN_PATH="${GIT_SUBDIR:+$GIT_SUBDIR/}clients/provisioned/applications/${REQ_APP}.ansible.yml"
-CERT_PATH="${GIT_SUBDIR:+$GIT_SUBDIR/}clients/provisioned/certs/${REQ_APP}-${REQ_ENV}.crt"
+MAN_PATH="${SUB_PFX}clients/provisioned/applications/${REQ_APP}.ansible.yml"
+CERT_PATH="${SUB_PFX}clients/provisioned/certs/${REQ_APP}-${REQ_ENV}.crt"
 BRANCH="provision/${REQ_APP}-${REQ_ENV}"
 [ -n "$ROLLBACK_OUT" ] && rm -f "$ROLLBACK_OUT"
 WORK="$(mktemp -d /tmp/approll.XXXXXX)"; trap 'rm -rf "$WORK"' EXIT

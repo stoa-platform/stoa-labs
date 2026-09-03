@@ -189,7 +189,14 @@ GIT_BASE="${GIT_BASE:-main}"
 # doit le lire ici, pas découvrir plus tard que la chaîne a visé « gitea:3000 ».
 GIT_HOST="${GIT_HOST:?GIT_HOST requis (base de la forge, ex. https://forge.client) — aucun repli}"
 GIT_WEB_HOST="${GIT_WEB_HOST:-$GIT_HOST}"   # l'adresse HUMAINE, si elle diffère de celle vue par le CI
-MANIFEST_DIR="${MANIFEST_DIR:-poc-control-plane-federation/clients/provisioned/applications}"
+# Disposition du dépôt (2026-09-03) : MANIFEST_DIR est RELATIF au livrable, le
+# préfixe du monorepo vit dans GIT_SUBDIR — contrat déjà écrit par
+# provision-apply-reconcile.sh, ici généralisé. Un chemin vu de la racine du
+# clone se compose « ${SUB_PFX}${MANIFEST_DIR}/… ».
+# shellcheck source=scripts/lib/repo-layout.sh
+. "scripts/lib/repo-layout.sh" || { echo "ERREUR: scripts/lib/repo-layout.sh introuvable ou illisible" >&2; exit 1; }
+repo_layout_init || exit 2
+MANIFEST_DIR="${MANIFEST_DIR:-clients/provisioned/applications}"
 
 # Garde-fous d'entrée : noms sûrs (pas d'injection dans un path/branche/YAML).
 # REQ_CLIENT_ID est optionnel (internal) → validé seulement s'il est fourni.
@@ -366,7 +373,7 @@ PUSH_LOGIN="$FORGE_LOGIN"; [ "$PUSH_LOGIN" = "(service)" ] && PUSH_LOGIN=ci
 PUSH_TF="${FORGE_TF:-$CI_TF}"
 
 BRANCH="provision/${REQ_APP}-${REQ_ENV}"
-REL_PATH="${MANIFEST_DIR}/${REQ_APP}.ansible.yml"
+REL_PATH="${SUB_PFX}${MANIFEST_DIR}/${REQ_APP}.ansible.yml"
 WORK="$(mktemp -d /tmp/provreq.XXXXXX)"
 # Chemin du script résolu AVANT tout `cd` : ce script se déplace dans le clone
 # ($WORK/repo) pour rendre le manifeste, et un `dirname "$0"` relatif n'y
@@ -492,9 +499,9 @@ mkdir -p "$(dirname "$REL_PATH")"
 # A1 : le certificat est une identité PAR PALIER (per_env.<env>.public_cert_ref)
 # — le fichier l'est donc aussi (`<app>-<env>.crt`) : une demande `rec` avec
 # son propre certificat n'écrase jamais celui de `dev`.
-CERT_DIR="$(dirname "$MANIFEST_DIR")/certs"
+CERT_DIR="${SUB_PFX}$(dirname "$MANIFEST_DIR")/certs"
 CERT_FILE="${CERT_DIR}/${REQ_APP}-${REQ_ENV}.crt"
-CERT_REL="${CERT_FILE#poc-control-plane-federation/}"
+CERT_REL="${CERT_FILE#"$SUB_PFX"}"
 if [ -n "$REQ_CERT_PEM" ]; then
   mkdir -p "$CERT_DIR"
   printf '%s\n' "$REQ_CERT_PEM" > "$CERT_FILE"
