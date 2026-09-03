@@ -172,9 +172,49 @@ if mutant m_tag roles/apim_common/tasks/refus.yml '/^- name: "Refus : écrire le
   run_role "$CTL_ABSENT"; [ "$(cat "$TMP/refus" 2>/dev/null)" = API_NOT_PROMOTED ] && ok "A.M3' l'original écrit le tag" || bad "A.M3' l'original a dérivé"
 fi
 
-# (sections B..E ajoutées par T2..T5)
+echo
+echo "══ B. verify contre le MOCK webMethods (shapes fidèles) ══"
+if command -v go >/dev/null && (cd "$REPO/mocks/webmethods" && go build -o "$TMP/wm-mock" . 2>"$TMP/mock.build"); then
+  MPORT="$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')"
+  LISTEN_ADDR=":$MPORT" "$TMP/wm-mock" > "$TMP/mock.log" 2>&1 &
+  PIDS="$PIDS $!"
+  for _ in $(seq 1 50); do curl -sf "http://127.0.0.1:$MPORT/health" >/dev/null 2>&1 && break; sleep 0.2; done
+  MGW="http://127.0.0.1:$MPORT/rest/apigateway"
+  madm(){ curl -s -u Administrator:manage -H 'Accept: application/json' -H 'Content-Type: application/json' "$@"; }
+  mk_api(){ madm -X POST "$MGW/apis" -d "{\"apiName\":\"$1\",\"apiVersion\":\"$2\",\"type\":\"REST\",\"apiDefinition\":{\"openapi\":\"3.0.0\"}}" | python3 -c 'import sys,json;print(json.load(sys.stdin)["apiResponse"]["api"]["id"])'; }
+  API1=$(mk_api demo-selfservice 1.0.0); madm -X PUT -o /dev/null "$MGW/apis/$API1/activate"
+  [ -n "$API1" ] && ok "B.0 mock : demo-selfservice 1.0.0 publiée et activée ($API1)" || bad "B.0 mock : API non créée ($(head -c 200 "$TMP/mock.log"))"
+  run_mock(){ # <playbook> → $TMP/r.rc, $TMP/r.out
+    rm -f "$TMP/refus" "$TMP/refus.detail"
+    ( cd "$REPO" && env -u VAULT_ADDR -u VAULT_TOKEN -u VAULT_TOKEN_FILE ANSIBLE_FORCE_COLOR=0 ANSIBLE_NOCOLOR=1 \
+        ansible-playbook -i ansible/inventory.lab.ini "ansible/$1" -e "apim_ss_api_base=$MGW" -e "apim_ss_manifest=$TMP/man.yml" \
+        -e apim_ss_env=rec -e apim_ss_team=banking-demo -e apim_ss_require_team=false \
+        -e "apim_ss_refus_out=$TMP/refus" -e "apim_ss_refus_detail_out=$TMP/refus.detail" ) > "$TMP/r.out" 2>&1; echo $? > "$TMP/r.rc"
+  }
+  run_mock selfservice-app.yml
+  [ "$(rrc)" = 0 ] && grep -q "API_AT_PALIER : 'demo-selfservice' v1.0.0 active" "$TMP/r.out" && ok "B.1 converge sur le mock : rc 0, API_AT_PALIER" || bad "B.1 rc $(rrc) : $(tail_out)"
+  run_mock selfservice-app-verify.yml
+  [ "$(rrc)" = 0 ] && grep -q "API_AT_PALIER_CONFIRMED" "$TMP/r.out" && grep -q "SUBSCRIPTION_CONFIRMED" "$TMP/r.out" && grep -q "id=$API1" "$TMP/r.out" \
+    && ok "B.2 verify : API_AT_PALIER_CONFIRMED + SUBSCRIPTION_CONFIRMED (souscrite au GUID $API1)" || bad "B.2 rc $(rrc) : $(grep -E 'CONFIRMED|REFUS' "$TMP/r.out" | tr '\n' ' ' | cut -c1-300)"
+  madm -X PUT -o /dev/null "$MGW/apis/$API1/deactivate"
+  run_mock selfservice-app-verify.yml
+  refus API_AT_PALIER_UNCONFIRMED && [ "$(cat "$TMP/refus")" = API_AT_PALIER_UNCONFIRMED ] && ok "B.3 API désactivée après l'apply ⇒ verify refuse API_AT_PALIER_UNCONFIRMED (tag relayé)" || bad "B.3 rc $(rrc) : $(tail_out)"
+  run_mock selfservice-app.yml
+  refus API_INACTIVE && ok "B.4 le mock est fidèle : converge sur l'inactive ⇒ API_INACTIVE (isActive booléen du mock)" || bad "B.4 rc $(rrc) : $(tail_out)"
+  madm -X PUT -o /dev/null "$MGW/apis/$API1/activate"
+  API2=$(mk_api autre-api 1.0.0); madm -X PUT -o /dev/null "$MGW/apis/$API2/activate"
+  APPID=$(madm "$MGW/applications" | python3 -c 'import sys,json;print(next(a["id"] for a in json.load(sys.stdin)["applications"] if a["name"]=="a5app"))')
+  madm -X PUT -o /dev/null "$MGW/applications/$APPID/apis" -d "{\"apiIDs\":[\"$API2\"]}"
+  run_mock selfservice-app-verify.yml
+  refus SUBSCRIPTION_UNCONFIRMED && grep -q "$API2" "$TMP/refus.detail" && ok "B.5 souscription remplacée par une autre API ⇒ SUBSCRIPTION_UNCONFIRMED (consumingAPIs cité)" || bad "B.5 rc $(rrc) : $(tail_out) / $(cat "$TMP/refus.detail" 2>/dev/null)"
+else
+  bad "B.0 mock Go non bâti (go absent ou build en échec : $(head -c 200 "$TMP/mock.build" 2>/dev/null))"
+  for _ in 1 2 3 4 5; do bad "B.x section sautée"; done
+fi
 
-EXPECTED_CHECKS=23
+# (sections C..E ajoutées par T3..T5)
+
+EXPECTED_CHECKS=29
 TOTAL=$((PASS+FAIL))
 [ "$TOTAL" -eq "$((EXPECTED_CHECKS-1))" ] \
   && ok "$((TOTAL+1)) contrôles exécutés = $EXPECTED_CHECKS attendus (aucune section sautée)" \
