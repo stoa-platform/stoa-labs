@@ -40,6 +40,7 @@ import json, os, re, sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 CTL, LOG, TOKEN = os.environ["STUB_CTL"], os.environ["STUB_LOG"], os.environ["STUB_TOKEN"]
+TOKENS = {TOKEN: "ci", "t-alice": "alice", "t-noscope": None}   # A7 : GET /user décidé par le token
 def ctl():
     try: return json.load(open(CTL))
     except Exception: return {}
@@ -52,10 +53,14 @@ class H(BaseHTTPRequestHandler):
         self.end_headers(); self.wfile.write(b)
     def _route(self, method):
         u = urlparse(self.path); q = parse_qs(u.query); path = u.path
-        with open(LOG, "a") as f: f.write("%s %s%s\n" % (method, path, ("?" + u.query) if u.query else ""))
-        if self.headers.get("Authorization") != "token " + TOKEN: return self._send(401, {"message": "unauthorized"})
+        auth = self.headers.get("Authorization", ""); tok = auth[len("token "):] if auth.startswith("token ") else ""
+        with open(LOG, "a") as f: f.write("%s %s%s %s\n" % (method, path, ("?" + u.query) if u.query else "", TOKENS.get(tok, "?") or "noscope"))
+        if tok not in TOKENS: return self._send(401, {"message": "unauthorized"})
         c = ctl()
         if c.get("down"): return self._send(500, {"message": "boom"})
+        if path == "/api/v1/user":
+            if TOKENS[tok] is None: return self._send(403, {"message": "token does not have at least one of required scope(s): [read:user]"})
+            return self._send(200, {"login": TOKENS[tok], "id": 7})
         m = re.match(r"^/api/v1/repos/[^/]+/[^/]+/pulls$", path)
         if m and method == "GET":
             state = (q.get("state") or ["open"])[0]; page = int((q.get("page") or ["1"])[0]); limit = int((q.get("limit") or ["50"])[0])
@@ -73,6 +78,7 @@ class H(BaseHTTPRequestHandler):
         if m is None and re.match(r"^/api/v1/repos/[^/]+/[^/]+/pulls$", path) and method == "POST":
             n = int(self.headers.get("Content-Length") or 0); body = self.rfile.read(n) if n else b""
             with open(os.environ["STUB_POSTED"], "ab") as f: f.write(body + b"\n")
+            with open(os.environ["STUB_POSTED"] + ".auth", "w") as f: f.write(auth)
             return self._send(201, {"number": 900, "html_url": "http://stub/pulls/900"})
         return self._send(404, {"message": "stub: route inconnue " + path})
     def do_GET(self): self._route("GET")
@@ -312,9 +318,9 @@ run_rb "$TMP/b21.out" REQ_CALLER='alice smith'; b_refus B.21 "caller avec espace
 run_rb "$TMP/b22.out" REQ_ENV=homol; b_refus B.22 "palier hors chaîne" ENV_INVALIDE "$TMP/b22.out"
 [ ! -s "$STUB_LOG" ] && ! grep -q '^clone' "$SHIM_LOG" && ok "B.23 les six refus de forme n'ont touché ni la forge ni git" || ko "B.23 forge=$(wc -l < "$STUB_LOG") clone=$(grep -c '^clone' "$SHIM_LOG")"
 run_rb "$TMP/b24.out" REQ_APP=nope; b_refus B.24 "manifeste absent" MANIFESTE_ABSENT "$TMP/b24.out"
-run_rb "$TMP/b25.out" REQ_ENV=int REQ_CHANGE_REF=CHG-1; b_refus B.25 "palier non déclaré (int)" PALIER_ABSENT "$TMP/b25.out"
+run_rb "$TMP/b25.out" REQ_ENV=int REQ_CHANGE_REF=CHG-1 FORGE_TOKEN=t-alice; b_refus B.25 "palier non déclaré (int, sous identité humaine — A7)" PALIER_ABSENT "$TMP/b25.out"
 run_rb "$TMP/b26.out" REQ_ENV=prod STOA_ENV_CHAIN_FILE="$CHAIN"; refus GATE_REFS_REQUIRED "$TMP/b26.out" && ! grep -q '^ETAPE clone' "$TMP/b26.out" && ok "B.26 terminus sans change_ref ⇒ GATE_REFS_REQUIRED avant le clone" || ko "B.26 : $(grep -E 'REFUS|ETAPE' "$TMP/b26.out" | tr '\n' ' ')"
-run_rb "$TMP/b27.out" REQ_ENV=prod REQ_CHANGE_REF=CHG-1; refus PALIER_ABSENT "$TMP/b27.out" && grep -q '^ETAPE clone' "$TMP/b27.out" && ok "B.27 terminus avec change_ref ⇒ PALIER_ABSENT après le clone (ordre porte < clone < manifeste)" || ko "B.27 : $(grep -E 'REFUS' "$TMP/b27.out")"
+run_rb "$TMP/b27.out" REQ_ENV=prod REQ_CHANGE_REF=CHG-1 FORGE_TOKEN=t-alice; refus PALIER_ABSENT "$TMP/b27.out" && grep -q '^ETAPE clone' "$TMP/b27.out" && ok "B.27 terminus avec change_ref ⇒ PALIER_ABSENT après le clone (ordre porte < clone < manifeste)" || ko "B.27 : $(grep -E 'REFUS' "$TMP/b27.out")"
 # LIGNEE_TRONQUEE : une origine elle-même shallow
 SH="$TMP/shallow"; git clone -q --bare --depth 1 "file://$ORIGIN" "$SH" 2>/dev/null || { echo "!! fixture : origine shallow" >&2; exit 2; }
 set_ctl "$(ctl_json)"; run_rb "$TMP/b28.out" GIT_CLONE_URL="file://$SH"; b_refus B.28 "origine shallow" LIGNEE_TRONQUEE "$TMP/b28.out"
@@ -387,6 +393,8 @@ run_req(){ ( cd "$REPO" && env -i PATH="$SHIM:$PATH" HOME="$HOME" GITEA_TOKEN="$
    MANIFEST_DIR=clients/provisioned/applications STOA_ENV_CHAIN_FILE="$CHAIN" PROVISION_PLAN_INLINE=false REQ_APP=appa REQ_ENV=rec REQ_API=demo-selfservice REQ_CLIENT_ID=appa-rec REQ_CALLER=oig-provisioner REQ_IP_ALLOWLIST=10.42.0.44 bash scripts/provision-request.sh ) > "$1" 2>&1; echo $? > "$TMP/req.rc"; }
 set_ctl "$(ctl_json "$(open_pr ci ci/stoa-labs "$RB")")"; run_req "$TMP/bp1.out"
 [ "$(cat "$TMP/req.rc")" = 2 ] && grep -q 'REFUS: REPLI_EN_COURS' "$TMP/bp1.out" && [ "$(remote_branch)" = "$RB" ] && [ "$(posts)" = 0 ] && ok "B'.1 demande pendant un repli ouvert ⇒ REPLI_EN_COURS, branche intacte" || ko "B'.1 rc $(cat "$TMP/req.rc") branche=$(remote_branch) : $(grep -E 'REFUS|ERREUR' "$TMP/bp1.out" | head -1)"
+set_ctl "$(ctl_json "$(open_pr alice ci/stoa-labs "$RB")")"; run_req "$TMP/bp1b.out"
+[ "$(cat "$TMP/req.rc")" = 2 ] && grep -q 'REFUS: REPLI_EN_COURS' "$TMP/bp1b.out" && [ "$(remote_branch)" = "$RB" ] && ok "B'.1b PR de repli ouverte par un HUMAIN (alice) ⇒ REPLI_EN_COURS aussi (A7 : l'auteur n'exonère plus)" || ko "B'.1b rc $(cat "$TMP/req.rc") : $(grep -E 'REFUS|ERREUR' "$TMP/bp1b.out" | head -1)"
 git -C "$ORIGIN" update-ref refs/heads/provision/appa-rec "$SHA_D"; set_ctl "$(ctl_json "$(open_pr ci ci/stoa-labs "$SHA_D")")"; run_req "$TMP/bp2.out"
 [ "$(cat "$TMP/req.rc")" = 0 ] && grep -q 'PR déjà ouverte: #77' "$TMP/bp2.out" && grep -q -- '--force-with-lease=refs/heads/provision/appa-rec:' "$SHIM_LOG" && ok "B'.2 PR ouverte sans trailer ⇒ EXIST comme avant, push en bail" || ko "B'.2 rc $(cat "$TMP/req.rc") : $(grep -E 'PR |EXIST|push|REFUS' "$TMP/bp2.out" | head -3 | tr '\n' ' ') / bail=$(grep -c -- '--force-with-lease' "$SHIM_LOG") / $(grep -E 'push' "$SHIM_LOG" | head -1 | cut -c1-120)"
 
@@ -429,6 +437,25 @@ N4B=$(grep -c '^# ── 4bis\. A6' "$RECONCILE"); grep -q 'if \[ -n "\$REPLI_DE
   && ok "B''.5 le bloc 4bis est UN bloc conditionnel, entre PALIER_SUPPLANTE et la sortie" || ko "B''.5 structure du bloc 4bis"
 reset_origin
 
+echo "══ E11. A7 : le repli sous identité de forge ══"
+cp "$REPO/clients/_example/environments.yaml" "$TMP/chain-gab.yaml"
+set_ctl "$(ctl_json)"; reset_origin; run_rb "$TMP/e11.out" FORGE_TOKEN=t-alice
+[ "$(rrc)" = 0 ] && [ "$(etapes "$TMP/e11.out")" = "forme chaine porte identite clone main manifeste lignee coherence candidate identique restauration verification pr-en-cours tete-distante commit push pr " ] \
+  && ok "E11.1 token d'alice ⇒ ETAPE identite entre porte et clone, rc 0" || ko "E11.1 rc $(rrc) étapes : $(etapes "$TMP/e11.out") $(grep -E 'REFUS|ERREUR' "$TMP/e11.out" | head -1)"
+L_USER=$(grep -n '^GET /api/v1/user ' "$STUB_LOG" | head -1 | cut -d: -f1); L_PULLS=$(grep -n 'pulls?state=closed' "$STUB_LOG" | head -1 | cut -d: -f1)
+[ -n "$L_USER" ] && [ -n "$L_PULLS" ] && [ "$L_USER" -lt "$L_PULLS" ] && grep -q '^GET /api/v1/user alice$' "$STUB_LOG" && ok "E11.2 GET /user (alias alice) AVANT toute lecture de forge" || ko "E11.2 journal : user=$L_USER pulls=$L_PULLS"
+[ "$(cat "$STUB_POSTED.auth" 2>/dev/null)" = "token t-alice" ] && grep -q 'ouverte par : alice (identite de forge' "$STUB_POSTED" && ok "E11.3 POST /pulls sous le token d'ALICE, corps « ouverte par : alice »" || ko "E11.3 auth='$(cat "$STUB_POSTED.auth" 2>/dev/null)'"
+! grep -q 't-alice' "$SHIM_LOG" && ! grep -q 't-alice' "$TMP/e11.out" && ok "E11.4 le token n'apparaît ni en argv git ni dans la sortie" || ko "E11.4 token visible"
+RB11=$(remote_branch)
+set_ctl "$(ctl_json "$(open_pr alice ci/stoa-labs "$RB11")")"; run_rb "$TMP/e11b.out" FORGE_TOKEN=t-alice
+[ "$(rrc)" = 0 ] && grep -q '^EXIST : la PR #77 (alice)' "$TMP/e11b.out" && [ "$(posts)" = 0 ] && ok "E11.5 EXIST strict étendu : PR d'alice au contenu identique + token d'alice ⇒ EXIST, ni push ni POST" || ko "E11.5 rc $(rrc) : $(grep -E 'EXIST|REFUS' "$TMP/e11b.out" | head -1)"
+run_rb "$TMP/e11c.out"
+refus PR_EN_COURS "$TMP/e11c.out" && ok "E11.6 la même PR d'alice sans token humain ⇒ PR_EN_COURS (pas la sienne)" || ko "E11.6 rc $(rrc) : $(grep REFUS "$TMP/e11c.out" | head -1)"
+set_ctl "$(ctl_json)"; reset_origin; run_rb "$TMP/e11d.out" REQ_ENV=int "STOA_ENV_CHAIN_FILE=$TMP/chain-gab.yaml"
+refus REQUESTER_UNKNOWN "$TMP/e11d.out" && ! grep -q '^ETAPE clone' "$TMP/e11d.out" && [ ! -s "$STUB_LOG" ] && ok "E11.7 int (fourEyes) sans token humain ⇒ REQUESTER_UNKNOWN avant ETAPE clone, journal de forge vide" || ko "E11.7 rc $(rrc) étapes : $(etapes "$TMP/e11d.out") forge=$(wc -l < "$STUB_LOG")"
+run_rb "$TMP/e11e.out" FORGE_TOKEN=t-noscope
+[ "$(rrc)" = 2 ] && grep -q 'REFUS: FORGE_SCOPE_INSUFFISANT' "$TMP/e11e.out" && ! grep -q '^ETAPE clone' "$TMP/e11e.out" && ok "E11.8 token sans read:user ⇒ FORGE_SCOPE_INSUFFISANT avant le clone" || ko "E11.8 rc $(rrc) : $(grep -E 'REFUS|ERREUR' "$TMP/e11e.out" | head -1)"
+
 echo "══ D. câblage : le formulaire, la coquille, le Makefile, les commentaires D8 ══"
 JF="$REPO/ci/Jenkinsfile.app-rollback"; XML="$REPO/ci/jenkins/app-rollback.job.xml"; MK="$REPO/Makefile"
 [ -f "$JF" ] && grep -q 'properties(\[parameters(\[' "$JF" && ok "D.1 Jenkinsfile.app-rollback pose son formulaire par properties()" || ko "D.1 Jenkinsfile absent ou sans properties()"
@@ -448,7 +475,7 @@ grep -q 'scripts/app-rollback-request.sh scripts/test-app-rollback-a6.sh' "$MK" 
 ! grep -q 'sauf repli (A6)' "$REPO/ci/Jenkinsfile.selfservice" && grep -q 'le repli (A6) est une PR' "$REPO/ci/Jenkinsfile.selfservice" && ok "D.12 Jenkinsfile.selfservice : le levier n'est plus « le repli »" || ko "D.12 commentaire selfservice"
 ! grep -q 'levier du repli (A6)' "$REPO/ENVIRONNEMENTS.md" && grep -q 'le repli est une PR' "$REPO/ENVIRONNEMENTS.md" && ok "D.13 ENVIRONNEMENTS.md : idem" || ko "D.13 ENVIRONNEMENTS.md"
 
-EXPECTED_CHECKS=82
+EXPECTED_CHECKS=91
 TOTAL=$((PASS+FAIL))
 if [ "$EXPECTED_CHECKS" -gt 0 ] && [ "$TOTAL" -ne "$EXPECTED_CHECKS" ]; then
   printf '❌ %d contrôles exécutés, %d attendus — une section a été sautée ou ajoutée sans mettre EXPECTED_CHECKS à jour\n' "$TOTAL" "$EXPECTED_CHECKS"; FAIL=$((FAIL+1))
