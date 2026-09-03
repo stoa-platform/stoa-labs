@@ -7,7 +7,8 @@
 #   1. rec par alice (PR ouverte ET mergée par alice) ⇒ la porte ADMET
 #      (selfApproval) : PORTE_OK(pre), pause, PORTE_OK(dispatch), « auto-approbation
 #      admise », SUCCESS, application <app> claim <app>-rec, PR ✅ « porte du palier ».
-#   2. int par ci (la voie livrée : provision-request.sh ouvre la PR sous ci),
+#   2. int par ci (depuis A7 la DEMANDE refuse REQUESTER_UNKNOWN sans humain : la PR
+#      de ci est fabriquée sur la forge pour prouver que la PORTE la refuse aussi),
 #      mergée par alice ⇒ FAILURE SANS PAUSE `REQUESTER_UNKNOWN` — la limite des
 #      voies livrées est MESURÉE, plus un silence.
 #   3. int par alice, mergée par alice ⇒ FAILURE SANS PAUSE `FOUR_EYES_VIOLATION`.
@@ -133,15 +134,21 @@ ensure_human(){
   fi
   hc=$(gapi -o /dev/null -w '%{http_code}' "$API/repos/$GIT_REPO/collaborators/$u")
   [ "$hc" = 204 ] || gapi -X PUT -d '{"permission":"write"}' -o /dev/null "$API/repos/$GIT_REPO/collaborators/$u"
-  tok=$(docker exec -u git "$GITEA_CONTAINER" gitea admin user generate-access-token --username "$u" --token-name "a4-live-$u-$TS" --scopes write:repository,write:issue 2>/dev/null | grep -oE '[0-9a-f]{40}' | head -1)
+  tok=$(docker exec -u git "$GITEA_CONTAINER" gitea admin user generate-access-token --username "$u" --token-name "a4-live-$u-$TS" --scopes read:user,write:repository,write:issue 2>/dev/null | grep -oE '[0-9a-f]{40}' | head -1)
   [ -n "$tok" ] || die "PREREQUIS : token Gitea de $u non minté"
   printf 'Authorization: token %s\n' "$tok" > "$hdr"; chmod 600 "$hdr"
+  printf '%s' "$tok" > "${hdr%.hdr}.tok"; chmod 600 "${hdr%.hdr}.tok"   # A7 : FORGE_TOKEN_FILE de la demande
 }
-# request_branch <env> <ip> → "<PR de ci> <branche>" (la demande de la CHAÎNE, sous ci, manifeste sans team)
+# request_branch <env> <ip> [login] → "<PR> <branche>" : la demande de la CHAÎNE — sous ci (aucun login),
+# ou SOUS L'HUMAIN nommé (A7 : FORGE_TOKEN_FILE, la PR est la sienne ; sous fourEyes la demande
+# refuse REQUESTER_UNKNOWN sans humain). L'équipe est dans le manifeste (A7 D2 : sous une
+# déclaration de déployeur, l'équipe vient de Git — sans team, TEAM_INDETERMINEE).
 request_branch(){
-  local e="$1" ip="$2" out rc pr
-  out=$(GITEA_TOKEN="$CI_TOKEN" GIT_HOST="$GITEA_URL" GIT_WEB_HOST="$GITEA_URL" GIT_REPO="$GIT_REPO" PROVISION_PLAN_INLINE=false \
-        REQ_APP="$APP" REQ_ENV="$e" REQ_API="$REQ_API" REQ_API_VER="$REQ_API_VER" REQ_CALLER=oig-provisioner \
+  local e="$1" ip="$2" who="${3:-}" out rc pr tf=""
+  [ -n "$who" ] && tf="$TMP/$who.tok"
+  out=$(GITEA_TOKEN="$CI_TOKEN" FORGE_TOKEN_FILE="$tf" GIT_HOST="$GITEA_URL" GIT_WEB_HOST="$GITEA_URL" GIT_REPO="$GIT_REPO" PROVISION_PLAN_INLINE=false \
+        STOA_ENV_CHAIN_FILE="$PWD/clients/_example/environments.yaml" \
+        REQ_APP="$APP" REQ_ENV="$e" REQ_API="$REQ_API" REQ_API_VER="$REQ_API_VER" REQ_CALLER="${who:+jenkins-form:$who}${who:-oig-provisioner}" REQ_TEAM="${A4_TEAM:-banking-demo}" \
         REQ_CLIENT_ID="${APP}-${e}" REQ_IP_ALLOWLIST="$ip" bash scripts/provision-request.sh 2>&1); rc=$?
   pr=$(printf '%s' "$out" | grep -oE 'PR_URL=[^ ]*/pulls/[0-9]+' | grep -oE '[0-9]+$' | tail -1)
   [ "$rc" -eq 0 ] && [ -n "$pr" ] || die "PREREQUIS : demande $e en échec (rc=$rc) : $(printf '%s' "$out" | tail -4 | tr '\n' ' ')"
@@ -426,8 +433,8 @@ d=json.load(sys.stdin)
 for pr in d.get("property",[]):
   for p in (pr.get("parameterDefinitions") or []):
     if p.get("name")=="ENVIRONMENT": print(" ".join(p.get("choices") or []))')
-NONPROD=$(STOA_ENV_CHAIN_FILE="$TMP/chain.yaml" env_chain_nonprod)
-[ "$POSED" = "$NONPROD" ] && ok "0.12 la liste POSÉE sur selfservice-app-deploy [$POSED] == env_chain_nonprod de gitea main (deux portes, une source — au repos)" || ko "0.12 liste posée [$POSED] ≠ chaîne [$NONPROD]"
+NONPROD=$(STOA_ENV_CHAIN_FILE="$TMP/chain.yaml" env_chain)   # A7 : la chaîne ENTIÈRE (build job: valide les choice — mesuré)
+[ "$POSED" = "$NONPROD" ] && ok "0.12 la liste POSÉE sur selfservice-app-deploy [$POSED] == env_chain de gitea main, terminus compris (A7 — deux portes, une source, au repos)" || ko "0.12 liste posée [$POSED] ≠ chaîne [$NONPROD]"
 POSED2=$(curl -sf "$JENKINS_UI/job/app-request/api/json?tree=property%5BparameterDefinitions%5Bname,choices%5D%5D" | python3 -c 'import json,sys
 d=json.load(sys.stdin)
 for pr in d.get("property",[]):
@@ -461,8 +468,12 @@ printf '%s' "$CM" | grep -q 'Apply nominatif RÉUSSI' && printf '%s' "$CM" | gre
 
 echo
 echo "═══ 2. PORTE fourEyes — la voie LIVRÉE refuse fermé (int par ci, mergée par alice ⇒ REQUESTER_UNKNOWN) ═══"
-read -r PR2 BR <<< "$(request_branch int 10.42.0.3)"; PRS="$PRS $PR2"
-[ "$(pr_field "$PR2" "['user']['login']")" = ci ] && ok "2.1 PR #$PR2 ouverte par ci (la voie livrée), branche $BR" || ko "2.1 auteur : $(pr_field "$PR2" "['user']['login']")"
+# A7 : la DEMANDE refuse désormais REQUESTER_UNKNOWN sous ci vers int (aucune PR) — la PR de
+# compte de service est fabriquée sur la forge (reopen_as sous ci) pour prouver que la PORTE
+# la refuse aussi (deux portes, une source).
+read -r PRH BR <<< "$(request_branch int 10.42.0.3 carol)"
+PR2=$(reopen_as "$TMP/ci.hdr" ci "$PRH" "$BR")
+[ "$(pr_field "$PR2" "['user']['login']")" = ci ] && ok "2.1 PR #$PR2 ouverte par ci (fabriquée sur la forge — la demande la refuse depuis A7), branche $BR" || ko "2.1 auteur : $(pr_field "$PR2" "['user']['login']")"
 N_PA=$(jnext provision-apply); MS2=$(merge_as_alice "$PR2"); ok "2.2 mergée par alice — $MS2"
 wait_amont "$N_PA" NOPAUSE
 [ "$(jresult provision-apply "$N_PA")" = FAILURE ] && grep -q '^REFUS: REQUESTER_UNKNOWN' "$TMP/pa.$N_PA.console" && ok "2.3 provision-apply #$N_PA : FAILURE REQUESTER_UNKNOWN (une PR de compte de service ne nomme aucun demandeur)" || ko "2.3 #$N_PA : $(jresult provision-apply "$N_PA") — $(grep -E 'REFUS|PORTE' "$TMP/pa.$N_PA.console" | head -2 | tr '\n' ' ')"
@@ -474,8 +485,8 @@ ST=$(gw_state); [ "$ST" = "${APP}-rec|10.42.0.1-10.42.0.1" ] && ok "2.6 gateway 
 
 echo
 echo "═══ 3. PORTE fourEyes — la porte REFUSE (int par alice, mergée par alice ⇒ FOUR_EYES_VIOLATION) ═══"
-read -r PRCI BR <<< "$(request_branch int 10.42.0.4)"
-PR3=$(reopen_as "$TMP/alice.hdr" alice "$PRCI" "$BR"); ok "3.1 PR #$PR3 ouverte par alice"
+read -r PR3 BR <<< "$(request_branch int 10.42.0.4 alice)"; PRS="$PRS $PR3"
+[ "$(pr_field "$PR3" "['user']['login']")" = alice ] && ok "3.1 PR #$PR3 ouverte par alice (FORGE_TOKEN — A7)" || ko "3.1 auteur : $(pr_field "$PR3" "['user']['login']")"
 N_PA=$(jnext provision-apply); MS3=$(merge_as_alice "$PR3"); ok "3.2 mergée par alice — $MS3"
 wait_amont "$N_PA" NOPAUSE
 [ "$(jresult provision-apply "$N_PA")" = FAILURE ] && grep -q '^REFUS: FOUR_EYES_VIOLATION' "$TMP/pa.$N_PA.console" && ok "3.3 provision-apply #$N_PA : FAILURE FOUR_EYES_VIOLATION — « le demandeur qui approuve sa propre demande rec→int »" || ko "3.3 #$N_PA : $(jresult provision-apply "$N_PA") — $(grep -E 'REFUS|PORTE' "$TMP/pa.$N_PA.console" | head -2 | tr '\n' ' ')"
@@ -486,8 +497,8 @@ ST=$(gw_state); [ "$ST" = "${APP}-rec|10.42.0.1-10.42.0.1" ] && ok "3.6 gateway 
 
 echo
 echo "═══ 4. PORTE deployerGroup — int par carol, mergée par alice ⇒ pause ⇒ aval DEPLOYER_GROUP_REQUIRED, rien écrit ═══"
-read -r PRCI BR <<< "$(request_branch int 10.42.0.5)"
-PR4=$(reopen_as "$TMP/carol.hdr" carol "$PRCI" "$BR"); ok "4.1 PR #$PR4 ouverte par carol (un autre humain — « même équipe » n'est PAS vérifié : mesuré)"
+read -r PR4 BR <<< "$(request_branch int 10.42.0.5 carol)"; PRS="$PRS $PR4"
+[ "$(pr_field "$PR4" "['user']['login']")" = carol ] && ok "4.1 PR #$PR4 ouverte par carol (FORGE_TOKEN — un autre humain : « même équipe » n'est PAS vérifié, mesuré)" || ko "4.1 auteur : $(pr_field "$PR4" "['user']['login']")"
 N_PA=$(jnext provision-apply); MS4=$(merge_as_alice "$PR4"); ok "4.2 mergée par alice — $MS4"
 wait_amont "$N_PA" PAUSE; ok "4.3 provision-apply #$N_PA en PAUSE (quatre yeux OK : carol ≠ alice)"
 answer_pause "$N_PA"; finish_amont "$N_PA"
@@ -508,8 +519,8 @@ echo
 echo "═══ 5. CONTRE-ÉPREUVE — le grant SUIT l'annuaire : alice ∈ apim-apply-int ⇒ la chaîne ENTIÈRE d'un palier déclaré ═══"
 MUTATED=1
 ldap_alice_int add; alice_in_int && ok "5.1 alice ajoutée à cn=apim-apply-int (annuaire — restauré par le trap)" || die "PREREQUIS : ajout LDAP d'alice à apim-apply-int en échec"
-read -r PRCI BR <<< "$(request_branch int 10.42.0.6)"
-PR5=$(reopen_as "$TMP/carol.hdr" carol "$PRCI" "$BR"); N_PA=$(jnext provision-apply); MS5=$(merge_as_alice "$PR5"); ok "5.2 PR #$PR5 (carol) mergée par alice — $MS5"
+read -r PR5 BR <<< "$(request_branch int 10.42.0.6 carol)"; PRS="$PRS $PR5"
+N_PA=$(jnext provision-apply); MS5=$(merge_as_alice "$PR5"); ok "5.2 PR #$PR5 (carol, FORGE_TOKEN) mergée par alice — $MS5"
 wait_amont "$N_PA" PAUSE; answer_pause "$N_PA"; finish_amont "$N_PA"
 [ "$RES" = SUCCESS ] && ok "5.3 provision-apply #$N_PA : SUCCESS — la chaîne entière d'un palier à deployerGroup" || ko "5.3 #$N_PA : $RES — $(grep -E 'REFUS|SHA_NON|error' "$TMP/pa.$N_PA.console" | tail -2 | tr '\n' ' ')"
 [ -n "$S_NUM" ] && [ "$(jresult selfservice-app-deploy "$S_NUM")" = SUCCESS ] && ok "5.4 aval #$S_NUM : SUCCESS" || ko "5.4 aval : $(jresult selfservice-app-deploy "${S_NUM:-0}")"
@@ -532,8 +543,29 @@ ST=$(gw_state); [ "$ST" = "${APP}-int|10.42.0.6-10.42.0.6" ] && ok "5.13 gateway
 
 echo
 echo "═══ 6. La porte lit plus que le déployeur — homol par carol ⇒ GATE_REFS_REQUIRED (pv_ref) ═══"
-read -r PRCI BR <<< "$(request_branch homol 10.42.0.7)"
-PR6=$(reopen_as "$TMP/carol.hdr" carol "$PRCI" "$BR"); N_PA=$(jnext provision-apply); MS6=$(merge_as_alice "$PR6"); ok "6.1 PR #$PR6 (carol, homol) mergée par alice — $MS6"
+# A7 : la DEMANDE refuse GATE_REFS_REQUIRED sans pv_ref (aucune PR) — la PR homol sans pv_ref est
+# fabriquée par l'API (manifeste de main ⊕ per_env.homol par la lib, sous carol) pour prouver la PORTE.
+# shellcheck source=scripts/lib/app-manifest.sh
+. scripts/lib/app-manifest.sh
+env_pr(){ # <env> <mapping per_env> <branche existante 0|1> → numéro de PR de carol
+  local e="$1" map="$2" existing="$3" m="$TMP/man.$1.yml" sha b64 body n hc
+  raw_at main "$MAN_DIR/${APP}.ansible.yml" > "$m"; [ "$(raw_hc)" = 200 ] || die "PREREQUIS : manifeste illisible sur main"
+  app_manifest_merge_env "$m" "$e" "$map" || die "PREREQUIS : fusion per_env.$e par la lib en échec"
+  b64=$(base64 < "$m" | tr -d '\n')
+  if [ "$existing" = 0 ]; then
+    sha=$(gapi "$API/repos/$GIT_REPO/contents/$MAN_DIR/${APP}.ansible.yml?ref=main" | jq_ "print(d['sha'])")
+    body="{\"branch\":\"main\",\"new_branch\":\"provision/${APP}-${e}\",\"sha\":\"$sha\",\"content\":\"$b64\",\"message\":\"provision(${e}): ${APP}\"}"
+  else
+    sha=$(gapi "$API/repos/$GIT_REPO/contents/$MAN_DIR/${APP}.ansible.yml?ref=provision/${APP}-${e}" | jq_ "print(d['sha'])")
+    body="{\"branch\":\"provision/${APP}-${e}\",\"sha\":\"$sha\",\"content\":\"$b64\",\"message\":\"provision(${e}): ${APP}\"}"
+  fi
+  hc=$(capi -X PUT -d "$body" -o "$TMP/put.out" -w '%{http_code}' "$API/repos/$GIT_REPO/contents/$MAN_DIR/${APP}.ansible.yml")
+  [ "$hc" = 200 ] || [ "$hc" = 201 ] || die "PREREQUIS : commit $e par carol refusé (HTTP $hc) : $(head -c 200 "$TMP/put.out")"
+  n=$(capi -X POST -d "{\"head\":\"provision/${APP}-${e}\",\"base\":\"main\",\"title\":\"provision(carol): ${APP}-${e}\"}" "$API/repos/$GIT_REPO/pulls" | jq_ "print(d.get('number',''))")
+  [ -n "$n" ] || die "PREREQUIS : PR $e de carol non ouverte"; PRS="$PRS $n"; printf '%s' "$n"
+}
+PR6=$(env_pr homol "{ auth: { claim: { value: \"${APP}-homol\" } }, ip_allowlist: [\"10.42.0.7\"] }" 0); BR="provision/${APP}-homol"
+N_PA=$(jnext provision-apply); MS6=$(merge_as_alice "$PR6"); ok "6.1 PR #$PR6 (carol, homol SANS pv_ref — fabriquée par l'API : la demande la refuserait GATE_REFS_REQUIRED depuis A7) mergée par alice — $MS6"
 wait_amont "$N_PA" NOPAUSE
 [ "$(jresult provision-apply "$N_PA")" = FAILURE ] && grep -q '^REFUS: GATE_REFS_REQUIRED' "$TMP/pa.$N_PA.console" && grep -q 'pv_ref' "$TMP/pa.$N_PA.console" && ! grep -q 'Input requested' "$TMP/pa.$N_PA.console" \
   && ok "6.2 provision-apply #$N_PA : FAILURE GATE_REFS_REQUIRED (pv_ref), sans pause" || ko "6.2 #$N_PA : $(jresult provision-apply "$N_PA") — $(grep -E 'REFUS|PORTE' "$TMP/pa.$N_PA.console" | head -2 | tr '\n' ' ')"
