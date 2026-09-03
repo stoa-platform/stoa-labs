@@ -39,9 +39,12 @@ SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=scripts/lib/forge-identity.sh
 . "$SELF_DIR/lib/forge-identity.sh" || { echo "ERREUR: $SELF_DIR/lib/forge-identity.sh introuvable" >&2; exit 1; }
 
-REQ_APP="${REQ_APP:?REQ_APP requis}"
-REQ_ENV="${REQ_ENV:?REQ_ENV requis}"
-REQ_REASON="${REQ_REASON:?REQ_REASON requis}"
+# Même règle que provision-request.sh : un champ obligatoire vide se NOMME
+# (CHAMP_REQUIS + le champ du formulaire), jamais un `${VAR:?}` de bash.
+requis(){ case "${2//[[:space:]]/}" in "") echo "REFUS: CHAMP_REQUIS : $1 est vide — obligatoire ($3). Rien n'a été tenté." >&2; exit 2;; esac; }
+REQ_APP="${REQ_APP:-}"; requis REQ_APP "$REQ_APP" "formulaire app-rollback : champ « APP », l'application à replier"
+REQ_ENV="${REQ_ENV:-}"; requis REQ_ENV "$REQ_ENV" "formulaire app-rollback : champ « ENV », le palier à replier"
+REQ_REASON="${REQ_REASON:-}"; requis REQ_REASON "$REQ_REASON" "formulaire app-rollback : champ « REASON », le motif du repli"
 REQ_CHANGE_REF="${REQ_CHANGE_REF:-}"
 REQ_CALLER="${REQ_CALLER:-unknown}"
 GITEA_TOKEN="${GITEA_TOKEN:?GITEA_TOKEN requis}"; export GITEA_TOKEN

@@ -15,6 +15,7 @@
 #   E5  rejeu sous alice ⇒ EXIST ; rejeu sous ci ⇒ REQUESTER_UNKNOWN
 #   E6  PR ouverte d'autrui ⇒ PR_D_AUTRUI ; repli ouvert ⇒ REPLI_EN_COURS ; forge muette ⇒ FORGE_ILLISIBLE
 #   E7  prod sous ci sans refs ⇒ GATE_REFS_REQUIRED ; E8 zeta ⇒ ENV_INVALIDE ; refs hors classe ⇒ REF_INVALIDE
+#   E9  les champs obligatoires ⇒ CHAMP_REQUIS, nommant LE CHAMP du formulaire
 #   E10 le token n'apparaît jamais dans la sortie d'un push en échec
 #   M   mutations : chaque garde neuve attrape ce qu'elle prétend attraper
 # `A && ok || ko` (SC2015) et les `$…` en quotes simples (SC2016) sont l'idiome des suites du repo.
@@ -257,6 +258,25 @@ done
 req rec 'REQ_PV_REF=..'
 refus REF_INVALIDE && ok "E8.3 pv_ref '..' ⇒ REF_INVALIDE" || ko "E8.3 rc $(rrc) : $(tail -1 "$TMP/req.out")"
 
+echo "═══ E9. les champs OBLIGATOIRES se refusent EN SE NOMMANT (CHAMP_REQUIS) ═══"
+# Mesuré en lab le 2026-09-03 (app-request #47) : une demande à APP vide mourait
+# sur `provision-request.sh: line 105: REQ_APP: REQ_APP requis` — un numéro de
+# ligne de shell et un nom de VARIABLE, alors que le demandeur a rempli un
+# formulaire dont le champ s'appelle « APP ». Le refus doit se nommer comme
+# tous les autres et désigner LE CHAMP.
+set_ctl '{"open":[]}'; reset_origin
+req dev REQ_APP=
+refus CHAMP_REQUIS && grep -q 'champ « APP »' "$TMP/req.out" && [ "$(clones)" = 0 ] && [ "$(users)" = 0 ] && ok "E9.1 REQ_APP vide ⇒ CHAMP_REQUIS nommant le champ « APP », aucun clone ni appel forge" || ko "E9.1 rc $(rrc) clones=$(clones) users=$(users) : $(tail -1 "$TMP/req.out")"
+! grep -qE 'provision-request\.sh: line [0-9]+' "$TMP/req.out" && ok "E9.2 plus AUCUN message brut « <script>: line N: REQ_X: … » (le refus ne parle plus shell)" || ko "E9.2 message brut : $(grep -E 'line [0-9]+' "$TMP/req.out" | head -1)"
+req dev REQ_API=
+refus CHAMP_REQUIS && grep -q 'champ « API »' "$TMP/req.out" && ok "E9.3 REQ_API vide ⇒ CHAMP_REQUIS nommant le champ « API »" || ko "E9.3 rc $(rrc) : $(tail -1 "$TMP/req.out")"
+req ""
+refus CHAMP_REQUIS && grep -q 'champ « REQ_ENV »' "$TMP/req.out" && ok "E9.4 REQ_ENV vide ⇒ CHAMP_REQUIS (et non ENV_INVALIDE sur une chaîne vide)" || ko "E9.4 rc $(rrc) : $(tail -1 "$TMP/req.out")"
+req dev REQ_MODE=idp REQ_CLIENT_ID=
+refus CHAMP_REQUIS && grep -q 'champ « CLIENT_ID »' "$TMP/req.out" && grep -q 'idp' "$TMP/req.out" && [ "$(clones)" = 0 ] && ok "E9.5 mode idp sans REQ_CLIENT_ID ⇒ CHAMP_REQUIS nommant le champ ET le mode, avant tout clone" || ko "E9.5 rc $(rrc) clones=$(clones) : $(tail -1 "$TMP/req.out")"
+req dev "REQ_APP=   "
+refus CHAMP_REQUIS && ok "E9.6 REQ_APP fait d'espaces ⇒ CHAMP_REQUIS (une valeur blanche n'est pas une valeur)" || ko "E9.6 rc $(rrc) : $(tail -1 "$TMP/req.out")"
+
 echo "═══ E10. un push en échec ne fuit pas le token ═══"
 set_ctl '{"open":[]}'; git -C "$ORIGIN" update-ref -d refs/heads/provision/appa-rec 2>/dev/null
 req rec FORGE_TOKEN=t-alice SHIM_PUSH_FAIL=1
@@ -281,6 +301,8 @@ M5=$(mutant m5 '/PR_D_AUTRUI : la PR/d')
 if [ -n "$M5" ]; then set_ctl "{\"open\":[$(pr_open 78 ci rec)]}"; git -C "$ORIGIN" update-ref -d refs/heads/provision/appa-rec 2>/dev/null; reqm "$M5" rec FORGE_TOKEN=t-alice; [ "$(rrc)" = 0 ] && ok "M5 PR_D_AUTRUI retiré ⇒ alice réécrit la PR de ci (E6.1 rougit)" || ko "M5 rc $(rrc) : $(tail -1 "$TMP/req.out")"; else ko "M5 mutant no-op/incompilable"; fi
 M6=$(mutant m6 's#grep -v -F -- "\$\(cat "\$PUSH_TF"\)" "\$WORK/pusherr" \| grep -v -F -- "\$GITEA_TOKEN"#cat "$WORK/pusherr"#')
 if [ -n "$M6" ]; then set_ctl '{"open":[]}'; git -C "$ORIGIN" update-ref -d refs/heads/provision/appa-rec 2>/dev/null; reqm "$M6" rec FORGE_TOKEN=t-alice SHIM_PUSH_FAIL=1; [ "$(rrc)" = 1 ] && grep -q 't-alice' "$TMP/req.out" && ok "M6 filtre du push retiré ⇒ le token humain fuit dans la sortie (E10 rougit)" || ko "M6 rc $(rrc) : le mutant ne fuit pas"; else ko "M6 mutant no-op/incompilable"; fi
+M7=$(mutant m7 's#^requis\(\)\{.*#requis(){ :; }#')
+if [ -n "$M7" ]; then set_ctl '{"open":[]}'; reset_origin; reqm "$M7" dev REQ_APP=; { [ "$(rrc)" = 2 ] && grep -q 'REFUS: CHAMP_REQUIS' "$TMP/req.out"; } && ko "M7 requis() neutralisée refuse encore" || ok "M7 requis() neutralisée ⇒ REQ_APP vide n'est plus nommé (E9.1 rougit)"; reset_origin; else ko "M7 mutant no-op/incompilable"; fi
 
 echo
 echo "═══════════════════════════════════════════════════"

@@ -102,9 +102,18 @@ set +x   # jamais de trace : le token ne doit pas fuiter
 # de résolution que env-chain.sh : le cwd d'appel, avant tout cd).
 . "scripts/lib/app-manifest.sh" || { echo "ERREUR: scripts/lib/app-manifest.sh introuvable ou illisible" >&2; exit 1; }
 
-REQ_APP="${REQ_APP:?REQ_APP requis}"
-REQ_ENV="${REQ_ENV:?REQ_ENV requis}"
-REQ_API="${REQ_API:?REQ_API requis}"
+# Un champ OBLIGATOIRE vide se refuse en SE NOMMANT, comme tous les autres refus
+# de la chaîne — jamais par le `${VAR:?}` de bash, qui rend « <script>: line N:
+# REQ_APP: REQ_APP requis » : un numéro de ligne de shell et une variable INTERNE,
+# là où le demandeur a rempli un formulaire dont le champ porte un autre nom
+# (mesuré en lab le 2026-09-03, app-request #47 : demande à APP vide).
+# Une valeur BLANCHE n'est pas une valeur : Jenkins rend '' pour un champ omis,
+# jamais null, et un espace seul passerait `-n` pour mourir plus loin sur la
+# garde de caractères, qui parle d'un contenu que le demandeur n'a pas saisi.
+requis(){ case "${2//[[:space:]]/}" in "") echo "REFUS: CHAMP_REQUIS : $1 est vide — obligatoire ($3). Rien n'a été tenté." >&2; exit 2;; esac; }
+REQ_APP="${REQ_APP:-}"; requis REQ_APP "$REQ_APP" "formulaire app-request : champ « APP », le nom de l'application demandée"
+REQ_ENV="${REQ_ENV:-}"; requis REQ_ENV "$REQ_ENV" "formulaire app-request : champ « REQ_ENV », le palier visé"
+REQ_API="${REQ_API:-}"; requis REQ_API "$REQ_API" "formulaire app-request : champ « API », l'API consommée (nom@version)"
 # A1 : les défauts de version/audience ne valent que pour une PREMIÈRE demande ;
 # sur un manifeste existant, absent = HÉRITÉ (résolu après le clone, [1/4]).
 # On garde donc la saisie BRUTE à part — c'est elle qui décide « fourni » (donc
@@ -150,7 +159,7 @@ case "${REQ_MODE:-}" in
 esac
 # En mode idp, la claim (= clientId de l'appelant) EST l'identité → obligatoire.
 if [ "$MODE" = "idp" ] && [ -z "$REQ_CLIENT_ID" ]; then
-  echo "REFUS: mode idp exige REQ_CLIENT_ID (la claim azp qui identifie l'app)" >&2; exit 2
+  echo "REFUS: CHAMP_REQUIS : REQ_CLIENT_ID est vide alors que REQ_MODE=idp — obligatoire dans ce mode (formulaire app-request : champ « CLIENT_ID », la claim azp qui identifie l'app). Rien n'a été tenté." >&2; exit 2
 fi
 GITEA_TOKEN="${GITEA_TOKEN:?GITEA_TOKEN requis}"
 # ── A7 — LES TOKENS, par FICHIER, et le token humain RETIRÉ de l'environnement ──

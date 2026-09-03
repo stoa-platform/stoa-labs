@@ -41,13 +41,13 @@
 //      retombe sur le défaut ; buildWithParameters remplit les champs omis
 //      ('' , jamais null). D'où FORM_BOOTSTRAP capturé AVANT properties() :
 //      c'est le SEUL build vert sans demande, et il se nomme. Une saisie
-//      humaine à APP vide reste refusée par le script (REQ_APP requis), rouge.
+//      humaine à APP vide reste refusée AVANT le clone (CHAMP_REQUIS), rouge.
 //   5. Les valeurs posées ainsi subissent toujours EnvVars.resolve() : la
 //      ré-injection brute withEnv([params…]) ci-dessous reste OBLIGATOIRE.
 // LIMITE ÉCRITE D'AVANCE : le formulaire montre les listes du build PRÉCÉDENT.
 // C'est acceptable parce que les listes sont de l'ERGONOMIE, pas de l'autorité :
 // un choix périmé meurt fermé dans le script (ENV_INVALIDE, TEAM_NOT_DECLARED,
-// REQ_API requis / API_FORMAT_INVALIDE).
+// CHAMP_REQUIS / API_FORMAT_INVALIDE).
 //
 // Un Pipeline from SCM tourne dans le SANDBOX Groovy (mesuré A2 : Secret.fromString
 // refusé, #78) ; tout ce qui est appelé ici est dans la liste blanche
@@ -161,6 +161,22 @@ pipeline {
       when { expression { env.FORM_BOOTSTRAP != 'true' } }
       steps {
         script {
+          // ── Champs OBLIGATOIRES : le refus nomme LE CHAMP, ici, tout de suite ──
+          // Mesuré en lab le 2026-09-03 (#47) : une demande à APP vide traversait
+          // le pipeline, le workspace et le clone pour mourir au fond du script sur
+          // « provision-request.sh: line 105: REQ_APP: REQ_APP requis » — un numéro
+          // de ligne de shell et un nom de VARIABLE, quand le demandeur, lui, a
+          // laissé vide un champ qui s'appelle « APP ». Le script porte la MÊME
+          // garde (CHAMP_REQUIS) pour la voie machine : deux portes, une règle.
+          // `.trim()` : Jenkins rend '' pour un champ omis (jamais null) et un
+          // champ d'espaces n'est pas une saisie.
+          if ((params.APP ?: '').trim() == '') {
+            error("REFUS: CHAMP_REQUIS : le champ « APP » (Nom de l'application demandée) est vide — il est OBLIGATOIRE. Relancer la demande en le renseignant ([A-Za-z0-9._-]). Rien n'a été tenté.")
+          }
+          if ((params.MODE ?: '') == 'idp' && (params.CLIENT_ID ?: '').trim() == '') {
+            error("REFUS: CHAMP_REQUIS : le champ « CLIENT_ID » est vide alors que MODE=idp — il est OBLIGATOIRE dans ce mode (c'est la claim azp qui identifie l'application côté gateway). Passer MODE=internal pour que la gateway génère le client, ou renseigner CLIENT_ID. Rien n'a été tenté.")
+          }
+
           // Traçabilité : l'identité Jenkins du demandeur remplace
           // oig-/cli2-provisioner dans REQ_CALLER.
           //
@@ -186,7 +202,7 @@ pipeline {
           // (fix round 1 de la revue Task 4) : les choix générés portent
           // TOUJOURS '@', un '@' absent sur une valeur non vide est un typo ou
           // un contrat obsolète — échec loud AVANT le sh. Le cas VIDE tombe sur
-          // le refus loud de provision-request.sh (REQ_API requis) : REQ_API
+          // le refus loud de provision-request.sh (CHAMP_REQUIS) : REQ_API
           // vide — et non absent — est posé ci-dessous, `${REQ_API:?}` le refuse.
           def apiChoice = params.API ?: ''
           if (apiChoice != '' && !apiChoice.contains('@')) {

@@ -76,6 +76,15 @@ pipeline {
       when { expression { env.FORM_BOOTSTRAP != 'true' } }
       steps {
         script {
+          // Champs OBLIGATOIRES : le refus nomme LE CHAMP, avant le workspace et
+          // le clone (même règle et même tag que app-request et que le script).
+          if ((params.APP ?: '').trim() == '') {
+            error("REFUS: CHAMP_REQUIS : le champ « APP » (application à replier) est vide — il est OBLIGATOIRE. Rien n'a été tenté.")
+          }
+          if ((params.REASON ?: '').trim() == '') {
+            error("REFUS: CHAMP_REQUIS : le champ « REASON » (motif du repli, tracé dans la PR) est vide — il est OBLIGATOIRE. Rien n'a été tenté.")
+          }
+
           // Identité du demandeur : informative (trailer Repli-Par, displayName) —
           // rien de sécuritaire n'en dérive. PIÈGE A0 : userId nul ⇒ chaîne 'null'.
           def cause = currentBuild.getBuildCauses('hudson.model.Cause$UserIdCause')

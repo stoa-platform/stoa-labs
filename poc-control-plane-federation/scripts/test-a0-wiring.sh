@@ -39,7 +39,7 @@ ko(){ FAIL=$((FAIL+1)); printf '  ❌ %s\n' "$*"; }
 
 # Total ATTENDU, ÉCRIT EN DUR — indépendant de PASS+FAIL. Toute section
 # ajoutée/retirée DOIT le mettre à jour : un oubli fait rougir le dernier §.
-EXPECTED_CHECKS=182
+EXPECTED_CHECKS=183
 
 # shellcheck source=scripts/lib/gwt-mirror.sh
 . scripts/lib/gwt-mirror.sh || { echo "lib gwt-mirror.sh introuvable"; exit 2; }
@@ -248,6 +248,12 @@ L_PROPS=$(code_line "$TMP/jf-app.code" "properties([parameters([")
   && ok "FORM_BOOTSTRAP capturé (ligne $L_BOOT) AVANT properties() (ligne $L_PROPS) — fait 4 : après, params retombe sur les défauts" \
   || ko "signal d'amorçage absent ou capturé après properties() (boot=$L_BOOT props=$L_PROPS)"
 [ -n "$L_PROPS" ] && ok "properties([parameters([ … ])]) en vue CODE : le formulaire est posé par le pipeline" || ko "properties([parameters([ absent"
+# Le champ obligatoire se refuse DANS le pipeline, avant le workspace et le clone
+# (mesuré app-request #47 : APP vide ⇒ message brut de bash au fond du script).
+L_REQ=$(code_line "$TMP/jf-app.code" "CHAMP_REQUIS"); L_SH=$(code_line "$TMP/jf-app.code" "bash scripts/provision-request.sh")
+[ -n "$L_REQ" ] && [ -n "$L_SH" ] && [ "$L_REQ" -lt "$L_SH" ] \
+  && ok "garde CHAMP_REQUIS (ligne $L_REQ) AVANT l'appel de provision-request.sh (ligne $L_SH) : un champ obligatoire vide se nomme sans cloner" \
+  || ko "garde du champ obligatoire absente ou après le sh (garde=$L_REQ sh=$L_SH)"
 MISS=""
 for P in "string(name: 'APP'" "choice(name: 'REQ_ENV', choices: envs" "choice(name: 'TEAM', choices: [''] + teams" "choice(name: 'API', choices: apis" \
          "string(name: 'CLIENT_ID'" "choice(name: 'MODE', choices: ['idp', 'internal']" "text(name: 'IP_ALLOWLIST'" "text(name: 'CERT_PEM'" \
