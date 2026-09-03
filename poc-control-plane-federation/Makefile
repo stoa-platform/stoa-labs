@@ -111,7 +111,7 @@ lint-ci:
 	  scripts/lib/gitea-pr-confirm.sh scripts/provision-plan-status.sh scripts/setup-selfservice-job.sh \
 	  scripts/selfservice-palier-gate.sh scripts/setup-wm-palier-admins.sh \
 	  scripts/provision-apply-gate.sh scripts/test-a4-live.sh \
-	  scripts/test-selfservice-api-gate-a5.sh \
+	  scripts/test-selfservice-api-gate-a5.sh scripts/test-a5-live.sh \
 	  && echo "  ✓ ci/lib + livrables shell G2..G8 + A1 + A2 + A0 + A3 + A4 + A5 propres"
 	@echo "== [3/14] épreuves de ci/lib/carto-secrets.sh"
 	@ci/test-carto-secrets.sh
