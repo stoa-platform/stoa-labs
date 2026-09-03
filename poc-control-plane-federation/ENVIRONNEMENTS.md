@@ -778,6 +778,64 @@ de forge humain `carol` s'il manque.
   parseur Go accepte les clés inconnues d'`environments.yaml`, le shell les
   refuse (écart enregistré).
 
+## L'ordre app/API (A5 — GOAL cd-applications, 2026-09-03)
+
+Depuis A5 (ADR-088), **une application ne précède jamais son API au palier**.
+Avant sa première écriture, l'apply d'application (le rôle
+`apim_selfservice_app`, §1) relit la liste des APIs de la gateway du palier
+et refuse, nommément, si l'API du manifeste n'y est pas **dans cette version,
+active** :
+
+| Ce que la gateway du palier présente | Refus | Le remède, nommé sur la PR |
+|---|---|---|
+| aucune API de ce nom | `API_NOT_PROMOTED` | promouvoir l'API vers le palier par la chaîne des APIs (`api-promote-request` → PR `promote/<api>-<env>` → merge → `team-promote`, G5) |
+| le nom, mais pas cette version | `API_VERSION_MISMATCH` (les versions présentes sont citées) | promouvoir cette version, ou corriger la demande — `api_version` est figé (A1) : une autre version est une NOUVELLE application |
+| plus d'une entrée nom+version | `API_AMBIGUE` | un état de gateway à corriger à la main (la 10.15 ne devrait pas le produire) |
+| présente mais **inactive** (`isActive` faux, absent ou non booléen) | `API_INACTIVE` (valeur vue et id cités) | activer l'API au palier — geste producteur |
+
+Puis **rejouer le webhook** de la PR mergée (`generic-webhook-trigger`, token
+`stoa-provision-apply`, le payload de fusion) : rien n'a été écrit sur la
+gateway, la PR reste la référence, inutile de rouvrir une demande. Le
+commentaire de PR porte le tag, **la phrase** (« aval selfservice-app-deploy
+#n : … ») et le paragraphe « L'ordre app/API ». Depuis A5, les refus de la
+garde A3 (`PALIER_FERME`, `DEPLOYER_GROUP_REQUIRED`…) arrivent eux aussi avec
+leur phrase.
+
+**Ce que la console de l'aval montre** : `palier ouvert : envs/<env>/wm-admin`
+< `préflight de joignabilité :` < `PLAY [Self-service application — converge`
+< `REFUS: API_INACTIVE : …` (aucune tâche « App : créer », aucun verify) ; sur
+le chemin nominal `API_AT_PALIER : '<api>' v<ver> active au palier '<env>'
+(id=<uuid>)`, puis au verify `API_AT_PALIER_CONFIRMED` et
+`SUBSCRIPTION_CONFIRMED : '<app>' souscrite à '<api>' v<ver> (id=<uuid>)` —
+le GUID promu, relu. Un verify rejoué après une désactivation rougit
+(`API_AT_PALIER_UNCONFIRMED`), une souscription remplacée aussi
+(`SUBSCRIPTION_UNCONFIRMED`) : le rapport dit alors « la convergence a eu
+lieu », jamais « rien n'a été écrit ».
+
+**Pourquoi avant l'écriture, et pas « poser puis défaire »** : le spike du
+2026-09-02 a mesuré qu'une paire application/API qui a servi du trafic ne se
+ré-inscrit plus après désinscription (500 irréversible). La porte est donc la
+dernière lecture avant `POST /applications`, et les preuves hors ligne le
+tiennent par mutation (porte déplacée après la création ⇒ une écriture part
+avant le refus ⇒ rouge).
+
+**Limites, mesurées** : sur ce lab **mono-gateway**, « promouvoir vers rec »
+n'est pas jouable (dev/rec/int = la même 10.15) — la porte est prouvée sur les
+trois situations que la gateway du palier peut présenter, et le « rejeu après
+promotion » est le rejeu après **réactivation** du même objet, GUID identique
+relu. Le plan (`provision-plan`) ne sait pas : lecture seule, sans credential
+gateway — le demandeur apprend le refus à l'apply, sur la PR. La porte suit la
+**lignée du rôle**, épinglée au SHA appliqué (A2) : un repli vers un SHA
+antérieur à A5 rejouerait le rôle d'alors, sans porte (artefact du lab — A6 le
+dira). Le formulaire `app-request` propose les APIs de `publish.yml`
+(authoring), pas celles du palier : ergonomie, pas autorité.
+
+**Rollout sur ce lab** : `git push gitea HEAD:main` suffit — le rôle appliqué
+est celui de l'arbre pinné au `MERGE_SHA` (une PR mergée après le push porte
+A5), la garde A3 est extraite de `origin/main`, aucun job re-posé, aucune
+globale. Preuve : `bash scripts/test-a5-live.sh` (≈ 25 min ; désactive puis
+réactive `demo-selfservice`, trap inconditionnel).
+
 ## Tout en Jenkinsfile (A0 — GOAL cd-applications, 2026-09-02)
 
 Depuis A0, **plus un seul `job.xml` de l'aval applicatif ne porte de logique** :
