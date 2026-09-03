@@ -337,8 +337,19 @@ N_INT=$(jbuild selfservice-app-deploy "$TMP/form.int"); rm -f "$TMP/form.int"
 ST=$(wait_until 900 selfservice-app-deploy "$N_INT" FINISHED); RES=$(jresult selfservice-app-deploy "$N_INT")
 jconsole selfservice-app-deploy "$N_INT" > "$TMP/int.console"
 [ "$RES" = FAILURE ] && ok "2.3 build #$N_INT : FAILURE" || ko "2.3 build #$N_INT : $RES ($ST)"
-grep -q '^REFUS: PALIER_FERME :' "$TMP/int.console" && grep -q 'envs/int/wm-admin' "$TMP/int.console" && grep -q 'HTTP 403' "$TMP/int.console" \
-  && ok "2.4 REFUS: PALIER_FERME sur envs/int/wm-admin (HTTP 403) — PORTE par build : le job de rec ne lit pas envs/int/*" || ko "2.4 PALIER_FERME absent : $(grep -E 'REFUS|error|fatal' "$TMP/int.console" | head -3 | tr '\n' ' ')"
+# A4 (2026-09-03) : la DÉCLARATION déployeur (§2bis) précède le ticket (§4) —
+# sur int, dont la porte déclare apim-apply-int, alice est refusée
+# DEPLOYER_GROUP_REQUIRED (le nom de la politique) AVANT PALIER_FERME (le 403
+# de capacité). La propriété mesurée est la même : aucun envs/int/* lu, aucun
+# préflight, aucun play (2.5-2.8). PALIER_FERME reste le refus d'un palier sans
+# déclaration (rec révoquée, §3).
+if grep -q '^REFUS: DEPLOYER_GROUP_REQUIRED :' "$TMP/int.console" && grep -q 'apim-apply-int' "$TMP/int.console"; then
+  ok "2.4 REFUS: DEPLOYER_GROUP_REQUIRED (apim-apply-int, A4 : la déclaration précède le ticket) — PORTE par build : le job de rec n'ouvre pas int"
+elif grep -q '^REFUS: PALIER_FERME :' "$TMP/int.console" && grep -q 'envs/int/wm-admin' "$TMP/int.console" && grep -q 'HTTP 403' "$TMP/int.console"; then
+  ok "2.4 REFUS: PALIER_FERME sur envs/int/wm-admin (HTTP 403) — PORTE par build : le job de rec ne lit pas envs/int/*"
+else
+  ko "2.4 ni DEPLOYER_GROUP_REQUIRED ni PALIER_FERME : $(grep -E 'REFUS|error|fatal' "$TMP/int.console" | head -3 | tr '\n' ' ')"
+fi
 grep -q 'préflight de joignabilité :' "$TMP/int.console" && ko "2.5 le préflight a tourné (connexion gateway sans credential du palier)" || ok "2.5 AUCUN préflight : la gateway n'a pas été contactée"
 grep -q 'PLAY \[Self-service application' "$TMP/int.console" && ko "2.6 un play d'apply a tourné" || ok "2.6 AUCUN play d'apply (converge/verify jamais lancés)"
 grep -q 'token Vault révoqué — mort PROUVÉE' "$TMP/int.console" && ok "2.7 token nominatif révoqué, mort prouvée (trap)" || ko "2.7 révocation absente de la console"

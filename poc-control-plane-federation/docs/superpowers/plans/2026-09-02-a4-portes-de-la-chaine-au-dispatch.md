@@ -1,7 +1,7 @@
 ---
 title: "Plan — A4, les portes de la chaîne et l'axe déployeur au dispatch de provision-apply"
 type: plan
-status: "EN COURS 2026-09-02 — T0..T8 inline, TDD (chaque suite vue rouge avant le code) ; preuve finale par BUILDS réels (T7)"
+status: "EXÉCUTÉ le 2026-09-02/03 — T0..T8 inline, TDD (chaque suite vue rouge avant le code) ; hors ligne 133/133 (lint-ci [13/13]), A3 174/174, env-chain 18/18 ; builds réels 80/80 au 6e passage (cinq défauts de harnais corrigés aux passages 2-5) ; docs, ADR-084 étendu, mémoire"
 date: 2026-09-02
 spec: docs/superpowers/specs/2026-09-02-a4-portes-de-la-chaine-au-dispatch-design.md
 ---

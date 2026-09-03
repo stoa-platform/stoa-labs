@@ -1,7 +1,7 @@
 ---
 title: "A4 — Les portes de la chaîne et l'axe déployeur, au dispatch de `provision-apply` : `environments.yaml` décide (fourEyes, approverGroup, refs/ITSM, deployerGroup) — deux portes, une source, aucun mécanisme neuf"
 type: design
-status: "AMENDÉE 2026-09-02 après critique adverse à trois lentilles (sécurité 16 constats, preuve 21, mécanique 16 — 5 bloquants intégrés : quatre-yeux FAIL-CLOSED sur un demandeur de service (REQUESTER_UNKNOWN), validation de la chaîne (CHAINE_INVALIDE), porte reformulée « même individu », UNE application par nom sur la gateway mono-palier (int écrase rec), manifestes jetables sans team ; majeurs : ITSM rejoué AU DISPATCH (la porte tourne deux fois), approuver ≡ porter dit, « tenu par la protection de branche » retiré, source de la chaîne ÉPINGLÉE, fragment $AMI EXÉCUTÉ hors ligne, chaîne complète int prouvée après le grant, canari ITSM, purge ABSOLUE de REFUS_OUT, ${REFUS_OUT:-}, pas de --map pré-pause ; mineurs intégrés ou nommés en D9) — prête pour le plan"
+status: "LIVRÉ 2026-09-03 — spec amendée après critique adverse à trois lentilles (53 constats, 5 bloquants intégrés) ; hors ligne 133/133 (lint-ci [13/13]) + A3 174/174 + env-chain 18/18 ; builds réels 80/80 au 6e passage (#119→#64, #120 REQUESTER_UNKNOWN, #121 FOUR_EYES_VIOLATION, #122→#65 DEPLOYER_GROUP_REQUIRED, #123→#66 chaîne entière int, #67 après retrait, #124 GATE_REFS_REQUIRED, #125 ITSM_NOT_APPROVED, TERMINUS_SANS_VOIE après ITSM approved) ; cinq défauts de harnais trouvés PAR les passages 2-5 (voir D9 « mesures live »)"
 date: 2026-09-02
 lié: [GOAL-cd-applications-2026-09-02, 2026-09-02-a3-credential-du-seul-palier-design, 2026-09-02-a2-reference-sha-merge-design, 2026-08-27-g2-axe-qui-deploie-design, adr-084-axe-qui-deploie-deployer-group, adr-082-ouverture-palier-retention-credential, adr-081-ou-vit-la-decision-humaine, adr-075 (anti-TOCTOU ITSM au dispatch)]
 ---
@@ -148,6 +148,16 @@ Chez un client : `ITSM_URL`/`ITSM_CACERT` sont des globales, `environments.yaml`
 - **Aucune règle par nom de palier** n'est ajoutée (ADR-082).
 - **`GATE_OUT` admet des valeurs vides** (une porte sans groupe) ; `GATE_ENV`, `GATE_STAGE`, `GATE_ALLOW_SELF` jamais — `GATE_ENV` est la sentinelle.
 - **bash 3.2** (les suites tournent sur le poste) : pas de `mapfile`, pas de `declare -A`, pas d'apostrophe dans `${X:?…}`, pas de heredoc python dans `$( )`, tableaux vides `${A[@]+"${A[@]}"}`, `case`/`grep -E` plutôt que `[[ =~ ]]`.
+
+### D10 — Mesures live, pièges de harnais (passages 2 à 6, 2026-09-02/03)
+
+- **`grep -q` sous `pipefail` sur une commande `docker exec`** : `grep -q` ferme le tube au premier match, docker meurt en SIGPIPE, le pipeline rend FAUX alors que le membre est là — `alice_in_int` a dit « absente » après un ajout réussi, et le trap l'a **laissée dans le groupe** (restaurée à la main). Règle du dépôt réaffirmée : capturer dans un fichier, grep ensuite.
+- **`${@:3}` n'existe pas en `sh` POSIX** (le `sh -c` du conteneur LDAP) : `ldap_run` doit faire `shift 2` (verbatim `test-deployer-gate-live.sh`).
+- **Une variable posée dans une fonction appelée en `$( )` meurt avec le sous-shell** (`S_NUM`, `RES`) : globales, jamais `RES=$(f)`.
+- **Gitea 1.22 : `mergeable: true` ne garantit pas la fin du contrôle de merge** — `POST /merge` peut rendre 405 « Please try again later » **et merger quand même** (pause orpheline #110, abandonnée) : relire `merged` après un 405 avant de rejouer ; le nettoyage abandonne les pauses de sa propre application.
+- **wfapi `FINISHED` précède `api/json building=false`** (le `post{}` tourne encore : console partielle, commentaire de PR pas encore posé) : attendre les deux (`wait_built`).
+- **Un stage sauté après un stage FAILED est rendu `FAILED` par wfapi**, pas `NOT_EXECUTED` : la propriété « sans pause » se mesure par l'absence d'`Input requested` dans la console.
+- **Le keepalive de la 10.15 (licence trial) recycle le JVM toutes les ~25 min** ; un passage de 40 min en traverse un : l'aval attend (préflight 600 s), le harnais relit la gateway avec retries (240 s), le nettoyage peut attendre son retour (passage 3 : app supprimée 16 min après la fin).
 
 ## Ce que A4 ne fait pas
 
