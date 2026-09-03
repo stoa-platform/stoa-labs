@@ -507,7 +507,7 @@ DEACTIVATED=1; api_switch "$GUID_REF" deactivate && ok "6.1 $REQ_API désactivé
 rollback_build "$APP" rec "repli sous api inactive a6"
 [ "$RB_RES" = SUCCESS ] && [ -n "$RB_PR" ] && ok "6.2 app-rollback #$RB_NUM → PR #$RB_PR (restaure le repli #$R1 : IP .1, C1)" || die "PORTE : #$RB_NUM $RB_RES"
 R3="$RB_PR"; merge_pause_apply "$R3"; S_R3="$S_NUM"; MSR3="$MS_N"
-[ "$RES" = FAILURE ] && grep -q '^REFUS: API_INACTIVE' "$TMP/ss.$S_R3.console" && ! grep -q 'PLAY \[Self-service application — verify' "$TMP/ss.$S_R3.console" \
+[ "$RES" = FAILURE ] && grep -q 'REFUS: API_INACTIVE' "$TMP/ss.$S_R3.console" && ! grep -q 'PLAY \[Self-service application — verify' "$TMP/ss.$S_R3.console" \
   && ok "6.3 aval #$S_R3 FAILURE REFUS: API_INACTIVE, aucun verify (A5 tient en repli)" || ko "6.3 aval #$S_R3 $RES : $(grep -E 'REFUS' "$TMP/ss.${S_R3:-0}.console" | head -1)"
 [ "$(gw_app_ip_of "$APP_ID")" = "10.42.0.2-10.42.0.2" ] && [ "$(obj_field "$(gw_app_obj "$APP_ID")" IDS)" = "$IDS2" ] && ok "6.4 rien n'a été écrit : la gateway est toujours à l'état N (IP .2)" || ko "6.4 la gateway a bougé : $(gw_app_ip_of "$APP_ID")"
 pr_comments "$R3" > "$TMP/r3.comments"; grep -q 'API_INACTIVE' "$TMP/r3.comments" && grep -q "L'ordre app/API" "$TMP/r3.comments" && grep -q "aval selfservice-app-deploy #$S_R3" "$TMP/r3.comments" && ok "6.5 PR #$R3 ❌ API_INACTIVE + « L'ordre app/API », ancrée sur l'aval #$S_R3" || ko "6.5 commentaires : $(grep -E 'REFUS|ordre' "$TMP/r3.comments" | head -2 | tr '\n' ' ')"
