@@ -29,6 +29,10 @@
 #     distinction est délibérée (cf. task-3-report.md).
 #
 # Entrées (env) :
+#   FORGE_SECRET le secret de la forge : jeton OU mot de passe d'un couple
+#                (alias historique : GITEA_TOKEN — toujours honoré)
+#   FORGE_USER   l'utilisateur du couple (alias : GIT_USER ; défaut « x », que
+#                seul Gitea accepte — GitLab et Bitbucket rendent 401)
 #   GIT_HOST     défaut http://gitea:3000 (toute forge servant du git HTTP :
 #                le clone n'utilise que git, pas l'API de la forge — le refus
 #                s'appelle GIT_UNREACHABLE et cite la sortie de git)
@@ -96,14 +100,24 @@ repo_layout_init || { echo "GIT_SUBDIR_INVALIDE : voir scripts/lib/repo-layout.s
 _gc_redact(){ printf '%s' "$1" | sed -E 's#://[^/@[:space:]]*@#://<identifiants masqués>@#g'; }
 _gc_clone(){
   local repo="$1" dest="$2"
-  local token="${GITEA_TOKEN:?GITEA_TOKEN requis (generate-choices)}"
+  # LE SECRET DE LA FORGE, quel qu'il soit (déploiement client 2026-09-04).
+  # Un gestionnaire d'identité ne rend pas toujours un JETON : Jenkins rend
+  # souvent un COUPLE (usernamePassword). Pour git, les deux valent : le clone
+  # ne fait qu'un Basic, où un mot de passe occupe la place du jeton. Seul le
+  # NOM de la variable prétendait le contraire, et le refus qui suivait réclamait
+  # un jeton que le client n'aura jamais.
+  #   FORGE_SECRET  le secret, jeton OU mot de passe (nom neutre, à préférer)
+  #   GITEA_TOKEN   alias historique, toujours honoré
+  #   FORGE_USER / GIT_USER  l'utilisateur du couple (défaut « x », que seul Gitea accepte)
+  local token="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
+  [ -n "$token" ] || { echo "SECRET_FORGE_REQUIS : aucun secret pour la forge — poser FORGE_SECRET (jeton, ou mot de passe d'un couple) ou son alias GITEA_TOKEN ; avec un couple, poser aussi FORGE_USER" >&2; return 1; }
   local host="${GIT_HOST:-http://gitea:3000}"
   # GIT_USER : l'utilisateur du Basic. Gitea accepte n'importe lequel avec un
   # PAT, d'où le « x » historique — GitLab et Bitbucket, NON (401). Knob, défaut
   # inchangé. GIT_BASE : la branche de base, knob d'ADR-075 honoré partout
   # ailleurs (provision-request.sh:393) et jusqu'ici IGNORÉ ici — un client dont
   # la branche est `master`/`develop` voyait donc échouer CE clone, et lui seul.
-  local user="${GIT_USER:-x}" base="${GIT_BASE:-main}"
+  local user="${FORGE_USER:-${GIT_USER:-x}}" base="${GIT_BASE:-main}"
   local auth_b64 err rc
   auth_b64=$(printf '%s:%s' "$user" "$token" | base64 | tr -d '\n')
   err=$(mktemp) || { _GC_CLONE_ERR="mktemp indisponible"; return 1; }

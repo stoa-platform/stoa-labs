@@ -152,6 +152,22 @@ OUT=$(cd "$REPO" && JENKINS_UI="$JU" JOBS="p3t3-disposable" GIT_HOST="/nonexiste
 [ "$RC" -ne 0 ] && ok "refusé (rc=$RC)" || ko "aurait dû échouer : $OUT"
 grep -q "GIT_UNREACHABLE" <<<"$OUT" && ok "cause explicite (GIT_UNREACHABLE)" || ko "cause absente : $OUT"
 
+# 2026-09-04 (deploiement client) : un gestionnaire d'identite ne rend pas
+# toujours un JETON — Jenkins rend souvent un COUPLE (usernamePassword). Pour
+# git, les deux valent : le clone ne fait qu'un Basic. Le refus reclamait un
+# jeton que le client n'aura jamais, et ne nommait pas l'alternative.
+OUTS=$(env -u GITEA_TOKEN -u FORGE_SECRET bash -c ". '$LIB'; generate_choices_teams_raw dev" 2>&1); RCS=$?
+[ "$RCS" -ne 0 ] && grep -q 'SECRET_FORGE_REQUIS' <<<"$OUTS" && grep -q 'FORGE_SECRET' <<<"$OUTS" && grep -q 'FORGE_USER' <<<"$OUTS" \
+  && ok "sans secret : SECRET_FORGE_REQUIS nomme FORGE_SECRET, son alias et FORGE_USER (le couple est une voie, pas un contournement)" \
+  || ko "refus de secret : rc=$RCS — $(head -1 <<<"$OUTS")"
+# le COUPLE ouvre le meme canal que le jeton : meme depot de fixture, secret par
+# mot de passe et utilisateur nomme — ce que fait un withCredentials Jenkins.
+OUTS=$(env -u GITEA_TOKEN FORGE_SECRET=motdepasse FORGE_USER=jdupont GIT_HOST="$GH" GIT_REPO=ci/stoa-labs \
+  bash -c ". '$LIB'; generate_choices_teams_raw dev" 2>&1); RCS=$?
+[ "$RCS" -eq 0 ] && [ "$(grep -c . <<<"$OUTS")" -ge 1 ] \
+  && ok "un COUPLE (FORGE_SECRET + FORGE_USER) lit les listes comme un jeton" \
+  || ko "couple refuse : rc=$RCS — $(head -1 <<<"$OUTS")"
+
 # 2026-09-03 (déploiement client) : le refus doit porter la CAUSE de git, pas
 # seulement le tag — avant, `2>/dev/null` avalait tout et un hôte injoignable,
 # un jeton refusé et une branche `main` absente rendaient le même refus muet.

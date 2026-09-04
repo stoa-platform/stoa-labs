@@ -39,7 +39,7 @@ ko(){ FAIL=$((FAIL+1)); printf '  ❌ %s\n' "$*"; }
 
 # Total ATTENDU, ÉCRIT EN DUR — indépendant de PASS+FAIL. Toute section
 # ajoutée/retirée DOIT le mettre à jour : un oubli fait rougir le dernier §.
-EXPECTED_CHECKS=185
+EXPECTED_CHECKS=187
 
 # shellcheck source=scripts/lib/gwt-mirror.sh
 . scripts/lib/gwt-mirror.sh || { echo "lib gwt-mirror.sh introuvable"; exit 2; }
@@ -275,7 +275,20 @@ grep -qE "error\('REFUS: TOKEN_(ALTERE|GLOBAL_REFUSE)[^']*\\\$\{(params|env)" "$
 [ "$(grep -c 'STOA_ENV_CHAIN_FILE="\$WORKSPACE/poc-control-plane-federation/clients/_example/environments.yaml"' "$TMP/jf-app.code")" = 2 ] && ok "A7 : la chaîne est ÉPINGLÉE sur les deux sh (listes et demande) — une globale ne redirige plus la porte à la demande" || ko "A7 : épinglages STOA_ENV_CHAIN_FILE : $(grep -c 'STOA_ENV_CHAIN_FILE=' "$TMP/jf-app.code")"
 grep -v '^\s*//' ci/Jenkinsfile.provisioning-request | grep -qE "^\s*FORGE_TOKEN\s*=\s*''" && ok "A7 : la voie machine VIDE FORGE_TOKEN dans son bloc environment (une globale du nœud ne lui prête aucune identité de forge)" || ko "A7 : Jenkinsfile.provisioning-request ne vide pas FORGE_TOKEN"
 L_SH=$(code_line "$TMP/jf-app.code" "sh 'set +x; GC_PLATFORM_DIR=\"\$WORKSPACE\" STOA_ENV_CHAIN_FILE=\"\$WORKSPACE/poc-control-plane-federation/clients/_example/environments.yaml\" CHOICES_OUT=\"\$WORKSPACE/.a0-choices.env\" bash scripts/app-request-choices.sh'")
-L_WC=$(code_line "$TMP/jf-app.code" "withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')])")
+L_WC=$(code_line "$TMP/jf-app.code" "withCredentials(forgeCreds())")
+# 2026-09-04 : le TYPE de credential est un knob du SITE. forgeCreds() rend un
+# secret text (jeton, defaut du lab) ou un usernamePassword (couple, cas client),
+# et le shell voit les MEMES noms dans les deux cas — sans quoi un client devrait
+# editer le pipeline, ce que ce depot refuse depuis A0.
+jfa "FORGE_CRED_KIND      = \"\${env.FORGE_CRED_KIND ?: 'secret-text'}\"" \
+  && jfa "FORGE_API_AUTH       = \"\${env.FORGE_API_AUTH ?: 'token'}\"" \
+  && ok "le type de credential et la forme d'authentification sont des knobs (defauts du lab : secret-text, token)" \
+  || ko "FORGE_CRED_KIND / FORGE_API_AUTH absents du bloc environment"
+grep -q "usernamePassword(credentialsId: env.GITEA_CREDENTIALS_ID" "$TMP/jf-app.code" \
+  && grep -q "usernameVariable: 'FORGE_USER', passwordVariable: 'FORGE_SECRET'" "$TMP/jf-app.code" \
+  && grep -q "string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'FORGE_SECRET')" "$TMP/jf-app.code" \
+  && ok "les DEUX types sont cables, et rendent le meme couple de noms (FORGE_SECRET / FORGE_USER)" \
+  || ko "forgeCreds() ne porte pas les deux types"
 [ -n "$L_SH" ] && [ -n "$L_WC" ] && [ "$L_WC" -lt "$L_SH" ] && [ "$L_SH" -lt "$L_PROPS" ] \
   && ok "app-request-choices.sh invoqué en quotes SIMPLES sous credential (ligne $L_SH), AVANT properties()" || ko "invocation du script de listes absente/mal placée (sh=$L_SH wc=$L_WC props=$L_PROPS)"
 jfa 'readFile("${env.WORKSPACE}/.a0-choices.env")' && jfa 'FORMULAIRE_VIDE' \

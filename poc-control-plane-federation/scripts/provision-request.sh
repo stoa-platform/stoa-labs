@@ -163,7 +163,12 @@ esac
 if [ "$MODE" = "idp" ] && [ -z "$REQ_CLIENT_ID" ]; then
   echo "REFUS: CHAMP_REQUIS : REQ_CLIENT_ID est vide alors que REQ_MODE=idp — obligatoire dans ce mode (formulaire app-request : champ « CLIENT_ID », la claim azp qui identifie l'app). Rien n'a été tenté." >&2; exit 2
 fi
-GITEA_TOKEN="${GITEA_TOKEN:?GITEA_TOKEN requis}"
+# Le secret de la forge porte un nom NEUTRE (2026-09-04) : un gestionnaire
+# d'identite rend un jeton OU un couple, et pour git comme pour l'API les deux
+# occupent la meme place. FORGE_SECRET est le nom ; GITEA_TOKEN reste honore.
+GITEA_TOKEN="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
+[ -n "$GITEA_TOKEN" ] || { echo "REFUS: SECRET_FORGE_REQUIS : ni FORGE_SECRET ni GITEA_TOKEN — le secret de la forge (jeton, ou mot de passe d'un couple avec FORGE_USER)" >&2; exit 2; }
+export GITEA_TOKEN
 # ── A7 — LES TOKENS, par FICHIER, et le token humain RETIRÉ de l'environnement ──
 # FORGE_TOKEN (formulaire, canal natif Jenkins) ou FORGE_TOKEN_FILE : l'identité
 # de forge du demandeur. Copié dans un fichier 0600 puis `unset` AVANT tout
