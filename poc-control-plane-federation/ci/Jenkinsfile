@@ -94,15 +94,15 @@ pipeline {
       environment {
         // Le token a iss=localhost:8480 (frontend KC figé), mais le JWKS est
         // fetché EN RÉSEAU sur keycloak:8080 (split-horizon).
-        KEYCLOAK_URL                = 'http://localhost:8480'
-        KEYCLOAK_JWKS_URL           = 'http://keycloak:8080/realms/stoa-lab/protocol/openid-connect/certs'
-        LABCTL_AUDIENCE             = 'onboarding-api'
-        OPENSEARCH_URL              = 'https://opensearch:9200'
-        OPENSEARCH_USER             = 'admin'
-        OPENSEARCH_INSECURE         = 'true'
-        OTEL_EXPORTER_OTLP_ENDPOINT = 'http://otel-lgtm:4318'
-        APPLY_TENANT                = 'banking-demo'
-        VAULT_ADDR                  = 'http://vault:8200'
+        KEYCLOAK_URL                = "${env.KEYCLOAK_URL ?: 'http://localhost:8480'}"
+        KEYCLOAK_JWKS_URL           = "${env.KEYCLOAK_JWKS_URL ?: 'http://keycloak:8080/realms/stoa-lab/protocol/openid-connect/certs'}"
+        LABCTL_AUDIENCE             = "${env.LABCTL_AUDIENCE ?: 'onboarding-api'}"
+        OPENSEARCH_URL              = "${env.OPENSEARCH_URL ?: 'https://opensearch:9200'}"
+        OPENSEARCH_USER             = "${env.OPENSEARCH_USER ?: 'admin'}"
+        OPENSEARCH_INSECURE         = "${env.OPENSEARCH_INSECURE ?: 'true'}"
+        OTEL_EXPORTER_OTLP_ENDPOINT = "${env.OTEL_EXPORTER_OTLP_ENDPOINT ?: 'http://otel-lgtm:4318'}"
+        APPLY_TENANT                = "${env.APPLY_TENANT ?: 'banking-demo'}"
+        VAULT_ADDR                  = "${env.VAULT_ADDR ?: 'http://vault:8200'}"
         // VAULT_ROLE_ID = l'IDENTITÉ AppRole (NON-SECRET, comme un username) — c'est
         // pourquoi elle peut vivre en clair ici. Le secret_id (credential ci-dessous)
         // est le SEUL vrai secret, court (~10min), rotable. Login -> token ÉPHÉMÈRE

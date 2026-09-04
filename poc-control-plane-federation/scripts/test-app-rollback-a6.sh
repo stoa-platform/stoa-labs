@@ -485,8 +485,8 @@ grep -q 'UserIdCause' "$JF" && grep -q 'jenkins-form:' "$JF" && ok "D.8 identit�
 ! grep -qE '^\s*triggers \{|^\s*parameters \{' "$JF" && ok "D.9 ni triggers{} ni parameters{} déclaratifs" || ko "D.9 triggers/parameters déclaratifs présents"
 grep -q 'CpsScmFlowDefinition' "$XML" && grep -q '<scriptPath>poc-control-plane-federation/ci/Jenkinsfile.app-rollback</scriptPath>' "$XML" && grep -q '<properties/>' "$XML" && grep -q '<triggers/>' "$XML" && ! grep -q '<script>' "$XML" \
   && ok "D.10 coquille XML pure : SCM, scriptPath, aucune propriété, aucun trigger, aucun Groovy" || ko "D.10 coquille XML"
-grep -q 'scripts/app-rollback-request.sh scripts/test-app-rollback-a6.sh' "$MK" && grep -q '\[16/16\]' "$MK" && grep -q 'bash scripts/test-app-rollback-a6.sh' "$MK" && ! grep -q '/15\]' "$MK" \
-  && ok "D.11 Makefile : shellcheck des scripts A6, [16/16] (A7 branché), la suite câblée" || ko "D.11 Makefile"
+grep -q 'scripts/app-rollback-request.sh scripts/test-app-rollback-a6.sh' "$MK" && grep -q '\[17/17\]' "$MK" && grep -q 'bash scripts/test-app-rollback-a6.sh' "$MK" && ! grep -q '/15\]' "$MK" \
+  && ok "D.11 Makefile : shellcheck des scripts A6, [17/17] (A7 puis la porte des valeurs par défaut branchés), la suite câblée" || ko "D.11 Makefile"
 ! grep -q 'sauf repli (A6)' "$REPO/ci/Jenkinsfile.selfservice" && grep -q 'le repli (A6) est une PR' "$REPO/ci/Jenkinsfile.selfservice" && ok "D.12 Jenkinsfile.selfservice : le levier n'est plus « le repli »" || ko "D.12 commentaire selfservice"
 ! grep -q 'levier du repli (A6)' "$REPO/ENVIRONNEMENTS.md" && grep -q 'le repli est une PR' "$REPO/ENVIRONNEMENTS.md" && ok "D.13 ENVIRONNEMENTS.md : idem" || ko "D.13 ENVIRONNEMENTS.md"
 

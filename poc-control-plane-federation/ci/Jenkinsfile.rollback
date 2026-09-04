@@ -36,28 +36,28 @@ pipeline {
     // au niveau job ; GIT_CREDENTIALS_ID non vide -> clone via GIT_ASKPASS.
     GOVERNANCE_GIT_URL = "${env.GOVERNANCE_GIT_URL ?: 'http://gitea:3000/ci/governance.git'}"
     GIT_CREDENTIALS_ID = "${env.GIT_CREDENTIALS_ID ?: ''}"
-    KEYCLOAK_URL                = 'http://localhost:8480'
-    KEYCLOAK_JWKS_URL           = 'http://keycloak:8080/realms/stoa-lab/protocol/openid-connect/certs'
-    LABCTL_AUDIENCE             = 'onboarding-api'
-    OPENSEARCH_URL              = 'https://opensearch:9200'
-    OPENSEARCH_USER             = 'admin'
-    OPENSEARCH_INSECURE         = 'true'
-    OTEL_EXPORTER_OTLP_ENDPOINT = 'http://otel-lgtm:4318'
-    APPLY_TENANT                = 'banking-demo'
+    KEYCLOAK_URL                = "${env.KEYCLOAK_URL ?: 'http://localhost:8480'}"
+    KEYCLOAK_JWKS_URL           = "${env.KEYCLOAK_JWKS_URL ?: 'http://keycloak:8080/realms/stoa-lab/protocol/openid-connect/certs'}"
+    LABCTL_AUDIENCE             = "${env.LABCTL_AUDIENCE ?: 'onboarding-api'}"
+    OPENSEARCH_URL              = "${env.OPENSEARCH_URL ?: 'https://opensearch:9200'}"
+    OPENSEARCH_USER             = "${env.OPENSEARCH_USER ?: 'admin'}"
+    OPENSEARCH_INSECURE         = "${env.OPENSEARCH_INSECURE ?: 'true'}"
+    OTEL_EXPORTER_OTLP_ENDPOINT = "${env.OTEL_EXPORTER_OTLP_ENDPOINT ?: 'http://otel-lgtm:4318'}"
+    APPLY_TENANT                = "${env.APPLY_TENANT ?: 'banking-demo'}"
     // Le re-apply prod passe par apply-uac : la couche dispatch-gate (A6) relit
     // l'ITSM du change de l'état N-1 restauré (deploy.prod.yaml reverté). Sans
     // ITSM_URL elle refuserait fail-closed (ITSM_NOT_CONFIGURED). NB PoC/mock :
     // le change du N-1 reste 'approved' ; un ITSM RÉEL le passerait 'implemented'
     // post-MEP → un rollback d'urgence devrait porter son propre change_ref
     // (param CHANGE_REF) plutôt que celui du N-1 — durcissement documenté (A6).
-    ITSM_URL                    = 'http://itsm-mock:8788'
-    VAULT_ADDR                  = 'http://vault:8200'
+    ITSM_URL                    = "${env.ITSM_URL ?: 'http://itsm-mock:8788'}"
+    VAULT_ADDR                  = "${env.VAULT_ADDR ?: 'http://vault:8200'}"
     VAULT_ROLE_ID               = "${env.VAULT_ROLE_ID ?: 'fa09b310-79a7-8845-609b-9b6090bcd53b'}"
     // governance-api tourne sur le HOST dans le PoC (:8787) — depuis l'agent
     // Jenkins, host.docker.internal (Docker Desktop). Sur un démon Linux nu :
     // ajouter extra_hosts host-gateway au service jenkins, ou pointer un
     // governance-api conteneurisé. Surchargable au niveau job.
-    GOVERNANCE_API_URL          = 'http://host.docker.internal:8787'
+    GOVERNANCE_API_URL          = "${env.GOVERNANCE_API_URL ?: 'http://host.docker.internal:8787'}"
   }
   stages {
     stage('Build labctl (air-gapped, vendored)') {
