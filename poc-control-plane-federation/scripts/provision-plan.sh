@@ -51,7 +51,12 @@ GITEA_TOKEN="${GITEA_TOKEN:?GITEA_TOKEN requis}"
 GIT_REPO="${GIT_REPO:-ci/stoa-labs}"
 GIT_BASE="${GIT_BASE:-main}"
 GIT_HOST="${GIT_HOST:-http://gitea:3000}"
-MANIFEST_DIR="${MANIFEST_DIR:-poc-control-plane-federation/clients/provisioned/applications}"
+# shellcheck source=scripts/lib/repo-layout.sh
+. "scripts/lib/repo-layout.sh" || { echo "ERREUR: scripts/lib/repo-layout.sh introuvable ou illisible" >&2; exit 1; }
+repo_layout_init || exit 2
+# RELATIF au livrable (2026-09-03) ; le préfixe du dépôt vit dans GIT_SUBDIR.
+MANIFEST_DIR="${MANIFEST_DIR:-clients/provisioned/applications}"
+MANIFEST_PATH="${SUB_PFX}${MANIFEST_DIR}"   # vu de la racine du clone : c'est ce que git connaît
 INVENTORY="${INVENTORY:-ansible/inventory.lab.ini}"
 # URL Git vue par l'HUMAIN (lien du commentaire) — distincte de GIT_HOST (in-cluster,
 # pour les opérations git). Chez le client, les deux valent l'URL entreprise ; au lab,
@@ -109,9 +114,9 @@ cd "$WORK/repo" || refus CLONE_ECHEC "clone incomplet"
 git checkout -q --detach "$GITEA_HEAD_SHA" 2>/dev/null || refus BRANCHE_INTROUVABLE "la tete ${GITEA_HEAD_SHA} de ${PR_BRANCH} n'est pas dans le clone (branche deplacee depuis la relecture, ou PR depuis un fork)"
 
 echo "[2/4] localisation du manifeste (diff vs ${GIT_BASE})"
-MAN=$(git diff --name-only "origin/${GIT_BASE}...HEAD" -- "${MANIFEST_DIR}/*.ansible.yml" 2>/dev/null | head -1)
-[ -n "$MAN" ] || MAN=$(git diff --name-only "origin/${GIT_BASE}...HEAD" 2>/dev/null | grep -E "^${MANIFEST_DIR}/.*\.ansible\.yml$" | head -1)
-if [ -z "$MAN" ]; then echo "IGNORE: aucun manifeste ajouté sous ${MANIFEST_DIR}" >&2; facts ignore "aucun manifeste ajoute sous ${MANIFEST_DIR}"; exit 0; fi
+MAN=$(git diff --name-only "origin/${GIT_BASE}...HEAD" -- "${MANIFEST_PATH}/*.ansible.yml" 2>/dev/null | head -1)
+[ -n "$MAN" ] || MAN=$(git diff --name-only "origin/${GIT_BASE}...HEAD" 2>/dev/null | grep -E "^${MANIFEST_PATH}/.*\.ansible\.yml$" | head -1)
+if [ -z "$MAN" ]; then echo "IGNORE: aucun manifeste ajouté sous ${MANIFEST_PATH}" >&2; facts ignore "aucun manifeste ajoute sous ${MANIFEST_PATH}"; exit 0; fi
 echo "  manifeste : $MAN"
 # env = suffixe de la branche provision/<app>-<env>
 # G4 (D6) : même geste que provision-request.sh — la liste suit LA chaîne,

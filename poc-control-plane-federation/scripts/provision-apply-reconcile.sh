@@ -90,7 +90,9 @@ GIT_HOST="${GIT_HOST:-http://gitea:3000}"
 GIT_REPO="${GIT_REPO:-ci/stoa-labs}"
 GIT_WEB_HOST="${GIT_WEB_HOST:-$GIT_HOST}"
 GIT_WORKTREE="${GIT_WORKTREE:-.}"
-GIT_SUBDIR="${GIT_SUBDIR:-poc-control-plane-federation}"
+# shellcheck source=scripts/lib/repo-layout.sh
+. "$(dirname "$0")/lib/repo-layout.sh" || { echo "ERREUR: lib/repo-layout.sh introuvable" >&2; exit 1; }
+repo_layout_init || exit 2   # tiret NU + sentinelle « . » : « » n'arrive jamais de Jenkins
 MANIFEST_DIR="${MANIFEST_DIR:-clients/provisioned/applications}"
 
 # shellcheck source=scripts/lib/app-manifest.sh
@@ -151,8 +153,8 @@ printf '%s' "$ENV_NAME" | grep -Eq '^[a-z0-9]+$' \
 # Sans point ni slash possible dans APP_NAME (classe ci-dessus) : le chemin du
 # manifeste ne peut pas sortir de MANIFEST_DIR.
 MANIFEST="${MANIFEST_DIR}/${APP_NAME}.ansible.yml"
-FORGE_MANIFEST="${GIT_SUBDIR:+$GIT_SUBDIR/}${MANIFEST}"
-FORGE_CERT="${GIT_SUBDIR:+$GIT_SUBDIR/}clients/provisioned/certs/${APP_NAME}-${ENV_NAME}.crt"
+FORGE_MANIFEST="${SUB_PFX}${MANIFEST}"
+FORGE_CERT="${SUB_PFX}clients/provisioned/certs/${APP_NAME}-${ENV_NAME}.crt"
 
 # ── 2. GITEA = LA VÉRITÉ sur la PR ───────────────────────────────────────────
 # Les deux logins remontent EMPAQUETÉS PAR LIGNES et sont donc forgeables par

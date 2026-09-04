@@ -87,6 +87,10 @@ pipeline {
   // (Task 7), la re-pose des formulaires était injoignable avec un défaut
   // localhost:18080.
   environment {
+    // Préfixe du livrable DANS le dépôt (2026-09-03) : le seul endroit qui le
+    // nomme. « . » = le livrable EST la racine (une valeur VIDE ne traverse pas
+    // Jenkins : elle arrive absente et reprendrait ce défaut).
+    GIT_SUBDIR           = "${env.GIT_SUBDIR ?: 'poc-control-plane-federation'}"
     VAULT_ADDR            = "${env.VAULT_ADDR ?: 'http://vault:8200'}"
     // Mount de l'auth user/mot de passe. CORRECTION INTER-TÂCHES (Task 8, gap
     // trouvé par exécution RÉELLE du chemin fort) : ci/lib/vault-login.sh
@@ -204,7 +208,7 @@ pipeline {
         // `input`. Ce qui comptait tient toujours : la chaîne `sh` est en
         // quotes SIMPLES, aucune valeur d'origine externe ne traverse une
         // interpolation Groovy pour atterrir dans du shell.
-        dir('poc-control-plane-federation') {
+        dir(env.GIT_SUBDIR) {
           sh 'set +x; sh scripts/lib/assert-merge-identity.sh --merged-by "${PR_MERGED_BY:-}" --requester "${PR_REQUESTER:-}" --vault-user "${V_USER:-}"'
         }
 
@@ -215,7 +219,7 @@ pipeline {
         // steps `sh` séparés rouvriraient un process par step — le trap du
         // premier révoquerait le token AVANT que le second ne le consomme.
         withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')]) {
-          dir('poc-control-plane-federation') {
+          dir(env.GIT_SUBDIR) {
             sh '''
               set +x
               export VAULT_USER="${V_USER:-}"
@@ -272,7 +276,7 @@ pipeline {
         checkout scm
         withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')]) {
           withEnv(["BUILD_RESULT=${currentBuild.currentResult}"]) {
-            dir('poc-control-plane-federation') {
+            dir(env.GIT_SUBDIR) {
               sh '''
                 set +x
                 # La PR d'onboarding vit sur le dépôt PLATEFORME (GIT_REPO), pas

@@ -91,7 +91,7 @@ set +x   # jamais de trace : le token ne doit pas fuiter
 # G4 (D6) : la liste d'environnements valides suit LA chaîne, jamais une liste
 # en dur. Aucun `cd` n'a encore eu lieu ici (le clone/cd n'arrive qu'au [1/4],
 # bien plus bas) : la source relative résout depuis le cwd d'appel, qui est
-# `poc-control-plane-federation` (le job fait `dir('poc-control-plane-federation')`
+# `poc-control-plane-federation` (le job fait `dir(env.GIT_SUBDIR)`
 # avant `bash scripts/provision-request.sh` — ci/Jenkinsfile.app-request,
 # ci/jenkins/provisioning-request.job.xml).
 . "scripts/lib/env-chain.sh" || { echo "ERREUR: scripts/lib/env-chain.sh introuvable ou illisible" >&2; exit 1; }
@@ -102,9 +102,18 @@ set +x   # jamais de trace : le token ne doit pas fuiter
 # de résolution que env-chain.sh : le cwd d'appel, avant tout cd).
 . "scripts/lib/app-manifest.sh" || { echo "ERREUR: scripts/lib/app-manifest.sh introuvable ou illisible" >&2; exit 1; }
 
-REQ_APP="${REQ_APP:?REQ_APP requis}"
-REQ_ENV="${REQ_ENV:?REQ_ENV requis}"
-REQ_API="${REQ_API:?REQ_API requis}"
+# Un champ OBLIGATOIRE vide se refuse en SE NOMMANT, comme tous les autres refus
+# de la chaîne — jamais par le `${VAR:?}` de bash, qui rend « <script>: line N:
+# REQ_APP: REQ_APP requis » : un numéro de ligne de shell et une variable INTERNE,
+# là où le demandeur a rempli un formulaire dont le champ porte un autre nom
+# (mesuré en lab le 2026-09-03, app-request #47 : demande à APP vide).
+# Une valeur BLANCHE n'est pas une valeur : Jenkins rend '' pour un champ omis,
+# jamais null, et un espace seul passerait `-n` pour mourir plus loin sur la
+# garde de caractères, qui parle d'un contenu que le demandeur n'a pas saisi.
+requis(){ case "${2//[[:space:]]/}" in "") echo "REFUS: CHAMP_REQUIS : $1 est vide — obligatoire ($3). Rien n'a été tenté." >&2; exit 2;; esac; }
+REQ_APP="${REQ_APP:-}"; requis REQ_APP "$REQ_APP" "formulaire app-request : champ « APP », le nom de l'application demandée"
+REQ_ENV="${REQ_ENV:-}"; requis REQ_ENV "$REQ_ENV" "formulaire app-request : champ « REQ_ENV », le palier visé"
+REQ_API="${REQ_API:-}"; requis REQ_API "$REQ_API" "formulaire app-request : champ « API », l'API consommée (nom@version)"
 # A1 : les défauts de version/audience ne valent que pour une PREMIÈRE demande ;
 # sur un manifeste existant, absent = HÉRITÉ (résolu après le clone, [1/4]).
 # On garde donc la saisie BRUTE à part — c'est elle qui décide « fourni » (donc
@@ -121,7 +130,9 @@ REQ_CERT_PEM="${REQ_CERT_PEM:-}"
 REQ_CERT_ROTATION="${REQ_CERT_ROTATION:-}"
 REQ_BACKEND_KEY_REF="${REQ_BACKEND_KEY_REF:-}"
 REQ_BACKEND_KEY_FIELD="${REQ_BACKEND_KEY_FIELD:-}"
-TENANT="${TENANT:-banking-demo}"
+# Pas de tenant par défaut : cette valeur entre dans `auth.vault_sub` du manifeste,
+# qui est COMMITÉ — un défaut de lab s'écrirait dans le dépôt du client.
+TENANT="${TENANT:-}"
 
 # MODE = propriété de l'APPELANT, jamais du body (anti-spoof) : OIG provisionne
 # (NB mesuré 2026-09-02 : sur la voie machine, REQ_CALLER est aujourd'hui `$.caller`
@@ -150,7 +161,7 @@ case "${REQ_MODE:-}" in
 esac
 # En mode idp, la claim (= clientId de l'appelant) EST l'identité → obligatoire.
 if [ "$MODE" = "idp" ] && [ -z "$REQ_CLIENT_ID" ]; then
-  echo "REFUS: mode idp exige REQ_CLIENT_ID (la claim azp qui identifie l'app)" >&2; exit 2
+  echo "REFUS: CHAMP_REQUIS : REQ_CLIENT_ID est vide alors que REQ_MODE=idp — obligatoire dans ce mode (formulaire app-request : champ « CLIENT_ID », la claim azp qui identifie l'app). Rien n'a été tenté." >&2; exit 2
 fi
 GITEA_TOKEN="${GITEA_TOKEN:?GITEA_TOKEN requis}"
 # ── A7 — LES TOKENS, par FICHIER, et le token humain RETIRÉ de l'environnement ──
@@ -174,8 +185,18 @@ REQ_CHANGE_REF="${REQ_CHANGE_REF:-}"
 REQ_PV_REF="${REQ_PV_REF:-}"
 GIT_REPO="${GIT_REPO:-ci/stoa-labs}"
 GIT_BASE="${GIT_BASE:-main}"
-GIT_HOST="${GIT_HOST:-http://gitea:3000}"
-MANIFEST_DIR="${MANIFEST_DIR:-poc-control-plane-federation/clients/provisioned/applications}"
+# Aucun repli vers le lab : un client dont le pipeline ne transmet pas la variable
+# doit le lire ici, pas découvrir plus tard que la chaîne a visé « gitea:3000 ».
+GIT_HOST="${GIT_HOST:?GIT_HOST requis (base de la forge, ex. https://forge.client) — aucun repli}"
+GIT_WEB_HOST="${GIT_WEB_HOST:-$GIT_HOST}"   # l'adresse HUMAINE, si elle diffère de celle vue par le CI
+# Disposition du dépôt (2026-09-03) : MANIFEST_DIR est RELATIF au livrable, le
+# préfixe du monorepo vit dans GIT_SUBDIR — contrat déjà écrit par
+# provision-apply-reconcile.sh, ici généralisé. Un chemin vu de la racine du
+# clone se compose « ${SUB_PFX}${MANIFEST_DIR}/… ».
+# shellcheck source=scripts/lib/repo-layout.sh
+. "scripts/lib/repo-layout.sh" || { echo "ERREUR: scripts/lib/repo-layout.sh introuvable ou illisible" >&2; exit 1; }
+repo_layout_init || exit 2
+MANIFEST_DIR="${MANIFEST_DIR:-clients/provisioned/applications}"
 
 # Garde-fous d'entrée : noms sûrs (pas d'injection dans un path/branche/YAML).
 # REQ_CLIENT_ID est optionnel (internal) → validé seulement s'il est fourni.
@@ -352,7 +373,7 @@ PUSH_LOGIN="$FORGE_LOGIN"; [ "$PUSH_LOGIN" = "(service)" ] && PUSH_LOGIN=ci
 PUSH_TF="${FORGE_TF:-$CI_TF}"
 
 BRANCH="provision/${REQ_APP}-${REQ_ENV}"
-REL_PATH="${MANIFEST_DIR}/${REQ_APP}.ansible.yml"
+REL_PATH="${SUB_PFX}${MANIFEST_DIR}/${REQ_APP}.ansible.yml"
 WORK="$(mktemp -d /tmp/provreq.XXXXXX)"
 # Chemin du script résolu AVANT tout `cd` : ce script se déplace dans le clone
 # ($WORK/repo) pour rendre le manifeste, et un `dirname "$0"` relatif n'y
@@ -363,12 +384,18 @@ trap 'rm -rf "$WORK" "$TOKENS_DIR"' EXIT
 # A7 : AUCUNE URL ne porte de credential. Le push s'authentifie par GIT_ASKPASS
 # (login du pousseur + token lu dans le fichier) — jamais en argv, jamais dans un
 # message d'erreur, jamais dans l'environnement d'un enfant.
-PUSH_URL="http://${GIT_HOST#http://}/${GIT_REPO}.git"
+# Le schéma de GIT_HOST est CONSERVÉ (2026-09-03) : « http:// » était forcé en
+# tête après avoir retiré le seul préfixe http://, ce qui produisait littéralement
+# « http://https://forge.client/... » sur une forge en TLS — et l'erreur de push
+# étant filtrée des deux jetons, le message n'en disait rien. Forme reprise mot
+# pour mot de provision-plan.sh (même dépôt, bug déjà nommé là-bas).
+case "$GIT_HOST" in http://*|https://*|file://*) GIT_BASE_URL="${GIT_HOST%/}";; *) GIT_BASE_URL="http://${GIT_HOST%/}";; esac
+PUSH_URL="${GIT_BASE_URL}/${GIT_REPO}.git"
 GIT_ASKPASS="$(forge_askpass "$TOKENS_DIR" "$PUSH_LOGIN" "$PUSH_TF")" || { echo "ERREUR: askpass" >&2; exit 1; }
 export GIT_ASKPASS GIT_TERMINAL_PROMPT=0
 
 echo "[1/4] clone ${GIT_REPO} (base ${GIT_BASE})"
-CLONE_URL="http://${GIT_HOST#http://}/${GIT_REPO}.git"
+CLONE_URL="${GIT_BASE_URL}/${GIT_REPO}.git"
 # A6 : les deux URL git sont surchargeables (épreuves hors ligne sur un dépôt nu en file://) — défauts = inchangés.
 CLONE_URL="${GIT_CLONE_URL:-$CLONE_URL}"; PUSH_URL="${GIT_PUSH_URL:-$PUSH_URL}"
 # ÉCHEC NET SI LE CLONE RATE. Ce script n'a pas `set -e` (délibérément : les
@@ -387,7 +414,7 @@ if ! git clone -q --depth 1 -b "$GIT_BASE" "$CLONE_URL" "$WORK/repo" 2>/dev/null
   exit 1
 fi
 cd "$WORK/repo" || { echo "ERREUR: clone absent après succès annoncé — abandon avant toute écriture" >&2; exit 1; }
-git config user.email "ci@bc.example"; git config user.name "provisioning (service ci)"
+git config user.email "${CI_COMMIT_EMAIL:-ci@bc.example}"; git config user.name "${CI_COMMIT_NAME:-provisioning (service ci)}"
 
 # ── A1 — le manifeste EXISTE-T-IL déjà sur GIT_BASE ? ───────────────────────
 # Si oui : ses champs trans-paliers font CONTRAT. Absents de la demande,
@@ -472,9 +499,9 @@ mkdir -p "$(dirname "$REL_PATH")"
 # A1 : le certificat est une identité PAR PALIER (per_env.<env>.public_cert_ref)
 # — le fichier l'est donc aussi (`<app>-<env>.crt`) : une demande `rec` avec
 # son propre certificat n'écrase jamais celui de `dev`.
-CERT_DIR="$(dirname "$MANIFEST_DIR")/certs"
+CERT_DIR="${SUB_PFX}$(dirname "$MANIFEST_DIR")/certs"
 CERT_FILE="${CERT_DIR}/${REQ_APP}-${REQ_ENV}.crt"
-CERT_REL="${CERT_FILE#poc-control-plane-federation/}"
+CERT_REL="${CERT_FILE#"$SUB_PFX"}"
 if [ -n "$REQ_CERT_PEM" ]; then
   mkdir -p "$CERT_DIR"
   printf '%s\n' "$REQ_CERT_PEM" > "$CERT_FILE"
@@ -533,6 +560,9 @@ done
 # principe de resolve-env.yml : IP, certificat et clé backend DIFFÈRENT par
 # environnement, seule l'identité de l'app est invariante).
 if [ "$MODE" = "internal" ]; then
+  # TENANT n'a plus de valeur par défaut (2026-09-03) : elle s'écrivait dans le
+  # manifeste COMMITÉ. Sans équipe déclarée, le chemin de coffre serait « deploy//apps/… ».
+  [ -n "$TENANT" ] || fail "TENANT_INDETERMINE : mode internal sans equipe — le chemin de coffre du client ne peut pas etre derive (fournir TEAM, ou TENANT au job)"
   PER_ENV_AUTH="auth: { vault_sub: \"deploy/${TENANT}/apps/${REQ_APP}/${REQ_ENV}/oauth-client\" }"
 else
   PER_ENV_AUTH="auth: { claim: { value: \"${REQ_CLIENT_ID}\" } }"
@@ -812,7 +842,7 @@ case "$PR_OUT" in
   CREATED*) echo "  PR créée: #${PR_NUM}";;
   *)        echo "ERREUR: réponse inattendue: ${PR_OUT}" >&2; exit 1;;
 esac
-PR_URL="${GIT_HOST}/${GIT_REPO}/pulls/${PR_NUM}"
+PR_URL="${GIT_WEB_HOST}/${GIT_REPO}/pulls/${PR_NUM}"
 echo "PR_URL=${PR_URL}"
 
 # ── PLAN ENCHAÎNÉ (ADR-081, corollaire 1) ────────────────────────────────────

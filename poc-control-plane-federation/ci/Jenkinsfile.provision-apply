@@ -84,6 +84,10 @@ pipeline {
   // ── POINTS DE CONFIG CLIENT (motif `env.X ?: défaut`, comme les Jenkinsfile frères) ──
   // ⚠ Hôtes vus DEPUIS le conteneur de l'agent (réseau docker `poc`).
   environment {
+    // Préfixe du livrable DANS le dépôt (2026-09-03) : le seul endroit qui le
+    // nomme. « . » = le livrable EST la racine (une valeur VIDE ne traverse pas
+    // Jenkins : elle arrive absente et reprendrait ce défaut).
+    GIT_SUBDIR           = "${env.GIT_SUBDIR ?: 'poc-control-plane-federation'}"
     GIT_HOST              = "${env.GIT_HOST ?: 'http://gitea:3000'}"
     GIT_REPO              = "${env.GIT_REPO ?: 'ci/stoa-labs'}"
     // Lien humain-CLIQUABLE dans le commentaire de PR (split-horizon lab :
@@ -159,7 +163,7 @@ pipeline {
       agent any
       steps {
         withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')]) {
-          dir('poc-control-plane-federation') {
+          dir(env.GIT_SUBDIR) {
             // Chaîne sh en quotes SIMPLES : PR_BRANCH/PR_NUMBER/MERGE_SHA viennent
             // du webhook (tiers) et sont lus par le SHELL, jamais interpolés par Groovy.
             sh 'set +x; RECONCILE_OUT="$WORKSPACE/.a2-reconcile.env" RECONCILE_FACTS="$WORKSPACE/.a2-reconcile.facts" bash scripts/provision-apply-reconcile.sh'
@@ -256,7 +260,7 @@ pipeline {
           withEnv(["V_USER=${vUser}"]) {
             node("${env.POST_AGENT_LABEL ?: ''}") {
               checkout scm
-              dir('poc-control-plane-federation') {
+              dir(env.GIT_SUBDIR) {
                 // ── A4 — LA PORTE, passage AU DISPATCH (anti-TOCTOU, ADR-075) ──
                 // « Approuvé hier n'est pas approuvé maintenant » : la porte est
                 // relue au GESTE, après la réponse humaine — c'est CE passage qui
@@ -305,6 +309,10 @@ pipeline {
           // matérialisé retiré en silence, plan-only, Jenkinsfile aval d'avant
           // A2 — est un ÉCHEC nommé SHA_NON_CONFIRME : ce qu'il a projeté est
           // dit sur la PR, pas maquillé en « pas déployé ».
+          // 2026-09-03 : sans garde, une APPLY_JOB vide echouait ICI — apres la
+          // reconciliation, la porte, la pause, le mot de passe d'annuaire et les
+          // quatre yeux — sur une exception hors vocabulaire « REFUS: ».
+          if (!env.APPLY_JOB?.trim()) { error("REFUS: CABLAGE_INCOMPLET — APPLY_JOB absente (nom du job d'aval a declencher)") }
           def b = build(job: env.APPLY_JOB, wait: true, propagate: false, parameters: [
             string(name: 'MANIFEST',    value: env.MANIFEST),
             string(name: 'ENVIRONMENT', value: env.ENV_NAME),
@@ -352,7 +360,7 @@ pipeline {
             node("${env.POST_AGENT_LABEL ?: ''}") {
               checkout scm
               withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')]) {
-                dir('poc-control-plane-federation') {
+                dir(env.GIT_SUBDIR) {
                   sh 'set +x; VALIDATOR="${V_USER:-}" EXPECTED_SHA="${MERGE_SHA:-}" BUILD_URL="${APPLY_BUILD_URL:-}" bash scripts/provision-apply-comment.sh || true'
                 }
               }
@@ -399,7 +407,7 @@ pipeline {
                 checkout scm
                 withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')]) {
                   withEnv(["BUILD_RESULT=${currentBuild.currentResult}"]) {
-                    dir('poc-control-plane-federation') {
+                    dir(env.GIT_SUBDIR) {
                       sh '''
                 set +x
                 if [ -z "${GIT_REPO:-}" ] || [ -z "${PR_NUMBER:-}" ]; then

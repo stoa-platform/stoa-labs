@@ -352,8 +352,11 @@ for pr in d:
     fi
     [ -f "$GOLDEN_DIR/$golden" ] || { ko "$label : golden '$golden' absent"; return; }
     local out rc mani
+    # TENANT posé PAR LE HARNAIS (2026-09-03) : le code livrable n'a plus de tenant
+    # par défaut (il s'écrivait dans un manifeste commité). Le golden du mode
+    # internal porte « deploy/banking-demo/… » : c'est le harnais qui le décide.
     out=$(env GITEA_TOKEN="$GITEA_TOKEN" GIT_HOST="$GH" REQ_APP="$app" REQ_ENV=dev REQ_API=accounts-read \
-      REQ_API_VER=1.0.0 REQ_CALLER="$caller" PROVISION_PLAN_INLINE=false "$@" bash "$S" 2>&1); rc=$?
+      REQ_API_VER=1.0.0 REQ_CALLER="$caller" TENANT=banking-demo PROVISION_PLAN_INLINE=false "$@" bash "$S" 2>&1); rc=$?
     [ "$rc" -eq 0 ] || { ko "$label : run en échec — $(printf '%s' "$out" | tail -3)"; return; }
     mani=$(raw_manifest "$branch" "$app")
     [ -n "$mani" ] || { ko "$label : manifeste introuvable après le run"; return; }

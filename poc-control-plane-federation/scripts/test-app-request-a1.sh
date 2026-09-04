@@ -29,7 +29,7 @@
 set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 # Le script sous test source ses libs RELATIVEMENT au cwd (`. scripts/lib/…`,
-# comme le job Jenkins qui fait dir('poc-control-plane-federation')) : la suite
+# comme le job Jenkins qui fait dir(env.GIT_SUBDIR)) : la suite
 # se place donc à la racine du dépôt, d'où qu'elle soit lancée.
 cd "$REPO" || exit 1
 S="$REPO/scripts/provision-request.sh"
@@ -564,7 +564,10 @@ except Exception: print("")' 2>/dev/null; }
     ko "C.0 création de la base jetable $BASE depuis main : HTTP $RC $(head -c 200 "$TMP/mkbase")"
   else
     ok "C.0 base jetable $BASE créée depuis main (aucune écriture sur main pendant cette suite)"
-    COMMON=(GITEA_TOKEN="$GITEA_TOKEN" GIT_HOST="$GH" GIT_BASE="$BASE" PROVISION_PLAN_INLINE=false)
+    # TENANT est posé PAR LE HARNAIS (2026-09-03) : le code livrable n'a plus de
+    # tenant par défaut, cette valeur entrant dans un manifeste commité. L'épreuve
+    # mesure « un vault_sub distinct par palier », pas la valeur d'un défaut de lab.
+    COMMON=(GITEA_TOKEN="$GITEA_TOKEN" GIT_HOST="$GH" GIT_BASE="$BASE" TENANT=banking-demo PROVISION_PLAN_INLINE=false)
     # A7 : une chaîne SANS porte pour les demandes int de C.5 — sous le gabarit réel,
     # int exige les quatre yeux et la demande sous ci refuse REQUESTER_UNKNOWN avant
     # le clone ; C.5 mesure le CONTRAT (après le clone), pas la porte.

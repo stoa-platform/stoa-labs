@@ -166,9 +166,9 @@ echo
 echo "== 7. le moteur est bien invoqué, et le pipeline reste MINCE =="
 jfc 'bash scripts/provision-request.sh' \
   && ok "scripts/provision-request.sh invoqué" || ko "provision-request.sh non invoqué — job mort"
-jfc "dir('poc-control-plane-federation')" \
+jfc "dir(env.GIT_SUBDIR)" \
   && ok "le step tourne dans poc-control-plane-federation/ (le dépôt est checkouté à la racine)" \
-  || ko "dir('poc-control-plane-federation') absent — tous les chemins relatifs seraient faux"
+  || ko "dir(env.GIT_SUBDIR) absent — tous les chemins relatifs seraient faux (le prefixe est un knob depuis 2026-09-03)"
 if grep -qE '^\s*(curl|ansible-playbook) ' "$JF"; then
   ko "le Jenkinsfile appelle directement curl/ansible-playbook — la substance doit rester dans scripts/"
 else

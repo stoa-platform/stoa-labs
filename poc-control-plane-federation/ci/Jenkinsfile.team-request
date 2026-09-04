@@ -89,6 +89,10 @@ pipeline {
   // `poc`) : « localhost » n'y désigne PAS Gitea — d'où GIT_HOST=gitea:3000 et,
   // symétriquement, GIT_WEB_HOST=localhost:13000 pour ce qu'un HUMAIN clique.
   environment {
+    // Préfixe du livrable DANS le dépôt (2026-09-03) : le seul endroit qui le
+    // nomme. « . » = le livrable EST la racine (une valeur VIDE ne traverse pas
+    // Jenkins : elle arrive absente et reprendrait ce défaut).
+    GIT_SUBDIR           = "${env.GIT_SUBDIR ?: 'poc-control-plane-federation'}"
     // Dépôt PLATEFORME : il porte providers.<env>.yml, le fichier que la PR
     // modifie. Ces deux valeurs sont EXACTEMENT les défauts que team-request.sh
     // s'applique déjà à lui-même — les poser ici ne change donc rien au
@@ -139,7 +143,7 @@ pipeline {
           // elle valide la valeur qu'elle REÇOIT, donc déjà expansée.
           withEnv(["TEAM=${params.TEAM}", "DESCRIPTION=${params.DESCRIPTION}",
                    "APPROVERS=${params.APPROVERS}", "REPO=${params.REPO ?: ''}"]) {
-            dir('poc-control-plane-federation') {
+            dir(env.GIT_SUBDIR) {
               // `sh` en triple quotes SIMPLES : Groovy n'interpole RIEN ici. Les
               // champs du formulaire sont de la saisie humaine — donnée d'un
               // tiers — et ne doivent jamais traverser une interpolation Groovy

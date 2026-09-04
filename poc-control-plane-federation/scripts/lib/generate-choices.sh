@@ -29,7 +29,9 @@
 #     distinction est délibérée (cf. task-3-report.md).
 #
 # Entrées (env) :
-#   GIT_HOST     défaut http://gitea:3000
+#   GIT_HOST     défaut http://gitea:3000 (toute forge servant du git HTTP :
+#                le clone n'utilise que git, pas l'API de la forge — le refus
+#                s'appelle GIT_UNREACHABLE et cite la sortie de git)
 #   GIT_REPO     défaut ci/stoa-labs (dépôt plateforme, porte providers.<env>.yml)
 #   GITEA_TOKEN  requis (${:?}) — jamais en argv. Un clone en LECTURE n'exige
 #                pas forcément un token sur ce Gitea de lab (team-request.sh
@@ -75,17 +77,72 @@ _gc_escape(){
 # Le token est injecté en HEADER Basic via GIT_CONFIG_COUNT/KEY/VALUE, jamais
 # dans l'URL/argv (motif éprouvé de team-apply.sh — vérifié en direct par
 # sondage ps -ww dans ce dépôt, jamais recomposé).
+# _GC_CLONE_ERR : la DERNIÈRE erreur de git, expurgée, publiée par _gc_clone.
+# Avant (2026-09-03), `2>/dev/null` avalait la cause : un déploiement client ne
+# pouvait pas distinguer un hôte injoignable d'un jeton refusé, d'une branche
+# `main` absente ou d'un dépôt privé — tous rendus par le même refus muet.
+_GC_CLONE_ERR=""
+# Disposition du dépôt (2026-09-03) : le préfixe du livrable n'est plus écrit en
+# dur ici. La lib voisine le normalise (sentinelle « . », tiret nu) ; elle est
+# localisée par le chemin de CE fichier, la lib pouvant être sourcée depuis
+# n'importe quel répertoire de travail.
+# shellcheck source=scripts/lib/repo-layout.sh
+# (cette lib est TOUJOURS sourcée : `return` est la seule sortie correcte ici)
+. "${BASH_SOURCE[0]%/*}/repo-layout.sh" || { echo "LIB_ABSENTE : repo-layout.sh (voisine de generate-choices.sh)" >&2; return 1; }
+repo_layout_init || { echo "GIT_SUBDIR_INVALIDE : voir scripts/lib/repo-layout.sh" >&2; return 1; }
+# _gc_redact <texte> — retire la partie userinfo de toute URL (http://user:jeton@hote).
+# Vaut pour la sortie de git ET pour GIT_HOST lui-même : un opérateur qui met ses
+# identifiants dans GIT_HOST les verrait sinon ressortir par le refus (mesuré).
+_gc_redact(){ printf '%s' "$1" | sed -E 's#://[^/@[:space:]]*@#://<identifiants masqués>@#g'; }
 _gc_clone(){
   local repo="$1" dest="$2"
   local token="${GITEA_TOKEN:?GITEA_TOKEN requis (generate-choices)}"
   local host="${GIT_HOST:-http://gitea:3000}"
-  local auth_b64
-  auth_b64=$(printf 'x:%s' "$token" | base64 | tr -d '\n')
+  # GIT_USER : l'utilisateur du Basic. Gitea accepte n'importe lequel avec un
+  # PAT, d'où le « x » historique — GitLab et Bitbucket, NON (401). Knob, défaut
+  # inchangé. GIT_BASE : la branche de base, knob d'ADR-075 honoré partout
+  # ailleurs (provision-request.sh:393) et jusqu'ici IGNORÉ ici — un client dont
+  # la branche est `master`/`develop` voyait donc échouer CE clone, et lui seul.
+  local user="${GIT_USER:-x}" base="${GIT_BASE:-main}"
+  local auth_b64 err rc
+  auth_b64=$(printf '%s:%s' "$user" "$token" | base64 | tr -d '\n')
+  err=$(mktemp) || { _GC_CLONE_ERR="mktemp indisponible"; return 1; }
   GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader \
     GIT_CONFIG_VALUE_0="Authorization: Basic ${auth_b64}" \
-    git clone -q --depth 1 -b main "${host}/${repo}.git" "$dest" 2>/dev/null
+    git clone -q --depth 1 -b "$base" "${host}/${repo}.git" "$dest" 2>"$err"
+  rc=$?
+  # expurgation : un identifiant glissé dans GIT_HOST (http://user:jeton@hote)
+  # ressortirait par stderr — on ne relaie jamais la partie userinfo d'une URL.
+  _GC_CLONE_ERR=$(_gc_redact "$(tr '\n' ' ' < "$err")" | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//')
+  rm -f "$err"
+  return "$rc"
 }
-_gc_fetch_main(){ _gc_clone "${GIT_REPO:-ci/stoa-labs}" "$1"; }        # dépôt plateforme
+# _gc_fetch_main <dest> — le dépôt PLATEFORME, par le réseau… ou pas.
+# GC_PLATFORM_DIR : racine d'un dépôt plateforme DÉJÀ présent (opt-in). Un job
+# « pipeline from SCM » sur ce dépôt l'a déjà dans le workspace de l'agent
+# (lightweight=false) : le re-cloner exige d'un client un hôte joignable, un
+# jeton, une branche de base et une traversée de proxy pour lire un fichier
+# qu'il a sous la main — et c'est le PREMIER geste réseau de la chaîne, donc le
+# premier à tomber (déploiement client 2026-09-03 : EQUIPES_INDISPONIBLES sans
+# cause). L'appelant qui pose ce knob AFFIRME que ce répertoire est le dépôt
+# plateforme à la bonne révision ; en Jenkins c'est la définition SCM du job qui
+# l'assure. Les listes restent de l'ERGONOMIE (l'autorité est dans les gardes).
+# FAIL-CLOSED : un knob qui ne porte pas le dépôt ne retombe JAMAIS sur un
+# clone — un repli masquerait la méprise de configuration.
+_gc_fetch_main(){
+  local dest="$1"
+  if [ -n "${GC_PLATFORM_DIR:-}" ]; then
+    if [ ! -d "${GC_PLATFORM_DIR}/${SUB_PFX}ansible" ]; then
+      _GC_CLONE_ERR="GC_PLATFORM_DIR=$(_gc_redact "$GC_PLATFORM_DIR") ne porte pas ${SUB_PFX}ansible — répertoire fourni par l'appelant, aucun repli sur un clone"
+      return 1
+    fi
+    rm -df "$dest" 2>/dev/null
+    ln -s "$GC_PLATFORM_DIR" "$dest" 2>/dev/null || {
+      _GC_CLONE_ERR="lien vers GC_PLATFORM_DIR impossible ($dest)"; return 1; }
+    return 0
+  fi
+  _gc_clone "${GIT_REPO:-ci/stoa-labs}" "$dest"
+}
 _gc_fetch_team_repo(){ _gc_clone "$1" "$2"; }                          # dépôt d'équipe
 
 # _gc_collect_publish_yml <dir> <outfile> — ajoute "nom@version" (une ligne
@@ -130,10 +187,10 @@ generate_choices_teams_raw(){
   work=$(mktemp -d) || { echo "MKTEMP : impossible de créer un répertoire de travail" >&2; return 1; }
 
   if ! _gc_fetch_main "$work"; then
-    echo "GITEA_UNREACHABLE : clone de ${GIT_REPO:-ci/stoa-labs}@main en échec" >&2
+    echo "GIT_UNREACHABLE : accès au dépôt plateforme ${GIT_REPO:-ci/stoa-labs}@${GIT_BASE:-main} (${GC_PLATFORM_DIR:+répertoire fourni}${GC_PLATFORM_DIR:-clone depuis $(_gc_redact "${GIT_HOST:-http://gitea:3000}")}) en échec — ${_GC_CLONE_ERR:-aucune sortie de git}" >&2
     rm -rf "$work"; return 1
   fi
-  local prov="$work/poc-control-plane-federation/ansible/providers.${envn}.yml"
+  local prov="$work/${SUB_PFX}ansible/providers.${envn}.yml"
   if [ ! -f "$prov" ]; then
     echo "PROVIDERS_MISSING : ansible/providers.${envn}.yml absent sur main" >&2
     rm -rf "$work"; return 1
@@ -180,10 +237,10 @@ generate_choices_apis_raw(){
   work=$(mktemp -d) || { echo "MKTEMP : impossible de créer un répertoire de travail" >&2; return 1; }
 
   if ! _gc_fetch_main "$work/platform"; then
-    echo "GITEA_UNREACHABLE : clone de ${GIT_REPO:-ci/stoa-labs}@main en échec" >&2
+    echo "GIT_UNREACHABLE : accès au dépôt plateforme ${GIT_REPO:-ci/stoa-labs}@${GIT_BASE:-main} (${GC_PLATFORM_DIR:+répertoire fourni}${GC_PLATFORM_DIR:-clone depuis $(_gc_redact "${GIT_HOST:-http://gitea:3000}")}) en échec — ${_GC_CLONE_ERR:-aucune sortie de git}" >&2
     rm -rf "$work"; return 1
   fi
-  local root="$work/platform/poc-control-plane-federation"
+  local root="$work/platform/${SUB_PFX%/}"
   local prov="$root/ansible/providers.${envn}.yml"
   if [ ! -f "$prov" ]; then
     echo "PROVIDERS_MISSING : ansible/providers.${envn}.yml absent sur main" >&2

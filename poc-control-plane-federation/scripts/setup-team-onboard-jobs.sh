@@ -87,7 +87,7 @@
 #     porte un placeholder (cf. scripts/lib/generate-choices.sh).
 set -uo pipefail
 set +x
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || { echo "REFUS: racine du depot introuvable" >&2; exit 2; }
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Auto-localisation par BASH_SOURCE quand le fichier vit dans son arbre ; repli
@@ -152,6 +152,7 @@ APIS_FRAG="$STAGE/apis.frag";   : > "$APIS_FRAG"
 
 if [ "$NEED_TEAMS" = true ] || [ "$NEED_APIS" = true ]; then
   # shellcheck source=lib/generate-choices.sh
+  # shellcheck disable=SC1091  # chemin resolu a l'execution depuis $SCRIPT_DIR
   . "$SCRIPT_DIR/lib/generate-choices.sh"
 fi
 
@@ -210,6 +211,7 @@ done
 BOOTSTRAP=""
 case " $JOBS " in *" app-request "*) BOOTSTRAP="app-request";; esac
 echo "Jobs du palier onboarding équipe à poser : $JOBS${BOOTSTRAP:+ (amorçage : $BOOTSTRAP)}"
+# shellcheck disable=SC2015  # A && B || C est ICI un si-alors-sinon valide : ok/ko rendent toujours 0
 JENKINS_UI="$JENKINS_UI" JOBS="$JOBS" JOBS_SRC_DIR="$STAGE" BOOTSTRAP_JOBS="$BOOTSTRAP" \
   bash "$SCRIPT_DIR/setup-provision-jobs.sh" \
   && ok "jobs du palier alignés sur le dépôt ($JOBS)" \

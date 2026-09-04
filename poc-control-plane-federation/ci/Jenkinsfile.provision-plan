@@ -66,6 +66,10 @@ pipeline {
   // ── POINTS DE CONFIG CLIENT (motif `env.X ?: défaut`, comme les Jenkinsfile frères) ──
   // ⚠ Hôtes vus DEPUIS le conteneur de l'agent (réseau docker `poc`).
   environment {
+    // Préfixe du livrable DANS le dépôt (2026-09-03) : le seul endroit qui le
+    // nomme. « . » = le livrable EST la racine (une valeur VIDE ne traverse pas
+    // Jenkins : elle arrive absente et reprendrait ce défaut).
+    GIT_SUBDIR           = "${env.GIT_SUBDIR ?: 'poc-control-plane-federation'}"
     GIT_HOST             = "${env.GIT_HOST ?: 'http://gitea:3000'}"
     GIT_REPO             = "${env.GIT_REPO ?: 'ci/stoa-labs'}"
     // Lien humain-CLIQUABLE dans le commentaire de PR (split-horizon lab :
@@ -125,7 +129,7 @@ pipeline {
           // seulement NOMMÉE par le payload n'est jamais clonée ni commentée —
           // FORGE_NON_CONFIRMEE) et écrit ses FAITS (tête relue, verdict,
           // raison) dans PLAN_FACTS, succès comme échec.
-          dir('poc-control-plane-federation') {
+          dir(env.GIT_SUBDIR) {
             // rm -f AVANT : le workspace persiste d'un build à l'autre — sans purge,
             // un script mort avant ses faits laisserait ceux du build precedent.
             sh 'set +x; rm -f "$WORKSPACE/.plan.facts"; PLAN_FACTS="$WORKSPACE/.plan.facts" bash scripts/provision-plan.sh'
@@ -189,7 +193,7 @@ pipeline {
                 checkout scm
                 withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')]) {
                   withEnv(["BUILD_RESULT=${currentBuild.currentResult}"]) {
-                    dir('poc-control-plane-federation') {
+                    dir(env.GIT_SUBDIR) {
                       // Les faits (GITEA_HEAD_REF / PLAN_VERDICT / PLAN_REASON)
                       // sont dans l'environnement, charges par le post du stage.
                       sh 'set +x; bash scripts/provision-plan-status.sh || echo "AVERTISSEMENT: statut de build non poste"'

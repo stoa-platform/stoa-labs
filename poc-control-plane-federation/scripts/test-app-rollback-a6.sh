@@ -358,6 +358,18 @@ SHA_DK2=$(pr_merge 12 rec "$LINE_D" "CERT-D") || { echo "!! fixture : pr_merge" 
 run_rb "$TMP/b32.out" STOA_ENV_CHAIN_FILE="$CHAIN_REC_GATED" REQ_CHANGE_REF=CHG-0009; b_refus B.32 "N-1 avec deux change_ref" LIGNE_AMBIGUE "$TMP/b32.out"
 gw reset -q --hard "$MAIN0"; gw push -q -f origin main; CLOSED="$CL_SAVE"; gw branch -q -D provision/appa-rec 2>/dev/null || true
 
+# CHAMP_REQUIS : les trois champs obligatoires du formulaire de repli se nomment
+# (même défaut mesuré sur app-request #47 : un `${VAR:?}` de bash ne dit ni le
+# formulaire ni le champ). Aucun réseau, aucune branche.
+set_ctl "$(ctl_json)"; reset_origin
+run_rb "$TMP/bcr1.out" REQ_APP=
+{ refus CHAMP_REQUIS "$TMP/bcr1.out" && grep -q 'champ « APP »' "$TMP/bcr1.out"; } && ok "B.CR1 REQ_APP vide ⇒ CHAMP_REQUIS nommant le champ « APP »" || ko "B.CR1 rc $(rrc) : $(tail -1 "$TMP/bcr1.out")"
+run_rb "$TMP/bcr2.out" REQ_ENV=
+{ refus CHAMP_REQUIS "$TMP/bcr2.out" && grep -q 'champ « ENV »' "$TMP/bcr2.out"; } && ok "B.CR2 REQ_ENV vide ⇒ CHAMP_REQUIS nommant le champ « ENV »" || ko "B.CR2 rc $(rrc) : $(tail -1 "$TMP/bcr2.out")"
+run_rb "$TMP/bcr3.out" REQ_REASON=
+{ refus CHAMP_REQUIS "$TMP/bcr3.out" && grep -q 'champ « REASON »' "$TMP/bcr3.out"; } && ok "B.CR3 REQ_REASON vide ⇒ CHAMP_REQUIS nommant le champ « REASON »" || ko "B.CR3 rc $(rrc) : $(tail -1 "$TMP/bcr3.out")"
+! grep -qE 'app-rollback-request\.sh: line [0-9]+' "$TMP/bcr1.out" && ok "B.CR4 plus aucun message brut « <script>: line N: REQ_X: … »" || ko "B.CR4 message brut : $(grep -E 'line [0-9]+' "$TMP/bcr1.out" | head -1)"
+
 echo "══ C. mutations : la suite mord ══"
 mutate(){ # <nom> <python transformant stdin→stdout> → chemin du mutant
   local m="$REPO/scripts/.a6-mut-$1.sh"; python3 -c "$2" < "$SCRIPT" > "$m"; chmod 700 "$m"   # à côté du script : il fait cd "$(dirname "$0")/.." et source ses libs
@@ -389,7 +401,7 @@ M5=$(mutate M5 'import sys; s=sys.stdin.read(); assert "is-ancestor \"$BIRTH\"" 
 
 echo "══ B'. la garde symétrique : une demande ne réécrit pas une PR de repli ouverte ══"
 set_ctl "$(ctl_json)"; reset_origin; run_rb "$TMP/bp0.out"; RB=$(remote_branch)   # une PR de repli « ouverte » : sa branche existe sur le nu
-run_req(){ ( cd "$REPO" && env -i PATH="$SHIM:$PATH" HOME="$HOME" GITEA_TOKEN="$STUB_TOKEN" GIT_HOST="$GH" GIT_REPO=ci/stoa-labs GIT_CLONE_URL="file://$ORIGIN" GIT_PUSH_URL="file://$ORIGIN" \
+run_req(){ ( cd "$REPO" && env -i PATH="$SHIM:$PATH" HOME="$HOME" GITEA_TOKEN="$STUB_TOKEN" GIT_HOST="$GH" GIT_REPO=ci/stoa-labs GIT_CLONE_URL="file://$ORIGIN" GIT_SUBDIR="" GIT_PUSH_URL="file://$ORIGIN" \
    MANIFEST_DIR=clients/provisioned/applications STOA_ENV_CHAIN_FILE="$CHAIN" PROVISION_PLAN_INLINE=false REQ_APP=appa REQ_ENV=rec REQ_API=demo-selfservice REQ_CLIENT_ID=appa-rec REQ_CALLER=oig-provisioner REQ_IP_ALLOWLIST=10.42.0.44 bash scripts/provision-request.sh ) > "$1" 2>&1; echo $? > "$TMP/req.rc"; }
 set_ctl "$(ctl_json "$(open_pr ci ci/stoa-labs "$RB")")"; run_req "$TMP/bp1.out"
 [ "$(cat "$TMP/req.rc")" = 2 ] && grep -q 'REFUS: REPLI_EN_COURS' "$TMP/bp1.out" && [ "$(remote_branch)" = "$RB" ] && [ "$(posts)" = 0 ] && ok "B'.1 demande pendant un repli ouvert ⇒ REPLI_EN_COURS, branche intacte" || ko "B'.1 rc $(cat "$TMP/req.rc") branche=$(remote_branch) : $(grep -E 'REFUS|ERREUR' "$TMP/bp1.out" | head -1)"
@@ -459,6 +471,8 @@ run_rb "$TMP/e11e.out" FORGE_TOKEN=t-noscope
 echo "══ D. câblage : le formulaire, la coquille, le Makefile, les commentaires D8 ══"
 JF="$REPO/ci/Jenkinsfile.app-rollback"; XML="$REPO/ci/jenkins/app-rollback.job.xml"; MK="$REPO/Makefile"
 [ -f "$JF" ] && grep -q 'properties(\[parameters(\[' "$JF" && ok "D.1 Jenkinsfile.app-rollback pose son formulaire par properties()" || ko "D.1 Jenkinsfile absent ou sans properties()"
+L_G=$(grep -nF 'CHAMP_REQUIS' "$JF" | head -1 | cut -d: -f1); L_S=$(grep -nF 'bash scripts/app-rollback-request.sh' "$JF" | head -1 | cut -d: -f1)
+[ -n "$L_G" ] && [ -n "$L_S" ] && [ "$L_G" -lt "$L_S" ] && ok "D.1bis la garde CHAMP_REQUIS (ligne $L_G) précède l'appel du script (ligne $L_S) : le formulaire se refuse AVANT le workspace" || ko "D.1bis garde=$L_G sh=$L_S"
 NAMES=$(sed -n '/properties(\[parameters(\[/,/\])\])/p' "$JF" | grep -oE "name: '[A-Z_]+'" | sed "s/name: '//;s/'//" | tr '\n' ' ')
 [ "$NAMES" = "APP ENV REASON CHANGE_REF FORGE_TOKEN " ] && ok "D.2 exactement cinq champs : APP ENV REASON CHANGE_REF FORGE_TOKEN (A7)" || ko "D.2 champs : $NAMES"
 grep -q "password(name: 'FORGE_TOKEN'" "$JF" && ! grep -q 'FORGE_TOKEN=${params' "$JF" && grep -q 'TOKEN_ALTERE' "$JF" && grep -q 'TOKEN_GLOBAL_REFUSE' "$JF" && ok "D.2b FORGE_TOKEN est un password, hors de tout withEnv (fait 9), gardes TOKEN_ALTERE / TOKEN_GLOBAL_REFUSE" || ko "D.2b câblage FORGE_TOKEN"
@@ -471,12 +485,12 @@ grep -q 'UserIdCause' "$JF" && grep -q 'jenkins-form:' "$JF" && ok "D.8 identit�
 ! grep -qE '^\s*triggers \{|^\s*parameters \{' "$JF" && ok "D.9 ni triggers{} ni parameters{} déclaratifs" || ko "D.9 triggers/parameters déclaratifs présents"
 grep -q 'CpsScmFlowDefinition' "$XML" && grep -q '<scriptPath>poc-control-plane-federation/ci/Jenkinsfile.app-rollback</scriptPath>' "$XML" && grep -q '<properties/>' "$XML" && grep -q '<triggers/>' "$XML" && ! grep -q '<script>' "$XML" \
   && ok "D.10 coquille XML pure : SCM, scriptPath, aucune propriété, aucun trigger, aucun Groovy" || ko "D.10 coquille XML"
-grep -q 'scripts/app-rollback-request.sh scripts/test-app-rollback-a6.sh' "$MK" && grep -q '\[16/16\]' "$MK" && grep -q 'bash scripts/test-app-rollback-a6.sh' "$MK" && ! grep -q '/15\]' "$MK" \
-  && ok "D.11 Makefile : shellcheck des scripts A6, [16/16] (A7 branché), la suite câblée" || ko "D.11 Makefile"
+grep -q 'scripts/app-rollback-request.sh scripts/test-app-rollback-a6.sh' "$MK" && grep -q '\[17/17\]' "$MK" && grep -q 'bash scripts/test-app-rollback-a6.sh' "$MK" && ! grep -q '/15\]' "$MK" \
+  && ok "D.11 Makefile : shellcheck des scripts A6, [17/17] (A7 puis la porte des valeurs par défaut branchés), la suite câblée" || ko "D.11 Makefile"
 ! grep -q 'sauf repli (A6)' "$REPO/ci/Jenkinsfile.selfservice" && grep -q 'le repli (A6) est une PR' "$REPO/ci/Jenkinsfile.selfservice" && ok "D.12 Jenkinsfile.selfservice : le levier n'est plus « le repli »" || ko "D.12 commentaire selfservice"
 ! grep -q 'levier du repli (A6)' "$REPO/ENVIRONNEMENTS.md" && grep -q 'le repli est une PR' "$REPO/ENVIRONNEMENTS.md" && ok "D.13 ENVIRONNEMENTS.md : idem" || ko "D.13 ENVIRONNEMENTS.md"
 
-EXPECTED_CHECKS=92
+EXPECTED_CHECKS=97
 TOTAL=$((PASS+FAIL))
 if [ "$EXPECTED_CHECKS" -gt 0 ] && [ "$TOTAL" -ne "$EXPECTED_CHECKS" ]; then
   printf '❌ %d contrôles exécutés, %d attendus — une section a été sautée ou ajoutée sans mettre EXPECTED_CHECKS à jour\n' "$TOTAL" "$EXPECTED_CHECKS"; FAIL=$((FAIL+1))

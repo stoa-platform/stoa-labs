@@ -39,23 +39,31 @@ SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=scripts/lib/forge-identity.sh
 . "$SELF_DIR/lib/forge-identity.sh" || { echo "ERREUR: $SELF_DIR/lib/forge-identity.sh introuvable" >&2; exit 1; }
 
-REQ_APP="${REQ_APP:?REQ_APP requis}"
-REQ_ENV="${REQ_ENV:?REQ_ENV requis}"
-REQ_REASON="${REQ_REASON:?REQ_REASON requis}"
+# Même règle que provision-request.sh : un champ obligatoire vide se NOMME
+# (CHAMP_REQUIS + le champ du formulaire), jamais un `${VAR:?}` de bash.
+requis(){ case "${2//[[:space:]]/}" in "") echo "REFUS: CHAMP_REQUIS : $1 est vide — obligatoire ($3). Rien n'a été tenté." >&2; exit 2;; esac; }
+REQ_APP="${REQ_APP:-}"; requis REQ_APP "$REQ_APP" "formulaire app-rollback : champ « APP », l'application à replier"
+REQ_ENV="${REQ_ENV:-}"; requis REQ_ENV "$REQ_ENV" "formulaire app-rollback : champ « ENV », le palier à replier"
+REQ_REASON="${REQ_REASON:-}"; requis REQ_REASON "$REQ_REASON" "formulaire app-rollback : champ « REASON », le motif du repli"
 REQ_CHANGE_REF="${REQ_CHANGE_REF:-}"
 REQ_CALLER="${REQ_CALLER:-unknown}"
 GITEA_TOKEN="${GITEA_TOKEN:?GITEA_TOKEN requis}"; export GITEA_TOKEN
-GIT_HOST="${GIT_HOST:-http://gitea:3000}"
+GIT_HOST="${GIT_HOST:?GIT_HOST requis (base de la forge, ex. https://forge.client) — aucun repli}"
+GIT_WEB_HOST="${GIT_WEB_HOST:-$GIT_HOST}"   # l'adresse HUMAINE, si elle diffère de celle vue par le CI
 GIT_REPO="${GIT_REPO:-ci/stoa-labs}"
 GIT_BASE="${GIT_BASE:-main}"
-GIT_SUBDIR="${GIT_SUBDIR-poc-control-plane-federation}"
-GIT_CLONE_URL="${GIT_CLONE_URL:-http://${GIT_HOST#http://}/${GIT_REPO}.git}"
+# shellcheck source=scripts/lib/repo-layout.sh
+. "$(dirname "$0")/lib/repo-layout.sh" || { echo "ERREUR: lib/repo-layout.sh introuvable" >&2; exit 1; }
+repo_layout_init || exit 2
+# schéma conservé (cf. provision-request.sh) : « http:// » forcé cassait toute forge TLS
+case "$GIT_HOST" in http://*|https://*|file://*) GIT_BASE_URL="${GIT_HOST%/}";; *) GIT_BASE_URL="http://${GIT_HOST%/}";; esac
+GIT_CLONE_URL="${GIT_CLONE_URL:-${GIT_BASE_URL}/${GIT_REPO}.git}"
 GITEA_SERVICE_LOGINS="${GITEA_SERVICE_LOGINS:-ci}"
 PROVISION_PLAN_INLINE="${PROVISION_PLAN_INLINE:-true}"
 ROLLBACK_OUT="${ROLLBACK_OUT:-}"
 API="${GIT_HOST}/api/v1"
-MAN_PATH="${GIT_SUBDIR:+$GIT_SUBDIR/}clients/provisioned/applications/${REQ_APP}.ansible.yml"
-CERT_PATH="${GIT_SUBDIR:+$GIT_SUBDIR/}clients/provisioned/certs/${REQ_APP}-${REQ_ENV}.crt"
+MAN_PATH="${SUB_PFX}clients/provisioned/applications/${REQ_APP}.ansible.yml"
+CERT_PATH="${SUB_PFX}clients/provisioned/certs/${REQ_APP}-${REQ_ENV}.crt"
 BRANCH="provision/${REQ_APP}-${REQ_ENV}"
 [ -n "$ROLLBACK_OUT" ] && rm -f "$ROLLBACK_OUT"
 WORK="$(mktemp -d /tmp/approll.XXXXXX)"; trap 'rm -rf "$WORK"' EXIT
@@ -166,7 +174,7 @@ git clone -q --single-branch --branch "$GIT_BASE" "$GIT_CLONE_URL" "$R" 2>"$WORK
 [ "$(git -C "$R" rev-parse --is-shallow-repository)" = false ] \
   || refus LIGNEE_TRONQUEE "le clone de ${GIT_BASE} est shallow — un historique tronqué ne peut pas prouver l'absence d'un état précédent"
 g(){ git -C "$R" "$@"; }
-g config user.email "ci@bc.example"; g config user.name "provisioning (service ci)"
+g config user.email "${CI_COMMIT_EMAIL:-ci@bc.example}"; g config user.name "${CI_COMMIT_NAME:-provisioning (service ci)}"
 
 # ── 5. MANIFESTE sur main, palier déclaré, naissance courante ─────────────────
 etape manifeste
@@ -347,7 +355,7 @@ case "$OPEN_LINE" in
       fi
     fi
     if [ "$SAME" = 1 ]; then
-      [ "$O_URL" != "-" ] || O_URL="${GIT_HOST}/${GIT_REPO}/pulls/${O_NUM}"
+      [ "$O_URL" != "-" ] || O_URL="${GIT_WEB_HOST}/${GIT_REPO}/pulls/${O_NUM}"
       echo "EXIST : la PR #${O_NUM} (${O_LOGIN}) porte déjà exactement cette restauration — rien à pousser"
       echo "PR_URL=${O_URL}"; echo "REPLI_DE=${SHA_N} REPLI_VERS=${SHA_N1} REPLI_DIGEST=${D_EXPECT}"
       [ -n "$ROLLBACK_OUT" ] && printf 'PR_URL=%s\nPR_NUMBER=%s\nREPLI_DE=%s\nREPLI_VERS=%s\nREPLI_DIGEST=%s\nREPLI_DU_REPLI=%s\n' "$O_URL" "$O_NUM" "$SHA_N" "$SHA_N1" "$D_EXPECT" "0" > "$ROLLBACK_OUT"

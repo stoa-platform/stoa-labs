@@ -12,7 +12,7 @@
 #     4. commentaire PR : le statut RÉEL, succès comme échec (ADR-081 coroll. 2).
 #
 # Invocation attendue (miroir de team-request.sh, Task 5/ci/jenkins/team-apply.job.xml) :
-#   dir('poc-control-plane-federation') { sh 'bash scripts/team-apply.sh' } — donc
+#   dir(env.GIT_SUBDIR) { sh 'bash scripts/team-apply.sh' } — donc
 # $0 = "scripts/team-apply.sh" et le `cd "$(dirname "$0")/.."` ci-dessous NE
 # BOUGE PAS le cwd (déjà poc-control-plane-federation/, "scripts/.." s'annule).
 # Toutes les références de fichier plus bas (PROV, clients/_example, ansible/…)

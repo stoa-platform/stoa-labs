@@ -1,0 +1,351 @@
+# ci/lint-config-knobs.exempt — LA DETTE, datée et comptée.
+#
+# Chaque ligne est un défaut de site que ci/lint-config-knobs.sh refuserait, et
+# qui existait DÉJÀ quand cette porte a été posée, le 2026-09-04. Ce fichier
+# n'absout rien : il fige l'état pour que la porte serve dès aujourd'hui, en
+# bloquant toute NOUVELLE violation, pendant que celle-ci se résorbe.
+#
+# ON N'AJOUTE JAMAIS DE LIGNE ICI. On en retire, en posant la valeur comme
+# variable globale du contrôleur et en laissant le script refuser quand elle
+# manque. La porte signale d'elle-même les lignes devenues inutiles.
+#
+# Format : <fichier>:<NOM_DE_VARIABLE>
+#
+# 166 entrées à la pose. Voie applicative traitée (phases 1 à 3) ;
+# l'essentiel de ce qui reste est la voie API et les trois pipelines anciens.
+
+# ── ci/Jenkinsfile
+ci/Jenkinsfile:GOVERNANCE_GIT_URL    # T1 : http://gitea:3000/ci/governance.git
+ci/Jenkinsfile:VAULT_ROLE_ID    # T2 : fa09b310-79a7-8845-609b-9b6090bcd53b
+
+# ── ci/Jenkinsfile.api-promote-export
+ci/Jenkinsfile.api-promote-export:APIM_API_BASE    # T1 : http://webmethods-mock:8080/rest/apigateway
+ci/Jenkinsfile.api-promote-export:GIT_HOST    # T1 : http://gitea:3000
+ci/Jenkinsfile.api-promote-export:GIT_REPO    # T2 : ci/stoa-labs
+ci/Jenkinsfile.api-promote-export:VAULT_ADDR    # T1 : http://vault:8200
+ci/Jenkinsfile.api-promote-export:VAULT_USER_AUTH_MOUNT    # T2 : userpass
+
+# ── ci/Jenkinsfile.api-promote-request
+ci/Jenkinsfile.api-promote-request:GIT_HOST    # T1 : http://gitea:3000
+ci/Jenkinsfile.api-promote-request:GIT_REPO    # T2 : ci/stoa-labs
+
+# ── ci/Jenkinsfile.api-request
+ci/Jenkinsfile.api-request:GIT_HOST    # T1 : http://gitea:3000
+ci/Jenkinsfile.api-request:GIT_REPO    # T2 : ci/stoa-labs
+ci/Jenkinsfile.api-request:GIT_WEB_HOST    # T1 : http://localhost:13000
+
+# ── ci/Jenkinsfile.app-request
+ci/Jenkinsfile.app-request:GIT_HOST    # T1 : http://gitea:3000
+ci/Jenkinsfile.app-request:GIT_REPO    # T2 : ci/stoa-labs
+
+# ── ci/Jenkinsfile.app-rollback
+ci/Jenkinsfile.app-rollback:GIT_HOST    # T1 : http://gitea:3000
+ci/Jenkinsfile.app-rollback:GIT_REPO    # T2 : ci/stoa-labs
+
+# ── ci/Jenkinsfile.prod
+ci/Jenkinsfile.prod:GOVERNANCE_GIT_URL    # T1 : http://gitea:3000/ci/governance.git
+ci/Jenkinsfile.prod:VAULT_ROLE_ID    # T2 : fa09b310-79a7-8845-609b-9b6090bcd53b
+
+# ── ci/Jenkinsfile.provision-apply
+ci/Jenkinsfile.provision-apply:APPLY_JOB    # T2 : selfservice-app-deploy
+ci/Jenkinsfile.provision-apply:GITEA_SERVICE_LOGINS    # T2 : ci
+ci/Jenkinsfile.provision-apply:GIT_HOST    # T1 : http://gitea:3000
+ci/Jenkinsfile.provision-apply:GIT_REPO    # T2 : ci/stoa-labs
+ci/Jenkinsfile.provision-apply:GIT_WEB_HOST    # T1 : http://localhost:13000
+ci/Jenkinsfile.provision-apply:ITSM_URL    # T1 : http://itsm-mock:8788
+
+# ── ci/Jenkinsfile.provision-plan
+ci/Jenkinsfile.provision-plan:GIT_HOST    # T1 : http://gitea:3000
+ci/Jenkinsfile.provision-plan:GIT_REPO    # T2 : ci/stoa-labs
+ci/Jenkinsfile.provision-plan:GIT_WEB_HOST    # T1 : http://localhost:13000
+
+# ── ci/Jenkinsfile.provisioning-request
+ci/Jenkinsfile.provisioning-request:GIT_HOST    # T1 : http://gitea:3000
+ci/Jenkinsfile.provisioning-request:GIT_REPO    # T2 : ci/stoa-labs
+
+# ── ci/Jenkinsfile.publish-api
+ci/Jenkinsfile.publish-api:APIM_API_BASE    # T1 : http://webmethods-real:5555/rest/apigateway
+ci/Jenkinsfile.publish-api:APIM_DATA_BASE    # T1 : http://webmethods-real:5555/gateway
+ci/Jenkinsfile.publish-api:APIM_OAUTH_SUB    # T3 : deploy/banking-demo/admin-oauth
+ci/Jenkinsfile.publish-api:APIM_PROXY_BASE    # T1 : http://webmethods-real:5555/gateway/wm-admin-self/1.…
+ci/Jenkinsfile.publish-api:APIM_WM_CREDS_SUB    # T3 : deploy/banking-demo/wm-admin
+ci/Jenkinsfile.publish-api:VAULT_ADDR    # T1 : http://vault:8200
+ci/Jenkinsfile.publish-api:VAULT_USER_AUTH_MOUNT    # T2 : ldap
+
+# ── ci/Jenkinsfile.rollback
+ci/Jenkinsfile.rollback:GOVERNANCE_GIT_URL    # T1 : http://gitea:3000/ci/governance.git
+ci/Jenkinsfile.rollback:VAULT_ROLE_ID    # T2 : fa09b310-79a7-8845-609b-9b6090bcd53b
+
+# ── ci/Jenkinsfile.selfservice
+ci/Jenkinsfile.selfservice:APIM_API_BASE    # T1 : http://webmethods-real:5555/rest/apigateway
+ci/Jenkinsfile.selfservice:APIM_DATA_BASE    # T1 : http://webmethods-real:5555/gateway
+ci/Jenkinsfile.selfservice:APIM_OAUTH_SUB_TPL    # T2 : envs/__ENV__/admin-oauth
+ci/Jenkinsfile.selfservice:APIM_PROXY_API    # T2 : wm-admin-__ENV__
+ci/Jenkinsfile.selfservice:APIM_PROXY_HOST    # T1 : http://webmethods-real:5555
+ci/Jenkinsfile.selfservice:APIM_PROXY_PATH    # T3 : /rest/apigateway
+ci/Jenkinsfile.selfservice:APIM_WM_CREDS_SUB_TPL    # T2 : envs/__ENV__/wm-admin
+ci/Jenkinsfile.selfservice:VAULT_ADDR    # T1 : http://vault:8200
+ci/Jenkinsfile.selfservice:VAULT_USER_AUTH_MOUNT    # T2 : ldap
+
+# ── ci/Jenkinsfile.team-apply
+ci/Jenkinsfile.team-apply:APIM_API_BASE    # T1 : http://webmethods-mock:8080/rest/apigateway
+ci/Jenkinsfile.team-apply:GIT_HOST    # T1 : http://gitea:3000
+ci/Jenkinsfile.team-apply:GIT_REPO    # T2 : ci/stoa-labs
+ci/Jenkinsfile.team-apply:GIT_WEB_HOST    # T1 : http://localhost:13000
+ci/Jenkinsfile.team-apply:JENKINS_UI    # T1 : http://jenkins:8080
+ci/Jenkinsfile.team-apply:VAULT_ADDR    # T1 : http://vault:8200
+ci/Jenkinsfile.team-apply:VAULT_USER_AUTH_MOUNT    # T2 : userpass
+
+# ── ci/Jenkinsfile.team-promote
+ci/Jenkinsfile.team-promote:APIM_API_BASE_TPL    # T1 : http://webmethods-real:5555/gateway/wm-admin-__ENV__…
+ci/Jenkinsfile.team-promote:APIM_DIRECT_BASE_TPL    # T1 : http://webmethods-real:5555/rest/apigateway
+ci/Jenkinsfile.team-promote:GIT_HOST    # T1 : http://gitea:3000
+ci/Jenkinsfile.team-promote:GIT_REPO    # T2 : ci/stoa-labs
+ci/Jenkinsfile.team-promote:GIT_WEB_HOST    # T1 : http://localhost:13000
+ci/Jenkinsfile.team-promote:ITSM_URL    # T1 : http://itsm-mock:8788
+ci/Jenkinsfile.team-promote:LABCTL_BIN    # T3 : $WORKSPACE/labctl
+ci/Jenkinsfile.team-promote:VAULT_ADDR    # T1 : http://vault:8200
+ci/Jenkinsfile.team-promote:VAULT_USER_AUTH_MOUNT    # T2 : userpass
+
+# ── ci/Jenkinsfile.team-publish
+ci/Jenkinsfile.team-publish:APIM_API_BASE    # T1 : http://webmethods-mock:8080/rest/apigateway
+ci/Jenkinsfile.team-publish:GIT_HOST    # T1 : http://gitea:3000
+ci/Jenkinsfile.team-publish:GIT_REPO    # T2 : ci/stoa-labs
+ci/Jenkinsfile.team-publish:GIT_WEB_HOST    # T1 : http://localhost:13000
+ci/Jenkinsfile.team-publish:JENKINS_UI    # T1 : http://jenkins:8080
+ci/Jenkinsfile.team-publish:VAULT_ADDR    # T1 : http://vault:8200
+ci/Jenkinsfile.team-publish:VAULT_USER_AUTH_MOUNT    # T2 : userpass
+
+# ── ci/Jenkinsfile.team-request
+ci/Jenkinsfile.team-request:GIT_HOST    # T1 : http://gitea:3000
+ci/Jenkinsfile.team-request:GIT_REPO    # T2 : ci/stoa-labs
+ci/Jenkinsfile.team-request:GIT_WEB_HOST    # T1 : http://localhost:13000
+
+# ── scripts/api-promote-export.sh
+scripts/api-promote-export.sh:GIT_HOST    # T1 : http://gitea:3000
+scripts/api-promote-export.sh:GIT_REPO    # T2 : ci/stoa-labs
+
+# ── scripts/api-promote-request.sh
+scripts/api-promote-request.sh:GIT_HOST    # T1 : http://gitea:3000
+scripts/api-promote-request.sh:GIT_REPO    # T2 : ci/stoa-labs
+
+# ── scripts/api-request.sh
+scripts/api-request.sh:GIT_HOST    # T1 : http://gitea:3000
+scripts/api-request.sh:GIT_REPO    # T2 : ci/stoa-labs
+
+# ── scripts/app-rollback-request.sh
+scripts/app-rollback-request.sh:GITEA_SERVICE_LOGINS    # T2 : ci
+scripts/app-rollback-request.sh:GIT_REPO    # T2 : ci/stoa-labs
+
+# ── scripts/assign-api-team.sh
+scripts/assign-api-team.sh:GW_USER    # T2 : Administrator
+
+# ── scripts/demo-multienv.sh
+scripts/demo-multienv.sh:VAULT_ADDR    # T1 : http://localhost:8200
+
+# ── scripts/get-oracle-token.sh
+scripts/get-oracle-token.sh:DEX_BASE    # T1 : http://localhost:5556
+scripts/get-oracle-token.sh:DEX_USER    # T2 : alice@bc.example
+scripts/get-oracle-token.sh:KC_BASE    # T1 : http://localhost:8480
+scripts/get-oracle-token.sh:REDIRECT_URI    # T1 : http://localhost:8480
+
+# ── scripts/lib/gitea-pr-comment.sh
+scripts/lib/gitea-pr-comment.sh:GIT_HOST    # T1 : http://gitea:3000
+
+# ── scripts/pair-devportal.sh
+scripts/pair-devportal.sh:GW    # T1 : http://localhost:5555
+scripts/pair-devportal.sh:GW_SELF    # T1 : http://poc-webmethods-real:5555
+scripts/pair-devportal.sh:PORTAL_PUB    # T1 : http://localhost:18101
+scripts/pair-devportal.sh:PORTAL_TENANT    # T2 : default
+scripts/pair-devportal.sh:PORTAL_URL    # T1 : http://poc-devportal:8080
+
+# ── scripts/provision-apply-comment.sh
+scripts/provision-apply-comment.sh:GIT_HOST    # T1 : http://gitea:3000
+scripts/provision-apply-comment.sh:GIT_REPO    # T2 : ci/stoa-labs
+
+# ── scripts/provision-apply-gate.sh
+scripts/provision-apply-gate.sh:GITEA_SERVICE_LOGINS    # T2 : ci
+scripts/provision-apply-gate.sh:GIT_REPO    # T2 : ci/stoa-labs
+
+# ── scripts/provision-apply-reconcile.sh
+scripts/provision-apply-reconcile.sh:GIT_HOST    # T1 : http://gitea:3000
+scripts/provision-apply-reconcile.sh:GIT_REPO    # T2 : ci/stoa-labs
+
+# ── scripts/provision-plan-status.sh
+scripts/provision-plan-status.sh:GIT_HOST    # T1 : http://gitea:3000
+
+# ── scripts/provision-plan.sh
+scripts/provision-plan.sh:GIT_HOST    # T1 : http://gitea:3000
+scripts/provision-plan.sh:GIT_REPO    # T2 : ci/stoa-labs
+scripts/provision-plan.sh:INVENTORY    # T4 : ansible/inventory.lab.ini
+
+# ── scripts/provision-request.sh
+scripts/provision-request.sh:GITEA_SERVICE_LOGINS    # T2 : ci
+scripts/provision-request.sh:GIT_REPO    # T2 : ci/stoa-labs
+
+# ── scripts/seed-governance-chain.sh
+scripts/seed-governance-chain.sh:GIT_HOST    # T1 : http://localhost:13000
+scripts/seed-governance-chain.sh:GIT_REPO    # T2 : ci/governance
+
+# ── scripts/seed-ldap-cluster.sh
+scripts/seed-ldap-cluster.sh:SECRETS_DIR    # T3 : /root/stoa-lab-secrets
+
+# ── scripts/selfservice-palier-gate.sh
+scripts/selfservice-palier-gate.sh:APIM_OAUTH_SUB_TPL    # T2 : envs/__ENV__/admin-oauth
+scripts/selfservice-palier-gate.sh:APIM_PROXY_PATH    # T3 : /rest/apigateway
+scripts/selfservice-palier-gate.sh:APIM_WM_CREDS_SUB_TPL    # T2 : envs/__ENV__/wm-admin
+
+# ── scripts/setup-carto-job.sh
+scripts/setup-carto-job.sh:JENKINS    # T1 : http://localhost:18080
+
+# ── scripts/setup-ci-applier.sh
+scripts/setup-ci-applier.sh:ADMIN_USER    # T2 : admin
+scripts/setup-ci-applier.sh:KC_BASE    # T1 : http://localhost:8480
+
+# ── scripts/setup-ci-horsprod.sh
+scripts/setup-ci-horsprod.sh:ADMIN_USER    # T2 : admin
+scripts/setup-ci-horsprod.sh:KC_BASE    # T1 : http://localhost:8480
+
+# ── scripts/setup-onboarding-rbac.sh
+scripts/setup-onboarding-rbac.sh:ADMIN_USER    # T2 : admin
+scripts/setup-onboarding-rbac.sh:KC_BASE    # T1 : http://localhost:8480
+
+# ── scripts/setup-provision-jobs.sh
+scripts/setup-provision-jobs.sh:JENKINS_UI    # T1 : http://localhost:18080
+
+# ── scripts/setup-provision-request-job.sh
+scripts/setup-provision-request-job.sh:JENKINS_UI    # T1 : http://localhost:18080
+
+# ── scripts/setup-provisioning-api.sh
+scripts/setup-provisioning-api.sh:JENKINS_INCLUSTER    # T1 : http://jenkins:8080
+scripts/setup-provisioning-api.sh:JENKINS_UI    # T1 : http://localhost:18080
+scripts/setup-provisioning-api.sh:KC_ADMIN_USER    # T2 : admin
+scripts/setup-provisioning-api.sh:PROOF_MANIFEST    # T4 : clients/_example/applications/demo-consumer-idp.ansi…
+scripts/setup-provisioning-api.sh:TARGET_JOB    # T2 : selfservice-app-deploy
+scripts/setup-provisioning-api.sh:WM    # T1 : http://localhost:5555
+
+# ── scripts/setup-release-team.sh
+scripts/setup-release-team.sh:KC    # T1 : http://localhost:8480
+
+# ── scripts/setup-repo-protections.sh
+scripts/setup-repo-protections.sh:GIT_HOST    # T1 : http://localhost:13000
+
+# ── scripts/setup-selfservice-job.sh
+scripts/setup-selfservice-job.sh:GIT_URL    # T1 : http://gitea:3000/ci/stoa-labs.git
+scripts/setup-selfservice-job.sh:JENKINS    # T1 : http://localhost:18080
+scripts/setup-selfservice-job.sh:MANIFEST_DEFAULT    # T4 : clients/_example/applications/demo-consumer.ansible.…
+scripts/setup-selfservice-job.sh:SCRIPT_PATH    # T3 : poc-control-plane-federation/ci/Jenkinsfile.selfserv…
+
+# ── scripts/setup-team-onboard-jobs.sh
+scripts/setup-team-onboard-jobs.sh:JENKINS_UI    # T1 : http://localhost:18080
+
+# ── scripts/setup-terminus-apps.sh
+scripts/setup-terminus-apps.sh:VAULT_ADDR    # T1 : http://localhost:8200
+
+# ── scripts/setup-user-deploy-job.sh
+scripts/setup-user-deploy-job.sh:JENKINS    # T1 : http://localhost:18080
+
+# ── scripts/setup-user-vault-jwt.sh
+scripts/setup-user-vault-jwt.sh:KC_ADMIN_USER    # T2 : admin
+scripts/setup-user-vault-jwt.sh:KC_BASE    # T1 : http://localhost:8480
+scripts/setup-user-vault-jwt.sh:KC_JWKS_INTERNAL    # T1 : http://keycloak:8080/realms/${REALM
+
+# ── scripts/setup-vault-approle.sh
+scripts/setup-vault-approle.sh:VAULT_ADDR    # T1 : http://localhost:8200
+
+# ── scripts/setup-vault-envs.sh
+scripts/setup-vault-envs.sh:ADMIN_OAUTH_TOKEN_URL    # T1 : http://keycloak:8080/realms/stoa-lab/protocol/openid…
+scripts/setup-vault-envs.sh:VAULT_ADDR    # T1 : http://localhost:8200
+
+# ── scripts/setup-vault-ldap.sh
+scripts/setup-vault-ldap.sh:LDAP_URL    # T3 : ldap://openldap:389
+
+# ── scripts/setup-vault-paliers.sh
+scripts/setup-vault-paliers.sh:VAULT_ADDR    # T1 : http://localhost:8200
+
+# ── scripts/setup-vault-userpass.sh
+scripts/setup-vault-userpass.sh:TENANTS    # T2 : banking-demo payments-team
+
+# ── scripts/setup-vault.sh
+scripts/setup-vault.sh:KC_ADMIN_USER    # T2 : admin
+scripts/setup-vault.sh:VAULT_ADDR    # T1 : http://localhost:8200
+scripts/setup-vault.sh:WM_USER    # T2 : Administrator
+scripts/setup-vault.sh:WSO2_USER    # T2 : admin
+
+# ── scripts/setup-wm-admin-proxy.sh
+scripts/setup-wm-admin-proxy.sh:KC_BASE    # T1 : http://localhost:8480
+scripts/setup-wm-admin-proxy.sh:VAULT_ADDR    # T1 : http://localhost:8200
+
+# ── scripts/setup-wm-admin-self-proxy.sh
+scripts/setup-wm-admin-self-proxy.sh:KC_ADMIN_USER    # T2 : admin
+scripts/setup-wm-admin-self-proxy.sh:KC_BASE    # T1 : http://localhost:8480
+scripts/setup-wm-admin-self-proxy.sh:TENANT    # T2 : banking-demo
+scripts/setup-wm-admin-self-proxy.sh:VAULT_ADDR    # T1 : http://localhost:8200
+
+# ── scripts/setup-wm-palier-admins.sh
+scripts/setup-wm-palier-admins.sh:VAULT_ADDR    # T1 : http://localhost:8200
+
+# ── scripts/spike-claim-runtime.sh
+scripts/spike-claim-runtime.sh:KC_ADMIN_USER    # T2 : admin
+
+# ── scripts/team-apply.sh
+scripts/team-apply.sh:GIT_HOST    # T1 : http://gitea:3000
+scripts/team-apply.sh:GIT_REPO    # T2 : ci/stoa-labs
+scripts/team-apply.sh:JENKINS_UI    # T1 : http://jenkins:8080
+
+# ── scripts/team-promote.sh
+scripts/team-promote.sh:GIT_HOST    # T1 : http://gitea:3000
+scripts/team-promote.sh:GIT_REPO    # T2 : ci/stoa-labs
+
+# ── scripts/team-publish.sh
+scripts/team-publish.sh:GIT_HOST    # T1 : http://gitea:3000
+scripts/team-publish.sh:GIT_REPO    # T2 : ci/stoa-labs
+scripts/team-publish.sh:JENKINS_UI    # T1 : http://jenkins:8080
+
+# ── scripts/team-request.sh
+scripts/team-request.sh:GIT_HOST    # T1 : http://gitea:3000
+scripts/team-request.sh:GIT_REPO    # T2 : ci/stoa-labs
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AJOUT DU 2026-09-04, et il demande une explication puisque la règle dit que
+# cette dette ne doit que DÉCROÎTRE.
+#
+# Ces 24 valeurs ne sont pas nouvelles. Elles vivaient dans les trois pipelines
+# les plus anciens sous une forme PIRE : des littéraux Groovy qu'aucune variable
+# globale ne pouvait surcharger. Un client posant sa valeur sur le contrôleur
+# n'aurait vu AUCUN effet sur ces trois-là, sans le moindre signe.
+# Les avoir rendues surchargeables les fait enfin entrer dans le champ de la
+# porte : la dette ne grandit pas, elle devient MESURÉE.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── ci/Jenkinsfile
+ci/Jenkinsfile:APPLY_TENANT    # T2 : banking-demo
+ci/Jenkinsfile:KEYCLOAK_JWKS_URL    # T1 : http://keycloak:8080/realms/stoa-lab/protocol/openid…
+ci/Jenkinsfile:KEYCLOAK_URL    # T1 : http://localhost:8480
+ci/Jenkinsfile:OPENSEARCH_URL    # T1 : https://opensearch:9200
+ci/Jenkinsfile:OPENSEARCH_USER    # T2 : admin
+ci/Jenkinsfile:OTEL_EXPORTER_OTLP_ENDPOINT    # T1 : http://otel-lgtm:4318
+ci/Jenkinsfile:VAULT_ADDR    # T1 : http://vault:8200
+
+# ── ci/Jenkinsfile.prod
+ci/Jenkinsfile.prod:APPLY_TENANT    # T2 : banking-demo
+ci/Jenkinsfile.prod:ITSM_URL    # T1 : http://itsm-mock:8788
+ci/Jenkinsfile.prod:KEYCLOAK_JWKS_URL    # T1 : http://keycloak:8080/realms/stoa-lab/protocol/openid…
+ci/Jenkinsfile.prod:KEYCLOAK_URL    # T1 : http://localhost:8480
+ci/Jenkinsfile.prod:OPENSEARCH_URL    # T1 : https://opensearch:9200
+ci/Jenkinsfile.prod:OPENSEARCH_USER    # T2 : admin
+ci/Jenkinsfile.prod:OTEL_EXPORTER_OTLP_ENDPOINT    # T1 : http://otel-lgtm:4318
+ci/Jenkinsfile.prod:VAULT_ADDR    # T1 : http://vault:8200
+
+# ── ci/Jenkinsfile.rollback
+ci/Jenkinsfile.rollback:APPLY_TENANT    # T2 : banking-demo
+ci/Jenkinsfile.rollback:GOVERNANCE_API_URL    # T1 : http://host.docker.internal:8787
+ci/Jenkinsfile.rollback:ITSM_URL    # T1 : http://itsm-mock:8788
+ci/Jenkinsfile.rollback:KEYCLOAK_JWKS_URL    # T1 : http://keycloak:8080/realms/stoa-lab/protocol/openid…
+ci/Jenkinsfile.rollback:KEYCLOAK_URL    # T1 : http://localhost:8480
+ci/Jenkinsfile.rollback:OPENSEARCH_URL    # T1 : https://opensearch:9200
+ci/Jenkinsfile.rollback:OPENSEARCH_USER    # T2 : admin
+ci/Jenkinsfile.rollback:OTEL_EXPORTER_OTLP_ENDPOINT    # T1 : http://otel-lgtm:4318
+ci/Jenkinsfile.rollback:VAULT_ADDR    # T1 : http://vault:8200
+

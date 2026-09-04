@@ -41,13 +41,13 @@
 //      retombe sur le défaut ; buildWithParameters remplit les champs omis
 //      ('' , jamais null). D'où FORM_BOOTSTRAP capturé AVANT properties() :
 //      c'est le SEUL build vert sans demande, et il se nomme. Une saisie
-//      humaine à APP vide reste refusée par le script (REQ_APP requis), rouge.
+//      humaine à APP vide reste refusée AVANT le clone (CHAMP_REQUIS), rouge.
 //   5. Les valeurs posées ainsi subissent toujours EnvVars.resolve() : la
 //      ré-injection brute withEnv([params…]) ci-dessous reste OBLIGATOIRE.
 // LIMITE ÉCRITE D'AVANCE : le formulaire montre les listes du build PRÉCÉDENT.
 // C'est acceptable parce que les listes sont de l'ERGONOMIE, pas de l'autorité :
 // un choix périmé meurt fermé dans le script (ENV_INVALIDE, TEAM_NOT_DECLARED,
-// REQ_API requis / API_FORMAT_INVALIDE).
+// CHAMP_REQUIS / API_FORMAT_INVALIDE).
 //
 // Un Pipeline from SCM tourne dans le SANDBOX Groovy (mesuré A2 : Secret.fromString
 // refusé, #78) ; tout ce qui est appelé ici est dans la liste blanche
@@ -65,6 +65,10 @@ pipeline {
   // ceux que provision-request.sh applique déjà de lui-même.
   // ⚠ Hôtes vus DEPUIS le conteneur de l'agent (réseau docker `poc`).
   environment {
+    // Préfixe du livrable DANS le dépôt (2026-09-03) : le seul endroit qui le
+    // nomme. « . » = le livrable EST la racine (une valeur VIDE ne traverse pas
+    // Jenkins : elle arrive absente et reprendrait ce défaut).
+    GIT_SUBDIR           = "${env.GIT_SUBDIR ?: 'poc-control-plane-federation'}"
     GIT_HOST             = "${env.GIT_HOST ?: 'http://gitea:3000'}"
     GIT_REPO             = "${env.GIT_REPO ?: 'ci/stoa-labs'}"
     // Credential Jenkins (secret text) portant le token Gitea du CI : push + PR,
@@ -86,10 +90,15 @@ pipeline {
           env.FORM_BOOTSTRAP = (params.size() == 0) ? 'true' : 'false'
         }
         withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')]) {
-          dir('poc-control-plane-federation') {
+          dir(env.GIT_SUBDIR) {
             // Quotes SIMPLES ; `set +x` : le token ne s'écho pas. Le script
             // RETIRE tout fichier périmé avant de travailler.
-            sh 'set +x; STOA_ENV_CHAIN_FILE="$WORKSPACE/poc-control-plane-federation/clients/_example/environments.yaml" CHOICES_OUT="$WORKSPACE/.a0-choices.env" bash scripts/app-request-choices.sh'
+            // GC_PLATFORM_DIR : le dépôt plateforme est DÉJÀ là (définition SCM
+            // du job, lightweight=false) — la lib le lit au lieu de le re-cloner
+            // par le réseau. Un geste réseau, un jeton, une branche et une
+            // traversée de proxy en moins sur le PREMIER stage de la chaîne ;
+            // les dépôts d'ÉQUIPE, eux, restent découverts et clonés à l'exécution.
+            sh 'set +x; GC_PLATFORM_DIR="$WORKSPACE" STOA_ENV_CHAIN_FILE="$WORKSPACE/poc-control-plane-federation/clients/_example/environments.yaml" CHOICES_OUT="$WORKSPACE/.a0-choices.env" bash scripts/app-request-choices.sh'
           }
         }
         script {
@@ -161,6 +170,22 @@ pipeline {
       when { expression { env.FORM_BOOTSTRAP != 'true' } }
       steps {
         script {
+          // ── Champs OBLIGATOIRES : le refus nomme LE CHAMP, ici, tout de suite ──
+          // Mesuré en lab le 2026-09-03 (#47) : une demande à APP vide traversait
+          // le pipeline, le workspace et le clone pour mourir au fond du script sur
+          // « provision-request.sh: line 105: REQ_APP: REQ_APP requis » — un numéro
+          // de ligne de shell et un nom de VARIABLE, quand le demandeur, lui, a
+          // laissé vide un champ qui s'appelle « APP ». Le script porte la MÊME
+          // garde (CHAMP_REQUIS) pour la voie machine : deux portes, une règle.
+          // `.trim()` : Jenkins rend '' pour un champ omis (jamais null) et un
+          // champ d'espaces n'est pas une saisie.
+          if ((params.APP ?: '').trim() == '') {
+            error("REFUS: CHAMP_REQUIS : le champ « APP » (Nom de l'application demandée) est vide — il est OBLIGATOIRE. Relancer la demande en le renseignant ([A-Za-z0-9._-]). Rien n'a été tenté.")
+          }
+          if ((params.MODE ?: '') == 'idp' && (params.CLIENT_ID ?: '').trim() == '') {
+            error("REFUS: CHAMP_REQUIS : le champ « CLIENT_ID » est vide alors que MODE=idp — il est OBLIGATOIRE dans ce mode (c'est la claim azp qui identifie l'application côté gateway). Passer MODE=internal pour que la gateway génère le client, ou renseigner CLIENT_ID. Rien n'a été tenté.")
+          }
+
           // Traçabilité : l'identité Jenkins du demandeur remplace
           // oig-/cli2-provisioner dans REQ_CALLER.
           //
@@ -186,7 +211,7 @@ pipeline {
           // (fix round 1 de la revue Task 4) : les choix générés portent
           // TOUJOURS '@', un '@' absent sur une valeur non vide est un typo ou
           // un contrat obsolète — échec loud AVANT le sh. Le cas VIDE tombe sur
-          // le refus loud de provision-request.sh (REQ_API requis) : REQ_API
+          // le refus loud de provision-request.sh (CHAMP_REQUIS) : REQ_API
           // vide — et non absent — est posé ci-dessous, `${REQ_API:?}` le refuse.
           def apiChoice = params.API ?: ''
           if (apiChoice != '' && !apiChoice.contains('@')) {
@@ -253,7 +278,7 @@ pipeline {
             // Triple quotes SIMPLES : Groovy n'interpole RIEN dans cette chaîne
             // (un `${…}` y serait du shell, pas du Groovy). `set +x` : le
             // GITEA_TOKEN injecté par withCredentials ne doit pas être écho.
-            dir('poc-control-plane-federation') {
+            dir(env.GIT_SUBDIR) {
               sh '''
                 set +x
                 STOA_ENV_CHAIN_FILE="$WORKSPACE/poc-control-plane-federation/clients/_example/environments.yaml" bash scripts/provision-request.sh

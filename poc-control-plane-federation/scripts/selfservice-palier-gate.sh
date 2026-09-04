@@ -59,15 +59,19 @@ VAULT_ADDR="${VAULT_ADDR:-}"; [ -n "$VAULT_ADDR" ] || refus CABLAGE_INCOMPLET "V
 VAULT_TOKEN_FILE="${VAULT_TOKEN_FILE:-}"; [ -n "$VAULT_TOKEN_FILE" ] || refus CABLAGE_INCOMPLET "VAULT_TOKEN_FILE absent (login nominatif non fait ?)"
 MANIFEST="${MANIFEST:-}"; [ -n "$MANIFEST" ] || refus CABLAGE_INCOMPLET "MANIFEST absent"
 ENVIRONMENT="${ENVIRONMENT:-}"
-ADMIN_VIA="${ADMIN_VIA:-direct}"
+# 2026-09-03 : plus de repli. Le pipeline pose 'proxy-oauth2', cette garde posait
+# 'direct' — une valeur vide (withEnv(["ADMIN_VIA="]) RETIRE la variable) faisait
+# donc basculer la voie d'admin du proxy OAuth2 vers le Basic direct, sans un mot.
+# Vide, le `case` plus bas rend VIA_INCONNU, relayé en tag jusqu'à la PR.
+ADMIN_VIA="${ADMIN_VIA:-}"
 APIM_KV_MOUNT="${APIM_KV_MOUNT:-secret}"
 APIM_KV_PREFIX="${APIM_KV_PREFIX:-}"
 APIM_WM_CREDS_SUB_TPL="${APIM_WM_CREDS_SUB_TPL:-envs/__ENV__/wm-admin}"
 APIM_OAUTH_SUB_TPL="${APIM_OAUTH_SUB_TPL:-envs/__ENV__/admin-oauth}"
-APIM_API_BASE="${APIM_API_BASE:-http://webmethods-real:5555/rest/apigateway}"
+APIM_API_BASE="${APIM_API_BASE:-}"        # aucun repli de lab : APIM_BASE_INVALIDE tranche
 APIM_TERMINUS_BASE="${APIM_TERMINUS_BASE:-}"
-APIM_PROXY_HOST="${APIM_PROXY_HOST:-http://webmethods-real:5555}"
-APIM_PROXY_API="${APIM_PROXY_API:-wm-admin-__ENV__}"
+APIM_PROXY_HOST="${APIM_PROXY_HOST:-}"    # idem
+APIM_PROXY_API="${APIM_PROXY_API:-}"      # idem, plus le contrôle de non-vacuité ci-dessous
 APIM_PROXY_VER="${APIM_PROXY_VER:-1.0}"
 APIM_PROXY_PATH="${APIM_PROXY_PATH:-/rest/apigateway}"
 APIM_PROXY_BASE="${APIM_PROXY_BASE:-}"
@@ -105,6 +109,13 @@ else
   EFFECTIVE_VIA=proxy-oauth2
   if [ -n "$APIM_PROXY_BASE" ]; then BASE="$(sub_env "$APIM_PROXY_BASE")"
   else BASE="$(sub_env "${APIM_PROXY_HOST}/gateway/${APIM_PROXY_API}/${APIM_PROXY_VER}${APIM_PROXY_PATH}")"; fi
+fi
+# Un composant VIDE produit une URL syntaxiquement valide (« …/gateway//1.0/… ») que
+# le contrôle de forme ci-dessous laisse passer : on le refuse AVANT, nommément.
+if [ "$EFFECTIVE_VIA" = proxy-oauth2 ] && [ -z "$APIM_PROXY_BASE" ]; then
+  for _c in APIM_PROXY_HOST:"$APIM_PROXY_HOST" APIM_PROXY_API:"$APIM_PROXY_API" APIM_PROXY_VER:"$APIM_PROXY_VER" APIM_PROXY_PATH:"$APIM_PROXY_PATH"; do
+    [ -n "${_c#*:}" ] || refus APIM_BASE_INVALIDE "${_c%%:*} est vide — le gabarit d'URL admin ne peut pas etre compose (poser la variable, ou fournir APIM_PROXY_BASE)"
+  done
 fi
 case "$BASE" in http://*|https://*) ;; *) refus APIM_BASE_INVALIDE "'${BASE}' — le gabarit d'URL admin doit produire une URL http(s)";; esac
 if [ "$EFFECTIVE_VIA" = direct ]; then AUTH_MODE=basic; else AUTH_MODE=oauth2; fi

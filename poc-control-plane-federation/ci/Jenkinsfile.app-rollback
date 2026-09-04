@@ -25,6 +25,10 @@ pipeline {
 
   // ── POINTS DE CONFIG CLIENT (motif `env.X ?: défaut`) ───────────────────
   environment {
+    // Préfixe du livrable DANS le dépôt (2026-09-03) : le seul endroit qui le
+    // nomme. « . » = le livrable EST la racine (une valeur VIDE ne traverse pas
+    // Jenkins : elle arrive absente et reprendrait ce défaut).
+    GIT_SUBDIR           = "${env.GIT_SUBDIR ?: 'poc-control-plane-federation'}"
     GIT_HOST             = "${env.GIT_HOST ?: 'http://gitea:3000'}"
     GIT_REPO             = "${env.GIT_REPO ?: 'ci/stoa-labs'}"
     GITEA_CREDENTIALS_ID = "${env.GITEA_CREDENTIALS_ID ?: 'gitea-provision-token'}"
@@ -39,7 +43,7 @@ pipeline {
           // FAIT 4 (A0) : le signal d'amorçage se lit AVANT properties().
           env.FORM_BOOTSTRAP = (params.size() == 0) ? 'true' : 'false'
         }
-        dir('poc-control-plane-federation') {
+        dir(env.GIT_SUBDIR) {
           // Une seule liste (les paliers) : la lib suffit, aucun script de choix.
           // Fail-closed : chaîne illisible ⇒ fichier retiré ⇒ FORMULAIRE_VIDE.
           sh 'set +x; STOA_ENV_CHAIN_FILE="$WORKSPACE/poc-control-plane-federation/clients/_example/environments.yaml" bash -c ". scripts/lib/env-chain.sh && env_chain_validate && env_chain" > "$WORKSPACE/.a6-envs" || { rm -f "$WORKSPACE/.a6-envs"; exit 1; }'
@@ -76,6 +80,15 @@ pipeline {
       when { expression { env.FORM_BOOTSTRAP != 'true' } }
       steps {
         script {
+          // Champs OBLIGATOIRES : le refus nomme LE CHAMP, avant le workspace et
+          // le clone (même règle et même tag que app-request et que le script).
+          if ((params.APP ?: '').trim() == '') {
+            error("REFUS: CHAMP_REQUIS : le champ « APP » (application à replier) est vide — il est OBLIGATOIRE. Rien n'a été tenté.")
+          }
+          if ((params.REASON ?: '').trim() == '') {
+            error("REFUS: CHAMP_REQUIS : le champ « REASON » (motif du repli, tracé dans la PR) est vide — il est OBLIGATOIRE. Rien n'a été tenté.")
+          }
+
           // Identité du demandeur : informative (trailer Repli-Par, displayName) —
           // rien de sécuritaire n'en dérive. PIÈGE A0 : userId nul ⇒ chaîne 'null'.
           def cause = currentBuild.getBuildCauses('hudson.model.Cause$UserIdCause')
@@ -99,7 +112,7 @@ pipeline {
           // ré-injection brute par withEnv, lues par le SHELL, jamais interpolées
           // dans la chaîne sh (quotes simples ; `set +x` : le token ne s'écho pas).
           withEnv(["REQ_APP=${params.APP}", "REQ_ENV=${params.ENV}", "REQ_REASON=${params.REASON}", "REQ_CHANGE_REF=${params.CHANGE_REF}"]) {
-            dir('poc-control-plane-federation') {
+            dir(env.GIT_SUBDIR) {
               sh 'set +x; STOA_ENV_CHAIN_FILE="$WORKSPACE/poc-control-plane-federation/clients/_example/environments.yaml" ROLLBACK_OUT="$WORKSPACE/.a6-rollback.env" bash scripts/app-rollback-request.sh'
             }
           }

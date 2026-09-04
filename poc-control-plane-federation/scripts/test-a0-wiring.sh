@@ -39,7 +39,7 @@ ko(){ FAIL=$((FAIL+1)); printf '  ❌ %s\n' "$*"; }
 
 # Total ATTENDU, ÉCRIT EN DUR — indépendant de PASS+FAIL. Toute section
 # ajoutée/retirée DOIT le mettre à jour : un oubli fait rougir le dernier §.
-EXPECTED_CHECKS=182
+EXPECTED_CHECKS=185
 
 # shellcheck source=scripts/lib/gwt-mirror.sh
 . scripts/lib/gwt-mirror.sh || { echo "lib gwt-mirror.sh introuvable"; exit 2; }
@@ -122,7 +122,7 @@ L_WHEN=$(code_line "$TMP/jf-plan.code" 'beforeAgent true'); L_AG=$(awk "NR>${L_W
 L_SH=$(code_line "$TMP/jf-plan.code" "sh 'set +x; rm -f \"\$WORKSPACE/.plan.facts\"; PLAN_FACTS=\"\$WORKSPACE/.plan.facts\" bash scripts/provision-plan.sh'")
 [ -n "$L_SH" ] && ok "scripts/provision-plan.sh invoqué en quotes SIMPLES avec set +x, purge puis PLAN_FACTS (ligne $L_SH)" || ko "invocation du script absente ou en quotes doubles"
 L_WC=$(code_line "$TMP/jf-plan.code" "withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')])")
-L_DIR=$(code_line "$TMP/jf-plan.code" "dir('poc-control-plane-federation')")
+L_DIR=$(code_line "$TMP/jf-plan.code" "dir(env.GIT_SUBDIR)")
 [ -n "$L_WC" ] && [ -n "$L_DIR" ] && [ -n "$L_SH" ] && [ "$L_WC" -lt "$L_DIR" ] && [ "$L_DIR" -lt "$L_SH" ] \
   && ok "ordre withCredentials ($L_WC) < dir ($L_DIR) < sh ($L_SH) : token présent, chemins relatifs justes" || ko "ordre withCredentials/dir/sh cassé (wc=$L_WC dir=$L_DIR sh=$L_SH)"
 MISS=""
@@ -161,7 +161,7 @@ done
 L_SH=$(code_line "$TMP/jf-req.code" "sh 'set +x; bash scripts/provision-request.sh'")
 [ -n "$L_SH" ] && ok "scripts/provision-request.sh invoqué en quotes SIMPLES avec set +x (ligne $L_SH)" || ko "invocation du script absente ou en quotes doubles"
 L_WC=$(code_line "$TMP/jf-req.code" "withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')])")
-L_DIR=$(code_line "$TMP/jf-req.code" "dir('poc-control-plane-federation')")
+L_DIR=$(code_line "$TMP/jf-req.code" "dir(env.GIT_SUBDIR)")
 [ -n "$L_WC" ] && [ -n "$L_DIR" ] && [ -n "$L_SH" ] && [ "$L_WC" -lt "$L_DIR" ] && [ "$L_DIR" -lt "$L_SH" ] \
   && ok "ordre withCredentials ($L_WC) < dir ($L_DIR) < sh ($L_SH)" || ko "ordre withCredentials/dir/sh cassé (wc=$L_WC dir=$L_DIR sh=$L_SH)"
 if jfr 'withEnv(' || jfr 'params.'; then
@@ -248,6 +248,13 @@ L_PROPS=$(code_line "$TMP/jf-app.code" "properties([parameters([")
   && ok "FORM_BOOTSTRAP capturé (ligne $L_BOOT) AVANT properties() (ligne $L_PROPS) — fait 4 : après, params retombe sur les défauts" \
   || ko "signal d'amorçage absent ou capturé après properties() (boot=$L_BOOT props=$L_PROPS)"
 [ -n "$L_PROPS" ] && ok "properties([parameters([ … ])]) en vue CODE : le formulaire est posé par le pipeline" || ko "properties([parameters([ absent"
+# Le champ obligatoire se refuse DANS le pipeline, avant le workspace et le clone
+# (mesuré app-request #47 : APP vide ⇒ message brut de bash au fond du script).
+jfa 'GC_PLATFORM_DIR="$WORKSPACE"' && ok "le stage Formulaire passe GC_PLATFORM_DIR=\$WORKSPACE : le dépôt plateforme du workspace est lu, pas re-cloné" || ko "GC_PLATFORM_DIR non passé au script de listes (le premier stage re-clone par le réseau)"
+L_REQ=$(code_line "$TMP/jf-app.code" "CHAMP_REQUIS"); L_SH=$(code_line "$TMP/jf-app.code" "bash scripts/provision-request.sh")
+[ -n "$L_REQ" ] && [ -n "$L_SH" ] && [ "$L_REQ" -lt "$L_SH" ] \
+  && ok "garde CHAMP_REQUIS (ligne $L_REQ) AVANT l'appel de provision-request.sh (ligne $L_SH) : un champ obligatoire vide se nomme sans cloner" \
+  || ko "garde du champ obligatoire absente ou après le sh (garde=$L_REQ sh=$L_SH)"
 MISS=""
 for P in "string(name: 'APP'" "choice(name: 'REQ_ENV', choices: envs" "choice(name: 'TEAM', choices: [''] + teams" "choice(name: 'API', choices: apis" \
          "string(name: 'CLIENT_ID'" "choice(name: 'MODE', choices: ['idp', 'internal']" "text(name: 'IP_ALLOWLIST'" "text(name: 'CERT_PEM'" \
@@ -267,7 +274,7 @@ L_ALT=$(code_line "$TMP/jf-app.code" 'TOKEN_ALTERE'); L_GLB=$(code_line "$TMP/jf
 grep -qE "error\('REFUS: TOKEN_(ALTERE|GLOBAL_REFUSE)[^']*\\\$\{(params|env)" "$TMP/jf-app.code" && ko "A7 : un message d'erreur interpole la valeur du token" || ok "A7 : aucun message d'erreur n'interpole le token"
 [ "$(grep -c 'STOA_ENV_CHAIN_FILE="\$WORKSPACE/poc-control-plane-federation/clients/_example/environments.yaml"' "$TMP/jf-app.code")" = 2 ] && ok "A7 : la chaîne est ÉPINGLÉE sur les deux sh (listes et demande) — une globale ne redirige plus la porte à la demande" || ko "A7 : épinglages STOA_ENV_CHAIN_FILE : $(grep -c 'STOA_ENV_CHAIN_FILE=' "$TMP/jf-app.code")"
 grep -v '^\s*//' ci/Jenkinsfile.provisioning-request | grep -qE "^\s*FORGE_TOKEN\s*=\s*''" && ok "A7 : la voie machine VIDE FORGE_TOKEN dans son bloc environment (une globale du nœud ne lui prête aucune identité de forge)" || ko "A7 : Jenkinsfile.provisioning-request ne vide pas FORGE_TOKEN"
-L_SH=$(code_line "$TMP/jf-app.code" "sh 'set +x; STOA_ENV_CHAIN_FILE=\"\$WORKSPACE/poc-control-plane-federation/clients/_example/environments.yaml\" CHOICES_OUT=\"\$WORKSPACE/.a0-choices.env\" bash scripts/app-request-choices.sh'")
+L_SH=$(code_line "$TMP/jf-app.code" "sh 'set +x; GC_PLATFORM_DIR=\"\$WORKSPACE\" STOA_ENV_CHAIN_FILE=\"\$WORKSPACE/poc-control-plane-federation/clients/_example/environments.yaml\" CHOICES_OUT=\"\$WORKSPACE/.a0-choices.env\" bash scripts/app-request-choices.sh'")
 L_WC=$(code_line "$TMP/jf-app.code" "withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')])")
 [ -n "$L_SH" ] && [ -n "$L_WC" ] && [ "$L_WC" -lt "$L_SH" ] && [ "$L_SH" -lt "$L_PROPS" ] \
   && ok "app-request-choices.sh invoqué en quotes SIMPLES sous credential (ligne $L_SH), AVANT properties()" || ko "invocation du script de listes absente/mal placée (sh=$L_SH wc=$L_WC props=$L_PROPS)"
@@ -334,8 +341,20 @@ BODYDIR="$BODYDIR" python3 "$TMP/fakejenkins.py" "$PORT" >/dev/null 2>&1 & FAKE_
 for _ in $(seq 1 40); do curl -s "http://127.0.0.1:$PORT/x" >/dev/null 2>&1 && break; sleep 0.1; done
 # SANS GITEA_TOKEN ni Gitea : app-request n'a plus de marqueur, la pose ne doit rien demander à Gitea.
 OUT=$(JENKINS_UI="http://127.0.0.1:$PORT" JOBS="app-request" bash "$STO" 2>&1); RC=$?
+# la pose SUIVANTE ecrase le corps recu : on garde celui de CETTE pose-ci
+POSTE1="$TMP/app-request.posted.1.xml"; cp "$BODYDIR/app-request.posted.xml" "$POSTE1" 2>/dev/null || true
+# Disposition (2026-09-03) : sous un AUTRE préfixe, le poseur compose le
+# <scriptPath> au lieu d'obliger a editer treize XML a la main — et la coquille
+# du depot n'est PAS modifiee (mise en scene dans un temporaire).
+OUT2=$(JENKINS_UI="http://127.0.0.1:$PORT" JOBS="app-request" GIT_SUBDIR=livrable bash "$STO" 2>&1); RC2=$?
+SP_POSTE=$(sed -n 's#.*<scriptPath>\([^<]*\)</scriptPath>.*#\1#p' "$BODYDIR/app-request.posted.xml" 2>/dev/null | head -1)
+SP_SOURCE=$(sed -n 's#.*<scriptPath>\([^<]*\)</scriptPath>.*#\1#p' ci/jenkins/app-request.job.xml | head -1)
 kill "$FAKE_PID" 2>/dev/null
-[ "$RC" -eq 0 ] && cmp -s "$BODYDIR/app-request.posted.xml" ci/jenkins/app-request.job.xml \
+[ "$RC2" -eq 0 ] && [ "$SP_POSTE" = "livrable/ci/Jenkinsfile.app-request" ] \
+  && [ "$SP_SOURCE" = "poc-control-plane-federation/ci/Jenkinsfile.app-request" ] \
+  && ok "GIT_SUBDIR=livrable : le <scriptPath> POSTÉ suit le knob ($SP_POSTE), la coquille du dépôt est INTACTE" \
+  || ko "mise en scène du scriptPath : rc=$RC2, posté='$SP_POSTE', source='$SP_SOURCE'"
+[ "$RC" -eq 0 ] && cmp -s "$POSTE1" ci/jenkins/app-request.job.xml \
   && ok "pose d'app-request SANS Gitea ni token : rc 0, XML posté octet pour octet identique à la source" \
   || ko "pose d'app-request : rc=$RC, ou XML posté divergent — $(printf '%s' "$OUT" | tail -3 | tr '\n' ' ')"
 [ -f "$BODYDIR/app-request.build" ] && ok "le build d'amorçage a été demandé juste après la pose (POST /job/app-request/build)" || ko "aucun build d'amorçage demandé"
@@ -666,7 +685,7 @@ MISS=""; for P in MANIFEST MERGE_SHA ENVIRONMENT ADMIN_VIA DEBUG VAULT_USER VAUL
 [ -z "$MISS" ] && ok "les 8 paramètres sont posés par properties()" || ko "paramètres absents :$MISS"
 jss "choice(name: 'ENVIRONMENT', choices: envs" && ok "ENVIRONMENT : choices: envs (dérivée)" || ko "ENVIRONMENT n'est pas dérivée"
 grep -qE "\['dev'|'homol'|'rec', 'int'" "$TMP/jsf.code" && ko "une liste de paliers LITTÉRALE subsiste" || ok "aucune liste de paliers littérale dans Jenkinsfile.selfservice"
-L_DIRF=$(awk "NR>${L_FORM:-0} && /dir\('poc-control-plane-federation'\)/ {print NR; exit}" "$TMP/jsf.code"); L_DER=$(code_line "$TMP/jsf.code" 'env-chain.sh && env_chain_validate && env_chain" > "$WORKSPACE/.a0-envs"')
+L_DIRF=$(awk "NR>${L_FORM:-0} && /dir\(env\.GIT_SUBDIR\)/ {print NR; exit}" "$TMP/jsf.code"); L_DER=$(code_line "$TMP/jsf.code" 'env-chain.sh && env_chain_validate && env_chain" > "$WORKSPACE/.a0-envs"')
 [ -n "$L_DIRF" ] && [ -n "$L_DER" ] && [ "$L_DIRF" -lt "$L_DER" ] && [ "$L_DER" -lt "$L_PROPS" ] && ok "dérivation env_chain (validée, chaîne ENTIÈRE — A7) sous dir() (ligne $L_DER), avant properties()" || ko "dérivation absente/mal placée (dir=$L_DIRF der=$L_DER)"
 jss 'envs.every { it ==~ /[a-z0-9]+/ }' && jss 'FORMULAIRE_INVALIDE' && ok "paliers validés ^[a-z0-9]+$, refus FORMULAIRE_INVALIDE (définitions précédentes conservées)" || ko "validation des paliers absente"
 # Les listes withEnv EXACTES par stage (revue : compter MANIFEST ne prouvait rien

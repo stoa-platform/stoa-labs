@@ -43,23 +43,27 @@ pipeline {
              description: "Mot de passe annuaire, saisi à chaque mise en prod. ⚠ Ne pas rejouer après un refus (lockout AD). NB : le bouton « Change Password » est un libellé Jenkins (SECURITY-1721) — il signifie « saisir la valeur du champ », RIEN ne modifie votre mot de passe annuaire ; cliquez-le puis tapez votre mot de passe.")
   }
   environment {
+    // Préfixe du livrable DANS le dépôt (2026-09-03) : le seul endroit qui le
+    // nomme. « . » = le livrable EST la racine (une valeur VIDE ne traverse pas
+    // Jenkins : elle arrive absente et reprendrait ce défaut).
+    GIT_SUBDIR           = "${env.GIT_SUBDIR ?: 'poc-control-plane-federation'}"
     GOPROXY = 'off'; GOFLAGS = '-mod=vendor'; GOSUMDB = 'off'
     // É0 — auth Git (cf. ci/Jenkinsfile) : défauts PoC anonymes, surchargeables
     // au niveau job ; GIT_CREDENTIALS_ID non vide -> clone via GIT_ASKPASS.
     GOVERNANCE_GIT_URL = "${env.GOVERNANCE_GIT_URL ?: 'http://gitea:3000/ci/governance.git'}"
     GIT_CREDENTIALS_ID = "${env.GIT_CREDENTIALS_ID ?: ''}"
-    KEYCLOAK_URL                = 'http://localhost:8480'
-    KEYCLOAK_JWKS_URL           = 'http://keycloak:8080/realms/stoa-lab/protocol/openid-connect/certs'
-    LABCTL_AUDIENCE             = 'onboarding-api'
-    OPENSEARCH_URL              = 'https://opensearch:9200'
-    OPENSEARCH_USER             = 'admin'
-    OPENSEARCH_INSECURE         = 'true'
-    OTEL_EXPORTER_OTLP_ENDPOINT = 'http://otel-lgtm:4318'
-    APPLY_TENANT                = 'banking-demo'
+    KEYCLOAK_URL                = "${env.KEYCLOAK_URL ?: 'http://localhost:8480'}"
+    KEYCLOAK_JWKS_URL           = "${env.KEYCLOAK_JWKS_URL ?: 'http://keycloak:8080/realms/stoa-lab/protocol/openid-connect/certs'}"
+    LABCTL_AUDIENCE             = "${env.LABCTL_AUDIENCE ?: 'onboarding-api'}"
+    OPENSEARCH_URL              = "${env.OPENSEARCH_URL ?: 'https://opensearch:9200'}"
+    OPENSEARCH_USER             = "${env.OPENSEARCH_USER ?: 'admin'}"
+    OPENSEARCH_INSECURE         = "${env.OPENSEARCH_INSECURE ?: 'true'}"
+    OTEL_EXPORTER_OTLP_ENDPOINT = "${env.OTEL_EXPORTER_OTLP_ENDPOINT ?: 'http://otel-lgtm:4318'}"
+    APPLY_TENANT                = "${env.APPLY_TENANT ?: 'banking-demo'}"
     // ITSM du re-check LIVE au dispatch (A6) : le stage 'Gate LIVE' ET la couche
     // labctl apply-uac (fail-closed) le relisent à l'instant du dispatch.
-    ITSM_URL                    = 'http://itsm-mock:8788'
-    VAULT_ADDR                  = 'http://vault:8200'
+    ITSM_URL                    = "${env.ITSM_URL ?: 'http://itsm-mock:8788'}"
+    VAULT_ADDR                  = "${env.VAULT_ADDR ?: 'http://vault:8200'}"
     // Identité AppRole non-secrète (cf. Jenkinsfile hors-prod) ; le secret_id
     // est le credential Jenkins vault-ci-secret-id.
     VAULT_ROLE_ID               = "${env.VAULT_ROLE_ID ?: 'fa09b310-79a7-8845-609b-9b6090bcd53b'}"
@@ -75,7 +79,7 @@ pipeline {
     }
     stage('Checkout governance (GitOps source)') {
       steps {
-        dir('poc-control-plane-federation') {
+        dir(env.GIT_SUBDIR) {
           // Clone COMPLET (pas de --depth 1) : le pinning de version lit le
           // contrat au SHA capturé par la promotion (git show <commit>:…) — un
           // clone shallow ne porte pas l'historique et casse ResolvePinned.
@@ -86,7 +90,7 @@ pipeline {
     }
     stage('Gate Git-natif — promotion approuvée + ITSM + 4-yeux + commit pinné') {
       steps {
-        dir('poc-control-plane-federation') {
+        dir(env.GIT_SUBDIR) {
           sh '''
             set -eu
             [ -n "$PROMOTION_ID" ] || { echo 'GATE: PROMOTION_ID requis'; exit 1; }
@@ -122,7 +126,7 @@ pipeline {
     }
     stage('Gate LIVE — ITSM re-checké au DISPATCH (anti-TOCTOU, A6)') {
       steps {
-        dir('poc-control-plane-federation') {
+        dir(env.GIT_SUBDIR) {
           // Le gate Git-natif ci-dessus a validé l'état MERGÉ (approbation au
           // moment du merge). Ici on re-valide l'état LIVE de l'ITSM À L'INSTANT
           // du dispatch : un change approuvé au merge puis RÉVOQUÉ avant ce point
@@ -135,7 +139,7 @@ pipeline {
     }
     stage('Apply PROD — apply-uac --env prod (admin direct, secrets Vault)') {
       steps {
-        dir('poc-control-plane-federation') {
+        dir(env.GIT_SUBDIR) {
           withCredentials([string(credentialsId: 'vault-ci-secret-id', variable: 'VAULT_SECRET_ID')]) {
             sh '''
               set +x          # NEVER echo: secret_id, vault token, OAuth token
@@ -183,7 +187,7 @@ pipeline {
     }
     stage('Smoke test — data-plane prod') {
       steps {
-        dir('poc-control-plane-federation') {
+        dir(env.GIT_SUBDIR) {
           sh '''
             set -eu
             # Même logique que scripts/phase3-identity-demo.sh, côté agent :

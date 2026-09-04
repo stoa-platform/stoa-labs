@@ -76,6 +76,10 @@ pipeline {
   // `env.X ?: défaut`, identique aux Jenkinsfile frères) : le MÊME fichier
   // sert le lab et le client, sans fork.
   environment {
+    // Préfixe du livrable DANS le dépôt (2026-09-03) : le seul endroit qui le
+    // nomme. « . » = le livrable EST la racine (une valeur VIDE ne traverse pas
+    // Jenkins : elle arrive absente et reprendrait ce défaut).
+    GIT_SUBDIR           = "${env.GIT_SUBDIR ?: 'poc-control-plane-federation'}"
     VAULT_ADDR            = "${env.VAULT_ADDR ?: 'http://vault:8200'}"
     // Mount de l'auth user/mot de passe — `userpass` en lab, `ldap` (AD) chez
     // le client. Posé ICI, exporté au shell AVANT que ci/lib/vault-login.sh
@@ -172,7 +176,7 @@ pipeline {
         // steps `sh` séparés rouvriraient un process par step — le trap du
         // premier révoquerait le token AVANT que le second ne le consomme.
         withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')]) {
-          dir('poc-control-plane-federation') {
+          dir(env.GIT_SUBDIR) {
             sh '''
               set +x
 
@@ -286,7 +290,7 @@ pipeline {
         checkout scm
         withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')]) {
           withEnv(["BUILD_RESULT=${currentBuild.currentResult}"]) {
-            dir('poc-control-plane-federation') {
+            dir(env.GIT_SUBDIR) {
               sh '''
                 set +x
                 if [ -z "${WEBHOOK_REPO:-}" ] || [ -z "${PR_NUMBER:-}" ]; then

@@ -150,7 +150,7 @@ say "build d'amorçage #$N (enregistre le trigger $TRIGGER_TOKEN)"
 HC=$(curl -s -b /tmp/judj.txt -X POST "$JENKINS/job/$JOB/build" -H "$F: $C" -o /dev/null -w '%{http_code}')
 [ "$HC" = 201 ] || { printf '\033[1;31m[user-deploy-job]\033[0m POST /build KO (HTTP %s)\n' "$HC"; exit 1; }
 R=""
-for i in $(seq 1 30); do
+for _ in $(seq 1 30); do
   R=$(curl -sf "$JENKINS/job/$JOB/$N/api/json" 2>/dev/null |
     python3 -c 'import sys,json;b=json.load(sys.stdin);print(b.get("result") or "")' 2>/dev/null || true)
   [ -n "$R" ] && break

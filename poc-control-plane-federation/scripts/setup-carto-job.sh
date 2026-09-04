@@ -40,7 +40,7 @@
 # mettre à jour dans ce credential, sinon les builds planifiés tombent en 401
 # dès la nuit suivante. Le build le dit alors explicitement, avec le geste.
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || { echo "REFUS: racine du depot introuvable" >&2; exit 2; }
 
 JENKINS="${JENKINS:-http://localhost:18080}"
 JOB="${JOB:-carto}"
