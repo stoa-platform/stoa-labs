@@ -46,7 +46,7 @@ _as_url() {        # <team> <api> <sha> — l'URL canonique du contenu
 
 archive_store_push() { # <zip_abs> <team> <api>
   local zip="$1" team="$2" api="$3" sha url code probe
-  [ -n "${FORGE_SECRET:-${GITEA_TOKEN:-}}" ] || { _as_fail "STORE_TOKEN_ABSENT : GITEA_TOKEN requis"; return 1; }
+  [ -n "${FORGE_SECRET:-${GITEA_TOKEN:-}}" ] || { _as_fail "STORE_TOKEN_ABSENT : FORGE_SECRET requis"; return 1; }
   _as_ident_ok "$team" && _as_ident_ok "$api" \
     || { _as_fail "STORE_PARAM_INVALIDE : team='$team' api='$api' (classe [a-z0-9-])"; return 1; }
   case "$zip" in /*) ;; *) { _as_fail "STORE_PARAM_INVALIDE : chemin d'archive non absolu '$zip'"; return 1; };; esac
@@ -75,7 +75,7 @@ archive_store_push() { # <zip_abs> <team> <api>
 
 archive_store_fetch() { # <team> <api> <sha256> <dest_abs>
   local team="$1" api="$2" sha="$3" dest="$4" url code got tmp
-  [ -n "${GITEA_TOKEN:-}" ] || { _as_fail "STORE_TOKEN_ABSENT : GITEA_TOKEN requis"; return 1; }
+  [ -n "${FORGE_SECRET:-${GITEA_TOKEN:-}}" ] || { _as_fail "STORE_TOKEN_ABSENT : FORGE_SECRET requis (ou son alias historique)"; return 1; }
   _as_ident_ok "$team" && _as_ident_ok "$api" \
     || { _as_fail "STORE_PARAM_INVALIDE : team='$team' api='$api'"; return 1; }
   case "$sha" in *[!0-9a-f]*|"") { _as_fail "STORE_PARAM_INVALIDE : sha256 '$sha'"; return 1; };; esac

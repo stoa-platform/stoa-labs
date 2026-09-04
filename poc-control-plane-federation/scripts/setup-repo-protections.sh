@@ -30,7 +30,7 @@
 #       ce qui laisse le chemin de réparation de team-apply pousser. PORTANT.
 #
 #   bash scripts/setup-repo-protections.sh --print   # hors ligne : ce qui SERAIT posé
-#   GITEA_TOKEN=… bash scripts/setup-repo-protections.sh
+#   FORGE_SECRET=… bash scripts/setup-repo-protections.sh
 #
 # ÉCART AU BRIEF (ajout justifié) : `--print`/`--help`. Sans eux, ce script
 # n'avait AUCUN chemin exécutable sans token ni réseau, et sa seule logique
@@ -101,9 +101,9 @@ if [ "$MODE" = print ]; then
   exit 0
 fi
 
-GITEA_TOKEN="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
-GITEA_TOKEN="${GITEA_TOKEN:?GITEA_TOKEN requis (write:repository sur les dépôts visés) — ou --print pour voir ce qui serait posé}"
-forge_auth_write "$GITEA_TOKEN" "$TMPD/hdr" || exit 2
+FORGE_SECRET="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
+FORGE_SECRET="${GITEA_TOKEN:?FORGE_SECRET requis (write:repository sur les dépôts visés) — ou --print pour voir ce qui serait posé}"
+forge_auth_write "$FORGE_SECRET" "$TMPD/hdr" || exit 2
 
 RC=0
 for repo in $REPOS $TEAM_REPOS; do

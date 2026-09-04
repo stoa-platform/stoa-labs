@@ -22,7 +22,7 @@
 #   TEAM, API_NAME, FROM_ENV, TO_ENV, MESSAGE   (requis)
 #   CHANGE_REF, PV_REF                          (selon la porte d'arrivée)
 #   ARCHIVE_SHA256  (facultatif — résolu depuis le manifeste épinglé (dev) ou hérité du palier source)
-#   GITEA_TOKEN                                 (requis hors DRY_RUN)
+#   FORGE_SECRET                                 (requis hors DRY_RUN)
 #   DRY_RUN=1                                   (s'arrête après les gardes)
 set -uo pipefail
 # shellcheck source=scripts/lib/forge-identity.sh
@@ -180,12 +180,12 @@ echo "GARDES_OK : $FROM_ENV -> $TO_ENV, groupe d'approbation='${APPROVER_GROUP:-
 
 # Le secret de la forge porte un nom NEUTRE (2026-09-04) : un gestionnaire
 # d'identite rend un jeton OU un couple, et les deux occupent la meme place.
-GITEA_TOKEN="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
-[ -n "$GITEA_TOKEN" ] || { echo "REFUS: SECRET_FORGE_REQUIS : ni FORGE_SECRET ni GITEA_TOKEN — le secret de la forge (jeton, ou mot de passe d'un couple avec FORGE_USER)" >&2; exit 2; }
+FORGE_SECRET="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
+[ -n "$FORGE_SECRET" ] || { echo "REFUS: SECRET_FORGE_REQUIS : ni FORGE_SECRET ni son alias GITEA_TOKEN — le secret de la forge (jeton, ou mot de passe d'un couple avec FORGE_USER)" >&2; exit 2; }
 GIT_HOST="${GIT_HOST:-http://gitea:3000}"
 GIT_REPO="${GIT_REPO:-ci/stoa-labs}"   # dépôt PLATEFORME — porte providers.<env>.yml
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT; umask 077
-forge_auth_write "$GITEA_TOKEN" "$TMP/ghdr" || exit 2
+forge_auth_write "$FORGE_SECRET" "$TMP/ghdr" || exit 2
 gapi() { curl -sS -H @"$TMP/ghdr" -H 'Content-Type: application/json' "$@"; }
 
 # ── team -> repo, lu sur GITEA MAIN (jamais le worktree local) ───────────────
@@ -225,7 +225,7 @@ case "$REPO_FULL" in REPO=*) REPO_FULL="${REPO_FULL#REPO=}";; *) fail "PARSE_PRO
 [ -n "$REPO_FULL" ] || fail "REPO_NON_DECLARE : équipe '$TEAM' sans dépôt dans providers.${AUTHORING_ENV}.yml"
 
 # ── clone du dépôt d'équipe (authentifié — un dépôt privé casserait sinon) ───
-AUTH_B64=$(printf 'x:%s' "$GITEA_TOKEN" | base64 | tr -d '\n')
+AUTH_B64=$(printf 'x:%s' "$FORGE_SECRET" | base64 | tr -d '\n')
 export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader \
        GIT_CONFIG_VALUE_0="Authorization: Basic ${AUTH_B64}"
 unset AUTH_B64

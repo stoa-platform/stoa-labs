@@ -36,7 +36,7 @@
 # Entrées (env — mappées depuis le payload webhook Gitea par le GWT du job) :
 #   PR_BRANCH   (req) ref de la branche de la PR (ex. provision/credit-scoring-dev)
 #   PR_NUMBER   (req) numéro de la PR (pour le commentaire)
-#   GITEA_TOKEN (req) token (scopes write:issue pour commenter)
+#   FORGE_SECRET (req) token (scopes write:issue pour commenter)
 #   PLAN_FACTS  fichier de faits (cf. ci-dessus) — vide = pas de faits écrits
 #   GIT_REPO    full-name (défaut ci/stoa-labs)
 #   GIT_BASE    branche cible (défaut main) — base du diff
@@ -49,8 +49,8 @@ PR_BRANCH="${PR_BRANCH:?PR_BRANCH requis}"
 PR_NUMBER="${PR_NUMBER:?PR_NUMBER requis}"
 # Le secret de la forge porte un nom NEUTRE (2026-09-04) : un gestionnaire
 # d'identite rend un jeton OU un couple, et les deux occupent la meme place.
-GITEA_TOKEN="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
-[ -n "$GITEA_TOKEN" ] || { echo "REFUS: SECRET_FORGE_REQUIS : ni FORGE_SECRET ni GITEA_TOKEN — le secret de la forge (jeton, ou mot de passe d'un couple avec FORGE_USER)" >&2; exit 2; }
+FORGE_SECRET="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
+[ -n "$FORGE_SECRET" ] || { echo "REFUS: SECRET_FORGE_REQUIS : ni FORGE_SECRET ni son alias GITEA_TOKEN — le secret de la forge (jeton, ou mot de passe d'un couple avec FORGE_USER)" >&2; exit 2; }
 GIT_REPO="${GIT_REPO:-ci/stoa-labs}"
 GIT_BASE="${GIT_BASE:-main}"
 GIT_HOST="${GIT_HOST:-http://gitea:3000}"
@@ -177,7 +177,7 @@ body = (f"{head} — automatique.\n\n"
            if verdict == "ok" else "**Corriger la demande avant validation.**"))
 open(os.environ["BODY_OUT"], "w").write(body)
 PY
-GIT_REPO="$GIT_REPO" GITEA_TOKEN="$GITEA_TOKEN" PR_NUMBER="$PR_NUMBER" GIT_HOST="$GIT_HOST" \
+GIT_REPO="$GIT_REPO" FORGE_SECRET="$FORGE_SECRET" PR_NUMBER="$PR_NUMBER" GIT_HOST="$GIT_HOST" \
 COMMENT_MARKER='<!-- provision-plan -->' COMMENT_BODY_FILE="$WORK/comment.md" \
   bash "$SELF_DIR/lib/gitea-pr-comment.sh" || refus COMMENTAIRE_ECHEC "plan ${VERDICT} sur ${MAN} mais le commentaire de verdict n'a pas pu etre pose"
 

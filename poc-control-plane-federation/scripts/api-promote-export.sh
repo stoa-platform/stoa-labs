@@ -16,7 +16,7 @@
 #
 # Entrées (env — mappées depuis les paramètres du job) :
 #   TEAM, API_NAME                        (requis, classe [a-z0-9-])
-#   GITEA_TOKEN                           (requis — lecture providers.yml + clone)
+#   FORGE_SECRET                           (requis — lecture providers.yml + clone)
 #   VAULT_ADDR, VAULT_TOKEN_FILE          (requis — CE script ne les lit jamais
 #                                          lui-même, mais `ansible-playbook` les
 #                                          HÉRITE en sous-processus : le rôle
@@ -81,8 +81,8 @@ esac
 
 # Le secret de la forge porte un nom NEUTRE (2026-09-04) : un gestionnaire
 # d'identite rend un jeton OU un couple, et les deux occupent la meme place.
-GITEA_TOKEN="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
-[ -n "$GITEA_TOKEN" ] || { echo "REFUS: SECRET_FORGE_REQUIS : ni FORGE_SECRET ni GITEA_TOKEN — le secret de la forge (jeton, ou mot de passe d'un couple avec FORGE_USER)" >&2; exit 2; }
+FORGE_SECRET="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
+[ -n "$FORGE_SECRET" ] || { echo "REFUS: SECRET_FORGE_REQUIS : ni FORGE_SECRET ni son alias GITEA_TOKEN — le secret de la forge (jeton, ou mot de passe d'un couple avec FORGE_USER)" >&2; exit 2; }
 VAULT_ADDR="${VAULT_ADDR:?VAULT_ADDR requis}"
 VAULT_TOKEN_FILE="${VAULT_TOKEN_FILE:?VAULT_TOKEN_FILE requis (jamais le token en env/argv)}"
 APIM_API_BASE="${APIM_API_BASE:?APIM_API_BASE requis — pas de défaut : dire sa cible est volontaire}"
@@ -91,7 +91,7 @@ GIT_WEB_HOST="${GIT_WEB_HOST:-$GIT_HOST}"   # défaut : même hôte, sauf revers
 GIT_REPO="${GIT_REPO:-ci/stoa-labs}"   # dépôt PLATEFORME — porte providers.<env>.yml
 
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT; umask 077
-forge_auth_write "$GITEA_TOKEN" "$TMP/ghdr" || exit 2
+forge_auth_write "$FORGE_SECRET" "$TMP/ghdr" || exit 2
 gapi() { curl -sS -H @"$TMP/ghdr" -H 'Content-Type: application/json' "$@"; }
 
 # ── team -> repo, lu sur GITEA MAIN (jamais le worktree local) ───────────────
@@ -121,7 +121,7 @@ case "$REPO_FULL" in REPO=*) REPO_FULL="${REPO_FULL#REPO=}";; *) fail "PARSE_PRO
 # pousse une branche, ou team-publish.sh, qui checkoute un SHA de merge).
 gclone(){
   local auth_b64
-  auth_b64=$(printf 'x:%s' "$GITEA_TOKEN" | base64 | tr -d '\n')
+  auth_b64=$(printf 'x:%s' "$FORGE_SECRET" | base64 | tr -d '\n')
   GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader \
     GIT_CONFIG_VALUE_0="Authorization: Basic ${auth_b64}" \
     git clone -q "$@"
@@ -262,17 +262,17 @@ else
   # push FORCÉ délibéré : la branche d'épinglage n'a qu'UN commit de tête et
   # appartient à l'export — un ré-export la REMPLACE (la PR ouverte suit),
   # jamais d'empilement (piège G5 « ré-export ⇒ PR neuve » fermé ici).
-  AUTH_B64=$(printf 'x:%s' "$GITEA_TOKEN" | base64 | tr -d '\n')
+  AUTH_B64=$(printf 'x:%s' "$FORGE_SECRET" | base64 | tr -d '\n')
   GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader \
     GIT_CONFIG_VALUE_0="Authorization: Basic ${AUTH_B64}" \
     git -C "$TMP/team" push -q -f "${GIT_HOST}/${REPO_FULL}.git" "$PIN_BRANCH" \
     || fail "PIN_PUSH_ECHEC : push de ${PIN_BRANCH} sur ${REPO_FULL}"
   unset AUTH_B64
-  PIN_PR=$(API="${GIT_HOST}/api/v1" REPO_FULL="$REPO_FULL" GITEA_TOKEN="$GITEA_TOKEN" \
+  PIN_PR=$(API="${GIT_HOST}/api/v1" REPO_FULL="$REPO_FULL" FORGE_SECRET="$FORGE_SECRET" \
     BRANCH="$PIN_BRANCH" API_NAME="$API_NAME" GUID="$GUID" SHA="$SHA" VER="$PUB_VERSION" \
     python3 - <<'PY'
 import json, os, urllib.error, urllib.request
-api, repo, tok = os.environ["API"], os.environ["REPO_FULL"], os.environ["GITEA_TOKEN"]
+api, repo, tok = os.environ["API"], os.environ["REPO_FULL"], os.environ["FORGE_SECRET"]
 head = os.environ["BRANCH"]
 hdrs = {"Authorization": f"token {tok}", "Content-Type": "application/json"}
 body = (

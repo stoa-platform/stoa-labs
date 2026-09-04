@@ -31,7 +31,7 @@
 #   FAILURE sans faits     ⇒ « echec avant le plan (agent ?), voir le log ».
 # Corps SANS accents : ils traversent l'agent, un POST JSON et Gitea.
 #
-# Entrées (env) : PR_NUMBER, PR_BRANCH, BUILD_RESULT (req) ; GITEA_TOKEN (req) ;
+# Entrées (env) : PR_NUMBER, PR_BRANCH, BUILD_RESULT (req) ; FORGE_SECRET (req) ;
 #   PLAN_FACTS (chemin du fichier de faits, optionnel) OU les mêmes faits en
 #   env (GITEA_HEAD_REF, PLAN_VERDICT, PLAN_REASON — chargés par le post de
 #   stage du Jenkinsfile) ; GIT_HOST, GIT_REPO,
@@ -46,8 +46,8 @@ BUILD_RESULT="${BUILD_RESULT:?BUILD_RESULT requis}"
 # 2026-09-04 : le pipeline pose FORGE_SECRET depuis forgeCreds(). Sans cet alias,
 # ce script refusait, et l'appelant avalait le refus (`|| echo AVERTISSEMENT`) :
 # build vert, statut de build jamais poste. Defaut ACTIF, corrige ici.
-GITEA_TOKEN="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
-[ -n "$GITEA_TOKEN" ] || { echo "REFUS: SECRET_FORGE_REQUIS : ni FORGE_SECRET ni GITEA_TOKEN" >&2; exit 2; }
+FORGE_SECRET="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
+[ -n "$FORGE_SECRET" ] || { echo "REFUS: SECRET_FORGE_REQUIS : ni FORGE_SECRET ni son alias GITEA_TOKEN" >&2; exit 2; }
 GIT_HOST="${GIT_HOST:-http://gitea:3000}"; GIT_REPO="${GIT_REPO:-ci/stoa-labs}"; GIT_BASE="${GIT_BASE:-main}"
 PLAN_FACTS="${PLAN_FACTS:-}"
 
@@ -122,6 +122,6 @@ case "${VERDICT}:${BUILD_RESULT}" in
     printf 'provision-plan (statut build) : le build a ECHOUE (%s) avant le plan (agent injoignable, depot plateforme non clonable) -- AUCUN verdict. Source : %s. Voir le log : %s\n' "$BUILD_RESULT" "$SOURCE" "$BUILD_REF" > "$BODYFILE" ;;
 esac
 
-GIT_REPO="$GIT_REPO" GITEA_TOKEN="$GITEA_TOKEN" PR_NUMBER="$PR_NUMBER" GIT_HOST="$GIT_HOST" \
+GIT_REPO="$GIT_REPO" FORGE_SECRET="$FORGE_SECRET" PR_NUMBER="$PR_NUMBER" GIT_HOST="$GIT_HOST" \
   COMMENT_MARKER="<!-- provision-plan-build -->" COMMENT_BODY_FILE="$BODYFILE" COMMENT_ONLY_IF_EXISTS="$ONLY_IF_EXISTS" \
   bash "$SELF_DIR/lib/gitea-pr-comment.sh"

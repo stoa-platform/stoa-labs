@@ -21,7 +21,7 @@
 # + plan enchaîné.
 #
 # Entrées (env) : REQ_APP REQ_ENV REQ_REASON (requis), REQ_CHANGE_REF,
-#   REQ_CALLER (défaut unknown), GITEA_TOKEN (requis), GIT_HOST GIT_REPO
+#   REQ_CALLER (défaut unknown), FORGE_SECRET (requis), GIT_HOST GIT_REPO
 #   GIT_BASE GIT_SUBDIR GIT_CLONE_URL GITEA_SERVICE_LOGINS STOA_ENV_CHAIN_FILE
 #   PROVISION_PLAN_INLINE ROLLBACK_OUT.
 # Sorties : ETAPE …, LIGNEE : …, REPLI_DU_REPLI : … (le cas échéant),
@@ -49,10 +49,10 @@ REQ_CHANGE_REF="${REQ_CHANGE_REF:-}"
 REQ_CALLER="${REQ_CALLER:-unknown}"
 # Le secret de la forge porte un nom NEUTRE (2026-09-04) : un gestionnaire
 # d'identite rend un jeton OU un couple, et pour git comme pour l'API les deux
-# occupent la meme place. FORGE_SECRET est le nom ; GITEA_TOKEN reste honore.
-GITEA_TOKEN="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
-[ -n "$GITEA_TOKEN" ] || { echo "REFUS: SECRET_FORGE_REQUIS : ni FORGE_SECRET ni GITEA_TOKEN — le secret de la forge (jeton, ou mot de passe d'un couple avec FORGE_USER)" >&2; exit 2; }
-export GITEA_TOKEN
+# occupent la meme place. FORGE_SECRET est le nom ; FORGE_SECRET reste honore.
+FORGE_SECRET="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
+[ -n "$FORGE_SECRET" ] || { echo "REFUS: SECRET_FORGE_REQUIS : ni FORGE_SECRET ni son alias GITEA_TOKEN — le secret de la forge (jeton, ou mot de passe d'un couple avec FORGE_USER)" >&2; exit 2; }
+export FORGE_SECRET
 GIT_HOST="${GIT_HOST:?GIT_HOST requis (base de la forge, ex. https://forge.client) — aucun repli}"
 GIT_WEB_HOST="${GIT_WEB_HOST:-$GIT_HOST}"   # l'adresse HUMAINE, si elle diffère de celle vue par le CI
 GIT_REPO="${GIT_REPO:-ci/stoa-labs}"
@@ -82,7 +82,7 @@ elif [ -n "${FORGE_TOKEN:-}" ]; then
   FORGE_TF="$WORK/forge-token"; printf '%s' "$FORGE_TOKEN" > "$FORGE_TF"
 fi
 unset FORGE_TOKEN FORGE_TOKEN_FILE
-CI_TF="$WORK/ci-token"; printf '%s' "$GITEA_TOKEN" > "$CI_TF"
+CI_TF="$WORK/ci-token"; printf '%s' "$FORGE_SECRET" > "$CI_TF"
 # Défauts = le compte de service ; l'identité (§3bis) les remplace quand un token humain existe.
 FORGE_LOGIN="(service)"; PUSH_LOGIN=ci; PUSH_TF="$CI_TF"
 
@@ -91,7 +91,7 @@ refus(){ echo "REFUS: $1 : $2" >&2; exit 2; }
 shown(){ printf '%q' "$(printf '%s' "${1:-}" | head -c 80)"; }
 # Un appel de forge : token PAR ENV, jamais en argv ; rc ≠ 0 = illisible.
 forge(){ # <script python> — les variables d'entrée sont dans l'environnement
-  F_API="$API" F_REPO="$GIT_REPO" F_TOKEN="$GITEA_TOKEN" F_BRANCH="$BRANCH" F_BASE="$GIT_BASE" F_PR_TOKEN_FILE="${PUSH_TF:-$CI_TF}" F_PUSH_LOGIN="${PUSH_LOGIN:-ci}" python3 -c "$1"
+  F_API="$API" F_REPO="$GIT_REPO" F_TOKEN="$FORGE_SECRET" F_BRANCH="$BRANCH" F_BASE="$GIT_BASE" F_PR_TOKEN_FILE="${PUSH_TF:-$CI_TF}" F_PUSH_LOGIN="${PUSH_LOGIN:-ci}" python3 -c "$1"
 }
 PY_FORGE_COMMON='
 import json, os, sys, urllib.request, urllib.error
@@ -175,7 +175,7 @@ ASKPASS="$(forge_askpass "$WORK" "$PUSH_LOGIN" "$PUSH_TF")" || refus CABLAGE_INC
 export GIT_ASKPASS="$ASKPASS" GIT_TERMINAL_PROMPT=0
 R="$WORK/repo"
 git clone -q --single-branch --branch "$GIT_BASE" "$GIT_CLONE_URL" "$R" 2>"$WORK/clone.err" \
-  || refus CLONE_ECHEC "clone de ${GIT_REPO} (${GIT_BASE}) impossible : $(grep -v -F -- "$(cat "$PUSH_TF")" "$WORK/clone.err" | grep -v -F -- "$GITEA_TOKEN" | head -c 200 | tr '\n' ' ')"
+  || refus CLONE_ECHEC "clone de ${GIT_REPO} (${GIT_BASE}) impossible : $(grep -v -F -- "$(cat "$PUSH_TF")" "$WORK/clone.err" | grep -v -F -- "$FORGE_SECRET" | head -c 200 | tr '\n' ' ')"
 [ "$(git -C "$R" rev-parse --is-shallow-repository)" = false ] \
   || refus LIGNEE_TRONQUEE "le clone de ${GIT_BASE} est shallow — un historique tronqué ne peut pas prouver l'absence d'un état précédent"
 g(){ git -C "$R" "$@"; }
@@ -393,7 +393,7 @@ printf '%s' "$N_MSG" | grep -q '^Repli-Vers: ' && REPLI_DU_REPLI=1
 g commit -q -F "$WORK/msg" || refus PUSH_ECHEC "commit impossible dans le clone"
 etape push
 if ! g push -q "--force-with-lease=refs/heads/${BRANCH}:${TIP}" origin "HEAD:refs/heads/${BRANCH}" 2>"$WORK/push.err"; then
-  refus PUSH_ECHEC "push de ${BRANCH} refusé (bail perdu ou droits) : $(grep -v -F -- "$(cat "$PUSH_TF")" "$WORK/push.err" | grep -v -F -- "$GITEA_TOKEN" | head -c 200 | tr '\n' ' ')"
+  refus PUSH_ECHEC "push de ${BRANCH} refusé (bail perdu ou droits) : $(grep -v -F -- "$(cat "$PUSH_TF")" "$WORK/push.err" | grep -v -F -- "$FORGE_SECRET" | head -c 200 | tr '\n' ' ')"
 fi
 etape pr
 PR_OUT=$(F_NUM_N="$NUM_N" F_NUM_N1="$NUM_N1" F_SHA_N="$SHA_N" F_SHA_N1="$SHA_N1" F_DIGEST="$D_EXPECT" F_LINE="$CANDIDATE" F_CERT="$CERT_ACTION" \

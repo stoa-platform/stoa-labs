@@ -494,7 +494,7 @@ set_pr open provision/appa-dev main 200 '' '-b x'; confirm 12 provision/appa-dev
 set_pr open provision/appa-dev main 200 '' '' acme/fork; confirm 12 provision/appa-dev; RC=$?
 [ "$RC" -eq 1 ] && grep -q 'FORK' "$TMP/cf.out" && ok "PR depuis un FORK (head.repo ≠ dépôt) ⇒ rc 1 nommé (sa tête n'est pas dans le clone)" || ko "PR de fork acceptée (rc=$RC)"
 set_pr open provision/appa-dev main
-grep -vE '^\s*#' scripts/lib/gitea-pr-confirm.sh | grep -q 'PC_TOKEN="$GITEA_TOKEN"' && ! grep -vE '^\s*#' scripts/lib/gitea-pr-confirm.sh | grep -qE 'curl .*(token|Authorization)' \
+grep -vE '^\s*#' scripts/lib/gitea-pr-confirm.sh | grep -q 'PC_TOKEN="$FORGE_SECRET"' && ! grep -vE '^\s*#' scripts/lib/gitea-pr-confirm.sh | grep -qE 'curl .*(token|Authorization)' \
   && ok "le token passe par l'ENVIRONNEMENT du python (jamais en argv)" || ko "token en argv ou lib sans python"
 grep -q 'timeout=30)' scripts/lib/gitea-pr-confirm.sh && ok "urlopen(timeout=30)" || ko "aucun timeout"
 

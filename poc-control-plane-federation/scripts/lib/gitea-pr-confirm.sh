@@ -32,15 +32,15 @@
 #   forgé) ; rc 1 sans aucun appel réseau sinon.
 #
 # Entrées (env) : GIT_HOST (défaut http://gitea:3000), GIT_REPO (défaut
-# ci/stoa-labs), GITEA_TOKEN (requis).
+# ci/stoa-labs), FORGE_SECRET (requis).
 gitea_pr_confirm(){
   local n="${1:-}" want_head="${2:-}" want_base="${3:-main}"
   case "$n" in ''|*[!0-9]*) echo "FORGE_NON_CONFIRMEE : numero de PR non numerique ('$n')" >&2; return 1;; esac
   [ -n "$want_head" ] || { echo "FORGE_NON_CONFIRMEE : head_ref attendu vide" >&2; return 1; }
   case "$want_head" in provision/*) ;; *) echo "FORGE_NON_CONFIRMEE : head_ref attendu hors provision/* ('$want_head')" >&2; return 1;; esac
-  GITEA_TOKEN="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
-  [ -n "$GITEA_TOKEN" ] || { echo "FORGE_NON_CONFIRMEE : ni FORGE_SECRET ni GITEA_TOKEN" >&2; return 1; }
-  PC_API="${GIT_HOST:-http://gitea:3000}/api/v1" PC_REPO="${GIT_REPO:-ci/stoa-labs}" PC_TOKEN="$GITEA_TOKEN" \
+  FORGE_SECRET="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
+  [ -n "$FORGE_SECRET" ] || { echo "FORGE_NON_CONFIRMEE : ni FORGE_SECRET ni son alias GITEA_TOKEN" >&2; return 1; }
+  PC_API="${GIT_HOST:-http://gitea:3000}/api/v1" PC_REPO="${GIT_REPO:-ci/stoa-labs}" PC_TOKEN="$FORGE_SECRET" \
   PC_N="$n" PC_HEAD="$want_head" PC_BASE="$want_base" python3 - <<'PY'
 import json, os, sys, urllib.request, urllib.error
 api, repo, tok = os.environ["PC_API"], os.environ["PC_REPO"], os.environ["PC_TOKEN"]

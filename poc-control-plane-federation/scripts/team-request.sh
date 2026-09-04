@@ -18,7 +18,7 @@
 #   REPO               full-name org/nom (défaut <TEAM>/apis)
 #   (REQ_ENV n'est PLUS une entrée : G4/ADR-082 le SCELLE sur l'env
 #    d'authoring — l'axe env a quitté le formulaire, cf. plus bas.)
-#   GITEA_TOKEN  (req) token du service ci (write:repository, write:issue)
+#   FORGE_SECRET  (req) token du service ci (write:repository, write:issue)
 #   GIT_REPO           défaut ci/stoa-labs   GIT_HOST  défaut http://gitea:3000
 #   GIT_WEB_HOST       URL Gitea vue par l'HUMAIN (liens des commentaires)
 #   DRY_RUN=1          les gardes statuent, puis exit 0 AVANT tout geste
@@ -42,8 +42,8 @@ _TR_LIB="$(dirname "${BASH_SOURCE[0]}")/lib/deploy-pin.sh"
 TEAM="${TEAM:?TEAM requis}"
 # Le secret de la forge porte un nom NEUTRE (2026-09-04) : un gestionnaire
 # d'identite rend un jeton OU un couple, et les deux occupent la meme place.
-GITEA_TOKEN="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
-[ -n "$GITEA_TOKEN" ] || { echo "REFUS: SECRET_FORGE_REQUIS : ni FORGE_SECRET ni GITEA_TOKEN — le secret de la forge (jeton, ou mot de passe d'un couple avec FORGE_USER)" >&2; exit 2; }
+FORGE_SECRET="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
+[ -n "$FORGE_SECRET" ] || { echo "REFUS: SECRET_FORGE_REQUIS : ni FORGE_SECRET ni son alias GITEA_TOKEN — le secret de la forge (jeton, ou mot de passe d'un couple avec FORGE_USER)" >&2; exit 2; }
 DESCRIPTION="${DESCRIPTION:-}"
 APPROVERS="${APPROVERS:-}"
 REPO="${REPO:-${TEAM}/apis}"
@@ -171,22 +171,22 @@ git -C "$WORK/repo" -c user.name=ci -c user.email=ci@stoa.lab \
 # (repris à l'identique, pas recomposé). L'URL de push redevient nue —
 # CONSÉQUENCE (revue finale de branche, Critical) : depuis ce même fix,
 # $WORK/pusherr ne peut PLUS contenir le token (il n'a plus jamais transité
-# par l'URL), donc le `grep -v "$GITEA_TOKEN"` ci-dessous ne filtrait plus
+# par l'URL), donc le `grep -v "$FORGE_SECRET"` ci-dessous ne filtrait plus
 # rien de réel — il ne restait qu'une fuite : le token EN CLAIR dans l'argv
 # de CE grep, visible par ps -ww pendant tout le chemin d'échec. Motif de
 # team-apply.sh:168 (`cat ... >&2`) repris ici — pusherr ne porte plus de
 # secret, rien à masquer.
-AUTH_B64=$(printf 'x:%s' "$GITEA_TOKEN" | base64 | tr -d '\n')
+AUTH_B64=$(printf 'x:%s' "$FORGE_SECRET" | base64 | tr -d '\n')
 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader \
   GIT_CONFIG_VALUE_0="Authorization: Basic ${AUTH_B64}" \
   git -C "$WORK/repo" push -q "${GIT_HOST}/${GIT_REPO}.git" "$BRANCH" 2>"$WORK/pusherr" \
   || { echo "ERREUR: push" >&2; cat "$WORK/pusherr" >&2; exit 1; }
 unset AUTH_B64
 
-PR_NUMBER=$(API="${GIT_HOST}/api/v1" GIT_REPO="$GIT_REPO" GITEA_TOKEN="$GITEA_TOKEN" \
+PR_NUMBER=$(API="${GIT_HOST}/api/v1" GIT_REPO="$GIT_REPO" FORGE_SECRET="$FORGE_SECRET" \
   BRANCH="$BRANCH" TEAM="$TEAM" REQ_ENV="$REQ_ENV" python3 - <<'PY'
 import json, os, urllib.request
-api, repo, tok = os.environ["API"], os.environ["GIT_REPO"], os.environ["GITEA_TOKEN"]
+api, repo, tok = os.environ["API"], os.environ["GIT_REPO"], os.environ["FORGE_SECRET"]
 body = {"base": "main", "head": os.environ["BRANCH"],
         "title": f"onboard: équipe {os.environ['TEAM']} ({os.environ['REQ_ENV']})"}
 req = urllib.request.Request(f"{api}/repos/{repo}/pulls", method="POST",
@@ -225,10 +225,10 @@ BODY="${VERDICT}
 
 Au merge, team-apply : crée le dépôt \`${REPO}\` (squelette ADR-076) puis pose
 user/groupe/team gateway + KV/policy Vault (rôle apim_team_onboard, idempotent)."
-API="${GIT_HOST}/api/v1" GIT_REPO="$GIT_REPO" GITEA_TOKEN="$GITEA_TOKEN" \
+API="${GIT_HOST}/api/v1" GIT_REPO="$GIT_REPO" FORGE_SECRET="$FORGE_SECRET" \
   PR="$PR_NUMBER" BODY="$BODY" python3 - <<'PY'
 import json, os, urllib.request
-api, repo, tok = os.environ["API"], os.environ["GIT_REPO"], os.environ["GITEA_TOKEN"]
+api, repo, tok = os.environ["API"], os.environ["GIT_REPO"], os.environ["FORGE_SECRET"]
 req = urllib.request.Request(f"{api}/repos/{repo}/issues/{os.environ['PR']}/comments",
     method="POST", data=json.dumps({"body": os.environ["BODY"]}).encode(),
     headers={"Authorization": f"token {tok}", "Content-Type": "application/json"})
