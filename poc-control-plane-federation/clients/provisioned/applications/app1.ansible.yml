@@ -1,0 +1,21 @@
+---
+# app1.ansible.yml — GÉNÉRÉ par une demande de provisioning (maillon 1).
+# Appelant : jenkins-form:anonymous (azp). Ne PAS éditer à la main : re-générer via la demande.
+# Mode IDP : le client OAuth2 existe côté IdP ; Git porte la CLAIM qui identifie l'app.
+# MULTI-PALIER (A1) : la racine est FIGÉE à la première demande ; chaque demande
+# n'écrit que sa clé per_env.<env> (identité par palier : claim, IP, cert, clé backend).
+apim_ss_app:
+  name: "app1"
+  api: "accounts-read-ans"
+  api_version: "1.0.0"
+  description: "Provisioned via jenkins-form:anonymous (idp)"
+  contact_emails: []
+  team: "banking-demo"
+  enforce: []
+  auth:
+    mode: "idp"
+    server_alias: "KeycloakStoaLab"
+    audience: "accounts-read-ans"
+    claim: { name: "azp" }
+  per_env:
+    dev: { auth: { claim: { value: "toto2" } } }
