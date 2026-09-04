@@ -36,6 +36,25 @@
 # Deploiement client 2026-09-04 : le credential Jenkins rend un user + mot de
 # passe, pas un jeton ; « Authorization: token » n'a aucun sens pour la forge en
 # face, et le refus qui suivait accusait le jeton de l'utilisateur.
+# forge_auth_write <secret> <fichier d'en-tete> — meme choix, mais depuis la
+# VALEUR. La plupart des scripts tiennent le secret dans une variable, pas dans
+# un fichier ; sans cette forme, ils continueraient d'ecrire l'en-tete de Gitea
+# en dur — et un jeton GitLab dans une variable au nom neutre, envoye avec
+# l'en-tete de Gitea, rendrait un 401 sous un nom qui promet la neutralite.
+forge_auth_write() {
+  local secret="$1" hf="$2" mode="${FORGE_API_AUTH:-token}" u b64
+  case "$mode" in
+    token)         printf 'Authorization: token %s\n' "$secret" > "$hf" ;;
+    private-token) printf 'PRIVATE-TOKEN: %s\n' "$secret" > "$hf" ;;
+    basic)
+      u="${FORGE_USER:-}"
+      [ -n "$u" ] || { echo "REFUS: FORGE_USER_REQUIS : FORGE_API_AUTH=basic exige FORGE_USER (l'utilisateur du couple)" >&2; return 2; }
+      b64=$(printf '%s:%s' "$u" "$secret" | base64 | tr -d '\n') || return 1
+      printf 'Authorization: Basic %s\n' "$b64" > "$hf" ;;
+    *) echo "REFUS: FORGE_API_AUTH_INCONNU : '$mode' — attendu token, private-token ou basic" >&2; return 2 ;;
+  esac
+}
+
 forge_auth_header() {
   local sf="$1" hf="$2" mode="${FORGE_API_AUTH:-token}" u b64
   case "$mode" in

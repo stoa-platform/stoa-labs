@@ -25,6 +25,8 @@
 #   GITEA_TOKEN                                 (requis hors DRY_RUN)
 #   DRY_RUN=1                                   (s'arrête après les gardes)
 set -uo pipefail
+# shellcheck source=scripts/lib/forge-identity.sh
+. scripts/lib/forge-identity.sh || { echo "ERREUR: scripts/lib/forge-identity.sh introuvable ou illisible" >&2; exit 1; }
 set +x   # jamais de trace : le token ne doit pas fuiter
 cd "$(dirname "$0")/.." || exit 1
 
@@ -183,7 +185,7 @@ GITEA_TOKEN="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
 GIT_HOST="${GIT_HOST:-http://gitea:3000}"
 GIT_REPO="${GIT_REPO:-ci/stoa-labs}"   # dépôt PLATEFORME — porte providers.<env>.yml
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT; umask 077
-printf 'Authorization: token %s\n' "$GITEA_TOKEN" > "$TMP/ghdr"
+forge_auth_write "$GITEA_TOKEN" "$TMP/ghdr" || exit 2
 gapi() { curl -sS -H @"$TMP/ghdr" -H 'Content-Type: application/json' "$@"; }
 
 # ── team -> repo, lu sur GITEA MAIN (jamais le worktree local) ───────────────

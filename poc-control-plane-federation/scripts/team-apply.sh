@@ -20,6 +20,8 @@
 # (celui-ci n'a de sens que dans un CLONE FRAIS du dépôt plateforme entier —
 # motif utilisé par team-request.sh pour son propre WORK/repo, différent).
 set -uo pipefail
+# shellcheck source=scripts/lib/forge-identity.sh
+. scripts/lib/forge-identity.sh || { echo "ERREUR: scripts/lib/forge-identity.sh introuvable ou illisible" >&2; exit 1; }
 set +x   # jamais de trace : le token ne doit pas fuiter
 cd "$(dirname "$0")/.." || exit 1
 
@@ -149,7 +151,7 @@ if [ -n "$REPO_FULL" ]; then
   curl -s -H @"$TMP/vthdr" "$VAULT_ADDR/v1/secret/data/stoa/ci/gitea-org-admin" \
     | python3 -c "import json,sys; print(json.load(sys.stdin)['data']['data']['token'])" > "$TMP/gt" \
     || fail "lecture du token org-admin dans Vault (policy team-onboarder ?)"
-  printf 'Authorization: token %s\n' "$(cat "$TMP/gt")" > "$TMP/ghdr"
+  forge_auth_write "$(cat "$TMP/gt")" "$TMP/ghdr" || exit 2
   ORG="${REPO_FULL%%/*}"; RNAME="${REPO_FULL##*/}"
   gapi(){ curl -s -H @"$TMP/ghdr" -H 'Content-Type: application/json' "$@"; }
   # org : create-or-skip

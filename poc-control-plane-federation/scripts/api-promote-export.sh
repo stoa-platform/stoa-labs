@@ -51,6 +51,8 @@ cd "$(dirname "$0")/.." || exit 1
 . scripts/lib/archive-store.sh || { echo "ERREUR: scripts/lib/archive-store.sh introuvable ou illisible" >&2; exit 1; }
 # shellcheck source=scripts/lib/promote-manifest.sh
 . scripts/lib/promote-manifest.sh || { echo "ERREUR: scripts/lib/promote-manifest.sh introuvable ou illisible" >&2; exit 1; }
+# shellcheck source=scripts/lib/forge-identity.sh
+. scripts/lib/forge-identity.sh || { echo "ERREUR: scripts/lib/forge-identity.sh introuvable ou illisible" >&2; exit 1; }
 
 fail() { printf 'ERREUR: %s\n' "$*" >&2; exit 1; }
 
@@ -89,7 +91,7 @@ GIT_WEB_HOST="${GIT_WEB_HOST:-$GIT_HOST}"   # défaut : même hôte, sauf revers
 GIT_REPO="${GIT_REPO:-ci/stoa-labs}"   # dépôt PLATEFORME — porte providers.<env>.yml
 
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT; umask 077
-printf 'Authorization: token %s\n' "$GITEA_TOKEN" > "$TMP/ghdr"
+forge_auth_write "$GITEA_TOKEN" "$TMP/ghdr" || exit 2
 gapi() { curl -sS -H @"$TMP/ghdr" -H 'Content-Type: application/json' "$@"; }
 
 # ── team -> repo, lu sur GITEA MAIN (jamais le worktree local) ───────────────

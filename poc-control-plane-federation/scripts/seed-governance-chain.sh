@@ -30,6 +30,8 @@
 #   docker exec -u git poc-gitea gitea admin user generate-access-token \
 #     --username ci --token-name seed-chain --scopes write:repository
 set -uo pipefail
+# shellcheck source=scripts/lib/forge-identity.sh
+. scripts/lib/forge-identity.sh || { echo "ERREUR: scripts/lib/forge-identity.sh introuvable ou illisible" >&2; exit 1; }
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC="$ROOT/clients/_example/environments.yaml"
@@ -58,7 +60,11 @@ fi
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 # Le token ne touche NI l'URL (il finirait dans .git/config et dans les logs),
 # NI argv (visible en `ps`) : il passe par un header, comme dans team-apply.sh.
-AUTH="Authorization: token $GITEA_TOKEN"
+# 2026-09-04 : l'en-tete suit FORGE_API_AUTH (un jeton GitLab envoye avec
+# l'en-tete de Gitea rendrait un 401 sous un nom qui promet la neutralite).
+_SGC_HDR="$(mktemp)"; trap 'rm -f "$_SGC_HDR"' EXIT
+forge_auth_write "$GITEA_TOKEN" "$_SGC_HDR" || exit 2
+AUTH="$(cat "$_SGC_HDR")"
 
 echo "② clone de $GIT_REPO"
 if git -c http.extraHeader="$AUTH" clone -q "$GIT_HOST/$GIT_REPO.git" "$TMP/gov" 2>"$TMP/err"; then
