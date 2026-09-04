@@ -170,6 +170,39 @@ set_ctl '{"login_override":"x/y"}'; forge_login "$API" "$TMP/tok" >/dev/null 2>"
 forge_is_service ci "ci svc-bot" && ! forge_is_service alice "ci svc-bot" && ok "E0.7 forge_is_service : ci oui, alice non" || ko "E0.7 forge_is_service"
 A=$(forge_askpass "$TMP" alice "$TMP/tok"); [ "$(sh "$A" 'Username for x')" = alice ] && [ "$(sh "$A" 'Password for x')" = t-alice ] && [ "$(stat -f %Lp "$A" 2>/dev/null || stat -c %a "$A")" = 700 ] && ok "E0.8 askpass : login pour Username, token du fichier sinon, 0700" || ko "E0.8 askpass"
 
+
+# ── E0.10 à E0.16 — DEUX MODES D'IDENTITE (déploiement client 2026-09-04) ────
+# Le gestionnaire d'identité d'un client ne rend pas toujours un jeton : Jenkins
+# rend souvent un COUPLE (usernamePassword). « Authorization: token » n'a alors
+# aucun sens pour la forge en face, et le refus accusait le jeton de l'humain.
+FT="$TMP/fi"; mkdir -p "$FT"; printf 'secret-canari' > "$FT/s"
+# chaque appel part d'un environnement PROPRE : ces modes se lisent dans l'env,
+# une variable qui survit d'une épreuve à l'autre rendrait un vert menteur.
+# <VAR=v>… -- <fonction> <args…>  (env exigeant : les assignations d'abord)
+fi_run(){
+  local -a A=()
+  while [ $# -gt 0 ] && [ "$1" != -- ]; do A+=("$1"); shift; done
+  shift
+  env -u FORGE_API_AUTH -u FORGE_USER "${A[@]}" bash -c '. "$0"; "$@"' "$LIB" "$@"
+}
+fi_hdr(){ fi_run "$@" -- forge_auth_header "$FT/s" "$FT/h" 2>"$FT/e"; }
+
+fi_hdr FORGE_API_AUTH=token && grep -qx 'Authorization: token secret-canari' "$FT/h" \
+  && ok "E0.10 mode token (défaut Gitea) : en-tête inchangé" || ko "E0.10 $(head -1 "$FT/h" 2>/dev/null)"
+fi_hdr FORGE_API_AUTH=private-token && grep -qx 'PRIVATE-TOKEN: secret-canari' "$FT/h" \
+  && ok "E0.11 mode private-token (GitLab) : en-tête PRIVATE-TOKEN" || ko "E0.11 $(head -1 "$FT/h" 2>/dev/null)"
+fi_hdr FORGE_API_AUTH=basic FORGE_USER=jdupont \
+  && [ "$(cut -d' ' -f3 "$FT/h" | base64 -d 2>/dev/null)" = "jdupont:secret-canari" ] \
+  && ok "E0.12 mode basic (couple d'un gestionnaire d'identité) : Basic <user:secret>" || ko "E0.12 $(head -1 "$FT/e" 2>/dev/null)"
+fi_hdr FORGE_API_AUTH=basic; RCB=$?
+[ "$RCB" = 2 ] && grep -q 'FORGE_USER_REQUIS' "$FT/e" && ok "E0.13 basic sans utilisateur ⇒ FORGE_USER_REQUIS (rc 2), aucun en-tête" || ko "E0.13 rc=$RCB"
+fi_hdr FORGE_API_AUTH=oauth; RCB=$?
+[ "$RCB" = 2 ] && grep -q 'FORGE_API_AUTH_INCONNU' "$FT/e" && ok "E0.14 mode inconnu ⇒ FORGE_API_AUTH_INCONNU (fail-closed)" || ko "E0.14 rc=$RCB"
+LG=$(fi_run FORGE_USER=jdupont -- forge_login "http://forge.invalid/api/v1" "$FT/s" 2>/dev/null)
+[ "$LG" = jdupont ] && ok "E0.15 FORGE_USER posé ⇒ le login est CONNU, aucun appel à la forge (hôte injoignable, rc 0)" || ko "E0.15 login='$LG'"
+LG=$(fi_run FORGE_USER="jean dupont" -- forge_login "http://forge.invalid/api/v1" "$FT/s" 2>&1)
+printf '%s' "$LG" | grep -q FORGE_LOGIN_INVALIDE && ok "E0.16 FORGE_USER hors charset ⇒ FORGE_LOGIN_INVALIDE (même contrôle que le login de la forge)" || ko "E0.16 $LG"
+
 echo "═══ E1. rec + refs sous ci : la ligne per_env porte change_ref/pv_ref, rien d'autre ne bouge ═══"
 set_ctl '{"open":[]}'; reset_origin
 req dev
