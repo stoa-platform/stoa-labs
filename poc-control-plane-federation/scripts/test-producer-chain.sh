@@ -584,7 +584,7 @@ rm -rf "$TMP/plat"; mkdir -p "$TMP/plat"
 # DEPUIS LA RACINE DU DÉPÔT, jamais depuis ce sous-répertoire : `git archive
 # HEAD` lancé dans un sous-répertoire n'archive QUE ce sous-arbre (mesuré) —
 # le dépôt plateforme y perdrait son niveau `poc-control-plane-federation/`,
-# celui-là même que le job ouvre (`dir('poc-control-plane-federation')`) et où
+# celui-là même que le job ouvre (`dir(env.GIT_SUBDIR)`) et où
 # vivent les scripts. Le clone se retrouvait sans ce répertoire, et TOUT ce qui
 # s'invoque depuis lui échouait sur un `cd` — sans que le message ne parle
 # jamais de l'archive.

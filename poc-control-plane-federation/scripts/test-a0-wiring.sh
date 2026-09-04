@@ -122,7 +122,7 @@ L_WHEN=$(code_line "$TMP/jf-plan.code" 'beforeAgent true'); L_AG=$(awk "NR>${L_W
 L_SH=$(code_line "$TMP/jf-plan.code" "sh 'set +x; rm -f \"\$WORKSPACE/.plan.facts\"; PLAN_FACTS=\"\$WORKSPACE/.plan.facts\" bash scripts/provision-plan.sh'")
 [ -n "$L_SH" ] && ok "scripts/provision-plan.sh invoqué en quotes SIMPLES avec set +x, purge puis PLAN_FACTS (ligne $L_SH)" || ko "invocation du script absente ou en quotes doubles"
 L_WC=$(code_line "$TMP/jf-plan.code" "withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')])")
-L_DIR=$(code_line "$TMP/jf-plan.code" "dir('poc-control-plane-federation')")
+L_DIR=$(code_line "$TMP/jf-plan.code" "dir(env.GIT_SUBDIR)")
 [ -n "$L_WC" ] && [ -n "$L_DIR" ] && [ -n "$L_SH" ] && [ "$L_WC" -lt "$L_DIR" ] && [ "$L_DIR" -lt "$L_SH" ] \
   && ok "ordre withCredentials ($L_WC) < dir ($L_DIR) < sh ($L_SH) : token présent, chemins relatifs justes" || ko "ordre withCredentials/dir/sh cassé (wc=$L_WC dir=$L_DIR sh=$L_SH)"
 MISS=""
@@ -161,7 +161,7 @@ done
 L_SH=$(code_line "$TMP/jf-req.code" "sh 'set +x; bash scripts/provision-request.sh'")
 [ -n "$L_SH" ] && ok "scripts/provision-request.sh invoqué en quotes SIMPLES avec set +x (ligne $L_SH)" || ko "invocation du script absente ou en quotes doubles"
 L_WC=$(code_line "$TMP/jf-req.code" "withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')])")
-L_DIR=$(code_line "$TMP/jf-req.code" "dir('poc-control-plane-federation')")
+L_DIR=$(code_line "$TMP/jf-req.code" "dir(env.GIT_SUBDIR)")
 [ -n "$L_WC" ] && [ -n "$L_DIR" ] && [ -n "$L_SH" ] && [ "$L_WC" -lt "$L_DIR" ] && [ "$L_DIR" -lt "$L_SH" ] \
   && ok "ordre withCredentials ($L_WC) < dir ($L_DIR) < sh ($L_SH)" || ko "ordre withCredentials/dir/sh cassé (wc=$L_WC dir=$L_DIR sh=$L_SH)"
 if jfr 'withEnv(' || jfr 'params.'; then
@@ -673,7 +673,7 @@ MISS=""; for P in MANIFEST MERGE_SHA ENVIRONMENT ADMIN_VIA DEBUG VAULT_USER VAUL
 [ -z "$MISS" ] && ok "les 8 paramètres sont posés par properties()" || ko "paramètres absents :$MISS"
 jss "choice(name: 'ENVIRONMENT', choices: envs" && ok "ENVIRONMENT : choices: envs (dérivée)" || ko "ENVIRONMENT n'est pas dérivée"
 grep -qE "\['dev'|'homol'|'rec', 'int'" "$TMP/jsf.code" && ko "une liste de paliers LITTÉRALE subsiste" || ok "aucune liste de paliers littérale dans Jenkinsfile.selfservice"
-L_DIRF=$(awk "NR>${L_FORM:-0} && /dir\('poc-control-plane-federation'\)/ {print NR; exit}" "$TMP/jsf.code"); L_DER=$(code_line "$TMP/jsf.code" 'env-chain.sh && env_chain_validate && env_chain" > "$WORKSPACE/.a0-envs"')
+L_DIRF=$(awk "NR>${L_FORM:-0} && /dir\(env\.GIT_SUBDIR\)/ {print NR; exit}" "$TMP/jsf.code"); L_DER=$(code_line "$TMP/jsf.code" 'env-chain.sh && env_chain_validate && env_chain" > "$WORKSPACE/.a0-envs"')
 [ -n "$L_DIRF" ] && [ -n "$L_DER" ] && [ "$L_DIRF" -lt "$L_DER" ] && [ "$L_DER" -lt "$L_PROPS" ] && ok "dérivation env_chain (validée, chaîne ENTIÈRE — A7) sous dir() (ligne $L_DER), avant properties()" || ko "dérivation absente/mal placée (dir=$L_DIRF der=$L_DER)"
 jss 'envs.every { it ==~ /[a-z0-9]+/ }' && jss 'FORMULAIRE_INVALIDE' && ok "paliers validés ^[a-z0-9]+$, refus FORMULAIRE_INVALIDE (définitions précédentes conservées)" || ko "validation des paliers absente"
 # Les listes withEnv EXACTES par stage (revue : compter MANIFEST ne prouvait rien

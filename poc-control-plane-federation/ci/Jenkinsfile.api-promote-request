@@ -33,6 +33,10 @@ pipeline {
   // autres Jenkinsfile qui parlent à Gitea. Un ID inventé fait échouer le build
   // sur CredentialNotFoundException, et aucune épreuve hors ligne ne le voit.
   environment {
+    // Préfixe du livrable DANS le dépôt (2026-09-03) : le seul endroit qui le
+    // nomme. « . » = le livrable EST la racine (une valeur VIDE ne traverse pas
+    // Jenkins : elle arrive absente et reprendrait ce défaut).
+    GIT_SUBDIR           = "${env.GIT_SUBDIR ?: 'poc-control-plane-federation'}"
     GIT_HOST             = "${env.GIT_HOST ?: 'http://gitea:3000'}"
     GIT_REPO             = "${env.GIT_REPO ?: 'ci/stoa-labs'}"
     GITEA_CREDENTIALS_ID = "${env.GITEA_CREDENTIALS_ID ?: 'gitea-provision-token'}"
@@ -62,7 +66,7 @@ pipeline {
             "PV_REF=${params.PV_REF}", "ARCHIVE_SHA256=${params.ARCHIVE_SHA256}",
             "PROMOTED_BY=${env.BUILD_USER_ID ?: 'ci'}",
           ]) {
-            dir('poc-control-plane-federation') {
+            dir(env.GIT_SUBDIR) {
               sh 'bash scripts/api-promote-request.sh'
             }
           }

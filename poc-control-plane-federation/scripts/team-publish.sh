@@ -51,7 +51,7 @@
 # trace de l'échec au lieu de la laisser trainer à côté d'un ✅ contradictoire.
 #
 # Invocation attendue (miroir de team-apply.sh) :
-#   dir('poc-control-plane-federation') { sh 'bash scripts/team-publish.sh' }
+#   dir(env.GIT_SUBDIR) { sh 'bash scripts/team-publish.sh' }
 # — donc $0 = "scripts/team-publish.sh" et le `cd "$(dirname "$0")/.."`
 # ci-dessous NE BOUGE PAS le cwd ("scripts/.." s'annule).
 set -uo pipefail

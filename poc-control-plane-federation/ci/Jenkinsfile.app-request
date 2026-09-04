@@ -65,6 +65,10 @@ pipeline {
   // ceux que provision-request.sh applique déjà de lui-même.
   // ⚠ Hôtes vus DEPUIS le conteneur de l'agent (réseau docker `poc`).
   environment {
+    // Préfixe du livrable DANS le dépôt (2026-09-03) : le seul endroit qui le
+    // nomme. « . » = le livrable EST la racine (une valeur VIDE ne traverse pas
+    // Jenkins : elle arrive absente et reprendrait ce défaut).
+    GIT_SUBDIR           = "${env.GIT_SUBDIR ?: 'poc-control-plane-federation'}"
     GIT_HOST             = "${env.GIT_HOST ?: 'http://gitea:3000'}"
     GIT_REPO             = "${env.GIT_REPO ?: 'ci/stoa-labs'}"
     // Credential Jenkins (secret text) portant le token Gitea du CI : push + PR,
@@ -86,7 +90,7 @@ pipeline {
           env.FORM_BOOTSTRAP = (params.size() == 0) ? 'true' : 'false'
         }
         withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')]) {
-          dir('poc-control-plane-federation') {
+          dir(env.GIT_SUBDIR) {
             // Quotes SIMPLES ; `set +x` : le token ne s'écho pas. Le script
             // RETIRE tout fichier périmé avant de travailler.
             // GC_PLATFORM_DIR : le dépôt plateforme est DÉJÀ là (définition SCM
@@ -274,7 +278,7 @@ pipeline {
             // Triple quotes SIMPLES : Groovy n'interpole RIEN dans cette chaîne
             // (un `${…}` y serait du shell, pas du Groovy). `set +x` : le
             // GITEA_TOKEN injecté par withCredentials ne doit pas être écho.
-            dir('poc-control-plane-federation') {
+            dir(env.GIT_SUBDIR) {
               sh '''
                 set +x
                 STOA_ENV_CHAIN_FILE="$WORKSPACE/poc-control-plane-federation/clients/_example/environments.yaml" bash scripts/provision-request.sh

@@ -72,6 +72,10 @@ pipeline {
 
 
   environment {
+    // Préfixe du livrable DANS le dépôt (2026-09-03) : le seul endroit qui le
+    // nomme. « . » = le livrable EST la racine (une valeur VIDE ne traverse pas
+    // Jenkins : elle arrive absente et reprendrait ce défaut).
+    GIT_SUBDIR           = "${env.GIT_SUBDIR ?: 'poc-control-plane-federation'}"
     VAULT_ADDR        = "${env.VAULT_ADDR ?: 'http://vault:8200'}"
     // Mount de l'auth user/password : `ldap` chez le client (AD ; peut s'appeler
     // ad, ldap-corp…), `userpass` en lab. MÊME requête REST — seul ce mount change.
@@ -163,7 +167,7 @@ pipeline {
     // poseur enchaîne et attend.
     stage('Formulaire — paliers dérivés de la chaîne') {
       steps {
-        dir('poc-control-plane-federation') {
+        dir(env.GIT_SUBDIR) {
           // A7 : la chaîne ENTIÈRE, terminus compris — MESURÉ : `build job:` valide
           // la valeur contre la liste d'un `choice` (« Invalid parameter value »), donc
           // le dispatch de prod par provision-apply exige que le terminus soit listé.
@@ -259,7 +263,7 @@ pipeline {
               error("REFUS: MERGE_SHA_REQUIS — appelé par un job amont sans référence (paramètre MERGE_SHA non matérialisé sur ce job ? appelant d'avant A2 ?) ; rien n'est appliqué")
             }
           }
-          dir('poc-control-plane-federation') {
+          dir(env.GIT_SUBDIR) {
             // Deux gardes d'ancrage, dans cet ordre : `merge-base --is-ancestor`
             // (l'objet est-il sur main ? refus rapide) puis la LIGNÉE first-parent
             // (est-ce un commit ATTERRI sur main — merge, squash ou rebase — et
@@ -322,7 +326,7 @@ pipeline {
         // altéré). Une valeur vide retire la variable : les `${X:-défaut}` du
         // shell restent valides.
         withEnv(["MANIFEST=${params.MANIFEST ?: (env.MANIFEST ?: '')}", "MERGE_SHA=${params.MERGE_SHA ?: ''}", "ENVIRONMENT=${params.ENVIRONMENT ?: ''}"]) {
-          dir('poc-control-plane-federation') {
+          dir(env.GIT_SUBDIR) {
             sh '''
               set -eu
               MANIFEST="${MANIFEST:?MANIFEST requis (manifeste de l'application a deployer) — aucune application par defaut}"
@@ -393,7 +397,7 @@ pipeline {
         withEnv(["MANIFEST=${params.MANIFEST ?: (env.MANIFEST ?: '')}", "MERGE_SHA=${params.MERGE_SHA ?: ''}", "ENVIRONMENT=${params.ENVIRONMENT ?: ''}",
                  "ADMIN_VIA=${params.ADMIN_VIA ?: ''}", "DEBUG=${params.DEBUG ?: false}",
                  "VAULT_USER=${params.VAULT_USER ?: ''}", "USER_VAULT_JWT=${params.USER_VAULT_JWT ?: ''}"]) {
-          dir('poc-control-plane-federation') {
+          dir(env.GIT_SUBDIR) {
             sh '''
               set +x            # NE JAMAIS écho : mot de passe, JWT, token Vault, creds gateway
               set -eu

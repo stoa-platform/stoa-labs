@@ -21,6 +21,10 @@ pipeline {
   // au premier build du job (lancer le build #1 manuellement à la création).
   triggers { GenericTrigger(token: 'stoa-ci', printContributedVariables: false, printPostContent: false) }
   environment {
+    // Préfixe du livrable DANS le dépôt (2026-09-03) : le seul endroit qui le
+    // nomme. « . » = le livrable EST la racine (une valeur VIDE ne traverse pas
+    // Jenkins : elle arrive absente et reprendrait ce défaut).
+    GIT_SUBDIR           = "${env.GIT_SUBDIR ?: 'poc-control-plane-federation'}"
     GOPROXY = 'off'; GOFLAGS = '-mod=vendor'; GOSUMDB = 'off'
     // É0 — auth Git : URL du repo governance + credential Jenkins OPTIONNEL,
     // surchargeables au niveau job (défauts = Gitea anonyme du PoC). Chez un
@@ -41,7 +45,7 @@ pipeline {
     }
     stage('Apply — Define Once, Expose Everywhere') {
       steps {
-        dir('poc-control-plane-federation') {
+        dir(env.GIT_SUBDIR) {
           // GitOps : 1 contrat OpenAPI + targets.cluster.yaml en git -> fédéré sur les 3 gateways.
           // NON-BLOQUANT (catchError → UNSTABLE) : ce stage est la preuve legacy
           // tri-gateway, PAS la chaîne multi-env (webMethods-only, stages suivants).
@@ -74,7 +78,7 @@ pipeline {
     //
     stage('Checkout governance (GitOps source)') {
       steps {
-        dir('poc-control-plane-federation') {
+        dir(env.GIT_SUBDIR) {
           // Clone COMPLET (pas de --depth 1) : le pinning de version lit le
           // contrat au SHA capturé par la promotion (git show <commit>:…) — un
           // clone shallow ne porte pas l'historique et casse ResolvePinned.
@@ -108,7 +112,7 @@ pipeline {
         VAULT_ROLE_ID               = "${env.VAULT_ROLE_ID ?: 'fa09b310-79a7-8845-609b-9b6090bcd53b'}"
       }
       steps {
-        dir('poc-control-plane-federation') {
+        dir(env.GIT_SUBDIR) {
           withCredentials([string(credentialsId: 'vault-ci-secret-id', variable: 'VAULT_SECRET_ID')]) {
             sh '''
               set +x          # NEVER echo: secret_id, vault token, OAuth tokens must not reach the console
@@ -196,7 +200,7 @@ PYCHAIN
     }
     stage('Verify — catalogue unifié') {
       steps {
-        dir('poc-control-plane-federation') {
+        dir(env.GIT_SUBDIR) {
           sh '"$WORKSPACE/labctl" get apis -f targets.cluster.yaml'
         }
       }

@@ -50,6 +50,10 @@ pipeline {
              printContributedVariables: false, printPostContent: false) }
 
   environment {
+    // Préfixe du livrable DANS le dépôt (2026-09-03) : le seul endroit qui le
+    // nomme. « . » = le livrable EST la racine (une valeur VIDE ne traverse pas
+    // Jenkins : elle arrive absente et reprendrait ce défaut).
+    GIT_SUBDIR           = "${env.GIT_SUBDIR ?: 'poc-control-plane-federation'}"
     VAULT_ADDR        = "${env.VAULT_ADDR ?: 'http://vault:8200'}"
     // `ldap` chez le client (AD), `userpass` en lab : MÊME requête REST, seul le mount change.
     VAULT_USER_AUTH_MOUNT = "${env.VAULT_USER_AUTH_MOUNT ?: 'ldap'}"
@@ -84,7 +88,7 @@ pipeline {
 
     stage('Plan — valider le contrat (lecture seule, identité de job)') {
       steps {
-        dir('poc-control-plane-federation') {
+        dir(env.GIT_SUBDIR) {
           sh '''
             set -eu
             MANIFEST="${MANIFEST:?MANIFEST requis (manifeste de l'API a publier) — aucune API par defaut}"
@@ -101,7 +105,7 @@ pipeline {
 
     stage('Apply — publier + verify via le rôle Ansible (identité nominative → Vault)') {
       steps {
-        dir('poc-control-plane-federation') {
+        dir(env.GIT_SUBDIR) {
           sh '''
             set +x
             set -eu

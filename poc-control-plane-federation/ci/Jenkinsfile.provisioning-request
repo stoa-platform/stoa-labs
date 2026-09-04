@@ -81,6 +81,10 @@ pipeline {
   // VISIBLE et surchargeable sans toucher au moteur.
   // ⚠ Hôtes vus DEPUIS le conteneur de l'agent (réseau docker `poc`).
   environment {
+    // Préfixe du livrable DANS le dépôt (2026-09-03) : le seul endroit qui le
+    // nomme. « . » = le livrable EST la racine (une valeur VIDE ne traverse pas
+    // Jenkins : elle arrive absente et reprendrait ce défaut).
+    GIT_SUBDIR           = "${env.GIT_SUBDIR ?: 'poc-control-plane-federation'}"
     GIT_HOST             = "${env.GIT_HOST ?: 'http://gitea:3000'}"
     GIT_REPO             = "${env.GIT_REPO ?: 'ci/stoa-labs'}"
     // Credential Jenkins (secret text) portant le token Gitea du CI (push +
@@ -113,7 +117,7 @@ pipeline {
           // Chaîne sh en quotes SIMPLES : les REQ_* (tiers) sont lus par le
           // SHELL depuis l'environnement, jamais interpolés par Groovy.
           // `set +x` : le GITEA_TOKEN injecté par withCredentials ne s'écho pas.
-          dir('poc-control-plane-federation') {
+          dir(env.GIT_SUBDIR) {
             sh 'set +x; bash scripts/provision-request.sh'
           }
         }

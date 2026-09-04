@@ -29,7 +29,7 @@
 set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 # Le script sous test source ses libs RELATIVEMENT au cwd (`. scripts/lib/…`,
-# comme le job Jenkins qui fait dir('poc-control-plane-federation')) : la suite
+# comme le job Jenkins qui fait dir(env.GIT_SUBDIR)) : la suite
 # se place donc à la racine du dépôt, d'où qu'elle soit lancée.
 cd "$REPO" || exit 1
 S="$REPO/scripts/provision-request.sh"

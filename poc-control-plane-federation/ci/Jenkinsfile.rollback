@@ -27,6 +27,10 @@ pipeline {
              description: "Mot de passe annuaire, saisi à chaque rollback. ⚠ Ne pas rejouer après un refus (lockout AD). NB : le bouton « Change Password » est un libellé Jenkins (SECURITY-1721) — il signifie « saisir la valeur du champ », RIEN ne modifie votre mot de passe annuaire ; cliquez-le puis tapez votre mot de passe.")
   }
   environment {
+    // Préfixe du livrable DANS le dépôt (2026-09-03) : le seul endroit qui le
+    // nomme. « . » = le livrable EST la racine (une valeur VIDE ne traverse pas
+    // Jenkins : elle arrive absente et reprendrait ce défaut).
+    GIT_SUBDIR           = "${env.GIT_SUBDIR ?: 'poc-control-plane-federation'}"
     GOPROXY = 'off'; GOFLAGS = '-mod=vendor'; GOSUMDB = 'off'
     // É0 — auth Git (cf. ci/Jenkinsfile) : défauts PoC anonymes, surchargeables
     // au niveau job ; GIT_CREDENTIALS_ID non vide -> clone via GIT_ASKPASS.
@@ -65,7 +69,7 @@ pipeline {
     }
     stage('Rollback governance — POST promotions/{id}/rollback') {
       steps {
-        dir('poc-control-plane-federation') {
+        dir(env.GIT_SUBDIR) {
           withCredentials([string(credentialsId: 'vault-ci-secret-id', variable: 'VAULT_SECRET_ID')]) {
             sh '''
               set +x          # NEVER echo: secret_id, vault token, OAuth token
@@ -128,7 +132,7 @@ PYCAP
     }
     stage('Checkout governance (post-revert)') {
       steps {
-        dir('poc-control-plane-federation') {
+        dir(env.GIT_SUBDIR) {
           // Re-clone APRÈS le revert : l'état appliqué est l'état Git
           // post-rollback (version précédente pinnée) — convergence idempotente.
           // Clone COMPLET (pas de --depth 1) : ResolvePinned lit git show
@@ -139,7 +143,7 @@ PYCAP
     }
     stage('Palier du rollback — chaîne dérivée, fail-closed') {
       steps {
-        dir('poc-control-plane-federation') {
+        dir(env.GIT_SUBDIR) {
           sh '''
             set -eu
             RENV=$(cat "$WORKSPACE/rollback-env.txt")
@@ -172,7 +176,7 @@ PYCHAIN
     stage('Re-apply terminus — convergence de l\'état Git reverté') {
       when { expression { readFile('rollback-terminus.flag').trim() == 'yes' } }
       steps {
-        dir('poc-control-plane-federation') {
+        dir(env.GIT_SUBDIR) {
           withCredentials([string(credentialsId: 'vault-ci-secret-id', variable: 'VAULT_SECRET_ID')]) {
             sh '''
               set +x
@@ -206,7 +210,7 @@ PYCHAIN
     stage('Re-apply + smoke palier intermédiaire — via wm-admin-<env>') {
       when { expression { readFile('rollback-terminus.flag').trim() == 'no' } }
       steps {
-        dir('poc-control-plane-federation') {
+        dir(env.GIT_SUBDIR) {
           withCredentials([string(credentialsId: 'vault-ci-secret-id', variable: 'VAULT_SECRET_ID')]) {
             sh '''
               set +x
@@ -269,7 +273,7 @@ PYSMOKE
     stage('Smoke terminus — data-plane + catalogue N-1') {
       when { expression { readFile('rollback-terminus.flag').trim() == 'yes' } }
       steps {
-        dir('poc-control-plane-federation') {
+        dir(env.GIT_SUBDIR) {
           sh '''
             set -eu
             RENV=$(cat "$WORKSPACE/rollback-env.txt")

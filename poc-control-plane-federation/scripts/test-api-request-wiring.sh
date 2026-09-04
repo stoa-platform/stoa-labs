@@ -187,9 +187,9 @@ if printf '%s\n' "$JF_CODE" | grep -q 'skipDefaultCheckout'; then
 else
   ok "pas de skipDefaultCheckout : le dépôt est bien reposé dans le workspace"
 fi
-jfc "dir('poc-control-plane-federation')" \
+jfc "dir(env.GIT_SUBDIR)" \
   && ok "le step tourne dans poc-control-plane-federation/ (le dépôt plateforme est checkouté à la racine)" \
-  || ko "\`dir('poc-control-plane-federation')\` absent — les chemins scripts/… ne résoudraient pas"
+  || ko "\`dir(env.GIT_SUBDIR)\` absent — les chemins scripts/… ne résoudraient pas"
 
 echo
 echo "== 5. le credential Gitea : même identité qu'avant, mais surchargeable =="

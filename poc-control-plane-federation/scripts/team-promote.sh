@@ -39,7 +39,7 @@
 # la question à chaque relecture.
 #
 # Invocation attendue (miroir de team-publish.sh) :
-#   dir('poc-control-plane-federation') { sh 'bash scripts/team-promote.sh' }
+#   dir(env.GIT_SUBDIR) { sh 'bash scripts/team-promote.sh' }
 # — donc $0 = "scripts/team-promote.sh" et le `cd "$(dirname "$0")/.."`
 # ci-dessous NE BOUGE PAS le cwd ("scripts/.." s'annule).
 set -uo pipefail

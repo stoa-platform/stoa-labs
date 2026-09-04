@@ -96,6 +96,10 @@ pipeline {
   // ⚠ Les hôtes sont ceux vus DEPUIS le conteneur de l'agent (réseau docker
   // `poc`) : `localhost` n'y désigne PAS Gitea — d'où gitea:3000 côté machine.
   environment {
+    // Préfixe du livrable DANS le dépôt (2026-09-03) : le seul endroit qui le
+    // nomme. « . » = le livrable EST la racine (une valeur VIDE ne traverse pas
+    // Jenkins : elle arrive absente et reprendrait ce défaut).
+    GIT_SUBDIR           = "${env.GIT_SUBDIR ?: 'poc-control-plane-federation'}"
     // Dépôt PLATEFORME : porte ansible/providers.<env>.yml (résolution
     // équipe -> dépôt, lue FRAÎCHE sur main par le script) et les gardes hors
     // ligne du plan. C'est aussi ce que la coquille XML checkoute.
@@ -155,7 +159,7 @@ pipeline {
             // Le dépôt plateforme est checkouté à la RACINE du workspace ; tout
             // le PoC vit dans ce sous-dossier (d'où lightweight=false côté XML :
             // sans le dépôt entier, scripts/ et ansible/ seraient absents).
-            dir('poc-control-plane-federation') {
+            dir(env.GIT_SUBDIR) {
               // Chaîne en quotes SIMPLES : Groovy n'y interpole rien. `set +x`
               // conservé tel quel — aucune trace shell, le token ne doit pas
               // fuiter dans le log même si le script était un jour lancé sous -x.

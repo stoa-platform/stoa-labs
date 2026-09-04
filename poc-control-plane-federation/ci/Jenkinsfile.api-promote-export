@@ -20,6 +20,10 @@ pipeline {
   // Motif `env.X ?: défaut`, identique aux Jenkinsfile frères : le MÊME
   // fichier sert le lab et le client, sans fork.
   environment {
+    // Préfixe du livrable DANS le dépôt (2026-09-03) : le seul endroit qui le
+    // nomme. « . » = le livrable EST la racine (une valeur VIDE ne traverse pas
+    // Jenkins : elle arrive absente et reprendrait ce défaut).
+    GIT_SUBDIR           = "${env.GIT_SUBDIR ?: 'poc-control-plane-federation'}"
     GIT_HOST              = "${env.GIT_HOST ?: 'http://gitea:3000'}"
     GIT_REPO              = "${env.GIT_REPO ?: 'ci/stoa-labs'}"
     GITEA_CREDENTIALS_ID  = "${env.GITEA_CREDENTIALS_ID ?: 'gitea-provision-token'}"
@@ -52,7 +56,7 @@ pipeline {
             "TEAM=${params.TEAM}", "API_NAME=${params.API_NAME}",
             "VAULT_USER=${params.VAULT_USER}", "V_PASS=${params.V_PASS}",
           ]) {
-            dir('poc-control-plane-federation') {
+            dir(env.GIT_SUBDIR) {
               // Login ET export dans UN SEUL step `sh` : le script hérite
               // VAULT_TOKEN_FILE en sous-processus, et le trap de révocation
               // (vault_trap_revoke, EXIT) ne révoque le token QU'APRÈS

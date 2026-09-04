@@ -344,10 +344,10 @@ echo "== 9. team-request.sh est invoqué, depuis le bon dossier, et le pipeline 
 printf '%s\n' "$SH_BODY" | grep -qF 'bash scripts/team-request.sh' \
   && ok "scripts/team-request.sh réellement invoqué (dans le corps du \`sh\`, pas en commentaire)" \
   || ko "team-request.sh non invoqué — job mort"
-jf "dir('poc-control-plane-federation')" \
-  && ok "l'appel a lieu dans dir('poc-control-plane-federation') — le chemin relatif scripts/… existe" \
-  || ko "dir('poc-control-plane-federation') absent : \`bash scripts/team-request.sh\` ne trouverait rien"
-L_DIR=$(grep -n "dir('poc-control-plane-federation')" "$JF" | head -1 | cut -d: -f1)
+jf "dir(env.GIT_SUBDIR)" \
+  && ok "l'appel a lieu dans dir(env.GIT_SUBDIR) — le chemin relatif scripts/… existe" \
+  || ko "dir(env.GIT_SUBDIR) absent : \`bash scripts/team-request.sh\` ne trouverait rien"
+L_DIR=$(grep -n "dir(env.GIT_SUBDIR)" "$JF" | head -1 | cut -d: -f1)
 if [ -n "$L_DIR" ] && [ -n "$L_RUN" ] && [ "$L_DIR" -lt "$L_RUN" ]; then
   ok "dir (ligne $L_DIR) enveloppe bien l'appel (ligne $L_RUN)"
 else

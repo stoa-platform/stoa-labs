@@ -91,7 +91,7 @@ set +x   # jamais de trace : le token ne doit pas fuiter
 # G4 (D6) : la liste d'environnements valides suit LA chaîne, jamais une liste
 # en dur. Aucun `cd` n'a encore eu lieu ici (le clone/cd n'arrive qu'au [1/4],
 # bien plus bas) : la source relative résout depuis le cwd d'appel, qui est
-# `poc-control-plane-federation` (le job fait `dir('poc-control-plane-federation')`
+# `poc-control-plane-federation` (le job fait `dir(env.GIT_SUBDIR)`
 # avant `bash scripts/provision-request.sh` — ci/Jenkinsfile.app-request,
 # ci/jenkins/provisioning-request.job.xml).
 . "scripts/lib/env-chain.sh" || { echo "ERREUR: scripts/lib/env-chain.sh introuvable ou illisible" >&2; exit 1; }

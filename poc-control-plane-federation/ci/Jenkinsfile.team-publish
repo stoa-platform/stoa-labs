@@ -83,6 +83,10 @@ pipeline {
   // `poc`) : `localhost` n'y désigne PAS Jenkins/Gitea/Vault — fix mesuré, la
   // re-pose des formulaires était injoignable avec un défaut localhost:18080.
   environment {
+    // Préfixe du livrable DANS le dépôt (2026-09-03) : le seul endroit qui le
+    // nomme. « . » = le livrable EST la racine (une valeur VIDE ne traverse pas
+    // Jenkins : elle arrive absente et reprendrait ce défaut).
+    GIT_SUBDIR           = "${env.GIT_SUBDIR ?: 'poc-control-plane-federation'}"
     VAULT_ADDR            = "${env.VAULT_ADDR ?: 'http://vault:8200'}"
     // Mount de l'auth user/mot de passe. Ce lab authentifie ses opérateurs
     // nominatifs en `userpass` ; chez le client c'est `ldap` (AD) — MÊME
@@ -160,7 +164,7 @@ pipeline {
         // le webhook (qui a mergé) et refuse si elles divergent, ou si le
         // valideur est le demandeur (MERGER_UNKNOWN / MERGER_MISMATCH /
         // FOUR_EYES_VIOLATION). Un build manuel n'a pas ces variables → refus.
-        dir('poc-control-plane-federation') {
+        dir(env.GIT_SUBDIR) {
           sh 'set +x; sh scripts/lib/assert-merge-identity.sh --merged-by "${PR_MERGED_BY:-}" --requester "${PR_REQUESTER:-}" --vault-user "${V_USER:-}"'
         }
 
@@ -171,7 +175,7 @@ pipeline {
         // steps `sh` séparés rouvriraient un process par step — le trap du
         // premier révoquerait le token AVANT que le second ne le consomme.
         withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')]) {
-          dir('poc-control-plane-federation') {
+          dir(env.GIT_SUBDIR) {
             sh '''
               set +x
               export VAULT_USER="${V_USER:-}"
@@ -233,7 +237,7 @@ pipeline {
         checkout scm
         withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')]) {
           withEnv(["BUILD_RESULT=${currentBuild.currentResult}"]) {
-            dir('poc-control-plane-federation') {
+            dir(env.GIT_SUBDIR) {
               sh '''
                 set +x
                 if [ -z "${WEBHOOK_REPO:-}" ] || [ -z "${PR_NUMBER:-}" ]; then
