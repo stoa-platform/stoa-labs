@@ -39,7 +39,7 @@ ko(){ FAIL=$((FAIL+1)); printf '  ❌ %s\n' "$*"; }
 
 # Total ATTENDU, ÉCRIT EN DUR — indépendant de PASS+FAIL. Toute section
 # ajoutée/retirée DOIT le mettre à jour : un oubli fait rougir le dernier §.
-EXPECTED_CHECKS=184
+EXPECTED_CHECKS=185
 
 # shellcheck source=scripts/lib/gwt-mirror.sh
 . scripts/lib/gwt-mirror.sh || { echo "lib gwt-mirror.sh introuvable"; exit 2; }
@@ -341,8 +341,20 @@ BODYDIR="$BODYDIR" python3 "$TMP/fakejenkins.py" "$PORT" >/dev/null 2>&1 & FAKE_
 for _ in $(seq 1 40); do curl -s "http://127.0.0.1:$PORT/x" >/dev/null 2>&1 && break; sleep 0.1; done
 # SANS GITEA_TOKEN ni Gitea : app-request n'a plus de marqueur, la pose ne doit rien demander à Gitea.
 OUT=$(JENKINS_UI="http://127.0.0.1:$PORT" JOBS="app-request" bash "$STO" 2>&1); RC=$?
+# la pose SUIVANTE ecrase le corps recu : on garde celui de CETTE pose-ci
+POSTE1="$TMP/app-request.posted.1.xml"; cp "$BODYDIR/app-request.posted.xml" "$POSTE1" 2>/dev/null || true
+# Disposition (2026-09-03) : sous un AUTRE préfixe, le poseur compose le
+# <scriptPath> au lieu d'obliger a editer treize XML a la main — et la coquille
+# du depot n'est PAS modifiee (mise en scene dans un temporaire).
+OUT2=$(JENKINS_UI="http://127.0.0.1:$PORT" JOBS="app-request" GIT_SUBDIR=livrable bash "$STO" 2>&1); RC2=$?
+SP_POSTE=$(sed -n 's#.*<scriptPath>\([^<]*\)</scriptPath>.*#\1#p' "$BODYDIR/app-request.posted.xml" 2>/dev/null | head -1)
+SP_SOURCE=$(sed -n 's#.*<scriptPath>\([^<]*\)</scriptPath>.*#\1#p' ci/jenkins/app-request.job.xml | head -1)
 kill "$FAKE_PID" 2>/dev/null
-[ "$RC" -eq 0 ] && cmp -s "$BODYDIR/app-request.posted.xml" ci/jenkins/app-request.job.xml \
+[ "$RC2" -eq 0 ] && [ "$SP_POSTE" = "livrable/ci/Jenkinsfile.app-request" ] \
+  && [ "$SP_SOURCE" = "poc-control-plane-federation/ci/Jenkinsfile.app-request" ] \
+  && ok "GIT_SUBDIR=livrable : le <scriptPath> POSTÉ suit le knob ($SP_POSTE), la coquille du dépôt est INTACTE" \
+  || ko "mise en scène du scriptPath : rc=$RC2, posté='$SP_POSTE', source='$SP_SOURCE'"
+[ "$RC" -eq 0 ] && cmp -s "$POSTE1" ci/jenkins/app-request.job.xml \
   && ok "pose d'app-request SANS Gitea ni token : rc 0, XML posté octet pour octet identique à la source" \
   || ko "pose d'app-request : rc=$RC, ou XML posté divergent — $(printf '%s' "$OUT" | tail -3 | tr '\n' ' ')"
 [ -f "$BODYDIR/app-request.build" ] && ok "le build d'amorçage a été demandé juste après la pose (POST /job/app-request/build)" || ko "aucun build d'amorçage demandé"

@@ -74,6 +74,32 @@ BOOTSTRAP_JOBS="${BOOTSTRAP_JOBS:-}"
 # rétrocompatible : par défaut, comportement identique à avant (ci/jenkins).
 JOBS_SRC_DIR="${JOBS_SRC_DIR:-ci/jenkins}"
 
+# Disposition du dépôt (2026-09-03) : le <scriptPath> des coquilles porte le
+# préfixe du livrable. Plutôt que d'obliger un client à éditer treize XML à la
+# main, le POSEUR le compose — la coquille reste la source de vérité pour tout
+# le reste. La mise en scène est un NO-OP quand le préfixe est celui du XML :
+# le fichier posté est alors la source, octet pour octet (épreuve a0-wiring).
+# shellcheck source=scripts/lib/repo-layout.sh
+. "$(dirname "$0")/lib/repo-layout.sh" || { echo "ERREUR: lib/repo-layout.sh introuvable" >&2; exit 1; }
+repo_layout_init || exit 2
+STAGE_DIR=""   # créé à la demande, seulement si une substitution est nécessaire
+
+# stage_xml <job> <xml source> → chemin du XML À POSTER (source, ou copie ajustée)
+stage_xml() {
+  local j="$1" src="$2" veut="${SUB_PFX}ci/Jenkinsfile.${1}" a
+  a=$(sed -n 's#.*<scriptPath>\([^<]*\)</scriptPath>.*#\1#p' "$src" | head -1)
+  # pas de scriptPath (coquille Groovy inline), ou deja le bon : la source suffit
+  if [ -z "$a" ] || [ "$a" = "$veut" ]; then printf '%s' "$src"; return 0; fi
+  # le nom du Jenkinsfile peut differer du nom du job : on ne remplace QUE le prefixe
+  local base="${a##*/}" rep
+  case "$a" in */*) : ;; *) printf '%s' "$src"; return 0 ;; esac
+  rep="${SUB_PFX}ci/${base}"
+  [ "$rep" = "$a" ] && { printf '%s' "$src"; return 0; }
+  [ -n "$STAGE_DIR" ] || { STAGE_DIR=$(mktemp -d) || return 1; }
+  sed "s#<scriptPath>[^<]*</scriptPath>#<scriptPath>${rep}</scriptPath>#" "$src" > "$STAGE_DIR/${j}.job.xml" || return 1
+  printf '%s' "$STAGE_DIR/${j}.job.xml"
+}
+
 ok(){   printf '  ✅ %s\n' "$*"; }
 warn(){ printf '  ⚠️  %s\n' "$*"; }
 ko(){   printf '  ❌ %s\n' "$*" >&2; exit 1; }
@@ -154,7 +180,7 @@ done
 ok "XML des jobs bien formés"
 
 # ── 1. crumb CSRF ────────────────────────────────────────────────────────────
-CK=$(mktemp); CB=$(mktemp); trap 'rm -f "$CK" "$CB"' EXIT
+CK=$(mktemp); CB=$(mktemp); trap 'rm -f "$CK" "$CB"; [ -n "$STAGE_DIR" ] && rm -rf "$STAGE_DIR"' EXIT
 # On lit le CODE plutôt que de se fier à `curl -f` : une redirection 302 vers un
 # portail N'EST PAS une erreur HTTP, `-f` la laisse passer, et le script échouait
 # ensuite sur un JSON vide avec un message qui n'aidait pas. Chaque cas mérite
@@ -188,6 +214,7 @@ ok "crumb CSRF obtenu"
 RC=0
 for J in $JOBS; do
   X="${JOBS_SRC_DIR}/${J}.job.xml"
+  X="$(stage_xml "$J" "$X")" || ko "mise en scene du XML de $J en echec"
   echo
   echo "== $J =="
 
