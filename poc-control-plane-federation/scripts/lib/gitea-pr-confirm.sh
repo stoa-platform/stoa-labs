@@ -38,7 +38,8 @@ gitea_pr_confirm(){
   case "$n" in ''|*[!0-9]*) echo "FORGE_NON_CONFIRMEE : numero de PR non numerique ('$n')" >&2; return 1;; esac
   [ -n "$want_head" ] || { echo "FORGE_NON_CONFIRMEE : head_ref attendu vide" >&2; return 1; }
   case "$want_head" in provision/*) ;; *) echo "FORGE_NON_CONFIRMEE : head_ref attendu hors provision/* ('$want_head')" >&2; return 1;; esac
-  [ -n "${GITEA_TOKEN:-}" ] || { echo "FORGE_NON_CONFIRMEE : GITEA_TOKEN absent" >&2; return 1; }
+  GITEA_TOKEN="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
+  [ -n "$GITEA_TOKEN" ] || { echo "FORGE_NON_CONFIRMEE : ni FORGE_SECRET ni GITEA_TOKEN" >&2; return 1; }
   PC_API="${GIT_HOST:-http://gitea:3000}/api/v1" PC_REPO="${GIT_REPO:-ci/stoa-labs}" PC_TOKEN="$GITEA_TOKEN" \
   PC_N="$n" PC_HEAD="$want_head" PC_BASE="$want_base" python3 - <<'PY'
 import json, os, sys, urllib.request, urllib.error

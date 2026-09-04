@@ -39,6 +39,7 @@ GIT_REPO="${GIT_REPO:-ci/governance}"
 # du texte à quoter, et une apostrophe française y ouvre une chaîne qui ne se
 # ferme jamais — le script entier devient un « unexpected EOF » signalé à la
 # DERNIÈRE ligne, très loin de la vraie faute (mesuré ici même le 2026-08-26).
+GITEA_TOKEN="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
 GITEA_TOKEN="${GITEA_TOKEN:?GITEA_TOKEN requis (write:repository) — voir l en-tete de ce script}"
 
 PASS=0; FAIL=0

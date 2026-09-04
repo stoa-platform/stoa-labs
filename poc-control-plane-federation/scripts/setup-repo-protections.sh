@@ -99,6 +99,7 @@ if [ "$MODE" = print ]; then
   exit 0
 fi
 
+GITEA_TOKEN="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
 GITEA_TOKEN="${GITEA_TOKEN:?GITEA_TOKEN requis (write:repository sur les dépôts visés) — ou --print pour voir ce qui serait posé}"
 printf 'Authorization: token %s\n' "$GITEA_TOKEN" > "$TMPD/hdr"
 

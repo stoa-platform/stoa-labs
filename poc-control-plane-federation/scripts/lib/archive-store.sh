@@ -25,7 +25,7 @@ _as_ident_ok() {   # <valeur> — classe [a-z0-9-], jamais vide (segment d'URL/c
 _as_curl() {       # $@ — curl authentifié, header-file éphémère (umask du caller)
   local hdr rc
   hdr="$(mktemp)" || { _as_fail "STORE_TMP_INCREABLE"; return 1; }
-  printf 'Authorization: token %s\n' "${GITEA_TOKEN:?}" > "$hdr"
+  printf 'Authorization: token %s\n' "${FORGE_SECRET:-${GITEA_TOKEN:?}}" > "$hdr"
   curl -sS -H @"$hdr" "$@"; rc=$?
   rm -f "$hdr"
   return "$rc"
@@ -38,7 +38,7 @@ _as_url() {        # <team> <api> <sha> — l'URL canonique du contenu
 
 archive_store_push() { # <zip_abs> <team> <api>
   local zip="$1" team="$2" api="$3" sha url code probe
-  [ -n "${GITEA_TOKEN:-}" ] || { _as_fail "STORE_TOKEN_ABSENT : GITEA_TOKEN requis"; return 1; }
+  [ -n "${FORGE_SECRET:-${GITEA_TOKEN:-}}" ] || { _as_fail "STORE_TOKEN_ABSENT : GITEA_TOKEN requis"; return 1; }
   _as_ident_ok "$team" && _as_ident_ok "$api" \
     || { _as_fail "STORE_PARAM_INVALIDE : team='$team' api='$api' (classe [a-z0-9-])"; return 1; }
   case "$zip" in /*) ;; *) { _as_fail "STORE_PARAM_INVALIDE : chemin d'archive non absolu '$zip'"; return 1; };; esac

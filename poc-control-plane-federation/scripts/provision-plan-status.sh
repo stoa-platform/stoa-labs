@@ -43,7 +43,11 @@ set +x
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 PR_NUMBER="${PR_NUMBER:-}"; PR_BRANCH="${PR_BRANCH:-}"
 BUILD_RESULT="${BUILD_RESULT:?BUILD_RESULT requis}"
-GITEA_TOKEN="${GITEA_TOKEN:?GITEA_TOKEN requis}"
+# 2026-09-04 : le pipeline pose FORGE_SECRET depuis forgeCreds(). Sans cet alias,
+# ce script refusait, et l'appelant avalait le refus (`|| echo AVERTISSEMENT`) :
+# build vert, statut de build jamais poste. Defaut ACTIF, corrige ici.
+GITEA_TOKEN="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
+[ -n "$GITEA_TOKEN" ] || { echo "REFUS: SECRET_FORGE_REQUIS : ni FORGE_SECRET ni GITEA_TOKEN" >&2; exit 2; }
 GIT_HOST="${GIT_HOST:-http://gitea:3000}"; GIT_REPO="${GIT_REPO:-ci/stoa-labs}"; GIT_BASE="${GIT_BASE:-main}"
 PLAN_FACTS="${PLAN_FACTS:-}"
 
