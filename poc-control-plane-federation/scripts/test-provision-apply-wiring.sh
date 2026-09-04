@@ -141,7 +141,7 @@ for K in GITEA_MERGED_BY GITEA_REQUESTER APP_NAME ENV_NAME MANIFEST MERGED_DIGES
 done
 grep -q 'env\."\$' "$TMP/jf.code" || grep -q 'env.setProperty' "$TMP/jf.code" \
   && ko "assignation dynamique d'env (env.\"\$k\" / setProperty) présente" || ok "aucune assignation dynamique d'env"
-jf "withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')])" \
+jf "withCredentials(forgeCreds())" \
   && ok "token Gitea lu via env.GITEA_CREDENTIALS_ID, exposé en GITEA_TOKEN (jamais en argv)" || ko "withCredentials n'utilise pas env.GITEA_CREDENTIALS_ID"
 jf "beforeAgent true" && ok "\`beforeAgent true\` : une PR hors provision/* n'alloue pas d'agent pour rien" || ko "beforeAgent absent"
 [ "$(grep -c 'beforeAgent true' "$TMP/jf.norm")" -ge 2 ] && ok "\`beforeAgent true\` sur les DEUX stages gardés (pause scriptée sans agent : la condition passe avant toute allocation)" || ko "beforeAgent true absent d'un des deux stages gardés"

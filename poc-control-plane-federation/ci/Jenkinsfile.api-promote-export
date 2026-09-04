@@ -12,6 +12,18 @@
 // gateway (lecture d'une API déjà publiée, export de son archive) : il exige
 // donc une identité NOMINATIVE, exactement comme l'apply de team-publish —
 // même motif de login Vault (ci/lib/vault-login.sh), même trap de révocation.
+// forgeCreds() — la liste withCredentials du TYPE declare par le site.
+// Dans les deux cas, le shell voit les MEMES noms : FORGE_SECRET (le secret) et
+// FORGE_USER (l'utilisateur, vide avec un jeton). Les scripts acceptent
+// FORGE_SECRET, avec GITEA_TOKEN toujours honore comme alias historique.
+def forgeCreds() {
+  if (env.FORGE_CRED_KIND == 'username-password') {
+    return [usernamePassword(credentialsId: env.GITEA_CREDENTIALS_ID,
+                             usernameVariable: 'FORGE_USER', passwordVariable: 'FORGE_SECRET')]
+  }
+  return [string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'FORGE_SECRET')]
+}
+
 pipeline {
   agent any
   options { disableConcurrentBuilds() }
@@ -51,7 +63,7 @@ pipeline {
         // obligatoire pour qu'ils arrivent intacts au script (fait mesuré,
         // cf. mémoire ci-jenkinsfile-refactor, déjà appliqué par
         // ci/Jenkinsfile.api-promote-request).
-        withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')]) {
+        withCredentials(forgeCreds()) {
           withEnv([
             "TEAM=${params.TEAM}", "API_NAME=${params.API_NAME}",
             "VAULT_USER=${params.VAULT_USER}", "V_PASS=${params.V_PASS}",

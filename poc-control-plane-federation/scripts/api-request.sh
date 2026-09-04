@@ -73,7 +73,10 @@ API_BASE="${API_BASE:-}"
 NEW_VERSION="${NEW_VERSION:-}"
 OPENAPI_SPEC="${OPENAPI_SPEC:?OPENAPI_SPEC requis}"
 INBOUND_MODE="${INBOUND_MODE:?INBOUND_MODE requis (jwt uniquement — oauth2 refusé)}"
-GITEA_TOKEN="${GITEA_TOKEN:?GITEA_TOKEN requis}"
+# Le secret de la forge porte un nom NEUTRE (2026-09-04) : un gestionnaire
+# d'identite rend un jeton OU un couple, et les deux occupent la meme place.
+GITEA_TOKEN="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
+[ -n "$GITEA_TOKEN" ] || { echo "REFUS: SECRET_FORGE_REQUIS : ni FORGE_SECRET ni GITEA_TOKEN — le secret de la forge (jeton, ou mot de passe d'un couple avec FORGE_USER)" >&2; exit 2; }
 GIT_REPO="${GIT_REPO:-ci/stoa-labs}"
 GIT_HOST="${GIT_HOST:-http://gitea:3000}"
 GIT_WEB_HOST="${GIT_WEB_HOST:-$GIT_HOST}"

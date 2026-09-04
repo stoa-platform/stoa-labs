@@ -205,7 +205,7 @@ else:
 open(os.environ["BODY_OUT"], "w").write("\n".join(lines) + "\n")
 PY
 
-GIT_REPO="$GIT_REPO" GITEA_TOKEN="${GITEA_TOKEN:?GITEA_TOKEN requis}" \
+GIT_REPO="$GIT_REPO" GITEA_TOKEN="${FORGE_SECRET:-${GITEA_TOKEN:?FORGE_SECRET ou GITEA_TOKEN requis (secret de la forge)}}" \
 PR_NUMBER="$PR_NUMBER" GIT_HOST="${GIT_HOST:-http://gitea:3000}" \
 COMMENT_MARKER="$MARKER" COMMENT_BODY_FILE="$WORK/comment.md" \
   bash "$SELF_DIR/lib/gitea-pr-comment.sh"

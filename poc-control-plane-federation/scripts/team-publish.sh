@@ -69,7 +69,10 @@ WEBHOOK_REPO="${WEBHOOK_REPO:?WEBHOOK_REPO requis (repository.full_name du webho
 PR_BRANCH="${PR_BRANCH:?PR_BRANCH requis}"
 PR_NUMBER="${PR_NUMBER:?PR_NUMBER requis}"
 MERGE_SHA="${MERGE_SHA:?MERGE_SHA requis (merge_commit_sha du webhook)}"
-GITEA_TOKEN="${GITEA_TOKEN:?GITEA_TOKEN requis}"
+# Le secret de la forge porte un nom NEUTRE (2026-09-04) : un gestionnaire
+# d'identite rend un jeton OU un couple, et les deux occupent la meme place.
+GITEA_TOKEN="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
+[ -n "$GITEA_TOKEN" ] || { echo "REFUS: SECRET_FORGE_REQUIS : ni FORGE_SECRET ni GITEA_TOKEN — le secret de la forge (jeton, ou mot de passe d'un couple avec FORGE_USER)" >&2; exit 2; }
 VAULT_ADDR="${VAULT_ADDR:?VAULT_ADDR requis}"
 VAULT_TOKEN_FILE="${VAULT_TOKEN_FILE:?VAULT_TOKEN_FILE requis (jamais le token en env/argv)}"
 APIM_API_BASE="${APIM_API_BASE:?APIM_API_BASE requis — pas de défaut : dire sa cible est volontaire}"

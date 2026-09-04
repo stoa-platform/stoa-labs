@@ -42,6 +42,18 @@
 // laisse muette ; (2) une réponse de forge illisible APRÈS le POST /pulls
 // (ERR) rend rouge alors que la PR a pu être créée. Aucune des deux n'est
 // couverte par un statut, et ce fichier ne le prétend pas.
+// forgeCreds() — la liste withCredentials du TYPE declare par le site.
+// Dans les deux cas, le shell voit les MEMES noms : FORGE_SECRET (le secret) et
+// FORGE_USER (l'utilisateur, vide avec un jeton). Les scripts acceptent
+// FORGE_SECRET, avec GITEA_TOKEN toujours honore comme alias historique.
+def forgeCreds() {
+  if (env.FORGE_CRED_KIND == 'username-password') {
+    return [usernamePassword(credentialsId: env.GITEA_CREDENTIALS_ID,
+                             usernameVariable: 'FORGE_USER', passwordVariable: 'FORGE_SECRET')]
+  }
+  return [string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'FORGE_SECRET')]
+}
+
 pipeline {
 
   // `agent any` : aucune pause, le job travaille dès qu'il démarre ; le
@@ -113,7 +125,7 @@ pipeline {
 
     stage('Ouvrir la demande (PR provision/<app>-<env>)') {
       steps {
-        withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')]) {
+        withCredentials(forgeCreds()) {
           // Chaîne sh en quotes SIMPLES : les REQ_* (tiers) sont lus par le
           // SHELL depuis l'environnement, jamais interpolés par Groovy.
           // `set +x` : le GITEA_TOKEN injecté par withCredentials ne s'écho pas.

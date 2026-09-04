@@ -405,8 +405,10 @@ for L in "$L_PRE" "$L_DISP"; do
   printf '%s' "$LINE" | grep -q "^ *sh '" && ok "B.4b ligne $L en quotes SIMPLES" || bad "B.4b ligne $L en quotes doubles"
   printf '%s' "$LINE" | grep -qF 'GATE_OUT="$WORKSPACE/.a4-gate.env"' && ok "B.4c ligne $L : GATE_OUT=\$WORKSPACE/.a4-gate.env" || bad "B.4c ligne $L : GATE_OUT absent"
 done
-L_WC2=$(awk "NR>${L_INPUT:-0} && NR<${L_DISP:-0} && /withCredentials\(\[string\(credentialsId: env.GITEA_CREDENTIALS_ID/ {n=NR} END {print n}" "$TMP/jf.code")
-[ -n "$L_WC2" ] && ok "B.4d le passage au dispatch tient GITEA_TOKEN (withCredentials, ligne $L_WC2) : un refus au dispatch est commenté" || bad "B.4d pas de withCredentials avant le dispatch"
+# 2026-09-04 : le TYPE de credential est un knob du site (forgeCreds()) — la
+# PROPRIÉTÉ mesurée reste « le dispatch tient un secret de forge », pas sa forme.
+L_WC2=$(awk "NR>${L_INPUT:-0} && NR<${L_DISP:-0} && /withCredentials\(forgeCreds\(\)\)/ {n=NR} END {print n}" "$TMP/jf.code")
+[ -n "$L_WC2" ] && ok "B.4d le passage au dispatch tient un secret de forge (withCredentials, ligne $L_WC2) : un refus au dispatch est commenté" || bad "B.4d pas de withCredentials avant le dispatch"
 L_RD=$(line_after "${L_DISP:-0}" 'readFile("${env.WORKSPACE}/.a4-gate.env")' "$TMP/jf.code")
 [ -n "$L_RD" ] && [ "$L_RD" -lt "$L_GUARD" ] && ok "B.5 GATE_OUT relu par readFile (ligne $L_RD) avant la garde" || bad "B.5 GATE_OUT non relu avant la garde (rd=$L_RD)"
 MISS=""; for K in GATE_ENV GATE_STAGE GATE_ALLOW_SELF GATE_FOUR_EYES GATE_APPROVER_GROUP GATE_DEPLOYER_GROUP GATE_DEPLOYER_POLICY GATE_CHANGE_REF GATE_PV_REF GATE_ITSM; do jf "env.$K = gk.$K" || MISS="$MISS $K"; done

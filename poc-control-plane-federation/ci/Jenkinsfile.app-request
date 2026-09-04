@@ -52,6 +52,18 @@
 // Un Pipeline from SCM tourne dans le SANDBOX Groovy (mesuré A2 : Secret.fromString
 // refusé, #78) ; tout ce qui est appelé ici est dans la liste blanche
 // (getBuildCauses, readFile, properties, params.size).
+// forgeCreds() — la liste withCredentials du TYPE declare par le site.
+// Dans les deux cas, le shell voit les MEMES noms : FORGE_SECRET (le secret) et
+// FORGE_USER (l'utilisateur, vide avec un jeton). GITEA_TOKEN reste pose pour
+// les scripts qui ne connaissent que l'alias historique.
+def forgeCreds() {
+  if (env.FORGE_CRED_KIND == 'username-password') {
+    return [usernamePassword(credentialsId: env.GITEA_CREDENTIALS_ID,
+                             usernameVariable: 'FORGE_USER', passwordVariable: 'FORGE_SECRET')]
+  }
+  return [string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'FORGE_SECRET')]
+}
+
 pipeline {
 
   // `agent any` : ce job n'a AUCUNE demande en attente, rien ne gâche un
@@ -74,6 +86,14 @@ pipeline {
     // Credential Jenkins (secret text) portant le token Gitea du CI : push + PR,
     // ET la lecture des dépôts d'équipe pour la liste API.
     GITEA_CREDENTIALS_ID = "${env.GITEA_CREDENTIALS_ID ?: 'gitea-provision-token'}"
+    // Le TYPE de credential de la forge, et la forme d'authentification de son
+    // API. Le lab expose un jeton (secret text) et parle a Gitea ; un client
+    // expose souvent un COUPLE (usernamePassword) et parle a GitLab. Les deux
+    // doivent tenir dans le meme pipeline, sans edition de code.
+    //   FORGE_CRED_KIND : secret-text (defaut) | username-password
+    //   FORGE_API_AUTH  : token (defaut, Gitea) | private-token (GitLab) | basic
+    FORGE_CRED_KIND      = "${env.FORGE_CRED_KIND ?: 'secret-text'}"
+    FORGE_API_AUTH       = "${env.FORGE_API_AUTH ?: 'token'}"
   }
 
   stages {
@@ -89,7 +109,7 @@ pipeline {
           // params retombe sur les défauts et ne distingue plus rien.
           env.FORM_BOOTSTRAP = (params.size() == 0) ? 'true' : 'false'
         }
-        withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')]) {
+        withCredentials(forgeCreds()) {
           dir(env.GIT_SUBDIR) {
             // Quotes SIMPLES ; `set +x` : le token ne s'écho pas. Le script
             // RETIRE tout fichier périmé avant de travailler.
@@ -242,7 +262,7 @@ pipeline {
     stage('Ouvrir la demande (PR provision/<app>-<env>)') {
       when { expression { env.FORM_BOOTSTRAP != 'true' } }
       steps {
-        withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')]) {
+        withCredentials(forgeCreds()) {
           // Les paramètres passent par l'ENVIRONNEMENT, jamais interpolés dans
           // la chaîne sh : saisie humaine = donnée d'un tiers (même règle que
           // team-request/provision-apply). MODE explicite prime toujours sur la

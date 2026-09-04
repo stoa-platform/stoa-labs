@@ -47,7 +47,12 @@ REQ_ENV="${REQ_ENV:-}"; requis REQ_ENV "$REQ_ENV" "formulaire app-rollback : cha
 REQ_REASON="${REQ_REASON:-}"; requis REQ_REASON "$REQ_REASON" "formulaire app-rollback : champ « REASON », le motif du repli"
 REQ_CHANGE_REF="${REQ_CHANGE_REF:-}"
 REQ_CALLER="${REQ_CALLER:-unknown}"
-GITEA_TOKEN="${GITEA_TOKEN:?GITEA_TOKEN requis}"; export GITEA_TOKEN
+# Le secret de la forge porte un nom NEUTRE (2026-09-04) : un gestionnaire
+# d'identite rend un jeton OU un couple, et pour git comme pour l'API les deux
+# occupent la meme place. FORGE_SECRET est le nom ; GITEA_TOKEN reste honore.
+GITEA_TOKEN="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
+[ -n "$GITEA_TOKEN" ] || { echo "REFUS: SECRET_FORGE_REQUIS : ni FORGE_SECRET ni GITEA_TOKEN — le secret de la forge (jeton, ou mot de passe d'un couple avec FORGE_USER)" >&2; exit 2; }
+export GITEA_TOKEN
 GIT_HOST="${GIT_HOST:?GIT_HOST requis (base de la forge, ex. https://forge.client) — aucun repli}"
 GIT_WEB_HOST="${GIT_WEB_HOST:-$GIT_HOST}"   # l'adresse HUMAINE, si elle diffère de celle vue par le CI
 GIT_REPO="${GIT_REPO:-ci/stoa-labs}"

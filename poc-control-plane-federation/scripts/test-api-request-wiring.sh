@@ -193,7 +193,7 @@ jfc "dir(env.GIT_SUBDIR)" \
 
 echo
 echo "== 5. le credential Gitea : même identité qu'avant, mais surchargeable =="
-jfc "withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')])" \
+jfc "withCredentials(forgeCreds())" \
   && ok "withCredentials réellement appelé, GITEA_TOKEN injecté par credential Jenkins (jamais en clair dans le dépôt)" \
   || ko "withCredentials absent ou remanié — api-request.sh refuserait sur \${GITEA_TOKEN:?}"
 jf "GITEA_CREDENTIALS_ID = \"\${env.GITEA_CREDENTIALS_ID ?: 'gitea-provision-token'}\"" \

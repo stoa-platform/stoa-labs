@@ -243,7 +243,7 @@ echo "== 6. le credential Gitea : knob surchargeable, et JAMAIS en argv =="
 jf 'GITEA_CREDENTIALS_ID = "${env.GITEA_CREDENTIALS_ID ?: '"'"'gitea-provision-token'"'"'}"' \
   && ok "GITEA_CREDENTIALS_ID surchargeable, défaut = gitea-provision-token (le credentialsId en dur du job Groovy devient un point de config client)" \
   || ko "GITEA_CREDENTIALS_ID absent ou de valeur inattendue"
-jf "withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')])" \
+jf "withCredentials(forgeCreds())" \
   && ok "withCredentials lie le credential au knob (pas un identifiant en dur au milieu du pipeline)" \
   || ko "withCredentials absent ou n'utilise pas env.GITEA_CREDENTIALS_ID"
 if printf '%s\n' "$SH_BODY" | grep -q 'GITEA_TOKEN'; then
@@ -251,9 +251,13 @@ if printf '%s\n' "$SH_BODY" | grep -q 'GITEA_TOKEN'; then
 else
   ok "le corps du \`sh\` ne touche jamais GITEA_TOKEN : il est hérité par l'environnement et lu par team-request.sh (\${GITEA_TOKEN:?})"
 fi
-grep -qF 'GITEA_TOKEN="${GITEA_TOKEN:?GITEA_TOKEN requis}"' "$SCRIPT" \
-  && ok "team-request.sh exige réellement GITEA_TOKEN (refus nommé s'il manque)" \
-  || ko "team-request.sh n'exige plus GITEA_TOKEN — un build sans credential échouerait loin de sa cause"
+# 2026-09-04 : le secret de la forge porte un nom NEUTRE (un gestionnaire
+# d'identité rend un jeton OU un couple). La PROPRIÉTÉ mesurée reste la même :
+# sans secret, le script refuse en le nommant, il ne part pas travailler.
+grep -qF 'GITEA_TOKEN="${FORGE_SECRET:-${GITEA_TOKEN:-}}"' "$SCRIPT" \
+  && grep -qF 'SECRET_FORGE_REQUIS' "$SCRIPT" \
+  && ok "team-request.sh exige réellement un secret de forge (FORGE_SECRET ou son alias) — refus nommé s'il manque" \
+  || ko "team-request.sh n'exige plus de secret — un build sans credential échouerait loin de sa cause"
 
 echo
 echo "== 7. pas d'injection : les valeurs saisies sont lues par le SHELL, jamais interpolées par Groovy =="

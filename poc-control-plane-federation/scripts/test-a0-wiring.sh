@@ -39,7 +39,7 @@ ko(){ FAIL=$((FAIL+1)); printf '  ❌ %s\n' "$*"; }
 
 # Total ATTENDU, ÉCRIT EN DUR — indépendant de PASS+FAIL. Toute section
 # ajoutée/retirée DOIT le mettre à jour : un oubli fait rougir le dernier §.
-EXPECTED_CHECKS=185
+EXPECTED_CHECKS=187
 
 # shellcheck source=scripts/lib/gwt-mirror.sh
 . scripts/lib/gwt-mirror.sh || { echo "lib gwt-mirror.sh introuvable"; exit 2; }
@@ -121,7 +121,7 @@ L_WHEN=$(code_line "$TMP/jf-plan.code" 'beforeAgent true'); L_AG=$(awk "NR>${L_W
 [ -n "$L_WHEN" ] && [ -n "$L_AG" ] && ok "le stage de plan a son propre \`agent any\` (ligne $L_AG) après la garde (ligne $L_WHEN)" || ko "agent any du stage de plan introuvable après la garde"
 L_SH=$(code_line "$TMP/jf-plan.code" "sh 'set +x; rm -f \"\$WORKSPACE/.plan.facts\"; PLAN_FACTS=\"\$WORKSPACE/.plan.facts\" bash scripts/provision-plan.sh'")
 [ -n "$L_SH" ] && ok "scripts/provision-plan.sh invoqué en quotes SIMPLES avec set +x, purge puis PLAN_FACTS (ligne $L_SH)" || ko "invocation du script absente ou en quotes doubles"
-L_WC=$(code_line "$TMP/jf-plan.code" "withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')])")
+L_WC=$(code_line "$TMP/jf-plan.code" "withCredentials(forgeCreds())")
 L_DIR=$(code_line "$TMP/jf-plan.code" "dir(env.GIT_SUBDIR)")
 [ -n "$L_WC" ] && [ -n "$L_DIR" ] && [ -n "$L_SH" ] && [ "$L_WC" -lt "$L_DIR" ] && [ "$L_DIR" -lt "$L_SH" ] \
   && ok "ordre withCredentials ($L_WC) < dir ($L_DIR) < sh ($L_SH) : token présent, chemins relatifs justes" || ko "ordre withCredentials/dir/sh cassé (wc=$L_WC dir=$L_DIR sh=$L_SH)"
@@ -160,7 +160,7 @@ done
 [ -z "$MISS" ] && ok "les 7 clés REQ_* pointent les chemins JSON du contrat machine (\$.app … \$.caller)" || ko "clés absentes/divergentes :$MISS"
 L_SH=$(code_line "$TMP/jf-req.code" "sh 'set +x; bash scripts/provision-request.sh'")
 [ -n "$L_SH" ] && ok "scripts/provision-request.sh invoqué en quotes SIMPLES avec set +x (ligne $L_SH)" || ko "invocation du script absente ou en quotes doubles"
-L_WC=$(code_line "$TMP/jf-req.code" "withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')])")
+L_WC=$(code_line "$TMP/jf-req.code" "withCredentials(forgeCreds())")
 L_DIR=$(code_line "$TMP/jf-req.code" "dir(env.GIT_SUBDIR)")
 [ -n "$L_WC" ] && [ -n "$L_DIR" ] && [ -n "$L_SH" ] && [ "$L_WC" -lt "$L_DIR" ] && [ "$L_DIR" -lt "$L_SH" ] \
   && ok "ordre withCredentials ($L_WC) < dir ($L_DIR) < sh ($L_SH)" || ko "ordre withCredentials/dir/sh cassé (wc=$L_WC dir=$L_DIR sh=$L_SH)"
@@ -275,7 +275,20 @@ grep -qE "error\('REFUS: TOKEN_(ALTERE|GLOBAL_REFUSE)[^']*\\\$\{(params|env)" "$
 [ "$(grep -c 'STOA_ENV_CHAIN_FILE="\$WORKSPACE/poc-control-plane-federation/clients/_example/environments.yaml"' "$TMP/jf-app.code")" = 2 ] && ok "A7 : la chaîne est ÉPINGLÉE sur les deux sh (listes et demande) — une globale ne redirige plus la porte à la demande" || ko "A7 : épinglages STOA_ENV_CHAIN_FILE : $(grep -c 'STOA_ENV_CHAIN_FILE=' "$TMP/jf-app.code")"
 grep -v '^\s*//' ci/Jenkinsfile.provisioning-request | grep -qE "^\s*FORGE_TOKEN\s*=\s*''" && ok "A7 : la voie machine VIDE FORGE_TOKEN dans son bloc environment (une globale du nœud ne lui prête aucune identité de forge)" || ko "A7 : Jenkinsfile.provisioning-request ne vide pas FORGE_TOKEN"
 L_SH=$(code_line "$TMP/jf-app.code" "sh 'set +x; GC_PLATFORM_DIR=\"\$WORKSPACE\" STOA_ENV_CHAIN_FILE=\"\$WORKSPACE/poc-control-plane-federation/clients/_example/environments.yaml\" CHOICES_OUT=\"\$WORKSPACE/.a0-choices.env\" bash scripts/app-request-choices.sh'")
-L_WC=$(code_line "$TMP/jf-app.code" "withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')])")
+L_WC=$(code_line "$TMP/jf-app.code" "withCredentials(forgeCreds())")
+# 2026-09-04 : le TYPE de credential est un knob du SITE. forgeCreds() rend un
+# secret text (jeton, defaut du lab) ou un usernamePassword (couple, cas client),
+# et le shell voit les MEMES noms dans les deux cas — sans quoi un client devrait
+# editer le pipeline, ce que ce depot refuse depuis A0.
+jfa "FORGE_CRED_KIND      = \"\${env.FORGE_CRED_KIND ?: 'secret-text'}\"" \
+  && jfa "FORGE_API_AUTH       = \"\${env.FORGE_API_AUTH ?: 'token'}\"" \
+  && ok "le type de credential et la forme d'authentification sont des knobs (defauts du lab : secret-text, token)" \
+  || ko "FORGE_CRED_KIND / FORGE_API_AUTH absents du bloc environment"
+grep -q "usernamePassword(credentialsId: env.GITEA_CREDENTIALS_ID" "$TMP/jf-app.code" \
+  && grep -q "usernameVariable: 'FORGE_USER', passwordVariable: 'FORGE_SECRET'" "$TMP/jf-app.code" \
+  && grep -q "string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'FORGE_SECRET')" "$TMP/jf-app.code" \
+  && ok "les DEUX types sont cables, et rendent le meme couple de noms (FORGE_SECRET / FORGE_USER)" \
+  || ko "forgeCreds() ne porte pas les deux types"
 [ -n "$L_SH" ] && [ -n "$L_WC" ] && [ "$L_WC" -lt "$L_SH" ] && [ "$L_SH" -lt "$L_PROPS" ] \
   && ok "app-request-choices.sh invoqué en quotes SIMPLES sous credential (ligne $L_SH), AVANT properties()" || ko "invocation du script de listes absente/mal placée (sh=$L_SH wc=$L_WC props=$L_PROPS)"
 jfa 'readFile("${env.WORKSPACE}/.a0-choices.env")' && jfa 'FORMULAIRE_VIDE' \
@@ -645,7 +658,7 @@ L_ST=$(code_line "$POSTV" "sh 'set +x; bash scripts/provision-plan-status.sh || 
 L_CATCH=$(code_line "$POSTV" 'catch (e)')
 [ -n "$L_G" ] && [ -n "$L_ND" ] && [ "$L_G" -lt "$L_ND" ] && ok "post de pipeline : garde Groovy provision/* + PR_NUMBER numérique (ligne +$L_G) AVANT node( (ligne +$L_ND) — aucun exécuteur pour une PR étrangère" || ko "garde absente ou après node (g=$L_G node=$L_ND)"
 [ -n "$L_TRY" ] && [ -n "$L_TO" ] && [ -n "$L_CATCH" ] && [ "$L_TRY" -lt "$L_ND" ] && [ "$L_TO" -lt "$L_ND" ] && ok "try (+$L_TRY) et timeout 2 min (+$L_TO) enveloppent le nœud ; catch présent (+$L_CATCH) : le statut ne rougit ni ne bloque jamais" || ko "try/timeout/catch absents ou mal placés (try=$L_TRY to=$L_TO catch=$L_CATCH node=$L_ND)"
-[ -n "$L_ST" ] && [ "$L_ND" -lt "$L_ST" ] && grep -q 'BUILD_RESULT=${currentBuild.currentResult}' "$POSTV" && grep -q "withCredentials(\[string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')\])" "$POSTV" \
+[ -n "$L_ST" ] && [ "$L_ND" -lt "$L_ST" ] && grep -q 'BUILD_RESULT=${currentBuild.currentResult}' "$POSTV" && grep -q "withCredentials(forgeCreds())" "$POSTV" \
   && ok "provision-plan-status.sh invoqué sous node + credential + BUILD_RESULT (quotes simples, set +x, || echo)" || ko "invocation du statut absente/mal enveloppée (st=$L_ST)"
 grep -q "provision-plan-build" scripts/provision-plan-status.sh && grep -q "COMMENT_MARKER='<!-- provision-plan -->'" scripts/provision-plan.sh \
   && ok "marqueurs DISTINCTS : verdict <!-- provision-plan -->, statut <!-- provision-plan-build -->" || ko "marqueurs non distincts"

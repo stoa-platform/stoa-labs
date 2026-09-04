@@ -187,8 +187,11 @@ fi
 
 echo
 echo "== 8. le credential Gitea : même identité qu'avant, mais surchargeable =="
-jfc 'withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID' \
-  && ok "withCredentials réellement appelé, credentialsId surchargeable" \
+# 2026-09-04 : le TYPE de credential est un knob du site (secret text pour un
+# jeton, usernamePassword pour un couple) — l'assertion porte sur la PROPRIÉTÉ
+# (un credential est pris, son identifiant reste surchargeable), pas sur la forme.
+jfc 'withCredentials(forgeCreds())' && jfc 'credentialsId: env.GITEA_CREDENTIALS_ID' \
+  && ok "withCredentials réellement appelé (type choisi par le site), credentialsId surchargeable" \
   || ko "withCredentials absent ou credentialsId figé"
 jfc "GITEA_CREDENTIALS_ID" \
   && ok "GITEA_CREDENTIALS_ID exposé en point de config client" || ko "GITEA_CREDENTIALS_ID absent"
