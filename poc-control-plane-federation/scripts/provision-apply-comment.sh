@@ -60,7 +60,7 @@
 #                        tient sur cette chaîne — ADR-084)
 #   BUILD_URL      (opt) lien du build (Jenkins le fournit)
 #   GIT_WEB_HOST   (opt) base Gitea vue de l'HUMAIN : rend le SHA cliquable
-#   GIT_REPO / GITEA_TOKEN / GIT_HOST — cf. lib/gitea-pr-comment.sh
+#   GIT_REPO / FORGE_SECRET / GIT_HOST — cf. lib/gitea-pr-comment.sh
 set -uo pipefail
 set +x
 
@@ -205,7 +205,7 @@ else:
 open(os.environ["BODY_OUT"], "w").write("\n".join(lines) + "\n")
 PY
 
-GIT_REPO="$GIT_REPO" GITEA_TOKEN="${FORGE_SECRET:-${GITEA_TOKEN:?FORGE_SECRET ou GITEA_TOKEN requis (secret de la forge)}}" \
+GIT_REPO="$GIT_REPO" FORGE_SECRET="${FORGE_SECRET:-${GITEA_TOKEN:?FORGE_SECRET ou GITEA_TOKEN requis (secret de la forge)}}" \
 PR_NUMBER="$PR_NUMBER" GIT_HOST="${GIT_HOST:-http://gitea:3000}" \
 COMMENT_MARKER="$MARKER" COMMENT_BODY_FILE="$WORK/comment.md" \
   bash "$SELF_DIR/lib/gitea-pr-comment.sh"

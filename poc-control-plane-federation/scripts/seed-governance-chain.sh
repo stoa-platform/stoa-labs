@@ -23,13 +23,15 @@
 #     bash scripts/seed-governance-chain.sh
 #
 # Usage :
-#   GITEA_TOKEN=<token write:repository> bash scripts/seed-governance-chain.sh
+#   FORGE_SECRET=<token write:repository> bash scripts/seed-governance-chain.sh
 #
 # Frapper un token si besoin (le lab n'en garde pas : Vault est en dev-mode,
 # donc en MÉMOIRE — il perd ses secrets à chaque redémarrage) :
 #   docker exec -u git poc-gitea gitea admin user generate-access-token \
 #     --username ci --token-name seed-chain --scopes write:repository
 set -uo pipefail
+# shellcheck source=scripts/lib/forge-identity.sh
+. scripts/lib/forge-identity.sh || { echo "ERREUR: scripts/lib/forge-identity.sh introuvable ou illisible" >&2; exit 1; }
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC="$ROOT/clients/_example/environments.yaml"
@@ -39,7 +41,8 @@ GIT_REPO="${GIT_REPO:-ci/governance}"
 # du texte à quoter, et une apostrophe française y ouvre une chaîne qui ne se
 # ferme jamais — le script entier devient un « unexpected EOF » signalé à la
 # DERNIÈRE ligne, très loin de la vraie faute (mesuré ici même le 2026-08-26).
-GITEA_TOKEN="${GITEA_TOKEN:?GITEA_TOKEN requis (write:repository) — voir l en-tete de ce script}"
+FORGE_SECRET="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
+FORGE_SECRET="${GITEA_TOKEN:?FORGE_SECRET requis (write:repository) — voir l en-tete de ce script}"
 
 PASS=0; FAIL=0
 ok()  { PASS=$((PASS+1)); printf '  \033[32mPASS\033[0m %s\n' "$*"; }
@@ -57,7 +60,11 @@ fi
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 # Le token ne touche NI l'URL (il finirait dans .git/config et dans les logs),
 # NI argv (visible en `ps`) : il passe par un header, comme dans team-apply.sh.
-AUTH="Authorization: token $GITEA_TOKEN"
+# 2026-09-04 : l'en-tete suit FORGE_API_AUTH (un jeton GitLab envoye avec
+# l'en-tete de Gitea rendrait un 401 sous un nom qui promet la neutralite).
+_SGC_HDR="$(mktemp)"; trap 'rm -f "$_SGC_HDR"' EXIT
+forge_auth_write "$FORGE_SECRET" "$_SGC_HDR" || exit 2
+AUTH="$(cat "$_SGC_HDR")"
 
 echo "② clone de $GIT_REPO"
 if git -c http.extraHeader="$AUTH" clone -q "$GIT_HOST/$GIT_REPO.git" "$TMP/gov" 2>"$TMP/err"; then

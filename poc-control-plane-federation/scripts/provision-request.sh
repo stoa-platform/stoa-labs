@@ -25,7 +25,7 @@
 #   REQ_API_VER    api version (défaut 1.0.0)
 #   REQ_AUDIENCE   audience de la stratégie (défaut = REQ_API)
 #   REQ_CALLER     azp de l'appelant (oig-provisioner|cli2-provisioner) — traçabilité
-#   GITEA_TOKEN    (req) token de push/PR (scopes write:repository, write:issue)
+#   FORGE_SECRET    (req) token de push/PR (scopes write:repository, write:issue)
 #   GIT_REPO       full-name du repo projet (défaut ci/stoa-labs)
 #   GIT_BASE       branche cible de la MR (défaut main)
 #   GIT_HOST       base Gitea vue depuis l'agent (défaut http://gitea:3000)
@@ -165,15 +165,15 @@ if [ "$MODE" = "idp" ] && [ -z "$REQ_CLIENT_ID" ]; then
 fi
 # Le secret de la forge porte un nom NEUTRE (2026-09-04) : un gestionnaire
 # d'identite rend un jeton OU un couple, et pour git comme pour l'API les deux
-# occupent la meme place. FORGE_SECRET est le nom ; GITEA_TOKEN reste honore.
-GITEA_TOKEN="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
-[ -n "$GITEA_TOKEN" ] || { echo "REFUS: SECRET_FORGE_REQUIS : ni FORGE_SECRET ni GITEA_TOKEN — le secret de la forge (jeton, ou mot de passe d'un couple avec FORGE_USER)" >&2; exit 2; }
-export GITEA_TOKEN
+# occupent la meme place. FORGE_SECRET est le nom ; FORGE_SECRET reste honore.
+FORGE_SECRET="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
+[ -n "$FORGE_SECRET" ] || { echo "REFUS: SECRET_FORGE_REQUIS : ni FORGE_SECRET ni son alias GITEA_TOKEN — le secret de la forge (jeton, ou mot de passe d'un couple avec FORGE_USER)" >&2; exit 2; }
+export FORGE_SECRET
 # ── A7 — LES TOKENS, par FICHIER, et le token humain RETIRÉ de l'environnement ──
 # FORGE_TOKEN (formulaire, canal natif Jenkins) ou FORGE_TOKEN_FILE : l'identité
 # de forge du demandeur. Copié dans un fichier 0600 puis `unset` AVANT tout
 # processus enfant (python, git, le plan enchaîné) : aucun d'eux ne doit le voir.
-# Le token de service (GITEA_TOKEN) reste celui des lectures et du plan.
+# Le token de service (FORGE_SECRET) reste celui des lectures et du plan.
 umask 077
 TOKENS_DIR="$(mktemp -d /tmp/provreq-tok.XXXXXX)"
 trap 'rm -rf "$TOKENS_DIR"' EXIT
@@ -184,7 +184,7 @@ elif [ -n "${FORGE_TOKEN:-}" ]; then
   FORGE_TF="$TOKENS_DIR/forge"; printf '%s' "$FORGE_TOKEN" > "$FORGE_TF"
 fi
 unset FORGE_TOKEN FORGE_TOKEN_FILE
-CI_TF="$TOKENS_DIR/ci"; printf '%s' "$GITEA_TOKEN" > "$CI_TF"
+CI_TF="$TOKENS_DIR/ci"; printf '%s' "$FORGE_SECRET" > "$CI_TF"
 GITEA_SERVICE_LOGINS="${GITEA_SERVICE_LOGINS:-ci}"
 REQ_CHANGE_REF="${REQ_CHANGE_REF:-}"
 REQ_PV_REF="${REQ_PV_REF:-}"
@@ -727,14 +727,14 @@ else
   # l'erreur est filtrée des DEUX tokens (celui qui a poussé, celui du service).
   if ! git push -q "--force-with-lease=refs/heads/${BRANCH}:${REMOTE_TIP}" "$PUSH_URL" "HEAD:refs/heads/${BRANCH}" 2>"$WORK/pusherr"; then
     echo "ERREUR push (détail masqué — token)" >&2
-    grep -v -F -- "$(cat "$PUSH_TF")" "$WORK/pusherr" | grep -v -F -- "$GITEA_TOKEN" >&2 || true; exit 1
+    grep -v -F -- "$(cat "$PUSH_TF")" "$WORK/pusherr" | grep -v -F -- "$FORGE_SECRET" >&2 || true; exit 1
   fi
 fi
 
 echo "[4/5] ouverture de la Pull Request ${BRANCH} → ${GIT_BASE}"
 # Interaction PR en PYTHON3 (portable — le conteneur Jenkins n'a pas jq) : liste
 # idempotente (filtre côté client sur head.ref), création sinon. Le token n'est
-# PAS en argv (passé par env GITEA_TOKEN) ; aucun secret imprimé.
+# PAS en argv (passé par env FORGE_SECRET) ; aucun secret imprimé.
 PR_OUT=$(REQ_APP="$REQ_APP" REQ_ENV="$REQ_ENV" REQ_API="$REQ_API" REQ_API_VER="$REQ_API_VER" \
   REQ_CLIENT_ID="$REQ_CLIENT_ID" REQ_CALLER="$REQ_CALLER" MODE="$MODE" BRANCH="$BRANCH" GIT_BASE="$GIT_BASE" \
   API="$API" GIT_REPO="$GIT_REPO" CI_TOKEN_FILE="$CI_TF" PR_TOKEN_FILE="$PUSH_TF" PUSH_LOGIN="$PUSH_LOGIN" \
@@ -871,7 +871,7 @@ echo "PR_URL=${PR_URL}"
 # puis repousser. Le verdict est repris dans la sortie ci-dessous.
 if [ "${PROVISION_PLAN_INLINE:-true}" = "true" ]; then
   echo "[5/5] plan enchaîné sur la PR #${PR_NUM}"
-  # A7 : le plan tourne sous GITEA_TOKEN (service) — le token humain a été retiré
+  # A7 : le plan tourne sous FORGE_SECRET (service) — le token humain a été retiré
   # de l'environnement en tête de script ; PROVISION_PLAN_BIN = stub des épreuves.
   if PR_BRANCH="$BRANCH" PR_NUMBER="$PR_NUM" \
      bash "${PROVISION_PLAN_BIN:-$SELF_DIR/provision-plan.sh}"; then

@@ -83,7 +83,7 @@
 #   (ENVN n'est PLUS une entrée : G4/ADR-082 le SCELLE sur l'env d'authoring,
 #    voir plus bas. Il ne désigne que l'env dont les listes sont dérivées,
 #    providers.<env>.yml.)
-#   GITEA_TOKEN / GIT_HOST / GIT_REPO : requis SEULEMENT si un job posé ce run
+#   FORGE_SECRET / GIT_HOST / GIT_REPO : requis SEULEMENT si un job posé ce run
 #     porte un placeholder (cf. scripts/lib/generate-choices.sh).
 set -uo pipefail
 set +x
@@ -137,7 +137,7 @@ JOBS="$PRESENT"
 # ── 1. les listes dynamiques sont-elles nécessaires CE RUN ? ────────────────
 # Recherche STATIQUE (aucun réseau) : seule la présence d'un placeholder dans
 # un XML effectivement posé ce run engage generate-choices.sh — les jobs
-# sans liste n'ont donc jamais besoin de GITEA_TOKEN/Gitea joignable.
+# sans liste n'ont donc jamais besoin de FORGE_SECRET/Gitea joignable.
 NEED_TEAMS=false; NEED_APIS=false
 for J in $JOBS; do
   grep -q '<!--CHOICES:TEAMS-->' "ci/jenkins/${J}.job.xml" && NEED_TEAMS=true

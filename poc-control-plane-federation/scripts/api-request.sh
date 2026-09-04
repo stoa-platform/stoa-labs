@@ -41,7 +41,7 @@
 #                       différente de la version de base
 #   OPENAPI_SPEC  (req) contrat OpenAPI/Swagger collé (YAML ou JSON)
 #   INBOUND_MODE  (req) jwt uniquement (oauth2 refusé — INBOUND_OAUTH2_NON_SUPPORTE)
-#   GITEA_TOKEN   (req) token du service ci (write:repository, write:issue)
+#   FORGE_SECRET   (req) token du service ci (write:repository, write:issue)
 #   GIT_REPO           dépôt PLATEFORME (défaut ci/stoa-labs) — porte
 #                       ansible/providers.<env>.yml ET les gardes hors ligne
 #   GIT_HOST            défaut http://gitea:3000
@@ -75,8 +75,8 @@ OPENAPI_SPEC="${OPENAPI_SPEC:?OPENAPI_SPEC requis}"
 INBOUND_MODE="${INBOUND_MODE:?INBOUND_MODE requis (jwt uniquement — oauth2 refusé)}"
 # Le secret de la forge porte un nom NEUTRE (2026-09-04) : un gestionnaire
 # d'identite rend un jeton OU un couple, et les deux occupent la meme place.
-GITEA_TOKEN="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
-[ -n "$GITEA_TOKEN" ] || { echo "REFUS: SECRET_FORGE_REQUIS : ni FORGE_SECRET ni GITEA_TOKEN — le secret de la forge (jeton, ou mot de passe d'un couple avec FORGE_USER)" >&2; exit 2; }
+FORGE_SECRET="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
+[ -n "$FORGE_SECRET" ] || { echo "REFUS: SECRET_FORGE_REQUIS : ni FORGE_SECRET ni son alias GITEA_TOKEN — le secret de la forge (jeton, ou mot de passe d'un couple avec FORGE_USER)" >&2; exit 2; }
 GIT_REPO="${GIT_REPO:-ci/stoa-labs}"
 GIT_HOST="${GIT_HOST:-http://gitea:3000}"
 GIT_WEB_HOST="${GIT_WEB_HOST:-$GIT_HOST}"
@@ -343,19 +343,19 @@ git -C "$WORK/team" -c user.name=ci -c user.email=ci@stoa.lab \
 # (jamais argv/URL — visible par ps -Aww sinon, sur le process git ET
 # git-remote-http, motif éprouvé de team-request.sh/team-apply.sh, repris à
 # l'identique).
-AUTH_B64=$(printf 'x:%s' "$GITEA_TOKEN" | base64 | tr -d '\n')
+AUTH_B64=$(printf 'x:%s' "$FORGE_SECRET" | base64 | tr -d '\n')
 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader \
   GIT_CONFIG_VALUE_0="Authorization: Basic ${AUTH_B64}" \
   git -C "$WORK/team" push -q "${GIT_HOST}/${REPO_FULL}.git" "$BRANCH" 2>"$WORK/pusherr" \
   || { echo "ERREUR: push" >&2; cat "$WORK/pusherr" >&2; exit 1; }
 unset AUTH_B64
 
-PR_NUMBER=$(API="${GIT_HOST}/api/v1" REPO_FULL="$REPO_FULL" GITEA_TOKEN="$GITEA_TOKEN" \
+PR_NUMBER=$(API="${GIT_HOST}/api/v1" REPO_FULL="$REPO_FULL" FORGE_SECRET="$FORGE_SECRET" \
   BRANCH="$BRANCH" API_NAME="$API_NAME" ACTION="$ACTION" EFFECTIVE_VERSION="$EFFECTIVE_VERSION" \
   TEAM="$TEAM" INBOUND_MODE="$INBOUND_MODE" BASE_VERSION="${BASE_VERSION:-}" \
   python3 - <<'PY'
 import json, os, urllib.request
-api, repo, tok = os.environ["API"], os.environ["REPO_FULL"], os.environ["GITEA_TOKEN"]
+api, repo, tok = os.environ["API"], os.environ["REPO_FULL"], os.environ["FORGE_SECRET"]
 action = os.environ["ACTION"]
 base_line = f"\n- version de base : {os.environ['BASE_VERSION']}" if action == "new-version" and os.environ.get("BASE_VERSION") else ""
 body = (
@@ -434,10 +434,10 @@ poser \`${PUB_REL}\` + \`${SPEC_REL}\`, rien n'est encore publié sur la gateway
 # inaperçu. Ici : vérifié, et un échec est VISIBLE (avertissement bruyant,
 # PAS un exit silencieux) — mais la PR EXISTE déjà et reste valide : la
 # non-publication d'UN commentaire n'annule pas une PR déjà ouverte.
-COMMENT_ERR=$(API="${GIT_HOST}/api/v1" REPO_FULL="$REPO_FULL" GITEA_TOKEN="$GITEA_TOKEN" \
+COMMENT_ERR=$(API="${GIT_HOST}/api/v1" REPO_FULL="$REPO_FULL" FORGE_SECRET="$FORGE_SECRET" \
   PR="$PR_NUMBER" BODY="$BODY" python3 - <<'PY' 2>&1
 import json, os, urllib.request
-api, repo, tok = os.environ["API"], os.environ["REPO_FULL"], os.environ["GITEA_TOKEN"]
+api, repo, tok = os.environ["API"], os.environ["REPO_FULL"], os.environ["FORGE_SECRET"]
 req = urllib.request.Request(f"{api}/repos/{repo}/issues/{os.environ['PR']}/comments",
     method="POST", data=json.dumps({"body": os.environ["BODY"]}).encode(),
     headers={"Authorization": f"token {tok}", "Content-Type": "application/json"})

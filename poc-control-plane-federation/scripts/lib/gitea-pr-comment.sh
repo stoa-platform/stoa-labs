@@ -16,7 +16,7 @@
 #
 # Entrées (env) :
 #   GIT_REPO      full-name (ex. ci/stoa-labs)
-#   GITEA_TOKEN   token (scope write:issue) — JAMAIS en argv, jamais loggé
+#   FORGE_SECRET   token (scope write:issue) — JAMAIS en argv, jamais loggé
 #   PR_NUMBER     numéro de la PR
 #   COMMENT_MARKER      marqueur HTML invisible (ex. '<!-- provision-apply -->')
 #   COMMENT_BODY_FILE   fichier contenant le corps SANS le marqueur
@@ -36,7 +36,8 @@ set -uo pipefail
 set +x
 
 GIT_REPO="${GIT_REPO:?GIT_REPO requis}"
-GITEA_TOKEN="${GITEA_TOKEN:?GITEA_TOKEN requis}"
+FORGE_SECRET="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
+[ -n "$FORGE_SECRET" ] || { echo "REFUS: SECRET_FORGE_REQUIS : ni FORGE_SECRET ni son alias GITEA_TOKEN" >&2; exit 2; }
 PR_NUMBER="${PR_NUMBER:?PR_NUMBER requis}"
 COMMENT_MARKER="${COMMENT_MARKER:?COMMENT_MARKER requis}"
 COMMENT_BODY_FILE="${COMMENT_BODY_FILE:?COMMENT_BODY_FILE requis}"
@@ -45,14 +46,14 @@ GIT_HOST="${GIT_HOST:-http://gitea:3000}"
 [ -f "$COMMENT_BODY_FILE" ] || { echo "COMMENT_BODY_FILE introuvable : $COMMENT_BODY_FILE" >&2; exit 1; }
 
 API="${GIT_HOST}/api/v1" \
-GIT_REPO="$GIT_REPO" GITEA_TOKEN="$GITEA_TOKEN" PR_NUMBER="$PR_NUMBER" \
+GIT_REPO="$GIT_REPO" FORGE_SECRET="$FORGE_SECRET" PR_NUMBER="$PR_NUMBER" \
 COMMENT_MARKER="$COMMENT_MARKER" COMMENT_BODY_FILE="$COMMENT_BODY_FILE" \
 COMMENT_ONLY_IF_EXISTS="${COMMENT_ONLY_IF_EXISTS:-0}" \
 python3 - <<'PY'
 import os, json, urllib.request, urllib.error, sys
 api  = os.environ["API"]
 repo = os.environ["GIT_REPO"]
-tok  = os.environ["GITEA_TOKEN"]
+tok  = os.environ["FORGE_SECRET"]
 prn  = os.environ["PR_NUMBER"]
 mark = os.environ["COMMENT_MARKER"]
 only_if_exists = os.environ.get("COMMENT_ONLY_IF_EXISTS", "0") == "1"

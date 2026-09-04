@@ -30,14 +30,14 @@
 #
 # Entrées (env) :
 #   FORGE_SECRET le secret de la forge : jeton OU mot de passe d'un couple
-#                (alias historique : GITEA_TOKEN — toujours honoré)
+#                (alias historique : FORGE_SECRET — toujours honoré)
 #   FORGE_USER   l'utilisateur du couple (alias : GIT_USER ; défaut « x », que
 #                seul Gitea accepte — GitLab et Bitbucket rendent 401)
 #   GIT_HOST     défaut http://gitea:3000 (toute forge servant du git HTTP :
 #                le clone n'utilise que git, pas l'API de la forge — le refus
 #                s'appelle GIT_UNREACHABLE et cite la sortie de git)
 #   GIT_REPO     défaut ci/stoa-labs (dépôt plateforme, porte providers.<env>.yml)
-#   GITEA_TOKEN  requis (${:?}) — jamais en argv. Un clone en LECTURE n'exige
+#   FORGE_SECRET  requis (${:?}) — jamais en argv. Un clone en LECTURE n'exige
 #                pas forcément un token sur ce Gitea de lab (team-request.sh
 #                clone sans lui), mais le brief de cette tâche le demande
 #                explicitement et fail-closed ; le header est injecté par
@@ -107,10 +107,10 @@ _gc_clone(){
   # NOM de la variable prétendait le contraire, et le refus qui suivait réclamait
   # un jeton que le client n'aura jamais.
   #   FORGE_SECRET  le secret, jeton OU mot de passe (nom neutre, à préférer)
-  #   GITEA_TOKEN   alias historique, toujours honoré
+  #   FORGE_SECRET   alias historique, toujours honoré
   #   FORGE_USER / GIT_USER  l'utilisateur du couple (défaut « x », que seul Gitea accepte)
   local token="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
-  [ -n "$token" ] || { echo "SECRET_FORGE_REQUIS : aucun secret pour la forge — poser FORGE_SECRET (jeton, ou mot de passe d'un couple) ou son alias GITEA_TOKEN ; avec un couple, poser aussi FORGE_USER" >&2; return 1; }
+  [ -n "$token" ] || { echo "SECRET_FORGE_REQUIS : aucun secret pour la forge — poser FORGE_SECRET (jeton, ou mot de passe d'un couple) ou son alias FORGE_SECRET ; avec un couple, poser aussi FORGE_USER" >&2; return 1; }
   local host="${GIT_HOST:-http://gitea:3000}"
   # GIT_USER : l'utilisateur du Basic. Gitea accepte n'importe lequel avec un
   # PAT, d'où le « x » historique — GitLab et Bitbucket, NON (401). Knob, défaut

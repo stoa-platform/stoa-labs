@@ -248,6 +248,9 @@ echo "== ⑩ MUTATION : retirer la comparaison du fetch doit faire VERDIR ⑤ ==
 # même expression littérale existe aussi dans archive_store_push (4 espaces,
 # le contrôle de conflit ⑥), et ce n'est PAS elle qu'on veut désarmer.
 sed 's/^  \[ "\$got" = "\$sha" \] \\$/  true \\/' "$LIB" > "$TMP/lib_mut10.sh"
+# la lib charge sa voisine (forge-identity.sh, qui choisit la forme de l'en-tête) :
+# une copie mutée sans elle ne serait pas la lib, mais une lib amputée (2026-09-04).
+cp "$(dirname "$LIB")/forge-identity.sh" "$TMP/forge-identity.sh"
 cmp -s "$LIB" "$TMP/lib_mut10.sh" \
   && bad "⑩ le mutant est IDENTIQUE à la lib — l'ancre a bougé, la mutation ne mute rien" \
   || ok "⑩ le mutant diffère RÉELLEMENT de la lib (mutation non no-op)"
@@ -266,17 +269,18 @@ RC="$(run "$TMP/c10.out" env GITEA_TOKEN=x GIT_HOST="$GIT_HOST" bash -c \
 echo
 echo "== ⑪ le token n'apparaît dans AUCUNE ligne de commande curl =="
 nc_strict "$LIB" > "$TMP/lib_nc.sh"
+# 2026-09-04 : la lib ne compose plus l'en-tête elle-même — forge_auth_write le
+# fait, selon FORGE_API_AUTH (Gitea, GitLab, ou un couple). La PROPRIÉTÉ mesurée
+# est la même, et elle est même plus forte : plus AUCUNE mention d'Authorization
+# ici, et le secret ne va que dans un FICHIER d'en-tête, jamais dans un argv.
 NAUTH="$(grep -c 'Authorization' "$TMP/lib_nc.sh")"
-[ "$NAUTH" = 1 ] \
-  && ok "⑪ exactement 1 occurrence de 'Authorization' dans le code décommenté" \
-  || bad "⑪ $NAUTH occurrence(s) de 'Authorization' (attendu 1) — le token pourrait fuiter ailleurs"
-AUTHLINE="$(grep 'Authorization' "$TMP/lib_nc.sh")"
-case "$AUTHLINE" in
-  *'printf'*'> "$hdr"'*)
-    ok "⑪bis l'unique occurrence est la construction du header-file (printf ... > \"\$hdr\"), pas un argv curl" ;;
-  *)
-    bad "⑪bis l'occurrence d'Authorization n'est pas la ligne du header-file attendue : $AUTHLINE" ;;
-esac
+[ "$NAUTH" = 0 ] \
+  && ok "⑪ aucune occurrence de 'Authorization' dans le code décommenté (l'en-tête est délégué)" \
+  || bad "⑪ $NAUTH occurrence(s) de 'Authorization' (attendu 0) — le token pourrait fuiter ailleurs"
+AUTHW="$(grep -c 'forge_auth_write .* "\$hdr"' "$TMP/lib_nc.sh")"
+[ "$AUTHW" = 1 ] \
+  && ok "⑪bis l'en-tête est écrit dans un FICHIER par forge_auth_write (pas un argv curl)" \
+  || bad "⑪bis forge_auth_write vers un header-file : $AUTHW occurrence(s), attendu 1"
 grep -q -F "PUT $P1 1" "$STUB_LOG" \
   && ok "⑪ter le stub a bien REÇU l'en-tête Authorization sur une requête réelle de la lib" \
   || bad "⑪ter aucune requête journalisée par le stub ne porte l'en-tête Authorization"

@@ -47,7 +47,7 @@
 #
 # Entrées (env) :
 #   PR_BRANCH, PR_NUMBER, MERGE_SHA   (req) la charge utile du webhook (GenericTrigger)
-#   GITEA_TOKEN                        (req) jamais en argv, jamais loggé
+#   FORGE_SECRET                        (req) jamais en argv, jamais loggé
 #   RECONCILE_OUT                      (req) fichier de sortie KEY=VALUE, lu par le pipeline
 #   RECONCILE_FACTS                    (opt) fichier écrit DÈS la relecture Gitea (GITEA_HEAD_REF=…),
 #                                            succès comme échec — c'est lui qui autorise le
@@ -85,8 +85,8 @@ PR_NUMBER="${PR_NUMBER:-}"
 MERGE_SHA="${MERGE_SHA:-}"
 # Le secret de la forge porte un nom NEUTRE (2026-09-04) : un gestionnaire
 # d'identite rend un jeton OU un couple, et les deux occupent la meme place.
-GITEA_TOKEN="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
-[ -n "$GITEA_TOKEN" ] || { echo "REFUS: SECRET_FORGE_REQUIS : ni FORGE_SECRET ni GITEA_TOKEN — le secret de la forge (jeton, ou mot de passe d'un couple avec FORGE_USER)" >&2; exit 2; }
+FORGE_SECRET="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
+[ -n "$FORGE_SECRET" ] || { echo "REFUS: SECRET_FORGE_REQUIS : ni FORGE_SECRET ni son alias GITEA_TOKEN — le secret de la forge (jeton, ou mot de passe d'un couple avec FORGE_USER)" >&2; exit 2; }
 RECONCILE_OUT="${RECONCILE_OUT:?RECONCILE_OUT requis (fichier de sortie KEY=VALUE)}"
 RECONCILE_FACTS="${RECONCILE_FACTS:-}"
 GIT_HOST="${GIT_HOST:-http://gitea:3000}"
@@ -121,7 +121,7 @@ fail(){
     provision/*)
       PR_NUMBER="$PR_NUMBER" APPLY_RESULT=REFUSED REFUSAL="$tag" REFUSAL_DETAIL="$prmsg" \
         APP_NAME="${APP_NAME:-(inconnue)}" ENV_NAME="${ENV_NAME:-(inconnu)}" \
-        GIT_REPO="$GIT_REPO" GIT_HOST="$GIT_HOST" GIT_WEB_HOST="$GIT_WEB_HOST" GITEA_TOKEN="$GITEA_TOKEN" \
+        GIT_REPO="$GIT_REPO" GIT_HOST="$GIT_HOST" GIT_WEB_HOST="$GIT_WEB_HOST" FORGE_SECRET="$FORGE_SECRET" \
         BUILD_URL="${BUILD_URL:-}" \
         bash "$SELF_DIR/provision-apply-comment.sh" >/dev/null 2>&1 || true ;;
     *) echo "  (refus non commenté : la forge n'a pas confirmé une PR provision/* — journal seul)" >&2 ;;
@@ -166,12 +166,12 @@ FORGE_CERT="${SUB_PFX}clients/provisioned/certs/${APP_NAME}-${ENV_NAME}.crt"
 # Les champs attendus doivent être PRÉSENTS (un 200 sans eux — portail
 # interposé, autre objet — est une réponse illisible, pas une divergence).
 PR_STATE=$(GIT_HOST="$GIT_HOST" GIT_REPO="$GIT_REPO" PR_NUMBER="$PR_NUMBER" \
-  GITEA_TOKEN="$GITEA_TOKEN" PR_BRANCH="$PR_BRANCH" MERGE_SHA="$MERGE_SHA" \
+  FORGE_SECRET="$FORGE_SECRET" PR_BRANCH="$PR_BRANCH" MERGE_SHA="$MERGE_SHA" \
   FORGE_MANIFEST="$FORGE_MANIFEST" FORGE_CERT="$FORGE_CERT" python3 - <<'PY'
 import os, json, urllib.request, urllib.error
 api = os.environ["GIT_HOST"].rstrip("/") + "/api/v1"
 repo, pr = os.environ["GIT_REPO"], os.environ["PR_NUMBER"]
-hdr = {"Authorization": "token " + os.environ["GITEA_TOKEN"], "Accept": "application/json"}
+hdr = {"Authorization": "token " + os.environ["FORGE_SECRET"], "Accept": "application/json"}
 def get(url):
     with urllib.request.urlopen(urllib.request.Request(url, headers=hdr), timeout=30) as r:
         return json.load(r)

@@ -30,7 +30,7 @@
 #       ce qui laisse le chemin de réparation de team-apply pousser. PORTANT.
 #
 #   bash scripts/setup-repo-protections.sh --print   # hors ligne : ce qui SERAIT posé
-#   GITEA_TOKEN=… bash scripts/setup-repo-protections.sh
+#   FORGE_SECRET=… bash scripts/setup-repo-protections.sh
 #
 # ÉCART AU BRIEF (ajout justifié) : `--print`/`--help`. Sans eux, ce script
 # n'avait AUCUN chemin exécutable sans token ni réseau, et sa seule logique
@@ -38,6 +38,8 @@
 # entièrement non prouvée par la porte hors-ligne. `--print` l'émet sans rien
 # poser ; la sémantique LIVE de la protection reste la Task 9.
 set -euo pipefail
+# shellcheck source=scripts/lib/forge-identity.sh
+. scripts/lib/forge-identity.sh || { echo "ERREUR: scripts/lib/forge-identity.sh introuvable ou illisible" >&2; exit 1; }
 cd "$(dirname "$0")/.." || exit 1
 # shellcheck source=scripts/lib/repo-protection.sh
 . "scripts/lib/repo-protection.sh"
@@ -99,8 +101,9 @@ if [ "$MODE" = print ]; then
   exit 0
 fi
 
-GITEA_TOKEN="${GITEA_TOKEN:?GITEA_TOKEN requis (write:repository sur les dépôts visés) — ou --print pour voir ce qui serait posé}"
-printf 'Authorization: token %s\n' "$GITEA_TOKEN" > "$TMPD/hdr"
+FORGE_SECRET="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
+FORGE_SECRET="${GITEA_TOKEN:?FORGE_SECRET requis (write:repository sur les dépôts visés) — ou --print pour voir ce qui serait posé}"
+forge_auth_write "$FORGE_SECRET" "$TMPD/hdr" || exit 2
 
 RC=0
 for repo in $REPOS $TEAM_REPOS; do

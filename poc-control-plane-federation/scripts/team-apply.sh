@@ -20,6 +20,8 @@
 # (celui-ci n'a de sens que dans un CLONE FRAIS du dépôt plateforme entier —
 # motif utilisé par team-request.sh pour son propre WORK/repo, différent).
 set -uo pipefail
+# shellcheck source=scripts/lib/forge-identity.sh
+. scripts/lib/forge-identity.sh || { echo "ERREUR: scripts/lib/forge-identity.sh introuvable ou illisible" >&2; exit 1; }
 set +x   # jamais de trace : le token ne doit pas fuiter
 cd "$(dirname "$0")/.." || exit 1
 
@@ -67,8 +69,8 @@ PR_NUMBER="${PR_NUMBER:?PR_NUMBER requis}"
 MERGE_SHA="${MERGE_SHA:?MERGE_SHA requis (merge_commit_sha du webhook)}"
 # Le secret de la forge porte un nom NEUTRE (2026-09-04) : un gestionnaire
 # d'identite rend un jeton OU un couple, et les deux occupent la meme place.
-GITEA_TOKEN="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
-[ -n "$GITEA_TOKEN" ] || { echo "REFUS: SECRET_FORGE_REQUIS : ni FORGE_SECRET ni GITEA_TOKEN — le secret de la forge (jeton, ou mot de passe d'un couple avec FORGE_USER)" >&2; exit 2; }
+FORGE_SECRET="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
+[ -n "$FORGE_SECRET" ] || { echo "REFUS: SECRET_FORGE_REQUIS : ni FORGE_SECRET ni son alias GITEA_TOKEN — le secret de la forge (jeton, ou mot de passe d'un couple avec FORGE_USER)" >&2; exit 2; }
 VAULT_ADDR="${VAULT_ADDR:?VAULT_ADDR requis}"
 VAULT_TOKEN_FILE="${VAULT_TOKEN_FILE:?VAULT_TOKEN_FILE requis (jamais le token en env/argv)}"
 APIM_API_BASE="${APIM_API_BASE:?APIM_API_BASE requis — pas de défaut : dire sa cible est volontaire}"
@@ -78,10 +80,10 @@ GIT_WEB_HOST="${GIT_WEB_HOST:-$GIT_HOST}"
 
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT; umask 077
 fail(){ comment "❌ team-apply : $*"; echo "ERREUR: $*" >&2; exit 1; }
-comment(){ API="${GIT_HOST}/api/v1" GIT_REPO="$GIT_REPO" GITEA_TOKEN="$GITEA_TOKEN" \
+comment(){ API="${GIT_HOST}/api/v1" GIT_REPO="$GIT_REPO" FORGE_SECRET="$FORGE_SECRET" \
   PR="$PR_NUMBER" BODY="$1" python3 - <<'PY'
 import json, os, urllib.request
-api, repo, tok = os.environ["API"], os.environ["GIT_REPO"], os.environ["GITEA_TOKEN"]
+api, repo, tok = os.environ["API"], os.environ["GIT_REPO"], os.environ["FORGE_SECRET"]
 req = urllib.request.Request(f"{api}/repos/{repo}/issues/{os.environ['PR']}/comments",
     method="POST", data=json.dumps({"body": os.environ["BODY"]}).encode(),
     headers={"Authorization": f"token {tok}", "Content-Type": "application/json"})
@@ -149,7 +151,7 @@ if [ -n "$REPO_FULL" ]; then
   curl -s -H @"$TMP/vthdr" "$VAULT_ADDR/v1/secret/data/stoa/ci/gitea-org-admin" \
     | python3 -c "import json,sys; print(json.load(sys.stdin)['data']['data']['token'])" > "$TMP/gt" \
     || fail "lecture du token org-admin dans Vault (policy team-onboarder ?)"
-  printf 'Authorization: token %s\n' "$(cat "$TMP/gt")" > "$TMP/ghdr"
+  forge_auth_write "$(cat "$TMP/gt")" "$TMP/ghdr" || exit 2
   ORG="${REPO_FULL%%/*}"; RNAME="${REPO_FULL##*/}"
   gapi(){ curl -s -H @"$TMP/ghdr" -H 'Content-Type: application/json' "$@"; }
   # org : create-or-skip
@@ -286,7 +288,7 @@ if [ -n "$REPO_FULL" ]; then
   #   - La garde RÉELLE contre un payload forgé/rejoué N'EST DONC PAS ce
   #     secret : c'est la réconciliation Gitea de team-publish.sh (§2 —
   #     merged/merge_commit_sha/head.ref/base.ref RELUS via GET
-  #     /repos/.../pulls/$PR_NUMBER avec GITEA_TOKEN, indépendamment de ce
+  #     /repos/.../pulls/$PR_NUMBER avec FORGE_SECRET, indépendamment de ce
   #     que prétend le payload) + l'ancrage merge-base --is-ancestor (§4).
   #     Le secret est enregistré ici en préparation d'une vérification future
   #     (ex. step dédié captant l'en-tête ET le corps brut), vide par défaut

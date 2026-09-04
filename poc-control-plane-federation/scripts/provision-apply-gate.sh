@@ -39,7 +39,7 @@
 #
 # Entrées (env — toutes lues ${X:-} : Jenkins n'exporte pas une variable vide) :
 #   ENV_NAME APP_NAME MANIFEST MERGE_SHA GITEA_MERGED_BY GITEA_REQUESTER (réconciliés)
-#   PR_NUMBER GITEA_TOKEN   (le refus est commenté si les deux sont posés)
+#   PR_NUMBER FORGE_SECRET   (le refus est commenté si les deux sont posés)
 #   GATE_OUT                (req) fichier de sortie KEY=VALUE
 #   GATE_STAGE              pre | dispatch (libellé de journal ; les deux font tout)
 #   STOA_ENV_CHAIN_FILE     la chaîne — posée par l'appelant, imprimée (`chaîne : …`)
@@ -61,7 +61,7 @@ cd "$SELF_DIR/.." || exit 1
 
 ENV_NAME="${ENV_NAME:-}"; APP_NAME="${APP_NAME:-}"; MANIFEST="${MANIFEST:-}"; MERGE_SHA="${MERGE_SHA:-}"
 GITEA_MERGED_BY="${GITEA_MERGED_BY:-}"; GITEA_REQUESTER="${GITEA_REQUESTER:-}"
-PR_NUMBER="${PR_NUMBER:-}"; GITEA_TOKEN="${FORGE_SECRET:-${GITEA_TOKEN:-}}"   # secret de la forge, jeton ou mot de passe
+PR_NUMBER="${PR_NUMBER:-}"; FORGE_SECRET="${FORGE_SECRET:-${GITEA_TOKEN:-}}"   # secret de la forge, jeton ou mot de passe
 GATE_OUT="${GATE_OUT:-}"; GATE_STAGE="${GATE_STAGE:-pre}"
 ITSM_URL="${ITSM_URL:-}"; ITSM_CACERT="${ITSM_CACERT:-}"
 APIM_TERMINUS_BASE="${APIM_TERMINUS_BASE:-}"
@@ -82,10 +82,10 @@ shown(){ printf '%q' "$(printf '%s' "${1:-}" | head -c 80)"; }
 refus(){
   local tag="$1" logmsg="$2" prmsg="${3:-}"
   printf 'REFUS: %s : %s\n' "$tag" "$logmsg"
-  if [ -n "$PR_NUMBER" ] && [ -n "$GITEA_TOKEN" ]; then
+  if [ -n "$PR_NUMBER" ] && [ -n "$FORGE_SECRET" ]; then
     PR_NUMBER="$PR_NUMBER" APPLY_RESULT=REFUSED REFUSAL="$tag" REFUSAL_KIND=porte REFUSAL_DETAIL="$prmsg" \
       APP_NAME="${APP_NAME:-(inconnue)}" ENV_NAME="${ENV_NAME:-(inconnu)}" \
-      GIT_REPO="$GIT_REPO" GIT_HOST="$GIT_HOST" GIT_WEB_HOST="$GIT_WEB_HOST" GITEA_TOKEN="$GITEA_TOKEN" BUILD_URL="${BUILD_URL:-}" \
+      GIT_REPO="$GIT_REPO" GIT_HOST="$GIT_HOST" GIT_WEB_HOST="$GIT_WEB_HOST" FORGE_SECRET="$FORGE_SECRET" BUILD_URL="${BUILD_URL:-}" \
       bash "$SELF_DIR/provision-apply-comment.sh" >/dev/null 2>&1 || true
   fi
   exit 1

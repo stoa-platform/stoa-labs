@@ -42,14 +42,14 @@
 #                 `APIS=…`, valeurs séparées par UN espace (les gardes amont
 #                 garantissent des noms sans espace : [a-z0-9-] côté équipe,
 #                 [A-Za-z0-9._-]@version côté API, palier alphanumérique).
-#   GIT_HOST / GIT_REPO / GITEA_TOKEN / GIT_USER / GIT_BASE : cf.
+#   GIT_HOST / GIT_REPO / FORGE_SECRET / GIT_USER / GIT_BASE : cf.
 #                 generate-choices.sh (jeton requis DÈS QU'un clone a lieu).
 #   GC_PLATFORM_DIR (opt.) racine d'un dépôt plateforme déjà présent — le clone
 #                 du dépôt plateforme est alors SAUTÉ (fail-closed si le
 #                 répertoire ne le porte pas : jamais de repli sur un clone).
 #   STOA_ENV_CHAIN_FILE : surcharge de la source de la chaîne (tests).
 #
-#   CHOICES_OUT=/tmp/choices.env GITEA_TOKEN=… bash scripts/app-request-choices.sh
+#   CHOICES_OUT=/tmp/choices.env FORGE_SECRET=… bash scripts/app-request-choices.sh
 set -uo pipefail
 set +x
 cd "$(dirname "$0")/.." || exit 1

@@ -62,8 +62,8 @@ PR_NUMBER="${PR_NUMBER:?PR_NUMBER requis}"
 MERGE_SHA="${MERGE_SHA:?MERGE_SHA requis (merge_commit_sha du webhook)}"
 # Le secret de la forge porte un nom NEUTRE (2026-09-04) : un gestionnaire
 # d'identite rend un jeton OU un couple, et les deux occupent la meme place.
-GITEA_TOKEN="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
-[ -n "$GITEA_TOKEN" ] || { echo "REFUS: SECRET_FORGE_REQUIS : ni FORGE_SECRET ni GITEA_TOKEN — le secret de la forge (jeton, ou mot de passe d'un couple avec FORGE_USER)" >&2; exit 2; }
+FORGE_SECRET="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
+[ -n "$FORGE_SECRET" ] || { echo "REFUS: SECRET_FORGE_REQUIS : ni FORGE_SECRET ni son alias GITEA_TOKEN — le secret de la forge (jeton, ou mot de passe d'un couple avec FORGE_USER)" >&2; exit 2; }
 VAULT_ADDR="${VAULT_ADDR:?VAULT_ADDR requis}"
 VAULT_TOKEN_FILE="${VAULT_TOKEN_FILE:?VAULT_TOKEN_FILE requis (jamais le token en env/argv)}"
 GIT_HOST="${GIT_HOST:-http://gitea:3000}"
@@ -104,20 +104,20 @@ comment(){
   local repo="$1" body="$2" bodyfile
   bodyfile="$TMP/comment-body"
   printf '%s\n' "$body" > "$bodyfile"
-  GIT_REPO="$repo" GITEA_TOKEN="$GITEA_TOKEN" PR_NUMBER="$PR_NUMBER" GIT_HOST="$GIT_HOST" \
+  GIT_REPO="$repo" FORGE_SECRET="$FORGE_SECRET" PR_NUMBER="$PR_NUMBER" GIT_HOST="$GIT_HOST" \
   COMMENT_MARKER="$TEAM_PROMOTE_MARKER" COMMENT_BODY_FILE="$bodyfile" \
     bash scripts/lib/gitea-pr-comment.sh \
     || echo "AVERTISSEMENT: échec de publication du commentaire sur ${repo}#${PR_NUMBER} — la décision (merge) reste actée, seul le RAPPORT a échoué" >&2
 }
 fail(){ comment "$WEBHOOK_REPO" "❌ team-promote : $*"; echo "ERREUR: $*" >&2; exit 1; }
 
-# Clone AUTHENTIFIÉ (GITEA_TOKEN, header injecté via variables d'ENVIRONNEMENT
+# Clone AUTHENTIFIÉ (FORGE_SECRET, header injecté via variables d'ENVIRONNEMENT
 # GIT_CONFIG_COUNT/KEY/VALUE — jamais l'URL, jamais argv). Un clone ANONYME
 # casserait sur un dépôt PRIVÉ — le dépôt plateforme ET le dépôt d'équipe le
 # sont chez un client réel.
 gclone(){
   local auth_b64
-  auth_b64=$(printf 'x:%s' "$GITEA_TOKEN" | base64 | tr -d '\n')
+  auth_b64=$(printf 'x:%s' "$FORGE_SECRET" | base64 | tr -d '\n')
   GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader \
     GIT_CONFIG_VALUE_0="Authorization: Basic ${auth_b64}" \
     git clone -q "$@"
@@ -219,7 +219,7 @@ fi
 # tir manuel avec le token GWT partagé peut prétendre N'IMPORTE QUEL
 # merge_commit_sha/branche pour ce PR_NUMBER. La garde d'atteignabilité (§4)
 # confirme que MERGE_SHA est UN ancêtre de main — pas forcément CELUI de CETTE
-# PR. On redemande donc l'état à GITEA LUI-MÊME (authentifié par GITEA_TOKEN,
+# PR. On redemande donc l'état à GITEA LUI-MÊME (authentifié par FORGE_SECRET,
 # donc pas falsifiable par le contenu d'un payload).
 #
 # ⚠ ET ON EN RAMÈNE AUSSI LES DEUX IDENTITÉS. C'est l'écart délibéré avec les
@@ -241,13 +241,13 @@ fi
 # deploy-pin.sh:117-125) : on REFUSE le délimiteur dans la valeur plutôt que
 # d'espérer qu'il n'y soit pas.
 PR_STATE=$(GIT_HOST="$GIT_HOST" WEBHOOK_REPO="$WEBHOOK_REPO" PR_NUMBER="$PR_NUMBER" \
-  GITEA_TOKEN="$GITEA_TOKEN" PR_BRANCH="$PR_BRANCH" MERGE_SHA="$MERGE_SHA" python3 - <<'PY'
+  FORGE_SECRET="$FORGE_SECRET" PR_BRANCH="$PR_BRANCH" MERGE_SHA="$MERGE_SHA" python3 - <<'PY'
 import os, json, urllib.request, urllib.error
 api = os.environ["GIT_HOST"] + "/api/v1"
 repo = os.environ["WEBHOOK_REPO"]
 pr = os.environ["PR_NUMBER"]
 req = urllib.request.Request(f"{api}/repos/{repo}/pulls/{pr}",
-    headers={"Authorization": "token " + os.environ["GITEA_TOKEN"]})
+    headers={"Authorization": "token " + os.environ["FORGE_SECRET"]})
 try:
     d = json.load(urllib.request.urlopen(req))
 except (urllib.error.URLError, ValueError) as e:
@@ -454,7 +454,7 @@ esac
 
 # ⚠ LE DEMANDEUR EST `promoted_by` DU MARQUEUR MERGÉ, PAS L'AUTEUR DE LA PR.
 # La distinction n'est pas cosmétique : `api-promote-request.sh` ouvre la PR
-# avec GITEA_TOKEN, donc son AUTEUR (`user.login`, réconcilié en §2) est le
+# avec FORGE_SECRET, donc son AUTEUR (`user.login`, réconcilié en §2) est le
 # COMPTE DE SERVICE du CI, pas l'humain qui a rempli le formulaire. Comparer
 # mergeur et auteur de PR reviendrait à comparer un humain à `ci` : la
 # comparaison ne serait jamais vraie, et les quatre yeux ne refuseraient
