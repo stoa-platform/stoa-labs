@@ -40,7 +40,10 @@ _TR_LIB="$(dirname "${BASH_SOURCE[0]}")/lib/deploy-pin.sh"
 . "$_TR_LIB" || { echo "ERREUR: $_TR_LIB introuvable ou illisible" >&2; exit 1; }
 
 TEAM="${TEAM:?TEAM requis}"
-GITEA_TOKEN="${GITEA_TOKEN:?GITEA_TOKEN requis}"
+# Le secret de la forge porte un nom NEUTRE (2026-09-04) : un gestionnaire
+# d'identite rend un jeton OU un couple, et les deux occupent la meme place.
+GITEA_TOKEN="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
+[ -n "$GITEA_TOKEN" ] || { echo "REFUS: SECRET_FORGE_REQUIS : ni FORGE_SECRET ni GITEA_TOKEN — le secret de la forge (jeton, ou mot de passe d'un couple avec FORGE_USER)" >&2; exit 2; }
 DESCRIPTION="${DESCRIPTION:-}"
 APPROVERS="${APPROVERS:-}"
 REPO="${REPO:-${TEAM}/apis}"

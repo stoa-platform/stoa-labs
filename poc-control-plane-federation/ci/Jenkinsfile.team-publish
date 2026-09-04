@@ -19,6 +19,18 @@
 // mentir sur son propre nom). Le croisement est fait par team-publish.sh.
 //
 // Login, révocation et preuve de mort du token : ci/lib/vault-login.sh (ADR-078 §2).
+// forgeCreds() — la liste withCredentials du TYPE declare par le site.
+// Dans les deux cas, le shell voit les MEMES noms : FORGE_SECRET (le secret) et
+// FORGE_USER (l'utilisateur, vide avec un jeton). Les scripts acceptent
+// FORGE_SECRET, avec GITEA_TOKEN toujours honore comme alias historique.
+def forgeCreds() {
+  if (env.FORGE_CRED_KIND == 'username-password') {
+    return [usernamePassword(credentialsId: env.GITEA_CREDENTIALS_ID,
+                             usernameVariable: 'FORGE_USER', passwordVariable: 'FORGE_SECRET')]
+  }
+  return [string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'FORGE_SECRET')]
+}
+
 pipeline {
 
   // `agent none` — DÉLIBÉRÉ, ce n'est pas un oubli. La demande en attente
@@ -174,7 +186,7 @@ pipeline {
         // (vault_trap_revoke, EXIT) ne révoque le token QU'APRÈS l'apply. Deux
         // steps `sh` séparés rouvriraient un process par step — le trap du
         // premier révoquerait le token AVANT que le second ne le consomme.
-        withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')]) {
+        withCredentials(forgeCreds()) {
           dir(env.GIT_SUBDIR) {
             sh '''
               set +x
@@ -235,7 +247,7 @@ pipeline {
       // exécuteur que l'étape d'apply, rien n'est hérité.
       node("${env.POST_AGENT_LABEL ?: ''}") {
         checkout scm
-        withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')]) {
+        withCredentials(forgeCreds()) {
           withEnv(["BUILD_RESULT=${currentBuild.currentResult}"]) {
             dir(env.GIT_SUBDIR) {
               sh '''

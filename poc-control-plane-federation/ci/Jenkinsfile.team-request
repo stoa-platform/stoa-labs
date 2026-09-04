@@ -25,6 +25,18 @@
 // hostile ne peut donc RIEN faire d'autre qu'ouvrir une PR que quelqu'un devra
 // relire — et les gardes de valeur (TEAM_NAME_INVALID, YAML_UNSAFE_INPUT,
 // TEAM_ALREADY_DECLARED) sont dans le script, pas ici.
+// forgeCreds() — la liste withCredentials du TYPE declare par le site.
+// Dans les deux cas, le shell voit les MEMES noms : FORGE_SECRET (le secret) et
+// FORGE_USER (l'utilisateur, vide avec un jeton). Les scripts acceptent
+// FORGE_SECRET, avec GITEA_TOKEN toujours honore comme alias historique.
+def forgeCreds() {
+  if (env.FORGE_CRED_KIND == 'username-password') {
+    return [usernamePassword(credentialsId: env.GITEA_CREDENTIALS_ID,
+                             usernameVariable: 'FORGE_USER', passwordVariable: 'FORGE_SECRET')]
+  }
+  return [string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'FORGE_SECRET')]
+}
+
 pipeline {
 
   // `agent any` — et NON `agent none` comme team-publish : ce job n'a aucune
@@ -121,7 +133,7 @@ pipeline {
         // le pose dans l'environnement du step `sh`, où team-request.sh le lit
         // (`${GITEA_TOKEN:?}`). Le pipeline ne le manipule pas, ne le
         // concatène nulle part, ne le passe à aucune commande.
-        withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')]) {
+        withCredentials(forgeCreds()) {
           // ── RÉ-INJECTION DES VALEURS BRUTES — NE PAS RETIRER ────────────────
           // Ce withEnv n'est PAS un doublon du canal natif : il est la seule
           // chose qui livre au shell la valeur EXACTEMENT SAISIE.

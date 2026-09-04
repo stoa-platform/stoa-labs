@@ -30,6 +30,18 @@
 // `input { message }` n'interpole pas (sans objet ici) ; un paramètre de build
 // subit EnvVars.resolve() (sans objet ici : aucun paramètre, les valeurs
 // viennent du webhook et sont lues par le SHELL).
+// forgeCreds() — la liste withCredentials du TYPE declare par le site.
+// Dans les deux cas, le shell voit les MEMES noms : FORGE_SECRET (le secret) et
+// FORGE_USER (l'utilisateur, vide avec un jeton). Les scripts acceptent
+// FORGE_SECRET, avec GITEA_TOKEN toujours honore comme alias historique.
+def forgeCreds() {
+  if (env.FORGE_CRED_KIND == 'username-password') {
+    return [usernamePassword(credentialsId: env.GITEA_CREDENTIALS_ID,
+                             usernameVariable: 'FORGE_USER', passwordVariable: 'FORGE_SECRET')]
+  }
+  return [string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'FORGE_SECRET')]
+}
+
 pipeline {
 
   // `agent none` au niveau pipeline, `agent any` sur le SEUL stage qui travaille :
@@ -118,7 +130,7 @@ pipeline {
       }
       agent any
       steps {
-        withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')]) {
+        withCredentials(forgeCreds()) {
           // Le checkout du dépôt plateforme est IMPLICITE (agent de stage en
           // déclaratif) : il vient du <scm> de la coquille — d'où la
           // disparition du `git url:` en dur du Groovy. Chaîne sh en quotes
@@ -191,7 +203,7 @@ pipeline {
             timeout(time: 2, unit: 'MINUTES') {
               node("${env.POST_AGENT_LABEL ?: ''}") {
                 checkout scm
-                withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')]) {
+                withCredentials(forgeCreds()) {
                   withEnv(["BUILD_RESULT=${currentBuild.currentResult}"]) {
                     dir(env.GIT_SUBDIR) {
                       // Les faits (GITEA_HEAD_REF / PLAN_VERDICT / PLAN_REASON)

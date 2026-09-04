@@ -121,7 +121,7 @@ L_WHEN=$(code_line "$TMP/jf-plan.code" 'beforeAgent true'); L_AG=$(awk "NR>${L_W
 [ -n "$L_WHEN" ] && [ -n "$L_AG" ] && ok "le stage de plan a son propre \`agent any\` (ligne $L_AG) après la garde (ligne $L_WHEN)" || ko "agent any du stage de plan introuvable après la garde"
 L_SH=$(code_line "$TMP/jf-plan.code" "sh 'set +x; rm -f \"\$WORKSPACE/.plan.facts\"; PLAN_FACTS=\"\$WORKSPACE/.plan.facts\" bash scripts/provision-plan.sh'")
 [ -n "$L_SH" ] && ok "scripts/provision-plan.sh invoqué en quotes SIMPLES avec set +x, purge puis PLAN_FACTS (ligne $L_SH)" || ko "invocation du script absente ou en quotes doubles"
-L_WC=$(code_line "$TMP/jf-plan.code" "withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')])")
+L_WC=$(code_line "$TMP/jf-plan.code" "withCredentials(forgeCreds())")
 L_DIR=$(code_line "$TMP/jf-plan.code" "dir(env.GIT_SUBDIR)")
 [ -n "$L_WC" ] && [ -n "$L_DIR" ] && [ -n "$L_SH" ] && [ "$L_WC" -lt "$L_DIR" ] && [ "$L_DIR" -lt "$L_SH" ] \
   && ok "ordre withCredentials ($L_WC) < dir ($L_DIR) < sh ($L_SH) : token présent, chemins relatifs justes" || ko "ordre withCredentials/dir/sh cassé (wc=$L_WC dir=$L_DIR sh=$L_SH)"
@@ -160,7 +160,7 @@ done
 [ -z "$MISS" ] && ok "les 7 clés REQ_* pointent les chemins JSON du contrat machine (\$.app … \$.caller)" || ko "clés absentes/divergentes :$MISS"
 L_SH=$(code_line "$TMP/jf-req.code" "sh 'set +x; bash scripts/provision-request.sh'")
 [ -n "$L_SH" ] && ok "scripts/provision-request.sh invoqué en quotes SIMPLES avec set +x (ligne $L_SH)" || ko "invocation du script absente ou en quotes doubles"
-L_WC=$(code_line "$TMP/jf-req.code" "withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')])")
+L_WC=$(code_line "$TMP/jf-req.code" "withCredentials(forgeCreds())")
 L_DIR=$(code_line "$TMP/jf-req.code" "dir(env.GIT_SUBDIR)")
 [ -n "$L_WC" ] && [ -n "$L_DIR" ] && [ -n "$L_SH" ] && [ "$L_WC" -lt "$L_DIR" ] && [ "$L_DIR" -lt "$L_SH" ] \
   && ok "ordre withCredentials ($L_WC) < dir ($L_DIR) < sh ($L_SH)" || ko "ordre withCredentials/dir/sh cassé (wc=$L_WC dir=$L_DIR sh=$L_SH)"
@@ -658,7 +658,7 @@ L_ST=$(code_line "$POSTV" "sh 'set +x; bash scripts/provision-plan-status.sh || 
 L_CATCH=$(code_line "$POSTV" 'catch (e)')
 [ -n "$L_G" ] && [ -n "$L_ND" ] && [ "$L_G" -lt "$L_ND" ] && ok "post de pipeline : garde Groovy provision/* + PR_NUMBER numérique (ligne +$L_G) AVANT node( (ligne +$L_ND) — aucun exécuteur pour une PR étrangère" || ko "garde absente ou après node (g=$L_G node=$L_ND)"
 [ -n "$L_TRY" ] && [ -n "$L_TO" ] && [ -n "$L_CATCH" ] && [ "$L_TRY" -lt "$L_ND" ] && [ "$L_TO" -lt "$L_ND" ] && ok "try (+$L_TRY) et timeout 2 min (+$L_TO) enveloppent le nœud ; catch présent (+$L_CATCH) : le statut ne rougit ni ne bloque jamais" || ko "try/timeout/catch absents ou mal placés (try=$L_TRY to=$L_TO catch=$L_CATCH node=$L_ND)"
-[ -n "$L_ST" ] && [ "$L_ND" -lt "$L_ST" ] && grep -q 'BUILD_RESULT=${currentBuild.currentResult}' "$POSTV" && grep -q "withCredentials(\[string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')\])" "$POSTV" \
+[ -n "$L_ST" ] && [ "$L_ND" -lt "$L_ST" ] && grep -q 'BUILD_RESULT=${currentBuild.currentResult}' "$POSTV" && grep -q "withCredentials(forgeCreds())" "$POSTV" \
   && ok "provision-plan-status.sh invoqué sous node + credential + BUILD_RESULT (quotes simples, set +x, || echo)" || ko "invocation du statut absente/mal enveloppée (st=$L_ST)"
 grep -q "provision-plan-build" scripts/provision-plan-status.sh && grep -q "COMMENT_MARKER='<!-- provision-plan -->'" scripts/provision-plan.sh \
   && ok "marqueurs DISTINCTS : verdict <!-- provision-plan -->, statut <!-- provision-plan-build -->" || ko "marqueurs non distincts"

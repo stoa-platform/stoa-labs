@@ -176,7 +176,10 @@ fi
 echo "GARDES_OK : $FROM_ENV -> $TO_ENV, groupe d'approbation='${APPROVER_GROUP:-<aucun>}', groupe déployeur='${DEPLOYER_GROUP:-<aucun>}'"
 [ "${DRY_RUN:-0}" = 1 ] && exit 0
 
-GITEA_TOKEN="${GITEA_TOKEN:?GITEA_TOKEN requis}"
+# Le secret de la forge porte un nom NEUTRE (2026-09-04) : un gestionnaire
+# d'identite rend un jeton OU un couple, et les deux occupent la meme place.
+GITEA_TOKEN="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
+[ -n "$GITEA_TOKEN" ] || { echo "REFUS: SECRET_FORGE_REQUIS : ni FORGE_SECRET ni GITEA_TOKEN — le secret de la forge (jeton, ou mot de passe d'un couple avec FORGE_USER)" >&2; exit 2; }
 GIT_HOST="${GIT_HOST:-http://gitea:3000}"
 GIT_REPO="${GIT_REPO:-ci/stoa-labs}"   # dépôt PLATEFORME — porte providers.<env>.yml
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT; umask 077

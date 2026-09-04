@@ -34,6 +34,18 @@
 // <triggers> du XML gagne sur celui-ci (miroir exact, test de câblage) ; un
 // paramètre inconnu du job aval est retiré en silence (d'où MERGE_SHA_REQUIS
 // côté aval ET la confrontation côté amont).
+// forgeCreds() — la liste withCredentials du TYPE declare par le site.
+// Dans les deux cas, le shell voit les MEMES noms : FORGE_SECRET (le secret) et
+// FORGE_USER (l'utilisateur, vide avec un jeton). Les scripts acceptent
+// FORGE_SECRET, avec GITEA_TOKEN toujours honore comme alias historique.
+def forgeCreds() {
+  if (env.FORGE_CRED_KIND == 'username-password') {
+    return [usernamePassword(credentialsId: env.GITEA_CREDENTIALS_ID,
+                             usernameVariable: 'FORGE_USER', passwordVariable: 'FORGE_SECRET')]
+  }
+  return [string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'FORGE_SECRET')]
+}
+
 pipeline {
 
   // `agent none` — DÉLIBÉRÉ : la pause (directive `input` de stage) est
@@ -162,7 +174,7 @@ pipeline {
       }
       agent any
       steps {
-        withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')]) {
+        withCredentials(forgeCreds()) {
           dir(env.GIT_SUBDIR) {
             // Chaîne sh en quotes SIMPLES : PR_BRANCH/PR_NUMBER/MERGE_SHA viennent
             // du webhook (tiers) et sont lus par le SHELL, jamais interpolés par Groovy.
@@ -266,7 +278,7 @@ pipeline {
                 // relue au GESTE, après la réponse humaine — c'est CE passage qui
                 // nourrit la garde (GATE_ALLOW_SELF) et le rapport (GATE_*). Sous
                 // withCredentials : un refus au dispatch est commenté sur la PR.
-                withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')]) {
+                withCredentials(forgeCreds()) {
                   sh 'set +x; STOA_ENV_CHAIN_FILE="$PWD/clients/_example/environments.yaml" GATE_STAGE=dispatch GATE_OUT="$WORKSPACE/.a4-gate.env" bash scripts/provision-apply-gate.sh'
                 }
                 // Relu par readFile, classe RE-VÉRIFIÉE (sinon PORTE_ILLISIBLE),
@@ -359,7 +371,7 @@ pipeline {
           withEnv(["V_USER=${vUser}"]) {
             node("${env.POST_AGENT_LABEL ?: ''}") {
               checkout scm
-              withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')]) {
+              withCredentials(forgeCreds()) {
                 dir(env.GIT_SUBDIR) {
                   sh 'set +x; VALIDATOR="${V_USER:-}" EXPECTED_SHA="${MERGE_SHA:-}" BUILD_URL="${APPLY_BUILD_URL:-}" bash scripts/provision-apply-comment.sh || true'
                 }
@@ -405,7 +417,7 @@ pipeline {
             timeout(time: 2, unit: 'MINUTES') {
               node("${env.POST_AGENT_LABEL ?: ''}") {
                 checkout scm
-                withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')]) {
+                withCredentials(forgeCreds()) {
                   withEnv(["BUILD_RESULT=${currentBuild.currentResult}"]) {
                     dir(env.GIT_SUBDIR) {
                       sh '''

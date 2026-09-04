@@ -19,6 +19,18 @@
 // sur les deux lignes sh (A4 : une globale STOA_ENV_CHAIN_FILE ne redirige ni la
 // liste ENV ni la porte GATE_REFS_REQUIRED). Sandbox Groovy : getBuildCauses,
 // readFile, properties, params.size, take sont en liste blanche (mesuré A0/A2).
+// forgeCreds() — la liste withCredentials du TYPE declare par le site.
+// Dans les deux cas, le shell voit les MEMES noms : FORGE_SECRET (le secret) et
+// FORGE_USER (l'utilisateur, vide avec un jeton). Les scripts acceptent
+// FORGE_SECRET, avec GITEA_TOKEN toujours honore comme alias historique.
+def forgeCreds() {
+  if (env.FORGE_CRED_KIND == 'username-password') {
+    return [usernamePassword(credentialsId: env.GITEA_CREDENTIALS_ID,
+                             usernameVariable: 'FORGE_USER', passwordVariable: 'FORGE_SECRET')]
+  }
+  return [string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'FORGE_SECRET')]
+}
+
 pipeline {
 
   agent any
@@ -107,7 +119,7 @@ pipeline {
             error('REFUS: TOKEN_GLOBAL_REFUSE — FORGE_TOKEN est pose par une variable d environnement du noeud alors que le champ est vide : une identite de forge ne s herite pas. Rien n a ete tente.')
           }
         }
-        withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')]) {
+        withCredentials(forgeCreds()) {
           // FAIT 5 (A0) : les valeurs de formulaire subissent EnvVars.resolve —
           // ré-injection brute par withEnv, lues par le SHELL, jamais interpolées
           // dans la chaîne sh (quotes simples ; `set +x` : le token ne s'écho pas).

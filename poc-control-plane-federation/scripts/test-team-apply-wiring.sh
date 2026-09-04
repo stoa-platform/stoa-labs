@@ -285,7 +285,7 @@ jf 'GIT_HOST = "${env.GIT_HOST ?: '"'"'http://gitea:3000'"'"'}"' \
 jf 'GITEA_CREDENTIALS_ID = "${env.GITEA_CREDENTIALS_ID ?: '"'"'gitea-provision-token'"'"'}"' \
   && ok "valeur littérale de GITEA_CREDENTIALS_ID = gitea-provision-token (point de config client, plus en dur dans le pipeline)" \
   || ko "GITEA_CREDENTIALS_ID : valeur par défaut inattendue ou absente"
-jf "withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')])" \
+jf "withCredentials(forgeCreds())" \
   && ok "le credential Gitea est réellement lu via env.GITEA_CREDENTIALS_ID et exposé en GITEA_TOKEN (jamais en argv)" \
   || ko "withCredentials n'utilise pas env.GITEA_CREDENTIALS_ID — la surcharge client serait décorative"
 # L'ordre compte : le bloc `environment` doit précéder les `stages` pour que

@@ -36,6 +36,18 @@
 //                             paramètres de build avant de les exposer au `sh`
 //                             (mesuré). Détail au-dessus du bloc lui-même.
 //   sh 'set +x; bash …'    -> INCHANGÉ, à l'octet près.
+// forgeCreds() — la liste withCredentials du TYPE declare par le site.
+// Dans les deux cas, le shell voit les MEMES noms : FORGE_SECRET (le secret) et
+// FORGE_USER (l'utilisateur, vide avec un jeton). Les scripts acceptent
+// FORGE_SECRET, avec GITEA_TOKEN toujours honore comme alias historique.
+def forgeCreds() {
+  if (env.FORGE_CRED_KIND == 'username-password') {
+    return [usernamePassword(credentialsId: env.GITEA_CREDENTIALS_ID,
+                             usernameVariable: 'FORGE_USER', passwordVariable: 'FORGE_SECRET')]
+  }
+  return [string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'FORGE_SECRET')]
+}
+
 pipeline {
 
   // Aucune demande en attente ici (pas de directive `input`) : une fois le
@@ -131,7 +143,7 @@ pipeline {
         // lit dans son environnement (GITEA_TOKEN) et le convertit lui-même en
         // en-tête Basic via GIT_CONFIG_COUNT/KEY_0 — jamais dans une URL de
         // push (motif éprouvé, cf. scripts/api-request.sh §4).
-        withCredentials([string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'GITEA_TOKEN')]) {
+        withCredentials(forgeCreds()) {
           // ── RÉ-INJECTION DES VALEURS BRUTES — NE PAS RETIRER ────────────────
           // Ce withEnv n'est PAS un doublon du canal natif : il est la seule
           // chose qui livre au shell la valeur EXACTEMENT SAISIE.
