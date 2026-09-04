@@ -45,7 +45,9 @@
 #   STOA_ENV_CHAIN_FILE     la chaîne — posée par l'appelant, imprimée (`chaîne : …`)
 #   ITSM_URL, ITSM_CACERT   requis seulement si la porte déclare itsmCheck
 #   APIM_TERMINUS_BASE      la voie du terminus (sans défaut — même nom qu'à l'aval)
-#   GITEA_SERVICE_LOGINS    comptes de service de la forge (défaut `ci`)
+#   GITEA_SERVICE_LOGINS    comptes de service de la forge (défaut `ci` — celui du
+#                           lab). Liste NÉGATIVE : la déclarer chez un client, sans
+#                           quoi son robot passe pour un humain sous quatre yeux.
 #   GIT_WORKTREE (.) MANIFEST_DIR (clients/provisioned/applications) GIT_REPO GIT_HOST GIT_WEB_HOST
 # Sortie (GATE_OUT) : GATE_ENV GATE_STAGE GATE_ALLOW_SELF GATE_FOUR_EYES
 #   GATE_APPROVER_GROUP GATE_DEPLOYER_GROUP GATE_DEPLOYER_POLICY GATE_CHANGE_REF
@@ -236,6 +238,12 @@ if [ "$FOUREYES" = 1 ]; then
   [ -n "$GITEA_MERGED_BY" ] || refus MERGER_UNKNOWN "la forge ne nomme aucun mergeur" "aucun mergeur relu sur la forge"
   REQ_IS_SERVICE=0
   for s in $GITEA_SERVICE_LOGINS; do [ "$s" = "$GITEA_REQUESTER" ] && REQ_IS_SERVICE=1; done
+  # LIMITE ÉCRITE (2026-09-03) : cette liste est NÉGATIVE — elle nomme les comptes
+  # qui ne sont PAS des humains. Trop étroite, elle ne refuse rien : un robot que
+  # personne n'y a inscrit passe pour un demandeur humain, et les quatre yeux sont
+  # alors satisfaits par « robot ≠ humain ». Le défaut « ci » est celui du lab.
+  # Elle est donc IMPRIMÉE : un exploitant doit pouvoir constater ce qui a servi.
+  printf "  quatre yeux : comptes de service consideres = '%s' (liste negative — un robot hors liste passerait pour un humain)\n" "$GITEA_SERVICE_LOGINS"
   if [ -z "$GITEA_REQUESTER" ] || [ "$REQ_IS_SERVICE" = 1 ]; then
     refus REQUESTER_UNKNOWN "la porte vers '$ENV_NAME' exige les quatre yeux, mais la PR a été ouverte par '${GITEA_REQUESTER:-(auteur vide)}' — la forge ne nomme aucun demandeur humain (comptes de service : $GITEA_SERVICE_LOGINS) ; une porte à quatre yeux qu'on ne peut pas vérifier refuse, elle ne passe pas" \
       "la porte vers ${ENV_NAME} exige les quatre yeux mais la PR a été ouverte par un compte de service (${GITEA_REQUESTER:-auteur vide}) : aucun demandeur humain à confronter au mergeur — ouvrir la demande sous une identité humaine de forge"

@@ -309,6 +309,10 @@ pipeline {
           // matérialisé retiré en silence, plan-only, Jenkinsfile aval d'avant
           // A2 — est un ÉCHEC nommé SHA_NON_CONFIRME : ce qu'il a projeté est
           // dit sur la PR, pas maquillé en « pas déployé ».
+          // 2026-09-03 : sans garde, une APPLY_JOB vide echouait ICI — apres la
+          // reconciliation, la porte, la pause, le mot de passe d'annuaire et les
+          // quatre yeux — sur une exception hors vocabulaire « REFUS: ».
+          if (!env.APPLY_JOB?.trim()) { error("REFUS: CABLAGE_INCOMPLET — APPLY_JOB absente (nom du job d'aval a declencher)") }
           def b = build(job: env.APPLY_JOB, wait: true, propagate: false, parameters: [
             string(name: 'MANIFEST',    value: env.MANIFEST),
             string(name: 'ENVIRONMENT', value: env.ENV_NAME),

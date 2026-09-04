@@ -129,7 +129,12 @@ run_gate(){
   local e="$1"; shift
   local -a DEFS=(ENVIRONMENT="$e" ADMIN_VIA=direct VAULT_ADDR="$VA" VAULT_TOKEN_FILE="$TMP/tok" PALIER_OUT="$OUTF"
                  MANIFEST="$MAN" APIM_KV_PREFIX=stoa APIM_API_BASE=http://gw.test:5555/rest/apigateway
-                 STOA_ENV_CHAIN_FILE="$TMP/chain.yaml")
+                 STOA_ENV_CHAIN_FILE="$TMP/chain.yaml"
+                 # 2026-09-03 : la garde n'a plus de repli de LAB pour le gabarit proxy
+                 # (un composant vide y produisait une URL bien formee mais fausse). Le
+                 # harnais pose donc ses propres valeurs, comme pour tout le reste.
+                 APIM_PROXY_HOST=http://gw.test:5555 APIM_PROXY_API=wm-admin-__ENV__
+                 APIM_PROXY_VER=1.0 APIM_PROXY_PATH=/rest/apigateway)
   local -a ENVV=() UNS=()
   local a d skip
   for a in "$@"; do case "$a" in UNSET:*) UNS+=(-u "${a#UNSET:}");; esac; done
@@ -189,7 +194,7 @@ echo "── A.2/A.3/A.4 la base par palier ──"
 run_gate rec "APIM_API_BASE=http://gw-__ENV__.test/rest/apigateway"
 [ "$(grc)" = 0 ] && [ "$(out_val APIM_API_BASE)" = "http://gw-rec.test/rest/apigateway" ] && ok "A.2 __ENV__ substitué dans la base directe" || bad "A.2 base : $(out_val APIM_API_BASE) (rc $(grc))"
 set_ctl "$CTL_OK"; run_gate rec ADMIN_VIA=proxy-oauth2
-[ "$(grc)" = 0 ] && [ "$(out_val APIM_API_BASE)" = "http://webmethods-real:5555/gateway/wm-admin-rec/1.0/rest/apigateway" ] && [ "$(out_val APIM_AUTH_MODE)" = oauth2 ] && [ "$(out_val PALIER_VIA)" = proxy-oauth2 ] \
+[ "$(grc)" = 0 ] && [ "$(out_val APIM_API_BASE)" = "http://gw.test:5555/gateway/wm-admin-rec/1.0/rest/apigateway" ] && [ "$(out_val APIM_AUTH_MODE)" = oauth2 ] && [ "$(out_val PALIER_VIA)" = proxy-oauth2 ] \
   && ok "A.3 proxy-oauth2 : base composée wm-admin-rec (= APIM_API_BASE_TPL de team-promote), oauth2" || bad "A.3 proxy : $(out_val APIM_API_BASE) $(out_val APIM_AUTH_MODE) (rc $(grc))"
 [ "$(jcount '"m": "GET", "p": "/v1/secret/data/stoa/envs/rec/wm-admin"')" = 1 ] && [ "$(out_val APIM_OAUTH_SUB)" = envs/rec/admin-oauth ] && ok "A.3b en proxy, le ticket reste wm-admin (parité §7.b) et le rôle relira envs/rec/admin-oauth" || bad "A.3b ticket/oauth sub en proxy"
 run_gate rec ADMIN_VIA=proxy-oauth2 "APIM_PROXY_BASE=https://apim-__ENV__.corp/admin"
@@ -297,8 +302,19 @@ printf 'apim_ss_app:\n  name: appa\n  team: "banking-demo\\nX=1"\n' > "$TMP/nl.y
 run_gate rec UNSET:VAULT_TOKEN_FILE; refus CABLAGE_INCOMPLET && ok "A.23b VAULT_TOKEN_FILE absent ⇒ CABLAGE_INCOMPLET" || bad "A.23b rc $(grc) : $(gout | tail -1)"
 run_gate rec UNSET:PALIER_OUT; refus CABLAGE_INCOMPLET && ok "A.23c PALIER_OUT absent ⇒ CABLAGE_INCOMPLET" || bad "A.23c rc $(grc) : $(gout | tail -1)"
 printf 'PALIER_TEAM=faux\n' > "$OUTF"
-env ENVIRONMENT=int ADMIN_VIA=direct VAULT_ADDR="$VA" VAULT_TOKEN_FILE="$TMP/tok" PALIER_OUT="$OUTF" MANIFEST="$MAN" APIM_KV_PREFIX=stoa STOA_ENV_CHAIN_FILE="$TMP/chain.yaml" bash "$GATE" > "$TMP/g.out" 2>&1; echo $? > "$TMP/g.rc"
+env ENVIRONMENT=int ADMIN_VIA=direct VAULT_ADDR="$VA" VAULT_TOKEN_FILE="$TMP/tok" PALIER_OUT="$OUTF" MANIFEST="$MAN" APIM_KV_PREFIX=stoa APIM_API_BASE=http://gw.test:5555/rest/apigateway STOA_ENV_CHAIN_FILE="$TMP/chain.yaml" bash "$GATE" > "$TMP/g.out" 2>&1; echo $? > "$TMP/g.rc"
 refus PALIER_FERME && [ ! -f "$OUTF" ] && ok "A.24 un PALIER_OUT périmé est RETIRÉ avant le verdict (aucun fichier après un refus)" || bad "A.24 rc $(grc), fichier $( [ -f "$OUTF" ] && echo présent || echo absent )"
+
+# ── A.24bis/A.24ter — les replis de LAB retirés de la garde (2026-09-03) ────
+# ADMIN_VIA n'a plus de repli 'direct' : le pipeline pose 'proxy-oauth2', la garde
+# posait 'direct', et une valeur VIDE (withEnv(["ADMIN_VIA="]) retire la variable)
+# faisait basculer la voie d'admin du proxy OAuth2 vers le Basic direct SANS UN MOT.
+run_gate rec ADMIN_VIA=
+refus VIA_INCONNU && ok "A.24bis ADMIN_VIA vide ⇒ VIA_INCONNU (plus de bascule silencieuse vers l'admin direct)" || bad "A.24bis rc $(grc) : $(gout | tail -1)"
+# un composant vide du gabarit proxy compose « …/gateway//1.0/… » : une URL BIEN
+# FORMÉE, donc invisible pour le contrôle de forme. Elle est refusée nommément.
+run_gate rec ADMIN_VIA=proxy-oauth2 APIM_PROXY_API=
+refus APIM_BASE_INVALIDE && gout | grep -q 'APIM_PROXY_API est vide' && ok "A.24ter gabarit proxy à composant vide ⇒ APIM_BASE_INVALIDE qui NOMME la variable" || bad "A.24ter rc $(grc) : $(gout | tail -1)"
 
 echo "── A.28/A.29 team et vault_sub hors charset : refus nommés, AVANT tout appel Vault ──"
 set_ctl "$CTL_OK"
@@ -676,7 +692,7 @@ grep -q '^vault_token_ttl()' "$TMP/lib.code" && ok "E.6 la fonction est définie
 
 # Le compte des contrôles est lui-même un contrôle : une section sautée (stub
 # mort, chemin absent) ne doit pas passer pour un vert plus court.
-EXPECTED_CHECKS=191
+EXPECTED_CHECKS=193
 TOTAL=$((PASS+FAIL))
 [ "$TOTAL" -eq "$((EXPECTED_CHECKS-1))" ] \
   && ok "$((TOTAL+1)) contrôles exécutés = $EXPECTED_CHECKS attendus (aucune section sautée)" \

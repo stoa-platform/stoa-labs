@@ -330,6 +330,10 @@ pipeline {
             sh '''
               set -eu
               MANIFEST="${MANIFEST:?MANIFEST requis (manifeste de l'application a deployer) — aucune application par defaut}"
+              # 2026-09-03 : APIM_DATA_BASE allait NUE jusqu'aux playbooks. Vide, le
+              # shell mourait sur « unbound variable » apres le login Vault et le
+              # preflight, sans ligne REFUS: — donc un echec muet sur la PR.
+              APIM_DATA_BASE="${APIM_DATA_BASE:?REFUS: CABLAGE_INCOMPLET — APIM_DATA_BASE absente (base data-plane de la gateway du palier)}"
               echo "=== PLAN : manifeste ${MANIFEST} ==="
               test -f "$MANIFEST" || { echo "manifeste introuvable : $MANIFEST"; exit 1; }
               grep -qE '^[[:space:]]*name:' "$MANIFEST" && grep -qE '^[[:space:]]*api:' "$MANIFEST" \
@@ -402,6 +406,10 @@ pipeline {
               set +x            # NE JAMAIS écho : mot de passe, JWT, token Vault, creds gateway
               set -eu
               MANIFEST="${MANIFEST:?MANIFEST requis (manifeste de l'application a deployer) — aucune application par defaut}"
+              # 2026-09-03 : APIM_DATA_BASE allait NUE jusqu'aux playbooks. Vide, le
+              # shell mourait sur « unbound variable » apres le login Vault et le
+              # preflight, sans ligne REFUS: — donc un echec muet sur la PR.
+              APIM_DATA_BASE="${APIM_DATA_BASE:?REFUS: CABLAGE_INCOMPLET — APIM_DATA_BASE absente (base data-plane de la gateway du palier)}"
 
               # token_url : passé en -e SEULEMENT si non vide (sinon résolution Vault).
               TOKEN_URL_OPT=""
