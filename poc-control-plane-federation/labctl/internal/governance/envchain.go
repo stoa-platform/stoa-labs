@@ -2,6 +2,7 @@ package governance
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -106,15 +107,31 @@ func ParseEnvChain(raw []byte) (EnvChain, error) {
 //	apim-apply-<x>    → policy "apply-<x>"     (setup-vault-paliers.sh, per-palier)
 //	apim-operator-<x> → policy "operator-deploy" (setup-vault-ldap.sh, terminus)
 //
+// The EMPTY group is refused here too — "no declaration" is the CALLER's case
+// to skip (preflightDeployerGate does, so does every shell caller), never a
+// projection this function invents. Returning ("", nil) made the empty group
+// indistinguishable from a successful projection and diverged from the shell
+// mirror, which has always refused it (mesuré 2026-09-06).
+//
+// Family apim-apply-<x>: <x> MUST name the palier this gate guards (g.To).
+// Otherwise the declaration would "pass" here and then fall back on the 403 of
+// capacity downstream — the declarative refusal would lie about the cause.
+// That rule used to live in the shell CALLERS (twice) and nowhere in Go.
+//
 // The shell mirror is deployer_group_policy() in scripts/lib/env-chain.sh —
-// same table, same refusals; any divergence is a bug (ADR-083 regime).
+// same table, same refusals, and TestDeployerPolicyMirror executes BOTH over
+// one table so a divergence cannot survive a `go test` (ADR-083 regime).
 func (g Gate) DeployerPolicy() (string, error) {
 	dg := g.DeployerGroup
 	switch {
-	case dg == "":
-		return "", nil
 	case strings.HasPrefix(dg, "apim-apply-") && dg != "apim-apply-":
-		return "apply-" + strings.TrimPrefix(dg, "apim-apply-"), nil
+		palier := strings.TrimPrefix(dg, "apim-apply-")
+		if palier != g.To {
+			return "", &deployerPalierMismatch{msg: fmt.Sprintf(
+				"deployerGroup %q declared on gate %q: the apim-apply-<x> family must name the palier of its own gate (apim-apply-%s) — the projected policy %q does not open %q",
+				dg, g.To, g.To, "apply-"+palier, g.To)}
+		}
+		return "apply-" + palier, nil
 	case strings.HasPrefix(dg, "apim-operator-") && dg != "apim-operator-":
 		return "operator-deploy", nil
 	default:
@@ -163,4 +180,16 @@ func (c EnvChain) HopsString() string {
 		hops = append(hops, c.Envs[i]+"→"+c.Envs[i+1])
 	}
 	return strings.Join(hops, ", ")
+}
+
+// deployerPalierMismatch marks the refusal of a deployerGroup of the
+// apim-apply-<x> family whose <x> does not name the palier its gate guards.
+type deployerPalierMismatch struct{ msg string }
+
+func (e *deployerPalierMismatch) Error() string { return e.msg }
+
+// IsDeployerPalierMismatch reports whether err is that refusal.
+func IsDeployerPalierMismatch(err error) bool {
+	var m *deployerPalierMismatch
+	return errors.As(err, &m)
 }

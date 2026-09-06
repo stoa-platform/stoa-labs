@@ -269,9 +269,15 @@ engine_import() { # $1 = ansible|labctl|ansible-mut|labctl-mut ; archive = A.zip
     labctl|labctl-mut)
       local BIN="$WORK/labctl"
       [ "$1" = "labctl-mut" ] && BIN="$WORK/labctl-mutbin"
+      # Le MÊME pin que le rôle reçoit ligne 263. Jusqu'au 2026-09-06 il
+      # n'était donné qu'à Ansible : la porte de parité exerçait donc les deux
+      # moteurs sur des entrées ASYMÉTRIQUES, et c'est exactement ainsi que
+      # l'écart n°1 d'ADR-087 (« digest jamais vérifié par labctl ») a pu
+      # survivre à G8 sans jamais rougir.
       VAULT_ADDR="$VAULT" VAULT_TOKEN="$VTOK" \
         "$BIN" promote --manifest "$WORK/parity.promote.yml" --env rec \
-        --action import --archive "$WORK/A.zip" -f "$WORK/targets.yaml"
+        --action import --archive "$WORK/A.zip" \
+        --archive-sha256 "$(cat "$WORK/A.sha256")" -f "$WORK/targets.yaml"
       ;;
   esac
 }

@@ -209,7 +209,7 @@ DEPLOYER_POLICIES=""
 for e in $ALL_ENVS; do
   g="$(env_chain_gate_deployer_group "$e")" || lab_absent "porte du palier $e illisible"
   [ -n "$g" ] || continue
-  p="$(deployer_group_policy "$g")" \
+  p="$(deployer_group_policy "$g" "$e")" \
     || lab_absent "la chaîne déclare deployerGroup='$g' (palier $e), hors des deux familles vérifiables — la chaîne du lab est cassée"
   DEPLOYER_POLICIES="$DEPLOYER_POLICIES $p"
   echo "  porte $e : deployerGroup=$g ⇒ policy projetée '$p'"
@@ -313,7 +313,7 @@ for e in $ENVS_NONPROD; do
     pv="$(pass_var_for "$u")" || continue
     [ -n "${!pv:-}" ] || continue
     TARGET_ENV="$e"; TARGET_GROUP="$g"; TARGET_USER="$u"; TARGET_PV="$pv"
-    TARGET_POLICY="$(deployer_group_policy "$g")"
+    TARGET_POLICY="$(deployer_group_policy "$g" "$e")"
     break 2
   done
 done
@@ -380,11 +380,11 @@ done
 
 echo
 echo "== ④ le miroir shell projette ce que Vault a mis =="
-MIRROR="$(deployer_group_policy "$TARGET_GROUP")"
+MIRROR="$(deployer_group_policy "$TARGET_GROUP" "$TARGET_ENV")"
 [ -n "$MIRROR" ] && has_policy "$POL_DEP" "$MIRROR" \
   && ok "④ deployer_group_policy $TARGET_GROUP ⇒ '$MIRROR' — et c'est EXACTEMENT ce que le token porte (miroir shell, moteur Go et Vault d'accord)" \
   || bad "④ divergence miroir/Vault : deployer_group_policy rend '$MIRROR', le token porte [$(policies_line "$POL_DEP")]"
-OPOL="$(deployer_group_policy apim-operator-prod)"
+OPOL="$(deployer_group_policy apim-operator-prod prod)"
 [ "$OPOL" = operator-deploy ] \
   && ok "④bis deployer_group_policy apim-operator-prod ⇒ 'operator-deploy' (seconde famille)" \
   || bad "④bis famille operator : '$OPOL' (attendu operator-deploy)"
@@ -392,7 +392,7 @@ OPOL="$(deployer_group_policy apim-operator-prod)"
 # c'est LA faute du jalon, et elle doit être BRUYANTE.
 KCNAME="$(env_chain_approver_group "$TARGET_ENV")"
 [ -n "$KCNAME" ] || KCNAME="int-team"
-if deployer_group_policy "$KCNAME" >/dev/null 2>&1; then
+if deployer_group_policy "$KCNAME" "$TARGET_ENV" >/dev/null 2>&1; then
   bad "④ter deployer_group_policy accepte '$KCNAME' (nom de l'annuaire d'APPROBATION) — il devrait refuser rc=1"
 else
   ok "④ter deployer_group_policy REFUSE rc=1 le nom d'approbation '$KCNAME' — les deux annuaires ne se confondent pas en silence"

@@ -349,7 +349,7 @@ if mutant 's@^if \[ "\$ITSMCHECK" = 1 \]; then$@if false; then@' itsm; then
   run_gate prod alice carol APIM_TERMINUS_BASE=http://prod-gw/rest/apigateway; refus ITSM_NOT_APPROVED && ok "A.M4' l'original refuse toujours" || bad "A.M4' l'original a dérivé"
   set_itsm "$ITSM_OK"
 fi
-if mutant 's@^  DEPLOYER_POLICY=\$\(deployer_group_policy "\$DEPLOYER_GROUP"\) \\$@  DEPLOYER_POLICY=apply-x \\@' dep; then
+if mutant 's@^  DEPLOYER_POLICY=\$\(deployer_group_policy "\$DEPLOYER_GROUP" "\$ENV_NAME"\) || DGP_RC=\$\?$@  DEPLOYER_POLICY=apply-x@' dep; then
   GATE_BIN="$TMP/mut-dep/scripts/provision-apply-gate.sh" run_gate int alice carol "STOA_ENV_CHAIN_FILE=$CH_TEAM"
   [ "$(grc)" = 0 ] && ok "A.M5 projection court-circuitée ⇒ int-team passe sur le mutant" || bad "A.M5 le mutant refuse encore : $(gout | tail -1)"
   run_gate int alice carol "STOA_ENV_CHAIN_FILE=$CH_TEAM"; refus DEPLOYER_GROUP_UNSUPPORTED && ok "A.M5' l'original refuse toujours" || bad "A.M5' l'original a dérivé"

@@ -129,12 +129,17 @@ if [ -n "$DEPLOYER_GROUP" ]; then
   # YAML faux (l'aval le redirait avec le token). Famille apim-apply-<x> : <x>
   # DOIT être le palier de la porte — sinon la déclaration « passerait » puis
   # retomberait sur le 403 de capacité, le refus déclaratif mentirait.
-  DEPLOYER_POLICY=$(deployer_group_policy "$DEPLOYER_GROUP") \
-    || refus DEPLOYER_GROUP_UNSUPPORTED "'$DEPLOYER_GROUP' est hors des deux familles vérifiables (apim-apply-<x> | apim-operator-<x>) — déclaration invérifiable, refus fail-closed" "deployerGroup hors famille dans environments.yaml (porte ${ENV_NAME})"
-  case "$DEPLOYER_GROUP" in
-    apim-apply-*)
-      [ "${DEPLOYER_GROUP#apim-apply-}" = "$ENV_NAME" ] \
-        || refus DEPLOYER_GROUP_UNSUPPORTED "'$DEPLOYER_GROUP' déclaré sur la porte '$ENV_NAME' — la famille apim-apply-<x> doit nommer le palier de sa porte (apim-apply-$ENV_NAME) : la policy projetée '$DEPLOYER_POLICY' n'ouvre pas ce palier" "deployerGroup ne nomme pas le palier de sa porte (environments.yaml, porte ${ENV_NAME})" ;;
+  #
+  # LES DEUX règles vivent désormais dans deployer_group_policy (rc=1 hors
+  # famille, rc=2 mauvais palier) — la seconde était écrite ICI et dans
+  # selfservice-palier-gate.sh, et absente du moteur Go. `|| RC=$?` et non
+  # `if !` : après un `!` le code de retour est perdu (piège mesuré).
+  DGP_RC=0
+  DEPLOYER_POLICY=$(deployer_group_policy "$DEPLOYER_GROUP" "$ENV_NAME") || DGP_RC=$?
+  case "$DGP_RC" in
+    0) ;;
+    2) refus DEPLOYER_GROUP_UNSUPPORTED "'$DEPLOYER_GROUP' déclaré sur la porte '$ENV_NAME' — la famille apim-apply-<x> doit nommer le palier de sa porte (apim-apply-$ENV_NAME) : la policy projetée 'apply-${DEPLOYER_GROUP#apim-apply-}' n'ouvre pas ce palier" "deployerGroup ne nomme pas le palier de sa porte (environments.yaml, porte ${ENV_NAME})" ;;
+    *) refus DEPLOYER_GROUP_UNSUPPORTED "'$DEPLOYER_GROUP' est hors des deux familles vérifiables (apim-apply-<x> | apim-operator-<x>) — déclaration invérifiable, refus fail-closed" "deployerGroup hors famille dans environments.yaml (porte ${ENV_NAME})" ;;
   esac
 fi
 

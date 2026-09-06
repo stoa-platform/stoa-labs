@@ -104,10 +104,16 @@ func TestShippedExampleChain_GatesMatchTheStatedPolicy(t *testing.T) {
 		}
 	}
 
-	// Every declared deployerGroup must be PROJECTABLE: a group outside the two
-	// verifiable families would ship a gate nothing can check (fail-closed by
-	// construction — but we refuse to ship it at all).
+	// Every DECLARED deployerGroup must be PROJECTABLE: a group outside the two
+	// verifiable families — or one whose apim-apply-<x> does not name the palier
+	// of its own gate — would ship a gate nothing can check (fail-closed by
+	// construction — but we refuse to ship it at all). No declaration at all is
+	// a legitimate state (rec: requester autonomy) and is the CALLER's to skip;
+	// DeployerPolicy refuses it rather than inventing a projection.
 	for env, g := range c.Gates {
+		if g.DeployerGroup == "" {
+			continue
+		}
 		if _, err := g.DeployerPolicy(); err != nil {
 			t.Errorf("%s: %v", env, err)
 		}

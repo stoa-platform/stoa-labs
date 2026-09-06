@@ -124,13 +124,31 @@ print(next((g.get("deployerGroup", "") or "" for g in (d.get("gates") or [])
 PY
 }
 
-# deployer_group_policy <groupe> — la policy Vault projetée. MIROIR EXACT de
-# Gate.DeployerPolicy() (labctl/internal/governance/envchain.go) : deux
-# familles vérifiables, rc=1 au-delà (fail-closed BRUYANT). Toute divergence
-# Go/shell est un bug — régime deux moteurs, ADR-083/ADR-084.
+# deployer_group_policy <groupe> <palier> — la policy Vault projetée. MIROIR
+# EXACT de Gate.DeployerPolicy() (labctl/internal/governance/envchain.go) :
+# deux familles vérifiables, fail-closed BRUYANT au-delà.
+#
+#   rc=0 + policy sur stdout — déclaration vérifiable
+#   rc=1 — hors des deux familles (le vide en fait partie : « pas de
+#          déclaration » est le cas de l'APPELANT, qui saute ; jamais une
+#          projection que cette fonction invente)
+#   rc=2 — famille apim-apply-<x> dont <x> ne nomme PAS le palier de sa porte
+#
+# ⚠ Le <palier> est OBLIGATOIRE : la règle rc=2 vivait dans les appelants,
+# écrite DEUX FOIS (provision-apply-gate.sh, selfservice-palier-gate.sh) et
+# absente du Go. Un appelant qui l'oublie doit être refusé, pas dispensé.
+#
+# Le miroir n'est plus tenu par ce commentaire : TestDeployerPolicyMirror
+# (labctl/internal/governance/envchain_mirror_test.go) exécute LES DEUX
+# implémentations sur UNE table et exige le même verdict. Régime deux moteurs,
+# ADR-083/ADR-084.
 deployer_group_policy() {
-  case "${1:-}" in
-    apim-apply-?*)    printf 'apply-%s' "${1#apim-apply-}" ;;
+  local grp="${1:-}" palier="${2:-}"
+  [ -n "$palier" ] || return 1
+  case "$grp" in
+    apim-apply-?*)
+      [ "${grp#apim-apply-}" = "$palier" ] || return 2
+      printf 'apply-%s' "${grp#apim-apply-}" ;;
     apim-operator-?*) printf 'operator-deploy' ;;
     *) return 1 ;;
   esac

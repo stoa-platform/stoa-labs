@@ -546,8 +546,15 @@ vcurl(){ curl -sS -H @"$TMP/vhdr" "$@"; }
 # rétention §7.b reste inconditionnelle dans tous les cas.
 DEPLOYER_GROUP=$(env_chain_gate_deployer_group "$TO_ENV") || fail "PARSE_GATE : deployerGroup"
 if [ -n "$DEPLOYER_GROUP" ]; then
-  DEPLOYER_POLICY=$(deployer_group_policy "$DEPLOYER_GROUP") \
-    || fail "DEPLOYER_GROUP_UNSUPPORTED : '$DEPLOYER_GROUP' est hors des deux familles vérifiables (apim-apply-<x> | apim-operator-<x>) — déclaration invérifiable, refus fail-closed"
+  # rc=1 hors famille, rc=2 famille apim-apply-<x> dont <x> ne nomme pas le
+  # palier de sa porte (règle jusqu'ici absente de CE site d'appel).
+  DGP_RC=0
+  DEPLOYER_POLICY=$(deployer_group_policy "$DEPLOYER_GROUP" "$TO_ENV") || DGP_RC=$?
+  case "$DGP_RC" in
+    0) ;;
+    2) fail "DEPLOYER_GROUP_UNSUPPORTED : '$DEPLOYER_GROUP' déclaré sur la porte '$TO_ENV' — la famille apim-apply-<x> doit nommer le palier de sa porte (apim-apply-$TO_ENV) : la policy projetée 'apply-${DEPLOYER_GROUP#apim-apply-}' n'ouvre pas ce palier" ;;
+    *) fail "DEPLOYER_GROUP_UNSUPPORTED : '$DEPLOYER_GROUP' est hors des deux familles vérifiables (apim-apply-<x> | apim-operator-<x>) — déclaration invérifiable, refus fail-closed" ;;
+  esac
   LOOKUP_CODE=$(vcurl -o "$TMP/lookup.json" -w '%{http_code}' --max-time 20 \
     "${VAULT_ADDR}/v1/auth/token/lookup-self") || LOOKUP_CODE=000
   [ "$LOOKUP_CODE" = 200 ] \
@@ -718,8 +725,13 @@ run_engine() {
         "${ENGINE_AUTH_ARGS[@]}"
       ;;
     labctl)
+      # --archive-sha256 : le moteur Go recevait l'archive SANS son pin et
+      # importait donc les octets présents sans preuve que ce soient ceux qui
+      # ont été approuvés — le rôle, lui, refusait (ARCHIVE_DIGEST_MISMATCH).
+      # Divergence #3, mesurée et fermée le 2026-09-06.
       "$LABCTL_BIN" promote --manifest "$DEPLOY_PIN_PROMOTE" --env "$TO_ENV" \
-        --action import --archive "$DEPLOY_PIN_ARCHIVE" -f "$TMP/targets.yaml"
+        --action import --archive "$DEPLOY_PIN_ARCHIVE" \
+        --archive-sha256 "$DEPLOY_PIN_SHA256" -f "$TMP/targets.yaml"
       ;;
     *) return 90 ;;   # ENGINE_INCONNU — refusé AVANT par la garde de forme (§0bis)
   esac

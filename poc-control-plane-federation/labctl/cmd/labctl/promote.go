@@ -24,7 +24,9 @@ package cmd
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -40,11 +42,12 @@ import (
 )
 
 var (
-	promoteManifestFlag string
-	promoteActionFlag   string
-	promoteEnvFlag      string
-	promoteTargetFlag   string
-	promoteArchiveFlag  string
+	promoteManifestFlag   string
+	promoteActionFlag     string
+	promoteEnvFlag        string
+	promoteTargetFlag     string
+	promoteArchiveFlag    string
+	promoteArchiveSHAFlag string
 )
 
 var promoteCmd = &cobra.Command{
@@ -63,6 +66,7 @@ func init() {
 	promoteCmd.Flags().StringVar(&promoteActionFlag, "action", "import", "export | import")
 	promoteCmd.Flags().StringVar(&promoteEnvFlag, "env", "", "environment key for the per_env merge (required when the manifest declares per_env)")
 	promoteCmd.Flags().StringVar(&promoteTargetFlag, "target", "", "targets.yaml entry to drive (default: the first webmethods target)")
+	promoteCmd.Flags().StringVar(&promoteArchiveSHAFlag, "archive-sha256", "", "sha256 the CI pinned for the artifact (64 hex); the import refuses ARCHIVE_DIGEST_MISMATCH when the bytes differ — overrides the manifest's archive_sha256")
 	promoteCmd.Flags().StringVar(&promoteArchiveFlag, "archive", "", "absolute path of the artifact fetched by the CI (overrides the manifest's archive field); required when the manifest's archive is a Jinja template ({{ ... }}) only Ansible can render")
 	rootCmd.AddCommand(promoteCmd)
 }
@@ -70,17 +74,18 @@ func init() {
 // promoteSpec mirrors the Ansible role's apim_promote manifest block (same
 // file, same keys — sigs.k8s.io/yaml maps the snake_case via JSON tags).
 type promoteSpec struct {
-	Name         string               `json:"name"`
-	Version      string               `json:"version"`
-	GUID         string               `json:"guid"`
-	Archive      string               `json:"archive"`
-	Overwrite    string               `json:"overwrite"`
-	BackendAlias promoteBackendAlias  `json:"backend_alias"`
-	CredAlias    promoteCredAlias     `json:"cred_alias"`
-	Aliases      []promoteAliasEntry  `json:"aliases"`
-	ScopeMapping promoteScopeMapping  `json:"scope_mapping"`
-	SmokePath    string               `json:"smoke_path"`
-	PerEnv       map[string]yamlBlock `json:"per_env"`
+	Name          string               `json:"name"`
+	Version       string               `json:"version"`
+	GUID          string               `json:"guid"`
+	Archive       string               `json:"archive"`
+	ArchiveSHA256 string               `json:"archive_sha256"`
+	Overwrite     string               `json:"overwrite"`
+	BackendAlias  promoteBackendAlias  `json:"backend_alias"`
+	CredAlias     promoteCredAlias     `json:"cred_alias"`
+	Aliases       []promoteAliasEntry  `json:"aliases"`
+	ScopeMapping  promoteScopeMapping  `json:"scope_mapping"`
+	SmokePath     string               `json:"smoke_path"`
+	PerEnv        map[string]yamlBlock `json:"per_env"`
 }
 
 type promoteBackendAlias struct {
@@ -348,6 +353,22 @@ func runPromoteImport(ctx context.Context, out interface{ Write([]byte) (int, er
 		return fmt.Errorf("promote: read archive: %w", err)
 	}
 
+	// ---- integrity FIRST: are these the bytes that were approved? ---------
+	// Mécaniquement antérieur à toute écriture gateway — un refus de digest ne
+	// doit jamais survenir après qu'un alias a déjà été posé. Le pin vient du
+	// drapeau (ce que le CI a mesuré) ou, à défaut, du manifeste.
+	wantSHA := promoteArchiveSHAFlag
+	if wantSHA == "" {
+		wantSHA = spec.ArchiveSHA256
+	}
+	digestTok, err := verifyArchiveDigest(zipBytes, wantSHA, spec.Archive)
+	if err != nil {
+		return err
+	}
+	if digestTok != "" {
+		fmt.Fprintln(out, digestTok)
+	}
+
 	// ---- alias-first: the env-local values, BEFORE the API ----------------
 	if spec.BackendAlias.Name != "" {
 		if spec.BackendAlias.URL == "" {
@@ -392,6 +413,7 @@ func runPromoteImport(ctx context.Context, out interface{ Write([]byte) (int, er
 	if err != nil {
 		return err
 	}
+	fmt.Fprintln(out, importSummary(rows))
 	guidSeen := false
 	for _, r := range rows {
 		if r.Type == "API" && r.ID == spec.GUID {
@@ -426,4 +448,43 @@ func runPromoteImport(ctx context.Context, out interface{ Write([]byte) (int, er
 	fmt.Fprintf(out, "PROMOTE_CONFIRMED: %s v%s guid=%s active on %s (env %q, %d assets)\n",
 		rec.APIName, rec.APIVersion, spec.GUID, targetName, promoteEnvFlag, len(rows))
 	return nil
+}
+
+// verifyArchiveDigest is the integrity gate of the import path: the bytes about
+// to be pushed to the gateway MUST be the ones the pin approved.
+//
+// Mirror of the role (roles/apim_promote_api/tasks/import.yml) verbatim,
+// including its guard: the check only runs when a 64-hex digest is pinned
+// (`when: (apim_ss_archive_sha256 | default(”)) | length == 64`). No pin ⇒
+// nothing verified ⇒ NO token — emitting ARCHIVE_DIGEST_OK without having
+// checked would be worse than silence.
+//
+// Until 2026-09-06 the Go engine decoded archive_sha256 and IGNORED it: it
+// imported whatever sat at --archive. The role refused. That was divergence #3.
+func verifyArchiveDigest(zipBytes []byte, wantSHA256, archivePath string) (string, error) {
+	if len(wantSHA256) != 64 {
+		return "", nil // pas de pin exploitable — le rôle saute aussi
+	}
+	sum := sha256.Sum256(zipBytes)
+	got := hex.EncodeToString(sum[:])
+	if got != wantSHA256 {
+		return "", fmt.Errorf("promote: ARCHIVE_DIGEST_MISMATCH — %s porte %s mais le marqueur pinne %s — ce ne sont pas les octets approuvés",
+			archivePath, got, wantSHA256)
+	}
+	return "ARCHIVE_DIGEST_OK: " + wantSHA256, nil
+}
+
+// importSummary is the IMPORT_OK line, same counts and same wording as the
+// role's success_msg (import.yml): total assets, how many overwrote an existing
+// object, how many were created. team-promote.sh greps it to build the PR
+// comment; the Go engine used to emit nothing, silently shipping a poorer
+// audit trail than the Ansible engine for the same promotion.
+func importSummary(rows []webmethods.ImportRow) string {
+	over := 0
+	for _, r := range rows {
+		if r.Overwritten {
+			over++
+		}
+	}
+	return fmt.Sprintf("IMPORT_OK: %d asset(s), overwrite=%d, création=%d", len(rows), over, len(rows)-over)
 }

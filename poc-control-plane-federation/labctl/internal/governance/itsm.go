@@ -3,6 +3,7 @@ package governance
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -31,8 +32,19 @@ func NewITSMClient(base string) *ITSMClient {
 	return &ITSMClient{BaseURL: base, client: &http.Client{Timeout: 5 * time.Second}}
 }
 
+// ErrChangeUnknown is returned when the ITSM answers 404: the change does not
+// exist. It is NOT an outage — the ITSM answered, and it answered that it has
+// no such change (a typo'd change_ref, or one deleted since the merge). The
+// caller must archive it as "not approved", never as "ITSM unavailable":
+// pointing the on-call at a healthy ITSM is a diagnosis that lies. Mirror of
+// the shell gate, which has always said so (provision-apply-gate.sh:
+// `404) refus ITSM_NOT_APPROVED … un change inconnu n'est pas un change
+// approuvé`). Divergence mesurée et fermée le 2026-09-06.
+var ErrChangeUnknown = errors.New("itsm: change unknown")
+
 // ChangeStatus GETs {base}/changes/{id} and returns its "status" field.
-// Anything but a 200 with a non-empty status is an error.
+// Anything but a 200 with a non-empty status is an error; a 404 is
+// ErrChangeUnknown so callers can tell "no such change" from "ITSM broken".
 func (c *ITSMClient) ChangeStatus(ctx context.Context, id string) (string, error) {
 	if id == "" {
 		return "", fmt.Errorf("itsm: empty change reference")
@@ -46,6 +58,9 @@ func (c *ITSMClient) ChangeStatus(ctx context.Context, id string) (string, error
 		return "", fmt.Errorf("itsm: fetch change %s: %w", id, err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return "", fmt.Errorf("%w: %s", ErrChangeUnknown, id)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("itsm: change %s -> HTTP %d", id, resp.StatusCode)
 	}

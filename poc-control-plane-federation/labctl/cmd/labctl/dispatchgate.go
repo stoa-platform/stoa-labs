@@ -133,6 +133,17 @@ func preflightDispatchGate(ctx context.Context, gchain governance.EnvChain, apis
 				}
 				var err error
 				st, err = itsm.ChangeStatus(ctx, d.ChangeRef)
+				// Un change INCONNU (404) n'est pas une panne : l'ITSM a
+				// répondu, et il a répondu qu'il ne connaît pas ce change.
+				// L'archiver en « ITSM injoignable » enverrait l'astreinte
+				// vers un système sain. Miroir du shell, qui l'a toujours dit
+				// (provision-apply-gate.sh, `404) refus ITSM_NOT_APPROVED`) —
+				// divergence mesurée et fermée le 2026-09-06.
+				if errors.Is(err, governance.ErrChangeUnknown) {
+					return &dispatchGateError{Code: "ITSM_NOT_APPROVED", Msg: fmt.Sprintf(
+						"[409 ITSM_NOT_APPROVED] %s/%s→%s: le change %s est INCONNU de l'ITSM (404) — un change inconnu n'est pas un change approuvé (référence erronée, ou supprimée depuis le merge) — AUCUN apply",
+						a.Tenant, a.Slug, e, d.ChangeRef)}
+				}
 				if err != nil {
 					return &dispatchGateError{Code: "ITSM_UNAVAILABLE", Msg: fmt.Sprintf(
 						"[503 ITSM_UNAVAILABLE] %s/%s→%s: ITSM injoignable pour le change %s (%v) — refus par défaut",

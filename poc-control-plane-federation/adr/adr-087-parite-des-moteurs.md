@@ -91,10 +91,21 @@ pour attraper — il a été attrapé à la **première** exécution de la porte
 
 ### Écarts de MOTEUR (hors état — assumés, pas des champs de snapshot)
 
-1. **Digest sha256** : vérifié par le rôle (`ARCHIVE_DIGEST_REQUIRED` hors
+1. ~~**Digest sha256** : vérifié par le rôle (`ARCHIVE_DIGEST_REQUIRED` hors
    authoring, degrés D0/D2) et par le CI (`deploy-pin.sh`) — **jamais par
    labctl** (côté Go les octets sont gardés par l'ArchiveTaintCheck + le GUID
-   iso ; le digest appartient à la chaîne qui fetch l'artefact).
+   iso ; le digest appartient à la chaîne qui fetch l'artefact).~~
+   **FERMÉ le 2026-09-06.** La raison ne tenait pas : ni l'ArchiveTaintCheck
+   (qui refuse `Alias/`/`PassmanData/`) ni le GUID iso (qui vérifie l'identité
+   de l'API, pas les octets) ne disent que ce sont *les octets approuvés*.
+   `labctl promote --action import` importait donc n'importe quels octets
+   présents à `--archive` — et `team-promote.sh` ne lui passait même pas le pin
+   qu'il passait au rôle. `archive_sha256` était décodé puis IGNORÉ
+   (`TestPromoteSpecToleratesPinnedSha` le constatait sans s'en émouvoir).
+   Le moteur Go porte désormais `--archive-sha256`, refuse
+   `ARCHIVE_DIGEST_MISMATCH` **avant toute écriture gateway**, et émet
+   `ARCHIVE_DIGEST_OK` (`promote_tokens_test.go`, dont une épreuve exige que la
+   gateway n'ait vu AUCUN appel au moment du refus).
 2. **Voie du terminus** : moteur ansible SEUL (G7,
    `COMBINAISON_NON_SUPPORTEE` pour labctl vers le dernier palier).
 3. **`apim_ss_authoring_env`** : default de rôle surchargeable aux degrés
@@ -137,3 +148,45 @@ snapshot pris pendant un recyclage était un état fantôme SILENCIEUX
   porte est dans `lint-ci` pour la syntaxe et se rejoue live à la demande
   (`ENVIRONNEMENTS.md` § G8) — le réflexe attendu avant de toucher
   `apim_promote_api` ou `promote.go` est de la rejouer.
+
+---
+
+## Suivi 2026-09-06 — trois divergences MESURÉES, et ce qui les tenait
+
+La règle d'entretien ci-dessus suppose que la parité rougit quand les moteurs
+divergent. Un audit du 2026-09-06 a trouvé **trois divergences actives que la
+porte ne pouvait pas voir**, parce qu'aucune ne porte sur l'ÉTAT de la gateway :
+elles portent sur le REFUS, sur le MOTIF d'audit, et sur ce que le moteur
+n'a pas vérifié. Elles vivaient sous des commentaires croisés qui affirmaient
+le contraire — « MIROIR EXACT », « any divergence is a bug », « one source of
+truth », « les trois jetons que les DEUX moteurs émettent ». **Un commentaire
+ne tient pas un miroir.**
+
+| # | Divergence | Le moteur fautif | Fermeture |
+|---|---|---|---|
+| 1 | ITSM répond **404** (change inconnu) | Go archivait `ITSM_UNAVAILABLE` — « ITSM injoignable » alors que l'ITSM a parfaitement répondu ; l'astreinte était envoyée vers un système sain. Le shell disait juste (`404) refus ITSM_NOT_APPROVED`). | `governance.ErrChangeUnknown` ; le dispatch-gate distingue 404 (→ `ITSM_NOT_APPROVED`) de tout autre non-200 (→ `ITSM_UNAVAILABLE`, contre-épreuve sur 500). |
+| 2 | `deployerGroup` **vide** ; et la règle « `apim-apply-<x>` doit nommer le palier de sa porte » | Go rendait succès sur le vide, le shell refusait. Et la règle du palier vivait dans DEUX appelants shell, **absente du Go** : `Gate.DeployerPolicy()` acceptait `apim-apply-int` sur la porte `homol`. | Table unique tenue par `TestDeployerPolicyMirror`, qui **exécute les deux implémentations** (`bash -c '. env-chain.sh; deployer_group_policy …'`) et exige le même verdict. `deployer_group_policy <groupe> <palier>` : rc=1 hors famille, rc=2 mauvais palier — la règle quitte les appelants. |
+| 3 | Jetons `IMPORT_OK` / `ARCHIVE_DIGEST_OK` | Absents du moteur Go ⇒ résumé de PR appauvri en silence. Et `ARCHIVE_DIGEST_OK` n'était pas qu'un message : **rien n'était vérifié** (cf. écart 1 ci-dessus, fermé). | `verifyArchiveDigest` + `importSummary`, appelés sur le chemin d'import ; `--archive-sha256` transmis par `team-promote.sh` ; une épreuve applique **le grep réel de `team-promote.sh`** aux lignes du moteur Go. |
+
+### Ce que l'audit dit de la MÉTHODE
+
+Les trois ont survécu à G8 parce que la porte de parité **juge l'état, jamais
+le motif**. C'est une bonne règle (ADR-087 §1) et elle reste ; mais elle laisse
+un angle mort exactement là où vit la valeur du régime à deux moteurs : deux
+moteurs qui écrivent le même état en refusant pour des raisons différentes ne
+sont pas iso-sémantiques, ils sont deux comportements dont on espère qu'ils
+coïncident — la phrase du GOAL, retournée contre la porte qui devait la fermer.
+
+**Règle ajoutée** : une règle métier écrite dans les deux moteurs doit être
+tenue par une épreuve qui **exécute les deux**, pas par un commentaire qui
+l'affirme. `TestDeployerPolicyMirror` est le gabarit ; `TestITSMCodeMappingMirrorsShell`
+et `TestPromoteTokensMatchTheShellGrep` sont ses variantes quand le shell n'est
+pas sourçable (on tient alors sa TABLE, pas son exécution — moins bien, et dit
+comme tel).
+
+**Reste à tenir** (mesuré, non fermé ici) : la chaîne d'environnements existe en
+**trois** implémentations (`scripts/lib/env-chain.sh`, `internal/governance/envchain.go`,
+`internal/uac/envchain.go`), le shell étant plus strict que le Go sur les clés
+inconnues — écart déjà enregistré, mais qu'aucune épreuve croisée ne tient
+encore. Même remarque pour la fusion `per_env` récursive (3 exemplaires) et le
+client Vault (3 exemplaires, 1 080 lignes pour une seule API HTTP).

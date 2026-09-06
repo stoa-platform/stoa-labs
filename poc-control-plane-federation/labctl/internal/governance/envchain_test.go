@@ -76,24 +76,31 @@ func TestParseEnvChainDeployerGroup(t *testing.T) {
 // invérifiable doit refuser BRUYAMMENT (contrairement à approverGroup, dont le
 // mauvais nom ne matche jamais en silence).
 func TestGateDeployerPolicy(t *testing.T) {
+	// La table complète — cas nominaux, hors-famille ET règle du palier — vit
+	// dans deployerPolicyTable (envchain_mirror_test.go), où le shell est tenu
+	// à la MÊME table. Ici on garde les cas propres au Go.
 	cases := []struct {
-		group, want string
-		wantErr     bool
+		group, gateEnv, want string
+		wantErr              bool
 	}{
-		{"", "", false},                        // pas de déclaration => pas de check
-		{"apim-apply-int", "apply-int", false}, // famille paliers (setup-vault-paliers.sh)
-		{"apim-apply-homol", "apply-homol", false},
-		{"apim-operator-prod", "operator-deploy", false}, // famille terminus (setup-vault-ldap.sh:156)
-		{"apim-operator-dr", "operator-deploy", false},
-		{"int-team", "", true},    // annuaire KC : PAS un groupe déployeur
-		{"apim-apply-", "", true}, // suffixe vide = invérifiable
-		{"apim-operator-", "", true},
-		{"release-team", "", true},
+		{"apim-apply-int", "int", "apply-int", false}, // famille paliers (setup-vault-paliers.sh)
+		{"apim-apply-homol", "homol", "apply-homol", false},
+		{"apim-operator-prod", "prod", "operator-deploy", false}, // famille terminus (setup-vault-ldap.sh:156)
+		{"apim-operator-dr", "dr", "operator-deploy", false},
+		// « pas de déclaration » est le cas de l'APPELANT (il saute), jamais une
+		// projection inventée ici — miroir du shell, mesuré 2026-09-06.
+		{"", "rec", "", true},
+		{"int-team", "int", "", true},    // annuaire KC : PAS un groupe déployeur
+		{"apim-apply-", "int", "", true}, // suffixe vide = invérifiable
+		{"apim-operator-", "prod", "", true},
+		{"release-team", "int", "", true},
+		// famille apply dont <x> ne nomme pas le palier de sa porte
+		{"apim-apply-int", "homol", "", true},
 	}
 	for _, tc := range cases {
-		got, err := (Gate{DeployerGroup: tc.group}).DeployerPolicy()
+		got, err := (Gate{To: tc.gateEnv, DeployerGroup: tc.group}).DeployerPolicy()
 		if (err != nil) != tc.wantErr || got != tc.want {
-			t.Errorf("DeployerPolicy(%q) = (%q, %v), want (%q, err=%v)", tc.group, got, err, tc.want, tc.wantErr)
+			t.Errorf("DeployerPolicy(group=%q, to=%q) = (%q, %v), want (%q, err=%v)", tc.group, tc.gateEnv, got, err, tc.want, tc.wantErr)
 		}
 	}
 }

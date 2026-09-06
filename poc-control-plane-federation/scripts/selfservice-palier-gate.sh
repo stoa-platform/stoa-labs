@@ -190,11 +190,15 @@ DEPLOYER_DECLARED=0
 # palier de la porte — sinon la déclaration « passerait » puis retomberait sur
 # PALIER_FERME, et le refus déclaratif mentirait.
 if [ -n "$DEPLOYER_GROUP" ]; then
-  DEPLOYER_POLICY="$(deployer_group_policy "$DEPLOYER_GROUP")" \
-    || refus DEPLOYER_GROUP_UNSUPPORTED "'${DEPLOYER_GROUP}' est hors des deux familles vérifiables (apim-apply-<x> | apim-operator-<x>) — déclaration invérifiable, refus fail-closed"
-  case "$DEPLOYER_GROUP" in
-    apim-apply-*) [ "${DEPLOYER_GROUP#apim-apply-}" = "$ENVIRONMENT" ] \
-      || refus DEPLOYER_GROUP_UNSUPPORTED "'${DEPLOYER_GROUP}' déclaré sur la porte '${ENVIRONMENT}' — la famille apim-apply-<x> doit nommer le palier de sa porte (apim-apply-${ENVIRONMENT})" ;;
+  # LES DEUX règles vivent dans deployer_group_policy (rc=1 hors famille, rc=2
+  # mauvais palier) : la seconde était écrite ici ET dans provision-apply-gate.sh,
+  # et absente du moteur Go. `|| RC=$?` : après un `!` le rc serait perdu.
+  DGP_RC=0
+  DEPLOYER_POLICY="$(deployer_group_policy "$DEPLOYER_GROUP" "$ENVIRONMENT")" || DGP_RC=$?
+  case "$DGP_RC" in
+    0) ;;
+    2) refus DEPLOYER_GROUP_UNSUPPORTED "'${DEPLOYER_GROUP}' déclaré sur la porte '${ENVIRONMENT}' — la famille apim-apply-<x> doit nommer le palier de sa porte (apim-apply-${ENVIRONMENT})" ;;
+    *) refus DEPLOYER_GROUP_UNSUPPORTED "'${DEPLOYER_GROUP}' est hors des deux familles vérifiables (apim-apply-<x> | apim-operator-<x>) — déclaration invérifiable, refus fail-closed" ;;
   esac
   DEPPOL="$(SRC="$TMP/lookup.json" POL="$DEPLOYER_POLICY" python3 -c 'import json,os
 d=(json.load(open(os.environ["SRC"])) or {}).get("data") or {}
