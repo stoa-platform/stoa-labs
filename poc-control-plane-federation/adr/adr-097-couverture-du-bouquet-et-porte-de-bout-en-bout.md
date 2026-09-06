@@ -1,7 +1,7 @@
 ---
 title: "ADR-097 — Une chaîne ne peut pas garantir qu'elle oppose tout ; elle peut garantir qu'elle ne se tait sur rien. La couverture du bouquet devient explicite, et la porte de bout en bout la mesure par des builds réels."
 sidebar_label: "ADR-097 : la couverture du bouquet (P7)"
-status: "Acté et prouvé le 2026-09-06 — voir le tableau de preuves en fin de document."
+status: "Acté et prouvé le 2026-09-06 — matrice P7 **83 ✅ / 0 ❌** par BUILDS JENKINS RÉELS sur les dépôts réels et la webMethods 10.15 réelle (4 publications, la contre-épreuve du GOAL dans ses DEUX sens, 2 refus structurels relayés sur la PR, 4 mutations) ; `go vet` propre, `go test ./...` 568/0, `make lint-ci` 17/17 ; non-régressions P2 67/0, P3 24/0, P4 38/0, P5 54/0, P6 48/0."
 maturite_technique: "✅ `tasks/coverage.yml` partage le bouquet rendu par `labctl posture` en trois : ce que la chaîne SAIT opposer (`apim_pub_posture_opposed_by`, chaque entrée adossée à la tâche qui l'écrit ET la relit), ce qu'elle DÉGRADE (`mode: degrade` — l'axe reste gardé plus faiblement, la PR le dit), ce qu'elle REFUSE (`mode: refuse` — l'axe n'est gardé par rien). Une dimension exigée absente des deux tables fait REFUSER (`POSTURE_NON_OPPOSEE`). ⚠ CONSÉQUENCE : les cellules `VH` (mtls) et `internet` (threat-protection) ne sont plus publiables par la chaîne producteur."
 date: 2026-09-06
 adr_number: 97
@@ -51,7 +51,7 @@ La réponse ne pouvait donc pas être « poser la règle manquante ». Elle ne p
 
 La question n'est pas « qu'est-ce qui nous arrange ». C'est : **l'axe est-il gardé par quelque chose, oui ou non**.
 
-- `oauth2` **dégrade** : l'appelant est quand même identifié — par `jwtClaims`, signature seule, fusionnée dans la règle du stage IAM par P6. Le contrôle est plus faible que le bouquet ne l'exige ; il n'est pas absent.
+- `oauth2` **dégrade** : l'appelant est quand même **exigé** — par `jwtClaims`, signature seule, fusionnée dans la règle du stage IAM par P6. Le contrôle est plus faible que le bouquet ne l'exige ; il n'est pas absent. *(§6 mesure ce que « plus faible » veut dire ici, et la réponse surprend : la dégradation FERME l'API au lieu de la relâcher.)*
 - `mtls` **refuse** : aucune mesure ne l'oppose. Le `clientAuth` du listener n'est pas éditable sur la 10.15 (P5 : `PUT` 200 sans persistance, alias `ssos` partout), et poser une identification par certificat que le listener ne réclame jamais **recréerait exactement le contrôle décoratif que P6 vient de supprimer**.
 - `threat-protection` **refuse** : `/policies` refuse de porter les actions correspondantes (HTTP 400 `NullPointerException`, deux filtres, deux portées — mesuré en P4) ; la seule surface qui les configure, `/administration/threatprotection`, est **gateway-wide** et ne peut donc pas différer d'une cellule à l'autre.
 
@@ -61,7 +61,9 @@ Une policy exigée par un bouquet et absente des **deux** tables fait **REFUSER*
 
 C'est la seule forme d'exhaustivité qu'un rôle puisse honnêtement tenir : *il ne peut pas garantir qu'il oppose tout ; il peut garantir qu'il ne se tait sur rien.*
 
-Un garde-fou complète la dégradation : `oauth2` ne dégrade que si **quelque chose** identifie encore l'appelant. Un manifeste sans volet inbound sur une cellule qui exige `oauth2` laisserait l'axe entièrement ouvert (P6 S1 : stage IAM vide = sert n'importe qui) — la dégradation deviendrait une absence, et une absence ne se tolère pas : `POSTURE_AUTHN_ABSENTE`.
+Un garde-fou complète la dégradation : `oauth2` ne dégrade que si **quelque chose** identifie encore l'appelant, et la condition porte sur le **résultat**, pas sur le manifeste. La règle du stage IAM est composée de deux apports (P6) — le volet inbound du manifeste, et les dimensions de la cellule. Quand les **deux** sont vides, la règle n'est pas posée du tout : stage IAM vide, l'API sert n'importe qui anonymement (P6 S1) tout en portant le tag qui affirme le contraire. C'est le seul cas refusé (`POSTURE_AUTHN_ABSENTE`) — un manifeste sans volet inbound reste parfaitement légitime sur une cellule `external`, où l'appelant est identifié par sa plage d'adresses, et plusieurs preuves de ce dépôt publient exactement comme cela pour isoler une dimension à la fois.
+
+C'est aussi, incidemment, un geste que le producteur pourrait faire : **retirer l'inbound de son manifeste est une façon de « se déclarer moins » que le registre ne rattrape pas**, puisque la posture, elle, resterait juste.
 
 ## Conséquence à annoncer, et elle est lourde
 
@@ -95,14 +97,24 @@ Trois combinaisons d'exposition × classification (`M/internal`, `M/external`, `
 | **identité** | les dimensions du stage IAM relues hors du rôle, puis la porte différentielle ci-dessous |
 | **inscription au port** | l'API est **servie** par le listener HTTPS d'environnement ; un témoin non gouverné répond 200 **en clair sur le même port**, ce qui dit exactement ce que le port vaut comme protection : rien |
 
-### La porte différentielle : c'est la CELLULE qui décide, pas l'application
+### Ce que la porte au plan de données peut prouver, et ce qu'elle ne peut pas
 
-La mesure qui compte est celle-ci. **Une seule** application, souscrite aux deux APIs, portant **le même** identifiant `ipAddressRange` = l'IP réelle de l'appelant (donnée par `docker inspect`, jamais devinée) :
+La première écriture de cette section attendait qu'une API `external` **serve** un appelant dont l'IP est déclarée sur une application souscrite. Elle rend **401**, et pour deux raisons cumulées dont aucune n'est un défaut :
 
-- l'API de la cellule **`external`** est **servie (200)** — sa règle accepte l'identification par plage ;
-- l'API de la cellule **`internal`** **refuse le même appelant** — sa règle ne comporte pas cette dimension.
+- la règle d'identification de P6 a le connecteur **`AND`** : une cellule `external` exige `ipAddressRange` **en plus** de la dimension du volet inbound, elle ne la remplace pas ;
+- et cette dimension, en mode `jwt`, n'est résolue par personne (voir §6).
 
-Même appelant, même identifiant, deux verdicts. La posture n'est donc pas une étiquette : elle décide au plan de données, et c'est la cellule gouvernée qui la fixe.
+La porte a donc été refondée sur ce qui est vrai **et attribuable**, autour d'un **témoin** publié par le rôle *sans* gouvernance, appelé depuis le même appelant et sur le même listener :
+
+| mesure | témoin non gouverné | API publiée par la chaîne |
+|---|---|---|
+| en clair | **200** | **500 « Transport protocol not supported »** |
+| en TLS | **500** (même message) | **401** |
+| en TLS, après autorisation explicite du témoin | **200** | **401**, jeton réel et identifiant de claim compris |
+
+Le témoin a livré au passage un fait produit qui complète exactement P5 : **une API importée porte déjà une action `entryProtocolPolicy`, dont la valeur par défaut est `http`**. Une API non gouvernée refuse donc le TLS, exactement comme une API gouvernée refuse le clair. **Le protocole est une décision par API dans les DEUX sens, jamais une propriété du port.**
+
+Et le différentiel de cellule est mesuré **là où il est observable** — sur la règle elle-même, relue hors du rôle : `external` exige la dimension réseau, `internal` ne l'exige pas. L'affirmer au plan de données, où les deux cellules refusent pour la raison ci-dessus, aurait été un vert vacant.
 
 ### La contre-épreuve du GOAL, dans ses deux sens
 
@@ -112,6 +124,20 @@ Le GOAL demandait « se déclarer moins exposé et moins critique donne exacteme
 - **vers le haut** — deux APIs sur la **même** ligne de registre `M/internal`, l'une déclarée honnêtement, l'autre déclarée `VH/internal` : leurs **empreintes de posture** (tag ⊕ cellule ⊕ protocole ⊕ dimensions d'identification), relues sur la gateway, sont **identiques**. La sur-déclaration est acceptée, signalée, et **sans effet**.
 
 Réunies : *le manifeste ne décide pas*. Mentir vers le bas est refusé ; mentir vers le haut ne donne rien de plus. C'est la formulation exacte que le GOAL cherchait, et elle est plus forte que celle qu'il avait écrite.
+
+## 6. Le fait qui requalifie la dégradation `oauth2`
+
+Une API publiée par le formulaire est **fermée à tous**. Mesuré au plan de données avec un **jeton réel** de l'IdP du lab et une **application souscrite portant un identifiant de claim** qui matche ce jeton — `azp`, puis `iss`, puis `sub`, en `jwtClaims` puis en `openIdClaims` : **401 « Unauthorized application request » dans les quatre cas**, quand le témoin, lui, est servi 200 avec le même jeton.
+
+Deux explications restent ouvertes : l'identifiant de claim est décoratif (l'identité runtime de la 10.15 vient de la **stratégie OAuth2**, `azp == clientId`, que seul le mode `oauth2` configure), ou l'alias d'auth-server n'est lié à l'API que par cette même stratégie, si bien que la gateway ne peut pas valider le jeton. **Ce qui est établi est le résultat, pas la cause** — la discrimination n'a pas été faite, et cet ADR ne la présente pas comme faite.
+
+Conséquence sur la table : la dégradation `oauth2` **ne relâche rien, elle ferme**. Elle reste donc tolérable au sens de la sécurité — fail-closed — et doit être **dite** au sens de l'usage. C'est écrit dans sa `raison`, et la PR la porte. **L'entrée `oauth2` au formulaire (audience, scope, client_id) est le prochain travail utile de la chaîne producteur**, et il est désormais nommé au lieu d'être invisible.
+
+## 7. Deux défauts de plomberie, invisibles jusqu'ici
+
+`approvers.yml` envoyait un `PUT /apis/{id}` **enveloppé** — HTTP 400 « Both content stream and apiDefinition are empty ». Le défaut était **connu et contourné** : le harnais de P3 le nomme depuis le 2026-09-05 et publie sous une liste d'approbateurs vide pour l'éviter. Ce que P7 apporte est que la chaîne RÉELLE, elle, ne peut pas contourner — `providers.dev.yml` déclare des approbateurs pour l'équipe, et **aucune de ses publications n'aboutissait sur le produit**. Un contournement de harnais avait rendu invisible un blocage de production.
+
+Le corps corrigé passe (200), mais la relecture rend toujours `owner = "Administrator"` : **le champ n'est pas écrivable**, ce que la recherche du GOAL avait établi (décision client n°2). La projection devient donc **opt-in** (`apim_pub_approvers_project`, défaut `false`) et le rôle **dit** ce qu'il ne fait pas (`APPROVERS_NON_PROJETABLE`) ; la liste reste autoritative dans `providers.<env>.yml`.
 
 ## 5. Ce que la matrice sait attraper (les mutations)
 
@@ -134,7 +160,14 @@ Chaque témoin est exigé **vert avant** le sabotage — sinon son rouge d'aprè
 
 | Preuve | Commande | Résultat |
 |---|---|---|
-| Matrice P7 (builds réels) | `bash scripts/test-p7-bout-en-bout.sh` | *(voir le handoff du jour)* |
-| Garde de couverture hors ligne | `ansible-playbook -i ansible/inventory.lab.ini ansible/test-coverage-guards.yml …` | jouée dans la matrice, sections D2/E |
-| Porte de lint | `make lint-ci` | verte |
-| Non-régressions P2..P6 | `scripts/test-p2…p6*.sh` | *(voir le handoff du jour)* |
+| **Matrice P7, par BUILDS RÉELS** | `bash scripts/test-p7-bout-en-bout.sh` | **83 ✅ / 0 ❌** — 4 publications par builds Jenkins réels, la contre-épreuve dans ses deux sens, 2 refus structurels, 4 mutations |
+| Garde de couverture hors ligne | `ansible/test-coverage-guards.yml` | jouée dans la matrice (D2/D2b/D2c) et par les mutations (E1..E3) |
+| Go | `cd labctl && go vet ./... && go test ./...` | vet propre, **568 ✅ / 0 ❌** |
+| Porte de lint | `make lint-ci` | **17/17** |
+| Non-régression P2 | `bash scripts/test-p2-posture-producteur.sh` | 67 / 0 |
+| Non-régression P3 | `bash scripts/test-p3-tag-plateforme.sh` | 24 / 0 |
+| Non-régression P4 | `bash scripts/test-p4-global-policy.sh` | 38 / 0 |
+| Non-régression P5 | `bash scripts/test-p5-https.sh` | 54 / 0 |
+| Non-régression P6 | `bash scripts/test-p6-deny-by-default.sh` | 48 / 0 |
+
+*(P3, P4 et P5 publient désormais des cellules PUBLIABLES — voir §7 ; leur section d'AUTORITÉ continue d'interroger les dix cellules, y compris celles qu'on ne déploie pas : la table de vérité ne dépend pas du produit.)*

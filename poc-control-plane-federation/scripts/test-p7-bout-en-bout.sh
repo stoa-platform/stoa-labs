@@ -525,7 +525,7 @@ SERVED_SHA=$(gapi "$GITEA_URL/api/v1/repos/ci/stoa-labs/branches/main" \
   || ko "A1 divergence checkout/servi : local=${LOCAL_SHA:0:8} servi=${SERVED_SHA:0:8} — les builds exécuteraient un AUTRE code"
 [ -z "$DIRTY" ] \
   && ok "A1b aucune modification suivie non committée (ce qui est mesuré est ce qui est servi)" \
-  || ko "A1b arbre SALE ($DIRTY…) — les builds exécutent le commit, pas le fichier édité"
+  || ko "A1b arbre SALE (${DIRTY}) — les builds exécutent le commit, pas le fichier édité"
 
 # A2. L'autorité de posture, SUR L'AGENT. Sans elle la chaîne refuse
 # POSTURE_AUTORITE_ABSENTE — un refus juste, qui accuserait le socle.

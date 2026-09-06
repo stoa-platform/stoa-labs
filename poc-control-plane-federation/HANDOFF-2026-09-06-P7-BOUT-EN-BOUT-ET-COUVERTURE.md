@@ -5,7 +5,7 @@ jalon: P7
 goal: GOAL-posture-par-exposition-2026-09-04.md
 adr: adr/adr-097-couverture-du-bouquet-et-porte-de-bout-en-bout.md
 date: 2026-09-06
-status: "LIVRÉ — chiffres de preuve en fin de document."
+status: "LIVRÉ — matrice P7 83/0 par builds réels ; non-régressions P2 67/0, P3 24/0, P4 38/0, P5 54/0, P6 48/0 ; go test 568/0, make lint-ci 17/17."
 ---
 
 # P7 — ce qu'il faut savoir en trente secondes
@@ -107,4 +107,26 @@ Réunies : *le manifeste ne décide pas*. Mentir vers le bas est refusé ; menti
 
 ## Preuves
 
-*(complété à la fin du passage — voir la section « Preuves » de l'ADR-097)*
+| Preuve | Commande | Résultat |
+|---|---|---|
+| **Matrice P7, par BUILDS RÉELS** | `bash scripts/test-p7-bout-en-bout.sh` | **83 ✅ / 0 ❌** |
+| Go | `cd labctl && go vet ./... && go test ./...` | vet propre, **568 ✅ / 0 ❌** |
+| Porte de lint | `make lint-ci` | **17/17** |
+| Non-régression P2 | `bash scripts/test-p2-posture-producteur.sh` | 67 / 0 |
+| Non-régression P3 | `bash scripts/test-p3-tag-plateforme.sh` | 24 / 0 |
+| Non-régression P4 | `bash scripts/test-p4-global-policy.sh` | 38 / 0 |
+| Non-régression P5 | `bash scripts/test-p5-https.sh` | 54 / 0 |
+| Non-régression P6 | `bash scripts/test-p6-deny-by-default.sh` | 48 / 0 |
+
+Ce que la matrice couvre, en une ligne : **13 préflights** (dont l'égalité prouvée entre la gateway que le job écrit et celle que le harnais relit), **4 publications** par builds Jenkins réels avec leurs 6 mesures chacune, **10 mesures au plan de données**, **la contre-épreuve du GOAL dans ses deux sens**, **2 refus structurels** relayés sur la PR, **3 gardes hors ligne** et **4 mutations** restaurées à l'octet près.
+
+### Les prérequis de lab levés pour ce jalon (et qui restent posés)
+
+Tous nommés par les handoffs de P2 comme « le geste qui appartient à l'humain » :
+
+1. **le dépôt plateforme est SERVI** — P0..P7 committés et poussés sur `ci/stoa-labs@main`, ce que le préflight A1 vérifie à chaque passage (`servi == checkout`) ;
+2. **le `labctl` de l'agent Jenkins connaît `posture`** (il datait du 2026-07-02) ;
+3. **`GOVERNANCE_REPO` / `GOVERNANCE_PATH`** posées en variables globales du contrôleur ;
+4. **le registre central existe** — `ci/governance:governance/classifications.yaml`, avec son en-tête qui dit ce qu'il décide ;
+5. **le formulaire `api-request` re-posé** avec ses deux listes `CLASSIFICATION` / `EXPOSURE` ;
+6. **les cellules de posture et le listener HTTPS amorcés** sur la gateway réelle.
