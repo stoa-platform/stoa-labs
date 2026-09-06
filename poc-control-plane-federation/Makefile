@@ -117,8 +117,8 @@ lint-ci:
 	  scripts/setup-jenkins-globals.sh scripts/setup-provision-jobs.sh scripts/setup-carto-job.sh ci/lint-config-knobs.sh \
 	  scripts/setup-provision-request-job.sh scripts/setup-team-onboard-jobs.sh scripts/setup-user-deploy-job.sh \
 	  scripts/lib/posture-authority.sh scripts/lib/wm-dataplane.sh scripts/test-p5-https.sh \
-	  scripts/test-p6-deny-by-default.sh \
-	  && echo "  ✓ ci/lib + livrables shell G2..G8 + A1 + A2 + A0 + A3 + A4 + A5 + A6 + A7 + P2 + P5 + P6 propres"
+	  scripts/test-p6-deny-by-default.sh scripts/test-p7-bout-en-bout.sh \
+	  && echo "  ✓ ci/lib + livrables shell G2..G8 + A1 + A2 + A0 + A3 + A4 + A5 + A6 + A7 + P2 + P5 + P6 + P7 propres"
 	@echo "== [3/17] épreuves de ci/lib/carto-secrets.sh"
 	@ci/test-carto-secrets.sh
 	@echo "== [4/17] épreuves du résolveur de pin (G3)"

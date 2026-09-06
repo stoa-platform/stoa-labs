@@ -133,6 +133,58 @@ apim_pub_classification_source: ""
 # passé un jalon à supprimer. Résolu par PATH ; un chemin absolu convient.
 apim_pub_labctl_bin: "labctl"
 
+# --- P7 (ADR-097) : CE QUE CETTE CHAÎNE OPPOSE, ET CE QU'ELLE N'OPPOSE PAS ----
+# `labctl posture` rend un bouquet FINI. Le rôle en appliquait quatre morceaux et
+# ignorait le reste EN SILENCE — une API dont le bouquet exige `oauth2` recevait
+# le tag et la cellule qui l'affirment sans que rien ne l'exige d'elle. Ces deux
+# tables rendent la couverture explicite ; tasks/coverage.yml les oppose AVANT
+# le premier appel à la gateway. Une dimension exigée absente des DEUX fait
+# REFUSER (POSTURE_NON_OPPOSEE) : c'est l'anti-dérive, et c'est le point.
+#
+# CE QUE LA CHAÎNE SAIT OPPOSER — clé = nom de la policy dans le bouquet, valeur
+# = la tâche qui l'écrit ET la relit. Ajouter une entrée ici sans la tâche
+# correspondante rendrait la garde menteuse : c'est un couple, pas une liste.
+apim_pub_posture_opposed_by:
+  audit-log:    "global policy de cellule, action logInvocation — tasks/global-policy.yml (POLICY_COMMUNE_CONFIRMED)"
+  rate-limit:   "global policy de cellule, action throttle au quota gouverné — tasks/global-policy.yml"
+  https-only:   "entryProtocolPolicy par API, posé avant l'activation — tasks/entry-protocol.yml (HTTPS_ONLY_CONFIRMED)"
+  ip-allowlist: "règle d'identification ipAddressRange au stage IAM — tasks/caller-identity.yml (IDENTITE_CONFIRMEE)"
+
+# CE QU'ELLE NE SAIT PAS OPPOSER, avec la MESURE qui l'établit — jamais une
+# opinion. `mode: degrade` = l'axe reste gardé par un contrôle plus faible, la
+# publication passe et le dit ; `mode: refuse` = l'axe n'est gardé par rien, la
+# publication est refusée. La ligne de partage est l'axe, pas la commodité.
+apim_pub_posture_unopposed:
+  oauth2:
+    mode: degrade
+    raison: >-
+      la chaîne identifie l'appelant par jwtClaims (signature seule), pas par un
+      jeton OAuth2 validé sur audience/scope/client_id : le formulaire producteur
+      ne collecte pas ces trois champs (scripts/api-request.sh,
+      INBOUND_OAUTH2_NON_SUPPORTE). La machinerie existe (tasks/inbound.yml,
+      branche oauth2) ; c'est l'entrée de formulaire qui manque. L'axe reste donc
+      gardé, en deçà du bouquet.
+  mtls:
+    mode: refuse
+    raison: >-
+      non déclinable PAR API sur la 10.15 : le clientAuth du listener n'est pas
+      éditable (PUT 200 sans persistance, alias 'ssos' partout — mesuré au jalon
+      P5), et poser une identification par certificat que le listener ne réclame
+      jamais recréerait exactement le contrôle décoratif que P6 a supprimé.
+  threat-protection:
+    mode: refuse
+    raison: >-
+      /policies refuse de porter les actions correspondantes (HTTP 400
+      NullPointerException, deux filtres et deux portées — mesuré au jalon P4) ;
+      la seule surface qui les configure, /administration/threatprotection, est
+      GATEWAY-WIDE et ne peut donc pas différer d'une cellule à l'autre. C'est
+      l'écart #1 d'ADR-091, et il rend la cellule `internet` indéployable tant
+      qu'un dispositif d'environnement n'a pas été déclaré.
+
+# Journaliser les limites déclarées qu'aucun bouquet de l'API courante n'exige.
+# Utile en revue de couverture, bruyant en publication : éteint par défaut.
+apim_pub_posture_verbose: false
+
 # --- l'API à publier --------------------------------------------------------
 apim_api:
   name: "accounts-read"

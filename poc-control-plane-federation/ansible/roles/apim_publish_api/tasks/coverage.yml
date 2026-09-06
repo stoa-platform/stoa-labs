@@ -1,0 +1,159 @@
+---
+# roles/apim_publish_api/tasks/coverage.yml — CE QUE LA CHAÎNE OPPOSE VRAIMENT,
+# et ce qu'elle n'oppose pas (jalon P7, ADR-097).
+#
+# ── LE DÉFAUT QUE CETTE TÂCHE FERME ─────────────────────────────────────────
+# `labctl posture` rend un bouquet FINI : `required_policies`. Jusqu'ici, le rôle
+# en consommait QUATRE morceaux — le tag (P3), la cellule commune (P4), le
+# protocole d'entrée (P5), l'identification de l'appelant (P6) — et IGNORAIT
+# le reste EN SILENCE. Une API `M/internal` recevait donc le tag
+# `posture:m-internal`, la cellule `posture-m-internal`, `https-only`… et un
+# bouquet qui exige `oauth2` sans que rien, nulle part, ne l'exige d'elle.
+#
+# C'est EXACTEMENT le défaut que P6 a trouvé sur l'`ip-allowlist` : un contrôle
+# nommé dans la table de vérité, affiché au journal, et opposé par personne. La
+# différence est qu'ici il ne s'agit plus d'une primitive oubliée mais de la
+# COUVERTURE de la chaîne — donc la réponse ne peut pas être « poser la règle
+# manquante » : `mtls` et `threat-protection` ne sont PAS déclinables sur ce
+# produit, c'est mesuré (voir les raisons ci-dessous). La réponse est de rendre
+# la couverture EXPLICITE et de refuser ce qui sort du connu.
+#
+# ── LA RÈGLE, ET SA LIGNE DE PARTAGE ────────────────────────────────────────
+# Pour chaque policy du bouquet, l'une de trois issues, jamais le silence :
+#
+#   1. la chaîne SAIT l'opposer  (`apim_pub_posture_opposed_by`) — et une tâche
+#      plus bas le CONFIRME par relecture. Rien à dire ici.
+#   2. la chaîne ne sait pas l'opposer, mais l'AXE reste gardé par un contrôle
+#      plus faible (`mode: degrade`) — la publication passe et le journal, puis
+#      la PR, portent `POSTURE_DEGRADEE` en nommant l'écart.
+#   3. la chaîne ne sait pas l'opposer et l'AXE n'est gardé par RIEN
+#      (`mode: refuse`) — la publication est REFUSÉE, nommée, avant toute
+#      écriture sur la gateway.
+#
+# La ligne de partage n'est pas « ce qui nous arrange » : c'est **l'axe est-il
+# gardé par quelque chose, oui ou non**. `oauth2` dégrade parce que l'appelant
+# est quand même identifié (par `jwtClaims`, signature seule) ; `mtls` et
+# `threat-protection` refusent parce qu'aucune mesure ne les oppose — les
+# attester en silence serait la garantie de papier que P0 a démontée.
+#
+# ── L'ANTI-DÉRIVE, QUI EST LA VRAIE VALEUR ──────────────────────────────────
+# Une policy exigée par un bouquet et absente des DEUX listes fait REFUSER
+# (`POSTURE_NON_OPPOSEE`). Autrement dit : ajouter demain une dimension à la
+# table de vérité de `labctl` sans apprendre à la chaîne à l'opposer CASSE la
+# publication au lieu de la laisser publier une posture décorative. C'est la
+# seule forme d'exhaustivité qu'un rôle puisse tenir : il ne peut pas garantir
+# qu'il oppose tout, il peut garantir qu'il ne se tait sur rien.
+#
+# ── OÙ ELLE TOURNE ──────────────────────────────────────────────────────────
+# Juste après `posture.yml`, donc AVANT les secrets et AVANT le premier appel à
+# la gateway : un refus de couverture ne doit rien laisser derrière lui. Hors
+# ligne — elle ne lit que des variables.
+
+- name: "Couverture : sans posture arbitrée, il n'y a pas de bouquet à couvrir"
+  ansible.builtin.set_fact:
+    pub_cov_required: >-
+      {{ (pub_posture.required_policies | default([])) if pub_posture is defined else [] }}
+
+- name: "Couverture : les trois ensembles (ce qu'on oppose, ce qu'on dégrade, ce qu'on refuse)"
+  ansible.builtin.set_fact:
+    pub_cov_known: "{{ apim_pub_posture_opposed_by | dict2items | map(attribute='key') | list }}"
+    pub_cov_degrade_keys: >-
+      {{ apim_pub_posture_unopposed | dict2items
+         | selectattr('value.mode', 'equalto', 'degrade') | map(attribute='key') | list }}
+    pub_cov_refuse_keys: >-
+      {{ apim_pub_posture_unopposed | dict2items
+         | selectattr('value.mode', 'equalto', 'refuse') | map(attribute='key') | list }}
+
+- name: "Couverture : le partage du bouquet exigé"
+  ansible.builtin.set_fact:
+    pub_cov_opposed: "{{ pub_cov_required | select('in', pub_cov_known) | list }}"
+    pub_cov_degraded: "{{ pub_cov_required | select('in', pub_cov_degrade_keys) | list }}"
+    pub_cov_refused: "{{ pub_cov_required | select('in', pub_cov_refuse_keys) | list }}"
+    pub_cov_unknown: >-
+      {{ pub_cov_required
+         | reject('in', pub_cov_known)
+         | reject('in', pub_cov_degrade_keys)
+         | reject('in', pub_cov_refuse_keys) | list }}
+
+# ── 1. L'ANTI-DÉRIVE ────────────────────────────────────────────────────────
+# Une dimension neuve dans la table de vérité, inconnue de cette chaîne : refus.
+# Le message NOMME la dimension et dit où la déclarer, pour que la personne qui
+# élargit le bouquet sache exactement ce qu'on attend d'elle.
+- name: "Couverture : FAIL-CLOSED — une dimension exigée que la chaîne ne connaît pas"
+  ansible.builtin.assert:
+    that: "pub_cov_unknown | length == 0"
+    fail_msg: >-
+      POSTURE_NON_OPPOSEE : le bouquet {{ pub_posture.bundle | default('?') }} exige
+      {{ pub_cov_unknown }}, que cette chaîne ne sait ni opposer ni déclarer. Publier
+      quand même donnerait à '{{ apim_api.name }}' un tag et une cellule qui affirment
+      un contrôle que rien n'applique — le défaut même que P6 a corrigé sur
+      l'ip-allowlist. Déclarer chaque dimension dans `apim_pub_posture_opposed_by`
+      (avec la tâche qui l'oppose ET sa relecture) ou dans `apim_pub_posture_unopposed`
+      (avec la MESURE qui établit qu'elle n'est pas déclinable). Rien n'a été créé.
+    success_msg: >-
+      POSTURE_COUVERTURE : bouquet {{ pub_posture.bundle | default('(aucun)') }} —
+      opposées={{ pub_cov_opposed }} dégradées={{ pub_cov_degraded }}
+      non-déclinables={{ pub_cov_refused }}
+  when: "pub_posture is defined"
+
+# ── 2. LE REFUS STRUCTUREL ──────────────────────────────────────────────────
+# `mtls` et `threat-protection` ne sont opposés par RIEN sur ce produit. Une API
+# dont le bouquet les exige n'est donc pas publiable par cette chaîne, et le dire
+# vaut mieux que de la publier en affichant une posture qu'elle n'a pas.
+- name: "Couverture : FAIL-CLOSED — une dimension exigée qu'AUCUNE mesure n'oppose"
+  ansible.builtin.assert:
+    that: "pub_cov_refused | length == 0"
+    fail_msg: >-
+      POSTURE_NON_DECLINABLE : le bouquet {{ pub_posture.bundle | default('?') }} de
+      '{{ apim_api.name }}' exige {{ pub_cov_refused }}, qu'aucun contrôle de cette
+      plateforme n'oppose — {{ pub_cov_refused | map('extract', apim_pub_posture_unopposed, 'raison') | join(' ; ') }}
+      Publier serait attester en silence un contrôle que personne n'a observé. La
+      cellule reste donc INDÉPLOYABLE tant que ce leg n'existe pas : c'est une
+      décision de gouvernance (choisir une autre exposition, ou fournir le
+      dispositif d'environnement), pas un défaut du demandeur. Rien n'a été créé.
+  when: "pub_posture is defined"
+
+# ── 3. LA DÉGRADATION, DITE ─────────────────────────────────────────────────
+# L'axe est gardé, mais moins fort que le bouquet ne l'exige. La publication
+# passe ; le journal le dit, et team-publish.sh remonte la ligne sur la PR.
+- name: "Couverture : AVERTISSEMENT — l'axe est gardé, mais en deçà du bouquet"
+  ansible.builtin.debug:
+    msg: >-
+      ⚠ POSTURE_DEGRADEE : {{ item }} est exigé par le bouquet {{ pub_posture.bundle }} et
+      n'est PAS opposé par cette chaîne — l'axe reste gardé plus faiblement. Raison
+      mesurée : voir apim_pub_posture_unopposed.{{ item }}.raison (defaults du rôle).
+  loop: "{{ pub_cov_degraded }}"
+  when: "pub_posture is defined"
+
+# `oauth2` ne DÉGRADE que si quelque chose identifie quand même l'appelant. Un
+# manifeste sans volet inbound sur une cellule qui exige `oauth2` laisse l'axe
+# ENTIÈREMENT ouvert (mesuré P6 S1 : stage IAM vide = sert n'importe qui) : la
+# dégradation deviendrait alors une absence, et une absence ne se tolère pas.
+- name: "Couverture : FAIL-CLOSED — dégrader l'authentification suppose qu'il en reste une"
+  ansible.builtin.assert:
+    that: >-
+      {{ ((apim_api.inbound | default({})) | length > 0)
+         and (((apim_api.inbound.mode | default('')) | trim) | length > 0) }}
+    fail_msg: >-
+      POSTURE_AUTHN_ABSENTE : le bouquet {{ pub_posture.bundle }} exige
+      {{ pub_cov_degraded }}, et le manifeste de '{{ apim_api.name }}' ne déclare AUCUN
+      volet inbound — l'axe d'authentification ne serait gardé par rien du tout
+      (stage IAM vide : l'API sert n'importe quel appelant, mesuré au spike P6).
+      Une dégradation se tolère, une absence non. Rien n'a été créé.
+  when:
+    - "pub_posture is defined"
+    - "'oauth2' in pub_cov_degraded"
+
+# Symétrique de l'avertissement de `scripts/check-no-plaintext-secrets.sh` sur
+# les entrées de base de référence devenues inutiles : une limite déclarée
+# qu'aucun bouquet n'exige plus est une limite à retirer, pas à garder.
+- name: "Couverture : limite déclarée qu'aucun bouquet de cette API n'exige"
+  ansible.builtin.debug:
+    msg: >-
+      POSTURE_LIMITE_INUTILISEE : '{{ item }}' est déclarée non opposable mais n'est
+      pas exigée par {{ pub_posture.bundle }} — information, pas défaut (un autre
+      bouquet peut l'exiger).
+  loop: "{{ (pub_cov_degrade_keys + pub_cov_refuse_keys) | reject('in', pub_cov_required) | list }}"
+  when:
+    - "pub_posture is defined"
+    - "apim_pub_posture_verbose | bool"

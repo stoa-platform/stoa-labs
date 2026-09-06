@@ -425,6 +425,21 @@ if [ "$PUB_RC" -eq 0 ]; then
   POSTURE_MSG=$(grep -oE '"msg": "POSTURE_RETENUE[^"]*"' "$TMP/pub.log" \
     | sed 's/^"msg": "//; s/"$//' | tail -1)
 
+  # P7 : la COUVERTURE remonte aussi, et elle est plus importante que la posture
+  # retenue — c'est la ligne qui dit ce que la chaîne a VRAIMENT opposé du
+  # bouquet, et ce qu'elle a seulement dégradé. Sans elle, le ✅ affiche une
+  # posture sans jamais dire qu'une de ses dimensions n'est pas appliquée : le
+  # demandeur lirait « m-internal » et comprendrait « oauth2 exigé ». Le refus
+  # (POSTURE_NON_OPPOSEE / POSTURE_NON_DECLINABLE), lui, passe déjà par la
+  # hiérarchie fatal de la branche d'échec, comme tout refus de rôle.
+  COVERAGE_MSG=$(grep -oE '"msg": "POSTURE_COUVERTURE[^"]*"' "$TMP/pub.log" \
+    | sed 's/^"msg": "//; s/"$//' | tail -1)
+  # Le motif ne cite PAS le ⚠ qui préfixe le message : le corps du grep
+  # traverserait le charset de l'agent, et un motif non-ASCII y a déjà coûté
+  # une correspondance silencieuse dans ce dépôt.
+  DEGRADED_MSG=$(grep -oE '"msg": "[^"]*POSTURE_DEGRADEE[^"]*"' "$TMP/pub.log" \
+    | sed 's/^"msg": "//; s/"$//' | tr '\n' ' ' | sed 's/ *$//')
+
   # ── re-pose app-request ET api-request (revue : la liste API_BASE d'api-
   # request restait périmée après chaque publication, bloquant le cycle
   # create->new-version sur API_BASE_STALE tant qu'un humain ne relançait pas
@@ -469,7 +484,11 @@ if [ "$PUB_RC" -eq 0 ]; then
 
   comment "$WEBHOOK_REPO" "✅ team-publish ${TEAM}/${API_NAME}@${API_VERSION} ([PR #${PR_NUMBER}](${GIT_WEB_HOST}/${WEBHOOK_REPO}/pulls/${PR_NUMBER})) — ${SUMMARY:-VERSION_CREATED}${REFRESH_NOTE}${POSTURE_MSG:+
 
-\`${POSTURE_MSG}\`}"
+\`${POSTURE_MSG}\`}${COVERAGE_MSG:+
+
+\`${COVERAGE_MSG}\`}${DEGRADED_MSG:+
+
+\`${DEGRADED_MSG}\`}"
 else
   # Hiérarchie fatal > msg > tail-3 (leçon du palier 2, cf. team-apply.sh §4 /
   # api-request.sh §5) : le dernier tag OK vu AVANT un échec réel situé

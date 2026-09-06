@@ -21,6 +21,13 @@
 - name: "Posture : classification × exposition — le registre CENTRAL tranche (P2)"
   ansible.builtin.import_tasks: posture.yml
 
+# IMMÉDIATEMENT après la posture, et pour la MÊME raison qu'elle est là : le
+# bouquet vient d'être arrêté, il faut savoir ce que la chaîne saura VRAIMENT en
+# opposer avant d'écrire quoi que ce soit. Une couverture jugée après coup
+# laisserait une API créée-active qui affiche une posture qu'elle n'a pas.
+- name: "Couverture : ce que la chaîne oppose du bouquet, et ce qu'elle n'oppose pas (P7)"
+  ansible.builtin.import_tasks: coverage.yml
+
 - name: "Secrets : auth admin (Vault, fallback PoC)"
   ansible.builtin.import_role:
     name: apim_common
