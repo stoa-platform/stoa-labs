@@ -242,6 +242,16 @@ YML
 # sur le produit réel le PUT enveloppé d'approvers.yml rend 400 et `owner` est
 # en lecture seule. Hors P4 ; documenté plutôt que tu.
 
+# CELLULES PUBLIABLES, et c'est une contrainte de P7 (ADR-097) : depuis que le
+# rôle vérifie la COUVERTURE du bouquet, une cellule `internet` est REFUSÉE à la
+# publication — `threat-protection` n'est portable par aucune policy sur ce
+# produit, et c'est P4 lui-même qui l'a mesuré. Ce harnais publiait en
+# `vh-internet` / `m-internet` ; il publie désormais en `h-external` /
+# `m-external`, ce qui ne change RIEN à ce qu'il prouve (deux cellules, deux
+# quotas gouvernés, le différentiel mesuré au plan de données) et le rend
+# cohérent avec ce que la chaîne accepte réellement de déployer. La section
+# d'AUTORITÉ, elle, continue d'interroger les dix cellules — y compris celles
+# qu'on ne déploie pas : la table de vérité ne dépend pas du produit.
 registry(){ cat > "$W/registry.yaml" <<YML
 apiVersion: governance.stoa.io/v1
 kind: ClassificationRegistry
@@ -295,9 +305,16 @@ burst(){ local n="$1" name="$2" c429=0 i
   for i in $(seq 1 "$n"); do
     [ "$(dp_code https "$name" 1.0.0 /ping)" = "429" ] && c429=$((c429+1))
   done; echo "$c429"; }
-wait_free(){ local name="$1" i  # attendre que la fenêtre du quota roule
+wait_free(){ local name="$1" i c  # attendre que la fenêtre du QUOTA roule
+  # On attend que le quota cesse de mordre — PAS que l'appel soit servi. Depuis
+  # que les cellules publiées ici sont `external` (contrainte de couverture, P7),
+  # l'appel reste refusé par l'IDENTIFICATION (403) même la fenêtre roulée :
+  # exiger un 200 mesurerait l'axe voisin et rougirait pour toujours. Le stage
+  # LMT s'évalue AVANT le stage IAM — mesuré : la 429 apparaît bien alors que
+  # l'appelant n'est pas identifié.
   for i in $(seq 1 40); do
-    [ "$(dp_code https "$name" 1.0.0 /ping)" = "200" ] && return 0
+    c=$(dp_code https "$name" 1.0.0 /ping)
+    [ "$c" != "429" ] && [ "$c" != "000" ] && return 0
     sleep 3
   done; return 1; }
 
@@ -323,27 +340,34 @@ NACT_AFTER=$(wm "$WM_ADMIN/policyActions" | python3 -c 'import json,sys; print(l
 # ---- C3 : la publication rejoint SA cellule ------------------------------
 drop_api "$API_A"; drop_api "$API_B"
 contract "$API_A"; contract "$API_B"
-manifest "$API_A" VH internet; manifest "$API_B" M internet
-registry VH internet M internet
+manifest "$API_A" H external; manifest "$API_B" M external
+registry H external M external
 
 publish "$API_A" "$W/pubA.log"; RC=$?
-[ "$RC" -eq 0 ] && ok "publication de $API_A (vh-internet) : rc=0" \
+[ "$RC" -eq 0 ] && ok "publication de $API_A (h-external) : rc=0" \
                 || ko "publication $API_A rc=$RC — $(grep -m1 -A2 '^fatal' "$W/pubA.log" | tr '\n' ' ')"
 grep -q 'POLICY_COMMUNE_CONFIRMED' "$W/pubA.log" \
   && ok "LA PORTE (a) : la gateway CONFIRME que $API_A est frappée par sa cellule" \
   || ko "POLICY_COMMUNE_CONFIRMED absent du journal — l'appartenance n'a pas été confirmée"
-[ "$(cells_of "$API_A" | tr '\n' ' ' | xargs)" = "posture-vh-internet" ] \
-  && ok "$API_A est membre de posture-vh-internet et d'AUCUNE autre cellule" \
+[ "$(cells_of "$API_A" | tr '\n' ' ' | xargs)" = "posture-h-external" ] \
+  && ok "$API_A est membre de posture-h-external et d'AUCUNE autre cellule" \
   || ko "cellules de $API_A : $(cells_of "$API_A" | tr '\n' ' ')"
 
 publish "$API_B" "$W/pubB.log"; RC=$?
-[ "$RC" -eq 0 ] && ok "publication de $API_B (m-internet) : rc=0" \
+[ "$RC" -eq 0 ] && ok "publication de $API_B (m-external) : rc=0" \
                 || ko "publication $API_B rc=$RC — $(grep -m1 -A2 '^fatal' "$W/pubB.log" | tr '\n' ' ')"
 
 # ---- C4/C5 : LA PORTE, mesurée côté PLAN DE DONNÉES ----------------------
-QA=$(posture_json "$TEAM" comptes-lecture VH internet | python3 -c 'import json,sys; print(json.load(sys.stdin)["quota"]["requests"])')
-QB=$(posture_json "$TEAM" taux-lecture    M  internet | python3 -c 'import json,sys; print(json.load(sys.stdin)["quota"]["requests"])')
-echo "     (quotas gouvernés : vh-internet=$QA/min, m-internet=$QB/min ; rafale = $((QA + 5)) appels)"
+# Les quotas viennent de la TABLE, pas d'une interrogation par API : depuis P7
+# les cellules publiées ici sont `h-external` et `m-external` (une cellule `VH`
+# ou `internet` est refusée à la publication — couverture du bouquet, ADR-097),
+# et interroger l'autorité avec une déclaration qui ne correspond pas à la ligne
+# du registre offline rendrait un refus, pas un quota.
+qof(){ printf '%s' "$CELLS" | python3 -c 'import json,sys
+for c in json.load(sys.stdin)["cells"]:
+    if c["bundle"]==sys.argv[1]: print(c["quota"]["requests"]); break' "$1"; }
+QA=$(qof h-external); QB=$(qof m-external)
+echo "     (quotas gouvernés : h-external=$QA/min, m-external=$QB/min ; rafale = $((QA + 5)) appels)"
 
 # La propagation du scope n'est pas instantanée : on attend que la policy MORDE
 # avant de mesurer quoi que ce soit. Sans cette attente, une première rafale
@@ -354,7 +378,7 @@ for _ in $(seq 1 6); do
   sleep 10
 done
 [ "$EFFECTIVE" = "1" ] \
-  && ok "LA PORTE (b) : le quota gouverné de vh-internet MORD au plan de données (429)" \
+  && ok "LA PORTE (b) : le quota gouverné de h-external MORD au plan de données (429)" \
   || ko "aucune 429 sur $API_A après $((QA + 5)) appels répétés — le quota ne mord pas"
 
 # LA PORTE du jalon : la MÊME rafale, sur une API d'une AUTRE cellule, ne mord
@@ -370,22 +394,22 @@ N429B=$(burst $((QA + 5)) "$API_B")
 PIDA=$(wm "$WM_ADMIN/policies" | python3 -c '
 import json,sys
 for p in json.load(sys.stdin)["policy"]:
-    if (p.get("names") or [{}])[0].get("value")=="posture-vh-internet": print(p["id"])')
+    if (p.get("names") or [{}])[0].get("value")=="posture-h-external": print(p["id"])')
 curl -s -o /dev/null -m 30 -u "$WM_USER:$WM_PASS" -X PUT "$WM_ADMIN/policies/$PIDA/deactivate"
 if wait_free "$API_A"; then
-  ok "CONTRE-ÉPREUVE : cellule désactivée → l'appel de $API_A repasse en 200"
+  ok "CONTRE-ÉPREUVE : cellule désactivée → l'appel de $API_A cesse d'être refusé par le QUOTA"
 else
   ko "l'appel ne repasse pas après désactivation — le refus n'était pas imputable à la cellule"
 fi
 curl -s -o /dev/null -m 30 -u "$WM_USER:$WM_PASS" -X PUT "$WM_ADMIN/policies/$PIDA/activate"
 
 # ---- C7 : changer de cellule, c'est QUITTER l'ancienne -------------------
-registry M internet M internet
-manifest "$API_A" M internet
+registry M external M external
+manifest "$API_A" M external
 publish "$API_A" "$W/pubA2.log"; RC=$?
 NEW=$(cells_of "$API_A" | tr '\n' ' ' | xargs)
-{ [ "$RC" -eq 0 ] && [ "$NEW" = "posture-m-internet" ]; } \
-  && ok "reclassée par le registre, $API_A QUITTE posture-vh-internet et rejoint posture-m-internet" \
+{ [ "$RC" -eq 0 ] && [ "$NEW" = "posture-m-external" ]; } \
+  && ok "reclassée par le registre, $API_A QUITTE posture-h-external et rejoint posture-m-external" \
   || ko "après reclassement, cellules de $API_A = '$NEW' (rc=$RC) — deux quotas contradictoires"
 
 # ---- C8/C9 : la sentinelle, et le contenu intact -------------------------
@@ -502,11 +526,11 @@ if [ "${LIVE:-0}" = "1" ]; then
   # cellule » doit l'attraper.
   cp "$GPFILE" "$TMP/gp.orig"
   if python3 "$TMP/mut-additif.py" "$GPFILE"; then
-    registry M internet M internet
-    manifest "$API_A" M internet
+    registry M external M external
+    manifest "$API_A" M external
     publish "$API_A" "$W/mutD5a.log" >/dev/null 2>&1
-    registry VH internet M internet
-    manifest "$API_A" VH internet
+    registry H external M external
+    manifest "$API_A" H external
     publish "$API_A" "$W/mutD5.log"; RC=$?
     if [ "$RC" -ne 0 ] && grep -q 'POLICY_COMMUNE_UNCONFIRMED' "$W/mutD5.log"; then
       ok "mutation D5 (rôle ADDITIF : ne quitte plus l'ancienne cellule) — la relecture ROUGIT"
@@ -526,13 +550,13 @@ if [ "${LIVE:-0}" = "1" ]; then
   PIDM=$(wm "$WM_ADMIN/policies" | python3 -c '
 import json,sys
 for p in json.load(sys.stdin)["policy"]:
-    if (p.get("names") or [{}])[0].get("value")=="posture-vh-internet": print(p["id"])')
+    if (p.get("names") or [{}])[0].get("value")=="posture-h-external": print(p["id"])')
   wm "$WM_ADMIN/policies/$PIDM" > "$TMP/polM.json"
   python3 "$TMP/mut-inerte.py" "$TMP/polM.json" "$TMP/polM.strip.json"
   curl -s -o /dev/null -m 30 -u "$WM_USER:$WM_PASS" -H 'Content-Type: application/json' \
        -X PUT --data @"$TMP/polM.strip.json" "$WM_ADMIN/policies/$PIDM"
-  registry VH internet M internet
-  manifest "$API_A" VH internet
+  registry H external M external
+  manifest "$API_A" H external
   publish "$API_A" "$W/mutD6.log"; RC=$?
   if [ "$RC" -ne 0 ] && grep -q 'POLICY_COMMUNE_INERTE' "$W/mutD6.log"; then
     ok "mutation D6 (cellule sans condition HTTP_METHOD, donc INERTE) — le rôle REFUSE d'y inscrire l'API"
@@ -546,7 +570,7 @@ import json,sys
 p=json.load(sys.stdin)["policy"]
 print(len([c for c in p["scope"]["scopeConditions"] if c["filterType"]=="HTTP_METHOD"]))')
   [ "$RESTORED" = "1" ] && ok "la cellule sabotée est RESTAURÉE (condition HTTP_METHOD de retour)" \
-                        || ko "RESTAURATION MANQUÉE : posture-vh-internet reste inerte — rejouer le play d'amorçage"
+                        || ko "RESTAURATION MANQUÉE : posture-h-external reste inerte — rejouer le play d'amorçage"
 else
   skip "mutations D5/D6 sautées (gateway absente) — les gardes du rôle ne sont donc PAS mesurées"
 fi

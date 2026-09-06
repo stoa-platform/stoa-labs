@@ -276,11 +276,23 @@ providers:
     repo: $TEAM/harness
     approvers: []
 YML
+# CELLULE 'external', et c'est une contrainte de P7 (ADR-097) : la garde de
+# couverture refuse une publication gouvernée dont le stage IAM resterait VIDE —
+# aucun volet inbound dans ce manifeste ET aucune dimension d'identification dans
+# la cellule. Une cellule 'external' en exige une (ip-allowlist), l'axe est donc
+# gardé, et ce harnais peut continuer d'isoler LE PROTOCOLE sans déclarer
+# d'inbound. Le prix : l'appel HTTPS n'est plus servi 200 mais REFUSÉ par
+# l'identification (voir C2), ce qui ne change rien à ce que C2 prouve — le refus
+# du CLAIR porte le message du PROTOCOLE, celui du TLS non.
+#
+# Ce commentaire est HORS du heredoc, et c'est nécessaire : le délimiteur n'est
+# pas quoté (`<<YML`), donc le shell y interprète les substitutions — un accent
+# grave dans le corps y deviendrait une commande à exécuter. Piège payé ici.
 cat > "$W/registry.yaml" <<YML
 apiVersion: governance.stoa.io/v1
 kind: ClassificationRegistry
 classifications:
-  - {owner: $TEAM, tenant: $TEAM, api: $API_G, classification: M, exposure: internal}
+  - {owner: $TEAM, tenant: $TEAM, api: $API_G, classification: H, exposure: external}
 YML
 
 publish(){  # publish <api> <journal> [--sans-registre]
@@ -359,7 +371,10 @@ trap 'drop_api "$API_G" >/dev/null 2>&1; drop_api "$API_T" >/dev/null 2>&1; clea
 
 drop_api "$API_G"; drop_api "$API_T"
 contract "$API_G"; contract "$API_T"
-manifest "$API_G" M internal; manifest "$API_T" M internal
+# La DÉCLARATION suit la ligne du registre (H/external) pour l'API gouvernée ;
+# le témoin, lui, est publié SANS registre — sa déclaration n'est arbitrée par
+# personne et n'a donc pas à correspondre à quoi que ce soit.
+manifest "$API_G" H external; manifest "$API_T" M internal
 
 # ---- C1 : la publication pose le protocole -------------------------------
 publish "$API_G" "$W/pubG.log"; RC=$?
@@ -384,11 +399,18 @@ printf '%s' "$BODY" | grep -q 'Transport protocol not supported' \
   && ok "C2 …et le refus est bien celui du PROTOCOLE (message du produit)" \
   || ko "C2 le refus n'est pas celui du protocole : $(printf '%s' "$BODY" | head -c 120)"
 
-dp_wait https "$API_G" 1.0.0 /ping 20 >/dev/null 2>&1
-TLS=$(dp_code https "$API_G" 1.0.0 /ping)
+# On n'attend plus un 200 : depuis que la cellule est `external`, l'appel TLS est
+# REFUSÉ par l'identification (403) faute d'application déclarant l'IP appelante.
+# Ce qui est mesuré ici est que l'API est PORTÉE par le canal TLS — c'est-à-dire
+# qu'elle n'y rend PAS le refus de protocole du canal clair.
+_p5_settle(){ local c n=0; while [ "$n" -lt 25 ]; do n=$((n+1))
+  c=$(dp_code https "$API_G" 1.0.0 /ping); case "$c" in 200|401|403) printf '%s' "$c"; return 0;; esac
+  sleep 3; done; printf '%s' "$c"; }
+TLS=$(_p5_settle)
 mes "appel en HTTPS : HTTP $TLS"
-[ "$TLS" = "200" ] \
-  && ok "C2 LA PORTE (b) : la MÊME API répond 200 en HTTPS" \
+case "$TLS" in 200|401|403) TLS_OK=1;; *) TLS_OK=0;; esac
+[ "$TLS_OK" = "1" ] \
+  && ok "C2 LA PORTE (b) : la MÊME API est PORTÉE par le canal HTTPS (HTTP $TLS — servie ou refusée par son IDENTIFICATION, jamais par le protocole)" \
   || ko "C2 l'appel HTTPS ne passe pas (HTTP $TLS) — l'API ne serait joignable par aucun canal"
 
 # ---- C3 : le TÉMOIN — sans gouvernance, rien n'est imposé ----------------
@@ -414,11 +436,15 @@ if [ -n "$AID" ]; then
   set_ep "$AID" http >/dev/null
   BACK=0
   for _ in $(seq 1 10); do
-    [ "$(dp_code clair "$API_G" 1.0.0 /ping)" = "200" ] && { BACK=1; break; }; sleep 2
+    # Ce qui doit disparaître est le refus DU PROTOCOLE, pas tout refus : depuis
+    # que la cellule est `external`, l'appel reste refusé par l'IDENTIFICATION
+    # (403), et exiger un 200 ici mesurerait le mauvais axe. On accepte donc
+    # tout code du vocabulaire « le protocole ne refuse plus ».
+    case "$(dp_code clair "$API_G" 1.0.0 /ping)" in 200|401|403) BACK=1; break;; esac; sleep 2
   done
   [ "$BACK" = "1" ] \
-    && ok "C4 CONTRE-ÉPREUVE : le réglage retiré, l'appel en clair REPASSE — c'était bien la policy" \
-    || ko "C4 le clair ne repasse pas après retrait : le refus de C2 venait d'ailleurs"
+    && ok "C4 CONTRE-ÉPREUVE : le réglage retiré, le CLAIR cesse d'être refusé par le protocole — c'était bien la policy" \
+    || ko "C4 le clair reste refusé par le protocole après retrait : le refus de C2 venait d'ailleurs"
 
   # ---- C5 : re-convergence. Le rôle rejoué remet le réglage. --------------
   publish "$API_G" "$W/pubG2.log"; RC=$?

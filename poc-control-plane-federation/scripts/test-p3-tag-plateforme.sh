@@ -167,11 +167,19 @@ apim_api:
   classification: "VH"
   exposure: "external"
 YML
+# CELLULE PUBLIABLE, et c'est une contrainte de P7 (ADR-097) : depuis que le
+# rôle vérifie la COUVERTURE du bouquet, une cellule `VH` est REFUSÉE à la
+# publication (`mtls` n'est déclinable par aucune API sur ce produit — mesure
+# P5) et une cellule `internet` aussi (`threat-protection` n'est portable par
+# aucune policy — mesure P4). Ce harnais publiait en `VH/external` ; il publie
+# désormais en `H/external`, ce qui ne change RIEN à ce qu'il prouve — la
+# plateforme pose le tag et écrase celui que le contrat avait forgé — et le
+# rend cohérent avec ce que la chaîne accepte réellement de déployer.
 cat > "$W/registry.yaml" <<YML
 apiVersion: governance.stoa.io/v1
 kind: ClassificationRegistry
 classifications:
-  - {owner: $TEAM, tenant: $TEAM, api: $API, classification: VH, exposure: external}
+  - {owner: $TEAM, tenant: $TEAM, api: $API, classification: H,  exposure: external}
 YML
 # banking-demo SANS approbateurs : approvers.yml sort en APPROVERS_EMPTY.
 # CONTOURNEMENT ASSUMÉ ET NOMMÉ d'un défaut PRÉEXISTANT, hors P3 et mesuré le
@@ -223,8 +231,8 @@ if [ -z "$AID" ]; then
   ko "l'API n'existe pas sur la gateway — le reste de la section C est sans objet"
 else
   TAGS=$(api_tags "$AID")
-  printf '%s\n' "$TAGS" | grep -qx 'posture:vh-external' \
-    && ok "LA PORTE : l'API porte le tag de la posture GOUVERNÉE (posture:vh-external)" \
+  printf '%s\n' "$TAGS" | grep -qx 'posture:h-external' \
+    && ok "LA PORTE : l'API porte le tag de la posture GOUVERNÉE (posture:h-external)" \
     || ko "tag de posture absent — relu : $(printf '%s' "$TAGS" | tr '\n' ' ')"
   printf '%s\n' "$TAGS" | grep -qx 'posture:m-internal' \
     && ko "CONTRE-ÉPREUVE ÉCHOUÉE : le tag FORGÉ par le contrat a survécu" \
@@ -253,7 +261,7 @@ else
   # IDEMPOTENCE : un second passage ne doit pas réécrire.
   publish "$W/run2.log"; RC=$?
   [ "$RC" -eq 0 ] && ok "second passage idempotent (rc=0)" || ko "second passage rc=$RC"
-  [ "$(api_tags "$AID" | sort | tr '\n' ' ')" = "$(printf 'comptes\nposture:vh-external\n' | sort | tr '\n' ' ')" ] \
+  [ "$(api_tags "$AID" | sort | tr '\n' ' ')" = "$(printf 'comptes\nposture:h-external\n' | sort | tr '\n' ' ')" ] \
     && ok "les tags sont inchangés après le second passage" \
     || ko "les tags ont dérivé au second passage : $(api_tags "$AID" | tr '\n' ' ')"
 
@@ -265,7 +273,7 @@ else
   [ "$RC" -eq 0 ] && ok "mise à jour du contrat : publication complète (rc=0)" \
                   || ko "mise à jour en échec (rc=$RC) — $(grep -m1 -A2 '^fatal' "$W/run3.log" | tr '\n' ' ')"
   TAGS=$(api_tags "$AID")
-  printf '%s\n' "$TAGS" | grep -qx 'posture:vh-external' \
+  printf '%s\n' "$TAGS" | grep -qx 'posture:h-external' \
     && ok "CONTRE-ÉPREUVE : le tag SURVIT à un ré-import de définition" \
     || ko "le ré-import a laissé l'API sans son tag : $(printf '%s' "$TAGS" | tr '\n' ' ')"
   printf '%s\n' "$TAGS" | grep -qx 'posture:m-internal' \
@@ -319,7 +327,7 @@ witness_live(){
   publish "$W/mut.log" || return 1
   local aid; aid=$(api_id "$API"); [ -n "$aid" ] || return 1
   local t; t=$(api_tags "$aid")
-  printf '%s\n' "$t" | grep -qx 'posture:vh-external' || return 1
+  printf '%s\n' "$t" | grep -qx 'posture:h-external' || return 1
   [ "$(printf '%s\n' "$t" | grep -c '^posture:')" = "1" ] || return 1
   printf '%s\n' "$t" | grep -qx 'comptes' || return 1
   return 0
@@ -395,7 +403,7 @@ else
   drop_api "$API" >/dev/null 2>&1
   publish "$W/mut4a.log"; RC=$?
   AID2=$(api_id "$API")
-  if [ "$RC" -eq 0 ] && [ -n "$AID2" ] && api_tags "$AID2" | grep -qx 'posture:vh-external' \
+  if [ "$RC" -eq 0 ] && [ -n "$AID2" ] && api_tags "$AID2" | grep -qx 'posture:h-external' \
      && grep -q 'TAG_CONFIRMED (relecture finale)' "$W/mut4a.log"; then
     ok "effacement POSTÉRIEUR à la pose : la relecture finale RE-CONVERGE et le prouve"
   else

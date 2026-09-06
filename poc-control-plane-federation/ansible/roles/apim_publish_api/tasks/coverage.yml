@@ -128,21 +128,41 @@
   loop: "{{ pub_cov_degraded }}"
   when: "pub_posture is defined"
 
-# `oauth2` ne DÉGRADE que si quelque chose identifie quand même l'appelant. Un
-# manifeste sans volet inbound sur une cellule qui exige `oauth2` laisse l'axe
-# ENTIÈREMENT ouvert (mesuré P6 S1 : stage IAM vide = sert n'importe qui) : la
-# dégradation deviendrait alors une absence, et une absence ne se tolère pas.
-- name: "Couverture : FAIL-CLOSED — dégrader l'authentification suppose qu'il en reste une"
+# ── 3bis. LA DÉGRADATION NE DOIT PAS DEVENIR UNE ABSENCE ────────────────────
+# Une dégradation se tolère parce que l'AXE reste gardé. Encore faut-il qu'il le
+# soit. La règle du stage IAM est composée de DEUX apports (P6) : le volet
+# inbound du manifeste, et les dimensions de la cellule. Quand les deux sont
+# vides, la règle n'est pas posée du tout — stage IAM VIDE, et l'API sert
+# n'importe qui, ANONYMEMENT (mesuré au spike P6, S1). Une API qui porte alors
+# le tag et la cellule de sa posture ment sur ce qu'elle oppose.
+#
+# LA CONDITION PORTE DONC SUR LE RÉSULTAT, PAS SUR LE MANIFESTE. Un manifeste
+# sans volet inbound reste parfaitement légitime sur une cellule `external` :
+# l'appelant y est identifié par sa plage d'adresses, l'axe est gardé, et
+# plusieurs preuves de ce dépôt publient exactement comme cela pour isoler UNE
+# dimension à la fois. Ce que ce refus interdit, c'est la conjonction — aucun
+# inbound ET aucune dimension de posture —, c'est-à-dire le seul cas où il ne
+# reste RIEN. C'est aussi le geste qu'un producteur pourrait faire en éditant
+# son manifeste : retirer l'inbound est une façon de « se déclarer moins » que
+# le registre ne rattrape pas, puisque la posture, elle, resterait juste.
+# `default([], true)` et non `default([])` : `caller_identity` vaut JSON **null**
+# (pas « absent ») sur les cellules qui n'exigent aucune dimension, et le filtre
+# à un argument ne remplace que l'INDÉFINI — `length` tombait alors sur None et
+# le refus devenait une erreur de templating. Mesuré en rejouant P4.
+- name: "Couverture : FAIL-CLOSED — l'axe d'identification doit rester gardé par QUELQUE CHOSE"
   ansible.builtin.assert:
     that: >-
-      {{ ((apim_api.inbound | default({})) | length > 0)
-         and (((apim_api.inbound.mode | default('')) | trim) | length > 0) }}
+      {{ (((apim_api.inbound | default({})) | length > 0)
+           and (((apim_api.inbound.mode | default('')) | trim) | length > 0))
+         or ((pub_posture.caller_identity | default([], true) | length) > 0) }}
     fail_msg: >-
       POSTURE_AUTHN_ABSENTE : le bouquet {{ pub_posture.bundle }} exige
-      {{ pub_cov_degraded }}, et le manifeste de '{{ apim_api.name }}' ne déclare AUCUN
-      volet inbound — l'axe d'authentification ne serait gardé par rien du tout
-      (stage IAM vide : l'API sert n'importe quel appelant, mesuré au spike P6).
-      Une dégradation se tolère, une absence non. Rien n'a été créé.
+      {{ pub_cov_degraded }}, le manifeste de '{{ apim_api.name }}' ne déclare AUCUN
+      volet inbound, et la cellule n'exige AUCUNE dimension d'identification. Le stage
+      IAM resterait donc VIDE et l'API servirait n'importe quel appelant,
+      ANONYMEMENT (mesuré au spike P6, S1) — tout en portant le tag et la cellule qui
+      affirment le contraire. Une dégradation se tolère, une absence non. Rien n'a
+      été créé.
   when:
     - "pub_posture is defined"
     - "'oauth2' in pub_cov_degraded"

@@ -30,7 +30,9 @@ Trois issues, jamais le silence : **opposée** (une tâche l'écrit ET la relit)
 
 ### 2. `approvers.yml` envoyait un corps que le produit refuse — HTTP 400
 
-`PUT /apis/{id}` avec l'enveloppe `{"apiResponse": {"api": …}}` rend **400 « Both content stream and apiDefinition are empty »**. `tag.yml` (P3) avait déjà mesuré que ce champ veut l'**objet nu** ; `approvers.yml` était resté sur l'enveloppe. Personne ne l'avait vu parce que la tâche ne s'exécute **que si l'équipe déclare des approbateurs** : les harnais de P3..P6 publient sous un `providers.<env>.yml` à liste **vide**, et le seul bout-en-bout qui déclarait des approbateurs visait le **mock**, qui accepte les deux formes.
+`PUT /apis/{id}` avec l'enveloppe `{"apiResponse": {"api": …}}` rend **400 « Both content stream and apiDefinition are empty »**. `tag.yml` (P3) avait déjà mesuré que ce champ veut l'**objet nu** ; `approvers.yml` était resté sur l'enveloppe.
+
+**Ce défaut était CONNU et contourné, pas ignoré** : le harnais de P3 le nomme dans un commentaire daté du 2026-09-05 (« CONTOURNEMENT ASSUMÉ ET NOMMÉ d'un défaut PRÉEXISTANT, hors P3 ») et publie sous un `providers.<env>.yml` à liste d'approbateurs **vide** pour l'éviter. Ce que P7 apporte n'est donc pas la découverte : c'est que la chaîne RÉELLE, elle, ne peut pas contourner — `providers.dev.yml` déclare des approbateurs pour `banking-demo`, et **aucune publication de cette équipe n'aboutissait sur le produit**. Un contournement de harnais avait rendu invisible un blocage de production.
 
 ### 3. …et le champ n'est de toute façon pas écrivable — `owner` reste `Administrator`
 
@@ -67,7 +69,11 @@ Le premier passage attendait qu'une API `external` **serve** un appelant dont l'
 - la règle de P6 a le connecteur **`AND`** : `external` exige `ipAddressRange` **en plus** de la dimension inbound, elle ne la remplace pas ;
 - et la dimension inbound, en mode `jwt`, n'est résolue par personne (défaut n°4).
 
-La porte a donc été refondée sur ce qui est vrai **et attribuable** : un **témoin** publié par le rôle *sans* gouvernance et *sans* volet inbound répond **200 sur les deux canaux, sur le même listener, depuis le même appelant*. Sans lui, le 500 en clair et le 401 en HTTPS ne prouveraient rien de plus que l'existence d'un pare-feu quelque part.
+La porte a donc été refondée sur ce qui est vrai **et attribuable** : un **témoin** publié par le rôle *sans* gouvernance et *sans* volet inbound, appelé depuis le même appelant, sur le même listener. Sans lui, le 500 en clair et le 401 en HTTPS ne prouveraient rien de plus que l'existence d'un pare-feu quelque part.
+
+Et le témoin a lui-même livré un fait produit, qui complète exactement P5 :
+
+> **Une API importée porte DÉJÀ une action `entryProtocolPolicy`, et sa valeur par défaut est `http`.** Le témoin non gouverné répond donc 200 en clair et **500 « Transport protocol not supported » en TLS** — le miroir exact de l'API gouvernée. **Le protocole est une décision par API dans les DEUX sens, jamais une propriété du port.** Le harnais autorise ensuite explicitement le témoin en TLS — geste nommé, qui ne touche à aucune identité — pour qu'il puisse servir d'attribution au 401.
 
 Et le différentiel de cellule est mesuré **là où il est observable** — sur la règle elle-même : `external` exige la dimension réseau, `internal` ne l'exige pas. L'affirmer au plan de données, où les deux refusent pour la raison ci-dessus, aurait été un vert vacant.
 
