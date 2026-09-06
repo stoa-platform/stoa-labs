@@ -17,7 +17,7 @@ Le GOAL confiait à P7 une seule chose, et il l'avait écrite comme une menace :
 
 > **Contre-épreuve de tout le GOAL :** un producteur qui édite son manifeste pour se déclarer moins exposé et moins critique qu'il ne l'est obtient **exactement la même posture**. Sinon, les six jalons précédents ont produit de la documentation.
 
-Cette contre-épreuve-là passe (§4). Mais une porte de bout en bout qui se contente de vérifier ce qu'on lui a demandé de vérifier n'est pas une porte : c'est une récitation. En mesurant, sur la gateway réelle, **tout** ce qu'une API publiée par la chaîne porte réellement, on trouve autre chose.
+Cette contre-épreuve-là passe — voir « La porte de bout en bout ». Mais une porte de bout en bout qui se contente de vérifier ce qu'on lui a demandé de vérifier n'est pas une porte : c'est une récitation. En mesurant, sur la gateway réelle, **tout** ce qu'une API publiée par la chaîne porte réellement, on trouve autre chose.
 
 ## La prise du jalon : quatre dimensions appliquées, deux ignorées, zéro mot
 
@@ -51,7 +51,7 @@ La réponse ne pouvait donc pas être « poser la règle manquante ». Elle ne p
 
 La question n'est pas « qu'est-ce qui nous arrange ». C'est : **l'axe est-il gardé par quelque chose, oui ou non**.
 
-- `oauth2` **dégrade** : l'appelant est quand même **exigé** — par `jwtClaims`, signature seule, fusionnée dans la règle du stage IAM par P6. Le contrôle est plus faible que le bouquet ne l'exige ; il n'est pas absent. *(§6 mesure ce que « plus faible » veut dire ici, et la réponse surprend : la dégradation FERME l'API au lieu de la relâcher.)*
+- `oauth2` **dégrade** : l'appelant est quand même **exigé** — par `jwtClaims`, signature seule, fusionnée dans la règle du stage IAM par P6. Le contrôle est plus faible que le bouquet ne l'exige ; il n'est pas absent. *(La section « Le fait qui requalifie la dégradation `oauth2` » mesure ce que « plus faible » veut dire ici, et la réponse surprend : la dégradation FERME l'API au lieu de la relâcher.)*
 - `mtls` **refuse** : aucune mesure ne l'oppose. Le `clientAuth` du listener n'est pas éditable sur la 10.15 (P5 : `PUT` 200 sans persistance, alias `ssos` partout), et poser une identification par certificat que le listener ne réclame jamais **recréerait exactement le contrôle décoratif que P6 vient de supprimer**.
 - `threat-protection` **refuse** : `/policies` refuse de porter les actions correspondantes (HTTP 400 `NullPointerException`, deux filtres, deux portées — mesuré en P4) ; la seule surface qui les configure, `/administration/threatprotection`, est **gateway-wide** et ne peut donc pas différer d'une cellule à l'autre.
 
@@ -73,11 +73,11 @@ Avant ce jalon, elles se publiaient — en affichant une posture qu'elles n'avai
 
 1. **fournir le dispositif d'environnement** — un mTLS terminé en amont, un WAF pour `threat-protection` — et le déclarer, auquel cas la dimension quitte `apim_pub_posture_unopposed` pour rejoindre `apim_pub_posture_opposed_by` avec la tâche qui la vérifie ;
 2. **choisir une autre cellule** pour l'API concernée, ce qui est une décision de classification, prise au registre central, par la gouvernance de la donnée ;
-3. **assumer explicitement** la dégradation en basculant l'entrée en `mode: degrade` — geste visible, versionné, revu, et qu'une mutation de la matrice P7 surveille (§5).
+3. **assumer explicitement** la dégradation en basculant l'entrée en `mode: degrade` — geste visible, versionné, revu, et qu'une mutation de la matrice P7 surveille.
 
 La troisième existe parce qu'un client peut avoir raison contre nous ; elle est écrite pour qu'on ne puisse pas la prendre sans le dire.
 
-## 4. La porte de bout en bout, et la contre-épreuve du GOAL
+## La porte de bout en bout, et la contre-épreuve du GOAL
 
 `scripts/test-p7-bout-en-bout.sh` joue la chaîne **entière**, par **builds Jenkins réels**, sur les dépôts réels et la webMethods 10.15 réelle :
 
@@ -102,7 +102,7 @@ Trois combinaisons d'exposition × classification (`M/internal`, `M/external`, `
 La première écriture de cette section attendait qu'une API `external` **serve** un appelant dont l'IP est déclarée sur une application souscrite. Elle rend **401**, et pour deux raisons cumulées dont aucune n'est un défaut :
 
 - la règle d'identification de P6 a le connecteur **`AND`** : une cellule `external` exige `ipAddressRange` **en plus** de la dimension du volet inbound, elle ne la remplace pas ;
-- et cette dimension, en mode `jwt`, n'est résolue par personne (voir §6).
+- et cette dimension, en mode `jwt`, n'est résolue par personne — voir « Le fait qui requalifie la dégradation `oauth2` ».
 
 La porte a donc été refondée sur ce qui est vrai **et attribuable**, autour d'un **témoin** publié par le rôle *sans* gouvernance, appelé depuis le même appelant et sur le même listener :
 
@@ -125,7 +125,7 @@ Le GOAL demandait « se déclarer moins exposé et moins critique donne exacteme
 
 Réunies : *le manifeste ne décide pas*. Mentir vers le bas est refusé ; mentir vers le haut ne donne rien de plus. C'est la formulation exacte que le GOAL cherchait, et elle est plus forte que celle qu'il avait écrite.
 
-## 6. Le fait qui requalifie la dégradation `oauth2`
+## Le fait qui requalifie la dégradation `oauth2`
 
 Une API publiée par le formulaire est **fermée à tous**. Mesuré au plan de données avec un **jeton réel** de l'IdP du lab et une **application souscrite portant un identifiant de claim** qui matche ce jeton — `azp`, puis `iss`, puis `sub`, en `jwtClaims` puis en `openIdClaims` : **401 « Unauthorized application request » dans les quatre cas**, quand le témoin, lui, est servi 200 avec le même jeton.
 
@@ -133,13 +133,13 @@ Deux explications restent ouvertes : l'identifiant de claim est décoratif (l'id
 
 Conséquence sur la table : la dégradation `oauth2` **ne relâche rien, elle ferme**. Elle reste donc tolérable au sens de la sécurité — fail-closed — et doit être **dite** au sens de l'usage. C'est écrit dans sa `raison`, et la PR la porte. **L'entrée `oauth2` au formulaire (audience, scope, client_id) est le prochain travail utile de la chaîne producteur**, et il est désormais nommé au lieu d'être invisible.
 
-## 7. Deux défauts de plomberie, invisibles jusqu'ici
+## Deux défauts de plomberie, invisibles jusqu'ici
 
 `approvers.yml` envoyait un `PUT /apis/{id}` **enveloppé** — HTTP 400 « Both content stream and apiDefinition are empty ». Le défaut était **connu et contourné** : le harnais de P3 le nomme depuis le 2026-09-05 et publie sous une liste d'approbateurs vide pour l'éviter. Ce que P7 apporte est que la chaîne RÉELLE, elle, ne peut pas contourner — `providers.dev.yml` déclare des approbateurs pour l'équipe, et **aucune de ses publications n'aboutissait sur le produit**. Un contournement de harnais avait rendu invisible un blocage de production.
 
 Le corps corrigé passe (200), mais la relecture rend toujours `owner = "Administrator"` : **le champ n'est pas écrivable**, ce que la recherche du GOAL avait établi (décision client n°2). La projection devient donc **opt-in** (`apim_pub_approvers_project`, défaut `false`) et le rôle **dit** ce qu'il ne fait pas (`APPROVERS_NON_PROJETABLE`) ; la liste reste autoritative dans `providers.<env>.yml`.
 
-## 5. Ce que la matrice sait attraper (les mutations)
+## Ce que la matrice sait attraper (les mutations)
 
 | sabotage | ce qui tombe |
 |---|---|
@@ -172,4 +172,4 @@ Le **teardown** a été durci après ces deux passages (il ne porte aucune asser
 | Non-régression P5 | `bash scripts/test-p5-https.sh` | 54 / 0 |
 | Non-régression P6 | `bash scripts/test-p6-deny-by-default.sh` | 48 / 0 |
 
-*(P3, P4 et P5 publient désormais des cellules PUBLIABLES — voir §7 ; leur section d'AUTORITÉ continue d'interroger les dix cellules, y compris celles qu'on ne déploie pas : la table de vérité ne dépend pas du produit.)*
+*(P3, P4 et P5 publient désormais des cellules PUBLIABLES ; leur section d'AUTORITÉ continue d'interroger les dix cellules, y compris celles qu'on ne déploie pas : la table de vérité ne dépend pas du produit.)*
