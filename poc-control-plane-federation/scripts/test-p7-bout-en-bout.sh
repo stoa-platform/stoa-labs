@@ -393,6 +393,37 @@ for i in ids:
 PY
 }
 
+# ep_set <id> <valeurs> — bascule l'action transport de l'API hors du rôle.
+# Sert UNIQUEMENT au témoin : une API non gouvernée naît `http`-only (mesuré, cf.
+# B'2), donc elle ne peut pas servir de témoin sur le canal TLS tant qu'on ne l'y
+# a pas autorisée. Le PUT est ENVELOPPÉ (`{"policyAction": …}`) — la forme nue
+# n'écrit rien sur cette gateway.
+ep_set(){ python3 - "$WM_ADMIN" "$WM_USER" "$WM_PASS" "$1" "$2" <<'EPSET'
+import base64,json,sys,urllib.request,urllib.error
+gw,u,p,aid,vals=sys.argv[1:6]
+auth=base64.b64encode(f"{u}:{p}".encode()).decode()
+def call(m,path,body=None):
+    data=json.dumps(body).encode() if body is not None else None
+    r=urllib.request.Request(gw+path, data=data, method=m)
+    r.add_header("Authorization","Basic "+auth); r.add_header("Accept","application/json")
+    if data: r.add_header("Content-Type","application/json")
+    try:
+        with urllib.request.urlopen(r,timeout=30) as x: return x.status, json.loads(x.read().decode() or "{}")
+    except urllib.error.HTTPError as e: return e.code, {}
+rec=(call("GET",f"/apis/{aid}")[1].get("apiResponse") or {}).get("api",{})
+pols=[call("GET",f"/policies/{i}")[1].get("policy",{}) for i in rec.get("policies") or []]
+svc=next((x for x in pols if x.get("policyScope")=="SERVICE"), pols[0] if pols else {})
+ids=[e["enforcementObjectId"] for st in svc.get("policyEnforcements") or []
+     if st.get("stageKey")=="transport" for e in st.get("enforcements") or []]
+for i in ids:
+    a=call("GET",f"/policyActions/{i}")[1].get("policyAction",{})
+    if a.get("templateKey")=="entryProtocolPolicy":
+        for q in a.get("parameters") or []:
+            if q.get("templateKey")=="protocol": q["values"]=vals.split(",")
+        print(call("PUT",f"/policyActions/{i}",{"policyAction":a})[0]); break
+EPSET
+}
+
 # Les dimensions d'identification EXIGÉES par l'API, relues hors du rôle.
 iam_of(){ python3 - "$WM_ADMIN" "$WM_USER" "$WM_PASS" "$1" <<'PY'
 import base64,json,sys,urllib.request,urllib.error
@@ -820,11 +851,31 @@ else
   tail -6 "$TMP/temoin.log" | sed 's/^/       /'
 fi
 dp_wait clair "$API_T" 1.0.0 /ping 25 >/dev/null 2>&1
+ID_T=$(api_id "$API_T")
+EP_T=$(ep_of "$ID_T")
 T_CLEAR=$(dp_code clair "$API_T" 1.0.0 /ping); T_TLS=$(dp_code https "$API_T" 1.0.0 /ping)
-mes "témoin : clair=$T_CLEAR  https=$T_TLS"
-{ [ "$T_CLEAR" = "200" ] && [ "$T_TLS" = "200" ]; } \
-  && ok "B'2 le témoin est SERVI sur les DEUX canaux — ni le port, ni le listener ne refusent quoi que ce soit" \
-  || ko "B'2 témoin clair=$T_CLEAR https=$T_TLS (attendu 200/200) — l'attribution des refus est perdue"
+mes "témoin : entryProtocolPolicy=[${EP_T:-(aucune)}] clair=$T_CLEAR https=$T_TLS"
+# FAIT PRODUIT MESURÉ ICI, et il complète exactement P5 : une API importée porte
+# DÉJÀ une action `entryProtocolPolicy`, et sa valeur par défaut est `http`. Le
+# protocole est donc une décision PAR API **dans les deux sens** — la gouvernée
+# refuse le clair, la NON gouvernée refuse le TLS — et jamais une propriété du
+# port. Un listener n'a jamais servi ni protégé personne tout seul.
+[ "$T_CLEAR" = "200" ] \
+  && ok "B'2 le témoin non gouverné est SERVI en clair — ce canal ne refuse rien de lui-même" \
+  || ko "B'2 témoin en clair = $T_CLEAR (attendu 200) — l'attribution du refus de B'3 est perdue"
+{ [ "$EP_T" = "http" ] && [ "$T_TLS" != "200" ]; } \
+  && ok "B'2b FAIT — une API importée naît http-only (entryProtocolPolicy=[http]) et REFUSE le TLS ($T_TLS) : le protocole est une décision par API dans les DEUX sens" \
+  || ko "B'2b témoin : ep=[$EP_T] https=$T_TLS — le défaut du produit n'est plus celui qui est documenté ici"
+# Pour que le témoin serve d'attribution sur le canal TLS, on l'y AUTORISE
+# explicitement — geste de harnais, nommé, qui ne touche à aucune identité : le
+# témoin reste SANS règle d'identification, ce qui est tout son intérêt.
+ep_set "$ID_T" https >/dev/null 2>&1
+dp_wait https "$API_T" 1.0.0 /ping 25 >/dev/null 2>&1
+T_TLS2=$(dp_code https "$API_T" 1.0.0 /ping)
+mes "témoin autorisé en TLS : https=$T_TLS2"
+[ "$T_TLS2" = "200" ] \
+  && ok "B'2c le témoin, autorisé en TLS et SANS règle d'identification, est SERVI (200) sur le listener d'environnement" \
+  || ko "B'2c témoin en TLS = $T_TLS2 (attendu 200) — l'attribution du refus de B'5 est perdue"
 
 # ── LE PROTOCOLE : la MÊME requête, sur le MÊME port que le témoin
 C_CLEAR=$(dp_code clair "$API_MI" 1.0.0 /ping)
