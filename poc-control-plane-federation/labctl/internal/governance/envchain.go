@@ -2,8 +2,10 @@ package governance
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"sigs.k8s.io/yaml"
@@ -65,10 +67,72 @@ type envChainFile struct {
 	Gates        []Gate   `json:"gates"`
 }
 
+// chainRootKeys and chainGateKeys are the ONLY keys this document may carry.
+// They mirror ALLOWED/root of env_chain_validate (scripts/lib/env-chain.sh) and
+// are matched CASE-SENSITIVELY on purpose: `Gates:` and `fourEye:` are the two
+// faults that used to pass. Neither UnmarshalStrict nor DisallowUnknownFields
+// helps — both are case-INSENSITIVE (measured 2026-09-06), which is exactly how
+// `FourEyes: true` silently became FourEyes=true while the shell readers saw no
+// gate at all.
+var (
+	chainRootKeys = map[string]bool{"environments": true, "gates": true}
+	chainGateKeys = map[string]bool{
+		"to": true, "selfApproval": true, "approverGroup": true, "fourEyes": true,
+		"requireChangeRef": true, "requirePVRef": true, "itsmCheck": true, "deployerGroup": true,
+	}
+	envNameRe   = regexp.MustCompile(`^[a-z0-9]+$`)
+	groupNameRe = regexp.MustCompile(`^[A-Za-z0-9._-]*$`)
+)
+
 // ParseEnvChain decodes and validates an environments.yaml document.
 // Fail-closed: a present-but-broken chain config is an error, never a silent
-// fallback to the default.
+// fallback to the default. The rules below are the shell's, ported verbatim —
+// TestParseEnvChainMirror runs BOTH engines over one table and also compares
+// what the shell READERS see, because the worst faults are invisible to the
+// validator alone.
 func ParseEnvChain(raw []byte) (EnvChain, error) {
+	// Strict: rejects a duplicated root key, which neither engine used to see.
+	js, err := yaml.YAMLToJSONStrict(raw)
+	if err != nil {
+		return EnvChain{}, fmt.Errorf("parse %s: %w", EnvChainPath, err)
+	}
+	var rootKeys map[string]json.RawMessage
+	if err := json.Unmarshal(js, &rootKeys); err != nil {
+		return EnvChain{}, fmt.Errorf("%s: document racine : mapping attendu (%w)", EnvChainPath, err)
+	}
+	for k := range rootKeys {
+		if !chainRootKeys[k] {
+			return EnvChain{}, fmt.Errorf("%s: clé racine inconnue %q (attendu : environments, gates) — la casse compte", EnvChainPath, k)
+		}
+	}
+	// Le TYPE, pas seulement la forme : sigs.k8s.io/yaml coerce `3` en "3", qui
+	// passerait ^[a-z0-9]+$. Le shell refuse (isinstance(e, str)) — on refuse
+	// aussi, sur la valeur JSON brute.
+	if rawEnvs, ok := rootKeys["environments"]; ok {
+		var es []json.RawMessage
+		if err := json.Unmarshal(rawEnvs, &es); err != nil {
+			return EnvChain{}, fmt.Errorf("%s: 'environments' : liste attendue (%w)", EnvChainPath, err)
+		}
+		for _, e := range es {
+			if len(e) == 0 || e[0] != '"' {
+				return EnvChain{}, fmt.Errorf("%s: environnement %s : chaîne attendue", EnvChainPath, string(e))
+			}
+		}
+	}
+	if rawGates, ok := rootKeys["gates"]; ok && string(rawGates) != "null" {
+		var gs []map[string]json.RawMessage
+		if err := json.Unmarshal(rawGates, &gs); err != nil {
+			return EnvChain{}, fmt.Errorf("%s: 'gates' : liste attendue (%w)", EnvChainPath, err)
+		}
+		for i, g := range gs {
+			for k := range g {
+				if !chainGateKeys[k] {
+					return EnvChain{}, fmt.Errorf("%s: gates[%d] : clé inconnue %q — la casse compte", EnvChainPath, i, k)
+				}
+			}
+		}
+	}
+
 	var f envChainFile
 	if err := yaml.Unmarshal(raw, &f); err != nil {
 		return EnvChain{}, fmt.Errorf("parse %s: %w", EnvChainPath, err)
@@ -78,8 +142,8 @@ func ParseEnvChain(raw []byte) (EnvChain, error) {
 	}
 	seen := map[string]bool{}
 	for _, e := range f.Environments {
-		if e == "" {
-			return EnvChain{}, fmt.Errorf("%s: empty environment name", EnvChainPath)
+		if !envNameRe.MatchString(e) {
+			return EnvChain{}, fmt.Errorf("%s: environnement %q hors de [a-z0-9]+", EnvChainPath, e)
 		}
 		if seen[e] {
 			return EnvChain{}, fmt.Errorf("%s: duplicate environment %q", EnvChainPath, e)
@@ -93,6 +157,12 @@ func ParseEnvChain(raw []byte) (EnvChain, error) {
 		}
 		if _, dup := gates[g.To]; dup {
 			return EnvChain{}, fmt.Errorf("%s: duplicate gate for environment %q", EnvChainPath, g.To)
+		}
+		if !groupNameRe.MatchString(g.ApproverGroup) {
+			return EnvChain{}, fmt.Errorf("%s: porte %q : approverGroup hors de [A-Za-z0-9._-] (%q)", EnvChainPath, g.To, g.ApproverGroup)
+		}
+		if !groupNameRe.MatchString(g.DeployerGroup) {
+			return EnvChain{}, fmt.Errorf("%s: porte %q : deployerGroup hors de [A-Za-z0-9._-] (%q)", EnvChainPath, g.To, g.DeployerGroup)
 		}
 		gates[g.To] = g
 	}

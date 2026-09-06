@@ -497,14 +497,24 @@ NADUP=$(grep -c 'ENVN=' "$TMP/ta_dup_nc")
 [ "$NADUP" -eq 2 ] \
   && ok "⑫(b) repassage réinjecté ⇒ compte 2 : le détecteur d'unicité de ⑪quater le verrait" \
   || bad "⑫(b) le compte reste $NADUP — l'assertion d'unicité de ⑪quater est vacante"
-# (c) LA raison d'être de nc_strict, prouvée sur le fichier réel : le
-# décommenteur naïf tronque la dérivation au `#` de ${PR_BRANCH#onboard/} et
-# fait perdre UNE ligne au compte. Écrit ⑪quater avec lui, l'unicité passait au
-# vert même avec le câblage mort en place.
-sed 's/[[:space:]]*#.*$//' scripts/team-apply.sh > "$TMP/ta_naif"
-[ "$(grep -c 'ENVN=' "$TMP/ta_naif")" -lt "$NTA" ] \
-  && ok "⑫(c) le décommenteur naïf perd bien la dérivation (# d'expansion) — nc_strict n'est pas un caprice de style" \
-  || bad "⑫(c) le décommenteur naïf ne perd rien ici — vérifier l'hypothèse qui motive nc_strict"
+# (c) LA raison d'être de nc_strict. RÉANCRÉ le 2026-09-06 : cette épreuve
+# lisait le fichier RÉEL, où `REST="${PR_BRANCH#onboard/}"; ENVN="${REST##*-}"`
+# portait sur UNE ligne à la fois une expansion `#` et un jeton compté — le
+# décommenteur naïf tronquait au `#` et perdait le `ENVN=`. Le découpage est
+# passé dans scripts/lib/branch-ref.sh (D8) : le témoin a disparu parce que le
+# code s'est amélioré, pas parce que le piège n'existe plus.
+#
+# On cesse donc de dépendre de la forme incidente d'un fichier et on prouve la
+# propriété sur une CONSTRUCTION — même patron que ⑫(b) juste au-dessus, qui
+# réinjecte déjà sa propre ligne. La ligne ci-dessous est exactement celle que
+# le dépôt écrivait hier.
+cp scripts/team-apply.sh "$TMP/ta_piege"
+printf 'REST="${PR_BRANCH#onboard/}"; ENVN="${REST##*-}"\n' >> "$TMP/ta_piege"
+NPIEGE=$(grep -c 'ENVN=' "$TMP/ta_piege")
+[ "$(sed 's/[[:space:]]*#.*$//' "$TMP/ta_piege" | grep -c 'ENVN=')" -lt "$NPIEGE" ] \
+  && [ "$(nc_strict "$TMP/ta_piege" | grep -c 'ENVN=')" -eq "$NPIEGE" ] \
+  && ok "⑫(c) sur une ligne portant une expansion # ET le jeton : le décommenteur naïf en perd une, nc_strict non — nc_strict n'est pas un caprice de style" \
+  || bad "⑫(c) le décommenteur naïf ne perd rien sur le piège construit — vérifier l'hypothèse qui motive nc_strict"
 
 echo "== ⑰ le formulaire team-request n'a plus d'axe env (Jenkinsfile ET XML) =="
 # Détecteur FACTORISÉ de ⑨a (jf_axe_verdict), appelé sur l'axe REQ_ENV : la

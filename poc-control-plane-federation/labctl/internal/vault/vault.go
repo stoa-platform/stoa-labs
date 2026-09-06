@@ -62,7 +62,7 @@ func FromEnv() (*Client, bool) {
 		roleID:   strings.TrimSpace(os.Getenv("VAULT_ROLE_ID")),
 		secretID: resolveSecretID(),
 		mount:    envOr("VAULT_KV_MOUNT", "secret"),
-		prefix:   envOr("VAULT_PREFIX", "stoa"),
+		prefix:   prefixFromEnv(),
 		hc:       httpx.NewClientCA(boolEnv("VAULT_INSECURE"), envOr("VAULT_CACERT", os.Getenv("LABCTL_CA_FILE"))),
 	}, true
 }
@@ -132,7 +132,7 @@ func (c *Client) ensureToken(ctx context.Context) (string, error) {
 // A transport or auth failure (Vault unreachable, 403) IS an error (fail closed:
 // a configured-but-broken Vault must surface, not silently fall back).
 func (c *Client) ReadKV(ctx context.Context, sub string) (map[string]string, error) {
-	url := fmt.Sprintf("%s/v1/%s/data/%s/%s", c.addr, c.mount, c.prefix, strings.Trim(sub, "/"))
+	url := c.addr + "/v1/" + KVDataPath(c.mount, c.prefix, sub)
 	var out struct {
 		Data struct {
 			Data map[string]string `json:"data"`
@@ -198,4 +198,34 @@ func boolEnv(key string) bool {
 	default:
 		return false
 	}
+}
+
+// KVDataPath composes the KV v2 read path "<mount>/data[/<prefix>]/<sub>".
+//
+// An EMPTY segment is ELIDED, never concatenated: `<prefix>` empty used to
+// produce "secret/data//envs/dev/x" — a 301 then a 404. That is not a corner
+// case, it is the measured client layout (per-palier mount, flat entries, no
+// prefix). The Ansible role and the shell have always elided; only Go did not.
+// Mirror: scripts/lib/vault-kv.sh (kv_data_path), held to one table by
+// TestKVDataPathMirror.
+func KVDataPath(mount, prefix, sub string) string {
+	p := strings.Trim(mount, "/") + "/data"
+	if s := strings.Trim(prefix, "/"); s != "" {
+		p += "/" + s
+	}
+	if s := strings.Trim(sub, "/"); s != "" {
+		p += "/" + s
+	}
+	return p
+}
+
+// prefixFromEnv distinguishes VAULT_PREFIX ABSENT from VAULT_PREFIX EXPLICITLY
+// EMPTY. envOr collapses the two and returned "stoa" for both — so the flat
+// layout (per-palier mount, no prefix) was INEXPRESSIBLE, whatever the client
+// set. Absent keeps the historical default; empty means flat.
+func prefixFromEnv() string {
+	if v, ok := os.LookupEnv("VAULT_PREFIX"); ok {
+		return strings.TrimSpace(v)
+	}
+	return "stoa"
 }

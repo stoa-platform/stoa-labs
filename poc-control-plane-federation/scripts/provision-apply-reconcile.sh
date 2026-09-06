@@ -100,6 +100,8 @@ MANIFEST_DIR="${MANIFEST_DIR:-clients/provisioned/applications}"
 
 # shellcheck source=scripts/lib/app-manifest.sh
 . "$SELF_DIR/lib/app-manifest.sh" || { echo "ERREUR: $SELF_DIR/lib/app-manifest.sh introuvable" >&2; exit 1; }
+# shellcheck source=scripts/lib/branch-ref.sh
+. "$SELF_DIR/lib/branch-ref.sh" || { echo "ERREUR: $SELF_DIR/lib/branch-ref.sh introuvable" >&2; exit 1; }
 
 APP_NAME=""; ENV_NAME=""; GITEA_HEAD_REF=""
 rm -f "$RECONCILE_OUT"
@@ -143,16 +145,18 @@ case "$PR_BRANCH" in
   *) fail BRANCH_FORMAT_INVALIDE "PR_BRANCH hors provision/<app>-<env> (valeur : $(shown "$PR_BRANCH")) — pas une demande d'application" ;;
 esac
 REST="${PR_BRANCH#provision/}"
-# Découpage au DERNIER tiret (le motif du Groovy d'origine et de team-apply.sh) :
-# `credit-scoring-rec` ⇒ app `credit-scoring`, env `rec`.
-case "$REST" in
-  *-*) ENV_NAME="${REST##*-}"; APP_NAME="${REST%-*}" ;;
-  *) fail BRANCH_FORMAT_INVALIDE "PR_BRANCH sans suffixe -<env> (valeur : $(shown "$PR_BRANCH"))" ;;
+# Découpage au DERNIER tiret (`credit-scoring-rec` ⇒ app `credit-scoring`, env
+# `rec`) — désormais dans scripts/lib/branch-ref.sh, une seule fois pour les
+# sept sites qui le réécrivaient (D8). Les codes de refus sont INCHANGÉS : ce
+# fichier faisait déjà foi, il cesse seulement de porter la règle en propre.
+BR_RC=0; BR_OUT="$(branch_split "$PR_BRANCH" "provision/")" || BR_RC=$?
+case "$BR_RC" in
+  0) APP_NAME="${BR_OUT% *}"; ENV_NAME="${BR_OUT##* }" ;;
+  2) APP_NAME=""; ENV_NAME=""; fail BRANCH_FORMAT_INVALIDE "PR_BRANCH sans suffixe -<env> (valeur : $(shown "$PR_BRANCH"))" ;;
+  3) APP_NAME=""; ENV_NAME=""; fail BRANCH_FORMAT_INVALIDE "nom d'application hors de ^[a-z0-9][a-z0-9-]*$ (valeur : $(shown "${REST%-*}"))" ;;
+  4) APP_NAME=""; ENV_NAME=""; fail BRANCH_FORMAT_INVALIDE "palier hors de ^[a-z0-9]+$ (valeur : $(shown "${REST##*-}"))" ;;
+  *) APP_NAME=""; ENV_NAME=""; fail BRANCH_FORMAT_INVALIDE "PR_BRANCH hors provision/<app>-<env> (valeur : $(shown "$PR_BRANCH"))" ;;
 esac
-printf '%s' "$APP_NAME" | grep -Eq '^[a-z0-9][a-z0-9-]*$' \
-  || { APP_NAME=""; ENV_NAME=""; fail BRANCH_FORMAT_INVALIDE "nom d'application hors de ^[a-z0-9][a-z0-9-]*$ (valeur : $(shown "${REST%-*}"))"; }
-printf '%s' "$ENV_NAME" | grep -Eq '^[a-z0-9]+$' \
-  || { APP_NAME=""; ENV_NAME=""; fail BRANCH_FORMAT_INVALIDE "palier hors de ^[a-z0-9]+$ (valeur : $(shown "${REST##*-}"))"; }
 # Sans point ni slash possible dans APP_NAME (classe ci-dessus) : le chemin du
 # manifeste ne peut pas sortir de MANIFEST_DIR.
 MANIFEST="${MANIFEST_DIR}/${APP_NAME}.ansible.yml"

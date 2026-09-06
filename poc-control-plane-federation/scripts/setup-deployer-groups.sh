@@ -266,6 +266,10 @@ read_back_group() {   # read_back_group <palier> <cn> <uid attendu>…
 }
 
 # ── Dérivation de la chaîne ──────────────────────────────────────────────────
+# La chaîne est validée avant d'être lue (les lecteurs sont laxistes ; cf.
+# scripts/lib/env-chain.sh). Ce script POSE des groupes déployeurs à partir des
+# portes : les poser depuis une chaîne non validée les poserait de travers.
+env_chain_validate || { echo "CHAINE_INVALIDE : environments.yaml ne respecte pas le contrat (détail sur stderr)" >&2; exit 1; }
 ENVS_NONPROD="$(env_chain_nonprod)" || { echo "CHAINE_ILLISIBLE : env_chain_nonprod a échoué" >&2; exit 1; }
 [ -n "$ENVS_NONPROD" ] || { echo "CHAINE_VIDE : aucun palier non terminal" >&2; exit 1; }
 

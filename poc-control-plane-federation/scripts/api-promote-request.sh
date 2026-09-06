@@ -69,6 +69,13 @@ esac
 # ── Garde 1 : LA CHAÎNE ─────────────────────────────────────────────────────
 # TO_ENV doit être le SUIVANT de FROM_ENV dans environments.yaml. L'ordre de la
 # liste EST la chaîne : un saut dev -> prod n'est pas exprimable.
+# LA CHAÎNE EST VALIDÉE AVANT D'ÊTRE LUE. Sans cela, les lecteurs
+# (`env_chain_gate*`) sont LAXISTES par construction : une clé de porte mal
+# orthographiée, un booléen en chaîne, une porte vers un palier non déclaré
+# passent en silence — et `fourEyes`/`itsmCheck` se lisent alors à 0. Mesuré le
+# 2026-09-06 : `Gates:` (une majuscule) faisait disparaître la porte ICI tout en
+# la faisant APPLIQUER côté Go. La validation est le seul endroit qui refuse.
+env_chain_validate || fail "CHAINE_INVALIDE : environments.yaml ne respecte pas le contrat de la chaîne (voir le détail sur stderr)"
 CHAIN="$(env_chain)" || fail "CHAINE_ILLISIBLE : environments.yaml absent, vide ou cassé"
 NEXT=""
 PREV=""

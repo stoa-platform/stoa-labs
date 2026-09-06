@@ -321,10 +321,27 @@ PY
 #   sémantique EXACTE du rôle (resolve-env.yml : `combine(recursive=True)` —
 #   mappings fusionnés récursivement, listes et scalaires REMPLACÉS) — tel que
 #   RELU par la lib (BaseLoader : aucun typage), `sort_keys`, séparateurs
-#   compacts, UTF-8. Deux manifestes qui ne diffèrent que par l'ordre des clés,
-#   les guillemets ou les espaces ⇒ même digest : il répond à « qu'est-ce qui
-#   tourne en <env> ? » (A2), pas à « quels octets ? » (ça, c'est le SHA de
-#   merge). Il couvre la racine (une édition manuelle d'`enforce`, de la
+#   compacts, UTF-8. Deux manifestes qui ne diffèrent que par l'ordre des clés
+#   ou les espaces ⇒ même digest : il répond à « qu'est-ce qui tourne en
+#   <env> ? » (A2), pas à « quels octets ? » (ça, c'est le SHA de merge).
+#
+#   ⚠ LIMITE MESURÉE LE 2026-09-06 — ce commentaire disait « les guillemets »
+#   dans la liste ci-dessus, et c'était FAUX : un guillemet qui change le TYPAGE
+#   YAML change ce qui tourne. Reproduit :
+#
+#       per_env.rec.strip_auth:  no   vs   "no"
+#       digest  : IDENTIQUE  (BaseLoader lit la chaîne 'no' des deux côtés)
+#       Ansible : False      vs   'no'     ← ce qui est RÉELLEMENT appliqué
+#
+#   La garde d'intégrité peut donc valider autre chose que ce qui sera posé.
+#   Le BaseLoader reste JUSTIFIÉ pour app_manifest_read/check_contract (comparer
+#   des identifiants ÉCRITS : `api_version: 1.10` relu 1.1 rendait un
+#   CONTRAT_DIVERGENT mensonger) — il ne l'est pas pour le digest, qui répond à
+#   une autre question. Le digest ne couvre NI le typage YAML implicite NI le
+#   rendu Jinja. Arbitrage ouvert (aligner le chargeur / ajouter une garde de
+#   forme à l'écriture / assumer la limite) — il appartient au porteur du GOAL.
+#
+#   Il couvre la racine (une édition manuelle d'`enforce`, de la
 #   description ou de l'audience change ce qui tourne — critique de la spec
 #   2026-09-02) et le SEUL palier demandé (un autre palier ne le change pas).
 #   Refus : PALIER_INVALIDE (clé hors classe, avant toute lecture),

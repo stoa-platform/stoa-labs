@@ -22,6 +22,8 @@
 set -uo pipefail
 # shellcheck source=scripts/lib/forge-identity.sh
 . scripts/lib/forge-identity.sh || { echo "ERREUR: scripts/lib/forge-identity.sh introuvable ou illisible" >&2; exit 1; }
+# shellcheck source=scripts/lib/branch-ref.sh
+. scripts/lib/branch-ref.sh || { echo "ERREUR: scripts/lib/branch-ref.sh introuvable ou illisible" >&2; exit 1; }
 set +x   # jamais de trace : le token ne doit pas fuiter
 cd "$(dirname "$0")/.." || exit 1
 
@@ -93,7 +95,11 @@ PY
 
 # ── 1. équipe et env depuis la branche ; anti-TOCTOU sur le contenu ──────────
 case "$PR_BRANCH" in onboard/*) ;; *) echo "hors onboard/* — rien à faire"; exit 0;; esac
-REST="${PR_BRANCH#onboard/}"; ENVN="${REST##*-}"; TEAM="${REST%-*}"
+# Même découpage que les six autres sites, une seule implémentation (D8) — et
+# ce site-ci n'avait AUCUNE classe : une branche malformée y passait entière.
+BR_RC=0; BR_OUT="$(branch_split "$PR_BRANCH" "onboard/")" || BR_RC=$?
+[ "$BR_RC" = 0 ] || fail "BRANCH_FORMAT_INVALIDE : '$PR_BRANCH' hors onboard/<equipe>-<palier> (equipe ^[a-z0-9][a-z0-9-]*$, palier ^[a-z0-9]+$)"
+TEAM="${BR_OUT% *}"; ENVN="${BR_OUT##* }"
 # G4 (ADR-082, D5) : la branche onboard/<team>-<env> porte l'env par
 # CONSTRUCTION (team-request le scelle sur la même constante) — un suffixe
 # étranger n'est donc pas un palier fermé qu'on refuserait d'ouvrir, c'est une

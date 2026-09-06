@@ -457,7 +457,7 @@ pipeline {
               GATE_DIR="$WORKSPACE/.a3-gate"; rm -rf "$GATE_DIR"
               PFX="$(git rev-parse --show-prefix)"
               git fetch -q origin main
-              for f in scripts/selfservice-palier-gate.sh scripts/lib/env-chain.sh clients/_example/environments.yaml; do
+              for f in scripts/selfservice-palier-gate.sh scripts/lib/env-chain.sh scripts/lib/vault-kv.sh clients/_example/environments.yaml; do
                 mkdir -p "$GATE_DIR/$(dirname "$f")"
                 git show "origin/main:${PFX}${f}" > "$GATE_DIR/$f" 2>/dev/null \
                   || { echo "REFUS: GATE_ABSENTE : ${PFX}${f} absent de origin/main — la garde du palier vient de la lignée de la définition du pipeline, jamais de l'arbre pinné ; rien n'est appliqué"; exit 1; }

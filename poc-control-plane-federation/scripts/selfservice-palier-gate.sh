@@ -94,8 +94,11 @@ sub_env(){ printf '%s' "$1" | sed "s/__ENV__/${ENVIRONMENT}/g"; }
 WM_SUB="$(sub_env "$APIM_WM_CREDS_SUB_TPL")"; OAUTH_SUB="$(sub_env "$APIM_OAUTH_SUB_TPL")"
 # Le chemin KV effectif est composé EXACTEMENT comme le rôle
 # (apim_common/tasks/secrets.yml : `[prefix, sub] | select | join('/')` — les
-# segments vides sont élidés).
-kv_data_path(){ local p="${APIM_KV_MOUNT}/data"; [ -n "$APIM_KV_PREFIX" ] && p="${p}/${APIM_KV_PREFIX}"; printf '%s/%s' "$p" "$1"; }
+# segments vides sont élidés). La composition vit désormais dans la lib : elle
+# existait à QUATRE endroits et le moteur Go était faux sur le cas client
+# (entrées à plat). Contrat tenu par labctl/internal/vault/kvpath_mirror_test.go.
+# shellcheck source=scripts/lib/vault-kv.sh
+. "$SELF_DIR/lib/vault-kv.sh" || refus LIB_ABSENTE "$SELF_DIR/lib/vault-kv.sh introuvable ou illisible"
 TICKET_PATH="$(kv_data_path "$WM_SUB")"
 
 # ── 1. LA VOIE, par POSITION ─────────────────────────────────────────────────

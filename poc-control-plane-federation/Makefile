@@ -97,7 +97,7 @@ lint-ci:
 	@# main, sa syntaxe se relit à chaque passage.
 	@echo "== [2/17] shellcheck des bibliothèques shell (ci/lib + livrables G2..G8, A1..A7, P2, P5, P6)"
 	@command -v shellcheck >/dev/null || { echo "!! shellcheck absent — \`brew install shellcheck\`"; exit 2; }
-	@shellcheck -x ci/lib/*.sh scripts/lib/deploy-pin.sh scripts/lib/env-chain.sh \
+	@shellcheck -x ci/lib/*.sh scripts/lib/deploy-pin.sh scripts/lib/env-chain.sh scripts/lib/branch-ref.sh scripts/lib/vault-kv.sh \
 	  scripts/lib/repo-protection.sh scripts/lib/archive-store.sh \
 	  scripts/lib/promote-manifest.sh scripts/test-promote-sans-recopie.sh \
 	  scripts/lib/assert-merge-identity.sh scripts/lib/app-manifest.sh \

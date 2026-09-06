@@ -352,7 +352,7 @@ mutant(){ # <sed-expr> <nom> → $TMP/<nom>.sh ; rc 0 si le mutant diffère et p
   return 0
 }
 # le mutant s'exécute depuis le dossier scripts/ pour retrouver lib/env-chain.sh
-mkdir -p "$TMP/mut/scripts/lib"; cp scripts/lib/env-chain.sh "$TMP/mut/scripts/lib/"
+mkdir -p "$TMP/mut/scripts/lib"; cp scripts/lib/env-chain.sh scripts/lib/vault-kv.sh "$TMP/mut/scripts/lib/"
 run_mut(){ local m="$1"; shift; cp "$TMP/$m.sh" "$TMP/mut/scripts/gate.sh"; GATE_BIN="$TMP/mut/scripts/gate.sh" run_gate "$@"; }
 set_ctl "$CTL_OK"
 if mutant 's@^\[ "\$TC" = 200 \] \|\| refus PALIER_FERME.*$@: # ticket retiré@' m_ticket; then
@@ -513,7 +513,7 @@ jf "APIM_TERMINUS_BASE = \"\${env.APIM_TERMINUS_BASE ?: ''}\"" && ok "B.4 APIM_T
 grep -q 'cut -d/ -f2' "$TMP/jf.code" && bad "B.5 la dérivation de TEAM par le chemin du credential subsiste" || ok "B.5 plus de dérivation de TEAM par cut -d/ -f2"
 L_LOGIN=$(code_line "$TMP/jf.code" 'RC=0; vault_login_nominative || RC=$?')
 L_FETCH=$(line_after "${L_LOGIN:-0}" 'git fetch -q origin main' "$TMP/jf.code")
-L_FOR=$(line_after "${L_LOGIN:-0}" 'for f in scripts/selfservice-palier-gate.sh scripts/lib/env-chain.sh clients/_example/environments.yaml; do' "$TMP/jf.code")
+L_FOR=$(line_after "${L_LOGIN:-0}" 'for f in scripts/selfservice-palier-gate.sh scripts/lib/env-chain.sh scripts/lib/vault-kv.sh clients/_example/environments.yaml; do' "$TMP/jf.code")
 L_SHOW=$(line_after "${L_LOGIN:-0}" 'git show "origin/main:${PFX}${f}"' "$TMP/jf.code")
 L_ABS=$(line_after "${L_LOGIN:-0}" 'REFUS: GATE_ABSENTE' "$TMP/jf.code")
 L_GATE=$(line_after "${L_LOGIN:-0}" 'bash "$GATE_DIR/scripts/selfservice-palier-gate.sh"' "$TMP/jf.code")

@@ -130,7 +130,27 @@ echo "  manifeste : $MAN"
 # shellcheck source=scripts/lib/env-chain.sh
 . "$SELF_DIR/lib/env-chain.sh" || refus LIB_ABSENTE "$SELF_DIR/lib/env-chain.sh introuvable ou illisible"
 CHAIN_NONPROD="$(env_chain_nonprod)" || refus CHAINE_ILLISIBLE "env_chain_nonprod en echec"
-ENVV="${PR_BRANCH##*-}"; case " $CHAIN_NONPROD " in *" $ENVV "*) ;; *) ENVV="";; esac
+# Le découpage vient de la lib, plus d'une expression locale : sept sites en
+# avaient quatre comportements (D8, 2026-09-06). Contrat tenu par la table de
+# labctl/internal/governance/branchref_mirror_test.go.
+# shellcheck source=scripts/lib/branch-ref.sh
+. "$SELF_DIR/lib/branch-ref.sh" || refus LIB_ABSENTE "$SELF_DIR/lib/branch-ref.sh introuvable ou illisible"
+BR_RC=0; BR_OUT="$(branch_split "$PR_BRANCH" "provision/")" || BR_RC=$?
+case "$BR_RC" in
+  0) ;;
+  1) refus BRANCHE_HORS_PERIMETRE "'$PR_BRANCH' ne commence pas par provision/ — ce n'est pas une demande d'application" ;;
+  *) refus BRANCH_FORMAT_INVALIDE "'$PR_BRANCH' hors provision/<app>-<palier> (app ^[a-z0-9][a-z0-9-]*\$, palier ^[a-z0-9]+\$)" ;;
+esac
+ENVV="${BR_OUT##* }"
+# ⚠ CE REFUS REMPLACE UN BLANCHIMENT SILENCIEUX (D8). Avant : un palier hors
+# chaîne hors-prod vidait ENVV, et `${ENVV:+-e apim_ss_env=…}` faisait
+# DISPARAÎTRE l'extra-var — le plan présenté au demandeur portait alors sur le
+# palier par défaut du rôle, pas sur celui que sa branche nomme. Un plan qui
+# répond à une autre question que celle posée est pire que pas de plan.
+case " $CHAIN_NONPROD " in
+  *" $ENVV "*) ;;
+  *) refus PALIER_HORS_CHAINE "le palier '$ENVV' (branche '$PR_BRANCH') n'est pas un palier hors-prod de la chaîne ($CHAIN_NONPROD) — le terminus se sert par sa propre voie (A7), et un palier inconnu ne se planifie pas en silence" ;;
+esac
 
 echo "[3/4] PLAN (lecture seule) sur $MAN"
 PLAN_LOG="$WORK/plan.log"; VERDICT="ok"

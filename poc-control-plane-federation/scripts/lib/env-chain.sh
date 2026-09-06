@@ -222,6 +222,16 @@ except Exception as e:
     bad("YAML illisible (%s)" % type(e).__name__)
 if not isinstance(d, dict):
     bad("document racine : mapping attendu")
+# LE FAIL-OPEN DU LOT, mesure le 2026-09-06 : `Gates:` (une majuscule) passait
+# ICI, disparaissait des LECTEURS (env_chain_gate* ne voit plus aucune porte)
+# et etait APPLIQUE par le Go. Le meme fichier, quatre-yeux + ITSM opposes d'un
+# cote et absents de l'autre, declare valide. La casse compte, a la racine
+# aussi. C'est ce controle qui rend vraie la phrase de l'en-tete de ce fichier.
+ROOT = ("environments", "gates")
+unknown_root = sorted(str(k) for k in d if k not in ROOT)
+if unknown_root:
+    bad("cle(s) racine inconnue(s) %s (attendu : %s) — la casse compte"
+        % (", ".join(unknown_root), ", ".join(ROOT)))
 envs = d.get("environments")
 if not isinstance(envs, list) or not envs:
     bad("'environments' absent ou vide")
@@ -256,8 +266,11 @@ for i, g in enumerate(gates):
     for k in BOOLS:
         if k in g and not isinstance(g[k], bool):
             bad("porte '%s' : %s doit etre un booleen YAML (true/false), pas %r" % (to, k, g[k]))
+    # `*` et non `+` : Go ne distingue pas un champ absent d'une chaine vide
+    # (string, pas *string). L'alignement se fait donc par le bas — les deux
+    # lecteurs sautent deja un groupe vide, seul le validateur le refusait.
     for k in NAMES:
-        if k in g and (not isinstance(g[k], str) or not re.fullmatch(r"[A-Za-z0-9._-]+", g[k])):
+        if k in g and (not isinstance(g[k], str) or not re.fullmatch(r"[A-Za-z0-9._-]*", g[k])):
             bad("porte '%s' : %s hors de [A-Za-z0-9._-] (%r)" % (to, k, g[k]))
 PY
 }

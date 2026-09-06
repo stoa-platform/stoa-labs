@@ -191,6 +191,13 @@ printf '%s' "$TO_ENV" | grep -Eq '^[a-z0-9][a-z0-9-]{0,30}$' \
 
 # TO_ENV : un palier de la CHAÎNE, jamais l'authoring (une promotion va toujours
 # vers un palier SUIVANT ; l'authoring suit HEAD et n'a pas de marqueur).
+# LA CHAÎNE EST VALIDÉE AVANT D'ÊTRE LUE. Sans cela, les lecteurs
+# (`env_chain_gate*`) sont LAXISTES par construction : une clé de porte mal
+# orthographiée, un booléen en chaîne, une porte vers un palier non déclaré
+# passent en silence — et `fourEyes`/`itsmCheck` se lisent alors à 0. Mesuré le
+# 2026-09-06 : `Gates:` (une majuscule) faisait disparaître la porte ICI tout en
+# la faisant APPLIQUER côté Go. La validation est le seul endroit qui refuse.
+env_chain_validate || fail "CHAINE_INVALIDE : environments.yaml ne respecte pas le contrat de la chaîne (voir le détail sur stderr)"
 CHAIN="$(env_chain)" || fail "CHAINE_ILLISIBLE : environments.yaml absent, vide ou cassé"
 case " $CHAIN " in *" $TO_ENV "*) ;; *) fail "ENV_INVALIDE : '$TO_ENV' hors de la chaîne ($CHAIN)";; esac
 [ "$TO_ENV" != "$ENVN_AUTH" ] \
