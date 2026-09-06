@@ -530,18 +530,24 @@ AGENT_SEES=$(docker exec "${P7_JENKINS_CTR:-poc-jenkins}" curl -s -o /dev/null -
   || ko "A3b l'agent n'atteint pas $G_APIM (HTTP ${AGENT_SEES:-000}) — la publication échouerait"
 # Les deux vues doivent désigner la MÊME instance : on l'établit par un objet
 # témoin créé ici et relu là-bas (la seule vérification possible de l'égalité).
+# L'objet témoin est une APPLICATION, et non une API : `POST /apis` en JSON nu
+# est cassé sur la 10.15 (fait déjà mesuré par ce projet — la création passe par
+# un multipart), et un témoin qui échoue à naître ne prouverait rien.
 WITNESS="p7probe-$RUN"
 W_ID=$(wm -X POST -H 'Content-Type: application/json' \
-  -d "{\"apiName\":\"$WITNESS\",\"apiVersion\":\"1.0.0\",\"type\":\"REST\"}" "$WM_ADMIN/apis" \
-  | python3 -c 'import json,sys;d=json.load(sys.stdin);print((d.get("apiResponse") or {}).get("api",{}).get("id") or d.get("id") or "")' 2>/dev/null)
+  -d "{\"name\":\"$WITNESS\",\"description\":\"temoin P7 d egalite des vues\"}" "$WM_ADMIN/applications" \
+  | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get("id") or (d.get("applications") or [{}])[0].get("id",""))' 2>/dev/null)
 if [ -n "$W_ID" ]; then
   SEEN=$(docker exec "${P7_JENKINS_CTR:-poc-jenkins}" curl -s -m 10 -u "$WM_USER:$WM_PASS" \
-        -H 'Accept: application/json' "$G_APIM/apis/$W_ID" 2>/dev/null \
-        | python3 -c 'import json,sys;print(((json.load(sys.stdin).get("apiResponse") or {}).get("api") or {}).get("apiName",""))' 2>/dev/null)
+        -H 'Accept: application/json' "$G_APIM/applications/$W_ID" 2>/dev/null \
+        | python3 -c 'import json,sys
+d=json.load(sys.stdin)
+a=(d.get("applications") or [d])[0] if isinstance(d.get("applications"),list) else d
+print(a.get("name",""))' 2>/dev/null)
   [ "$SEEN" = "$WITNESS" ] \
     && ok "A3c l'agent et ce harnais voient la MÊME gateway (objet témoin relu de l'autre côté)" \
     || ko "A3c objet témoin invisible depuis l'agent — deux gateways différentes, les mesures ne prouveraient rien"
-  wm -o /dev/null -X DELETE "$WM_ADMIN/apis/$W_ID"
+  wm -o /dev/null -X DELETE "$WM_ADMIN/applications/$W_ID"
 else
   ko "A3c création de l'objet témoin impossible — égalité des deux vues non établie"
 fi
