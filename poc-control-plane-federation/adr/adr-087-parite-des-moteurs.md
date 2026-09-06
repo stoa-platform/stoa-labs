@@ -184,9 +184,40 @@ et `TestPromoteTokensMatchTheShellGrep` sont ses variantes quand le shell n'est
 pas sourçable (on tient alors sa TABLE, pas son exécution — moins bien, et dit
 comme tel).
 
-**Reste à tenir** (mesuré, non fermé ici) : la chaîne d'environnements existe en
-**trois** implémentations (`scripts/lib/env-chain.sh`, `internal/governance/envchain.go`,
-`internal/uac/envchain.go`), le shell étant plus strict que le Go sur les clés
-inconnues — écart déjà enregistré, mais qu'aucune épreuve croisée ne tient
-encore. Même remarque pour la fusion `per_env` récursive (3 exemplaires) et le
-client Vault (3 exemplaires, 1 080 lignes pour une seule API HTTP).
+### Suite du même jour — les quatre duplications restantes
+
+**D1, chaîne d'environnements : FERMÉE.** Trois implémentations → deux
+(`internal/uac/envchain.go` délègue). Et l'écart enregistré était **faux dans son
+sens** : `env-chain.sh` affirmait « une chaîne acceptée ici l'est par Go — le sens
+sûr ». Sous un bloc `Gates:` (une majuscule), `env_chain_validate` rendait 0, les
+**lecteurs** shell ne voyaient plus aucune porte, et le Go appliquait fourEyes +
+itsmCheck. Le même fichier, verdict de sécurité opposé, déclaré valide.
+`TestParseEnvChainMirror` tient les deux moteurs **et les lecteurs** sur une
+table ; `env_chain_validate` est désormais posé avant la première lecture de
+porte dans les trois scripts de production qui ne validaient pas.
+
+**D8, découpage du nom de branche : FERMÉE.** Sept sites, quatre comportements —
+mais le défaut réel était le **blanchiment silencieux** de `provision-plan.sh`,
+qui faisait disparaître l'extra-var de palier : le plan portait sur un autre
+environnement que celui de la branche. Devenu `PALIER_HORS_CHAINE`.
+`scripts/lib/branch-ref.sh` + table exécutée (régime dégradé assumé : aucune
+implémentation Go n'existe, c'est un contrat à un moteur).
+
+**D5, client Vault : le gros est le MAUVAIS COMBAT, sa cible réelle est FERMÉE.**
+Les 1 080 lignes sont trois transports HTTP dans trois runtimes dont deux ne
+peuvent pas dépendre du binaire (contrainte de provenance, `apim_selfservice_app/defaults/main.yml`).
+La seule règle réellement dupliquée était la composition du chemin KV v2 — en
+quatre exemplaires, et le Go **faux** sur la configuration client mesurée
+(entrées à plat : `secret/data//envs/dev/x`). `scripts/lib/vault-kv.sh` +
+`vault.KVDataPath`, tenus par `TestKVDataPathMirror`.
+
+**D4, fusion `per_env` : NON FERMÉE, limite NOMMÉE.** L'algorithme est identique
+partout ; c'est le **chargeur** qui diverge, et c'est un fail-open de la garde
+d'intégrité, reproduit : `strip_auth: no` et `strip_auth: "no"` ont le **même
+digest** (BaseLoader lit `'no'` des deux côtés) alors qu'Ansible applique `False`
+d'un côté et `'no'` de l'autre. Le commentaire d'`app_manifest_digest_env`
+affirmait le contraire ; il est corrigé. **Arbitrage ouvert**, il appartient au
+porteur du GOAL : aligner le chargeur (`SafeLoader` pour le digest seul),
+ajouter une garde de forme à l'écriture (`MANIFESTE_AMBIGU`), ou assumer la
+limite par écrit. Tant qu'il n'est pas pris, le digest est une présomption, pas
+une garantie.
