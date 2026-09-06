@@ -17,7 +17,7 @@ var validateCmd = &cobra.Command{
 	Short: "Validate a UAC contract (api.yaml) against the v1 rules — read-only, no gateway",
 	Long: "validate re-checks a UAC contract file (the load-bearing subset of " +
 		"uac_contract_v1_schema.json: required fields, enums incl. classification VH/H/M and " +
-		"exposure internal/external, name/version patterns, and the destructive=>approval and " +
+		"exposure internal/external/internet, name/version patterns, and the destructive=>approval and " +
 		"published=>endpoint, and integrity-consistency semantic rules — the last requires that " +
 		"classification+exposure+tags yield a valid security posture, fail-closed via render). " +
 		"Strictly local — it never touches a gateway. " +

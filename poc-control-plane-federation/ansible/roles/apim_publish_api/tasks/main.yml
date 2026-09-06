@@ -13,6 +13,14 @@
 - name: "Team : quelle équipe, et d'où (AVANT tout appel — un refus ne crée rien)"
   ansible.builtin.import_tasks: team-name.yml
 
+# APRÈS team-name (dont elle consomme l'identité, moitié non-éditable de la clé
+# du registre) et AVANT les secrets comme avant le premier appel : la posture
+# décide de ce que l'API doit porter, la juger après l'avoir créée-activée
+# laisserait derrière un objet dont la posture vient d'être refusée. Hors ligne :
+# un fichier de registre et un binaire, aucun réseau.
+- name: "Posture : classification × exposition — le registre CENTRAL tranche (P2)"
+  ansible.builtin.import_tasks: posture.yml
+
 - name: "Secrets : auth admin (Vault, fallback PoC)"
   ansible.builtin.import_role:
     name: apim_common
@@ -204,6 +212,70 @@
         that: "apim_api_id | length > 0"
         fail_msg: "import KO : aucune id d'API."
 
+    # ===== 1b. Tag de posture — POSE, avant l'activation (P3) ================
+    # ICI et pas plus loin : toute écriture de DÉFINITION est derrière nous
+    # (création, ré-import d'update, version minée), et l'API n'est pas encore
+    # en service. Une API dont le tag n'a pas pu être posé n'est donc jamais
+    # activée — c'est la seule position où le refus ne laisse pas derrière lui
+    # un objet en service dont la posture n'est pas lisible sur la gateway.
+    - name: "Tag : pose du tag de posture (jamais repris du manifeste)"
+      ansible.builtin.set_fact:
+        pub_tag_phase: "pose"
+    - name: "Tag : poser et relire"
+      ansible.builtin.import_tasks: tag.yml
+
+    # ===== 1c. Bouquet COMMUN — appartenance, avant l'activation (P4) =======
+    # Même règle que le tag, pour la même raison : une API dont l'appartenance à
+    # sa cellule ne peut pas être CONFIRMÉE n'est jamais mise en service. Elle
+    # porterait sinon ses seules policies propres — sans quota gouverné et sans
+    # restriction de protocole commune — tout en servant du trafic.
+    #
+    # Cette position n'est tenable que parce que la sonde
+    # `GET /apis/{id}/globalPolicies` RÉPOND sur une API INACTIVE : mesuré au
+    # spike P4 (S7 Q2) et non supposé. Si elle ne répondait qu'après activation,
+    # il faudrait choisir entre confirmer et ne pas servir — et ce fichier
+    # documenterait le choix au lieu de le taire.
+    - name: "Policy commune : rejoindre la global policy de sa cellule"
+      ansible.builtin.import_tasks: global-policy.yml
+
+    # ===== 1d. Protocole d'entrée — avant l'activation (P5) =================
+    # Troisième et dernière chose que la plateforme impose avant de mettre en
+    # service, et la position se justifie plus fort encore que pour les deux
+    # précédentes : poser le protocole APRÈS l'activation ouvrirait une fenêtre
+    # — courte, réelle, invisible chez le client — pendant laquelle une API
+    # gouvernée `https-only` servirait en clair. Posée ici, elle n'a jamais servi
+    # un seul appel en clair, pas même pendant sa propre publication.
+    #
+    # Tenable parce que MESURÉ (spike P5 S8) et non supposé : l'action
+    # `entryProtocolPolicy` se lit ET s'écrit sur une API INACTIVE, et le réglage
+    # survit à l'activation. Le fait jumeau avait dû être mesuré en P4 pour
+    # `GET /apis/{id}/globalPolicies` — même exigence, même méthode.
+    #
+    # APRÈS global-policy.yml, et pas avant : le refus le plus probable des deux
+    # est POLICY_COMMUNE_ABSENTE (une cellule dont le play d'amorçage n'a pas été
+    # joué), et il vaut mieux qu'il tombe avant qu'on ait touché à la policy
+    # SERVICE de l'API.
+    - name: "Protocole : l'API refuse elle-même l'appel en clair"
+      ansible.builtin.import_tasks: entry-protocol.yml
+
+    # ===== 1e. Identité de l'appelant — avant l'activation (P6) =============
+    # Quatrième et dernière chose imposée avant la mise en service, et la
+    # position se justifie exactement comme celle du protocole : poser la règle
+    # APRÈS l'activation ouvrirait une fenêtre — courte, réelle, invisible chez
+    # le client — pendant laquelle une API gouvernée servirait un appelant que
+    # personne n'a identifié. Mesuré posable sur une API INACTIVE et survivant à
+    # l'activation (spike P6 S8), donc la fenêtre n'existe pas.
+    #
+    # APRÈS entry-protocol.yml : les deux écrivent la policy SERVICE de l'API, et
+    # il vaut mieux que le refus le plus probable (une action transport absente)
+    # tombe avant qu'on ait touché au stage IAM.
+    #
+    # C'est ici, et NULLE PART AILLEURS, que le stage IAM se règle depuis P6 :
+    # inbound.yml ne le touche plus (la gateway refuse une seconde action au même
+    # stage — 409, S7 — donc les dimensions se fusionnent en un seul objet).
+    - name: "Identité : l'API refuse elle-même l'appelant non identifié"
+      ansible.builtin.import_tasks: caller-identity.yml
+
     # ===== 2. Activate =======================================================
     - name: "Activate : relire l'état"
       ansible.builtin.uri:
@@ -254,3 +326,18 @@
     - name: "Inbound : validation JWT/OAuth2 au stage IAM"
       ansible.builtin.import_tasks: inbound.yml
       when: "(apim_api.inbound | default({})) | length > 0"
+
+    # ===== 5. Tag de posture — RELECTURE, le dernier mot du rôle (P3) ========
+    # Le rôle écrit encore APRÈS la pose : approbateurs (`PUT /apis/{id}` de
+    # l'objet complet), équipe, policies. Aucune de ces écritures ne devrait
+    # toucher `apiDefinition.tags` — mais « ne devrait pas » n'est pas une
+    # garantie, et le mécanisme d'effacement est MESURÉ (un PUT de définition
+    # sans `tags` efface le tag, spike D de P0). Cette seconde passe est donc la
+    # seule qui puisse promettre quelque chose sur l'état FINAL : elle
+    # re-converge si une écriture postérieure a emporté le tag, et relit dans
+    # tous les cas. Idempotente : un GET quand tout va bien.
+    - name: "Tag : relecture finale — rien n'a effacé le tag depuis sa pose"
+      ansible.builtin.set_fact:
+        pub_tag_phase: "relecture finale"
+    - name: "Tag : re-converger si besoin, et relire"
+      ansible.builtin.import_tasks: tag.yml

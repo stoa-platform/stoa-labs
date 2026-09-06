@@ -1,0 +1,72 @@
+---
+# roles/apim_https_listener/defaults/main.yml
+#
+# LE LISTENER HTTPS D'UN ENVIRONNEMENT (jalon P5, ADR-095). Deuxième moitié de
+# l'axe HTTPS : la première — le protocole qu'une API ACCEPTE — vit dans le
+# pipeline (roles/apim_publish_api/tasks/entry-protocol.yml) ; celle-ci est un
+# objet d'ENVIRONNEMENT, posé une fois, hors du pipeline de publication.
+#
+# ⚠ CE QUE CE RÔLE NE PROTÈGE PAS, ET IL FAUT LE LIRE AVANT DE S'EN SERVIR.
+# Ajouter un listener HTTPS ne rend AUCUNE API plus sûre. Mesuré deux fois :
+#   * une API servie sur un listener HTTPS neuf reste REFUSÉE tant que son
+#     propre `entryProtocolPolicy` vaut `http` (spike C de P0) ;
+#   * `enabled` et `primary` sont deux champs INDÉPENDANTS — promouvoir le port
+#     HTTPS en primaire ne ferme pas le HTTP (spike P5 S6).
+# La seule chose qui fait refuser un appel en clair est le réglage PAR API. Ce
+# rôle fournit le transport ; il ne décide de la posture de personne. Un
+# environnement peut avoir un listener HTTPS parfait et servir toutes ses APIs
+# en clair.
+#
+# ⚠ CE QUI NE S'ÉDITE PAS, ET POURQUOI LE RÔLE REFUSE PLUTÔT QUE D'ESSAYER.
+# Mesuré sur la 10.15 réelle (spike P5 S10) : `clientAuth` est honoré À LA
+# CRÉATION du port et ne s'édite pas — `PUT /ports/{listenerKey}` comme
+# `PUT /ports/{alias}` rendent **200** et la relecture ne bouge pas. C'est un
+# faux vert du produit, pire que le « 500 sur modification de port » que
+# `is-mtls-setup.yml` annonçait. Et le champ `alias` vaut « ssos » sur TOUS les
+# listeners HTTPS : `/ports/{alias}` ne désigne même pas un port. Le rôle pose
+# donc le mode à la naissance, RELIT, et refuse en le nommant s'il faudrait le
+# changer sur un port déjà là.
+
+# --- le port visé ------------------------------------------------------------
+apim_hl_port: 5543
+apim_hl_port_alias: "DefaultSecure"
+apim_hl_description: "Listener HTTPS d'environnement (ADR-095)"
+
+# Mode d'authentification du client au transport : none | request | require.
+#   request — le certificat client est ACCEPTÉ mais pas exigé : toutes les APIs
+#             restent joignables sur le port, et chacune décide par sa policy
+#             IAM (le modèle ADR-076, et le défaut ici).
+#   require — le port exige un certificat de confiance : c'est un contrôle de
+#             TRANSPORT qui frappe TOUTES les APIs du port, pas une par une.
+# ⚠ Non éditable après création (voir l'en-tête).
+apim_hl_client_auth: "request"
+
+# --- la forme du port --------------------------------------------------------
+# Le contrat publié SOUS-DÉCRIT l'objet Port : `keyStore` et `trustStore` n'y
+# figurent pas, et le port réel les porte par ALIAS (mesuré, spike C de P0 et
+# P5 S6). On ne compose donc pas un port de zéro : on RECOPIE le record d'un
+# listener HTTPS existant et on ne surcharge que ce qu'on veut changer. Vide =
+# le premier listener HTTPS relu sur la gateway.
+apim_hl_template_port: 0
+# Surcharges facultatives des alias de magasins. Vides = ceux du gabarit.
+apim_hl_keystore: ""
+apim_hl_truststore: ""
+
+# --- deux gestes de TOPOLOGIE, éteints par défaut ----------------------------
+# Ni l'un ni l'autre n'est un contrôle de sécurité pour les APIs ; ils sont ici
+# parce qu'ils appartiennent à l'axe HTTPS, pas parce qu'ils protègent.
+#
+# Promotion en primaire. Surface REST MESURÉE en no-op (spike P5 S9 :
+# `PUT /ports/primary {listenerKey}` répond 200 sur le port DÉJÀ primaire ;
+# `PUT /ports/{key}/primary` répond 400). La BASCULE elle-même n'a pas été
+# jouée : elle change le port par défaut d'un serveur entier, et ce dépôt ne
+# mesure pas ce qu'il ne peut pas défaire dans un lab dont tout dépend. Éteinte
+# par défaut, et le rôle le dit à qui l'allume.
+apim_hl_promote_primary: false
+
+# Fermeture d'un listener en clair. `PUT /ports/disable {listenerKey}` est
+# mesuré (il sert au ménage des spikes depuis P0). 0 = ne rien fermer.
+# C'est le TROISIÈME geste, et le seul des trois qui ferme réellement le clair
+# au niveau du serveur — mais il le ferme pour TOUT ce qui passait par ce port,
+# API Gateway comprise et /invoke compris.
+apim_hl_close_plaintext_port: 0

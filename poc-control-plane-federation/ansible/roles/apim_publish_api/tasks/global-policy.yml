@@ -1,0 +1,312 @@
+---
+# roles/apim_publish_api/tasks/global-policy.yml — L'APPARTENANCE AU BOUQUET
+# COMMUN : l'API rejoint la global policy de SA cellule, et quitte celles des
+# autres (jalon P4, ADR-094).
+#
+# CE QUE CETTE TÂCHE FAIT, ET LA SEULE CHOSE QU'ELLE FAIT. Elle inscrit le NOM
+# de l'API dans le scope de la global policy `posture-<bouquet>` — l'objet
+# unique qui porte, pour toutes les APIs de la cellule, la moitié COMMUNE du
+# bouquet (https-only, audit-log, rate-limit et son quota gouverné). Elle ne
+# crée aucune policy, n'en active aucune, n'en supprime aucune, et ne touche
+# jamais à son CONTENU. Ces verbes appartiennent au play d'amorçage
+# (apim-global-posture-setup.yml), qui tourne avec un identifiant
+# Administrateur, hors du pipeline de publication.
+#
+# POURQUOI CETTE FRONTIÈRE EXACTEMENT LÀ. P0 a mesuré qu'une suppression de
+# global policy CASCADE sur ses policyActions — action SYSTÈME comprise — et met
+# toute activation d'API en NPE jusqu'au redémarrage. Un pipeline qui crée et
+# supprime des global policies peut donc briquer la gateway. La frontière n'est
+# pas une précaution de style : les trois verbes retirés au pipeline sont
+# exactement les trois qui portent ce risque. Ce qui lui reste — GET puis PUT —
+# est aussi tout ce que l'allow-list du proxy d'administration (ADR-075) expose
+# sur `/policies/{id}`.
+#
+# POURQUOI ELLE QUITTE LES AUTRES CELLULES. Une API change de bouquet : le
+# registre central la reclasse, ou son exposition évolue. Si le rôle ne faisait
+# qu'ajouter, l'API resterait membre de son ancienne cellule et porterait DEUX
+# quotas et DEUX postures contradictoires, sans que rien ne dise laquelle fait
+# foi. Le retrait n'est donc pas une politesse de ménage : c'est la moitié qui
+# rend l'appartenance univoque, et la relecture l'exige explicitement.
+#
+# LA SENTINELLE, ET POURQUOI ON NE VIDE JAMAIS LA LISTE. MESURÉ sur la 10.15
+# réelle (spike S7) : une condition de scope `filterType: API` SANS attribut ne
+# sélectionne pas « aucune API », elle les sélectionne TOUTES. Retirer le
+# dernier membre d'une cellule appliquerait donc son quota et sa restriction de
+# protocole à la gateway entière. La liste porte toujours, en plus de ses
+# membres, un nom qu'aucune API ne porte (`pub_posture.member_sentinel`), et le
+# rôle le remet s'il a disparu.
+#
+# QUAND ELLE TOURNE. Après la pose du tag, AVANT l'activation. Même règle que
+# P3 : une API dont l'appartenance ne peut pas être confirmée n'est jamais mise
+# en service. Cette position n'est tenable que parce que la sonde
+# `GET /apis/{id}/globalPolicies` RÉPOND sur une API inactive — mesuré (S7 Q2),
+# pas supposé.
+
+- name: "Policy commune : la posture a-t-elle été ARBITRÉE ?"
+  ansible.builtin.set_fact:
+    pub_gp_governed: >-
+      {{ (pub_posture is defined)
+         and ((pub_posture.global_policy | default('')) | length > 0)
+         and ((pub_posture.member_sentinel | default('')) | length > 0) }}
+
+# Sans registre central, il n'y a pas de cellule gouvernée — donc aucune
+# appartenance à écrire. Inscrire l'API dans la policy de la posture DÉCLARÉE
+# laisserait le demandeur choisir son propre quota, c'est-à-dire ce que ce jalon
+# interdit. On ne touche à rien, et on le dit.
+- name: "Policy commune : AVERTISSEMENT — aucune posture arbitrée, aucune appartenance écrite"
+  ansible.builtin.debug:
+    msg: >-
+      ⚠ POLICY_COMMUNE_NON_ARBITREE : la posture de '{{ apim_api.name }}' n'a été arbitrée par
+      aucun registre central (cf. POSTURE_NON_ARBITREE), donc la plateforme n'inscrit l'API dans
+      AUCUNE global policy de posture. L'API ne porte alors que ses policies propres : ni quota
+      gouverné, ni restriction de protocole commune. Acceptable hors pipeline (rejeu local) ;
+      JAMAIS dans une chaîne de publication, qui pose toujours la source.
+  when: "not (pub_gp_governed | bool)"
+
+- name: "Policy commune : rejoindre la cellule, quitter les autres"
+  when: "pub_gp_governed | bool"
+  block:
+
+    - name: "Policy commune : lire les policies de la gateway"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/policies"
+      register: pub_gp_list
+      changed_when: false
+
+    # L'espace de noms de la plateforme, `posture-` — rendu FINI par
+    # `labctl posture` (pub_posture.policy_prefix), jamais concaténé ici : c'est
+    # la règle que P3 a posée pour le tag, et un préfixe recopié de travers
+    # ferait ignorer en silence la moitié des cellules.
+    - name: "Policy commune : indexer les policies de l'espace de noms de la plateforme"
+      ansible.builtin.set_fact:
+        pub_gp_posture: >-
+          {{ (pub_gp_posture | default([]))
+             + [{'id': item.id,
+                 'name': (item.names | first).value,
+                 'active': item.active | default(false),
+                 'raw': item,
+                 'names_before': (((item.scope | default({})).scopeConditions | default([]))
+                                  | selectattr('filterType', 'equalto', 'API')
+                                  | map(attribute='attributes') | flatten
+                                  | map(attribute='value') | list),
+                 'has_methods': ((((item.scope | default({})).scopeConditions | default([]))
+                                  | selectattr('filterType', 'equalto', 'HTTP_METHOD') | list)
+                                 | length) > 0}] }}
+      loop: "{{ pub_gp_list.json.policy | default([]) }}"
+      loop_control:
+        label: "{{ (item.names | default([{'value': '?'}]) | first).value }}"
+      when:
+        - "item.global | default(false) | bool"
+        - "(item.names | default([]) | length) > 0"
+        - "(item.names | first).value is match('^' ~ (pub_posture.policy_prefix | regex_escape))"
+
+    - name: "Policy commune : la cellule de cette API"
+      ansible.builtin.set_fact:
+        pub_gp_mine: >-
+          {{ ((pub_gp_posture | default([]))
+              | selectattr('name', 'equalto', pub_posture.global_policy) | list) | first | default({}) }}
+
+    # Le pipeline ne CRÉE pas de global policy — ni en fonctionnement normal, ni
+    # « juste cette fois ». Une cellule sans objet est une gouvernance
+    # incomplète, pas une permission d'improviser : l'API n'est pas activée, et
+    # le message nomme le geste manquant.
+    - name: "Policy commune : FAIL-CLOSED — la policy de la cellule doit EXISTER"
+      ansible.builtin.assert:
+        that: "(pub_gp_mine.id | default('')) | length > 0"
+        fail_msg: >-
+          POLICY_COMMUNE_ABSENTE : aucune global policy nommée '{{ pub_posture.global_policy }}'
+          sur la gateway. La cellule '{{ pub_posture.bundle }}' n'a donc pas d'objet pour porter
+          son bouquet commun ({{ pub_posture.common_policies | join(', ') }}) ni son quota
+          ({{ pub_posture.quota.requests }}/{{ pub_posture.quota.interval }}
+          {{ pub_posture.quota.unit }}). Le pipeline n'a pas le droit de la créer (création,
+          activation et suppression d'une global policy exigent un identifiant Administrateur et
+          portent le risque de cascade mesuré au P0) : jouer d'abord
+          `ansible-playbook ansible/apim-global-posture-setup.yml`. Rien n'a été activé.
+        success_msg: >-
+          POLICY_COMMUNE_TROUVEE : cellule {{ pub_posture.bundle }} →
+          '{{ pub_posture.global_policy }}' ({{ pub_gp_mine.id }}), active={{ pub_gp_mine.active }}.
+
+    # Une policy dont le scope n'a PAS de condition HTTP_METHOD ne sélectionne
+    # RIEN, quelle que soit sa liste de noms — mesuré au P0 (spike A2), et c'est
+    # le vert vacant le plus coûteux de ce GOAL : la liste se remplit, sa
+    # relecture passe, et aucune API n'est jamais frappée. On refuse d'inscrire
+    # quoi que ce soit dans un objet inerte.
+    - name: "Policy commune : FAIL-CLOSED — la policy de la cellule doit SÉLECTIONNER (condition HTTP_METHOD)"
+      ansible.builtin.assert:
+        that: "pub_gp_mine.has_methods | bool"
+        fail_msg: >-
+          POLICY_COMMUNE_INERTE : '{{ pub_posture.global_policy }}' n'a pas de condition
+          HTTP_METHOD dans son scope. Mesuré sur wM 10.15 : une condition `filterType: API`
+          SEULE ne sélectionne AUCUNE API — l'objet serait inerte et l'inscription de
+          '{{ apim_api.name }}' n'appliquerait rien. À réparer par le play d'amorçage.
+
+    # LE PLAN. Une entrée par cellule, et l'objet EXACT à écrire construit ici :
+    # la tâche d'écriture ne calcule plus rien, elle applique. `after` se déduit
+    # de la même façon pour toutes les cellules — nom retiré de partout, puis
+    # sentinelle garantie, puis nom rajouté à la SIENNE — ce qui rend le retrait
+    # et l'adhésion impossibles à décaler l'un par rapport à l'autre.
+    - name: "Policy commune : planifier chaque appartenance (rejoindre la sienne, quitter les autres)"
+      ansible.builtin.set_fact:
+        pub_gp_plan: >-
+          {{ (pub_gp_plan | default([]))
+             + [{'id': item.id, 'name': item.name,
+                 'mine': (item.name == pub_posture.global_policy),
+                 'before': item.names_before, 'after': gp_after,
+                 'changed': (item.names_before != gp_after),
+                 'enf_before': (item.raw.policyEnforcements | default([])),
+                 'desired': item.raw | combine({'scope':
+                    (item.raw.scope | default({})) | combine({'scopeConditions':
+                      (((item.raw.scope | default({})).scopeConditions | default([]))
+                        | rejectattr('filterType', 'equalto', 'API') | list)
+                      + [{'filterType': 'API', 'logicalConnector': 'OR',
+                          'attributes': gp_attrs | from_json}]})})}] }}
+      vars:
+        gp_stripped: "{{ item.names_before | reject('equalto', apim_api.name) | list }}"
+        gp_kept: >-
+          {{ gp_stripped if (pub_posture.member_sentinel in gp_stripped)
+             else (gp_stripped + [pub_posture.member_sentinel]) }}
+        gp_after: >-
+          {{ (gp_kept + [apim_api.name]) if (item.name == pub_posture.global_policy) else gp_kept }}
+        # Une boucle Jinja plutôt qu'un filtre exotique : la forme d'un attribut
+        # de scope est imposée par le produit (attributeName / operation / value
+        # IMBRIQUÉS dans `attributes`, découverte du P0 — et non `attributeName`
+        # à plat comme le laissait croire le contrat publié). Elle doit se lire
+        # ici telle qu'elle part sur le fil.
+        gp_attrs: >-
+          {% set out = [] %}{% for n in gp_after %}{% set _ = out.append(
+            {'attributeName': 'API_NAME', 'operation': 'EQUALS', 'value': n}) %}{% endfor %}{{ out | to_json }}
+      loop: "{{ pub_gp_posture | default([]) }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: "Policy commune : état lu et visé"
+      ansible.builtin.debug:
+        msg: >-
+          POLICY_COMMUNE_PLAN : {{ apim_api.name }} → cellule {{ pub_posture.bundle }}
+          ({{ pub_posture.global_policy }}) ; commun=[{{ pub_posture.common_policies | join(', ') }}]
+          quota={{ pub_posture.quota.requests }}/{{ pub_posture.quota.interval }}
+          {{ pub_posture.quota.unit }} ; per-API=[{{ pub_posture.per_api_policies | join(', ') }}] ;
+          cellules connues={{ pub_gp_plan | map(attribute='name') | list }} ;
+          mouvements={{ pub_gp_plan | selectattr('changed') | map(attribute='name') | list }}
+
+    # On n'écrit QUE le scope : l'objet part de celui qu'on vient de lire et
+    # tout le reste — les policyEnforcements en particulier — repart tel quel.
+    # La relecture d'après le VÉRIFIE. Ce que cette construction protège, c'est
+    # l'accident et le bug, pas un opérateur qui aurait déjà l'identifiant.
+    - name: "Policy commune : PUT du seul SCOPE, pour les cellules qui bougent"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/policies/{{ item.id }}"
+        method: PUT
+        body:
+          policy: "{{ item.desired }}"
+        status_code: [200, 201]
+      register: pub_gp_put
+      loop: "{{ pub_gp_plan | selectattr('changed') | list }}"
+      loop_control:
+        label: "{{ item.name }} : {{ item.before }} -> {{ item.after }}"
+
+    # ═══ LA PORTE ═══════════════════════════════════════════════════════════
+    # Deux relectures, deux défaillances différentes — et aucune n'est un 200.
+    #
+    #  1. la LISTE : ce qui est réellement persisté dans le scope. Sur cette
+    #     gateway un PUT rend 200 sans écrire (mesuré au P0 sur `apiTags`), donc
+    #     seule la relecture distingue « écrit » de « accepté puis ignoré » ; et
+    #     c'est là qu'on vérifie aussi que le CONTENU n'a pas bougé.
+    #  2. la SÉLECTION : ce que la gateway fait de cette liste. C'est la seule
+    #     qui prouve quelque chose au demandeur — une liste juste dans un objet
+    #     inerte est le vert vacant que ce jalon doit rendre impossible.
+    - name: "Policy commune : READ-BACK — relire les policies"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/policies"
+      register: pub_gp_after
+      changed_when: false
+
+    - name: "Policy commune : ce que porte réellement chaque cellule"
+      ansible.builtin.set_fact:
+        pub_gp_state: >-
+          {{ (pub_gp_state | default([]))
+             + [{'name': (item.names | first).value,
+                 'id': item.id,
+                 'names': (((item.scope | default({})).scopeConditions | default([]))
+                           | selectattr('filterType', 'equalto', 'API')
+                           | map(attribute='attributes') | flatten
+                           | map(attribute='value') | list),
+                 'enf': item.policyEnforcements | default([])}] }}
+      loop: "{{ pub_gp_after.json.policy | default([]) }}"
+      loop_control:
+        label: "{{ (item.names | default([{'value': '?'}]) | first).value }}"
+      when:
+        - "item.global | default(false) | bool"
+        - "(item.names | default([]) | length) > 0"
+        - "(item.names | first).value is match('^' ~ (pub_posture.policy_prefix | regex_escape))"
+
+    # Le PUT porte l'objet ENTIER : rien n'empêche techniquement qu'il emporte
+    # les policyEnforcements avec le scope. On compare donc, cellule par cellule
+    # touchée, le contenu relu à celui lu AVANT l'écriture. Deux facts plutôt
+    # qu'un : une boucle Jinja rend une CHAÎNE, et la convertir au même endroit
+    # masquerait l'endroit exact où la comparaison se fait.
+    - name: "Policy commune : les cellules dont le CONTENU a changé sous nos doigts (JSON)"
+      ansible.builtin.set_fact:
+        pub_gp_enf_drift_json: >-
+          {% set out = [] %}{% for p in (pub_gp_plan | selectattr('changed') | list)
+          %}{% set after = (pub_gp_state | selectattr('name', 'equalto', p.name) | list)
+          %}{% if (after | length) == 0 or (after | first).enf != p.enf_before
+          %}{% set _ = out.append(p.name) %}{% endif %}{% endfor %}{{ out | to_json }}
+
+    - name: "Policy commune : les cellules dont le CONTENU a changé sous nos doigts"
+      ansible.builtin.set_fact:
+        pub_gp_enf_drift: "{{ pub_gp_enf_drift_json | from_json }}"
+
+    - name: "Policy commune : FAIL-CLOSED — la LISTE relue est celle qu'on visait, et le CONTENU est intact"
+      ansible.builtin.assert:
+        that:
+          # a) l'API est membre de SA cellule
+          - "apim_api.name in ((pub_gp_state | selectattr('name', 'equalto', pub_posture.global_policy)
+                                | map(attribute='names') | flatten | list))"
+          # b) et d'AUCUNE autre — sinon deux quotas, deux postures, et rien qui dise laquelle vaut
+          - "((pub_gp_state | rejectattr('name', 'equalto', pub_posture.global_policy)
+               | map(attribute='names') | flatten | select('equalto', apim_api.name) | list) | length) == 0"
+          # c) aucune cellule n'est laissée avec une liste VIDE (elle frapperait TOUTES les APIs)
+          - "((pub_gp_state | selectattr('names', 'equalto', []) | list) | length) == 0"
+          # d) le PUT n'a touché QUE le scope
+          - "(pub_gp_enf_drift | default([])) | length == 0"
+        fail_msg: >-
+          POLICY_COMMUNE_UNCONFIRMED : après écriture, l'appartenance relue est
+          {% for c in pub_gp_state %}{{ c.name }}={{ c.names }} {% endfor %}
+          et les cellules dont le CONTENU a bougé sont {{ pub_gp_enf_drift | default([]) }}.
+          Attendu : '{{ apim_api.name }}' membre de '{{ pub_posture.global_policy }}' et d'AUCUNE
+          autre cellule, aucune cellule à liste vide (une condition API vide frappe TOUTES les
+          APIs — mesuré), et des policyEnforcements identiques à ceux lus avant le PUT. Une
+          publication concurrente sur la même cellule peut aussi avoir écrasé celle-ci : rejouer.
+        success_msg: >-
+          POLICY_COMMUNE_LISTE_OK : '{{ apim_api.name }}' est membre de
+          '{{ pub_posture.global_policy }}' et d'aucune autre cellule ; contenu des policies intact.
+
+    - name: "Policy commune : READ-BACK — ce que la GATEWAY sélectionne pour cette API"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/apis/{{ apim_api_id }}/globalPolicies"
+      register: pub_gp_selected
+      changed_when: false
+      retries: 8
+      delay: 3
+      until: "pub_gp_mine.id in (pub_gp_selected.json.globalPolicies | default([]))"
+      failed_when: false
+
+    - name: "Policy commune : FAIL-CLOSED — la gateway SÉLECTIONNE bien cette API pour sa cellule"
+      ansible.builtin.assert:
+        that:
+          - "pub_gp_mine.id in (pub_gp_selected.json.globalPolicies | default([]))"
+          - "((pub_gp_plan | rejectattr('mine') | map(attribute='id') | list)
+              | intersect(pub_gp_selected.json.globalPolicies | default([])) | length) == 0"
+        fail_msg: >-
+          POLICY_COMMUNE_UNCONFIRMED : la gateway répond que '{{ apim_api.name }}' est frappée par
+          {{ pub_gp_selected.json.globalPolicies | default([]) }}, or on attend
+          {{ pub_gp_mine.id }} ('{{ pub_posture.global_policy }}') et aucune autre cellule de
+          posture. Une liste juste dans un objet qui ne sélectionne rien est le vert vacant que
+          cette relecture existe pour empêcher : vérifier que la policy est ACTIVE
+          (active={{ pub_gp_mine.active }}) et qu'elle porte bien sa condition HTTP_METHOD.
+        success_msg: >-
+          POLICY_COMMUNE_CONFIRMED : '{{ apim_api.name }}' est effectivement frappée par
+          '{{ pub_posture.global_policy }}' — bouquet commun
+          [{{ pub_posture.common_policies | join(', ') }}], quota
+          {{ pub_posture.quota.requests }}/{{ pub_posture.quota.interval }} {{ pub_posture.quota.unit }}.

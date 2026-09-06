@@ -1,0 +1,196 @@
+---
+# roles/apim_publish_api/tasks/posture.yml — la POSTURE de l'API : qui la décide
+# (jalon P2, ADR-092).
+#
+# CE QUE CETTE TÂCHE DÉCIDE. Le manifeste de l'équipe DÉCLARE une posture
+# (apim_api.classification / apim_api.exposure, posées par le formulaire). Cette
+# tâche la remplace par celle du REGISTRE CENTRAL de gouvernance, et refuse la
+# demande si la déclaration est PLUS FAIBLE. La valeur retenue est écrite au
+# journal du build : c'est la porte du jalon.
+#
+# POURQUOI ELLE NE COMPARE RIEN ELLE-MÊME. La comparaison anti-downgrade porte
+# sur DEUX axes qui ne sont pas de même nature (ADR-091) : l'intégrité est une
+# échelle, l'exposition n'en est pas une — `internet` REMPLACE l'ip-allowlist par
+# threat-protection, donc déclarer `internal` contre un `external` gouverné PERD
+# un contrôle, et déclarer `internet` contre ce même `external` en perd un autre.
+# Aucun rang Jinja n'exprime cela ; la seule formulation juste est la contenance
+# de bouquet, dérivée de la table de vérité. Cette table vit dans `labctl`
+# (internal/render), P1 y a supprimé quatre recopies de son vocabulaire, et en
+# écrire une cinquième ici — en Jinja, sur l'axe le plus piégeux — serait
+# reprendre d'une main ce que ce jalon-là a rendu de l'autre. Donc le rôle
+# DEMANDE : `labctl posture`, exactement la commande que la chaîne appelle déjà
+# au plan de la PR, avec le même registre et la même clé (équipe, api).
+#
+# QUAND ELLE TOURNE. AVANT les secrets et AVANT le premier appel gateway, juste
+# après team-name.yml dont elle consomme l'identité — un refus ne doit rien
+# laisser derrière lui, et surtout pas une API créée-active dont la posture
+# vient d'être jugée illégitime.
+#
+# D'OÙ VIENT L'AUTORITÉ. `apim_pub_classification_source` est une extra-var posée
+# par le PIPELINE (team-publish.sh), qui appartient à la plateforme — et elle
+# pointe un clone FRAIS du dépôt de gouvernance, que l'équipe API ne peut pas
+# écrire. Un registre que l'équipe pourrait éditer ne serait qu'une seconde copie
+# de sa propre déclaration : l'invariant d'ancrage déjà prouvé côté labctl
+# (scripts/test-classification-central.sh, preuve 6).
+
+- name: "Posture : registre central configuré ?"
+  ansible.builtin.set_fact:
+    pub_posture_source: "{{ apim_pub_classification_source | default('') | trim }}"
+
+# Sans registre, le rôle se comporte comme avant ce jalon — et le DIT. Même
+# dualité que le gate labctl (A1 sans source / A5 avec) : ce n'est pas une porte
+# dérobée, c'est le mode mono-poste où il n'y a aucune gouvernance à consulter.
+# Ce qui rend le silence impossible, c'est que la CHAÎNE, elle, pose toujours la
+# source (team-publish.sh §4b) et qu'une épreuve de câblage le vérifie.
+- name: "Posture : AVERTISSEMENT — aucun registre central, la déclaration n'est arbitrée par personne"
+  ansible.builtin.debug:
+    msg: >-
+      ⚠ POSTURE_NON_ARBITREE : apim_pub_classification_source non posée. La posture
+      déclarée par le manifeste ({{ apim_api.classification | default('(absente)') }}/{{
+      apim_api.exposure | default('(absente)') }}) n'est comparée à RIEN — la gateway ne
+      protège aucun de ses champs en écriture, donc rien d'autre ne la rattrapera.
+      Acceptable hors pipeline (rejeu local) ; JAMAIS dans une chaîne de publication.
+  when: "pub_posture_source | length == 0"
+
+- name: "Posture : arbitrage contre le registre CENTRAL"
+  when: "pub_posture_source | length > 0"
+  block:
+
+    - name: "Posture : le registre doit exister là où la chaîne le dit"
+      ansible.builtin.stat:
+        path: "{{ pub_posture_source }}"
+      register: pub_posture_reg
+
+    - name: "Posture : FAIL-CLOSED — registre de gouvernance introuvable"
+      ansible.builtin.assert:
+        that: "pub_posture_reg.stat.exists"
+        fail_msg: >-
+          REGISTRE_GOUVERNANCE_ABSENT : '{{ pub_posture_source }}' n'existe pas. Une
+          source configurée mais illisible ne doit JAMAIS retomber en silence sur la
+          posture déclarée par l'équipe — ce serait rouvrir exactement le trou que le
+          registre existe pour fermer. Rien n'a été créé.
+
+    # Le manifeste DOIT engager une posture. Non parce qu'elle décide (le registre
+    # décide), mais parce qu'une demande sans déclaration ne peut pas être reprise :
+    # il n'y a rien à comparer, donc rien à refuser, donc rien à apprendre à
+    # l'équipe. Le refus, lui, est ce qui rend le désaccord visible.
+    - name: "Posture : FAIL-CLOSED — le manifeste doit DÉCLARER sa posture"
+      ansible.builtin.assert:
+        that:
+          - "(apim_api.classification | default('') | trim) | length > 0"
+          - "(apim_api.exposure | default('') | trim) | length > 0"
+        fail_msg: >-
+          POSTURE_MANQUANTE : le manifeste de '{{ apim_api.name }}' ne déclare pas
+          classification et/ou exposure (lu : classification='{{ apim_api.classification
+          | default('') }}' exposure='{{ apim_api.exposure | default('') }}'). Le
+          formulaire les collecte depuis le jalon P2 — un manifeste antérieur doit être
+          repassé par une demande, ou complété par une PR. Rien n'a été créé.
+        success_msg: >-
+          POSTURE_DECLAREE : '{{ apim_api.name }}' déclare classification={{
+          apim_api.classification }} exposure={{ apim_api.exposure }} — à arbitrer.
+
+    # L'identité NON-ÉDITABLE, moitié 'owner' de la clé de recherche. Vide, le
+    # drapeau --project s'efface et labctl retomberait sur LABCTL_PROJECT de
+    # l'environnement : une identité ambiante déciderait quelle ligne du registre
+    # s'applique. D'où le refus ici, et le vidage de l'environnement plus bas.
+    - name: "Posture : FAIL-CLOSED — pas d'identité d'équipe, pas de recherche gouvernée"
+      ansible.builtin.assert:
+        that: "(pub_team_name | default('') | trim) | length > 0"
+        fail_msg: >-
+          POSTURE_SANS_IDENTITE : aucune équipe résolue pour '{{ apim_api.name }}'. La
+          clé du registre est le couple (équipe, api) et son ancrage anti-spoof tient
+          entièrement à ce que l'équipe soit posée par la CHAÎNE, jamais par le
+          manifeste. Sans elle, aucune ligne ne peut être désignée légitimement.
+
+    # SONDE SÉPARÉE, et non un rc==127 lu après coup : quand le binaire n'existe
+    # pas, le module `command` échoue AVANT d'avoir un rc (« Unable to execute
+    # command »), et l'assertion qui suivait tombait alors sur le refus GÉNÉRIQUE
+    # — « posture refusée », pour un problème de socle. Mesuré, puis corrigé ici.
+    # `command -v` couvre les deux formes : un nom résolu par le PATH comme un
+    # chemin absolu.
+    - name: "Posture : l'autorité est-elle seulement présente ?"
+      ansible.builtin.command:
+        argv: ["/bin/sh", "-c", 'command -v "$1" >/dev/null 2>&1', "sh", "{{ apim_pub_labctl_bin }}"]
+      register: pub_posture_which
+      changed_when: false
+      failed_when: false
+
+    - name: "Posture : FAIL-CLOSED — l'autorité doit être présente"
+      ansible.builtin.assert:
+        that: "pub_posture_which.rc == 0"
+        fail_msg: >-
+          POSTURE_AUTORITE_ABSENTE : '{{ apim_pub_labctl_bin }}' introuvable sur l'agent.
+          La table de vérité exposition × classification (ADR-091) vit dans ce binaire et
+          n'est réécrite nulle part — sans lui, la posture n'est pas arbitrable. Refus,
+          plutôt qu'une publication dont la posture n'aurait été jugée par personne.
+
+    - name: "Posture : demander l'arbitrage à l'autorité (labctl posture)"
+      ansible.builtin.command:
+        argv:
+          - "{{ apim_pub_labctl_bin }}"
+          - posture
+          - --api
+          - "{{ apim_api.name }}"
+          - --project
+          - "{{ pub_team_name }}"
+          - --declared-classification
+          - "{{ apim_api.classification }}"
+          - --declared-exposure
+          - "{{ apim_api.exposure }}"
+          - --classification-source
+          - "{{ pub_posture_source }}"
+          - "-o"
+          - json
+      # Les jumelles d'environnement des deux drapeaux sont VIDÉES : labctl les
+      # lit quand un drapeau est absent ou vide. Un nœud qui les porterait
+      # pourrait faire consulter un AUTRE registre, ou trancher sous une AUTRE
+      # identité, sans que rien ici ne change. Les drapeaux sont l'unique canal.
+      environment:
+        LABCTL_CLASSIFICATION_SOURCE: ""
+        LABCTL_PROJECT: ""
+      register: pub_posture_out
+      changed_when: false
+      failed_when: false
+
+    # Le refus de gouvernance est relayé TEL QUEL, code nommé compris
+    # ([CLASSIFICATION_SPOOFED], [CLASSIFICATION_UNGOVERNED],
+    # [INTEGRITY_INCONSISTENT]) : team-publish.sh le remonte au commentaire de la
+    # PR par la hiérarchie fatal > msg, et c'est ce que le demandeur lit.
+    - name: "Posture : FAIL-CLOSED — le refus du registre est RELAYÉ, nommé"
+      ansible.builtin.assert:
+        that: "pub_posture_out.rc == 0"
+        fail_msg: >-
+          POSTURE_REFUSEE : {{ (pub_posture_out.stderr | default('') | trim)
+          if (pub_posture_out.stderr | default('') | trim) | length > 0
+          else (pub_posture_out.stdout | default('(aucune sortie)') | trim) }}
+
+    - name: "Posture : la posture RETENUE (celle du registre, pas celle de la demande)"
+      ansible.builtin.set_fact:
+        pub_posture: "{{ pub_posture_out.stdout | from_json }}"
+
+    # Contre-épreuve intégrée : si un jour le drapeau --classification-source
+    # cessait d'atteindre labctl (renommage, quoting, refactor), la commande
+    # rendrait 0 en répondant depuis la DEMANDE — un vert parfaitement menteur,
+    # du type que P1 a trouvé en mesurant la couverture. La réponse porte donc sa
+    # provenance, et le rôle exige qu'elle soit 'central'.
+    - name: "Posture : FAIL-CLOSED — la réponse doit venir du CENTRAL, pas de la demande"
+      ansible.builtin.assert:
+        that: "pub_posture.source == 'central'"
+        fail_msg: >-
+          POSTURE_SOURCE_INATTENDUE : labctl a répondu source='{{ pub_posture.source }}'
+          alors qu'un registre est configuré ({{ pub_posture_source }}). La réponse vient
+          donc de la DEMANDE elle-même : le registre n'a rien arbitré. Refus.
+
+    - name: "Posture : ce qui sera réellement appliqué"
+      ansible.builtin.debug:
+        msg: >-
+          POSTURE_RETENUE : {{ apim_api.name }} classification={{ pub_posture.classification
+          }} exposure={{ pub_posture.exposure }} bundle={{ pub_posture.bundle }} authn={{
+          pub_posture.authn }} policies=[{{ pub_posture.required_policies | join(', ') }}]
+          tenant={{ pub_posture.tenant }} source={{ pub_posture.source }} (la demande
+          déclarait {{ pub_posture.declared_classification }}/{{ pub_posture.declared_exposure }})
+
+    - name: "Posture : sur-provisionnement signalé (la demande déclarait plus fort)"
+      ansible.builtin.debug:
+        msg: "⚠ {{ item }}"
+      loop: "{{ pub_posture.warnings | default([]) | select | list }}"

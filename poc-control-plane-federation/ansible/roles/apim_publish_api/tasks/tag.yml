@@ -1,0 +1,189 @@
+---
+# roles/apim_publish_api/tasks/tag.yml — LE TAG DE POSTURE : posé par la
+# plateforme, jamais repris du demandeur (jalon P3, ADR-093).
+#
+# CE QUE CETTE TÂCHE ÉCRIT. Un seul tag, sur l'objet API de la gateway :
+# `posture:<bouquet>` — le NOM de la cellule de la table de vérité que le
+# registre central a retenue (P2/posture.yml). La valeur n'est ni lue dans le
+# manifeste ni composée ici : elle arrive FINIE de `labctl posture`
+# (pub_posture.tag), la même autorité qui a dérivé le bouquet. Composer
+# « préfixe + bouquet » en Jinja serait une recopie de vocabulaire de plus, et
+# P1 a passé un jalon à en supprimer quatre.
+#
+# OÙ ELLE L'ÉCRIT, ET POURQUOI CE CHAMP-LÀ. Dans `apiDefinition.tags`, c'est-à-
+# dire les `tags` de la spec OpenAPI. Ce n'est pas un choix : `apiTags` — le
+# champ que le contrat publié désigne — est MORT sur la 10.15 (inécrivable par
+# toute surface essayée, `PUT` à 200 sans effet ; mesuré au spike A de P0), et
+# `apiDefinition.tags` est le seul porteur réel, celui qu'indexe `GET /tags`.
+#
+# LA CONSÉQUENCE DURE, ET CE QU'ON EN FAIT. Ce champ est donc PARTAGÉ avec le
+# producteur : les tags de son contrat y atterrissent, et la plateforme écrit
+# dans la même liste. « Qui a écrit en dernier » ne peut pas fonder la propriété
+# — d'où un ESPACE DE NOMS réservé (pub_posture.tag_prefix). Tout tag qui le
+# porte appartient à la plateforme : la tâche les RETIRE TOUS avant de poser
+# exactement celui qu'elle a dérivé. Un contrat qui embarque `posture:m-internal`
+# pour se faire passer pour plus anodin qu'il n'est PERD ce tag ; il n'en gagne
+# aucun.
+#
+# CE QU'ELLE NE DÉTRUIT PAS, et c'est délibéré. Les tags HORS de l'espace de
+# noms sont ceux du producteur et sont préservés à l'octet près. Le GOAL disait
+# « écraser, pas compléter » ; écraser la LISTE ENTIÈRE serait un dommage
+# gratuit — les opérations OpenAPI RÉFÉRENCENT leurs tags par nom
+# (`operation.tags`), et le contrat `apis/accounts-read.openapi.yaml` de ce
+# dépôt en est l'exemple vivant (tag `accounts`, référencé par ses deux
+# opérations). Les effacer casserait le regroupement documentaire du producteur
+# sans rien apporter à la sécurité. Ce que le jalon exige, c'est que le
+# producteur ne puisse pas écrire LA POSTURE — pas qu'il perde ses étiquettes
+# métier. L'écrasement porte donc sur l'espace de noms, ce qui est STRICTEMENT
+# plus fort qu'un ajout et strictement moins destructeur qu'un effacement.
+#
+# QUAND ELLE TOURNE — DEUX FOIS, et le même fichier les deux fois.
+#   1. `pose`     : après l'import/la mise à jour de la définition, AVANT
+#                   l'activation. Une API dont le tag n'a pas pu être posé n'est
+#                   donc jamais mise en service.
+#   2. `relecture`: en toute fin de rôle. Un `PUT /apis/{id}` de définition SANS
+#                   `tags` EFFACE le tag (mesuré, spike D de P0 ; et
+#                   `overwriteTags=false` n'en protège pas), et le rôle écrit
+#                   encore après la pose (approbateurs). La seconde passe
+#                   re-converge si quelque chose a effacé, et RELIT dans tous les
+#                   cas. Le fichier étant idempotent, la seconde passe ne coûte
+#                   qu'un GET quand tout va bien.
+#
+# CE QU'ELLE NE COÛTE PAS : de coupure. Mesuré le 2026-09-05 sur la 10.15 réelle
+# — le `PUT /apis/{id}` de l'objet NU est ACCEPTÉ sur une API ACTIVE, l'API reste
+# active et le data-plane répond pendant toute l'opération. (Le refus 400 bien
+# connu sur API active porte sur le PUT MULTIPART de ré-import de contrat, pas
+# sur celui-ci.) La pose du tag ne croise donc pas la contrainte de zéro-coupure
+# d'ADR-079, et n'est réservée à aucun palier.
+
+- name: "Tag ({{ pub_tag_phase | default('pose') }}) : la posture a-t-elle été ARBITRÉE ?"
+  ansible.builtin.set_fact:
+    pub_tag_governed: "{{ (pub_posture is defined) and ((pub_posture.tag | default('')) | length > 0) }}"
+
+# Sans registre central, il n'y a pas de posture gouvernée — donc pas de tag à
+# poser. Poser ici le tag de la posture DÉCLARÉE reviendrait à laisser le
+# demandeur choisir son propre tag, c'est-à-dire exactement ce que ce jalon
+# interdit ; et retirer les tags réservés sans en poser aucun donnerait une API
+# muette qu'on pourrait croire gouvernée. On ne touche donc à RIEN, et on le dit.
+- name: "Tag ({{ pub_tag_phase | default('pose') }}) : AVERTISSEMENT — aucune posture arbitrée, aucun tag posé"
+  ansible.builtin.debug:
+    msg: >-
+      ⚠ TAG_NON_ARBITRE : la posture de '{{ apim_api.name }}' n'a été arbitrée par aucun
+      registre central (cf. POSTURE_NON_ARBITREE), donc la plateforme ne pose AUCUN tag de
+      posture. Les tags que porte l'API sont ceux de son contrat, y compris s'ils ressemblent
+      à un tag de plateforme — ils n'engagent personne. Acceptable hors pipeline (rejeu
+      local) ; JAMAIS dans une chaîne de publication, qui pose toujours la source.
+  when: "not (pub_tag_governed | bool)"
+
+- name: "Tag ({{ pub_tag_phase | default('pose') }}) : poser le tag dérivé, et le relire"
+  when: "pub_tag_governed | bool"
+  block:
+
+    - name: "Tag ({{ pub_tag_phase | default('pose') }}) : relire le record de l'API"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/apis/{{ apim_api_id }}"
+      register: pub_tag_get
+      changed_when: false
+
+    - name: "Tag ({{ pub_tag_phase | default('pose') }}) : record et tags courants"
+      ansible.builtin.set_fact:
+        pub_tag_rec: "{{ pub_tag_get.json.apiResponse.api }}"
+        pub_tag_current: >-
+          {{ ((pub_tag_get.json.apiResponse.api.apiDefinition | default({})).tags | default([]) | default([], true))
+             | selectattr('name', 'defined') | list }}
+
+    # Le partage du champ, traité : ce qui reste au producteur (tout ce qui est
+    # HORS de l'espace de noms) et ce que la plateforme impose (exactement un
+    # tag). `regex_escape` parce que le préfixe vient d'une autre couche : un
+    # jour où il porterait un métacaractère, un `match` nu sélectionnerait de
+    # travers — en silence, dans les DEUX sens.
+    - name: "Tag ({{ pub_tag_phase | default('pose') }}) : ce qui reste au producteur, et ce que la plateforme impose"
+      ansible.builtin.set_fact:
+        pub_tag_kept: >-
+          {{ pub_tag_current
+             | rejectattr('name', 'match', '^' ~ (pub_posture.tag_prefix | regex_escape)) | list }}
+        pub_tag_desired_one:
+          name: "{{ pub_posture.tag }}"
+          description: >-
+            Posture gouvernée (ADR-091/093) — posée par la plateforme depuis le registre
+            central ; toute valeur écrite ici par un contrat est écrasée.
+
+    - name: "Tag ({{ pub_tag_phase | default('pose') }}) : la liste visée"
+      ansible.builtin.set_fact:
+        pub_tag_desired: "{{ pub_tag_kept + [pub_tag_desired_one] }}"
+
+    - name: "Tag ({{ pub_tag_phase | default('pose') }}) : état lu"
+      ansible.builtin.debug:
+        msg: >-
+          TAG_ETAT : {{ apim_api.name }} tags lus={{ pub_tag_current | map(attribute='name') | list }}
+          — réservés repris par la plateforme (retirés puis remplacés par le seul tag
+          dérivé){{ ' : ' }}{{ (pub_tag_current | map(attribute='name') | list)
+             | difference(pub_tag_kept | map(attribute='name') | list) }},
+          conservés={{ pub_tag_kept | map(attribute='name') | list }},
+          tag de posture à poser='{{ pub_posture.tag }}' (bouquet {{ pub_posture.bundle }},
+          source {{ pub_posture.source }})
+
+    # Idempotence : on n'écrit que si la liste des NOMS diffère. C'est le seul
+    # axe qui porte de la sécurité — une description qui aurait dérivé ne change
+    # ni la posture ni ce qu'un lecteur en conclut.
+    - name: "Tag ({{ pub_tag_phase | default('pose') }}) : PUT /apis/{id} — objet NU (l'enveloppe apiResponse.api est refusée pour ce champ)"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/apis/{{ apim_api_id }}"
+        method: PUT
+        body: >-
+          {{ pub_tag_rec | combine({'apiDefinition':
+             (pub_tag_rec.apiDefinition | default({})) | combine({'tags': pub_tag_desired})}) }}
+        status_code: [200, 201]
+      register: pub_tag_put
+      when: >-
+        (pub_tag_current | map(attribute='name') | list)
+        != (pub_tag_desired | map(attribute='name') | list)
+
+    # LA PORTE. Un 200 ne vaut rien sur cette gateway : `PUT /apis/{id}` rend 200
+    # sans rien écrire sur le champ voisin `apiTags` (mesuré), et `GET
+    # /apis/{id}/tags` rend le record complet en 200 pour un sous-chemin qui
+    # n'existe pas. Seule la RELECTURE distingue « posé » de « accepté puis
+    # ignoré ».
+    - name: "Tag ({{ pub_tag_phase | default('pose') }}) : READ-BACK — relire le record"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/apis/{{ apim_api_id }}"
+      register: pub_tag_after
+      changed_when: false
+
+    - name: "Tag ({{ pub_tag_phase | default('pose') }}) : tags relus"
+      ansible.builtin.set_fact:
+        pub_tag_after_names: >-
+          {{ ((pub_tag_after.json.apiResponse.api.apiDefinition | default({})).tags | default([]) | default([], true))
+             | selectattr('name', 'defined') | map(attribute='name') | list }}
+
+    - name: "Tag ({{ pub_tag_phase | default('pose') }}) : tags réservés effectivement portés"
+      ansible.builtin.set_fact:
+        pub_tag_reserved_after: >-
+          {{ pub_tag_after_names | select('match', '^' ~ (pub_posture.tag_prefix | regex_escape)) | list }}
+
+    # Trois assertions, trois défaillances DIFFÉRENTES :
+    #  1. le tag n'a pas été posé (ou a été effacé entre-temps) ;
+    #  2. il a été posé MAIS un tag réservé du producteur a survécu à côté — la
+    #     gateway porterait alors deux postures contradictoires, et rien ne
+    #     dirait laquelle fait foi ;
+    #  3. la pose a emporté des tags métier — régression fonctionnelle que ce
+    #     jalon n'a aucune raison de causer.
+    - name: "Tag ({{ pub_tag_phase | default('pose') }}) : FAIL-CLOSED — le tag de posture est RÉELLEMENT porté, et il est SEUL"
+      ansible.builtin.assert:
+        that:
+          - "pub_posture.tag in pub_tag_after_names"
+          - "pub_tag_reserved_after == [pub_posture.tag]"
+          - "(pub_tag_kept | map(attribute='name') | list) | difference(pub_tag_after_names) | length == 0"
+        fail_msg: >-
+          TAG_UNCONFIRMED : après écriture (HTTP {{ pub_tag_put.status | default('aucun PUT — la liste
+          était déjà conforme') }}), '{{ apim_api.name }}' porte tags={{ pub_tag_after_names }}.
+          Attendu : '{{ pub_posture.tag }}' présent, SEUL tag de l'espace de noms
+          '{{ pub_posture.tag_prefix }}' (relu : {{ pub_tag_reserved_after }}), et les tags du
+          producteur {{ pub_tag_kept | map(attribute='name') | list }} intacts. Un PUT de
+          définition sans `tags` efface le tag (mesuré) : si cette relecture est la seconde,
+          c'est qu'une écriture postérieure à la pose l'a emporté.
+        success_msg: >-
+          TAG_CONFIRMED ({{ pub_tag_phase | default('pose') }}) : '{{ apim_api.name }}' porte
+          '{{ pub_posture.tag }}' — bouquet {{ pub_posture.bundle }}, arbitré par le registre
+          {{ pub_posture.source }} ; tags du producteur conservés :
+          {{ pub_tag_kept | map(attribute='name') | list }}.

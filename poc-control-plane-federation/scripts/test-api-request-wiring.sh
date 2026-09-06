@@ -47,7 +47,7 @@ ko(){ FAIL=$((FAIL+1)); printf '  ❌ %s\n' "$*"; }
 # PASS+FAIL (qui devient vrai par construction : une section entière sautée
 # silencieusement ferait baisser le total affiché SANS jamais faire échouer ce
 # script). Toute section ajoutée/retirée DOIT mettre à jour ce nombre à la main.
-EXPECTED_CHECKS=51
+EXPECTED_CHECKS=54
 
 [ -f "$JOB" ] || { echo "job introuvable : $JOB"; exit 2; }
 [ -f "$JF" ]  || { echo "Jenkinsfile introuvable : $JF"; exit 2; }
@@ -127,12 +127,31 @@ echo "== 3. le FORMULAIRE reste dans le XML, marqueurs de listes intacts =="
 # les équipes/APIs réellement présentes sur Gitea main. Les figer dans Git
 # viderait ou périmerait le formulaire.
 PARAM_KO=""
-for P in ACTION TEAM API_NAME API_VERSION API_BASE NEW_VERSION OPENAPI_SPEC INBOUND_MODE; do
+for P in ACTION TEAM API_NAME API_VERSION API_BASE NEW_VERSION OPENAPI_SPEC INBOUND_MODE \
+         CLASSIFICATION EXPOSURE; do
   grep -q "<name>${P}</name>" "$JOB" || PARAM_KO="${PARAM_KO} ${P}"
 done
 [ -z "$PARAM_KO" ] \
-  && ok "les 8 paramètres du formulaire sont toujours déclarés dans le XML" \
+  && ok "les 10 paramètres du formulaire sont toujours déclarés dans le XML (dont la posture, P2)" \
   || ko "paramètres absents du XML :${PARAM_KO} — le formulaire serait borgne"
+
+# ── P2 (ADR-092) : la posture doit ARRIVER au script ─────────────────────────
+# Deux listes de plus dans le XML ne servent à rien si le pipeline ne les route
+# pas : le script les verrait vides et refuserait en CHAMP_REQUIS, sur une
+# saisie pourtant remplie. Le canal est le MÊME withEnv que les huit autres —
+# jamais le canal natif, dont Jenkins résout les `${…}` avant le `sh`.
+grep -q 'CLASSIFICATION=${params.CLASSIFICATION' "$JF" \
+  && ok "CLASSIFICATION routée par withEnv (valeur BRUTE, comme les huit autres)" \
+  || ko "CLASSIFICATION non routée — le script la verrait vide et refuserait une saisie remplie"
+grep -q 'EXPOSURE=${params.EXPOSURE' "$JF" \
+  && ok "EXPOSURE routée par withEnv (valeur BRUTE)" \
+  || ko "EXPOSURE non routée — idem"
+# Le dépôt de gouvernance est un knob de SITE, sans repli de lab (porte
+# ci/lint-config-knobs.sh) : un défaut ferait arbitrer la posture contre une
+# gouvernance qui n'est pas celle du client, en silence.
+grep -qE 'GOVERNANCE_REPO +=' "$JF" && grep -qE 'GOVERNANCE_PATH +=' "$JF" \
+  && ok "le dépôt du registre central est un knob de site du pipeline (sans défaut)" \
+  || ko "GOVERNANCE_REPO/GOVERNANCE_PATH absents du pipeline — le registre ne serait pas configurable"
 grep -q '<!--CHOICES:TEAMS-->' "$JOB" \
   && ok "marqueur CHOICES:TEAMS présent (liste des équipes générée à la pose)" \
   || ko "marqueur CHOICES:TEAMS perdu — la liste des équipes ne serait plus jamais substituée"

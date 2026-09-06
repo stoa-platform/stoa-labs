@@ -117,12 +117,34 @@ apim_pub_approvers_join: ","      # mettre "" pour ecrire un TABLEAU
 # la reutiliser aurait echoue "variable is undefined" a chaque publish normal.
 apim_pub_providers_file: "providers.dev.yml"
 
+# --- P2 (ADR-092) : la POSTURE, et qui la décide -----------------------------
+# Chemin du REGISTRE CENTRAL de classification (le fichier, pas le dépôt),
+# matérialisé par le pipeline dans un clone FRAIS du dépôt de gouvernance —
+# team-publish.sh §4b. Vide = aucun arbitrage : le rôle se comporte comme avant
+# ce jalon et le DIT bruyamment (POSTURE_NON_ARBITREE). Même dualité que le gate
+# labctl (A1 sans source / A5 avec) ; ce n'est PAS un interrupteur de sécurité à
+# poser dans un pipeline, c'est le mode rejeu local où il n'y a pas de
+# gouvernance à consulter. Une épreuve de câblage vérifie que la chaîne, elle,
+# la pose toujours.
+apim_pub_classification_source: ""
+# Le binaire qui PORTE la table de vérité exposition × classification. Le rôle ne
+# la réécrit pas en Jinja : les deux axes n'ont pas la même nature (l'exposition
+# n'est pas une échelle, ADR-091) et une recopie serait la cinquième que P1 a
+# passé un jalon à supprimer. Résolu par PATH ; un chemin absolu convient.
+apim_pub_labctl_bin: "labctl"
+
 # --- l'API à publier --------------------------------------------------------
 apim_api:
   name: "accounts-read"
   version: "1.0.0"
   contract: ""          # chemin du contrat OpenAPI (yaml|json) — REQUIS (absolu ou relatif au playbook)
   team: ""              # nom d'équipe (accessProfile) à assigner — optionnel (isolation ADR-076)
+  # Posture DÉCLARÉE par la demande (P2). Vides ici parce qu'un défaut de rôle
+  # serait une posture que personne n'a demandée : c'est le manifeste qui les
+  # porte, et le registre central qui tranche (tasks/posture.yml). Sous registre,
+  # leur absence est un refus nommé (POSTURE_MANQUANTE), jamais un défaut.
+  classification: ""    # VH | H | M — intégrité de la donnée
+  exposure: ""          # internal | external | internet — ENTRANT : qui peut appeler
   # update: si l'API EXISTE déjà (même name+version), ré-importer le contrat
   # (le contrat devient la source de vérité). false = create-only (défaut sûr :
   # pas de re-déploiement surprise). true ⇒ deactivate → PUT /apis/{id} → activate

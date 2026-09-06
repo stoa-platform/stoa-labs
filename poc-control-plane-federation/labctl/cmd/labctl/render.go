@@ -15,8 +15,10 @@ var renderCmd = &cobra.Command{
 	Short: "Derive the required security-policy bundle from a contract's integrity classification (ADR-076)",
 	Long: "render turns 'security = f(integrity)' into a machine-derived, fail-closed fact: it reads a UAC " +
 		"contract's classification (+ exposure/tags) and prints the required_policies bundle the gateway must " +
-		"enforce — VH -> oauth2+mtls, H/M -> oauth2, M+auth-exception:apikey (internal) -> apikey; external adds " +
-		"ip-allowlist; every tier gets rate-limit + audit-log. FAIL-CLOSED: an unknown classification or an " +
+		"enforce, and the NAMED truth-table cell it comes from (ADR-091) — VH -> oauth2+mtls, H/M -> oauth2, " +
+		"M+auth-exception:apikey (internal) -> apikey; exposure external adds ip-allowlist, internet REPLACES it " +
+		"with threat-protection (a public caller is not enumerable); every cell gets rate-limit + audit-log + " +
+		"https-only. FAIL-CLOSED: an unknown classification, an unknown exposure, an ungoverned cell or an " +
 		"inconsistent apikey exception exits 1 — a project cannot ship a posture weaker than its integrity level. " +
 		"Read-only; never touches a gateway.\n\nPath: the positional argument wins, else the shared -f/--file flag.",
 	Args: cobra.MaximumNArgs(1),
@@ -59,12 +61,13 @@ func runRender(cmd *cobra.Command, args []string) error {
 			"name":              c.Name,
 			"classification":    c.Classification,
 			"exposure":          effExposure,
+			"bundle":            res.Bundle,
 			"authn":             res.Authn,
 			"required_policies": res.RequiredPolicies,
 		})
 	}
-	fmt.Fprintf(out, "%s [classification=%s exposure=%s] -> authn=%s\n",
-		c.Name, c.Classification, effExposure, res.Authn)
+	fmt.Fprintf(out, "%s [classification=%s exposure=%s] -> bundle=%s authn=%s\n",
+		c.Name, c.Classification, effExposure, res.Bundle, res.Authn)
 	fmt.Fprintf(out, "required_policies: %s\n", strings.Join(res.RequiredPolicies, ", "))
 	return nil
 }

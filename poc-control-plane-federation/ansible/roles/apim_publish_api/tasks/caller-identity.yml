@@ -1,0 +1,368 @@
+---
+# roles/apim_publish_api/tasks/caller-identity.yml — LE REFUS PAR DÉFAUT :
+# l'API refuse elle-même l'appelant qu'elle n'a pas identifié (jalon P6, ADR-096).
+#
+# CE QUE CETTE TÂCHE ÉCRIT, ET OÙ. UNE action `evaluatePolicy` au stage `IAM` de
+# la policy SERVICE de l'API : `allowAnonymous=false` et une `IdentificationRule`
+# par dimension exigée. Les dimensions arrivent FINIES de deux endroits, et ce
+# fichier n'en compose aucune :
+#   - la POSTURE, via `labctl posture` (`pub_posture.caller_identity`) : la
+#     cellule `external` d'ADR-091 exige `ipAddressRange`, `internal` n'exige
+#     rien, et `internet` REMPLACE l'allow-list par threat-protection puisque
+#     l'appelant public n'est pas énumérable ;
+#   - le VOLET INBOUND du manifeste (`apim_api.inbound.mode`) : `jwt` donne
+#     (open, jwtClaims), `oauth2` donne (strict, oAuth2Token).
+#
+# POURQUOI CE JALON EXISTE, ET CE QU'IL CORRIGE. La prémisse d'origine de P6 —
+# « réveiller le deny-by-default du port » — est TOMBÉE : le mode d'accès d'un
+# port de l'Integration Server garde `/invoke`, pas le dispatch `/gateway` de la
+# gateway (spike B de P0 : une API publiée répond 200 sur un port en `deny` dont
+# la liste ne la mentionne pas). La surface qui garde VRAIMENT le dispatch est
+# celle-ci. Et il y avait plus urgent que de concevoir : P1 fait de
+# l'`ip-allowlist` la règle propre d'`external`, le read-back rendait
+# « enforced au consommateur », et le drapeau qui POSE la règle
+# (EnforceInboundIdentifiers, consumer.go) n'était positionné NULLE PART — ni
+# CLI, ni manifeste, ni pipeline. Chaque cellule `external` publiée portait donc
+# un contrôle que rien n'opposait.
+#
+# CE QUE LA MESURE A TRANCHÉ (spike P6, 2026-09-06, wM 10.15 réelle, 49/0) :
+#   S1 — une API fraîchement publiée a un stage IAM VIDE et sert n'importe qui,
+#        anonymement. Il n'y a pas de refus par défaut à réveiller : il y en a
+#        un à POSER.
+#   S2 — l'identifier `ipAddressRange` écrit sur l'application n'oppose RIEN
+#        tant qu'aucune règle ne l'exige : appelant hors plage, 200.
+#   S3 — la règle posée, MÊME API et MÊME appelant : 403 hors plage, 200 dedans,
+#        403 depuis une autre origine. Et un joker 0.0.0.0-255.255.255.255
+#        n'identifie PERSONNE (403) — on ne peut pas « ouvrir » l'allow-list.
+#   S4 — la règle retirée à plage inchangée, l'appel REPASSE : c'est bien elle
+#        qui refusait.
+#   S5 — une seconde application souscrite SANS identifier ne sauve pas l'appel :
+#        le repli `sys:defaultApplication` ne rouvre pas la porte.
+#   S7 — la gateway REFUSE une seconde action au stage IAM (HTTP 409) : les
+#        dimensions se FUSIONNENT dans une action unique, elles ne s'empilent pas.
+#   S8 — la règle se pose sur une API INACTIVE et survit à l'activation : d'où
+#        la position de cette tâche, avant l'activation. Une API gouvernée ne
+#        sert donc JAMAIS un appel non identifié, pas même pendant sa
+#        publication (même exigence qu'en P4 et P5).
+#   S9 — elle survit au ré-import de contrat (contrairement au tag de P3) : une
+#        seule passe suffit, pas de relecture finale.
+#
+# LE FAIT QUI COMMANDE LA FORME (S6, et il est dur). DÉTACHER une action d'une
+# policy DÉTRUIT l'objet action. Toute autre policy qui le référençait garde un
+# UUID mort : son plan de données continue de refuser (mesuré : 403, donc pas de
+# fail-open), mais sa RÉACTIVATION échoue en 500 jusqu'à réparation — c'est le
+# mécanisme, jusqu'ici non identifié, du NPE que ce projet connaissait déjà.
+# Conséquence : une action IAM ne doit être référencée que par UNE policy. Cette
+# tâche pose donc un objet PAR API, et REFUSE de détacher un objet partagé
+# (ACTION_IAM_PARTAGEE) plutôt que de casser silencieusement les voisines — le
+# play `ansible/is-iam-action-split.yml` fait la conversion, une fois par
+# environnement, sur le modèle du play d'amorçage des global policies (P4).
+
+- name: "Identité : dimension du volet inbound du manifeste"
+  ansible.builtin.set_fact:
+    pub_ci_inbound: >-
+      {{ [] if ((apim_api.inbound | default({})) | length == 0)
+         else ([{'lookup': 'strict', 'type': 'oAuth2Token'}]
+               if (apim_api.inbound.mode | default('jwt')) == 'oauth2'
+               else [{'lookup': 'open', 'type': 'jwtClaims'}]) }}
+
+# La posture arrive FINIE : `caller_identity` est une liste de dimensions dans le
+# vocabulaire du produit. Le rôle ne la dérive pas — la table de vérité vit dans
+# labctl (P1), et en réécrire une copie en Jinja serait reprendre d'une main ce
+# que P2 a rendu de l'autre. Chaque dimension de posture est `strict` : elle doit
+# résoudre l'appelant à UNE application précise, sinon elle n'identifie rien
+# (`open` la rendrait décorative, ce qui est exactement le fail-open corrigé ici).
+- name: "Identité : dimensions exigées par la POSTURE"
+  ansible.builtin.set_fact:
+    pub_ci_posture: >-
+      {{ ((pub_posture.caller_identity | default([])) if pub_posture is defined else [])
+         | map('regex_replace', '^(.+)$', '{"lookup":"strict","type":"\1"}')
+         | map('from_json') | list }}
+
+- name: "Identité : la liste FUSIONNÉE (une seule action au stage IAM — 409 sinon)"
+  ansible.builtin.set_fact:
+    pub_ci_rules: "{{ pub_ci_inbound + pub_ci_posture }}"
+    pub_ci_types: "{{ (pub_ci_inbound + pub_ci_posture) | map(attribute='type') | list | sort }}"
+
+# Aucune dimension : le manifeste ne déclare pas d'inbound ET la cellule n'exige
+# aucune restriction réseau. On ne touche à rien — et surtout on ne pose pas
+# « allowAnonymous=false sans règle », qui refuserait tout le monde. Le silence
+# est ici la bonne réponse, mais il est DIT : une API sans aucune dimension sert
+# n'importe qui (mesuré, S1), et c'est une information de build.
+- name: "Identité : AVERTISSEMENT — aucune dimension exigée, l'API sert tout appelant"
+  ansible.builtin.debug:
+    msg: >-
+      ⚠ IDENTITE_APPELANT_NON_EXIGEE : ni volet inbound ni dimension de posture pour
+      '{{ apim_api.name }}'. Le stage IAM reste tel quel — mesuré (spike P6 S1), une API
+      sans règle d'identification sert n'importe quel appelant, anonymement. Acceptable
+      pour une cellule `internal` sans inbound ; jamais pour une API exposée.
+  when: "pub_ci_types | length == 0"
+
+- name: "Identité : exiger les dimensions, et les relire"
+  when: "pub_ci_types | length > 0"
+  block:
+
+    # ===== 1. La policy SERVICE de l'API =====================================
+    - name: "Identité : relire le record de l'API"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/apis/{{ apim_api_id }}"
+      register: pub_ci_api
+      changed_when: false
+
+    - name: "Identité : FAIL-CLOSED — l'API doit porter au moins une policy"
+      ansible.builtin.assert:
+        that: "((pub_ci_api.json.apiResponse.api.policies | default([])) | length) > 0"
+        fail_msg: >-
+          IDENTITE_SANS_POLICY : '{{ apim_api.name }}' ne référence aucune policy, donc aucun
+          stage IAM où exiger l'identification de l'appelant. Une API importée en porte une
+          nativement : son absence est une anomalie de la gateway, pas un cas nominal. Rien
+          n'a été activé.
+
+    - name: "Identité : lire les policies de l'API"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/policies/{{ item }}"
+      register: pub_ci_pols
+      changed_when: false
+      loop: "{{ pub_ci_api.json.apiResponse.api.policies | default([]) }}"
+
+    # Même règle de résolution que le moteur Go (findServicePolicy) et que
+    # entry-protocol.yml : la policy de scope SERVICE porte les stages ; à
+    # défaut, la première. C'est de la résolution d'objet, pas du vocabulaire de
+    # posture — rien de ce que P1 a centralisé ne se rejoue ici.
+    - name: "Identité : isoler la policy qui porte les stages (SERVICE, sinon la première)"
+      ansible.builtin.set_fact:
+        pub_ci_policy: >-
+          {{ ((pub_ci_pols.results | map(attribute='json')
+               | map(attribute='policy') | select('defined') | list
+               | selectattr('policyScope', 'defined')
+               | selectattr('policyScope', 'equalto', 'SERVICE') | list)
+              | first)
+             | default(((pub_ci_pols.results | first).json.policy | default({})), true) }}
+
+    - name: "Identité : l'id de cette policy"
+      ansible.builtin.set_fact:
+        pub_ci_policy_id: "{{ pub_ci_policy.id | default('') }}"
+
+    - name: "Identité : FAIL-CLOSED — la policy doit être identifiable"
+      ansible.builtin.assert:
+        that: "pub_ci_policy_id | length > 0"
+        fail_msg: >-
+          IDENTITE_POLICY_ILLISIBLE : aucune policy exploitable relue pour '{{ apim_api.name }}'.
+          Rien n'a été activé.
+
+    - name: "Identité : actions actuellement au stage IAM"
+      ansible.builtin.set_fact:
+        pub_ci_current: >-
+          {{ (pub_ci_policy.policyEnforcements | default([]))
+             | selectattr('stageKey', 'defined')
+             | selectattr('stageKey', 'equalto', 'IAM')
+             | map(attribute='enforcements') | flatten
+             | selectattr('enforcementObjectId', 'defined')
+             | map(attribute='enforcementObjectId') | list }}
+
+    # ===== 2. Notre objet PROPRE ============================================
+    # Le NOM porte l'API : c'est ce qui rend l'objet propre à celle-ci, et donc
+    # ce qui rend un futur détachement inoffensif pour les autres. La
+    # correspondance exige AUSSI l'empreinte exacte des règles : un objet qui
+    # porterait notre nom avec d'autres dimensions serait un objet DÉRIVÉ, et le
+    # réutiliser attesterait une barrière qu'il ne porte pas.
+    - name: "Identité : inventaire des policyActions"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/policyActions"
+      register: pub_ci_actions
+      changed_when: false
+
+    - name: "Identité : le nom de NOTRE action"
+      ansible.builtin.set_fact:
+        pub_ci_name: "identify ({{ apim_api.name }} {{ apim_api.version }})"
+        pub_ci_action_id: ""
+
+    - name: "Identité : id de notre action si elle existe déjà (nom ⊕ empreinte)"
+      ansible.builtin.set_fact:
+        pub_ci_action_id: "{{ item.id }}"
+      loop: "{{ pub_ci_actions.json.policyAction | default([]) }}"
+      loop_control: { label: "{{ item.id | default('?') }}" }
+      when:
+        - "(item.templateKey | default('')) == 'evaluatePolicy'"
+        - "pub_ci_name in (item.names | default([]) | map(attribute='value') | list)"
+        - >-
+          (item.parameters | default([]) | selectattr('templateKey', 'equalto', 'IdentificationRule')
+           | map(attribute='parameters') | flatten
+           | selectattr('templateKey', 'equalto', 'identificationType')
+           | map(attribute='values') | flatten | sort) == pub_ci_types
+
+    # ===== 3. La garde du PARTAGE (S6) ======================================
+    # Si le stage porte déjà une action qui n'est pas la nôtre, la remplacer la
+    # DÉTRUIRA (mesuré). Tant qu'elle est référencée par une AUTRE policy, la
+    # détruire laisserait ces APIs avec un UUID mort : elles continueraient de
+    # refuser au plan de données, mais leur prochaine ACTIVATION échouerait en
+    # 500. On refuse donc, en nommant la conversion à jouer.
+    - name: "Identité : y a-t-il une action étrangère à remplacer ?"
+      ansible.builtin.set_fact:
+        pub_ci_to_drop: "{{ pub_ci_current | reject('equalto', pub_ci_action_id) | list }}"
+        pub_ci_sharers: []
+
+    - name: "Identité : qui d'autre référence l'action à remplacer ?"
+      when: "pub_ci_to_drop | length > 0"
+      block:
+        - name: "Identité : inventaire des policies"
+          ansible.builtin.uri:
+            url: "{{ apim_ss_api_base }}/policies"
+          register: pub_ci_all_policies
+          changed_when: false
+
+        - name: "Identité : policies étrangères qui la référencent"
+          ansible.builtin.set_fact:
+            pub_ci_sharers: "{{ pub_ci_sharers + [item.id] }}"
+          loop: "{{ pub_ci_all_policies.json.policy | default([]) }}"
+          loop_control: { label: "{{ item.id | default('?') }}" }
+          when:
+            - "(item.id | default('')) != pub_ci_policy_id"
+            - >-
+              (item.policyEnforcements | default([])
+               | selectattr('stageKey', 'defined')
+               | selectattr('stageKey', 'equalto', 'IAM')
+               | map(attribute='enforcements') | flatten
+               | selectattr('enforcementObjectId', 'defined')
+               | map(attribute='enforcementObjectId') | list)
+              is contains(pub_ci_to_drop | first)
+
+        - name: "Identité : FAIL-CLOSED — ne jamais détruire une action PARTAGÉE"
+          ansible.builtin.assert:
+            that: "pub_ci_sharers | length == 0"
+            fail_msg: >-
+              ACTION_IAM_PARTAGEE : l'action {{ pub_ci_to_drop | first }} attachée à
+              '{{ apim_api.name }}' est AUSSI référencée par {{ pub_ci_sharers | length }} autre(s)
+              policy ({{ pub_ci_sharers[:3] | join(', ') }}). La remplacer ici la DÉTRUIRAIT —
+              mesuré (spike P6 S6) : les policies qui la référencent garderaient un UUID mort et
+              leur prochaine activation échouerait en 500. Jouer d'abord
+              `ansible-playbook ansible/is-iam-action-split.yml` (une fois par environnement) pour
+              donner à chaque API son objet propre, puis republier. Rien n'a été activé.
+
+    # ===== 4. Créer NOTRE action si elle n'existe pas ========================
+    # Corps ENVELOPPÉ {policyAction:{…}} : un corps nu est accepté en 200 et
+    # n'écrit rien sur cette gateway (wm-1015-rest-shapes). `logicalConnector=AND`
+    # et `allowAnonymous=false` : chaque dimension doit être satisfaite, et un
+    # appelant qu'aucune ne résout est refusé — c'est là tout le refus par défaut.
+    - name: "Identité : l'en-tête de l'action (connecteur ET, anonyme REFUSÉ)"
+      ansible.builtin.set_fact:
+        pub_ci_params:
+          - { templateKey: "logicalConnector", values: ["AND"] }
+          - { templateKey: "allowAnonymous", values: ["false"] }
+
+    - name: "Identité : une IdentificationRule par dimension"
+      ansible.builtin.set_fact:
+        pub_ci_params: >-
+          {{ pub_ci_params + [{'templateKey': 'IdentificationRule',
+              'parameters': [{'templateKey': 'applicationLookup', 'values': [item.lookup]},
+                             {'templateKey': 'identificationType', 'values': [item.type]}]}] }}
+      loop: "{{ pub_ci_rules }}"
+      loop_control: { label: "{{ item.lookup }}/{{ item.type }}" }
+
+    - name: "Identité : créer notre action AND({{ pub_ci_types | join('+') }}) si absente"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/policyActions"
+        method: POST
+        body:
+          policyAction:
+            names: [{ value: "{{ pub_ci_name }}", locale: "en" }]
+            templateKey: "evaluatePolicy"
+            parameters: "{{ pub_ci_params }}"
+            active: true
+        status_code: [200, 201]
+      register: pub_ci_create
+      when: "pub_ci_action_id | length == 0"
+
+    - name: "Identité : capturer l'id de l'action créée"
+      ansible.builtin.set_fact:
+        pub_ci_action_id: "{{ pub_ci_create.json.policyAction.id | default(pub_ci_create.json.id | default('')) }}"
+      when: "pub_ci_action_id | length == 0"
+
+    - name: "Identité : FAIL-CLOSED — l'action doit avoir une id"
+      ansible.builtin.assert:
+        that: "pub_ci_action_id | length > 0"
+        fail_msg: >-
+          IDENTITE_ACTION_SANS_ID : la gateway n'a pas rendu d'id pour l'action
+          AND({{ pub_ci_types | join('+') }}) de '{{ apim_api.name }}'. Rien n'a été activé.
+
+    # ===== 5. Attacher — NOTRE action, et elle seule =========================
+    # La liste du stage IAM est REMPLACÉE, jamais complétée : la gateway refuse
+    # une seconde action au même stage (409, S7), et deux actions ne se
+    # composeraient de toute façon pas en ET.
+    - name: "Identité : attacher au stage IAM si ce n'est pas déjà fait"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/policies/{{ pub_ci_policy_id }}"
+        method: PUT
+        body:
+          policy: >-
+            {{ pub_ci_policy | combine({'policyEnforcements':
+                [{'stageKey': 'IAM',
+                  'enforcements': [{'enforcementObjectId': pub_ci_action_id, 'order': none}]}]
+                + (pub_ci_policy.policyEnforcements | default([])
+                   | rejectattr('stageKey', 'equalto', 'IAM') | list) }) }}
+        status_code: [200, 201]
+      when: "pub_ci_current != [pub_ci_action_id]"
+
+    # ===== 6. RELECTURE fail-closed ==========================================
+    # Deux lectures, et les deux comptent. La policy dit QUI est attaché ;
+    # l'action dit CE QU'ELLE EXIGE. Sans la seconde, un objet vidé de ses règles
+    # — ou dont `allowAnonymous` aurait dérivé — passerait pour une barrière : le
+    # 200 ne prouve rien, seule la relecture du contenu prouve quelque chose
+    # (règle de ce GOAL depuis P0).
+    - name: "Identité : relire la policy"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/policies/{{ pub_ci_policy_id }}"
+      register: pub_ci_after
+      changed_when: false
+
+    - name: "Identité : ce que le stage IAM référence après écriture"
+      ansible.builtin.set_fact:
+        pub_ci_attached: >-
+          {{ ((pub_ci_after.json.policy | default(pub_ci_after.json)).policyEnforcements | default([]))
+             | selectattr('stageKey', 'defined')
+             | selectattr('stageKey', 'equalto', 'IAM')
+             | map(attribute='enforcements') | flatten
+             | selectattr('enforcementObjectId', 'defined')
+             | map(attribute='enforcementObjectId') | list }}
+
+    - name: "Identité : FAIL-CLOSED — le stage IAM référence NOTRE action, et elle seule"
+      ansible.builtin.assert:
+        that: "pub_ci_attached == [pub_ci_action_id]"
+        fail_msg: >-
+          IDENTITE_NON_ATTACHEE : le stage IAM de '{{ apim_api.name }}' référence
+          {{ pub_ci_attached | default([]) | join(', ') | default('(rien)', true) }} au lieu de la
+          seule action {{ pub_ci_action_id }}. L'appelant ne serait pas identifié comme la posture
+          l'exige. Rien n'a été activé.
+
+    - name: "Identité : relire l'ACTION elle-même"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/policyActions/{{ pub_ci_action_id }}"
+      register: pub_ci_act_after
+      changed_when: false
+
+    - name: "Identité : ce que l'action exige réellement"
+      ansible.builtin.set_fact:
+        pub_ci_read_types: >-
+          {{ ((pub_ci_act_after.json.policyAction | default(pub_ci_act_after.json)).parameters | default([]))
+             | selectattr('templateKey', 'equalto', 'IdentificationRule')
+             | map(attribute='parameters') | flatten
+             | selectattr('templateKey', 'equalto', 'identificationType')
+             | map(attribute='values') | flatten | sort }}
+        pub_ci_read_anon: >-
+          {{ (((pub_ci_act_after.json.policyAction | default(pub_ci_act_after.json)).parameters | default([]))
+              | selectattr('templateKey', 'equalto', 'allowAnonymous')
+              | map(attribute='values') | flatten | first | default('')) | string }}
+
+    - name: "Identité : FAIL-CLOSED — les dimensions relues sont EXACTEMENT celles exigées"
+      ansible.builtin.assert:
+        that:
+          - "pub_ci_read_types == pub_ci_types"
+          - "pub_ci_read_anon | lower == 'false'"
+        fail_msg: >-
+          IDENTITE_NON_CONFIRMEE : l'action {{ pub_ci_action_id }} de '{{ apim_api.name }}' relit
+          dimensions=[{{ pub_ci_read_types | join(', ') }}] allowAnonymous={{ pub_ci_read_anon }},
+          au lieu de [{{ pub_ci_types | join(', ') }}] / false. Une barrière qui ne se relit pas
+          n'est pas une barrière. Rien n'a été activé.
+        success_msg: >-
+          IDENTITE_CONFIRMEE : '{{ apim_api.name }}' exige AND({{ pub_ci_types | join(' + ') }})
+          avec allowAnonymous=false — un appelant non identifié est refusé par l'API elle-même.

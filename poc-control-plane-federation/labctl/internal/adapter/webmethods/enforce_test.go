@@ -26,7 +26,8 @@ var vhRequirement = adapter.EnforcementRequirement{
 	Classification: "VH",
 	Exposure:       "external",
 	Authn:          "oauth2+mtls",
-	Policies:       []string{"audit-log", "ip-allowlist", "mtls", "oauth2", "rate-limit"},
+	Bundle:         "vh-external",
+	Policies:       []string{"audit-log", "https-only", "ip-allowlist", "mtls", "oauth2", "rate-limit"},
 }
 
 // newVHAdapter builds an adapter with the FULL VH manifest knobs (OAuth2 path +
@@ -49,6 +50,7 @@ func newVHAdapter(t *testing.T, srv *httptest.Server) (*Adapter, *adapter.Normal
 			"inboundAuthScope":    "accounts.read",
 			"inboundAuthClientId": "accounts-read-consumer",
 			"inboundMtls":         "true",
+			"inboundIPAllowlist":  "true",
 			"rateLimitRequests":   "1000",
 			"rateLimitInterval":   "1",
 			"rateLimitUnit":       "minutes",
@@ -111,7 +113,11 @@ func TestVerifyEnforcement_VHAllConfirmed(t *testing.T) {
 		"mtls":         adapter.VerdictEnforced,
 		"rate-limit":   adapter.VerdictEnforced,
 		"audit-log":    adapter.VerdictEnforced,
-		"ip-allowlist": adapter.VerdictDegraded,
+		"https-only":   adapter.VerdictEnforced,
+		// P6 (ADR-096) : plus un verdict de complaisance. Le projecteur pose la
+		// dimension réseau dans l'action IAM UNION, et le read-back la relit —
+		// TestVerifyEnforcement_IPAllowlistMissingWhenNotDeclared joue la mutation.
+		"ip-allowlist": adapter.VerdictEnforced,
 	}
 	for p, status := range want {
 		if v := verdictOf(t, rep, p); v.Status != status {
@@ -134,9 +140,14 @@ func TestVerifyEnforcement_VHAllConfirmed(t *testing.T) {
 func TestVerifyEnforcement_CatchesAllowAnonymousDrift(t *testing.T) {
 	mock, a, apiID := publishVH(t, nil)
 
+	// Toutes les actions d'identification, et non la seule empreinte
+	// {oAuth2Token, httpsCertificate} : depuis P6 le projecteur pose l'action
+	// UNION (celle-là plus ipAddressRange), et viser une empreinte figée ferait
+	// muter un objet que le stage IAM ne référence même pas — la mutation
+	// passerait alors pour une non-régression.
 	mock.mu.Lock()
 	for _, act := range mock.actions {
-		if isMtlsIdentifyAction(act) {
+		if tk, _ := act["templateKey"].(string); tk == "evaluatePolicy" {
 			setActionParamValues(act, "allowAnonymous", []any{"true"})
 		}
 	}
@@ -151,6 +162,49 @@ func TestVerifyEnforcement_CatchesAllowAnonymousDrift(t *testing.T) {
 	}
 	if v := verdictOf(t, rep, "oauth2"); v.Status != adapter.VerdictMissing {
 		t.Errorf("oauth2 after allowAnonymous drift = %s, want missing", v.Status)
+	}
+	if v := verdictOf(t, rep, "ip-allowlist"); v.Status != adapter.VerdictMissing {
+		t.Errorf("ip-allowlist after allowAnonymous drift = %s, want missing", v.Status)
+	}
+}
+
+// TestVerifyEnforcement_IPAllowlistMissingWhenNotDeclared est LA mutation du
+// jalon P6 : une API dont le bouquet exige `ip-allowlist` mais dont personne n'a
+// posé la règle (strict, ipAddressRange) doit être REFUSÉE, pas attestée.
+//
+// C'était l'état réel de la chaîne avant P6, et le verdict disait alors
+// « degraded — enforced au consommateur ». Le spike P6 (S2) a mesuré ce que
+// valait cette phrase : appelant HORS plage, application souscrite portant
+// l'allow-list, aucune règle — 200. Si cette épreuve repassait au vert avec le
+// drapeau absent, le contrôle serait redevenu un mot.
+func TestVerifyEnforcement_IPAllowlistMissingWhenNotDeclared(t *testing.T) {
+	mock := newMockGateway()
+	mock.seedTransportAction()
+	mock.seedGlobalLogInvocation("true", "false")
+	srv := httptest.NewServer(mock.handler())
+	t.Cleanup(srv.Close)
+
+	a, api := newVHAdapter(t, srv)
+	a.inbound.ipAllowlist = false // le manifeste ne déclare PAS la restriction réseau
+
+	res, err := a.Publish(context.Background(), api)
+	if err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	rep, err := a.VerifyEnforcement(context.Background(), res.APIID, vhRequirement)
+	if err != nil {
+		t.Fatalf("VerifyEnforcement: %v", err)
+	}
+	v := verdictOf(t, rep, "ip-allowlist")
+	if v.Status != adapter.VerdictMissing {
+		t.Fatalf("ip-allowlist sans dimension posée = %s (%s), want missing", v.Status, v.Detail)
+	}
+	if !strings.Contains(v.Detail, "ipAddressRange") {
+		t.Errorf("le refus doit NOMMER la dimension absente : %q", v.Detail)
+	}
+	// La barrière mTLS, elle, reste opposée : le jalon n'affaiblit rien d'autre.
+	if m := verdictOf(t, rep, "mtls"); m.Status != adapter.VerdictEnforced {
+		t.Errorf("mtls = %s (%s), want enforced", m.Status, m.Detail)
 	}
 }
 
@@ -360,5 +414,71 @@ func TestVerifyEnforcement_SignatureOnlyManifestCannotConfirmOAuth2(t *testing.T
 	}
 	if v := verdictOf(t, rep, "rate-limit"); v.Status != adapter.VerdictEnforced {
 		t.Errorf("rate-limit = %s (%s), want enforced", v.Status, v.Detail)
+	}
+}
+
+// --- ADR-091 (jalon P1) : le plancher https-only et l'écart threat-protection --
+
+// https-only is a FLOOR policy since P1, and its verdict must come from the
+// gateway's transport stage, never from the manifest's intent. Flipping
+// entryProtocolPolicy back to [http] out of band is exactly the drift that
+// would leave an API answering in the clear while the manifest still claims
+// https — so the read-back must call it missing.
+func TestVerifyEnforcement_HTTPSOnlyCatchesPlaintextDrift(t *testing.T) {
+	mock, a, apiID := publishVH(t, nil)
+
+	mock.mu.Lock()
+	for _, act := range mock.routingActions {
+		if tk, _ := act["templateKey"].(string); tk == "entryProtocolPolicy" {
+			setActionParamValues(act, "protocol", []any{"http"})
+		}
+	}
+	mock.mu.Unlock()
+
+	rep, err := a.VerifyEnforcement(context.Background(), apiID, vhRequirement)
+	if err != nil {
+		t.Fatalf("VerifyEnforcement: %v", err)
+	}
+	v := verdictOf(t, rep, "https-only")
+	if v.Status != adapter.VerdictMissing {
+		t.Errorf("https-only après bascule en clair = %s (%s), want missing", v.Status, v.Detail)
+	}
+	if !strings.Contains(v.Detail, "clair") {
+		t.Errorf("le détail doit nommer l'appel en clair : %q", v.Detail)
+	}
+}
+
+// threat-protection (exposure=internet) has NO measured surface on wM 10.15 and
+// none opened in the ADR-075 admin allow-list. The read-back must say so —
+// unverifiable, which the gate REFUSES — rather than attest a control nobody
+// has observed. This is écart ADR-091 #1, and it is deliberately loud: an
+// internet-exposed API is structurally red here until that leg is measured.
+func TestVerifyEnforcement_ThreatProtectionIsUnverifiable(t *testing.T) {
+	_, a, apiID := publishVH(t, nil)
+
+	internetRequirement := adapter.EnforcementRequirement{
+		Classification: "VH",
+		Exposure:       "internet",
+		Bundle:         "vh-internet",
+		Authn:          "oauth2+mtls",
+		Policies:       []string{"audit-log", "https-only", "mtls", "oauth2", "rate-limit", "threat-protection"},
+	}
+	rep, err := a.VerifyEnforcement(context.Background(), apiID, internetRequirement)
+	if err != nil {
+		t.Fatalf("VerifyEnforcement: %v", err)
+	}
+	v := verdictOf(t, rep, "threat-protection")
+	if v.Status != adapter.VerdictUnverifiable {
+		t.Errorf("threat-protection = %s (%s), want unverifiable — jamais d'attestation silencieuse", v.Status, v.Detail)
+	}
+	if !strings.Contains(v.Detail, "ADR-091") {
+		t.Errorf("le détail doit nommer l'écart ADR-091 #1 : %q", v.Detail)
+	}
+	// L'exposition internet ne réclame AUCUNE ip-allowlist : le vérificateur ne
+	// doit pas en produire un verdict, même dégradé.
+	for _, x := range rep.Verdicts {
+		if x.Policy == "ip-allowlist" {
+			t.Errorf("verdict ip-allowlist émis pour une exposure internet : %+v", x)
+		}
 	}
 }

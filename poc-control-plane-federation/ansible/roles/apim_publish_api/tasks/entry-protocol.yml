@@ -1,0 +1,252 @@
+---
+# roles/apim_publish_api/tasks/entry-protocol.yml — LE PROTOCOLE D'ENTRÉE :
+# l'API refuse elle-même l'appel en clair (jalon P5, ADR-095).
+#
+# CE QUE CETTE TÂCHE ÉCRIT, ET OÙ. Une seule valeur : le paramètre `protocol`
+# de l'action `entryProtocolPolicy` du stage `transport` de la policy SERVICE de
+# l'API. Elle arrive FINIE de `labctl posture` (`pub_posture.entry_protocol`),
+# dans le vocabulaire du produit ; ce fichier ne la compose pas, ne la traduit
+# pas, et ne décide pas non plus SI elle s'applique — c'est la table de vérité
+# qui le dit, en la dérivant de la moitié per-API du bouquet.
+#
+# POURQUOI SUR L'API ET PAS SUR LE PORT. C'est LE fait mesuré du jalon, et il
+# est contre-intuitif : ajouter un listener HTTPS ne change RIEN au protocole
+# qu'une API accepte (spike C de P0), et promouvoir ce listener en primaire ne
+# ferme pas le HTTP (`enabled` et `primary` sont deux champs indépendants,
+# spike P5 S6). La topologie des ports ne protège donc aucune API. Le seul
+# levier qui refuse l'appel en clair est celui-ci, et il est PAR API.
+#
+# CE QUE LA MESURE A TRANCHÉ (spike P5, 2026-09-06, wM 10.15 réelle) :
+#   S1 — une API fraîchement importée porte DÉJÀ cette action, à ["http"]. Le
+#        rôle ÉDITE un objet existant ; il n'en crée aucun, et son absence est
+#        une anomalie de plateforme, pas un cas nominal.
+#   S2 — l'action est PROPRE à chaque API. C'est ce qui rend l'écriture sûre :
+#        l'action de throttle du stage LMT, elle, est PARTAGÉE (mesuré en P4),
+#        et l'éditer par API serait un effet de bord silencieux. La vérification
+#        des ids distincts a été jouée, elle n'est pas déduite du modèle.
+#   S4 — posée à ["https"], l'API répond HTTP 500 « Transport protocol not
+#        supported » en clair et 200 en HTTPS. Le refus vient de l'API.
+#   S5 — remise à ["http"], l'appel en clair REPASSE : c'est bien la policy qui
+#        refusait, pas le port. Corollaire dur : le paramètre est EXCLUSIF, pas
+#        additif — poser ["https"] ferme le clair, et ["http"] fermerait le TLS.
+#   S8 — l'action se lit ET s'écrit sur une API INACTIVE, et le réglage survit à
+#        l'activation. C'est ce qui autorise la position choisie ci-dessous.
+#
+# QUAND ELLE TOURNE, ET CE QUE ÇA GARANTIT. Avant l'activation, comme le tag
+# (P3) et l'appartenance à la cellule (P4). La conséquence n'est pas cosmétique :
+# une API gouvernée `https-only` ne sert JAMAIS un seul appel en clair, pas même
+# pendant sa propre publication. La poser après l'activation ouvrirait une
+# fenêtre — courte, réelle, et impossible à mesurer chez le client.
+#
+# CE QU'ELLE COÛTE, ET CE QU'ELLE NE COÛTE PAS. Pas de coupure au sens
+# d'ADR-079 : le PUT est accepté sur une API ACTIVE, qui reste active, et la
+# gateway le prend à chaud sans redémarrage (S3). Mais il FERME le clair — pour
+# un appelant qui y était, c'est une rupture. Ce n'est pas la plateforme qui
+# coupe, c'est le contrôle qui s'applique ; la distinction appartient à la
+# conduite du changement, pas à ce fichier, et l'ADR la porte.
+
+- name: "Protocole : la posture a-t-elle été ARBITRÉE ?"
+  ansible.builtin.set_fact:
+    pub_ep_wanted: "{{ (pub_posture.entry_protocol | default('')) | trim if pub_posture is defined else '' }}"
+
+# Sans registre central, il n'y a pas de posture gouvernée — donc aucun
+# protocole à imposer. Fermer le clair sur la foi de la posture DÉCLARÉE
+# laisserait le demandeur décider du protocole de sa propre API : dans un sens
+# c'est un durcissement gratuit, dans l'autre une porte ouverte, et dans les
+# deux cas ce n'est pas la plateforme qui tranche. On ne touche à rien, on le dit.
+- name: "Protocole : AVERTISSEMENT — aucune posture arbitrée, aucun protocole imposé"
+  ansible.builtin.debug:
+    msg: >-
+      ⚠ PROTOCOLE_NON_ARBITRE : la posture de '{{ apim_api.name }}' n'a été arbitrée par aucun
+      registre central (cf. POSTURE_NON_ARBITREE), donc la plateforme n'impose AUCUN protocole
+      d'entrée. L'API garde celui de son import — mesuré : `http`, c'est-à-dire qu'elle ACCEPTE
+      l'appel en clair. Acceptable hors pipeline (rejeu local) ; JAMAIS dans une chaîne de
+      publication, qui pose toujours la source.
+  when: "pub_ep_wanted | length == 0"
+
+- name: "Protocole : poser le protocole d'entrée dérivé, et le relire"
+  when: "pub_ep_wanted | length > 0"
+  block:
+
+    # ===== 1. Retrouver l'action : API -> policy SERVICE -> stage transport ====
+    - name: "Protocole : relire le record de l'API"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/apis/{{ apim_api_id }}"
+      register: pub_ep_api
+      changed_when: false
+
+    - name: "Protocole : FAIL-CLOSED — l'API doit porter au moins une policy"
+      ansible.builtin.assert:
+        that: "((pub_ep_api.json.apiResponse.api.policies | default([])) | length) > 0"
+        fail_msg: >-
+          PROTOCOLE_SANS_POLICY : '{{ apim_api.name }}' ne référence aucune policy, donc aucun
+          stage `transport` où poser le protocole d'entrée. Une API importée en porte une
+          nativement (« Default Policy for API <nom> ») : son absence est une anomalie de la
+          gateway, pas un cas nominal. Rien n'a été activé.
+
+    - name: "Protocole : lire les policies de l'API"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/policies/{{ item }}"
+      register: pub_ep_pols
+      changed_when: false
+      loop: "{{ pub_ep_api.json.apiResponse.api.policies | default([]) }}"
+
+    # Même règle de résolution que le moteur Go (findServicePolicy) : la policy
+    # de scope SERVICE porte les stages ; à défaut, la première. Recopiée ici
+    # parce qu'Ansible ne peut pas importer Go — mais c'est une règle de
+    # RÉSOLUTION D'OBJET, pas du vocabulaire de posture : rien de ce que P1 a
+    # centralisé ne se rejoue ici.
+    - name: "Protocole : isoler la policy qui porte les stages (SERVICE, sinon la première)"
+      ansible.builtin.set_fact:
+        pub_ep_policy: >-
+          {{ ((pub_ep_pols.results | map(attribute='json')
+               | map('combine', {}) | list
+               | map(attribute='policy') | select('defined') | list
+               | selectattr('policyScope', 'defined')
+               | selectattr('policyScope', 'equalto', 'SERVICE') | list)
+              | first)
+             | default(((pub_ep_pols.results | first).json.policy | default({})), true) }}
+
+    - name: "Protocole : les actions du stage `transport`"
+      ansible.builtin.set_fact:
+        pub_ep_stage_actions: >-
+          {{ (pub_ep_policy.policyEnforcements | default([]))
+             | selectattr('stageKey', 'defined')
+             | selectattr('stageKey', 'equalto', 'transport')
+             | map(attribute='enforcements') | flatten
+             | selectattr('enforcementObjectId', 'defined')
+             | map(attribute='enforcementObjectId') | list }}
+
+    - name: "Protocole : FAIL-CLOSED — le stage `transport` doit exister"
+      ansible.builtin.assert:
+        that: "(pub_ep_stage_actions | length) > 0"
+        fail_msg: >-
+          PROTOCOLE_STAGE_ABSENT : la policy '{{ pub_ep_policy.id | default('?') }}' de
+          '{{ apim_api.name }}' n'a aucune action au stage `transport`. Mesuré sur wM 10.15 : une
+          API importée en porte une nativement (entryProtocolPolicy à ["http"]). Poursuivre
+          activerait une API dont le protocole d'entrée n'est décidé par personne — refus.
+
+    - name: "Protocole : lire les actions du stage `transport`"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/policyActions/{{ item }}"
+      register: pub_ep_acts
+      changed_when: false
+      loop: "{{ pub_ep_stage_actions }}"
+
+    - name: "Protocole : isoler l'action `entryProtocolPolicy`"
+      ansible.builtin.set_fact:
+        pub_ep_action: >-
+          {{ ((pub_ep_acts.results | map(attribute='json')
+               | map(attribute='policyAction') | select('defined') | list
+               | selectattr('templateKey', 'defined')
+               | selectattr('templateKey', 'equalto', 'entryProtocolPolicy') | list)
+              | first) | default({}, true) }}
+
+    - name: "Protocole : FAIL-CLOSED — l'action `entryProtocolPolicy` doit exister"
+      ansible.builtin.assert:
+        that: "(pub_ep_action.id | default('')) | length > 0"
+        fail_msg: >-
+          PROTOCOLE_ACTION_ABSENTE : aucune action `entryProtocolPolicy` au stage `transport` de
+          '{{ apim_api.name }}' (actions lues :
+          {{ pub_ep_acts.results | map(attribute='json') | map(attribute='policyAction')
+             | select('defined') | map(attribute='templateKey') | list }}). Le rôle ÉDITE cette
+          action, il ne la crée pas : la créer reviendrait à inventer la forme d'un objet produit
+          que personne n'a mesurée sous cette forme-là. Rien n'a été activé.
+
+    # ===== 2. Le plan, puis l'écriture ======================================
+    - name: "Protocole : valeur lue, valeur visée"
+      ansible.builtin.set_fact:
+        pub_ep_before: >-
+          {{ ((pub_ep_action.parameters | default([]))
+              | selectattr('templateKey', 'defined')
+              | selectattr('templateKey', 'equalto', 'protocol')
+              | map(attribute='values') | flatten | list) }}
+        pub_ep_has_param: >-
+          {{ (((pub_ep_action.parameters | default([]))
+               | selectattr('templateKey', 'defined')
+               | selectattr('templateKey', 'equalto', 'protocol') | list) | length) > 0 }}
+
+    - name: "Protocole : FAIL-CLOSED — l'action doit porter le paramètre `protocol`"
+      ansible.builtin.assert:
+        that: "pub_ep_has_param | bool"
+        fail_msg: >-
+          PROTOCOLE_PARAM_ABSENT : l'action `entryProtocolPolicy` ({{ pub_ep_action.id }}) de
+          '{{ apim_api.name }}' n'a pas de paramètre `protocol`. En AJOUTER un serait deviner :
+          la forme mesurée est un paramètre EXISTANT dont on remplace les valeurs. Refus.
+
+    # L'objet à écrire, construit ici pour que la tâche d'écriture n'ait plus
+    # rien à calculer. Le paramètre est REMPLACÉ, pas complété : mesuré exclusif
+    # (S5 — ["http"] ferme le TLS aussi sûrement que ["https"] ferme le clair),
+    # donc une liste à deux valeurs n'exprimerait pas « https-only », elle
+    # l'annulerait. Tout le reste de l'action repart tel qu'il a été lu.
+    - name: "Protocole : l'action visée (le seul paramètre `protocol` est remplacé)"
+      ansible.builtin.set_fact:
+        pub_ep_desired: >-
+          {{ pub_ep_action | combine({'parameters':
+               (pub_ep_action.parameters | default([]))
+               | rejectattr('templateKey', 'equalto', 'protocol') | list
+               + [{'templateKey': 'protocol', 'values': [pub_ep_wanted]}]}) }}
+
+    - name: "Protocole : état lu et visé"
+      ansible.builtin.debug:
+        msg: >-
+          PROTOCOLE_PLAN : {{ apim_api.name }} — action {{ pub_ep_action.id }}
+          protocol={{ pub_ep_before }} → ['{{ pub_ep_wanted }}']
+          (bouquet {{ pub_posture.bundle }}, per-API=[{{ pub_posture.per_api_policies | join(', ') }}],
+          source {{ pub_posture.source }}){{ ' — déjà conforme, aucune écriture'
+          if pub_ep_before == [pub_ep_wanted] else '' }}
+
+    # PIÈGE 10.15, le même qu'au P4 : `PUT /policyActions/{id}` exige le corps
+    # ENVELOPPÉ {"policyAction": {...}} ; un corps nu rend 200 SANS persister.
+    # Idempotence sur la seule chose qui porte de la sécurité — la liste des
+    # valeurs — et non sur l'objet entier, dont des champs d'affichage peuvent
+    # dériver sans rien changer au contrôle.
+    - name: "Protocole : PUT /policyActions/{id} — corps ENVELOPPÉ (un corps nu rend 200 sans persister)"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/policyActions/{{ pub_ep_action.id }}"
+        method: PUT
+        body:
+          policyAction: "{{ pub_ep_desired }}"
+        status_code: [200, 201]
+      register: pub_ep_put
+      when: "pub_ep_before != [pub_ep_wanted]"
+
+    # ═══ LA PORTE ═══════════════════════════════════════════════════════════
+    # Un 200 ne prouve rien sur cette gateway — c'est la leçon la plus chère de
+    # ce GOAL (`apiTags` accepte un PUT à 200 et n'écrit rien, P0 spike A). Seule
+    # la relecture distingue « posé » de « accepté puis ignoré ». Et l'égalité
+    # est STRICTE : une liste ['http', 'https'] contiendrait bien la valeur
+    # visée tout en laissant le clair passer — c'est exactement le vert vacant
+    # qu'un `in` produirait ici.
+    - name: "Protocole : READ-BACK — relire l'action"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/policyActions/{{ pub_ep_action.id }}"
+      register: pub_ep_after
+      changed_when: false
+
+    - name: "Protocole : protocoles relus"
+      ansible.builtin.set_fact:
+        pub_ep_now: >-
+          {{ ((pub_ep_after.json.policyAction.parameters | default([]))
+              | selectattr('templateKey', 'defined')
+              | selectattr('templateKey', 'equalto', 'protocol')
+              | map(attribute='values') | flatten | list) }}
+
+    - name: "Protocole : FAIL-CLOSED — l'API refuse RÉELLEMENT tout ce qui n'est pas '{{ pub_ep_wanted }}'"
+      ansible.builtin.assert:
+        that: "pub_ep_now == [pub_ep_wanted]"
+        fail_msg: >-
+          HTTPS_ONLY_UNCONFIRMED : après écriture (HTTP {{ pub_ep_put.status | default('aucun PUT — la
+          valeur était déjà conforme') }}), l'action `entryProtocolPolicy` ({{ pub_ep_action.id }}) de
+          '{{ apim_api.name }}' porte protocol={{ pub_ep_now }}, attendu exactement
+          ['{{ pub_ep_wanted }}']. L'égalité est stricte À DESSEIN : une liste qui contient
+          '{{ pub_ep_wanted }}' PARMI d'autres valeurs laisse passer les autres — l'API
+          accepterait encore l'appel en clair tout en portant le tag de posture gouvernée.
+          Rappel du piège du produit : `PUT /policyActions/{id}` rend 200 sur un corps NU sans
+          rien persister. Rien n'a été activé.
+        success_msg: >-
+          HTTPS_ONLY_CONFIRMED : '{{ apim_api.name }}' n'accepte plus que
+          '{{ pub_ep_wanted }}' au stage transport (action {{ pub_ep_action.id }},
+          {{ pub_ep_before }} → {{ pub_ep_now }}) — l'appel en clair est refusé par l'API
+          elle-même, quel que soit le listener qui l'a porté. Bouquet {{ pub_posture.bundle }},
+          arbitré par le registre {{ pub_posture.source }}.

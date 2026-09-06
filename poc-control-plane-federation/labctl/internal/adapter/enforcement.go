@@ -23,10 +23,12 @@ const (
 
 // EnforcementRequirement is the derived bundle (render.Derive output plus its
 // inputs) one API must be observed to enforce. Policies uses the render policy
-// identifiers (oauth2, mtls, rate-limit, audit-log, ip-allowlist, apikey).
+// identifiers (oauth2, mtls, rate-limit, audit-log, ip-allowlist, apikey,
+// https-only, threat-protection).
 type EnforcementRequirement struct {
 	Classification string   // VH | H | M (as declared by the UAC contract)
-	Exposure       string   // internal | external (effective, defaulted)
+	Exposure       string   // internal | external | internet (effective, defaulted)
+	Bundle         string   // named truth-table cell, e.g. "vh-internet" (ADR-091)
 	Authn          string   // oauth2+mtls | oauth2 | apikey
 	Policies       []string // sorted render.RequiredPolicies
 }

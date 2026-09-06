@@ -1,0 +1,139 @@
+---
+# is-iam-action-split.yml — LE JOUR 0 DE L'IDENTITÉ D'APPELANT (jalon P6, ADR-096).
+#
+# Donne à chaque API son PROPRE objet d'identification, là où plusieurs se
+# partageaient le même. Une fois par environnement, avant que le pipeline de
+# publication ne commence à poser des règles d'identification.
+#
+# POURQUOI CE PLAY EXISTE — un fait produit, mesuré, et contre-intuitif.
+# DÉTACHER une action d'une policy DÉTRUIT l'objet action (spike P6 S6, wM 10.15
+# réelle). Toute autre policy qui le référençait garde alors un UUID mort :
+#   - son plan de données continue de REFUSER (mesuré : 403 — pas de fail-open) ;
+#   - mais sa prochaine ACTIVATION échoue en HTTP 500 « Policy action does not
+#     exist », jusqu'à ce qu'un PUT la repointe sur une action valide.
+# C'est le mécanisme, jusqu'ici non identifié, du NPE que ce projet connaissait
+# déjà (mémoire wm-npe-dangling-policyaction).
+#
+# Or jusqu'à P6, l'action d'identification était trouvée PAR EMPREINTE de règles
+# et donc PARTAGÉE par toutes les APIs du même mode (roles/apim_publish_api,
+# tasks/inbound.yml avant ce jalon ; côté Go, ensureMtlsIdentifyAction et
+# ensureSelfServiceIdentifyAction le font encore). Le jour où l'une d'elles
+# change de dimensions — exactement ce que fait P6 sur une cellule `external` —
+# le partage devient une panne pour toutes les autres.
+#
+# Le rôle de publication REFUSE donc de détacher une action partagée
+# (ACTION_IAM_PARTAGEE) et renvoie ici. Ce play fait la conversion en bloc, dans
+# le bon ordre : il LIT tout d'abord (les objets partagés disparaissent au
+# premier détachement, leurs règles doivent donc être en mémoire avant), puis
+# écrit API par API en ne citant jamais qu'une action VALIDE.
+#
+# ⚠ FENÊTRE ASSUMÉE. Entre la première réécriture et la dernière, les APIs pas
+# encore converties portent une référence morte : elles servent et refusent
+# normalement, mais ne peuvent pas être RÉACTIVÉES. Le play est court ; ne pas
+# le jouer pendant une publication.
+#
+# Idempotent : un second passage relit et n'écrit rien. Ne supprime rien
+# explicitement — c'est la gateway qui recycle l'objet partagé quand sa dernière
+# référence s'en va.
+#
+#   ansible-playbook -i ansible/inventory.lab.ini ansible/is-iam-action-split.yml
+#   # constater sans écrire :
+#   ansible-playbook … -e apim_split_converge=false
+- name: "Scinder les actions d'identification partagées (une par API) — ADR-096"
+  hosts: webmethods
+  gather_facts: false
+  vars:
+    apim_split_converge: true
+  tasks:
+
+    - name: "Split : secrets d'admin (Vault, fallback PoC)"
+      ansible.builtin.import_role:
+        name: apim_common
+        tasks_from: secrets.yml
+
+    - name: "Split : conversion des actions d'identification"
+      module_defaults:
+        ansible.builtin.uri: "{{ apim_ss_uri_defaults }}"
+      block:
+
+        # ===== 1. TOUT LIRE avant d'écrire quoi que ce soit ==================
+        - name: "Split : lire les APIs"
+          ansible.builtin.uri:
+            url: "{{ apim_ss_api_base }}/apis"
+          register: split_apis
+          changed_when: false
+
+        - name: "Split : lire les policies"
+          ansible.builtin.uri:
+            url: "{{ apim_ss_api_base }}/policies"
+          register: split_policies
+          changed_when: false
+
+        - name: "Split : lire les policyActions"
+          ansible.builtin.uri:
+            url: "{{ apim_ss_api_base }}/policyActions"
+          register: split_actions
+          changed_when: false
+
+        # Le lien API -> policy passe par le record de l'API : ni la liste des
+        # APIs ni celle des policies ne le porte (mesuré : `policies` est absent
+        # de la liste, et le NOM d'une policy — « Default Policy for API <x> » —
+        # est une chaîne de produit qu'on ne parse pas pour décider d'une
+        # écriture).
+        - name: "Split : lire chaque API pour connaître ses policies"
+          ansible.builtin.uri:
+            url: "{{ apim_ss_api_base }}/apis/{{ item.api.id }}"
+          register: split_api_records
+          changed_when: false
+          loop: "{{ split_apis.json.apiResponse | default([]) }}"
+          loop_control: { label: "{{ item.api.apiName | default('?') }}" }
+
+        # ===== 2. Qui partage quoi ==========================================
+        - name: "Split : l'action IAM de chaque policy"
+          ansible.builtin.set_fact:
+            split_refs: >-
+              {{ (split_refs | default([])) +
+                 (item.policyEnforcements | default([])
+                  | selectattr('stageKey', 'defined')
+                  | selectattr('stageKey', 'equalto', 'IAM')
+                  | map(attribute='enforcements') | flatten
+                  | selectattr('enforcementObjectId', 'defined')
+                  | map(attribute='enforcementObjectId') | list) }}
+          loop: "{{ split_policies.json.policy | default([]) }}"
+          loop_control: { label: "{{ item.id | default('?') }}" }
+
+        - name: "Split : celles qu'au moins DEUX policies référencent"
+          ansible.builtin.set_fact:
+            split_shared: >-
+              {{ (split_shared | default([]))
+                 + ([item] if ((split_refs | default([])) | select('equalto', item) | list | length) > 1
+                    else []) }}
+          loop: "{{ (split_refs | default([])) | unique }}"
+
+        - name: "Split : ce que la gateway porte aujourd'hui"
+          ansible.builtin.debug:
+            msg: >-
+              {{ split_apis.json.apiResponse | default([]) | length }} APIs,
+              {{ split_policies.json.policy | default([]) | length }} policies,
+              {{ (split_refs | default([])) | unique | length }} action(s) IAM référencée(s),
+              dont {{ (split_shared | default([])) | length }} PARTAGÉE(S) :
+              {{ (split_shared | default([])) | join(', ') | default('(aucune)', true) }}
+
+        # ===== 3. Convertir, API par API ====================================
+        # Chaque itération est autonome : elle relit l'API dans les données déjà
+        # en mémoire, compose la copie propre à partir des RÈGLES de l'action
+        # partagée (lues AVANT toute destruction), la crée, et repointe la policy.
+        - name: "Split : donner son objet propre à chaque API qui partage le sien"
+          ansible.builtin.include_tasks: tasks/iam-action-split-one.yml
+          loop: "{{ split_api_records.results | default([]) }}"
+          loop_control:
+            loop_var: split_rec
+            label: "{{ split_rec.json.apiResponse.api.apiName | default('?') }}"
+          when: "apim_split_converge | bool"
+
+        - name: "Split : AUDIT — rien n'a été écrit (apim_split_converge=false)"
+          ansible.builtin.debug:
+            msg: >-
+              Actions IAM partagées par plus d'une policy :
+              {{ (split_shared | default([])) | join(', ') | default('(aucune)', true) }}
+          when: "not (apim_split_converge | bool)"

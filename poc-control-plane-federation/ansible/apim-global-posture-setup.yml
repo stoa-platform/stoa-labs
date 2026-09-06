@@ -1,0 +1,26 @@
+---
+# apim-global-posture-setup.yml — LE JOUR 0 DU BOUQUET COMMUN (jalon P4, ADR-094).
+#
+# Pose sur la gateway UN objet par cellule nommée de la table de vérité : la
+# global policy `posture-<bouquet>`, qui porte pour toutes les APIs de la
+# cellule la moitié COMMUNE de leur bouquet (https-only, audit-log, et le quota
+# gouverné de la cellule).
+#
+# ⚠ IDENTIFIANT ADMINISTRATEUR REQUIS. Créer, converger ou activer une policy
+# GLOBALE exige le rôle API Gateway Administrator ; un identifiant de niveau
+# *provider* ne suffit pas. C'est délibérément un autre identifiant, un autre
+# moment et un autre journal que la publication d'API — parce que ce play décide
+# de la posture commune de TOUTES les APIs d'une cellule, et parce que les
+# verbes qu'il porte sont ceux qui peuvent briquer la gateway (P0 : la
+# suppression d'une global policy cascade sur ses policyActions, action SYSTÈME
+# comprise).
+#
+# Idempotent, relecture fail-closed, ne supprime JAMAIS rien.
+#
+#   ansible-playbook -i ansible/inventory.ini ansible/apim-global-posture-setup.yml
+#   # mode audit (constate les écarts de quota, n'écrit rien) :
+#   ansible-playbook … -e apim_gp_converge=false
+- name: "Amorcer les global policies de posture (une par cellule de la table de vérité)"
+  hosts: webmethods
+  gather_facts: false
+  roles: [apim_global_posture]

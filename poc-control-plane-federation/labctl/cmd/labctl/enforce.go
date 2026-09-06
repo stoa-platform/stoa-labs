@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/stoa-platform/stoa-labs/poc/labctl/internal/adapter"
 	"github.com/stoa-platform/stoa-labs/poc/labctl/internal/enforce"
@@ -92,7 +93,12 @@ func loadEnforcement(manifestPath, apiName string) (*enforcementSpec, error) {
 	// the non-editable project identity — the project's api.yaml value becomes a
 	// reference that must not be WEAKER. Without a source (dev-local / PR-gate),
 	// behaviour is strictly A1 (project-declared classification).
-	warnings, err := resolveCentralClassification(&c)
+	// tenantClaimed=true, unconditionally: a UAC contract ALWAYS claims a tenant
+	// (tenant_id is a required field of the schema), so an absent one here is a
+	// contract that dropped a governed field — a mismatch, not an absence of
+	// claim. The producer chain (labctl posture) is the caller that legitimately
+	// claims none; see posture.go.
+	warnings, err := resolveCentralClassification(&c, true)
 	if err != nil {
 		return nil, err
 	}
@@ -112,14 +118,22 @@ func loadEnforcement(manifestPath, apiName string) (*enforcementSpec, error) {
 //   - source set but no project identity → refuse (no governed lookup possible);
 //   - registry unreadable → refuse (never silent fallback to project value);
 //   - (project, api) absent from the registry → CLASSIFICATION_UNGOVERNED;
-//   - api.yaml tenant_id != central tenant → CLASSIFICATION_SPOOFED (the tenant
+//   - tenant CLAIMED but != central tenant → CLASSIFICATION_SPOOFED (the tenant
 //     is governed too; lying about it is a spoof);
 //   - project posture WEAKER than central → CLASSIFICATION_SPOOFED (downgrade).
+//
+// tenantClaimed says whether the caller's TenantID is a CLAIM at all. The UAC
+// contract always claims one (apply passes true, so an empty tenant_id there is
+// a mismatch, not an exemption). The producer chain's publish manifest claims
+// none — the team is its scoping unit — and passes false: there is then nothing
+// to lie about, and the anti-spoof anchor remains the (owner, api) key, which
+// no caller can edit. On success c.TenantID is set to the RESOLVED tenant, so
+// an unclaiming caller still learns it.
 //
 // On success the contract's Classification/Exposure are set to the CENTRAL
 // values, so Derive produces the governed bundle regardless of what the project
 // declared. A no-op when no source is configured (strict A1).
-func resolveCentralClassification(c *render.ContractSubset) ([]string, error) {
+func resolveCentralClassification(c *render.ContractSubset, tenantClaimed bool) ([]string, error) {
 	src := classificationSource()
 	if src == "" {
 		return nil, nil // no central source → A1 (project-declared), strictly unchanged
@@ -138,23 +152,40 @@ func resolveCentralClassification(c *render.ContractSubset) ([]string, error) {
 	if !ok {
 		return nil, fmt.Errorf("[%s] aucune classification centrale pour (projet=%q, api=%q) — une API gouvernée doit être classée dans le registre central (pas d'auto-classification) ; enregistrer via une PR gouvernance avant le 1er deploy", enforce.CodeUngoverned, owner, c.Name)
 	}
-	if c.TenantID != entry.Tenant {
-		return nil, fmt.Errorf("[%s] l'api.yaml déclare tenant_id=%q mais la gouvernance assigne tenant=%q pour (projet=%q, api=%q) — le tenant est gouverné", enforce.CodeSpoofed, c.TenantID, entry.Tenant, owner, c.Name)
+	if tenantClaimed && c.TenantID != entry.Tenant {
+		return nil, fmt.Errorf("[%s] la demande déclare tenant_id=%q mais la gouvernance assigne tenant=%q pour (projet=%q, api=%q) — le tenant est gouverné", enforce.CodeSpoofed, c.TenantID, entry.Tenant, owner, c.Name)
+	}
+	// Le vocabulaire de la DEMANDE, avant la comparaison. Weaker est fail-closed :
+	// une valeur qu'il ne sait pas dériver le fait répondre « plus faible ». Le
+	// verdict resterait donc juste (refus), mais le MESSAGE accuserait un
+	// downgrade là où il n'y a qu'une valeur inconnue — et un demandeur qui a
+	// tapé `dmz` lirait « votre posture est plus faible que la gouvernance »
+	// sans jamais apprendre que `dmz` n'existe pas. Nommer la vraie cause.
+	if !render.ValidClassification(c.Classification) {
+		return nil, fmt.Errorf("[%s] la demande déclare classification=%q, hors du vocabulaire gouverné (%s) — corriger la demande, ce n'est pas un désaccord avec la gouvernance",
+			render.CodeIntegrityInconsistent, c.Classification, strings.Join(render.Classifications(), ", "))
+	}
+	if !render.ValidExposure(render.EffectiveExposure(c.Exposure)) {
+		return nil, fmt.Errorf("[%s] la demande déclare exposure=%q, hors du vocabulaire gouverné (%s) — corriger la demande, ce n'est pas un désaccord avec la gouvernance",
+			render.CodeIntegrityInconsistent, c.Exposure, strings.Join(render.Exposures(), ", "))
 	}
 	if render.Weaker(c.Classification, c.Exposure, entry.Classification, entry.Exposure) {
-		return nil, fmt.Errorf("[%s] l'api.yaml déclare classification=%q/exposure=%q, PLUS FAIBLE que la gouvernance (%q/%q) pour %q — tentative de downgrade refusée",
+		return nil, fmt.Errorf("[%s] la demande déclare classification=%q/exposure=%q, PLUS FAIBLE que la gouvernance (%q/%q) pour %q — tentative de downgrade refusée",
 			enforce.CodeSpoofed, c.Classification, render.EffectiveExposure(c.Exposure), entry.Classification, render.EffectiveExposure(entry.Exposure), c.Name)
 	}
 	var warnings []string
 	if c.Classification != entry.Classification || render.EffectiveExposure(c.Exposure) != render.EffectiveExposure(entry.Exposure) {
 		// Stronger-or-equal-but-different = over-declaration: harmless (the
 		// bundle derives from central anyway). Surface it, don't block (review S3).
-		warnings = append(warnings, fmt.Sprintf("classification centrale %s/%s appliquée (l'api.yaml déclarait %s/%s, sur-provisionné — le bundle vient du central)",
+		warnings = append(warnings, fmt.Sprintf("posture centrale %s/%s appliquée (la demande déclarait %s/%s, sur-provisionné — le bundle vient du central)",
 			entry.Classification, render.EffectiveExposure(entry.Exposure), c.Classification, render.EffectiveExposure(c.Exposure)))
 	}
-	// Authoritative: derive from the CENTRAL values.
+	// Authoritative: derive from the CENTRAL values. The tenant is resolved too,
+	// so a caller that claimed none (the producer chain) still gets the governed
+	// value to log rather than an empty field.
 	c.Classification = entry.Classification
 	c.Exposure = entry.Exposure
+	c.TenantID = entry.Tenant
 	return warnings, nil
 }
 

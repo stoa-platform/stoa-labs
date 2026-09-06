@@ -1,0 +1,145 @@
+---
+# ansible/tasks/iam-action-split-one.yml — une itération de is-iam-action-split.yml
+# (jalon P6, ADR-096). Donne à UNE API son objet d'identification propre, si et
+# seulement si celui qu'elle porte est partagé avec une autre policy.
+#
+# Contexte fourni par le play : `split_rec` (le record de l'API), `split_shared`
+# (les actions référencées par plus d'une policy), `split_actions` (l'inventaire
+# LU AVANT toute écriture — c'est de là que viennent les règles à recopier, car
+# l'objet partagé disparaît dès le premier détachement).
+
+- name: "Split : identité de cette API"
+  ansible.builtin.set_fact:
+    one_api: "{{ split_rec.json.apiResponse.api }}"
+
+- name: "Split : sa policy porteuse de stages, et son action IAM"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_api_base }}/policies/{{ item }}"
+  register: one_pols
+  changed_when: false
+  loop: "{{ one_api.policies | default([]) }}"
+
+- name: "Split : la policy SERVICE (sinon la première)"
+  ansible.builtin.set_fact:
+    one_policy: >-
+      {{ ((one_pols.results | map(attribute='json')
+           | map(attribute='policy') | select('defined') | list
+           | selectattr('policyScope', 'defined')
+           | selectattr('policyScope', 'equalto', 'SERVICE') | list) | first)
+         | default(((one_pols.results | first).json.policy | default({})), true) }}
+  when: "(one_api.policies | default([])) | length > 0"
+
+- name: "Split : son action IAM actuelle"
+  ansible.builtin.set_fact:
+    one_iam: >-
+      {{ ((one_policy | default({})).policyEnforcements | default([]))
+         | selectattr('stageKey', 'defined')
+         | selectattr('stageKey', 'equalto', 'IAM')
+         | map(attribute='enforcements') | flatten
+         | selectattr('enforcementObjectId', 'defined')
+         | map(attribute='enforcementObjectId') | list }}
+
+# RIEN À FAIRE dans deux cas, et ce sont les plus fréquents : l'API n'a pas
+# d'action IAM, ou elle en a une qui n'appartient qu'à elle. On ne touche pas à
+# ce qui va bien — un play de migration qui réécrit tout est un play qui casse
+# plus qu'il ne répare.
+- name: "Split : cette API partage-t-elle son action ?"
+  ansible.builtin.set_fact:
+    one_todo: "{{ (one_iam | length == 1) and ((split_shared | default([])) is contains(one_iam | first)) }}"
+
+- name: "Split : {{ one_api.apiName }} — rien à convertir"
+  ansible.builtin.debug:
+    msg: >-
+      {{ one_api.apiName }} {{ one_api.apiVersion }} : action IAM
+      {{ (one_iam | first) | default('(aucune)', true) }} — {{ 'propre à cette API' if one_iam | length == 1
+      else 'stage IAM vide' }}, rien à faire.
+  when: "not (one_todo | bool)"
+
+- name: "Split : {{ one_api.apiName }} — lui donner son objet propre"
+  when: "one_todo | bool"
+  block:
+
+    # Les règles viennent de l'inventaire LU AU DÉBUT du play, jamais d'un GET
+    # fait maintenant : à la deuxième API convertie, l'objet partagé n'existe
+    # déjà plus, et un GET rendrait 404 au lieu des règles à recopier.
+    - name: "Split : les paramètres de l'action partagée (lus avant toute écriture)"
+      ansible.builtin.set_fact:
+        one_src: >-
+          {{ (split_actions.json.policyAction | default([]))
+             | selectattr('id', 'defined')
+             | selectattr('id', 'equalto', one_iam | first) | list | first | default({}) }}
+
+    - name: "Split : FAIL-CLOSED — les règles de l'action partagée doivent être connues"
+      ansible.builtin.assert:
+        that: "(one_src.parameters | default([])) | length > 0"
+        fail_msg: >-
+          SPLIT_SOURCE_ILLISIBLE : l'action {{ one_iam | first }} de '{{ one_api.apiName }}' n'a
+          pas été relevée à la lecture initiale. La recopier à l'aveugle poserait une barrière
+          dont personne ne connaît le contenu. Rien n'a été écrit pour cette API.
+
+    - name: "Split : créer l'objet propre à {{ one_api.apiName }}"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/policyActions"
+        method: POST
+        body:
+          policyAction:
+            names: [{ value: "identify ({{ one_api.apiName }} {{ one_api.apiVersion }})", locale: "en" }]
+            templateKey: "{{ one_src.templateKey | default('evaluatePolicy') }}"
+            parameters: "{{ one_src.parameters }}"
+            active: true
+        status_code: [200, 201]
+      register: one_create
+
+    - name: "Split : l'id du nouvel objet"
+      ansible.builtin.set_fact:
+        one_new: "{{ one_create.json.policyAction.id | default(one_create.json.id | default('')) }}"
+
+    - name: "Split : FAIL-CLOSED — le nouvel objet doit avoir une id"
+      ansible.builtin.assert:
+        that: "one_new | length > 0"
+        fail_msg: >-
+          SPLIT_SANS_ID : la gateway n'a pas rendu d'id pour la copie destinée à
+          '{{ one_api.apiName }}'. Sa policy n'a PAS été modifiée — elle référence toujours
+          l'action partagée.
+
+    # C'est CE PUT qui détruit l'objet partagé — mesuré, et c'est le geste que le
+    # play existe pour ordonner. Les APIs pas encore converties portent dès lors
+    # une référence morte ; leur propre itération la remplacera par une action
+    # valide, ce que la gateway accepte (mesuré : 200).
+    - name: "Split : repointer la policy de {{ one_api.apiName }}"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/policies/{{ one_policy.id }}"
+        method: PUT
+        body:
+          policy: >-
+            {{ one_policy | combine({'policyEnforcements':
+                [{'stageKey': 'IAM',
+                  'enforcements': [{'enforcementObjectId': one_new, 'order': none}]}]
+                + (one_policy.policyEnforcements | default([])
+                   | rejectattr('stageKey', 'equalto', 'IAM') | list) }) }}
+        status_code: [200, 201]
+
+    - name: "Split : RELECTURE — la policy référence bien son objet propre"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/policies/{{ one_policy.id }}"
+      register: one_after
+      changed_when: false
+
+    - name: "Split : FAIL-CLOSED — {{ one_api.apiName }} porte son objet, et lui seul"
+      ansible.builtin.assert:
+        that:
+          - >-
+            (((one_after.json.policy | default(one_after.json)).policyEnforcements | default([]))
+             | selectattr('stageKey', 'defined')
+             | selectattr('stageKey', 'equalto', 'IAM')
+             | map(attribute='enforcements') | flatten
+             | selectattr('enforcementObjectId', 'defined')
+             | map(attribute='enforcementObjectId') | list) == [one_new]
+        fail_msg: >-
+          SPLIT_NON_CONFIRME : la policy de '{{ one_api.apiName }}' ne référence pas {{ one_new }}
+          après réécriture. Son identification est dans un état indéterminé — republier cette API
+          avant toute activation.
+        success_msg: >-
+          SPLIT_CONFIRME : '{{ one_api.apiName }}' {{ one_api.apiVersion }} porte désormais son
+          objet d'identification propre ({{ one_new }}), plus l'action partagée
+          {{ one_iam | first }}.

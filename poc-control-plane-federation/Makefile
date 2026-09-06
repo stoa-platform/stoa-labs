@@ -95,7 +95,7 @@ lint-ci:
 	@# EXÉCUTÉE par lint-ci : elle exige le lab (annuaire + Vault) et mute
 	@# l'annuaire. Même régime que les autres `-live` — son verdict se rend à la
 	@# main, sa syntaxe se relit à chaque passage.
-	@echo "== [2/17] shellcheck des bibliothèques shell (ci/lib + livrables G2..G8, A1, A2, A3, A4, A5, A6, A7)"
+	@echo "== [2/17] shellcheck des bibliothèques shell (ci/lib + livrables G2..G8, A1..A7, P2, P5, P6)"
 	@command -v shellcheck >/dev/null || { echo "!! shellcheck absent — \`brew install shellcheck\`"; exit 2; }
 	@shellcheck -x ci/lib/*.sh scripts/lib/deploy-pin.sh scripts/lib/env-chain.sh \
 	  scripts/lib/repo-protection.sh scripts/lib/archive-store.sh \
@@ -116,7 +116,9 @@ lint-ci:
 	  scripts/lib/forge-identity.sh scripts/test-app-request-a7.sh scripts/setup-terminus-apps.sh scripts/test-a7-live.sh \
 	  scripts/setup-jenkins-globals.sh scripts/setup-provision-jobs.sh scripts/setup-carto-job.sh ci/lint-config-knobs.sh \
 	  scripts/setup-provision-request-job.sh scripts/setup-team-onboard-jobs.sh scripts/setup-user-deploy-job.sh \
-	  && echo "  ✓ ci/lib + livrables shell G2..G8 + A1 + A2 + A0 + A3 + A4 + A5 + A6 + A7 propres"
+	  scripts/lib/posture-authority.sh scripts/lib/wm-dataplane.sh scripts/test-p5-https.sh \
+	  scripts/test-p6-deny-by-default.sh \
+	  && echo "  ✓ ci/lib + livrables shell G2..G8 + A1 + A2 + A0 + A3 + A4 + A5 + A6 + A7 + P2 + P5 + P6 propres"
 	@echo "== [3/17] épreuves de ci/lib/carto-secrets.sh"
 	@ci/test-carto-secrets.sh
 	@echo "== [4/17] épreuves du résolveur de pin (G3)"

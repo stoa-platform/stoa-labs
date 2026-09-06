@@ -69,6 +69,16 @@
           <description>jwt : validation de la signature seule (seul mode disponible actuellement). alias/issuer/JWKS restent des valeurs PLATEFORME fixées par le gabarit gateways/templates/publish.yml.tmpl, jamais saisies ici. oauth2 (validation stricte + audience/scope/client_id) retiré du choix (fix round 1, revue) : ces trois champs sont PAR API/PAR CONSOMMATEUR (pas des valeurs plateforme fixables comme issuer/jwks) et ce formulaire ne les collecte pas — api-request.sh refuse oauth2 (INBOUND_OAUTH2_NON_SUPPORTE) tant qu'ils n'ont pas leur propre champ ; à instruire par T6/T7.</description>
           <choices class="java.util.Arrays$ArrayList"><a class="string-array"><string>jwt</string></a></choices>
         </hudson.model.ChoiceParameterDefinition>
+        <hudson.model.ChoiceParameterDefinition>
+          <name>CLASSIFICATION</name>
+          <description>Niveau d'INTÉGRITÉ de la donnée (VH = Very High, H = High, M = Medium). Ce que vous choisissez ici est une RÉFÉRENCE, pas la décision : la valeur retenue est celle du registre central de gouvernance (owner, api). Déclarer PLUS FAIBLE que le registre est refusé [CLASSIFICATION_SPOOFED], relayé sur la PR ; une API absente du registre est refusée [CLASSIFICATION_UNGOVERNED] — la faire enregistrer par une PR gouvernance avant la 1re publication. Le bouquet de policies en est DÉRIVÉ (ADR-076/ADR-091), jamais choisi.</description>
+          <choices class="java.util.Arrays$ArrayList"><a class="string-array"><string>VH</string><string>H</string><string>M</string></a></choices>
+        </hudson.model.ChoiceParameterDefinition>
+        <hudson.model.ChoiceParameterDefinition>
+          <name>EXPOSURE</name>
+          <description>Qui peut APPELER l'API — les trois valeurs sont ENTRANTES (ADR-091). internal : appelant du SI. external : appelant PARTENAIRE identifié (ajoute une ip-allowlist : les IP sources d'un partenaire sont énumérables). internet : appelant PUBLIC (REMPLACE l'ip-allowlist par threat-protection — une liste publique serait une fiction 0.0.0.0/0). L'exposition n'est PAS une échelle : déclarer internal quand la gouvernance dit external, ou internet quand elle dit external, PERD un contrôle obligatoire dans les deux cas — refusé pareillement. Même arbitrage que CLASSIFICATION : le registre central gagne.</description>
+          <choices class="java.util.Arrays$ArrayList"><a class="string-array"><string>internal</string><string>external</string><string>internet</string></a></choices>
+        </hudson.model.ChoiceParameterDefinition>
       </parameterDefinitions>
     </hudson.model.ParametersDefinitionProperty>
   </properties>

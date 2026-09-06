@@ -285,6 +285,17 @@ type InboundAuth struct {
 	// application (labctl subscribe publicCertRef). Requires the OAuth2 path
 	// (Audience set). Absent = OAuth2 only (no cert requirement).
 	Mtls bool `json:"mtls"`
+
+	// IPAllowlist, when true, requires the caller's SOURCE IP to fall inside the
+	// `ipAddressRange` identifier of a subscribed consumer application, in AND
+	// with whatever the inbound leg already requires (jalon P6, ADR-096).
+	//
+	// It is the network restriction of the `external` cell of ADR-091, and the
+	// apply pre-check REFUSES a bundle that requires `ip-allowlist` on a target
+	// that leaves this false: writing the allow-list on the application without
+	// this rule opposes NOTHING — measured, an out-of-range caller is served 200
+	// (spike P6 S2, the fail-open ADR-078 named).
+	IPAllowlist bool `json:"ipAllowlist"`
 }
 
 // Keycloak holds the out-of-band OAuth client settings used by `labctl subscribe`.
@@ -332,6 +343,9 @@ func (t Target) ToConfig() adapter.Config {
 		opts["inboundAuthIntrospectionClientId"] = t.InboundAuth.IntrospectionClientID
 		opts["inboundAuthIntrospectionClientSecret"] = t.InboundAuth.IntrospectionClientSecret
 		opts["inboundAuthIntrospectionUser"] = t.InboundAuth.IntrospectionUser
+		if t.InboundAuth.IPAllowlist {
+			opts["inboundIPAllowlist"] = "true"
+		}
 		if t.InboundAuth.Mtls {
 			opts["inboundMtls"] = "true"
 		}

@@ -106,6 +106,19 @@ type inboundAuthConfig struct {
 	// the AND's first rule is oAuth2Token.
 	mtls bool
 
+	// ipAllowlist, when true, requires the caller's SOURCE IP to fall inside the
+	// `ipAddressRange` identifier of a subscribed consumer application, in AND
+	// with whatever the inbound-auth leg already requires (jalon P6, ADR-096).
+	//
+	// It is the network restriction of the `external` cell of ADR-091, and until
+	// P6 nothing opposed it: the identifier was written on the application and
+	// never required by any rule, so an out-of-range caller was served 200
+	// (fail-open named by ADR-078, re-measured at spike P6 S2). Declaring it is
+	// what makes `ip-allowlist` a control rather than a word — and the apply
+	// pre-check REFUSES a bundle that requires ip-allowlist on a target that does
+	// not declare it, rather than attesting a barrier nobody posed.
+	ipAllowlist bool
+
 	// scopeMappingName overrides the scope-mapping name. "" (default) selects
 	// the PER-API model "<apiName>:<apiVersion>" (ADR-079, client-aligned);
 	// setting it restores the legacy SHARED mapping (e.g. "<alias>:<scope>",
@@ -205,6 +218,7 @@ func inboundAuthFromConfig(cfg adapter.Config) (*inboundAuthConfig, error) {
 		return nil, fmt.Errorf("webmethods: inboundAuth has mtls but no audience (the mTLS barrier ANDs a trusted client cert WITH the OAuth2 token; set inboundAuth.audience/scope/clientId)")
 	}
 	return &inboundAuthConfig{
+		ipAllowlist:               cfg.Opt("inboundIPAllowlist", "") == "true",
 		issuer:                    issuer,
 		jwksURI:                   jwks,
 		aliasName:                 cfg.Opt("inboundAuthAliasName", defaultInboundAliasName),
@@ -688,6 +702,12 @@ func identifyActionBody(id string, mode identifyActionMode) map[string]any {
 // Identify & Authorize action and lets a manifest flip an API between
 // signature-only and the full OAuth2 path without orphaning the old action.
 func (a *Adapter) ensureIdentifyAction(ctx context.Context) (string, error) {
+	// P6 leg: when the posture's network restriction is declared, the IAM action
+	// is the UNION of every dimension (inbound + cert + IP) in ONE object — the
+	// gateway refuses a second action on the stage (409, spike P6 S7).
+	if a.inbound != nil && a.inbound.ipAllowlist {
+		return a.ensureCallerIdentityAction(ctx)
+	}
 	// VH leg: when the manifest asks for mTLS, the IAM action is the OAuth2+cert
 	// AND action (a distinct shared action), not the oauth2-only one.
 	if a.inbound != nil && a.inbound.mtls {

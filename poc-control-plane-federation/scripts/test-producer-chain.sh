@@ -188,12 +188,31 @@ WITNESS_APP="t8consumer${RUN_TAG}"  # application témoin des souscriptions (pre
 printf '%s' "$API_NAME" | grep -Eq '^[a-z0-9][a-z0-9-]{1,30}$' \
   || { echo "API_NAME dérivé de RUN_TAG ('$API_NAME', ${#API_NAME} caractères) ne satisfait PAS la regex de la porte producteur ^[a-z0-9][a-z0-9-]{1,30}\$ — corriger le format de RUN_TAG" >&2; exit 2; }
 JOB="team-publish"
+# P2 (ADR-092) : le REGISTRE CENTRAL de classification. Dépôt SCRATCH, SÉPARÉ du
+# dépôt plateforme comme du dépôt d'équipe — c'est la séparation qui fait
+# l'ancrage, pas le contenu. Jamais celui du lab : un harnais qui lirait la
+# gouvernance réelle ferait dépendre son verdict d'un fichier que personne n'a
+# posé pour lui.
+GOV_REPO="${PLAT_ORG}/governance"
+GOV_PATH="governance/classifications.yaml"
 
 PASS=0; FAIL=0
 ok()  { PASS=$((PASS+1)); printf '  \033[32mPASS\033[0m %s\n' "$*"; }
 bad() { FAIL=$((FAIL+1)); printf '  \033[31mFAIL\033[0m %s\n' "$*"; }
 
 TMP="$(mktemp -d)"; chmod 700 "$TMP"
+
+# P2 : api-request.sh et team-publish.sh interrogent `labctl posture` avant
+# d'écrire. Lancés EN DIRECT par ce harnais (preuves 1, 2, 3, 6), ils tournent
+# sur l'HÔTE, où labctl n'est pas forcément installé — le job Jenkins, lui, l'a
+# dans son PATH. Le résolveur construit celui du dépôt.
+# shellcheck source=scripts/lib/posture-authority.sh
+. "$REPO_ROOT/scripts/lib/posture-authority.sh" 2>/dev/null || . scripts/lib/posture-authority.sh
+# Refus INLINE et non `die` : celui-ci n'est défini que bien plus bas (§pré-vol),
+# et l'appeler ici donnerait « die: command not found » — un refus qui accuserait
+# le harnais au lieu de nommer le binaire manquant.
+resolve_posture_authority "$TMP/labctl" \
+  || { echo "PRÉ-VOL: aucun labctl disponible (ni LABCTL_BIN, ni go build, ni PATH) — depuis P2 la chaîne producteur ne peut plus arbitrer une posture sans lui" >&2; exit 2; }
 
 # ── helpers header-file (ADR-074) : un secret part TOUJOURS par un fichier
 # 0600, jamais en argv/URL — même motif que team-request.sh/team-apply.sh, et
@@ -414,6 +433,7 @@ teardown() {
   gapi -X DELETE "$GITEA_URL/api/v1/repos/$TEAM_REPO"  -o /dev/null 2>/dev/null
   gapi -X DELETE "$GITEA_URL/api/v1/repos/$PLAT_REPO"  -o /dev/null 2>/dev/null
   gapi -X DELETE "$GITEA_URL/api/v1/repos/$ORPH_REPO"  -o /dev/null 2>/dev/null
+  gapi -X DELETE "$GITEA_URL/api/v1/repos/$GOV_REPO"   -o /dev/null 2>/dev/null
   gapi -X DELETE "$GITEA_URL/api/v1/orgs/$TEAM"        -o /dev/null 2>/dev/null
   gapi -X DELETE "$GITEA_URL/api/v1/orgs/$PLAT_ORG"    -o /dev/null 2>/dev/null
   gapi -X DELETE "$GITEA_URL/api/v1/orgs/$ORPH_ORG"    -o /dev/null 2>/dev/null
@@ -600,6 +620,35 @@ GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=http.extraheader GIT_CONFIG_VALUE_0="Authori
 PLAT_PUSH_RC=$?
 unset PLAT_AUTH
 [ "$PLAT_PUSH_RC" -eq 0 ] || die "publication de l'arbre sous test dans $PLAT_REPO en échec — $(tail -2 "$TMP/platpush.err")"
+
+# ── P2 : le registre CENTRAL scratch (dépôt à part) ─────────────────────────
+# La chaîne producteur refuse désormais de publier une API que la gouvernance ne
+# connaît pas (CLASSIFICATION_UNGOVERNED) : l'API jetable de ce run doit donc y
+# être enregistrée, comme le ferait une PR gouvernance dans la vraie vie.
+gapi -X POST -H 'Content-Type: application/json' -d '{"name":"governance","private":false,"auto_init":false}' \
+  "$GITEA_URL/api/v1/orgs/$PLAT_ORG/repos" -o /dev/null
+rm -rf "$TMP/gov"; mkdir -p "$TMP/gov/governance"
+cat > "$TMP/gov/$GOV_PATH" <<GOVYML
+apiVersion: governance.stoa.io/v1
+kind: ClassificationRegistry
+classifications:
+  - {owner: ${TEAM}, tenant: banking-demo, api: ${API_NAME}, classification: VH, exposure: external}
+GOVYML
+( cd "$TMP/gov" && git init -q -b main . && git add -A \
+  && git -c user.name=ci -c user.email=ci@stoa.lab commit -qm "seed: registre central scratch (P2)" ) >/dev/null 2>&1
+GOV_AUTH=$(printf 'x:%s' "$GITEA_TOKEN" | base64 | tr -d '\n')
+GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader GIT_CONFIG_VALUE_0="Authorization: Basic ${GOV_AUTH}" \
+  git -C "$TMP/gov" push -q "$GITEA_URL/$GOV_REPO.git" main 2>"$TMP/govpush.err" \
+  || die "publication du registre central scratch dans $GOV_REPO en échec — $(tail -2 "$TMP/govpush.err")"
+unset GOV_AUTH
+# Les appels du HARNAIS (api-request.sh, team-publish.sh lancés en direct) lisent
+# ces deux-là dans leur environnement ; le JOB Jenkins, lui, les reçoit par la
+# substitution du XML ci-dessous — les deux voies pointent le MÊME registre.
+export GOVERNANCE_REPO="$GOV_REPO" GOVERNANCE_PATH="$GOV_PATH"
+# La posture DÉCLARÉE par les demandes de ce harnais : conforme au registre
+# ci-dessus. Une demande sans posture serait refusée en CHAMP_REQUIS, et un
+# rouge sur la posture accuserait la chaîne d'un défaut du harnais.
+export CLASSIFICATION=VH EXPOSURE=external
 # DEUX clones DISTINCTS, et c'est nécessaire : la matrice du palier 2 MUTE le
 # sien (sa preuve 10 y restaure ci/jenkins/team-apply.job.xml depuis sa propre
 # baseline, et ses preuves 5/6 y déplacent HEAD). Le `git checkout $MERGE_SHA`
@@ -711,7 +760,8 @@ OSCAR_POL_AFTER=$(curl -s -H @"$(vhdr "$VROOT")" "$VAULT_ADDR/v1/auth/userpass/u
 
 # ── pose du job team-publish depuis son XML LIVRÉ, deux substitutions (cf.
 # l'écart du gate, en tête). ------------------------------------------------
-PLAT_ORG="$PLAT_ORG" PLAT_REPO="$PLAT_REPO" GIT_HOST_INTERNAL="$GIT_HOST_INTERNAL" python3 - \
+PLAT_ORG="$PLAT_ORG" PLAT_REPO="$PLAT_REPO" GIT_HOST_INTERNAL="$GIT_HOST_INTERNAL" \
+  GOV_REPO="$GOV_REPO" GOV_PATH="$GOV_PATH" python3 - \
   "$REPO_ROOT/ci/jenkins/$JOB.job.xml" "$TMP/$JOB.job.xml" <<'PY' || die "réécriture du XML du job"
 import os, sys
 src, dst = sys.argv[1], sys.argv[2]
@@ -732,7 +782,10 @@ marker = "export APIM_API_BASE="
 m = x.count(marker)
 if m != 1:
     sys.exit(f"attendu 1 occurrence de l'ancre '{marker}' dans le XML du job, trouvé {m} — le XML a changé, revoir la substitution")
-x = x.replace(marker, f'export GIT_REPO="{os.environ["PLAT_REPO"]}"\n              ' + marker, 1)
+x = x.replace(marker,
+              f'export GIT_REPO="{os.environ["PLAT_REPO"]}"\n              '
+              f'export GOVERNANCE_REPO="{os.environ["GOV_REPO"]}"\n              '
+              f'export GOVERNANCE_PATH="{os.environ["GOV_PATH"]}"\n              ' + marker, 1)
 open(dst, "w", encoding="utf-8").write(x)
 PY
 jcrumb || die "crumb Jenkins indisponible"

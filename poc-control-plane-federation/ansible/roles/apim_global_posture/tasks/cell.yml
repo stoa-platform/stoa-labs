@@ -1,0 +1,338 @@
+---
+# roles/apim_global_posture/tasks/cell.yml — l'amorçage d'UNE cellule.
+#
+# LE FAIT PRODUIT QUI COMMANDE TOUTE CETTE STRUCTURE, mesuré le 2026-09-05 sur
+# la 10.15 réelle : **une policyAction n'a aucune identité qu'on puisse
+# écrire**. `POST /policyActions` accepte un `names` et rend 201 — puis
+# l'objet relu porte le nom PAR DÉFAUT de son template (« Log Invocation »,
+# « Traffic Optimization »…), et `descriptions` reste vide. Les 49 actions du
+# lab se répartissent ainsi sur dix noms, tous ceux du produit.
+#
+# Conséquence : on ne peut pas retrouver « notre » action par son nom, donc on
+# ne peut pas la rendre idempotente par son nom. Un rôle qui essaierait
+# recréerait trois actions à chaque passage et en laisserait autant d'orphelines
+# (mesuré : 120 en quatre passages).
+#
+# D'OÙ L'ANCRE. C'est la POLICY qui porte l'identité — son `names` est écrit et
+# relu tel quel (vérifié). Les actions d'une cellule sont donc atteintes PAR
+# elle : `policyEnforcements[].enforcements[].enforcementObjectId`. La policy
+# est le parent, les actions sont ses enfants ; il n'existe aucun autre chemin
+# pour les retrouver, et c'est pour cela que ce rôle ne supprime jamais une
+# policy — il perdrait ses actions avec, et le produit les supprimerait en
+# cascade de toute façon (incident P0).
+
+- name: "[{{ gp_cell.bundle }}] les actions VOULUES pour cette cellule (JSON)"
+  ansible.builtin.set_fact:
+    gp_want_json: >-
+      {% set out = [] %}
+      {% for pol in gp_cell.common_policies %}
+      {% if pol == 'https-only' %}
+      {% set _ = out.append({'policy': pol, 'stage': 'transport', 'order': 0,
+          'templateKey': 'entryProtocolPolicy', 'witness': 'https',
+          'parameters': [{'templateKey': 'protocol', 'values': ['https']}]}) %}
+      {% elif pol == 'audit-log' %}
+      {% set _ = out.append({'policy': pol, 'stage': 'LMT', 'order': 1,
+          'templateKey': 'logInvocation', 'witness': 'Always',
+          'parameters': [
+            {'templateKey': 'storeRequestPayload', 'values': ['false']},
+            {'templateKey': 'storeResponsePayload', 'values': ['false']},
+            {'templateKey': 'storeAsZip', 'values': ['false']},
+            {'templateKey': 'logGenerationFrequency', 'values': ['Always']},
+            {'templateKey': 'destination', 'parameters': [
+              {'templateKey': 'destinationType', 'values': [apim_gp_destination]}]}]}) %}
+      {% elif pol == 'rate-limit' %}
+      {% set _ = out.append({'policy': pol, 'stage': 'LMT', 'order': 0,
+          'templateKey': 'throttle', 'witness': gp_cell.quota.requests | string,
+          'parameters': [
+            {'templateKey': 'throttleRule', 'parameters': [
+              {'templateKey': 'throttleRuleName', 'values': ['requestCount']},
+              {'templateKey': 'monitorRuleOperator', 'values': ['GT']},
+              {'templateKey': 'value', 'values': [gp_cell.quota.requests | string]}]},
+            {'templateKey': 'consumerIds', 'values': ['AllConsumers']},
+            {'templateKey': 'alertInterval', 'values': [gp_cell.quota.interval | string]},
+            {'templateKey': 'alertIntervalUnit', 'values': [gp_cell.quota.unit]},
+            {'templateKey': 'alertFrequency', 'values': ['always']},
+            {'templateKey': 'alertMessage', 'values': [
+              'posture ' ~ gp_cell.bundle ~ ' : quota gouverne depasse']},
+            {'templateKey': 'destination', 'parameters': [
+              {'templateKey': 'destinationType', 'values': [apim_gp_destination]}]}]}) %}
+      {% endif %}
+      {% endfor %}
+      {{ out | to_json }}
+
+- name: "[{{ gp_cell.bundle }}] les actions voulues, et la policy déjà là"
+  ansible.builtin.set_fact:
+    gp_want: "{{ gp_want_json | from_json }}"
+    gp_pol: "{{ gp_pol_index[gp_cell.global_policy] | default({}) }}"
+    gp_have: {}
+    gp_created: {}
+
+# Une policy commune annoncée au demandeur (`common_policies`) que ce rôle ne
+# sait pas traduire en action serait promise et appliquée par personne — le pire
+# des deux mondes. Refus nommé, à l'amorçage, plutôt qu'un silence à l'exécution.
+- name: "[{{ gp_cell.bundle }}] FAIL-CLOSED — toute policy annoncée COMMUNE doit avoir une action"
+  ansible.builtin.assert:
+    that: "(gp_want | length) == (gp_cell.common_policies | length)"
+    fail_msg: >-
+      POLICY_COMMUNE_SANS_ACTION : la cellule '{{ gp_cell.bundle }}' annonce
+      {{ gp_cell.common_policies }} dans son bouquet COMMUN, mais ce rôle ne sait traduire que
+      {{ gp_want | map(attribute='policy') | list }} en actions de la gateway. Les autres seraient
+      promises au demandeur et appliquées par personne. Soit la policy rejoint `commonCarriable`
+      avec sa surface mesurée, soit ce rôle apprend à la poser.
+
+# ═══ Les actions DÉJÀ portées par la policy (le seul chemin pour les trouver) ══
+- name: "[{{ gp_cell.bundle }}] lire les actions que la policy référence déjà"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_api_base }}/policyActions/{{ item }}"
+  register: gp_have_get
+  changed_when: false
+  failed_when: false
+  loop: >-
+    {{ (gp_pol.policyEnforcements | default([]))
+       | map(attribute='enforcements') | flatten | map(attribute='enforcementObjectId') | list }}
+
+# `body` est le corps de l'action SANS son `id` : le témoin de convergence est
+# cherché par sous-chaîne, et un UUID plein de chiffres ferait croire à un quota
+# déjà convergé — un faux négatif silencieux, le pire des deux sens pour un
+# contrôle de sécurité.
+- name: "[{{ gp_cell.bundle }}] index des actions portées, par templateKey"
+  ansible.builtin.set_fact:
+    gp_have: >-
+      {{ gp_have | combine({(item.json.policyAction.templateKey): {
+           'id': item.json.policyAction.id,
+           'body': (item.json.policyAction | dict2items
+                    | rejectattr('key', 'equalto', 'id') | items2dict | to_json)}}) }}
+  loop: "{{ gp_have_get.results | default([]) }}"
+  loop_control:
+    label: "{{ (item.json.policyAction.templateKey) | default('?') }}"
+  when:
+    - "item.status | default(0) == 200"
+    - "item.json.policyAction.templateKey is defined"
+
+# ═══ Créer ce qui manque, converger ce qui a dérivé ═══════════════════════════
+- name: "[{{ gp_cell.bundle }}] créer les actions manquantes"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_api_base }}/policyActions"
+    method: POST
+    body:
+      policyAction:
+        # `names` est envoyé pour la lisibilité du journal du produit, PAS comme
+        # identité : la gateway le remplace par le nom du template (mesuré).
+        names: [{value: "posture {{ gp_cell.bundle }} {{ item.policy }}", locale: "en"}]
+        templateKey: "{{ item.templateKey }}"
+        parameters: "{{ item.parameters }}"
+        active: true
+    status_code: [200, 201]
+  register: gp_action_post
+  loop: "{{ gp_want }}"
+  loop_control:
+    label: "{{ gp_cell.bundle }} / {{ item.policy }}"
+  when: "item.templateKey not in gp_have"
+
+- name: "[{{ gp_cell.bundle }}] index des actions créées"
+  ansible.builtin.set_fact:
+    gp_created: >-
+      {{ gp_created | combine({(item.json.policyAction.templateKey): item.json.policyAction.id}) }}
+  loop: "{{ gp_action_post.results | default([]) }}"
+  loop_control:
+    label: "{{ (item.json.policyAction.templateKey) | default('(sautée)') }}"
+  when:
+    - "not (item.skipped | default(false))"
+    - "item.json.policyAction.id is defined"
+
+# PIÈGE 10.15 : `PUT /policyActions/{id}` exige le corps ENVELOPPÉ
+# ({"policyAction": {...}}) et rend 200 SANS PERSISTER si le corps est nu.
+- name: "[{{ gp_cell.bundle }}] converger les actions dont le paramètre gouverné a dérivé"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_api_base }}/policyActions/{{ gp_have[item.templateKey].id }}"
+    method: PUT
+    body:
+      policyAction:
+        id: "{{ gp_have[item.templateKey].id }}"
+        templateKey: "{{ item.templateKey }}"
+        parameters: "{{ item.parameters }}"
+        active: true
+    status_code: [200, 201]
+  loop: "{{ gp_want }}"
+  loop_control:
+    label: "{{ gp_cell.bundle }} / {{ item.policy }} -> {{ item.witness }}"
+  when:
+    - "apim_gp_converge | bool"
+    - "item.templateKey in gp_have"
+    - "item.witness not in gp_have[item.templateKey].body"
+
+- name: "[{{ gp_cell.bundle }}] ÉCART CONSTATÉ mais non convergé (mode audit)"
+  ansible.builtin.debug:
+    msg: >-
+      ⚠ POLICY_COMMUNE_ECART : la cellule '{{ gp_cell.bundle }}' ne porte pas le paramètre
+      gouverné attendu pour '{{ item.policy }}' ({{ item.witness }}). Mode audit
+      (apim_gp_converge=false) : rien n'a été écrit. Les APIs de cette cellule portent donc un
+      bouquet commun PÉRIMÉ.
+  loop: "{{ gp_want }}"
+  loop_control:
+    label: "{{ gp_cell.bundle }} / {{ item.policy }}"
+  when:
+    - "not (apim_gp_converge | bool)"
+    - "item.templateKey in gp_have"
+    - "item.witness not in gp_have[item.templateKey].body"
+
+# ═══ La POLICY : créer, ou recoudre ses enforcements ══════════════════════════
+- name: "[{{ gp_cell.bundle }}] les enforcements voulus (JSON)"
+  ansible.builtin.set_fact:
+    gp_enf_json: >-
+      {% set ids = {} %}
+      {% for k, v in gp_have.items() %}{% set _ = ids.update({k: v.id}) %}{% endfor %}
+      {% for k, v in gp_created.items() %}{% set _ = ids.update({k: v}) %}{% endfor %}
+      {% set stages = {} %}
+      {% for a in gp_want %}
+      {% set _ = stages.update({a.stage: (stages.get(a.stage, []) + [
+           {'enforcementObjectId': ids[a.templateKey], 'order': a.order | string}])}) %}
+      {% endfor %}
+      {% set out = [] %}
+      {% for st, es in stages.items() %}
+      {% set _ = out.append({'stageKey': st, 'enforcements': es | sort(attribute='order')}) %}
+      {% endfor %}
+      {{ out | to_json }}
+
+- name: "[{{ gp_cell.bundle }}] les enforcements voulus"
+  ansible.builtin.set_fact:
+    gp_enf: "{{ gp_enf_json | from_json }}"
+
+# LA SENTINELLE À LA NAISSANCE. Une policy de cellule naît sans membre, et une
+# condition `filterType: API` SANS attribut sélectionne TOUTES les APIs de la
+# gateway (mesuré, spike S7). Sans elle, jouer ce play sur une gateway en
+# service appliquerait d'un coup dix quotas à tout le trafic.
+- name: "[{{ gp_cell.bundle }}] CRÉER la policy de la cellule (avec la SENTINELLE)"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_api_base }}/policies"
+    method: POST
+    body:
+      policy:
+        names: [{value: "{{ gp_cell.global_policy }}", locale: "en"}]
+        descriptions:
+          - value: >-
+              Bouquet COMMUN de la cellule {{ gp_cell.bundle }} (ADR-094) : quota
+              {{ gp_cell.quota.requests }}/{{ gp_cell.quota.interval }} {{ gp_cell.quota.unit }}.
+              Objet pose par la plateforme ; le pipeline de publication n'y inscrit que des NOMS
+              d'API. Ne pas supprimer : la suppression cascade sur les policyActions.
+            locale: "en"
+        policyScope: "GLOBAL"
+        global: true
+        systemPolicy: false
+        scope:
+          applicableAPITypes: "{{ apim_gp_api_types }}"
+          logicalConnector: "AND"
+          scopeConditions:
+            - filterType: "HTTP_METHOD"
+              logicalConnector: "AND"
+              attributes: "{{ gp_method_attrs | from_json }}"
+            - filterType: "API"
+              logicalConnector: "OR"
+              attributes:
+                - attributeName: "API_NAME"
+                  operation: "EQUALS"
+                  value: "{{ gp_table.member_sentinel }}"
+        policyEnforcements: "{{ gp_enf }}"
+    status_code: [200, 201]
+  vars:
+    gp_method_attrs: >-
+      {% set out = [] %}{% for m in apim_gp_methods %}{% set _ = out.append(
+        {'attributeName': m, 'value': 'true'}) %}{% endfor %}{{ out | to_json }}
+  when: "(gp_pol | length) == 0"
+
+# Sur une policy EXISTANTE on ne recoud que les enforcements — JAMAIS le scope,
+# qui porte les MEMBRES écrits par le pipeline de publication. Les réécrire ici
+# jetterait toutes les adhésions d'un coup.
+- name: "[{{ gp_cell.bundle }}] recoudre les ENFORCEMENTS (jamais le scope : il porte les membres)"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_api_base }}/policies/{{ gp_pol.id }}"
+    method: PUT
+    body:
+      policy: "{{ gp_pol | combine({'policyEnforcements': gp_enf}) }}"
+    status_code: [200, 201]
+  when:
+    - "(gp_pol | length) > 0"
+    - "apim_gp_converge | bool"
+    - "(gp_pol.policyEnforcements | default([])) != gp_enf"
+
+# ═══ LA PORTE de la cellule ═══════════════════════════════════════════════════
+- name: "[{{ gp_cell.bundle }}] READ-BACK — relire la policy"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_api_base }}/policies"
+  register: gp_after
+  changed_when: false
+
+- name: "[{{ gp_cell.bundle }}] la policy de la cellule, relue (JSON)"
+  ansible.builtin.set_fact:
+    gp_mine_json: >-
+      {% set out = {} %}{% for p in (gp_after.json.policy | default([]))
+      %}{% if (p.names | default([]) | length) > 0 and (p.names | first).value == gp_cell.global_policy
+      %}{% set _ = out.update(p) %}{% endif %}{% endfor %}{{ out | to_json }}
+
+- name: "[{{ gp_cell.bundle }}] la policy de la cellule, relue"
+  ansible.builtin.set_fact:
+    gp_mine: "{{ gp_mine_json | from_json }}"
+
+# Une policy INACTIVE ne frappe rien, et le fait en silence : c'est la panne la
+# plus discrete de tout ce jalon.
+- name: "[{{ gp_cell.bundle }}] ACTIVER si elle ne l'est pas"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_api_base }}/policies/{{ gp_mine.id }}/activate"
+    method: PUT
+    status_code: [200, 201]
+  when:
+    - "(gp_mine | length) > 0"
+    - "not (gp_mine.active | default(false))"
+
+- name: "[{{ gp_cell.bundle }}] READ-BACK final"
+  ansible.builtin.uri:
+    url: "{{ apim_ss_api_base }}/policies"
+  register: gp_final_get
+  changed_when: false
+
+- name: "[{{ gp_cell.bundle }}] état final de la cellule"
+  ansible.builtin.set_fact:
+    gp_final_json: >-
+      {% set out = {} %}{% for p in (gp_final_get.json.policy | default([]))
+      %}{% if (p.names | default([]) | length) > 0 and (p.names | first).value == gp_cell.global_policy
+      %}{% set _ = out.update(p) %}{% endif %}{% endfor %}{{ out | to_json }}
+
+- name: "[{{ gp_cell.bundle }}] état final (objet)"
+  ansible.builtin.set_fact:
+    gp_final_pol: "{{ gp_final_json | from_json }}"
+
+# Quatre défaillances distinctes, et aucune n'est un 200 :
+#  1. l'objet n'existe pas -> les APIs de la cellule ne portent AUCUN commun ;
+#  2. il est INACTIF -> il ne frappe rien, en silence ;
+#  3. il n'a pas de condition HTTP_METHOD -> une condition API seule ne
+#     sélectionne AUCUNE API (P0), l'objet est inerte alors qu'il a l'air juste ;
+#  4. sa condition API est VIDE -> il frappe TOUTES les APIs de la gateway (S7).
+- name: "[{{ gp_cell.bundle }}] FAIL-CLOSED — la cellule a son objet, ACTIF, SÉLECTIF et BORNÉ"
+  ansible.builtin.assert:
+    that:
+      - "(gp_final_pol | length) > 0"
+      - "gp_final_pol.active | default(false) | bool"
+      - "((gp_final_pol.scope.scopeConditions | default([]))
+          | selectattr('filterType', 'equalto', 'HTTP_METHOD') | list | length) > 0"
+      - "((gp_final_pol.scope.scopeConditions | default([]))
+          | selectattr('filterType', 'equalto', 'API')
+          | map(attribute='attributes') | flatten | list | length) > 0"
+      - "((gp_final_pol.policyEnforcements | default([]))
+          | map(attribute='enforcements') | flatten | list | length) == (gp_want | length)"
+    fail_msg: >-
+      POLICY_COMMUNE_AMORCAGE_UNCONFIRMED : '{{ gp_cell.global_policy }}' —
+      présente={{ (gp_final_pol | length) > 0 }},
+      active={{ gp_final_pol.active | default('?') }},
+      actions portées={{ (gp_final_pol.policyEnforcements | default([]))
+                         | map(attribute='enforcements') | flatten | list | length }}
+      pour {{ gp_want | length }} attendues. Une policy inactive ou sans condition HTTP_METHOD ne
+      frappe rien et le fait en silence ; une condition API sans attribut frappe au contraire
+      TOUTES les APIs de la gateway.
+    success_msg: >-
+      POLICY_COMMUNE_AMORCEE : '{{ gp_cell.global_policy }}' active, bornée,
+      {{ (gp_final_pol.policyEnforcements | default([])) | map(attribute='enforcements')
+         | flatten | list | length }} actions
+      ({{ gp_cell.common_policies | join('+') }}, quota {{ gp_cell.quota.requests }}/{{
+      gp_cell.quota.interval }} {{ gp_cell.quota.unit }}) — membres={{
+      (gp_final_pol.scope.scopeConditions | selectattr('filterType', 'equalto', 'API')
+       | map(attribute='attributes') | flatten | map(attribute='value') | list) }}.

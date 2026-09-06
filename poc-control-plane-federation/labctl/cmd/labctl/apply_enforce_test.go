@@ -313,6 +313,23 @@ func TestRunApply_CentralRefusesTenantSpoof(t *testing.T) {
 	}
 }
 
+// P2 guard: a UAC contract that DROPS tenant_id must still be refused. The
+// tenant check became conditional when `labctl posture` (a caller that
+// legitimately claims no tenant) was added — apply passes tenantClaimed=true
+// unconditionally precisely so this case stays a mismatch and never becomes an
+// exemption a project could reach by deleting a line.
+func TestRunApply_CentralRefusesAbsentTenantClaim(t *testing.T) {
+	p := writeFederation(t, `targets:
+  - {name: gw-a, type: faketgt, adminUrl: http://a, credentials: {behavior: verify-ok}}
+`)
+	writeUAC(t, p, strings.Replace(uacVH, "tenant_id: banking-demo\n", "", 1))
+	withCentral(t, centralReg, "accounts-team")
+	_, err := runDispatch(t, runApply, p)
+	if err == nil || !strings.Contains(err.Error(), "CLASSIFICATION_SPOOFED") {
+		t.Fatalf("err = %v, want [CLASSIFICATION_SPOOFED] (tenant_id absent du contrat UAC)", err)
+	}
+}
+
 // An API absent from the registry cannot self-classify → UNGOVERNED.
 func TestRunApply_CentralUngovernedAPI(t *testing.T) {
 	p := writeFederation(t, `targets:

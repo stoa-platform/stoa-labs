@@ -79,6 +79,15 @@ APIM_API_BASE="${APIM_API_BASE:?APIM_API_BASE requis — pas de défaut : dire s
 GIT_HOST="${GIT_HOST:-http://gitea:3000}"
 GIT_REPO="${GIT_REPO:-ci/stoa-labs}"        # dépôt PLATEFORME — porte providers.<env>.yml
 GIT_WEB_HOST="${GIT_WEB_HOST:-$GIT_HOST}"
+# P2 (ADR-092) : dépôt du REGISTRE CENTRAL de classification. SÉPARÉ du dépôt
+# plateforme comme du dépôt d'équipe, parce qu'il appartient à la gouvernance de
+# la donnée — le même couple de knobs qu'api-request.sh, pour que la demande et
+# la publication arbitrent contre LE MÊME registre. En prod : le dépôt
+# `data-governance` du client.
+# AUCUN DÉFAUT (porte ci/lint-config-knobs.sh) : cf. le même couple dans
+# scripts/api-request.sh. Le refus nommé est au §4b, là où la valeur sert.
+GOVERNANCE_REPO="${GOVERNANCE_REPO:-}"
+GOVERNANCE_PATH="${GOVERNANCE_PATH:-}"
 # G4 (ADR-082) : ENVN est SCELLÉ sur l'env d'authoring — affectation sèche
 # depuis la constante de lib, jamais "${ENVN:-dev}" : les variables d'un job
 # Jenkins atterrissent dans l'environnement du process (fait mesuré, même
@@ -369,6 +378,22 @@ resolve_deploy_pin "$TMP/team" "$API_NAME" "$ENVN" "$TMP/resolved" 2>"$TMP/pin.e
   fail "PIN_NON_RESOLU : la référence de déploiement de ${API_NAME} en ${ENVN} n'a pas pu être résolue (${REFUS:-refus non nommé — voir le log du build})"
 }
 
+# ── 4b. registre CENTRAL de classification, lu FRAIS sur main (jalon P2) ────
+# Cloné ICI, avant l'appel au rôle : c'est la source que posture.yml consultera,
+# et elle doit venir d'un dépôt que l'ÉQUIPE NE PEUT PAS ÉCRIRE. Un registre lu
+# dans le clone du dépôt d'équipe (§4) serait la déclaration de l'équipe une
+# seconde fois — l'invariant d'ancrage, déjà prouvé côté labctl
+# (test-classification-central.sh, preuve 6), tient à cette séparation seule.
+# FAIL-CLOSED : injoignable ou absent ⇒ refus, jamais un repli silencieux sur la
+# posture déclarée par le manifeste.
+[ -n "$GOVERNANCE_REPO" ] || fail "CHAMP_REQUIS : GOVERNANCE_REPO — le dépôt du registre central de classification. Aucun défaut n'est posé volontairement : publier sous une gouvernance de lab chez un client serait pire qu'un refus. La poser en variable globale du contrôleur Jenkins."
+[ -n "$GOVERNANCE_PATH" ] || fail "CHAMP_REQUIS : GOVERNANCE_PATH — le chemin du registre DANS ce dépôt. Même raison qu'au-dessus."
+git clone -q --depth 1 -b main "${GIT_HOST}/${GOVERNANCE_REPO}.git" "$TMP/governance" 2>"$TMP/gov.err" \
+  || { cat "$TMP/gov.err" >&2; fail "REGISTRE_GOUVERNANCE_INACCESSIBLE : dépôt '${GOVERNANCE_REPO}' injoignable sur ${GIT_HOST} — la posture de ${API_NAME} ne peut être arbitrée par personne, et une posture non arbitrée est celle que la demande s'est donnée. Rien n'est publié."; }
+GOV_REGISTRY="$TMP/governance/${GOVERNANCE_PATH}"
+[ -f "$GOV_REGISTRY" ] \
+  || fail "REGISTRE_GOUVERNANCE_ABSENT : '${GOVERNANCE_PATH}' introuvable dans ${GOVERNANCE_REPO}@main — vérifier GOVERNANCE_PATH, ou faire poser le registre par la gouvernance de la donnée. Rien n'est publié."
+
 # ── 5. publication (rôle du palier 3, idempotent create-or-version) ─────────
 # apim_ss_contract_pin (extra-var, précédence 22) ÉPINGLE le contract au
 # chemin RÉSOLU (DEPLOY_PIN_CONTRACT) — en dev, le résolveur matérialise
@@ -383,6 +408,7 @@ resolve_deploy_pin "$TMP/team" "$API_NAME" "$ENVN" "$TMP/resolved" 2>"$TMP/pin.e
     -e apim_ss_manifest="$DEPLOY_PIN_PUBLISH" -e apim_ss_team="$TEAM" \
     -e apim_ss_api_base="$APIM_API_BASE" -e apim_ss_env="$ENVN" \
     -e apim_ss_contract_pin="$DEPLOY_PIN_CONTRACT" \
+    -e apim_pub_classification_source="$GOV_REGISTRY" \
 ) >"$TMP/pub.log" 2>&1
 PUB_RC=$?
 
@@ -390,6 +416,14 @@ PUB_RC=$?
 if [ "$PUB_RC" -eq 0 ]; then
   SUMMARY=$(grep -oE '"msg": "(MANIFEST_KEYS_OK|TEAM_REQUESTED|ENV_OK|VERSION_[A-Z_]+)[^"]*"' "$TMP/pub.log" \
     | sed 's/^"msg": "//; s/"$//' | tail -3 | tr '\n' ' ; ')
+
+  # P2 : la posture RETENUE remonte à la PR, par son propre grep plutôt que dans
+  # l'alternation ci-dessus — `tail -3` y garde les DERNIERS messages, et la
+  # posture est arbitrée en tête de rôle : elle en serait systématiquement
+  # évincée. Or c'est précisément la ligne qui prouve que la valeur appliquée est
+  # celle du registre et non celle qui a été cochée au formulaire.
+  POSTURE_MSG=$(grep -oE '"msg": "POSTURE_RETENUE[^"]*"' "$TMP/pub.log" \
+    | sed 's/^"msg": "//; s/"$//' | tail -1)
 
   # ── re-pose app-request ET api-request (revue : la liste API_BASE d'api-
   # request restait périmée après chaque publication, bloquant le cycle
@@ -433,7 +467,9 @@ if [ "$PUB_RC" -eq 0 ]; then
     tail -20 "$TMP/refresh.log" >&2
   fi
 
-  comment "$WEBHOOK_REPO" "✅ team-publish ${TEAM}/${API_NAME}@${API_VERSION} ([PR #${PR_NUMBER}](${GIT_WEB_HOST}/${WEBHOOK_REPO}/pulls/${PR_NUMBER})) — ${SUMMARY:-VERSION_CREATED}${REFRESH_NOTE}"
+  comment "$WEBHOOK_REPO" "✅ team-publish ${TEAM}/${API_NAME}@${API_VERSION} ([PR #${PR_NUMBER}](${GIT_WEB_HOST}/${WEBHOOK_REPO}/pulls/${PR_NUMBER})) — ${SUMMARY:-VERSION_CREATED}${REFRESH_NOTE}${POSTURE_MSG:+
+
+\`${POSTURE_MSG}\`}"
 else
   # Hiérarchie fatal > msg > tail-3 (leçon du palier 2, cf. team-apply.sh §4 /
   # api-request.sh §5) : le dernier tag OK vu AVANT un échec réel situé

@@ -16,8 +16,11 @@ package govsource
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"sigs.k8s.io/yaml"
+
+	"github.com/stoa-platform/stoa-labs/poc/labctl/internal/render"
 )
 
 // Entry is one governed API's central classification. owner is the authoritative
@@ -38,14 +41,13 @@ type Registry struct {
 	Classifications []Entry `json:"classifications"`
 }
 
-// validClassifications / validExposures pin the governed enums. The central
-// registry is AUTHORITATIVE, so a typo in it (e.g. "vh") must fail loud AT LOAD
-// with a registry-specific error — not silently downstream as a project-blaming
-// INTEGRITY_INCONSISTENT (review S1). Kept in sync with the UAC schema + render.
-var (
-	validClassifications = map[string]bool{"VH": true, "H": true, "M": true}
-	validExposures       = map[string]bool{"internal": true, "external": true}
-)
+// The governed enums are NOT re-declared here: render is the single authority
+// for both vocabularies (ADR-091, jalon P1). The central registry is
+// AUTHORITATIVE, so a typo in it (e.g. "vh") must still fail loud AT LOAD with a
+// registry-specific error — not silently downstream as a project-blaming
+// INTEGRITY_INCONSISTENT (review S1); that is what validate() below does, now
+// asking render what the vocabulary is instead of carrying a copy that could
+// drift from it.
 
 // Load reads, decodes AND validates the registry. FAIL-CLOSED (goal A5, review
 // S1): when a caller has a source configured, a missing/unreadable/unparseable/
@@ -80,11 +82,13 @@ func (r *Registry) validate() error {
 		if e.Owner == "" || e.API == "" || e.Tenant == "" {
 			return fmt.Errorf("%s: owner/tenant/api requis", where)
 		}
-		if !validClassifications[e.Classification] {
-			return fmt.Errorf("%s: classification %q invalide (attendu VH, H ou M) — typo gouvernance", where, e.Classification)
+		if !render.ValidClassification(e.Classification) {
+			return fmt.Errorf("%s: classification %q invalide (attendu %s) — typo gouvernance",
+				where, e.Classification, strings.Join(render.Classifications(), ", "))
 		}
-		if !validExposures[e.Exposure] {
-			return fmt.Errorf("%s: exposure %q invalide (attendu internal ou external) — typo gouvernance", where, e.Exposure)
+		if !render.ValidExposure(e.Exposure) {
+			return fmt.Errorf("%s: exposure %q invalide (attendu %s) — typo gouvernance",
+				where, e.Exposure, strings.Join(render.Exposures(), ", "))
 		}
 		key := e.Owner + "/" + e.API
 		if seen[key] {

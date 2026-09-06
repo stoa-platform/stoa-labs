@@ -1,0 +1,40 @@
+---
+# is-https-listener.yml — LE LISTENER HTTPS D'UN ENVIRONNEMENT (jalon P5,
+# ADR-095).
+#
+# L'axe HTTPS a deux moitiés et un seul propriétaire. Celle-ci est l'objet
+# d'ENVIRONNEMENT : le port, son keystore, son mode d'authentification client,
+# et — éteints par défaut — les deux gestes de topologie que sont la promotion
+# en primaire et la fermeture du clair. L'autre moitié, le protocole qu'une API
+# ACCEPTE, vit dans le pipeline de publication
+# (roles/apim_publish_api/tasks/entry-protocol.yml) et n'a rien à faire ici.
+#
+# ⚠ CE PLAY NE PROTÈGE AUCUNE API, et c'est la première chose à savoir. Mesuré
+# sur la 10.15 réelle : une API servie sur un listener HTTPS neuf reste refusée
+# si son propre `entryProtocolPolicy` vaut `http` (spike C de P0), et promouvoir
+# un port HTTPS en primaire ne ferme pas le HTTP (spike P5 S6). Un environnement
+# peut avoir un listener HTTPS impeccable et servir toutes ses APIs en clair.
+#
+# ⚠ IDENTIFIANT IS-ADMIN. Les ports sont des objets d'Integration Server, pas
+# d'API Gateway : comme le play d'amorçage des global policies, celui-ci tourne
+# avec un identifiant Administrateur, hors du pipeline de publication, à son
+# propre moment et dans son propre journal.
+#
+# Idempotent : un second passage relit et n'écrit rien. Ne supprime jamais un
+# port. Relectures fail-closed — sur cette gateway un 200 ne prouve rien, et
+# `clientAuth` en est l'exemple le plus net (spike P5 S10 : PUT à 200, relecture
+# inchangée).
+#
+#   # créer/activer le listener HTTPS d'un environnement :
+#   ansible-playbook -i ansible/inventory.lab.ini ansible/is-https-listener.yml
+#
+#   # un port dédié, en exigeant le certificat client au transport :
+#   ansible-playbook … -e apim_hl_port=5544 -e apim_hl_port_alias=DefaultSecureMtls \
+#                      -e apim_hl_client_auth=require
+#
+#   # fermer le clair (geste distinct, et le SEUL des trois qui ferme vraiment) :
+#   ansible-playbook … -e apim_hl_close_plaintext_port=5555
+- name: "Listener HTTPS d'environnement (ADR-095, jalon P5)"
+  hosts: webmethods
+  gather_facts: false
+  roles: [apim_https_listener]

@@ -58,6 +58,7 @@ func Requirement(c render.ContractSubset, res render.Result) adapter.Enforcement
 	return adapter.EnforcementRequirement{
 		Classification: c.Classification,
 		Exposure:       render.EffectiveExposure(c.Exposure),
+		Bundle:         res.Bundle,
 		Authn:          res.Authn,
 		Policies:       res.RequiredPolicies,
 	}
@@ -103,12 +104,33 @@ func PrecheckTarget(t targets.Target, req adapter.EnforcementRequirement) (viola
 				if t.RateLimit == nil || t.RateLimit.Requests <= 0 {
 					violations = append(violations, "rate-limit requis (tout niveau) mais le target ne déclare pas rateLimit.requests > 0")
 				}
+			case "https-only":
+				if t.TransportProtocol != "https" {
+					violations = append(violations, "https-only requis (tout niveau, ADR-091) mais transportProtocol n'est pas \"https\" — l'API accepterait l'appel en clair")
+				}
 			case "apikey":
 				violations = append(violations, "apikey requis mais le mode apiKey n'est pas projeté sur webMethods (écart ADR-076 #7)")
-			case "audit-log", "ip-allowlist":
+			case "threat-protection":
+				// exposure=internet only. wM 10.15 DOES carry Threat Protection
+				// rules, but they are SERVER-level and their surface has never
+				// been measured by this project, nor opened in the ADR-075 admin
+				// allow-list — so there is no per-API knob to pre-check here. The
+				// read-back stays fail-closed on it (écart ADR-091 #1): warn now,
+				// refuse there, never attest silently.
+				warnings = append(warnings, "threat-protection requis (exposure=internet) — aucun levier par-API sur webMethods 10.15 ; le read-back reste fail-closed (écart ADR-091 #1)")
+			case "ip-allowlist":
+				// P6 (ADR-096) : la restriction réseau a désormais un levier
+				// À L'API — une règle d'identification (strict, ipAddressRange)
+				// avec allowAnonymous=false — et donc un pré-check. Avant ce
+				// jalon, ce cas ne vérifiait RIEN et le read-back rendait un
+				// verdict de complaisance (« enforced au consommateur ») : le
+				// spike P6 (S2) a mesuré qu'un appelant HORS plage était servi
+				// 200, application souscrite et allow-list écrite comprises.
+				if t.InboundAuth == nil || !t.InboundAuth.IPAllowlist {
+					violations = append(violations, "ip-allowlist requis (exposure=external, ADR-091) mais le target ne déclare pas inboundAuth.ipAllowlist: true — l'allow-list des applications ne serait OPPOSÉE par aucune règle d'identification (fail-open ADR-078)")
+				}
+			case "audit-log":
 				// audit-log: global policy, confirmed at read-back (2 fixed-ID GETs).
-				// ip-allowlist: consumer-side identifier on wM (subscribe leg) —
-				// reported degraded at read-back, no apply-side knob to pre-check.
 			default:
 				violations = append(violations, fmt.Sprintf("policy %q inconnue du pré-check webmethods (fail-closed)", p))
 			}

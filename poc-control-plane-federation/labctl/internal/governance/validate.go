@@ -3,6 +3,7 @@ package governance
 import (
 	"fmt"
 	"regexp"
+	"strings"
 
 	"github.com/stoa-platform/stoa-labs/poc/labctl/internal/render"
 )
@@ -30,12 +31,15 @@ var (
 	versionPattern = regexp.MustCompile(`^\d+\.\d+\.\d+$`)
 )
 
+// classification/exposure are NOT re-declared here: render is the single
+// authority for both vocabularies (ADR-091, jalon P1). Before P1 this file
+// carried its own copy of the enum, so a value added to the derivation engine
+// and forgotten here was rejected by the validator the engine would have
+// accepted — a divergence nothing detected.
 var (
-	classificationEnum = map[string]bool{"VH": true, "H": true, "M": true}
-	exposureEnum       = map[string]bool{"internal": true, "external": true}
-	statusEnum         = map[string]bool{"draft": true, "published": true, "deprecated": true}
-	methodEnum         = map[string]bool{"GET": true, "POST": true, "PUT": true, "PATCH": true, "DELETE": true, "HEAD": true, "OPTIONS": true}
-	sideEffectsEnum    = map[string]bool{"none": true, "read": true, "write": true, "destructive": true}
+	statusEnum      = map[string]bool{"draft": true, "published": true, "deprecated": true}
+	methodEnum      = map[string]bool{"GET": true, "POST": true, "PUT": true, "PATCH": true, "DELETE": true, "HEAD": true, "OPTIONS": true}
+	sideEffectsEnum = map[string]bool{"none": true, "read": true, "write": true, "destructive": true}
 )
 
 // ValidateUAC checks contract (a YAML/JSON-decoded object). published=true
@@ -75,15 +79,17 @@ func ValidateUAC(contract map[string]any, published bool) []ValidationError {
 	classification, _ := contract["classification"].(string)
 	if classification == "" {
 		add("classification", "REQUIRED", "le champ 'classification' est requis")
-	} else if !classificationEnum[classification] {
-		add("classification", "ENUM", "'classification' doit être VH, H ou M : %q invalide", classification)
+	} else if !render.ValidClassification(classification) {
+		add("classification", "ENUM", "'classification' doit être %s : %q invalide",
+			strings.Join(render.Classifications(), ", "), classification)
 	}
 
 	// exposure (optionnel) — load-bearing : sélectionne l'ancre de confiance / IdP
 	// et l'obligation d'allowlist IP (ADR-076). Absent => hérité par défaut au render.
 	exposure, _ := contract["exposure"].(string)
-	if exposure != "" && !exposureEnum[exposure] {
-		add("exposure", "ENUM", "'exposure' doit être internal ou external : %q invalide", exposure)
+	if exposure != "" && !render.ValidExposure(exposure) {
+		add("exposure", "ENUM", "'exposure' doit être %s : %q invalide",
+			strings.Join(render.Exposures(), ", "), exposure)
 	}
 
 	// Cohérence intégrité -> stratégie (ADR-076 Phase 3) : la posture de sécurité
@@ -92,7 +98,7 @@ func ValidateUAC(contract map[string]any, published bool) []ValidationError {
 	// exception apikey hors M/internal) est rejeté fail-closed — un projet ne peut
 	// pas shipper une posture plus faible que son niveau d'intégrité. On ne le lance
 	// que si la classification est un enum valide (sinon l'erreur ENUM suffit).
-	if classificationEnum[classification] && (exposure == "" || exposureEnum[exposure]) {
+	if render.ValidClassification(classification) && (exposure == "" || render.ValidExposure(exposure)) {
 		var tags []string
 		if raw, ok := contract["tags"].([]any); ok {
 			for _, t := range raw {

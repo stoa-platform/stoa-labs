@@ -93,11 +93,21 @@ func (a *Adapter) VerifyEnforcement(ctx context.Context, apiID string, want adap
 			v = a.verifyRateLimit(ctx, policy)
 		case "audit-log":
 			v = a.verifyAuditLog(ctx)
-		case "ip-allowlist":
+		case "https-only":
+			v = a.verifyHTTPSOnly(ctx, policy)
+		case "threat-protection":
+			// Named gap, never a silent pass: wM 10.15 Threat Protection is a
+			// SERVER-level feature whose surface this project has not measured
+			// and which the ADR-075 admin allow-list does not open. Unverifiable
+			// => the gate REFUSES the run (écart ADR-091 #1). An exposure=internet
+			// API is therefore structurally red here until that leg is measured —
+			// which is the honest state, not an oversight.
 			v = adapter.PolicyVerdict{
-				Policy: p, Status: adapter.VerdictDegraded,
-				Detail: "enforced au consommateur (identifier ipAddressRange à la souscription, ADR-071) — pas de policy IP API-level sur wM 10.15",
+				Policy: p, Status: adapter.VerdictUnverifiable,
+				Detail: "threat-protection non projetée/vérifiable sur webMethods 10.15 (feature serveur, hors allow-list ADR-075) — écart ADR-091 #1",
 			}
+		case "ip-allowlist":
+			v = verifyIPAllowlist(iamActions)
 		case "apikey":
 			v = adapter.PolicyVerdict{
 				Policy: p, Status: adapter.VerdictUnverifiable,
@@ -233,6 +243,78 @@ func (a *Adapter) verifyMTLS(ctx context.Context, policy map[string]any, iamActi
 		return miss("l'action transport entryProtocolPolicy n'est pas [https] — l'API reste joignable hors du listener TLS")
 	}
 	return miss("aucune action entryProtocolPolicy sur le stage transport")
+}
+
+// verifyIPAllowlist confirms the `external` leg of ADR-091 the way P6 made it
+// real: the API's OWN IAM stage carries an action with allowAnonymous=false and
+// a (strict, ipAddressRange) IdentificationRule, so a caller whose source IP is
+// not in a subscribed application's allow-list is REFUSED by the API itself.
+//
+// UNTIL P6 THIS VERDICT WAS A COURTESY. It read `Degraded — enforced au
+// consommateur (identifier ipAddressRange à la souscription)`, and no
+// measurement supported the sentence: spike P6 S2 re-measured the fail-open
+// ADR-078 had named — an application carrying the identifier, subscribed to the
+// API, with the caller OUT of range, is served 200 as long as no rule requires
+// the dimension. Worse, the flag that poses that rule (EnforceInboundIdentifiers,
+// consumer.go) was set nowhere in the product: no CLI, no manifest, no pipeline.
+// Every `external` cell the chain had published therefore carried a control that
+// nothing opposed, while this verdict said it was enforced elsewhere. A verdict
+// that names a mechanism it does not read is the most expensive kind of green.
+//
+// It reads ALL rules of every IAM action (actionIdentificationRules), never the
+// first one only: the action the role poses UNIONS the dimensions of the cell
+// with those of the inbound-auth leg, because the gateway refuses a second
+// action on the stage (409, spike P6 S7). Missing — never degraded: the gate
+// must refuse a run whose network restriction is not opposed.
+func verifyIPAllowlist(iamActions []map[string]any) adapter.PolicyVerdict {
+	if !anyIAMAction(iamActions, func(act map[string]any) bool {
+		return actionParamString(act, "allowAnonymous") == "false" &&
+			hasIdentificationRule(act, "strict", identificationTypeIP)
+	}) {
+		return adapter.PolicyVerdict{
+			Policy: "ip-allowlist", Status: adapter.VerdictMissing,
+			Detail: "aucune action IAM avec allowAnonymous=false et une règle (strict, ipAddressRange) — " +
+				"l'allow-list d'IP des applications n'est OPPOSÉE par rien (fail-open ADR-078, re-mesuré au spike P6)",
+		}
+	}
+	return adapter.PolicyVerdict{
+		Policy: "ip-allowlist", Status: adapter.VerdictEnforced,
+		Detail: "action IAM strict/ipAddressRange avec allowAnonymous=false — un appelant hors des plages " +
+			"déclarées par les applications souscrites est refusé par l'API (403, mesuré au plan de données)",
+	}
+}
+
+// verifyHTTPSOnly confirms the floor leg of ADR-091: the transport stage pins
+// entryProtocolPolicy to [https], so the API REFUSES a plaintext call whatever
+// listener carried it. GOAL spike C measured both halves of that fact live — an
+// API served on a brand-new HTTPS listener is still refused when its own
+// entryProtocolPolicy says http, and adding the listener changes nothing about
+// the protocol the API accepts. The listener itself is an environment object and
+// is deliberately NOT read here.
+func (a *Adapter) verifyHTTPSOnly(ctx context.Context, policy map[string]any) adapter.PolicyVerdict {
+	transportActions, err := a.stageActions(ctx, policy, stageTransport)
+	if err != nil {
+		return adapter.PolicyVerdict{Policy: "https-only", Status: adapter.VerdictUnverifiable, Detail: "stage transport illisible au read-back (erreur de lecture admin)"}
+	}
+	for _, act := range transportActions {
+		if tk, _ := act["templateKey"].(string); tk != "entryProtocolPolicy" {
+			continue
+		}
+		if actionProtocolIs(act, "https") {
+			return adapter.PolicyVerdict{
+				Policy: "https-only", Status: adapter.VerdictEnforced,
+				Detail: "action transport entryProtocolPolicy=[https] — l'appel en clair est refusé par l'API elle-même",
+			}
+		}
+		return adapter.PolicyVerdict{
+			Policy: "https-only", Status: adapter.VerdictMissing,
+			Detail: "l'action transport entryProtocolPolicy n'est pas [https] — l'API accepte l'appel en clair",
+		}
+	}
+	return adapter.PolicyVerdict{
+		Policy: "https-only", Status: adapter.VerdictMissing,
+		Detail: "aucune action entryProtocolPolicy sur le stage transport",
+	}
 }
 
 // verifyRateLimit confirms a throttle action with a positive limit on the LMT

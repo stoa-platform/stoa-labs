@@ -45,6 +45,24 @@ PASS=0; FAIL=0
 ok(){ PASS=$((PASS+1)); printf '  ✅ %s\n' "$*"; }
 ko(){ FAIL=$((FAIL+1)); printf '  ❌ %s\n' "$*"; }
 
+# ── P2 (ADR-092) : la POSTURE est devenue une entrée OBLIGATOIRE ─────────────
+# api-request.sh refuse désormais toute demande qui ne déclare pas
+# classification + exposure (CHAMP_REQUIS), et interroge `labctl posture` avant
+# d'écrire. Ce harnais fournit donc les deux valeurs et LE binaire : sans elles,
+# chaque cas de ce fichier échouerait sur la posture au lieu de la garde qu'il
+# teste — un rouge qui ne dirait rien de ce qu'il prétend mesurer.
+# shellcheck source=scripts/lib/posture-authority.sh
+. "$REPO/scripts/lib/posture-authority.sh"
+resolve_posture_authority "$TMP/labctl" \
+  || { echo "ABANDON : aucun labctl disponible — la posture n'est pas arbitrable, donc rien n'est mesurable ici." >&2; exit 2; }
+export CLASSIFICATION="${CLASSIFICATION:-VH}" EXPOSURE="${EXPOSURE:-external}"
+# Le couple de gouvernance n'a AUCUN défaut dans le code livrable (porte
+# ci/lint-config-knobs.sh) : c'est au harnais de dire quel registre il consulte.
+# Les sections A/B le résolvent sous la racine bidon de mk_platform ; la section D
+# le réoriente vers son dépôt scratch sur le Gitea réel.
+export GOVERNANCE_REPO="${GOVERNANCE_REPO:-ci/stoa-platform-ci}" \
+       GOVERNANCE_PATH="${GOVERNANCE_PATH:-governance/classifications.yaml}"
+
 # Motif éprouvé de team-apply.sh (gapi()) — jamais le token en argv d'un
 # process (curl -H "Authorization: token $TOK" le mettrait en clair dans
 # ps -Aww pendant toute la durée de l'appel) : un HEADER FICHIER 0600, lu par
@@ -67,6 +85,8 @@ run_guard(){
   local label="$1" tag="$2"; shift 2
   local out rc
   out=$(env -i PATH="$PATH" GIT_HOST="http://127.0.0.1:1" GITEA_TOKEN=dummy \
+        LABCTL_BIN="$LABCTL_BIN" CLASSIFICATION="$CLASSIFICATION" EXPOSURE="$EXPOSURE" \
+        GOVERNANCE_REPO="$GOVERNANCE_REPO" GOVERNANCE_PATH="$GOVERNANCE_PATH" \
         ACTION=create TEAM=probe API_NAME=probe API_VERSION=1.0.0 \
         OPENAPI_SPEC='{"openapi":"3.0.0"}' INBOUND_MODE=jwt "$@" bash "$S" 2>&1)
   rc=$?
@@ -104,6 +124,28 @@ mk_platform(){ # $1=bare-dir $2=providers.dev.yml content
   ( cd "$src" && git init -q -b main && git -c user.name=t -c user.email=t@t add -A \
     && git -c user.name=t -c user.email=t commit -qm init >/dev/null )
   mkdir -p "$(dirname "$bare")"; git clone -q --bare "$src" "$bare" >/dev/null
+  # P2 : le REGISTRE CENTRAL, dépôt SÉPARÉ, sous la même racine bidon — c'est
+  # ainsi que le défaut GOVERNANCE_REPO=ci/stoa-platform-ci se résout ici sans
+  # toucher un seul appelant. Il est cloné par api-request.sh §2a, donc AVANT
+  # les refus que la section B mesure : sans lui, chacun d'eux rougirait sur
+  # REGISTRE_GOUVERNANCE_INACCESSIBLE au lieu de sa propre garde. Le contenu
+  # n'a pas à gouverner quoi que ce soit ici (aucun de ces cas n'atteint le
+  # plan) — il doit seulement être un registre VALIDE.
+  mk_governance "$(dirname "$(dirname "$bare")")/ci/stoa-platform-ci.git"
+}
+mk_governance(){ # $1=bare-dir ; registre central minimal mais VALIDE
+  local bare="$1" src="$TMP/src-gov-$$-$RANDOM"
+  [ -e "$bare" ] && return 0
+  mkdir -p "$src/governance"
+  cat > "$src/governance/classifications.yaml" <<'YML'
+apiVersion: governance.stoa.io/v1
+kind: ClassificationRegistry
+classifications:
+  - {owner: teamx, tenant: banking-demo, api: foo, classification: VH, exposure: external}
+YML
+  ( cd "$src" && git init -q -b main && git -c user.name=t -c user.email=t@t add -A \
+    && git -c user.name=t -c user.email=t commit -qm init >/dev/null )
+  mkdir -p "$(dirname "$bare")"; git clone -q --bare "$src" "$bare" >/dev/null
 }
 mk_team(){ # $1=bare-dir  $2=contenu optionnel de apis/foo.publish.yml
   local bare="$1" src="$TMP/src-team-$$-$RANDOM"
@@ -128,6 +170,8 @@ run_local(){ # $1=label $2=expected_tag $3=GH $4=GIT_REPO $5=team-bare-path-ou-v
   before=$(git ls-remote "$gh/$gitrepo.git" 2>&1)
   [ -n "$teambare" ] && tbefore=$(git ls-remote "$teambare" 2>&1)
   out=$(env -i PATH="$PATH" GIT_HOST="$gh" GIT_REPO="$gitrepo" GITEA_TOKEN=dummy \
+        LABCTL_BIN="$LABCTL_BIN" CLASSIFICATION="$CLASSIFICATION" EXPOSURE="$EXPOSURE" \
+        GOVERNANCE_REPO="$GOVERNANCE_REPO" GOVERNANCE_PATH="$GOVERNANCE_PATH" \
         ACTION=create TEAM=teamx API_NAME=foo API_VERSION=1.0.0 \
         OPENAPI_SPEC='{"openapi":"3.0.0"}' INBOUND_MODE=jwt "$@" bash "$S" 2>&1)
   rc=$?
@@ -203,6 +247,8 @@ mk_team "$GH5/teamy/apis.git" ""   # vide — AUCUNE API 'foo' déclarée ici
 BEFORE_X=$(git ls-remote "$GH5/teamx/apis.git" 2>&1)
 BEFORE_Y=$(git ls-remote "$GH5/teamy/apis.git" 2>&1)
 OUT_COL=$(env -i PATH="$PATH" GIT_HOST="$GH5" GIT_REPO="ci/stoa-labs" GITEA_TOKEN=dummy \
+  LABCTL_BIN="$LABCTL_BIN" CLASSIFICATION="$CLASSIFICATION" EXPOSURE="$EXPOSURE" \
+        GOVERNANCE_REPO="$GOVERNANCE_REPO" GOVERNANCE_PATH="$GOVERNANCE_PATH" \
   ACTION=create TEAM=teamy API_NAME=foo API_VERSION=1.0.0 \
   OPENAPI_SPEC='{"openapi":"3.0.0"}' INBOUND_MODE=jwt bash "$S" 2>&1)
 RC_COL=$?
@@ -221,6 +267,8 @@ fi
 # (l'ouverture de PR échoue ensuite, cette "forge" locale bare n'a pas d'API
 # REST Gitea — attendu, ce n'est pas ce que ce contre-témoin vérifie).
 OUT_COL2=$(env -i PATH="$PATH" GIT_HOST="$GH5" GIT_REPO="ci/stoa-labs" GITEA_TOKEN=dummy \
+  LABCTL_BIN="$LABCTL_BIN" CLASSIFICATION="$CLASSIFICATION" EXPOSURE="$EXPOSURE" \
+        GOVERNANCE_REPO="$GOVERNANCE_REPO" GOVERNANCE_PATH="$GOVERNANCE_PATH" \
   ACTION=create TEAM=teamy API_NAME=quux API_VERSION=1.0.0 \
   OPENAPI_SPEC='{"openapi":"3.0.0"}' INBOUND_MODE=jwt bash "$S" 2>&1)
 AFTER2_Y=$(git ls-remote "$GH5/teamy/apis.git" 2>&1)
@@ -274,12 +322,22 @@ else
   RC2=$(gapi -X POST -d "{\"username\":\"$TEAMORG\"}" -o /dev/null -w '%{http_code}' "$GH/api/v1/orgs")
   RC3=$(gapi -X POST -d '{"name":"stoa-labs","auto_init":false}' -o /dev/null -w '%{http_code}' "$GH/api/v1/orgs/$PLATORG/repos")
   RC4=$(gapi -X POST -d '{"name":"apis","auto_init":false}' -o /dev/null -w '%{http_code}' "$GH/api/v1/orgs/$TEAMORG/repos")
-  CLEANUP_URLS+=("$GH/api/v1/repos/$PLATORG/stoa-labs" "$GH/api/v1/repos/$TEAMORG/apis" "$GH/api/v1/orgs/$PLATORG" "$GH/api/v1/orgs/$TEAMORG")
-  if [ "$RC1" != 201 ] || [ "$RC2" != 201 ] || [ "$RC3" != 201 ] || [ "$RC4" != 201 ]; then
-    ko "préparation scratch (org/repo) en échec (HTTP $RC1/$RC2/$RC3/$RC4) — section D avortée"
+  # P2 : le registre central vit dans un dépôt À PART, que l'équipe ne possède
+  # pas — c'est toute la valeur de l'ancrage. Un registre posé dans le dépôt
+  # d'équipe (ou dans sa branche) serait sa propre déclaration relue deux fois.
+  RC5=$(gapi -X POST -d '{"name":"governance","auto_init":false}' -o /dev/null -w '%{http_code}' "$GH/api/v1/orgs/$PLATORG/repos")
+  CLEANUP_URLS+=("$GH/api/v1/repos/$PLATORG/stoa-labs" "$GH/api/v1/repos/$PLATORG/governance" "$GH/api/v1/repos/$TEAMORG/apis" "$GH/api/v1/orgs/$PLATORG" "$GH/api/v1/orgs/$TEAMORG")
+  if [ "$RC1" != 201 ] || [ "$RC2" != 201 ] || [ "$RC3" != 201 ] || [ "$RC4" != 201 ] || [ "$RC5" != 201 ]; then
+    ko "préparation scratch (org/repo) en échec (HTTP $RC1/$RC2/$RC3/$RC4/$RC5) — section D avortée"
   else
     WD="$TMP/d-work"
-    mkdir -p "$WD/plat/poc-control-plane-federation/ansible" "$WD/team/apis"
+    mkdir -p "$WD/plat/poc-control-plane-federation/ansible" "$WD/team/apis" "$WD/gov/governance"
+    cat > "$WD/gov/governance/classifications.yaml" <<YML
+apiVersion: governance.stoa.io/v1
+kind: ClassificationRegistry
+classifications:
+  - {owner: ${TEAMORG}, tenant: banking-demo, api: scratch-api, classification: VH, exposure: external}
+YML
     cat > "$WD/plat/poc-control-plane-federation/ansible/providers.dev.yml" <<YML
 ---
 providers:
@@ -292,11 +350,15 @@ YML
       && git -c user.name=t -c user.email=t commit -qm init )
     ( cd "$WD/team" && git init -q -b main && git -c user.name=t -c user.email=t@t add -A 2>/dev/null
       git -c user.name=t -c user.email=t commit -qm init --allow-empty )
+    ( cd "$WD/gov" && git init -q -b main && git -c user.name=t -c user.email=t@t add -A \
+      && git -c user.name=t -c user.email=t commit -qm init )
     AUTH_B64=$(printf 'x:%s' "$GITEA_TOKEN" | base64 | tr -d '\n')
     GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader GIT_CONFIG_VALUE_0="Authorization: Basic ${AUTH_B64}" \
       git -C "$WD/plat" push -q "$GH/$PLATORG/stoa-labs.git" main
     GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader GIT_CONFIG_VALUE_0="Authorization: Basic ${AUTH_B64}" \
       git -C "$WD/team" push -q "$GH/$TEAMORG/apis.git" main
+    GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader GIT_CONFIG_VALUE_0="Authorization: Basic ${AUTH_B64}" \
+      git -C "$WD/gov" push -q "$GH/$PLATORG/governance.git" main
     unset AUTH_B64
 
     # ── flake d'ENVIRONNEMENT observé (pas un défaut d'api-request.sh) : sur
@@ -331,6 +393,10 @@ YML
     # premier ("ACTION=create") est alors pris pour le NOM de la commande à
     # exécuter — "command not found", reproduit puis corrigé ici).
     export GIT_HOST="$GH" GIT_REPO="${PLATORG}/stoa-labs" GIT_WEB_HOST="$GH" GITEA_TOKEN="$GITEA_TOKEN"
+    # P2 : le registre scratch, jamais celui du lab — un harnais qui lirait la
+    # gouvernance RÉELLE ferait dépendre son verdict d'un fichier que personne
+    # n'a mis là pour lui, et écrirait sur une réalité qu'il ne possède pas.
+    export GOVERNANCE_REPO="${PLATORG}/governance" GOVERNANCE_PATH="governance/classifications.yaml"
 
     echo "── D1. mode create (nominal) ──"
     SPEC1='openapi: "3.0.0"

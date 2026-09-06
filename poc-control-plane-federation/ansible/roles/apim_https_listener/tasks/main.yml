@@ -1,0 +1,305 @@
+---
+# roles/apim_https_listener/tasks/main.yml — le listener HTTPS d'un
+# environnement (jalon P5, ADR-095). Voir defaults/main.yml pour ce que ce rôle
+# NE protège pas — c'est la première chose à lire.
+#
+# Idempotent. Ne supprime jamais un port. Relectures fail-closed : sur cette
+# gateway, un 200 ne prouve rien (mesuré trois fois dans ce GOAL, et une fois
+# ici même sur `clientAuth`).
+
+- name: "Listener : secrets d'admin (Vault, fallback PoC)"
+  ansible.builtin.import_role:
+    name: apim_common
+    tasks_from: secrets.yml
+
+- name: "Listener HTTPS :{{ apim_hl_port }}"
+  module_defaults:
+    ansible.builtin.uri: "{{ apim_ss_uri_defaults }}"
+  block:
+
+    - name: "Listener : mode d'authentification client dans le vocabulaire du produit"
+      ansible.builtin.assert:
+        that: "apim_hl_client_auth in ['none', 'request', 'require']"
+        fail_msg: >-
+          CLIENT_AUTH_INCONNU : apim_hl_client_auth='{{ apim_hl_client_auth }}' ; attendu
+          none|request|require. Une valeur hors vocabulaire serait acceptée par un POST /ports
+          puis relue autrement — le port naîtrait avec un mode que personne n'a demandé.
+
+    - name: "Listener : lire les ports"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/ports"
+      register: hl_ports
+      changed_when: false
+
+    - name: "Listener : le port visé, et le gabarit"
+      ansible.builtin.set_fact:
+        hl_key: "HTTPSListener@{{ apim_hl_port }}"
+        hl_existing: >-
+          {{ ((hl_ports.json.listeners | default([]))
+              | selectattr('port', 'equalto', apim_hl_port | int) | list) | first | default({}, true) }}
+        hl_template: >-
+          {{ (((hl_ports.json.listeners | default([]))
+               | selectattr('port', 'equalto', apim_hl_template_port | int) | list) | first)
+             | default((((hl_ports.json.listeners | default([]))
+                         | selectattr('protocol', 'defined')
+                         | selectattr('protocol', 'equalto', 'HTTPS') | list) | first), true)
+             | default({}, true) }}
+
+    # ===== 1. Créer le port s'il n'existe pas =================================
+    - name: "Listener : créer le port HTTPS (recopie d'un gabarit relu)"
+      when: "(hl_existing.port | default(0) | int) != (apim_hl_port | int)"
+      block:
+
+        # On ne compose pas un port de zéro. Le contrat publié ne décrit ni
+        # `keyStore` ni `trustStore`, et le port réel les porte par ALIAS
+        # (mesuré) : inventer la forme donnerait un port qui se crée et ne sert
+        # rien, ou pire, qui sert sans le magasin attendu.
+        - name: "Listener : FAIL-CLOSED — un gabarit HTTPS doit exister pour recopier la forme"
+          ansible.builtin.assert:
+            that: "(hl_template.protocol | default('')) == 'HTTPS'"
+            fail_msg: >-
+              HTTPS_LISTENER_SANS_GABARIT : aucun listener HTTPS sur cette gateway
+              (apim_hl_template_port={{ apim_hl_template_port }}). La forme d'un port HTTPS n'est
+              pas inventable : le contrat publié SOUS-DÉCRIT l'objet — `keyStore` et `trustStore`
+              n'y figurent pas et le port réel les porte par alias (mesuré, spike C de P0). Créer
+              le premier listener HTTPS par l'IS Admin (:5555/WmRoot > Security > Ports), puis
+              rejouer ce play qui saura le recopier.
+
+        # ⚠ `clientAuth` est posé ICI et nulle part ailleurs : il est honoré à la
+        # création et ne s'édite pas (spike P5 S10). Les champs d'identité du
+        # gabarit sont retirés — les garder ferait naître un doublon d'identité.
+        - name: "Listener : POST /ports (le gabarit, moins son identité, plus la nôtre)"
+          ansible.builtin.uri:
+            url: "{{ apim_ss_api_base }}/ports"
+            method: POST
+            body: >-
+              {{ hl_template
+                 | dict2items | rejectattr('key', 'in',
+                     ['uniqueID', 'key', 'listenerKey', 'primary', 'targets', 'curDelay'])
+                 | items2dict
+                 | combine({'port': apim_hl_port | int,
+                            'portAlias': apim_hl_port_alias,
+                            'portDescription': apim_hl_description,
+                            'clientAuth': apim_hl_client_auth,
+                            'enabled': 'false'})
+                 | combine({'keyStore': apim_hl_keystore} if (apim_hl_keystore | length > 0) else {})
+                 | combine({'trustStore': apim_hl_truststore} if (apim_hl_truststore | length > 0) else {}) }}
+            status_code: [200, 201]
+          register: hl_create
+
+        - name: "Listener : port créé"
+          ansible.builtin.debug:
+            msg: >-
+              HTTPS_LISTENER_CREE : {{ hl_key }} (alias {{ apim_hl_port_alias }}), recopié du
+              gabarit :{{ hl_template.port }} — keystore
+              {{ apim_hl_keystore | default(hl_template.keyStore, true) }},
+              clientAuth={{ apim_hl_client_auth }}. Créé DÉSACTIVÉ ; l'activation est l'étape
+              suivante, pour qu'un port mal formé ne serve jamais.
+
+    # ===== 2. Le mode d'authentification client, sur un port DÉJÀ là =========
+    # Le rôle refuse au lieu d'écrire, et c'est le résultat d'une mesure, pas une
+    # prudence : les deux URL d'édition rendent 200 SANS persister. Écrire puis
+    # relire donnerait le même refus, une écriture inutile plus tard ; écrire
+    # SANS relire donnerait un play vert sur un port dont le mode n'a pas bougé —
+    # c'est-à-dire la garantie de papier que ce GOAL démonte depuis P0.
+    - name: "Listener : FAIL-CLOSED — clientAuth ne s'édite pas sur un port existant"
+      when: "(hl_existing.port | default(0) | int) == (apim_hl_port | int)"
+      ansible.builtin.assert:
+        that: "(hl_existing.clientAuth | default('none')) == apim_hl_client_auth"
+        fail_msg: >-
+          CLIENT_AUTH_NON_CONVERGEABLE : le port :{{ apim_hl_port }} existe avec
+          clientAuth='{{ hl_existing.clientAuth | default('none') }}' et ce play en demande
+          '{{ apim_hl_client_auth }}'. MESURÉ sur wM 10.15 (spike P5 S10) : `clientAuth` est
+          honoré à la CRÉATION et ne s'édite pas — `PUT /ports/{listenerKey}` et
+          `PUT /ports/{alias}` rendent 200 et la relecture ne bouge pas (et `alias` vaut « ssos »
+          sur tous les listeners HTTPS, donc cette seconde URL ne désigne même pas un port).
+          Prétendre l'avoir écrit serait un faux vert. Gestes possibles : (a) recréer le port —
+          `PUT /ports/disable` puis `DELETE /ports/{{ hl_key }}` puis rejouer ce play, ce qui
+          COUPE tout ce qui passait par lui ; (b) le régler dans l'IS Admin
+          (:5555/WmRoot > Security > Ports) ; (c) viser un AUTRE port et laisser celui-ci.
+        success_msg: >-
+          CLIENT_AUTH_CONFORME : :{{ apim_hl_port }} est déjà en '{{ apim_hl_client_auth }}'.
+
+    # ===== 3. Activation =====================================================
+    - name: "Listener : relire les ports (après création éventuelle)"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/ports"
+      register: hl_ports2
+      changed_when: false
+
+    - name: "Listener : l'état courant du port visé"
+      ansible.builtin.set_fact:
+        hl_now: >-
+          {{ ((hl_ports2.json.listeners | default([]))
+              | selectattr('port', 'equalto', apim_hl_port | int) | list) | first | default({}, true) }}
+
+    - name: "Listener : PUT /ports/enable si le port n'est pas activé"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/ports/enable"
+        method: PUT
+        body: { listenerKey: "{{ hl_key }}" }
+        status_code: [200, 201]
+      when: "(hl_now.enabled | default('false')) != 'true'"
+
+    # ===== 4. LA PORTE de ce rôle : la relecture =============================
+    - name: "Listener : READ-BACK — relire les ports"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/ports"
+      register: hl_after
+      changed_when: false
+      retries: 6
+      delay: 2
+      until: >-
+        (((hl_after.json.listeners | default([]))
+          | selectattr('port', 'equalto', apim_hl_port | int)
+          | map(attribute='enabled') | list | first | default('false')) == 'true')
+      failed_when: false
+
+    - name: "Listener : l'état relu"
+      ansible.builtin.set_fact:
+        hl_final: >-
+          {{ ((hl_after.json.listeners | default([]))
+              | selectattr('port', 'equalto', apim_hl_port | int) | list) | first | default({}, true) }}
+
+    - name: "Listener : FAIL-CLOSED — le port EXISTE, est HTTPS, est ACTIVÉ, et porte un keystore"
+      ansible.builtin.assert:
+        that:
+          - "(hl_final.port | default(0) | int) == (apim_hl_port | int)"
+          - "(hl_final.protocol | default('')) == 'HTTPS'"
+          - "(hl_final.enabled | default('false')) == 'true'"
+          - "(hl_final.keyStore | default('')) | length > 0"
+          - "(hl_final.clientAuth | default('none')) == apim_hl_client_auth"
+        fail_msg: >-
+          HTTPS_LISTENER_UNCONFIRMED : après écriture, :{{ apim_hl_port }} est relu
+          {{ hl_final | default({}) }}. Attendu : protocole HTTPS, enabled=true, un keystore par
+          alias, et clientAuth='{{ apim_hl_client_auth }}'. Un port sans keystore se crée et ne
+          sert rien ; un port relu inactif n'écoute pas. Aucune API n'est concernée par ce refus —
+          ce rôle ne touche à aucune API.
+        success_msg: >-
+          HTTPS_LISTENER_CONFIRMED : :{{ apim_hl_port }} ({{ hl_final.portAlias | default('?') }})
+          écoute en HTTPS, keystore={{ hl_final.keyStore }}, trustStore={{ hl_final.trustStore
+          | default('(aucun)') }}, clientAuth={{ hl_final.clientAuth }}. Aucun redémarrage n'a été
+          nécessaire — mesuré : un port créé puis activé sert immédiatement (spike P5 S6). Le
+          truststore, LUI, n'est relu qu'au démarrage de l'IS : y importer une CA exige un restart
+          (is-mtls-setup.yml), ce que ce rôle ne fait pas.
+
+    # ===== 5. Promotion en primaire — geste de TOPOLOGIE, éteint par défaut ===
+    - name: "Listener : promotion en primaire"
+      when: "apim_hl_promote_primary | bool"
+      block:
+
+        - name: "Listener : ce que la promotion fait, et ce qu'elle ne fait pas"
+          ansible.builtin.debug:
+            msg: >-
+              ⚠ PROMOTION_DEMANDEE : {{ hl_key }} va devenir le listener PRIMAIRE. Ce n'est pas
+              un contrôle de sécurité — mesuré : `enabled` et `primary` sont deux champs
+              indépendants, donc le HTTP en clair reste OUVERT après cette bascule (spike P5 S6),
+              et aucune API n'en devient plus protégée (spike C de P0). La forme de l'appel a été
+              mesurée en NO-OP (S9) ; la BASCULE elle-même ne l'a pas été, parce qu'elle change le
+              port par défaut du serveur entier. Pour fermer le clair : apim_hl_close_plaintext_port.
+
+        - name: "Listener : PUT /ports/primary"
+          ansible.builtin.uri:
+            url: "{{ apim_ss_api_base }}/ports/primary"
+            method: PUT
+            body: { listenerKey: "{{ hl_key }}" }
+            status_code: [200, 201]
+
+        - name: "Listener : READ-BACK — relire quel port est primaire"
+          ansible.builtin.uri:
+            url: "{{ apim_ss_api_base }}/ports"
+          register: hl_prim
+          changed_when: false
+
+        - name: "Listener : FAIL-CLOSED — le port visé EST le primaire"
+          ansible.builtin.assert:
+            that: >-
+              (((hl_prim.json.listeners | default([])) | selectattr('primary', 'defined')
+                | selectattr('primary') | map(attribute='listenerKey') | list) == [hl_key])
+            fail_msg: >-
+              PRIMAIRE_UNCONFIRMED : après le PUT, le primaire relu est
+              {{ (hl_prim.json.listeners | default([])) | selectattr('primary', 'defined')
+                 | selectattr('primary') | map(attribute='listenerKey') | list }}, attendu
+              ['{{ hl_key }}']. La surface a répondu sans appliquer : ne pas conclure que la
+              bascule a eu lieu.
+
+    # ===== 6. Fermer un listener en clair — le SEUL des trois qui ferme ======
+    - name: "Listener : fermer le port en clair :{{ apim_hl_close_plaintext_port }}"
+      when: "(apim_hl_close_plaintext_port | int) > 0"
+      block:
+
+        # La garde qui empêche de se couper la branche : le port par lequel ce
+        # play PILOTE la gateway ne se ferme pas depuis ce play. Sinon la tâche
+        # suivante — la relecture — n'a plus de canal pour dire si ça a marché.
+        - name: "Listener : FAIL-CLOSED — ne jamais fermer le port par lequel on pilote"
+          ansible.builtin.assert:
+            that: >-
+              (apim_hl_close_plaintext_port | int | string)
+              not in [((apim_ss_api_base | urlsplit('port')) | default('', true) | string)]
+            fail_msg: >-
+              PORT_DE_PILOTAGE : :{{ apim_hl_close_plaintext_port }} est le port par lequel ce play
+              parle à la gateway ({{ apim_ss_api_base }}). Le fermer d'ici couperait la connexion
+              qui doit ensuite RELIRE que la fermeture a eu lieu — un play qui ne peut pas se
+              relire ne prouve rien. Le fermer depuis un autre canal (IS Admin, ou ce play joué à
+              travers le listener HTTPS), une fois celui-ci vérifié.
+
+        - name: "Listener : le port en clair à fermer"
+          ansible.builtin.set_fact:
+            hl_plain: >-
+              {{ ((hl_after.json.listeners | default([]))
+                  | selectattr('port', 'equalto', apim_hl_close_plaintext_port | int)
+                  | list) | first | default({}, true) }}
+
+        - name: "Listener : PUT /ports/disable"
+          ansible.builtin.uri:
+            url: "{{ apim_ss_api_base }}/ports/disable"
+            method: PUT
+            body: { listenerKey: "{{ hl_plain.listenerKey | default('HTTPListener@' ~ apim_hl_close_plaintext_port) }}" }
+            status_code: [200, 201]
+          when: "(hl_plain.enabled | default('false')) == 'true'"
+
+        - name: "Listener : READ-BACK — relire les ports"
+          ansible.builtin.uri:
+            url: "{{ apim_ss_api_base }}/ports"
+          register: hl_closed
+          changed_when: false
+
+        - name: "Listener : FAIL-CLOSED — le port en clair est bien FERMÉ"
+          ansible.builtin.assert:
+            that: >-
+              (((hl_closed.json.listeners | default([]))
+                | selectattr('port', 'equalto', apim_hl_close_plaintext_port | int)
+                | map(attribute='enabled') | list | first | default('false')) != 'true')
+            fail_msg: >-
+              PORT_EN_CLAIR_TOUJOURS_OUVERT : :{{ apim_hl_close_plaintext_port }} est relu
+              enabled=true après le PUT /ports/disable. Ne pas conclure que le clair est fermé.
+
+    # ===== 7. Ce que l'environnement porte VRAIMENT, dit sans arrondir =======
+    # Un play de listener qui se termine en vert laisse croire que le clair est
+    # traité. Il ne l'est pas : cette dernière tâche énumère ce qui reste ouvert
+    # et rappelle où vit le contrôle. C'est le seul endroit du livrable qui
+    # empêche de confondre « j'ai un port HTTPS » et « mes APIs refusent le clair ».
+    - name: "Listener : ÉTAT DE L'ENVIRONNEMENT — ce qui reste ouvert en clair"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/ports"
+      register: hl_report
+      changed_when: false
+
+    - name: "Listener : état final"
+      ansible.builtin.debug:
+        msg: >-
+          HTTPS_LISTENER_ETAT : HTTPS activés =
+          {{ (hl_report.json.listeners | default([])) | selectattr('protocol', 'defined')
+             | selectattr('protocol', 'equalto', 'HTTPS') | selectattr('enabled', 'equalto', 'true')
+             | map(attribute='port') | list }} ;
+          ⚠ EN CLAIR, TOUJOURS ACTIVÉS =
+          {{ (hl_report.json.listeners | default([])) | selectattr('protocol', 'defined')
+             | selectattr('protocol', 'equalto', 'HTTP') | selectattr('enabled', 'equalto', 'true')
+             | map(attribute='port') | list }} ;
+          primaire =
+          {{ (hl_report.json.listeners | default([])) | selectattr('primary', 'defined')
+             | selectattr('primary') | map(attribute='listenerKey') | list }}.
+          RAPPEL : tant qu'un port en clair est activé, une API le sert — À MOINS que son propre
+          `entryProtocolPolicy` ne vaille `https`, ce que pose le pipeline de publication
+          (roles/apim_publish_api/tasks/entry-protocol.yml, jalon P5). Ce play n'a protégé aucune
+          API ; il a fourni un transport.

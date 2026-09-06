@@ -226,3 +226,117 @@ func (a *Adapter) selfServiceIdTypes(spec *adapter.ConsumerSpec) []string {
 	}
 	return t
 }
+
+// --- P6: the caller-identity dimension the POSTURE requires -----------------
+
+// callerIdentityActionName documents the per-manifest union action. Matching is
+// on the rule fingerprint, never the name (same discipline as the two actions
+// above).
+func callerIdentityActionName(dims []string) string {
+	return "Identify & Authorize (" + strings.Join(dims, "+") + ") (labctl)"
+}
+
+// identRule is one IdentificationRule: which dimension, and how strictly the
+// gateway must resolve it to a consumer application.
+type identRule struct {
+	lookup string // strict | open
+	idType string
+}
+
+// identifyRulesActionBody is identifyAndActionBody with a PER-RULE lookup.
+//
+// It exists because the union action P6 needs is not uniformly strict: the
+// signature-only inbound path uses (open, jwtClaims) — a JWT that validates but
+// maps to no application is still let through, by design of that path — while
+// the network dimension MUST be (strict, ipAddressRange) or it identifies
+// nobody. Forcing `strict` on every rule would silently harden the jwtClaims
+// path, which is not P6's axis to change; forcing `open` on the IP rule would
+// give away the whole control. So the lookup travels with its rule.
+func identifyRulesActionBody(id, name string, rules []identRule) map[string]any {
+	params := []any{
+		map[string]any{"templateKey": "logicalConnector", "values": []any{"AND"}},
+		map[string]any{"templateKey": "allowAnonymous", "values": []any{"false"}},
+	}
+	for _, r := range rules {
+		params = append(params, map[string]any{
+			"templateKey": "IdentificationRule",
+			"parameters": []any{
+				map[string]any{"templateKey": "applicationLookup", "values": []any{r.lookup}},
+				map[string]any{"templateKey": "identificationType", "values": []any{r.idType}},
+			},
+		})
+	}
+	action := map[string]any{
+		"names":       []any{map[string]any{"value": name, "locale": "en"}},
+		"templateKey": "evaluatePolicy",
+		"parameters":  params,
+		"active":      true,
+	}
+	if id != "" {
+		action["id"] = id
+	}
+	return map[string]any{"policyAction": action}
+}
+
+// callerIdentityRules is the FULL set of identification rules one API's IAM
+// stage must carry: the inbound-auth leg's own dimension, plus the cert
+// dimension of the mTLS leg, plus the network dimension of the posture.
+//
+// ONE ACTION, NOT THREE. The gateway refuses a second action on the IAM stage —
+// HTTP 409, measured at spike P6 S7 — so the dimensions cannot be stacked as
+// separate objects. They are UNIONED here, which is also what makes the barrier
+// an AND rather than a set of alternatives.
+func (a *Adapter) callerIdentityRules() []identRule {
+	mode := a.wantMode()
+	rules := []identRule{{lookup: mode.applicationLookup, idType: mode.identificationType}}
+	if a.inbound != nil && a.inbound.mtls {
+		rules = append(rules, identRule{lookup: "strict", idType: identificationTypeCert})
+	}
+	if a.inbound != nil && a.inbound.ipAllowlist {
+		rules = append(rules, identRule{lookup: "strict", idType: identificationTypeIP})
+	}
+	return rules
+}
+
+// ensureCallerIdentityAction finds — by exact rule fingerprint — or creates the
+// union action of callerIdentityRules, and returns its id.
+//
+// It NEVER edits an action it finds. That is not tidiness: spike P6 S6 measured
+// that a policy action is DESTROYED the moment it is detached from a policy,
+// while every other policy still referencing it keeps a dead UUID and rejects
+// its next write with 500 « Policy action does not exist ». Rewriting a shared
+// object in place would spread one API's decision to every other API sharing the
+// fingerprint — so the only safe moves are "reuse identically" or "create".
+func (a *Adapter) ensureCallerIdentityAction(ctx context.Context) (string, error) {
+	rules := a.callerIdentityRules()
+	dims := make([]string, 0, len(rules))
+	for _, r := range rules {
+		dims = append(dims, r.idType)
+	}
+	actions, err := a.listPolicyActions(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, act := range actions {
+		if !actionMatchesRuleTypes(act, dims) {
+			continue
+		}
+		if id, _ := act["id"].(string); id != "" {
+			return id, nil // converged — idempotent no-op
+		}
+	}
+	url := a.adminPath("/policyActions")
+	code, raw, err := a.sendJSON(ctx, http.MethodPost, url,
+		identifyRulesActionBody("", callerIdentityActionName(dims), rules))
+	if err != nil {
+		return "", fmt.Errorf("caller identity: create AND action %v: %w", dims, err)
+	}
+	if code != http.StatusCreated && code != http.StatusOK {
+		return "", fmt.Errorf("caller identity: create AND action %v: expected 200/201, got %d: %s", dims, code, truncate(raw, 300))
+	}
+	id := parsePolicyActionID(raw)
+	if id == "" {
+		return "", fmt.Errorf("caller identity: create AND action %v: response carries no id: %s", dims, truncate(raw, 300))
+	}
+	return id, nil
+}

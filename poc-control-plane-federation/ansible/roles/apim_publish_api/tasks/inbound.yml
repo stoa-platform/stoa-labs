@@ -134,86 +134,23 @@
         - "in_scope.id is defined"
         - "apim_api_id not in (in_scope.apiScopes | default([]))"
 
-# ===== 2. Action IAM (find-or-create par empreinte de règle) ================
-- name: "Inbound : liste des policyActions"
-  ansible.builtin.uri:
-    url: "{{ apim_ss_api_base }}/policyActions"
-  register: in_actions
-  changed_when: false
-
-- name: "Inbound : id vide par défaut"
-  ansible.builtin.set_fact:
-    in_iam_id: ""
-- name: "Inbound : id de l'action IAM {{ in_lookup }}/{{ in_type }} (empreinte)"
-  ansible.builtin.set_fact:
-    in_iam_id: "{{ item.id }}"
-  loop: "{{ in_actions.json.policyAction | default([]) }}"
-  loop_control: { label: "{{ item.id }}" }
-  when: >-
-    (item.parameters | default([]) | selectattr('templateKey', 'equalto', 'IdentificationRule')
-     | map(attribute='parameters') | flatten
-     | selectattr('templateKey', 'equalto', 'identificationType')
-     | map(attribute='values') | flatten | sort) == ([in_type] | sort)
-
-- name: "Inbound : créer l'action IAM {{ in_lookup }}/{{ in_type }} si absente"
-  ansible.builtin.uri:
-    url: "{{ apim_ss_api_base }}/policyActions"
-    method: POST
-    body:
-      policyAction:
-        names: [{ value: "identify ({{ apim_api.name }})", locale: "en" }]
-        templateKey: "evaluatePolicy"
-        parameters:
-          - { templateKey: "logicalConnector", values: ["OR"] }
-          - { templateKey: "allowAnonymous", values: ["false"] }
-          - templateKey: "IdentificationRule"
-            parameters:
-              - { templateKey: "applicationLookup", values: ["{{ in_lookup }}"] }
-              - { templateKey: "identificationType", values: ["{{ in_type }}"] }
-        active: true
-    status_code: [200, 201]
-  register: in_iam_create
-  when: "in_iam_id | length == 0"
-
-- ansible.builtin.set_fact:
-    in_iam_id: "{{ in_iam_create.json.policyAction.id | default(in_iam_create.json.id) }}"
-  when: "in_iam_id | length == 0"
-
-# ===== 3. Attacher l'action au stage IAM de la policy de l'API ==============
-- name: "Inbound : GET policy de l'API"
-  ansible.builtin.uri:
-    url: "{{ apim_ss_api_base }}/apis/{{ apim_api_id }}"
-  register: in_api_get
-  changed_when: false
-
-- ansible.builtin.set_fact:
-    in_pol_id: "{{ (in_api_get.json.apiResponse.api.policies | default([])) | first | default('') }}"
-
-- name: "Inbound : convergence du stage IAM"
-  when: "in_pol_id | length > 0"
-  block:
-    - ansible.builtin.uri:
-        url: "{{ apim_ss_api_base }}/policies/{{ in_pol_id }}"
-      register: in_pol_get
-      changed_when: false
-    - ansible.builtin.set_fact:
-        in_pol: "{{ in_pol_get.json.policy | default(in_pol_get.json) }}"
-    - ansible.builtin.set_fact:
-        in_iam_attached: >-
-          {{ in_iam_id in (in_pol.policyEnforcements | default([])
-              | selectattr('stageKey', 'equalto', 'IAM')
-              | map(attribute='enforcements') | flatten
-              | map(attribute='enforcementObjectId') | list) }}
-    - name: "Inbound : attacher (IAM = notre action) + PUT enveloppé — si pas attaché"
-      when: "not in_iam_attached"
-      block:
-        - ansible.builtin.set_fact:
-            in_pol_new: >-
-              {{ in_pol | combine({'policyEnforcements':
-                  [{'stageKey': 'IAM', 'enforcements': [{'enforcementObjectId': in_iam_id, 'order': none}]}]
-                  + (in_pol.policyEnforcements | default([]) | rejectattr('stageKey', 'equalto', 'IAM') | list) }) }}
-        - ansible.builtin.uri:
-            url: "{{ apim_ss_api_base }}/policies/{{ in_pol_id }}"
-            method: PUT
-            body: { policy: "{{ in_pol_new }}" }
-            status_code: [200, 201]
+# ===== 2. Le stage IAM ne se règle PLUS ici =================================
+# La création de l'action d'identification et son attachement au stage IAM
+# vivaient dans ce fichier jusqu'au jalon P6 (ADR-096). Ils l'ont quitté pour
+# `caller-identity.yml`, et ce n'est pas un rangement :
+#
+#   - la gateway n'accepte QU'UNE action au stage IAM (409 sur la seconde,
+#     mesuré au spike P6 S7). Les dimensions du volet inbound et celle de la
+#     posture (`ip-allowlist` d'une cellule `external`) doivent donc être
+#     FUSIONNÉES dans un seul objet. Deux fichiers qui écrivent le même stage,
+#     c'est le second qui gagne — et le contrôle perdu ne se voit nulle part ;
+#   - la position change aussi : l'identification est désormais posée AVANT
+#     l'activation (mesuré posable sur une API inactive et survivant à
+#     l'activation, S8), donc une API gouvernée ne sert jamais un appel non
+#     identifié, pas même pendant sa propre publication. Ici, elle l'aurait été
+#     après ;
+#   - et l'objet est PROPRE à l'API : détacher une action la DÉTRUIT (S6), ce
+#     qui laisserait un UUID mort dans toutes les policies qui la partageaient.
+#
+# Ce fichier garde donc ce dont l'IAM a besoin pour mordre — l'alias, la
+# strategy OAUTH2 et le scope mapping — et rien de plus. Un axe, un propriétaire.

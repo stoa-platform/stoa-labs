@@ -56,6 +56,22 @@ apim_api:
   # le contrat, écrit juste à côté par api-request.sh, s'y trouve donc TOUJOURS.
   contract: "{{ (pub_manifest_path | dirname) }}/__API_NAME__.openapi.yaml"
   team: ""   # jamais renseigné ici — la chaîne assigne l'équipe (E1, TEAM_FORBIDDEN sinon)
+
+  # ── POSTURE DÉCLARÉE (jalon P2, ADR-092) ──────────────────────────────────
+  # Ce que l'équipe a coché au formulaire. C'est une DÉCLARATION, jamais une
+  # décision : le rôle (roles/apim_publish_api/tasks/posture.yml) résout la
+  # posture EFFECTIVE au registre CENTRAL de gouvernance, clé (équipe, api), et
+  # c'est cette valeur-là qui dérive le bouquet de policies. Éditer ces deux
+  # lignes après coup n'affaiblit donc rien : déclarer PLUS FAIBLE que le
+  # registre est refusé [CLASSIFICATION_SPOOFED] avant le premier appel à la
+  # gateway, déclarer plus fort est accepté et signalé comme sur-provisionné.
+  #
+  # Pourquoi elles sont là quand même, plutôt qu'absentes puisque le registre
+  # tranche : parce qu'une demande DOIT engager quelque chose de comparable.
+  # Sans déclaration, une équipe ne peut pas se tromper — et ne peut donc pas
+  # non plus être reprise. C'est ce que le refus rend visible, sur la PR.
+  classification: "__CLASSIFICATION__"   # VH | H | M  (intégrité de la donnée)
+  exposure: "__EXPOSURE__"               # internal | external | internet (ENTRANT — qui peut appeler)
   inbound:
     alias_name: "BankAuth-demo"   # invariant PLATEFORME — jamais saisi par l'équipe
     mode: "__INBOUND_MODE__"      # jwt (signature seule) — seule valeur acceptée par api-request.sh actuellement ;

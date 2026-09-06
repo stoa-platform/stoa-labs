@@ -41,11 +41,28 @@
 #                       différente de la version de base
 #   OPENAPI_SPEC  (req) contrat OpenAPI/Swagger collé (YAML ou JSON)
 #   INBOUND_MODE  (req) jwt uniquement (oauth2 refusé — INBOUND_OAUTH2_NON_SUPPORTE)
+#   CLASSIFICATION (req) niveau d'INTÉGRITÉ déclaré (VH|H|M) — P2, une RÉFÉRENCE
+#   EXPOSURE      (req) exposition ENTRANTE déclarée (internal|external|internet)
+#                       — P2, une RÉFÉRENCE elle aussi : le REGISTRE CENTRAL
+#                       gagne, et une déclaration PLUS FAIBLE est refusée
+#                       [CLASSIFICATION_SPOOFED], relayée sur la PR
 #   FORGE_SECRET   (req) token du service ci (write:repository, write:issue)
 #   GIT_REPO           dépôt PLATEFORME (défaut ci/stoa-labs) — porte
 #                       ansible/providers.<env>.yml ET les gardes hors ligne
 #   GIT_HOST            défaut http://gitea:3000
 #   GIT_WEB_HOST         URL Gitea vue par l'HUMAIN (liens des commentaires)
+#   GOVERNANCE_REPO (req) dépôt du REGISTRE CENTRAL de classification, propriété
+#                       de la gouvernance de la donnée et NON éditable par les
+#                       équipes API (en prod : le dépôt `data-governance` du
+#                       client). AUCUN défaut — un repli de lab publierait sous
+#                       une gouvernance qui n'est pas la vôtre, sans le dire.
+#                       Lu FRAIS sur main, jamais depuis le worktree — même
+#                       discipline que providers.<env>.yml, même raison.
+#   GOVERNANCE_PATH (req) chemin du registre DANS ce dépôt
+#                       (ex. governance/classifications.yaml) — sans défaut
+#   LABCTL_BIN          binaire qui porte l'AUTORITÉ de la table de vérité
+#                       (défaut labctl, résolu par PATH) — la comparaison
+#                       anti-downgrade n'est PAS réécrite ici (cf. §1b)
 #   (ENVN n'est PLUS une entrée : G4/ADR-082 le SCELLE sur l'env d'authoring,
 #    voir plus bas. Il ne désigne que l'env dont providers.<env>.yml donne le
 #    dépôt d'équipe — sans rapport avec l'env de PUBLICATION, résolu plus tard
@@ -73,6 +90,11 @@ API_BASE="${API_BASE:-}"
 NEW_VERSION="${NEW_VERSION:-}"
 OPENAPI_SPEC="${OPENAPI_SPEC:?OPENAPI_SPEC requis}"
 INBOUND_MODE="${INBOUND_MODE:?INBOUND_MODE requis (jwt uniquement — oauth2 refusé)}"
+# P2 — la POSTURE déclarée. Lue SANS `${VAR:?}` : un champ obligatoire se refuse
+# en se nommant (mémoire CHAMP_REQUIS), pas par un « unbound variable » qui ne
+# dit ni lequel ni pourquoi. Le refus explicite est dans les gardes ci-dessous.
+CLASSIFICATION="${CLASSIFICATION:-}"
+EXPOSURE="${EXPOSURE:-}"
 # Le secret de la forge porte un nom NEUTRE (2026-09-04) : un gestionnaire
 # d'identite rend un jeton OU un couple, et les deux occupent la meme place.
 FORGE_SECRET="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
@@ -80,6 +102,14 @@ FORGE_SECRET="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
 GIT_REPO="${GIT_REPO:-ci/stoa-labs}"
 GIT_HOST="${GIT_HOST:-http://gitea:3000}"
 GIT_WEB_HOST="${GIT_WEB_HOST:-$GIT_HOST}"
+# AUCUN DÉFAUT, et c'est la porte ci/lint-config-knobs.sh qui l'exige : une
+# valeur de lab installée en repli n'est jamais signalée chez un client, elle est
+# substituée en silence et la panne sort plus loin sous un autre nom. Ces deux-là
+# se posent en variables globales du contrôleur (scripts/setup-jenkins-globals.sh)
+# et le script REFUSE en se nommant quand elles manquent (§2a).
+GOVERNANCE_REPO="${GOVERNANCE_REPO:-}"
+GOVERNANCE_PATH="${GOVERNANCE_PATH:-}"
+LABCTL_BIN="${LABCTL_BIN:-labctl}"
 # G4 (ADR-082) : ENVN est SCELLÉ sur l'env d'authoring — affectation sèche
 # depuis la constante de lib, jamais "${ENVN:-dev}" : les variables d'un job
 # Jenkins atterrissent dans l'environnement du process (fait mesuré, même
@@ -129,6 +159,44 @@ case "$INBOUND_MODE" in
   oauth2) fail "INBOUND_OAUTH2_NON_SUPPORTE : oauth2 exige inbound.audience/scope/client_id (roles/apim_publish_api/tasks/inbound.yml), non collectés par ce formulaire — seul jwt est supporté pour l'instant (cf. commentaire du script)";;
   *) fail "INBOUND_MODE_INVALIDE : '$INBOUND_MODE' — attendu jwt";;
 esac
+
+# ── 1b. POSTURE : présence, puis vocabulaire — DEMANDÉ À L'AUTORITÉ ──────────
+# (jalon P2, ADR-092.) Deux gardes distinctes, et la seconde ne réécrit RIEN.
+#
+# PRÉSENCE d'abord : un champ obligatoire se refuse EN SE NOMMANT. Le
+# formulaire les pose en listes déroulantes sans valeur vide, mais ce script est
+# aussi la voie MACHINE (appel direct, sans Jenkins) — un appelant qui les omet
+# doit lire pourquoi, pas un `unbound variable`.
+[ -n "$CLASSIFICATION" ] || fail "CHAMP_REQUIS : CLASSIFICATION (niveau d'intégrité déclaré : VH|H|M). La valeur RETENUE sera celle du registre central ; celle-ci en est la référence, et une référence absente ne peut pas être comparée."
+[ -n "$EXPOSURE" ]       || fail "CHAMP_REQUIS : EXPOSURE (exposition entrante déclarée : internal|external|internet). Idem — le registre central tranche, cette valeur est ce que la demande engage."
+case "$CLASSIFICATION" in *[!A-Za-z]*) fail "POSTURE_INVALIDE : CLASSIFICATION='$CLASSIFICATION' porte un caractère hors [A-Za-z]";; esac
+case "$EXPOSURE" in       *[!a-z]*)    fail "POSTURE_INVALIDE : EXPOSURE='$EXPOSURE' porte un caractère hors [a-z]";; esac
+
+# VOCABULAIRE ensuite, et ICI EST LE POINT : aucune liste VH|H|M ni
+# internal|external|internet n'est écrite dans ce fichier. P1 a retiré quatre
+# recopies de ces énumérations pour faire de `render` (Go) leur seule autorité ;
+# en réécrire une cinquième en bash — et, pire, y réécrire la comparaison
+# anti-downgrade, sur un axe qui n'est PAS une échelle — rouvrirait exactement
+# la dérive silencieuse que ce jalon vient de fermer. Donc on DEMANDE.
+#
+# Sans registre à cette étape (`--classification-source` absent) : `labctl
+# posture` se contente de dériver la posture DÉCLARÉE. Il refuse une valeur hors
+# vocabulaire ou une cellule non gouvernée [INTEGRITY_INCONSISTENT] — c'est tout
+# ce qu'on lui demande avant d'écrire quoi que ce soit. L'arbitrage contre le
+# registre, lui, vient au PLAN (§5b), après l'ouverture de la PR : son refus
+# doit être RELAYÉ à la PR, donc il faut qu'une PR existe.
+command -v "$LABCTL_BIN" >/dev/null 2>&1 \
+  || fail "POSTURE_AUTORITE_ABSENTE : '$LABCTL_BIN' introuvable dans le PATH — la table de vérité exposition × classification (ADR-091) vit dans ce binaire et n'est réécrite nulle part ailleurs. Sans lui, la demande n'est pas vérifiable : refus, plutôt qu'une posture acceptée sans juge."
+#
+# LABCTL_CLASSIFICATION_SOURCE/LABCTL_PROJECT sont VIDÉS pour cet appel-ci, et
+# ce n'est pas cosmétique : `labctl posture` lit ces variables d'environnement
+# quand ses drapeaux sont absents. Un nœud Jenkins qui les porterait ferait
+# consulter le registre DÈS CETTE GARDE — et une API pas encore enregistrée
+# (le cas NORMAL d'un `create`) serait refusée AVANT qu'aucune PR n'existe,
+# donc sans que personne ne puisse lire pourquoi à l'endroit prévu.
+POSTURE_ERR=$(LABCTL_CLASSIFICATION_SOURCE='' LABCTL_PROJECT='' "$LABCTL_BIN" posture --api "$API_NAME" \
+  --declared-classification "$CLASSIFICATION" --declared-exposure "$EXPOSURE" 2>&1) \
+  || fail "POSTURE_INVALIDE : classification='$CLASSIFICATION' exposure='$EXPOSURE' — ${POSTURE_ERR}"
 
 VERSION_RE='^[0-9]+\.[0-9]+(\.[0-9]+)?$'
 
@@ -211,6 +279,28 @@ case "$REPO_OUT" in
 esac
 [ -n "$REPO_FULL" ] || fail "REPO_MANQUANT : onboarder d'abord un dépôt pour cette équipe (providers.${ENVN}.yml, champ repo de '${TEAM}' vide)"
 echo "  équipe '${TEAM}' -> dépôt ${REPO_FULL}"
+
+# ── 2a. registre CENTRAL de classification, lu FRAIS sur main ────────────────
+# (jalon P2.) Cloné ICI, avant toute écriture Git : une source de gouvernance
+# injoignable ou absente est une panne d'INFRASTRUCTURE, pas un défaut de la
+# demande — elle doit donc refuser AVANT qu'une PR n'existe, et non finir en
+# « ❌ PLAN » sur une PR ouverte qui ferait porter le chapeau au demandeur.
+# (Un défaut de la DEMANDE, lui — downgrade, API non enregistrée — est arbitré
+# au plan §5b, une fois la PR ouverte, parce que son refus doit y être relayé.)
+#
+# Dépôt SÉPARÉ, et c'est le fond : le registre appartient à la gouvernance de la
+# donnée, pas à l'équipe API ni même à la plateforme qui l'exécute. Un registre
+# que l'équipe pourrait éditer ne serait qu'une deuxième copie de sa propre
+# déclaration — l'invariant d'ancrage déjà prouvé côté labctl
+# (scripts/test-classification-central.sh, preuve 6).
+[ -n "$GOVERNANCE_REPO" ] || fail "CHAMP_REQUIS : GOVERNANCE_REPO — le dépôt du registre central de classification (chez le client : le dépôt de la gouvernance de la donnée). Aucun défaut n'est posé volontairement : une valeur de lab en repli publierait sous une gouvernance qui n'est pas la vôtre. La poser en variable globale du contrôleur Jenkins (scripts/setup-jenkins-globals.sh)."
+[ -n "$GOVERNANCE_PATH" ] || fail "CHAMP_REQUIS : GOVERNANCE_PATH — le chemin du registre DANS ce dépôt (ex. governance/classifications.yaml). Même raison qu'au-dessus."
+echo "[1c/5] registre central ${GOVERNANCE_REPO}@main (${GOVERNANCE_PATH})"
+git clone -q --depth 1 -b main "${GIT_HOST}/${GOVERNANCE_REPO}.git" "$WORK/governance" \
+  || fail "REGISTRE_GOUVERNANCE_INACCESSIBLE : '${GOVERNANCE_REPO}' injoignable sur ${GIT_HOST} — la posture ne peut pas être arbitrée, et une posture non arbitrée est celle que la demande s'est donnée. Refus."
+REGISTRY="$WORK/governance/${GOVERNANCE_PATH}"
+[ -f "$REGISTRY" ] \
+  || fail "REGISTRE_GOUVERNANCE_ABSENT : '${GOVERNANCE_PATH}' introuvable dans ${GOVERNANCE_REPO}@main — vérifier GOVERNANCE_PATH, ou faire poser le registre par la gouvernance de la donnée"
 
 # ── 2b. collision cross-team (mode create uniquement) ────────────────────────
 # L'apply aval (roles/apim_publish_api/tasks/main.yml:61-67) matche name+version
@@ -326,8 +416,15 @@ mkdir -p "$(dirname "$PUB_PATH")"
 sed -e "s/__API_NAME__/${API_NAME}/g" \
     -e "s/__API_VERSION__/${EFFECTIVE_VERSION}/g" \
     -e "s/__INBOUND_MODE__/${INBOUND_MODE}/g" \
+    -e "s/__CLASSIFICATION__/${CLASSIFICATION}/g" \
+    -e "s/__EXPOSURE__/${EXPOSURE}/g" \
     "${REPO_ROOT}/gateways/templates/publish.yml.tmpl" > "$PUB_PATH" \
   || fail "rendu du gabarit ${PUB_REL}"
+# Le gabarit ne doit plus porter AUCUN marqueur : un `__X__` survivant serait
+# une posture littérale « __CLASSIFICATION__ » committée puis refusée bien plus
+# loin, par un code qui ne désignerait pas la cause. Vérifié plutôt que supposé.
+! grep -q '__[A-Z_]*__' "$PUB_PATH" \
+  || fail "GABARIT_NON_SUBSTITUE : ${PUB_REL} porte encore $(grep -o '__[A-Z_]*__' "$PUB_PATH" | sort -u | tr '\n' ' ') — le gabarit a gagné un marqueur que ce script ne substitue pas"
 printf '%s\n' "$OPENAPI_SPEC" > "$SPEC_PATH"
 
 # ── 4. branche, commit, push, PR ─────────────────────────────────────────────
@@ -353,6 +450,7 @@ unset AUTH_B64
 PR_NUMBER=$(API="${GIT_HOST}/api/v1" REPO_FULL="$REPO_FULL" FORGE_SECRET="$FORGE_SECRET" \
   BRANCH="$BRANCH" API_NAME="$API_NAME" ACTION="$ACTION" EFFECTIVE_VERSION="$EFFECTIVE_VERSION" \
   TEAM="$TEAM" INBOUND_MODE="$INBOUND_MODE" BASE_VERSION="${BASE_VERSION:-}" \
+  CLASSIFICATION="$CLASSIFICATION" EXPOSURE="$EXPOSURE" \
   python3 - <<'PY'
 import json, os, urllib.request
 api, repo, tok = os.environ["API"], os.environ["REPO_FULL"], os.environ["FORGE_SECRET"]
@@ -362,8 +460,12 @@ body = (
     f"Demande de publication d'API (formulaire api-request).\n\n"
     f"- action : {action}\n- équipe : {os.environ['TEAM']}\n"
     f"- API : {os.environ['API_NAME']} v{os.environ['EFFECTIVE_VERSION']}\n"
-    f"- inbound.mode : {os.environ['INBOUND_MODE']}{base_line}\n\n"
-    "Plan hors ligne (manifest-guard + team-name + syntax-check) à suivre en "
+    f"- inbound.mode : {os.environ['INBOUND_MODE']}{base_line}\n"
+    f"- posture DÉCLARÉE : classification={os.environ['CLASSIFICATION']} "
+    f"exposure={os.environ['EXPOSURE']} — déclaration, pas décision : la posture "
+    "retenue vient du registre central de gouvernance (commentaire de plan "
+    "ci-dessous).\n\n"
+    "Plan hors ligne (posture centrale + manifest-guard + team-name + syntax-check) à suivre en "
     "commentaire. Validation humaine requise avant merge (ADR-081) : le "
     "merge n'importe rien lui-même — la publication réelle vit dans le "
     "pipeline post-merge."
@@ -390,10 +492,26 @@ echo "PR #${PR_NUMBER} ouverte : ${GIT_WEB_HOST}/${REPO_FULL}/pulls/${PR_NUMBER}
 # invocation relevée de HANDOFF-2026-07-31-E1-PRODUCTEUR.md, apim_ss_manifest
 # en CHEMIN ABSOLU — accepté tel quel par manifest-guard.yml) PUIS
 # --syntax-check du playbook de publication.
-echo "[4/5] plan (gardes hors ligne : manifest-guard + team-name + syntax-check)"
+echo "[4/5] plan (posture centrale + gardes hors ligne : manifest-guard + team-name + syntax-check)"
 ABS_MANIFEST="$PUB_PATH"
 PLAN_LOG="$WORK/plan.log"
 {
+  # ── 5b. POSTURE : le registre CENTRAL contre la déclaration ────────────────
+  # (jalon P2, la porte ET la contre-épreuve.) L'identité passée en --project
+  # est TEAM, résolue plus haut par la chaîne : c'est la moitié non-éditable de
+  # la clé de recherche. Le manifeste, lui, ne la porte pas — s'il la portait,
+  # l'équipe pourrait pointer la ligne d'une autre (le trou « emprunt de ligne »
+  # déjà fermé côté labctl).
+  #
+  # Aucun --tenant : le manifeste de publication n'en déclare pas (l'équipe EST
+  # son unité de cloisonnement ici). Rien de réclamé, donc rien à falsifier —
+  # l'ancre anti-spoof reste le couple (équipe, api). Le tenant gouverné est
+  # RENDU par la commande, et paraît dans ce journal.
+  echo "=== posture centrale (labctl posture — registre ${GOVERNANCE_REPO}@main) ==="
+  "$LABCTL_BIN" posture --api "$API_NAME" --project "$TEAM" \
+    --declared-classification "$CLASSIFICATION" --declared-exposure "$EXPOSURE" \
+    --classification-source "$REGISTRY"
+  echo "POSTURE_RC=$?"
   echo "=== manifest-guard + team-name (ansible/test-publish-guards.yml) ==="
   ansible-playbook -i ansible/inventory.lab.ini ansible/test-publish-guards.yml \
     -e apim_ss_manifest="$ABS_MANIFEST" -e apim_ss_team="$TEAM"
@@ -402,13 +520,21 @@ PLAN_LOG="$WORK/plan.log"
   ansible-playbook -i ansible/inventory.lab.ini ansible/publish-api.yml --syntax-check
   echo "SYNTAX_RC=$?"
 } >"$PLAN_LOG" 2>&1
+POSTURE_RC=$(grep -oE 'POSTURE_RC=[0-9]+' "$PLAN_LOG" | tail -1 | cut -d= -f2)
 GUARD_RC=$(grep -oE 'GUARD_RC=[0-9]+' "$PLAN_LOG" | tail -1 | cut -d= -f2)
 SYNTAX_RC=$(grep -oE 'SYNTAX_RC=[0-9]+' "$PLAN_LOG" | tail -1 | cut -d= -f2)
-if [ "${GUARD_RC:-1}" -eq 0 ] && [ "${SYNTAX_RC:-1}" -eq 0 ]; then
+if [ "${POSTURE_RC:-1}" -eq 0 ] && [ "${GUARD_RC:-1}" -eq 0 ] && [ "${SYNTAX_RC:-1}" -eq 0 ]; then
   PLAN_RC=0
 else
   PLAN_RC=1
 fi
+
+# La ligne de posture RETENUE, telle quelle, pour le journal du build ET pour le
+# commentaire de PR : c'est elle qui montre que la valeur appliquée est celle du
+# registre (source=central) et non celle qui a été cochée au formulaire.
+POSTURE_LINE=$(grep -E '^posture ' "$PLAN_LOG" | tail -1)
+POSTURE_WARN=$(grep -E '^⚠ ' "$PLAN_LOG" | tail -1)
+[ -n "$POSTURE_LINE" ] && echo "  $POSTURE_LINE"
 
 # Hiérarchie de diagnostic fatal > msg > tail-3 (leçon du palier 2, appliquée
 # d'entrée ici — cf. team-apply.sh §4 — plutôt que la simple extraction de
@@ -418,16 +544,44 @@ if [ "$PLAN_RC" -eq 0 ]; then
   OKMSG=$(grep -oE '"msg": "(MANIFEST_KEYS_OK|TEAM_REQUESTED)[^"]*"' "$PLAN_LOG" | sed 's/^"msg": "//; s/"$//' | tr '\n' ' ; ')
   VERDICT="✅ PLAN OK — ${OKMSG:-gardes hors ligne + syntax-check passés}"
 else
-  MSG=$(grep -A6 -E 'fatal:|FAILED!|^ERROR!' "$PLAN_LOG" | grep -oE '"msg":.*|^ERROR!.*' | tail -1 | cut -c1-300)
+  # La POSTURE d'abord dans la hiérarchie de diagnostic (jalon P2) : son refus
+  # est une phrase de labctl sur stderr, sans `fatal:` ni `"msg":` — les deux
+  # motifs que la hiérarchie d'origine sait lire. Sans cette branche, un
+  # CLASSIFICATION_SPOOFED tombait sur le repli `tail -3` et arrivait sur la PR
+  # en morceau de trace, c'est-à-dire nommé par personne. Le code nommé DOIT
+  # être ce que le demandeur lit.
+  MSG=""
+  if [ "${POSTURE_RC:-1}" -ne 0 ]; then
+    MSG=$(grep -oE '\[(CLASSIFICATION_SPOOFED|CLASSIFICATION_UNGOVERNED|INTEGRITY_INCONSISTENT)\].*' "$PLAN_LOG" | tail -1 | cut -c1-400)
+  fi
+  if [ -z "$MSG" ]; then
+    MSG=$(grep -A6 -E 'fatal:|FAILED!|^ERROR!' "$PLAN_LOG" | grep -oE '"msg":.*|^ERROR!.*' | tail -1 | cut -c1-300)
+  fi
   [ -n "$MSG" ] || MSG=$(tail -3 "$PLAN_LOG" | tr '\n' ' ')
   VERDICT="❌ PLAN EN ÉCHEC — NE PAS MERGER : ${MSG}"
 fi
 
-BODY="${VERDICT}
+# La posture RETENUE est portée par le commentaire, verdict vert ou rouge : sur
+# une PR verte elle montre ce qui sera réellement appliqué (et, si le registre a
+# corrigé la demande, que la correction a bien eu lieu) ; sur une PR rouge elle
+# est simplement absente, parce qu'aucune posture n'a été retenue.
+POSTURE_BLOCK=""
+[ -n "$POSTURE_LINE" ] && POSTURE_BLOCK="
+
+Posture retenue (le registre central de gouvernance fait autorité, la demande
+n'en est que la référence) :
+\`\`\`
+${POSTURE_LINE}
+\`\`\`${POSTURE_WARN:+
+${POSTURE_WARN}}"
+
+BODY="${VERDICT}${POSTURE_BLOCK}
 
 Au merge, la publication réelle (import OpenAPI + activate + inbound) vit
 dans le pipeline post-merge (rôle apim_publish_api) — cette PR ne fait que
-poser \`${PUB_REL}\` + \`${SPEC_REL}\`, rien n'est encore publié sur la gateway."
+poser \`${PUB_REL}\` + \`${SPEC_REL}\`, rien n'est encore publié sur la gateway.
+La posture y est ré-arbitrée contre le MÊME registre avant le premier appel à
+la gateway : ce plan est un avis précoce, pas une autorisation."
 
 # Dette du palier 2 (constat de revue) : le POST de commentaire n'y vérifiait
 # JAMAIS son code de retour — un échec de publication du verdict passait

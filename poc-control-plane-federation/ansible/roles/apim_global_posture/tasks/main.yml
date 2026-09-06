@@ -1,0 +1,98 @@
+---
+# roles/apim_global_posture/tasks/main.yml — le JOUR 0 du bouquet commun
+# (jalon P4, ADR-094).
+#
+# Un objet par cellule NOMMÉE de la table de vérité, portant la moitié COMMUNE
+# de son bouquet — celle dont l'application ne dépend d'aucun paramètre propre à
+# une API, et dont la surface a été MESURÉE portable par une global policy sur
+# la webMethods 10.15 réelle (spike P4 du 2026-09-05) :
+#
+#   https-only  -> stage `transport`, action entryProtocolPolicy{protocol=https}
+#   audit-log   -> stage `LMT`,       action logInvocation
+#   rate-limit  -> stage `LMT`,       action throttle, avec le QUOTA de la cellule
+#
+# Le quota est la seule chose qui distingue deux bouquets communs (l'ensemble
+# des trois policies est un plancher depuis P1) : c'est donc lui qui rend la
+# porte du jalon mesurable côté plan de données, et lui qu'il fallait gouverner
+# plutôt que laisser à qui écrit l'objet.
+#
+# CE QUE CE RÔLE NE SUPPRIME JAMAIS. Ni policy, ni action. Voir defaults/.
+
+- name: "Amorçage : l'autorité est-elle présente ?"
+  ansible.builtin.command:
+    argv: ["/bin/sh", "-c", 'command -v "$1" >/dev/null 2>&1', "sh", "{{ apim_gp_labctl_bin }}"]
+  register: gp_which
+  changed_when: false
+  failed_when: false
+
+- name: "Amorçage : FAIL-CLOSED — l'autorité doit être présente"
+  ansible.builtin.assert:
+    that: "gp_which.rc == 0"
+    fail_msg: >-
+      POSTURE_AUTORITE_ABSENTE : '{{ apim_gp_labctl_bin }}' introuvable sur l'agent. La table de
+      vérité (cellules, bouquets communs, quotas gouvernés) vit dans ce binaire et n'est réécrite
+      nulle part. Sans lui, on ne saurait pas QUELLES cellules amorcer — et amorcer une liste
+      recopiée à la main, c'est amorcer la liste d'hier.
+
+- name: "Amorçage : demander la table de vérité (labctl posture --cells)"
+  ansible.builtin.command:
+    argv: ["{{ apim_gp_labctl_bin }}", "posture", "--cells", "-o", "json"]
+  register: gp_cells_out
+  changed_when: false
+
+- name: "Amorçage : les cellules à amorcer"
+  ansible.builtin.set_fact:
+    gp_table: "{{ gp_cells_out.stdout | from_json }}"
+
+- name: "Amorçage : ce qui va être posé"
+  ansible.builtin.debug:
+    msg: >-
+      POSTURE_AMORCAGE : {{ gp_table.cells | length }} cellules —
+      {% for c in gp_table.cells %}{{ c.global_policy }}(quota {{ c.quota.requests }}/{{
+      c.quota.interval }} {{ c.quota.unit }}) {% endfor %}; sentinelle
+      '{{ gp_table.member_sentinel }}' (une liste de membres VIDE frapperait TOUTES les APIs —
+      mesuré) ; convergence du contenu = {{ apim_gp_converge }}.
+
+- name: "Amorçage : secrets d'admin (Vault, fallback PoC)"
+  ansible.builtin.import_role:
+    name: apim_common
+    tasks_from: secrets.yml
+
+- name: "Amorçage des global policies de posture"
+  module_defaults:
+    ansible.builtin.uri: "{{ apim_ss_uri_defaults }}"
+  block:
+
+    # UNE lecture pour toutes les cellules : chaque cellule a SA policy, aucune
+    # ne modifie celle d'une autre, donc l'index ne peut pas devenir périmé en
+    # cours de boucle.
+    - name: "Policies : lire celles qui existent"
+      ansible.builtin.uri:
+        url: "{{ apim_ss_api_base }}/policies"
+      register: gp_pol_get
+      changed_when: false
+
+    - name: "Policies : index par nom (JSON)"
+      ansible.builtin.set_fact:
+        gp_pol_by_name_json: >-
+          {% set out = {} %}{% for p in (gp_pol_get.json.policy | default([]))
+          %}{% if (p.names | default([]) | length) > 0
+          %}{% set _ = out.update({(p.names | first).value: p}) %}{% endif %}{% endfor
+          %}{{ out | to_json }}
+
+    - name: "Policies : index par nom"
+      ansible.builtin.set_fact:
+        gp_pol_index: "{{ gp_pol_by_name_json | from_json }}"
+
+    # Une cellule à la fois, de bout en bout. Le séquençage est imposé par le
+    # produit et non par le style : les actions d'une cellule n'ont AUCUNE
+    # identité propre (leur `names` est ignoré à la création), on ne les
+    # retrouve que par la policy qui les référence — il faut donc créer les
+    # actions ET la policy dans la même passe, et lire les unes à travers
+    # l'autre au passage suivant.
+    - name: "Amorçage : une cellule à la fois, de bout en bout"
+      ansible.builtin.include_tasks: cell.yml
+      loop: "{{ gp_table.cells }}"
+      loop_control:
+        loop_var: gp_cell
+        label: "{{ gp_cell.bundle }}"

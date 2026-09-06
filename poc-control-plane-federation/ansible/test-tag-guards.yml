@@ -1,0 +1,26 @@
+---
+# P3 (ADR-093) — la garde du TAG de posture, HORS LIGNE.
+#
+# Pendant de ansible/test-posture-guards.yml, et pour la même raison : la
+# branche NON ARBITRÉE de tag.yml ne parle à aucune gateway. Sans registre
+# central il n'y a pas de posture gouvernée, donc pas de tag à poser — et la
+# tâche doit alors ne RIEN écrire tout en le disant (TAG_NON_ARBITRE). C'est
+# précisément ce qu'on ne peut pas mesurer depuis une publication réelle : là,
+# la chaîne pose toujours la source.
+#
+# Entrées (extra-vars) : aucune. Le fait qui commande la branche est l'ABSENCE
+# de `pub_posture`, c'est-à-dire l'état où posture.yml n'a rien arbitré.
+- name: "P3 — garde du tag hors ligne (aucune posture arbitrée)"
+  hosts: webmethods
+  gather_facts: false
+  vars:
+    # Le strict nécessaire pour que la tâche parle d'une API : si elle en venait
+    # à tenter une écriture, l'id bidon ci-dessous la ferait échouer bruyamment
+    # plutôt que muter un objet réel — la garde est donc testée à découvert.
+    apim_api: { name: "sans-gouvernance", version: "1.0.0" }
+    apim_api_id: "00000000-0000-0000-0000-000000000000"
+  tasks:
+    - name: "Tag : la branche non arbitrée"
+      ansible.builtin.import_role:
+        name: apim_publish_api
+        tasks_from: tag.yml

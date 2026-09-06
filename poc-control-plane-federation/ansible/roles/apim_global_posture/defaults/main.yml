@@ -1,0 +1,53 @@
+---
+# roles/apim_global_posture/defaults/main.yml
+#
+# AMORÇAGE des global policies de posture — un objet par cellule NOMMÉE de la
+# table de vérité (jalon P4, ADR-094). Ce rôle est le SEUL endroit du dépôt qui
+# crée, converge et active une global policy ; le rôle de publication, lui, ne
+# fait qu'inscrire un nom dans le scope d'un objet déjà là.
+#
+# POURQUOI IL EST SÉPARÉ, et non une tâche de plus dans la publication :
+#   * il exige le rôle API Gateway ADMINISTRATOR (le niveau *provider* ne suffit
+#     pas pour une policy globale) — donc un autre identifiant, un autre moment,
+#     un autre journal ;
+#   * les trois verbes qu'il porte (créer / activer / converger le CONTENU) sont
+#     exactement ceux qui peuvent briquer la gateway : P0 a mesuré qu'une
+#     suppression de global policy cascade sur ses policyActions, action SYSTÈME
+#     comprise, et met toute activation d'API en NPE jusqu'au redémarrage ;
+#   * son effet est gateway-wide : il décide de la posture commune de TOUTES les
+#     APIs d'une cellule, pas d'une API.
+#
+# CE QU'IL NE FAIT JAMAIS : supprimer. Ni une policy, ni une action. Une cellule
+# retirée de la table de vérité laisse son objet en place, inerte parce que sa
+# liste ne contiendra plus que la sentinelle — un objet orphelin est un problème
+# d'inventaire, une cascade est un incident de production.
+
+# Le binaire qui PORTE la table de vérité. Le rôle ne liste pas les cellules
+# lui-même : il les DEMANDE (`labctl posture --cells`), pour la même raison que
+# le rôle de publication demande la posture d'une API — une liste de cellules
+# recopiée en YAML serait la cinquième recopie du vocabulaire que P1 a supprimée,
+# et une cellule ajoutée à la table sans ligne correspondante ici n'aurait
+# simplement aucun objet : ses APIs ne porteraient AUCUN bouquet commun.
+apim_gp_labctl_bin: "labctl"
+
+# Vider et recréer n'est pas une option (cascade). Converger le CONTENU d'une
+# policy existante en est une, et c'est ce que fait le rôle par défaut : si le
+# quota gouverné change dans la table de vérité, l'action correspondante est
+# mise à jour puis relue. `false` = le rôle CONSTATE l'écart et refuse, sans
+# écrire (mode audit, pour un environnement où le changement de quota passe par
+# une fenêtre de changement).
+apim_gp_converge: true
+
+# La destination des événements des actions de log et de quota, dans le
+# vocabulaire du produit (relevé sur la 10.15 : destination{destinationType}).
+apim_gp_destination: "GATEWAY"
+
+# Les types d'API que le scope d'une cellule couvre. Relevé sur la policy
+# système « Transaction logging » du produit.
+apim_gp_api_types: ["REST", "SOAP", "ODATA"]
+
+# Les verbes de la condition HTTP_METHOD. ELLE N'EST PAS DÉCORATIVE : mesuré au
+# P0 (spike A2), une condition `filterType: API` SEULE ne sélectionne AUCUNE
+# API — c'est cette condition-ci qui rend la policy sélective. La retirer
+# donnerait un objet parfaitement configuré qui ne frappe rien.
+apim_gp_methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD"]

@@ -123,6 +123,20 @@ pipeline {
     // Le repasser depuis le pipeline redonnerait à l'environnement du job le
     // pouvoir que le scellement lui retire.
     // Credential Jenkins (secret text) portant le token Gitea du CI.
+    // P2 (ADR-092) : le REGISTRE CENTRAL de classification — dépôt SÉPARÉ,
+    // propriété de la gouvernance de la donnée, que ni l'équipe API ni la
+    // plateforme d'exécution ne peuvent éditer. Deux knobs plutôt qu'un chemin
+    // en dur : chez le client, c'est le dépôt `data-governance`, et son
+    // arborescence n'a aucune raison de ressembler à celle du lab. AUCUN repli
+    // de lab non plus (porte ci/lint-config-knobs.sh) : les valeurs vivent en
+    // variables globales du contrôleur, et le script refuse en se nommant quand
+    // elles manquent — jamais une gouvernance substituée en silence.
+    GOVERNANCE_REPO       = "${env.GOVERNANCE_REPO ?: ''}"
+    GOVERNANCE_PATH       = "${env.GOVERNANCE_PATH ?: ''}"
+    // Le binaire qui PORTE la table de vérité (ADR-091/092). Vide = résolu par
+    // le PATH de l'agent, ce que fait le lab ; un client dont l'agent le range
+    // ailleurs pose la valeur ici plutôt que de patcher un script.
+    LABCTL_BIN            = "${env.LABCTL_BIN ?: ''}"
     GITEA_CREDENTIALS_ID  = "${env.GITEA_CREDENTIALS_ID ?: 'gitea-provision-token'}"
   }
 
