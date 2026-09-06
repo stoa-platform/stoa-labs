@@ -16,7 +16,14 @@ RUN apt-get update \
  && ansible-playbook --version | head -1
 # GOPROXY=off + -mod=vendor par défaut : TOUT build est offline dans cette image.
 ENV PATH="${PATH}:/usr/local/go/bin" GOPROXY=off GOFLAGS=-mod=vendor GOSUMDB=off
-# labctl : LE moteur gateway UNIQUE (ADR-076 / POSITIONING §7.6). Compilé À LA
+# labctl : le binaire qui porte la DÉCISION (portes, 4-yeux, ITSM, pin, posture)
+# — DELIVERY-PROCESS.md §D3, « Ansible peut rester bête ; le binaire porte la
+# politique ». ⚠ Ce commentaire disait « LE moteur gateway UNIQUE (ADR-076 /
+# POSITIONING §7.6) » : doctrine TUÉE le 2026-08-26 (les rôles apim_* portent 53
+# mutations REST contre webMethods, toute la chaîne self-service repose dessus),
+# et citation fausse — le §7.6 est une section de l'ÉTUDE CLIENT, pas de
+# POSITIONING.md. Le geste de mutation part de l'un ou l'autre moteur ; seule la
+# décision est obligatoirement ici. Compilé À LA
 # CONSTRUCTION de l'image, air-gapped (vendor/ + GOPROXY=off), sur l'arch NATIVE
 # de l'image -> zéro cross-compile. Les jobs projet n'ont plus à re-dériver les
 # quirks wM : ils ORCHESTRENT `labctl apply` (Model 2). Source = repo plateforme
