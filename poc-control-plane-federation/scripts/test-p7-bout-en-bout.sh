@@ -112,17 +112,37 @@ CREATED_APIS=""; CREATED_BRANCHES=""; CREATED_APP=""; GOV_BASE_SHA=""
 MY_PAUSES=""; TEAM_REPO=""; TLS_PORT=""; LABCTL_BIN="${LABCTL_BIN:-}"
 
 cleanup(){
-  local a b id
+  local a b id i reste
   # Les pauses de CE run, et elles seules : une pause d'un autre run bloquerait
   # sa propre matrice si on l'abandonnait ici.
   for b in $MY_PAUSES; do
     [ "$(jstatus team-publish "$b" 2>/dev/null)" = PAUSED_PENDING_INPUT ] \
       && abort_pause team-publish "$b" >/dev/null 2>&1
   done
+  # ATTENDRE LA GATEWAY AVANT DE PURGER. La matrice se termine par des minutes
+  # d'ansible ; le keepalive peut avoir recycle le conteneur entre-temps, et un
+  # `api_id` sur une gateway eteinte rend VIDE — le teardown ne supprimait alors
+  # rien, EN SILENCE, et les objets du run s'accumulaient d'un passage a l'autre
+  # (mesure : 5 APIs laissees sur trois passages consecutifs).
+  if [ -n "$CREATED_APIS" ]; then
+    i=0
+    while [ "$i" -lt 60 ]; do
+      [ "$(wm -o /dev/null -w '%{http_code}' "$WM_ADMIN/apis")" = "200" ] && break
+      i=$((i+1)); sleep 5
+    done
+  fi
   for a in $CREATED_APIS; do
     id=$(api_id "$a" 2>/dev/null)
+    # `deactivate` rend 500 sur une API deja inactive : son code n'est donc PAS
+    # une condition, et le DELETE (204) doit etre tente dans tous les cas.
     [ -n "$id" ] && { wm -o /dev/null -X PUT "$WM_ADMIN/apis/$id/deactivate"; wm -o /dev/null -X DELETE "$WM_ADMIN/apis/$id"; }
   done
+  # Le teardown se RELIT : un objet reste est nomme sur stderr, jamais tu.
+  reste=""
+  for a in $CREATED_APIS; do
+    [ -n "$(api_id "$a" 2>/dev/null)" ] && reste="$reste $a"
+  done
+  [ -n "$reste" ] && printf 'AVERTISSEMENT teardown : API(s) non supprimee(s) :%s\n' "$reste" >&2
   [ -n "$CREATED_APP" ] && purge_app "$CREATED_APP" >/dev/null 2>&1
   if [ -n "$TEAM_REPO" ]; then
     for b in $CREATED_BRANCHES; do

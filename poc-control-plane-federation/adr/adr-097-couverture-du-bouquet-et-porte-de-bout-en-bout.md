@@ -1,7 +1,7 @@
 ---
 title: "ADR-097 — Une chaîne ne peut pas garantir qu'elle oppose tout ; elle peut garantir qu'elle ne se tait sur rien. La couverture du bouquet devient explicite, et la porte de bout en bout la mesure par des builds réels."
 sidebar_label: "ADR-097 : la couverture du bouquet (P7)"
-status: "Acté et prouvé le 2026-09-06 — matrice P7 **83 ✅ / 0 ❌** par BUILDS JENKINS RÉELS sur les dépôts réels et la webMethods 10.15 réelle (4 publications, la contre-épreuve du GOAL dans ses DEUX sens, 2 refus structurels relayés sur la PR, 4 mutations) ; `go vet` propre, `go test ./...` 568/0, `make lint-ci` 17/17 ; non-régressions P2 67/0, P3 24/0, P4 38/0, P5 54/0, P6 48/0."
+status: "Acté et prouvé le 2026-09-06 — matrice P7 **83 ✅ / 0 ❌, rejouée à l'identique**, par BUILDS JENKINS RÉELS sur les dépôts réels et la webMethods 10.15 réelle (4 publications, la contre-épreuve du GOAL dans ses DEUX sens, 2 refus structurels relayés sur la PR, 4 mutations) ; `go vet` propre, `go test ./...` 568/0, `make lint-ci` 17/17 ; non-régressions P2 67/0, P3 24/0, P4 38/0, P5 54/0, P6 48/0."
 maturite_technique: "✅ `tasks/coverage.yml` partage le bouquet rendu par `labctl posture` en trois : ce que la chaîne SAIT opposer (`apim_pub_posture_opposed_by`, chaque entrée adossée à la tâche qui l'écrit ET la relit), ce qu'elle DÉGRADE (`mode: degrade` — l'axe reste gardé plus faiblement, la PR le dit), ce qu'elle REFUSE (`mode: refuse` — l'axe n'est gardé par rien). Une dimension exigée absente des deux tables fait REFUSER (`POSTURE_NON_OPPOSEE`). ⚠ CONSÉQUENCE : les cellules `VH` (mtls) et `internet` (threat-protection) ne sont plus publiables par la chaîne producteur."
 date: 2026-09-06
 adr_number: 97
@@ -150,6 +150,8 @@ Le corps corrigé passe (200), mais la relecture rend toujours `owner = "Adminis
 
 Chaque témoin est exigé **vert avant** le sabotage — sinon son rouge d'après prouverait sa propre panne, pas la garde (leçon payée en P2) — et chaque fichier est restauré **à l'octet près** (`cmp`).
 
+Le **teardown** a été durci après ces deux passages (il ne porte aucune assertion) : il attend le retour de la gateway avant de purger — la matrice se termine par des minutes d'Ansible, le keepalive peut avoir recyclé le conteneur entre-temps, et un identifiant cherché sur une gateway éteinte rend vide, si bien que rien n'était supprimé **en silence** — puis il **se relit** et nomme sur stderr ce qui resterait.
+
 ## Ce que ce jalon ne fait pas
 
 - Il **n'implémente pas** `oauth2` de bout en bout dans la chaîne producteur : la machinerie existe (`tasks/inbound.yml`, branche oauth2), c'est l'entrée de formulaire qui manque (audience, scope, client_id). La dégradation est donc **nommée**, pas résorbée.
@@ -160,7 +162,7 @@ Chaque témoin est exigé **vert avant** le sabotage — sinon son rouge d'aprè
 
 | Preuve | Commande | Résultat |
 |---|---|---|
-| **Matrice P7, par BUILDS RÉELS** | `bash scripts/test-p7-bout-en-bout.sh` | **83 ✅ / 0 ❌** — 4 publications par builds Jenkins réels, la contre-épreuve dans ses deux sens, 2 refus structurels, 4 mutations |
+| **Matrice P7, par BUILDS RÉELS** | `bash scripts/test-p7-bout-en-bout.sh` | **83 ✅ / 0 ❌, rejouée à l'identique** — 4 publications par builds Jenkins réels, la contre-épreuve dans ses deux sens, 2 refus structurels, 4 mutations |
 | Garde de couverture hors ligne | `ansible/test-coverage-guards.yml` | jouée dans la matrice (D2/D2b/D2c) et par les mutations (E1..E3) |
 | Go | `cd labctl && go vet ./... && go test ./...` | vet propre, **568 ✅ / 0 ❌** |
 | Porte de lint | `make lint-ci` | **17/17** |

@@ -5,7 +5,7 @@ jalon: P7
 goal: GOAL-posture-par-exposition-2026-09-04.md
 adr: adr/adr-097-couverture-du-bouquet-et-porte-de-bout-en-bout.md
 date: 2026-09-06
-status: "LIVRÉ — matrice P7 83/0 par builds réels ; non-régressions P2 67/0, P3 24/0, P4 38/0, P5 54/0, P6 48/0 ; go test 568/0, make lint-ci 17/17."
+status: "LIVRÉ — matrice P7 83/0 par builds réels, rejouée à l'identique ; non-régressions P2 67/0, P3 24/0, P4 38/0, P5 54/0, P6 48/0 ; go test 568/0, make lint-ci 17/17."
 ---
 
 # P7 — ce qu'il faut savoir en trente secondes
@@ -92,6 +92,7 @@ Réunies : *le manifeste ne décide pas*. Mentir vers le bas est refusé ; menti
 - **La fenêtre keepalive est de ~24 min, pas 20** : le cron `*/5` ne recycle qu'au premier tick où l'uptime atteint le seuil. Un seuil d'attente à 11 min faisait attendre le harnais **13 minutes** pour rien ; il est passé à 15.
 - **`set -o pipefail` + `play | grep -q` sur un play qui REFUSE** rend le code du **play**, jamais celui de grep : les témoins de mutation seraient rouges en permanence, donc muets. On capture, puis on greppe (piège déjà payé en P2 et A4 — il revient dès qu'on observe un refus).
 - **Le commentaire de PR est posé par le bloc `post{}`**, donc APRÈS le `FINISHED` de `wfapi` : lire la PR sans attendre `building=false` (puis un court délai) rend un commentaire de la passe précédente.
+- **Un teardown qui ne relit pas ne supprime rien** : la matrice se termine par des minutes d'Ansible, le keepalive peut recycler la gateway entre-temps, et un identifiant cherché sur une gateway éteinte rend vide — les objets du run s'accumulaient d'un passage à l'autre, **sans un mot**. Le teardown attend désormais le retour du service, puis **se relit** et nomme ce qui resterait.
 - **`printf` et les séparateurs** : la spec OpenAPI est multi-lignes ; tout séparateur textuel (retour à la ligne, `\0` via `printf`) finit par couper une valeur en paires bancales dont Jenkins fait des paramètres vides. Le corps du formulaire se compose depuis l'**environnement**, pas depuis un flux séparé.
 
 ---
@@ -109,7 +110,7 @@ Réunies : *le manifeste ne décide pas*. Mentir vers le bas est refusé ; menti
 
 | Preuve | Commande | Résultat |
 |---|---|---|
-| **Matrice P7, par BUILDS RÉELS** | `bash scripts/test-p7-bout-en-bout.sh` | **83 ✅ / 0 ❌** |
+| **Matrice P7, par BUILDS RÉELS** | `bash scripts/test-p7-bout-en-bout.sh` | **83 ✅ / 0 ❌, rejouée à l'identique** |
 | Go | `cd labctl && go vet ./... && go test ./...` | vet propre, **568 ✅ / 0 ❌** |
 | Porte de lint | `make lint-ci` | **17/17** |
 | Non-régression P2 | `bash scripts/test-p2-posture-producteur.sh` | 67 / 0 |
