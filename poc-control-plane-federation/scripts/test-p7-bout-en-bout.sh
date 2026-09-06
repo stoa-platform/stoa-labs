@@ -457,7 +457,7 @@ fresh_window(){
   ep="$(date -u -j -f "%Y-%m-%dT%H:%M:%S" "$st" +%s 2>/dev/null || date -u -d "$st" +%s 2>/dev/null || echo 0)"
   [ "$ep" = "0" ] && return 0
   up=$(( ( $(date +%s) - ep ) / 60 ))
-  [ "$up" -lt 11 ] && { mes "fenêtre keepalive fraîche (uptime ${up}min)"; return 0; }
+  [ "$up" -lt 15 ] && { mes "fenêtre keepalive fraîche (uptime ${up}min)"; return 0; }
   mes "uptime ${up}min — attente du recyclage keepalive avant de déclencher la publication…"
   i=0
   while [ "$i" -lt 220 ]; do
@@ -777,7 +777,23 @@ run_case "$API_HE" H  external h-external "ipAddressRange,jwtClaims|anon=false"
 
 # ═══════════════════════════════════════════════════════════════════════════
 echo
-echo "═══ B' — LA PORTE AU PLAN DE DONNÉES : la posture MORD, et la cellule décide ═══"
+echo "═══ B' — LA PORTE AU PLAN DE DONNÉES : ce que l'API oppose, et à qui ═══"
+
+# CE QUE CETTE SECTION MESURE, ET CE QU'ELLE A DÛ CORRIGER. Le premier passage
+# attendait qu'une API `external` publiée par la chaîne SERVE (200) un appelant
+# dont l'IP est déclarée sur une application souscrite. Elle rend 401 — et la
+# mesure qui suit explique pourquoi, sans rien inventer :
+#   - la règle d'identification de P6 a le connecteur **AND** : une cellule
+#     `external` exige `ipAddressRange` EN PLUS de la dimension du volet inbound,
+#     elle ne la remplace pas ;
+#   - et la dimension du volet inbound, en mode `jwt`, est `jwtClaims`, qu'AUCUN
+#     identifiant d'application ne résout sur ce produit (B'5, mesuré ici avec un
+#     jeton réel de l'IdP du lab). L'API est donc fermée à tous.
+# La porte de cette section n'est donc pas « l'API sert le bon appelant » : c'est
+# **l'API refuse, et le refus lui est ATTRIBUABLE**. Un témoin publié par le rôle
+# sans gouvernance et sans volet inbound répond, lui, 200 sur le MÊME listener et
+# depuis le MÊME appelant : sans lui, les 401 et 500 ci-dessous ne prouveraient
+# rien de plus que l'existence d'un pare-feu quelque part.
 
 CALLER=$(docker inspect "$WM_DP_CONTAINER" \
   --format '{{range $k,$v := .NetworkSettings.Networks}}{{if $v.IPAddress}}{{$v.IPAddress}}{{println}}{{end}}{{end}}' 2>/dev/null | head -1)
@@ -785,42 +801,57 @@ CALLER=$(docker inspect "$WM_DP_CONTAINER" \
                  || ko "B'0 IP de l'appelant inconnue"
 export WM_DP_TLS_BASE="https://$CALLER:${TLS_PORT:-5543}/gateway"
 
-# ── le PROTOCOLE, au plan de données : la MÊME API, deux canaux
+# ── LE TÉMOIN : publié par le RÔLE, sans registre (POSTURE_NON_ARBITREE) et
+#    sans volet inbound. Ni protocole imposé, ni identification exigée : il doit
+#    répondre 200 partout. C'est lui qui rend les refus attribuables.
+API_T="p7temoin-$RUN"
+TW="$TMP/temoin"; mkdir -p "$TW"
+printf 'openapi: 3.0.0\ninfo: { title: %s, version: 1.0.0 }\nservers: [ { url: "http://poc-token-echo:8080" } ]\npaths:\n  /ping:\n    get: { operationId: ping, responses: { "200": { description: ok } } }\n' "$API_T" > "$TW/$API_T.yaml"
+printf -- '---\napim_api:\n  name: "%s"\n  version: "1.0.0"\n  contract: "%s/%s.yaml"\n  team: ""\n' "$API_T" "$TW" "$API_T" > "$TW/$API_T.yml"
+printf 'providers:\n  - team: %s\n    repo: %s\n    approvers: []\n' "$TEAM" "$TEAM_REPO" > "$TW/providers.yml"
+if ansible-playbook -i ansible/inventory.lab.ini ansible/publish-api.yml \
+     -e "apim_ss_manifest=$TW/$API_T.yml" -e "apim_ss_team=$TEAM" \
+     -e "apim_pub_labctl_bin=$LABCTL_BIN" -e "apim_pub_providers_file=$TW/providers.yml" \
+     > "$TMP/temoin.log" 2>&1; then
+  CREATED_APIS="$CREATED_APIS $API_T"
+  ok "B'1 témoin publié SANS gouvernance (POSTURE_NON_ARBITREE) — ni protocole imposé, ni identité exigée"
+else
+  ko "B'1 publication du témoin en échec — les refus de cette section ne seront attribuables à rien"
+  tail -6 "$TMP/temoin.log" | sed 's/^/       /'
+fi
+dp_wait clair "$API_T" 1.0.0 /ping 25 >/dev/null 2>&1
+T_CLEAR=$(dp_code clair "$API_T" 1.0.0 /ping); T_TLS=$(dp_code https "$API_T" 1.0.0 /ping)
+mes "témoin : clair=$T_CLEAR  https=$T_TLS"
+{ [ "$T_CLEAR" = "200" ] && [ "$T_TLS" = "200" ]; } \
+  && ok "B'2 le témoin est SERVI sur les DEUX canaux — ni le port, ni le listener ne refusent quoi que ce soit" \
+  || ko "B'2 témoin clair=$T_CLEAR https=$T_TLS (attendu 200/200) — l'attribution des refus est perdue"
+
+# ── LE PROTOCOLE : la MÊME requête, sur le MÊME port que le témoin
 C_CLEAR=$(dp_code clair "$API_MI" 1.0.0 /ping)
 B_CLEAR=$(dp_body clair "$API_MI" 1.0.0 /ping)
 mes "$API_MI en CLAIR : HTTP $C_CLEAR"
 [ "$C_CLEAR" != "200" ] \
-  && ok "B'1 l'appel en CLAIR d'une API publiée PAR LA CHAÎNE est refusé (HTTP $C_CLEAR)" \
-  || ko "B'1 l'appel en clair PASSE — l'API gouvernée sert en clair"
+  && ok "B'3 l'appel en CLAIR d'une API publiée PAR LA CHAÎNE est refusé (HTTP $C_CLEAR) là où le témoin passe" \
+  || ko "B'3 l'appel en clair PASSE — l'API gouvernée sert en clair"
 printf '%s' "$B_CLEAR" | grep -q 'Transport protocol not supported' \
-  && ok "B'2 …et le refus est celui du PROTOCOLE (message du produit)" \
-  || ko "B'2 le refus n'est pas celui du protocole : $(printf '%s' "$B_CLEAR" | head -c 100)"
+  && ok "B'4 …et le refus est celui du PROTOCOLE, pas du réseau (message du produit)" \
+  || ko "B'4 le refus n'est pas celui du protocole : $(printf '%s' "$B_CLEAR" | head -c 100)"
 
-# ── L'INSCRIPTION AU PORT, dite honnêtement : le listener PORTE l'API, il ne
-#    la protège pas. Le témoin est une API du lab qui, elle, répond en clair sur
-#    LE MÊME port — la seule mesure qui rende le refus ci-dessus attribuable à
-#    l'API et non au port.
+# ── L'INSCRIPTION AU PORT, dite honnêtement : le listener PORTE l'API et ne la
+#    protège pas — le témoin, servi 200 sur ce même listener, en est la preuve.
 C_TLS=$(dp_settle "$API_MI")
 mes "$API_MI en HTTPS : HTTP $C_TLS"
-case "$C_TLS" in 200|401|403) ok "B'3 inscription au port — la MÊME API est SERVIE par le listener d'environnement (:${TLS_PORT:-5543}, HTTP $C_TLS)";;
-  *) ko "B'3 l'API n'est pas servie par le listener HTTPS (HTTP $C_TLS)";; esac
-TEMOIN=""
-for cand in $(wm "$WM_ADMIN/apis" | python3 -c '
-import json,sys
-for e in (json.load(sys.stdin).get("apiResponse") or []):
-    a=e.get("api",e)
-    n=a.get("apiName","")
-    if n and not n.startswith("p7"): print(n)' 2>/dev/null | head -12); do
-  [ "$(dp_code clair "$cand" 1.0.0 /ping)" = "200" ] && { TEMOIN="$cand"; break; }
-done
-[ -n "$TEMOIN" ] \
-  && ok "B'4 TÉMOIN — l'API non gouvernée '$TEMOIN' répond 200 EN CLAIR sur le même port : le port ne protège personne" \
-  || skip "B'4 aucun témoin en clair disponible sur ce lab — l'attribution du refus repose sur B'2 seul"
+case "$C_TLS" in 401|403) ok "B'5 inscription au port — la MÊME API est portée par le listener d'environnement (:${TLS_PORT:-5543}) et y REFUSE l'appelant non identifié (HTTP $C_TLS)";;
+  200) ko "B'5 l'API gouvernée SERT un appelant non identifié (200) — le refus par défaut de P6 ne mord pas";;
+  *) ko "B'5 l'API n'est pas servie par le listener HTTPS (HTTP $C_TLS)";; esac
 
-# ── L'IDENTITÉ, au plan de données : LA MÊME application, LE MÊME appelant,
-#    deux cellules, deux verdicts. C'est la CELLULE qui décide, pas l'app.
+# ── LE FAIT PRODUIT DU JALON : un JETON RÉEL ne suffit pas. On présente un jeton
+#    émis par l'IdP du lab, et une application SOUSCRITE portant un identifiant
+#    de claim qui matche ce jeton. Si l'API répondait 200, la dégradation
+#    `oauth2` serait bien « un contrôle plus faible » ; elle rend 401, et c'est
+#    une information de premier ordre pour le client.
 APP_N="p7consumer-$RUN"; CREATED_APP="$APP_N"
-app_subscribe(){  # <plage> <api-id…>
+app_identify(){  # <json des identifiers> <api-id…>
   local aid ids="" i
   for i in "${@:2}"; do ids="$ids\"$i\","; done; ids="${ids%,}"
   aid=$(wm "$WM_ADMIN/applications" | python3 -c '
@@ -839,27 +870,66 @@ for a in (json.load(sys.stdin).get("applications") or []):
 import json,sys
 d=json.load(sys.stdin)
 app=(d.get("applications") or [d])[0] if isinstance(d.get("applications"),list) else d
-app["identifiers"]=[i for i in (app.get("identifiers") or []) if i.get("key")!="ipAddressRange"]
-app["identifiers"].append({"name":"ip-allowlist","key":"ipAddressRange","value":[sys.argv[1]]})
+app["identifiers"]=json.loads(sys.argv[1])
 print(json.dumps(app))' "$1" > "$TMP/app.json"
   wm -o /dev/null -X PUT -H 'Content-Type: application/json' \
     --data-binary @"$TMP/app.json" "$WM_ADMIN/applications/$aid"
   printf '%s' "$aid"
 }
 ID_MI=$(api_id "$API_MI"); ID_HE=$(api_id "$API_HE")
-APP_ID=$(app_subscribe "$CALLER-$CALLER" "$ID_MI" "$ID_HE")
-[ -n "$APP_ID" ] && ok "B'5 une application souscrite aux deux APIs porte l'IP de l'appelant" \
-                 || ko "B'5 application témoin non créée"
-C_HE=$(dp_settle "$API_HE"); C_MI2=$(dp_settle "$API_MI")
-mes "même appelant, même identifiant : $API_HE(external)=$C_HE  $API_MI(internal)=$C_MI2"
-[ "$C_HE" = "200" ] \
-  && ok "B'6 LA PORTE — la cellule 'external' ACCEPTE l'identification par plage d'IP (200)" \
-  || ko "B'6 $API_HE = $C_HE, attendu 200 (l'ip-allowlist de la cellule external n'est pas opposée)"
-[ "$C_MI2" = "403" ] || [ "$C_MI2" = "401" ] \
-  && ok "B'7 LA PORTE — la cellule 'internal' REFUSE le même appelant, même identifiant ($C_MI2)" \
-  || ko "B'7 $API_MI = $C_MI2 — les deux cellules se comportent pareil, la porte ne mesure rien"
+# Le jeton est celui d'un client de service RÉEL du realm du lab ; son `azp` est
+# recopié dans l'identifiant de claim de l'application. Aucun secret en argv :
+# le client_secret est lu par l'API d'admin et ne quitte pas ce shell.
+KCTOK=""
+if KCADM=$(curl -s -m 20 -X POST "${P7_KC:-http://localhost:8480}/realms/master/protocol/openid-connect/token" \
+      -d grant_type=password -d client_id=admin-cli \
+      -d "username=${KEYCLOAK_ADMIN:-admin}" --data-urlencode "password=${KEYCLOAK_ADMIN_PASSWORD:-admin}" \
+      | python3 -c 'import sys,json;print(json.load(sys.stdin).get("access_token") or "")') && [ -n "$KCADM" ]; then
+  KCID=$(curl -s -m 20 -H "Authorization: Bearer $KCADM" \
+    "${P7_KC:-http://localhost:8480}/admin/realms/${P7_REALM:-stoa-lab}/clients?clientId=${P7_KC_CLIENT:-accounts-read-consumer}" \
+    | python3 -c 'import sys,json;d=json.load(sys.stdin);print(d[0]["id"] if d else "")')
+  if [ -n "$KCID" ]; then
+    KCSEC=$(curl -s -m 20 -H "Authorization: Bearer $KCADM" \
+      "${P7_KC:-http://localhost:8480}/admin/realms/${P7_REALM:-stoa-lab}/clients/$KCID/client-secret" \
+      | python3 -c 'import sys,json;print(json.load(sys.stdin).get("value") or "")')
+    KCTOK=$(curl -s -m 20 -X POST "${P7_KC:-http://localhost:8480}/realms/${P7_REALM:-stoa-lab}/protocol/openid-connect/token" \
+      -d grant_type=client_credentials -d "client_id=${P7_KC_CLIENT:-accounts-read-consumer}" \
+      --data-urlencode "client_secret=$KCSEC" \
+      | python3 -c 'import sys,json;print(json.load(sys.stdin).get("access_token") or "")')
+    unset KCSEC
+  fi
+fi
+if [ -n "$KCTOK" ]; then
+  APP_ID=$(app_identify "[{\"name\":\"claims\",\"key\":\"jwtClaims\",\"value\":[\"azp=${P7_KC_CLIENT:-accounts-read-consumer}\"]},{\"name\":\"ip-allowlist\",\"key\":\"ipAddressRange\",\"value\":[\"$CALLER-$CALLER\"]}]" "$ID_MI" "$ID_HE")
+  [ -n "$APP_ID" ] \
+    && ok "B'6 une application SOUSCRITE porte l'identifiant de claim du jeton ET l'IP de l'appelant" \
+    || ko "B'6 application témoin non créée"
+  sleep 5
+  printf '%s' "$KCTOK" > "$TMP/kc.tok"; chmod 600 "$TMP/kc.tok"
+  bearer(){ docker exec -i -e T="$(cat "$TMP/kc.tok")" "$WM_DP_CONTAINER" \
+    sh -c "curl -sk -m 10 -o /dev/null -w '%{http_code}' -H \"Authorization: Bearer \$T\" \"https://$CALLER:${TLS_PORT:-5543}/gateway/$1/1.0.0/ping\"" 2>/dev/null; }
+  BT_MI=$(bearer "$API_MI"); BT_HE=$(bearer "$API_HE"); BT_T=$(bearer "$API_T")
+  mes "avec un JETON RÉEL de l'IdP : $API_MI(internal)=$BT_MI  $API_HE(external)=$BT_HE  témoin=$BT_T"
+  [ "$BT_T" = "200" ] \
+    && ok "B'7 le témoin reste servi avec le même jeton — le jeton n'est pas le problème" \
+    || ko "B'7 le témoin ne répond plus (HTTP $BT_T) — la mesure suivante ne serait attribuable à rien"
+  { [ "$BT_MI" != "200" ] && [ "$BT_HE" != "200" ]; } \
+    && ok "B'8 LE FAIT : un jeton VALIDE et un identifiant de claim ne suffisent pas ($BT_MI/$BT_HE) — jwtClaims n'est résolu par AUCUN identifiant d'application (l'identité runtime vient de la stratégie OAuth2, que le mode 'jwt' ne configure pas)" \
+    || ko "B'8 une API gouvernée a SERVI le jeton ($BT_MI/$BT_HE) : la dégradation oauth2 doit être re-qualifiée"
+  rm -f "$TMP/kc.tok"
+else
+  skip "B'6..B'8 aucun jeton obtenu de l'IdP du lab — le fait produit du jalon n'est pas rejoué ici (voir le handoff)"
+fi
 
-# ═══════════════════════════════════════════════════════════════════════════
+# ── LE DIFFÉRENTIEL DE CELLULE, là où il est OBSERVABLE : sur la règle même.
+#    Au plan de données il ne l'est pas — les deux cellules refusent, pour la
+#    raison ci-dessus — et l'affirmer quand même serait un vert vacant.
+IAM_MI=$(iam_of "$ID_MI"); IAM_HE=$(iam_of "$ID_HE")
+mes "règles relues : internal=[$IAM_MI] external=[$IAM_HE]"
+{ printf '%s' "$IAM_HE" | grep -q 'ipAddressRange' && ! printf '%s' "$IAM_MI" | grep -q 'ipAddressRange'; } \
+  && ok "B'9 LE DIFFÉRENTIEL — la cellule 'external' EXIGE la dimension réseau, 'internal' ne l'exige pas : c'est la posture gouvernée qui compose la règle" \
+  || ko "B'9 les deux cellules composent la même règle — la posture ne décide de rien"
+
 echo
 echo "═══ C — LA CONTRE-ÉPREUVE DU GOAL : le manifeste ne décide pas ═══"
 

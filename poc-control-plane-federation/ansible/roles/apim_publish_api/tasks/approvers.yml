@@ -42,8 +42,46 @@
       {{ apim_pub_approvers_field }} est laisse tel quel.
   when: "pub_approvers | length == 0"
 
+# ── LE CHAMP N'EST PAS ECRIVABLE SUR LA 10.15 (mesure P7, 2026-09-06) ────────
+# Cette projection etait ecrite en `write-always` et n'avait jamais ete jouee
+# contre le PRODUIT REEL : les harnais de P3..P6 publient sous un
+# providers.<env>.yml a liste VIDE (chemin APPROVERS_EMPTY), et le seul
+# bout-en-bout qui declarait des approbateurs visait le MOCK. La porte de bout
+# en bout de P7 l'a exercee pour la premiere fois, et a trouve DEUX defauts
+# enchaines :
+#   1. le corps du PUT etait ENVELOPPE (`{"apiResponse": {"api": …}}`) : HTTP
+#      400 « Both content stream and apiDefinition are empty » — corrige plus
+#      bas, objet NU comme `tag.yml` ;
+#   2. le corps corrige passe (200), mais la RELECTURE rend toujours
+#      `owner = "Administrator"` : **le champ n'est pas ecrivable**. La garde
+#      fail-closed fait alors echouer la publication (APPROVERS_UNCONFIRMED) —
+#      correctement, mais pour un fait produit qu'aucun reglage ne changera.
+# La recherche du GOAL posture l'avait deja etabli (decision client n°2 :
+# `owner` et `provider` sont en LECTURE SEULE) ; il restait a le tirer ici.
+#
+# La projection devient donc OPT-IN. Par defaut le role ne tente rien et le DIT
+# — la liste d'approbateurs reste autoritative la ou elle est revue par PR
+# (providers.<env>.yml), et le developpement qui la consomme doit la lire la, ou
+# dans le registre central, jamais sur l'objet API. Un client dont la gateway
+# accepterait le champ pose `apim_pub_approvers_project: true` : le chemin
+# complet, read-back fail-closed compris, est intact sous ce drapeau.
+- name: "Approbateurs : NON PROJETES — le champ n'est pas ecrivable sur ce produit"
+  ansible.builtin.debug:
+    msg: >-
+      APPROVERS_NON_PROJETABLE : {{ pub_approvers | length }} approbateur(s) declare(s)
+      pour '{{ pub_team_name }}', et le champ '{{ apim_pub_approvers_field }}' de l'API
+      n'est PAS ecrivable sur la webMethods 10.15 (PUT accepte, relecture inchangee —
+      mesure du jalon P7). Rien n'est tente : la liste fait autorite dans
+      {{ apim_pub_providers_file }}, revue par PR. Poser
+      apim_pub_approvers_project=true si votre gateway, elle, accepte ce champ.
+  when:
+    - "pub_approvers | length > 0"
+    - "not (apim_pub_approvers_project | default(false) | bool)"
+
 - name: "Approbateurs : projeter dans {{ apim_pub_approvers_field }}"
-  when: "pub_approvers | length > 0"
+  when:
+    - "pub_approvers | length > 0"
+    - "apim_pub_approvers_project | default(false) | bool"
   block:
     - name: "Approbateurs : relire l'API"
       ansible.builtin.uri:
@@ -61,12 +99,24 @@
           {{ (pub_approvers | join(apim_pub_approvers_join))
              if (apim_pub_approvers_join | length > 0) else pub_approvers }}
 
+    # OBJET NU, PAS L'ENVELOPPE — et ce n'est pas un detail de style.
+    # `PUT /apis/{id}` avec `{"apiResponse": {"api": …}}` rend **HTTP 400
+    # « Both content stream and apiDefinition are empty »** sur la 10.15 : le
+    # produit lit le corps comme une CREATION et n'y trouve ni flux ni
+    # definition. Mesure du spike P0 (« enveloppe apiResponse.api -> 400 »),
+    # reprise telle quelle par `tag.yml` — mais cette tache-ci etait restee sur
+    # la forme enveloppee, et personne ne l'avait vu parce qu'elle ne s'execute
+    # QUE si l'equipe declare des approbateurs : les harnais de P3..P6 publient
+    # sous un providers.yml a liste VIDE (chemin APPROVERS_EMPTY), et le seul
+    # bout-en-bout qui declarait des approbateurs visait le MOCK, qui accepte
+    # les deux formes. La porte de bout en bout de P7 est ce qui l'a revele.
+    # La RELECTURE, elle, reste enveloppee : `GET` rend `apiResponse.api`.
     - name: "Approbateurs : ecrire (write-always — une API ayant derive revient)"
       ansible.builtin.uri:
         url: "{{ apim_ss_api_base }}/apis/{{ apim_api_id }}"
         method: PUT
         body: >-
-          {{ {'apiResponse': {'api': pub_api_rec | combine({apim_pub_approvers_field: pub_approvers_value})}} }}
+          {{ pub_api_rec | combine({apim_pub_approvers_field: pub_approvers_value}) }}
         status_code: [200, 201]
 
     - name: "Approbateurs : relire et EXIGER la valeur"

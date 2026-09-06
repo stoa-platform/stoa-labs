@@ -32,9 +32,12 @@
 #
 # La ligne de partage n'est pas « ce qui nous arrange » : c'est **l'axe est-il
 # gardé par quelque chose, oui ou non**. `oauth2` dégrade parce que l'appelant
-# est quand même identifié (par `jwtClaims`, signature seule) ; `mtls` et
-# `threat-protection` refusent parce qu'aucune mesure ne les oppose — les
-# attester en silence serait la garantie de papier que P0 a démontée.
+# est quand même exigé — et la mesure de P7 montre que cette exigence, faute de
+# stratégie OAuth2, n'est satisfaite par PERSONNE : la dégradation FERME l'API
+# au lieu de la relâcher. Elle est donc tolérable au sens de la sécurité, et
+# elle doit être DITE au sens de l'usage. `mtls` et `threat-protection`, eux,
+# refusent parce qu'aucune mesure ne les oppose — les attester en silence serait
+# la garantie de papier que P0 a démontée.
 #
 # ── L'ANTI-DÉRIVE, QUI EST LA VRAIE VALEUR ──────────────────────────────────
 # Une policy exigée par un bouquet et absente des DEUX listes fait REFUSER

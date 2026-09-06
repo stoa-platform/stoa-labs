@@ -111,6 +111,19 @@ apim_pub_require_team: true
 # unitaire.
 apim_pub_approvers_field: "owner"
 apim_pub_approvers_join: ","      # mettre "" pour ecrire un TABLEAU
+# P7 (2026-09-06) : la projection est OPT-IN, parce que le champ n'est PAS
+# ecrivable sur la webMethods 10.15 — mesure de la porte de bout en bout, qui a
+# exerce cette tache pour la premiere fois contre le produit reel (les harnais
+# de P3..P6 publient sous une liste d'approbateurs VIDE, et le seul bout-en-bout
+# qui en declarait visait le mock). Deux defauts enchaines : le corps du PUT
+# etait ENVELOPPE (400 « Both content stream and apiDefinition are empty »,
+# corrige), et une fois corrige la relecture rend toujours owner="Administrator".
+# La recherche du GOAL posture l'avait etabli (decision client n°2 : owner et
+# provider sont en LECTURE SEULE) ; le role en tire desormais la consequence.
+# false = ne rien tenter, et le DIRE (APPROVERS_NON_PROJETABLE). La liste reste
+# autoritative dans providers.<env>.yml, revue par PR. true = tenter, avec le
+# read-back fail-closed intact, pour une gateway qui accepterait le champ.
+apim_pub_approvers_project: false
 # Knob PROPRE a ce role (namespace apim_pub_*) plutot que de reutiliser
 # apim_onb_providers_file (apim_team_onboard) : ce playbook (publish-api.yml)
 # tourne seul, sans que ce role d'onboarding n'ait jamais pose cette variable —
@@ -162,8 +175,16 @@ apim_pub_posture_unopposed:
       jeton OAuth2 validé sur audience/scope/client_id : le formulaire producteur
       ne collecte pas ces trois champs (scripts/api-request.sh,
       INBOUND_OAUTH2_NON_SUPPORTE). La machinerie existe (tasks/inbound.yml,
-      branche oauth2) ; c'est l'entrée de formulaire qui manque. L'axe reste donc
-      gardé, en deçà du bouquet.
+      branche oauth2) ; c'est l'entrée de formulaire qui manque. ⚠ MESURÉ AU PLAN
+      DE DONNÉES (jalon P7, 2026-09-06) : cette dégradation ne relâche RIEN, elle
+      FERME. Un jeton VALIDE de l'IdP du lab, présenté à une API publiée en mode
+      `jwt`, est refusé 401 « Unauthorized application request » — y compris avec
+      une application souscrite portant un identifiant de claim (jwtClaims comme
+      openIdClaims, sur azp, iss ou sub). L'identité runtime de la 10.15 vient de
+      la STRATÉGIE OAuth2 (azp == clientId), que seul le mode `oauth2` configure ;
+      l'identifiant de claim est décoratif. Conséquence à dire au client : le
+      formulaire producteur publie aujourd'hui des APIs FERMÉES À TOUS. C'est
+      fail-closed, donc sans risque de sécurité — et inutilisable en l'état.
   mtls:
     mode: refuse
     raison: >-
