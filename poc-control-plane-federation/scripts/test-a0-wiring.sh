@@ -39,7 +39,7 @@ ko(){ FAIL=$((FAIL+1)); printf '  ❌ %s\n' "$*"; }
 
 # Total ATTENDU, ÉCRIT EN DUR — indépendant de PASS+FAIL. Toute section
 # ajoutée/retirée DOIT le mettre à jour : un oubli fait rougir le dernier §.
-EXPECTED_CHECKS=187
+EXPECTED_CHECKS=188
 
 # shellcheck source=scripts/lib/gwt-mirror.sh
 . scripts/lib/gwt-mirror.sh || { echo "lib gwt-mirror.sh introuvable"; exit 2; }
@@ -272,9 +272,19 @@ L_ALT=$(code_line "$TMP/jf-app.code" 'TOKEN_ALTERE'); L_GLB=$(code_line "$TMP/jf
 [ -n "$L_ALT" ] && [ -n "$L_GLB" ] && [ -n "$L_SHREQ" ] && [ "$L_ALT" -lt "$L_SHREQ" ] && [ "$L_GLB" -lt "$L_SHREQ" ] && jfa 'brutTok != resoluTok' \
   && ok "A7 : gardes TOKEN_ALTERE ($L_ALT) et TOKEN_GLOBAL_REFUSE ($L_GLB) AVANT l'appel du script ($L_SHREQ) — brut ≠ résolu ⇔ altéré, champ vide + env non vide ⇔ globale" || ko "A7 : gardes du token absentes/mal placées (alt=$L_ALT glb=$L_GLB sh=$L_SHREQ)"
 grep -qE "error\('REFUS: TOKEN_(ALTERE|GLOBAL_REFUSE)[^']*\\\$\{(params|env)" "$TMP/jf-app.code" && ko "A7 : un message d'erreur interpole la valeur du token" || ok "A7 : aucun message d'erreur n'interpole le token"
-[ "$(grep -c 'STOA_ENV_CHAIN_FILE="\$WORKSPACE/poc-control-plane-federation/clients/_example/environments.yaml"' "$TMP/jf-app.code")" = 2 ] && ok "A7 : la chaîne est ÉPINGLÉE sur les deux sh (listes et demande) — une globale ne redirige plus la porte à la demande" || ko "A7 : épinglages STOA_ENV_CHAIN_FILE : $(grep -c 'STOA_ENV_CHAIN_FILE=' "$TMP/jf-app.code")"
+# 2026-09-07 : la chaîne reste ÉPINGLÉE, mais son chemin se COMPOSE depuis le
+# knob GIT_SUBDIR — le préfixe du lab y était écrit en dur, si bien que chez un
+# client dont le livrable porte un autre nom le stage mourait CHAINE_ILLISIBLE
+# avant d'atteindre la liste des APIs (mesuré).
+[ "$(grep -c 'STOA_ENV_CHAIN_FILE="\$WORKSPACE/\$GIT_SUBDIR/clients/_example/environments.yaml"' "$TMP/jf-app.code")" = 2 ] && ok "A7 : la chaîne est ÉPINGLÉE sur les deux sh (listes et demande), et COMPOSÉE depuis \$GIT_SUBDIR — une globale ne redirige plus la porte, un client n'a plus le préfixe du lab en dur" || ko "A7 : épinglages STOA_ENV_CHAIN_FILE composés depuis \$GIT_SUBDIR : $(grep -c 'STOA_ENV_CHAIN_FILE=' "$TMP/jf-app.code")"
+# Le préfixe du lab n'a le droit d'apparaître QU'À UN endroit du code exécuté :
+# le défaut du knob lui-même. Toute autre occurrence est un chemin en dur.
+N_PFX=$(grep -c 'poc-control-plane-federation' "$TMP/jf-app.code")
+[ "$N_PFX" = 1 ] && grep -q "GIT_SUBDIR           = \"\${env.GIT_SUBDIR ?: 'poc-control-plane-federation'}\"" "$TMP/jf-app.code" \
+  && ok "le préfixe du livrable n'apparaît QU'UNE fois dans le code d'app-request : le défaut du knob GIT_SUBDIR (aucun chemin en dur)" \
+  || ko "préfixe du lab écrit en dur dans app-request : $N_PFX occurrence(s) dans la vue CODE"
 grep -v '^\s*//' ci/Jenkinsfile.provisioning-request | grep -qE "^\s*FORGE_TOKEN\s*=\s*''" && ok "A7 : la voie machine VIDE FORGE_TOKEN dans son bloc environment (une globale du nœud ne lui prête aucune identité de forge)" || ko "A7 : Jenkinsfile.provisioning-request ne vide pas FORGE_TOKEN"
-L_SH=$(code_line "$TMP/jf-app.code" "sh 'set +x; GC_PLATFORM_DIR=\"\$WORKSPACE\" STOA_ENV_CHAIN_FILE=\"\$WORKSPACE/poc-control-plane-federation/clients/_example/environments.yaml\" CHOICES_OUT=\"\$WORKSPACE/.a0-choices.env\" bash scripts/app-request-choices.sh'")
+L_SH=$(code_line "$TMP/jf-app.code" "sh 'set +x; GC_PLATFORM_DIR=\"\$WORKSPACE\" STOA_ENV_CHAIN_FILE=\"\$WORKSPACE/\$GIT_SUBDIR/clients/_example/environments.yaml\" CHOICES_OUT=\"\$WORKSPACE/.a0-choices.env\" bash scripts/app-request-choices.sh'")
 L_WC=$(code_line "$TMP/jf-app.code" "withCredentials(forgeCreds())")
 # 2026-09-04 : le TYPE de credential est un knob du SITE. forgeCreds() rend un
 # secret text (jeton, defaut du lab) ou un usernamePassword (couple, cas client),

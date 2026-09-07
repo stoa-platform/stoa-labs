@@ -58,7 +58,18 @@ pipeline {
         dir(env.GIT_SUBDIR) {
           // Une seule liste (les paliers) : la lib suffit, aucun script de choix.
           // Fail-closed : chaîne illisible ⇒ fichier retiré ⇒ FORMULAIRE_VIDE.
-          sh 'set +x; STOA_ENV_CHAIN_FILE="$WORKSPACE/poc-control-plane-federation/clients/_example/environments.yaml" bash -c ". scripts/lib/env-chain.sh && env_chain_validate && env_chain" > "$WORKSPACE/.a6-envs" || { rm -f "$WORKSPACE/.a6-envs"; exit 1; }'
+          // 2026-09-07 — LE PRÉFIXE DU LIVRABLE N'EST PLUS ÉCRIT ICI. Il l'était
+          // deux fois dans ce fichier (ce stage et celui de la demande), alors
+          // que le bloc environment{} en fait un knob (GIT_SUBDIR) et que le
+          // `dir(env.GIT_SUBDIR)` juste au-dessus l'honore déjà — même défaut de
+          // portabilité, et même conséquence, que celui corrigé dans
+          // ci/Jenkinsfile.app-request : chez un client dont le livrable n'a pas
+          // le nom du lab, ce stage mourait en FORMULAIRE_VIDE (chaîne
+          // introuvable) et le repli était impossible. Quotes SIMPLES :
+          // $GIT_SUBDIR est développé par le SHELL, qui le reçoit du bloc
+          // environment{} ; la sentinelle « . » compose « $WORKSPACE/./… », qui
+          // résout.
+          sh 'set +x; STOA_ENV_CHAIN_FILE="$WORKSPACE/$GIT_SUBDIR/clients/_example/environments.yaml" bash -c ". scripts/lib/env-chain.sh && env_chain_validate && env_chain" > "$WORKSPACE/.a6-envs" || { rm -f "$WORKSPACE/.a6-envs"; exit 1; }'
         }
         script {
           def envs = readFile("${env.WORKSPACE}/.a6-envs").trim().tokenize(' ')
@@ -125,7 +136,8 @@ pipeline {
           // dans la chaîne sh (quotes simples ; `set +x` : le token ne s'écho pas).
           withEnv(["REQ_APP=${params.APP}", "REQ_ENV=${params.ENV}", "REQ_REASON=${params.REASON}", "REQ_CHANGE_REF=${params.CHANGE_REF}"]) {
             dir(env.GIT_SUBDIR) {
-              sh 'set +x; STOA_ENV_CHAIN_FILE="$WORKSPACE/poc-control-plane-federation/clients/_example/environments.yaml" ROLLBACK_OUT="$WORKSPACE/.a6-rollback.env" bash scripts/app-rollback-request.sh'
+              // Même règle qu'au stage Formulaire : le préfixe vient du knob.
+              sh 'set +x; STOA_ENV_CHAIN_FILE="$WORKSPACE/$GIT_SUBDIR/clients/_example/environments.yaml" ROLLBACK_OUT="$WORKSPACE/.a6-rollback.env" bash scripts/app-rollback-request.sh'
             }
           }
         }

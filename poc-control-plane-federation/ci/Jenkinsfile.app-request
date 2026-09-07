@@ -118,7 +118,17 @@ pipeline {
             // par le réseau. Un geste réseau, un jeton, une branche et une
             // traversée de proxy en moins sur le PREMIER stage de la chaîne ;
             // les dépôts d'ÉQUIPE, eux, restent découverts et clonés à l'exécution.
-            sh 'set +x; GC_PLATFORM_DIR="$WORKSPACE" STOA_ENV_CHAIN_FILE="$WORKSPACE/poc-control-plane-federation/clients/_example/environments.yaml" CHOICES_OUT="$WORKSPACE/.a0-choices.env" bash scripts/app-request-choices.sh'
+            // 2026-09-07 — LE PRÉFIXE DU LIVRABLE N'EST PLUS ÉCRIT ICI. Il l'était
+            // deux fois dans ce fichier, alors que le bloc environment{} en fait
+            // un knob (GIT_SUBDIR) et que le `dir(env.GIT_SUBDIR)` juste au-dessus
+            // l'honore déjà. Chez un client dont le livrable n'a pas le nom du
+            // lab, ce stage mourait donc en CHAINE_ILLISIBLE — « source
+            // illisible : $WORKSPACE/poc-control-plane-federation/… » — AVANT
+            // même d'atteindre la liste des APIs (mesuré). Quotes SIMPLES :
+            // $GIT_SUBDIR est développé par le SHELL, qui le reçoit du bloc
+            // environment{} ; la sentinelle « . » compose « $WORKSPACE/./… »,
+            // qui résout.
+            sh 'set +x; GC_PLATFORM_DIR="$WORKSPACE" STOA_ENV_CHAIN_FILE="$WORKSPACE/$GIT_SUBDIR/clients/_example/environments.yaml" CHOICES_OUT="$WORKSPACE/.a0-choices.env" bash scripts/app-request-choices.sh'
           }
         }
         script {
@@ -301,7 +311,7 @@ pipeline {
             dir(env.GIT_SUBDIR) {
               sh '''
                 set +x
-                STOA_ENV_CHAIN_FILE="$WORKSPACE/poc-control-plane-federation/clients/_example/environments.yaml" bash scripts/provision-request.sh
+                STOA_ENV_CHAIN_FILE="$WORKSPACE/$GIT_SUBDIR/clients/_example/environments.yaml" bash scripts/provision-request.sh
               '''
             }
           }
