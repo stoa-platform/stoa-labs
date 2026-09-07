@@ -62,5 +62,29 @@ run ENVIRONMENT=dev ADMIN_VIA=direct APIM_TERMINUS=prod APIM_API_BASE=pas-une-ur
 grep -q '^REFUS: APIM_BASE_INVALIDE' "$ERRF" && ok "base non http(s) ⇒ APIM_BASE_INVALIDE" \
   || ko "base non http : stderr='$(cat "$ERRF")'"
 
+echo "== 5. parité lib ↔ garde (le refactor ne doit RIEN changer) =="
+GATE="$REPO/scripts/selfservice-palier-gate.sh"
+# Ces deux assertions ne lisent que le TEXTE de la garde — la forme la plus
+# fragile qui soit (un « vert vacant » possible : sourcer la lib SANS
+# l'appeler passerait quand même). Elles sont conservées PARCE QUE le
+# comportement réel de la composition (proxy/terminus/override/les quatre
+# refus nommés, y compris avec la BASE du site réel) est déjà exercé de bout
+# en bout par scripts/test-selfservice-palier-a3.sh (A.1 à A.21, A.30–A.40 —
+# REFUS_OUT/REFUS_DETAIL_OUT inclus) au travers de la garde ENTIÈRE, stub
+# Vault + canari gateway réels : une épreuve comportementale ICI ne ferait que
+# le dupliquer avec moins de couverture. Ce que NI A3 ni un grep textuel ne
+# peuvent trancher seuls — la PROVENANCE de l'argument APIM_TERMINUS (que la
+# garde passe bien le TERMINUS de env_chain_terminus(), jamais une valeur
+# arbitraire) — est prouvé par MUTATION directe sur scripts/selfservice-palier-gate.sh
+# rejouée contre A3 (rapport de tâche : la mutation
+# APIM_TERMINUS="$TERMINUS" → APIM_TERMINUS="$ENVIRONMENT" fait rougir A.1 et
+# A.3, qui ne portent pas d'APIM_TERMINUS_BASE).
+grep -q 'apim-base\.sh' "$GATE" \
+  && ok "la garde source scripts/lib/apim-base.sh (plus de composition recopiée)" \
+  || ko "la garde compose toujours la base en ligne — la duplication subsiste"
+grep -q 'gateway/\${APIM_PROXY_API}' "$GATE" \
+  && ko "la garde porte ENCORE le gabarit d'URL en dur (deux vérités)" \
+  || ok "le gabarit d'URL n'existe plus qu'à un seul endroit"
+
 printf '\n%d ✅  %d ❌\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

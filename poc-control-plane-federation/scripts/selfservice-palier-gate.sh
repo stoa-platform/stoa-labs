@@ -103,25 +103,25 @@ TICKET_PATH="$(kv_data_path "$WM_SUB")"
 
 # ── 1. LA VOIE, par POSITION ─────────────────────────────────────────────────
 TERMINUS="$(env_chain_terminus)" || refus ENV_INVALIDE "terminus indéterminable"
-if [ "$ENVIRONMENT" = "$TERMINUS" ]; then
-  [ -n "$APIM_TERMINUS_BASE" ] || refus TERMINUS_SANS_VOIE "'${ENVIRONMENT}' est le terminus de la chaîne — pas de proxy wm-admin-<env> devant lui (exclusion structurelle G4) ; la voie directe exige APIM_TERMINUS_BASE, et dire sa cible est volontaire"
-  EFFECTIVE_VIA=direct; BASE="$(sub_env "$APIM_TERMINUS_BASE")"
-elif [ "$ADMIN_VIA" = direct ]; then
-  EFFECTIVE_VIA=direct; BASE="$(sub_env "$APIM_API_BASE")"
-else
-  EFFECTIVE_VIA=proxy-oauth2
-  if [ -n "$APIM_PROXY_BASE" ]; then BASE="$(sub_env "$APIM_PROXY_BASE")"
-  else BASE="$(sub_env "${APIM_PROXY_HOST}/gateway/${APIM_PROXY_API}/${APIM_PROXY_VER}${APIM_PROXY_PATH}")"; fi
-fi
-# Un composant VIDE produit une URL syntaxiquement valide (« …/gateway//1.0/… ») que
-# le contrôle de forme ci-dessous laisse passer : on le refuse AVANT, nommément.
-if [ "$EFFECTIVE_VIA" = proxy-oauth2 ] && [ -z "$APIM_PROXY_BASE" ]; then
-  for _c in APIM_PROXY_HOST:"$APIM_PROXY_HOST" APIM_PROXY_API:"$APIM_PROXY_API" APIM_PROXY_VER:"$APIM_PROXY_VER" APIM_PROXY_PATH:"$APIM_PROXY_PATH"; do
-    [ -n "${_c#*:}" ] || refus APIM_BASE_INVALIDE "${_c%%:*} est vide — le gabarit d'URL admin ne peut pas etre compose (poser la variable, ou fournir APIM_PROXY_BASE)"
-  done
-fi
-case "$BASE" in http://*|https://*) ;; *) refus APIM_BASE_INVALIDE "'${BASE}' — le gabarit d'URL admin doit produire une URL http(s)";; esac
-if [ "$EFFECTIVE_VIA" = direct ]; then AUTH_MODE=basic; else AUTH_MODE=oauth2; fi
+# shellcheck source=scripts/lib/apim-base.sh
+. "$SELF_DIR/lib/apim-base.sh" || refus LIB_ABSENTE "$SELF_DIR/lib/apim-base.sh introuvable ou illisible"
+# apim_base_resolve ne consulte PAS la chaîne d'environnements elle-même — son
+# contrat déclaré est de comparer ENVIRONMENT à APIM_TERMINUS, rien de plus :
+# la discipline « le terminus vient de la chaîne » reste ICI, portée par
+# env_chain_terminus() ci-dessus (jamais une valeur arbitraire). ADMIN_VIA a
+# déjà été validé en §0 (VIA_INCONNU y est donc inatteignable depuis ce point,
+# mais reste porté par la lib pour ses autres appelants, ex. le scan de parc).
+APIM_TERMINUS="$TERMINUS" apim_base_resolve 2>"$TMP/base.err" || {
+  # La lib rend son refus nommé sur stderr ("REFUS: TAG : détail") et rend 1 ;
+  # relayé par refus() — et non un simple exit — pour que REFUS_OUT et
+  # REFUS_DETAIL_OUT (A4/A5, relayés jusqu'à la PR) restent posés à
+  # l'identique d'avant le refactor : ce sont eux, pas seulement la ligne
+  # stdout, qui portaient le comportement observable du refus.
+  AB_TAG="$(sed -n 's/^REFUS: \([A-Z_]*\) : .*/\1/p' "$TMP/base.err")"
+  AB_DETAIL="$(sed -n 's/^REFUS: [A-Z_]* : //p' "$TMP/base.err")"
+  refus "${AB_TAG:-APIM_BASE_INVALIDE}" "${AB_DETAIL:-$(cat "$TMP/base.err")}"
+}
+BASE="$APIM_BASE"; EFFECTIVE_VIA="$APIM_EFFECTIVE_VIA"; AUTH_MODE="$APIM_AUTH_MODE"
 
 # ── le manifeste : la DONNÉE (name, team, auth.mode, auth.vault_sub EFFECTIF) ─
 # Lu TOLÉRANT (BaseLoader) : la sévérité de forme appartient à la demande
