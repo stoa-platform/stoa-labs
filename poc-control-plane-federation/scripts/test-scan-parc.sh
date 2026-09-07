@@ -58,6 +58,23 @@ class H(BaseHTTPRequestHandler):
             return self._send(401, {"error": "no token"})     # la preuve de vie du proxy
         if auth == "Basic SANS-GROUPE":
             return self._send(401, {"error": "User is not a member of any administrator group"})
+        if p.endswith("/archive"):
+            # le contrat du proxy DECLARE le GET mais type sa reponse
+            # application/json (cf. scan-parc.sh) : par defaut on rend un 200
+            # qui n'est PAS un zip, pour prouver que la sonde verifie l'octet
+            # magique et ne se contente pas d'un code 200. Bascule pilotee
+            # par fichier pour rendre un VRAI zip (octets PK\x03\x04) quand
+            # le test le demande explicitement.
+            flagzip = os.environ.get("ARCHIVE_REAL_ZIP_FLAG", "")
+            if flagzip and os.path.exists(flagzip):
+                body = b"PK\x03\x04" + b"\x00" * 16
+                self.send_response(200)
+                self.send_header("Content-Type", "application/zip")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            return self._send(200, {"not": "a zip — application/json comme declare"})
         if p.endswith("/apis"):
             if "slow=1" in self.path:
                 import time; time.sleep(1)   # sonde 1a : un appel VOLONTAIREMENT lent
@@ -96,6 +113,7 @@ class H(BaseHTTPRequestHandler):
 HTTPServer(("127.0.0.1", int(os.environ["PORT"])), H).serve_forever()
 PY
 PORT="$PORT" FAIL_APIDEF_FLAG="$TMP/fail-apidef.flag" FAIL_APIDEF_GUID="g-cpt-100" \
+ARCHIVE_REAL_ZIP_FLAG="$TMP/archive-real-zip.flag" \
   python3 "$TMP/fakewm.py" & PID=$!
 for _ in $(seq 1 50); do
   curl -s -o /dev/null "http://127.0.0.1:$PORT/apis" && break; sleep 0.1
@@ -272,8 +290,31 @@ cmp -s "$TMP/lignees.json" "$TMP/l3.json" \
 
 echo "== 3. garde de troncature : SCAN_PARC_ATTENDU =="
 SCAN="$REPO/scripts/scan-parc.sh"
+# gouvernance/providers PAR DÉFAUT pour les sections 3 à 5 (Task 7 rend les
+# deux OBLIGATOIRES, sans défaut dans scan-parc.sh — cf. GOVERNANCE_REQUISE /
+# PLATEFORME_REQUISE) : ce registre par défaut déclare `comptes`, la SEULE
+# lignée OK de tout le jeu d'essai, pour que les assertions déjà vertes des
+# sections 3 à 5 (contrat comptes, sha256, etc.) restent inchangées SANS
+# toucher à leur texte. providers.dev.yml par défaut n'a qu'UN dépôt à UNE
+# équipe (aucune ambiguïté), pour ne rien ajouter aux refus des sections
+# précédentes. La section 6 (gouvernance) SURCHARGE ces deux knobs.
+mkdir -p "$TMP/gov-default" "$TMP/plat-default/ansible"
+cat > "$TMP/gov-default/registre.yaml" <<'YML'
+apis:
+  - owner: toto
+    api: comptes
+    classification: M
+    exposure: internal
+YML
+cat > "$TMP/plat-default/ansible/providers.dev.yml" <<'YML'
+providers:
+  - team: toto
+    repo: grp/apis-comptes
+YML
 scan(){ env ENVIRONMENT=dev ADMIN_VIA=direct APIM_TERMINUS=prod APIM_API_BASE="$BASE" \
-  APIM_AUTH_MODE=basic WM_USER=adm WM_PASSWORD=s3cr3t SCAN_OUT="$TMP/out" "$@" bash "$SCAN"; }
+  APIM_AUTH_MODE=basic WM_USER=adm WM_PASSWORD=s3cr3t SCAN_OUT="$TMP/out" \
+  GOVERNANCE_PATH="$TMP/gov-default/registre.yaml" GC_PLATFORM_DIR="$TMP/plat-default" GIT_SUBDIR=. \
+  "$@" bash "$SCAN"; }
 
 rm -rf "$TMP/out"; mkdir -p "$TMP/out"
 scan >"$TMP/s1.out" 2>"$TMP/s1.err"
@@ -397,6 +438,163 @@ grep -q '^REFUS: CONTRAT_ABSENT' "$TMP/s5.err" \
 [ ! -f "$TMP/out/estate.dev.json" ] \
   && ok "aucun estate.dev.json écrit malgré le refus survenu en cours de boucle" \
   || ko "un estate.dev.json a été écrit malgré CONTRAT_ABSENT (fail-open)"
+
+echo "== 6. gouvernance, providers, sonde archive =="
+# R2 (rulings-a-porter.md) : le brief visait `virements` pour prouver qu'une
+# lignée non gouvernée ne produit pas de contrat — mais virements est déjà
+# refusée API_MULTI_EQUIPES : l'assertion serait verte MÊME SANS la porte de
+# gouvernance (vert vacant). Le registre ci-dessous ne déclare donc QUE
+# `paiements` (déjà refusée par ailleurs elle aussi) — jamais `comptes`,
+# l'UNIQUE lignée OK du jeu d'essai (cf. section 3, registre par défaut) :
+# c'est SA bascule OK → CLASSIFICATION_UNGOVERNED qui prouve la porte.
+mkdir -p "$TMP/gov" "$TMP/plat/ansible"
+cat > "$TMP/gov/registre.yaml" <<'YML'
+apis:
+  - owner: toto
+    api: paiements
+    classification: M
+    exposure: internal
+YML
+# deux équipes déclarant le MÊME dépôt (grp/apis-toto) — PLUS un dépôt à
+# équipe UNIQUE (grp/apis-legit, R13) : sans ce second dépôt, la mutation M3
+# du brief (retirer le filtre `len(set(ts)) > 1` dans estate_repo_ambigu) ne
+# rougirait RIEN — un jeu d'essai qui ne contient QUE des dépôts ambigus ne
+# peut pas distinguer « le filtre écarte les dépôts non-ambigus » de
+# « le filtre n'existe pas ». grp/apis-legit doit rester ABSENTE des refus.
+cat > "$TMP/plat/ansible/providers.dev.yml" <<'YML'
+providers:
+  - team: toto
+    repo: grp/apis-toto
+  - team: titi
+    repo: grp/apis-toto
+  - team: toto
+    repo: grp/apis-legit
+YML
+rm -rf "$TMP/out"
+scan SCAN_PARC_ATTENDU=10:1 GC_PLATFORM_DIR="$TMP/plat" GOVERNANCE_PATH="$TMP/gov/registre.yaml" \
+     >"$TMP/s6.out" 2>"$TMP/s6.err"
+
+python3 -c '
+import json,sys
+d=json.load(open(sys.argv[1]))
+codes={r["code"] for r in d["refus"]}
+assert "CLASSIFICATION_UNGOVERNED" in codes, codes
+assert "REPO_AMBIGU" in codes, codes
+' "$TMP/out/estate.dev.json" \
+  && ok "CLASSIFICATION_UNGOVERNED et REPO_AMBIGU sont inscrits aux refus" \
+  || ko "verdicts manquants dans estate.dev.json"
+
+python3 -c '
+import json,sys
+d=json.load(open(sys.argv[1]))
+for l in d["lignees"]:
+    if l["nom"]=="comptes":
+        assert l["verdict"]=="CLASSIFICATION_UNGOVERNED", l["verdict"]
+        break
+else:
+    sys.exit("comptes absente de l'\''inventaire")
+' "$TMP/out/estate.dev.json" \
+  && ok "comptes (OK hors gouvernance) bascule CLASSIFICATION_UNGOVERNED — absente du registre (R2)" \
+  || ko "comptes n'a pas basculé CLASSIFICATION_UNGOVERNED"
+
+[ ! -f "$TMP/out/contrats/comptes-1.0.0.openapi.yaml" ] \
+  && ok "une lignée OK mais NON GOUVERNÉE ne produit PAS de contrat (R2)" \
+  || ko "un contrat a été produit pour comptes, pourtant hors registre"
+
+# REPO_AMBIGU discrimine réellement le filtre len(set(ts))>1 (mutation M3
+# corrigée, cf. task-7-report.md) : SEUL grp/apis-toto (2 équipes) est
+# rapporté, jamais grp/apis-legit (1 équipe).
+python3 -c '
+import json,sys
+d=json.load(open(sys.argv[1]))
+r=[x for x in d["refus"] if x["code"]=="REPO_AMBIGU"]
+objets=sorted(x["objet"] for x in r)
+assert objets==["grp/apis-toto"], objets
+detail=next(x["detail"] for x in r if x["objet"]=="grp/apis-toto")
+assert "titi" in detail and "toto" in detail, detail
+' "$TMP/out/estate.dev.json" \
+  && ok "REPO_AMBIGU cible SEULEMENT grp/apis-toto (2 équipes), jamais grp/apis-legit (1 équipe)" \
+  || ko "REPO_AMBIGU sur-désigne ou sous-désigne les dépôts déclarés"
+
+# La sonde archive n'a de sens QUE s'il existe au moins une lignée OK pour
+# lui fournir un GUID (cf. FIRST_GUID, scan-parc.sh) — or dans le scan R2
+# ci-dessus, comptes est CLASSIFICATION_UNGOVERNED : PLUS AUCUNE lignée n'y
+# est OK, la sonde n'y est donc JAMAIS invoquée, et lire archive_zip depuis
+# "$TMP/out/estate.dev.json" (le résultat du scan R2) y verrait un "KO" qui
+# ne mesure RIEN — juste la valeur initiale jamais changée (vert vacant : une
+# mutation qui casserait la sonde ne rougirait rien depuis CE fichier-là).
+# D'où un scan SÉPARÉ, avec la gouvernance PAR DÉFAUT (comptes reste OK,
+# cf. section 3) pour que FIRST_GUID soit non-vide et la sonde réellement
+# exercée.
+rm -rf "$TMP/out"
+scan SCAN_PARC_ATTENDU=10:1 >"$TMP/s6a.out" 2>"$TMP/s6a.err"
+python3 -c '
+import json,sys
+v=json.load(open(sys.argv[1]))["provenance"]["sondes"]["archive_zip"]
+assert v in ("OK","KO"), v' "$TMP/out/estate.dev.json" \
+  && ok "provenance.sondes.archive_zip porte une MESURE (OK|KO), pas NON_MESURE en dur" \
+  || ko "archive_zip n'est pas mesuré"
+
+# la mesure discrimine réellement (R13) : un 200 SANS l'octet magique zip
+# (le faux wM rend du JSON sur /archive par défaut) doit rester KO — un
+# simple code 200 ne suffit pas à prouver un export. Lu du MÊME scan
+# ci-dessus (comptes OK ⇒ FIRST_GUID non-vide ⇒ la sonde a réellement tourné).
+python3 -c '
+import json,sys
+v=json.load(open(sys.argv[1]))["provenance"]["sondes"]["archive_zip"]
+assert v=="KO", v' "$TMP/out/estate.dev.json" \
+  && ok "200 sans octet magique PK (JSON) ⇒ archive_zip=KO, pas un vert de complaisance" \
+  || ko "archive_zip=OK sur un corps qui n'est PAS un zip"
+
+# et l'inverse : un VRAI octet magique zip (PK\x03\x04) ⇒ OK — sans ce
+# second cas, une sonde qui rendrait KO EN DUR passerait l'assertion
+# précédente sans jamais avoir rien mesuré (R13).
+: > "$TMP/archive-real-zip.flag"
+rm -rf "$TMP/out"
+scan SCAN_PARC_ATTENDU=10:1 >"$TMP/s6b.out" 2>"$TMP/s6b.err"
+rm -f "$TMP/archive-real-zip.flag"
+python3 -c '
+import json,sys
+v=json.load(open(sys.argv[1]))["provenance"]["sondes"]["archive_zip"]
+assert v=="OK", v' "$TMP/out/estate.dev.json" \
+  && ok "200 AVEC l'octet magique PK\\x03\\x04 ⇒ archive_zip=OK" \
+  || ko "archive_zip reste KO malgré un vrai zip — la sonde ne mesure rien"
+
+echo "== 6b. GOVERNANCE_PATH et GC_PLATFORM_DIR : aucun défaut ne devine =="
+rm -rf "$TMP/out"
+scan SCAN_PARC_ATTENDU=10:1 GOVERNANCE_PATH= >"$TMP/s6c.out" 2>"$TMP/s6c.err"
+grep -q '^REFUS: GOUVERNANCE_REQUISE' "$TMP/s6c.err" \
+  && ok "GOVERNANCE_PATH absent ⇒ GOUVERNANCE_REQUISE (aucun défaut, aucun optimisme)" \
+  || ko "le scan a tourné sans registre : $(tail -3 "$TMP/s6c.err")"
+[ ! -f "$TMP/out/estate.dev.json" ] \
+  && ok "aucun inventaire écrit sur le chemin GOUVERNANCE_REQUISE" \
+  || ko "un estate.dev.json a été écrit malgré GOUVERNANCE_REQUISE"
+
+rm -rf "$TMP/out"
+scan SCAN_PARC_ATTENDU=10:1 GC_PLATFORM_DIR= >"$TMP/s6d.out" 2>"$TMP/s6d.err"
+grep -q '^REFUS: PLATEFORME_REQUISE' "$TMP/s6d.err" \
+  && ok "GC_PLATFORM_DIR absent ⇒ PLATEFORME_REQUISE (aucun défaut, aucun optimisme)" \
+  || ko "le scan a tourné sans dépôt plateforme : $(tail -3 "$TMP/s6d.err")"
+[ ! -f "$TMP/out/estate.dev.json" ] \
+  && ok "aucun inventaire écrit sur le chemin PLATEFORME_REQUISE" \
+  || ko "un estate.dev.json a été écrit malgré PLATEFORME_REQUISE"
+
+echo "== 6c. contrats/ : suppression par PROVENANCE, jamais par motif de nom (correctif Task 6) =="
+# AVANT ce correctif, le commentaire de scan-parc.sh affirmait « on ne
+# supprime QUE ce que CE script écrit lui-même » — mais le motif de
+# suppression était un NOM DE FICHIER (*.openapi.yaml), pas une preuve de
+# provenance. Un fichier PERSONNEL nommé comme un contrat passe la garde
+# CONTRATS_DIR_ETRANGER (qui ne flaire que le SUFFIXE) puis était détruit en
+# silence par le `rm -f *.openapi.yaml` qui suivait (mesuré, revue Task 6).
+rm -rf "$TMP/out"; mkdir -p "$TMP/out/contrats"
+printf 'CANARI-CONTRAT-ETRANGER-NE-DOIT-PAS-DISPARAITRE\n' > "$TMP/out/contrats/notes-perso.openapi.yaml"
+scan SCAN_PARC_ATTENDU=10:1 >"$TMP/s6e.out" 2>"$TMP/s6e.err"
+grep -q 'CANARI-CONTRAT-ETRANGER-NE-DOIT-PAS-DISPARAITRE' "$TMP/out/contrats/notes-perso.openapi.yaml" 2>/dev/null \
+  && ok "un *.openapi.yaml ÉTRANGER (nommé comme un contrat, jamais écrit par ce scan) survit intact" \
+  || ko "DESTRUCTION : le fichier étranger *.openapi.yaml a disparu ou a été altéré"
+[ -f "$TMP/out/contrats/comptes-1.0.0.openapi.yaml" ] \
+  && ok "le VRAI contrat de la lignée OK est bien (ré)écrit à côté du fichier étranger" \
+  || ko "le contrat légitime n'a pas été produit malgré le fichier étranger"
 
 printf '\n%d ✅  %d ❌\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

@@ -48,6 +48,41 @@ for AID in $(python3 -c 'import json,sys; [print(a["id"]) for a in (json.load(op
 done
 estate_applications "$WORK/apps.json" "$WORK/appdet" "$WORK/apps-rendu.json" || refus "ESTATE_APPLICATIONS"
 
+# ── gouvernance : le registre CENTRAL tranche, le scan ne déclare rien ───────
+# (ADR-076/092, task-7-brief.md, rulings-a-porter.md R2). Sans ce gate, une
+# lignée OK mais absente du registre passerait pour publiable — l'apply la
+# refuserait CLASSIFICATION_UNGOVERNED, mais le scan aurait déjà déclaré OK.
+[ -n "${GOVERNANCE_PATH:-}" ] || refus "GOUVERNANCE_REQUISE : poser GOVERNANCE_PATH (le registre central de classification). Sans lui, le scan déclarerait OK des lignées que l'apply refuse CLASSIFICATION_UNGOVERNED."
+[ -r "$GOVERNANCE_PATH" ] || refus "GOUVERNANCE_ILLISIBLE : ${GOVERNANCE_PATH}"
+estate_gouvernance "$GOVERNANCE_PATH" "$WORK/lignees.json" "$WORK/lignees-gouv.json" \
+  || refus "GOUVERNANCE_PARSE : ${GOVERNANCE_PATH} illisible"
+mv "$WORK/lignees-gouv.json" "$WORK/lignees.json"
+
+# ── providers.<env>.yml : un dépôt déclaré par deux équipes ──────────────────
+# shellcheck source=scripts/lib/repo-layout.sh
+. "$REPO/scripts/lib/repo-layout.sh" || refus "LIB_ABSENTE : repo-layout.sh"
+repo_layout_init                     || refus "GIT_SUBDIR_INVALIDE : repo-layout.sh"
+[ -n "${GC_PLATFORM_DIR:-}" ] || refus "PLATEFORME_REQUISE : poser GC_PLATFORM_DIR (racine du depot plateforme deja present)"
+PROV="${GC_PLATFORM_DIR}/${SUB_PFX}ansible/providers.${ENVIRONMENT}.yml"
+[ -r "$PROV" ] || refus "PROVIDERS_MISSING : ${PROV} illisible"
+estate_repo_ambigu "$PROV" "$WORK/ambigu.json" || refus "PROVIDERS_PARSE : ${PROV}"
+
+# ── sonde /archive : MESURÉE une fois, jamais en dépendance ──────────────────
+# Le contrat du proxy declare le GET mais type sa reponse application/json, et
+# aucun export n'a jamais ete joue a travers le proxy. On mesure, on rapporte,
+# on n'en depend pas. L'archive porte PassmanData/ et Alias/ : elle ne survit pas.
+ARCHIVE_ZIP=KO
+FIRST_GUID="$(python3 -c 'import json,sys
+for l in json.load(open(sys.argv[1]))["lignees"]:
+    if l["verdict"]=="OK" and l["versions"]: print(l["versions"][0]["guid"]); break' "$WORK/lignees.json")"
+if [ -n "$FIRST_GUID" ]; then
+  C="$(wm_get "/archive?apis=${FIRST_GUID}" "$WORK/probe.zip")"
+  if [ "$C" = 200 ] && [ "$(head -c 4 "$WORK/probe.zip" | od -An -tx1 | tr -d ' \n')" = "504b0304" ]; then
+    ARCHIVE_ZIP=OK
+  fi
+  rm -f "$WORK/probe.zip"
+fi
+
 # contrats : apiDefinition de GET /apis/{id}, pour les LIGNÉES OK SEULEMENT.
 # Reconstruit à chaque scan : un ancien contrat d'une lignée qui n'est plus OK
 # ne doit pas survivre (sinon un verdict dégradé laisse un vert périmé sur disque).
@@ -55,13 +90,31 @@ estate_applications "$WORK/apps.json" "$WORK/appdet" "$WORK/apps-rendu.json" || 
 # NE JAMAIS `rm -rf` UN RÉPERTOIRE FOURNI PAR L'APPELANT. SCAN_OUT n'est
 # validé que non-vide (l.18) : mesuré (fix round 1, constat 1) qu'un
 # SCAN_OUT=. avec un fichier personnel dans contrats/ était DÉTRUIT EN
-# SILENCE par le `rm -rf` précédent. On ne supprime QUE ce que CE script
-# écrit lui-même (*.openapi.yaml) ; tout le reste est un refus nommé, sans
-# rien toucher — la même discipline que le reste de l'outil.
+# SILENCE par le `rm -rf` précédent.
+#
+# CORRECTIF (revue Task 6) : le commentaire d'alors affirmait « on ne
+# supprime QUE ce que CE script écrit lui-même » — FAUX. Le motif de
+# suppression était `rm -f *.openapi.yaml`, un NOM DE FICHIER, pas une
+# preuve de provenance : un fichier personnel nommé notes-perso.openapi.yaml
+# PASSE la garde CONTRATS_DIR_ETRANGER ci-dessous (qui ne flaire que le
+# suffixe) puis était détruit en silence (mesuré). La PROVENANCE, elle, est
+# ce que l'outil vient de RECALCULER : les (nom, version) de chaque lignée
+# de $WORK/lignees.json À CE PASSAGE (post-gouvernance), quel que soit leur
+# verdict — cet ensemble est fermé et connu, et c'est le seul que ce script
+# ait le droit d'effacer avant de le réécrire (les lignées non-OK n'y seront
+# de toute façon pas réécrites par la boucle ci-dessous, ce qui nettoie bien
+# le contrat périmé d'une lignée dégradée). Un nom absent de cet ensemble —
+# notes-perso, ou tout autre fichier étranger nommé comme un contrat — n'est
+# JAMAIS touché, quel que soit son suffixe.
 mkdir -p "$SCAN_OUT/contrats"
 ETRANGER="$(find "$SCAN_OUT/contrats" -mindepth 1 -maxdepth 1 ! -name '*.openapi.yaml' | head -1)"
 [ -z "$ETRANGER" ] || refus "CONTRATS_DIR_ETRANGER : ${SCAN_OUT}/contrats contient '${ETRANGER}', qui n'est pas un contrat produit par ce scan (*.openapi.yaml) — rien n'est supprimé, rien n'est écrit. Vider ce répertoire soi-même si son contenu est bien celui d'un scan précédent."
-rm -f "$SCAN_OUT/contrats/"*.openapi.yaml
+while read -r NOMFIC; do
+  rm -f "$SCAN_OUT/contrats/${NOMFIC}"
+done < <(python3 -c 'import json,sys
+for l in json.load(open(sys.argv[1]))["lignees"]:
+    for v in l["versions"]:
+        print("%s-%s.openapi.yaml" % (l["nom"], v["version"]))' "$WORK/lignees.json")
 # NE PAS piper vers `while read` : sur bash 3.2 sans `lastpipe`, le corps du
 # `while` tournerait dans un SOUS-SHELL — le `exit 1` de `refus` n'y tuerait
 # que le sous-shell, et le scan continuerait, silencieux, jusqu'à un vert
@@ -85,11 +138,12 @@ mkdir -p "$SCAN_OUT"
 STAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 BASE_RED="$(printf '%s' "$APIM_BASE" | sed -E 's#://[^[:space:]]*@#://<identifiants masqués>@#g')"
 python3 - "$WORK/lignees.json" "$SCAN_OUT/estate.${ENVIRONMENT}.json" "$WORK/apps-rendu.json" \
-  "$SCAN_OUT/contrats" "$SCAN_OUT/rapport.md" <<PY || refus "ECRITURE : ${SCAN_OUT}/estate.${ENVIRONMENT}.json"
+  "$SCAN_OUT/contrats" "$SCAN_OUT/rapport.md" "$WORK/ambigu.json" <<PY || refus "ECRITURE : ${SCAN_OUT}/estate.${ENVIRONMENT}.json"
 import hashlib, json, os, sys
 lig = json.load(open(sys.argv[1]))
 apps = json.load(open(sys.argv[3])).get("applications") or []
 contrats_dir = sys.argv[4]
+ambigu = json.load(open(sys.argv[6])).get("refus") or []
 
 # geste proposé par verdict de refus — relayé dans rapport.md, cf. task-6-brief.md
 GESTES = {
@@ -100,6 +154,8 @@ GESTES = {
     "VERSION_HORS_REGEXP": "renommer = NOUVELLE publication, pas une migration",
     "CONTRAT_NON_EXTRACTIBLE_API_INACTIVE": "activer au palier, puis rescanner",
     "APP_PROPRIETE_INDIVIDUELLE": "POST /assets/owner avec l'UUID de l'accessProfile",
+    "CLASSIFICATION_UNGOVERNED": "declarer (owner, api) dans le registre de gouvernance (GOVERNANCE_PATH), puis rescanner",
+    "REPO_AMBIGU": "corriger providers.<env>.yml — aucune equipe ne peut etre choisie sans arbitraire",
 }
 
 for l in lig["lignees"]:
@@ -117,23 +173,25 @@ doc = {
   "provenance": {"base": "${BASE_RED}", "env": "${ENVIRONMENT}",
                  "via": "${APIM_EFFECTIVE_VIA}", "scanned_at": "${STAMP}",
                  "sondes": {"preflight": "OK", "apis": 200, "applications": 200,
-                            "archive_zip": "NON_MESURE"}},
+                            "archive_zip": "${ARCHIVE_ZIP}"}},
   "comptes": {"apis": ${N_APIS}, "applications": ${N_APPS},
               "lignees": len(lig["lignees"]), "troncature": "OK"},
   "lignees": lig["lignees"],
   "applications": apps,
   "refus": [ {"objet": l["nom"], "code": l["verdict"]}
-             for l in lig["lignees"] if l["verdict"] != "OK" ],
+             for l in lig["lignees"] if l["verdict"] != "OK" ] + ambigu,
 }
 json.dump(doc, open(sys.argv[2], "w"), ensure_ascii=False, indent=2, sort_keys=True)
 
-# rapport.md — une section par refus rencontré (lignées ET applications), avec
-# le geste proposé et les objets concernés. Rien à écrire n'est pas une erreur :
-# un parc entièrement conforme produit un rapport qui le dit.
+# rapport.md — une section par refus rencontré (lignées, providers ET
+# applications), avec le geste proposé et les objets concernés. Dérivé de
+# doc["refus"] (pas re-dérivé de lig["lignees"]) pour que CLASSIFICATION_UNGOVERNED
+# et REPO_AMBIGU y apparaissent aussi, sans dupliquer la logique. Rien à
+# écrire n'est pas une erreur : un parc entièrement conforme produit un
+# rapport qui le dit.
 refus_lignees = {}
-for l in lig["lignees"]:
-    if l["verdict"] != "OK":
-        refus_lignees.setdefault(l["verdict"], []).append(l["nom"])
+for r in doc["refus"]:
+    refus_lignees.setdefault(r["code"], []).append(r["objet"])
 refus_apps = {}
 for a in apps:
     if a.get("verdict", "OK") != "OK":

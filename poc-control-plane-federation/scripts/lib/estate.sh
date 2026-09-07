@@ -118,3 +118,56 @@ json.dump({"applications": sorted(out, key=lambda x: x["nom"])},
           open(sys.argv[3], "w"), ensure_ascii=False, indent=2, sort_keys=True)
 PY
 }
+
+# estate_gouvernance <registre yaml> <lignees.json> <sortie json>
+#
+# LA POSTURE EST CENTRALE ET OWNER-KEYÉE (ADR-076/092). Le scan ne la DÉCLARE
+# jamais — il constate seulement si la ligne (owner, api) existe au registre.
+# Une lignée absente est refusée à l'apply (CLASSIFICATION_UNGOVERNED) : la
+# rendre OK ici produirait un dépôt mort-né.
+estate_gouvernance(){
+  python3 - "$1" "$2" "$3" <<'GOUV'
+import json, sys, yaml
+reg = yaml.safe_load(open(sys.argv[1])) or {}
+gouv = {(str(e.get("owner") or ""), str(e.get("api") or "")): e
+        for e in (reg.get("apis") or [])}
+d = json.load(open(sys.argv[2]))
+for l in d["lignees"]:
+    if l["verdict"] != "OK":
+        continue                      # un verdict plus grave a déjà tranché
+    e = gouv.get((l["equipe"] or "", l["nom"]))
+    if e is None:
+        l["verdict"] = "CLASSIFICATION_UNGOVERNED"
+    else:
+        l["classification"] = e.get("classification")
+        l["exposure"] = e.get("exposure")
+json.dump(d, open(sys.argv[3], "w"), ensure_ascii=False, indent=2, sort_keys=True)
+GOUV
+}
+
+# estate_repo_ambigu <providers.<env>.yml> <sortie json>
+#
+# Même discipline que team-publish.sh:244 : deux équipes déclarant le MÊME
+# dépôt est un conflit qui ne se tranche pas tout seul. On NOMME, on ne
+# choisit pas. Le filtre `len(set(ts)) > 1` EST la règle : un dépôt à une
+# seule équipe n'est PAS ambigu, et doit rester absent de la sortie (cf. le
+# canari grp/apis-legit de scripts/test-scan-parc.sh, section 6 — sans un
+# dépôt à équipe unique dans le jeu d'essai, une mutation qui retire ce
+# filtre ne rougirait rien).
+estate_repo_ambigu(){
+  python3 - "$1" "$2" <<'AMBI'
+import json, sys, yaml, collections
+d = yaml.safe_load(open(sys.argv[1])) or {}
+par_repo = collections.defaultdict(list)
+for p in (d.get("providers") or []):
+    r = (p.get("repo") or "").strip()
+    t = (p.get("team") or "").strip()
+    if r and t:
+        par_repo[r].append(t)
+out = [{"objet": r, "code": "REPO_AMBIGU",
+        "detail": "declare par " + ", ".join(sorted(set(ts))),
+        "geste": "corriger providers.<env>.yml — aucune equipe ne peut etre choisie sans arbitraire"}
+       for r, ts in sorted(par_repo.items()) if len(set(ts)) > 1]
+json.dump({"refus": out}, open(sys.argv[2], "w"), ensure_ascii=False, indent=2, sort_keys=True)
+AMBI
+}
