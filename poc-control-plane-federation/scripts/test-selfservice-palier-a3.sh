@@ -351,9 +351,28 @@ mutant(){ # <sed-expr> <nom> → $TMP/<nom>.sh ; rc 0 si le mutant diffère et p
   bash -n "$TMP/$2.sh" 2>/dev/null || { bad "A.27 mutant $2 ne parse pas"; return 1; }
   return 0
 }
-# le mutant s'exécute depuis le dossier scripts/ pour retrouver lib/env-chain.sh
-mkdir -p "$TMP/mut/scripts/lib"; cp scripts/lib/env-chain.sh scripts/lib/vault-kv.sh "$TMP/mut/scripts/lib/"
+# le mutant s'exécute depuis le dossier scripts/ pour retrouver ses libs. La
+# liste à copier est DÉRIVÉE des lignes `. "$SELF_DIR/lib/…"` du GATE
+# lui-même — jamais une énumération à jour à la main : une énumération en dur
+# (env-chain.sh, vault-kv.sh) a laissé ce harnais à 183/193 le jour où
+# apim-base.sh a été sourcée par la garde (Task 2, refactor palier-gate) sans
+# qu'on pense à l'ajouter ici. Dériver de la ligne de sourcing réelle ne peut
+# pas l'oublier : sans elle, le GATE lui-même ne tournerait pas.
+mkdir -p "$TMP/mut/scripts/lib"
+GATE_LIBS="$(grep -oE '"\$SELF_DIR/lib/[A-Za-z0-9_.-]+\.sh"' "$GATE" | tr -d '"' | sed 's#.*/##' | sort -u)"
+[ -n "$GATE_LIBS" ] || { echo "!! aucune lib \$SELF_DIR/lib/*.sh trouvée dans $GATE — dérivation cassée, mutants inutilisables"; exit 2; }
+for _gl in $GATE_LIBS; do cp "scripts/lib/$_gl" "$TMP/mut/scripts/lib/$_gl"; done
 run_mut(){ local m="$1"; shift; cp "$TMP/$m.sh" "$TMP/mut/scripts/gate.sh"; GATE_BIN="$TMP/mut/scripts/gate.sh" run_gate "$@"; }
+# run_mut_lib : même arbre "mut/", mais c'est scripts/lib/apim-base.sh qui est
+# mutée et le gate.sh copié qui reste INTACT (A.27vi — la composition de la
+# base a déménagé dans la lib en Task 2 ; muter le gate ne peut plus l'exercer).
+run_mut_lib(){ local m="$1"; shift; cp "$GATE" "$TMP/mut/scripts/gate.sh"; cp "$TMP/$m.sh" "$TMP/mut/scripts/lib/apim-base.sh"; GATE_BIN="$TMP/mut/scripts/gate.sh" run_gate "$@"; }
+mutant_lib(){ # <sed-expr> <nom> → $TMP/<nom>.sh ; mutant de scripts/lib/apim-base.sh
+  sed -E "$1" scripts/lib/apim-base.sh > "$TMP/$2.sh"
+  if cmp -s scripts/lib/apim-base.sh "$TMP/$2.sh"; then bad "A.27 mutation lib $2 NO-OP (l'ancre a bougé)"; return 1; fi
+  bash -n "$TMP/$2.sh" 2>/dev/null || { bad "A.27 mutant lib $2 ne parse pas"; return 1; }
+  return 0
+}
 set_ctl "$CTL_OK"
 if mutant 's@^\[ "\$TC" = 200 \] \|\| refus PALIER_FERME.*$@: # ticket retiré@' m_ticket; then
   run_mut m_ticket int; [ "$(grc)" = 0 ] && ok "A.27i ticket retiré ⇒ le palier int PASSE sur le mutant (le détecteur A.16 verrait rouge)" || bad "A.27i le mutant refuse encore : $(gout | tail -1)"
@@ -379,10 +398,17 @@ if mutant 's@if v and not \(set\(caps.get\(v\) or \[\]\) \& \{"create", "update"
   run_mut m_vsub rec "MANIFEST=$TMP/man-int.yml"; [ "$(grc)" = 0 ] && ok "A.27v sonde vault_sub retirée ⇒ le tenant non porté PASSE sur le mutant" || bad "A.27v le mutant refuse encore : $(gout | tail -1)"
   run_gate rec "MANIFEST=$TMP/man-int.yml"; refus TENANT_NON_PORTE && ok "A.27v' l'original refuse toujours" || bad "A.27v' l'original a dérivé"
 fi
-if mutant 's@^if \[ "\$ENVIRONMENT" = "\$TERMINUS" \]; then$@if false; then@' m_term; then
+# A.27vi — depuis la Task 2 (refactor palier-gate), la comparaison
+# ENVIRONMENT/TERMINUS vit dans scripts/lib/apim-base.sh (apim_base_resolve),
+# plus dans le gate : cette mutation cible donc la LIB (mutant_lib/run_mut_lib),
+# pas le gate. C'est le SEUL des 6 de cette section à avoir dû bouger — les
+# cinq autres visent des contrôles qui sont restés dans le gate lui-même.
+if mutant_lib 's@^  if \[ -n "\$term" \] && \[ "\$envn" = "\$term" \]; then$@  if false; then@' m_term_lib; then
   set_ctl '{"lookup":{"policies":["deploy-banking-demo","operator-deploy","default"]},"caps":{"paths":{"secret/data/stoa/envs/prod/wm-admin":["read"]}},"kv":{"secret/data/stoa/envs/prod/wm-admin":200}}'
-  run_mut m_term prod ADMIN_VIA=proxy-oauth2 "APIM_TERMINUS_BASE=http://prod-gw/rest/apigateway"
-  [ "$(grc)" = 0 ] && [ "$(out_val PALIER_VIA)" = proxy-oauth2 ] && ok "A.27vi position du terminus retirée ⇒ le terminus compose une base PROXY sur le mutant (l'original force direct)" || bad "A.27vi mutant : rc $(grc) via $(out_val PALIER_VIA)"
+  run_mut_lib m_term_lib prod ADMIN_VIA=proxy-oauth2 "APIM_TERMINUS_BASE=http://prod-gw/rest/apigateway"
+  [ "$(grc)" = 0 ] && [ "$(out_val PALIER_VIA)" = proxy-oauth2 ] && ok "A.27vi position du terminus retirée (dans apim-base.sh) ⇒ le terminus compose une base PROXY sur le mutant (l'original force direct)" || bad "A.27vi mutant : rc $(grc) via $(out_val PALIER_VIA)"
+  run_gate prod ADMIN_VIA=proxy-oauth2 "APIM_TERMINUS_BASE=http://prod-gw/rest/apigateway"
+  [ "$(grc)" = 0 ] && [ "$(out_val PALIER_VIA)" = direct ] && ok "A.27vi' l'original (lib intacte) force toujours direct au terminus" || bad "A.27vi' l'original a dérivé : rc $(grc) via $(out_val PALIER_VIA)"
 fi
 
 echo "── A.30–A.37 (A4) §2bis : la déclaration déployeur, vérifiée sur le TOKEN, AVANT les capacités et le ticket ──"
@@ -518,7 +544,11 @@ L_SHOW=$(line_after "${L_LOGIN:-0}" 'git show "origin/main:${PFX}${f}"' "$TMP/jf
 L_ABS=$(line_after "${L_LOGIN:-0}" 'REFUS: GATE_ABSENTE' "$TMP/jf.code")
 L_GATE=$(line_after "${L_LOGIN:-0}" 'bash "$GATE_DIR/scripts/selfservice-palier-gate.sh"' "$TMP/jf.code")
 L_READ=$(line_after "${L_LOGIN:-0}" "while IFS='=' read -r k v; do" "$TMP/jf.code")
-L_PF=$(line_after "${L_LOGIN:-0}" 'préflight de joignabilité :' "$TMP/jf.code")
+# Ancre du préflight : depuis son extraction dans ci/lib/preflight.sh (une
+# implémentation, deux appelants), le Jenkinsfile n'en porte plus l'echo mais
+# l'APPEL. La propriété gardée est INCHANGÉE — la garde du palier doit rester
+# AVANT tout contact avec la gateway.
+L_PF=$(line_after "${L_LOGIN:-0}" 'apim_preflight "$APIM_API_BASE"' "$TMP/jf.code")
 L_TTL=$(line_after "${L_LOGIN:-0}" 'vault_token_ttl' "$TMP/jf.code")
 L_CONV=$(line_after "${L_LOGIN:-0}" 'ansible/selfservice-app.yml' "$TMP/jf.code")
 L_VERIFY=$(line_after "${L_LOGIN:-0}" 'ansible/selfservice-app-verify.yml' "$TMP/jf.code")
@@ -530,7 +560,7 @@ ordre_verdict(){ # <fichier code> → OK | KO: …
   l_show=$(line_after "$l_login" 'git show "origin/main:${PFX}${f}"' "$f"); [ -n "$l_show" ] || { echo "KO: extraction git show origin/main absente"; return; }
   l_gate=$(line_after "$l_login" 'bash "$GATE_DIR/scripts/selfservice-palier-gate.sh"' "$f"); [ -n "$l_gate" ] || { echo "KO: garde absente (aucun appel de selfservice-palier-gate.sh)"; return; }
   l_read=$(line_after "$l_login" "while IFS='=' read -r k v; do" "$f"); [ -n "$l_read" ] || { echo "KO: relecture de PALIER_OUT absente"; return; }
-  l_pf=$(line_after "$l_login" 'préflight de joignabilité :' "$f"); [ -n "$l_pf" ] || { echo "KO: préflight non annoncé"; return; }
+  l_pf=$(line_after "$l_login" 'apim_preflight "$APIM_API_BASE"' "$f"); [ -n "$l_pf" ] || { echo "KO: préflight non appelé (ci/lib/preflight.sh)"; return; }
   l_ttl=$(line_after "$l_login" 'vault_token_ttl' "$f"); [ -n "$l_ttl" ] || { echo "KO: TTL non relu"; return; }
   l_conv=$(line_after "$l_login" 'ansible/selfservice-app.yml' "$f"); l_verify=$(line_after "$l_login" 'ansible/selfservice-app-verify.yml' "$f"); l_cp=$(line_after "$l_login" 'cp .a2-reference-sha .a2-applied-sha' "$f")
   [ -n "$l_conv" ] && [ -n "$l_verify" ] && [ -n "$l_cp" ] || { echo "KO: converge/verify/annonce A2 introuvables après le login"; return; }
@@ -692,7 +722,7 @@ grep -q '^vault_token_ttl()' "$TMP/lib.code" && ok "E.6 la fonction est définie
 
 # Le compte des contrôles est lui-même un contrôle : une section sautée (stub
 # mort, chemin absent) ne doit pas passer pour un vert plus court.
-EXPECTED_CHECKS=193
+EXPECTED_CHECKS=194
 TOTAL=$((PASS+FAIL))
 [ "$TOTAL" -eq "$((EXPECTED_CHECKS-1))" ] \
   && ok "$((TOTAL+1)) contrôles exécutés = $EXPECTED_CHECKS attendus (aucune section sautée)" \
