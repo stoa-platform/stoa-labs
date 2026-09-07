@@ -36,8 +36,10 @@ wm_admin_cleanup(){ [ -n "${WM_HDR:-}" ] && rm -f "$WM_HDR"; }
 wm_get(){
   local path="$1" out="$2" ca=()
   [ -n "${VAULT_CACERT:-${LABCTL_CA_FILE:-}}" ] && ca=(--cacert "${VAULT_CACERT:-$LABCTL_CA_FILE}")
+  # `${ca[@]+"${ca[@]}"}` : un tableau VIDE sous `set -u` en bash 3.2 est « unbound »
+  # (même motif que scripts/selfservice-palier-gate.sh:165).
   curl -s -m "${WM_TIMEOUT:-30}" -o "$out" -w '%{http_code}' \
-    -H @"$WM_HDR" "${ca[@]}" "${APIM_BASE}${path}"
+    -H @"$WM_HDR" ${ca[@]+"${ca[@]}"} "${APIM_BASE}${path}"
 }
 
 wm_preflight(){

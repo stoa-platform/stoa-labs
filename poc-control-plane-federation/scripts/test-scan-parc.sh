@@ -246,5 +246,37 @@ cmp -s "$TMP/lignees.json" "$TMP/l3.json" \
   && ok "rendu DÉTERMINISTE (cmp -s) — diff devient l'outil de suivi du parc" \
   || ko "deux rendus du même parc diffèrent"
 
+echo "== 3. garde de troncature : SCAN_PARC_ATTENDU =="
+SCAN="$REPO/scripts/scan-parc.sh"
+scan(){ env ENVIRONMENT=dev ADMIN_VIA=direct APIM_TERMINUS=prod APIM_API_BASE="$BASE" \
+  APIM_AUTH_MODE=basic WM_USER=adm WM_PASSWORD=s3cr3t SCAN_OUT="$TMP/out" "$@" bash "$SCAN"; }
+
+rm -rf "$TMP/out"; mkdir -p "$TMP/out"
+scan >"$TMP/s1.out" 2>"$TMP/s1.err"
+grep -q '^REFUS: SCAN_PARC_ATTENDU_REQUIS' "$TMP/s1.err" \
+  && ok "SCAN_PARC_ATTENDU absent ⇒ refus nommé (aucun défaut deviné)" \
+  || ko "le scan a tourné sans contre-compte : $(tail -2 "$TMP/s1.err")"
+[ ! -f "$TMP/out/estate.dev.json" ] && ok "aucun inventaire écrit sur le chemin de refus" \
+  || ko "un estate.dev.json a été écrit malgré le refus"
+
+scan SCAN_PARC_ATTENDU=99:1 >"$TMP/s2.out" 2>"$TMP/s2.err"
+grep -q '^REFUS: PARC_POSSIBLEMENT_TRONQUE' "$TMP/s2.err" \
+  && ok "contre-compte faux (99 attendues, 10 rendues) ⇒ PARC_POSSIBLEMENT_TRONQUE" \
+  || ko "compte divergent accepté : $(tail -2 "$TMP/s2.err")"
+
+# le jeu d'essai porte DIX entrées d'API (APIS ci-dessus) et UNE application
+# (endpoint /applications du faux wM) — compté à la main, cf. rulings-a-porter.md R1.
+scan SCAN_PARC_ATTENDU=10:1 >"$TMP/s3.out" 2>"$TMP/s3.err"
+[ -f "$TMP/out/estate.dev.json" ] \
+  && ok "contre-compte juste ⇒ l'inventaire est écrit" || ko "rien écrit : $(tail -3 "$TMP/s3.err")"
+python3 -c '
+import json,sys
+d=json.load(open(sys.argv[1]))
+sys.exit(0 if d.get("schema")==1 and d["provenance"]["env"]=="dev" else 1)' "$TMP/out/estate.dev.json" \
+  && ok "estate.dev.json porte schema:1 et sa provenance" || ko "en-tête d'inventaire incorrect"
+grep -q 'SECRET-QUI-NE-DOIT-PAS-FUIR' "$TMP/out/estate.dev.json" \
+  && ko "FUITE : la valeur d'un identifiant d'application est dans l'inventaire" \
+  || ok "aucune valeur d'identifiant dans l'inventaire (NON_TRANSPORTEE)"
+
 printf '\n%d ✅  %d ❌\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
