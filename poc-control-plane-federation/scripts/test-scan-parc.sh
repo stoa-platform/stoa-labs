@@ -133,5 +133,97 @@ bash -c '. "'"$LIBC"'" && wm_diag_401 "'"$TMP"'/401.json"' 2>&1 | grep -qi "droi
   && ok "401 d'AUTORISATION : le diagnostic demande les droits de lecture, pas un mot de passe" \
   || ko "le diagnostic ne distingue pas les deux causes d'un 401"
 
+echo "== 2. estate.sh : normalisation, lignée, verdicts =="
+LIBE="$REPO/scripts/lib/estate.sh"
+curl -s -H "Authorization: Basic ok" "$BASE/apis" > "$TMP/apis.json"
+bash -c '. "'"$LIBE"'" && estate_from_apis "'"$TMP"'/apis.json" "'"$TMP"'/lignees.json"' 2>"$TMP/e.err"
+verdict(){ python3 -c '
+import json,sys
+d=json.load(open(sys.argv[1]))
+for l in d["lignees"]:
+    if l["nom"]==sys.argv[2]: print(l["verdict"]); break
+else: print("ABSENTE")' "$TMP/lignees.json" "$1"; }
+
+[ "$(verdict paiements)" = "LIGNEE_PARTIELLEMENT_ETRANGERE" ] \
+  && ok "lignée mixte (v1.0.1 en Default) ⇒ LIGNEE_PARTIELLEMENT_ETRANGERE, pas OK sur v1.0.0" \
+  || ko "paiements : verdict '$(verdict paiements)'"
+[ "$(verdict virements)" = "API_MULTI_EQUIPES" ] \
+  && ok "deux équipes RÉELLES ⇒ API_MULTI_EQUIPES (l'outil refuse de trancher)" \
+  || ko "virements : verdict '$(verdict virements)'"
+[ "$(verdict legacy_API)" = "NOM_HORS_REGEXP" ] \
+  && ok "nom hors ^[a-z0-9][a-z0-9-]{1,30}$ ⇒ NOM_HORS_REGEXP" || ko "legacy_API : '$(verdict legacy_API)'"
+[ "$(verdict offline-api)" = "CONTRAT_NON_EXTRACTIBLE_API_INACTIVE" ] \
+  && ok "isActive false ⇒ CONTRAT_NON_EXTRACTIBLE_API_INACTIVE" || ko "offline-api : '$(verdict offline-api)'"
+[ "$(verdict orpheline)" = "API_NON_APPROPRIEE" ] \
+  && ok "teams ⊆ profils système ⇒ API_NON_APPROPRIEE" || ko "orpheline : '$(verdict orpheline)'"
+
+# les teams se lisent au niveau de l'ENTRÉE, jamais dans api (api.teams est null en 10.15)
+python3 - "$TMP/apis.json" <<'PY' > "$TMP/nullteams.json"
+import json,sys
+d=json.load(open(sys.argv[1]))
+for r in d["apiResponse"]: r["api"]["teams"]=None
+json.dump(d,open(sys.stdout.fileno(),"w"))
+PY
+bash -c '. "'"$LIBE"'" && estate_from_apis "'"$TMP"'/nullteams.json" "'"$TMP"'/l2.json"' 2>/dev/null
+python3 -c '
+import json,sys
+a=json.load(open(sys.argv[1]))["lignees"]; b=json.load(open(sys.argv[2]))["lignees"]
+sys.exit(0 if a==b else 1)' "$TMP/lignees.json" "$TMP/l2.json" \
+  && ok "api.teams=null ne change RIEN : les teams sont lues au niveau de l'entrée apiResponse" \
+  || ko "la lib lit api.teams — elle sera aveugle sur la 10.15 réelle"
+
+# api.teams=null est un vert VACANT pour la priorité de lecture (api.teams n'y est
+# jamais VRAI-mais-faux, donc M1 du brief — inverser l'ordre de la ligne `or` — ne
+# rougissait RIEN : api.get("teams") vaut toujours None dans le jeu d'essai, donc
+# le repli sur r.get("teams") se déclenchait quel que soit l'ordre. Ici, api.teams
+# porte une valeur VRAIE mais TROMPEUSE (une équipe système seule) alors que
+# l'entrée porte la vraie équipe ; seule la lecture au niveau ENTRÉE en priorité
+# retombe sur OK/toto.
+python3 - "$TMP/apis.json" <<'PY' > "$TMP/apiteamsbogus.json"
+import json,sys
+d=json.load(open(sys.argv[1]))
+for r in d["apiResponse"]:
+    if r["api"]["apiName"] == "comptes":
+        r["api"]["teams"] = [{"id": "u-Administrators", "name": "Administrators"}]
+json.dump(d,open(sys.stdout.fileno(),"w"))
+PY
+bash -c '. "'"$LIBE"'" && estate_from_apis "'"$TMP"'/apiteamsbogus.json" "'"$TMP"'/l4.json"' 2>/dev/null
+[ "$(python3 -c '
+import json,sys
+d=json.load(open(sys.argv[1]))
+for l in d["lignees"]:
+    if l["nom"]=="comptes": print(l["verdict"]); break
+else: print("ABSENTE")' "$TMP/l4.json")" = "OK" ] \
+  && ok "api.teams TROMPEUR (équipe système seule) ignoré : comptes reste OK/toto via l'entrée" \
+  || ko "la lib a suivi api.teams au lieu de l'entrée apiResponse — priorité de lecture inversée"
+
+# isActive="true" (chaîne) est absent du jeu d'essai (toujours un booléen JSON
+# réel) : M3 du brief — bool(api.get("isActive")) au lieu de `is True` — ne
+# rougissait RIEN non plus, bool(True)==True comme (True is True). Ici la
+# valeur est la CHAÎNE "true" : le booléen JSON strict l'exige inactive.
+python3 - "$TMP/apis.json" <<'PY' > "$TMP/isactivestring.json"
+import json,sys
+d=json.load(open(sys.argv[1]))
+for r in d["apiResponse"]:
+    if r["api"]["apiName"] == "comptes":
+        r["api"]["isActive"] = "true"
+json.dump(d,open(sys.stdout.fileno(),"w"))
+PY
+bash -c '. "'"$LIBE"'" && estate_from_apis "'"$TMP"'/isactivestring.json" "'"$TMP"'/l5.json"' 2>/dev/null
+[ "$(python3 -c '
+import json,sys
+d=json.load(open(sys.argv[1]))
+for l in d["lignees"]:
+    if l["nom"]=="comptes": print(l["verdict"]); break
+else: print("ABSENTE")' "$TMP/l5.json")" = "CONTRAT_NON_EXTRACTIBLE_API_INACTIVE" ] \
+  && ok "isActive=\"true\" (chaîne) ⇒ inactif quand même (booléen JSON strict)" \
+  || ko "la lib accepte la chaîne \"true\" comme active — booléen non strict"
+
+# déterminisme : deux rendus identiques octet pour octet
+bash -c '. "'"$LIBE"'" && estate_from_apis "'"$TMP"'/apis.json" "'"$TMP"'/l3.json"' 2>/dev/null
+cmp -s "$TMP/lignees.json" "$TMP/l3.json" \
+  && ok "rendu DÉTERMINISTE (cmp -s) — diff devient l'outil de suivi du parc" \
+  || ko "deux rendus du même parc diffèrent"
+
 printf '\n%d ✅  %d ❌\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
