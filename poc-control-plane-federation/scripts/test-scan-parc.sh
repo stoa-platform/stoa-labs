@@ -25,6 +25,9 @@ APIS = [
   ("g-off-100", "offline-api", "1.0.0", False, ["toto"]),                      # inactive
   ("g-orp-100", "orpheline", "1.0.0", True,  ["Default", "Administrators"]),   # non appropriée
   ("g-cpt-100", "comptes", "1.0.0", True,  ["toto", "Administrators"]),        # lignée PROPRE (R1)
+  ("g-vie-100", "vieille-api", "v1", True, ["toto", "Administrators"]),        # version hors regex
+  ("g-gel-100", "gel-fonds", "1.0.0", True,  ["toto", "Administrators"]),      # v1 réelle, active
+  ("g-gel-110", "gel-fonds", "1.1.0", False, ["Default", "Administrators"]),   # v2 étrangère ET inactive — priorité
 ]
 def env(a):
     i, n, v, act, teams = a
@@ -156,6 +159,24 @@ else: print("ABSENTE")' "$TMP/lignees.json" "$1"; }
   && ok "isActive false ⇒ CONTRAT_NON_EXTRACTIBLE_API_INACTIVE" || ko "offline-api : '$(verdict offline-api)'"
 [ "$(verdict orpheline)" = "API_NON_APPROPRIEE" ] \
   && ok "teams ⊆ profils système ⇒ API_NON_APPROPRIEE" || ko "orpheline : '$(verdict orpheline)'"
+
+# fix round 1 — constat 1 : VERSION_HORS_REGEXP n'avait AUCUNE couverture (le
+# relecteur a supprimé toute la branche RE_VER, la suite restait 15/0). "v1" ne
+# matche pas ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ; nom et équipe valides par ailleurs —
+# seul le défaut de version est en cause, aucun autre verdict ne peut matcher avant.
+[ "$(verdict vieille-api)" = "VERSION_HORS_REGEXP" ] \
+  && ok "version 'v1' hors ^[0-9]+\\.[0-9]+(\\.[0-9]+)?$ ⇒ VERSION_HORS_REGEXP" \
+  || ko "vieille-api : verdict '$(verdict vieille-api)'"
+
+# fix round 1 — constat 2 : rien ne gardait l'ordre de gravité (le relecteur a
+# interverti LIGNEE_PARTIELLEMENT_ETRANGERE et CONTRAT_NON_EXTRACTIBLE_API_INACTIVE,
+# la suite restait 15/0). gel-fonds combine les DEUX fautes sur sa v1.1.0 : équipe
+# Default+Administrators (donc ÉTRANGÈRE — aucune équipe réelle sur cette version)
+# ET isActive=false (donc aussi INACTIVE). Le verdict attendu est
+# LIGNEE_PARTIELLEMENT_ETRANGERE : cette faute est plus grave, elle prime.
+[ "$(verdict gel-fonds)" = "LIGNEE_PARTIELLEMENT_ETRANGERE" ] \
+  && ok "v1.1.0 étrangère ET inactive ⇒ LIGNEE_PARTIELLEMENT_ETRANGERE prime sur CONTRAT_NON_EXTRACTIBLE_API_INACTIVE" \
+  || ko "gel-fonds : verdict '$(verdict gel-fonds)'"
 
 # les teams se lisent au niveau de l'ENTRÉE, jamais dans api (api.teams est null en 10.15)
 python3 - "$TMP/apis.json" <<'PY' > "$TMP/nullteams.json"
