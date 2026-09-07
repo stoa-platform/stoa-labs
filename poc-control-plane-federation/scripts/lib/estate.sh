@@ -67,16 +67,31 @@ PY
 
 # estate_applications <liste JSON> <répertoire des détails> <sortie JSON>
 #
-# AUCUNE VALEUR D'IDENTIFIANT NE TRAVERSE. La 10.15 masque l'apiAccessKey à
-# tout lecteur qui n'est pas l'owner (32 astérisques) — écrire ce masque serait
-# un vert menteur. Et une clé d'API n'a de toute façon rien à faire dans Git :
-# le manifeste porte le CHEMIN Vault, jamais la valeur.
-# L'IP, elle, n'est pas un secret : elle est conservée.
+# AUCUNE VALEUR D'IDENTIFIANT NE TRAVERSE, PAR DÉFAUT-DENY. Le vocabulaire réel
+# des identifiers sur la 10.15 est {httpsCertificate, ipAddressRange,
+# openIdClaims, token} (mesuré, docs/superpowers/specs/2026-09-03-a6-repli-par
+# -pr-design.md point 9 — exactement `ss_ids_now` du rôle apim_selfservice_app,
+# main.yml:370-379). Fix round 1 (constat 2) : une PREMIÈRE version de cette
+# fonction masquait une liste {apiKey, oauth2Token, jwt, certificate,
+# sslCertificate} qui ne correspond à AUCUN de ces noms — décorative sur le
+# produit réel, un `token` inconnu de la liste serait tombé dans le `else` et
+# sa VALEUR aurait été écrite en clair dans l'inventaire. D'où l'inversion :
+# GARDE_VALEUR est une ALLOWLIST de ce qui n'est PAS un secret — seule
+# `ipAddressRange` en fait partie (une plage d'IP identifie un réseau, pas un
+# secret). Tout type absent de cette liste est masqué, y compris un type
+# qu'aucun rôle du dépôt n'a jamais prévu : un identifiant inconnu ne doit
+# JAMAIS fuir par défaut.
+#
+# `accessTokens` (et son `apiAccessKey_credentials.apiAccessKey`, où vit la
+# VRAIE clé d'API — pas dans `identifiers`, une deuxième erreur du même
+# brief) N'EST NI LU NI ÉCRIT ICI : le mot `accessTokens` n'apparaît nulle
+# part dans cette fonction. Une clé d'API n'a de toute façon rien à faire
+# dans Git : le manifeste porte le CHEMIN Vault, jamais la valeur.
 estate_applications(){
   local src="$1" det="$2" out="$3"
   python3 - "$src" "$det" "$out" <<'PY'
 import json, os, sys
-SANS_VALEUR = {"apiKey", "oauth2Token", "jwt", "certificate", "sslCertificate"}
+GARDE_VALEUR = {"ipAddressRange"}  # tout le reste est masqué, PAR DÉFAUT
 liste = json.load(open(sys.argv[1])) or {}
 out = []
 for a in (liste.get("applications") or []):
@@ -86,12 +101,12 @@ for a in (liste.get("applications") or []):
     ids = []
     for i in (det.get("identifiers") or []):
         k = i.get("key") or ""
-        if k in SANS_VALEUR:
-            ids.append({"type": k, "valeur":
-                        "CLE_MASQUEE_PROPRIETAIRE_UTILISATEUR" if ownert == "user" else "NON_TRANSPORTEE"})
-        else:
+        if k in GARDE_VALEUR:
             v = i.get("value")
             ids.append({"type": k, "valeurs": v if isinstance(v, list) else [v]})
+        else:
+            ids.append({"type": k, "valeur":
+                        "CLE_MASQUEE_PROPRIETAIRE_UTILISATEUR" if ownert == "user" else "NON_TRANSPORTEE"})
     out.append({
         "nom": det.get("name") or a.get("name") or "", "id": det.get("id") or a.get("id") or "",
         "ownerType": ownert, "owner": det.get("owner") or "",

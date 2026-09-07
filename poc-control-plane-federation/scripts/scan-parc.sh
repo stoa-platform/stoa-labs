@@ -51,7 +51,17 @@ estate_applications "$WORK/apps.json" "$WORK/appdet" "$WORK/apps-rendu.json" || 
 # contrats : apiDefinition de GET /apis/{id}, pour les LIGNÉES OK SEULEMENT.
 # Reconstruit à chaque scan : un ancien contrat d'une lignée qui n'est plus OK
 # ne doit pas survivre (sinon un verdict dégradé laisse un vert périmé sur disque).
-rm -rf "$SCAN_OUT/contrats"; mkdir -p "$SCAN_OUT/contrats"
+#
+# NE JAMAIS `rm -rf` UN RÉPERTOIRE FOURNI PAR L'APPELANT. SCAN_OUT n'est
+# validé que non-vide (l.18) : mesuré (fix round 1, constat 1) qu'un
+# SCAN_OUT=. avec un fichier personnel dans contrats/ était DÉTRUIT EN
+# SILENCE par le `rm -rf` précédent. On ne supprime QUE ce que CE script
+# écrit lui-même (*.openapi.yaml) ; tout le reste est un refus nommé, sans
+# rien toucher — la même discipline que le reste de l'outil.
+mkdir -p "$SCAN_OUT/contrats"
+ETRANGER="$(find "$SCAN_OUT/contrats" -mindepth 1 -maxdepth 1 ! -name '*.openapi.yaml' | head -1)"
+[ -z "$ETRANGER" ] || refus "CONTRATS_DIR_ETRANGER : ${SCAN_OUT}/contrats contient '${ETRANGER}', qui n'est pas un contrat produit par ce scan (*.openapi.yaml) — rien n'est supprimé, rien n'est écrit. Vider ce répertoire soi-même si son contenu est bien celui d'un scan précédent."
+rm -f "$SCAN_OUT/contrats/"*.openapi.yaml
 # NE PAS piper vers `while read` : sur bash 3.2 sans `lastpipe`, le corps du
 # `while` tournerait dans un SOUS-SHELL — le `exit 1` de `refus` n'y tuerait
 # que le sous-shell, et le scan continuerait, silencieux, jusqu'à un vert

@@ -34,6 +34,17 @@ def env(a):
     return {"api": {"id": i, "apiName": n, "apiVersion": v, "isActive": act},
             "responseStatus": "SUCCESS",
             "teams": [{"id": "u-"+t, "name": t} for t in teams]}
+# vocabulaire RÉEL des identifiers (mesuré, cf. estate.sh:estate_applications) :
+# {httpsCertificate, ipAddressRange, openIdClaims, token}. Le canari
+# CANARI-CLE-INCONNUE prouve le défaut-deny : un type que PERSONNE n'a prévu
+# doit être masqué comme les autres, jamais transporté.
+IDENTIFIERS = [
+    {"key": "token", "name": "app-front", "value": ["CANARI-TOKEN-NE-DOIT-PAS-FUIR"]},
+    {"key": "openIdClaims", "name": "app-front", "value": ["CANARI-CLAIMS-NE-DOIT-PAS-FUIR"]},
+    {"key": "httpsCertificate", "name": "app-front-exp-20270101", "value": ["CANARI-CERT-NE-DOIT-PAS-FUIR"]},
+    {"key": "ipAddressRange", "name": "app-front", "value": ["10.42.0.1-10.42.0.1"]},
+    {"key": "coupon-fidelite", "name": "app-front", "value": ["CANARI-CLE-INCONNUE-NE-DOIT-PAS-FUIR"]},
+]
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def _send(self, code, obj=None):
@@ -55,9 +66,17 @@ class H(BaseHTTPRequestHandler):
             gid = p.rsplit("/", 1)[1]
             for a in APIS:
                 if a[0] == gid:
-                    e = env(a); e["api"]["apiDefinition"] = {
-                        "openapi": "3.0.1", "info": {"title": a[1], "version": a[2]},
-                        "paths": {"/x": {"get": {"responses": {"200": {"description": "OK"}}}}}}
+                    e = env(a)
+                    # bascule pilotée par fichier (constat 3, fix round 1) : une
+                    # lignée OK dont l'apiDefinition disparaît côté gateway doit
+                    # faire refuser CONTRAT_ABSENT — sans redémarrer le serveur.
+                    flag = os.environ.get("FAIL_APIDEF_FLAG", "")
+                    if flag and os.path.exists(flag) and gid == os.environ.get("FAIL_APIDEF_GUID", ""):
+                        e["api"]["apiDefinition"] = None
+                    else:
+                        e["api"]["apiDefinition"] = {
+                            "openapi": "3.0.1", "info": {"title": a[1], "version": a[2]},
+                            "paths": {"/x": {"get": {"responses": {"200": {"description": "OK"}}}}}}
                     return self._send(200, {"apiResponse": e})
             return self._send(404)
         if p.endswith("/applications"):
@@ -67,12 +86,17 @@ class H(BaseHTTPRequestHandler):
                 "id": "app-1", "name": "app-front", "owner": "toto", "ownerType": "team",
                 "teams": [{"name": "toto"}],
                 "consumingAPIs": ["g-pai-100"],
-                "identifiers": [{"key": "apiKey", "value": "SECRET-QUI-NE-DOIT-PAS-FUIR"},
-                                {"key": "ip", "value": ["10.0.0.0/8"]}]}]})
+                "identifiers": IDENTIFIERS,
+                # NE DOIT JAMAIS ÊTRE LU : la vraie clé d'API vit ici sur la
+                # 10.15 réelle, pas dans `identifiers` (cf. estate.sh). Présent
+                # dans la fixture pour PROUVER que rien ne le recopie.
+                "accessTokens": {"apiAccessKey_credentials": {
+                    "apiAccessKey": "CANARI-ACCESSTOKENS-NE-DOIT-JAMAIS-FUIR"}}}]})
         return self._send(404)
 HTTPServer(("127.0.0.1", int(os.environ["PORT"])), H).serve_forever()
 PY
-PORT="$PORT" python3 "$TMP/fakewm.py" & PID=$!
+PORT="$PORT" FAIL_APIDEF_FLAG="$TMP/fail-apidef.flag" FAIL_APIDEF_GUID="g-cpt-100" \
+  python3 "$TMP/fakewm.py" & PID=$!
 for _ in $(seq 1 50); do
   curl -s -o /dev/null "http://127.0.0.1:$PORT/apis" && break; sleep 0.1
 done
@@ -274,11 +298,37 @@ import json,sys
 d=json.load(open(sys.argv[1]))
 sys.exit(0 if d.get("schema")==1 and d["provenance"]["env"]=="dev" else 1)' "$TMP/out/estate.dev.json" \
   && ok "estate.dev.json porte schema:1 et sa provenance" || ko "en-tête d'inventaire incorrect"
-grep -q 'SECRET-QUI-NE-DOIT-PAS-FUIR' "$TMP/out/estate.dev.json" \
-  && ko "FUITE : la valeur d'un identifiant d'application est dans l'inventaire" \
-  || ok "aucune valeur d'identifiant dans l'inventaire (NON_TRANSPORTEE)"
+# les CINQ canaris de identifiers (token/openIdClaims/httpsCertificate/clé
+# inconnue — tous masqués — PLUS ipAddressRange, qui elle DOIT apparaître :
+# ce n'est pas un secret) et le canari accessTokens (jamais lu nulle part).
+grep -qE 'CANARI-(TOKEN|CLAIMS|CERT|CLE-INCONNUE|ACCESSTOKENS)-NE-DOIT' "$TMP/out/estate.dev.json" \
+  && ko "FUITE : la valeur d'un identifiant (ou accessTokens) est dans l'inventaire" \
+  || ok "aucune valeur d'identifiant masqué dans l'inventaire (défaut-deny)"
+grep -q '10.42.0.1-10.42.0.1' "$TMP/out/estate.dev.json" \
+  && ok "ipAddressRange, seule valeur non masquée, EST dans l'inventaire (ce n'est pas un secret)" \
+  || ko "ipAddressRange a disparu — le défaut-deny masque trop"
+grep -q 'accessTokens' "$TMP/out/estate.dev.json" \
+  && ko "FUITE DE STRUCTURE : le mot accessTokens apparaît dans l'inventaire — il ne doit JAMAIS être lu" \
+  || ok "accessTokens n'apparaît nulle part dans l'inventaire (jamais lu)"
 
 echo "== 4. applications, contrats, rapport =="
+# un fichier ÉTRANGER (pas produit par le scan) dans contrats/ : refus nommé,
+# fichier INTACT, rien écrit. Preuve directe du constat 1 (fix round 1) —
+# SCAN_OUT n'est validé QUE non-vide ; un SCAN_OUT=. avec un fichier
+# personnel dans contrats/ était détruit en silence par l'ancien `rm -rf`.
+rm -rf "$TMP/out"; mkdir -p "$TMP/out/contrats"
+echo "des notes personnelles, pas un contrat" > "$TMP/out/contrats/mon-fichier-perso.txt"
+scan SCAN_PARC_ATTENDU=10:1 >"$TMP/s4pre.out" 2>"$TMP/s4pre.err"
+grep -q '^REFUS: CONTRATS_DIR_ETRANGER' "$TMP/s4pre.err" \
+  && ok "un fichier étranger dans contrats/ ⇒ refus nommé" \
+  || ko "aucun refus CONTRATS_DIR_ETRANGER : $(tail -3 "$TMP/s4pre.err")"
+[ -f "$TMP/out/contrats/mon-fichier-perso.txt" ] \
+  && ok "le fichier étranger est INTACT (rien détruit)" \
+  || ko "DESTRUCTION : le fichier étranger a disparu"
+[ ! -f "$TMP/out/estate.dev.json" ] \
+  && ok "aucun inventaire écrit à cause du fichier étranger" \
+  || ko "un estate.dev.json a été écrit malgré le refus"
+
 # comptes, pas paiements : cf. rulings-a-porter.md R1. paiements est
 # LIGNEE_PARTIELLEMENT_ETRANGERE (v1.0.1 en Default) — elle ne produit AUCUN
 # contrat, c'est correct ; comptes est la seule lignée OK du jeu d'essai.
@@ -288,10 +338,17 @@ import json,sys
 a=json.load(open(sys.argv[1]))["applications"][0]
 ids={i["type"]: i for i in a["identifiants"]}
 assert a["ownerType"]=="team" and a["owner"]=="toto", a
-assert ids["apiKey"]["valeur"]=="NON_TRANSPORTEE", ids
-assert ids["ip"]["valeurs"]==["10.0.0.0/8"], ids
+# vocabulaire RÉEL : token/openIdClaims/httpsCertificate masqués (allowlist
+# GARDE_VALEUR = {ipAddressRange} seule) ; une clé JAMAIS PRÉVUE par aucun
+# rôle du dépôt (coupon-fidelite) doit AUSSI être masquée — cest la preuve du
+# défaut-deny (constat 2, fix round 1) : sans ce cas, une inversion de garde
+# ne rougirait rien.
+for k in ("token", "openIdClaims", "httpsCertificate", "coupon-fidelite"):
+    assert ids[k]["valeur"]=="NON_TRANSPORTEE", (k, ids[k])
+assert ids["ipAddressRange"]["valeurs"]==["10.42.0.1-10.42.0.1"], ids
+assert "accessTokens" not in a, "accessTokens recopié dans l'\''application rendue"
 ' "$TMP/out/estate.dev.json" \
-  && ok "application : owner/ownerType lus, clé NON_TRANSPORTEE, IP conservée (ce n'est pas un secret)" \
+  && ok "application : owner/ownerType lus, tout masqué SAUF ipAddressRange, clé inconnue masquée aussi (défaut-deny)" \
   || ko "forme de l'application incorrecte"
 
 [ -f "$TMP/out/contrats/comptes-1.0.0.openapi.yaml" ] \
@@ -320,6 +377,26 @@ assert vu, "lignée comptes absente de l'\''inventaire"
 
 grep -q 'API_MULTI_EQUIPES' "$TMP/out/rapport.md" && grep -q 'assign-api-team.sh' "$TMP/out/rapport.md" \
   && ok "rapport.md nomme les refus ET le geste proposé" || ko "rapport.md incomplet"
+
+echo "== 5. fail-closed : CONTRAT_ABSENT (apiDefinition disparue) ne laisse rien =="
+# comptes est la seule lignée OK : sa forcer apiDefinition à disparaître côté
+# gateway doit faire refuser CONTRAT_ABSENT, SANS ÉCRIRE d'estate.dev.json.
+# C'est la preuve directe de la classe de bug du sous-shell (fix round 1,
+# constat 3) : `python3 ... | while read` avale le `exit 1` de `refus()`
+# sur bash 3.2 (pas de lastpipe) — le mutant ci-dessous le remet en place.
+rm -rf "$TMP/out"
+: > "$TMP/fail-apidef.flag"
+scan SCAN_PARC_ATTENDU=10:1 >"$TMP/s5.out" 2>"$TMP/s5.err"
+RC5=$?
+rm -f "$TMP/fail-apidef.flag"
+[ "$RC5" -ne 0 ] && ok "CONTRAT_ABSENT ⇒ le scan sort en échec (rc=${RC5})" \
+  || ko "le scan a réussi malgré une apiDefinition absente (rc=0)"
+grep -q '^REFUS: CONTRAT_ABSENT' "$TMP/s5.err" \
+  && ok "le refus CONTRAT_ABSENT est nommé sur stderr" \
+  || ko "aucun refus CONTRAT_ABSENT : $(tail -3 "$TMP/s5.err")"
+[ ! -f "$TMP/out/estate.dev.json" ] \
+  && ok "aucun estate.dev.json écrit malgré le refus survenu en cours de boucle" \
+  || ko "un estate.dev.json a été écrit malgré CONTRAT_ABSENT (fail-open)"
 
 printf '\n%d ✅  %d ❌\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
