@@ -11,6 +11,25 @@ set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 refus(){ echo "REFUS: $*" >&2; exit 1; }
 
+# ── LES DONNÉES DU PARC COMPOSENT DES CHEMINS DE FICHIER ────────────────────
+# Les deux revues précédentes ont cherché l'attaquant du côté de SCAN_OUT.
+# Il vient du PARC SCANNÉ : `apiName`, `apiVersion`, l'`id` d'une API et
+# l'`id` d'une application sont des chaînes rendues par la gateway, et
+# toutes les quatre composent un chemin ici. Mesuré sur ce script AVANT
+# correctif, chaque fois avec rc=0 et « inventaire écrit » — donc EN SILENCE :
+#
+#   apiName='../../PRECIEUX'  ⇒ rm de $SCAN_OUT/contrats/../../PRECIEUX-1.0.0.openapi.yaml
+#   apiVersion=$'1.0.0\n../../VICTIME\n' ⇒ le `print` rend TROIS lignes, `read -r`
+#       les consomme une par une, la deuxième est `../../VICTIME` NUE : la
+#       contrainte de suffixe .openapi.yaml tombe, un fichier arbitraire est effacé
+#   application.id='../../…/tmp/x' ⇒ `curl -o "$WORK/appdet/<id>.json"` ÉCRASE un
+#       fichier arbitraire HORS de SCAN_OUT — le TROISIÈME côté : le répertoire de
+#       TRAVAIL de l'outil, que personne n'avait regardé
+#
+# `segment_ok` est le prédicat unique : un segment de chemin, jamais `.`,
+# jamais `..`, jamais un `/`, jamais un espace ni un caractère de contrôle.
+segment_ok(){ case "$1" in ''|.|..|*/*) return 1;; *[!A-Za-z0-9._-]*) return 1;; esac; return 0; }
+
 . "$REPO/scripts/lib/apim-base.sh"     || refus "LIB_ABSENTE : scripts/lib/apim-base.sh"
 . "$REPO/scripts/lib/wm-admin-curl.sh" || refus "LIB_ABSENTE : scripts/lib/wm-admin-curl.sh"
 . "$REPO/scripts/lib/estate.sh"        || refus "LIB_ABSENTE : scripts/lib/estate.sh"
@@ -42,10 +61,14 @@ estate_from_apis "$WORK/apis.json" "$WORK/lignees.json" || refus "ESTATE_RENDU :
 # détail par application : GET /applications/{id}. La liste ne porte pas
 # teams/owner/identifiers sur la 10.15 réelle (vrai du mock seulement) — N+1 assumé.
 mkdir -p "$WORK/appdet"
-for AID in $(python3 -c 'import json,sys; [print(a["id"]) for a in (json.load(open(sys.argv[1])).get("applications") or [])]' "$WORK/apps.json"); do
+# NUL-délimité, jamais `for AID in $(…)` : le découpage par IFS coupait un id
+# porteur d'espace en DEUX identifiants, chacun composant son propre chemin.
+while IFS= read -r -d '' AID; do
+  segment_ok "$AID" || refus "IDENTIFIANT_HORS_SEGMENT : l'application rendue par la gateway porte l'id '${AID}', qui n'est pas un segment de chemin. Il composerait le chemin d'un fichier de travail : mesuré, un id en '../..' fait ÉCRASER par curl un fichier arbitraire HORS de SCAN_OUT."
   C="$(wm_get "/applications/${AID}" "$WORK/appdet/${AID}.json")"
   [ "$C" = 200 ] || refus "GET_APPLICATION : ${AID} -> HTTP ${C}"
-done
+done < <(python3 -c 'import json,sys
+for a in (json.load(open(sys.argv[1])).get("applications") or []): sys.stdout.write(str(a.get("id") or "") + "\0")' "$WORK/apps.json")
 estate_applications "$WORK/apps.json" "$WORK/appdet" "$WORK/apps-rendu.json" || refus "ESTATE_APPLICATIONS"
 
 # ── gouvernance : le registre CENTRAL tranche, le scan ne déclare rien ───────
@@ -71,11 +94,16 @@ estate_repo_ambigu "$PROV" "$WORK/ambigu.json" || refus "PROVIDERS_PARSE : ${PRO
 # Le contrat du proxy declare le GET mais type sa reponse application/json, et
 # aucun export n'a jamais ete joue a travers le proxy. On mesure, on rapporte,
 # on n'en depend pas. L'archive porte PassmanData/ et Alias/ : elle ne survit pas.
-ARCHIVE_ZIP=KO
+# NON_MESURE, PAS KO : sans lignée OK, FIRST_GUID est vide et la sonde n'est
+# JAMAIS invoquée — écrire « KO » ferait passer une absence de mesure pour un
+# échec mesuré. Le champ dit ce qui s'est produit, pas ce qu'on espérait.
+ARCHIVE_ZIP=NON_MESURE
 FIRST_GUID="$(python3 -c 'import json,sys
 for l in json.load(open(sys.argv[1]))["lignees"]:
     if l["verdict"]=="OK" and l["versions"]: print(l["versions"][0]["guid"]); break' "$WORK/lignees.json")"
 if [ -n "$FIRST_GUID" ]; then
+  segment_ok "$FIRST_GUID" || refus "IDENTIFIANT_HORS_SEGMENT : l'API rendue par la gateway porte l'id '${FIRST_GUID}', qui n'est pas un segment de chemin."
+  ARCHIVE_ZIP=KO
   C="$(wm_get "/archive?apis=${FIRST_GUID}" "$WORK/probe.zip")"
   if [ "$C" = 200 ] && [ "$(head -c 4 "$WORK/probe.zip" | od -An -tx1 | tr -d ' \n')" = "504b0304" ]; then
     ARCHIVE_ZIP=OK
@@ -109,18 +137,51 @@ fi
 mkdir -p "$SCAN_OUT/contrats"
 ETRANGER="$(find "$SCAN_OUT/contrats" -mindepth 1 -maxdepth 1 ! -name '*.openapi.yaml' | head -1)"
 [ -z "$ETRANGER" ] || refus "CONTRATS_DIR_ETRANGER : ${SCAN_OUT}/contrats contient '${ETRANGER}', qui n'est pas un contrat produit par ce scan (*.openapi.yaml) — rien n'est supprimé, rien n'est écrit. Vider ce répertoire soi-même si son contenu est bien celui d'un scan précédent."
-while read -r NOMFIC; do
+#
+# CORRECTIF (vague finale) : la provenance ne suffisait pas — les regexps
+# gardaient le VERDICT, jamais le CHEMIN. Cette boucle compose un chemin pour
+# TOUTES les lignées, y compris celles dont le nom est précisément ce que la
+# regexp vient de refuser : `apiName='../../PRECIEUX'` sortait bien
+# NOM_HORS_REGEXP *et* faisait effacer ../../PRECIEUX-1.0.0.openapi.yaml.
+# L'outil nommait la faute ET la commettait.
+#
+# LE CHOIX. Refuser le scan sur un nom hors classe serait le mauvais geste :
+# la spec (§5.4) exige qu'AUCUNE des huit situations n'interrompe le run —
+# l'outil existe précisément pour inventorier un parc mal nommé. On ÉCARTE
+# donc la lignée de l'ensemble à effacer, et on le DIT. Rien n'est perdu :
+# l'ensemble des fichiers que ce script peut ÉCRIRE est exactement celui des
+# lignées OK, et une lignée OK a forcément passé les deux regexps. Un nom qui
+# n'est pas un segment ne peut donc désigner AUCUN contrat écrit par ce
+# scan — ne pas l'effacer n'oublie rien, et effacer serait une évasion.
+#
+# NUL-DÉLIMITÉ, et le nom de fichier ENTIER testé d'un bloc : c'est le seul
+# découpage qui ne peut pas transformer UNE valeur en DEUX. Un `read -r` par
+# ligne rendait `../../VICTIME` sur sa propre ligne, débarrassée du suffixe
+# .openapi.yaml qui était la seule contrainte restante.
+while IFS= read -r -d '' NOMFIC; do
+  if ! segment_ok "$NOMFIC"; then
+    echo "  CONTRAT_NOM_HORS_SEGMENT (ignoré, rien n'est effacé) : '${NOMFIC}'" >&2
+    continue
+  fi
   rm -f "$SCAN_OUT/contrats/${NOMFIC}"
 done < <(python3 -c 'import json,sys
 for l in json.load(open(sys.argv[1]))["lignees"]:
     for v in l["versions"]:
-        print("%s-%s.openapi.yaml" % (l["nom"], v["version"]))' "$WORK/lignees.json")
+        sys.stdout.write("%s-%s.openapi.yaml\0" % (l["nom"], v["version"]))' "$WORK/lignees.json")
 # NE PAS piper vers `while read` : sur bash 3.2 sans `lastpipe`, le corps du
 # `while` tournerait dans un SOUS-SHELL — le `exit 1` de `refus` n'y tuerait
 # que le sous-shell, et le scan continuerait, silencieux, jusqu'à un vert
 # menteur (mesuré : le script survit et sort 0). D'où la substitution de
 # process `< <(...)`, qui garde le `while` dans le shell courant.
-while read -r NOM VER GUID; do
+while IFS= read -r -d '' NOM && IFS= read -r -d '' VER && IFS= read -r -d '' GUID; do
+  # ICI un refus EST le bon geste, contrairement à la boucle de suppression :
+  # cette boucle ne traite que des lignées OK, elle refuse déjà sur un HTTP
+  # non-200 et sur une apiDefinition absente (CONTRAT_ABSENT). Un nom, une
+  # version ou un GUID hors segment sur une lignée déclarée OK n'est pas une
+  # situation du parc : c'est une garde amont qui a cédé.
+  if ! segment_ok "$NOM" || ! segment_ok "$VER" || ! segment_ok "$GUID"; then
+    refus "CONTRAT_NOM_HORS_SEGMENT : la lignée OK '${NOM}'@'${VER}' (guid '${GUID}') ne compose pas un segment de chemin — rien n'est écrit."
+  fi
   C="$(wm_get "/apis/${GUID}" "$WORK/api-${GUID}.json")"
   [ "$C" = 200 ] || refus "GET_API : ${NOM}@${VER} -> HTTP ${C}"
   python3 -c 'import json,sys,yaml
@@ -132,11 +193,15 @@ yaml.safe_dump(d, open(sys.argv[2],"w"), sort_keys=True, allow_unicode=True)' \
 done < <(python3 -c 'import json,sys
 for l in json.load(open(sys.argv[1]))["lignees"]:
     if l["verdict"]=="OK":
-        for v in l["versions"]: print(l["nom"], v["version"], v["guid"])' "$WORK/lignees.json")
+        for v in l["versions"]:
+            sys.stdout.write("%s\0%s\0%s\0" % (l["nom"], v["version"], v["guid"]))' "$WORK/lignees.json")
 
 mkdir -p "$SCAN_OUT"
 STAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-BASE_RED="$(printf '%s' "$APIM_BASE" | sed -E 's#://[^[:space:]]*@#://<identifiants masqués>@#g')"
+# UNE seule expurgation, celle de la lib (wm_redact_url) : le `sed` vivait ICI
+# et NULLE PART ailleurs — d'où un message de refus qui, lui, sortait la base
+# BRUTE sur stderr. Le fichier était propre, le log ne l'était pas.
+BASE_RED="$(wm_redact_url "$APIM_BASE")"
 python3 - "$WORK/lignees.json" "$SCAN_OUT/estate.${ENVIRONMENT}.json" "$WORK/apps-rendu.json" \
   "$SCAN_OUT/contrats" "$SCAN_OUT/rapport.md" "$WORK/ambigu.json" <<PY || refus "ECRITURE : ${SCAN_OUT}/estate.${ENVIRONMENT}.json"
 import hashlib, json, os, sys
@@ -172,7 +237,11 @@ doc = {
   "schema": 1,
   "provenance": {"base": "${BASE_RED}", "env": "${ENVIRONMENT}",
                  "via": "${APIM_EFFECTIVE_VIA}", "scanned_at": "${STAMP}",
-                 "sondes": {"preflight": "OK", "apis": 200, "applications": 200,
+                 # preflight : le CODE RÉELLEMENT OBSERVÉ, ou DESACTIVE quand
+                 # la sonde n'a pas tourné. C'était "OK" EN LITTÉRAL — un
+                 # champ de provenance qui affirmait une mesure jamais faite,
+                 # y compris sous APIM_PREFLIGHT=off.
+                 "sondes": {"preflight": "${WM_PREFLIGHT_CODE}", "apis": 200, "applications": 200,
                             "archive_zip": "${ARCHIVE_ZIP}"}},
   "comptes": {"apis": ${N_APIS}, "applications": ${N_APPS},
               "lignees": len(lig["lignees"]), "troncature": "OK"},

@@ -14,8 +14,14 @@ estate_from_apis(){
   python3 - "$src" "$out" <<'PY'
 import json, re, sys
 SYSTEME = {"Administrators", "Default", "API-Gateway-Providers"}
-RE_NOM = re.compile(r"^[a-z0-9][a-z0-9-]{1,30}$")
-RE_VER = re.compile(r"^[0-9]+\.[0-9]+(\.[0-9]+)?$")
+# `fullmatch`, JAMAIS `match` : en Python, `$` matche AUSSI juste avant un
+# saut de ligne FINAL — `re.match(r"^[a-z0-9-]+$", "comptes\n")` réussit. Or
+# la spec (§5.4 n°5) fait de ces deux classes la garde de SEGMENT DE CHEMIN :
+# un nom qui porte un saut de ligne sort de la classe, et `print` le rendrait
+# sur DEUX lignes que `read -r` consommerait comme deux valeurs distinctes.
+# `fullmatch` exige que la classe couvre la chaîne ENTIÈRE.
+RE_NOM = re.compile(r"[a-z0-9][a-z0-9-]{1,30}")
+RE_VER = re.compile(r"[0-9]+\.[0-9]+(\.[0-9]+)?")
 
 d = json.load(open(sys.argv[1])) or {}
 lignees = {}
@@ -46,9 +52,9 @@ for nom in sorted(lignees):
         verdict, equipe = "API_NON_APPROPRIEE", None
     elif len(equipes) > 1:
         verdict, equipe = "API_MULTI_EQUIPES", None
-    elif not RE_NOM.match(nom):
+    elif not RE_NOM.fullmatch(nom):
         verdict, equipe = "NOM_HORS_REGEXP", equipes[0]
-    elif any(not RE_VER.match(v["version"]) for v in versions):
+    elif any(not RE_VER.fullmatch(v["version"]) for v in versions):
         verdict, equipe = "VERSION_HORS_REGEXP", equipes[0]
     elif any(equipes[0] not in v["_reelles"] for v in versions):
         verdict, equipe = "LIGNEE_PARTIELLEMENT_ETRANGERE", equipes[0]
@@ -96,7 +102,19 @@ liste = json.load(open(sys.argv[1])) or {}
 out = []
 for a in (liste.get("applications") or []):
     det_p = os.path.join(sys.argv[2], a["id"] + ".json")
-    det = (json.load(open(det_p)).get("applications") or [{}])[0] if os.path.exists(det_p) else a
+    # REPLI SUR L'OBJET LUI-MÊME, JAMAIS SUR {} — le motif que le dépôt écrit
+    # DÉJÀ huit fois (`json.applications | default([json]) | first` :
+    # apim_selfservice_app/tasks/main.yml:243, consumer-auth.yml:495,
+    # rotate-strategy.yml:84,184, team.yml:87,129, verify.yml:44,45). La spec
+    # (§5.3) prévient que « les enveloppes sont incohérentes » : un détail
+    # rendu NU est un cas NOMINAL du produit. Le repli sur `[{}]` d'avant
+    # rendait alors ownerType="" et identifiants=[] — une application en
+    # PROPRIÉTÉ INDIVIDUELLE ressortait DÉCLARÉE CONFORME (verdict "OK"),
+    # fail-open mesuré.
+    det = a
+    if os.path.exists(det_p):
+        dj = json.load(open(det_p)) or {}
+        det = (dj.get("applications") or [dj])[0]
     ownert = det.get("ownerType") or ""
     ids = []
     for i in (det.get("identifiers") or []):

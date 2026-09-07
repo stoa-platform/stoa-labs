@@ -97,8 +97,11 @@ class H(BaseHTTPRequestHandler):
                     return self._send(200, {"apiResponse": e})
             return self._send(404)
         if p.endswith("/applications"):
-            return self._send(200, {"applications": [{"id": "app-1", "name": "app-front"}]})
-        if "/applications/" in p:
+            return self._send(200, {"applications": [
+                {"id": "app-1", "name": "app-front"},
+                {"id": "app-2", "name": "app-perso"},
+                {"id": "app-3", "name": "app-nue"}]})
+        if p.endswith("/applications/app-1"):
             return self._send(200, {"applications": [{
                 "id": "app-1", "name": "app-front", "owner": "toto", "ownerType": "team",
                 "teams": [{"name": "toto"}],
@@ -109,6 +112,35 @@ class H(BaseHTTPRequestHandler):
                 # dans la fixture pour PROUVER que rien ne le recopie.
                 "accessTokens": {"apiAccessKey_credentials": {
                     "apiAccessKey": "CANARI-ACCESSTOKENS-NE-DOIT-JAMAIS-FUIR"}}}]})
+        if p.endswith("/applications/app-2"):
+            # SITUATION n°7 DE LA SPEC (§5.4), codée et SANS jeu d'essai
+            # jusqu'ici : toute la branche ownerType=user était MORTE. Le
+            # relecteur l'a mesuré — supprimer le verdict
+            # APP_PROPRIETE_INDIVIDUELLE *ou* le masque
+            # CLE_MASQUEE_PROPRIETAIRE_UTILISATEUR laissait la suite à 51/51.
+            return self._send(200, {"applications": [{
+                "id": "app-2", "name": "app-perso", "owner": "oscar", "ownerType": "user",
+                "consumingAPIs": ["g-pai-100"],
+                "identifiers": [{"key": "token", "name": "app-perso",
+                                 "value": ["CANARI-TOKEN-USER-NE-DOIT-PAS-FUIR"]}]}]})
+        if p.endswith("/applications/app-3"):
+            # ENVELOPPE ABSENTE — l'objet est rendu NU, sans la clé
+            # `applications`. La spec (§5.3) prévient que « les enveloppes
+            # sont incohérentes » : c'est un cas NOMINAL du produit, pas un
+            # accident. Le repli `or [{}]` d'estate.sh rendait alors
+            # ownerType="" et identifiants=[] ⇒ verdict "OK" : une
+            # application en propriété INDIVIDUELLE déclarée CONFORME.
+            self.send_response(200)
+            b = json.dumps({"id": "app-3", "name": "app-nue", "owner": "oscar",
+                            "ownerType": "user",
+                            "identifiers": [{"key": "token", "name": "app-nue",
+                                             "value": ["CANARI-TOKEN-NU-NE-DOIT-PAS-FUIR"]}]}).encode()
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(b))); self.end_headers()
+            self.wfile.write(b)
+            return
+        if "/applications/" in p:
+            return self._send(404)
         return self._send(404)
 HTTPServer(("127.0.0.1", int(os.environ["PORT"])), H).serve_forever()
 PY
@@ -139,17 +171,40 @@ LIBC="$REPO/scripts/lib/wm-admin-curl.sh"
 # apparaît dans l'argv du grep qui le cherche) et rougirait TOUJOURS,
 # secret ou pas — on écrit donc le relevé dans un fichier, et on grep ce
 # fichier depuis le script appelant, jamais depuis le process sondé.
+#
+# TROIS CANARIS DISTINCTS, un par règle gardée : ARGV ici, REFUS en 1g,
+# FICHIER en 6a-bis. Ils ne peuvent pas être le même mot : `scan()` passe ses
+# variables par l'ARGV d'`env`, si bien qu'un canari partagé ferait rougir
+# CETTE sonde ps dès que deux exécutions du harnais se chevauchent (mesuré) —
+# un faux positif qui ressemblerait exactement à la fuite qu'on traque.
+#
+# CORRECTIF (vague finale). Cette épreuve gardait UN vecteur sur DEUX. Le
+# fichier affirmait « LE SECRET NE PASSE JAMAIS PAR ARGV » ; mesuré : pendant
+# que le canari Basic base64 comptait 0 occurrence, le mot de passe porté par
+# l'USERINFO DE L'URL (`https://svc-scan:<mdp>@apim…`, la forme d'une base
+# d'admin de site) en comptait 2 — l'URL passait en argv de curl. La base
+# porte donc DÉSORMAIS un userinfo, et les DEUX canaris sont comptés.
+# Un canari doit contenir exactement le caractère qui casse la règle qu'il garde.
 B64="$(printf '%s:%s' adm s3cr3t | base64 | tr -d '\n')"
+MDPURL=M0tDeP4sseDeLARGV
 PSFILE="$TMP/ps.snap"
-APIM_BASE="$BASE" APIM_AUTH_MODE=basic WM_USER=adm WM_PASSWORD=s3cr3t \
+APIM_BASE="http://svc-scan:${MDPURL}@127.0.0.1:$PORT" APIM_AUTH_MODE=basic WM_USER=adm WM_PASSWORD=s3cr3t \
   bash -c '. "'"$LIBC"'" && wm_admin_init && wm_get "/apis?slow=1" "'"$TMP"'/probe.out" >/dev/null' &
 BGPID=$!
 sleep 0.3
 ps -Aww > "$PSFILE" 2>/dev/null
 wait "$BGPID" 2>/dev/null
 OUT="$(grep -c "$B64" "$PSFILE" 2>/dev/null || true)"
-[ "${OUT:-1}" = "0" ] && ok "aucun secret dans l'argv d'aucun process (sonde ps -Aww)" \
-  || ko "le secret apparaît dans un argv (${OUT} occurrence(s))"
+[ "${OUT:-1}" = "0" ] && ok "aucun secret d'en-tête dans l'argv d'aucun process (sonde ps -Aww)" \
+  || ko "le secret d'en-tête apparaît dans un argv (${OUT} occurrence(s))"
+OUTU="$(grep -c "$MDPURL" "$PSFILE" 2>/dev/null || true)"
+[ "${OUTU:-1}" = "0" ] && ok "l'USERINFO DE L'URL non plus n'apparaît dans aucun argv (curl -K, pas l'URL en clair)" \
+  || ko "le mot de passe d'URL apparaît dans un argv (${OUTU} occurrence(s)) :: $(grep "$MDPURL" "$PSFILE" | head -3 | cut -c1-200)"
+# et l'appel a bien abouti : `curl -K` ne doit pas être un silence qui passe
+# pour une réussite (le corps rendu par le faux wM porte apiResponse).
+grep -q 'apiResponse' "$TMP/probe.out" 2>/dev/null \
+  && ok "l'appel via curl -K a réellement atteint la gateway (corps apiResponse reçu)" \
+  || ko "curl -K n'a rien rapporté — l'URL du fichier de configuration n'a pas été suivie"
 
 # 1b. le fichier d'en-tête est 0600
 M="$(APIM_BASE="$BASE" APIM_AUTH_MODE=basic WM_USER=adm WM_PASSWORD=s3cr3t \
@@ -171,6 +226,27 @@ APIM_BASE="$BASE" bash -c '. "'"$LIBC"'" && wm_preflight >/dev/null 2>&1; printf
 APIM_BASE="http://127.0.0.1:1" APIM_PREFLIGHT=OFF bash -c '. "'"$LIBC"'" && wm_preflight' >/dev/null 2>&1 \
   && ok "APIM_PREFLIGHT=OFF désactive (comparaison insensible à la casse)" \
   || ko "APIM_PREFLIGHT=OFF n'a pas désactivé le préflight"
+
+# 1g. le REFUS lui-même ne fuit pas (spec §9.5 : « base d'admin dans un
+# message : expurgée »). Mesuré avant correctif :
+#   REFUS: GATEWAY_INJOIGNABLE : sonde https://svc-scan:M0tDeP4sse@…/apis -> HTTP 000000
+# sur stderr — donc dans le log de build, donc archivé. L'expurgation
+# EXISTAIT, écrite, mais uniquement du côté du FICHIER (scan-parc.sh) :
+# l'asymétrie était le défaut. Elle est maintenant UNE fonction partagée.
+APIM_BASE="https://svc-scan:M0tDeP4sseDuREFUS@127.0.0.1:1/rest/apigateway" \
+  bash -c '. "'"$LIBC"'" && wm_preflight' >/dev/null 2>"$TMP/pf3.err"
+grep -q 'M0tDeP4sseDuREFUS' "$TMP/pf3.err" \
+  && ko "FUITE : le refus GATEWAY_INJOIGNABLE porte l'userinfo de la base sur stderr" \
+  || ok "le refus GATEWAY_INJOIGNABLE ne porte plus l'userinfo (message expurgé)"
+grep -q '<identifiants masqués>' "$TMP/pf3.err" \
+  && ok "le refus montre bien l'URL sondée, userinfo remplacé par <identifiants masqués>" \
+  || ko "le refus n'affiche plus l'URL sondée du tout : $(cat "$TMP/pf3.err")"
+# le code annoncé est celui que curl a rendu, UNE fois. `curl -w %{http_code}`
+# imprime DÉJÀ 000 en cas d'échec de connexion ; le `|| echo 000` d'alors en
+# concaténait un second et le message annonçait « HTTP 000000 ».
+grep -q 'HTTP 000 (attendus' "$TMP/pf3.err" \
+  && ok "le refus annonce HTTP 000, pas le HTTP 000000 d'un code concaténé deux fois" \
+  || ko "code HTTP mal formé dans le refus : $(cat "$TMP/pf3.err")"
 
 # 1f. les deux causes d'un 401 sont distinguées
 printf '{"error":"User is not a member of any administrator group"}' > "$TMP/401.json"
@@ -219,6 +295,46 @@ else: print("ABSENTE")' "$TMP/lignees.json" "$1"; }
 [ "$(verdict gel-fonds)" = "LIGNEE_PARTIELLEMENT_ETRANGERE" ] \
   && ok "v1.1.0 étrangère ET inactive ⇒ LIGNEE_PARTIELLEMENT_ETRANGERE prime sur CONTRAT_NON_EXTRACTIBLE_API_INACTIVE" \
   || ko "gel-fonds : verdict '$(verdict gel-fonds)'"
+
+# LA REGEXP EST LA GARDE DE SEGMENT DE CHEMIN (spec §5.4 n°5) — et en Python
+# `re.match(r"…$", "comptes\n")` RÉUSSIT : `$` matche aussi juste avant un
+# saut de ligne final. Un nom porteur d'un saut de ligne sortait donc VALIDE,
+# alors que `print` le rend sur DEUX lignes et que `read -r` en fait DEUX
+# valeurs. `fullmatch` est ce qui rend la classe vraie sur la chaîne entière.
+python3 - "$TMP/apis.json" <<'PYNOM' > "$TMP/nomretour.json"
+import json,sys
+d=json.load(open(sys.argv[1]))
+for r in d["apiResponse"]:
+    if r["api"]["apiName"] == "comptes": r["api"]["apiName"] = "comptes\n"
+json.dump(d,open(sys.stdout.fileno(),"w"))
+PYNOM
+bash -c '. "'"$LIBE"'" && estate_from_apis "'"$TMP"'/nomretour.json" "'"$TMP"'/l6.json"' 2>/dev/null
+python3 -c '
+import json,sys
+d=json.load(open(sys.argv[1]))
+l=next(x for x in d["lignees"] if x["nom"].startswith("comptes"))
+assert l["nom"]=="comptes\n", repr(l["nom"])
+assert l["verdict"]=="NOM_HORS_REGEXP", l["verdict"]
+' "$TMP/l6.json" \
+  && ok "nom porteur d'un saut de ligne FINAL ⇒ NOM_HORS_REGEXP (fullmatch : le \$ ne le tolère plus)" \
+  || ko "un nom porteur d'un saut de ligne final est accepté — la classe n'est pas un segment de chemin"
+
+python3 - "$TMP/apis.json" <<'PYVER' > "$TMP/verretour.json"
+import json,sys
+d=json.load(open(sys.argv[1]))
+for r in d["apiResponse"]:
+    if r["api"]["apiName"] == "comptes": r["api"]["apiVersion"] = "1.0.0\n"
+json.dump(d,open(sys.stdout.fileno(),"w"))
+PYVER
+bash -c '. "'"$LIBE"'" && estate_from_apis "'"$TMP"'/verretour.json" "'"$TMP"'/l7.json"' 2>/dev/null
+[ "$(python3 -c '
+import json,sys
+d=json.load(open(sys.argv[1]))
+for l in d["lignees"]:
+    if l["nom"]=="comptes": print(l["verdict"]); break
+else: print("ABSENTE")' "$TMP/l7.json")" = "VERSION_HORS_REGEXP" ] \
+  && ok "version porteuse d'un saut de ligne FINAL ⇒ VERSION_HORS_REGEXP (même défaut de \$, même correctif)" \
+  || ko "une version porteuse d'un saut de ligne final est acceptée"
 
 # les teams se lisent au niveau de l'ENTRÉE, jamais dans api (api.teams est null en 10.15)
 python3 - "$TMP/apis.json" <<'PY' > "$TMP/nullteams.json"
@@ -329,14 +445,16 @@ grep -q '^REFUS: SCAN_PARC_ATTENDU_REQUIS' "$TMP/s1.err" \
 [ ! -f "$TMP/out/estate.dev.json" ] && ok "aucun inventaire écrit sur le chemin de refus" \
   || ko "un estate.dev.json a été écrit malgré le refus"
 
-scan SCAN_PARC_ATTENDU=99:1 >"$TMP/s2.out" 2>"$TMP/s2.err"
+scan SCAN_PARC_ATTENDU=99:3 >"$TMP/s2.out" 2>"$TMP/s2.err"
 grep -q '^REFUS: PARC_POSSIBLEMENT_TRONQUE' "$TMP/s2.err" \
   && ok "contre-compte faux (99 attendues, 10 rendues) ⇒ PARC_POSSIBLEMENT_TRONQUE" \
   || ko "compte divergent accepté : $(tail -2 "$TMP/s2.err")"
 
-# le jeu d'essai porte DIX entrées d'API (APIS ci-dessus) et UNE application
-# (endpoint /applications du faux wM) — compté à la main, cf. rulings-a-porter.md R1.
-scan SCAN_PARC_ATTENDU=10:1 >"$TMP/s3.out" 2>"$TMP/s3.err"
+# le jeu d'essai porte DIX entrées d'API (APIS ci-dessus) et TROIS applications
+# (endpoint /applications du faux wM : app-front en équipe, app-perso en
+# propriété individuelle, app-nue rendue SANS enveloppe) — compté à la main,
+# cf. rulings-a-porter.md R1.
+scan SCAN_PARC_ATTENDU=10:3 >"$TMP/s3.out" 2>"$TMP/s3.err"
 [ -f "$TMP/out/estate.dev.json" ] \
   && ok "contre-compte juste ⇒ l'inventaire est écrit" || ko "rien écrit : $(tail -3 "$TMP/s3.err")"
 python3 -c '
@@ -382,7 +500,7 @@ else:
 # les CINQ canaris de identifiers (token/openIdClaims/httpsCertificate/clé
 # inconnue — tous masqués — PLUS ipAddressRange, qui elle DOIT apparaître :
 # ce n'est pas un secret) et le canari accessTokens (jamais lu nulle part).
-grep -qE 'CANARI-(TOKEN|CLAIMS|CERT|CLE-INCONNUE|ACCESSTOKENS)-NE-DOIT' "$TMP/out/estate.dev.json" \
+grep -qE 'CANARI-(TOKEN|CLAIMS|CERT|CLE-INCONNUE|ACCESSTOKENS|TOKEN-USER|TOKEN-NU)-NE-DOIT' "$TMP/out/estate.dev.json" \
   && ko "FUITE : la valeur d'un identifiant (ou accessTokens) est dans l'inventaire" \
   || ok "aucune valeur d'identifiant masqué dans l'inventaire (défaut-deny)"
 grep -q '10.42.0.1-10.42.0.1' "$TMP/out/estate.dev.json" \
@@ -399,7 +517,7 @@ echo "== 4. applications, contrats, rapport =="
 # personnel dans contrats/ était détruit en silence par l'ancien `rm -rf`.
 rm -rf "$TMP/out"; mkdir -p "$TMP/out/contrats"
 echo "des notes personnelles, pas un contrat" > "$TMP/out/contrats/mon-fichier-perso.txt"
-scan SCAN_PARC_ATTENDU=10:1 >"$TMP/s4pre.out" 2>"$TMP/s4pre.err"
+scan SCAN_PARC_ATTENDU=10:3 >"$TMP/s4pre.out" 2>"$TMP/s4pre.err"
 grep -q '^REFUS: CONTRATS_DIR_ETRANGER' "$TMP/s4pre.err" \
   && ok "un fichier étranger dans contrats/ ⇒ refus nommé" \
   || ko "aucun refus CONTRATS_DIR_ETRANGER : $(tail -3 "$TMP/s4pre.err")"
@@ -413,10 +531,12 @@ grep -q '^REFUS: CONTRATS_DIR_ETRANGER' "$TMP/s4pre.err" \
 # comptes, pas paiements : cf. rulings-a-porter.md R1. paiements est
 # LIGNEE_PARTIELLEMENT_ETRANGERE (v1.0.1 en Default) — elle ne produit AUCUN
 # contrat, c'est correct ; comptes est la seule lignée OK du jeu d'essai.
-rm -rf "$TMP/out"; scan SCAN_PARC_ATTENDU=10:1 >/dev/null 2>&1
+rm -rf "$TMP/out"; scan SCAN_PARC_ATTENDU=10:3 >/dev/null 2>&1
 python3 -c '
 import json,sys
-a=json.load(open(sys.argv[1]))["applications"][0]
+# PAR NOM, jamais par position : le jeu d'\''essai porte trois applications
+# désormais, et un index nu se serait tu en désignant la mauvaise.
+a=next(x for x in json.load(open(sys.argv[1]))["applications"] if x["nom"]=="app-front")
 ids={i["type"]: i for i in a["identifiants"]}
 assert a["ownerType"]=="team" and a["owner"]=="toto", a
 # vocabulaire RÉEL : token/openIdClaims/httpsCertificate masqués (allowlist
@@ -431,6 +551,50 @@ assert "accessTokens" not in a, "accessTokens recopié dans l'\''application ren
 ' "$TMP/out/estate.dev.json" \
   && ok "application : owner/ownerType lus, tout masqué SAUF ipAddressRange, clé inconnue masquée aussi (défaut-deny)" \
   || ko "forme de l'application incorrecte"
+
+# ── ownerType=user : la situation n°7 de la spec §5.4, codée SANS jeu d'essai
+# jusqu'à cette vague. Mesuré par le relecteur : supprimer le verdict
+# APP_PROPRIETE_INDIVIDUELLE (estate.sh) *ou* le masque
+# CLE_MASQUEE_PROPRIETAIRE_UTILISATEUR laissait la suite intégralement verte.
+# Les deux constantes ont maintenant chacune leur épreuve.
+python3 -c '
+import json,sys
+a=next(x for x in json.load(open(sys.argv[1]))["applications"] if x["nom"]=="app-perso")
+assert a["ownerType"]=="user", a
+assert a["verdict"]=="APP_PROPRIETE_INDIVIDUELLE", a
+' "$TMP/out/estate.dev.json" \
+  && ok "application ownerType=user ⇒ verdict APP_PROPRIETE_INDIVIDUELLE (situation n°7, §5.4)" \
+  || ko "une application en propriété individuelle ne porte pas son verdict"
+python3 -c '
+import json,sys
+a=next(x for x in json.load(open(sys.argv[1]))["applications"] if x["nom"]=="app-perso")
+ids={i["type"]: i for i in a["identifiants"]}
+assert ids["token"]["valeur"]=="CLE_MASQUEE_PROPRIETAIRE_UTILISATEUR", ids
+' "$TMP/out/estate.dev.json" \
+  && ok "le masque d'un identifiant d'app ownerType=user est CLE_MASQUEE_PROPRIETAIRE_UTILISATEUR, pas NON_TRANSPORTEE" \
+  || ko "le masque propre au propriétaire utilisateur n'est pas employé"
+
+# ── S3 : enveloppe ABSENTE (§5.3, « les enveloppes sont incohérentes »). Le
+# repli `or [{}]` d'estate.sh rendait alors ownerType="" et identifiants=[] :
+# l'application ressortait {"verdict":"OK"} — DÉCLARÉE CONFORME alors qu'elle
+# est en propriété individuelle. Le dépôt écrit huit fois la forme correcte
+# (`| default([json]) | first`) ; la lib neuve divergeait vers un fail-open.
+python3 -c '
+import json,sys
+a=next(x for x in json.load(open(sys.argv[1]))["applications"] if x["nom"]=="app-nue")
+assert a["ownerType"]=="user", a          # lu MALGRÉ l'\''enveloppe absente
+assert a["verdict"]=="APP_PROPRIETE_INDIVIDUELLE", a
+ids={i["type"]: i for i in a["identifiants"]}
+assert ids["token"]["valeur"]=="CLE_MASQUEE_PROPRIETAIRE_UTILISATEUR", ids
+' "$TMP/out/estate.dev.json" \
+  && ok "détail rendu SANS enveloppe : ownerType/identifiants lus quand même (repli sur l'objet, pas sur {})" \
+  || ko "FAIL-OPEN : une app ownerType=user rendue sans enveloppe ressort conforme"
+
+# le rapport nomme aussi les refus d'APPLICATION, avec leur geste
+grep -q 'APP_PROPRIETE_INDIVIDUELLE' "$TMP/out/rapport.md" \
+  && grep -q 'POST /assets/owner' "$TMP/out/rapport.md" \
+  && ok "rapport.md nomme le refus d'application ET son geste (POST /assets/owner)" \
+  || ko "rapport.md ne relaie pas les refus d'application"
 
 [ -f "$TMP/out/contrats/comptes-1.0.0.openapi.yaml" ] \
   && ok "contrat extrait d'apiDefinition pour une lignée OK" || ko "contrat manquant"
@@ -467,7 +631,7 @@ echo "== 5. fail-closed : CONTRAT_ABSENT (apiDefinition disparue) ne laisse rien
 # sur bash 3.2 (pas de lastpipe) — le mutant ci-dessous le remet en place.
 rm -rf "$TMP/out"
 : > "$TMP/fail-apidef.flag"
-scan SCAN_PARC_ATTENDU=10:1 >"$TMP/s5.out" 2>"$TMP/s5.err"
+scan SCAN_PARC_ATTENDU=10:3 >"$TMP/s5.out" 2>"$TMP/s5.err"
 RC5=$?
 rm -f "$TMP/fail-apidef.flag"
 [ "$RC5" -ne 0 ] && ok "CONTRAT_ABSENT ⇒ le scan sort en échec (rc=${RC5})" \
@@ -511,7 +675,7 @@ providers:
     repo: grp/apis-legit
 YML
 rm -rf "$TMP/out"
-scan SCAN_PARC_ATTENDU=10:1 GC_PLATFORM_DIR="$TMP/plat" GOVERNANCE_PATH="$TMP/gov/registre.yaml" \
+scan SCAN_PARC_ATTENDU=10:3 GC_PLATFORM_DIR="$TMP/plat" GOVERNANCE_PATH="$TMP/gov/registre.yaml" \
      >"$TMP/s6.out" 2>"$TMP/s6.err"
 
 python3 -c '
@@ -558,6 +722,18 @@ else:
   && ok "une lignée OK mais NON GOUVERNÉE ne produit PAS de contrat (R2)" \
   || ko "un contrat a été produit pour comptes, pourtant hors registre"
 
+# V4 — un champ de provenance ne doit pas MENTIR. Dans ce scan-ci, comptes est
+# CLASSIFICATION_UNGOVERNED : AUCUNE lignée n'est OK, FIRST_GUID est vide, la
+# sonde /archive n'est JAMAIS invoquée. Le champ valait pourtant "KO" — la
+# valeur initiale jamais changée, une absence de mesure présentée comme un
+# échec mesuré. Il vaut désormais NON_MESURE.
+python3 -c '
+import json,sys
+v=json.load(open(sys.argv[1]))["provenance"]["sondes"]["archive_zip"]
+assert v=="NON_MESURE", v' "$TMP/out/estate.dev.json" \
+  && ok "sonde /archive JAMAIS invoquée (aucune lignée OK) ⇒ archive_zip=NON_MESURE, pas KO" \
+  || ko "archive_zip présente une absence de mesure comme un échec mesuré"
+
 # REPO_AMBIGU discrimine réellement le filtre len(set(ts))>1 (mutation M3
 # corrigée, cf. task-7-report.md) : SEUL grp/apis-toto (2 équipes) est
 # rapporté, jamais grp/apis-legit (1 équipe).
@@ -584,7 +760,7 @@ assert "titi" in detail and "toto" in detail, detail
 # cf. section 3) pour que FIRST_GUID soit non-vide et la sonde réellement
 # exercée.
 rm -rf "$TMP/out"
-scan SCAN_PARC_ATTENDU=10:1 >"$TMP/s6a.out" 2>"$TMP/s6a.err"
+scan SCAN_PARC_ATTENDU=10:3 >"$TMP/s6a.out" 2>"$TMP/s6a.err"
 python3 -c '
 import json,sys
 v=json.load(open(sys.argv[1]))["provenance"]["sondes"]["archive_zip"]
@@ -608,7 +784,7 @@ assert v=="KO", v' "$TMP/out/estate.dev.json" \
 # précédente sans jamais avoir rien mesuré (R13).
 : > "$TMP/archive-real-zip.flag"
 rm -rf "$TMP/out"
-scan SCAN_PARC_ATTENDU=10:1 >"$TMP/s6b.out" 2>"$TMP/s6b.err"
+scan SCAN_PARC_ATTENDU=10:3 >"$TMP/s6b.out" 2>"$TMP/s6b.err"
 rm -f "$TMP/archive-real-zip.flag"
 python3 -c '
 import json,sys
@@ -617,9 +793,49 @@ assert v=="OK", v' "$TMP/out/estate.dev.json" \
   && ok "200 AVEC l'octet magique PK\\x03\\x04 ⇒ archive_zip=OK" \
   || ko "archive_zip reste KO malgré un vrai zip — la sonde ne mesure rien"
 
+echo "== 6a-bis. provenance : les champs disent ce qui a été MESURÉ =="
+# `preflight` était le littéral "OK". Il mentait deux fois : il annonçait une
+# réussite sans jamais dire QUEL code avait été observé, et il l'annonçait
+# AUSSI quand APIM_PREFLIGHT=off, c'est-à-dire quand la sonde n'avait pas
+# tourné du tout. Le faux wM rend 401 sans jeton (la preuve de vie du proxy) :
+# c'est CE code que la provenance doit porter.
+rm -rf "$TMP/out"
+scan SCAN_PARC_ATTENDU=10:3 >"$TMP/s6pf.out" 2>"$TMP/s6pf.err"
+python3 -c '
+import json,sys
+v=json.load(open(sys.argv[1]))["provenance"]["sondes"]["preflight"]
+assert v=="401", v' "$TMP/out/estate.dev.json" \
+  && ok "provenance.sondes.preflight porte le CODE RÉELLEMENT OBSERVÉ (401 sans jeton), pas un \"OK\" en dur" \
+  || ko "preflight n'est pas le code observé : $(python3 -c '''import json,sys;print(json.load(open(sys.argv[1]))["provenance"]["sondes"]["preflight"])''' "$TMP/out/estate.dev.json" 2>/dev/null)"
+
+rm -rf "$TMP/out"
+scan SCAN_PARC_ATTENDU=10:3 APIM_PREFLIGHT=off >"$TMP/s6pg.out" 2>"$TMP/s6pg.err"
+python3 -c '
+import json,sys
+v=json.load(open(sys.argv[1]))["provenance"]["sondes"]["preflight"]
+assert v=="DESACTIVE", v' "$TMP/out/estate.dev.json" \
+  && ok "APIM_PREFLIGHT=off ⇒ preflight=DESACTIVE (la sonde n'a pas tourné, le champ le dit)" \
+  || ko "preflight annonce une mesure alors que la sonde était désactivée"
+
+# S2(a), côté FICHIER : l'expurgation de provenance.base est la MÊME fonction
+# que celle du message de refus (wm_redact_url). Sans cette épreuve, seul le
+# message était gardé et le fichier ne l'était par rien.
+rm -rf "$TMP/out"
+scan SCAN_PARC_ATTENDU=10:3 APIM_API_BASE="http://svc-scan:M0tDeP4sseDuFICHIER@127.0.0.1:$PORT" \
+  >"$TMP/s6ph.out" 2>"$TMP/s6ph.err"
+grep -q 'M0tDeP4sseDuFICHIER' "$TMP/out/estate.dev.json" \
+  && ko "FUITE : provenance.base porte l'userinfo de la base d'admin dans l'inventaire" \
+  || ok "provenance.base est expurgée dans l'inventaire (même fonction que le message)"
+python3 -c '
+import json,sys
+b=json.load(open(sys.argv[1]))["provenance"]["base"]
+assert "<identifiants masqués>" in b, b' "$TMP/out/estate.dev.json" \
+  && ok "provenance.base montre bien la base, userinfo remplacé par <identifiants masqués>" \
+  || ko "provenance.base n'affiche plus la base du tout"
+
 echo "== 6b. GOVERNANCE_PATH et GC_PLATFORM_DIR : aucun défaut ne devine =="
 rm -rf "$TMP/out"
-scan SCAN_PARC_ATTENDU=10:1 GOVERNANCE_PATH= >"$TMP/s6c.out" 2>"$TMP/s6c.err"
+scan SCAN_PARC_ATTENDU=10:3 GOVERNANCE_PATH= >"$TMP/s6c.out" 2>"$TMP/s6c.err"
 grep -q '^REFUS: GOUVERNANCE_REQUISE' "$TMP/s6c.err" \
   && ok "GOVERNANCE_PATH absent ⇒ GOUVERNANCE_REQUISE (aucun défaut, aucun optimisme)" \
   || ko "le scan a tourné sans registre : $(tail -3 "$TMP/s6c.err")"
@@ -628,7 +844,7 @@ grep -q '^REFUS: GOUVERNANCE_REQUISE' "$TMP/s6c.err" \
   || ko "un estate.dev.json a été écrit malgré GOUVERNANCE_REQUISE"
 
 rm -rf "$TMP/out"
-scan SCAN_PARC_ATTENDU=10:1 GC_PLATFORM_DIR= >"$TMP/s6d.out" 2>"$TMP/s6d.err"
+scan SCAN_PARC_ATTENDU=10:3 GC_PLATFORM_DIR= >"$TMP/s6d.out" 2>"$TMP/s6d.err"
 grep -q '^REFUS: PLATEFORME_REQUISE' "$TMP/s6d.err" \
   && ok "GC_PLATFORM_DIR absent ⇒ PLATEFORME_REQUISE (aucun défaut, aucun optimisme)" \
   || ko "le scan a tourné sans dépôt plateforme : $(tail -3 "$TMP/s6d.err")"
@@ -645,13 +861,129 @@ echo "== 6c. contrats/ : suppression par PROVENANCE, jamais par motif de nom (co
 # silence par le `rm -f *.openapi.yaml` qui suivait (mesuré, revue Task 6).
 rm -rf "$TMP/out"; mkdir -p "$TMP/out/contrats"
 printf 'CANARI-CONTRAT-ETRANGER-NE-DOIT-PAS-DISPARAITRE\n' > "$TMP/out/contrats/notes-perso.openapi.yaml"
-scan SCAN_PARC_ATTENDU=10:1 >"$TMP/s6e.out" 2>"$TMP/s6e.err"
+scan SCAN_PARC_ATTENDU=10:3 >"$TMP/s6e.out" 2>"$TMP/s6e.err"
 grep -q 'CANARI-CONTRAT-ETRANGER-NE-DOIT-PAS-DISPARAITRE' "$TMP/out/contrats/notes-perso.openapi.yaml" 2>/dev/null \
   && ok "un *.openapi.yaml ÉTRANGER (nommé comme un contrat, jamais écrit par ce scan) survit intact" \
   || ko "DESTRUCTION : le fichier étranger *.openapi.yaml a disparu ou a été altéré"
 [ -f "$TMP/out/contrats/comptes-1.0.0.openapi.yaml" ] \
   && ok "le VRAI contrat de la lignée OK est bien (ré)écrit à côté du fichier étranger" \
   || ko "le contrat légitime n'a pas été produit malgré le fichier étranger"
+
+echo "== 7. LE PARC EST UN ATTAQUANT : les données de la gateway composent des chemins =="
+# Les deux revues précédentes ont cherché l'attaquant du côté de SCAN_OUT.
+# Il vient d'AILLEURS : apiName, apiVersion et les identifiants rendus par la
+# gateway composent tous un chemin de fichier. Mesuré sur le script AVANT
+# correctif, chaque fois avec rc=0 et « inventaire écrit » — donc en silence.
+# Un faux wM SÉPARÉ sert ici le parc hostile, pour ne rien changer aux comptes
+# du jeu d'essai des sections 1 à 6.
+cat > "$TMP/fakewm-hostile.py" <<'PYH'
+import json, os
+from http.server import BaseHTTPRequestHandler, HTTPServer
+NOM, VER, APPID = os.environ["EVIL_NAME"], os.environ["EVIL_VER"], os.environ["EVIL_APPID"]
+def env():
+    return {"api": {"id": "g-evil-1", "apiName": NOM, "apiVersion": VER, "isActive": True},
+            "responseStatus": "SUCCESS", "teams": [{"id": "u-toto", "name": "toto"}]}
+class H(BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def _send(self, code, obj=None):
+        b = json.dumps(obj if obj is not None else {}).encode()
+        self.send_response(code); self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
+    def do_GET(self):
+        p = self.path.split("?")[0]
+        if not self.headers.get("Authorization"): return self._send(401, {"e": "no token"})
+        if p.endswith("/apis"): return self._send(200, {"apiResponse": [env()]})
+        if "/apis/" in p:
+            e = env(); e["api"]["apiDefinition"] = {"openapi": "3.0.1"}
+            return self._send(200, {"apiResponse": e})
+        if p.endswith("/applications"): return self._send(200, {"applications": [{"id": APPID, "name": "app-x"}]})
+        if "/applications/" in p:
+            return self._send(200, {"applications": [{"id": APPID, "name": "app-x",
+                                                      "owner": "toto", "ownerType": "team", "identifiers": []}]})
+        return self._send(404)
+HTTPServer(("127.0.0.1", int(os.environ["PORT2"])), H).serve_forever()
+PYH
+mkdir -p "$TMP/evil/gov" "$TMP/evil/plat/ansible"
+printf 'apis: []\n'      > "$TMP/evil/gov/registre.yaml"
+printf 'providers: []\n' > "$TMP/evil/plat/ansible/providers.dev.yml"
+PORT2="${FAKE_WM_HOSTILE_PORT:-$((PORT + 1))}"
+
+# scan_hostile <nom> <version> <id d'application> — relance un faux wM avec CE
+# parc-là, puis scanne. Sortie : $TMP/evil/out, journal $TMP/evil/scan.err.
+scan_hostile(){
+  EVIL_NAME="$1" EVIL_VER="$2" EVIL_APPID="$3" PORT2="$PORT2" python3 "$TMP/fakewm-hostile.py" & HPID=$!
+  for _ in $(seq 1 50); do curl -s -o /dev/null "http://127.0.0.1:$PORT2/apis" && break; sleep 0.1; done
+  rm -rf "$TMP/evil/out"; mkdir -p "$TMP/evil/out/contrats"
+  printf 'CANARI-PRECIEUX-NE-DOIT-PAS-DISPARAITRE\n' > "$TMP/evil/PRECIEUX-1.0.0.openapi.yaml"
+  printf 'CANARI-VICTIME-NE-DOIT-PAS-DISPARAITRE\n'  > "$TMP/evil/VICTIME"
+  printf 'CANARI-APPID-NE-DOIT-PAS-ETRE-ECRASE\n'    > "$TMP/evil/CIBLE-APPID.json"
+  env ENVIRONMENT=dev ADMIN_VIA=direct APIM_TERMINUS=prod APIM_API_BASE="http://127.0.0.1:$PORT2" \
+      APIM_AUTH_MODE=basic WM_USER=adm WM_PASSWORD=s3cr3t SCAN_OUT="$TMP/evil/out" \
+      GOVERNANCE_PATH="$TMP/evil/gov/registre.yaml" GC_PLATFORM_DIR="$TMP/evil/plat" GIT_SUBDIR=. \
+      SCAN_PARC_ATTENDU=1:1 bash "$SCAN" >"$TMP/evil/scan.out" 2>"$TMP/evil/scan.err"
+  EVILRC=$?
+  kill "$HPID" 2>/dev/null; wait "$HPID" 2>/dev/null
+}
+
+# 7a. apiName = '../../PRECIEUX' — le contrat visé est HORS de SCAN_OUT.
+# Mesuré avant correctif : $SCAN_OUT/contrats/../../PRECIEUX-1.0.0.openapi.yaml
+# SUPPRIMÉ, scan rc=0, « inventaire écrit », aucun refus. Le verdict de la
+# lignée était pourtant NOM_HORS_REGEXP : l'outil NOMMAIT la faute ET la
+# COMMETTAIT. La regexp gardait le verdict, jamais le chemin.
+scan_hostile '../../PRECIEUX' '1.0.0' 'app-x'
+grep -q 'CANARI-PRECIEUX-NE-DOIT-PAS-DISPARAITRE' "$TMP/evil/PRECIEUX-1.0.0.openapi.yaml" 2>/dev/null \
+  && ok "apiName='../../PRECIEUX' : le fichier visé HORS de SCAN_OUT survit intact" \
+  || ko "DESTRUCTION : un apiName en '../..' a fait effacer un fichier hors de SCAN_OUT"
+# et le run n'est PAS interrompu (spec §5.4 : aucune des huit situations
+# n'interrompt le scan) — l'outil existe pour inventorier un parc mal nommé.
+[ "$EVILRC" = 0 ] && [ -f "$TMP/evil/out/estate.dev.json" ] \
+  && ok "le scan n'est PAS interrompu par un nom hors classe (§5.4) : rc=0, inventaire écrit" \
+  || ko "le scan a été interrompu par un nom hors classe (rc=${EVILRC})"
+python3 -c '
+import json,sys
+d=json.load(open(sys.argv[1]))
+assert [l["verdict"] for l in d["lignees"]]==["NOM_HORS_REGEXP"], d["lignees"]
+' "$TMP/evil/out/estate.dev.json" \
+  && ok "la lignée hostile est NOMMÉE NOM_HORS_REGEXP dans l'inventaire (nommer sans commettre)" \
+  || ko "la lignée hostile n'est pas rapportée"
+grep -q 'CONTRAT_NOM_HORS_SEGMENT' "$TMP/evil/scan.err" \
+  && ok "l'écart est DIT sur stderr (CONTRAT_NOM_HORS_SEGMENT), il n'est pas passé sous silence" \
+  || ko "le nom écarté de la suppression ne laisse aucune trace : $(tail -3 "$TMP/evil/scan.err")"
+
+# 7b. apiVersion = $'1.0.0\n../../VICTIME\n' — le `print` rend TROIS lignes,
+# `read -r` les consomme une par une, la deuxième est '../../VICTIME' NUE :
+# la contrainte de suffixe .openapi.yaml, seule garde restante, TOMBE.
+# Mesuré avant correctif : fichier arbitraire supprimé, rc=0.
+# $'…' et NON "$(printf …)" : la substitution de commande MANGE le saut de
+# ligne FINAL, et c'est précisément lui qui détache '../../VICTIME' du suffixe
+# '.openapi.yaml'. Avec le suffixe recollé, l'épreuve restait verte même sur
+# le code d'AVANT correctif (mesuré : mutation M1b, 76/0) — un canari qui ne
+# porte pas exactement le caractère qui casse la règle ne garde rien.
+scan_hostile 'precieuse' $'1.0.0\n../../VICTIME\n' 'app-x'
+grep -q 'CANARI-VICTIME-NE-DOIT-PAS-DISPARAITRE' "$TMP/evil/VICTIME" 2>/dev/null \
+  && ok "apiVersion multiligne : le fichier NU visé (sans suffixe .openapi.yaml) survit intact" \
+  || ko "DESTRUCTION : une version multiligne a fait effacer un fichier arbitraire"
+[ "$EVILRC" = 0 ] && [ -f "$TMP/evil/out/estate.dev.json" ] \
+  && ok "le scan n'est PAS interrompu par une version hors classe (§5.4) : rc=0, inventaire écrit" \
+  || ko "le scan a été interrompu par une version hors classe (rc=${EVILRC})"
+
+# 7c. LE TROISIÈME CÔTÉ. Ni SCAN_OUT, ni la boucle de suppression : le
+# répertoire de TRAVAIL de l'outil. `curl -o "$WORK/appdet/<id>.json"` compose
+# son chemin avec l'`id` d'application rendu par la gateway. Mesuré avant
+# correctif : un id en '../..' fait ÉCRASER un fichier arbitraire HORS de
+# SCAN_OUT — et le scan sort rc=0 en annonçant « inventaire écrit ».
+# Les '../' en excès se replient sur '/' : la cible est atteinte quelle que
+# soit la profondeur de $WORK (mktemp -d n'honore pas TMPDIR sur BSD).
+scan_hostile 'precieuse' '1.0.0' "../../../../../../../../../../../..${TMP}/evil/CIBLE-APPID"
+grep -q 'CANARI-APPID-NE-DOIT-PAS-ETRE-ECRASE' "$TMP/evil/CIBLE-APPID.json" 2>/dev/null \
+  && ok "application.id en '../..' : le fichier visé HORS de SCAN_OUT n'est pas écrasé" \
+  || ko "ÉCRASEMENT : un id d'application a fait écrire curl hors de SCAN_OUT :: $(head -c 120 "$TMP/evil/CIBLE-APPID.json")"
+grep -q '^REFUS: IDENTIFIANT_HORS_SEGMENT' "$TMP/evil/scan.err" \
+  && ok "un id d'application hors segment ⇒ refus nommé IDENTIFIANT_HORS_SEGMENT" \
+  || ko "aucun refus sur un id d'application hors segment : $(tail -3 "$TMP/evil/scan.err")"
+[ ! -f "$TMP/evil/out/estate.dev.json" ] \
+  && ok "aucun inventaire écrit sur le chemin IDENTIFIANT_HORS_SEGMENT (fail-closed)" \
+  || ko "un estate.dev.json a été écrit malgré IDENTIFIANT_HORS_SEGMENT"
 
 printf '\n%d ✅  %d ❌\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
