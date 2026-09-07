@@ -339,6 +339,29 @@ import json,sys
 d=json.load(open(sys.argv[1]))
 sys.exit(0 if d.get("schema")==1 and d["provenance"]["env"]=="dev" else 1)' "$TMP/out/estate.dev.json" \
   && ok "estate.dev.json porte schema:1 et sa provenance" || ko "en-tête d'inventaire incorrect"
+
+# fix round 1 (revue Task 7) — dixième vert vacant du chantier : la branche
+# `else` d'estate_gouvernance (recopie classification/exposure du registre
+# vers la lignée gouvernée) tournait à CHAQUE scan de ce fichier (comptes est
+# gouvernée dans la fixture par défaut, section 3) sans qu'AUCUNE assertion
+# ne lise ce qu'elle produit. Mutation du relecteur : remplacer les deux
+# valeurs par "BOGUS" dans estate_gouvernance laissait la suite
+# intégralement verte. classification/exposure SONT la posture que la chaîne
+# aval oppose — une valeur fausse recopiée en silence produirait un dépôt
+# qui déclare une posture qu'il n'a pas.
+python3 -c '
+import json,sys
+d=json.load(open(sys.argv[1]))
+for l in d["lignees"]:
+    if l["nom"]=="comptes":
+        assert l["classification"]=="M", l.get("classification")
+        assert l["exposure"]=="internal", l.get("exposure")
+        break
+else:
+    sys.exit("comptes absente de l'\''inventaire")
+' "$TMP/out/estate.dev.json" \
+  && ok "comptes gouvernée porte classification=M et exposure=internal, recopiées du registre" \
+  || ko "classification/exposure absentes ou fausses sur une lignée gouvernée"
 # les CINQ canaris de identifiers (token/openIdClaims/httpsCertificate/clé
 # inconnue — tous masqués — PLUS ipAddressRange, qui elle DOIT apparaître :
 # ce n'est pas un secret) et le canari accessTokens (jamais lu nulle part).
@@ -496,6 +519,23 @@ else:
 ' "$TMP/out/estate.dev.json" \
   && ok "comptes (OK hors gouvernance) bascule CLASSIFICATION_UNGOVERNED — absente du registre (R2)" \
   || ko "comptes n'a pas basculé CLASSIFICATION_UNGOVERNED"
+
+# moitié négative (fix round 1) : une lignée NON gouvernée ne porte NI
+# classification NI exposure — la branche `if e is None` d'estate_gouvernance
+# ne les écrit jamais, elle ne fait basculer que le verdict.
+python3 -c '
+import json,sys
+d=json.load(open(sys.argv[1]))
+for l in d["lignees"]:
+    if l["nom"]=="comptes":
+        assert "classification" not in l, l
+        assert "exposure" not in l, l
+        break
+else:
+    sys.exit("comptes absente de l'\''inventaire")
+' "$TMP/out/estate.dev.json" \
+  && ok "comptes NON gouvernée ne porte NI classification NI exposure" \
+  || ko "classification/exposure présentes sur une lignée non gouvernée"
 
 [ ! -f "$TMP/out/contrats/comptes-1.0.0.openapi.yaml" ] \
   && ok "une lignée OK mais NON GOUVERNÉE ne produit PAS de contrat (R2)" \
