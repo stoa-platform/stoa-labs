@@ -299,12 +299,17 @@ SCAN="$REPO/scripts/scan-parc.sh"
 # équipe (aucune ambiguïté), pour ne rien ajouter aux refus des sections
 # précédentes. La section 6 (gouvernance) SURCHARGE ces deux knobs.
 mkdir -p "$TMP/gov-default" "$TMP/plat-default/ansible"
+# classification=VH / exposure=internet (fix round 2, revue Task 7) : PAS
+# M/internal — ce couple-là est précisément ce qu'un code faux écrirait « au
+# hasard », coïncidant par accident avec une implémentation qui ignorerait le
+# registre. VH+internet ne ressemble à aucun défaut plausible dans la
+# taxonomie du dépôt (VH/H/M × internal/external/internet).
 cat > "$TMP/gov-default/registre.yaml" <<'YML'
 apis:
   - owner: toto
     api: comptes
-    classification: M
-    exposure: internal
+    classification: VH
+    exposure: internet
 YML
 cat > "$TMP/plat-default/ansible/providers.dev.yml" <<'YML'
 providers:
@@ -349,19 +354,31 @@ sys.exit(0 if d.get("schema")==1 and d["provenance"]["env"]=="dev" else 1)' "$TM
 # intégralement verte. classification/exposure SONT la posture que la chaîne
 # aval oppose — une valeur fausse recopiée en silence produirait un dépôt
 # qui déclare une posture qu'il n'a pas.
+#
+# fix round 2 (re-revue) : PRÉSENCE ET VALEUR ne suffisent pas à prouver la
+# PROVENANCE — une assertion qui écrit "M"/"internal" en dur serait satisfaite
+# aussi bien par le code correct QUE par une mutation qui code ces deux
+# valeurs en dur dans estate_gouvernance (essai B du re-relecteur, suite
+# restée 51/0). L'assertion lit donc DÉSORMAIS le registre lui-même
+# ($TMP/gov-default/registre.yaml) et compare l'inventaire À CES valeurs —
+# jamais des littéraux recopiés ici. Un code qui ignore le registre (ou qui
+# code une valeur en dur) diverge dès que la fixture change, il ne peut plus
+# coïncider par accident.
 python3 -c '
-import json,sys
+import json,sys,yaml
+reg = yaml.safe_load(open(sys.argv[2]))
+attendu = next(e for e in (reg.get("apis") or []) if e.get("api")=="comptes")
 d=json.load(open(sys.argv[1]))
 for l in d["lignees"]:
     if l["nom"]=="comptes":
-        assert l["classification"]=="M", l.get("classification")
-        assert l["exposure"]=="internal", l.get("exposure")
+        assert l["classification"]==attendu["classification"], (l.get("classification"), attendu["classification"])
+        assert l["exposure"]==attendu["exposure"], (l.get("exposure"), attendu["exposure"])
         break
 else:
     sys.exit("comptes absente de l'\''inventaire")
-' "$TMP/out/estate.dev.json" \
-  && ok "comptes gouvernée porte classification=M et exposure=internal, recopiées du registre" \
-  || ko "classification/exposure absentes ou fausses sur une lignée gouvernée"
+' "$TMP/out/estate.dev.json" "$TMP/gov-default/registre.yaml" \
+  && ok "comptes gouvernée porte EXACTEMENT classification/exposure du registre (dérivées, pas en dur)" \
+  || ko "classification/exposure divergent du registre — présence/valeur ne suffit pas, la provenance a manqué"
 # les CINQ canaris de identifiers (token/openIdClaims/httpsCertificate/clé
 # inconnue — tous masqués — PLUS ipAddressRange, qui elle DOIT apparaître :
 # ce n'est pas un secret) et le canari accessTokens (jamais lu nulle part).
