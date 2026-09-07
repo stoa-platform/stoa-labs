@@ -148,20 +148,25 @@ pipeline {
 
             # 0) GATEWAY DISPONIBLE ? Le lab la recycle toutes les ~20 min (keepalive
             #    licence trial) et un rolling restart chez le client produit la même
-            #    fenêtre : attendre son retour (max 5 min) AVANT de consommer
-            #    l'identité — plutôt qu'échouer au milieu du play sur un
-            #    « Connection refused » cryptique. /health répond 200 sans auth.
-            i=0
-            while :; do
-              HC="$(curl -s -o /dev/null -m 5 -w '%{http_code}' "$APIM_API_BASE/health" || true)"
-              # 200 = up (accès direct) ; 401 = up ET l'OAuth2 du proxy est déjà
-              # enforce (on sonde SANS token — le 401 est la preuve de vie du proxy).
-              if [ "$HC" = 200 ] || [ "$HC" = 401 ]; then break; fi
-              i=$((i+1))
-              if [ "$i" -ge 60 ]; then echo "  ✗ gateway toujours injoignable après 5 min ($APIM_API_BASE/health -> $HC)"; exit 1; fi
-              if [ "$i" -eq 1 ]; then echo "  (gateway indisponible — recyclage en cours ? attente du retour, max 5 min…)"; fi
-              sleep 5
-            done
+            #    fenêtre : attendre son retour AVANT de consommer l'identité — plutôt
+            #    qu'échouer au milieu du play sur un « Connection refused » cryptique.
+            #
+            #    UNE SEULE implémentation : ci/lib/preflight.sh, la MÊME que
+            #    ci/Jenkinsfile.selfservice. Ce bloc sondait ici `/health` EN DUR,
+            #    cinq minutes durant, sans aucun knob — état antérieur rendu par le
+            #    merge 5d34299. Chez un client dont l'API d'admin est proxifiée SUR
+            #    la gateway et dont `/health` est filtré en amont, ce build échouait
+            #    pour une raison étrangère au travail demandé : APIM_PREFLIGHT=off,
+            #    APIM_PREFLIGHT_URL et APIM_PREFLIGHT_CODES visent une autre sonde
+            #    de vie (401 sans jeton = preuve de vie d'un proxy OAuth2 enforce).
+            #
+            #    LE PALIER EST PASSÉ EN 2e ARGUMENT : APIM_PREFLIGHT_URL est un
+            #    GABARIT (`__ENV__` y est substitué), parce qu'une globale de site
+            #    porte UNE valeur pour TOUS les builds. Vide est licite ici (API
+            #    mono-palier) — mais alors un gabarit portant `__ENV__` est REFUSÉ,
+            #    jamais sondé littéralement.
+            . ci/lib/preflight.sh
+            apim_preflight "$APIM_API_BASE" "${ENVIRONMENT:-}" || exit 1
 
             # IDENTITÉ NOMINATIVE → TOKEN VAULT (voie B si JWT fourni, sinon voie A).
             # DEBUG : exporte STOA_DEBUG (lib + rôle Ansible) et pose la verbosité ansible.

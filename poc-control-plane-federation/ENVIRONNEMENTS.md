@@ -652,6 +652,46 @@ nom) ; `APIM_TEAM` (borné par le token) ; `APIM_TOKEN_TTL_MIN` (180 s). ⚠ Ne
 PAS réutiliser `APIM_DIRECT_BASE_TPL` (chaîne des APIs) pour les applications :
 sur ce lab elle vise `wm-mock-prod`.
 
+**Knobs du préflight de joignabilité** (globales de site, déclarées dans
+`scripts/setup-jenkins-globals.sh` — `--help` les décrit) — une seule
+implémentation, `ci/lib/preflight.sh`, appelée par `selfservice` **et** par
+`publish-api`, avec **le palier en 2ᵉ argument** :
+
+| knob | ce qu'il fait |
+|---|---|
+| `APIM_PREFLIGHT=off` | ne sonde pas du tout (**insensible à la casse** : `Off`, `OFF` aussi). Le build l'écrit : `préflight de joignabilité : DÉSACTIVÉ` — **le même marqueur** que le chemin actif, jamais un silence (les preuves live s'ancrent dessus). |
+| `APIM_PREFLIGHT_URL` | vise **une autre sonde de vie** que `<base>/health`. ⚠ **C'est un GABARIT par palier, pas une URL plate** : `__ENV__` y est substitué par le palier du build, comme dans `APIM_PROXY_API` (`wm-admin-__ENV__`) et dans `envs/__ENV__/wm-admin`. Ex. `https://apim-__ENV__.corp/ping`. Une URL **plate** reste acceptée (une seule gateway pour tous les paliers) mais la trace le **dit** : « sonde de SITE, la même pour TOUS les paliers ». Un gabarit **sans palier nommé** est **refusé**, jamais sondé littéralement. ⚠ **La substitution vaut pour CE knob, et pour lui seul** : la base d'admin par défaut est reçue **telle quelle** de l'appelant (cf. l'encadré ci-dessous). |
+| `APIM_PREFLIGHT_CODES` | codes qui valent preuve de vie (défaut « 200 401 ») — un **401 sans jeton EST** la preuve de vie d'un proxy dont l'OAuth2 est déjà enforce. |
+| `APIM_PREFLIGHT_TRIES` | nombre d'essais (défaut 60, **borné à 3600**). ⚠ **Un essai coûte jusqu'à 10 s, pas 5** : le timeout du `curl -m 5`, consommé **entier** quand l'hôte ne répond pas (le cas visé), **puis** l'attente de 5 s. Le défaut vaut donc **jusqu'à ~10 minutes**, pas 5 — l'ancien chiffre sous-estimait d'un facteur 2. |
+
+Leur absence est un état normal : le défaut est conservé.
+⚠ **Pourquoi le gabarit n'est pas un détail.** Une globale de contrôleur porte
+UNE valeur pour TOUS les builds, alors que la base réellement sondée est **par
+palier**. Une `APIM_PREFLIGHT_URL` plate posée en globale — ce que cette page
+prescrivait — faisait sonder **le même palier depuis les quatre autres** : cinq
+environnements lus vivants parce qu'un seul l'était, et l'argument que
+l'appelant prend la peine de résoudre ignoré en silence.
+⚠ **La substitution n'appartient QU'à `APIM_PREFLIGHT_URL`.** Le premier jet
+l'appliquait aussi à la branche par défaut `<base de l'appelant>/health` : la
+lib **réparait** alors en silence une base que personne n'avait résolue —
+`APIM_API_BASE` / `APIM_PROXY_BASE` de `publish-api` sont des globales de
+**SITE**, que rien ne résout par palier. Une base portant `__ENV__` est donc
+désormais **refusée**, jamais réparée, et le refus **nomme laquelle des deux
+origines** est en cause : accuser `APIM_PREFLIGHT_URL` quand l'exploitant ne
+l'a jamais posée l'envoie chercher un knob qui n'existe pas. Résoudre le palier
+reste le travail de **l'appelant** — c'est ce que fait
+`scripts/selfservice-palier-gate.sh` avant d'émettre `APIM_API_BASE`.
+⚠ Chez un client dont l'API d'admin est **proxifiée SUR la gateway** et dont
+`/health` est filtré en amont (hors VIP), sans ces knobs le build attend
+**~10 minutes** puis échoue **pour une raison étrangère au travail demandé** —
+mode de panne rencontré le 2026-09-07. `publish-api` sondait alors `/health`
+**en dur** et n'en portait aucun : le merge `5d34299` lui avait rendu une
+version antérieure du bloc, pendant que `selfservice` gardait la bonne. La
+porte qui l'aurait vu — les assertions de câblage de
+`ci/test-proxy-base-et-preflight.sh` — existait mais **rien ne l'appelait** ;
+elle est branchée depuis le 2026-09-07 sous `make lint-ci` (étape 18/18,
+`STOA_PREFLIGHT_ONLY=1`).
+
 **Rollout sur ce lab (l'ordre compte)** — joué le 2026-09-02 :
 
 ```bash

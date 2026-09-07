@@ -494,68 +494,21 @@ pipeline {
               #    gateway sans le credential du palier — le F4-canari) et ANNONCÉ par une
               #    ligne inconditionnelle (un préflight qui réussit du premier coup
               #    n'imprimait rien : la preuve live s'ancre sur ce marqueur).
-              #    Le lab la recycle toutes les ~20 min (keepalive
-              #    licence trial) et un rolling restart chez le client produit la même
-              #    fenêtre : attendre son retour AVANT de consommer l'identité —
-              #    plutôt qu'échouer au milieu du play sur un « Connection refused »
-              #    cryptique.
               #
-              #    OPTIONNEL — APIM_PREFLIGHT=off. Chez un client, /health peut être
-              #    injoignable depuis la VIP, ou filtré en amont : le build mourrait
-              #    alors plusieurs minutes durant pour une raison étrangère au travail
-              #    demandé. Plutôt que de renoncer au bénéfice, APIM_PREFLIGHT_URL et
-              #    APIM_PREFLIGHT_CODES permettent de viser UNE AUTRE sonde de vie.
-              # Comparaison insensible à la casse : Jenkins ne normalise pas la
-              # casse d'un paramètre `string`, et "Off"/"OFF" ne désactivaient
-              # rien avant ce correctif — silencieusement.
-              APIM_PREFLIGHT_LC="$(printf '%s' "${APIM_PREFLIGHT:-on}" | tr '[:upper:]' '[:lower:]')"
-              if [ "$APIM_PREFLIGHT_LC" = "off" ]; then
-                echo "  (préflight de joignabilité désactivé — APIM_PREFLIGHT=off)"
-              else
-                PF_URL="${APIM_PREFLIGHT_URL:-}"
-                [ -n "$PF_URL" ] || PF_URL="$APIM_API_BASE/health"
-                # 200 = up (accès direct) ; 401 = up ET l'OAuth2 du proxy est déjà
-                # enforce (on sonde SANS token — le 401 est la preuve de vie du proxy).
-                PF_CODES="${APIM_PREFLIGHT_CODES:-200 401}"
-                PF_MAX="${APIM_PREFLIGHT_TRIES:-60}"
-                # `[ "$i" -ge "$PF_MAX" ]` sous sh : si PF_MAX n'est pas un entier
-                # décimal canonique, `-ge` rend soit 2 (ni vrai ni faux — la
-                # branche de sortie n'est JAMAIS prise, boucle à l'infini), soit
-                # une interprétation OCTALE surprenante dans `$((PF_MAX*5))` plus
-                # bas (`08` : arithmétique invalide, l'étape meurt sur un message
-                # cryptique — exactement ce que ce garde-fou doit éviter). `0*`
-                # rejette `0`/`00` ET tout zéro en tête (`08`, `060`). On valide
-                # AVANT d'entrer dans la boucle ; repli sur le défaut, avec avertissement.
-                case "$PF_MAX" in
-                  ''|*[!0-9]*|0*) echo "  ⚠ APIM_PREFLIGHT_TRIES='$PF_MAX' n'est pas un entier positif — repli sur le défaut (60)"; PF_MAX=60 ;;
-                esac
-                # Borne haute : une valeur énorme mais numérique (ex.
-                # 99999999999999999999) passe le garde-fou ci-dessus et rouvre
-                # le même mode de panne — une boucle non bornée en pratique
-                # (aucun timeout de build n'est posé dans les job XML). La
-                # LONGUEUR est testée avant toute comparaison arithmétique :
-                # au-delà de 4 chiffres la valeur dépasse déjà 3600, sans
-                # risquer un débordement de `-gt` sur un entier à 20 chiffres.
-                case "$PF_MAX" in
-                  ?????*) echo "  ⚠ APIM_PREFLIGHT_TRIES='$PF_MAX' dépasse la borne raisonnable — repli sur 3600"; PF_MAX=3600 ;;
-                esac
-                if [ "$PF_MAX" -gt 3600 ]; then
-                  echo "  ⚠ APIM_PREFLIGHT_TRIES='$PF_MAX' dépasse la borne raisonnable — repli sur 3600"
-                  PF_MAX=3600
-                fi
-                echo "  préflight de joignabilité : $PF_URL (codes attendus : $PF_CODES, max $PF_MAX essais)"
-                i=0
-                while :; do
-                  HC="$(curl -s -o /dev/null -m 5 -w '%{http_code}' "$PF_URL" || true)"
-                  for C in $PF_CODES; do
-                    if [ "$HC" = "$C" ]; then break 2; fi
-                  done
-                  i=$((i+1))
-                  if [ "$i" -ge "$PF_MAX" ]; then echo "  ✗ gateway toujours injoignable après $((PF_MAX*5))s ($PF_URL -> $HC ; attendu : $PF_CODES)"; exit 1; fi
-                  if [ "$i" -eq 1 ]; then echo "  (gateway indisponible — recyclage en cours ? attente du retour, max $((PF_MAX*5))s…)"; fi
-                  sleep 5
-                done
-              fi
+              #    UNE SEULE implémentation : ci/lib/preflight.sh. Les knobs
+              #    (APIM_PREFLIGHT / _URL / _CODES / _TRIES), les quatre garde-fous
+              #    mesurés et l'incident client qui les motive y sont documentés. Ce
+              #    bloc a vécu en DOUBLE avec ci/Jenkinsfile.publish-api, où le merge
+              #    5d34299 a rendu une version antérieure — sans knob, sans garde-fou —
+              #    sans que rien ne le dise. Le comportement ici est INCHANGÉ.
+              #
+              #    LE PALIER EST PASSÉ EN 2e ARGUMENT, et c'est $PALIER_ENV — celui
+              #    que la garde a VALIDÉ contre la chaîne, jamais le paramètre brut.
+              #    APIM_PREFLIGHT_URL est un GABARIT (`__ENV__`) : posée en globale
+              #    de site, une URL plate ferait sonder LE MÊME palier depuis tous
+              #    les autres, et la base résolue ci-dessus serait ignorée en silence.
+              . ci/lib/preflight.sh
+              apim_preflight "$APIM_API_BASE" "$PALIER_ENV" || exit 1
 
 
               # 4) TTL — le préflight a pu durer (10 s par essai au pire) ; le mount ldap

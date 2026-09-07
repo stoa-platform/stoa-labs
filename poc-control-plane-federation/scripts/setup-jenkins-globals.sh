@@ -40,7 +40,68 @@
 #
 #   Authentification : JENKINS_USER + JENKINS_TOKEN si l'instance les exige
 #   (le lab est anonyme). Le jeton n'est jamais en argv : fichier de config curl.
+#
+# LE PRÉFLIGHT DE JOIGNABILITÉ (APIM_PREFLIGHT*), ET POURQUOI IL EST DOCUMENTÉ ICI
+# Avant de consommer une identité nominative (login Vault, mot de passe
+# d'annuaire saisi à la main), `publish-api` et `selfservice` sondent la
+# gateway — une seule implémentation, `ci/lib/preflight.sh`. Chez un client dont
+# l'API d'admin est proxifiée SUR la gateway, `/health` n'est pas joignable
+# depuis l'externe (filtré en amont, hors VIP) : le build attend DIX MINUTES
+# puis échoue, pour une raison ÉTRANGÈRE au travail demandé. Les quatre knobs
+# qui l'évitent existaient déjà dans le code, mais aucune procédure ne les
+# nommait : un intégrateur qui la déroulait ne pouvait pas savoir qu'ils
+# existent. C'est le mode de panne rencontré (incident client, 2026-09-07).
+#
+#   APIM_PREFLIGHT=off      ne sonde pas du tout (comparaison insensible à la
+#                           casse : « Off », « OFF » désactivent aussi). Le
+#                           build le DIT : « préflight de joignabilité :
+#                           DÉSACTIVÉ » — jamais un silence.
+#   APIM_PREFLIGHT_URL      viser UNE AUTRE sonde de vie que <base>/health.
+#                           ⚠ C'EST UN GABARIT PAR PALIER, PAS UNE URL PLATE :
+#                           `__ENV__` y est remplacé par le palier du build,
+#                           comme dans APIM_PROXY_API (wm-admin-__ENV__) et dans
+#                           les sous-chemins Vault (envs/__ENV__/wm-admin).
+#                           Une globale de contrôleur vaut pour TOUS les
+#                           builds : une valeur plate ferait sonder LE MÊME
+#                           palier depuis les quatre autres, et cinq
+#                           environnements se liraient vivants alors qu'un seul
+#                           l'est. Exemple : https://apim-__ENV__.corp/ping
+#                           (une URL plate reste acceptée quand il n'y a
+#                           qu'une gateway pour tous les paliers — la trace le
+#                           dit alors : « sonde de SITE, la même pour TOUS les
+#                           paliers »).
+#                           ⚠ LA SUBSTITUTION VAUT POUR CE KNOB, ET POUR LUI
+#                           SEUL. Sans APIM_PREFLIGHT_URL, la lib sonde
+#                           <base>/health où <base> est reçue TELLE QUELLE de
+#                           l'appelant : elle ne la répare pas. Une base
+#                           portant encore __ENV__ (APIM_API_BASE ou
+#                           APIM_PROXY_BASE posées ici, en globales de SITE,
+#                           que rien ne résout par palier) est donc REFUSÉE,
+#                           et le refus dit que la faute est dans LA BASE —
+#                           pas dans un knob que vous n'avez pas posé ;
+#   APIM_PREFLIGHT_CODES    codes qui valent preuve de vie (défaut « 200 401 » :
+#                           un 401 SANS jeton EST la preuve de vie d'un proxy
+#                           dont l'OAuth2 est déjà enforce) ;
+#   APIM_PREFLIGHT_TRIES    nombre d'essais (défaut 60, borné à 3600 par la
+#                           lib). ⚠ UN ESSAI COÛTE JUSQU'À 10 s, pas 5 : le
+#                           timeout du curl (5 s, consommé ENTIER quand l'hôte
+#                           ne répond pas — le cas visé) PUIS l'attente (5 s).
+#                           Le défaut vaut donc jusqu'à ~10 minutes, pas 5.
+#
+# Ces quatre-là sont OPTIONNELLES : absentes, la chaîne garde son comportement
+# par défaut, et le rapport final ne les annonce pas « manquantes ».
 set -euo pipefail
+
+# L'aide = l'entête de commentaire ENTIER (ligne 1 exclue : le shebang), coupé à
+# la première ligne de code. Aucun compte de lignes en dur : un compte se périme
+# dès qu'on documente une variable de plus, et il se périme EN SILENCE.
+aide(){ awk 'NR==1{next} /^#/{sub(/^# ?/,""); print; next} {exit}' "$0"; }
+# `--help` AVANT tout prérequis : une aide qui exige JENKINS_UI pour s'afficher
+# n'est pas une aide — or c'est elle qui NOMME les knobs à un intégrateur qui
+# n'a encore rien posé. (Mesuré le 2026-09-07 : `--help` refusait sans elle.)
+for _a in ${@+"$@"}; do
+  case "$_a" in -h|--help) aide; exit 0 ;; esac
+done
 
 JENKINS_UI="${JENKINS_UI:?JENKINS_UI requis (ex. https://jenkins.client)}"
 JENKINS_UI="${JENKINS_UI%/}"
@@ -54,15 +115,27 @@ die(){ printf '\nREFUS: %s\n' "$*" >&2; exit 2; }
 # Les variables de SITE que la chaîne lit. Ne pas y mettre de secret : ce sont
 # des adresses, des chemins et des noms. La liste sert à --from-env et au
 # rapport final ; un nom hors liste reste posable explicitement.
+# Le préflight de joignabilité (APIM_PREFLIGHT*) est décrit dans l'entête de ce
+# fichier — donc dans `--help`, qui est le seul endroit où un intégrateur qui
+# n'a encore rien posé ira le lire.
 CONNUES="
 GIT_HOST GIT_WEB_HOST GIT_REPO GIT_BASE GIT_SUBDIR GITEA_CREDENTIALS_ID GITEA_SERVICE_LOGINS
 FORGE_CRED_KIND FORGE_API_AUTH FORGE_USER
 VAULT_ADDR JENKINS_UI ITSM_URL
 APIM_API_BASE APIM_DATA_BASE APIM_PROXY_HOST APIM_PROXY_API APIM_PROXY_VER APIM_PROXY_PATH APIM_TERMINUS_BASE
+APIM_PREFLIGHT APIM_PREFLIGHT_URL APIM_PREFLIGHT_CODES APIM_PREFLIGHT_TRIES
 APPLY_TENANT APPLY_JOB APPLY_ADMIN_VIA VAULT_USER_AUTH_MOUNT MANIFEST_DIR INVENTORY STOA_ENV_CHAIN_FILE
 CI_COMMIT_EMAIL CI_COMMIT_NAME
 GOVERNANCE_REPO GOVERNANCE_PATH
 "
+
+# Parmi les CONNUES, celles dont l'ABSENCE est un état normal : la chaîne garde
+# alors son comportement par défaut, et on ne les pose que pour en SORTIR. Elles
+# se posent et se relisent comme les autres (--from-env les prend) ; cette liste
+# ne sert qu'au rapport final, pour ne pas les annoncer manquantes au même titre
+# qu'une adresse sans laquelle le pipeline refuse — ce serait faux, et un
+# rapport qui crie au loup ne se lit plus.
+OPTIONNELLES="APIM_PREFLIGHT APIM_PREFLIGHT_URL APIM_PREFLIGHT_CODES APIM_PREFLIGHT_TRIES"
 
 # ── le canal : console de script Jenkins, jeton par fichier ──────────────────
 CFG="$TMP/curl.cfg"
@@ -113,7 +186,13 @@ while [ $# -gt 0 ]; do
     --print)     MODE=print ;;
     --from-env)  MODE=from-env ;;
     --file)      MODE=fichier; FICHIER="${2:?--file exige un chemin}"; shift ;;
-    -h|--help)   sed -n '1,50p' "$0"; exit 0 ;;
+    # `aide` et non `sed -n '1,50p'` : un compte de lignes en dur RATE toute
+    # documentation ajoutee plus bas — c'est arrive le 2026-09-07, la
+    # description des knobs du preflight etant inseree aux lignes 58-77, hors
+    # de la fenetre. L'aide imprime desormais TOUT l'entete de commentaire, du
+    # shebang jusqu'a la premiere ligne de code : elle ne peut plus rater un
+    # bloc, et rien n'est a mettre a jour quand l'entete grandit.
+    -h|--help)   aide; exit 0 ;;
     *=*)         PAIRES+=("$1") ;;
     *)           die "ARGUMENT_INCONNU : '$1' (attendu --print, --from-env, --file F, ou CLE=valeur)" ;;
   esac
@@ -175,11 +254,16 @@ done
 echo
 echo "== ce que la chaîne lira =="
 APRES="$TMP/apres"; lire_toutes > "$APRES" || true
-MANQUE=""
+MANQUE=""; MANQUE_OPT=""
 for k in $CONNUES; do
-  grep -q "^${k}=" "$APRES" 2>/dev/null || MANQUE="$MANQUE $k"
+  grep -q "^${k}=" "$APRES" 2>/dev/null && continue
+  case " $OPTIONNELLES " in
+    *" $k "*) MANQUE_OPT="$MANQUE_OPT $k" ;;
+    *)        MANQUE="$MANQUE $k" ;;
+  esac
 done
 [ -n "$MANQUE" ] && printf '  non posées (le pipeline devra les déclarer, ou le script refusera) :%s\n' "$MANQUE"
+[ -n "$MANQUE_OPT" ] && printf '  non posées, OPTIONNELLES (le défaut est conservé — à poser seulement pour en sortir) :%s\n' "$MANQUE_OPT"
 
 echo
 printf 'RÉSULTAT : %d posées / %d en échec\n' "$PASS" "$FAIL"
