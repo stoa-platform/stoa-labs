@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # test-apim-base.sh — preuve X/X de scripts/lib/apim-base.sh : composition de
-# la base d'admin, dérivation de la voie et du mode d'auth, et les trois refus
-# nommés. TOUT EN LOCAL, aucun réseau.
+# la base d'admin, dérivation de la voie et du mode d'auth, et les quatre
+# refus nommés. TOUT EN LOCAL, aucun réseau.
 set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 LIB="$REPO/scripts/lib/apim-base.sh"
@@ -40,7 +40,11 @@ R="$(run ENVIRONMENT=prod ADMIN_VIA=proxy-oauth2 APIM_TERMINUS=prod \
 [ "$R" = "0|https://prod.adm/rest/apigateway|direct|basic" ] \
   && ok "terminus : direct/basic malgré ADMIN_VIA=proxy-oauth2" || ko "terminus : rendu '$R'"
 
-echo "== 4. les trois refus nommés =="
+echo "== 4. les quatre refus nommés =="
+run ADMIN_VIA=direct APIM_TERMINUS=prod >/dev/null
+grep -q '^REFUS: ENV_REQUIS' "$ERRF" && ok "ENVIRONMENT absent ⇒ ENV_REQUIS (vert vacant fermé)" \
+  || ko "ENVIRONMENT absent : stderr='$(cat "$ERRF")'"
+
 run ENVIRONMENT=dev ADMIN_VIA= APIM_TERMINUS=prod >/dev/null
 grep -q '^REFUS: VIA_INCONNU' "$ERRF" && ok "ADMIN_VIA vide ⇒ VIA_INCONNU (aucun repli silencieux)" \
   || ko "ADMIN_VIA vide : stderr='$(cat "$ERRF")'"
