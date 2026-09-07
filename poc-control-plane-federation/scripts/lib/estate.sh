@@ -64,3 +64,42 @@ json.dump({"lignees": sortie}, open(sys.argv[2], "w"),
           ensure_ascii=False, indent=2, sort_keys=True)
 PY
 }
+
+# estate_applications <liste JSON> <répertoire des détails> <sortie JSON>
+#
+# AUCUNE VALEUR D'IDENTIFIANT NE TRAVERSE. La 10.15 masque l'apiAccessKey à
+# tout lecteur qui n'est pas l'owner (32 astérisques) — écrire ce masque serait
+# un vert menteur. Et une clé d'API n'a de toute façon rien à faire dans Git :
+# le manifeste porte le CHEMIN Vault, jamais la valeur.
+# L'IP, elle, n'est pas un secret : elle est conservée.
+estate_applications(){
+  local src="$1" det="$2" out="$3"
+  python3 - "$src" "$det" "$out" <<'PY'
+import json, os, sys
+SANS_VALEUR = {"apiKey", "oauth2Token", "jwt", "certificate", "sslCertificate"}
+liste = json.load(open(sys.argv[1])) or {}
+out = []
+for a in (liste.get("applications") or []):
+    det_p = os.path.join(sys.argv[2], a["id"] + ".json")
+    det = (json.load(open(det_p)).get("applications") or [{}])[0] if os.path.exists(det_p) else a
+    ownert = det.get("ownerType") or ""
+    ids = []
+    for i in (det.get("identifiers") or []):
+        k = i.get("key") or ""
+        if k in SANS_VALEUR:
+            ids.append({"type": k, "valeur":
+                        "CLE_MASQUEE_PROPRIETAIRE_UTILISATEUR" if ownert == "user" else "NON_TRANSPORTEE"})
+        else:
+            v = i.get("value")
+            ids.append({"type": k, "valeurs": v if isinstance(v, list) else [v]})
+    out.append({
+        "nom": det.get("name") or a.get("name") or "", "id": det.get("id") or a.get("id") or "",
+        "ownerType": ownert, "owner": det.get("owner") or "",
+        "souscriptions": sorted(det.get("consumingAPIs") or []),
+        "identifiants": sorted(ids, key=lambda x: x["type"]),
+        "verdict": "APP_PROPRIETE_INDIVIDUELLE" if ownert == "user" else "OK",
+    })
+json.dump({"applications": sorted(out, key=lambda x: x["nom"])},
+          open(sys.argv[3], "w"), ensure_ascii=False, indent=2, sort_keys=True)
+PY
+}

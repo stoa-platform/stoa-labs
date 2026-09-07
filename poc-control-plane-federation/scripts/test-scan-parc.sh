@@ -278,5 +278,48 @@ grep -q 'SECRET-QUI-NE-DOIT-PAS-FUIR' "$TMP/out/estate.dev.json" \
   && ko "FUITE : la valeur d'un identifiant d'application est dans l'inventaire" \
   || ok "aucune valeur d'identifiant dans l'inventaire (NON_TRANSPORTEE)"
 
+echo "== 4. applications, contrats, rapport =="
+# comptes, pas paiements : cf. rulings-a-porter.md R1. paiements est
+# LIGNEE_PARTIELLEMENT_ETRANGERE (v1.0.1 en Default) — elle ne produit AUCUN
+# contrat, c'est correct ; comptes est la seule lignée OK du jeu d'essai.
+rm -rf "$TMP/out"; scan SCAN_PARC_ATTENDU=10:1 >/dev/null 2>&1
+python3 -c '
+import json,sys
+a=json.load(open(sys.argv[1]))["applications"][0]
+ids={i["type"]: i for i in a["identifiants"]}
+assert a["ownerType"]=="team" and a["owner"]=="toto", a
+assert ids["apiKey"]["valeur"]=="NON_TRANSPORTEE", ids
+assert ids["ip"]["valeurs"]==["10.0.0.0/8"], ids
+' "$TMP/out/estate.dev.json" \
+  && ok "application : owner/ownerType lus, clé NON_TRANSPORTEE, IP conservée (ce n'est pas un secret)" \
+  || ko "forme de l'application incorrecte"
+
+[ -f "$TMP/out/contrats/comptes-1.0.0.openapi.yaml" ] \
+  && ok "contrat extrait d'apiDefinition pour une lignée OK" || ko "contrat manquant"
+[ ! -f "$TMP/out/contrats/offline-api-1.0.0.openapi.yaml" ] \
+  && ok "aucun contrat pour une API INACTIVE (verdict non-OK ⇒ rien n'est produit)" \
+  || ko "un contrat a été extrait pour une API inactive"
+python3 -c '
+import hashlib,json,sys
+d=json.load(open(sys.argv[1]))
+vu=False
+for l in d["lignees"]:
+    if l["nom"]!="comptes": continue
+    for v in l["versions"]:
+        c=v.get("contrat")
+        # PAS un "if c:" — un contrat tu (bloc absent, silencieusement) doit
+        # rougir ici, pas passer inaperçu (vert vacant mesuré : le brief le
+        # laissait passer, cf. rulings-a-porter.md R13).
+        assert c, "bloc contrat absent pour comptes@%s" % v["version"]
+        h=hashlib.sha256(open(sys.argv[2]+"/"+c["fichier"].split("/")[-1],"rb").read()).hexdigest()
+        assert h==c["sha256"], (h,c)
+        vu=True
+assert vu, "lignée comptes absente de l'\''inventaire"
+' "$TMP/out/estate.dev.json" "$TMP/out/contrats" 2>/dev/null \
+  && ok "sha256 du contrat vérifiable depuis l'inventaire" || ko "sha256 absent ou faux"
+
+grep -q 'API_MULTI_EQUIPES' "$TMP/out/rapport.md" && grep -q 'assign-api-team.sh' "$TMP/out/rapport.md" \
+  && ok "rapport.md nomme les refus ET le geste proposé" || ko "rapport.md incomplet"
+
 printf '\n%d ✅  %d ❌\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
