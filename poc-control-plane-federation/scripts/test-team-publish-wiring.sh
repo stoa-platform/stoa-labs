@@ -33,6 +33,11 @@
 # `bash scripts/...`), soit une exclusion explicite des lignes de commentaire.
 #
 #   ./scripts/test-team-publish-wiring.sh
+# `A && ok || ko` (SC2015) est l'idiome des scripts de preuve du repo ;
+# SC2016 vise les quotes SIMPLES délibérées (on cherche le TEXTE `${…}`).
+# Directive de FICHIER, posée le 2026-09-09 en entrant sous `make lint-ci` :
+# la suite est désormais shellcheckée comme les autres livrables.
+# shellcheck disable=SC2015,SC2016
 set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 JOB="$REPO/ci/jenkins/team-publish.job.xml"
@@ -49,7 +54,7 @@ ko(){ FAIL=$((FAIL+1)); printf '  ❌ %s\n' "$*"; }
 # section ajoutée/retirée DOIT mettre à jour ce nombre à la main — un oubli
 # fait virer le §26 au rouge, ce qui EST le comportement voulu (un rappel,
 # pas un bug).
-EXPECTED_CHECKS=118
+EXPECTED_CHECKS=121
 
 [ -f "$JOB" ] || { echo "job introuvable : $JOB"; exit 2; }
 [ -f "$JF" ]  || { echo "Jenkinsfile introuvable : $JF"; exit 2; }
@@ -510,15 +515,35 @@ grep -qF "cfg['secret'] = secret" "$REPO/scripts/team-apply.sh" \
   || ko "aucun mécanisme de secret dans l'enregistrement du hook"
 
 echo
-echo "== 21. les DEUX clones (dépôt plateforme ET dépôt d'équipe) sont authentifiés, pas seulement les push =="
+echo "== 21. TOUS les clones sont authentifiés, pas seulement les push =="
+# 2026-09-09 : cette section comptait « exactement 1 clone brut, exactement 2
+# appels à gclone ». Elle a dérivé dès qu'un TROISIÈME dépôt est entré dans le
+# script (le registre de gouvernance), et le rouge disait « nombre inattendu »
+# — un recomptage, alors que le défaut était RÉEL : ce clone-là était ANONYME.
+# Un compte en dur ne dit pas la propriété ; il dit un état du script à une date.
+# Les assertions portent désormais sur la PROPRIÉTÉ : aucun `git clone` ne
+# s'exécute hors du corps de gclone(), et chaque dépôt cloné est nommément
+# passé par gclone. Ajouter un 4e dépôt ne fait plus rougir un compte : ça fait
+# rougir la propriété, et seulement si le clone échappe à gclone.
 NONCOMMENT_GITCLONE=$(grep -vE '^\s*#' "$REPO/scripts/team-publish.sh" | grep -c 'git clone')
 [ "$NONCOMMENT_GITCLONE" -eq 1 ] \
-  && ok "un seul \`git clone\` brut dans le script, celui enveloppé par gclone() (aucun clone anonyme parallèle)" \
-  || ko "nombre de \`git clone\` bruts inattendu (${NONCOMMENT_GITCLONE}, attendu 1 — celui interne à gclone())"
-GCLONE_CALLS=$(grep -cE '^gclone ' "$REPO/scripts/team-publish.sh")
-[ "$GCLONE_CALLS" -eq 2 ] \
-  && ok "gclone (authentifiée) appelée exactement 2 fois — dépôt plateforme ET dépôt d'équipe" \
-  || ko "gclone appelée ${GCLONE_CALLS} fois, attendu 2 — un clone pourrait être resté anonyme"
+  && ok "aucun \`git clone\` brut hors du corps de gclone() (le seul restant EST celui de gclone)" \
+  || ko "${NONCOMMENT_GITCLONE} \`git clone\` bruts : au moins un clone échappe à gclone() et part donc ANONYME"
+# … et celui qui reste est bien DANS gclone(), pas ailleurs : sans ce contrôle,
+# un script qui aurait sorti le clone de la fonction passerait encore à 1.
+awk '/^gclone\(\)/{f=1} f&&/git clone/{print NR; exit}' "$REPO/scripts/team-publish.sh" | grep -q . \
+  && ok "ce \`git clone\` vit bien dans le corps de gclone() (l'unicité ne suffit pas : il faut qu'il soit AU BON ENDROIT)" \
+  || ko "le \`git clone\` restant n'est pas dans gclone() — l'authentification ne l'enveloppe pas"
+# Les trois dépôts, NOMMÉMENT. Le registre de gouvernance est le plus important
+# des trois : c'est l'autorité de classification, et elle doit venir d'un dépôt
+# que l'équipe ne peut pas écrire — souvent PRIVÉ chez un client, donc illisible
+# sans jeton. Anonyme, il rendait REGISTRE_GOUVERNANCE_INACCESSIBLE : fail-closed,
+# donc pas une fuite, mais toute publication devenait impossible hors du lab.
+for _r in 'GIT_REPO' 'WEBHOOK_REPO' 'GOVERNANCE_REPO'; do
+  grep -qE "^gclone .*\\\$\{$_r\}" "$REPO/scripts/team-publish.sh" \
+    && ok "le dépôt \$$_r est cloné par gclone (authentifié)" \
+    || ko "le dépôt \$$_r n'est pas cloné par gclone — clone anonyme"
+done
 
 echo
 echo "== 22. la pause ne réserve AUCUN exécuteur, et son abandon est couvert =="

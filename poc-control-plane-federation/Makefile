@@ -120,6 +120,7 @@ lint-ci:
 	  scripts/test-p6-deny-by-default.sh scripts/test-p7-bout-en-bout.sh \
 	  scripts/test-repo-layout-portabilite.sh scripts/lib/providers-teams.sh scripts/test-providers-teams.sh \
 	  scripts/test-porte-clone-frais.sh \
+	  scripts/test-team-request-wiring.sh scripts/test-team-publish-wiring.sh \
 	  && echo "  ✓ ci/lib + livrables shell G2..G8 + A1 + A2 + A0 + A3 + A4 + A5 + A6 + A7 + P2 + P5 + P6 + P7 propres"
 	@# … et la MÊME étape doit passer sur un CLONE FRAIS. Le shellcheck
 	@# ci-dessus s'exécute là où `.env.lab-users` (0600, hors Git) EXISTE ;
@@ -141,6 +142,15 @@ lint-ci:
 	@# shellchecké — c'est son verdict qui compte, pas son style.
 	@echo "== [7/20] épreuves du câblage de promotion — porte refusée ⇒ moteur jamais lancé (G5)"
 	@bash scripts/test-team-promote-wiring.sh
+	@# … et les DEUX AUTRES câblages de la même famille (demande et publication
+	@# d'équipe). Ils existaient et RIEN ne les appelait : c'est exactement pour
+	@# ça qu'ils avaient dérivé — 65/66 et 118/119 au 2026-09-09, rouges depuis
+	@# le renommage du secret de forge (2026-09-04) et depuis l'ajout du clone du
+	@# registre de gouvernance. Une suite hors porte ne mesure plus rien : elle
+	@# enregistre l'état du jour où on l'a écrite. Ils vivent SOUS l'étape 7,
+	@# sans rang à eux — le compte des étapes et D.11 restent inchangés.
+	@bash scripts/test-team-request-wiring.sh
+	@bash scripts/test-team-publish-wiring.sh
 	@# mocks/webmethods n'est PAS vendored (dépend du module cache Go, comme
 	@# labctl NE l'est PAS ici) : pas de GOPROXY=off. Spec §4.3 promettait
 	@# cette porte hors-ligne branchée dans lint-ci — restée débranchée jusqu'ici.

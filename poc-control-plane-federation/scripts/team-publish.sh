@@ -395,7 +395,14 @@ resolve_deploy_pin "$TMP/team" "$API_NAME" "$ENVN" "$TMP/resolved" 2>"$TMP/pin.e
 # posture déclarée par le manifeste.
 [ -n "$GOVERNANCE_REPO" ] || fail "CHAMP_REQUIS : GOVERNANCE_REPO — le dépôt du registre central de classification. Aucun défaut n'est posé volontairement : publier sous une gouvernance de lab chez un client serait pire qu'un refus. La poser en variable globale du contrôleur Jenkins."
 [ -n "$GOVERNANCE_PATH" ] || fail "CHAMP_REQUIS : GOVERNANCE_PATH — le chemin du registre DANS ce dépôt. Même raison qu'au-dessus."
-git clone -q --depth 1 -b main "${GIT_HOST}/${GOVERNANCE_REPO}.git" "$TMP/governance" 2>"$TMP/gov.err" \
+# AUTHENTIFIÉ comme les deux autres clones (gclone). Il était ANONYME, seul
+# `git clone` brut du script hors du corps de gclone() : sur un lab dont le
+# registre est lisible sans jeton ça marchait, chez un client dont le dépôt de
+# gouvernance est privé le clone échoue et REGISTRE_GOUVERNANCE_INACCESSIBLE
+# refuse TOUTE publication — fail-closed, donc pas une fuite, mais la
+# fonctionnalité entière est inatteignable. Même famille que le préfixe du
+# livrable : vrai au lab, faux chez le client.
+gclone --depth 1 -b main "${GIT_HOST}/${GOVERNANCE_REPO}.git" "$TMP/governance" 2>"$TMP/gov.err" \
   || { cat "$TMP/gov.err" >&2; fail "REGISTRE_GOUVERNANCE_INACCESSIBLE : dépôt '${GOVERNANCE_REPO}' injoignable sur ${GIT_HOST} — la posture de ${API_NAME} ne peut être arbitrée par personne, et une posture non arbitrée est celle que la demande s'est donnée. Rien n'est publié."; }
 GOV_REGISTRY="$TMP/governance/${GOVERNANCE_PATH}"
 [ -f "$GOV_REGISTRY" ] \

@@ -31,6 +31,11 @@
 # au vert (leçon du panel, cf. test-team-publish-wiring.sh §F).
 #
 #   ./scripts/test-team-request-wiring.sh
+# `A && ok || ko` (SC2015) est l'idiome des scripts de preuve du repo ;
+# SC2016 vise les quotes SIMPLES délibérées (on cherche le TEXTE `${…}`).
+# Directive de FICHIER, posée le 2026-09-09 en entrant sous `make lint-ci` :
+# la suite est désormais shellcheckée comme les autres livrables.
+# shellcheck disable=SC2015,SC2016
 set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 JOB="$REPO/ci/jenkins/team-request.job.xml"
@@ -46,7 +51,7 @@ ko(){ FAIL=$((FAIL+1)); printf '  ❌ %s\n' "$*"; }
 # total affiché SANS jamais faire échouer ce script). Toute section
 # ajoutée/retirée DOIT mettre à jour ce nombre à la main — un oubli fait virer
 # le §13 au rouge, ce qui EST le comportement voulu (un rappel, pas un bug).
-EXPECTED_CHECKS=65
+EXPECTED_CHECKS=67
 
 [ -f "$JOB" ] || { echo "job introuvable : $JOB"; exit 2; }
 [ -f "$JF" ]  || { echo "Jenkinsfile introuvable : $JF"; exit 2; }
@@ -254,10 +259,34 @@ fi
 # 2026-09-04 : le secret de la forge porte un nom NEUTRE (un gestionnaire
 # d'identité rend un jeton OU un couple). La PROPRIÉTÉ mesurée reste la même :
 # sans secret, le script refuse en le nommant, il ne part pas travailler.
-grep -qF 'GITEA_TOKEN="${FORGE_SECRET:-${GITEA_TOKEN:-}}"' "$SCRIPT" \
-  && grep -qF 'SECRET_FORGE_REQUIS' "$SCRIPT" \
-  && ok "team-request.sh exige réellement un secret de forge (FORGE_SECRET ou son alias) — refus nommé s'il manque" \
-  || ko "team-request.sh n'exige plus de secret — un build sans credential échouerait loin de sa cause"
+#
+# 2026-09-09 : cette assertion épinglait la LIGNE D'AFFECTATION littérale
+# (`GITEA_TOKEN="${FORGE_SECRET:-…}"`). Le renommage du 2026-09-04 a déplacé le
+# nom à GAUCHE du `=` ; l'assertion a rougi alors que la propriété n'a jamais
+# cessé d'être tenue. Une porte écrite dans le vocabulaire de ce qu'elle garde
+# finit par garantir ce vocabulaire au lieu de la propriété. Elle est donc
+# MESURÉE, plus lue : on exécute le script sans secret et on regarde s'il
+# refuse. Le second appel est le DISCRIMINANT — avec un secret, le refus ne
+# doit PAS tomber ; sans lui, une assertion qui refuserait toujours passerait
+# aussi. HORS LIGNE : la forge vise un port fermé, le refus tombe bien avant.
+# PORTÉE EXACTE, mesurée (ne pas la surestimer) : renommer la variable INTERNE
+# laisse la 1re assertion verte — c'est le gain sur l'ancien grep. Le
+# DISCRIMINANT, lui, épingle le nom du knob PUBLIC `FORGE_SECRET`, et rougit
+# si on le renomme. C'est VOULU : ce nom est le contrat avec Jenkins, le
+# renommer est un changement d'interface qui DOIT se voir.
+_tr_run(){ ( cd "$REPO" && env -i PATH="$PATH" HOME="$HOME" \
+    GIT_HOST=http://127.0.0.1:1 TEAM=equipe-sonde "$@" bash scripts/team-request.sh ) 2>&1; }
+_TR_SANS=$(_tr_run)
+_TR_AVEC=$(_tr_run FORGE_SECRET=stub)
+printf '%s' "$_TR_SANS" | grep -q 'REFUS: SECRET_FORGE_REQUIS' \
+  && ok "sans secret, team-request.sh REFUSE en nommant SECRET_FORGE_REQUIS (mesuré, pas lu — survit au renommage de la variable interne)" \
+  || ko "sans secret, team-request.sh ne refuse pas en le nommant : $(printf '%s' "$_TR_SANS" | head -1)"
+printf '%s' "$_TR_AVEC" | grep -q 'SECRET_FORGE_REQUIS' \
+  && ko "DISCRIMINANT : le refus tombe MÊME AVEC un secret — l'assertion précédente ne prouve rien" \
+  || ok "DISCRIMINANT : avec un secret, ce refus ne tombe pas (l'assertion ci-dessus dépend bien du secret)"
+grep -qF 'SECRET_FORGE_REQUIS' "$SCRIPT" \
+  && ok "l'identifiant du refus est bien celui du script (le message n'est pas fabriqué par le harnais)" \
+  || ko "SECRET_FORGE_REQUIS absent de team-request.sh"
 
 echo
 echo "== 7. pas d'injection : les valeurs saisies sont lues par le SHELL, jamais interpolées par Groovy =="
