@@ -129,6 +129,13 @@ lint-ci:
 	@# ABSENCE FORCÉE du fichier, et porte sa mutation. Elle vit SOUS l'étape 2
 	@# (pas de rang à elle) : elle mesure cette étape-là, pas autre chose.
 	@bash scripts/test-porte-clone-frais.sh
+	@# … et le livrable doit arriver en LF chez le CLIENT, pas seulement ici.
+	@# Sans .gitattributes, c'est `core.autocrlf` du POSTE qui decide : le meme
+	@# depot produit deux arbres differents, et un `\r` en fin de ligne fait
+	@# echouer bash sur un message qui designe la MAUVAISE cause (« introuvable
+	@# ou illisible » pour un fichier present). Mesure le 2026-09-09 sur le CI
+	@# client. Sous l'etape 2 (pas de rang a elle) : elle mesure le meme objet.
+	@bash ci/lint-eol.sh
 	@echo "== [3/20] épreuves de ci/lib/carto-secrets.sh"
 	@ci/test-carto-secrets.sh
 	@echo "== [4/20] épreuves du résolveur de pin (G3)"

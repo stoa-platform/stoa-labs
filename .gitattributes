@@ -1,0 +1,59 @@
+# .gitattributes — les fins de ligne du livrable ne dépendent PAS du poste.
+#
+# CE QUE CE FICHIER EMPÊCHE (mesuré le 2026-09-09, CI client `ci-app-request`) :
+#
+#   scripts/lib/providers-teams.sh: line 48: $'\r': command not found
+#   scripts/lib/providers-teams.sh: line 50: syntax error near unexpected token `$'{\r''
+#   ERREUR: scripts/lib/providers-teams.sh introuvable ou illisible
+#
+# Le fichier était LF dans le dépôt (vérifié : 0 CR sur les .sh suivis) et il est
+# arrivé en CRLF dans la copie de travail du client. Sans `.gitattributes`, c'est
+# la configuration du POSTE qui décide (`core.autocrlf`, `true` par défaut sous
+# Windows) — donc un dépôt identique produit deux arbres différents selon qui le
+# extrait. Un `\r` en fin de ligne fait échouer bash, et le message qu'il rend
+# désigne la mauvaise cause : « introuvable ou illisible » pour un fichier
+# parfaitement présent et lisible.
+#
+# Même famille que tout le reste de la journée : une hypothèse de lab (« tout le
+# monde est en LF ») qui ne tient pas chez un client.
+#
+# PORTÉE VOLONTAIREMENT ÉNUMÉRÉE, jamais `* text=auto`. Marquer tout le dépôt
+# obligerait à recenser chaque binaire (archives de promotion, images, .p12) sous
+# peine de les corrompre à la normalisation. On ne contraint donc que ce qui est
+# INTERPRÉTÉ — et c'est exactement ce qui casse.
+
+# Shell : le cas fatal. Un CR y est une erreur de syntaxe, pas une gêne.
+*.sh            text eol=lf
+*.bash          text eol=lf
+
+# Jenkins : Groovy compilé par le contrôleur, et les coquilles XML des jobs.
+Jenkinsfile     text eol=lf
+Jenkinsfile.*   text eol=lf
+*.groovy        text eol=lf
+*.job.xml       text eol=lf
+
+# Données lues par les chaînes : providers.<env>.yml, manifestes, inventaires.
+# Le CRLF y est survivable depuis que l'appartenance d'équipe se lit en YAML
+# (scripts/lib/providers-teams.sh), mais rien ne garantit qu'un futur lecteur
+# soit aussi tolérant — on ne le laisse pas dépendre de ça.
+*.yml           text eol=lf
+*.yaml          text eol=lf
+*.json          text eol=lf
+*.ini           text eol=lf
+*.cfg           text eol=lf
+*.env.example   text eol=lf
+
+# Python : les heredocs `python3 - <<'PY'` des scripts, et les outils de carto.
+*.py            text eol=lf
+
+# Make : une recette dont la ligne finit par CR passe le CR au shell.
+Makefile        text eol=lf
+*.mk            text eol=lf
+
+# Go : gofmt impose LF, autant que le checkout le respecte aussi.
+*.go            text eol=lf
+go.mod          text eol=lf
+go.sum          text eol=lf
+
+# Documentation livrée avec le produit (runbooks que le client suit).
+*.md            text eol=lf
