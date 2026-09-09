@@ -51,6 +51,13 @@ class H(BaseHTTPRequestHandler):
         b = json.dumps(body).encode(); self.send_response(code)
         self.send_header("Content-Type", "application/json"); self.send_header("Content-Length", str(len(b)))
         self.end_headers(); self.wfile.write(b)
+    # L1 (2026-09-09) : jusqu'ici _send ne rendait QUE du JSON typé. Le client
+    # GitLab recevait un 302 vers /users/sign_in puis une page HTML — une forme
+    # que ce stub ne savait pas produire, donc E6.5 etait un vert vacant.
+    def _raw(self, code, ctype, body, extra=()):
+        self.send_response(code); self.send_header("Content-Type", ctype); self.send_header("Content-Length", str(len(body)))
+        for k, v in extra: self.send_header(k, v)
+        self.end_headers(); self.wfile.write(body)
     def _route(self, method):
         u = urlparse(self.path); q = parse_qs(u.query); path = u.path
         auth = self.headers.get("Authorization", ""); tok = auth[len("token "):] if auth.startswith("token ") else ""
@@ -58,6 +65,15 @@ class H(BaseHTTPRequestHandler):
         with open(LOG, "a") as f: f.write("%s %s %s\n" % (method, path, alias))
         c = ctl()
         if c.get("down"): return self._send(500, {"message": "boom"})
+        HTML = b"<!DOCTYPE html>\n<html><head><title>Sign in \xc2\xb7 GitLab</title></head><body>GitLab</body></html>\n"
+        if path == "/users/sign_in": return self._raw(200, "text/html; charset=utf-8", HTML)
+        bm = c.get("body_mode")
+        if bm and path.endswith("/pulls") and method == "GET":
+            if bm == "empty":     return self._raw(200, "application/json", b"")
+            if bm == "html":      return self._raw(200, "text/html; charset=utf-8", HTML)
+            if bm == "object":    return self._send(200, {"message": "not a list"})
+            if bm == "redirect":  return self._raw(302, "text/html", b"", [("Location", "/users/sign_in")])
+            if bm == "echo_auth": return self._raw(200, "text/html", b"<html><pre>" + auth.encode() + b"</pre></html>")
         if tok not in TOKENS: return self._send(401, {"message": "token does not exist"})
         if path == "/api/v1/user":
             if TOKENS[tok] is None: return self._send(403, {"message": "token does not have at least one of required scope(s): [read:user]"})
@@ -277,6 +293,37 @@ git -C "$ORIGIN" update-ref -d refs/heads/provision/appa-rec; gw checkout -q mai
 set_ctl '{"down":true}'
 req rec
 [ "$(rrc)" = 2 ] && grep -qE 'REFUS: (FORGE_ILLISIBLE|REPLI_EN_COURS)' "$TMP/req.out" && [ "$(tip rec)" = absente ] && ok "E6.5 forge muette ⇒ refus fermé avant le push (une PR ouverte pourrait exister)" || ko "E6.5 rc $(rrc) tip=$(tip rec) : $(tail -1 "$TMP/req.out")"
+# L1 (2026-09-09) — CE QUE LE CLIENT A VU : un corps vide, une trace Python de
+# quinze lignes, et un refus qui ne disait ni le statut ni l'URL. Quatre formes
+# de reponse qu'une forge, un reverse-proxy ou un portail SSO rendent pour de
+# vrai, et que le stub ne savait pas produire.
+sans_trace(){ ! grep -q 'Traceback' "$TMP/req.out"; }
+set_ctl '{"body_mode":"empty"}'; git -C "$ORIGIN" update-ref -d refs/heads/provision/appa-rec 2>/dev/null
+req rec
+refus FORGE_ILLISIBLE && sans_trace && grep -q 'HTTP 200' "$TMP/req.out" && grep -q '0 octet' "$TMP/req.out" && [ "$(tip rec)" = absente ] \
+  && ok "E6.6 corps VIDE (200) ⇒ FORGE_ILLISIBLE qui dit « HTTP 200, 0 octet », sans trace Python, rien de poussé" \
+  || ko "E6.6 rc $(rrc) tip=$(tip rec) : $(grep -E 'REFUS|Traceback|Error' "$TMP/req.out" | head -2 | tr '\n' ' ')"
+# gitlab.com repond a /api/v1/... par 302 vers /users/sign_in : c'est la panne
+# du client, et c'est la LIGNE qu'il doit lire.
+set_ctl '{"body_mode":"redirect"}'; git -C "$ORIGIN" update-ref -d refs/heads/provision/appa-rec 2>/dev/null
+req rec
+refus FORGE_ILLISIBLE && sans_trace && grep -q '302' "$TMP/req.out" && grep -q '/users/sign_in' "$TMP/req.out" && [ "$(tip rec)" = absente ] \
+  && ok "E6.7 302 vers /users/sign_in ⇒ le refus NOMME la redirection (« cette forge ne parle pas /api/v1 »), jamais suivie" \
+  || ko "E6.7 rc $(rrc) tip=$(tip rec) : $(grep -E 'REFUS|Traceback' "$TMP/req.out" | head -2 | tr '\n' ' ')"
+# LE FAIL-OPEN : un objet JSON au lieu d'une liste faisait conclure « aucune PR
+# ouverte » puis POUSSER EN FORCE par-dessus la PR d'autrui.
+set_ctl '{"body_mode":"object"}'; git -C "$ORIGIN" update-ref -d refs/heads/provision/appa-rec 2>/dev/null
+req rec
+refus FORGE_ILLISIBLE && sans_trace && grep -qi 'objet' "$TMP/req.out" && [ "$(tip rec)" = absente ] && ! grep -q '^ARGV push' "$SHIM_LOG" \
+  && ok "E6.8 objet JSON au lieu d'une liste ⇒ REFUS nommé, aucun push (avant : rc 0 et push en force)" \
+  || ko "E6.8 rc $(rrc) tip=$(tip rec) push=$(grep -c '^ARGV push' "$SHIM_LOG") : $(grep -E 'REFUS' "$TMP/req.out" | head -1)"
+# L'EXTRAIT DU CORPS EST EXPURGE : une page d'erreur qui recopie l'en-tete
+# Authorization ne doit jamais faire fuiter le jeton dans un log Jenkins.
+set_ctl '{"body_mode":"echo_auth"}'; git -C "$ORIGIN" update-ref -d refs/heads/provision/appa-rec 2>/dev/null
+req rec
+refus FORGE_ILLISIBLE && grep -q '<secret masqué>' "$TMP/req.out" && ! grep -q 't-ci' "$TMP/req.out" \
+  && ok "E6.9 le corps cite dans le refus est EXPURGE du jeton (« <secret masqué> », jamais t-ci)" \
+  || ko "E6.9 rc $(rrc) fuite=$(grep -c 't-ci' "$TMP/req.out") masque=$(grep -c '<secret masqué>' "$TMP/req.out")"
 
 echo "═══ E7/E8. la chaîne entière ; les refs hors classe ═══"
 set_ctl '{"open":[]}'

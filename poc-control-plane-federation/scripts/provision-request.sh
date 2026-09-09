@@ -697,22 +697,67 @@ if git fetch -q --depth 1 "$CLONE_URL" "refs/heads/${BRANCH}" 2>/dev/null; then 
 # REPLI_EN_COURS (A6 — désormais quel que soit l'auteur : A7 rend les PR de
 # repli humaines), puis PR_D_AUTRUI.
 OPEN_BY=$(API="$API" GIT_REPO="$GIT_REPO" CI_TOKEN_FILE="$CI_TF" BRANCH="$BRANCH" python3 - <<'PY2'
-import os, json, urllib.request
+import os, json, sys, urllib.request, urllib.error
 api, repo, br = os.environ["API"], os.environ["GIT_REPO"], os.environ["BRANCH"]
 tok = open(os.environ["CI_TOKEN_FILE"]).read().strip()
+# ── LA GARDE DE RÉPONSE DE FORGE (L1, 2026-09-09) ────────────────────────
+# Chez un client sur GitLab, cet appel rendait un 302 vers /users/sign_in que
+# urllib SUIVAIT : json.load mourait sur une page HTML avec une trace Python
+# de quinze lignes et un refus qui ne disait ni le statut, ni l'URL, ni le
+# corps. Ici : aucune redirection suivie, statut/type/taille/URL/début du
+# corps dans la CAUSE, corps EXPURGÉ du secret par littéral, et un objet là
+# où une liste est attendue est un REFUS — plus jamais « aucune PR » puis un
+# push en force. (L5 centralisera ceci dans scripts/lib/forge-api.sh.)
+class ForgeError(Exception): pass
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl): return None
+_opener = urllib.request.build_opener(_NoRedirect)
+def _mask(s, secrets):
+    for t in secrets:
+        if t: s = s.replace(t, "<secret masqué>")
+    return s
+def _debut(b, secrets): return _mask(b[:120].decode("utf-8", "replace"), secrets)
+def forge_json(r, want, secrets):
+    """Rend le JSON de la réponse, de la forme `want` (list/dict/None) — ou lève ForgeError avec une cause auto-diagnostique."""
+    u = _mask(r.full_url, secrets)
+    try:
+        with _opener.open(r, timeout=30) as resp:
+            body = resp.read(); st = resp.getcode(); ct = resp.headers.get("Content-Type") or "(type absent)"
+    except urllib.error.HTTPError as e:
+        body = e.read() or b""; ct = e.headers.get("Content-Type") or "(type absent)"
+        diag = "HTTP %d %s, %d octet(s) sur %s, début : %r" % (e.code, ct, len(body), u, _debut(body, secrets))
+        if 300 <= e.code < 400:
+            loc = _mask(e.headers.get("Location") or "(sans Location)", secrets)
+            raise ForgeError("la forge REDIRIGE vers %s — GIT_HOST doit être l'URL finale de la forge, et une forge qui répond ainsi à /api/v1 n'est probablement pas Gitea (GitLab renvoie vers /users/sign_in) ; %s" % (loc, diag))
+        raise ForgeError(diag)
+    except Exception as e:
+        raise ForgeError("forge injoignable sur %s (%s : %s)" % (u, type(e).__name__, _mask(str(e), secrets)))
+    diag = "HTTP %d %s, %d octet(s) sur %s, début : %r" % (st, ct, len(body), u, _debut(body, secrets))
+    if not body: raise ForgeError("corps VIDE — " + diag)
+    try: d = json.loads(body)
+    except Exception: raise ForgeError("réponse NON JSON (page HTML d'un proxy ou d'un portail SSO ?) — " + diag)
+    if want is list and not isinstance(d, list):
+        raise ForgeError("un OBJET %s a été rendu là où une LISTE était attendue (une forge ou un proxy qui normalise ses erreurs en 200 ?) — %s" % (type(d).__name__, diag))
+    if want is dict and not isinstance(d, dict):
+        raise ForgeError("une réponse %s a été rendue là où un OBJET était attendu — %s" % (type(d).__name__, diag))
+    return d
 page = 1
-while True:
-    r = urllib.request.Request(f"{api}/repos/{repo}/pulls?state=open&limit=50&page={page}", headers={"Authorization": "token " + tok})
-    with urllib.request.urlopen(r, timeout=30) as resp: prs = json.load(resp)
-    if not isinstance(prs, list) or not prs: break
-    for pr in prs:
-        h = pr.get("head") or {}
-        if h.get("ref") == br and (h.get("repo") or {}).get("full_name") == repo:
-            print("%s %s" % (pr.get("number"), (pr.get("user") or {}).get("login", ""))); raise SystemExit
-    page += 1
+try:
+    while True:
+        r = urllib.request.Request(f"{api}/repos/{repo}/pulls?state=open&limit=50&page={page}", headers={"Authorization": "token " + tok})
+        prs = forge_json(r, list, (tok,))
+        if not prs: break
+        for pr in prs:
+            if not isinstance(pr, dict): continue
+            h = pr.get("head") or {}
+            if h.get("ref") == br and (h.get("repo") or {}).get("full_name") == repo:
+                print("%s %s" % (pr.get("number"), (pr.get("user") or {}).get("login", ""))); raise SystemExit
+        page += 1
+except ForgeError as e:
+    sys.stderr.write("forge : %s\n" % e); sys.exit(1)
 print("")
 PY2
-) || fail "FORGE_ILLISIBLE : la forge n'a pas pu être relue — une PR ouverte pourrait exister sur ${BRANCH}, rien n'est poussé"
+) || fail "FORGE_ILLISIBLE : la forge n'a pas pu être relue (cause ci-dessus) — une PR ouverte pourrait exister sur ${BRANCH}, rien n'est poussé"
 OPEN_NUM="${OPEN_BY%% *}"; OPEN_LOGIN="${OPEN_BY#* }"
 if [ -n "$REMOTE_TIP" ] && git log -1 --format=%B "$REMOTE_TIP" 2>/dev/null | grep -q '^Repli-Vers: '; then
   # Le trailer EST la preuve ; la forge ne fait que nommer la PR (A6 D1bis).
@@ -772,19 +817,60 @@ api, repo = os.environ["API"], os.environ["GIT_REPO"]
 ci_tok = open(os.environ["CI_TOKEN_FILE"]).read().strip()
 pr_tok = open(os.environ["PR_TOKEN_FILE"]).read().strip()
 branch, base = os.environ["BRANCH"], os.environ["GIT_BASE"]
-def req(method, url, data=None, tok=ci_tok):
+# ── LA GARDE DE RÉPONSE DE FORGE (L1, 2026-09-09) ────────────────────────
+# Chez un client sur GitLab, cet appel rendait un 302 vers /users/sign_in que
+# urllib SUIVAIT : json.load mourait sur une page HTML avec une trace Python
+# de quinze lignes et un refus qui ne disait ni le statut, ni l'URL, ni le
+# corps. Ici : aucune redirection suivie, statut/type/taille/URL/début du
+# corps dans la CAUSE, corps EXPURGÉ du secret par littéral, et un objet là
+# où une liste est attendue est un REFUS — plus jamais « aucune PR » puis un
+# push en force. (L5 centralisera ceci dans scripts/lib/forge-api.sh.)
+class ForgeError(Exception): pass
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl): return None
+_opener = urllib.request.build_opener(_NoRedirect)
+def _mask(s, secrets):
+    for t in secrets:
+        if t: s = s.replace(t, "<secret masqué>")
+    return s
+def _debut(b, secrets): return _mask(b[:120].decode("utf-8", "replace"), secrets)
+def forge_json(r, want, secrets):
+    """Rend le JSON de la réponse, de la forme `want` (list/dict/None) — ou lève ForgeError avec une cause auto-diagnostique."""
+    u = _mask(r.full_url, secrets)
+    try:
+        with _opener.open(r, timeout=30) as resp:
+            body = resp.read(); st = resp.getcode(); ct = resp.headers.get("Content-Type") or "(type absent)"
+    except urllib.error.HTTPError as e:
+        body = e.read() or b""; ct = e.headers.get("Content-Type") or "(type absent)"
+        diag = "HTTP %d %s, %d octet(s) sur %s, début : %r" % (e.code, ct, len(body), u, _debut(body, secrets))
+        if 300 <= e.code < 400:
+            loc = _mask(e.headers.get("Location") or "(sans Location)", secrets)
+            raise ForgeError("la forge REDIRIGE vers %s — GIT_HOST doit être l'URL finale de la forge, et une forge qui répond ainsi à /api/v1 n'est probablement pas Gitea (GitLab renvoie vers /users/sign_in) ; %s" % (loc, diag))
+        raise ForgeError(diag)
+    except Exception as e:
+        raise ForgeError("forge injoignable sur %s (%s : %s)" % (u, type(e).__name__, _mask(str(e), secrets)))
+    diag = "HTTP %d %s, %d octet(s) sur %s, début : %r" % (st, ct, len(body), u, _debut(body, secrets))
+    if not body: raise ForgeError("corps VIDE — " + diag)
+    try: d = json.loads(body)
+    except Exception: raise ForgeError("réponse NON JSON (page HTML d'un proxy ou d'un portail SSO ?) — " + diag)
+    if want is list and not isinstance(d, list):
+        raise ForgeError("un OBJET %s a été rendu là où une LISTE était attendue (une forge ou un proxy qui normalise ses erreurs en 200 ?) — %s" % (type(d).__name__, diag))
+    if want is dict and not isinstance(d, dict):
+        raise ForgeError("une réponse %s a été rendue là où un OBJET était attendu — %s" % (type(d).__name__, diag))
+    return d
+SECRETS = (ci_tok, pr_tok)
+def req(method, url, data=None, tok=ci_tok, want=dict):
     body = json.dumps(data).encode() if data is not None else None
     r = urllib.request.Request(url, data=body, method=method,
         headers={"Authorization": "token "+tok, "Content-Type": "application/json"})
-    with urllib.request.urlopen(r) as resp:
-        return json.loads(resp.read() or "null")
+    return forge_json(r, want, SECRETS)
 # idempotence : PR ouverte existante pour CETTE branche ?
 try:
-    for pr in req("GET", f"{api}/repos/{repo}/pulls?state=open&limit=50") or []:
-        if pr.get("head", {}).get("ref") == branch:
+    for pr in req("GET", f"{api}/repos/{repo}/pulls?state=open&limit=50", want=list):
+        if isinstance(pr, dict) and (pr.get("head") or {}).get("ref") == branch:
             print("EXIST", pr["number"]); sys.exit(0)
-except urllib.error.HTTPError as e:
-    print("ERR", e.code, e.read().decode()[:200]); sys.exit(1)
+except ForgeError as e:
+    print("ERR", e); sys.exit(1)
 mode = os.environ.get("MODE", "idp")
 title = f"provision({os.environ['REQ_ENV']}): {os.environ['REQ_APP']}"
 ident = (f"- claim azp : {os.environ['REQ_CLIENT_ID']}" if mode == "idp"
@@ -859,8 +945,8 @@ try:
     pr = req("POST", f"{api}/repos/{repo}/pulls",
              {"title": title, "head": branch, "base": base, "body": bodytxt}, tok=pr_tok)
     print("CREATED", pr["number"])
-except urllib.error.HTTPError as e:
-    print("ERR", e.code, e.read().decode()[:200]); sys.exit(1)
+except ForgeError as e:
+    print("ERR", e); sys.exit(1)
 PY
 ) || { echo "ERREUR: création PR échouée: ${PR_OUT}" >&2; exit 1; }
 PR_NUM=$(printf '%s' "$PR_OUT" | awk '{print $2}')
