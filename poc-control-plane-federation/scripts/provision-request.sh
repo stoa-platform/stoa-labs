@@ -201,6 +201,10 @@ GIT_WEB_HOST="${GIT_WEB_HOST:-$GIT_HOST}"   # l'adresse HUMAINE, si elle diffèr
 # shellcheck source=scripts/lib/repo-layout.sh
 . "scripts/lib/repo-layout.sh" || { echo "ERREUR: scripts/lib/repo-layout.sh introuvable ou illisible" >&2; exit 1; }
 repo_layout_init || exit 2
+# L'appartenance d'equipe se lit en YAML — une seule autorite pour toute la
+# chaine (scripts/lib/providers-teams.sh, preuve test-providers-teams.sh).
+# shellcheck source=scripts/lib/providers-teams.sh
+. "scripts/lib/providers-teams.sh" || { echo "ERREUR: scripts/lib/providers-teams.sh introuvable ou illisible" >&2; exit 1; }
 MANIFEST_DIR="${MANIFEST_DIR:-clients/provisioned/applications}"
 
 # Garde-fous d'entrée : noms sûrs (pas d'injection dans un path/branche/YAML).
@@ -473,10 +477,20 @@ if [ -n "$REQ_TEAM" ]; then
   # théorique envoie chercher au mauvais endroit — c'est lui qui a masqué le défaut.
   PROV_FILE="${SUB_PFX}ansible/providers.${REQ_ENV}.yml"
   [ -f "$PROV_FILE" ] || fail "PROVIDERS_MISSING : ${PROV_FILE} absent sur ${GIT_BASE} (dépôt ${GIT_REPO})"
-  # Chaîne FIXE, ligne ENTIÈRE (-Fx) : la team (fournie ou héritée) n'est
-  # jamais interprétée comme regex — une valeur `.*` ou `(a|b)` ne matche rien.
-  grep -Fxq -- "  - team: ${REQ_TEAM}" "$PROV_FILE" \
-    || fail "TEAM_NOT_DECLARED : '${REQ_TEAM}' absent de providers.${REQ_ENV}.yml"
+  # L'APPARTENANCE SE LIT EN YAML, JAMAIS PAR LA FORME D'UNE LIGNE. Le grep
+  # textuel qui vivait ici exigeait EXACTEMENT deux espaces d'indentation et
+  # une valeur nue : chez un client dont le fichier — YAML valide — indente a
+  # quatre, cite la valeur, laisse un commentaire en fin de ligne ou arrive en
+  # CRLF, l'equipe DECLAREE etait refusee (mesure 2026-09-09, CI client
+  # `ci-app-request`, apres que le meme parcours eut passe PROVIDERS_MISSING).
+  # La comparaison de VALEURS ferme aussi, par construction, la porte que `-F`
+  # tenait : une equipe nommee `.*` ne matche rien.
+  providers_team_declared "$PROV_FILE" "$REQ_TEAM"
+  case $? in
+    0) ;;
+    1) fail "TEAM_NOT_DECLARED : '${REQ_TEAM}' absent de ${PROV_FILE} — équipes déclarées : $(providers_teams_inline "$PROV_FILE")" ;;
+    *) fail "PROVIDERS_PARSE : ${PROV_FILE} ne se lit pas en YAML (cause ci-dessus) — refus, plutôt qu'une appartenance devinée" ;;
+  esac
   TENANT="$REQ_TEAM"
 fi
 

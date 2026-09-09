@@ -51,15 +51,24 @@ ko(){ FAIL=$((FAIL+1)); printf '  ❌ %s\n' "$*"; }
 # ── fixture : un dépôt nu dont le livrable vit sous <préfixe> ────────────────
 # fixture <nom> <préfixe|.> → chemin du dépôt nu. Le préfixe « . » pose le
 # livrable À LA RACINE (la sentinelle de repo-layout.sh).
+# fixture <nom> <préfixe|.> [palier déclaré] [style]
+# style « client » : le MÊME contenu en YAML, écrit comme un client l'écrit —
+# indentation à 4 espaces, valeur entre guillemets, commentaire en fin de ligne
+# et fins de ligne CRLF. Tout ceci est valide ; le grep textuel le refusait.
 fixture(){
-  local pfx="$2" o="$TMP/$1.git" w="$TMP/$1" sub="" env_decl="${3:-dev}"
+  local pfx="$2" o="$TMP/$1.git" w="$TMP/$1" sub="" env_decl="${3:-dev}" style="${4:-lab}"
   [ "$pfx" = "." ] || sub="$pfx/"
   git init -q --bare "$o" && git -C "$o" symbolic-ref HEAD refs/heads/main
   git init -q "$w" && git -C "$w" checkout -q -b main
   mkdir -p "$w/${sub}ansible" "$w/${sub}clients/provisioned/applications"
   # SEUL dev est déclaré : `rec` sert de contre-épreuve « vraiment absent ».
-  printf 'providers:\n  - team: teamx\n    repo: ci/teamx\n    approvers: []\n' \
-    > "$w/${sub}ansible/providers.${env_decl}.yml"
+  if [ "$style" = client ]; then
+    printf 'providers:\r\n    - team: "teamx"   # equipe reprise du referentiel interne\r\n      repo: ci/teamx\r\n      approvers: []\r\n' \
+      > "$w/${sub}ansible/providers.${env_decl}.yml"
+  else
+    printf 'providers:\n  - team: teamx\n    repo: ci/teamx\n    approvers: []\n' \
+      > "$w/${sub}ansible/providers.${env_decl}.yml"
+  fi
   printf 'init\n' > "$w/README"
   git -C "$w" -c user.name=t -c user.email=t@t add -A >/dev/null
   git -C "$w" -c user.name=t -c user.email=t@t commit -qm c0 >/dev/null
@@ -339,9 +348,132 @@ done
 # du script suivait déjà le knob (MANIFEST_PATH) : ce `cd` en était le résidu.
 # shellcheck disable=SC2016  # quotes SIMPLES à dessein : c'est le TEXTE cherché
 q_cd(){ grep -qF 'cd "${SUB_PFX:-.}"' "$1" && ! grep -qE '^[[:space:]]*cd poc-control-plane-federation' "$1"; }
+# team-request.sh entre dans le livrable du CLONE pour y jouer le plan ; le
+# littéral y faisait échouer le `cd`, court-circuiter le `&&`, et le valideur
+# lisait « PLAN EN ÉCHEC — NE PAS MERGER » sur une demande valide.
+# shellcheck disable=SC2016  # motif recherché, jamais une expansion
+q_cd_clone(){ grep -qF 'cd "$WORK/repo/${SUB_PFX:-.}"' "$1"; }
+# setup-carto-job.sh : le défaut du <scriptPath> était VIDE, donc la
+# substitution ne jouait pas et c'était le littéral du job.xml qui partait.
+# shellcheck disable=SC2016  # motif recherché, jamais une expansion
+q_scriptpath(){ grep -q 'repo_layout_init' "$1" && grep -qF 'SCRIPT_PATH:-${SUB_PFX}ci/Jenkinsfile' "$1"; }
+# Le triplet labctl : la MÊME ligne dans trois Jenkinsfile qui déclarent déjà le
+# knob et l'honorent partout ailleurs — seul le stage « Build labctl » tombait.
+# shellcheck disable=SC2016  # motif recherché, jamais une expansion
+q_dir_labctl(){ grep -qF 'dir("${env.GIT_SUBDIR}/labctl")' "$1" && ! grep -qF "dir('poc-control-plane-federation/labctl')" "$1"; }
 if q_cd "$REPO/scripts/provision-plan.sh"; then
   ok "Q.provision-plan entre dans le livrable par le knob (cd \"\${SUB_PFX:-.}\"), plus par un littéral"
 else ko "Q.provision-plan porte encore 'cd poc-control-plane-federation' en dur"; fi
+
+if q_cd_clone "$REPO/scripts/team-request.sh"; then
+  ok "Q.team-request joue le plan dans le livrable du clone, pris au knob"
+else ko "Q.team-request porte encore le préfixe du lab dans le cd du plan"; fi
+if q_scriptpath "$REPO/scripts/setup-carto-job.sh"; then
+  ok "Q.setup-carto-job compose son <scriptPath> depuis \${SUB_PFX} (défaut non vide)"
+else ko "Q.setup-carto-job garde un défaut vide ou un littéral"; fi
+for jf in Jenkinsfile Jenkinsfile.prod Jenkinsfile.rollback; do
+  if q_dir_labctl "$REPO/ci/$jf"; then
+    ok "Q.$jf le stage « Build labctl » entre par dir(\"\${env.GIT_SUBDIR}/labctl\")"
+  else ko "Q.$jf porte encore dir('poc-control-plane-federation/labctl')"; fi
+done
+
+echo "═══ R. l'appartenance d'équipe se LIT (YAML), elle ne se reconnaît pas (texte) ═══"
+# Le second refus du client, le 2026-09-09 : passe PROVIDERS_MISSING, puis
+# « TEAM_NOT_DECLARED : 'fbi' absent » sur un fichier qui DÉCLARE l'équipe.
+# Ici on joue le parcours ENTIER contre un providers écrit comme chez lui.
+fixture cli livrable dev client >/dev/null
+fixture clivide livrable dev client >/dev/null
+
+req "$S" "$TMP/cli.git" livrable dev REQ_TEAM=teamx
+if franchie; then ok "R.1 providers en style client (4 espaces, guillemets, commentaire, CRLF) ⇒ l'équipe est reconnue"
+else ko "R.1 rc $(rrc) : $(detail)"; fi
+
+req "$S" "$TMP/clivide.git" livrable dev REQ_TEAM=inconnue
+if [ "$(rrc)" = 2 ] && grep -q "REFUS: TEAM_NOT_DECLARED : 'inconnue'" "$TMP/req.out" \
+   && grep -q 'équipes déclarées : teamx' "$TMP/req.out"; then
+  ok "R.2 équipe vraiment absente ⇒ refus qui LISTE les équipes déclarées (le message qui manquait)"
+else ko "R.2 rc $(rrc) : $(detail)"; fi
+
+# Un providers illisible ne doit JAMAIS se présenter comme « équipe absente » :
+# l'un est une panne de la plateforme, l'autre un défaut de la demande.
+CASSE="$TMP/casse"; rm -rf "$CASSE" "$TMP/casse.git"
+fixture casse livrable >/dev/null
+git clone -q "$TMP/casse.git" "$CASSE/w" 2>/dev/null \
+  && printf 'providers:\n  - team: teamx\n   repo: mauvaise indentation\n' > "$CASSE/w/livrable/ansible/providers.dev.yml" \
+  && git -C "$CASSE/w" -c user.name=t -c user.email=t@t commit -aqm casse \
+  && git -C "$CASSE/w" push -q origin main
+req "$S" "$TMP/casse.git" livrable dev REQ_TEAM=teamx
+if [ "$(rrc)" = 2 ] && grep -q 'PROVIDERS_PARSE' "$TMP/req.out" && ! grep -q 'TEAM_NOT_DECLARED' "$TMP/req.out"; then
+  ok "R.3 providers illisible en YAML ⇒ PROVIDERS_PARSE, jamais « équipe absente » (deux pannes, deux remèdes)"
+else ko "R.3 rc $(rrc) : $(detail)"; fi
+
+echo "═══ S. le <scriptPath> posé dans Jenkins suit le knob ═══"
+# Un <scriptPath> est un chemin DANS LE DÉPÔT DE LA FORGE : Jenkins le résout au
+# checkout. Écrit en dur, le job pointait un Jenkinsfile inexistant chez un
+# client. `--print` sort le XML sur stdout AVANT le premier appel réseau : la
+# preuve est behaviourale et hors ligne, sans faux Jenkins.
+sp(){ # sp <GIT_SUBDIR|__ABSENT__> → le <scriptPath> réellement posé
+  local -a e=(PATH="$PATH" HOME="$HOME" "STOA_ENV_CHAIN_FILE=$REPO/clients/_example/environments.yaml")
+  [ "$1" = "__ABSENT__" ] || e+=("GIT_SUBDIR=$1")
+  ( cd "$REPO" && env -i "${e[@]}" bash scripts/setup-selfservice-job.sh --print 2>/dev/null ) \
+    | grep -o '<scriptPath>[^<]*</scriptPath>' | head -1
+}
+if [ "$(sp livrable)" = '<scriptPath>livrable/ci/Jenkinsfile.selfservice</scriptPath>' ]; then
+  ok "S.1 GIT_SUBDIR=livrable ⇒ le job pointe livrable/ci/Jenkinsfile.selfservice"
+else ko "S.1 posé : $(sp livrable)"; fi
+if [ "$(sp .)" = '<scriptPath>ci/Jenkinsfile.selfservice</scriptPath>' ]; then
+  ok "S.2 sentinelle « le livrable EST la racine » ⇒ ci/Jenkinsfile.selfservice"
+else ko "S.2 posé : $(sp .)"; fi
+if [ "$(sp __ABSENT__)" = '<scriptPath>poc-control-plane-federation/ci/Jenkinsfile.selfservice</scriptPath>' ]; then
+  ok "S.3 non-régression : sans knob, le préfixe du lab (valeur identique à celle d'avant)"
+else ko "S.3 posé : $(sp __ABSENT__)"; fi
+
+echo "═══ T. le balayage de collision REGARDE là où le knob l'envoie ═══"
+# Le plus cher du lot : un préfixe faux ici ne casse rien de VISIBLE. La boucle
+# fait `[ -d … ] || continue` sur ses deux itérations, COLLISION_OWNER reste
+# vide, et la moitié plateforme d'API_NAME_COLLISION rend « aucune collision »
+# avec la même assurance que si elle avait regardé — un FAIL-OPEN silencieux,
+# à comparer au clone d'équipe raté qui, lui, CRIE COLLISION_SCAN_INCOMPLET.
+# fixture_collision <nom> <préfixe du dépôt> <préfixe où POSER le manifeste>
+fixture_collision(){
+  local o="$TMP/$1.git" w="$TMP/$1" sub="" psub=""
+  [ "$2" = "." ] || sub="$2/"
+  [ "$3" = "." ] || psub="$3/"
+  git init -q --bare "$o" && git -C "$o" symbolic-ref HEAD refs/heads/main
+  git init -q "$w" && git -C "$w" checkout -q -b main
+  mkdir -p "$w/${sub}ansible" "$w/${psub}clients/autre-equipe"
+  printf 'providers:\n  - team: teamx\n    repo: ci/teamx\n' > "$w/${sub}ansible/providers.dev.yml"
+  printf 'apim_api:\n  name: "demo"\n  version: "1.0.0"\n' \
+    > "$w/${psub}clients/autre-equipe/demo.publish.yml"
+  printf 'classifications: {}\n' > "$w/registre.yaml"
+  printf 'init\n' > "$w/README"
+  git -C "$w" -c user.name=t -c user.email=t@t add -A >/dev/null
+  git -C "$w" -c user.name=t -c user.email=t@t commit -qm c0 >/dev/null
+  git -C "$w" remote add origin "$o" && git -C "$w" push -q origin main
+}
+# Le registre de gouvernance vit dans le MÊME dépôt nu (un second suffirait,
+# mais il n'apporterait rien : ce qu'on éprouve est le balayage, pas le registre).
+coll(){ # coll <fixture> <sub>
+  run "$S_AR" "$2" "GIT_HOST=file://$TMP" "GIT_REPO=$1" ACTION=create TEAM=teamx \
+      API_NAME=demo API_VERSION=1.0.0 API_BASE=/demo "OPENAPI_SPEC=$SPEC" INBOUND_MODE=jwt \
+      CLASSIFICATION=M EXPOSURE=internal "LABCTL_BIN=$LABCTL_STUB" \
+      "GOVERNANCE_REPO=$1" GOVERNANCE_PATH=registre.yaml
+}
+
+fixture_collision collok livrable livrable
+coll collok livrable
+if grep -q "API_NAME_COLLISION : 'demo' est déjà publiée par dépôt plateforme" "$TMP/req.out"; then
+  ok "T.1 manifeste homonyme sous livrable/clients/ + knob livrable ⇒ la collision est VUE"
+else ko "T.1 collision manquée — rc $(rrc) : $(detail)"; fi
+
+# DISCRIMINANT : le manifeste est posé au préfixe du LAB, le knob dit livrable.
+# Le balayage ne doit RIEN voir de ce côté — l'ancien code, lui, le voyait
+# toujours, quel que soit le knob : c'est ce cas seul qui sépare les deux.
+fixture_collision collleurre livrable poc-control-plane-federation
+coll collleurre livrable
+if ! grep -q 'API_NAME_COLLISION' "$TMP/req.out"; then
+  ok "T.2 discriminant : manifeste au préfixe du lab + knob livrable ⇒ hors du périmètre balayé"
+else ko "T.2 le balayage a regardé au préfixe du lab malgré le knob"; fi
 
 echo "═══ M. mutation : l'épreuve attrape bien ce qu'elle prétend attraper ═══"
 MUT="$TMP/mut.sh"
@@ -383,6 +515,22 @@ if cmp -s "$REPO/scripts/provision-plan.sh" "$MQ3"; then
 elif q_cd "$MQ3"; then
   ko "M3 Q.provision-plan reste verte sur un mutant au préfixe du lab : assertion vacante"
 else ok "M3 préfixe du lab réécrit en dur ⇒ Q.provision-plan rougit"; fi
+
+# M4/M5/M6 — les trois assertions statiques ajoutées le 2026-09-09, chacune
+# mutée : sans mutation, une assertion de forme ne prouve que sa propre existence.
+mute(){ # mute <étiquette> <fichier> <sed> <prédicat>
+  local m="$TMP/mut-$1.txt"
+  sed "$3" "$2" > "$m"
+  if cmp -s "$2" "$m"; then ko "$1 mutant no-op — l'assertion ne prouve rien"
+  elif "$4" "$m"; then ko "$1 l'assertion reste verte sur le mutant : vacante"
+  else ok "$1 préfixe du lab réécrit en dur ⇒ l'assertion rougit"; fi
+}
+# shellcheck disable=SC2016  # motifs, jamais des expansions
+mute M4-team-request "$REPO/scripts/team-request.sh" 's#cd "$WORK/repo/${SUB_PFX:-.}"#cd "$WORK/repo/poc-control-plane-federation"#' q_cd_clone
+# shellcheck disable=SC2016
+mute M5-setup-carto-job "$REPO/scripts/setup-carto-job.sh" 's#SCRIPT_PATH:-${SUB_PFX}ci/Jenkinsfile#SCRIPT_PATH:-poc-control-plane-federation/ci/Jenkinsfile#' q_scriptpath
+# shellcheck disable=SC2016
+mute M6-labctl "$REPO/ci/Jenkinsfile" 's#dir("${env.GIT_SUBDIR}/labctl")#dir('"'"'poc-control-plane-federation/labctl'"'"')#' q_dir_labctl
 
 echo
 echo "═══════════════════════════════════════════════════"

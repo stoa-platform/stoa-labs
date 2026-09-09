@@ -65,6 +65,10 @@ _TA_PROT="$(dirname "${BASH_SOURCE[0]}")/lib/repo-protection.sh"
 [ -f "$_TA_PROT" ] || _TA_PROT="scripts/lib/repo-protection.sh"
 # shellcheck source=scripts/lib/repo-protection.sh
 . "$_TA_PROT" || { echo "ERREUR: $_TA_PROT introuvable ou illisible" >&2; exit 1; }
+_TA_PROV="$(dirname "${BASH_SOURCE[0]}")/lib/providers-teams.sh"
+[ -f "$_TA_PROV" ] || _TA_PROV="scripts/lib/providers-teams.sh"
+# shellcheck source=scripts/lib/providers-teams.sh
+. "$_TA_PROV" || { echo "ERREUR: $_TA_PROV introuvable ou illisible" >&2; exit 1; }
 
 PR_BRANCH="${PR_BRANCH:?PR_BRANCH requis}"
 PR_NUMBER="${PR_NUMBER:?PR_NUMBER requis}"
@@ -112,8 +116,13 @@ TEAM="${BR_OUT% *}"; ENVN="${BR_OUT##* }"
 git fetch -q origin main && git checkout -q "$MERGE_SHA" \
   || fail "checkout du SHA de merge $MERGE_SHA"
 PROV="ansible/providers.${ENVN}.yml"
-grep -Eq "^  - team: ${TEAM}\$" "$PROV" \
-  || fail "TEAM_NOT_IN_MERGED_STATE : ${TEAM} absente de ${PROV} au SHA mergé — le payload ne fait pas foi"
+# Lu en YAML (voir provision-request.sh). L'ERE interpolait $TEAM ici aussi.
+providers_team_declared "$PROV" "$TEAM"
+case $? in
+  0) ;;
+  1) fail "TEAM_NOT_IN_MERGED_STATE : ${TEAM} absente de ${PROV} au SHA mergé — le payload ne fait pas foi (équipes déclarées au SHA mergé : $(providers_teams_inline "$PROV"))" ;;
+  *) fail "PROVIDERS_PARSE : ${PROV} ne se lit pas en YAML au SHA mergé (cause ci-dessus) — refus" ;;
+esac
 # REVUE (Important) : la 1ère version n'avait aucun `|| fail` sur cette
 # extraction — une exception Python (YAML malformé, équipe absente malgré le
 # grep texte du dessus) laissait REPO_FULL vide EN SILENCE, et le script

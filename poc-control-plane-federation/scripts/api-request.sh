@@ -339,7 +339,14 @@ if [ "$ACTION" = "create" ]; then
   # Le nom cherché est celui DÉCLARÉ dans le manifeste (`apim_api.name`), pas le
   # nom de fichier : les deux peuvent diverger, et c'est le champ qui décide de
   # l'objet créé sur la gateway.
-  PLATFORM_ROOT="$WORK/platform/poc-control-plane-federation"
+  # FAIL-OPEN si ce préfixe est faux, et c'est ce qui le rend cher : la boucle
+  # ci-dessous fait `[ -d … ] || continue` sur ses DEUX itérations, COLLISION_OWNER
+  # reste vide, et la moitié plateforme de la porte rend « aucune collision » avec
+  # la même assurance que si elle avait regardé — à comparer au clone d'équipe
+  # raté qui, lui, CRIE COLLISION_SCAN_INCOMPLET. Le knob est déjà résolu plus
+  # haut (repo_layout_init) et déjà utilisé pour providers.<env>.yml.
+  # `${SUB_PFX:-.}` : SUB_PFX vide (le livrable EST la racine) rend « . ».
+  PLATFORM_ROOT="$WORK/platform/${SUB_PFX:-.}"
   for SCAN_DIR in clients gateways; do
     [ -d "$PLATFORM_ROOT/$SCAN_DIR" ] || continue
     [ -n "$COLLISION_OWNER" ] && break

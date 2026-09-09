@@ -62,7 +62,7 @@ pipeline {
   stages {
     stage('Build labctl (air-gapped, vendored)') {
       steps {
-        dir('poc-control-plane-federation/labctl') {
+        dir("${env.GIT_SUBDIR}/labctl") {
           sh 'go build -trimpath -o "$WORKSPACE/labctl" .'
         }
       }

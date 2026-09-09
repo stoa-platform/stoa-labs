@@ -121,8 +121,17 @@ carto_secrets_resolve() {
   # `ci/Jenkinsfile.carto`, dont les blocs `sh` tournent à la RACINE du dépôt
   # (voir le commentaire du stage `Source`). Sous `set -eu`, un chemin faux ne
   # dégrade pas — il tue le stage avant la moindre garde.
+  #
+  # Le préfixe du livrable VIENT DU KNOB (SUB_PFX, posé par le podTemplate de
+  # Jenkinsfile.carto). Il s'écrivait ici en dur au préfixe du lab : chez un
+  # client rangeant son dépôt autrement, le job nocturne s'éteignait. Ce
+  # fichier ne peut pas sourcer scripts/lib/repo-layout.sh pour l'obtenir — elle
+  # vit elle-même sous ce préfixe — et il est sourcé par `sh` (ni `$0` ni
+  # `BASH_SOURCE` ne le localisent : son shebang est décoratif).
+  # `?` et non `:?` : un SUB_PFX VIDE est légitime (le livrable EST la racine),
+  # un SUB_PFX ABSENT est une chaîne mal câblée — refus nommé, pas un chemin deviné.
   # shellcheck source=/dev/null
-  . poc-control-plane-federation/ci/lib/vault-login.sh
+  . "${SUB_PFX?SUB_PFX absent : ci/Jenkinsfile.carto doit le poser dans le podTemplate}ci/lib/vault-login.sh"
   trap vault_trap_revoke EXIT
   vault_login_any || {
     echo "  ✗ Login Vault impossible." >&2

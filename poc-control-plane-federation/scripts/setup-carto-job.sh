@@ -41,6 +41,14 @@
 # dès la nuit suivante. Le build le dit alors explicitement, avec le geste.
 set -uo pipefail
 cd "$(dirname "$0")/.." || { echo "REFUS: racine du depot introuvable" >&2; exit 2; }
+# Le <scriptPath> est un chemin DANS LE DÉPÔT DE LA FORGE : il suit GIT_SUBDIR.
+# Le défaut était VIDE, donc la substitution conditionnelle plus bas ne jouait
+# pas et c'était le littéral de ci/jenkins/carto.job.xml qui partait vers
+# Jenkins — le seul des job.xml à échapper au recomposeur de setup-provision-jobs.sh.
+# `fail()` n'est défini que plus bas : sortie par echo, comme le `cd` ci-dessus.
+# shellcheck source=scripts/lib/repo-layout.sh
+. "scripts/lib/repo-layout.sh" || { echo "REFUS: scripts/lib/repo-layout.sh introuvable ou illisible" >&2; exit 2; }
+repo_layout_init || exit 2
 
 JENKINS="${JENKINS:-http://localhost:18080}"
 JOB="${JOB:-carto}"
@@ -50,7 +58,9 @@ CREDS_ID="${CREDS_ID:-carto-wm-gateway}"
 # éditer le XML (le dépôt de référence n'est pas le même selon le lab).
 GIT_URL="${GIT_URL:-}"
 BRANCH="${BRANCH:-}"
-SCRIPT_PATH="${SCRIPT_PATH:-}"
+# Désormais TOUJOURS non vide : la substitution du <scriptPath> joue à chaque
+# pose (changement de comportement assumé — c'était l'intention de la ligne).
+SCRIPT_PATH="${SCRIPT_PATH:-${SUB_PFX}ci/Jenkinsfile.carto}"
 # Le build attend la gateway jusqu'à 8 min (recyclage licence d'essai) : on lui
 # laisse de la marge avant de déclarer l'attente perdue.
 WAIT_S="${WAIT_S:-1200}"

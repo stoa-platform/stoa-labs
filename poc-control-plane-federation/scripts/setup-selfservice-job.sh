@@ -41,9 +41,19 @@
 # setup-provision-jobs.sh à faire le jour du rollout client).
 set -uo pipefail
 
+# Le <scriptPath> posé plus bas est un chemin DANS LE DÉPÔT DE LA FORGE : il
+# suit donc GIT_SUBDIR, comme tout ce que Jenkins lit du checkout. Écrit en dur,
+# il faisait pointer le job vers un Jenkinsfile inexistant chez un client — une
+# SECONDE autorité sur le préfixe, à côté du knob qui existe déjà.
+# Sourcé ICI, avant la première valeur qui en dépend : `fail()` n'est défini que
+# plus bas, d'où la sortie par echo (même patron que setup-provision-jobs.sh).
+# shellcheck source=scripts/lib/repo-layout.sh
+. "$(dirname "$0")/lib/repo-layout.sh" || { echo "ERREUR: lib/repo-layout.sh introuvable ou illisible" >&2; exit 1; }
+repo_layout_init || exit 2
+
 # TOUT est surchargeable par env : le MÊME script pose le job frère publish-api-deploy —
 #   JOB=publish-api-deploy TRIGGER_TOKEN=stoa-publish-api-plan \
-#   SCRIPT_PATH=poc-control-plane-federation/ci/Jenkinsfile.publish-api \
+#   SCRIPT_PATH="${SUB_PFX}ci/Jenkinsfile.publish-api" \
 #   MANIFEST_DEFAULT=clients/_example/apis/accounts-read.publish.yml \
 #   JOB_DESC="publication d'API (PRODUCTEUR)" bash scripts/setup-selfservice-job.sh
 JENKINS="${JENKINS:-http://localhost:18080}"
@@ -54,7 +64,7 @@ GIT_URL="${GIT_URL:-http://gitea:3000/ci/stoa-labs.git}"   # vu DEPUIS l'agent (
 # feature après merge est éditable HORS revue (quiconque pousse sur cette
 # branche change le pipeline sans passer par une PR sur main).
 BRANCH="${BRANCH:-main}"
-SCRIPT_PATH="${SCRIPT_PATH:-poc-control-plane-federation/ci/Jenkinsfile.selfservice}"
+SCRIPT_PATH="${SCRIPT_PATH:-${SUB_PFX}ci/Jenkinsfile.selfservice}"
 MANIFEST_DEFAULT="${MANIFEST_DEFAULT:-clients/_example/applications/demo-consumer.ansible.yml}"
 JOB_DESC="${JOB_DESC:-self-service creation d application - CONSOMMATEUR}"
 BOOTSTRAP_WAIT="${BOOTSTRAP_WAIT:-360}"

@@ -304,6 +304,26 @@ def liaisons = { String credJenkins, String userVar, String passVar, String chem
                         usernameVariable: userVar, passwordVariable: passVar)]
 }
 
+// LE PRÉFIXE DU LIVRABLE, NORMALISÉ ICI ET NULLE PART AILLEURS.
+// Ce pipeline est le SEUL du dépôt sans `dir(env.GIT_SUBDIR)` — `carto/` vit à
+// la RACINE du dépôt et `python3 -m carto.collect` exige d'y être (cf. le
+// commentaire du stage `Source`). Ses blocs `sh` composent donc leurs chemins
+// de bibliothèque avec SUB_PFX, au lieu du préfixe du lab écrit en dur qui y
+// vivait : chez un client rangeant son dépôt autrement, `set -eu` + un chemin
+// de `source` faux ÉTEINT le stage avant la moindre garde.
+// Transposition littérale de scripts/lib/repo-layout.sh (que ce pipeline ne
+// peut pas sourcer : elle vit elle-même sous le préfixe qu'on cherche) :
+//   - TIRET NU côté shell / test `!= null` ici : une valeur VIDE est une
+//     sentinelle (« le livrable EST la racine »), pas « reprends le défaut » ;
+//   - `.`, `./` et `` rendent un préfixe VIDE ; tout le reste finit par « / » ;
+//   - un préfixe ABSOLU est un refus — il assemblerait « /ci/lib/… ».
+def SUB_PFX = {
+  def s = env.GIT_SUBDIR != null ? env.GIT_SUBDIR : 'poc-control-plane-federation'
+  if (s == '.' || s == './' || s == '') { return '' }
+  if (s.startsWith('/')) { error("GIT_SUBDIR_ABSOLU : '${s}' — le prefixe est RELATIF a la racine du depot") }
+  return s.replaceAll('/+$', '') + '/'
+}()
+
 // AUCUN serviceAccount privilégié n'est demandé : ce pod ne parle ni à Vault ni
 // à l'API Kubernetes. C'est la contrepartie visible de l'arbitrage ci-dessus —
 // l'identité de pod ne sert plus à rien ici, on ne la réclame donc pas.
@@ -334,7 +354,11 @@ podTemplate(containers: [
       envVar(key: 'VAULT_ROLE_ID', value: VAULT_RID),
       envVar(key: 'CARTO_VAULT_GW_PATH', value: V_GW),
       envVar(key: 'CARTO_VAULT_PAGES_PATH', value: V_PAGES),
-      envVar(key: 'CARTO_VAULT_CONFLUENCE_PATH', value: V_CONF)
+      envVar(key: 'CARTO_VAULT_CONFLUENCE_PATH', value: V_CONF),
+      // Le préfixe atteint le shell PAR ICI, et par nulle autre voie : sans
+      // cette ligne, les quatre `source` ci-dessous et ci/lib/carto-secrets.sh
+      // n'ont aucun moyen de savoir où vit le livrable.
+      envVar(key: 'SUB_PFX', value: SUB_PFX)
     ])
 ]) {
   node(POD_LABEL) {
@@ -532,7 +556,7 @@ podTemplate(containers: [
             sh '''
               set -eu
               set +x
-              . poc-control-plane-federation/ci/lib/carto-secrets.sh
+              . "${SUB_PFX}ci/lib/carto-secrets.sh"
               carto_secrets_resolve || exit 1
               set -x
               python3 - <<'PY'
@@ -645,7 +669,7 @@ PY
             sh '''
               set -eu
               set +x
-              . poc-control-plane-federation/ci/lib/carto-secrets.sh
+              . "${SUB_PFX}ci/lib/carto-secrets.sh"
               carto_secrets_resolve || exit 1
               set -x
               umask 077
@@ -846,7 +870,7 @@ PY
               sh '''
                 set -eu
               set +x
-              . poc-control-plane-federation/ci/lib/carto-secrets.sh
+              . "${SUB_PFX}ci/lib/carto-secrets.sh"
               carto_secrets_resolve || exit 1
               set -x
                 carto/scripts/publier-markdown.sh --source carto-pages
@@ -882,7 +906,7 @@ PY
                 sh '''
                   set -eu
               set +x
-              . poc-control-plane-federation/ci/lib/carto-secrets.sh
+              . "${SUB_PFX}ci/lib/carto-secrets.sh"
               carto_secrets_resolve || exit 1
               set -x
                   python3 carto/scripts/publier-confluence.py --source carto-pages

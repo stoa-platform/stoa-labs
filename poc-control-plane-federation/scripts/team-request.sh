@@ -46,6 +46,10 @@ _TR_LAYOUT="$(dirname "${BASH_SOURCE[0]}")/lib/repo-layout.sh"
 # shellcheck source=scripts/lib/repo-layout.sh
 . "$_TR_LAYOUT" || { echo "ERREUR: $_TR_LAYOUT introuvable ou illisible" >&2; exit 1; }
 repo_layout_init || exit 2
+_TR_PROV="$(dirname "${BASH_SOURCE[0]}")/lib/providers-teams.sh"
+[ -f "$_TR_PROV" ] || _TR_PROV="scripts/lib/providers-teams.sh"
+# shellcheck source=scripts/lib/providers-teams.sh
+. "$_TR_PROV" || { echo "ERREUR: $_TR_PROV introuvable ou illisible" >&2; exit 1; }
 
 TEAM="${TEAM:?TEAM requis}"
 # Le secret de la forge porte un nom NEUTRE (2026-09-04) : un gestionnaire
@@ -154,7 +158,17 @@ PROV="$WORK/repo/$PROV_REL"
 
 # Jamais d'écrasement silencieux : une équipe déjà déclarée est un refus,
 # pas une mise à jour — la mise à jour d'une équipe passe par une PR manuelle.
-grep -Eq "^  - team: ${TEAM}\$" "$PROV" && fail "TEAM_ALREADY_DECLARED : ${TEAM} est déjà dans providers.${REQ_ENV}.yml"
+# Lu en YAML (voir provision-request.sh pour le pourquoi). DEUX gains ici :
+# l'ERE qui vivait a cette ligne interpolait $TEAM — une equipe nommee `.*`
+# matchait n'importe quelle declaration et refusait toute demande ; et un
+# fichier illisible valait « pas encore declaree », donc un doublon ajoute EN
+# SILENCE. Les deux sont desormais des refus nommes.
+providers_team_declared "$PROV" "$TEAM"
+case $? in
+  0) fail "TEAM_ALREADY_DECLARED : ${TEAM} est déjà dans ${PROV_REL}" ;;
+  1) ;;
+  *) fail "PROVIDERS_PARSE : ${PROV_REL} ne se lit pas en YAML (cause ci-dessus) — refus avant toute écriture" ;;
+esac
 
 echo "[2/4] entrée ${TEAM} dans providers.${REQ_ENV}.yml"
 cat >> "$PROV" <<EOF
@@ -213,7 +227,10 @@ echo "PR #${PR_NUMBER} ouverte : ${GIT_WEB_HOST}/${GIT_REPO}/pulls/${PR_NUMBER}"
 # que le valideur lira est calculé sur ce qui sera mergé, rien d'autre.
 echo "[4/4] plan (gardes hors ligne du rôle)"
 PLAN_LOG="$WORK/plan.log"
-( cd "$WORK/repo/poc-control-plane-federation" \
+# Même idiome que provision-plan.sh : le préfixe vient du knob. En dur, le `cd`
+# échoue chez un client, le sous-shell court-circuite le `&&`, et le valideur
+# lit « PLAN EN ÉCHEC — NE PAS MERGER » sur une demande parfaitement valide.
+( cd "$WORK/repo/${SUB_PFX:-.}" \
   && ansible-playbook -i ansible/inventory.lab.ini ansible/team-plan.yml \
        -e "apim_onb_team=${TEAM}" -e "apim_onb_providers_file=providers.${REQ_ENV}.yml" \
 ) >"$PLAN_LOG" 2>&1

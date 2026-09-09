@@ -72,7 +72,9 @@ docker compose -f docker-compose.poc.yml -f docker-compose.ci.yml up -d --build 
    (il contient `poc-control-plane-federation/labctl` **avec `vendor/`**, les
    `apis/`, `targets.cluster.yaml` et `ci/Jenkinsfile`).
 2. Dans Jenkins : créer un job **Pipeline** → *Pipeline script from SCM* → Git →
-   URL `http://gitea:3000/<user>/stoa-labs.git` → *Script Path* `poc-control-plane-federation/ci/Jenkinsfile`.
+   URL `http://gitea:3000/<user>/stoa-labs.git` → *Script Path* `<prefixe-de-votre-livrable>/ci/Jenkinsfile` (au lab :
+   `poc-control-plane-federation/ci/Jenkinsfile` — c'est la valeur par défaut du
+   knob `GIT_SUBDIR`, la seule à écrire ailleurs qu'ici).
 3. Dans Gitea : repo → *Settings → Webhooks → Gitea* → URL
    `http://jenkins:8080/job/<job>/build?token=...` (ou le plugin Generic Webhook
    Trigger), événement **Push**.
@@ -80,7 +82,7 @@ docker compose -f docker-compose.poc.yml -f docker-compose.ci.yml up -d --build 
    `targets.cluster.yaml` → le webhook déclenche Jenkins → `labctl apply` fédère
    l'API sur WSO2 + APISIX + webMethods. **Define Once, depuis un commit.**
 5. **Jobs prod et rollback** (ADR-075) : deux jobs Pipeline supplémentaires,
-   *Script Path* `poc-control-plane-federation/ci/Jenkinsfile.prod` et
+   *Script Path* `<prefixe-de-votre-livrable>/ci/Jenkinsfile.prod` et
    `…/ci/Jenkinsfile.rollback` — **sans webhook** (aucun trigger déclaré : ils
    ne partent QUE de *Build with Parameters*). Lancer chaque job une première
    fois pour enregistrer ses paramètres (`PROMOTION_ID`, …).
