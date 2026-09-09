@@ -463,8 +463,16 @@ fi
 # le trap EXIT. S'applique à la team HÉRITÉE comme à une team fournie : le
 # palier VISÉ doit la déclarer (providers.<env>.yml de CE palier).
 if [ -n "$REQ_TEAM" ]; then
-  PROV_FILE="poc-control-plane-federation/ansible/providers.${REQ_ENV}.yml"
-  [ -f "$PROV_FILE" ] || fail "PROVIDERS_MISSING : ansible/providers.${REQ_ENV}.yml absent sur ${GIT_BASE}"
+  # Le préfixe du livrable est un KNOB (GIT_SUBDIR → SUB_PFX), comme pour
+  # REL_PATH et CERT_DIR ci-dessous. Il s'écrivait ici en dur au préfixe du LAB
+  # — résidu de la généralisation du 2026-09-03 : chez un client rangeant son
+  # dépôt autrement, ce chemin n'existe pas et TOUTE demande portant une `team`
+  # (fournie ou héritée) mourait PROVIDERS_MISSING sur un fichier POURTANT
+  # PRÉSENT, sous un autre préfixe (mesuré 2026-09-08, CI client `ci-app-request`).
+  # Le refus NOMME le chemin réellement lu : un message qui désigne un chemin
+  # théorique envoie chercher au mauvais endroit — c'est lui qui a masqué le défaut.
+  PROV_FILE="${SUB_PFX}ansible/providers.${REQ_ENV}.yml"
+  [ -f "$PROV_FILE" ] || fail "PROVIDERS_MISSING : ${PROV_FILE} absent sur ${GIT_BASE} (dépôt ${GIT_REPO})"
   # Chaîne FIXE, ligne ENTIÈRE (-Fx) : la team (fournie ou héritée) n'est
   # jamais interprétée comme regex — une valeur `.*` ou `(a|b)` ne matche rien.
   grep -Fxq -- "  - team: ${REQ_TEAM}" "$PROV_FILE" \

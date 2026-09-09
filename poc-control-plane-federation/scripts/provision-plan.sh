@@ -166,7 +166,11 @@ PLAN_LOG="$WORK/plan.log"; VERDICT="ok"
     || { echo "manifeste incomplet (name/api requis)"; exit 1; }
   grep -qE '^[[:space:]]*mode:' "$MAN" && echo "  mode: $(grep -oE 'mode: *"[a-z]+"' "$MAN" | head -1)"
   echo "== ansible --syntax-check (aucune mutation) =="
-  cd poc-control-plane-federation
+  # Le préfixe du livrable DANS LE CLONE, pris au knob comme MANIFEST_PATH plus
+  # haut — il s'écrivait ici en dur (résidu de la généralisation du 2026-09-03,
+  # même famille que le défaut client du 2026-09-08). SUB_PFX est vide quand le
+  # livrable EST la racine : `${SUB_PFX:-.}` rend alors un `cd .` inoffensif.
+  cd "${SUB_PFX:-.}"
   ansible-playbook -i "$INVENTORY" ansible/selfservice-app.yml --syntax-check \
     -e "apim_ss_manifest=$(cd "$WORK/repo" && pwd)/$MAN" ${ENVV:+-e apim_ss_env="$ENVV"}
 ) >"$PLAN_LOG" 2>&1 || VERDICT="fail"

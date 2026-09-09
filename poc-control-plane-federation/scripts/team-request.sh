@@ -38,6 +38,14 @@ _TR_LIB="$(dirname "${BASH_SOURCE[0]}")/lib/deploy-pin.sh"
 # laisserait bash continuer jusqu'à un « unbound variable » sur la constante.
 # shellcheck source=scripts/lib/deploy-pin.sh
 . "$_TR_LIB" || { echo "ERREUR: $_TR_LIB introuvable ou illisible" >&2; exit 1; }
+# Disposition du dépôt : le préfixe du livrable est un KNOB (GIT_SUBDIR ->
+# SUB_PFX), jamais le préfixe du lab en dur — c'est ce littéral qui a fait
+# mourir la chaîne du client le 2026-09-08 sur un fichier POURTANT présent.
+_TR_LAYOUT="$(dirname "${BASH_SOURCE[0]}")/lib/repo-layout.sh"
+[ -f "$_TR_LAYOUT" ] || _TR_LAYOUT="scripts/lib/repo-layout.sh"
+# shellcheck source=scripts/lib/repo-layout.sh
+. "$_TR_LAYOUT" || { echo "ERREUR: $_TR_LAYOUT introuvable ou illisible" >&2; exit 1; }
+repo_layout_init || exit 2
 
 TEAM="${TEAM:?TEAM requis}"
 # Le secret de la forge porte un nom NEUTRE (2026-09-04) : un gestionnaire
@@ -138,8 +146,11 @@ WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
 BRANCH="onboard/${TEAM}-${REQ_ENV}"
 echo "[1/4] clone ${GIT_REPO}"
 git clone -q --depth 1 -b main "${GIT_HOST}/${GIT_REPO}.git" "$WORK/repo" || fail "clone ${GIT_REPO}"
-PROV="$WORK/repo/poc-control-plane-federation/ansible/providers.${REQ_ENV}.yml"
-[ -f "$PROV" ] || fail "providers.${REQ_ENV}.yml absent du dépôt plateforme"
+PROV_REL="${SUB_PFX}ansible/providers.${REQ_ENV}.yml"
+PROV="$WORK/repo/$PROV_REL"
+# Le refus ne disait AUCUN chemin : sur un dépôt client rangé autrement, il
+# envoyait chercher un fichier présent. Il nomme désormais ce qui a été lu.
+[ -f "$PROV" ] || fail "PROVIDERS_MISSING : ${PROV_REL} absent de ${GIT_REPO}@main (chemin RELATIF à la racine du dépôt, préfixe GIT_SUBDIR='${GIT_SUBDIR}')"
 
 # Jamais d'écrasement silencieux : une équipe déjà déclarée est un refus,
 # pas une mise à jour — la mise à jour d'une équipe passe par une PR manuelle.

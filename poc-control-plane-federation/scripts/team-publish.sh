@@ -64,6 +64,12 @@ cd "$(dirname "$0")/.." || exit 1
 # — un fail-closed par accident, avec un message qui accuse la résolution au
 # lieu du fichier absent.
 . scripts/lib/deploy-pin.sh || { echo "ERREUR: scripts/lib/deploy-pin.sh introuvable ou illisible" >&2; exit 1; }
+# Disposition du dépôt : le préfixe du livrable est un KNOB (GIT_SUBDIR ->
+# SUB_PFX), jamais le préfixe du lab en dur — c'est ce littéral qui a fait
+# mourir la chaîne du client le 2026-09-08 sur un fichier POURTANT présent.
+# shellcheck source=scripts/lib/repo-layout.sh
+. scripts/lib/repo-layout.sh || { echo "ERREUR: scripts/lib/repo-layout.sh introuvable ou illisible" >&2; exit 1; }
+repo_layout_init || exit 2
 
 WEBHOOK_REPO="${WEBHOOK_REPO:?WEBHOOK_REPO requis (repository.full_name du webhook)}"
 PR_BRANCH="${PR_BRANCH:?PR_BRANCH requis}"
@@ -220,8 +226,9 @@ echo "réconciliation Gitea OK : ${WEBHOOK_REPO}#${PR_NUMBER} merged, ${PR_BRANC
 # vide) de « extraction cassée » (marqueur absent) — jamais confondus.
 gclone --depth 1 -b main "${GIT_HOST}/${GIT_REPO}.git" "$TMP/platform" \
   || fail "clone ${GIT_REPO}@main (résolution dépôt -> équipe)"
-PROV="$TMP/platform/poc-control-plane-federation/ansible/providers.${ENVN}.yml"
-[ -f "$PROV" ] || fail "PROVIDERS_MISSING : ansible/providers.${ENVN}.yml absent sur main"
+PROV_REL="${SUB_PFX}ansible/providers.${ENVN}.yml"
+PROV="$TMP/platform/$PROV_REL"
+[ -f "$PROV" ] || fail "PROVIDERS_MISSING : ${PROV_REL} absent sur ${GIT_REPO}@main (chemin RELATIF à la racine du dépôt, préfixe GIT_SUBDIR='${GIT_SUBDIR}')"
 
 # FAIL-CLOSED supplémentaire (REPO_AMBIGU) : si CE dépôt est déclaré par PLUS
 # D'UNE équipe (erreur d'opérateur — copier-coller de providers.<env>.yml),

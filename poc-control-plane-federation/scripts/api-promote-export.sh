@@ -53,6 +53,11 @@ cd "$(dirname "$0")/.." || exit 1
 . scripts/lib/promote-manifest.sh || { echo "ERREUR: scripts/lib/promote-manifest.sh introuvable ou illisible" >&2; exit 1; }
 # shellcheck source=scripts/lib/forge-identity.sh
 . scripts/lib/forge-identity.sh || { echo "ERREUR: scripts/lib/forge-identity.sh introuvable ou illisible" >&2; exit 1; }
+# Disposition du dépôt : le préfixe du livrable est un KNOB (GIT_SUBDIR ->
+# SUB_PFX), jamais le préfixe du lab en dur — ici il est un SEGMENT D'URL.
+# shellcheck source=scripts/lib/repo-layout.sh
+. scripts/lib/repo-layout.sh || { echo "ERREUR: scripts/lib/repo-layout.sh introuvable ou illisible" >&2; exit 1; }
+repo_layout_init || exit 2
 
 fail() { printf 'ERREUR: %s\n' "$*" >&2; exit 1; }
 
@@ -95,13 +100,14 @@ forge_auth_write "$FORGE_SECRET" "$TMP/ghdr" || exit 2
 gapi() { curl -sS -H @"$TMP/ghdr" -H 'Content-Type: application/json' "$@"; }
 
 # ── team -> repo, lu sur GITEA MAIN (jamais le worktree local) ───────────────
-# REPRIS À L'IDENTIQUE de api-promote-request.sh:141-175 (mêmes deux pièges
-# mesurés : le préfixe de sous-répertoire dans le chemin, et `curl -s` qui rend
-# 0 sur un 404 — d'où --fail-with-body).
+# REPRIS À L'IDENTIQUE de api-promote-request.sh (mêmes deux pièges mesurés :
+# le préfixe de sous-répertoire dans le chemin — un KNOB, jamais un littéral —
+# et `curl -s` qui rend 0 sur un 404, d'où --fail-with-body).
+PROV_REL="${SUB_PFX}ansible/providers.${AUTHORING_ENV}.yml"
 gapi --fail-with-body --max-time 20 \
-  "${GIT_HOST}/api/v1/repos/${GIT_REPO}/raw/poc-control-plane-federation/ansible/providers.${AUTHORING_ENV}.yml" \
+  "${GIT_HOST}/api/v1/repos/${GIT_REPO}/raw/${PROV_REL}" \
   > "$TMP/providers.yml" \
-  || fail "LECTURE_PROVIDERS : poc-control-plane-federation/ansible/providers.${AUTHORING_ENV}.yml illisible sur ${GIT_REPO}@main (HTTP non-2xx, hote injoignable ou token refuse)"
+  || fail "LECTURE_PROVIDERS : ${PROV_REL} illisible sur ${GIT_REPO}@main (HTTP non-2xx, hote injoignable ou token refuse ; chemin RELATIF a la racine du depot, prefixe GIT_SUBDIR='${GIT_SUBDIR}')"
 REPO_FULL=$(TEAM="$TEAM" PROV="$TMP/providers.yml" python3 - <<'PY'
 import os, sys, yaml
 d = yaml.safe_load(open(os.environ["PROV"])) or {}

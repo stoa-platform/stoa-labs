@@ -36,6 +36,11 @@ cd "$(dirname "$0")/.." || exit 1
 . scripts/lib/deploy-pin.sh
 # shellcheck source=scripts/lib/promote-manifest.sh
 . scripts/lib/promote-manifest.sh
+# Disposition du dépôt : le préfixe du livrable est un KNOB (GIT_SUBDIR ->
+# SUB_PFX), jamais le préfixe du lab en dur — ici il est un SEGMENT D'URL.
+# shellcheck source=scripts/lib/repo-layout.sh
+. scripts/lib/repo-layout.sh || { echo "ERREUR: scripts/lib/repo-layout.sh introuvable ou illisible" >&2; exit 1; }
+repo_layout_init || exit 2
 
 fail() { printf 'ERREUR: %s\n' "$*" >&2; exit 1; }
 
@@ -201,10 +206,12 @@ gapi() { curl -sS -H @"$TMP/ghdr" -H 'Content-Type: application/json' "$@"; }
 # main du dépôt plateforme (même discipline que team-publish.sh §3).
 # ⚠ DEUX PIÈGES ICI, MESURÉS TOUS LES DEUX.
 #
-# (1) LE CHEMIN. `providers.<env>.yml` ne vit pas à la racine du dépôt
-#     plateforme mais sous `poc-control-plane-federation/` — c'est ce que
-#     lisent les scripts frères. Sans ce préfixe, chaque exécution hors
-#     DRY_RUN tape un 404 et le chemin nominal est mort.
+# (1) LE CHEMIN. `providers.<env>.yml` ne vit pas forcément à la racine du
+#     dépôt plateforme : au lab il est sous `poc-control-plane-federation/`,
+#     chez un client sous le sien. Sans ce préfixe, chaque exécution hors
+#     DRY_RUN tape un 404 et le chemin nominal est mort — et l'écrire EN DUR
+#     produit le MÊME 404 chez qui range son dépôt autrement (mesuré le
+#     2026-09-08). D'où SUB_PFX, seule autorité du préfixe (repo-layout.sh).
 #
 # (2) `curl -s` REND 0 SUR UN 404. Le `|| fail` ci-dessous ne se déclencherait
 #     donc jamais : le corps d'erreur JSON de Gitea atterrirait dans le
@@ -215,10 +222,11 @@ gapi() { curl -sS -H @"$TMP/ghdr" -H 'Content-Type: application/json' "$@"; }
 #     de déclaration d'équipe. C'est la classe de panne que ce dépôt a déjà
 #     payée — une variable vide, une branche plausible, un verdict trompeur —
 #     ici en refus trompeur. `--fail-with-body` rend le statut HTTP au shell.
+PROV_REL="${SUB_PFX}ansible/providers.${AUTHORING_ENV}.yml"
 gapi --fail-with-body --max-time 20 \
-  "${GIT_HOST}/api/v1/repos/${GIT_REPO}/raw/poc-control-plane-federation/ansible/providers.${AUTHORING_ENV}.yml" \
+  "${GIT_HOST}/api/v1/repos/${GIT_REPO}/raw/${PROV_REL}" \
   > "$TMP/providers.yml" \
-  || fail "LECTURE_PROVIDERS : poc-control-plane-federation/ansible/providers.${AUTHORING_ENV}.yml illisible sur ${GIT_REPO}@main (HTTP non-2xx, hote injoignable ou token refuse)"
+  || fail "LECTURE_PROVIDERS : ${PROV_REL} illisible sur ${GIT_REPO}@main (HTTP non-2xx, hote injoignable ou token refuse ; chemin RELATIF a la racine du depot, prefixe GIT_SUBDIR='${GIT_SUBDIR}')"
 REPO_FULL=$(TEAM="$TEAM" PROV="$TMP/providers.yml" python3 - <<'PY'
 import os, sys, yaml
 d = yaml.safe_load(open(os.environ["PROV"])) or {}

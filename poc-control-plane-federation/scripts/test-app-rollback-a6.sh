@@ -488,8 +488,10 @@ grep -q 'CpsScmFlowDefinition' "$XML" && grep -q '<scriptPath>poc-control-plane-
 # Le compte de la dernière étape est écrit EN DUR ici : c'est ce qui rend
 # visible qu'une porte a été ajoutée (ou retirée) au Makefile. 2026-09-07 :
 # [17/17] → [18/18], le préflight de joignabilité branché en dernière étape.
-grep -q 'scripts/app-rollback-request.sh scripts/test-app-rollback-a6.sh' "$MK" && grep -q '\[18/18\]' "$MK" && grep -q 'bash scripts/test-app-rollback-a6.sh' "$MK" && ! grep -q '/15\]' "$MK" && ! grep -q '/17\]' "$MK" \
-  && ok "D.11 Makefile : shellcheck des scripts A6, [18/18] (A7, la porte des valeurs par défaut, puis le préflight branchés), la suite câblée" || ko "D.11 Makefile"
+# 2026-09-08 : [18/18] → [19/19], la porte de portabilité du préfixe du livrable
+# (test-repo-layout-portabilite.sh) insérée en 18e, le préflight repoussé en 19e.
+grep -q 'scripts/app-rollback-request.sh scripts/test-app-rollback-a6.sh' "$MK" && grep -q '\[19/19\]' "$MK" && grep -q 'bash scripts/test-app-rollback-a6.sh' "$MK" && ! grep -q '/15\]' "$MK" && ! grep -q '/17\]' "$MK" && ! grep -q '/18\]' "$MK" \
+  && ok "D.11 Makefile : shellcheck des scripts A6, [19/19] (A7, valeurs par défaut, portabilité du préfixe, puis le préflight branchés), la suite câblée" || ko "D.11 Makefile"
 ! grep -q 'sauf repli (A6)' "$REPO/ci/Jenkinsfile.selfservice" && grep -q 'le repli (A6) est une PR' "$REPO/ci/Jenkinsfile.selfservice" && ok "D.12 Jenkinsfile.selfservice : le levier n'est plus « le repli »" || ko "D.12 commentaire selfservice"
 ! grep -q 'levier du repli (A6)' "$REPO/ENVIRONNEMENTS.md" && grep -q 'le repli est une PR' "$REPO/ENVIRONNEMENTS.md" && ok "D.13 ENVIRONNEMENTS.md : idem" || ko "D.13 ENVIRONNEMENTS.md"
 

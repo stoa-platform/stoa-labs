@@ -81,6 +81,14 @@ _AR_LIB="$(dirname "${BASH_SOURCE[0]}")/lib/deploy-pin.sh"
 # laisserait bash continuer jusqu'à un « unbound variable » sur la constante.
 # shellcheck source=scripts/lib/deploy-pin.sh
 . "$_AR_LIB" || { echo "ERREUR: $_AR_LIB introuvable ou illisible" >&2; exit 1; }
+# Disposition du dépôt : le préfixe du livrable est un KNOB (GIT_SUBDIR ->
+# SUB_PFX), jamais le préfixe du lab en dur — c'est ce littéral qui a fait
+# mourir la chaîne du client le 2026-09-08 sur un fichier POURTANT présent.
+_AR_LAYOUT="$(dirname "${BASH_SOURCE[0]}")/lib/repo-layout.sh"
+[ -f "$_AR_LAYOUT" ] || _AR_LAYOUT="scripts/lib/repo-layout.sh"
+# shellcheck source=scripts/lib/repo-layout.sh
+. "$_AR_LAYOUT" || { echo "ERREUR: $_AR_LAYOUT introuvable ou illisible" >&2; exit 1; }
+repo_layout_init || exit 2
 
 ACTION="${ACTION:?ACTION requis (create|new-version)}"
 TEAM="${TEAM:?TEAM requis}"
@@ -257,8 +265,11 @@ WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
 echo "[1/5] clone ${GIT_REPO}@main (lecture team -> repo)"
 git clone -q --depth 1 -b main "${GIT_HOST}/${GIT_REPO}.git" "$WORK/platform" \
   || fail "clone ${GIT_REPO}@main (résolution team -> repo)"
-PROV="$WORK/platform/poc-control-plane-federation/ansible/providers.${ENVN}.yml"
-[ -f "$PROV" ] || fail "PROVIDERS_MISSING : ansible/providers.${ENVN}.yml absent sur main"
+PROV_REL="${SUB_PFX}ansible/providers.${ENVN}.yml"
+PROV="$WORK/platform/$PROV_REL"
+# Le refus NOMME le chemin RÉELLEMENT lu, préfixe compris : un message qui
+# désigne un chemin théorique envoie chercher au mauvais endroit.
+[ -f "$PROV" ] || fail "PROVIDERS_MISSING : ${PROV_REL} absent sur ${GIT_REPO}@main (chemin RELATIF à la racine du dépôt, préfixe GIT_SUBDIR='${GIT_SUBDIR}')"
 
 REPO_OUT=$(TEAM="$TEAM" PROV="$PROV" python3 - <<'PY'
 import os, sys, yaml

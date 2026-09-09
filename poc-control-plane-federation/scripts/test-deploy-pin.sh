@@ -550,11 +550,14 @@ grep -q REPO_NON_DECLARE "$ROOT/scripts/api-promote-request.sh" \
 # worktree local (qui peut être en retard ou modifié). Même discipline que
 # team-publish.sh §3 : le seul énoncé qui fait autorité sur « ce dépôt
 # appartient à cette équipe » vit sur main du dépôt plateforme.
-# ⚠ Motif mis à jour avec le préfixe de sous-répertoire (cf. ⑱bis, deuxième
-# piège de LECTURE_PROVIDERS) : sans lui, cette assertion redevenait fausse
-# malgré une garde correcte — un cas de désaccord entre deux greps du même
-# fichier, l'un patché et l'autre laissé sur l'ancien chemin.
-grep -q 'repos/${GIT_REPO}/raw/poc-control-plane-federation/ansible/providers' "$ROOT/scripts/api-promote-request.sh" \
+# ⚠ Motif mis à jour DEUX FOIS. D'abord avec le préfixe de sous-répertoire (cf.
+# ⑱bis) ; puis, le 2026-09-09, avec le KNOB qui l'a remplacé : ce préfixe
+# s'écrivait en dur au lab et faisait mourir la chaîne d'un client rangeant son
+# dépôt autrement. L'assertion porte donc sur la FORME (l'URL est composée avec
+# $PROV_REL), jamais sur la valeur d'un préfixe — sinon elle réinstallerait le
+# défaut qu'elle est censée interdire. Le préfixe lui-même est éprouvé, sous une
+# valeur NON-défaut, par scripts/test-repo-layout-portabilite.sh (section P).
+grep -q 'repos/${GIT_REPO}/raw/${PROV_REL}' "$ROOT/scripts/api-promote-request.sh" \
   && ok "providers lu sur Gitea main, pas sur le worktree local" \
   || bad "providers lu localement — un worktree en retard déciderait de l'appartenance"
 
@@ -588,9 +591,10 @@ grep -q 'yaml.safe_dump' "$WCODE" \
 grep -q -- '--fail-with-body' "$WCODE" \
   && ok "curl echoue vraiment sur un HTTP non-2xx (sinon LECTURE_PROVIDERS est du code mort)" \
   || bad "curl -s rend 0 sur un 404 : le refus emis serait un mensonge"
-grep -q 'raw/poc-control-plane-federation/ansible/providers' "$WCODE" \
-  && ok "le chemin providers porte le prefixe du sous-repertoire" \
-  || bad "chemin providers sans prefixe — 404 a chaque execution hors DRY_RUN"
+grep -q 'PROV_REL="${SUB_PFX}ansible/providers' "$WCODE" \
+  && grep -q 'raw/${PROV_REL}' "$WCODE" \
+  && ok "le chemin providers porte le prefixe du livrable, pris au KNOB (SUB_PFX) et non ecrit en dur" \
+  || bad "chemin providers sans prefixe (404 hors DRY_RUN) ou prefixe du lab en dur (404 chez le client)"
 
 # PV_REF passe par la meme garde que CHANGE_REF ; l'eprouver separement,
 # sinon la moitie du verrou de reference n'est tenue par rien. `homol` est le

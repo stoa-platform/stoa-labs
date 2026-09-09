@@ -689,7 +689,7 @@ mode de panne rencontré le 2026-09-07. `publish-api` sondait alors `/health`
 version antérieure du bloc, pendant que `selfservice` gardait la bonne. La
 porte qui l'aurait vu — les assertions de câblage de
 `ci/test-proxy-base-et-preflight.sh` — existait mais **rien ne l'appelait** ;
-elle est branchée depuis le 2026-09-07 sous `make lint-ci` (étape 18/18,
+elle est branchée depuis le 2026-09-07 sous `make lint-ci` (dernière étape,
 `STOA_PREFLIGHT_ONLY=1`).
 
 **Rollout sur ce lab (l'ordre compte)** — joué le 2026-09-02 :
