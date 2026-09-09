@@ -88,8 +88,34 @@
 #                           ne répond pas — le cas visé) PUIS l'attente (5 s).
 #                           Le défaut vaut donc jusqu'à ~10 minutes, pas 5.
 #
-# Ces quatre-là sont OPTIONNELLES : absentes, la chaîne garde son comportement
-# par défaut, et le rapport final ne les annonce pas « manquantes ».
+# Les APIM_PREFLIGHT* et les FORGE_* sont OPTIONNELLES : absentes, la chaîne
+# garde son comportement par défaut, et le rapport final ne les annonce pas
+# « manquantes ».
+#
+# LE VISAGE DE LA FORGE (FORGE_KIND, FORGE_API_AUTH, FORGE_API_BASE)
+# La chaîne parlait l'API de Gitea en dur ; depuis le 2026-09-09 une seule
+# autorité, scripts/lib/forge-api.sh, décide des chemins, des en-têtes et des
+# noms de champs selon le visage. Trois knobs, tous OPTIONNELS :
+#
+#   FORGE_KIND              gitea (défaut) | gitlab. Chez un client GitLab,
+#                           c'est LE knob à poser — sans lui, la chaîne compose
+#                           /api/v1 et « Authorization: token », et GitLab
+#                           répond par une redirection vers sa page de
+#                           connexion (refus FORGE_ILLISIBLE, cause nommée).
+#   FORGE_API_AUTH          token | private-token | bearer | basic. ABSENTE, la
+#                           lib dérive l'en-tête du visage (token pour Gitea,
+#                           PRIVATE-TOKEN pour GitLab) : ne la poser que pour
+#                           en SORTIR (un GitLab derrière un portail OAuth2 qui
+#                           exige Bearer, un couple user/mot de passe en basic —
+#                           basic exige aussi FORGE_USER).
+#   FORGE_API_BASE          base d'API COMPLÈTE quand un reverse-proxy la
+#                           déplace (ex. https://forge.client/gitlab/api/v4).
+#                           ABSENTE, la lib compose GIT_HOST + /api/v1 ou /api/v4.
+#
+# Les webhooks des jobs provision-plan / provision-apply lisent, eux, les DEUX
+# formes de payload (Gitea « pull_request », GitLab « Merge Request Hook ») sans
+# knob : côté forge, pointer le hook sur la même URL
+# /generic-webhook-trigger/invoke?token=<token du job>.
 set -euo pipefail
 
 # L'aide = l'entête de commentaire ENTIER (ligne 1 exclue : le shebang), coupé à
@@ -120,7 +146,7 @@ die(){ printf '\nREFUS: %s\n' "$*" >&2; exit 2; }
 # n'a encore rien posé ira le lire.
 CONNUES="
 GIT_HOST GIT_WEB_HOST GIT_REPO GIT_BASE GIT_SUBDIR GITEA_CREDENTIALS_ID GITEA_SERVICE_LOGINS
-FORGE_CRED_KIND FORGE_API_AUTH FORGE_USER
+FORGE_KIND FORGE_CRED_KIND FORGE_API_AUTH FORGE_API_BASE FORGE_USER
 VAULT_ADDR JENKINS_UI ITSM_URL
 APIM_API_BASE APIM_DATA_BASE APIM_PROXY_HOST APIM_PROXY_API APIM_PROXY_VER APIM_PROXY_PATH APIM_TERMINUS_BASE
 APIM_PREFLIGHT APIM_PREFLIGHT_URL APIM_PREFLIGHT_CODES APIM_PREFLIGHT_TRIES
@@ -134,8 +160,10 @@ GOVERNANCE_REPO GOVERNANCE_PATH
 # se posent et se relisent comme les autres (--from-env les prend) ; cette liste
 # ne sert qu'au rapport final, pour ne pas les annoncer manquantes au même titre
 # qu'une adresse sans laquelle le pipeline refuse — ce serait faux, et un
-# rapport qui crie au loup ne se lit plus.
-OPTIONNELLES="APIM_PREFLIGHT APIM_PREFLIGHT_URL APIM_PREFLIGHT_CODES APIM_PREFLIGHT_TRIES"
+# rapport qui crie au loup ne se lit plus. Le visage de la forge en fait
+# partie : absent, la chaîne parle Gitea (FORGE_KIND) et la lib forge-api
+# dérive l'en-tête et la base d'API du visage (FORGE_API_AUTH, FORGE_API_BASE).
+OPTIONNELLES="APIM_PREFLIGHT APIM_PREFLIGHT_URL APIM_PREFLIGHT_CODES APIM_PREFLIGHT_TRIES FORGE_KIND FORGE_API_AUTH FORGE_API_BASE"
 
 # ── le canal : console de script Jenkins, jeton par fichier ──────────────────
 CFG="$TMP/curl.cfg"

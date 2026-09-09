@@ -39,7 +39,7 @@ ko(){ FAIL=$((FAIL+1)); printf '  ❌ %s\n' "$*"; }
 
 # Total ATTENDU, ÉCRIT EN DUR — indépendant de PASS+FAIL. Toute section
 # ajoutée/retirée DOIT le mettre à jour : un oubli fait rougir le dernier §.
-EXPECTED_CHECKS=188
+EXPECTED_CHECKS=190
 
 # shellcheck source=scripts/lib/gwt-mirror.sh
 . scripts/lib/gwt-mirror.sh || { echo "lib gwt-mirror.sh introuvable"; exit 2; }
@@ -98,9 +98,50 @@ mirror_expect(){ # $1=job $2=nb de clés attendu
     && ok "$1 : $2 genericVariables, à l'identique des deux côtés" \
     || ko "$1 : nombre de genericVariables inattendu (attendu $2) — $(printf '%s' "$out" | tr '\n' ' ')"
 }
-mirror_expect provision-apply 7
-mirror_expect provision-plan 3
+# 2026-09-09 (forge agnostique) : DEUX jeux de clés par job à webhook de PR —
+# PR_* (Gitea « pull_request ») et GL_* (GitLab « Merge Request Hook ») ; le
+# miroir les compte TOUS (14 = 7 + 7 pour l'apply, 7 = 3 + 4 pour le plan).
+mirror_expect provision-apply 14
+mirror_expect provision-plan 7
 mirror_expect provisioning-request 7
+# La PORTE DU FILTRE, jouée sur le côté qui GAGNE (le XML) : le texte est rendu
+# comme le plugin le rend (chaque $CLÉ remplacée par sa valeur, VIDE quand le
+# payload ne la porte pas — un payload Gitea laisse GL_* vides, un payload
+# GitLab laisse PR_* vides ; les clés les plus longues d'abord, comme lui), puis
+# l'expression est jouée par find(), comme lui. Un visage accepte, l'autre passe
+# pour vide ; une fermeture sans fusion, un push, un payload vide ne passent jamais.
+gwt_filtre(){ # $1=job $2… CLÉ=VALEUR (les contribuées) → rc 0 si le filtre laisse passer
+  local job="$1"; shift
+  python3 - "ci/jenkins/$job.job.xml" "$@" <<'PY2'
+import re, sys, xml.etree.ElementTree as T
+g = next(el for el in T.parse(sys.argv[1]).getroot().iter() if el.tag.endswith('GenericTrigger'))
+kv = dict(a.split('=', 1) for a in sys.argv[2:])
+text = g.findtext('regexpFilterText') or ''
+for k in sorted((v.findtext('key') or '' for v in g.find('genericVariables')), key=len, reverse=True):
+    text = text.replace('$' + k, kv.get(k, ''))
+sys.exit(0 if re.search(g.findtext('regexpFilterExpression') or '', text) else 1)
+PY2
+}
+F_KO=""
+for c in "PR_ACTION=opened" "PR_ACTION=reopened" "PR_ACTION=synchronized" "GL_KIND=merge_request GL_ACTION=open" "GL_KIND=merge_request GL_ACTION=reopen" "GL_KIND=merge_request GL_ACTION=update"; do
+  # shellcheck disable=SC2086
+  gwt_filtre provision-plan $c || F_KO="$F_KO [$c refusé]"
+done
+for c in "PR_ACTION=closed" "PR_ACTION=edited" "GL_KIND=merge_request GL_ACTION=merge" "GL_KIND=merge_request GL_ACTION=close" "GL_KIND=merge_request GL_ACTION=approved" "GL_KIND=push" ""; do
+  # shellcheck disable=SC2086
+  gwt_filtre provision-plan $c && F_KO="$F_KO [${c:-payload vide} accepté]"
+done
+[ -z "$F_KO" ] && ok "provision-plan : le filtre (XML, le côté qui gagne) accepte opened|reopened|synchronized ET merge_request:open|reopen|update ; refuse fermeture, fusion, approbation, push, payload vide" || ko "provision-plan : filtre —$F_KO"
+F_KO=""
+for c in "PR_ACTION=closed PR_MERGED=true" "GL_KIND=merge_request GL_ACTION=merge"; do
+  # shellcheck disable=SC2086
+  gwt_filtre provision-apply $c || F_KO="$F_KO [$c refusé]"
+done
+for c in "PR_ACTION=closed PR_MERGED=false" "PR_ACTION=opened PR_MERGED=false" "PR_ACTION=reopened PR_MERGED=true" "GL_KIND=merge_request GL_ACTION=close" "GL_KIND=merge_request GL_ACTION=open" "GL_KIND=merge_request GL_ACTION=update" "GL_KIND=push" ""; do
+  # shellcheck disable=SC2086
+  gwt_filtre provision-apply $c && F_KO="$F_KO [${c:-payload vide} accepté]"
+done
+[ -z "$F_KO" ] && ok "provision-apply : le filtre accepte closed+merged=true ET merge_request:merge SEULEMENT — fermeture sans fusion, ouverture, update, push, payload vide ne passent pas" || ko "provision-apply : filtre —$F_KO"
 OUT=$(gwt_mirror_diff ci/jenkins/app-request.job.xml ci/Jenkinsfile.app-request 2>&1); RC=$?
 [ "$RC" -eq 0 ] && [ "$OUT" = "AUCUN_TRIGGER" ] \
   && ok "app-request : AUCUN trigger des deux côtés (formulaire humain, <triggers/> vide)" \
@@ -113,8 +154,8 @@ jfp(){ grep -qF -- "$1" "$TMP/jf-plan.code"; }
 grep -qE '^pipeline \{' "$JFP" && grep -qE '^  agent none' "$TMP/jf-plan.code" \
   && ok "déclaratif, \`agent none\` au niveau pipeline (la PR étrangère n'alloue rien)" || ko "pas déclaratif / agent none absent au niveau pipeline"
 jfp 'disableConcurrentBuilds()' && ok "options { disableConcurrentBuilds() } — miroir de la propriété du XML" || ko "disableConcurrentBuilds absent (le XML l'a : divergence)"
-jfp "regexpFilterExpression: '^(opened|reopened|synchronized)\$'" && jfp "regexpFilterText: '\$PR_ACTION'" \
-  && ok "filtre GWT exact : \$PR_ACTION ~ ^(opened|reopened|synchronized)\$ (jamais la fermeture)" || ko "filtre GWT inattendu"
+jfp "regexpFilterExpression: '^(opened|reopened|synchronized)\\\\||merge_request:(open|reopen|update)\$'" && jfp "regexpFilterText: '\$PR_ACTION|\$GL_KIND:\$GL_ACTION'" \
+  && ok "filtre GWT exact, DEUX visages : \$PR_ACTION|\$GL_KIND:\$GL_ACTION ~ ^(opened|reopened|synchronized)\\| … merge_request:(open|reopen|update)\$ (jamais la fermeture)" || ko "filtre GWT inattendu"
 jfp 'beforeAgent true' && jfp "expression { (env.PR_BRANCH ?: '').startsWith('provision/') }" \
   && ok "garde provision/* AVANT l'agent (beforeAgent true)" || ko "garde provision/* ou beforeAgent absents"
 L_WHEN=$(code_line "$TMP/jf-plan.code" 'beforeAgent true'); L_AG=$(awk "NR>${L_WHEN:-0} && /^ *agent any/ {print NR; exit}" "$TMP/jf-plan.code")
@@ -130,7 +171,12 @@ jfp "GIT_WEB_HOST         = \"\${env.GIT_WEB_HOST ?: 'http://localhost:13000'}\"
 jfp "GITEA_CREDENTIALS_ID = \"\${env.GITEA_CREDENTIALS_ID ?: 'gitea-provision-token'}\"" || MISS="$MISS GITEA_CREDENTIALS_ID"
 jfp "GIT_HOST             = \"\${env.GIT_HOST ?: 'http://gitea:3000'}\"" || MISS="$MISS GIT_HOST"
 jfp "GIT_REPO             = \"\${env.GIT_REPO ?: 'ci/stoa-labs'}\"" || MISS="$MISS GIT_REPO"
-[ -z "$MISS" ] && ok "points de config (défauts = ceux du Groovy : GIT_WEB_HOST localhost:13000, credential gitea-provision-token)" || ko "points de config absents/divergents :$MISS"
+# 2026-09-09 : le VISAGE de la forge atteint le shell (forge-api.sh le lit) ;
+# FORGE_API_AUTH / FORGE_API_BASE en repli VIDE — jamais un défaut de site.
+jfp "FORGE_KIND           = \"\${env.FORGE_KIND ?: 'gitea'}\"" || MISS="$MISS FORGE_KIND"
+jfp "FORGE_API_AUTH       = \"\${env.FORGE_API_AUTH ?: ''}\"" || MISS="$MISS FORGE_API_AUTH"
+jfp "FORGE_API_BASE       = \"\${env.FORGE_API_BASE ?: ''}\"" || MISS="$MISS FORGE_API_BASE"
+[ -z "$MISS" ] && ok "points de config (défauts = ceux du Groovy : GIT_WEB_HOST localhost:13000, credential gitea-provision-token ; FORGE_KIND gitea, FORGE_API_AUTH/FORGE_API_BASE en repli vide)" || ko "points de config absents/divergents :$MISS"
 BAD=""
 jfp 'git url:' && BAD="$BAD git-url"; grep -qE '^\s*parameters \{' "$TMP/jf-plan.code" && BAD="$BAD parameters{}"
 grep -q 'sh """' "$TMP/jf-plan.code" && BAD="$BAD sh-triple-double"; grep -qE '\binput\b' "$TMP/jf-plan.code" && BAD="$BAD input"
@@ -290,10 +336,15 @@ L_WC=$(code_line "$TMP/jf-app.code" "withCredentials(forgeCreds())")
 # secret text (jeton, defaut du lab) ou un usernamePassword (couple, cas client),
 # et le shell voit les MEMES noms dans les deux cas — sans quoi un client devrait
 # editer le pipeline, ce que ce depot refuse depuis A0.
+# 2026-09-09 : le VISAGE (FORGE_KIND) s'ajoute, et FORGE_API_AUTH perd son
+# défaut `token` — un défaut de SITE qui aurait envoyé « Authorization: token »
+# à un GitLab (401) : repli VIDE, la lib forge-api dérive l'en-tête du visage.
 jfa "FORGE_CRED_KIND      = \"\${env.FORGE_CRED_KIND ?: 'secret-text'}\"" \
-  && jfa "FORGE_API_AUTH       = \"\${env.FORGE_API_AUTH ?: 'token'}\"" \
-  && ok "le type de credential et la forme d'authentification sont des knobs (defauts du lab : secret-text, token)" \
-  || ko "FORGE_CRED_KIND / FORGE_API_AUTH absents du bloc environment"
+  && jfa "FORGE_KIND           = \"\${env.FORGE_KIND ?: 'gitea'}\"" \
+  && jfa "FORGE_API_AUTH       = \"\${env.FORGE_API_AUTH ?: ''}\"" \
+  && jfa "FORGE_API_BASE       = \"\${env.FORGE_API_BASE ?: ''}\"" \
+  && ok "le type de credential, le VISAGE de la forge et la forme de son API sont des knobs (defauts : secret-text, gitea ; FORGE_API_AUTH / FORGE_API_BASE en repli VIDE, jamais un defaut de site)" \
+  || ko "FORGE_CRED_KIND / FORGE_KIND / FORGE_API_AUTH / FORGE_API_BASE absents du bloc environment, ou portant un defaut de site"
 grep -q "usernamePassword(credentialsId: env.GITEA_CREDENTIALS_ID" "$TMP/jf-app.code" \
   && grep -q "usernameVariable: 'FORGE_USER', passwordVariable: 'FORGE_SECRET'" "$TMP/jf-app.code" \
   && grep -q "string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'FORGE_SECRET')" "$TMP/jf-app.code" \
@@ -494,7 +545,8 @@ set_pr open provision/appa-dev main 404; confirm 12 provision/appa-dev; RC=$?
 set_pr open provision/appa-dev main 500; confirm 12 provision/appa-dev; RC=$?
 [ "$RC" -eq 1 ] && grep -q 'HTTP 500' "$TMP/cf.out" && ok "forge en erreur (500) ⇒ rc 1" || ko "500 accepté (rc=$RC)"
 set_pr open provision/appa-dev main 200 '[]'; confirm 12 provision/appa-dev; RC=$?
-[ "$RC" -eq 1 ] && grep -q 'pas un objet' "$TMP/cf.out" && ok "200 mais pas un objet PR (portail interposé) ⇒ rc 1" || ko "non-objet accepté (rc=$RC)"
+# La cause vient de forge-api (« un list a été rendu là où un OBJET était attendu ») : la lib ne la reformule pas, elle la relaie sous FORGE_NON_CONFIRMEE.
+[ "$RC" -eq 1 ] && grep -qi 'objet' "$TMP/cf.out" && grep -q 'FORGE_NON_CONFIRMEE' "$TMP/cf.out" && ok "200 mais pas un objet PR (portail interposé) ⇒ rc 1 FORGE_NON_CONFIRMEE, la cause nomme l'OBJET attendu" || ko "non-objet accepté (rc=$RC) : $(tr '\n' ' ' < "$TMP/cf.out" | head -c 200)"
 set_pr open "$(printf 'provision/appa-dev\nX')" main; confirm 12 "$(printf 'provision/appa-dev\nX')"; RC=$?
 [ "$RC" -eq 1 ] && ok "retour-ligne dans head.ref ⇒ rc 1 (jamais une valeur multi-ligne dans un fichier de faits)" || ko "retour-ligne accepté (rc=$RC)"
 : > "$STUB_LOG"; confirm '12;rm' provision/appa-dev; RC=$?
@@ -504,9 +556,13 @@ set_pr open provision/appa-dev main 200 '' '-b x'; confirm 12 provision/appa-dev
 set_pr open provision/appa-dev main 200 '' '' acme/fork; confirm 12 provision/appa-dev; RC=$?
 [ "$RC" -eq 1 ] && grep -q 'FORK' "$TMP/cf.out" && ok "PR depuis un FORK (head.repo ≠ dépôt) ⇒ rc 1 nommé (sa tête n'est pas dans le clone)" || ko "PR de fork acceptée (rc=$RC)"
 set_pr open provision/appa-dev main
-grep -vE '^\s*#' scripts/lib/gitea-pr-confirm.sh | grep -q 'PC_TOKEN="$FORGE_SECRET"' && ! grep -vE '^\s*#' scripts/lib/gitea-pr-confirm.sh | grep -qE 'curl .*(token|Authorization)' \
-  && ok "le token passe par l'ENVIRONNEMENT du python (jamais en argv)" || ko "token en argv ou lib sans python"
-grep -q 'timeout=30)' scripts/lib/gitea-pr-confirm.sh && ok "urlopen(timeout=30)" || ko "aucun timeout"
+# Routage forge-agnostique (2026-09-09) : la lib ne compose plus aucun appel de
+# forge — elle demande pr_get à forge-api.sh, qui passe le secret par l'ENV de
+# forge-api.py (jamais en argv) et porte le timeout réseau (FORGE_TIMEOUT, 30 s).
+# shellcheck disable=SC2016  # motifs cherchés DANS la lib, jamais des expansions
+grep -vE '^\s*#' scripts/lib/gitea-pr-confirm.sh | grep -q 'forge_kv PC pr_get "$n"' && ! grep -vE '^\s*#' scripts/lib/gitea-pr-confirm.sh | grep -qE 'curl |urllib|/api/v[14]|Authorization|python3' \
+  && ok "la forge est relue par forge-api (forge_kv pr_get) : ni curl, ni urllib, ni /api/v1 dans la lib — le secret passe par l'ENVIRONNEMENT de forge-api.py (jamais en argv)" || ko "la lib compose encore un appel de forge en ligne (curl/urllib//api/v1) ou n'appelle pas forge_kv pr_get"
+grep -q 'FORGE_TIMEOUT' scripts/lib/forge-api.py && grep -q 'timeout=timeout' scripts/lib/forge-api.py && ok "timeout réseau porté par forge-api.py (FORGE_TIMEOUT, 30 s par défaut)" || ko "aucun timeout réseau dans forge-api.py"
 
 echo
 echo "== 9. (b) gitea-pr-comment.sh : COMMENT_ONLY_IF_EXISTS et pagination (couvert aussi par test-pr-comment.sh §11-12) =="
@@ -693,7 +749,9 @@ L_4=$(grep -n 'echo "\[4/5\] ouverture de la Pull Request' "$PRS" | cut -d: -f1)
 [ -n "$L_4" ] && [ -n "$L_5" ] && [ "$L_4" -lt "$L_5" ] && ok "la PR naît en [4/5] (ligne $L_4), le plan enchaîné suit en [5/5] (ligne $L_5)" || ko "numérotation/ordre [4/5]<[5/5] cassés (4=$L_4 5=$L_5)"
 L_PF=$(grep -n 'PLAN_INLINE=fail' "$PRS" | cut -d: -f1)
 [ -n "$L_PF" ] && ! sed -n "$((L_PF)),$((L_PF+2))p" "$PRS" | grep -qE 'exit [1-9]' && ok "PLAN_INLINE=fail (ligne $L_PF) n'est suivi d'aucun exit non nul : le plan enchaîné n'est pas fatal" || ko "le plan enchaîné est devenu fatal"
-grep -q 'EXIST\*)   echo "  PR déjà ouverte' "$PRS" && ok "EXIST (PR préexistante au rejeu) est un succès" || ko "EXIST n'est plus traité comme succès"
+# L5 : la PR déjà ouverte est OPEN_NUMBER de pr_find_open (relue AVANT le push), réutilisée sans POST ni exit.
+grep -q 'PR_NUM="$OPEN_NUM"; PR_URL_FORGE="$OPEN_URL"' "$PRS" && grep -q 'echo "  PR déjà ouverte: #${PR_NUM}"' "$PRS" \
+  && ok "une PR déjà ouverte (OPEN_NUMBER relu avant le push) est réutilisée : succès, aucun POST" || ko "EXIST n'est plus traité comme succès"
 
 echo
 echo "== 10. DETTE 2 — selfservice-app-deploy : formulaire posé par le Jenkinsfile, XML sans paramètre, liste dérivée =="
@@ -786,7 +844,7 @@ OUT=$(gwt_mirror_diff "$TMP/pa-val.xml" ci/Jenkinsfile.provision-apply 2>&1); RC
   && ok "valeur de MERGE_SHA altérée (head.sha) ⇒ rc 1 « DIVERGENCE vars » nommant la clé" \
   || ko "valeur altérée non détectée (rc=$RC : $OUT)"
 # (d) le filtre altéré côté JENKINSFILE (fermeture sans merge) ⇒ rc 1.
-sed "s#regexpFilterExpression: '^closed\\\\\\\\|true\$'#regexpFilterExpression: '^closed'#" ci/Jenkinsfile.provision-apply > "$TMP/jf-filtre"
+sed "s#regexpFilterExpression: '^closed\\\\\\\\|true\\\\\\\\||merge_request:merge\$'#regexpFilterExpression: '^closed'#" ci/Jenkinsfile.provision-apply > "$TMP/jf-filtre"
 grep -q "regexpFilterExpression: '^closed'" "$TMP/jf-filtre" || echo "  (avertissement : mutation (d) non appliquée)"
 OUT=$(gwt_mirror_diff ci/jenkins/provision-apply.job.xml "$TMP/jf-filtre" 2>&1); RC=$?
 [ "$RC" -eq 1 ] && printf '%s' "$OUT" | grep -q '^DIVERGENCE regexpFilterExpression' \

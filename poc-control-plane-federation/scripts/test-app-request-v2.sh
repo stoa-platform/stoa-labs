@@ -51,7 +51,7 @@ trap cleanup EXIT
 
 echo "═══ Section A — gardes d'entrée (HORS LIGNE, AVANT tout geste Git) ═══"
 # GIT_HOST volontairement injoignable : la preuve qu'AUCUNE garde ci-dessous
-# ne touche le réseau est que le script échoue AVANT d'imprimer "[1/4]"
+# ne touche le réseau est que le script échoue AVANT d'imprimer "[1/5]"
 # (premier message qui suit le clone).
 run_guard(){
   # $1=label $2=expected_tag ; le reste = env KEY=VALUE...
@@ -62,7 +62,7 @@ run_guard(){
         REQ_CALLER="oig-provisioner" "$@" bash "$S" 2>&1)
   rc=$?
   if [ "$rc" -eq 2 ] && printf '%s' "$out" | grep -q "$tag"; then
-    if printf '%s' "$out" | grep -q '\[1/4\]'; then
+    if printf '%s' "$out" | grep -q '\[1/5\]'; then
       ko "$label : refusé mais APRÈS le clone (réseau touché) — pas 'AVANT tout geste Git'"
     else
       ok "$label : refusé ($tag), AVANT tout appel réseau"

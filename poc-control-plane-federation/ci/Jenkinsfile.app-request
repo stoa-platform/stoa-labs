@@ -86,14 +86,24 @@ pipeline {
     // Credential Jenkins (secret text) portant le token Gitea du CI : push + PR,
     // ET la lecture des dépôts d'équipe pour la liste API.
     GITEA_CREDENTIALS_ID = "${env.GITEA_CREDENTIALS_ID ?: 'gitea-provision-token'}"
-    // Le TYPE de credential de la forge, et la forme d'authentification de son
-    // API. Le lab expose un jeton (secret text) et parle a Gitea ; un client
-    // expose souvent un COUPLE (usernamePassword) et parle a GitLab. Les deux
-    // doivent tenir dans le meme pipeline, sans edition de code.
+    // Le TYPE de credential de la forge, son VISAGE, et la forme de son API.
+    // Le lab expose un jeton (secret text) et parle a Gitea ; un client expose
+    // souvent un COUPLE (usernamePassword) et parle a GitLab. Les deux doivent
+    // tenir dans le meme pipeline, sans edition de code.
     //   FORGE_CRED_KIND : secret-text (defaut) | username-password
-    //   FORGE_API_AUTH  : token (defaut, Gitea) | private-token (GitLab) | basic
+    //   FORGE_KIND      : gitea (defaut) | gitlab — lu par scripts/lib/forge-api.sh,
+    //                     la SEULE autorite qui parle a l'API de la forge
+    //   FORGE_API_AUTH  : token | private-token | bearer | basic — repli VIDE,
+    //                     jamais un defaut de site : absente, la lib derive
+    //                     l'en-tete du VISAGE (token pour Gitea, PRIVATE-TOKEN
+    //                     pour GitLab). Un `token` ecrit ici aurait envoye
+    //                     « Authorization: token » a un GitLab (401).
+    //   FORGE_API_BASE  : base d'API deplacee par un reverse-proxy — repli VIDE,
+    //                     la lib la derive de GIT_HOST (/api/v1 ou /api/v4)
     FORGE_CRED_KIND      = "${env.FORGE_CRED_KIND ?: 'secret-text'}"
-    FORGE_API_AUTH       = "${env.FORGE_API_AUTH ?: 'token'}"
+    FORGE_KIND           = "${env.FORGE_KIND ?: 'gitea'}"
+    FORGE_API_AUTH       = "${env.FORGE_API_AUTH ?: ''}"
+    FORGE_API_BASE       = "${env.FORGE_API_BASE ?: ''}"
   }
 
   stages {

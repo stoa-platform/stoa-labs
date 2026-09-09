@@ -21,7 +21,7 @@
   builds conserve).
 -->
 <flow-definition plugin="workflow-job">
-  <description>Apply post-merge d'une DEMANDE D'APPLICATION : une PR provision/&lt;app&gt;-&lt;env&gt; FUSIONNEE est RECONCILIEE avec Gitea (le payload ne fait pas foi), ouvre une DEMANDE EN ATTENTE (input), puis -- identite Vault nominative confrontee a l'auteur du merge -- apply via selfservice-app-deploy AU SHA MERGE (A2), jamais au dernier main ; la PR recoit resultat, identite, SHA et digest. PIPELINE FROM SCM : ci/Jenkinsfile.provision-apply, charge depuis le depot plateforme (branche main) -- ce job ne contient AUCUN Groovy.</description>
+  <description>Apply post-merge d'une DEMANDE D'APPLICATION : une PR provision/&lt;app&gt;-&lt;env&gt; FUSIONNEE est RECONCILIEE avec la forge (Gitea ou GitLab -- le payload ne fait pas foi), ouvre une DEMANDE EN ATTENTE (input), puis -- identite Vault nominative confrontee a l'auteur du merge -- apply via selfservice-app-deploy AU SHA MERGE (A2), jamais au dernier main ; la PR recoit resultat, identite, SHA et digest. PIPELINE FROM SCM : ci/Jenkinsfile.provision-apply, charge depuis le depot plateforme (branche main) -- ce job ne contient AUCUN Groovy.</description>
   <keepDependencies>false</keepDependencies>
   <properties>
     <org.jenkinsci.plugins.workflow.job.properties.DisableConcurrentBuildsJobProperty/>
@@ -30,6 +30,10 @@
         <org.jenkinsci.plugins.gwt.GenericTrigger plugin="generic-webhook-trigger@2.4.2">
           <spec></spec>
           <genericVariables>
+            <!-- Deux visages, un jeu de cles par visage : une cle dont le chemin
+                 JSON est absent du payload arrive VIDE. Le stage « Contexte du
+                 webhook » du Jenkinsfile unifie (PR_BRANCH, PR_NUMBER, MERGE_SHA). -->
+            <!-- visage Gitea (hook « pull_request ») -->
             <org.jenkinsci.plugins.gwt.GenericVariable><key>PR_BRANCH</key><value>$.pull_request.head.ref</value></org.jenkinsci.plugins.gwt.GenericVariable>
             <org.jenkinsci.plugins.gwt.GenericVariable><key>PR_NUMBER</key><value>$.pull_request.number</value></org.jenkinsci.plugins.gwt.GenericVariable>
             <org.jenkinsci.plugins.gwt.GenericVariable><key>PR_ACTION</key><value>$.action</value></org.jenkinsci.plugins.gwt.GenericVariable>
@@ -39,16 +43,28 @@
                  (GITEA_MERGED_BY / GITEA_REQUESTER) - jamais celles-ci. -->
             <org.jenkinsci.plugins.gwt.GenericVariable><key>PR_MERGED_BY</key><value>$.pull_request.merged_by.login</value></org.jenkinsci.plugins.gwt.GenericVariable>
             <org.jenkinsci.plugins.gwt.GenericVariable><key>PR_REQUESTER</key><value>$.pull_request.user.login</value></org.jenkinsci.plugins.gwt.GenericVariable>
-            <!-- A2 - LA REFERENCE : le SHA de merge, reconcilie avec Gitea puis
+            <!-- A2 - LA REFERENCE : le SHA de merge, reconcilie avec la forge puis
                  projete par selfservice-app-deploy (checkout de CE SHA). -->
             <org.jenkinsci.plugins.gwt.GenericVariable><key>MERGE_SHA</key><value>$.pull_request.merge_commit_sha</value></org.jenkinsci.plugins.gwt.GenericVariable>
+            <!-- visage GitLab (« Merge Request Hook ») ; `user` est l'ACTEUR de
+                 l'evenement (le mergeur pour action=merge), journal seulement. -->
+            <org.jenkinsci.plugins.gwt.GenericVariable><key>GL_KIND</key><value>$.object_kind</value></org.jenkinsci.plugins.gwt.GenericVariable>
+            <org.jenkinsci.plugins.gwt.GenericVariable><key>GL_IID</key><value>$.object_attributes.iid</value></org.jenkinsci.plugins.gwt.GenericVariable>
+            <org.jenkinsci.plugins.gwt.GenericVariable><key>GL_SOURCE_BRANCH</key><value>$.object_attributes.source_branch</value></org.jenkinsci.plugins.gwt.GenericVariable>
+            <org.jenkinsci.plugins.gwt.GenericVariable><key>GL_ACTION</key><value>$.object_attributes.action</value></org.jenkinsci.plugins.gwt.GenericVariable>
+            <org.jenkinsci.plugins.gwt.GenericVariable><key>GL_STATE</key><value>$.object_attributes.state</value></org.jenkinsci.plugins.gwt.GenericVariable>
+            <org.jenkinsci.plugins.gwt.GenericVariable><key>GL_USER</key><value>$.user.username</value></org.jenkinsci.plugins.gwt.GenericVariable>
+            <org.jenkinsci.plugins.gwt.GenericVariable><key>GL_MERGE_SHA</key><value>$.object_attributes.merge_commit_sha</value></org.jenkinsci.plugins.gwt.GenericVariable>
           </genericVariables>
           <printContributedVariables>true</printContributedVariables>
           <printPostContent>false</printPostContent>
           <token>stoa-provision-apply</token>
           <silentResponse>false</silentResponse>
-          <regexpFilterText>$PR_ACTION|$PR_MERGED</regexpFilterText>
-          <regexpFilterExpression>^closed\|true$</regexpFilterExpression>
+          <!-- Une fusion REELLE seulement. Gitea : closed ET merged=true ; GitLab :
+               action=merge. Le plugin joue find() : moitie Gitea ancree en tete,
+               moitie GitLab en queue, chacune sur SON segment du texte. -->
+          <regexpFilterText>$PR_ACTION|$PR_MERGED|$GL_KIND:$GL_ACTION</regexpFilterText>
+          <regexpFilterExpression>^closed\|true\||merge_request:merge$</regexpFilterExpression>
           <overrideQuietPeriod>false</overrideQuietPeriod>
           <shouldNotFlattern>false</shouldNotFlattern>
           <allowSeveralTriggersPerBuild>false</allowSeveralTriggersPerBuild>

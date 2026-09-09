@@ -3,6 +3,13 @@
 # Pull Request. Idempotent par MARQUEUR : le même appelant, rejoué, met à jour
 # son commentaire au lieu d'en empiler un second.
 #
+# LE NOM EST HISTORIQUE (2026-09-09). Il date du lab, où la forge était Gitea.
+# Ce fichier ne parle plus l'API de Gitea : il demande `comment_find` puis
+# `comment_upsert` à scripts/lib/forge-api.sh, la SEULE autorité sur le visage
+# (FORGE_KIND=gitea|gitlab), la base d'API, l'en-tête d'auth et la garde de
+# réponse. Le nom reste parce que cinq Jenkinsfile et quatre scripts l'appellent
+# par ce chemin — le renommer casserait plus qu'il n'éclairerait.
+#
 # POURQUOI CE FICHIER EXISTE (2026-08-03). La logique vivait à l'intérieur de
 # provision-plan.sh. ADR-081 fait remonter AUSSI le statut de l'apply sur la PR :
 # sans extraction, le même upsert serait réécrit une deuxième fois, et un jour
@@ -15,23 +22,36 @@
 # qu'un historique que personne ne relit.
 #
 # Entrées (env) :
-#   GIT_REPO      full-name (ex. ci/stoa-labs)
-#   FORGE_SECRET   token (scope write:issue) — JAMAIS en argv, jamais loggé
-#   PR_NUMBER     numéro de la PR
+#   GIT_HOST      base de la forge vue de l'agent, AVEC son schéma — REQUIS,
+#                 aucun repli : le défaut http://gitea:3000 d'avant 2026-09-09
+#                 remplaçait en silence une variable non transmise chez un client
+#                 (refus nommé GIT_HOST_REQUIS par forge_api_init)
+#   GIT_REPO      owner/repo (ex. ci/stoa-labs)
+#   FORGE_SECRET  secret de la forge (alias historique GITEA_TOKEN) — lu par
+#                 forge-api.py dans l'ENVIRONNEMENT, JAMAIS en argv, jamais loggé
+#   FORGE_KIND    gitea (défaut) | gitlab — cf. scripts/lib/forge-api.sh
+#   PR_NUMBER     numéro de la PR (iid sur GitLab)
 #   COMMENT_MARKER      marqueur HTML invisible (ex. '<!-- provision-apply -->')
 #   COMMENT_BODY_FILE   fichier contenant le corps SANS le marqueur
-#   GIT_HOST      base Gitea vue de l'agent (défaut http://gitea:3000)
 #   COMMENT_ONLY_IF_EXISTS=1  (A0 dettes) ne fait QUE mettre à jour un commentaire
 #                 déjà présent sous ce marqueur — s'il n'existe pas, ne crée rien
 #                 et rend "COMMENT_SKIPPED" (rc 0). Sert au statut de build de
 #                 provision-plan : en SUCCESS il n'ajoute pas un troisième
 #                 commentaire redondant, il efface seulement un rouge périmé.
+#   API           N'EST PLUS LUE (2026-09-09). La base d'API (v1 chez Gitea,
+#                 v4 chez GitLab) est composée par forge-api.py à partir de
+#                 GIT_HOST et FORGE_KIND — ou de FORGE_API_BASE pour un
+#                 reverse-proxy qui déplace /api. Un appelant qui la pose encore
+#                 n'est pas en faute : elle est ignorée.
 #
 # Sortie : "COMMENT_UPDATED <id>", "COMMENT_CREATED <id>" ou "COMMENT_SKIPPED".
-# Échec = code 1. Réseau : timeout 30 s par appel ; la recherche du marqueur
-# PAGINE jusqu'à une page VIDE (limit=50&page=N — Gitea pagine par défaut ET
-# plafonne `limit` : un marqueur au-delà de la première page était invisible
-# et le commentaire se serait EMPILÉ).
+# Échec = rc 1 et `COMMENT_FAILED : … (cause ci-dessus)` sur stderr : la CAUSE
+# (statut HTTP, type, taille, URL, début du corps EXPURGÉ du secret) est écrite
+# par forge-api juste avant — c'est elle que le client doit lire.
+# Réseau : timeout FORGE_TIMEOUT (30 s) par appel ; la recherche du marqueur
+# PAGINE jusqu'à une page VIDE (limit=50&page=N sur Gitea, per_page sur GitLab —
+# Gitea pagine par défaut ET plafonne `limit` : un marqueur au-delà de la
+# première page était invisible et le commentaire se serait EMPILÉ).
 set -uo pipefail
 set +x
 
@@ -41,71 +61,35 @@ FORGE_SECRET="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
 PR_NUMBER="${PR_NUMBER:?PR_NUMBER requis}"
 COMMENT_MARKER="${COMMENT_MARKER:?COMMENT_MARKER requis}"
 COMMENT_BODY_FILE="${COMMENT_BODY_FILE:?COMMENT_BODY_FILE requis}"
-GIT_HOST="${GIT_HOST:-http://gitea:3000}"
+COMMENT_ONLY_IF_EXISTS="${COMMENT_ONLY_IF_EXISTS:-0}"
 
 [ -f "$COMMENT_BODY_FILE" ] || { echo "COMMENT_BODY_FILE introuvable : $COMMENT_BODY_FILE" >&2; exit 1; }
 
-API="${GIT_HOST}/api/v1" \
-GIT_REPO="$GIT_REPO" FORGE_SECRET="$FORGE_SECRET" PR_NUMBER="$PR_NUMBER" \
-COMMENT_MARKER="$COMMENT_MARKER" COMMENT_BODY_FILE="$COMMENT_BODY_FILE" \
-COMMENT_ONLY_IF_EXISTS="${COMMENT_ONLY_IF_EXISTS:-0}" \
-python3 - <<'PY'
-import os, json, urllib.request, urllib.error, sys
-api  = os.environ["API"]
-repo = os.environ["GIT_REPO"]
-tok  = os.environ["FORGE_SECRET"]
-prn  = os.environ["PR_NUMBER"]
-mark = os.environ["COMMENT_MARKER"]
-only_if_exists = os.environ.get("COMMENT_ONLY_IF_EXISTS", "0") == "1"
-body = mark + "\n" + open(os.environ["COMMENT_BODY_FILE"]).read()
+# La forge : une seule autorité, à côté de ce fichier. `forge` lit FORGE_SECRET
+# dans l'environnement du shell — la variable posée ci-dessus suffit, rien en argv.
+# shellcheck source=scripts/lib/forge-api.sh
+. "$(dirname "${BASH_SOURCE[0]}")/forge-api.sh" || { echo "COMMENT_FAILED : scripts/lib/forge-api.sh introuvable a cote de ce fichier" >&2; exit 1; }
+# GIT_HOST vide ⇒ GIT_HOST_REQUIS (aucun repli de site) ; visage inconnu ⇒ FORGE_KIND_INCONNU.
+forge_api_init || { echo "COMMENT_FAILED : forge non initialisee (cause ci-dessus)" >&2; exit 1; }
 
-def call(method, url, data=None):
-    r = urllib.request.Request(
-        url,
-        data=(json.dumps(data).encode() if data is not None else None),
-        method=method,
-        headers={"Authorization": "token " + tok, "Content-Type": "application/json"})
-    with urllib.request.urlopen(r, timeout=30) as resp:
-        return json.loads(resp.read() or "null")
+# ONLY_IF_EXISTS : le commentaire de CE rôle existe-t-il déjà ? Marqueur seul,
+# paginé — dans forge-api, la même pagination que l'upsert (qui la rejoue :
+# cette lecture n'est faite QUE quand la réponse décide de ne rien écrire). Une
+# forge qui ne répond pas est un échec NOMMÉ, jamais « aucun commentaire » (qui
+# ferait EMPILER au prochain appel).
+if [ "$COMMENT_ONLY_IF_EXISTS" = 1 ]; then
+  forge_kv CF comment_find "$PR_NUMBER" "$COMMENT_MARKER" \
+    || { echo "COMMENT_FAILED : recherche du marqueur sur la PR #${PR_NUMBER} (cause ci-dessus)" >&2; exit 1; }
+  if [ -z "${CF_ID:-}" ]; then
+    echo "COMMENT_SKIPPED"
+    exit 0
+  fi
+fi
 
-try:
-    # Le commentaire de CE rôle existe-t-il déjà ? On ne regarde que le marqueur :
-    # ni l'auteur (le compte de service peut changer) ni la position (d'autres
-    # commentaires s'intercalent) ne sont des clés fiables. PAGINÉ jusqu'à une
-    # page VIDE — jamais « plus courte que limit » : Gitea PLAFONNE `limit` à
-    # api.MAX_RESPONSE_ITEMS (50 par défaut, souvent moins chez un client), une
-    # page pleine de 30 aurait été prise pour la dernière (revue 2026-09-02).
-    # Une forge qui ignorerait `page` rend la même page : détectée par ses ids,
-    # on s'arrête. Borne haute de 40 pages.
-    existing = None
-    LIMIT = 50
-    seen_ids = set()
-    for page in range(1, 41):
-        chunk = call("GET", f"{api}/repos/{repo}/issues/{prn}/comments?limit={LIMIT}&page={page}") or []
-        ids = {c.get("id") for c in chunk}
-        if not chunk or ids <= seen_ids:
-            break
-        seen_ids |= ids
-        for c in chunk:
-            if mark in (c.get("body") or ""):
-                existing = c["id"]
-                break
-        if existing is not None:
-            break
-    if existing is not None:
-        call("PATCH", f"{api}/repos/{repo}/issues/comments/{existing}", {"body": body})
-        print(f"COMMENT_UPDATED {existing}")
-    elif only_if_exists:
-        print("COMMENT_SKIPPED")
-    else:
-        c = call("POST", f"{api}/repos/{repo}/issues/{prn}/comments", {"body": body})
-        print(f"COMMENT_CREATED {c['id']}")
-except urllib.error.HTTPError as e:
-    # Le corps d'erreur peut contenir l'URL appelée, jamais le token (il est en
-    # en-tête). On tronque tout de même : un message d'API n'est pas un log.
-    print(f"COMMENT_FAILED HTTP {e.code}: {e.read().decode()[:200]}", file=sys.stderr)
-    raise SystemExit(1)
-except Exception as e:
-    print(f"COMMENT_FAILED {type(e).__name__}: {e}", file=sys.stderr)
-    raise SystemExit(1)
-PY
+forge_kv CU comment_upsert "$PR_NUMBER" "$COMMENT_MARKER" "$COMMENT_BODY_FILE" \
+  || { echo "COMMENT_FAILED : ecriture du commentaire sur la PR #${PR_NUMBER} (cause ci-dessus)" >&2; exit 1; }
+case "${CU_ACTION:-}" in
+  updated) echo "COMMENT_UPDATED ${CU_ID:-}" ;;
+  created) echo "COMMENT_CREATED ${CU_ID:-}" ;;
+  *) echo "COMMENT_FAILED : forge-api a rendu ACTION='${CU_ACTION:-}' (attendu created ou updated)" >&2; exit 1 ;;
+esac

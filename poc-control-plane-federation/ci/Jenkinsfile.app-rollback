@@ -44,6 +44,12 @@ pipeline {
     GIT_HOST             = "${env.GIT_HOST ?: 'http://gitea:3000'}"
     GIT_REPO             = "${env.GIT_REPO ?: 'ci/stoa-labs'}"
     GITEA_CREDENTIALS_ID = "${env.GITEA_CREDENTIALS_ID ?: 'gitea-provision-token'}"
+    // Le VISAGE de la forge (même motif que Jenkinsfile.provision-apply) : lu
+    // par la seule autorité qui parle à son API, scripts/lib/forge-api.sh.
+    // FORGE_API_AUTH / FORGE_API_BASE passent TELS QUELS, repli VIDE.
+    FORGE_KIND           = "${env.FORGE_KIND ?: 'gitea'}"
+    FORGE_API_AUTH       = "${env.FORGE_API_AUTH ?: ''}"
+    FORGE_API_BASE       = "${env.FORGE_API_BASE ?: ''}"
   }
 
   stages {

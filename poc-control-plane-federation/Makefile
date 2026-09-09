@@ -119,6 +119,9 @@ lint-ci:
 	  scripts/lib/posture-authority.sh scripts/lib/wm-dataplane.sh scripts/test-p5-https.sh \
 	  scripts/test-p6-deny-by-default.sh scripts/test-p7-bout-en-bout.sh \
 	  scripts/test-repo-layout-portabilite.sh scripts/lib/providers-teams.sh scripts/test-providers-teams.sh \
+	  scripts/lib/forge-api.sh scripts/test-forge-api.sh scripts/test-forge-api-live.sh scripts/setup-gitlab-lab.sh \
+	  scripts/lib/git-base.sh scripts/test-git-base.sh scripts/test-dbg-redaction.sh \
+	  ci/lint-forge-literals.sh scripts/test-app-request-gitlab-live.sh \
 	  scripts/test-porte-clone-frais.sh \
 	  scripts/test-team-request-wiring.sh scripts/test-team-publish-wiring.sh \
 	  && echo "  ✓ ci/lib + livrables shell G2..G8 + A1 + A2 + A0 + A3 + A4 + A5 + A6 + A7 + P2 + P5 + P6 + P7 propres"
@@ -136,6 +139,29 @@ lint-ci:
 	@# ou illisible » pour un fichier present). Mesure le 2026-09-09 sur le CI
 	@# client. Sous l'etape 2 (pas de rang a elle) : elle mesure le meme objet.
 	@bash ci/lint-eol.sh
+	@# L'ADAPTATEUR DE FORGE (2026-09-09). La chaine parlait l'API de Gitea en
+	@# dur ; un client GitLab mourait au premier appel (302 vers /users/sign_in).
+	@# scripts/lib/forge-api.py rend les MEMES lignes CLE=VALEUR sur les deux
+	@# visages ; ce mock a deux visages rend les formes REELLES et ses mutations
+	@# (iid→number, username→login…) prouvent que l'adaptateur LIT GitLab au lieu
+	@# de le deviner. La preuve vivante (GitLab CE + Gitea du lab) se joue a la
+	@# main : bash scripts/test-forge-api-live.sh. Sous l'etape 2, sans rang.
+	@python3 -m py_compile scripts/lib/forge-api.py
+	@bash scripts/test-forge-api.sh
+	@# LA BRANCHE PAR DEFAUT (2026-09-09) : un client GitLab sur `master` a perdu
+	@# deux jours sur 46 `main` ecrits en dur. scripts/lib/git-base.sh est l'autorite
+	@# unique — knob explicite > decouverte `ls-remote --symref` > refus nomme,
+	@# jamais un `main` devine. Sous l'etape 2, sans rang.
+	@bash scripts/test-git-base.sh
+	@# LE DEBUG SANS FUITE (2026-09-09) : ci/lib/dbg.sh, sortie curatee sur stderr,
+	@# redaction fail-closed, secrets vers python par here-doc sur fd 3 — le SEUL
+	@# canal muet sous `sh -x` (mesure : printf est trace avec ses arguments dans
+	@# bash ET dash). Sa suite joue `bash -xc` et `dash -xc`. Sous l'etape 2, sans rang.
+	@bash scripts/test-dbg-redaction.sh
+	@# UNE SEULE AUTORITE DE FORGE (2026-09-09) : hors de forge-api.py/.sh et de
+	@# forge-identity.sh, aucun /api/v1, /api/v4, en-tete d'auth, json.load ni
+	@# urlopen dans les fichiers ROUTES. Interdire le litteral, jamais l'exiger.
+	@bash ci/lint-forge-literals.sh
 	@echo "== [3/20] épreuves de ci/lib/carto-secrets.sh"
 	@ci/test-carto-secrets.sh
 	@echo "== [4/20] épreuves du résolveur de pin (G3)"

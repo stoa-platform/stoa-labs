@@ -17,14 +17,21 @@
 #   1. FORME, sans aucun appel réseau : PR_NUMBER entier, MERGE_SHA ^[0-9a-f]{40}$,
 #      PR_BRANCH = provision/<app>-<env> (classes strictes : le chemin du
 #      manifeste ne peut pas sortir de son dossier).
-#   2. GITEA = LA VÉRITÉ sur la PR (GET authentifié, non falsifiable par un
-#      payload) : merged === true · merge_commit_sha == MERGE_SHA ·
-#      head.ref == PR_BRANCH · base.ref == main, sinon PAYLOAD_PERIME ; les
-#      IDENTITÉS (merged_by.login, user.login) viennent de là, jamais du payload.
-#   3. PÉRIMÈTRE de la PR (GET /pulls/<n>/files) : elle ne touche QUE son
+#   2. LA FORGE = LA VÉRITÉ sur la PR (`forge pr_get`, authentifié, non
+#      falsifiable par un payload) : MERGED=1 · MERGE_SHA == MERGE_SHA ·
+#      HEAD_REF == PR_BRANCH · BASE_REF == main, sinon PAYLOAD_PERIME ; les
+#      IDENTITÉS (MERGED_BY, LOGIN) viennent de là, jamais du payload.
+#   3. PÉRIMÈTRE de la PR (`forge pr_files`) : elle ne touche QUE son
 #      manifeste et son certificat de palier — sinon PR_HORS_PERIMETRE (l'aval
 #      checkoute l'arbre ENTIER au SHA mergé : une PR qui éditerait le rôle ou
 #      un script s'exécuterait sous l'identité du valideur).
+#
+# LA FORGE N'EST PLUS GITEA EN DUR (2026-09-09, client sur GitLab) : tout appel
+# passe par scripts/lib/forge-api.sh — visage FORGE_KIND=gitea|gitlab, base
+# d'API, en-tête d'auth, garde de réponse (redirection, non-JSON, non-objet,
+# retour-ligne dans une valeur) vivent LÀ, avec une cause auto-diagnostique sur
+# stderr. Les TAGS de refus ci-dessous ne bougent pas (GITEA_RECONCILE_ECHEC
+# garde son nom : provision-plan/apply et les harnais le greppent).
 #   4. GIT = LA VÉRITÉ sur main : MERGE_SHA est un ancêtre de origin/main
 #      (MERGE_SHA_NON_ANCETRE) et le manifeste EFFECTIF du palier au SHA mergé
 #      est encore celui que main porte pour ce palier — sinon
@@ -35,7 +42,7 @@
 # Tourne AVANT la pause : personne n'est réveillé pour un payload forgé ou périmé.
 #
 # COMMENTAIRE SUR LA PR — deux règles, mesurées à la critique de la spec :
-#   - on ne commente QUE si la PR a été RELUE sur Gitea et que SON head.ref (relu,
+#   - on ne commente QUE si la PR a été RELUE sur la forge et que SON head.ref (relu,
 #     pas celui du payload) est en provision/* : un PR_NUMBER forgé ne fait pas
 #     publier le compte de service sur une PR étrangère ; refus de forme, 404,
 #     500, JSON illisible ⇒ journal + rc 1 seulement ;
@@ -49,10 +56,11 @@
 #   PR_BRANCH, PR_NUMBER, MERGE_SHA   (req) la charge utile du webhook (GenericTrigger)
 #   FORGE_SECRET                        (req) jamais en argv, jamais loggé
 #   RECONCILE_OUT                      (req) fichier de sortie KEY=VALUE, lu par le pipeline
-#   RECONCILE_FACTS                    (opt) fichier écrit DÈS la relecture Gitea (GITEA_HEAD_REF=…),
+#   RECONCILE_FACTS                    (opt) fichier écrit DÈS la relecture de la forge (GITEA_HEAD_REF=…),
 #                                            succès comme échec — c'est lui qui autorise le
 #                                            statut build du post{always}
-#   GIT_HOST (défaut http://gitea:3000) · GIT_REPO (défaut ci/stoa-labs)
+#   GIT_HOST (REQUIS, aucun repli — base de la forge) · GIT_REPO (défaut ci/stoa-labs)
+#   FORGE_KIND (gitea|gitlab, défaut gitea) · FORGE_API_AUTH (cf. scripts/lib/forge-api.py)
 #   GIT_WEB_HOST (lien humain du commentaire, défaut GIT_HOST)
 #   GIT_WORKTREE (défaut . = poc-control-plane-federation/ dans le workspace : là où
 #                 `git fetch origin main` et `git show` tournent)
@@ -65,9 +73,9 @@
 #
 # Codes d'échec :
 #   BRANCH_FORMAT_INVALIDE · PR_NUMBER_INVALIDE · MERGE_SHA_INVALIDE
-#   GITEA_RECONCILE_ECHEC    Gitea injoignable / réponse illisible ou sans les champs attendus / identité forgée
-#   PAYLOAD_PERIME           Gitea contredit le payload (merged / SHA / head / base)
-#   MERGER_UNKNOWN           Gitea ne nomme aucun mergeur
+#   GITEA_RECONCILE_ECHEC    forge injoignable / réponse illisible ou sans les champs attendus / identité forgée
+#   PAYLOAD_PERIME           la forge contredit le payload (merged / SHA / head / base)
+#   MERGER_UNKNOWN           la forge ne nomme aucun mergeur
 #   PR_HORS_PERIMETRE        la PR touche autre chose que son manifeste / son certificat
 #   MERGE_SHA_NON_ANCETRE    le SHA n'est pas sur main
 #   MANIFESTE_ABSENT         le manifeste manque au SHA mergé ou sur main
@@ -89,7 +97,10 @@ FORGE_SECRET="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
 [ -n "$FORGE_SECRET" ] || { echo "REFUS: SECRET_FORGE_REQUIS : ni FORGE_SECRET ni son alias GITEA_TOKEN — le secret de la forge (jeton, ou mot de passe d'un couple avec FORGE_USER)" >&2; exit 2; }
 RECONCILE_OUT="${RECONCILE_OUT:?RECONCILE_OUT requis (fichier de sortie KEY=VALUE)}"
 RECONCILE_FACTS="${RECONCILE_FACTS:-}"
-GIT_HOST="${GIT_HOST:-http://gitea:3000}"
+# La base de la forge n'a plus de repli de lab (2026-09-09) : forge_api_init la
+# refuse vide — un défaut « gitea:3000 » chez un client GitLab rendait un refus
+# qui accusait la PR au lieu du câblage.
+GIT_HOST="${GIT_HOST:-}"
 GIT_REPO="${GIT_REPO:-ci/stoa-labs}"
 GIT_WEB_HOST="${GIT_WEB_HOST:-$GIT_HOST}"
 GIT_WORKTREE="${GIT_WORKTREE:-.}"
@@ -102,6 +113,11 @@ MANIFEST_DIR="${MANIFEST_DIR:-clients/provisioned/applications}"
 . "$SELF_DIR/lib/app-manifest.sh" || { echo "ERREUR: $SELF_DIR/lib/app-manifest.sh introuvable" >&2; exit 1; }
 # shellcheck source=scripts/lib/branch-ref.sh
 . "$SELF_DIR/lib/branch-ref.sh" || { echo "ERREUR: $SELF_DIR/lib/branch-ref.sh introuvable" >&2; exit 1; }
+# L'unique autorité pour parler à la forge (visage, base, en-tête, garde) ; le
+# secret lui parvient par l'environnement (FORGE_SECRET), jamais en argv.
+# shellcheck source=scripts/lib/forge-api.sh
+. "$SELF_DIR/lib/forge-api.sh" || { echo "ERREUR: $SELF_DIR/lib/forge-api.sh introuvable" >&2; exit 1; }
+forge_api_init || exit 2
 
 APP_NAME=""; ENV_NAME=""; GITEA_HEAD_REF=""
 rm -f "$RECONCILE_OUT"
@@ -163,105 +179,79 @@ MANIFEST="${MANIFEST_DIR}/${APP_NAME}.ansible.yml"
 FORGE_MANIFEST="${SUB_PFX}${MANIFEST}"
 FORGE_CERT="${SUB_PFX}clients/provisioned/certs/${APP_NAME}-${ENV_NAME}.crt"
 
-# ── 2. GITEA = LA VÉRITÉ sur la PR ───────────────────────────────────────────
-# Les deux logins remontent EMPAQUETÉS PAR LIGNES et sont donc forgeables par
-# un saut de ligne (même classe que team-promote.sh §2 et deploy-pin.sh) : on
-# REFUSE le délimiteur dans la valeur plutôt que d'espérer qu'il n'y soit pas.
-# Les champs attendus doivent être PRÉSENTS (un 200 sans eux — portail
-# interposé, autre objet — est une réponse illisible, pas une divergence).
-PR_STATE=$(GIT_HOST="$GIT_HOST" GIT_REPO="$GIT_REPO" PR_NUMBER="$PR_NUMBER" \
-  FORGE_SECRET="$FORGE_SECRET" PR_BRANCH="$PR_BRANCH" MERGE_SHA="$MERGE_SHA" \
-  FORGE_MANIFEST="$FORGE_MANIFEST" FORGE_CERT="$FORGE_CERT" python3 - <<'PY'
-import os, json, urllib.request, urllib.error
-api = os.environ["GIT_HOST"].rstrip("/") + "/api/v1"
-repo, pr = os.environ["GIT_REPO"], os.environ["PR_NUMBER"]
-hdr = {"Authorization": "token " + os.environ["FORGE_SECRET"], "Accept": "application/json"}
-def get(url):
-    with urllib.request.urlopen(urllib.request.Request(url, headers=hdr), timeout=30) as r:
-        return json.load(r)
-try:
-    d = get(f"{api}/repos/{repo}/pulls/{pr}")
-    if not isinstance(d, dict):
-        raise ValueError("réponse non-objet")
-except urllib.error.HTTPError as e:
-    print("ERR=HTTP%s" % e.code); raise SystemExit
-except (urllib.error.URLError, ValueError, OSError) as e:
-    print("ERR=" + type(e).__name__); raise SystemExit
-for k in ("merged", "merge_commit_sha", "head", "base", "user"):
-    if k not in d:
-        print("SCHEMA=" + k); raise SystemExit
-if not isinstance(d.get("head"), dict) or "ref" not in d["head"] or not isinstance(d.get("base"), dict) or "ref" not in d["base"]:
-    print("SCHEMA=head.ref/base.ref"); raise SystemExit
-head_ref = str(d["head"].get("ref") or "")
-mb = str((d.get("merged_by") or {}).get("login") or "")
-rq = str((d.get("user") or {}).get("login") or "")
-for name, val in (("merged_by.login", mb), ("user.login", rq), ("head.ref", head_ref)):
-    if "\n" in val or "\r" in val:
-        print("FORGE=" + name); raise SystemExit
-why = []
-if d.get("merged") is not True:                             why.append("merged=%r" % d.get("merged"))
-if d.get("merge_commit_sha") != os.environ["MERGE_SHA"]:    why.append("merge_commit_sha=%s" % d.get("merge_commit_sha"))
-if head_ref != os.environ["PR_BRANCH"]:                     why.append("head.ref=%s" % head_ref)
-if d["base"].get("ref") != "main":                          why.append("base.ref=%s" % d["base"].get("ref"))
-# Périmètre : la PR ne touche QUE son manifeste et son certificat de palier.
-files_verdict = "FILES_OK"
-if not why:
-    try:
-        files = get(f"{api}/repos/{repo}/pulls/{pr}/files?limit=200")
-        if not isinstance(files, list):
-            raise ValueError("files non-liste")
-        allowed = {os.environ["FORGE_MANIFEST"], os.environ["FORGE_CERT"]}
-        extra = sorted({str(f.get("filename") or "?") for f in files} - allowed)
-        if not files:
-            files_verdict = "FILES_VIDE"
-        elif extra:
-            files_verdict = "FILES_HORS " + " ".join(x.replace(" ", "_")[:120] for x in extra[:5])
-    except urllib.error.HTTPError as e:
-        files_verdict = "FILES_ERR=HTTP%s" % e.code
-    except (urllib.error.URLError, ValueError, OSError) as e:
-        files_verdict = "FILES_ERR=" + type(e).__name__
-print("OK" if not why else "MISMATCH " + " ".join(why))
-print("HR=" + head_ref)
-print("MB=" + mb)
-print("RQ=" + rq)
-print("FV=" + files_verdict)
-PY
-) || fail GITEA_RECONCILE_ECHEC "lecture de ${GIT_REPO}#${PR_NUMBER} sur Gitea en échec (python)"
-PR_VERDICT=$(printf '%s\n' "$PR_STATE" | sed -n '1p')
-GITEA_HEAD_REF=$(printf '%s\n' "$PR_STATE" | sed -n 's/^HR=//p')
-GITEA_MERGED_BY=$(printf '%s\n' "$PR_STATE" | sed -n 's/^MB=//p')
-GITEA_REQUESTER=$(printf '%s\n' "$PR_STATE" | sed -n 's/^RQ=//p')
-FILES_VERDICT=$(printf '%s\n' "$PR_STATE" | sed -n 's/^FV=//p')
+# ── 2. LA FORGE = LA VÉRITÉ sur la PR ────────────────────────────────────────
+# Relue par `forge pr_get` (scripts/lib/forge-api.py). Ce que la lib refuse
+# DÉJÀ, avec une cause auto-diagnostique sur stderr : redirection, statut hors
+# 2xx (401 = secret refusé, 500 = panne), corps vide, non-JSON, non-objet, et
+# tout champ portant un retour-ligne — les logins remontent EMPAQUETÉS PAR
+# LIGNES et sont forgeables par un saut de ligne (même classe que team-promote.sh
+# §2 et deploy-pin.sh) : le délimiteur est REFUSÉ dans la valeur, jamais espéré
+# absent. Ce qui reste ICI, parce que la lib ne peut pas le savoir : le SCHÉMA
+# d'une PR (un 200 sans état ni tête — portail interposé, autre objet — est une
+# réponse illisible, pas une divergence) et la confrontation au payload.
+# Les clés attendues de pr_get sont posées VIDES avant l'appel : une clé que la
+# forge ne rend pas reste vide, jamais héritée (forge_kv pose par printf -v).
+R_NUMBER=""; R_STATE_RAW=""; R_HEAD_REF=""; R_BASE_REF=""; R_MERGED=""; R_MERGE_SHA=""; R_MERGED_BY=""; R_LOGIN=""
+forge_kv R pr_get "$PR_NUMBER" 2>"$TMP/forge.err" || {
+  cat "$TMP/forge.err" >&2
+  fail GITEA_RECONCILE_ECHEC "lecture de ${GIT_REPO}#${PR_NUMBER} sur la forge en échec — sans la vérité de la forge, pas d'apply (cause ci-dessus)"
+}
+# Le SCHÉMA, dans le vocabulaire normalisé : l'adaptateur rend VIDE ce que la
+# forge ne rend pas (il ne distingue pas « absent » de « nul »), et `merged`
+# vaut 0 dans les deux cas — le schéma se fonde donc sur ce qu'une PR ne peut
+# JAMAIS rendre vide : son numéro (celui demandé), sa tête et sa base. Un objet
+# qui n'a rien de tout cela (portail interposé, page d'erreur en 200) est
+# illisible ; une PR non mergée sans champ `state` (forme Gitea minimale) reste
+# une PR, et sa divergence se nomme plus bas (PAYLOAD_PERIME).
+MISSING=""
+[ "$R_NUMBER" = "$PR_NUMBER" ] || MISSING="$MISSING number"
+[ -n "$R_HEAD_REF" ] || MISSING="$MISSING head.ref"
+[ -n "$R_BASE_REF" ] || MISSING="$MISSING base.ref"
+[ -z "$MISSING" ] \
+  || fail GITEA_RECONCILE_ECHEC "réponse de la forge sans les champs d'une PR (absents ou étrangers :${MISSING} ; lu : number=$(shown "$R_NUMBER") état=$(shown "$R_STATE_RAW")) pour ${GIT_REPO}#${PR_NUMBER} (schéma inattendu / portail interposé) — refus"
+GITEA_HEAD_REF="$R_HEAD_REF"; GITEA_MERGED_BY="$R_MERGED_BY"; GITEA_REQUESTER="$R_LOGIN"
 # Les FAITS relus, écrits dès maintenant (succès comme échec) : c'est ce que le
 # post{always} du pipeline consulte avant de poser un statut de build.
-case "$PR_VERDICT" in
-  OK|MISMATCH*)
-    [ -n "$RECONCILE_FACTS" ] && printf 'GITEA_HEAD_REF=%s\n' "$GITEA_HEAD_REF" > "$RECONCILE_FACTS" ;;
-esac
-case "$PR_VERDICT" in
-  OK) ;;
-  ERR=*)    fail GITEA_RECONCILE_ECHEC "appel Gitea en échec (${PR_VERDICT#ERR=}) pour ${GIT_REPO}#${PR_NUMBER} — sans la vérité de la forge, pas d'apply" ;;
-  SCHEMA=*) fail GITEA_RECONCILE_ECHEC "réponse Gitea sans le champ ${PR_VERDICT#SCHEMA=} pour ${GIT_REPO}#${PR_NUMBER} (schéma inattendu / portail interposé) — refus" ;;
-  FORGE=*)  fail GITEA_RECONCILE_ECHEC "le champ ${PR_VERDICT#FORGE=} de ${GIT_REPO}#${PR_NUMBER} contient un saut de ligne — une identité ne fabrique pas de champ, refus" ;;
-  MISMATCH*) fail PAYLOAD_PERIME "${GIT_REPO}#${PR_NUMBER} sur Gitea ne correspond pas au webhook (${PR_VERDICT#MISMATCH }) — le payload ne fait pas foi, refus ; CE webhook n'a rien appliqué" \
-                                 "la PR relue sur la forge ne correspond pas au webhook (${PR_VERDICT#MISMATCH })" ;;
-  *) fail GITEA_RECONCILE_ECHEC "réponse inattendue de la réconciliation ($(shown "$PR_VERDICT"))" ;;
-esac
+[ -n "$RECONCILE_FACTS" ] && printf 'GITEA_HEAD_REF=%s\n' "$GITEA_HEAD_REF" > "$RECONCILE_FACTS"
+# La confrontation au payload : UNE comparaison par ligne — chacune porte une
+# épreuve de mutation (test-provision-apply-a2.sh §D : retirer la ligne fait
+# PASSER le scénario qui la vise, la preuve tient donc à cette ligne).
+WHY=""
+[ "$R_MERGED" = 1 ]               || WHY="$WHY merged=false"
+[ "$R_MERGE_SHA" = "$MERGE_SHA" ] || WHY="$WHY merge_commit_sha=${R_MERGE_SHA}"
+[ "$GITEA_HEAD_REF" = "$PR_BRANCH" ] || WHY="$WHY head.ref=${GITEA_HEAD_REF}"
+[ "$R_BASE_REF" = main ]          || WHY="$WHY base.ref=${R_BASE_REF}"
+[ -z "$WHY" ] \
+  || fail PAYLOAD_PERIME "${GIT_REPO}#${PR_NUMBER} sur la forge ne correspond pas au webhook (${WHY# }) — le payload ne fait pas foi, refus ; CE webhook n'a rien appliqué" \
+                         "la PR relue sur la forge ne correspond pas au webhook (${WHY# })"
 # FAIL-CLOSED, dit ICI : la garde d'identité refuserait aussi un mergeur vide
 # (MERGER_UNKNOWN), mais en accusant le CÂBLAGE du webhook — alors que la cause
-# est que Gitea lui-même ne nomme personne. Et refuser ici évite de réveiller
+# est que la forge elle-même ne nomme personne. Et refuser ici évite de réveiller
 # un humain pour une pause qui ne peut pas aboutir.
 [ -n "$GITEA_MERGED_BY" ] \
-  || fail MERGER_UNKNOWN "Gitea ne nomme aucun mergeur sur ${GIT_REPO}#${PR_NUMBER} (merged_by absent) — la garde d'identité ne pourrait RIEN vérifier" \
+  || fail MERGER_UNKNOWN "la forge ne nomme aucun mergeur sur ${GIT_REPO}#${PR_NUMBER} (merged_by absent) — la garde d'identité ne pourrait RIEN vérifier" \
                          "la forge ne nomme aucun mergeur pour cette PR"
 
 # ── 3. PÉRIMÈTRE : la PR n'a touché que son manifeste et son certificat ──────
+# `forge pr_files` : un chemin par ligne, PAGINÉ jusqu'à une page vide — une PR
+# qui touche plus de fichiers qu'une page n'en montre n'échappe pas au périmètre.
+forge pr_files "$PR_NUMBER" > "$TMP/files" 2>"$TMP/files.err" || {
+  cat "$TMP/files.err" >&2
+  fail GITEA_RECONCILE_ECHEC "lecture des fichiers de ${GIT_REPO}#${PR_NUMBER} en échec (cause ci-dessus)"
+}
+# Hors périmètre = tout chemin qui n'est ni le manifeste ni le certificat DE CE
+# PALIER ; montrés au plus cinq, tronqués, sans blanc (ils entrent dans un
+# message d'une ligne relayé sur la PR).
+EXTRA=$(grep -vxF -e "$FORGE_MANIFEST" -e "$FORGE_CERT" "$TMP/files" | sort -u | head -5 | cut -c1-120 | tr ' ' '_' | tr '\n' ' ')
+FILES_VERDICT=FILES_OK
+if [ ! -s "$TMP/files" ]; then FILES_VERDICT=FILES_VIDE
+elif [ -n "$EXTRA" ]; then FILES_VERDICT="FILES_HORS ${EXTRA% }"
+fi
 case "$FILES_VERDICT" in
   FILES_OK) ;;
   FILES_VIDE)  fail PR_HORS_PERIMETRE "${GIT_REPO}#${PR_NUMBER} ne modifie aucun fichier — rien à projeter" "la PR ne modifie aucun fichier" ;;
   FILES_HORS*) fail PR_HORS_PERIMETRE "${GIT_REPO}#${PR_NUMBER} touche des fichiers hors de son manifeste/certificat (${FILES_VERDICT#FILES_HORS }) — l'aval checkoute l'arbre ENTIER au SHA mergé : refus" \
                                       "la PR touche des fichiers hors de son manifeste et de son certificat de palier (${FILES_VERDICT#FILES_HORS })" ;;
-  FILES_ERR=*) fail GITEA_RECONCILE_ECHEC "lecture des fichiers de ${GIT_REPO}#${PR_NUMBER} en échec (${FILES_VERDICT#FILES_ERR=})" ;;
   *)           fail GITEA_RECONCILE_ECHEC "verdict de périmètre inattendu ($(shown "$FILES_VERDICT"))" ;;
 esac
 

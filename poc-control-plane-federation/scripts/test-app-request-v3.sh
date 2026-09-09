@@ -64,7 +64,7 @@ run_guard(){
     ko "$label : attendu exit=2 + '$tag', obtenu rc=$rc out=$(printf '%s' "$out" | tail -1)"
     return
   fi
-  if printf '%s' "$out" | grep -q '\[1/4\]'; then
+  if printf '%s' "$out" | grep -q '\[1/5\]'; then
     ko "$label : refusé mais APRÈS le clone (réseau touché) — pas 'AVANT tout geste Git'"
     return
   fi

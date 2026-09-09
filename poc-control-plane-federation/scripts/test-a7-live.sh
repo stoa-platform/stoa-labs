@@ -550,12 +550,12 @@ pr_dashboard "$PR_N" 3.5 alice bob bob
 NPR=$(prs_on_branch "provision/$APP-int"); BS=$(branch_sha "provision/$APP-int")
 printf 'APP=%s\nREQ_ENV=int\nTEAM=%s\nAPI=%s\nMODE=idp\nCLIENT_ID=%s-int\nIP_ALLOWLIST=10.42.0.99\n' "$APP" "$TEAM" "$FORM_API" "$APP" | form_file "$TMP/f3.form"
 form_build app-request "$TMP/f3.form"
-[ "$FB_RES" = FAILURE ] && grep -q 'REFUS: REQUESTER_UNKNOWN' "$TMP/fb.app-request.$FB_NUM.console" && ! grep -q '\[1/4\]' "$TMP/fb.app-request.$FB_NUM.console" && [ "$(prs_on_branch "provision/$APP-int")" = "$NPR" ] && [ "$(branch_sha "provision/$APP-int")" = "$BS" ] \
+[ "$FB_RES" = FAILURE ] && grep -q 'REFUS: REQUESTER_UNKNOWN' "$TMP/fb.app-request.$FB_NUM.console" && ! grep -q '\[1/5\]' "$TMP/fb.app-request.$FB_NUM.console" && [ "$(prs_on_branch "provision/$APP-int")" = "$NPR" ] && [ "$(branch_sha "provision/$APP-int")" = "$BS" ] \
   && ok "3.6 formulaire app-request #$FB_NUM sans FORGE_TOKEN vers int ⇒ FAILURE REQUESTER_UNKNOWN avant tout clone, PR et branche inchangées" || ko "3.6 app-request #$FB_NUM = $FB_RES : $(grep -E 'REFUS|ERROR' "$TMP/fb.app-request.$FB_NUM.console" | head -2 | tr '\n' ' ')"
 
 echo "═══ 4. homol — GATE_REFS_REQUIRED sans pv_ref ; puis alice / carol / carol ═══"
 NPR=$(prs_on_branch "provision/$APP-homol")
-PRX=$(request_as alice homol 10.42.0.14); [ "$(cat "$TMP/req.rc")" = 2 ] && grep -q 'REFUS: GATE_REFS_REQUIRED' "$TMP/req.homol.out" && grep -q 'pv_ref' "$TMP/req.homol.out" && ! grep -q '\[1/4\]' "$TMP/req.homol.out" && [ "$(prs_on_branch "provision/$APP-homol")" = "$NPR" ] \
+PRX=$(request_as alice homol 10.42.0.14); [ "$(cat "$TMP/req.rc")" = 2 ] && grep -q 'REFUS: GATE_REFS_REQUIRED' "$TMP/req.homol.out" && grep -q 'pv_ref' "$TMP/req.homol.out" && ! grep -q '\[1/5\]' "$TMP/req.homol.out" && [ "$(prs_on_branch "provision/$APP-homol")" = "$NPR" ] \
   && ok "4.1 demande homol sans pv_ref ⇒ GATE_REFS_REQUIRED (pv_ref) avant tout clone, aucune PR" || ko "4.1 rc $(cat "$TMP/req.rc") : $(grep -E 'REFUS|ERREUR' "$TMP/req.homol.out" | head -1)"
 palier homol 10.42.0.14 carol "" PV-A7
 [ "$RES" = SUCCESS ] && ok "4.2 provision-apply #$N_PA SUCCESS (aval #$S_NUM) — PR #$PR_N d'alice (pv_ref PV-A7) mergée par carol, portée par carol" || ko "4.2 #$N_PA = $RES : $(grep -E 'REFUS' "$TMP/pa.$N_PA.console" "$TMP/ss.${S_NUM:-0}.console" 2>/dev/null | head -2 | tr '\n' ' ')"
@@ -658,7 +658,7 @@ PRF=$(grep -oE 'PR_URL=[^ ]*/pulls/[0-9]+' "$TMP/fb.app-request.$FB_NUM.console"
 [ -n "$PRF" ] && { pr_comments "$PRF" | grep -q 'provision-plan' && ok "7.1c PR #$PRF : plan enchaîné commenté (sous le compte de service)" || ko "7.1c plan absent"; close_pr "$PRF" >/dev/null; }
 printf 'APP=%s\nREQ_ENV=homol\nTEAM=%s\nAPI=%s\nMODE=idp\nCLIENT_ID=%s-homol\nFORGE_TOKEN=%s\n' "$APPF" "$TEAM" "$FORM_API" "$APPF" "$(cat "$TMP/alice.tok")" | form_file "$TMP/f7c.form"
 form_build app-request "$TMP/f7c.form"
-[ "$FB_RES" = FAILURE ] && grep -q 'REFUS: GATE_REFS_REQUIRED' "$TMP/fb.app-request.$FB_NUM.console" && ! grep -q '\[1/4\]' "$TMP/fb.app-request.$FB_NUM.console" && ok "7.2 app-request #$FB_NUM (homol, token, sans PV_REF) ⇒ FAILURE GATE_REFS_REQUIRED avant tout clone" || ko "7.2 #$FB_NUM = $FB_RES : $(grep -E 'REFUS|ERROR' "$TMP/fb.app-request.$FB_NUM.console" | head -1)"
+[ "$FB_RES" = FAILURE ] && grep -q 'REFUS: GATE_REFS_REQUIRED' "$TMP/fb.app-request.$FB_NUM.console" && ! grep -q '\[1/5\]' "$TMP/fb.app-request.$FB_NUM.console" && ok "7.2 app-request #$FB_NUM (homol, token, sans PV_REF) ⇒ FAILURE GATE_REFS_REQUIRED avant tout clone" || ko "7.2 #$FB_NUM = $FB_RES : $(grep -E 'REFUS|ERROR' "$TMP/fb.app-request.$FB_NUM.console" | head -1)"
 printf 'APP=%s\nREQ_ENV=rec\nTEAM=%s\nAPI=%s\nMODE=idp\nCLIENT_ID=%s-rec\nFORGE_TOKEN=${JENKINS_HOME}x\n' "$APPF" "$TEAM" "$FORM_API" "$APPF" | form_file "$TMP/f7d.form"
 form_build app-request "$TMP/f7d.form"
 [ "$FB_RES" = FAILURE ] && grep -q 'TOKEN_ALTERE' "$TMP/fb.app-request.$FB_NUM.console" && ! grep -q 'provision-request.sh' "$TMP/fb.app-request.$FB_NUM.console" && ok "7.3 app-request #$FB_NUM avec FORGE_TOKEN='\${JENKINS_HOME}x' ⇒ FAILURE TOKEN_ALTERE, rien tenté" || ko "7.3 #$FB_NUM = $FB_RES : $(grep -E 'REFUS|ERROR' "$TMP/fb.app-request.$FB_NUM.console" | head -1)"

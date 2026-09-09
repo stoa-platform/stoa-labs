@@ -483,8 +483,8 @@ if mut_jf noami; then
   grep -q -- '--allow-self-approval' "$TMP/frag.log" && bad "B.M4 mutation inopérante (le drapeau passe encore)" || ok "B.M4 \$AMI retiré de la garde ⇒ le fragment EXÉCUTÉ ne porte plus le drapeau (B.7a verrait rouge)"
 fi
 echo "── B.12 la suite de câblage A2 rejouée sans modifier ses assertions ──"
-bash scripts/test-provision-apply-wiring.sh > "$TMP/wiring.log" 2>&1 && grep -q 'RÉSULTAT : 142/142' "$TMP/wiring.log" \
-  && ok "B.12 test-provision-apply-wiring.sh 142/142" || bad "B.12 test-provision-apply-wiring.sh : $(tail -1 "$TMP/wiring.log")"
+bash scripts/test-provision-apply-wiring.sh > "$TMP/wiring.log" 2>&1 && grep -q 'RÉSULTAT : 150/150' "$TMP/wiring.log" \
+  && ok "B.12 test-provision-apply-wiring.sh 150/150" || bad "B.12 test-provision-apply-wiring.sh : $(tail -1 "$TMP/wiring.log")"
 
 echo
 echo "═══ C. le câblage de ci/Jenkinsfile.selfservice : REFUS_OUT, chaîne épinglée, purges absolues, post{always} ═══"

@@ -1,0 +1,92 @@
+# =============================================================================
+# docker-compose.gitlab.yml — UNE FORGE GITLAB pour prouver l'adaptateur de forge.
+#
+# Pourquoi un vrai GitLab et pas un mock : le 2026-09-09, un client sur GitLab a
+# vu la chaîne mourir « FORGE_ILLISIBLE » sur un corps vide. Cause mesurée sur
+# gitlab.com : la chaîne parle l'API de GITEA (`/api/v1/repos/…/pulls`), et
+# GitLab répond à `/api/v1/…` par un 302 vers /users/sign_in — une page HTML que
+# `urllib` suit et que `json.load` ne sait pas lire. Un mock qui ne rend pas ce
+# 302, ni les vraies formes de /api/v4 (merge request `iid` et non `number`,
+# `username` et non `login`, `opened` et non `open`, `source_branch` et non
+# `head.ref`, `diffs` et non `files`, `notes` et non `comments`), ne prouve
+# rien : c'est CONTRE CETTE IMAGE que l'adaptateur FORGE_KIND=gitlab se mesure.
+#
+#   docker compose -f docker-compose.poc.yml -f docker-compose.gitlab.yml up -d gitlab
+#   docker compose -f docker-compose.poc.yml -f docker-compose.gitlab.yml logs -f gitlab
+#   # prêt quand `curl -s localhost:13080/-/readiness` rend {"status":"ok"} (3 à 5 min)
+#
+# SPLIT-HORIZON, comme Gitea (jenkins→gitea:3000, navigateur→localhost:13000) :
+#   depuis le réseau compose : http://gitlab:80   (GIT_HOST des jobs)
+#   depuis le poste           : http://localhost:13080
+#
+# ⚠ Forge JETABLE, mot de passe root en clair ci-dessous (hors des combinaisons
+# « trop courantes » que GitLab refuse — « gitlab-… » en fait partie), même régime que
+# LDAP_ADMIN_PASSWORD de docker-compose.ldap.yml. Chez le client c'est SON
+# GitLab, avec un PAT de service — rien de ceci n'est livré.
+#
+# ⚠ LES DONNÉES VIVENT DANS UN VOLUME NOMMÉ, exprès. Leçon du même jour sur
+# openldap (aucun volume : un `docker rm` détruisait l'annuaire) : ici les
+# projets, MR et jetons de la preuve survivent à un `rm` du conteneur.
+# =============================================================================
+
+name: stoa-labs-poc
+
+networks:
+  poc:
+    driver: bridge
+
+volumes:
+  gitlab-data:
+  gitlab-config:
+  gitlab-logs:
+
+services:
+
+  gitlab:
+    image: ${GITLAB_IMAGE:-gitlab/gitlab-ce:17.11.0-ce.0}
+    container_name: poc-gitlab
+    hostname: gitlab
+    restart: unless-stopped
+    shm_size: "256m"
+    environment:
+      # external_url porte le port VU DU POSTE ; nginx écoute sur 80 dans le
+      # conteneur (listen_port) pour que le réseau compose parle à gitlab:80.
+      GITLAB_OMNIBUS_CONFIG: |
+        external_url 'http://localhost:13080'
+        nginx['listen_port'] = 80
+        nginx['listen_https'] = false
+        gitlab_rails['initial_root_password'] = '${GITLAB_ROOT_PASSWORD:-Forge-Jetable-2026-Xk7q}'
+        gitlab_rails['gitlab_shell_ssh_port'] = 13022
+        # Allégé : rien ici n'a besoin de monitoring, de KAS, de pages ni de registry.
+        prometheus_monitoring['enable'] = false
+        gitlab_rails['gitlab_kas_enabled'] = false
+        gitlab_kas['enable'] = false
+        letsencrypt['enable'] = false
+        registry['enable'] = false
+        gitlab_pages['enable'] = false
+        puma['worker_processes'] = 2
+        sidekiq['max_concurrency'] = 5
+        # MESURÉ 2026-09-09 (premier boot sous forte contention disque, 1 h 30 de
+        # reconfigure) : `gitlab-rake cache:clear` meurt en PG::QueryCanceled
+        # (statement_timeout), la reconfiguration échoue, le conteneur sort et
+        # redémarre EN BOUCLE — deux tours perdus. Le cache:clear n'a aucune
+        # valeur ici (forge jetable) et le timeout est celui d'une machine calme.
+        gitlab_rails['rake_cache_clear'] = false
+        postgresql['statement_timeout'] = '600000'
+        # Les webhooks vers Jenkins (jenkins:8080) sont des adresses LOCALES :
+        # GitLab les refuse par défaut — l'API d'admin les autorise au setup.
+    ports:
+      - "13080:80"
+      - "13022:22"
+    volumes:
+      - gitlab-config:/etc/gitlab
+      - gitlab-logs:/var/log/gitlab
+      - gitlab-data:/var/opt/gitlab
+    networks:
+      - poc
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost/-/readiness"]
+      interval: 30s
+      timeout: 10s
+      retries: 20
+      start_period: 300s

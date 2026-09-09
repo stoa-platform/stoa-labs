@@ -240,7 +240,7 @@ req rec
 echo "═══ E2. homol : GATE_REFS_REQUIRED avant tout clone ; puis REQUESTER_UNKNOWN ═══"
 set_ctl '{"open":[]}'
 req homol
-refus GATE_REFS_REQUIRED && grep -q 'pv_ref' "$TMP/req.out" && [ "$(clones)" = 0 ] && ! grep -q '\[1/4\]' "$TMP/req.out" && ok "E2.1 homol sans pv_ref ⇒ GATE_REFS_REQUIRED (pv_ref nommé), aucun clone" || ko "E2.1 rc $(rrc) clones=$(clones) : $(tail -1 "$TMP/req.out")"
+refus GATE_REFS_REQUIRED && grep -q 'pv_ref' "$TMP/req.out" && [ "$(clones)" = 0 ] && ! grep -q '\[1/5\]' "$TMP/req.out" && ok "E2.1 homol sans pv_ref ⇒ GATE_REFS_REQUIRED (pv_ref nommé), aucun clone" || ko "E2.1 rc $(rrc) clones=$(clones) : $(tail -1 "$TMP/req.out")"
 req homol REQ_PV_REF=PV-A7
 refus REQUESTER_UNKNOWN && [ "$(clones)" = 0 ] && [ "$(users)" = 0 ] && ok "E2.2 homol + pv_ref sous ci ⇒ REQUESTER_UNKNOWN sans appel ni clone" || ko "E2.2 rc $(rrc) : $(tail -1 "$TMP/req.out")"
 

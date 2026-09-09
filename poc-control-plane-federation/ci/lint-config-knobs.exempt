@@ -149,9 +149,6 @@ scripts/get-oracle-token.sh:DEX_USER    # T2 : alice@bc.example
 scripts/get-oracle-token.sh:KC_BASE    # T1 : http://localhost:8480
 scripts/get-oracle-token.sh:REDIRECT_URI    # T1 : http://localhost:8480
 
-# ── scripts/lib/gitea-pr-comment.sh
-scripts/lib/gitea-pr-comment.sh:GIT_HOST    # T1 : http://gitea:3000
-
 # ── scripts/pair-devportal.sh
 scripts/pair-devportal.sh:GW    # T1 : http://localhost:5555
 scripts/pair-devportal.sh:GW_SELF    # T1 : http://poc-webmethods-real:5555

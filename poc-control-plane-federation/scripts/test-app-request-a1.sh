@@ -479,18 +479,18 @@ grep -q 'app-manifest.sh' "$S" && ok "B.4 le script source la lib app-manifest.s
 # refus d'entrée existants sortent toujours avant [1/4] (patron v2/v3).
 OUT=$(env -i PATH="$PATH" GITEA_TOKEN=dummy GIT_HOST="http://127.0.0.1:1" REQ_APP=probe REQ_ENV=dev \
       REQ_API=accounts-read REQ_CLIENT_ID=probe REQ_CALLER=oig-provisioner REQ_AUDIENCE='bad"aud' bash "$S" 2>&1); RC=$?
-[ "$RC" -eq 2 ] && printf '%s' "$OUT" | grep -q 'AUDIENCE_INVALID' && ! printf '%s' "$OUT" | grep -q '\[1/4\]' \
+[ "$RC" -eq 2 ] && printf '%s' "$OUT" | grep -q 'AUDIENCE_INVALID' && ! printf '%s' "$OUT" | grep -q '\[1/5\]' \
   && ok "B.5 REQ_AUDIENCE avec guillemet : AUDIENCE_INVALID, AVANT tout appel réseau (le champ est figé et interpolé en YAML)" \
   || ko "B.5 audience invalide : rc=$RC out=$(printf '%s' "$OUT" | tail -1)"
 OUT=$(env -i PATH="$PATH" GITEA_TOKEN=dummy GIT_HOST="http://127.0.0.1:1" REQ_APP=probe REQ_ENV=dev \
       REQ_API=accounts-read REQ_CLIENT_ID=probe REQ_CALLER=oig-provisioner REQ_API_VER='1.0;x' bash "$S" 2>&1); RC=$?
-[ "$RC" -eq 2 ] && printf '%s' "$OUT" | grep -q 'API_VERSION_INVALID' && ! printf '%s' "$OUT" | grep -q '\[1/4\]' \
+[ "$RC" -eq 2 ] && printf '%s' "$OUT" | grep -q 'API_VERSION_INVALID' && ! printf '%s' "$OUT" | grep -q '\[1/5\]' \
   && ok "B.6 REQ_API_VER hors classe : API_VERSION_INVALID, AVANT tout appel réseau" \
   || ko "B.6 version invalide : rc=$RC out=$(printf '%s' "$OUT" | tail -1)"
 
 OUT=$(env -i PATH="$PATH" GITEA_TOKEN=dummy GIT_HOST="http://127.0.0.1:1" REQ_APP=probe REQ_ENV=dev \
       REQ_API=accounts-read REQ_CLIENT_ID=probe REQ_CALLER=$'oig"\n  api: evil' bash "$S" 2>&1); RC=$?
-[ "$RC" -eq 2 ] && printf '%s' "$OUT" | grep -q 'CALLER_INVALID' && ! printf '%s' "$OUT" | grep -q '\[1/4\]' \
+[ "$RC" -eq 2 ] && printf '%s' "$OUT" | grep -q 'CALLER_INVALID' && ! printf '%s' "$OUT" | grep -q '\[1/5\]' \
   && ok "B.7 REQ_CALLER avec guillemet + retour-ligne (injection de clé racine via l'en-tête/description) : CALLER_INVALID, AVANT tout appel réseau" \
   || ko "B.7 caller invalide : rc=$RC out=$(printf '%s' "$OUT" | tail -1)"
 OUT=$(env -i PATH="$PATH" GITEA_TOKEN=dummy GIT_HOST="http://127.0.0.1:1" REQ_APP=probe REQ_ENV=dev \

@@ -22,7 +22,7 @@
   builds conserve).
 -->
 <flow-definition plugin="workflow-job">
-  <description>Fermeture de boucle : PR de provisioning OUVERTE (webhook Gitea) -&gt; plan self-service LECTURE SEULE sur la branche (identite de job, aucune mutation, aucun secret) -&gt; verdict commente sur la PR, visible AVANT la decision humaine (le merge). PIPELINE FROM SCM : ci/Jenkinsfile.provision-plan, charge depuis le depot plateforme (branche main) -- ce job ne contient AUCUN Groovy.</description>
+  <description>Fermeture de boucle : PR de provisioning OUVERTE (webhook de la forge, Gitea ou GitLab) -&gt; plan self-service LECTURE SEULE sur la branche (identite de job, aucune mutation, aucun secret) -&gt; verdict commente sur la PR, visible AVANT la decision humaine (le merge). PIPELINE FROM SCM : ci/Jenkinsfile.provision-plan, charge depuis le depot plateforme (branche main) -- ce job ne contient AUCUN Groovy.</description>
   <keepDependencies>false</keepDependencies>
   <properties>
     <org.jenkinsci.plugins.workflow.job.properties.DisableConcurrentBuildsJobProperty/>
@@ -31,16 +31,29 @@
         <org.jenkinsci.plugins.gwt.GenericTrigger plugin="generic-webhook-trigger@2.4.2">
           <spec></spec>
           <genericVariables>
+            <!-- Deux visages, un jeu de cles par visage : une cle dont le chemin
+                 JSON est absent du payload arrive VIDE. Le stage « Contexte du
+                 webhook » du Jenkinsfile unifie (PR_BRANCH, PR_NUMBER...). -->
+            <!-- visage Gitea (hook « pull_request ») -->
             <org.jenkinsci.plugins.gwt.GenericVariable><key>PR_BRANCH</key><value>$.pull_request.head.ref</value></org.jenkinsci.plugins.gwt.GenericVariable>
             <org.jenkinsci.plugins.gwt.GenericVariable><key>PR_NUMBER</key><value>$.pull_request.number</value></org.jenkinsci.plugins.gwt.GenericVariable>
             <org.jenkinsci.plugins.gwt.GenericVariable><key>PR_ACTION</key><value>$.action</value></org.jenkinsci.plugins.gwt.GenericVariable>
+            <!-- visage GitLab (« Merge Request Hook ») -->
+            <org.jenkinsci.plugins.gwt.GenericVariable><key>GL_KIND</key><value>$.object_kind</value></org.jenkinsci.plugins.gwt.GenericVariable>
+            <org.jenkinsci.plugins.gwt.GenericVariable><key>GL_IID</key><value>$.object_attributes.iid</value></org.jenkinsci.plugins.gwt.GenericVariable>
+            <org.jenkinsci.plugins.gwt.GenericVariable><key>GL_SOURCE_BRANCH</key><value>$.object_attributes.source_branch</value></org.jenkinsci.plugins.gwt.GenericVariable>
+            <org.jenkinsci.plugins.gwt.GenericVariable><key>GL_ACTION</key><value>$.object_attributes.action</value></org.jenkinsci.plugins.gwt.GenericVariable>
           </genericVariables>
           <printPostContent>false</printPostContent>
           <printContributedVariables>true</printContributedVariables>
           <token>stoa-provision-plan</token>
           <silentResponse>false</silentResponse>
-          <regexpFilterText>$PR_ACTION</regexpFilterText>
-          <regexpFilterExpression>^(opened|reopened|synchronized)$</regexpFilterExpression>
+          <!-- Ouverture, reouverture, nouveau push - jamais la fermeture. Gitea :
+               opened|reopened|synchronized ; GitLab : merge_request:open|reopen|
+               update. Le plugin joue find() : moitie Gitea ancree en tete, moitie
+               GitLab en queue, chacune sur SON segment du texte. -->
+          <regexpFilterText>$PR_ACTION|$GL_KIND:$GL_ACTION</regexpFilterText>
+          <regexpFilterExpression>^(opened|reopened|synchronized)\||merge_request:(open|reopen|update)$</regexpFilterExpression>
           <overrideQuietPeriod>false</overrideQuietPeriod>
           <shouldNotFlattern>false</shouldNotFlattern>
           <allowSeveralTriggersPerBuild>false</allowSeveralTriggersPerBuild>

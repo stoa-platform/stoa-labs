@@ -96,9 +96,9 @@ req(){
   echo $? > "$TMP/req.rc"
 }
 rrc(){ cat "$TMP/req.rc"; }
-# franchie : la garde providers a été PASSÉE — le rendu a commencé ([2/4]) et le
+# franchie : la garde providers a été PASSÉE — le rendu a commencé ([2/5]) et le
 # parcours est allé mourir sur la forge injoignable, jamais sur PROVIDERS_MISSING.
-franchie(){ ! grep -q 'PROVIDERS_MISSING' "$TMP/req.out" && grep -q '^\[2/4\]' "$TMP/req.out" && grep -q 'REFUS: FORGE_ILLISIBLE' "$TMP/req.out"; }
+franchie(){ ! grep -q 'PROVIDERS_MISSING' "$TMP/req.out" && grep -q '^\[2/5\]' "$TMP/req.out" && grep -q 'REFUS: FORGE_ILLISIBLE' "$TMP/req.out"; }
 detail(){ grep -E 'REFUS|ERREUR' "$TMP/req.out" | head -1; }
 
 echo "═══ L. la garde providers suit le knob GIT_SUBDIR ═══"

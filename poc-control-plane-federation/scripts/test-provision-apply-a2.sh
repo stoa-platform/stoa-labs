@@ -395,7 +395,9 @@ grep -qx 'GITEA_REQUESTER=ci' "$TMP/b1.out" && ok "B.1b GITEA_REQUESTER=ci (Gite
 grep -qx 'APP_NAME=appa' "$TMP/b1.out" && grep -qx 'ENV_NAME=rec' "$TMP/b1.out" && ok "B.1c APP_NAME=appa ENV_NAME=rec" || ko "B.1c app/env : $(grep -E 'APP_NAME|ENV_NAME' "$TMP/b1.out" | tr '\n' ' ')"
 grep -qx 'MANIFEST=clients/provisioned/applications/appa.ansible.yml' "$TMP/b1.out" && ok "B.1d MANIFEST=clients/provisioned/applications/appa.ansible.yml" || ko "B.1d manifeste : $(grep MANIFEST "$TMP/b1.out")"
 grep -qx "MERGED_DIGEST=$D_C1" "$TMP/b1.out" && ok "B.1e MERGED_DIGEST = digest du manifeste effectif rec au SHA mergé (recalculé ici sur git show)" || ko "B.1e MERGED_DIGEST : $(grep MERGED_DIGEST "$TMP/b1.out")"
-[ "$(pulls_calls)" = 1 ] && [ "$(files_calls)" = 1 ] && ok "B.1f exactement UN GET /pulls/42 et UN GET /pulls/42/files (contrôle positif)" || ko "B.1f $(pulls_calls) /pulls, $(files_calls) /files"
+# /files est PAGINÉ par forge-api (jusqu'à une page vide, ce stub ignore `page`) :
+# au moins un appel — le contrôle positif garde son sens, pas son compte exact.
+[ "$(pulls_calls)" = 1 ] && [ "$(files_calls)" -ge 1 ] && ok "B.1f exactement UN GET /pulls/42 et au moins UN GET /pulls/42/files (contrôle positif)" || ko "B.1f $(pulls_calls) /pulls, $(files_calls) /files"
 [ "$(comments_n)" = 0 ] && ok "B.1g aucun commentaire posé sur un succès (c'est l'apply qui rapportera)" || ko "B.1g $(comments_n) commentaire(s) inattendu(s)"
 grep -q 'RECONCILE_OK' "$TMP/b1.log" && ok "B.1h RECONCILE_OK loggué" || ko "B.1h RECONCILE_OK absent du log"
 grep -q "$STUB_TOKEN" "$TMP/b1.log" && ko "B.1i le token FUITE dans la sortie" || ok "B.1i aucune fuite du token dans la sortie"
@@ -450,10 +452,13 @@ refus_attendu "B.8c" "JSON 200 mais pas un objet PR" GITEA_RECONCILE_ECHEC "$TMP
 set_pr true "$C1" provision/appa-rec main alice ci 200 '{"message": "token is required"}'
 run_rec "$TMP/b8e.out" "$TMP/b8e.log"; RC=$?
 refus_attendu "B.8e" "objet 200 sans les champs d'une PR (portail interposé)" GITEA_RECONCILE_ECHEC "$TMP/b8e.log" "$RC" "$TMP/b8e.out" non
-grep -q 'sans le champ merged' "$TMP/b8e.log" && ok "B.8e‴ le refus nomme le champ manquant (schéma), pas une divergence PAYLOAD_PERIME" || ko "B.8e‴ diagnostic : $(grep REFUS "$TMP/b8e.log")"
+# L'adaptateur normalise (forge-api) : « absent » et « vide » se confondent, le
+# schéma se dit donc par les champs qu'une PR ne rend jamais vides (number, head.ref, base.ref).
+grep -q "sans les champs d'une PR (absents ou étrangers : number head.ref base.ref" "$TMP/b8e.log" && ok "B.8e‴ le refus nomme les champs manquants (schéma), pas une divergence PAYLOAD_PERIME" || ko "B.8e‴ diagnostic : $(grep REFUS "$TMP/b8e.log")"
 set_pr true "$C1" provision/appa-rec main alice ci
 run_rec "$TMP/b8d.out" "$TMP/b8d.log" GITEA_TOKEN=mauvais; RC=$?
-if [ "$RC" -ne 0 ] && grep -q 'REFUS: GITEA_RECONCILE_ECHEC' "$TMP/b8d.log" && grep -q 'HTTP401' "$TMP/b8d.log"; then
+# la cause de forge-api dit « → HTTP 401 » (un blanc) ; l'ancien python disait « HTTP401 »
+if [ "$RC" -ne 0 ] && grep -q 'REFUS: GITEA_RECONCILE_ECHEC' "$TMP/b8d.log" && grep -qE 'HTTP ?401' "$TMP/b8d.log"; then
   ok "B.8d token refusé (401) ⇒ GITEA_RECONCILE_ECHEC (pas de repli silencieux sur le payload)"
 else ko "B.8d 401 : rc=$RC $(tail -2 "$TMP/b8d.log" | tr '\n' ' ')"; fi
 [ ! -e "$TMP/b8d.out" ] && [ "$(comments_n)" = 0 ] && ok "B.8d′ aucun fichier de sortie, aucun commentaire" || ko "B.8d′ sortie ou commentaire présents"
@@ -649,27 +654,29 @@ python3 - "$STUB_CTL" <<'PY'
 import json, sys
 c = json.load(open(sys.argv[1])); c.pop("files", None); c.pop("files_code", None); json.dump(c, open(sys.argv[1], "w"))
 PY
-if mutate 'merge_commit_sha") != os.environ' "$MUTD/mut1.sh"; then
+# Les motifs visent les comparaisons BASH de la réconciliation (une par ligne,
+# depuis le routage sur forge-api : `[ … ] || WHY="$WHY <champ>=…"`).
+if mutate 'WHY merge_commit_sha=' "$MUTD/mut1.sh"; then
   set_pr true "$SHA_AUTRE" provision/appa-rec main alice ci
   mut_run "$MUTD/mut1.sh" "$TMP/mut1.log"; RC=$?
   [ "$RC" -eq 0 ] && ok "D.1 sans la comparaison du SHA, le scénario B.3 PASSE (rc 0) — B.3 tient donc à cette ligne" || ko "D.1 le mutant refuse encore (rc=$RC) : $(tail -1 "$TMP/mut1.log")"
 else ko "D.1 mutation impossible (motif introuvable)"; fi
-if mutate 'base"\].get("ref") != "main"' "$MUTD/mut2.sh"; then
+if mutate 'WHY base\.ref=' "$MUTD/mut2.sh"; then
   set_pr true "$C1" provision/appa-rec p3a1-base-1 alice ci
   mut_run "$MUTD/mut2.sh" "$TMP/mut2.log"; RC=$?
   [ "$RC" -eq 0 ] && ok "D.2 sans la comparaison de base.ref, le scénario B.5 PASSE — B.5 tient à cette ligne" || ko "D.2 le mutant refuse encore (rc=$RC) : $(tail -1 "$TMP/mut2.log")"
 else ko "D.2 mutation impossible"; fi
-if mutate 'get("merged") is not True' "$MUTD/mut3.sh"; then
+if mutate 'WHY merged=' "$MUTD/mut3.sh"; then
   set_pr false "$C1" provision/appa-rec main alice ci
   mut_run "$MUTD/mut3.sh" "$TMP/mut3.log"; RC=$?
   [ "$RC" -eq 0 ] && ok "D.3 sans le test merged, le scénario B.2 PASSE — B.2 tient à cette ligne" || ko "D.3 le mutant refuse encore (rc=$RC) : $(tail -1 "$TMP/mut3.log")"
 else ko "D.3 mutation impossible"; fi
-if mutate 'if head_ref != os.environ\["PR_BRANCH"\]' "$MUTD/mut4.sh"; then
+if mutate 'WHY head\.ref=' "$MUTD/mut4.sh"; then
   set_pr true "$C1" provision/autre-rec main alice ci
   mut_run "$MUTD/mut4.sh" "$TMP/mut4.log"; RC=$?
   [ "$RC" -eq 0 ] && ok "D.4 sans la comparaison de head.ref, le scénario B.4b PASSE — B.4b tient à cette ligne" || ko "D.4 le mutant refuse encore (rc=$RC) : $(tail -1 "$TMP/mut4.log")"
 else ko "D.4 mutation impossible"; fi
-if mutate 'elif extra:' "$MUTD/mut5.sh"; then
+if mutate 'FILES_VERDICT="FILES_HORS' "$MUTD/mut5.sh"; then
   set_pr true "$C1" provision/appa-rec main alice ci
   set_files "$FMAN" "poc-control-plane-federation/ansible/roles/x/tasks/main.yml"
   mut_run "$MUTD/mut5.sh" "$TMP/mut5.log"; RC=$?

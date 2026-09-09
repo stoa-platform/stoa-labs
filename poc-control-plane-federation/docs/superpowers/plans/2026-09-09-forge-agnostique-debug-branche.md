@@ -130,6 +130,8 @@ L1 (1 j) → **L5 phase 1** (2-3 j, c'est ce qui débloque le client) → L3 (2-
 ## Décisions prises le 2026-09-09
 
 - GitLab : adaptateur commandé (L5 phase 1, chaîne app-request). Prérequis à obtenir du client : version, CE ou Premium, `/api/v4` joignable depuis l'agent, **PAT de service** (le couple user/mdp suffit pour `git`, pas pour `/api/v4`).
+- GitLab, prérequis découvert à la relecture du routage : la **méthode de merge du projet doit être « merge commit »** — en fast-forward/squash `merge_commit_sha` est nul et A2/A6 refusent (fail-closed, nommé). Documenté dans ENVIRONNEMENTS.md § « Le visage de la forge ».
+- GitLab, deux faits mesurés sur le CE du lab et absorbés par l'adaptateur/les harnais : le diff d'une MR est calculé en ASYNCHRONE (`prepared_at` nul ~4 s, `/diffs` vide ⇒ `pr_files` attend, borné `FORGE_PREPARE_WAIT`) ; un push HTTP > 1 Mio en chunked rend un 500 (`http.postBuffer` sur l'agent).
 - Knob DEBUG : globale `STOA_DEBUG` **et** case `DEBUG` sur les formulaires.
 - Branche : chaîne app-request **et** producteur, messages compris.
 - GitLab CE **réel** dans le lab pour la preuve (l'utilisateur : « tu devrais passer sur gitlab en local pour valider tout cela »).

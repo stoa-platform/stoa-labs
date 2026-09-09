@@ -60,6 +60,16 @@ pipeline {
   // Aucune charge utile n'est de confiance : ces clés ne servent qu'à NOMMER ce
   // qu'il faut relire sur la forge (PR_NUMBER) et dans l'état mergé (MERGE_SHA).
   //
+  // DEUX VISAGES DE FORGE (2026-09-09, client sur GitLab) : un jeu de clés par
+  // visage — « pull_request » de Gitea (PR_*), « Merge Request Hook » de GitLab
+  // (GL_*). Une clé dont le chemin JSON est absent du payload arrive VIDE
+  // (plugin generic-webhook-trigger) ; le stage « Contexte du webhook » pose
+  // ensuite UN SEUL nom par fait (PR_BRANCH, PR_NUMBER, MERGE_SHA) — celui que
+  // la réconciliation, la pause et l'aval consomment, sans savoir quel visage
+  // a parlé. Le filtre est composé sur les deux : l'un OU l'autre, et
+  // seulement une fusion RÉELLE (Gitea : closed + merged=true ; GitLab :
+  // action=merge).
+  //
   // ⚠ Ce bloc doit rester le MIROIR EXACT de celui de
   // ci/jenkins/provision-apply.job.xml, et c'est le XML qui gagne : Declarative
   // ne remplace que les déclencheurs qu'il a lui-même posés
@@ -74,21 +84,36 @@ pipeline {
     GenericTrigger(
       token: 'stoa-provision-apply',
       genericVariables: [
-        [key: 'PR_BRANCH',    value: '$.pull_request.head.ref'],
-        [key: 'PR_NUMBER',    value: '$.pull_request.number'],
-        [key: 'PR_ACTION',    value: '$.action'],
-        [key: 'PR_MERGED',    value: '$.pull_request.merged'],
+        // ── visage Gitea (hook « pull_request ») ──
+        [key: 'PR_BRANCH',        value: '$.pull_request.head.ref'],
+        [key: 'PR_NUMBER',        value: '$.pull_request.number'],
+        [key: 'PR_ACTION',        value: '$.action'],
+        [key: 'PR_MERGED',        value: '$.pull_request.merged'],
         // Captés pour le journal (printContributedVariables) — mais JAMAIS lus
         // par la garde d'identité : elle reçoit GITEA_MERGED_BY / GITEA_REQUESTER,
         // relus sur la forge par la réconciliation (le payload est une AFFIRMATION).
-        [key: 'PR_MERGED_BY', value: '$.pull_request.merged_by.login'],
-        [key: 'PR_REQUESTER', value: '$.pull_request.user.login'],
+        [key: 'PR_MERGED_BY',     value: '$.pull_request.merged_by.login'],
+        [key: 'PR_REQUESTER',     value: '$.pull_request.user.login'],
         // A2 — LA RÉFÉRENCE : le SHA de merge, réconcilié puis projeté par l'aval.
-        [key: 'MERGE_SHA',    value: '$.pull_request.merge_commit_sha'],
+        [key: 'MERGE_SHA',        value: '$.pull_request.merge_commit_sha'],
+        // ── visage GitLab (« Merge Request Hook ») ──
+        [key: 'GL_KIND',          value: '$.object_kind'],
+        [key: 'GL_IID',           value: '$.object_attributes.iid'],
+        [key: 'GL_SOURCE_BRANCH', value: '$.object_attributes.source_branch'],
+        [key: 'GL_ACTION',        value: '$.object_attributes.action'],
+        [key: 'GL_STATE',         value: '$.object_attributes.state'],
+        // GitLab ne nomme pas le demandeur dans le hook (author_id seulement) et
+        // `user` est l'ACTEUR de l'événement — le mergeur, pour action=merge.
+        // Journal seulement : la réconciliation relit les deux identités.
+        [key: 'GL_USER',          value: '$.user.username'],
+        [key: 'GL_MERGE_SHA',     value: '$.object_attributes.merge_commit_sha'],
       ],
-      // Ne déclenche que sur une PR RÉELLEMENT fusionnée (fermée sans merge = rien).
-      regexpFilterText: '$PR_ACTION|$PR_MERGED',
-      regexpFilterExpression: '^closed\\|true$',
+      // Ne déclenche que sur une PR RÉELLEMENT fusionnée (fermée sans merge =
+      // rien). Gitea : action=closed ET merged=true ; GitLab : action=merge.
+      // Le plugin joue find() : la moitié Gitea est ancrée en tête (`^…\|`),
+      // la moitié GitLab en queue (`…$`), chacune sur SON segment du texte.
+      regexpFilterText: '$PR_ACTION|$PR_MERGED|$GL_KIND:$GL_ACTION',
+      regexpFilterExpression: '^closed\\|true\\||merge_request:merge$',
       printContributedVariables: true,
       printPostContent: false)
   }
@@ -102,6 +127,14 @@ pipeline {
     GIT_SUBDIR           = "${env.GIT_SUBDIR ?: 'poc-control-plane-federation'}"
     GIT_HOST              = "${env.GIT_HOST ?: 'http://gitea:3000'}"
     GIT_REPO              = "${env.GIT_REPO ?: 'ci/stoa-labs'}"
+    // Le VISAGE de la forge (gitea, défaut | gitlab) : lu par la seule autorité
+    // qui parle à son API, scripts/lib/forge-api.sh. FORGE_API_AUTH et
+    // FORGE_API_BASE passent TELS QUELS, repli VIDE — jamais un défaut de site :
+    // absents, la lib dérive l'en-tête d'auth du visage (token / PRIVATE-TOKEN)
+    // et la base d'API de GIT_HOST (/api/v1 ou /api/v4).
+    FORGE_KIND            = "${env.FORGE_KIND ?: 'gitea'}"
+    FORGE_API_AUTH        = "${env.FORGE_API_AUTH ?: ''}"
+    FORGE_API_BASE        = "${env.FORGE_API_BASE ?: ''}"
     // Lien humain-CLIQUABLE dans le commentaire de PR (split-horizon lab :
     // jenkins→gitea:3000, navigateur→localhost:13000).
     GIT_WEB_HOST          = "${env.GIT_WEB_HOST ?: 'http://localhost:13000'}"
@@ -142,6 +175,19 @@ pipeline {
     stage('Contexte du webhook') {
       steps {
         script {
+          // ── UN SEUL nom par fait, quel que soit le visage ─────────────────
+          // Le payload Gitea remplit PR_*/MERGE_SHA, le payload GitLab remplit
+          // GL_* et laisse les premiers vides. ICI, et nulle part ailleurs, le
+          // fait unifié est posé : PR_BRANCH / PR_NUMBER / MERGE_SHA sont ce que
+          // les gardes `when`, la pause, l'appel de l'aval, le post{always} ET
+          // les scripts (réconciliation, porte, rapport — lus par le SHELL)
+          // consomment, sans savoir quel visage a parlé. En Groovy et non dans
+          // un sh : `when { beforeAgent }` se joue AVANT tout sh, et une
+          // variable posée dans env est vue de tout sh du build (même mécanisme
+          // que GITEA_MERGED_BY, posé par la réconciliation et lu par la garde).
+          env.PR_BRANCH = env.PR_BRANCH ?: (env.GL_SOURCE_BRANCH ?: '')
+          env.PR_NUMBER = env.PR_NUMBER ?: (env.GL_IID ?: '')
+          env.MERGE_SHA = env.MERGE_SHA ?: (env.GL_MERGE_SHA ?: '')
           def ref = env.PR_BRANCH ?: ''
           if (ref.startsWith('provision/')) {
             def rest = ref.substring('provision/'.length())

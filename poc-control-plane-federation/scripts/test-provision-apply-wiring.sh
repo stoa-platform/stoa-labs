@@ -44,7 +44,7 @@ TMP="$(mktemp -d /tmp/pa-wiring.XXXXXX)"; trap 'rm -rf "$TMP"' EXIT
 # quel que soit le nombre de contrôles exécutés : une section sautée en silence
 # ferait baisser le total SANS rougir). Toute section ajoutée/retirée DOIT le
 # mettre à jour à la main. Le contrôle final n'est pas compté dedans.
-EXPECTED_CHECKS=141
+EXPECTED_CHECKS=149
 
 [ -f "$JOB" ] || { echo "job introuvable : $JOB"; exit 2; }
 [ -f "$JF" ]  || { echo "Jenkinsfile introuvable : $JF"; exit 2; }
@@ -90,26 +90,31 @@ jf "options { disableConcurrentBuilds() }" \
 grep -qE '^  agent none' "$TMP/jf.code" && ok "\`agent none\` au niveau pipeline" || ko "agent none absent"
 
 echo
-echo "== 2. le webhook capte les 7 clés, dont MERGE_SHA — Jenkinsfile ET XML (miroir, le XML gagne) =="
-for K in PR_BRANCH PR_NUMBER PR_ACTION PR_MERGED PR_MERGED_BY PR_REQUESTER MERGE_SHA; do
+echo "== 2. le webhook capte les 14 clés (7 Gitea + 7 GitLab), dont MERGE_SHA — Jenkinsfile ET XML (miroir, le XML gagne) =="
+# 2026-09-09 (forge agnostique) : DEUX jeux de clés — PR_* pour le hook
+# « pull_request » de Gitea, GL_* pour le « Merge Request Hook » de GitLab ; une
+# clé absente du payload arrive vide, le stage Contexte unifie (PR_BRANCH,
+# PR_NUMBER, MERGE_SHA). test-a0-wiring.sh §2 JOUE le filtre sur les deux visages.
+GWT_KEYS="PR_BRANCH PR_NUMBER PR_ACTION PR_MERGED PR_MERGED_BY PR_REQUESTER MERGE_SHA GL_KIND GL_IID GL_SOURCE_BRANCH GL_ACTION GL_STATE GL_USER GL_MERGE_SHA"
+for K in $GWT_KEYS; do
   jf "[key: '$K'," && ok "clé $K dans le Jenkinsfile" || ko "clé $K absente du Jenkinsfile"
 done
 jf "[key: 'MERGE_SHA', value: '\$.pull_request.merge_commit_sha']" \
   && ok "MERGE_SHA = \$.pull_request.merge_commit_sha (la référence vient du webhook, puis est réconciliée)" \
   || ko "MERGE_SHA ne pointe pas merge_commit_sha"
 jf "token: 'stoa-provision-apply'" && ok "token stoa-provision-apply (Jenkinsfile)" || ko "token inattendu"
-jf "regexpFilterText: '\$PR_ACTION|\$PR_MERGED'" && ok "filterText (Jenkinsfile)" || ko "filterText inattendu"
-jf "regexpFilterExpression: '^closed\\\\|true\$'" && ok "filterExpression ^closed\\|true\$ (Jenkinsfile)" || ko "filterExpression inattendue — laisserait passer une fermeture SANS merge"
+jf "regexpFilterText: '\$PR_ACTION|\$PR_MERGED|\$GL_KIND:\$GL_ACTION'" && ok "filterText \$PR_ACTION|\$PR_MERGED|\$GL_KIND:\$GL_ACTION (Jenkinsfile) — les deux visages sur le même texte" || ko "filterText inattendu"
+jf "regexpFilterExpression: '^closed\\\\|true\\\\||merge_request:merge\$'" && ok "filterExpression ^closed\\|true\\| … merge_request:merge\$ (Jenkinsfile) : fusion RÉELLE seulement, sur l'un OU l'autre visage" || ko "filterExpression inattendue — laisserait passer une fermeture SANS merge, ou ignorerait un visage"
 MIRROR_KO=""
-for K in PR_BRANCH PR_NUMBER PR_ACTION PR_MERGED PR_MERGED_BY PR_REQUESTER MERGE_SHA; do
+for K in $GWT_KEYS; do
   grep -q "<key>${K}</key>" "$JOB" || MIRROR_KO="${MIRROR_KO} ${K}"
 done
-[ -z "$MIRROR_KO" ] && ok "les 7 genericVariables sont dans le XML à l'identique" || ko "clés absentes du XML :${MIRROR_KO}"
+[ -z "$MIRROR_KO" ] && ok "les 14 genericVariables sont dans le XML à l'identique" || ko "clés absentes du XML :${MIRROR_KO}"
 grep -q '<key>MERGE_SHA</key><value>$.pull_request.merge_commit_sha</value>' "$JOB" \
   && ok "MERGE_SHA = merge_commit_sha dans le XML (le webhook n'est pas borgne dès la pose)" || ko "MERGE_SHA du XML divergent"
 grep -q '<token>stoa-provision-apply</token>' "$JOB" && ok "token identique dans le XML" || ko "token du XML divergent"
-grep -q '<regexpFilterText>\$PR_ACTION|\$PR_MERGED</regexpFilterText>' "$JOB" && ok "filterText identique dans le XML" || ko "filterText du XML divergent"
-grep -q '<regexpFilterExpression>\^closed\\|true\$</regexpFilterExpression>' "$JOB" && ok "filterExpression identique dans le XML" || ko "filterExpression du XML divergente"
+grep -q '<regexpFilterText>\$PR_ACTION|\$PR_MERGED|\$GL_KIND:\$GL_ACTION</regexpFilterText>' "$JOB" && ok "filterText identique dans le XML" || ko "filterText du XML divergent"
+grep -q '<regexpFilterExpression>\^closed\\|true\\||merge_request:merge\$</regexpFilterExpression>' "$JOB" && ok "filterExpression identique dans le XML" || ko "filterExpression du XML divergente"
 grep -qE '^  parameters \{' "$TMP/jf.code" \
   && ko "un bloc \`parameters {}\` de niveau pipeline existe — un lanceur manuel pourrait nommer MERGE_SHA/PR_NUMBER lui-même" \
   || ok "aucun bloc \`parameters {}\` : ces valeurs ne viennent QUE du webhook"
@@ -267,6 +272,12 @@ jf 'APPLY_JOB = "${env.APPLY_JOB ?: '"'"'selfservice-app-deploy'"'"'}"' && ok "A
 jf 'APPLY_ADMIN_VIA = "${env.APPLY_ADMIN_VIA ?: '"'"'proxy-oauth2'"'"'}"' \
   && ok "APPLY_ADMIN_VIA = proxy-oauth2 par défaut (le modèle client, celui que le Groovy codait en dur ; lab = direct par variable globale)" \
   || ko "APPLY_ADMIN_VIA : défaut inattendu — le modèle client doit rester le défaut"
+# 2026-09-09 : le VISAGE de la forge atteint le shell (scripts/lib/forge-api.sh
+# le lit) ; FORGE_API_AUTH / FORGE_API_BASE en repli VIDE — jamais un défaut de
+# site (un `token` écrit ici aurait envoyé « Authorization: token » à un GitLab).
+jf 'FORGE_KIND = "${env.FORGE_KIND ?: '"'"'gitea'"'"'}"' && jf 'FORGE_API_AUTH = "${env.FORGE_API_AUTH ?: '"'"''"'"'}"' && jf 'FORGE_API_BASE = "${env.FORGE_API_BASE ?: '"'"''"'"'}"' \
+  && ok "FORGE_KIND = gitea par défaut ; FORGE_API_AUTH / FORGE_API_BASE passent tels quels, repli vide (la lib forge-api dérive l'en-tête et la base du visage)" \
+  || ko "FORGE_KIND / FORGE_API_AUTH / FORGE_API_BASE absents du bloc environment, ou portant un défaut de site"
 L_ENV=$(grep -n '^  environment {' "$TMP/jf.code" | head -1 | cut -d: -f1)
 L_STAGES=$(grep -n '^  stages {' "$TMP/jf.code" | head -1 | cut -d: -f1)
 [ -n "$L_ENV" ] && [ -n "$L_STAGES" ] && [ "$L_ENV" -lt "$L_STAGES" ] && ok "environment (ligne $L_ENV) précède stages (ligne $L_STAGES)" || ko "ordre environment/stages non confirmé"

@@ -6,7 +6,8 @@
 #     → webhook Jenkins → CE script :
 #         1. rend le manifeste apim_ss_app (mode idp) depuis les champs de la demande
 #         2. branche provision/<app>-<env>, commit, push sur le repo projet
-#         3. ouvre une Pull Request (API Gitea) — le plan self-service se lance dessus
+#         3. ouvre une Pull Request par scripts/lib/forge-api.sh (Gitea ou GitLab,
+#            selon FORGE_KIND) — le plan self-service se lance dessus
 #
 # Le pipeline aval (plan sur la MR, apply au merge, promo par env) est déjà couvert
 # par ADR-075/076/079 : ce script ne fait QUE la porte d'entrée (demande → Git → MR).
@@ -28,7 +29,12 @@
 #   FORGE_SECRET    (req) token de push/PR (scopes write:repository, write:issue)
 #   GIT_REPO       full-name du repo projet (défaut ci/stoa-labs)
 #   GIT_BASE       branche cible de la MR (défaut main)
-#   GIT_HOST       base Gitea vue depuis l'agent (défaut http://gitea:3000)
+#   GIT_HOST       base de la forge vue depuis l'agent (REQUIS, aucun repli) ;
+#                  GIT_WEB_HOST = l'adresse HUMAINE si elle diffère (split-horizon)
+#   FORGE_KIND     gitea (défaut) | gitlab — le VISAGE de la forge. La base d'API,
+#                  l'en-tête d'auth et la garde de réponse vivent dans
+#                  scripts/lib/forge-api.sh (L5, 2026-09-09) : ce script ne compose
+#                  plus le chemin d'API de Gitea ni son en-tête, il nomme des verbes.
 #   MANIFEST_DIR   dossier des manifestes dans le repo
 #                  (défaut poc-control-plane-federation/clients/provisioned/applications)
 #
@@ -205,6 +211,23 @@ repo_layout_init || exit 2
 # chaine (scripts/lib/providers-teams.sh, preuve test-providers-teams.sh).
 # shellcheck source=scripts/lib/providers-teams.sh
 . "scripts/lib/providers-teams.sh" || { echo "ERREUR: scripts/lib/providers-teams.sh introuvable ou illisible" >&2; exit 1; }
+# L5 (2026-09-09) — LA FORGE SE PARLE PAR UNE SEULE AUTORITÉ : scripts/lib/forge-api.sh
+# (visage FORGE_KIND=gitea|gitlab, base d'API, en-tête d'auth, garde de réponse
+# fail-closed et auto-diagnostique). Ce script ne compose plus le chemin d'API
+# de Gitea ni son en-tête d'auth : il nomme un verbe (pr_find_open, pr_open) et
+# lit des lignes CLÉ=VALEUR. Mesuré chez le client sur GitLab : le chemin de
+# Gitea en dur répondait 302 vers /users/sign_in, et le décodage JSON mourait
+# sur du HTML avec une trace de quinze lignes.
+# Chemin ABSOLU, résolu depuis le cwd comme les autres libs : ce script fait
+# `cd $WORK/repo` avant les verbes de forge, et forge-api.sh localise
+# forge-api.py à côté de LUI-MÊME (BASH_SOURCE) — sourcé en relatif, ce chemin
+# ne résoudrait plus depuis le clone.
+FORGE_API_LIB="$(cd scripts/lib 2>/dev/null && pwd)/forge-api.sh"
+# shellcheck source=scripts/lib/forge-api.sh
+. "$FORGE_API_LIB" || { echo "ERREUR: scripts/lib/forge-api.sh introuvable ou illisible" >&2; exit 1; }
+# L'init vérifie GIT_HOST/GIT_REPO/python3 AVANT le premier appel réseau et pose
+# FORGE_API_AUTH selon le visage (REFUS: rc 2 nommé, ERREUR: rc 1).
+forge_api_init || { rc=$?; exit "$rc"; }
 MANIFEST_DIR="${MANIFEST_DIR:-clients/provisioned/applications}"
 
 # Garde-fous d'entrée : noms sûrs (pas d'injection dans un path/branche/YAML).
@@ -362,15 +385,16 @@ FOUREYES="${FOUREYES#FOUREYES=}"
 
 # ── A7 (D3) — L'IDENTITÉ DE FORGE : le porteur du token nominatif EST l'auteur ──
 # Sans token humain, il n'y a pas d'humain : le job n'a qu'un token de service,
-# aucun appel n'est fait, l'identité vaut `(service)`. Avec : GET /user (scope
-# read:user) — un refus nommé (rc 2 : token invalide, scope insuffisant, login
-# hors classe) ou une ERREUR (rc 1 : réseau). Sous fourEyes, une demande sans
-# humain est refusée ICI, au plus tôt : la porte A4 la refuserait REQUESTER_UNKNOWN
-# au dispatch, après avoir réveillé un mergeur pour rien.
-API="${GIT_HOST}/api/v1"
+# aucun appel n'est fait, l'identité vaut `(service)`. Avec : `forge whoami`
+# (GET /user, scope read:user sur Gitea) — un refus nommé (rc 2 : token invalide,
+# scope insuffisant, login hors classe) ou une ERREUR (rc 1 : réseau). Sous
+# fourEyes, une demande sans humain est refusée ICI, au plus tôt : la porte A4
+# la refuserait REQUESTER_UNKNOWN au dispatch, après avoir réveillé un mergeur
+# pour rien. La base d'API n'est plus composée ici (L5) : forge_login la tient
+# de forge-api (GIT_HOST + FORGE_KIND), son premier argument est ignoré.
 FORGE_LOGIN="(service)"
 if [ -n "$FORGE_TF" ]; then
-  FORGE_LOGIN="$(forge_login "$API" "$FORGE_TF")" || { rc=$?; [ "$rc" = 2 ] && exit 2; exit 1; }
+  FORGE_LOGIN="$(forge_login "" "$FORGE_TF")" || { rc=$?; [ "$rc" = 2 ] && exit 2; exit 1; }
   forge_is_service "$FORGE_LOGIN" "$GITEA_SERVICE_LOGINS" && FORGE_LOGIN="(service)"
 fi
 if [ "$FOUREYES" = 1 ] && [ "$FORGE_LOGIN" = "(service)" ]; then
@@ -403,7 +427,7 @@ PUSH_URL="${GIT_BASE_URL}/${GIT_REPO}.git"
 GIT_ASKPASS="$(forge_askpass "$TOKENS_DIR" "$PUSH_LOGIN" "$PUSH_TF")" || { echo "ERREUR: askpass" >&2; exit 1; }
 export GIT_ASKPASS GIT_TERMINAL_PROMPT=0
 
-echo "[1/4] clone ${GIT_REPO} (base ${GIT_BASE})"
+echo "[1/5] clone ${GIT_REPO} (base ${GIT_BASE})"
 CLONE_URL="${GIT_BASE_URL}/${GIT_REPO}.git"
 # A6 : les deux URL git sont surchargeables (épreuves hors ligne sur un dépôt nu en file://) — défauts = inchangés.
 CLONE_URL="${GIT_CLONE_URL:-$CLONE_URL}"; PUSH_URL="${GIT_PUSH_URL:-$PUSH_URL}"
@@ -497,9 +521,9 @@ fi
 git checkout -q -B "$BRANCH"
 
 if [ "$MAN_EXISTS" = 1 ]; then
-  echo "[2/4] fusion de per_env.${REQ_ENV} dans ${REL_PATH} (mode ${MODE})"
+  echo "[2/5] fusion de per_env.${REQ_ENV} dans ${REL_PATH} (mode ${MODE})"
 else
-  echo "[2/4] rendu du manifeste ${REL_PATH} (mode ${MODE}, première demande)"
+  echo "[2/5] rendu du manifeste ${REL_PATH} (mode ${MODE}, première demande)"
 fi
 mkdir -p "$(dirname "$REL_PATH")"
 
@@ -692,73 +716,17 @@ if git fetch -q --depth 1 "$CLONE_URL" "refs/heads/${BRANCH}" 2>/dev/null; then 
 # Une PR ouverte n'appartient qu'à son auteur : la réutiliser (EXIST) sous une
 # autre identité ferait signer par un tiers un contenu poussé par un autre (le
 # force-push réécrirait la branche sous le nom d'autrui). La forge est relue
-# avec le token de SERVICE (par fichier), paginée, head.ref exact, même dépôt ;
-# illisible ⇒ fail-closed (une PR ouverte pourrait exister). Ordre : d'abord
-# REPLI_EN_COURS (A6 — désormais quel que soit l'auteur : A7 rend les PR de
-# repli humaines), puis PR_D_AUTRUI.
-OPEN_BY=$(API="$API" GIT_REPO="$GIT_REPO" CI_TOKEN_FILE="$CI_TF" BRANCH="$BRANCH" python3 - <<'PY2'
-import os, json, sys, urllib.request, urllib.error
-api, repo, br = os.environ["API"], os.environ["GIT_REPO"], os.environ["BRANCH"]
-tok = open(os.environ["CI_TOKEN_FILE"]).read().strip()
-# ── LA GARDE DE RÉPONSE DE FORGE (L1, 2026-09-09) ────────────────────────
-# Chez un client sur GitLab, cet appel rendait un 302 vers /users/sign_in que
-# urllib SUIVAIT : json.load mourait sur une page HTML avec une trace Python
-# de quinze lignes et un refus qui ne disait ni le statut, ni l'URL, ni le
-# corps. Ici : aucune redirection suivie, statut/type/taille/URL/début du
-# corps dans la CAUSE, corps EXPURGÉ du secret par littéral, et un objet là
-# où une liste est attendue est un REFUS — plus jamais « aucune PR » puis un
-# push en force. (L5 centralisera ceci dans scripts/lib/forge-api.sh.)
-class ForgeError(Exception): pass
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl): return None
-_opener = urllib.request.build_opener(_NoRedirect)
-def _mask(s, secrets):
-    for t in secrets:
-        if t: s = s.replace(t, "<secret masqué>")
-    return s
-def _debut(b, secrets): return _mask(b[:120].decode("utf-8", "replace"), secrets)
-def forge_json(r, want, secrets):
-    """Rend le JSON de la réponse, de la forme `want` (list/dict/None) — ou lève ForgeError avec une cause auto-diagnostique."""
-    u = _mask(r.full_url, secrets)
-    try:
-        with _opener.open(r, timeout=30) as resp:
-            body = resp.read(); st = resp.getcode(); ct = resp.headers.get("Content-Type") or "(type absent)"
-    except urllib.error.HTTPError as e:
-        body = e.read() or b""; ct = e.headers.get("Content-Type") or "(type absent)"
-        diag = "HTTP %d %s, %d octet(s) sur %s, début : %r" % (e.code, ct, len(body), u, _debut(body, secrets))
-        if 300 <= e.code < 400:
-            loc = _mask(e.headers.get("Location") or "(sans Location)", secrets)
-            raise ForgeError("la forge REDIRIGE vers %s — GIT_HOST doit être l'URL finale de la forge, et une forge qui répond ainsi à /api/v1 n'est probablement pas Gitea (GitLab renvoie vers /users/sign_in) ; %s" % (loc, diag))
-        raise ForgeError(diag)
-    except Exception as e:
-        raise ForgeError("forge injoignable sur %s (%s : %s)" % (u, type(e).__name__, _mask(str(e), secrets)))
-    diag = "HTTP %d %s, %d octet(s) sur %s, début : %r" % (st, ct, len(body), u, _debut(body, secrets))
-    if not body: raise ForgeError("corps VIDE — " + diag)
-    try: d = json.loads(body)
-    except Exception: raise ForgeError("réponse NON JSON (page HTML d'un proxy ou d'un portail SSO ?) — " + diag)
-    if want is list and not isinstance(d, list):
-        raise ForgeError("un OBJET %s a été rendu là où une LISTE était attendue (une forge ou un proxy qui normalise ses erreurs en 200 ?) — %s" % (type(d).__name__, diag))
-    if want is dict and not isinstance(d, dict):
-        raise ForgeError("une réponse %s a été rendue là où un OBJET était attendu — %s" % (type(d).__name__, diag))
-    return d
-page = 1
-try:
-    while True:
-        r = urllib.request.Request(f"{api}/repos/{repo}/pulls?state=open&limit=50&page={page}", headers={"Authorization": "token " + tok})
-        prs = forge_json(r, list, (tok,))
-        if not prs: break
-        for pr in prs:
-            if not isinstance(pr, dict): continue
-            h = pr.get("head") or {}
-            if h.get("ref") == br and (h.get("repo") or {}).get("full_name") == repo:
-                print("%s %s" % (pr.get("number"), (pr.get("user") or {}).get("login", ""))); raise SystemExit
-        page += 1
-except ForgeError as e:
-    sys.stderr.write("forge : %s\n" % e); sys.exit(1)
-print("")
-PY2
-) || fail "FORGE_ILLISIBLE : la forge n'a pas pu être relue (cause ci-dessus) — une PR ouverte pourrait exister sur ${BRANCH}, rien n'est poussé"
-OPEN_NUM="${OPEN_BY%% *}"; OPEN_LOGIN="${OPEN_BY#* }"
+# avec le token de SERVICE (par fichier, jamais argv) par `forge pr_find_open` :
+# paginé, head.ref exact, même dépôt, aucune redirection suivie — et illisible
+# (statut hors contrat, corps vide, HTML, objet là où une liste est attendue)
+# ⇒ fail-closed, la CAUSE auto-diagnostique est déjà sur stderr (L5 : elle
+# nomme statut, type, taille, URL et début du corps expurgé du secret). Ordre :
+# d'abord REPLI_EN_COURS (A6 — désormais quel que soit l'auteur : A7 rend les PR
+# de repli humaines), puis PR_D_AUTRUI.
+OPEN_NUMBER=""; OPEN_LOGIN=""; OPEN_URL=""
+FORGE_SECRET_FILE="$CI_TF" forge_kv OPEN pr_find_open "$BRANCH" \
+  || fail "FORGE_ILLISIBLE : la forge n'a pas pu être relue (cause ci-dessus) — une PR ouverte pourrait exister sur ${BRANCH}, rien n'est poussé"
+OPEN_NUM="$OPEN_NUMBER"
 if [ -n "$REMOTE_TIP" ] && git log -1 --format=%B "$REMOTE_TIP" 2>/dev/null | grep -q '^Repli-Vers: '; then
   # Le trailer EST la preuve ; la forge ne fait que nommer la PR (A6 D1bis).
   [ -z "$OPEN_NUM" ] || fail "REPLI_EN_COURS : la PR #${OPEN_NUM} (${OPEN_LOGIN:-auteur inconnu}) est un repli ouvert sur ${BRANCH} — la merger ou la fermer avant une nouvelle demande"
@@ -779,16 +747,16 @@ if git diff --cached --quiet; then
   # présent sur la base). Il n'y a ni commit ni PR à ouvrir — et surtout pas de
   # POST /pulls sur une branche de tête qui n'existe plus (404 mesuré à la
   # critique : « supprimer la branche après merge » est un réglage courant).
-  echo "[3/4] aucun changement : ${REQ_APP}/${REQ_ENV} est déjà sur ${GIT_BASE} (per_env.${REQ_ENV} présent) — aucune PR à ouvrir"
+  echo "[3/5] aucun changement : ${REQ_APP}/${REQ_ENV} est déjà sur ${GIT_BASE} (per_env.${REQ_ENV} présent) — aucune PR à ouvrir"
   echo "OK: demande ${REQ_APP}/${REQ_ENV} déjà mergée sur ${GIT_BASE}"
   exit 0
 elif [ "$REMOTE_UP_TO_DATE" = 1 ]; then
-  echo "[3/4] aucun changement à committer (branche ${BRANCH} déjà à jour — demande rejouée)"
+  echo "[3/5] aucun changement à committer (branche ${BRANCH} déjà à jour — demande rejouée)"
 else
   # A7 : le trailer Demande-Par nomme le pousseur (informatif — l'autorité est
   # l'auteur de la PR relu sur la forge par la porte A4).
   git commit -q -m "provision(${REQ_ENV}): application ${REQ_APP} (demande ${REQ_CALLER})" -m "Demande-Par: ${PUSH_LOGIN}"
-  echo "[3/4] push ${BRANCH}"
+  echo "[3/5] push ${BRANCH}"
   # Branche machine-owned (provision/*) : push explicite forcé, sûr ici (le flux
   # est le seul écrivain). 2>err pour ne jamais laisser un token fuiter au log —
   # l'erreur est filtrée des DEUX tokens (celui qui a poussé, celui du service).
@@ -799,78 +767,20 @@ else
 fi
 
 echo "[4/5] ouverture de la Pull Request ${BRANCH} → ${GIT_BASE}"
-# Interaction PR en PYTHON3 (portable — le conteneur Jenkins n'a pas jq) : liste
-# idempotente (filtre côté client sur head.ref), création sinon. Le token n'est
-# PAS en argv (passé par env FORGE_SECRET) ; aucun secret imprimé.
-PR_OUT=$(REQ_APP="$REQ_APP" REQ_ENV="$REQ_ENV" REQ_API="$REQ_API" REQ_API_VER="$REQ_API_VER" \
-  REQ_CLIENT_ID="$REQ_CLIENT_ID" REQ_CALLER="$REQ_CALLER" MODE="$MODE" BRANCH="$BRANCH" GIT_BASE="$GIT_BASE" \
-  API="$API" GIT_REPO="$GIT_REPO" CI_TOKEN_FILE="$CI_TF" PR_TOKEN_FILE="$PUSH_TF" PUSH_LOGIN="$PUSH_LOGIN" \
+# Le TITRE et le CORPS de la PR se composent en python3 (portable — le conteneur
+# Jenkins n'a pas jq ; du texte à f-strings, sans quoting shell) : c'est du
+# TEXTE, aucun réseau ici — le corps va dans un fichier, le titre sur stdout.
+# La forge, elle, se parle par forge-api.sh (L5) : `forge pr_open`, plus bas.
+PR_BODY_FILE="$WORK/pr-body.txt"
+PR_TITLE=$(REQ_APP="$REQ_APP" REQ_ENV="$REQ_ENV" REQ_API="$REQ_API" REQ_API_VER="$REQ_API_VER" \
+  REQ_CLIENT_ID="$REQ_CLIENT_ID" REQ_CALLER="$REQ_CALLER" MODE="$MODE" PUSH_LOGIN="$PUSH_LOGIN" \
   REQ_CHANGE_REF="$REQ_CHANGE_REF" REQ_PV_REF="$REQ_PV_REF" \
   REQ_TEAM="$REQ_TEAM" TEAM_INHERITED="$TEAM_INHERITED" REQ_IP_ALLOWLIST="$IP_JOINED" REQ_CERT_ROTATION="${REQ_CERT_ROTATION:-}" \
   REQ_CERT_PRESENT="$([ -n "$REQ_CERT_PEM" ] && echo 1 || echo 0)" CERT_REL="$CERT_REL" \
   REQ_BACKEND_KEY_REF="$REQ_BACKEND_KEY_REF" MAN_EXISTS="$MAN_EXISTS" MAN_ENVS="$MAN_ENVS" \
+  PR_BODY_FILE="$PR_BODY_FILE" \
   python3 - <<'PY'
-import os, json, urllib.request, urllib.error, sys
-api, repo = os.environ["API"], os.environ["GIT_REPO"]
-# A7 : les lectures sous le token de SERVICE, le POST /pulls sous celui du
-# POUSSEUR (l'humain quand il y en a un) — l'auteur de la PR est son identité.
-ci_tok = open(os.environ["CI_TOKEN_FILE"]).read().strip()
-pr_tok = open(os.environ["PR_TOKEN_FILE"]).read().strip()
-branch, base = os.environ["BRANCH"], os.environ["GIT_BASE"]
-# ── LA GARDE DE RÉPONSE DE FORGE (L1, 2026-09-09) ────────────────────────
-# Chez un client sur GitLab, cet appel rendait un 302 vers /users/sign_in que
-# urllib SUIVAIT : json.load mourait sur une page HTML avec une trace Python
-# de quinze lignes et un refus qui ne disait ni le statut, ni l'URL, ni le
-# corps. Ici : aucune redirection suivie, statut/type/taille/URL/début du
-# corps dans la CAUSE, corps EXPURGÉ du secret par littéral, et un objet là
-# où une liste est attendue est un REFUS — plus jamais « aucune PR » puis un
-# push en force. (L5 centralisera ceci dans scripts/lib/forge-api.sh.)
-class ForgeError(Exception): pass
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl): return None
-_opener = urllib.request.build_opener(_NoRedirect)
-def _mask(s, secrets):
-    for t in secrets:
-        if t: s = s.replace(t, "<secret masqué>")
-    return s
-def _debut(b, secrets): return _mask(b[:120].decode("utf-8", "replace"), secrets)
-def forge_json(r, want, secrets):
-    """Rend le JSON de la réponse, de la forme `want` (list/dict/None) — ou lève ForgeError avec une cause auto-diagnostique."""
-    u = _mask(r.full_url, secrets)
-    try:
-        with _opener.open(r, timeout=30) as resp:
-            body = resp.read(); st = resp.getcode(); ct = resp.headers.get("Content-Type") or "(type absent)"
-    except urllib.error.HTTPError as e:
-        body = e.read() or b""; ct = e.headers.get("Content-Type") or "(type absent)"
-        diag = "HTTP %d %s, %d octet(s) sur %s, début : %r" % (e.code, ct, len(body), u, _debut(body, secrets))
-        if 300 <= e.code < 400:
-            loc = _mask(e.headers.get("Location") or "(sans Location)", secrets)
-            raise ForgeError("la forge REDIRIGE vers %s — GIT_HOST doit être l'URL finale de la forge, et une forge qui répond ainsi à /api/v1 n'est probablement pas Gitea (GitLab renvoie vers /users/sign_in) ; %s" % (loc, diag))
-        raise ForgeError(diag)
-    except Exception as e:
-        raise ForgeError("forge injoignable sur %s (%s : %s)" % (u, type(e).__name__, _mask(str(e), secrets)))
-    diag = "HTTP %d %s, %d octet(s) sur %s, début : %r" % (st, ct, len(body), u, _debut(body, secrets))
-    if not body: raise ForgeError("corps VIDE — " + diag)
-    try: d = json.loads(body)
-    except Exception: raise ForgeError("réponse NON JSON (page HTML d'un proxy ou d'un portail SSO ?) — " + diag)
-    if want is list and not isinstance(d, list):
-        raise ForgeError("un OBJET %s a été rendu là où une LISTE était attendue (une forge ou un proxy qui normalise ses erreurs en 200 ?) — %s" % (type(d).__name__, diag))
-    if want is dict and not isinstance(d, dict):
-        raise ForgeError("une réponse %s a été rendue là où un OBJET était attendu — %s" % (type(d).__name__, diag))
-    return d
-SECRETS = (ci_tok, pr_tok)
-def req(method, url, data=None, tok=ci_tok, want=dict):
-    body = json.dumps(data).encode() if data is not None else None
-    r = urllib.request.Request(url, data=body, method=method,
-        headers={"Authorization": "token "+tok, "Content-Type": "application/json"})
-    return forge_json(r, want, SECRETS)
-# idempotence : PR ouverte existante pour CETTE branche ?
-try:
-    for pr in req("GET", f"{api}/repos/{repo}/pulls?state=open&limit=50", want=list):
-        if isinstance(pr, dict) and (pr.get("head") or {}).get("ref") == branch:
-            print("EXIST", pr["number"]); sys.exit(0)
-except ForgeError as e:
-    print("ERR", e); sys.exit(1)
+import os, sys
 mode = os.environ.get("MODE", "idp")
 title = f"provision({os.environ['REQ_ENV']}): {os.environ['REQ_APP']}"
 ident = (f"- claim azp : {os.environ['REQ_CLIENT_ID']}" if mode == "idp"
@@ -941,21 +851,40 @@ bodytxt = ("Demande de provisioning application.\n\n"
     f"{ident}\n- demandeur (azp) : {os.environ['REQ_CALLER']}{extra_txt}{enforce_warning}\n\n"
     "Plan self-service a lancer sur cette MR. Validation humaine requise (4-yeux) - "
     "un webhook ne porte aucun humain (ADR-078).")
-try:
-    pr = req("POST", f"{api}/repos/{repo}/pulls",
-             {"title": title, "head": branch, "base": base, "body": bodytxt}, tok=pr_tok)
-    print("CREATED", pr["number"])
-except ForgeError as e:
-    print("ERR", e); sys.exit(1)
+with open(os.environ["PR_BODY_FILE"], "w", encoding="utf-8") as f:
+    f.write(bodytxt)
+print(title)
 PY
-) || { echo "ERREUR: création PR échouée: ${PR_OUT}" >&2; exit 1; }
-PR_NUM=$(printf '%s' "$PR_OUT" | awk '{print $2}')
-case "$PR_OUT" in
-  EXIST*)   echo "  PR déjà ouverte: #${PR_NUM}";;
-  CREATED*) echo "  PR créée: #${PR_NUM}";;
-  *)        echo "ERREUR: réponse inattendue: ${PR_OUT}" >&2; exit 1;;
-esac
-PR_URL="${GIT_WEB_HOST}/${GIT_REPO}/pulls/${PR_NUM}"
+) || { echo "ERREUR: composition du titre/corps de la PR échouée" >&2; exit 1; }
+[ -n "$PR_TITLE" ] && [ -s "$PR_BODY_FILE" ] || { echo "ERREUR: titre ou corps de PR vide — rien n'est ouvert" >&2; exit 1; }
+# A7 : les lectures sous le token de SERVICE (pr_find_open, plus haut), le POST
+# /pulls sous celui du POUSSEUR (l'humain quand il y en a un) — l'auteur de la
+# PR est son identité. Par FICHIER (FORGE_SECRET_FILE), jamais en argv.
+PR_TOKEN_FILE="$PUSH_TF"
+if [ -n "$OPEN_NUM" ]; then
+  # Idempotence : la PR ouverte de CETTE branche, relue avant le push (même
+  # dépôt ; PR_D_AUTRUI a déjà tranché qu'elle est la nôtre), est réutilisée
+  # telle quelle — aucun POST.
+  PR_NUM="$OPEN_NUM"; PR_URL_FORGE="$OPEN_URL"
+  echo "  PR déjà ouverte: #${PR_NUM}"
+else
+  NEW_NUMBER=""; NEW_URL=""
+  FORGE_SECRET_FILE="$PR_TOKEN_FILE" forge_kv NEW pr_open "$BRANCH" "$GIT_BASE" "$PR_TITLE" "$PR_BODY_FILE" \
+    || { echo "ERREUR: création PR échouée (cause ci-dessus)" >&2; exit 1; }
+  PR_NUM="$NEW_NUMBER"; PR_URL_FORGE="$NEW_URL"
+  echo "  PR créée: #${PR_NUM}"
+fi
+# L'URL HUMAINE est celle que la forge REND (html_url Gitea, web_url GitLab :
+# « /pulls/N » chez l'une, « /-/merge_requests/N » chez l'autre — plus jamais
+# composée ici), vue de GIT_HOST. En split-horizon (l'agent voit la forge par
+# une adresse, le demandeur par une autre), GIT_WEB_HOST remplace GIT_HOST en
+# tête ; le motif est cité pour être pris à la lettre, jamais comme un glob.
+PR_URL="$PR_URL_FORGE"
+if [ "${GIT_HOST%/}" != "${GIT_WEB_HOST%/}" ]; then
+  _h="${GIT_HOST%/}"; _w="${GIT_WEB_HOST%/}"
+  PR_URL="${PR_URL_FORGE/#"$_h"/"$_w"}"
+fi
+[ -n "$PR_URL" ] || echo "  (la forge n'a rendu aucune URL humaine pour la PR #${PR_NUM})" >&2
 echo "PR_URL=${PR_URL}"
 
 # ── PLAN ENCHAÎNÉ (ADR-081, corollaire 1) ────────────────────────────────────

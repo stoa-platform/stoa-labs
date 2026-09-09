@@ -13,8 +13,16 @@
 // branche, localisation du manifeste, plan Ansible en lecture seule,
 // commentaire). Aucune logique métier n'a migré ici, aucune ne doit y migrer.
 //
-//   PR provision/<app>-<env> ouverte ──webhook Gitea──▶ plan (identité de JOB,
-//   aucune mutation, aucun secret) ──▶ commentaire ✅/❌ sur la PR
+//   PR provision/<app>-<env> ouverte ──webhook de la forge──▶ plan (identité de
+//   JOB, aucune mutation, aucun secret) ──▶ commentaire ✅/❌ sur la PR
+//
+// DEUX VISAGES DE FORGE (2026-09-09, client sur GitLab) : le déclencheur lit
+// les DEUX formes de payload — « pull_request » de Gitea et « Merge Request
+// Hook » de GitLab — et le stage « Contexte du webhook » pose UN SEUL nom par
+// fait (PR_BRANCH, PR_NUMBER…), celui que le pipeline et les scripts
+// consomment. Ni le stage de plan ni scripts/provision-plan.sh ne savent quel
+// visage a parlé ; côté API, scripts/lib/forge-api.sh (FORGE_KIND) est la seule
+// autorité.
 //
 // CE JOB N'APPLIQUE RIEN. L'apply est le job provision-apply (au merge,
 // identité nominative, ADR-081).
@@ -55,22 +63,38 @@ pipeline {
 
   // ⚠ Ce bloc doit rester le MIROIR EXACT de celui de
   // ci/jenkins/provision-plan.job.xml, et c'est le XML qui gagne. Le token est
-  // celui que le hook Gitea `stoa-provision-plan` du dépôt plateforme appelle.
+  // celui que le hook `stoa-provision-plan` du dépôt plateforme appelle (Gitea :
+  // hook « pull_request » ; GitLab : webhook « Merge request events » — même
+  // URL /generic-webhook-trigger/invoke?token=…).
   // Volontairement PAS de bloc `parameters {}` : PR_BRANCH / PR_NUMBER ne
   // viennent QUE du webhook (un build manuel n'a aucune de ces variables →
   // le stage de plan ne s'exécute pas).
+  //
+  // DEUX JEUX de clés, un par visage : une clé dont le chemin JSON est absent
+  // du payload arrive VIDE (plugin generic-webhook-trigger) — un payload Gitea
+  // laisse GL_* vides, un payload GitLab laisse PR_* vides. Le filtre est
+  // composé sur les deux : il accepte l'un OU l'autre, jamais la fermeture.
   triggers {
     GenericTrigger(
       token: 'stoa-provision-plan',
       genericVariables: [
-        [key: 'PR_BRANCH', value: '$.pull_request.head.ref'],
-        [key: 'PR_NUMBER', value: '$.pull_request.number'],
-        [key: 'PR_ACTION', value: '$.action'],
+        // ── visage Gitea (hook « pull_request ») ──
+        [key: 'PR_BRANCH',        value: '$.pull_request.head.ref'],
+        [key: 'PR_NUMBER',        value: '$.pull_request.number'],
+        [key: 'PR_ACTION',        value: '$.action'],
+        // ── visage GitLab (« Merge Request Hook ») ──
+        [key: 'GL_KIND',          value: '$.object_kind'],
+        [key: 'GL_IID',           value: '$.object_attributes.iid'],
+        [key: 'GL_SOURCE_BRANCH', value: '$.object_attributes.source_branch'],
+        [key: 'GL_ACTION',        value: '$.object_attributes.action'],
       ],
       // Ouverture, réouverture, nouveau push sur la branche — jamais la
-      // fermeture (c'est provision-apply qui écoute `closed` + `merged`).
-      regexpFilterText: '$PR_ACTION',
-      regexpFilterExpression: '^(opened|reopened|synchronized)$',
+      // fermeture (c'est provision-apply qui écoute la fusion). Gitea dit
+      // opened|reopened|synchronized ; GitLab dit merge_request:open|reopen|
+      // update. Le plugin joue find() : la moitié Gitea est ancrée en tête
+      // (`^…\|`), la moitié GitLab en queue (`…$`), chacune sur SON segment.
+      regexpFilterText: '$PR_ACTION|$GL_KIND:$GL_ACTION',
+      regexpFilterExpression: '^(opened|reopened|synchronized)\\||merge_request:(open|reopen|update)$',
       printContributedVariables: true,
       printPostContent: false)
   }
@@ -84,11 +108,19 @@ pipeline {
     GIT_SUBDIR           = "${env.GIT_SUBDIR ?: 'poc-control-plane-federation'}"
     GIT_HOST             = "${env.GIT_HOST ?: 'http://gitea:3000'}"
     GIT_REPO             = "${env.GIT_REPO ?: 'ci/stoa-labs'}"
+    // Le VISAGE de la forge (gitea, défaut | gitlab) : lu par la seule autorité
+    // qui parle à son API, scripts/lib/forge-api.sh. FORGE_API_AUTH et
+    // FORGE_API_BASE passent TELS QUELS, repli VIDE — jamais un défaut de site :
+    // absents, la lib dérive l'en-tête d'auth du visage (token / PRIVATE-TOKEN)
+    // et la base d'API de GIT_HOST (/api/v1 ou /api/v4).
+    FORGE_KIND           = "${env.FORGE_KIND ?: 'gitea'}"
+    FORGE_API_AUTH       = "${env.FORGE_API_AUTH ?: ''}"
+    FORGE_API_BASE       = "${env.FORGE_API_BASE ?: ''}"
     // Lien humain-CLIQUABLE dans le commentaire de PR (split-horizon lab :
     // jenkins→gitea:3000, navigateur→localhost:13000). Le Groovy d'origine le
     // codait EN DUR dans la ligne sh ; c'est désormais un point de config.
     GIT_WEB_HOST         = "${env.GIT_WEB_HOST ?: 'http://localhost:13000'}"
-    // Credential Jenkins (secret text) portant le token Gitea du CI
+    // Credential Jenkins (secret text) portant le token de forge du CI
     // (scopes write:issue pour commenter). Même identifiant qu'avant.
     GITEA_CREDENTIALS_ID = "${env.GITEA_CREDENTIALS_ID ?: 'gitea-provision-token'}"
   }
@@ -103,6 +135,19 @@ pipeline {
     stage('Contexte du webhook') {
       steps {
         script {
+          // ── UN SEUL nom par fait, quel que soit le visage ─────────────────
+          // Le payload Gitea remplit PR_*, le payload GitLab remplit GL_* et
+          // laisse PR_* vides. ICI, et nulle part ailleurs, le fait unifié est
+          // posé : PR_BRANCH / PR_NUMBER sont ce que la garde `when` du stage
+          // suivant, le post{always} ET les scripts (provision-plan.sh,
+          // provision-plan-status.sh, lus par le SHELL) consomment — aucun
+          // d'eux ne sait quel visage a parlé. En Groovy et non dans un sh :
+          // la garde `when { beforeAgent }` se joue AVANT tout sh, et une
+          // variable posée dans env est vue de tout sh du build (même
+          // mécanisme que REQ_API dans app-request, GITEA_MERGED_BY ici).
+          env.PR_BRANCH = env.PR_BRANCH ?: (env.GL_SOURCE_BRANCH ?: '')
+          env.PR_NUMBER = env.PR_NUMBER ?: (env.GL_IID ?: '')
+          env.PR_ACTION = env.PR_ACTION ?: (env.GL_KIND ? "${env.GL_KIND}:${env.GL_ACTION ?: ''}" : '')
           def ref = env.PR_BRANCH ?: ''
           if (ref.startsWith('provision/')) {
             def rest = ref.substring('provision/'.length())

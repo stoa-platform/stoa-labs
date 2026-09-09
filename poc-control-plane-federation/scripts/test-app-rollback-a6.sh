@@ -280,8 +280,8 @@ SHA_Q=$(pr_merge 13 rec "$(printf '%s' "$LINE_B" | sed "s/\"appa-rec\"/'appa-rec
 set_ctl "$(ctl_json)"; git -C "$ORIGIN" update-ref -d refs/heads/provision/appa-rec 2>/dev/null || true
 run_rb "$TMP/b9.out"; b_refus B.9 "N == N-1 au digest près (quoting)" ETAT_IDENTIQUE "$TMP/b9.out"
 gw reset -q --hard "$SAVE_MAIN"; gw push -q -f origin main; CLOSED="$CL_SAVE"
-open_pr(){ # <login> <repo> [head sha] → json d'une PR ouverte sur la branche
-  printf '[{"number":77,"state":"open","merged":false,"head":{"ref":"provision/appa-rec","sha":"%s","repo":{"full_name":"%s"}},"base":{"ref":"main"},"user":{"login":"%s"},"body":"<!-- app-rollback: de %s vers %s -->"}]' "${3:-deadbeef}" "$2" "$1" "$SHA_D" "$SHA_B"
+open_pr(){ # <login> <repo> [head sha] → json d'une PR ouverte sur la branche (html_url : Gitea la rend toujours ; le script ne compose plus /pulls/N)
+  printf '[{"number":77,"state":"open","merged":false,"html_url":"http://stub/pulls/77","head":{"ref":"provision/appa-rec","sha":"%s","repo":{"full_name":"%s"}},"base":{"ref":"main"},"user":{"login":"%s"},"body":"<!-- app-rollback: de %s vers %s -->"}]' "${3:-deadbeef}" "$2" "$1" "$SHA_D" "$SHA_B"
 }
 # PR_EN_COURS : PR ouverte par alice (marqueur collé) ; par ci mais contenu différent ; EXIST : ci + contenu identique
 set_ctl "$(ctl_json "$(open_pr alice ci/stoa-labs)")"; reset_origin; run_rb "$TMP/b10.out"; b_refus B.10 "PR ouverte par alice, marqueur collé" PR_EN_COURS "$TMP/b10.out"
@@ -376,8 +376,10 @@ mutate(){ # <nom> <python transformant stdin→stdout> → chemin du mutant
   cmp -s "$m" "$SCRIPT" && { ko "C.$1 mutant identique à l'original (mutation sans effet)"; return 1; }; printf '%s' "$m"
 }
 run_mut(){ SCRIPT="$1" run_rb "$2" "${@:3}"; }   # NB bash 3.2 : "${@:3}" est valide en bash (pas en sh)
-# M1 : filtre head.ref par PRÉFIXE ⇒ dev#14 devient N ⇒ N-1 = rec#13 = main ⇒ ETAT_IDENTIQUE ⇒ A rougit
-M1=$(mutate M1 'import sys; s=sys.stdin.read(); assert "head_ref != BRANCH" in s; print(s.replace("head_ref != BRANCH", "not head_ref.startswith(BRANCH.rsplit(\"-\",1)[0] + \"-\")"), end="")') && {
+# M1 : lignée par PRÉFIXE (la tête n'est plus exacte : toutes les provision/appa-* comptent —
+# depuis le routage sur forge-api, la tête est l'argument de `forge pr_list_merged`, le
+# mutant en interroge deux) ⇒ dev#14 devient N ⇒ N-1 = rec#13 = main ⇒ ETAT_IDENTIQUE ⇒ A rougit
+M1=$(mutate M1 'import sys; s=sys.stdin.read(); assert "forge pr_list_merged \"$BRANCH\" >" in s; print(s.replace("forge pr_list_merged \"$BRANCH\" >", "{ for _b in provision/appa-rec provision/appa-dev; do forge pr_list_merged \"$_b\"; done; } >"), end="")') && {
   set_ctl "$(ctl_json)"; reset_origin; run_mut "$M1" "$TMP/m1.out"
   [ "$(rrc)" != 0 ] && grep -q 'ETAT_IDENTIQUE\|RESTAURATION_INFIDELE' "$TMP/m1.out" && ok "C.M1 clé de lignée par préfixe ⇒ le nominal rougit (dev#14 pris pour N)" || ko "C.M1 le mutant passe : rc $(rrc)"; }
 # M2 : la porte (#3) déplacée APRÈS la lignée ⇒ A'.1 journalise un GET avant GATE_REFS_REQUIRED

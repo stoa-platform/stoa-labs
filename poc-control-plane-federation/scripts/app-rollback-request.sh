@@ -17,13 +17,21 @@
 # les PR, Git = la vérité sur main, bornée à la vie courante du manifeste) →
 # cohérence → ligne candidate en mémoire (N-1 ⊕ change_ref) → ETAT_IDENTIQUE →
 # restauration → auto-vérification → PR en cours / EXIST strict → tête
-# distante en bail → commit (trailers) + push --force-with-lease + POST /pulls
-# + plan enchaîné.
+# distante en bail → commit (trailers) + push --force-with-lease + ouverture
+# de la PR (forge pr_open) + plan enchaîné.
+#
+# LA FORGE N'EST PLUS GITEA EN DUR (2026-09-09, client sur GitLab) : tout appel
+# passe par scripts/lib/forge-api.sh (verbes pr_list_merged, pr_find_open,
+# pr_open ; whoami via forge-identity.sh) — visage FORGE_KIND=gitea|gitlab,
+# base d'API, en-tête d'auth et garde de réponse vivent LÀ, avec une cause
+# auto-diagnostique sur stderr ; ici l'appelant NOMME le refus (FORGE_ILLISIBLE,
+# PR_ECHEC…), les tags ne bougent pas. Le python qui reste ne compose que du
+# TEXTE (ligne candidate, corps de PR) : plus jamais de réseau.
 #
 # Entrées (env) : REQ_APP REQ_ENV REQ_REASON (requis), REQ_CHANGE_REF,
-#   REQ_CALLER (défaut unknown), FORGE_SECRET (requis), GIT_HOST GIT_REPO
+#   REQ_CALLER (défaut unknown), FORGE_SECRET (requis), GIT_HOST (requis) GIT_REPO
 #   GIT_BASE GIT_SUBDIR GIT_CLONE_URL GITEA_SERVICE_LOGINS STOA_ENV_CHAIN_FILE
-#   PROVISION_PLAN_INLINE ROLLBACK_OUT.
+#   PROVISION_PLAN_INLINE ROLLBACK_OUT ; FORGE_KIND FORGE_API_AUTH (cf. forge-api.py).
 # Sorties : ETAPE …, LIGNEE : …, REPLI_DU_REPLI : … (le cas échéant),
 #   PR_URL=…, REPLI_DE=… REPLI_VERS=… REPLI_DIGEST=… ; ROLLBACK_OUT (KEY=VALUE).
 # rc 0 (PR créée, ou EXIST), 2 refus nommé `REFUS: <TAG> : <phrase>`, 1 erreur.
@@ -38,6 +46,8 @@ SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SELF_DIR/lib/app-manifest.sh" || { echo "ERREUR: $SELF_DIR/lib/app-manifest.sh introuvable" >&2; exit 1; }
 # shellcheck source=scripts/lib/forge-identity.sh
 . "$SELF_DIR/lib/forge-identity.sh" || { echo "ERREUR: $SELF_DIR/lib/forge-identity.sh introuvable" >&2; exit 1; }
+# shellcheck source=scripts/lib/forge-api.sh
+. "$SELF_DIR/lib/forge-api.sh" || { echo "ERREUR: $SELF_DIR/lib/forge-api.sh introuvable" >&2; exit 1; }
 
 # Même règle que provision-request.sh : un champ obligatoire vide se NOMME
 # (CHAMP_REQUIS + le champ du formulaire), jamais un `${VAR:?}` de bash.
@@ -60,13 +70,15 @@ GIT_BASE="${GIT_BASE:-main}"
 # shellcheck source=scripts/lib/repo-layout.sh
 . "$(dirname "$0")/lib/repo-layout.sh" || { echo "ERREUR: lib/repo-layout.sh introuvable" >&2; exit 1; }
 repo_layout_init || exit 2
+# Le visage et la base d'API sont posés UNE fois (GIT_HOST, GIT_REPO, FORGE_KIND
+# défaut gitea) — aucun appel réseau ici : les refus de forme restent muets.
+forge_api_init || exit 2
 # schéma conservé (cf. provision-request.sh) : « http:// » forcé cassait toute forge TLS
 case "$GIT_HOST" in http://*|https://*|file://*) GIT_BASE_URL="${GIT_HOST%/}";; *) GIT_BASE_URL="http://${GIT_HOST%/}";; esac
 GIT_CLONE_URL="${GIT_CLONE_URL:-${GIT_BASE_URL}/${GIT_REPO}.git}"
 GITEA_SERVICE_LOGINS="${GITEA_SERVICE_LOGINS:-ci}"
 PROVISION_PLAN_INLINE="${PROVISION_PLAN_INLINE:-true}"
 ROLLBACK_OUT="${ROLLBACK_OUT:-}"
-API="${GIT_HOST}/api/v1"
 MAN_PATH="${SUB_PFX}clients/provisioned/applications/${REQ_APP}.ansible.yml"
 CERT_PATH="${SUB_PFX}clients/provisioned/certs/${REQ_APP}-${REQ_ENV}.crt"
 BRANCH="provision/${REQ_APP}-${REQ_ENV}"
@@ -89,34 +101,6 @@ FORGE_LOGIN="(service)"; PUSH_LOGIN=ci; PUSH_TF="$CI_TF"
 etape(){ echo "ETAPE $*"; }
 refus(){ echo "REFUS: $1 : $2" >&2; exit 2; }
 shown(){ printf '%q' "$(printf '%s' "${1:-}" | head -c 80)"; }
-# Un appel de forge : token PAR ENV, jamais en argv ; rc ≠ 0 = illisible.
-forge(){ # <script python> — les variables d'entrée sont dans l'environnement
-  F_API="$API" F_REPO="$GIT_REPO" F_TOKEN="$FORGE_SECRET" F_BRANCH="$BRANCH" F_BASE="$GIT_BASE" F_PR_TOKEN_FILE="${PUSH_TF:-$CI_TF}" F_PUSH_LOGIN="${PUSH_LOGIN:-ci}" python3 -c "$1"
-}
-PY_FORGE_COMMON='
-import json, os, sys, urllib.request, urllib.error
-api, repo, tok, BRANCH, base = os.environ["F_API"], os.environ["F_REPO"], os.environ["F_TOKEN"], os.environ["F_BRANCH"], os.environ["F_BASE"]
-def refuse(tag, msg): print("REFUS %s %s" % (tag, msg)); sys.exit(0)
-def get(url):
-    try:
-        with urllib.request.urlopen(urllib.request.Request(url, headers={"Authorization": "token " + tok}), timeout=30) as r: return json.load(r)
-    except urllib.error.HTTPError as e: refuse("FORGE_ILLISIBLE", "forge HTTP %d sur %s" % (e.code, url.split("?")[0]))
-    except Exception as e: refuse("FORGE_ILLISIBLE", "forge injoignable ou illisible (%s)" % type(e).__name__)
-def pulls(state):
-    page = 1
-    while True:
-        l = get("%s/repos/%s/pulls?state=%s&limit=50&page=%d" % (api, repo, state, page))
-        if not isinstance(l, list): refuse("FORGE_ILLISIBLE", "la liste des PR (%s) n est pas une liste" % state)
-        if not l: return
-        for pr in l:
-            if not isinstance(pr, dict): refuse("FORGE_ILLISIBLE", "entree de PR non-objet")
-            yield pr
-        page += 1
-def clean(v):
-    v = "" if v is None else str(v)
-    if "\n" in v or "\r" in v: refuse("FORGE_ILLISIBLE", "valeur de la forge avec retour-ligne")
-    return v
-'
 
 # ── 1. FORME, avant tout réseau ──────────────────────────────────────────────
 etape forme
@@ -154,12 +138,15 @@ esac
 # ── 3bis. L'IDENTITÉ DE FORGE (A7) — après la porte, AVANT tout clone et toute forge ──
 # Sans token humain, il n'y a pas d'humain (le job n'a qu'un token de service) :
 # sous fourEyes, la PR de repli serait refusée REQUESTER_UNKNOWN à l'apply — refus
-# ici, au plus tôt, aucune PR ouverte. Avec un token : GET /user (read:user).
+# ici, au plus tôt, aucune PR ouverte. Avec un token : le login est demandé à la
+# forge (forge-identity.sh, `forge whoami` : scope read:user).
 FOUREYES="$(env_chain_gate_four_eyes "$REQ_ENV")" || refus CHAINE_INVALIDE "fourEyes de '$REQ_ENV' illisible"
 FOUREYES="${FOUREYES#FOUREYES=}"
 if [ -n "$FORGE_TF" ]; then
   etape identite
-  FORGE_LOGIN="$(forge_login "$API" "$FORGE_TF")" || { rc=$?; [ "$rc" = 2 ] && exit 2; exit 1; }
+  # La base d'API n'est plus composée ici : forge_login la tient de forge_api_init
+  # (GIT_HOST, FORGE_KIND) — le premier argument, historique, reste vide.
+  FORGE_LOGIN="$(forge_login "" "$FORGE_TF")" || { rc=$?; [ "$rc" = 2 ] && exit 2; exit 1; }
   forge_is_service "$FORGE_LOGIN" "$GITEA_SERVICE_LOGINS" && FORGE_LOGIN="(service)"
 fi
 [ "$FOUREYES" != 1 ] || [ "$FORGE_LOGIN" != "(service)" ] \
@@ -193,26 +180,39 @@ BIRTH=$(g log --first-parent --diff-filter=A --format=%H -1 -- "$MAN_PATH")
 # ── 6. LIGNÉE : forge (PR mergées de la branche) ordonnée par Git, bornée à BIRTH ──
 etape lignee
 g rev-list --first-parent "$GIT_BASE" > "$WORK/firstparent"
-F_FP="$WORK/firstparent" forge "$PY_FORGE_COMMON"'
-fp = [l.strip() for l in open(os.environ["F_FP"]) if l.strip()]
-pos = {sha: i for i, sha in enumerate(fp)}
-seen = set()
-for pr in pulls("closed"):
-    head = pr.get("head") or {}; base_ = pr.get("base") or {}
-    head_ref = clean(head.get("ref"))
-    if not pr.get("merged") or head_ref != BRANCH or clean(base_.get("ref")) != base: continue
-    if clean((head.get("repo") or {}).get("full_name")) != repo:
-        refuse("LIGNEE_AMBIGUE", "la PR #%s mergee sur %s vient d un fork (%s) — une lignee que personne n a voulue, refus" % (pr.get("number"), BRANCH, clean((head.get("repo") or {}).get("full_name"))))
-    sha = clean(pr.get("merge_commit_sha")); n = clean(pr.get("number"))
-    if len(sha) != 40 or any(c not in "0123456789abcdef" for c in sha) or not n.isdigit():
-        refuse("FORGE_ILLISIBLE", "PR #%s : merge_commit_sha ou numero illisible" % n)
-    if sha not in pos:
-        refuse("FORGE_INCOHERENTE", "la PR #%s (mergee, %s) a un merge_commit_sha %s absent de la premiere parente de %s — historique reecrit ou base changee, refus" % (n, BRANCH, sha[:7], base))
-    if sha in seen: continue
-    seen.add(sha); print("CAND %d %s %s" % (pos[sha], sha, n))
-' > "$WORK/lineage" || refus FORGE_ILLISIBLE "lecture des PR en échec"
-REF_LINE=$(grep '^REFUS ' "$WORK/lineage" | head -1)
-[ -z "$REF_LINE" ] || refus "$(printf '%s' "$REF_LINE" | cut -d' ' -f2)" "$(printf '%s' "$REF_LINE" | cut -d' ' -f3-)"
+# `forge pr_list_merged` : une ligne par PR mergée de cette tête, quel que soit
+# le visage — NUMBER= MERGE_SHA= BASE_REF= SAME_REPO= HEAD_REPO= ; rc 2 + cause
+# sur stderr si la forge est en panne, illisible ou hors forme (liste attendue).
+# L'ORDRE de merge se lit dans Git (position du merge_commit_sha sur la première
+# parenté de la base), jamais dans l'ordre que la forge rend.
+forge pr_list_merged "$BRANCH" > "$WORK/merged" 2>"$WORK/merged.err" \
+  || { cat "$WORK/merged.err" >&2; refus FORGE_ILLISIBLE "lecture des PR mergées de ${BRANCH} en échec (cause ci-dessus)"; }
+: > "$WORK/lineage"; : > "$WORK/seen"
+set -f   # les champs sont découpés sur les blancs, jamais développés en chemins
+while IFS= read -r line; do
+  [ -n "$line" ] || continue
+  L_NUMBER=""; L_MERGE_SHA=""; L_BASE_REF=""; L_SAME_REPO=""; L_HEAD_REPO=""
+  for kv in $line; do
+    case "$kv" in
+      NUMBER=*) L_NUMBER="${kv#*=}" ;; MERGE_SHA=*) L_MERGE_SHA="${kv#*=}" ;; BASE_REF=*) L_BASE_REF="${kv#*=}" ;;
+      SAME_REPO=*) L_SAME_REPO="${kv#*=}" ;; HEAD_REPO=*) L_HEAD_REPO="${kv#*=}" ;;
+    esac
+  done
+  # mergée ailleurs que sur la base : pas un état de la base
+  [ "$L_BASE_REF" = "$GIT_BASE" ] || continue
+  [ "$L_SAME_REPO" = 1 ] \
+    || refus LIGNEE_AMBIGUE "la PR #${L_NUMBER} mergée sur ${BRANCH} vient d'un fork (${L_HEAD_REPO}) — une lignée que personne n'a voulue, refus"
+  case "$L_NUMBER" in ''|*[!0-9]*) refus FORGE_ILLISIBLE "PR #$(shown "$L_NUMBER") : numéro illisible" ;; esac
+  case "$L_MERGE_SHA" in ''|*[!0-9a-f]*) refus FORGE_ILLISIBLE "PR #${L_NUMBER} : merge_commit_sha illisible" ;; esac
+  [ "${#L_MERGE_SHA}" = 40 ] || refus FORGE_ILLISIBLE "PR #${L_NUMBER} : merge_commit_sha illisible"
+  POS=$(grep -m1 -nxF "$L_MERGE_SHA" "$WORK/firstparent" | cut -d: -f1)
+  [ -n "$POS" ] \
+    || refus FORGE_INCOHERENTE "la PR #${L_NUMBER} (mergée, ${BRANCH}) a un merge_commit_sha $(printf '%s' "$L_MERGE_SHA" | cut -c1-7) absent de la première parenté de ${GIT_BASE} — historique réécrit ou base changée, refus"
+  grep -qxF "$L_MERGE_SHA" "$WORK/seen" && continue
+  printf '%s\n' "$L_MERGE_SHA" >> "$WORK/seen"
+  printf 'CAND %d %s %s\n' "$((POS - 1))" "$L_MERGE_SHA" "$L_NUMBER" >> "$WORK/lineage"
+done < "$WORK/merged"
+set +f
 # borne : seuls les merges dont BIRTH est ancêtre-ou-égal comptent (la vie courante du manifeste)
 : > "$WORK/lineage.ok"
 while read -r _c pos sha num; do
@@ -331,44 +331,40 @@ CH=$(g diff --cached -U0 -- "$MAN_PATH" | grep -cE '^[-+][^-+]' || true)
 
 # ── 12. PR EN COURS / EXIST strict (auteur de service, même dépôt, contenu identique) ──
 etape pr-en-cours
-forge "$PY_FORGE_COMMON"'
-for pr in pulls("open"):
-    head = pr.get("head") or {}
-    head_ref = clean(head.get("ref"))
-    if head_ref == BRANCH and clean((head.get("repo") or {}).get("full_name")) == repo:
-        print("OPEN %s %s %s %s" % (clean(pr.get("number")), clean((pr.get("user") or {}).get("login")) or "-", clean(head.get("sha")) or "-", clean(pr.get("html_url")) or "-")); sys.exit(0)
-print("NONE")
-' > "$WORK/open" || refus FORGE_ILLISIBLE "lecture des PR ouvertes en échec"
-OPEN_LINE=$(head -1 "$WORK/open")
-case "$OPEN_LINE" in
-  REFUS*) refus "$(printf '%s' "$OPEN_LINE" | cut -d' ' -f2)" "$(printf '%s' "$OPEN_LINE" | cut -d' ' -f3-)" ;;
-  NONE) ;;
-  OPEN*)
-    O_NUM=$(printf '%s' "$OPEN_LINE" | cut -d' ' -f2); O_LOGIN=$(printf '%s' "$OPEN_LINE" | cut -d' ' -f3); O_URL=$(printf '%s' "$OPEN_LINE" | cut -d' ' -f5)
-    # A7 : une PR ouverte n'appartient qu'à son auteur — « la sienne » = même
-    # identité que le pousseur (service ↔ service, humain ↔ ce même humain).
-    MINE=0
-    if [ "$FORGE_LOGIN" = "(service)" ]; then case " $GITEA_SERVICE_LOGINS " in *" $O_LOGIN "*) MINE=1;; esac
-    else [ "$O_LOGIN" = "$FORGE_LOGIN" ] && MINE=1; fi
-    SAME=0
-    if [ "$MINE" = 1 ] && g fetch -q origin "refs/heads/${BRANCH}" 2>/dev/null; then
-      g show "FETCH_HEAD:${MAN_PATH}" > "$WORK/open.yml" 2>/dev/null \
-        && [ "$(app_manifest_digest_env "$WORK/open.yml" "$REQ_ENV" 2>/dev/null)" = "$D_EXPECT" ] && SAME=1
-      if [ "$SAME" = 1 ]; then
-        if [ "$HAS_N1_CERT" = 1 ]; then g show "FETCH_HEAD:${CERT_PATH}" > "$WORK/open.crt" 2>/dev/null && cmp -s "$WORK/open.crt" "$WORK/n1.crt" || SAME=0
-        else g cat-file -e "FETCH_HEAD:${CERT_PATH}" 2>/dev/null && SAME=0; fi
-      fi
-    fi
+# `forge pr_find_open` ne rend que « la nôtre » : même tête, même dépôt (une PR
+# de fork portant ce head.ref est ignorée). NUMBER vide = aucune, rc 0 — ce
+# n'est pas une panne ; rc 2 + cause = la forge est illisible.
+O_NUMBER=""; O_LOGIN=""; O_URL=""
+forge_kv O pr_find_open "$BRANCH" 2>"$WORK/open.err" \
+  || { cat "$WORK/open.err" >&2; refus FORGE_ILLISIBLE "lecture des PR ouvertes de ${BRANCH} en échec (cause ci-dessus)"; }
+if [ -n "$O_NUMBER" ]; then
+  O_NUM="$O_NUMBER"; [ -n "$O_LOGIN" ] || O_LOGIN="-"
+  # A7 : une PR ouverte n'appartient qu'à son auteur — « la sienne » = même
+  # identité que le pousseur (service ↔ service, humain ↔ ce même humain).
+  MINE=0
+  if [ "$FORGE_LOGIN" = "(service)" ]; then case " $GITEA_SERVICE_LOGINS " in *" $O_LOGIN "*) MINE=1;; esac
+  else [ "$O_LOGIN" = "$FORGE_LOGIN" ] && MINE=1; fi
+  SAME=0
+  if [ "$MINE" = 1 ] && g fetch -q origin "refs/heads/${BRANCH}" 2>/dev/null; then
+    g show "FETCH_HEAD:${MAN_PATH}" > "$WORK/open.yml" 2>/dev/null \
+      && [ "$(app_manifest_digest_env "$WORK/open.yml" "$REQ_ENV" 2>/dev/null)" = "$D_EXPECT" ] && SAME=1
     if [ "$SAME" = 1 ]; then
-      [ "$O_URL" != "-" ] || O_URL="${GIT_WEB_HOST}/${GIT_REPO}/pulls/${O_NUM}"
-      echo "EXIST : la PR #${O_NUM} (${O_LOGIN}) porte déjà exactement cette restauration — rien à pousser"
-      echo "PR_URL=${O_URL}"; echo "REPLI_DE=${SHA_N} REPLI_VERS=${SHA_N1} REPLI_DIGEST=${D_EXPECT}"
-      [ -n "$ROLLBACK_OUT" ] && printf 'PR_URL=%s\nPR_NUMBER=%s\nREPLI_DE=%s\nREPLI_VERS=%s\nREPLI_DIGEST=%s\nREPLI_DU_REPLI=%s\n' "$O_URL" "$O_NUM" "$SHA_N" "$SHA_N1" "$D_EXPECT" "0" > "$ROLLBACK_OUT"
-      exit 0
+      if [ "$HAS_N1_CERT" = 1 ]; then g show "FETCH_HEAD:${CERT_PATH}" > "$WORK/open.crt" 2>/dev/null && cmp -s "$WORK/open.crt" "$WORK/n1.crt" || SAME=0
+      else g cat-file -e "FETCH_HEAD:${CERT_PATH}" 2>/dev/null && SAME=0; fi
     fi
-    refus PR_EN_COURS "une PR est ouverte sur ${BRANCH} (#${O_NUM}, par ${O_LOGIN}) : la fermer ou la merger avant de replier — un repli ne réécrit jamais une PR ouverte" ;;
-  *) refus FORGE_ILLISIBLE "réponse inattendue ($(shown "$OPEN_LINE"))" ;;
-esac
+  fi
+  if [ "$SAME" = 1 ]; then
+    # Le lien humain est celui que la forge rend (html_url Gitea, web_url GitLab),
+    # vu de GIT_HOST — réécrit sur GIT_WEB_HOST en split-horizon. Jamais composé
+    # ici : GitLab dit /-/merge_requests/N, Gitea /pulls/N.
+    O_URL="${O_URL/#"$GIT_HOST"/"$GIT_WEB_HOST"}"
+    echo "EXIST : la PR #${O_NUM} (${O_LOGIN}) porte déjà exactement cette restauration — rien à pousser"
+    echo "PR_URL=${O_URL}"; echo "REPLI_DE=${SHA_N} REPLI_VERS=${SHA_N1} REPLI_DIGEST=${D_EXPECT}"
+    [ -n "$ROLLBACK_OUT" ] && printf 'PR_URL=%s\nPR_NUMBER=%s\nREPLI_DE=%s\nREPLI_VERS=%s\nREPLI_DIGEST=%s\nREPLI_DU_REPLI=%s\n' "$O_URL" "$O_NUM" "$SHA_N" "$SHA_N1" "$D_EXPECT" "0" > "$ROLLBACK_OUT"
+    exit 0
+  fi
+  refus PR_EN_COURS "une PR est ouverte sur ${BRANCH} (#${O_NUM}, par ${O_LOGIN}) : la fermer ou la merger avant de replier — un repli ne réécrit jamais une PR ouverte"
+fi
 
 # ── 12bis. TÊTE DISTANTE : absente ou déjà mergée ⇒ bail ; sinon refus ────────
 etape tete-distante
@@ -396,11 +392,14 @@ if ! g push -q "--force-with-lease=refs/heads/${BRANCH}:${TIP}" origin "HEAD:ref
   refus PUSH_ECHEC "push de ${BRANCH} refusé (bail perdu ou droits) : $(grep -v -F -- "$(cat "$PUSH_TF")" "$WORK/push.err" | grep -v -F -- "$FORGE_SECRET" | head -c 200 | tr '\n' ' ')"
 fi
 etape pr
-PR_OUT=$(F_NUM_N="$NUM_N" F_NUM_N1="$NUM_N1" F_SHA_N="$SHA_N" F_SHA_N1="$SHA_N1" F_DIGEST="$D_EXPECT" F_LINE="$CANDIDATE" F_CERT="$CERT_ACTION" \
-  F_REF="$REQ_CHANGE_REF" F_REASON="$REQ_REASON" F_CALLER="$REQ_CALLER" F_APP="$REQ_APP" F_ENV="$REQ_ENV" F_RDR="$REPLI_DU_REPLI" F_HOST="$GIT_HOST" \
-  forge "$PY_FORGE_COMMON"'
+PR_TITLE="provision(${REQ_ENV}): ${REQ_APP} — repli vers #${NUM_N1}"
+# Le CORPS de la PR : du TEXTE, composé ici (aucun réseau) ; la forge le reçoit
+# par `forge pr_open`, dans les champs de SON visage.
+F_NUM_N="$NUM_N" F_NUM_N1="$NUM_N1" F_SHA_N="$SHA_N" F_SHA_N1="$SHA_N1" F_DIGEST="$D_EXPECT" F_LINE="$CANDIDATE" F_CERT="$CERT_ACTION" \
+  F_REF="$REQ_CHANGE_REF" F_REASON="$REQ_REASON" F_CALLER="$REQ_CALLER" F_APP="$REQ_APP" F_ENV="$REQ_ENV" F_RDR="$REPLI_DU_REPLI" F_PUSH_LOGIN="$PUSH_LOGIN" \
+  python3 - > "$WORK/pr-body" <<'PY' || refus PR_ECHEC "composition du corps de la PR en échec — la branche ${BRANCH} est poussée, rejouer la demande (EXIST la reconnaîtra par son contenu)"
+import os
 e = os.environ
-title = "provision(%s): %s — repli vers #%s" % (e["F_ENV"], e["F_APP"], e["F_NUM_N1"])
 body = ["<!-- app-rollback: de %s vers %s -->" % (e["F_SHA_N"], e["F_SHA_N1"]),
         "Demande de REPLI d une application (A6, ADR-089) — le repli est une PR.", "",
         "- application : %s" % e["F_APP"], "- palier : %s" % e["F_ENV"],
@@ -415,20 +414,17 @@ body = ["<!-- app-rollback: de %s vers %s -->" % (e["F_SHA_N"], e["F_SHA_N1"]),
 if e["F_REF"]: body.append("- change_ref : %s (remplace celui de l etat restaure — un repli porte SON change)" % e["F_REF"])
 if e["F_RDR"] == "1": body.append("- REPLI_DU_REPLI : #%s est lui-meme un repli ; si son apply a ete REFUSE, le remede est le rejeu de son webhook (A2), pas ce repli" % e["F_NUM_N"])
 body += ["", "Toutes les portes du palier s appliquent (merge, provision-apply, garde du palier, ordre app/API). Rien n est jamais desinscrit : la convergence garde le GUID et la cle de l application."]
-data = json.dumps({"title": title, "head": BRANCH, "base": base, "body": "\n".join(body)}, ensure_ascii=False).encode("utf-8")
-ptok = open(e["F_PR_TOKEN_FILE"]).read().strip()   # A7 : la PR est ouverte SOUS le pousseur (l humain quand il y en a un)
-r = urllib.request.Request("%s/repos/%s/pulls" % (api, repo), data=data, method="POST", headers={"Authorization": "token " + ptok, "Content-Type": "application/json"})
-try:
-    with urllib.request.urlopen(r, timeout=30) as resp: pr = json.load(resp)
-except urllib.error.HTTPError as ex: refuse("PR_ECHEC", "POST /pulls HTTP %d — la branche %s est poussee, rejouer la demande (EXIST la reconnaitra par son contenu)" % (ex.code, BRANCH))
-except Exception as ex: refuse("PR_ECHEC", "POST /pulls injoignable (%s)" % type(ex).__name__)
-print("CREATED %s %s" % (clean(pr.get("number")), clean(pr.get("html_url")) or ("%s/%s/pulls/%s" % (e["F_HOST"], repo, pr.get("number")))))
-') || refus PR_ECHEC "ouverture de la PR en échec"
-case "$PR_OUT" in
-  CREATED*) PR_NUM=$(printf '%s' "$PR_OUT" | cut -d' ' -f2); PR_URL=$(printf '%s' "$PR_OUT" | cut -d' ' -f3) ;;
-  REFUS*) refus "$(printf '%s' "$PR_OUT" | cut -d' ' -f2)" "$(printf '%s' "$PR_OUT" | cut -d' ' -f3-)" ;;
-  *) refus PR_ECHEC "réponse inattendue ($(shown "$PR_OUT"))" ;;
-esac
+print("\n".join(body))
+PY
+# A7 : la PR est ouverte SOUS le pousseur (l'humain quand il y en a un) — son
+# secret passe par FICHIER (FORGE_SECRET_FILE), jamais en argv ; rc 2 = la forge
+# a refusé ou est illisible, la cause est au-dessus.
+P_NUMBER=""; P_URL=""
+FORGE_SECRET_FILE="$PUSH_TF" forge_kv P pr_open "$BRANCH" "$GIT_BASE" "$PR_TITLE" "$WORK/pr-body" 2>"$WORK/pr.err" \
+  || { cat "$WORK/pr.err" >&2; refus PR_ECHEC "ouverture de la PR sur ${BRANCH} en échec — la branche est poussée, rejouer la demande (EXIST la reconnaîtra par son contenu) (cause ci-dessus)"; }
+PR_NUM="$P_NUMBER"
+# Le lien humain : l'URL rendue par la forge, réécrite sur GIT_WEB_HOST en split-horizon.
+PR_URL="${P_URL/#"$GIT_HOST"/"$GIT_WEB_HOST"}"
 echo "  PR créée: #${PR_NUM}"
 echo "PR_URL=${PR_URL}"
 echo "REPLI_DE=${SHA_N} REPLI_VERS=${SHA_N1} REPLI_DIGEST=${D_EXPECT}"

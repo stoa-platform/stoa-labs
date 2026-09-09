@@ -1200,6 +1200,70 @@ protection de `ci/stoa-labs@main` (`setup-repo-protections.sh`) ; un
 arrière — applications (A6) » ci-dessous), c'est un rejeu hors chaîne borné par
 l'identité nominative et Vault comme aujourd'hui.
 
+## Le visage de la forge (L5 — 2026-09-09)
+
+Le 2026-09-09, chez un client sur **GitLab**, `ci-app-request` mourait
+`REFUS: FORGE_ILLISIBLE` sur un corps vide : la chaîne parlait l'API de Gitea
+(`/api/v1/…`, `Authorization: token`) et GitLab répond à `/api/v1` par un
+**302 vers /users/sign_in** — une page HTML que `json.load` ne sait pas lire.
+Depuis, **une seule autorité** parle à la forge : `scripts/lib/forge-api.sh`
+(enveloppe) + `scripts/lib/forge-api.py` (visage, base d'API, en-tête d'auth,
+garde de réponse, formes normalisées). La porte `ci/lint-forge-literals.sh`
+(`make lint-ci`) interdit `/api/v1`, `/api/v4`, `Authorization: token`,
+`PRIVATE-TOKEN`, `json.load(` et `urlopen(` hors de cette autorité.
+
+**Knobs** (globals Jenkins, `setup-jenkins-globals.sh --help`) :
+
+| Knob | Valeurs | Défaut | Rôle |
+|------|---------|--------|------|
+| `FORGE_KIND` | `gitea` \| `gitlab` | `gitea` | le VISAGE : chemins (`/api/v1/repos/o/r` vs `/api/v4/projects/o%2Fr`), formes (`number`/`iid`, `login`/`username`, `open`/`opened`, `head.ref`/`source_branch`, `comments`/`notes`) |
+| `FORGE_API_AUTH` | `token` \| `private-token` \| `bearer` \| `basic` | dérivé du visage (`token` Gitea, `private-token` GitLab) | l'en-tête d'auth ; `basic` exige `FORGE_USER` |
+| `FORGE_API_BASE` | URL | vide | la base d'API **si** un reverse-proxy la déplace ; sinon dérivée de `GIT_HOST` |
+| `GIT_HOST` / `GIT_REPO` | URL / `groupe/projet` | **aucun repli** | `REFUS: GIT_HOST_REQUIS` / `GIT_REPO_REQUIS` plutôt qu'un `http://gitea:3000` de lab chez le client |
+| `FORGE_PREPARE_WAIT` | secondes | `30` | GitLab seulement : attente bornée de `prepared_at` avant de lire les fichiers d'une MR (voir ci-dessous) |
+
+Un GitLab sans `FORGE_KIND=gitlab` refuse encore, mais **en nommant la cause** :
+« la forge REDIRIGE (302) vers …/users/sign_in — GIT_HOST doit être l'URL finale
+… ou cette forge ne parle pas ce visage ». Le secret ne passe **jamais** en argv
+ni en préfixe de commande (tracé sous `set -x`) : here-doc sur le descripteur 3,
+et toute cause est expurgée des secrets connus.
+
+**Prérequis côté client GitLab** (à obtenir AVANT de rejouer la chaîne) :
+
+- `/api/v4` joignable **depuis l'agent Jenkins** (pas seulement depuis le poste) ;
+- un **PAT de service** avec les scopes `api`, `read_user`, `write_repository`
+  (le couple user/mot de passe suffit à `git`, pas à `/api/v4`) ;
+- méthode de merge du projet = **merge commit** : en fast-forward ou squash,
+  `merge_commit_sha` est nul et la réconciliation (A2) comme le repli (A6)
+  refusent (`PAYLOAD_PERIME`, `FORGE_ILLISIBLE : merge_commit_sha illisible`) —
+  la chaîne exige un commit de merge (`MERGE_SHA^2`, trailers `Repli-De`) ;
+- les webhooks vers Jenkins autorisés (« Allow requests to the local network »
+  si Jenkins est une adresse privée) ; les deux payloads (Gitea `pull_request`,
+  GitLab `merge_request`) sont lus par les mêmes jobs, sans knob ;
+- la branche par défaut (**`master`** chez ce client, pas `main`) : `GIT_BASE`
+  la nomme ; sa découverte automatique est `scripts/lib/git-base.sh` (L3, en
+  cours de câblage) ;
+- CE suffit pour la chaîne app-request ; la protection de branche par
+  utilisateurs/patterns est Premium (ADR-081, dette nommée) ;
+- **GitLab calcule le diff d'une MR en asynchrone** (mesuré 17.11 : `prepared_at`
+  nul et `detailed_merge_status=preparing` pendant 3-4 s après la création,
+  `/diffs` rend `[]` entre-temps — et le webhook « open » arrive AVANT).
+  `pr_files` attend `prepared_at` (borné par `FORGE_PREPARE_WAIT`, refus nommé
+  « encore en PRÉPARATION » au-delà) : sans cela, provision-plan lirait « aucun
+  fichier » et la porte de périmètre refuserait à tort ;
+- `git config http.postBuffer 524288000` sur l'agent qui POUSSE : un push
+  > 1 Mio part en `Transfer-Encoding: chunked` et le GitLab du lab le refuse
+  en **500** (gitaly « waiting for receive-pack: exit status 128 », 53 ms —
+  mesuré le 2026-09-09 sur un push de 11 Mio ; le même buffé passe). Même
+  leçon qu'avec Gitea (mémoire « push gitea > 1 Mo exige http.postBuffer »).
+
+**Au lab** : `docker compose -f docker-compose.gitlab.yml up -d gitlab` (seul,
+3-5 min au premier boot), `bash scripts/setup-gitlab-lab.sh` → `.env.gitlab-lab`
+(PAT 0600, hors Git), puis `FORGES=gitlab bash scripts/test-forge-api-live.sh`
+(les verbes contre le GitLab RÉEL, discriminant J.1) et
+`bash scripts/test-app-request-gitlab-live.sh` (la demande de bout en bout :
+MR ouverte, rejeu idempotent, puis la panne du client reproduite et nommée).
+
 ## Résiduel
 
 - **Le lien entre le Jenkins local et celui du labs n'est pas établi.** Ce sont

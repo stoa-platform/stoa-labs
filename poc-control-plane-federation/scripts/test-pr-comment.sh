@@ -253,7 +253,13 @@ OUT=$(GIT_REPO=ci/stoa-labs GITEA_TOKEN=tok-ok PR_NUMBER=7 GIT_HOST="$GH" COMMEN
 [ "$RC" -eq 0 ] && [ "$OUT" = "COMMENT_UPDATED 55" ] && [ "$(count)" = 60 ] \
   && ok "marqueur au-delà de la première page ⇒ COMMENT_UPDATED 55 (pagination), 60 commentaires, aucun empilement" \
   || ko "pagination cassée (rc=$RC : $OUT, n=$(count)) — le commentaire se serait EMPILÉ"
-grep -q 'timeout=30)' "$LIB" && ok "urlopen(timeout=30) : un post{always} ne tient plus l'exécuteur indéfiniment sur une forge muette" || ko "aucun timeout réseau dans la lib"
+# Routage forge-agnostique (2026-09-09) : la lib ne fait plus d'appel réseau elle-même,
+# elle passe par forge-api.sh (comment_find puis comment_upsert) ; le timeout réseau
+# (FORGE_TIMEOUT, 30 s par défaut) vit dans forge-api.py, l'unique autorité.
+grep -q 'forge_kv CU comment_upsert' "$LIB" && ! grep -vE '^\s*#' "$LIB" | grep -qE 'urllib|/api/v[14]|Authorization|python3' \
+  && grep -q 'FORGE_TIMEOUT' "$REPO/scripts/lib/forge-api.py" && grep -q 'timeout=timeout' "$REPO/scripts/lib/forge-api.py" \
+  && ok "forge_kv comment_upsert derrière forge-api.py (FORGE_TIMEOUT 30 s, sans urllib ni /api/v1 dans la lib) : un post{always} ne tient plus l'exécuteur indéfiniment sur une forge muette" \
+  || ko "la lib compose encore un appel réseau en ligne, ou forge-api.py n'a plus de timeout"
 
 echo
 echo "== 12bis. PLAFOND serveur (revue 2026-09-02) : la forge écrête limit à 20, marqueur en 25e position ⇒ TROUVÉ (arrêt sur page VIDE, jamais sur « page courte ») =="
