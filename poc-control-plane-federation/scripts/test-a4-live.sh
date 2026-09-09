@@ -64,8 +64,16 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO" || exit 1
 
 if [ -z "${LAB_ALICE_PASS:-}" ] && [ -r ./.env.lab-users ]; then
+  # La directive shellcheck s'attache à la PREMIÈRE commande de la ligne
+  # qui suit. Sur la liste `set -a; . fichier; set +a` elle n'atteignait
+  # donc que `set -a`, jamais le `.` : elle ne masquait RIEN. Sur un clone
+  # frais (.env.lab-users est 0600, hors Git) `shellcheck -x` rendait alors
+  # SC1091 et `make lint-ci` mourait à l'étape 2. NE PAS recoller ces trois
+  # commandes sur une seule ligne : la porte redeviendrait injouable.
+  set -a
   # shellcheck disable=SC1091
-  set -a; . ./.env.lab-users; set +a
+  . ./.env.lab-users
+  set +a
 fi
 JENKINS_UI="${JENKINS_UI:?JENKINS_UI requis (ex. http://localhost:18080)}"
 GITEA_URL="${GITEA_URL:?GITEA_URL requis (ex. http://localhost:13000)}"

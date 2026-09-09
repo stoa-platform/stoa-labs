@@ -119,7 +119,15 @@ lint-ci:
 	  scripts/lib/posture-authority.sh scripts/lib/wm-dataplane.sh scripts/test-p5-https.sh \
 	  scripts/test-p6-deny-by-default.sh scripts/test-p7-bout-en-bout.sh \
 	  scripts/test-repo-layout-portabilite.sh scripts/lib/providers-teams.sh scripts/test-providers-teams.sh \
+	  scripts/test-porte-clone-frais.sh \
 	  && echo "  ✓ ci/lib + livrables shell G2..G8 + A1 + A2 + A0 + A3 + A4 + A5 + A6 + A7 + P2 + P5 + P6 + P7 propres"
+	@# … et la MÊME étape doit passer sur un CLONE FRAIS. Le shellcheck
+	@# ci-dessus s'exécute là où `.env.lab-users` (0600, hors Git) EXISTE ;
+	@# absent, il rendait SC1091 et lint-ci mourait ici — chez un client, en
+	@# CI, jamais sur le poste. Cette suite relit les six suites `-live` sous
+	@# ABSENCE FORCÉE du fichier, et porte sa mutation. Elle vit SOUS l'étape 2
+	@# (pas de rang à elle) : elle mesure cette étape-là, pas autre chose.
+	@bash scripts/test-porte-clone-frais.sh
 	@echo "== [3/20] épreuves de ci/lib/carto-secrets.sh"
 	@ci/test-carto-secrets.sh
 	@echo "== [4/20] épreuves du résolveur de pin (G3)"

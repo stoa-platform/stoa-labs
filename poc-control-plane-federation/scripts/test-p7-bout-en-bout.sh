@@ -85,8 +85,16 @@ TEAM="${P7_TEAM:-banking-demo}"
 MERGER="${P7_MERGER:-oscar}"
 
 if [ -z "${LAB_OSCAR_PASS:-}" ] && [ -r ./.env.lab-users ]; then
+  # La directive shellcheck s'attache à la PREMIÈRE commande de la ligne
+  # qui suit. Sur la liste `set -a; . fichier; set +a` elle n'atteignait
+  # donc que `set -a`, jamais le `.` : elle ne masquait RIEN. Sur un clone
+  # frais (.env.lab-users est 0600, hors Git) `shellcheck -x` rendait alors
+  # SC1091 et `make lint-ci` mourait à l'étape 2. NE PAS recoller ces trois
+  # commandes sur une seule ligne : la porte redeviendrait injouable.
+  set -a
   # shellcheck source=/dev/null
-  set -a; . ./.env.lab-users; set +a
+  . ./.env.lab-users
+  set +a
 fi
 LAB_OSCAR_PASS="${LAB_OSCAR_PASS:?LAB_OSCAR_PASS requis (ou ./.env.lab-users) — le SECOND humain qui fusionne et repond a la pause}"
 
