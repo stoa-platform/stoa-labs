@@ -10,7 +10,8 @@
 #     ./scripts/setup-provisioning-api.sh   (ou re-patch du routing endpointUri)
 #
 # Le job checkoute ci/stoa-labs (Gitea) → le script provision-request.sh DOIT y
-# être poussé (git push gitea main). Aucune identité humaine (webhook) : le commit
+# être poussé sur la branche de base du dépôt (git push gitea HEAD). Aucune
+# identité humaine (webhook) : le commit
 # est signé par `ci`, la PR reste à valider (4-yeux, ADR-078).
 set -uo pipefail
 cd "$(dirname "$0")/.." || { echo "REFUS: racine du depot introuvable" >&2; exit 2; }
@@ -62,9 +63,12 @@ rm -f "$CK"
 # La logique correcte (charset, mise à jour en place, création si absent, repli
 # destructeur seulement sur demande explicite) vit dans setup-provision-jobs.sh,
 # qui est générique (`JOBS=`) et prouvé contre l'instance réelle. On l'appelle
-# plutôt que d'en écrire une seconde copie qui divergerait.
+# plutôt que d'en écrire une seconde copie qui divergerait. Depuis L3, la
+# substitution de la BRANCHE (`__GIT_BASE__` du job.xml) en fait partie : elle
+# se joue chez le délégué, avec sa découverte et son refus nommé — ce script
+# n'en porte aucune copie.
 JENKINS_UI="$JENKINS_UI" JOBS="$JOB" bash "$(cd "$(dirname "$0")" && pwd)/setup-provision-jobs.sh" \
   || ko "mise à jour du job $JOB"
 echo
-echo "→ pousser le script sur Gitea :  git push gitea main"
+echo "→ pousser le script sur la branche de base de Gitea :  git push gitea HEAD"
 echo "→ router l'API :  GWT_TOKEN=stoa-provision-request TARGET_JOB=$JOB ./scripts/setup-provisioning-api.sh"

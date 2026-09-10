@@ -24,7 +24,7 @@
   (ou par l'amorçage).
 -->
 <flow-definition plugin="workflow-job">
-  <description>Formulaire : demander une application (deuxième porte, à côté de la voie machine OIG/CLI2) → PR provision/&lt;app&gt;-&lt;env&gt; + plan enchaîné. Même aval que la voie machine (ADR-075/076/079/081) : un formulaire ne porte aucun humain de plus qu'un webhook, la décision reste le MERGE. PIPELINE FROM SCM : ci/Jenkinsfile.app-request, chargé depuis le dépôt plateforme (branche main) — ce job ne contient AUCUN Groovy ni AUCUN paramètre : le formulaire est posé par le Jenkinsfile à chaque build (A0), depuis les listes du dépôt.</description>
+  <description>Formulaire : demander une application (deuxième porte, à côté de la voie machine OIG/CLI2) → PR provision/&lt;app&gt;-&lt;env&gt; + plan enchaîné. Même aval que la voie machine (ADR-075/076/079/081) : un formulaire ne porte aucun humain de plus qu'un webhook, la décision reste le MERGE. PIPELINE FROM SCM : ci/Jenkinsfile.app-request, chargé depuis le dépôt plateforme (branche __GIT_BASE__) — ce job ne contient AUCUN Groovy ni AUCUN paramètre : le formulaire est posé par le Jenkinsfile à chaque build (A0), depuis les listes du dépôt.</description>
   <keepDependencies>false</keepDependencies>
   <properties/>
   <definition class="org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition" plugin="workflow-cps">
@@ -39,7 +39,7 @@
       </userRemoteConfigs>
       <branches>
         <hudson.plugins.git.BranchSpec>
-          <name>*/main</name>
+          <name>*/__GIT_BASE__</name>
         </hudson.plugins.git.BranchSpec>
       </branches>
       <doGenerateSubmoduleConfigurations>false</doGenerateSubmoduleConfigurations>

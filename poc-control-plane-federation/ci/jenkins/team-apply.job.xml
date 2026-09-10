@@ -21,7 +21,7 @@
   et vire au rouge a la premiere divergence.
 -->
 <flow-definition plugin="workflow-job">
-  <description>Apply post-merge (onboarding equipe) : une PR onboard/* FUSIONNEE ouvre une DEMANDE EN ATTENTE dans Jenkins (input) ; sur validation + identite Vault -> apply nominatif via scripts/team-apply.sh (miroir de provision-apply.job.xml). PIPELINE FROM SCM : le pipeline est ci/Jenkinsfile.team-apply, charge depuis le depot plateforme (branche main) -- ce job ne contient AUCUN Groovy.</description>
+  <description>Apply post-merge (onboarding equipe) : une PR onboard/* FUSIONNEE ouvre une DEMANDE EN ATTENTE dans Jenkins (input) ; sur validation + identite Vault -> apply nominatif via scripts/team-apply.sh (miroir de provision-apply.job.xml). PIPELINE FROM SCM : le pipeline est ci/Jenkinsfile.team-apply, charge depuis le depot plateforme (branche __GIT_BASE__) -- ce job ne contient AUCUN Groovy.</description>
   <keepDependencies>false</keepDependencies>
   <properties>
     <org.jenkinsci.plugins.workflow.job.properties.DisableConcurrentBuildsJobProperty/>
@@ -72,7 +72,7 @@
       </userRemoteConfigs>
       <branches>
         <hudson.plugins.git.BranchSpec>
-          <name>*/main</name>
+          <name>*/__GIT_BASE__</name>
         </hudson.plugins.git.BranchSpec>
       </branches>
       <doGenerateSubmoduleConfigurations>false</doGenerateSubmoduleConfigurations>

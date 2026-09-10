@@ -28,7 +28,7 @@
   webhook existant suffit.
 -->
 <flow-definition plugin="workflow-job">
-  <description>Apply post-merge (promotion d'API, ADR-081/ADR-079) : une PR promote/&lt;api&gt;-&lt;env&gt; d'un DEPOT D'EQUIPE FUSIONNEE ouvre une DEMANDE EN ATTENTE dans Jenkins (input) ; sur validation + identite Vault -> apply nominatif via scripts/team-promote.sh (miroir de team-publish.job.xml, palier authoring, pour le depot de l'equipe). L'equipe autorisee est derivee du DEPOT qui a declenche le webhook (topologie), croise avec providers.&lt;env&gt;.yml -- jamais du contenu du payload. Verbe G5 : IMPORT D'ARCHIVE, jamais un re-POST du contrat. PIPELINE FROM SCM : le pipeline est ci/Jenkinsfile.team-promote, charge depuis le depot plateforme (branche main) -- ce job ne contient AUCUN Groovy.</description>
+  <description>Apply post-merge (promotion d'API, ADR-081/ADR-079) : une PR promote/&lt;api&gt;-&lt;env&gt; d'un DEPOT D'EQUIPE FUSIONNEE ouvre une DEMANDE EN ATTENTE dans Jenkins (input) ; sur validation + identite Vault -> apply nominatif via scripts/team-promote.sh (miroir de team-publish.job.xml, palier authoring, pour le depot de l'equipe). L'equipe autorisee est derivee du DEPOT qui a declenche le webhook (topologie), croise avec providers.&lt;env&gt;.yml -- jamais du contenu du payload. Verbe G5 : IMPORT D'ARCHIVE, jamais un re-POST du contrat. PIPELINE FROM SCM : le pipeline est ci/Jenkinsfile.team-promote, charge depuis le depot plateforme (branche __GIT_BASE__) -- ce job ne contient AUCUN Groovy.</description>
   <keepDependencies>false</keepDependencies>
   <properties>
     <org.jenkinsci.plugins.workflow.job.properties.DisableConcurrentBuildsJobProperty/>
@@ -81,7 +81,7 @@
       </userRemoteConfigs>
       <branches>
         <hudson.plugins.git.BranchSpec>
-          <name>*/main</name>
+          <name>*/__GIT_BASE__</name>
         </hudson.plugins.git.BranchSpec>
       </branches>
       <doGenerateSubmoduleConfigurations>false</doGenerateSubmoduleConfigurations>

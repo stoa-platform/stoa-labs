@@ -33,7 +33,11 @@
 # paramètres ET trackers), JAMAIS par un simple push du Jenkinsfile — sinon le
 # doublon du fait 6. Après l'amorçage, la config est RELUE : exactement UNE
 # propriété de paramètres, et (mode no) ENVIRONMENT == env_chain_nonprod.
-#   --print        : rend le XML sur stdout, zéro réseau (épreuves hors ligne).
+#   --print        : rend le XML sur stdout, ne pose RIEN. Zéro réseau tant que
+#                    la branche est NOMMÉE (GIT_BASE ou BRANCH) ; sans knob elle
+#                    est découverte sur GIT_URL, parce qu'un XML « hors ligne »
+#                    qui nommerait une branche que personne n'a choisie serait
+#                    précisément le défaut que L3 retire.
 #   BOOTSTRAP_WAIT : attente de l'amorçage (défaut 360 s — le préflight gateway
 #                   de l'aval peut durer 300 s pendant un recyclage keepalive) ;
 #                   « encore en cours » est distingué d'un échec : NE PAS re-poser.
@@ -50,6 +54,8 @@ set -uo pipefail
 # shellcheck source=scripts/lib/repo-layout.sh
 . "$(dirname "$0")/lib/repo-layout.sh" || { echo "ERREUR: lib/repo-layout.sh introuvable ou illisible" >&2; exit 1; }
 repo_layout_init || exit 2
+# shellcheck source=scripts/lib/git-base.sh
+. "$(dirname "$0")/lib/git-base.sh" || { echo "ERREUR: lib/git-base.sh introuvable ou illisible" >&2; exit 1; }
 
 # TOUT est surchargeable par env : le MÊME script pose le job frère publish-api-deploy —
 #   JOB=publish-api-deploy TRIGGER_TOKEN=stoa-publish-api-plan \
@@ -60,10 +66,26 @@ JENKINS="${JENKINS:-http://localhost:18080}"
 JOB="${JOB:-selfservice-app-deploy}"
 TRIGGER_TOKEN="${TRIGGER_TOKEN:-stoa-selfservice-plan}"
 GIT_URL="${GIT_URL:-http://gitea:3000/ci/stoa-labs.git}"   # vu DEPUIS l'agent (réseau docker)
-# G4 (M2) : défaut sur main — un pipeline qui ride encore une branche de
-# feature après merge est éditable HORS revue (quiconque pousse sur cette
-# branche change le pipeline sans passer par une PR sur main).
-BRANCH="${BRANCH:-main}"
+# G4 (M2) : le job doit rider la branche de BASE du dépôt — un pipeline resté
+# sur une branche de feature après merge est éditable HORS revue (quiconque
+# pousse sur cette branche change le pipeline sans passer par une PR).
+# L3 (2026-09-10) : cette branche NE S'ÉCRIT PLUS EN DUR. « main » y était un
+# défaut de SITE : chez un client dont la branche par défaut est `master`, ce
+# poseur créait un job dont le checkout SCM ne trouvait rien — et le diagnostic
+# de Jenkins ne nomme pas ce fichier. BRANCH reste le knob LOCAL (rider
+# volontairement autre chose) ; sans lui, l'autorité décide — GIT_BASE, sinon
+# la HEAD annoncée par le dépôt, sinon un REFUS nommé. Le knob local passe PAR
+# la lib, qui contrôle sa forme : `BRANCH=-x` doit être un refus, pas un
+# `<name>*/-x</name>` posé dans Jenkins.
+# GIT_URL est le dépôt vu DEPUIS L'AGENT ; c'est aussi celui dont on veut la
+# HEAD, et l'exploitant qui pose ce job depuis un poste où ce nom ne résout pas
+# pose GIT_BASE (ou BRANCH). `--print` n'y échappe pas : il rend le XML qui
+# SERAIT posé, branche comprise ; un XML « hors ligne » nommant une branche que
+# personne n'a choisie serait exactement le défaut qu'on retire.
+BRANCH="${BRANCH:-}"
+[ -z "$BRANCH" ] || GIT_BASE="$BRANCH"
+git_base_init "$GIT_URL" || exit 2
+BRANCH="$GIT_BASE"
 SCRIPT_PATH="${SCRIPT_PATH:-${SUB_PFX}ci/Jenkinsfile.selfservice}"
 MANIFEST_DEFAULT="${MANIFEST_DEFAULT:-clients/_example/applications/demo-consumer.ansible.yml}"
 JOB_DESC="${JOB_DESC:-self-service creation d application - CONSOMMATEUR}"
@@ -122,7 +144,7 @@ ${ENV_CHOICES_XML}          </choices>
              RETIRÉ EN SILENCE d'un « build job: » amont (SECURITY-170). -->
         <hudson.model.StringParameterDefinition>
           <name>MERGE_SHA</name>
-          <description>A2 &#8212; SHA de merge &#224; projeter (40 hex, anc&#234;tre de main). Vide = HEAD du checkout SCM. Pos&#233; par provision-apply.</description>
+          <description>A2 &#8212; SHA de merge &#224; projeter (40 hex, anc&#234;tre de ${BRANCH}). Vide = HEAD du checkout SCM. Pos&#233; par provision-apply.</description>
           <defaultValue></defaultValue>
           <trim>true</trim>
         </hudson.model.StringParameterDefinition>
@@ -302,7 +324,7 @@ r = T.parse(sys.argv[1]).getroot()
 for p in r.iter():
     if p.tag.endswith('ChoiceParameterDefinition') and p.findtext('name') == 'ENVIRONMENT':
         print(' '.join(s.text or '' for s in p.iter('string')))" "$XML.relu")
-  [ "$GOT" = "$WANT" ] || fail "ENVIRONMENT pose par le build = [$GOT], chaine locale = [$WANT] — le build derive la liste de gitea main : pousser le depot, ou relire apres le prochain build"
+  [ "$GOT" = "$WANT" ] || fail "ENVIRONMENT pose par le build = [$GOT], chaine locale = [$WANT] — le build derive la liste de la branche ${BRANCH} sur gitea : pousser le depot, ou relire apres le prochain build"
   TRIG=$(python3 -c "import sys,xml.etree.ElementTree as T; r=T.parse(sys.argv[1]).getroot(); print(','.join(t.findtext('token') or '' for t in r.iter() if t.tag.endswith('GenericTrigger')))" "$XML.relu")
   NDIS=$(python3 -c "import sys,xml.etree.ElementTree as T; r=T.parse(sys.argv[1]).getroot(); print(sum(1 for e in r.iter() if e.tag.endswith('DisableConcurrentBuildsJobProperty')))" "$XML.relu")
   [ "$TRIG" = "$TRIGGER_TOKEN" ] && [ "$NDIS" = 1 ] || fail "apres l'amorcage : trigger=[$TRIG] disableConcurrentBuilds=$NDIS — attendu UN trigger $TRIGGER_TOKEN et UNE option, poses par properties() (fait 10)"

@@ -17,7 +17,7 @@
   son formulaire (ou par l'amorçage) ; aucun webhook.
 -->
 <flow-definition plugin="workflow-job">
-  <description>Repli d'une application (A6, ADR-089) : formulaire (APP, ENV, REASON, CHANGE_REF) → PR provision/&lt;app&gt;-&lt;env&gt; dont la ligne per_env.&lt;env&gt; et le certificat du palier redeviennent, à l'octet, ceux du merge PRÉCÉDENT ; même aval que toute demande (merge → provision-apply → selfservice-app-deploy), mêmes portes, même GUID, même clé. PIPELINE FROM SCM : ci/Jenkinsfile.app-rollback, chargé depuis le dépôt plateforme (branche main) — ce job ne contient AUCUN Groovy ni AUCUN paramètre : le formulaire est posé par le Jenkinsfile à chaque build.</description>
+  <description>Repli d'une application (A6, ADR-089) : formulaire (APP, ENV, REASON, CHANGE_REF) → PR provision/&lt;app&gt;-&lt;env&gt; dont la ligne per_env.&lt;env&gt; et le certificat du palier redeviennent, à l'octet, ceux du merge PRÉCÉDENT ; même aval que toute demande (merge → provision-apply → selfservice-app-deploy), mêmes portes, même GUID, même clé. PIPELINE FROM SCM : ci/Jenkinsfile.app-rollback, chargé depuis le dépôt plateforme (branche __GIT_BASE__) — ce job ne contient AUCUN Groovy ni AUCUN paramètre : le formulaire est posé par le Jenkinsfile à chaque build.</description>
   <keepDependencies>false</keepDependencies>
   <properties/>
   <definition class="org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition" plugin="workflow-cps">
@@ -32,7 +32,7 @@
       </userRemoteConfigs>
       <branches>
         <hudson.plugins.git.BranchSpec>
-          <name>*/main</name>
+          <name>*/__GIT_BASE__</name>
         </hudson.plugins.git.BranchSpec>
       </branches>
       <doGenerateSubmoduleConfigurations>false</doGenerateSubmoduleConfigurations>

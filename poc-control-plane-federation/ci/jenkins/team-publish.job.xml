@@ -20,7 +20,7 @@
   et vire au rouge a la premiere divergence.
 -->
 <flow-definition plugin="workflow-job">
-  <description>Apply post-merge (publication d'API) : une PR api/&lt;name&gt;-&lt;version&gt; d'un DEPOT D'EQUIPE FUSIONNEE ouvre une DEMANDE EN ATTENTE dans Jenkins (input) ; sur validation + identite Vault -> apply nominatif via scripts/team-publish.sh (miroir de team-apply.job.xml, palier 2, pour le depot de l'equipe). L'equipe autorisee est derivee du DEPOT qui a declenche le webhook (topologie), croise avec providers.&lt;env&gt;.yml -- jamais du contenu du payload. PIPELINE FROM SCM : le pipeline est ci/Jenkinsfile.team-publish, charge depuis le depot plateforme (branche main) -- ce job ne contient AUCUN Groovy.</description>
+  <description>Apply post-merge (publication d'API) : une PR api/&lt;name&gt;-&lt;version&gt; d'un DEPOT D'EQUIPE FUSIONNEE ouvre une DEMANDE EN ATTENTE dans Jenkins (input) ; sur validation + identite Vault -> apply nominatif via scripts/team-publish.sh (miroir de team-apply.job.xml, palier 2, pour le depot de l'equipe). L'equipe autorisee est derivee du DEPOT qui a declenche le webhook (topologie), croise avec providers.&lt;env&gt;.yml -- jamais du contenu du payload. PIPELINE FROM SCM : le pipeline est ci/Jenkinsfile.team-publish, charge depuis le depot plateforme (branche __GIT_BASE__) -- ce job ne contient AUCUN Groovy.</description>
   <keepDependencies>false</keepDependencies>
   <properties>
     <org.jenkinsci.plugins.workflow.job.properties.DisableConcurrentBuildsJobProperty/>
@@ -72,7 +72,7 @@
       </userRemoteConfigs>
       <branches>
         <hudson.plugins.git.BranchSpec>
-          <name>*/main</name>
+          <name>*/__GIT_BASE__</name>
         </hudson.plugins.git.BranchSpec>
       </branches>
       <doGenerateSubmoduleConfigurations>false</doGenerateSubmoduleConfigurations>

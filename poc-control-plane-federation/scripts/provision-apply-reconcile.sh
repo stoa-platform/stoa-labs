@@ -190,7 +190,16 @@ FORGE_CERT="${SUB_PFX}clients/provisioned/certs/${APP_NAME}-${ENV_NAME}.crt"
 # §2 : c'est la base RELUE de la PR que la §2 compare (base.ref). « main » y était
 # écrit en dur — chez un client dont la branche est `master`, TOUTE PR mergée
 # était refusée PAYLOAD_PERIME, en accusant le webhook au lieu du câblage.
-GIT_CLONE_URL="${GIT_CLONE_URL:-$(git -C "$GIT_WORKTREE" remote get-url origin 2>/dev/null || true)}"
+#
+# Écrit en `if`, pas en `${…:-…}` (forme retenue par team-apply.sh) : ce n'est
+# pas un DÉFAUT de configuration mais une LECTURE de l'arbre en place, et
+# ci/lint-config-knobs.sh a raison de refuser un `:-` dont la valeur ressemble à
+# un chemin. Sous la forme `${…:-$(…)}`, sa règle T3 laissait ce site passer par
+# ACCIDENT (sa regex s'arrête au guillemet interne du `git -C "$GIT_WORKTREE"`)
+# alors que le MÊME motif sans guillemet a bien été refusé dans team-apply.sh.
+if [ -z "${GIT_CLONE_URL:-}" ]; then
+  GIT_CLONE_URL="$(git -C "$GIT_WORKTREE" remote get-url origin 2>/dev/null || true)"
+fi
 git_base_init "$GIT_CLONE_URL" \
   || fail GITEA_RECONCILE_ECHEC "branche par défaut du dépôt inconnue (cause ci-dessus) — sans elle, ni la base de la PR ni l'ancêtre ne peuvent être vérifiés" \
                                 "la branche par défaut du dépôt n'a pas pu être déterminée"

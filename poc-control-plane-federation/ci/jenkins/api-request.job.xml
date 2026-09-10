@@ -9,7 +9,7 @@
   POURQUOI LES PARAMETRES RESTENT ICI, et pas dans le Jenkinsfile : deux
   d'entre eux portent les marqueurs CHOICES:TEAMS / CHOICES:APIS ci-dessous,
   que scripts/setup-team-onboard-jobs.sh substitue AU MOMENT DE LA POSE par les
-  equipes et les APIs reellement presentes sur Gitea main
+  equipes et les APIs reellement presentes sur la branche par defaut de la forge
   (scripts/lib/generate-choices.sh). Les deplacer dans le Jenkinsfile figerait
   ces listes dans Git : le formulaire deviendrait vide ou perime. Le bloc
   parameterDefinitions ci-dessous est donc conserve TEL QUEL, marqueurs
@@ -20,7 +20,7 @@
   <triggers/> vide de l'original est conserve tel quel.
 -->
 <flow-definition plugin="workflow-job">
-  <description>Formulaire : publier une API (la porte du PRODUCTEUR) → PR api/&lt;name&gt;-&lt;version&gt; sur le dépôt de l'ÉQUIPE (ADR-076) + plan hors ligne (manifest-guard/team-name/syntax-check) enchaîné. La décision reste le MERGE (ADR-081) : cette PR ne publie rien elle-même, la publication réelle vit dans le pipeline post-merge. PIPELINE FROM SCM : le pipeline est ci/Jenkinsfile.api-request, chargé depuis le dépôt plateforme (branche main) — ce job ne contient AUCUN Groovy ; seuls ses paramètres (listes déroulantes générées à la pose) vivent ici.</description>
+  <description>Formulaire : publier une API (la porte du PRODUCTEUR) → PR api/&lt;name&gt;-&lt;version&gt; sur le dépôt de l'ÉQUIPE (ADR-076) + plan hors ligne (manifest-guard/team-name/syntax-check) enchaîné. La décision reste le MERGE (ADR-081) : cette PR ne publie rien elle-même, la publication réelle vit dans le pipeline post-merge. PIPELINE FROM SCM : le pipeline est ci/Jenkinsfile.api-request, chargé depuis le dépôt plateforme (branche __GIT_BASE__) — ce job ne contient AUCUN Groovy ; seuls ses paramètres (listes déroulantes générées à la pose) vivent ici.</description>
   <keepDependencies>false</keepDependencies>
   <properties>
     <hudson.model.ParametersDefinitionProperty>
@@ -96,7 +96,7 @@
       </userRemoteConfigs>
       <branches>
         <hudson.plugins.git.BranchSpec>
-          <name>*/main</name>
+          <name>*/__GIT_BASE__</name>
         </hudson.plugins.git.BranchSpec>
       </branches>
       <doGenerateSubmoduleConfigurations>false</doGenerateSubmoduleConfigurations>

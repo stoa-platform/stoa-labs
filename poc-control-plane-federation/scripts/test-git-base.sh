@@ -526,6 +526,45 @@ if [ "$(rrc)" = 2 ] && grep -q 'exige une commande' "$TMP/err"; then
   ok "H.6 enveloppe sans commande ⇒ refus nommé (une enveloppe qui n'enveloppe rien n'est pas un succès)"
 else ko "H.6 rc $(rrc) : $(detail)"; fi
 
+echo "═══ I. git_base_xml_substituer : le placeholder des XML de jobs, fail-closed ═══"
+# Les treize ci/jenkins/*.job.xml ne nomment plus de branche : ils portent
+# __GIT_BASE__, et le POSEUR substitue. Trois refus nommés, un nominal.
+XSRC="$TMP/x.job.xml"; XDST="$TMP/x.rendu.xml"
+printf '<flow-definition>\n  <name>*/__GIT_BASE__</name>\n  <d>base __GIT_BASE__</d>\n</flow-definition>\n' > "$XSRC"
+xsub(){ # xsub <GIT_BASE|-> <src> <dst> → rc et stderr dans $TMP/xerr
+  ( set +u
+    . "$REPO/scripts/lib/git-base.sh"
+    [ "$1" = - ] || GIT_BASE="$1"
+    git_base_xml_substituer "$2" "$3" ) 2>"$TMP/xerr"
+}
+xsub master "$XSRC" "$XDST"; RCX=$?
+if [ "$RCX" -eq 0 ] && grep -qF '<name>*/master</name>' "$XDST" && grep -qF 'base master' "$XDST" \
+   && ! grep -qF '__GIT_BASE__' "$XDST"; then
+  ok "I.1 substitution nominale : TOUTES les occurrences remplacées, plus aucun placeholder"
+else ko "I.1 rc $RCX : $(tr '\n' ' ' < "$XDST" 2>/dev/null | cut -c1-90)"; fi
+rm -f "$XDST"; xsub - "$XSRC" "$XDST"; RCX=$?
+if [ "$RCX" -eq 2 ] && grep -q 'XML_SUBSTITUTION_IMPOSSIBLE' "$TMP/xerr" && [ ! -s "$XDST" ]; then
+  ok "I.2 GIT_BASE non posée ⇒ refus XML_SUBSTITUTION_IMPOSSIBLE, aucun XML rendu (git_base_init d'abord)"
+else ko "I.2 rc $RCX : $(head -1 "$TMP/xerr")"; fi
+rm -f "$XDST"; xsub master "$TMP/absent.job.xml" "$XDST"; RCX=$?
+if [ "$RCX" -eq 2 ] && grep -q 'XML_SUBSTITUTION_IMPOSSIBLE' "$TMP/xerr"; then
+  ok "I.3 source illisible ⇒ refus nommé, jamais un XML vide posté"
+else ko "I.3 rc $RCX : $(head -1 "$TMP/xerr")"; fi
+# Le placeholder SURVIT quand la valeur substituée le contient elle-même : c'est
+# la seule façon de le faire réapparaître, et la garde doit quand même tenir —
+# un XML posté avec « __GIT_BASE__ » ferait chercher à Jenkins une branche de ce
+# nom, diagnostic que personne ne relie au fichier qui l'a causé.
+rm -f "$XDST"; xsub 'a__GIT_BASE__b' "$XSRC" "$XDST"; RCX=$?
+if [ "$RCX" -eq 2 ] && grep -q 'XML_PLACEHOLDER_RESTANT' "$TMP/xerr"; then
+  ok "I.4 un placeholder qui SURVIT à la substitution ⇒ refus XML_PLACEHOLDER_RESTANT (fail-closed)"
+else ko "I.4 rc $RCX : $(head -1 "$TMP/xerr")"; fi
+# Une valeur portant `&` ou `#` — légale pour git — ne doit pas se faire manger
+# par sed (`&` = « le motif trouvé »).
+rm -f "$XDST"; xsub 'rel&2.0' "$XSRC" "$XDST"; RCX=$?
+if [ "$RCX" -eq 0 ] && grep -qF '<name>*/rel&2.0</name>' "$XDST"; then
+  ok "I.5 une branche portant « & » est substituée telle quelle (échappement du remplacement sed)"
+else ko "I.5 rc $RCX : $(grep -o '<name>[^<]*</name>' "$XDST" 2>/dev/null | head -1)"; fi
+
 echo "═══ M. mutations sur COPIE : chaque assertion attrape ce qu'elle prétend attraper ═══"
 # mute <fichier> <sed-expr> — écrit le mutant ; rc 1 si no-op (le motif n'est
 # plus dans la lib : l'épreuve ne prouverait rien) ou incompilable.

@@ -2,8 +2,9 @@
 # setup-repo-protections.sh — G4 (ADR-082, M2/M3) : pose les protections de
 # branche sur les dépôts que le PIPELINE LIT — la définition de pipeline et la
 # référence de déploiement sortent du périmètre d'écriture du demandeur.
-#   - ci/stoa-labs@main   (plateforme : Jenkinsfiles, scripts/, ansible/)
-#   - ci/governance@main  (chaîne d'environnements : environments.yaml)
+#   - ci/stoa-labs        (plateforme : Jenkinsfiles, scripts/, ansible/)
+#   - ci/governance       (chaîne d'environnements : environments.yaml)
+#   … sur leur branche de BASE — voir « LA BRANCHE PROTÉGÉE » plus bas.
 #   - chaque dépôt d'équipe DÉCLARÉ dans UN SEUL fichier providers — celui de
 #     $PROVIDERS_FILE, par défaut ansible/providers.dev.yml — champ `repo` non
 #     vide. Ce script ne balaie PAS tous les paliers : un `repo` d'équipe est
@@ -43,6 +44,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.." || exit 1
 # shellcheck source=scripts/lib/repo-protection.sh
 . "scripts/lib/repo-protection.sh"
+# shellcheck source=scripts/lib/git-base.sh
+. "scripts/lib/git-base.sh" || { echo "ERREUR: scripts/lib/git-base.sh introuvable ou illisible" >&2; exit 1; }
 
 usage() {
   # REVUE round 1 (Minor 6) : plage ANCRÉE, plus `sed -n '2,18p'`. Le numéro
@@ -63,7 +66,15 @@ esac
 GIT_HOST="${GIT_HOST:-http://localhost:13000}"
 WL="${PROTECT_PUSH_WHITELIST:-ci}"
 PATTERNS="${PROTECT_FILE_PATTERNS:-}"
-BRANCH="${PROTECT_BRANCH:-main}"
+# LA BRANCHE PROTÉGÉE (L3, 2026-09-10). « main » y était écrit en dur : chez un
+# client dont la branche par défaut est `master`, ce script posait la protection
+# sur une branche INEXISTANTE — Gitea l'inscrit sans broncher — et la vraie
+# branche restait grande ouverte. Une protection posée à côté est PIRE
+# qu'absente : elle se relit verte. PROTECT_BRANCH reste le knob LOCAL (protéger
+# volontairement autre chose que la branche de base) ; sans lui, l'autorité
+# décide — GIT_BASE, sinon la HEAD annoncée par le dépôt plateforme, sinon un
+# REFUS nommé. Le knob passe PAR la lib, qui contrôle sa forme.
+BRANCH="${PROTECT_BRANCH:-}"
 PROVIDERS_FILE="${PROVIDERS_FILE:-ansible/providers.dev.yml}"
 
 TMPD=$(mktemp -d); trap 'rm -rf "$TMPD"' EXIT INT TERM; umask 077
@@ -86,6 +97,29 @@ for p in d.get("providers", []) or []:
         print(r)
 PY
 )" || { echo "PROVIDERS_ILLISIBLE : $PROVIDERS_FILE (yaml.safe_load en échec)" >&2; exit 1; }
+
+# La découverte se joue ICI : après la liste des dépôts (le premier dépôt de
+# PLATEFORME est celui dont on interroge la HEAD) et avant le payload, qui NOMME
+# la branche. En `--print` sans knob on ne découvre RIEN : lire la HEAD d'un
+# dépôt distant est un acte de RÉSEAU, et `--print` est le seul chemin hors
+# ligne de ce script (test-palier-retention ⑳ l'y tient). Le mode `pose`, lui,
+# ne part jamais sans branche : c'est un refus nommé, pas un « main » deviné.
+if [ -z "$BRANCH" ]; then
+  if [ "$MODE" = pose ] || { [ -n "${GIT_BASE:-}" ] && [ "$GIT_BASE" != auto ]; }; then
+    git_base_init "${GIT_HOST%/}/${REPOS%% *}.git" || exit 2
+    BRANCH="$GIT_BASE"
+  fi
+fi
+
+if [ -z "$BRANCH" ]; then
+  # print sans knob : rien n'est posé, on le DIT plutôt que d'inventer un nom.
+  echo "MODE=print"
+  echo "HOST=$GIT_HOST"
+  echo "BRANCH=(découverte à la pose : GIT_BASE, sinon la HEAD de ${GIT_HOST%/}/${REPOS%% *}.git)"
+  echo "PAYLOAD=(dépend de la branche — calculé à la pose)"
+  for repo in $REPOS $TEAM_REPOS; do echo "REPO=$repo"; done
+  exit 0
+fi
 
 repo_protection_payload "$BRANCH" "$WL" "$PATTERNS" > "$TMPD/payload.json" \
   || { echo "PAYLOAD_NON_FORME : whitelist='$WL' branche='$BRANCH'" >&2; exit 1; }

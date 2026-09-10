@@ -46,7 +46,8 @@
 # Les XML de jobs à listes déroulantes portent des PLACEHOLDERS
 # <!--CHOICES:TEAMS--> / <!--CHOICES:APIS-->. Avant de poser un job, CE script
 # les remplace par les fragments <string>…</string> RÉELLEMENT trouvés sur
-# Gitea main (scripts/lib/generate-choices.sh) — jamais depuis ce worktree.
+# la branche par défaut de Gitea (scripts/lib/generate-choices.sh) — jamais
+# depuis ce worktree.
 #
 # NO-OP GARANTI pour un job SANS placeholder : la substitution n'est tentée
 # QUE sur les XML qui contiennent au moins un des deux marqueurs (recherche
@@ -164,14 +165,14 @@ if [ "$NEED_TEAMS" = true ]; then
   OUT=$(generate_choices_teams "$ENVN") \
     || ko "génération de la liste des équipes (env=${ENVN}) en échec — AUCUN POST envoyé à Jenkins"
   printf '%s\n' "$OUT" > "$TEAMS_FRAG"
-  ok "liste des équipes générée ($(grep -c '<string>' "$TEAMS_FRAG") équipe(s), depuis Gitea main)"
+  ok "liste des équipes générée ($(grep -c '<string>' "$TEAMS_FRAG") équipe(s), depuis la branche par défaut de Gitea)"
 fi
 
 if [ "$NEED_APIS" = true ]; then
   OUT=$(generate_choices_apis "$ENVN") \
     || ko "génération de la liste des APIs (env=${ENVN}) en échec — AUCUN POST envoyé à Jenkins"
   printf '%s\n' "$OUT" > "$APIS_FRAG"
-  ok "liste des APIs générée ($(grep -c '<string>' "$APIS_FRAG") API(s), depuis Gitea main)"
+  ok "liste des APIs générée ($(grep -c '<string>' "$APIS_FRAG") API(s), depuis la branche par défaut de Gitea)"
 fi
 
 # ── 2. rendu des XML dans le dossier de mise en scène ────────────────────────
@@ -204,6 +205,10 @@ done
 # setup-provision-jobs.sh porte le mécanisme réseau (crumb, auth, charset,
 # update-en-place/create) : on ne le duplique pas ici, on lui donne juste une
 # SOURCE différente pour les XML déjà rendus (ÉCART déclaré, cf. son en-tête).
+# L3 (2026-09-10) : la BRANCHE (`__GIT_BASE__`) se substitue là-bas aussi, sur
+# les XML mis en scène ici — le délégué joue git_base_init et refuse si le
+# placeholder survit. Rien à découvrir une seconde fois de ce côté : DEUX
+# découvertes, ce serait deux autorités, et l'une des deux finirait par mentir.
 # A0 : app-request pose son formulaire depuis son Jenkinsfile ; sa pose EFFACE
 # les paramètres du build précédent (mesuré) — le délégué l'amorce d'un build
 # juste après (BOOTSTRAP_JOBS). C'est aussi ce qui RAFRAÎCHIT ses listes après

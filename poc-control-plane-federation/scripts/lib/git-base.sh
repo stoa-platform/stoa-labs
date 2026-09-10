@@ -259,3 +259,40 @@ git_base_avec_basic() {
     GIT_CONFIG_VALUE_0="Authorization: Basic ${b64}" \
     "$@"
 }
+
+# ── git_base_xml_substituer : le placeholder des XML de jobs ─────────────────
+# LE PROBLÈME (L3, 2026-09-10). Les treize ci/jenkins/*.job.xml portaient
+# `<name>*/main</name>`. Chez un client dont la branche par défaut est `master`,
+# le job Jenkins checkoutait une branche INEXISTANTE : aucun script de la chaîne
+# ne pouvait le rattraper, le mal était fait avant que le pipeline ne démarre.
+# La source ne nomme donc plus AUCUNE branche : elle porte `__GIT_BASE__`, et
+# c'est le POSEUR qui substitue, une fois, au moment où il envoie le XML.
+#
+#   git_base_xml_substituer <source> <destination>
+#     Écrit <destination> = <source> avec `__GIT_BASE__` remplacé par $GIT_BASE
+#     (que git_base_init doit avoir posée : c'est le contrat, pas un défaut).
+#     rc 2 + refus nommé si GIT_BASE n'est pas posée, si la source est
+#     illisible, ou si un `__GIT_BASE__` SURVIT dans le produit — fail-closed :
+#     un XML posé avec son placeholder ferait chercher à Jenkins une branche
+#     nommée « __GIT_BASE__ », et ce diagnostic-là, personne ne le relie au
+#     fichier qui l'a causé.
+#     Le remplacement échappe `&`, `#` et `\` : `&` est « le motif trouvé » pour
+#     sed, et un nom de branche a le droit de le porter (check-ref-format ne le
+#     refuse pas). Une substitution qui se trahit sur un caractère légal serait
+#     le même mode de panne, en plus discret.
+git_base_xml_substituer() {
+  local src="${1:-}" dst="${2:-}" rep
+  [ -n "$src" ] && [ -n "$dst" ] \
+    || { echo "REFUS: XML_SUBSTITUTION_IMPOSSIBLE : git_base_xml_substituer exige <source> et <destination>" >&2; return 2; }
+  [ -r "$src" ] \
+    || { echo "REFUS: XML_SUBSTITUTION_IMPOSSIBLE : ${src} introuvable ou illisible — rien n'a été mis en scène" >&2; return 2; }
+  { [ -n "${GIT_BASE:-}" ] && [ "$GIT_BASE" != auto ]; } \
+    || { echo "REFUS: XML_SUBSTITUTION_IMPOSSIBLE : GIT_BASE n'est pas posée — git_base_init doit être joué AVANT la mise en scène de ${src}" >&2; return 2; }
+  rep="$(printf '%s' "$GIT_BASE" | sed -e 's/[&#\\]/\\&/g')"
+  sed "s#__GIT_BASE__#${rep}#g" "$src" > "$dst" \
+    || { echo "REFUS: XML_SUBSTITUTION_IMPOSSIBLE : écriture de ${dst} en échec" >&2; return 2; }
+  if grep -qF '__GIT_BASE__' "$dst"; then
+    echo "REFUS: XML_PLACEHOLDER_RESTANT : ${src} porte encore __GIT_BASE__ après substitution — Jenkins chercherait une branche de ce nom ; rien n'a été envoyé" >&2
+    return 2
+  fi
+}

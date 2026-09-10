@@ -49,6 +49,8 @@ cd "$(dirname "$0")/.." || { echo "REFUS: racine du depot introuvable" >&2; exit
 # shellcheck source=scripts/lib/repo-layout.sh
 . "scripts/lib/repo-layout.sh" || { echo "REFUS: scripts/lib/repo-layout.sh introuvable ou illisible" >&2; exit 2; }
 repo_layout_init || exit 2
+# shellcheck source=scripts/lib/git-base.sh
+. "scripts/lib/git-base.sh" || { echo "REFUS: scripts/lib/git-base.sh introuvable ou illisible" >&2; exit 2; }
 
 JENKINS="${JENKINS:-http://localhost:18080}"
 JOB="${JOB:-carto}"
@@ -73,12 +75,30 @@ fail() { printf '\033[1;31m[carto-job]\033[0m %s\n' "$*"; exit 1; }
 
 [ -f "$JOB_XML" ] || fail "définition de job absente : $JOB_XML"
 
+# ── LA BRANCHE DU <scm> (L3, 2026-09-10) ─────────────────────────────────────
+# carto.job.xml ne nomme plus de branche : il porte `__GIT_BASE__`. BRANCH reste
+# le knob LOCAL de ce poseur (poser un job de carto sur une autre branche que
+# celle du dépôt) ; sans lui, l'autorité décide — GIT_BASE, sinon la HEAD
+# annoncée par le dépôt, sinon un REFUS nommé. Le knob local est passé À la lib
+# plutôt que court-circuité : il hérite ainsi de son contrôle de FORME
+# (`BRANCH=-x` deviendrait sinon un `-x` dans le <name> du BranchSpec).
+# L'URL interrogée est composée de GIT_HOST/GIT_REPO (le dépôt vu DEPUIS CE
+# POSTE) ; à défaut, GIT_URL, quand l'exploitant la donne déjà.
+GIT_HOST="${GIT_HOST:-}"
+GIT_REPO="${GIT_REPO:-}"
+BASE_URL=""
+[ -n "$GIT_HOST" ] && [ -n "$GIT_REPO" ] && BASE_URL="${GIT_HOST%/}/${GIT_REPO}.git"
+[ -n "$BASE_URL" ] || BASE_URL="$GIT_URL"
+[ -z "$BRANCH" ] || GIT_BASE="$BRANCH"
+git_base_init "$BASE_URL" || exit 2
+
 XML="$(mktemp)"; CK="$(mktemp)"; trap 'rm -f "$XML" "$CK"' EXIT
-cp "$JOB_XML" "$XML"
-# Substitutions optionnelles — sed sur les seules balises concernées, pour ne
-# pas réécrire un XML entier à la main dans deux endroits.
+# La BRANCHE : substitution fail-closed (refus nommé si le placeholder survit).
+git_base_xml_substituer "$JOB_XML" "$XML" || exit 2
+# Les deux autres substitutions restent optionnelles — sed sur les seules
+# balises concernées, pour ne pas réécrire un XML entier à la main en deux
+# endroits.
 [ -n "$GIT_URL" ]     && sed -i.bak "s#<url>[^<]*</url>#<url>${GIT_URL}</url>#" "$XML"
-[ -n "$BRANCH" ]      && sed -i.bak "s#<name>\*/[^<]*</name>#<name>*/${BRANCH}</name>#" "$XML"
 [ -n "$SCRIPT_PATH" ] && sed -i.bak "s#<scriptPath>[^<]*</scriptPath>#<scriptPath>${SCRIPT_PATH}</scriptPath>#" "$XML"
 rm -f "$XML.bak"
 

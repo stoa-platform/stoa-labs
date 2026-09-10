@@ -429,8 +429,13 @@ echo "═══ S. le <scriptPath> posé dans Jenkins suit le knob ═══"
 # checkout. Écrit en dur, le job pointait un Jenkinsfile inexistant chez un
 # client. `--print` sort le XML sur stdout AVANT le premier appel réseau : la
 # preuve est behaviourale et hors ligne, sans faux Jenkins.
+# L3 (2026-09-10) : le poseur DEMANDE désormais sa branche au dépôt, et refuse
+# s'il ne peut pas la connaître — sous `env -i`, le GIT_URL du lab
+# (http://gitea:3000) ne résout pas. On lui donne donc un dépôt nu de CETTE
+# suite, dont la HEAD est `master`, et AUCUN GIT_BASE : le XML rendu ci-dessous
+# est celui d'un poseur qui a vraiment interrogé le dépôt.
 sp(){ # sp <GIT_SUBDIR|__ABSENT__> → le <scriptPath> réellement posé
-  local -a e=(PATH="$PATH" HOME="$HOME" "STOA_ENV_CHAIN_FILE=$REPO/clients/_example/environments.yaml")
+  local -a e=(PATH="$PATH" HOME="$HOME" "STOA_ENV_CHAIN_FILE=$REPO/clients/_example/environments.yaml" "GIT_URL=$TMP/cli.git")
   [ "$1" = "__ABSENT__" ] || e+=("GIT_SUBDIR=$1")
   ( cd "$REPO" && env -i "${e[@]}" bash scripts/setup-selfservice-job.sh --print 2>/dev/null ) \
     | grep -o '<scriptPath>[^<]*</scriptPath>' | head -1
@@ -444,6 +449,15 @@ else ko "S.2 posé : $(sp .)"; fi
 if [ "$(sp __ABSENT__)" = '<scriptPath>poc-control-plane-federation/ci/Jenkinsfile.selfservice</scriptPath>' ]; then
   ok "S.3 non-régression : sans knob, le préfixe du lab (valeur identique à celle d'avant)"
 else ko "S.3 posé : $(sp __ABSENT__)"; fi
+# … et pendant qu'on y est : le <scm> du même XML vise la HEAD du dépôt, pas un
+# littéral. Le poseur a deux knobs de site (préfixe, branche) et aucun défaut.
+SCM_BR=$( ( cd "$REPO" && env -i PATH="$PATH" HOME="$HOME" \
+            "STOA_ENV_CHAIN_FILE=$REPO/clients/_example/environments.yaml" "GIT_URL=$TMP/cli.git" \
+            bash scripts/setup-selfservice-job.sh --print 2>/dev/null ) \
+          | grep -o '<name>\*/[^<]*</name>' | head -1 )
+if [ "$SCM_BR" = '<name>*/master</name>' ]; then
+  ok "S.4 le <scm> suit la HEAD du dépôt (master), sans GIT_BASE ni littéral"
+else ko "S.4 <scm> posé : $SCM_BR (attendu */master — un poseur qui devine rendrait */main)"; fi
 
 echo "═══ T. le balayage de collision REGARDE là où le knob l'envoie ═══"
 # Le plus cher du lot : un préfixe faux ici ne casse rien de VISIBLE. La boucle

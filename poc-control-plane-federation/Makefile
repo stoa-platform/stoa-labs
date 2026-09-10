@@ -121,7 +121,7 @@ lint-ci:
 	  scripts/test-repo-layout-portabilite.sh scripts/lib/providers-teams.sh scripts/test-providers-teams.sh \
 	  scripts/lib/forge-api.sh scripts/test-forge-api.sh scripts/test-forge-api-live.sh scripts/setup-gitlab-lab.sh \
 	  scripts/lib/git-base.sh scripts/test-git-base.sh scripts/test-dbg-redaction.sh \
-	  ci/lint-forge-literals.sh scripts/test-app-request-gitlab-live.sh \
+	  ci/lint-forge-literals.sh ci/lint-branch-literals.sh scripts/test-app-request-gitlab-live.sh \
 	  scripts/test-porte-clone-frais.sh \
 	  scripts/test-team-request-wiring.sh scripts/test-team-publish-wiring.sh \
 	  scripts/test-producer-chain.sh \
@@ -163,6 +163,13 @@ lint-ci:
 	@# forge-identity.sh, aucun /api/v1, /api/v4, en-tete d'auth, json.load ni
 	@# urlopen dans les fichiers ROUTES. Interdire le litteral, jamais l'exiger.
 	@bash ci/lint-forge-literals.sh
+	@# AUCUNE BRANCHE ECRITE EN DUR (2026-09-10, L3). Le meme client GitLab :
+	@# 46 « main » executes et 155 messages, pour une branche par defaut `master`.
+	@# Cette porte interdit le litteral dans les fichiers LIVRES (shell, Jenkinsfile,
+	@# coquilles de jobs, taches Ansible) — A1 le litteral execute, A2 le mot « main »
+	@# nu dans un message, qui est ce qui a coute deux jours. Exemptes NOMMES dans le
+	@# fichier (harnais, outils de lab, l'autorite git-base.sh). Sous l'etape 2, sans rang.
+	@bash ci/lint-branch-literals.sh
 	@echo "== [3/20] épreuves de ci/lib/carto-secrets.sh"
 	@ci/test-carto-secrets.sh
 	@echo "== [4/20] épreuves du résolveur de pin (G3)"

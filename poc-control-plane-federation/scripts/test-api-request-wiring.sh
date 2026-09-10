@@ -101,8 +101,8 @@ grep -qF '<lightweight>false</lightweight>' "$JOB" \
 grep -qF '<url>http://gitea:3000/ci/stoa-labs.git</url>' "$JOB" \
   && ok "SCM = dépôt plateforme vu depuis l'agent (gitea:3000, jamais localhost)" \
   || ko "URL SCM absente ou divergente — 'localhost' depuis le conteneur ne désigne PAS Gitea"
-grep -qF '<name>*/main</name>' "$JOB" \
-  && ok "branche SCM = */main (miroir du \`branch: 'main'\` du job Groovy)" || ko "branche SCM absente ou divergente"
+grep -qF '<name>*/__GIT_BASE__</name>' "$JOB" \
+  && ok "branche SCM = placeholder __GIT_BASE__, substitué à la pose (la source ne nomme aucune branche)" || ko "branche SCM absente ou divergente"
 # Le Jenkinsfile lui-même doit rester déclaratif : ni try/catch, ni pipeline
 # scripté déguisé. Ce job n'ayant AUCUN bloc `post`, il n'a besoin d'AUCUN
 # `node(...)` explicite — contrairement à team-publish (post sous `agent none`).

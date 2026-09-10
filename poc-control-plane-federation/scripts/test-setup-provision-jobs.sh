@@ -20,6 +20,14 @@ PASS=0; FAIL=0
 ok(){ PASS=$((PASS+1)); printf '  ✅ %s\n' "$*"; }
 ko(){ FAIL=$((FAIL+1)); printf '  ❌ %s\n' "$*"; }
 
+# L3 (2026-09-10) : le poseur substitue __GIT_BASE__ dans les XML, et il exige
+# donc une branche — knob, ou HEAD d'un dépôt joignable, ou refus nommé. Les
+# quatorze sections ci-dessous mesurent le dialogue avec JENKINS, pas la
+# branche : on leur pose le knob une fois pour toutes (aucun réseau : la lib ne
+# consulte alors aucune HEAD). La branche elle-même est éprouvée en §15, contre
+# un dépôt nu, SANS knob — c'est là qu'est le discriminant.
+export GIT_BASE=master
+
 # ── faux Jenkins : journalise CHAQUE appel dans un fichier ───────────────────
 cat > "$TMP/fakejenkins.py" <<'PY'
 import json, os, re, sys
@@ -31,6 +39,7 @@ NEED_AUTH = os.environ.get("NEED_AUTH", "") == "1"
 CRUMB_CODE = int(os.environ.get("CRUMB_CODE", "200"))   # 302 = portail devant Jenkins
 NEED_CF = os.environ.get("NEED_CF", "") == "1"          # exige le service token
 BUILD_CODE = int(os.environ.get("BUILD_CODE", "201"))   # reponse a POST /job/<j>/build (A0)
+BODYDIR = os.environ.get("BODYDIR", "")                 # L3 : on GARDE le XML recu, pour le relire
 def log(line):
     with open(LOG, "a") as f: f.write(line + "\n")
 class H(BaseHTTPRequestHandler):
@@ -61,7 +70,7 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._authok(): return self._send(401)
         n = int(self.headers.get("Content-Length", 0))
-        if n: self.rfile.read(n)
+        body = self.rfile.read(n) if n else b""
         if re.match(r"^/job/[^/]+/config\.xml$", self.path):
             # Le VRAI Jenkins parse le corps en ISO-8859-1 quand le charset n'est
             # pas declare, et rend 500 des le premier caractere accentue. On
@@ -70,7 +79,10 @@ class H(BaseHTTPRequestHandler):
             ct = (self.headers.get("Content-Type") or "").lower()
             if "charset=utf-8" not in ct:
                 log("POST update NO-CHARSET " + self.path); return self._send(500)
-            log("POST update " + self.path); return self._send(UPDATE_CODE)
+            log("POST update " + self.path)
+            if BODYDIR:
+                open(os.path.join(BODYDIR, re.match(r"^/job/([^/]+)/", self.path).group(1) + ".posted.xml"), "wb").write(body)
+            return self._send(UPDATE_CODE)
         if re.match(r"^/job/[^/]+/doDelete$", self.path):
             log("POST DELETE " + self.path); return self._send(200)
         mb = re.match(r"^/job/([^/]+)/build$", self.path)
@@ -79,7 +91,10 @@ class H(BaseHTTPRequestHandler):
             # 400 = le vrai Jenkins refuse POST /build sur un job PARAMETRE (mesure).
             log("POST build " + mb.group(1)); return self._send(BUILD_CODE)
         if self.path.startswith("/createItem"):
-            log("POST create " + self.path); return self._send(200)
+            log("POST create " + self.path)
+            if BODYDIR:
+                open(os.path.join(BODYDIR, re.search(r"name=([^&]+)", self.path).group(1) + ".posted.xml"), "wb").write(body)
+            return self._send(200)
         self._send(404)
     def log_message(self, *a): pass
 HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
@@ -88,7 +103,7 @@ PY
 start(){ # $1=jobs existants (csv) $2=code MAJ $3=auth(0/1) $4=code crumb $5=CF requis(0/1)
   [ -n "$PID" ] && kill "$PID" 2>/dev/null
   : > "$TMP/calls.log"
-  CALLLOG="$TMP/calls.log" EXISTING_JOBS="$1" UPDATE_CODE="$2" NEED_AUTH="${3:-0}" \
+  CALLLOG="$TMP/calls.log" EXISTING_JOBS="$1" UPDATE_CODE="$2" NEED_AUTH="${3:-0}" BODYDIR="${BODYDIR:-}" \
   CRUMB_CODE="${4:-200}" NEED_CF="${5:-0}" BUILD_CODE="${BUILD_CODE:-201}" \
     python3 "$TMP/fakejenkins.py" "$PORT" >/dev/null 2>&1 &
   PID=$!
@@ -241,6 +256,51 @@ grep -q "amorçage NON tenté" <<<"$OUT" && ok "le refus d'amorçage est nommé"
 BUILD_CODE=400 start "provision-plan" 200
 OUT=$(cd "$REPO" && JENKINS_UI="$JU" JOBS=provision-plan BOOTSTRAP_JOBS=provision-plan bash "$S" 2>&1); RC=$?
 [ $RC -ne 0 ] && grep -q "DÉJÀ paramétré" <<<"$OUT" && ok "Jenkins répond 400 ⇒ échec du run, nommé « déjà paramétré » (jamais silencieux)" || ko "400 sur l'amorçage avalé (rc=$RC)"
+
+echo
+echo "== 15. la BRANCHE du <scm> : substituée à la pose, DÉCOUVERTE quand aucun knob ne la nomme =="
+# Les treize job.xml portent `__GIT_BASE__` et ne nomment plus aucune branche.
+# DISCRIMINANT : un dépôt nu dont la HEAD est `develop`, AUCUN GIT_BASE dans
+# l'environnement du poseur. Un poseur qui devinerait poserait « main » et cette
+# section rougirait ; il doit poser ce que le dépôt annonce.
+BODYDIR="$TMP/bodies"; mkdir -p "$BODYDIR"
+NU="$TMP/forge/depot.git"; W="$TMP/forge/w"; mkdir -p "$TMP/forge"
+git init -q --bare "$NU" && git -C "$NU" symbolic-ref HEAD refs/heads/develop
+git init -q "$W" && git -C "$W" checkout -q -b develop && : > "$W/x" && git -C "$W" add x \
+  && git -C "$W" -c user.email=t@t -c user.name=t commit -qm x \
+  && git -C "$W" remote add origin "$NU" && git -C "$W" push -q origin develop
+start "provision-apply" 200
+OUT=$(cd "$REPO" && env -i PATH="$PATH" HOME="$HOME" JENKINS_UI="$JU" JOBS=provision-apply \
+      GIT_HOST="$TMP/forge" GIT_REPO=depot bash "$S" 2>&1); RC=$?
+POSTE="$BODYDIR/provision-apply.posted.xml"
+[ $RC -eq 0 ] && ok "pose SANS GIT_BASE : la HEAD du dépôt suffit" || ko "pose sans knob en échec (rc=$RC) : $(printf '%s' "$OUT" | tail -2 | tr '\n' ' ')"
+grep -qF '<name>*/develop</name>' "$POSTE" 2>/dev/null \
+  && ok "le XML POSTÉ vise */develop — la branche vient de la HEAD annoncée, pas d'un littéral" \
+  || ko "le XML posté ne vise pas */develop : $(grep -o '<name>[^<]*</name>' "$POSTE" 2>/dev/null | head -2 | tr '\n' ' ')"
+grep -qF '__GIT_BASE__' "$POSTE" 2>/dev/null \
+  && ko "le placeholder __GIT_BASE__ survit dans le XML POSTÉ — Jenkins chercherait une branche de ce nom" \
+  || ok "aucun __GIT_BASE__ dans le XML posté (substitution fail-closed)"
+if sed 's#__GIT_BASE__#develop#g' "$REPO/ci/jenkins/provision-apply.job.xml" | cmp -s - "$POSTE"; then
+  ok "et le XML posté est la SOURCE, à cette seule substitution près (octet pour octet)"
+else
+  ko "le XML posté diffère de la source substituée — la mise en scène touche autre chose que la branche"
+fi
+# … le knob explicite gagne sur la HEAD.
+rm -f "$POSTE"; start "provision-apply" 200
+OUT=$(cd "$REPO" && env -i PATH="$PATH" HOME="$HOME" JENKINS_UI="$JU" JOBS=provision-apply \
+      GIT_HOST="$TMP/forge" GIT_REPO=depot GIT_BASE=master bash "$S" 2>&1); RC=$?
+[ $RC -eq 0 ] && grep -qF '<name>*/master</name>' "$POSTE" 2>/dev/null \
+  && ok "GIT_BASE=master (knob explicite) GAGNE sur la HEAD develop du dépôt" \
+  || ko "le knob ne gagne pas : rc=$RC, $(grep -o '<name>[^<]*</name>' "$POSTE" 2>/dev/null | head -2 | tr '\n' ' ')"
+# … et sans rien pour décider, RIEN n'est envoyé.
+rm -f "$POSTE"; start "provision-apply" 200
+OUT=$(cd "$REPO" && env -i PATH="$PATH" HOME="$HOME" JENKINS_UI="$JU" JOBS=provision-apply bash "$S" 2>&1); RC=$?
+[ $RC -ne 0 ] && grep -q 'BRANCHE_PAR_DEFAUT_INCONNUE' <<<"$OUT" \
+  && ok "ni knob ni dépôt à interroger ⇒ refus nommé (jamais un « main » de repli)" \
+  || ko "sans branche décidable : rc=$RC — $(printf '%s' "$OUT" | tail -2 | tr '\n' ' ')"
+[ -z "$(calls | grep -E 'POST')" ] && [ ! -f "$POSTE" ] \
+  && ok "et AUCUNE écriture n'est partie vers Jenkins" || ko "des écritures ont eu lieu malgré le refus"
+unset BODYDIR
 
 echo
 echo "======================================================================"

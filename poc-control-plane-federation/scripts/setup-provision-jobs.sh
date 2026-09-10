@@ -9,7 +9,8 @@
 # POURQUOI CE SCRIPT EXISTE. Depuis A0 (2026-09-02), PLUS AUCUN job de cette
 # chaîne ne porte de Groovy dans son XML : `provision-apply` (A2),
 # `provision-plan` et `provisioning-request` (A0) sont des COQUILLES « Pipeline
-# from SCM » (ci/Jenkinsfile.<job>) — leur logique suit `git push gitea main`.
+# from SCM » (ci/Jenkinsfile.<job>) — leur logique suit le push sur la branche
+# de base de la forge (`git push gitea HEAD`).
 # Mais la coquille — pointeur SCM + miroir du bloc <triggers>, qui GAGNE sur le
 # Jenkinsfile — se (re)pose toujours par ce script : une fois à la conversion,
 # puis à chaque changement de clé du webhook.
@@ -77,27 +78,61 @@ JOBS_SRC_DIR="${JOBS_SRC_DIR:-ci/jenkins}"
 # Disposition du dépôt (2026-09-03) : le <scriptPath> des coquilles porte le
 # préfixe du livrable. Plutôt que d'obliger un client à éditer treize XML à la
 # main, le POSEUR le compose — la coquille reste la source de vérité pour tout
-# le reste. La mise en scène est un NO-OP quand le préfixe est celui du XML :
-# le fichier posté est alors la source, octet pour octet (épreuve a0-wiring).
+# le reste. La mise en scène ne touche QUE ce que le poseur doit composer : le
+# préfixe, et depuis L3 la branche (__GIT_BASE__). Le XML posté est donc la
+# source à ces substitutions près, et à rien d'autre (épreuve a0-wiring, qui le
+# compare octet pour octet à la source ainsi substituée).
 # shellcheck source=scripts/lib/repo-layout.sh
 . "$(dirname "$0")/lib/repo-layout.sh" || { echo "ERREUR: lib/repo-layout.sh introuvable" >&2; exit 1; }
 repo_layout_init || exit 2
+# shellcheck source=scripts/lib/git-base.sh
+. "$(dirname "$0")/lib/git-base.sh" || { echo "ERREUR: lib/git-base.sh introuvable" >&2; exit 1; }
+
+# ── LA BRANCHE DU <scm> (L3, 2026-09-10) ─────────────────────────────────────
+# Les XML des jobs ne NOMMENT plus de branche : ils portent `__GIT_BASE__`, que
+# ce poseur substitue à la pose. Le littéral « main » qui s'y trouvait faisait
+# checkouter au job une branche INEXISTANTE chez un client dont la branche par
+# défaut est `master` — et cela se produit AVANT que le moindre script de la
+# chaîne ne démarre : rien, en aval, ne pouvait le rattraper ni le nommer.
+# La branche vient donc de l'autorité : knob GIT_BASE, sinon la HEAD annoncée
+# par le dépôt plateforme, sinon un REFUS nommé. Aucun défaut de site.
+# L'URL est celle du dépôt plateforme vue DEPUIS CE POSTE (GIT_HOST/GIT_REPO) :
+# celle qu'écrit le XML est vue depuis l'agent Jenkins (réseau docker) et n'est
+# pas joignable d'ici. Ni l'une ni l'autre n'est devinée — les deux sont des
+# knobs, et leur absence est un refus que la lib formule elle-même.
+GIT_HOST="${GIT_HOST:-}"
+GIT_REPO="${GIT_REPO:-}"
+PLATEFORME_URL=""
+[ -n "$GIT_HOST" ] && [ -n "$GIT_REPO" ] && PLATEFORME_URL="${GIT_HOST%/}/${GIT_REPO}.git"
+git_base_init "$PLATEFORME_URL" || exit 2
+
 STAGE_DIR=""   # créé à la demande, seulement si une substitution est nécessaire
 
 # stage_xml <job> <xml source> → chemin du XML À POSTER (source, ou copie ajustée)
+# DEUX substitutions indépendantes : la BRANCHE (__GIT_BASE__, par l'autorité,
+# fail-closed) et le PRÉFIXE du livrable dans <scriptPath>. Une source qui n'a
+# besoin d'aucune des deux part telle quelle, octet pour octet.
 stage_xml() {
-  local j="$1" src="$2" veut="${SUB_PFX}ci/Jenkinsfile.${1}" a
+  local j="$1" src="$2" veut="${SUB_PFX}ci/Jenkinsfile.${1}" a base rep="" dst
   a=$(sed -n 's#.*<scriptPath>\([^<]*\)</scriptPath>.*#\1#p' "$src" | head -1)
-  # pas de scriptPath (coquille Groovy inline), ou deja le bon : la source suffit
-  if [ -z "$a" ] || [ "$a" = "$veut" ]; then printf '%s' "$src"; return 0; fi
-  # le nom du Jenkinsfile peut differer du nom du job : on ne remplace QUE le prefixe
-  local base="${a##*/}" rep
-  case "$a" in */*) : ;; *) printf '%s' "$src"; return 0 ;; esac
-  rep="${SUB_PFX}ci/${base}"
-  [ "$rep" = "$a" ] && { printf '%s' "$src"; return 0; }
+  # pas de scriptPath (coquille Groovy inline), ou deja le bon : rien a reecrire
+  if [ -n "$a" ] && [ "$a" != "$veut" ]; then
+    # le nom du Jenkinsfile peut differer du nom du job : on ne remplace QUE le prefixe
+    base="${a##*/}"
+    case "$a" in */*) rep="${SUB_PFX}ci/${base}" ;; esac
+    [ "$rep" = "$a" ] && rep=""
+  fi
+  if [ -z "$rep" ] && ! grep -qF '__GIT_BASE__' "$src"; then printf '%s' "$src"; return 0; fi
   [ -n "$STAGE_DIR" ] || { STAGE_DIR=$(mktemp -d) || return 1; }
-  sed "s#<scriptPath>[^<]*</scriptPath>#<scriptPath>${rep}</scriptPath>#" "$src" > "$STAGE_DIR/${j}.job.xml" || return 1
-  printf '%s' "$STAGE_DIR/${j}.job.xml"
+  dst="$STAGE_DIR/${j}.job.xml"
+  # La branche d'abord : si le placeholder survit, RIEN n'est mis en scène et le
+  # refus est déjà nommé par la lib (XML_PLACEHOLDER_RESTANT).
+  git_base_xml_substituer "$src" "$dst" || return 1
+  if [ -n "$rep" ]; then
+    sed "s#<scriptPath>[^<]*</scriptPath>#<scriptPath>${rep}</scriptPath>#" "$dst" > "${dst}.tmp" \
+      && mv "${dst}.tmp" "$dst" || return 1
+  fi
+  printf '%s' "$dst"
 }
 
 ok(){   printf '  ✅ %s\n' "$*"; }
@@ -295,8 +330,8 @@ echo
 if [ "$RC" = "0" ]; then
   echo "OK — les jobs demandés sont alignés sur le dépôt."
   echo "Rappel : ces jobs CLONENT ci/stoa-labs sur Gitea. Les scripts qu'ils"
-  echo "appellent doivent y être poussés (git push gitea main), sans quoi la"
-  echo "config à jour exécuterait du code périmé."
+  echo "appellent doivent y être poussés sur ${GIT_BASE} (git push gitea HEAD),"
+  echo "sans quoi la config à jour exécuterait du code périmé."
 else
   echo "TERMINÉ AVEC DES ÉCARTS — voir ci-dessus." >&2
 fi

@@ -18,7 +18,7 @@
   est donc copié TEL QUEL par setup-team-onboard-jobs.sh.
 -->
 <flow-definition plugin="workflow-job">
-  <description>Formulaire : demander la PROMOTION d'une API — ouvre la PR promote/&lt;api&gt;-&lt;env&gt; portant le marqueur apis/&lt;api&gt;.deploy.&lt;env&gt;.yaml sur le dépôt d'équipe. NE DÉPLOIE RIEN : la décision est le merge (ADR-081) ; le merge déclenche team-promote (pause nominative + garde d'identité). ARCHIVE_SHA256 est FACULTATIF : vide, il est lu sur main (manifeste épinglé par api-promote-export) ou hérité du palier source. PIPELINE FROM SCM : le pipeline est ci/Jenkinsfile.api-promote-request (branche main) — ce job ne contient AUCUN Groovy.</description>
+  <description>Formulaire : demander la PROMOTION d'une API — ouvre la PR promote/&lt;api&gt;-&lt;env&gt; portant le marqueur apis/&lt;api&gt;.deploy.&lt;env&gt;.yaml sur le dépôt d'équipe. NE DÉPLOIE RIEN : la décision est le merge (ADR-081) ; le merge déclenche team-promote (pause nominative + garde d'identité). ARCHIVE_SHA256 est FACULTATIF : vide, il est lu sur __GIT_BASE__ (manifeste épinglé par api-promote-export) ou hérité du palier source. PIPELINE FROM SCM : le pipeline est ci/Jenkinsfile.api-promote-request (branche __GIT_BASE__) — ce job ne contient AUCUN Groovy.</description>
   <keepDependencies>false</keepDependencies>
   <properties>
     <hudson.model.ParametersDefinitionProperty>
@@ -60,7 +60,7 @@
         </hudson.model.StringParameterDefinition>
         <hudson.model.StringParameterDefinition>
           <name>ARCHIVE_SHA256</name>
-          <description>FACULTATIF. Vide : lu sur main (manifeste épinglé) depuis dev, hérité du palier source au-delà. Renseigné : depuis dev il gagne avec avertissement (re-promotion d'une archive antérieure) ; au-delà, une contradiction avec la source est refusée (DIGEST_CONTREDIT_SOURCE).</description>
+          <description>FACULTATIF. Vide : lu sur __GIT_BASE__ (manifeste épinglé) depuis dev, hérité du palier source au-delà. Renseigné : depuis dev il gagne avec avertissement (re-promotion d'une archive antérieure) ; au-delà, une contradiction avec la source est refusée (DIGEST_CONTREDIT_SOURCE).</description>
           <defaultValue></defaultValue>
         </hudson.model.StringParameterDefinition>
       </parameterDefinitions>
@@ -76,7 +76,7 @@
       </userRemoteConfigs>
       <branches>
         <hudson.plugins.git.BranchSpec>
-          <name>*/main</name>
+          <name>*/__GIT_BASE__</name>
         </hudson.plugins.git.BranchSpec>
       </branches>
       <doGenerateSubmoduleConfigurations>false</doGenerateSubmoduleConfigurations>

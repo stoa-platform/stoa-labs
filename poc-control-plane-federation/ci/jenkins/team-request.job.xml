@@ -36,7 +36,7 @@
   joignable a chaque pose.
 -->
 <flow-definition plugin="workflow-job">
-  <description>Formulaire : onboarder une équipe → PR onboard/* + plan commenté. La décision reste le MERGE (ADR-081) ; le dépôt et les objets naissent au merge (job team-apply). PIPELINE FROM SCM : le pipeline est ci/Jenkinsfile.team-request, chargé depuis le dépôt plateforme (branche main) — ce job ne contient AUCUN Groovy.</description>
+  <description>Formulaire : onboarder une équipe → PR onboard/* + plan commenté. La décision reste le MERGE (ADR-081) ; le dépôt et les objets naissent au merge (job team-apply). PIPELINE FROM SCM : le pipeline est ci/Jenkinsfile.team-request, chargé depuis le dépôt plateforme (branche __GIT_BASE__) — ce job ne contient AUCUN Groovy.</description>
   <keepDependencies>false</keepDependencies>
   <properties>
     <hudson.model.ParametersDefinitionProperty>
@@ -79,7 +79,7 @@
       </userRemoteConfigs>
       <branches>
         <hudson.plugins.git.BranchSpec>
-          <name>*/main</name>
+          <name>*/__GIT_BASE__</name>
         </hudson.plugins.git.BranchSpec>
       </branches>
       <doGenerateSubmoduleConfigurations>false</doGenerateSubmoduleConfigurations>

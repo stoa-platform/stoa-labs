@@ -21,7 +21,7 @@
   builds conserve).
 -->
 <flow-definition plugin="workflow-job">
-  <description>Apply post-merge d'une DEMANDE D'APPLICATION : une PR provision/&lt;app&gt;-&lt;env&gt; FUSIONNEE est RECONCILIEE avec la forge (Gitea ou GitLab -- le payload ne fait pas foi), ouvre une DEMANDE EN ATTENTE (input), puis -- identite Vault nominative confrontee a l'auteur du merge -- apply via selfservice-app-deploy AU SHA MERGE (A2), jamais au dernier main ; la PR recoit resultat, identite, SHA et digest. PIPELINE FROM SCM : ci/Jenkinsfile.provision-apply, charge depuis le depot plateforme (branche main) -- ce job ne contient AUCUN Groovy.</description>
+  <description>Apply post-merge d'une DEMANDE D'APPLICATION : une PR provision/&lt;app&gt;-&lt;env&gt; FUSIONNEE est RECONCILIEE avec la forge (Gitea ou GitLab -- le payload ne fait pas foi), ouvre une DEMANDE EN ATTENTE (input), puis -- identite Vault nominative confrontee a l'auteur du merge -- apply via selfservice-app-deploy AU SHA MERGE (A2), jamais au dernier __GIT_BASE__ ; la PR recoit resultat, identite, SHA et digest. PIPELINE FROM SCM : ci/Jenkinsfile.provision-apply, charge depuis le depot plateforme (branche __GIT_BASE__) -- ce job ne contient AUCUN Groovy.</description>
   <keepDependencies>false</keepDependencies>
   <properties>
     <org.jenkinsci.plugins.workflow.job.properties.DisableConcurrentBuildsJobProperty/>
@@ -84,7 +84,7 @@
       </userRemoteConfigs>
       <branches>
         <hudson.plugins.git.BranchSpec>
-          <name>*/main</name>
+          <name>*/__GIT_BASE__</name>
         </hudson.plugins.git.BranchSpec>
       </branches>
       <doGenerateSubmoduleConfigurations>false</doGenerateSubmoduleConfigurations>

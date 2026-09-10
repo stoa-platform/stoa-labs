@@ -248,27 +248,31 @@ python3 -c "import xml.etree.ElementTree as T; T.parse('$TMP/frag.xml')" \
   && ok "le fragment produit est du XML bien formé" || ko "fragment XML cassé"
 
 echo
-echo "== 5. jobs SANS placeholder -> pose octet pour octet identique =="
+echo "== 5. jobs SANS placeholder CHOICES -> posés tels quels, à la BRANCHE près =="
+# L3 (2026-09-10) : les XML ne nomment plus de branche, ils portent
+# __GIT_BASE__ que le délégué substitue. « Octet pour octet » se dit donc
+# désormais « la source, à cette seule substitution près » — et le knob
+# GIT_BASE=master (zéro réseau) tient lieu de branche pour ce faux Jenkins.
 : > "$TMP/calls.log"; rm -rf "$BODYDIR"/*
-OUT=$(cd "$REPO" && JENKINS_UI="$JU" JOBS="team-request team-apply" bash "$SETUP" 2>&1); RC=$?
-[ "$RC" -eq 0 ] && ok "pose réussie (aucun placeholder -> aucun besoin de Gitea/token)" || ko "échec (rc=$RC) : $OUT"
-if diff -q "$REPO/ci/jenkins/team-request.job.xml" "$BODYDIR/team-request.posted.xml" >/dev/null 2>&1; then
-  ok "team-request.job.xml : identique octet pour octet"
-else
-  ko "team-request.job.xml : DIVERGENCE (voir diff)"
-  diff "$REPO/ci/jenkins/team-request.job.xml" "$BODYDIR/team-request.posted.xml" | head -5
-fi
-if diff -q "$REPO/ci/jenkins/team-apply.job.xml" "$BODYDIR/team-apply.posted.xml" >/dev/null 2>&1; then
-  ok "team-apply.job.xml : identique octet pour octet"
-else
-  ko "team-apply.job.xml : DIVERGENCE (voir diff)"
-  diff "$REPO/ci/jenkins/team-apply.job.xml" "$BODYDIR/team-apply.posted.xml" | head -5
-fi
+OUT=$(cd "$REPO" && JENKINS_UI="$JU" JOBS="team-request team-apply" GIT_BASE=master bash "$SETUP" 2>&1); RC=$?
+[ "$RC" -eq 0 ] && ok "pose réussie (aucun placeholder CHOICES -> aucun besoin de Gitea/token)" || ko "échec (rc=$RC) : $OUT"
+for J in team-request team-apply; do
+  sed 's#__GIT_BASE__#master#g' "$REPO/ci/jenkins/$J.job.xml" > "$TMP/$J.attendu.xml"
+  if diff -q "$TMP/$J.attendu.xml" "$BODYDIR/$J.posted.xml" >/dev/null 2>&1; then
+    ok "$J.job.xml : la source, à la substitution de branche près (octet pour octet)"
+  else
+    ko "$J.job.xml : DIVERGENCE (voir diff)"
+    diff "$TMP/$J.attendu.xml" "$BODYDIR/$J.posted.xml" | head -5
+  fi
+  grep -qF '__GIT_BASE__' "$BODYDIR/$J.posted.xml" \
+    && ko "$J.job.xml : le placeholder survit dans le XML POSTÉ" \
+    || ok "$J.job.xml : aucun __GIT_BASE__ dans le XML posté"
+done
 
 echo
 echo "== 6. job ABSENT du dépôt dans JOBS -> toléré, pas un échec =="
 : > "$TMP/calls.log"; rm -rf "$BODYDIR"/*
-OUT=$(cd "$REPO" && JENKINS_UI="$JU" JOBS="team-request api-request-inexistant-t3" bash "$SETUP" 2>&1); RC=$?
+OUT=$(cd "$REPO" && JENKINS_UI="$JU" JOBS="team-request api-request-inexistant-t3" GIT_BASE=master bash "$SETUP" 2>&1); RC=$?
 [ "$RC" -eq 0 ] && ok "succès malgré l'absence" || ko "échec (rc=$RC) : $OUT"
 grep -q "ignoré (pas encore livré)" <<<"$OUT" && ok "l'absence est signalée" || ko "absence non signalée : $OUT"
 [ -f "$BODYDIR/team-request.posted.xml" ] && ok "le job PRÉSENT (team-request) a quand même été posé" || ko "team-request non posé"

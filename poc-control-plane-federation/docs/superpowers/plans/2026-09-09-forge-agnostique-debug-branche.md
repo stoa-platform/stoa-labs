@@ -100,13 +100,14 @@ L1 (1 j) → **L5 phase 1** (2-3 j, c'est ce qui débloque le client) → L3 (2-
 
 **Files:** create `scripts/lib/git-base.sh`, `scripts/test-git-base.sh` ; modify les 10 scripts, 3 poseurs de XML, 13 XML, `setup-jenkins-globals.sh:122`.
 
-- [ ] **RED** `test-git-base.sh` : bare HEAD→`master`, aucun knob ⇒ `GIT_BASE=master` ; bare VIDE ⇒ `REFUS: BRANCHE_PAR_DEFAUT_INCONNUE` (jamais `main` deviné) ; `GIT_BASE=develop` explicite ⇒ gagne + ligne d'information si la découverte diverge ; shim `git` sur le PATH ⇒ avec knob explicite AUCUN `ls-remote` émis ; auth = même enveloppe que le clone (`GIT_CONFIG_COUNT`/askpass), la lib ne porte aucun secret.
-- [ ] Précédence : `GIT_BASE` non vide et ≠ `auto` > `git ls-remote --symref <url> HEAD` > refus. Sentinelle `auto` (Jenkins n'exporte pas une variable vide).
-- [ ] Trois familles de dépôts (plateforme, gouvernance, équipe) : `git_base_of <url>` mémoïsé par URL — un `GIT_BASE` global juste pour la plateforme peut être faux pour le dépôt d'équipe.
-- [ ] Les 33 sites exécutés ⇒ `"$GIT_BASE"` / `origin/$GIT_BASE` / `os.environ["GIT_BASE"]` ; les 13 XML ⇒ placeholder `*/__GIT_BASE__` substitué à la pose ; les 155 messages ⇒ interpolés (un refus qui dit « sur main » ment à un client `master`).
-- [ ] **Discriminant** : fixtures des suites a2/a6/a7 basculées `symbolic-ref HEAD refs/heads/master` SANS poser `GIT_BASE` ⇒ 0 rouge.
-- [ ] Hors lot, dette nommée : 41 `main` Go dans `labctl/internal/governance` et `cmd/governance-api` (chaîne P2).
-- [ ] Commit.
+- [x] **RED** `test-git-base.sh` : bare HEAD→`master`, aucun knob ⇒ `GIT_BASE=master` ; bare VIDE ⇒ `REFUS: BRANCHE_PAR_DEFAUT_INCONNUE` (jamais `main` deviné) ; `GIT_BASE=develop` explicite ⇒ gagne + ligne d'information si la découverte diverge ; shim `git` sur le PATH ⇒ avec knob explicite AUCUN `ls-remote` émis ; auth = même enveloppe que le clone (`GIT_CONFIG_COUNT`/askpass), la lib ne porte aucun secret.
+- [x] Précédence : `GIT_BASE` non vide et ≠ `auto` > `git ls-remote --symref <url> HEAD` > refus. Sentinelle `auto` (Jenkins n'exporte pas une variable vide).
+- [x] Trois familles de dépôts (plateforme, gouvernance, équipe) : `git_base_of <url>` mémoïsé par URL — un `GIT_BASE` global juste pour la plateforme peut être faux pour le dépôt d'équipe.
+- [x] Les 33 sites exécutés ⇒ `"$GIT_BASE"` / `origin/$GIT_BASE` / `os.environ["GIT_BASE"]` ; les 13 XML ⇒ placeholder `*/__GIT_BASE__` substitué à la pose ; les 155 messages ⇒ interpolés (un refus qui dit « sur main » ment à un client `master`).
+- [x] **Discriminant** : fixtures des suites a2/a6/a7 basculées `symbolic-ref HEAD refs/heads/master` SANS poser `GIT_BASE` ⇒ 0 rouge.
+- [x] Hors lot, dette nommée : le Go de `labctl/` (46 `main` hors tests, surtout `cmd/governance-api`) et le paramètre `CARTO_PAGES_BRANCH` de `Jenkinsfile.carto` — les deux consignés dans ENVIRONNEMENTS.md § « La branche par défaut ».
+- [x] **Porte** `ci/lint-branch-literals.sh` (ajout au plan, sous-lot 4c) : sous l'étape 2 de `make lint-ci`, elle refuse tout nom de branche écrit en dur dans les fichiers livrés — le littéral exécuté (A1) ET le mot `main` nu dans un message (A2). Exemptés nommés dans le fichier ; section M de mutation.
+- [x] Commit (4a `d6c9515`+`2a066e5`, 4b `8964c69`+`7b6c869`, 4c ci-dessous).
 
 ### Task 5 (L2) : `ci/lib/dbg.sh` — verbeux sans fuite
 

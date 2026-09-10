@@ -112,6 +112,31 @@
 #                           déplace (ex. https://forge.client/gitlab/api/v4).
 #                           ABSENTE, la lib compose GIT_HOST + /api/v1 ou /api/v4.
 #
+# LA BRANCHE PAR DÉFAUT (GIT_BASE), et pourquoi elle est OPTIONNELLE
+# Un client dont la branche par défaut est `master` a perdu deux jours sur des
+# refus qui nommaient une branche inexistante chez lui : la chaîne écrivait
+# « main » en dur. Une seule autorité en décide désormais,
+# scripts/lib/git-base.sh, et son contrat tient en deux lignes :
+#
+#   GIT_BASE                POSÉE (et ≠ `auto`), elle GAGNE : aucune HEAD n'est
+#                           consultée, et si le dépôt en annonce une autre,
+#                           c'est le knob qui l'emporte. ABSENTE, vide ou
+#                           `auto`, la branche est DÉCOUVERTE sur la HEAD que le
+#                           dépôt annonce (`git ls-remote --symref <url> HEAD`).
+#                           Découverte impossible — dépôt injoignable, dépôt
+#                           VIDE, HEAD sans forme de nom de branche — la chaîne
+#                           REFUSE, nommément (BRANCHE_PAR_DEFAUT_INCONNUE) :
+#                           « main » n'est jamais deviné en silence.
+#
+# Ne la poser ici que pour en SORTIR : un dépôt dont la HEAD ne désigne pas la
+# branche d'intégration, ou une bascule préparée à l'avance. Le knob vaut pour
+# le dépôt PLATEFORME ; la gouvernance et les dépôts d'équipe se voient demander
+# LEUR branche, dépôt par dépôt (git_base_of) — trois familles, trois HEAD.
+# ⚠ PRÉREQUIS GITLAB : la HEAD d'un projet GitLab est sa « Default branch »
+# (Settings → Repository) — c'est elle qu'annonce `ls-remote --symref`. Un
+# projet dont la default branch n'est pas celle qu'on veut voir déployer doit
+# être corrigé là, ou nommer GIT_BASE ici.
+#
 # Les webhooks des jobs provision-plan / provision-apply lisent, eux, les DEUX
 # formes de payload (Gitea « pull_request », GitLab « Merge Request Hook ») sans
 # knob : côté forge, pointer le hook sur la même URL
@@ -163,7 +188,10 @@ GOVERNANCE_REPO GOVERNANCE_PATH
 # rapport qui crie au loup ne se lit plus. Le visage de la forge en fait
 # partie : absent, la chaîne parle Gitea (FORGE_KIND) et la lib forge-api
 # dérive l'en-tête et la base d'API du visage (FORGE_API_AUTH, FORGE_API_BASE).
-OPTIONNELLES="APIM_PREFLIGHT APIM_PREFLIGHT_URL APIM_PREFLIGHT_CODES APIM_PREFLIGHT_TRIES FORGE_KIND FORGE_API_AUTH FORGE_API_BASE"
+# La branche par défaut en fait partie depuis L3 : absente (ou `auto`), la
+# chaîne la DÉCOUVRE sur la HEAD du dépôt — l'annoncer « manquante » ferait
+# poser un littéral, c'est-à-dire exactement le défaut qu'on vient de retirer.
+OPTIONNELLES="APIM_PREFLIGHT APIM_PREFLIGHT_URL APIM_PREFLIGHT_CODES APIM_PREFLIGHT_TRIES FORGE_KIND FORGE_API_AUTH FORGE_API_BASE GIT_BASE"
 
 # ── le canal : console de script Jenkins, jeton par fichier ──────────────────
 CFG="$TMP/curl.cfg"

@@ -76,8 +76,8 @@ grep -q '<scriptPath>poc-control-plane-federation/ci/Jenkinsfile.provision-apply
   && ok "scriptPath = poc-control-plane-federation/ci/Jenkinsfile.provision-apply" || ko "scriptPath divergent"
 grep -q '<url>http://gitea:3000/ci/stoa-labs.git</url>' "$JOB" \
   && ok "dépôt plateforme vu de l'agent (http://gitea:3000/ci/stoa-labs.git)" || ko "URL SCM inattendue"
-grep -q '<name>\*/main</name>' "$JOB" \
-  && ok "branche */main (un pipeline sur une branche de feature serait éditable hors revue)" || ko "branche SCM ≠ */main"
+grep -qF '<name>*/__GIT_BASE__</name>' "$JOB" \
+  && ok "branche = placeholder __GIT_BASE__, substitué à la pose (la source ne nomme AUCUNE branche)" || ko "branche SCM ≠ */__GIT_BASE__"
 grep -q '<lightweight>false</lightweight>' "$JOB" \
   && ok "lightweight=false (le workspace porte scripts/ et ci/lib/)" || ko "lightweight absent ou true"
 grep -q 'DisableConcurrentBuildsJobProperty' "$JOB" \

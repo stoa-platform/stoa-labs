@@ -457,8 +457,8 @@ grep -qF '<lightweight>false</lightweight>' "$JOB" \
 grep -qF '<url>http://gitea:3000/ci/stoa-labs.git</url>' "$JOB" \
   && ok "l'URL du checkout d'origine survit dans <scm> (http://gitea:3000/ci/stoa-labs.git)" \
   || ko "URL du <scm> absente ou divergente de celle du job Groovy"
-grep -qF '<name>*/main</name>' "$JOB" \
-  && ok "branche */main dans <scm> — même branche que le \`git branch: 'main'\` d'origine" \
+grep -qF '<name>*/__GIT_BASE__</name>' "$JOB" \
+  && ok "branche du <scm> = placeholder __GIT_BASE__, substitué à la pose — la source ne nomme aucune branche" \
   || ko "branche du <scm> absente ou divergente"
 if printf '%s\n' "$JF_CODE" | grep -q 'git url:'; then
   ko "un \`git url:\` explicite subsiste dans le Jenkinsfile — le checkout doit rester celui, implicite, de Declarative"

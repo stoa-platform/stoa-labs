@@ -1240,9 +1240,8 @@ et toute cause est expurgée des secrets connus.
 - les webhooks vers Jenkins autorisés (« Allow requests to the local network »
   si Jenkins est une adresse privée) ; les deux payloads (Gitea `pull_request`,
   GitLab `merge_request`) sont lus par les mêmes jobs, sans knob ;
-- la branche par défaut (**`master`** chez ce client, pas `main`) : `GIT_BASE`
-  la nomme ; sa découverte automatique est `scripts/lib/git-base.sh` (L3, en
-  cours de câblage) ;
+- la branche par défaut (**`master`** chez ce client, pas `main`) : voir
+  « La branche par défaut » ci-dessous — plus rien ne la devine ;
 - CE suffit pour la chaîne app-request ; la protection de branche par
   utilisateurs/patterns est Premium (ADR-081, dette nommée) ;
 - **GitLab calcule le diff d'une MR en asynchrone** (mesuré 17.11 : `prepared_at`
@@ -1256,6 +1255,64 @@ et toute cause est expurgée des secrets connus.
   en **500** (gitaly « waiting for receive-pack: exit status 128 », 53 ms —
   mesuré le 2026-09-09 sur un push de 11 Mio ; le même buffé passe). Même
   leçon qu'avec Gitea (mémoire « push gitea > 1 Mo exige http.postBuffer »).
+
+### La branche par défaut (`GIT_BASE`) — L3, 2026-09-10
+
+La chaîne écrivait `main` en dur à 46 endroits exécutés et dans 155 messages.
+Chez ce client la branche est `master` : deux jours perdus à lire des refus qui
+nommaient une branche inexistante. Une **seule autorité** en décide désormais,
+`scripts/lib/git-base.sh`, et son contrat tient en trois lignes :
+
+1. **`GIT_BASE` posée** (et ≠ `auto`) : elle **gagne**. Aucune HEAD n'est
+   consultée — zéro appel réseau — et si le dépôt en annonce une autre, c'est le
+   knob qui l'emporte. Le knob doit avoir la forme d'un nom de branche, sinon
+   c'est un refus (pas un `clone -b -x` en aval).
+2. **`GIT_BASE` absente, vide ou `auto`** : la branche est **découverte** —
+   `git ls-remote --symref <url> HEAD`, motif prouvé sur Gitea, GitLab, GitHub
+   et un dépôt nu local. `auto` existe parce que Jenkins n'exporte pas au shell
+   une variable de valeur **vide** : « découvrir » doit pouvoir se dire avec un
+   mot.
+3. **Rien de découvrable** — dépôt injoignable, dépôt **vide** (aucun commit),
+   HEAD sans forme de nom de branche : **`REFUS: BRANCHE_PAR_DEFAUT_INCONNUE`**,
+   rc 2. `main` n'est **jamais** deviné en silence.
+
+`GIT_BASE` est donc **OPTIONNELLE** dans `setup-jenkins-globals.sh` : ne la poser
+que pour **sortir** de la HEAD du dépôt. Elle vaut pour le dépôt **plateforme** ;
+la gouvernance et les dépôts d'équipe se voient demander **leur** branche, dépôt
+par dépôt (`git_base_of`) — trois familles, trois HEAD, et la base d'une PR est
+celle du dépôt **cible**.
+
+**Les XML des jobs ne nomment plus aucune branche.** Les treize
+`ci/jenkins/*.job.xml` portent `<name>*/__GIT_BASE__</name>` ; le **poseur**
+(`setup-provision-jobs.sh` et ses appelants, `setup-carto-job.sh`) substitue à la
+pose, et **refuse** (`XML_PLACEHOLDER_RESTANT`) si le placeholder survit — sinon
+Jenkins chercherait une branche de ce nom. Même règle pour
+`setup-selfservice-job.sh` (knob local `BRANCH`) et `setup-repo-protections.sh`
+(knob local `PROTECT_BRANCH`) : le knob local gagne, sans lui l'autorité décide,
+et il n'existe **aucun défaut de site**.
+
+**Prérequis GitLab** : la HEAD d'un projet GitLab est sa **Default branch**
+(Settings → Repository) — c'est elle qu'annonce `ls-remote --symref`. Un projet
+dont la default branch n'est pas celle qu'on veut voir déployer doit être
+corrigé **là**, ou nommer `GIT_BASE`.
+
+**La porte** : `ci/lint-branch-literals.sh` (sous l'étape 2 de `make lint-ci`)
+refuse tout nom de branche écrit en dur dans les fichiers livrés — le littéral
+exécuté (`-b main`, `origin/main`, `*/main`…) **et** le mot `main` nu dans un
+message, qui est ce qui a coûté les deux jours. Exemptés nommément : les harnais
+de test (leurs fixtures NOMMENT des branches, c'est leur discriminant), les
+outils de lab, et l'autorité elle-même.
+
+**Deux dettes nommées, hors périmètre L3 :**
+
+- `labctl/` (Go) porte encore 46 occurrences de `main` hors tests (`package
+  main` et `func main` exclus) — surtout dans `governance-api`, qui lit son
+  registre git sur une branche écrite en dur. Le moteur ne parle pas à la forge
+  du client, mais ces valeurs par défaut n'ont pas été relues ; la porte de lint
+  ne couvre pas le Go ;
+- `ci/Jenkinsfile.carto` garde `CARTO_PAGES_BRANCH` avec un défaut `'main'` :
+  c'est la branche **Pages** du dépôt carto, un paramètre documenté du job, sans
+  rapport avec la branche de la chaîne. Exempté **nommément** par la porte.
 
 **Au lab** : `docker compose -f docker-compose.gitlab.yml up -d gitlab` (seul,
 3-5 min au premier boot), `bash scripts/setup-gitlab-lab.sh` → `.env.gitlab-lab`

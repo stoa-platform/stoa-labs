@@ -22,7 +22,7 @@
   builds conserve).
 -->
 <flow-definition plugin="workflow-job">
-  <description>Fermeture de boucle : PR de provisioning OUVERTE (webhook de la forge, Gitea ou GitLab) -&gt; plan self-service LECTURE SEULE sur la branche (identite de job, aucune mutation, aucun secret) -&gt; verdict commente sur la PR, visible AVANT la decision humaine (le merge). PIPELINE FROM SCM : ci/Jenkinsfile.provision-plan, charge depuis le depot plateforme (branche main) -- ce job ne contient AUCUN Groovy.</description>
+  <description>Fermeture de boucle : PR de provisioning OUVERTE (webhook de la forge, Gitea ou GitLab) -&gt; plan self-service LECTURE SEULE sur la branche (identite de job, aucune mutation, aucun secret) -&gt; verdict commente sur la PR, visible AVANT la decision humaine (le merge). PIPELINE FROM SCM : ci/Jenkinsfile.provision-plan, charge depuis le depot plateforme (branche __GIT_BASE__) -- ce job ne contient AUCUN Groovy.</description>
   <keepDependencies>false</keepDependencies>
   <properties>
     <org.jenkinsci.plugins.workflow.job.properties.DisableConcurrentBuildsJobProperty/>
@@ -73,7 +73,7 @@
       </userRemoteConfigs>
       <branches>
         <hudson.plugins.git.BranchSpec>
-          <name>*/main</name>
+          <name>*/__GIT_BASE__</name>
         </hudson.plugins.git.BranchSpec>
       </branches>
       <doGenerateSubmoduleConfigurations>false</doGenerateSubmoduleConfigurations>

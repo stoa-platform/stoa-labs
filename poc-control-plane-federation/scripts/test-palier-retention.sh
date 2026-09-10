@@ -891,25 +891,58 @@ grep -Eq 'dev\|rec\|int\|prod' "$TMP/c21_mut_plan_nc" \
   && ok "㉑ter(b) liste en dur réinjectée dans provision-plan.sh ⇒ le détecteur de ㉑bis la VOIT" \
   || bad "㉑ter(b) la réinjection passe inaperçue — ㉑bis est vacante sur provision-plan.sh"
 
-echo "== ㉑quater le job selfservice ride main, plus une branche de feature (M2) =="
+echo "== ㉑quater la branche du job selfservice vient de GIT_BASE, jamais d'un littéral (M2 + L3) =="
+# G4 (M2) disait : le job doit rider la branche de BASE, pas une branche de
+# feature (éditable hors revue). L3 (2026-09-10) ajoute POURQUOI le littéral ne
+# convient pas non plus : `BRANCH="${BRANCH:-main}"` était un défaut de SITE, et
+# chez un client sur `master` il posait un job dont le checkout ne trouve rien.
+# La formulation change donc de camp : on n'EXIGE plus le mot « main », on
+# INTERDIT tout nom de branche écrit en dur, et on prouve la résolution en la
+# FAISANT tourner contre un dépôt nu dont la HEAD est `master`.
 SSJ="scripts/setup-selfservice-job.sh"
 if [ ! -f "$SSJ" ]; then
   bad "㉑quater $SSJ introuvable — les assertions BRANCH seraient vaines"
 else
   nc_strict "$SSJ" > "$TMP/ssj21_nc"
-  grep -q 'BRANCH="${BRANCH:-main}"' "$TMP/ssj21_nc" \
-    && ok "㉑quater défaut BRANCH=main (un pipeline sur branche non protégée est éditable hors revue)" \
-    || bad "㉑quater le job selfservice ride encore une branche de feature par défaut"
+  detecteur_litteral(){ grep -Eq 'BRANCH="\$\{BRANCH:-[^}]+\}"|<name>\*/(main|master)<' "$1"; }
+  detecteur_litteral "$TMP/ssj21_nc" \
+    && bad "㉑quater le poseur écrit encore un nom de branche en dur" \
+    || ok "㉑quater aucun nom de branche en dur dans le poseur (ni défaut BRANCH, ni <name>*/… littéral)"
+  grep -q 'git_base_init "\$GIT_URL"' "$TMP/ssj21_nc" \
+    && ok "㉑quater-bis la branche est DEMANDÉE à l'autorité (git_base_init sur GIT_URL)" \
+    || bad "㉑quater-bis le poseur ne passe pas par git_base.sh — d'où viendrait la branche ?"
 
-  echo "== ㉑quinquies mutation : BRANCH régresse vers une branche de feature ⇒ ㉑quater rougirait =="
-  sed 's/BRANCH="\${BRANCH:-main}"/BRANCH="\${BRANCH:-feat\/selfservice-app-adr078}"/' "$SSJ" > "$TMP/ssj21_mut"
+  # DISCRIMINANT VIVANT : un dépôt nu qui annonce `master`, AUCUN GIT_BASE dans
+  # l'environnement. Un poseur qui devinerait rendrait `*/main`.
+  NU21="$TMP/ss21/depot.git"; W21="$TMP/ss21/w"; mkdir -p "$TMP/ss21"
+  git init -q --bare "$NU21" && git -C "$NU21" symbolic-ref HEAD refs/heads/master
+  git init -q "$W21" && git -C "$W21" checkout -q -b master && : > "$W21/x" && git -C "$W21" add x \
+    && git -C "$W21" -c user.email=t@t -c user.name=t commit -qm x \
+    && git -C "$W21" remote add origin "$NU21" && git -C "$W21" push -q origin master
+  ( env -i PATH="$PATH" HOME="$HOME" GIT_URL="$NU21" bash "$SSJ" --print ) >"$TMP/ss21.xml" 2>"$TMP/ss21.err"
+  RC=$?
+  { [ "$RC" -eq 0 ] && grep -qF '<name>*/master</name>' "$TMP/ss21.xml"; } \
+    && ok "㉑quater-ter --print sans knob : la HEAD du dépôt (master) décide — */master dans le <scm>" \
+    || bad "㉑quater-ter rc=$RC, <scm>=$(grep -o '<name>[^<]*</name>' "$TMP/ss21.xml" 2>/dev/null | head -1) : $(tail -1 "$TMP/ss21.err")"
+  ( env -i PATH="$PATH" HOME="$HOME" GIT_URL="$NU21" BRANCH=develop bash "$SSJ" --print ) >"$TMP/ss21b.xml" 2>/dev/null
+  grep -qF '<name>*/develop</name>' "$TMP/ss21b.xml" \
+    && ok "㉑quater-quater le knob LOCAL BRANCH=develop gagne sur la HEAD master" \
+    || bad "㉑quater-quater le knob BRANCH ne gagne pas : $(grep -o '<name>[^<]*</name>' "$TMP/ss21b.xml" 2>/dev/null | head -1)"
+  ( env -i PATH="$PATH" HOME="$HOME" GIT_URL="$TMP/ss21/inexistant.git" bash "$SSJ" --print ) >"$TMP/ss21c.xml" 2>"$TMP/ss21c.err"
+  RC=$?
+  { [ "$RC" -ne 0 ] && grep -q 'BRANCHE_PAR_DEFAUT_INCONNUE' "$TMP/ss21c.err" && [ ! -s "$TMP/ss21c.xml" ]; } \
+    && ok "㉑quater-quinquies dépôt injoignable ⇒ refus nommé, AUCUN XML rendu (jamais un « main » de repli)" \
+    || bad "㉑quater-quinquies rc=$RC, $(wc -c < "$TMP/ss21c.xml" | tr -d ' ') octets rendus"
+
+  echo "== ㉑quinquies mutation : un littéral de branche REVIENT ⇒ ㉑quater rougirait =="
+  sed 's/^BRANCH="\${BRANCH:-}"/BRANCH="${BRANCH:-main}"/' "$SSJ" > "$TMP/ssj21_mut"
   cmp -s "$SSJ" "$TMP/ssj21_mut" \
     && bad "㉑quinquies(0) le mutant est IDENTIQUE — l'ancre BRANCH= a bougé" \
     || ok "㉑quinquies(0) le mutant diffère RÉELLEMENT du fichier"
   nc_strict "$TMP/ssj21_mut" > "$TMP/ssj21_mut_nc"
-  grep -q 'BRANCH="${BRANCH:-main}"' "$TMP/ssj21_mut_nc" \
-    && bad "㉑quinquies la régression vers une branche de feature passe inaperçue — détecteur aveugle" \
-    || ok "㉑quinquies régression vers une branche de feature ⇒ le détecteur de ㉑quater la VOIT"
+  detecteur_litteral "$TMP/ssj21_mut_nc" \
+    && ok "㉑quinquies le défaut littéral réinjecté ⇒ le détecteur de ㉑quater le VOIT" \
+    || bad "㉑quinquies la réinjection passe inaperçue — ㉑quater est vacante"
 fi
 
 echo "== ㉑sexies le formulaire consommateur n'écrit AUCUN palier en dur (A7 : la liste est la chaîne ENTIÈRE, dérivée ; le terminus est gardé par ses portes) =="

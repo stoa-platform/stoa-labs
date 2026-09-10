@@ -27,7 +27,7 @@
   d'un Gitea joignable pour être posé.
 -->
 <flow-definition plugin="workflow-job">
-  <description>Formulaire : exporter l'archive d'une API déjà publiée en authoring, la pousser au registre (Gitea packages) et imprimer guid/sha256/package (EXPORT_CONFIRMED_SUMMARY) — rend apis/&lt;api&gt;.promote.yml s'il est absent (gabarit), puis ouvre la PR d'épinglage guid/sha256/version sur le dépôt d'équipe — AUCUNE recopie : api-promote-request lit le sha sur main. Ne publie rien, ne déploie rien : identité NOMINATIVE requise (login Vault). PIPELINE FROM SCM : le pipeline est ci/Jenkinsfile.api-promote-export, chargé depuis le dépôt plateforme (branche main) — ce job ne contient AUCUN Groovy.</description>
+  <description>Formulaire : exporter l'archive d'une API déjà publiée en authoring, la pousser au registre (Gitea packages) et imprimer guid/sha256/package (EXPORT_CONFIRMED_SUMMARY) — rend apis/&lt;api&gt;.promote.yml s'il est absent (gabarit), puis ouvre la PR d'épinglage guid/sha256/version sur le dépôt d'équipe — AUCUNE recopie : api-promote-request lit le sha sur __GIT_BASE__. Ne publie rien, ne déploie rien : identité NOMINATIVE requise (login Vault). PIPELINE FROM SCM : le pipeline est ci/Jenkinsfile.api-promote-export, chargé depuis le dépôt plateforme (branche __GIT_BASE__) — ce job ne contient AUCUN Groovy.</description>
   <keepDependencies>false</keepDependencies>
   <properties>
     <hudson.model.ParametersDefinitionProperty>
@@ -67,7 +67,7 @@
       </userRemoteConfigs>
       <branches>
         <hudson.plugins.git.BranchSpec>
-          <name>*/main</name>
+          <name>*/__GIT_BASE__</name>
         </hudson.plugins.git.BranchSpec>
       </branches>
       <doGenerateSubmoduleConfigurations>false</doGenerateSubmoduleConfigurations>

@@ -39,7 +39,7 @@ ko(){ FAIL=$((FAIL+1)); printf '  ❌ %s\n' "$*"; }
 
 # Total ATTENDU, ÉCRIT EN DUR — indépendant de PASS+FAIL. Toute section
 # ajoutée/retirée DOIT le mettre à jour : un oubli fait rougir le dernier §.
-EXPECTED_CHECKS=195
+EXPECTED_CHECKS=199
 
 # shellcheck source=scripts/lib/gwt-mirror.sh
 . scripts/lib/gwt-mirror.sh || { echo "lib gwt-mirror.sh introuvable"; exit 2; }
@@ -77,8 +77,8 @@ PY
   grep -qF "<scriptPath>poc-control-plane-federation/ci/Jenkinsfile.$J</scriptPath>" "$X" || RES="$RES scriptPath"
   grep -qF '<lightweight>false</lightweight>' "$X" || RES="$RES lightweight"
   grep -qF '<url>http://gitea:3000/ci/stoa-labs.git</url>' "$X" || RES="$RES url"
-  grep -qF '<name>*/main</name>' "$X" || RES="$RES branche"
-  [ -z "$RES" ] && ok "$J : pointeur SCM complet (scriptPath ci/Jenkinsfile.$J, lightweight=false, gitea main)" \
+  grep -qF '<name>*/__GIT_BASE__</name>' "$X" || RES="$RES branche"
+  [ -z "$RES" ] && ok "$J : pointeur SCM complet (scriptPath ci/Jenkinsfile.$J, lightweight=false, branche = placeholder __GIT_BASE__)" \
                 || ko "$J : pointeur SCM incomplet :$RES"
 done
 
@@ -413,24 +413,62 @@ PY
 BODYDIR="$TMP/posted"; mkdir -p "$BODYDIR"; PORT="${FAKE_JENKINS_PORT:-18470}"
 BODYDIR="$BODYDIR" python3 "$TMP/fakejenkins.py" "$PORT" >/dev/null 2>&1 & FAKE_PID=$!
 for _ in $(seq 1 40); do curl -s "http://127.0.0.1:$PORT/x" >/dev/null 2>&1 && break; sleep 0.1; done
+# L3 (2026-09-10) — LE DISCRIMINANT. Le XML source ne nomme plus de branche : il
+# porte __GIT_BASE__, et c'est le poseur qui substitue. Pour le prouver SANS
+# knob, on lui donne un dépôt nu dont la HEAD est `master` : un poseur qui
+# devinerait « main » poserait `*/main` et cette section rougirait.
+DEPOT_NU="$TMP/branche/depot.git"; DEPOT_W="$TMP/branche/w"
+mkdir -p "$TMP/branche"
+git init -q --bare "$DEPOT_NU" && git -C "$DEPOT_NU" symbolic-ref HEAD refs/heads/master
+git init -q "$DEPOT_W" && git -C "$DEPOT_W" checkout -q -b master
+: > "$DEPOT_W/x"; git -C "$DEPOT_W" add x
+git -C "$DEPOT_W" -c user.email=t@t -c user.name=t commit -qm x
+git -C "$DEPOT_W" remote add origin "$DEPOT_NU" && git -C "$DEPOT_W" push -q origin master
 # SANS GITEA_TOKEN ni Gitea : app-request n'a plus de marqueur, la pose ne doit rien demander à Gitea.
-OUT=$(JENKINS_UI="http://127.0.0.1:$PORT" JOBS="app-request" bash "$STO" 2>&1); RC=$?
+# SANS GIT_BASE non plus : la branche est DÉCOUVERTE sur la HEAD du dépôt nu.
+OUT=$(JENKINS_UI="http://127.0.0.1:$PORT" JOBS="app-request" \
+      GIT_HOST="$TMP/branche" GIT_REPO=depot bash "$STO" 2>&1); RC=$?
 # la pose SUIVANTE ecrase le corps recu : on garde celui de CETTE pose-ci
 POSTE1="$TMP/app-request.posted.1.xml"; cp "$BODYDIR/app-request.posted.xml" "$POSTE1" 2>/dev/null || true
 # Disposition (2026-09-03) : sous un AUTRE préfixe, le poseur compose le
 # <scriptPath> au lieu d'obliger a editer treize XML a la main — et la coquille
 # du depot n'est PAS modifiee (mise en scene dans un temporaire).
-OUT2=$(JENKINS_UI="http://127.0.0.1:$PORT" JOBS="app-request" GIT_SUBDIR=livrable bash "$STO" 2>&1); RC2=$?
+OUT2=$(JENKINS_UI="http://127.0.0.1:$PORT" JOBS="app-request" GIT_SUBDIR=livrable \
+       GIT_HOST="$TMP/branche" GIT_REPO=depot bash "$STO" 2>&1); RC2=$?
 SP_POSTE=$(sed -n 's#.*<scriptPath>\([^<]*\)</scriptPath>.*#\1#p' "$BODYDIR/app-request.posted.xml" 2>/dev/null | head -1)
 SP_SOURCE=$(sed -n 's#.*<scriptPath>\([^<]*\)</scriptPath>.*#\1#p' ci/jenkins/app-request.job.xml | head -1)
+# … et le KNOB explicite gagne sur la HEAD (GIT_BASE=develop sur un dépôt master).
+OUT3=$(JENKINS_UI="http://127.0.0.1:$PORT" JOBS="app-request" \
+       GIT_HOST="$TMP/branche" GIT_REPO=depot GIT_BASE=develop bash "$STO" 2>&1); RC3=$?
+POSTE3="$TMP/app-request.posted.3.xml"; cp "$BODYDIR/app-request.posted.xml" "$POSTE3" 2>/dev/null || true
+# … et SANS rien pour décider — ni knob, ni dépôt à interroger — le poseur
+# REFUSE : il ne pose pas un XML au hasard, et surtout pas « main ».
+: > "$BODYDIR/app-request.posted.xml"
+OUT4=$( env -i PATH="$PATH" HOME="$HOME" JENKINS_UI="http://127.0.0.1:$PORT" JOBS="app-request" \
+        bash "$STO" 2>&1 ); RC4=$?
 kill "$FAKE_PID" 2>/dev/null
 [ "$RC2" -eq 0 ] && [ "$SP_POSTE" = "livrable/ci/Jenkinsfile.app-request" ] \
   && [ "$SP_SOURCE" = "poc-control-plane-federation/ci/Jenkinsfile.app-request" ] \
   && ok "GIT_SUBDIR=livrable : le <scriptPath> POSTÉ suit le knob ($SP_POSTE), la coquille du dépôt est INTACTE" \
   || ko "mise en scène du scriptPath : rc=$RC2, posté='$SP_POSTE', source='$SP_SOURCE'"
-[ "$RC" -eq 0 ] && cmp -s "$POSTE1" ci/jenkins/app-request.job.xml \
-  && ok "pose d'app-request SANS Gitea ni token : rc 0, XML posté octet pour octet identique à la source" \
+# Le XML posté = la source, à la SEULE substitution de la branche près : on
+# rejoue la substitution attendue et on compare octet pour octet.
+sed 's#__GIT_BASE__#master#g' ci/jenkins/app-request.job.xml > "$TMP/attendu-master.xml"
+[ "$RC" -eq 0 ] && cmp -s "$POSTE1" "$TMP/attendu-master.xml" \
+  && ok "pose SANS knob : la HEAD du dépôt (master) décide, XML posté = la source à la substitution de branche près" \
   || ko "pose d'app-request : rc=$RC, ou XML posté divergent — $(printf '%s' "$OUT" | tail -3 | tr '\n' ' ')"
+grep -qF '<name>*/master</name>' "$POSTE1" \
+  && ok "le <scm> POSTÉ vise */master — aucun « main » deviné, et le placeholder a disparu" \
+  || ko "le <scm> posté ne vise pas */master : $(grep -o '<name>[^<]*</name>' "$POSTE1" | head -2 | tr '\n' ' ')"
+grep -qF '__GIT_BASE__' "$POSTE1" \
+  && ko "le placeholder __GIT_BASE__ survit dans le XML POSTÉ — Jenkins chercherait une branche de ce nom" \
+  || ok "aucun __GIT_BASE__ dans le XML posté"
+[ "$RC3" -eq 0 ] && grep -qF '<name>*/develop</name>' "$POSTE3" \
+  && ok "GIT_BASE=develop (knob explicite) GAGNE sur la HEAD master du dépôt" \
+  || ko "le knob GIT_BASE ne gagne pas : rc=$RC3, $(grep -o '<name>[^<]*</name>' "$POSTE3" | head -2 | tr '\n' ' ')"
+[ "$RC4" -ne 0 ] && printf '%s' "$OUT4" | grep -q 'BRANCHE_PAR_DEFAUT_INCONNUE' && [ ! -s "$BODYDIR/app-request.posted.xml" ] \
+  && ok "ni knob ni dépôt à interroger ⇒ refus BRANCHE_PAR_DEFAUT_INCONNUE, rc≠0, AUCUN XML posté (jamais un « main » de repli)" \
+  || ko "sans branche décidable : rc=$RC4, posté=$(wc -c < "$BODYDIR/app-request.posted.xml" | tr -d ' ') octets — $(printf '%s' "$OUT4" | tail -2 | tr '\n' ' ')"
 [ -f "$BODYDIR/app-request.build" ] && ok "le build d'amorçage a été demandé juste après la pose (POST /job/app-request/build)" || ko "aucun build d'amorçage demandé"
 
 echo
@@ -816,6 +854,12 @@ grep -q 'PR_NUM="$OPEN_NUM"; PR_URL_FORGE="$OPEN_URL"' "$PRS" && grep -q 'echo "
 
 echo
 echo "== 10. DETTE 2 — selfservice-app-deploy : formulaire posé par le Jenkinsfile, XML sans paramètre, liste dérivée =="
+# L3 (2026-09-10) : GIT_BASE=master sur les appels `--print` de ce poseur. Le
+# knob est un KNOB, pas un contournement — il rend ces appels ZÉRO RÉSEAU (la
+# lib ne consulte alors aucune HEAD, prouvé par test-git-base §B) là où le
+# GIT_URL par défaut (http://gitea:3000) ne résout pas hors du lab. Et `master`
+# plutôt que `main` : un poseur qui devinerait la branche rendrait le même XML,
+# ici il DOIT rendre celle qu'on lui nomme.
 JSF="ci/Jenkinsfile.selfservice"; SSJ="scripts/setup-selfservice-job.sh"; code_view "$JSF" > "$TMP/jsf.code"
 jss(){ grep -qF -- "$1" "$TMP/jsf.code"; }
 grep -qE '^\s*parameters \{' "$TMP/jsf.code" && ko "un bloc parameters{} déclaratif subsiste (il fusionnerait par nom avec properties() : formulaire flottant)" || ok "aucun bloc parameters{} déclaratif"
@@ -850,12 +894,12 @@ if grep -qE '^  (options|triggers) \{' "$TMP/jsf.code"; then ko "options{}/trigg
 jss 'disableConcurrentBuilds(),' && jss "pipelineTriggers([GenericTrigger(token: 'stoa-selfservice-plan'," && ok "properties() pose AUSSI disableConcurrentBuilds et le trigger PLAN (stoa-selfservice-plan) — les trois propriétés en un seul pas (fait 10)" || ko "trigger/option absents de properties()"
 # ── le poseur ──
 printf 'environments: [alpha, beta, gamma, delta, eps, zeta]\n' > "$TMP/chain10.yaml"
-STOA_ENV_CHAIN_FILE="$TMP/chain10.yaml" bash "$SSJ" --print > "$TMP/ss-no.xml" 2>"$TMP/ss.err"; RC=$?
+STOA_ENV_CHAIN_FILE="$TMP/chain10.yaml" GIT_BASE=master bash "$SSJ" --print > "$TMP/ss-no.xml" 2>"$TMP/ss.err"; RC=$?
 NP=$(python3 -c "import sys,xml.etree.ElementTree as T; r=T.parse(sys.argv[1]).getroot(); print(sum(1 for e in r.iter() if e.tag.endswith('ParameterDefinition')), sum(1 for e in r.iter() if e.tag.endswith('ParametersDefinitionProperty')), sum(1 for e in r.iter() if e.tag.endswith('GenericTrigger')), sum(1 for e in r.iter() if e.tag.endswith('DisableConcurrentBuildsJobProperty')))" "$TMP/ss-no.xml" 2>/dev/null)
 [ "$RC" -eq 0 ] && [ "$NP" = "0 0 0 0" ] && grep -q '<scriptPath>poc-control-plane-federation/ci/Jenkinsfile.selfservice</scriptPath>' "$TMP/ss-no.xml" \
   && ok "setup-selfservice-job.sh --print (auto ⇒ XML_PARAMS=no) : AUCUNE propriété — ni paramètre, ni trigger, ni option (faits 6 et 10 : ni doublon, ni perte)" || ko "--print mode no : rc=$RC params/prop/trig/dis=$NP $(tail -2 "$TMP/ss.err")"
 OUT=$(gwt_mirror_diff "$TMP/ss-no.xml" "$JSF" 2>&1); RC=$?; [ "$RC" -eq 2 ] && [ "$OUT" = "DIVERGENCE trigger xml=absent jenkinsfile=present" ] && ok "miroir : le trigger PLAN n'est QUE dans le Jenkinsfile (xml=absent jenkinsfile=present) — l'état voulu pour ce job (fait 10), pas une divergence" || ko "miroir XML rendu / Jenkinsfile.selfservice : $OUT (rc=$RC)"
-STOA_ENV_CHAIN_FILE="$TMP/chain10.yaml" JOB=publish-api-deploy TRIGGER_TOKEN=stoa-publish-api-plan SCRIPT_PATH=poc-control-plane-federation/ci/Jenkinsfile.publish-api bash "$SSJ" --print > "$TMP/ss-yes.xml" 2>"$TMP/ss.err"; RC=$?
+STOA_ENV_CHAIN_FILE="$TMP/chain10.yaml" JOB=publish-api-deploy TRIGGER_TOKEN=stoa-publish-api-plan SCRIPT_PATH=poc-control-plane-federation/ci/Jenkinsfile.publish-api GIT_BASE=master bash "$SSJ" --print > "$TMP/ss-yes.xml" 2>"$TMP/ss.err"; RC=$?
 ENVX=$(python3 -c "
 import sys, xml.etree.ElementTree as T
 r = T.parse(sys.argv[1]).getroot()
@@ -864,7 +908,7 @@ for p in r.iter():
 [ "$RC" -eq 0 ] && [ "$ENVX" = "alpha beta gamma delta eps zeta" ] && grep -q '<name>MERGE_SHA</name>' "$TMP/ss-yes.xml" && grep -q '<token>stoa-publish-api-plan</token>' "$TMP/ss-yes.xml" && grep -q 'DisableConcurrentBuildsJobProperty' "$TMP/ss-yes.xml" \
   && ok "--print publish-api-deploy (XML_PARAMS=yes) : ENVIRONMENT DÉRIVÉE à la pose [$ENVX], terminus zeta PRÉSENT (A7 : build job: valide les choice, mesuré), MERGE_SHA présent (ceinture SECURITY-170), trigger + option dans le XML (bloc déclaratif côté Jenkinsfile)" || ko "--print mode yes : rc=$RC ENVIRONMENT=[$ENVX]"
 sed 's/ENVS="$(env_chain)"/ENVS="$(env_chain_nonprod)"/' "$SSJ" > "$TMP/ssj_mut.sh"; cp -R scripts/lib "$TMP/" 2>/dev/null; mkdir -p "$TMP/scripts"; cp "$TMP/ssj_mut.sh" "$TMP/scripts/setup-selfservice-job.sh"; cp -R scripts/lib "$TMP/scripts/"
-ENVM=$(STOA_ENV_CHAIN_FILE="$TMP/chain10.yaml" JOB=publish-api-deploy SCRIPT_PATH=poc-control-plane-federation/ci/Jenkinsfile.publish-api bash "$TMP/scripts/setup-selfservice-job.sh" --print 2>/dev/null | python3 -c "
+ENVM=$(STOA_ENV_CHAIN_FILE="$TMP/chain10.yaml" JOB=publish-api-deploy SCRIPT_PATH=poc-control-plane-federation/ci/Jenkinsfile.publish-api GIT_BASE=master bash "$TMP/scripts/setup-selfservice-job.sh" --print 2>/dev/null | python3 -c "
 import sys, xml.etree.ElementTree as T
 r = T.fromstring(sys.stdin.read())
 for p in r.iter():
@@ -873,7 +917,7 @@ for p in r.iter():
 grep -vE '^\s*#' "$SSJ" | grep -q 'BUILD_EP="build"' && grep -vE '^\s*#' "$SSJ" | grep -q "ParametersDefinitionProperty'))" && grep -q 'BOOTSTRAP_WAIT="${BOOTSTRAP_WAIT:-360}"' "$SSJ" && grep -vE '^\s*#' "$SSJ" | grep -q 'attendu UN trigger $TRIGGER_TOKEN et UNE option' \
   && ok "poseur : amorçage POST /build en mode no, relecture « UNE propriété + trigger + option posés par le build » (faits 6/10), BOOTSTRAP_WAIT 360 s" || ko "poseur : amorçage/relecture/attente non câblés"
 printf 'environments: [alpha, Beta, gamma]\n' > "$TMP/chain10b.yaml"
-OUTB=$(STOA_ENV_CHAIN_FILE="$TMP/chain10b.yaml" JOB=publish-api-deploy SCRIPT_PATH=poc-control-plane-federation/ci/Jenkinsfile.publish-api bash "$SSJ" --print 2>"$TMP/ss.err"); RC=$?
+OUTB=$(STOA_ENV_CHAIN_FILE="$TMP/chain10b.yaml" JOB=publish-api-deploy SCRIPT_PATH=poc-control-plane-federation/ci/Jenkinsfile.publish-api GIT_BASE=master bash "$SSJ" --print 2>"$TMP/ss.err"); RC=$?
 [ "$RC" -ne 0 ] && [ -z "$OUTB" ] && grep -q 'PALIER_INVALIDE' "$TMP/ss.err" && ok "--print mode yes avec un palier invalide (Beta) ⇒ rc 1, PALIER_INVALIDE sur stderr, stdout VIDE (jamais un message pris pour du XML)" || ko "palier invalide : rc=$RC stdout=$(printf '%s' "$OUTB" | head -c 60) err=$(tail -1 "$TMP/ss.err")"
 grep -q "choices: \['dev', 'rec', 'int', 'prod'\]" ci/Jenkinsfile.publish-api && ok "exception NOMMÉE : ci/Jenkinsfile.publish-api garde sa liste littérale avec le terminus (chaîne des APIs, décision producteur, hors périmètre A0)" || ko "l'exception publish-api n'est plus celle décrite (liste modifiée ?) — mettre la spec à jour"
 

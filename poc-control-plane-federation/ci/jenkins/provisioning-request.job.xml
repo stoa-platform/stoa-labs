@@ -20,7 +20,7 @@
   scripts/setup-provision-jobs.sh (POST config.xml, historique conserve).
 -->
 <flow-definition plugin="workflow-job">
-  <description>Maillon 1, VOIE MACHINE : demande OIG/CLI2 (via l'API provisioning de la gateway, authentifiee + scope) -&gt; manifeste (fusion per_env, A1) + Pull Request provision/&lt;app&gt;-&lt;env&gt; sur ci/stoa-labs ; le plan (provision-plan) se declenche sur la PR, la decision reste le MERGE (ADR-078 : un webhook ne porte aucun humain). PIPELINE FROM SCM : ci/Jenkinsfile.provisioning-request, charge depuis le depot plateforme (branche main) -- ce job ne contient AUCUN Groovy et ne liste AUCUN champ : il herite de tout enrichissement de scripts/provision-request.sh.</description>
+  <description>Maillon 1, VOIE MACHINE : demande OIG/CLI2 (via l'API provisioning de la gateway, authentifiee + scope) -&gt; manifeste (fusion per_env, A1) + Pull Request provision/&lt;app&gt;-&lt;env&gt; sur ci/stoa-labs ; le plan (provision-plan) se declenche sur la PR, la decision reste le MERGE (ADR-078 : un webhook ne porte aucun humain). PIPELINE FROM SCM : ci/Jenkinsfile.provisioning-request, charge depuis le depot plateforme (branche __GIT_BASE__) -- ce job ne contient AUCUN Groovy et ne liste AUCUN champ : il herite de tout enrichissement de scripts/provision-request.sh.</description>
   <keepDependencies>false</keepDependencies>
   <properties>
     <org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty>
@@ -59,7 +59,7 @@
       </userRemoteConfigs>
       <branches>
         <hudson.plugins.git.BranchSpec>
-          <name>*/main</name>
+          <name>*/__GIT_BASE__</name>
         </hudson.plugins.git.BranchSpec>
       </branches>
       <doGenerateSubmoduleConfigurations>false</doGenerateSubmoduleConfigurations>
