@@ -92,6 +92,28 @@
 # garde son comportement par défaut, et le rapport final ne les annonce pas
 # « manquantes ».
 #
+# LE CREDENTIAL DE LA FORGE (GITEA_CREDENTIALS_ID, FORGE_CRED_KIND)
+# Le secret ne se pose JAMAIS ici : il vit dans le gestionnaire de credentials
+# Jenkins, et seuls son IDENTIFIANT et son TYPE sont des globales.
+#
+#   GITEA_CREDENTIALS_ID    identifiant du credential Jenkins qui porte le
+#                           secret de la forge (défaut du lab :
+#                           gitea-provision-token).
+#   FORGE_CRED_KIND         secret-text (défaut) | username-password — le TYPE
+#                           de ce credential, tel que Jenkins le lie :
+#                           secret-text = un jeton (« Secret text ») ;
+#                           username-password = un couple (« Username with
+#                           password », y compris la variante Vault
+#                           « Vault Username-Password Credential »). Toute
+#                           autre valeur est REFUSÉE par nom AVANT tout
+#                           binding (FORGE_CRED_KIND_INVALIDE), et la console
+#                           du build dit quel identifiant est lié, en quel
+#                           type. Mesuré chez un client le 2026-09-10 : sans ce
+#                           knob, Jenkins refusait un couple par « is of type
+#                           Vault Username-Password Credential where
+#                           StringCredentials was expected » — un message qui
+#                           accuse le credential, jamais le knob absent.
+#
 # LE VISAGE DE LA FORGE (FORGE_KIND, FORGE_API_AUTH, FORGE_API_BASE)
 # La chaîne parlait l'API de Gitea en dur ; depuis le 2026-09-09 une seule
 # autorité, scripts/lib/forge-api.sh, décide des chemins, des en-têtes et des
@@ -191,7 +213,7 @@ GOVERNANCE_REPO GOVERNANCE_PATH
 # La branche par défaut en fait partie depuis L3 : absente (ou `auto`), la
 # chaîne la DÉCOUVRE sur la HEAD du dépôt — l'annoncer « manquante » ferait
 # poser un littéral, c'est-à-dire exactement le défaut qu'on vient de retirer.
-OPTIONNELLES="APIM_PREFLIGHT APIM_PREFLIGHT_URL APIM_PREFLIGHT_CODES APIM_PREFLIGHT_TRIES FORGE_KIND FORGE_API_AUTH FORGE_API_BASE GIT_BASE"
+OPTIONNELLES="APIM_PREFLIGHT APIM_PREFLIGHT_URL APIM_PREFLIGHT_CODES APIM_PREFLIGHT_TRIES FORGE_CRED_KIND FORGE_KIND FORGE_API_AUTH FORGE_API_BASE GIT_BASE"
 
 # ── le canal : console de script Jenkins, jeton par fichier ──────────────────
 CFG="$TMP/curl.cfg"

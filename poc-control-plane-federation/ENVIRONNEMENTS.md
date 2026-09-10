@@ -1216,6 +1216,8 @@ garde de réponse, formes normalisées). La porte `ci/lint-forge-literals.sh`
 
 | Knob | Valeurs | Défaut | Rôle |
 |------|---------|--------|------|
+| `GITEA_CREDENTIALS_ID` | identifiant de credential Jenkins | `gitea-provision-token` | le credential qui porte le secret de la forge — le secret lui-même reste dans le gestionnaire de credentials, jamais en globale |
+| `FORGE_CRED_KIND` | `secret-text` \| `username-password` | `secret-text` | le TYPE de ce credential, tel que Jenkins le lie : jeton (« Secret text ») ou couple (« Username with password », variante Vault comprise). **Fail-closed** depuis le 2026-09-10 : toute autre valeur ⇒ `REFUS: FORGE_CRED_KIND_INVALIDE` avant tout binding, et la console dit « credential de la forge : '<id>' lie en <type> ». Sans lui, un couple mourait par « is of type Vault Username-Password Credential where StringCredentials was expected », message qui accuse le credential et pas le knob |
 | `FORGE_KIND` | `gitea` \| `gitlab` | `gitea` | le VISAGE : chemins (`/api/v1/repos/o/r` vs `/api/v4/projects/o%2Fr`), formes (`number`/`iid`, `login`/`username`, `open`/`opened`, `head.ref`/`source_branch`, `comments`/`notes`) |
 | `FORGE_API_AUTH` | `token` \| `private-token` \| `bearer` \| `basic` | dérivé du visage (`token` Gitea, `private-token` GitLab) | l'en-tête d'auth ; `basic` exige `FORGE_USER` |
 | `FORGE_API_BASE` | URL | vide | la base d'API **si** un reverse-proxy la déplace ; sinon dérivée de `GIT_HOST` |

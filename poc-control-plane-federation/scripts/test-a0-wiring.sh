@@ -39,7 +39,7 @@ ko(){ FAIL=$((FAIL+1)); printf '  ❌ %s\n' "$*"; }
 
 # Total ATTENDU, ÉCRIT EN DUR — indépendant de PASS+FAIL. Toute section
 # ajoutée/retirée DOIT le mettre à jour : un oubli fait rougir le dernier §.
-EXPECTED_CHECKS=199
+EXPECTED_CHECKS=200
 
 # shellcheck source=scripts/lib/gwt-mirror.sh
 . scripts/lib/gwt-mirror.sh || { echo "lib gwt-mirror.sh introuvable"; exit 2; }
@@ -350,6 +350,33 @@ grep -q "usernamePassword(credentialsId: env.GITEA_CREDENTIALS_ID" "$TMP/jf-app.
   && grep -q "string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'FORGE_SECRET')" "$TMP/jf-app.code" \
   && ok "les DEUX types sont cables, et rendent le meme couple de noms (FORGE_SECRET / FORGE_USER)" \
   || ko "forgeCreds() ne porte pas les deux types"
+# 2026-09-10 : forgeCreds() est FAIL-CLOSED et SE DIT. Mesure chez un client :
+# une copie du Jenkinsfile mise a jour a la main sans le knob ⇒ l'aiguillage
+# retombait EN SILENCE sur secret text, et Jenkins refusait le credential
+# user/mot de passe par un message qui accuse le credential, jamais le knob —
+# « tous les types donnent le meme message ». Desormais : (1) une valeur hors
+# {secret-text, username-password} est un REFUS nomme, AVANT tout binding ;
+# (2) la console dit quel identifiant est lie, et en quel type, AVANT de le
+# lier. Les DOUZE pipelines portent la meme fonction (f77bdf0) : on l'exige de
+# chacun, et le compte des porteurs doit egaler celui des refus.
+N_FC=0; N_FCOK=0; FC_KO=""
+for _jf in ci/Jenkinsfile.*; do
+  grep -q '^def forgeCreds()' "$_jf" || continue
+  N_FC=$((N_FC+1))
+  _fc="$(code_view "$_jf" | awk '/^def forgeCreds\(\)/,/^}/')"
+  if printf '%s\n' "$_fc" | grep -q "== 'secret-text'" \
+     && printf '%s\n' "$_fc" | grep -q "== 'username-password'" \
+     && printf '%s\n' "$_fc" | grep -q "error(.REFUS: FORGE_CRED_KIND_INVALIDE" \
+     && [ "$(printf '%s\n' "$_fc" | grep -c 'echo "credential de la forge : ')" = 2 ] \
+     && [ "$(printf '%s\n' "$_fc" | grep -v '^[[:space:]]*$' | tail -2 | head -1 | sed -E 's/^[[:space:]]+//' | cut -c1-6)" = 'error(' ]; then
+    N_FCOK=$((N_FCOK+1))
+  else
+    FC_KO="$FC_KO $_jf"
+  fi
+done
+[ "$N_FC" = 12 ] && [ "$N_FCOK" = 12 ] \
+  && ok "forgeCreds() FAIL-CLOSED dans les 12 pipelines : deux branches EXPLICITES (secret-text / username-password), REFUS FORGE_CRED_KIND_INVALIDE sinon, la console nomme l'identifiant et le type AVANT le binding, plus AUCUN repli implicite sur string()" \
+  || ko "forgeCreds() fail-open ou muet : $N_FCOK/$N_FC pipelines conformes —$FC_KO"
 [ -n "$L_SH" ] && [ -n "$L_WC" ] && [ "$L_WC" -lt "$L_SH" ] && [ "$L_SH" -lt "$L_PROPS" ] \
   && ok "app-request-choices.sh invoqué en quotes SIMPLES sous credential (ligne $L_SH), AVANT properties()" || ko "invocation du script de listes absente/mal placée (sh=$L_SH wc=$L_WC props=$L_PROPS)"
 jfa 'readFile("${env.WORKSPACE}/.a0-choices.env")' && jfa 'FORMULAIRE_VIDE' \

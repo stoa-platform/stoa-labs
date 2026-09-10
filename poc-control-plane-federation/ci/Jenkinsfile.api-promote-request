@@ -21,12 +21,25 @@
 // Dans les deux cas, le shell voit les MEMES noms : FORGE_SECRET (le secret) et
 // FORGE_USER (l'utilisateur, vide avec un jeton). Les scripts acceptent
 // FORGE_SECRET, avec GITEA_TOKEN toujours honore comme alias historique.
+// 2026-09-10 : FAIL-CLOSED, et la console DIT ce qu'elle lie. Mesure chez un
+// client (copie du Jenkinsfile mise a jour a la main, sans le knob) : toute
+// valeur hors {secret-text, username-password} retombait EN SILENCE sur secret
+// text, et Jenkins refusait alors le credential user/mot de passe par un
+// message qui accuse le credential, jamais le knob — « tous les types donnent
+// le meme message ». Le refus se nomme AVANT tout binding ; l'identifiant du
+// credential n'est pas un secret, il s'ecrit.
 def forgeCreds() {
-  if (env.FORGE_CRED_KIND == 'username-password') {
+  def kind = "${env.FORGE_CRED_KIND ?: ''}".trim()
+  if (kind == 'username-password') {
+    echo "credential de la forge : '${env.GITEA_CREDENTIALS_ID}' lie en username-password (FORGE_USER + FORGE_SECRET)"
     return [usernamePassword(credentialsId: env.GITEA_CREDENTIALS_ID,
                              usernameVariable: 'FORGE_USER', passwordVariable: 'FORGE_SECRET')]
   }
-  return [string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'FORGE_SECRET')]
+  if (kind == 'secret-text') {
+    echo "credential de la forge : '${env.GITEA_CREDENTIALS_ID}' lie en secret-text (FORGE_SECRET)"
+    return [string(credentialsId: env.GITEA_CREDENTIALS_ID, variable: 'FORGE_SECRET')]
+  }
+  error("REFUS: FORGE_CRED_KIND_INVALIDE — FORGE_CRED_KIND='${kind}' : attendu secret-text (jeton) ou username-password (couple). Rien n a ete lie. Poser la globale Jenkins FORGE_CRED_KIND (setup-jenkins-globals.sh).")
 }
 
 pipeline {
