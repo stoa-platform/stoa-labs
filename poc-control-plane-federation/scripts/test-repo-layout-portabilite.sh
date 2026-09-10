@@ -55,11 +55,18 @@ ko(){ FAIL=$((FAIL+1)); printf '  ❌ %s\n' "$*"; }
 # style « client » : le MÊME contenu en YAML, écrit comme un client l'écrit —
 # indentation à 4 espaces, valeur entre guillemets, commentaire en fin de ligne
 # et fins de ligne CRLF. Tout ceci est valide ; le grep textuel le refusait.
+# fixture <nom> <préfixe|.> [palier déclaré] [style] [branche par défaut]
+# La BRANCHE est un paramètre depuis L3 (2026-09-10) : les dépôts que
+# provision-request.sh clone sont construits sur `master`, pour que la
+# DÉCOUVERTE de la branche (scripts/lib/git-base.sh) soit réellement mise à
+# l'épreuve ici — un script qui devinerait « main » n'a plus de repli sans `-b`
+# pour le rattraper, il refuse BRANCHE_DE_BASE_INTROUVABLE. Les fixtures des
+# sections N/O/T (chaîne producteur, lot 4b) restent sur `main`.
 fixture(){
-  local pfx="$2" o="$TMP/$1.git" w="$TMP/$1" sub="" env_decl="${3:-dev}" style="${4:-lab}"
+  local pfx="$2" o="$TMP/$1.git" w="$TMP/$1" sub="" env_decl="${3:-dev}" style="${4:-lab}" br="${5:-main}"
   [ "$pfx" = "." ] || sub="$pfx/"
-  git init -q --bare "$o" && git -C "$o" symbolic-ref HEAD refs/heads/main
-  git init -q "$w" && git -C "$w" checkout -q -b main
+  git init -q --bare "$o" && git -C "$o" symbolic-ref HEAD "refs/heads/$br"
+  git init -q "$w" && git -C "$w" checkout -q -b "$br"
   mkdir -p "$w/${sub}ansible" "$w/${sub}clients/provisioned/applications"
   # SEUL dev est déclaré : `rec` sert de contre-épreuve « vraiment absent ».
   if [ "$style" = client ]; then
@@ -72,20 +79,26 @@ fixture(){
   printf 'init\n' > "$w/README"
   git -C "$w" -c user.name=t -c user.email=t@t add -A >/dev/null
   git -C "$w" -c user.name=t -c user.email=t@t commit -qm c0 >/dev/null
-  git -C "$w" remote add origin "$o" && git -C "$w" push -q origin main
+  git -C "$w" remote add origin "$o" && git -C "$w" push -q origin "$br"
   printf '%s' "$o"
 }
 printf 'environments: [dev, rec, int, prod]\ngates:\n  - { to: rec, selfApproval: true }\n' > "$TMP/chain.yaml"
 
-O_CLIENT=$(fixture client livrable)                       # préfixe NON-défaut
-O_LAB=$(fixture lab poc-control-plane-federation)          # préfixe du lab
-O_RACINE=$(fixture racine .)                               # livrable = racine
+O_CLIENT=$(fixture client livrable dev lab master)          # préfixe NON-défaut, HEAD → master
+O_LAB=$(fixture lab poc-control-plane-federation dev lab master)   # préfixe du lab
+O_RACINE=$(fixture racine . dev lab master)                 # livrable = racine
 
 # req <script> <dépôt nu> <GIT_SUBDIR|__ABSENT__> <env> [VAR=val…] → $TMP/req.out, $TMP/req.rc
 # GIT_HOST vise un port fermé : la forge est injoignable PAR CONSTRUCTION.
 req(){
   local sc="$1" origin="$2" sub="$3" e="$4"; shift 4
-  local -a envv=(GITEA_TOKEN=stub GIT_HOST=http://127.0.0.1:1 GIT_REPO=ci/appli GIT_BASE=master
+  # AUCUN GIT_BASE (L3, 2026-09-10) : la branche se DÉCOUVRE sur GIT_CLONE_URL,
+  # un dépôt nu en file:// dont la HEAD est `master` — la suite reste hors ligne
+  # (GIT_HOST vise un port fermé, et n'est jamais interrogé pour la branche).
+  # Un knob « master » ici aurait été un vert vacant : jusqu'au 2026-09-10, le
+  # repli sans `-b` de provision-request.sh rattrapait le clone `-b master` sur
+  # des fixtures construites en `main` — 17 paires de clones, aucune détection.
+  local -a envv=(GITEA_TOKEN=stub GIT_HOST=http://127.0.0.1:1 GIT_REPO=ci/appli
                  "GIT_CLONE_URL=file://$origin" "GIT_PUSH_URL=file://$origin"
                  MANIFEST_DIR=clients/provisioned/applications
                  "STOA_ENV_CHAIN_FILE=$TMP/chain.yaml" PROVISION_PLAN_INLINE=false
@@ -397,11 +410,11 @@ else ko "R.2 rc $(rrc) : $(detail)"; fi
 # Un providers illisible ne doit JAMAIS se présenter comme « équipe absente » :
 # l'un est une panne de la plateforme, l'autre un défaut de la demande.
 CASSE="$TMP/casse"; rm -rf "$CASSE" "$TMP/casse.git"
-fixture casse livrable >/dev/null
+fixture casse livrable dev lab master >/dev/null
 git clone -q "$TMP/casse.git" "$CASSE/w" 2>/dev/null \
   && printf 'providers:\n  - team: teamx\n   repo: mauvaise indentation\n' > "$CASSE/w/livrable/ansible/providers.dev.yml" \
   && git -C "$CASSE/w" -c user.name=t -c user.email=t@t commit -aqm casse \
-  && git -C "$CASSE/w" push -q origin main
+  && git -C "$CASSE/w" push -q origin master
 req "$S" "$TMP/casse.git" livrable dev REQ_TEAM=teamx
 if [ "$(rrc)" = 2 ] && grep -q 'PROVIDERS_PARSE' "$TMP/req.out" && ! grep -q 'TEAM_NOT_DECLARED' "$TMP/req.out"; then
   ok "R.3 providers illisible en YAML ⇒ PROVIDERS_PARSE, jamais « équipe absente » (deux pannes, deux remèdes)"

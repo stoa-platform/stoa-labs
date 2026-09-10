@@ -95,11 +95,28 @@ else
   # shellcheck source=scripts/lib/gitea-pr-confirm.sh
   . "$SELF_DIR/lib/gitea-pr-confirm.sh" || { echo "AVERTISSEMENT: lib gitea-pr-confirm.sh introuvable — aucun statut"; exit 0; }
   # LA BASE, sur cette voie SEULEMENT : quand les faits du plan existent, ce
-  # script ne parle à personne — il ne doit pas non plus interroger un dépôt.
-  # Même composition de schéma que la lib de confirmation, et même environnement :
-  # ce que gitea_pr_confirm peut lire, le `ls-remote` de git-base.sh le peut.
+  # script ne parle a personne — il ne doit pas non plus interroger un depot.
+  #
+  # L'ENVELOPPE, DITE JUSTE (revue 2026-09-10). Ce script ne clone JAMAIS : il
+  # n'y a donc, contrairement aux quatre autres sites, aucun geste git anonyme
+  # voisin dont heriter. Le voisin honnete est l'appel d'API, et lui est
+  # AUTHENTIFIE (forge-api, FORGE_SECRET, rendu obligatoire l. 51-52). Un
+  # `git ls-remote` nu serait ANONYME : sur un depot PRIVE — le cas normal — il
+  # echouerait, et une decouverte ratee effacerait le statut de build. Le meme
+  # secret voyage donc en Basic dans http.extraheader, pose en PREFIXE D'ENV sur
+  # l'appel de fonction (bash le passe aux enfants et ne le laisse pas persister
+  # apres le retour, mesure) : jamais en argv, jamais dans l'URL. Meme motif que
+  # scripts/lib/generate-choices.sh (_gc_auth_b64). GIT_USER/FORGE_USER : Gitea
+  # accepte n'importe quel utilisateur avec un jeton, GitLab et Bitbucket NON.
   case "$GIT_HOST" in http://*|https://*|file://*) SB="${GIT_HOST%/}";; *) SB="http://${GIT_HOST%/}";; esac
-  git_base_init "${SB}/${GIT_REPO}.git" || { echo "(branche par defaut du depot inconnue (cause ci-dessus) — aucun statut a commenter)"; exit 0; }
+  SB_AUTH="$(printf '%s:%s' "${FORGE_USER:-${GIT_USER:-x}}" "$FORGE_SECRET" | base64 | tr -d '\n')"
+  # ET IL REFUSE BRUYAMMENT. Un `exit 0` ici serait le defaut que les l. 48-50 de
+  # ce fichier consignent comme corrige le 2026-09-04 : build vert, statut de
+  # build jamais poste, personne ne sait pourquoi. rc 2, refus nomme, sur stderr.
+  GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader \
+    GIT_CONFIG_VALUE_0="Authorization: Basic ${SB_AUTH}" \
+    git_base_init "${SB}/${GIT_REPO}.git" \
+    || { echo "REFUS: BRANCHE_PAR_DEFAUT_INCONNUE : branche par defaut de ${GIT_REPO} indeterminable (cause ci-dessus) — sans elle la PR ne peut pas etre confirmee, et AUCUN statut de build n'a ete poste" >&2; exit 2; }
   if ! CONFIRM="$(gitea_pr_confirm "$PR_NUMBER" "$PR_BRANCH" "$GIT_BASE" 2>&1)"; then
     echo "(forge non confirmee : $(printf '%s' "$CONFIRM" | tr '\n' ' ') — aucun statut a commenter)"; exit 0
   fi

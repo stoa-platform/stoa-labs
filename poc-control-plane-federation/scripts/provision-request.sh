@@ -459,9 +459,29 @@ echo "[1/5] clone ${GIT_REPO} (base ${GIT_BASE})"
 # réseau (six commits parasites dans le dépôt plateforme). La suite v2 ne
 # pouvait pas le voir : toutes ses épreuves hors ligne sont des REFUS, qui
 # sortent avant le clone.
-if ! git clone -q --depth 1 -b "$GIT_BASE" "$CLONE_URL" "$WORK/repo" 2>/dev/null \
-   && ! git clone -q --depth 1 "$CLONE_URL" "$WORK/repo"; then
-  echo "ERREUR: clone impossible — ${GIT_REPO} injoignable sur ${GIT_HOST} (rien n'a été écrit)" >&2
+# LE REPLI SANS `-b` A ÉTÉ RETIRÉ (L3, 2026-09-10). Il écrivait
+# « … || git clone --depth 1 "$CLONE_URL" » : un `-b <base>` en échec était
+# rattrapé en SILENCE par un clone de la HEAD, puis la MR s'ouvrait vers
+# ${GIT_BASE} — une base que le clone n'avait pas utilisée, et qui pouvait ne
+# pas exister. C'est ce repli qui masquait le défaut « main » chez le client, et
+# c'est lui qui rendait verte, seule, une suite entière (mesuré : 17 paires de
+# clones dans test-repo-layout-portabilite.sh, le `-b` échouant à chaque fois).
+# Fail-closed : un clone en échec est un refus, et la PHRASE distingue les deux
+# causes — la branche absente d'un dépôt JOIGNABLE, ou le dépôt injoignable.
+if ! git clone -q --depth 1 -b "$GIT_BASE" "$CLONE_URL" "$WORK/repo" 2>"$WORK/clone.err"; then
+  # `ls-remote --exit-code --heads` : rc 0 la branche existe, rc 2 le dépôt a
+  # répondu mais n'a pas cette branche, rc autre le dépôt n'a pas répondu
+  # (mesuré git 2.42 : 0 / 2 / 128). C'est DÉTERMINISTE, là où lire le texte de
+  # git dépendrait de sa locale (« Remote branch … not found » / « La branche
+  # distante … n'a pas été trouvée »). Joué SEULEMENT sur le chemin d'échec.
+  LS_RC=0; git ls-remote --exit-code --heads "$CLONE_URL" "refs/heads/${GIT_BASE}" >/dev/null 2>&1 || LS_RC=$?
+  # git peut citer l'URL : on n'en relaie jamais la partie userinfo.
+  CLONE_ERR="$(sed -E 's#://[^/@[:space:]]+@#://<masqué>@#g' "$WORK/clone.err" 2>/dev/null | head -c 300 | tr '\n' ' ')"
+  if [ "$LS_RC" = 2 ]; then
+    echo "REFUS: BRANCHE_DE_BASE_INTROUVABLE : ${GIT_BASE} n'existe pas sur ${GIT_REPO} — knob GIT_BASE faux, ou dépôt vide ; aucune PR ouverte, rien n'a été écrit (git : ${CLONE_ERR:-sans message})" >&2
+    exit 2
+  fi
+  echo "ERREUR: clone impossible — ${GIT_REPO} injoignable sur ${GIT_HOST} (rien n'a été écrit) : ${CLONE_ERR:-sans message}" >&2
   exit 1
 fi
 cd "$WORK/repo" || { echo "ERREUR: clone absent après succès annoncé — abandon avant toute écriture" >&2; exit 1; }

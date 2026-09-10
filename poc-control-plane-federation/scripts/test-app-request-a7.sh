@@ -399,6 +399,19 @@ CLONES_D="$(grep '^ARGV clone' "$SHIM_LOG" | tr '\n' ' ')"
 git -C "$ORIGIN" update-ref -d refs/heads/develop 2>/dev/null || true
 git -C "$W" branch -q -D develop 2>/dev/null || true
 reset_origin
+# UN KNOB QUI NOMME UNE BRANCHE INEXISTANTE EST UN REFUS, plus un repli silencieux.
+# `develop` vient d'être supprimée. Jusqu'au 2026-09-10, provision-request.sh
+# écrivait « clone -b "$GIT_BASE" … || clone … » : le `-b` échouait, le repli
+# clonait la HEAD, et la PR partait quand même vers une base qui n'existe pas.
+# Le repli est retiré ; le refus NOMME la branche demandée, pas « main ».
+set_ctl '{"open":[]}'; git -C "$ORIGIN" update-ref -d refs/heads/provision/appa-int 2>/dev/null || true
+req int FORGE_TOKEN=t-alice GIT_BASE=develop
+{ [ "$(rrc)" = 2 ] && grep -q 'REFUS: BRANCHE_DE_BASE_INTROUVABLE' "$TMP/req.out" \
+  && grep -q "develop n'existe pas" "$TMP/req.out" && ! grep -qw 'main' "$TMP/req.out" \
+  && [ "$(posts)" = 0 ] && [ "$(tip int)" = absente ]; } \
+  && ok "E11.3 GIT_BASE=develop absente du dépôt ⇒ REFUS: BRANCHE_DE_BASE_INTROUVABLE nommant develop, aucune PR, aucune branche poussée" \
+  || ko "E11.3 rc $(rrc) posts=$(posts) tip=$(tip int) : $(tail -1 "$TMP/req.out")"
+reset_origin
 
 echo "═══ M. mutations : chaque garde neuve attrape ce qu'elle prétend attraper ═══"
 MUT="$TMP/mut"; mkdir -p "$MUT"
@@ -421,6 +434,20 @@ M6=$(mutant m6 's#grep -v -F -- "\$\(cat "\$PUSH_TF"\)" "\$WORK/pusherr" \| grep
 if [ -n "$M6" ]; then set_ctl '{"open":[]}'; git -C "$ORIGIN" update-ref -d refs/heads/provision/appa-rec 2>/dev/null; reqm "$M6" rec FORGE_TOKEN=t-alice SHIM_PUSH_FAIL=1; [ "$(rrc)" = 1 ] && grep -q 't-alice' "$TMP/req.out" && ok "M6 filtre du push retiré ⇒ le token humain fuit dans la sortie (E10 rougit)" || ko "M6 rc $(rrc) : le mutant ne fuit pas"; else ko "M6 mutant no-op/incompilable"; fi
 M7=$(mutant m7 's#^requis\(\)\{.*#requis(){ :; }#')
 if [ -n "$M7" ]; then set_ctl '{"open":[]}'; reset_origin; reqm "$M7" dev REQ_APP=; { [ "$(rrc)" = 2 ] && grep -q 'REFUS: CHAMP_REQUIS' "$TMP/req.out"; } && ko "M7 requis() neutralisée refuse encore" || ok "M7 requis() neutralisée ⇒ REQ_APP vide n'est plus nommé (E9.1 rougit)"; reset_origin; else ko "M7 mutant no-op/incompilable"; fi
+
+# M8 : LE REPLI DU CLONE REVIENT (« … || git clone --depth 1 "$CLONE_URL" »), tel
+# qu'il était avant le 2026-09-10. C'est LE fail-open que E11.1/E11.3 mesurent :
+# le `-b <base>` échoue, le repli clone la HEAD en silence, et la demande
+# continue vers une base que le clone n'a pas utilisée.
+M8=$(mutant m8 's#^if ! git clone -q --depth 1 -b "\$GIT_BASE" "\$CLONE_URL" "\$WORK/repo" 2>"\$WORK/clone.err"; then#if ! git clone -q --depth 1 -b "$GIT_BASE" "$CLONE_URL" "$WORK/repo" 2>"$WORK/clone.err" \&\& ! git clone -q --depth 1 "$CLONE_URL" "$WORK/repo"; then#')
+if [ -n "$M8" ]; then
+  set_ctl '{"open":[]}'; reset_origin; git -C "$ORIGIN" update-ref -d refs/heads/provision/appa-int 2>/dev/null || true
+  reqm "$M8" int FORGE_TOKEN=t-alice GIT_BASE=develop
+  { [ "$(rrc)" = 0 ] || ! grep -q 'REFUS: BRANCHE_DE_BASE_INTROUVABLE' "$TMP/req.out"; } \
+    && ok "M8 repli du clone rétabli ⇒ un GIT_BASE inexistant repasse en SILENCE (E11.3 rougit : le refus tient à ce retrait)" \
+    || ko "M8 le mutant refuse encore : rc $(rrc) — $(tail -1 "$TMP/req.out")"
+  reset_origin
+else ko "M8 mutant no-op/incompilable"; fi
 
 echo
 echo "═══════════════════════════════════════════════════"

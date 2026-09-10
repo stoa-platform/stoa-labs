@@ -39,7 +39,7 @@ ko(){ FAIL=$((FAIL+1)); printf '  ❌ %s\n' "$*"; }
 
 # Total ATTENDU, ÉCRIT EN DUR — indépendant de PASS+FAIL. Toute section
 # ajoutée/retirée DOIT le mettre à jour : un oubli fait rougir le dernier §.
-EXPECTED_CHECKS=192
+EXPECTED_CHECKS=195
 
 # shellcheck source=scripts/lib/gwt-mirror.sh
 . scripts/lib/gwt-mirror.sh || { echo "lib gwt-mirror.sh introuvable"; exit 2; }
@@ -666,7 +666,7 @@ echo
 echo "== 9. (d) provision-plan-status.sh : les faits d'abord, la forge sinon, jamais une PR seulement nommée =="
 status(){ # $1=BUILD_RESULT $2=facts content (vide = pas de fichier) $3=PR_NUMBER $4=PR_BRANCH → $TMP/st.out, rc
   rm -f "$TMP/st.facts"; [ -n "$2" ] && printf '%b' "$2" > "$TMP/st.facts"; : > "$STUB_LOG"
-  BUILD_RESULT="$1" PLAN_FACTS="$TMP/st.facts" PR_NUMBER="$3" PR_BRANCH="$4" GITEA_TOKEN="$STUB_TOKEN" GIT_HOST="$GH9" GIT_REPO=ci/stoa-labs GIT_BASE=master \
+  BUILD_RESULT="$1" PLAN_FACTS="$TMP/st.facts" PR_NUMBER="$3" PR_BRANCH="$4" GITEA_TOKEN="$STUB_TOKEN" GIT_HOST="$GH9" GIT_REPO=ci/stoa-labs GIT_BASE="${ST_BASE-master}" \
     JOB_NAME=provision-plan BUILD_NUMBER=77 BUILD_URL="${ST_BUILD_URL:-}" bash scripts/provision-plan-status.sh >"$TMP/st.out" 2>&1
 }
 F_OK='GITEA_HEAD_REF=provision/appa-dev\nGITEA_HEAD_SHA=cccc\nPLAN_VERDICT=ok\nPLAN_REASON=plan vert\n'
@@ -703,6 +703,42 @@ set_pr open provision/appa-dev master; printf '[]' > "$STUB_COMMENTS"; ST_BUILD_
 last_body | grep -q 'http://j/job/provision-plan/78/' && ok "BUILD_URL posé ⇒ le lien est dans le corps" || ko "BUILD_URL ignoré"
 printf '[]' > "$STUB_COMMENTS"; status ABORTED "$F_OK" 12 provision/appa-dev; RC=$?
 [ "$RC" -eq 0 ] && last_body | grep -q 'verdict a ete RENDU' && ! last_body | grep -q 'AUCUN verdict' && ok "ABORTED + verdict ok ⇒ « verdict RENDU, build termine ABORTED apres coup » (jamais « AUCUN verdict » à côté d'un ✅)" || ko "ABORTED+ok : $(last_body | head -c 140)"
+
+# ── L3 (revue 2026-09-10) : la DÉCOUVERTE joue aussi pour le statut de build ──
+# Les cas ci-dessus posent le knob GIT_BASE : ils éprouvent la relecture de la
+# PR, pas la branche. Les deux qui suivent retirent le knob (ST_BASE="") et
+# mesurent la découverte elle-même — le dépôt SERVI d'abord, puis retiré. Sans
+# le second, un `exit 0` sur découverte ratée passerait pour un succès (c'est le
+# défaut que les l. 48-50 de provision-plan-status.sh consignent comme corrigé).
+git clone -q --bare "$SRC" "$STUB_GITDIR" && ( cd "$STUB_GITDIR" && git update-server-info ) \
+  && git -C "$STUB_GITDIR" symbolic-ref HEAD refs/heads/master
+set_pr open provision/appa-dev master; printf '[]' > "$STUB_COMMENTS"
+ST_BASE="" status FAILURE "" 12 provision/appa-dev; RC=$?
+[ "$RC" -eq 0 ] && [ "$(ncomments)" = 1 ] && last_body | grep -q 'ECHOUE (FAILURE) avant le plan' \
+  && ok "sans GIT_BASE, la base est DÉCOUVERTE sur le dépôt servi (HEAD=master) et le statut de build est posté" \
+  || ko "découverte pour le statut : rc=$RC n=$(ncomments) $(cat "$TMP/st.out")"
+# L'ENVELOPPE EST MESURÉE, pas affirmée. Ce script ne clone jamais : il n'a
+# aucun geste git anonyme voisin dont hériter, et son voisin honnête (l'appel
+# d'API) est authentifié. Un `ls-remote` nu serait ANONYME et échouerait sur un
+# dépôt privé — le cas normal. Le shim rend l'en-tête que git a REÇU.
+SHIMST="$TMP/shim-status"; mkdir -p "$SHIMST"
+cat > "$SHIMST/git" <<SHST
+#!/usr/bin/env bash
+if [ "\${1:-}" = ls-remote ]; then printf '%s\n' "\$GIT_CONFIG_VALUE_0" > "$TMP/hdr-status.txt"; exit 128; fi
+exec "$(command -v git)" "\$@"
+SHST
+chmod 700 "$SHIMST/git"; rm -f "$TMP/hdr-status.txt"
+PATH="$SHIMST:$PATH" ST_BASE="" status FAILURE "" 12 provision/appa-dev
+HDRST=$(sed -E 's/^Authorization: Basic //' "$TMP/hdr-status.txt" 2>/dev/null | base64 -d 2>/dev/null)
+[ "$HDRST" = "x:$STUB_TOKEN" ] \
+  && ok "le ls-remote de la découverte porte le MÊME secret que l'API (Basic « x:<secret> » en http.extraheader, jamais en argv)" \
+  || ko "enveloppe absente du ls-remote : en-tête décodé '${HDRST:-vide}'"
+
+rm -rf "$STUB_GITDIR"
+printf '[]' > "$STUB_COMMENTS"; ST_BASE="" status FAILURE "" 12 provision/appa-dev; RC=$?
+[ "$RC" -ne 0 ] && [ "$(ncomments)" = 0 ] && grep -q 'REFUS: BRANCHE_PAR_DEFAUT_INCONNUE' "$TMP/st.out" \
+  && ok "dépôt injoignable pour la découverte ⇒ REFUS NOMMÉ rc≠0 (jamais un exit 0 muet qui effacerait le statut de build)" \
+  || ko "découverte ratée non refusée : rc=$RC n=$(ncomments) $(cat "$TMP/st.out")"
 printf '[]' > "$STUB_COMMENTS"; status UNSTABLE "$F_OK" 12 provision/appa-dev; RC=$?
 [ "$RC" -eq 0 ] && last_body | grep -q 'verdict a ete RENDU' && ! last_body | grep -q 'injoignable' && ok "UNSTABLE + verdict ok ⇒ verdict RENDU (jamais « agent injoignable »)" || ko "UNSTABLE+ok : $(last_body | head -c 140)"
 F_CE='GITEA_HEAD_REF=provision/appa-dev\nGITEA_HEAD_SHA=cccc\nPLAN_VERDICT=refus\nPLAN_REASON=COMMENTAIRE_ECHEC : plan ok sur x mais le commentaire de verdict n a pas pu etre pose\n'
