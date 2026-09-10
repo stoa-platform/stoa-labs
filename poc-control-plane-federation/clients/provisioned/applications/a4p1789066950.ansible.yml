@@ -19,4 +19,4 @@ apim_ss_app:
     claim: { name: "azp" }
   per_env:
     rec: { auth: { claim: { value: "a4p1789066950-rec" } }, ip_allowlist: ["10.42.0.1"] }
-    int: { auth: { claim: { value: "a4p1789066950-int" } }, ip_allowlist: ["10.42.0.5"] }
+    int: { auth: { claim: { value: "a4p1789066950-int" } }, ip_allowlist: ["10.42.0.6"] }
