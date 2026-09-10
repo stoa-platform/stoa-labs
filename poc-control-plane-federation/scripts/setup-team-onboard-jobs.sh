@@ -84,7 +84,14 @@
 #   (ENVN n'est PLUS une entrée : G4/ADR-082 le SCELLE sur l'env d'authoring,
 #    voir plus bas. Il ne désigne que l'env dont les listes sont dérivées,
 #    providers.<env>.yml.)
-#   FORGE_SECRET / GIT_HOST / GIT_REPO : requis SEULEMENT si un job posé ce run
+#   GIT_BASE, ou GIT_HOST + GIT_REPO : REQUIS à chaque pose, depuis L3
+#     (2026-09-10). Les XML des jobs ne nomment plus de branche : ils portent
+#     __GIT_BASE__, que le délégué (setup-provision-jobs.sh) substitue. Il lui
+#     faut donc la branche — le knob GIT_BASE, sinon la HEAD du dépôt, qu'il
+#     découvre sur GIT_HOST/GIT_REPO. Sans l'un ni l'autre : refus nommé
+#     BRANCHE_PAR_DEFAUT_INDECIDABLE, aucun job posé. Cela vaut AUSSI pour les
+#     jobs sans placeholder CHOICES (team-request, team-apply) — mesuré.
+#   FORGE_SECRET : requis SEULEMENT si un job posé ce run
 #     porte un placeholder (cf. scripts/lib/generate-choices.sh).
 set -uo pipefail
 set +x

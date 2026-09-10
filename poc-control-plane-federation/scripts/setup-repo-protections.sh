@@ -106,6 +106,11 @@ PY
 # ne part jamais sans branche : c'est un refus nommé, pas un « main » deviné.
 if [ -z "$BRANCH" ]; then
   if [ "$MODE" = pose ] || { [ -n "${GIT_BASE:-}" ] && [ "$GIT_BASE" != auto ]; }; then
+    # PAS de garde « knobs indécidables » ici, et c'est MESURÉ (revue 4c) :
+    # `GIT_HOST="${GIT_HOST:-…}"` et `REPOS="${PROTECT_PLATFORM_REPOS:-…}"`
+    # redonnent leur défaut même à un knob explicitement vidé — l'URL composée
+    # n'est jamais vide, et le refus de la lib (dépôt injoignable, « poser
+    # GIT_BASE ») est le bon. Une garde ici serait du code mort.
     git_base_init "${GIT_HOST%/}/${REPOS%% *}.git" || exit 2
     BRANCH="$GIT_BASE"
   fi

@@ -48,6 +48,13 @@
 #   JENKINS_USER=<login> JENKINS_TOKEN=<api-token> \
 #     ./scripts/setup-provision-jobs.sh
 #
+#   GIT_BASE, ou GIT_HOST + GIT_REPO : REQUIS (L3, 2026-09-10). Les XML des
+#                   jobs portent __GIT_BASE__ au lieu d'un nom de branche ; ce
+#                   script le substitue. GIT_BASE nomme la branche ; à défaut,
+#                   GIT_HOST + GIT_REPO composent l'URL du dépôt plateforme
+#                   (vue DEPUIS CE POSTE) dont la HEAD est alors interrogée.
+#                   Ni l'un ni l'autre : refus BRANCHE_PAR_DEFAUT_INDECIDABLE,
+#                   aucun job posé.
 #   DRY_RUN=true    n'envoie AUCUNE écriture — affiche ce qui serait fait.
 #   JOBS="provision-apply"   restreint aux jobs nommés (défaut : les deux).
 #   ALLOW_RECREATE=true      autorise delete+create si la mise à jour échoue.
@@ -100,8 +107,20 @@ repo_layout_init || exit 2
 # celle qu'écrit le XML est vue depuis l'agent Jenkins (réseau docker) et n'est
 # pas joignable d'ici. Ni l'une ni l'autre n'est devinée — les deux sont des
 # knobs, et leur absence est un refus que la lib formule elle-même.
+#
+# LE REFUS EST À NOUS, PAS À LA LIB (revue 4c). Passer une URL VIDE à
+# git_base_init donne un refus juste mais inutilisable ici : il parle de
+# « l'argument de git_base_init » et de GIT_CLONE_URL, deux choses qu'un
+# exploitant qui pose des jobs depuis son poste n'a pas sous la main. Ce sont
+# GIT_BASE, ou GIT_HOST **et** GIT_REPO, qu'il doit poser — alors c'est ce
+# script, qui connaît SES knobs, qui le dit, AVANT d'appeler la lib.
 GIT_HOST="${GIT_HOST:-}"
 GIT_REPO="${GIT_REPO:-}"
+if { [ -z "${GIT_BASE:-}" ] || [ "${GIT_BASE:-}" = auto ]; } \
+   && { [ -z "$GIT_HOST" ] || [ -z "$GIT_REPO" ]; }; then
+  echo "REFUS: BRANCHE_PAR_DEFAUT_INDECIDABLE : les XML des jobs portent __GIT_BASE__ et rien ici ne dit par quoi le remplacer — poser GIT_BASE (la branche, explicitement), ou GIT_HOST et GIT_REPO pour que la HEAD du dépôt plateforme soit découverte. Aucun job n'a été posé." >&2
+  exit 2
+fi
 PLATEFORME_URL=""
 [ -n "$GIT_HOST" ] && [ -n "$GIT_REPO" ] && PLATEFORME_URL="${GIT_HOST%/}/${GIT_REPO}.git"
 git_base_init "$PLATEFORME_URL" || exit 2

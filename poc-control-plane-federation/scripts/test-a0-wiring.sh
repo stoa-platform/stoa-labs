@@ -493,8 +493,8 @@ grep -qF '__GIT_BASE__' "$POSTE1" \
 [ "$RC3" -eq 0 ] && grep -qF '<name>*/develop</name>' "$POSTE3" \
   && ok "GIT_BASE=develop (knob explicite) GAGNE sur la HEAD master du dépôt" \
   || ko "le knob GIT_BASE ne gagne pas : rc=$RC3, $(grep -o '<name>[^<]*</name>' "$POSTE3" | head -2 | tr '\n' ' ')"
-[ "$RC4" -ne 0 ] && printf '%s' "$OUT4" | grep -q 'BRANCHE_PAR_DEFAUT_INCONNUE' && [ ! -s "$BODYDIR/app-request.posted.xml" ] \
-  && ok "ni knob ni dépôt à interroger ⇒ refus BRANCHE_PAR_DEFAUT_INCONNUE, rc≠0, AUCUN XML posté (jamais un « main » de repli)" \
+[ "$RC4" -ne 0 ] && printf '%s' "$OUT4" | grep -q 'BRANCHE_PAR_DEFAUT_INDECIDABLE' && [ ! -s "$BODYDIR/app-request.posted.xml" ] \
+  && ok "ni knob ni dépôt à interroger ⇒ refus BRANCHE_PAR_DEFAUT_INDECIDABLE, rc≠0, AUCUN XML posté (jamais un « main » de repli)" \
   || ko "sans branche décidable : rc=$RC4, posté=$(wc -c < "$BODYDIR/app-request.posted.xml" | tr -d ' ') octets — $(printf '%s' "$OUT4" | tail -2 | tr '\n' ' ')"
 [ -f "$BODYDIR/app-request.build" ] && ok "le build d'amorçage a été demandé juste après la pose (POST /job/app-request/build)" || ko "aucun build d'amorçage demandé"
 

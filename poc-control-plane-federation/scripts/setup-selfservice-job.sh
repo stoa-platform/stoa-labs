@@ -84,6 +84,12 @@ GIT_URL="${GIT_URL:-http://gitea:3000/ci/stoa-labs.git}"   # vu DEPUIS l'agent (
 # personne n'a choisie serait exactement le défaut qu'on retire.
 BRANCH="${BRANCH:-}"
 [ -z "$BRANCH" ] || GIT_BASE="$BRANCH"
+# PAS de garde « knobs indécidables » ici, et c'est MESURÉ (revue 4c) : à la
+# différence de setup-provision-jobs.sh / setup-carto-job.sh, ce script ne peut
+# PAS composer une URL vide — `GIT_URL="${GIT_URL:-…}"` redonne son défaut même
+# à un knob explicitement vidé. La lib reçoit donc toujours une URL, et son
+# refus est le bon : il nomme le dépôt injoignable ET « poser GIT_BASE ». Une
+# garde de plus serait du code mort, et un code mort se lit comme une garantie.
 git_base_init "$GIT_URL" || exit 2
 BRANCH="$GIT_BASE"
 SCRIPT_PATH="${SCRIPT_PATH:-${SUB_PFX}ci/Jenkinsfile.selfservice}"

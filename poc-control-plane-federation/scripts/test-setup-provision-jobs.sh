@@ -294,10 +294,22 @@ OUT=$(cd "$REPO" && env -i PATH="$PATH" HOME="$HOME" JENKINS_UI="$JU" JOBS=provi
   || ko "le knob ne gagne pas : rc=$RC, $(grep -o '<name>[^<]*</name>' "$POSTE" 2>/dev/null | head -2 | tr '\n' ' ')"
 # … et sans rien pour décider, RIEN n'est envoyé.
 rm -f "$POSTE"; start "provision-apply" 200
+# … et sans rien pour décider, RIEN n'est envoyé — et le refus NOMME les knobs
+# que CET exploitant a sous la main. La lib, elle, parlerait de « l'argument de
+# git_base_init » et de GIT_CLONE_URL : deux choses qui n'existent pas pour
+# quelqu'un qui pose des jobs depuis son poste (revue 4c).
 OUT=$(cd "$REPO" && env -i PATH="$PATH" HOME="$HOME" JENKINS_UI="$JU" JOBS=provision-apply bash "$S" 2>&1); RC=$?
-[ $RC -ne 0 ] && grep -q 'BRANCHE_PAR_DEFAUT_INCONNUE' <<<"$OUT" \
-  && ok "ni knob ni dépôt à interroger ⇒ refus nommé (jamais un « main » de repli)" \
+[ $RC -ne 0 ] && grep -q 'BRANCHE_PAR_DEFAUT_INDECIDABLE' <<<"$OUT" \
+  && ok "ni knob ni dépôt à interroger ⇒ refus BRANCHE_PAR_DEFAUT_INDECIDABLE (jamais un « main » de repli)" \
   || ko "sans branche décidable : rc=$RC — $(printf '%s' "$OUT" | tail -2 | tr '\n' ' ')"
+MANQUE=""
+for K in GIT_BASE GIT_HOST GIT_REPO; do grep -q "$K" <<<"$OUT" || MANQUE="$MANQUE $K"; done
+[ -z "$MANQUE" ] \
+  && ok "le refus NOMME les trois knobs à poser (GIT_BASE, GIT_HOST, GIT_REPO) — pas GIT_CLONE_URL, que l'exploitant n'a pas" \
+  || ko "knobs absents du refus :$MANQUE — $(printf '%s' "$OUT" | tail -1)"
+grep -q 'GIT_CLONE_URL' <<<"$OUT" \
+  && ko "le refus parle encore de GIT_CLONE_URL — une variable que ce poseur n'expose pas" \
+  || ok "et il ne renvoie pas vers une variable interne à la lib"
 [ -z "$(calls | grep -E 'POST')" ] && [ ! -f "$POSTE" ] \
   && ok "et AUCUNE écriture n'est partie vers Jenkins" || ko "des écritures ont eu lieu malgré le refus"
 unset BODYDIR

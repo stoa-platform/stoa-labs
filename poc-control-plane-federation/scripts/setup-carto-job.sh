@@ -17,6 +17,11 @@
 # prouverait rien. L'arbitrage (ce qu'on perd, ce qui l'atténue) est écrit en
 # tête de ci/Jenkinsfile.carto.
 #
+# LA BRANCHE (L3, 2026-09-10) : carto.job.xml porte __GIT_BASE__ et non un nom
+# de branche. Poser BRANCH (ou GIT_BASE) pour la nommer, ou GIT_HOST + GIT_REPO
+# (ou GIT_URL) pour que la HEAD du dépôt soit interrogée. Ni l'un ni l'autre :
+# refus BRANCHE_PAR_DEFAUT_INDECIDABLE, le job n'est pas posé.
+#
 # Le credential est posé par l'équipe d'exploitation :
 #
 #   Où          : Manage Jenkins → Credentials → System →
@@ -84,12 +89,19 @@ fail() { printf '\033[1;31m[carto-job]\033[0m %s\n' "$*"; exit 1; }
 # (`BRANCH=-x` deviendrait sinon un `-x` dans le <name> du BranchSpec).
 # L'URL interrogée est composée de GIT_HOST/GIT_REPO (le dépôt vu DEPUIS CE
 # POSTE) ; à défaut, GIT_URL, quand l'exploitant la donne déjà.
+# LE REFUS EST À NOUS, PAS À LA LIB (revue 4c) : une URL vide passée à
+# git_base_init donne un refus qui nomme GIT_CLONE_URL, que cet exploitant n'a
+# pas. Ce script connaît SES knobs, il les nomme lui-même, avant l'appel.
 GIT_HOST="${GIT_HOST:-}"
 GIT_REPO="${GIT_REPO:-}"
 BASE_URL=""
 [ -n "$GIT_HOST" ] && [ -n "$GIT_REPO" ] && BASE_URL="${GIT_HOST%/}/${GIT_REPO}.git"
 [ -n "$BASE_URL" ] || BASE_URL="$GIT_URL"
 [ -z "$BRANCH" ] || GIT_BASE="$BRANCH"
+if { [ -z "${GIT_BASE:-}" ] || [ "${GIT_BASE:-}" = auto ]; } && [ -z "$BASE_URL" ]; then
+  echo "REFUS: BRANCHE_PAR_DEFAUT_INDECIDABLE : carto.job.xml porte __GIT_BASE__ et rien ici ne dit par quoi le remplacer — poser BRANCH ou GIT_BASE (la branche, explicitement), ou GIT_HOST et GIT_REPO (ou GIT_URL) pour que la HEAD du dépôt soit découverte. Le job n'a pas été posé." >&2
+  exit 2
+fi
 git_base_init "$BASE_URL" || exit 2
 
 XML="$(mktemp)"; CK="$(mktemp)"; trap 'rm -f "$XML" "$CK"' EXIT

@@ -272,14 +272,26 @@ git_base_avec_basic() {
 #     Écrit <destination> = <source> avec `__GIT_BASE__` remplacé par $GIT_BASE
 #     (que git_base_init doit avoir posée : c'est le contrat, pas un défaut).
 #     rc 2 + refus nommé si GIT_BASE n'est pas posée, si la source est
-#     illisible, ou si un `__GIT_BASE__` SURVIT dans le produit — fail-closed :
-#     un XML posé avec son placeholder ferait chercher à Jenkins une branche
-#     nommée « __GIT_BASE__ », et ce diagnostic-là, personne ne le relie au
-#     fichier qui l'a causé.
-#     Le remplacement échappe `&`, `#` et `\` : `&` est « le motif trouvé » pour
-#     sed, et un nom de branche a le droit de le porter (check-ref-format ne le
-#     refuse pas). Une substitution qui se trahit sur un caractère légal serait
-#     le même mode de panne, en plus discret.
+#     illisible, si le nom de branche ne peut pas entrer dans du XML (ci-dessous),
+#     ou si un `__GIT_BASE__` SURVIT dans le produit — fail-closed : un XML posé
+#     avec son placeholder ferait chercher à Jenkins une branche nommée
+#     « __GIT_BASE__ », et ce diagnostic-là, personne ne le relie au fichier qui
+#     l'a causé.
+#
+#     ⚠ CE QUI ENTRE DANS UN XML N'EST PAS CE QU'ACCEPTE GIT (revue 4c). Un nom
+#     de branche a parfaitement le droit de porter `&`, `<`, `>`, `"` ou `'` :
+#     `git check-ref-format` ne refuse que `~ ^ : ? * [ \` et les caractères de
+#     contrôle. Or `rel&2.0` inséré tel quel dans `<name>*/rel&2.0</name>` rend
+#     un XML MAL FORMÉ, que Jenkins refuse par une SAXParseException — le mode
+#     de panne exact que l'en-tête de setup-provision-request-job.sh consigne
+#     déjà pour le charset. Échapper vers des entités (`&amp;`) serait pire :
+#     le placeholder peut vivre dans un nœud de TEXTE comme dans une valeur
+#     d'ATTRIBUT, où les règles diffèrent, et une branche que personne ne
+#     retrouverait dans Jenkins vaut moins qu'un refus. Les cinq caractères sont
+#     donc REFUSÉS, nommément, AVANT toute écriture : rc 2, rien n'est écrit.
+#     Restent échappés pour sed `#` (son délimiteur ici) et `\` (qui ouvre une
+#     séquence dans le remplacement) — les deux sont légaux pour git et n'ont
+#     aucun sens particulier en XML, donc eux passent.
 git_base_xml_substituer() {
   local src="${1:-}" dst="${2:-}" rep
   [ -n "$src" ] && [ -n "$dst" ] \
@@ -288,7 +300,14 @@ git_base_xml_substituer() {
     || { echo "REFUS: XML_SUBSTITUTION_IMPOSSIBLE : ${src} introuvable ou illisible — rien n'a été mis en scène" >&2; return 2; }
   { [ -n "${GIT_BASE:-}" ] && [ "$GIT_BASE" != auto ]; } \
     || { echo "REFUS: XML_SUBSTITUTION_IMPOSSIBLE : GIT_BASE n'est pas posée — git_base_init doit être joué AVANT la mise en scène de ${src}" >&2; return 2; }
-  rep="$(printf '%s' "$GIT_BASE" | sed -e 's/[&#\\]/\\&/g')"
+  # Cinq motifs plutôt qu'une classe `[...]` : une classe qui doit contenir les
+  # DEUX guillemets se cite mal, et shellcheck a raison de s'en méfier (SC1003).
+  case "$GIT_BASE" in
+    *'&'*|*'<'*|*'>'*|*'"'*|*"'"*)
+      echo "REFUS: BRANCHE_NON_INSERABLE_XML : la branche '${GIT_BASE}' porte un caractère de balisage (& < > \" ') — un nom de branche portant ces caractères ne peut pas être posé dans un nœud XML sans ambiguïté ; ${dst} n'a PAS été écrit. Renommer la branche, ou poser le XML du job à la main." >&2
+      return 2 ;;
+  esac
+  rep="$(printf '%s' "$GIT_BASE" | sed -e 's/[#\\]/\\&/g')"
   sed "s#__GIT_BASE__#${rep}#g" "$src" > "$dst" \
     || { echo "REFUS: XML_SUBSTITUTION_IMPOSSIBLE : écriture de ${dst} en échec" >&2; return 2; }
   if grep -qF '__GIT_BASE__' "$dst"; then

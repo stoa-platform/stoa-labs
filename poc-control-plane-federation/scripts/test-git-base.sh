@@ -558,12 +558,38 @@ rm -f "$XDST"; xsub 'a__GIT_BASE__b' "$XSRC" "$XDST"; RCX=$?
 if [ "$RCX" -eq 2 ] && grep -q 'XML_PLACEHOLDER_RESTANT' "$TMP/xerr"; then
   ok "I.4 un placeholder qui SURVIT à la substitution ⇒ refus XML_PLACEHOLDER_RESTANT (fail-closed)"
 else ko "I.4 rc $RCX : $(head -1 "$TMP/xerr")"; fi
-# Une valeur portant `&` ou `#` — légale pour git — ne doit pas se faire manger
-# par sed (`&` = « le motif trouvé »).
-rm -f "$XDST"; xsub 'rel&2.0' "$XSRC" "$XDST"; RCX=$?
-if [ "$RCX" -eq 0 ] && grep -qF '<name>*/rel&2.0</name>' "$XDST"; then
-  ok "I.5 une branche portant « & » est substituée telle quelle (échappement du remplacement sed)"
-else ko "I.5 rc $RCX : $(grep -o '<name>[^<]*</name>' "$XDST" 2>/dev/null | head -1)"; fi
+# CE QUI ENTRE DANS UN XML N'EST PAS CE QU'ACCEPTE GIT (revue 4c). `rel&2.0`
+# est un nom de branche PARFAITEMENT légal (check-ref-format ne refuse que
+# ~ ^ : ? * [ \ et les contrôles) et il rend `<name>*/rel&2.0</name>`, c'est-à-dire
+# un XML MAL FORMÉ que Jenkins refuse par une SAXParseException. Un échappement
+# discret serait pire qu'un refus : la branche ne serait pas celle qu'on croit.
+# Donc REFUS nommé, avant toute écriture.
+bienforme(){ python3 - "$1" <<'PYX'
+import sys, xml.etree.ElementTree as T
+try:
+    T.parse(sys.argv[1]); sys.exit(0)
+except Exception:
+    sys.exit(1)
+PYX
+}
+for CAR in 'rel&2.0' 'a<b' 'a>b' 'a"b' "a'b"; do
+  rm -f "$XDST"; xsub "$CAR" "$XSRC" "$XDST"; RCX=$?
+  if [ "$RCX" -eq 2 ] && grep -q 'BRANCHE_NON_INSERABLE_XML' "$TMP/xerr" && [ ! -f "$XDST" ]; then
+    ok "I.5 branche '$CAR' (légale pour git, ingérable en XML) ⇒ refus BRANCHE_NON_INSERABLE_XML, RIEN écrit"
+  else ko "I.5 '$CAR' : rc $RCX, fichier $( [ -f "$XDST" ] && echo ECRIT || echo absent ) — $(head -1 "$TMP/xerr")"; fi
+done
+# … et le nominal ne se contente pas de « contenir le bon texte » : il doit
+# PARSER. Sans cette lecture, la porte ci-dessus resterait une opinion.
+rm -f "$XDST"; xsub 'release/2.0' "$XSRC" "$XDST"; RCX=$?
+if [ "$RCX" -eq 0 ] && bienforme "$XDST" && grep -qF '<name>*/release/2.0</name>' "$XDST"; then
+  ok "I.6 un nom ordinaire ⇒ XML BIEN FORMÉ (relu par ElementTree), branche exacte"
+else ko "I.6 rc $RCX : $(grep -o '<name>[^<]*</name>' "$XDST" 2>/dev/null | head -1)"; fi
+# `#` et `\` restent ÉCHAPPÉS pour sed (délimiteur, séquence de remplacement) :
+# légaux pour git, sans signification en XML, ils doivent passer TELS QUELS.
+rm -f "$XDST"; xsub 'rel#2' "$XSRC" "$XDST"; RCX=$?
+if [ "$RCX" -eq 0 ] && bienforme "$XDST" && grep -qF '<name>*/rel#2</name>' "$XDST"; then
+  ok "I.7 une branche portant « # » (le délimiteur du sed) passe telle quelle"
+else ko "I.7 rc $RCX : $(grep -o '<name>[^<]*</name>' "$XDST" 2>/dev/null | head -1)"; fi
 
 echo "═══ M. mutations sur COPIE : chaque assertion attrape ce qu'elle prétend attraper ═══"
 # mute <fichier> <sed-expr> — écrit le mutant ; rc 1 si no-op (le motif n'est
@@ -733,7 +759,45 @@ else
   else ko "M.14 le mutant passe encore : shim=$(cat "$SHIM_LOG")"; fi
 fi
 
-echo
+# M.15 — LA GARDE XML RETIRÉE. C'est le défaut relevé en revue de 4c : sans
+# elle, un nom de branche légal pour git mais porteur de balisage traversait la
+# substitution et le XML partait vers Jenkins. Deux mutants, deux degrés :
+#   M.15 la garde neutralisée seule ⇒ le refus BRANCHE_NON_INSERABLE_XML
+#        DISPARAÎT, donc I.5 rougirait (c'est ce que la mutation doit montrer) ;
+#   M.16 la garde neutralisée ET l'échappement `&` de sed remis, c'est-à-dire
+#        la lib EXACTEMENT telle qu'elle était avant cette correction ⇒ rc 0 sur
+#        un XML MAL FORMÉ. Le défaut mesuré par la revue, reproduit.
+MUT15="$TMP/mut15.sh"
+# shellcheck disable=SC2016  # quotes SIMPLES à dessein : `"$GIT_BASE"` est le TEXTE cherché dans la lib
+if ! mute "$MUT15" 's#case "$GIT_BASE" in#case ZZ_NEUTRE in#'; then
+  ko "M.15 mutant no-op ou incompilable — l'épreuve ne prouve rien (la garde a-t-elle changé de forme ?)"
+  ko "M.16 (non jouée : le mutant de M.15 n'a pas pu être construit)"
+else
+  rm -f "$XDST"
+  # shellcheck source=/dev/null  # le mutant est produit à l'exécution, par construction
+  ( set +u; . "$MUT15"; GIT_BASE='rel&2.0'; git_base_xml_substituer "$XSRC" "$XDST" ) 2>"$TMP/xerr"; RCX=$?
+  if grep -q 'BRANCHE_NON_INSERABLE_XML' "$TMP/xerr"; then
+    ko "M.15 la garde neutralisée refuse encore — la mutation ne mord pas, I.5 est vacante"
+  else
+    ok "M.15 garde neutralisée ⇒ plus aucun BRANCHE_NON_INSERABLE_XML : I.5 rougirait (rc $RCX)"
+  fi
+  # M.16 : et on remet l'échappement `&` du remplacement sed, retiré avec la
+  # garde. `&` y signifiait « le motif trouvé » ; échappé, il insérait le nom
+  # tel quel — donc le balisage — dans le XML.
+  MUT16="$TMP/mut16.sh"
+  sed -e 's|\[#\\\\]|[\&#\\\\]|' "$MUT15" > "$MUT16"
+  if cmp -s "$MUT15" "$MUT16" || ! bash -n "$MUT16" 2>/dev/null; then
+    ko "M.16 mutant no-op ou incompilable — l'échappement sed a-t-il changé de forme ?"
+  else
+    rm -f "$XDST"
+    # shellcheck source=/dev/null  # idem
+    ( set +u; . "$MUT16"; GIT_BASE='rel&2.0'; git_base_xml_substituer "$XSRC" "$XDST" ) 2>"$TMP/xerr"; RCX=$?
+    if [ "$RCX" -eq 0 ] && [ -f "$XDST" ] && ! bienforme "$XDST"; then
+      ok "M.16 lib d'avant la correction ⇒ rc 0 sur un XML MAL FORMÉ — le défaut de la revue 4c, reproduit"
+    else ko "M.16 le mutant ne reproduit pas le défaut : rc $RCX, $( [ -f "$XDST" ] && { bienforme "$XDST" && echo bien-formé || echo mal-formé; } || echo 'aucun fichier' )"; fi
+  fi
+fi
+
 echo "═══════════════════════════════════════════════════"
 printf 'RÉSULTAT : %d/%d\n' "$PASS" $((PASS + FAIL))
 [ "$FAIL" -eq 0 ] || exit 1
