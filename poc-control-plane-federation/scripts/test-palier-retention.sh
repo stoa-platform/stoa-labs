@@ -908,9 +908,15 @@ else
   detecteur_litteral "$TMP/ssj21_nc" \
     && bad "㉑quater le poseur écrit encore un nom de branche en dur" \
     || ok "㉑quater aucun nom de branche en dur dans le poseur (ni défaut BRANCH, ni <name>*/… littéral)"
-  grep -q 'git_base_init "\$GIT_URL"' "$TMP/ssj21_nc" \
-    && ok "㉑quater-bis la branche est DEMANDÉE à l'autorité (git_base_init sur GIT_URL)" \
+  grep -q 'git_base_init "\$URL_DECOUVERTE"' "$TMP/ssj21_nc" \
+    && ok "㉑quater-bis la branche est DEMANDÉE à l'autorité (git_base_init sur l'URL de découverte)" \
     || bad "㉑quater-bis le poseur ne passe pas par git_base.sh — d'où viendrait la branche ?"
+  # … et cette URL n'est PAS celle du XML : le <url> reste vu de l'AGENT
+  # (réseau docker), la découverte se fait DEPUIS CE POSTE (GIT_HOST+GIT_REPO).
+  grep -q 'URL_DECOUVERTE="\${GIT_HOST%/}/\${GIT_REPO}.git"' "$TMP/ssj21_nc" \
+    && grep -q 'URL_DECOUVERTE="\$GIT_URL"' "$TMP/ssj21_nc" \
+    && ok "㉑quater-bis(2) l'URL interrogée se compose de GIT_HOST+GIT_REPO (le dépôt vu D'ICI), avec repli sur GIT_URL (le lab, même réseau)" \
+    || bad "㉑quater-bis(2) le poseur n'a qu'une URL : depuis un poste d'exploitant, « gitea » ne résout pas et la découverte ne peut pas aboutir"
 
   # DISCRIMINANT VIVANT : un dépôt nu qui annonce `master`, AUCUN GIT_BASE dans
   # l'environnement. Un poseur qui devinerait rendrait `*/main`.
@@ -933,6 +939,46 @@ else
   { [ "$RC" -ne 0 ] && grep -q 'BRANCHE_PAR_DEFAUT_INCONNUE' "$TMP/ss21c.err" && [ ! -s "$TMP/ss21c.xml" ]; } \
     && ok "㉑quater-quinquies dépôt injoignable ⇒ refus nommé, AUCUN XML rendu (jamais un « main » de repli)" \
     || bad "㉑quater-quinquies rc=$RC, $(wc -c < "$TMP/ss21c.xml" | tr -d ' ') octets rendus"
+
+  # ㉑quater-sexies — LE POSTE DE L'EXPLOITANT (correction L3 du 2026-09-10).
+  # DEUX URL, et elles ne se valent pas : le <url> du XML est le dépôt vu par
+  # l'AGENT Jenkins (« gitea », réseau docker — un nom qui ne résout PAS sur un
+  # poste), tandis que la HEAD doit être demandée au dépôt vu DEPUIS CE POSTE
+  # (GIT_HOST + GIT_REPO, les knobs des poseurs frères). Avant la correction, le
+  # poseur n'avait qu'une URL : d'ici, la découverte ne pouvait que refuser, et
+  # il ne restait qu'à nommer la branche à la main — le geste que L3 retire.
+  # Un shim git journalise CHAQUE appel : la preuve n'est pas seulement que le
+  # XML porte */master, c'est qu'aucun appel n'est parti vers l'URL de l'agent.
+  SHIM21="$TMP/ss21/shim"; mkdir -p "$SHIM21"
+  cat > "$SHIM21/git" <<'SHIM'
+#!/bin/sh
+printf '%s\n' "$*" >> "$GIT_SHIM_LOG"
+exec "$GIT_SHIM_REAL" "$@"
+SHIM
+  chmod +x "$SHIM21/git"
+  LOG21="$TMP/ss21/shim.log"; : > "$LOG21"
+  AGENT21="http://gitea.invalide.interne:3000/ci/stoa-labs.git"   # un nom qui NE RÉSOUT PAS
+  ( env -i PATH="$SHIM21:$PATH" HOME="$HOME" GIT_SHIM_LOG="$LOG21" GIT_SHIM_REAL="$(command -v git)" \
+      GIT_HOST="$TMP/ss21" GIT_REPO=depot GIT_URL="$AGENT21" bash "$SSJ" --print ) >"$TMP/ss21d.xml" 2>"$TMP/ss21d.err"
+  RC=$?
+  { [ "$RC" -eq 0 ] && grep -qF '<name>*/master</name>' "$TMP/ss21d.xml" && grep -qF "<url>$AGENT21</url>" "$TMP/ss21d.xml"; } \
+    && ok "㉑quater-sexies GIT_HOST/GIT_REPO joignables + GIT_URL injoignable : la HEAD (master) décide, et le <url> POSÉ reste celui de l'agent" \
+    || bad "㉑quater-sexies rc=$RC, scm=$(grep -o '<name>[^<]*</name>' "$TMP/ss21d.xml" 2>/dev/null | head -1), url=$(grep -o '<url>[^<]*</url>' "$TMP/ss21d.xml" 2>/dev/null | head -1) : $(tail -1 "$TMP/ss21d.err")"
+  { [ "$(grep -c . "$LOG21")" = 1 ] && grep -qF -- "ls-remote --symref $NU21 HEAD" "$LOG21" \
+      && ! grep -qF -- 'gitea.invalide.interne' "$LOG21"; } \
+    && ok "㉑quater-sexies(2) UN seul appel git, vers le dépôt vu D'ICI — RIEN n'est parti vers l'URL de l'agent (shim journalisant)" \
+    || bad "㉑quater-sexies(2) journal du shim : $(tr '\n' ' ' < "$LOG21")"
+  # … et une paire À MOITIÉ posée ne retombe pas EN SILENCE sur l'URL de l'agent.
+  : > "$LOG21"
+  ( env -i PATH="$SHIM21:$PATH" HOME="$HOME" GIT_SHIM_LOG="$LOG21" GIT_SHIM_REAL="$(command -v git)" \
+      GIT_HOST="$TMP/ss21" GIT_URL="$AGENT21" bash "$SSJ" --print ) >"$TMP/ss21e.xml" 2>"$TMP/ss21e.err"
+  RC=$?
+  MANQUE21=""
+  for K21 in GIT_BASE GIT_HOST GIT_REPO; do grep -q "$K21" "$TMP/ss21e.err" || MANQUE21="$MANQUE21 $K21"; done
+  { [ "$RC" -ne 0 ] && grep -q 'BRANCHE_PAR_DEFAUT_INDECIDABLE' "$TMP/ss21e.err" && [ -z "$MANQUE21" ] \
+      && [ ! -s "$TMP/ss21e.xml" ] && [ "$(grep -c . "$LOG21")" = 0 ]; } \
+    && ok "㉑quater-sexies(3) GIT_HOST sans GIT_REPO ⇒ refus BRANCHE_PAR_DEFAUT_INDECIDABLE nommant les trois knobs, AUCUN XML, AUCUN appel git" \
+    || bad "㉑quater-sexies(3) rc=$RC, knobs absents du refus :${MANQUE21:- (aucun)}, $(wc -c < "$TMP/ss21e.xml" | tr -d ' ') octets, git=$(tr '\n' ' ' < "$LOG21")"
 
   echo "== ㉑quinquies mutation : un littéral de branche REVIENT ⇒ ㉑quater rougirait =="
   sed 's/^BRANCH="\${BRANCH:-}"/BRANCH="${BRANCH:-main}"/' "$SSJ" > "$TMP/ssj21_mut"

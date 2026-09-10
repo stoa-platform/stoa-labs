@@ -1133,12 +1133,24 @@ job le XML n'a pas autorité (fusion par nom), la décision est à prendre là-b
 Résiduel : `setup-selfservice-job.sh` n'a ni auth Jenkins ni portail (parité
 avec `setup-provision-jobs.sh` le jour du rollout client).
 
+**Deux URL, et elles ne se valent pas** (L3, corrigé le 2026-09-10) : le
+`<url>` écrit dans le XML est `GIT_URL`, le dépôt vu **depuis l'agent** Jenkins
+(`http://gitea:3000/...`) ; la **découverte** de la branche, elle, part **de ce
+poste**, où « gitea » ne résout pas. D'où les mêmes knobs que chez les poseurs
+frères : `GIT_HOST` + `GIT_REPO` composent le dépôt joignable d'ici. Sans eux,
+la découverte retombe sur `GIT_URL` (le cas du lab, agent et poseur sur le même
+réseau) ; l'un des deux seulement ⇒ `REFUS:
+BRANCHE_PAR_DEFAUT_INDECIDABLE`, aucun job posé.
+
 ```bash
 git push gitea HEAD:main
 bash scripts/setup-selfservice-job.sh          # RE-POSE (XML sans paramètre) + amorçage + relecture
 bash scripts/setup-selfservice-job.sh --print  # le XML rendu, zéro réseau SI GIT_BASE ou BRANCH est posée
-# Sans knob, `--print` DÉCOUVRE la branche (git_base_init sur GIT_URL, un
-# ls-remote) avant de rendre le XML : ce n'est plus un geste hors ligne.
+# Sans knob, `--print` DÉCOUVRE la branche (un ls-remote) avant de rendre le
+# XML : ce n'est plus un geste hors ligne.
+# DEPUIS UN POSTE D'EXPLOITANT — le dépôt vu D'ICI, le <url> reste celui de l'agent :
+GIT_HOST=http://localhost:13000 GIT_REPO=ci/stoa-labs \
+  bash scripts/setup-selfservice-job.sh --print
 GIT_BASE=master bash scripts/setup-selfservice-job.sh --print   # rendu strictement hors ligne
 ```
 
@@ -1146,7 +1158,9 @@ GIT_BASE=master bash scripts/setup-selfservice-job.sh --print   # rendu strictem
 
 ```bash
 git push gitea HEAD:main                                   # le CI lit gitea
-bash scripts/setup-selfservice-job.sh                      # l'AVAL d'abord : déclare MERGE_SHA + build d'amorçage
+GIT_HOST=http://localhost:13000 GIT_REPO=ci/stoa-labs \
+  bash scripts/setup-selfservice-job.sh                    # l'AVAL d'abord : déclare MERGE_SHA + build d'amorçage
+                                                           # (GIT_HOST/GIT_REPO = le dépôt vu D'ICI, pour la seule découverte de la branche)
 # vérifier : selfservice-app-deploy déclare MERGE_SHA (sinon un `build job:` le
 # retirerait EN SILENCE — SECURITY-170 — ; l'aval refuserait MERGE_SHA_REQUIS)
 curl -s "$JENKINS/job/selfservice-app-deploy/api/json?tree=property[parameterDefinitions[name]]"
@@ -1301,6 +1315,17 @@ Jenkins chercherait une branche de ce nom. Même règle pour
 (knob local `PROTECT_BRANCH`) : le knob local gagne, sans lui l'autorité décide,
 et il n'existe **aucun défaut de site**.
 
+**Le dépôt interrogé n'est pas celui qu'on écrit** (corrigé le 2026-09-10). Tous
+ces poseurs écrivent dans le job une URL vue **depuis l'agent** Jenkins et
+interrogent, pour la seule découverte, une URL vue **depuis le poste** :
+`GIT_HOST` + `GIT_REPO`. C'est vrai de `setup-provision-jobs.sh`, de
+`setup-carto-job.sh` — et désormais aussi de `setup-selfservice-job.sh`, dont le
+`GIT_URL` par défaut (`http://gitea:3000/...`) ne résout pas hors du réseau
+docker : sans ces knobs, un exploitant n'avait d'autre issue que de nommer la
+branche à la main, ce que L3 existe pour retirer. Les trois nomment leurs knobs
+dans un refus (`BRANCHE_PAR_DEFAUT_INDECIDABLE`) plutôt que d'interroger en
+silence un dépôt qu'ils ne peuvent pas joindre.
+
 **Prérequis GitLab** : la HEAD d'un projet GitLab est sa **Default branch**
 (Settings → Repository) — c'est elle qu'annonce `ls-remote --symref`. Un projet
 dont la default branch n'est pas celle qu'on veut voir déployer doit être
@@ -1350,6 +1375,13 @@ outils de lab, et l'autorité elle-même.
 (les verbes contre le GitLab RÉEL, discriminant J.1) et
 `bash scripts/test-app-request-gitlab-live.sh` (la demande de bout en bout :
 MR ouverte, rejeu idempotent, puis la panne du client reproduite et nommée).
+Cette dernière **n'épingle plus `GIT_BASE`** (corrigé le 2026-09-10 : le knob
+gagnait, donc la suite ne prouvait rien de la découverte, et sa MR visait `main`
+sur un projet dont la *Default branch* est `master`) : elle lit la branche que
+le projet **annonce** (`ls-remote --symref HEAD`), y pousse notre tronc, et
+compare le `target_branch` de la MR à cette valeur. Elle est donc verte sur un
+projet en `main` **comme** sur un projet en `master` ; sur un projet **vide**
+(HEAD non née) elle **refuse**, elle ne devine pas.
 
 ## Résiduel
 

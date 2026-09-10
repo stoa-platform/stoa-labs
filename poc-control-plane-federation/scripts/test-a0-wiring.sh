@@ -883,10 +883,17 @@ echo
 echo "== 10. DETTE 2 — selfservice-app-deploy : formulaire posé par le Jenkinsfile, XML sans paramètre, liste dérivée =="
 # L3 (2026-09-10) : GIT_BASE=master sur les appels `--print` de ce poseur. Le
 # knob est un KNOB, pas un contournement — il rend ces appels ZÉRO RÉSEAU (la
-# lib ne consulte alors aucune HEAD, prouvé par test-git-base §B) là où le
-# GIT_URL par défaut (http://gitea:3000) ne résout pas hors du lab. Et `master`
-# plutôt que `main` : un poseur qui devinerait la branche rendrait le même XML,
-# ici il DOIT rendre celle qu'on lui nomme.
+# lib ne consulte alors aucune HEAD, prouvé par test-git-base §B), ce qui est
+# exactement ce qu'on veut de §10 : elle mesure le FORMULAIRE (XML_PARAMS,
+# dérivation, amorçage), pas la résolution de branche. Et `master` plutôt que
+# `main` : un poseur qui devinerait la branche rendrait le même XML, ici il DOIT
+# rendre celle qu'on lui nomme.
+# CE QUE §10 NE MESURE DONC PAS, et où c'est mesuré : la DÉCOUVERTE de ce même
+# poseur — sans knob, sur le dépôt vu DEPUIS CE POSTE (GIT_HOST + GIT_REPO,
+# tandis que le <url> du XML reste celui de l'agent) — vit dans
+# test-palier-retention.sh §㉑quater, avec dépôt nu, shim git journalisant et
+# paire de knobs à moitié posée. Deux suites, deux objets ; aucune des deux ne
+# rejoue l'autre.
 JSF="ci/Jenkinsfile.selfservice"; SSJ="scripts/setup-selfservice-job.sh"; code_view "$JSF" > "$TMP/jsf.code"
 jss(){ grep -qF -- "$1" "$TMP/jsf.code"; }
 grep -qE '^\s*parameters \{' "$TMP/jsf.code" && ko "un bloc parameters{} déclaratif subsiste (il fusionnerait par nom avec properties() : formulaire flottant)" || ok "aucun bloc parameters{} déclaratif"

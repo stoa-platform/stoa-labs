@@ -35,9 +35,24 @@
 # propriété de paramètres, et (mode no) ENVIRONMENT == env_chain_nonprod.
 #   --print        : rend le XML sur stdout, ne pose RIEN. Zéro réseau tant que
 #                    la branche est NOMMÉE (GIT_BASE ou BRANCH) ; sans knob elle
-#                    est découverte sur GIT_URL, parce qu'un XML « hors ligne »
-#                    qui nommerait une branche que personne n'a choisie serait
-#                    précisément le défaut que L3 retire.
+#                    est découverte, parce qu'un XML « hors ligne » qui nommerait
+#                    une branche que personne n'a choisie serait précisément le
+#                    défaut que L3 retire.
+#
+# ── DEUX URL, ET POURQUOI (L3, 2026-09-10) ──────────────────────────────────
+# Le <url> du XML est GIT_URL : le dépôt vu DEPUIS L'AGENT Jenkins (réseau
+# docker, `http://gitea:3000/...`). La DÉCOUVERTE de la branche, elle, se fait
+# DEPUIS CE POSTE — et « gitea » n'y résout pas. Interroger GIT_URL d'ici ne
+# pouvait donc que refuser BRANCHE_PAR_DEFAUT_INCONNUE : un refus juste, mais
+# qui ne laissait à l'exploitant que le geste de nommer la branche à la main —
+# c'est-à-dire exactement ce que L3 retire. Le dépôt joignable D'ICI se compose
+# donc des MÊMES knobs que chez les poseurs frères (setup-provision-jobs.sh,
+# setup-carto-job.sh) : GIT_HOST + GIT_REPO. Sans eux, la découverte retombe sur
+# GIT_URL — le cas du lab, où l'agent et le poseur voient le même réseau.
+#   GIT_HOST + GIT_REPO : le dépôt plateforme vu DEPUIS CE POSTE (découverte).
+#   GIT_URL             : le dépôt vu DEPUIS L'AGENT — c'est lui qui part dans
+#                         le <url> du XML, quoi qu'il arrive.
+#   BRANCH / GIT_BASE   : la branche, NOMMÉE — rien n'est alors découvert.
 #   BOOTSTRAP_WAIT : attente de l'amorçage (défaut 360 s — le préflight gateway
 #                   de l'aval peut durer 300 s pendant un recyclage keepalive) ;
 #                   « encore en cours » est distingué d'un échec : NE PAS re-poser.
@@ -65,7 +80,7 @@ repo_layout_init || exit 2
 JENKINS="${JENKINS:-http://localhost:18080}"
 JOB="${JOB:-selfservice-app-deploy}"
 TRIGGER_TOKEN="${TRIGGER_TOKEN:-stoa-selfservice-plan}"
-GIT_URL="${GIT_URL:-http://gitea:3000/ci/stoa-labs.git}"   # vu DEPUIS l'agent (réseau docker)
+GIT_URL="${GIT_URL:-http://gitea:3000/ci/stoa-labs.git}"   # le <url> du XML : vu DEPUIS l'agent (réseau docker)
 # G4 (M2) : le job doit rider la branche de BASE du dépôt — un pipeline resté
 # sur une branche de feature après merge est éditable HORS revue (quiconque
 # pousse sur cette branche change le pipeline sans passer par une PR).
@@ -77,20 +92,44 @@ GIT_URL="${GIT_URL:-http://gitea:3000/ci/stoa-labs.git}"   # vu DEPUIS l'agent (
 # la HEAD annoncée par le dépôt, sinon un REFUS nommé. Le knob local passe PAR
 # la lib, qui contrôle sa forme : `BRANCH=-x` doit être un refus, pas un
 # `<name>*/-x</name>` posé dans Jenkins.
-# GIT_URL est le dépôt vu DEPUIS L'AGENT ; c'est aussi celui dont on veut la
-# HEAD, et l'exploitant qui pose ce job depuis un poste où ce nom ne résout pas
-# pose GIT_BASE (ou BRANCH). `--print` n'y échappe pas : il rend le XML qui
-# SERAIT posé, branche comprise ; un XML « hors ligne » nommant une branche que
-# personne n'a choisie serait exactement le défaut qu'on retire.
+# `--print` n'échappe pas à la découverte : il rend le XML qui SERAIT posé,
+# branche comprise ; un XML « hors ligne » nommant une branche que personne n'a
+# choisie serait exactement le défaut qu'on retire.
 BRANCH="${BRANCH:-}"
 [ -z "$BRANCH" ] || GIT_BASE="$BRANCH"
-# PAS de garde « knobs indécidables » ici, et c'est MESURÉ (revue 4c) : à la
-# différence de setup-provision-jobs.sh / setup-carto-job.sh, ce script ne peut
-# PAS composer une URL vide — `GIT_URL="${GIT_URL:-…}"` redonne son défaut même
-# à un knob explicitement vidé. La lib reçoit donc toujours une URL, et son
-# refus est le bon : il nomme le dépôt injoignable ET « poser GIT_BASE ». Une
-# garde de plus serait du code mort, et un code mort se lit comme une garantie.
-git_base_init "$GIT_URL" || exit 2
+# L'URL DE LA DÉCOUVERTE — celle vue DEPUIS CE POSTE (cf. « DEUX URL » en tête).
+# Composition identique à celle des poseurs frères, aux mêmes knobs : le jour où
+# un exploitant apprend GIT_HOST/GIT_REPO pour l'un, il les connaît pour tous.
+GIT_HOST="${GIT_HOST:-}"
+GIT_REPO="${GIT_REPO:-}"
+URL_DECOUVERTE=""
+[ -n "$GIT_HOST" ] && [ -n "$GIT_REPO" ] && URL_DECOUVERTE="${GIT_HOST%/}/${GIT_REPO}.git"
+# … et à défaut, le dépôt de l'agent : au lab, l'agent et le poseur voient le
+# même réseau, et rien ne doit changer pour qui pose ses jobs depuis là.
+[ -n "$URL_DECOUVERTE" ] || URL_DECOUVERTE="$GIT_URL"
+# LA GARDE PORTE SUR LA PAIRE À MOITIÉ POSÉE, ET SUR ELLE SEULE. Le refus
+# « rien à découvrir » de setup-provision-jobs.sh serait ici du CODE MORT
+# (mesuré, revue 4c) : `GIT_URL="${GIT_URL:-…}"` redonne son défaut même à un
+# knob explicitement vidé, la lib reçoit donc toujours une URL. Une paire à
+# moitié posée, elle, est ATTEIGNABLE — et sans garde, un GIT_HOST seul
+# retomberait EN SILENCE sur l'URL de l'agent, celle qui ne résout pas d'ici :
+# précisément la panne que cette correction ferme. Le refus est À NOUS parce
+# qu'il nomme NOS knobs ; la lib, elle, parlerait de GIT_CLONE_URL.
+if { [ -z "${GIT_BASE:-}" ] || [ "${GIT_BASE:-}" = auto ]; } \
+   && [ -n "${GIT_HOST}${GIT_REPO}" ] && { [ -z "$GIT_HOST" ] || [ -z "$GIT_REPO" ]; }; then
+  echo "REFUS: BRANCHE_PAR_DEFAUT_INDECIDABLE : le dépôt à interroger depuis ce poste se compose de GIT_HOST **et** GIT_REPO, et l'un des deux manque (GIT_HOST='${GIT_HOST}', GIT_REPO='${GIT_REPO}') — poser les deux, ou nommer la branche (BRANCH, ou GIT_BASE). Sans cela la HEAD serait cherchée sur le dépôt vu par l'AGENT, dont le nom ne résout pas d'ici. Le job n'a pas été posé." >&2
+  exit 2
+fi
+if ! git_base_init "$URL_DECOUVERTE"; then
+  # Le refus de la lib nomme le dépôt (URL expurgée) et « poser GIT_BASE » : il
+  # ne peut pas connaître NOS knobs. Quand la HEAD a été cherchée sur le dépôt
+  # de l'AGENT — c'est-à-dire quand personne n'a posé GIT_HOST/GIT_REPO — c'est
+  # presque toujours LA cause, et le geste tient en une ligne. On l'ajoute sans
+  # réécrire le refus qui précède, et sans réafficher l'URL (elle peut porter un
+  # secret : la lib l'a déjà masquée, une seule fois).
+  [ "$URL_DECOUVERTE" = "$GIT_URL" ] && echo "[selfservice-job] la HEAD a été cherchée sur le dépôt vu par l'AGENT Jenkins ; depuis un poste d'exploitant ce nom ne résout pas — poser GIT_HOST **et** GIT_REPO (le même dépôt, vu d'ici), ou nommer la branche (BRANCH, ou GIT_BASE)." >&2
+  exit 2
+fi
 BRANCH="$GIT_BASE"
 SCRIPT_PATH="${SCRIPT_PATH:-${SUB_PFX}ci/Jenkinsfile.selfservice}"
 MANIFEST_DEFAULT="${MANIFEST_DEFAULT:-clients/_example/applications/demo-consumer.ansible.yml}"

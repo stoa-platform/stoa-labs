@@ -12,11 +12,25 @@
 # GitLab doit refuser en NOMMANT « 302 … /users/sign_in » — c'est exactement
 # la panne vue chez le client le 2026-09-09, reproduite et lisible.
 #
+# LA BRANCHE DE BASE N'EST PAS ÉPINGLÉE (correction L3, 2026-09-10). Cette suite
+# posait `GIT_BASE=main` dans l'environnement de la demande : le knob GAGNE (par
+# contrat, git-base.sh ne consulte alors aucune HEAD), donc elle ne pouvait RIEN
+# prouver de la découverte — la seule chose que L3 ajoute à ce chemin. Mesuré le
+# 2026-09-10 sur le GitLab du lab (projet ci/stoa-labs, default_branch=master) :
+# la MR ouverte par la suite visait `main`, une branche que le client n'a pas.
+# Désormais : aucun GIT_BASE dans `req()` — la chaîne DÉCOUVRE ; et l'étape 0
+# pousse notre tronc sur la branche PAR DÉFAUT DU PROJET, celle que le dépôt
+# annonce (`ls-remote --symref … HEAD`). La suite est donc verte sur un projet
+# dont la default est `main` (l'état normal du lab) COMME sur `master` — et
+# c'est la valeur DÉCOUVERTE, jamais un littéral, qui sert d'attendu.
+#
 # PRÉREQUIS :
 #   docker compose -f docker-compose.gitlab.yml up -d gitlab
 #   bash scripts/setup-gitlab-lab.sh                 → .env.gitlab-lab (PAT 0600)
-#   Le projet ci/stoa-labs du GitLab reçoit NOTRE main (poussé ici si absent) :
-#   c'est le même dépôt que sur Gitea, donc les mêmes providers/manifestes.
+#   Le projet ci/stoa-labs du GitLab reçoit NOTRE tronc sur SA branche par
+#   défaut (poussé ici s'il en diverge) : c'est le même dépôt que sur Gitea,
+#   donc les mêmes providers/manifestes. Un projet VIDE (aucun commit, donc
+#   aucune HEAD annoncée) est un REFUS nommé, pas une branche devinée.
 #
 # NETTOIE derrière elle : ferme la MR, supprime la branche provision/<app>-dev.
 #
@@ -51,14 +65,25 @@ TOK="$GITLAB_LAB_TOKEN"
 gauth(){ GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=http.extraheader GIT_CONFIG_VALUE_0="Authorization: Basic $(printf 'oauth2:%s' "$TOK" | base64 | tr -d '\n')" GIT_CONFIG_KEY_1=http.postBuffer GIT_CONFIG_VALUE_1=524288000 git "$@"; }
 CLONE="${GL%/}/${GL_REPO}.git"
 
-echo "═══ 0. le projet GitLab porte notre main (le même dépôt que sur Gitea) ═══"
-LOCAL_MAIN="$(git -C "$REPO/.." rev-parse main 2>/dev/null || git -C "$REPO" rev-parse HEAD)"
-REMOTE_MAIN="$(gauth ls-remote "$CLONE" refs/heads/main 2>/dev/null | cut -f1)"
-if [ "$REMOTE_MAIN" != "$LOCAL_MAIN" ]; then
-  gauth -C "$REPO/.." push -q --force "$CLONE" "main:refs/heads/main" 2>"$TMP/push0.err" \
-    && ok "0.1 main ($(printf '%s' "$LOCAL_MAIN" | cut -c1-7)) poussé sur $GL_REPO" \
-    || { ko "0.1 push de main impossible : $(head -c 200 "$TMP/push0.err")"; echo "RÉSULTAT : $PASS/$((PASS+FAIL))"; exit 1; }
-else ok "0.1 $GL_REPO est déjà à notre main ($(printf '%s' "$LOCAL_MAIN" | cut -c1-7))"; fi
+echo "═══ 0. le projet GitLab porte notre tronc, sur SA branche par défaut ═══"
+# CE QUE LE DÉPÔT ANNONCE, pas ce que la suite préfère : même motif que
+# scripts/lib/git-base.sh (`ls-remote --symref … HEAD`), joué ici par le harnais
+# pour savoir OÙ pousser. La HEAD d'un projet GitLab est sa « Default branch »
+# (Settings → Repository) ; sur ce lab elle a valu `master` le 2026-09-10.
+BASE_DEFAUT="$(gauth ls-remote --symref "$CLONE" HEAD 2>"$TMP/symref.err" | sed -n 's#^ref: refs/heads/\(.*\)\tHEAD$#\1#p' | head -1)"
+if [ -z "$BASE_DEFAUT" ]; then
+  echo "!! REFUS: BRANCHE_PAR_DEFAUT_INCONNUE : $GL_REPO n'annonce aucune HEAD symbolique — projet VIDE (aucun commit, HEAD non née) ou injoignable : $(head -c 200 "$TMP/symref.err")"
+  echo "!! y pousser un premier commit (ou fixer la Default branch du projet) ; cette suite ne devine JAMAIS de branche."
+  echo "RÉSULTAT : 0/1"; exit 1
+fi
+ok "0.0 la branche par défaut ANNONCÉE par $GL_REPO est '$BASE_DEFAUT' (ls-remote --symref HEAD) — c'est elle l'attendu de toute la suite"
+LOCAL_TRONC="$(git -C "$REPO/.." rev-parse main 2>/dev/null || git -C "$REPO" rev-parse HEAD)"
+REMOTE_TRONC="$(gauth ls-remote "$CLONE" "refs/heads/$BASE_DEFAUT" 2>/dev/null | cut -f1)"
+if [ "$REMOTE_TRONC" != "$LOCAL_TRONC" ]; then
+  gauth -C "$REPO/.." push -q --force "$CLONE" "${LOCAL_TRONC}:refs/heads/${BASE_DEFAUT}" 2>"$TMP/push0.err" \
+    && ok "0.1 notre tronc ($(printf '%s' "$LOCAL_TRONC" | cut -c1-7)) poussé sur $GL_REPO, branche $BASE_DEFAUT" \
+    || { ko "0.1 push impossible vers $BASE_DEFAUT : $(head -c 200 "$TMP/push0.err")"; echo "RÉSULTAT : $PASS/$((PASS+FAIL))"; exit 1; }
+else ok "0.1 $GL_REPO est déjà à notre tronc sur $BASE_DEFAUT ($(printf '%s' "$LOCAL_TRONC" | cut -c1-7))"; fi
 
 # Le login de SERVICE de ce GitLab (le PAT) : la chaîne le compare à l'auteur
 # d'une PR ouverte (PR_D_AUTRUI) — chez le client c'est le knob
@@ -78,7 +103,7 @@ req(){
   local kind="$1"; shift
   ( cd "$REPO" && env -i PATH="$PATH" HOME="$HOME" \
       FORGE_KIND="$kind" FORGE_API_AUTH=private-token FORGE_SECRET="$TOK" \
-      GIT_HOST="$GL" GIT_WEB_HOST="$GL" GIT_REPO="$GL_REPO" GIT_BASE=main GIT_SUBDIR="$SUB" \
+      GIT_HOST="$GL" GIT_WEB_HOST="$GL" GIT_REPO="$GL_REPO" GIT_SUBDIR="$SUB" \
       GIT_CLONE_URL="$CLONE" GIT_PUSH_URL="$CLONE" \
       STOA_ENV_CHAIN_FILE="$REPO/clients/_example/environments.yaml" PROVISION_PLAN_INLINE=false \
       REQ_APP="$APP" REQ_ENV="$ENVN" REQ_API=demo-selfservice REQ_API_VER=1.0.0 REQ_CLIENT_ID="${APP}-${ENVN}" \
@@ -99,11 +124,35 @@ else ko "A.1 rc $(rrc) : $(extrait)"; fi
 if grep -q 'PR_URL=.*/-/merge_requests/' "$TMP/req.out"; then
   ok "A.2 PR_URL est l'URL GitLab de la MR (/-/merge_requests/N), pas un /pulls/N composé à la main"
 else ko "A.2 PR_URL : $(grep 'PR_URL=' "$TMP/req.out" | head -1)"; fi
+# A.2bis — LE JOURNAL DIT LA BRANCHE, ET C'EST LA DÉCOUVERTE QUI L'A DITE.
+# Deux choses distinctes : (1) la chaîne a bien annoncé $BASE_DEFAUT à ses deux
+# étapes visibles ([1/5] clone, [4/5] ouverture) ; (2) elle l'a DÉCOUVERTE —
+# git-base.sh écrit « … (knob explicite) … » sur stderr dès qu'un GIT_BASE est
+# retenu, et stderr est capturé ici. Sans cette seconde moitié, un GIT_BASE
+# réintroduit dans `req()` repasserait au vert sans rien prouver.
+if grep -qF "[1/5] clone ${GL_REPO} (base ${BASE_DEFAUT})" "$TMP/req.out" \
+   && grep -qF "[4/5] ouverture de la Pull Request ${BR} → ${BASE_DEFAUT}" "$TMP/req.out"; then
+  ok "A.2bis le journal de la demande nomme la base DÉCOUVERTE à ses deux étapes : « clone (base $BASE_DEFAUT) » puis « $BR → $BASE_DEFAUT »"
+else ko "A.2bis base absente du journal (attendu '$BASE_DEFAUT') : $(grep -E '^\[[14]/5\]' "$TMP/req.out" | tr '\n' ' ' | cut -c1-200)"; fi
+if grep -q 'knob explicite' "$TMP/req.out"; then
+  ko "A.2ter un knob GIT_BASE a été retenu : la HEAD du projet n'a pas été consultée — cette suite ne prouve alors RIEN de la découverte"
+else ok "A.2ter aucun knob GIT_BASE dans l'environnement de la demande : la branche vient de la HEAD annoncée par le projet (découverte)"; fi
 if [ -n "$N" ]; then
   # shellcheck disable=SC2016  # le bash enfant reçoit $1, à dessein
   ( env -i PATH="$PATH" HOME="$HOME" FORGE_KIND=gitlab GIT_HOST="$GL" GIT_REPO="$GL_REPO" FORGE_SECRET="$TOK" bash -c '. scripts/lib/forge-api.sh && forge_api_init && forge pr_get "$1"' _ "$N" ) > "$TMP/pr.out" 2>"$TMP/pr.err"
   st="$(sed -n 's/^STATE=//p' "$TMP/pr.out")"; hr="$(sed -n 's/^HEAD_REF=//p' "$TMP/pr.out")"; lg="$(sed -n 's/^LOGIN=//p' "$TMP/pr.out")"
+  # BASE_REF = le `target_branch` de la MR, lu par l'adaptateur (jamais un
+  # /api/v4 composé ici : ci/lint-forge-literals.sh interdit le littéral hors de
+  # l'autorité, et une seconde autorité sur la forge est ce que L5 a fermé).
+  br="$(sed -n 's/^BASE_REF=//p' "$TMP/pr.out")"
   [ "$st" = open ] && [ "$hr" = "$BR" ] && [ -n "$lg" ] && ok "A.3 la MR relue par l'adaptateur : STATE=open HEAD_REF=$BR LOGIN=$lg" || ko "A.3 STATE=$st HEAD_REF=$hr LOGIN=$lg $(head -c 160 "$TMP/pr.err")"
+  # LE DISCRIMINANT DE LA CORRECTION : ce que la MR VISE, côté forge, est la
+  # branche par défaut du projet — pas celle que la suite aurait épinglée. Le
+  # 2026-09-10, `GIT_BASE=main` dans `req()` donnait target_branch=main sur un
+  # projet dont la default est `master` : vert, et faux.
+  [ -n "$br" ] && [ "$br" = "$BASE_DEFAUT" ] \
+    && ok "A.3bis la MR VISE '$br' côté GitLab (target_branch relu par l'adaptateur) = la branche par défaut annoncée par le projet" \
+    || ko "A.3bis target_branch='$br', branche par défaut du projet='$BASE_DEFAUT' — la MR vise autre chose que la base du dépôt"
   # IDEMPOTENCE : rejouer la même demande ⇒ « déjà ouverte », même numéro, pas de doublon.
   req gitlab
   grep -q "PR déjà ouverte: #$N" "$TMP/req.out" && ok "A.4 rejeu ⇒ « PR déjà ouverte: #$N » (pr_find_open relit la MR, aucun doublon)" || ko "A.4 rc $(rrc) : $(extrait)"
