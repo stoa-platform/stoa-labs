@@ -23,6 +23,12 @@
 #   GITEA_TOKEN_FILE=<fichier 0600> ./scripts/test-app-request-v3.sh
 #   (défaut : mint un token jetable via `docker exec -u git poc-gitea ...`
 #   si GITEA_TOKEN_FILE est absent ET que le conteneur poc-gitea existe.)
+#
+# Directive shellcheck de CE HARNAIS (porte de l'étape 2 de lint-ci) :
+#   SC2181 — `$?` relu juste APRÈS l'affectation `OUT=$(…)` qui le produit :
+#            le rc d'une affectation EST celui de sa substitution, lecture
+#            immédiate et non ambiguë (même régime que test-*-live.sh).
+# shellcheck disable=SC2181
 set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 S="$REPO/scripts/provision-request.sh"
@@ -81,6 +87,7 @@ run_guard(){
     ko "$label : refusé ($tag) mais le message ne cite pas l'entrée fautive '$cite' — out=$(printf '%s' "$out" | tail -1)"
     return
   fi
+  # shellcheck disable=SC2016  # apostrophes LITTÉRALES dans `${cite:+…}` en contexte double-quote : `$cite` s'y expanse bien
   ok "$label : refusé ($tag)${cite:+, message citant '$cite'}, AVANT tout appel réseau"
 }
 

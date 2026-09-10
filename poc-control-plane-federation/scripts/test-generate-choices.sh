@@ -10,6 +10,15 @@
 #     chaque POST config.xml (nécessaire à la preuve 5 : octet pour octet).
 #
 #   ./scripts/test-generate-choices.sh
+#
+# Directives shellcheck de CE HARNAIS (porte de l'étape 2 de lint-ci) :
+#   SC2015 — `cond && ok "…" || ko "…"` est l'idiome des harnais du dépôt :
+#            ok() finit par printf, rc 0, donc ko ne court jamais après un ok.
+#   SC2115 — `rm -rf "$BODYDIR"/*` : BODYDIR est "$TMP/posted", donc issu du
+#            `mktemp -d` ci-dessous — jamais vide, et jamais hors du bac à sable.
+#   SC2143 — `[ -z "$(… | grep …)" ]` lit l'ABSENCE de ligne (journal du faux
+#            Jenkins, dernière ligne d'un refus) : c'est le texte qui est le sujet.
+# shellcheck disable=SC2015,SC2115,SC2143
 set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 LIB="$REPO/scripts/lib/generate-choices.sh"
@@ -175,9 +184,11 @@ cp "$REPO/ci/jenkins/team-request.job.xml" "$TMP/disposable-src.xml"
 { echo "<?xml version='1.1' encoding='UTF-8'?>"
   echo '<flow-definition plugin="workflow-job"><description>jetable T3</description>'
   echo '<properties><hudson.model.ParametersDefinitionProperty><parameterDefinitions>'
+  # shellcheck disable=SC2016  # `java.util.Arrays$ArrayList` est un nom de classe Java, texte littéral de l'XML Jenkins
   echo '<hudson.model.ChoiceParameterDefinition><name>TEAM</name><choices class="java.util.Arrays$ArrayList"><a class="string-array">'
   echo '<!--CHOICES:TEAMS-->'
   echo '</a></choices></hudson.model.ChoiceParameterDefinition>'
+  # shellcheck disable=SC2016  # idem : nom de classe Java, jamais une expansion
   echo '<hudson.model.ChoiceParameterDefinition><name>API</name><choices class="java.util.Arrays$ArrayList"><a class="string-array">'
   echo '<!--CHOICES:APIS-->'
   echo '</a></choices></hudson.model.ChoiceParameterDefinition>'
@@ -298,8 +309,10 @@ echo
 echo "== 8. re-pose événementielle (team-apply.sh) — câblage best-effort BRUYANT =="
 TA="$REPO/scripts/team-apply.sh"
 bash -n "$TA" 2>/dev/null && ok "team-apply.sh : syntaxe valide" || ko "team-apply.sh non parsable"
+# shellcheck disable=SC2016  # `$ONB_RC` est le MOTIF cherché DANS team-apply.sh, jamais une expansion
 L_ONBRC=$(grep -n '\[ "\$ONB_RC" -eq 0 \]' "$TA" | head -1 | cut -d: -f1)
 L_REFRESH=$(grep -n 'setup-team-onboard-jobs\.sh' "$TA" | head -1 | cut -d: -f1)
+# shellcheck disable=SC2034  # repère documentaire (la ligne du `fail "onboarding`) : l'assertion ci-dessous ne compare que les deux autres
 L_FAIL_ONB=$(grep -n 'fail "onboarding' "$TA" | head -1 | cut -d: -f1)
 if [ -n "$L_ONBRC" ] && [ -n "$L_REFRESH" ] && [ "$L_REFRESH" -gt "$L_ONBRC" ]; then
   ok "la re-pose est appelée APRÈS le succès de l'onboarding (ligne $L_REFRESH > $L_ONBRC)"
@@ -486,6 +499,7 @@ OUT=$(GIT_BASE=develop GIT_HOST="$GHD" GIT_REPO=ci/stoa-labs GITEA_TOKEN=dummy \
 echo
 echo "== 14. l'utilisateur du Basic est un knob (GIT_USER), plus « x » en dur =="
 SHIMD="$TMP/shim"; mkdir -p "$SHIMD"
+# shellcheck disable=SC2016  # le shim ÉCRIT du bash : `$GIT_CONFIG_VALUE_0` s'expanse chez lui, jamais ici
 printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$GIT_CONFIG_VALUE_0" > "%s/hdr.txt"\nexit 128\n' "$TMP" > "$SHIMD/git"; chmod 700 "$SHIMD/git"
 PATH="$SHIMD:$PATH" GIT_USER=sof_svc GIT_HOST="https://scm.example/" GIT_REPO=org/depot GITEA_TOKEN=JETON \
   bash -c ". '$LIB'; generate_choices_teams_raw dev" >/dev/null 2>&1
@@ -1131,6 +1145,7 @@ done
 # Le ko COMPTE ce qu'il reproche : le nombre d'épinglages COMPOSÉS, sur le
 # nombre total d'épinglages. Une première version affichait le total (2) en
 # regard d'« attendu 2 » — un message qui dément son propre verdict.
+# shellcheck disable=SC2016  # `$WORKSPACE/$GIT_SUBDIR` est le MOTIF cherché DANS le Jenkinsfile, jamais une expansion
 N_COMP=$(grep -c 'STOA_ENV_CHAIN_FILE="\$WORKSPACE/\$GIT_SUBDIR/clients/_example/environments.yaml"' "$TMP/jf-app-rollback.code")
 N_TOT=$(grep -c 'STOA_ENV_CHAIN_FILE=' "$TMP/jf-app-rollback.code")
 [ "$N_COMP" = 2 ] && [ "$N_TOT" = 2 ] \
@@ -1403,6 +1418,7 @@ cp "$REPO/scripts/lib/git-base.sh" "$MUTD/git-base.sh"
 LIBMUT="$MUTD/generate-choices.sh"
 # LA MUTATION, exacte : la garde de _gc_redact redevient le VERDICT (l'état
 # d'avant la passe 7, mot pour mot).
+# shellcheck disable=SC2016  # `$_GC_HOST_UI` est le texte de la mutation posée dans la copie, jamais une expansion
 sed 's/if _gc_host_ui_extract && \[ -n "\$_GC_HOST_UI" \]; then/if _gc_host_userinfo \&\& _gc_host_ui_extract \&\& [ -n "$_GC_HOST_UI" ]; then/' \
   "$LIB" >"$LIBMUT"
 cmp -s "$LIB" "$LIBMUT" \

@@ -57,7 +57,7 @@
 set -uo pipefail
 set +x   # jamais de trace : le token ne doit pas fuiter
 cd "$(dirname "$0")/.." || exit 1
-# shellcheck source=lib/deploy-pin.sh
+# shellcheck source=scripts/lib/deploy-pin.sh
 # `set -e` n'est pas actif dans ce script : sans ce garde-fou explicite, un
 # fichier manquant laisserait bash CONTINUER, et l'échec se présenterait bien
 # plus bas comme « resolve_deploy_pin: command not found » puis PIN_NON_RESOLU

@@ -97,6 +97,12 @@ lint-ci:
 	@# main, sa syntaxe se relit à chaque passage.
 	@echo "== [2/20] shellcheck des bibliothèques shell (ci/lib + livrables G2..G8, A1..A7, P2, P5, P6)"
 	@command -v shellcheck >/dev/null || { echo "!! shellcheck absent — \`brew install shellcheck\`"; exit 2; }
+	@# L3 (2026-09-10) : cinq fichiers de plus dans CETTE liste, aucun rang de
+	@# plus. scripts/team-publish.sh est du shell LIVRÉ, lourdement édité par L3,
+	@# et rien ne le relisait ; les quatre harnais qui suivent gardent le
+	@# comportement neuf des poseurs, et trois d'entre eux sont EXÉCUTÉS plus bas
+	@# sous cette même étape. Une suite que la porte ne relit pas dérive en
+	@# silence — c'est exactement ce qui vient d'arriver deux fois (revue L3).
 	@shellcheck -x ci/lib/*.sh scripts/lib/deploy-pin.sh scripts/lib/env-chain.sh scripts/lib/branch-ref.sh scripts/lib/vault-kv.sh \
 	  scripts/lib/repo-protection.sh scripts/lib/archive-store.sh \
 	  scripts/lib/promote-manifest.sh scripts/test-promote-sans-recopie.sh \
@@ -125,7 +131,10 @@ lint-ci:
 	  scripts/test-porte-clone-frais.sh \
 	  scripts/test-team-request-wiring.sh scripts/test-team-publish-wiring.sh \
 	  scripts/test-producer-chain.sh \
-	  && echo "  ✓ ci/lib + livrables shell G2..G8 + A1 + A2 + A0 + A3 + A4 + A5 + A6 + A7 + P2 + P5 + P6 + P7 propres"
+	  scripts/team-publish.sh \
+	  scripts/test-setup-provision-jobs.sh scripts/test-generate-choices.sh \
+	  scripts/test-app-request-v2.sh scripts/test-app-request-v3.sh \
+	  && echo "  ✓ ci/lib + livrables shell G2..G8 + A1 + A2 + A0 + A3 + A4 + A5 + A6 + A7 + P2 + P5 + P6 + P7 + L3 propres"
 	@# … et la MÊME étape doit passer sur un CLONE FRAIS. Le shellcheck
 	@# ci-dessus s'exécute là où `.env.lab-users` (0600, hors Git) EXISTE ;
 	@# absent, il rendait SC1091 et lint-ci mourait ici — chez un client, en

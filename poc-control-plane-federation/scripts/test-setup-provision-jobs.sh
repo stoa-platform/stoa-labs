@@ -8,6 +8,13 @@
 # est une trace d'audit), et il ne doit JAMAIS envoyer un XML cassé.
 #
 #   ./scripts/test-setup-provision-jobs.sh
+#
+# Directives shellcheck de CE HARNAIS (porte de l'étape 2 de lint-ci) :
+#   SC2015 — `cond && ok "…" || ko "…"` est l'idiome des harnais du dépôt :
+#            ok() finit par printf, rc 0, donc ko ne court jamais après un ok.
+#   SC2143 — `[ -z "$(calls | grep …)" ]` lit l'ABSENCE d'appel dans le journal
+#            du faux Jenkins : c'est ce journal qui est le sujet de l'assertion.
+# shellcheck disable=SC2015,SC2143
 set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 S="$REPO/scripts/setup-provision-jobs.sh"
@@ -217,6 +224,7 @@ echo "== 12. setup-provision-request-job.sh ne DÉTRUIT plus son job =="
 # 500 etait le defaut de charset, pas une fatalite du produit.
 R="$REPO/scripts/setup-provision-request-job.sh"
 CODE_R=$(grep -vE '^\s*#' "$R")
+# shellcheck disable=SC2016  # `\$JOB` est le MOTIF cherché DANS le script livré, jamais une expansion
 grep -qE 'job/\$JOB/doDelete' <<<"$CODE_R" \
   && ko "doDelete inconditionnel toujours present" || ok "aucune suppression inconditionnelle du job"
 grep -q 'setup-provision-jobs.sh' <<<"$CODE_R" \
