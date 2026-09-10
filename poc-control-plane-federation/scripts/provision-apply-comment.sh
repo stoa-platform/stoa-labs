@@ -174,7 +174,7 @@ elif res == "REFUSED":
                      "changement ou de PV, statut ITSM, déclaration de la porte) puis rejouer le webhook. "
                      "Un apply antérieur de cette PR, s'il existe, reste celui que le commentaire « Apply nominatif » décrit.")
     else:
-        lines.append("Le webhook ne fait pas foi : la PR et `main` ont été relus (forge, git) et ne "
+        lines.append("Le webhook ne fait pas foi : la PR et la branche de base ont été relues (forge, git) et ne "
                      "correspondent pas — aucune identité n'a été demandée. Un apply antérieur de cette PR, "
                      "s'il existe, reste celui que le commentaire « Apply nominatif » décrit.")
 elif refusal == "SHA_NON_CONFIRME":

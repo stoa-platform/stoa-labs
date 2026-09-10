@@ -151,14 +151,14 @@
 #
 # AUTO-DIAGNOSTIC (2026-09-07, incident client : APIS_EMPTY sur un déploiement
 # où les DEUX dépôts d'équipe déclarés étaient illisibles). Le log Jenkins ne
-# portait que « dépôt d'équipe X illisible sur main » ×2 puis APIS_EMPTY : ni
+# portait que « dépôt d'équipe X illisible sur <branche> » ×2 puis APIS_EMPTY : ni
 # l'URL tentée, ni la branche réelle, ni la sortie de git, ni le chemin balayé
 # — 401, 404, branche absente, proxy et TLS rendaient le MÊME texte, et un
 # clients/ ABSENT était indistinguable d'un clients/ vide. C'est l'incident du
 # 2026-09-03 (cause avalée) rejoué sur l'autre branche du même fichier : le
 # correctif d'alors n'avait touché QUE le refus du dépôt plateforme. Depuis :
 #   - l'avertissement d'un dépôt d'équipe cite l'URL EXPURGÉE, la branche
-#     ${GIT_BASE:-main} (plus le mot « main » en dur, qui pouvait mentir) et
+#     réellement demandée (plus le mot « main » en dur, qui pouvait mentir) et
 #     la sortie de git (_GC_CLONE_ERR, déjà expurgée par _gc_clone) ;
 #   - APIS_EMPTY nomme le chemin balayé, son état, le motif find, le fichier
 #     providers lu, et les comptes déclaré/cloné/sauté ;
@@ -187,7 +187,7 @@ _gc_escape(){
   printf '%s' "$s"
 }
 
-# _gc_clone <repo_fullname> <dest> — clone superficiel (branche main) de
+# _gc_clone <repo_fullname> <dest> — clone superficiel (branche de base) de
 # <repo_fullname> depuis GIT_HOST, EN LECTURE, dans <dest> (déjà créé, vide).
 # Le token est injecté en HEADER Basic via GIT_CONFIG_COUNT/KEY/VALUE, jamais
 # dans l'URL/argv (motif éprouvé de team-apply.sh — vérifié en direct par
@@ -195,8 +195,12 @@ _gc_escape(){
 # _GC_CLONE_ERR : la DERNIÈRE erreur de git, expurgée, publiée par _gc_clone.
 # Avant (2026-09-03), `2>/dev/null` avalait la cause : un déploiement client ne
 # pouvait pas distinguer un hôte injoignable d'un jeton refusé, d'une branche
-# `main` absente ou d'un dépôt privé — tous rendus par le même refus muet.
+# de base absente ou d'un dépôt privé — tous rendus par le même refus muet.
 _GC_CLONE_ERR=""
+# _GC_CLONE_BASE : la branche que le DERNIER _gc_clone a réellement tentée —
+# vide quand il n'a pas pu la déterminer. Un message qui nomme une branche que
+# git n'a pas demandée est exactement le défaut que ce fichier combat.
+_GC_CLONE_BASE=""
 # Disposition du dépôt (2026-09-03) : le préfixe du livrable n'est plus écrit en
 # dur ici. La lib voisine le normalise (sentinelle « . », tiret nu) ; elle est
 # localisée par le chemin de CE fichier, la lib pouvant être sourcée depuis
@@ -205,6 +209,11 @@ _GC_CLONE_ERR=""
 # (cette lib est TOUJOURS sourcée : `return` est la seule sortie correcte ici)
 . "${BASH_SOURCE[0]%/*}/repo-layout.sh" || { echo "LIB_ABSENTE : repo-layout.sh (voisine de generate-choices.sh)" >&2; return 1; }
 repo_layout_init || { echo "GIT_SUBDIR_INVALIDE : voir scripts/lib/repo-layout.sh" >&2; return 1; }
+# LA branche par défaut, une autorité (L3, 2026-09-10). Elle n'écrit RIEN sur
+# stdout — ce que cette lib exige de toute voisine : son stdout devient tel quel
+# le fragment XML d'un job Jenkins (cf. l'encadré « stdout » de l'en-tête).
+# shellcheck source=scripts/lib/git-base.sh
+. "${BASH_SOURCE[0]%/*}/git-base.sh" || { echo "LIB_ABSENTE : git-base.sh (voisine de generate-choices.sh)" >&2; return 1; }
 # ─────────────────────────────────────────────────────────────────────────────
 # UN « @ » DANS GIT_HOST : UN REFUS. RÈGLE UNIQUE, SANS INTELLIGENCE.
 # (2026-09-07 quinquies — CINQUIÈME passe sur la MÊME fuite, et la première qui
@@ -566,10 +575,61 @@ _gc_redact(){
 # à qui sert un dépôt depuis un chemin local (que le refus, lui, laisse passer).
 # _gc_host / _gc_base — LES défauts, en UN seul endroit (2026-09-07). Chaque
 # message qui les recopiait pouvait mentir : l'avertissement d'un dépôt d'équipe
-# écrivait « sur main » en dur alors que le clone demandait ${GIT_BASE:-main},
+# écrivait « sur main » en dur alors que le clone demandait le knob GIT_BASE,
 # et servait donc un diagnostic FAUX à un client dont la base est master.
 _gc_host(){ printf '%s' "${GIT_HOST:-http://gitea:3000}"; }
-_gc_base(){ printf '%s' "${GIT_BASE:-main}"; }
+_gc_platform_url(){ printf '%s/%s.git' "$(_gc_host)" "${GIT_REPO:-ci/stoa-labs}"; }
+
+# _gc_base_knob — le knob GIT_BASE s'il est POSÉ (vide sinon). Un knob vaut pour
+# TOUS les dépôts : il a été posé exprès, et il ne consulte aucune HEAD.
+_gc_base_knob(){ [ -n "${GIT_BASE:-}" ] && [ "$GIT_BASE" != auto ] && printf '%s' "$GIT_BASE"; }
+
+# _gc_base_of <url> — LA branche de base de CE dépôt, sur stdout ; rc 2 sinon
+# (L3, 2026-09-10 : le défaut « main » de _gc_base était le dernier de cette lib,
+# et chez un client dont la branche est `master` TOUS les clones d'ici
+# échouaient — eux seuls, le reste de la chaîne honorant déjà le knob).
+# LA BRANCHE SE DEMANDE AU DÉPÔT QU'ON CLONE, pas à un voisin : plateforme,
+# gouvernance et équipe sont TROIS dépôts et peuvent avoir TROIS HEAD
+# (contrat de git_base_of). Un knob explicite court-circuite tout : zéro réseau.
+# L'ENVELOPPE : la découverte est un `git ls-remote`, elle porte donc EXACTEMENT
+# l'en-tête Basic du clone (préfixe d'env sur l'appel de fonction — bash le passe
+# aux enfants sans le laisser fuir après le retour, mesuré).
+# LA CAUSE PART EXPURGÉE, dans _GC_BASE_ERR : git-base.sh cite l'URL qu'il a
+# tentée, et cette URL vient de GIT_HOST — la garantie d'expurgation de cette lib
+# ne survivrait pas à un message relayé tel quel.
+_GC_BASE_ERR=""
+# _GC_BASE_R : la branche rendue, POUR L'APPELANT qui ne peut pas se permettre un
+# sous-shell — « b=$(_gc_base_of …) » perdrait _GC_BASE_ERR avec lui, et l'appelant
+# n'aurait plus de cause à relayer (le défaut même que ce fichier combat).
+_GC_BASE_R=""
+_gc_base_of(){
+  local url="$1" err b rc a
+  _GC_BASE_ERR=""
+  err=$(mktemp) || { _GC_BASE_ERR="mktemp indisponible"; return 2; }
+  if b="$(_gc_base_knob)"; then
+    # La FORME du knob est gardée par git-base.sh (« -x » n'ira pas en `clone -b »).
+    git_base_init >/dev/null 2>"$err"; rc=$?; b="${GIT_BASE:-}"
+  else
+    # `2>/dev/null` : sans secret, _gc_auth_b64 NOMME le manque — et l'appelant
+    # le nomme déjà. Une seconde ligne identique ferait croire à deux causes.
+    if ! a="$(_gc_auth_b64 2>/dev/null)"; then
+      rm -f "$err"; _GC_BASE_ERR="SECRET_FORGE_REQUIS : ni FORGE_SECRET ni son alias GITEA_TOKEN"; return 2
+    fi
+    b=$(GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader \
+        GIT_CONFIG_VALUE_0="Authorization: Basic ${a}" \
+        git_base_of "$url" 2>"$err"); rc=$?
+  fi
+  _GC_BASE_ERR=$(_gc_redact "$(cat "$err")" | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//')
+  rm -f "$err"
+  _GC_BASE_R=""
+  { [ "$rc" -eq 0 ] && [ -n "$b" ]; } || return 2
+  _GC_BASE_R="$b"
+  printf '%s' "$b"
+}
+# _gc_base — la branche du dépôt PLATEFORME (pour les messages qui le nomment) ;
+# vide si elle est inconnue. Avec GC_PLATFORM_DIR aucun dépôt n'est cloné : ce
+# helper n'est alors appelé par aucun message (cf. _gc_platform_ref).
+_gc_base(){ _gc_base_of "$(_gc_platform_url)"; }
 # _gc_emit_marker <n> — LE SEUL point d'émission du marqueur (2026-09-07 bis).
 # L'en-tête promettait « émis sur TOUS les chemins d'échec » alors que trois
 # `echo` recopiés le portaient sur TROIS chemins ; les quatre autres (MKTEMP,
@@ -592,7 +652,7 @@ _gc_source_desc(){
 }
 # _gc_platform_ref — COMMENT nommer le dépôt plateforme dans un refus, sans
 # rien affirmer de faux (2026-09-07). Les refus écrivaient « dépôt plateforme
-# ci/stoa-labs@main » DANS TOUS LES CAS. Avec GC_PLATFORM_DIR, aucun dépôt et
+# ci/stoa-labs@<base> » DANS TOUS LES CAS. Avec GC_PLATFORM_DIR, aucun dépôt et
 # aucune branche n'ont pourtant été consultés : c'est un RÉPERTOIRE qui a été
 # lu — et chez le client concerné « ci/stoa-labs » n'existe même pas. Mesuré :
 #   GC_PLATFORM_DIR=<ws> GIT_BASE=master … ⇒ « PROVIDERS_MISSING : … absent du
@@ -603,8 +663,30 @@ _gc_platform_ref(){
   if [ -n "${GC_PLATFORM_DIR:-}" ]; then
     printf 'dépôt plateforme (%s)' "$(_gc_source_desc)"
   else
-    printf 'dépôt plateforme %s@%s (%s)' "${GIT_REPO:-ci/stoa-labs}" "$(_gc_base)" "$(_gc_source_desc)"
+    printf 'dépôt plateforme %s@%s (%s)' "${GIT_REPO:-ci/stoa-labs}" "$(_gc_base || printf 'branche par défaut inconnue')" "$(_gc_source_desc)"
   fi
+}
+# _gc_auth_b64 — l'en-tête Basic du clone ET de la découverte, en UN endroit
+# (L3, 2026-09-10 : la seconde ne doit pas recomposer ce que le premier compose).
+# rc 1 et un message sur stderr si aucun secret — il NOMME l'alias réellement lu.
+# Elle ne pose AUCUNE globale : ses appelants l'invoquent en `$( )`, où une
+# affectation mourrait avec le sous-shell (c'est à eux de poser _GC_CLONE_ERR).
+#   FORGE_SECRET  le secret, jeton OU mot de passe (nom neutre, à préférer)
+#   GITEA_TOKEN   alias historique, toujours honoré
+#   FORGE_USER / GIT_USER  l'utilisateur du couple (défaut « x », que seul Gitea accepte)
+_gc_auth_b64(){
+  local token="${FORGE_SECRET:-${GITEA_TOKEN:-}}" user
+  # 2026-09-07 : le message nommait DEUX FOIS la même variable (« FORGE_SECRET
+  # ou son alias FORGE_SECRET ») et jamais l'alias réellement lu, GITEA_TOKEN —
+  # instruction circulaire pour l'opérateur client. Aligné sur la formulation
+  # des scripts frères (provision-request.sh, team-apply.sh).
+  [ -n "$token" ] || {
+    echo "SECRET_FORGE_REQUIS : aucun secret pour la forge — ni FORGE_SECRET (jeton, ou mot de passe d'un couple) ni son alias GITEA_TOKEN ; avec un couple, poser aussi FORGE_USER" >&2; return 1; }
+  # GIT_USER : l'utilisateur du Basic. Gitea accepte n'importe lequel avec un
+  # PAT, d'où le « x » historique — GitLab et Bitbucket, NON (401). Knob, défaut
+  # inchangé.
+  user="${FORGE_USER:-${GIT_USER:-x}}"
+  printf '%s:%s' "$user" "$token" | base64 | tr -d '\n'
 }
 _gc_clone(){
   local repo="$1" dest="$2"
@@ -614,32 +696,34 @@ _gc_clone(){
   # B ; et sur le chemin SECRET_FORGE_REQUIS ci-dessous elle n'était pas posée
   # DU TOUT, si bien que l'avertissement disait « aucune sortie de git » alors
   # que la vraie cause était un secret manquant (mesuré).
-  _GC_CLONE_ERR=""
+  _GC_CLONE_ERR=""; _GC_CLONE_BASE=""
   # LE SECRET DE LA FORGE, quel qu'il soit (déploiement client 2026-09-04).
   # Un gestionnaire d'identité ne rend pas toujours un JETON : Jenkins rend
   # souvent un COUPLE (usernamePassword). Pour git, les deux valent : le clone
   # ne fait qu'un Basic, où un mot de passe occupe la place du jeton. Seul le
   # NOM de la variable prétendait le contraire, et le refus qui suivait réclamait
-  # un jeton que le client n'aura jamais.
-  #   FORGE_SECRET  le secret, jeton OU mot de passe (nom neutre, à préférer)
-  #   GITEA_TOKEN   alias historique, toujours honoré
-  #   FORGE_USER / GIT_USER  l'utilisateur du couple (défaut « x », que seul Gitea accepte)
-  local token="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
-  # 2026-09-07 : le message nommait DEUX FOIS la même variable (« FORGE_SECRET
-  # ou son alias FORGE_SECRET ») et jamais l'alias réellement lu, GITEA_TOKEN —
-  # instruction circulaire pour l'opérateur client. Aligné sur la formulation
-  # des scripts frères (provision-request.sh:170, team-apply.sh:75).
-  [ -n "$token" ] || { _GC_CLONE_ERR="SECRET_FORGE_REQUIS : ni FORGE_SECRET ni son alias GITEA_TOKEN (aucun clone tenté)"
-    echo "SECRET_FORGE_REQUIS : aucun secret pour la forge — ni FORGE_SECRET (jeton, ou mot de passe d'un couple) ni son alias GITEA_TOKEN ; avec un couple, poser aussi FORGE_USER" >&2; return 1; }
-  local host; host="$(_gc_host)"
-  # GIT_USER : l'utilisateur du Basic. Gitea accepte n'importe lequel avec un
-  # PAT, d'où le « x » historique — GitLab et Bitbucket, NON (401). Knob, défaut
-  # inchangé. GIT_BASE : la branche de base, knob d'ADR-075 honoré partout
-  # ailleurs (provision-request.sh:393) et jusqu'ici IGNORÉ ici — un client dont
-  # la branche est `master`/`develop` voyait donc échouer CE clone, et lui seul.
-  local user="${FORGE_USER:-${GIT_USER:-x}}" base; base="$(_gc_base)"
-  local auth_b64 err rc
-  auth_b64=$(printf '%s:%s' "$user" "$token" | base64 | tr -d '\n')
+  # un jeton que le client n'aura jamais. L'en-tête est composé par
+  # _gc_auth_b64 — le MÊME que porte la découverte de la branche.
+  local auth_b64 host base err rc
+  # PAS de « $( ) » sur ces deux appels : ils posent la CAUSE dans une globale
+  # (_GC_CLONE_ERR, _GC_BASE_ERR), et un sous-shell l'emporterait avec lui —
+  # l'avertissement du corps de boucle retomberait sur « aucune sortie de git ».
+  host="$(_gc_host)"
+  if ! auth_b64="$(_gc_auth_b64)"; then
+    _GC_CLONE_ERR="SECRET_FORGE_REQUIS : ni FORGE_SECRET ni son alias GITEA_TOKEN (aucun clone tenté)"; return 1
+  fi
+  # LA BRANCHE de CE dépôt : knob, sinon sa HEAD — jamais « main » deviné.
+  # Elle est PUBLIÉE dans _GC_CLONE_BASE : l'avertissement du corps de boucle
+  # nomme la branche RÉELLEMENT tentée, et se tait quand il n'y en a pas eu.
+  # L'URL repasse par _gc_redact ICI : git-base.sh masque déjà un `user:secret@`,
+  # mais l'expurgation de CETTE lib est plus large (littéral de GIT_HOST, formes
+  # scp-like, segments) et c'est elle qui fait foi pour ce qu'elle émet.
+  if ! _gc_base_of "${host}/${repo}.git" >/dev/null; then
+    _GC_CLONE_ERR="BRANCHE_PAR_DEFAUT_INCONNUE : $(_gc_redact "${host}/${repo}.git") n'annonce pas sa branche par défaut — ${_GC_BASE_ERR:-aucune sortie de git} (aucun clone tenté ; poser GIT_BASE pour trancher)"
+    return 1
+  fi
+  base="$_GC_BASE_R"
+  _GC_CLONE_BASE="$base"
   err=$(mktemp) || { _GC_CLONE_ERR="mktemp indisponible"; return 1; }
   GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader \
     GIT_CONFIG_VALUE_0="Authorization: Basic ${auth_b64}" \
@@ -901,8 +985,11 @@ PY
   # EXACTEMENT ce que git a tenté — c'est la question du client : « quel dépôt
   # est cloné ». L'hôte passe par _gc_redact : un opérateur qui met ses
   # identifiants dans GIT_HOST ne les verra pas ressortir par ce message.
-  local rrepo tw base_b host_red url_red
-  base_b="$(_gc_base)"; host_red="$(_gc_redact "$(_gc_host)")"
+  local rrepo tw base_b host_red url_red sur
+  # base_b = le KNOB seul : un message d'ENSEMBLE ne peut nommer une branche que
+  # si elle vaut pour tous les dépôts. Sans knob, chaque dépôt a la sienne (elles
+  # sont nommées une à une par les avertissements) et l'ensemble n'en nomme aucune.
+  base_b="$(_gc_base_knob || true)"; host_red="$(_gc_redact "$(_gc_host)")"
   while IFS= read -r rrepo; do
     [ -n "$rrepo" ] || continue
     declares=$((declares + 1))
@@ -921,7 +1008,8 @@ PY
       # _GC_CLONE_ERR est DÉJÀ expurgé par _gc_clone — il était calculé puis
       # JETÉ ici : 401, 404, branche absente, proxy et TLS rendaient le même
       # message, et le client ne pouvait pas les distinguer (incident du jour).
-      echo "  (avertissement) dépôt d'équipe ${rrepo} illisible sur ${base_b} (${url_red}) — ignoré pour cette liste — ${_GC_CLONE_ERR:-aucune sortie de git}" >&2
+      sur=""; [ -z "$_GC_CLONE_BASE" ] || sur=" sur ${_GC_CLONE_BASE}"
+      echo "  (avertissement) dépôt d'équipe ${rrepo} illisible${sur} (${url_red}) — ignoré pour cette liste — ${_GC_CLONE_ERR:-aucune sortie de git}" >&2
     fi
   done <<<"$repos"
 
@@ -952,13 +1040,13 @@ PY
     # question littérale du client était « quel dépôt est cloné ».
     # Le VOLET « dépôts d'équipe » ne cite la forge et la branche que si un
     # dépôt a été DÉCLARÉ : sans déclaration, aucune branche et aucun hôte n'ont
-    # été mis en jeu, et « 0 illisible(s) sur main (http://…) » nommerait un
+    # été mis en jeu, et « 0 illisible(s) sur <base> (http://…) » nommerait un
     # hôte que ce run n'a jamais approché.
     local repos_desc
     if [ "$declares" -eq 0 ]; then
       repos_desc="aucun dépôt d'équipe déclaré"
     else
-      repos_desc="${declares} dépôt(s) d'équipe déclaré(s), ${clones} cloné(s), ${skipped} illisible(s) sur ${base_b} (${host_red})"
+      repos_desc="${declares} dépôt(s) d'équipe déclaré(s), ${clones} cloné(s), ${skipped} illisible(s)$([ -z "$base_b" ] || printf ' sur %s' "$base_b") (${host_red})"
     fi
     # LE REMÈDE NE RENVOIE À DES AVERTISSEMENTS QUE S'IL Y EN A EU (2026-09-07
     # bis). « ou réparer les dépôts d'équipe avertis ci-dessus » était émis

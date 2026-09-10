@@ -77,8 +77,8 @@ git_shows(){ grep -c ' show ' "$TMP/git.log" || true; }
 
 # ── le dépôt git : un manifeste multi-palier à c1, des variantes en commits frères ──
 ORIGIN="$TMP/origin.git"; WORK="$TMP/work"
-git init -q --bare "$ORIGIN" && git -C "$ORIGIN" symbolic-ref HEAD refs/heads/main
-git init -q "$WORK" && git -C "$WORK" checkout -q -b main
+git init -q --bare "$ORIGIN" && git -C "$ORIGIN" symbolic-ref HEAD refs/heads/master
+git init -q "$WORK" && git -C "$WORK" checkout -q -b master
 gitc(){ git -C "$WORK" -c user.name=t -c user.email=t@t "$@"; }
 mkdir -p "$WORK/clients/provisioned/applications"
 MANP="$WORK/clients/provisioned/applications/appa.ansible.yml"
@@ -105,7 +105,7 @@ C_NL=$(variant prod-nl "$(pe_with "$H0" '    prod: { auth: { claim: { value: "ap
 # garde la racine standard ; le contrat doit le voir au dispatch.
 gitc show "$C1:./clients/provisioned/applications/appa.ansible.yml" | sed 's/  api: "demo-selfservice"/  api: "payments-initiation"/' > "$MANP"
 gitc add -A; gitc commit -qm root-api >/dev/null; C_ROOT=$(gitc rev-parse HEAD)
-gitc remote add origin "$ORIGIN"; gitc push -q origin main
+gitc remote add origin "$ORIGIN"; gitc push -q origin master
 [ "$(gitc show "$C_NL:./clients/provisioned/applications/appa.ansible.yml" | grep -c 'CHG\\n1')" = 1 ] || { echo "!! fixture : la variante saut-de-ligne n'est pas écrite"; exit 2; }
 
 # ── le stub ITSM : GET /changes/<id> piloté, journal des chemins BRUTS ───────
@@ -509,7 +509,7 @@ run_rpt(){ # [VAR=val …] → $BODY
 }
 run_rpt APPLY_RESULT=REFUSED REFUSAL=FOUR_EYES_VIOLATION REFUSAL_KIND=porte 'REFUSAL_DETAIL=le demandeur a approuvé sa propre demande'
 [ "$(cat "$TMP/rpt.rc")" = 0 ] && grep -q 'porte du palier' "$BODY" && grep -q 'FOUR_EYES_VIOLATION' "$BODY" && ! grep -q 'ne correspondent pas' "$BODY" \
-  && ok "D.1 REFUSED + REFUSAL_KIND=porte ⇒ la phrase de la porte, jamais « la PR et main ne correspondent pas »" || bad "D.1 rc $(cat "$TMP/rpt.rc") : $(tr '\n' ' ' < "$BODY" 2>/dev/null | head -c 300)"
+  && ok "D.1 REFUSED + REFUSAL_KIND=porte ⇒ la phrase de la porte, jamais « la PR et la branche de base ne correspondent pas »" || bad "D.1 rc $(cat "$TMP/rpt.rc") : $(tr '\n' ' ' < "$BODY" 2>/dev/null | head -c 300)"
 run_rpt APPLY_RESULT=REFUSED REFUSAL=PAYLOAD_PERIME 'REFUSAL_DETAIL=x'
 grep -q 'ne correspondent pas' "$BODY" && ! grep -q 'porte du palier' "$BODY" && ok "D.2 REFUSED sans kind ⇒ le texte A2 (réconciliation) inchangé" || bad "D.2 texte : $(tr '\n' ' ' < "$BODY" | head -c 300)"
 run_rpt APPLY_RESULT=FAILURE VALIDATOR=alice REFUSAL=DEPLOYER_GROUP_REQUIRED 'REFUSAL_DETAIL=refus de l aval selfservice-app-deploy #7'
@@ -532,7 +532,7 @@ mk_platform(){ # $1=racine bare $2=providers.dev.yml
   mkdir -p "$src/poc-control-plane-federation/ansible" "$src/poc-control-plane-federation/clients/_example/apis"
   printf '%s' "$2" > "$src/poc-control-plane-federation/ansible/providers.dev.yml"
   printf 'apim_api:\n  name: accounts-read\n  version: 1.0.0\n' > "$src/poc-control-plane-federation/clients/_example/apis/accounts-read.publish.yml"
-  ( cd "$src" && git init -q -b main && git -c user.name=t -c user.email=t@t add -A && git -c user.name=t -c user.email=t@t commit -qm init >/dev/null )
+  ( cd "$src" && git init -q -b master && git -c user.name=t -c user.email=t@t add -A && git -c user.name=t -c user.email=t@t commit -qm init >/dev/null )
   mkdir -p "$(dirname "$bare")"; git clone -q --bare "$src" "$bare" >/dev/null
 }
 GHE="$TMP/giteaE"; mk_platform "$GHE/ci/stoa-labs.git" $'providers:\n  - team: banking-demo\n    repo: ""\n    approvers: []\n'

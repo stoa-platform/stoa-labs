@@ -1,6 +1,6 @@
 // ci/Jenkinsfile.provision-apply — APPLY post-merge d'une DEMANDE D'APPLICATION
 // (maillon 2 du self-service consommateur, ADR-078/081) — la RÉFÉRENCE est le
-// SHA mergé (A2, GOAL cd-applications), jamais le dernier `main`.
+// SHA mergé (A2, GOAL cd-applications), jamais la dernière tête de la base.
 //
 // Conversion DÉCLARATIVE du pipeline qui vivait en Groovy inline dans
 // ci/jenkins/provision-apply.job.xml (<script>…</script>) — la contrainte du
@@ -12,7 +12,7 @@
 //     ──webhook──▶ 1. RÉCONCILIATION (agent court, sans humain) : le payload ne
 //                     fait pas foi — la PR est relue sur la FORGE (merged /
 //                     merge_commit_sha / head / base, périmètre des fichiers) et
-//                     `main` est relu par GIT (le SHA est sur main, le palier n'a
+//                     la base est relue par GIT (le SHA est sur la base, le palier n'a
 //                     pas été supplanté depuis) — scripts/provision-apply-reconcile.sh.
 //                     Les identités mergeur/demandeur viennent de la forge, jamais
 //                     du payload. Refus nommé (PAYLOAD_PERIME, PALIER_SUPPLANTE,
@@ -206,9 +206,9 @@ pipeline {
 
     // ── 1. RÉCONCILIATION — AVANT la pause, sans identité humaine ────────────
     // Le webhook (token GWT partagé, HMAC non vérifié en aval) peut prétendre
-    // n'importe quoi. On relit la PR sur la forge ET main par git : merged,
+    // n'importe quoi. On relit la PR sur la forge ET la base par git : merged,
     // merge_commit_sha, head.ref, base.ref, périmètre des fichiers, ancêtre de
-    // main, palier non supplanté — sinon refus nommé, commenté (si la forge a
+    // la base, palier non supplanté — sinon refus nommé, commenté (si la forge a
     // confirmé une PR provision/*), build rouge, PERSONNE n'est réveillé. Les
     // identités réconciliées (GITEA_MERGED_BY / GITEA_REQUESTER), APP_NAME,
     // ENV_NAME, MANIFEST et MERGED_DIGEST sont chargés dans l'environnement.

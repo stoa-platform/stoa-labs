@@ -21,7 +21,7 @@
 #
 #   « jamais un geste du compte de service sur une PR seulement NOMMÉE. »
 #
-# gitea_pr_confirm <numéro> <head_ref attendu> [base_ref attendue (défaut main)]
+# gitea_pr_confirm <numéro> <head_ref attendu> <base_ref attendue>
 #   `forge pr_get <numéro>` (secret PAR ENV — jamais en argv —, timeout
 #   FORGE_TIMEOUT 30 s, aucune redirection suivie). rc 0 et, sur stdout, quatre
 #   lignes
@@ -53,10 +53,16 @@
 . "$(dirname "${BASH_SOURCE[0]}")/forge-api.sh" || { echo "ERREUR: scripts/lib/forge-api.sh introuvable a cote de gitea-pr-confirm.sh" >&2; return 1; }
 
 gitea_pr_confirm(){
-  local n="${1:-}" want_head="${2:-}" want_base="${3:-main}"
+  local n="${1:-}" want_head="${2:-}" want_base="${3:-}"
   # Validations d'entrée : aucun appel réseau avant qu'elles passent.
   case "$n" in ''|*[!0-9]*) echo "FORGE_NON_CONFIRMEE : numero de PR non numerique ('$n')" >&2; return 1;; esac
   [ -n "$want_head" ] || { echo "FORGE_NON_CONFIRMEE : head_ref attendu vide" >&2; return 1; }
+  # LA BASE ATTENDUE EST OBLIGATOIRE (L3, 2026-09-10). Son défaut « main »
+  # était un défaut de SITE invisible à ci/lint-config-knobs.sh : chez un client
+  # dont la branche est `master`, un appelant qui oubliait l'argument faisait
+  # refuser FORGE_NON_CONFIRMEE toutes ses PR, en accusant la PR. Fail-closed :
+  # l'appelant pose la base (scripts/lib/git-base.sh la lui donne).
+  [ -n "$want_base" ] || { echo "FORGE_NON_CONFIRMEE : base_ref attendue vide — la branche de base est un ARGUMENT obligatoire, aucun defaut (cf. scripts/lib/git-base.sh)" >&2; return 1; }
   case "$want_head" in provision/*) ;; *) echo "FORGE_NON_CONFIRMEE : head_ref attendu hors provision/* ('$want_head')" >&2; return 1;; esac
   FORGE_SECRET="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
   [ -n "$FORGE_SECRET" ] || { echo "FORGE_NON_CONFIRMEE : ni FORGE_SECRET ni son alias GITEA_TOKEN" >&2; return 1; }

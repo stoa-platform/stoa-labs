@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # provision-apply-reconcile.sh — la RÉCONCILIATION de provision-apply (A2, GOAL
 # cd-applications) : le payload du webhook ne fait pas foi — ni sur l'état de la
-# PR (Gitea), ni sur l'état de `main` (git).
+# PR (Gitea), ni sur l'état de la branche de base (git).
 #
 # POURQUOI. Le déclencheur de provision-apply est un webhook au token GWT
 # partagé, sans HMAC vérifié en aval (limite mesurée, cf. team-apply.sh §webhook).
@@ -10,7 +10,7 @@
 # `merge_commit_sha` d'une autre PR, un `merged_by` qui n'a rien mergé, ou
 # rejouer à l'identique une PR RÉELLEMENT mergée dont le palier a été supplanté
 # depuis. Avant A2, un tel payload ouvrait la pause et — si quelqu'un répondait —
-# appliquait l'état de `main` ; avec A2 il projetterait le SHA demandé : la
+# appliquait l'état de la branche de base ; avec A2 il projetterait le SHA demandé : la
 # réconciliation est donc ce qui rend « projeter le SHA mergé » sûr.
 #
 # CE QUI EST VÉRIFIÉ, DANS L'ORDRE (chaque refus est nommé, stable, greppable) :
@@ -19,7 +19,7 @@
 #      manifeste ne peut pas sortir de son dossier).
 #   2. LA FORGE = LA VÉRITÉ sur la PR (`forge pr_get`, authentifié, non
 #      falsifiable par un payload) : MERGED=1 · MERGE_SHA == MERGE_SHA ·
-#      HEAD_REF == PR_BRANCH · BASE_REF == main, sinon PAYLOAD_PERIME ; les
+#      HEAD_REF == PR_BRANCH · BASE_REF == GIT_BASE, sinon PAYLOAD_PERIME ; les
 #      IDENTITÉS (MERGED_BY, LOGIN) viennent de là, jamais du payload.
 #   3. PÉRIMÈTRE de la PR (`forge pr_files`) : elle ne touche QUE son
 #      manifeste et son certificat de palier — sinon PR_HORS_PERIMETRE (l'aval
@@ -32,11 +32,11 @@
 # retour-ligne dans une valeur) vivent LÀ, avec une cause auto-diagnostique sur
 # stderr. Les TAGS de refus ci-dessous ne bougent pas (GITEA_RECONCILE_ECHEC
 # garde son nom : provision-plan/apply et les harnais le greppent).
-#   4. GIT = LA VÉRITÉ sur main : MERGE_SHA est un ancêtre de origin/main
-#      (MERGE_SHA_NON_ANCETRE) et le manifeste EFFECTIF du palier au SHA mergé
-#      est encore celui que main porte pour ce palier — sinon
+#   4. GIT = LA VÉRITÉ sur la branche de base : MERGE_SHA est un ancêtre de
+#      origin/<base> (MERGE_SHA_NON_ANCETRE) et le manifeste EFFECTIF du palier
+#      au SHA mergé est encore celui que la base porte pour ce palier — sinon
 #      PALIER_SUPPLANTE (un rejeu d'une PR ancienne ne re-projette jamais un
-#      état que main a dépassé ; granularité = le palier, via
+#      état que la base a dépassé ; granularité = le palier, via
 #      app_manifest_digest_env : une PR foo-dev postérieure ne bloque pas foo-rec).
 #
 # Tourne AVANT la pause : personne n'est réveillé pour un payload forgé ou périmé.
@@ -63,7 +63,7 @@
 #   FORGE_KIND (gitea|gitlab, défaut gitea) · FORGE_API_AUTH (cf. scripts/lib/forge-api.py)
 #   GIT_WEB_HOST (lien humain du commentaire, défaut GIT_HOST)
 #   GIT_WORKTREE (défaut . = poc-control-plane-federation/ dans le workspace : là où
-#                 `git fetch origin main` et `git show` tournent)
+#                 `git fetch origin <base>` et `git show` tournent)
 #   GIT_SUBDIR   (défaut poc-control-plane-federation : préfixe des chemins vus par la forge)
 #   MANIFEST_DIR (défaut clients/provisioned/applications, relatif à GIT_WORKTREE)
 #
@@ -77,10 +77,10 @@
 #   PAYLOAD_PERIME           la forge contredit le payload (merged / SHA / head / base)
 #   MERGER_UNKNOWN           la forge ne nomme aucun mergeur
 #   PR_HORS_PERIMETRE        la PR touche autre chose que son manifeste / son certificat
-#   MERGE_SHA_NON_ANCETRE    le SHA n'est pas sur main
-#   MANIFESTE_ABSENT         le manifeste manque au SHA mergé ou sur main
+#   MERGE_SHA_NON_ANCETRE    le SHA n'est pas sur la branche de base
+#   MANIFESTE_ABSENT         le manifeste manque au SHA mergé ou sur la base
 #   PALIER_ABSENT            le manifeste au SHA mergé ne déclare pas ce palier (lib)
-#   PALIER_SUPPLANTE         main porte un état plus récent de ce palier que cette PR
+#   PALIER_SUPPLANTE         la base porte un état plus récent de ce palier que cette PR
 set -uo pipefail
 set +x
 # Chemin du script résolu AVANT le `cd` (motif provision-plan.sh : après, un
@@ -113,6 +113,8 @@ MANIFEST_DIR="${MANIFEST_DIR:-clients/provisioned/applications}"
 . "$SELF_DIR/lib/app-manifest.sh" || { echo "ERREUR: $SELF_DIR/lib/app-manifest.sh introuvable" >&2; exit 1; }
 # shellcheck source=scripts/lib/branch-ref.sh
 . "$SELF_DIR/lib/branch-ref.sh" || { echo "ERREUR: $SELF_DIR/lib/branch-ref.sh introuvable" >&2; exit 1; }
+# shellcheck source=scripts/lib/git-base.sh
+. "$SELF_DIR/lib/git-base.sh" || { echo "ERREUR: $SELF_DIR/lib/git-base.sh introuvable" >&2; exit 1; }
 # L'unique autorité pour parler à la forge (visage, base, en-tête, garde) ; le
 # secret lui parvient par l'environnement (FORGE_SECRET), jamais en argv.
 # shellcheck source=scripts/lib/forge-api.sh
@@ -179,6 +181,20 @@ MANIFEST="${MANIFEST_DIR}/${APP_NAME}.ansible.yml"
 FORGE_MANIFEST="${SUB_PFX}${MANIFEST}"
 FORGE_CERT="${SUB_PFX}clients/provisioned/certs/${APP_NAME}-${ENV_NAME}.crt"
 
+# ── 1bis. LA BRANCHE DE BASE (L3, 2026-09-10) ────────────────────────────────
+# Ce script ne clone RIEN : il lit le worktree que Jenkins a déjà posé. La
+# branche par défaut se découvre donc sur l'origine DE CE WORKTREE — la même que
+# le `git fetch` du §4 interroge, sous le même environnement, donc sous la même
+# enveloppe d'authentification (celle que la définition SCM du job a posée).
+# APRÈS la §1 : un payload difforme reste refusé sans toucher au réseau. AVANT la
+# §2 : c'est la base RELUE de la PR que la §2 compare (base.ref). « main » y était
+# écrit en dur — chez un client dont la branche est `master`, TOUTE PR mergée
+# était refusée PAYLOAD_PERIME, en accusant le webhook au lieu du câblage.
+GIT_CLONE_URL="${GIT_CLONE_URL:-$(git -C "$GIT_WORKTREE" remote get-url origin 2>/dev/null || true)}"
+git_base_init "$GIT_CLONE_URL" \
+  || fail GITEA_RECONCILE_ECHEC "branche par défaut du dépôt inconnue (cause ci-dessus) — sans elle, ni la base de la PR ni l'ancêtre ne peuvent être vérifiés" \
+                                "la branche par défaut du dépôt n'a pas pu être déterminée"
+
 # ── 2. LA FORGE = LA VÉRITÉ sur la PR ────────────────────────────────────────
 # Relue par `forge pr_get` (scripts/lib/forge-api.py). Ce que la lib refuse
 # DÉJÀ, avec une cause auto-diagnostique sur stderr : redirection, statut hors
@@ -220,7 +236,7 @@ WHY=""
 [ "$R_MERGED" = 1 ]               || WHY="$WHY merged=false"
 [ "$R_MERGE_SHA" = "$MERGE_SHA" ] || WHY="$WHY merge_commit_sha=${R_MERGE_SHA}"
 [ "$GITEA_HEAD_REF" = "$PR_BRANCH" ] || WHY="$WHY head.ref=${GITEA_HEAD_REF}"
-[ "$R_BASE_REF" = main ]          || WHY="$WHY base.ref=${R_BASE_REF}"
+[ "$R_BASE_REF" = "$GIT_BASE" ]   || WHY="$WHY base.ref=${R_BASE_REF}"
 [ -z "$WHY" ] \
   || fail PAYLOAD_PERIME "${GIT_REPO}#${PR_NUMBER} sur la forge ne correspond pas au webhook (${WHY# }) — le payload ne fait pas foi, refus ; CE webhook n'a rien appliqué" \
                          "la PR relue sur la forge ne correspond pas au webhook (${WHY# })"
@@ -255,32 +271,32 @@ case "$FILES_VERDICT" in
   *)           fail GITEA_RECONCILE_ECHEC "verdict de périmètre inattendu ($(shown "$FILES_VERDICT"))" ;;
 esac
 
-# ── 4. GIT = LA VÉRITÉ sur main : ancêtre, et palier non supplanté ───────────
-git -C "$GIT_WORKTREE" fetch -q origin main 2>"$TMP/fetch.err" \
-  || fail GITEA_RECONCILE_ECHEC "git fetch origin main en échec dans ${GIT_WORKTREE} : $(head -c 200 "$TMP/fetch.err")"
-git -C "$GIT_WORKTREE" merge-base --is-ancestor "$MERGE_SHA" origin/main \
-  || fail MERGE_SHA_NON_ANCETRE "${MERGE_SHA} n'est pas un ancêtre de main — le SHA ne correspond pas à un commit fusionné sur la branche protégée" \
-                                "le SHA de merge n'est pas sur main"
+# ── 4. GIT = LA VÉRITÉ sur la branche de base : ancêtre, palier non supplanté ─
+git -C "$GIT_WORKTREE" fetch -q origin "$GIT_BASE" 2>"$TMP/fetch.err" \
+  || fail GITEA_RECONCILE_ECHEC "git fetch origin ${GIT_BASE} en échec dans ${GIT_WORKTREE} : $(head -c 200 "$TMP/fetch.err")"
+git -C "$GIT_WORKTREE" merge-base --is-ancestor "$MERGE_SHA" "origin/${GIT_BASE}" \
+  || fail MERGE_SHA_NON_ANCETRE "${MERGE_SHA} n'est pas un ancêtre de ${GIT_BASE} — le SHA ne correspond pas à un commit fusionné sur la branche protégée" \
+                                "le SHA de merge n'est pas sur ${GIT_BASE}"
 git -C "$GIT_WORKTREE" show "${MERGE_SHA}:./${MANIFEST}" > "$TMP/merged.yml" 2>/dev/null \
   || fail MANIFESTE_ABSENT "${MANIFEST} absent de l'arbre au SHA mergé ${MERGE_SHA}" "le manifeste de l'application est absent au SHA mergé"
-git -C "$GIT_WORKTREE" show "origin/main:./${MANIFEST}" > "$TMP/main.yml" 2>/dev/null \
-  || fail MANIFESTE_ABSENT "${MANIFEST} absent de main (application retirée depuis ?) — rien à projeter" "le manifeste de l'application n'est plus sur main"
+git -C "$GIT_WORKTREE" show "origin/${GIT_BASE}:./${MANIFEST}" > "$TMP/base.yml" 2>/dev/null \
+  || fail MANIFESTE_ABSENT "${MANIFEST} absent de ${GIT_BASE} (application retirée depuis ?) — rien à projeter" "le manifeste de l'application n'est plus sur ${GIT_BASE}"
 MERGED_DIGEST=$(app_manifest_digest_env "$TMP/merged.yml" "$ENV_NAME" 2>"$TMP/dg.err") \
   || fail PALIER_ABSENT "le manifeste au SHA mergé ne déclare pas le palier ${ENV_NAME} ou est illisible : $(head -c 200 "$TMP/dg.err" | tr '\n' ' ')" \
                         "le manifeste au SHA mergé ne déclare pas ce palier (ou est illisible)"
-MAIN_DIGEST=$(app_manifest_digest_env "$TMP/main.yml" "$ENV_NAME" 2>"$TMP/dg2.err") \
-  || fail PALIER_SUPPLANTE "main ne déclare plus le palier ${ENV_NAME} pour ${APP_NAME} (ou son manifeste est illisible) : $(head -c 200 "$TMP/dg2.err" | tr '\n' ' ') — rejouer une demande" \
-                           "main ne déclare plus ce palier pour cette application"
-[ "$MERGED_DIGEST" = "$MAIN_DIGEST" ] \
-  || fail PALIER_SUPPLANTE "main porte un état plus récent de ${APP_NAME}/${ENV_NAME} que ${GIT_REPO}#${PR_NUMBER} (digest mergé ${MERGED_DIGEST} ≠ main ${MAIN_DIGEST}) — un rejeu ne re-projette jamais un état dépassé : rejouer une demande, ou le repli (A6)" \
-                           "main porte un état plus récent de ce palier que cette PR (rejeu d'un webhook ancien ?) — rejouer une demande, ou le repli A6"
+BASE_DIGEST=$(app_manifest_digest_env "$TMP/base.yml" "$ENV_NAME" 2>"$TMP/dg2.err") \
+  || fail PALIER_SUPPLANTE "${GIT_BASE} ne déclare plus le palier ${ENV_NAME} pour ${APP_NAME} (ou son manifeste est illisible) : $(head -c 200 "$TMP/dg2.err" | tr '\n' ' ') — rejouer une demande" \
+                           "la branche de base ne déclare plus ce palier pour cette application"
+[ "$MERGED_DIGEST" = "$BASE_DIGEST" ] \
+  || fail PALIER_SUPPLANTE "${GIT_BASE} porte un état plus récent de ${APP_NAME}/${ENV_NAME} que ${GIT_REPO}#${PR_NUMBER} (digest mergé ${MERGED_DIGEST} ≠ ${GIT_BASE} ${BASE_DIGEST}) — un rejeu ne re-projette jamais un état dépassé : rejouer une demande, ou le repli (A6)" \
+                           "la branche de base porte un état plus récent de ce palier que cette PR (rejeu d'un webhook ancien ?) — rejouer une demande, ou le repli A6"
 
 # ── 4bis. A6 (D1ter) — un REPLI ne restaure que l'état d'avant le MERGE ──────
-# PALIER_SUPPLANTE compare le SHA mergé à main : pour la PR qui vient d'être
-# mergée ce sont le même commit. Si main a bougé pour ce palier ENTRE la
+# PALIER_SUPPLANTE compare le SHA mergé à la base : pour la PR qui vient d'être
+# mergée ce sont le même commit. Si la base a bougé pour ce palier ENTRE la
 # demande de repli (trailer `Repli-De: <sha>` du commit de branche, MERGE_SHA^2)
-# et le merge (MERGE_SHA^1 = main juste avant), la PR restaure « l'état d'avant »
-# d'un main qui n'existe plus : refus, avant la pause. Certificat comparé par
+# et le merge (MERGE_SHA^1 = la base juste avant), la PR restaure « l'état
+# d'avant » d'une base qui n'existe plus : refus, avant la pause. Certificat par
 # identifiant de blob (aucun contenu lu). INERTE sans trailer (toute PR non-repli,
 # un squash) : rien d'autre ne change dans ce script.
 P2=$(git -C "$GIT_WORKTREE" rev-parse -q --verify "${MERGE_SHA}^2" 2>/dev/null || true)
@@ -290,20 +306,20 @@ if [ -n "$REPLI_DE" ]; then
   P1=$(git -C "$GIT_WORKTREE" rev-parse "${MERGE_SHA}^1")
   CERT_REL="clients/provisioned/certs/${APP_NAME}-${ENV_NAME}.crt"
   git -C "$GIT_WORKTREE" show "${P1}:./${MANIFEST}" > "$TMP/p1.yml" 2>/dev/null \
-    || fail REPLI_PERIME "${MANIFEST} absent de main juste avant le merge (${P1}) — main a bougé depuis la demande de repli ; rejouer la demande de repli" \
-                         "main a bougé pour ce palier entre la demande de repli et son merge (manifeste absent avant le merge) — rejouer la demande de repli"
+    || fail REPLI_PERIME "${MANIFEST} absent de ${GIT_BASE} juste avant le merge (${P1}) — ${GIT_BASE} a bougé depuis la demande de repli ; rejouer la demande de repli" \
+                         "la branche de base a bougé pour ce palier entre la demande de repli et son merge (manifeste absent avant le merge) — rejouer la demande de repli"
   git -C "$GIT_WORKTREE" show "${REPLI_DE}:./${MANIFEST}" > "$TMP/de.yml" 2>/dev/null \
     || fail REPLI_PERIME "la référence Repli-De ${REPLI_DE} ne porte pas ${MANIFEST}" "la référence Repli-De de la PR est illisible — rejouer la demande de repli"
   D_P1=$(app_manifest_digest_env "$TMP/p1.yml" "$ENV_NAME" 2>/dev/null); D_DE=$(app_manifest_digest_env "$TMP/de.yml" "$ENV_NAME" 2>/dev/null)
   [ -n "$D_P1" ] && [ "$D_P1" = "$D_DE" ] \
-    || fail REPLI_PERIME "main a bougé pour ${APP_NAME}/${ENV_NAME} entre la demande de repli (${REPLI_DE}) et le merge (${P1}) : digest ${D_DE:-illisible} → ${D_P1:-illisible} — rejouer la demande de repli" \
-                         "main a bougé pour ce palier entre la demande de repli et son merge — rejouer la demande de repli"
+    || fail REPLI_PERIME "${GIT_BASE} a bougé pour ${APP_NAME}/${ENV_NAME} entre la demande de repli (${REPLI_DE}) et le merge (${P1}) : digest ${D_DE:-illisible} → ${D_P1:-illisible} — rejouer la demande de repli" \
+                         "la branche de base a bougé pour ce palier entre la demande de repli et son merge — rejouer la demande de repli"
   B1=$(git -C "$GIT_WORKTREE" rev-parse -q --verify "${P1}:./${CERT_REL}" 2>/dev/null || true)
   B2=$(git -C "$GIT_WORKTREE" rev-parse -q --verify "${REPLI_DE}:./${CERT_REL}" 2>/dev/null || true)
   [ "$B1" = "$B2" ] \
-    || fail REPLI_PERIME "le certificat ${CERT_REL} a changé sur main entre la demande de repli et le merge — rejouer la demande de repli" \
-                         "le certificat du palier a changé sur main entre la demande de repli et son merge — rejouer la demande de repli"
-  echo "REPLI_OK : la PR est un repli (Repli-De ${REPLI_DE}) et main n'a pas bougé pour ${APP_NAME}/${ENV_NAME} avant le merge"
+    || fail REPLI_PERIME "le certificat ${CERT_REL} a changé sur ${GIT_BASE} entre la demande de repli et le merge — rejouer la demande de repli" \
+                         "le certificat du palier a changé sur la branche de base entre la demande de repli et son merge — rejouer la demande de repli"
+  echo "REPLI_OK : la PR est un repli (Repli-De ${REPLI_DE}) et ${GIT_BASE} n'a pas bougé pour ${APP_NAME}/${ENV_NAME} avant le merge"
 fi
 
 # ── 5. SORTIE : ce que le pipeline charge dans son environnement ─────────────
@@ -315,4 +331,4 @@ fi
   printf 'MANIFEST=%s\n' "$MANIFEST"
   printf 'MERGED_DIGEST=%s\n' "$MERGED_DIGEST"
 } > "$RECONCILE_OUT"
-echo "RECONCILE_OK : ${GIT_REPO}#${PR_NUMBER} mergée (${MERGE_SHA}) par '${GITEA_MERGED_BY}' (demandeur '${GITEA_REQUESTER}') — ${APP_NAME}/${ENV_NAME}, manifeste ${MANIFEST}, digest ${MERGED_DIGEST} = main"
+echo "RECONCILE_OK : ${GIT_REPO}#${PR_NUMBER} mergée (${MERGE_SHA}) par '${GITEA_MERGED_BY}' (demandeur '${GITEA_REQUESTER}') — ${APP_NAME}/${ENV_NAME}, manifeste ${MANIFEST}, digest ${MERGED_DIGEST} = ${GIT_BASE}"

@@ -85,7 +85,7 @@ O_RACINE=$(fixture racine .)                               # livrable = racine
 # GIT_HOST vise un port fermé : la forge est injoignable PAR CONSTRUCTION.
 req(){
   local sc="$1" origin="$2" sub="$3" e="$4"; shift 4
-  local -a envv=(GITEA_TOKEN=stub GIT_HOST=http://127.0.0.1:1 GIT_REPO=ci/appli GIT_BASE=main
+  local -a envv=(GITEA_TOKEN=stub GIT_HOST=http://127.0.0.1:1 GIT_REPO=ci/appli GIT_BASE=master
                  "GIT_CLONE_URL=file://$origin" "GIT_PUSH_URL=file://$origin"
                  MANIFEST_DIR=clients/provisioned/applications
                  "STOA_ENV_CHAIN_FILE=$TMP/chain.yaml" PROVISION_PLAN_INLINE=false

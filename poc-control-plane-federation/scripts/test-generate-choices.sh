@@ -453,7 +453,7 @@ OUT=$(GC_PLATFORM_DIR="$TMP/vide-$$" GIT_HOST="$GHK" GIT_REPO=ci/stoa-labs GITEA
 [ "$RC" -ne 0 ] && grep -q 'GC_PLATFORM_DIR' <<<"$OUT" && ok "GC_PLATFORM_DIR invalide ⇒ refus nommant le knob, AUCUN repli sur le clone (fail-closed)" || ko "rc=$RC (repli silencieux ?) : $(tr '\n' ' ' <<<"$OUT")"
 
 echo
-echo "== 13. la branche de base est un knob (GIT_BASE), plus « main » en dur =="
+echo "== 13. la branche de base : DÉCOUVERTE, ou knob — jamais « main » en dur =="
 # dépôt dont la SEULE branche est `develop` (aucune `main`) — le cas d'un client
 GHD="$TMP/gitea-develop"; SRCD="$TMP/src-develop"
 mkdir -p "$SRCD/poc-control-plane-federation/ansible" "$GHD/ci"
@@ -461,9 +461,20 @@ printf '%s' "$TWO_TEAMS" > "$SRCD/poc-control-plane-federation/ansible/providers
 ( cd "$SRCD" && git init -q -b develop && git -c user.name=t -c user.email=t@t add -A \
   && git -c user.name=t -c user.email=t@t commit -qm init ) >/dev/null 2>&1
 git clone -q --bare "$SRCD" "$GHD/ci/stoa-labs.git" >/dev/null 2>&1
+# SANS KNOB (L3, 2026-09-10) : la HEAD du dépôt dit `develop`, la lib la
+# DÉCOUVRE et les listes sortent. C'est le renversement du lot L3 — avant, ce
+# même appel échouait en citant une branche « main » que ce client n'a jamais eue.
 OUT=$(GIT_HOST="$GHD" GIT_REPO=ci/stoa-labs GITEA_TOKEN=dummy \
   bash -c ". '$LIB'; generate_choices_teams_raw dev" 2>&1); RC=$?
-[ "$RC" -ne 0 ] && grep -q 'GIT_UNREACHABLE' <<<"$OUT" && grep -qiE 'branch|branche' <<<"$OUT" && ok "branche de base absente ⇒ refus citant git (« Remote branch … not found »), diagnosticable" || ko "rc=$RC : $(tr '\n' ' ' <<<"$OUT")"
+[ "$RC" -eq 0 ] && [ "$(printf '%s\n' "$OUT" | grep -c .)" = 2 ] && ! grep -q 'main' <<<"$OUT" \
+  && ok "aucun knob, HEAD=develop ⇒ la branche est DÉCOUVERTE et les listes sortent (« main » n'est plus deviné)" \
+  || ko "rc=$RC : $(tr '\n' ' ' <<<"$OUT")"
+# et un dépôt qui n'annonce RIEN (inexistant) est un refus NOMMÉ, pas un « main »
+OUT=$(GIT_HOST="$GHD" GIT_REPO=ci/inexistant GITEA_TOKEN=dummy \
+  bash -c ". '$LIB'; generate_choices_teams_raw dev" 2>&1); RC=$?
+[ "$RC" -ne 0 ] && grep -q 'GIT_UNREACHABLE' <<<"$OUT" && grep -q 'BRANCHE_PAR_DEFAUT_INCONNUE' <<<"$OUT" && ! grep -qw 'main' <<<"$OUT" \
+  && ok "dépôt qui n'annonce aucune HEAD ⇒ GIT_UNREACHABLE + BRANCHE_PAR_DEFAUT_INCONNUE, et pas un clone « -b main » à l'aveugle" \
+  || ko "rc=$RC : $(tr '\n' ' ' <<<"$OUT")"
 OUT=$(GIT_BASE=develop GIT_HOST="$GHD" GIT_REPO=ci/stoa-labs GITEA_TOKEN=dummy \
   bash -c ". '$LIB'; generate_choices_teams_raw dev" 2>&1); RC=$?
 [ "$RC" -eq 0 ] && [ "$(printf '%s\n' "$OUT" | grep -c .)" = 2 ] && ok "GIT_BASE=develop ⇒ les listes sortent (le knob d'ADR-075 atteint ENFIN ce clone)" || ko "GIT_BASE ignoré : rc=$RC $(tr '\n' ' ' <<<"$OUT")"
@@ -533,12 +544,18 @@ E15A="$TMP/d15a.err"; RC15A=$RC   # le rc RÉEL, relu par la § 17 (8/9) — ell
 [ ! -s "$TMP/d15a.out" ] && ok "stdout RIGOUREUSEMENT vide sur le chemin d'échec (aucun diagnostic ne pollue le fragment)" \
   || ko "stdout pollué : $(head -3 "$TMP/d15a.out" | tr '\n' ' ')"
 [ "$(grep -c '(avertissement)' "$E15A")" = "2" ] && ok "un avertissement par dépôt d'équipe sauté (2)" || ko "avertissements : $(grep -c '(avertissement)' "$E15A")"
-grep -qF "dépôt d'équipe ibafraud/accounts-api illisible sur main ($GH15/ibafraud/accounts-api.git)" "$E15A" \
+# L3 (2026-09-10) : la branche n'est plus nommée quand AUCUNE n'a été demandée —
+# ces deux dépôts n'existent pas, ils n'ont annoncé aucune HEAD, et « sur main »
+# nommait ici une branche que git n'avait jamais réclamée.
+grep -qF "dépôt d'équipe ibafraud/accounts-api illisible ($GH15/ibafraud/accounts-api.git)" "$E15A" \
   && ok "l'avertissement cite l'URL COMPOSÉE — exactement ce que git a tenté (hôte + repo + .git)" \
   || ko "URL absente de l'avertissement : $(grep -m1 'ibafraud' "$E15A")"
-grep -qF "dépôt d'équipe fbi/accounts-api illisible sur main ($GH15/fbi/accounts-api.git)" "$E15A" \
+grep -qF "dépôt d'équipe fbi/accounts-api illisible ($GH15/fbi/accounts-api.git)" "$E15A" \
   && ok "idem pour le second dépôt (chaque dépôt a SA cause, pas seulement le dernier)" \
   || ko "URL absente pour fbi : $(grep -m1 'fbi' "$E15A")"
+grep -c 'BRANCHE_PAR_DEFAUT_INCONNUE' "$E15A" | grep -qx 2 \
+  && ok "et la cause NOMMÉE est la bonne : le dépôt n'annonce pas sa branche par défaut (jamais « main » deviné)" \
+  || ko "cause de branche absente : $(grep -m1 'ibafraud' "$E15A")"
 CAUSES=$(grep -c "ignoré pour cette liste — .\{10,\}" "$E15A")
 [ "$CAUSES" = "2" ] && ! grep -q 'aucune sortie de git' "$E15A" \
   && ok "les DEUX avertissements portent la CAUSE de git (_GC_CLONE_ERR relayé, plus jeté)" \
@@ -552,8 +569,9 @@ grep -qF "Balayé livrable/clients" <<<"$A15" && ok "APIS_EMPTY nomme le CHEMIN 
 grep -qF "répertoire ABSENT" <<<"$A15" && ok "APIS_EMPTY dit que ce répertoire est ABSENT (indistinguable d'un clients/ vide jusqu'ici)" || ko "état du répertoire absent du refus : $A15"
 grep -qF "motif '*/apis/*.publish.yml'" <<<"$A15" && ok "APIS_EMPTY donne le MOTIF find (un fichier hors d'un segment apis/ est invisible)" || ko "motif absent : $A15"
 grep -qF "livrable/ansible/providers.dev.yml" <<<"$A15" && ok "APIS_EMPTY rappelle le fichier providers réellement lu" || ko "providers absent du refus : $A15"
-grep -qF "2 dépôt(s) d'équipe déclaré(s), 0 cloné(s), 2 illisible(s) sur main" <<<"$A15" \
-  && ok "APIS_EMPTY compte déclarés/clonés/sautés ET nomme la branche" || ko "comptes absents : $A15"
+grep -qF "2 dépôt(s) d'équipe déclaré(s), 0 cloné(s), 2 illisible(s) (" <<<"$A15" \
+  && ! grep -q 'illisible(s) sur' <<<"$A15" \
+  && ok "APIS_EMPTY compte déclarés/clonés/sautés, et SANS knob ne nomme aucune branche d'ensemble (chaque dépôt a la sienne)" || ko "comptes absents : $A15"
 grep -qF "REMÈDE : poser livrable/clients/<projet>/apis/<nom>.publish.yml" <<<"$A15" \
   && ok "APIS_EMPTY dit OÙ poser un fichier — l'opérateur agit sans lire le code" || ko "remède absent : $A15"
 
@@ -1373,7 +1391,11 @@ echo "-- 22bis. L'EXCEPTION VAUT POUR LE VERDICT, JAMAIS POUR L'EXPURGATION — 
 #       c'est qu'ils ne mesurent rien — et le vert du (1) serait vacant à son
 #       tour. C'est le contrôle qui a manqué six fois.
 MUTD="$TMP/mut22"; mkdir -p "$MUTD"
+# Les voisines que la lib source par « ${BASH_SOURCE[0]%/*}/… » doivent être là :
+# sans git-base.sh (L3, 2026-09-10) la copie mutée refuse LIB_ABSENTE et
+# n'émet plus rien — les quatre canaris deviendraient INERTES par accident.
 cp "$REPO/scripts/lib/repo-layout.sh" "$MUTD/repo-layout.sh"
+cp "$REPO/scripts/lib/git-base.sh" "$MUTD/git-base.sh"
 LIBMUT="$MUTD/generate-choices.sh"
 # LA MUTATION, exacte : la garde de _gc_redact redevient le VERDICT (l'état
 # d'avant la passe 7, mot pour mot).

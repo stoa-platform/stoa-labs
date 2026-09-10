@@ -8,13 +8,13 @@
 # existante (merge → provision-apply → selfservice-app-deploy) l'applique
 # comme tout apply : mêmes portes, même rôle, même GUID, même clé (spike S1).
 # C'est le port d'ADR-085 (G6 écrivait N-1 verbatim dans un commit NEUF sur
-# main) à l'objet dont « la PR est le fichier de déploiement ».
+# la branche de base) à l'objet dont « la PR est le fichier de déploiement ».
 #
 # ORDRE = LA PROPRIÉTÉ (rien n'est poussé avant le dernier refus ; chaque étape
 # imprime `ETAPE <nom>`) : forme → chaîne (épinglée par l'appelant) → porte
 # (GATE_REFS_REQUIRED AVANT tout clone, AVANT tout appel de forge) → clone avec
 # historique → manifeste + naissance (BIRTH) → lignée (forge = la vérité sur
-# les PR, Git = la vérité sur main, bornée à la vie courante du manifeste) →
+# les PR, Git = la vérité sur la branche de base, bornée à la vie courante du manifeste) →
 # cohérence → ligne candidate en mémoire (N-1 ⊕ change_ref) → ETAT_IDENTIQUE →
 # restauration → auto-vérification → PR en cours / EXIST strict → tête
 # distante en bail → commit (trailers) + push --force-with-lease + ouverture
@@ -66,10 +66,13 @@ export FORGE_SECRET
 GIT_HOST="${GIT_HOST:?GIT_HOST requis (base de la forge, ex. https://forge.client) — aucun repli}"
 GIT_WEB_HOST="${GIT_WEB_HOST:-$GIT_HOST}"   # l'adresse HUMAINE, si elle diffère de celle vue par le CI
 GIT_REPO="${GIT_REPO:-ci/stoa-labs}"
-GIT_BASE="${GIT_BASE:-main}"
+# GIT_BASE n'a plus de défaut « main » (L3, 2026-09-10) : elle est POSÉE à
+# l'étape 4, sous l'enveloppe d'authentification du clone (git-base.sh).
 # shellcheck source=scripts/lib/repo-layout.sh
 . "$(dirname "$0")/lib/repo-layout.sh" || { echo "ERREUR: lib/repo-layout.sh introuvable" >&2; exit 1; }
 repo_layout_init || exit 2
+# shellcheck source=scripts/lib/git-base.sh
+. "$(dirname "$0")/lib/git-base.sh" || { echo "ERREUR: lib/git-base.sh introuvable" >&2; exit 1; }
 # Le visage et la base d'API sont posés UNE fois (GIT_HOST, GIT_REPO, FORGE_KIND
 # défaut gitea) — aucun appel réseau ici : les refus de forme restent muets.
 forge_api_init || exit 2
@@ -154,12 +157,17 @@ fi
 PUSH_LOGIN="$FORGE_LOGIN"; [ "$PUSH_LOGIN" = "(service)" ] && PUSH_LOGIN=ci
 PUSH_TF="${FORGE_TF:-$CI_TF}"
 
-# ── 4. CLONE avec historique (jamais --depth, jamais --filter : la lignée se lit sur main ; un clone partiel boucle en fetchs paresseux contre une origine shallow — mesuré) ─────
-etape clone "$GIT_BASE"
+# ── 4. CLONE avec historique (jamais --depth, jamais --filter : la lignée se lit sur la branche de base ; un clone partiel boucle en fetchs paresseux contre une origine shallow — mesuré) ─────
 # A7 : l'askpass rend le login du POUSSEUR et le token lu dans son fichier (humain
 # s'il y en a un, service sinon) — jamais en argv, jamais dans une URL.
 ASKPASS="$(forge_askpass "$WORK" "$PUSH_LOGIN" "$PUSH_TF")" || refus CABLAGE_INCOMPLET "askpass"
 export GIT_ASKPASS="$ASKPASS" GIT_TERMINAL_PROMPT=0
+# LA BRANCHE DE BASE, ICI et pas plus haut : GIT_ASKPASS vient d'être EXPORTÉ, le
+# `git ls-remote` de la lib hérite donc de la MÊME enveloppe que le clone qui
+# suit. `etape clone` la NOMME : l'étape ne peut pas annoncer une branche avant
+# que le dépôt ait dit laquelle. Refus déjà nommé par la lib, rc 2, rien d'écrit.
+git_base_init "$GIT_CLONE_URL" || exit 2
+etape clone "$GIT_BASE"
 R="$WORK/repo"
 git clone -q --single-branch --branch "$GIT_BASE" "$GIT_CLONE_URL" "$R" 2>"$WORK/clone.err" \
   || refus CLONE_ECHEC "clone de ${GIT_REPO} (${GIT_BASE}) impossible : $(grep -v -F -- "$(cat "$PUSH_TF")" "$WORK/clone.err" | grep -v -F -- "$FORGE_SECRET" | head -c 200 | tr '\n' ' ')"
@@ -168,11 +176,11 @@ git clone -q --single-branch --branch "$GIT_BASE" "$GIT_CLONE_URL" "$R" 2>"$WORK
 g(){ git -C "$R" "$@"; }
 g config user.email "${CI_COMMIT_EMAIL:-ci@bc.example}"; g config user.name "${CI_COMMIT_NAME:-provisioning (service ci)}"
 
-# ── 5. MANIFESTE sur main, palier déclaré, naissance courante ─────────────────
+# ── 5. MANIFESTE sur la branche de base, palier déclaré, naissance courante ───
 etape manifeste
 [ -f "$R/$MAN_PATH" ] || refus MANIFESTE_ABSENT "${MAN_PATH} absent de ${GIT_BASE} — rien à replier (application retirée ?)"
 app_manifest_read "$R/$MAN_PATH" >/dev/null 2>"$WORK/read.err" || refus MANIFESTE_INVALIDE "$(head -c 200 "$WORK/read.err" | tr '\n' ' ')"
-D_MAIN=$(app_manifest_digest_env "$R/$MAN_PATH" "$REQ_ENV" 2>"$WORK/dg.err") \
+D_BASE=$(app_manifest_digest_env "$R/$MAN_PATH" "$REQ_ENV" 2>"$WORK/dg.err") \
   || refus PALIER_ABSENT "${GIT_BASE} ne déclare pas per_env.${REQ_ENV} pour ${REQ_APP} : $(head -c 200 "$WORK/dg.err" | tr '\n' ' ')"
 BIRTH=$(g log --first-parent --diff-filter=A --format=%H -1 -- "$MAN_PATH")
 [ -n "$BIRTH" ] || refus MANIFESTE_INVALIDE "naissance de ${MAN_PATH} introuvable sur la première parenté de ${GIT_BASE}"
@@ -227,13 +235,13 @@ echo "LIGNEE : $(awk '{printf "#%s (%s) ", $3, substr($2,1,7)}' "$WORK/lineage.s
 [ "$N_COUNT" -ge 2 ] || refus AUCUN_ETAT_PRECEDENT "un seul état mergé pour ${REQ_APP}/${REQ_ENV} (#${NUM_N}) : un repli restaure l'état précédent, il n'y en a pas — le retrait d'une application est une SUSPENSION (règle 2 du spike), pas un repli"
 SHA_N1=$(sed -n '2p' "$WORK/lineage.sorted" | cut -d' ' -f2); NUM_N1=$(sed -n '2p' "$WORK/lineage.sorted" | cut -d' ' -f3)
 
-# ── 7. COHÉRENCE : main == #N pour ce palier ; racine(N-1) == racine(N) ──────
+# ── 7. COHÉRENCE : la base == #N pour ce palier ; racine(N-1) == racine(N) ────
 etape coherence
 g show "${SHA_N}:${MAN_PATH}" > "$WORK/n.yml" 2>/dev/null || refus MANIFESTE_INVALIDE "${MAN_PATH} absent au merge #${NUM_N}"
 g show "${SHA_N1}:${MAN_PATH}" > "$WORK/n1.yml" 2>/dev/null || refus MANIFESTE_INVALIDE "${MAN_PATH} absent au merge #${NUM_N1}"
 D_N=$(app_manifest_digest_env "$WORK/n.yml" "$REQ_ENV" 2>/dev/null) || refus PALIER_ABSENT "per_env.${REQ_ENV} absent au merge #${NUM_N}"
-[ "$D_MAIN" = "$D_N" ] \
-  || refus REFERENCE_DIVERGENTE "${GIT_BASE} porte pour ${REQ_APP}/${REQ_ENV} un état qu'aucune PR ne porte (digest main ${D_MAIN} ≠ #${NUM_N} ${D_N}) — écriture hors flux ; corriger ${GIT_BASE} par une demande avant de replier"
+[ "$D_BASE" = "$D_N" ] \
+  || refus REFERENCE_DIVERGENTE "${GIT_BASE} porte pour ${REQ_APP}/${REQ_ENV} un état qu'aucune PR ne porte (digest ${GIT_BASE} ${D_BASE} ≠ #${NUM_N} ${D_N}) — écriture hors flux ; corriger ${GIT_BASE} par une demande avant de replier"
 python3 - "$WORK/n1.yml" "$WORK/n.yml" <<'PY' || refus RACINE_DIVERGENTE "la racine du manifeste diffère entre #${NUM_N1} et #${NUM_N} (édition hors flux) — le repli ne restaure que per_env.${REQ_ENV} et son certificat, il ne peut pas restaurer une racine sans toucher les autres paliers"
 import sys, yaml
 def root(p):
@@ -297,7 +305,7 @@ etape identique
 CERT_SAME=0
 if [ "$HAS_N1_CERT" = 0 ] && [ "$HAS_MAIN_CERT" = 0 ]; then CERT_SAME=1
 elif [ "$HAS_N1_CERT" = 1 ] && [ "$HAS_MAIN_CERT" = 1 ] && cmp -s "$WORK/n1.crt" "$R/$CERT_PATH"; then CERT_SAME=1; fi
-if [ "$D_EXPECT" = "$D_MAIN" ] && [ "$CERT_SAME" = 1 ]; then
+if [ "$D_EXPECT" = "$D_BASE" ] && [ "$CERT_SAME" = 1 ]; then
   refus ETAT_IDENTIQUE "l'état à restaurer (#${NUM_N1}) est identique à l'état courant de ${REQ_APP}/${REQ_ENV} — rien à replier ; une dérive de la gateway se corrige en rejouant le webhook de la PR #${NUM_N} (A2)"
 fi
 

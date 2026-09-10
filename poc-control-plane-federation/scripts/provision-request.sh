@@ -28,7 +28,9 @@
 #   REQ_CALLER     azp de l'appelant (oig-provisioner|cli2-provisioner) — traçabilité
 #   FORGE_SECRET    (req) token de push/PR (scopes write:repository, write:issue)
 #   GIT_REPO       full-name du repo projet (défaut ci/stoa-labs)
-#   GIT_BASE       branche cible de la MR (défaut main)
+#   GIT_BASE       branche cible de la MR — AUCUN défaut : vide, absente ou
+#                  « auto » = DÉCOUVERTE de la HEAD du dépôt (scripts/lib/git-base.sh) ;
+#                  posée, elle gagne sur la HEAD ; rien à découvrir = refus nommé
 #   GIT_HOST       base de la forge vue depuis l'agent (REQUIS, aucun repli) ;
 #                  GIT_WEB_HOST = l'adresse HUMAINE si elle diffère (split-horizon)
 #   FORGE_KIND     gitea (défaut) | gitlab — le VISAGE de la forge. La base d'API,
@@ -195,7 +197,13 @@ GITEA_SERVICE_LOGINS="${GITEA_SERVICE_LOGINS:-ci}"
 REQ_CHANGE_REF="${REQ_CHANGE_REF:-}"
 REQ_PV_REF="${REQ_PV_REF:-}"
 GIT_REPO="${GIT_REPO:-ci/stoa-labs}"
-GIT_BASE="${GIT_BASE:-main}"
+# GIT_BASE n'a plus de DÉFAUT (L3, 2026-09-10) : « main » y était un défaut de
+# SITE que ci/lint-config-knobs.sh ne voit pas (« main » y est classé NEUTRE), et
+# chez un client dont la branche est `master` il faisait viser une branche qui
+# n'existe pas — le repli sans `-b` sauvait le clone, puis la MR s'ouvrait vers
+# une base inexistante. La branche est POSÉE plus bas par scripts/lib/git-base.sh
+# (knob GIT_BASE > HEAD du dépôt > refus nommé), APRÈS la composition de l'URL de
+# clone et de l'enveloppe d'authentification, et AVANT le premier `-b`.
 # Aucun repli vers le lab : un client dont le pipeline ne transmet pas la variable
 # doit le lire ici, pas découvrir plus tard que la chaîne a visé « gitea:3000 ».
 GIT_HOST="${GIT_HOST:?GIT_HOST requis (base de la forge, ex. https://forge.client) — aucun repli}"
@@ -207,6 +215,11 @@ GIT_WEB_HOST="${GIT_WEB_HOST:-$GIT_HOST}"   # l'adresse HUMAINE, si elle diffèr
 # shellcheck source=scripts/lib/repo-layout.sh
 . "scripts/lib/repo-layout.sh" || { echo "ERREUR: scripts/lib/repo-layout.sh introuvable ou illisible" >&2; exit 1; }
 repo_layout_init || exit 2
+# LA branche par défaut du dépôt de la forge, une autorité (L3) : la lib est
+# SOURCÉE ici, avant le `cd` dans le clone ; `git_base_init` est joué plus bas,
+# quand l'URL et l'enveloppe d'authentification existent.
+# shellcheck source=scripts/lib/git-base.sh
+. "scripts/lib/git-base.sh" || { echo "ERREUR: scripts/lib/git-base.sh introuvable ou illisible" >&2; exit 1; }
 # L'appartenance d'equipe se lit en YAML — une seule autorite pour toute la
 # chaine (scripts/lib/providers-teams.sh, preuve test-providers-teams.sh).
 # shellcheck source=scripts/lib/providers-teams.sh
@@ -427,10 +440,15 @@ PUSH_URL="${GIT_BASE_URL}/${GIT_REPO}.git"
 GIT_ASKPASS="$(forge_askpass "$TOKENS_DIR" "$PUSH_LOGIN" "$PUSH_TF")" || { echo "ERREUR: askpass" >&2; exit 1; }
 export GIT_ASKPASS GIT_TERMINAL_PROMPT=0
 
-echo "[1/5] clone ${GIT_REPO} (base ${GIT_BASE})"
 CLONE_URL="${GIT_BASE_URL}/${GIT_REPO}.git"
 # A6 : les deux URL git sont surchargeables (épreuves hors ligne sur un dépôt nu en file://) — défauts = inchangés.
 CLONE_URL="${GIT_CLONE_URL:-$CLONE_URL}"; PUSH_URL="${GIT_PUSH_URL:-$PUSH_URL}"
+# LA BRANCHE DE BASE, ICI : l'URL de clone est composée, GIT_ASKPASS est EXPORTÉ
+# (deux lignes plus haut) — le `git ls-remote` de la lib hérite donc de la MÊME
+# enveloppe d'authentification que le clone. Refus déjà nommé par la lib
+# (BRANCHE_PAR_DEFAUT_INCONNUE), rc 2 : rien n'a encore été écrit nulle part.
+git_base_init "$CLONE_URL" || exit 2
+echo "[1/5] clone ${GIT_REPO} (base ${GIT_BASE})"
 # ÉCHEC NET SI LE CLONE RATE. Ce script n'a pas `set -e` (délibérément : les
 # `[ -n "$X" ] && …` du rendu retournent faux sans être des erreurs). Sans la
 # garde ci-dessous, un clone en échec laissait $WORK/repo INEXISTANT, le `cd`

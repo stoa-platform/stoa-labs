@@ -119,8 +119,8 @@ chmod 700 "$SHIM/git"
 
 # ── la fixture git : nu + clone de construction (layout du dépôt plateforme) ──
 ORIGIN="$TMP/origin.git"; W="$TMP/w"; SUB="poc-control-plane-federation"
-git init -q --bare "$ORIGIN" && git -C "$ORIGIN" symbolic-ref HEAD refs/heads/main
-git init -q "$W" && git -C "$W" checkout -q -b main
+git init -q --bare "$ORIGIN" && git -C "$ORIGIN" symbolic-ref HEAD refs/heads/master
+git init -q "$W" && git -C "$W" checkout -q -b master
 gw(){ git -C "$W" -c user.name=t -c user.email=t@t "$@"; }
 MAN="$SUB/clients/provisioned/applications/appa.ansible.yml"
 mkdir -p "$W/$SUB/ansible" "$W/$SUB/clients/provisioned/applications" "$W/$SUB/clients/_example"
@@ -128,23 +128,23 @@ for e in dev rec int homol prod; do printf 'providers:\n  - team: banking-demo\n
 cp "$REPO/clients/_example/environments.yaml" "$TMP/chain.yaml"
 cp "$TMP/chain.yaml" "$W/$SUB/clients/_example/environments.yaml"
 printf 'init\n' > "$W/README"; gw add -A; gw commit -qm c0 >/dev/null
-gw remote add origin "$ORIGIN"; gw push -q origin main
-MAIN0=$(gw rev-parse main)
+gw remote add origin "$ORIGIN"; gw push -q origin master
+BASE0=$(gw rev-parse master)
 # plan enchaîné : un stub qui journalise SON environnement (le token humain ne doit pas y être)
 PLAN_STUB="$TMP/plan-stub.sh"; PLAN_ENV="$TMP/plan.env"
 printf '#!/usr/bin/env bash\nprintf "FORGE_TOKEN=%%s\\nGITEA_TOKEN=%%s\\nPUSH_TOKEN=%%s\\n" "${FORGE_TOKEN:-}" "${GITEA_TOKEN:-}" "${PUSH_TOKEN:-}" > "%s"\n' "$PLAN_ENV" > "$PLAN_STUB"; chmod 700 "$PLAN_STUB"
 
 set_ctl(){ printf '%s' "$1" > "$STUB_CTL"; : > "$STUB_LOG"; : > "$STUB_POSTED"; : > "$SHIM_LOG"; rm -f "$PLAN_ENV"; }
-reset_origin(){ git -C "$W" push -q -f origin "$MAIN0:main"; for b in dev rec int homol prod; do git -C "$ORIGIN" update-ref -d "refs/heads/provision/appa-$b" 2>/dev/null || true; done; }
-merge_branch(){ # <env> : « le merge humain » de provision/appa-<env> dans main, dans le nu
-  gw fetch -q origin && gw checkout -q main && gw reset -q --hard origin/main \
-    && gw merge -q --no-ff -m "Merge pull request 'provision($1): appa' from provision/appa-$1 into main" "origin/provision/appa-$1" \
-    && gw push -q origin main
+reset_origin(){ git -C "$W" push -q -f origin "$BASE0:master"; for b in dev rec int homol prod; do git -C "$ORIGIN" update-ref -d "refs/heads/provision/appa-$b" 2>/dev/null || true; done; }
+merge_branch(){ # <env> : « le merge humain » de provision/appa-<env> dans master, dans le nu
+  gw fetch -q origin && gw checkout -q master && gw reset -q --hard origin/master \
+    && gw merge -q --no-ff -m "Merge pull request 'provision($1): appa' from provision/appa-$1 into master" "origin/provision/appa-$1" \
+    && gw push -q origin master
 }
 # req <env> [VAR=val…] : le script sous test ; sortie $TMP/req.out, rc $TMP/req.rc
 req(){
   local e="$1"; shift
-  ( cd "$REPO" && env -i PATH="$SHIM:$PATH" HOME="$HOME" GITEA_TOKEN=t-ci GIT_HOST="$GH" GIT_WEB_HOST="$GH" GIT_REPO=ci/stoa-labs GIT_BASE=main \
+  ( cd "$REPO" && env -i PATH="$SHIM:$PATH" HOME="$HOME" GITEA_TOKEN=t-ci GIT_HOST="$GH" GIT_WEB_HOST="$GH" GIT_REPO=ci/stoa-labs \
       GIT_CLONE_URL="file://$ORIGIN" GIT_PUSH_URL="file://$ORIGIN" STOA_ENV_CHAIN_FILE="$TMP/chain.yaml" PROVISION_PLAN_INLINE=false \
       REQ_APP=appa REQ_ENV="$e" REQ_API=demo-selfservice REQ_API_VER=1.0.0 REQ_CLIENT_ID="appa-$e" REQ_CALLER=jenkins-form:x REQ_TEAM=banking-demo \
       "$@" bash "$S" ) > "$TMP/req.out" 2>&1
@@ -160,12 +160,19 @@ except Exception: print("")'; }
 post_body(){ tail -1 "$STUB_POSTED" 2>/dev/null | python3 -c 'import json,sys
 try: print(json.load(sys.stdin)["body"].get("body",""))
 except Exception: print("")'; }
+# La BASE que la PR postée vise. Les deux visages de forge-api.sh la nomment
+# autrement (Gitea « base », GitLab « target_branch ») ; ici le stub est Gitea,
+# les deux clés sont lues pour que l'épreuve ne dépende pas du visage.
+post_base(){ tail -1 "$STUB_POSTED" 2>/dev/null | python3 -c 'import json,sys
+try:
+    b = json.load(sys.stdin)["body"]; print(b.get("base") or b.get("target_branch") or "")
+except Exception: print("")'; }
 clones(){ grep -c '^ARGV clone' "$SHIM_LOG" || true; }
 tip(){ git -C "$ORIGIN" rev-parse -q --verify "refs/heads/provision/appa-$1" 2>/dev/null || printf 'absente'; }
 line_at(){ git -C "$ORIGIN" show "provision/appa-$1:$MAN" 2>/dev/null | grep -E "^    $1: "; }
 trailer_at(){ git -C "$ORIGIN" log -1 --format=%B "provision/appa-$1" 2>/dev/null | sed -n 's/^Demande-Par: //p'; }
 pr_open(){ # <n> <login> <env> → json d'une PR ouverte
-  printf '{"number":%s,"state":"open","merged":false,"head":{"ref":"provision/appa-%s","sha":"deadbeef","repo":{"full_name":"ci/stoa-labs"}},"base":{"ref":"main"},"user":{"login":"%s"}}' "$1" "$3" "$2"
+  printf '{"number":%s,"state":"open","merged":false,"head":{"ref":"provision/appa-%s","sha":"deadbeef","repo":{"full_name":"ci/stoa-labs"}},"base":{"ref":"master"},"user":{"login":"%s"}}' "$1" "$3" "$2"
 }
 
 echo "═══ E0. la lib seule ═══"
@@ -224,7 +231,7 @@ set_ctl '{"open":[]}'; reset_origin
 req dev
 [ "$(rrc)" = 0 ] && [ "$(posts)" = 1 ] && [ "$(users)" = 0 ] && ok "E1a dev sous ci ⇒ PR postée, aucun GET /user (pas de token humain, pas de quatre yeux)" || ko "E1a rc $(rrc) posts=$(posts) users=$(users) : $(grep -E 'REFUS|ERREUR' "$TMP/req.out" | head -2 | tr '\n' ' ')"
 merge_branch dev || ko "E1a' fixture : merge de dev"
-git -C "$ORIGIN" show "main:$MAN" > "$TMP/man.dev.yml" 2>/dev/null
+git -C "$ORIGIN" show "master:$MAN" > "$TMP/man.dev.yml" 2>/dev/null
 set_ctl '{"open":[]}'
 req rec REQ_CHANGE_REF=CHG-0001 REQ_PV_REF=PV-A7
 [ "$(rrc)" = 0 ] && ok "E1.1 rec + refs sous ci ⇒ rc 0" || ko "E1.1 rc $(rrc) : $(grep -E 'REFUS|ERREUR' "$TMP/req.out" | head -2 | tr '\n' ' ')"
@@ -285,11 +292,11 @@ set_ctl "{\"open\":[$(pr_open 78 ci rec)]}"
 req rec
 [ "$(rrc)" = 0 ] && grep -q 'PR déjà ouverte: #78' "$TMP/req.out" && ok "E6.3 PR #78 de ci ouverte, demande sous ci ⇒ la sienne : EXIST #78" || ko "E6.3 rc $(rrc) : $(grep -E 'PR |REFUS' "$TMP/req.out" | head -2 | tr '\n' ' ')"
 # repli ouvert (tête portant Repli-Vers:) + PR d'alice ⇒ REPLI_EN_COURS (quel que soit l'auteur)
-gw fetch -q origin && gw checkout -q -B provision/appa-rec origin/main && gw commit -q --allow-empty -m "provision(rec): repli" -m "Repli-Vers: 0000000 (PR #1)" && gw push -q -f origin provision/appa-rec
+gw fetch -q origin && gw checkout -q -B provision/appa-rec origin/master && gw commit -q --allow-empty -m "provision(rec): repli" -m "Repli-Vers: 0000000 (PR #1)" && gw push -q -f origin provision/appa-rec
 set_ctl "{\"open\":[$(pr_open 80 alice rec)]}"; T6b=$(tip rec)
 req rec FORGE_TOKEN=t-alice
 refus REPLI_EN_COURS && [ "$(tip rec)" = "$T6b" ] && ok "E6.4 PR de repli ouverte par un HUMAIN ⇒ REPLI_EN_COURS (A6 étendu : l'auteur n'exonère plus)" || ko "E6.4 rc $(rrc) : $(tail -1 "$TMP/req.out")"
-git -C "$ORIGIN" update-ref -d refs/heads/provision/appa-rec; gw checkout -q main
+git -C "$ORIGIN" update-ref -d refs/heads/provision/appa-rec; gw checkout -q master
 set_ctl '{"down":true}'
 req rec
 [ "$(rrc)" = 2 ] && grep -qE 'REFUS: (FORGE_ILLISIBLE|REPLI_EN_COURS)' "$TMP/req.out" && [ "$(tip rec)" = absente ] && ok "E6.5 forge muette ⇒ refus fermé avant le push (une PR ouverte pourrait exister)" || ko "E6.5 rc $(rrc) tip=$(tip rec) : $(tail -1 "$TMP/req.out")"
@@ -361,6 +368,37 @@ echo "═══ E10. un push en échec ne fuit pas le token ═══"
 set_ctl '{"open":[]}'; git -C "$ORIGIN" update-ref -d refs/heads/provision/appa-rec 2>/dev/null
 req rec FORGE_TOKEN=t-alice SHIM_PUSH_FAIL=1
 [ "$(rrc)" = 1 ] && grep -q 'ERREUR push' "$TMP/req.out" && ! grep -q 't-alice' "$TMP/req.out" && ok "E10 push en échec ⇒ rc 1, détail masqué, le token humain n'apparaît pas" || ko "E10 rc $(rrc) : $(grep -n 't-alice' "$TMP/req.out" | head -1)"
+
+echo "═══ E11. la branche de base : DÉCOUVERTE, jamais « main » deviné (L3, ADR à venir) ═══"
+# La fixture de CETTE suite a pour HEAD `master` (bare : symbolic-ref HEAD
+# refs/heads/master) et AUCUN GIT_BASE n'entre dans l'environnement de `req` :
+# c'est ce qui rend les deux épreuves ci-dessous DISCRIMINANTES. Un
+# provision-request.sh qui devine « main » demande `clone -b main`, tombe sur le
+# repli sans `-b` — donc reste VERT sur tout le reste de la suite — et ouvre la
+# PR vers une base qui n'existe pas chez le client. Ce sont donc l'argv du clone
+# et la base POSTÉE qui statuent, jamais le seul code de retour.
+set_ctl '{"open":[]}'; reset_origin
+req dev
+CLONES_B="$(grep '^ARGV clone' "$SHIM_LOG" | tr '\n' ' ')"
+{ [ "$(rrc)" = 0 ] && [ "$(post_base)" = master ] \
+  && printf '%s' "$CLONES_B" | grep -q -- '-b master' \
+  && ! printf '%s' "$CLONES_B" | grep -q -- '-b main'; } \
+  && ok "E11.1 HEAD du dépôt = master, aucun GIT_BASE ⇒ clone « -b master » et PR ouverte vers master (rien n'a deviné « main »)" \
+  || ko "E11.1 rc $(rrc) base postée '$(post_base)' clone: ${CLONES_B}"
+# LE KNOB GAGNE, et il gagne SANS consulter la HEAD (git-base.sh §1) : `develop`
+# existe ici, le clone doit la viser telle quelle alors que la HEAD dit master.
+git -C "$W" push -q origin "master:develop"
+set_ctl '{"open":[]}'; git -C "$ORIGIN" update-ref -d refs/heads/provision/appa-int 2>/dev/null
+req int FORGE_TOKEN=t-alice GIT_BASE=develop
+CLONES_D="$(grep '^ARGV clone' "$SHIM_LOG" | tr '\n' ' ')"
+{ [ "$(rrc)" = 0 ] && [ "$(post_base)" = develop ] \
+  && printf '%s' "$CLONES_D" | grep -q -- '-b develop' \
+  && ! printf '%s' "$CLONES_D" | grep -q -- '-b master'; } \
+  && ok "E11.2 GIT_BASE=develop (knob explicite) sur un dépôt dont la HEAD est master ⇒ le clone vise develop, la PR aussi" \
+  || ko "E11.2 rc $(rrc) base postée '$(post_base)' clone: ${CLONES_D}"
+git -C "$ORIGIN" update-ref -d refs/heads/develop 2>/dev/null || true
+git -C "$W" branch -q -D develop 2>/dev/null || true
+reset_origin
 
 echo "═══ M. mutations : chaque garde neuve attrape ce qu'elle prétend attraper ═══"
 MUT="$TMP/mut"; mkdir -p "$MUT"

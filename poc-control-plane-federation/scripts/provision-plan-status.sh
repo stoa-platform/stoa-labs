@@ -35,8 +35,10 @@
 #   PLAN_FACTS (chemin du fichier de faits, optionnel) OU les mêmes faits en
 #   env (GITEA_HEAD_REF, PLAN_VERDICT, PLAN_REASON — chargés par le post de
 #   stage du Jenkinsfile) ; GIT_HOST, GIT_REPO,
-#   GIT_BASE ; BUILD_URL ou JOB_NAME + BUILD_NUMBER (repli textuel : sans URL
-#   racine Jenkins, BUILD_URL est vide — mesuré A2).
+#   GIT_BASE (AUCUN défaut : vide, absente ou « auto » = découverte de la HEAD
+#   du dépôt, cf. scripts/lib/git-base.sh) ; BUILD_URL ou JOB_NAME +
+#   BUILD_NUMBER (repli textuel : sans URL racine Jenkins, BUILD_URL est vide —
+#   mesuré A2).
 # Sortie : rc 0 dans tous les cas « rien à dire » ; rc du commentaire sinon.
 set -uo pipefail
 set +x
@@ -48,7 +50,14 @@ BUILD_RESULT="${BUILD_RESULT:?BUILD_RESULT requis}"
 # build vert, statut de build jamais poste. Defaut ACTIF, corrige ici.
 FORGE_SECRET="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
 [ -n "$FORGE_SECRET" ] || { echo "REFUS: SECRET_FORGE_REQUIS : ni FORGE_SECRET ni son alias GITEA_TOKEN" >&2; exit 2; }
-GIT_HOST="${GIT_HOST:-http://gitea:3000}"; GIT_REPO="${GIT_REPO:-ci/stoa-labs}"; GIT_BASE="${GIT_BASE:-main}"
+GIT_HOST="${GIT_HOST:-http://gitea:3000}"; GIT_REPO="${GIT_REPO:-ci/stoa-labs}"
+# GIT_BASE n'a plus de défaut « main » (L3, 2026-09-10) : il est POSÉ, plus bas et
+# SEULEMENT sur la voie qui en a besoin, par scripts/lib/git-base.sh.
+# GIT_HOST et GIT_REPO gardent les leurs : ce sont des défauts de SITE, la dette
+# déjà datée de ci/lint-config-knobs.exempt (GIT_HOST) et la voie API non encore
+# traitée — les retirer ici sortirait du périmètre de cette passe (branche de base).
+# shellcheck source=scripts/lib/git-base.sh
+. "$SELF_DIR/lib/git-base.sh" || { echo "AVERTISSEMENT: lib git-base.sh introuvable — aucun statut"; exit 0; }
 PLAN_FACTS="${PLAN_FACTS:-}"
 
 case "$PR_NUMBER" in ''|*[!0-9]*) echo "(PR_NUMBER non numerique — aucun statut a commenter)"; exit 0;; esac
@@ -85,6 +94,12 @@ elif [ -n "${PLAN_VERDICT:-}" ]; then
 else
   # shellcheck source=scripts/lib/gitea-pr-confirm.sh
   . "$SELF_DIR/lib/gitea-pr-confirm.sh" || { echo "AVERTISSEMENT: lib gitea-pr-confirm.sh introuvable — aucun statut"; exit 0; }
+  # LA BASE, sur cette voie SEULEMENT : quand les faits du plan existent, ce
+  # script ne parle à personne — il ne doit pas non plus interroger un dépôt.
+  # Même composition de schéma que la lib de confirmation, et même environnement :
+  # ce que gitea_pr_confirm peut lire, le `ls-remote` de git-base.sh le peut.
+  case "$GIT_HOST" in http://*|https://*|file://*) SB="${GIT_HOST%/}";; *) SB="http://${GIT_HOST%/}";; esac
+  git_base_init "${SB}/${GIT_REPO}.git" || { echo "(branche par defaut du depot inconnue (cause ci-dessus) — aucun statut a commenter)"; exit 0; }
   if ! CONFIRM="$(gitea_pr_confirm "$PR_NUMBER" "$PR_BRANCH" "$GIT_BASE" 2>&1)"; then
     echo "(forge non confirmee : $(printf '%s' "$CONFIRM" | tr '\n' ' ') — aucun statut a commenter)"; exit 0
   fi

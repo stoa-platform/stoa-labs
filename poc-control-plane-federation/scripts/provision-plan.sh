@@ -5,7 +5,7 @@
 #
 #   PR ouverte (maillon 1) → webhook Gitea → job Jenkins → CE script :
 #     1. checkout la branche de la PR
-#     2. localise le manifeste ajouté (git diff vs main)
+#     2. localise le manifeste ajouté (git diff vs la branche de base)
 #     3. PLAN lecture seule : manifeste valide (name/api) + ansible --syntax-check
 #        (identité de JOB, AUCUNE mutation, AUCUN secret — ADR-078 §2)
 #     4. poste le verdict (✅/❌) en commentaire sur la PR (API Gitea)
@@ -39,7 +39,8 @@
 #   FORGE_SECRET (req) token (scopes write:issue pour commenter)
 #   PLAN_FACTS  fichier de faits (cf. ci-dessus) — vide = pas de faits écrits
 #   GIT_REPO    full-name (défaut ci/stoa-labs)
-#   GIT_BASE    branche cible (défaut main) — base du diff
+#   GIT_BASE    branche cible — AUCUN défaut : vide, absente ou « auto » =
+#               DÉCOUVERTE de la HEAD du dépôt (scripts/lib/git-base.sh) ; base du diff
 #   GIT_HOST    base Gitea vue de l'agent (défaut http://gitea:3000)
 #   MANIFEST_DIR dossier des manifestes (défaut poc-control-plane-federation/clients/provisioned/applications)
 set -uo pipefail
@@ -52,11 +53,17 @@ PR_NUMBER="${PR_NUMBER:?PR_NUMBER requis}"
 FORGE_SECRET="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
 [ -n "$FORGE_SECRET" ] || { echo "REFUS: SECRET_FORGE_REQUIS : ni FORGE_SECRET ni son alias GITEA_TOKEN — le secret de la forge (jeton, ou mot de passe d'un couple avec FORGE_USER)" >&2; exit 2; }
 GIT_REPO="${GIT_REPO:-ci/stoa-labs}"
-GIT_BASE="${GIT_BASE:-main}"
+# GIT_BASE : plus de défaut « main » (L3, 2026-09-10) — il est POSÉ plus bas par
+# scripts/lib/git-base.sh, une fois l'URL du dépôt composée. Ce script compare la
+# base RELUE de la PR à GIT_BASE (§0) et diffe contre `origin/${GIT_BASE}` (§2) :
+# un « main » deviné faisait refuser FORGE_NON_CONFIRMEE toute PR d'un client
+# dont la branche est `master`, en accusant la PR au lieu du câblage.
 GIT_HOST="${GIT_HOST:-http://gitea:3000}"
 # shellcheck source=scripts/lib/repo-layout.sh
 . "scripts/lib/repo-layout.sh" || { echo "ERREUR: scripts/lib/repo-layout.sh introuvable ou illisible" >&2; exit 1; }
 repo_layout_init || exit 2
+# shellcheck source=scripts/lib/git-base.sh
+. "scripts/lib/git-base.sh" || { echo "ERREUR: scripts/lib/git-base.sh introuvable ou illisible" >&2; exit 1; }
 # RELATIF au livrable (2026-09-03) ; le préfixe du dépôt vit dans GIT_SUBDIR.
 MANIFEST_DIR="${MANIFEST_DIR:-clients/provisioned/applications}"
 MANIFEST_PATH="${SUB_PFX}${MANIFEST_DIR}"   # vu de la racine du clone : c'est ce que git connaît
@@ -96,6 +103,17 @@ WORK="$(mktemp -d /tmp/provplan.XXXXXX)"; trap 'rm -rf "$WORK"' EXIT
 # ── [0/4] LA FORGE, AVANT LE CLONE ────────────────────────────────────────────
 # shellcheck source=scripts/lib/gitea-pr-confirm.sh
 . "$SELF_DIR/lib/gitea-pr-confirm.sh" || { echo "ERREUR: $SELF_DIR/lib/gitea-pr-confirm.sh introuvable" >&2; facts refus "LIB_ABSENTE"; exit 1; }
+# GIT_HOST porte son schéma (http, https, file pour les épreuves) — même
+# composition que la lib de confirmation ; un hôte nu reçoit http:// (revue :
+# `http://${GIT_HOST#http://}` rendait « http://https://… » chez un client TLS).
+# Composé ICI, avant [0/4] : la BASE se découvre sur cette URL, et la base est ce
+# que la relecture de la PR compare (base.ref) — donc avant le premier appel.
+case "$GIT_HOST" in http://*|https://*|file://*) CLONE_BASE="${GIT_HOST%/}";; *) CLONE_BASE="http://${GIT_HOST%/}";; esac
+# Le clone de ce script n'est PAS enveloppé (dépôt lu en anonyme) : le
+# `git ls-remote` de la lib hérite du même environnement, donc de la même
+# absence d'enveloppe — ce que l'un peut lire, l'autre le peut.
+git_base_init "${CLONE_BASE}/${GIT_REPO}.git" \
+  || { facts refus "BRANCHE_PAR_DEFAUT_INCONNUE : branche par defaut de ${GIT_REPO} indeterminable (cause dans le log du build)"; exit 1; }
 echo "[0/4] relecture de la PR #${PR_NUMBER} sur la forge (tete attendue ${PR_BRANCH}, base ${GIT_BASE})"
 if ! CONFIRM="$(gitea_pr_confirm "$PR_NUMBER" "$PR_BRANCH" "$GIT_BASE" 2>"$WORK/confirm.err")"; then
   refus FORGE_NON_CONFIRMEE "$(cat "$WORK/confirm.err") — aucun commentaire, aucun clone"
@@ -105,13 +123,9 @@ GITEA_HEAD_SHA="$(printf '%s\n' "$CONFIRM" | sed -n 's/^GITEA_HEAD_SHA=//p')"
 echo "  forge : PR #${PR_NUMBER} ouverte, tete ${GITEA_HEAD_REF} @ ${GITEA_HEAD_SHA}"
 
 echo "[1/4] checkout ${PR_BRANCH} @ ${GITEA_HEAD_SHA} (la tete RELUE, pas le nom)"
-# GIT_HOST porte son schéma (http, https, file pour les épreuves) — même
-# composition que la lib de confirmation ; un hôte nu reçoit http:// (revue :
-# `http://${GIT_HOST#http://}` rendait « http://https://… » chez un client TLS).
 # `--detach <sha>` : le SHA est un COMMIT (validé ^[0-9a-f]{40}$ par la lib —
 # jamais une option), pas un chemin : `checkout -- <sha>` le prendrait pour un
 # pathspec (mesuré : « BRANCHE_INTROUVABLE » sur un clone pourtant complet).
-case "$GIT_HOST" in http://*|https://*|file://*) CLONE_BASE="${GIT_HOST%/}";; *) CLONE_BASE="http://${GIT_HOST%/}";; esac
 git clone -q "${CLONE_BASE}/${GIT_REPO}.git" "$WORK/repo" || refus CLONE_ECHEC "clone de ${GIT_REPO} en echec"
 cd "$WORK/repo" || refus CLONE_ECHEC "clone incomplet"
 git checkout -q --detach "$GITEA_HEAD_SHA" 2>/dev/null || refus BRANCHE_INTROUVABLE "la tete ${GITEA_HEAD_SHA} de ${PR_BRANCH} n'est pas dans le clone (branche deplacee depuis la relecture, ou PR depuis un fork)"

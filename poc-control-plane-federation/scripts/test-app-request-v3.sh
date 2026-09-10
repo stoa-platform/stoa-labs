@@ -50,7 +50,13 @@ echo "═══ Section A — gardes d'entrée v3 (HORS LIGNE, AVANT tout geste 
 # GIT_HOST volontairement injoignable : la preuve qu'AUCUNE garde ci-dessous ne
 # touche le réseau est que le script échoue AVANT d'imprimer "[1/4]" (premier
 # message qui suit le clone).
-BASE_ENV=(GITEA_TOKEN=dummy GIT_HOST="http://127.0.0.1:1"
+# GIT_BASE : un knob EXPLICITE (L3, 2026-09-10). Sans lui, la branche de base se
+# DÉCOUVRE par un `git ls-remote` — qui, sur un hôte injoignable par
+# construction, refuse en rc 2 AVANT le clone : les contre-épreuves vertes
+# ci-dessous ne verraient plus « échec au clone » mais un rc 2 qu'elles lisent
+# comme « une garde v3 a refusé ». Le knob rend zéro geste réseau (git-base.sh
+# §1) et rend à cette section ce qu'elle mesure : les gardes d'entrée de v3.
+BASE_ENV=(GITEA_TOKEN=dummy GIT_HOST="http://127.0.0.1:1" GIT_BASE=master
           REQ_APP="probe" REQ_ENV="dev" REQ_API="accounts-read"
           REQ_CLIENT_ID="probe" REQ_CALLER="oig-provisioner")
 

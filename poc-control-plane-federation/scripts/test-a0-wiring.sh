@@ -39,7 +39,7 @@ ko(){ FAIL=$((FAIL+1)); printf '  ❌ %s\n' "$*"; }
 
 # Total ATTENDU, ÉCRIT EN DUR — indépendant de PASS+FAIL. Toute section
 # ajoutée/retirée DOIT le mettre à jour : un oubli fait rougir le dernier §.
-EXPECTED_CHECKS=190
+EXPECTED_CHECKS=192
 
 # shellcheck source=scripts/lib/gwt-mirror.sh
 . scripts/lib/gwt-mirror.sh || { echo "lib gwt-mirror.sh introuvable"; exit 2; }
@@ -482,7 +482,7 @@ class H(BaseHTTPRequestHandler):
             pr = c.get("pr") or {}
             return self._send(code, {"number": int(m.group(1)), "state": pr.get("state", "open"),
                 "head": {"ref": pr.get("head_ref", ""), "sha": pr.get("head_sha", "a" * 40), "repo": {"full_name": pr.get("head_repo", "ci/stoa-labs")}},
-                "base": {"ref": pr.get("base_ref", "main")}, "merged": pr.get("merged", False)})
+                "base": {"ref": pr.get("base_ref", "master")}, "merged": pr.get("merged", False)})
         if re.match(r"^/api/v1/repos/[^/]+/[^/]+/issues/[0-9]+/comments$", path):
             if method == "GET":
                 q = dict(kv.split("=", 1) for kv in qs.split("&") if "=" in kv)
@@ -525,37 +525,46 @@ nreq(){ grep -c "^$1" "$STUB_LOG" 2>/dev/null || true; }
 last_body(){ python3 -c "import json;c=json.load(open('$STUB_COMMENTS'));print(c[-1]['body'] if c else '')"; }
 ncomments(){ python3 -c "import json;print(len(json.load(open('$STUB_COMMENTS'))))"; }
 confirm(){ # $1=n $2=head attendu [$3=base] → stdout+stderr dans $TMP/cf.out, rc
-  ( . scripts/lib/gitea-pr-confirm.sh; GIT_HOST="$GH9" GIT_REPO=ci/stoa-labs GITEA_TOKEN="$STUB_TOKEN" gitea_pr_confirm "$1" "$2" ${3:+"$3"} ) >"$TMP/cf.out" 2>&1
+  # L3 (2026-09-10) : la base attendue n'a plus de défaut dans la lib — c'est
+  # l'appelant qui la pose (la découvre par scripts/lib/git-base.sh en vrai).
+  ( . scripts/lib/gitea-pr-confirm.sh; GIT_HOST="$GH9" GIT_REPO=ci/stoa-labs GITEA_TOKEN="$STUB_TOKEN" gitea_pr_confirm "$1" "$2" "${3-master}" ) >"$TMP/cf.out" 2>&1
 }
 shellcheck -x scripts/lib/gitea-pr-confirm.sh >/dev/null 2>&1 && ok "gitea-pr-confirm.sh : shellcheck propre" || ko "gitea-pr-confirm.sh : shellcheck en échec"
-set_pr open provision/appa-dev main; confirm 12 provision/appa-dev; RC=$?
-[ "$RC" -eq 0 ] && grep -qx 'GITEA_STATE=open' "$TMP/cf.out" && grep -qx 'GITEA_HEAD_REF=provision/appa-dev' "$TMP/cf.out" && grep -qx "GITEA_HEAD_SHA=$(printf 'c%.0s' $(seq 40))" "$TMP/cf.out" && grep -qx 'GITEA_BASE_REF=main' "$TMP/cf.out" \
+set_pr open provision/appa-dev master; confirm 12 provision/appa-dev; RC=$?
+[ "$RC" -eq 0 ] && grep -qx 'GITEA_STATE=open' "$TMP/cf.out" && grep -qx 'GITEA_HEAD_REF=provision/appa-dev' "$TMP/cf.out" && grep -qx "GITEA_HEAD_SHA=$(printf 'c%.0s' $(seq 40))" "$TMP/cf.out" && grep -qx 'GITEA_BASE_REF=master' "$TMP/cf.out" \
   && ok "PR ouverte, tête et base concordantes ⇒ rc 0 + quatre faits (state/head.ref/head.sha/base.ref)" || ko "confirmation nominale : rc=$RC — $(tr '\n' ' ' < "$TMP/cf.out")"
-set_pr open provision/appb-dev main; confirm 12 provision/appa-dev; RC=$?
+set_pr open provision/appb-dev master; confirm 12 provision/appa-dev; RC=$?
 [ "$RC" -eq 1 ] && grep -q 'FORGE_NON_CONFIRMEE' "$TMP/cf.out" && grep -q "appb-dev" "$TMP/cf.out" \
   && ok "tête divergente (le payload nomme appa, la forge dit appb) ⇒ rc 1 FORGE_NON_CONFIRMEE, la tête réelle est nommée" || ko "tête divergente non refusée (rc=$RC)"
-set_pr closed provision/appa-dev main; confirm 12 provision/appa-dev; RC=$?
+set_pr closed provision/appa-dev master; confirm 12 provision/appa-dev; RC=$?
 [ "$RC" -eq 1 ] && grep -q 'pas ouverte' "$TMP/cf.out" && ok "PR fermée/mergée (branche réutilisée) ⇒ rc 1 (jamais un plan sur une PR mergée)" || ko "PR fermée acceptée (rc=$RC)"
-set_pr open onboard/x main; confirm 12 onboard/x; RC=$?
+set_pr open onboard/x master; confirm 12 onboard/x; RC=$?
 [ "$RC" -eq 1 ] && ok "head attendu hors provision/* ⇒ rc 1 (la lib ne sert que la voie provision/*)" || ko "hors provision/* accepté (rc=$RC)"
 set_pr open provision/appa-dev release; confirm 12 provision/appa-dev; RC=$?
-[ "$RC" -eq 1 ] && grep -q "base de la PR" "$TMP/cf.out" && ok "base ≠ main ⇒ rc 1" || ko "base divergente acceptée (rc=$RC)"
-set_pr open provision/appa-dev main 404; confirm 12 provision/appa-dev; RC=$?
+[ "$RC" -eq 1 ] && grep -q "base de la PR" "$TMP/cf.out" && ok "base ≠ celle attendue ⇒ rc 1" || ko "base divergente acceptée (rc=$RC)"
+# L3 : la base attendue est OBLIGATOIRE. Son défaut « main » était un défaut de
+# SITE invisible à ci/lint-config-knobs.sh — un appelant qui l'oubliait faisait
+# refuser TOUTES les PR d'un client dont la branche est `master`, en accusant la PR.
+set_pr open provision/appa-dev master; : > "$STUB_LOG"; confirm 12 provision/appa-dev ''; RC=$?
+[ "$RC" -eq 1 ] && grep -q 'base_ref attendue vide' "$TMP/cf.out" && [ "$(nreq GET)" = 0 ] \
+  && ok "base attendue VIDE ⇒ refus nommé SANS appel réseau (plus de défaut « main » qui mentait à un client sur master)" \
+  || ko "base vide non refusée : rc=$RC $(cat "$TMP/cf.out")"
+set_pr open provision/appa-dev master 404; confirm 12 provision/appa-dev; RC=$?
 [ "$RC" -eq 1 ] && grep -q 'HTTP 404' "$TMP/cf.out" && ok "PR inconnue (404) ⇒ rc 1" || ko "404 accepté (rc=$RC)"
-set_pr open provision/appa-dev main 500; confirm 12 provision/appa-dev; RC=$?
+set_pr open provision/appa-dev master 500; confirm 12 provision/appa-dev; RC=$?
 [ "$RC" -eq 1 ] && grep -q 'HTTP 500' "$TMP/cf.out" && ok "forge en erreur (500) ⇒ rc 1" || ko "500 accepté (rc=$RC)"
-set_pr open provision/appa-dev main 200 '[]'; confirm 12 provision/appa-dev; RC=$?
+set_pr open provision/appa-dev master 200 '[]'; confirm 12 provision/appa-dev; RC=$?
 # La cause vient de forge-api (« un list a été rendu là où un OBJET était attendu ») : la lib ne la reformule pas, elle la relaie sous FORGE_NON_CONFIRMEE.
 [ "$RC" -eq 1 ] && grep -qi 'objet' "$TMP/cf.out" && grep -q 'FORGE_NON_CONFIRMEE' "$TMP/cf.out" && ok "200 mais pas un objet PR (portail interposé) ⇒ rc 1 FORGE_NON_CONFIRMEE, la cause nomme l'OBJET attendu" || ko "non-objet accepté (rc=$RC) : $(tr '\n' ' ' < "$TMP/cf.out" | head -c 200)"
-set_pr open "$(printf 'provision/appa-dev\nX')" main; confirm 12 "$(printf 'provision/appa-dev\nX')"; RC=$?
+set_pr open "$(printf 'provision/appa-dev\nX')" master; confirm 12 "$(printf 'provision/appa-dev\nX')"; RC=$?
 [ "$RC" -eq 1 ] && ok "retour-ligne dans head.ref ⇒ rc 1 (jamais une valeur multi-ligne dans un fichier de faits)" || ko "retour-ligne accepté (rc=$RC)"
 : > "$STUB_LOG"; confirm '12;rm' provision/appa-dev; RC=$?
 [ "$RC" -eq 1 ] && [ "$(nreq GET)" = 0 ] && ok "numéro non numérique ⇒ rc 1 SANS aucun appel réseau (jamais un chemin forgé)" || ko "numéro non numérique : rc=$RC, appels=$(nreq GET)"
-set_pr open provision/appa-dev main 200 '' '-b x'; confirm 12 provision/appa-dev; RC=$?
+set_pr open provision/appa-dev master 200 '' '-b x'; confirm 12 provision/appa-dev; RC=$?
 [ "$RC" -eq 1 ] && grep -q 'hexadecimal' "$TMP/cf.out" && ok "head.sha non hexadécimal ('-b x') ⇒ rc 1 : jamais un argument libre pour git checkout" || ko "head.sha non hex accepté (rc=$RC)"
-set_pr open provision/appa-dev main 200 '' '' acme/fork; confirm 12 provision/appa-dev; RC=$?
+set_pr open provision/appa-dev master 200 '' '' acme/fork; confirm 12 provision/appa-dev; RC=$?
 [ "$RC" -eq 1 ] && grep -q 'FORK' "$TMP/cf.out" && ok "PR depuis un FORK (head.repo ≠ dépôt) ⇒ rc 1 nommé (sa tête n'est pas dans le clone)" || ko "PR de fork acceptée (rc=$RC)"
-set_pr open provision/appa-dev main
+set_pr open provision/appa-dev master
 # Routage forge-agnostique (2026-09-09) : la lib ne compose plus aucun appel de
 # forge — elle demande pr_get à forge-api.sh, qui passe le secret par l'ENV de
 # forge-api.py (jamais en argv) et porte le timeout réseau (FORGE_TIMEOUT, 30 s).
@@ -577,10 +586,10 @@ json.dump(cs, open(sys.argv[1], "w"))
 PY
 OUT=$(GIT_REPO=ci/stoa-labs GITEA_TOKEN="$STUB_TOKEN" PR_NUMBER=12 GIT_HOST="$GH9" COMMENT_MARKER='<!-- provision-plan-build -->' COMMENT_BODY_FILE="$TMP/cb" COMMENT_ONLY_IF_EXISTS=1 bash scripts/lib/gitea-pr-comment.sh 2>&1); RC=$?
 [ "$RC" -eq 0 ] && [ "$OUT" = "COMMENT_UPDATED 55" ] && ok "ONLY_IF_EXISTS avec un marqueur en 55e position (2e page) ⇒ COMMENT_UPDATED 55 : pagination + mise à jour" || ko "pagination/ONLY_IF_EXISTS : rc=$RC $OUT"
-set_pr open provision/appa-dev main 200 '' '' '' 30
+set_pr open provision/appa-dev master 200 '' '' '' 30
 OUT=$(GIT_REPO=ci/stoa-labs GITEA_TOKEN="$STUB_TOKEN" PR_NUMBER=12 GIT_HOST="$GH9" COMMENT_MARKER='<!-- provision-plan-build -->' COMMENT_BODY_FILE="$TMP/cb" bash scripts/lib/gitea-pr-comment.sh 2>&1); RC=$?
 [ "$RC" -eq 0 ] && [ "$OUT" = "COMMENT_UPDATED 55" ] && ok "forge qui PLAFONNE limit à 30 (api.MAX_RESPONSE_ITEMS) ⇒ le marqueur en 55e est encore trouvé (arrêt sur page VIDE, jamais sur page courte)" || ko "plafond serveur 30 : $OUT — empilement (revue 2026-09-02)"
-set_pr open provision/appa-dev main
+set_pr open provision/appa-dev master
 
 echo
 echo "== 9. (c) provision-plan.sh : la forge relue AVANT le clone — refus nommé, zéro commentaire, zéro clone =="
@@ -588,22 +597,26 @@ plan(){ # $1=PR_NUMBER $2=PR_BRANCH → $TMP/plan.out (stdout+stderr), rc ; fait
   rm -f "$TMP/plan.facts"; : > "$STUB_LOG"; printf '[]' > "$STUB_COMMENTS"
   # GIT_TERMINAL_PROMPT=0 : le stub répond 401 au clone (pas un dépôt git) — sans
   # ce knob, git demanderait un mot de passe au terminal et la suite pendrait.
-  GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/usr/bin/false GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 PR_NUMBER="$1" PR_BRANCH="$2" GITEA_TOKEN="$STUB_TOKEN" GIT_HOST="$GH9" GIT_REPO=ci/stoa-labs PLAN_FACTS="$TMP/plan.facts" \
+  # GIT_BASE : PLAN_BASE non posé ⇒ le knob « master » (le stub ne sert le dépôt
+  # git que dans la section (c bis) — ailleurs, aucune HEAD n'est découvrable, et
+  # ces épreuves-là portent sur la relecture de la PR, pas sur la branche).
+  # PLAN_BASE="" ⇒ GIT_BASE vide = DÉCOUVERTE (jouée en (c bis), dépôt servi).
+  GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/usr/bin/false GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 PR_NUMBER="$1" PR_BRANCH="$2" GITEA_TOKEN="$STUB_TOKEN" GIT_HOST="$GH9" GIT_REPO=ci/stoa-labs PLAN_FACTS="$TMP/plan.facts" GIT_BASE="${PLAN_BASE-master}" \
     bash scripts/provision-plan.sh >"$TMP/plan.out" 2>&1
 }
 fact(){ sed -n "s/^$1=//p" "$TMP/plan.facts" 2>/dev/null | head -1; }
-set_pr open provision/appb-dev main; plan 12 provision/appa-dev; RC=$?
+set_pr open provision/appb-dev master; plan 12 provision/appa-dev; RC=$?
 [ "$RC" -eq 1 ] && grep -q 'REFUS: FORGE_NON_CONFIRMEE' "$TMP/plan.out" && [ "$(fact PLAN_VERDICT)" = refus ] && [ -z "$(fact GITEA_HEAD_REF)" ] \
   && ok "payload forgé (branche de A, numéro de B) ⇒ rc 1 FORGE_NON_CONFIRMEE, faits : verdict=refus, tête VIDE (non confirmée)" || ko "payload forgé : rc=$RC — $(tail -2 "$TMP/plan.out" | tr '\n' ' ')"
 [ "$(nreq POST)" = 0 ] && [ "$(nreq PATCH)" = 0 ] && ok "… AUCUN commentaire (zéro POST/PATCH sur le stub)" || ko "… un commentaire est parti (POST=$(nreq POST) PATCH=$(nreq PATCH))"
 grep -q 'stoa-labs.git' "$STUB_LOG" && ko "… un clone a été tenté AVANT la confirmation" || ok "… AUCUN clone tenté : la forge est relue AVANT tout geste Git"
-set_pr closed provision/appa-dev main; plan 12 provision/appa-dev; RC=$?
+set_pr closed provision/appa-dev master; plan 12 provision/appa-dev; RC=$?
 [ "$RC" -eq 1 ] && grep -q 'pas ouverte' "$TMP/plan.out" && [ "$(nreq POST)" = 0 ] && ok "PR mergée/fermée (branche réutilisée) ⇒ refus, aucun commentaire" || ko "PR fermée : rc=$RC POST=$(nreq POST)"
 plan '12;rm' provision/appa-dev; RC=$?
 [ "$RC" -eq 1 ] && [ "$(nreq GET)" = 0 ] && ok "PR_NUMBER non numérique ⇒ refus SANS aucun appel réseau" || ko "PR_NUMBER non numérique : rc=$RC GET=$(nreq GET)"
 plan 12 onboard/x; RC=$?
 [ "$RC" -eq 0 ] && [ "$(fact PLAN_VERDICT)" = ignore ] && [ "$(nreq GET)" = 0 ] && ok "hors provision/* ⇒ IGNORE rc 0, faits verdict=ignore, aucun appel" || ko "hors provision/* : rc=$RC verdict=$(fact PLAN_VERDICT)"
-set_pr open provision/appa-dev main; plan 12 provision/appa-dev; RC=$?
+set_pr open provision/appa-dev master; plan 12 provision/appa-dev; RC=$?
 L_PULL=$(grep -n 'GET /api/v1/repos/ci/stoa-labs/pulls/12' "$STUB_LOG" | head -1 | cut -d: -f1); L_CLONE=$(grep -n 'stoa-labs.git' "$STUB_LOG" | head -1 | cut -d: -f1)
 [ "$RC" -eq 1 ] && grep -q 'REFUS: CLONE_ECHEC' "$TMP/plan.out" && [ "$(fact PLAN_VERDICT)" = refus ] && [ "$(fact GITEA_HEAD_REF)" = provision/appa-dev ] \
   && ok "forge confirmée puis clone impossible (le stub n'est pas un dépôt git) ⇒ CLONE_ECHEC rc 1, faits : refus + tête CONFIRMÉE (le statut pourra parler)" || ko "clone impossible : rc=$RC verdict=$(fact PLAN_VERDICT) head=$(fact GITEA_HEAD_REF)"
@@ -618,16 +631,20 @@ grep -vE '^\s*#' scripts/provision-plan.sh | grep -qE '^\($' && grep -vE '^\s*#'
 
 echo
 echo "== 9. (c bis) APRÈS le clone (dépôt git servi en dumb-http par le stub) : un manifeste SUPPRIMÉ rend un ❌ commenté + faits fail — plus jamais un rc 1 muet =="
-# Bare repo : main porte un manifeste ; la branche provision/appa-dev le SUPPRIME
+# Bare repo : master porte un manifeste ; la branche provision/appa-dev le SUPPRIME
 # (le diff le liste, `test -f` échoue — le cas du bloquant de la revue : `exit 1`
 # dans un groupe { } tuait le script sans verdict ni faits).
 SRC="$TMP/src-plan"; mkdir -p "$SRC/poc-control-plane-federation/clients/provisioned/applications"
 printf 'apim_ss_app:\n  name: appa\n  api: demo\n' > "$SRC/poc-control-plane-federation/clients/provisioned/applications/appa.ansible.yml"
-( cd "$SRC" && git init -q -b main && git -c user.name=t -c user.email=t@t add -A && git -c user.name=t -c user.email=t@t commit -qm init >/dev/null \
+( cd "$SRC" && git init -q -b master && git -c user.name=t -c user.email=t@t add -A && git -c user.name=t -c user.email=t@t commit -qm init >/dev/null \
   && git checkout -q -b provision/appa-dev && git rm -q poc-control-plane-federation/clients/provisioned/applications/appa.ansible.yml && git -c user.name=t -c user.email=t@t commit -qm retrait >/dev/null )
 git clone -q --bare "$SRC" "$STUB_GITDIR" && ( cd "$STUB_GITDIR" && git update-server-info )
+# La HEAD du dépôt SERVI est `master` : `git clone --bare` recopie celle de $SRC,
+# laissée sur provision/appa-dev par la construction ci-dessus. C'est cette HEAD
+# que la découverte de la branche de base lit (git ls-remote --symref).
+git -C "$STUB_GITDIR" symbolic-ref HEAD refs/heads/master
 SHA_BR=$(git -C "$STUB_GITDIR" rev-parse provision/appa-dev)
-set_pr open provision/appa-dev main 200 '' "$SHA_BR"; printf '[]' > "$STUB_COMMENTS"
+set_pr open provision/appa-dev master 200 '' "$SHA_BR"; printf '[]' > "$STUB_COMMENTS"
 plan 12 provision/appa-dev; RC=$?
 [ -n "${PLAN_DEBUG:-}" ] && { echo "----- plan.out (PLAN_DEBUG)"; cat "$TMP/plan.out"; echo "----- http.log"; cat "$STUB_LOG"; echo "-----"; }
 [ "$RC" -eq 1 ] && ok "plan sur une PR qui supprime le manifeste : rc 1 (verdict négatif), le script n'est PAS mort en silence" || ko "plan sur manifeste supprimé : rc=$RC — $(tail -3 "$TMP/plan.out" | tr '\n' ' ')"
@@ -635,13 +652,21 @@ plan 12 provision/appa-dev; RC=$?
 last_body | grep -q '❌' && last_body | grep -q '<!-- provision-plan -->' && ok "le verdict ❌ EST posé sur la PR (marqueur provision-plan)" || ko "aucun verdict posé : $(last_body | head -c 120)"
 last_body | grep -q "src/commit/$SHA_BR/" && last_body | grep -q "tete relue sur la forge : \`$SHA_BR\`" && ok "le verdict est LIÉ au contenu : lien src/commit/<sha relu>, tête citée" || ko "verdict non lié au SHA relu"
 grep -q 'manifeste introuvable' "$TMP/plan.out" && ok "la sortie du plan nomme la cause (manifeste introuvable)" || ko "cause absente de la sortie"
-rm -rf "$STUB_GITDIR"; set_pr open provision/appa-dev main
+# L3 — LE MÊME SCÉNARIO, SANS KNOB : le dépôt est servi ici, sa HEAD dit `master`,
+# et provision-plan.sh la DÉCOUVRE (scripts/lib/git-base.sh) avant de relire la PR
+# et de differ. Discriminant : un script qui devinerait « main » refuserait
+# FORGE_NON_CONFIRMEE (base.ref=master) au lieu de rendre le verdict.
+printf '[]' > "$STUB_COMMENTS"; PLAN_BASE="" plan 12 provision/appa-dev; RC=$?
+[ "$RC" -eq 1 ] && [ "$(fact PLAN_VERDICT)" = fail ] && ! grep -q 'FORGE_NON_CONFIRMEE' "$TMP/plan.out" \
+  && ok "aucun GIT_BASE, HEAD du dépôt = master ⇒ la base est DÉCOUVERTE, la PR est confirmée et le verdict rendu" \
+  || ko "découverte de la base : rc=$RC verdict=$(fact PLAN_VERDICT) — $(tail -2 "$TMP/plan.out" | tr '\n' ' ')"
+rm -rf "$STUB_GITDIR"; set_pr open provision/appa-dev master
 
 echo
 echo "== 9. (d) provision-plan-status.sh : les faits d'abord, la forge sinon, jamais une PR seulement nommée =="
 status(){ # $1=BUILD_RESULT $2=facts content (vide = pas de fichier) $3=PR_NUMBER $4=PR_BRANCH → $TMP/st.out, rc
   rm -f "$TMP/st.facts"; [ -n "$2" ] && printf '%b' "$2" > "$TMP/st.facts"; : > "$STUB_LOG"
-  BUILD_RESULT="$1" PLAN_FACTS="$TMP/st.facts" PR_NUMBER="$3" PR_BRANCH="$4" GITEA_TOKEN="$STUB_TOKEN" GIT_HOST="$GH9" GIT_REPO=ci/stoa-labs \
+  BUILD_RESULT="$1" PLAN_FACTS="$TMP/st.facts" PR_NUMBER="$3" PR_BRANCH="$4" GITEA_TOKEN="$STUB_TOKEN" GIT_HOST="$GH9" GIT_REPO=ci/stoa-labs GIT_BASE=master \
     JOB_NAME=provision-plan BUILD_NUMBER=77 BUILD_URL="${ST_BUILD_URL:-}" bash scripts/provision-plan-status.sh >"$TMP/st.out" 2>&1
 }
 F_OK='GITEA_HEAD_REF=provision/appa-dev\nGITEA_HEAD_SHA=cccc\nPLAN_VERDICT=ok\nPLAN_REASON=plan vert\n'
@@ -658,7 +683,7 @@ printf '[]' > "$STUB_COMMENTS"; status SUCCESS "$F_IGN" 12 provision/appa-dev; R
 [ "$RC" -eq 0 ] && [ "$(ncomments)" = 1 ] && last_body | grep -q 'IGNOREE' && last_body | grep -q 'aucun manifeste ajoute' && last_body | grep -q '<!-- provision-plan-build -->' \
   && ok "SUCCESS + ignore ⇒ statut posé « demande IGNOREE (raison) : aucun verdict », marqueur provision-plan-build" || ko "SUCCESS+ignore : $(cat "$TMP/st.out") body=$(last_body | head -c 120)"
 printf '[]' > "$STUB_COMMENTS"; status ABORTED "" 12 provision/appa-dev; RC=$?
-set_pr open provision/appa-dev main
+set_pr open provision/appa-dev master
 [ "$RC" -eq 0 ] && [ "$(ncomments)" = 1 ] && last_body | grep -q 'ABANDONNE' && last_body | grep -q 'provision-plan #77' \
   && ok "ABORTED sans faits ⇒ forge relue, statut « ABANDONNE, aucun verdict », repli textuel provision-plan #77 (BUILD_URL vide)" || ko "ABORTED : rc=$RC $(cat "$TMP/st.out") body=$(last_body | head -c 120)"
 printf '[]' > "$STUB_COMMENTS"; status FAILURE "$F_FAIL" 12 provision/appa-dev; RC=$?
@@ -670,11 +695,11 @@ printf '[]' > "$STUB_COMMENTS"; status FAILURE "$F_NC" 12 provision/appa-dev; RC
 printf '[]' > "$STUB_COMMENTS"; status FAILURE "" 12 provision/appa-dev; RC=$?
 [ "$RC" -eq 0 ] && [ "$(ncomments)" = 1 ] && last_body | grep -q 'ECHOUE (FAILURE) avant le plan' && grep -q 'GET /api/v1/repos/ci/stoa-labs/pulls/12' "$STUB_LOG" \
   && ok "FAILURE sans faits ⇒ forge relue par la lib, statut « ECHOUE (FAILURE) avant le plan »" || ko "FAILURE sans faits : n=$(ncomments) $(cat "$TMP/st.out")"
-set_pr open provision/appb-dev main; printf '[]' > "$STUB_COMMENTS"; status FAILURE "" 12 provision/appa-dev; RC=$?
+set_pr open provision/appb-dev master; printf '[]' > "$STUB_COMMENTS"; status FAILURE "" 12 provision/appa-dev; RC=$?
 [ "$RC" -eq 0 ] && [ "$(ncomments)" = 0 ] && grep -q 'forge non confirmee' "$TMP/st.out" && ok "FAILURE sans faits, forge divergente ⇒ AUCUN commentaire (rc 0)" || ko "forge divergente : n=$(ncomments) $(cat "$TMP/st.out")"
 : > "$STUB_LOG"; status FAILURE "" 'x' provision/appa-dev; RC=$?
 [ "$RC" -eq 0 ] && [ "$(nreq GET)" = 0 ] && ok "PR_NUMBER non numérique ⇒ rc 0, aucun appel" || ko "PR_NUMBER non numérique : rc=$RC GET=$(nreq GET)"
-set_pr open provision/appa-dev main; printf '[]' > "$STUB_COMMENTS"; ST_BUILD_URL=http://j/job/provision-plan/78/ status ABORTED "" 12 provision/appa-dev
+set_pr open provision/appa-dev master; printf '[]' > "$STUB_COMMENTS"; ST_BUILD_URL=http://j/job/provision-plan/78/ status ABORTED "" 12 provision/appa-dev
 last_body | grep -q 'http://j/job/provision-plan/78/' && ok "BUILD_URL posé ⇒ le lien est dans le corps" || ko "BUILD_URL ignoré"
 printf '[]' > "$STUB_COMMENTS"; status ABORTED "$F_OK" 12 provision/appa-dev; RC=$?
 [ "$RC" -eq 0 ] && last_body | grep -q 'verdict a ete RENDU' && ! last_body | grep -q 'AUCUN verdict' && ok "ABORTED + verdict ok ⇒ « verdict RENDU, build termine ABORTED apres coup » (jamais « AUCUN verdict » à côté d'un ✅)" || ko "ABORTED+ok : $(last_body | head -c 140)"

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # test-provision-apply-a2.sh — preuve X/X HORS LIGNE du jalon A2 (GOAL
 # cd-applications) : la référence de déploiement d'une application est le SHA
-# mergé, jamais le dernier `main`.
+# mergé, jamais le dernier `master`.
 #
 #   A. la lib : `app_manifest_digest_env` (digest canonique du bloc per_env.<env>)
 #   B. la réconciliation Gitea de provision-apply (scripts/provision-apply-reconcile.sh)
@@ -229,12 +229,12 @@ else
 fi
 
 # ── le dépôt git : un `origin` nu + un clone (là où le script fait fetch/show) ──
-# Historique de main : c0 (sans manifeste) → c1 (appa : dev+rec v1, LE merge)
+# Historique de master : c0 (sans manifeste) → c1 (appa : dev+rec v1, LE merge)
 # → [c2 : per_env.rec change (supplante)] ou [c2b : per_env.dev change (voisin)]
-# Une branche `side` (hors main) porte un commit qui n'est pas un ancêtre.
+# Une branche `side` (hors master) porte un commit qui n'est pas un ancêtre.
 ORIGIN="$TMP/origin.git"; WORK="$TMP/work"
-git init -q --bare "$ORIGIN" && git -C "$ORIGIN" symbolic-ref HEAD refs/heads/main
-git init -q "$WORK" && git -C "$WORK" checkout -q -b main
+git init -q --bare "$ORIGIN" && git -C "$ORIGIN" symbolic-ref HEAD refs/heads/master
+git init -q "$WORK" && git -C "$WORK" checkout -q -b master
 gitc(){ git -C "$WORK" -c user.name=t -c user.email=t@t "$@"; }
 mkdir -p "$WORK/clients/provisioned/applications" "$WORK/clients/provisioned/certs"
 printf 'init\n' > "$WORK/README"; gitc add -A; gitc commit -qm c0; C0=$(gitc rev-parse HEAD)
@@ -243,18 +243,18 @@ write_idp "$WORK/clients/provisioned/applications/appa.ansible.yml" appa '    de
 gitc add -A; gitc commit -qm "c1: provision(rec) appa"; C1=$(gitc rev-parse HEAD)
 write_idp "$WORK/clients/provisioned/applications/appd.ansible.yml" appd '    dev: { auth: { claim: { value: "appd-dev" } } }'
 gitc add -A; gitc commit -qm "c1b: appd dev seul"; C1B=$(gitc rev-parse HEAD)
-gitc remote add origin "$ORIGIN"; gitc push -q origin main
-gitc checkout -q -b side; printf 'side\n' > "$WORK/SIDE"; gitc add -A; gitc commit -qm side; CSIDE=$(gitc rev-parse HEAD); gitc push -q origin side; gitc checkout -q main
+gitc remote add origin "$ORIGIN"; gitc push -q origin master
+gitc checkout -q -b side; printf 'side\n' > "$WORK/SIDE"; gitc add -A; gitc commit -qm side; CSIDE=$(gitc rev-parse HEAD); gitc push -q origin side; gitc checkout -q master
 D_C1=$(gitc show "$C1:clients/provisioned/applications/appa.ansible.yml" > "$TMP/c1.yml" && app_manifest_digest_env "$TMP/c1.yml" rec 2>/dev/null)
 [ -n "$D_C1" ] && ok "B.0c dépôt de fixture prêt : c0=$(printf '%s' "$C0" | cut -c1-7) c1=$(printf '%s' "$C1" | cut -c1-7) (digest rec $(printf '%s' "$D_C1" | cut -c1-19)…) side=$(printf '%s' "$CSIDE" | cut -c1-7)" || ko "B.0c fixture git illisible"
-# main avance sur `origin` sans toucher le clone : le script DOIT fetcher.
+# master avance sur `origin` sans toucher le clone : le script DOIT fetcher.
 advance_main(){ # $1=fichier manifeste appa (contenu complet) $2=message
   local w2="$TMP/w2"; rm -rf "$w2"; git clone -q "$ORIGIN" "$w2"
   cp "$1" "$w2/clients/provisioned/applications/appa.ansible.yml"
   git -C "$w2" -c user.name=t -c user.email=t@t add -A; git -C "$w2" -c user.name=t -c user.email=t@t commit -qm "$2"
-  git -C "$w2" push -q origin main; git -C "$w2" rev-parse HEAD
+  git -C "$w2" push -q origin master; git -C "$w2" rev-parse HEAD
 }
-reset_main(){ git -C "$WORK" push -q -f origin "$1:main"; }
+reset_main(){ git -C "$WORK" push -q -f origin "$1:master"; }
 
 # ── le stub Gitea : /pulls/<n> et /pulls/<n>/files pilotés par ctl.json, commentaires capturés, journal HTTP ──
 STUB_CTL="$TMP/ctl.json"; STUB_LOG="$TMP/http.log"; STUB_COMMENTS="$TMP/comments.json"
@@ -304,7 +304,7 @@ class H(BaseHTTPRequestHandler):
                 "merged": pr.get("merged", True),
                 "merge_commit_sha": pr.get("merge_commit_sha", ""),
                 "head": {"ref": pr.get("head_ref", "")},
-                "base": {"ref": pr.get("base_ref", "main")},
+                "base": {"ref": pr.get("base_ref", "master")},
                 "merged_by": ({"login": pr["merged_by"]} if pr.get("merged_by") is not None else None),
                 "user": {"login": pr.get("user", "")},
             })
@@ -385,8 +385,8 @@ refus_attendu(){
   esac
 }
 
-echo "-- B.1 nominal : Gitea concorde, main = le merge ⇒ sortie, identités = GITEA, pas le payload --"
-set_pr true "$C1" provision/appa-rec main alice ci
+echo "-- B.1 nominal : Gitea concorde, master = le merge ⇒ sortie, identités = GITEA, pas le payload --"
+set_pr true "$C1" provision/appa-rec master alice ci
 : > "$STUB_LOG"
 run_rec "$TMP/b1.out" "$TMP/b1.log"; RC=$?
 if [ "$RC" -eq 0 ] && [ -s "$TMP/b1.out" ]; then ok "B.1 rc 0 + fichier de sortie écrit"; else ko "B.1 rc=$RC : $(tail -4 "$TMP/b1.log" | tr '\n' ' ')"; fi
@@ -404,58 +404,58 @@ grep -q "$STUB_TOKEN" "$TMP/b1.log" && ko "B.1i le token FUITE dans la sortie" |
 grep -qx 'GITEA_HEAD_REF=provision/appa-rec' "$TMP/facts" && ok "B.1j fichier de FAITS : GITEA_HEAD_REF relu sur la forge" || ko "B.1j faits absents : $(cat "$TMP/facts" 2>/dev/null)"
 
 echo "-- B.2 PR NON mergée côté Gitea (payload prétend merged:true) --"
-set_pr false "$C1" provision/appa-rec main NULL ci
+set_pr false "$C1" provision/appa-rec master NULL ci
 run_rec "$TMP/b2.out" "$TMP/b2.log"; RC=$?
 refus_attendu "B.2" "PR non mergée" PAYLOAD_PERIME "$TMP/b2.log" "$RC" "$TMP/b2.out" oui
 last_comment | grep -q "CE webhook n'a rien appliqué" && ok "B.2‴ le corps dit « CE webhook n'a rien appliqué » (pas « PAS déployée » : un apply antérieur peut exister)" || ko "B.2‴ corps du refus inattendu"
 grep -qx 'GITEA_HEAD_REF=provision/appa-rec' "$TMP/facts" && ok "B.2⁗ faits écrits MÊME sur refus (le post{always} saura que c'est une PR provision/*)" || ko "B.2⁗ faits absents sur refus"
 
 echo "-- B.3 SHA divergent (la PR est mergée, mais pas à ce SHA) --"
-set_pr true "$SHA_AUTRE" provision/appa-rec main alice ci
+set_pr true "$SHA_AUTRE" provision/appa-rec master alice ci
 run_rec "$TMP/b3.out" "$TMP/b3.log"; RC=$?
 refus_attendu "B.3" "merge_commit_sha ≠ MERGE_SHA" PAYLOAD_PERIME "$TMP/b3.log" "$RC" "$TMP/b3.out" oui
 
 echo "-- B.4 head.ref divergent : PR_NUMBER d'une PR ÉTRANGÈRE (onboard/*) ⇒ refus SANS commentaire --"
-set_pr true "$C1" onboard/team-dev main alice ci
+set_pr true "$C1" onboard/team-dev master alice ci
 run_rec "$TMP/b4.out" "$TMP/b4.log"; RC=$?
 refus_attendu "B.4" "head.ref ≠ PR_BRANCH (PR étrangère)" PAYLOAD_PERIME "$TMP/b4.log" "$RC" "$TMP/b4.out" non
 grep -qx 'GITEA_HEAD_REF=onboard/team-dev' "$TMP/facts" && ok "B.4‴ faits : GITEA_HEAD_REF=onboard/team-dev (le post{always} ne posera pas de statut)" || ko "B.4‴ faits : $(cat "$TMP/facts" 2>/dev/null)"
-set_pr true "$C1" provision/autre-rec main alice ci
+set_pr true "$C1" provision/autre-rec master alice ci
 run_rec "$TMP/b4b.out" "$TMP/b4b.log"; RC=$?
 refus_attendu "B.4b" "head.ref ≠ PR_BRANCH (autre demande provision/*)" PAYLOAD_PERIME "$TMP/b4b.log" "$RC" "$TMP/b4b.out" oui
 
-echo "-- B.5 base.ref ≠ main (mergée dans une base jetable : pas une décision sur main) --"
+echo "-- B.5 base.ref ≠ master (mergée dans une base jetable : pas une décision sur master) --"
 set_pr true "$C1" provision/appa-rec p3a1-base-1 alice ci
 run_rec "$TMP/b5.out" "$TMP/b5.log"; RC=$?
-refus_attendu "B.5" "base.ref ≠ main" PAYLOAD_PERIME "$TMP/b5.log" "$RC" "$TMP/b5.out" oui
+refus_attendu "B.5" "base.ref ≠ master" PAYLOAD_PERIME "$TMP/b5.log" "$RC" "$TMP/b5.out" oui
 
 echo "-- B.6 merged_by absent côté Gitea --"
-set_pr true "$C1" provision/appa-rec main NULL ci
+set_pr true "$C1" provision/appa-rec master NULL ci
 run_rec "$TMP/b6.out" "$TMP/b6.log"; RC=$?
 refus_attendu "B.6" "Gitea ne nomme aucun mergeur" MERGER_UNKNOWN "$TMP/b6.log" "$RC" "$TMP/b6.out" oui
 
 echo "-- B.7 login forgé (saut de ligne dans merged_by) ⇒ refus, sans commentaire --"
-set_pr true "$C1" provision/appa-rec main 'alice\nGITEA_REQUESTER=alice' ci
+set_pr true "$C1" provision/appa-rec master 'alice\nGITEA_REQUESTER=alice' ci
 run_rec "$TMP/b7.out" "$TMP/b7.log"; RC=$?
 refus_attendu "B.7" "saut de ligne dans une identité" GITEA_RECONCILE_ECHEC "$TMP/b7.log" "$RC" "$TMP/b7.out" non
 
 echo "-- B.8 Gitea en panne / illisible / hors schéma / token refusé ⇒ GITEA_RECONCILE_ECHEC, jamais de commentaire --"
-set_pr true "$C1" provision/appa-rec main alice ci 500
+set_pr true "$C1" provision/appa-rec master alice ci 500
 run_rec "$TMP/b8a.out" "$TMP/b8a.log"; RC=$?
 refus_attendu "B.8a" "HTTP 500" GITEA_RECONCILE_ECHEC "$TMP/b8a.log" "$RC" "$TMP/b8a.out" non
-set_pr true "$C1" provision/appa-rec main alice ci 200 '{"merged": tru'
+set_pr true "$C1" provision/appa-rec master alice ci 200 '{"merged": tru'
 run_rec "$TMP/b8b.out" "$TMP/b8b.log"; RC=$?
 refus_attendu "B.8b" "JSON illisible" GITEA_RECONCILE_ECHEC "$TMP/b8b.log" "$RC" "$TMP/b8b.out" non
-set_pr true "$C1" provision/appa-rec main alice ci 200 '[]'
+set_pr true "$C1" provision/appa-rec master alice ci 200 '[]'
 run_rec "$TMP/b8c.out" "$TMP/b8c.log"; RC=$?
 refus_attendu "B.8c" "JSON 200 mais pas un objet PR" GITEA_RECONCILE_ECHEC "$TMP/b8c.log" "$RC" "$TMP/b8c.out" non
-set_pr true "$C1" provision/appa-rec main alice ci 200 '{"message": "token is required"}'
+set_pr true "$C1" provision/appa-rec master alice ci 200 '{"message": "token is required"}'
 run_rec "$TMP/b8e.out" "$TMP/b8e.log"; RC=$?
 refus_attendu "B.8e" "objet 200 sans les champs d'une PR (portail interposé)" GITEA_RECONCILE_ECHEC "$TMP/b8e.log" "$RC" "$TMP/b8e.out" non
 # L'adaptateur normalise (forge-api) : « absent » et « vide » se confondent, le
 # schéma se dit donc par les champs qu'une PR ne rend jamais vides (number, head.ref, base.ref).
 grep -q "sans les champs d'une PR (absents ou étrangers : number head.ref base.ref" "$TMP/b8e.log" && ok "B.8e‴ le refus nomme les champs manquants (schéma), pas une divergence PAYLOAD_PERIME" || ko "B.8e‴ diagnostic : $(grep REFUS "$TMP/b8e.log")"
-set_pr true "$C1" provision/appa-rec main alice ci
+set_pr true "$C1" provision/appa-rec master alice ci
 run_rec "$TMP/b8d.out" "$TMP/b8d.log" GITEA_TOKEN=mauvais; RC=$?
 # la cause de forge-api dit « → HTTP 401 » (un blanc) ; l'ancien python disait « HTTP401 »
 if [ "$RC" -ne 0 ] && grep -q 'REFUS: GITEA_RECONCILE_ECHEC' "$TMP/b8d.log" && grep -qE 'HTTP ?401' "$TMP/b8d.log"; then
@@ -464,7 +464,7 @@ else ko "B.8d 401 : rc=$RC $(tail -2 "$TMP/b8d.log" | tr '\n' ' ')"; fi
 [ ! -e "$TMP/b8d.out" ] && [ "$(comments_n)" = 0 ] && ok "B.8d′ aucun fichier de sortie, aucun commentaire" || ko "B.8d′ sortie ou commentaire présents"
 
 echo "-- B.9 FORME : refus AVANT tout appel réseau, sans commentaire, valeur jamais recopiée telle quelle --"
-set_pr true "$C1" provision/appa-rec main alice ci
+set_pr true "$C1" provision/appa-rec master alice ci
 : > "$STUB_LOG"
 run_rec "$TMP/b9a.out" "$TMP/b9a.log" PR_NUMBER=12a; RC=$?
 [ "$RC" -ne 0 ] && grep -q 'REFUS: PR_NUMBER_INVALIDE' "$TMP/b9a.log" && ok "B.9a PR_NUMBER=12a ⇒ PR_NUMBER_INVALIDE" || ko "B.9a rc=$RC $(tail -1 "$TMP/b9a.log")"
@@ -487,10 +487,10 @@ run_rec "$TMP/b9g.out" "$TMP/b9g.log" PR_BRANCH='provision/appa-Rec1'; RC=$?
 for f in b9a b9b b9c b9d b9e b9f b9g; do [ -e "$TMP/$f.out" ] && ko "B.9j fichier de sortie écrit pour $f"; done; ok "B.9j aucun fichier de sortie pour les refus de forme (contrôle par boucle)"
 
 echo "-- B.10 découpage au DERNIER tiret : app à tirets --"
-git -C "$WORK" checkout -q main 2>/dev/null
+git -C "$WORK" checkout -q master 2>/dev/null
 write_idp "$WORK/clients/provisioned/applications/credit-scoring.ansible.yml" credit-scoring '    rec: { auth: { claim: { value: "cs-rec" } } }'
-gitc add -A; gitc commit -qm "cs"; CCS=$(gitc rev-parse HEAD); gitc push -q origin main
-set_pr true "$CCS" provision/credit-scoring-rec main alice ci
+gitc add -A; gitc commit -qm "cs"; CCS=$(gitc rev-parse HEAD); gitc push -q origin master
+set_pr true "$CCS" provision/credit-scoring-rec master alice ci
 set_files "poc-control-plane-federation/clients/provisioned/applications/credit-scoring.ansible.yml"
 run_rec "$TMP/b10.out" "$TMP/b10.log" PR_BRANCH=provision/credit-scoring-rec MERGE_SHA="$CCS"; RC=$?
 [ "$RC" -eq 0 ] && grep -qx 'APP_NAME=credit-scoring' "$TMP/b10.out" && grep -qx 'ENV_NAME=rec' "$TMP/b10.out" \
@@ -498,20 +498,20 @@ run_rec "$TMP/b10.out" "$TMP/b10.log" PR_BRANCH=provision/credit-scoring-rec MER
 reset_main "$C1B"
 
 echo "-- B.11 PÉRIMÈTRE : la PR touche autre chose que son manifeste / son certificat --"
-set_pr true "$C1" provision/appa-rec main alice ci
+set_pr true "$C1" provision/appa-rec master alice ci
 set_files "$FMAN" "poc-control-plane-federation/ansible/roles/apim_selfservice_app/tasks/main.yml"
 run_rec "$TMP/b11.out" "$TMP/b11.log"; RC=$?
 refus_attendu "B.11" "la PR touche ansible/roles/…" PR_HORS_PERIMETRE "$TMP/b11.log" "$RC" "$TMP/b11.out" oui
 grep -q 'apim_selfservice_app/tasks/main.yml' "$TMP/b11.log" && ok "B.11‴ le fichier hors périmètre est NOMMÉ dans le journal" || ko "B.11‴ fichier hors périmètre non nommé"
-set_pr true "$C1" provision/appa-rec main alice ci
+set_pr true "$C1" provision/appa-rec master alice ci
 set_files
 run_rec "$TMP/b11b.out" "$TMP/b11b.log"; RC=$?
 refus_attendu "B.11b" "PR sans aucun fichier" PR_HORS_PERIMETRE "$TMP/b11b.log" "$RC" "$TMP/b11b.out" oui
-set_pr true "$C1" provision/appa-rec main alice ci
+set_pr true "$C1" provision/appa-rec master alice ci
 set_files "$FMAN" "$FCERT"
 run_rec "$TMP/b11c.out" "$TMP/b11c.log"; RC=$?
 [ "$RC" -eq 0 ] && ok "B.11c manifeste + certificat du palier (appa-rec.crt) ⇒ dans le périmètre, rc 0" || ko "B.11c rc=$RC : $(tail -2 "$TMP/b11c.log" | tr '\n' ' ')"
-set_pr true "$C1" provision/appa-rec main alice ci
+set_pr true "$C1" provision/appa-rec master alice ci
 set_files "$FMAN" "poc-control-plane-federation/clients/provisioned/certs/appa-dev.crt"
 run_rec "$TMP/b11d.out" "$TMP/b11d.log"; RC=$?
 refus_attendu "B.11d" "certificat d'un AUTRE palier (appa-dev.crt)" PR_HORS_PERIMETRE "$TMP/b11d.log" "$RC" "$TMP/b11d.out" oui
@@ -522,59 +522,59 @@ PY
 run_rec "$TMP/b11e.out" "$TMP/b11e.log"; RC=$?
 refus_attendu "B.11e" "/files en erreur (500)" GITEA_RECONCILE_ECHEC "$TMP/b11e.log" "$RC" "$TMP/b11e.out" oui
 
-echo "-- B.12 POSTÉRIORITÉ : main porte un état plus récent de CE palier ⇒ PALIER_SUPPLANTE --"
-set_pr true "$C1" provision/appa-rec main alice ci
+echo "-- B.12 POSTÉRIORITÉ : master porte un état plus récent de CE palier ⇒ PALIER_SUPPLANTE --"
+set_pr true "$C1" provision/appa-rec master alice ci
 write_idp "$TMP/c2.yml" appa '    dev: { auth: { claim: { value: "appa-dev" } }, ip_allowlist: ["10.0.0.1"] }
     rec: { auth: { claim: { value: "appa-rec" } }, ip_allowlist: ["10.42.0.2"] }'
 C2=$(advance_main "$TMP/c2.yml" "c2: rec supplante (10.42.0.2)")
 run_rec "$TMP/b12.out" "$TMP/b12.log"; RC=$?
-refus_attendu "B.12" "main (c2) a changé per_env.rec après le merge (c1)" PALIER_SUPPLANTE "$TMP/b12.log" "$RC" "$TMP/b12.out" oui
+refus_attendu "B.12" "master (c2) a changé per_env.rec après le merge (c1)" PALIER_SUPPLANTE "$TMP/b12.log" "$RC" "$TMP/b12.out" oui
 grep -q 'rejeu' "$TMP/b12.log" && ok "B.12‴ le refus nomme la cause probable (rejeu d'un webhook ancien) et la voie (nouvelle demande / repli A6)" || ko "B.12‴ message du refus : $(grep REFUS "$TMP/b12.log")"
-grep -q "$(git -C "$WORK" rev-parse origin/main)" "$TMP/b12.log" 2>/dev/null; true
-# contrôle : un autre palier a bougé sur main ⇒ CE palier n'est pas supplanté
+grep -q "$(git -C "$WORK" rev-parse origin/master)" "$TMP/b12.log" 2>/dev/null; true
+# contrôle : un autre palier a bougé sur master ⇒ CE palier n'est pas supplanté
 reset_main "$C1B"
-set_pr true "$C1" provision/appa-rec main alice ci
+set_pr true "$C1" provision/appa-rec master alice ci
 write_idp "$TMP/c2b.yml" appa '    dev: { auth: { claim: { value: "appa-dev" } }, ip_allowlist: ["10.0.0.9"] }
     rec: { auth: { claim: { value: "appa-rec" } }, ip_allowlist: ["10.42.0.1"] }'
 C2B=$(advance_main "$TMP/c2b.yml" "c2b: dev bouge, rec identique")
 run_rec "$TMP/b12b.out" "$TMP/b12b.log"; RC=$?
 [ "$RC" -eq 0 ] && grep -qx "MERGED_DIGEST=$D_C1" "$TMP/b12b.out" \
-  && ok "B.12b contrôle : seul per_env.dev a bougé sur main (c2b) ⇒ rec n'est PAS supplanté, rc 0 (granularité = le palier)" \
+  && ok "B.12b contrôle : seul per_env.dev a bougé sur master (c2b) ⇒ rec n'est PAS supplanté, rc 0 (granularité = le palier)" \
   || ko "B.12b rc=$RC : $(tail -2 "$TMP/b12b.log" | tr '\n' ' ')"
-# et une re-sérialisation de main sans changement de fond ne supplante pas non plus
+# et une re-sérialisation de master sans changement de fond ne supplante pas non plus
 reset_main "$C1B"
-set_pr true "$C1" provision/appa-rec main alice ci
+set_pr true "$C1" provision/appa-rec master alice ci
 write_idp "$TMP/c2c.yml" appa '    dev: {auth: {claim: {value: "appa-dev"}}, ip_allowlist: ["10.0.0.1"]}
     rec: {ip_allowlist: ["10.42.0.1"], auth: {claim: {value: "appa-rec"}}}'
 C2C=$(advance_main "$TMP/c2c.yml" "c2c: reformatage sans changement de fond")
 run_rec "$TMP/b12c.out" "$TMP/b12c.log"; RC=$?
-[ "$RC" -eq 0 ] && ok "B.12c contrôle : main reformaté (ordre des clés) mais même fond ⇒ pas supplanté, rc 0" || ko "B.12c rc=$RC : $(tail -2 "$TMP/b12c.log" | tr '\n' ' ')"
+[ "$RC" -eq 0 ] && ok "B.12c contrôle : master reformaté (ordre des clés) mais même fond ⇒ pas supplanté, rc 0" || ko "B.12c rc=$RC : $(tail -2 "$TMP/b12c.log" | tr '\n' ' ')"
 reset_main "$C1B"
-# manifeste retiré de main ⇒ rien à projeter
-set_pr true "$C1" provision/appa-rec main alice ci
+# manifeste retiré de master ⇒ rien à projeter
+set_pr true "$C1" provision/appa-rec master alice ci
 W3="$TMP/w3"; rm -rf "$W3"; git clone -q "$ORIGIN" "$W3"; git -C "$W3" rm -q clients/provisioned/applications/appa.ansible.yml
-git -C "$W3" -c user.name=t -c user.email=t@t commit -qm "retrait appa"; git -C "$W3" push -q origin main
+git -C "$W3" -c user.name=t -c user.email=t@t commit -qm "retrait appa"; git -C "$W3" push -q origin master
 run_rec "$TMP/b12d.out" "$TMP/b12d.log"; RC=$?
-refus_attendu "B.12d" "manifeste retiré de main depuis le merge" MANIFESTE_ABSENT "$TMP/b12d.log" "$RC" "$TMP/b12d.out" oui
+refus_attendu "B.12d" "manifeste retiré de master depuis le merge" MANIFESTE_ABSENT "$TMP/b12d.log" "$RC" "$TMP/b12d.out" oui
 reset_main "$C1B"
 
-echo "-- B.13 GIT : SHA hors main, manifeste absent au SHA, palier absent au SHA --"
-set_pr true "$CSIDE" provision/appa-rec main alice ci
+echo "-- B.13 GIT : SHA hors master, manifeste absent au SHA, palier absent au SHA --"
+set_pr true "$CSIDE" provision/appa-rec master alice ci
 run_rec "$TMP/b13.out" "$TMP/b13.log" MERGE_SHA="$CSIDE"; RC=$?
 refus_attendu "B.13" "SHA d'une branche jamais fusionnée" MERGE_SHA_NON_ANCETRE "$TMP/b13.log" "$RC" "$TMP/b13.out" oui
-set_pr true "$C0" provision/appa-rec main alice ci
+set_pr true "$C0" provision/appa-rec master alice ci
 run_rec "$TMP/b13b.out" "$TMP/b13b.log" MERGE_SHA="$C0"; RC=$?
 refus_attendu "B.13b" "manifeste absent de l'arbre au SHA mergé (c0)" MANIFESTE_ABSENT "$TMP/b13b.log" "$RC" "$TMP/b13b.out" oui
-set_pr true "$C1B" provision/appd-rec main alice ci
+set_pr true "$C1B" provision/appd-rec master alice ci
 set_files "poc-control-plane-federation/clients/provisioned/applications/appd.ansible.yml"
 run_rec "$TMP/b13c.out" "$TMP/b13c.log" PR_BRANCH=provision/appd-rec MERGE_SHA="$C1B"; RC=$?
 refus_attendu "B.13c" "le manifeste au SHA mergé ne déclare pas le palier rec (appd : dev seul)" PALIER_ABSENT "$TMP/b13c.log" "$RC" "$TMP/b13c.out" oui
 # le clone n'avait PAS c2/c2b/c2c localement : c'est le fetch du script qui les a vus
-git -C "$WORK" log --oneline main | grep -q 'c2:' && ko "B.13d le clone local a été avancé par le harnais (le script n'a pas eu à fetcher)" \
-  || ok "B.13d main du clone local inchangé : les états c2/c2b/c2c n'étaient visibles que par « git fetch origin main » — le script fetche bien"
+git -C "$WORK" log --oneline master | grep -q 'c2:' && ko "B.13d le clone local a été avancé par le harnais (le script n'a pas eu à fetcher)" \
+  || ok "B.13d master du clone local inchangé : les états c2/c2b/c2c n'étaient visibles que par « git fetch origin master » — le script fetche bien"
 
 echo "-- B.14 un refus ne PATCHe jamais le tableau de bord d'un apply réel (marqueurs distincts) --"
-set_pr true "$SHA_AUTRE" provision/appa-rec main alice ci
+set_pr true "$SHA_AUTRE" provision/appa-rec master alice ci
 python3 - "$STUB_COMMENTS" <<'PY'
 import json, sys
 json.dump([{"id": 1, "body": "<!-- provision-apply -->\n✅ **Apply nominatif RÉUSSI**\n- référence appliquée (SHA de merge) : `aaaa`"}], open(sys.argv[1], "w"))
@@ -657,7 +657,7 @@ PY
 # Les motifs visent les comparaisons BASH de la réconciliation (une par ligne,
 # depuis le routage sur forge-api : `[ … ] || WHY="$WHY <champ>=…"`).
 if mutate 'WHY merge_commit_sha=' "$MUTD/mut1.sh"; then
-  set_pr true "$SHA_AUTRE" provision/appa-rec main alice ci
+  set_pr true "$SHA_AUTRE" provision/appa-rec master alice ci
   mut_run "$MUTD/mut1.sh" "$TMP/mut1.log"; RC=$?
   [ "$RC" -eq 0 ] && ok "D.1 sans la comparaison du SHA, le scénario B.3 PASSE (rc 0) — B.3 tient donc à cette ligne" || ko "D.1 le mutant refuse encore (rc=$RC) : $(tail -1 "$TMP/mut1.log")"
 else ko "D.1 mutation impossible (motif introuvable)"; fi
@@ -667,17 +667,17 @@ if mutate 'WHY base\.ref=' "$MUTD/mut2.sh"; then
   [ "$RC" -eq 0 ] && ok "D.2 sans la comparaison de base.ref, le scénario B.5 PASSE — B.5 tient à cette ligne" || ko "D.2 le mutant refuse encore (rc=$RC) : $(tail -1 "$TMP/mut2.log")"
 else ko "D.2 mutation impossible"; fi
 if mutate 'WHY merged=' "$MUTD/mut3.sh"; then
-  set_pr false "$C1" provision/appa-rec main alice ci
+  set_pr false "$C1" provision/appa-rec master alice ci
   mut_run "$MUTD/mut3.sh" "$TMP/mut3.log"; RC=$?
   [ "$RC" -eq 0 ] && ok "D.3 sans le test merged, le scénario B.2 PASSE — B.2 tient à cette ligne" || ko "D.3 le mutant refuse encore (rc=$RC) : $(tail -1 "$TMP/mut3.log")"
 else ko "D.3 mutation impossible"; fi
 if mutate 'WHY head\.ref=' "$MUTD/mut4.sh"; then
-  set_pr true "$C1" provision/autre-rec main alice ci
+  set_pr true "$C1" provision/autre-rec master alice ci
   mut_run "$MUTD/mut4.sh" "$TMP/mut4.log"; RC=$?
   [ "$RC" -eq 0 ] && ok "D.4 sans la comparaison de head.ref, le scénario B.4b PASSE — B.4b tient à cette ligne" || ko "D.4 le mutant refuse encore (rc=$RC) : $(tail -1 "$TMP/mut4.log")"
 else ko "D.4 mutation impossible"; fi
 if mutate 'FILES_VERDICT="FILES_HORS' "$MUTD/mut5.sh"; then
-  set_pr true "$C1" provision/appa-rec main alice ci
+  set_pr true "$C1" provision/appa-rec master alice ci
   set_files "$FMAN" "poc-control-plane-federation/ansible/roles/x/tasks/main.yml"
   mut_run "$MUTD/mut5.sh" "$TMP/mut5.log"; RC=$?
   [ "$RC" -eq 0 ] && ok "D.5 sans le test de périmètre, le scénario B.11 PASSE — B.11 tient à cette ligne" || ko "D.5 le mutant refuse encore (rc=$RC) : $(tail -1 "$TMP/mut5.log")"
@@ -687,16 +687,16 @@ c = json.load(open(sys.argv[1])); c.pop("files", None); json.dump(c, open(sys.ar
 PY
 else ko "D.5 mutation impossible"; fi
 # la comparaison de digest tient sur DEUX lignes (test + fail) : on retire le test ET son fail.
-sed '/^\[ "\$MERGED_DIGEST" = "\$MAIN_DIGEST" \] \\$/,/rejouer une demande, ou le repli A6"$/d' "$RECONCILE" > "$MUTD/mut6.sh"; chmod +x "$MUTD/mut6.sh"
+sed '/^\[ "\$MERGED_DIGEST" = "\$BASE_DIGEST" \] \\$/,/rejouer une demande, ou le repli A6"$/d' "$RECONCILE" > "$MUTD/mut6.sh"; chmod +x "$MUTD/mut6.sh"
 if ! cmp -s "$RECONCILE" "$MUTD/mut6.sh"; then
-  set_pr true "$C1" provision/appa-rec main alice ci
+  set_pr true "$C1" provision/appa-rec master alice ci
   C2=$(advance_main "$TMP/c2.yml" "c2: rec supplante (mutation)")
   mut_run "$MUTD/mut6.sh" "$TMP/mut6.log"; RC=$?
-  [ "$RC" -eq 0 ] && ok "D.6 sans la comparaison des digests mergé/main, le scénario B.12 PASSE — B.12 tient à cette ligne" || ko "D.6 le mutant refuse encore (rc=$RC) : $(tail -1 "$TMP/mut6.log")"
+  [ "$RC" -eq 0 ] && ok "D.6 sans la comparaison des digests mergé/base, le scénario B.12 PASSE — B.12 tient à cette ligne" || ko "D.6 le mutant refuse encore (rc=$RC) : $(tail -1 "$TMP/mut6.log")"
   reset_main "$C1B"
 else ko "D.6 mutation impossible"; fi
 # Et l'original, rejoué sur le dernier scénario, refuse toujours (le stub n'a pas dérivé).
-set_pr true "$SHA_AUTRE" provision/appa-rec main alice ci
+set_pr true "$SHA_AUTRE" provision/appa-rec master alice ci
 run_rec "$TMP/d7.out" "$TMP/d7.log"; RC=$?
 [ "$RC" -ne 0 ] && grep -q 'REFUS: PAYLOAD_PERIME' "$TMP/d7.log" && ok "D.7 contrôle : l'ORIGINAL refuse toujours PAYLOAD_PERIME sur ce scénario" || ko "D.7 l'original accepte (rc=$RC) — le stub a dérivé"
 

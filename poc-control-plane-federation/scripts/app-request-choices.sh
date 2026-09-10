@@ -83,7 +83,7 @@ ENVS="$(env_chain)" || refus "CHAINE_ILLISIBLE : env_chain (source $(_env_chain_
 [ -n "$ENVS" ] || refus "CHAINE_VIDE : chaîne vide"
 
 # Sous-shell : le ${GITEA_TOKEN:?} de la lib n'abat que lui, le message reste le nôtre.
-TEAMS_RAW="$(generate_choices_teams_raw "$ENVN")" || refus "EQUIPES_INDISPONIBLES : providers.${ENVN}.yml sur Gitea main (voir ci-dessus)"
+TEAMS_RAW="$(generate_choices_teams_raw "$ENVN")" || refus "EQUIPES_INDISPONIBLES : providers.${ENVN}.yml sur la branche de base du depot plateforme (voir ci-dessus)"
 APIS_RAW="$(generate_choices_apis_raw "$ENVN")"   || refus "APIS_INDISPONIBLES : APIs publiées (voir ci-dessus)"
 
 # Une valeur par ligne → une ligne, séparateur espace ; doublons exacts écartés,

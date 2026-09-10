@@ -23,7 +23,7 @@
 //   REQ_ENV ← env_chain (clients/_example/environments.yaml du clone — la chaîne
 //             ENTIÈRE, terminus compris : A7 — la MÊME source que
 //             provision-request.sh, qui refuse ENV_INVALIDE ; les portes décident) ;
-//   TEAM    ← providers.<env d'authoring>.yml relu sur Gitea main ;
+//   TEAM    ← providers.<env d'authoring>.yml relu sur la branche de base ;
 //   API     ← les publish.yml (dépôt plateforme + dépôts d'équipe déclarés).
 // Le XML n'est plus qu'une COQUILLE (pointeur SCM, <triggers/> vide) : la seule
 // source de vérité du formulaire est ce fichier, versionné, relu, linté.
