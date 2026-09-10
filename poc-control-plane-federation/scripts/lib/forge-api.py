@@ -31,7 +31,27 @@
 #       · FORGE_API_BASE (option : un reverse-proxy qui déplace /api) · GIT_REPO
 #       (owner/repo, requis) · FORGE_API_AUTH (token|private-token|bearer|basic ;
 #       défaut token pour gitea, private-token pour gitlab) · FORGE_USER (basic)
-#       · FORGE_SECRET | FORGE_SECRET_FILE · FORGE_TIMEOUT (défaut 30).
+#       · FORGE_SECRET | FORGE_SECRET_FILE · FORGE_TIMEOUT (défaut 30)
+#       · STOA_DEBUG (mode debug, ci-dessous).
+#
+# MODE DEBUG (STOA_DEBUG, plan L2). Une ligne par requête HTTP, écrite par CE
+# process sur stderr : « GET url -> HTTP 200 (42 octets) » — le format de
+# dbg_http (ci/lib/dbg.sh), pour qu'un log Jenkins archivé se grep d'une seule
+# façon — ou « GET url -> ERREUR URLError » quand rien n'a répondu. Elle est
+# écrite AVANT toute cause : un log se lit de haut en bas, le statut d'abord, le
+# refus ensuite. Elle est masquée par _mask, PAS par le redact shell de dbg.sh,
+# et voici pourquoi : ce process est un ENFANT de forge() ; faire passer sa
+# sortie debug par redact obligerait forge() à capturer son stderr, ce qui
+# retiendrait la CAUSE d'un refus jusqu'à la fin du process et doublerait la
+# plomberie de chaque verbe. _mask est déjà l'autorité de ses causes depuis L1
+# (scripts/test-app-request-a7.sh E6.9 le prouve : le corps cité dans un refus
+# porte « <secret masqué> », jamais le jeton) — la ligne de debug suit le même
+# chemin que la cause. Comme redact, _mask connaît chaque secret sous ses
+# formes d'URL (quote, quote_plus) : un chemin ou une ref qui le porte entre
+# dans l'URL encodé, et c'est la ligne de CHAQUE requête qui le montrerait
+# (test-forge-api P.7c-P.7e). _dbg_on lit STOA_DEBUG comme dbg_on de dbg.sh
+# (vide, 0, false, off, no ⇒ muet ; test-forge-api P.6 le vérifie valeur par
+# valeur). Jamais stdout : stdout est le produit CLÉ=VALEUR que forge_kv relit.
 #
 # Preuve : scripts/test-forge-api.sh (mock à deux visages, formes RÉELLES,
 # mutations champ par champ) et scripts/test-forge-api-live.sh (le GitLab CE et
@@ -89,23 +109,69 @@ def _secret():
 
 
 def _secrets_connus(s):
-    """Tout ce qui doit être masqué dans une cause : le secret EN USAGE et ceux
-    que l'environnement porte encore (le token de service pendant un pr_open
-    sous le token du pousseur, par exemple)."""
+    """Tout ce qui doit être masqué dans une cause ou une ligne de debug : le
+    secret EN USAGE et ceux que l'environnement porte encore (le token de
+    service pendant un pr_open sous le token du pousseur, par exemple) — chacun
+    sous ses FORMES D'URL, pas seulement en clair. Un secret que l'appelant
+    passe en chemin (`forge raw <chemin>`) ou en ref entre dans l'URL par quote
+    (GitLab : t-s%2Bvc, %3A, %2F, %20) ou par urlencode (la query, « + » pour
+    l'espace) : le littéral brut n'y est plus et un masque qui ne connaît que
+    lui laisse la forme encodée en clair dans la ligne de CHAQUE requête et dans
+    la cause d'un refus (mesuré L2-A1 tour 1, test-forge-api P.7c-P.7e). Le
+    modèle est redact de ci/lib/dbg.sh : quote(x) et quote_plus(x) de chaque
+    littéral. Une forme identique au littéral (secret URL-safe) n'est pas
+    doublée."""
     for t in (s, os.environ.get("FORGE_SECRET"), os.environ.get("GITEA_TOKEN")):
         t = (t or "").strip()
-        if t and t not in _SECRETS:
-            _SECRETS.append(t)
+        if not t:
+            continue
+        formes = (t, urllib.parse.quote(t, safe=""), urllib.parse.quote_plus(t, safe=""))
+        for forme in formes:
+            if forme not in _SECRETS:
+                _SECRETS.append(forme)
 
 
 _SECRETS = []
+_M = "<secret masqué>"
+# La FORME « ://userinfo@ » d'une URL. Le masque est un ATOME de la classe : si
+# le mot de passe était un littéral connu, le premier passage laisse
+# « svc:<secret masqué>@ » et la forme doit reprendre l'userinfo EN ENTIER —
+# même arbitrage que dbg.sh (F.1-F.4) : une forme qui s'arrêterait au blanc du
+# masque laisserait le login dans un log archivé (test-forge-api P.10b).
+_USERINFO = re.compile(r"://(?:" + re.escape(_M) + r"|[^/@\s])+@")
 
 
 def _mask(s):
-    for t in _SECRETS:
+    """Les LITTÉRAUX connus du process, du plus long au plus court, puis la
+    FORME. Le plus long d'abord (comme redact de dbg.sh) : deux secrets dont
+    l'un est un préfixe de l'autre (t-svc en usage, t-svc-long encore dans
+    l'env) laisseraient « <secret masqué>-long » si le court passait en premier
+    (test-forge-api P.7f). Un GIT_HOST qui porterait user:mdp ne doit fuiter ni
+    dans la ligne de debug ni dans une cause — l'hôte RESTE, c'est lui qu'on
+    diagnostique."""
+    for t in sorted(_SECRETS, key=len, reverse=True):
         if t:
-            s = s.replace(t, "<secret masqué>")
-    return s
+            s = s.replace(t, _M)
+    return _USERINFO.sub("://" + _M + "@", s)
+
+
+def _dbg_on():
+    """Vrai SAUF si STOA_DEBUG vaut vide, 0, false, off ou no (valeur nettoyée,
+    en minuscules) : la liste de dbg_on dans ci/lib/dbg.sh — les deux autorités
+    doivent répondre pareil, test-forge-api P.6 le vérifie valeur par valeur."""
+    return (os.environ.get("STOA_DEBUG") or "").strip().lower() not in ("", "0", "false", "off", "no")
+
+
+def _dbg(texte):
+    """Une ligne de debug : stderr SEULEMENT (stdout est le produit), masquée par
+    _mask ICI et nulle part avant — les appelants donnent l'URL BRUTE : c'est
+    cette fonction l'autorité du masque de la ligne, et le mutant P.8 (un _dbg
+    sans _mask) ne rougirait rien si l'URL arrivait déjà masquée. flush : la
+    ligne doit PRÉCÉDER la cause qu'un refus écrira juste après, quel que soit
+    le tampon (test-forge-api P.4)."""
+    if _dbg_on():
+        sys.stderr.write("[dbg forge-api.py] " + _mask(texte) + "\n")
+        sys.stderr.flush()
 
 
 def _debut(b):
@@ -204,6 +270,8 @@ def call(method, path, data=None, want=None, query=None, raw=False):
     except urllib.error.HTTPError as e:
         content = e.read() or b""
         ct = e.headers.get("Content-Type") or "(type absent)"
+        # 3xx compris : c'est la ligne que le client GitLab aurait vue (302 vers /users/sign_in).
+        _dbg("%s %s -> HTTP %d (%d octets)" % (method, url, e.code, len(content)))
         diag = "%s %s → HTTP %d %s, %d octet(s), début : %r" % (method, u, e.code, ct, len(content), _debut(content))
         if 300 <= e.code < 400:
             loc = _mask(e.headers.get("Location") or "(sans Location)")
@@ -218,7 +286,9 @@ def call(method, path, data=None, want=None, query=None, raw=False):
     except ForgeError:
         raise
     except Exception as e:  # réseau, TLS, DNS, timeout
+        _dbg("%s %s -> ERREUR %s" % (method, url, e.__class__.__name__))
         raise ForgeError("forge injoignable : %s %s (%s : %s)" % (method, u, e.__class__.__name__, _mask(str(e))))
+    _dbg("%s %s -> HTTP %d (%d octets)" % (method, url, st, len(content)))
     diag = "%s %s → HTTP %d %s, %d octet(s), début : %r" % (method, u, st, ct, len(content), _debut(content))
     if raw:
         return content
@@ -305,15 +375,18 @@ def v_probe():
     det = "inconnu"
     notes = []
     for label, path, ok_codes in (("gitea", "/api/v1/version", (200,)), ("gitlab", "/api/v4/version", (200, 401))):
-        req = urllib.request.Request(h + path, headers={"Accept": "application/json"})
+        url = h + path
+        req = urllib.request.Request(url, headers={"Accept": "application/json"})
         try:
             with _opener.open(req, timeout=15) as r:
-                code, ct = r.getcode(), r.headers.get("Content-Type") or ""
+                code, ct, n = r.getcode(), r.headers.get("Content-Type") or "", len(r.read())
         except urllib.error.HTTPError as e:
-            code, ct = e.code, (e.headers.get("Content-Type") or "")
+            code, ct, n = e.code, (e.headers.get("Content-Type") or ""), len(e.read() or b"")
         except Exception as e:
+            _dbg("GET %s -> ERREUR %s" % (url, e.__class__.__name__))
             notes.append("%s:%s" % (label, e.__class__.__name__))
             continue
+        _dbg("GET %s -> HTTP %d (%d octets)" % (url, code, n))
         notes.append("%s:%d" % (label, code))
         if code in ok_codes and "json" in ct:
             det = label

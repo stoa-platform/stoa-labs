@@ -126,7 +126,7 @@ lint-ci:
 	  scripts/test-p6-deny-by-default.sh scripts/test-p7-bout-en-bout.sh \
 	  scripts/test-repo-layout-portabilite.sh scripts/lib/providers-teams.sh scripts/test-providers-teams.sh \
 	  scripts/lib/forge-api.sh scripts/test-forge-api.sh scripts/test-forge-api-live.sh scripts/setup-gitlab-lab.sh \
-	  scripts/lib/git-base.sh scripts/test-git-base.sh scripts/test-dbg-redaction.sh \
+	  scripts/lib/git-base.sh scripts/test-git-base.sh scripts/test-dbg-redaction.sh scripts/test-vault-login-offline.sh \
 	  ci/lint-forge-literals.sh ci/lint-branch-literals.sh scripts/test-app-request-gitlab-live.sh \
 	  scripts/test-porte-clone-frais.sh \
 	  scripts/test-team-request-wiring.sh scripts/test-team-publish-wiring.sh \
@@ -168,6 +168,11 @@ lint-ci:
 	@# canal muet sous `sh -x` (mesure : printf est trace avec ses arguments dans
 	@# bash ET dash). Sa suite joue `bash -xc` et `dash -xc`. Sous l'etape 2, sans rang.
 	@bash scripts/test-dbg-redaction.sh
+	@# … et son PREMIER CONSOMMATEUR (2026-09-10, L2) : ci/lib/vault-login.sh y a
+	@# migre son debug — plus de `_vault_redact … || cat` qui sortait le corps
+	@# d'erreur EN CLAIR sans python3. Stub Vault sur port libre, dash/sh/bash,
+	@# mutations sur copie. Hors ligne, ~5 s. Sous l'etape 2, sans rang.
+	@bash scripts/test-vault-login-offline.sh
 	@# UNE SEULE AUTORITE DE FORGE (2026-09-09) : hors de forge-api.py/.sh et de
 	@# forge-identity.sh, aucun /api/v1, /api/v4, en-tete d'auth, json.load ni
 	@# urlopen dans les fichiers ROUTES. Interdire le litteral, jamais l'exiger.

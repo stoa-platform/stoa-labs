@@ -36,6 +36,17 @@
 #   F. sourçable des deux façons (`. scripts/lib/…` et `$(dirname $0)/lib/…`)
 #   M. mutations sur COPIE — chacune fait rougir l'assertion qu'elle vise, et
 #      celle-là seulement quand c'est ce qui est prouvé
+#   J. STOA_DEBUG=1 (plan 2026-09-09, L2) : la lib DIT ce qu'elle a décidé —
+#      le ls-remote et son rc, GIT_BASE, GIT_BASE_ORIGINE, GIT_BASE_OF — sur
+#      STDERR seulement, par dbg/dbg_kv de ci/lib/dbg.sh ; stdout INCHANGÉ
+#      octet pour octet ; le knob ne coûte toujours aucun appel git ; le secret
+#      d'une URL ne sort ni dans la ligne de debug ni dans le REFUS — même sous
+#      GIT_TRACE=1 hérité, où git recopie l'URL NUE sur son stderr : ce stderr
+#      est masqué EN ENTIER avant d'être tronqué à 300 octets, aux deux sites
+#      (découverte J.4c-d, clone J.4e) ; chaque absence est DOUBLÉE d'une
+#      présence (une lib muette ne passe pas) ; trois mutations sur copie
+#      prouvent que J.1, J.4 et J.4c/J.4e mordent (jouées après M : elles
+#      reprennent son `mute`)
 #
 # TERRAIN : HORS LIGNE intégralement — dépôts nus en file://, forge injoignable
 # (127.0.0.1:1), git FACTICE pour ce qu'une fixture ne peut pas produire (une
@@ -45,6 +56,9 @@
 # le seul git visible. Les fixtures sont SOURDES à la config de l'hôte
 # (commit.gpgsign, identité) et la suite S'ARRÊTE (rc 2) si l'une d'elles rate :
 # elle ne joue jamais sur un dépôt vide en imputant les rouges à la lib.
+# python3 doit être sur le PATH de l'hôte : sans lui, la rédaction de dbg.sh
+# est fail-closed (« <rédaction indisponible> ») et la section J rougit — c'est
+# le contrat, pas un défaut de la suite.
 #
 #   bash scripts/test-git-base.sh
 set -uo pipefail
@@ -161,9 +175,16 @@ rrc(){ cat "$TMP/rc"; }
 val(){ grep -o " $1=[^ ]*" "$TMP/out" | head -1 | cut -d= -f2-; }
 libout(){ tr -d '\n' < "$TMP/lib.out"; }
 detail(){ grep -E 'REFUS|ERREUR|git-base' "$TMP/err" | head -1; }
-refus(){ grep -q "^REFUS: BRANCHE_PAR_DEFAUT_INCONNUE : " "$TMP/err"; }
+# LC_ALL=C sur tout ce qui LIT stderr : le détail d'un refus est coupé à 300
+# OCTETS et la coupe peut trancher un `é` en deux (celui de « <masqué> », ou de
+# git en locale française) ; sous une locale UTF-8, le sed BSD ABANDONNE alors
+# la ligne (« RE error: illegal byte sequence ») et le grep BSD ne la voit plus
+# — mesuré 2026-09-10 : `grep -q '^REFUS: TAG : '` rend 1 sur une ligne qui
+# porte un octet invalide. Une sentinelle est de l'ASCII : sous C, chaque octet
+# est un caractère et aucune ligne n'est aveugle.
+refus(){ LC_ALL=C grep -q "^REFUS: BRANCHE_PAR_DEFAUT_INCONNUE : " "$TMP/err"; }
 muet(){ [ -z "$(libout)" ]; }               # git_base_init n'a RIEN écrit sur stdout
-fuite(){ grep -q "$1" "$TMP/out" "$TMP/err" "$TMP/lib.out"; }   # <sentinelle> vue quelque part ?
+fuite(){ LC_ALL=C grep -q "$1" "$TMP/out" "$TMP/err" "$TMP/lib.out"; }   # <sentinelle> vue quelque part ?
 
 # les corps de cas
 cat > "$TMP/c-init.sh" <<'SH'
@@ -209,6 +230,13 @@ cat > "$TMP/c-clone-refus.sh" <<'SH'
 d="${LIB_OUT}.repo"; rm -rf "$d"
 git clone -q --depth 1 -b "$2" "$1" "$d" 2>"${LIB_OUT}.err"
 git_base_clone_refus "$1" "$2" "${LIB_OUT}.err" "${DESIGNATION:-}"; rc=$?
+etat "$rc"; exit "$rc"
+SH
+# Le même helper, mais le stderr du clone est un FICHIER COMPOSÉ par le cas
+# (ERRF) : le 3e argument est un chemin par contrat, et une coupe qui doit
+# tomber à un octet précis se compose — elle ne se tire pas d'un vrai clone.
+cat > "$TMP/c-clone-refus-fichier.sh" <<'SH'
+git_base_clone_refus "$1" "$2" "$ERRF" ""; rc=$?
 etat "$rc"; exit "$rc"
 SH
 cat > "$TMP/c-avec-basic.sh" <<'SH'
@@ -495,6 +523,17 @@ if command -v shellcheck >/dev/null 2>&1; then
   if [ -f "$LIB" ] && shellcheck -x "$LIB" "$0" >/dev/null 2>&1; then ok "F.4 shellcheck -x propre (lib + suite)"
   else ko "F.4 shellcheck : $(shellcheck -x "$LIB" "$0" 2>&1 | grep -c '^In ') site(s)"; fi
 else echo "  (shellcheck absent — F.4 non jouée ; make lint-ci la joue)"; fi
+# La lib source ci/lib/dbg.sh (L2) : à côté d'elle (../../ci/lib) ou sous $PWD.
+# Une COPIE isolée (aucun ci/ à côté), sourcée depuis un cwd sans ci/lib, doit
+# le DIRE — ERREUR nommée citant les deux chemins cherchés — et ne PAS se
+# sourcer (le `|| exit 9` de l'appelant est atteint) : jamais une lib qui se
+# tait faute de debug, ni un appelant qui continue sur des fonctions absentes.
+mkdir -p "$TMP/isole/lib" && cp "$LIB" "$TMP/isole/lib/git-base.sh"
+# shellcheck disable=SC2016  # « $1 » est pour le bash ENFANT (le chemin de la copie), jamais pour celui-ci
+F5="$(cd / && env -i PATH="$SHIM:$PATH" HOME="$TMP/home" bash -c '. "$1" || exit 9' _ "$TMP/isole/lib/git-base.sh" 2>&1 >/dev/null </dev/null; echo "rc=$?")"
+if grep -q '^ERREUR: ci/lib/dbg.sh introuvable (cherché : ' <<<"$F5" && grep -qF "$TMP/isole/lib/../../ci/lib/dbg.sh" <<<"$F5" && grep -q '^rc=9$' <<<"$F5"; then
+  ok "F.5 sans ci/lib/dbg.sh joignable ⇒ « ERREUR: ci/lib/dbg.sh introuvable (cherché : …) » nomme les deux chemins, la lib ne se source pas (rc 9 de l'appelant)"
+else ko "F.5 $(tr '\n' ' ' <<<"$F5" | cut -c1-200)"; fi
 
 echo "═══ G. git_base_clone_refus : POURQUOI le -b a été refusé, sans lire le texte de git ═══"
 # Le diagnostic était écrit à l'identique dans trois scripts de la chaîne
@@ -858,6 +897,229 @@ else
   if [ "$(rrc)" = 0 ] && [ "$(libout)" = master ] && ! grep -q '^git-base: ' "$TMP/err"; then
     ok "M.18 git_base_of muet ⇒ D.10 rougit (la branche d'un dépôt d'équipe est posée sans qu'on sache d'où elle vient)"
   else ko "M.18 le mutant passe encore : rc $(rrc), $(grep -c '^git-base: ' "$TMP/err") ligne(s)"; fi
+fi
+
+echo "═══ J. STOA_DEBUG=1 : la lib dit ce qu'elle a décidé, sur stderr, jamais un secret ═══"
+# LE MODE DEBUG SANS FUITE (plan 2026-09-09, L2). Quand la chaîne casse chez un
+# client, le log ne dit ni la branche retenue, ni d'où elle vient (knob ou
+# HEAD), ni ce que le ls-remote a rendu — et il faut solliciter l'auteur. Sous
+# STOA_DEBUG=1 la lib le dit, par dbg/dbg_kv de ci/lib/dbg.sh : STDERR
+# seulement, préfixe « [dbg <script>] », APRÈS rédaction. Gabarit : D1/D2/D3 de
+# test-vault-user-login.sh — chaque absence (« le secret n'y est pas ») est
+# DOUBLÉE d'une présence (« la ligne attendue y est »), sinon une lib muette
+# passerait tout. Les assertions de présence sont la LIGNE EXACTE, préfixe
+# retiré (<script> est le prélude du harnais : on ne l'épingle pas).
+corps_dbg(){ LC_ALL=C sed -n 's/^\[dbg [^]]*\] //p' "$TMP/err"; }   # les lignes de debug, préfixe retiré (C : voir refus/fuite)
+ligne_dbg(){ corps_dbg | LC_ALL=C grep -qxF -- "$1"; }               # la LIGNE EXACTE attendue est là
+dbgl(){ LC_ALL=C grep -c '^\[dbg ' "$TMP/err"; }                      # combien de lignes de debug émises
+# init PUIS of dans le MÊME shell, TOUT le stdout de la lib dans LIB_OUT : c'est
+# là qu'une ligne de debug égarée sur stdout se verrait — git_base_init n'y
+# écrit rien, git_base_of y écrit la branche, et rien d'autre.
+cat > "$TMP/c-dbg.sh" <<'SH'
+{ git_base_init "$1" && git_base_of "$1"; } > "$LIB_OUT"; rc=$?
+etat "$rc"; exit "$rc"
+SH
+# La taille RÉELLE de ce que ls-remote rend sur la fixture — « (n octets) » n'est
+# pas un [0-9]+ vacant. `$(…)` retire le saut de ligne final, comme dans la lib.
+N_MASTER=$(s=$(fgit ls-remote --symref "$U_MASTER" HEAD); printf '%s' "${#s}")
+
+# J.1 — la découverte se dit : le ls-remote et son rc, la branche, l'origine.
+joue "$LIB" "$TMP/c-dbg.sh" "$U_MASTER"
+cp "$TMP/lib.out" "$TMP/lib.out.sans"; J1_SANS="$(dbgl)"
+joue "$LIB" "$TMP/c-dbg.sh" "$U_MASTER" - STOA_DEBUG=1
+if [ "$(rrc)" = 0 ] && ligne_dbg "git ls-remote --symref $U_MASTER HEAD -> rc 0 ($N_MASTER octets)"; then
+  ok "J.1a découverte sous STOA_DEBUG=1 ⇒ « git ls-remote --symref <url> HEAD -> rc 0 ($N_MASTER octets) » sur stderr (la taille est celle mesurée sur la fixture)"
+else ko "J.1a rc $(rrc) : $(corps_dbg | grep ls-remote | head -1) — attendu ($N_MASTER octets)"; fi
+if ligne_dbg "GIT_BASE=master" && ligne_dbg "GIT_BASE_ORIGINE=decouverte"; then
+  ok "J.1b « GIT_BASE=master » puis « GIT_BASE_ORIGINE=decouverte » : la décision ET son origine, en clair"
+else ko "J.1b lignes vues : $(corps_dbg | grep GIT_BASE | tr '\n' ' ')"; fi
+if ligne_dbg "GIT_BASE_OF $U_MASTER=master" && [ "$(nls)" = 1 ]; then
+  ok "J.1c git_base_of dit sa décision « GIT_BASE_OF <url>=master » — ici mémoïsée (init a découvert) : UN seul ls-remote au total"
+else ko "J.1c ligne GIT_BASE_OF ou mémo : ls-remote=$(nls) — $(corps_dbg | tr '\n' ' ' | cut -c1-200)"; fi
+if [ "$(libout)" = master ] && cmp -s "$TMP/lib.out" "$TMP/lib.out.sans" && [ "$J1_SANS" = 0 ] && [ "$(nls)" = 1 ]; then
+  ok "J.1d stdout de git_base_of INCHANGÉ : exactement « master », octet pour octet le même que sans STOA_DEBUG (qui n'émet, lui, 0 ligne [dbg) ; toujours UN seul ls-remote"
+else ko "J.1d stdout='$(libout)' sans-debug='$(tr -d '\n' < "$TMP/lib.out.sans")' lignes-sans-debug=$J1_SANS ls-remote=$(nls)"; fi
+
+# J.2 — le knob explicite : dit, et toujours ZÉRO appel git (le debug n'en ajoute pas).
+joue "$LIB" "$TMP/c-init.sh" "$U_MASTER" - GIT_BASE=develop STOA_DEBUG=1
+if [ "$(rrc)" = 0 ] && ligne_dbg "GIT_BASE=develop" && ligne_dbg "GIT_BASE_ORIGINE=knob" && muet; then
+  ok "J.2a knob GIT_BASE=develop sous STOA_DEBUG=1 ⇒ « GIT_BASE=develop » et « GIT_BASE_ORIGINE=knob » sur stderr, stdout vide"
+else ko "J.2a rc $(rrc) : $(corps_dbg | tr '\n' ' ') stdout='$(libout)'"; fi
+if [ "$(nls)" = 0 ] && ! grep -q 'ls-remote' "$TMP/err"; then
+  ok "J.2b AUCUN ls-remote : ni dans le journal du shim ($(wc -l < "$SHIM_LOG" | tr -d ' ') appel(s) git), ni sur stderr — le mode debug n'ajoute aucune commande git"
+else ko "J.2b ls-remote vu : shim=$(nls) stderr=$(grep -c ls-remote "$TMP/err")"; fi
+
+# J.3 — le chemin d'échec : le rc du ls-remote se lit AVANT le verdict (c'est
+# le point du mode debug) — l'ORDRE est vérifié, pas seulement la présence.
+joue "$LIB" "$TMP/c-init.sh" "$U_VIDE" - STOA_DEBUG=1
+L_LSR=$(grep -nF "] git ls-remote --symref $U_VIDE HEAD -> rc 0 (0 octets)" "$TMP/err" | head -1 | cut -d: -f1)
+L_REF=$(grep -n '^REFUS: BRANCHE_PAR_DEFAUT_INCONNUE : ' "$TMP/err" | head -1 | cut -d: -f1)
+if [ "$(rrc)" = 2 ] && [ -n "$L_LSR" ] && [ -n "$L_REF" ] && [ "$L_LSR" -lt "$L_REF" ]; then
+  ok "J.3 dépôt VIDE ⇒ « ls-remote … -> rc 0 (0 octets) » (ligne $L_LSR de stderr) PRÉCÈDE « REFUS: BRANCHE_PAR_DEFAUT_INCONNUE » (ligne $L_REF)"
+else ko "J.3 rc $(rrc) : ls-remote ligne '${L_LSR:-absente}', refus ligne '${L_REF:-absent}' — $(head -3 "$TMP/err" | tr '\n' ' ' | cut -c1-200)"; fi
+
+# J.4 — le secret d'une URL : la ligne de debug est LÀ (contrôle positif), le
+# secret n'est NULLE PART — ni stdout, ni stderr, ni le REFUS. La lib masque
+# l'userinfo AVANT d'appeler dbg (le refus a le même masque) et dbg la passe
+# ENCORE par redact (forme ://…@) : « <masqué> » ou « <secret masqué> », les
+# deux disent la même chose, jamais « S3cret-jx ».
+U_SECRET='http://u:S3cret-jx@127.0.0.1:1/x.git'
+joue "$LIB" "$TMP/c-init.sh" "$U_SECRET" - STOA_DEBUG=1
+if [ "$(rrc)" = 2 ] && refus && corps_dbg | grep -qE '^git ls-remote --symref http://<(secret )?masqué>@127\.0\.0\.1:1/x\.git HEAD -> rc [1-9][0-9]* \(0 octets\)$'; then
+  ok "J.4a URL avec userinfo, forge injoignable ⇒ la ligne ls-remote est LÀ avec son rc ($(corps_dbg | grep -o 'rc [0-9]*' | head -1)) et l'userinfo masquée (contrôle positif)"
+else ko "J.4a rc $(rrc) : $(corps_dbg | grep ls-remote | head -1 | cut -c1-160)"; fi
+if ! fuite S3cret-jx && grep -q '://<masqué>@127.0.0.1:1/x.git' "$TMP/err"; then
+  ok "J.4b « S3cret-jx » n'apparaît NI sur stdout NI sur stderr — y compris dans le REFUS, qui nomme l'URL expurgée « ://<masqué>@ »"
+else ko "J.4b FUITE ou refus sans URL expurgée : $(grep -n 'S3cret-jx' "$TMP/out" "$TMP/err" "$TMP/lib.out" | head -1 | cut -c1-160)"; fi
+
+# J.4c — GIT_TRACE=1 HÉRITÉ (le knob de debug de git, celui qu'un client pose à
+# côté de STOA_DEBUG ; la lib hérite de l'environnement par contrat) : git
+# 2.42.0 recopie alors l'URL AVEC son userinfo sur son stderr — sept fois sur
+# quatre lignes, 899 octets mesurés sur ce poste. Le REFUS relaie ce stderr
+# tronqué à 300 octets ; tronquer AVANT de masquer laissait un « u:S3cret-j »
+# orphelin de son `@` — que la forme ://…@ du sed ne prend plus — en clair dans
+# le REFUS (relecture L2-A2, F1 : 10 longueurs d'URL sur 91). La lib masque
+# désormais le stderr EN ENTIER, puis coupe.
+# LA FIXTURE EST MESURÉE, pas supposée : on cherche les longueurs d'URL pour
+# lesquelles le 300e octet du stderr BRUT de git (le vrai, sous le même
+# environnement que le harnais) tombe DANS l'userinfo ; sans une telle
+# longueur l'épreuve est un ko (« git ne recopie plus l'URL ? la mesure de F1
+# est à refaire »), jamais un vert vacant. Puis, à CHACUNE de ces longueurs :
+# la ligne [dbg est là avec son rc (présence), pas un fragment du secret
+# (absence). §J.6d prouve que ces longueurs mordent sur le chemin RÉEL de la
+# lib (shim compris) : l'ancien ordre y fait ressortir le fragment.
+# `return 0` : git rend 128 (forge injoignable) et la suite est sous pipefail —
+# sans lui, le `if … | grep -q` aval hériterait de ce 128 et ne verrait AUCUNE
+# longueur, même trouvée (mesuré : 0/141, puis 25-28 une fois le rc rendu).
+trace_brute(){   # <url> → le stderr de git sous GIT_TRACE=1, mis sur une ligne
+  env -i PATH="$PATH" HOME="$TMP/home" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TRACE=1 GIT_TERMINAL_PROMPT=0 \
+    "$REAL_GIT" ls-remote --symref "$1" HEAD 2>&1 >/dev/null </dev/null | tr '\n' ' '
+  return 0
+}
+url_pad(){ printf 'http://u:S3cret-jx@127.0.0.1:1/%s.git' "$(printf '%*s' "$1" '' | tr ' ' a)"; }
+PADS=''; NPAD=0
+for p in $(seq 0 140); do
+  if trace_brute "$(url_pad "$p")" | head -c 300 | LC_ALL=C grep -qE '://u:S3[A-Za-z0-9-]*$'; then PADS="$PADS $p"; NPAD=$((NPAD+1)); fi
+  [ "$NPAD" -lt 6 ] || break
+done
+PADS="${PADS# }"
+if [ "$NPAD" -eq 0 ]; then
+  ko "J.4c aucune longueur d'URL (0..140) ne fait tomber le 300e octet du stderr de git dans l'userinfo sous GIT_TRACE=1 — $("$REAL_GIT" --version) ne recopie plus l'URL ? la mesure de F1 est à refaire : l'épreuve n'a pas de fixture"
+  ko "J.4d (sans fixture, voir J.4c)"
+else
+  J4C_FUITES=0; J4C_DBG=0; J4C_DET=''
+  for p in $PADS; do
+    joue "$LIB" "$TMP/c-init.sh" "$(url_pad "$p")" - STOA_DEBUG=1 GIT_TRACE=1
+    ! fuite 'u:S3' || J4C_FUITES=$((J4C_FUITES+1))
+    if [ "$(rrc)" = 2 ] && refus && corps_dbg | LC_ALL=C grep -qE '^git ls-remote --symref http://<(secret )?masqué>@127\.0\.0\.1:1/a*\.git HEAD -> rc [1-9][0-9]* \(0 octets\)$'; then J4C_DBG=$((J4C_DBG+1)); fi
+    [ -n "$J4C_DET" ] || J4C_DET="$(LC_ALL=C sed -n 's/^REFUS: BRANCHE_PAR_DEFAUT_INCONNUE : .* a échoué (rc [0-9]*) : \(.*\) — dépôt injoignable.*$/\1/p' "$TMP/err" | head -1)"
+  done
+  if [ "$J4C_FUITES" -eq 0 ] && [ "$J4C_DBG" -eq "$NPAD" ]; then
+    ok "J.4c GIT_TRACE=1 hérité, $NPAD longueur(s) d'URL (pad $PADS) où le 300e octet du stderr de git tombe DANS l'userinfo ⇒ à chacune : rc 2, REFUS, la ligne [dbg ls-remote là avec son rc — et pas un fragment « u:S3 » nulle part"
+  else ko "J.4c fuites=$J4C_FUITES/$NPAD, lignes [dbg=$J4C_DBG/$NPAD (pad $PADS) — $(LC_ALL=C grep -o 'u:S3[A-Za-z0-9-]*' "$TMP/err" | head -1)"; fi
+  # J.4d — la coupe a bien eu lieu, et APRÈS le masque : le détail relayé fait
+  # 300 octets EXACTEMENT (le stderr masqué en fait 885) et porte le masque.
+  # Une coupe avant le masque rendrait un détail plus COURT (le masque retire
+  # deux octets par URL entière qu'il trouve dans les 300 premiers).
+  if [ "$(printf '%s' "$J4C_DET" | wc -c | tr -d ' ')" -eq 300 ] && printf '%s' "$J4C_DET" | LC_ALL=C grep -q '://<masqué>@127.0.0.1:1/'; then
+    ok "J.4d … et le détail relayé dans le REFUS fait 300 octets EXACTEMENT et porte « ://<masqué>@ » : la coupe a eu lieu, APRÈS le masque"
+  else ko "J.4d détail de $(printf '%s' "$J4C_DET" | wc -c | tr -d ' ') octet(s) : $(printf '%s' "$J4C_DET" | LC_ALL=C cut -c1-120)"; fi
+fi
+
+# J.4e — le SECOND site, git_base_clone_refus : son 3e argument est le stderr
+# du clone, un FICHIER par contrat — la fixture se compose donc à l'octet près,
+# à l'image d'une trace de git : une première ligne qui cite l'URL nue en
+# entier, du remplissage sur une seconde ligne (le `tr` doit joindre les deux),
+# puis une seconde URL nue dont le 300e octet tombe sur le `t` de « u:S3cret ».
+# L'ancien ordre relayait « u:S3cret » (§J.6d le rejoue) ; le bon masque les
+# deux, et le détail fait 300 octets, avec la première URL masquée en entier.
+ERRF_J4="$TMP/j4e.err"
+J4E_L1='trace: built-in: git clone -q --depth 1 -b master http://u:S3cret-jx@127.0.0.1:1/x.git d'
+{ printf '%s\n' "$J4E_L1"; printf '%*s' $((285 - ${#J4E_L1} - 1)) '' | tr ' ' x; printf 'http://u:S3cret-jx@127.0.0.1:1/x.git fatal: composé\n'; } > "$ERRF_J4"
+joue "$LIB" "$TMP/c-clone-refus-fichier.sh" "$U_SECRET" master ERRF="$ERRF_J4"
+J4E_DET="$(LC_ALL=C sed -n 's/^REFUS: DEPOT_INJOIGNABLE : .* (git : \(.*\))$/\1/p' "$TMP/err" | head -1)"
+if [ "$(rrc)" = 1 ] && LC_ALL=C grep -q '^REFUS: DEPOT_INJOIGNABLE : ' "$TMP/err" && ! fuite 'u:S3' \
+   && [ "$(printf '%s' "$J4E_DET" | wc -c | tr -d ' ')" -eq 300 ] \
+   && printf '%s' "$J4E_DET" | LC_ALL=C grep -q 'master http://<masqué>@127.0.0.1:1/x.git d xxx' \
+   && printf '%s' "$J4E_DET" | LC_ALL=C grep -q 'xhttp://<masqu'; then
+  ok "J.4e git_base_clone_refus, stderr composé dont le 300e octet tombe dans l'userinfo ⇒ DEPOT_INJOIGNABLE, détail de 300 octets, les DEUX URL masquées « ://<masqué>@ », aucun « u:S3 »"
+else ko "J.4e rc $(rrc) : détail $(printf '%s' "$J4E_DET" | wc -c | tr -d ' ') octet(s) — $(LC_ALL=C grep -o 'u:S3[A-Za-z0-9-]*' "$TMP/err" | head -1) $(printf '%s' "$J4E_DET" | LC_ALL=C cut -c1-120)"; fi
+
+# J.5 — le silence quand on ne demande rien, et A.1 + B.1 rejouées sous
+# STOA_DEBUG=1 : mêmes verdicts, stdout identique (c'est là qu'une ligne
+# égarée sur stdout deviendrait une branche).
+for V in absent 0 false off; do
+  if [ "$V" = absent ]; then joue "$LIB" "$TMP/c-dbg.sh" "$U_MASTER"; else joue "$LIB" "$TMP/c-dbg.sh" "$U_MASTER" - "STOA_DEBUG=$V"; fi
+  if [ "$(rrc)" = 0 ] && [ "$(dbgl)" = 0 ] && [ "$(libout)" = master ]; then ok "J.5 STOA_DEBUG $V ⇒ 0 ligne [dbg, master rendu"
+  else ko "J.5 STOA_DEBUG $V : rc $(rrc), $(dbgl) ligne(s) [dbg — $(grep '^\[dbg' "$TMP/err" | head -1 | cut -c1-120)"; fi
+done
+joue "$LIB" "$TMP/c-init.sh" "$U_MASTER"
+cp "$TMP/out" "$TMP/out.a1"; cp "$TMP/lib.out" "$TMP/lib.out.a1"
+joue "$LIB" "$TMP/c-init.sh" "$U_MASTER" - STOA_DEBUG=1
+if [ "$(rrc)" = 0 ] && [ "$(val GIT_BASE)" = master ] && [ "$(val ORIGINE)" = decouverte ] && muet \
+   && cmp -s "$TMP/out" "$TMP/out.a1" && cmp -s "$TMP/lib.out" "$TMP/lib.out.a1" && [ "$(dbgl)" -ge 3 ]; then
+  ok "J.5e A.1 rejouée sous STOA_DEBUG=1 ⇒ même verdict (master, decouverte, stdout vide), état IDENTIQUE octet pour octet, et $(dbgl) lignes [dbg sur stderr"
+else ko "J.5e rc $(rrc) : $(cat "$TMP/out") stdout='$(libout)' lignes=$(dbgl) $(cmp "$TMP/out" "$TMP/out.a1" 2>&1 | head -1)"; fi
+joue "$LIB" "$TMP/c-init.sh" "$U_MASTER" - GIT_BASE=develop
+cp "$TMP/out" "$TMP/out.b1"; cp "$TMP/lib.out" "$TMP/lib.out.b1"
+joue "$LIB" "$TMP/c-init.sh" "$U_MASTER" - GIT_BASE=develop STOA_DEBUG=1
+if [ "$(rrc)" = 0 ] && [ "$(val GIT_BASE)" = develop ] && [ "$(val ORIGINE)" = knob ] && [ "$(nls)" = 0 ] && muet \
+   && cmp -s "$TMP/out" "$TMP/out.b1" && cmp -s "$TMP/lib.out" "$TMP/lib.out.b1" && [ "$(dbgl)" -ge 2 ]; then
+  ok "J.5f B.1 rejouée sous STOA_DEBUG=1 ⇒ même verdict (develop, knob, zéro ls-remote, stdout vide), état identique, $(dbgl) lignes [dbg"
+else ko "J.5f rc $(rrc) : $(cat "$TMP/out") ls-remote=$(nls) lignes=$(dbgl)"; fi
+
+# J.6 — mutations sur COPIE (le `mute` de M) : chacune fait rougir l'épreuve visée.
+# (a) la ligne de branche écrite sur stdout, là où git_base_of rend son produit.
+MUTJA="$TMP/mutJa.sh"
+# shellcheck disable=SC2016  # quotes SIMPLES à dessein : `"$GIT_BASE"` est le TEXTE cherché dans la lib
+if ! mute "$MUTJA" 's#dbg_kv GIT_BASE "$GIT_BASE"#echo "GIT_BASE=$GIT_BASE"#'; then
+  ko "J.6a mutant no-op ou incompilable — l'épreuve ne prouve rien (la ligne dbg_kv GIT_BASE a-t-elle changé de forme ?)"
+else
+  joue "$MUTJA" "$TMP/c-dbg.sh" "$U_MASTER" - STOA_DEBUG=1
+  if [ "$(libout)" != master ] && grep -q '^GIT_BASE=master$' "$TMP/lib.out"; then
+    ok "J.6a dbg_kv GIT_BASE remplacé par un echo ⇒ J.1d rougit (stdout='$(libout)' ≠ master : la ligne de debug est devenue un produit)"
+  else ko "J.6a le mutant passe encore : stdout='$(libout)'"; fi
+fi
+# (b) l'URL NUE à la place de l'URL masquée dans les lignes « ls-remote » — la
+# ligne de debug ET le refus portent le même texte, la mutation touche les deux.
+MUTJB="$TMP/mutJb.sh"
+# shellcheck disable=SC2016  # idem : `${masquee}` et `${url}` sont du texte pour sed
+if ! mute "$MUTJB" 's#--symref ${masquee} HEAD#--symref ${url} HEAD#g'; then
+  ko "J.6b mutant no-op ou incompilable — l'épreuve ne prouve rien (les lignes ls-remote ont-elles changé de forme ?)"
+else
+  joue "$MUTJB" "$TMP/c-init.sh" "$U_SECRET" - STOA_DEBUG=1
+  if fuite S3cret-jx && grep -q '^REFUS: .*S3cret-jx' "$TMP/err"; then
+    ok "J.6b URL nue dans les lignes ls-remote ⇒ J.4b rougit (S3cret-jx sort dans le REFUS, qui ne passe pas par redact)"
+  else ko "J.6b le mutant passe encore : aucune fuite vue — $(grep -c 'S3cret-jx' "$TMP/err") occurrence(s) sur stderr"; fi
+  # Le second filet, MESURÉ et non supposé : sous le même mutant, la ligne
+  # [dbg reste masquée par la forme ://…@ de redact (dbg.sh, §E de sa suite).
+  # C'est pourquoi la mutation ne peut faire fuir que le refus : la ligne de
+  # debug est sous DEUX masques, celui de la lib (prouvé ici par le refus, qui
+  # n'a que lui) et celui de dbg.sh.
+  if corps_dbg | grep -q '^git ls-remote --symref http://<secret masqué>@127.0.0.1:1/x.git HEAD -> rc ' && ! grep -q '^\[dbg .*S3cret-jx' "$TMP/err"; then
+    ok "J.6c … et sous ce mutant la ligne [dbg reste masquée « ://<secret masqué>@ » : redact est le second filet, sur le chemin, éprouvé"
+  else ko "J.6c la ligne [dbg du mutant : $(corps_dbg | grep ls-remote | head -1 | cut -c1-160)"; fi
+fi
+# (d) L'ANCIEN ORDRE — couper à 300 octets PUIS masquer (la lib de L3, le défaut
+# F1 de la relecture L2-A2) : les deux sites passent par _git_base_stderr_relaye,
+# la mutation inverse ses deux étapes. Aux longueurs d'URL mesurées en J.4c et
+# sur le fichier composé de J.4e, un fragment « u:S3… » ressort dans le REFUS :
+# J.4c ET J.4e rougissent. C'est aussi la preuve que la fixture de J.4c MORD sur
+# le chemin réel de la lib (shim compris), pas seulement sur le stderr brut.
+MUTJD="$TMP/mutJd.sh"
+# shellcheck disable=SC2016  # idem : `${1:-}` et `$m` sont du texte pour sed
+if ! mute "$MUTJD" 's#_git_base_masquer "${1:-}" 2>/dev/null | tr#head -c 300 "${1:-}" 2>/dev/null | tr#;s#head -c 300 <<<"$m"#_git_base_masquer <<<"$m"#'; then
+  ko "J.6d mutant no-op ou incompilable — l'épreuve ne prouve rien (_git_base_stderr_relaye a-t-elle changé de forme ?)"
+else
+  J6D_FUITES=0; J6D_FRAG=''
+  for p in ${PADS:-}; do
+    joue "$MUTJD" "$TMP/c-init.sh" "$(url_pad "$p")" - STOA_DEBUG=1 GIT_TRACE=1
+    if LC_ALL=C grep -q '^REFUS: .*u:S3' "$TMP/err"; then J6D_FUITES=$((J6D_FUITES+1)); J6D_FRAG="$J6D_FRAG $(LC_ALL=C grep -o 'u:S3[A-Za-z0-9-]*' "$TMP/err" | head -1)"; fi
+  done
+  joue "$MUTJD" "$TMP/c-clone-refus-fichier.sh" "$U_SECRET" master ERRF="$ERRF_J4"
+  if [ "${NPAD:-0}" -gt 0 ] && [ "$J6D_FUITES" -eq "$NPAD" ] && LC_ALL=C grep -q '^REFUS: DEPOT_INJOIGNABLE : .*u:S3cret' "$TMP/err"; then
+    ok "J.6d coupe-puis-masque (l'ancien ordre) ⇒ J.4c rougit à $J6D_FUITES/$NPAD longueur(s) («$J6D_FRAG » dans le REFUS) et J.4e rougit (« u:S3cret » relayé par git_base_clone_refus)"
+  else ko "J.6d le mutant passe encore : fuites J.4c=$J6D_FUITES/${NPAD:-0}, clone : $(LC_ALL=C grep -o 'u:S3[A-Za-z0-9-]*' "$TMP/err" | head -1)"; fi
 fi
 
 echo "═══════════════════════════════════════════════════"

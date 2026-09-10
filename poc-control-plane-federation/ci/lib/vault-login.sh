@@ -38,43 +38,52 @@
 _VAULT_TMPDIR=""
 _VAULT_REVOKED=0
 
-# ── MODE DEBUG (STOA_DEBUG / VAULT_DEBUG non vide) ────────────────────────────
-# Rend VISIBLE ce que le pipeline fait — méthode, URL, code HTTP de chaque appel,
-# et le CORPS D'ERREUR (jamais le corps de succès : il porte token/secret). Pensé
-# pour répondre à « je ne sais pas si c'est MA config ou LA LEUR qui plante » :
-# l'URL + le code + le message d'erreur de Vault/Keycloak/gateway localisent la
-# faute sans exposer le moindre secret.
+# ── MODE DEBUG (STOA_DEBUG) — par ci/lib/dbg.sh ──────────────────────────────
+# Rend VISIBLE ce que le pipeline fait — méthode, URL, code HTTP de chaque appel
+# (dbg_http), le contexte du login, l'EMPREINTE du mot de passe, et le CORPS
+# D'ERREUR (≥ 400). Pensé pour répondre à « je ne sais pas si c'est MA config ou
+# LA LEUR qui plante » sans exposer le moindre secret. Les fonctions dbg,
+# dbg_http et dbg_on de ci/lib/dbg.sh sont la SEULE voie de sortie du mode
+# debug (stderr seulement, $? préservé, jamais d'ANSI, préfixe « [dbg <script>] »
+# — ou DBG_NAME quand le step Jenkins le posera, L4) ; les refus « ✗ … » de la
+# lib, eux, ne sont pas du debug et parlent toujours. STOA_DEBUG est la seule
+# autorité (ruling L2) : l'ancien knob VAULT_DEBUG n'existe plus.
 #
-# INVARIANT DE SÛRETÉ (contre-épreuve dans scripts/test-vault-user-login.sh) :
-#   - jamais le mot de passe, le token, ni un corps de réponse 2xx dans les logs ;
-#   - tout ce qui est imprimé passe par _vault_redact (masque tokens hvs./JWT et
-#     les secrets connus tenus par le process).
-_vault_debug_on() { [ -n "${STOA_DEBUG:-}${VAULT_DEBUG:-}" ]; }
-
-# _vault_redact — filtre de rédaction. Masque : tokens Vault (hvs.*, s.*, b.*),
-# JWT (eyXXX.YYY.ZZZ), en-têtes X-Vault-Token, et toute valeur sensible connue
-# passée en $VAULT_USER_PASSWORD / VAULT_TOKEN. Défense en profondeur — les corps
-# d'erreur n'échoient normalement AUCUN secret, mais on ne parie pas là-dessus.
-_vault_redact() {
-  VP="${VAULT_USER_PASSWORD:-}" python3 -c '
-import os, re, sys
-s = sys.stdin.read()
-pw = os.environ.get("VP", "")
-if pw and len(pw) >= 3:
-    s = s.replace(pw, "***REDACTED-PWD***")
-s = re.sub(r"(hvs\.|hvb\.|s\.|b\.)[A-Za-z0-9._-]{8,}", r"\1***REDACTED-TOKEN***", s)
-s = re.sub(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+", "***REDACTED-JWT***", s)
-s = re.sub(r"(?i)(X-Vault-Token:\s*)\S+", r"\1***REDACTED***", s)
-s = re.sub(r"(?i)(\"?client_?secret\"?\s*[:=]\s*\"?)[^\"\s,&]+", r"\1***REDACTED***", s)
-sys.stdout.write(s)
-' 2>/dev/null || cat   # si python indisponible, mieux vaut ne RIEN imprimer que fuiter -> voir appelant
-}
-
-# _vault_dbg <message> — imprime sur stderr, préfixé, seulement en mode debug.
-_vault_dbg() {
-  _vault_debug_on || return 0
-  printf '\033[2m[vault-dbg] %s\033[0m\n' "$1" >&2
-}
+# INVARIANTS (preuve hors ligne : scripts/test-vault-login-offline.sh O.1-O.6 ;
+# preuve de la rédaction elle-même : scripts/test-dbg-redaction.sh ; en lab :
+# scripts/test-vault-user-login.sh D1/D2/D3) :
+#   - un corps 2xx n'est JAMAIS imprimé (token de login, valeur KV) : _vault_curl
+#     ne passe à dbg que les corps ≥ 400 (discriminant O.2d, mutant M5) ;
+#   - un corps d'erreur passe par redact PUIS est coupé à 400 caractères, puis
+#     par dbg (idempotent) : masqué par LITTÉRAL connu du process —
+#     VAULT_USER_PASSWORD (encore tenu au moment de l'appel, voir
+#     vault_login_nominative), VAULT_TOKEN, le contenu de VAULT_TOKEN_FILE,
+#     tous dans la liste de dbg.sh — et par FORME (hvs./hvb., JWT eyJ…, valeur
+#     derrière une clé password/token/secret). Jamais coupé AVANT : un secret
+#     tronqué n'est plus ni le littéral ni un de ses segments, son préfixe
+#     sortirait en clair (mesuré, relecture 2026-09-10 ; O.1d, mutant M6) ;
+#   - FAIL-CLOSED : l'ancien `_vault_redact … 2>/dev/null || cat` sortait le
+#     corps EN CLAIR dès que python3 manquait — à l'inverse de son commentaire.
+#     redact rend désormais « <rédaction indisponible> » et RIEN d'autre (O.4).
+#
+# La lib du debug. Ce fichier est POSIX (dash) et SOURCÉ : ni BASH_SOURCE ni $0
+# ne le localisent (son shebang est décoratif). La recherche est BORNÉE aux deux
+# conventions de ses appelants — `. "${SUB_PFX}ci/lib/vault-login.sh"` (carto-
+# secrets.sh, cwd = racine du dépôt) puis `. ci/lib/vault-login.sh` (les
+# Jenkinsfile, cwd = racine du livrable) — la plus spécifique d'abord, et rien
+# au-delà : un refus NOMMÉ vaut mieux qu'une lib devinée dans un autre arbre
+# (ruling L2 ; épreuve O.6). Le `return 1` arrête un bloc `sh -e` de Jenkins :
+# jamais un login sans sa rédaction.
+if [ -f "${SUB_PFX:-}ci/lib/dbg.sh" ]; then
+  # shellcheck source=ci/lib/dbg.sh
+  . "${SUB_PFX:-}ci/lib/dbg.sh"
+elif [ -f ci/lib/dbg.sh ]; then
+  # shellcheck source=ci/lib/dbg.sh
+  . ci/lib/dbg.sh
+else
+  echo "ERREUR: ci/lib/dbg.sh introuvable (cherché : ${SUB_PFX:-}ci/lib/dbg.sh et ci/lib/dbg.sh depuis $PWD ; SUB_PFX=${SUB_PFX:-<vide>}) — vault-login.sh se source depuis la racine du livrable" >&2
+  return 1
+fi
 
 # _vault_cleanup — efface les fichiers temporaires (jamais le token en clair sur disque
 # une fois le build fini). Appelé par vault_trap_revoke.
@@ -106,14 +115,20 @@ _vault_curl() {
   code="$(curl "$@")"
   printf '%s' "$code"
   # DEBUG : trace l'appel (méthode + URL, jamais le corps requête) et, SI erreur
-  # (>=400), le corps de réponse RÉDACTÉ — un corps 2xx peut porter un secret
-  # (token de login, KV read), on ne l'imprime JAMAIS.
-  if _vault_debug_on; then
-    _vault_dbg "$method $url -> HTTP $code"
+  # (>=400), le corps de réponse — RÉDIGÉ par redact (littéraux connus du
+  # process et formes, fail-closed sans python3) PUIS coupé à 400 caractères,
+  # jamais l'inverse : un secret coupé à la frontière n'est plus ni le littéral
+  # ni un de ses segments, et son préfixe sortirait en clair (mesuré, relecture
+  # 2026-09-10 : 8 caractères sur 400 ; O.1d, mutant M6). dbg rédige une
+  # seconde fois — idempotent, le masque est un atome (contrat dbg.sh). Un
+  # corps 2xx peut porter un secret (token de login, KV read) : on ne
+  # l'imprime JAMAIS, il ne passe même pas par dbg (O.2d, mutant M5).
+  if dbg_on; then
+    dbg_http "$method" "$url" "$code"
     case "$code" in
       [45]??)
         if [ -f "$out" ] && [ -s "$out" ]; then
-          _vault_dbg "  ↳ erreur: $(_vault_redact < "$out" | tr -d '\n' | cut -c1-400)"
+          dbg "  ↳ erreur: $(redact < "$out" | tr -d '\n' | cut -c1-400)"
         fi ;;
     esac
   fi
@@ -156,18 +171,18 @@ vault_login_nominative() {
   jwt="$(printf '%s' "$jwt" | tr -d '[:space:]')"
 
   if [ -z "$jwt" ] && [ -z "$user" ]; then
-    _vault_dbg "aucune identité (ni USER_VAULT_JWT ni VAULT_USER) -> code 2 (PLAN-only)"
+    dbg "aucune identité (ni USER_VAULT_JWT ni VAULT_USER) -> code 2 (PLAN-only)"
     return 2
   fi
 
   # Contexte (non-secret) : ce que le pipeline VA faire, avant de le faire.
-  if _vault_debug_on; then
+  if dbg_on; then
     local _ca="${VAULT_CACERT:-${LABCTL_CA_FILE:-}}"
-    _vault_dbg "VAULT_ADDR=$VAULT_ADDR  namespace=${VAULT_NAMESPACE:-<aucun>}  CA=${_ca:-<système>}"
+    dbg "VAULT_ADDR=$VAULT_ADDR  namespace=${VAULT_NAMESPACE:-<aucun>}  CA=${_ca:-<système>}"
     if [ -n "$jwt" ]; then
-      _vault_dbg "voie B (JWT) : rôle=${VAULT_JWT_ROLE:-user-deploy}"
+      dbg "voie B (JWT) : rôle=${VAULT_JWT_ROLE:-user-deploy}"
     else
-      _vault_dbg "voie A (user/pwd) : mount=$(_vault_mount)  user=$user"
+      dbg "voie A (user/pwd) : mount=$(_vault_mount)  user=$user"
     fi
   fi
 
@@ -187,7 +202,8 @@ PY
   else
     # ── Voie A : user/mot de passe (LDAP/AD chez le client, userpass en lab) ────
     # Le mot de passe vient d'un FICHIER 0600 de préférence ; le paramètre de build
-    # Jenkins (VAULT_USER_PASSWORD) est accepté et immédiatement retiré de l'env.
+    # Jenkins (VAULT_USER_PASSWORD) est accepté et retiré de l'env sitôt l'appel
+    # de login passé (l'unset SUIT _vault_curl, jamais avant : voir plus bas).
     local passfile="${VAULT_USER_PASS_FILE:-${VAULT_LDAP_PASS_FILE:-}}"
     if [ -n "$passfile" ] && [ -f "$passfile" ]; then
       VAULT_USER_PASSWORD="$(cat "$passfile")"
@@ -205,8 +221,8 @@ PY
     # drapeau si des espaces/retours-ligne l'entourent (LE piège classique d'un
     # paramètre Jenkins ou d'un fichier qui ajoute un \n). Comparer avec, côté
     # curl qui marche :  printf '%s' 'monMotDePasse' | shasum -a 256
-    if _vault_debug_on; then
-      _vault_dbg "$(python3 - <<'PY'
+    if dbg_on; then
+      dbg "$(python3 - <<'PY'
 import hashlib, os
 p = os.environ.get("VAULT_USER_PASSWORD", "")
 b = p.encode("utf-8", "surrogatepass")
@@ -227,8 +243,6 @@ fd = os.open(sys.argv[1], os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
 with os.fdopen(fd, "w") as fh:
     json.dump({"password": os.environ["VAULT_USER_PASSWORD"]}, fh)
 PY
-    # Le mot de passe a fini son office : il ne doit PAS être hérité par ansible-playbook.
-    unset VAULT_USER_PASSWORD VAULT_USER_PASS VAULT_LDAP_PASS
     url="$VAULT_ADDR/v1/$(_vault_mount)/login/$(VU="$user" python3 -c \
         'import os,urllib.parse;print(urllib.parse.quote(os.environ["VU"], safe=""))')"
   fi
@@ -236,6 +250,15 @@ PY
   # Le corps part par FICHIER (--data-binary @) : jamais en argv.
   code="$(_vault_curl "$resp" POST "$url" -H 'Content-Type: application/json' --data-binary "@$body" || true)"
   rm -f "$body"
+  # Le mot de passe a fini son office : il ne doit PAS être hérité par
+  # ansible-playbook (lancé bien plus tard par l'appelant). Il est retiré APRÈS
+  # l'appel et non avant : dbg masque par LITTÉRAL ce que le process TIENT
+  # ENCORE (ci/lib/dbg.sh relit VAULT_USER_PASSWORD à chaque appel) — un corps
+  # 4xx qui recopierait le mot de passe serait rédigé ; retiré avant, il
+  # sortirait en clair (mesuré : stub echo_pwd de test-vault-login-offline.sh,
+  # O.1). curl l'hérite dans son environnement comme python3 juste avant —
+  # jamais dans son argv (T16 de test-vault-user-login.sh).
+  unset VAULT_USER_PASSWORD VAULT_USER_PASS VAULT_LDAP_PASS
 
   if [ "$code" != "200" ]; then
     if [ -n "$jwt" ]; then
@@ -394,18 +417,18 @@ vault_read() {
     return 1
   fi
   resp="$_VAULT_TMPDIR/read.json"
-  _vault_dbg "lecture KV: GET v1/$path (champ '$field')"
+  dbg "lecture KV: GET v1/$path (champ '$field')"
   code="$(_vault_curl "$resp" GET "$VAULT_ADDR/v1/$path" -H "@$_VAULT_TMPDIR/token.hdr" || true)"
   if [ "$code" != "200" ]; then
     echo "  ✗ lecture $path REFUSÉE (HTTP $code) — la policy du token couvre-t-elle ce chemin ?" >&2
-    _vault_dbg "  ↳ le token a-t-il une policy autorisant read sur '$path' ? (403=non, 404=chemin absent)"
+    dbg "  ↳ le token a-t-il une policy autorisant read sur '$path' ? (403=non, 404=chemin absent)"
     rm -f "$resp"
     return 1
   fi
   # DEBUG : liste les CHAMPS disponibles (les CLÉS, jamais les valeurs) — répond à
   # « le secret existe mais je ne trouve pas mon champ » sans exposer aucune valeur.
-  if _vault_debug_on; then
-    _vault_dbg "  ↳ champs disponibles: $(python3 -c '
+  if dbg_on; then
+    dbg "  ↳ champs disponibles: $(python3 -c '
 import json,sys
 try: print(",".join(sorted(json.load(open(sys.argv[1])).get("data",{}).get("data",{}).keys())) or "<vide>")
 except Exception: print("<illisible>")' "$resp" 2>/dev/null)"

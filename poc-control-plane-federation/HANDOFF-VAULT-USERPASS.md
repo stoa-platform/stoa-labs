@@ -107,7 +107,7 @@ bash scripts/setup-wm-admin-proxy.sh ; bash scripts/demo-multienv.sh   # re-appl
 
 Tout est verrouillé `no_log`/`set +x` pour ne jamais fuiter un secret → par défaut on est aveugle. Le mode debug **opt-in** rend visible les appels **sans** exposer de secret (corps de succès jamais imprimés, corps d'erreur rédactés).
 
-- **Dans le pipeline** : cocher le paramètre **`DEBUG`** du build → traces `[vault-dbg] MÉTHODE url -> HTTP code`, erreurs Vault/Keycloak/gateway rédactées, verbosité Ansible, résumé des lectures KV (chemin + statut). Prouvé non-fuyant : `test-vault-user-login.sh` **37/37** (D1/D2/D3) + E2E `publish #16 DEBUG=true`.
+- **Dans le pipeline** : cocher le paramètre **`DEBUG`** du build → traces `[dbg <script>] MÉTHODE url -> HTTP code`, erreurs Vault/Keycloak/gateway rédactées, verbosité Ansible, résumé des lectures KV (chemin + statut). Prouvé non-fuyant : `test-vault-user-login.sh` **37/37** (D1/D2/D3) + E2E `publish #16 DEBUG=true`.
 - **En ligne de commande** : `STOA_DEBUG=1` devant n'importe quel appel à `ci/lib/vault-login.sh`.
 - **Diagnostic autonome (LE plus utile au client)** : `scripts/diagnose-vault.sh` — rejoue la chaîne (joignable ? mount ? login ? lecture ?) avec les mêmes variables que le pipeline, et donne à CHAQUE étape le code HTTP + le message d'erreur Vault pour localiser la faute. Exemple :
   ```bash

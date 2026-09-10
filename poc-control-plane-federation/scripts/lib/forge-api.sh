@@ -30,8 +30,26 @@
 # Localisation de forge-api.py : à côté de ce fichier, en chemin ABSOLU — la
 # chaîne fait `cd` dans un clone après avoir sourcé la lib (provision-request),
 # et un chemin relatif y devenait « python3: can't open file ». Repli : la racine.
-_FORGE_API_PY="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/forge-api.py"
+_FORGE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+_FORGE_API_PY="$_FORGE_LIB_DIR/forge-api.py"
 [ -f "$_FORGE_API_PY" ] || _FORGE_API_PY="$PWD/scripts/lib/forge-api.py"
+
+# Le MODE DEBUG (STOA_DEBUG) : dbg_kv de ci/lib/dbg.sh est la seule voie de
+# sortie côté shell — stderr seulement, rédigé, `$?` préservé. Même localisation
+# que forge-api.py (à côté de ce fichier puis ../../ci/lib, repli la racine) ;
+# absent ⇒ ERREUR nommée, même régime que les autres libs manquantes — jamais
+# un `forge` qui marcherait sans pouvoir se dire. Sourcer dbg.sh n'a aucun
+# effet de bord (des fonctions et deux variables) : la suite vérifie que les
+# sections L et N (argv, set -x) restent vertes.
+_FORGE_DBG_SH="$_FORGE_LIB_DIR/../../ci/lib/dbg.sh"
+[ -f "$_FORGE_DBG_SH" ] || _FORGE_DBG_SH="$PWD/ci/lib/dbg.sh"
+if [ -f "$_FORGE_DBG_SH" ]; then
+  # shellcheck source=ci/lib/dbg.sh
+  . "$_FORGE_DBG_SH"
+else
+  echo "ERREUR: ci/lib/dbg.sh introuvable (cherché : $_FORGE_LIB_DIR/../../ci/lib/dbg.sh, $PWD/ci/lib/dbg.sh)" >&2
+  return 1
+fi
 
 # forge_api_init — vérifie le minimum AVANT le premier appel réseau et pose les
 # défauts qui dépendent du visage (l'en-tête d'auth par défaut de GitLab est
@@ -50,6 +68,14 @@ forge_api_init() {
     case "$FORGE_KIND" in gitlab) FORGE_API_AUTH=private-token ;; *) FORGE_API_AUTH=token ;; esac
   fi
   export FORGE_KIND FORGE_API_AUTH
+  # Le mode debug dit ce que l'init a DÉCIDÉ (stderr, rédigé ; dbg_kv rend le
+  # rc reçu, celui de l'init ne bouge pas). FORGE_API_BASE vide se lit
+  # « <vide> » : c'est le diagnostic « Jenkins a retiré la variable ».
+  dbg_kv FORGE_KIND "$FORGE_KIND"
+  dbg_kv FORGE_API_AUTH "$FORGE_API_AUTH"
+  dbg_kv GIT_HOST "$GIT_HOST"
+  dbg_kv GIT_REPO "$GIT_REPO"
+  dbg_kv FORGE_API_BASE "${FORGE_API_BASE:-}"
 }
 
 # forge <verbe> [args…] — le secret ne passe NI par argv (`ps` le verrait), NI
@@ -57,10 +83,13 @@ forge_api_init() {
 # part par un here-doc sur le descripteur 3, dont le contenu n'est jamais tracé
 # (FORGE_SECRET_FILE, quand il est posé, garde la priorité côté python). Les
 # knobs non secrets sont passés EXPLICITEMENT : l'appelant n'a pas à les
-# exporter (provision-plan.sh les pose sans export).
+# exporter (provision-plan.sh les pose sans export). STOA_DEBUG en fait partie :
+# un script qui l'allume sans l'exporter (ni dbg_init) verrait le shell parler
+# et python se taire — les deux autorités doivent répondre pareil (P.6).
 forge() {
   GIT_HOST="${GIT_HOST:-}" GIT_REPO="${GIT_REPO:-}" FORGE_KIND="${FORGE_KIND:-}" \
   FORGE_API_AUTH="${FORGE_API_AUTH:-}" FORGE_API_BASE="${FORGE_API_BASE:-}" FORGE_USER="${FORGE_USER:-}" \
+  STOA_DEBUG="${STOA_DEBUG:-}" \
   python3 "$_FORGE_API_PY" "$@" 3<<_FORGE_EOF
 S=${FORGE_SECRET:-${GITEA_TOKEN:-}}
 _FORGE_EOF

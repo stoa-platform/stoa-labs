@@ -20,6 +20,20 @@
 # « 302 » et « /users/sign_in » ; FORGE_KIND=gitlab contre le visage gitea ⇒
 # « 404 ». Un knob décoratif ne produirait pas ces deux refus DIFFÉRENTS.
 #
+# LE MODE DEBUG (section P, plan L2). Sous STOA_DEBUG=1, chaque requête HTTP se
+# dit sur stderr (« [dbg forge-api.py] GET url -> HTTP 200 (N octets) », N
+# MESURÉ par le mock — jamais un [0-9]+ vacant), l'init dit ce qu'il a décidé,
+# stdout reste IDENTIQUE octet à octet, et le secret n'y passe jamais — ni par
+# littéral (un chemin demandé qui le porte), ni par forme (un userinfo d'URL),
+# ni sous sa FORME D'URL (P.7c-P.7f : un secret qui porte « + », « : » ou un
+# espace entre dans l'URL en %2B/%3A/%20 par quote, ou en « + » par
+# urlencode — mesuré L2-A1 tour 1 : la ligne de CHAQUE requête et la cause
+# d'un refus le montraient en clair). Chaque épreuve d'absence est DOUBLÉE
+# d'une présence (gabarit D1/D2/D3 de test-vault-user-login.sh) : une lib
+# muette ne passe pas. Les mutants P.8 (une ligne de debug sans _mask) et P.8b
+# (un registre de secrets sans les formes d'URL), sur COPIE, prouvent que P.7
+# et P.7c discriminent.
+#
 # Hors ligne intégralement. La preuve VIVANTE (GitLab CE et Gitea du lab) est
 # scripts/test-forge-api-live.sh, mêmes assertions.
 #
@@ -27,6 +41,10 @@
 set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO" || exit 1
+# ARDOISE PROPRE : un poste qui exporte STOA_DEBUG=1 ferait parler TOUTES les
+# épreuves (et `cause` citerait des lignes de debug) ; la section P pose la
+# valeur elle-même, cas par cas.
+unset STOA_DEBUG
 LIB="$REPO/scripts/lib/forge-api.sh"
 PY="$REPO/scripts/lib/forge-api.py"
 TMP="$(mktemp -d /tmp/forgeapi.XXXXXX)"
@@ -43,13 +61,15 @@ python3 -m py_compile "$PY" && shellcheck -x "$LIB" >/dev/null 2>&1 && ok "0. fo
 . "$LIB"
 
 # ── LE MOCK À DEUX VISAGES ───────────────────────────────────────────────────
-CTL="$TMP/ctl.json"; LOG="$TMP/http.log"; POSTED="$TMP/posted.jsonl"
+CTL="$TMP/ctl.json"; LOG="$TMP/http.log"; POSTED="$TMP/posted.jsonl"; SIZES="$TMP/sizes.log"
 cat > "$TMP/mock.py" <<'PY'
 import json, os, re, sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote
 KIND, CTL, LOG, POSTED = os.environ["MOCK_KIND"], os.environ["MOCK_CTL"], os.environ["MOCK_LOG"], os.environ["MOCK_POSTED"]
-USERS = {"t-svc": "svc-bot", "t-alice": "alice"}
+SIZES = os.environ["MOCK_SIZES"]  # « METHODE chemin octets » par réponse : le mock connaît son corps (section P)
+USERS = {"t-svc": "svc-bot", "t-alice": "alice",
+         "t-s+vc": "svc-plus", "t-sp vc": "svc-espace"}  # secrets NON URL-safe (P.7c-P.7e) : acceptés, pour que la ligne soit celle d'un 200
 HTML = b"<!DOCTYPE html>\n<html><head><title>Sign in \xc2\xb7 GitLab</title></head><body>GitLab</body></html>\n"
 def ctl():
     try: return json.load(open(CTL))
@@ -66,6 +86,7 @@ class H(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.0"
     def log_message(self, *a): pass
     def raw(self, code, ctype, body, extra=()):
+        with open(SIZES, "a") as f: f.write("%s %s %d\n" % (self.command, urlparse(self.path).path, len(body)))
         self.send_response(code); self.send_header("Content-Type", ctype); self.send_header("Content-Length", str(len(body)))
         for k, v in extra: self.send_header(k, v)
         self.end_headers(); self.wfile.write(body)
@@ -210,14 +231,14 @@ srv = ThreadingHTTPServer(("127.0.0.1", 0), H); print(srv.server_address[1], flu
 PY
 start_mock(){ # <kind> → imprime l'URL
   local port
-  MOCK_KIND="$1" MOCK_CTL="$CTL" MOCK_LOG="$LOG" MOCK_POSTED="$POSTED" python3 "$TMP/mock.py" > "$TMP/port.$1" 2>"$TMP/err.$1" &
+  MOCK_KIND="$1" MOCK_CTL="$CTL" MOCK_LOG="$LOG" MOCK_POSTED="$POSTED" MOCK_SIZES="$SIZES" python3 "$TMP/mock.py" > "$TMP/port.$1" 2>"$TMP/err.$1" &
   PIDS="$PIDS $!"
   for _ in $(seq 1 60); do [ -s "$TMP/port.$1" ] && break; sleep 0.1; done
   port="$(head -n1 "$TMP/port.$1")"; case "$port" in ''|*[!0-9]*) echo "!! mock $1 non démarré : $(cat "$TMP/err.$1")"; exit 2;; esac
   printf 'http://127.0.0.1:%s' "$port"
 }
 GITEA="$(start_mock gitea)"; GITLAB="$(start_mock gitlab)"
-set_ctl(){ printf '%s' "$1" > "$CTL"; : > "$LOG"; : > "$POSTED"; rm -f "$CTL.prep"; }
+set_ctl(){ printf '%s' "$1" > "$CTL"; : > "$LOG"; : > "$POSTED"; : > "$SIZES"; rm -f "$CTL.prep"; }
 PRS='{"prs":[
  {"n":41,"state":"open","head":"provision/appa-rec","base":"main","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","author":"alice","files":["poc/clients/appa.ansible.yml","poc/clients/certs/appa-rec.crt"]},
  {"n":42,"state":"open","head":"provision/fork-dev","base":"main","sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","author":"mallory","head_repo":"mallory/stoa-labs"},
@@ -362,10 +383,11 @@ echo "═══ N. sous set -x, rien ne fuit ; les knobs atteignent python sans 
 # La lib et son python, copiés ENSEMBLE (la lib localise le python à côté d'elle) :
 # c'est cette copie que les mutants de N altèrent, jamais l'original.
 mkdir -p "$TMP/lib"; cp "$LIB" "$TMP/lib/forge-api.sh"; cp "$PY" "$TMP/lib/forge-api.py"
-# trace <lib> : whoami sous `bash -x`, secret t-svc, trace sur stderr ⇒ $TMP/trace
+# trace <lib> [STOA_DEBUG] : whoami sous `bash -x`, secret t-svc, trace sur stderr ⇒ $TMP/trace
+# (STOA_DEBUG vide = muet, pour les deux autorités ; P.9 le pose à 1)
 # shellcheck disable=SC2016  # le bash enfant reçoit $1, à dessein
 trace(){
-  ( cd "$REPO" && env -i PATH="$PATH" HOME="$HOME" FORGE_KIND=gitlab GIT_HOST="$GITLAB" GIT_REPO=ci/stoa-labs FORGE_SECRET=t-svc \
+  ( cd "$REPO" && env -i PATH="$PATH" HOME="$HOME" STOA_DEBUG="${2:-}" FORGE_KIND=gitlab GIT_HOST="$GITLAB" GIT_REPO=ci/stoa-labs FORGE_SECRET=t-svc \
       bash -x -c '. "$1" && forge_api_init && forge whoami' _ "$1" ) > "$TMP/out" 2> "$TMP/trace"; echo $? > "$TMP/rc"
 }
 trace "$TMP/lib/forge-api.sh"
@@ -420,6 +442,188 @@ prep 2
 # shellcheck disable=SC2016  # le bash enfant reçoit $1, à dessein
 ( cd "$REPO" && env -i PATH="$PATH" HOME="$HOME" FORGE_KIND=gitlab GIT_HOST="$GITLAB" GIT_REPO=ci/stoa-labs FORGE_SECRET=t-svc bash -c '. "$1" && forge_api_init && forge pr_files 41' _ "$TMP/lib3/forge-api.sh" ) > "$TMP/out" 2> "$TMP/err"; echo $? > "$TMP/rc"
 [ "$(rc)" = 0 ] && [ ! -s "$TMP/out" ] && ok "O.3 mutant sans attente ⇒ rc 0 et AUCUN fichier (la panne que O.1 attrape : « aucun fichier » à tort)" || ko "O.3 le mutant passe : rc $(rc) $(tr '\n' ' ' < "$TMP/out" | cut -c1-80)"
+set_ctl "$PRS"
+
+echo "═══ P. STOA_DEBUG=1 : chaque appel se dit, stdout inchangé, jamais le secret ═══"
+# fd <STOA_DEBUG> <kind> <host> <verbe…> — f() sous STOA_DEBUG=<valeur> ; « - » =
+# variable ABSENTE (pas vide : c'est l'état d'un job dont le pont DEBUG⇒STOA_DEBUG
+# n'a rien exporté, DEBUG étant faux). Le bash enfant pose la variable LUI-MÊME :
+# sous `env -i`, un mot vide passerait pour le nom de la commande.
+# shellcheck disable=SC2016  # le bash enfant reçoit $1 (la valeur) puis le verbe, à dessein
+fd(){
+  local d="$1" k="$2" h="$3"; shift 3
+  ( cd "$REPO" && env -i PATH="$PATH" HOME="$HOME" FORGE_KIND="$k" GIT_HOST="$h" GIT_REPO=ci/stoa-labs FORGE_SECRET=t-svc \
+      bash -c 'case "$1" in -) ;; *) export STOA_DEBUG="$1";; esac; shift; . scripts/lib/forge-api.sh && forge_api_init && forge "$@"' _ "$d" "$@" ) > "$TMP/out" 2> "$TMP/err"
+  echo $? > "$TMP/rc"
+}
+# taille <chemin> — les octets de la DERNIÈRE réponse du mock sur ce chemin : c'est
+# le mock qui dit N (il connaît son corps), jamais un « [0-9]+ » vacant.
+taille(){ awk -v p="$1" '$2==p{n=$3} END{print n+0}' "$SIZES"; }
+DBGPY='^\[dbg forge-api\.py\] '
+# P.1/P.2 : la ligne EXACTE, stdout identique octet à octet, zéro secret.
+for K in gitea gitlab; do
+  case "$K" in gitea) H="$GITEA"; NP=P.1;; *) H="$GITLAB"; NP=P.2;; esac
+  set_ctl "$PRS"
+  f "$K" "$H" whoami; cp "$TMP/out" "$TMP/out.sans"
+  : > "$SIZES"; fd 1 "$K" "$H" whoami
+  n="$(taille "/api/$(nom v4 v1)/user")"
+  attendu="[dbg forge-api.py] GET $H/api/$(nom v4 v1)/user -> HTTP 200 ($n octets)"
+  [ "$(rc)" = 0 ] && [ "$n" -gt 0 ] && grep -qxF -- "$attendu" "$TMP/err" && cmp -s "$TMP/out" "$TMP/out.sans" && [ -s "$TMP/out.sans" ] && [ "$(grep -c 't-svc' "$TMP/err")" = 0 ] \
+    && ok "$NP ($K) whoami sous STOA_DEBUG=1 ⇒ stderr porte EXACTEMENT « $attendu » (N mesuré par le mock), stdout identique au même appel sans debug, zéro t-svc" \
+    || ko "$NP ($K) rc $(rc) N=$n attendu « $attendu » — stderr : $(cause)"
+done
+# P.3 : l'init seul dit ce qu'il a décidé — et FORGE_API_BASE vide se lit « <vide> ».
+( cd "$REPO" && env -i PATH="$PATH" HOME="$HOME" STOA_DEBUG=1 FORGE_KIND=gitlab GIT_HOST="$GITLAB" GIT_REPO=ci/stoa-labs FORGE_SECRET=t-svc bash -c '. scripts/lib/forge-api.sh && forge_api_init' ) > "$TMP/out" 2> "$TMP/err"; echo $? > "$TMP/rc"
+[ "$(rc)" = 0 ] && grep -q '\] FORGE_KIND=gitlab$' "$TMP/err" && grep -q '\] FORGE_API_AUTH=private-token$' "$TMP/err" && grep -q '\] FORGE_API_BASE=<vide>$' "$TMP/err" \
+  && grep -q "\] GIT_HOST=$GITLAB\$" "$TMP/err" && grep -q '\] GIT_REPO=ci/stoa-labs$' "$TMP/err" && [ ! -s "$TMP/out" ] \
+  && ok "P.3 forge_api_init seul sous STOA_DEBUG=1 (gitlab) ⇒ « ] FORGE_KIND=gitlab », « ] FORGE_API_AUTH=private-token », « ] FORGE_API_BASE=<vide> » (+ GIT_HOST, GIT_REPO) sur stderr ; stdout vide ; rc 0" \
+  || ko "P.3 rc $(rc) stdout=$(wc -c < "$TMP/out" | tr -d ' ') : $(cause)"
+# P.4 : le refus — la ligne HTTP PRÉCÈDE la cause (c'est ce qu'un log se lit de haut en bas).
+( cd "$REPO" && env -i PATH="$PATH" HOME="$HOME" STOA_DEBUG=1 FORGE_KIND=gitlab GIT_HOST="$GITLAB" GIT_REPO=ci/stoa-labs FORGE_SECRET=mauvais bash -c '. scripts/lib/forge-api.sh && forge_api_init && forge whoami' ) > "$TMP/out" 2> "$TMP/err"; echo $? > "$TMP/rc"
+l_http="$(awk '/-> HTTP 401/{print NR; exit}' "$TMP/err")"; l_cause="$(awk '/REFUSE le secret/{print NR; exit}' "$TMP/err")"
+[ "$(rc)" = 2 ] && [ -n "$l_http" ] && [ -n "$l_cause" ] && [ "$l_http" -lt "$l_cause" ] && [ ! -s "$TMP/out" ] \
+  && ok "P.4 token inconnu ⇒ « -> HTTP 401 » (ligne $l_http) PRÉCÈDE la cause « la forge REFUSE » (ligne $l_cause) ; rc 2 ; stdout vide" \
+  || ko "P.4 rc $(rc) ligne HTTP=${l_http:-absente} ligne cause=${l_cause:-absente} : $(cause)"
+# P.5 : le discriminant de J sous debug — le 302 se dit ET la cause reste.
+fd 1 gitea "$GITLAB" pr_find_open provision/appa-rec
+[ "$(rc)" = 2 ] && grep -q -- '-> HTTP 302' "$TMP/err" && grep -q '/users/sign_in' "$TMP/err" && grep -qi 'redirige' "$TMP/err" \
+  && ok "P.5 FORGE_KIND=gitea contre le mock gitlab sous STOA_DEBUG=1 ⇒ « -> HTTP 302 » présent ET la cause qui nomme /users/sign_in toujours là" \
+  || ko "P.5 rc $(rc) : $(cause)"
+# P.6 : l'accord avec dbg_on de dbg.sh, valeur par valeur — les DEUX autorités se
+# taisent ensemble (0 ligne « [dbg ») ou parlent ensemble (python ET shell).
+for v in - 0 false FALSE off no; do
+  case "$v" in -) etiq='STOA_DEBUG absent';; *) etiq="STOA_DEBUG=$v";; esac
+  fd "$v" gitlab "$GITLAB" whoami
+  [ "$(rc)" = 0 ] && [ "$(val LOGIN)" = svc-bot ] && [ "$(grep -c '\[dbg' "$TMP/err")" = 0 ] \
+    && ok "P.6 $etiq ⇒ ZÉRO ligne « [dbg » (python et shell muets), whoami répond quand même" \
+    || ko "P.6 $etiq : rc $(rc) lignes=$(grep -c '\[dbg' "$TMP/err") : $(cause)"
+done
+for v in 1 true yes on; do
+  fd "$v" gitlab "$GITLAB" whoami
+  [ "$(rc)" = 0 ] && grep -qE "${DBGPY}GET .* -> HTTP 200 \([0-9]+ octets\)$" "$TMP/err" && grep -q '\] FORGE_KIND=gitlab$' "$TMP/err" \
+    && ok "P.6 STOA_DEBUG=$v ⇒ la ligne « [dbg forge-api.py] GET … -> HTTP 200 » est là, et « ] FORGE_KIND= » aussi (accord avec dbg_on de dbg.sh)" \
+    || ko "P.6 STOA_DEBUG=$v : rc $(rc) : $(cause)"
+done
+# … et la variable posée SANS export (ni dbg_init) : le shell la voit, python
+# doit la voir aussi — forge() la passe explicitement, comme GIT_HOST en N.3.
+# shellcheck disable=SC2016  # le bash enfant pose STOA_DEBUG lui-même, sans export, à dessein
+( cd "$REPO" && env -i PATH="$PATH" HOME="$HOME" FORGE_KIND=gitlab GIT_HOST="$GITLAB" GIT_REPO=ci/stoa-labs FORGE_SECRET=t-svc bash -c 'STOA_DEBUG=1; . scripts/lib/forge-api.sh && forge_api_init && forge whoami' ) > "$TMP/out" 2> "$TMP/err"; echo $? > "$TMP/rc"
+[ "$(rc)" = 0 ] && grep -qE "${DBGPY}GET .* -> HTTP 200 " "$TMP/err" && grep -q '\] FORGE_KIND=gitlab$' "$TMP/err" \
+  && ok "P.6 STOA_DEBUG=1 posé SANS export ⇒ python parle comme le shell (forge() le passe explicitement, jamais un shell bavard devant un python muet)" \
+  || ko "P.6 sans export : rc $(rc) dbg-python=$(grep -c '\[dbg forge-api.py\]' "$TMP/err") : $(cause)"
+# P.7 : le secret DANS l'URL — un chemin demandé est un argument de l'appelant, il
+# entre dans l'URL ; la ligne de debug le masque par LITTÉRAL. Le mock sert le
+# fichier : la ligne est celle d'un succès (200, N octets), pas d'un refus.
+set_ctl "$(python3 -c 'import json,sys;d=json.loads(sys.argv[1]);d["raw"]["t-svc.txt"]="contenu servi\n";print(json.dumps(d))' "$PRS")"
+for K in gitea gitlab; do
+  case "$K" in gitea) H="$GITEA";; *) H="$GITLAB";; esac
+  fd 1 "$K" "$H" raw t-svc.txt master
+  [ "$(rc)" = 0 ] && grep -qE "${DBGPY}GET .*<secret masqué>.* -> HTTP 200 \([0-9]+ octets\)$" "$TMP/err" && [ "$(grep -c 't-svc' "$TMP/err")" = 0 ] && grep -q 'contenu servi' "$TMP/out" \
+    && ok "P.7 ($K) forge raw t-svc.txt sous STOA_DEBUG=1 ⇒ la ligne de debug montre « <secret masqué> » et jamais t-svc ; « -> HTTP 200 » présent (contrôle positif), le contenu sur stdout" \
+    || ko "P.7 ($K) rc $(rc) fuite=$(grep -c 't-svc' "$TMP/err") : $(cause)"
+done
+# fds <secret> <kind> <host> <verbe…> — fd 1 sous un AUTRE secret que t-svc
+# (P.7c-P.7f : un secret qui n'est pas URL-safe, ou deux secrets dans l'env).
+# shellcheck disable=SC2016  # le bash enfant reçoit le verbe et ses arguments, à dessein
+fds(){
+  local s="$1" k="$2" h="$3"; shift 3
+  ( cd "$REPO" && env -i PATH="$PATH" HOME="$HOME" STOA_DEBUG=1 FORGE_KIND="$k" GIT_HOST="$h" GIT_REPO=ci/stoa-labs FORGE_SECRET="$s" \
+      bash -c '. scripts/lib/forge-api.sh && forge_api_init && forge "$@"' _ "$@" ) > "$TMP/out" 2> "$TMP/err"
+  echo $? > "$TMP/rc"
+}
+# P.7c : le secret sous sa FORME D'URL. Un secret qui porte « + » entre dans le
+# chemin GitLab par quote (t-s%2Bvc) et dans la query des deux visages par
+# urlencode (?ref=t-s%2Bvc) : le littéral brut n'y est plus, seule sa forme
+# encodée y est — dbg.sh masque quote(x) et quote_plus(x) de chaque littéral,
+# _mask doit faire de même (mesuré L2-A1 tour 1 : « /files/t-s%2Bvc/raw?ref=
+# t-s%2Bvc -> HTTP 200 » en clair, sur CHAQUE requête). Chemin ET ref dans le
+# même appel : la ligne doit finir par « ref=<secret masqué> -> HTTP 200 ».
+# (t-svc.txt reste servi : P.8 le redemande sur la copie mutée et attend un 200.)
+set_ctl "$(python3 -c 'import json,sys;d=json.loads(sys.argv[1]);d["raw"]["t-svc.txt"]="contenu servi\n";d["raw"]["t-s+vc"]="contenu plus\n";d["raw"]["t-sp vc"]="contenu espace\n";d["raw"]["t-svc-long"]="contenu long\n";print(json.dumps(d))' "$PRS")"
+for K in gitea gitlab; do
+  case "$K" in gitea) H="$GITEA";; *) H="$GITLAB";; esac
+  fds 't-s+vc' "$K" "$H" raw 't-s+vc' 't-s+vc'
+  [ "$(rc)" = 0 ] && grep -qE "${DBGPY}GET .*<secret masqué>.*ref=<secret masqué> -> HTTP 200 \([0-9]+ octets\)$" "$TMP/err" \
+    && [ "$(grep -cF -- 't-s+vc' "$TMP/err")" = 0 ] && [ "$(grep -c 't-s%2Bvc' "$TMP/err")" = 0 ] && grep -q 'contenu plus' "$TMP/out" \
+    && ok "P.7c ($K) secret « t-s+vc » en chemin ET en ref ⇒ la ligne de debug finit par « ref=<secret masqué> -> HTTP 200 (N octets) », jamais t-s+vc ni t-s%2Bvc ; le contenu sur stdout" \
+    || ko "P.7c ($K) rc $(rc) brut=$(grep -cF -- 't-s+vc' "$TMP/err") encodé=$(grep -c 't-s%2Bvc' "$TMP/err") : $(grep '\[dbg forge-api.py\]' "$TMP/err" | head -1 | cut -c1-160)"
+done
+# P.7d : l'espace, le seul caractère qui SÉPARE les deux formes — %20 par quote
+# (le chemin GitLab), « + » par urlencode (la query, les deux visages). Pour
+# « + » (P.7c) les deux formes coïncident : sans l'espace, retirer l'une des
+# deux serait invisible. GitLab reçoit le secret en chemin ET en ref ; Gitea en
+# ref seulement (son chemin n'est pas encodé : un espace y est une InvalidURL).
+for K in gitea gitlab; do
+  case "$K" in gitea) H="$GITEA"; chemin=poc/ansible/providers.dev.yml; motif='ref=<secret masqué>'; attendu='team: fbi';;
+                 *) H="$GITLAB"; chemin='t-sp vc'; motif='/files/<secret masqué>/raw\?ref=<secret masqué>'; attendu='contenu espace';; esac
+  fds 't-sp vc' "$K" "$H" raw "$chemin" 't-sp vc'
+  [ "$(rc)" = 0 ] && grep -qE "${DBGPY}GET .*${motif} -> HTTP 200 \([0-9]+ octets\)$" "$TMP/err" \
+    && [ "$(grep -c 't-sp' "$TMP/err")" = 0 ] && grep -q "$attendu" "$TMP/out" \
+    && ok "P.7d ($K) secret « t-sp vc » $(nom 'en chemin (%20) ET en ref (+)' 'en ref (+)') ⇒ « $(nom '/files/<secret masqué>/raw?ref=<secret masqué>' 'ref=<secret masqué>') -> HTTP 200 » ; ni t-sp vc, ni t-sp+vc, ni t-sp%20vc sur stderr" \
+    || ko "P.7d ($K) rc $(rc) occurrences=$(grep -c 't-sp' "$TMP/err") : $(grep '\[dbg forge-api.py\]' "$TMP/err" | head -1 | cut -c1-160)"
+done
+# P.7e : la CAUSE porte la même URL (u = _mask(url)) : port fermé ⇒ « forge
+# injoignable : GET url » (K.5) — la forme encodée ne doit pas y être non plus,
+# ni dans la ligne « -> ERREUR » qui la précède.
+fds 't-s+vc' gitlab "http://127.0.0.1:1" raw 't-s+vc' 't-s+vc'
+[ "$(rc)" = 2 ] && grep -qE "${DBGPY}GET .*ref=<secret masqué> -> ERREUR [A-Za-z]+$" "$TMP/err" && grep -q 'injoignable' "$TMP/err" \
+  && [ "$(grep -cF -- 't-s+vc' "$TMP/err")" = 0 ] && [ "$(grep -c 't-s%2Bvc' "$TMP/err")" = 0 ] \
+  && ok "P.7e port fermé, secret « t-s+vc » en chemin et ref ⇒ « -> ERREUR » ET la cause « injoignable » sont là, ni t-s+vc ni t-s%2Bvc dans tout stderr" \
+  || ko "P.7e rc $(rc) brut=$(grep -cF -- 't-s+vc' "$TMP/err") encodé=$(grep -c 't-s%2Bvc' "$TMP/err") : $(cause)"
+# P.7f : le plus long d'abord. Deux secrets dans l'env dont l'un est un préfixe
+# de l'autre (FORGE_SECRET=t-svc en usage, GITEA_TOKEN=t-svc-long encore porté) :
+# masquer le court en premier trouerait le long (« <secret masqué>-long ») —
+# dbg.sh trie ses littéraux du plus long au plus court pour cette raison.
+# shellcheck disable=SC2016  # le bash enfant reçoit $1, à dessein
+( cd "$REPO" && env -i PATH="$PATH" HOME="$HOME" STOA_DEBUG=1 FORGE_KIND=gitea GIT_HOST="$GITEA" GIT_REPO=ci/stoa-labs FORGE_SECRET=t-svc GITEA_TOKEN=t-svc-long \
+    bash -c '. scripts/lib/forge-api.sh && forge_api_init && forge raw t-svc-long master' ) > "$TMP/out" 2> "$TMP/err"; echo $? > "$TMP/rc"
+[ "$(rc)" = 0 ] && grep -qE "${DBGPY}GET .*/raw/<secret masqué>\?ref=master -> HTTP 200 \([0-9]+ octets\)$" "$TMP/err" \
+  && [ "$(grep -c 'long' "$TMP/err")" = 0 ] && [ "$(grep -c 't-svc' "$TMP/err")" = 0 ] && grep -q 'contenu long' "$TMP/out" \
+  && ok "P.7f FORGE_SECRET=t-svc et GITEA_TOKEN=t-svc-long ⇒ « /raw/<secret masqué>?ref=master -> HTTP 200 » : le long est masqué EN ENTIER, jamais « <secret masqué>-long »" \
+  || ko "P.7f rc $(rc) fragment=$(grep -c 'long' "$TMP/err") : $(grep '\[dbg forge-api.py\]' "$TMP/err" | head -1 | cut -c1-160)"
+# P.8 : mutant sur COPIE (lib + py ensemble, comme en N) : _dbg écrit `texte` sans _mask ⇒ P.7 rougit.
+mkdir -p "$TMP/libP"; cp "$LIB" "$TMP/libP/forge-api.sh"
+sed 's/"\[dbg forge-api.py\] " + _mask(texte)/"[dbg forge-api.py] " + texte/' "$PY" > "$TMP/libP/forge-api.py"
+grep -q '"\[dbg forge-api.py\] " + texte + ' "$TMP/libP/forge-api.py" || ko "P.8 mutant non appliqué (ancre absente)"
+# shellcheck disable=SC2016  # le bash enfant reçoit $1, à dessein
+( cd "$REPO" && env -i PATH="$PATH" HOME="$HOME" STOA_DEBUG=1 FORGE_KIND=gitea GIT_HOST="$GITEA" GIT_REPO=ci/stoa-labs FORGE_SECRET=t-svc bash -c '. "$1" && forge_api_init && forge raw t-svc.txt master' _ "$TMP/libP/forge-api.sh" ) > "$TMP/out" 2> "$TMP/err"; echo $? > "$TMP/rc"
+grep -qE "${DBGPY}GET .*t-svc.* -> HTTP 200 " "$TMP/err" \
+  && ok "P.8 mutant (_dbg sans _mask, sur copie) ⇒ t-svc apparaît dans la ligne de debug : P.7 discrimine" \
+  || ko "P.8 le mutant passe : fuite=$(grep -c 't-svc' "$TMP/err") : $(cause)"
+# P.8b : mutant sur COPIE : le registre des secrets sans leurs formes d'URL
+# (« formes = (t,) ») ⇒ P.7c rougit : t-s%2Bvc apparaît dans la ligne de debug.
+sed 's/^        formes = (t, urllib\.parse\.quote(t, safe=""), urllib\.parse\.quote_plus(t, safe=""))$/        formes = (t,)/' "$PY" > "$TMP/libP/forge-api.py"
+grep -q '^        formes = (t,)$' "$TMP/libP/forge-api.py" || ko "P.8b mutant non appliqué (ancre absente)"
+# shellcheck disable=SC2016  # le bash enfant reçoit $1, à dessein
+( cd "$REPO" && env -i PATH="$PATH" HOME="$HOME" STOA_DEBUG=1 FORGE_KIND=gitlab GIT_HOST="$GITLAB" GIT_REPO=ci/stoa-labs FORGE_SECRET='t-s+vc' bash -c '. "$1" && forge_api_init && forge raw t-s+vc t-s+vc' _ "$TMP/libP/forge-api.sh" ) > "$TMP/out" 2> "$TMP/err"; echo $? > "$TMP/rc"
+grep -qE "${DBGPY}GET .*t-s%2Bvc.* -> HTTP 200 " "$TMP/err" \
+  && ok "P.8b mutant (registre sans les formes d'URL, sur copie) ⇒ t-s%2Bvc apparaît dans la ligne de debug : P.7c discrimine" \
+  || ko "P.8b le mutant passe : encodé=$(grep -c 't-s%2Bvc' "$TMP/err") : $(cause)"
+set_ctl "$PRS"
+# P.9 : sous `bash -x` ET STOA_DEBUG=1 — le -x du `sh -xe` de Jenkins — rien ne fuit, et le debug parle.
+trace "$LIB" 1
+[ "$(rc)" = 0 ] && [ "$(val LOGIN)" = svc-bot ] && [ "$(grep -c 't-svc' "$TMP/trace")" = 0 ] && grep -qE "${DBGPY}GET .* -> HTTP 200 " "$TMP/trace" && grep -q '\] FORGE_KIND=gitlab$' "$TMP/trace" \
+  && ok "P.9 sous \`bash -x\` avec STOA_DEBUG=1 : 0 occurrence de t-svc dans la trace, ET la trace porte « [dbg forge-api.py] GET … -> HTTP 200 » et « ] FORGE_KIND=gitlab »" \
+  || ko "P.9 rc $(rc) occurrences=$(grep -c 't-svc' "$TMP/trace") dbg=$(grep -c '\[dbg forge-api.py\]' "$TMP/trace") : $(grep 't-svc' "$TMP/trace" | head -1 | cut -c1-120)"
+# P.10 : un GIT_HOST qui porte user:mdp — le secret n'est connu d'AUCUN littéral,
+# seule la FORME « ://…@ » le rattrape (urllib prend « svc:t-secret-url@127.0.0.1 »
+# pour un nom d'hôte, mesuré 3.11 : la ligne est « -> ERREUR URLError » — c'est
+# elle, et la cause « injoignable », qui doivent être masquées).
+fd 1 gitlab "http://svc:t-secret-url@${GITLAB#http://}" whoami
+[ "$(grep -c 't-secret-url' "$TMP/err")" = 0 ] && [ "$(grep -c 't-secret-url' "$TMP/out")" = 0 ] \
+  && grep -qE "${DBGPY}GET http://<secret masqué>@127\.0\.0\.1:[0-9]+/api/v4/user -> (HTTP [0-9]+ \([0-9]+ octets\)|ERREUR [A-Za-z]+)$" "$TMP/err" && grep -q '\] GIT_HOST=http://<secret masqué>@' "$TMP/err" \
+  && ok "P.10 GIT_HOST portant un userinfo ⇒ ni stderr ni stdout ne portent t-secret-url ; « $(grep -oE -- '-> (HTTP|ERREUR) [A-Za-z0-9]+' "$TMP/err" | head -1) » présent (contrôle positif), l'hôte reste lisible ; l'init le dit masqué aussi" \
+  || ko "P.10 rc $(rc) fuite=$(grep -c 't-secret-url' "$TMP/err") : $(cause)"
+# P.10b : le mot de passe de l'userinfo EST le secret connu (t-svc) : le littéral
+# passe d'abord et laisse « svc:<secret masqué>@ » ; la forme doit reprendre
+# l'userinfo EN ENTIER (le masque est un atome, même arbitrage que dbg.sh F.1-F.4)
+# — sinon le login d'un couple user:mdp finit dans un log archivé. Discriminant :
+# une forme « ://[^/@\s]+@ » qui s'arrête au blanc du masque laisse « svc: ».
+fd 1 gitlab "http://svc:t-svc@${GITLAB#http://}" whoami
+[ "$(grep -c 't-svc' "$TMP/err")" = 0 ] && ! grep -q 'svc:<secret' "$TMP/err" \
+  && grep -qE "${DBGPY}GET http://<secret masqué>@127\.0\.0\.1:[0-9]+/api/v4/user -> (HTTP|ERREUR) " "$TMP/err" && grep -q '\] GIT_HOST=http://<secret masqué>@' "$TMP/err" \
+  && ok "P.10b userinfo dont le mot de passe est le secret connu ⇒ « ://<secret masqué>@ » en entier (jamais « svc:<secret masqué>@ ») — python et shell rendent la MÊME ligne" \
+  || ko "P.10b fuite=$(grep -c 't-svc' "$TMP/err") login=$(grep -c 'svc:<secret' "$TMP/err") : $(cause)"
 set_ctl "$PRS"
 
 echo
