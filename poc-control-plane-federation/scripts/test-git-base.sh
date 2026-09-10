@@ -200,6 +200,26 @@ cat > "$TMP/c-init-of.sh" <<'SH'
 git_base_init "$1" && git_base_of "$1" > "$LIB_OUT"; rc=$?
 etat "$rc"; exit "$rc"
 SH
+# G/H — les deux helpers de la lib. Le clone est joué POUR DE VRAI (le shim
+# délègue au git réel), donc son stderr est celui de git, pas une imitation.
+cat > "$TMP/c-clone-refus.sh" <<'SH'
+d="${LIB_OUT}.repo"; rm -rf "$d"
+git clone -q --depth 1 -b "$2" "$1" "$d" 2>"${LIB_OUT}.err"
+git_base_clone_refus "$1" "$2" "${LIB_OUT}.err" "${DESIGNATION:-}"; rc=$?
+etat "$rc"; exit "$rc"
+SH
+cat > "$TMP/c-avec-basic.sh" <<'SH'
+git_base_avec_basic "${LOGIN:-x}" SECRET_SONDE git ls-remote --symref "$1" HEAD > "$LIB_OUT"; rc=$?
+etat "$rc"; exit "$rc"
+SH
+cat > "$TMP/c-basic-refus.sh" <<'SH'
+case "$2" in
+  sansnom) git_base_avec_basic x "" git ls-remote "$1" ;;
+  videvar) git_base_avec_basic x VAR_VIDE git ls-remote "$1" ;;
+  sanscmd) git_base_avec_basic x SECRET_SONDE ;;
+esac
+rc=$?; etat "$rc"; exit "$rc"
+SH
 
 echo "═══ A. la HEAD du dépôt fait foi — jamais « main » deviné, jamais un mot sur stdout ═══"
 # DISCRIMINANT (ce que l'ancien code aurait raté) : le dépôt du client a
@@ -439,6 +459,73 @@ if command -v shellcheck >/dev/null 2>&1; then
   else ko "F.4 shellcheck : $(shellcheck -x "$LIB" "$0" 2>&1 | grep -c '^In ') site(s)"; fi
 else echo "  (shellcheck absent — F.4 non jouée ; make lint-ci la joue)"; fi
 
+echo "═══ G. git_base_clone_refus : POURQUOI le -b a été refusé, sans lire le texte de git ═══"
+# Le diagnostic était écrit à l'identique dans trois scripts de la chaîne
+# (provision-request, team-request, api-request) ; il vit ici depuis la revue du
+# sous-lot 4b. Ce qu'il doit tenir : DEUX causes, DEUX rc, DEUX tags — et la
+# distinction ne doit jamais venir du texte de git, qui dépend de la locale.
+joue "$LIB" "$TMP/c-clone-refus.sh" "$U_MASTER" develop
+if [ "$(rrc)" = 2 ] && grep -q '^REFUS: BRANCHE_DE_BASE_INTROUVABLE : ' "$TMP/err" \
+   && grep -q "develop n'existe pas" "$TMP/err" && ! grep -qw main "$TMP/err"; then
+  ok "G.1 dépôt JOIGNABLE sans la branche demandée ⇒ rc 2, BRANCHE_DE_BASE_INTROUVABLE nommant develop (jamais « main »)"
+else ko "G.1 rc $(rrc) : $(detail)"; fi
+if grep -q 'ls-remote --exit-code --heads .* refs/heads/develop|' "$SHIM_LOG"; then
+  ok "G.2 la distinction vient de \`ls-remote --exit-code --heads refs/heads/<branche>\`, pas du message de git"
+else ko "G.2 aucun ls-remote --exit-code --heads dans le journal du shim : $(cat "$SHIM_LOG")"; fi
+
+joue "$LIB" "$TMP/c-clone-refus.sh" "$U_ABSENT" master
+if [ "$(rrc)" = 1 ] && grep -q '^REFUS: DEPOT_INJOIGNABLE : ' "$TMP/err" \
+   && ! grep -q 'BRANCHE_DE_BASE_INTROUVABLE' "$TMP/err"; then
+  ok "G.3 dépôt qui NE RÉPOND PAS ⇒ rc 1, DEPOT_INJOIGNABLE — l'autre cause, l'autre tag, l'autre code"
+else ko "G.3 rc $(rrc) : $(detail)"; fi
+
+# La DÉSIGNATION : l'appelant nomme le dépôt dans SES termes (« ci/stoa-labs »),
+# sinon l'URL EXPURGÉE. Un refus qui nommerait un chemin file:// de harnais chez
+# un client ne lui dirait rien.
+joue "$LIB" "$TMP/c-clone-refus.sh" "$U_MASTER" develop DESIGNATION=ci/stoa-labs
+if [ "$(rrc)" = 2 ] && grep -q 'sur ci/stoa-labs' "$TMP/err"; then
+  ok "G.4 la désignation de l'appelant est reprise telle quelle dans le refus"
+else ko "G.4 rc $(rrc) : $(detail)"; fi
+joue "$LIB" "$TMP/c-clone-refus.sh" "http://u:SENTINELLE@127.0.0.1:1/x.git" master
+if [ "$(rrc)" = 1 ] && ! fuite SENTINELLE && grep -q '127.0.0.1:1/x.git' "$TMP/err"; then
+  ok "G.5 sans désignation, le refus nomme l'URL EXPURGÉE de son userinfo (aucun secret relayé)"
+else ko "G.5 rc $(rrc) : $(detail)"; fi
+
+echo "═══ H. git_base_avec_basic : l'enveloppe composée ICI, le secret jamais en argv ═══"
+# Elle était recopiée mot pour mot dans trois scripts (team-publish, team-promote,
+# api-promote-export). Ce qu'elle doit tenir : les TROIS variables arrivent à git,
+# l'en-tête vaut base64("<login>:<secret>"), et le secret ne passe NI par argv NI
+# par la sortie. Le shim journalise l'argv ET l'enveloppe : les deux se voient.
+SECRET_SONDE='sonde-tres-secrete'
+B64_ATTENDU="$(printf 'x:%s' "$SECRET_SONDE" | base64 | tr -d '\n')"
+joue "$LIB" "$TMP/c-avec-basic.sh" "$U_MASTER" - "SECRET_SONDE=$SECRET_SONDE"
+if [ "$(rrc)" = 0 ] && grep -q "|env:count=1,key0=http.extraheader,value0=Authorization: Basic ${B64_ATTENDU}\$" "$SHIM_LOG"; then
+  ok "H.1 les TROIS variables atteignent git, et VALUE_0 vaut « Authorization: Basic base64(x:<secret>) » — MESURÉ derrière le shim"
+else ko "H.1 rc $(rrc) : shim=$(cat "$SHIM_LOG")"; fi
+if ! grep -q "$SECRET_SONDE" <(cut -d'|' -f1 "$SHIM_LOG") && ! fuite "$SECRET_SONDE"; then
+  ok "H.2 le secret n'est NI dans l'argv de git (ps -Aww le lirait) NI sur stdout/stderr — seul son NOM a voyagé"
+else ko "H.2 FUITE du secret : argv=$(cut -d'|' -f1 "$SHIM_LOG" | tr '\n' ' ')"; fi
+joue "$LIB" "$TMP/c-avec-basic.sh" "$U_MASTER" - "SECRET_SONDE=$SECRET_SONDE" LOGIN=oscar
+B64_OSCAR="$(printf 'oscar:%s' "$SECRET_SONDE" | base64 | tr -d '\n')"
+if [ "$(rrc)" = 0 ] && grep -q "value0=Authorization: Basic ${B64_OSCAR}\$" "$SHIM_LOG"; then
+  ok "H.3 le LOGIN est un paramètre : Gitea accepte n'importe quel utilisateur avec un jeton, GitLab et Bitbucket NON"
+else ko "H.3 rc $(rrc) : shim=$(cat "$SHIM_LOG")"; fi
+
+# TROIS façons de composer une enveloppe À MOITIÉ : chacune est un refus nommé,
+# jamais un git lancé sous une authentification morte.
+joue "$LIB" "$TMP/c-basic-refus.sh" "$U_MASTER" sansnom "SECRET_SONDE=$SECRET_SONDE"
+if [ "$(rrc)" = 2 ] && grep -q '^REFUS: ENVELOPPE_AUTH_INCOMPLETE : ' "$TMP/err" && [ "$(nls)" = 0 ]; then
+  ok "H.4 nom de variable absent ⇒ ENVELOPPE_AUTH_INCOMPLETE rc 2, AUCUN appel git"
+else ko "H.4 rc $(rrc) ls-remote=$(nls) : $(detail)"; fi
+joue "$LIB" "$TMP/c-basic-refus.sh" "$U_MASTER" videvar "SECRET_SONDE=$SECRET_SONDE"
+if [ "$(rrc)" = 2 ] && grep -q "la variable 'VAR_VIDE' est vide" "$TMP/err" && [ "$(nls)" = 0 ]; then
+  ok "H.5 variable désignée mais VIDE ⇒ refus nommé, AUCUN appel git (une clé sans secret = authentification morte)"
+else ko "H.5 rc $(rrc) ls-remote=$(nls) : $(detail)"; fi
+joue "$LIB" "$TMP/c-basic-refus.sh" "$U_MASTER" sanscmd "SECRET_SONDE=$SECRET_SONDE"
+if [ "$(rrc)" = 2 ] && grep -q 'exige une commande' "$TMP/err"; then
+  ok "H.6 enveloppe sans commande ⇒ refus nommé (une enveloppe qui n'enveloppe rien n'est pas un succès)"
+else ko "H.6 rc $(rrc) : $(detail)"; fi
+
 echo "═══ M. mutations sur COPIE : chaque assertion attrape ce qu'elle prétend attraper ═══"
 # mute <fichier> <sed-expr> — écrit le mutant ; rc 1 si no-op (le motif n'est
 # plus dans la lib : l'épreuve ne prouverait rien) ou incompilable.
@@ -581,6 +668,30 @@ else
   if [ "$(rrc)" = 2 ] && [ "$(val ENFANT)" = auto ]; then
     ok "M.12 refus sans unset ⇒ C.10 rougit (auto reste exporté vers l'enfant)"
   else ko "M.12 le mutant passe encore : rc $(rrc) ENFANT=$(val ENFANT)"; fi
+fi
+
+# M.13 — le diagnostic confond « branche absente » et « dépôt injoignable » :
+# le client lirait « dépôt injoignable » sur un dépôt qui a parfaitement répondu.
+MUT13="$TMP/mut13.sh"
+# shellcheck disable=SC2016  # quotes SIMPLES à dessein : `"$rc"` est le TEXTE cherché dans la lib, jamais une expansion
+if ! mute "$MUT13" 's#if \[ "$rc" = 2 \]; then#if false; then#'; then
+  ko "M.13 mutant no-op ou incompilable — l'épreuve ne prouve rien (le diagnostic a-t-il changé de forme ?)"
+else
+  joue "$MUT13" "$TMP/c-clone-refus.sh" "$U_MASTER" develop
+  if [ "$(rrc)" = 1 ] && grep -q 'DEPOT_INJOIGNABLE' "$TMP/err"; then
+    ok "M.13 rc 2 traité comme « injoignable » ⇒ G.1 rougit (une branche absente s'annonce comme une panne de forge)"
+  else ko "M.13 le mutant passe encore : rc $(rrc) $(detail)"; fi
+fi
+# M.14 — l'enveloppe part à MOITIÉ (COUNT=0) : la clé reste visible, git
+# n'applique rien, et l'authentification est morte sans que rien ne le dise.
+MUT14="$TMP/mut14.sh"
+if ! mute "$MUT14" 's#GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader \\#GIT_CONFIG_COUNT=0 GIT_CONFIG_KEY_0=http.extraheader \\#'; then
+  ko "M.14 mutant no-op ou incompilable — l'épreuve ne prouve rien (l'enveloppe a-t-elle changé de forme ?)"
+else
+  joue "$MUT14" "$TMP/c-avec-basic.sh" "$U_MASTER" - "SECRET_SONDE=$SECRET_SONDE"
+  if grep -q '|env:count=0,' "$SHIM_LOG"; then
+    ok "M.14 COUNT=0 ⇒ H.1 rougit (git voit la clé mais n'applique aucune config : authentification morte)"
+  else ko "M.14 le mutant passe encore : shim=$(cat "$SHIM_LOG")"; fi
 fi
 
 echo

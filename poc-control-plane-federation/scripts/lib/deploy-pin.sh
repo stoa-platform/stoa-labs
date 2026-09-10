@@ -319,21 +319,21 @@ PY
 # resolve_promotion_pin <clone> <api> <from_env>
 #
 # CE QU'UN SAUT PROMEUT : l'état que le palier SOURCE exécute — pas « le dernier
-# main ».
+# état de la branche de base ».
 #
 # ⚠ C'EST LA LETTRE DU GOAL, et le premier jet ne la tenait pas. Le pin était
-# `git log -1 main -- apis/<api>.*`, et le marqueur du palier source était
-# ouvert puis jeté sauf `enabled`. Mesuré : rec servant v1.0.0, main à v2.0.0,
+# `git log -1 <base> -- apis/<api>.*`, et le marqueur du palier source était
+# ouvert puis jeté sauf `enabled`. Mesuré : rec servant v1.0.0, la base à v2.0.0,
 # une demande rec -> int écrivait v2.0.0 — un état que rec n'a JAMAIS servi, et
 # rien ne rougissait. La chaîne à cinq paliers ne garantissait plus que homol a
 # vu ce que int a vu.
 #
-# DEUX RÉGIMES, ET UN SEUL EST « le dernier main » :
+# DEUX RÉGIMES, ET UN SEUL SUIT LA BRANCHE DE BASE :
 #   from == authoring  -> dev n'a pas de marqueur, il suit HEAD par conception
-#                         (pinned.go:15). Le pin est donc le dernier commit de
-#                         main touchant CETTE API — pas HEAD, sinon une API
-#                         soeur ferait bouger le pin. Le digest vient du
-#                         formulaire (sortie EXPORT_CONFIRMED).
+#                         (pinned.go:15). Le pin est donc le dernier commit du
+#                         HEAD du clone touchant CETTE API — pas HEAD lui-même,
+#                         sinon une API soeur ferait bouger le pin. Le digest
+#                         vient du formulaire (sortie EXPORT_CONFIRMED).
 #   sinon              -> pin ET digest viennent du marqueur SOURCE. Le digest
 #                         voyage donc avec le pin : c'est ce qui rend « build
 #                         once, deploy many » VRAI plutôt que déclaratif.

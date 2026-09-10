@@ -560,10 +560,12 @@ grep -q 'GIT_CONFIG_KEY_0=http.extraheader' "$ROOT/scripts/api-promote-request.s
 grep -q REPO_NON_DECLARE "$ROOT/scripts/api-promote-request.sh" \
   && ok "REPO_NON_DECLARE — une équipe sans dépôt déclaré est refusée" \
   || bad "aucune garde sur l'appartenance dépôt↔équipe"
-# L'équipe est dérivée de providers.<env>.yml lu sur GITEA MAIN — jamais du
-# worktree local (qui peut être en retard ou modifié). Même discipline que
-# team-publish.sh §3 : le seul énoncé qui fait autorité sur « ce dépôt
-# appartient à cette équipe » vit sur main du dépôt plateforme.
+# L'équipe est dérivée de providers.<env>.yml lu SUR LA FORGE — jamais du
+# worktree local (qui peut être en retard ou modifié). L'URL `/raw/<chemin>`
+# n'a pas de ref : la forge sert la branche par défaut du dépôt, quel qu'en soit
+# le nom. Même discipline que team-publish.sh §3 : le seul énoncé qui fait
+# autorité sur « ce dépôt appartient à cette équipe » vit dans le dépôt
+# PLATEFORME, sur sa branche de base.
 # ⚠ Motif mis à jour DEUX FOIS. D'abord avec le préfixe de sous-répertoire (cf.
 # ⑱bis) ; puis, le 2026-09-09, avec le KNOB qui l'a remplacé : ce préfixe
 # s'écrivait en dur au lab et faisait mourir la chaîne d'un client rangeant son
@@ -572,7 +574,7 @@ grep -q REPO_NON_DECLARE "$ROOT/scripts/api-promote-request.sh" \
 # défaut qu'elle est censée interdire. Le préfixe lui-même est éprouvé, sous une
 # valeur NON-défaut, par scripts/test-repo-layout-portabilite.sh (section P).
 grep -q 'repos/${GIT_REPO}/raw/${PROV_REL}' "$ROOT/scripts/api-promote-request.sh" \
-  && ok "providers lu sur Gitea main, pas sur le worktree local" \
+  && ok "providers lu sur la forge (branche par défaut du dépôt), pas sur le worktree local" \
   || bad "providers lu localement — un worktree en retard déciderait de l'appartenance"
 
 echo "⑱bis un CHANGE_REF ne peut pas fabriquer une cle du marqueur"

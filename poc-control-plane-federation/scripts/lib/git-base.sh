@@ -52,6 +52,49 @@
 #     mémo meurt avec le sous-shell — préférer `git_base_of "$u" >/dev/null &&
 #     b=$GIT_BASE_OF` quand plusieurs appels visent la même URL.
 #
+#   git_base_clone_refus <url> <branche> <fichier-stderr-du-clone> [désignation]
+#     LE DIAGNOSTIC D'UN `clone -b <branche>` REFUSÉ, une fois pour toute la
+#     chaîne. Écrit le refus NOMMÉ sur stderr et rend :
+#       2  la branche n'existe pas sur un dépôt qui a RÉPONDU  (BRANCHE_DE_BASE_INTROUVABLE)
+#       1  le dépôt n'a pas répondu                            (DEPOT_INJOIGNABLE)
+#     Ne rend JAMAIS 0 : il n'est appelé que sur le chemin d'échec, et
+#     l'appelant l'écrit `git_base_clone_refus … || exit $?`.
+#     LA DISTINCTION VIENT DE `git ls-remote --exit-code --heads <url>
+#     refs/heads/<branche>` (rc 0 / 2 / autre — mesurés 0/2/128, git 2.42),
+#     JAMAIS du texte de git : « Remote branch … not found » devient « La
+#     branche distante … n'a pas été trouvée » sous une autre locale, et un
+#     diagnostic qui dépend de LANG n'en est pas un. Le `ls-remote` hérite de
+#     l'environnement de l'appelant, donc de son enveloppe d'authentification,
+#     comme le clone qui vient d'échouer. [désignation] est le nom que
+#     l'appelant donne au dépôt dans SES termes (ex. `ci/stoa-labs`) — à défaut,
+#     l'URL expurgée. Le stderr du clone est relayé, expurgé lui aussi, tronqué
+#     à 300 octets et mis sur une ligne.
+#
+#   git_base_avec_basic <login> <NOM-de-variable-du-secret> <commande…>
+#     EXÉCUTE <commande…> sous l'enveloppe `GIT_CONFIG_COUNT=1
+#     GIT_CONFIG_KEY_0=http.extraheader GIT_CONFIG_VALUE_0="Authorization:
+#     Basic <base64(login:secret)>"`, posée en PRÉFIXE D'ENV sur la commande —
+#     bash la passe aux enfants et ne la laisse pas persister après le retour
+#     (mesuré). C'est l'enveloppe des clones authentifiés de la chaîne
+#     (team-publish, team-promote, api-promote-export) et donc, par contrat de
+#     cette lib, celle que la DÉCOUVERTE doit porter aussi : la lib n'embarque
+#     aucun secret, elle hérite de l'environnement de son appelant.
+#     ⚠ LE 2e ARGUMENT EST LE **NOM** D'UNE VARIABLE, JAMAIS LE SECRET.
+#     `ps -Aww` lit l'argv de tout process de la machine : un secret passé là
+#     serait lisible pendant toute la durée de la commande (défaut mesuré sur ce
+#     dépôt, cf. team-apply.sh). Le nom est déréférencé ici (`${!nom}`) ; le
+#     secret ne vit que dans deux variables LOCALES qui meurent au retour.
+#     Le LOGIN est un paramètre, et ce n'est pas gratuit : Gitea accepte
+#     n'importe quel utilisateur du moment que le mot de passe est un jeton,
+#     GitLab et Bitbucket NON. Les appelants d'aujourd'hui passent `x` (le
+#     comportement historique) ; celui qui vise une autre forge passe son
+#     `${FORGE_USER:-x}`.
+#     Refus nommé ENVELOPPE_AUTH_INCOMPLETE (rc 2) si le nom de variable manque,
+#     désigne une variable vide, ou si aucune commande n'est donnée : une
+#     enveloppe à moitié composée serait une authentification MORTE avec une
+#     clé encore visible — exactement le mode de panne que ce fichier existe
+#     pour rendre impossible.
+#
 # LA SENTINELLE « auto », et pourquoi elle existe (même piège que le point de
 # repo-layout.sh) : Jenkins n'exporte pas au shell une variable de valeur vide,
 # elle arrive ABSENTE du processus. « Découvrir » se dit donc avec un mot,
@@ -173,4 +216,46 @@ git_base_of() {
   # shellcheck disable=SC2034  # posée POUR L'APPELANT (le contrat : stdout + variable, sans sous-shell)
   GIT_BASE_OF="$b"
   printf '%s\n' "$b"
+}
+
+# ── git_base_clone_refus : POURQUOI le `-b <branche>` a été refusé ───────────
+# Contrat complet dans l'entête. Ne rend jamais 0 ; l'appelant écrit
+# `git_base_clone_refus … || exit $?`.
+git_base_clone_refus() {
+  local url="${1:-}" branche="${2:-}" errf="${3:-}" designation="${4:-}" detail rc=0
+  [ -n "$designation" ] || designation="$(_git_base_url_masquee "$url")"
+  # Le stderr du clone est relayé, mais git peut y citer l'URL : on n'en relaie
+  # jamais la partie userinfo. Une ligne, 300 octets — un dump complet noierait
+  # le refus qui le précède.
+  detail="$(_git_base_url_masquee "$(head -c 300 "$errf" 2>/dev/null | tr '\n' ' ')")"
+  # rc 0 la branche existe (le clone a donc échoué pour une autre raison), rc 2
+  # le dépôt a répondu mais ne l'a pas, rc autre le dépôt n'a pas répondu.
+  # GIT_TERMINAL_PROMPT=0 comme partout dans cette lib : sans terminal, un dépôt
+  # privé sans enveloppe doit ÉCHOUER, jamais attendre une saisie.
+  GIT_TERMINAL_PROMPT=0 git ls-remote --exit-code --heads "$url" "refs/heads/${branche}" >/dev/null 2>&1 || rc=$?
+  if [ "$rc" = 2 ]; then
+    echo "REFUS: BRANCHE_DE_BASE_INTROUVABLE : ${branche} n'existe pas sur ${designation} — knob GIT_BASE faux, ou dépôt vide ; rien n'a été écrit (git : ${detail:-sans message})" >&2
+    return 2
+  fi
+  echo "REFUS: DEPOT_INJOIGNABLE : ${designation} n'a pas répondu (ls-remote rc ${rc}) — la branche ${branche} n'a donc pas pu être vérifiée ; rien n'a été écrit (git : ${detail:-sans message})" >&2
+  return 1
+}
+
+# ── git_base_avec_basic : l'enveloppe d'authentification, une fois ───────────
+# Contrat complet dans l'entête. Le 2e argument est le NOM d'une variable —
+# jamais le secret : argv est lisible par `ps -Aww`.
+git_base_avec_basic() {
+  local login="${1:-x}" nomvar="${2:-}" secret b64
+  [ -n "$nomvar" ] \
+    || { echo "REFUS: ENVELOPPE_AUTH_INCOMPLETE : git_base_avec_basic exige le NOM de la variable qui porte le secret (jamais le secret lui-même : argv est lisible par ps -Aww)" >&2; return 2; }
+  shift 2
+  [ "$#" -gt 0 ] \
+    || { echo "REFUS: ENVELOPPE_AUTH_INCOMPLETE : git_base_avec_basic exige une commande à exécuter sous l'enveloppe" >&2; return 2; }
+  secret="${!nomvar-}"
+  [ -n "$secret" ] \
+    || { echo "REFUS: ENVELOPPE_AUTH_INCOMPLETE : la variable '${nomvar}' est vide — une enveloppe à moitié composée est une authentification morte avec une clé encore visible" >&2; return 2; }
+  b64="$(printf '%s:%s' "$login" "$secret" | base64 | tr -d '\n')"
+  GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader \
+    GIT_CONFIG_VALUE_0="Authorization: Basic ${b64}" \
+    "$@"
 }

@@ -887,6 +887,9 @@ guard_case "API_BASE mal formée"    API_BASE_FORMAT_INVALIDE   ACTION=new-versi
 guard_case "nouvelle version = base" NEW_VERSION_IDENTIQUE     ACTION=new-version TEAM="$TEAM" API_NAME=g9 API_BASE='g9@1.0.0' NEW_VERSION=1.0.0 OPENAPI_SPEC="$SPEC_OK" INBOUND_MODE=jwt
 
 AFTER1=$(git ls-remote "$GITEA_URL/$TEAM_REPO.git" 2>/dev/null)
+# Le découpage en mots est VOULU : $G_TAGS est une liste de tags séparés par des
+# espaces, accumulée par guard_case, et on la compte tag par tag.
+# shellcheck disable=SC2086  # non quoté à dessein : c'est le découpage qui compte les tags
 NB_GUARDS=$(printf '%s\n' $G_TAGS | grep -c . )
 if [ -z "$G_FAILED" ] && [ "$BEFORE1" = "$AFTER1" ] && [ "$NB_GUARDS" -eq 10 ]; then
   ok "1. 10 refus nommés ($G_TAGS), ls-remote de $TEAM_REPO IDENTIQUE avant/après — aucune branche, aucun objet"
@@ -936,11 +939,16 @@ echo
 echo "== 3. REPO_NON_DECLARE : $ORPH_REPO déclenche team-publish -> refus, PR commentée =="
 gapi -X POST -H 'Content-Type: application/json' -d "{\"username\":\"$ORPH_ORG\",\"visibility\":\"public\"}" \
   "$GITEA_URL/api/v1/orgs" -o /dev/null
+# Ce dépôt-ci garde une branche DÉCLARÉE en propre, qui diffère de $SEED_BASE le
+# jour où l'arbre sous test n'est pas sur `main` : c'est le discriminant PAR DÉPÔT
+# de L3 — team-publish doit DEMANDER sa HEAD à CHAQUE dépôt (git_base_of), jamais
+# réutiliser celle de la plateforme. Elle n'est pas devinée : elle est posée ici,
+# et relue telle quelle aux trois endroits qui la citent plus bas.
+# ⚠ LE COMMENTAIRE VIT AU-DESSUS, PAS DANS LA COMMANDE. Une ligne de commentaire
+# glissée après une continuation `\` termine la commande : `gapi` partirait sans
+# URL ni `-d`, et la ligne `-d '{…}'` deviendrait une commande nommée `-d`
+# (mesuré : « -d: command not found », shellcheck SC2215).
 gapi -X POST -H 'Content-Type: application/json' \
-  # Ce dépôt-ci garde une branche DÉCLARÉE en propre, différente de $SEED_BASE le
-  # jour où celle-ci diffère : c'est le discriminant PAR DÉPÔT de L3 — team-publish
-  # doit DEMANDER sa HEAD à chaque dépôt (git_base_of), pas réutiliser celle de la
-  # plateforme. Elle n'est pas devinée : elle est posée ici et relue ci-dessous.
   -d '{"name":"orphan-api","private":false,"auto_init":true,"default_branch":"main"}' \
   "$GITEA_URL/api/v1/orgs/$ORPH_ORG/repos" -o /dev/null
 # `auto_init` est ASYNCHRONE côté Gitea : cloner tout de suite peut rendre un

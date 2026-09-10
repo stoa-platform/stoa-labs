@@ -132,27 +132,18 @@ fail(){ comment "$WEBHOOK_REPO" "❌ team-publish : $*"; echo "ERREUR: $*" >&2; 
 # casserait sur un dépôt PRIVÉ — le dépôt plateforme ET le dépôt d'équipe le
 # sont chez un client réel ; ce lab les a en lecture publique, ce qui
 # masquait le trou (les deux clones fonctionnaient "par accident").
-gclone(){
-  local auth_b64
-  auth_b64=$(printf 'x:%s' "$FORGE_SECRET" | base64 | tr -d '\n')
-  GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader \
-    GIT_CONFIG_VALUE_0="Authorization: Basic ${auth_b64}" \
-    git clone -q "$@"
-}
-# LA DÉCOUVERTE SOUS LA MÊME ENVELOPPE QUE LE CLONE. La lib ne porte aucun
-# secret : c'est l'appelant qui enveloppe son `git ls-remote` comme il enveloppe
-# son `git clone`. Sans ça, un dépôt PRIVÉ — le cas normal chez un client —
-# rendrait la découverte ANONYME donc en échec, et la publication refuserait
-# pour une raison qui n'a rien à voir. Préfixe d'ENV sur l'appel de fonction :
-# bash le passe aux enfants, jamais en argv. Premier argument : la fonction de
-# la lib (git_base_init pour la plateforme, git_base_of pour les autres dépôts).
-gbase(){
-  local auth_b64
-  auth_b64=$(printf 'x:%s' "$FORGE_SECRET" | base64 | tr -d '\n')
-  GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader \
-    GIT_CONFIG_VALUE_0="Authorization: Basic ${auth_b64}" \
-    "$@"
-}
+# L'ENVELOPPE ELLE-MÊME VIT DANS LA LIB (git_base_avec_basic) depuis la revue du
+# sous-lot 4b : elle était recopiée mot pour mot dans trois scripts. Le SECRET
+# n'est pas passé en argv — c'est le NOM de la variable qui l'est ; argv est
+# lisible par `ps -Aww`.
+gclone(){ git_base_avec_basic x FORGE_SECRET git clone -q "$@"; }
+# LA DÉCOUVERTE SOUS LA MÊME ENVELOPPE QUE LE CLONE. La lib git-base.sh ne porte
+# aucun secret : c'est l'appelant qui enveloppe son `git ls-remote` comme il
+# enveloppe son `git clone`. Sans ça, un dépôt PRIVÉ — le cas normal chez un
+# client — rendrait la découverte ANONYME donc en échec, et la publication
+# refuserait pour une raison qui n'a rien à voir. Premier argument : la fonction
+# de la lib (git_base_init pour la plateforme, git_base_of pour les autres).
+gbase(){ git_base_avec_basic x FORGE_SECRET "$@"; }
 
 # ── 0. VALIDATION DE FORME — AVANT tout argv git/curl ────────────────────────
 # WEBHOOK_REPO et MERGE_SHA viennent d'un WEBHOOK (un tiers) et sont
@@ -321,11 +312,11 @@ PUB_PATH="$TMP/team/${PUB_REL}"
   || fail "PUBLISH_MANIFEST_MISSING : ${PUB_REL} absent de ${WEBHOOK_REPO} au SHA mergé ${MERGE_SHA}"
 
 # CONTRAT_ABSENT : api-request.sh pose TOUJOURS le manifeste ET son contrat
-# ENSEMBLE (même commit). Une PR qui aurait retiré/renommé le contrat à la
-# la branche de base romprait la publication BEAUCOUP plus loin (à l'intérieur du rôle
-# Ansible, sur un lookup('file', …) dont le message ne dit pas "le contrat
-# manque au SHA mergé") — vérifié ICI, tôt, avec un diagnostic qui nomme la
-# cause plutôt que sa conséquence.
+# ENSEMBLE (même commit). Une PR qui aurait retiré/renommé le contrat à la main
+# romprait la publication BEAUCOUP plus loin (à l'intérieur du rôle Ansible, sur
+# un lookup('file', …) dont le message ne dit pas « le contrat manque au SHA
+# mergé ») — vérifié ICI, tôt, avec un diagnostic qui nomme la cause plutôt que
+# sa conséquence.
 SPEC_REL="apis/${API_NAME}.openapi.yaml"
 SPEC_PATH="$TMP/team/${SPEC_REL}"
 [ -f "$SPEC_PATH" ] \

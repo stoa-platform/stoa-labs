@@ -105,7 +105,9 @@ TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT; umask 077
 forge_auth_write "$FORGE_SECRET" "$TMP/ghdr" || exit 2
 gapi() { curl -sS -H @"$TMP/ghdr" -H 'Content-Type: application/json' "$@"; }
 
-# ── team -> repo, lu sur GITEA MAIN (jamais le worktree local) ───────────────
+# ── team -> repo, lu sur la FORGE (jamais le worktree local) ────────────────
+# `/raw/<chemin>` SANS ref : la forge sert la branche par défaut du dépôt
+# plateforme — celle qu'elle déclare, quel que soit son nom.
 # REPRIS À L'IDENTIQUE de api-promote-request.sh (mêmes deux pièges mesurés :
 # le préfixe de sous-répertoire dans le chemin — un KNOB, jamais un littéral —
 # et `curl -s` qui rend 0 sur un 404, d'où --fail-with-body).
@@ -127,29 +129,21 @@ case "$REPO_FULL" in REPO=*) REPO_FULL="${REPO_FULL#REPO=}";; *) fail "PARSE_PRO
 [ -n "$REPO_FULL" ] || fail "REPO_NON_DECLARE : équipe '$TEAM' sans dépôt dans providers.${AUTHORING_ENV}.yml"
 
 # ── clone AUTHENTIFIÉ du dépôt d'équipe (motif gclone de team-publish.sh:110-116) ──
-# Un dépôt d'équipe privé casserait un clone anonyme. --depth 1 -b <base> :
+# Un dépôt d'équipe privé casserait un clone anonyme. `--depth 1 -b <base>` :
 # l'export lit apis/<api>.promote.yml TEL QU'IL EST SUR la branche de base du
-# dépôt d'équipe (découverte, jamais devinée), aucune branche à
-# créer ni de SHA tiers à atteindre (contrairement à api-promote-request.sh, qui
-# pousse une branche, ou team-publish.sh, qui checkoute un SHA de merge).
-gclone(){
-  local auth_b64
-  auth_b64=$(printf 'x:%s' "$FORGE_SECRET" | base64 | tr -d '\n')
-  GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader \
-    GIT_CONFIG_VALUE_0="Authorization: Basic ${auth_b64}" \
-    git clone -q "$@"
-}
+# dépôt d'équipe — découverte, jamais devinée. Aucune branche à créer, aucun SHA
+# tiers à atteindre (contrairement à api-promote-request.sh, qui pousse une
+# branche, ou à team-publish.sh, qui checkoute un SHA de merge).
+# L'ENVELOPPE ELLE-MÊME VIT DANS LA LIB (git_base_avec_basic) depuis la revue du
+# sous-lot 4b : elle était recopiée mot pour mot dans trois scripts. Le SECRET
+# n'est pas passé en argv — c'est le NOM de la variable qui l'est ; argv est
+# lisible par `ps -Aww`.
+gclone(){ git_base_avec_basic x FORGE_SECRET git clone -q "$@"; }
 # LA DÉCOUVERTE SOUS LA MÊME ENVELOPPE QUE LE CLONE : la lib n'embarque aucun
 # secret, elle hérite de l'environnement. Anonyme, son `git ls-remote`
 # échouerait sur le dépôt d'équipe PRIVÉ d'un client — l'export refuserait pour
-# une raison sans rapport. Préfixe d'ENV sur l'appel de fonction, jamais argv.
-gbase(){
-  local auth_b64
-  auth_b64=$(printf 'x:%s' "$FORGE_SECRET" | base64 | tr -d '\n')
-  GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader \
-    GIT_CONFIG_VALUE_0="Authorization: Basic ${auth_b64}" \
-    "$@"
-}
+# une raison sans rapport.
+gbase(){ git_base_avec_basic x FORGE_SECRET "$@"; }
 gbase git_base_of "${GIT_HOST}/${REPO_FULL}.git" >/dev/null \
   || fail "CLONE_ECHEC : branche par défaut de ${REPO_FULL} indéterminable (cause ci-dessus) — rien n'est exporté"
 TEAM_BASE="$GIT_BASE_OF"
@@ -157,8 +151,8 @@ gclone --depth 1 -b "$TEAM_BASE" "${GIT_HOST}/${REPO_FULL}.git" "$TMP/team" \
   || fail "CLONE_ECHEC : ${REPO_FULL}@${TEAM_BASE}"
 
 PROMOTE_REL="apis/${API_NAME}.promote.yml"
-# La version d'AUTHORING (publish.yml sur la branche de base) est la vérité de ce qui se
-# publie en dev — le manifeste de promotion la SUIT, il ne la précède pas.
+# La version d'AUTHORING (publish.yml sur la branche de base) est la vérité de
+# ce qui se publie en dev — le manifeste de promotion la SUIT, il ne la précède pas.
 PUB_VERSION=$(publish_manifest_version "$TMP/team" "$API_NAME") \
   || fail "PUBLISH_MANIFEST_ABSENT : apis/${API_NAME}.publish.yml absent ou illisible sur ${REPO_FULL}@${TEAM_BASE} — publier l'API d'abord (formulaire api-request)"
 MANIFEST_RENDU=0

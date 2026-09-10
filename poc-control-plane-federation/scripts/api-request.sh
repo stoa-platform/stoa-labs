@@ -281,16 +281,11 @@ WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
 PLAT_URL="${GIT_HOST}/${GIT_REPO}.git"
 git_base_init "$PLAT_URL" || exit 2
 echo "[1/5] clone ${GIT_REPO}@${GIT_BASE} (lecture team -> repo)"
+# Le diagnostic d'un `-b` refusé vit dans la lib (git_base_clone_refus) : rc 2
+# = branche absente d'un dépôt qui a RÉPONDU, rc 1 = dépôt injoignable, et la
+# distinction vient de `ls-remote --exit-code --heads`, jamais du texte de git.
 if ! git clone -q --depth 1 -b "$GIT_BASE" "$PLAT_URL" "$WORK/platform" 2>"$WORK/clone.err"; then
-  # `ls-remote --exit-code --heads` : rc 0 la branche existe, rc 2 le dépôt a
-  # répondu mais n'a pas cette branche, rc autre le dépôt n'a pas répondu
-  # (mesuré git 2.42). DÉTERMINISTE, là où lire le texte de git dépendrait de sa
-  # locale. Joué SEULEMENT sur le chemin d'échec.
-  AR_LS_RC=0; git ls-remote --exit-code --heads "$PLAT_URL" "refs/heads/${GIT_BASE}" >/dev/null 2>&1 || AR_LS_RC=$?
-  AR_CLONE_ERR="$(sed -E 's#://[^/@[:space:]]+@#://<masqué>@#g' "$WORK/clone.err" 2>/dev/null | head -c 300 | tr '\n' ' ')"
-  [ "$AR_LS_RC" = 2 ] \
-    && fail "BRANCHE_DE_BASE_INTROUVABLE : ${GIT_BASE} n'existe pas sur ${GIT_REPO} — knob GIT_BASE faux, ou dépôt vide ; rien n'a été écrit (git : ${AR_CLONE_ERR:-sans message})"
-  fail "clone ${GIT_REPO}@${GIT_BASE} (résolution team -> repo) : ${AR_CLONE_ERR:-sans message}"
+  git_base_clone_refus "$PLAT_URL" "$GIT_BASE" "$WORK/clone.err" "${GIT_REPO} (résolution team -> repo)" || exit $?
 fi
 PROV_REL="${SUB_PFX}ansible/providers.${ENVN}.yml"
 PROV="$WORK/platform/$PROV_REL"

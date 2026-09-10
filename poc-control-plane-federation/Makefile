@@ -124,6 +124,7 @@ lint-ci:
 	  ci/lint-forge-literals.sh scripts/test-app-request-gitlab-live.sh \
 	  scripts/test-porte-clone-frais.sh \
 	  scripts/test-team-request-wiring.sh scripts/test-team-publish-wiring.sh \
+	  scripts/test-producer-chain.sh \
 	  && echo "  ✓ ci/lib + livrables shell G2..G8 + A1 + A2 + A0 + A3 + A4 + A5 + A6 + A7 + P2 + P5 + P6 + P7 propres"
 	@# … et la MÊME étape doit passer sur un CLONE FRAIS. Le shellcheck
 	@# ci-dessus s'exécute là où `.env.lab-users` (0600, hors Git) EXISTE ;

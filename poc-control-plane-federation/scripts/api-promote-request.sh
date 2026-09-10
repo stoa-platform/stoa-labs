@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # api-promote-request.sh — moteur du formulaire « promouvoir une API »
 # (jalon G3). Pendant de api-request.sh (publication) : MÊME MODÈLE STRUCTUREL
-# — gardes nommées AVANT tout geste Git, team -> repo lu sur GITEA MAIN (jamais
-# le worktree local), push par GIT_CONFIG_COUNT/KEY_0/VALUE_0 (jamais de token
-# en URL ni en argv), PR par heredoc python, plan commenté sur la PR.
+# — gardes nommées AVANT tout geste Git, team -> repo lu sur la FORGE à la
+# branche par défaut qu'elle déclare (jamais le worktree local), push par
+# GIT_CONFIG_COUNT/KEY_0/VALUE_0 (jamais de token en URL ni en argv), PR par
+# heredoc python, plan commenté sur la PR.
 #
 # CE SCRIPT NE DÉPLOIE RIEN. Il ouvre une PR portant le marqueur
 # apis/<name>.deploy.<TO_ENV>.yaml. La DÉCISION est le merge (ADR-081).
@@ -205,7 +206,9 @@ TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT; umask 077
 forge_auth_write "$FORGE_SECRET" "$TMP/ghdr" || exit 2
 gapi() { curl -sS -H @"$TMP/ghdr" -H 'Content-Type: application/json' "$@"; }
 
-# ── team -> repo, lu sur GITEA MAIN (jamais le worktree local) ───────────────
+# ── team -> repo, lu sur la FORGE (jamais le worktree local) ────────────────
+# `/raw/<chemin>` SANS ref : la forge sert la branche par défaut du dépôt
+# plateforme — celle qu'elle déclare, quel que soit son nom.
 # Le worktree local peut être en retard, ou modifié : la seule source qui dit
 # VRAIMENT « ce dépôt appartient à cette équipe » est providers.<env>.yml sur
 # la branche de base du dépôt plateforme (même discipline que team-publish.sh §3).

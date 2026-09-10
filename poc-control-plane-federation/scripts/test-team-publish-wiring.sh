@@ -359,8 +359,8 @@ echo "== 14. les gardes d'intégrité de team-publish.sh sont réellement câbl�
 # Statique (grep), pas fonctionnel — le comportement rouge/vert de chacune est
 # prouvé par contre-épreuve à l'exécution (rapport de tâche), pas ici.
 grep -q 'merge-base --is-ancestor' "$REPO/scripts/team-publish.sh" \
-  && ok "garde d'atteignabilité merge-base --is-ancestor présente (MERGE_SHA doit être un ANCÊTRE de main, pas juste un objet existant)" \
-  || ko "aucune garde d'atteignabilité — un SHA valide mais non fusionné sur main serait accepté"
+  && ok "garde d'atteignabilité merge-base --is-ancestor présente (MERGE_SHA doit être un ANCÊTRE de la branche de base, pas juste un objet existant)" \
+  || ko "aucune garde d'atteignabilité — un SHA valide mais non fusionné sur la branche de base serait accepté"
 grep -qF 'fail "REPO_AMBIGU :' "$REPO/scripts/team-publish.sh" \
   && ok "REPO_AMBIGU réellement appelé (fail nommé, pas juste mentionné en commentaire)" \
   || ko "REPO_AMBIGU absent de tout fail() réel — un dépôt déclaré deux fois choisirait la première équipe rencontrée en silence"

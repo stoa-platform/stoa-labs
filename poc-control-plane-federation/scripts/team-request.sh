@@ -161,14 +161,10 @@ BRANCH="onboard/${TEAM}-${REQ_ENV}"
 TR_URL="${GIT_HOST}/${GIT_REPO}.git"
 git_base_init "$TR_URL" || exit 2
 echo "[1/4] clone ${GIT_REPO}@${GIT_BASE}"
+# Le diagnostic d'un `-b` refusé vit dans la lib (git_base_clone_refus) : rc 2
+# = branche absente d'un dépôt qui a RÉPONDU, rc 1 = dépôt injoignable.
 if ! git clone -q --depth 1 -b "$GIT_BASE" "$TR_URL" "$WORK/repo" 2>"$WORK/clone.err"; then
-  # rc 2 = le dépôt a répondu mais n'a pas cette branche ; autre = pas de
-  # réponse (mesuré git 2.42). Le texte de git dépendrait de sa locale.
-  TR_LS_RC=0; git ls-remote --exit-code --heads "$TR_URL" "refs/heads/${GIT_BASE}" >/dev/null 2>&1 || TR_LS_RC=$?
-  TR_ERR="$(sed -E 's#://[^/@[:space:]]+@#://<masqué>@#g' "$WORK/clone.err" 2>/dev/null | head -c 300 | tr '\n' ' ')"
-  [ "$TR_LS_RC" = 2 ] \
-    && fail "BRANCHE_DE_BASE_INTROUVABLE : ${GIT_BASE} n'existe pas sur ${GIT_REPO} — knob GIT_BASE faux, ou dépôt vide ; rien n'a été écrit (git : ${TR_ERR:-sans message})"
-  fail "clone ${GIT_REPO}@${GIT_BASE} : ${TR_ERR:-sans message}"
+  git_base_clone_refus "$TR_URL" "$GIT_BASE" "$WORK/clone.err" "$GIT_REPO" || exit $?
 fi
 PROV_REL="${SUB_PFX}ansible/providers.${REQ_ENV}.yml"
 PROV="$WORK/repo/$PROV_REL"
