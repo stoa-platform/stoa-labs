@@ -228,7 +228,15 @@ fi
 # B3 — A0 : la pose d'app-request est une COPIE OCTET POUR OCTET suivie d'un
 # build d'AMORÇAGE (c'est le build qui pose le formulaire). Preuve de bout en
 # bout contre un faux Jenkins : plus aucune substitution, l'amorçage demandé.
+# L3 (2026-09-10) : la fixture est DISCRIMINANTE — la HEAD annoncée par le
+# dépôt nu et la branche poussée sont l'une et l'autre « master », jamais
+# « main ». Sans le symbolic-ref, `git init --bare` annonce refs/heads/master
+# tandis que le push crée refs/heads/main : le dépôt a une HEAD NON NÉE,
+# ls-remote --symref rend 0 octet et le poseur refuse (à juste titre)
+# BRANCHE_PAR_DEFAUT_INCONNUE. Aucun GIT_BASE n'est posé dans l'appel au
+# poseur : un code qui devinerait « main » rougirait ici.
 PLAT="$TMP/platform.git"; git init -q --bare "$PLAT"
+git -C "$PLAT" symbolic-ref HEAD refs/heads/master
 WPLAT="$TMP/wplat"; git clone -q "$PLAT" "$WPLAT"
 mkdir -p "$WPLAT/poc-control-plane-federation/ansible" "$WPLAT/poc-control-plane-federation/clients/teamx/apis"
 cat > "$WPLAT/poc-control-plane-federation/ansible/providers.dev.yml" <<'YML'
@@ -244,7 +252,7 @@ apim_api:
 YML
 git -C "$WPLAT" add -A
 git -C "$WPLAT" -c user.email=t@t -c user.name=t commit -qm seed
-git -C "$WPLAT" push -q origin HEAD:main
+git -C "$WPLAT" push -q origin HEAD:master
 
 cat > "$TMP/fakejenkins.py" <<'PY'
 import os, re, sys
@@ -289,10 +297,17 @@ if [ $? -ne 0 ]; then
   ko "pose du job : setup-team-onboard-jobs.sh a échoué — $(printf '%s' "$OUT" | tail -5)"
 else
   POSTED="$TMP/posted/app-request.posted.xml"
-  if [ -f "$POSTED" ] && cmp -s "$POSTED" "$XML" && ! grep -q 'CHOICES:' "$POSTED"; then
-    ok "job POSÉ octet pour octet identique à la source (A0 : coquille pure, aucune substitution)"
+  # L3 (2026-09-10) : la source porte désormais `__GIT_BASE__`. La pose y
+  # substitue la branche DÉCOUVERTE — ici `master`, la HEAD annoncée par le
+  # dépôt nu — et RIEN d'autre. L'assertion reste octet pour octet, à cette
+  # seule substitution près, et elle discrimine : un poseur qui devinerait
+  # poserait `main` et la comparaison rougirait.
+  if [ -f "$POSTED" ] && ! grep -qF '__GIT_BASE__' "$POSTED" \
+     && sed 's#__GIT_BASE__#master#g' "$XML" | cmp -s - "$POSTED" \
+     && ! grep -q 'CHOICES:' "$POSTED"; then
+    ok "job POSÉ identique à la source à la seule substitution __GIT_BASE__→master près (A0 : coquille pure, branche DÉCOUVERTE)"
   else
-    ko "job POSÉ divergent de la source — une substitution a eu lieu sur une coquille sans marqueur ?"
+    ko "job POSÉ divergent de la source substituée — substitution de trop, ou __GIT_BASE__ survivant, ou branche devinée"
   fi
   if [ -f "$TMP/posted/app-request.build" ]; then
     ok "job POSÉ puis AMORCÉ (POST /job/app-request/build) : les trois champs v3 arrivent à Jenkins par le build, pas par le XML"
@@ -312,14 +327,28 @@ fi
 echo
 echo "═══ Sections C/D — contre le Gitea RÉEL du lab (poc-gitea:13000) ═══"
 GITEA_TOKEN=""
-if [ -n "${GITEA_TOKEN_FILE:-}" ] && [ -r "$GITEA_TOKEN_FILE" ]; then
+# V3_SANS_LAB (L3, 2026-09-10) : le SYMÉTRIQUE de V3_REQUIRE_LAB. Les sections
+# C/D ÉCRIVENT sur le Gitea du lab (branches nettoyées à la sortie, PR laissées
+# derrière). `make lint-ci` câble ce harnais pour ses sections A/B — hors ligne,
+# c'est là que vivent le placeholder __GIT_BASE__ et le discriminant `master` —
+# et n'a AUCUNE raison de muter une forge au passage. Le saut est alors DEMANDÉ,
+# pas subi : le message ne dit pas « lab indisponible » quand le lab est debout.
+if [ -n "${V3_SANS_LAB:-}" ] && [ -n "${V3_REQUIRE_LAB:-}" ]; then
+  echo "REFUS: KNOBS_CONTRADICTOIRES : V3_SANS_LAB et V3_REQUIRE_LAB posés tous les deux — l'un interdit de toucher au lab, l'autre l'exige. Choisir." >&2
+  exit 2
+fi
+if [ -n "${V3_SANS_LAB:-}" ]; then
+  : # aucun token n'est fabriqué : le message et le saut sont juste en dessous.
+elif [ -n "${GITEA_TOKEN_FILE:-}" ] && [ -r "$GITEA_TOKEN_FILE" ]; then
   GITEA_TOKEN="$(cat "$GITEA_TOKEN_FILE")"
 elif docker inspect poc-gitea >/dev/null 2>&1; then
   GITEA_TOKEN=$(docker exec -u git poc-gitea gitea admin user generate-access-token \
     --username ci --token-name "p3v3-test-$TS" \
     --scopes write:repository,write:issue 2>/dev/null | grep -oE '[0-9a-f]{40}' | head -1)
 fi
-if [ -z "$GITEA_TOKEN" ] || ! curl -s -o /dev/null "http://localhost:13000" 2>/dev/null; then
+if [ -n "${V3_SANS_LAB:-}" ]; then
+  echo "  (sections C/D NON JOUÉES — V3_SANS_LAB posé : le lab n'est pas muté. Les rejouer à la main pour le verdict complet.)"
+elif [ -z "$GITEA_TOKEN" ] || ! curl -s -o /dev/null "http://localhost:13000" 2>/dev/null; then
   if [ -n "${V3_REQUIRE_LAB:-}" ]; then echo "SECTIONS_C_D_IMPOSSIBLES : Gitea du lab (poc-gitea:13000) ou token indisponible — V3_REQUIRE_LAB posé, refus fermé" >&2; exit 2; fi
   echo "  (sections C/D sautées — Gitea du lab (poc-gitea:13000) ou token indisponible ; V3_REQUIRE_LAB=1 pour en faire un refus)"
 else

@@ -87,7 +87,15 @@ echo "═══ Section B — câblage de la pose d'app-request (A0 : coquille p
 # = même serveur minimal que test-generate-choices.sh, étendu pour enregistrer
 # le corps POSTé (nécessaire pour vérifier que TEAM/API sont bien substitués
 # dans CE job précis, premier consommateur réel du mécanisme Task 3).
+# L3 (2026-09-10) : la fixture est DISCRIMINANTE — la HEAD annoncée par le
+# dépôt nu et la branche poussée sont l'une et l'autre « master », jamais
+# « main ». Sans le symbolic-ref, `git init --bare` annonce refs/heads/master
+# tandis que le push crée refs/heads/main : le dépôt a une HEAD NON NÉE,
+# ls-remote --symref rend 0 octet et le poseur refuse (à juste titre)
+# BRANCHE_PAR_DEFAUT_INCONNUE. Aucun GIT_BASE n'est posé dans l'appel au
+# poseur : un code qui devinerait « main » rougirait ici.
 PLAT="$TMP/platform.git"; git init -q --bare "$PLAT"
+git -C "$PLAT" symbolic-ref HEAD refs/heads/master
 WPLAT="$TMP/wplat"; git clone -q "$PLAT" "$WPLAT"
 mkdir -p "$WPLAT/poc-control-plane-federation/ansible" "$WPLAT/poc-control-plane-federation/clients/teamx/apis"
 cat > "$WPLAT/poc-control-plane-federation/ansible/providers.dev.yml" <<'YML'
@@ -103,7 +111,7 @@ apim_api:
 YML
 git -C "$WPLAT" add -A
 git -C "$WPLAT" -c user.email=t@t -c user.name=t commit -qm seed
-git -C "$WPLAT" push -q origin HEAD:main
+git -C "$WPLAT" push -q origin HEAD:master
 
 cat > "$TMP/fakejenkins.py" <<'PY'
 import os, re, sys
@@ -156,10 +164,16 @@ else
   # marqueur, plus de paramètre. La pose le copie TEL QUEL (octet pour octet)
   # puis l'AMORCE d'un build : c'est le build qui pose le formulaire, depuis
   # scripts/app-request-choices.sh (listes teamx / foo@2.0.0 relues alors).
-  if [ -f "$POSTED" ] && cmp -s "$POSTED" "$REPO/ci/jenkins/app-request.job.xml"; then
-    ok "câblage A0 : app-request posté OCTET POUR OCTET identique à la source (aucune substitution, NO-OP garanti)"
+  # L3 (2026-09-10) : la source porte désormais `__GIT_BASE__`. La pose y
+  # substitue la branche DÉCOUVERTE — ici `master`, la HEAD annoncée par le
+  # dépôt nu — et RIEN d'autre. L'assertion reste octet pour octet, à cette
+  # seule substitution près, et elle discrimine : un poseur qui devinerait
+  # poserait `main` et la comparaison rougirait.
+  if [ -f "$POSTED" ] && ! grep -qF '__GIT_BASE__' "$POSTED" \
+     && sed 's#__GIT_BASE__#master#g' "$REPO/ci/jenkins/app-request.job.xml" | cmp -s - "$POSTED"; then
+    ok "câblage A0 : app-request posté identique à la source à la seule substitution __GIT_BASE__→master près (branche DÉCOUVERTE, NO-OP garanti par ailleurs)"
   else
-    ko "câblage A0 : le XML posté diffère de la source (une substitution a eu lieu sur une coquille sans marqueur ?)"
+    ko "câblage A0 : le XML posté diffère de la source substituée (substitution de trop, __GIT_BASE__ survivant, ou branche devinée)"
   fi
   if [ -f "$TMP/posted/app-request.build" ]; then
     ok "câblage A0 : le build d'AMORÇAGE a été demandé après la pose (POST /job/app-request/build) — sans lui, la pose efface le formulaire"

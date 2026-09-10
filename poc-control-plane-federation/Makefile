@@ -170,6 +170,26 @@ lint-ci:
 	@# nu dans un message, qui est ce qui a coute deux jours. Exemptes NOMMES dans le
 	@# fichier (harnais, outils de lab, l'autorite git-base.sh). Sous l'etape 2, sans rang.
 	@bash ci/lint-branch-literals.sh
+	@# … et la porte interdit le LITTERAL, elle ne verifie pas le COMPORTEMENT.
+	@# Les trois suites qui suivent gardent ce que L3 a reellement change : la
+	@# substitution de __GIT_BASE__ a la pose, le refus BRANCHE_PAR_DEFAUT_INDECIDABLE
+	@# quand rien ne dit par quoi remplacer, et la decouverte `ls-remote --symref`.
+	@# Aucune n'etait jouee par lint-ci : c'est ainsi que deux d'entre elles ont
+	@# derive au ROUGE sans que personne le voie (revue L3, 2026-09-10). Elles
+	@# vivent SOUS l'etape 2, sans rang a elles — le compte [20/20] ne bouge pas.
+	@#
+	@# Le poseur des treize jobs : placeholder substitue, refus nomme, knob qui
+	@# gagne sur la HEAD. Hors ligne (faux Jenkins + depot nu local), 7 s.
+	@bash scripts/test-setup-provision-jobs.sh
+	@# Le generateur de listes : c'est lui qui clone la plateforme et les depots
+	@# d'equipe, donc lui qui joue git_base_init ET git_base_of. Hors ligne, 33 s.
+	@bash scripts/test-generate-choices.sh
+	@# La pose d'app-request de bout en bout, fixture DISCRIMINANTE : depot nu
+	@# dont la HEAD annoncee est `master`, aucun GIT_BASE dans l'environnement du
+	@# poseur — un code qui devinerait `main` rougirait ici. V3_SANS_LAB borne le
+	@# harnais a ses sections A/B : ses sections C/D ECRIVENT sur le Gitea du lab
+	@# (meme regime que les `-live` : leur verdict se rend a la main). 6 s.
+	@V3_SANS_LAB=1 bash scripts/test-app-request-v3.sh
 	@echo "== [3/20] épreuves de ci/lib/carto-secrets.sh"
 	@ci/test-carto-secrets.sh
 	@echo "== [4/20] épreuves du résolveur de pin (G3)"

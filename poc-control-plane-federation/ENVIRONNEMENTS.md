@@ -893,7 +893,7 @@ réactive `demo-selfservice`, trap inconditionnel).
 
 **Limites écrites** : l'état restauré est l'état **déclaré** (Git), pas l'état servi (un N-1 mergé puis refusé à l'apply est restauré tel que déclaré et repasse les portes) ; un repli vers « sans cert » retire le fichier de Git mais **laisse le cert de N sur la gateway** (le rôle préserve les dimensions absentes du manifeste — dette du rôle) ; mono-gateway sur le lab ; la suspension (verbe de retrait) n'est pas écrite.
 
-**Preuves** : hors ligne `scripts/test-app-rollback-a6.sh` 82/82 (`make lint-ci` [15/15]) ; par builds réels `scripts/test-a6-live.sh` **49/49** au 4e passage (repli #16 → PR #511 → provision-apply #156 → aval #102 SUCCESS, gateway lue à l'état N-1 : même GUID, même clé, IP et cert de N-1 ; chiffres complets dans le GOAL). Pose du job : `JOBS=app-rollback BOOTSTRAP_JOBS=app-rollback scripts/setup-provision-jobs.sh`.
+**Preuves** : hors ligne `scripts/test-app-rollback-a6.sh` 82/82 (`make lint-ci` [15/15]) ; par builds réels `scripts/test-a6-live.sh` **49/49** au 4e passage (repli #16 → PR #511 → provision-apply #156 → aval #102 SUCCESS, gateway lue à l'état N-1 : même GUID, même clé, IP et cert de N-1 ; chiffres complets dans le GOAL). Pose du job : `GIT_HOST=http://localhost:13000 GIT_REPO=ci/stoa-labs JOBS=app-rollback BOOTSTRAP_JOBS=app-rollback scripts/setup-provision-jobs.sh` (depuis L3 le poseur exige `GIT_BASE`, ou `GIT_HOST` **et** `GIT_REPO` — cf. « La branche par défaut »).
 
 ## Le terminus et le parcours complet — applications (A7 — GOAL cd-applications, 2026-09-03)
 
@@ -1034,6 +1034,10 @@ la pose : deux mécanismes coexistent, délibérément.
 
 ```bash
 git push gitea HEAD:main                                          # le CI lit gitea
+# Depuis L3 les XML portent __GIT_BASE__ : poser GIT_BASE, ou GIT_HOST ET
+# GIT_REPO pour que la HEAD du dépôt plateforme soit découverte (sinon
+# REFUS: BRANCHE_PAR_DEFAUT_INDECIDABLE, aucun job posé).
+export GIT_HOST=http://localhost:13000 GIT_REPO=ci/stoa-labs
 JOBS="provision-plan provisioning-request" bash scripts/setup-provision-jobs.sh   # coquilles (historique conservé)
 JOBS=app-request bash scripts/setup-team-onboard-jobs.sh          # coquille + build d'AMORÇAGE (sans token Gitea)
 curl -sg "$JENKINS/job/app-request/api/json?tree=property[parameterDefinitions[name]]"   # 11 paramètres après l'amorçage
@@ -1132,7 +1136,10 @@ avec `setup-provision-jobs.sh` le jour du rollout client).
 ```bash
 git push gitea HEAD:main
 bash scripts/setup-selfservice-job.sh          # RE-POSE (XML sans paramètre) + amorçage + relecture
-bash scripts/setup-selfservice-job.sh --print  # le XML rendu, zéro réseau (épreuves)
+bash scripts/setup-selfservice-job.sh --print  # le XML rendu, zéro réseau SI GIT_BASE ou BRANCH est posée
+# Sans knob, `--print` DÉCOUVRE la branche (git_base_init sur GIT_URL, un
+# ls-remote) avant de rendre le XML : ce n'est plus un geste hors ligne.
+GIT_BASE=master bash scripts/setup-selfservice-job.sh --print   # rendu strictement hors ligne
 ```
 
 **Rollout sur un Jenkins existant — l'ordre est une contrainte :**
@@ -1143,7 +1150,8 @@ bash scripts/setup-selfservice-job.sh                      # l'AVAL d'abord : d�
 # vérifier : selfservice-app-deploy déclare MERGE_SHA (sinon un `build job:` le
 # retirerait EN SILENCE — SECURITY-170 — ; l'aval refuserait MERGE_SHA_REQUIS)
 curl -s "$JENKINS/job/selfservice-app-deploy/api/json?tree=property[parameterDefinitions[name]]"
-JOBS=provision-apply bash scripts/setup-provision-jobs.sh  # puis l'AMONT : la coquille from SCM (historique conservé)
+GIT_HOST=http://localhost:13000 GIT_REPO=ci/stoa-labs \
+  JOBS=provision-apply bash scripts/setup-provision-jobs.sh # puis l'AMONT : la coquille from SCM (historique conservé)
 ```
 
 **Knob de lab `APPLY_ADMIN_VIA`** : le défaut du Jenkinsfile est
@@ -1305,7 +1313,7 @@ message, qui est ce qui a coûté les deux jours. Exemptés nommément : les har
 de test (leurs fixtures NOMMENT des branches, c'est leur discriminant), les
 outils de lab, et l'autorité elle-même.
 
-**Deux dettes nommées, hors périmètre L3 :**
+**Les dettes nommées, hors périmètre L3** (recomptées le 2026-09-10) :
 
 - `labctl/` (Go) porte encore 46 occurrences de `main` hors tests (`package
   main` et `func main` exclus) — surtout dans `governance-api`, qui lit son
@@ -1314,7 +1322,27 @@ outils de lab, et l'autorité elle-même.
   ne couvre pas le Go ;
 - `ci/Jenkinsfile.carto` garde `CARTO_PAGES_BRANCH` avec un défaut `'main'` :
   c'est la branche **Pages** du dépôt carto, un paramètre documenté du job, sans
-  rapport avec la branche de la chaîne. Exempté **nommément** par la porte.
+  rapport avec la branche de la chaîne. Exempté **nommément** par la porte ;
+- **le périmètre de la porte est plus étroit que la surface livrée.**
+  `ci/lint-branch-literals.sh` ne lit que `scripts/*.sh`, `scripts/lib/*.sh`,
+  `ci/Jenkinsfile*`, `ci/jenkins/*.job.xml` et `ansible/roles/*/tasks/*.yml`.
+  N'y entrent donc **pas** : `ci/lib/*.sh` (quatre scripts livrés),
+  `scripts/lib/*.py` — dont `forge-api.py`, qui **compose le corps des PR** et
+  dont la `base` est aujourd'hui un **argument**, jamais un littéral —,
+  `ansible/roles/*/defaults|vars/*.yml`, `ansible/playbooks/*.yml`, et le Go
+  ci-dessus. Balayage manuel du 2026-09-10 : **zéro littéral exécuté** dans ces
+  familles. C'est de la prévention manquante, pas une fuite ouverte ;
+- `scripts/seed-governance-chain.sh:88` pousse encore `HEAD:main` sur le dépôt
+  de **gouvernance**, et relit `raw/branch/main`. C'est un **outil de lab**,
+  exempté nommément par la porte, et le lab EST sur `main` — mais il ne
+  tournera pas tel quel chez un client sur `master`. Même famille : les
+  prérequis des harnais `test-a{0,3,4,5,6,7}-live.sh` et
+  `test-selfservice-form-live.sh` ;
+- `ci/lint-config-knobs.sh:84` extrait les défauts shell avec
+  `\b([A-Z][A-Z0-9_]*)="?\$\{\1:-([^}"]*)\}"?`. La classe `[^}"]*` exclut le
+  guillemet : un défaut de la forme `${VAR:-$(cmd "x")}` **ne matche pas du
+  tout**, donc n'est jamais classé T1…T4. Aucun défaut de ce genre aujourd'hui,
+  mais la porte ne le verrait pas passer.
 
 **Au lab** : `docker compose -f docker-compose.gitlab.yml up -d gitlab` (seul,
 3-5 min au premier boot), `bash scripts/setup-gitlab-lab.sh` → `.env.gitlab-lab`
