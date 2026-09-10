@@ -3,7 +3,7 @@
 #
 #   merge PR onboard/* → webhook → job team-apply (pause nominative + garde
 #   d'identité, cf. le job XML) → CE script :
-#     1. ANTI-TOCTOU : checkout de main AU SHA DU MERGE ; l'équipe est lue dans
+#     1. ANTI-TOCTOU : checkout de la branche de base AU SHA DU MERGE ; l'équipe est lue dans
 #        providers.<env>.yml TEL QUE MERGÉ — jamais dans le payload du webhook.
 #     2. dépôt Gitea depuis le squelette ADR-076 (token org-admin lu dans Vault,
 #        header-file). IDEMPOTENT : dépôt existant → sauté, dit dans le commentaire.
@@ -47,13 +47,13 @@ _TA_LIB="$(dirname "${BASH_SOURCE[0]}")/lib/deploy-pin.sh"
 #
 # CE QUE CE PLACEMENT NE FAIT PAS (revue round 1 — une version antérieure de ce
 # commentaire le prétendait, à tort) : il ne met PAS le poseur hors de portée du
-# demandeur. Le workspace du job est checkouté sur */main de ci/stoa-labs
+# demandeur. Le workspace du job est checkouté sur la branche de base de ci/stoa-labs
 # (team-apply.job.xml:73-77) et le webhook ne part qu'APRÈS le merge : l'arbre
 # d'AVANT le `git checkout "$MERGE_SHA"` porte DÉJÀ la PR du demandeur. Sourcer
 # tôt ou tard n'y change donc RIEN.
 #
 # La vraie mitigation du trou « le demandeur peut éditer le poseur » est la
-# protection de ci/stoa-labs@main que CETTE tâche livre
+# protection de la branche de base de ci/stoa-labs que CETTE tâche livre
 # (setup-repo-protections.sh) : plus de push direct, tout passe par une PR
 # revue. C'est un contrôle de dépôt, pas un contrôle de ce script.
 #
@@ -69,6 +69,15 @@ _TA_PROV="$(dirname "${BASH_SOURCE[0]}")/lib/providers-teams.sh"
 [ -f "$_TA_PROV" ] || _TA_PROV="scripts/lib/providers-teams.sh"
 # shellcheck source=scripts/lib/providers-teams.sh
 . "$_TA_PROV" || { echo "ERREUR: $_TA_PROV introuvable ou illisible" >&2; exit 1; }
+# LA branche par défaut, une autorité (L3, 2026-09-10). Ce script ne clone pas
+# le dépôt plateforme : il lit le WORKTREE que Jenkins a checkouté. La branche
+# se découvre donc sur l'origine DE CE WORKTREE — le même dépôt, la même URL et
+# le même environnement que le `git fetch` du §1, donc la même enveloppe
+# d'authentification (celle que la définition SCM du job a posée).
+_TA_BASE="$(dirname "${BASH_SOURCE[0]}")/lib/git-base.sh"
+[ -f "$_TA_BASE" ] || _TA_BASE="scripts/lib/git-base.sh"
+# shellcheck source=scripts/lib/git-base.sh
+. "$_TA_BASE" || { echo "ERREUR: $_TA_BASE introuvable ou illisible" >&2; exit 1; }
 
 PR_BRANCH="${PR_BRANCH:?PR_BRANCH requis}"
 PR_NUMBER="${PR_NUMBER:?PR_NUMBER requis}"
@@ -113,7 +122,18 @@ TEAM="${BR_OUT% *}"; ENVN="${BR_OUT##* }"
 # d'authoring bouge — un littéral serait un second point de vérité muet.
 [ "$ENVN" = "$DEPLOY_PIN_AUTHORING_ENV" ] || fail "ENV_MISMATCH : ${ENVN} ≠ ${DEPLOY_PIN_AUTHORING_ENV} — l'onboarding est un geste d'authoring ; la tenancy aux paliers supérieurs vient du chemin de promotion (ADR-082)"
 
-git fetch -q origin main && git checkout -q "$MERGE_SHA" \
+# La branche de base AVANT le premier geste git : le fetch la nomme, et c'est
+# elle que le squelette du dépôt d'équipe suivra (§2). Knob GIT_BASE > HEAD de
+# l'origine du worktree > refus nommé (rc 2, déjà dit par la lib).
+# Écrit en `if`, pas en `${…:-…}` : ce n'est pas un DÉFAUT de configuration mais
+# une LECTURE de l'arbre en place — et ci/lint-config-knobs.sh a raison de
+# refuser un `:-` dont la valeur ressemble à un chemin.
+if [ -z "${GIT_CLONE_URL:-}" ]; then
+  GIT_CLONE_URL="$(git remote get-url origin 2>/dev/null || true)"
+fi
+git_base_init "$GIT_CLONE_URL" \
+  || fail "BRANCHE_PAR_DEFAUT_INCONNUE : branche par défaut du dépôt plateforme indéterminable (cause ci-dessus) — rien n'est appliqué"
+git fetch -q origin "$GIT_BASE" && git checkout -q "$MERGE_SHA" \
   || fail "checkout du SHA de merge $MERGE_SHA"
 PROV="ansible/providers.${ENVN}.yml"
 # Lu en YAML (voir provision-request.sh). L'ERE interpolait $TEAM ici aussi.
@@ -191,7 +211,12 @@ if [ -n "$REPO_FULL" ]; then
   RC=$(gapi -o "$TMP/repoinfo" -w '%{http_code}' "${GIT_HOST}/api/v1/repos/${REPO_FULL}")
   PUSH_SKELETON=0
   if [ "$RC" != 200 ]; then
-    RC=$(gapi -X POST -d "{\"name\":\"${RNAME}\",\"auto_init\":false}" -o "$TMP/err" -w '%{http_code}' "${GIT_HOST}/api/v1/orgs/${ORG}/repos")
+    # `default_branch` DIT à la forge la branche que le squelette va porter.
+    # Sans lui, la forge garde SON défaut de configuration (« main » chez la
+    # plupart) : le dépôt naîtrait en annonçant une HEAD que personne ne pousse,
+    # et api-request.sh, qui DEMANDE cette HEAD au dépôt (git_base_of), viserait
+    # une branche vide. Un dépôt neuf suit la branche de base de la plateforme.
+    RC=$(gapi -X POST -d "{\"name\":\"${RNAME}\",\"auto_init\":false,\"default_branch\":\"${GIT_BASE}\"}" -o "$TMP/err" -w '%{http_code}' "${GIT_HOST}/api/v1/orgs/${ORG}/repos")
     [ "$RC" = 201 ] || fail "création dépôt ${REPO_FULL} (HTTP $RC)"
     PUSH_SKELETON=1
     REPO_NOTE="dépôt ${REPO_FULL} : créé depuis le squelette ADR-076"
@@ -214,7 +239,9 @@ if [ -n "$REPO_FULL" ]; then
     SK="$TMP/skel"; mkdir -p "$SK"
     cp -R clients/_example/. "$SK/"
     printf '# %s\n\nDépôt d équipe (squelette ADR-076 : apis/, applications/).\nCréé par team-apply au merge de la PR #%s.\n' "$REPO_FULL" "$PR_NUMBER" > "$SK/README.md"
-    git -C "$SK" init -q -b main && git -C "$SK" add -A \
+    # Un dépôt NEUF n'a pas de HEAD à découvrir : il suit la branche de base de
+    # la plateforme (git_base_init ci-dessus, knob GIT_BASE prioritaire).
+    git -C "$SK" init -q -b "$GIT_BASE" && git -C "$SK" add -A \
       && git -C "$SK" -c user.name=ci -c user.email=ci@stoa.lab commit -qm "squelette ADR-076 (team-apply, PR #${PR_NUMBER})"
     # ÉCART AU BRIEF (bug corrigé, constaté en direct) : le brief (comme
     # team-request.sh/provision-request.sh) met le token dans l'URL
@@ -230,7 +257,7 @@ if [ -n "$REPO_FULL" ]; then
     AUTH_B64=$(printf 'x:%s' "$(cat "$TMP/gt")" | base64 | tr -d '\n')
     GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader \
       GIT_CONFIG_VALUE_0="Authorization: Basic ${AUTH_B64}" \
-      git -C "$SK" push -q "${GIT_HOST}/${REPO_FULL}.git" main 2>"$TMP/pe" \
+      git -C "$SK" push -q "${GIT_HOST}/${REPO_FULL}.git" "$GIT_BASE" 2>"$TMP/pe" \
       || { cat "$TMP/pe" >&2; fail "push du squelette"; }
     unset AUTH_B64
   fi
@@ -259,12 +286,28 @@ if [ -n "$REPO_FULL" ]; then
   # client change l'admin sans changer PROTECT_PUSH_WHITELIST, c'est le chemin
   # de RÉPARATION (dépôt existant VIDE, :184-189) qui casse — la protection
   # posée au run précédent refuserait le push de rattrapage.
+  # QUELLE branche protéger ? Celle que CE dépôt porte réellement. Squelette
+  # tout juste poussé : c'est $GIT_BASE. Dépôt qui EXISTAIT déjà (non vide) : sa
+  # HEAD est celle que la forge annonce, déjà lue dans $TMP/repoinfo — aucun
+  # appel supplémentaire, et surtout aucune supposition. Protéger une branche
+  # qui n'existe pas ne protège rien, en silence.
+  #
+  # Le repli sur $GIT_BASE quand la forge ne nomme aucune branche (réponse
+  # inattendue) ne MASQUE rien : si la branche est fausse, `pose_branch_protection`
+  # échoue et la note ⚠ ci-dessous le DIT sur la PR. C'est le seul endroit de ce
+  # script où une branche non confirmée est essayée, et elle ne l'est jamais en
+  # silence.
+  PROT_BRANCH="$GIT_BASE"
+  if [ "$PUSH_SKELETON" = 0 ]; then
+    PROT_BRANCH=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('default_branch') or '')" "$TMP/repoinfo" 2>/dev/null)
+    [ -n "$PROT_BRANCH" ] || PROT_BRANCH="$GIT_BASE"
+  fi
   PROT_NOTE=""
-  if repo_protection_payload main "${PROTECT_PUSH_WHITELIST:-ci}" > "$TMP/prot.json" \
+  if repo_protection_payload "$PROT_BRANCH" "${PROTECT_PUSH_WHITELIST:-ci}" > "$TMP/prot.json" \
      && pose_branch_protection "$GIT_HOST" "$TMP/ghdr" "$REPO_FULL" "$TMP/prot.json"; then
-    PROT_NOTE=" ; protection main posée (push whitelist: ${PROTECT_PUSH_WHITELIST:-ci})"
+    PROT_NOTE=" ; protection ${PROT_BRANCH} posée (push whitelist: ${PROTECT_PUSH_WHITELIST:-ci})"
   else
-    PROT_NOTE=" ; ⚠ protection main NON posée — repasser setup-repo-protections.sh"
+    PROT_NOTE=" ; ⚠ protection ${PROT_BRANCH} NON posée — repasser setup-repo-protections.sh"
     echo "AVERTISSEMENT: protection de branche non posée sur ${REPO_FULL} — refus nommé ci-dessus (PROTECTION_NON_POSEE)" >&2
   fi
   REPO_NOTE="${REPO_NOTE}${PROT_NOTE}"
@@ -336,17 +379,17 @@ print(json.dumps({'type': 'gitea', 'config': cfg, 'events': ['pull_request'], 'a
         if [ "$RC2" = 201 ]; then
           WEBHOOK_NOTE=" ; webhook team-publish : enregistré"
         else
-          WEBHOOK_NOTE=" ; ❌ webhook team-publish NON enregistré (HTTP ${RC2}) — team-publish ne se déclenchera pas sur ce dépôt tant qu'il n'est pas réparé à la main"
+          WEBHOOK_NOTE=" ; ❌ webhook team-publish NON enregistré (HTTP ${RC2}) — team-publish ne se déclenchera pas sur ce dépôt tant qu'il n'est pas réparé manuellement"
           echo "AVERTISSEMENT: enregistrement du webhook team-publish en échec (HTTP ${RC2}) : $(cat "$TMP/hookerr")" >&2
         fi
         ;;
       *)
-        WEBHOOK_NOTE=" ; ❌ webhook team-publish : état indéterminé (liste des hooks illisible) — vérifier à la main"
+        WEBHOOK_NOTE=" ; ❌ webhook team-publish : état indéterminé (liste des hooks illisible) — vérifier manuellement"
         echo "AVERTISSEMENT: lecture des hooks existants du dépôt ${REPO_FULL} illisible : $(cat "$TMP/hookperr")" >&2
         ;;
     esac
   else
-    WEBHOOK_NOTE=" ; ❌ webhook team-publish NON enregistré (liste des hooks illisible, HTTP ${RC}) — vérifier à la main"
+    WEBHOOK_NOTE=" ; ❌ webhook team-publish NON enregistré (liste des hooks illisible, HTTP ${RC}) — vérifier manuellement"
     echo "AVERTISSEMENT: lecture des hooks existants du dépôt ${REPO_FULL} en échec (HTTP ${RC})" >&2
   fi
   REPO_NOTE="${REPO_NOTE}${WEBHOOK_NOTE}"

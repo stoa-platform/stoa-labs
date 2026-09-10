@@ -131,7 +131,7 @@ PY
     case "$_ra" in
       */"${_api}-${_v}.archive.zip") ;;
       *)
-        _pm_fail "REALIGNEMENT_NON_APPLIQUE : archive relue '${_ra}' ne porte pas /${_api}-${_v}.archive.zip — forme inattendue (version pré-release déjà en place, ligne éditée à la main), le sed de réalignement n'a rien substitué"
+        _pm_fail "REALIGNEMENT_NON_APPLIQUE : archive relue '${_ra}' ne porte pas /${_api}-${_v}.archive.zip — forme inattendue (version pré-release déjà en place, ligne éditée manuellement), le sed de réalignement n'a rien substitué"
         return 1
         ;;
     esac

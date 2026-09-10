@@ -699,7 +699,7 @@ class H(BaseHTTPRequestHandler):
                 "merged": bool(pr.get("merged", True)),
                 "merge_commit_sha": pr.get("merge_commit_sha", ""),
                 "head": {"ref": pr.get("head_ref", "")},
-                "base": {"ref": pr.get("base_ref", "main")},
+                "base": {"ref": pr.get("base_ref", "master")},
                 "merged_by": {"login": pr.get("merged_by", "")},
                 "user": {"login": pr.get("user", "")},
             }))
@@ -793,7 +793,7 @@ TEAM_REPO="equipe/paiements"
 TEAM_NAME="paiements"
 PLAT_REPO="ci/stoa-labs"
 
-_gitinit() { git -C "$1" init -q -b main && git -C "$1" config user.email ci@stoa.lab && git -C "$1" config user.name ci; }
+_gitinit() { git -C "$1" init -q -b master && git -C "$1" config user.email ci@stoa.lab && git -C "$1" config user.name ci; }
 _publish() { # <src-worktree> <full-name>
   rm -rf "${STUB_REPOS:?}/${2}.git"
   mkdir -p "$(dirname "$STUB_REPOS/${2}.git")"
@@ -879,7 +879,7 @@ set_ctl() { # <merged true|false> <merge_sha> <head_ref> <merged_by> <user> <wm-
   local pols ipols
   pols=$(printf '%s' "$8" | awk -F, '{for(i=1;i<=NF;i++) printf "%s\"%s\"", (i>1?",":""), $i}')
   ipols=$(printf '%s' "${9:-}" | awk -F, '{for(i=1;i<=NF;i++) printf "%s\"%s\"", (i>1?",":""), $i}')
-  printf '{"pr":{"merged":%s,"merge_commit_sha":"%s","head_ref":"%s","base_ref":"main","merged_by":"%s","user":"%s"},"vault":{"wm-admin":%s,"admin-oauth":200,"lookup":%s,"lookup_policies":[%s],"lookup_identity_policies":[%s]}}\n' \
+  printf '{"pr":{"merged":%s,"merge_commit_sha":"%s","head_ref":"%s","base_ref":"master","merged_by":"%s","user":"%s"},"vault":{"wm-admin":%s,"admin-oauth":200,"lookup":%s,"lookup_policies":[%s],"lookup_identity_policies":[%s]}}\n' \
     "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$pols" "$ipols" > "$STUB_CTL"
 }
 
@@ -1032,7 +1032,7 @@ git -C "$D" checkout -q -b sournoise
 write_api "$D" "9.9.9"
 git -C "$D" add -A && git -C "$D" commit -qm "commit jamais merge"
 EVIL="$(git -C "$D" rev-parse HEAD)"
-git -C "$D" checkout -q main
+git -C "$D" checkout -q master
 write_marker "$D" rec "$EVIL" "1.0.0" "$ARCH_SHA" "" "" alice
 seal_team "$D"
 # L'archive légitime est déjà au registre (semée en tête de volet B) : le refus

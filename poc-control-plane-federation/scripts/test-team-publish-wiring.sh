@@ -54,7 +54,7 @@ ko(){ FAIL=$((FAIL+1)); printf '  ❌ %s\n' "$*"; }
 # section ajoutée/retirée DOIT mettre à jour ce nombre à la main — un oubli
 # fait virer le §26 au rouge, ce qui EST le comportement voulu (un rappel,
 # pas un bug).
-EXPECTED_CHECKS=121
+EXPECTED_CHECKS=122
 
 [ -f "$JOB" ] || { echo "job introuvable : $JOB"; exit 2; }
 [ -f "$JF" ]  || { echo "Jenkinsfile introuvable : $JF"; exit 2; }
@@ -401,8 +401,14 @@ grep -qF 'd.get("merge_commit_sha") == os.environ["MERGE_SHA"]' "$REPO/scripts/t
   && ok "merge_commit_sha comparé au MERGE_SHA du webhook" || ko "merge_commit_sha non comparé"
 grep -qF '.get("ref") == os.environ["PR_BRANCH"]' "$REPO/scripts/team-publish.sh" \
   && ok "head.ref comparé à PR_BRANCH du webhook" || ko "head.ref non comparé"
-grep -qF '.get("ref") == "main"' "$REPO/scripts/team-publish.sh" \
-  && ok "base.ref comparé à main" || ko "base.ref non comparé"
+# L3 (2026-09-10) : la base ATTENDUE n'est plus un littéral — c'est la HEAD que
+# la forge déclare pour CE dépôt d'équipe (git_base_of, §1bis). Un littéral
+# « main » refusait TOUTE PR chez un client dont la branche est `master`, en
+# accusant le payload. L'assertion suit : elle exige la comparaison ET sa source.
+grep -qF '.get("ref") == os.environ["TEAM_BASE"]' "$REPO/scripts/team-publish.sh" \
+  && ok "base.ref comparé à la branche de base DÉCOUVERTE du dépôt d'équipe (jamais un littéral)" || ko "base.ref non comparé à TEAM_BASE"
+grep -qE '^gbase git_base_of "\$\{GIT_HOST\}/\$\{WEBHOOK_REPO\}\.git"' "$REPO/scripts/team-publish.sh" \
+  && ok "TEAM_BASE vient d'une DÉCOUVERTE sur le dépôt d'équipe, sous l'enveloppe d'authentification (gbase)" || ko "TEAM_BASE n'est pas découvert sous enveloppe — une valeur devinée, ou un ls-remote anonyme"
 
 echo
 echo "== 16. contract (liste blanche EXACTE) + MANIFEST_UNSAFE (scan du reste) =="

@@ -483,8 +483,10 @@ if mut_jf noami; then
   grep -q -- '--allow-self-approval' "$TMP/frag.log" && bad "B.M4 mutation inopérante (le drapeau passe encore)" || ok "B.M4 \$AMI retiré de la garde ⇒ le fragment EXÉCUTÉ ne porte plus le drapeau (B.7a verrait rouge)"
 fi
 echo "── B.12 la suite de câblage A2 rejouée sans modifier ses assertions ──"
-bash scripts/test-provision-apply-wiring.sh > "$TMP/wiring.log" 2>&1 && grep -q 'RÉSULTAT : 150/150' "$TMP/wiring.log" \
-  && ok "B.12 test-provision-apply-wiring.sh 150/150" || bad "B.12 test-provision-apply-wiring.sh : $(tail -1 "$TMP/wiring.log")"
+# 152 depuis L3 (2026-09-10) : la suite A2 a gagné deux contrôles sur la
+# RÉSOLUTION de la branche de base de l'aval (elle n'est plus un littéral).
+bash scripts/test-provision-apply-wiring.sh > "$TMP/wiring.log" 2>&1 && grep -q 'RÉSULTAT : 152/152' "$TMP/wiring.log" \
+  && ok "B.12 test-provision-apply-wiring.sh 152/152" || bad "B.12 test-provision-apply-wiring.sh : $(tail -1 "$TMP/wiring.log")"
 
 echo
 echo "═══ C. le câblage de ci/Jenkinsfile.selfservice : REFUS_OUT, chaîne épinglée, purges absolues, post{always} ═══"
@@ -493,7 +495,7 @@ L_SL=$(code_line "$TMP/jfs.code" 'RC=0; vault_login_nominative || RC=$?')
 L_SG=$(line_after "${L_SL:-0}" 'bash "$GATE_DIR/scripts/selfservice-palier-gate.sh"' "$TMP/jfs.code")
 SG_LINE=$(sed -n "${L_SG:-0}p" "$TMP/jfs.code")
 printf '%s' "$SG_LINE" | grep -qF 'REFUS_OUT="$WORKSPACE/.a3-refus"' && ok "C.1 REFUS_OUT=\$WORKSPACE/.a3-refus sur la ligne d'appel de la garde" || bad "C.1 REFUS_OUT absent : $SG_LINE"
-printf '%s' "$SG_LINE" | grep -qF 'STOA_ENV_CHAIN_FILE="$GATE_DIR/clients/_example/environments.yaml"' && ok "C.2 STOA_ENV_CHAIN_FILE épinglé sur l'extraction origin/main" || bad "C.2 chaîne non épinglée : $SG_LINE"
+printf '%s' "$SG_LINE" | grep -qF 'STOA_ENV_CHAIN_FILE="$GATE_DIR/clients/_example/environments.yaml"' && ok "C.2 STOA_ENV_CHAIN_FILE épinglé sur l'extraction de la lignée (origin/\$BASE)" || bad "C.2 chaîne non épinglée : $SG_LINE"
 [ "$(grep -c 'rm -f "$WORKSPACE/.a3-refus"' "$TMP/jfs.code")" -ge 2 ] && ok "C.3 deux purges ABSOLUES de .a3-refus (Référence + avant l'appel)" || bad "C.3 purges absolues : $(grep -c 'rm -f "$WORKSPACE/.a3-refus"' "$TMP/jfs.code")"
 grep -q 'fileExists("${env.WORKSPACE}/.a3-refus")' "$TMP/jfs.code" && grep -q 'env.APPLIED_REFUSAL = ' "$TMP/jfs.code" && ok "C.4 post{always} du stage Apply relit .a3-refus dans env.APPLIED_REFUSAL" || bad "C.4 relais APPLIED_REFUSAL absent"
 grep -q '==~ /\[A-Z\]\[A-Z0-9_\]{2,40}/' "$TMP/jfs.code" && ok "C.5 le tag relayé est contrôlé contre [A-Z][A-Z0-9_]{2,40}" || bad "C.5 pas de classe sur le tag relayé"

@@ -121,7 +121,7 @@ mk_platform(){ # $1=bare-dir $2=providers.dev.yml content
   local bare="$1" src="$TMP/src-plat-$$-$RANDOM"
   mkdir -p "$src/poc-control-plane-federation/ansible"
   printf '%s' "$2" > "$src/poc-control-plane-federation/ansible/providers.dev.yml"
-  ( cd "$src" && git init -q -b main && git -c user.name=t -c user.email=t@t add -A \
+  ( cd "$src" && git init -q -b master && git -c user.name=t -c user.email=t@t add -A \
     && git -c user.name=t -c user.email=t commit -qm init >/dev/null )
   mkdir -p "$(dirname "$bare")"; git clone -q --bare "$src" "$bare" >/dev/null
   # P2 : le REGISTRE CENTRAL, dépôt SÉPARÉ, sous la même racine bidon — c'est
@@ -143,7 +143,7 @@ kind: ClassificationRegistry
 classifications:
   - {owner: teamx, tenant: banking-demo, api: foo, classification: VH, exposure: external}
 YML
-  ( cd "$src" && git init -q -b main && git -c user.name=t -c user.email=t@t add -A \
+  ( cd "$src" && git init -q -b master && git -c user.name=t -c user.email=t@t add -A \
     && git -c user.name=t -c user.email=t commit -qm init >/dev/null )
   mkdir -p "$(dirname "$bare")"; git clone -q --bare "$src" "$bare" >/dev/null
 }
@@ -151,7 +151,7 @@ mk_team(){ # $1=bare-dir  $2=contenu optionnel de apis/foo.publish.yml
   local bare="$1" src="$TMP/src-team-$$-$RANDOM"
   mkdir -p "$src/apis"
   [ -n "${2:-}" ] && printf '%s' "$2" > "$src/apis/foo.publish.yml"
-  ( cd "$src" && git init -q -b main && git -c user.name=t -c user.email=t@t add -A 2>/dev/null
+  ( cd "$src" && git init -q -b master && git -c user.name=t -c user.email=t@t add -A 2>/dev/null
     git -c user.name=t -c user.email=t commit -qm init --allow-empty >/dev/null )
   mkdir -p "$(dirname "$bare")"; git clone -q --bare "$src" "$bare" >/dev/null
 }
@@ -320,12 +320,12 @@ else
   gapi(){ curl -s -H @"$GTHDR" -H 'Content-Type: application/json' "$@"; }
   RC1=$(gapi -X POST -d "{\"username\":\"$PLATORG\"}" -o /dev/null -w '%{http_code}' "$GH/api/v1/orgs")
   RC2=$(gapi -X POST -d "{\"username\":\"$TEAMORG\"}" -o /dev/null -w '%{http_code}' "$GH/api/v1/orgs")
-  RC3=$(gapi -X POST -d '{"name":"stoa-labs","auto_init":false}' -o /dev/null -w '%{http_code}' "$GH/api/v1/orgs/$PLATORG/repos")
-  RC4=$(gapi -X POST -d '{"name":"apis","auto_init":false}' -o /dev/null -w '%{http_code}' "$GH/api/v1/orgs/$TEAMORG/repos")
+  RC3=$(gapi -X POST -d '{"name":"stoa-labs","auto_init":false,"default_branch":"master"}' -o /dev/null -w '%{http_code}' "$GH/api/v1/orgs/$PLATORG/repos")
+  RC4=$(gapi -X POST -d '{"name":"apis","auto_init":false,"default_branch":"master"}' -o /dev/null -w '%{http_code}' "$GH/api/v1/orgs/$TEAMORG/repos")
   # P2 : le registre central vit dans un dépôt À PART, que l'équipe ne possède
   # pas — c'est toute la valeur de l'ancrage. Un registre posé dans le dépôt
   # d'équipe (ou dans sa branche) serait sa propre déclaration relue deux fois.
-  RC5=$(gapi -X POST -d '{"name":"governance","auto_init":false}' -o /dev/null -w '%{http_code}' "$GH/api/v1/orgs/$PLATORG/repos")
+  RC5=$(gapi -X POST -d '{"name":"governance","auto_init":false,"default_branch":"master"}' -o /dev/null -w '%{http_code}' "$GH/api/v1/orgs/$PLATORG/repos")
   CLEANUP_URLS+=("$GH/api/v1/repos/$PLATORG/stoa-labs" "$GH/api/v1/repos/$PLATORG/governance" "$GH/api/v1/repos/$TEAMORG/apis" "$GH/api/v1/orgs/$PLATORG" "$GH/api/v1/orgs/$TEAMORG")
   if [ "$RC1" != 201 ] || [ "$RC2" != 201 ] || [ "$RC3" != 201 ] || [ "$RC4" != 201 ] || [ "$RC5" != 201 ]; then
     ko "préparation scratch (org/repo) en échec (HTTP $RC1/$RC2/$RC3/$RC4/$RC5) — section D avortée"
@@ -346,19 +346,19 @@ providers:
     repo: ${TEAMORG}/apis
     approvers: []
 YML
-    ( cd "$WD/plat" && git init -q -b main && git -c user.name=t -c user.email=t@t add -A \
+    ( cd "$WD/plat" && git init -q -b master && git -c user.name=t -c user.email=t@t add -A \
       && git -c user.name=t -c user.email=t commit -qm init )
-    ( cd "$WD/team" && git init -q -b main && git -c user.name=t -c user.email=t@t add -A 2>/dev/null
+    ( cd "$WD/team" && git init -q -b master && git -c user.name=t -c user.email=t@t add -A 2>/dev/null
       git -c user.name=t -c user.email=t commit -qm init --allow-empty )
-    ( cd "$WD/gov" && git init -q -b main && git -c user.name=t -c user.email=t@t add -A \
+    ( cd "$WD/gov" && git init -q -b master && git -c user.name=t -c user.email=t@t add -A \
       && git -c user.name=t -c user.email=t commit -qm init )
     AUTH_B64=$(printf 'x:%s' "$GITEA_TOKEN" | base64 | tr -d '\n')
     GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader GIT_CONFIG_VALUE_0="Authorization: Basic ${AUTH_B64}" \
-      git -C "$WD/plat" push -q "$GH/$PLATORG/stoa-labs.git" main
+      git -C "$WD/plat" push -q "$GH/$PLATORG/stoa-labs.git" master
     GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader GIT_CONFIG_VALUE_0="Authorization: Basic ${AUTH_B64}" \
-      git -C "$WD/team" push -q "$GH/$TEAMORG/apis.git" main
+      git -C "$WD/team" push -q "$GH/$TEAMORG/apis.git" master
     GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader GIT_CONFIG_VALUE_0="Authorization: Basic ${AUTH_B64}" \
-      git -C "$WD/gov" push -q "$GH/$PLATORG/governance.git" main
+      git -C "$WD/gov" push -q "$GH/$PLATORG/governance.git" master
     unset AUTH_B64
 
     # ── flake d'ENVIRONNEMENT observé (pas un défaut d'api-request.sh) : sur
@@ -465,7 +465,7 @@ paths: {}'
     OUT3=$(ACTION=new-version TEAM="$TEAMORG" API_NAME=scratch-api API_BASE='scratch-api@1.0.0' NEW_VERSION=3.0.0 \
       OPENAPI_SPEC="$SPEC2" INBOUND_MODE=jwt bash "$S" 2>&1)
     RC3=$?
-    # main porte encore 1.0.0 (D3 n'est pas mergée) : ce n'est PAS une base
+    # master porte encore 1.0.0 (D3 n'est pas mergée) : ce n'est PAS une base
     # périmée ici, donc la PR doit s'ouvrir sans API_BASE_STALE. On vérifie
     # juste la non-régression du chemin nominal, pas un refus.
     if [ "$RC3" -eq 0 ]; then

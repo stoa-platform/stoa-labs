@@ -238,7 +238,7 @@ mk_platform(){ # $1=racine bare $2=providers.dev.yml
   mkdir -p "$src/poc-control-plane-federation/ansible" "$src/poc-control-plane-federation/clients/_example/apis"
   printf '%s' "$2" > "$src/poc-control-plane-federation/ansible/providers.dev.yml"
   printf 'apim_api:\n  name: accounts-read\n  version: 1.0.0\n' > "$src/poc-control-plane-federation/clients/_example/apis/accounts-read.publish.yml"
-  ( cd "$src" && git init -q -b main && git -c user.name=t -c user.email=t@t add -A && git -c user.name=t -c user.email=t commit -qm init >/dev/null )
+  ( cd "$src" && git init -q -b master && git -c user.name=t -c user.email=t@t add -A && git -c user.name=t -c user.email=t commit -qm init >/dev/null )
   mkdir -p "$(dirname "$bare")"; git clone -q --bare "$src" "$bare" >/dev/null
 }
 PROV_OK=$'providers:\n  - team: banking-demo\n    repo: acme/depot-absent\n    approvers: []\n  - team: payments-team\n    repo: ""\n    approvers: []\n  - team: banking-demo\n    repo: ""\n    approvers: []\n'

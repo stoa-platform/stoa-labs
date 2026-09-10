@@ -46,6 +46,13 @@ _TR_LAYOUT="$(dirname "${BASH_SOURCE[0]}")/lib/repo-layout.sh"
 # shellcheck source=scripts/lib/repo-layout.sh
 . "$_TR_LAYOUT" || { echo "ERREUR: $_TR_LAYOUT introuvable ou illisible" >&2; exit 1; }
 repo_layout_init || exit 2
+# LA branche par défaut du dépôt de la forge, une autorité (L3, 2026-09-10) :
+# sourcée ici, JOUÉE au clone (§2), quand l'URL existe. Le clone de ce script
+# est ANONYME — la découverte l'est donc aussi, sous la même enveloppe.
+_TR_BASE="$(dirname "${BASH_SOURCE[0]}")/lib/git-base.sh"
+[ -f "$_TR_BASE" ] || _TR_BASE="scripts/lib/git-base.sh"
+# shellcheck source=scripts/lib/git-base.sh
+. "$_TR_BASE" || { echo "ERREUR: $_TR_BASE introuvable ou illisible" >&2; exit 1; }
 _TR_PROV="$(dirname "${BASH_SOURCE[0]}")/lib/providers-teams.sh"
 [ -f "$_TR_PROV" ] || _TR_PROV="scripts/lib/providers-teams.sh"
 # shellcheck source=scripts/lib/providers-teams.sh
@@ -148,13 +155,26 @@ fi
 # ── 2. clone + édition de providers.<env>.yml ────────────────────────────────
 WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
 BRANCH="onboard/${TEAM}-${REQ_ENV}"
-echo "[1/4] clone ${GIT_REPO}"
-git clone -q --depth 1 -b main "${GIT_HOST}/${GIT_REPO}.git" "$WORK/repo" || fail "clone ${GIT_REPO}"
+# LA BRANCHE DE BASE, ICI : l'URL est composée, c'est le premier `-b` du
+# script, et c'est aussi la base que la PR visera plus bas — les deux DOIVENT
+# être la même, sinon la MR s'ouvre vers une branche que le clone n'a pas prise.
+TR_URL="${GIT_HOST}/${GIT_REPO}.git"
+git_base_init "$TR_URL" || exit 2
+echo "[1/4] clone ${GIT_REPO}@${GIT_BASE}"
+if ! git clone -q --depth 1 -b "$GIT_BASE" "$TR_URL" "$WORK/repo" 2>"$WORK/clone.err"; then
+  # rc 2 = le dépôt a répondu mais n'a pas cette branche ; autre = pas de
+  # réponse (mesuré git 2.42). Le texte de git dépendrait de sa locale.
+  TR_LS_RC=0; git ls-remote --exit-code --heads "$TR_URL" "refs/heads/${GIT_BASE}" >/dev/null 2>&1 || TR_LS_RC=$?
+  TR_ERR="$(sed -E 's#://[^/@[:space:]]+@#://<masqué>@#g' "$WORK/clone.err" 2>/dev/null | head -c 300 | tr '\n' ' ')"
+  [ "$TR_LS_RC" = 2 ] \
+    && fail "BRANCHE_DE_BASE_INTROUVABLE : ${GIT_BASE} n'existe pas sur ${GIT_REPO} — knob GIT_BASE faux, ou dépôt vide ; rien n'a été écrit (git : ${TR_ERR:-sans message})"
+  fail "clone ${GIT_REPO}@${GIT_BASE} : ${TR_ERR:-sans message}"
+fi
 PROV_REL="${SUB_PFX}ansible/providers.${REQ_ENV}.yml"
 PROV="$WORK/repo/$PROV_REL"
 # Le refus ne disait AUCUN chemin : sur un dépôt client rangé autrement, il
 # envoyait chercher un fichier présent. Il nomme désormais ce qui a été lu.
-[ -f "$PROV" ] || fail "PROVIDERS_MISSING : ${PROV_REL} absent de ${GIT_REPO}@main (chemin RELATIF à la racine du dépôt, préfixe GIT_SUBDIR='${GIT_SUBDIR}')"
+[ -f "$PROV" ] || fail "PROVIDERS_MISSING : ${PROV_REL} absent de ${GIT_REPO}@${GIT_BASE} (chemin RELATIF à la racine du dépôt, préfixe GIT_SUBDIR='${GIT_SUBDIR}')"
 
 # Jamais d'écrasement silencieux : une équipe déjà déclarée est un refus,
 # pas une mise à jour — la mise à jour d'une équipe passe par une PR manuelle.
@@ -209,10 +229,11 @@ GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader \
 unset AUTH_B64
 
 PR_NUMBER=$(API="${GIT_HOST}/api/v1" GIT_REPO="$GIT_REPO" FORGE_SECRET="$FORGE_SECRET" \
-  BRANCH="$BRANCH" TEAM="$TEAM" REQ_ENV="$REQ_ENV" python3 - <<'PY'
+  BRANCH="$BRANCH" TEAM="$TEAM" GIT_BASE="$GIT_BASE" REQ_ENV="$REQ_ENV" python3 - <<'PY'
 import json, os, urllib.request
 api, repo, tok = os.environ["API"], os.environ["GIT_REPO"], os.environ["FORGE_SECRET"]
-body = {"base": "main", "head": os.environ["BRANCH"],
+# La base de la PR = la branche que le clone a prise, jamais un littéral.
+body = {"base": os.environ["GIT_BASE"], "head": os.environ["BRANCH"],
         "title": f"onboard: équipe {os.environ['TEAM']} ({os.environ['REQ_ENV']})"}
 req = urllib.request.Request(f"{api}/repos/{repo}/pulls", method="POST",
     data=json.dumps(body).encode(),

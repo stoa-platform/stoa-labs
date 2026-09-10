@@ -16,7 +16,7 @@
 #        payload serait une AFFIRMATION du dépôt de l'équipe lui-même (il
 #        pourrait mentir sur son propre nom). L'équipe est dérivée en CROISANT
 #        ce dépôt avec providers.<env>.yml — dépôt PLATEFORME, lu FRAIS sur
-#        main — la SEULE source qui dit VRAIMENT « ce dépôt appartient à
+#        la branche de base — la SEULE source qui dit VRAIMENT « ce dépôt appartient à
 #        cette équipe ». REPO_NON_DECLARE si aucune équipe ne le revendique.
 #     4. ANTI-TOCTOU : le manifeste (apis/<name>.publish.yml) est lu dans le
 #        dépôt de l'ÉQUIPE AU SHA DU MERGE (clone AUTHENTIFIÉ, pas anonyme —
@@ -70,6 +70,13 @@ cd "$(dirname "$0")/.." || exit 1
 # shellcheck source=scripts/lib/repo-layout.sh
 . scripts/lib/repo-layout.sh || { echo "ERREUR: scripts/lib/repo-layout.sh introuvable ou illisible" >&2; exit 1; }
 repo_layout_init || exit 2
+# LA branche par défaut, une autorité (L3, 2026-09-10). TROIS dépôts ici —
+# plateforme, équipe, gouvernance — et TROIS HEAD possibles : un GIT_BASE global
+# n'est vrai que pour la plateforme, les deux autres se DEMANDENT à leur dépôt
+# (git_base_of, mémoïsé). Les découvertes passent par gbase(), qui porte la
+# MÊME enveloppe d'authentification que gclone().
+# shellcheck source=scripts/lib/git-base.sh
+. scripts/lib/git-base.sh || { echo "ERREUR: scripts/lib/git-base.sh introuvable ou illisible" >&2; exit 1; }
 
 WEBHOOK_REPO="${WEBHOOK_REPO:?WEBHOOK_REPO requis (repository.full_name du webhook)}"
 PR_BRANCH="${PR_BRANCH:?PR_BRANCH requis}"
@@ -132,6 +139,20 @@ gclone(){
     GIT_CONFIG_VALUE_0="Authorization: Basic ${auth_b64}" \
     git clone -q "$@"
 }
+# LA DÉCOUVERTE SOUS LA MÊME ENVELOPPE QUE LE CLONE. La lib ne porte aucun
+# secret : c'est l'appelant qui enveloppe son `git ls-remote` comme il enveloppe
+# son `git clone`. Sans ça, un dépôt PRIVÉ — le cas normal chez un client —
+# rendrait la découverte ANONYME donc en échec, et la publication refuserait
+# pour une raison qui n'a rien à voir. Préfixe d'ENV sur l'appel de fonction :
+# bash le passe aux enfants, jamais en argv. Premier argument : la fonction de
+# la lib (git_base_init pour la plateforme, git_base_of pour les autres dépôts).
+gbase(){
+  local auth_b64
+  auth_b64=$(printf 'x:%s' "$FORGE_SECRET" | base64 | tr -d '\n')
+  GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader \
+    GIT_CONFIG_VALUE_0="Authorization: Basic ${auth_b64}" \
+    "$@"
+}
 
 # ── 0. VALIDATION DE FORME — AVANT tout argv git/curl ────────────────────────
 # WEBHOOK_REPO et MERGE_SHA viennent d'un WEBHOOK (un tiers) et sont
@@ -177,19 +198,31 @@ case "$API_VERSION" in *[!0-9.]*) fail "API_VERSION_INVALIDE : '${API_VERSION}' 
 printf '%s' "$API_VERSION" | grep -Eq '^[0-9]+\.[0-9]+(\.[0-9]+)?$' \
   || fail "API_VERSION_INVALIDE : '${API_VERSION}' (branche '${PR_BRANCH}') — attendu X.Y ou X.Y.Z"
 
+# ── 1bis. LA BRANCHE DE BASE DU DÉPÔT D'ÉQUIPE (L3, 2026-09-10) ─────────────
+# APRÈS les gardes de forme (un payload difforme est refusé sans toucher au
+# réseau) et AVANT la §2 : c'est la base RELUE de la PR que la §2 compare
+# (base.ref), et c'est la même branche que le `origin/<base>` du §4. « main » y
+# était écrit en dur — chez un client dont la branche est `master`, TOUTE PR
+# mergée était refusée PAYLOAD_PERIME, en accusant le webhook au lieu du
+# câblage. Le dépôt d'équipe a SA HEAD, pas celle de la plateforme.
+gbase git_base_of "${GIT_HOST}/${WEBHOOK_REPO}.git" >/dev/null \
+  || fail "BRANCHE_PAR_DEFAUT_INCONNUE : branche par défaut de ${WEBHOOK_REPO} indéterminable (cause ci-dessus) — sans elle, ni la base de la PR ni l'ancêtreté du merge ne peuvent être vérifiées ; rien n'est publié"
+TEAM_BASE="$GIT_BASE_OF"
+
 # ── 2. RÉCONCILIATION AVEC GITEA — le payload n'est pas la vérité ────────────
 # Le webhook n'a ni secret HMAC vérifié en aval (limite du plugin Generic
 # Webhook Trigger avec ce montage — cf. rapport) ni garantie de fraîcheur : un
 # tir manuel avec le token GWT partagé peut prétendre N'IMPORTE QUEL
 # merge_commit_sha/branche pour ce PR_NUMBER. La garde d'atteignabilité
-# (§4, plus bas) confirme que MERGE_SHA est UN ancêtre de main — pas
+# (§4, plus bas) confirme que MERGE_SHA est UN ancêtre de la branche de base —
+# pas
 # forcément CELUI de CETTE PR. On redemande donc l'état à GITEA LUI-MÊME
 # (authentifié par FORGE_SECRET, donc pas falsifiable par le contenu d'un
 # payload) : la PR est-elle RÉELLEMENT fusionnée, avec CE SHA, CETTE branche,
-# sur main ? Un payload rejoué (SHA périmé, branche différente, PR pas encore
+# sur la base ? Un payload rejoué (SHA périmé, branche différente, PR pas encore
 # mergée) ne peut pas fabriquer une réponse Gitea qui concorde.
 PR_STATE=$(GIT_HOST="$GIT_HOST" WEBHOOK_REPO="$WEBHOOK_REPO" PR_NUMBER="$PR_NUMBER" \
-  FORGE_SECRET="$FORGE_SECRET" PR_BRANCH="$PR_BRANCH" MERGE_SHA="$MERGE_SHA" python3 - <<'PY'
+  FORGE_SECRET="$FORGE_SECRET" PR_BRANCH="$PR_BRANCH" MERGE_SHA="$MERGE_SHA" TEAM_BASE="$TEAM_BASE" python3 - <<'PY'
 import os, json, urllib.request, urllib.error
 api = os.environ["GIT_HOST"] + "/api/v1"
 repo = os.environ["WEBHOOK_REPO"]
@@ -205,7 +238,9 @@ ok = (
     d.get("merged") is True
     and d.get("merge_commit_sha") == os.environ["MERGE_SHA"]
     and (d.get("head") or {}).get("ref") == os.environ["PR_BRANCH"]
-    and (d.get("base") or {}).get("ref") == "main"
+    # La base ATTENDUE est celle que la forge déclare pour CE dépôt, pas un
+    # littéral : un dépôt d'équipe sur `master` refusait tout, en accusant le payload.
+    and (d.get("base") or {}).get("ref") == os.environ["TEAM_BASE"]
 )
 print("OK" if ok else "MISMATCH")
 PY
@@ -216,19 +251,24 @@ case "$PR_STATE" in
   MISMATCH) fail "PAYLOAD_PERIME : ${WEBHOOK_REPO}#${PR_NUMBER} sur Gitea (merged/merge_commit_sha/head.ref/base.ref) ne correspond pas au webhook — le payload ne fait pas foi, refus" ;;
   *) fail "GITEA_RECONCILE_ECHEC : réponse inattendue de la réconciliation ('${PR_STATE}')" ;;
 esac
-echo "réconciliation Gitea OK : ${WEBHOOK_REPO}#${PR_NUMBER} merged, ${PR_BRANCH}->main"
+echo "réconciliation Gitea OK : ${WEBHOOK_REPO}#${PR_NUMBER} merged, ${PR_BRANCH}->${TEAM_BASE}"
 
 # ── 3. AUTORITÉ PAR TOPOLOGIE : quelle équipe déclare CE dépôt ? ─────────────
-# providers.<env>.yml est le dépôt PLATEFORME (GIT_REPO), lu FRAIS sur main —
+# providers.<env>.yml est le dépôt PLATEFORME (GIT_REPO), lu FRAIS sur SA
+# branche de base —
 # jamais au MERGE_SHA (qui est celui du dépôt d'ÉQUIPE, un repo DIFFÉRENT, cf.
 # §4). Même discipline fail-closed que team-apply.sh REPO_FULL : un marqueur
 # EXPLICITE (TEAM=) distingue « aucune équipe » (marqueur présent, valeur
 # vide) de « extraction cassée » (marqueur absent) — jamais confondus.
-gclone --depth 1 -b main "${GIT_HOST}/${GIT_REPO}.git" "$TMP/platform" \
-  || fail "clone ${GIT_REPO}@main (résolution dépôt -> équipe)"
+# La PLATEFORME, elle, suit le knob GIT_BASE quand il est posé (git_base_init) :
+# c'est le dépôt de la chaîne, celui que l'exploitant nomme.
+gbase git_base_init "${GIT_HOST}/${GIT_REPO}.git" \
+  || fail "BRANCHE_PAR_DEFAUT_INCONNUE : branche par défaut de ${GIT_REPO} indéterminable (cause ci-dessus) — la topologie dépôt -> équipe ne peut pas être lue ; rien n'est publié"
+gclone --depth 1 -b "$GIT_BASE" "${GIT_HOST}/${GIT_REPO}.git" "$TMP/platform" \
+  || fail "clone ${GIT_REPO}@${GIT_BASE} (résolution dépôt -> équipe)"
 PROV_REL="${SUB_PFX}ansible/providers.${ENVN}.yml"
 PROV="$TMP/platform/$PROV_REL"
-[ -f "$PROV" ] || fail "PROVIDERS_MISSING : ${PROV_REL} absent sur ${GIT_REPO}@main (chemin RELATIF à la racine du dépôt, préfixe GIT_SUBDIR='${GIT_SUBDIR}')"
+[ -f "$PROV" ] || fail "PROVIDERS_MISSING : ${PROV_REL} absent sur ${GIT_REPO}@${GIT_BASE} (chemin RELATIF à la racine du dépôt, préfixe GIT_SUBDIR='${GIT_SUBDIR}')"
 
 # FAIL-CLOSED supplémentaire (REPO_AMBIGU) : si CE dépôt est déclaré par PLUS
 # D'UNE équipe (erreur d'opérateur — copier-coller de providers.<env>.yml),
@@ -266,14 +306,14 @@ git -C "$TMP/team" checkout -q "$MERGE_SHA" \
 # GARDE D'ATTEIGNABILITÉ : un `git checkout $MERGE_SHA` réussi prouve
 # seulement que l'OBJET existe quelque part dans le clone (un `git clone` SANS
 # --depth 1 récupère TOUTES les branches) — jamais qu'il est réellement fusionné
-# sur main. Un SHA valide mais vivant sur une branche non protégée (ou jamais
+# sur la branche de base. Un SHA valide mais vivant sur une branche non protégée (ou jamais
 # mergée) passerait le checkout ET dériverait ensuite name/version depuis LA
 # BRANCHE (webhook) plutôt que depuis un état VRAIMENT revu — exactement le
 # point aveugle qu'une revue de ce dépôt traque partout ailleurs (cf.
 # TEAM_NOT_IN_MERGED_STATE de team-apply.sh, même intention, garde différente
-# car team-apply.sh checkoute directement SUR origin/main, jamais un SHA tiers).
-git -C "$TMP/team" merge-base --is-ancestor "$MERGE_SHA" origin/main \
-  || fail "MERGE_SHA_NON_ANCETRE : ${MERGE_SHA} n'est pas un ancêtre de ${WEBHOOK_REPO}@main — le SHA du webhook ne correspond pas à un commit réellement fusionné sur la branche protégée, refus de publier depuis un état non revu"
+# car team-apply.sh checkoute directement SUR la branche de base, jamais un SHA tiers).
+git -C "$TMP/team" merge-base --is-ancestor "$MERGE_SHA" "origin/${TEAM_BASE}" \
+  || fail "MERGE_SHA_NON_ANCETRE : ${MERGE_SHA} n'est pas un ancêtre de ${WEBHOOK_REPO}@${TEAM_BASE} — le SHA du webhook ne correspond pas à un commit réellement fusionné sur la branche protégée, refus de publier depuis un état non revu"
 
 PUB_REL="apis/${API_NAME}.publish.yml"
 PUB_PATH="$TMP/team/${PUB_REL}"
@@ -282,7 +322,7 @@ PUB_PATH="$TMP/team/${PUB_REL}"
 
 # CONTRAT_ABSENT : api-request.sh pose TOUJOURS le manifeste ET son contrat
 # ENSEMBLE (même commit). Une PR qui aurait retiré/renommé le contrat à la
-# main romprait la publication BEAUCOUP plus loin (à l'intérieur du rôle
+# la branche de base romprait la publication BEAUCOUP plus loin (à l'intérieur du rôle
 # Ansible, sur un lookup('file', …) dont le message ne dit pas "le contrat
 # manque au SHA mergé") — vérifié ICI, tôt, avec un diagnostic qui nomme la
 # cause plutôt que sa conséquence.
@@ -379,13 +419,13 @@ PY
 # Ligne D'APPEL laissée intacte (test-deploy-pin.sh ⑳ ancre
 # ^resolve_deploy_pin "\$TMP/team" en tête de ligne) : le branchement en
 # `|| { … }` porte la capture sans déplacer l'appel derrière un `if !`.
-resolve_deploy_pin "$TMP/team" "$API_NAME" "$ENVN" "$TMP/resolved" 2>"$TMP/pin.err" || {
+resolve_deploy_pin "$TMP/team" "$API_NAME" "$ENVN" "$TMP/resolved" "origin/${TEAM_BASE}" 2>"$TMP/pin.err" || {
   cat "$TMP/pin.err" >&2   # le log de build garde TOUT le détail
   REFUS="$(grep -o 'deploy-pin: [A-Z_]*' "$TMP/pin.err" | tail -1)"
   fail "PIN_NON_RESOLU : la référence de déploiement de ${API_NAME} en ${ENVN} n'a pas pu être résolue (${REFUS:-refus non nommé — voir le log du build})"
 }
 
-# ── 4b. registre CENTRAL de classification, lu FRAIS sur main (jalon P2) ────
+# ── 4b. registre CENTRAL, lu FRAIS sur SA branche de base (jalon P2) ────────
 # Cloné ICI, avant l'appel au rôle : c'est la source que posture.yml consultera,
 # et elle doit venir d'un dépôt que l'ÉQUIPE NE PEUT PAS ÉCRIRE. Un registre lu
 # dans le clone du dépôt d'équipe (§4) serait la déclaration de l'équipe une
@@ -402,11 +442,14 @@ resolve_deploy_pin "$TMP/team" "$API_NAME" "$ENVN" "$TMP/resolved" 2>"$TMP/pin.e
 # refuse TOUTE publication — fail-closed, donc pas une fuite, mais la
 # fonctionnalité entière est inatteignable. Même famille que le préfixe du
 # livrable : vrai au lab, faux chez le client.
-gclone --depth 1 -b main "${GIT_HOST}/${GOVERNANCE_REPO}.git" "$TMP/governance" 2>"$TMP/gov.err" \
+gbase git_base_of "${GIT_HOST}/${GOVERNANCE_REPO}.git" >/dev/null \
+  || fail "REGISTRE_GOUVERNANCE_INACCESSIBLE : branche par défaut de '${GOVERNANCE_REPO}' indéterminable sur ${GIT_HOST} (cause ci-dessus) — la posture de ${API_NAME} ne peut être arbitrée par personne. Rien n'est publié."
+GOV_BASE="$GIT_BASE_OF"
+gclone --depth 1 -b "$GOV_BASE" "${GIT_HOST}/${GOVERNANCE_REPO}.git" "$TMP/governance" 2>"$TMP/gov.err" \
   || { cat "$TMP/gov.err" >&2; fail "REGISTRE_GOUVERNANCE_INACCESSIBLE : dépôt '${GOVERNANCE_REPO}' injoignable sur ${GIT_HOST} — la posture de ${API_NAME} ne peut être arbitrée par personne, et une posture non arbitrée est celle que la demande s'est donnée. Rien n'est publié."; }
 GOV_REGISTRY="$TMP/governance/${GOVERNANCE_PATH}"
 [ -f "$GOV_REGISTRY" ] \
-  || fail "REGISTRE_GOUVERNANCE_ABSENT : '${GOVERNANCE_PATH}' introuvable dans ${GOVERNANCE_REPO}@main — vérifier GOVERNANCE_PATH, ou faire poser le registre par la gouvernance de la donnée. Rien n'est publié."
+  || fail "REGISTRE_GOUVERNANCE_ABSENT : '${GOVERNANCE_PATH}' introuvable dans ${GOVERNANCE_REPO}@${GOV_BASE} — vérifier GOVERNANCE_PATH, ou faire poser le registre par la gouvernance de la donnée. Rien n'est publié."
 
 # ── 5. publication (rôle du palier 3, idempotent create-or-version) ─────────
 # apim_ss_contract_pin (extra-var, précédence 22) ÉPINGLE le contract au

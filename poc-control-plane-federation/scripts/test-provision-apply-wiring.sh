@@ -44,7 +44,7 @@ TMP="$(mktemp -d /tmp/pa-wiring.XXXXXX)"; trap 'rm -rf "$TMP"' EXIT
 # quel que soit le nombre de contrôles exécutés : une section sautée en silence
 # ferait baisser le total SANS rougir). Toute section ajoutée/retirée DOIT le
 # mettre à jour à la main. Le contrôle final n'est pas compté dedans.
-EXPECTED_CHECKS=149
+EXPECTED_CHECKS=151
 
 [ -f "$JOB" ] || { echo "job introuvable : $JOB"; exit 2; }
 [ -f "$JF" ]  || { echo "Jenkinsfile introuvable : $JF"; exit 2; }
@@ -303,9 +303,13 @@ L_REQ=$(code_line "$TMP/jfd.code" 'MERGE_SHA_REQUIS')
 jfd "!currentBuild.upstreamBuilds.isEmpty() && !((params.MERGE_SHA ?: '').trim())" \
   && ok "garde MERGE_SHA_REQUIS : appelé par un amont (upstreamBuilds, attrape BuildUpstreamCause) SANS MERGE_SHA ⇒ error" \
   || ko "garde MERGE_SHA_REQUIS absente ou fondée sur getBuildCauses('…UpstreamCause') (nom exact : ne verrait pas BuildUpstreamCause)"
-L_FETCH=$(code_line "$TMP/jfd.code" 'git fetch -q origin main')
-L_ANC=$(code_line "$TMP/jfd.code" 'git merge-base --is-ancestor "$REF" origin/main')
-L_FP=$(code_line "$TMP/jfd.code" 'git rev-list --first-parent origin/main | grep -qx "$REF"')
+# L3 (2026-09-10) : la branche de base est RÉSOLUE dans le bloc `sh` (globale
+# GIT_BASE, sinon la HEAD annoncée par l'origine, sinon refus) — l'aval ne peut
+# pas sourcer git-base.sh, qui vit dans l'arbre PINNÉ que ces gardes contrôlent.
+L_BASE=$(code_line "$TMP/jfd.code" 'BASE=$(git ls-remote --symref origin HEAD')
+L_FETCH=$(code_line "$TMP/jfd.code" 'git fetch -q origin "$BASE"')
+L_ANC=$(code_line "$TMP/jfd.code" 'git merge-base --is-ancestor "$REF" "origin/$BASE"')
+L_FP=$(code_line "$TMP/jfd.code" 'git rev-list --first-parent "origin/$BASE" | grep -qx "$REF"')
 L_CO=$(code_line "$TMP/jfd.code" 'git checkout -q "$REF"')
 L_RP=$(code_line "$TMP/jfd.code" 'REF="$(git rev-parse HEAD)"')
 L_PLAN=$(code_line "$TMP/jfd.code" "stage('Plan")
@@ -317,8 +321,10 @@ L_CP=$(code_line "$TMP/jfd.code" 'cp .a2-reference-sha .a2-applied-sha')
 # PREMIER stage — AVANT la garde MERGE_SHA_REQUIS qui lit params.MERGE_SHA.
 L_PROPS=$(code_line "$TMP/jfd.code" 'properties([')
 [ -n "$L_PROPS" ] && [ -n "$L_REQ" ] && [ "$L_PROPS" -lt "$L_REQ" ] && ok "properties([ (ligne $L_PROPS) AVANT MERGE_SHA_REQUIS (ligne $L_REQ) : le formulaire est posé avant d'être lu" || ko "properties() absent ou après MERGE_SHA_REQUIS (props=$L_PROPS req=$L_REQ)"
-[ -n "$L_FETCH" ] && ok "git fetch origin main (ligne $L_FETCH)" || ko "aucun fetch de main"
-[ -n "$L_ANC" ] && ok "garde d'atteignabilité merge-base --is-ancestor (ligne $L_ANC)" || ko "aucun merge-base --is-ancestor — un SHA hors main serait appliqué"
+[ -n "$L_BASE" ] && ok "la branche de base est RÉSOLUE (ls-remote --symref, ligne $L_BASE) — jamais un littéral" || ko "aucune résolution de la branche de base — l'aval devine sa branche"
+jfd "REFUS: BRANCHE_PAR_DEFAUT_INCONNUE" && ok "refus nommé BRANCHE_PAR_DEFAUT_INCONNUE : rien n'est appliqué sans branche de base" || ko "BRANCHE_PAR_DEFAUT_INCONNUE absent — une base vide passerait"
+[ -n "$L_FETCH" ] && [ -n "$L_BASE" ] && [ "$L_BASE" -lt "$L_FETCH" ] && ok "git fetch origin \$BASE (ligne $L_FETCH), APRÈS la résolution (ligne $L_BASE)" || ko "aucun fetch de la branche de base, ou fetch avant sa résolution"
+[ -n "$L_ANC" ] && ok "garde d'atteignabilité merge-base --is-ancestor (ligne $L_ANC)" || ko "aucun merge-base --is-ancestor — un SHA hors de la branche de base serait appliqué"
 [ -n "$L_FP" ] && ok "garde de LIGNÉE first-parent (ligne $L_FP) : un commit intérieur à une branche de PR est refusé" || ko "aucune garde first-parent"
 [ -n "$L_CO" ] && ok "git checkout du SHA (ligne $L_CO)" || ko "aucun checkout du SHA"
 [ -n "$L_ANC" ] && [ -n "$L_FP" ] && [ -n "$L_CO" ] && [ "$L_ANC" -lt "$L_FP" ] && [ "$L_FP" -lt "$L_CO" ] && ok "ancrage, puis lignée, puis checkout" || ko "ordre ancrage/lignée/checkout non respecté"

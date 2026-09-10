@@ -32,7 +32,7 @@
 // sinon), jouée par scripts/selfservice-palier-gate.sh APRÈS le login et AVANT
 // tout contact avec la gateway (préflight compris) ; l'équipe de cloisonnement
 // est DÉCIDÉE par le token (policies deploy-<tenant>), le manifeste ne peut que
-// concorder. La garde est extraite de origin/main — la lignée de CE fichier —
+// concorder. La garde est extraite de la lignée de CE fichier (origin/<base>) —
 // jamais de l'arbre pinné au MERGE_SHA (le levier A6 pinnerait la garde avec).
 // Le terminus n'a pas de voie tant qu'APIM_TERMINUS_BASE n'est pas déclarée.
 //
@@ -41,7 +41,7 @@
 // des paliers de la CHAÎNE (scripts/lib/env-chain.sh, env_chain_nonprod — la
 // source de provision-request.sh, terminus exclu par structure) et pose les
 // huit paramètres par `properties([parameters([…])])`, à chaque build. C'était
-// la SEULE liste de paliers encore tenue à la main (« choix contraint » : un
+// la SEULE liste de paliers encore tenue manuellement (« choix contraint » : un
 // bloc déclaratif est évalué hors de tout workspace) ; le pas scripté, lui,
 // tourne dans le clone. Faits mesurés (spec 2026-09-02-a0-dettes-design) :
 //   6. `options{}`/`triggers{}` déclaratifs + properties([parameters]) scripté
@@ -191,16 +191,16 @@ pipeline {
                    description: "Manifeste de demande (vars du rôle : apim_ss_app)."),
             // A2 (GOAL cd-applications) — LA RÉFÉRENCE. Fourni par provision-apply :
             // le SHA de merge de la PR provision/<app>-<env>. Le stage « Référence »
-            // checkoute CE SHA (après `merge-base --is-ancestor main`) et tout ce qui
+            // checkoute CE SHA (après `merge-base --is-ancestor` sur la base) et tout ce qui
             // suit — PLAN, APPLY, VERIFY — lit le manifeste DANS CET ARBRE, jamais dans
-            // le dernier `main`. Vide = HEAD du checkout SCM (voie humaine directe, PLAN
+            // le dernier état de la base. Vide = HEAD du checkout SCM (voie humaine directe, PLAN
             // par webhook, amorçage). Le SHA réellement projeté est annoncé en
             // `APPLIED_SHA` (+ `APPLIED_DIGEST`), que l'appelant CONFRONTE
             // (SHA_NON_CONFIRME). ⚠ Un paramètre inconnu du job aval est RETIRÉ EN
             // SILENCE (SECURITY-170) : il doit être MATÉRIALISÉ (amorçage après pose)
             // avant que provision-apply ne compte dessus.
             string(name: 'MERGE_SHA', defaultValue: '',
-                   description: "A2 — SHA de merge à projeter (40 hex, ancêtre de main). Vide = HEAD du checkout SCM. Posé par provision-apply, jamais à la main — le repli (A6) est une PR, pas un SHA saisi ; un SHA de la lignée saisi ici est un rejeu hors chaîne, borné par A3 (jamais les portes A4)."),
+                   description: "A2 — SHA de merge à projeter (40 hex, ancêtre de la branche de base). Vide = HEAD du checkout SCM. Posé par provision-apply, jamais saisi — le repli (A6) est une PR, pas un SHA saisi ; un SHA de la lignée saisi ici est un rejeu hors chaîne, borné par A3 (jamais les portes A4)."),
             // Env cible : sélectionne per_env[ENVIRONMENT] du manifeste ET le
             // credential du palier (A3 : envs/<env>/wm-admin ou admin-oauth). La liste vient de la CHAÎNE
             // ENTIÈRE (clients/_example/environments.yaml, terminus compris — A7 : les
@@ -231,7 +231,7 @@ pipeline {
 
     // ── RÉFÉRENCE (A2) ───────────────────────────────────────────────────────
     // AVANT le PLAN : c'est ici que l'on décide QUEL ARBRE les deux étapes
-    // suivantes lisent. Avec MERGE_SHA : fetch de main, garde d'atteignabilité
+    // suivantes lisent. Avec MERGE_SHA : fetch de la base, garde d'atteignabilité
     // (un `git checkout` réussi prouve que l'OBJET existe, jamais qu'il est
     // fusionné sur la branche protégée — team-promote.sh §4), checkout, puis
     // digest du bloc per_env.<env> AU SHA MERGÉ (refus fermé si le palier n'y
@@ -240,10 +240,10 @@ pipeline {
     // MERGE_SHA : on ANNONCE seulement la référence (HEAD) et le digest est
     // best-effort (manifeste mono-env, ENVIRONMENT vide : note, pas refus).
     //
-    // La définition de CE pipeline vient de main (from SCM) ; l'arbre — rôle,
+    // La définition de CE pipeline vient de la branche de base (from SCM) ; l'arbre — rôle,
     // scripts, ci/lib, manifeste — est celui du SHA mergé, comme team-apply.sh.
     // Le shell de l'agent est dash : la lib (bash) est appelée via `bash -c`.
-    stage('Référence — le SHA mergé, jamais le dernier main (A2)') {
+    stage('Référence — le SHA mergé, jamais le dernier état de la base (A2)') {
       steps {
         // FAIT 7 (A0 dettes) : valeurs BRUTES des paramètres — EnvVars.resolve()
         // frappe le canal natif (mesuré : `${JENKINS_HOME}` résolu, mot de passe
@@ -265,11 +265,11 @@ pipeline {
           }
           dir(env.GIT_SUBDIR) {
             // Deux gardes d'ancrage, dans cet ordre : `merge-base --is-ancestor`
-            // (l'objet est-il sur main ? refus rapide) puis la LIGNÉE first-parent
-            // (est-ce un commit ATTERRI sur main — merge, squash ou rebase — et
+            // (l'objet est-il sur la base ? refus rapide) puis la LIGNÉE first-parent
+            // (est-ce un commit ATTERRI sur la base — merge, squash ou rebase — et
             // non un commit intérieur à une branche de PR, ancêtre lui aussi une
             // fois la PR mergée mais qui projetterait l'état de la branche sans
-            // le reste de main ?). APPLIED_SHA sort de `git rev-parse HEAD` APRÈS
+            // le reste de la base ?). APPLIED_SHA sort de `git rev-parse HEAD` APRÈS
             // le checkout — jamais l'écho du paramètre : c'est l'arbre réellement
             // en place que l'amont confronte.
             sh '''
@@ -279,11 +279,24 @@ pipeline {
               if [ -n "$REF" ]; then
                 printf '%s' "$REF" | grep -Eq '^[0-9a-f]{40}$' \
                   || { echo "REFUS: MERGE_SHA_INVALIDE : MERGE_SHA hors de ^[0-9a-f]{40}$ — rien n'est appliqué"; exit 1; }
-                git fetch -q origin main
-                git merge-base --is-ancestor "$REF" origin/main \
-                  || { echo "REFUS: MERGE_SHA_NON_ANCETRE : $REF n'est pas un ancêtre de main — le SHA ne correspond pas à un commit fusionné sur la branche protégée, refus de projeter un état non revu"; exit 1; }
-                git rev-list --first-parent origin/main | grep -qx "$REF" \
-                  || { echo "REFUS: MERGE_SHA_HORS_LIGNEE : $REF est un ancêtre de main mais pas sur sa lignée first-parent (commit intérieur à une branche, pas un état atterri sur main) — refus"; exit 1; }
+                # LA BRANCHE DE BASE, RÉSOLUE ICI — et le motif est DUPLIQUÉ À DESSEIN
+                # (une ligne, le MÊME sed que scripts/lib/git-base.sh). Ce stage lit la
+                # LIGNÉE de la définition du pipeline, jamais l'arbre pinné : sourcer une
+                # lib depuis cet arbre épinglerait la garde par ce qu'elle contrôle
+                # (le levier A6, fermé par A3/A4). La globale Jenkins GIT_BASE gagne quand
+                # elle est posée ; vide ou « auto » = la HEAD que l'origine annonce ;
+                # rien = refus nommé. « main » n'est jamais deviné.
+                BASE="${GIT_BASE:-}"
+                case "$BASE" in ''|auto)
+                  BASE=$(git ls-remote --symref origin HEAD | sed -n 's#^ref: refs/heads/\\(.*\\)\\tHEAD$#\\1#p' | head -n1) ;;
+                esac
+                [ -n "$BASE" ] \
+                  || { echo "REFUS: BRANCHE_PAR_DEFAUT_INCONNUE : l'origine n'annonce aucune HEAD symbolique et la globale GIT_BASE n'est pas posée — sans branche de base, l'ancêtreté du SHA mergé ne peut pas être vérifiée ; rien n'est appliqué"; exit 1; }
+                git fetch -q origin "$BASE"
+                git merge-base --is-ancestor "$REF" "origin/$BASE" \
+                  || { echo "REFUS: MERGE_SHA_NON_ANCETRE : $REF n'est pas un ancêtre de $BASE — le SHA ne correspond pas à un commit fusionné sur la branche protégée, refus de projeter un état non revu"; exit 1; }
+                git rev-list --first-parent "origin/$BASE" | grep -qx "$REF" \
+                  || { echo "REFUS: MERGE_SHA_HORS_LIGNEE : $REF est un ancêtre de $BASE mais pas sur sa lignée first-parent (commit intérieur à une branche, pas un état atterri sur $BASE) — refus"; exit 1; }
                 git checkout -q "$REF"
                 MODE=pinned
                 echo "  référence : SHA mergé $REF checkouté — manifeste, rôle et scripts sont ceux du merge"
@@ -446,28 +459,37 @@ pipeline {
                 echo "  (pas d'identité nominative → PLAN-only, apply sauté)"; exit 0
               fi
 
-              # 2) A3 — LA GARDE DU PALIER, depuis la LIGNÉE DE MAIN (jamais l'arbre pinné).
+              # 2) A3 — LA GARDE DU PALIER, depuis la LIGNÉE DE LA BASE (jamais l'arbre pinné).
               #    Le stage Référence a checkouté l'arbre ENTIER au MERGE_SHA demandé ;
               #    une garde lue dans cet arbre serait épinglée par la partie qu'elle
               #    contrôle (build direct + MERGE_SHA ancien : le levier A6). Les trois
-              #    fichiers (script, lib, chaîne) sont extraits de origin/main dans un
+              #    fichiers (script, lib, chaîne) sont extraits de origin/<base> dans un
               #    répertoire qui CONSERVE l'arborescence (la lib se résout par
               #    BASH_SOURCE, la chaîne par la lib). Le manifeste, lui, reste lu dans
               #    l'arbre pinné : c'est la DONNÉE, pas la garde.
               GATE_DIR="$WORKSPACE/.a3-gate"; rm -rf "$GATE_DIR"
               PFX="$(git rev-parse --show-prefix)"
-              git fetch -q origin main
+              # MÊME résolution qu'au stage Référence, et pour la MÊME raison : la garde
+              # vient de la lignée, donc rien ici ne peut être sourcé de l'arbre pinné.
+              # Le motif est dupliqué à dessein (une ligne, le même sed que la lib).
+              BASE="${GIT_BASE:-}"
+              case "$BASE" in ''|auto)
+                BASE=$(git ls-remote --symref origin HEAD | sed -n 's#^ref: refs/heads/\\(.*\\)\\tHEAD$#\\1#p' | head -n1) ;;
+              esac
+              [ -n "$BASE" ] \
+                || { echo "REFUS: BRANCHE_PAR_DEFAUT_INCONNUE : l'origine n'annonce aucune HEAD symbolique et la globale GIT_BASE n'est pas posée — la garde du palier ne peut être extraite d'aucune lignée ; rien n'est appliqué"; exit 1; }
+              git fetch -q origin "$BASE"
               for f in scripts/selfservice-palier-gate.sh scripts/lib/env-chain.sh scripts/lib/vault-kv.sh clients/_example/environments.yaml; do
                 mkdir -p "$GATE_DIR/$(dirname "$f")"
-                git show "origin/main:${PFX}${f}" > "$GATE_DIR/$f" 2>/dev/null \
-                  || { echo "REFUS: GATE_ABSENTE : ${PFX}${f} absent de origin/main — la garde du palier vient de la lignée de la définition du pipeline, jamais de l'arbre pinné ; rien n'est appliqué"; exit 1; }
+                git show "origin/${BASE}:${PFX}${f}" > "$GATE_DIR/$f" 2>/dev/null \
+                  || { echo "REFUS: GATE_ABSENTE : ${PFX}${f} absent de origin/${BASE} — la garde du palier vient de la lignée de la définition du pipeline, jamais de l'arbre pinné ; rien n'est appliqué"; exit 1; }
               done
               #    Un refus tue l'étape ICI : le trap révoque le token (preuve de mort
               #    comprise), la gateway n'a pas été touchée. La sortie est relue par
               #    le shell UNE clé à la fois, valeur re-vérifiée contre la classe
               #    [A-Za-z0-9_./:@+-] — jamais `eval`, jamais sourcée.
               PALIER_OUT="$WORKSPACE/.a3-palier.env"; rm -f "$PALIER_OUT"
-              #    A4 : la chaîne est ÉPINGLÉE sur l'extraction de origin/main (une
+              #    A4 : la chaîne est ÉPINGLÉE sur l'extraction de origin/<base> (une
               #    globale STOA_ENV_CHAIN_FILE ne redirige pas la porte) ; le TAG d'un
               #    refus est écrit dans REFUS_OUT (chemin absolu, purgé ici et au
               #    stage Référence) et relayé à l'amont par le post{always} du stage

@@ -47,9 +47,25 @@ deploy_pin_marker_path() { printf 'apis/%s.deploy.%s.yaml' "$1" "$2"; }
 # sortie absurde ou une erreur de syntaxe.
 _dp_fail() { printf 'deploy-pin: %s\n' "$*" >&2; }
 
-# resolve_deploy_pin <clone_dir> <api_name> <env> <workdir> [main_ref=origin/main] [archive_in]
+# resolve_deploy_pin <clone_dir> <api_name> <env> <workdir> <base_ref> [archive_in]
+#
+# <base_ref> — la référence contre laquelle l'ancêtreté du pin se vérifie
+# (`origin/<branche de base>` chez les appelants qui clonent). ARGUMENT
+# OBLIGATOIRE depuis L3 (2026-09-10) : son défaut `origin/main` était un défaut
+# de SITE, invisible à ci/lint-config-knobs.sh. Chez un client dont la branche
+# est `master`, `merge-base --is-ancestor` comparait à une ref INEXISTANTE —
+# donc échouait — et TOUT pin se disait PIN_NON_ANCETRE : un refus qui accuse le
+# marqueur de l'équipe alors que le défaut est dans le câblage de l'appelant.
+# Fail-closed : l'appelant NOMME la référence (scripts/lib/git-base.sh la lui
+# donne), ou il est refusé avant tout geste git.
 resolve_deploy_pin() {
-  local clone="$1" api="$2" env="$3" work="$4" mainref="${5:-origin/main}" archive_in="${6:-}"
+  local clone="$1" api="$2" env="$3" work="$4" baseref="${5:-}" archive_in="${6:-}"
+
+  # AVANT toute autre garde : un appelant qui n'a pas transmis la référence a un
+  # défaut de CÂBLAGE, pas de données. Le dire ici évite qu'il se déguise, dix
+  # gardes plus bas, en refus portant sur le marqueur.
+  [ -n "$baseref" ] \
+    || { _dp_fail "REFERENCE_BASE_REQUISE : la reference de base (5e argument, ex. origin/\$GIT_BASE) est vide — aucun defaut n'est pose : la branche par defaut y etait ecrite en dur, donc fausse des que celle du client s'appelle autrement (cf. scripts/lib/git-base.sh)"; return 1; }
 
   # Sans elle, un appel qui ÉCHOUE laisse en place les valeurs du précédent :
   # mesuré en revue — après un succès sur `bonapi` puis un échec sur
@@ -162,8 +178,8 @@ PY
   # le pin déplacerait alors la confiance du MERGE vers un champ que le
   # demandeur remplit lui-même. Même intention que MERGE_SHA_NON_ANCETRE
   # (team-publish.sh:246), un cran plus bas.
-  git -C "$clone" merge-base --is-ancestor "$DEPLOY_PIN_COMMIT" "$mainref" 2>/dev/null \
-    || { _dp_fail "PIN_NON_ANCETRE : $DEPLOY_PIN_COMMIT n'est pas un ancêtre de $mainref — refus de déployer depuis un état jamais fusionné"; return 1; }
+  git -C "$clone" merge-base --is-ancestor "$DEPLOY_PIN_COMMIT" "$baseref" 2>/dev/null \
+    || { _dp_fail "PIN_NON_ANCETRE : $DEPLOY_PIN_COMMIT n'est pas un ancêtre de $baseref — refus de déployer depuis un état jamais fusionné"; return 1; }
 
   mkdir -p "$work" \
     || { _dp_fail "WORKDIR_INCREABLE : impossible de créer '$work'"; return 1; }

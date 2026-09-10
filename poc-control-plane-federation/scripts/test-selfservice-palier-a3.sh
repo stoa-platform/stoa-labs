@@ -538,9 +538,14 @@ grep -q 'wm-admin-self' "$TMP/jf.code" && bad "B.3b wm-admin-self subsiste dans 
 jf "APIM_TERMINUS_BASE = \"\${env.APIM_TERMINUS_BASE ?: ''}\"" && ok "B.4 APIM_TERMINUS_BASE posé SANS défaut" || bad "B.4 APIM_TERMINUS_BASE absent ou avec un défaut"
 grep -q 'cut -d/ -f2' "$TMP/jf.code" && bad "B.5 la dérivation de TEAM par le chemin du credential subsiste" || ok "B.5 plus de dérivation de TEAM par cut -d/ -f2"
 L_LOGIN=$(code_line "$TMP/jf.code" 'RC=0; vault_login_nominative || RC=$?')
-L_FETCH=$(line_after "${L_LOGIN:-0}" 'git fetch -q origin main' "$TMP/jf.code")
+# L3 (2026-09-10) : la branche de base n'est plus le littéral « main ». Le
+# Jenkinsfile la RÉSOUT dans le même bloc `sh` (globale GIT_BASE, sinon la HEAD
+# que l'origine annonce, sinon REFUS) — il ne peut pas sourcer git-base.sh, qui
+# vit dans l'arbre PINNÉ que cette garde existe justement pour ne pas croire.
+L_BASE=$(line_after "${L_LOGIN:-0}" 'BASE=$(git ls-remote --symref origin HEAD' "$TMP/jf.code")
+L_FETCH=$(line_after "${L_LOGIN:-0}" 'git fetch -q origin "$BASE"' "$TMP/jf.code")
 L_FOR=$(line_after "${L_LOGIN:-0}" 'for f in scripts/selfservice-palier-gate.sh scripts/lib/env-chain.sh scripts/lib/vault-kv.sh clients/_example/environments.yaml; do' "$TMP/jf.code")
-L_SHOW=$(line_after "${L_LOGIN:-0}" 'git show "origin/main:${PFX}${f}"' "$TMP/jf.code")
+L_SHOW=$(line_after "${L_LOGIN:-0}" 'git show "origin/${BASE}:${PFX}${f}"' "$TMP/jf.code")
 L_ABS=$(line_after "${L_LOGIN:-0}" 'REFUS: GATE_ABSENTE' "$TMP/jf.code")
 L_GATE=$(line_after "${L_LOGIN:-0}" 'bash "$GATE_DIR/scripts/selfservice-palier-gate.sh"' "$TMP/jf.code")
 L_READ=$(line_after "${L_LOGIN:-0}" "while IFS='=' read -r k v; do" "$TMP/jf.code")
@@ -556,8 +561,10 @@ L_CP=$(line_after "${L_LOGIN:-0}" 'cp .a2-reference-sha .a2-applied-sha' "$TMP/j
 ordre_verdict(){ # <fichier code> → OK | KO: …
   local f="$1" l_login l_fetch l_show l_gate l_read l_pf l_ttl l_conv l_verify l_cp
   l_login=$(code_line "$f" 'RC=0; vault_login_nominative || RC=$?'); [ -n "$l_login" ] || { echo "KO: login absent"; return; }
-  l_fetch=$(line_after "$l_login" 'git fetch -q origin main' "$f"); [ -n "$l_fetch" ] || { echo "KO: fetch de main absent après le login"; return; }
-  l_show=$(line_after "$l_login" 'git show "origin/main:${PFX}${f}"' "$f"); [ -n "$l_show" ] || { echo "KO: extraction git show origin/main absente"; return; }
+  l_base=$(line_after "$l_login" 'BASE=$(git ls-remote --symref origin HEAD' "$f"); [ -n "$l_base" ] || { echo "KO: resolution de la branche de base absente apres le login"; return; }
+  l_fetch=$(line_after "$l_login" 'git fetch -q origin "$BASE"' "$f"); [ -n "$l_fetch" ] || { echo "KO: fetch de la branche de base absent après le login"; return; }
+  [ "$l_base" -lt "$l_fetch" ] || { echo "KO: la branche de base est fetchée avant d'être résolue"; return; }
+  l_show=$(line_after "$l_login" 'git show "origin/${BASE}:${PFX}${f}"' "$f"); [ -n "$l_show" ] || { echo "KO: extraction git show origin/\$BASE absente"; return; }
   l_gate=$(line_after "$l_login" 'bash "$GATE_DIR/scripts/selfservice-palier-gate.sh"' "$f"); [ -n "$l_gate" ] || { echo "KO: garde absente (aucun appel de selfservice-palier-gate.sh)"; return; }
   l_read=$(line_after "$l_login" "while IFS='=' read -r k v; do" "$f"); [ -n "$l_read" ] || { echo "KO: relecture de PALIER_OUT absente"; return; }
   l_pf=$(line_after "$l_login" 'apim_preflight "$APIM_API_BASE"' "$f"); [ -n "$l_pf" ] || { echo "KO: préflight non appelé (ci/lib/preflight.sh)"; return; }
@@ -570,9 +577,9 @@ ordre_verdict(){ # <fichier code> → OK | KO: …
   echo OK
 }
 V="$(ordre_verdict "$TMP/jf.code")"
-[ "$V" = OK ] && ok "B.6 ordre : login ($L_LOGIN) < fetch ($L_FETCH) < git show ($L_SHOW) < garde ($L_GATE) < relecture ($L_READ) < préflight ($L_PF) < TTL ($L_TTL) < converge ($L_CONV) < verify ($L_VERIFY) < annonce A2 ($L_CP)" || bad "B.6 $V"
-[ -n "$L_FOR" ] && [ -n "$L_ABS" ] && ok "B.7 les TROIS fichiers de la garde (script, lib, chaîne) sont extraits de origin/main, refus GATE_ABSENTE" || bad "B.7 extraction incomplète (for=$L_FOR abs=$L_ABS)"
-[ -n "$L_FETCH" ] && [ -n "$L_SHOW" ] && [ "$L_FETCH" -lt "$L_SHOW" ] && ok "B.8 git fetch origin main AVANT git show" || bad "B.8 fetch/show (fetch=$L_FETCH show=$L_SHOW)"
+[ "$V" = OK ] && ok "B.6 ordre : login ($L_LOGIN) < résolution de la base ($L_BASE) < fetch ($L_FETCH) < git show ($L_SHOW) < garde ($L_GATE) < relecture ($L_READ) < préflight ($L_PF) < TTL ($L_TTL) < converge ($L_CONV) < verify ($L_VERIFY) < annonce A2 ($L_CP)" || bad "B.6 $V"
+[ -n "$L_FOR" ] && [ -n "$L_ABS" ] && ok "B.7 les TROIS fichiers de la garde (script, lib, chaîne) sont extraits de origin/\$BASE, refus GATE_ABSENTE" || bad "B.7 extraction incomplète (for=$L_FOR abs=$L_ABS)"
+[ -n "$L_FETCH" ] && [ -n "$L_SHOW" ] && [ "$L_FETCH" -lt "$L_SHOW" ] && ok "B.8 git fetch origin \$BASE AVANT git show" || bad "B.8 fetch/show (fetch=$L_FETCH show=$L_SHOW)"
 grep -q '\*\[!A-Za-z0-9_./:@+-\]\*' "$TMP/jf.code" && grep -q 'REFUS: SORTIE_INVALIDE' "$TMP/jf.code" && ok "B.9 relecture : classe [A-Za-z0-9_./:@+-] re-vérifiée par le shell, SORTIE_INVALIDE" || bad "B.9 relecture sans contrôle de classe"
 grep -Eq '(^|[^A-Za-z_])eval([^A-Za-z_]|$)' "$TMP/jf.code" && bad "B.9b eval présent dans le Jenkinsfile" || ok "B.9b aucun eval"
 L_CPL=$(line_after "${L_LOGIN:-0}" 'PALIER_OUT incomplet' "$TMP/jf.code")
@@ -615,7 +622,7 @@ fi
 echo "── B.21–B.25 (A4) : REFUS_OUT relayé, chaîne épinglée, purges ABSOLUES, post{always} du stage Apply ──"
 GATE_LINE=$(sed -n "${L_GATE:-0}p" "$TMP/jf.code")
 printf '%s' "$GATE_LINE" | grep -qF 'REFUS_OUT="$WORKSPACE/.a3-refus"' && ok "B.21 la ligne d'appel de la garde porte REFUS_OUT=\$WORKSPACE/.a3-refus" || bad "B.21 REFUS_OUT absent de la ligne d'appel : $GATE_LINE"
-printf '%s' "$GATE_LINE" | grep -qF 'STOA_ENV_CHAIN_FILE="$GATE_DIR/clients/_example/environments.yaml"' && ok "B.22 la chaîne est ÉPINGLÉE sur l'extraction de origin/main (une globale ne gagne pas)" || bad "B.22 STOA_ENV_CHAIN_FILE non épinglé : $GATE_LINE"
+printf '%s' "$GATE_LINE" | grep -qF 'STOA_ENV_CHAIN_FILE="$GATE_DIR/clients/_example/environments.yaml"' && ok "B.22 la chaîne est ÉPINGLÉE sur l'extraction de la lignée (une globale ne gagne pas)" || bad "B.22 STOA_ENV_CHAIN_FILE non épinglé : $GATE_LINE"
 L_RMA=$(line_after "${L_LOGIN:-0}" 'rm -f "$WORKSPACE/.a3-refus"' "$TMP/jf.code")
 [ -n "$L_RMA" ] && [ "$L_RMA" -lt "${L_GATE:-0}" ] && ok "B.23 purge ABSOLUE de \$WORKSPACE/.a3-refus avant l'appel (ligne $L_RMA)" || bad "B.23 pas de purge absolue avant l'appel (rm=$L_RMA gate=$L_GATE)"
 L_RMR=$(awk "NR>${L_REF:-0} && NR<${L_PLAN:-0} && index(\$0, \"rm -f \\\"\$WORKSPACE/.a3-refus\\\"\") { print NR; exit }" "$TMP/jf.code")

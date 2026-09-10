@@ -153,6 +153,14 @@ ENVN="${ENVN:-dev}"
 # Objets JETABLES — aucun tenant réel, aucun dépôt de travail du palier.
 PLAT_ORG="p3t8lab"                  # dépôt plateforme de substitution (cf. écart du gate)
 PLAT_REPO="${PLAT_ORG}/stoa-labs"
+# La branche des dépôts SCRATCH que ce harnais SÈME. Un dépôt qu'on crée n'a
+# aucune HEAD à découvrir : le harnais la CHOISIT — et il la prend sur l'arbre
+# sous test plutôt que d'écrire « main », qui n'est vrai que chez nous. Elle est
+# déclarée à la forge (`default_branch`) ET poussée, pour que la DÉCOUVERTE de
+# la chaîne (scripts/lib/git-base.sh) retrouve exactement ce qui a été semé.
+SEED_BASE="$(git -C "$(git rev-parse --show-toplevel)" symbolic-ref --short HEAD 2>/dev/null || true)"
+[ -n "$SEED_BASE" ] \
+  || { echo "REFUS: BRANCHE_DE_SEMENCE_INCONNUE : l'arbre sous test est en HEAD détachée — impossible de nommer la branche des dépôts scratch sans la deviner ; se placer sur une branche, ou poser SEED_BASE" >&2; exit 2; }
 TEAM="probe-p3"                     # équipe jetable, onboardée puis démontée
 TEAM_REPO="${TEAM}/apis"
 ORPH_ORG="p3t8x"                    # dépôt d'équipe RÉEL mais NON déclaré (preuve 3)
@@ -208,6 +216,12 @@ TMP="$(mktemp -d)"; chmod 700 "$TMP"
 # dans son PATH. Le résolveur construit celui du dépôt.
 # shellcheck source=scripts/lib/posture-authority.sh
 . "$REPO_ROOT/scripts/lib/posture-authority.sh" 2>/dev/null || . scripts/lib/posture-authority.sh
+# L'AUTORITÉ DE LA BRANCHE PAR DÉFAUT (L3, 2026-09-10) : les dépôts scratch de
+# ce harnais sont clonés sur la branche que la forge ANNONCE (git_base_of), plus
+# sur un littéral. Le harnais hérite de l'enveloppe GIT_CONFIG_* qu'il pose
+# lui-même autour de ses appels git.
+# shellcheck source=scripts/lib/git-base.sh
+. "$REPO_ROOT/scripts/lib/git-base.sh" 2>/dev/null || . scripts/lib/git-base.sh
 # Refus INLINE et non `die` : celui-ci n'est défini que bien plus bas (§pré-vol),
 # et l'appeler ici donnerait « die: command not found » — un refus qui accuserait
 # le harnais au lieu de nommer le binaire manquant.
@@ -598,7 +612,7 @@ done
 # celui de ci/stoa-labs@main.
 gapi -X POST -H 'Content-Type: application/json' -d "{\"username\":\"$PLAT_ORG\",\"visibility\":\"public\"}" \
   "$GITEA_URL/api/v1/orgs" -o /dev/null
-gapi -X POST -H 'Content-Type: application/json' -d '{"name":"stoa-labs","private":false,"auto_init":false}' \
+gapi -X POST -H 'Content-Type: application/json' -d "{\"name\":\"stoa-labs\",\"private\":false,\"auto_init\":false,\"default_branch\":\"${SEED_BASE}\"}" \
   "$GITEA_URL/api/v1/orgs/$PLAT_ORG/repos" -o /dev/null
 rm -rf "$TMP/plat"; mkdir -p "$TMP/plat"
 # DEPUIS LA RACINE DU DÉPÔT, jamais depuis ce sous-répertoire : `git archive
@@ -610,13 +624,13 @@ rm -rf "$TMP/plat"; mkdir -p "$TMP/plat"
 # jamais de l'archive.
 GIT_TOPLEVEL=$(git -C "$REPO_ROOT" rev-parse --show-toplevel)
 git -C "$GIT_TOPLEVEL" archive HEAD | tar -x -C "$TMP/plat" 2>/dev/null
-( cd "$TMP/plat" && git init -q -b main . \
+( cd "$TMP/plat" && git init -q -b "$SEED_BASE" . \
   && git add -A \
   && git -c user.name=ci -c user.email=ci@stoa.lab commit -qm "seed: arbre du palier 3 sous test (matrice producteur)" ) >/dev/null 2>&1
 PLAT_AUTH=$(printf 'x:%s' "$GITEA_TOKEN" | base64 | tr -d '\n')
 GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=http.extraheader GIT_CONFIG_VALUE_0="Authorization: Basic ${PLAT_AUTH}" \
   GIT_CONFIG_KEY_1=http.postBuffer GIT_CONFIG_VALUE_1=524288000 \
-  git -C "$TMP/plat" push -q "$GITEA_URL/$PLAT_REPO.git" main 2>"$TMP/platpush.err"
+  git -C "$TMP/plat" push -q "$GITEA_URL/$PLAT_REPO.git" "$SEED_BASE" 2>"$TMP/platpush.err"
 PLAT_PUSH_RC=$?
 unset PLAT_AUTH
 [ "$PLAT_PUSH_RC" -eq 0 ] || die "publication de l'arbre sous test dans $PLAT_REPO en échec — $(tail -2 "$TMP/platpush.err")"
@@ -625,7 +639,7 @@ unset PLAT_AUTH
 # La chaîne producteur refuse désormais de publier une API que la gouvernance ne
 # connaît pas (CLASSIFICATION_UNGOVERNED) : l'API jetable de ce run doit donc y
 # être enregistrée, comme le ferait une PR gouvernance dans la vraie vie.
-gapi -X POST -H 'Content-Type: application/json' -d '{"name":"governance","private":false,"auto_init":false}' \
+gapi -X POST -H 'Content-Type: application/json' -d "{\"name\":\"governance\",\"private\":false,\"auto_init\":false,\"default_branch\":\"${SEED_BASE}\"}" \
   "$GITEA_URL/api/v1/orgs/$PLAT_ORG/repos" -o /dev/null
 rm -rf "$TMP/gov"; mkdir -p "$TMP/gov/governance"
 cat > "$TMP/gov/$GOV_PATH" <<GOVYML
@@ -634,11 +648,11 @@ kind: ClassificationRegistry
 classifications:
   - {owner: ${TEAM}, tenant: banking-demo, api: ${API_NAME}, classification: VH, exposure: external}
 GOVYML
-( cd "$TMP/gov" && git init -q -b main . && git add -A \
+( cd "$TMP/gov" && git init -q -b "$SEED_BASE" . && git add -A \
   && git -c user.name=ci -c user.email=ci@stoa.lab commit -qm "seed: registre central scratch (P2)" ) >/dev/null 2>&1
 GOV_AUTH=$(printf 'x:%s' "$GITEA_TOKEN" | base64 | tr -d '\n')
 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader GIT_CONFIG_VALUE_0="Authorization: Basic ${GOV_AUTH}" \
-  git -C "$TMP/gov" push -q "$GITEA_URL/$GOV_REPO.git" main 2>"$TMP/govpush.err" \
+  git -C "$TMP/gov" push -q "$GITEA_URL/$GOV_REPO.git" "$SEED_BASE" 2>"$TMP/govpush.err" \
   || die "publication du registre central scratch dans $GOV_REPO en échec — $(tail -2 "$TMP/govpush.err")"
 unset GOV_AUTH
 # Les appels du HARNAIS (api-request.sh, team-publish.sh lancés en direct) lisent
@@ -655,7 +669,8 @@ export CLASSIFICATION=VH EXPOSURE=external
 # de team-apply.sh, plus bas, REFUSE alors de tourner : « Your local changes
 # would be overwritten by checkout » — un échec du PRÉ-REQUIS de la chaîne
 # producteur, causé par une preuve DÉJÀ passée. Constaté en direct.
-git clone -q --depth 1 -b main "$GITEA_URL/$PLAT_REPO.git" "$TMP/p2src" || die "clone de $PLAT_REPO (matrice du palier 2)"
+git_base_of "$GITEA_URL/$PLAT_REPO.git" >/dev/null || die "branche par défaut de $PLAT_REPO indéterminable (matrice du palier 2)"
+git clone -q --depth 1 -b "$GIT_BASE_OF" "$GITEA_URL/$PLAT_REPO.git" "$TMP/p2src" || die "clone de $PLAT_REPO (matrice du palier 2)"
 
 ( cd "$TMP/p2src/poc-control-plane-federation" && GITEA_URL="$GITEA_URL" GITEA_TOKEN="$GITEA_TOKEN" \
     VAULT_ADDR="$VAULT_ADDR" VAULT_TOKEN="$VROOT" \
@@ -699,7 +714,9 @@ echo
 echo "== (pré-requis) onboarding de l'équipe jetable $TEAM sur $PLAT_REPO =="
 # Clone NEUF (cf. le commentaire des deux clones, preuve 0) : team-apply.sh y
 # fera un `git checkout $MERGE_SHA`, qui exige un arbre propre.
-git clone -q -b main "$GITEA_URL/$PLAT_REPO.git" "$TMP/src" || die "clone de $PLAT_REPO (chaîne producteur)"
+git_base_of "$GITEA_URL/$PLAT_REPO.git" >/dev/null || die "branche par défaut de $PLAT_REPO indéterminable (chaîne producteur)"
+PLAT_BASE="$GIT_BASE_OF"
+git clone -q -b "$PLAT_BASE" "$GITEA_URL/$PLAT_REPO.git" "$TMP/src" || die "clone de $PLAT_REPO (chaîne producteur)"
 SRC="$TMP/src/poc-control-plane-federation"
 ( cd "$SRC" && TEAM="$TEAM" DESCRIPTION="equipe jetable de la matrice producteur (P3-T8)" REQ_ENV="$ENVN" \
     GITEA_TOKEN="$GITEA_TOKEN" GIT_HOST="$GITEA_URL" GIT_WEB_HOST="$GITEA_URL" GIT_REPO="$PLAT_REPO" \
@@ -713,7 +730,7 @@ PR_ONB=$(grep -oE 'PR #[0-9]+ ouverte' "$TMP/onb-req.log" | grep -oE '[0-9]+' | 
 MERGE_ONB=$(merge_as_ci "$PLAT_REPO" "${PR_ONB:-0}")
 SHA_ONB=$(gapi "$GITEA_URL/api/v1/repos/$PLAT_REPO/pulls/${PR_ONB:-0}" \
   | python3 -c "import json,sys; print(json.load(sys.stdin).get('merge_commit_sha') or '')" 2>/dev/null)
-git -C "$TMP/src" fetch -q "$GITEA_URL/$PLAT_REPO.git" main 2>/dev/null
+git -C "$TMP/src" fetch -q "$GITEA_URL/$PLAT_REPO.git" "$PLAT_BASE" 2>/dev/null
 ( cd "$SRC" && PR_BRANCH="onboard/${TEAM}-${ENVN}" PR_NUMBER="${PR_ONB:-0}" MERGE_SHA="$SHA_ONB" \
     GITEA_TOKEN="$GITEA_TOKEN" VAULT_ADDR="$VAULT_ADDR" VAULT_TOKEN_FILE="$VTOK_FILE" \
     APIM_API_BASE="$WM_GATEWAY_URL/rest/apigateway" \
@@ -920,6 +937,10 @@ echo "== 3. REPO_NON_DECLARE : $ORPH_REPO déclenche team-publish -> refus, PR c
 gapi -X POST -H 'Content-Type: application/json' -d "{\"username\":\"$ORPH_ORG\",\"visibility\":\"public\"}" \
   "$GITEA_URL/api/v1/orgs" -o /dev/null
 gapi -X POST -H 'Content-Type: application/json' \
+  # Ce dépôt-ci garde une branche DÉCLARÉE en propre, différente de $SEED_BASE le
+  # jour où celle-ci diffère : c'est le discriminant PAR DÉPÔT de L3 — team-publish
+  # doit DEMANDER sa HEAD à chaque dépôt (git_base_of), pas réutiliser celle de la
+  # plateforme. Elle n'est pas devinée : elle est posée ici et relue ci-dessous.
   -d '{"name":"orphan-api","private":false,"auto_init":true,"default_branch":"main"}' \
   "$GITEA_URL/api/v1/orgs/$ORPH_ORG/repos" -o /dev/null
 # `auto_init` est ASYNCHRONE côté Gitea : cloner tout de suite peut rendre un

@@ -61,9 +61,10 @@ ko(){ FAIL=$((FAIL+1)); printf '  ❌ %s\n' "$*"; }
 # DÉCOUVERTE de la branche (scripts/lib/git-base.sh) soit réellement mise à
 # l'épreuve ici — un script qui devinerait « main » n'a plus de repli sans `-b`
 # pour le rattraper, il refuse BRANCHE_DE_BASE_INTROUVABLE. Les fixtures des
-# sections N/O/T (chaîne producteur, lot 4b) restent sur `main`.
+# sections N/O/T (chaîne producteur) sont passées sur `master` au lot 4b : la
+# découverte y joue pour de vrai, sur les quatre dépôts que la chaîne clone.
 fixture(){
-  local pfx="$2" o="$TMP/$1.git" w="$TMP/$1" sub="" env_decl="${3:-dev}" style="${4:-lab}" br="${5:-main}"
+  local pfx="$2" o="$TMP/$1.git" w="$TMP/$1" sub="" env_decl="${3:-dev}" style="${4:-lab}" br="${5:-master}"
   [ "$pfx" = "." ] || sub="$pfx/"
   git init -q --bare "$o" && git -C "$o" symbolic-ref HEAD "refs/heads/$br"
   git init -q "$w" && git -C "$w" checkout -q -b "$br"
@@ -188,9 +189,9 @@ S_AR="$REPO/scripts/api-request.sh"
 # déclare que `rec` — elle sert de « vraiment absent » pour CE script.
 # Ces fixtures sont désignées par leur NOM (via GIT_REPO), pas par le chemin
 # rendu : les affecter ferait des variables mortes.
-fixture ar livrable >/dev/null
-fixture arvide livrable rec >/dev/null
-fixture arlab poc-control-plane-federation >/dev/null
+fixture ar livrable dev lab master >/dev/null
+fixture arvide livrable rec lab master >/dev/null
+fixture arlab poc-control-plane-federation dev lab master >/dev/null
 ar(){ # ar <nom de fixture> <sub> [script]
   run "${3:-$S_AR}" "$2" "GIT_HOST=file://$TMP" "GIT_REPO=$1" ACTION=create TEAM=teamx \
       API_NAME=demo API_VERSION=1.0.0 API_BASE=/demo "OPENAPI_SPEC=$SPEC" INBOUND_MODE=jwt \
@@ -229,10 +230,10 @@ echo "═══ O. team-request.sh (onboarding d'équipe) suit le knob ═══
 S_TR="$REPO/scripts/team-request.sh"
 # Fixtures DÉDIÉES : team-request POUSSE une branche dans le dépôt nu — les
 # partager avec la section N ferait dépendre les cas de leur ordre.
-fixture tr livrable >/dev/null
-fixture trvide livrable rec >/dev/null
-fixture trlab poc-control-plane-federation >/dev/null
-fixture trleurre poc-control-plane-federation >/dev/null
+fixture tr livrable dev lab master >/dev/null
+fixture trvide livrable rec lab master >/dev/null
+fixture trlab poc-control-plane-federation dev lab master >/dev/null
+fixture trleurre poc-control-plane-federation dev lab master >/dev/null
 trq(){ # trq <nom de fixture> <sub> [script]
   run "${3:-$S_TR}" "$2" "GIT_HOST=file://$TMP" "GIT_REPO=$1" TEAM=nouvelle REPO=eq/nouvelle \
       DESCRIPTION="equipe de sonde" REQ_ENV=dev
@@ -308,8 +309,11 @@ apr(){ run "${2:-$S_APR}" "$1" "GIT_HOST=$STUB_HOST" GIT_REPO=ci/plat TEAM=teamx
 ape(){ run "${2:-$S_APE}" "$1" "GIT_HOST=$STUB_HOST" GIT_REPO=ci/plat TEAM=teamx API_NAME=demo \
            VAULT_ADDR=http://127.0.0.1:1 "VAULT_TOKEN_FILE=$TMP/vtok" APIM_API_BASE=http://127.0.0.1:1; }
 # franchie_ap : LECTURE_PROVIDERS passée, l'équipe résolue — le parcours meurt
-# au clone du dépôt d'équipe, que le stub ne sert pas.
-franchie_ap(){ ! grep -q 'LECTURE_PROVIDERS' "$TMP/req.out" && grep -q 'CLONE_ECHEC : ci/teamx' "$TMP/req.out"; }
+# sur le dépôt d'équipe, que le stub ne sert pas. Depuis L3 (2026-09-10) il y
+# meurt un cran plus tôt, à la DÉCOUVERTE de la branche de ce dépôt (git_base_of,
+# avant le `-b`) : même tag CLONE_ECHEC, même dépôt nommé — c'est la propriété
+# mesurée. L'ERE ne fige donc plus la fin exacte de la phrase.
+franchie_ap(){ ! grep -q 'LECTURE_PROVIDERS' "$TMP/req.out" && grep -qE 'CLONE_ECHEC :.*ci/teamx' "$TMP/req.out"; }
 demande(){ grep -q "/raw/$1\$" "$STUB_LOG"; }
 
 : > "$STUB_LOG"; apr livrable
@@ -452,8 +456,8 @@ fixture_collision(){
   local o="$TMP/$1.git" w="$TMP/$1" sub="" psub=""
   [ "$2" = "." ] || sub="$2/"
   [ "$3" = "." ] || psub="$3/"
-  git init -q --bare "$o" && git -C "$o" symbolic-ref HEAD refs/heads/main
-  git init -q "$w" && git -C "$w" checkout -q -b main
+  git init -q --bare "$o" && git -C "$o" symbolic-ref HEAD refs/heads/master
+  git init -q "$w" && git -C "$w" checkout -q -b master
   mkdir -p "$w/${sub}ansible" "$w/${psub}clients/autre-equipe"
   printf 'providers:\n  - team: teamx\n    repo: ci/teamx\n' > "$w/${sub}ansible/providers.dev.yml"
   printf 'apim_api:\n  name: "demo"\n  version: "1.0.0"\n' \
@@ -462,7 +466,7 @@ fixture_collision(){
   printf 'init\n' > "$w/README"
   git -C "$w" -c user.name=t -c user.email=t@t add -A >/dev/null
   git -C "$w" -c user.name=t -c user.email=t@t commit -qm c0 >/dev/null
-  git -C "$w" remote add origin "$o" && git -C "$w" push -q origin main
+  git -C "$w" remote add origin "$o" && git -C "$w" push -q origin master
 }
 # Le registre de gouvernance vit dans le MÊME dépôt nu (un second suffirait,
 # mais il n'apporterait rien : ce qu'on éprouve est le balayage, pas le registre).

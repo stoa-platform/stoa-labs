@@ -58,6 +58,12 @@ cd "$(dirname "$0")/.." || exit 1
 # shellcheck source=scripts/lib/repo-layout.sh
 . scripts/lib/repo-layout.sh || { echo "ERREUR: scripts/lib/repo-layout.sh introuvable ou illisible" >&2; exit 1; }
 repo_layout_init || exit 2
+# LA branche par défaut du dépôt d'ÉQUIPE, une autorité (L3, 2026-09-10) : ce
+# script ne lit QUE ce dépôt-là (le providers de la plateforme passe par l'API
+# raw, sans ref). C'est donc `git_base_of` — la HEAD de CE dépôt — et non le
+# knob global, qui ne vaut que pour la plateforme.
+# shellcheck source=scripts/lib/git-base.sh
+. scripts/lib/git-base.sh || { echo "ERREUR: scripts/lib/git-base.sh introuvable ou illisible" >&2; exit 1; }
 
 fail() { printf 'ERREUR: %s\n' "$*" >&2; exit 1; }
 
@@ -107,7 +113,7 @@ PROV_REL="${SUB_PFX}ansible/providers.${AUTHORING_ENV}.yml"
 gapi --fail-with-body --max-time 20 \
   "${GIT_HOST}/api/v1/repos/${GIT_REPO}/raw/${PROV_REL}" \
   > "$TMP/providers.yml" \
-  || fail "LECTURE_PROVIDERS : ${PROV_REL} illisible sur ${GIT_REPO}@main (HTTP non-2xx, hote injoignable ou token refuse ; chemin RELATIF a la racine du depot, prefixe GIT_SUBDIR='${GIT_SUBDIR}')"
+  || fail "LECTURE_PROVIDERS : ${PROV_REL} illisible sur la branche par défaut de ${GIT_REPO} (HTTP non-2xx, hote injoignable ou token refuse ; chemin RELATIF a la racine du depot, prefixe GIT_SUBDIR='${GIT_SUBDIR}')"
 REPO_FULL=$(TEAM="$TEAM" PROV="$TMP/providers.yml" python3 - <<'PY'
 import os, sys, yaml
 d = yaml.safe_load(open(os.environ["PROV"])) or {}
@@ -121,8 +127,9 @@ case "$REPO_FULL" in REPO=*) REPO_FULL="${REPO_FULL#REPO=}";; *) fail "PARSE_PRO
 [ -n "$REPO_FULL" ] || fail "REPO_NON_DECLARE : équipe '$TEAM' sans dépôt dans providers.${AUTHORING_ENV}.yml"
 
 # ── clone AUTHENTIFIÉ du dépôt d'équipe (motif gclone de team-publish.sh:110-116) ──
-# Un dépôt d'équipe privé casserait un clone anonyme. --depth 1 -b main :
-# l'export lit apis/<api>.promote.yml TEL QU'IL EST SUR main, aucune branche à
+# Un dépôt d'équipe privé casserait un clone anonyme. --depth 1 -b <base> :
+# l'export lit apis/<api>.promote.yml TEL QU'IL EST SUR la branche de base du
+# dépôt d'équipe (découverte, jamais devinée), aucune branche à
 # créer ni de SHA tiers à atteindre (contrairement à api-promote-request.sh, qui
 # pousse une branche, ou team-publish.sh, qui checkoute un SHA de merge).
 gclone(){
@@ -132,14 +139,28 @@ gclone(){
     GIT_CONFIG_VALUE_0="Authorization: Basic ${auth_b64}" \
     git clone -q "$@"
 }
-gclone --depth 1 -b main "${GIT_HOST}/${REPO_FULL}.git" "$TMP/team" \
-  || fail "CLONE_ECHEC : ${REPO_FULL}"
+# LA DÉCOUVERTE SOUS LA MÊME ENVELOPPE QUE LE CLONE : la lib n'embarque aucun
+# secret, elle hérite de l'environnement. Anonyme, son `git ls-remote`
+# échouerait sur le dépôt d'équipe PRIVÉ d'un client — l'export refuserait pour
+# une raison sans rapport. Préfixe d'ENV sur l'appel de fonction, jamais argv.
+gbase(){
+  local auth_b64
+  auth_b64=$(printf 'x:%s' "$FORGE_SECRET" | base64 | tr -d '\n')
+  GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader \
+    GIT_CONFIG_VALUE_0="Authorization: Basic ${auth_b64}" \
+    "$@"
+}
+gbase git_base_of "${GIT_HOST}/${REPO_FULL}.git" >/dev/null \
+  || fail "CLONE_ECHEC : branche par défaut de ${REPO_FULL} indéterminable (cause ci-dessus) — rien n'est exporté"
+TEAM_BASE="$GIT_BASE_OF"
+gclone --depth 1 -b "$TEAM_BASE" "${GIT_HOST}/${REPO_FULL}.git" "$TMP/team" \
+  || fail "CLONE_ECHEC : ${REPO_FULL}@${TEAM_BASE}"
 
 PROMOTE_REL="apis/${API_NAME}.promote.yml"
-# La version d'AUTHORING (publish.yml sur main) est la vérité de ce qui se
+# La version d'AUTHORING (publish.yml sur la branche de base) est la vérité de ce qui se
 # publie en dev — le manifeste de promotion la SUIT, il ne la précède pas.
 PUB_VERSION=$(publish_manifest_version "$TMP/team" "$API_NAME") \
-  || fail "PUBLISH_MANIFEST_ABSENT : apis/${API_NAME}.publish.yml absent ou illisible sur ${REPO_FULL}@main — publier l'API d'abord (formulaire api-request)"
+  || fail "PUBLISH_MANIFEST_ABSENT : apis/${API_NAME}.publish.yml absent ou illisible sur ${REPO_FULL}@${TEAM_BASE} — publier l'API d'abord (formulaire api-request)"
 MANIFEST_RENDU=0
 if [ ! -f "$TMP/team/$PROMOTE_REL" ]; then
   # Spec promotion-sans-recopie (2026-08-28) : le manifeste absent n'est plus
@@ -148,12 +169,12 @@ if [ ! -f "$TMP/team/$PROMOTE_REL" ]; then
   render_promote_manifest "$TMP/team" "$API_NAME" gateways/templates/promote.yml.tmpl \
     || fail "RENDU_ECHEC : gabarit gateways/templates/promote.yml.tmpl -> ${PROMOTE_REL}"
   MANIFEST_RENDU=1
-  echo "manifeste absent de main — RENDU depuis le gabarit (name=${API_NAME}, version=${PUB_VERSION})"
+  echo "manifeste absent de ${TEAM_BASE} — RENDU depuis le gabarit (name=${API_NAME}, version=${PUB_VERSION})"
 else
   # Manifeste présent mais version en retard sur l'authoring (new-version
   # publiée depuis) : réaligner AVANT l'export — sinon le play ci-dessous
   # résout l'API par le COUPLE name+version du manifeste, donc exporterait
-  # l'ancienne version, et la main reviendrait à chaque montée de version.
+  # l'ancienne version, et la reprise manuelle reviendrait à chaque montée de version.
   M_VERSION=$(python3 -c "import sys,yaml; print((yaml.safe_load(open(sys.argv[1])) or {}).get('apim_promote',{}).get('version',''))" "$TMP/team/$PROMOTE_REL" 2>/dev/null || printf '')
   if [ -n "$M_VERSION" ] && [ "$M_VERSION" != "$PUB_VERSION" ]; then
     # Réutilise pin_promote_manifest (guid/sha déjà portés, INCHANGÉS) pour ne
@@ -254,10 +275,10 @@ pin_promote_manifest "$TMP/team/$PROMOTE_REL" "$GUID" "$SHA" "$PUB_VERSION" \
 printf 'EXPORT_CONFIRMED_SUMMARY guid=%s sha256=%s package=%s\n' "$GUID" "$SHA" "$URL"
 
 if git -C "$TMP/team" diff --quiet -- "$PROMOTE_REL" && [ "$MANIFEST_RENDU" = 0 ]; then
-  # main porte déjà exactement ces valeurs : ré-export au contenu identique
+  # la branche de base porte déjà exactement ces valeurs : ré-export au contenu identique
   # (registre idempotent par le contenu) — aucune PR à ouvrir, et on le DIT.
-  echo "PIN_DEJA_A_JOUR : ${PROMOTE_REL} sur main porte déjà guid/sha/version — pas de PR"
-  echo "geste suivant : formulaire api-promote-request (ARCHIVE_SHA256 facultatif — lu sur main)"
+  echo "PIN_DEJA_A_JOUR : ${PROMOTE_REL} sur ${TEAM_BASE} porte déjà guid/sha/version — pas de PR"
+  echo "geste suivant : formulaire api-promote-request (ARCHIVE_SHA256 facultatif — lu sur ${TEAM_BASE})"
 else
   PIN_BRANCH="chore/promote-manifest-${API_NAME}"
   git -C "$TMP/team" checkout -q -B "$PIN_BRANCH"
@@ -276,6 +297,7 @@ else
   unset AUTH_B64
   PIN_PR=$(API="${GIT_HOST}/api/v1" REPO_FULL="$REPO_FULL" FORGE_SECRET="$FORGE_SECRET" \
     BRANCH="$PIN_BRANCH" API_NAME="$API_NAME" GUID="$GUID" SHA="$SHA" VER="$PUB_VERSION" \
+    TEAM_BASE="$TEAM_BASE" \
     python3 - <<'PY'
 import json, os, urllib.error, urllib.request
 api, repo, tok = os.environ["API"], os.environ["REPO_FULL"], os.environ["FORGE_SECRET"]
@@ -288,10 +310,12 @@ body = (
     f"- archive_sha256 (registre, adressé par le contenu) : {os.environ['SHA']}\n\n"
     "Merger cette PR épingle CE guid et CES octets pour la promotion. "
     "Geste suivant : formulaire api-promote-request — ARCHIVE_SHA256 peut "
-    "rester vide, il sera lu ici, sur main (ADR-081 : la décision est le merge)."
+    f"rester vide, il sera lu ici, sur {os.environ['TEAM_BASE']} (ADR-081 : la décision est le merge)."
 )
 req = urllib.request.Request(f"{api}/repos/{repo}/pulls", method="POST",
-    data=json.dumps({"base": "main", "head": head,
+    # La base de la PR est la branche du dépôt CIBLE (celui de l'équipe), celle
+    # que le clone a prise — jamais un littéral.
+    data=json.dumps({"base": os.environ["TEAM_BASE"], "head": head,
         "title": f"promo({os.environ['API_NAME']}): épinglage guid/sha v{os.environ['VER']}",
         "body": body}).encode(), headers=hdrs)
 try:
@@ -311,5 +335,5 @@ except urllib.error.HTTPError as e:
 PY
 ) || fail "PIN_PR_ECHEC : ouverture/retrouvaille de la PR d'épinglage"
   echo "PR d'épinglage : ${GIT_WEB_HOST}/${REPO_FULL}/pulls/${PIN_PR}"
-  echo "geste suivant : MERGER cette PR, puis formulaire api-promote-request (ARCHIVE_SHA256 facultatif — lu sur main)"
+  echo "geste suivant : MERGER cette PR, puis formulaire api-promote-request (ARCHIVE_SHA256 facultatif — lu sur ${TEAM_BASE})"
 fi

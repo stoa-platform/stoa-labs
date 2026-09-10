@@ -15,7 +15,7 @@
 #        authentifiés (le DEMANDEUR, lui, vient du marqueur mergé, cf. §6bis).
 #     3. AUTORITÉ PAR TOPOLOGIE : l'équipe se dérive du dépôt, jamais du payload.
 #     4. ANTI-TOCTOU : le dépôt d'équipe est lu AU SHA DU MERGE, et ce SHA doit
-#        être un ancêtre de main.
+#        être un ancêtre de la branche de base.
 #     5. LE MARQUEUR : digest pré-lu, archive fetchée PAR SON CONTENU au
 #        registre, puis résolveur complet (pin, ancêtreté, version, digest).
 #     6. LES EXIGENCES DE LA PORTE, RELUES SUR LE MARQUEUR MERGÉ.
@@ -61,6 +61,11 @@ cd "$(dirname "$0")/.." || exit 1
 # shellcheck source=scripts/lib/repo-layout.sh
 . scripts/lib/repo-layout.sh || { echo "ERREUR: scripts/lib/repo-layout.sh introuvable ou illisible" >&2; exit 1; }
 repo_layout_init || exit 2
+# LA branche par défaut, une autorité (L3, 2026-09-10) : TROIS dépôts (équipe,
+# plateforme, et le worktree du job) peuvent avoir TROIS HEAD. gbase() ci-dessous
+# porte la MÊME enveloppe d'authentification que gclone().
+# shellcheck source=scripts/lib/git-base.sh
+. scripts/lib/git-base.sh || { echo "ERREUR: scripts/lib/git-base.sh introuvable ou illisible" >&2; exit 1; }
 
 WEBHOOK_REPO="${WEBHOOK_REPO:?WEBHOOK_REPO requis (repository.full_name du webhook)}"
 PR_BRANCH="${PR_BRANCH:?PR_BRANCH requis}"
@@ -127,6 +132,20 @@ gclone(){
   GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader \
     GIT_CONFIG_VALUE_0="Authorization: Basic ${auth_b64}" \
     git clone -q "$@"
+}
+
+# LA DÉCOUVERTE DE BRANCHE SOUS LA MÊME ENVELOPPE QUE LE CLONE. La lib
+# git-base.sh ne porte aucun secret : elle HÉRITE de l'environnement de son
+# appelant. Un `git ls-remote` nu serait ANONYME et échouerait sur un dépôt
+# PRIVÉ — le cas normal chez un client — et la promotion refuserait pour une
+# raison qui n'a rien à voir. Préfixe d'ENV sur l'appel de fonction (bash le
+# passe aux enfants), jamais en argv. $1 = la fonction de la lib.
+gbase(){
+  local auth_b64
+  auth_b64=$(printf 'x:%s' "$FORGE_SECRET" | base64 | tr -d '\n')
+  GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader \
+    GIT_CONFIG_VALUE_0="Authorization: Basic ${auth_b64}" \
+    "$@"
 }
 
 # ── 0. VALIDATION DE FORME — AVANT tout argv git/curl ────────────────────────
@@ -227,11 +246,20 @@ else
   EFFECTIVE_VIA="$ADMIN_VIA"
 fi
 
+# ── 1bis. LA BRANCHE DE BASE DU DÉPÔT D'ÉQUIPE (L3, 2026-09-10) ─────────────
+# APRÈS les gardes de forme (rien de difforme ne touche le réseau), AVANT la §2
+# qui compare la base RELUE de la PR, et avant le `origin/<base>` du §4. Le
+# dépôt d'équipe a SA HEAD : « main » en dur refusait TOUTE PR chez un client
+# dont la branche est `master`, en accusant le payload plutôt que le câblage.
+gbase git_base_of "${GIT_HOST}/${WEBHOOK_REPO}.git" >/dev/null \
+  || fail "BRANCHE_PAR_DEFAUT_INCONNUE : branche par défaut de ${WEBHOOK_REPO} indéterminable (cause ci-dessus) — ni la base de la PR ni l'ancêtreté du merge ne peuvent être vérifiées ; rien n'est promu"
+TEAM_BASE="$GIT_BASE_OF"
+
 # ── 2. RÉCONCILIATION AVEC GITEA — le payload n'est pas la vérité ────────────
 # Le webhook n'a ni secret HMAC vérifié en aval ni garantie de fraîcheur : un
 # tir manuel avec le token GWT partagé peut prétendre N'IMPORTE QUEL
 # merge_commit_sha/branche pour ce PR_NUMBER. La garde d'atteignabilité (§4)
-# confirme que MERGE_SHA est UN ancêtre de main — pas forcément CELUI de CETTE
+# confirme que MERGE_SHA est UN ancêtre de la branche de base — pas forcément CELUI de CETTE
 # PR. On redemande donc l'état à GITEA LUI-MÊME (authentifié par FORGE_SECRET,
 # donc pas falsifiable par le contenu d'un payload).
 #
@@ -254,7 +282,7 @@ fi
 # deploy-pin.sh:117-125) : on REFUSE le délimiteur dans la valeur plutôt que
 # d'espérer qu'il n'y soit pas.
 PR_STATE=$(GIT_HOST="$GIT_HOST" WEBHOOK_REPO="$WEBHOOK_REPO" PR_NUMBER="$PR_NUMBER" \
-  FORGE_SECRET="$FORGE_SECRET" PR_BRANCH="$PR_BRANCH" MERGE_SHA="$MERGE_SHA" python3 - <<'PY'
+  FORGE_SECRET="$FORGE_SECRET" PR_BRANCH="$PR_BRANCH" MERGE_SHA="$MERGE_SHA" TEAM_BASE="$TEAM_BASE" python3 - <<'PY'
 import os, json, urllib.request, urllib.error
 api = os.environ["GIT_HOST"] + "/api/v1"
 repo = os.environ["WEBHOOK_REPO"]
@@ -270,7 +298,9 @@ ok = (
     d.get("merged") is True
     and d.get("merge_commit_sha") == os.environ["MERGE_SHA"]
     and (d.get("head") or {}).get("ref") == os.environ["PR_BRANCH"]
-    and (d.get("base") or {}).get("ref") == "main"
+    # La base ATTENDUE est celle que la forge déclare pour CE dépôt (§1bis),
+    # jamais un littéral.
+    and (d.get("base") or {}).get("ref") == os.environ["TEAM_BASE"]
 )
 mb = str((d.get("merged_by") or {}).get("login") or "")
 rq = str((d.get("user") or {}).get("login") or "")
@@ -308,24 +338,28 @@ esac
 # `promoted_by` du marqueur) — il est journalisé comme diagnostic, et parce que
 # le voir valoir `ci` build après build est la façon la plus rapide de
 # comprendre pourquoi les quatre yeux ne mordent pas encore.
-echo "réconciliation Gitea OK : ${WEBHOOK_REPO}#${PR_NUMBER} merged, ${PR_BRANCH}->main, mergeur '${GITEA_MERGED_BY}', PR ouverte par '${GITEA_REQUESTER}'"
+echo "réconciliation Gitea OK : ${WEBHOOK_REPO}#${PR_NUMBER} merged, ${PR_BRANCH}->${TEAM_BASE}, mergeur '${GITEA_MERGED_BY}', PR ouverte par '${GITEA_REQUESTER}'"
 
 # ── 3. AUTORITÉ PAR TOPOLOGIE : quelle équipe déclare CE dépôt ? ─────────────
 # Le webhook dit QUEL DÉPÔT a mergé (repository.full_name) — jamais quelle
 # équipe. Une "team" dans le payload serait une AFFIRMATION du dépôt de l'équipe
 # lui-même. L'équipe est dérivée en CROISANT ce dépôt avec providers.<env>.yml
-# — dépôt PLATEFORME, lu FRAIS sur main. Ici elle sert aussi de segment d'URL au
+# — dépôt PLATEFORME, lu FRAIS sur SA branche de base. Ici elle sert aussi de segment d'URL au
 # registre d'archives (§5) : une équipe devinée y désignerait les octets de
 # quelqu'un d'autre.
 #
 # ⚠ providers.<env>.yml est lu à l'env d'AUTHORING, pas à TO_ENV : la topologie
 # « quel dépôt appartient à quelle équipe » ne dépend pas du palier visé (même
 # fichier que team-publish.sh §3 ; un providers.prod.yml séparé n'existe pas).
-gclone --depth 1 -b main "${GIT_HOST}/${GIT_REPO}.git" "$TMP/platform" \
-  || fail "clone ${GIT_REPO}@main (résolution dépôt -> équipe)"
+# La PLATEFORME suit le knob GIT_BASE quand il est posé (git_base_init) : c'est
+# le dépôt de la chaîne, celui que l'exploitant nomme.
+gbase git_base_init "${GIT_HOST}/${GIT_REPO}.git" \
+  || fail "BRANCHE_PAR_DEFAUT_INCONNUE : branche par défaut de ${GIT_REPO} indéterminable (cause ci-dessus) — la topologie dépôt -> équipe ne peut pas être lue ; rien n'est promu"
+gclone --depth 1 -b "$GIT_BASE" "${GIT_HOST}/${GIT_REPO}.git" "$TMP/platform" \
+  || fail "clone ${GIT_REPO}@${GIT_BASE} (résolution dépôt -> équipe)"
 PROV_REL="${SUB_PFX}ansible/providers.${ENVN_AUTH}.yml"
 PROV="$TMP/platform/$PROV_REL"
-[ -f "$PROV" ] || fail "PROVIDERS_MISSING : ${PROV_REL} absent sur ${GIT_REPO}@main (chemin RELATIF à la racine du dépôt, préfixe GIT_SUBDIR='${GIT_SUBDIR}')"
+[ -f "$PROV" ] || fail "PROVIDERS_MISSING : ${PROV_REL} absent sur ${GIT_REPO}@${GIT_BASE} (chemin RELATIF à la racine du dépôt, préfixe GIT_SUBDIR='${GIT_SUBDIR}')"
 
 # FAIL-CLOSED supplémentaire (REPO_AMBIGU) : si CE dépôt est déclaré par PLUS
 # D'UNE équipe (copier-coller de providers.<env>.yml), prendre la première
@@ -359,9 +393,9 @@ git -C "$TMP/team" checkout -q "$MERGE_SHA" \
 
 # GARDE D'ATTEIGNABILITÉ : un `git checkout $MERGE_SHA` réussi prouve seulement
 # que l'OBJET existe quelque part dans le clone (un `git clone` SANS --depth 1
-# récupère TOUTES les branches) — jamais qu'il est réellement fusionné sur main.
-git -C "$TMP/team" merge-base --is-ancestor "$MERGE_SHA" origin/main \
-  || fail "MERGE_SHA_NON_ANCETRE : ${MERGE_SHA} n'est pas un ancêtre de ${WEBHOOK_REPO}@main — le SHA du webhook ne correspond pas à un commit réellement fusionné sur la branche protégée, refus de promouvoir depuis un état non revu"
+# récupère TOUTES les branches) — jamais qu'il est réellement fusionné sur la base.
+git -C "$TMP/team" merge-base --is-ancestor "$MERGE_SHA" "origin/${TEAM_BASE}" \
+  || fail "MERGE_SHA_NON_ANCETRE : ${MERGE_SHA} n'est pas un ancêtre de ${WEBHOOK_REPO}@${TEAM_BASE} — le SHA du webhook ne correspond pas à un commit réellement fusionné sur la branche protégée, refus de promouvoir depuis un état non revu"
 
 # ── 5. LE MARQUEUR : digest pré-lu, archive fetchée, PUIS résolveur complet ──
 # L'ordre est contraint par les interfaces : resolve_deploy_pin exige l'archive
@@ -390,7 +424,7 @@ archive_store_fetch "$TEAM" "$API_NAME" "$PRE_SHA" "$TMP/archive.zip" 2>"$TMP/st
 # ARCHIVE_DIGEST_MISMATCH…) part sur stderr — un lecteur de PR ne voit pas le log
 # Jenkins. On capture stderr en FICHIER (jamais un pipe : pipefail + le résolveur
 # sort 1) et le dernier jeton nommé rejoint le commentaire.
-resolve_deploy_pin "$TMP/team" "$API_NAME" "$TO_ENV" "$TMP/resolved" origin/main "$TMP/archive.zip" \
+resolve_deploy_pin "$TMP/team" "$API_NAME" "$TO_ENV" "$TMP/resolved" "origin/${TEAM_BASE}" "$TMP/archive.zip" \
   2>"$TMP/pin.err" || { cat "$TMP/pin.err" >&2
        REFUS="$(grep -o 'deploy-pin: [A-Z_0-9]*' "$TMP/pin.err" | tail -1)"
        fail "PIN_NON_RESOLU : la référence de déploiement de ${API_NAME} en ${TO_ENV} n'a pas pu être résolue (${REFUS:-refus non nommé — voir le log du build})"; }

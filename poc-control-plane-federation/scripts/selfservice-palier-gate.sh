@@ -26,8 +26,9 @@
 # token part par FICHIER d'en-tête (jamais argv). Le corps du ticket EST le
 # credential d'admin du palier : -o /dev/null, jamais lu, jamais écrit.
 #
-# CHARGÉ PAR LE JENKINSFILE DEPUIS origin/main (jamais l'arbre pinné au
-# MERGE_SHA) dans un répertoire qui conserve l'arborescence scripts/lib +
+# CHARGÉ PAR LE JENKINSFILE DEPUIS la branche de base de l'origine (GIT_BASE),
+# jamais l'arbre pinné au MERGE_SHA — dans un répertoire qui conserve
+# l'arborescence scripts/lib +
 # clients/_example : la lib se résout par BASH_SOURCE, la chaîne par la lib.
 #
 # Défauts : APIM_KV_PREFIX est VIDE (le miroir exact de `${APIM_KV_PREFIX:-}`
@@ -82,7 +83,7 @@ APIM_TEAM="${APIM_TEAM:-}"
 case "$ENVIRONMENT" in *[!a-z0-9]*) refus ENV_INVALIDE "'${ENVIRONMENT}' hors de ^[a-z0-9]+\$";; esac
 # A4 (D0) : la chaîne est VALIDÉE avant d'être lue — une porte `to: itn` ou une
 # clé mal orthographiée ne relâche rien en silence — et sa source est imprimée
-# (épinglée par le Jenkinsfile sur l'extraction de origin/main).
+# (épinglée par le Jenkinsfile sur l'extraction de la branche de base, GIT_BASE).
 echo "chaîne : $(_env_chain_file)"
 env_chain_validate 2>"$TMP/validate.err" || refus CHAINE_INVALIDE "$(tail -1 "$TMP/validate.err" | tr -d '\r')"
 CHAIN="$(env_chain)" || refus ENV_INVALIDE "chaîne d'environnements illisible"

@@ -41,6 +41,11 @@ cd "$(dirname "$0")/.." || exit 1
 # shellcheck source=scripts/lib/repo-layout.sh
 . scripts/lib/repo-layout.sh || { echo "ERREUR: scripts/lib/repo-layout.sh introuvable ou illisible" >&2; exit 1; }
 repo_layout_init || exit 2
+# LA branche par défaut du dépôt d'ÉQUIPE, une autorité (L3, 2026-09-10) : ce
+# script ne clone que ce dépôt-là, et c'est vers SA branche que la PR s'ouvre.
+# `git_base_of` la lui demande — un knob global ne vaut que pour la plateforme.
+# shellcheck source=scripts/lib/git-base.sh
+. scripts/lib/git-base.sh || { echo "ERREUR: scripts/lib/git-base.sh introuvable ou illisible" >&2; exit 1; }
 
 fail() { printf 'ERREUR: %s\n' "$*" >&2; exit 1; }
 
@@ -101,7 +106,7 @@ done
 # (clients/_example/environments.yaml, cf. lib/env-chain.sh) : il est appelé
 # AVANT le clone du dépôt d'équipe, plus bas, donc lire la chaîne de l'équipe
 # est mécaniquement impossible ici. governance-api, lui, lit `environments.yaml`
-# sur `main` du dépôt GOVERNANCE (labctl/internal/governance/envchain.go), et
+# sur la branche de base du dépôt GOVERNANCE (labctl/internal/governance/envchain.go), et
 # seed-governance-chain.sh y copie le gabarit UNE FOIS, dans UN SEUL SENS : une
 # porte modifiée côté governance laisse ces gardes-ci sur une copie périmée.
 # Elles refusent TÔT ; elles ne font pas autorité.
@@ -203,7 +208,7 @@ gapi() { curl -sS -H @"$TMP/ghdr" -H 'Content-Type: application/json' "$@"; }
 # ── team -> repo, lu sur GITEA MAIN (jamais le worktree local) ───────────────
 # Le worktree local peut être en retard, ou modifié : la seule source qui dit
 # VRAIMENT « ce dépôt appartient à cette équipe » est providers.<env>.yml sur
-# main du dépôt plateforme (même discipline que team-publish.sh §3).
+# la branche de base du dépôt plateforme (même discipline que team-publish.sh §3).
 # ⚠ DEUX PIÈGES ICI, MESURÉS TOUS LES DEUX.
 #
 # (1) LE CHEMIN. `providers.<env>.yml` ne vit pas forcément à la racine du
@@ -226,7 +231,7 @@ PROV_REL="${SUB_PFX}ansible/providers.${AUTHORING_ENV}.yml"
 gapi --fail-with-body --max-time 20 \
   "${GIT_HOST}/api/v1/repos/${GIT_REPO}/raw/${PROV_REL}" \
   > "$TMP/providers.yml" \
-  || fail "LECTURE_PROVIDERS : ${PROV_REL} illisible sur ${GIT_REPO}@main (HTTP non-2xx, hote injoignable ou token refuse ; chemin RELATIF a la racine du depot, prefixe GIT_SUBDIR='${GIT_SUBDIR}')"
+  || fail "LECTURE_PROVIDERS : ${PROV_REL} illisible sur la branche par défaut de ${GIT_REPO} (HTTP non-2xx, hote injoignable ou token refuse ; chemin RELATIF a la racine du depot, prefixe GIT_SUBDIR='${GIT_SUBDIR}')"
 REPO_FULL=$(TEAM="$TEAM" PROV="$TMP/providers.yml" python3 - <<'PY'
 import os, sys, yaml
 d = yaml.safe_load(open(os.environ["PROV"])) or {}
@@ -244,6 +249,14 @@ AUTH_B64=$(printf 'x:%s' "$FORGE_SECRET" | base64 | tr -d '\n')
 export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader \
        GIT_CONFIG_VALUE_0="Authorization: Basic ${AUTH_B64}"
 unset AUTH_B64
+# GIT_CONFIG_* vient d'être EXPORTÉ (trois lignes plus haut) : le `git ls-remote`
+# de la lib hérite donc de la MÊME enveloppe d'authentification que ce clone —
+# elle n'en porte aucune de son côté. Le clone reste SANS `-b` (il prend la HEAD
+# du dépôt) ; la branche est découverte ici parce que la PR, plus bas, doit
+# viser CETTE base et pas un littéral.
+git_base_of "${GIT_HOST}/${REPO_FULL}.git" >/dev/null \
+  || fail "CLONE_ECHEC : branche par défaut de ${REPO_FULL} indéterminable (cause ci-dessus) — la PR de promotion ne peut viser aucune base"
+TEAM_BASE="$GIT_BASE_OF"
 git clone -q "${GIT_HOST}/${REPO_FULL}.git" "$TMP/team" \
   || fail "CLONE_ECHEC : ${REPO_FULL}"
 
@@ -259,11 +272,11 @@ fi
 # fois. Dupliquer cette lecture ici ferait deriver les deux copies.
 
 # ── LE PIN : ce que le palier SOURCE execute ────────────────────────────────
-# Depuis dev (env d'authoring, sans marqueur) : le dernier commit de main
+# Depuis dev (env d'authoring, sans marqueur) : le dernier commit de la base
 # touchant CETTE API. Au-dela : le pin ET le digest du marqueur SOURCE, pour
 # qu'un saut promeuve ce que le palier precedent sert reellement — la lettre du
 # GOAL, « chaque palier recevant exactement l'archive approuvee et pas le
-# dernier main ». La logique vit dans la bibliotheque parce qu'elle s'y eprouve
+# dernier etat de la base ». La logique vit dans la bibliotheque parce qu'elle s'y eprouve
 # hors ligne ; ici elle serait dans le chemin post-DRY_RUN, que rien ne teste.
 resolve_promotion_pin "$TMP/team" "$API_NAME" "$FROM_ENV" \
   || fail "PIN_NON_RESOLU : impossible de determiner ce que '$FROM_ENV' execute pour ${API_NAME} (voir le refus nomme ci-dessus)"
@@ -280,7 +293,7 @@ if [ "$FROM_ENV" = "$AUTHORING_ENV" ]; then
     || fail "MANIFESTE_ILLISIBLE : apis/${API_NAME}.promote.yml ne se lit pas — impossible de résoudre le digest"
   if [ -z "$ARCHIVE_SHA256" ]; then
     ARCHIVE_SHA256="$MANIFEST_SHA"
-    [ -n "$ARCHIVE_SHA256" ] && echo "DIGEST_RESOLU : archive_sha256 lu sur main (manifeste épinglé) = ${ARCHIVE_SHA256}"
+    [ -n "$ARCHIVE_SHA256" ] && echo "DIGEST_RESOLU : archive_sha256 lu sur ${TEAM_BASE} (manifeste épinglé) = ${ARCHIVE_SHA256}"
   elif [ -n "$MANIFEST_SHA" ] && [ "$ARCHIVE_SHA256" != "$MANIFEST_SHA" ]; then
     echo "AVERTISSEMENT DIGEST_EXPLICITE : le formulaire (${ARCHIVE_SHA256}) remplace la valeur épinglée du manifeste (${MANIFEST_SHA}) — désignation explicite, le merge de la PR l'approuvera" >&2
   fi
@@ -379,13 +392,14 @@ La DÉCISION est le merge de cette PR (ADR-081). Groupe d'approbation ATTENDU : 
 ${DEPLOYER_GROUP_LINE}
 
 **Ce merge DÉCLENCHE l'apply de promotion** (webhook → job \`team-promote\`, G5/ADR-083) : une pause nominative demandera l'identité du MERGEUR, puis l'import d'archive (GUID stable, 0-coupure — ADR-079) tournera vers \`${TO_ENV}\` et son résultat sera commenté ICI — pin, digest, moteur, et les trois identités (demandeur / mergeur / porteur).${ITSM_LINE}" \
-  HDR="$TMP/ghdr" python3 - <<'PY'
+  TEAM_BASE="$TEAM_BASE" HDR="$TMP/ghdr" python3 - <<'PY'
 import json, os, urllib.request
 h = dict(l.split(": ", 1) for l in open(os.environ["HDR"]).read().splitlines() if l)
 h["Content-Type"] = "application/json"
 req = urllib.request.Request(
     f"{os.environ['API']}/repos/{os.environ['R']}/pulls", method="POST",
-    data=json.dumps({"head": os.environ["B"], "base": "main",
+    # La base de la PR = la branche du dépôt d'équipe, découverte, jamais un littéral.
+    data=json.dumps({"head": os.environ["B"], "base": os.environ["TEAM_BASE"],
                      "title": os.environ["T"], "body": os.environ["BODY"]}).encode(),
     headers=h)
 print(json.load(urllib.request.urlopen(req))["html_url"])

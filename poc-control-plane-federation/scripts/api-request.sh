@@ -7,7 +7,8 @@
 #
 #   formulaire Jenkins → CE script :
 #     1. gardes d'entrée (AVANT tout geste Git — un refus ne laisse rien derrière)
-#     2. team -> repo, lu dans providers.<env>.yml sur GITEA MAIN (jamais le
+#     2. team -> repo, lu dans providers.<env>.yml sur la branche de base du
+#        dépôt plateforme, telle que la forge la déclare (jamais le
 #        worktree local — même discipline que scripts/lib/generate-choices.sh)
 #     3. clone du dépôt de l'ÉQUIPE (ADR-076), écrit apis/<name>.publish.yml
 #        (gabarit gateways/templates/publish.yml.tmpl) + apis/<name>.openapi.yaml
@@ -56,8 +57,10 @@
 #                       équipes API (en prod : le dépôt `data-governance` du
 #                       client). AUCUN défaut — un repli de lab publierait sous
 #                       une gouvernance qui n'est pas la vôtre, sans le dire.
-#                       Lu FRAIS sur main, jamais depuis le worktree — même
-#                       discipline que providers.<env>.yml, même raison.
+#                       Lu FRAIS sur SA branche de base (git_base_of : ce dépôt
+#                       peut ne pas avoir la même HEAD que la plateforme),
+#                       jamais depuis le worktree — même discipline que
+#                       providers.<env>.yml, même raison.
 #   GOVERNANCE_PATH (req) chemin du registre DANS ce dépôt
 #                       (ex. governance/classifications.yaml) — sans défaut
 #   LABCTL_BIN          binaire qui porte l'AUTORITÉ de la table de vérité
@@ -89,6 +92,16 @@ _AR_LAYOUT="$(dirname "${BASH_SOURCE[0]}")/lib/repo-layout.sh"
 # shellcheck source=scripts/lib/repo-layout.sh
 . "$_AR_LAYOUT" || { echo "ERREUR: $_AR_LAYOUT introuvable ou illisible" >&2; exit 1; }
 repo_layout_init || exit 2
+# LA branche par défaut des dépôts de la forge, une autorité (L3, 2026-09-10).
+# SOURCÉE ici, JOUÉE plus bas : `git_base_init` sur le dépôt PLATEFORME, et
+# `git_base_of` sur chacun des autres (gouvernance, équipes) — trois familles de
+# dépôts peuvent avoir trois HEAD, un GIT_BASE global n'est vrai que pour la
+# plateforme. Les quatre clones de ce script sont ANONYMES : les découvertes le
+# sont aussi, sous la même enveloppe (aucune) que le clone qu'elles précèdent.
+_AR_BASE="$(dirname "${BASH_SOURCE[0]}")/lib/git-base.sh"
+[ -f "$_AR_BASE" ] || _AR_BASE="scripts/lib/git-base.sh"
+# shellcheck source=scripts/lib/git-base.sh
+. "$_AR_BASE" || { echo "ERREUR: $_AR_BASE introuvable ou illisible" >&2; exit 1; }
 
 ACTION="${ACTION:?ACTION requis (create|new-version)}"
 TEAM="${TEAM:?TEAM requis}"
@@ -260,16 +273,30 @@ if not isinstance(doc, dict) or not (("openapi" in doc) or ("swagger" in doc)):
 PY
 ) || fail "SPEC_INVALIDE : ${SPEC_ERR:-parse en échec}"
 
-# ── 2. team -> repo, depuis providers.<env>.yml sur GITEA MAIN ──────────────
+# ── 2. team -> repo, depuis providers.<env>.yml sur la BRANCHE DE BASE ──────
 WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
-echo "[1/5] clone ${GIT_REPO}@main (lecture team -> repo)"
-git clone -q --depth 1 -b main "${GIT_HOST}/${GIT_REPO}.git" "$WORK/platform" \
-  || fail "clone ${GIT_REPO}@main (résolution team -> repo)"
+# LA BRANCHE DE BASE DU DÉPÔT PLATEFORME, ici : l'URL de clone est composée
+# (GIT_HOST + GIT_REPO), et c'est le premier `-b` du script. Knob GIT_BASE >
+# HEAD du dépôt > refus nommé (rc 2) — jamais « main » deviné.
+PLAT_URL="${GIT_HOST}/${GIT_REPO}.git"
+git_base_init "$PLAT_URL" || exit 2
+echo "[1/5] clone ${GIT_REPO}@${GIT_BASE} (lecture team -> repo)"
+if ! git clone -q --depth 1 -b "$GIT_BASE" "$PLAT_URL" "$WORK/platform" 2>"$WORK/clone.err"; then
+  # `ls-remote --exit-code --heads` : rc 0 la branche existe, rc 2 le dépôt a
+  # répondu mais n'a pas cette branche, rc autre le dépôt n'a pas répondu
+  # (mesuré git 2.42). DÉTERMINISTE, là où lire le texte de git dépendrait de sa
+  # locale. Joué SEULEMENT sur le chemin d'échec.
+  AR_LS_RC=0; git ls-remote --exit-code --heads "$PLAT_URL" "refs/heads/${GIT_BASE}" >/dev/null 2>&1 || AR_LS_RC=$?
+  AR_CLONE_ERR="$(sed -E 's#://[^/@[:space:]]+@#://<masqué>@#g' "$WORK/clone.err" 2>/dev/null | head -c 300 | tr '\n' ' ')"
+  [ "$AR_LS_RC" = 2 ] \
+    && fail "BRANCHE_DE_BASE_INTROUVABLE : ${GIT_BASE} n'existe pas sur ${GIT_REPO} — knob GIT_BASE faux, ou dépôt vide ; rien n'a été écrit (git : ${AR_CLONE_ERR:-sans message})"
+  fail "clone ${GIT_REPO}@${GIT_BASE} (résolution team -> repo) : ${AR_CLONE_ERR:-sans message}"
+fi
 PROV_REL="${SUB_PFX}ansible/providers.${ENVN}.yml"
 PROV="$WORK/platform/$PROV_REL"
 # Le refus NOMME le chemin RÉELLEMENT lu, préfixe compris : un message qui
 # désigne un chemin théorique envoie chercher au mauvais endroit.
-[ -f "$PROV" ] || fail "PROVIDERS_MISSING : ${PROV_REL} absent sur ${GIT_REPO}@main (chemin RELATIF à la racine du dépôt, préfixe GIT_SUBDIR='${GIT_SUBDIR}')"
+[ -f "$PROV" ] || fail "PROVIDERS_MISSING : ${PROV_REL} absent sur ${GIT_REPO}@${GIT_BASE} (chemin RELATIF à la racine du dépôt, préfixe GIT_SUBDIR='${GIT_SUBDIR}')"
 
 REPO_OUT=$(TEAM="$TEAM" PROV="$PROV" python3 - <<'PY'
 import os, sys, yaml
@@ -282,7 +309,7 @@ PY
 )
 RC=$?
 if [ "$RC" -ne 0 ]; then
-  fail "TEAM_NOT_DECLARED : '${TEAM}' absente de providers.${ENVN}.yml (sur main)"
+  fail "TEAM_NOT_DECLARED : '${TEAM}' absente de providers.${ENVN}.yml (sur ${GIT_BASE})"
 fi
 case "$REPO_OUT" in
   REPO=*) REPO_FULL="${REPO_OUT#REPO=}";;
@@ -291,7 +318,7 @@ esac
 [ -n "$REPO_FULL" ] || fail "REPO_MANQUANT : onboarder d'abord un dépôt pour cette équipe (providers.${ENVN}.yml, champ repo de '${TEAM}' vide)"
 echo "  équipe '${TEAM}' -> dépôt ${REPO_FULL}"
 
-# ── 2a. registre CENTRAL de classification, lu FRAIS sur main ────────────────
+# ── 2a. registre CENTRAL, lu FRAIS sur SA branche de base ───────────────────
 # (jalon P2.) Cloné ICI, avant toute écriture Git : une source de gouvernance
 # injoignable ou absente est une panne d'INFRASTRUCTURE, pas un défaut de la
 # demande — elle doit donc refuser AVANT qu'une PR n'existe, et non finir en
@@ -306,12 +333,19 @@ echo "  équipe '${TEAM}' -> dépôt ${REPO_FULL}"
 # (scripts/test-classification-central.sh, preuve 6).
 [ -n "$GOVERNANCE_REPO" ] || fail "CHAMP_REQUIS : GOVERNANCE_REPO — le dépôt du registre central de classification (chez le client : le dépôt de la gouvernance de la donnée). Aucun défaut n'est posé volontairement : une valeur de lab en repli publierait sous une gouvernance qui n'est pas la vôtre. La poser en variable globale du contrôleur Jenkins (scripts/setup-jenkins-globals.sh)."
 [ -n "$GOVERNANCE_PATH" ] || fail "CHAMP_REQUIS : GOVERNANCE_PATH — le chemin du registre DANS ce dépôt (ex. governance/classifications.yaml). Même raison qu'au-dessus."
-echo "[1c/5] registre central ${GOVERNANCE_REPO}@main (${GOVERNANCE_PATH})"
-git clone -q --depth 1 -b main "${GIT_HOST}/${GOVERNANCE_REPO}.git" "$WORK/governance" \
+# SA branche à LUI, pas celle de la plateforme : le dépôt de gouvernance
+# appartient à une autre équipe, souvent créé un autre jour, sur une autre
+# convention. `git_base_of` la demande AU DÉPÔT et la mémoïse par URL.
+GOV_URL="${GIT_HOST}/${GOVERNANCE_REPO}.git"
+git_base_of "$GOV_URL" >/dev/null \
+  || fail "REGISTRE_GOUVERNANCE_INACCESSIBLE : branche par défaut de '${GOVERNANCE_REPO}' indéterminable sur ${GIT_HOST} (cause ci-dessus) — la posture ne peut pas être arbitrée, et une posture non arbitrée est celle que la demande s'est donnée. Refus."
+GOV_BASE="$GIT_BASE_OF"
+echo "[1c/5] registre central ${GOVERNANCE_REPO}@${GOV_BASE} (${GOVERNANCE_PATH})"
+git clone -q --depth 1 -b "$GOV_BASE" "$GOV_URL" "$WORK/governance" \
   || fail "REGISTRE_GOUVERNANCE_INACCESSIBLE : '${GOVERNANCE_REPO}' injoignable sur ${GIT_HOST} — la posture ne peut pas être arbitrée, et une posture non arbitrée est celle que la demande s'est donnée. Refus."
 REGISTRY="$WORK/governance/${GOVERNANCE_PATH}"
 [ -f "$REGISTRY" ] \
-  || fail "REGISTRE_GOUVERNANCE_ABSENT : '${GOVERNANCE_PATH}' introuvable dans ${GOVERNANCE_REPO}@main — vérifier GOVERNANCE_PATH, ou faire poser le registre par la gouvernance de la donnée"
+  || fail "REGISTRE_GOUVERNANCE_ABSENT : '${GOVERNANCE_PATH}' introuvable dans ${GOVERNANCE_REPO}@${GOV_BASE} — vérifier GOVERNANCE_PATH, ou faire poser le registre par la gouvernance de la donnée"
 
 # ── 2b. collision cross-team (mode create uniquement) ────────────────────────
 # L'apply aval (roles/apim_publish_api/tasks/main.yml:61-67) matche name+version
@@ -383,7 +417,13 @@ for p in (d.get('providers') or []):
       [ -n "$OTHER_REPO" ] || continue
       [ "$OTHER_TEAM" = "$TEAM" ] && continue   # notre propre dépôt : couvert par API_ALREADY_EXISTS plus bas
       OW=$(mktemp -d)
-      if git clone -q --depth 1 -b main "${GIT_HOST}/${OTHER_REPO}.git" "$OW" 2>"$OW.err"; then
+      # Chaque dépôt d'équipe a SA branche par défaut : la demander au dépôt
+      # (git_base_of, mémoïsé) est la seule façon de balayer réellement. Une
+      # découverte ratée n'est pas « aucune collision » — c'est le même
+      # non-balayage que le clone raté ci-dessous, et il se dit pareil.
+      OTHER_URL="${GIT_HOST}/${OTHER_REPO}.git"
+      if git_base_of "$OTHER_URL" 2>"$OW.err" >/dev/null \
+         && git clone -q --depth 1 -b "$GIT_BASE_OF" "$OTHER_URL" "$OW" 2>"$OW.err"; then
         [ -f "$OW/apis/${API_NAME}.publish.yml" ] && COLLISION_OWNER="équipe '${OTHER_TEAM}' (${OTHER_REPO})"
       else
         # Un clone qui échoue n'est PAS une absence de collision : c'est une
@@ -402,8 +442,15 @@ for p in (d.get('providers') or []):
 fi
 
 # ── 3. clone du dépôt d'ÉQUIPE, écrit spec + manifeste ───────────────────────
-echo "[2/5] clone ${REPO_FULL}@main (dépôt de l'équipe)"
-git clone -q --depth 1 -b main "${GIT_HOST}/${REPO_FULL}.git" "$WORK/team" \
+# LA BRANCHE DU DÉPÔT D'ÉQUIPE — la sienne, pas celle de la plateforme. C'est
+# elle que le clone prend ET que la PR vise plus bas : ouvrir une PR vers une
+# base que le clone n'a pas utilisée était exactement le défaut du 2026-09-09.
+TEAM_URL="${GIT_HOST}/${REPO_FULL}.git"
+git_base_of "$TEAM_URL" >/dev/null \
+  || fail "REPO_INACCESSIBLE : '${REPO_FULL}' déclaré pour '${TEAM}' mais sa branche par défaut est indéterminable sur ${GIT_HOST} (cause ci-dessus) — l'onboarding (team-apply) a-t-il bien créé le dépôt ?"
+TEAM_BASE="$GIT_BASE_OF"
+echo "[2/5] clone ${REPO_FULL}@${TEAM_BASE} (dépôt de l'équipe)"
+git clone -q --depth 1 -b "$TEAM_BASE" "$TEAM_URL" "$WORK/team" \
   || fail "REPO_INACCESSIBLE : '${REPO_FULL}' déclaré pour '${TEAM}' mais introuvable/inaccessible sur ${GIT_HOST} — l'onboarding (team-apply) a-t-il bien créé le dépôt ?"
 
 PUB_REL="apis/${API_NAME}.publish.yml"
@@ -418,7 +465,7 @@ else
   [ -f "$PUB_PATH" ] \
     || fail "API_BASE_NOT_FOUND : '${API_NAME}' introuvable dans ${REPO_FULL} (${PUB_REL}) — si ce nom n'appartient à AUCUNE équipe, publier d'abord une version initiale (ACTION=create) ; s'il apparaît dans la liste déroulante, il appartient à une AUTRE équipe (API_NAME_COLLISION vous le dira si vous tentez un create)"
   # Anti-TOCTOU léger : la liste déroulante (API_BASE) peut être en retard sur
-  # ce que le dépôt d'équipe porte RÉELLEMENT sur main — un refus explicite
+  # ce que le dépôt d'équipe porte RÉELLEMENT sur sa branche de base — un refus explicite
   # vaut mieux qu'une nouvelle version silencieusement basée sur la mauvaise
   # version de départ.
   EXISTING_VERSION=$(python3 -c "
@@ -468,7 +515,7 @@ unset AUTH_B64
 PR_NUMBER=$(API="${GIT_HOST}/api/v1" REPO_FULL="$REPO_FULL" FORGE_SECRET="$FORGE_SECRET" \
   BRANCH="$BRANCH" API_NAME="$API_NAME" ACTION="$ACTION" EFFECTIVE_VERSION="$EFFECTIVE_VERSION" \
   TEAM="$TEAM" INBOUND_MODE="$INBOUND_MODE" BASE_VERSION="${BASE_VERSION:-}" \
-  CLASSIFICATION="$CLASSIFICATION" EXPOSURE="$EXPOSURE" \
+  CLASSIFICATION="$CLASSIFICATION" EXPOSURE="$EXPOSURE" TEAM_BASE="$TEAM_BASE" \
   python3 - <<'PY'
 import json, os, urllib.request
 api, repo, tok = os.environ["API"], os.environ["REPO_FULL"], os.environ["FORGE_SECRET"]
@@ -488,7 +535,9 @@ body = (
     "merge n'importe rien lui-même — la publication réelle vit dans le "
     "pipeline post-merge."
 )
-req_body = {"base": "main", "head": os.environ["BRANCH"],
+# La base de la PR est la branche du dépôt CIBLE (celui de l'équipe), telle
+# que le clone l'a utilisée — jamais un littéral, jamais celle de la plateforme.
+req_body = {"base": os.environ["TEAM_BASE"], "head": os.environ["BRANCH"],
             "title": f"api({os.environ['TEAM']}): {os.environ['API_NAME']} v{os.environ['EFFECTIVE_VERSION']} ({action})",
             "body": body}
 req = urllib.request.Request(f"{api}/repos/{repo}/pulls", method="POST",
@@ -501,7 +550,8 @@ echo "PR #${PR_NUMBER} ouverte : ${GIT_WEB_HOST}/${REPO_FULL}/pulls/${PR_NUMBER}
 
 # ── 5. PLAN — gardes hors ligne de apim_publish_api ──────────────────────────
 # Exécuté depuis LE CHECKOUT DE CE SCRIPT (poc-control-plane-federation/,
-# déjà préparé par le job Jenkins, stage('checkout') sur ci/stoa-labs@main) —
+# déjà préparé par le job Jenkins, stage('checkout') sur la branche de base de
+# ci/stoa-labs) —
 # PAS un nouveau clone : le code ansible/ est un artefact PLATEFORME, pas une
 # donnée que la PR de l'équipe modifie (au contraire de providers.<env>.yml
 # ci-dessus, lu FRAIS pour cette raison précise). Même geste que le stage
@@ -525,7 +575,7 @@ PLAN_LOG="$WORK/plan.log"
   # son unité de cloisonnement ici). Rien de réclamé, donc rien à falsifier —
   # l'ancre anti-spoof reste le couple (équipe, api). Le tenant gouverné est
   # RENDU par la commande, et paraît dans ce journal.
-  echo "=== posture centrale (labctl posture — registre ${GOVERNANCE_REPO}@main) ==="
+  echo "=== posture centrale (labctl posture — registre ${GOVERNANCE_REPO}@${GOV_BASE}) ==="
   "$LABCTL_BIN" posture --api "$API_NAME" --project "$TEAM" \
     --declared-classification "$CLASSIFICATION" --declared-exposure "$EXPOSURE" \
     --classification-source "$REGISTRY"
