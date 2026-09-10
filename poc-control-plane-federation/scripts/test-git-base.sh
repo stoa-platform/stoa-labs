@@ -13,7 +13,9 @@
 # un lot suivant) :
 #   A. la HEAD du dépôt fait foi — un dépôt HEAD→master rend master, jamais main
 #      (c'est le DISCRIMINANT : un code qui suppose main rougit ici sans mutation) ;
-#      git_base_init est MUET sur stdout (les scripts y lisent leur produit)
+#      git_base_init est MUET sur stdout (les scripts y lisent leur produit) et
+#      DIT sur stderr, en une ligne, la branche découverte et l'URL EXPURGÉE qui
+#      l'a annoncée — l'auditabilité d'une pose (M.17)
 #   B. un knob explicite GAGNE et coûte ZÉRO appel réseau — prouvé par un shim
 #      `git` en tête du PATH qui journalise chaque argv ; un knob sans la forme
 #      d'un nom de branche (`-x`) est un REFUS, jamais un `clone -b -x` en aval
@@ -23,7 +25,8 @@
 #   D. git_base_of : une branche PAR DÉPÔT, mémoïsée par URL dans le process —
 #      QUATRE appels sur DEUX URL dans le MÊME shell rendent master/main/master/
 #      main avec DEUX ls-remote (une mémo qui ignore l'URL rougit : M.4) ; la
-#      mémo n'est jamais exportée (une URL peut porter un secret)
+#      mémo n'est jamais exportée (une URL peut porter un secret) ; chaque
+#      découverte s'annonce sur stderr, UNE fois par URL (mémo comprise, M.18)
 #   E. l'enveloppe d'authentification du clone est HÉRITÉE (GIT_CONFIG_COUNT/KEY/
 #      VALUE atteignent git : journalisés par le shim ET prouvés par un
 #      `url.<x>.insteadOf` qui change ce que ls-remote rend), la lib ne porte
@@ -244,6 +247,30 @@ joue "$LIB" "$TMP/c-init.sh" "$U_DEVELOP"
 if [ "$(rrc)" = 0 ] && [ "$(val GIT_BASE)" = develop ] && muet; then ok "A.6 HEAD→develop ⇒ develop (une troisième valeur : la HEAD est LUE), stdout vide"
 else ko "A.6 rc $(rrc) : $(cat "$TMP/out") stdout='$(libout)' $(detail)"; fi
 
+# L'AUDITABILITÉ D'UNE POSE (L3, 2026-09-10). La voie du KNOB dit ce qu'elle
+# retient (B.3) ; la DÉCOUVERTE, elle, était MUETTE. Après une pose des treize
+# jobs Jenkins, rien dans le journal du poseur ne disait quelle URL avait été
+# interrogée ni quelle HEAD elle avait annoncée : un « main » DÉCOUVERT était
+# indistinguable d'un « main » écrit en dur, et « pas de ligne knob » était la
+# seule preuve — elle-même fausse dès que GIT_BASE_ORIGINE est HÉRITÉ. Une
+# ligne, sur stderr, SYMÉTRIQUE de celle du knob ; stdout reste le produit.
+joue "$LIB" "$TMP/c-init.sh" "$U_MASTER"
+if [ "$(grep -c '^git-base: ' "$TMP/err")" = 1 ] && grep -q '^git-base: GIT_BASE=master découvert' "$TMP/err" \
+   && grep -q 'ls-remote --symref' "$TMP/err" && grep -qF "$TMP/master.git" "$TMP/err" \
+   && ! grep -q 'knob' "$TMP/err" && muet; then
+  ok "A.7 la DÉCOUVERTE s'annonce : UNE ligne sur stderr nommant la branche trouvée ET l'URL qui l'a annoncée, stdout toujours vide"
+else ko "A.7 $(grep -c '^git-base: ' "$TMP/err") ligne(s) : $(grep '^git-base: ' "$TMP/err" | head -1) stdout='$(libout)'"; fi
+
+# La même ligne sur une URL qui porte un `user:secret@` : elle nomme le dépôt
+# EXPURGÉ, comme les refus (§E). Une ligne d'information qui fuiterait un jeton
+# serait pire que le silence qu'elle remplace — le git factice sert la HEAD, le
+# dépôt n'est jamais joint.
+SHIM_DIR="$FAUX" joue "$LIB" "$TMP/c-init.sh" "http://u:SENTINELLE@forge.local/x.git" - GIT_SHIM_FAUX=head=master
+if [ "$(rrc)" = 0 ] && [ "$(val GIT_BASE)" = master ] && grep -q '^git-base: GIT_BASE=master découvert' "$TMP/err" \
+   && grep -q '<masqué>@forge.local' "$TMP/err" && ! fuite SENTINELLE && muet; then
+  ok "A.8 la ligne de découverte porte l'URL EXPURGÉE (« <masqué>@ ») — un user:secret@ n'y entre jamais"
+else ko "A.8 rc $(rrc) : $(grep '^git-base: ' "$TMP/err" | head -1)"; fi
+
 echo "═══ B. le knob explicite gagne, ne coûte AUCUN appel réseau, et doit avoir la forme d'une branche ═══"
 joue "$LIB" "$TMP/c-init.sh" "$U_MASTER" - GIT_BASE=develop
 if [ "$(rrc)" = 0 ] && [ "$(val GIT_BASE)" = develop ] && [ "$(val ORIGINE)" = knob ] && muet; then
@@ -388,6 +415,16 @@ joue "$LIB" "$TMP/c-of-deux.sh" "$U_MASTER" "$U_MAIN"
 if [ "$(rrc)" = 0 ] && [ "$(val MEMO_ENFANT)" = 0 ]; then
   ok "D.9 après deux découvertes mémoïsées, _GIT_BASE_MEMO est ABSENTE de l'environnement d'un enfant (jamais exportée)"
 else ko "D.9 rc $(rrc) : MEMO_ENFANT=$(val MEMO_ENFANT) — la mémo (des URL) fuit vers les enfants"; fi
+
+# La ligne de découverte suit la MÉMO : UNE interrogation, UNE ligne. Deux
+# appels sur la même URL n'en font pas deux — un journal de pose qui annoncerait
+# deux découvertes là où il n'y a eu qu'un ls-remote (D.3) mentirait sur ce qui
+# a été demandé au dépôt.
+joue "$LIB" "$TMP/c-of-memo.sh" "$U_MASTER"
+if [ "$(rrc)" = 0 ] && [ "$(grep -c '^git-base: ' "$TMP/err")" = 1 ] \
+   && grep -q 'a pour HEAD master (découverte)' "$TMP/err" && grep -qF "$TMP/master.git" "$TMP/err"; then
+  ok "D.10 git_base_of annonce la découverte UNE fois pour deux appels sur la même URL (la mémo vaut aussi pour la ligne)"
+else ko "D.10 $(grep -c '^git-base: ' "$TMP/err") ligne(s) : $(grep '^git-base: ' "$TMP/err" | tr '\n' ' ')"; fi
 
 echo "═══ E. l'enveloppe d'authentification est HÉRITÉE entière ; la lib ne porte aucun secret ═══"
 # La même enveloppe que le clone (GIT_CONFIG_COUNT/KEY/VALUE) doit ARRIVER
@@ -796,6 +833,31 @@ else
       ok "M.16 lib d'avant la correction ⇒ rc 0 sur un XML MAL FORMÉ — le défaut de la revue 4c, reproduit"
     else ko "M.16 le mutant ne reproduit pas le défaut : rc $RCX, $( [ -f "$XDST" ] && { bienforme "$XDST" && echo bien-formé || echo mal-formé; } || echo 'aucun fichier' )"; fi
   fi
+fi
+
+# M.17 — la ligne de découverte de git_base_init retirée : la pose redevient
+# MUETTE, c'est-à-dire l'état d'avant ce lot — le journal du poseur ne dit plus
+# ni l'URL interrogée ni la HEAD annoncée, et « GIT_BASE=main » redevient
+# indistinguable d'un littéral.
+MUT17="$TMP/mut17.sh"
+if ! mute "$MUT17" "s#^ *printf 'git-base: GIT_BASE=%s d.*#  :#"; then
+  ko "M.17 mutant no-op ou incompilable — l'épreuve ne prouve rien (la ligne de découverte a-t-elle changé de forme ?)"
+else
+  joue "$MUT17" "$TMP/c-init.sh" "$U_MASTER"
+  if [ "$(rrc)" = 0 ] && [ "$(val GIT_BASE)" = master ] && ! grep -q '^git-base: ' "$TMP/err"; then
+    ok "M.17 découverte muette ⇒ A.7 rougit (la pose ne dit plus ni l'URL interrogée ni la HEAD annoncée)"
+  else ko "M.17 le mutant passe encore : rc $(rrc), $(grep -c '^git-base: ' "$TMP/err") ligne(s)"; fi
+fi
+# M.18 — la même ligne retirée de git_base_of : les dépôts NON plateforme
+# (gouvernance, équipes) redeviennent découverts en silence.
+MUT18="$TMP/mut18.sh"
+if ! mute "$MUT18" "s#^ *printf 'git-base: %s a pour HEAD %s (d.*#  :#"; then
+  ko "M.18 mutant no-op ou incompilable — l'épreuve ne prouve rien (la ligne de git_base_of a-t-elle changé de forme ?)"
+else
+  joue "$MUT18" "$TMP/c-of-memo.sh" "$U_MASTER"
+  if [ "$(rrc)" = 0 ] && [ "$(libout)" = master ] && ! grep -q '^git-base: ' "$TMP/err"; then
+    ok "M.18 git_base_of muet ⇒ D.10 rougit (la branche d'un dépôt d'équipe est posée sans qu'on sache d'où elle vient)"
+  else ko "M.18 le mutant passe encore : rc $(rrc), $(grep -c '^git-base: ' "$TMP/err") ligne(s)"; fi
 fi
 
 echo "═══════════════════════════════════════════════════"

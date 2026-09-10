@@ -25,7 +25,14 @@
 #     2. sinon                        ⇒ découverte :
 #          git ls-remote --symref <url> HEAD | sed -n 's#^ref: refs/heads/\(.*\)\tHEAD$#\1#p'
 #        motif PROUVÉ sur Gitea, GitLab, GitHub et un dépôt nu local. L'URL est
-#        l'argument, sinon GIT_CLONE_URL.
+#        l'argument, sinon GIT_CLONE_URL. Une ligne d'information sur stderr —
+#        SYMÉTRIQUE de celle du knob — dit la branche DÉCOUVERTE et l'URL
+#        (expurgée) qui l'a annoncée. C'EST L'AUDITABILITÉ D'UNE POSE : après une
+#        pose des treize jobs Jenkins, rien dans le journal du poseur ne disait
+#        quel dépôt avait été interrogé ni quelle HEAD il annonçait — un « main »
+#        DÉCOUVERT était indistinguable d'un « main » écrit en dur, et « pas de
+#        ligne knob » était la seule preuve, elle-même fausse dès que
+#        GIT_BASE_ORIGINE est HÉRITÉ.
 #     3. rien découvert               ⇒ REFUS: BRANCHE_PAR_DEFAUT_INCONNUE (rc 2),
 #        GIT_BASE NON posée — et si la sentinelle `auto` était HÉRITÉE (Jenkins
 #        l'exporte), elle est RETIRÉE de l'environnement (unset) : un appelant
@@ -36,17 +43,25 @@
 #        plus le dépôt injoignable et la HEAD sans la forme d'un nom de branche,
 #        qui tombent ici. Un seul tag, la PHRASE distingue.
 #     Pose et exporte GIT_BASE et GIT_BASE_ORIGINE=knob|decouverte ; n'écrit
-#     RIEN sur stdout (les scripts y lisent leur produit). Idempotent dans le
-#     process ; un processus ENFANT qui hérite de GIT_BASE_ORIGINE=decouverte
-#     ne rejoue pas la découverte et ne parle pas de knob.
+#     RIEN sur stdout (les scripts y lisent leur produit) — les deux lignes
+#     ci-dessus vont sur stderr, et il y en a AU PLUS UNE par pose. Idempotent
+#     dans le process ; un processus ENFANT qui hérite de
+#     GIT_BASE_ORIGINE=decouverte ne rejoue pas la découverte et ne dit rien :
+#     ni knob, ni découverte — le parent l'a déjà annoncée (une ligne par BUILD,
+#     pas par processus).
 #
 #   git_base_of <url>
 #     Rend sur stdout (et dans GIT_BASE_OF) la branche par défaut de CE dépôt,
 #     découverte puis MÉMOÏSÉE par URL dans le process. Trois familles de
 #     dépôts — plateforme, gouvernance, équipe — peuvent avoir trois HEAD : un
-#     GIT_BASE global n'est vrai que pour la plateforme. Si un knob explicite
-#     GIT_BASE diverge de la HEAD découverte, une ligne d'information le dit ;
-#     c'est la HEAD du dépôt qui est rendue, le knob reste intact.
+#     GIT_BASE global n'est vrai que pour la plateforme. Une DÉCOUVERTE — la
+#     première pour cette URL, la mémo vaut aussi pour la ligne — s'annonce sur
+#     stderr comme celle de git_base_init : même raison, un dépôt d'équipe ou de
+#     gouvernance dont la branche est posée en silence ne se relit pas dans un
+#     journal de build. Si un knob explicite GIT_BASE diverge de la HEAD
+#     découverte, c'est la ligne de DIVERGENCE qui sort À SA PLACE (elle dit
+#     déjà l'URL, la HEAD et le knob) ; c'est la HEAD du dépôt qui est rendue,
+#     le knob reste intact.
 #     La mémo est une variable du process (jamais exportée : une URL peut porter
 #     un secret). Appelée en `$(git_base_of …)`, la découverte est juste mais la
 #     mémo meurt avec le sous-shell — préférer `git_base_of "$u" >/dev/null &&
@@ -107,7 +122,9 @@
 # test-git-base.sh §E prouve que l'enveloppe atteint git. La seule variable
 # qu'elle ajoute est GIT_TERMINAL_PROMPT=0 : sans terminal, un dépôt privé sans
 # enveloppe doit ÉCHOUER (refus nommé), pas attendre une saisie. Les URL sont
-# expurgées de tout `user:secret@` avant d'entrer dans un message.
+# expurgées de tout `user:secret@` avant d'entrer dans un message — refus comme
+# lignes d'information : celle qui rend une pose auditable ne doit pas, elle,
+# rendre un jeton lisible.
 #
 # USAGE
 #   . "$(dirname "$0")/lib/git-base.sh"     # ou « . scripts/lib/git-base.sh » depuis la racine
@@ -196,6 +213,10 @@ git_base_init() {
     b="$(_git_base_decouvrir "$url")" || { unset GIT_BASE; return 2; }
     _git_base_memo_ecrire "$url" "$b"
     GIT_BASE="$b"; GIT_BASE_ORIGINE=decouverte
+    # SYMÉTRIQUE de la ligne du knob : ce qui vient d'être DÉCOUVERT se dit, et
+    # dit d'OÙ (URL expurgée). Sans elle la pose est muette et « GIT_BASE=main »
+    # ne se distingue plus d'un littéral — cf. l'entête, auditabilité d'une pose.
+    printf 'git-base: GIT_BASE=%s découvert — HEAD annoncée par %s (ls-remote --symref)\n' "$b" "$(_git_base_url_masquee "$url")" >&2
   fi
   _GIT_BASE_INIT_FAIT=1
   export GIT_BASE GIT_BASE_ORIGINE
@@ -211,6 +232,11 @@ git_base_of() {
     if [ -n "${GIT_BASE:-}" ] && [ "$GIT_BASE" != auto ] && [ "${GIT_BASE_ORIGINE:-knob}" = knob ] && [ "$b" != "$GIT_BASE" ]; then
       printf 'git-base: %s a pour HEAD %s alors que GIT_BASE=%s (knob) — le knob vaut pour la plateforme ; pour ce dépôt, c'\''est %s qui est rendue\n' \
         "$(_git_base_url_masquee "$url")" "$b" "$GIT_BASE" "$b" >&2
+    else
+      # UNE découverte, UNE ligne : la mémo au-dessus fait que deux appels sur la
+      # même URL n'en annoncent qu'une. La ligne de divergence, plus riche, tient
+      # ce rôle quand elle sort — elle dit déjà l'URL, la HEAD et le knob.
+      printf 'git-base: %s a pour HEAD %s (découverte)\n' "$(_git_base_url_masquee "$url")" "$b" >&2
     fi
   fi
   # shellcheck disable=SC2034  # posée POUR L'APPELANT (le contrat : stdout + variable, sans sous-shell)
