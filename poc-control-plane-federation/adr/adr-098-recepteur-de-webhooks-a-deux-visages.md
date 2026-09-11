@@ -6,7 +6,7 @@ maturite_technique: "⏳ en cours — les visages ne sont pas encore écrits ; c
 date: 2026-09-11
 adr_number: 98
 note: "Lot L6 du chantier forge-agnostique (après L1, L5, L3). Déclenché par un client sur GitLab dont le Jenkins ne peut PAS recevoir le plugin generic-webhook-trigger : la chaîne app-request s'arrêtait à la MR, l'aval (provision-plan, provision-apply, selfservice-app-deploy) mourant avant son premier stage."
-lié: "[[adr-090-terminus-et-identite-de-forge]], [[adr-089-repli-application-par-pr]], [[adr-088-ordre-app-api]], [[adr-081-webhook-sonnette-jamais-autorite]], [[adr-076-gitops-api-lifecycle-repo-per-project]]"
+lié: "[[adr-090-terminus-et-identite-de-forge]], [[adr-089-repli-des-applications-par-pr]], [[adr-088-ordre-app-api]], [[adr-081-ou-vit-la-decision-humaine]], [[adr-076-gitops-api-lifecycle-repo-per-project]]"
 ---
 
 # ADR-098 — Le récepteur de webhooks à deux visages (L6)
@@ -29,7 +29,7 @@ Ce Jenkins a le **GitLab Plugin** (« Build when a change is pushed to GitLab »
 URL `/project/<job>`), qui expose ce que la chaîne consomme :
 `gitlabMergeRequestIid`, `gitlabSourceBranch`, `gitlabMergeRequestState`,
 `gitlabMergedByUser` et — depuis la 1.7.13 — `gitlabMergeCommitSha`, la
-référence A2 ([[adr-084-axe-qui-deploie]] pour la lignée du SHA de merge).
+référence A2 ([[adr-084-axe-qui-deploie-deployer-group]] pour la lignée du SHA de merge).
 
 La question n'est donc pas « quel plugin choisir » mais « comment un même
 Jenkinsfile peut-il porter deux récepteurs sans exiger les deux plugins ».
