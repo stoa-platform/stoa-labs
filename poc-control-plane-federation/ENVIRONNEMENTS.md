@@ -256,9 +256,12 @@ protection ou des paramètres de job :
   Garder `PROTECT_PUSH_WHITELIST` aligné sur `GITEA_ADMIN_USER` (l'admin de site
   n'est PAS exempté du push_whitelist).
 - **re-poser le job `selfservice`/`team-request`** si le `config.xml` doit
-  refléter les listes (choices, triggers, paramètres) : **le XML gagne sur le
-  Jenkinsfile** — un scellement présent dans le Jenkinsfile mais absent du
-  config.xml posé ne prend pas effet.
+  refléter les listes (choices, triggers, paramètres) : pour un bloc
+  **déclaratif**, le XML gagne sur le Jenkinsfile — un scellement présent dans le
+  Jenkinsfile mais absent du config.xml posé ne prend pas effet. ⚠ Ce n'est PLUS
+  vrai de `provision-plan`, `provision-apply` et `selfservice-app-deploy` : depuis
+  L6 leur XML ne porte AUCUNE propriété et c'est leur **premier build** qui pose
+  déclencheur et verrou (voir « Le récepteur de webhooks »).
 
 ## Qui déploie un palier (G2 — ADR-084)
 
@@ -610,7 +613,9 @@ ne projette plus « le dernier `main` » :
 
 Le job `provision-apply` est désormais un **Jenkinsfile déclaratif from SCM**
 (`ci/Jenkinsfile.provision-apply`) ; `ci/jenkins/provision-apply.job.xml` n'est
-qu'une coquille (pointeur SCM + miroir du bloc `<triggers>`, qui gagne).
+qu'une coquille — pointeur SCM et, depuis L6, **aucune propriété** : le
+déclencheur est posé par le Jenkinsfile au premier build (voir « Le récepteur de
+webhooks »).
 
 ## Le credential du seul palier (A3 — GOAL cd-applications, 2026-09-02)
 
@@ -1617,6 +1622,119 @@ du canal debug) :
   (` 0`, `fAlSe`) — sans effet dès que `dbg_init` a normalisé ; stderr fermé +
   `STOA_DEBUG=1` fait rendre rc 1 à `forge-api.py` au lieu de son verdict
   (`_dbg` n'est pas gardé).
+
+## Le récepteur de webhooks (L6 — 2026-09-11)
+
+Le 2026-09-11, chez le client GitLab, `provision-plan` mourait **avant son
+premier stage** : `Invalid trigger type "GenericTrigger"`. Le plugin
+**generic-webhook-trigger** ne peut pas être installé sur son Jenkins, et un
+symbole de déclencheur nommé dans un bloc Declarative `triggers { }` est résolu
+**à la compilation** — le job est donc refusé, pas dégradé.
+`selfservice-app-deploy` mourait de la même cause, à l'invocation
+(`No such DSL method 'GenericTrigger'`), alors que son hook n'est même pas un
+hook de forge : c'est la gateway wM qui le sonne. Ce Jenkins a, lui, le **GitLab
+Plugin**.
+
+**Une seule autorité, et elle est dans le Jenkinsfile.** Chaque pipeline de
+l'aval applicatif pose son déclencheur ET son verrou de concurrence par un
+`properties()` **scripté**, au premier stage, selon la globale `WEBHOOK_KIND` —
+un `if` non pris n'invoque pas le symbole, donc n'exige pas le plugin. Toute
+autre valeur est refusée par nom, **avant** que rien ne soit posé
+(`WEBHOOK_KIND_INVALIDE`). Les `job.xml` de `provision-plan` et
+`provision-apply` ne portent plus **aucune** propriété : un XML porteur du même
+déclencheur donne un **doublon** au premier build, puis l'exemplaire du XML est
+**perdu** au second (mesuré). Conséquence directe : le déclencheur n'existe
+qu'après le premier build — l'**amorçage**, que `setup-provision-jobs.sh`
+déclenche, **attend** et **relit** (`AMORCAGE_INCOMPLET` sinon).
+
+**Knobs** (globales Jenkins, `setup-jenkins-globals.sh --help`) :
+
+| Knob | Valeurs | Défaut | Rôle |
+|------|---------|--------|------|
+| `WEBHOOK_KIND` | `gwt` \| `gitlab` | `gwt` | le **récepteur** de ce Jenkins, pas le visage de la forge (`FORGE_KIND`) : un même GitLab se sert par l'un ou l'autre. `gwt` : `/generic-webhook-trigger/invoke?token=<token du job>`, les deux formes de payload (Gitea, GitLab) lues sans knob. `gitlab` : `/project/<job>` + `X-Gitlab-Token` ; `provision-plan` écoute ouverture / réouverture / push / titre, `provision-apply` la **fusion seulement** ; `selfservice-app-deploy` n'a **aucun** hook direct |
+| `BOOTSTRAP_JOBS` | liste \| `none` | `provision-apply provision-plan` | les jobs amorcés après la pose (`setup-provision-jobs.sh`). Le mot `none` débranche — une valeur vide n'atteint pas le shell depuis Jenkins |
+| `BOOTSTRAP_AWAIT_JOBS` | liste \| `none` | idem | ceux dont l'amorçage est **attendu puis relu** ; `none` rend le geste fire-and-forget d'avant |
+| `BOOTSTRAP_WAIT` | secondes | `360` | la borne de cette attente |
+
+**Prérequis côté client GitLab** (à obtenir AVANT de brancher les webhooks) :
+
+- **GitLab Plugin ≥ 1.7.13** : c'est la version qui expose
+  `gitlabMergeCommitSha`, donc la référence A2. Sans elle, l'apply n'a aucun SHA
+  à projeter ;
+- **deux webhooks de projet**, événements **« Merge request » seulement**
+  (jamais push), vers `https://<jenkins>/project/provision-plan` et
+  `https://<jenkins>/project/provision-apply`, champ **Secret Token** =
+  `stoa-provision-plan` / `stoa-provision-apply`. Ce mot est une **sonnette**,
+  pas une autorité : la réconciliation relit la forge (`FORGE_NON_CONFIRMEE`,
+  `PAYLOAD_PERIME`). Sans token, l'endpoint authentifié du plugin — actif par
+  défaut — répond 401/403 ;
+- **méthode de merge = merge commit** : en fast-forward ou squash, GitLab ne
+  remplit pas `merge_commit_sha` et l'apply refuse `MERGE_SHA_INVALIDE` ;
+- **jobs créés à la main** (sans le poseur) : type **Pipeline**, « Pipeline
+  script from SCM », `Lightweight checkout` **décoché** (le workspace doit porter
+  `scripts/`, `ansible/`, `ci/lib/`), **aucun** déclencheur coché, puis **« Build
+  Now » une fois** : le build sort vert (« hors provision/* ») sans exécuteur et
+  pose le déclencheur ;
+- ce que le plugin ne dit pas : il **n'expose pas l'action** de la MR
+  (`gitlabActionType` vaut `MERGE` même sur une ouverture) et un état hors de
+  son énumération devient un **joker** dans ses règles. Le pipeline relit donc
+  l'**état** : `opened` pour le plan, `merged` pour l'apply — hors de là, le
+  build sort vert et ne fait rien ;
+- un **bon** token sur un corps forgé fait **500** dans le handler du plugin
+  (aucun build) : à savoir en lisant les journaux, rien à corriger ;
+- ⚠ **sur un GitLab privé, posez `GIT_BASE` explicitement.** La découverte de la
+  branche par défaut (L3, `git ls-remote --symref … HEAD`) tourne **hors** de
+  l'enveloppe d'authentification du clone : sur un dépôt qui exige des droits en
+  lecture, elle meurt `fatal: could not read Username … terminal prompts
+  disabled` et le plan refuse `BRANCHE_PAR_DEFAUT_INCONNUE` (mesuré le
+  2026-09-11 sur le GitLab du lab). Le refus nomme lui-même la voie. **Dette
+  L3** : faire passer cette sonde par la même enveloppe que le clone ;
+- le **credential de la forge** est un jeton de **forge** : un jeton Gitea dans
+  `GITEA_CREDENTIALS_ID` fait échouer la réconciliation en **401** sur l'API
+  GitLab, APRÈS le déclenchement — le webhook a l'air bon, la chaîne meurt plus
+  loin. Un site GitLab pose un PAT GitLab (`api`, `read_user`,
+  `write_repository`) ;
+- ⛔ **BLOQUANT sur une forge PRIVÉE, et ce n'est pas un défaut de ce lot** :
+  `scripts/provision-plan.sh:208` clone `${GIT_HOST}/${GIT_REPO}.git` **sans
+  aucune enveloppe d'authentification**, et c'est le SEUL de la chaîne à ignorer
+  `GIT_CLONE_URL` (ses frères `provision-request.sh:495`,
+  `app-rollback-request.sh:121` et `provision-apply-reconcile.sh:262`
+  l'honorent). Sur le Gitea du lab, la lecture anonyme masque le trou (mesuré :
+  `info/refs` ⇒ 200 sur Gitea, **401** sur un projet GitLab privé) ; sur une
+  forge privée le plan meurt `CLONE_ECHEC` et l'apply enchaîne sur
+  `MERGE_SHA_NON_ANCETRE` (il a cloné autre chose que la forge visée). **À
+  fermer avant tout client sur forge privée** : honorer `GIT_CLONE_URL` dans
+  `provision-plan.sh` et passer le clone par `git_base_avec_basic`
+  (`scripts/lib/git-base.sh`), qui existe déjà et ne met jamais le secret en
+  argv. Le lab GitLab a été mis en lecture anonyme (groupe `ci` et projet en
+  `public`) pour que la preuve du récepteur mesure le récepteur, et pas ce trou.
+
+**Pas d'écart de comportement entre les deux visages** sur les événements d'une
+MR : le plugin reconstruit le plan sur un changement de titre comme sur un push,
+exactement comme le generic-webhook-trigger. La « garde déjà construit » que ses
+sources laissaient craindre ne s'applique pas — mesuré par builds réels.
+
+**La porte** : `test-a0-wiring.sh` §3bis (structurel : l'ordre refus →
+`properties()` → fait unifié, la table des cases du plugin, un seul symbole de
+chaque en vue code) et §8bis (neuf mutations qui doivent rougir) ;
+`test-setup-provision-jobs.sh` §16 (l'amorçage attendu et relu, six refus) ;
+sous `make lint-ci` [11/20] et [1/20]. **Angle mort assumé** : aucune suite
+statique ne voit un `if` dont la condition ment — le miroir lit le premier
+symbole qu'il trouve. Seule la preuve live le couvre, et la porte le dit.
+
+**Au lab** : `scripts/test-webhook-kind-gitlab-live.sh` (la chaîne entière par le
+GitLab Plugin : plan sur ouverture et sur push, apply sur la fusion avec
+`MERGE_SHA` égal à l'API, close muet, token exigé, retour à `gwt` vérifié) ;
+non-régression `gwt` par `test-a6-live.sh` et `test-a7-live.sh` inchangés ;
+`gitlab-plugin` ajouté à `ci/jenkins/Dockerfile` pour qu'un lab reconstruit
+porte les deux récepteurs.
+
+**Dettes** : les cinq Jenkinsfile de la chaîne API (`team-apply`,
+`team-publish`, `team-promote`, `publish-api`, `provisioning-request`) portent
+encore un bloc déclaratif — même motif à rejouer avant tout client GitLab sur la
+chaîne producteur ; un vrai secret par site pour le Secret Token (credential +
+`withCredentials` avant le `properties()`) ; `FORGE_CRED_KIND` classé optionnel
+mais refusé si vide par onze pipelines.
 
 ## Résiduel
 

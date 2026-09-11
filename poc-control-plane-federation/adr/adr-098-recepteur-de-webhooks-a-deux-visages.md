@@ -1,8 +1,8 @@
 ---
 title: "ADR-098 — Un Jenkinsfile qui NOMME son déclencheur dans un bloc déclaratif exige le plugin qui le porte, avant son premier stage. Le récepteur de webhooks devient un knob, le déclencheur est posé par le build, et le XML ne porte plus rien."
 sidebar_label: "ADR-098 : le récepteur de webhooks (L6)"
-status: "BROUILLON — spike COMPLET (2026-09-11) : M1 3/3, M5, M2, M4, M6..M9 mesurés au lab ; une prédiction RÉFUTÉE (la garde « déjà construit » du plugin). Le code des visages reste à écrire."
-maturite_technique: "⏳ en cours — les visages ne sont pas encore écrits ; ce document collecte les mesures qui fondent leur forme."
+status: "Acté et prouvé le 2026-09-11 — spike M1..M9 mesuré au lab (une prédiction RÉFUTÉE) ; `test-webhook-kind-gitlab-live.sh` **26/26** (la chaîne entière par le GitLab Plugin) ; non-régression gwt : re-pose + amorçages relus, contre-épreuve WEBHOOK_KIND=foo ⇒ aucun déclencheur, webhook GWT réel, `test-a6-live.sh` **50/50** ; `make lint-ci` 20/20 (a0-wiring 257/257, provision-apply-wiring 148/148, setup-provision-jobs 69/69, a4 138/138)."
+maturite_technique: "✅ `WEBHOOK_KIND` (gwt | gitlab) décide du récepteur ; les trois Jenkinsfile de l'aval applicatif posent déclencheur ET verrou par un `properties()` scripté, leurs XML ne portent AUCUNE propriété, et `setup-provision-jobs.sh` attend et relit l'amorçage. ⚠ RESTE BLOQUANT POUR UN CLIENT SUR FORGE PRIVÉE, hors périmètre : `provision-plan.sh` clone sans enveloppe d'authentification et ignore `GIT_CLONE_URL`."
 date: 2026-09-11
 adr_number: 98
 note: "Lot L6 du chantier forge-agnostique (après L1, L5, L3). Déclenché par un client sur GitLab dont le Jenkins ne peut PAS recevoir le plugin generic-webhook-trigger : la chaîne app-request s'arrêtait à la MR, l'aval (provision-plan, provision-apply, selfservice-app-deploy) mourant avant son premier stage."
@@ -148,6 +148,15 @@ build, et le XML ne porte plus rien.**
 - **Un bon token sur un corps forgé fait 500** dans le handler du plugin (M9) :
   aucun build, mais une erreur serveur plutôt qu'un refus propre. Rien à
   corriger chez nous ; à savoir en lisant les journaux d'un client.
+- ⛔ **Trouvé en prouvant ce lot, et hors de son périmètre** :
+  `scripts/provision-plan.sh:208` clone la plateforme **sans enveloppe
+  d'authentification** et ignore `GIT_CLONE_URL` — seul de la chaîne à le faire.
+  La lecture anonyme du Gitea du lab masquait ce trou ; sur une forge **privée**
+  (le cas de tout client) le plan meurt `CLONE_ECHEC`. Ce n'est pas un effet du
+  récepteur : c'est la marche suivante, et elle bloque un client sur GitLab
+  privé. Même famille : la découverte de la branche par défaut (L3) ne
+  s'authentifie pas non plus (`BRANCHE_PAR_DEFAUT_INCONNUE`) — contournable en
+  posant `GIT_BASE`, ce que le refus dit lui-même.
 - **Dettes nommées** : les cinq Jenkinsfile de la chaîne API (`team-apply`,
   `team-publish`, `team-promote`, `publish-api`, `provisioning-request`) portent
   encore un bloc déclaratif — même motif à rejouer avant tout client GitLab sur
@@ -162,3 +171,7 @@ build, et le XML ne porte plus rien.**
 | M5 — le lab porte les deux récepteurs | `bash scripts/spike-webhook-kind-m5.sh` | gitlab-plugin 1.2148 actif, GWT intact, 0 perdu (2026-09-11) |
 | M2 + M4 — doublon puis perte ; fenêtre d'amorçage | `bash scripts/spike-webhook-kind-m2m4.sh` | **conformes** (2026-09-11) |
 | M6..M9 — six événements réels, table état×action par builds, variables, token | `bash scripts/spike-webhook-kind-m6m9.sh` | table **mesurée** ; 1 prédiction réfutée (titre), corrigée dans la spec (2026-09-11) |
+| **Le visage gitlab, chaîne entière par builds réels** | `JENKINS_UI=… bash scripts/test-webhook-kind-gitlab-live.sh` | **26/26** (2026-09-11) : plan sur ouverture (#1404) et sur push (#1405), apply sur la FUSION (#274) jusqu'à la pause nominative, `MERGE_SHA` == `merge_commit_sha` de l'API, MR fermée sans fusion ⇒ aucun apply, `/project/` sans token ⇒ 401, retour à `gwt` complet et `/project/` redevenu muet |
+| Non-régression gwt — l'amorçage relu sur les VRAIS jobs | `GIT_HOST=… bash scripts/setup-provision-jobs.sh` | amorçages #236/#1353 SUCCESS, relecture 1 GenericTrigger + 1 verrou ; contre-épreuve `WEBHOOK_KIND=foo` ⇒ amorçage FAILURE, `WEBHOOK_KIND_INVALIDE` en console, **aucun** déclencheur posé, `AMORCAGE_INCOMPLET` |
+| Non-régression gwt — la chaîne d'apply complète | `bash scripts/test-a6-live.sh` | **50/50** (2026-09-11), identique au vert du 2026-09-03 |
+| Portes hors ligne | `make lint-ci` | **20/20**, rc 0 (a0-wiring 257/257 dont §3bis et §8bis, provision-apply-wiring 148/148, setup-provision-jobs 69/69, a4 138/138) |

@@ -52,6 +52,11 @@
 
 L1 (1 j) → **L5 phase 1** (2-3 j, c'est ce qui débloque le client) → L3 (2-3 j, le client est sur `master`) → L2 (2 j) → L4a (2 h) → L4b (1-2 j). L2/L4 avant L5 rendraient la panne lisible sans la fermer.
 
+**L6 (Task 7, ajouté le 2026-09-11)** vient après L5 et L3, indépendamment de L2
+et L4 : le client ne pouvait pas installer le plugin que l'aval de la chaîne
+NOMMAIT dans un bloc déclaratif, donc ses jobs mouraient au parse. Ce n'était pas
+un problème de forge mais de **récepteur de webhooks** — d'où un lot à part.
+
 ---
 
 ### Task 1 (L1) : la relecture des PR ouvertes ne meurt plus muette, et ne pousse plus en force sur un objet
@@ -144,3 +149,33 @@ L1 (1 j) → **L5 phase 1** (2-3 j, c'est ce qui débloque le client) → L3 (2-
 - `team-apply.sh` org/repo/hook (7 appels) : évitable si le client crée ses dépôts (D10).
 - `forge_open_pr` prévu par la spec `2026-09-07` §8.4 doit consommer `forge-api.sh`, pas le dupliquer.
 - ~60 `json.load` nus dans `setup-*/demo-*/phase3-*` : outils de lab joués devant un terminal, priorité nulle ; `assign-api-team.sh`, `repair-wm-dangling-policyaction.sh`, `seed-governance-chain.sh` sont des outils d'INCIDENT — à trancher (livrable ou « lab uniquement » en tête).
+
+---
+
+### Task 7 (L6) : le récepteur de webhooks à deux visages (`WEBHOOK_KIND`)
+
+**LIVRÉ le 2026-09-11.** Spec, plan et ADR ont leur propre dossier :
+- spec : `docs/superpowers/specs/2026-09-11-webhook-kind-deux-visages-design.md`
+- plan : `docs/superpowers/plans/2026-09-11-webhook-kind-deux-visages.md`
+- ADR : `adr/adr-098-recepteur-de-webhooks-a-deux-visages.md`
+
+Le problème n'était pas la forge mais le **récepteur** : le Jenkins du client ne
+peut pas recevoir le plugin generic-webhook-trigger, et un symbole de
+déclencheur nommé dans un bloc Declarative `triggers { }` est résolu au parse —
+`provision-plan`, `provision-apply` et `selfservice-app-deploy` mouraient avant
+leur premier stage. Les trois posent désormais leur déclencheur par un
+`properties()` scripté selon `WEBHOOK_KIND` (`gwt` par défaut | `gitlab`), leurs
+XML ne portent plus aucune propriété, et `setup-provision-jobs.sh` attend et
+relit l'amorçage.
+
+Fichiers : `ci/Jenkinsfile.provision-plan`, `ci/Jenkinsfile.provision-apply`,
+`ci/Jenkinsfile.selfservice`, `ci/jenkins/provision-{plan,apply}.job.xml`,
+`scripts/setup-provision-jobs.sh`, `scripts/setup-selfservice-job.sh`,
+`scripts/setup-jenkins-globals.sh`, `scripts/lib/gwt-mirror.sh`,
+`ci/jenkins/Dockerfile`, les suites `test-a0-wiring.sh`,
+`test-provision-apply-wiring.sh`, `test-team-publish-wiring.sh`,
+`test-provision-apply-a4.sh`, `test-setup-provision-jobs.sh`, et deux nouveaux :
+`scripts/test-webhook-kind-gitlab-live.sh` (preuve live) plus les trois spikes
+`scripts/spike-webhook-kind-{m1,m5,m2m4,m6m9}.sh`.
+
+Ordre : après L5 et L3 (livrés), indépendant de L2 et L4.

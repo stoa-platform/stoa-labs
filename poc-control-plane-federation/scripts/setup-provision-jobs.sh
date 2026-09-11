@@ -15,6 +15,13 @@
 # Jenkinsfile — se (re)pose toujours par ce script : une fois à la conversion,
 # puis à chaque changement de clé du webhook.
 #
+# L6 (2026-09-11) : les XML de provision-plan et provision-apply ne portent plus
+# AUCUNE propriété — leur déclencheur et leur verrou sont posés par leur premier
+# build. Re-poser, c'est donc AMORCER : ce script enchaîne le build, l'ATTEND et
+# RELIT le config.xml (AMORCAGE_INCOMPLET sinon). Un XML porteur ne serait pas
+# une ceinture : ce serait un doublon au build 1, puis la perte de l'exemplaire
+# du XML au build 2 (mesuré, scripts/spike-webhook-kind-m2m4.sh).
+#
 # ─────────────────────────────────────────────────────────────────────────────
 # BOOTSTRAP_JOBS : LE BUILD D'AMORÇAGE, POUR LES JOBS QUI POSENT LEUR FORMULAIRE
 # ─────────────────────────────────────────────────────────────────────────────

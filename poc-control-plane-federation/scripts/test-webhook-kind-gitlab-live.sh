@@ -31,9 +31,11 @@
 #   - le projet GitLab porte notre tronc sur SA branche par défaut et fusionne
 #     par MERGE COMMIT (en ff/squash, merge_commit_sha est nul : le harnais
 #     REFUSE plutôt que de mesurer un SHA vide) ;
-#   - le credential Jenkins de la forge (GITEA_CREDENTIALS_ID) porte un PAT
-#     GitLab (scopes api, read_user, write_repository) — sinon le plan refusera
-#     FORGE_ILLISIBLE, ce que ce harnais dira ;
+#   - un credential Jenkins « secret text » nommé `gitlab-provision-token`
+#     (knob CID_GL) portant un PAT GitLab (scopes api, read_user,
+#     write_repository) : le credential de forge du lab porte un jeton GITEA,
+#     que l'API de GitLab refuse en 401 — le plan déclencherait puis mourrait.
+#     Le harnais pose GITEA_CREDENTIALS_ID dessus et le RESTAURE en sortie ;
 #   - Vault du lab re-seedé (la garde A3 lit envs/dev/wm-admin).
 #
 #   JENKINS_UI=http://localhost:18080 bash scripts/test-webhook-kind-gitlab-live.sh
@@ -124,12 +126,28 @@ attendre_pause(){ # <job> <n> [secondes] → rc 0 si la pause nominative est ouv
   done
   return 1
 }
-poser_jobs(){ # <WEBHOOK_KIND> → journal dans $TMP/pose.<kind>.log
-  GIT_HOST="$GL" GIT_REPO="$GL_REPO" WEBHOOK_KIND="$1" JENKINS_UI="$J" \
-    bash scripts/setup-provision-jobs.sh > "$TMP/pose.$1.log" 2>&1
+# poser_jobs <WEBHOOK_KIND> [URL du <scm>] : pose les deux jobs. Le second
+# argument RE-POINTE le dépôt du job — nécessaire au lab SEULEMENT, parce qu'il
+# a DEUX forges et que les job.xml codent l'URL de Gitea en dur. Sans cela,
+# l'apply checkoute gitea et cherche le SHA de la MR GitLab dans l'histoire de
+# gitea : `MERGE_SHA_NON_ANCETRE`, à juste titre (mesuré le 2026-09-11). Chez un
+# client il n'y a qu'une forge, et ce paramètre n'existe pas. Le poseur accepte
+# des XML PRÉ-RENDUS par JOBS_SRC_DIR : c'est son mécanisme, pas un contournement.
+poser_jobs(){
+  local kind="$1" url="${2:-}" src=ci/jenkins d
+  if [ -n "$url" ]; then
+    d="$TMP/jobs.$kind"; mkdir -p "$d"
+    for jx in provision-plan provision-apply; do
+      sed "s#<url>[^<]*</url>#<url>${url}</url>#" "ci/jenkins/$jx.job.xml" > "$d/$jx.job.xml"
+      grep -qF "<url>$url</url>" "$d/$jx.job.xml" || { say "!! mise en scène de $jx.job.xml sans effet"; return 1; }
+    done
+    src="$d"
+  fi
+  GIT_HOST="$GL" GIT_REPO="$GL_REPO" WEBHOOK_KIND="$kind" JENKINS_UI="$J" JOBS_SRC_DIR="$src" \
+    bash scripts/setup-provision-jobs.sh > "$TMP/pose.$kind.log" 2>&1
 }
 HOOKS=""; IID=""; BR="provision/${APP}-${ENVN}"; CLONE="$GL/$GL_REPO.git"
-SAVE_WK=""; SAVE_FK=""; SAVE_GH=""; SAVE_GR=""; SAVE_GW=""
+SAVE_WK=""; SAVE_FK=""; SAVE_GH=""; SAVE_GR=""; SAVE_GW=""; SAVE_CID=""; SAVE_GB=""
 restaurer(){
   say ""
   say "── Z. nettoyage et restauration ──"
@@ -141,6 +159,8 @@ restaurer(){
   globale GIT_HOST     "$SAVE_GH" >/dev/null
   globale GIT_REPO     "$SAVE_GR" >/dev/null
   globale GIT_WEB_HOST "$SAVE_GW" >/dev/null
+  globale GITEA_CREDENTIALS_ID "$SAVE_CID" >/dev/null
+  globale GIT_BASE "$SAVE_GB" >/dev/null
   if poser_jobs gwt && grep -q '1 trigger GenericTrigger' "$TMP/pose.gwt.log"; then
     say "  ✔ globales restaurées, jobs re-posés sous gwt (amorçage relu)"
   else
@@ -169,15 +189,33 @@ else
 fi
 SAVE_WK=$(globale_lire WEBHOOK_KIND); SAVE_FK=$(globale_lire FORGE_KIND)
 SAVE_GH=$(globale_lire GIT_HOST);     SAVE_GR=$(globale_lire GIT_REPO)
-SAVE_GW=$(globale_lire GIT_WEB_HOST)
-ok "0.5 globales relevées pour restauration (WEBHOOK_KIND='$SAVE_WK' FORGE_KIND='$SAVE_FK' GIT_HOST='$SAVE_GH')"
+SAVE_GW=$(globale_lire GIT_WEB_HOST); SAVE_CID=$(globale_lire GITEA_CREDENTIALS_ID)
+SAVE_GB=$(globale_lire GIT_BASE)
+ok "0.5 globales relevées pour restauration (WEBHOOK_KIND='$SAVE_WK' FORGE_KIND='$SAVE_FK' GIT_HOST='$SAVE_GH' GITEA_CREDENTIALS_ID='$SAVE_CID')"
+# Le credential de la forge est un JETON DE FORGE : celui du lab porte un jeton
+# GITEA, que l'API de GitLab refuse en 401 — la réconciliation A2 meurt alors,
+# après le déclenchement (mesuré le 2026-09-11). Le visage gitlab a donc besoin
+# de SON credential ; il est posé ici et RESTAURÉ en sortie.
+CID_GL="${CID_GL:-gitlab-provision-token}"
+CRED_OK=$(jget "$J/credentials/store/system/domain/_/credential/$CID_GL/api/json" -o /dev/null -w '%{http_code}')
+[ "$CRED_OK" = 200 ] && ok "0.6 le credential '$CID_GL' existe sur ce Jenkins (jeton GitLab : sans lui, le plan déclenche puis meurt en 401)" \
+  || ko "0.6 credential '$CID_GL' absent (HTTP $CRED_OK) — le créer (secret text, PAT GitLab scopes api/read_user/write_repository)"
 
 say ""
 say "═══ 1. le visage gitlab : globales, webhooks de projet, jobs amorcés ═══"
 globale WEBHOOK_KIND gitlab >/dev/null; globale FORGE_KIND gitlab >/dev/null
 globale GIT_HOST "$GLIN" >/dev/null;    globale GIT_REPO "$GL_REPO" >/dev/null
 globale GIT_WEB_HOST "$GL" >/dev/null
-[ "$(globale_lire WEBHOOK_KIND)" = gitlab ] && ok "1.1 globale WEBHOOK_KIND=gitlab (FORGE_KIND=gitlab, GIT_HOST=$GLIN)" || ko "1.1 globale non posée"
+globale GITEA_CREDENTIALS_ID "$CID_GL" >/dev/null
+# ⚠ MESURÉ le 2026-09-11 : sur un GitLab PRIVÉ, la découverte de la branche par
+# défaut (L3, `git ls-remote --symref … HEAD`) tourne HORS de l'enveloppe
+# d'authentification du clone et meurt « could not read Username …
+# terminal prompts disabled » ⇒ `REFUS: BRANCHE_PAR_DEFAUT_INCONNUE`. Le refus
+# nomme lui-même la voie : poser GIT_BASE explicitement. C'est ce qu'un client
+# sur GitLab privé devra faire tant que la lib ne s'authentifie pas ici (dette
+# L3, nommée dans ENVIRONNEMENTS.md).
+globale GIT_BASE "$BASE" >/dev/null
+[ "$(globale_lire WEBHOOK_KIND)" = gitlab ] && ok "1.1 globales du visage gitlab posées (WEBHOOK_KIND=gitlab, FORGE_KIND=gitlab, GIT_HOST=$GLIN, GITEA_CREDENTIALS_ID=$CID_GL, GIT_BASE=$BASE — la découverte ne s'authentifie pas sur un GitLab privé)" || ko "1.1 globale non posée"
 for h in $(gl "$GL/api/v4/projects/$PID_PROJ/hooks" | jq_ "print(' '.join(str(x['id']) for x in d if '/project/provision-' in x['url']))"); do
   gl -X DELETE "$GL/api/v4/projects/$PID_PROJ/hooks/$h" -o /dev/null
 done
@@ -187,9 +225,12 @@ H1=$(hook "$JIN/project/provision-plan" stoa-provision-plan)
 H2=$(hook "$JIN/project/provision-apply" stoa-provision-apply)
 HOOKS="$H1 $H2"
 { [ -n "$H1" ] && [ -n "$H2" ]; } && ok "1.2 deux webhooks de projet ($HOOKS) : « Merge request events » SEULEMENT, Secret Token = le mot du job" || ko "1.2 webhooks non posés : [$HOOKS]"
-poser_jobs gitlab
+# ⚠ L'URL du <scm> est celle que voit l'AGENT (réseau docker), jamais celle du
+# poste : un `http://localhost:13080/...` dans le job donne « Could not connect
+# to server » côté conteneur (mesuré le 2026-09-11). Split-horizon du lab.
+poser_jobs gitlab "$GLIN/$GL_REPO.git"
 { [ "$(grep -c '1 trigger GitLabPushTrigger' "$TMP/pose.gitlab.log")" = 2 ] && [ "$(grep -c 'amorçage #' "$TMP/pose.gitlab.log")" = 2 ]; } \
-  && ok "1.3 provision-plan et provision-apply re-posés, amorçage ATTENDU et RELU : 1 GitLabPushTrigger + 1 verrou chacun" \
+  && ok "1.3 provision-plan et provision-apply re-posés (dépôt du job = $CLONE : le lab a DEUX forges, un client n'en a qu'une), amorçage ATTENDU et RELU : 1 GitLabPushTrigger + 1 verrou chacun" \
   || ko "1.3 pose/amorçage : $(grep -E 'AMORCAGE|amorçage|relecture' "$TMP/pose.gitlab.log" | tr '\n' ' ' | cut -c1-300)"
 NG=$(jget "$J/job/provision-apply/config.xml" | grep -c 'GenericTrigger')
 [ "$NG" = 0 ] && ok "1.4 aucun GenericTrigger résiduel sur provision-apply : un seul récepteur à la fois" || ko "1.4 $NG GenericTrigger encore présent(s)"
@@ -216,9 +257,14 @@ R=$(attendre provision-plan "$NP" 300)
 [ "$R" = SUCCESS ] && ok "2.2 le PLUGIN a déclenché le plan : build #$NP $R" || ko "2.2 plan #$NP : ${R:-jamais déclenché (webhook non reçu ? alert_status du hook ?)}"
 N1=$(jname provision-plan "$NP")
 [ "$N1" = "plan $APP/$ENVN (PR #$IID)" ] && ok "2.3 build nommé « $N1 » : le fait unifié vient des variables gitlab*" || ko "2.3 build nommé « $N1 »"
-jconsole provision-plan "$NP" | grep -q 'gitlabMergeRequestIid' \
-  && ok "2.4 la console montre les variables gitlab* (troisième visage du fait unifié)" \
-  || ko "2.4 aucune variable gitlab* dans la console"
+# Le GitLab Plugin n'a PAS d'équivalent de `printContributedVariables` : ses
+# variables ne sont jamais ÉCHOUÉES dans la console (assertion fausse du premier
+# jet, 2026-09-11). Ce qui se mesure, c'est le FAIT UNIFIÉ qu'elles ont produit :
+# `action=merge_request:opened` ne peut venir que de gitlabMergeRequestState —
+# le GWT aurait écrit `merge_request:open` (l'ACTION, que ce plugin n'expose pas).
+jconsole provision-plan "$NP" | grep -q "Demande OUVERTE — application=$APP env=$ENVN action=merge_request:opened" \
+  && ok "2.4 le fait unifié vient de l'ÉTAT relu (« action=merge_request:opened ») : c'est la signature du troisième visage, le GWT aurait dit « merge_request:open »" \
+  || ko "2.4 fait unifié absent/divergent : $(jconsole provision-plan "$NP" | grep -m1 'Demande OUVERTE' | cut -c1-160)"
 sleep 5
 gl "$GL/api/v4/projects/$PID_PROJ/merge_requests/$IID/notes" | jq_ "import sys; sys.exit(0 if any('plan' in (n.get('body') or '').lower() for n in d) else 1)" \
   && ok "2.5 un commentaire de plan est posé sur la MR (comment_upsert, sous l'identité de forge)" \
@@ -227,9 +273,12 @@ gl "$GL/api/v4/projects/$PID_PROJ/merge_requests/$IID/notes" | jq_ "import sys; 
 say ""
 say "═══ 3. un nouveau commit rejoue le plan (parité mesurée avec le GWT) ═══"
 NP=$(jnext provision-plan)
+# ⚠ Un commit qui AJOUTE un fichier ferait refuser l'apply plus loin
+# (PR_HORS_PERIMETRE : l'aval checkoute l'arbre entier au SHA mergé et n'accepte
+# que le manifeste et son certificat — mesuré le 2026-09-11). Un commit VIDE
+# change le SHA sans toucher un octet : c'est exactement ce qu'on veut éprouver.
 W="$TMP/w"; gauth clone -q --depth 1 -b "$BR" "$CLONE" "$W" 2>/dev/null \
-  && { printf 'wk %s\n' "$$" > "$W/.wk-l6.txt"; git -C "$W" add .wk-l6.txt
-       git -C "$W" -c user.name=wk -c user.email=wk@lab commit -qm "wk push"
+  && { git -C "$W" -c user.name=wk -c user.email=wk@lab commit -q --allow-empty -m "wk : nouveau SHA, aucun fichier touché"
        gauth -C "$W" push -q "$CLONE" "$BR"; }
 R=$(attendre provision-plan "$NP" 300)
 [ "$R" = SUCCESS ] && ok "3.1 push d'un commit ⇒ plan rejoué (build #$NP $R)" || ko "3.1 push ⇒ ${R:-aucun build}"
@@ -249,7 +298,7 @@ fi
 jconsole provision-apply "$NA" | grep -q "merge_sha=$SHA" \
   && ok "4.3 MERGE_SHA du build == merge_commit_sha de l'API : la référence A2 survit au changement de récepteur" \
   || ko "4.3 MERGE_SHA divergent : $(jconsole provision-apply "$NA" | grep -m1 'merge_sha=' | cut -c1-160)"
-jconsole provision-apply "$NA" | grep -qE 'RECONCILE|réconcili' \
+jconsole provision-apply "$NA" | grep -qE 'RECONCILE|[Rr]éconcili|provision-apply-reconcile|forge a CONFIRM' \
   && ok "4.4 la réconciliation a relu la forge : le payload du plugin ne fait pas foi non plus" \
   || ko "4.4 aucune trace de réconciliation dans la console"
 AB=$(jget "$J/job/provision-apply/$NA/wfapi/pendingInputActions" | jq_ "print(d[0]['abortUrl'] if d else '')")
