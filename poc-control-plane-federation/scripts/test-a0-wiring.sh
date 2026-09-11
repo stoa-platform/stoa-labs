@@ -39,7 +39,7 @@ ko(){ FAIL=$((FAIL+1)); printf '  ❌ %s\n' "$*"; }
 
 # Total ATTENDU, ÉCRIT EN DUR — indépendant de PASS+FAIL. Toute section
 # ajoutée/retirée DOIT le mettre à jour : un oubli fait rougir le dernier §.
-EXPECTED_CHECKS=200
+EXPECTED_CHECKS=244   # 200 + 44 (§9 (c ter), STOA_DEBUG — plan L2)
 
 # shellcheck source=scripts/lib/gwt-mirror.sh
 . scripts/lib/gwt-mirror.sh || { echo "lib gwt-mirror.sh introuvable"; exit 2; }
@@ -726,6 +726,243 @@ printf '[]' > "$STUB_COMMENTS"; PLAN_BASE="" plan 12 provision/appa-dev; RC=$?
   && ok "aucun GIT_BASE, HEAD du dépôt = master ⇒ la base est DÉCOUVERTE, la PR est confirmée et le verdict rendu" \
   || ko "découverte de la base : rc=$RC verdict=$(fact PLAN_VERDICT) — $(tail -2 "$TMP/plan.out" | tr '\n' ' ')"
 rm -rf "$STUB_GITDIR"; set_pr open provision/appa-dev master
+
+echo
+echo "== 9. (c ter) STOA_DEBUG=1 : le plan parle, sans fuite (plan L2) =="
+# Gabarit D1/D2/D3 (test-vault-user-login.sh) et §E de test-provision-apply-a2.sh :
+# chaque ABSENCE (« le token n'y est pas ») est DOUBLÉE d'une PRÉSENCE (« la
+# ligne attendue y est ») — sinon un script muet passerait toute absence (vert
+# vacant). Les deux flux sont SÉPARÉS : c'est la seule façon de prouver qu'aucune
+# ligne de debug ne descend sur stdout (le journal [n/4] du build) — plan() les
+# fusionne, d'où ce second lanceur. Le préfixe attendu est le NOM DU SCRIPT ($0),
+# pas de DBG_NAME : c'est ce qu'on lit dans un log Jenkins ; une COPIE (mutant,
+# §(c ter).7) parle sous SON nom, les lignes de forge-api.py portent toujours
+# « [dbg forge-api.py] ». La MÊME fixture que (c bis) — dépôt servi en dumb-http,
+# HEAD=master, PR dont la branche SUPPRIME le manifeste — est reconstruite ici :
+# (c bis) la détruit en sortant. GIT_BASE vide = DÉCOUVERTE, comme son dernier run.
+git clone -q --bare "$SRC" "$STUB_GITDIR" && ( cd "$STUB_GITDIR" && git update-server-info ) \
+  && git -C "$STUB_GITDIR" symbolic-ref HEAD refs/heads/master
+set_pr open provision/appa-dev master 200 '' "$SHA_BR"
+# plan_dbg <n> <branche> [VAR=val…] — plan(), flux SÉPARÉS ($TMP/pd.so, $TMP/pd.se),
+# knobs supplémentaires par `env` (STOA_DEBUG, GITEA_TOKEN, PATH d'un shim… — le
+# dernier GITEA_TOKEN= gagne) ; PD_SCRIPT = une copie mutée à la place du script.
+plan_dbg(){
+  local n="$1" b="$2"; shift 2
+  rm -f "$TMP/plan.facts"; : > "$STUB_LOG"; printf '[]' > "$STUB_COMMENTS"
+  env GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/usr/bin/false GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 PR_NUMBER="$n" PR_BRANCH="$b" \
+    GITEA_TOKEN="$STUB_TOKEN" GIT_HOST="$GH9" GIT_REPO=ci/stoa-labs PLAN_FACTS="$TMP/plan.facts" GIT_BASE="" "$@" \
+    bash "${PD_SCRIPT:-scripts/provision-plan.sh}" >"$TMP/pd.so" 2>"$TMP/pd.se"
+}
+DBGP='[dbg provision-plan.sh] '
+# ligne_exacte <n> <fichier> <ligne sans préfixe> — la ligne « [dbg provision-plan.sh] <ligne> », ENTIÈRE (grep -xF)
+ligne_exacte(){ grep -qxF -- "${DBGP}$3" "$2" && ok "$1 stderr porte « ] $3 »" || ko "$1 stderr sans « ] $3 » ($(grep -c '\[dbg' "$2") ligne(s) [dbg)"; }
+# ligne_motif <n> <fichier> <ERE> <libellé>
+ligne_motif(){ grep -qE -- "$3" "$2" && ok "$1 stderr porte « $4 »" || ko "$1 stderr sans « $4 » ($(grep -c '\[dbg' "$2") ligne(s) [dbg)"; }
+# precede <fichier> <ERE A> <ERE B> — la première occurrence de A précède la première de B
+precede(){ local a b; a=$(grep -nE -m1 -- "$2" "$1" | cut -d: -f1); b=$(grep -nE -m1 -- "$3" "$1" | cut -d: -f1); [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ]; }
+# fuite <n> <mot> <libellé> <fichier…> — ABSENCE d'un secret dans TOUS les fichiers donnés (stdout et stderr)
+fuite(){ local n="$1" mot="$2" label="$3"; shift 3; grep -qF -- "$mot" "$@" && ko "$n $label FUITE : $(grep -hF -- "$mot" "$@" | head -1 | cut -c1-160)" || ok "$n $label absent de stdout ET de stderr"; }
+
+echo "-- (c ter).0 la RÉFÉRENCE : le même scénario SANS STOA_DEBUG (rc, stdout, faits) --"
+plan_dbg 12 provision/appa-dev; RC0=$?
+cp "$TMP/pd.so" "$TMP/pd0.so"; cp "$TMP/plan.facts" "$TMP/pd0.facts"
+[ "$RC0" -eq 1 ] && [ "$(fact PLAN_VERDICT)" = fail ] && [ "$(cat "$TMP/pd.so" "$TMP/pd.se" | grep -c '\[dbg')" = 0 ] \
+  && ok "(c ter).0 sans STOA_DEBUG : rc 1, verdict fail, ZÉRO ligne « [dbg » — la non-régression, et la référence des runs qui suivent" \
+  || ko "(c ter).0 rc=$RC0 verdict=$(fact PLAN_VERDICT) lignes [dbg=$(cat "$TMP/pd.so" "$TMP/pd.se" | grep -c '\[dbg')"
+
+echo "-- (c ter).1 nominal (c bis) sous STOA_DEBUG=1, GIT_BASE vide : même rc, même stdout, mêmes faits ; stderr dit chaque décision, jamais le token --"
+plan_dbg 12 provision/appa-dev STOA_DEBUG=1; RC=$?
+cp "$TMP/pd.so" "$TMP/pd1.so"; cp "$TMP/pd.se" "$TMP/pd1.se"; cp "$TMP/plan.facts" "$TMP/pd1.facts"
+[ "$RC" -eq 1 ] && cmp -s "$TMP/pd0.so" "$TMP/pd1.so" && cmp -s "$TMP/pd0.facts" "$TMP/pd1.facts" \
+  && ok "(c ter).1 rc 1 (verdict fail), stdout et PLAN_FACTS identiques OCTET POUR OCTET à la référence (le debug ne change pas le produit)" \
+  || ko "(c ter).1 rc=$RC : $(cmp "$TMP/pd0.so" "$TMP/pd1.so" 2>&1 | head -1) $(cmp "$TMP/pd0.facts" "$TMP/pd1.facts" 2>&1 | head -1) $(grep -E 'REFUS|ERREUR' "$TMP/pd1.se" | head -1 | cut -c1-120)"
+grep -q '\[dbg' "$TMP/pd1.so" && ko "(c ter).1a une ligne « [dbg » sur STDOUT (le journal du build serait pollué)" || ok "(c ter).1a aucune ligne « [dbg » sur stdout"
+grep -q '\[dbg' "$TMP/pd1.facts" && ko "(c ter).1b PLAN_FACTS porte une ligne « [dbg » : $(grep '\[dbg' "$TMP/pd1.facts" | head -1 | cut -c1-120)" || ok "(c ter).1b PLAN_FACTS sans aucune ligne « [dbg » (le statut de build les relirait)"
+ligne_exacte "(c ter).1c" "$TMP/pd1.se" 'GIT_BASE=master'
+ligne_exacte "(c ter).1d" "$TMP/pd1.se" 'GIT_BASE_ORIGINE=decouverte'
+# Dite par forge_api_init DANS gitea_pr_confirm, dont le stderr est capturé : sa
+# présence sous le préfixe du SCRIPT prouve que confirm.err est relayé sur succès.
+ligne_exacte "(c ter).1e" "$TMP/pd1.se" 'FORGE_KIND=gitea'
+# GIT_SUBDIR n'est pas posé par ce harnais : repo_layout_init reprend son défaut
+# (poc-control-plane-federation/) — c'est ce que la ligne doit dire ; le VIDE se
+# dit en (c ter).1w, avec GIT_SUBDIR=. posé.
+ligne_exacte "(c ter).1f" "$TMP/pd1.se" 'SUB_PFX=poc-control-plane-federation/'
+ligne_exacte "(c ter).1g" "$TMP/pd1.se" 'MANIFEST_PATH=poc-control-plane-federation/clients/provisioned/applications'
+ligne_exacte "(c ter).1h" "$TMP/pd1.se" "CLONE_BASE=$GH9"
+ligne_exacte "(c ter).1i" "$TMP/pd1.se" "PLAN_FACTS=$TMP/plan.facts"
+ligne_motif "(c ter).1j" "$TMP/pd1.se" '^\[dbg forge-api\.py\] GET [^ ]*/pulls/12 -> HTTP 200 \([0-9]+ octets\)$' '[dbg forge-api.py] GET …/pulls/12 -> HTTP 200 (n octets) — confirm.err RELAYÉ sur succès, sinon perdu'
+ligne_exacte "(c ter).1k" "$TMP/pd1.se" "PR #12 relue : state=open head=provision/appa-dev sha=$SHA_BR base=master same_repo=1 (attendu head=provision/appa-dev base=master)"
+ligne_exacte "(c ter).1l" "$TMP/pd1.se" 'GITEA_HEAD_REF=provision/appa-dev'
+ligne_exacte "(c ter).1m" "$TMP/pd1.se" "GITEA_HEAD_SHA=$SHA_BR"
+ligne_exacte "(c ter).1n" "$TMP/pd1.se" "git clone $GH9/ci/stoa-labs.git -> rc 0"
+ligne_exacte "(c ter).1o" "$TMP/pd1.se" "git checkout --detach $SHA_BR -> rc 0"
+ligne_exacte "(c ter).1p" "$TMP/pd1.se" 'git diff --name-only origin/master...HEAD -- poc-control-plane-federation/clients/provisioned/applications/*.ansible.yml -> poc-control-plane-federation/clients/provisioned/applications/appa.ansible.yml'
+ligne_exacte "(c ter).1q" "$TMP/pd1.se" 'MAN=poc-control-plane-federation/clients/provisioned/applications/appa.ansible.yml'
+ligne_exacte "(c ter).1r" "$TMP/pd1.se" 'ENVV=dev'
+ligne_exacte "(c ter).1s" "$TMP/pd1.se" 'VERDICT=fail'
+ligne_motif "(c ter).1t" "$TMP/pd1.se" '^\[dbg forge-api\.py\] POST [^ ]*/issues/12/comments -> HTTP 201 \([0-9]+ octets\)$' '[dbg forge-api.py] POST …/issues/12/comments -> HTTP 201 (le commentaire ❌, par gitea-pr-comment.sh — stderr libre)'
+grep -qxF '[dbg gitea-pr-comment.sh] COMMENT_MARKER=<!-- provision-plan -->' "$TMP/pd1.se" && grep -qxF '[dbg gitea-pr-comment.sh] CU_ACTION=created' "$TMP/pd1.se" \
+  && ok "(c ter).1u « [dbg gitea-pr-comment.sh] COMMENT_MARKER=<!-- provision-plan --> » et « CU_ACTION=created » : la lib de commentaire parle sous SON nom" \
+  || ko "(c ter).1u lignes de gitea-pr-comment.sh : $(grep -F '[dbg gitea-pr-comment.sh]' "$TMP/pd1.se" | tr '\n' '|' | cut -c1-200)"
+fuite "(c ter).1v" "$STUB_TOKEN" "le token du stub ($STUB_TOKEN)" "$TMP/pd1.so" "$TMP/pd1.se"
+# Le VIDE se dit : GIT_SUBDIR=. (« le livrable est la racine ») contre un dépôt
+# qui range le livrable sous un préfixe ⇒ aucun manifeste trouvé ⇒ IGNORE, rc 0
+# — inchangé ; et le log dit « SUB_PFX=<vide> » puis « MAN=<vide> » AVANT
+# l'IGNORE : le diagnostic que l'IGNORE seul ne donne pas.
+plan_dbg 12 provision/appa-dev STOA_DEBUG=1 GIT_SUBDIR=.; RC=$?
+[ "$RC" -eq 0 ] && [ "$(fact PLAN_VERDICT)" = ignore ] && grep -q '^IGNORE: aucun manifeste ajouté sous clients/provisioned/applications$' "$TMP/pd.se" \
+  && precede "$TMP/pd.se" '^\[dbg provision-plan\.sh\] SUB_PFX=<vide>$' '^IGNORE: ' && precede "$TMP/pd.se" '^\[dbg provision-plan\.sh\] MAN=<vide>$' '^IGNORE: ' \
+  && ok "(c ter).1w GIT_SUBDIR=. contre un dépôt qui préfixe ⇒ IGNORE rc 0 inchangé, et « ] SUB_PFX=<vide> » puis « ] MAN=<vide> » PRÉCÈDENT l'IGNORE : le vide se DIT, c'est le diagnostic" \
+  || ko "(c ter).1w rc=$RC verdict=$(fact PLAN_VERDICT) : $(grep -nE 'SUB_PFX|MAN=|IGNORE' "$TMP/pd.se" | head -3 | tr '\n' ' ' | cut -c1-200)"
+
+echo "-- (c ter).2 payload forgé sous STOA_DEBUG=1 : « -> HTTP 200 » puis « PR #12 relue : … head=provision/appb-dev … » PRÉCÈDENT le refus --"
+set_pr open provision/appb-dev master 200 '' "$SHA_BR"
+plan_dbg 12 provision/appa-dev STOA_DEBUG=1; RC=$?
+# « aucun clone » se lit sur objects/ : la DÉCOUVERTE de la base (GIT_BASE vide)
+# est un ls-remote sur le même dépôt servi — info/refs seulement, jamais un objet.
+[ "$RC" -eq 1 ] && grep -q '^REFUS: FORGE_NON_CONFIRMEE' "$TMP/pd.se" && [ "$(fact PLAN_VERDICT)" = refus ] && [ -z "$(fact GITEA_HEAD_REF)" ] && [ "$(nreq POST)" = 0 ] && ! grep -q 'stoa-labs.git/objects/' "$STUB_LOG" \
+  && ok "(c ter).2 payload forgé (branche de A, numéro de B) sous debug ⇒ rc 1 FORGE_NON_CONFIRMEE, faits refus + tête VIDE, aucun commentaire, aucun clone (rien sous objects/) — le refus est inchangé" \
+  || ko "(c ter).2 rc=$RC verdict=$(fact PLAN_VERDICT) head=$(fact GITEA_HEAD_REF) POST=$(nreq POST) objets=$(grep -c 'stoa-labs.git/objects/' "$STUB_LOG")"
+precede "$TMP/pd.se" '^\[dbg forge-api\.py\] GET [^ ]*/pulls/12 -> HTTP 200 ' '^REFUS: FORGE_NON_CONFIRMEE' \
+  && precede "$TMP/pd.se" "^\[dbg provision-plan\.sh\] PR #12 relue : state=open head=provision/appb-dev sha=$SHA_BR base=master same_repo=1 \(attendu head=provision/appa-dev base=master\)\$" '^REFUS: FORGE_NON_CONFIRMEE' \
+  && ok "(c ter).2a « GET …/pulls/12 -> HTTP 200 » puis « ] PR #12 relue : … head=provision/appb-dev … (attendu head=provision/appa-dev …) » PRÉCÈDENT « REFUS: FORGE_NON_CONFIRMEE » — la ligne que le client lira quand le refus tombe" \
+  || ko "(c ter).2a : $(grep -nE 'HTTP 200|PR #12 relue|REFUS' "$TMP/pd.se" | head -3 | tr '\n' ' ' | cut -c1-240)"
+# Le refus RECOPIE le stderr de la confirmation (la cause de forge-api, puis la
+# ligne FORGE_NON_CONFIRMEE) et PLAN_REASON en hérite : les lignes de debug
+# doivent en être SÉPARÉES — relayées avant, jamais dans le refus ni les faits.
+! grep '^REFUS: ' "$TMP/pd.se" | grep -q '\[dbg' && ! grep -q '\[dbg' "$TMP/plan.facts" \
+  && grep -q "^PLAN_REASON=FORGE_NON_CONFIRMEE : FORGE_NON_CONFIRMEE : tete de la PR #12 = 'provision/appb-dev', le payload nommait 'provision/appa-dev' — aucun commentaire, aucun clone$" "$TMP/plan.facts" \
+  && ok "(c ter).2b le refus et PLAN_REASON portent la CAUSE (« tete de la PR #12 = … »), sans aucune ligne « [dbg » : le debug relayé est SÉPARÉ de la cause que le refus recopie" \
+  || ko "(c ter).2b : $(grep -E '^PLAN_REASON=' "$TMP/plan.facts" | cut -c1-200)"
+fuite "(c ter).2c" "$STUB_TOKEN" "le token du stub" "$TMP/pd.so" "$TMP/pd.se"
+
+echo "-- (c ter).3 jeton refusé par le stub (401) sous STOA_DEBUG=1 : « -> HTTP 401 » PRÉCÈDE le refus ; ni le mauvais jeton ni celui du stub --"
+# Le stub répond 401 à tout jeton inconnu (« Authorization » ≠ le sien), lu.
+set_pr open provision/appa-dev master 200 '' "$SHA_BR"
+plan_dbg 12 provision/appa-dev STOA_DEBUG=1 GITEA_TOKEN=mauvais-jeton; RC=$?
+[ "$RC" -eq 1 ] && grep -q '^REFUS: FORGE_NON_CONFIRMEE' "$TMP/pd.se" && [ "$(fact PLAN_VERDICT)" = refus ] \
+  && precede "$TMP/pd.se" '^\[dbg forge-api\.py\] GET [^ ]*/pulls/12 -> HTTP 401 ' '^REFUS: FORGE_NON_CONFIRMEE' \
+  && ok "(c ter).3 jeton inconnu ⇒ « GET …/pulls/12 -> HTTP 401 » PRÉCÈDE « REFUS: FORGE_NON_CONFIRMEE » (rc=$RC, faits refus)" \
+  || ko "(c ter).3 rc=$RC : $(grep -nE 'HTTP 401|REFUS' "$TMP/pd.se" | head -3 | tr '\n' ' ' | cut -c1-200)"
+fuite "(c ter).3a" 'mauvais-jeton' "le jeton REFUSÉ (un secret refusé reste un secret)" "$TMP/pd.so" "$TMP/pd.se"
+fuite "(c ter).3b" "$STUB_TOKEN" "le token du stub" "$TMP/pd.so" "$TMP/pd.se"
+
+echo "-- (c ter).4 SILENCE : STOA_DEBUG=0 ⇒ zéro ligne [dbg, même produit --"
+plan_dbg 12 provision/appa-dev STOA_DEBUG=0; RC=$?
+[ "$RC" -eq 1 ] && [ "$(cat "$TMP/pd.so" "$TMP/pd.se" | grep -c '\[dbg')" = 0 ] && cmp -s "$TMP/pd0.so" "$TMP/pd.so" && cmp -s "$TMP/pd0.facts" "$TMP/plan.facts" \
+  && ok "(c ter).4 STOA_DEBUG=0 ⇒ rc 1, ZÉRO ligne « [dbg » (shell, forge-api.py et gitea-pr-comment.sh muets ensemble), stdout et faits identiques à la référence" \
+  || ko "(c ter).4 rc=$RC lignes [dbg=$(cat "$TMP/pd.so" "$TMP/pd.se" | grep -c '\[dbg')"
+
+echo "-- (c ter).5 GIT_HOST ABSENT : provision-plan.sh et provision-plan-status.sh meurent en le NOMMANT, sans un appel au stub (le dernier défaut de site de la chaîne est tombé) --"
+# `env -u GIT_HOST` : la variable est RETIRÉE, même si le shell qui joue cette
+# suite en porte une — c'est l'absence que Jenkins produit (variable non transmise).
+: > "$STUB_LOG"; rm -f "$TMP/plan.facts"
+env -u GIT_HOST GIT_TERMINAL_PROMPT=0 PR_NUMBER=12 PR_BRANCH=provision/appa-dev GITEA_TOKEN="$STUB_TOKEN" GIT_REPO=ci/stoa-labs PLAN_FACTS="$TMP/plan.facts" bash scripts/provision-plan.sh >"$TMP/pd.so" 2>"$TMP/pd.se"; RC=$?
+[ "$RC" -ne 0 ] && grep -q 'GIT_HOST requis' "$TMP/pd.se" && [ "$(nreq GET)" = 0 ] && [ ! -e "$TMP/plan.facts" ] \
+  && ok "(c ter).5 provision-plan.sh sans GIT_HOST ⇒ rc $RC en nommant « GIT_HOST requis », AUCUN appel au stub, aucun fait (plus de repli de site)" \
+  || ko "(c ter).5 rc=$RC GET=$(nreq GET) : $(head -1 "$TMP/pd.se" | cut -c1-160)"
+: > "$STUB_LOG"; printf '[]' > "$STUB_COMMENTS"
+env -u GIT_HOST BUILD_RESULT=FAILURE PR_NUMBER=12 PR_BRANCH=provision/appa-dev GITEA_TOKEN="$STUB_TOKEN" GIT_REPO=ci/stoa-labs bash scripts/provision-plan-status.sh >"$TMP/st.out" 2>&1; RC=$?
+[ "$RC" -ne 0 ] && grep -q 'GIT_HOST requis' "$TMP/st.out" && [ "$(nreq GET)" = 0 ] && [ "$(ncomments)" = 0 ] \
+  && ok "(c ter).5a provision-plan-status.sh sans GIT_HOST ⇒ rc $RC en nommant « GIT_HOST requis », aucun appel, aucun commentaire" \
+  || ko "(c ter).5a rc=$RC GET=$(nreq GET) : $(head -1 "$TMP/st.out" | cut -c1-160)"
+! grep -qE '^scripts/provision-plan(-status)?\.sh:GIT_HOST' ci/lint-config-knobs.exempt \
+  && ok "(c ter).5b ci/lint-config-knobs.exempt ne porte plus scripts/provision-plan.sh:GIT_HOST ni scripts/provision-plan-status.sh:GIT_HOST (une exemption sans violation est une dette qui ment)" \
+  || ko "(c ter).5b exemption orpheline : $(grep -E '^scripts/provision-plan(-status)?\.sh:GIT_HOST' ci/lint-config-knobs.exempt | tr '\n' ' ')"
+
+echo "-- (c ter).6 ÉCHEC GIT sous STOA_DEBUG=1 : le clone échoue en recopiant le secret (shim), à cheval sur l'octet 400 ⇒ « git clone … -> rc 128 » + « git: … <secret masqué> », le refus inchangé, jamais le token --"
+# Le shim git recopie dans son stderr de clone le secret que le process tient
+# (GITEA_TOKEN — le cas réel : un GIT_HOST à user:secret@ que git recopie NU sous
+# GIT_TRACE=1). Le DISCRIMINANT de l'ordre « masque puis coupe » de dbg_git_err
+# (grammaire §3 corrigée, revues B1/B3 ; même motif que test-app-request-a7 E12.3e/f
+# et M11) : le secret est recopié une SECONDE fois à partir de l'octet 395 de la
+# ligne, à cheval sur la coupe à 400. Masque puis coupe ⇒ la ligne « git: » porte
+# le premier masque entier, le rembourrage, et s'arrête à 400 octets avant la
+# seconde occurrence (déjà masquée). Coupe puis masque ⇒ « jeton tok-a », cinq
+# octets du token que ni redact ni le dbg qui remasque derrière ne reconnaissent
+# — c'est le mutant (c ter).7c. Octets, pas caractères (« é », « — » : 2 et 3).
+SHIMPL="$TMP/shim-plan"; mkdir -p "$SHIMPL"
+cat > "$SHIMPL/git" <<SH
+#!/usr/bin/env bash
+if [ "\${1:-}" = clone ]; then
+  s="\${GITEA_TOKEN:-}"; pre="fatal: unable to access (simulé) — jeton "; l="\$pre\$s"
+  if [ -n "\${SHIM_CLONE_SECRET_AT:-}" ]; then
+    mid=" jeton "; n=\$(( \$(printf '%s' "\$pre\$mid" | wc -c) + \${#s} + 1 ))
+    l="\$l \$(printf '%*s' "\$((SHIM_CLONE_SECRET_AT - n))" '' | tr ' ' x)\$mid\$s"
+  fi
+  printf '%s\n' "\$l" >&2; exit 128
+fi
+exec "$(command -v git)" "\$@"
+SH
+chmod 700 "$SHIMPL/git"
+SECRET_AT=395; FRAG="${STUB_TOKEN:0:$((400 - SECRET_AT))}"   # le morceau que laisserait la coupe : « tok-a »
+# git_line <stderr> : la charge de la ligne « git: » du clone, sans le préfixe « [dbg <script>] »
+# (agnostique du NOM : (c ter).7c la relit sur une copie) ; git_octets : sa taille en OCTETS.
+git_line(){ grep -m1 -E '^\[dbg [^]]*\]   git: fatal: unable to access' "$1" | sed -E 's/^\[dbg [^]]*\]   git: //' | tr -d '\n'; }
+git_octets(){ echo $(( $(git_line "$1" | wc -c) )); }
+plan_dbg 12 provision/appa-dev STOA_DEBUG=1 PATH="$SHIMPL:$PATH" "SHIM_CLONE_SECRET_AT=$SECRET_AT"; RC=$?
+cp "$TMP/pd.so" "$TMP/pd6.so"; cp "$TMP/pd.se" "$TMP/pd6.se"
+[ "$RC" -eq 1 ] && grep -qx 'REFUS: CLONE_ECHEC : clone de ci/stoa-labs en echec' "$TMP/pd6.se" && [ "$(fact PLAN_VERDICT)" = refus ] && [ "$(fact GITEA_HEAD_REF)" = provision/appa-dev ] && [ "$(nreq POST)" = 0 ] \
+  && ok "(c ter).6 clone refusé par le shim ⇒ « REFUS: CLONE_ECHEC : clone de ci/stoa-labs en echec » rc 1, faits refus + tête CONFIRMÉE, aucun commentaire — le refus d'origine, inchangé" \
+  || ko "(c ter).6 rc=$RC verdict=$(fact PLAN_VERDICT) : $(grep -E 'REFUS|fatal' "$TMP/pd6.se" | head -2 | tr '\n' ' ' | cut -c1-200)"
+precede "$TMP/pd6.se" "^\[dbg provision-plan\.sh\] git clone $GH9/ci/stoa-labs\.git -> rc 128\$" '^REFUS: CLONE_ECHEC' \
+  && ok "(c ter).6a « ] git clone …/ci/stoa-labs.git -> rc 128 » PRÉCÈDE le refus (le VRAI rc du shim, pas celui d'un « || »)" \
+  || ko "(c ter).6a : $(grep -nE 'git clone|REFUS' "$TMP/pd6.se" | head -3 | tr '\n' ' ' | cut -c1-200)"
+grep -qE '^\[dbg provision-plan\.sh\]   git: fatal: unable to access \(simulé\) — jeton <secret masqué> x+' "$TMP/pd6.se" && [ "$(git_octets "$TMP/pd6.se")" -eq 400 ] \
+  && ok "(c ter).6b stderr de clone de 402 octets, secret à cheval sur l'octet 400 : la ligne « ]   git: … jeton <secret masqué> x… » fait EXACTEMENT 400 octets (masquée EN ENTIER, PUIS coupée)" \
+  || ko "(c ter).6b octets=$(git_octets "$TMP/pd6.se") : …$(git_line "$TMP/pd6.se" | tail -c 60)"
+grep -qxE 'fatal: unable to access \(simulé\) — jeton <secret masqué> x+ jeton <secret masqué>' "$TMP/pd6.se" \
+  && ok "(c ter).6c le stderr de git relayé AVANT le refus (sans debug aussi) est masqué et non coupé : les DEUX occurrences portent « <secret masqué> » — avant L2 il passait BRUT" \
+  || ko "(c ter).6c relais : $(grep -vE '^(\[dbg |REFUS: )' "$TMP/pd6.se" | head -1 | cut -c1-120)"
+! grep -qF -- "$FRAG" "$TMP/pd6.so" "$TMP/pd6.se" && ! grep -qF -- "$STUB_TOKEN" "$TMP/pd6.so" "$TMP/pd6.se" \
+  && ok "(c ter).6d ni « $FRAG » (le morceau qu'une coupe AVANT le masque laisserait) ni $STUB_TOKEN, nulle part — stdout, lignes [dbg, relais, refus" \
+  || ko "(c ter).6d fuite : $(grep -nF -- "$FRAG" "$TMP/pd6.so" "$TMP/pd6.se" | head -1 | cut -c1-160)"
+
+echo "-- (c ter).7 MUTATIONS sur COPIE : relais de confirm.err retiré ⇒ (c ter).1j rougit ; dbg_kv MAN → echo ⇒ (c ter).1/1a rougissent ; coupe AVANT masque ⇒ (c ter).6b/6d rougissent --"
+# La copie vit dans un faux scripts/ (lib, ci et clients liés, motif
+# test-provision-apply-a2 §D/§E.7) : provision-plan.sh résout ses libs de PR par
+# $SELF_DIR/lib, dbg.sh / repo-layout / git-base par le cwd (la racine, d'où
+# cette suite joue) ; env-chain.sh remonte à SA racine par `cd lib/../.. && pwd`
+# — logique, donc $TMP/mut-plan — et y lit clients/_example/environments.yaml
+# (mesuré : sans ce lien, le mutant meurt CHAINE_ILLISIBLE avant sa ligne).
+# Tout résout sans rien poser dans l'arbre. dbg.sh signe par le NOM du fichier
+# joué : une copie parle sous « [dbg plan-mutN.sh] ». Un mutant identique ou
+# incompilable est un ko (jamais un vert vacant).
+MUTP="$TMP/mut-plan/scripts"; mkdir -p "$MUTP"; ln -s "$REPO/scripts/lib" "$MUTP/lib"; ln -s "$REPO/ci" "$TMP/mut-plan/ci"; ln -s "$REPO/clients" "$TMP/mut-plan/clients"
+plan_mutant(){ # <nom> <sed -E> → chemin de la copie, ou vide si no-op / incompilable
+  sed -E "$2" scripts/provision-plan.sh > "$MUTP/$1.sh"; chmod +x "$MUTP/$1.sh"
+  if cmp -s scripts/provision-plan.sh "$MUTP/$1.sh" || ! bash -n "$MUTP/$1.sh" 2>/dev/null; then echo ""; else echo "$MUTP/$1.sh"; fi
+}
+# shellcheck disable=SC2016  # motif sed : le « $WORK » visé est celui du SCRIPT, à ne pas expandre ici
+M1=$(plan_mutant plan-mut1 '/^\[ -s "\$WORK\/confirm\.err" \] && cat "\$WORK\/confirm\.err" >&2$/d')
+if [ -n "$M1" ]; then
+  set_pr open provision/appa-dev master 200 '' "$SHA_BR"
+  PD_SCRIPT="$M1" plan_dbg 12 provision/appa-dev STOA_DEBUG=1; RC=$?
+  [ "$RC" -eq 1 ] && [ "$(fact PLAN_VERDICT)" = fail ] && ! grep -qE '^\[dbg forge-api\.py\] GET [^ ]*/pulls/12 -> HTTP 200 ' "$TMP/pd.se" && grep -qE '^\[dbg forge-api\.py\] POST [^ ]*/issues/12/comments -> HTTP 201 ' "$TMP/pd.se" \
+    && ok "(c ter).7a sans le relais de confirm.err : même verdict (rc 1, fail) mais « GET …/pulls/12 -> HTTP 200 » a DISPARU (le POST du commentaire, stderr libre, reste) — (c ter).1j tient à cette ligne" \
+    || ko "(c ter).7a rc=$RC verdict=$(fact PLAN_VERDICT) : $(grep -c 'pulls/12 -> HTTP 200' "$TMP/pd.se") ligne(s) pr_get, $(grep -c 'comments -> HTTP 201' "$TMP/pd.se") ligne(s) POST — $(grep -E 'REFUS|ERREUR|COMMENT_FAILED' "$TMP/pd.se" | head -1 | cut -c1-120)"
+else ko "(c ter).7a mutation impossible (motif introuvable ou copie incompilable) — mutant no-op"; fi
+# shellcheck disable=SC2016  # idem : « $MAN » est celui du script muté, le mutant l'écrit sur stdout (la ligne porte un commentaire de fin : ancre en tête seulement)
+M2=$(plan_mutant plan-mut2 's#^dbg_kv MAN "\$MAN"#echo "MAN=$MAN"#')
+if [ -n "$M2" ]; then
+  PD_SCRIPT="$M2" plan_dbg 12 provision/appa-dev STOA_DEBUG=1; RC=$?
+  [ "$RC" -eq 1 ] && grep -q '^MAN=poc-control-plane-federation/' "$TMP/pd.so" && ! cmp -s "$TMP/pd0.so" "$TMP/pd.so" \
+    && ok "(c ter).7b dbg_kv MAN → echo (stdout) : même rc mais stdout porte « MAN=… » et diffère de la référence — (c ter).1 et .1a tiennent à ce que le debug reste sur stderr" \
+    || ko "(c ter).7b stdout du mutant : $(grep -c . "$TMP/pd.so") lignes (rc=$RC)"
+else ko "(c ter).7b mutation impossible — mutant no-op"; fi
+# (c ter).7c — l'ORDRE de dbg_git_err : COUPER puis masquer (la première rédaction
+# de la grammaire §3). Sur le stderr de (c ter).6 (secret à cheval sur 400), la
+# coupe laisse « tok-a », que ni redact ni le dbg qui remasque ne reconnaissent.
+# shellcheck disable=SC2016  # motif sed : « $1 » est celui du helper muté, à ne pas expandre ici
+M3=$(plan_mutant plan-mut3 's#^(    m=")\$\(redact < "\$1" [|] tr#\1$(head -c 400 < "$1" | tr#')
+if [ -n "$M3" ]; then
+  PD_SCRIPT="$M3" plan_dbg 12 provision/appa-dev STOA_DEBUG=1 PATH="$SHIMPL:$PATH" "SHIM_CLONE_SECRET_AT=$SECRET_AT"; RC=$?
+  [ "$RC" -eq 1 ] && grep '^\[dbg' "$TMP/pd.se" | grep -qF -- "jeton $FRAG" && ! grep -qF -- "$STUB_TOKEN" "$TMP/pd.se" \
+    && ok "(c ter).7c dbg_git_err coupe PUIS masque ⇒ « jeton $FRAG » : cinq octets du token dans la ligne « git: » ($(git_octets "$TMP/pd.se") octets au lieu de 400) — (c ter).6b et .6d tiennent à l'ordre masque→coupe, pas au redact de dbg" \
+    || ko "(c ter).7c rc=$RC : le mutant ne laisse pas de morceau — …$(git_line "$TMP/pd.se" | tail -c 60)"
+else ko "(c ter).7c mutation impossible — mutant no-op"; fi
+# L'état laissé à (d) est celui que (c bis) laissait : dépôt retiré, PR nominale.
+rm -rf "$STUB_GITDIR"; set_pr open provision/appa-dev master; printf '[]' > "$STUB_COMMENTS"
 
 echo
 echo "== 9. (d) provision-plan-status.sh : les faits d'abord, la forge sinon, jamais une PR seulement nommée =="

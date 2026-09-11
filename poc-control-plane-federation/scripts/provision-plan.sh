@@ -41,8 +41,16 @@
 #   GIT_REPO    full-name (défaut ci/stoa-labs)
 #   GIT_BASE    branche cible — AUCUN défaut : vide, absente ou « auto » =
 #               DÉCOUVERTE de la HEAD du dépôt (scripts/lib/git-base.sh) ; base du diff
-#   GIT_HOST    base Gitea vue de l'agent (défaut http://gitea:3000)
+#   GIT_HOST    base de la forge vue de l'agent, avec son schéma (REQUIS, aucun
+#               repli : le défaut http://gitea:3000 d'avant 2026-09-11 remplaçait
+#               en silence une variable non transmise chez un client, et la
+#               panne sortait plus loin sous un autre nom — ci/lint-config-knobs.sh)
 #   MANIFEST_DIR dossier des manifestes (défaut poc-control-plane-federation/clients/provisioned/applications)
+#   STOA_DEBUG  mode debug SANS FUITE (ci/lib/dbg.sh, L2 2026-09-11) : ce que ce
+#               script DÉCIDE (disposition, base, tête relue, rc de chaque geste
+#               git, verdict) sur STDERR seulement, rédigé — jamais un token,
+#               jamais stdout (le journal [n/4] ne bouge pas), jamais les faits.
+#               Preuve : scripts/test-a0-wiring.sh §9 (c ter).
 set -uo pipefail
 set +x
 
@@ -58,15 +66,53 @@ GIT_REPO="${GIT_REPO:-ci/stoa-labs}"
 # base RELUE de la PR à GIT_BASE (§0) et diffe contre `origin/${GIT_BASE}` (§2) :
 # un « main » deviné faisait refuser FORGE_NON_CONFIRMEE toute PR d'un client
 # dont la branche est `master`, en accusant la PR au lieu du câblage.
-GIT_HOST="${GIT_HOST:-http://gitea:3000}"
+# GIT_HOST : plus de défaut de site (L2, 2026-09-11 — la même ligne que
+# provision-request.sh et app-rollback-request.sh). Absent ou vide ⇒ mort nommée
+# ici, AVANT tout appel : chez un client, « http://gitea:3000 » remplaçait la
+# variable non transmise et la panne sortait sous BRANCHE_PAR_DEFAUT_INCONNUE.
+GIT_HOST="${GIT_HOST:?GIT_HOST requis (base de la forge, ex. https://forge.client) — aucun repli}"
+# L2 : le MODE DEBUG SANS FUITE. dbg/dbg_kv/redact de ci/lib/dbg.sh sont les
+# seules voies de sortie du debug (stderr seulement, rédigé, `$?` préservé) —
+# jamais `set -x` (le `set +x` en tête : un log Jenkins est archivé). Même base
+# de résolution que les libs ci-dessous : le cwd d'appel, AVANT le cd de [1/4].
+# dbg_init normalise et EXPORTE STOA_DEBUG pour que les enfants (forge-api.py,
+# gitea-pr-comment.sh) parlent avec la même valeur. Pas de DBG_NAME : le préfixe
+# est le nom de CE script, c'est lui qu'on veut lire dans un log Jenkins. Pas de
+# DBG_SECRET_FILES : le plan ne tient que FORGE_SECRET, que dbg.sh relit dans
+# l'environnement à chaque appel — aucun token humain ici.
+# shellcheck source=ci/lib/dbg.sh
+. "ci/lib/dbg.sh" || { echo "ERREUR: ci/lib/dbg.sh introuvable ou illisible" >&2; exit 1; }
+dbg_init
+# dbg_git_err <fichier> — le stderr d'un geste git, relayé en mode debug sur
+# UNE ligne « git: … » : rédigé EN ENTIER, puis mis sur une ligne, puis tronqué
+# à 400 octets — dans cet ordre et pas un autre. Couper AVANT de masquer
+# laisserait un MORCEAU de secret que redact ne reconnaît plus (la classe de
+# défaut fermée trois fois par la relecture de la phase A ; même ordre que
+# dbg_git_err de provision-request.sh et _git_base_stderr_relaye de
+# scripts/lib/git-base.sh). L'ORDRE a son épreuve : test-a0-wiring §9 (c ter).6b/6d
+# et le mutant (c ter).7c — un secret de 6 octets À CHEVAL sur l'octet 400 ;
+# coupé avant d'être masqué, il en laisse cinq en clair, et dbg qui rédige une
+# seconde fois ne les reconnaît pas (le masque est un atome, remasquer est
+# idempotent — mais un MORCEAU n'est pas un littéral connu). Hors debug : rien
+# n'est lu, rien n'est lancé ; fichier vide ⇒ rien. Le `$?` reçu est rendu tel quel.
+dbg_git_err(){
+  local _rc=$? m
+  if dbg_on && [ -s "${1:-}" ]; then
+    m="$(redact < "$1" | tr '\n' ' ')"
+    dbg "  git: $(head -c 400 <<<"$m")"
+  fi
+  return "$_rc"
+}
 # shellcheck source=scripts/lib/repo-layout.sh
 . "scripts/lib/repo-layout.sh" || { echo "ERREUR: scripts/lib/repo-layout.sh introuvable ou illisible" >&2; exit 1; }
 repo_layout_init || exit 2
+dbg_kv SUB_PFX "$SUB_PFX"   # vide ⇒ « <vide> » : le livrable EST la racine — c'est le diagnostic d'un IGNORE chez un client dont la forge préfixe
 # shellcheck source=scripts/lib/git-base.sh
 . "scripts/lib/git-base.sh" || { echo "ERREUR: scripts/lib/git-base.sh introuvable ou illisible" >&2; exit 1; }
 # RELATIF au livrable (2026-09-03) ; le préfixe du dépôt vit dans GIT_SUBDIR.
 MANIFEST_DIR="${MANIFEST_DIR:-clients/provisioned/applications}"
 MANIFEST_PATH="${SUB_PFX}${MANIFEST_DIR}"   # vu de la racine du clone : c'est ce que git connaît
+dbg_kv MANIFEST_PATH "$MANIFEST_PATH"   # le chemin tel que ce script le COMPOSE : c'est l'écart avec l'arbre qu'on diagnostique
 INVENTORY="${INVENTORY:-ansible/inventory.lab.ini}"
 # URL Git vue par l'HUMAIN (lien du commentaire) — distincte de GIT_HOST (in-cluster,
 # pour les opérations git). Chez le client, les deux valent l'URL entreprise ; au lab,
@@ -77,6 +123,7 @@ GIT_WEB_HOST="${GIT_WEB_HOST:-$GIT_HOST}"
 # la PR ($WORK/repo) en [1/4], et un `dirname "$0"` relatif n'y résoudrait plus.
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLAN_FACTS="${PLAN_FACTS:-}"
+dbg_kv PLAN_FACTS "$PLAN_FACTS"   # vide ⇒ « <vide> » : aucun fait écrit, le statut de build relira la forge
 GITEA_HEAD_REF=""; GITEA_HEAD_SHA=""
 
 # facts <verdict> <raison> — écrit le fichier de faits (si demandé), à CHAQUE
@@ -109,30 +156,82 @@ WORK="$(mktemp -d /tmp/provplan.XXXXXX)"; trap 'rm -rf "$WORK"' EXIT
 # Composé ICI, avant [0/4] : la BASE se découvre sur cette URL, et la base est ce
 # que la relecture de la PR compare (base.ref) — donc avant le premier appel.
 case "$GIT_HOST" in http://*|https://*|file://*) CLONE_BASE="${GIT_HOST%/}";; *) CLONE_BASE="http://${GIT_HOST%/}";; esac
+# L'URL composée : c'est elle qu'on diagnostique (le « http://https:// » du
+# 2026-09-03 se serait lu ici). Un userinfo éventuel est masqué par redact.
+dbg_kv CLONE_BASE "$CLONE_BASE"
 # Le clone de ce script n'est PAS enveloppé (dépôt lu en anonyme) : le
 # `git ls-remote` de la lib hérite du même environnement, donc de la même
 # absence d'enveloppe — ce que l'un peut lire, l'autre le peut.
 git_base_init "${CLONE_BASE}/${GIT_REPO}.git" \
   || { facts refus "BRANCHE_PAR_DEFAUT_INCONNUE : branche par defaut de ${GIT_REPO} indeterminable (cause dans le log du build)"; exit 1; }
 echo "[0/4] relecture de la PR #${PR_NUMBER} sur la forge (tete attendue ${PR_BRANCH}, base ${GIT_BASE})"
+# Le stderr de la confirmation est CAPTURÉ parce que le refus le RECOPIE (la
+# cause de forge-api puis la ligne FORGE_NON_CONFIRMEE) et que PLAN_REASON en
+# hérite. Sous STOA_DEBUG il porte AUSSI les lignes de debug — celles de
+# forge_api_init, de forge-api.py (« GET …/pulls/n -> HTTP code ») et la PR relue
+# par la lib — toutes préfixées « [dbg » (le contrat de ci/lib/dbg.sh et de
+# forge-api.py : un log archivé se grep en tête de ligne). Sur REFUS, elles sont
+# relayées AVANT le refus, SÉPARÉES de la cause : recopiées dans le refus, elles
+# entreraient dans PLAN_REASON, donc dans le commentaire de statut (mesuré :
+# test-a0-wiring (c ter).2b rouge avant cette séparation). Sans debug, aucune
+# ligne « [dbg » n'existe : `grep -v` rend le fichier tel quel, le refus est
+# octet pour octet celui d'avant.
 if ! CONFIRM="$(gitea_pr_confirm "$PR_NUMBER" "$PR_BRANCH" "$GIT_BASE" 2>"$WORK/confirm.err")"; then
-  refus FORGE_NON_CONFIRMEE "$(cat "$WORK/confirm.err") — aucun commentaire, aucun clone"
+  grep '^\[dbg ' "$WORK/confirm.err" >&2
+  refus FORGE_NON_CONFIRMEE "$(grep -v '^\[dbg ' "$WORK/confirm.err") — aucun commentaire, aucun clone"
 fi
+# Sur SUCCÈS, confirm.err ne porte que les lignes de debug : sans relais elles
+# seraient PERDUES — la capture n'existe que pour le refus. Sans debug le
+# fichier est vide et rien ne s'écrit ((c ter).1j ; mutant (c ter).7a).
+[ -s "$WORK/confirm.err" ] && cat "$WORK/confirm.err" >&2
 GITEA_HEAD_REF="$(printf '%s\n' "$CONFIRM" | sed -n 's/^GITEA_HEAD_REF=//p')"
 GITEA_HEAD_SHA="$(printf '%s\n' "$CONFIRM" | sed -n 's/^GITEA_HEAD_SHA=//p')"
+# La tête RELUE — celle que le clone va checkouter, jamais le nom du payload.
+dbg_kv GITEA_HEAD_REF "$GITEA_HEAD_REF"
+dbg_kv GITEA_HEAD_SHA "$GITEA_HEAD_SHA"
 echo "  forge : PR #${PR_NUMBER} ouverte, tete ${GITEA_HEAD_REF} @ ${GITEA_HEAD_SHA}"
 
 echo "[1/4] checkout ${PR_BRANCH} @ ${GITEA_HEAD_SHA} (la tete RELUE, pas le nom)"
 # `--detach <sha>` : le SHA est un COMMIT (validé ^[0-9a-f]{40}$ par la lib —
 # jamais une option), pas un chemin : `checkout -- <sha>` le prendrait pour un
 # pathspec (mesuré : « BRANCHE_INTROUVABLE » sur un clone pourtant complet).
-git clone -q "${CLONE_BASE}/${GIT_REPO}.git" "$WORK/repo" || refus CLONE_ECHEC "clone de ${GIT_REPO} en echec"
+# Le VRAI rc de git est capturé (L2) : la ligne de debug le dit, puis la même
+# décision qu'avant — un rc non nul est CLONE_ECHEC. Le stderr du clone allait
+# BRUT dans le journal ; il y va toujours, mais RÉDIGÉ (redact : littéraux du
+# process + forme ://…@) : sous GIT_TRACE=1 git y recopie l'URL NUE (mesure de
+# scripts/lib/git-base.sh, _git_base_stderr_relaye), et un GIT_HOST à
+# user:secret@ serait sorti en clair dans le log archivé — test-a0-wiring
+# (c ter).6c/6d (un shim qui recopie le secret) rougissaient avant ce relais.
+# Même forme sinon, octet pour octet (redact ne change rien à une ligne sans
+# secret). python3 est acquis ici : forge_api_init l'a exigé (PYTHON3_REQUIS)
+# avant la relecture de la PR, qui précède ce clone.
+git clone -q "${CLONE_BASE}/${GIT_REPO}.git" "$WORK/repo" 2>"$WORK/clone.err"; rc=$?
+dbg "git clone ${CLONE_BASE}/${GIT_REPO}.git -> rc $rc"
+dbg_git_err "$WORK/clone.err"
+[ ! -s "$WORK/clone.err" ] || redact < "$WORK/clone.err" >&2
+[ "$rc" -eq 0 ] || refus CLONE_ECHEC "clone de ${GIT_REPO} en echec"
 cd "$WORK/repo" || refus CLONE_ECHEC "clone incomplet"
-git checkout -q --detach "$GITEA_HEAD_SHA" 2>/dev/null || refus BRANCHE_INTROUVABLE "la tete ${GITEA_HEAD_SHA} de ${PR_BRANCH} n'est pas dans le clone (branche deplacee depuis la relecture, ou PR depuis un fork)"
+# Le stderr du checkout allait à /dev/null : en mode debug il est le diagnostic
+# (« reference is not a tree » = tête déplacée) — capturé, rc dit ; hors debug,
+# rien n'est lu, rien ne change.
+git checkout -q --detach "$GITEA_HEAD_SHA" 2>"$WORK/checkout.err"; rc=$?
+dbg "git checkout --detach ${GITEA_HEAD_SHA} -> rc $rc"
+dbg_git_err "$WORK/checkout.err"
+[ "$rc" -eq 0 ] || refus BRANCHE_INTROUVABLE "la tete ${GITEA_HEAD_SHA} de ${PR_BRANCH} n'est pas dans le clone (branche deplacee depuis la relecture, ou PR depuis un fork)"
 
 echo "[2/4] localisation du manifeste (diff vs ${GIT_BASE})"
-MAN=$(git diff --name-only "origin/${GIT_BASE}...HEAD" -- "${MANIFEST_PATH}/*.ansible.yml" 2>/dev/null | head -1)
-[ -n "$MAN" ] || MAN=$(git diff --name-only "origin/${GIT_BASE}...HEAD" 2>/dev/null | grep -E "^${MANIFEST_PATH}/.*\.ansible\.yml$" | head -1)
+# Le diff dit ce qu'il a RENDU (pas un rc : sous `| head -1` et pipefail, un
+# SIGPIPE en ferait un 141 sans valeur) ; son stderr allait à /dev/null, il est
+# capturé (« bad revision origin/<base> » = base non ramenée par le clone).
+MAN=$(git diff --name-only "origin/${GIT_BASE}...HEAD" -- "${MANIFEST_PATH}/*.ansible.yml" 2>"$WORK/diff.err" | head -1)
+dbg "git diff --name-only origin/${GIT_BASE}...HEAD -- ${MANIFEST_PATH}/*.ansible.yml -> ${MAN:-<vide>}"
+dbg_git_err "$WORK/diff.err"
+if [ -z "$MAN" ]; then
+  MAN=$(git diff --name-only "origin/${GIT_BASE}...HEAD" 2>"$WORK/diff.err" | grep -E "^${MANIFEST_PATH}/.*\.ansible\.yml$" | head -1)
+  dbg "git diff --name-only origin/${GIT_BASE}...HEAD | grep ^${MANIFEST_PATH}/ -> ${MAN:-<vide>}"
+  dbg_git_err "$WORK/diff.err"
+fi
+dbg_kv MAN "$MAN"   # vide ⇒ « <vide> » : c'est l'IGNORE qui suit — et, avec SUB_PFX, son diagnostic
 if [ -z "$MAN" ]; then echo "IGNORE: aucun manifeste ajouté sous ${MANIFEST_PATH}" >&2; facts ignore "aucun manifeste ajoute sous ${MANIFEST_PATH}"; exit 0; fi
 echo "  manifeste : $MAN"
 # env = suffixe de la branche provision/<app>-<env>
@@ -156,6 +255,7 @@ case "$BR_RC" in
   *) refus BRANCH_FORMAT_INVALIDE "'$PR_BRANCH' hors provision/<app>-<palier> (app ^[a-z0-9][a-z0-9-]*\$, palier ^[a-z0-9]+\$)" ;;
 esac
 ENVV="${BR_OUT##* }"
+dbg_kv ENVV "$ENVV"   # le palier que la branche nomme : c'est lui que PALIER_HORS_CHAINE juge
 # ⚠ CE REFUS REMPLACE UN BLANCHIMENT SILENCIEUX (D8). Avant : un palier hors
 # chaîne hors-prod vidait ENVV, et `${ENVV:+-e apim_ss_env=…}` faisait
 # DISPARAÎTRE l'extra-var — le plan présenté au demandeur portait alors sur le
@@ -188,13 +288,16 @@ PLAN_LOG="$WORK/plan.log"; VERDICT="ok"
   ansible-playbook -i "$INVENTORY" ansible/selfservice-app.yml --syntax-check \
     -e "apim_ss_manifest=$(cd "$WORK/repo" && pwd)/$MAN" ${ENVV:+-e apim_ss_env="$ENVV"}
 ) >"$PLAN_LOG" 2>&1 || VERDICT="fail"
+dbg_kv VERDICT "$VERDICT"   # ce que le commentaire va porter, et le rc final (fail ⇒ 1)
 sed -n '1,40p' "$PLAN_LOG"
 
 echo "[4/4] commentaire sur la PR #${PR_NUMBER} (verdict ${VERDICT})"
 # L'UPSERT par marqueur vit dans scripts/lib/gitea-pr-comment.sh — partagé avec
 # le commentaire d'apply (ADR-081). Ici on ne construit que le CORPS ; le
 # marqueur, la recherche du commentaire existant et le choix POST/PATCH sont à
-# la lib. Sans ce partage, le même upsert existerait en deux copies.
+# la lib. Sans ce partage, le même upsert existerait en deux copies. Son stderr
+# est LIBRE (rien à relayer) : sous STOA_DEBUG — exporté par dbg_init, hérité —
+# elle parle sous son propre nom (« [dbg gitea-pr-comment.sh] »).
 VERDICT="$VERDICT" MAN="$MAN" PLAN_LOG="$PLAN_LOG" GIT_REPO="$GIT_REPO" HEAD_SHA="$GITEA_HEAD_SHA" \
 GIT_WEB_HOST="$GIT_WEB_HOST" PR_BRANCH="$PR_BRANCH" BODY_OUT="$WORK/comment.md" python3 - <<'PY'
 import os

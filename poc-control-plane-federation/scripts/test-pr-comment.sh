@@ -278,6 +278,73 @@ OUT=$(GIT_REPO=ci/stoa-labs GITEA_TOKEN=tok-ok PR_NUMBER=7 GIT_HOST="$GH" COMMEN
 unset PAGE_CAP
 
 echo
+echo "== 13. STOA_DEBUG=1 : la lib parle, sans fuite (plan L2) =="
+# Gabarit D1/D2/D3 (test-vault-user-login.sh) : chaque ABSENCE (« tok-ok n'y est
+# pas ») est DOUBLÉE d'une PRÉSENCE (la ligne attendue y est) — sinon une lib
+# muette passerait toute absence. Flux SÉPARÉS : stdout est le PRODUIT
+# (COMMENT_CREATED <id>, relu par l'appelant) — une ligne de debug qui y
+# descendrait deviendrait une valeur. Le préfixe est le NOM DU SCRIPT ($0) :
+# « [dbg gitea-pr-comment.sh] » ; les lignes HTTP portent « [dbg forge-api.py] ».
+DBGP='[dbg gitea-pr-comment.sh] '
+ligne_exacte(){ grep -qxF -- "${DBGP}$3" "$2" && ok "$1 stderr porte « ] $3 »" || ko "$1 stderr sans « ] $3 » ($(grep -c '\[dbg' "$2") ligne(s) [dbg)"; }
+ligne_motif(){ grep -qE -- "$3" "$2" && ok "$1 stderr porte « $4 »" || ko "$1 stderr sans « $4 » ($(grep -c '\[dbg' "$2") ligne(s) [dbg)"; }
+precede(){ local a b; a=$(grep -nE -m1 -- "$2" "$1" | cut -d: -f1); b=$(grep -nE -m1 -- "$3" "$1" | cut -d: -f1); [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ]; }
+# run13 <stdout> <stderr> [VAR=val…] — la lib, flux séparés ; LIB13 = une copie mutée (13.5)
+run13(){ local so="$1" se="$2"; shift 2; env GIT_REPO=ci/stoa-labs GITEA_TOKEN=tok-ok PR_NUMBER=7 GIT_HOST="$GH" COMMENT_MARKER='<!-- provision-plan -->' COMMENT_BODY_FILE="$TMP/b13.md" "$@" bash "${LIB13:-$LIB}" >"$so" 2>"$se"; }
+startgitea tok-ok
+printf 'corps debug\n' > "$TMP/b13.md"
+run13 "$TMP/d13.so" "$TMP/d13.se" STOA_DEBUG=1; RC=$?
+[ "$RC" -eq 0 ] && [ "$(cat "$TMP/d13.so")" = "COMMENT_CREATED 1" ] && [ "$(count)" = 1 ] \
+  && ok "13.1 création sous STOA_DEBUG=1 ⇒ rc 0, stdout EXACTEMENT « COMMENT_CREATED 1 », un commentaire (le produit ne bouge pas)" \
+  || ko "13.1 rc=$RC stdout=« $(tr '\n' '|' < "$TMP/d13.so" | cut -c1-120) » n=$(count)"
+ligne_exacte 13.1a "$TMP/d13.se" 'FORGE_KIND=gitea'
+ligne_exacte 13.1b "$TMP/d13.se" 'PR_NUMBER=7'
+ligne_exacte 13.1c "$TMP/d13.se" 'COMMENT_MARKER=<!-- provision-plan -->'
+ligne_exacte 13.1d "$TMP/d13.se" 'COMMENT_ONLY_IF_EXISTS=0'
+ligne_motif 13.1e "$TMP/d13.se" '^\[dbg forge-api\.py\] GET [^ ]*/issues/7/comments[^ ]* -> HTTP 200 \([0-9]+ octets\)$' '[dbg forge-api.py] GET …/issues/7/comments… -> HTTP 200 (n octets) — la recherche du marqueur, paginée'
+ligne_motif 13.1f "$TMP/d13.se" '^\[dbg forge-api\.py\] POST [^ ]*/issues/7/comments -> HTTP 201 \([0-9]+ octets\)$' '[dbg forge-api.py] POST …/issues/7/comments -> HTTP 201 (n octets)'
+ligne_exacte 13.1g "$TMP/d13.se" 'CU_ACTION=created'
+ligne_exacte 13.1h "$TMP/d13.se" 'CU_ID=1'
+grep -qF 'tok-ok' "$TMP/d13.so" "$TMP/d13.se" && ko "13.1i le token FUITE : $(grep -hF tok-ok "$TMP/d13.so" "$TMP/d13.se" | head -1 | cut -c1-160)" || ok "13.1i tok-ok absent de stdout ET de stderr"
+
+# 13.2 — la forge qui refuse le token (fixture du §4) : le statut PRÉCÈDE le verdict.
+startgitea autre-token
+run13 "$TMP/d13b.so" "$TMP/d13b.se" STOA_DEBUG=1; RC=$?
+[ "$RC" -ne 0 ] && [ ! -s "$TMP/d13b.so" ] && precede "$TMP/d13b.se" '^\[dbg forge-api\.py\] GET [^ ]*/issues/7/comments[^ ]* -> HTTP 401 ' '^COMMENT_FAILED' \
+  && ok "13.2 forge qui refuse le token sous STOA_DEBUG=1 ⇒ rc $RC, stdout VIDE, « GET … -> HTTP 401 » PRÉCÈDE « COMMENT_FAILED » (le statut d'abord, le verdict ensuite)" \
+  || ko "13.2 rc=$RC : $(grep -nE 'HTTP 401|COMMENT_FAILED' "$TMP/d13b.se" | head -3 | tr '\n' ' ' | cut -c1-200)"
+grep -qF 'tok-ok' "$TMP/d13b.so" "$TMP/d13b.se" && ko "13.2a le token FUITE dans le refus : $(grep -hF tok-ok "$TMP/d13b.se" | head -1 | cut -c1-160)" || ok "13.2a tok-ok absent, refus compris (un secret refusé reste un secret)"
+
+# 13.3 — le silence : STOA_DEBUG=0 ⇒ zéro [dbg, même produit.
+startgitea tok-ok
+run13 "$TMP/d13c.so" "$TMP/d13c.se" STOA_DEBUG=0; RC=$?
+[ "$RC" -eq 0 ] && [ "$(cat "$TMP/d13c.so")" = "COMMENT_CREATED 1" ] && [ "$(cat "$TMP/d13c.so" "$TMP/d13c.se" | grep -c '\[dbg')" = 0 ] \
+  && ok "13.3 STOA_DEBUG=0 ⇒ rc 0, « COMMENT_CREATED 1 », ZÉRO ligne « [dbg » (shell et python muets ensemble)" \
+  || ko "13.3 rc=$RC lignes [dbg=$(cat "$TMP/d13c.so" "$TMP/d13c.se" | grep -c '\[dbg') stdout=« $(head -1 "$TMP/d13c.so") »"
+
+# 13.4 — ONLY_IF_EXISTS sans marqueur : le VIDE se dit (CF_ID=<vide>), c'est pourquoi rien n'est créé.
+startgitea tok-ok
+run13 "$TMP/d13d.so" "$TMP/d13d.se" STOA_DEBUG=1 COMMENT_ONLY_IF_EXISTS=1; RC=$?
+[ "$RC" -eq 0 ] && [ "$(cat "$TMP/d13d.so")" = COMMENT_SKIPPED ] && [ "$(count)" = 0 ] && grep -qxF "${DBGP}COMMENT_ONLY_IF_EXISTS=1" "$TMP/d13d.se" && grep -qxF "${DBGP}CF_ID=<vide>" "$TMP/d13d.se" \
+  && ok "13.4 ONLY_IF_EXISTS sans marqueur sous debug ⇒ COMMENT_SKIPPED inchangé, « ] COMMENT_ONLY_IF_EXISTS=1 » et « ] CF_ID=<vide> » (le vide se DIT : c'est la raison du SKIPPED)" \
+  || ko "13.4 rc=$RC stdout=« $(head -1 "$TMP/d13d.so") » : $(grep -E 'ONLY_IF_EXISTS|CF_ID' "$TMP/d13d.se" | tr '\n' ' ' | cut -c1-160)"
+
+# 13.5 — MUTATION sur COPIE : dbg_kv CU_ACTION → echo (stdout) ⇒ le produit est
+# pollué, 13.1 rougit. La copie vit dans un faux scripts/lib (forge-api liée, ci
+# lié) : elle source ses voisines par $(dirname "${BASH_SOURCE[0]}") — tout
+# résout sans rien poser dans l'arbre. Un mutant identique est un ko.
+MUTL="$TMP/mut/scripts/lib"; mkdir -p "$MUTL"; ln -s "$REPO/scripts/lib/forge-api.sh" "$REPO/scripts/lib/forge-api.py" "$MUTL/"; ln -s "$REPO/ci" "$TMP/mut/ci"
+# shellcheck disable=SC2016  # motif sed : « ${CU_ACTION:-} » est celui du script muté, le mutant l'écrit sur stdout
+sed 's/^dbg_kv CU_ACTION "\${CU_ACTION:-}"$/echo "CU_ACTION=${CU_ACTION:-}"/' "$LIB" > "$MUTL/gitea-pr-comment.sh"
+if ! cmp -s "$LIB" "$MUTL/gitea-pr-comment.sh"; then
+  startgitea tok-ok
+  LIB13="$MUTL/gitea-pr-comment.sh" run13 "$TMP/d13e.so" "$TMP/d13e.se" STOA_DEBUG=1; RC=$?
+  [ "$RC" -eq 0 ] && [ "$(wc -l < "$TMP/d13e.so" | tr -d ' ')" = 2 ] && grep -qx 'CU_ACTION=created' "$TMP/d13e.so" && grep -qx 'COMMENT_CREATED 1' "$TMP/d13e.so" \
+    && ok "13.5 dbg_kv CU_ACTION → echo : rc 0 mais stdout porte DEUX lignes (CU_ACTION=created puis COMMENT_CREATED 1) — 13.1 tient à ce que le debug reste sur stderr" \
+    || ko "13.5 stdout du mutant : $(wc -l < "$TMP/d13e.so" | tr -d ' ') ligne(s) (rc=$RC)"
+else ko "13.5 mutation impossible (motif introuvable) — mutant no-op"; fi
+
+echo
 echo "======================================================================"
 printf 'RÉSULTAT : %d/%d\n' "$PASS" "$((PASS+FAIL))"
 [ "$FAIL" -eq 0 ] || exit 1

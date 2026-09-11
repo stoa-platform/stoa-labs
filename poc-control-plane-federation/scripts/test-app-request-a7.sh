@@ -23,7 +23,8 @@
 #   M   mutations : chaque garde neuve attrape ce qu'elle prétend attraper
 #       (M6 redact du push, M9 DBG_SECRET_FILES, M10 une ligne de debug sur stdout,
 #       M11 l'ordre « masque puis coupe » de dbg_git_err — le secret à cheval sur l'octet 400,
-#       M12/M13 un rc de fetch/clone écrit en dur, M14 « existe=oui » écrit en dur)
+#       M12/M13 un rc de fetch/clone écrit en dur, M14 « existe=oui » écrit en dur,
+#       M15 le relais du whoami de forge_login rendu conditionnel — sur COPIE de la lib)
 # `A && ok || ko` (SC2015) et les `$…` en quotes simples (SC2016) sont l'idiome des suites du repo.
 # shellcheck disable=SC2015,SC2016
 set -uo pipefail
@@ -510,23 +511,14 @@ pres E12.1j "${P}FORGE_LOGIN=alice\$" "] FORGE_LOGIN=alice (forge_login)"
 pres E12.1k "${P}PUSH_LOGIN=alice\$" "] PUSH_LOGIN=alice"
 pres E12.1l "${P}BRANCH=provision/appa-int\$" "] BRANCH=provision/appa-int"
 pres E12.1m "${P}CLONE_URL=file://" "] CLONE_URL=file://… (l'URL composée : c'est elle qu'on diagnostique)"
-# LIMITE MESURÉE (2026-09-10, L2-B1), hors des fichiers de cette tâche : la ligne
-# « [dbg forge-api.py] GET …/user -> HTTP 200 » du whoami est ÉCRITE par python
-# mais forge_login (scripts/lib/forge-identity.sh:126-129) capture le stderr du
-# verbe dans ${tf}.err, l'efface, et ne le relaie que sur rc ≠ 0 : sur SUCCÈS elle
-# est perdue — la classe de défaut que la grammaire L2 §5 nomme pour reconcile,
-# rollback et provision-plan. Elle n'est donc pas assertée ici ; sur le chemin
-# d'ÉCHEC (401) la cause relayée la porte, et E12.2c la prouve. À reprendre par
-# le propriétaire de forge-identity.sh — jamais en assertant l'absence.
-# Tour 3 (2026-09-11) : mesure refaite (journal du stub : un GET /user sous
-# t-alice ; 0 ligne « /user » sur stderr ; forge_login appelée seule, rc 0 sous
-# STOA_DEBUG=1 : stderr vide) et remède ÉPROUVÉ SUR COPIE de l'autorité — le
-# relais de « cause » déplacé AVANT le « if rc ≠ 0 » (succès compris, une ligne) :
-# la suite entière rend 118/119 contre l'arbre (la présence ci-dessous ROUGIT)
-# et 119/119 contre la copie remédiée ; le 401 garde UNE cause avant le refus ;
-# sans STOA_DEBUG, forge_login reste muette (0 octet). Le jour où
-# forge-identity.sh relaie, décommenter la présence — telle quelle :
-# pres "E12.1n'" '^\[dbg forge-api\.py\] GET http://127\.0\.0\.1:[0-9]+/[^ ]+/user -> HTTP 200 \([0-9]+ octets\)$' "[dbg forge-api.py] GET …/user -> HTTP 200 (forge_login : le whoami, relayé succès compris)"
+# Le whoami de forge_login (scripts/lib/forge-identity.sh) : jusqu'au 2026-09-11
+# (L2-B5) la lib capturait le stderr du verbe et ne le relayait que sur rc ≠ 0 —
+# sur SUCCÈS la ligne HTTP était lue, effacée, perdue (mesure L2-B1 : journal du
+# stub users=1, 0 ligne « /user » sur stderr). Relayée succès compris désormais ;
+# M15 rend le relais à nouveau conditionnel (rc ≠ 0 seulement). Le motif écrit
+# « /[^ ]+/user » : un visage GitLab dirait /api/v4/user, la présence ne dépend
+# pas du préfixe d'API.
+pres "E12.1n'" '^\[dbg forge-api\.py\] GET http://127\.0\.0\.1:[0-9]+/[^ ]+/user -> HTTP 200 \([0-9]+ octets\)$' "[dbg forge-api.py] GET …/user -> HTTP 200 (forge_login : le whoami, relayé succès compris)"
 pres E12.1n '^\[dbg forge-api\.py\] GET http://127\.0\.0\.1:[0-9]+/api/v1/repos/ci/stoa-labs/pulls\?[^ ]* -> HTTP 200 \([0-9]+ octets\)$' "[dbg forge-api.py] GET …/pulls?… -> HTTP 200 (pr_find_open)"
 pres E12.1o '^\[dbg forge-api\.py\] POST http://127\.0\.0\.1:[0-9]+/api/v1/repos/ci/stoa-labs/pulls -> HTTP 201 \([0-9]+ octets\)$' "[dbg forge-api.py] POST …/pulls -> HTTP 201 (pr_open)"
 pres E12.1p "${P}git clone --depth 1 -b master file://[^ ]+ -> rc 0\$" "] git clone --depth 1 -b master <url> -> rc 0"
@@ -764,6 +756,33 @@ if [ -n "$M14" ]; then
     || ko "M14 rc $(rrc) : $(grep -nE 'PROV_FILE|PROVIDERS' "$OUT" | head -2 | tr '\n' ' ')"
   reset_int
 else ko "M14 mutant no-op/incompilable"; fi
+# M15 : le relais de forge_login (scripts/lib/forge-identity.sh) REVIENT à ce
+# qu'il était avant L2-B5 — la cause relayée sur rc ≠ 0 SEULEMENT. Sur succès, la
+# ligne « [dbg forge-api.py] GET …/user -> HTTP 200 » que python écrit est lue,
+# effacée, perdue : c'est E12.1n' qui rougit. Mutation sur COPIE de la lib, jamais
+# l'arbre ; mutant() lit $S — pointé sur la lib le temps de l'appel. La copie
+# vit dans un arbre miniature (scripts/lib + ci en liens) : la lib charge sa
+# voisine forge-api.sh par SON répertoire, et forge-api.sh cherche forge-api.py
+# et ../../ci/lib/dbg.sh à côté d'elle — une copie SEULE serait une lib amputée
+# (motif de test-archive-store ⑩). Appelée SEULE comme E0.2 (fi_run, LIB pointée
+# sur la copie), sous STOA_DEBUG=1 : le login est rendu, la ligne HTTP non. Cette
+# ABSENCE est doublée d'une PRÉSENCE sur le même appel — l'ÉTALON, la lib de
+# l'arbre : sans lui, un fi_run qui ne ferait pas parler python (STOA_DEBUG non
+# transmis, stub muet) rendrait le mutant vert pour rien.
+M15=$(S="$LIB" mutant m15 's#^  \[ -z "\$cause" \] \|\| printf#  [ "$rc" -eq 0 ] || [ -z "$cause" ] || printf#')
+if [ -n "$M15" ]; then
+  M15T="$MUT/tree"; mkdir -p "$M15T/scripts/lib"; ln -s "$REPO/ci" "$M15T/ci"
+  ln -s "$REPO/scripts/lib/forge-api.sh" "$REPO/scripts/lib/forge-api.py" "$M15T/scripts/lib/"
+  cp "$M15" "$M15T/scripts/lib/forge-identity.sh"
+  m15_user(){ grep -qE '^\[dbg forge-api\.py\] GET [^ ]+/user -> HTTP 200 \([0-9]+ octets\)$' "$1"; }
+  set_ctl '{}'; printf 't-alice' > "$TMP/tok"
+  L0=$(fi_run STOA_DEBUG=1 -- forge_login "$API" "$TMP/tok" 2>"$TMP/m15.ref"); RC0=$?
+  L=$(LIB="$M15T/scripts/lib/forge-identity.sh" fi_run STOA_DEBUG=1 -- forge_login "$API" "$TMP/tok" 2>"$TMP/m15.err"); RC=$?
+  [ "$RC0" = 0 ] && [ "$L0" = alice ] && m15_user "$TMP/m15.ref" \
+    && [ "$RC" = 0 ] && [ "$L" = alice ] && [ "$(users)" = 2 ] && ! m15_user "$TMP/m15.err" \
+    && ok "M15 relais de forge_login rendu conditionnel (rc ≠ 0 seulement) ⇒ même appel, même stub (deux whoami au journal) : l'étalon porte « GET …/user -> HTTP 200 », le mutant rend alice mais la ligne n'atteint plus stderr (E12.1n' rougit)" \
+    || ko "M15 étalon rc=$RC0 login='$L0' ligne=$(m15_user "$TMP/m15.ref" && echo oui || echo non) ; mutant rc=$RC login='$L' users=$(users) : $(head -c 300 "$TMP/m15.err" | tr '\n' ' ')"
+else ko "M15 mutant no-op/incompilable"; fi
 
 echo
 echo "═══════════════════════════════════════════════════"

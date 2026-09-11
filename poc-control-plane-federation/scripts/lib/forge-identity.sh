@@ -104,7 +104,10 @@ forge_auth_header() {
 #
 # Les refus gardent leurs TAGS (les harnais les grep) ; la CAUSE de forge-api
 # (statut, type, taille, URL, début du corps expurgé) est écrite AVANT, telle
-# quelle : c'est elle que le client doit lire à la place d'une trace.
+# quelle : c'est elle que le client doit lire à la place d'une trace. Sous
+# STOA_DEBUG (L2, 2026-09-11), la ligne « [dbg forge-api.py] GET …/user -> HTTP
+# 200 » du whoami RÉUSSI est relayée elle aussi : ce que forge-api.py écrit sur
+# stderr n'est plus retenu par cette lib, quel que soit le rc.
 #   HTTP 401 ⇒ REFUS: FORGE_TOKEN_INVALIDE (rc 2)
 #   HTTP 403 ⇒ REFUS: FORGE_SCOPE_INSUFFISANT (rc 2)
 #   login hors classe ⇒ REFUS: FORGE_LOGIN_INVALIDE (rc 2) — le contrat d'avant L5
@@ -122,11 +125,27 @@ forge_login() {
   [ -n "$api_base" ] || [ -n "${GIT_HOST:-}" ] || api_base="$api"
   # Le secret par FICHIER (jamais argv) ; la cause éventuelle dans un fichier à
   # côté du token, jamais mêlée au login rendu sur stdout. Le rc est lu AVANT
-  # toute autre commande (pas de `set -e` chez les appelants).
+  # toute autre commande (pas de `set -e` chez les appelants). La capture reste :
+  # c'est dans la cause que le `case` ci-dessous lit le statut (401/403…) pour
+  # NOMMER le refus — pas seulement pour ordonner cause puis tag.
   FORGE_API_BASE="$api_base" FORGE_SECRET_FILE="$tf" forge_kv WHO whoami 2>"${tf}.err"; rc=$?
   cause="$(cat "${tf}.err" 2>/dev/null)"; rm -f "${tf}.err"
+  # Relayée dans TOUS les cas, succès compris (mode debug L2, grammaire §5).
+  # Sur rc 0 le fichier ne porte que ce que forge-api.py écrit sous STOA_DEBUG —
+  # « [dbg forge-api.py] GET …/user -> HTTP 200 (n octets) », déjà masquée par
+  # SON _mask (le secret en usage sous ses formes d'URL, l'userinfo d'un
+  # GIT_HOST) — et rien sans lui : forge-api.py n'écrit sur stderr que par _dbg
+  # et sur ForgeError. Mesuré (L2-B5, 2026-09-11, forge_login seule, HEAD contre
+  # arbre, six chemins × {STOA_DEBUG=1, absent, 0}) : 16 cas sur 17 identiques
+  # à l'octet — rc, stdout, stderr — ; le 17e est celui-ci, rc 0 sous debug, qui
+  # gagne cette seule ligne. Jusque-là elle n'était relayée que sur rc ≠ 0 :
+  # lue, effacée, PERDUE (mesure L2-B1 n°2 — journal du stub users=1, 0 ligne
+  # « /user » sur stderr ; test-app-request-a7 E12.1n', et M15 qui remet le
+  # relais conditionnel). Sur rc ≠ 0 rien ne bouge : la cause sort UNE fois,
+  # AVANT le tag, comme avant. Rien n'est coupé ici, donc rien à masquer avant
+  # une coupe : la ligne part entière, telle que python l'a écrite.
+  [ -z "$cause" ] || printf '%s\n' "$cause" >&2
   if [ "$rc" -ne 0 ]; then
-    [ -z "$cause" ] || printf '%s\n' "$cause" >&2
     case "$rc" in
       2) case "$cause" in
            *"HTTP 401"*) echo "REFUS: FORGE_TOKEN_INVALIDE : la forge refuse ce token (HTTP 401) — token révoqué ou mal collé (cause ci-dessus)" >&2; return 2 ;;

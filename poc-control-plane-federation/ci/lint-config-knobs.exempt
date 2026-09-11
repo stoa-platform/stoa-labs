@@ -168,11 +168,7 @@ scripts/provision-apply-gate.sh:GIT_REPO    # T2 : ci/stoa-labs
 scripts/provision-apply-reconcile.sh:GIT_HOST    # T1 : http://gitea:3000
 scripts/provision-apply-reconcile.sh:GIT_REPO    # T2 : ci/stoa-labs
 
-# ── scripts/provision-plan-status.sh
-scripts/provision-plan-status.sh:GIT_HOST    # T1 : http://gitea:3000
-
 # ── scripts/provision-plan.sh
-scripts/provision-plan.sh:GIT_HOST    # T1 : http://gitea:3000
 scripts/provision-plan.sh:GIT_REPO    # T2 : ci/stoa-labs
 scripts/provision-plan.sh:INVENTORY    # T4 : ansible/inventory.lab.ini
 
@@ -344,4 +340,20 @@ ci/Jenkinsfile.rollback:OPENSEARCH_URL    # T1 : https://opensearch:9200
 ci/Jenkinsfile.rollback:OPENSEARCH_USER    # T2 : admin
 ci/Jenkinsfile.rollback:OTEL_EXPORTER_OTLP_ENDPOINT    # T1 : http://otel-lgtm:4318
 ci/Jenkinsfile.rollback:VAULT_ADDR    # T1 : http://vault:8200
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AJOUT DU 2026-09-11 (L2, retrait du défaut GIT_HOST de provision-plan-status.sh),
+# même explication que ci-dessus : la dette ne grandit pas, elle devient MESURÉE.
+#
+# Cette valeur n'est pas nouvelle : elle partageait la ligne de GIT_HOST
+# (`GIT_HOST="${GIT_HOST:-…}"; GIT_REPO="${GIT_REPO:-ci/stoa-labs}"`) et la porte
+# n'examine qu'UN défaut par ligne (le premier qui correspond) — GIT_HOST la
+# masquait. GIT_HOST devenu REQUIS (`${GIT_HOST:?…}`), GIT_REPO est le premier
+# défaut de la ligne : la porte le voit enfin. Il est du même rang que
+# scripts/provision-plan.sh:GIT_REPO, exempté depuis la pose ; il tombera avec
+# lui (le lot qui retire GIT_REPO de la chaîne app-request).
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── scripts/provision-plan-status.sh
+scripts/provision-plan-status.sh:GIT_REPO    # T2 : ci/stoa-labs
 

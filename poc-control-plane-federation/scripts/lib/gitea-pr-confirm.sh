@@ -48,9 +48,26 @@
 # transmise chez un client, et la panne sortait plus loin sous un autre nom),
 # GIT_REPO (REQUIS, owner/repo), FORGE_SECRET (requis ; alias historique
 # GITEA_TOKEN), FORGE_KIND (gitea par défaut, ou gitlab).
+# STOA_DEBUG (L2, 2026-09-11) : sous ce mode, UNE ligne de debug après la
+# relecture — « PR #n relue : state=… head=… sha=… base=… same_repo=… (attendu
+# head=… base=…) », sur stderr, rédigée par ci/lib/dbg.sh, sous le nom du
+# script qui source cette lib — c'est la ligne que le client lira quand
+# FORGE_NON_CONFIRMEE tombe (test-a0-wiring §9 (c ter).1k, .2a). Les verdicts,
+# leurs tags et leur ordre ne changent pas ; stdout (CLÉ=VALEUR) non plus.
 
 # shellcheck source=scripts/lib/forge-api.sh
 . "$(dirname "${BASH_SOURCE[0]}")/forge-api.sh" || { echo "ERREUR: scripts/lib/forge-api.sh introuvable a cote de gitea-pr-confirm.sh" >&2; return 1; }
+# ci/lib/dbg.sh : le répertoire de CE fichier puis ../../ci/lib (le `..` est
+# résolu par le noyau derrière un lien symbolique), repli $PWD/ci/lib. Sourcée
+# ici même si forge-api.sh la porte déjà : une lib ne dépend pas d'un import
+# transitif pour se dire. Absente ⇒ ERREUR nommée et return 1, comme toute lib
+# manquante — jamais une lib qui marcherait sans pouvoir se dire.
+_PC_DBG="$(dirname "${BASH_SOURCE[0]}")/../../ci/lib/dbg.sh"
+[ -f "$_PC_DBG" ] || _PC_DBG="$PWD/ci/lib/dbg.sh"
+[ -f "$_PC_DBG" ] \
+  || { echo "ERREUR: ci/lib/dbg.sh introuvable (cherché : $(dirname "${BASH_SOURCE[0]}")/../../ci/lib/dbg.sh, $PWD/ci/lib/dbg.sh)" >&2; return 1; }
+# shellcheck source=ci/lib/dbg.sh
+. "$_PC_DBG"
 
 gitea_pr_confirm(){
   local n="${1:-}" want_head="${2:-}" want_base="${3:-}"
@@ -76,6 +93,11 @@ gitea_pr_confirm(){
   # forge_kv les pose ici (portée dynamique), rien ne fuit chez l'appelant.
   local PC_STATE="" PC_HEAD_REF="" PC_HEAD_SHA="" PC_BASE_REF="" PC_SAME_REPO=""
   forge_kv PC pr_get "$n" || { echo "FORGE_NON_CONFIRMEE : la forge n'a pas rendu la PR #${n} (cause ci-dessus)" >&2; return 1; }
+  # Ce que la forge a rendu, en UNE ligne, AVANT les verdicts, avec ce qui était
+  # attendu : un refus qui suit se lit avec ses données. Des valeurs de forge,
+  # jamais un secret ; forge-api refuse de rendre un retour-ligne. dbg rend le
+  # rc reçu : rien ne change pour l'appelant.
+  dbg "PR #${n} relue : state=${PC_STATE} head=${PC_HEAD_REF} sha=${PC_HEAD_SHA} base=${PC_BASE_REF} same_repo=${PC_SAME_REPO} (attendu head=${want_head} base=${want_base})"
 
   # Les MÊMES verdicts qu'avant le routage, dans le même ordre.
   [ -n "$PC_STATE" ]    || { echo "FORGE_NON_CONFIRMEE : champ state absent de la PR #${n}" >&2; return 1; }

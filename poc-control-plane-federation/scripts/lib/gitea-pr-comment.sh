@@ -43,6 +43,11 @@
 #                 GIT_HOST et FORGE_KIND — ou de FORGE_API_BASE pour un
 #                 reverse-proxy qui déplace /api. Un appelant qui la pose encore
 #                 n'est pas en faute : elle est ignorée.
+#   STOA_DEBUG    mode debug SANS FUITE (ci/lib/dbg.sh, L2 2026-09-11) : ce que
+#                 ce script DÉCIDE (PR_NUMBER, COMMENT_MARKER, ONLY_IF_EXISTS,
+#                 CF_ID, CU_ACTION/CU_ID) sur STDERR seulement, rédigé — jamais
+#                 le secret, jamais stdout (le produit ci-dessous ne bouge pas).
+#                 Preuve : scripts/test-pr-comment.sh §13.
 #
 # Sortie : "COMMENT_UPDATED <id>", "COMMENT_CREATED <id>" ou "COMMENT_SKIPPED".
 # Échec = rc 1 et `COMMENT_FAILED : … (cause ci-dessus)` sur stderr : la CAUSE
@@ -55,6 +60,21 @@
 set -uo pipefail
 set +x
 
+# L2 : le MODE DEBUG SANS FUITE. dbg_kv de ci/lib/dbg.sh est la seule voie de
+# sortie (stderr seulement, rédigé, `$?` préservé) — jamais `set -x`. Même
+# localisation que forge-api.sh (à côté de ce fichier puis ../../ci/lib, repli
+# $PWD/ci/lib) ; absente ⇒ COMMENT_FAILED nommé, rc 1 — le contrat de ce script
+# (« Échec = rc 1 et COMMENT_FAILED : … »), le même régime que forge-api.sh
+# manquante. dbg_init normalise et EXPORTE STOA_DEBUG pour forge-api.py. Pas de
+# DBG_NAME : le préfixe est le nom de CE script.
+_CM_DBG="$(dirname "${BASH_SOURCE[0]}")/../../ci/lib/dbg.sh"
+[ -f "$_CM_DBG" ] || _CM_DBG="$PWD/ci/lib/dbg.sh"
+[ -f "$_CM_DBG" ] \
+  || { echo "COMMENT_FAILED : ci/lib/dbg.sh introuvable (cherche : $(dirname "${BASH_SOURCE[0]}")/../../ci/lib/dbg.sh, $PWD/ci/lib/dbg.sh)" >&2; exit 1; }
+# shellcheck source=ci/lib/dbg.sh
+. "$_CM_DBG"
+dbg_init
+
 GIT_REPO="${GIT_REPO:?GIT_REPO requis}"
 FORGE_SECRET="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
 [ -n "$FORGE_SECRET" ] || { echo "REFUS: SECRET_FORGE_REQUIS : ni FORGE_SECRET ni son alias GITEA_TOKEN" >&2; exit 2; }
@@ -62,6 +82,11 @@ PR_NUMBER="${PR_NUMBER:?PR_NUMBER requis}"
 COMMENT_MARKER="${COMMENT_MARKER:?COMMENT_MARKER requis}"
 COMMENT_BODY_FILE="${COMMENT_BODY_FILE:?COMMENT_BODY_FILE requis}"
 COMMENT_ONLY_IF_EXISTS="${COMMENT_ONLY_IF_EXISTS:-0}"
+# Ce que ce script a DÉCIDÉ, juste après la décision (stderr, rédigé) : la PR
+# visée, la clé d'idempotence, le mode — jamais le corps (il est sur la PR).
+dbg_kv PR_NUMBER "$PR_NUMBER"
+dbg_kv COMMENT_MARKER "$COMMENT_MARKER"
+dbg_kv COMMENT_ONLY_IF_EXISTS "$COMMENT_ONLY_IF_EXISTS"
 
 [ -f "$COMMENT_BODY_FILE" ] || { echo "COMMENT_BODY_FILE introuvable : $COMMENT_BODY_FILE" >&2; exit 1; }
 
@@ -80,6 +105,7 @@ forge_api_init || { echo "COMMENT_FAILED : forge non initialisee (cause ci-dessu
 if [ "$COMMENT_ONLY_IF_EXISTS" = 1 ]; then
   forge_kv CF comment_find "$PR_NUMBER" "$COMMENT_MARKER" \
     || { echo "COMMENT_FAILED : recherche du marqueur sur la PR #${PR_NUMBER} (cause ci-dessus)" >&2; exit 1; }
+  dbg_kv CF_ID "${CF_ID:-}"   # vide ⇒ « <vide> » : aucun commentaire sous ce marqueur — c'est la raison du SKIPPED
   if [ -z "${CF_ID:-}" ]; then
     echo "COMMENT_SKIPPED"
     exit 0
@@ -88,6 +114,10 @@ fi
 
 forge_kv CU comment_upsert "$PR_NUMBER" "$COMMENT_MARKER" "$COMMENT_BODY_FILE" \
   || { echo "COMMENT_FAILED : ecriture du commentaire sur la PR #${PR_NUMBER} (cause ci-dessus)" >&2; exit 1; }
+# Ce que forge-api a fait (created|updated) et sur quel identifiant, AVANT le
+# produit qui le redit sur stdout : un ACTION inattendu se lit ici avant le refus.
+dbg_kv CU_ACTION "${CU_ACTION:-}"
+dbg_kv CU_ID "${CU_ID:-}"
 case "${CU_ACTION:-}" in
   updated) echo "COMMENT_UPDATED ${CU_ID:-}" ;;
   created) echo "COMMENT_CREATED ${CU_ID:-}" ;;
