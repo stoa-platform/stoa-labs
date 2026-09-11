@@ -76,6 +76,13 @@ pipeline {
     // nomme. « . » = le livrable EST la racine (une valeur VIDE ne traverse pas
     // Jenkins : elle arrive absente et reprendrait ce défaut).
     GIT_SUBDIR           = "${env.GIT_SUBDIR ?: 'poc-control-plane-federation'}"
+    // Le RÉCEPTEUR de webhooks de CE Jenkins (L6) : sous gwt, ce job garde son
+    // hook direct PLAN (la gateway wM le sonne avec {"manifest":…}, lu par le
+    // generic-webhook-trigger) ; sous gitlab il n'en a AUCUN — le GitLab Plugin
+    // ne lit pas ce JSON, et ce job n'est alors atteint que par le
+    // `build job:` de provision-apply. Le symbole absent n'est jamais invoqué
+    // (mesuré : scripts/spike-webhook-kind-m1.sh).
+    WEBHOOK_KIND      = "${env.WEBHOOK_KIND ?: 'gwt'}"
     VAULT_ADDR        = "${env.VAULT_ADDR ?: 'http://vault:8200'}"
     // Mount de l'auth user/password : `ldap` chez le client (AD ; peut s'appeler
     // ad, ldap-corp…), `userpass` en lab. MÊME requête REST — seul ce mount change.
@@ -179,13 +186,19 @@ pipeline {
           if (envs.isEmpty() || !envs.every { it ==~ /[a-z0-9]+/ }) {
             error("FORMULAIRE_INVALIDE : paliers dérivés = ${envs} — rien n'est posé, le formulaire précédent reste en place.")
           }
+          def hook = env.WEBHOOK_KIND
+          if (hook != 'gwt' && hook != 'gitlab') {
+            error("REFUS: WEBHOOK_KIND_INVALIDE : '${hook}' — attendu gwt|gitlab (globale Jenkins WEBHOOK_KIND, scripts/setup-jenkins-globals.sh). Rien n'est posé, le formulaire précédent reste en place.")
+          }
+          // PLAN par webhook, sous gwt SEULEMENT : le GWT contribue MANIFEST
+          // (même token que la coquille d'avant A0 ; le XML n'en porte plus —
+          // fait 10). Sous gitlab la liste est VIDE : aucun hook direct.
+          def hooks = (hook == 'gwt') ? [GenericTrigger(token: 'stoa-selfservice-plan',
+              genericVariables: [[key: 'MANIFEST', value: '$.manifest']],
+              printContributedVariables: false, printPostContent: false)] : []
           properties([
             disableConcurrentBuilds(),   // un apply à la fois = régime bancaire
-            // PLAN par webhook : le GWT contribue MANIFEST (même token que la
-            // coquille d'avant A0 ; le XML n'en porte plus — fait 10).
-            pipelineTriggers([GenericTrigger(token: 'stoa-selfservice-plan',
-              genericVariables: [[key: 'MANIFEST', value: '$.manifest']],
-              printContributedVariables: false, printPostContent: false)]),
+            pipelineTriggers(hooks),
             parameters([
             string(name: 'MANIFEST', defaultValue: '',
                    description: "Manifeste de demande (vars du rôle : apim_ss_app)."),

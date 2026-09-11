@@ -39,7 +39,7 @@ ko(){ FAIL=$((FAIL+1)); printf '  ❌ %s\n' "$*"; }
 
 # Total ATTENDU, ÉCRIT EN DUR — indépendant de PASS+FAIL. Toute section
 # ajoutée/retirée DOIT le mettre à jour : un oubli fait rougir le dernier §.
-EXPECTED_CHECKS=211
+EXPECTED_CHECKS=212
 
 # shellcheck source=scripts/lib/gwt-mirror.sh
 . scripts/lib/gwt-mirror.sh || { echo "lib gwt-mirror.sh introuvable"; exit 2; }
@@ -1030,7 +1030,20 @@ L_GARDE=$(code_line "$TMP/jsf.code" "MOT_DE_PASSE_ALTERE"); L_BRUT=$(code_line "
 jss '"DEBUG=${params.DEBUG ?: false}"' && ok "DEBUG=\${params.DEBUG ?: false} (jamais la chaîne « null » sur un job non matérialisé)" || ko "DEBUG sans repli"
 jss '"MANIFEST=${params.MANIFEST ?: (env.MANIFEST ?: '"''"')}"' && ok "MANIFEST retombe sur env.MANIFEST (valeur GWT) quand le paramètre n'est pas matérialisé : un PLAN par webhook ne tourne jamais sur le manifeste par défaut" || ko "MANIFEST sans repli env.MANIFEST"
 if grep -qE '^  (options|triggers) \{' "$TMP/jsf.code"; then ko "options{}/triggers{} déclaratifs présents — fait 10 : PERDUS au premier build d'un job re-posé"; else ok "aucun options{}/triggers{} déclaratif (fait 10)"; fi
-jss 'disableConcurrentBuilds(),' && jss "pipelineTriggers([GenericTrigger(token: 'stoa-selfservice-plan'," && ok "properties() pose AUSSI disableConcurrentBuilds et le trigger PLAN (stoa-selfservice-plan) — les trois propriétés en un seul pas (fait 10)" || ko "trigger/option absents de properties()"
+# L6 (2026-09-11) : ce hook DIRECT n'est pas un hook de forge — la gateway wM le
+# sonne (setup-provisioning-api.sh) et provision-apply atteint ce job par
+# `build job:`. Mais il dépend du MÊME plugin : sur un site sans lui, ce
+# properties() mourait « No such DSL method » (mesuré M1). Il n'est donc posé
+# que sous WEBHOOK_KIND=gwt ; sous gitlab, ce job n'a AUCUN hook direct.
+jss 'disableConcurrentBuilds(),' && jss "pipelineTriggers(hooks)," \
+  && jss "def hooks = (hook == 'gwt') ? [GenericTrigger(token: 'stoa-selfservice-plan'," \
+  && jss "WEBHOOK_KIND      = \"\${env.WEBHOOK_KIND ?: 'gwt'}\"" \
+  && ok "properties() pose disableConcurrentBuilds et le trigger PLAN (stoa-selfservice-plan) SOUS gwt SEULEMENT — sous gitlab, aucun hook direct (le GitLab Plugin ne lit pas ce JSON)" \
+  || ko "trigger/option/knob absents de properties() (L6)"
+L_HK=$(code_line "$TMP/jsf.code" 'error("REFUS: WEBHOOK_KIND_INVALIDE'); L_PR=$(code_line "$TMP/jsf.code" 'properties([')
+[ -n "$L_HK" ] && [ -n "$L_PR" ] && [ "$L_HK" -lt "$L_PR" ] \
+  && ok "le refus WEBHOOK_KIND_INVALIDE (ligne $L_HK) précède properties() (ligne $L_PR) : sur un knob inconnu, RIEN n'est posé et le formulaire précédent reste" \
+  || ko "refus du knob absent ou après properties() (refus=$L_HK properties=$L_PR)"
 # ── le poseur ──
 printf 'environments: [alpha, beta, gamma, delta, eps, zeta]\n' > "$TMP/chain10.yaml"
 STOA_ENV_CHAIN_FILE="$TMP/chain10.yaml" GIT_BASE=master bash "$SSJ" --print > "$TMP/ss-no.xml" 2>"$TMP/ss.err"; RC=$?
@@ -1053,7 +1066,7 @@ r = T.fromstring(sys.stdin.read())
 for p in r.iter():
     if p.tag.endswith('ChoiceParameterDefinition') and p.findtext('name') == 'ENVIRONMENT': print(' '.join(s.text or '' for s in p.iter('string')))")
 [ "$ENVM" = "alpha beta gamma delta eps" ] && ok "mutation env_chain→env_chain_nonprod dans le poseur ⇒ le TERMINUS disparaît (zeta) : la dérivation est bien ce qui l'inclut (A7)" || ko "mutation du poseur sans effet : [$ENVM]"
-grep -vE '^\s*#' "$SSJ" | grep -q 'BUILD_EP="build"' && grep -vE '^\s*#' "$SSJ" | grep -q "ParametersDefinitionProperty'))" && grep -q 'BOOTSTRAP_WAIT="${BOOTSTRAP_WAIT:-360}"' "$SSJ" && grep -vE '^\s*#' "$SSJ" | grep -q 'attendu UN trigger $TRIGGER_TOKEN et UNE option' \
+grep -vE '^\s*#' "$SSJ" | grep -q 'BUILD_EP="build"' && grep -vE '^\s*#' "$SSJ" | grep -q "ParametersDefinitionProperty'))" && grep -q 'BOOTSTRAP_WAIT="${BOOTSTRAP_WAIT:-360}"' "$SSJ" && grep -vE '^\s*#' "$SSJ" | grep -q 'attendu trigger=\[$WANT_TRIG\]' \
   && ok "poseur : amorçage POST /build en mode no, relecture « UNE propriété + trigger + option posés par le build » (faits 6/10), BOOTSTRAP_WAIT 360 s" || ko "poseur : amorçage/relecture/attente non câblés"
 printf 'environments: [alpha, Beta, gamma]\n' > "$TMP/chain10b.yaml"
 OUTB=$(STOA_ENV_CHAIN_FILE="$TMP/chain10b.yaml" JOB=publish-api-deploy SCRIPT_PATH=poc-control-plane-federation/ci/Jenkinsfile.publish-api GIT_BASE=master bash "$SSJ" --print 2>"$TMP/ss.err"); RC=$?

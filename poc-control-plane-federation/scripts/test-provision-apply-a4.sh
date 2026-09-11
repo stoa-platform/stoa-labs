@@ -483,10 +483,11 @@ if mut_jf noami; then
   grep -q -- '--allow-self-approval' "$TMP/frag.log" && bad "B.M4 mutation inopérante (le drapeau passe encore)" || ok "B.M4 \$AMI retiré de la garde ⇒ le fragment EXÉCUTÉ ne porte plus le drapeau (B.7a verrait rouge)"
 fi
 echo "── B.12 la suite de câblage A2 rejouée sans modifier ses assertions ──"
-# 152 depuis L3 (2026-09-10) : la suite A2 a gagné deux contrôles sur la
-# RÉSOLUTION de la branche de base de l'aval (elle n'est plus un littéral).
-bash scripts/test-provision-apply-wiring.sh > "$TMP/wiring.log" 2>&1 && grep -q 'RÉSULTAT : 152/152' "$TMP/wiring.log" \
-  && ok "B.12 test-provision-apply-wiring.sh 152/152" || bad "B.12 test-provision-apply-wiring.sh : $(tail -1 "$TMP/wiring.log")"
+# 148 depuis L6 (2026-09-11) : le XML de l'apply ne porte plus aucune propriété
+# (le Jenkinsfile pose seul son déclencheur), la suite A2 a donc perdu les
+# quatre contrôles du miroir XML — elle en garde un : « aucune clé dans le XML ».
+bash scripts/test-provision-apply-wiring.sh > "$TMP/wiring.log" 2>&1 && grep -q 'RÉSULTAT : 148/148' "$TMP/wiring.log" \
+  && ok "B.12 test-provision-apply-wiring.sh 148/148" || bad "B.12 test-provision-apply-wiring.sh : $(tail -1 "$TMP/wiring.log")"
 
 echo
 echo "═══ C. le câblage de ci/Jenkinsfile.selfservice : REFUS_OUT, chaîne épinglée, purges absolues, post{always} ═══"

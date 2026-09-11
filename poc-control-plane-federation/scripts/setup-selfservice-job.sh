@@ -372,10 +372,18 @@ for p in r.iter():
   [ "$GOT" = "$WANT" ] || fail "ENVIRONMENT pose par le build = [$GOT], chaine locale = [$WANT] — le build derive la liste de la branche ${BRANCH} sur gitea : pousser le depot, ou relire apres le prochain build"
   TRIG=$(python3 -c "import sys,xml.etree.ElementTree as T; r=T.parse(sys.argv[1]).getroot(); print(','.join(t.findtext('token') or '' for t in r.iter() if t.tag.endswith('GenericTrigger')))" "$XML.relu")
   NDIS=$(python3 -c "import sys,xml.etree.ElementTree as T; r=T.parse(sys.argv[1]).getroot(); print(sum(1 for e in r.iter() if e.tag.endswith('DisableConcurrentBuildsJobProperty')))" "$XML.relu")
-  [ "$TRIG" = "$TRIGGER_TOKEN" ] && [ "$NDIS" = 1 ] || fail "apres l'amorcage : trigger=[$TRIG] disableConcurrentBuilds=$NDIS — attendu UN trigger $TRIGGER_TOKEN et UNE option, poses par properties() (fait 10)"
-  say "relecture : 1 propriete de parametres, trigger $TRIGGER_TOKEN + disableConcurrentBuilds poses par le Jenkinsfile, ENVIRONMENT == env_chain [$GOT]"
+  # L6 (2026-09-11) : sous WEBHOOK_KIND=gitlab le Jenkinsfile ne pose AUCUN hook
+  # direct (le GitLab Plugin ne lit pas le JSON de la gateway wM) — l'attendu
+  # devient « aucun trigger », et le job n'est plus atteint que par `build job:`.
+  WANT_TRIG="$TRIGGER_TOKEN"; [ "${WEBHOOK_KIND:-gwt}" = gitlab ] && WANT_TRIG=""
+  [ "$TRIG" = "$WANT_TRIG" ] && [ "$NDIS" = 1 ] || fail "apres l'amorcage : trigger=[$TRIG] disableConcurrentBuilds=$NDIS — attendu trigger=[$WANT_TRIG] (WEBHOOK_KIND=${WEBHOOK_KIND:-gwt}) et UNE option, poses par properties() (fait 10)"
+  say "relecture : 1 propriete de parametres, trigger [$WANT_TRIG] + disableConcurrentBuilds poses par le Jenkinsfile (WEBHOOK_KIND=${WEBHOOK_KIND:-gwt}), ENVIRONMENT == env_chain [$GOT]"
 else
   say "relecture : 1 propriete de parametres (XML_PARAMS=yes)"
 fi
-say "OK — webhook PLAN : POST $JENKINS/generic-webhook-trigger/invoke?token=$TRIGGER_TOKEN  body {\"manifest\":\"<chemin>\"}"
+if [ "${WANT_TRIG:-$TRIGGER_TOKEN}" = "" ]; then
+  say "OK — AUCUN hook direct (WEBHOOK_KIND=gitlab) : ce job n'est atteint que par \`build job:\` depuis provision-apply"
+else
+  say "OK — webhook PLAN : POST $JENKINS/generic-webhook-trigger/invoke?token=$TRIGGER_TOKEN  body {\"manifest\":\"<chemin>\"}"
+fi
 say "     APPLY manuel : $JENKINS/job/$JOB/build?delay=0sec (fournir USER_VAULT_JWT via scripts/mint-selfservice-jwt.sh)"
