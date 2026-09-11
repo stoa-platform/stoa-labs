@@ -932,7 +932,7 @@ STOA_ENV_CHAIN_FILE="$TMP/chain10.yaml" GIT_BASE=master bash "$SSJ" --print > "$
 NP=$(python3 -c "import sys,xml.etree.ElementTree as T; r=T.parse(sys.argv[1]).getroot(); print(sum(1 for e in r.iter() if e.tag.endswith('ParameterDefinition')), sum(1 for e in r.iter() if e.tag.endswith('ParametersDefinitionProperty')), sum(1 for e in r.iter() if e.tag.endswith('GenericTrigger')), sum(1 for e in r.iter() if e.tag.endswith('DisableConcurrentBuildsJobProperty')))" "$TMP/ss-no.xml" 2>/dev/null)
 [ "$RC" -eq 0 ] && [ "$NP" = "0 0 0 0" ] && grep -q '<scriptPath>poc-control-plane-federation/ci/Jenkinsfile.selfservice</scriptPath>' "$TMP/ss-no.xml" \
   && ok "setup-selfservice-job.sh --print (auto ⇒ XML_PARAMS=no) : AUCUNE propriété — ni paramètre, ni trigger, ni option (faits 6 et 10 : ni doublon, ni perte)" || ko "--print mode no : rc=$RC params/prop/trig/dis=$NP $(tail -2 "$TMP/ss.err")"
-OUT=$(gwt_mirror_diff "$TMP/ss-no.xml" "$JSF" 2>&1); RC=$?; [ "$RC" -eq 2 ] && [ "$OUT" = "DIVERGENCE trigger xml=absent jenkinsfile=present" ] && ok "miroir : le trigger PLAN n'est QUE dans le Jenkinsfile (xml=absent jenkinsfile=present) — l'état voulu pour ce job (fait 10), pas une divergence" || ko "miroir XML rendu / Jenkinsfile.selfservice : $OUT (rc=$RC)"
+OUT=$(gwt_mirror_diff "$TMP/ss-no.xml" "$JSF" 2>&1); RC=$?; [ "$RC" -eq 2 ] && [ "$OUT" = "DIVERGENCE trigger xml=absent jenkinsfile=present token=stoa-selfservice-plan vars=1" ] && ok "miroir : le trigger PLAN n'est QUE dans le Jenkinsfile (xml=absent jenkinsfile=present) — l'état voulu pour ce job (fait 10), pas une divergence" || ko "miroir XML rendu / Jenkinsfile.selfservice : $OUT (rc=$RC)"
 STOA_ENV_CHAIN_FILE="$TMP/chain10.yaml" JOB=publish-api-deploy TRIGGER_TOKEN=stoa-publish-api-plan SCRIPT_PATH=poc-control-plane-federation/ci/Jenkinsfile.publish-api GIT_BASE=master bash "$SSJ" --print > "$TMP/ss-yes.xml" 2>"$TMP/ss.err"; RC=$?
 ENVX=$(python3 -c "
 import sys, xml.etree.ElementTree as T
@@ -968,9 +968,9 @@ for el in list(p):
 t.write(sys.argv[2], encoding='unicode')
 PY
 OUT=$(gwt_mirror_diff "$TMP/pa-sans-triggers.xml" ci/Jenkinsfile.provision-apply 2>&1); RC=$?
-[ "$RC" -eq 2 ] && printf '%s' "$OUT" | grep -q '^DIVERGENCE trigger xml=absent jenkinsfile=present' \
-  && ok "XML sans <triggers> ⇒ rc 2 « DIVERGENCE trigger xml=absent » (le webhook serait borgne dès la pose)" \
-  || ko "XML sans <triggers> non détecté (rc=$RC : $OUT)"
+[ "$RC" -eq 2 ] && [ "$OUT" = "DIVERGENCE trigger xml=absent jenkinsfile=present token=stoa-provision-apply vars=14" ] \
+  && ok "XML sans <triggers> ⇒ rc 2 « DIVERGENCE trigger xml=absent jenkinsfile=present token=… vars=14 » : le côté PRÉSENT est compté (L6 — c'est l'état voulu de ce job, pas une avarie)" \
+  || ko "XML sans <triggers> : sortie inattendue (rc=$RC : $OUT)"
 # (b) token altéré dans le XML ⇒ rc 1, champ nommé.
 sed 's#<token>stoa-provision-apply</token>#<token>stoa-provision-apply-MUTE</token>#' ci/jenkins/provision-apply.job.xml > "$TMP/pa-token.xml"
 OUT=$(gwt_mirror_diff "$TMP/pa-token.xml" ci/Jenkinsfile.provision-apply 2>&1); RC=$?

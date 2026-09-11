@@ -2,13 +2,24 @@
 # scripts/lib/gwt-mirror.sh — LE MIROIR XML / Jenkinsfile d'un déclencheur
 # GenericTrigger (plugin generic-webhook-trigger). À SOURCER, jamais exécuté seul.
 #
-# POURQUOI CETTE LIB EXISTE. Sur un job « Pipeline from SCM », le bloc
-# `triggers { GenericTrigger(...) }` du Jenkinsfile et le bloc <triggers> du
+# POURQUOI CETTE LIB EXISTE. Sur un job « Pipeline from SCM », un bloc
+# `triggers { GenericTrigger(...) }` DÉCLARATIF et le bloc <triggers> du
 # config.xml décrivent le MÊME déclencheur — et c'est le XML qui GAGNE :
 # Declarative ne remplace que les déclencheurs qu'il a lui-même posés
 # (DeclarativeJobPropertyTrackerAction), un déclencheur venu d'un config.xml
-# est préservé tel quel, indéfiniment (mesuré sur le lab le 2026-08-06, re-mesuré
-# le 2026-09-02 : un `properties()` scripté le préserve aussi). Une divergence
+# est préservé tel quel, indéfiniment (mesuré sur le lab le 2026-08-06).
+#
+# ⚠ CE N'EST PAS VRAI d'un `properties([pipelineTriggers([...])])` SCRIPTÉ, et
+# l'entête de ce fichier l'a affirmé à tort jusqu'au 2026-09-11 : le step AJOUTE
+# sa propriété sans dédoublonner (DOUBLON au build 1), puis retire les DEUX
+# exemplaires et repose le sien (build 2) — le déclencheur du XML est PERDU,
+# jamais « préservé » (fait 10 du 2026-09-02, re-mesuré le 2026-09-11 :
+# scripts/spike-webhook-kind-m2m4.sh, [2 2] puis [1 1]).
+# C'est pourquoi, depuis L6, provision-plan, provision-apply et selfservice
+# posent SEULS leur déclencheur et leurs XML ne portent AUCUNE propriété. Pour
+# ces jobs la sortie attendue est « DIVERGENCE trigger xml=absent
+# jenkinsfile=present token=… vars=N » (rc 2) : c'est l'état VOULU, et c'est le
+# côté Jenkinsfile que les suites lisent. Une divergence
 # entre les deux fichiers est donc SILENCIEUSE : le Jenkinsfile dit une chose,
 # le job en fait une autre. Jusqu'à A0, chaque test de câblage re-écrivait sa
 # propre comparaison (test-team-publish-wiring.sh §3, test-provision-apply-
@@ -93,8 +104,13 @@ if m:
 if xml_side is None and jf_side is None:
     print("AUCUN_TRIGGER"); sys.exit(0)
 if (xml_side is None) != (jf_side is None):
-    print("DIVERGENCE trigger xml=%s jenkinsfile=%s" % (
-        'present' if xml_side else 'absent', 'present' if jf_side else 'absent'))
+    # Le côté PRÉSENT est COMPTÉ (token, nombre de clés). Depuis L6 c'est l'état
+    # VOULU des jobs dont le Jenkinsfile pose seul son déclencheur (XML vide) :
+    # les suites vérifient alors ce qu'il déclare, sans XML à lui opposer.
+    side = jf_side if jf_side is not None else xml_side
+    print("DIVERGENCE trigger xml=%s jenkinsfile=%s token=%s vars=%d" % (
+        'present' if xml_side else 'absent', 'present' if jf_side else 'absent',
+        side['token'], len(side['vars'])))
     sys.exit(2)
 rc = 0
 for f in FIELDS:
