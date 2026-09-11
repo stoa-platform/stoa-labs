@@ -544,7 +544,12 @@ L_LOGIN=$(code_line "$TMP/jf.code" 'RC=0; vault_login_nominative || RC=$?')
 # vit dans l'arbre PINNÉ que cette garde existe justement pour ne pas croire.
 L_BASE=$(line_after "${L_LOGIN:-0}" 'BASE=$(git ls-remote --symref origin HEAD' "$TMP/jf.code")
 L_FETCH=$(line_after "${L_LOGIN:-0}" 'git fetch -q origin "$BASE"' "$TMP/jf.code")
-L_FOR=$(line_after "${L_LOGIN:-0}" 'for f in scripts/selfservice-palier-gate.sh scripts/lib/env-chain.sh scripts/lib/vault-kv.sh clients/_example/environments.yaml; do' "$TMP/jf.code")
+# La boucle d'extraction est retrouvée par sa TÊTE (la garde en premier), plus
+# par la liste en dur : épingler la liste, c'est affirmer la liste périmée — et
+# c'est exactement ce que B.7 faisait pendant que les apply réels mouraient.
+# La liste extraite est relue (un fichier par ligne) pour B.7 et B.7bis.
+L_FOR=$(line_after "${L_LOGIN:-0}" 'for f in scripts/selfservice-palier-gate.sh ' "$TMP/jf.code")
+awk -v s="${L_FOR:-0}" 'NR==s' "$TMP/jf.code" | sed -E 's/^[[:space:]]*for f in (.*); do[[:space:]]*$/\1/' | tr ' ' '\n' | grep -v '^$' > "$TMP/jf.for-files"
 L_SHOW=$(line_after "${L_LOGIN:-0}" 'git show "origin/${BASE}:${PFX}${f}"' "$TMP/jf.code")
 L_ABS=$(line_after "${L_LOGIN:-0}" 'REFUS: GATE_ABSENTE' "$TMP/jf.code")
 L_GATE=$(line_after "${L_LOGIN:-0}" 'bash "$GATE_DIR/scripts/selfservice-palier-gate.sh"' "$TMP/jf.code")
@@ -578,7 +583,25 @@ ordre_verdict(){ # <fichier code> → OK | KO: …
 }
 V="$(ordre_verdict "$TMP/jf.code")"
 [ "$V" = OK ] && ok "B.6 ordre : login ($L_LOGIN) < résolution de la base ($L_BASE) < fetch ($L_FETCH) < git show ($L_SHOW) < garde ($L_GATE) < relecture ($L_READ) < préflight ($L_PF) < TTL ($L_TTL) < converge ($L_CONV) < verify ($L_VERIFY) < annonce A2 ($L_CP)" || bad "B.6 $V"
-[ -n "$L_FOR" ] && [ -n "$L_ABS" ] && ok "B.7 les TROIS fichiers de la garde (script, lib, chaîne) sont extraits de origin/\$BASE, refus GATE_ABSENTE" || bad "B.7 extraction incomplète (for=$L_FOR abs=$L_ABS)"
+[ -n "$L_FOR" ] && [ -n "$L_ABS" ] && grep -qx 'clients/_example/environments.yaml' "$TMP/jf.for-files" \
+  && ok "B.7 la garde (script, libs, chaîne) est extraite de origin/\$BASE dans UNE boucle for, refus GATE_ABSENTE" || bad "B.7 extraction incomplète (for=$L_FOR abs=$L_ABS chaîne=$(grep -cx 'clients/_example/environments.yaml' "$TMP/jf.for-files"))"
+# B.7bis — mesuré le 2026-09-10 sur le lab (provision-apply #197/#200/#201 →
+# selfservice-app-deploy #135/#136/#140) : depuis e57db13 la garde source AUSSI
+# scripts/lib/apim-base.sh, que la boucle du Jenkinsfile n'extrayait pas ⇒
+# chaque apply réel mourait « REFUS: LIB_ABSENTE : …/.a3-gate/scripts/lib/
+# apim-base.sh introuvable » — quatre jours de rouge que B.7 (existence de la
+# boucle + du refus GATE_ABSENTE) ne pouvait pas voir. La liste ATTENDUE est
+# DÉRIVÉE des lignes `. "$SELF_DIR/lib/…"` de la garde (GATE_LIBS, §A.27 — la
+# dérivation qui avait déjà sauvé les mutants de la même énumération en dur) ;
+# chaque lib doit figurer telle quelle (scripts/lib/<lib>) dans la boucle.
+MISS_LIBS=""; N_GL=0; N_GL_OK=0
+for _gl in $GATE_LIBS; do
+  N_GL=$((N_GL+1))
+  if grep -qx "scripts/lib/$_gl" "$TMP/jf.for-files"; then N_GL_OK=$((N_GL_OK+1)); else MISS_LIBS="$MISS_LIBS scripts/lib/$_gl"; fi
+done
+[ -n "$L_FOR" ] && [ "$N_GL" -gt 0 ] && [ -z "$MISS_LIBS" ] \
+  && ok "B.7bis la liste d'extraction du Jenkinsfile couvre toutes les libs que la garde source — $N_GL_OK/$N_GL" \
+  || bad "B.7bis la liste d'extraction du Jenkinsfile ne couvre pas toutes les libs que la garde source — $N_GL_OK/$N_GL ; manquent :${MISS_LIBS:- (boucle introuvable)} ⇒ LIB_ABSENTE à chaque apply réel"
 [ -n "$L_FETCH" ] && [ -n "$L_SHOW" ] && [ "$L_FETCH" -lt "$L_SHOW" ] && ok "B.8 git fetch origin \$BASE AVANT git show" || bad "B.8 fetch/show (fetch=$L_FETCH show=$L_SHOW)"
 grep -q '\*\[!A-Za-z0-9_./:@+-\]\*' "$TMP/jf.code" && grep -q 'REFUS: SORTIE_INVALIDE' "$TMP/jf.code" && ok "B.9 relecture : classe [A-Za-z0-9_./:@+-] re-vérifiée par le shell, SORTIE_INVALIDE" || bad "B.9 relecture sans contrôle de classe"
 grep -Eq '(^|[^A-Za-z_])eval([^A-Za-z_]|$)' "$TMP/jf.code" && bad "B.9b eval présent dans le Jenkinsfile" || ok "B.9b aucun eval"
@@ -729,7 +752,7 @@ grep -q '^vault_token_ttl()' "$TMP/lib.code" && ok "E.6 la fonction est définie
 
 # Le compte des contrôles est lui-même un contrôle : une section sautée (stub
 # mort, chemin absent) ne doit pas passer pour un vert plus court.
-EXPECTED_CHECKS=194
+EXPECTED_CHECKS=195
 TOTAL=$((PASS+FAIL))
 [ "$TOTAL" -eq "$((EXPECTED_CHECKS-1))" ] \
   && ok "$((TOTAL+1)) contrôles exécutés = $EXPECTED_CHECKS attendus (aucune section sautée)" \

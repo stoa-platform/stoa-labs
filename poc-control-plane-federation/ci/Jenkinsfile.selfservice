@@ -479,7 +479,8 @@ pipeline {
               [ -n "$BASE" ] \
                 || { echo "REFUS: BRANCHE_PAR_DEFAUT_INCONNUE : l'origine n'annonce aucune HEAD symbolique et la globale GIT_BASE n'est pas posée — la garde du palier ne peut être extraite d'aucune lignée ; rien n'est appliqué"; exit 1; }
               git fetch -q origin "$BASE"
-              for f in scripts/selfservice-palier-gate.sh scripts/lib/env-chain.sh scripts/lib/vault-kv.sh clients/_example/environments.yaml; do
+              # Cette liste doit couvrir TOUTE lib que la garde source (`. "$SELF_DIR/lib/…"`) — B.7bis de test-selfservice-palier-a3.sh l'impose (mesuré le 2026-09-10 : quatre jours d'apply rouges LIB_ABSENTE, apim-base.sh sourcée depuis e57db13 et jamais extraite).
+              for f in scripts/selfservice-palier-gate.sh scripts/lib/env-chain.sh scripts/lib/vault-kv.sh scripts/lib/apim-base.sh clients/_example/environments.yaml; do
                 mkdir -p "$GATE_DIR/$(dirname "$f")"
                 git show "origin/${BASE}:${PFX}${f}" > "$GATE_DIR/$f" 2>/dev/null \
                   || { echo "REFUS: GATE_ABSENTE : ${PFX}${f} absent de origin/${BASE} — la garde du palier vient de la lignée de la définition du pipeline, jamais de l'arbre pinné ; rien n'est appliqué"; exit 1; }
