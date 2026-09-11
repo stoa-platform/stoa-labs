@@ -35,7 +35,10 @@
 //                             équivalent : Jenkins résout les `${…}` des
 //                             paramètres de build avant de les exposer au `sh`
 //                             (mesuré). Détail au-dessus du bloc lui-même.
-//   sh 'set +x; bash …'    -> INCHANGÉ, à l'octet près.
+//   sh 'set +x; bash …'    -> set +x conservé, PUIS le pont DEBUG ⇒ STOA_DEBUG
+//                             en if/fi (L4, opt-in, n'éteint jamais la globale),
+//                             puis le script — forme épinglée à l'octet par
+//                             test-api-request-wiring.sh.
 // forgeCreds() — la liste withCredentials du TYPE declare par le site.
 // Dans les deux cas, le shell voit les MEMES noms : FORGE_SECRET (le secret) et
 // FORGE_USER (l'utilisateur, vide avec un jeton). Les scripts acceptent
@@ -78,9 +81,10 @@ pipeline {
 
   // ── CONTRAT D'ENTRÉE : les paramètres du formulaire ─────────────────────────
   // Volontairement PAS de bloc `parameters {}` ici, et ce n'est pas un oubli :
-  // les dix paramètres (ACTION, TEAM, API_NAME, API_VERSION, API_BASE,
-  // NEW_VERSION, OPENAPI_SPEC, INBOUND_MODE, et depuis le jalon P2
-  // CLASSIFICATION, EXPOSURE) vivent dans
+  // les onze paramètres (ACTION, TEAM, API_NAME, API_VERSION, API_BASE,
+  // NEW_VERSION, OPENAPI_SPEC, INBOUND_MODE, depuis le jalon P2
+  // CLASSIFICATION, EXPOSURE, et depuis L4 la case DEBUG — qui vit ici dans
+  // le XML précisément parce que ce fichier refuse tout parameters{}) vivent dans
   // ci/jenkins/api-request.job.xml parce que DEUX d'entre eux portent les
   // marqueurs <!--CHOICES:TEAMS--> / <!--CHOICES:APIS--> que
   // setup-team-onboard-jobs.sh substitue AU MOMENT DE LA POSE par les équipes
@@ -211,7 +215,7 @@ pipeline {
               // Chaîne en quotes SIMPLES : Groovy n'y interpole rien. `set +x`
               // conservé tel quel — aucune trace shell, le token ne doit pas
               // fuiter dans le log même si le script était un jour lancé sous -x.
-              sh 'set +x; bash scripts/api-request.sh'
+              sh 'set +x; if [ "${DEBUG:-false}" = "true" ]; then export STOA_DEBUG=1; fi; bash scripts/api-request.sh'
             }
           }
         }

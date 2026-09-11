@@ -96,6 +96,9 @@ pipeline {
            description: "Matricules des approbateurs [A-Za-z0-9_-], séparés par des virgules. VIDE ACCEPTÉ : la projection owner ne fera rien tant que la liste n'est pas établie.")
     string(name: 'REPO', defaultValue: '',
            description: "Dépôt Git de l'équipe (org/nom). Vide = <team>/apis. Créé AU MERGE depuis le squelette ADR-076.")
+    // DEBUG (opt-in, L4) : trace détaillée sous STOA_DEBUG, aucun secret exposé — la case ALLUME le mode, elle n'éteint jamais la globale.
+    booleanParam(name: 'DEBUG', defaultValue: false,
+                 description: "Trace détaillée (appels, codes HTTP, erreurs redactées) — aucun secret exposé.")
     // AUCUN champ d'environnement, et c'est délibéré (G4, ADR-082, D5) : une
     // liste à quatre entrées dont une seule était acceptée offrait un choix qui
     // n'en était pas un, et faisait croire que le palier de destination se
@@ -177,6 +180,7 @@ pipeline {
               // l'environnement posé juste au-dessus.
               sh '''
                 set +x
+                if [ "${DEBUG:-false}" = "true" ]; then export STOA_DEBUG=1; fi
                 # REPO vide → on RETIRE la variable pour que le défaut du script
                 # (REPO="${REPO:-${TEAM}/apis}") s'applique sans ambiguïté.
                 # Ceinture explicite reprise TELLE QUELLE du job d'origine : le

@@ -152,7 +152,7 @@ pipeline {
             // $GIT_SUBDIR est développé par le SHELL, qui le reçoit du bloc
             // environment{} ; la sentinelle « . » compose « $WORKSPACE/./… »,
             // qui résout.
-            sh 'set +x; GC_PLATFORM_DIR="$WORKSPACE" STOA_ENV_CHAIN_FILE="$WORKSPACE/$GIT_SUBDIR/clients/_example/environments.yaml" CHOICES_OUT="$WORKSPACE/.a0-choices.env" bash scripts/app-request-choices.sh'
+            sh 'set +x; if [ "${DEBUG:-false}" = "true" ]; then export STOA_DEBUG=1; fi; GC_PLATFORM_DIR="$WORKSPACE" STOA_ENV_CHAIN_FILE="$WORKSPACE/$GIT_SUBDIR/clients/_example/environments.yaml" CHOICES_OUT="$WORKSPACE/.a0-choices.env" bash scripts/app-request-choices.sh'
           }
         }
         script {
@@ -195,6 +195,9 @@ pipeline {
                    description: "CHEMIN Vault de la clé backend (identifier `token`), optionnel — sous-chemin KV v2, ex. deploy/banking-demo/apps/mon-app/dev/backend-key. ⚠ Ce champ attend un CHEMIN, JAMAIS la valeur de la clé : Git ne porte jamais le secret, il est lu dans Vault à l'apply. L'entrée doit EXISTER dans Vault avant l'apply — sinon BACKEND_KEY_MISSING et rien n'est posé sur la gateway. Caractères [A-Za-z0-9._/-] ; chemin absolu, '//' et traversée '..' sont refusés (BACKEND_KEY_REF_INVALID). N'est PAS une identité entrante : c'est une clé sortante app→backend, non opposable par enforce."),
             string(name: 'BACKEND_KEY_FIELD', defaultValue: '',
                    description: "Champ à lire DANS l'entrée Vault, optionnel — laisser VIDE pour le défaut du rôle (api_key). ⚠ PIÈGE MESURÉ : le nom doit correspondre EXACTEMENT au champ de l'entrée KV — une entrée dont la clé s'appelle `api-key` (avec un TIRET) est lue vide et échoue en BACKEND_KEY_MISSING alors que l'entrée existe bel et bien. Renseigné sans BACKEND_KEY_REF, ce champ serait inerte : la demande est alors REFUSÉE (BACKEND_KEY_FIELD_ORPHAN)."),
+            // DEBUG (opt-in, L4) : trace détaillée sous STOA_DEBUG, aucun secret exposé — la case ALLUME le mode, elle n'éteint jamais la globale.
+            booleanParam(name: 'DEBUG', defaultValue: false,
+                         description: "Trace détaillée (appels, codes HTTP, erreurs redactées) — aucun secret exposé."),
             // ── A7 (ADR-090) : l'identité de forge et les références de la porte ──
             // FORGE_TOKEN est un `password` : canal natif (jamais dans un withEnv,
             // fait 9 — il serait persisté en clair), altération détectée
@@ -335,6 +338,7 @@ pipeline {
             dir(env.GIT_SUBDIR) {
               sh '''
                 set +x
+                if [ "${DEBUG:-false}" = "true" ]; then export STOA_DEBUG=1; fi
                 STOA_ENV_CHAIN_FILE="$WORKSPACE/$GIT_SUBDIR/clients/_example/environments.yaml" bash scripts/provision-request.sh
               '''
             }

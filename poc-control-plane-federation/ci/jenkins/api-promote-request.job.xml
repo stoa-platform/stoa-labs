@@ -63,6 +63,11 @@
           <description>FACULTATIF. Vide : lu sur __GIT_BASE__ (manifeste épinglé) depuis dev, hérité du palier source au-delà. Renseigné : depuis dev il gagne avec avertissement (re-promotion d'une archive antérieure) ; au-delà, une contradiction avec la source est refusée (DIGEST_CONTREDIT_SOURCE).</description>
           <defaultValue></defaultValue>
         </hudson.model.StringParameterDefinition>
+        <hudson.model.BooleanParameterDefinition>
+          <name>DEBUG</name>
+          <description>Trace détaillée (appels, codes HTTP, erreurs redactées) — aucun secret exposé.</description>
+          <defaultValue>false</defaultValue>
+        </hudson.model.BooleanParameterDefinition>
       </parameterDefinitions>
     </hudson.model.ParametersDefinitionProperty>
   </properties>

@@ -22,6 +22,8 @@
 #                              argument sont des secrets de plus à masquer.
 #   dbg_on                     vrai si le mode est actif.  dbg_init : idempotent,
 #                              normalise et exporte STOA_DEBUG (1 ou vide).
+#   dbg_bool                   imprime `true` si dbg_on, `false` sinon — le mot
+#                              qu'Ansible lit (`-e stoa_debug="$(dbg_bool)"`, L4).
 #
 # POURQUOI LE $? EST PRÉSERVÉ. La consigne du plan (« return 0 toujours »)
 # voulait dire « ne casse JAMAIS l'appelant », pas « efface son verdict » :
@@ -257,6 +259,14 @@ dbg_init() {
   if dbg_on; then STOA_DEBUG=1; else STOA_DEBUG=''; fi
   export STOA_DEBUG
   return 0
+}
+
+# dbg_bool — le mode, dans le mot qu'Ansible lit : `true` si dbg_on, `false`
+# sinon. Pour `-e stoa_debug="$(dbg_bool)"` sur les ansible-playbook du moteur
+# (L4) : le rôle apim_common n'a pas de lookup d'environnement, il ne connaît
+# que l'extra-var. Une seule règle, ici, plutôt que quatre copies d'un `if`.
+dbg_bool() {
+  if dbg_on; then printf 'true'; else printf 'false'; fi
 }
 
 # _dbg_py [fichier…] — lance le programme de rédaction : stdin = le texte,

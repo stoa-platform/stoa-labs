@@ -189,6 +189,7 @@ fi
 # SOURCE. D'où l'invocation identique en forme, opposée en sens.
 ARCHIVE_OUT="$TMP/export.zip"
 ( ansible-playbook -i ansible/inventory.lab.ini ansible/promote-api.yml \
+    -e stoa_debug="$(dbg_bool)" \
     -e apim_promote_action=export \
     -e apim_promote_manifest="$TMP/team/apis/${API_NAME}.promote.yml" \
     -e apim_ss_archive_pin="$ARCHIVE_OUT" \

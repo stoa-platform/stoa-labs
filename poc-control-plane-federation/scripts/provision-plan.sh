@@ -156,13 +156,41 @@ WORK="$(mktemp -d /tmp/provplan.XXXXXX)"; trap 'rm -rf "$WORK"' EXIT
 # Composé ICI, avant [0/4] : la BASE se découvre sur cette URL, et la base est ce
 # que la relecture de la PR compare (base.ref) — donc avant le premier appel.
 case "$GIT_HOST" in http://*|https://*|file://*) CLONE_BASE="${GIT_HOST%/}";; *) CLONE_BASE="http://${GIT_HOST%/}";; esac
+# GIT_CLONE_URL gagne sur l'URL composée — comme chez provision-request.sh:495,
+# app-rollback-request.sh:121 et provision-apply-reconcile.sh:262. Ce script
+# était le SEUL de la chaîne à ne pas l'honorer (mesuré le 2026-09-11).
+CLONE_URL="${GIT_CLONE_URL:-${CLONE_BASE}/${GIT_REPO}.git}"
 # L'URL composée : c'est elle qu'on diagnostique (le « http://https:// » du
 # 2026-09-03 se serait lu ici). Un userinfo éventuel est masqué par redact.
 dbg_kv CLONE_BASE "$CLONE_BASE"
-# Le clone de ce script n'est PAS enveloppé (dépôt lu en anonyme) : le
-# `git ls-remote` de la lib hérite du même environnement, donc de la même
-# absence d'enveloppe — ce que l'un peut lire, l'autre le peut.
-git_base_init "${CLONE_BASE}/${GIT_REPO}.git" \
+dbg_kv CLONE_URL "$CLONE_URL"
+# ── L'ENVELOPPE D'AUTHENTIFICATION, sur la découverte ET sur le clone ────────
+# CE FICHIER A PORTÉ LE DÉFAUT INVERSE JUSQU'AU 2026-09-11, et son commentaire
+# le revendiquait : « le clone de ce script n'est PAS enveloppé (dépôt lu en
+# anonyme) ». Ça tenait par ACCIDENT : le Gitea du lab sert `info/refs` en
+# anonyme (200). Sur un projet GitLab PRIVÉ — le cas de tout client — c'est 401,
+# la découverte meurt « could not read Username » (BRANCHE_PAR_DEFAUT_INCONNUE)
+# et le clone meurt CLONE_ECHEC, après quoi l'apply enchaîne sur
+# MERGE_SHA_NON_ANCETRE parce qu'il a lu un autre dépôt. MESURÉ par
+# scripts/test-webhook-kind-gitlab-live.sh, et c'était le seul site de la chaîne
+# dans cet état (porte : test-git-base.sh « H bis »).
+# Le secret ne passe NI en argv NI dans l'URL : c'est le NOM de la variable qui
+# voyage (`ps -Aww` lit l'argv de toute la machine). Le LOGIN vient de la SEULE
+# autorité, git_base_basic_login — « x » convient à Gitea, jamais à GitLab.
+# Sans secret (dépôt réellement anonyme, épreuves file://), les deux gestes
+# restent NUS : le comportement d'avant, inchangé.
+FORGE_SECRET="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
+if [ -n "$FORGE_SECRET" ]; then
+  PLAN_LOGIN="$(git_base_basic_login)"
+  gbase(){ git_base_avec_basic "$PLAN_LOGIN" FORGE_SECRET "$@"; }
+  gclone(){ git_base_avec_basic "$PLAN_LOGIN" FORGE_SECRET git clone -q "$@"; }
+  dbg_kv PLAN_LOGIN "$PLAN_LOGIN"
+else
+  gbase(){ "$@"; }
+  gclone(){ git clone -q "$@"; }
+  dbg "aucun FORGE_SECRET : découverte et clone ANONYMES (dépôt public, ou épreuve file://)"
+fi
+gbase git_base_init "$CLONE_URL" \
   || { facts refus "BRANCHE_PAR_DEFAUT_INCONNUE : branche par defaut de ${GIT_REPO} indeterminable (cause dans le log du build)"; exit 1; }
 echo "[0/4] relecture de la PR #${PR_NUMBER} sur la forge (tete attendue ${PR_BRANCH}, base ${GIT_BASE})"
 # Le stderr de la confirmation est CAPTURÉ parce que le refus le RECOPIE (la
@@ -205,8 +233,8 @@ echo "[1/4] checkout ${PR_BRANCH} @ ${GITEA_HEAD_SHA} (la tete RELUE, pas le nom
 # Même forme sinon, octet pour octet (redact ne change rien à une ligne sans
 # secret). python3 est acquis ici : forge_api_init l'a exigé (PYTHON3_REQUIS)
 # avant la relecture de la PR, qui précède ce clone.
-git clone -q "${CLONE_BASE}/${GIT_REPO}.git" "$WORK/repo" 2>"$WORK/clone.err"; rc=$?
-dbg "git clone ${CLONE_BASE}/${GIT_REPO}.git -> rc $rc"
+gclone "$CLONE_URL" "$WORK/repo" 2>"$WORK/clone.err"; rc=$?
+dbg "git clone $CLONE_URL -> rc $rc"
 dbg_git_err "$WORK/clone.err"
 [ ! -s "$WORK/clone.err" ] || redact < "$WORK/clone.err" >&2
 [ "$rc" -eq 0 ] || refus CLONE_ECHEC "clone de ${GIT_REPO} en echec"

@@ -547,8 +547,8 @@ for p in root.iter():
             choices.append(n)
 print("PARAMS=%d CHOICES=%d REQ_ENV=%s" % (len(names), len(choices), 'REQ_ENV' in names))
 PY
-  grep -q '^PARAMS=4 CHOICES=0 REQ_ENV=False$' "$TMP/xtr_params" \
-    && ok "⑰bis le XML déclare 4 paramètres, 0 liste fermée, aucun REQ_ENV (lu par ElementTree, pas par grep)" \
+  grep -q '^PARAMS=5 CHOICES=0 REQ_ENV=False$' "$TMP/xtr_params" \
+    && ok "⑰bis le XML déclare 5 paramètres (4 champs + la case DEBUG, L4), 0 liste fermée, aucun REQ_ENV (lu par ElementTree, pas par grep)" \
     || { bad "⑰bis structure du formulaire XML inattendue"; sed 's/^/      /' "$TMP/xtr_params" | head -3; }
 fi
 

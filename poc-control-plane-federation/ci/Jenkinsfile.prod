@@ -22,6 +22,9 @@ pipeline {
   // PAS de triggers {} : prod ne part JAMAIS d'un webhook.
   parameters {
     string(name: 'PROMOTION_ID', defaultValue: '', description: 'ID de la promotion int→prod approuvée (promotions/banking-demo/{id}.yaml)')
+    // DEBUG (opt-in, L4) : trace détaillée sous STOA_DEBUG, aucun secret exposé — la case ALLUME le mode, elle n'éteint jamais la globale.
+    booleanParam(name: 'DEBUG', defaultValue: false,
+                 description: "Trace détaillée (appels, codes HTTP, erreurs redactées) — aucun secret exposé.")
     // Identité NOMINATIVE de l'opérateur de mise en prod (voie A, ADR-078 §3).
     // Laissées vides → repli AppRole : le job s'exécute sous une identité de
     // MACHINE et l'acte prod n'est imputable à personne. C'est le comportement
@@ -143,6 +146,7 @@ pipeline {
           withCredentials([string(credentialsId: 'vault-ci-secret-id', variable: 'VAULT_SECRET_ID')]) {
             sh '''
               set +x          # NEVER echo: secret_id, vault token, OAuth token
+              if [ "${DEBUG:-false}" = "true" ]; then export STOA_DEBUG=1; fi
               set -eu
               # Login Vault mutualisé (ci/lib/vault-login.sh) : NOMINATIF si l'opérateur
               # a saisi VAULT_USER + son mot de passe, sinon repli AppRole — identité de

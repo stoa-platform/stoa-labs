@@ -406,6 +406,7 @@ REPO_LINK=""
 
 # ── 3. onboarding (rôle du palier 1, idempotent) ─────────────────────────────
 ( ansible-playbook -i ansible/inventory.lab.ini ansible/onboard-team.yml \
+    -e stoa_debug="$(dbg_bool)" \
     -e "apim_onb_team=${TEAM}" -e "apim_onb_providers_file=providers.${ENVN}.yml" \
     -e "apim_ss_api_base=${APIM_API_BASE}" \
 ) >"$TMP/onb.log" 2>&1

@@ -120,12 +120,16 @@ done
 # l'ops relit — en porte la trace.
 N_XML_STR=$(grep -c '<hudson.model.StringParameterDefinition>' "$JOB")
 N_XML_CHO=$(grep -c '<hudson.model.ChoiceParameterDefinition>' "$JOB")
-N_XML=$((N_XML_STR + N_XML_CHO))
-N_JF=$(printf '%s\n' "$JF_N" | grep -cE "^ *(string|choice)\(name: '")
-[ "$N_XML" -eq 4 ] && ok "le XML déclare exactement 4 paramètres (4 string, 0 choice — l'axe env est parti, G4/ADR-082 D5)" \
-  || ko "le XML déclare ${N_XML} paramètres, attendu 4"
-[ "$N_JF" -eq 4 ] && ok "le Jenkinsfile déclare exactement 4 paramètres" \
-  || ko "le Jenkinsfile déclare ${N_JF} paramètres, attendu 4"
+# L4 (2026-09-11) : la case DEBUG est un BooleanParameterDefinition / booleanParam
+# — comptée des DEUX côtés, sinon le §2 deviendrait aveugle à un booléen posé
+# d'un seul côté du miroir (et c'est le XML qui gagne).
+N_XML_BOO=$(grep -c '<hudson.model.BooleanParameterDefinition>' "$JOB")
+N_XML=$((N_XML_STR + N_XML_CHO + N_XML_BOO))
+N_JF=$(printf '%s\n' "$JF_N" | grep -cE "^ *(string|choice|booleanParam)\(name: '")
+[ "$N_XML" -eq 5 ] && ok "le XML déclare exactement 5 paramètres (4 string + la case DEBUG, 0 choice — l'axe env est parti, G4/ADR-082 D5)" \
+  || ko "le XML déclare ${N_XML} paramètres, attendu 5"
+[ "$N_JF" -eq 5 ] && ok "le Jenkinsfile déclare exactement 5 paramètres (4 string + booleanParam DEBUG)" \
+  || ko "le Jenkinsfile déclare ${N_JF} paramètres, attendu 5"
 # ANTI-RETOUR DE L'AXE : le seul `choice` qu'ait jamais porté ce formulaire était
 # l'environnement. Zéro liste fermée est donc la forme la plus tenace de
 # l'assertion — elle rougit même si l'axe revient sous un AUTRE nom.
@@ -163,9 +167,9 @@ names = [p.findtext('name') or ''
 print(','.join(names))
 PY
 )
-[ "$XML_PARAMS" = "TEAM,DESCRIPTION,APPROVERS,REPO" ] \
-  && ok "le formulaire XML est exactement TEAM,DESCRIPTION,APPROVERS,REPO — aucun axe env (et c'est le XML qui GAGNE)" \
-  || ko "formulaire XML inattendu : '${XML_PARAMS}' (attendu TEAM,DESCRIPTION,APPROVERS,REPO)"
+[ "$XML_PARAMS" = "TEAM,DESCRIPTION,APPROVERS,REPO,DEBUG" ] \
+  && ok "le formulaire XML est exactement TEAM,DESCRIPTION,APPROVERS,REPO,DEBUG — aucun axe env, la case DEBUG en dernier (L4 ; et c'est le XML qui GAGNE)" \
+  || ko "formulaire XML inattendu : '${XML_PARAMS}' (attendu TEAM,DESCRIPTION,APPROVERS,REPO,DEBUG)"
 if printf '%s\n' "$JF_CODE" | grep -q 'choice(name:'; then
   ko "un \`choice(name: …)\` subsiste dans le CODE du Jenkinsfile — le seul qu'ait eu ce formulaire était l'axe env"
 else

@@ -435,7 +435,7 @@ N_PFX=$(grep -c 'poc-control-plane-federation' "$TMP/jf-app.code")
   && ok "le préfixe du livrable n'apparaît QU'UNE fois dans le code d'app-request : le défaut du knob GIT_SUBDIR (aucun chemin en dur)" \
   || ko "préfixe du lab écrit en dur dans app-request : $N_PFX occurrence(s) dans la vue CODE"
 grep -v '^\s*//' ci/Jenkinsfile.provisioning-request | grep -qE "^\s*FORGE_TOKEN\s*=\s*''" && ok "A7 : la voie machine VIDE FORGE_TOKEN dans son bloc environment (une globale du nœud ne lui prête aucune identité de forge)" || ko "A7 : Jenkinsfile.provisioning-request ne vide pas FORGE_TOKEN"
-L_SH=$(code_line "$TMP/jf-app.code" "sh 'set +x; GC_PLATFORM_DIR=\"\$WORKSPACE\" STOA_ENV_CHAIN_FILE=\"\$WORKSPACE/\$GIT_SUBDIR/clients/_example/environments.yaml\" CHOICES_OUT=\"\$WORKSPACE/.a0-choices.env\" bash scripts/app-request-choices.sh'")
+L_SH=$(code_line "$TMP/jf-app.code" "sh 'set +x; if [ \"\${DEBUG:-false}\" = \"true\" ]; then export STOA_DEBUG=1; fi; GC_PLATFORM_DIR=\"\$WORKSPACE\" STOA_ENV_CHAIN_FILE=\"\$WORKSPACE/\$GIT_SUBDIR/clients/_example/environments.yaml\" CHOICES_OUT=\"\$WORKSPACE/.a0-choices.env\" bash scripts/app-request-choices.sh'")
 L_WC=$(code_line "$TMP/jf-app.code" "withCredentials(forgeCreds())")
 # 2026-09-04 : le TYPE de credential est un knob du SITE. forgeCreds() rend un
 # secret text (jeton, defaut du lab) ou un usernamePassword (couple, cas client),

@@ -196,6 +196,36 @@
 #                           selfservice-app-deploy n'a AUCUN hook direct : il
 #                           n'est atteint que par le `build job:` de
 #                           provision-apply.
+#
+# LE MODE DEBUG SANS FUITE (STOA_DEBUG) — L4, 2026-09-11
+#
+#   STOA_DEBUG              absente (défaut) | 1 | true — le PLANCHER du mode
+#                           debug pour TOUS les builds de ce Jenkins : posée,
+#                           chaque script de la chaîne qui source ci/lib/dbg.sh
+#                           dit sur stderr ce qu'il décide (disposition,
+#                           identité, URL composées, chaque geste git avec son
+#                           vrai rc, chaque appel HTTP avec son code), corps
+#                           d'erreur RÉDIGÉS, jamais un secret ni un corps de
+#                           succès. Les formulaires portent en plus une case
+#                           DEBUG (booleanParam) : cochée, elle ALLUME le mode
+#                           pour ce build ; décochée, elle n'ÉTEINT PAS la
+#                           globale — le plancher reste le plancher. Les jobs
+#                           sans formulaire (webhook, pauses) n'ont QUE la
+#                           globale. ⚠ dbg_on (ci/lib/dbg.sh) est une liste
+#                           d'EXTINCTION : seules vide / 0 / false / off / no
+#                           éteignent, TOUTE autre valeur allume — une faute de
+#                           frappe (`flase`, `2`) allume le plancher, elle ne
+#                           l'éteint pas. Poser 1 ou true, rien d'autre.
+#                           Retirer le plancher = le VIDER : `STOA_DEBUG=` en
+#                           argument de ce script (ce script n'a pas de verbe de
+#                           suppression ; la clé reste listée par --print, à
+#                           vide, et Jenkins n'exporte pas une globale vide :
+#                           elle arrive ABSENTE au build), ou la vider dans
+#                           Jenkins. `--from-env` ne vide jamais (une valeur
+#                           vide y est ignorée).
+#                           Les lignes sortent préfixées `[dbg …]` : un log
+#                           archivé avec STOA_DEBUG posée reste lisible par
+#                           un tiers sans lui livrer un secret (L2).
 set -euo pipefail
 
 # L'aide = l'entête de commentaire ENTIER (ligne 1 exclue : le shebang), coupé à
@@ -226,7 +256,7 @@ die(){ printf '\nREFUS: %s\n' "$*" >&2; exit 2; }
 # n'a encore rien posé ira le lire.
 CONNUES="
 GIT_HOST GIT_WEB_HOST GIT_REPO GIT_BASE GIT_SUBDIR GITEA_CREDENTIALS_ID GITEA_SERVICE_LOGINS
-FORGE_KIND FORGE_CRED_KIND FORGE_API_AUTH FORGE_API_BASE FORGE_USER WEBHOOK_KIND
+FORGE_KIND FORGE_CRED_KIND FORGE_API_AUTH FORGE_API_BASE FORGE_USER WEBHOOK_KIND STOA_DEBUG
 VAULT_ADDR JENKINS_UI ITSM_URL
 APIM_API_BASE APIM_DATA_BASE APIM_PROXY_HOST APIM_PROXY_API APIM_PROXY_VER APIM_PROXY_PATH APIM_TERMINUS_BASE
 APIM_PREFLIGHT APIM_PREFLIGHT_URL APIM_PREFLIGHT_CODES APIM_PREFLIGHT_TRIES
@@ -248,8 +278,10 @@ GOVERNANCE_REPO GOVERNANCE_PATH
 # poser un littéral, c'est-à-dire exactement le défaut qu'on vient de retirer.
 # Le récepteur de webhooks en fait partie depuis L6 : absent, la chaîne pose le
 # generic-webhook-trigger (gwt), c'est-à-dire exactement ce qu'elle faisait
-# avant ce knob.
-OPTIONNELLES="APIM_PREFLIGHT APIM_PREFLIGHT_URL APIM_PREFLIGHT_CODES APIM_PREFLIGHT_TRIES FORGE_CRED_KIND FORGE_KIND FORGE_API_AUTH FORGE_API_BASE GIT_BASE WEBHOOK_KIND"
+# avant ce knob. Le mode debug en fait partie depuis L4 : absent, la chaîne se
+# tait — et un rapport qui annoncerait « STOA_DEBUG manquante » inviterait à
+# poser un plancher de debug permanent, c'est-à-dire l'inverse d'un opt-in.
+OPTIONNELLES="APIM_PREFLIGHT APIM_PREFLIGHT_URL APIM_PREFLIGHT_CODES APIM_PREFLIGHT_TRIES FORGE_CRED_KIND FORGE_KIND FORGE_API_AUTH FORGE_API_BASE GIT_BASE WEBHOOK_KIND STOA_DEBUG"
 
 # ── le canal : console de script Jenkins, jeton par fichier ──────────────────
 CFG="$TMP/curl.cfg"

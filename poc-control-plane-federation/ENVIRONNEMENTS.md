@@ -256,9 +256,12 @@ protection ou des paramètres de job :
   Garder `PROTECT_PUSH_WHITELIST` aligné sur `GITEA_ADMIN_USER` (l'admin de site
   n'est PAS exempté du push_whitelist).
 - **re-poser le job `selfservice`/`team-request`** si le `config.xml` doit
-  refléter les listes (choices, triggers, paramètres) : **le XML gagne sur le
-  Jenkinsfile** — un scellement présent dans le Jenkinsfile mais absent du
-  config.xml posé ne prend pas effet.
+  refléter les listes (choices, triggers, paramètres) : pour un bloc
+  **déclaratif**, le XML gagne sur le Jenkinsfile — un scellement présent dans le
+  Jenkinsfile mais absent du config.xml posé ne prend pas effet. ⚠ Ce n'est PLUS
+  vrai de `provision-plan`, `provision-apply` et `selfservice-app-deploy` : depuis
+  L6 leur XML ne porte AUCUNE propriété et c'est leur **premier build** qui pose
+  déclencheur et verrou (voir « Le récepteur de webhooks »).
 
 ## Qui déploie un palier (G2 — ADR-084)
 
@@ -610,7 +613,9 @@ ne projette plus « le dernier `main` » :
 
 Le job `provision-apply` est désormais un **Jenkinsfile déclaratif from SCM**
 (`ci/Jenkinsfile.provision-apply`) ; `ci/jenkins/provision-apply.job.xml` n'est
-qu'une coquille (pointeur SCM + miroir du bloc `<triggers>`, qui gagne).
+qu'une coquille — pointeur SCM et, depuis L6, **aucune propriété** : le
+déclencheur est posé par le Jenkinsfile au premier build (voir « Le récepteur de
+webhooks »).
 
 ## Le credential du seul palier (A3 — GOAL cd-applications, 2026-09-02)
 
@@ -1408,15 +1413,92 @@ préfixe de commande — le canal vers python est un here-doc sur le descripteur
 **Le knob** : `STOA_DEBUG` — actif sauf vide, `0`, `false`, `off`, `no`
 (`dbg_init` le normalise en `1` ou vide et l'**exporte**, pour que les enfants —
 `forge-api.py`, le plan enchaîné, `gitea-pr-comment.sh` — parlent avec la même
-valeur). Deux Jenkinsfile (`publish-api`, `selfservice`) portent déjà une case
-`DEBUG` qui exporte `STOA_DEBUG=1` ; la case sur les douze formulaires et la
-globale Jenkins (`setup-jenkins-globals.sh`) sont **L4, à venir**.
+valeur). **Dix formulaires** portent une case `DEBUG` qui exporte
+`STOA_DEBUG=1` (les deux d'origine, `publish-api` et `selfservice`, plus les
+huit de L4), et la globale Jenkins `STOA_DEBUG` (`setup-jenkins-globals.sh`)
+est le **plancher** — voir « La case DEBUG et la globale (L4) » ci-dessous.
 
 | Knob | Valeurs | Défaut | Rôle |
 |------|---------|--------|------|
 | `STOA_DEBUG` | tout sauf vide / `0` / `false` / `off` / `no` | vide (muet) | la **seule** autorité du mode debug — l'ancien `VAULT_DEBUG` n'existe plus ; relue à chaque appel, normalisée et exportée par `dbg_init` |
-| `DBG_NAME` | un nom | le nom du script (`$0`) | ce qui s'écrit entre crochets : `[dbg <nom>]`. Aucun script de la chaîne ne le pose — c'est le nom du script qu'on veut lire dans un log ; réservé au bloc `sh` d'un Jenkinsfile, où `$0` n'est pas un nom parlant (L4) |
+| `DBG_NAME` | un nom | le nom du script (`$0`) | ce qui s'écrit entre crochets : `[dbg <nom>]`. Aucun script de la chaîne ne le pose, et aucun Jenkinsfile non plus après L4 (le nom du script suffit) ; réservé au bloc `sh` d'un Jenkinsfile, où `$0` n'est pas un nom parlant (L4) |
 | `DBG_SECRET_FILES` | chemins, un par ligne | vide | des **fichiers** de secret de plus à masquer, par leur contenu. `provision-request.sh` et `app-rollback-request.sh` y nomment le fichier du token **humain** — retiré de l'environnement par A7, la rédaction ne le connaît que par là ; variable de shell **non exportée** : un chemin n'est pas un secret, mais les enfants n'ont pas à le connaître |
+
+### La case DEBUG et la globale (L4 — 2026-09-11)
+
+**Deux knobs, une sémantique.** La globale Jenkins `STOA_DEBUG` (posée par
+`scripts/setup-jenkins-globals.sh`, CONNUE et OPTIONNELLE comme `WEBHOOK_KIND`)
+est le **plancher** : posée à `1` ou `true`, tout build du contrôleur parle —
+formulaires, webhooks, pauses. La case `DEBUG` d'un formulaire **allume** le
+mode pour ce build ; **décochée, elle n'éteint pas la globale** — le pont ne
+fait qu'exporter, jamais vider. Absente (le défaut), la globale laisse la chaîne
+muette : un rapport de `setup-jenkins-globals.sh` ne l'annonce pas « manquante »,
+ce serait inviter à poser un debug permanent. Retirer la globale = la vider
+(`STOA_DEBUG=` en argument du script) : `dbg_on` lit vide, `0`, `false`, `off`,
+`no` comme éteint.
+
+**Où vit la case** — au rang « juste avant le premier paramètre d'identité,
+sinon en dernier » (le gabarit de `publish-api:36`), même libellé partout,
+déclarée **là où le formulaire vit** :
+
+| Job | Le formulaire vit dans | Case DEBUG | Re-pose |
+|-----|------------------------|-----------|---------|
+| `app-request`, `app-rollback` | `properties([parameters([…])])` du Jenkinsfile, XML `<properties/>` | dans le `parameters([...])` existant, avant `FORGE_TOKEN` | un build d'amorçage (`POST /job/<j>/build`) — le XML ne bouge pas |
+| `team-request`, `api-promote-export`, `api-promote-request` | `parameters{}` déclaratif **et** XML miroir (le XML gagne à nom égal) | des deux côtés, **au même rang** (`BooleanParameterDefinition`, `defaultValue` false) | `JOBS="team-request api-promote-export api-promote-request" bash scripts/setup-team-onboard-jobs.sh` — visible dès le POST du XML |
+| `api-request` | le XML seul (`Jenkinsfile.api-request` refuse tout `parameters{}`) | dans `ci/jenkins/api-request.job.xml`, en dernier | `JOBS=api-request bash scripts/setup-team-onboard-jobs.sh` (marqueurs CHOICES ⇒ `FORGE_SECRET` et forge joignable) |
+| `prod`, `rollback` (`stoa-prod-deploy`, `stoa-prod-rollback`) | `parameters{}` déclaratif, sans XML ni poseur (jobs créés à la main, `ci/README.md`) | avant `VAULT_USER` | le premier build ré-enregistre le formulaire |
+| `publish-api`, `selfservice` | déjà équipés (commit `33d8f36`) | inchangés | — |
+
+**Exclus, et pourquoi** : les trois pauses `input{}` (`team-apply`,
+`team-publish`, `team-promote`) et l'`input()` de `provision-apply` n'exposent
+que l'identité (V_USER/V_PASS) et une suite épingle cette liste exacte — une
+case de pause ne couvrirait de toute façon jamais la réconciliation qui précède
+la pause ; les jobs webhook-only (`provision-plan`, `provisioning-request`,
+`stoa-ci`) n'ont pas de formulaire ; **`carto`** garde un XML porteur de
+paramètres **et** un `properties()` scripté (régime jamais mesuré, fait 6) et
+aucun de ses scripts ne source `dbg.sh` : une case y serait un knob sans sortie
+— dette nommée, pas une case. Tous reçoivent la globale.
+
+**Le pont**, une seule forme, dans chaque bloc `sh` qui appelle un script
+sourçant `dbg.sh`, juste après `set +x` quand il existe (sinon en tête) :
+
+```sh
+if [ "${DEBUG:-false}" = "true" ]; then export STOA_DEBUG=1; fi
+```
+
+En `if/fi`, jamais `[ … ] && export` : mesuré le 2026-09-11, la forme du plan
+sans défaut (`[ "$DEBUG" = true ]`) abat le step sous `set -u` dès que `DEBUG`
+n'est pas matérialisée (premier build d'un job `properties()`), et la liste
+`&&` rend 1 si elle termine un bloc. `DEBUG` ne traverse **aucun** `withEnv` :
+Jenkins expose nativement les paramètres de build au `sh`, en déclaratif comme
+en `properties()` (le même canal que `selfservice` réserve à son mot de passe,
+fait 9). Rien ne bouge dans les listes `withEnv` épinglées par les suites.
+
+**Le moteur parle aussi** : les quatre scripts qui appellent `ansible-playbook`
+(`api-promote-export.sh`, `team-apply.sh`, `team-publish.sh`, `team-promote.sh`
+— branche `ansible` seulement) relaient `-e stoa_debug="$(dbg_bool)"`
+(`dbg_bool`, `ci/lib/dbg.sh` : `true` si `dbg_on`, `false` sinon). Aucun
+`ansible-playbook` n'existe dans ces Jenkinsfile, et six suites l'interdisent
+(le pipeline route, le moteur reste dans `scripts/` et `ansible/roles/`). Effet
+réel : les deux tâches `debug` gardées par `stoa_debug` dans
+`apim_common/tasks/secrets.yml` — `no_log` n'est jamais levé.
+
+**Preuves** : hors ligne `scripts/test-debug-knob-wiring.sh` 70/70 (`make
+lint-ci` [11/20]) — une table des huit jobs (case à défaut `false`, libellé,
+rang, miroir, pont, forme lue sur la vue CODE : toute occurrence de
+`STOA_DEBUG` est le pont, aucun `withEnv` ne porte DEBUG), exclusions
+explicites, globale dans les deux listes et dans `--help`, relais du moteur,
+`lint-ci` qui joue la suite, et sept mutants qui rougissent (pont en `&&`, pont
+avant `set +x`, rang déplacé, XML amputé, DEBUG glissé dans un `withEnv`,
+`export STOA_DEBUG=false` après le pont, `defaultValue: true`) ;
+`test-dbg-redaction.sh` 109/109 avec le cas A.7 de `dbg_bool` ; les suites
+voisines re-comptent (team-request 5 paramètres, `test-palier-retention` ⑰bis,
+`test-promote-sans-recopie` §13, `test-api-request-wiring` :302,
+`test-app-rollback-a6` D.2/D.6). Les trois suites de câblage orphelines
+(`app-request`, `api-request`, `team-apply`) entrent sous `lint-ci` et sous
+shellcheck le même jour : L4 réécrivait leurs ancres, une suite hors porte ne
+mesure plus rien. Par builds réels : `scripts/test-debug-knob-live.sh` — voir
+le paragraphe « Preuve live » de ce chapitre.
 
 **Qui parle** (sous `STOA_DEBUG`, une ligne par décision, juste après elle) :
 
@@ -1555,7 +1637,8 @@ la voie du plan (ci-dessous, « Dettes hors périmètre »).
 - la ligne d'**appel** (`+ dbg …`, `+ dbg_kv CLONE_URL …`) est tracée par un
   appelant sous `sh -x` **avant** d'entrer dans la lib — la lib n'y ajoute
   aucune ligne, mais ne retire pas celle-là. Un bloc Jenkins doit faire
-  `set +x` avant le pont `DEBUG ⇒ STOA_DEBUG` (L4) ;
+  `set +x` avant le pont `DEBUG ⇒ STOA_DEBUG` — c'est la forme posée par L4 sur
+  les dix formulaires, épinglée par `scripts/test-debug-knob-wiring.sh` ;
 - `provision-apply-comment.sh`, appelé par le `fail()` de la réconciliation
   avec sa sortie jetée (`>/dev/null 2>&1`), n'est pas instrumenté : la ligne
   HTTP du commentaire de refus ne se lit pas ;
@@ -1617,6 +1700,119 @@ du canal debug) :
   (` 0`, `fAlSe`) — sans effet dès que `dbg_init` a normalisé ; stderr fermé +
   `STOA_DEBUG=1` fait rendre rc 1 à `forge-api.py` au lieu de son verdict
   (`_dbg` n'est pas gardé).
+
+## Le récepteur de webhooks (L6 — 2026-09-11)
+
+Le 2026-09-11, chez le client GitLab, `provision-plan` mourait **avant son
+premier stage** : `Invalid trigger type "GenericTrigger"`. Le plugin
+**generic-webhook-trigger** ne peut pas être installé sur son Jenkins, et un
+symbole de déclencheur nommé dans un bloc Declarative `triggers { }` est résolu
+**à la compilation** — le job est donc refusé, pas dégradé.
+`selfservice-app-deploy` mourait de la même cause, à l'invocation
+(`No such DSL method 'GenericTrigger'`), alors que son hook n'est même pas un
+hook de forge : c'est la gateway wM qui le sonne. Ce Jenkins a, lui, le **GitLab
+Plugin**.
+
+**Une seule autorité, et elle est dans le Jenkinsfile.** Chaque pipeline de
+l'aval applicatif pose son déclencheur ET son verrou de concurrence par un
+`properties()` **scripté**, au premier stage, selon la globale `WEBHOOK_KIND` —
+un `if` non pris n'invoque pas le symbole, donc n'exige pas le plugin. Toute
+autre valeur est refusée par nom, **avant** que rien ne soit posé
+(`WEBHOOK_KIND_INVALIDE`). Les `job.xml` de `provision-plan` et
+`provision-apply` ne portent plus **aucune** propriété : un XML porteur du même
+déclencheur donne un **doublon** au premier build, puis l'exemplaire du XML est
+**perdu** au second (mesuré). Conséquence directe : le déclencheur n'existe
+qu'après le premier build — l'**amorçage**, que `setup-provision-jobs.sh`
+déclenche, **attend** et **relit** (`AMORCAGE_INCOMPLET` sinon).
+
+**Knobs** (globales Jenkins, `setup-jenkins-globals.sh --help`) :
+
+| Knob | Valeurs | Défaut | Rôle |
+|------|---------|--------|------|
+| `WEBHOOK_KIND` | `gwt` \| `gitlab` | `gwt` | le **récepteur** de ce Jenkins, pas le visage de la forge (`FORGE_KIND`) : un même GitLab se sert par l'un ou l'autre. `gwt` : `/generic-webhook-trigger/invoke?token=<token du job>`, les deux formes de payload (Gitea, GitLab) lues sans knob. `gitlab` : `/project/<job>` + `X-Gitlab-Token` ; `provision-plan` écoute ouverture / réouverture / push / titre, `provision-apply` la **fusion seulement** ; `selfservice-app-deploy` n'a **aucun** hook direct |
+| `BOOTSTRAP_JOBS` | liste \| `none` | `provision-apply provision-plan` | les jobs amorcés après la pose (`setup-provision-jobs.sh`). Le mot `none` débranche — une valeur vide n'atteint pas le shell depuis Jenkins |
+| `BOOTSTRAP_AWAIT_JOBS` | liste \| `none` | idem | ceux dont l'amorçage est **attendu puis relu** ; `none` rend le geste fire-and-forget d'avant |
+| `BOOTSTRAP_WAIT` | secondes | `360` | la borne de cette attente |
+
+**Prérequis côté client GitLab** (à obtenir AVANT de brancher les webhooks) :
+
+- **GitLab Plugin ≥ 1.7.13** : c'est la version qui expose
+  `gitlabMergeCommitSha`, donc la référence A2. Sans elle, l'apply n'a aucun SHA
+  à projeter ;
+- **deux webhooks de projet**, événements **« Merge request » seulement**
+  (jamais push), vers `https://<jenkins>/project/provision-plan` et
+  `https://<jenkins>/project/provision-apply`, champ **Secret Token** =
+  `stoa-provision-plan` / `stoa-provision-apply`. Ce mot est une **sonnette**,
+  pas une autorité : la réconciliation relit la forge (`FORGE_NON_CONFIRMEE`,
+  `PAYLOAD_PERIME`). Sans token, l'endpoint authentifié du plugin — actif par
+  défaut — répond 401/403 ;
+- **méthode de merge = merge commit** : en fast-forward ou squash, GitLab ne
+  remplit pas `merge_commit_sha` et l'apply refuse `MERGE_SHA_INVALIDE` ;
+- **jobs créés à la main** (sans le poseur) : type **Pipeline**, « Pipeline
+  script from SCM », `Lightweight checkout` **décoché** (le workspace doit porter
+  `scripts/`, `ansible/`, `ci/lib/`), **aucun** déclencheur coché, puis **« Build
+  Now » une fois** : le build sort vert (« hors provision/* ») sans exécuteur et
+  pose le déclencheur ;
+- ce que le plugin ne dit pas : il **n'expose pas l'action** de la MR
+  (`gitlabActionType` vaut `MERGE` même sur une ouverture) et un état hors de
+  son énumération devient un **joker** dans ses règles. Le pipeline relit donc
+  l'**état** : `opened` pour le plan, `merged` pour l'apply — hors de là, le
+  build sort vert et ne fait rien ;
+- un **bon** token sur un corps forgé fait **500** dans le handler du plugin
+  (aucun build) : à savoir en lisant les journaux, rien à corriger ;
+- ⚠ **sur un GitLab privé, posez `GIT_BASE` explicitement.** La découverte de la
+  branche par défaut (L3, `git ls-remote --symref … HEAD`) tourne **hors** de
+  l'enveloppe d'authentification du clone : sur un dépôt qui exige des droits en
+  lecture, elle meurt `fatal: could not read Username … terminal prompts
+  disabled` et le plan refuse `BRANCHE_PAR_DEFAUT_INCONNUE` (mesuré le
+  2026-09-11 sur le GitLab du lab). Le refus nomme lui-même la voie. **Dette
+  L3** : faire passer cette sonde par la même enveloppe que le clone ;
+- le **credential de la forge** est un jeton de **forge** : un jeton Gitea dans
+  `GITEA_CREDENTIALS_ID` fait échouer la réconciliation en **401** sur l'API
+  GitLab, APRÈS le déclenchement — le webhook a l'air bon, la chaîne meurt plus
+  loin. Un site GitLab pose un PAT GitLab (`api`, `read_user`,
+  `write_repository`) ;
+- ⛔ **BLOQUANT sur une forge PRIVÉE, et ce n'est pas un défaut de ce lot** :
+  `scripts/provision-plan.sh:208` clone `${GIT_HOST}/${GIT_REPO}.git` **sans
+  aucune enveloppe d'authentification**, et c'est le SEUL de la chaîne à ignorer
+  `GIT_CLONE_URL` (ses frères `provision-request.sh:495`,
+  `app-rollback-request.sh:121` et `provision-apply-reconcile.sh:262`
+  l'honorent). Sur le Gitea du lab, la lecture anonyme masque le trou (mesuré :
+  `info/refs` ⇒ 200 sur Gitea, **401** sur un projet GitLab privé) ; sur une
+  forge privée le plan meurt `CLONE_ECHEC` et l'apply enchaîne sur
+  `MERGE_SHA_NON_ANCETRE` (il a cloné autre chose que la forge visée). **À
+  fermer avant tout client sur forge privée** : honorer `GIT_CLONE_URL` dans
+  `provision-plan.sh` et passer le clone par `git_base_avec_basic`
+  (`scripts/lib/git-base.sh`), qui existe déjà et ne met jamais le secret en
+  argv. Le lab GitLab a été mis en lecture anonyme (groupe `ci` et projet en
+  `public`) pour que la preuve du récepteur mesure le récepteur, et pas ce trou.
+
+**Pas d'écart de comportement entre les deux visages** sur les événements d'une
+MR : le plugin reconstruit le plan sur un changement de titre comme sur un push,
+exactement comme le generic-webhook-trigger. La « garde déjà construit » que ses
+sources laissaient craindre ne s'applique pas — mesuré par builds réels.
+
+**La porte** : `test-a0-wiring.sh` §3bis (structurel : l'ordre refus →
+`properties()` → fait unifié, la table des cases du plugin, un seul symbole de
+chaque en vue code) et §8bis (neuf mutations qui doivent rougir) ;
+`test-setup-provision-jobs.sh` §16 (l'amorçage attendu et relu, six refus) ;
+sous `make lint-ci` [11/20] et [1/20]. **Angle mort assumé** : aucune suite
+statique ne voit un `if` dont la condition ment — le miroir lit le premier
+symbole qu'il trouve. Seule la preuve live le couvre, et la porte le dit.
+
+**Au lab** : `scripts/test-webhook-kind-gitlab-live.sh` (la chaîne entière par le
+GitLab Plugin : plan sur ouverture et sur push, apply sur la fusion avec
+`MERGE_SHA` égal à l'API, close muet, token exigé, retour à `gwt` vérifié) ;
+non-régression `gwt` par `test-a6-live.sh` et `test-a7-live.sh` inchangés ;
+`gitlab-plugin` ajouté à `ci/jenkins/Dockerfile` pour qu'un lab reconstruit
+porte les deux récepteurs.
+
+**Dettes** : les cinq Jenkinsfile de la chaîne API (`team-apply`,
+`team-publish`, `team-promote`, `publish-api`, `provisioning-request`) portent
+encore un bloc déclaratif — même motif à rejouer avant tout client GitLab sur la
+chaîne producteur ; un vrai secret par site pour le Secret Token (credential +
+`withCredentials` avant le `properties()`) ; `FORGE_CRED_KIND` classé optionnel
+mais refusé si vide par onze pipelines.
 
 ## Résiduel
 

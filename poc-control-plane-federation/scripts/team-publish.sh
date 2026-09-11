@@ -453,6 +453,7 @@ GOV_REGISTRY="$TMP/governance/${GOVERNANCE_PATH}"
 # liste blanche du champ contract) : elles valident l'état mergé sur le
 # clone ; ce qui part au moteur est ce que le résolveur en a fait.
 ( ansible-playbook -i ansible/inventory.lab.ini ansible/publish-api.yml \
+    -e stoa_debug="$(dbg_bool)" \
     -e apim_ss_manifest="$DEPLOY_PIN_PUBLISH" -e apim_ss_team="$TEAM" \
     -e apim_ss_api_base="$APIM_API_BASE" -e apim_ss_env="$ENVN" \
     -e apim_ss_contract_pin="$DEPLOY_PIN_CONTRACT" \
