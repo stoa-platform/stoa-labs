@@ -88,8 +88,71 @@ photo d'avant), `scripts/spike-webhook-kind-m2m4.sh` (deux jobs `spike-m2`,
 
 ## Décision
 
-À écrire une fois le spike complet (D1..D12 de la spec
-`docs/superpowers/specs/2026-09-11-webhook-kind-deux-visages-design.md`).
+**Le récepteur de webhooks devient un knob, le déclencheur est posé par le
+build, et le XML ne porte plus rien.**
+
+1. **`WEBHOOK_KIND` = `gwt` | `gitlab`**, globale Jenkins, défaut `gwt`. Le knob
+   nomme le **récepteur de webhooks de ce Jenkins**, pas le visage de la forge
+   (`FORGE_KIND`) : un même GitLab peut être servi par l'un ou l'autre, et le
+   déclencheur de `selfservice-app-deploy` — que la gateway wM sonne, pas une
+   forge — dépend du même plugin. Optionnel, parce qu'absent il pose exactement
+   ce que la chaîne faisait avant. Toute autre valeur ⇒ `WEBHOOK_KIND_INVALIDE`.
+2. **Plus aucun bloc Declarative `triggers {}` ni `options {}`** dans l'aval
+   applicatif : ils exigeraient le plugin au parse (M1). Le premier stage —
+   « Contexte du webhook », sans agent, qui ne refusait rien jusqu'ici — pose
+   `properties([disableConcurrentBuilds(), pipelineTriggers([<visage>])])` selon
+   le knob, et **refuse avant de rien poser**.
+3. **Les deux `job.xml` deviennent `<properties/>`.** Un XML porteur n'est pas
+   une ceinture : c'est un doublon au build 1 et une perte au build 2 (M2).
+4. **L'amorçage est attendu et relu** par `setup-provision-jobs.sh` : un job posé
+   sans amorçage est muet, et son silence ne se dénonce pas (M4). La relecture
+   exige **un** déclencheur de la classe qu'annonce `WEBHOOK_KIND` et **une**
+   `DisableConcurrentBuildsJobProperty` — sinon `AMORCAGE_INCOMPLET`, rc 1.
+5. **L'état est relu dans le pipeline.** Le plugin n'expose pas l'action (M8) et
+   un état hors de son énumération devient un joker dans ses règles : le
+   pipeline exige donc `opened` pour le plan, `merged` pour l'apply. Deux
+   portes, jamais une seule — la doctrine de cette chaîne.
+6. **Le `secretToken` est le mot du token GWT**, littéral dans le Jenkinsfile.
+   C'est une sonnette, pas une autorité : la réconciliation relit la forge
+   ([[adr-081-ou-vit-la-decision-humaine]]). Un vrai secret par site reste
+   possible (credential + `withCredentials`) et est nommé en dette.
+7. **Les défauts TRUE du plugin sont figés à false** — `ciSkip` en premier : une
+   MR dont la description porte `[ci-skip]` n'aurait NI plan NI apply.
+8. **Sous `gitlab`, `selfservice-app-deploy` n'a aucun hook direct** : il n'est
+   atteint que par le `build job:` de `provision-apply`.
+
+## Refus nommés
+
+| Refus | Où | Quand |
+|---|---|---|
+| `WEBHOOK_KIND_INVALIDE` | les trois Jenkinsfile, **avant** `properties()` | la globale ne vaut ni `gwt` ni `gitlab` — aucun déclencheur n'est posé, et le formulaire précédent de `selfservice` reste en place |
+| `AMORCAGE_INCOMPLET` | `setup-provision-jobs.sh`, après l'amorçage | build d'amorçage en échec, ou jamais fini dans `BOOTSTRAP_WAIT`, ou relecture ≠ 1 déclencheur de la classe attendue + 1 verrou (0 = job muet, 2 = le doublon, autre classe = le knob et le Jenkinsfile en désaccord) |
+| `MERGE_SHA_INVALIDE` | `provision-apply-reconcile.sh` (inchangé) | le SHA arrive vide — en fast-forward ou squash, GitLab ne remplit pas `merge_commit_sha` |
+
+## Conséquences et limites
+
+- **Le déclencheur n'existe qu'après le premier build.** Toute re-pose de XML
+  ouvre une fenêtre muette ; elle est désormais fermée par le poseur avant qu'il
+  ne rende la main. Un client qui crée ses jobs à la main doit cliquer « Build
+  Now » une fois : le build sort vert (« hors provision/* ») sans exécuteur.
+- **En fast-forward ou squash, la chaîne refuse.** Le prérequis « merge commit »
+  n'est pas une préférence : sans `merge_commit_sha`, il n'y a pas de référence
+  A2 à projeter.
+- **Angle mort assumé de la porte hors ligne** : aucune suite statique ne voit
+  un `if` dont la condition ment (le miroir est aveugle à la conditionnalité —
+  il lit le premier symbole qu'il trouve). Seule la preuve live le couvre, et
+  c'est écrit dans la porte elle-même.
+- **Le trou `locked` du plugin** : un état hors de son énumération devient un
+  joker dans ses règles ; `triggerOpenMergeRequestOnPush: 'never'` le ferme sur
+  `update` pour l'apply, et la relecture de l'état le ferme partout ailleurs.
+- **Un bon token sur un corps forgé fait 500** dans le handler du plugin (M9) :
+  aucun build, mais une erreur serveur plutôt qu'un refus propre. Rien à
+  corriger chez nous ; à savoir en lisant les journaux d'un client.
+- **Dettes nommées** : les cinq Jenkinsfile de la chaîne API (`team-apply`,
+  `team-publish`, `team-promote`, `publish-api`, `provisioning-request`) portent
+  encore un bloc déclaratif — même motif à rejouer avant tout client GitLab sur
+  la chaîne producteur ; le `secretToken` par credential ; `FORGE_CRED_KIND`
+  classé optionnel mais refusé si vide par onze pipelines.
 
 ## Preuves
 
