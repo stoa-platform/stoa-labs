@@ -1,7 +1,7 @@
 ---
 title: "ADR-098 — Un Jenkinsfile qui NOMME son déclencheur dans un bloc déclaratif exige le plugin qui le porte, avant son premier stage. Le récepteur de webhooks devient un knob, le déclencheur est posé par le build, et le XML ne porte plus rien."
 sidebar_label: "ADR-098 : le récepteur de webhooks (L6)"
-status: "BROUILLON — spike en cours (2026-09-11). M1 mesuré 3/3."
+status: "BROUILLON — spike en cours (2026-09-11). M1 3/3, M5, M2, M4 mesurés ; restent M6..M9 (payloads réels GitLab)."
 maturite_technique: "⏳ en cours — les visages ne sont pas encore écrits ; ce document collecte les mesures qui fondent leur forme."
 date: 2026-09-11
 adr_number: 98
@@ -41,18 +41,34 @@ Jenkinsfile peut-il porter deux récepteurs sans exiger les deux plugins ».
 | M1(a) | `triggers { gitlab(triggerOnPush: false) }` **déclaratif**, `gitlab-plugin` ABSENT | FAILURE au parse | ✅ **FAILURE**, `Invalid trigger type "gitlab". Valid trigger types: [upstream, cron, G…]` — aucun stage n'a tourné |
 | M1(b) | le **même** symbole dans `script { if (false) { properties([pipelineTriggers([gitlab(…)])]) } }` | SUCCESS (jamais résolu) | ✅ **SUCCESS** |
 | M1(c) | le même sous `if (true)` | FAILURE à l'invocation | ✅ **FAILURE**, `No such DSL method 'gitlab'` |
+| M5 | `jenkins-plugin-cli --plugins gitlab-plugin` dans le conteneur + redémarrage | plugin actif, GWT intact, rien d'autre touché | ✅ `gitlab-plugin 1.2148.vf57e19a_56658` actif, `generic-webhook-trigger 2.4.3` intact, **aucun** des 61 plugins préexistants modifié ou désactivé ; 14 dépendances arrivées (61 → 75) ; `useAuthenticatedEndpoint=false` sur ce lab (un client sécurisé exigera le `secretToken`) |
+| M2 | XML porteur d'un `GenericTrigger` **+** `properties([pipelineTriggers([GenericTrigger identique])])` | doublon au build 1, un seul au build 2 | ✅ à la pose `[1 GenericTrigger, 1 PipelineTriggersJobProperty]` ; après le build 1 **`[2, 2]` — DOUBLON** ; après le build 2 **`[1, 1]`** : les deux exemplaires retirés et celui du Jenkinsfile reposé. Le déclencheur du XML est **PERDU**, jamais « préservé ». Un `invoke` sur le doublon ne lance qu'**un** build (`allowSeveralTriggersPerBuild=false`) |
+| M4 | XML `<properties/>` : le webhook avant / après l'amorçage | muet puis vivant | ✅ à la pose `[0 0 0 0]` ; `invoke?token` ⇒ **404 « aucun job »** ; `POST /project/<job>` (sans `GitLabPushTrigger`) ⇒ **200 SILENCIEUX, aucun build** ; amorçage ⇒ `[1 trigger, 1 option]` posés par le build ; `invoke?token` ⇒ **200 + le job**. Toute pose de XML ouvre donc une **fenêtre muette** jusqu'à la fin du premier build |
 
-**Conséquence, et c'est la forme du lot** : Declarative valide ses directives
+**Conséquences, et c'est la forme du lot** :
+
+1. *(M1)*  Declarative valide ses directives
 `triggers {}` à la compilation, contre les descripteurs **présents** ; un appel
 scripté n'est résolu qu'à l'invocation. Le visage d'un plugin absent doit donc
 être écrit en **scripté, sous un `if`** — et aucun `triggers { … }` déclaratif ne
-peut subsister dans l'aval applicatif. Preuve : `scripts/spike-webhook-kind-m1.sh`
-(jetable, trois jobs `spike-m1-*` supprimés en sortie, garde fail-closed qui
-REFUSE si le plugin éprouvé est présent : mesurer l'inverse ne prouve rien).
+peut subsister dans l'aval applicatif.
+2. *(M2)* Garder le déclencheur dans le XML « par ceinture » ne protège de rien :
+   c'est un doublon, puis une perte. Le XML de `provision-plan` et
+   `provision-apply` doit donc ne porter **aucune** propriété, et le Jenkinsfile
+   les poser **toutes** (déclencheur ET `disableConcurrentBuilds`).
+3. *(M4)* Le déclencheur n'existe qu'après le premier build. Le poseur doit donc
+   **attendre et relire** cet amorçage (`AMORCAGE_INCOMPLET` sinon) : sans cela
+   il rend la main sur un job muet, et le silence du `POST /project/<job>`
+   (200, aucun build) ne le dénoncerait jamais.
 
-<!-- M5, M2, M4 (installation du plugin au lab, doublon XML+properties(),
-     fenêtre d'amorçage) et M6..M9 (payloads réels GitLab CE 17.11, table
-     état×action, variables gitlab*, X-Gitlab-Token) s'ajoutent ici. -->
+Preuves : `scripts/spike-webhook-kind-m1.sh` (trois jobs `spike-m1-*`, garde
+fail-closed qui REFUSE si le plugin éprouvé est présent : mesurer l'inverse ne
+prouve rien), `scripts/spike-webhook-kind-m5.sh` (idempotent, ne détruit pas sa
+photo d'avant), `scripts/spike-webhook-kind-m2m4.sh` (deux jobs `spike-m2`,
+`spike-m4`). Tous jetables : leurs jobs sont supprimés en sortie, même en échec.
+
+<!-- M6..M9 (payloads réels GitLab CE 17.11, table état×action, variables
+     gitlab*, X-Gitlab-Token) s'ajoutent ici. -->
 
 ## Décision
 
@@ -64,3 +80,5 @@ REFUSE si le plugin éprouvé est présent : mesurer l'inverse ne prouve rien).
 | Preuve | Commande | Résultat |
 |---|---|---|
 | M1 — le symbole se résout au parse en déclaratif, à l'invocation en scripté | `JENKINS_UI=http://localhost:18080 bash scripts/spike-webhook-kind-m1.sh` | **3/3** (2026-09-11) |
+| M5 — le lab porte les deux récepteurs | `bash scripts/spike-webhook-kind-m5.sh` | gitlab-plugin 1.2148 actif, GWT intact, 0 perdu (2026-09-11) |
+| M2 + M4 — doublon puis perte ; fenêtre d'amorçage | `bash scripts/spike-webhook-kind-m2m4.sh` | **conformes** (2026-09-11) |
