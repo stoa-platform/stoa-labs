@@ -68,11 +68,25 @@ class H(BaseHTTPRequestHandler):
                 self.send_header("Location", "https://stoa-platform.cloudflareaccess.com/cdn-cgi/access/login/x")
                 self.send_header("Content-Length", "0"); self.end_headers(); return
             return self._send(200, json.dumps({"crumbRequestField": "Jenkins-Crumb", "crumb": "abc"}).encode())
-        m = re.match(r"^/job/([^/]+)/api/json$", self.path)
+        m = re.match(r"^/job/([^/]+)/api/json", self.path)
         if m:
             present = m.group(1) in EXISTING
             log(f"GET exists {m.group(1)} -> {200 if present else 404}")
-            return self._send(200 if present else 404)
+            # nextBuildNumber : le poseur le relève AVANT de lancer l'amorcage,
+            # pour savoir QUEL build attendre (L6).
+            return self._send(200 if present else 404, json.dumps({"nextBuildNumber": 7}).encode())
+        m = re.match(r"^/job/([^/]+)/7/api/json", self.path)
+        if m:   # L6 : le build d'amorcage. BUILD_RESULT vide = ENCORE EN COURS.
+            log(f"GET build {m.group(1)} 7")
+            return self._send(200, json.dumps({"result": os.environ.get("BUILD_RESULT", "SUCCESS") or None}).encode())
+        m = re.match(r"^/job/([^/]+)/config\.xml$", self.path)
+        if m:   # L6 : la RELECTURE d'apres l'amorcage. RELU_XML = ce qu'on sert.
+            log(f"GET config {m.group(1)}")
+            p = os.environ.get("RELU_XML", "")
+            body = open(p, "rb").read() if p else b"<flow-definition><properties/></flow-definition>"
+            # __JOB__ → le nom du job : un seul gabarit sert les deux jobs, dont
+            # les tokens attendus diffèrent (stoa-provision-plan / -apply).
+            return self._send(200, body.replace(b"__JOB__", m.group(1).encode()))
         self._send(404)
     def do_POST(self):
         if not self._authok(): return self._send(401)
@@ -112,12 +126,45 @@ start(){ # $1=jobs existants (csv) $2=code MAJ $3=auth(0/1) $4=code crumb $5=CF 
   : > "$TMP/calls.log"
   CALLLOG="$TMP/calls.log" EXISTING_JOBS="$1" UPDATE_CODE="$2" NEED_AUTH="${3:-0}" BODYDIR="${BODYDIR:-}" \
   CRUMB_CODE="${4:-200}" NEED_CF="${5:-0}" BUILD_CODE="${BUILD_CODE:-201}" \
+  BUILD_RESULT="${BUILD_RESULT-SUCCESS}" RELU_XML="${RELU_XML:-}" \
     python3 "$TMP/fakejenkins.py" "$PORT" >/dev/null 2>&1 &
   PID=$!
   for _ in $(seq 1 40); do curl -s "http://127.0.0.1:$PORT/x" >/dev/null 2>&1 && return; sleep 0.1; done
 }
 calls(){ cat "$TMP/calls.log" 2>/dev/null; }
 JU="http://127.0.0.1:$PORT"
+# relu <n GenericTrigger> <n GitLabPushTrigger> <n DisableConcurrentBuilds> <token> → chemin
+# du config.xml que le faux Jenkins servira APRÈS l'amorçage. C'est le seul
+# levier de la §16 : 1/0/1 = nominal gwt, 0/1/1 = nominal gitlab, 2/0/1 =
+# doublon (fait 10), 0/0/0 = job muet.
+# ⚠ JAMAIS `for i in $(seq 1 "$n")` pour répéter n fois quand n peut valoir 0 :
+# le seq de BSD/macOS rend « 1 0 » (DEUX valeurs) là où celui de GNU n'en rend
+# aucune — mesuré le 2026-09-11, la ligne « 0 GitLabPushTrigger » en écrivait
+# deux et la §16 accusait le poseur de compter faux.
+rep(){ local n="$1"; shift; local i=0; while [ "$i" -lt "$n" ]; do printf '%s\n' "$*"; i=$((i+1)); done; }
+relu(){
+  # Le nom du fichier porte AUSSI le token : sinon un appel d'une section écrase
+  # le gabarit servi à une autre (mesuré le 2026-09-11 — §14 posait le token de
+  # provision-plan dans le fichier que §15 servait à provision-apply, et la
+  # relecture refusait à juste titre un token qui n'était pas le sien).
+  local f="$TMP/relu-$1-$2-$3-$(printf '%s' "$4" | tr -c 'A-Za-z0-9_-' '_').xml"
+  { echo '<flow-definition><properties>'
+    rep "$3" '<org.jenkinsci.plugins.workflow.job.properties.DisableConcurrentBuildsJobProperty/>'
+    if [ "$1$2" != 00 ]; then
+      echo '<org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty><triggers>'
+      rep "$1" "<org.jenkinsci.plugins.gwt.GenericTrigger><token>$4</token></org.jenkinsci.plugins.gwt.GenericTrigger>"
+      rep "$2" '<com.dabsquared.gitlabjenkins.GitLabPushTrigger><secretToken>x</secretToken></com.dabsquared.gitlabjenkins.GitLabPushTrigger>'
+      echo '</triggers></org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty>'
+    fi
+    echo '</properties></flow-definition>'; } > "$f"
+  printf '%s' "$f"
+}
+# Depuis L6 le poseur amorce et RELIT par défaut : chaque section de cette suite
+# traverse donc la relecture. On sert un config.xml NOMINAL par défaut (1 trigger
+# de la classe gwt au nom du job, 1 option) ; §16 le surcharge pour éprouver les
+# refus. Sans ce défaut, les quatorze sections d'avant L6 rougiraient sur une
+# relecture qu'elles ne mesurent pas.
+RELU_XML="$(relu 1 0 1 'stoa-__JOB__')"; export RELU_XML
 
 echo "== 1. job EXISTANT : mis à jour EN PLACE, jamais supprimé =="
 start "provision-apply,provision-plan" 200
@@ -242,18 +289,26 @@ echo "== 14. BOOTSTRAP_JOBS (A0) : le build d'amorçage suit la pose — et seul
 # EFFACE les paramètres (mesuré 2026-09-02). Le poseur doit donc amorcer d'un
 # build les jobs qu'on lui nomme, APRÈS une pose réussie, jamais en dry-run,
 # jamais sans demande — et dire si Jenkins refuse (400 = déjà paramétré).
-start "provision-apply,provision-plan" 200
+RELU_XML="$(relu 1 0 1 stoa-provision-plan)" start "provision-apply,provision-plan" 200
 OUT=$(cd "$REPO" && JENKINS_UI="$JU" BOOTSTRAP_JOBS=provision-plan bash "$S" 2>&1); RC=$?
 [ $RC -eq 0 ] && ok "succès avec BOOTSTRAP_JOBS" || ko "échec (rc=$RC) : $OUT"
 [ "$(calls | grep -c 'POST build provision-plan')" = "1" ] && ok "UN build d'amorçage demandé pour le job nommé" || ko "amorçage absent ou répété : $(calls | grep -c 'POST build')"
 calls | grep -q 'POST build provision-apply' && ko "amorçage sur un job NON nommé" || ok "aucun amorçage sur le job non nommé"
 L_POSE=$(calls | grep -n 'POST update /job/provision-plan' | cut -d: -f1); L_BOOT=$(calls | grep -n 'POST build provision-plan' | cut -d: -f1)
 [ -n "$L_POSE" ] && [ -n "$L_BOOT" ] && [ "$L_POSE" -lt "$L_BOOT" ] && ok "l'amorçage vient APRÈS la pose (appels $L_POSE puis $L_BOOT)" || ko "ordre pose/amorçage cassé (pose=$L_POSE boot=$L_BOOT)"
-grep -q "build d'amorçage déclenché" <<<"$OUT" && ok "annoncé dans la sortie" || ko "amorçage muet"
-start "provision-apply,provision-plan" 200
+{ grep -q "amorçage #7 : SUCCESS" <<<"$OUT" && grep -q 'relecture : 1 trigger' <<<"$OUT"; } \
+  && ok "annoncé dans la sortie, et pas seulement « déclenché » : l'amorçage est ATTENDU puis RELU (L6)" \
+  || ko "amorçage muet ou non relu : $(grep -E 'amorçage|relecture' <<<"$OUT" | tr '\n' ' ')"
+RELU_XML="$(relu 1 0 1 stoa-provision-plan)" start "provision-apply,provision-plan" 200
 OUT=$(cd "$REPO" && JENKINS_UI="$JU" bash "$S" 2>&1); RC=$?
-calls | grep -q 'POST build' && ko "amorçage sans BOOTSTRAP_JOBS" || ok "sans BOOTSTRAP_JOBS : aucun build demandé (défaut inchangé)"
+[ "$(calls | grep -c 'POST build')" = 2 ] \
+  && ok "sans BOOTSTRAP_JOBS : les DEUX jobs posés sont amorcés (défaut L6 — un job posé sans amorçage est un job MUET : ses propriétés ne sont posées que par son premier build)" \
+  || ko "défaut BOOTSTRAP_JOBS : $(calls | grep -c 'POST build') build(s) demandé(s), attendu 2"
 start "provision-apply,provision-plan" 200
+OUT=$(cd "$REPO" && JENKINS_UI="$JU" BOOTSTRAP_JOBS=none bash "$S" 2>&1); RC=$?
+calls | grep -q 'POST build' && ko "BOOTSTRAP_JOBS=none a tout de même amorcé" \
+  || ok "BOOTSTRAP_JOBS=none : aucun build demandé (le MOT, parce qu'une valeur VIDE n'atteint pas le shell depuis Jenkins)"
+RELU_XML="$(relu 1 0 1 stoa-provision-plan)" start "provision-apply,provision-plan" 200
 OUT=$(cd "$REPO" && JENKINS_UI="$JU" DRY_RUN=true BOOTSTRAP_JOBS=provision-plan bash "$S" 2>&1); RC=$?
 calls | grep -q 'POST build' && ko "DRY_RUN a amorcé un build !" || ok "DRY_RUN : aucun build demandé"
 grep -q "serait AMORCÉ" <<<"$OUT" && ok "DRY_RUN annonce l'amorçage qui serait fait" || ko "DRY_RUN muet sur l'amorçage"
@@ -261,7 +316,7 @@ start "provision-plan" 500
 OUT=$(cd "$REPO" && JENKINS_UI="$JU" JOBS=provision-plan BOOTSTRAP_JOBS=provision-plan bash "$S" 2>&1); RC=$?
 calls | grep -q 'POST build' && ko "amorçage tenté alors que la POSE a échoué" || ok "pose refusée ⇒ amorçage NON tenté (et dit)"
 grep -q "amorçage NON tenté" <<<"$OUT" && ok "le refus d'amorçage est nommé" || ko "refus d'amorçage muet"
-BUILD_CODE=400 start "provision-plan" 200
+BUILD_CODE=400 RELU_XML="$(relu 1 0 1 stoa-provision-plan)" start "provision-plan" 200
 OUT=$(cd "$REPO" && JENKINS_UI="$JU" JOBS=provision-plan BOOTSTRAP_JOBS=provision-plan bash "$S" 2>&1); RC=$?
 [ $RC -ne 0 ] && grep -q "DÉJÀ paramétré" <<<"$OUT" && ok "Jenkins répond 400 ⇒ échec du run, nommé « déjà paramétré » (jamais silencieux)" || ko "400 sur l'amorçage avalé (rc=$RC)"
 
@@ -324,5 +379,56 @@ unset BODYDIR
 
 echo
 echo "======================================================================"
+echo "== 16. l'amorçage est ATTENDU puis RELU (L6) : un trigger de la classe de WEBHOOK_KIND et une option, sinon AMORCAGE_INCOMPLET =="
+# MESURÉ (scripts/spike-webhook-kind-m2m4.sh, 2026-09-11) : un XML posé sans
+# propriété laisse le job MUET jusqu'à la fin de son premier build — le webhook
+# rend 404, et le POST /project/<job> du GitLab Plugin rend 200 EN SILENCE. Le
+# poseur ne peut donc pas rendre la main sur un « build lancé » : il attend, il
+# relit, et il nomme ce qui manque.
+RELU_XML="$(relu 1 0 1 stoa-provision-plan)" start "provision-plan" 200
+OUT=$(cd "$REPO" && JENKINS_UI="$JU" JOBS=provision-plan bash "$S" 2>&1); RC=$?
+[ $RC -eq 0 ] && grep -q "amorçage #7 : SUCCESS" <<<"$OUT" && grep -q "1 trigger GenericTrigger (stoa-provision-plan)" <<<"$OUT" \
+  && ok "gwt nominal : build #7 ATTENDU, config.xml RELU, 1 GenericTrigger + 1 DisableConcurrentBuilds ⇒ succès nommé" \
+  || ko "gwt nominal : rc=$RC — $(grep -E 'amorçage|relecture|AMORCAGE' <<<"$OUT" | tr '\n' ' ')"
+L_B=$(calls | grep -n 'POST build provision-plan' | head -1 | cut -d: -f1); L_R=$(calls | grep -n 'GET config provision-plan' | head -1 | cut -d: -f1)
+[ -n "$L_B" ] && [ -n "$L_R" ] && [ "$L_B" -lt "$L_R" ] \
+  && ok "la relecture (appel $L_R) vient APRÈS l'amorçage (appel $L_B)" || ko "ordre amorçage/relecture cassé (build=$L_B config=$L_R)"
+RELU_XML="$(relu 0 1 1 x)" start "provision-plan" 200
+OUT=$(cd "$REPO" && JENKINS_UI="$JU" JOBS=provision-plan WEBHOOK_KIND=gitlab bash "$S" 2>&1); RC=$?
+[ $RC -eq 0 ] && grep -q "1 trigger GitLabPushTrigger" <<<"$OUT" \
+  && ok "gitlab nominal : la CLASSE attendue suit WEBHOOK_KIND (GitLabPushTrigger), et l'URL du webhook GitLab est annoncée" \
+  || ko "gitlab nominal : rc=$RC — $(grep -E 'relecture|AMORCAGE' <<<"$OUT" | tr '\n' ' ')"
+RELU_XML="$(relu 1 0 1 stoa-provision-plan)" start "provision-plan" 200
+OUT=$(cd "$REPO" && JENKINS_UI="$JU" JOBS=provision-plan WEBHOOK_KIND=gitlab bash "$S" 2>&1); RC=$?
+[ $RC -ne 0 ] && grep -q "AMORCAGE_INCOMPLET" <<<"$OUT" \
+  && ok "knob gitlab mais GenericTrigger relu ⇒ AMORCAGE_INCOMPLET (la globale et le job ne disent pas la même chose)" \
+  || ko "classe divergente avalée (rc=$RC)"
+RELU_XML="$(relu 0 0 0 x)" start "provision-plan" 200
+OUT=$(cd "$REPO" && JENKINS_UI="$JU" JOBS=provision-plan bash "$S" 2>&1); RC=$?
+[ $RC -ne 0 ] && grep -q "AMORCAGE_INCOMPLET" <<<"$OUT" \
+  && ok "aucune propriété après l'amorçage ⇒ AMORCAGE_INCOMPLET (le job serait MUET, et le webhook rendrait 404 sans le dire)" \
+  || ko "job muet avalé (rc=$RC)"
+RELU_XML="$(relu 2 0 1 stoa-provision-plan)" start "provision-plan" 200
+OUT=$(cd "$REPO" && JENKINS_UI="$JU" JOBS=provision-plan bash "$S" 2>&1); RC=$?
+[ $RC -ne 0 ] && grep -q "AMORCAGE_INCOMPLET" <<<"$OUT" \
+  && ok "DEUX triggers relus ⇒ AMORCAGE_INCOMPLET (le doublon du fait 10 : un XML porteur aurait survécu à la pose)" \
+  || ko "doublon avalé (rc=$RC)"
+BUILD_RESULT="" RELU_XML="$(relu 1 0 1 stoa-provision-plan)" start "provision-plan" 200
+OUT=$(cd "$REPO" && JENKINS_UI="$JU" JOBS=provision-plan BOOTSTRAP_WAIT=4 bash "$S" 2>&1); RC=$?
+[ $RC -ne 0 ] && grep -q "ENCORE EN COURS après 4 s" <<<"$OUT" \
+  && ok "build d'amorçage jamais fini ⇒ échec BORNÉ par BOOTSTRAP_WAIT, nommé, et qui dit de NE PAS re-poser" \
+  || ko "attente non bornée ou muette (rc=$RC)"
+BUILD_RESULT=FAILURE RELU_XML="$(relu 1 0 1 stoa-provision-plan)" start "provision-plan" 200
+OUT=$(cd "$REPO" && JENKINS_UI="$JU" JOBS=provision-plan bash "$S" 2>&1); RC=$?
+[ $RC -ne 0 ] && grep -q "amorçage #7 : FAILURE" <<<"$OUT" && grep -q "AMORCAGE_INCOMPLET" <<<"$OUT" \
+  && ok "amorçage FAILURE (WEBHOOK_KIND_INVALIDE côté Jenkinsfile, par exemple) ⇒ AMORCAGE_INCOMPLET, même si la relecture est bonne" \
+  || ko "FAILURE d'amorçage avalé (rc=$RC)"
+start "provision-plan" 200
+OUT=$(cd "$REPO" && JENKINS_UI="$JU" JOBS=provision-plan BOOTSTRAP_AWAIT_JOBS=none bash "$S" 2>&1); RC=$?
+[ $RC -eq 0 ] && ! calls | grep -q 'GET config' && grep -q "non attendu" <<<"$OUT" \
+  && ok "BOOTSTRAP_AWAIT_JOBS=none : amorçage déclenché, ni attendu ni relu (le geste d'A0, conservé et DIT)" \
+  || ko "await=none : rc=$RC relectures=$(calls | grep -c 'GET config')"
+
+echo
 printf 'RÉSULTAT : %d/%d\n' "$PASS" "$((PASS+FAIL))"
 [ "$FAIL" -eq 0 ] || exit 1

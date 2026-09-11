@@ -73,7 +73,24 @@ JENKINS_TOKEN="${JENKINS_TOKEN:-}"
 DRY_RUN="${DRY_RUN:-false}"
 ALLOW_RECREATE="${ALLOW_RECREATE:-false}"
 JOBS="${JOBS:-provision-apply provision-plan}"
-BOOTSTRAP_JOBS="${BOOTSTRAP_JOBS:-}"
+# L6 (2026-09-11) : un job posé SANS amorçage est un job MUET — ses propriétés
+# (déclencheur, verrou de concurrence) ne sont posées que par son premier build,
+# et jusque-là le webhook rend 404 tandis que le POST /project/<job> du GitLab
+# Plugin rend 200 EN SILENCE (mesuré : scripts/spike-webhook-kind-m2m4.sh). Les
+# deux jobs de l'aval sont donc amorcés PAR DÉFAUT ; le mot `none` le débranche
+# (une valeur VIDE n'atteint pas le shell quand Jenkins l'exporte).
+BOOTSTRAP_JOBS="${BOOTSTRAP_JOBS:-provision-apply provision-plan}"
+[ "$BOOTSTRAP_JOBS" = none ] && BOOTSTRAP_JOBS=""
+# Ceux dont l'amorçage est ATTENDU (BOOTSTRAP_WAIT secondes) puis RELU :
+# exactement UN déclencheur de la classe qu'annonce WEBHOOK_KIND, et UNE
+# DisableConcurrentBuildsJobProperty — sinon AMORCAGE_INCOMPLET, rc 1. `none`
+# rend le geste d'A0 (fire-and-forget), explicitement.
+BOOTSTRAP_AWAIT_JOBS="${BOOTSTRAP_AWAIT_JOBS:-provision-apply provision-plan}"
+[ "$BOOTSTRAP_AWAIT_JOBS" = none ] && BOOTSTRAP_AWAIT_JOBS=""
+BOOTSTRAP_WAIT="${BOOTSTRAP_WAIT:-360}"
+# Le RÉCEPTEUR que le Jenkinsfile va poser : décide de la CLASSE attendue à la
+# relecture (GenericTrigger sous gwt, GitLabPushTrigger sous gitlab).
+WEBHOOK_KIND="${WEBHOOK_KIND:-gwt}"
 # ÉCART Task 3 (palier 3, déclaré) : JOBS_SRC_DIR permet à un appelant de
 # poser des XML PRÉ-RENDUS (setup-team-onboard-jobs.sh y substitue les
 # placeholders <!--CHOICES:*--> avant l'appel, dans un dossier de mise en
@@ -126,6 +143,7 @@ PLATEFORME_URL=""
 git_base_init "$PLATEFORME_URL" || exit 2
 
 STAGE_DIR=""   # créé à la demande, seulement si une substitution est nécessaire
+RELU_DIR="$(mktemp -d)"   # les config.xml relus après amorçage (L6)
 
 # stage_xml <job> <xml source> → chemin du XML À POSTER (source, ou copie ajustée)
 # DEUX substitutions indépendantes : la BRANCHE (__GIT_BASE__, par l'autorité,
@@ -234,7 +252,7 @@ done
 ok "XML des jobs bien formés"
 
 # ── 1. crumb CSRF ────────────────────────────────────────────────────────────
-CK=$(mktemp); CB=$(mktemp); trap 'rm -f "$CK" "$CB"; [ -n "$STAGE_DIR" ] && rm -rf "$STAGE_DIR"' EXIT
+CK=$(mktemp); CB=$(mktemp); trap 'rm -f "$CK" "$CB"; [ -n "$STAGE_DIR" ] && rm -rf "$STAGE_DIR"; rm -rf "$RELU_DIR"' EXIT
 # On lit le CODE plutôt que de se fier à `curl -f` : une redirection 302 vers un
 # portail N'EST PAS une erreur HTTP, `-f` la laisse passer, et le script échouait
 # ensuite sur un JSON vide avec un message qui n'aidait pas. Chaque cas mérite
@@ -266,6 +284,66 @@ C=$(printf '%s' "$CJ" | python3 -c 'import sys,json;print(json.load(sys.stdin)["
 ok "crumb CSRF obtenu"
 
 RC=0
+# amorcage_relu <job> <n° du build> : attend la fin de l'amorçage (borné par
+# BOOTSTRAP_WAIT), puis RELIT le config.xml. Fail-closed, et JAMAIS de re-pose —
+# elle effacerait ce que le build vient de poser (fait 10). rc 0 = amorçage
+# SUCCESS et relecture conforme.
+amorcage_relu(){
+  local j="$1" n="$2" r="" want nt no ntok tok hcr counts rest
+  [ -n "$n" ] || { warn "AMORCAGE_INCOMPLET : nextBuildNumber illisible pour $j — le build est lancé mais rien ne l'attend"; return 1; }
+  case "$WEBHOOK_KIND" in
+    gwt)    want=GenericTrigger ;;
+    gitlab) want=GitLabPushTrigger ;;
+    *)      warn "AMORCAGE_INCOMPLET : WEBHOOK_KIND='$WEBHOOK_KIND' inconnu (attendu gwt|gitlab) — rien n'est relu"; return 1 ;;
+  esac
+  for _ in $(seq 1 "$((BOOTSTRAP_WAIT / 2))"); do
+    r=$(jcurl -s -b "$CK" "$JENKINS_UI/job/$j/$n/api/json?tree=result" |
+        python3 -c 'import sys,json;print(json.load(sys.stdin).get("result") or "")' 2>/dev/null || true)
+    [ -n "$r" ] && break
+    sleep 2
+  done
+  [ -n "$r" ] || { warn "AMORCAGE_INCOMPLET : build d'amorçage #$n de $j ENCORE EN COURS après ${BOOTSTRAP_WAIT} s — NE PAS re-poser (la re-pose effacerait ce que ce build est en train de poser) : attendre sa fin sur $JENKINS_UI/job/$j/$n/console, puis relire le config.xml"; return 1; }
+  # ⚠ NE JAMAIS tester le rc de jcurl : sa dernière commande avant le tube est
+  # un `[ -n "$CF_ACCESS_TOKEN" ] && printf …`, donc le GROUPE rend 1 quand ce
+  # jeton est absent — et `pipefail` propage ce 1, requête réussie ou non
+  # (mesuré le 2026-09-11 : la relecture se croyait illisible sur un 200). Tous
+  # les autres appels de ce fichier lisent le CODE HTTP ; celui-ci aussi.
+  hcr=$(jcurl -s -b "$CK" -o "$RELU_DIR/$j.relu.xml" -w '%{http_code}' "$JENKINS_UI/job/$j/config.xml")
+  [ "$hcr" = 200 ] || { warn "AMORCAGE_INCOMPLET : config.xml de $j illisible après l'amorçage (HTTP $hcr)"; return 1; }
+  # PAS de heredoc ici : un `<<'PY'` imbriqué dans une substitution de commande
+  # elle-même placée dans un heredoc est mal découpé par bash — le python
+  # recevait un script tronqué et rendait des comptes faux (mesuré le
+  # 2026-09-11 : « 3 déclencheurs » sur un XML qui n'en portait qu'un).
+  # Les déclencheurs sont les enfants de <triggers> ; la PROPRIÉTÉ qui les porte
+  # (PipelineTriggersJobProperty) ne finit pas par « Trigger », elle n'est donc
+  # jamais comptée.
+  counts=$(python3 -c 'import sys, xml.etree.ElementTree as T
+r = T.parse(sys.argv[1]).getroot(); w = sys.argv[2]
+trig = [e for e in r.iter() if e.tag.endswith("Trigger")]
+print(sum(1 for e in trig if e.tag.endswith(w)),
+      sum(1 for e in r.iter() if e.tag.endswith("DisableConcurrentBuildsJobProperty")),
+      len(trig))' "$RELU_DIR/$j.relu.xml" "$want" 2>/dev/null)
+  [ -n "$counts" ] || { warn "AMORCAGE_INCOMPLET : config.xml de $j relu mais illisible (XML cassé ?)"; return 1; }
+  nt=${counts%% *}; rest=${counts#* }; no=${rest%% *}; ntok=${rest##* }
+  if [ "$r" != SUCCESS ]; then
+    warn "amorçage #$n : $r — AMORCAGE_INCOMPLET : voir $JENKINS_UI/job/$j/$n/console (WEBHOOK_KIND_INVALIDE côté Jenkinsfile ? préflight ?) ; relu : $nt $want, $no DisableConcurrentBuilds — NE PAS re-poser"
+    return 1
+  fi
+  ok "amorçage #$n : SUCCESS"
+  if [ "$nt" = 1 ] && [ "$ntok" = 1 ] && [ "$no" = 1 ]; then
+    if [ "$want" = GenericTrigger ]; then
+      tok=$(python3 -c "import sys,xml.etree.ElementTree as T; r=T.parse(sys.argv[1]).getroot(); print(','.join(t.findtext('token') or '' for t in r.iter() if t.tag.endswith('GenericTrigger')))" "$RELU_DIR/$j.relu.xml")
+      [ "$tok" = "stoa-$j" ] || { warn "AMORCAGE_INCOMPLET : token relu '$tok' ≠ 'stoa-$j' — le hook de la forge appelle un mot que ce job ne porte pas"; return 1; }
+      ok "relecture : 1 trigger GenericTrigger ($tok) + 1 DisableConcurrentBuilds, posés par le build (fait 10) ; webhook : $JENKINS_UI/generic-webhook-trigger/invoke?token=$tok"
+    else
+      ok "relecture : 1 trigger GitLabPushTrigger + 1 DisableConcurrentBuilds, posés par le build (fait 10) ; webhook GitLab : $JENKINS_UI/project/$j (événements « Merge request » seulement, Secret Token = stoa-$j)"
+    fi
+    return 0
+  fi
+  warn "AMORCAGE_INCOMPLET : relu $nt $want sur $ntok déclencheur(s), $no DisableConcurrentBuilds — attendu 1/1/1 (2 = le DOUBLON du fait 10, un XML porteur a survécu à la pose ; 0 = job MUET ; autre classe = WEBHOOK_KIND et le Jenkinsfile en désaccord)"
+  return 1
+}
+
 for J in $JOBS; do
   X="${JOBS_SRC_DIR}/${J}.job.xml"
   X="$(stage_xml "$J" "$X")" || ko "mise en scene du XML de $J en echec"
@@ -333,9 +411,15 @@ for J in $JOBS; do
   case " $BOOTSTRAP_JOBS " in
     *" $J "*)
       if [ "$POSED" = true ]; then
+        # Le numéro à attendre est relevé AVANT de lancer le build (L6).
+        NB=$(jcurl -s -b "$CK" "$JENKINS_UI/job/$J/api/json?tree=nextBuildNumber" |
+             python3 -c 'import sys,json;print(json.load(sys.stdin).get("nextBuildNumber",""))' 2>/dev/null || true)
         HC=$(jcurl -s -b "$CK" -X POST "$JENKINS_UI/job/$J/build" -H "$F: $C" -o /dev/null -w '%{http_code}')
         case "$HC" in
-          201) ok "build d'amorçage déclenché (HTTP $HC) — le formulaire existe dès sa fin (non attendu ici)";;
+          201) case " $BOOTSTRAP_AWAIT_JOBS " in
+                 *" $J "*) amorcage_relu "$J" "$NB" || RC=1 ;;
+                 *) ok "build d'amorçage déclenché (HTTP $HC) — non attendu (BOOTSTRAP_AWAIT_JOBS ne nomme pas $J)" ;;
+               esac;;
           400) warn "amorçage refusé (HTTP 400) : le job est DÉJÀ paramétré — la pose n'a pas remplacé sa configuration ?"; RC=1;;
           *)   warn "amorçage en échec (HTTP $HC) — le job n'a PAS de formulaire tant qu'un build n'a pas tourné (bouton « Build »)"; RC=1;;
         esac

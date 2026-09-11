@@ -505,8 +505,16 @@ echo
 echo "== 7. la POSE : coquille copiée telle quelle, build d'amorçage câblé, deux mécanismes qui coexistent =="
 SPJ="scripts/setup-provision-jobs.sh"; STO="scripts/setup-team-onboard-jobs.sh"
 code_sh(){ grep -vE '^\s*#' "$1"; }
-code_sh "$SPJ" | grep -q 'BOOTSTRAP_JOBS="${BOOTSTRAP_JOBS:-}"' && code_sh "$SPJ" | grep -qF '"$JENKINS_UI/job/$J/build"' \
-  && ok "setup-provision-jobs.sh : knob BOOTSTRAP_JOBS + POST /job/<j>/build" || ko "setup-provision-jobs.sh : BOOTSTRAP_JOBS ou POST /build absents"
+# L6 (2026-09-11) : le défaut de BOOTSTRAP_JOBS n'est plus vide — un job posé
+# sans amorçage est MUET (ses propriétés ne sont posées que par son premier
+# build) — et l'amorçage des deux jobs de l'aval est ATTENDU puis RELU.
+{ code_sh "$SPJ" | grep -q 'BOOTSTRAP_JOBS="${BOOTSTRAP_JOBS:-provision-apply provision-plan}"' \
+  && code_sh "$SPJ" | grep -qF '"$JENKINS_UI/job/$J/build"' \
+  && code_sh "$SPJ" | grep -q 'BOOTSTRAP_AWAIT_JOBS="${BOOTSTRAP_AWAIT_JOBS:-provision-apply provision-plan}"' \
+  && code_sh "$SPJ" | grep -qF 'amorcage_relu "$J" "$NB"' \
+  && code_sh "$SPJ" | grep -q 'AMORCAGE_INCOMPLET'; } \
+  && ok "setup-provision-jobs.sh : les deux jobs de l'aval sont amorcés PAR DÉFAUT (POST /job/<j>/build), leur amorçage est ATTENDU et RELU, et ce qui manque est nommé (AMORCAGE_INCOMPLET)" \
+  || ko "setup-provision-jobs.sh : défaut BOOTSTRAP_JOBS, BOOTSTRAP_AWAIT_JOBS, amorcage_relu ou AMORCAGE_INCOMPLET absents"
 code_sh "$SPJ" | grep -q '400) warn "amorçage refusé' && code_sh "$SPJ" | grep -q 'if \[ "$POSED" = true \]; then' \
   && ok "amorçage gaté sur une pose RÉUSSIE, 400 (déjà paramétré) nommé et rc≠0" || ko "amorçage non gaté sur la pose, ou 400 avalé"
 code_sh "$STO" | grep -q 'case " $JOBS " in \*" app-request "\*) BOOTSTRAP="app-request";; esac' && code_sh "$STO" | grep -q 'BOOTSTRAP_JOBS="$BOOTSTRAP"' \
