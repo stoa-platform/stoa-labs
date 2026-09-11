@@ -64,6 +64,11 @@
 #                   aucun job posé.
 #   DRY_RUN=true    n'envoie AUCUNE écriture — affiche ce qui serait fait.
 #   JOBS="provision-apply"   restreint aux jobs nommés (défaut : les deux).
+#   GIT_CREDENTIALS_ID="forge"  injecte ce credential dans le <scm> des jobs
+#                            posés (REQUIS sur une forge PRIVÉE : sans lui le
+#                            checkout de Jenkins est anonyme et le build meurt
+#                            « Authentication failed » avant le Jenkinsfile).
+#                            Absent : le XML part tel quel.
 #   ALLOW_RECREATE=true      autorise delete+create si la mise à jour échoue.
 #   BOOTSTRAP_JOBS="app-request"  jobs à AMORCER d'un build après leur pose
 #                            (cf. ci-dessus) ; défaut : aucun.
@@ -98,6 +103,16 @@ BOOTSTRAP_WAIT="${BOOTSTRAP_WAIT:-360}"
 # Le RÉCEPTEUR que le Jenkinsfile va poser : décide de la CLASSE attendue à la
 # relecture (GenericTrigger sous gwt, GitLabPushTrigger sous gitlab).
 WEBHOOK_KIND="${WEBHOOK_KIND:-gwt}"
+# LE CREDENTIAL DU <scm> (2026-09-11). Les job.xml ne portent AUCUN
+# <credentialsId> : le checkout que JENKINS fait lui-même (« Pipeline script
+# from SCM ») est donc ANONYME. Le Gitea du lab le sert (lecture anonyme) ; un
+# projet GitLab PRIVÉ — le cas client — refuse, et le build meurt
+# « Authentication failed for … » AVANT d'exécuter une ligne du Jenkinsfile.
+# Ce n'est pas le clone de la chaîne (celui-là porte son enveloppe depuis
+# ec6ebfd) : c'est la couche au-dessus, celle que Jenkins exécute.
+# Posé : l'identifiant est INJECTÉ dans le userRemoteConfig à la pose. Absent :
+# le XML part tel quel — un lab en lecture anonyme n'a rien à changer.
+GIT_CREDENTIALS_ID="${GIT_CREDENTIALS_ID:-}"
 # ÉCART Task 3 (palier 3, déclaré) : JOBS_SRC_DIR permet à un appelant de
 # poser des XML PRÉ-RENDUS (setup-team-onboard-jobs.sh y substitue les
 # placeholders <!--CHOICES:*--> avant l'appel, dans un dossier de mise en
@@ -166,7 +181,7 @@ stage_xml() {
     case "$a" in */*) rep="${SUB_PFX}ci/${base}" ;; esac
     [ "$rep" = "$a" ] && rep=""
   fi
-  if [ -z "$rep" ] && ! grep -qF '__GIT_BASE__' "$src"; then printf '%s' "$src"; return 0; fi
+  if [ -z "$rep" ] && [ -z "$GIT_CREDENTIALS_ID" ] && ! grep -qF '__GIT_BASE__' "$src"; then printf '%s' "$src"; return 0; fi
   [ -n "$STAGE_DIR" ] || { STAGE_DIR=$(mktemp -d) || return 1; }
   dst="$STAGE_DIR/${j}.job.xml"
   # La branche d'abord : si le placeholder survit, RIEN n'est mis en scène et le
@@ -175,6 +190,27 @@ stage_xml() {
   if [ -n "$rep" ]; then
     sed "s#<scriptPath>[^<]*</scriptPath>#<scriptPath>${rep}</scriptPath>#" "$dst" > "${dst}.tmp" \
       && mv "${dst}.tmp" "$dst" || return 1
+  fi
+  # Le credential du <scm>, DANS le userRemoteConfig — ailleurs Jenkins
+  # l'ignorerait EN SILENCE. Un credentialsId déjà présent est REMPLACÉ (le knob
+  # décide), et l'identifiant n'est pas un secret : il s'écrit.
+  if [ -n "$GIT_CREDENTIALS_ID" ]; then
+    python3 - "$dst" "$GIT_CREDENTIALS_ID" <<'PY' || return 1
+import sys, xml.etree.ElementTree as T
+f, cid = sys.argv[1], sys.argv[2]
+t = T.parse(f); r = t.getroot(); n = 0
+for u in r.iter():
+    if not u.tag.endswith('UserRemoteConfig') or u.find('url') is None:
+        continue
+    e = u.find('credentialsId')
+    if e is None:
+        e = T.SubElement(u, 'credentialsId')
+    e.text = cid; n += 1
+if n == 0:
+    sys.stderr.write("REFUS: SCM_SANS_DEPOT : aucun userRemoteConfig avec une <url> dans %s — le credential n'a nulle part a aller\n" % f)
+    sys.exit(1)
+t.write(f, encoding='unicode')
+PY
   fi
   printf '%s' "$dst"
 }

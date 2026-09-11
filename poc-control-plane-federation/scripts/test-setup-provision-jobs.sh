@@ -381,6 +381,41 @@ unset BODYDIR
 
 echo
 echo "======================================================================"
+echo "== 17. le CREDENTIAL du <scm> (GIT_CREDENTIALS_ID) : sans lui, un dépôt PRIVÉ refuse le checkout du job =="
+# MESURÉ le 2026-09-11 : les treize job.xml ne portent AUCUN <credentialsId>, et
+# le checkout que JENKINS fait lui-même (« Pipeline script from SCM ») est donc
+# ANONYME. Sur le Gitea du lab ça passe (lecture anonyme) ; sur un projet GitLab
+# privé — le cas client — le build meurt « Authentication failed for … » avant
+# d'exécuter une seule ligne du Jenkinsfile. Ce n'est pas le clone de la chaîne
+# (fermé par ec6ebfd dans provision-plan.sh) : c'est la couche au-dessus.
+# Le knob l'INJECTE à la pose, et son absence laisse le XML tel quel — un lab en
+# lecture anonyme n'a rien à changer.
+BODYDIR="$TMP/bodies17"; mkdir -p "$BODYDIR"
+RELU_XML="$(relu 1 0 1 'stoa-__JOB__')" start "provision-plan" 200
+OUT=$(cd "$REPO" && JENKINS_UI="$JU" JOBS=provision-plan GIT_CREDENTIALS_ID=forge-privee bash "$S" 2>&1); RC=$?
+POSTE="$BODYDIR/provision-plan.posted.xml"
+if [ $RC -eq 0 ] && grep -qF '<credentialsId>forge-privee</credentialsId>' "$POSTE" 2>/dev/null; then
+  ok "17.1 GIT_CREDENTIALS_ID=forge-privee ⇒ le XML POSTÉ porte <credentialsId>forge-privee</credentialsId> dans son userRemoteConfig"
+else ko "17.1 rc=$RC, credentialsId dans le XML posté : $(grep -o '<credentialsId>[^<]*</credentialsId>' "$POSTE" 2>/dev/null | head -1)"; fi
+# L'ORDRE compte : Jenkins veut <url> puis <credentialsId> dans le même
+# userRemoteConfig — un credentialsId hors de ce bloc serait ignoré EN SILENCE.
+python3 - "$POSTE" <<'PY' && ok "17.2 le credentialsId est DANS le même userRemoteConfig que l'url (ailleurs, Jenkins l'ignorerait en silence)" || ko "17.2 credentialsId hors du userRemoteConfig"
+import sys, xml.etree.ElementTree as T
+r = T.parse(sys.argv[1]).getroot()
+ok = any(u.find('url') is not None and u.find('credentialsId') is not None
+         for u in r.iter() if u.tag.endswith('UserRemoteConfig'))
+sys.exit(0 if ok else 1)
+PY
+rm -f "$POSTE"
+RELU_XML="$(relu 1 0 1 'stoa-__JOB__')" start "provision-plan" 200
+OUT=$(cd "$REPO" && JENKINS_UI="$JU" JOBS=provision-plan bash "$S" 2>&1); RC=$?
+if [ $RC -eq 0 ] && ! grep -q 'credentialsId' "$POSTE" 2>/dev/null; then
+  ok "17.3 sans le knob : AUCUN credentialsId ajouté — le XML reste la source (un lab en lecture anonyme n'a rien à changer)"
+else ko "17.3 rc=$RC, un credentialsId est apparu sans le knob"; fi
+if sed -e 's#__GIT_BASE__#master#g' "$REPO/ci/jenkins/provision-plan.job.xml" | cmp -s - "$POSTE"; then
+  ok "17.4 et le XML posté reste la SOURCE, à la seule substitution de branche près (octet pour octet)"
+else ko "17.4 le XML posté diffère de la source substituée"; fi
+
 echo "== 16. l'amorçage est ATTENDU puis RELU (L6) : un trigger de la classe de WEBHOOK_KIND et une option, sinon AMORCAGE_INCOMPLET =="
 # MESURÉ (scripts/spike-webhook-kind-m2m4.sh, 2026-09-11) : un XML posé sans
 # propriété laisse le job MUET jusqu'à la fin de son premier build — le webhook

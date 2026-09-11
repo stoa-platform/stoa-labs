@@ -636,22 +636,41 @@ done
 #                             c'est une consigne actionnable, pas une panne muette ;
 #   seed-governance-chain.sh  amorce de lab sur un dépôt de démonstration.
 MECANISMES='git_base_avec_basic|extraheader|GIT_ASKPASS|forge_askpass|_gc_auth_b64|git_base_basic_login'
+# LE PÉRIMÈTRE EST DÉRIVÉ DES JENKINSFILE, pas d'une liste : un script EXÉCUTÉ
+# par un pipeline (`bash scripts/x.sh`) tourne sur un agent, sans terminal et
+# sans utilisateur — son geste git DOIT donc porter son authentification. Une
+# simple MENTION en commentaire ou dans un message de refus ne compte pas
+# (mesuré : setup-jenkins-globals.sh et setup-provision-request-job.sh ne sont
+# cités que là). On ajoute les scripts de chaîne appelés par d'autres scripts de
+# chaîne (provision-request appelle provision-plan), en suivant la même règle.
+EXECUTES=$(grep -ohE '(bash|sh) scripts/[a-z0-9-]+\.sh' "$REPO"/ci/Jenkinsfile.* "$REPO"/scripts/*.sh 2>/dev/null |
+           grep -oE 'scripts/[a-z0-9-]+\.sh' | sort -u)
 MANQUANTS=""
-for f in "$REPO"/scripts/*.sh; do
-  b="$(basename "$f")"
-  case "$b" in test-*|spike-*|setup-*|seed-governance-chain.sh|demo*) continue ;; esac
-  grep -qE 'git (clone|push)' "$f" || continue
+for rel in $EXECUTES; do
+  b="$(basename "$rel")"; f="$REPO/scripts/$b"
+  [ -f "$f" ] || continue
+  # EXEMPTÉS, nommément et avec leur raison — jamais une classe balayée :
+  #   test-*/spike-*  harnais : ils posent leurs propres valeurs ;
+  #   setup-*         POSEURS lancés depuis le POSTE par un exploitant (ils
+  #                   entrent ici parce qu'ils s'appellent entre eux) : ils ne
+  #                   clonent JAMAIS, ils DÉCOUVRENT, et sur une forge privée
+  #                   leur refus NOMME GIT_BASE et GIT_HOST/GIT_REPO — une
+  #                   consigne actionnable par la personne qui les lance, pas
+  #                   une panne muette dans un build sans terminal.
+  case "$b" in test-*|spike-*|setup-*) continue ;; esac
+  # parle-t-il à une forge DISTANTE ? cloner, pousser, ou DÉCOUVRIR une HEAD
+  grep -qE 'git (clone|push|fetch)|git_base_init|git_base_of|ls-remote' "$f" || continue
   grep -qE "$MECANISMES" "$f" && continue
   MANQUANTS="$MANQUANTS $b"
 done
 if [ -z "$MANQUANTS" ]; then
   ok "H bis.2 COMPLÉTUDE : tout script qui CLONE ou POUSSE porte un mécanisme d'authentification — aucun geste anonyme, donc aucun CLONE_ECHEC réservé aux forges privées (la lecture anonyme du Gitea du lab masquait le trou : info/refs ⇒ 200 Gitea, 401 GitLab privé)"
-else ko "H bis.2 clone/push SANS authentification, casse sur forge PRIVÉE et invisible au lab :$MANQUANTS"; fi
+else ko "H bis.2 geste git SANS authentification dans un script exécuté par un pipeline — casse sur forge PRIVÉE, invisible au lab :$MANQUANTS"; fi
 # DISCRIMINANT : la porte doit attraper le défaut réel du 2026-09-11. On rejoue
 # la mesure sur une COPIE de provision-plan.sh privée de son mécanisme.
 CP="$TMP/pp-sans-mecanisme.sh"
 sed -E 's/git_base_avec_basic|git_base_basic_login/NEANT/g' "$REPO/scripts/provision-plan.sh" > "$CP"
-if grep -qE 'git (clone|push)' "$CP" && ! grep -qE "$MECANISMES" "$CP"; then
+if grep -qE 'git (clone|push|fetch)|git_base_init' "$CP" && ! grep -qE "$MECANISMES" "$CP"; then
   ok "H bis.3 discriminant : provision-plan.sh privé de son enveloppe est VU par la règle de H bis.2 (c'est l'état dans lequel il a été trouvé, et il rougirait)"
 else ko "H bis.3 la règle de H bis.2 ne verrait PAS un provision-plan.sh anonyme — elle ne mesure rien"; fi
 

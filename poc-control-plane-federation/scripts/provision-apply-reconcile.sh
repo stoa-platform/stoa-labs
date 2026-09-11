@@ -265,7 +265,17 @@ fi
 # L'URL est UTILE (c'est elle qu'on diagnostique) ; un `user:secret@` qu'elle
 # porterait est masqué par redact (forme ://…@), l'hôte reste (§E.5a).
 dbg_kv GIT_CLONE_URL "$GIT_CLONE_URL"
-git_base_init "$GIT_CLONE_URL" \
+# LA DÉCOUVERTE SOUS L'ENVELOPPE D'AUTHENTIFICATION (2026-09-11). Un
+# `git ls-remote` nu est ANONYME : sur un dépôt PRIVÉ — le cas de tout client —
+# il meurt « could not read Username … terminal prompts disabled », et la
+# réconciliation refuse pour une raison qui n'a rien à voir avec la PR (MESURÉ
+# par scripts/test-webhook-kind-gitlab-live.sh contre un GitLab privé : l'apply
+# tombait sur BRANCHE_PAR_DEFAUT_INCONNUE alors que le plan, lui, passait déjà).
+# Même geste que provision-plan.sh, provision-plan-status.sh et les trois
+# scripts de la chaîne producteur ; le LOGIN vient de la seule autorité,
+# git_base_basic_login (« x » convient à Gitea, jamais à GitLab). Le secret ne
+# passe NI en argv NI dans l'URL : c'est le NOM de la variable qui voyage.
+git_base_avec_basic "$(git_base_basic_login)" FORGE_SECRET git_base_init "$GIT_CLONE_URL" \
   || fail GITEA_RECONCILE_ECHEC "branche par défaut du dépôt inconnue (cause ci-dessus) — sans elle, ni la base de la PR ni l'ancêtre ne peuvent être vérifiés" \
                                 "la branche par défaut du dépôt n'a pas pu être déterminée"
 

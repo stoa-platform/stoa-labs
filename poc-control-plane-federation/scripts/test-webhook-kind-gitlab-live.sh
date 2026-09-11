@@ -143,7 +143,20 @@ poser_jobs(){
     done
     src="$d"
   fi
+  # GIT_CREDENTIALS_ID : le checkout que JENKINS fait lui-même est anonyme sans
+  # lui, et le dépôt est PRIVÉ — le build mourrait « Authentication failed »
+  # avant d'exécuter une ligne du Jenkinsfile (mesuré le 2026-09-11). Sous gwt
+  # on ne le pose PAS : le Gitea du lab est en lecture anonyme, et le remettre
+  # ferait diverger la config du job de son état nominal.
+  # ⚠ DEUX credentials, DEUX types, le même PAT (mesuré le 2026-09-11) :
+  #   - le <scm> du JOB est checkouté par Jenkins lui-même ⇒ il exige un COUPLE
+  #     username/password (ou une clé SSH). Un « Secret text » y est INUTILISABLE :
+  #     le build meurt « Authentication failed » sans autre explication ;
+  #   - la chaîne, elle, lit son secret par forgeCreds() et accepte les deux
+  #     types (knob FORGE_CRED_KIND).
+  local cid=""; [ "$kind" = gitlab ] && cid="$CID_SCM"
   GIT_HOST="$GL" GIT_REPO="$GL_REPO" WEBHOOK_KIND="$kind" JENKINS_UI="$J" JOBS_SRC_DIR="$src" \
+  GIT_CREDENTIALS_ID="$cid" \
     bash scripts/setup-provision-jobs.sh > "$TMP/pose.$kind.log" 2>&1
 }
 HOOKS=""; IID=""; BR="provision/${APP}-${ENVN}"; CLONE="$GL/$GL_REPO.git"
@@ -179,6 +192,13 @@ MM=$(gl "$GL/api/v4/projects/$PID_PROJ" | jq_ "print(d.get('merge_method',''))")
   || { ko "0.2 merge_method='$MM' — PUT /projects/$PID_PROJ -d merge_method=merge"; say "RÉSULTAT : $PASS/$((PASS+FAIL))"; exit 1; }
 BASE=$(gl "$GL/api/v4/projects/$PID_PROJ" | jq_ "print(d['default_branch'])")
 [ -n "$BASE" ] && ok "0.3 branche par défaut ANNONCÉE par le projet : '$BASE' (jamais un littéral)" || { ko "0.3 aucune branche par défaut"; exit 1; }
+# LE DÉPÔT DOIT ÊTRE PRIVÉ : c'est le cas client, et c'est ce qui a révélé que le
+# clone et la découverte de provision-plan.sh n'étaient pas authentifiés. Sur un
+# dépôt public, cette suite passerait sans rien prouver de l'authentification.
+ANON=$(curl -sg --max-time 15 -o /dev/null -w '%{http_code}' "$GL/$GL_REPO.git/info/refs?service=git-upload-pack")
+[ "$ANON" != 200 ] \
+  && ok "0.3b le dépôt REFUSE la lecture anonyme (info/refs ⇒ HTTP $ANON) : l'authentification du clone ET de la découverte est réellement éprouvée" \
+  || ko "0.3b le dépôt est en lecture ANONYME (info/refs ⇒ 200) — cette suite ne prouverait rien de l'authentification ; le remettre en 'private'"
 LOCAL=$(git -C "$REPO/.." rev-parse HEAD 2>/dev/null || git -C "$REPO" rev-parse HEAD)
 REMOTE=$(gauth ls-remote "$CLONE" "refs/heads/$BASE" 2>/dev/null | cut -f1)
 if [ "$REMOTE" = "$LOCAL" ]; then ok "0.4 $GL_REPO est à notre tronc sur $BASE ($(printf '%s' "$LOCAL" | cut -c1-7))"
@@ -196,10 +216,14 @@ ok "0.5 globales relevées pour restauration (WEBHOOK_KIND='$SAVE_WK' FORGE_KIND
 # GITEA, que l'API de GitLab refuse en 401 — la réconciliation A2 meurt alors,
 # après le déclenchement (mesuré le 2026-09-11). Le visage gitlab a donc besoin
 # de SON credential ; il est posé ici et RESTAURÉ en sortie.
-CID_GL="${CID_GL:-gitlab-provision-token}"
+CID_GL="${CID_GL:-gitlab-provision-token}"      # secret text : pour forgeCreds()
+CID_SCM="${CID_SCM:-gitlab-scm-userpass}"       # username/password : pour le <scm> du job
 CRED_OK=$(jget "$J/credentials/store/system/domain/_/credential/$CID_GL/api/json" -o /dev/null -w '%{http_code}')
-[ "$CRED_OK" = 200 ] && ok "0.6 le credential '$CID_GL' existe sur ce Jenkins (jeton GitLab : sans lui, le plan déclenche puis meurt en 401)" \
+[ "$CRED_OK" = 200 ] && ok "0.6 le credential '$CID_GL' existe (secret text, pour forgeCreds() : sans lui le plan déclenche puis meurt en 401)" \
   || ko "0.6 credential '$CID_GL' absent (HTTP $CRED_OK) — le créer (secret text, PAT GitLab scopes api/read_user/write_repository)"
+CRED_SCM_OK=$(jget "$J/credentials/store/system/domain/_/credential/$CID_SCM/api/json" -o /dev/null -w '%{http_code}')
+[ "$CRED_SCM_OK" = 200 ] && ok "0.6b le credential '$CID_SCM' existe (username/password, pour le <scm> du job : le Git SCM de Jenkins REFUSE un secret text — « Authentication failed » sans autre explication)" \
+  || ko "0.6b credential '$CID_SCM' absent (HTTP $CRED_SCM_OK) — le créer (username 'oauth2', password = le PAT)"
 
 say ""
 say "═══ 1. le visage gitlab : globales, webhooks de projet, jobs amorcés ═══"
@@ -207,15 +231,21 @@ globale WEBHOOK_KIND gitlab >/dev/null; globale FORGE_KIND gitlab >/dev/null
 globale GIT_HOST "$GLIN" >/dev/null;    globale GIT_REPO "$GL_REPO" >/dev/null
 globale GIT_WEB_HOST "$GL" >/dev/null
 globale GITEA_CREDENTIALS_ID "$CID_GL" >/dev/null
-# ⚠ MESURÉ le 2026-09-11 : sur un GitLab PRIVÉ, la découverte de la branche par
-# défaut (L3, `git ls-remote --symref … HEAD`) tourne HORS de l'enveloppe
-# d'authentification du clone et meurt « could not read Username …
-# terminal prompts disabled » ⇒ `REFUS: BRANCHE_PAR_DEFAUT_INCONNUE`. Le refus
-# nomme lui-même la voie : poser GIT_BASE explicitement. C'est ce qu'un client
-# sur GitLab privé devra faire tant que la lib ne s'authentifie pas ici (dette
-# L3, nommée dans ENVIRONNEMENTS.md).
-globale GIT_BASE "$BASE" >/dev/null
-[ "$(globale_lire WEBHOOK_KIND)" = gitlab ] && ok "1.1 globales du visage gitlab posées (WEBHOOK_KIND=gitlab, FORGE_KIND=gitlab, GIT_HOST=$GLIN, GITEA_CREDENTIALS_ID=$CID_GL, GIT_BASE=$BASE — la découverte ne s'authentifie pas sur un GitLab privé)" || ko "1.1 globale non posée"
+# LA DÉCOUVERTE N'EST PLUS CONTOURNÉE (ec6ebfd, 2026-09-11). Ce harnais posait
+# `GIT_BASE` parce que, sur un GitLab PRIVÉ, la découverte de la branche par
+# défaut tournait hors de l'enveloppe d'authentification et mourait
+# « could not read Username » (`BRANCHE_PAR_DEFAUT_INCONNUE`), comme le clone
+# mourait `CLONE_ECHEC`. Depuis le correctif, les deux gestes portent
+# l'enveloppe : on laisse donc `GIT_BASE` ABSENTE, et la découverte sur dépôt
+# privé DEVIENT une assertion de cette suite. Le knob `WKGL_POSE_GIT_BASE=1`
+# remet l'ancien contournement, pour éprouver une chaîne antérieure.
+if [ "${WKGL_POSE_GIT_BASE:-0}" = 1 ]; then
+  globale GIT_BASE "$BASE" >/dev/null
+  say "  (WKGL_POSE_GIT_BASE=1 : GIT_BASE posée à '$BASE' — la découverte n'est PAS éprouvée)"
+else
+  globale GIT_BASE "" >/dev/null
+fi
+[ "$(globale_lire WEBHOOK_KIND)" = gitlab ] && ok "1.1 globales du visage gitlab posées (WEBHOOK_KIND=gitlab, FORGE_KIND=gitlab, GIT_HOST=$GLIN, GITEA_CREDENTIALS_ID=$CID_GL) ; GIT_BASE laissée ABSENTE : la DÉCOUVERTE sur dépôt privé est éprouvée, plus contournée" || ko "1.1 globale non posée"
 for h in $(gl "$GL/api/v4/projects/$PID_PROJ/hooks" | jq_ "print(' '.join(str(x['id']) for x in d if '/project/provision-' in x['url']))"); do
   gl -X DELETE "$GL/api/v4/projects/$PID_PROJ/hooks/$h" -o /dev/null
 done
@@ -230,7 +260,7 @@ HOOKS="$H1 $H2"
 # to server » côté conteneur (mesuré le 2026-09-11). Split-horizon du lab.
 poser_jobs gitlab "$GLIN/$GL_REPO.git"
 { [ "$(grep -c '1 trigger GitLabPushTrigger' "$TMP/pose.gitlab.log")" = 2 ] && [ "$(grep -c 'amorçage #' "$TMP/pose.gitlab.log")" = 2 ]; } \
-  && ok "1.3 provision-plan et provision-apply re-posés (dépôt du job = $CLONE : le lab a DEUX forges, un client n'en a qu'une), amorçage ATTENDU et RELU : 1 GitLabPushTrigger + 1 verrou chacun" \
+  && ok "1.3 provision-plan et provision-apply re-posés (dépôt du job = $GLIN/$GL_REPO.git, credential du <scm> = $CID_GL : le lab a DEUX forges, un client n'en a qu'une), amorçage ATTENDU et RELU : 1 GitLabPushTrigger + 1 verrou chacun" \
   || ko "1.3 pose/amorçage : $(grep -E 'AMORCAGE|amorçage|relecture' "$TMP/pose.gitlab.log" | tr '\n' ' ' | cut -c1-300)"
 NG=$(jget "$J/job/provision-apply/config.xml" | grep -c 'GenericTrigger')
 [ "$NG" = 0 ] && ok "1.4 aucun GenericTrigger résiduel sur provision-apply : un seul récepteur à la fois" || ko "1.4 $NG GenericTrigger encore présent(s)"
