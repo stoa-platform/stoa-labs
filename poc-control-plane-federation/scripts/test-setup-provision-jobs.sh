@@ -147,7 +147,9 @@ relu(){
   # le gabarit servi à une autre (mesuré le 2026-09-11 — §14 posait le token de
   # provision-plan dans le fichier que §15 servait à provision-apply, et la
   # relecture refusait à juste titre un token qui n'était pas le sien).
-  local f="$TMP/relu-$1-$2-$3-$(printf '%s' "$4" | tr -c 'A-Za-z0-9_-' '_').xml"
+  local f slug
+  slug=$(printf '%s' "$4" | tr -c 'A-Za-z0-9_-' '_')
+  f="$TMP/relu-$1-$2-$3-$slug.xml"
   { echo '<flow-definition><properties>'
     rep "$3" '<org.jenkinsci.plugins.workflow.job.properties.DisableConcurrentBuildsJobProperty/>'
     if [ "$1$2" != 00 ]; then

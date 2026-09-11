@@ -36,7 +36,12 @@ RUN cd /usr/local/src/labctl \
 USER jenkins
 # Plugins requis par le scaffold (« Pipeline script from SCM » + checkout Git) —
 # l'image de base n'en embarque AUCUN. Install au build (one-shot, hors zone).
-RUN jenkins-plugin-cli --plugins "git workflow-aggregator generic-webhook-trigger pipeline-stage-view kubernetes"
+RUN jenkins-plugin-cli --plugins "git workflow-aggregator generic-webhook-trigger gitlab-plugin pipeline-stage-view kubernetes"
+# gitlab-plugin (L6, 2026-09-11) : le SECOND récepteur de webhooks
+# (WEBHOOK_KIND=gitlab), pour qu'un lab reconstruit puisse rejouer
+# scripts/test-webhook-kind-gitlab-live.sh. Installé le 2026-09-11 sur le lab en
+# place par scripts/spike-webhook-kind-m5.sh (1.2148, 14 dépendances, GWT
+# intact, aucun plugin préexistant modifié).
 # pipeline-stage-view : dessine la Stage View (visualisation des stages sur la page
 # du job) — workflow-aggregator ne l'embarque PAS. Sans lui les stages s'exécutent
 # mais ne s'affichent pas (trouvé au build #1 accounts-team).

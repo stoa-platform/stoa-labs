@@ -159,10 +159,43 @@
 # projet dont la default branch n'est pas celle qu'on veut voir déployer doit
 # être corrigé là, ou nommer GIT_BASE ici.
 #
-# Les webhooks des jobs provision-plan / provision-apply lisent, eux, les DEUX
-# formes de payload (Gitea « pull_request », GitLab « Merge Request Hook ») sans
-# knob : côté forge, pointer le hook sur la même URL
-# /generic-webhook-trigger/invoke?token=<token du job>.
+# LE RÉCEPTEUR DE WEBHOOKS (WEBHOOK_KIND) — L6, 2026-09-11
+#
+#   WEBHOOK_KIND            gwt (défaut) | gitlab — le PLUGIN de ce Jenkins qui
+#                           reçoit les webhooks de la forge et pose les
+#                           variables du build. Ce n'est pas le visage de la
+#                           forge (FORGE_KIND) : un GitLab peut être servi par
+#                           l'un OU l'autre récepteur.
+#
+#                           gwt = generic-webhook-trigger. Côté forge, pointer
+#                           le hook sur /generic-webhook-trigger/invoke?token=
+#                           <token du job> ; les DEUX formes de payload (Gitea
+#                           « pull_request », GitLab « Merge Request Hook »)
+#                           sont lues sans knob.
+#
+#                           gitlab = GitLab Plugin, pour un Jenkins qui ne peut
+#                           pas recevoir le précédent. Côté GitLab : DEUX
+#                           webhooks de projet, événements « Merge request »
+#                           SEULEMENT (jamais push), vers
+#                           <jenkins>/project/provision-plan et
+#                           <jenkins>/project/provision-apply, champ « Secret
+#                           Token » = stoa-provision-plan / stoa-provision-apply.
+#                           Ce mot est une SONNETTE, pas une autorité : la forge
+#                           est relue ensuite (FORGE_NON_CONFIRMEE,
+#                           PAYLOAD_PERIME). Plugin >= 1.7.13 exigé
+#                           (gitlabMergeCommitSha, la référence A2), et méthode
+#                           de merge « merge commit » côté projet — en
+#                           fast-forward ou squash le SHA arrive VIDE et l'apply
+#                           refuse MERGE_SHA_INVALIDE.
+#
+#                           Le déclencheur est posé par le Jenkinsfile à son
+#                           PREMIER BUILD (l'amorçage, que setup-provision-jobs.sh
+#                           attend et relit) ; toute autre valeur est refusée par
+#                           NOM avant que rien ne soit posé
+#                           (WEBHOOK_KIND_INVALIDE). Sous gitlab,
+#                           selfservice-app-deploy n'a AUCUN hook direct : il
+#                           n'est atteint que par le `build job:` de
+#                           provision-apply.
 set -euo pipefail
 
 # L'aide = l'entête de commentaire ENTIER (ligne 1 exclue : le shebang), coupé à
@@ -193,7 +226,7 @@ die(){ printf '\nREFUS: %s\n' "$*" >&2; exit 2; }
 # n'a encore rien posé ira le lire.
 CONNUES="
 GIT_HOST GIT_WEB_HOST GIT_REPO GIT_BASE GIT_SUBDIR GITEA_CREDENTIALS_ID GITEA_SERVICE_LOGINS
-FORGE_KIND FORGE_CRED_KIND FORGE_API_AUTH FORGE_API_BASE FORGE_USER
+FORGE_KIND FORGE_CRED_KIND FORGE_API_AUTH FORGE_API_BASE FORGE_USER WEBHOOK_KIND
 VAULT_ADDR JENKINS_UI ITSM_URL
 APIM_API_BASE APIM_DATA_BASE APIM_PROXY_HOST APIM_PROXY_API APIM_PROXY_VER APIM_PROXY_PATH APIM_TERMINUS_BASE
 APIM_PREFLIGHT APIM_PREFLIGHT_URL APIM_PREFLIGHT_CODES APIM_PREFLIGHT_TRIES
@@ -213,7 +246,10 @@ GOVERNANCE_REPO GOVERNANCE_PATH
 # La branche par défaut en fait partie depuis L3 : absente (ou `auto`), la
 # chaîne la DÉCOUVRE sur la HEAD du dépôt — l'annoncer « manquante » ferait
 # poser un littéral, c'est-à-dire exactement le défaut qu'on vient de retirer.
-OPTIONNELLES="APIM_PREFLIGHT APIM_PREFLIGHT_URL APIM_PREFLIGHT_CODES APIM_PREFLIGHT_TRIES FORGE_CRED_KIND FORGE_KIND FORGE_API_AUTH FORGE_API_BASE GIT_BASE"
+# Le récepteur de webhooks en fait partie depuis L6 : absent, la chaîne pose le
+# generic-webhook-trigger (gwt), c'est-à-dire exactement ce qu'elle faisait
+# avant ce knob.
+OPTIONNELLES="APIM_PREFLIGHT APIM_PREFLIGHT_URL APIM_PREFLIGHT_CODES APIM_PREFLIGHT_TRIES FORGE_CRED_KIND FORGE_KIND FORGE_API_AUTH FORGE_API_BASE GIT_BASE WEBHOOK_KIND"
 
 # ── le canal : console de script Jenkins, jeton par fichier ──────────────────
 CFG="$TMP/curl.cfg"
