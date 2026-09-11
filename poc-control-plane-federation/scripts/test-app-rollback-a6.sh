@@ -709,12 +709,23 @@ rbm GITEA_TOKEN=t-inconnu STOA_DEBUG=1
 [ "$(rrc)" = 2 ] && avant '^\[dbg forge-api\.py\] GET [^ ]+/pulls\?state=closed[^ ]* -> HTTP 401 ' '^REFUS: FORGE_ILLISIBLE' && toutes_absentes t-inconnu && toutes_absentes "$STUB_TOKEN" \
   && ok "F.4b token de service refusé (401) : « GET …/pulls?… -> HTTP 401 » PRÉCÈDE « REFUS: FORGE_ILLISIBLE » ; ni t-inconnu ni $STUB_TOKEN" \
   || ko "F.4b rc $(rrc) : $(grep -nE 'HTTP 401|REFUS' "$OUT" | head -2 | tr '\n' ' ')"
-# ── F.5 le silence : STOA_DEBUG=0 ⇒ zéro [dbg, stderr VIDE, stdout OCTET POUR OCTET celui de F.1 ──
+# ── F.5 le silence : STOA_DEBUG=0 ⇒ zéro [dbg, stderr = la SEULE ligne d'information de git-base.sh, stdout OCTET POUR OCTET celui de F.1 ──
+# stderr n'est plus VIDE depuis e2f947b (main) : git-base.sh annonce chaque
+# découverte, INCONDITIONNELLEMENT, sur une ligne — « git-base: GIT_BASE=<b>
+# découvert — HEAD annoncée par <url> (ls-remote --symref) ». C'est
+# l'auditabilité d'une pose, pas le mode debug (F.1e prouve que run_rb
+# découvre : GIT_BASE_ORIGINE=decouverte). Ce que F.5 prouve donc : zéro ligne
+# [dbg sur les deux flux, et stderr = EXACTEMENT cette ligne, avec l'URL que
+# _rb_run donne (file://$ORIGIN) — épinglée en PRÉSENCE : « ! -s » ou une
+# exclusion nue laisserait passer un stderr muet comme un stderr bavard.
+# Mesuré au rebase L2-R (2026-09-11) : 158/159, stderr = 163 octets = cette
+# seule ligne (recomptée par printf | wc -c).
 set_ctl "$(ctl_json)"; reset_origin
 rb2 STOA_DEBUG=0
-[ "$(rrc)" = 0 ] && ! grep -q '\[dbg' "$OUT" "$ERR" && [ ! -s "$ERR" ] && cmp -s "$OUT" "$TMP/f1.stdout" \
-  && ok "F.5 STOA_DEBUG=0 : zéro ligne [dbg, stderr VIDE (0 octet), et stdout identique octet pour octet à celui de F.1 — le mode debug n'ajoute rien au produit" \
-  || ko "F.5 rc $(rrc) dbg=$(grep -c '\[dbg' "$OUT" "$ERR" | tr '\n' ' ') stderr=$(wc -c < "$ERR") diff: $(diff "$OUT" "$TMP/f1.stdout" | head -2 | tr '\n' ' ')"
+LIGNE_GITBASE="git-base: GIT_BASE=master découvert — HEAD annoncée par file://$ORIGIN (ls-remote --symref)"
+[ "$(rrc)" = 0 ] && ! grep -q '\[dbg' "$OUT" "$ERR" && [ $(( $(wc -l < "$ERR") )) -eq 1 ] && grep -qxF -- "$LIGNE_GITBASE" "$ERR" && cmp -s "$OUT" "$TMP/f1.stdout" \
+  && ok "F.5 STOA_DEBUG=0 : zéro ligne [dbg, stderr = la SEULE ligne « git-base: GIT_BASE=master découvert — HEAD annoncée par file://…/origin.git » (l'auditabilité d'une pose, e2f947b — pas le debug), et stdout identique octet pour octet à celui de F.1 — le mode debug n'ajoute rien au produit" \
+  || ko "F.5 rc $(rrc) dbg=$(grep -c '\[dbg' "$OUT" "$ERR" | tr '\n' ' ') stderr=$(( $(wc -l < "$ERR") )) ligne(s) : « $(head -1 "$ERR" | cut -c1-140) » diff: $(diff "$OUT" "$TMP/f1.stdout" | head -2 | tr '\n' ' ')"
 # ── F.6 le clone RATÉ sous debug : le rc du clone n'est plus prouvé qu'à 0 ─────
 # GIT_BASE=develop (knob explicite : aucun ls-remote, GIT_BASE_ORIGINE=knob),
 # branche absente du nu. « git clone … -> rc 128 » (le VRAI rc — M11 écrit 0)

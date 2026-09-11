@@ -919,12 +919,21 @@ fuite E.4e "$MDP_FRAG" "le mot de passe de l'URL (fragment), dans le REFUS aussi
 # E.4f — PRÉSENCE, contrepartie d'E.4e (sinon un refus muet passerait) : le
 # refus relaie encore le stderr de git (la première ligne de trace y est — ni
 # vide, ni « <rédaction indisponible> ») et tient sur UNE ligne : hors des
-# lignes « [dbg » et de la ligne « REFUS: », stderr est VIDE (avant le tour 3 :
-# une ligne de continuation, celle qui portait le fragment).
+# lignes « [dbg » et de la ligne « REFUS: », stderr ne porte QUE la ligne
+# d'information de git-base.sh (avant le tour 3 : une ligne de continuation
+# du refus, celle qui portait le fragment). Cette ligne — « git-base:
+# GIT_BASE=master découvert — HEAD annoncée par <url> (ls-remote --symref) » —
+# est INCONDITIONNELLE depuis e2f947b (l'auditabilité d'une pose : GIT_BASE
+# n'est pas posé, run_dbg découvre sur $ORIGIN) ; ce n'est pas le mode debug et
+# ce n'est pas une fuite. Elle est épinglée en PRÉSENCE, exactement une, avec
+# l'URL de la fixture : une exclusion nue (`grep -v '^git-base: '`) laisserait
+# passer un stderr muet comme un stderr bavard — vert vacant. Mesuré au rebase
+# L2-R (2026-09-11) : 225/226, la seule ligne « hors [dbg/REFUS » était celle-ci.
+LIGNE_GITBASE="git-base: GIT_BASE=master découvert — HEAD annoncée par $ORIGIN (ls-remote --symref)"
 grep -E '^REFUS: GITEA_RECONCILE_ECHEC : git fetch origin master en échec dans .* : .*trace: built-in: git fetch' "$TMP/e4t.se" > "$TMP/e4t.refus"
-[ "$(wc -l < "$TMP/e4t.refus" | tr -d ' ')" = 1 ] && [ "$(grep -cvE '^(\[dbg |REFUS: )' "$TMP/e4t.se")" = 0 ] \
-  && ok "E.4f le REFUS relaie la trace de git (« trace: built-in: git fetch »), masquée, sur UNE ligne : hors « [dbg » et « REFUS: », stderr est vide" \
-  || ko "E.4f refus : $(wc -l < "$TMP/e4t.refus" | tr -d ' ') ligne(s) ; hors [dbg/REFUS : $(grep -cvE '^(\[dbg |REFUS: )' "$TMP/e4t.se") ligne(s) : « $(grep -vE '^(\[dbg |REFUS: )' "$TMP/e4t.se" | head -1 | cut -c1-120) »"
+[ "$(wc -l < "$TMP/e4t.refus" | tr -d ' ')" = 1 ] && [ "$(grep -cxF -- "$LIGNE_GITBASE" "$TMP/e4t.se")" = 1 ] && [ "$(grep -cvE '^(\[dbg |REFUS: )' "$TMP/e4t.se")" = 1 ] \
+  && ok "E.4f le REFUS relaie la trace de git (« trace: built-in: git fetch »), masquée, sur UNE ligne ; hors « [dbg » et « REFUS: », stderr ne porte QUE la ligne « git-base: GIT_BASE=master découvert — HEAD annoncée par <fixture> » (une fois : l'auditabilité d'une pose, pas une fuite)" \
+  || ko "E.4f refus : $(wc -l < "$TMP/e4t.refus" | tr -d ' ') ligne(s) ; git-base: $(grep -cxF -- "$LIGNE_GITBASE" "$TMP/e4t.se") ligne(s) ; hors [dbg/REFUS : $(grep -cvE '^(\[dbg |REFUS: )' "$TMP/e4t.se") ligne(s) : « $(grep -vE '^(\[dbg |REFUS: )' "$TMP/e4t.se" | head -1 | cut -c1-120) »"
 
 echo "-- E.5 l'URL d'origine porte user:mdp@ et GIT_CLONE_URL n'est pas posé : la ligne la dit MASQUÉE (forme), l'hôte reste --"
 set_pr true "$C1" provision/appa-rec master alice ci
