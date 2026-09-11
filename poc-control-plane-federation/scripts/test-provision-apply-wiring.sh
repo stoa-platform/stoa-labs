@@ -44,7 +44,7 @@ TMP="$(mktemp -d /tmp/pa-wiring.XXXXXX)"; trap 'rm -rf "$TMP"' EXIT
 # quel que soit le nombre de contrôles exécutés : une section sautée en silence
 # ferait baisser le total SANS rougir). Toute section ajoutée/retirée DOIT le
 # mettre à jour à la main. Le contrôle final n'est pas compté dedans.
-EXPECTED_CHECKS=151
+EXPECTED_CHECKS=147
 
 [ -f "$JOB" ] || { echo "job introuvable : $JOB"; exit 2; }
 [ -f "$JF" ]  || { echo "Jenkinsfile introuvable : $JF"; exit 2; }
@@ -80,17 +80,19 @@ grep -qF '<name>*/__GIT_BASE__</name>' "$JOB" \
   && ok "branche = placeholder __GIT_BASE__, substitué à la pose (la source ne nomme AUCUNE branche)" || ko "branche SCM ≠ */__GIT_BASE__"
 grep -q '<lightweight>false</lightweight>' "$JOB" \
   && ok "lightweight=false (le workspace porte scripts/ et ci/lib/)" || ko "lightweight absent ou true"
-grep -q 'DisableConcurrentBuildsJobProperty' "$JOB" \
-  && ok "un apply à la fois (DisableConcurrentBuilds dans le XML)" || ko "concurrence non interdite dans le XML"
+python3 -c "import sys,xml.etree.ElementTree as T; p=T.parse(sys.argv[1]).getroot().find('properties'); sys.exit(0 if p is not None and len(list(p))==0 else 1)" "$JOB" \
+  && ok "le XML ne porte AUCUNE propriété (<properties/>) : déclencheur et verrou « un apply à la fois » sont posés par le BUILD (L6 — mesuré : un XML porteur ferait un doublon puis perdrait son exemplaire)" \
+  || ko "le XML porte une propriété : doublon au build 1, perte au build 2"
 grep -qE '^pipeline \{' "$TMP/jf.code" \
   && ok "le Jenkinsfile ouvre sur \`pipeline {\` (déclaratif)" || ko "pas un pipeline déclaratif"
 grep -qE '^  stages \{' "$TMP/jf.code" && ok "bloc \`stages\` présent" || ko "aucun bloc \`stages\`"
-jf "options { disableConcurrentBuilds() }" \
-  && ok "disableConcurrentBuilds() dans le Jenkinsfile aussi" || ko "disableConcurrentBuilds absent du Jenkinsfile"
+[ "$(grep -c 'properties(\[disableConcurrentBuilds(), pipelineTriggers(\[' "$TMP/jf.norm")" -eq 2 ] && ! grep -qE '^  (options|triggers) \{' "$TMP/jf.code" \
+  && ok "disableConcurrentBuilds() DANS properties() sous les DEUX visages ; aucun options{}/triggers{} déclaratif (L6 : un symbole déclaratif meurt au parse sans son plugin)" \
+  || ko "properties([disableConcurrentBuilds(), pipelineTriggers([ ≠ 2 occurrences, ou bloc déclaratif encore présent"
 grep -qE '^  agent none' "$TMP/jf.code" && ok "\`agent none\` au niveau pipeline" || ko "agent none absent"
 
 echo
-echo "== 2. le webhook capte les 14 clés (7 Gitea + 7 GitLab), dont MERGE_SHA — Jenkinsfile ET XML (miroir, le XML gagne) =="
+echo "== 2. le webhook capte les 14 clés (7 Gitea + 7 GitLab), dont MERGE_SHA — dans le Jenkinsfile, SEUL déclarant (L6) =="
 # 2026-09-09 (forge agnostique) : DEUX jeux de clés — PR_* pour le hook
 # « pull_request » de Gitea, GL_* pour le « Merge Request Hook » de GitLab ; une
 # clé absente du payload arrive vide, le stage Contexte unifie (PR_BRANCH,
@@ -105,16 +107,10 @@ jf "[key: 'MERGE_SHA', value: '\$.pull_request.merge_commit_sha']" \
 jf "token: 'stoa-provision-apply'" && ok "token stoa-provision-apply (Jenkinsfile)" || ko "token inattendu"
 jf "regexpFilterText: '\$PR_ACTION|\$PR_MERGED|\$GL_KIND:\$GL_ACTION'" && ok "filterText \$PR_ACTION|\$PR_MERGED|\$GL_KIND:\$GL_ACTION (Jenkinsfile) — les deux visages sur le même texte" || ko "filterText inattendu"
 jf "regexpFilterExpression: '^closed\\\\|true\\\\||merge_request:merge\$'" && ok "filterExpression ^closed\\|true\\| … merge_request:merge\$ (Jenkinsfile) : fusion RÉELLE seulement, sur l'un OU l'autre visage" || ko "filterExpression inattendue — laisserait passer une fermeture SANS merge, ou ignorerait un visage"
-MIRROR_KO=""
-for K in $GWT_KEYS; do
-  grep -q "<key>${K}</key>" "$JOB" || MIRROR_KO="${MIRROR_KO} ${K}"
-done
-[ -z "$MIRROR_KO" ] && ok "les 14 genericVariables sont dans le XML à l'identique" || ko "clés absentes du XML :${MIRROR_KO}"
-grep -q '<key>MERGE_SHA</key><value>$.pull_request.merge_commit_sha</value>' "$JOB" \
-  && ok "MERGE_SHA = merge_commit_sha dans le XML (le webhook n'est pas borgne dès la pose)" || ko "MERGE_SHA du XML divergent"
-grep -q '<token>stoa-provision-apply</token>' "$JOB" && ok "token identique dans le XML" || ko "token du XML divergent"
-grep -q '<regexpFilterText>\$PR_ACTION|\$PR_MERGED|\$GL_KIND:\$GL_ACTION</regexpFilterText>' "$JOB" && ok "filterText identique dans le XML" || ko "filterText du XML divergent"
-grep -q '<regexpFilterExpression>\^closed\\|true\\||merge_request:merge\$</regexpFilterExpression>' "$JOB" && ok "filterExpression identique dans le XML" || ko "filterExpression du XML divergente"
+# L6 : le Jenkinsfile est le SEUL à déclarer — le XML n'a plus une seule clé.
+grep -q '<key>' "$JOB" \
+  && ko "le XML porte encore des genericVariables (elles seraient un doublon, puis une perte)" \
+  || ok "aucune genericVariable dans le XML : le Jenkinsfile déclare seul (L6)"
 grep -qE '^  parameters \{' "$TMP/jf.code" \
   && ko "un bloc \`parameters {}\` de niveau pipeline existe — un lanceur manuel pourrait nommer MERGE_SHA/PR_NUMBER lui-même" \
   || ok "aucun bloc \`parameters {}\` : ces valeurs ne viennent QUE du webhook"

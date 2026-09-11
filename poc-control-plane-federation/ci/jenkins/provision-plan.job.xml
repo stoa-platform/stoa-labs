@@ -8,15 +8,8 @@
   dans ci/Jenkinsfile.provision-plan (declaratif, versionne, relisible par
   l'ops, compile par `make lint-ci`).
 
-  Le bloc <triggers> ci-dessous DOIT rester le miroir exact du bloc
-  `triggers { GenericTrigger(...) }` du Jenkinsfile. C'est CELUI-CI qui gagne,
-  et c'est contre-intuitif : Declarative ne remplace QUE les declencheurs
-  qu'il a lui-meme poses (DeclarativeJobPropertyTrackerAction) ; un
-  declencheur venu d'un config.xml est PRESERVE tel quel, indefiniment
-  (mesure sur le lab 2026-08-06). Une divergence entre les deux fichiers est
-  SILENCIEUSE, et c'est le XML qui fait foi. scripts/lib/gwt-mirror.sh
-  (test-a0-wiring.sh) compare les deux champ a champ et vire au rouge a la
-  premiere divergence.
+  Ce fichier ne porte AUCUNE propriete (L6, 2026-09-11) : voir <properties/>
+  ci-dessous. Le declencheur est pose par le Jenkinsfile a son premier build.
 
   Re-pose : scripts/setup-provision-jobs.sh (POST config.xml, historique des
   builds conserve).
@@ -24,43 +17,18 @@
 <flow-definition plugin="workflow-job">
   <description>Fermeture de boucle : PR de provisioning OUVERTE (webhook de la forge, Gitea ou GitLab) -&gt; plan self-service LECTURE SEULE sur la branche (identite de job, aucune mutation, aucun secret) -&gt; verdict commente sur la PR, visible AVANT la decision humaine (le merge). PIPELINE FROM SCM : ci/Jenkinsfile.provision-plan, charge depuis le depot plateforme (branche __GIT_BASE__) -- ce job ne contient AUCUN Groovy.</description>
   <keepDependencies>false</keepDependencies>
-  <properties>
-    <org.jenkinsci.plugins.workflow.job.properties.DisableConcurrentBuildsJobProperty/>
-    <org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty>
-      <triggers>
-        <org.jenkinsci.plugins.gwt.GenericTrigger plugin="generic-webhook-trigger@2.4.2">
-          <spec></spec>
-          <genericVariables>
-            <!-- Deux visages, un jeu de cles par visage : une cle dont le chemin
-                 JSON est absent du payload arrive VIDE. Le stage « Contexte du
-                 webhook » du Jenkinsfile unifie (PR_BRANCH, PR_NUMBER...). -->
-            <!-- visage Gitea (hook « pull_request ») -->
-            <org.jenkinsci.plugins.gwt.GenericVariable><key>PR_BRANCH</key><value>$.pull_request.head.ref</value></org.jenkinsci.plugins.gwt.GenericVariable>
-            <org.jenkinsci.plugins.gwt.GenericVariable><key>PR_NUMBER</key><value>$.pull_request.number</value></org.jenkinsci.plugins.gwt.GenericVariable>
-            <org.jenkinsci.plugins.gwt.GenericVariable><key>PR_ACTION</key><value>$.action</value></org.jenkinsci.plugins.gwt.GenericVariable>
-            <!-- visage GitLab (« Merge Request Hook ») -->
-            <org.jenkinsci.plugins.gwt.GenericVariable><key>GL_KIND</key><value>$.object_kind</value></org.jenkinsci.plugins.gwt.GenericVariable>
-            <org.jenkinsci.plugins.gwt.GenericVariable><key>GL_IID</key><value>$.object_attributes.iid</value></org.jenkinsci.plugins.gwt.GenericVariable>
-            <org.jenkinsci.plugins.gwt.GenericVariable><key>GL_SOURCE_BRANCH</key><value>$.object_attributes.source_branch</value></org.jenkinsci.plugins.gwt.GenericVariable>
-            <org.jenkinsci.plugins.gwt.GenericVariable><key>GL_ACTION</key><value>$.object_attributes.action</value></org.jenkinsci.plugins.gwt.GenericVariable>
-          </genericVariables>
-          <printPostContent>false</printPostContent>
-          <printContributedVariables>true</printContributedVariables>
-          <token>stoa-provision-plan</token>
-          <silentResponse>false</silentResponse>
-          <!-- Ouverture, reouverture, nouveau push - jamais la fermeture. Gitea :
-               opened|reopened|synchronized ; GitLab : merge_request:open|reopen|
-               update. Le plugin joue find() : moitie Gitea ancree en tete, moitie
-               GitLab en queue, chacune sur SON segment du texte. -->
-          <regexpFilterText>$PR_ACTION|$GL_KIND:$GL_ACTION</regexpFilterText>
-          <regexpFilterExpression>^(opened|reopened|synchronized)\||merge_request:(open|reopen|update)$</regexpFilterExpression>
-          <overrideQuietPeriod>false</overrideQuietPeriod>
-          <shouldNotFlattern>false</shouldNotFlattern>
-          <allowSeveralTriggersPerBuild>false</allowSeveralTriggersPerBuild>
-        </org.jenkinsci.plugins.gwt.GenericTrigger>
-      </triggers>
-    </org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty>
-  </properties>
+  <!-- L6 (2026-09-11) : AUCUNE propriete ici, et c'est le contrat de ce job.
+       Le declencheur (selon la globale WEBHOOK_KIND : generic-webhook-trigger ou
+       GitLab Plugin) et DisableConcurrentBuilds sont poses par le Jenkinsfile,
+       par un properties() SCRIPTE, a son PREMIER BUILD - l'AMORCAGE, que
+       setup-provision-jobs.sh declenche, ATTEND et RELIT (AMORCAGE_INCOMPLET
+       sinon). MESURE le 2026-09-11 (scripts/spike-webhook-kind-m2m4.sh) : un XML
+       porteur du meme declencheur + ce properties() donne un DOUBLON au build 1
+       (2 GenericTrigger), puis l'exemplaire du XML est PERDU au build 2 - un XML
+       porteur n'est donc pas une ceinture, c'est une avarie differee.
+       scripts/lib/gwt-mirror.sh rend pour ce job « DIVERGENCE trigger xml=absent
+       jenkinsfile=present token=… vars=N » : c'est l'ETAT VOULU, pas un ecart. -->
+  <properties/>
   <definition class="org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition" plugin="workflow-cps">
     <scm class="hudson.plugins.git.GitSCM" plugin="git">
       <configVersion>2</configVersion>

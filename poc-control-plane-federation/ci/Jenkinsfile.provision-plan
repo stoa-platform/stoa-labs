@@ -72,45 +72,23 @@ pipeline {
   // script rendre `IGNORE … exit 0` : même résultat (build vert, rien fait),
   // sans le clone.
   agent none
-  options { disableConcurrentBuilds() }   // miroir du XML (un plan à la fois)
 
-  // ⚠ Ce bloc doit rester le MIROIR EXACT de celui de
-  // ci/jenkins/provision-plan.job.xml, et c'est le XML qui gagne. Le token est
-  // celui que le hook `stoa-provision-plan` du dépôt plateforme appelle (Gitea :
-  // hook « pull_request » ; GitLab : webhook « Merge request events » — même
-  // URL /generic-webhook-trigger/invoke?token=…).
-  // Volontairement PAS de bloc `parameters {}` : PR_BRANCH / PR_NUMBER ne
-  // viennent QUE du webhook (un build manuel n'a aucune de ces variables →
-  // le stage de plan ne s'exécute pas).
+  // Ni `options {}` ni `triggers {}` DÉCLARATIFS (L6, 2026-09-11) : un symbole de
+  // déclencheur nommé dans un bloc Declarative est résolu AU PARSE — sur un site
+  // qui n'a pas le plugin qui le porte, le job meurt avant son premier stage
+  // (« Invalid trigger type », MESURÉ : scripts/spike-webhook-kind-m1.sh). Le
+  // déclencheur ET le verrou de concurrence sont donc posés par un `properties()`
+  // SCRIPTÉ au premier stage, selon la globale WEBHOOK_KIND ; un `if` non pris
+  // n'invoque rien. Le XML de ce job ne porte AUCUNE propriété : un XML porteur
+  // + `properties()` fait un DOUBLON au build 1 puis PERD l'exemplaire du XML au
+  // build 2 (fait 10 du 2026-09-02, re-mesuré 2026-09-11 : spike-webhook-kind-m2m4).
+  // Conséquence assumée : le déclencheur n'existe qu'après le premier build —
+  // l'AMORÇAGE, que setup-provision-jobs.sh attend et RELIT.
   //
-  // DEUX JEUX de clés, un par visage : une clé dont le chemin JSON est absent
-  // du payload arrive VIDE (plugin generic-webhook-trigger) — un payload Gitea
-  // laisse GL_* vides, un payload GitLab laisse PR_* vides. Le filtre est
-  // composé sur les deux : il accepte l'un OU l'autre, jamais la fermeture.
-  triggers {
-    GenericTrigger(
-      token: 'stoa-provision-plan',
-      genericVariables: [
-        // ── visage Gitea (hook « pull_request ») ──
-        [key: 'PR_BRANCH',        value: '$.pull_request.head.ref'],
-        [key: 'PR_NUMBER',        value: '$.pull_request.number'],
-        [key: 'PR_ACTION',        value: '$.action'],
-        // ── visage GitLab (« Merge Request Hook ») ──
-        [key: 'GL_KIND',          value: '$.object_kind'],
-        [key: 'GL_IID',           value: '$.object_attributes.iid'],
-        [key: 'GL_SOURCE_BRANCH', value: '$.object_attributes.source_branch'],
-        [key: 'GL_ACTION',        value: '$.object_attributes.action'],
-      ],
-      // Ouverture, réouverture, nouveau push sur la branche — jamais la
-      // fermeture (c'est provision-apply qui écoute la fusion). Gitea dit
-      // opened|reopened|synchronized ; GitLab dit merge_request:open|reopen|
-      // update. Le plugin joue find() : la moitié Gitea est ancrée en tête
-      // (`^…\|`), la moitié GitLab en queue (`…$`), chacune sur SON segment.
-      regexpFilterText: '$PR_ACTION|$GL_KIND:$GL_ACTION',
-      regexpFilterExpression: '^(opened|reopened|synchronized)\\||merge_request:(open|reopen|update)$',
-      printContributedVariables: true,
-      printPostContent: false)
-  }
+  // Volontairement PAS de bloc `parameters {}` : PR_BRANCH / PR_NUMBER ne
+  // viennent QUE du webhook. Un build manuel n'a aucune de ces variables : il
+  // sort VERT sans exécuteur (« hors provision/* ») — c'est précisément ce qui
+  // en fait un amorçage sans effet de bord.
 
   // ── POINTS DE CONFIG CLIENT (motif `env.X ?: défaut`, comme les Jenkinsfile frères) ──
   // ⚠ Hôtes vus DEPUIS le conteneur de l'agent (réseau docker `poc`).
@@ -129,6 +107,11 @@ pipeline {
     FORGE_KIND           = "${env.FORGE_KIND ?: 'gitea'}"
     FORGE_API_AUTH       = "${env.FORGE_API_AUTH ?: ''}"
     FORGE_API_BASE       = "${env.FORGE_API_BASE ?: ''}"
+    // Le RÉCEPTEUR de webhooks de CE Jenkins (L6) : gwt (défaut = l'état
+    // historique — generic-webhook-trigger, /generic-webhook-trigger/invoke?token=)
+    // | gitlab (GitLab Plugin, /project/<job> + X-Gitlab-Token). Toute autre
+    // valeur est refusée par NOM avant que rien ne soit posé.
+    WEBHOOK_KIND         = "${env.WEBHOOK_KIND ?: 'gwt'}"
     // Lien humain-CLIQUABLE dans le commentaire de PR (split-horizon lab :
     // jenkins→gitea:3000, navigateur→localhost:13000). Le Groovy d'origine le
     // codait EN DUR dans la ligne sh ; c'est désormais un point de config.
@@ -148,6 +131,62 @@ pipeline {
     stage('Contexte du webhook') {
       steps {
         script {
+          // ── LE RÉCEPTEUR (L6) : posé ICI, sans agent, avant tout refus ────
+          // Deux visages, un seul posé. Le symbole de l'autre n'est jamais
+          // invoqué (mesuré M1), donc son plugin n'est pas requis.
+          // `disableConcurrentBuilds()` voyage avec lui : un job re-posé perd
+          // ses propriétés déclaratives au premier build (fait 10).
+          // ⚠ Le corps GenericTrigger(...) est relu par scripts/lib/gwt-mirror.sh :
+          // quotes SIMPLES, maps `[key:, value:]` nues, aucune virgule finale.
+          def hook = env.WEBHOOK_KIND
+          if (hook == 'gwt') {
+            properties([disableConcurrentBuilds(), pipelineTriggers([GenericTrigger(
+              token: 'stoa-provision-plan',
+              genericVariables: [
+                // ── visage Gitea (hook « pull_request ») ──
+                [key: 'PR_BRANCH',        value: '$.pull_request.head.ref'],
+                [key: 'PR_NUMBER',        value: '$.pull_request.number'],
+                [key: 'PR_ACTION',        value: '$.action'],
+                // ── visage GitLab par le GWT (« Merge Request Hook ») ──
+                [key: 'GL_KIND',          value: '$.object_kind'],
+                [key: 'GL_IID',           value: '$.object_attributes.iid'],
+                [key: 'GL_SOURCE_BRANCH', value: '$.object_attributes.source_branch'],
+                [key: 'GL_ACTION',        value: '$.object_attributes.action'],
+              ],
+              // Ouverture, réouverture, nouveau push — jamais la fermeture
+              // (c'est provision-apply qui écoute la fusion). Gitea dit
+              // opened|reopened|synchronized ; GitLab merge_request:open|reopen|
+              // update. Le plugin joue find() : la moitié Gitea ancrée en tête,
+              // la moitié GitLab en queue, chacune sur SON segment du texte.
+              regexpFilterText: '$PR_ACTION|$GL_KIND:$GL_ACTION',
+              regexpFilterExpression: '^(opened|reopened|synchronized)\\||merge_request:(open|reopen|update)$',
+              printContributedVariables: true,
+              printPostContent: false)])])
+          } else if (hook == 'gitlab') {
+            // GitLab Plugin. MESURÉ (M7, builds réels) : ouverture, push d'un
+            // commit, changement de TITRE et réouverture construisent ; une
+            // fermeture sans fusion et une fusion ne construisent pas. C'est la
+            // parité avec le GWT — la « garde déjà construit » lue dans les
+            // sources du plugin ne s'applique pas.
+            // Les défauts TRUE du plugin sont FIGÉS à false : ciSkip laisserait
+            // une MR « [ci-skip] » sans plan, triggerOnPush ferait construire à
+            // chaque push du dépôt. secretToken = le mot du token GWT : une
+            // SONNETTE, jamais une autorité (la forge est relue ensuite).
+            properties([disableConcurrentBuilds(), pipelineTriggers([gitlab(
+              triggerOnMergeRequest: true, triggerOnAcceptedMergeRequest: false,
+              triggerOpenMergeRequestOnPush: 'source',
+              triggerOnPush: false, triggerOnNoteRequest: false, ciSkip: false,
+              setBuildDescription: false, skipWorkInProgressMergeRequest: false,
+              triggerOnClosedMergeRequest: false, triggerOnApprovedMergeRequest: false,
+              triggerOnPipelineEvent: false, triggerToBranchDeleteRequest: false,
+              cancelPendingBuildsOnUpdate: false, cancelRunningBuildsOnUpdate: false,
+              branchFilterType: 'RegexBasedFilter', sourceBranchRegex: 'provision/.*',
+              targetBranchRegex: '.*',
+              secretToken: 'stoa-provision-plan')])])
+          } else {
+            error("REFUS: WEBHOOK_KIND_INVALIDE : '${hook}' — attendu gwt|gitlab (globale Jenkins WEBHOOK_KIND, scripts/setup-jenkins-globals.sh). AUCUN déclencheur n'a été posé.")
+          }
+
           // ── UN SEUL nom par fait, quel que soit le visage ─────────────────
           // Le payload Gitea remplit PR_*, le payload GitLab remplit GL_* et
           // laisse PR_* vides. ICI, et nulle part ailleurs, le fait unifié est
@@ -158,9 +197,23 @@ pipeline {
           // la garde `when { beforeAgent }` se joue AVANT tout sh, et une
           // variable posée dans env est vue de tout sh du build (même
           // mécanisme que REQ_API dans app-request, GITEA_MERGED_BY ici).
-          env.PR_BRANCH = env.PR_BRANCH ?: (env.GL_SOURCE_BRANCH ?: '')
-          env.PR_NUMBER = env.PR_NUMBER ?: (env.GL_IID ?: '')
-          env.PR_ACTION = env.PR_ACTION ?: (env.GL_KIND ? "${env.GL_KIND}:${env.GL_ACTION ?: ''}" : '')
+          // TROIS visages : Gitea (PR_*), GitLab par le GWT (GL_*), GitLab par
+          // son plugin (gitlab*, posées par le plugin lui-même). MESURÉ (M8) :
+          // le plugin n'expose PAS l'action — `gitlabActionType` vaut MERGE
+          // même sur une OUVERTURE — et `gitlabMergeCommitSha` arrive NULLE
+          // hors fusion ; seul l'ÉTAT est lisible.
+          env.PR_BRANCH = env.PR_BRANCH ?: (env.GL_SOURCE_BRANCH ?: (env.gitlabSourceBranch ?: ''))
+          env.PR_NUMBER = env.PR_NUMBER ?: (env.GL_IID ?: (env.gitlabMergeRequestIid ?: ''))
+          env.PR_ACTION = env.PR_ACTION ?: (env.GL_KIND ? "${env.GL_KIND}:${env.GL_ACTION ?: ''}" : (env.gitlabMergeRequestState ? "merge_request:${env.gitlabMergeRequestState}" : ''))
+          // Le filtre du plugin vit dans ses cases, et un état hors de son
+          // énumération y devient un JOKER : l'état est donc RELU ici. Hors
+          // `opened`, il n'y a aucune demande à planifier — même geste que
+          // « hors provision/* » : build VERT, stages sautés, aucun exécuteur.
+          def glState = env.gitlabMergeRequestState ?: ''
+          if (glState && glState != 'opened') {
+            echo "hook GitLab hors evenement : state='${glState}' (attendu opened) — aucune demande a planifier."
+            env.PR_BRANCH = ''
+          }
           def ref = env.PR_BRANCH ?: ''
           if (ref.startsWith('provision/')) {
             def rest = ref.substring('provision/'.length())

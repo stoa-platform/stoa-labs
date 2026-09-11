@@ -39,7 +39,7 @@ ko(){ FAIL=$((FAIL+1)); printf '  ❌ %s\n' "$*"; }
 
 # Total ATTENDU, ÉCRIT EN DUR — indépendant de PASS+FAIL. Toute section
 # ajoutée/retirée DOIT le mettre à jour : un oubli fait rougir le dernier §.
-EXPECTED_CHECKS=200
+EXPECTED_CHECKS=211
 
 # shellcheck source=scripts/lib/gwt-mirror.sh
 . scripts/lib/gwt-mirror.sh || { echo "lib gwt-mirror.sh introuvable"; exit 2; }
@@ -101,47 +101,78 @@ mirror_expect(){ # $1=job $2=nb de clés attendu
 # 2026-09-09 (forge agnostique) : DEUX jeux de clés par job à webhook de PR —
 # PR_* (Gitea « pull_request ») et GL_* (GitLab « Merge Request Hook ») ; le
 # miroir les compte TOUS (14 = 7 + 7 pour l'apply, 7 = 3 + 4 pour le plan).
-mirror_expect provision-apply 14
-mirror_expect provision-plan 7
+#
+# L6 (2026-09-11) : provision-plan et provision-apply posent SEULS leur
+# déclencheur (properties() scripté — un bloc déclaratif meurt AU PARSE sans le
+# plugin qui porte le symbole, mesuré M1) et leurs XML ne portent AUCUNE
+# propriété (mesuré M2 : XML porteur + properties() = doublon au build 1, PERTE
+# du XML au build 2). L'état VOULU est donc « xml=absent jenkinsfile=present »,
+# et c'est le côté Jenkinsfile qui est compté.
+solo_expect(){ # $1=job $2=nb de clés attendu
+  local out rc
+  out=$(gwt_mirror_diff "ci/jenkins/$1.job.xml" "ci/Jenkinsfile.$1" 2>&1); rc=$?
+  [ "$rc" -eq 2 ] && [ "$out" = "DIVERGENCE trigger xml=absent jenkinsfile=present token=stoa-$1 vars=$2" ] \
+    && ok "$1 : le déclencheur n'est QUE dans le Jenkinsfile (token stoa-$1, $2 clés) — XML sans propriété (L6)" \
+    || ko "$1 : attendu « xml=absent jenkinsfile=present token=stoa-$1 vars=$2 », lu (rc=$rc) : $(printf '%s' "$out" | tr '\n' ' ')"
+  python3 -c "import sys,xml.etree.ElementTree as T; r=T.parse(sys.argv[1]).getroot(); p=r.find('properties'); sys.exit(0 if p is not None and len(list(p))==0 else 1)" "ci/jenkins/$1.job.xml" \
+    && ok "$1 : <properties/> VIDE dans le XML — ni déclencheur, ni DisableConcurrentBuilds (ils seraient un doublon, puis une perte)" \
+    || ko "$1 : le XML porte encore une propriété (mesuré M2 : doublon au build 1, perte au build 2)"
+}
+solo_expect provision-apply 14
+solo_expect provision-plan 7
 mirror_expect provisioning-request 7
-# La PORTE DU FILTRE, jouée sur le côté qui GAGNE (le XML) : le texte est rendu
+# La PORTE DU FILTRE, jouée sur le SEUL côté qui déclare (le Jenkinsfile, L6) :
+# le texte est rendu
 # comme le plugin le rend (chaque $CLÉ remplacée par sa valeur, VIDE quand le
 # payload ne la porte pas — un payload Gitea laisse GL_* vides, un payload
 # GitLab laisse PR_* vides ; les clés les plus longues d'abord, comme lui), puis
 # l'expression est jouée par find(), comme lui. Un visage accepte, l'autre passe
 # pour vide ; une fermeture sans fusion, un push, un payload vide ne passent jamais.
-gwt_filtre(){ # $1=job $2… CLÉ=VALEUR (les contribuées) → rc 0 si le filtre laisse passer
-  local job="$1"; shift
-  python3 - "ci/jenkins/$job.job.xml" "$@" <<'PY2'
-import re, sys, xml.etree.ElementTree as T
-g = next(el for el in T.parse(sys.argv[1]).getroot().iter() if el.tag.endswith('GenericTrigger'))
+gwt_filtre(){ # $1=CHEMIN d'un Jenkinsfile $2… CLÉ=VALEUR → rc 0 si le filtre laisse passer
+  local jf="$1"; shift
+  python3 - "$jf" "$@" <<'PY2'
+import re, sys
+# Vue CODE (les `//` blanchis), puis le PREMIER GenericTrigger( … ) équilibré :
+# le même extracteur que scripts/lib/gwt-mirror.sh, sur le seul côté qui déclare.
+code = ''.join('\n' if ln.lstrip().startswith('//') else ln for ln in open(sys.argv[1], encoding='utf-8'))
+m = re.search(r'GenericTrigger\s*\(', code)
+if m is None:
+    sys.exit(3)
+i, depth = m.end(), 1
+while i < len(code) and depth:
+    depth += {'(': 1, ')': -1}.get(code[i], 0)
+    i += 1
+body = code[m.end():i - 1]
+unq = lambda t: t.replace("\\\\", "\\").replace("\\'", "'")
+opt = lambda n: unq(re.search(r"\b%s\s*:\s*'((?:[^'\\]|\\.)*)'" % n, body).group(1))
+keys = [unq(k) for k in re.findall(r"\[\s*key\s*:\s*'((?:[^'\\]|\\.)*)'", body)]
 kv = dict(a.split('=', 1) for a in sys.argv[2:])
-text = g.findtext('regexpFilterText') or ''
-for k in sorted((v.findtext('key') or '' for v in g.find('genericVariables')), key=len, reverse=True):
+text = opt('regexpFilterText')
+for k in sorted(keys, key=len, reverse=True):
     text = text.replace('$' + k, kv.get(k, ''))
-sys.exit(0 if re.search(g.findtext('regexpFilterExpression') or '', text) else 1)
+sys.exit(0 if re.search(opt('regexpFilterExpression'), text) else 1)
 PY2
 }
 F_KO=""
 for c in "PR_ACTION=opened" "PR_ACTION=reopened" "PR_ACTION=synchronized" "GL_KIND=merge_request GL_ACTION=open" "GL_KIND=merge_request GL_ACTION=reopen" "GL_KIND=merge_request GL_ACTION=update"; do
   # shellcheck disable=SC2086
-  gwt_filtre provision-plan $c || F_KO="$F_KO [$c refusé]"
+  gwt_filtre ci/Jenkinsfile.provision-plan $c || F_KO="$F_KO [$c refusé]"
 done
 for c in "PR_ACTION=closed" "PR_ACTION=edited" "GL_KIND=merge_request GL_ACTION=merge" "GL_KIND=merge_request GL_ACTION=close" "GL_KIND=merge_request GL_ACTION=approved" "GL_KIND=push" ""; do
   # shellcheck disable=SC2086
-  gwt_filtre provision-plan $c && F_KO="$F_KO [${c:-payload vide} accepté]"
+  gwt_filtre ci/Jenkinsfile.provision-plan $c && F_KO="$F_KO [${c:-payload vide} accepté]"
 done
-[ -z "$F_KO" ] && ok "provision-plan : le filtre (XML, le côté qui gagne) accepte opened|reopened|synchronized ET merge_request:open|reopen|update ; refuse fermeture, fusion, approbation, push, payload vide" || ko "provision-plan : filtre —$F_KO"
+[ -z "$F_KO" ] && ok "provision-plan : le filtre (Jenkinsfile, le seul côté) accepte opened|reopened|synchronized ET merge_request:open|reopen|update ; refuse fermeture, fusion, approbation, push, payload vide" || ko "provision-plan : filtre —$F_KO"
 F_KO=""
 for c in "PR_ACTION=closed PR_MERGED=true" "GL_KIND=merge_request GL_ACTION=merge"; do
   # shellcheck disable=SC2086
-  gwt_filtre provision-apply $c || F_KO="$F_KO [$c refusé]"
+  gwt_filtre ci/Jenkinsfile.provision-apply $c || F_KO="$F_KO [$c refusé]"
 done
 for c in "PR_ACTION=closed PR_MERGED=false" "PR_ACTION=opened PR_MERGED=false" "PR_ACTION=reopened PR_MERGED=true" "GL_KIND=merge_request GL_ACTION=close" "GL_KIND=merge_request GL_ACTION=open" "GL_KIND=merge_request GL_ACTION=update" "GL_KIND=push" ""; do
   # shellcheck disable=SC2086
-  gwt_filtre provision-apply $c && F_KO="$F_KO [${c:-payload vide} accepté]"
+  gwt_filtre ci/Jenkinsfile.provision-apply $c && F_KO="$F_KO [${c:-payload vide} accepté]"
 done
-[ -z "$F_KO" ] && ok "provision-apply : le filtre accepte closed+merged=true ET merge_request:merge SEULEMENT — fermeture sans fusion, ouverture, update, push, payload vide ne passent pas" || ko "provision-apply : filtre —$F_KO"
+[ -z "$F_KO" ] && ok "provision-apply : le filtre (Jenkinsfile) accepte closed+merged=true ET merge_request:merge SEULEMENT — fermeture sans fusion, ouverture, update, push, payload vide ne passent pas" || ko "provision-apply : filtre —$F_KO"
 OUT=$(gwt_mirror_diff ci/jenkins/app-request.job.xml ci/Jenkinsfile.app-request 2>&1); RC=$?
 [ "$RC" -eq 0 ] && [ "$OUT" = "AUCUN_TRIGGER" ] \
   && ok "app-request : AUCUN trigger des deux côtés (formulaire humain, <triggers/> vide)" \
@@ -153,7 +184,9 @@ JFP="ci/Jenkinsfile.provision-plan"; code_view "$JFP" > "$TMP/jf-plan.code"
 jfp(){ grep -qF -- "$1" "$TMP/jf-plan.code"; }
 grep -qE '^pipeline \{' "$JFP" && grep -qE '^  agent none' "$TMP/jf-plan.code" \
   && ok "déclaratif, \`agent none\` au niveau pipeline (la PR étrangère n'alloue rien)" || ko "pas déclaratif / agent none absent au niveau pipeline"
-jfp 'disableConcurrentBuilds()' && ok "options { disableConcurrentBuilds() } — miroir de la propriété du XML" || ko "disableConcurrentBuilds absent (le XML l'a : divergence)"
+[ "$(grep -c 'properties(\[disableConcurrentBuilds(), pipelineTriggers(\[' "$TMP/jf-plan.code")" -eq 2 ] && ! grep -qE '^  options \{' "$TMP/jf-plan.code" \
+  && ok "disableConcurrentBuilds() posé DANS properties() sous les DEUX visages ; aucun options{} déclaratif (mesuré M2/fait 10 : un job re-posé perdrait l'option déclarative au premier build)" \
+  || ko "disableConcurrentBuilds : pas dans les deux properties(), ou options{} déclaratif encore présent"
 jfp "regexpFilterExpression: '^(opened|reopened|synchronized)\\\\||merge_request:(open|reopen|update)\$'" && jfp "regexpFilterText: '\$PR_ACTION|\$GL_KIND:\$GL_ACTION'" \
   && ok "filtre GWT exact, DEUX visages : \$PR_ACTION|\$GL_KIND:\$GL_ACTION ~ ^(opened|reopened|synchronized)\\| … merge_request:(open|reopen|update)\$ (jamais la fermeture)" || ko "filtre GWT inattendu"
 jfp 'beforeAgent true' && jfp "expression { (env.PR_BRANCH ?: '').startsWith('provision/') }" \
@@ -188,6 +221,78 @@ jfp 'currentBuild.displayName = "plan ${app}/${envn} (PR #' && ok "le build est 
 [ -x scripts/provision-plan.sh ] && bash -n scripts/provision-plan.sh 2>/dev/null && ok "scripts/provision-plan.sh existe, exécutable, parsable" || ko "scripts/provision-plan.sh absent ou cassé"
 grep -q 'bash scripts/provision-plan.sh' "$TMP/jf-plan.code" && [ "$(grep -c 'provision-plan.sh' "$TMP/jf-plan.code")" -eq 1 ] \
   && ok "le moteur est invoqué UNE fois : le pipeline route, la substance reste dans scripts/" || ko "invocations du moteur : $(grep -c 'provision-plan.sh' "$TMP/jf-plan.code")"
+
+echo
+echo "== 3bis. le RÉCEPTEUR de webhooks (L6) : posé par properties(), deux visages, refus nommé AVANT, fait unifié APRÈS =="
+# STRUCTUREL : par ORDRE de lignes (code_line) et par COMPTE, jamais par simple
+# présence — un `if` qui ment ne se voit pas au grep, et c'est l'angle mort
+# assumé de cette porte (seule la preuve live M10 le couvre).
+# recepteur_check <vue code> <plan|apply> : imprime les motifs MANQUANTS, rc 1 si un manque.
+recepteur_check(){
+  local c="$1" j="$2" miss="" l_if l_prop l_gl l_err l_fact l_first prem
+  tr -s ' ' < "$c" > "$c.norm"
+  grep -qE '^  (options|triggers) \{' "$c" && miss="$miss bloc-declaratif-present"
+  grep -qF "WEBHOOK_KIND = \"\${env.WEBHOOK_KIND ?: 'gwt'}\"" "$c.norm" || miss="$miss env-WEBHOOK_KIND"
+  l_if=$(code_line "$c" "if (hook == 'gwt') {")
+  l_prop=$(code_line "$c" 'properties([disableConcurrentBuilds(), pipelineTriggers([')
+  l_gl=$(code_line "$c" "} else if (hook == 'gitlab') {")
+  l_err=$(code_line "$c" 'error("REFUS: WEBHOOK_KIND_INVALIDE')
+  l_fact=$(code_line "$c" 'env.PR_BRANCH = env.PR_BRANCH ?:')
+  if [ -n "$l_if" ] && [ -n "$l_prop" ] && [ -n "$l_gl" ] && [ -n "$l_err" ] && [ -n "$l_fact" ]; then
+    { [ "$l_if" -lt "$l_prop" ] && [ "$l_prop" -lt "$l_gl" ] && [ "$l_gl" -lt "$l_err" ] && [ "$l_err" -lt "$l_fact" ]; } \
+      || miss="$miss ordre(if=$l_if prop=$l_prop gitlab=$l_gl error=$l_err fait=$l_fact)"
+  else
+    miss="$miss ancres(if=${l_if:-?} prop=${l_prop:-?} gitlab=${l_gl:-?} error=${l_err:-?} fait=${l_fact:-?})"
+  fi
+  [ "$(grep -c 'GenericTrigger(' "$c")" -eq 1 ] || miss="$miss GenericTrigger(x$(grep -c 'GenericTrigger(' "$c"))"
+  [ "$(grep -c 'gitlab(' "$c")" -eq 1 ] || miss="$miss gitlab(x$(grep -c 'gitlab(' "$c"))"
+  [ "$(grep -c 'properties(\[disableConcurrentBuilds(), pipelineTriggers(\[' "$c")" -eq 2 ] || miss="$miss properties-pas-2"
+  # Les défauts TRUE du plugin GitLab, figés à false (ciSkip : une MR dont la
+  # description porte « [ci-skip] » n'aurait NI plan NI apply ; triggerOnPush :
+  # chaque push du dépôt construirait), et la porte de branche.
+  for k in "triggerOnPush: false" "triggerOnNoteRequest: false" "ciSkip: false" "setBuildDescription: false" \
+           "skipWorkInProgressMergeRequest: false" "triggerOnClosedMergeRequest: false" \
+           "triggerOnApprovedMergeRequest: false" "triggerOnPipelineEvent: false" \
+           "triggerToBranchDeleteRequest: false" "cancelPendingBuildsOnUpdate: false" \
+           "cancelRunningBuildsOnUpdate: false" "branchFilterType: 'RegexBasedFilter'" \
+           "sourceBranchRegex: 'provision/.*'" "targetBranchRegex: '.*'" \
+           "secretToken: 'stoa-provision-$j'" \
+           "env.gitlabSourceBranch" "env.gitlabMergeRequestIid" "env.gitlabMergeRequestState"; do
+    grep -qF -- "$k" "$c.norm" || miss="$miss [$k]"
+  done
+  # Le plugin n'expose PAS l'action (mesuré M8 : gitlabActionType vaut MERGE
+  # même sur une ouverture) : l'ÉTAT est relu, plan `opened`, apply `merged`.
+  if [ "$j" = plan ]; then
+    for k in "triggerOnMergeRequest: true" "triggerOnAcceptedMergeRequest: false" \
+             "triggerOpenMergeRequestOnPush: 'source'" "!= 'opened'"; do
+      grep -qF -- "$k" "$c.norm" || miss="$miss [$k]"
+    done
+  else
+    for k in "triggerOnMergeRequest: false" "triggerOnAcceptedMergeRequest: true" \
+             "triggerOpenMergeRequestOnPush: 'never'" "env.gitlabMergeCommitSha" "!= 'merged'"; do
+      grep -qF -- "$k" "$c.norm" || miss="$miss [$k]"
+    done
+  fi
+  # La PREMIÈRE occurrence de CHAQUE symbole, en vue code, doit ÊTRE son appel :
+  # jamais un `GenericTrigger(`/`gitlab(` dans un /* */ ou une chaîne avant lui.
+  # La vue code ne blanchit que les `//` — un bloc /* */ reste lisible, donc un
+  # symbole commenté serait COMPTÉ (trouvé en écrivant cette porte, 2026-09-11).
+  # Et le miroir, lui, prend la première occurrence qu'il trouve : il mesurerait
+  # un commentaire.
+  l_first=$(grep -n 'GenericTrigger(' "$c" | head -1 | cut -d: -f1)
+  prem=$(sed -n "${l_first:-0}p" "$c")
+  case "$prem" in *"pipelineTriggers([GenericTrigger("*) ;; *) miss="$miss GenericTrigger-premiere-occurrence-hors-appel" ;; esac
+  l_first=$(grep -n 'gitlab(' "$c" | head -1 | cut -d: -f1)
+  prem=$(sed -n "${l_first:-0}p" "$c")
+  case "$prem" in *"pipelineTriggers([gitlab("*) ;; *) miss="$miss gitlab-premiere-occurrence-hors-appel" ;; esac
+  printf '%s' "$miss"; [ -z "$miss" ]
+}
+for J in plan apply; do
+  code_view "ci/Jenkinsfile.provision-$J" > "$TMP/jf-$J.l6"
+  MISS=$(recepteur_check "$TMP/jf-$J.l6" "$J") \
+    && ok "provision-$J : WEBHOOK_KIND lu (défaut gwt) ; if gwt ⇒ properties(GenericTrigger) ; else if gitlab ⇒ properties(gitlab(… table mesurée M7 …)) ; else error(WEBHOOK_KIND_INVALIDE) ; le tout AVANT le fait unifié ; un seul GenericTrigger( et un seul gitlab( ; troisième visage gitlab* et ÉTAT relu" \
+    || ko "provision-$J : récepteur mal câblé —$MISS"
+done
 
 echo
 echo "== 4. ci/Jenkinsfile.provisioning-request : la voie machine, sans un seul champ listé =="
@@ -971,29 +1076,51 @@ OUT=$(gwt_mirror_diff "$TMP/pa-sans-triggers.xml" ci/Jenkinsfile.provision-apply
 [ "$RC" -eq 2 ] && [ "$OUT" = "DIVERGENCE trigger xml=absent jenkinsfile=present token=stoa-provision-apply vars=14" ] \
   && ok "XML sans <triggers> ⇒ rc 2 « DIVERGENCE trigger xml=absent jenkinsfile=present token=… vars=14 » : le côté PRÉSENT est compté (L6 — c'est l'état voulu de ce job, pas une avarie)" \
   || ko "XML sans <triggers> : sortie inattendue (rc=$RC : $OUT)"
-# (b) token altéré dans le XML ⇒ rc 1, champ nommé.
-sed 's#<token>stoa-provision-apply</token>#<token>stoa-provision-apply-MUTE</token>#' ci/jenkins/provision-apply.job.xml > "$TMP/pa-token.xml"
-OUT=$(gwt_mirror_diff "$TMP/pa-token.xml" ci/Jenkinsfile.provision-apply 2>&1); RC=$?
-[ "$RC" -eq 1 ] && printf '%s' "$OUT" | grep -q '^DIVERGENCE token' \
-  && ok "token altéré dans le XML ⇒ rc 1 « DIVERGENCE token »" || ko "token altéré non détecté (rc=$RC : $OUT)"
-# (c) la VALEUR d'une clé altérée dans le XML (même clé, autre chemin JSON) ⇒ rc 1.
-sed 's#<key>MERGE_SHA</key><value>$.pull_request.merge_commit_sha</value>#<key>MERGE_SHA</key><value>$.pull_request.head.sha</value>#' ci/jenkins/provision-apply.job.xml > "$TMP/pa-val.xml"
-OUT=$(gwt_mirror_diff "$TMP/pa-val.xml" ci/Jenkinsfile.provision-apply 2>&1); RC=$?
-[ "$RC" -eq 1 ] && printf '%s' "$OUT" | grep -q '^DIVERGENCE vars' && printf '%s' "$OUT" | grep -q 'head.sha' \
-  && ok "valeur de MERGE_SHA altérée (head.sha) ⇒ rc 1 « DIVERGENCE vars » nommant la clé" \
-  || ko "valeur altérée non détectée (rc=$RC : $OUT)"
-# (d) le filtre altéré côté JENKINSFILE (fermeture sans merge) ⇒ rc 1.
-sed "s#regexpFilterExpression: '^closed\\\\\\\\|true\\\\\\\\||merge_request:merge\$'#regexpFilterExpression: '^closed'#" ci/Jenkinsfile.provision-apply > "$TMP/jf-filtre"
-grep -q "regexpFilterExpression: '^closed'" "$TMP/jf-filtre" || echo "  (avertissement : mutation (d) non appliquée)"
-OUT=$(gwt_mirror_diff ci/jenkins/provision-apply.job.xml "$TMP/jf-filtre" 2>&1); RC=$?
-[ "$RC" -eq 1 ] && printf '%s' "$OUT" | grep -q '^DIVERGENCE regexpFilterExpression' \
-  && ok "filtre altéré côté Jenkinsfile (^closed) ⇒ rc 1 « DIVERGENCE regexpFilterExpression »" \
-  || ko "filtre altéré côté Jenkinsfile non détecté (rc=$RC : $OUT)"
-# (e) un commentaire qui NOMME un autre token ne verdit ni ne rougit rien (vue code).
+# (b) token altéré dans le JENKINSFILE ⇒ le token COMPTÉ change (solo_expect rougirait).
+sed "s#token: 'stoa-provision-apply',#token: 'stoa-provision-apply-MUTE',#" ci/Jenkinsfile.provision-apply > "$TMP/jf-token"
+OUT=$(gwt_mirror_diff ci/jenkins/provision-apply.job.xml "$TMP/jf-token" 2>&1); RC=$?
+[ "$RC" -eq 2 ] && [ "$OUT" = "DIVERGENCE trigger xml=absent jenkinsfile=present token=stoa-provision-apply-MUTE vars=14" ] \
+  && ok "token altéré côté Jenkinsfile ⇒ le token COMPTÉ change (solo_expect du §2 rougirait : le webhook ne répondrait plus au mot du hook)" \
+  || ko "token altéré non vu (rc=$RC : $OUT)"
+# (c) la VALEUR d'une clé altérée : le COMPTE ne la voit pas (14 clés restent 14)
+#     — c'est le grep exact de test-provision-apply-wiring §2 qui la garde. On
+#     mesure les DEUX faits, plutôt que de laisser croire que le miroir suffit.
+sed "s#\[key: 'MERGE_SHA',        value: '\$.pull_request.merge_commit_sha'\]#[key: 'MERGE_SHA',        value: '\$.pull_request.head.sha']#" ci/Jenkinsfile.provision-apply > "$TMP/jf-val"
+OUT=$(gwt_mirror_diff ci/jenkins/provision-apply.job.xml "$TMP/jf-val" 2>&1)
+if ! grep -q "head.sha" "$TMP/jf-val"; then ko "mutation (c) non appliquée"
+elif printf '%s' "$OUT" | grep -q 'vars=14' && ! tr -s ' ' < "$TMP/jf-val" | grep -qF "[key: 'MERGE_SHA', value: '\$.pull_request.merge_commit_sha']"; then
+  ok "valeur de MERGE_SHA altérée (head.sha) : le COMPTE de clés ne la voit pas (vars=14), le grep exact de test-provision-apply-wiring §2 la voit — dit ici, pas supposé"
+else ko "mutation (c) : $OUT"; fi
+# (d) le filtre altéré côté Jenkinsfile (fermeture sans merge) ⇒ le filtre JOUÉ accepte ce qu'il refusait.
+sed "s#regexpFilterExpression: '\^closed\\\\\\\\|true\\\\\\\\||merge_request:merge\$'#regexpFilterExpression: '^closed'#" ci/Jenkinsfile.provision-apply > "$TMP/jf-filtre"
+if ! grep -q "regexpFilterExpression: '\^closed'" "$TMP/jf-filtre"; then ko "mutation (d) non appliquée"
+elif gwt_filtre "$TMP/jf-filtre" PR_ACTION=closed PR_MERGED=false; then
+  ok "filtre altéré côté Jenkinsfile (^closed) ⇒ une fermeture SANS fusion passerait : le filtre joué du §2 rougit"
+else ko "filtre altéré (d) : la fermeture sans fusion est encore refusée — la mutation n'a rien changé"; fi
+# (e) un commentaire qui NOMME un autre token ne change rien (vue code).
 { echo "// token: 'stoa-un-autre-token' — commentaire, pas du code"; cat ci/Jenkinsfile.provision-apply; } > "$TMP/jf-comm"
 OUT=$(gwt_mirror_diff ci/jenkins/provision-apply.job.xml "$TMP/jf-comm" 2>&1); RC=$?
-[ "$RC" -eq 0 ] && ok "un token cité dans un COMMENTAIRE Groovy est ignoré (vue code) : miroir toujours exact" \
-  || ko "un commentaire a fait diverger le miroir (rc=$RC : $OUT)"
+[ "$RC" -eq 2 ] && [ "$OUT" = "DIVERGENCE trigger xml=absent jenkinsfile=present token=stoa-provision-apply vars=14" ] \
+  && ok "un token cité dans un COMMENTAIRE Groovy est ignoré (vue code) : le verdict ne bouge pas" \
+  || ko "un commentaire a changé le verdict (rc=$RC : $OUT)"
+
+echo
+echo "== 8bis. contre-épreuve du RÉCEPTEUR, par MUTATION (recepteur_check ROUGIT) =="
+mut(){ # <libellé> <plan|apply> <expression sed>
+  sed "$3" "ci/Jenkinsfile.provision-$2" > "$TMP/m.jf"
+  if cmp -s "$TMP/m.jf" "ci/Jenkinsfile.provision-$2"; then ko "$1 : mutation NON appliquée (le motif a changé ?)"; return; fi
+  code_view "$TMP/m.jf" > "$TMP/m.l6"
+  if recepteur_check "$TMP/m.l6" "$2" >/dev/null; then ko "$1 : mutation INVISIBLE à la porte"; else ok "$1 ⇒ rouge"; fi
+}
+mut "apply : triggerOnAcceptedMergeRequest true→false (la fusion ne construirait plus)" apply "s/triggerOnAcceptedMergeRequest: true/triggerOnAcceptedMergeRequest: false/"
+mut "plan : triggerOnMergeRequest true→false (aucune ouverture ne construirait)" plan "s/triggerOnMergeRequest: true/triggerOnMergeRequest: false/"
+mut "apply : ciSkip false→true (une MR « [ci-skip] » tuerait l'apply)" apply "s/ciSkip: false/ciSkip: true/"
+mut "plan : la branche else error() retirée (un knob inconnu passerait en silence)" plan "/error(\"REFUS: WEBHOOK_KIND_INVALIDE/d"
+mut "apply : if (hook == 'gwt') → if (false) (le visage gwt ne serait JAMAIS posé)" apply "s/if (hook == 'gwt') {/if (false) {/"
+mut "plan : le visage gitlab commenté" plan "s#pipelineTriggers(\[gitlab(#pipelineTriggers([/* gitlab( */ cron(#"
+mut "apply : secretToken altéré (la sonnette ne répondrait plus au mot)" apply "s/secretToken: 'stoa-provision-apply'/secretToken: 'autre-mot'/"
+mut "plan : WEBHOOK_KIND sans défaut gwt (le site historique deviendrait muet)" plan "s/WEBHOOK_KIND         = \"\${env.WEBHOOK_KIND ?: 'gwt'}\"/WEBHOOK_KIND         = \"\${env.WEBHOOK_KIND ?: ''}\"/"
+mut "apply : l'ÉTAT n'est plus relu (un état hors énumération = joker du plugin)" apply "s/!= 'merged'/!= 'MERGED_JAMAIS'/"
 
 echo
 echo "== 10. le total de contrôles exécutés correspond au total ATTENDU, écrit en dur =="

@@ -68,68 +68,29 @@ pipeline {
   // (minutes, heures) ni l'apply aval (préflight, login, converge, verify) ne
   // réservent un exécuteur — le lab n'en a que deux.
   agent none
-  options { disableConcurrentBuilds() }   // un apply à la fois = régime bancaire
 
-  // Aucune charge utile n'est de confiance : ces clés ne servent qu'à NOMMER ce
-  // qu'il faut relire sur la forge (PR_NUMBER) et dans l'état mergé (MERGE_SHA).
+  // Ni `options {}` ni `triggers {}` DÉCLARATIFS (L6, 2026-09-11) : un symbole de
+  // déclencheur nommé dans un bloc Declarative est résolu AU PARSE — sur un site
+  // sans le plugin qui le porte, le job meurt avant son premier stage (MESURÉ :
+  // scripts/spike-webhook-kind-m1.sh). Déclencheur et verrou « un apply à la
+  // fois » sont posés par un `properties()` SCRIPTÉ au premier stage, selon la
+  // globale WEBHOOK_KIND. Le XML ne porte AUCUNE propriété : un XML porteur +
+  // `properties()` fait un DOUBLON au build 1 puis PERD l'exemplaire du XML au
+  // build 2 (fait 10, re-mesuré : spike-webhook-kind-m2m4).
   //
-  // DEUX VISAGES DE FORGE (2026-09-09, client sur GitLab) : un jeu de clés par
-  // visage — « pull_request » de Gitea (PR_*), « Merge Request Hook » de GitLab
-  // (GL_*). Une clé dont le chemin JSON est absent du payload arrive VIDE
-  // (plugin generic-webhook-trigger) ; le stage « Contexte du webhook » pose
-  // ensuite UN SEUL nom par fait (PR_BRANCH, PR_NUMBER, MERGE_SHA) — celui que
-  // la réconciliation, la pause et l'aval consomment, sans savoir quel visage
-  // a parlé. Le filtre est composé sur les deux : l'un OU l'autre, et
-  // seulement une fusion RÉELLE (Gitea : closed + merged=true ; GitLab :
-  // action=merge).
+  // Aucune charge utile n'est de confiance : les clés du webhook ne servent qu'à
+  // NOMMER ce qu'il faut relire sur la forge (PR_NUMBER) et dans l'état mergé
+  // (MERGE_SHA). TROIS visages : « pull_request » de Gitea (PR_*), « Merge
+  // Request Hook » de GitLab par le GWT (GL_*), et le GitLab Plugin (gitlab*,
+  // qui n'expose PAS l'action — l'ÉTAT est relu). Le stage « Contexte du
+  // webhook » pose UN SEUL nom par fait, sans savoir quel visage a parlé.
   //
-  // ⚠ Ce bloc doit rester le MIROIR EXACT de celui de
-  // ci/jenkins/provision-apply.job.xml, et c'est le XML qui gagne : Declarative
-  // ne remplace que les déclencheurs qu'il a lui-même posés
-  // (DeclarativeJobPropertyTrackerAction) — mesuré sur le lab 2026-08-06.
-  // test-provision-apply-wiring.sh compare les deux.
   // Volontairement PAS de bloc `parameters {}` : ces valeurs ne doivent venir
   // QUE du webhook (un paramètre de build permettrait à quiconque lance le job
   // de nommer lui-même MERGE_SHA ou PR_NUMBER — la réconciliation refuserait
   // l'incohérence, mais on ne lui donne pas ce travail). Un build manuel n'a
-  // donc aucune de ces variables → refus nommé dès la réconciliation.
-  triggers {
-    GenericTrigger(
-      token: 'stoa-provision-apply',
-      genericVariables: [
-        // ── visage Gitea (hook « pull_request ») ──
-        [key: 'PR_BRANCH',        value: '$.pull_request.head.ref'],
-        [key: 'PR_NUMBER',        value: '$.pull_request.number'],
-        [key: 'PR_ACTION',        value: '$.action'],
-        [key: 'PR_MERGED',        value: '$.pull_request.merged'],
-        // Captés pour le journal (printContributedVariables) — mais JAMAIS lus
-        // par la garde d'identité : elle reçoit GITEA_MERGED_BY / GITEA_REQUESTER,
-        // relus sur la forge par la réconciliation (le payload est une AFFIRMATION).
-        [key: 'PR_MERGED_BY',     value: '$.pull_request.merged_by.login'],
-        [key: 'PR_REQUESTER',     value: '$.pull_request.user.login'],
-        // A2 — LA RÉFÉRENCE : le SHA de merge, réconcilié puis projeté par l'aval.
-        [key: 'MERGE_SHA',        value: '$.pull_request.merge_commit_sha'],
-        // ── visage GitLab (« Merge Request Hook ») ──
-        [key: 'GL_KIND',          value: '$.object_kind'],
-        [key: 'GL_IID',           value: '$.object_attributes.iid'],
-        [key: 'GL_SOURCE_BRANCH', value: '$.object_attributes.source_branch'],
-        [key: 'GL_ACTION',        value: '$.object_attributes.action'],
-        [key: 'GL_STATE',         value: '$.object_attributes.state'],
-        // GitLab ne nomme pas le demandeur dans le hook (author_id seulement) et
-        // `user` est l'ACTEUR de l'événement — le mergeur, pour action=merge.
-        // Journal seulement : la réconciliation relit les deux identités.
-        [key: 'GL_USER',          value: '$.user.username'],
-        [key: 'GL_MERGE_SHA',     value: '$.object_attributes.merge_commit_sha'],
-      ],
-      // Ne déclenche que sur une PR RÉELLEMENT fusionnée (fermée sans merge =
-      // rien). Gitea : action=closed ET merged=true ; GitLab : action=merge.
-      // Le plugin joue find() : la moitié Gitea est ancrée en tête (`^…\|`),
-      // la moitié GitLab en queue (`…$`), chacune sur SON segment du texte.
-      regexpFilterText: '$PR_ACTION|$PR_MERGED|$GL_KIND:$GL_ACTION',
-      regexpFilterExpression: '^closed\\|true\\||merge_request:merge$',
-      printContributedVariables: true,
-      printPostContent: false)
-  }
+  // donc aucune de ces variables : il sort VERT sans exécuteur (« hors
+  // provision/* ») — c'est ce qui en fait un AMORÇAGE sans effet de bord.
 
   // ── POINTS DE CONFIG CLIENT (motif `env.X ?: défaut`, comme les Jenkinsfile frères) ──
   // ⚠ Hôtes vus DEPUIS le conteneur de l'agent (réseau docker `poc`).
@@ -148,6 +109,8 @@ pipeline {
     FORGE_KIND            = "${env.FORGE_KIND ?: 'gitea'}"
     FORGE_API_AUTH        = "${env.FORGE_API_AUTH ?: ''}"
     FORGE_API_BASE        = "${env.FORGE_API_BASE ?: ''}"
+    // Le RÉCEPTEUR de webhooks de CE Jenkins (L6) : gwt (défaut) | gitlab.
+    WEBHOOK_KIND          = "${env.WEBHOOK_KIND ?: 'gwt'}"
     // Lien humain-CLIQUABLE dans le commentaire de PR (split-horizon lab :
     // jenkins→gitea:3000, navigateur→localhost:13000).
     GIT_WEB_HOST          = "${env.GIT_WEB_HOST ?: 'http://localhost:13000'}"
@@ -188,6 +151,70 @@ pipeline {
     stage('Contexte du webhook') {
       steps {
         script {
+          // ── LE RÉCEPTEUR (L6) : posé ICI, sans agent, avant tout refus ────
+          // Deux visages, un seul posé ; le symbole de l'autre n'est jamais
+          // invoqué (mesuré M1), donc son plugin n'est pas requis.
+          // ⚠ Le corps GenericTrigger(...) est relu par scripts/lib/gwt-mirror.sh :
+          // quotes SIMPLES, maps `[key:, value:]` nues, aucune virgule finale.
+          def hook = env.WEBHOOK_KIND
+          if (hook == 'gwt') {
+            properties([disableConcurrentBuilds(), pipelineTriggers([GenericTrigger(
+              token: 'stoa-provision-apply',
+              genericVariables: [
+                // ── visage Gitea (hook « pull_request ») ──
+                [key: 'PR_BRANCH',        value: '$.pull_request.head.ref'],
+                [key: 'PR_NUMBER',        value: '$.pull_request.number'],
+                [key: 'PR_ACTION',        value: '$.action'],
+                [key: 'PR_MERGED',        value: '$.pull_request.merged'],
+                // Captés pour le journal — JAMAIS lus par la garde d'identité :
+                // elle reçoit GITEA_MERGED_BY / GITEA_REQUESTER, relus sur la
+                // forge par la réconciliation (le payload est une AFFIRMATION).
+                [key: 'PR_MERGED_BY',     value: '$.pull_request.merged_by.login'],
+                [key: 'PR_REQUESTER',     value: '$.pull_request.user.login'],
+                // A2 — LA RÉFÉRENCE : le SHA de merge, réconcilié puis projeté.
+                [key: 'MERGE_SHA',        value: '$.pull_request.merge_commit_sha'],
+                // ── visage GitLab par le GWT (« Merge Request Hook ») ──
+                [key: 'GL_KIND',          value: '$.object_kind'],
+                [key: 'GL_IID',           value: '$.object_attributes.iid'],
+                [key: 'GL_SOURCE_BRANCH', value: '$.object_attributes.source_branch'],
+                [key: 'GL_ACTION',        value: '$.object_attributes.action'],
+                [key: 'GL_STATE',         value: '$.object_attributes.state'],
+                // GitLab ne nomme pas le demandeur dans le hook (author_id
+                // seulement) et `user` est l'ACTEUR de l'événement — le
+                // mergeur, pour action=merge. Journal seulement.
+                [key: 'GL_USER',          value: '$.user.username'],
+                [key: 'GL_MERGE_SHA',     value: '$.object_attributes.merge_commit_sha'],
+              ],
+              // Ne déclenche que sur une PR RÉELLEMENT fusionnée (fermée sans
+              // merge = rien). Gitea : action=closed ET merged=true ; GitLab :
+              // action=merge. Le plugin joue find() : la moitié Gitea ancrée en
+              // tête, la moitié GitLab en queue, chacune sur SON segment.
+              regexpFilterText: '$PR_ACTION|$PR_MERGED|$GL_KIND:$GL_ACTION',
+              regexpFilterExpression: '^closed\\|true\\||merge_request:merge$',
+              printContributedVariables: true,
+              printPostContent: false)])])
+          } else if (hook == 'gitlab') {
+            // GitLab Plugin : la FUSION seulement. MESURÉ (M7, builds réels) :
+            // seul `(merged, merge)` construit — ouverture, push, titre,
+            // réouverture et fermeture sans fusion ne construisent pas.
+            // `triggerOpenMergeRequestOnPush: 'never'` ferme la règle
+            // « état inconnu × update » du plugin (un état hors de son
+            // énumération y devient un joker). Défauts TRUE figés à false.
+            properties([disableConcurrentBuilds(), pipelineTriggers([gitlab(
+              triggerOnMergeRequest: false, triggerOnAcceptedMergeRequest: true,
+              triggerOpenMergeRequestOnPush: 'never',
+              triggerOnPush: false, triggerOnNoteRequest: false, ciSkip: false,
+              setBuildDescription: false, skipWorkInProgressMergeRequest: false,
+              triggerOnClosedMergeRequest: false, triggerOnApprovedMergeRequest: false,
+              triggerOnPipelineEvent: false, triggerToBranchDeleteRequest: false,
+              cancelPendingBuildsOnUpdate: false, cancelRunningBuildsOnUpdate: false,
+              branchFilterType: 'RegexBasedFilter', sourceBranchRegex: 'provision/.*',
+              targetBranchRegex: '.*',
+              secretToken: 'stoa-provision-apply')])])
+          } else {
+            error("REFUS: WEBHOOK_KIND_INVALIDE : '${hook}' — attendu gwt|gitlab (globale Jenkins WEBHOOK_KIND, scripts/setup-jenkins-globals.sh). AUCUN déclencheur n'a été posé.")
+          }
+
           // ── UN SEUL nom par fait, quel que soit le visage ─────────────────
           // Le payload Gitea remplit PR_*/MERGE_SHA, le payload GitLab remplit
           // GL_* et laisse les premiers vides. ICI, et nulle part ailleurs, le
@@ -198,9 +225,23 @@ pipeline {
           // un sh : `when { beforeAgent }` se joue AVANT tout sh, et une
           // variable posée dans env est vue de tout sh du build (même mécanisme
           // que GITEA_MERGED_BY, posé par la réconciliation et lu par la garde).
-          env.PR_BRANCH = env.PR_BRANCH ?: (env.GL_SOURCE_BRANCH ?: '')
-          env.PR_NUMBER = env.PR_NUMBER ?: (env.GL_IID ?: '')
-          env.MERGE_SHA = env.MERGE_SHA ?: (env.GL_MERGE_SHA ?: '')
+          // TROIS visages. MESURÉ (M6/M8) : le plugin pose
+          // `gitlabMergeCommitSha` = les 40 hex À LA FUSION (identiques au
+          // merge_commit_sha de l'API), et NULLE hors fusion ; il n'expose pas
+          // l'action (`gitlabActionType` vaut MERGE même sur une ouverture).
+          // En fast-forward ou squash le SHA reste vide côté GitLab : la
+          // réconciliation refuse alors MERGE_SHA_INVALIDE — c'est sa charge.
+          env.PR_BRANCH = env.PR_BRANCH ?: (env.GL_SOURCE_BRANCH ?: (env.gitlabSourceBranch ?: ''))
+          env.PR_NUMBER = env.PR_NUMBER ?: (env.GL_IID ?: (env.gitlabMergeRequestIid ?: ''))
+          env.MERGE_SHA = env.MERGE_SHA ?: (env.GL_MERGE_SHA ?: (env.gitlabMergeCommitSha ?: ''))
+          // Le filtre du plugin vit dans ses cases, et un état hors de son
+          // énumération y devient un JOKER : l'état est donc RELU ici. Hors
+          // `merged`, il n'y a rien à appliquer — build VERT, stages sautés.
+          def glState = env.gitlabMergeRequestState ?: ''
+          if (glState && glState != 'merged') {
+            echo "hook GitLab hors evenement : state='${glState}' (attendu merged) — aucune demande a appliquer."
+            env.PR_BRANCH = ''
+          }
           def ref = env.PR_BRANCH ?: ''
           if (ref.startsWith('provision/')) {
             def rest = ref.substring('provision/'.length())
