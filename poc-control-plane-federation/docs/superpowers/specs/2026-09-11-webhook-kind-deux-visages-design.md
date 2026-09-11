@@ -122,11 +122,12 @@ Toutes prises par le porteur du chantier le 2026-09-11 :
 - Règles MR (reject puis accept) : `never` rejette `{opened,updated,null}×{update,null}` ;
   `triggerOnMergeRequest` accepte `{opened,reopened,null}×toute action` ;
   `triggerOnAcceptedMergeRequest` accepte `tout état×{merge}` ; un état hors enum
-  (`locked`) devient `null` = **joker**. Garde « déjà construit » : sautée pour
-  open/approved/merge, jouée pour reopen/update/close (même SHA + même état + même cible
-  ⇒ pas de build) — le plugin **ne rejoue pas** un plan sur un simple changement de titre,
-  GWT si. Sans conséquence fonctionnelle : le commentaire de plan est par SHA
-  (`comment_upsert`).
+  (`locked`) devient `null` = **joker**.
+- ⚠ **La garde « déjà construit » lue dans les sources est RÉFUTÉE par la mesure**
+  (M7, 2026-09-11) : le plugin **reconstruit** sur un update de titre (même SHA,
+  `oldrev` nul) et sur un `reopen`. C'est la **parité** avec le GWT, qui
+  reconstruit aussi — il n'y a donc aucun écart de comportement à documenter
+  entre les deux visages sur `update`/`reopen`.
 - Variables d'un build MR : `gitlabMergeRequestIid`, `gitlabSourceBranch`,
   `gitlabTargetBranch`, `gitlabMergeRequestState` (`opened|closed|merged|…`),
   `gitlabMergeCommitSha` (**toujours présente, vide si null** — fast-forward/squash),
@@ -206,12 +207,17 @@ Non posés : `addNoteOnMergeRequest`, `addCiMessage`, `addVoteOnMergeRequest`,
 `acceptMergeRequestOnSuccess` (no-op), `pendingBuildName` (exige une connexion),
 `noteRegex`, `includeBranchesSpec`/`excludeBranchesSpec`.
 
-Table attendue état × action → build (à confirmer par M7) :
+Table **mesurée** état × action → build (M7, builds réels du 2026-09-11, six
+événements réels de GitLab CE 17.11) :
 
-- **plan** : `opened/open` BUILD ; `opened/update` BUILD si nouveau SHA, sinon rien ;
-  `opened/reopen` BUILD si SHA jamais construit dans cet état ; `merged/*`, `closed/*`,
-  approbations : rien.
-- **apply** : `merged/merge` BUILD (nominal) ; tout le reste : rien.
+| événement | `(state, action)` réels | plan | apply |
+|---|---|---|---|
+| ouverture de la MR | `(opened, open)` | **BUILD** | — |
+| push d'un commit | `(opened, update)`, `oldrev` présent | **BUILD** | — |
+| changement de titre | `(opened, update)`, `oldrev` nul | **BUILD** | — |
+| close sans fusion | `(closed, close)` | — | — |
+| reopen | `(opened, reopen)` | **BUILD** | — |
+| fusion | `(merged, merge)`, `merge_commit_sha` = 40 hex | — | **BUILD** |
 
 ### 6.2 Le troisième visage dans « Contexte du webhook »
 
@@ -223,14 +229,22 @@ Le fait unifié gagne un repli de plus, dans l'ordre Gitea → GWT/GitLab → pl
   `gitlabMergeRequestState` est posé et ≠ `opened` ⇒ build nommé
   « hors événement (state=…) », vert, stages sautés (même geste que « hors provision/* »).
 - apply : idem, plus `MERGE_SHA ?: GL_MERGE_SHA ?: gitlabMergeCommitSha` ; état exigé
-  `merged`. SHA vide ⇒ `MERGE_SHA_INVALIDE` par la réconciliation (D8).
-  `GL_USER ?: gitlabMergedByUser` → journal seulement ; la garde d'identité relit la forge.
+  `merged`. **Mesuré (M8)** : sur un hook non-merge la variable arrive **nulle**
+  (Groovy `null`, pas une chaîne vide) — le `?: ''` couvre les deux ; sur la
+  fusion elle vaut les 40 hex, égaux au `merge_commit_sha` de l'API. SHA vide
+  ⇒ `MERGE_SHA_INVALIDE` par la réconciliation (D8).
+  `GL_USER ?: gitlabMergedByUser` → journal seulement (**mesuré** : c'est
+  l'ACTEUR, `root` même sur une ouverture) ; la garde d'identité relit la forge.
 - selfservice : `pipelineTriggers(hook == 'gwt' ? [GenericTrigger(…actuel…)] : [])`,
   même lecture et même refus du knob.
 
 ### 6.3 Le `secretToken`
 
-Un littéral dans le Jenkinsfile, le même mot que le token GWT. C'est une sonnette : un
+Un littéral dans le Jenkinsfile, le même mot que le token GWT. **Mesuré (M9)** :
+sans `X-Gitlab-Token` ⇒ **401**, avec un mauvais ⇒ **401** (fail-closed) ; avec
+le bon mais un corps forgé et incomplet ⇒ **500 sans build** (le handler du
+plugin ne se protège pas d'un payload qu'il ne peut pas résoudre — une raison de
+plus pour que la décision vive dans le pipeline, pas dans le récepteur). C'est une sonnette : un
 payload forgé finit en `FORGE_NON_CONFIRMEE` (plan) ou `PAYLOAD_PERIME` (apply) ; un
 rejeu d'une MR réellement mergée n'est qu'une convergence idempotente qui bute sur la
 pause nominative. Le client saisit ce mot dans le champ « Secret Token » de ses deux
@@ -351,9 +365,9 @@ Pièges déjà connus à intégrer : `prepared_at` asynchrone (`FORGE_PREPARE_WA
   `gwt-mirror.sh:5-11`, `setup-provision-jobs.sh:14-16`.
 - **ADR-098** `adr/adr-098-recepteur-de-webhooks-a-deux-visages.md` (gabarit ADR-097) :
   Contexte, « Ce que le spike a mesuré » (M1..M9), Décision (D1..D12), Refus nommés
-  (`WEBHOOK_KIND_INVALIDE`, `AMORCAGE_INCOMPLET`), Conséquences et limites (parité
-  `update` imparfaite, SHA vide en fast-forward, angle mort du miroir, trou `locked`),
-  Preuves (table).
+  (`WEBHOOK_KIND_INVALIDE`, `AMORCAGE_INCOMPLET`), Conséquences et limites (SHA
+  vide en fast-forward, angle mort du miroir, trou `locked`, 500 du handler sur
+  un payload forgé), Preuves (table).
 - Plan forge-agnostique : `### Task 7 (L6)`, ligne « Structure des fichiers », « Ordre et
   pourquoi » (après L5/L3, en parallèle de L2/L4), cases L1/L5/L3 cochées, `:124` corrigé.
 - `ci/jenkins/Dockerfile:39` : `gitlab-plugin` ajouté (D12).
@@ -385,5 +399,6 @@ version du plugin GitLab ≥ 1.7.13 à confirmer.
   périmé.
 - Trou `state=locked` du plugin GitLab (état hors enum = joker ; NPE possible dans
   `MergeRequestHookTriggerHandlerImpl` sans garde null).
-- Parité `update` imparfaite entre les deux visages (GWT rejoue un plan sur tout `update`,
-  le plugin seulement sur un nouveau SHA).
+- ~~Parité `update` imparfaite~~ : **réfutée par la mesure** (M7, 2026-09-11) — le
+  plugin reconstruit sur un update de titre comme sur un push, exactement comme le
+  GWT. Rien à documenter, rien à corriger.
