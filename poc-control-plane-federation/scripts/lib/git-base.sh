@@ -344,6 +344,34 @@ git_base_clone_refus() {
   return 1
 }
 
+# ── git_base_basic_login : QUEL login met-on dans l'enveloppe Basic ─────────
+# LA RÈGLE, EN UN SEUL EXEMPLAIRE (2026-09-11). Elle vivait en NEUF copies —
+# git_base_avec_basic (appelée avec « x » en dur par team-publish, team-promote,
+# api-promote-export), l'enveloppe en ligne de provision-plan-status,
+# api-request, api-promote-request, team-request, team-apply, et _gc_auth_b64 de
+# generate-choices — chacune décidant pour elle-même. Or la règle n'est pas un
+# goût : **Gitea accepte n'importe quel utilisateur du moment que le mot de passe
+# est un jeton ; GitLab et Bitbucket NON** (entête de ce fichier). Un « x » en
+# dur est donc une authentification MORTE sur ces deux forges — et le refus qui
+# suit accuse le jeton, jamais le login.
+#   FORGE_USER posé            ⇒ lui (un couple user/mot de passe, ou un login
+#                                choisi par le site) ;
+#   sinon, forge non-Gitea     ⇒ « oauth2 », le login conventionnel d'un jeton
+#                                personnel chez GitLab (et accepté par Bitbucket) ;
+#   sinon (Gitea, ou inconnue) ⇒ « x », le comportement historique, inchangé.
+# GIT_USER est honoré comme alias de FORGE_USER : provision-plan-status.sh le
+# lisait déjà (`${FORGE_USER:-${GIT_USER:-x}}`).
+# Ne REFUSE jamais : un login est toujours dérivable, et c'est l'absence de
+# SECRET que git_base_avec_basic refuse.
+git_base_basic_login() {
+  local u="${FORGE_USER:-${GIT_USER:-}}"
+  if [ -n "$u" ]; then printf '%s' "$u"; return 0; fi
+  case "${FORGE_KIND:-}" in
+    ''|gitea) printf 'x' ;;
+    *)        printf 'oauth2' ;;
+  esac
+}
+
 # ── git_base_avec_basic : l'enveloppe d'authentification, une fois ───────────
 # Contrat complet dans l'entête. Le 2e argument est le NOM d'une variable —
 # jamais le secret : argv est lisible par `ps -Aww`.

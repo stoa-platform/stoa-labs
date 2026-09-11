@@ -602,6 +602,59 @@ if [ "$(rrc)" = 2 ] && grep -q 'exige une commande' "$TMP/err"; then
   ok "H.6 enveloppe sans commande ⇒ refus nommé (une enveloppe qui n'enveloppe rien n'est pas un succès)"
 else ko "H.6 rc $(rrc) : $(detail)"; fi
 
+echo "═══ H bis. LE LOGIN DE L'ENVELOPPE, en UN exemplaire — et la COMPLÉTUDE des appelants ═══"
+# POURQUOI CETTE SECTION EXISTE. Le 2026-09-11, une preuve live sur un GitLab
+# PRIVÉ a trouvé que scripts/provision-plan.sh clonait le dépôt plateforme SANS
+# enveloppe et ignorait GIT_CLONE_URL — seul de la chaîne. La lecture ANONYME du
+# Gitea du lab masquait le trou (`info/refs` ⇒ 200 sur Gitea, 401 sur un projet
+# GitLab privé) : le plan mourait CLONE_ECHEC chez un client, jamais ici. Ce
+# n'est pas un oubli isolé : c'est une RÈGLE qui n'était écrite nulle part.
+# Elle l'est maintenant, à deux niveaux :
+#   1. le LOGIN de l'enveloppe se décide en UN endroit (git_base_basic_login) —
+#      « x » convient à Gitea, JAMAIS à GitLab ni Bitbucket (entête de la lib) ;
+#   2. la liste des scripts qui parlent à une forge DISTANTE est mesurée en
+#      COMPLÉTUDE : chacun porte une enveloppe (git_base_avec_basic) ou
+#      GIT_ASKPASS (forge-identity.sh). Un script qui clonerait en anonyme
+#      rougit ICI, au lieu d'attendre un client sur forge privée.
+for cas in "gitea::x" "gitea:bob:bob" ":oauth2:oauth2" "gitlab::oauth2" "gitlab:alice:alice" "bitbucket::oauth2"; do
+  kind="${cas%%:*}"; rest="${cas#*:}"; user="${rest%%:*}"; want="${rest##*:}"
+  got=$( FORGE_KIND="$kind" FORGE_USER="$user" bash -c ". $LIB && git_base_basic_login" 2>&1 )
+  if [ "$got" = "$want" ]; then ok "H bis.1 FORGE_KIND='$kind' FORGE_USER='$user' ⇒ login '$got'"
+  else ko "H bis.1 FORGE_KIND='$kind' FORGE_USER='$user' ⇒ login '$got', attendu '$want'"; fi
+done
+# LA COMPLÉTUDE, sur ce qui compte : un script qui CLONE ou POUSSE une forge
+# distante doit porter un mécanisme d'authentification. La liste est DÉRIVÉE du
+# dépôt, jamais écrite à la main — un script ajouté demain entre dans la mesure
+# tout seul. Les mécanismes acceptés sont les QUATRE formes en usage :
+#   git_base_avec_basic (la lib)            · http.extraheader posé en ligne
+#   GIT_ASKPASS / forge_askpass (A7)        · _gc_auth_b64 (generate-choices)
+# EXEMPTÉS, un par un et avec leur raison :
+#   test-*/spike-*            harnais : ils posent leurs propres valeurs ;
+#   setup-*                   poseurs lancés DEPUIS LE POSTE : ils ne clonent
+#                             JAMAIS (mesuré : 0 `git clone`), ils DÉCOUVRENT, et
+#                             sur une forge privée leur refus nomme GIT_BASE —
+#                             c'est une consigne actionnable, pas une panne muette ;
+#   seed-governance-chain.sh  amorce de lab sur un dépôt de démonstration.
+MECANISMES='git_base_avec_basic|extraheader|GIT_ASKPASS|forge_askpass|_gc_auth_b64|git_base_basic_login'
+MANQUANTS=""
+for f in "$REPO"/scripts/*.sh; do
+  b="$(basename "$f")"
+  case "$b" in test-*|spike-*|setup-*|seed-governance-chain.sh|demo*) continue ;; esac
+  grep -qE 'git (clone|push)' "$f" || continue
+  grep -qE "$MECANISMES" "$f" && continue
+  MANQUANTS="$MANQUANTS $b"
+done
+if [ -z "$MANQUANTS" ]; then
+  ok "H bis.2 COMPLÉTUDE : tout script qui CLONE ou POUSSE porte un mécanisme d'authentification — aucun geste anonyme, donc aucun CLONE_ECHEC réservé aux forges privées (la lecture anonyme du Gitea du lab masquait le trou : info/refs ⇒ 200 Gitea, 401 GitLab privé)"
+else ko "H bis.2 clone/push SANS authentification, casse sur forge PRIVÉE et invisible au lab :$MANQUANTS"; fi
+# DISCRIMINANT : la porte doit attraper le défaut réel du 2026-09-11. On rejoue
+# la mesure sur une COPIE de provision-plan.sh privée de son mécanisme.
+CP="$TMP/pp-sans-mecanisme.sh"
+sed -E 's/git_base_avec_basic|git_base_basic_login/NEANT/g' "$REPO/scripts/provision-plan.sh" > "$CP"
+if grep -qE 'git (clone|push)' "$CP" && ! grep -qE "$MECANISMES" "$CP"; then
+  ok "H bis.3 discriminant : provision-plan.sh privé de son enveloppe est VU par la règle de H bis.2 (c'est l'état dans lequel il a été trouvé, et il rougirait)"
+else ko "H bis.3 la règle de H bis.2 ne verrait PAS un provision-plan.sh anonyme — elle ne mesure rien"; fi
+
 echo "═══ I. git_base_xml_substituer : le placeholder des XML de jobs, fail-closed ═══"
 # Les treize ci/jenkins/*.job.xml ne nomment plus de branche : ils portent
 # __GIT_BASE__, et le POSEUR substitue. Trois refus nommés, un nominal.
