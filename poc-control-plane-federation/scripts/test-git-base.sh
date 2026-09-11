@@ -660,12 +660,63 @@ for rel in $EXECUTES; do
   case "$b" in test-*|spike-*|setup-*) continue ;; esac
   # parle-t-il à une forge DISTANTE ? cloner, pousser, ou DÉCOUVRIR une HEAD
   grep -qE 'git (clone|push|fetch)|git_base_init|git_base_of|ls-remote' "$f" || continue
-  grep -qE "$MECANISMES" "$f" && continue
-  MANQUANTS="$MANQUANTS $b"
+  # PAR GESTE, pas par fichier (leçon du 2026-09-11) : la seule PRÉSENCE d'un
+  # mécanisme dans le script ne dit rien des autres gestes. provision-apply-
+  # reconcile.sh avait sa découverte enveloppée et son `git fetch` NU — le
+  # défaut a reculé d'un cran au lieu de se fermer. Un script qui exporte
+  # GIT_ASKPASS, lui, couvre TOUS ses gestes d'un coup : il est accepté en bloc.
+  grep -qE 'export .*GIT_ASKPASS|GIT_ASKPASS=' "$f" && continue
+  # Les CONTINUATIONS de ligne sont jointes d'abord : une enveloppe posée en
+  # préfixe et son `git` sur la ligne suivante forment UN seul geste (faux
+  # positif mesuré le 2026-09-11 sur provision-apply-reconcile.sh:396).
+  NUS=$(python3 - "$f" <<'PY'
+import re, sys
+brut = open(sys.argv[1], encoding='utf-8').read().split('\n')
+logiques, cur, depart = [], '', 1
+for n, ln in enumerate(brut, 1):
+    if not cur:
+        depart = n
+    cur += ln
+    if cur.rstrip().endswith('\\'):
+        cur = cur.rstrip()[:-1] + ' '
+        continue
+    logiques.append((depart, cur)); cur = ''
+if cur:
+    logiques.append((depart, cur))
+GESTE = re.compile(r'(^|[;&|(]|\s)git (-C \S+ )?(clone|push|fetch|ls-remote)\b')
+# Les QUATRE formes en usage, enveloppe en ligne comprise (`http.extraheader`
+# posé en préfixe d'env — api-promote-export.sh et ses frères l'écrivent ainsi).
+ENVELOPPE = re.compile(r'git_base_avec_basic|gclone|gbase|gauth|GIT_ASKPASS|extraheader|_gc_auth_b64')
+nus = [str(n) for n, l in logiques
+       if GESTE.search(l) and not ENVELOPPE.search(l) and not l.lstrip().startswith('#')]
+print(','.join(nus))
+PY
+)
+  [ -z "$NUS" ] && continue
+  MANQUANTS="$MANQUANTS ${b}:${NUS}"
 done
+# ── LA DETTE, DATÉE ET COMPTÉE (2026-09-11) ─────────────────────────────────
+# Les gestes nus CONNUS au moment de la pose de cette porte, tous dans la chaîne
+# API/producteur (la chaîne app-request, elle, est close : provision-plan,
+# provision-apply-reconcile, provision-request, app-rollback-request).
+# CE N'EST PAS UNE LISTE DE PARDONS : c'est la dette. On n'y AJOUTE jamais une
+# ligne — un geste nu neuf fait rougir. Et une ligne qui ne correspond PLUS à un
+# geste nu fait rougir aussi : réparer oblige à la retirer. C'est le cliquet.
+DETTE="api-promote-request.sh:263,374 api-request.sh:287,339,420,448 team-apply.sh:136 team-request.sh:166"
+RESTE=""; PERIMEES=""
+for e in $MANQUANTS; do
+  case " $DETTE " in *" $e "*) ;; *) RESTE="$RESTE $e" ;; esac
+done
+for d in $DETTE; do
+  case " $MANQUANTS " in *" $d "*) ;; *) PERIMEES="$PERIMEES $d" ;; esac
+done
+MANQUANTS="$RESTE"
+if [ -z "$PERIMEES" ]; then
+  ok "H bis.2b la dette est EXACTE : chaque ligne déclarée correspond encore à un geste nu (une ligne réparée doit être RETIRÉE — sinon cette porte ne serait qu'une liste de pardons)"
+else ko "H bis.2b dette PÉRIMÉE — ces gestes sont réparés (ou déplacés), retire-les de DETTE :$PERIMEES"; fi
 if [ -z "$MANQUANTS" ]; then
   ok "H bis.2 COMPLÉTUDE : tout script qui CLONE ou POUSSE porte un mécanisme d'authentification — aucun geste anonyme, donc aucun CLONE_ECHEC réservé aux forges privées (la lecture anonyme du Gitea du lab masquait le trou : info/refs ⇒ 200 Gitea, 401 GitLab privé)"
-else ko "H bis.2 geste git SANS authentification dans un script exécuté par un pipeline — casse sur forge PRIVÉE, invisible au lab :$MANQUANTS"; fi
+else ko "H bis.2 geste(s) git NU(S) HORS DETTE dans un script exécuté par un pipeline — casse sur forge PRIVÉE, invisible au lab :$MANQUANTS"; fi
 # DISCRIMINANT : la porte doit attraper le défaut réel du 2026-09-11. On rejoue
 # la mesure sur une COPIE de provision-plan.sh privée de son mécanisme.
 CP="$TMP/pp-sans-mecanisme.sh"

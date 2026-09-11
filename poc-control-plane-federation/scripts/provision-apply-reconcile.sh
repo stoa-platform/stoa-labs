@@ -246,8 +246,10 @@ dbg_kv FORGE_CERT "$FORGE_CERT"
 # ── 1bis. LA BRANCHE DE BASE (L3, 2026-09-10) ────────────────────────────────
 # Ce script ne clone RIEN : il lit le worktree que Jenkins a déjà posé. La
 # branche par défaut se découvre donc sur l'origine DE CE WORKTREE — la même que
-# le `git fetch` du §4 interroge, sous le même environnement, donc sous la même
-# enveloppe d'authentification (celle que la définition SCM du job a posée).
+# le `git fetch` du §4 interroge. ⚠ CE COMMENTAIRE A AFFIRMÉ LE CONTRAIRE
+# JUSQU'AU 2026-09-11 (« sous la même enveloppe que la définition SCM du job ») :
+# le plugin Git de Jenkins ne laisse AUCUN credential dans le workspace. Les DEUX
+# gestes portent donc leur propre enveloppe, explicitement.
 # APRÈS la §1 : un payload difforme reste refusé sans toucher au réseau. AVANT la
 # §2 : c'est la base RELUE de la PR que la §2 compare (base.ref). « main » y était
 # écrit en dur — chez un client dont la branche est `master`, TOUTE PR mergée
@@ -384,7 +386,14 @@ esac
 # tour 3 L2-B3, il le relayait BRUT, voir le helper) ; celui de merge-base
 # n'est pas capturé (il n'a jamais été jeté : il tombe dans le journal, comme
 # avant).
-git -C "$GIT_WORKTREE" fetch -q origin "$GIT_BASE" 2>"$TMP/fetch.err"; RC_GIT=$?
+# SOUS L'ENVELOPPE, comme la découverte du §1bis (2026-09-11). Le commentaire du
+# §1bis affirmait que ce fetch héritait de « l'enveloppe que la définition SCM du
+# job a posée » : c'est FAUX. Le plugin Git de Jenkins ne laisse AUCUN credential
+# dans le workspace — MESURÉ contre un GitLab privé, ce fetch mourait
+# « could not read Username … No such device or address » et la réconciliation
+# refusait GITEA_RECONCILE_ECHEC, une couche après la découverte.
+git_base_avec_basic "$(git_base_basic_login)" FORGE_SECRET \
+  git -C "$GIT_WORKTREE" fetch -q origin "$GIT_BASE" 2>"$TMP/fetch.err"; RC_GIT=$?
 dbg "git fetch origin ${GIT_BASE} -> rc ${RC_GIT}"
 if dbg_on && [ -s "$TMP/fetch.err" ]; then dbg "  git: $(git_err_une_ligne "$TMP/fetch.err")"; fi
 [ "$RC_GIT" -eq 0 ] \
