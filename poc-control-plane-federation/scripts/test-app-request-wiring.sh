@@ -9,6 +9,10 @@
 # vérifie que le CÂBLAGE — le pipeline est-il bien sorti du XML sans rien perdre.
 #
 #   ./scripts/test-app-request-wiring.sh
+# `A && ok || ko` (SC2015) est l'idiome des scripts de preuve du repo ; SC2016 vise
+# les quotes SIMPLES délibérées. Directive de FICHIER posée le 2026-09-11 (L4) en
+# entrant sous `make lint-ci` : la suite est désormais shellcheckée comme les autres.
+# shellcheck disable=SC2015,SC2016
 set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 JOB="$REPO/ci/jenkins/app-request.job.xml"

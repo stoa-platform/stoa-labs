@@ -170,7 +170,7 @@ XML=ci/jenkins/api-promote-request.job.xml
 JF=ci/Jenkinsfile.api-promote-request
 if [ -f "$XML" ]; then
   P_XML=$(grep -oE '<name>[A-Z_0-9]+</name>' "$XML" | sed 's/<[^>]*>//g' | tr '\n' ' ')
-  P_JF=$(grep -oE "(string|choice)\(name: '[A-Z_0-9]+'" "$JF" | grep -oE "'[A-Z_0-9]+'" | tr -d "'" | tr '\n' ' ')
+  P_JF=$(grep -oE "(string|choice|booleanParam)\(name: '[A-Z_0-9]+'" "$JF" | grep -oE "'[A-Z_0-9]+'" | tr -d "'" | tr '\n' ' ')
   [ "$P_XML" = "$P_JF" ] \
     && ok "params identiques et DANS LE MÊME ORDRE ($P_JF)" \
     || ko "divergence params — XML: [$P_XML] vs Jenkinsfile: [$P_JF] (le XML gagne, la divergence serait silencieuse)"

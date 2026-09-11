@@ -42,6 +42,11 @@
           <description>Nom de l'API à exporter (déjà publiée en authoring — le manifeste de promotion est rendu par ce job s'il n'existe pas encore).</description>
           <defaultValue></defaultValue>
         </hudson.model.StringParameterDefinition>
+        <hudson.model.BooleanParameterDefinition>
+          <name>DEBUG</name>
+          <description>Trace détaillée (appels, codes HTTP, erreurs redactées) — aucun secret exposé.</description>
+          <defaultValue>false</defaultValue>
+        </hudson.model.BooleanParameterDefinition>
         <hudson.model.StringParameterDefinition>
           <name>VAULT_USER</name>
           <description>Login annuaire nominatif (ex. oscar) — identité qui exécute l'export.</description>

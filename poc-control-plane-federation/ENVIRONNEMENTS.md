@@ -1413,15 +1413,92 @@ préfixe de commande — le canal vers python est un here-doc sur le descripteur
 **Le knob** : `STOA_DEBUG` — actif sauf vide, `0`, `false`, `off`, `no`
 (`dbg_init` le normalise en `1` ou vide et l'**exporte**, pour que les enfants —
 `forge-api.py`, le plan enchaîné, `gitea-pr-comment.sh` — parlent avec la même
-valeur). Deux Jenkinsfile (`publish-api`, `selfservice`) portent déjà une case
-`DEBUG` qui exporte `STOA_DEBUG=1` ; la case sur les douze formulaires et la
-globale Jenkins (`setup-jenkins-globals.sh`) sont **L4, à venir**.
+valeur). **Dix formulaires** portent une case `DEBUG` qui exporte
+`STOA_DEBUG=1` (les deux d'origine, `publish-api` et `selfservice`, plus les
+huit de L4), et la globale Jenkins `STOA_DEBUG` (`setup-jenkins-globals.sh`)
+est le **plancher** — voir « La case DEBUG et la globale (L4) » ci-dessous.
 
 | Knob | Valeurs | Défaut | Rôle |
 |------|---------|--------|------|
 | `STOA_DEBUG` | tout sauf vide / `0` / `false` / `off` / `no` | vide (muet) | la **seule** autorité du mode debug — l'ancien `VAULT_DEBUG` n'existe plus ; relue à chaque appel, normalisée et exportée par `dbg_init` |
-| `DBG_NAME` | un nom | le nom du script (`$0`) | ce qui s'écrit entre crochets : `[dbg <nom>]`. Aucun script de la chaîne ne le pose — c'est le nom du script qu'on veut lire dans un log ; réservé au bloc `sh` d'un Jenkinsfile, où `$0` n'est pas un nom parlant (L4) |
+| `DBG_NAME` | un nom | le nom du script (`$0`) | ce qui s'écrit entre crochets : `[dbg <nom>]`. Aucun script de la chaîne ne le pose, et aucun Jenkinsfile non plus après L4 (le nom du script suffit) ; réservé au bloc `sh` d'un Jenkinsfile, où `$0` n'est pas un nom parlant (L4) |
 | `DBG_SECRET_FILES` | chemins, un par ligne | vide | des **fichiers** de secret de plus à masquer, par leur contenu. `provision-request.sh` et `app-rollback-request.sh` y nomment le fichier du token **humain** — retiré de l'environnement par A7, la rédaction ne le connaît que par là ; variable de shell **non exportée** : un chemin n'est pas un secret, mais les enfants n'ont pas à le connaître |
+
+### La case DEBUG et la globale (L4 — 2026-09-11)
+
+**Deux knobs, une sémantique.** La globale Jenkins `STOA_DEBUG` (posée par
+`scripts/setup-jenkins-globals.sh`, CONNUE et OPTIONNELLE comme `WEBHOOK_KIND`)
+est le **plancher** : posée à `1` ou `true`, tout build du contrôleur parle —
+formulaires, webhooks, pauses. La case `DEBUG` d'un formulaire **allume** le
+mode pour ce build ; **décochée, elle n'éteint pas la globale** — le pont ne
+fait qu'exporter, jamais vider. Absente (le défaut), la globale laisse la chaîne
+muette : un rapport de `setup-jenkins-globals.sh` ne l'annonce pas « manquante »,
+ce serait inviter à poser un debug permanent. Retirer la globale = la vider
+(`STOA_DEBUG=` en argument du script) : `dbg_on` lit vide, `0`, `false`, `off`,
+`no` comme éteint.
+
+**Où vit la case** — au rang « juste avant le premier paramètre d'identité,
+sinon en dernier » (le gabarit de `publish-api:36`), même libellé partout,
+déclarée **là où le formulaire vit** :
+
+| Job | Le formulaire vit dans | Case DEBUG | Re-pose |
+|-----|------------------------|-----------|---------|
+| `app-request`, `app-rollback` | `properties([parameters([…])])` du Jenkinsfile, XML `<properties/>` | dans le `parameters([...])` existant, avant `FORGE_TOKEN` | un build d'amorçage (`POST /job/<j>/build`) — le XML ne bouge pas |
+| `team-request`, `api-promote-export`, `api-promote-request` | `parameters{}` déclaratif **et** XML miroir (le XML gagne à nom égal) | des deux côtés, **au même rang** (`BooleanParameterDefinition`, `defaultValue` false) | `JOBS="team-request api-promote-export api-promote-request" bash scripts/setup-team-onboard-jobs.sh` — visible dès le POST du XML |
+| `api-request` | le XML seul (`Jenkinsfile.api-request` refuse tout `parameters{}`) | dans `ci/jenkins/api-request.job.xml`, en dernier | `JOBS=api-request bash scripts/setup-team-onboard-jobs.sh` (marqueurs CHOICES ⇒ `FORGE_SECRET` et forge joignable) |
+| `prod`, `rollback` (`stoa-prod-deploy`, `stoa-prod-rollback`) | `parameters{}` déclaratif, sans XML ni poseur (jobs créés à la main, `ci/README.md`) | avant `VAULT_USER` | le premier build ré-enregistre le formulaire |
+| `publish-api`, `selfservice` | déjà équipés (commit `33d8f36`) | inchangés | — |
+
+**Exclus, et pourquoi** : les trois pauses `input{}` (`team-apply`,
+`team-publish`, `team-promote`) et l'`input()` de `provision-apply` n'exposent
+que l'identité (V_USER/V_PASS) et une suite épingle cette liste exacte — une
+case de pause ne couvrirait de toute façon jamais la réconciliation qui précède
+la pause ; les jobs webhook-only (`provision-plan`, `provisioning-request`,
+`stoa-ci`) n'ont pas de formulaire ; **`carto`** garde un XML porteur de
+paramètres **et** un `properties()` scripté (régime jamais mesuré, fait 6) et
+aucun de ses scripts ne source `dbg.sh` : une case y serait un knob sans sortie
+— dette nommée, pas une case. Tous reçoivent la globale.
+
+**Le pont**, une seule forme, dans chaque bloc `sh` qui appelle un script
+sourçant `dbg.sh`, juste après `set +x` quand il existe (sinon en tête) :
+
+```sh
+if [ "${DEBUG:-false}" = "true" ]; then export STOA_DEBUG=1; fi
+```
+
+En `if/fi`, jamais `[ … ] && export` : mesuré le 2026-09-11, la forme du plan
+sans défaut (`[ "$DEBUG" = true ]`) abat le step sous `set -u` dès que `DEBUG`
+n'est pas matérialisée (premier build d'un job `properties()`), et la liste
+`&&` rend 1 si elle termine un bloc. `DEBUG` ne traverse **aucun** `withEnv` :
+Jenkins expose nativement les paramètres de build au `sh`, en déclaratif comme
+en `properties()` (le même canal que `selfservice` réserve à son mot de passe,
+fait 9). Rien ne bouge dans les listes `withEnv` épinglées par les suites.
+
+**Le moteur parle aussi** : les quatre scripts qui appellent `ansible-playbook`
+(`api-promote-export.sh`, `team-apply.sh`, `team-publish.sh`, `team-promote.sh`
+— branche `ansible` seulement) relaient `-e stoa_debug="$(dbg_bool)"`
+(`dbg_bool`, `ci/lib/dbg.sh` : `true` si `dbg_on`, `false` sinon). Aucun
+`ansible-playbook` n'existe dans ces Jenkinsfile, et six suites l'interdisent
+(le pipeline route, le moteur reste dans `scripts/` et `ansible/roles/`). Effet
+réel : les deux tâches `debug` gardées par `stoa_debug` dans
+`apim_common/tasks/secrets.yml` — `no_log` n'est jamais levé.
+
+**Preuves** : hors ligne `scripts/test-debug-knob-wiring.sh` 70/70 (`make
+lint-ci` [11/20]) — une table des huit jobs (case à défaut `false`, libellé,
+rang, miroir, pont, forme lue sur la vue CODE : toute occurrence de
+`STOA_DEBUG` est le pont, aucun `withEnv` ne porte DEBUG), exclusions
+explicites, globale dans les deux listes et dans `--help`, relais du moteur,
+`lint-ci` qui joue la suite, et sept mutants qui rougissent (pont en `&&`, pont
+avant `set +x`, rang déplacé, XML amputé, DEBUG glissé dans un `withEnv`,
+`export STOA_DEBUG=false` après le pont, `defaultValue: true`) ;
+`test-dbg-redaction.sh` 109/109 avec le cas A.7 de `dbg_bool` ; les suites
+voisines re-comptent (team-request 5 paramètres, `test-palier-retention` ⑰bis,
+`test-promote-sans-recopie` §13, `test-api-request-wiring` :302,
+`test-app-rollback-a6` D.2/D.6). Les trois suites de câblage orphelines
+(`app-request`, `api-request`, `team-apply`) entrent sous `lint-ci` et sous
+shellcheck le même jour : L4 réécrivait leurs ancres, une suite hors porte ne
+mesure plus rien. Par builds réels : `scripts/test-debug-knob-live.sh` — voir
+le paragraphe « Preuve live » de ce chapitre.
 
 **Qui parle** (sous `STOA_DEBUG`, une ligne par décision, juste après elle) :
 
@@ -1560,7 +1637,8 @@ la voie du plan (ci-dessous, « Dettes hors périmètre »).
 - la ligne d'**appel** (`+ dbg …`, `+ dbg_kv CLONE_URL …`) est tracée par un
   appelant sous `sh -x` **avant** d'entrer dans la lib — la lib n'y ajoute
   aucune ligne, mais ne retire pas celle-là. Un bloc Jenkins doit faire
-  `set +x` avant le pont `DEBUG ⇒ STOA_DEBUG` (L4) ;
+  `set +x` avant le pont `DEBUG ⇒ STOA_DEBUG` — c'est la forme posée par L4 sur
+  les dix formulaires, épinglée par `scripts/test-debug-knob-wiring.sh` ;
 - `provision-apply-comment.sh`, appelé par le `fail()` de la réconciliation
   avec sa sortie jetée (`>/dev/null 2>&1`), n'est pas instrumenté : la ligne
   HTTP du commentaire de refus ne se lit pas ;

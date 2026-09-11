@@ -34,6 +34,10 @@
 # (syntaxe d'invocation exacte, ou exclusion explicite des lignes de commentaire).
 #
 #   ./scripts/test-api-request-wiring.sh
+# `A && ok || ko` (SC2015) est l'idiome des scripts de preuve du repo ; SC2016 vise
+# les quotes SIMPLES délibérées. Directive de FICHIER posée le 2026-09-11 (L4) en
+# entrant sous `make lint-ci` : la suite est désormais shellcheckée comme les autres.
+# shellcheck disable=SC2015,SC2016
 set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 JOB="$REPO/ci/jenkins/api-request.job.xml"
@@ -128,11 +132,11 @@ echo "== 3. le FORMULAIRE reste dans le XML, marqueurs de listes intacts =="
 # viderait ou périmerait le formulaire.
 PARAM_KO=""
 for P in ACTION TEAM API_NAME API_VERSION API_BASE NEW_VERSION OPENAPI_SPEC INBOUND_MODE \
-         CLASSIFICATION EXPOSURE; do
+         CLASSIFICATION EXPOSURE DEBUG; do
   grep -q "<name>${P}</name>" "$JOB" || PARAM_KO="${PARAM_KO} ${P}"
 done
 [ -z "$PARAM_KO" ] \
-  && ok "les 10 paramètres du formulaire sont toujours déclarés dans le XML (dont la posture, P2)" \
+  && ok "les 11 paramètres du formulaire sont toujours déclarés dans le XML (dont la posture, P2, et la case DEBUG, L4)" \
   || ko "paramètres absents du XML :${PARAM_KO} — le formulaire serait borgne"
 
 # ── P2 (ADR-092) : la posture doit ARRIVER au script ─────────────────────────
@@ -281,10 +285,13 @@ done
   || ko "paramètres NON ré-injectés en brut :${MISSING_RAW} — ceux-là subiraient EnvVars.resolve()"
 # L'invocation est un `sh` d'UNE ligne : c'est elle, et elle seule, qui ne doit
 # porter aucune interpolation Groovy (ni params., ni ${…}).
-if printf '%s\n' "$JF_CODE" | grep -E "^[[:space:]]*sh '" | grep -q 'params\.\|\${'; then
+# L4 (2026-09-11) : le pont DEBUG ⇒ STOA_DEBUG porte un `${DEBUG:-false}` — du
+# SHELL (quotes simples, Groovy n'y touche pas). On le retire AVANT de chercher
+# une interpolation : c'est la seule forme admise, à l'octet, rien d'autre.
+if printf '%s\n' "$JF_CODE" | grep -E "^[[:space:]]*sh '" | sed 's/\${DEBUG:-false}//g' | grep -q 'params\.\|\${'; then
   ko "la chaîne sh porte une interpolation Groovy (params. ou \${…}) — la saisie la traverserait"
 else
-  ok "la chaîne sh ne porte aucune interpolation Groovy : c'est le shell qui lit l'environnement posé par withEnv"
+  ok "la chaîne sh ne porte aucune interpolation Groovy hors le pont DEBUG (\${DEBUG:-false}, du shell) : c'est le shell qui lit l'environnement posé par withEnv"
 fi
 if grep -q 'sh """' "$JF"; then
   ko "un bloc \`sh \"\"\"\` (triple quotes DOUBLES) existe — Groovy y interpolerait la saisie et le token"
@@ -296,9 +303,9 @@ if printf '%s\n' "$JF_CODE" | grep -qE '^\s*sh "'; then
 else
   ok "aucune chaîne \`sh \"…\"\` : tout ce qui va au shell est en quotes simples"
 fi
-jfc "sh 'set +x; bash scripts/api-request.sh'" \
-  && ok "l'invocation RÉELLE est \`sh 'set +x; bash scripts/api-request.sh'\` — à l'octet près celle du job d'origine (set +x compris : aucune trace shell)" \
-  || ko "l'invocation d'api-request.sh a changé de forme — vérifier le \`set +x\` et les quotes simples"
+jfc "sh 'set +x; if [ \"\${DEBUG:-false}\" = \"true\" ]; then export STOA_DEBUG=1; fi; bash scripts/api-request.sh'" \
+  && ok "l'invocation RÉELLE est \`sh 'set +x; <pont DEBUG>; bash scripts/api-request.sh'\` — à l'octet près : set +x, PUIS le pont DEBUG ⇒ STOA_DEBUG en if/fi (L4), puis le script" \
+  || ko "l'invocation d'api-request.sh a changé de forme — vérifier \`set +x\`, le pont DEBUG (if/fi, après set +x) et les quotes simples"
 
 echo
 echo "== 8. le pipeline reste MINCE : il route, le moteur ne bouge pas =="

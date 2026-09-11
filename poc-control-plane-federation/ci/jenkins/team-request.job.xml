@@ -61,6 +61,11 @@
           <description>Dépôt Git de l'équipe (org/nom). Vide = &lt;team&gt;/apis. Créé AU MERGE depuis le squelette ADR-076.</description>
           <defaultValue></defaultValue>
         </hudson.model.StringParameterDefinition>
+        <hudson.model.BooleanParameterDefinition>
+          <name>DEBUG</name>
+          <description>Trace détaillée (appels, codes HTTP, erreurs redactées) — aucun secret exposé.</description>
+          <defaultValue>false</defaultValue>
+        </hudson.model.BooleanParameterDefinition>
       </parameterDefinitions>
     </hudson.model.ParametersDefinitionProperty>
   </properties>

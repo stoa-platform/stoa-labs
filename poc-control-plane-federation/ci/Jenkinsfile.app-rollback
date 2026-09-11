@@ -104,6 +104,9 @@ pipeline {
                    description: "Motif du repli — 1 à 300 caractères, sans retour-ligne ni ` < > # @ [ ] \\ (il entre dans le commit, trailer Repli-Motif, et dans la PR)."),
             string(name: 'CHANGE_REF', defaultValue: '',
                    description: "Référence de changement [A-Za-z0-9._-] — EXIGÉE si la porte du palier porte requireChangeRef ou itsmCheck (refus GATE_REFS_REQUIRED sans elle, aucune PR ouverte) ; elle REMPLACE change_ref dans la ligne restaurée (un repli d'urgence porte SON change, jamais celui de l'état restauré). pv_ref n'est jamais exigé : l'état restauré a porté le sien."),
+            // DEBUG (opt-in, L4) : trace détaillée sous STOA_DEBUG, aucun secret exposé — la case ALLUME le mode, elle n'éteint jamais la globale.
+            booleanParam(name: 'DEBUG', defaultValue: false,
+                         description: "Trace détaillée (appels, codes HTTP, erreurs redactées) — aucun secret exposé."),
             // A7 (ADR-090) : l'identité de forge — canal natif, jamais dans un withEnv (fait 9).
             password(name: 'FORGE_TOKEN', defaultValue: '',
                      description: "Votre token d'accès personnel de la forge, scopes EXACTEMENT read:user + write:repository — la PR de repli est ouverte SOUS VOTRE identité (la porte à quatre yeux la confronte au mergeur). Token dédié, à révoquer après. Vide : le compte de service ouvre — refusée (REQUESTER_UNKNOWN) dès qu'une porte exige les quatre yeux.")
@@ -156,7 +159,7 @@ pipeline {
           withEnv(["REQ_APP=${params.APP}", "REQ_ENV=${params.ENV}", "REQ_REASON=${params.REASON}", "REQ_CHANGE_REF=${params.CHANGE_REF}"]) {
             dir(env.GIT_SUBDIR) {
               // Même règle qu'au stage Formulaire : le préfixe vient du knob.
-              sh 'set +x; STOA_ENV_CHAIN_FILE="$WORKSPACE/$GIT_SUBDIR/clients/_example/environments.yaml" ROLLBACK_OUT="$WORKSPACE/.a6-rollback.env" bash scripts/app-rollback-request.sh'
+              sh 'set +x; if [ "${DEBUG:-false}" = "true" ]; then export STOA_DEBUG=1; fi; STOA_ENV_CHAIN_FILE="$WORKSPACE/$GIT_SUBDIR/clients/_example/environments.yaml" ROLLBACK_OUT="$WORKSPACE/.a6-rollback.env" bash scripts/app-rollback-request.sh'
             }
           }
         }

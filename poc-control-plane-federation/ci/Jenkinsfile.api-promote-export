@@ -65,6 +65,9 @@ pipeline {
   parameters {
     string(name: 'TEAM',       defaultValue: '', description: 'Équipe propriétaire de l\'API')
     string(name: 'API_NAME',   defaultValue: '', description: "Nom de l'API à exporter (déjà publiée en authoring, avec un apis/<api>.promote.yml)")
+    // DEBUG (opt-in, L4) : trace détaillée sous STOA_DEBUG, aucun secret exposé — la case ALLUME le mode, elle n'éteint jamais la globale.
+    booleanParam(name: 'DEBUG', defaultValue: false,
+                 description: "Trace détaillée (appels, codes HTTP, erreurs redactées) — aucun secret exposé.")
     string(name: 'VAULT_USER', defaultValue: '', description: "Login annuaire nominatif (ex. oscar) — identité qui exécute l'export.")
     password(name: 'V_PASS',   defaultValue: '', description: "Mot de passe annuaire. ⚠ Ne PAS relancer en boucle après un refus (lockout AD).")
   }
@@ -90,6 +93,7 @@ pipeline {
               // second ne le consomme (même piège que team-publish.sh).
               sh '''
                 set +x
+                if [ "${DEBUG:-false}" = "true" ]; then export STOA_DEBUG=1; fi
                 export VAULT_USER_PASSWORD="${V_PASS:-}"
                 # V_PASS ne doit PAS survivre au-delà de cette ligne : une
                 # variable EXPORTÉE reste lisible dans /proc/PID/environ de

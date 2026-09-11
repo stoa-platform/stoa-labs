@@ -85,7 +85,9 @@ docker compose -f docker-compose.poc.yml -f docker-compose.ci.yml up -d --build 
    *Script Path* `<prefixe-de-votre-livrable>/ci/Jenkinsfile.prod` et
    `…/ci/Jenkinsfile.rollback` — **sans webhook** (aucun trigger déclaré : ils
    ne partent QUE de *Build with Parameters*). Lancer chaque job une première
-   fois pour enregistrer ses paramètres (`PROMOTION_ID`, …).
+   fois pour enregistrer ses paramètres (`PROMOTION_ID`, …, et depuis L4 la case
+   `DEBUG` : trace détaillée sans secret, cf. ENVIRONNEMENTS.md § « Le mode
+   debug sans fuite » — un build après toute modification du formulaire).
 
 ## Pourquoi c'est le bon modèle pour une banque
 

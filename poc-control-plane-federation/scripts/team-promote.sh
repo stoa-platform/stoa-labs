@@ -754,6 +754,7 @@ run_engine() {
   case "$PROMOTE_ENGINE" in
     ansible)
       ansible-playbook -i ansible/inventory.lab.ini ansible/promote-api.yml \
+        -e stoa_debug="$(dbg_bool)" \
         -e apim_promote_action=import \
         -e apim_promote_manifest="$DEPLOY_PIN_PROMOTE" \
         -e apim_ss_archive_pin="$DEPLOY_PIN_ARCHIVE" \

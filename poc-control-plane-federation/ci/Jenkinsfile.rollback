@@ -17,6 +17,9 @@ pipeline {
     string(name: 'PROMOTION_ID', defaultValue: '', description: 'ID de la promotion à annuler — le palier est celui de la promotion')
     string(name: 'REASON',       defaultValue: '', description: 'Raison du rollback (audit)')
     string(name: 'CHANGE_REF',   defaultValue: '', description: 'Change ITSM couvrant le rollback — REQUIS si le gate du palier de la promotion exige une référence de changement (prod), refusé GATE_REFS_REQUIRED sinon vide')
+    // DEBUG (opt-in, L4) : trace détaillée sous STOA_DEBUG, aucun secret exposé — la case ALLUME le mode, elle n'éteint jamais la globale.
+    booleanParam(name: 'DEBUG', defaultValue: false,
+                 description: "Trace détaillée (appels, codes HTTP, erreurs redactées) — aucun secret exposé.")
     // Identité NOMINATIVE de l'opérateur (voie A, ADR-078 §3). Vides → repli
     // AppRole : identité de MACHINE, acte non imputable — comportement historique.
     // Le token nominatif exige la policy `operator-deploy` (secrets de PLATEFORME) :
@@ -73,6 +76,7 @@ pipeline {
           withCredentials([string(credentialsId: 'vault-ci-secret-id', variable: 'VAULT_SECRET_ID')]) {
             sh '''
               set +x          # NEVER echo: secret_id, vault token, OAuth token
+              if [ "${DEBUG:-false}" = "true" ]; then export STOA_DEBUG=1; fi
               set -eu
               # CHANGE_REF n'est requis que si le gate du palier de la promotion
               # l'exige (prod aujourd'hui) — c'est governance-api qui le sait et
@@ -180,6 +184,7 @@ PYCHAIN
           withCredentials([string(credentialsId: 'vault-ci-secret-id', variable: 'VAULT_SECRET_ID')]) {
             sh '''
               set +x
+              if [ "${DEBUG:-false}" = "true" ]; then export STOA_DEBUG=1; fi
               set -eu
               # Même login mutualisé que le stage précédent : nominatif, sinon AppRole.
               . ci/lib/vault-login.sh
@@ -214,6 +219,7 @@ PYCHAIN
           withCredentials([string(credentialsId: 'vault-ci-secret-id', variable: 'VAULT_SECRET_ID')]) {
             sh '''
               set +x
+              if [ "${DEBUG:-false}" = "true" ]; then export STOA_DEBUG=1; fi
               set -eu
               RENV=$(cat "$WORKSPACE/rollback-env.txt")
               RVER=$(cat "$WORKSPACE/rollback-version.txt")

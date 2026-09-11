@@ -142,6 +142,13 @@ joue cas_dbg_on
 if grep -qx fin "$OUT" && ! grep -q '^ON:\|^OFF:' "$OUT"; then
   ok "A.6 dbg_on : faux pour ''/0/false/off/no, vrai pour 1/true/yes/on"
 else ko "A.6 dbg_on : $(tr '\n' ' ' < "$OUT")"; fi
+# A.7 (L4) dbg_bool : la PROJECTION de dbg_on dans le mot qu'Ansible lit — pas
+# une seconde table de valeurs, la même règle vue de l'extra-var stoa_debug.
+cas_dbg_bool(){ for v in 1 true flase '' 0 off; do printf '%s/' "$(STOA_DEBUG="$v" dbg_bool)"; done; echo; }
+joue cas_dbg_bool
+if grep -qx 'true/true/true/false/false/false/' "$OUT"; then
+  ok "A.7 dbg_bool : true pour 1/true/valeur-libre, false pour ''/0/off — le mot d'Ansible suit dbg_on"
+else ko "A.7 dbg_bool : '$(tr '\n' ' ' < "$OUT")' (attendu true/true/true/false/false/false/)"; fi
 
 echo "═══ B. la parole : STOA_DEBUG=1 ⇒ stderr seulement, préfixe [dbg <script>] ═══"
 export STOA_DEBUG=1

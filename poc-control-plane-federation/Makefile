@@ -130,6 +130,7 @@ lint-ci:
 	  ci/lint-forge-literals.sh ci/lint-branch-literals.sh scripts/test-app-request-gitlab-live.sh \
 	  scripts/test-porte-clone-frais.sh \
 	  scripts/test-team-request-wiring.sh scripts/test-team-publish-wiring.sh \
+	  scripts/test-debug-knob-wiring.sh scripts/test-app-request-wiring.sh scripts/test-api-request-wiring.sh scripts/test-team-apply-wiring.sh \
 	  scripts/test-producer-chain.sh \
 	  scripts/team-publish.sh \
 	  scripts/test-setup-provision-jobs.sh scripts/test-generate-choices.sh \
@@ -226,6 +227,11 @@ lint-ci:
 	@# sans rang à eux — le compte des étapes et D.11 restent inchangés.
 	@bash scripts/test-team-request-wiring.sh
 	@bash scripts/test-team-publish-wiring.sh
+	@# L4 (2026-09-11) : deux câblages de plus de la même famille, verts mais
+	@# jamais appelés (72/72 et 55/55 le jour de leur entrée) — L4 réécrit leurs
+	@# ancres (case DEBUG, pont), une suite hors porte les aurait laissées dériver.
+	@bash scripts/test-team-apply-wiring.sh
+	@bash scripts/test-api-request-wiring.sh
 	@# mocks/webmethods n'est PAS vendored (dépend du module cache Go, comme
 	@# labctl NE l'est PAS ici) : pas de GOPROXY=off. Spec §4.3 promettait
 	@# cette porte hors-ligne branchée dans lint-ci — restée débranchée jusqu'ici.
@@ -251,6 +257,14 @@ lint-ci:
 	@echo "== [11/20] épreuves « tout en Jenkinsfile » — coquilles, miroir, formulaire posé, pose (A0)"
 	@bash scripts/test-a0-wiring.sh
 	@bash scripts/test-provision-apply-wiring.sh
+	@# L4 (2026-09-11) : le câblage d'app-request (36/36, orphelin jusqu'ici) et
+	@# LA porte de la case DEBUG — une table des huit formulaires : case au bon
+	@# rang, miroir XML, pont après set +x en if/fi, exclusions explicites,
+	@# globale STOA_DEBUG connue/optionnelle, relais -e stoa_debug du moteur,
+	@# mutants qui rougissent. Les preuves par builds réels
+	@# (test-debug-knob-live.sh) se rendent à la main.
+	@bash scripts/test-app-request-wiring.sh
+	@bash scripts/test-debug-knob-wiring.sh
 	@# A3 (CD des applications) : le credential du seul palier — la garde
 	@# (scripts/selfservice-palier-gate.sh) contre un stub Vault et un canari
 	@# (refus nommés, ticket non inscriptible, équipe décidée par le token,

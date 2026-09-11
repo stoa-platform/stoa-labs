@@ -79,6 +79,11 @@
           <description>Qui peut APPELER l'API — les trois valeurs sont ENTRANTES (ADR-091). internal : appelant du SI. external : appelant PARTENAIRE identifié (ajoute une ip-allowlist : les IP sources d'un partenaire sont énumérables). internet : appelant PUBLIC (REMPLACE l'ip-allowlist par threat-protection — une liste publique serait une fiction 0.0.0.0/0). L'exposition n'est PAS une échelle : déclarer internal quand la gouvernance dit external, ou internet quand elle dit external, PERD un contrôle obligatoire dans les deux cas — refusé pareillement. Même arbitrage que CLASSIFICATION : le registre central gagne.</description>
           <choices class="java.util.Arrays$ArrayList"><a class="string-array"><string>internal</string><string>external</string><string>internet</string></a></choices>
         </hudson.model.ChoiceParameterDefinition>
+        <hudson.model.BooleanParameterDefinition>
+          <name>DEBUG</name>
+          <description>Trace détaillée (appels, codes HTTP, erreurs redactées) — aucun secret exposé.</description>
+          <defaultValue>false</defaultValue>
+        </hudson.model.BooleanParameterDefinition>
       </parameterDefinitions>
     </hudson.model.ParametersDefinitionProperty>
   </properties>
