@@ -211,6 +211,16 @@ SAVE_WK=$(globale_lire WEBHOOK_KIND); SAVE_FK=$(globale_lire FORGE_KIND)
 SAVE_GH=$(globale_lire GIT_HOST);     SAVE_GR=$(globale_lire GIT_REPO)
 SAVE_GW=$(globale_lire GIT_WEB_HOST); SAVE_CID=$(globale_lire GITEA_CREDENTIALS_ID)
 SAVE_GB=$(globale_lire GIT_BASE)
+# ⚠ NE JAMAIS ENTÉRINER UN ÉTAT POLLUÉ. Ce harnais restaure ce qu'il a TROUVÉ ;
+# si un run précédent est mort sans jouer son trap (interruption, bash édité en
+# vol), il aurait trouvé l'état du VISAGE GITLAB et l'aurait fidèlement remis —
+# le lab serait resté sous gitlab en croyant avoir été restauré (mesuré le
+# 2026-09-11). Un tel état se reconnaît sans ambiguïté : c'est exactement celui
+# que ce harnais pose. On REFUSE de démarrer plutôt que de le graver.
+if [ "$SAVE_WK" = gitlab ] || [ "$SAVE_GH" = "$GLIN" ]; then
+  ko "0.5 le lab est DÉJÀ sous le visage gitlab (WEBHOOK_KIND='$SAVE_WK' GIT_HOST='$SAVE_GH') — un run précédent n'a pas joué son nettoyage. Restaurer d'abord l'état nominal (WEBHOOK_KIND/FORGE_KIND/GITEA_CREDENTIALS_ID/GIT_BASE absentes, GIT_HOST=http://gitea:3000, GIT_WEB_HOST=http://localhost:13000) puis re-poser les jobs, sinon ce harnais GRAVERAIT la pollution en la « restaurant »"
+  HOOKS=""; say "RÉSULTAT : $PASS/$((PASS+FAIL))"; exit 1
+fi
 ok "0.5 globales relevées pour restauration (WEBHOOK_KIND='$SAVE_WK' FORGE_KIND='$SAVE_FK' GIT_HOST='$SAVE_GH' GITEA_CREDENTIALS_ID='$SAVE_CID')"
 # Le credential de la forge est un JETON DE FORGE : celui du lab porte un jeton
 # GITEA, que l'API de GitLab refuse en 401 — la réconciliation A2 meurt alors,
