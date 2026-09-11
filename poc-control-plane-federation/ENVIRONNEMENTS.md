@@ -1497,8 +1497,27 @@ voisines re-comptent (team-request 5 paramètres, `test-palier-retention` ⑰bis
 `test-app-rollback-a6` D.2/D.6). Les trois suites de câblage orphelines
 (`app-request`, `api-request`, `team-apply`) entrent sous `lint-ci` et sous
 shellcheck le même jour : L4 réécrivait leurs ancres, une suite hors porte ne
-mesure plus rien. Par builds réels : `scripts/test-debug-knob-live.sh` — voir
-le paragraphe « Preuve live » de ce chapitre.
+mesure plus rien.
+
+**Preuve live** (2026-09-11, `scripts/test-debug-knob-live.sh` **22/22**, lab
+sur gitea `c45f456`) : les huit formulaires réels relus par l'API portent
+`DEBUG` au rang attendu après la re-pose (XML par `setup-team-onboard-jobs.sh`
+pour team-request/api-promote-*/api-request — ce dernier avec un jeton de forge
+jetable en lecture seule, minté puis révoqué —, amorçage d'app-request et
+d'app-rollback, un build à vide refusé par leur porte pour `stoa-prod-deploy`
+#5 et `stoa-prod-rollback` #7). Témoin `api-promote-export`, identité
+nominative inexistante, mot de passe sentinelle : build **#5** case cochée ⇒
+`FAILURE` au login refusé **avec** cinq lignes `[dbg` (« voie A (user/pwd) :
+mount=auth/ldap user=l4-nobody », « POST …/auth/ldap/login/l4-nobody -> HTTP
+400 »), sentinelle absente de la console, aucune trace `+` du mot de passe ;
+build **#6** case décochée ⇒ même refus, **zéro** ligne `[dbg` ; build **#7**
+case décochée, globale `STOA_DEBUG=1` ⇒ le build parle (le plancher tient) ;
+globale restaurée à vide par le trap. Deux faits à retenir : le préfixe des
+lignes est **`[dbg script.sh.copy]`** — le `$0` du step Jenkins, jamais le nom
+de la lib sourcée — d'où un oracle par CONTENU dans la suite ; et un job
+webhook-only lancé à vide (`provisioning-request` #20) refuse **avant**
+d'atteindre un script qui parle : la globale atteint tout build, mais elle ne
+fait parler que ce qui s'exécute.
 
 **Qui parle** (sous `STOA_DEBUG`, une ligne par décision, juste après elle) :
 
