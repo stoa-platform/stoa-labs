@@ -20,3 +20,4 @@ apim_ss_app:
   per_env:
     dev: { auth: { claim: { value: "a7p1789130416-dev" } }, ip_allowlist: ["10.42.0.11"] }
     rec: { auth: { claim: { value: "a7p1789130416-rec" } }, ip_allowlist: ["10.42.0.12"] }
+    int: { auth: { claim: { value: "a7p1789130416-int" } }, ip_allowlist: ["10.42.0.13"] }
