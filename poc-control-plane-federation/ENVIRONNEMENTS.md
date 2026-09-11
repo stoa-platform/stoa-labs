@@ -1588,7 +1588,9 @@ du canal debug) :
   `provision-apply-comment.sh:209` (appelée par le `fail()` de la
   réconciliation). Les retirer (`${GIT_HOST:?…}`, exemptions retirées, présence
   dans a4/a0) est le lot suivant : `test-provision-apply-a4.sh` joue la porte
-  56 fois (`run_gate`) **sans** `GIT_HOST`, ses fixtures sont à reprendre ;
+  58 fois (`run_gate`) **sans** `GIT_HOST` (mesuré : `grep -vE '^\s*#'
+  scripts/test-provision-apply-a4.sh | grep -cE '(^|[^a-z_])run_gate '`), ses
+  fixtures sont à reprendre ;
 - `ci/lint-config-knobs.sh` n'examine qu'**un défaut par ligne** (le premier
   qui correspond, puis `break`) — deux victimes connues : le `GIT_REPO` de
   `provision-plan-status.sh`, caché derrière `GIT_HOST` sur la même ligne et
