@@ -114,6 +114,43 @@
 #
 # JAMAIS D'ANSI. Un log Jenkins archivé se grep : « [dbg » en tête de ligne.
 #
+# QUI PARLE PAR CETTE LIB (L2, 2026-09-10). Les consommateurs, chacun sous son
+# propre nom (« [dbg <script>] », jamais DBG_NAME dans la chaîne) :
+#   - scripts/lib/forge-api.sh, via forge_api_init (FORGE_KIND, FORGE_API_AUTH,
+#     GIT_HOST, GIT_REPO, FORGE_API_BASE) ;
+#   - scripts/lib/git-base.sh (la ligne ls-remote avec son rc, GIT_BASE,
+#     GIT_BASE_ORIGINE, GIT_BASE_OF par dépôt) — la ligne d'AUDIT
+#     « git-base: GIT_BASE=… découvert — HEAD annoncée par … » (L3) n'est PAS du
+#     debug : inconditionnelle, sans préfixe « [dbg », une par build ;
+#   - ci/lib/vault-login.sh (dbg_http par appel, contexte du login, empreinte
+#     du mot de passe — longueur, blancs parasites, 2 hex de son SHA-256 :
+#     jamais une forme qu'un dictionnaire hors ligne confirme —, corps d'erreur
+#     ≥ 400 par redact PUIS coupé) — ses _vault_dbg/_vault_redact/
+#     _vault_debug_on ont migré ici, VAULT_DEBUG n'existe plus ;
+#   - les quatre scripts de la chaîne app-request — scripts/provision-request.sh,
+#     scripts/provision-plan.sh, scripts/provision-apply-reconcile.sh,
+#     scripts/app-rollback-request.sh (dbg_init en tête ; disposition, identité,
+#     URL composées, chaque geste git avec son rc et son stderr masqué PUIS
+#     coupé ; le premier et le dernier nomment le fichier du token humain par
+#     DBG_SECRET_FILES — le plan et reconcile ne tiennent que FORGE_SECRET,
+#     relu dans l'environnement à chaque appel, et ne la posent pas) ;
+#   - scripts/lib/gitea-pr-confirm.sh (« PR #n relue : … ») et
+#     scripts/lib/gitea-pr-comment.sh (PR_NUMBER, COMMENT_MARKER, CF_ID, CU_*).
+#   NON instrumentés, dits pour ne pas les chercher : scripts/provision-plan-status.sh
+#   (seul son défaut de site GIT_HOST est tombé) ; scripts/lib/forge-identity.sh
+#   (forge_login RELAIE le stderr de forge-api.py, succès compris, sans parler
+#   elle-même) ; scripts/provision-apply-comment.sh (appelé par fail() avec sa
+#   sortie jetée).
+#   L'EXCEPTION, documentée : scripts/lib/forge-api.py est un process python,
+#   enfant de forge() ; il écrit LUI-MÊME « [dbg forge-api.py] METHOD url -> HTTP
+#   code (n octets) » sur stderr, AVANT toute cause, masqué par SON _mask —
+#   l'autorité de ses causes de refus depuis L1 (mêmes littéraux sous leurs
+#   formes d'URL, forme ://…@ ; test-forge-api.sh §P). Le faire passer par redact
+#   obligerait forge() à capturer son stderr, ce qui retiendrait la cause d'un
+#   refus jusqu'à la fin du process et doublerait la plomberie de chaque verbe
+#   (l'en-tête de forge-api.py dit le reste). Deux autorités de masque pour le
+#   texte côté python, une seule liste de valeurs pour STOA_DEBUG (P.6).
+#
 # USAGE
 #   . ci/lib/dbg.sh                                   # ou "$(dirname "$0")/../ci/lib/dbg.sh"
 #   dbg_kv GIT_BASE "$GIT_BASE"

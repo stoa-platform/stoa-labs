@@ -1383,6 +1383,241 @@ compare le `target_branch` de la MR à cette valeur. Elle est donc verte sur un
 projet en `main` **comme** sur un projet en `master` ; sur un projet **vide**
 (HEAD non née) elle **refuse**, elle ne devine pas.
 
+## Le mode debug sans fuite (L2 — 2026-09-10)
+
+Quand la chaîne casse chez un client, le log ne dit ni l'URL composée, ni le
+chemin lu, ni la branche retenue, ni le statut HTTP que la forge a rendu : il
+faut solliciter l'auteur. Le réflexe `set -x` est **interdit** — tous les
+scripts font `set +x` — parce qu'un log Jenkins est **archivé** : un secret qui
+y passe une fois y reste. Et le mode verbeux qui existait côté shell, celui de
+`ci/lib/vault-login.sh`, était **fail-open** : son `_vault_redact … || cat`
+sortait le corps d'erreur **en clair** dès que `python3` manquait — à l'inverse
+de son commentaire.
+
+**La décision** : une sortie **curatée** sur stderr, et chaque ligne passe par
+une rédaction **fail-closed** avant d'y arriver — `ci/lib/dbg.sh` (POSIX, à
+sourcer ; contrat en tête du fichier, preuve `scripts/test-dbg-redaction.sh`
+108/108). Côté shell, rien d'autre ne sort en mode debug : `dbg <msg>`,
+`dbg_kv <clé> <valeur>`, `dbg_http <méthode> <url> <code> [octets]`, `redact`
+(le filtre stdin→stdout), et `dbg_on` / `dbg_init`. Toujours stderr, jamais
+stdout ; le `$?` reçu est rendu tel quel (un `dbg` qui rendrait 0 effacerait le
+verdict d'un `cmd || refus`) ; jamais d'ANSI ; jamais un secret en argv ni en
+préfixe de commande — le canal vers python est un here-doc sur le descripteur
+3, que `sh -x` ne trace pas.
+
+**Le knob** : `STOA_DEBUG` — actif sauf vide, `0`, `false`, `off`, `no`
+(`dbg_init` le normalise en `1` ou vide et l'**exporte**, pour que les enfants —
+`forge-api.py`, le plan enchaîné, `gitea-pr-comment.sh` — parlent avec la même
+valeur). Deux Jenkinsfile (`publish-api`, `selfservice`) portent déjà une case
+`DEBUG` qui exporte `STOA_DEBUG=1` ; la case sur les douze formulaires et la
+globale Jenkins (`setup-jenkins-globals.sh`) sont **L4, à venir**.
+
+| Knob | Valeurs | Défaut | Rôle |
+|------|---------|--------|------|
+| `STOA_DEBUG` | tout sauf vide / `0` / `false` / `off` / `no` | vide (muet) | la **seule** autorité du mode debug — l'ancien `VAULT_DEBUG` n'existe plus ; relue à chaque appel, normalisée et exportée par `dbg_init` |
+| `DBG_NAME` | un nom | le nom du script (`$0`) | ce qui s'écrit entre crochets : `[dbg <nom>]`. Aucun script de la chaîne ne le pose — c'est le nom du script qu'on veut lire dans un log ; réservé au bloc `sh` d'un Jenkinsfile, où `$0` n'est pas un nom parlant (L4) |
+| `DBG_SECRET_FILES` | chemins, un par ligne | vide | des **fichiers** de secret de plus à masquer, par leur contenu. `provision-request.sh` et `app-rollback-request.sh` y nomment le fichier du token **humain** — retiré de l'environnement par A7, la rédaction ne le connaît que par là ; variable de shell **non exportée** : un chemin n'est pas un secret, mais les enfants n'ont pas à le connaître |
+
+**Qui parle** (sous `STOA_DEBUG`, une ligne par décision, juste après elle) :
+
+- `scripts/lib/forge-api.py` — **une ligne par requête**, `[dbg forge-api.py]
+  METHOD url -> HTTP code (n octets)` (ou `-> ERREUR URLError` quand rien n'a
+  répondu), écrite **avant** toute cause de refus, 3xx et 5xx compris — c'est
+  la ligne `-> HTTP 302` que le client GitLab du 2026-09-09 devait lire.
+  Process python : il écrit lui-même, masqué par son `_mask` (l'autorité de ses
+  causes depuis L1 ; même liste de valeurs que `dbg_on`). `forge_api_init`
+  (`forge-api.sh`) dit `FORGE_KIND=`, `FORGE_API_AUTH=`, `GIT_HOST=`,
+  `GIT_REPO=`, `FORGE_API_BASE=` (vide ⇒ `<vide>`) ;
+- `scripts/lib/git-base.sh` — `git ls-remote --symref <url masquée> HEAD -> rc
+  N (n octets)` **avant** tout refus, puis `GIT_BASE=` et
+  `GIT_BASE_ORIGINE=knob|decouverte` ; `GIT_BASE_OF <url masquée>=<branche>`
+  par dépôt ;
+- les quatre scripts de la chaîne app-request — `provision-request.sh`,
+  `provision-plan.sh`, `provision-apply-reconcile.sh`, `app-rollback-request.sh`
+  — disent ce qu'**eux** décident, sans redire les autorités : la disposition
+  (`SUB_PFX` — vide ⇒ `<vide>`, c'est le diagnostic d'un IGNORE chez un client
+  dont la forge préfixe —, `MANIFEST_DIR`, `REL_PATH` / `MANIFEST_PATH` /
+  `MAN_PATH` / `MANIFEST`, `PROV_FILE=… existe=oui|non`), l'identité
+  (`FORGE_LOGIN`, `PUSH_LOGIN`, `MODE`, `BRANCH`, `TENANT`), les URL
+  **composées** (`CLONE_URL`, `PUSH_URL`, `GIT_CLONE_URL`, `CLONE_BASE` — c'est
+  elles qu'on diagnostique, un userinfo y est masqué), la PR relue — `PR #n
+  relue : state=… head=… sha=… base=… same_repo=… (attendu head=… base=…)`,
+  écrite par `gitea-pr-confirm.sh`, la ligne qu'on lit quand
+  `FORGE_NON_CONFIRMEE` tombe, et sa jumelle de la réconciliation avec
+  `merged=… merge_sha=… merged_by=…` —, les digests, la lignée et les bornes du
+  repli (`MERGED_DIGEST`, `BASE_DIGEST`, `REPLI_DE`, `BIRTH`, `D_BASE`,
+  `D_EXPECT`, `TIP`, `NUM_N`/`SHA_N`, `NUM_N1`/`SHA_N1`), et **chaque geste git**
+  avec son **vrai** rc — `git clone --depth 1 -b <branche> <url> -> rc 0`,
+  `git fetch … -> rc 128` (le premier passage, jadis jeté à `/dev/null`),
+  `git push --force-with-lease=… -> rc 0` — suivi, s'il a parlé, d'une ligne
+  `  git: …` : son stderr **masqué en entier, puis mis sur une ligne, puis
+  coupé** à 400 octets, jamais dans l'autre ordre. Les lignes HTTP de
+  `forge-api.py` qu'une capture de stderr perdait sur succès sont relayées
+  (`pr_get`, `pr_files`, `pr_find_open`) — dont celle du `whoami` réussi, que
+  `forge_login` (`forge-identity.sh`) lisait, effaçait et perdait ;
+- `gitea-pr-comment.sh` — `PR_NUMBER=`, `COMMENT_MARKER=`,
+  `COMMENT_ONLY_IF_EXISTS=`, `CF_ID=` (vide ⇒ la raison du SKIPPED),
+  `CU_ACTION=`, `CU_ID=` ;
+- `ci/lib/vault-login.sh` — chaque appel Vault par `dbg_http`, le contexte du
+  login (`VAULT_ADDR`, namespace, CA, voie A/B, mount, user), l'**empreinte** du
+  mot de passe — sa longueur en caractères et en octets, les blancs parasites,
+  et **deux** hex de son SHA-256 (`sha256=d3…` : 8 bits, « même valeur ou pas »,
+  une chance sur 256 de coïncidence, rien qu'un dictionnaire hors ligne puisse
+  confirmer ; les 16 hex d'avant, 64 bits non salés, étaient un **oracle** sur
+  le mot de passe LDAP/AD d'un compte humain — relecture finale, I-2) — et,
+  sur un statut ≥ 400 seulement, le corps d'erreur `↳ erreur: …` rédigé **puis**
+  coupé à 400 caractères ; un corps 2xx (token de login, valeur KV) n'est
+  **jamais** imprimé.
+
+**Ce qui est masqué** — par **littéral** connu du process : les valeurs de
+`FORGE_SECRET`, `GITEA_TOKEN`, `FORGE_TOKEN`, `PUSH_TOKEN`, `VAULT_TOKEN`,
+`VAULT_USER_PASSWORD`, `WM_PASSWORD` / `WM_PASS` / `WM_BEARER`,
+`LDAP_ADMIN_PASSWORD`, le **contenu** des fichiers `CI_TOKEN_FILE`,
+`PR_TOKEN_FILE`, `VAULT_TOKEN_FILE`, `FORGE_TOKEN_FILE`, de ceux de
+`DBG_SECRET_FILES` et de ceux passés en argument à `redact` — sous toutes leurs
+formes (`%XX` d'URL, `+` d'un corps de formulaire, échappements JSON, base64 de
+`user:secret`) et par **morceaux** (chaque segment de 4 caractères ou plus,
+coupé à `/` et aux blancs : ssh écrit « Could not resolve hostname
+git:MORCEAU ») ; par **forme**, sans littéral connu : `Authorization: <schéma>
+<valeur>` (le schéma reste — il dit si l'en-tête est celui de Gitea ou de
+GitLab), l'userinfo d'une URL `://…@` (l'hôte reste), `hvs.` / `hvb.`, un JWT
+`eyJ…`, une valeur derrière une clé `password` / `secret` / `token` / `api_key`…
+(ce qui couvre `PRIVATE-TOKEN:` et `X-Vault-Token:`). Le masque est un
+**atome** : une valeur déjà masquée en partie est remasquée en entier. Sans
+`python3` : la ligne unique `<rédaction indisponible>` et **rien d'autre** —
+mieux vaut aucun debug qu'un debug qui fuit.
+
+**Ce qui n'est jamais écrit** : un corps de réponse 2xx ; un secret en argv —
+le `grep -v "$(cat "$PUSH_TF")" | grep -v "$FORGE_SECRET"` qui mettait **deux**
+secrets dans l'argv d'un process (`ps` les voit) et **jetait** la ligne a
+disparu de ses trois sites (`provision-request.sh`, `app-rollback-request.sh`
+×2, clone et push), remplacé par `redact "$PUSH_TF"` : un chemin en argument, la
+ligne masquée et gardée ; une ligne sur **stdout** — les scripts y rendent leur
+produit (`PR_URL=`, `RECONCILE_OK`, `OK:`), une ligne de debug égarée y
+deviendrait une valeur. Et sans `STOA_DEBUG`, **rien ne change à l'octet** :
+chaque suite compare le produit (stdout, faits) à une référence prise sans
+debug.
+
+**Comment lire un log** : `grep '^\[dbg '` — le préfixe est en tête de ligne,
+sans ANSI, et nomme qui parle (`[dbg provision-request.sh]`,
+`[dbg forge-api.py]`). La ligne HTTP **précède** la cause, qui précède le
+`REFUS: TAG` : un log se lit de haut en bas. `<vide>` derrière une clé veut
+dire « la variable est vide ou absente » — Jenkins retire une variable vide de
+l'environnement, c'est un diagnostic, pas un masque. Sur un refus de
+`provision-plan.sh`, les lignes `[dbg` sont **séparées** de la cause par leur
+préfixe avant qu'elle n'entre dans `PLAN_REASON`, donc dans le commentaire de
+statut de la PR — sans debug, le refus est octet pour octet celui d'avant. À ne
+pas confondre : `git-base: GIT_BASE=<b> découvert — HEAD annoncée par <url>
+(ls-remote --symref)` (et sa sœur `retenu (knob explicite)`) est la ligne
+d'**audit** d'une pose, venue de L3, **inconditionnelle** et sans préfixe
+`[dbg` : elle sort sans `STOA_DEBUG`, une fois par build, et dit d'où vient la
+branche ; les lignes `[dbg …] GIT_BASE=` / `GIT_BASE_ORIGINE=` qui la suivent
+sous debug sont le mode debug, rédigé.
+
+**Les preuves** (comptes de la branche livrée, rebasée sur la branche par
+défaut du dépôt) : `test-dbg-redaction.sh` 108/108 (la lib, figée) ;
+`test-forge-api.sh` 103/103 ; `test-git-base.sh` 111/111 ;
+`test-vault-login-offline.sh` 72/72 (stub Vault, mot de passe sentinelle, sous
+dash, sh et bash, `python3` retiré ⇒ `<rédaction indisponible>`) ;
+`test-app-request-a7.sh` 120/120 ; `test-provision-apply-a2.sh` 232/232 ;
+`test-app-rollback-a6.sh` 159/159 ; `test-pr-comment.sh` 62/62 ;
+`test-a0-wiring.sh` 245/245. Chaque absence (« le secret n'y est pas ») est
+doublée d'une présence (« la ligne HTTP attendue y est »), et l'**ordre**
+masque-puis-coupe a son épreuve à discriminant : un secret recopié **à cheval**
+sur l'octet de coupe, qu'un mutant « coupe puis masque » laisse fuir. La même
+famille de défaut a été trouvée trois fois en phase A dans le code
+(`git-base.sh` coupait le stderr de git à 300 octets avant de masquer,
+`vault-login.sh` le corps d'erreur à 400, `forge-api.py` ignorait la forme
+`%XX`), trois fois en phase B dans les épreuves (l'ordre était juste, aucune
+épreuve ne l'épinglait — a7, a2, a6), une fois de plus dans le code, héritée
+d'avant L2 (le refus `GITEA_RECONCILE_ECHEC` de la réconciliation relayait
+200 octets **bruts** du stderr de `git fetch` — masqué avant coupe désormais),
+et **deux fois encore par la relecture finale** : `_debut` de `forge-api.py`
+coupait à 120 octets **avant** de masquer le début de corps qu'une cause cite
+(chemin inconditionnel, jusque dans `PLAN_REASON` : un PAT à cheval sur
+l'octet 120 sortait à 20 caractères — `test-forge-api` P.11, mutant P.11c), et
+la ligne « PR relue » de la réconciliation passait ses valeurs par `shown`
+(coupe à 80 puis `%q`) **avant** `dbg` — le `%q` défait un littéral qui porte
+un espace (`test-provision-apply-a2` E.9, mutants E.9e/f) ; valeurs brutes
+désormais, comme sa jumelle de `gitea-pr-confirm.sh`.
+
+**Le défaut de site de la voie du plan est tombé** : `provision-plan.sh` et
+`provision-plan-status.sh` gardaient un `GIT_HOST` par défaut de lab
+(`http://gitea:3000`), exempté comme « dette connue » dans
+`ci/lint-config-knobs.exempt`. Retiré, exemptions retirées : un client dont le
+pipeline ne transmet pas la variable lit `GIT_HOST requis` en tête, il ne
+découvre plus la panne sous `BRANCHE_PAR_DEFAUT_INCONNUE`. Ce n'est **pas** le
+dernier défaut de site du dépôt — treize `GIT_HOST` par défaut restent hors de
+la voie du plan (ci-dessous, « Dettes hors périmètre »).
+
+**Limites nommées** :
+
+- la ligne d'**appel** (`+ dbg …`, `+ dbg_kv CLONE_URL …`) est tracée par un
+  appelant sous `sh -x` **avant** d'entrer dans la lib — la lib n'y ajoute
+  aucune ligne, mais ne retire pas celle-là. Un bloc Jenkins doit faire
+  `set +x` avant le pont `DEBUG ⇒ STOA_DEBUG` (L4) ;
+- `provision-apply-comment.sh`, appelé par le `fail()` de la réconciliation
+  avec sa sortie jetée (`>/dev/null 2>&1`), n'est pas instrumenté : la ligne
+  HTTP du commentaire de refus ne se lit pas ;
+- les tokens Vault d'avant 1.10 (`s.…`, `b.…`) ne sont **plus une forme
+  masquée** (l'ancien `_vault_redact` les prenait) ; le **littéral**
+  `VAULT_TOKEN` et le contenu de `VAULT_TOKEN_FILE` le sont, `hvs.` / `hvb.`
+  restent une forme ;
+- `provision-plan-status.sh` n'est pas instrumenté (seul son défaut de site est
+  tombé) ; `forge-identity.sh` relaie la ligne de `forge-api.py`, elle ne parle
+  pas elle-même.
+
+**Dettes hors périmètre, relevées par les relectures** (antérieures à L2, hors
+du canal debug) :
+
+- le lien humain du commentaire `[4/4]` de `provision-plan.sh` porte
+  l'userinfo d'un `GIT_HOST` de la forme `http://user:jeton@…` quand
+  `GIT_WEB_HOST` est absent (repli `GIT_WEB_HOST="${GIT_WEB_HOST:-$GIT_HOST}"`)
+  — visible du demandeur, indépendant de `STOA_DEBUG` ; un client passe
+  `GIT_WEB_HOST`, mais rien ne l'y oblige ;
+- **treize `GIT_HOST` par défaut restent** dans du code livrable (mesuré :
+  `grep -rn 'GIT_HOST:-' scripts/*.sh scripts/lib/*.sh` hors `test-*`) — onze
+  `http://gitea:3000` (`api-request.sh`, `api-promote-request.sh`,
+  `api-promote-export.sh`, `team-request.sh`, `team-apply.sh`,
+  `team-promote.sh`, `team-publish.sh`, `provision-apply-gate.sh:70`,
+  `provision-apply-comment.sh:209`, `lib/archive-store.sh:44`,
+  `lib/generate-choices.sh:580`) et deux `http://localhost:13000`
+  (`seed-governance-chain.sh`, `setup-repo-protections.sh`). **Deux sont sur la
+  voie apply de la même chaîne app-request** : `provision-apply-gate.sh:70`
+  (appelée deux fois par `ci/Jenkinsfile.provision-apply`) et
+  `provision-apply-comment.sh:209` (appelée par le `fail()` de la
+  réconciliation). Les retirer (`${GIT_HOST:?…}`, exemptions retirées, présence
+  dans a4/a0) est le lot suivant : `test-provision-apply-a4.sh` joue la porte
+  58 fois (`run_gate`) **sans** `GIT_HOST` (mesuré : `grep -vE '^\s*#'
+  scripts/test-provision-apply-a4.sh | grep -cE '(^|[^a-z_])run_gate '`), ses
+  fixtures sont à reprendre ;
+- `ci/lint-config-knobs.sh` n'examine qu'**un défaut par ligne** (le premier
+  qui correspond, puis `break`) — deux victimes connues : le `GIT_REPO` de
+  `provision-plan-status.sh`, caché derrière `GIT_HOST` sur la même ligne et
+  apparu au retrait de celui-ci (d'où une exemption **ajoutée**, datée, à un
+  fichier qui dit qu'on n'en ajoute jamais), et le `GIT_HOST` de
+  `provision-apply-gate.sh:70`, caché derrière `GIT_REPO` sur la même ligne :
+  **non exempté, jamais vu** par la porte. Elle ne compte pas non plus une
+  exemption **orpheline** — `provision-apply-reconcile.sh:GIT_HOST` ne
+  couvrait plus rien depuis L5 (`GIT_HOST="${GIT_HOST:-}"`, classé « vide ») et
+  la porte disait 186 exemptées avec comme sans elle ; retirée (relecture
+  finale, I-4). Remède connu : un défaut par **correspondance** (`finditer`),
+  et le décompte des exemptions que rien ne consomme ;
+- dette L3 : `generate-choices.sh` (`_gc_base_of`) capture le stderr de
+  `git_base_of` et ne le ressort, expurgé, que sur échec — sur succès la ligne
+  d'audit de git-base **et** les lignes `[dbg` sont avalées ; et
+  `ci/Jenkinsfile.selfservice` découvre la HEAD **inline** (`git ls-remote
+  --symref origin HEAD | sed …`, deux stages) sans passer par la lib, donc sans
+  ligne du tout. Remède connu : le relais de la grammaire (le fichier capturé
+  est relu sur stderr, succès compris) pour l'un, la lib pour l'autre ;
+- mineurs consignés : `(n octets)` de git-base compte des caractères sous une
+  locale UTF-8 ; un `@` nu dans un mot de passe d'URL est coupé différemment
+  par `_mask` (`[^/@\s]`) et par `redact` (`[^/\s]`) ; `_dbg_on` de
+  `forge-api.py` nettoie et met en minuscules là où `dbg_on` compare tel quel
+  (` 0`, `fAlSe`) — sans effet dès que `dbg_init` a normalisé ; stderr fermé +
+  `STOA_DEBUG=1` fait rendre rc 1 à `forge-api.py` au lieu de son verdict
+  (`_dbg` n'est pas gardé).
+
 ## Résiduel
 
 - **Le lien entre le Jenkins local et celui du labs n'est pas établi.** Ce sont

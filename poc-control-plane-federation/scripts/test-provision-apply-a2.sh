@@ -11,11 +11,23 @@
 #      et corps INCHANGÉ pour les appelants d'avant A2
 #   D. MUTATIONS : retirer une comparaison de la réconciliation ⇒ l'épreuve
 #      correspondante rougit (motif G3 « toute assertion se règle par mutation »)
+#   E. STOA_DEBUG=1 (plan L2) : la réconciliation DIT chaque décision sur stderr
+#      (rédigée par ci/lib/dbg.sh), le produit et les refus ne bougent pas — un
+#      seul refus change de FORME, celui du fetch (E.4e/f : masqué avant coupe,
+#      UNE ligne) —, aucun token ni mot de passe d'URL n'y passe, ni dans une
+#      ligne de debug ni dans un refus ; chaque absence doublée d'une présence ;
+#      E.9 : la ligne « PR relue » reçoit des valeurs BRUTES (dbg masque, puis
+#      rien ne coupe ni n'échappe) — un shown() remis devant (E.9e/f) laisse
+#      sortir un fragment du secret (relecture finale, I-3)
 #
 # Ni Jenkins, ni Gitea, ni gateway : tout est local. La preuve par BUILDS réels
 # (porte + contre-épreuve du GOAL) vit dans test-provision-apply-a2-live.sh.
 #
 #   ./scripts/test-provision-apply-a2.sh
+# `A && ok || ko` (SC2015) est l'idiome des scripts de preuve du repo (même
+# directive en tête de test-provision-apply-a4.sh) : `ok` est un printf et un
+# compteur, il n'échoue pas — le `ko` ne peut pas courir derrière un `ok`.
+# shellcheck disable=SC2015
 set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO" || exit 1
@@ -32,7 +44,7 @@ trap cleanup EXIT
 
 # Total ATTENDU, écrit en dur (motif test-team-apply-wiring.sh) : une section
 # sautée en silence ferait baisser PASS+FAIL sans jamais rougir — ce nombre, si.
-EXPECTED_CHECKS=148
+EXPECTED_CHECKS=232   # 148 (A-D) + 84 (E)
 
 command -v python3 >/dev/null || { echo "python3 absent"; exit 2; }
 python3 -c 'import yaml' 2>/dev/null || { echo "PyYAML absent"; exit 2; }
@@ -639,8 +651,10 @@ echo "═══ Section D — MUTATIONS : chaque comparaison de la réconciliati
 # On retire UNE comparaison dans une copie du script et on rejoue le scénario
 # qui la vise : le mutant doit ACCEPTER (rc 0) là où l'original refuse — preuve
 # que l'épreuve B.x tient à cette ligne et pas à un hasard du stub. La copie vit
-# dans un faux `scripts/` (lib et rapport liés) pour que ses chemins résolvent.
-MUTD="$TMP/mut/scripts"; mkdir -p "$MUTD"; ln -s "$REPO/scripts/lib" "$MUTD/lib"; ln -s "$COMMENT" "$MUTD/provision-apply-comment.sh"
+# dans un faux `scripts/` (lib et rapport liés) pour que ses chemins résolvent —
+# et un faux `ci/` à côté : le script source $SELF_DIR/../ci/lib/dbg.sh (L2), un
+# chemin que le faux arbre doit porter, sinon chaque mutant mourrait avant sa ligne.
+MUTD="$TMP/mut/scripts"; mkdir -p "$MUTD"; ln -s "$REPO/scripts/lib" "$MUTD/lib"; ln -s "$COMMENT" "$MUTD/provision-apply-comment.sh"; ln -s "$REPO/ci" "$TMP/mut/ci"
 mutate(){ # $1=motif sed à supprimer $2=copie
   sed "/$1/d" "$RECONCILE" > "$2"; chmod +x "$2"
   ! cmp -s "$RECONCILE" "$2"
@@ -699,6 +713,467 @@ else ko "D.6 mutation impossible"; fi
 set_pr true "$SHA_AUTRE" provision/appa-rec master alice ci
 run_rec "$TMP/d7.out" "$TMP/d7.log"; RC=$?
 [ "$RC" -ne 0 ] && grep -q 'REFUS: PAYLOAD_PERIME' "$TMP/d7.log" && ok "D.7 contrôle : l'ORIGINAL refuse toujours PAYLOAD_PERIME sur ce scénario" || ko "D.7 l'original accepte (rc=$RC) — le stub a dérivé"
+
+echo
+echo "═══ Section E — STOA_DEBUG=1 : la réconciliation parle, sans fuite (plan L2) ═══"
+# Gabarit D1/D2/D3 (test-vault-user-login.sh) : chaque ABSENCE (« le token n'y
+# est pas ») est DOUBLÉE d'une PRÉSENCE (« la ligne attendue y est ») — sinon un
+# script muet passerait toute absence (vert vacant). Les deux flux sont SÉPARÉS :
+# c'est la seule façon de prouver qu'aucune ligne de debug ne descend sur stdout,
+# le PRODUIT que le pipeline relit (RECONCILE_OK) — un log fusionné ne le
+# distingue pas. Le préfixe attendu est le NOM DU SCRIPT ($0) : pas de DBG_NAME,
+# c'est ce qu'on veut lire dans un log Jenkins.
+# run_dbg <script> <sortie> <stdout> <stderr> [VAR=val…] — run_rec, flux séparés
+run_dbg(){
+  local script="$1" out="$2" so="$3" se="$4"; shift 4
+  rm -f "$out" "$TMP/facts"
+  env -i PATH="$PATH" HOME="$HOME" GITEA_TOKEN="$STUB_TOKEN" GIT_HOST="$GH" GIT_REPO=ci/stoa-labs GIT_WORKTREE="$WORK" \
+    PR_BRANCH="provision/appa-rec" PR_NUMBER=42 MERGE_SHA="$C1" PR_MERGED_BY=oscar PR_REQUESTER=eve \
+    RECONCILE_OUT="$out" RECONCILE_FACTS="$TMP/facts" "$@" bash "$script" >"$so" 2>"$se"
+}
+# dbgp_re <script> — le préfixe ERE des lignes de debug de CE script : dbg.sh
+# signe par ${0##*/} (dbg.sh:308, pas de DBG_NAME), donc une COPIE jouée sous
+# un autre nom (mutant mut9.sh, §E.7c) parle sous SON nom, jamais sous celui
+# de l'original — appris au rouge (relecture L2-B3 tour 2 : le préfixe de
+# l'original cherché sur le stderr d'un mutant ⇒ ligne vide, ko sans message).
+# Les sept épreuves qui lisent DBGP_RE sur l'original (E.1p, E.1ab, E.3a,
+# E.4a/b/d, E.5b) sont celles qui gardent cette dérivation.
+dbgp_re(){ printf '^\\[dbg %s\\] ' "$(printf '%s' "${1##*/}" | sed 's/\./\\./g')"; }
+DBGP='[dbg provision-apply-reconcile.sh] '
+DBGP_RE="$(dbgp_re "$RECONCILE")"
+# ligne_exacte <n> <fichier> <ligne sans préfixe> — la ligne « [dbg <script>] <ligne> », ENTIÈRE (grep -xF)
+ligne_exacte(){ grep -qxF -- "${DBGP}$3" "$2" && ok "$1 stderr porte « ] $3 »" || ko "$1 stderr sans « ] $3 » ($(grep -c '\[dbg' "$2") ligne(s) [dbg)"; }
+# ligne_motif <n> <fichier> <ERE> <libellé>
+ligne_motif(){ grep -qE -- "$3" "$2" && ok "$1 stderr porte « $4 »" || ko "$1 stderr sans « $4 » ($(grep -c '\[dbg' "$2") ligne(s) [dbg)"; }
+# precede <fichier> <ERE A> <ERE B> — la première occurrence de A précède la première de B
+precede(){ local a b; a=$(grep -nE -m1 -- "$2" "$1" | cut -d: -f1); b=$(grep -nE -m1 -- "$3" "$1" | cut -d: -f1); [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ]; }
+# fuite <n> <mot> <libellé> <fichier…> — ABSENCE d'un secret dans TOUS les fichiers donnés (stdout et stderr)
+fuite(){ local n="$1" mot="$2" label="$3"; shift 3; grep -qF -- "$mot" "$@" && ko "$n $label FUITE : $(grep -hF -- "$mot" "$@" | head -1 | cut -c1-160)" || ok "$n $label absent de stdout ET de stderr"; }
+
+echo "-- E.1 nominal (scénario B.1) sous STOA_DEBUG=1 : même produit, stdout pur, stderr dit chaque décision, jamais le token --"
+set_pr true "$C1" provision/appa-rec master alice ci
+run_dbg "$RECONCILE" "$TMP/e1.out" "$TMP/e1.so" "$TMP/e1.se" STOA_DEBUG=1; RC=$?
+[ "$RC" -eq 0 ] && cmp -s "$TMP/b1.out" "$TMP/e1.out" \
+  && ok "E.1 rc 0 et RECONCILE_OUT identique à B.1 octet pour octet (le debug ne change pas le produit)" \
+  || ko "E.1 rc=$RC : $(cmp "$TMP/b1.out" "$TMP/e1.out" 2>&1 | head -1) $(grep -E 'REFUS|ERREUR' "$TMP/e1.se" | head -1 | cut -c1-160)"
+[ "$(wc -l < "$TMP/e1.so" | tr -d ' ')" = 1 ] && grep -q '^RECONCILE_OK : ci/stoa-labs#42 mergée' "$TMP/e1.so" \
+  && ok "E.1a stdout = exactement UNE ligne, RECONCILE_OK (rien d'autre n'y est descendu)" \
+  || ko "E.1a stdout : $(wc -l < "$TMP/e1.so" | tr -d ' ') ligne(s) : $(head -3 "$TMP/e1.so" | cut -c1-100 | tr '\n' '|')"
+grep -q '\[dbg' "$TMP/e1.so" && ko "E.1b une ligne « [dbg » sur STDOUT (elle deviendrait une valeur pour le pipeline)" || ok "E.1b aucune ligne « [dbg » sur stdout"
+# RECONCILE_FACTS (relu par le post{always} du pipeline) sous debug : une seule
+# ligne, la bonne, aucune « [dbg » — copié AVANT le run suivant, qui l'écrase
+# (run_dbg le retire) ; E.6b le compare à celui d'un run sans debug.
+cp "$TMP/facts" "$TMP/e1.facts" 2>/dev/null
+[ "$(wc -l < "$TMP/e1.facts" 2>/dev/null | tr -d ' ')" = 1 ] && grep -qx 'GITEA_HEAD_REF=provision/appa-rec' "$TMP/e1.facts" \
+  && ok "E.1ac RECONCILE_FACTS sous debug = exactement « GITEA_HEAD_REF=provision/appa-rec » (une ligne, rien d'autre n'y est descendu)" \
+  || ko "E.1ac faits sous debug : $(tr '\n' '|' < "$TMP/e1.facts" 2>/dev/null | cut -c1-160)"
+ligne_exacte E.1c "$TMP/e1.se" 'FORGE_KIND=gitea'
+ligne_exacte E.1d "$TMP/e1.se" 'GIT_BASE=master'
+ligne_exacte E.1e "$TMP/e1.se" 'GIT_BASE_ORIGINE=decouverte'
+# GIT_SUBDIR est ABSENT sous env -i : repo_layout_init reprend son défaut — c'est
+# ce que la ligne doit dire (E.1ab dit le VIDE quand le knob est posé à « . »).
+ligne_exacte E.1f "$TMP/e1.se" 'SUB_PFX=poc-control-plane-federation/'
+ligne_exacte E.1g "$TMP/e1.se" 'MANIFEST_DIR=clients/provisioned/applications'
+ligne_exacte E.1h "$TMP/e1.se" "GIT_WORKTREE=$WORK"
+ligne_exacte E.1i "$TMP/e1.se" 'APP_NAME=appa'
+ligne_exacte E.1j "$TMP/e1.se" 'ENV_NAME=rec'
+ligne_exacte E.1k "$TMP/e1.se" 'MANIFEST=clients/provisioned/applications/appa.ansible.yml'
+ligne_exacte E.1l "$TMP/e1.se" "FORGE_MANIFEST=$FMAN"
+ligne_exacte E.1m "$TMP/e1.se" "FORGE_CERT=$FCERT"
+ligne_exacte E.1n "$TMP/e1.se" "GIT_CLONE_URL=$ORIGIN"
+ligne_motif E.1o "$TMP/e1.se" '^\[dbg forge-api\.py\] GET [^ ]*/pulls/42 -> HTTP 200 \([0-9]+ octets\)$' '[dbg forge-api.py] GET …/pulls/42 -> HTTP 200 (n octets) — forge.err RELAYÉ sur succès, sinon perdu'
+ligne_motif E.1p "$TMP/e1.se" "${DBGP_RE}PR #42 relue : state=[^ ]* head=provision/appa-rec base=master merged=1 merge_sha=$C1 merged_by=alice\$" '] PR #42 relue : state=… head=provision/appa-rec base=master merged=1 merge_sha=<c1> merged_by=alice (UNE ligne, ce que la forge a rendu)'
+ligne_motif E.1q "$TMP/e1.se" '^\[dbg forge-api\.py\] GET [^ ]*/pulls/42/files[^ ]* -> HTTP 200 \([0-9]+ octets\)$' '[dbg forge-api.py] GET …/pulls/42/files -> HTTP 200 — files.err RELAYÉ sur succès'
+ligne_exacte E.1r "$TMP/e1.se" 'FILES_VERDICT=FILES_OK'
+ligne_exacte E.1s "$TMP/e1.se" 'git fetch origin master -> rc 0'
+ligne_exacte E.1t "$TMP/e1.se" "git merge-base --is-ancestor $C1 origin/master -> rc 0"
+ligne_exacte E.1u "$TMP/e1.se" "git show $C1:./clients/provisioned/applications/appa.ansible.yml -> rc 0"
+ligne_exacte E.1v "$TMP/e1.se" 'git show origin/master:./clients/provisioned/applications/appa.ansible.yml -> rc 0'
+ligne_exacte E.1w "$TMP/e1.se" "MERGED_DIGEST=$D_C1"
+ligne_exacte E.1x "$TMP/e1.se" "BASE_DIGEST=$D_C1"
+ligne_exacte E.1y "$TMP/e1.se" 'REPLI_DE=<vide>'
+fuite E.1z "$STUB_TOKEN" "le token du stub ($STUB_TOKEN)" "$TMP/e1.so" "$TMP/e1.se"
+# Le VIDE se dit : GIT_SUBDIR=. (« le livrable est la racine ») chez un client
+# dont la forge range le livrable sous un préfixe ⇒ PR_HORS_PERIMETRE — et le
+# log dit « SUB_PFX=<vide> » et le chemin vu de la forge SANS préfixe, AVANT le
+# refus : c'est le diagnostic que le refus seul ne donne pas.
+set_pr true "$C1" provision/appa-rec master alice ci
+run_dbg "$RECONCILE" "$TMP/e1s.out" "$TMP/e1s.so" "$TMP/e1s.se" STOA_DEBUG=1 GIT_SUBDIR=.; RC=$?
+[ "$RC" -ne 0 ] && grep -q 'REFUS: PR_HORS_PERIMETRE' "$TMP/e1s.se" && [ ! -e "$TMP/e1s.out" ] \
+  && ok "E.1aa GIT_SUBDIR=. contre un stub qui préfixe ⇒ PR_HORS_PERIMETRE (rc=$RC), refus inchangé, aucune sortie" \
+  || ko "E.1aa rc=$RC : $(grep REFUS "$TMP/e1s.se" | head -1 | cut -c1-160)"
+precede "$TMP/e1s.se" "${DBGP_RE}SUB_PFX=<vide>\$" 'REFUS: PR_HORS_PERIMETRE' && grep -qxF -- "${DBGP}FORGE_MANIFEST=clients/provisioned/applications/appa.ansible.yml" "$TMP/e1s.se" \
+  && ok "E.1ab « ] SUB_PFX=<vide> » et « ] FORGE_MANIFEST=clients/… » (sans préfixe) PRÉCÈDENT le refus : le vide se DIT, c'est le diagnostic" \
+  || ko "E.1ab : $(grep -E 'SUB_PFX|FORGE_MANIFEST' "$TMP/e1s.se" | tr '\n' ' ' | cut -c1-200)"
+
+echo "-- E.2 forge en panne (500) et token refusé (401) sous STOA_DEBUG=1 : la ligne HTTP PRÉCÈDE le refus, jamais un token --"
+set_pr true "$C1" provision/appa-rec master alice ci 500
+run_dbg "$RECONCILE" "$TMP/e2.out" "$TMP/e2.so" "$TMP/e2.se" STOA_DEBUG=1; RC=$?
+[ "$RC" -ne 0 ] && grep -q 'REFUS: GITEA_RECONCILE_ECHEC' "$TMP/e2.se" && ok "E.2 stub 500 ⇒ GITEA_RECONCILE_ECHEC (rc=$RC), refus inchangé" || ko "E.2 rc=$RC : $(tail -2 "$TMP/e2.se" | tr '\n' ' ' | cut -c1-200)"
+precede "$TMP/e2.se" '^\[dbg forge-api\.py\] GET [^ ]*/pulls/42 -> HTTP 500 ' 'REFUS: GITEA_RECONCILE_ECHEC' \
+  && ok "E.2a « [dbg forge-api.py] GET …/pulls/42 -> HTTP 500 » PRÉCÈDE « REFUS: GITEA_RECONCILE_ECHEC » (ordre vérifié : le statut d'abord, le verdict ensuite)" \
+  || ko "E.2a ordre ou absence : $(grep -nE 'HTTP 500|REFUS' "$TMP/e2.se" | head -3 | tr '\n' ' ' | cut -c1-200)"
+[ ! -e "$TMP/e2.out" ] && [ "$(wc -l < "$TMP/e2.so" | tr -d ' ')" = 0 ] && ok "E.2b aucun fichier de sortie, stdout VIDE (le refus ne change pas pour le pipeline)" || ko "E.2b sortie écrite ou stdout non vide : $(head -1 "$TMP/e2.so")"
+fuite E.2c "$STUB_TOKEN" "le token du stub" "$TMP/e2.so" "$TMP/e2.se"
+set_pr true "$C1" provision/appa-rec master alice ci
+run_dbg "$RECONCILE" "$TMP/e2d.out" "$TMP/e2d.so" "$TMP/e2d.se" STOA_DEBUG=1 GITEA_TOKEN=mauvais-jeton; RC=$?
+[ "$RC" -ne 0 ] && precede "$TMP/e2d.se" '^\[dbg forge-api\.py\] GET [^ ]*/pulls/42 -> HTTP 401 ' 'REFUS: GITEA_RECONCILE_ECHEC' \
+  && ok "E.2d token refusé ⇒ « -> HTTP 401 » PRÉCÈDE « REFUS: GITEA_RECONCILE_ECHEC » (rc=$RC)" \
+  || ko "E.2d rc=$RC : $(grep -nE 'HTTP 401|REFUS' "$TMP/e2d.se" | head -3 | tr '\n' ' ' | cut -c1-200)"
+fuite E.2e 'mauvais-jeton' "le token REFUSÉ (un secret refusé reste un secret)" "$TMP/e2d.so" "$TMP/e2d.se"
+
+echo "-- E.3 SHA hors master sous STOA_DEBUG=1 : le VRAI rc de git précède MERGE_SHA_NON_ANCETRE --"
+set_pr true "$CSIDE" provision/appa-rec master alice ci
+run_dbg "$RECONCILE" "$TMP/e3.out" "$TMP/e3.so" "$TMP/e3.se" STOA_DEBUG=1 MERGE_SHA="$CSIDE"; RC=$?
+[ "$RC" -ne 0 ] && grep -q 'REFUS: MERGE_SHA_NON_ANCETRE' "$TMP/e3.se" && [ ! -e "$TMP/e3.out" ] && ok "E.3 refus MERGE_SHA_NON_ANCETRE inchangé (rc=$RC), aucune sortie" || ko "E.3 rc=$RC : $(grep REFUS "$TMP/e3.se" | head -1 | cut -c1-160)"
+precede "$TMP/e3.se" "${DBGP_RE}git merge-base --is-ancestor $CSIDE origin/master -> rc 1\$" 'REFUS: MERGE_SHA_NON_ANCETRE' \
+  && ok "E.3a « ] git merge-base --is-ancestor <side> origin/master -> rc 1 » PRÉCÈDE le refus — la décision, avec le rc de git" \
+  || ko "E.3a : $(grep -nE 'merge-base|REFUS' "$TMP/e3.se" | head -3 | tr '\n' ' ' | cut -c1-200)"
+ligne_exacte E.3b "$TMP/e3.se" 'git fetch origin master -> rc 0'
+[ "$(wc -l < "$TMP/e3.so" | tr -d ' ')" = 0 ] && ok "E.3c stdout VIDE sur un refus, debug allumé (rien n'y descend)" || ko "E.3c stdout : $(head -2 "$TMP/e3.so" | tr '\n' '|')"
+# Les DEUX `git show` du §4 ont chacun leur rc 128 devant le refus — sans ces
+# scénarios, « -> rc 0 » écrit en dur passait E.1u/E.1v (mutant M-B de la
+# relecture L2-B3 tour 2 ; E.7e le rejoue et rougit ici). Les refus
+# MANIFESTE_ABSENT sont ceux de B.13b et B.12d, joués là SANS debug.
+set_pr true "$C0" provision/appa-rec master alice ci
+run_dbg "$RECONCILE" "$TMP/e3d.out" "$TMP/e3d.so" "$TMP/e3d.se" STOA_DEBUG=1 MERGE_SHA="$C0"; RC=$?
+[ "$RC" -ne 0 ] && grep -q 'REFUS: MANIFESTE_ABSENT' "$TMP/e3d.se" && [ ! -e "$TMP/e3d.out" ] && [ "$(wc -l < "$TMP/e3d.so" | tr -d ' ')" = 0 ] \
+  && ok "E.3d manifeste absent au SHA mergé (c0) sous debug ⇒ MANIFESTE_ABSENT inchangé (rc=$RC), aucune sortie, stdout vide" \
+  || ko "E.3d rc=$RC : $(grep REFUS "$TMP/e3d.se" | head -1 | cut -c1-160)"
+precede "$TMP/e3d.se" "${DBGP_RE}git show $C0:\./clients/provisioned/applications/appa\.ansible\.yml -> rc 128\$" 'REFUS: MANIFESTE_ABSENT' \
+  && ok "E.3e « ] git show <c0>:./clients/…/appa.ansible.yml -> rc 128 » PRÉCÈDE le refus — le VRAI rc du premier show (le manifeste manque au SHA mergé)" \
+  || ko "E.3e : $(grep -nE 'git show|REFUS' "$TMP/e3d.se" | head -3 | tr '\n' ' ' | cut -c1-200)"
+ligne_exacte E.3f "$TMP/e3d.se" "git merge-base --is-ancestor $C0 origin/master -> rc 0"
+# …et le SECOND show : le manifeste retiré de master DEPUIS le merge (B.12d) —
+# même tag de refus, c'est la ligne qui dit LEQUEL des deux show a échoué.
+W3E="$TMP/w3e"; rm -rf "$W3E"; git clone -q "$ORIGIN" "$W3E"; git -C "$W3E" rm -q clients/provisioned/applications/appa.ansible.yml
+git -C "$W3E" -c user.name=t -c user.email=t@t commit -qm "retrait appa"; git -C "$W3E" push -q origin master
+set_pr true "$C1" provision/appa-rec master alice ci
+run_dbg "$RECONCILE" "$TMP/e3g.out" "$TMP/e3g.so" "$TMP/e3g.se" STOA_DEBUG=1; RC=$?
+[ "$RC" -ne 0 ] && grep -q 'REFUS: MANIFESTE_ABSENT' "$TMP/e3g.se" && [ ! -e "$TMP/e3g.out" ] \
+  && ok "E.3g manifeste retiré de master depuis le merge, sous debug ⇒ MANIFESTE_ABSENT inchangé (rc=$RC), aucune sortie" \
+  || ko "E.3g rc=$RC : $(grep REFUS "$TMP/e3g.se" | head -1 | cut -c1-160)"
+precede "$TMP/e3g.se" "${DBGP_RE}git show origin/master:\./clients/provisioned/applications/appa\.ansible\.yml -> rc 128\$" 'REFUS: MANIFESTE_ABSENT' \
+  && ok "E.3h « ] git show origin/master:./clients/…/appa.ansible.yml -> rc 128 » PRÉCÈDE le refus — le VRAI rc du second show" \
+  || ko "E.3h : $(grep -nE 'git show|REFUS' "$TMP/e3g.se" | head -3 | tr '\n' ' ' | cut -c1-200)"
+ligne_exacte E.3i "$TMP/e3g.se" "git show $C1:./clients/provisioned/applications/appa.ansible.yml -> rc 0"
+reset_main "$C1B"
+
+echo "-- E.4 ÉCHEC GIT sous STOA_DEBUG=1 : origine à user:mdp@ injoignable ⇒ « git fetch … -> rc 128 » + « git: … », l'hôte reste, jamais le mot de passe --"
+# Un clone dont l'origine porte user:mdp@ vers un port fermé (rien n'écoute sur
+# 127.0.0.1:1). GIT_CLONE_URL=$ORIGIN : la base se découvre sur le nu, la forge
+# concorde, c'est le fetch du §4 qui échoue. Le mot de passe n'est connu d'AUCUNE
+# variable : seule la FORME ://…@ de redact peut le masquer. L'ABSENCE se
+# cherche sur un FRAGMENT (MDP_FRAG, sa tête) et non sur le mot entier : une
+# coupe qui tombe dans le mot en laisse un morceau qu'un grep du littéral
+# entier ne verrait pas — c'est ainsi que le refus d'E.4d FUYAIT avant le
+# tour 3 (mesuré : « S3cret-xxxx », 11 octets ; §E.4e le garde désormais).
+# Le mot de passe est LONG (512 octets) : c'est le DISCRIMINANT de l'ordre
+# masque→coupe du helper git_err_une_ligne (relecture L2-B3). Mesuré, git
+# 2.42.0 sous GIT_TRACE=1 : l'URL nue est recopiée 3 fois ; le premier mot de
+# passe commence à l'octet 189 et, long de 512, court jusqu'à 701 — la coupe à
+# 400 tombe DEDANS (URL aux offsets 180/796/1419 ; ≈ 2100 octets en tout :
+# 2101 quand git parle français, 2089 en anglais — seule la ligne « fatal »
+# finale varie, les offsets ne bougent pas). Un helper
+# qui couperait AVANT de masquer laisserait « S3cret-xxx… » orphelin de son
+# « @ », que la forme ://…@ du dbg externe ne rattrape plus : E.4d rougit (le
+# mutant E.7c le joue). Avec 16 octets (URL à 180/300/427, ≈ 600 octets), la coupe ne
+# tombait dans AUCUNE occurrence et le dbg externe remasquait la ligne entière :
+# original et mutant étaient indiscernables — un vert vacant sur la propriété
+# que le libellé annonçait.
+WBAD="$TMP/wbad"; rm -rf "$WBAD"; git clone -q "$ORIGIN" "$WBAD"
+MDP_URL="S3cret-$(head -c 505 /dev/zero | tr '\0' x)"; MDP_FRAG="${MDP_URL%%-*}"
+git -C "$WBAD" remote set-url origin "http://u:${MDP_URL}@127.0.0.1:1/x.git"
+set_pr true "$C1" provision/appa-rec master alice ci
+run_dbg "$RECONCILE" "$TMP/e4.out" "$TMP/e4.so" "$TMP/e4.se" STOA_DEBUG=1 GIT_WORKTREE="$WBAD" GIT_CLONE_URL="$ORIGIN"; RC=$?
+[ "$RC" -ne 0 ] && grep -q 'REFUS: GITEA_RECONCILE_ECHEC : git fetch origin master en échec' "$TMP/e4.se" && [ ! -e "$TMP/e4.out" ] \
+  && ok "E.4 fetch en échec ⇒ GITEA_RECONCILE_ECHEC « git fetch origin master en échec » (rc=$RC), refus inchangé" \
+  || ko "E.4 rc=$RC : $(grep REFUS "$TMP/e4.se" | head -1 | cut -c1-160)"
+precede "$TMP/e4.se" "${DBGP_RE}git fetch origin master -> rc 128\$" 'REFUS: GITEA_RECONCILE_ECHEC' \
+  && ok "E.4a « ] git fetch origin master -> rc 128 » PRÉCÈDE le refus (le vrai rc de git)" \
+  || ko "E.4a : $(grep -nE 'git fetch|REFUS' "$TMP/e4.se" | head -3 | tr '\n' ' ' | cut -c1-200)"
+ligne_motif E.4b "$TMP/e4.se" "${DBGP_RE}  git: .*127\.0\.0\.1" "] git: … 127.0.0.1 … (le stderr de git relayé ; l'hôte RESTE : c'est lui qu'on diagnostique)"
+fuite E.4c "$MDP_FRAG" "le mot de passe de l'URL d'origine (même un fragment)" "$TMP/e4.so" "$TMP/e4.se"
+# Sous GIT_TRACE=1 — LE knob de debug de git, qu'un client pose à côté de
+# STOA_DEBUG — git recopie l'URL NUE dans son stderr (mesuré : 3 fois, ≈ 2100
+# octets avec ce mot de passe, git 2.42 — 2101 en français, 2089 en anglais,
+# seule la ligne « fatal » varie). La ligne « git: » est masquée EN
+# ENTIER avant d'être coupée : elle porte l'URL avec « <secret masqué>@ »,
+# jamais un morceau du mot de passe — et comme la coupe à 400 tombe dans le
+# premier mot de passe (octets 189..701), seul l'ordre masque→coupe tient
+# cette épreuve : E.7c joue l'ordre inverse sur copie et la fait rougir.
+# E.4d ne regarde QUE la ligne de debug ; E.4e/E.4f regardent le REFUS du même
+# run. Jusqu'au tour 3 (L2-B3), ce refus relayait fetch.err BRUT (`head -c
+# 200`, sans masque — d'avant L2) et portait, lui, un MORCEAU du mot de passe
+# (« S3cret-xxxx » : la coupe à 200 tombe 11 octets dans le mot, mesuré sur
+# la ligne de CONTINUATION du refus — le bloc brut gardait ses retours-ligne).
+# Fermé par la même mesure que git-base.sh §J.4e : le refus passe par
+# git_err_une_ligne (masqué EN ENTIER, une ligne, coupé à 200) ; le mutant
+# §E.7f restaure le brut sur copie et fait rougir E.4e.
+run_dbg "$RECONCILE" "$TMP/e4t.out" "$TMP/e4t.so" "$TMP/e4t.se" STOA_DEBUG=1 GIT_WORKTREE="$WBAD" GIT_CLONE_URL="$ORIGIN" GIT_TRACE=1; RC=$?
+grep -E "${DBGP_RE}  git: " "$TMP/e4t.se" > "$TMP/e4t.gitline"
+[ "$RC" -ne 0 ] && [ -s "$TMP/e4t.gitline" ] && grep -qF -- '<secret masqué>@127.0.0.1:1/x.git' "$TMP/e4t.gitline" && ! grep -qF -- "$MDP_FRAG" "$TMP/e4t.gitline" \
+  && ok "E.4d sous GIT_TRACE=1 la ligne « ] git: … » porte « ://<secret masqué>@127.0.0.1:1/x.git » et JAMAIS un fragment du mot de passe (masquée en entier AVANT la coupe : la coupe à 400 tombe dans le mot, E.7c prouve que l'ordre inverse fuit)" \
+  || ko "E.4d rc=$RC : $(cut -c1-200 "$TMP/e4t.gitline" | head -1)"
+# E.4e — ABSENCE dans TOUT stderr (et stdout), le refus compris. Rougissait
+# avant le tour 3 (le fragment sur la ligne de continuation du refus) ; son
+# mutant est §E.7f (le brut restauré dans le refus, sur copie).
+fuite E.4e "$MDP_FRAG" "le mot de passe de l'URL (fragment), dans le REFUS aussi — pas seulement dans la ligne de debug" "$TMP/e4t.so" "$TMP/e4t.se"
+# E.4f — PRÉSENCE, contrepartie d'E.4e (sinon un refus muet passerait) : le
+# refus relaie encore le stderr de git (la première ligne de trace y est — ni
+# vide, ni « <rédaction indisponible> ») et tient sur UNE ligne : hors des
+# lignes « [dbg » et de la ligne « REFUS: », stderr ne porte QUE la ligne
+# d'information de git-base.sh (avant le tour 3 : une ligne de continuation
+# du refus, celle qui portait le fragment). Cette ligne — « git-base:
+# GIT_BASE=master découvert — HEAD annoncée par <url> (ls-remote --symref) » —
+# est INCONDITIONNELLE depuis e2f947b (l'auditabilité d'une pose : GIT_BASE
+# n'est pas posé, run_dbg découvre sur $ORIGIN) ; ce n'est pas le mode debug et
+# ce n'est pas une fuite. Elle est épinglée en PRÉSENCE, exactement une, avec
+# l'URL de la fixture : une exclusion nue (`grep -v '^git-base: '`) laisserait
+# passer un stderr muet comme un stderr bavard — vert vacant. Mesuré au rebase
+# L2-R (2026-09-11) : 225/226, la seule ligne « hors [dbg/REFUS » était celle-ci.
+LIGNE_GITBASE="git-base: GIT_BASE=master découvert — HEAD annoncée par $ORIGIN (ls-remote --symref)"
+grep -E '^REFUS: GITEA_RECONCILE_ECHEC : git fetch origin master en échec dans .* : .*trace: built-in: git fetch' "$TMP/e4t.se" > "$TMP/e4t.refus"
+[ "$(wc -l < "$TMP/e4t.refus" | tr -d ' ')" = 1 ] && [ "$(grep -cxF -- "$LIGNE_GITBASE" "$TMP/e4t.se")" = 1 ] && [ "$(grep -cvE '^(\[dbg |REFUS: )' "$TMP/e4t.se")" = 1 ] \
+  && ok "E.4f le REFUS relaie la trace de git (« trace: built-in: git fetch »), masquée, sur UNE ligne ; hors « [dbg » et « REFUS: », stderr ne porte QUE la ligne « git-base: GIT_BASE=master découvert — HEAD annoncée par <fixture> » (une fois : l'auditabilité d'une pose, pas une fuite)" \
+  || ko "E.4f refus : $(wc -l < "$TMP/e4t.refus" | tr -d ' ') ligne(s) ; git-base: $(grep -cxF -- "$LIGNE_GITBASE" "$TMP/e4t.se") ligne(s) ; hors [dbg/REFUS : $(grep -cvE '^(\[dbg |REFUS: )' "$TMP/e4t.se") ligne(s) : « $(grep -vE '^(\[dbg |REFUS: )' "$TMP/e4t.se" | head -1 | cut -c1-120) »"
+
+echo "-- E.5 l'URL d'origine porte user:mdp@ et GIT_CLONE_URL n'est pas posé : la ligne la dit MASQUÉE (forme), l'hôte reste --"
+set_pr true "$C1" provision/appa-rec master alice ci
+run_dbg "$RECONCILE" "$TMP/e5.out" "$TMP/e5.so" "$TMP/e5.se" STOA_DEBUG=1 GIT_WORKTREE="$WBAD"; RC=$?
+[ "$RC" -ne 0 ] && grep -q 'REFUS: BRANCHE_PAR_DEFAUT_INCONNUE' "$TMP/e5.se" && grep -q 'REFUS: GITEA_RECONCILE_ECHEC : branche par défaut du dépôt inconnue' "$TMP/e5.se" && [ ! -e "$TMP/e5.out" ] \
+  && ok "E.5 ls-remote sur l'origine injoignable ⇒ BRANCHE_PAR_DEFAUT_INCONNUE puis GITEA_RECONCILE_ECHEC (rc=$RC), refus inchangés" \
+  || ko "E.5 rc=$RC : $(grep REFUS "$TMP/e5.se" | head -2 | tr '\n' ' ' | cut -c1-200)"
+ligne_exacte E.5a "$TMP/e5.se" 'GIT_CLONE_URL=http://<secret masqué>@127.0.0.1:1/x.git'
+ligne_motif E.5b "$TMP/e5.se" "${DBGP_RE}git ls-remote --symref http://<[^>]*>@127\.0\.0\.1:1/x\.git HEAD -> rc 128 " '] git ls-remote --symref http://<…>@127.0.0.1:1/x.git HEAD -> rc 128 (git-base.sh, même préfixe : une seule voix)'
+fuite E.5c "$MDP_FRAG" "le mot de passe de l'URL, même un fragment (connu d'AUCUNE variable : seule la forme le masque)" "$TMP/e5.so" "$TMP/e5.se"
+[ "$(wc -l < "$TMP/e5.so" | tr -d ' ')" = 0 ] && ok "E.5d stdout VIDE sur ce refus aussi (comme E.2b/E.3c)" || ko "E.5d stdout : $(head -2 "$TMP/e5.so" | tr '\n' '|')"
+
+echo "-- E.6 SILENCE : STOA_DEBUG=0 ⇒ zéro ligne [dbg, même produit ; les sections B (sans STOA_DEBUG) n'en portaient aucune --"
+set_pr true "$C1" provision/appa-rec master alice ci
+run_dbg "$RECONCILE" "$TMP/e6.out" "$TMP/e6.so" "$TMP/e6.se" STOA_DEBUG=0; RC=$?
+[ "$RC" -eq 0 ] && cmp -s "$TMP/b1.out" "$TMP/e6.out" && [ "$(cat "$TMP/e6.so" "$TMP/e6.se" | grep -c '\[dbg')" = 0 ] \
+  && ok "E.6 STOA_DEBUG=0 ⇒ rc 0, RECONCILE_OUT identique à B.1, ZÉRO ligne « [dbg » (python et shell muets ensemble)" \
+  || ko "E.6 rc=$RC lignes [dbg=$(cat "$TMP/e6.so" "$TMP/e6.se" | grep -c '\[dbg')"
+[ "$(grep -c '\[dbg' "$TMP/b1.log")" = 0 ] && [ "$(grep -c '\[dbg' "$TMP/b13.log")" = 0 ] \
+  && ok "E.6a non-régression : B.1 (succès) et B.13 (refus), joués SANS STOA_DEBUG, ne portent aucune ligne « [dbg »" \
+  || ko "E.6a une section sans STOA_DEBUG porte du debug : b1=$(grep -c '\[dbg' "$TMP/b1.log") b13=$(grep -c '\[dbg' "$TMP/b13.log")"
+[ -s "$TMP/e1.facts" ] && cmp -s "$TMP/e1.facts" "$TMP/facts" \
+  && ok "E.6b RECONCILE_FACTS identique octet pour octet entre STOA_DEBUG=1 (E.1) et STOA_DEBUG=0 (le debug ne touche pas les faits)" \
+  || ko "E.6b faits divergents : $(cmp "$TMP/e1.facts" "$TMP/facts" 2>&1 | head -1)"
+
+echo "-- E.7 MUTATIONS sur COPIE (faux scripts/ de la section D) : le relais retiré ⇒ E.1o rougit ; dbg_kv → echo ⇒ E.1a rougit ; coupe AVANT masque ⇒ E.4d rougit ; relais files.err retiré ⇒ E.1q rougit ; « rc 0 » en dur sur les git show ⇒ E.3e rougit ; fetch.err BRUT restauré dans le refus ⇒ E.4e rougit --"
+# shellcheck disable=SC2016  # motif sed : le « $TMP » visé est celui du SCRIPT, à ne pas expandre ici
+if mutate '^\[ -s "\$TMP\/forge\.err" \] && cat "\$TMP\/forge\.err" >&2$' "$MUTD/mut7.sh"; then
+  set_pr true "$C1" provision/appa-rec master alice ci
+  run_dbg "$MUTD/mut7.sh" "$TMP/mut7.out" "$TMP/mut7.so" "$TMP/mut7.se" STOA_DEBUG=1; RC=$?
+  [ "$RC" -eq 0 ] && ! grep -qE '^\[dbg forge-api\.py\] GET [^ ]*/pulls/42 -> HTTP 200 ' "$TMP/mut7.se" && grep -qE '^\[dbg forge-api\.py\] GET [^ ]*/pulls/42/files' "$TMP/mut7.se" \
+    && ok "E.7a sans le relais de forge.err : rc 0 mais « GET …/pulls/42 -> HTTP 200 » a DISPARU (celle de /files, relayée ailleurs, reste) — E.1o tient à cette ligne" \
+    || ko "E.7a le mutant parle encore (rc=$RC) : $(grep -c 'pulls/42 -> HTTP 200' "$TMP/mut7.se") ligne(s) pr_get"
+else ko "E.7a mutation impossible (motif introuvable) — mutant no-op"; fi
+# shellcheck disable=SC2016  # idem : « $MANIFEST » est celui du script muté, le mutant l'écrit sur stdout
+sed 's/^dbg_kv MANIFEST "\$MANIFEST"$/echo "MANIFEST=$MANIFEST"/' "$RECONCILE" > "$MUTD/mut8.sh"; chmod +x "$MUTD/mut8.sh"
+if ! cmp -s "$RECONCILE" "$MUTD/mut8.sh"; then
+  set_pr true "$C1" provision/appa-rec master alice ci
+  run_dbg "$MUTD/mut8.sh" "$TMP/mut8.out" "$TMP/mut8.so" "$TMP/mut8.se" STOA_DEBUG=1; RC=$?
+  [ "$RC" -eq 0 ] && [ "$(wc -l < "$TMP/mut8.so" | tr -d ' ')" = 2 ] && grep -q '^MANIFEST=' "$TMP/mut8.so" \
+    && ok "E.7b dbg_kv MANIFEST → echo (stdout) : rc 0 mais stdout porte DEUX lignes (MANIFEST=… puis RECONCILE_OK) — E.1a tient à ce que le debug reste sur stderr" \
+    || ko "E.7b stdout du mutant : $(wc -l < "$TMP/mut8.so" | tr -d ' ') ligne(s) (rc=$RC)"
+else ko "E.7b mutation impossible (motif introuvable) — mutant no-op"; fi
+# E.7c — l'ORDRE du helper git_err_une_ligne : la même fonction, coupe à 400
+# PUIS masque (le mutant §J.6d de git-base ; la forme que la première grammaire
+# §3 écrivait). Insérée juste APRÈS l'originale (sed `r`) : la dernière
+# définition gagne. Même fixture qu'E.4d (wbad, mot de passe de 512 octets,
+# GIT_TRACE=1) : la coupe tranche dans le premier mot de passe, l'orphelin sans
+# « @ » n'a plus de forme — ni le redact du helper ni celui de dbg ne le voient,
+# le fragment PASSE dans la ligne « git: ». Le refus, lui, ne bouge pas.
+# La copie s'appelle mut9.sh : dbg.sh la signe « [dbg mut9.sh] » — le préfixe
+# cherché est le SIEN (dbgp_re), pas celui de l'original (c'était le ko du
+# tour 2 : mut9.gitline vide sous le préfixe de l'original, 200/201).
+# Même signature que l'originale (`$2` = la coupe, 400 par défaut ; depuis le
+# tour 3 le refus du fetch l'appelle à 200) : le mutant ne change que l'ORDRE.
+cat > "$MUTD/mut9.fn" <<'FN'
+git_err_une_ligne(){ local m; m="$(head -c "${2:-400}" "$1" | tr '\n' ' ')"; printf '%s' "$m" | redact; }
+FN
+sed "/^git_err_une_ligne(){ /r $MUTD/mut9.fn" "$RECONCILE" > "$MUTD/mut9.sh"; chmod +x "$MUTD/mut9.sh"
+if ! cmp -s "$RECONCILE" "$MUTD/mut9.sh"; then
+  set_pr true "$C1" provision/appa-rec master alice ci
+  run_dbg "$MUTD/mut9.sh" "$TMP/mut9.out" "$TMP/mut9.so" "$TMP/mut9.se" STOA_DEBUG=1 GIT_WORKTREE="$WBAD" GIT_CLONE_URL="$ORIGIN" GIT_TRACE=1; RC=$?
+  grep -E "$(dbgp_re "$MUTD/mut9.sh")  git: " "$TMP/mut9.se" > "$TMP/mut9.gitline"
+  [ "$RC" -ne 0 ] && grep -q 'REFUS: GITEA_RECONCILE_ECHEC : git fetch origin master en échec' "$TMP/mut9.se" && [ -s "$TMP/mut9.gitline" ] \
+    && grep -qF -- "$MDP_FRAG" "$TMP/mut9.gitline" && ! grep -qF -- '<secret masqué>@127.0.0.1:1/x.git' "$TMP/mut9.gitline" \
+    && ok "E.7c coupe à 400 PUIS masque (ordre inversé, sur copie) : même refus (rc=$RC) mais la ligne « [dbg mut9.sh]   git: … » porte le FRAGMENT « $MDP_FRAG » et plus aucun « <secret masqué>@ » — E.4d tient à l'ordre masque→coupe, pas au redact de dbg" \
+    || ko "E.7c le mutant ne fuit pas (rc=$RC) : ligne git: « $(cut -c1-160 "$TMP/mut9.gitline" | head -1) » ; préfixes vus sur stderr : $(grep -o '^\[dbg [^]]*\]' "$TMP/mut9.se" | sort -u | tr '\n' ' ')"
+else ko "E.7c mutation impossible (motif introuvable) — mutant no-op"; fi
+# E.7d — le relais de files.err (l'autre relais, grammaire §5) : sans lui les
+# lignes « GET …/files?page=n -> HTTP 200 » disparaissent, celle de pr_get
+# (relayée par forge.err) reste — E.1q tient à cette ligne.
+# shellcheck disable=SC2016  # motif sed : le « $TMP » visé est celui du SCRIPT, à ne pas expandre ici
+if mutate '^\[ -s "\$TMP\/files\.err" \] && cat "\$TMP\/files\.err" >&2$' "$MUTD/mut10.sh"; then
+  set_pr true "$C1" provision/appa-rec master alice ci
+  run_dbg "$MUTD/mut10.sh" "$TMP/mut10.out" "$TMP/mut10.so" "$TMP/mut10.se" STOA_DEBUG=1; RC=$?
+  [ "$RC" -eq 0 ] && ! grep -qE '^\[dbg forge-api\.py\] GET [^ ]*/pulls/42/files' "$TMP/mut10.se" && grep -qE '^\[dbg forge-api\.py\] GET [^ ]*/pulls/42 -> HTTP 200 ' "$TMP/mut10.se" \
+    && ok "E.7d sans le relais de files.err : rc 0 mais « GET …/pulls/42/files -> HTTP 200 » a DISPARU (celle de pr_get, relayée ailleurs, reste) — E.1q tient à cette ligne" \
+    || ko "E.7d le mutant parle encore (rc=$RC) : $(grep -c 'pulls/42/files' "$TMP/mut10.se") ligne(s) /files"
+else ko "E.7d mutation impossible (motif introuvable) — mutant no-op"; fi
+# E.7e — les quatre lignes « git show … -> rc N » avec « rc 0 » écrit EN DUR (le
+# mutant M-B de la relecture tour 2, qui passait E.1u/E.1v) : sur le scénario
+# d'E.3d (manifeste absent au SHA mergé) le refus est le même, mais la ligne
+# MENT (« rc 0 ») et « rc 128 » n'y est plus — E.3e tient à la VALEUR du rc.
+# shellcheck disable=SC2016  # motif sed : « ${RC_GIT} » est celui du script muté
+sed 's/^\([[:space:]]*dbg "git show .*\) -> rc \${RC_GIT}"$/\1 -> rc 0"/' "$RECONCILE" > "$MUTD/mut11.sh"; chmod +x "$MUTD/mut11.sh"
+if ! cmp -s "$RECONCILE" "$MUTD/mut11.sh"; then
+  set_pr true "$C0" provision/appa-rec master alice ci
+  run_dbg "$MUTD/mut11.sh" "$TMP/mut11.out" "$TMP/mut11.so" "$TMP/mut11.se" STOA_DEBUG=1 MERGE_SHA="$C0"; RC=$?
+  [ "$RC" -ne 0 ] && grep -q 'REFUS: MANIFESTE_ABSENT' "$TMP/mut11.se" \
+    && grep -qE "$(dbgp_re "$MUTD/mut11.sh")git show $C0:\./clients/provisioned/applications/appa\.ansible\.yml -> rc 0\$" "$TMP/mut11.se" \
+    && ! grep -qF -- "git show $C0:./clients/provisioned/applications/appa.ansible.yml -> rc 128" "$TMP/mut11.se" \
+    && ok "E.7e « rc 0 » en dur sur les git show : même refus MANIFESTE_ABSENT (rc=$RC) mais la ligne « [dbg mut11.sh] git show <c0>:… » dit « -> rc 0 » et « -> rc 128 » a disparu — E.3e tient à la valeur du rc" \
+    || ko "E.7e (rc=$RC) : $(grep -E 'git show|REFUS' "$TMP/mut11.se" | head -3 | tr '\n' ' ' | cut -c1-200)"
+else ko "E.7e mutation impossible (motif introuvable) — mutant no-op"; fi
+# E.7f — le REFUS du fetch avec fetch.err BRUT restauré (`head -c 200` sans
+# masque : la forme d'avant le tour 3, la dette Minor 6 des relectures). Même
+# fixture qu'E.4d/E.4e (wbad, 512 octets, GIT_TRACE=1) : même refus, la ligne
+# « git: » du mutant reste masquée (ce n'est PAS elle qui fuit), mais le
+# fragment du mot de passe est sur stderr HORS des lignes [dbg — dans le bloc
+# du refus. E.4e tient à la ligne du refus, pas au helper ni au redact de dbg.
+# shellcheck disable=SC2016  # motif sed : « $TMP » est celui du script muté, à ne pas expandre ici
+sed 's/\$(git_err_une_ligne "\$TMP\/fetch\.err" 200)/$(head -c 200 "$TMP\/fetch.err")/' "$RECONCILE" > "$MUTD/mut12.sh"; chmod +x "$MUTD/mut12.sh"
+if ! cmp -s "$RECONCILE" "$MUTD/mut12.sh"; then
+  set_pr true "$C1" provision/appa-rec master alice ci
+  run_dbg "$MUTD/mut12.sh" "$TMP/mut12.out" "$TMP/mut12.so" "$TMP/mut12.se" STOA_DEBUG=1 GIT_WORKTREE="$WBAD" GIT_CLONE_URL="$ORIGIN" GIT_TRACE=1; RC=$?
+  [ "$RC" -ne 0 ] && grep -q 'REFUS: GITEA_RECONCILE_ECHEC : git fetch origin master en échec' "$TMP/mut12.se" \
+    && grep -E "$(dbgp_re "$MUTD/mut12.sh")  git: " "$TMP/mut12.se" | grep -qF -- '<secret masqué>@127.0.0.1:1/x.git' \
+    && grep -v '^\[dbg ' "$TMP/mut12.se" | grep -qF -- "$MDP_FRAG" \
+    && ok "E.7f fetch.err BRUT restauré dans le refus (sur copie) : même refus (rc=$RC), la ligne « [dbg mut12.sh]   git: » reste masquée, mais le REFUS porte le fragment « $MDP_FRAG » — E.4e tient à la ligne du refus, pas au helper" \
+    || ko "E.7f (rc=$RC) : fragment hors [dbg : $(grep -v '^\[dbg ' "$TMP/mut12.se" | grep -cF -- "$MDP_FRAG") ; ligne git: masquée : $(grep -E "$(dbgp_re "$MUTD/mut12.sh")  git: " "$TMP/mut12.se" | grep -cF -- '<secret masqué>@')"
+else ko "E.7f mutation impossible (motif introuvable) — mutant no-op"; fi
+
+echo "-- E.8 le bloc 4bis (REPLI) sous STOA_DEBUG=1 : REPLI_DE non vide, les deux « git show » du repli et leur rc, même produit — et leur rc 128 devant REPLI_PERIME --"
+# Un merge --no-ff dont le commit de branche porte le trailer « Repli-De: <sha> »
+# (forme d'app-rollback-request.sh, test-app-rollback-a6.sh §A.9). Aucune
+# section de cette suite n'exerçait le bloc 4bis, même sans debug : E.1y ne
+# prouvait que le VIDE. Trois merges, chacun sur une copie fraîche de l'origine
+# (master = c1b) : nominal (Repli-De = c1, dont l'état rec est celui de c1b, le
+# parent 1 du merge) ; Repli-De = c0 (la référence ne porte pas le manifeste :
+# 4e show, rc 128) ; master ayant RETIRÉ le manifeste avant le merge (le parent
+# 1 ne le porte plus : 3e show, rc 128). L'origine est remise à c1b après chacun.
+W4="$TMP/w4"
+gw4(){ git -C "$W4" -c user.name=t -c user.email=t@t "$@"; }
+# repli_merge <sha du trailer> <lignes per_env du manifeste sur la branche> [retrait] — rend le SHA du merge
+repli_merge(){
+  rm -rf "$W4"; git clone -q "$ORIGIN" "$W4" || return 1
+  if [ "${3:-}" = retrait ]; then gw4 rm -q clients/provisioned/applications/appa.ansible.yml && gw4 commit -qm "retrait appa (avant le repli)" || return 1; fi
+  gw4 checkout -q -b provision/appa-rec || return 1
+  write_idp "$W4/clients/provisioned/applications/appa.ansible.yml" appa "$2"
+  gw4 add -A && gw4 commit -qm "$(printf 'provision(rec): repli de appa\n\nRepli-De: %s (PR #40)\n' "$1")" || return 1
+  gw4 checkout -q master && gw4 merge -q --no-ff -m "Merge pull request 'provision(rec): appa — repli' (#42) from provision/appa-rec into master" provision/appa-rec || return 1
+  gw4 push -q origin master && gw4 rev-parse HEAD
+}
+PE_C1='    dev: { auth: { claim: { value: "appa-dev" } }, ip_allowlist: ["10.0.0.1"] }
+    rec: { auth: { claim: { value: "appa-rec" } }, ip_allowlist: ["10.42.0.1"] }'
+PE_REPLI='    dev: { auth: { claim: { value: "appa-dev" } }, ip_allowlist: ["10.0.0.1"] }
+    rec: { auth: { claim: { value: "appa-rec" } }, ip_allowlist: ["10.42.0.7"] }'
+CREPLI=$(repli_merge "$C1" "$PE_REPLI")
+set_pr true "$CREPLI" provision/appa-rec master alice ci
+run_rec "$TMP/e8.out" "$TMP/e8.log" MERGE_SHA="$CREPLI"; RC=$?
+cp "$TMP/facts" "$TMP/e8.facts" 2>/dev/null
+[ "$RC" -eq 0 ] && [ -s "$TMP/e8.out" ] && grep -q "^REPLI_OK : la PR est un repli (Repli-De $C1)" "$TMP/e8.log" && grep -q '^RECONCILE_OK' "$TMP/e8.log" \
+  && ok "E.8 SANS debug : la PR de repli passe (rc 0), REPLI_OK puis RECONCILE_OK — le bloc 4bis est exercé (aucune section ne le faisait)" \
+  || ko "E.8 rc=$RC : $(grep -E 'REFUS|REPLI|RECONCILE' "$TMP/e8.log" | head -2 | tr '\n' ' ' | cut -c1-200)"
+run_dbg "$RECONCILE" "$TMP/e8d.out" "$TMP/e8d.so" "$TMP/e8d.se" STOA_DEBUG=1 MERGE_SHA="$CREPLI"; RC=$?
+[ "$RC" -eq 0 ] && cmp -s "$TMP/e8.out" "$TMP/e8d.out" && cmp -s "$TMP/e8.facts" "$TMP/facts" \
+  && ok "E.8a sous debug : rc 0, RECONCILE_OUT et RECONCILE_FACTS identiques octet pour octet au run sans debug" \
+  || ko "E.8a rc=$RC : $(cmp "$TMP/e8.out" "$TMP/e8d.out" 2>&1 | head -1) $(grep -E 'REFUS|ERREUR' "$TMP/e8d.se" | head -1 | cut -c1-160)"
+[ "$(wc -l < "$TMP/e8d.so" | tr -d ' ')" = 2 ] && sed -n 1p "$TMP/e8d.so" | grep -q "^REPLI_OK : la PR est un repli (Repli-De $C1)" && sed -n 2p "$TMP/e8d.so" | grep -q "^RECONCILE_OK : ci/stoa-labs#42 mergée ($CREPLI)" && ! grep -q '\[dbg' "$TMP/e8d.so" \
+  && ok "E.8b stdout = exactement DEUX lignes, REPLI_OK puis RECONCILE_OK, aucune « [dbg » (le produit du repli n'est pas pollué)" \
+  || ko "E.8b stdout : $(wc -l < "$TMP/e8d.so" | tr -d ' ') ligne(s) : $(head -3 "$TMP/e8d.so" | cut -c1-80 | tr '\n' '|')"
+ligne_exacte E.8c "$TMP/e8d.se" "REPLI_DE=$C1"
+ligne_exacte E.8d "$TMP/e8d.se" "git show $C1B:./clients/provisioned/applications/appa.ansible.yml -> rc 0"
+ligne_exacte E.8e "$TMP/e8d.se" "git show $C1:./clients/provisioned/applications/appa.ansible.yml -> rc 0"
+fuite E.8f "$STUB_TOKEN" "le token du stub" "$TMP/e8d.so" "$TMP/e8d.se"
+reset_main "$C1B"
+# Repli-De = c0 : la référence ne porte pas le manifeste ⇒ le 4e show dit rc 128 AVANT REPLI_PERIME.
+CREPLI0=$(repli_merge "$C0" "$PE_REPLI")
+set_pr true "$CREPLI0" provision/appa-rec master alice ci
+run_dbg "$RECONCILE" "$TMP/e8g.out" "$TMP/e8g.so" "$TMP/e8g.se" STOA_DEBUG=1 MERGE_SHA="$CREPLI0"; RC=$?
+[ "$RC" -ne 0 ] && grep -q 'REFUS: REPLI_PERIME : la référence Repli-De' "$TMP/e8g.se" && [ ! -e "$TMP/e8g.out" ] \
+  && precede "$TMP/e8g.se" "${DBGP_RE}git show $C0:\./clients/provisioned/applications/appa\.ansible\.yml -> rc 128\$" 'REFUS: REPLI_PERIME' \
+  && ok "E.8g Repli-De = c0 (sans manifeste) ⇒ « ] git show <c0>:… -> rc 128 » PRÉCÈDE « REFUS: REPLI_PERIME » (rc=$RC), aucune sortie — le rc du 4e show" \
+  || ko "E.8g rc=$RC : $(grep -nE 'git show|REFUS' "$TMP/e8g.se" | head -4 | tr '\n' ' ' | cut -c1-240)"
+# …et le mutant « rc 0 en dur » (mut11, §E.7e) sur CE scénario : même refus, la ligne ment.
+run_dbg "$MUTD/mut11.sh" "$TMP/mut11g.out" "$TMP/mut11g.so" "$TMP/mut11g.se" STOA_DEBUG=1 MERGE_SHA="$CREPLI0"; RC=$?
+[ "$RC" -ne 0 ] && grep -q 'REFUS: REPLI_PERIME : la référence Repli-De' "$TMP/mut11g.se" \
+  && grep -qE "$(dbgp_re "$MUTD/mut11.sh")git show $C0:\./clients/provisioned/applications/appa\.ansible\.yml -> rc 0\$" "$TMP/mut11g.se" \
+  && ! grep -qF -- "git show $C0:./clients/provisioned/applications/appa.ansible.yml -> rc 128" "$TMP/mut11g.se" \
+  && ok "E.8i mutant « rc 0 » en dur sur ce scénario : même REPLI_PERIME (rc=$RC) mais « git show <c0>:… -> rc 0 » et plus de « rc 128 » — E.8g tient à la valeur du rc du 4e show" \
+  || ko "E.8i (rc=$RC) : $(grep -E 'git show|REFUS' "$TMP/mut11g.se" | head -3 | tr '\n' ' ' | cut -c1-200)"
+reset_main "$C1B"
+# master a RETIRÉ le manifeste avant le merge : le parent 1 ne le porte plus ⇒ le 3e show dit rc 128 AVANT REPLI_PERIME.
+CREPLIR=$(repli_merge "$C1" "$PE_C1" retrait); P1R=$(gw4 rev-parse "${CREPLIR}^1")
+set_pr true "$CREPLIR" provision/appa-rec master alice ci
+run_dbg "$RECONCILE" "$TMP/e8h.out" "$TMP/e8h.so" "$TMP/e8h.se" STOA_DEBUG=1 MERGE_SHA="$CREPLIR"; RC=$?
+[ "$RC" -ne 0 ] && grep -q 'REFUS: REPLI_PERIME : clients/provisioned/applications/appa.ansible.yml absent de master juste avant le merge' "$TMP/e8h.se" && [ ! -e "$TMP/e8h.out" ] \
+  && precede "$TMP/e8h.se" "${DBGP_RE}git show $P1R:\./clients/provisioned/applications/appa\.ansible\.yml -> rc 128\$" 'REFUS: REPLI_PERIME' \
+  && ok "E.8h manifeste retiré de master avant le merge ⇒ « ] git show <parent 1>:… -> rc 128 » PRÉCÈDE « REFUS: REPLI_PERIME » (rc=$RC) — le rc du 3e show" \
+  || ko "E.8h rc=$RC : $(grep -nE 'git show|REFUS' "$TMP/e8h.se" | head -4 | tr '\n' ' ' | cut -c1-240)"
+# …et le même mutant sur le 3e show : même refus, la ligne du parent 1 ment.
+run_dbg "$MUTD/mut11.sh" "$TMP/mut11h.out" "$TMP/mut11h.so" "$TMP/mut11h.se" STOA_DEBUG=1 MERGE_SHA="$CREPLIR"; RC=$?
+[ "$RC" -ne 0 ] && grep -q 'REFUS: REPLI_PERIME : clients/provisioned/applications/appa.ansible.yml absent de master juste avant le merge' "$TMP/mut11h.se" \
+  && grep -qE "$(dbgp_re "$MUTD/mut11.sh")git show $P1R:\./clients/provisioned/applications/appa\.ansible\.yml -> rc 0\$" "$TMP/mut11h.se" \
+  && ! grep -qF -- "git show $P1R:./clients/provisioned/applications/appa.ansible.yml -> rc 128" "$TMP/mut11h.se" \
+  && ok "E.8j mutant « rc 0 » en dur sur ce scénario : même REPLI_PERIME (rc=$RC) mais « git show <parent 1>:… -> rc 0 » et plus de « rc 128 » — E.8h tient à la valeur du rc du 3e show" \
+  || ko "E.8j (rc=$RC) : $(grep -E 'git show|REFUS' "$TMP/mut11h.se" | head -3 | tr '\n' ' ' | cut -c1-200)"
+reset_main "$C1B"
+
+echo "-- E.9 la ligne « PR relue » : valeurs BRUTES à dbg, masquées par lui — jamais transformées ni coupées AVANT (relecture finale I-3) --"
+# La ligne passait par shown() (head -c 80 puis %q) AVANT dbg : le %q défait un
+# littéral qui porte un espace ou un « $ » (seuls ses segments ≥ 4 restent
+# connus de redact), et la coupe à 80 tranche dans un secret qui la chevauche —
+# l'ordre coupe-puis-masque que ce lot interdit partout. Scénario SYNTHÉTIQUE
+# et dit tel quel : une forge ne rend pas le secret du process dans merged_by ;
+# c'est l'ORDRE qui est éprouvé, sur le secret que le process TIENT. Deux
+# discriminants : (a) merged_by = 75 « r » + le token du stub (le secret d'auth,
+# à cheval sur l'octet 80) ; (b) merged_by = un second littéral que le process
+# tient (FORGE_TOKEN, dans la liste de redact — la forge n'accepte que tok-a2,
+# le secret d'auth ne peut donc pas porter l'espace), avec espace, « $ », « ! ».
+# stdout est le PRODUIT et cite le mergeur tel que la forge le nomme
+# (RECONCILE_OK … par '<login>') — hors du canal debug ; l'absence se mesure sur
+# stderr, où vivent les lignes [dbg. Mutant E.9e/E.9f : shown() remis sur le
+# champ, sur copie ⇒ le fragment sort.
+R75="$(printf '%*s' 75 '' | tr ' ' r)"
+set_pr true "$C1" provision/appa-rec master "${R75}${STUB_TOKEN}" ci
+run_dbg "$RECONCILE" "$TMP/e9.out" "$TMP/e9.so" "$TMP/e9.se" STOA_DEBUG=1; RC=$?
+ligne_motif E.9a "$TMP/e9.se" "${DBGP_RE}PR #42 relue : state=[^ ]* head=provision/appa-rec base=master merged=1 merge_sha=$C1 merged_by=${R75}<secret masqué>\$" "] PR #42 relue : … merged_by=r×75<secret masqué> (le token à cheval sur l'octet 80, masqué ENTIER)"
+! grep -q 'tok-a' "$TMP/e9.se" \
+  && ok "E.9b « tok-a » (le fragment qu'une coupe à 80 laisserait du token) ABSENT de tout stderr (rc=$RC)" \
+  || ko "E.9b FUITE sur stderr : $(grep 'tok-a' "$TMP/e9.se" | head -1 | cut -c1-160)"
+# shellcheck disable=SC2016  # quotes simples voulues : le « $ » fait partie du secret, c'est lui que %q échappait
+SECRET2='P@ss w0rd$2026!'
+set_pr true "$C1" provision/appa-rec master "$SECRET2" ci
+run_dbg "$RECONCILE" "$TMP/e9b.out" "$TMP/e9b.so" "$TMP/e9b.se" STOA_DEBUG=1 FORGE_TOKEN="$SECRET2"; RC=$?
+ligne_motif E.9c "$TMP/e9b.se" "${DBGP_RE}PR #42 relue : state=[^ ]* head=provision/appa-rec base=master merged=1 merge_sha=$C1 merged_by=<secret masqué>\$" "] PR #42 relue : … merged_by=<secret masqué> (un littéral avec espace, « \$ » et « ! », masqué ENTIER — pas « <secret masqué>\\ w0rd\\\$2026\\! »)"
+! grep -q 'w0rd' "$TMP/e9b.se" \
+  && ok "E.9d « w0rd » (le segment que %q rend méconnaissable) ABSENT de tout stderr (rc=$RC)" \
+  || ko "E.9d FUITE sur stderr : $(grep 'w0rd' "$TMP/e9b.se" | head -1 | cut -c1-160)"
+# E.9e/E.9f — shown() remis sur le champ merged_by (la forme d'avant la
+# relecture finale), sur COPIE : la coupe à 80 laisse « rtok-a », le %q laisse « w0rd ».
+# shellcheck disable=SC2016  # motif sed : « $R_MERGED_BY » est celui du script muté, à ne pas expandre ici
+sed 's/ merged_by=\${R_MERGED_BY}"$/ merged_by=$(shown "$R_MERGED_BY")"/' "$RECONCILE" > "$MUTD/mut13.sh"; chmod +x "$MUTD/mut13.sh"
+if ! cmp -s "$RECONCILE" "$MUTD/mut13.sh"; then
+  set_pr true "$C1" provision/appa-rec master "${R75}${STUB_TOKEN}" ci
+  run_dbg "$MUTD/mut13.sh" "$TMP/mut13.out" "$TMP/mut13.so" "$TMP/mut13.se" STOA_DEBUG=1; RC=$?
+  grep -E "$(dbgp_re "$MUTD/mut13.sh")PR #42 relue : " "$TMP/mut13.se" > "$TMP/mut13.line"
+  [ -s "$TMP/mut13.line" ] && grep -q 'merged_by=r*tok-a$' "$TMP/mut13.line" && ! grep -q '<secret masqué>' "$TMP/mut13.line" \
+    && ok "E.9e shown() remis (sur copie), token à cheval sur l'octet 80 ⇒ la ligne finit par « …rtok-a » et ne porte plus « <secret masqué> » — E.9a/E.9b tiennent à l'ordre masque→coupe" \
+    || ko "E.9e le mutant ne fuit pas (rc=$RC) : « $(cut -c1-200 "$TMP/mut13.line" | head -1) »"
+  set_pr true "$C1" provision/appa-rec master "$SECRET2" ci
+  run_dbg "$MUTD/mut13.sh" "$TMP/mut13b.out" "$TMP/mut13b.so" "$TMP/mut13b.se" STOA_DEBUG=1 FORGE_TOKEN="$SECRET2"; RC=$?
+  grep -E "$(dbgp_re "$MUTD/mut13.sh")PR #42 relue : " "$TMP/mut13b.se" > "$TMP/mut13b.line"
+  [ -s "$TMP/mut13b.line" ] && grep -q 'w0rd' "$TMP/mut13b.line" \
+    && ok "E.9f shown() remis (sur copie), littéral avec espace ⇒ la ligne porte « $(grep -o 'merged_by=.*' "$TMP/mut13b.line" | head -1) » : le %q défait le littéral, « w0rd » sort — E.9c/E.9d tiennent aux valeurs brutes" \
+    || ko "E.9f le mutant ne fuit pas (rc=$RC) : « $(cut -c1-200 "$TMP/mut13b.line" | head -1) »"
+else ko "E.9e mutation impossible (motif introuvable) — mutant no-op"; ko "E.9f mutation impossible (motif introuvable) — mutant no-op"; fi
 
 echo
 echo "═══════════════════════════════════════════════════"

@@ -17,7 +17,14 @@
 #   E7  prod sous ci sans refs ⇒ GATE_REFS_REQUIRED ; E8 zeta ⇒ ENV_INVALIDE ; refs hors classe ⇒ REF_INVALIDE
 #   E9  les champs obligatoires ⇒ CHAMP_REQUIS, nommant LE CHAMP du formulaire
 #   E10 le token n'apparaît jamais dans la sortie d'un push en échec
+#   E11 la branche de base est DÉCOUVERTE (master), jamais devinée
+#   E12 STOA_DEBUG=1 : la chaîne parle (disposition, identité, HTTP, gestes git),
+#       sans fuite — chaque absence doublée d'une présence (L2, plan 2026-09-09)
 #   M   mutations : chaque garde neuve attrape ce qu'elle prétend attraper
+#       (M6 redact du push, M9 DBG_SECRET_FILES, M10 une ligne de debug sur stdout,
+#       M11 l'ordre « masque puis coupe » de dbg_git_err — le secret à cheval sur l'octet 400,
+#       M12/M13 un rc de fetch/clone écrit en dur, M14 « existe=oui » écrit en dur,
+#       M15 le relais du whoami de forge_login rendu conditionnel — sur COPIE de la lib)
 # `A && ok || ko` (SC2015) et les `$…` en quotes simples (SC2016) sont l'idiome des suites du repo.
 # shellcheck disable=SC2015,SC2016
 set -uo pipefail
@@ -110,7 +117,24 @@ printf 'ARGV %s\n' "\$*" >> "$SHIM_LOG"
 printf 'ENV FORGE_TOKEN=%s PUSH_TOKEN=%s FORGE_TOKEN_FILE=%s\n' "\${FORGE_TOKEN:-}" "\${PUSH_TOKEN:-}" "\${FORGE_TOKEN_FILE:-}" >> "$SHIM_LOG"
 if [ -n "\${SHIM_PUSH_FAIL:-}" ] && [ "\${1:-}" = push ]; then
   # le mode de panne réel : git imprime l'URL ; ici on simule pire — le secret que rend l'askpass
-  echo "fatal: unable to access (simulé) — askpass a rendu \$(sh "\${GIT_ASKPASS:-/bin/false}" Password 2>/dev/null)" >&2
+  s="\$(sh "\${GIT_ASKPASS:-/bin/false}" Password 2>/dev/null)"
+  pre="fatal: unable to access (simulé) — askpass a rendu "; l="\$pre\$s"
+  # SHIM_PUSH_SECRET_AT=N : le secret est recopié UNE SECONDE FOIS, en commençant
+  # à l'OCTET N de la ligne (0-indexé), derrière un rembourrage de « x ». C'est le
+  # DISCRIMINANT de l'ordre « masque puis coupe » de dbg_git_err (E12.3e/f, M11) :
+  # N dans ]400-len(secret), 400[ met le secret À CHEVAL sur la coupe à 400 octets
+  # — un helper qui coupe AVANT de masquer en laisse un morceau que redact ne
+  # reconnaît plus. Un rembourrage qui pousserait le secret ENTIÈREMENT après
+  # l'octet 400 ne discriminerait rien : les deux ordres rendent le même
+  # rembourrage (mesuré : 390 « x » avant « askpass a rendu » ⇒ secret à l'octet
+  # 445). Octets, pas caractères : « é » et « — » du préfixe en font 2 et 3
+  # (wc -c) ; le secret du harnais est ASCII (\${#s} suffit).
+  if [ -n "\${SHIM_PUSH_SECRET_AT:-}" ]; then
+    mid=" askpass a rendu "
+    n=\$(( \$(printf '%s' "\$pre\$mid" | wc -c) + \${#s} + 1 ))
+    l="\$l \$(printf '%*s' "\$((SHIM_PUSH_SECRET_AT - n))" '' | tr ' ' x)\$mid\$s"
+  fi
+  echo "\$l" >&2
   exit 128
 fi
 exec "$REAL_GIT" "\$@"
@@ -141,15 +165,24 @@ merge_branch(){ # <env> : « le merge humain » de provision/appa-<env> dans mas
     && gw merge -q --no-ff -m "Merge pull request 'provision($1): appa' from provision/appa-$1 into master" "origin/provision/appa-$1" \
     && gw push -q origin master
 }
-# req <env> [VAR=val…] : le script sous test ; sortie $TMP/req.out, rc $TMP/req.rc
-req(){
+# _req_run <env> [VAR=val…] : le script sous test, dans un environnement VIERGE
+# (env -i : aucune variable du poste — ni GIT_BASE, ni STOA_DEBUG — n'y entre
+# sans être nommée ici). Les deux flux vont où l'appelant les envoie.
+_req_run(){
   local e="$1"; shift
   ( cd "$REPO" && env -i PATH="$SHIM:$PATH" HOME="$HOME" GITEA_TOKEN=t-ci GIT_HOST="$GH" GIT_WEB_HOST="$GH" GIT_REPO=ci/stoa-labs \
       GIT_CLONE_URL="file://$ORIGIN" GIT_PUSH_URL="file://$ORIGIN" STOA_ENV_CHAIN_FILE="$TMP/chain.yaml" PROVISION_PLAN_INLINE=false \
       REQ_APP=appa REQ_ENV="$e" REQ_API=demo-selfservice REQ_API_VER=1.0.0 REQ_CLIENT_ID="appa-$e" REQ_CALLER=jenkins-form:x REQ_TEAM=banking-demo \
-      "$@" bash "$S" ) > "$TMP/req.out" 2>&1
-  echo $? > "$TMP/req.rc"
+      "$@" bash "$S" )
 }
+# req <env> [VAR=val…] : sortie FUSIONNÉE dans $TMP/req.out (l'ordre des lignes
+# entre stdout et stderr est celui de l'exécution), rc $TMP/req.rc. req.err est
+# vidé : un run fusionné ne laisse pas traîner le stderr d'un run séparé.
+req(){ : > "$TMP/req.err"; _req_run "$@" > "$TMP/req.out" 2>&1; echo $? > "$TMP/req.rc"; }
+# req2 <env> [VAR=val…] : les deux flux SÉPARÉS — stdout dans req.out, stderr
+# dans req.err. C'est la seule façon de prouver que le PRODUIT (stdout) ne
+# porte aucune ligne de debug (E12).
+req2(){ _req_run "$@" > "$TMP/req.out" 2>"$TMP/req.err"; echo $? > "$TMP/req.rc"; }
 rrc(){ cat "$TMP/req.rc"; }
 refus(){ [ "$(rrc)" = 2 ] && grep -qF "REFUS: $1" "$TMP/req.out"; }
 posts(){ grep -c '^POST /api/v1/repos/ci/stoa-labs/pulls ' "$STUB_LOG" || true; }
@@ -368,6 +401,11 @@ echo "═══ E10. un push en échec ne fuit pas le token ═══"
 set_ctl '{"open":[]}'; git -C "$ORIGIN" update-ref -d refs/heads/provision/appa-rec 2>/dev/null
 req rec FORGE_TOKEN=t-alice SHIM_PUSH_FAIL=1
 [ "$(rrc)" = 1 ] && grep -q 'ERREUR push' "$TMP/req.out" && ! grep -q 't-alice' "$TMP/req.out" && ok "E10 push en échec ⇒ rc 1, détail masqué, le token humain n'apparaît pas" || ko "E10 rc $(rrc) : $(grep -n 't-alice' "$TMP/req.out" | head -1)"
+# L2 : la PRÉSENCE qui double l'absence — le détail du push n'est plus JETÉ
+# (l'ancien `grep -v` supprimait la ligne entière), il est RÉDIGÉ : la ligne
+# reste lisible, seul le secret en part. Sans cette assertion, un script muet
+# passerait E10.
+grep -q '^fatal: unable to access (simulé) — askpass a rendu <secret masqué>$' "$TMP/req.out" && ok "E10b le détail du push est PRÉSENT, le secret remplacé par « <secret masqué> » (rédigé, pas jeté)" || ko "E10b détail absent ou non masqué : $(grep -n 'askpass' "$TMP/req.out" | head -1)"
 
 echo "═══ E11. la branche de base : DÉCOUVERTE, jamais « main » deviné (L3, ADR à venir) ═══"
 # La fixture de CETTE suite a pour HEAD `master` (bare : symbolic-ref HEAD
@@ -413,6 +451,194 @@ req int FORGE_TOKEN=t-alice GIT_BASE=develop
   || ko "E11.3 rc $(rrc) posts=$(posts) tip=$(tip int) : $(tail -1 "$TMP/req.out")"
 reset_origin
 
+echo "═══ E12. STOA_DEBUG=1 : la chaîne parle, sans fuite (L2, plan 2026-09-09) ═══"
+# Gabarit D1/D2/D3 de test-vault-user-login.sh : chaque ABSENCE (« le token n'y
+# est pas ») est DOUBLÉE d'une PRÉSENCE (« la ligne attendue y est ») — une lib
+# muette passerait toute absence (vert vacant). Deux tokens dans ce harnais :
+# t-ci (service, dans l'environnement : redact le connaît par FORGE_SECRET) et
+# t-alice (humain, RETIRÉ de l'environnement par A7 : redact ne le connaît que
+# par son fichier, via DBG_SECRET_FILES — M9 retire cette ligne). Le préfixe
+# des lignes du script est son nom ($0) : « [dbg provision-request.sh] » ; les
+# lignes HTTP viennent de forge-api.py, qui écrit lui-même « [dbg forge-api.py] ».
+OUT="$TMP/req.out"; ERR="$TMP/req.err"
+P='^\[dbg provision-request\.sh\] '
+pres(){ grep -qE -- "$2" "$ERR" && ok "$1 $3" || ko "$1 ABSENTE de stderr : /$2/"; }
+# Les FORMES d'un secret (brut, JSON \uXXXX et utf-8, « \/ », %XX, « + », et
+# ses morceaux ≥ 4 caractères) — calculées par python, jamais par la lib sous
+# test (sinon la preuve tournerait en rond) : le helper de test-dbg-redaction.sh.
+formes(){ S="$1" python3 -c '
+import json, os, re
+from urllib.parse import quote, quote_plus
+v = os.environ["S"]; out = set()
+for x in [v] + [s for s in re.split(r"[/\s]+", v) if len(s) >= 4]:
+    j = json.dumps(x)[1:-1]
+    for f in (x, j, j.replace("/", "\\/"), json.dumps(x, ensure_ascii=False)[1:-1], quote(x, safe=""), quote_plus(x, safe="")):
+        out.add(f)
+print("\n".join(sorted(out)))'; }
+# toutes_absentes <secret> — aucune forme d'aucun morceau, ni sur stdout ni sur stderr du dernier run
+toutes_absentes(){ local f; while IFS= read -r f; do ! grep -qF -- "$f" "$OUT" "$ERR" || return 1; done < <(formes "$1"); }
+# avant <regex A> <regex B> — dans la sortie FUSIONNÉE, la première ligne qui
+# matche A PRÉCÈDE la première qui matche B (un log se lit de haut en bas : le
+# statut HTTP d'abord, le refus ensuite).
+avant(){ local a b; a=$(grep -nE -- "$1" "$OUT" | head -1 | cut -d: -f1); b=$(grep -nE -- "$2" "$OUT" | head -1 | cut -d: -f1); [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ]; }
+reset_int(){ set_ctl '{"open":[]}'; git -C "$ORIGIN" update-ref -d refs/heads/provision/appa-int 2>/dev/null || true; }
+# ── E12.1 le nominal (E4 sous STOA_DEBUG=1), flux SÉPARÉS ────────────────────
+reset_int
+req2 int FORGE_TOKEN=t-alice STOA_DEBUG=1
+cp "$OUT" "$TMP/e12.stdout"
+[ "$(rrc)" = 0 ] && grep -q '^PR_URL=http://stub/pulls/900$' "$OUT" && [ "$(posts)" = 1 ] && [ "$(post_auth)" = "token t-alice" ] \
+  && ok "E12.1a nominal sous STOA_DEBUG=1 : rc 0, PR_URL= sur stdout, une PR postée sous alice — le produit d'E4" \
+  || ko "E12.1a rc $(rrc) posts=$(posts) auth='$(post_auth)' : $(grep -hE 'REFUS|ERREUR' "$OUT" "$ERR" | head -2 | tr '\n' ' ')"
+# LE PRODUIT : stdout ne porte QUE le contrat — « [n/5] … », une ligne de détail
+# indentée de deux espaces, « PR_URL= », « OK: » — jamais une ligne de debug :
+# ni « [dbg », ni un CLÉ=VALEUR nu. M10 remplace un dbg_kv par un echo : c'est
+# la seconde moitié de cette assertion qui le voit, « pas de [dbg » seule ne le
+# verrait pas (le brief l'appelle une assertion vacante).
+! grep -q '\[dbg' "$OUT" && ! grep -qvE '^(\[[1-5]/5\] |  |PR_URL=|OK: )' "$OUT" \
+  && ok "E12.1b stdout = le contrat seul ([n/5], détails indentés, PR_URL=, OK:) — aucune ligne de debug, ni [dbg ni CLÉ=VALEUR" \
+  || ko "E12.1b stdout pollué : $(grep -vE '^(\[[1-5]/5\] |  |PR_URL=|OK: )' "$OUT" | head -2 | tr '\n' ' ')"
+# LES PRÉSENCES, une à une. D'abord ce que les AUTORITÉS disent (le script ne le redit pas) …
+pres E12.1c "${P}FORGE_KIND=gitea\$" "] FORGE_KIND=gitea (forge_api_init)"
+pres E12.1d "${P}GIT_BASE=master\$" "] GIT_BASE=master (git_base_init — la HEAD de la fixture)"
+pres E12.1e "${P}GIT_BASE_ORIGINE=decouverte\$" "] GIT_BASE_ORIGINE=decouverte (aucun GIT_BASE dans l'environnement de req)"
+# … puis ce que CE script décide : la disposition (SUB_PFX est le préfixe du
+# monorepo du lab — NON VIDE, et il se lit), l'identité, les gestes git.
+pres E12.1f "${P}MODE=idp\$" "] MODE=idp (dérivé du caller jenkins-form:x)"
+pres E12.1g "${P}SUB_PFX=poc-control-plane-federation/\$" "] SUB_PFX=poc-control-plane-federation/ (GIT_SUBDIR par défaut : préfixe non vide, terminé par /)"
+pres E12.1h "${P}REL_PATH=poc-control-plane-federation/clients/provisioned/applications/appa\\.ansible\\.yml\$" "] REL_PATH=<SUB_PFX><MANIFEST_DIR>/appa.ansible.yml"
+pres E12.1i "${P}PROV_FILE=poc-control-plane-federation/ansible/providers\\.int\\.yml existe=oui\$" "] PROV_FILE=<SUB_PFX>ansible/providers.int.yml existe=oui"
+pres E12.1j "${P}FORGE_LOGIN=alice\$" "] FORGE_LOGIN=alice (forge_login)"
+pres E12.1k "${P}PUSH_LOGIN=alice\$" "] PUSH_LOGIN=alice"
+pres E12.1l "${P}BRANCH=provision/appa-int\$" "] BRANCH=provision/appa-int"
+pres E12.1m "${P}CLONE_URL=file://" "] CLONE_URL=file://… (l'URL composée : c'est elle qu'on diagnostique)"
+# Le whoami de forge_login (scripts/lib/forge-identity.sh) : jusqu'au 2026-09-11
+# (L2-B5) la lib capturait le stderr du verbe et ne le relayait que sur rc ≠ 0 —
+# sur SUCCÈS la ligne HTTP était lue, effacée, perdue (mesure L2-B1 : journal du
+# stub users=1, 0 ligne « /user » sur stderr). Relayée succès compris désormais ;
+# M15 rend le relais à nouveau conditionnel (rc ≠ 0 seulement). Le motif écrit
+# « /[^ ]+/user » : un visage GitLab dirait /api/v4/user, la présence ne dépend
+# pas du préfixe d'API.
+pres "E12.1n'" '^\[dbg forge-api\.py\] GET http://127\.0\.0\.1:[0-9]+/[^ ]+/user -> HTTP 200 \([0-9]+ octets\)$' "[dbg forge-api.py] GET …/user -> HTTP 200 (forge_login : le whoami, relayé succès compris)"
+pres E12.1n '^\[dbg forge-api\.py\] GET http://127\.0\.0\.1:[0-9]+/api/v1/repos/ci/stoa-labs/pulls\?[^ ]* -> HTTP 200 \([0-9]+ octets\)$' "[dbg forge-api.py] GET …/pulls?… -> HTTP 200 (pr_find_open)"
+pres E12.1o '^\[dbg forge-api\.py\] POST http://127\.0\.0\.1:[0-9]+/api/v1/repos/ci/stoa-labs/pulls -> HTTP 201 \([0-9]+ octets\)$' "[dbg forge-api.py] POST …/pulls -> HTTP 201 (pr_open)"
+pres E12.1p "${P}git clone --depth 1 -b master file://[^ ]+ -> rc 0\$" "] git clone --depth 1 -b master <url> -> rc 0"
+pres E12.1q "${P}REMOTE_TIP=<vide>\$" "] REMOTE_TIP=<vide> (premier passage : pas de branche distante — le vide se DIT)"
+pres E12.1r "${P}git diff --cached --quiet -> rc 1\$" "] git diff --cached --quiet -> rc 1 (l'index diffère de la base : il y a quelque chose à committer)"
+pres E12.1s "${P}git push --force-with-lease=refs/heads/provision/appa-int: file://[^ ]+ HEAD:refs/heads/provision/appa-int -> rc 0\$" "] git push --force-with-lease=… <url> HEAD:… -> rc 0"
+pres E12.1t "${P}PR_NUM=900\$" "] PR_NUM=900 (créée)"
+# LES ABSENCES : aucune forme d'aucun des deux tokens, aucun en-tête d'auth en clair.
+toutes_absentes t-alice && toutes_absentes t-ci \
+  && ok "E12.1u AUCUNE forme de t-alice (humain) ni de t-ci (service) — ni sur stdout ni sur stderr" \
+  || ko "E12.1u fuite : $(grep -nE 't-alice|t-ci' "$OUT" "$ERR" | head -1)"
+! grep -q 'Authorization: token' "$OUT" "$ERR" && ok "E12.1v aucun en-tête « Authorization: token » en clair" || ko "E12.1v $(grep -n 'Authorization: token' "$OUT" "$ERR" | head -1)"
+# LE VRAI rc HORS du succès (relecture L2-B1, n°3) : « -> rc 0 » n'était prouvé
+# que là où git réussit — un « -> rc 0 » écrit en dur à la place de « $rc »
+# traversait la suite (sondes S3/S6 de la revue : 6/6 verts). Sur ce même
+# premier passage, les DEUX fetch de la branche (le bail, puis le rejeu) rendent
+# réellement 128 : la branche distante n'existe pas encore — c'est le diagnostic
+# « premier passage » que L2 voulait lisible, jadis jeté à /dev/null. La ligne
+# « git: » épingle « fatal » et la REF, jamais la langue : sous env -i, git parle
+# la langue du poste (ici « impossible de trouver la référence distante » ; un
+# CI Linux dirait « couldn't find remote ref »). M12 écrit « rc 0 » en dur.
+[ "$(grep -cE "${P}git fetch --depth 1 file://[^ ]+ refs/heads/provision/appa-int -> rc 128\$" "$ERR")" = 2 ] && ! grep -qE "${P}git fetch .* -> rc 0\$" "$ERR" \
+  && ok "E12.1w les DEUX fetch de la branche (bail, puis rejeu) disent « -> rc 128 » — le VRAI rc du premier passage, aucun « git fetch … -> rc 0 »" \
+  || ko "E12.1w fetch : $(grep -nE "${P}git fetch " "$ERR" | tr '\n' ' ')"
+pres E12.1x "${P}  git: .*fatal.*refs/heads/provision/appa-int" "]   git: fatal … refs/heads/provision/appa-int (le stderr du fetch, jadis jeté à /dev/null — la ref nommée, quelle que soit la langue de git)"
+# ── E12.2 l'échec de forge : la ligne HTTP PRÉCÈDE le refus, sans token ──────
+set_ctl '{"down":true}'; git -C "$ORIGIN" update-ref -d refs/heads/provision/appa-rec 2>/dev/null || true
+req rec STOA_DEBUG=1
+[ "$(rrc)" = 2 ] && avant '^\[dbg forge-api\.py\] GET [^ ]+/pulls\?[^ ]* -> HTTP 500 ' '^REFUS: FORGE_ILLISIBLE' && toutes_absentes t-ci \
+  && ok "E12.2a forge en panne (500) : « GET …/pulls?… -> HTTP 500 » PRÉCÈDE « REFUS: FORGE_ILLISIBLE » ; jamais t-ci" \
+  || ko "E12.2a rc $(rrc) : $(grep -nE 'HTTP 500|REFUS' "$OUT" | head -2 | tr '\n' ' ')"
+set_ctl '{"body_mode":"redirect"}'; git -C "$ORIGIN" update-ref -d refs/heads/provision/appa-rec 2>/dev/null || true
+req rec STOA_DEBUG=1
+[ "$(rrc)" = 2 ] && avant '^\[dbg forge-api\.py\] GET [^ ]+/pulls\?[^ ]* -> HTTP 302 ' '^REFUS: FORGE_ILLISIBLE' && toutes_absentes t-ci \
+  && ok "E12.2b 302 vers /users/sign_in : « -> HTTP 302 » PRÉCÈDE le refus (la ligne que le client GitLab devait lire) ; jamais t-ci" \
+  || ko "E12.2b rc $(rrc) : $(grep -nE 'HTTP 302|REFUS' "$OUT" | head -2 | tr '\n' ' ')"
+set_ctl '{"open":[]}'
+req int FORGE_TOKEN=t-inconnu STOA_DEBUG=1
+[ "$(rrc)" = 2 ] && avant '^\[dbg forge-api\.py\] GET [^ ]+/user -> HTTP 401 ' '^REFUS: FORGE_TOKEN_INVALIDE' && toutes_absentes t-inconnu && toutes_absentes t-ci \
+  && ok "E12.2c token refusé (401) : « GET …/user -> HTTP 401 » PRÉCÈDE « REFUS: FORGE_TOKEN_INVALIDE » ; ni t-inconnu ni t-ci" \
+  || ko "E12.2c rc $(rrc) : $(grep -nE 'HTTP 401|REFUS' "$OUT" | head -2 | tr '\n' ' ')"
+# ── E12.3 l'échec de push : E10 en mode debug — le shim recopie le secret de l'askpass ──
+set_ctl '{"open":[]}'; git -C "$ORIGIN" update-ref -d refs/heads/provision/appa-rec 2>/dev/null || true
+req2 rec FORGE_TOKEN=t-alice SHIM_PUSH_FAIL=1 STOA_DEBUG=1
+[ "$(rrc)" = 1 ] && grep -q '^ERREUR push (détail masqué — token)$' "$ERR" && grep -q '^fatal: unable to access (simulé) — askpass a rendu <secret masqué>$' "$ERR" \
+  && ok "E12.3a push refusé sous STOA_DEBUG=1 : rc 1, « ERREUR push » et son détail MASQUÉ — l'erreur d'origine, inchangée" \
+  || ko "E12.3a rc $(rrc) : $(grep -nE 'ERREUR|fatal' "$ERR" | head -2 | tr '\n' ' ')"
+pres E12.3b "${P}git push --force-with-lease=refs/heads/provision/appa-rec: file://[^ ]+ HEAD:refs/heads/provision/appa-rec -> rc 128\$" "] git push … -> rc 128 (le VRAI rc du shim, pas celui d'un « ! »)"
+pres E12.3c "${P}  git: fatal: unable to access \\(simulé\\) — askpass a rendu <secret masqué>" "]   git: … askpass a rendu <secret masqué> (le stderr du push, rédigé par le FICHIER du token humain)"
+toutes_absentes t-alice && toutes_absentes t-ci \
+  && ok "E12.3d JAMAIS t-alice ni t-ci, sous aucune forme — ni dans le refus, ni dans une ligne de debug" \
+  || ko "E12.3d fuite : $(grep -nE 't-alice|t-ci' "$OUT" "$ERR" | head -1)"
+# ── E12.3e/f l'ORDRE de dbg_git_err : masqué EN ENTIER, PUIS coupé à 400 octets ──
+# Le DISCRIMINANT (grammaire §3, CORRECTION revues B1/B3 : « l'ORDRE doit avoir
+# son ÉPREUVE ») : le secret du harnais (t-alice, 7 octets) ne chevauche jamais
+# la coupe de lui-même, et dbg remasque derrière — sans discriminant, un helper
+# qui couperait AVANT de masquer traverse E12.3a-d en vert (mesuré : relecture
+# L2-B1, sonde S1, 4/4 verts sur le mutant). Le shim recopie donc le secret une
+# seconde fois à partir de l'octet 395 de sa ligne : à cheval sur 400 (ligne
+# brute de 402 octets). Masque puis coupe ⇒ la ligne « git: » porte le premier
+# masque entier, puis le rembourrage, et s'arrête à 400 octets AVANT la seconde
+# occurrence (déjà masquée). Coupe puis masque ⇒ « askpass a rendu t-ali »,
+# cinq octets du token humain que ni redact ni dbg ne reconnaissent — c'est M11.
+SECRET_AT=395; FRAG="t-alice"; FRAG="${FRAG:0:$((400 - SECRET_AT))}"   # le morceau que laisserait la coupe : « t-ali »
+set_ctl '{"open":[]}'; git -C "$ORIGIN" update-ref -d refs/heads/provision/appa-rec 2>/dev/null || true
+req2 rec FORGE_TOKEN=t-alice SHIM_PUSH_FAIL=1 "SHIM_PUSH_SECRET_AT=$SECRET_AT" STOA_DEBUG=1
+# git_line : la charge de la ligne « git: » du push, sans le préfixe « [dbg <script>] »
+# (agnostique du NOM : M11 la relit sur une copie nommée m11.sh) ; git_octets : sa taille en OCTETS.
+git_line(){ grep -m1 -E '^\[dbg [^]]*\]   git: fatal: unable to access' "$ERR" | sed -E 's/^\[dbg [^]]*\]   git: //' | tr -d '\n'; }
+git_octets(){ echo $(( $(git_line | wc -c) )); }
+[ "$(rrc)" = 1 ] && grep -qE "${P}  git: fatal: unable to access \\(simulé\\) — askpass a rendu <secret masqué> x+" "$ERR" && [ "$(git_octets)" -eq 400 ] \
+  && grep -qE '^fatal: unable to access \(simulé\) — askpass a rendu <secret masqué> x+ askpass a rendu <secret masqué>$' "$ERR" \
+  && ok "E12.3e stderr de push de 402 octets, secret à cheval sur l'octet 400 : la ligne « git: » porte « <secret masqué> » puis le rembourrage et fait EXACTEMENT 400 octets (masquée en entier, PUIS coupée) ; le détail du refus, non coupé, masque les DEUX occurrences" \
+  || ko "E12.3e rc $(rrc) octets=$(git_octets) : …$(git_line | tail -c 40) / $(grep -c 'askpass a rendu <secret masqué>' "$ERR") ligne(s) masquée(s)"
+! grep -oE 'askpass a rendu [^ ]*' "$OUT" "$ERR" | grep -vqE 'askpass a rendu (<secret|$)' && ! grep -qF -- "$FRAG" "$OUT" "$ERR" && toutes_absentes t-alice && toutes_absentes t-ci \
+  && ok "E12.3f après « askpass a rendu », rien d'autre que le masque (entier, ou coupé par les 400 octets) : ni « $FRAG » ni aucune forme de t-alice / t-ci — aucun MORCEAU du secret n'a survécu à la coupe" \
+  || ko "E12.3f morceau du secret : $(grep -noE 'askpass a rendu [^ ]*' "$OUT" "$ERR" | grep -vE '<secret' | head -1)"
+# ── E12.4 le silence : STOA_DEBUG=0 ⇒ zéro [dbg, produit OCTET POUR OCTET celui d'E12.1 ──
+reset_int
+req2 int FORGE_TOKEN=t-alice STOA_DEBUG=0
+[ "$(rrc)" = 0 ] && ! grep -q '\[dbg' "$OUT" "$ERR" && cmp -s "$OUT" "$TMP/e12.stdout" \
+  && ok "E12.4 STOA_DEBUG=0 : zéro ligne [dbg (stdout ET stderr), et stdout identique octet pour octet à celui d'E12.1 — le mode debug n'ajoute rien au produit" \
+  || ko "E12.4 rc $(rrc) dbg=$(grep -c '\[dbg' "$OUT" "$ERR" | tr '\n' ' ') diff: $(diff "$OUT" "$TMP/e12.stdout" | head -2 | tr '\n' ' ')"
+# ── E12.5 l'ordre : la base est DITE avant d'être utilisée ; la ligne du contrat est toujours là ──
+reset_int
+req int FORGE_TOKEN=t-alice STOA_DEBUG=1
+avant "${P}GIT_BASE=master\$" '^\[1/5\] clone ci/stoa-labs \(base master\)$' \
+  && ok "E12.5 « ] GIT_BASE=master » PRÉCÈDE « [1/5] clone ci/stoa-labs (base master) » — et cette ligne du contrat est toujours là" \
+  || ko "E12.5 ordre : $(grep -nE 'GIT_BASE=master|\[1/5\]' "$OUT" | head -2 | tr '\n' ' ')"
+reset_int
+# ── E12.6 le clone RATÉ sous debug : le rc du clone n'est plus prouvé qu'à 0 ──
+# E11.3 sous STOA_DEBUG=1 : GIT_BASE=develop, branche absente. La ligne
+# « git clone … -> rc 128 » (le VRAI rc de git — M13 écrit 0) PRÉCÈDE le refus,
+# et la ligne « git: » nomme la branche que git n'a pas trouvée (« fatal » et
+# « develop », jamais la langue de git). Le refus est celui d'E11.3, inchangé.
+reset_int
+req int FORGE_TOKEN=t-alice GIT_BASE=develop STOA_DEBUG=1
+[ "$(rrc)" = 2 ] && avant "${P}git clone --depth 1 -b develop file://[^ ]+ -> rc 128\$" '^REFUS: BRANCHE_DE_BASE_INTROUVABLE : develop' \
+  && ok "E12.6a GIT_BASE=develop absente sous STOA_DEBUG=1 : « git clone --depth 1 -b develop <url> -> rc 128 » PRÉCÈDE « REFUS: BRANCHE_DE_BASE_INTROUVABLE » (rc 2 — le refus d'E11.3, inchangé)" \
+  || ko "E12.6a rc $(rrc) : $(grep -nE 'git clone|REFUS' "$OUT" | head -2 | tr '\n' ' ')"
+grep -qE "${P}  git: .*fatal.*develop" "$OUT" && avant "${P}  git: " '^REFUS: BRANCHE_DE_BASE_INTROUVABLE' && toutes_absentes t-alice && toutes_absentes t-ci \
+  && ok "E12.6b la ligne « git: » du clone nomme la branche introuvable (fatal … develop) AVANT le refus ; jamais t-alice ni t-ci" \
+  || ko "E12.6b : $(grep -nE '  git: |REFUS' "$OUT" | head -2 | tr '\n' ' ')"
+# ── E12.7 PROVIDERS_MISSING sous debug : « existe=non » se DIT, avant le refus ──
+# Le cas du client (2026-09-08) : un dépôt rangé AUTREMENT — GIT_SUBDIR=. (le
+# livrable EST la racine). SUB_PFX est vide et se DIT « <vide> » (grammaire §2 :
+# c'est le diagnostic), le fichier des providers est cherché SANS préfixe,
+# absent, et « PROV_FILE=… existe=non » PRÉCÈDE le refus qui nomme le MÊME
+# chemin. Jusqu'ici « existe=non » n'était exercé nulle part (relecture L2-B1
+# n°4 : un « existe=oui » écrit en dur restait invisible — M14 l'écrit).
+reset_int
+req int FORGE_TOKEN=t-alice GIT_SUBDIR=. STOA_DEBUG=1
+[ "$(rrc)" = 2 ] && grep -qE "${P}SUB_PFX=<vide>\$" "$OUT" && grep -qE "${P}REL_PATH=clients/provisioned/applications/appa\\.ansible\\.yml\$" "$OUT" \
+  && ok "E12.7a GIT_SUBDIR=. sous STOA_DEBUG=1 : « ] SUB_PFX=<vide> » (le vide se DIT) et REL_PATH sans préfixe" \
+  || ko "E12.7a rc $(rrc) : $(grep -nE 'SUB_PFX|REL_PATH' "$OUT" | head -2 | tr '\n' ' ')"
+avant "${P}PROV_FILE=ansible/providers\\.int\\.yml existe=non\$" '^REFUS: PROVIDERS_MISSING : ansible/providers\.int\.yml absent' && toutes_absentes t-alice && toutes_absentes t-ci \
+  && ok "E12.7b « ] PROV_FILE=ansible/providers.int.yml existe=non » PRÉCÈDE « REFUS: PROVIDERS_MISSING » qui nomme le MÊME chemin ; jamais t-alice ni t-ci" \
+  || ko "E12.7b : $(grep -nE 'PROV_FILE|PROVIDERS_MISSING' "$OUT" | head -2 | tr '\n' ' ')"
+reset_int
+
 echo "═══ M. mutations : chaque garde neuve attrape ce qu'elle prétend attraper ═══"
 MUT="$TMP/mut"; mkdir -p "$MUT"
 mutant(){ # <nom> <sed-expr> → $MUT/<nom>.sh, ou vide si no-op / ne compile pas
@@ -420,6 +646,7 @@ mutant(){ # <nom> <sed-expr> → $MUT/<nom>.sh, ou vide si no-op / ne compile pa
   if cmp -s "$S" "$MUT/$1.sh" || ! bash -n "$MUT/$1.sh" 2>/dev/null; then echo ""; else echo "$MUT/$1.sh"; fi
 }
 reqm(){ local m="$1"; shift; local e="$1"; shift; S="$m" req "$e" "$@"; }
+reqm2(){ local m="$1"; shift; S="$m" req2 "$@"; }   # flux séparés (les mutants du mode debug lisent stdout SEUL)
 M1=$(mutant m1 's#^(\. "scripts/lib/forge-identity\.sh".*)$#\1\nforge_is_service(){ return 1; }#')
 if [ -n "$M1" ]; then set_ctl '{"open":[]}'; reqm "$M1" int FORGE_TOKEN=t-svc "GITEA_SERVICE_LOGINS=ci svc-bot"; refus REQUESTER_UNKNOWN && ko "M1 le mutant (forge_is_service ⇒ jamais service) refuse encore" || ok "M1 forge_is_service neutralisée ⇒ svc-bot passe pour humain (E3.2 rougit)"; else ko "M1 mutant no-op/incompilable"; fi
 M2=$(mutant m2 's#PR_TOKEN_FILE="\$PUSH_TF"#PR_TOKEN_FILE="$CI_TF"#')
@@ -430,8 +657,12 @@ M4=$(mutant m4 '/^unset FORGE_TOKEN FORGE_TOKEN_FILE$/d')
 if [ -n "$M4" ]; then set_ctl '{"open":[]}'; git -C "$ORIGIN" update-ref -d refs/heads/provision/appa-int 2>/dev/null; reqm "$M4" int FORGE_TOKEN=t-alice; grep -qE 'ENV FORGE_TOKEN=t-alice' "$SHIM_LOG" && ok "M4 unset retiré ⇒ git hérite le token (E4.6 rougit)" || ko "M4 rc $(rrc) : $(grep -c 'ENV FORGE_TOKEN=t-alice' "$SHIM_LOG") héritages"; else ko "M4 mutant no-op/incompilable"; fi
 M5=$(mutant m5 '/PR_D_AUTRUI : la PR/d')
 if [ -n "$M5" ]; then set_ctl "{\"open\":[$(pr_open 78 ci rec)]}"; git -C "$ORIGIN" update-ref -d refs/heads/provision/appa-rec 2>/dev/null; reqm "$M5" rec FORGE_TOKEN=t-alice; [ "$(rrc)" = 0 ] && ok "M5 PR_D_AUTRUI retiré ⇒ alice réécrit la PR de ci (E6.1 rougit)" || ko "M5 rc $(rrc) : $(tail -1 "$TMP/req.out")"; else ko "M5 mutant no-op/incompilable"; fi
-M6=$(mutant m6 's#grep -v -F -- "\$\(cat "\$PUSH_TF"\)" "\$WORK/pusherr" \| grep -v -F -- "\$FORGE_SECRET"#cat "$WORK/pusherr"#')
-if [ -n "$M6" ]; then set_ctl '{"open":[]}'; git -C "$ORIGIN" update-ref -d refs/heads/provision/appa-rec 2>/dev/null; reqm "$M6" rec FORGE_TOKEN=t-alice SHIM_PUSH_FAIL=1; [ "$(rrc)" = 1 ] && grep -q 't-alice' "$TMP/req.out" && ok "M6 filtre du push retiré ⇒ le token humain fuit dans la sortie (E10 rougit)" || ko "M6 rc $(rrc) : le mutant ne fuit pas"; else ko "M6 mutant no-op/incompilable"; fi
+# M6 (re-ciblé L2) : le détail du push passe par `redact "$PUSH_TF" < pusherr`
+# (le chemin du fichier en argument, jamais le secret en argv) ; le mutant le
+# remplace par un `cat` nu — l'ancien `grep -v` n'existe plus, un mutant qui le
+# viserait serait un no-op (compté ko).
+M6=$(mutant m6 's#redact "\$PUSH_TF" < "\$WORK/pusherr" >&2#cat "$WORK/pusherr" >\&2#')
+if [ -n "$M6" ]; then set_ctl '{"open":[]}'; git -C "$ORIGIN" update-ref -d refs/heads/provision/appa-rec 2>/dev/null; reqm "$M6" rec FORGE_TOKEN=t-alice SHIM_PUSH_FAIL=1; [ "$(rrc)" = 1 ] && grep -q 't-alice' "$TMP/req.out" && ok "M6 redact du push remplacé par cat ⇒ le token humain fuit dans la sortie (E10 rougit)" || ko "M6 rc $(rrc) : le mutant ne fuit pas"; else ko "M6 mutant no-op/incompilable"; fi
 M7=$(mutant m7 's#^requis\(\)\{.*#requis(){ :; }#')
 if [ -n "$M7" ]; then set_ctl '{"open":[]}'; reset_origin; reqm "$M7" dev REQ_APP=; { [ "$(rrc)" = 2 ] && grep -q 'REFUS: CHAMP_REQUIS' "$TMP/req.out"; } && ko "M7 requis() neutralisée refuse encore" || ok "M7 requis() neutralisée ⇒ REQ_APP vide n'est plus nommé (E9.1 rougit)"; reset_origin; else ko "M7 mutant no-op/incompilable"; fi
 
@@ -439,7 +670,10 @@ if [ -n "$M7" ]; then set_ctl '{"open":[]}'; reset_origin; reqm "$M7" dev REQ_AP
 # qu'il était avant le 2026-09-10. C'est LE fail-open que E11.1/E11.3 mesurent :
 # le `-b <base>` échoue, le repli clone la HEAD en silence, et la demande
 # continue vers une base que le clone n'a pas utilisée.
-M8=$(mutant m8 's#^if ! git clone -q --depth 1 -b "\$GIT_BASE" "\$CLONE_URL" "\$WORK/repo" 2>"\$WORK/clone.err"; then#if ! git clone -q --depth 1 -b "$GIT_BASE" "$CLONE_URL" "$WORK/repo" 2>"$WORK/clone.err" \&\& ! git clone -q --depth 1 "$CLONE_URL" "$WORK/repo"; then#')
+# (re-ciblé L2 : le clone n'est plus dans un `if !` — son VRAI rc est capturé
+# pour la ligne de debug — ; le mutant remet le repli sur la même ligne, et le
+# rc capturé devient celui du repli : 0.)
+M8=$(mutant m8 's#^git clone -q --depth 1 -b "\$GIT_BASE" "\$CLONE_URL" "\$WORK/repo" 2>"\$WORK/clone\.err"; rc=\$\?$#git clone -q --depth 1 -b "$GIT_BASE" "$CLONE_URL" "$WORK/repo" 2>"$WORK/clone.err" || git clone -q --depth 1 "$CLONE_URL" "$WORK/repo"; rc=$?#')
 if [ -n "$M8" ]; then
   set_ctl '{"open":[]}'; reset_origin; git -C "$ORIGIN" update-ref -d refs/heads/provision/appa-int 2>/dev/null || true
   reqm "$M8" int FORGE_TOKEN=t-alice GIT_BASE=develop
@@ -448,6 +682,107 @@ if [ -n "$M8" ]; then
     || ko "M8 le mutant refuse encore : rc $(rrc) — $(tail -1 "$TMP/req.out")"
   reset_origin
 else ko "M8 mutant no-op/incompilable"; fi
+
+# M9 : la ligne PORTEUSE du mode debug. Le token humain a été retiré de
+# l'environnement (A7) : redact ne le connaît que par DBG_SECRET_FILES. Sans
+# cette ligne, le stderr du push raté — où le shim recopie le secret de
+# l'askpass — sort EN CLAIR dans la ligne de debug « git: … ». Le refus, lui,
+# reste masqué (redact reçoit le fichier en argument) : la fuite est DANS une
+# ligne [dbg, et nulle part ailleurs — c'est ce que l'assertion cible.
+M9=$(mutant m9 '/^DBG_SECRET_FILES=/d')
+if [ -n "$M9" ]; then
+  set_ctl '{"open":[]}'; git -C "$ORIGIN" update-ref -d refs/heads/provision/appa-rec 2>/dev/null
+  reqm2 "$M9" rec FORGE_TOKEN=t-alice SHIM_PUSH_FAIL=1 STOA_DEBUG=1
+  grep '^\[dbg' "$ERR" | grep -q 't-alice' \
+    && ok "M9 DBG_SECRET_FILES retirée ⇒ le token HUMAIN fuit dans la ligne de debug du push raté (E12.3d rougit : redact ne le connaît que par son fichier)" \
+    || ko "M9 rc $(rrc) : le mutant ne fuit pas dans une ligne [dbg — $(grep -c 't-alice' "$ERR") occurrence(s) de t-alice sur stderr, toutes hors [dbg"
+else ko "M9 mutant no-op/incompilable"; fi
+# M10 : une ligne de debug qui se tromperait de flux. `dbg_kv REL_PATH` devient
+# un `echo` (stdout) : PR_URL= y est toujours, le contrat « seul » ne suffirait
+# pas — c'est l'assertion « stdout = le contrat seul » (E12.1b) qui doit rougir.
+M10=$(mutant m10 's#^dbg_kv REL_PATH "\$REL_PATH"$#echo "REL_PATH=$REL_PATH"#')
+if [ -n "$M10" ]; then
+  reset_int
+  reqm2 "$M10" int FORGE_TOKEN=t-alice STOA_DEBUG=1
+  [ "$(rrc)" = 0 ] && grep -q '^PR_URL=' "$OUT" && grep -q '^REL_PATH=' "$OUT" \
+    && ok "M10 dbg_kv REL_PATH ⇒ echo : stdout porte « REL_PATH=… » à côté de PR_URL= (E12.1b rougit — « pas de [dbg » seul ne le verrait pas)" \
+    || ko "M10 rc $(rrc) : stdout sans REL_PATH= ($(grep -c . "$OUT") lignes)"
+  reset_int
+else ko "M10 mutant no-op/incompilable"; fi
+# M11 : l'ORDRE de dbg_git_err — COUPER puis masquer (la première rédaction de la
+# grammaire §3, corrigée par les revues B1/B3). Sur le stderr d'E12.3e (le secret
+# à cheval sur l'octet 400), la coupe laisse « t-ali », que ni redact ni le dbg
+# qui remasque derrière ne reconnaissent : cinq octets du token humain dans la
+# ligne « git: ». La longueur le trahit aussi : 400 octets coupés PUIS remasqués
+# (le masque fait 9 octets de plus que t-alice) en font 409, la forme livrée 400.
+M11=$(mutant m11 's#^(    m=")\$\(redact < "\$1" [|] tr#\1$(head -c 400 < "$1" | tr#')
+if [ -n "$M11" ]; then
+  set_ctl '{"open":[]}'; git -C "$ORIGIN" update-ref -d refs/heads/provision/appa-rec 2>/dev/null
+  reqm2 "$M11" rec FORGE_TOKEN=t-alice SHIM_PUSH_FAIL=1 "SHIM_PUSH_SECRET_AT=$SECRET_AT" STOA_DEBUG=1
+  grep '^\[dbg' "$ERR" | grep -qF -- "askpass a rendu $FRAG" \
+    && ok "M11 dbg_git_err coupe PUIS masque ⇒ « askpass a rendu $FRAG » : cinq octets du token humain fuient dans la ligne « git: », qui fait $(git_octets) octets au lieu de 400 (E12.3e ET E12.3f rougissent)" \
+    || ko "M11 rc $(rrc) : le mutant ne laisse pas de morceau — …$(git_line | tail -c 40)"
+else ko "M11 mutant no-op/incompilable"; fi
+# M12/M13 : le rc DIT n'est pas le rc REÇU — « -> rc 0 » écrit en dur à la place
+# de « -> rc $rc ». La décision qui suit lit $rc, pas la ligne : le refus reste,
+# la ligne MENT. Sans E12.1w (fetch) et E12.6a (clone), ces mutants traversaient
+# la suite en vert (relecture L2-B1, sondes S3/S6 : 6/6).
+M12=$(mutant m12 's#^dbg "git fetch --depth 1 \$CLONE_URL refs/heads/\$\{BRANCH\} -> rc \$rc"$#dbg "git fetch --depth 1 $CLONE_URL refs/heads/${BRANCH} -> rc 0"#')
+if [ -n "$M12" ]; then
+  reset_int
+  reqm2 "$M12" int FORGE_TOKEN=t-alice STOA_DEBUG=1
+  [ "$(rrc)" = 0 ] && ! grep -qE '^\[dbg [^]]*\] git fetch .* -> rc 128$' "$ERR" && grep -qE '^\[dbg [^]]*\] git fetch .* -> rc 0$' "$ERR" \
+    && ok "M12 « git fetch … -> rc 0 » en dur ⇒ le premier passage dit rc 0 là où git a rendu 128 (E12.1w rougit) — le produit, lui, est intact (rc 0)" \
+    || ko "M12 rc $(rrc) : $(grep -nE 'git fetch ' "$ERR" | head -2 | tr '\n' ' ')"
+  reset_int
+else ko "M12 mutant no-op/incompilable"; fi
+M13=$(mutant m13 's#^dbg "git clone --depth 1 -b \$GIT_BASE \$CLONE_URL -> rc \$rc"$#dbg "git clone --depth 1 -b $GIT_BASE $CLONE_URL -> rc 0"#')
+if [ -n "$M13" ]; then
+  reset_int
+  reqm "$M13" int FORGE_TOKEN=t-alice GIT_BASE=develop STOA_DEBUG=1
+  [ "$(rrc)" = 2 ] && grep -q 'REFUS: BRANCHE_DE_BASE_INTROUVABLE' "$OUT" && grep -qE '^\[dbg [^]]*\] git clone --depth 1 -b develop .* -> rc 0$' "$OUT" \
+    && ok "M13 « git clone … -> rc 0 » en dur ⇒ la ligne dit rc 0 alors que REFUS: BRANCHE_DE_BASE_INTROUVABLE suit (E12.6a rougit)" \
+    || ko "M13 rc $(rrc) : $(grep -nE 'git clone|REFUS' "$OUT" | head -2 | tr '\n' ' ')"
+  reset_int
+else ko "M13 mutant no-op/incompilable"; fi
+# M14 : « existe=oui » écrit en dur — la ligne PROV_FILE ment sur le fichier que
+# le refus, une ligne plus bas, dit absent. Sans E12.7b, invisible (sonde S4).
+M14=$(mutant m14 's#^  _ex=non; \[ ! -f "\$PROV_FILE" \] \|\| _ex=oui$#  _ex=oui#')
+if [ -n "$M14" ]; then
+  reset_int
+  reqm "$M14" int FORGE_TOKEN=t-alice GIT_SUBDIR=. STOA_DEBUG=1
+  [ "$(rrc)" = 2 ] && grep -q 'REFUS: PROVIDERS_MISSING' "$OUT" && grep -qE '^\[dbg [^]]*\] PROV_FILE=ansible/providers\.int\.yml existe=oui$' "$OUT" \
+    && ok "M14 « existe=oui » en dur ⇒ PROV_FILE dit « existe=oui » une ligne avant PROVIDERS_MISSING (E12.7b rougit)" \
+    || ko "M14 rc $(rrc) : $(grep -nE 'PROV_FILE|PROVIDERS' "$OUT" | head -2 | tr '\n' ' ')"
+  reset_int
+else ko "M14 mutant no-op/incompilable"; fi
+# M15 : le relais de forge_login (scripts/lib/forge-identity.sh) REVIENT à ce
+# qu'il était avant L2-B5 — la cause relayée sur rc ≠ 0 SEULEMENT. Sur succès, la
+# ligne « [dbg forge-api.py] GET …/user -> HTTP 200 » que python écrit est lue,
+# effacée, perdue : c'est E12.1n' qui rougit. Mutation sur COPIE de la lib, jamais
+# l'arbre ; mutant() lit $S — pointé sur la lib le temps de l'appel. La copie
+# vit dans un arbre miniature (scripts/lib + ci en liens) : la lib charge sa
+# voisine forge-api.sh par SON répertoire, et forge-api.sh cherche forge-api.py
+# et ../../ci/lib/dbg.sh à côté d'elle — une copie SEULE serait une lib amputée
+# (motif de test-archive-store ⑩). Appelée SEULE comme E0.2 (fi_run, LIB pointée
+# sur la copie), sous STOA_DEBUG=1 : le login est rendu, la ligne HTTP non. Cette
+# ABSENCE est doublée d'une PRÉSENCE sur le même appel — l'ÉTALON, la lib de
+# l'arbre : sans lui, un fi_run qui ne ferait pas parler python (STOA_DEBUG non
+# transmis, stub muet) rendrait le mutant vert pour rien.
+M15=$(S="$LIB" mutant m15 's#^  \[ -z "\$cause" \] \|\| printf#  [ "$rc" -eq 0 ] || [ -z "$cause" ] || printf#')
+if [ -n "$M15" ]; then
+  M15T="$MUT/tree"; mkdir -p "$M15T/scripts/lib"; ln -s "$REPO/ci" "$M15T/ci"
+  ln -s "$REPO/scripts/lib/forge-api.sh" "$REPO/scripts/lib/forge-api.py" "$M15T/scripts/lib/"
+  cp "$M15" "$M15T/scripts/lib/forge-identity.sh"
+  m15_user(){ grep -qE '^\[dbg forge-api\.py\] GET [^ ]+/user -> HTTP 200 \([0-9]+ octets\)$' "$1"; }
+  set_ctl '{}'; printf 't-alice' > "$TMP/tok"
+  L0=$(fi_run STOA_DEBUG=1 -- forge_login "$API" "$TMP/tok" 2>"$TMP/m15.ref"); RC0=$?
+  L=$(LIB="$M15T/scripts/lib/forge-identity.sh" fi_run STOA_DEBUG=1 -- forge_login "$API" "$TMP/tok" 2>"$TMP/m15.err"); RC=$?
+  [ "$RC0" = 0 ] && [ "$L0" = alice ] && m15_user "$TMP/m15.ref" \
+    && [ "$RC" = 0 ] && [ "$L" = alice ] && [ "$(users)" = 2 ] && ! m15_user "$TMP/m15.err" \
+    && ok "M15 relais de forge_login rendu conditionnel (rc ≠ 0 seulement) ⇒ même appel, même stub (deux whoami au journal) : l'étalon porte « GET …/user -> HTTP 200 », le mutant rend alice mais la ligne n'atteint plus stderr (E12.1n' rougit)" \
+    || ko "M15 étalon rc=$RC0 login='$L0' ligne=$(m15_user "$TMP/m15.ref" && echo oui || echo non) ; mutant rc=$RC login='$L' users=$(users) : $(head -c 300 "$TMP/m15.err" | tr '\n' ' ')"
+else ko "M15 mutant no-op/incompilable"; fi
 
 echo
 echo "═══════════════════════════════════════════════════"

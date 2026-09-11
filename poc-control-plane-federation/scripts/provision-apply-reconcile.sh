@@ -66,6 +66,9 @@
 #                 `git fetch origin <base>` et `git show` tournent)
 #   GIT_SUBDIR   (défaut poc-control-plane-federation : préfixe des chemins vus par la forge)
 #   MANIFEST_DIR (défaut clients/provisioned/applications, relatif à GIT_WORKTREE)
+#   STOA_DEBUG   (opt) mode debug SANS FUITE (ci/lib/dbg.sh, plan L2) : chaque
+#                décision de ce script se dit sur stderr, rédigée — le produit,
+#                les refus et les rc ne bougent pas (test-provision-apply-a2.sh §E)
 #
 # Sortie (RECONCILE_OUT) : GITEA_MERGED_BY= GITEA_REQUESTER= APP_NAME= ENV_NAME=
 #   MANIFEST=<MANIFEST_DIR>/<app>.ansible.yml  MERGED_DIGEST=sha256:… — écrit
@@ -104,10 +107,30 @@ GIT_HOST="${GIT_HOST:-}"
 GIT_REPO="${GIT_REPO:-ci/stoa-labs}"
 GIT_WEB_HOST="${GIT_WEB_HOST:-$GIT_HOST}"
 GIT_WORKTREE="${GIT_WORKTREE:-.}"
+# LE MODE DEBUG (STOA_DEBUG, plan L2 ; preuve : test-provision-apply-a2.sh §E).
+# dbg/dbg_kv de ci/lib/dbg.sh sont la SEULE voie de sortie : stderr seulement
+# (stdout est le PRODUIT — RECONCILE_OK, relu par le pipeline), rédigé
+# (littéraux connus du process et formes), `$?` préservé. Ce script ne redit
+# pas ce que les autorités disent déjà (FORGE_KIND…, GIT_BASE…, les lignes
+# HTTP) : il dit ce que LUI décide. Même résolution que ses libs ($SELF_DIR,
+# posé AVANT le cd) ; absent ⇒ ERREUR nommée, comme toute lib manquante.
+# dbg_init normalise et EXPORTE STOA_DEBUG : les enfants (forge-api.py,
+# provision-apply-comment.sh) parlent avec la même valeur. Pas de DBG_NAME : le
+# préfixe est le nom du script ($0), c'est ce qu'on lit dans un log Jenkins.
+# Pas de DBG_SECRET_FILES : ce script ne tient que FORGE_SECRET, que dbg.sh
+# relit dans l'environnement à chaque appel.
+# shellcheck source=ci/lib/dbg.sh
+. "$SELF_DIR/../ci/lib/dbg.sh" || { echo "ERREUR: ci/lib/dbg.sh introuvable ou illisible" >&2; exit 1; }
+dbg_init
 # shellcheck source=scripts/lib/repo-layout.sh
 . "$(dirname "$0")/lib/repo-layout.sh" || { echo "ERREUR: lib/repo-layout.sh introuvable" >&2; exit 1; }
 repo_layout_init || exit 2   # tiret NU + sentinelle « . » : « » n'arrive jamais de Jenkins
+# Vide ⇒ « <vide> » : c'est LE diagnostic d'un PR_HORS_PERIMETRE chez un client
+# qui a posé GIT_SUBDIR=. alors que sa forge préfixe les chemins (§E.1ab).
+dbg_kv SUB_PFX "$SUB_PFX"
 MANIFEST_DIR="${MANIFEST_DIR:-clients/provisioned/applications}"
+dbg_kv MANIFEST_DIR "$MANIFEST_DIR"
+dbg_kv GIT_WORKTREE "$GIT_WORKTREE"
 
 # shellcheck source=scripts/lib/app-manifest.sh
 . "$SELF_DIR/lib/app-manifest.sh" || { echo "ERREUR: $SELF_DIR/lib/app-manifest.sh introuvable" >&2; exit 1; }
@@ -128,6 +151,38 @@ TMP="$(mktemp -d /tmp/pa-reconcile.XXXXXX)"; trap 'rm -rf "$TMP"' EXIT
 
 # Valeur externe montrée dans le JOURNAL seulement : tronquée, échappée.
 shown(){ printf '%q' "$(printf '%s' "${1:-}" | head -c 80)"; }
+
+# git_err_une_ligne <fichier> [coupe=400] — le stderr d'un geste git pour UNE
+# ligne : masqué EN ENTIER (redact : littéraux du process + forme ://…@), PUIS
+# mis sur une ligne, PUIS coupé (400 octets par défaut) — dans cet ordre et
+# pas un autre.
+# Sous GIT_TRACE=1 (le knob de debug de git, qu'un client pose à côté de
+# STOA_DEBUG) git recopie l'URL NUE de l'origine (mesuré : 3 fois sur ≈ 600
+# octets, git 2.42 — 601 en anglais, 613 en français : seule la ligne « fatal »
+# varie, l'URL est aux mêmes offsets) ; couper AVANT de masquer laisserait un morceau de mot de
+# passe orphelin de son « @ », que la forme ne rattrape plus — la mesure de
+# git-base.sh (_git_base_stderr_relaye, §J.4e). L'ORDRE a son épreuve :
+# test-provision-apply-a2 §E.4d (mot de passe de 512 octets, la coupe à 400
+# tombe dedans) et son mutant §E.7c (coupe puis masque ⇒ le fragment passe).
+# dbg rédige une seconde fois :
+# le masque est un atome, c'est idempotent (dbg.sh, F.1-F.4). Here-string et
+# non tube pour la coupe : head ne ferme jamais un tube sous un écrivain encore
+# actif (SIGPIPE sous pipefail — même mesure).
+# DEUX APPELANTS (tour 3 L2-B3) : la ligne de debug « git: » (400, sous dbg_on
+# seulement — sans debug, ni python ni lecture, §E.6) et le REFUS
+# GITEA_RECONCILE_ECHEC du fetch (200 : la longueur qu'il a toujours eue).
+# Jusque-là ce refus relayait fetch.err BRUT, coupé avant tout masque : sous
+# GIT_TRACE=1, 11 octets du mot de passe de l'URL dans le refus — ce qu'un
+# client colle dans un ticket (mesuré ; §E.4e le garde, mutant §E.7f). Sur ce
+# chemin python tourne sans STOA_DEBUG (redact ne dépend pas du mode) : python3
+# est déjà exigé en amont (forge-api.sh, PYTHON3_REQUIS avant tout appel de
+# forge, donc avant ce fetch) ; s'il mourait, « <rédaction indisponible> » —
+# fail-closed. Le refus change de FORME, et de forme seulement : multi-ligne ⇒
+# UNE ligne (tr), blancs de fin retirés (sed) — un stderr d'UNE ligne (le cas
+# sans GIT_TRACE : git expurge lui-même l'userinfo) rend le refus OCTET POUR
+# OCTET identique à l'ancien (mesuré tour 3, e4.se avant/après) ; aucune
+# section B n'exerce un fetch en échec, seules E.4/E.4d-f le font (§E.4f).
+git_err_une_ligne(){ local m; m="$(redact < "$1" | tr '\n' ' ' | sed 's/[[:space:]]*$//')"; head -c "${2:-400}" <<<"$m"; }
 
 # Le refus est RAPPORTÉ sur la PR (tableau de bord, ADR-081) — sous le marqueur
 # des REFUS, et seulement si la forge a confirmé qu'il s'agit d'une PR de
@@ -175,11 +230,18 @@ case "$BR_RC" in
   4) APP_NAME=""; ENV_NAME=""; fail BRANCH_FORMAT_INVALIDE "palier hors de ^[a-z0-9]+$ (valeur : $(shown "${REST##*-}"))" ;;
   *) APP_NAME=""; ENV_NAME=""; fail BRANCH_FORMAT_INVALIDE "PR_BRANCH hors provision/<app>-<env> (valeur : $(shown "$PR_BRANCH"))" ;;
 esac
+dbg_kv APP_NAME "$APP_NAME"
+dbg_kv ENV_NAME "$ENV_NAME"
 # Sans point ni slash possible dans APP_NAME (classe ci-dessus) : le chemin du
 # manifeste ne peut pas sortir de MANIFEST_DIR.
 MANIFEST="${MANIFEST_DIR}/${APP_NAME}.ansible.yml"
 FORGE_MANIFEST="${SUB_PFX}${MANIFEST}"
 FORGE_CERT="${SUB_PFX}clients/provisioned/certs/${APP_NAME}-${ENV_NAME}.crt"
+# Les chemins tels que CE script les compose : celui que git lit, ceux que la
+# forge compare (§3) — c'est l'écart entre les deux qu'on diagnostique.
+dbg_kv MANIFEST "$MANIFEST"
+dbg_kv FORGE_MANIFEST "$FORGE_MANIFEST"
+dbg_kv FORGE_CERT "$FORGE_CERT"
 
 # ── 1bis. LA BRANCHE DE BASE (L3, 2026-09-10) ────────────────────────────────
 # Ce script ne clone RIEN : il lit le worktree que Jenkins a déjà posé. La
@@ -200,6 +262,9 @@ FORGE_CERT="${SUB_PFX}clients/provisioned/certs/${APP_NAME}-${ENV_NAME}.crt"
 if [ -z "${GIT_CLONE_URL:-}" ]; then
   GIT_CLONE_URL="$(git -C "$GIT_WORKTREE" remote get-url origin 2>/dev/null || true)"
 fi
+# L'URL est UTILE (c'est elle qu'on diagnostique) ; un `user:secret@` qu'elle
+# porterait est masqué par redact (forme ://…@), l'hôte reste (§E.5a).
+dbg_kv GIT_CLONE_URL "$GIT_CLONE_URL"
 git_base_init "$GIT_CLONE_URL" \
   || fail GITEA_RECONCILE_ECHEC "branche par défaut du dépôt inconnue (cause ci-dessus) — sans elle, ni la base de la PR ni l'ancêtre ne peuvent être vérifiés" \
                                 "la branche par défaut du dépôt n'a pas pu être déterminée"
@@ -221,6 +286,22 @@ forge_kv R pr_get "$PR_NUMBER" 2>"$TMP/forge.err" || {
   cat "$TMP/forge.err" >&2
   fail GITEA_RECONCILE_ECHEC "lecture de ${GIT_REPO}#${PR_NUMBER} sur la forge en échec — sans la vérité de la forge, pas d'apply (cause ci-dessus)"
 }
+# Sur SUCCÈS, forge.err ne porte que la ligne de debug de forge-api.py
+# (« GET …/pulls/n -> HTTP 200 ») : sans relais elle serait PERDUE — la capture
+# n'existe que pour que la cause d'un refus précède le verdict. Sans debug le
+# fichier est vide et rien ne s'écrit (§E.1o ; mutant §E.7a).
+[ -s "$TMP/forge.err" ] && cat "$TMP/forge.err" >&2
+# Ce que la forge a rendu, en UNE ligne, AVANT le schéma et la confrontation :
+# un refus qui suit se lit avec ses données. Valeurs BRUTES, comme la jumelle
+# de gitea-pr-confirm.sh : dbg masque, et il masque APRÈS — pas `shown` ici.
+# `shown` (head -c 80 puis %q) transforme AVANT le masque : le %q défait un
+# littéral qui porte un espace ou un « $ » (« <secret masqué>\ w0rd\$2026\! »,
+# 10 caractères sur 15 en clair) et la coupe à 80 tranche dans un secret qui
+# la chevauche (« …rrrtok-a ») — l'ordre coupe-puis-masque que ce lot interdit
+# partout (relecture finale I-3 ; test-provision-apply-a2 §E.9, mutants E.9e/f).
+# Cette ligne n'est pas relayée sur la PR : rien à échapper ; forge-api refuse
+# déjà un retour-ligne dans une valeur de forge (B.7).
+dbg "PR #${PR_NUMBER} relue : state=${R_STATE_RAW} head=${R_HEAD_REF} base=${R_BASE_REF} merged=${R_MERGED} merge_sha=${R_MERGE_SHA} merged_by=${R_MERGED_BY}"
 # Le SCHÉMA, dans le vocabulaire normalisé : l'adaptateur rend VIDE ce que la
 # forge ne rend pas (il ne distingue pas « absent » de « nul »), et `merged`
 # vaut 0 dans les deux cas — le schéma se fonde donc sur ce qu'une PR ne peut
@@ -264,6 +345,9 @@ forge pr_files "$PR_NUMBER" > "$TMP/files" 2>"$TMP/files.err" || {
   cat "$TMP/files.err" >&2
   fail GITEA_RECONCILE_ECHEC "lecture des fichiers de ${GIT_REPO}#${PR_NUMBER} en échec (cause ci-dessus)"
 }
+# Même relais que forge.err : sur succès, les lignes de debug de la pagination
+# (« GET …/files?page=n -> HTTP 200 ») seraient perdues (§E.1q).
+[ -s "$TMP/files.err" ] && cat "$TMP/files.err" >&2
 # Hors périmètre = tout chemin qui n'est ni le manifeste ni le certificat DE CE
 # PALIER ; montrés au plus cinq, tronqués, sans blanc (ils entrent dans un
 # message d'une ligne relayé sur la PR).
@@ -272,6 +356,7 @@ FILES_VERDICT=FILES_OK
 if [ ! -s "$TMP/files" ]; then FILES_VERDICT=FILES_VIDE
 elif [ -n "$EXTRA" ]; then FILES_VERDICT="FILES_HORS ${EXTRA% }"
 fi
+dbg_kv FILES_VERDICT "$FILES_VERDICT"   # déjà borné : cinq chemins au plus, tronqués
 case "$FILES_VERDICT" in
   FILES_OK) ;;
   FILES_VIDE)  fail PR_HORS_PERIMETRE "${GIT_REPO}#${PR_NUMBER} ne modifie aucun fichier — rien à projeter" "la PR ne modifie aucun fichier" ;;
@@ -281,21 +366,47 @@ case "$FILES_VERDICT" in
 esac
 
 # ── 4. GIT = LA VÉRITÉ sur la branche de base : ancêtre, palier non supplanté ─
-git -C "$GIT_WORKTREE" fetch -q origin "$GIT_BASE" 2>"$TMP/fetch.err" \
-  || fail GITEA_RECONCILE_ECHEC "git fetch origin ${GIT_BASE} en échec dans ${GIT_WORKTREE} : $(head -c 200 "$TMP/fetch.err")"
-git -C "$GIT_WORKTREE" merge-base --is-ancestor "$MERGE_SHA" "origin/${GIT_BASE}" \
+# Chaque geste git : son rc est CAPTURÉ (`cmd; RC_GIT=$?`) et dit AVANT le
+# verdict — le VRAI rc, pas un `||` qui le résume ; la décision qui suit est la
+# même qu'avant (mêmes refus, mêmes codes, mêmes messages : §B reste vert sans
+# STOA_DEBUG). Le stderr du fetch est relayé, masqué avant coupe
+# (git_err_une_ligne) — dans la ligne de debug (400) ET dans le refus (200 :
+# tour 3 L2-B3, il le relayait BRUT, voir le helper) ; celui de merge-base
+# n'est pas capturé (il n'a jamais été jeté : il tombe dans le journal, comme
+# avant).
+git -C "$GIT_WORKTREE" fetch -q origin "$GIT_BASE" 2>"$TMP/fetch.err"; RC_GIT=$?
+dbg "git fetch origin ${GIT_BASE} -> rc ${RC_GIT}"
+if dbg_on && [ -s "$TMP/fetch.err" ]; then dbg "  git: $(git_err_une_ligne "$TMP/fetch.err")"; fi
+[ "$RC_GIT" -eq 0 ] \
+  || fail GITEA_RECONCILE_ECHEC "git fetch origin ${GIT_BASE} en échec dans ${GIT_WORKTREE} : $(git_err_une_ligne "$TMP/fetch.err" 200)"
+# rc 1 = pas un ancêtre : C'EST la décision MERGE_SHA_NON_ANCETRE ; 128 = SHA
+# inconnu du dépôt (le refus est le même, la ligne dit lequel — §E.3a).
+git -C "$GIT_WORKTREE" merge-base --is-ancestor "$MERGE_SHA" "origin/${GIT_BASE}"; RC_GIT=$?
+dbg "git merge-base --is-ancestor ${MERGE_SHA} origin/${GIT_BASE} -> rc ${RC_GIT}"
+[ "$RC_GIT" -eq 0 ] \
   || fail MERGE_SHA_NON_ANCETRE "${MERGE_SHA} n'est pas un ancêtre de ${GIT_BASE} — le SHA ne correspond pas à un commit fusionné sur la branche protégée" \
                                 "le SHA de merge n'est pas sur ${GIT_BASE}"
-git -C "$GIT_WORKTREE" show "${MERGE_SHA}:./${MANIFEST}" > "$TMP/merged.yml" 2>/dev/null \
+# Les `2>/dev/null` des `git show` restent : leur message ne dit rien que le rc
+# et le refus (chemin, SHA) ne disent déjà — la ligne de debug porte les deux.
+# Chacune des quatre a son rc 128 devant le refus (§E.3d-i : c0, master sans le
+# manifeste ; §E.8g-h : Repli-De = c0, parent 1 sans le manifeste) et son mutant
+# « rc 0 en dur » (§E.7e).
+git -C "$GIT_WORKTREE" show "${MERGE_SHA}:./${MANIFEST}" > "$TMP/merged.yml" 2>/dev/null; RC_GIT=$?
+dbg "git show ${MERGE_SHA}:./${MANIFEST} -> rc ${RC_GIT}"
+[ "$RC_GIT" -eq 0 ] \
   || fail MANIFESTE_ABSENT "${MANIFEST} absent de l'arbre au SHA mergé ${MERGE_SHA}" "le manifeste de l'application est absent au SHA mergé"
-git -C "$GIT_WORKTREE" show "origin/${GIT_BASE}:./${MANIFEST}" > "$TMP/base.yml" 2>/dev/null \
+git -C "$GIT_WORKTREE" show "origin/${GIT_BASE}:./${MANIFEST}" > "$TMP/base.yml" 2>/dev/null; RC_GIT=$?
+dbg "git show origin/${GIT_BASE}:./${MANIFEST} -> rc ${RC_GIT}"
+[ "$RC_GIT" -eq 0 ] \
   || fail MANIFESTE_ABSENT "${MANIFEST} absent de ${GIT_BASE} (application retirée depuis ?) — rien à projeter" "le manifeste de l'application n'est plus sur ${GIT_BASE}"
 MERGED_DIGEST=$(app_manifest_digest_env "$TMP/merged.yml" "$ENV_NAME" 2>"$TMP/dg.err") \
   || fail PALIER_ABSENT "le manifeste au SHA mergé ne déclare pas le palier ${ENV_NAME} ou est illisible : $(head -c 200 "$TMP/dg.err" | tr '\n' ' ')" \
                         "le manifeste au SHA mergé ne déclare pas ce palier (ou est illisible)"
+dbg_kv MERGED_DIGEST "$MERGED_DIGEST"
 BASE_DIGEST=$(app_manifest_digest_env "$TMP/base.yml" "$ENV_NAME" 2>"$TMP/dg2.err") \
   || fail PALIER_SUPPLANTE "${GIT_BASE} ne déclare plus le palier ${ENV_NAME} pour ${APP_NAME} (ou son manifeste est illisible) : $(head -c 200 "$TMP/dg2.err" | tr '\n' ' ') — rejouer une demande" \
                            "la branche de base ne déclare plus ce palier pour cette application"
+dbg_kv BASE_DIGEST "$BASE_DIGEST"   # ≠ MERGED_DIGEST ⇒ PALIER_SUPPLANTE : les deux se lisent avant le verdict
 [ "$MERGED_DIGEST" = "$BASE_DIGEST" ] \
   || fail PALIER_SUPPLANTE "${GIT_BASE} porte un état plus récent de ${APP_NAME}/${ENV_NAME} que ${GIT_REPO}#${PR_NUMBER} (digest mergé ${MERGED_DIGEST} ≠ ${GIT_BASE} ${BASE_DIGEST}) — un rejeu ne re-projette jamais un état dépassé : rejouer une demande, ou le repli (A6)" \
                            "la branche de base porte un état plus récent de ce palier que cette PR (rejeu d'un webhook ancien ?) — rejouer une demande, ou le repli A6"
@@ -308,16 +419,25 @@ BASE_DIGEST=$(app_manifest_digest_env "$TMP/base.yml" "$ENV_NAME" 2>"$TMP/dg2.er
 # d'avant » d'une base qui n'existe plus : refus, avant la pause. Certificat par
 # identifiant de blob (aucun contenu lu). INERTE sans trailer (toute PR non-repli,
 # un squash) : rien d'autre ne change dans ce script.
+# Le `2>/dev/null` du rev-parse reste : ${MERGE_SHA}^2 est une ref FACULTATIVE
+# (absente de tout commit sans second parent — squash, fast-forward), son
+# absence est le cas normal, pas un diagnostic. REPLI_DE se dit ensuite, vide
+# compris : « <vide> » = pas un repli, le bloc est inerte (§E.1y).
 P2=$(git -C "$GIT_WORKTREE" rev-parse -q --verify "${MERGE_SHA}^2" 2>/dev/null || true)
 REPLI_DE=""
 [ -n "$P2" ] && REPLI_DE=$(git -C "$GIT_WORKTREE" log -1 --format=%B "$P2" | sed -n 's/^Repli-De: \([0-9a-f]\{40\}\).*/\1/p' | head -1)
+dbg_kv REPLI_DE "$REPLI_DE"
 if [ -n "$REPLI_DE" ]; then
   P1=$(git -C "$GIT_WORKTREE" rev-parse "${MERGE_SHA}^1")
   CERT_REL="clients/provisioned/certs/${APP_NAME}-${ENV_NAME}.crt"
-  git -C "$GIT_WORKTREE" show "${P1}:./${MANIFEST}" > "$TMP/p1.yml" 2>/dev/null \
+  git -C "$GIT_WORKTREE" show "${P1}:./${MANIFEST}" > "$TMP/p1.yml" 2>/dev/null; RC_GIT=$?
+  dbg "git show ${P1}:./${MANIFEST} -> rc ${RC_GIT}"
+  [ "$RC_GIT" -eq 0 ] \
     || fail REPLI_PERIME "${MANIFEST} absent de ${GIT_BASE} juste avant le merge (${P1}) — ${GIT_BASE} a bougé depuis la demande de repli ; rejouer la demande de repli" \
                          "la branche de base a bougé pour ce palier entre la demande de repli et son merge (manifeste absent avant le merge) — rejouer la demande de repli"
-  git -C "$GIT_WORKTREE" show "${REPLI_DE}:./${MANIFEST}" > "$TMP/de.yml" 2>/dev/null \
+  git -C "$GIT_WORKTREE" show "${REPLI_DE}:./${MANIFEST}" > "$TMP/de.yml" 2>/dev/null; RC_GIT=$?
+  dbg "git show ${REPLI_DE}:./${MANIFEST} -> rc ${RC_GIT}"
+  [ "$RC_GIT" -eq 0 ] \
     || fail REPLI_PERIME "la référence Repli-De ${REPLI_DE} ne porte pas ${MANIFEST}" "la référence Repli-De de la PR est illisible — rejouer la demande de repli"
   D_P1=$(app_manifest_digest_env "$TMP/p1.yml" "$ENV_NAME" 2>/dev/null); D_DE=$(app_manifest_digest_env "$TMP/de.yml" "$ENV_NAME" 2>/dev/null)
   [ -n "$D_P1" ] && [ "$D_P1" = "$D_DE" ] \

@@ -82,8 +82,10 @@
 #     l'environnement de l'appelant, donc de son enveloppe d'authentification,
 #     comme le clone qui vient d'échouer. [désignation] est le nom que
 #     l'appelant donne au dépôt dans SES termes (ex. `ci/stoa-labs`) — à défaut,
-#     l'URL expurgée. Le stderr du clone est relayé, expurgé lui aussi, tronqué
-#     à 300 octets et mis sur une ligne.
+#     l'URL expurgée. Le stderr du clone est relayé : expurgé EN ENTIER, puis
+#     mis sur une ligne, puis tronqué à 300 octets — dans cet ordre, parce que
+#     sous GIT_TRACE=1 git y recopie l'URL nue et qu'une coupe AVANT le masque
+#     en laissait un morceau de mot de passe (_git_base_stderr_relaye, §J.4e).
 #
 #   git_base_avec_basic <login> <NOM-de-variable-du-secret> <commande…>
 #     EXÉCUTE <commande…> sous l'enveloppe `GIT_CONFIG_COUNT=1
@@ -126,11 +128,45 @@
 # lignes d'information : celle qui rend une pose auditable ne doit pas, elle,
 # rendre un jeton lisible.
 #
+# LE MODE DEBUG (plan 2026-09-09, L2 ; preuve : test-git-base.sh §J). Quand la
+# chaîne casse chez un client, le log ne dit ni la branche retenue, ni d'où elle
+# vient, ni ce que le ls-remote a rendu. Sous STOA_DEBUG=1 la lib le dit, par
+# dbg/dbg_kv de ci/lib/dbg.sh — STDERR seulement (git_base_of rend la branche
+# sur stdout : une ligne égarée y deviendrait une branche), APRÈS rédaction, le
+# $? de l'appelant préservé :
+#   [dbg <script>] git ls-remote --symref <url masquée> HEAD -> rc <rc> (<n> octets)
+#   [dbg <script>] GIT_BASE=<branche>            [dbg <script>] GIT_BASE_ORIGINE=knob|decouverte
+#   [dbg <script>] GIT_BASE_OF <url masquée>=<branche>
+# La ligne ls-remote PRÉCÈDE tout refus : sur le chemin d'échec, le rc se lit
+# avant le verdict. Le knob explicite ne coûte toujours aucun appel git (§B,
+# §J.2). L'URL est masquée par _git_base_url_masquee AVANT d'entrer dans dbg :
+# la ligne d'APPEL `+ dbg …` serait tracée telle quelle par le `-x` d'un
+# appelant (limite documentée de dbg.sh) — on ne confie à dbg que l'URL déjà
+# masquée ; redact la masque une seconde fois (forme ://…@). Deux filets : le
+# premier est éprouvé sur le REFUS, qui n'a que lui (§J.6b), le second sur la
+# ligne de debug (§J.6c, et §E de test-dbg-redaction.sh). Le stderr de git que
+# le REFUS relaie est masqué EN ENTIER avant d'être tronqué (§J.4c-e, §J.6d) :
+# sous GIT_TRACE=1 — le knob de debug de git, posé à côté de STOA_DEBUG — git
+# y recopie l'URL nue, et une coupe avant le masque en laissait un morceau.
+#
 # USAGE
 #   . "$(dirname "$0")/lib/git-base.sh"     # ou « . scripts/lib/git-base.sh » depuis la racine
 #   git_base_init "$CLONE_URL" || exit 2     # pose GIT_BASE, GIT_BASE_ORIGINE
 #   git clone -q --depth 1 -b "$GIT_BASE" "$CLONE_URL" …
 #   git_base_of "$TEAM_URL" >/dev/null || exit 2 ; base_equipe="$GIT_BASE_OF"
+
+# ci/lib/dbg.sh : le répertoire de CE fichier puis ../../ci/lib (le `..` est
+# résolu par le noyau DERRIÈRE un lien symbolique — §F.2 source la lib par un
+# lib/ lié depuis un autre cwd), repli $PWD/ci/lib (« . scripts/lib/git-base.sh »
+# depuis la racine). Absent ⇒ ERREUR nommée et return 1, comme toute lib
+# manquante : une lib qui se tairait faute de dbg.sh ne dirait rien de ce
+# qu'elle a décidé, et c'est ce silence que L2 corrige.
+_GIT_BASE_DBG="$(dirname "${BASH_SOURCE[0]:-$0}")/../../ci/lib/dbg.sh"
+[ -f "$_GIT_BASE_DBG" ] || _GIT_BASE_DBG="$PWD/ci/lib/dbg.sh"
+[ -f "$_GIT_BASE_DBG" ] \
+  || { echo "ERREUR: ci/lib/dbg.sh introuvable (cherché : $(dirname "${BASH_SOURCE[0]:-$0}")/../../ci/lib/dbg.sh, $PWD/ci/lib/dbg.sh)" >&2; return 1; }
+# shellcheck source=ci/lib/dbg.sh
+. "$_GIT_BASE_DBG"
 
 _GIT_BASE_MEMO="${_GIT_BASE_MEMO:-}"   # « <url>\t<branche>\n »… — jamais exportée
 _GIT_BASE_TAB=$'\t'
@@ -138,9 +174,38 @@ _GIT_BASE_NL=$'\n'
 
 _git_base_refus() { echo "REFUS: BRANCHE_PAR_DEFAUT_INCONNUE : $1" >&2; }
 
-# _git_base_url_masquee <url> — `scheme://user:secret@hôte` ⇒ `scheme://<masqué>@hôte`.
+# _git_base_masquer [fichier] — LE filtre : `scheme://user:secret@hôte` ⇒
+# `scheme://<masqué>@hôte`, sur chaque ligne de stdin (ou du fichier donné).
+# UNE forme, une autorité : l'URL d'un message et le stderr de git passent par
+# le même sed. L'hôte RESTE — c'est lui qu'on diagnostique.
+_git_base_masquer() { sed -E 's#://[^/@[:space:]]+@#://<masqué>@#g' "$@"; }
+# _git_base_url_masquee <url> — la forme, sur un argument.
 # git 2.42 expurge déjà l'URL dans « unable to access » ; on n'en dépend pas.
-_git_base_url_masquee() { printf '%s' "$1" | sed -E 's#://[^/@[:space:]]+@#://<masqué>@#g'; }
+_git_base_url_masquee() { printf '%s' "$1" | _git_base_masquer; }
+# _git_base_stderr_relaye <fichier> — le stderr de git tel qu'un REFUS le relaie :
+# masqué EN ENTIER, PUIS mis sur une ligne, PUIS tronqué à 300 octets — dans
+# cet ordre et pas un autre. MESURE (git 2.42.0, 2026-09-10, relecture L2-A2
+# F1) : sans GIT_TRACE, « fatal: unable to access 'http://127.0.0.1:1/x.git/' »
+# expurge l'userinfo lui-même (en locale française aussi) ; sous GIT_TRACE=1
+# hérité — LE knob de debug de git, qu'un client pose à côté de STOA_DEBUG et
+# que la lib hérite par contrat — git recopie l'URL NUE sept fois sur quatre
+# lignes (899 octets). Couper à 300 octets AVANT de masquer laissait alors
+# « u:S3cret-j », orphelin de son `@`, que la forme ://…@ ne prend plus : en
+# clair dans le REFUS pour 10 longueurs d'URL sur 91. Le masque d'abord : ce
+# que la coupe tranche ensuite, c'est « <masqué> », plus jamais un secret
+# (§J.4c-e ; l'ancien ordre est le mutant §J.6d). Pas de redact ici : le refus
+# ne dépend pas de python3 (fail-closed, il remplacerait tout le détail par
+# « <rédaction indisponible> »). Le masque entre dans une variable et la coupe
+# lit une here-string : head ne ferme jamais un tube sous un sed qui écrit
+# encore — mesuré sur 200 Ko sous `pipefail` : `printf | head -c 300` rend
+# 141 à l'affectation, `head -c 300 <<<"$m"` rend 0 ; et `-x` ne trace de la
+# here-string que `+ head -c 300`, jamais son contenu. Un fichier absent ou
+# vide ⇒ chaîne vide, en silence — l'appelant dit « (sans message) ».
+_git_base_stderr_relaye() {
+  local m
+  m="$(_git_base_masquer "${1:-}" 2>/dev/null | tr '\n' ' ')"
+  head -c 300 <<<"$m"
+}
 
 _git_base_memo_lire() {   # <url> → branche sur stdout ; rc 1 si inconnue
   local u b
@@ -173,7 +238,13 @@ _git_base_decouvrir() {
   masquee="$(_git_base_url_masquee "$url")"
   err="$(mktemp 2>/dev/null)" || err=/dev/null
   sortie=$(GIT_TERMINAL_PROMPT=0 git ls-remote --symref "$url" HEAD 2>"$err"); rc=$?
-  detail="$(_git_base_url_masquee "$(head -c 300 "$err" 2>/dev/null | tr '\n' ' ')")"
+  # La ligne de debug PRÉCÈDE tout refus : sur le chemin d'échec, le rc se lit
+  # avant le verdict — c'est le point du mode debug (§J.3 vérifie l'ordre).
+  dbg "git ls-remote --symref ${masquee} HEAD -> rc ${rc} (${#sortie} octets)"
+  # Le stderr de git, masqué EN ENTIER puis tronqué — l'ordre est la mesure
+  # consignée sur _git_base_stderr_relaye : sous GIT_TRACE=1, git y recopie
+  # l'URL nue (§J.4c-d).
+  detail="$(_git_base_stderr_relaye "$err")"
   [ "$err" = /dev/null ] || rm -f "$err"
   if [ "$rc" -ne 0 ]; then
     _git_base_refus "git ls-remote --symref ${masquee} HEAD a échoué (rc ${rc}) : ${detail:-(sans message)} — dépôt injoignable ou droits insuffisants ; l'enveloppe d'authentification du clone (GIT_CONFIG_*/GIT_ASKPASS) vaut ici aussi ; sinon poser GIT_BASE explicitement"
@@ -218,6 +289,10 @@ git_base_init() {
     # ne se distingue plus d'un littéral — cf. l'entête, auditabilité d'une pose.
     printf 'git-base: GIT_BASE=%s découvert — HEAD annoncée par %s (ls-remote --symref)\n' "$b" "$(_git_base_url_masquee "$url")" >&2
   fi
+  # Après la décision, quelle que soit la voie : ce qui est retenu, et d'où ça
+  # vient — stderr, rédigé (§J.1, §J.2). Un enfant qui hérite le redit pour lui.
+  dbg_kv GIT_BASE "$GIT_BASE"
+  dbg_kv GIT_BASE_ORIGINE "$GIT_BASE_ORIGINE"
   _GIT_BASE_INIT_FAIT=1
   export GIT_BASE GIT_BASE_ORIGINE
 }
@@ -239,6 +314,8 @@ git_base_of() {
       printf 'git-base: %s a pour HEAD %s (découverte)\n' "$(_git_base_url_masquee "$url")" "$b" >&2
     fi
   fi
+  # À chaque décision, mémoïsée ou découverte : l'URL (masquée) et sa branche.
+  dbg "GIT_BASE_OF $(_git_base_url_masquee "$url")=${b}"
   # shellcheck disable=SC2034  # posée POUR L'APPELANT (le contrat : stdout + variable, sans sous-shell)
   GIT_BASE_OF="$b"
   printf '%s\n' "$b"
@@ -250,10 +327,10 @@ git_base_of() {
 git_base_clone_refus() {
   local url="${1:-}" branche="${2:-}" errf="${3:-}" designation="${4:-}" detail rc=0
   [ -n "$designation" ] || designation="$(_git_base_url_masquee "$url")"
-  # Le stderr du clone est relayé, mais git peut y citer l'URL : on n'en relaie
-  # jamais la partie userinfo. Une ligne, 300 octets — un dump complet noierait
-  # le refus qui le précède.
-  detail="$(_git_base_url_masquee "$(head -c 300 "$errf" 2>/dev/null | tr '\n' ' ')")"
+  # Le stderr du clone est relayé, mais git y cite l'URL (nue, sous GIT_TRACE=1) :
+  # masqué EN ENTIER, puis une ligne, puis 300 octets — un dump complet noierait
+  # le refus qui le précède (_git_base_stderr_relaye, §J.4e).
+  detail="$(_git_base_stderr_relaye "$errf")"
   # rc 0 la branche existe (le clone a donc échoué pour une autre raison), rc 2
   # le dépôt a répondu mais ne l'a pas, rc autre le dépôt n'a pas répondu.
   # GIT_TERMINAL_PROMPT=0 comme partout dans cette lib : sans terminal, un dépôt

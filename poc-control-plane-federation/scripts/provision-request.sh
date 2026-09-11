@@ -39,6 +39,11 @@
 #                  plus le chemin d'API de Gitea ni son en-tête, il nomme des verbes.
 #   MANIFEST_DIR   dossier des manifestes dans le repo
 #                  (défaut poc-control-plane-federation/clients/provisioned/applications)
+#   STOA_DEBUG     mode debug SANS FUITE (ci/lib/dbg.sh, L2 2026-09-10) : ce que
+#                  le script DÉCIDE (disposition, identité, URL, rc de chaque
+#                  geste git) sur STDERR seulement, rédigé — jamais un token,
+#                  jamais stdout (le produit [n/5], PR_URL=, OK: ne bouge pas).
+#                  Preuve : scripts/test-app-request-a7.sh E12, M6/M9/M10.
 #
 # Task 4 (P3) — identité entrante, TOUS OPTIONNELS. Absents = comportement
 # octet pour octet identique à avant (preuve de non-régression, cf. Step 4 du
@@ -109,6 +114,36 @@ set +x   # jamais de trace : le token ne doit pas fuiter
 # A1 : lecture / contrat figé / fusion d'un palier du manifeste (même base
 # de résolution que env-chain.sh : le cwd d'appel, avant tout cd).
 . "scripts/lib/app-manifest.sh" || { echo "ERREUR: scripts/lib/app-manifest.sh introuvable ou illisible" >&2; exit 1; }
+# L2 : le MODE DEBUG SANS FUITE. dbg/dbg_kv/redact de ci/lib/dbg.sh sont les
+# seules voies de sortie du debug (stderr seulement, rédigé, `$?` préservé) —
+# jamais `set -x` (le `set +x` en tête : un log Jenkins est archivé). Même base de
+# résolution que les libs ci-dessus : le cwd d'appel, AVANT tout cd. dbg_init
+# normalise et EXPORTE STOA_DEBUG pour que les enfants (forge-api.py, le plan
+# enchaîné) parlent avec la même valeur. Pas de DBG_NAME : le préfixe est le
+# nom de CE script, c'est lui qu'on veut lire dans un log Jenkins.
+# shellcheck source=ci/lib/dbg.sh
+. "ci/lib/dbg.sh" || { echo "ERREUR: ci/lib/dbg.sh introuvable ou illisible" >&2; exit 1; }
+dbg_init
+# dbg_git_err <fichier> — le stderr d'un geste git, relayé en mode debug sur
+# UNE ligne « git: … » : rédigé EN ENTIER, puis mis sur une ligne, puis tronqué
+# à 400 octets — dans cet ordre et pas un autre. Couper AVANT de masquer
+# laisserait un MORCEAU de secret que redact ne reconnaît plus (la classe de
+# défaut fermée trois fois par la relecture de la phase A ; même ordre que
+# _git_base_stderr_relaye, scripts/lib/git-base.sh). L'ORDRE a son épreuve :
+# E12.3e/f et le mutant M11 de scripts/test-app-request-a7.sh — un secret de
+# 7 octets À CHEVAL sur l'octet 400 ; coupé avant d'être masqué, il en laisse
+# cinq en clair, et dbg qui rédige une seconde fois ne les reconnaît pas (le
+# masque est un atome, remasquer est idempotent — mais un MORCEAU n'est pas un
+# littéral connu). Hors debug : rien n'est lu, rien n'est lancé ; fichier vide
+# ⇒ rien. Le `$?` reçu est rendu tel quel.
+dbg_git_err(){
+  local _rc=$? m
+  if dbg_on && [ -s "${1:-}" ]; then
+    m="$(redact < "$1" | tr '\n' ' ')"
+    dbg "  git: $(head -c 400 <<<"$m")"
+  fi
+  return "$_rc"
+}
 
 # Un champ OBLIGATOIRE vide se refuse en SE NOMMANT, comme tous les autres refus
 # de la chaîne — jamais par le `${VAR:?}` de bash, qui rend « <script>: line N:
@@ -167,6 +202,7 @@ case "${REQ_MODE:-}" in
        *)                 MODE="idp";;
      esac;;
 esac
+dbg_kv MODE "$MODE"
 # En mode idp, la claim (= clientId de l'appelant) EST l'identité → obligatoire.
 if [ "$MODE" = "idp" ] && [ -z "$REQ_CLIENT_ID" ]; then
   echo "REFUS: CHAMP_REQUIS : REQ_CLIENT_ID est vide alors que REQ_MODE=idp — obligatoire dans ce mode (formulaire app-request : champ « CLIENT_ID », la claim azp qui identifie l'app). Rien n'a été tenté." >&2; exit 2
@@ -193,6 +229,14 @@ elif [ -n "${FORGE_TOKEN:-}" ]; then
 fi
 unset FORGE_TOKEN FORGE_TOKEN_FILE
 CI_TF="$TOKENS_DIR/ci"; printf '%s' "$FORGE_SECRET" > "$CI_TF"
+# L2 — LIGNE PORTEUSE du mode debug. Le token humain vient d'être retiré de
+# l'environnement : redact (ci/lib/dbg.sh) ne le connaît donc que par son
+# FICHIER, et c'est DBG_SECRET_FILES (un chemin par ligne) qui le lui nomme.
+# Variable de shell, PAS exportée : les enfants ne portent pas le token humain,
+# ils n'ont pas à connaître son fichier. Sans cette ligne, le stderr d'un push
+# raté — git y recopie ce que l'askpass a rendu — sortirait EN CLAIR dans la
+# ligne de debug « git: … » (test-app-request-a7 M9 la retire, E12.3 rougit).
+DBG_SECRET_FILES="$CI_TF"; [ -z "$FORGE_TF" ] || DBG_SECRET_FILES="$DBG_SECRET_FILES"$'\n'"$FORGE_TF"
 GITEA_SERVICE_LOGINS="${GITEA_SERVICE_LOGINS:-ci}"
 REQ_CHANGE_REF="${REQ_CHANGE_REF:-}"
 REQ_PV_REF="${REQ_PV_REF:-}"
@@ -215,6 +259,7 @@ GIT_WEB_HOST="${GIT_WEB_HOST:-$GIT_HOST}"   # l'adresse HUMAINE, si elle diffèr
 # shellcheck source=scripts/lib/repo-layout.sh
 . "scripts/lib/repo-layout.sh" || { echo "ERREUR: scripts/lib/repo-layout.sh introuvable ou illisible" >&2; exit 1; }
 repo_layout_init || exit 2
+dbg_kv SUB_PFX "$SUB_PFX"   # vide ⇒ « <vide> » : le livrable EST la racine — c'est le diagnostic
 # LA branche par défaut du dépôt de la forge, une autorité (L3) : la lib est
 # SOURCÉE ici, avant le `cd` dans le clone ; `git_base_init` est joué plus bas,
 # quand l'URL et l'enveloppe d'authentification existent.
@@ -242,6 +287,7 @@ FORGE_API_LIB="$(cd scripts/lib 2>/dev/null && pwd)/forge-api.sh"
 # FORGE_API_AUTH selon le visage (REFUS: rc 2 nommé, ERREUR: rc 1).
 forge_api_init || { rc=$?; exit "$rc"; }
 MANIFEST_DIR="${MANIFEST_DIR:-clients/provisioned/applications}"
+dbg_kv MANIFEST_DIR "$MANIFEST_DIR"
 
 # Garde-fous d'entrée : noms sûrs (pas d'injection dans un path/branche/YAML).
 # REQ_CLIENT_ID est optionnel (internal) → validé seulement s'il est fourni.
@@ -410,6 +456,7 @@ if [ -n "$FORGE_TF" ]; then
   FORGE_LOGIN="$(forge_login "" "$FORGE_TF")" || { rc=$?; [ "$rc" = 2 ] && exit 2; exit 1; }
   forge_is_service "$FORGE_LOGIN" "$GITEA_SERVICE_LOGINS" && FORGE_LOGIN="(service)"
 fi
+dbg_kv FORGE_LOGIN "$FORGE_LOGIN"
 if [ "$FOUREYES" = 1 ] && [ "$FORGE_LOGIN" = "(service)" ]; then
   fail "REQUESTER_UNKNOWN : la porte vers '$REQ_ENV' exige les quatre yeux ; une PR ouverte par un compte de service (${GITEA_SERVICE_LOGINS}) serait refusée REQUESTER_UNKNOWN à l'apply — fournir FORGE_TOKEN (formulaire : votre token de forge, scopes read:user + write:repository) ; voie machine : décision client n°3 — aucune PR ouverte"
 fi
@@ -417,9 +464,12 @@ fi
 # n'entre que dans l'askpass et le trailer, jamais dans une URL.
 PUSH_LOGIN="$FORGE_LOGIN"; [ "$PUSH_LOGIN" = "(service)" ] && PUSH_LOGIN=ci
 PUSH_TF="${FORGE_TF:-$CI_TF}"
+dbg_kv PUSH_LOGIN "$PUSH_LOGIN"
 
 BRANCH="provision/${REQ_APP}-${REQ_ENV}"
 REL_PATH="${SUB_PFX}${MANIFEST_DIR}/${REQ_APP}.ansible.yml"
+dbg_kv BRANCH "$BRANCH"
+dbg_kv REL_PATH "$REL_PATH"
 WORK="$(mktemp -d /tmp/provreq.XXXXXX)"
 # Chemin du script résolu AVANT tout `cd` : ce script se déplace dans le clone
 # ($WORK/repo) pour rendre le manifeste, et un `dirname "$0"` relatif n'y
@@ -443,6 +493,10 @@ export GIT_ASKPASS GIT_TERMINAL_PROMPT=0
 CLONE_URL="${GIT_BASE_URL}/${GIT_REPO}.git"
 # A6 : les deux URL git sont surchargeables (épreuves hors ligne sur un dépôt nu en file://) — défauts = inchangés.
 CLONE_URL="${GIT_CLONE_URL:-$CLONE_URL}"; PUSH_URL="${GIT_PUSH_URL:-$PUSH_URL}"
+# Les URL COMPOSÉES : c'est elles qu'on diagnostique (le « http://https:// » du
+# 2026-09-03 se serait lu ici). Un userinfo éventuel est masqué par redact.
+dbg_kv CLONE_URL "$CLONE_URL"
+dbg_kv PUSH_URL "$PUSH_URL"
 # LA BRANCHE DE BASE, ICI : l'URL de clone est composée, GIT_ASKPASS est EXPORTÉ
 # (deux lignes plus haut) — le `git ls-remote` de la lib hérite donc de la MÊME
 # enveloppe d'authentification que le clone. Refus déjà nommé par la lib
@@ -472,7 +526,13 @@ echo "[1/5] clone ${GIT_REPO} (base ${GIT_BASE})"
 # sous-lot 4b : il était écrit à l'identique dans trois scripts, et un
 # diagnostic recopié dérive. rc 2 = branche absente d'un dépôt qui a répondu,
 # rc 1 = dépôt injoignable ; la fonction ne rend jamais 0.
-if ! git clone -q --depth 1 -b "$GIT_BASE" "$CLONE_URL" "$WORK/repo" 2>"$WORK/clone.err"; then
+# Le VRAI rc de git est capturé (L2) : la ligne de debug le dit, puis la même
+# décision qu'avant — un rc non nul est un refus, le diagnostic vit dans la lib.
+# (preuve : E12.1p rc 0 ; E12.6a rc 128 sur une branche absente ; M13, un rc écrit en dur).
+git clone -q --depth 1 -b "$GIT_BASE" "$CLONE_URL" "$WORK/repo" 2>"$WORK/clone.err"; rc=$?
+dbg "git clone --depth 1 -b $GIT_BASE $CLONE_URL -> rc $rc"
+dbg_git_err "$WORK/clone.err"
+if [ "$rc" -ne 0 ]; then
   git_base_clone_refus "$CLONE_URL" "$GIT_BASE" "$WORK/clone.err" "$GIT_REPO" || exit $?
 fi
 cd "$WORK/repo" || { echo "ERREUR: clone absent après succès annoncé — abandon avant toute écriture" >&2; exit 1; }
@@ -513,6 +573,8 @@ if [ -f "$REL_PATH" ]; then
   echo "  manifeste existant sur ${GIT_BASE} — paliers déclarés : ${MAN_ENVS:-(aucun)}"
   app_manifest_check_contract "$REL_PATH" "$REQ_APP" "$REQ_API" "$REQ_API_VER" "$REQ_AUDIENCE" "$MODE" "$REQ_TEAM" || exit 2
 fi
+dbg_kv MAN_EXISTS "$MAN_EXISTS"
+dbg_kv MAN_ENVS "$MAN_ENVS"   # première demande ⇒ « <vide> »
 
 # REQ_TEAM (suite) : l'appartenance ne se vérifie qu'ici — MAIS avant tout
 # geste Git qui compte (aucune branche créée, aucun push tenté). Un échec ici
@@ -529,6 +591,11 @@ if [ -n "$REQ_TEAM" ]; then
   # Le refus NOMME le chemin réellement lu : un message qui désigne un chemin
   # théorique envoie chercher au mauvais endroit — c'est lui qui a masqué le défaut.
   PROV_FILE="${SUB_PFX}ansible/providers.${REQ_ENV}.yml"
+  # Le chemin tel qu'il est LU, et s'il existe : c'est la question que
+  # PROVIDERS_MISSING posait au client (« présent, sous un autre préfixe »).
+  # (preuve : E12.1i « existe=oui » ; E12.7b « existe=non » avec GIT_SUBDIR=. ; M14, « oui » écrit en dur).
+  _ex=non; [ ! -f "$PROV_FILE" ] || _ex=oui
+  dbg_kv PROV_FILE "$PROV_FILE existe=$_ex"
   [ -f "$PROV_FILE" ] || fail "PROVIDERS_MISSING : ${PROV_FILE} absent sur ${GIT_BASE} (dépôt ${GIT_REPO})"
   # L'APPARTENANCE SE LIT EN YAML, JAMAIS PAR LA FORME D'UNE LIGNE. Le grep
   # textuel qui vivait ici exigeait EXACTEMENT deux espaces d'indentation et
@@ -546,6 +613,7 @@ if [ -n "$REQ_TEAM" ]; then
   esac
   TENANT="$REQ_TEAM"
 fi
+dbg_kv TENANT "$TENANT"   # vide ⇒ « <vide> » : en mode internal, c'est TENANT_INDETERMINE qui suit
 
 git checkout -q -B "$BRANCH"
 
@@ -586,6 +654,7 @@ if [ -n "$REQ_CERT_PEM" ]; then
   mkdir -p "$CERT_DIR"
   printf '%s\n' "$REQ_CERT_PEM" > "$CERT_FILE"
   chmod 0644 "$CERT_FILE"   # certificat PUBLIC (ADR-071) — pas un secret, versionné en clair
+  dbg_kv CERT_FILE "$CERT_FILE"   # le chemin seulement, jamais le PEM (public, mais il tient sur trente lignes)
 fi
 
 # Blocs optionnels du manifeste — chacun un no-op (chaîne vide) tant que le
@@ -740,7 +809,16 @@ git add "$REL_PATH"
 # PR), la réécrire ferait merger une demande sous un titre « repli ». Refus,
 # rien poussé. La tête relue devient le BAIL du push (--force-with-lease).
 REMOTE_TIP=""
-if git fetch -q --depth 1 "$CLONE_URL" "refs/heads/${BRANCH}" 2>/dev/null; then REMOTE_TIP=$(git rev-parse FETCH_HEAD 2>/dev/null || true); fi
+# Le stderr du fetch allait à /dev/null : en mode debug il est le diagnostic
+# (dépôt injoignable, ref absente = premier passage) — capturé, rc dit. Le
+# `rev-parse FETCH_HEAD 2>/dev/null || true` reste tel quel : il ne court
+# qu'après un fetch réussi, qui vient d'écrire FETCH_HEAD — son stderr n'a
+# pas de valeur diagnostique.
+git fetch -q --depth 1 "$CLONE_URL" "refs/heads/${BRANCH}" 2>"$WORK/fetch.err"; rc=$?
+dbg "git fetch --depth 1 $CLONE_URL refs/heads/${BRANCH} -> rc $rc"
+dbg_git_err "$WORK/fetch.err"
+if [ "$rc" -eq 0 ]; then REMOTE_TIP=$(git rev-parse FETCH_HEAD 2>/dev/null || true); fi
+dbg_kv REMOTE_TIP "$REMOTE_TIP"   # vide ⇒ « <vide> » : pas de branche distante, premier passage
 # ── A7 (hypothèse 10) — LA PR OUVERTE DE LA BRANCHE, relue AVANT le push ──────
 # Une PR ouverte n'appartient qu'à son auteur : la réutiliser (EXIST) sous une
 # autre identité ferait signer par un tiers un contenu poussé par un autre (le
@@ -756,6 +834,8 @@ OPEN_NUMBER=""; OPEN_LOGIN=""; OPEN_URL=""
 FORGE_SECRET_FILE="$CI_TF" forge_kv OPEN pr_find_open "$BRANCH" \
   || fail "FORGE_ILLISIBLE : la forge n'a pas pu être relue (cause ci-dessus) — une PR ouverte pourrait exister sur ${BRANCH}, rien n'est poussé"
 OPEN_NUM="$OPEN_NUMBER"
+dbg_kv OPEN_NUM "$OPEN_NUM"       # vide ⇒ « <vide> » : aucune PR ouverte sur la branche
+dbg_kv OPEN_LOGIN "$OPEN_LOGIN"
 if [ -n "$REMOTE_TIP" ] && git log -1 --format=%B "$REMOTE_TIP" 2>/dev/null | grep -q '^Repli-Vers: '; then
   # Le trailer EST la preuve ; la forge ne fait que nommer la PR (A6 D1bis).
   [ -z "$OPEN_NUM" ] || fail "REPLI_EN_COURS : la PR #${OPEN_NUM} (${OPEN_LOGIN:-auteur inconnu}) est un repli ouvert sur ${BRANCH} — la merger ou la fermer avant une nouvelle demande"
@@ -767,11 +847,22 @@ if [ -n "$OPEN_NUM" ]; then
   [ "$MINE" = 1 ] || fail "PR_D_AUTRUI : la PR #${OPEN_NUM} ouverte sur ${BRANCH} appartient à '${OPEN_LOGIN}' — la fermer, ou la merger si le palier l'admet, avant de redemander sous une autre identité ; rien n'est poussé"
 fi
 REMOTE_UP_TO_DATE=0
-if git fetch -q --depth 1 "$CLONE_URL" "refs/heads/${BRANCH}" 2>/dev/null \
-   && git diff --cached --quiet FETCH_HEAD -- . 2>/dev/null; then
-  REMOTE_UP_TO_DATE=1
+# Même décision qu'avant (fetch rc 0 ET index identique à la tête distante),
+# chaque rc dit. Le `diff … 2>/dev/null` reste : FETCH_HEAD vient d'être posée
+# par un fetch réussi, son stderr n'aurait rien à apprendre.
+git fetch -q --depth 1 "$CLONE_URL" "refs/heads/${BRANCH}" 2>"$WORK/fetch2.err"; rc=$?
+dbg "git fetch --depth 1 $CLONE_URL refs/heads/${BRANCH} -> rc $rc"
+dbg_git_err "$WORK/fetch2.err"
+if [ "$rc" -eq 0 ]; then
+  git diff --cached --quiet FETCH_HEAD -- . 2>/dev/null; rc=$?
+  dbg "git diff --cached --quiet FETCH_HEAD -- . -> rc $rc"
+  [ "$rc" -ne 0 ] || REMOTE_UP_TO_DATE=1
 fi
-if git diff --cached --quiet; then
+dbg_kv REMOTE_UP_TO_DATE "$REMOTE_UP_TO_DATE"
+# LA décision : rc 0 = l'index EST la base (déjà mergé) ; sinon rejoué ou à committer.
+git diff --cached --quiet; rc=$?
+dbg "git diff --cached --quiet -> rc $rc"
+if [ "$rc" -eq 0 ]; then
   # L'index est IDENTIQUE à GIT_BASE : la demande est déjà mergée (per_env.<env>
   # présent sur la base). Il n'y a ni commit ni PR à ouvrir — et surtout pas de
   # POST /pulls sur une branche de tête qui n'existe plus (404 mesuré à la
@@ -787,11 +878,19 @@ else
   git commit -q -m "provision(${REQ_ENV}): application ${REQ_APP} (demande ${REQ_CALLER})" -m "Demande-Par: ${PUSH_LOGIN}"
   echo "[3/5] push ${BRANCH}"
   # Branche machine-owned (provision/*) : push explicite forcé, sûr ici (le flux
-  # est le seul écrivain). 2>err pour ne jamais laisser un token fuiter au log —
-  # l'erreur est filtrée des DEUX tokens (celui qui a poussé, celui du service).
-  if ! git push -q "--force-with-lease=refs/heads/${BRANCH}:${REMOTE_TIP}" "$PUSH_URL" "HEAD:refs/heads/${BRANCH}" 2>"$WORK/pusherr"; then
+  # est le seul écrivain). 2>err pour ne jamais laisser un token fuiter au log.
+  # L2 : le détail est RÉDIGÉ par redact (ci/lib/dbg.sh), plus filtré par un
+  # `grep -v` — qui mettait DEUX secrets dans l'argv d'un processus (`ps` les
+  # voit) et JETAIT la ligne entière au lieu d'y masquer le secret. Le fichier
+  # du token du pousseur est passé en ARGUMENT (un chemin n'est pas un secret) ;
+  # celui du service est déjà connu par l'environnement (FORGE_SECRET). Sans
+  # python3, redact rend « <rédaction indisponible> » : fail-closed, voulu.
+  git push -q "--force-with-lease=refs/heads/${BRANCH}:${REMOTE_TIP}" "$PUSH_URL" "HEAD:refs/heads/${BRANCH}" 2>"$WORK/pusherr"; rc=$?
+  dbg "git push --force-with-lease=refs/heads/${BRANCH}:${REMOTE_TIP} $PUSH_URL HEAD:refs/heads/${BRANCH} -> rc $rc"
+  dbg_git_err "$WORK/pusherr"
+  if [ "$rc" -ne 0 ]; then
     echo "ERREUR push (détail masqué — token)" >&2
-    grep -v -F -- "$(cat "$PUSH_TF")" "$WORK/pusherr" | grep -v -F -- "$FORGE_SECRET" >&2 || true; exit 1
+    redact "$PUSH_TF" < "$WORK/pusherr" >&2 || true; exit 1
   fi
 fi
 
@@ -903,6 +1002,7 @@ else
   PR_NUM="$NEW_NUMBER"; PR_URL_FORGE="$NEW_URL"
   echo "  PR créée: #${PR_NUM}"
 fi
+dbg_kv PR_NUM "$PR_NUM"   # créée ou réutilisée : le numéro que le plan enchaîné reçoit
 # L'URL HUMAINE est celle que la forge REND (html_url Gitea, web_url GitLab :
 # « /pulls/N » chez l'une, « /-/merge_requests/N » chez l'autre — plus jamais
 # composée ici), vue de GIT_HOST. En split-horizon (l'agent voit la forge par
