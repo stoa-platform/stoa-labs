@@ -22,3 +22,4 @@ apim_ss_app:
     rec: { auth: { claim: { value: "a7p1789130416-rec" } }, ip_allowlist: ["10.42.0.12"] }
     int: { auth: { claim: { value: "a7p1789130416-int" } }, ip_allowlist: ["10.42.0.13"] }
     homol: { auth: { claim: { value: "a7p1789130416-homol" } }, ip_allowlist: ["10.42.0.14"], pv_ref: "PV-A7" }
+    prod: { auth: { claim: { value: "a7p1789130416-prod" } }, ip_allowlist: ["10.42.0.15"], change_ref: "CHG-0002", pv_ref: "PV-A7" }
