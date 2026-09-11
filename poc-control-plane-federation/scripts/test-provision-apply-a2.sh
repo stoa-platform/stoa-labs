@@ -15,7 +15,10 @@
 #      (rédigée par ci/lib/dbg.sh), le produit et les refus ne bougent pas — un
 #      seul refus change de FORME, celui du fetch (E.4e/f : masqué avant coupe,
 #      UNE ligne) —, aucun token ni mot de passe d'URL n'y passe, ni dans une
-#      ligne de debug ni dans un refus ; chaque absence doublée d'une présence
+#      ligne de debug ni dans un refus ; chaque absence doublée d'une présence ;
+#      E.9 : la ligne « PR relue » reçoit des valeurs BRUTES (dbg masque, puis
+#      rien ne coupe ni n'échappe) — un shown() remis devant (E.9e/f) laisse
+#      sortir un fragment du secret (relecture finale, I-3)
 #
 # Ni Jenkins, ni Gitea, ni gateway : tout est local. La preuve par BUILDS réels
 # (porte + contre-épreuve du GOAL) vit dans test-provision-apply-a2-live.sh.
@@ -41,7 +44,7 @@ trap cleanup EXIT
 
 # Total ATTENDU, écrit en dur (motif test-team-apply-wiring.sh) : une section
 # sautée en silence ferait baisser PASS+FAIL sans jamais rougir — ce nombre, si.
-EXPECTED_CHECKS=226   # 148 (A-D) + 78 (E)
+EXPECTED_CHECKS=232   # 148 (A-D) + 84 (E)
 
 command -v python3 >/dev/null || { echo "python3 absent"; exit 2; }
 python3 -c 'import yaml' 2>/dev/null || { echo "PyYAML absent"; exit 2; }
@@ -1122,6 +1125,55 @@ run_dbg "$MUTD/mut11.sh" "$TMP/mut11h.out" "$TMP/mut11h.so" "$TMP/mut11h.se" STO
   && ok "E.8j mutant « rc 0 » en dur sur ce scénario : même REPLI_PERIME (rc=$RC) mais « git show <parent 1>:… -> rc 0 » et plus de « rc 128 » — E.8h tient à la valeur du rc du 3e show" \
   || ko "E.8j (rc=$RC) : $(grep -E 'git show|REFUS' "$TMP/mut11h.se" | head -3 | tr '\n' ' ' | cut -c1-200)"
 reset_main "$C1B"
+
+echo "-- E.9 la ligne « PR relue » : valeurs BRUTES à dbg, masquées par lui — jamais transformées ni coupées AVANT (relecture finale I-3) --"
+# La ligne passait par shown() (head -c 80 puis %q) AVANT dbg : le %q défait un
+# littéral qui porte un espace ou un « $ » (seuls ses segments ≥ 4 restent
+# connus de redact), et la coupe à 80 tranche dans un secret qui la chevauche —
+# l'ordre coupe-puis-masque que ce lot interdit partout. Scénario SYNTHÉTIQUE
+# et dit tel quel : une forge ne rend pas le secret du process dans merged_by ;
+# c'est l'ORDRE qui est éprouvé, sur le secret que le process TIENT. Deux
+# discriminants : (a) merged_by = 75 « r » + le token du stub (le secret d'auth,
+# à cheval sur l'octet 80) ; (b) merged_by = un second littéral que le process
+# tient (FORGE_TOKEN, dans la liste de redact — la forge n'accepte que tok-a2,
+# le secret d'auth ne peut donc pas porter l'espace), avec espace, « $ », « ! ».
+# stdout est le PRODUIT et cite le mergeur tel que la forge le nomme
+# (RECONCILE_OK … par '<login>') — hors du canal debug ; l'absence se mesure sur
+# stderr, où vivent les lignes [dbg. Mutant E.9e/E.9f : shown() remis sur le
+# champ, sur copie ⇒ le fragment sort.
+R75="$(printf '%*s' 75 '' | tr ' ' r)"
+set_pr true "$C1" provision/appa-rec master "${R75}${STUB_TOKEN}" ci
+run_dbg "$RECONCILE" "$TMP/e9.out" "$TMP/e9.so" "$TMP/e9.se" STOA_DEBUG=1; RC=$?
+ligne_motif E.9a "$TMP/e9.se" "${DBGP_RE}PR #42 relue : state=[^ ]* head=provision/appa-rec base=master merged=1 merge_sha=$C1 merged_by=${R75}<secret masqué>\$" "] PR #42 relue : … merged_by=r×75<secret masqué> (le token à cheval sur l'octet 80, masqué ENTIER)"
+! grep -q 'tok-a' "$TMP/e9.se" \
+  && ok "E.9b « tok-a » (le fragment qu'une coupe à 80 laisserait du token) ABSENT de tout stderr (rc=$RC)" \
+  || ko "E.9b FUITE sur stderr : $(grep 'tok-a' "$TMP/e9.se" | head -1 | cut -c1-160)"
+# shellcheck disable=SC2016  # quotes simples voulues : le « $ » fait partie du secret, c'est lui que %q échappait
+SECRET2='P@ss w0rd$2026!'
+set_pr true "$C1" provision/appa-rec master "$SECRET2" ci
+run_dbg "$RECONCILE" "$TMP/e9b.out" "$TMP/e9b.so" "$TMP/e9b.se" STOA_DEBUG=1 FORGE_TOKEN="$SECRET2"; RC=$?
+ligne_motif E.9c "$TMP/e9b.se" "${DBGP_RE}PR #42 relue : state=[^ ]* head=provision/appa-rec base=master merged=1 merge_sha=$C1 merged_by=<secret masqué>\$" "] PR #42 relue : … merged_by=<secret masqué> (un littéral avec espace, « \$ » et « ! », masqué ENTIER — pas « <secret masqué>\\ w0rd\\\$2026\\! »)"
+! grep -q 'w0rd' "$TMP/e9b.se" \
+  && ok "E.9d « w0rd » (le segment que %q rend méconnaissable) ABSENT de tout stderr (rc=$RC)" \
+  || ko "E.9d FUITE sur stderr : $(grep 'w0rd' "$TMP/e9b.se" | head -1 | cut -c1-160)"
+# E.9e/E.9f — shown() remis sur le champ merged_by (la forme d'avant la
+# relecture finale), sur COPIE : la coupe à 80 laisse « rtok-a », le %q laisse « w0rd ».
+# shellcheck disable=SC2016  # motif sed : « $R_MERGED_BY » est celui du script muté, à ne pas expandre ici
+sed 's/ merged_by=\${R_MERGED_BY}"$/ merged_by=$(shown "$R_MERGED_BY")"/' "$RECONCILE" > "$MUTD/mut13.sh"; chmod +x "$MUTD/mut13.sh"
+if ! cmp -s "$RECONCILE" "$MUTD/mut13.sh"; then
+  set_pr true "$C1" provision/appa-rec master "${R75}${STUB_TOKEN}" ci
+  run_dbg "$MUTD/mut13.sh" "$TMP/mut13.out" "$TMP/mut13.so" "$TMP/mut13.se" STOA_DEBUG=1; RC=$?
+  grep -E "$(dbgp_re "$MUTD/mut13.sh")PR #42 relue : " "$TMP/mut13.se" > "$TMP/mut13.line"
+  [ -s "$TMP/mut13.line" ] && grep -q 'merged_by=r*tok-a$' "$TMP/mut13.line" && ! grep -q '<secret masqué>' "$TMP/mut13.line" \
+    && ok "E.9e shown() remis (sur copie), token à cheval sur l'octet 80 ⇒ la ligne finit par « …rtok-a » et ne porte plus « <secret masqué> » — E.9a/E.9b tiennent à l'ordre masque→coupe" \
+    || ko "E.9e le mutant ne fuit pas (rc=$RC) : « $(cut -c1-200 "$TMP/mut13.line" | head -1) »"
+  set_pr true "$C1" provision/appa-rec master "$SECRET2" ci
+  run_dbg "$MUTD/mut13.sh" "$TMP/mut13b.out" "$TMP/mut13b.so" "$TMP/mut13b.se" STOA_DEBUG=1 FORGE_TOKEN="$SECRET2"; RC=$?
+  grep -E "$(dbgp_re "$MUTD/mut13.sh")PR #42 relue : " "$TMP/mut13b.se" > "$TMP/mut13b.line"
+  [ -s "$TMP/mut13b.line" ] && grep -q 'w0rd' "$TMP/mut13b.line" \
+    && ok "E.9f shown() remis (sur copie), littéral avec espace ⇒ la ligne porte « $(grep -o 'merged_by=.*' "$TMP/mut13b.line" | head -1) » : le %q défait le littéral, « w0rd » sort — E.9c/E.9d tiennent aux valeurs brutes" \
+    || ko "E.9f le mutant ne fuit pas (rc=$RC) : « $(cut -c1-200 "$TMP/mut13b.line" | head -1) »"
+else ko "E.9e mutation impossible (motif introuvable) — mutant no-op"; ko "E.9f mutation impossible (motif introuvable) — mutant no-op"; fi
 
 echo
 echo "═══════════════════════════════════════════════════"

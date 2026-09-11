@@ -165,7 +165,6 @@ scripts/provision-apply-gate.sh:GITEA_SERVICE_LOGINS    # T2 : ci
 scripts/provision-apply-gate.sh:GIT_REPO    # T2 : ci/stoa-labs
 
 # ── scripts/provision-apply-reconcile.sh
-scripts/provision-apply-reconcile.sh:GIT_HOST    # T1 : http://gitea:3000
 scripts/provision-apply-reconcile.sh:GIT_REPO    # T2 : ci/stoa-labs
 
 # ── scripts/provision-plan.sh

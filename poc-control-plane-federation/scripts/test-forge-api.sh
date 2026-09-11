@@ -32,7 +32,11 @@
 # d'une présence (gabarit D1/D2/D3 de test-vault-user-login.sh) : une lib
 # muette ne passe pas. Les mutants P.8 (une ligne de debug sans _mask) et P.8b
 # (un registre de secrets sans les formes d'URL), sur COPIE, prouvent que P.7
-# et P.7c discriminent.
+# et P.7c discriminent. P.11 épingle l'ORDRE masque-puis-coupe du début de
+# corps qu'une CAUSE cite (_debut, 120 caractères, chemin inconditionnel) : un
+# PAT de 40 caractères à cheval sur l'octet 120, dont un mutant « coupe puis
+# masque » (P.11c) laisse sortir 20 caractères — la classe de défaut fermée
+# quatre fois ailleurs par L2, retrouvée ici par la relecture finale (I-1).
 #
 # Hors ligne intégralement. La preuve VIVANTE (GitLab CE et Gitea du lab) est
 # scripts/test-forge-api-live.sh, mêmes assertions.
@@ -69,7 +73,8 @@ from urllib.parse import urlparse, parse_qs, unquote
 KIND, CTL, LOG, POSTED = os.environ["MOCK_KIND"], os.environ["MOCK_CTL"], os.environ["MOCK_LOG"], os.environ["MOCK_POSTED"]
 SIZES = os.environ["MOCK_SIZES"]  # « METHODE chemin octets » par réponse : le mock connaît son corps (section P)
 USERS = {"t-svc": "svc-bot", "t-alice": "alice",
-         "t-s+vc": "svc-plus", "t-sp vc": "svc-espace"}  # secrets NON URL-safe (P.7c-P.7e) : acceptés, pour que la ligne soit celle d'un 200
+         "t-s+vc": "svc-plus", "t-sp vc": "svc-espace",  # secrets NON URL-safe (P.7c-P.7e) : acceptés, pour que la ligne soit celle d'un 200
+         "t-4f8e1c9a2b7d6e5f0a1b2c3d4e5f6a7b8c9d0e": "svc-pat"}  # un PAT de 40 caractères (P.11) : assez long pour chevaucher l'octet 120 d'un corps
 HTML = b"<!DOCTYPE html>\n<html><head><title>Sign in \xc2\xb7 GitLab</title></head><body>GitLab</body></html>\n"
 def ctl():
     try: return json.load(open(CTL))
@@ -138,7 +143,9 @@ class H(BaseHTTPRequestHandler):
                 if bm == "empty": return self.raw(200, "application/json", b"")
                 if bm == "html": return self.raw(200, "text/html", HTML)
                 if bm == "object": return self.js(200, {"message": "not a list"})
-                if bm == "echo_auth": return self.raw(200, "text/html", b"<pre>" + (self.headers.get("PRIVATE-TOKEN") or "").encode() + b"</pre>")
+                # echo_auth : le corps recopie l'en-tête d'auth ; « pad » (P.11) le pousse LOIN
+                # dans le corps, à cheval sur l'octet 120 que _debut cite dans une cause.
+                if bm == "echo_auth": return self.raw(200, "text/html", b"<pre>" + b"." * int(c.get("pad") or 0) + (self.headers.get("PRIVATE-TOKEN") or "").encode() + b"</pre>")
                 st = (q.get("state") or [None])[0]; sb = (q.get("source_branch") or [None])[0]
                 page = int((q.get("page") or ["1"])[0]); per = int((q.get("per_page") or ["20"])[0])
                 if bm == "endless":  # une page PLEINE et neuve à chaque appel : la liste ne finit jamais
@@ -624,6 +631,47 @@ fd 1 gitlab "http://svc:t-svc@${GITLAB#http://}" whoami
   && grep -qE "${DBGPY}GET http://<secret masqué>@127\.0\.0\.1:[0-9]+/api/v4/user -> (HTTP|ERREUR) " "$TMP/err" && grep -q '\] GIT_HOST=http://<secret masqué>@' "$TMP/err" \
   && ok "P.10b userinfo dont le mot de passe est le secret connu ⇒ « ://<secret masqué>@ » en entier (jamais « svc:<secret masqué>@ ») — python et shell rendent la MÊME ligne" \
   || ko "P.10b fuite=$(grep -c 't-svc' "$TMP/err") login=$(grep -c 'svc:<secret' "$TMP/err") : $(cause)"
+# P.11 : le DÉBUT d'un corps cité dans une CAUSE — masqué EN ENTIER, PUIS coupé
+# à 120. Chemin INCONDITIONNEL (une cause ne dépend pas de STOA_DEBUG) : un
+# corps qui recopie l'en-tête d'auth (echo_auth, comme K.4) avec un PAT de 40
+# caractères poussé à l'offset 100 (pad=95 : « <pre> » + 95 points) chevauche
+# l'octet 120. Coupé AVANT le masque, ses 20 premiers caractères ne sont plus
+# le littéral connu : ils sortaient EN CLAIR dans la cause, donc dans le log
+# archivé et dans PLAN_REASON (relecture finale I-1, mesuré). Masqué avant, la
+# cause porte « <secret masqué> » entier et la coupe tombe dans « </pre> ». La
+# ligne EXACTE est attendue (les 120 premiers caractères du corps RÉDIGÉ, sous
+# %r) — sans debug (P.11) et avec (P.11b : la ligne HTTP, N mesuré, en contrôle
+# positif). P.11c remet la coupe AVANT le masque sur COPIE : le fragment sort.
+PAT=t-4f8e1c9a2b7d6e5f0a1b2c3d4e5f6a7b8c9d0e
+FRAG="$(printf '%s' "$PAT" | cut -c1-20)"      # ce que la coupe à 120 laisse du PAT
+DEBUT_ATTENDU="début : '<pre>$(printf '%*s' 95 '' | tr ' ' .)<secret masqué></pre'"
+N_ECHO=$((5 + 95 + ${#PAT} + 6))               # <pre> + pad + PAT + </pre>
+p11(){ # <STOA_DEBUG|-> <lib> — comme fd/f, mais FORGE_SECRET = le PAT et la lib choisie (copie mutée en P.11c)
+  # shellcheck disable=SC2016  # le bash enfant reçoit $1 (STOA_DEBUG) et $2 (la lib), à dessein
+  ( cd "$REPO" && env -i PATH="$PATH" HOME="$HOME" FORGE_KIND=gitlab GIT_HOST="$GITLAB" GIT_REPO=ci/stoa-labs FORGE_SECRET="$PAT" \
+      bash -c 'case "$1" in -) ;; *) export STOA_DEBUG="$1";; esac; . "$2" && forge_api_init && forge pr_find_open x' _ "$1" "$2" ) > "$TMP/out" 2> "$TMP/err"
+  echo $? > "$TMP/rc"
+}
+set_ctl '{"body_mode":"echo_auth","pad":95}'
+p11 - "$LIB"
+[ "$(rc)" = 2 ] && grep -q 'NON JSON' "$TMP/err" && grep -qF -- "$DEBUT_ATTENDU" "$TMP/err" \
+  && [ "$(cat "$TMP/out" "$TMP/err" | grep -c -- 't-4f')" = 0 ] && ! grep -qF -- "$FRAG" "$TMP/err" \
+  && ok "P.11 SANS debug, PAT de 40 caractères à cheval sur l'octet 120 du corps ⇒ la cause « NON JSON » porte EXACTEMENT « $DEBUT_ATTENDU » (masqué entier, coupe dans </pre>) ; ni « $FRAG » ni « t-4f » nulle part" \
+  || ko "P.11 rc $(rc) fragment=$(grep -cF -- "$FRAG" "$TMP/err") : $(grep -o 'début : .*' "$TMP/err" | head -1 | cut -c1-160)"
+p11 1 "$LIB"
+[ "$(rc)" = 2 ] && grep -qF -- "$DEBUT_ATTENDU" "$TMP/err" && [ "$(cat "$TMP/out" "$TMP/err" | grep -c -- 't-4f')" = 0 ] \
+  && grep -qE "${DBGPY}GET .*/merge_requests.* -> HTTP 200 \($N_ECHO octets\)$" "$TMP/err" \
+  && ok "P.11b sous STOA_DEBUG=1, même corps ⇒ « -> HTTP 200 ($N_ECHO octets) » présent (contrôle positif) ET la cause porte le même début rédigé ; « t-4f » absent de stdout et stderr" \
+  || ko "P.11b rc $(rc) http=$(grep -c -- '-> HTTP 200' "$TMP/err") fragment=$(grep -cF -- "$FRAG" "$TMP/err") : $(cause)"
+# P.11c : mutant sur COPIE — la coupe remise AVANT le masque (la forme d'avant
+# la relecture finale) ⇒ le fragment de 20 caractères sort dans la cause : P.11 discrimine.
+mkdir -p "$TMP/libP"; cp "$LIB" "$TMP/libP/forge-api.sh"
+sed 's/^    return _mask(b\.decode("utf-8", "replace"))\[:120\]$/    return _mask(b[:120].decode("utf-8", "replace"))/' "$PY" > "$TMP/libP/forge-api.py"
+grep -q '^    return _mask(b\[:120\]\.decode("utf-8", "replace"))$' "$TMP/libP/forge-api.py" || ko "P.11c mutant non appliqué (ancre absente)"
+p11 - "$TMP/libP/forge-api.sh"
+[ "$(rc)" = 2 ] && grep -q 'NON JSON' "$TMP/err" && grep -qF -- "$FRAG" "$TMP/err" && ! grep -qF -- "$DEBUT_ATTENDU" "$TMP/err" \
+  && ok "P.11c mutant (coupe à 120 PUIS masque, sur copie) ⇒ la cause porte « $FRAG » en clair et plus le début rédigé : P.11 discrimine" \
+  || ko "P.11c le mutant passe : fragment=$(grep -cF -- "$FRAG" "$TMP/err") : $(grep -o 'début : .*' "$TMP/err" | head -1 | cut -c1-160)"
 set_ctl "$PRS"
 
 echo

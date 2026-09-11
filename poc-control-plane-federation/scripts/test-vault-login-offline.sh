@@ -16,6 +16,10 @@
 #       O.1d : la COUPE à 400 caractères du corps d'erreur vient APRÈS la
 #       rédaction — un secret coupé n'est plus un littéral (ni entier, ni un
 #       segment) et son préfixe sortirait en clair (relecture 2026-09-10, F1) ;
+#       O.1e : l'EMPREINTE du mot de passe n'est pas un oracle — 2 hex de son
+#       SHA-256 (8 bits), jamais 3 ou plus : les 16 d'avant (64 bits, non
+#       salés) se vérifiaient hors ligne contre un dictionnaire (relecture
+#       finale, I-2) ;
 #   O.2 un login RÉUSSI ne montre le token NI sur stdout NI sur stderr (un
 #       corps 2xx n'est jamais imprimé) et la ligne `-> HTTP 200` est là ;
 #       O.2d : cet invariant a son DISCRIMINANT — une seule ligne « ↳ erreur »
@@ -29,8 +33,8 @@
 #   O.5 mutations sur COPIE : un corps d'erreur écrit hors de dbg, une ligne
 #       HTTP retirée, VAULT_DEBUG réintroduit, l'unset remis avant l'appel,
 #       tout corps (2xx compris) passé à dbg, la coupe remise AVANT la
-#       rédaction — chacune fait ROUGIR l'épreuve visée : la suite attrape ce
-#       qu'elle prétend attraper ;
+#       rédaction, l'empreinte remise à 16 hex — chacune fait ROUGIR l'épreuve
+#       visée : la suite attrape ce qu'elle prétend attraper ;
 #   O.6 la lib trouve ci/lib/dbg.sh par les DEUX conventions de ses appelants
 #       (`${SUB_PFX}ci/lib/…` puis `ci/lib/…`, la plus spécifique d'abord) et
 #       REFUSE, nommé, hors de ces deux-là — un `sh -e` de Jenkins s'y arrête.
@@ -272,12 +276,25 @@ for shell in $SHELLS; do
   if grep -qF "]   ↳ erreur: {\"errors\": [\"canari-bind-KO\", \"$MASQUE\", \"$MASQUE\", \"$MASQUE\"]}" "$ERR"; then
     ok "O.1b [$shell] la ligne « ↳ erreur: » est EXACTEMENT le corps 400 avec ses trois formes du mot de passe masquées (\\uXXXX, utf-8, %XX)"
   else ko "O.1b [$shell] $(grep 'erreur:' "$ERR" | head -1 | cut -c1-160)"; fi
-  if ligne_err '\] empreinte mot de passe: [0-9][0-9]* caractères / [0-9][0-9]* octets  sha256=[0-9a-f]\{16\}  (aucun blanc parasite)$' \
+  if ligne_err '\] empreinte mot de passe: [0-9][0-9]* caractères / [0-9][0-9]* octets  sha256=[0-9a-f]\{2\}…  (aucun blanc parasite)$' \
      && ligne_err '\] voie A (user/pwd) : mount=auth/userpass  user=alice$' \
      && present_err 'auth/userpass/login REFUSÉ (HTTP 400)' \
      && ! grep -q 'vault-dbg' "$ERR" && ! grep -q "$(printf '\033')" "$ERR"; then
     ok "O.1c [$shell] le contexte (voie A, mount, user) et l'EMPREINTE du mot de passe sont dits, le refus nommé ; plus de « [vault-dbg] », plus d'ANSI"
   else ko "O.1c [$shell] $(tr '\n' '|' < "$ERR" | cut -c1-240)"; fi
+  # O.1e — l'empreinte n'est PAS un oracle. 16 hex d'un SHA-256 nu (64 bits, non
+  # salé) se vérifient hors ligne contre tout dictionnaire : un mot de passe
+  # LDAP/AD faible se retrouvait en secondes depuis la console archivée d'un
+  # build DEBUG (relecture finale I-2 ; mesuré : « sha256=d32b21c15841939b » =
+  # `printf '%s' 'Pwd-Vault-77' | shasum -a 256 | cut -c1-16`). Il en reste DEUX
+  # (8 bits : « même valeur ou pas »), et la ligne dit qu'elle est tronquée (« … »).
+  # PRÉSENCE : les deux hex sont bien ceux du SHA-256 de la sentinelle telle
+  # qu'envoyée (calculés ICI, pas par la lib) ; ABSENCE : aucun « sha256= » suivi
+  # de trois hex ou plus, nulle part sur stderr. Mutant M7.
+  H2="$(S="$S_O" python3 -c 'import hashlib,os; print(hashlib.sha256(os.environ["S"].encode("utf-8","surrogatepass")).hexdigest()[:2])')"
+  if present_err "  sha256=${H2}…  " && ! ligne_err 'sha256=[0-9a-f]\{3\}'; then
+    ok "O.1e [$shell] l'empreinte porte « sha256=${H2}… » (les 2 premiers hex du SHA-256 de la sentinelle, calculés par le harnais) et JAMAIS trois hex ou plus : 8 bits, pas un oracle"
+  else ko "O.1e [$shell] attendu « sha256=${H2}… » : $(grep 'empreinte' "$ERR" | head -1 | cut -c1-160)"; fi
   # O.1d — la coupe à 400 caractères tombe DANS le mot de passe (AVANT=8 de
   # ses caractères la précèdent). Coupé AVANT la rédaction, ce préfixe n'est
   # ni le littéral entier ni un segment : il sortirait en clair (relecture
@@ -446,6 +463,19 @@ if mute M6 's/\$(redact < "\$out" | tr/$(cat "$out" | tr/'; then
     if ! prefixes_absents "$S_O" && present_err "] POST $VADDR/v1/auth/userpass/login/alice -> HTTP 400"; then
       ok "M6 [$shell] coupe AVANT rédaction ⇒ la ligne finit par « $(grep 'erreur:' "$ERR" | head -1 | cut -c$((COUPE + 8))-$((COUPE + 30)))» : un préfixe du mot de passe SORT en clair (O.1d rougit)"
     else ko "M6 [$shell] le mutant passe encore : « $(grep 'erreur:' "$ERR" | head -1 | cut -c400-440) »"; fi
+  done
+fi
+# M7 — l'empreinte remise à 16 hex (l'oracle d'avant la relecture finale, I-2)
+# ⇒ O.1e rougit : « sha256= » suivi de trois hex ou plus paraît. Une absence
+# seule serait vacante : la PRÉSENCE des deux hex attendus est tenue par O.1e
+# sur l'original.
+if mute M7 's/hexdigest()\[:2\]/hexdigest()[:16]/'; then
+  for shell in $SHELLS; do
+    set_mode echo_pwd; S_O="$(sentinelle M7)"
+    S_O="$S_O" STOA_DEBUG=1 JLIB="$TMP/mut-M7.sh" joue "$shell" "$P_LOGIN"
+    if ligne_err 'sha256=[0-9a-f]\{16\}' && present_err "] POST $VADDR/v1/auth/userpass/login/alice -> HTTP 400"; then
+      ok "M7 [$shell] empreinte remise à 16 hex ⇒ « $(grep -o 'sha256=[0-9a-f]*' "$ERR" | head -1) » : 64 bits vérifiables hors ligne (O.1e rougit)"
+    else ko "M7 [$shell] le mutant passe encore : $(grep 'empreinte' "$ERR" | head -1 | cut -c1-160)"; fi
   done
 fi
 

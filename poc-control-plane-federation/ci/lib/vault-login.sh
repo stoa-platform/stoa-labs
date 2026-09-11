@@ -217,10 +217,16 @@ PY
     export VAULT_USER_PASSWORD
     # DEBUG : EMPREINTE du mot de passe EXACTEMENT tel qu'il sera envoyé — pour
     # répondre à « curl marche mais pas le pipeline ». N'imprime JAMAIS le mot de
-    # passe : seulement sa longueur (car. + octets), un préfixe SHA-256, et un
-    # drapeau si des espaces/retours-ligne l'entourent (LE piège classique d'un
-    # paramètre Jenkins ou d'un fichier qui ajoute un \n). Comparer avec, côté
-    # curl qui marche :  printf '%s' 'monMotDePasse' | shasum -a 256
+    # passe, ni une forme qui permette de le retrouver : sa longueur (car. +
+    # octets), un drapeau si des espaces/retours-ligne l'entourent (LE piège
+    # classique d'un paramètre Jenkins ou d'un fichier qui ajoute un \n), et
+    # DEUX hex de son SHA-256 — 8 bits, « même valeur ou pas » (une chance sur
+    # 256 de coïncidence), rien qu'un dictionnaire hors ligne puisse confirmer.
+    # Les 16 hex d'avant (64 bits, non salés) étaient un ORACLE EXACT : le mot
+    # de passe LDAP/AD d'un compte humain, faible, se retrouvait en secondes
+    # depuis la console archivée d'un build DEBUG (relecture finale I-2 ;
+    # test-vault-login-offline O.1c/O.1e, mutant M7). Comparer avec, côté curl
+    # qui marche :  printf '%s' 'monMotDePasse' | shasum -a 256 | cut -c1-2
     if dbg_on; then
       dbg "$(python3 - <<'PY'
 import hashlib, os
@@ -232,8 +238,8 @@ if "\n" in p or "\r" in p:    flags.append("CONTIENT CR/LF")
 if p != p.rstrip():           flags.append("finit par un blanc")
 if p != p.lstrip():           flags.append("commence par un blanc")
 tag = ("  ⚠ " + " ; ".join(flags)) if flags else "  (aucun blanc parasite)"
-print("empreinte mot de passe: %d caractères / %d octets  sha256=%s%s"
-      % (len(p), len(b), hashlib.sha256(b).hexdigest()[:16], tag))
+print("empreinte mot de passe: %d caractères / %d octets  sha256=%s…%s"
+      % (len(p), len(b), hashlib.sha256(b).hexdigest()[:2], tag))
 PY
 )"
     fi

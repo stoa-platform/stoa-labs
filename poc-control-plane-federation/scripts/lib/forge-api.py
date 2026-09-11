@@ -175,7 +175,14 @@ def _dbg(texte):
 
 
 def _debut(b):
-    return _mask(b[:120].decode("utf-8", "replace"))
+    """Le DÉBUT d'un corps cité dans une cause : masqué EN ENTIER, PUIS coupé à
+    120 caractères — dans cet ordre et pas un autre. Coupé d'abord, un secret
+    qui chevauche l'octet 120 n'est plus le littéral connu : `_mask` ne le voit
+    pas et son préfixe sort en clair dans la cause — un chemin INCONDITIONNEL
+    (pas même gardé par STOA_DEBUG) qui finit dans le log Jenkins archivé et,
+    par provision-plan.sh, dans PLAN_REASON (mesuré : PAT de 40 caractères à
+    l'offset 100, 20 en clair ; test-forge-api P.11, mutant P.11c)."""
+    return _mask(b.decode("utf-8", "replace"))[:120]
 
 
 # ── visage, base, en-tête ───────────────────────────────────────────────────

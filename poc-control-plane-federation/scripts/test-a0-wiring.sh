@@ -853,7 +853,7 @@ plan_dbg 12 provision/appa-dev STOA_DEBUG=0; RC=$?
   && ok "(c ter).4 STOA_DEBUG=0 ⇒ rc 1, ZÉRO ligne « [dbg » (shell, forge-api.py et gitea-pr-comment.sh muets ensemble), stdout et faits identiques à la référence" \
   || ko "(c ter).4 rc=$RC lignes [dbg=$(cat "$TMP/pd.so" "$TMP/pd.se" | grep -c '\[dbg')"
 
-echo "-- (c ter).5 GIT_HOST ABSENT : provision-plan.sh et provision-plan-status.sh meurent en le NOMMANT, sans un appel au stub (le dernier défaut de site de la chaîne est tombé) --"
+echo "-- (c ter).5 GIT_HOST ABSENT : provision-plan.sh et provision-plan-status.sh meurent en le NOMMANT, sans un appel au stub (le défaut de site de la VOIE DU PLAN est tombé — la voie apply garde les siens : gate.sh:70, comment.sh:209) --"
 # `env -u GIT_HOST` : la variable est RETIRÉE, même si le shell qui joue cette
 # suite en porte une — c'est l'absence que Jenkins produit (variable non transmise).
 : > "$STUB_LOG"; rm -f "$TMP/plan.facts"

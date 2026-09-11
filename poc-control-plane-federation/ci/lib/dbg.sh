@@ -123,9 +123,10 @@
 #     « git-base: GIT_BASE=… découvert — HEAD annoncée par … » (L3) n'est PAS du
 #     debug : inconditionnelle, sans préfixe « [dbg », une par build ;
 #   - ci/lib/vault-login.sh (dbg_http par appel, contexte du login, empreinte
-#     du mot de passe, corps d'erreur ≥ 400 par redact PUIS coupé) — ses
-#     _vault_dbg/_vault_redact/_vault_debug_on ont migré ici, VAULT_DEBUG n'existe
-#     plus ;
+#     du mot de passe — longueur, blancs parasites, 2 hex de son SHA-256 :
+#     jamais une forme qu'un dictionnaire hors ligne confirme —, corps d'erreur
+#     ≥ 400 par redact PUIS coupé) — ses _vault_dbg/_vault_redact/
+#     _vault_debug_on ont migré ici, VAULT_DEBUG n'existe plus ;
 #   - les quatre scripts de la chaîne app-request — scripts/provision-request.sh,
 #     scripts/provision-plan.sh, scripts/provision-apply-reconcile.sh,
 #     scripts/app-rollback-request.sh (dbg_init en tête ; disposition, identité,

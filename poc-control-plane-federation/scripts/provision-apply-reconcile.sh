@@ -292,12 +292,16 @@ forge_kv R pr_get "$PR_NUMBER" 2>"$TMP/forge.err" || {
 # fichier est vide et rien ne s'écrit (§E.1o ; mutant §E.7a).
 [ -s "$TMP/forge.err" ] && cat "$TMP/forge.err" >&2
 # Ce que la forge a rendu, en UNE ligne, AVANT le schéma et la confrontation :
-# un refus qui suit se lit avec ses données. Valeurs externes : échappées et
-# tronquées comme dans tout message de ce journal (shown) ; `if dbg_on` pour
-# ne pas payer six substitutions quand le mode est éteint.
-if dbg_on; then
-  dbg "PR #${PR_NUMBER} relue : state=$(shown "$R_STATE_RAW") head=$(shown "$R_HEAD_REF") base=$(shown "$R_BASE_REF") merged=$(shown "$R_MERGED") merge_sha=$(shown "$R_MERGE_SHA") merged_by=$(shown "$R_MERGED_BY")"
-fi
+# un refus qui suit se lit avec ses données. Valeurs BRUTES, comme la jumelle
+# de gitea-pr-confirm.sh : dbg masque, et il masque APRÈS — pas `shown` ici.
+# `shown` (head -c 80 puis %q) transforme AVANT le masque : le %q défait un
+# littéral qui porte un espace ou un « $ » (« <secret masqué>\ w0rd\$2026\! »,
+# 10 caractères sur 15 en clair) et la coupe à 80 tranche dans un secret qui
+# la chevauche (« …rrrtok-a ») — l'ordre coupe-puis-masque que ce lot interdit
+# partout (relecture finale I-3 ; test-provision-apply-a2 §E.9, mutants E.9e/f).
+# Cette ligne n'est pas relayée sur la PR : rien à échapper ; forge-api refuse
+# déjà un retour-ligne dans une valeur de forge (B.7).
+dbg "PR #${PR_NUMBER} relue : state=${R_STATE_RAW} head=${R_HEAD_REF} base=${R_BASE_REF} merged=${R_MERGED} merge_sha=${R_MERGE_SHA} merged_by=${R_MERGED_BY}"
 # Le SCHÉMA, dans le vocabulaire normalisé : l'adaptateur rend VIDE ce que la
 # forge ne rend pas (il ne distingue pas « absent » de « nul »), et `merged`
 # vaut 0 dans les deux cas — le schéma se fonde donc sur ce qu'une PR ne peut

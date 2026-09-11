@@ -1460,7 +1460,11 @@ globale Jenkins (`setup-jenkins-globals.sh`) sont **L4, à venir**.
   `CU_ACTION=`, `CU_ID=` ;
 - `ci/lib/vault-login.sh` — chaque appel Vault par `dbg_http`, le contexte du
   login (`VAULT_ADDR`, namespace, CA, voie A/B, mount, user), l'**empreinte** du
-  mot de passe (longueur, `sha256=` tronqué, blancs parasites — jamais lui) et,
+  mot de passe — sa longueur en caractères et en octets, les blancs parasites,
+  et **deux** hex de son SHA-256 (`sha256=d3…` : 8 bits, « même valeur ou pas »,
+  une chance sur 256 de coïncidence, rien qu'un dictionnaire hors ligne puisse
+  confirmer ; les 16 hex d'avant, 64 bits non salés, étaient un **oracle** sur
+  le mot de passe LDAP/AD d'un compte humain — relecture finale, I-2) — et,
   sur un statut ≥ 400 seulement, le corps d'erreur `↳ erreur: …` rédigé **puis**
   coupé à 400 caractères ; un corps 2xx (token de login, valeur KV) n'est
   **jamais** imprimé.
@@ -1494,13 +1498,6 @@ deviendrait une valeur. Et sans `STOA_DEBUG`, **rien ne change à l'octet** :
 chaque suite compare le produit (stdout, faits) à une référence prise sans
 debug.
 
-**Au passage, le dernier défaut de site est tombé** : `provision-plan.sh` et
-`provision-plan-status.sh` gardaient un `GIT_HOST` par défaut de lab
-(`http://gitea:3000`), exempté comme « dette connue » dans
-`ci/lint-config-knobs.exempt`. Retiré, exemptions retirées : un client dont le
-pipeline ne transmet pas la variable lit `GIT_HOST requis` en tête, il ne
-découvre plus la panne sous `BRANCHE_PAR_DEFAUT_INCONNUE`.
-
 **Comment lire un log** : `grep '^\[dbg '` — le préfixe est en tête de ligne,
 sans ANSI, et nomme qui parle (`[dbg provision-request.sh]`,
 `[dbg forge-api.py]`). La ligne HTTP **précède** la cause, qui précède le
@@ -1519,10 +1516,10 @@ sous debug sont le mode debug, rédigé.
 
 **Les preuves** (comptes de la branche livrée, rebasée sur la branche par
 défaut du dépôt) : `test-dbg-redaction.sh` 108/108 (la lib, figée) ;
-`test-forge-api.sh` 100/100 ; `test-git-base.sh` 111/111 ;
-`test-vault-login-offline.sh` 66/66 (stub Vault, mot de passe sentinelle, sous
+`test-forge-api.sh` 103/103 ; `test-git-base.sh` 111/111 ;
+`test-vault-login-offline.sh` 72/72 (stub Vault, mot de passe sentinelle, sous
 dash, sh et bash, `python3` retiré ⇒ `<rédaction indisponible>`) ;
-`test-app-request-a7.sh` 120/120 ; `test-provision-apply-a2.sh` 226/226 ;
+`test-app-request-a7.sh` 120/120 ; `test-provision-apply-a2.sh` 232/232 ;
 `test-app-rollback-a6.sh` 159/159 ; `test-pr-comment.sh` 62/62 ;
 `test-a0-wiring.sh` 245/245. Chaque absence (« le secret n'y est pas ») est
 doublée d'une présence (« la ligne HTTP attendue y est »), et l'**ordre**
@@ -1532,9 +1529,26 @@ famille de défaut a été trouvée trois fois en phase A dans le code
 (`git-base.sh` coupait le stderr de git à 300 octets avant de masquer,
 `vault-login.sh` le corps d'erreur à 400, `forge-api.py` ignorait la forme
 `%XX`), trois fois en phase B dans les épreuves (l'ordre était juste, aucune
-épreuve ne l'épinglait — a7, a2, a6), et une fois de plus dans le code, héritée
-d'avant L2 : le refus `GITEA_RECONCILE_ECHEC` de la réconciliation relayait
-200 octets **bruts** du stderr de `git fetch` — masqué avant coupe désormais.
+épreuve ne l'épinglait — a7, a2, a6), une fois de plus dans le code, héritée
+d'avant L2 (le refus `GITEA_RECONCILE_ECHEC` de la réconciliation relayait
+200 octets **bruts** du stderr de `git fetch` — masqué avant coupe désormais),
+et **deux fois encore par la relecture finale** : `_debut` de `forge-api.py`
+coupait à 120 octets **avant** de masquer le début de corps qu'une cause cite
+(chemin inconditionnel, jusque dans `PLAN_REASON` : un PAT à cheval sur
+l'octet 120 sortait à 20 caractères — `test-forge-api` P.11, mutant P.11c), et
+la ligne « PR relue » de la réconciliation passait ses valeurs par `shown`
+(coupe à 80 puis `%q`) **avant** `dbg` — le `%q` défait un littéral qui porte
+un espace (`test-provision-apply-a2` E.9, mutants E.9e/f) ; valeurs brutes
+désormais, comme sa jumelle de `gitea-pr-confirm.sh`.
+
+**Le défaut de site de la voie du plan est tombé** : `provision-plan.sh` et
+`provision-plan-status.sh` gardaient un `GIT_HOST` par défaut de lab
+(`http://gitea:3000`), exempté comme « dette connue » dans
+`ci/lint-config-knobs.exempt`. Retiré, exemptions retirées : un client dont le
+pipeline ne transmet pas la variable lit `GIT_HOST requis` en tête, il ne
+découvre plus la panne sous `BRANCHE_PAR_DEFAUT_INCONNUE`. Ce n'est **pas** le
+dernier défaut de site du dépôt — treize `GIT_HOST` par défaut restent hors de
+la voie du plan (ci-dessous, « Dettes hors périmètre »).
 
 **Limites nommées** :
 
@@ -1561,14 +1575,32 @@ du canal debug) :
   `GIT_WEB_HOST` est absent (repli `GIT_WEB_HOST="${GIT_WEB_HOST:-$GIT_HOST}"`)
   — visible du demandeur, indépendant de `STOA_DEBUG` ; un client passe
   `GIT_WEB_HOST`, mais rien ne l'y oblige ;
-- `forge-api.py` `_debut` **coupe puis masque** les 120 premiers octets d'un
-  corps cité dans une cause — la classe fermée trois fois ailleurs ; remède
-  d'une ligne, épreuve à discriminant à écrire dans `test-forge-api.sh` ;
+- **treize `GIT_HOST` par défaut restent** dans du code livrable (mesuré :
+  `grep -rn 'GIT_HOST:-' scripts/*.sh scripts/lib/*.sh` hors `test-*`) — onze
+  `http://gitea:3000` (`api-request.sh`, `api-promote-request.sh`,
+  `api-promote-export.sh`, `team-request.sh`, `team-apply.sh`,
+  `team-promote.sh`, `team-publish.sh`, `provision-apply-gate.sh:70`,
+  `provision-apply-comment.sh:209`, `lib/archive-store.sh:44`,
+  `lib/generate-choices.sh:580`) et deux `http://localhost:13000`
+  (`seed-governance-chain.sh`, `setup-repo-protections.sh`). **Deux sont sur la
+  voie apply de la même chaîne app-request** : `provision-apply-gate.sh:70`
+  (appelée deux fois par `ci/Jenkinsfile.provision-apply`) et
+  `provision-apply-comment.sh:209` (appelée par le `fail()` de la
+  réconciliation). Les retirer (`${GIT_HOST:?…}`, exemptions retirées, présence
+  dans a4/a0) est le lot suivant : `test-provision-apply-a4.sh` joue la porte
+  56 fois (`run_gate`) **sans** `GIT_HOST`, ses fixtures sont à reprendre ;
 - `ci/lint-config-knobs.sh` n'examine qu'**un défaut par ligne** (le premier
-  qui correspond, puis `break`) : le `GIT_REPO` de `provision-plan-status.sh`
-  était caché derrière `GIT_HOST` sur la même ligne et n'est apparu qu'au
-  retrait de celui-ci — d'où une exemption **ajoutée**, datée, à un fichier qui
-  dit qu'on n'en ajoute jamais ;
+  qui correspond, puis `break`) — deux victimes connues : le `GIT_REPO` de
+  `provision-plan-status.sh`, caché derrière `GIT_HOST` sur la même ligne et
+  apparu au retrait de celui-ci (d'où une exemption **ajoutée**, datée, à un
+  fichier qui dit qu'on n'en ajoute jamais), et le `GIT_HOST` de
+  `provision-apply-gate.sh:70`, caché derrière `GIT_REPO` sur la même ligne :
+  **non exempté, jamais vu** par la porte. Elle ne compte pas non plus une
+  exemption **orpheline** — `provision-apply-reconcile.sh:GIT_HOST` ne
+  couvrait plus rien depuis L5 (`GIT_HOST="${GIT_HOST:-}"`, classé « vide ») et
+  la porte disait 186 exemptées avec comme sans elle ; retirée (relecture
+  finale, I-4). Remède connu : un défaut par **correspondance** (`finditer`),
+  et le décompte des exemptions que rien ne consomme ;
 - dette L3 : `generate-choices.sh` (`_gc_base_of`) capture le stderr de
   `git_base_of` et ne le ressort, expurgé, que sur échec — sur succès la ligne
   d'audit de git-base **et** les lignes `[dbg` sont avalées ; et
