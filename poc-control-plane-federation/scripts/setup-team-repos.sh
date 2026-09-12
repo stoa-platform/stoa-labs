@@ -18,6 +18,10 @@
 #                               défaut gitlab : http://jenkins:8080/project/team-promote — le GitLab
 #                               Plugin expose UNE URL PAR JOB, il faut un hook PAR récepteur (Ruling 6).
 #   WEBHOOK_KIND                gwt (défaut) | gitlab — forme du/des hook(s) posé(s).
+#   WEBHOOK_SSL_VERIFY          true (défaut) | false — enable_ssl_verification du hook
+#                               GitLab. `false` est réservé à un lab en HTTPS auto-signé ;
+#                               il ne peut plus être subi en silence (il l'était : le champ
+#                               était en dur à false). Sans effet au lab (http://jenkins:8080).
 #   GIT_BASE                    branche à protéger ; ABSENT ⇒ la forge attribue sa branche
 #                               par défaut au dépôt créé, relue dans sa réponse (jamais un
 #                               littéral deviné ici — Ruling 18, porte ci/lint-branch-literals.sh).
@@ -45,8 +49,9 @@
 # gain, pas une divergence.
 #
 # Refus nommés (rc 2) : REPO_REQUIS, REPO_INVALIDE, BRANCHE_INVALIDE,
-# SECRET_FORGE_REQUIS, FORGE_KIND_INCONNU, CREATION_ECHEC, REPO_GET,
-# BRANCHE_PAR_DEFAUT_INDECIDABLE, HOOK_ECHEC, PROTECTION_ECHEC, ARGUMENT_INCONNU.
+# SECRET_FORGE_REQUIS, FORGE_KIND_INCONNU, WEBHOOK_SSL_VERIFY_INVALIDE,
+# CREATION_ECHEC, REPO_GET, BRANCHE_PAR_DEFAUT_INDECIDABLE, HOOK_ECHEC,
+# PROTECTION_ECHEC, ARGUMENT_INCONNU.
 # `A && ok || bad` (SC2015) est l'idiome des poseurs du repo (cf. setup-terminus-apps.sh).
 # shellcheck disable=SC2015
 set -uo pipefail
@@ -70,6 +75,13 @@ GIT_HOST="${GIT_HOST:?GIT_HOST requis (base de la forge)}"
 FORGE_SECRET="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
 [ -n "$FORGE_SECRET" ] || { echo "REFUS: SECRET_FORGE_REQUIS : FORGE_SECRET (Gitea : write:organization,write:repository ; GitLab : PAT api, Owner du groupe)" >&2; exit 2; }
 WEBHOOK_KIND="${WEBHOOK_KIND:-gwt}"; GIT_BASE="${GIT_BASE:-}"
+# enable_ssl_verification du hook GitLab : VRAI par défaut. Un hook qui appelle
+# un récepteur en HTTPS doit vérifier son certificat ; `false` en dur (ce que ce
+# script posait) désarmait la vérification chez TOUS les clients pour la
+# commodité d'un lab en auto-signé, sans que personne puisse le voir. Le lab, lui,
+# appelle http://jenkins:8080 : le champ y est sans effet.
+WEBHOOK_SSL_VERIFY="${WEBHOOK_SSL_VERIFY:-true}"
+case "$WEBHOOK_SSL_VERIFY" in true|false) ;; *) echo "REFUS: WEBHOOK_SSL_VERIFY_INVALIDE : '$WEBHOOK_SSL_VERIFY' — attendu true ou false" >&2; exit 2;; esac
 # JAMAIS de littéral de repli ici (Ruling 18, porte ci/lint-branch-literals.sh,
 # même règle que scripts/lib/git-base.sh depuis L3) : GIT_BASE ABSENT signifie
 # « laisser la forge attribuer sa propre branche par défaut au dépôt créé » —
@@ -96,11 +108,19 @@ ${TEAM_PROMOTE_WEBHOOK_URL:-http://jenkins:8080/project/team-promote}	${TEAM_PRO
   *)
     HOOKS="${TEAM_PUBLISH_WEBHOOK_URL:-http://jenkins:8080/generic-webhook-trigger/invoke?token=stoa-team-publish}	${TEAM_PUBLISH_WEBHOOK_SECRET:-}" ;;
 esac
+# Dédoublonnage PAR URL, avant toute pose : l'instantané des hooks déjà présents
+# est relu UNE seule fois (avant la boucle, plus bas), donc deux entrées de même
+# URL dans CETTE liste-ci poseraient deux hooks — la seconde ne pouvant pas voir
+# la première. Le premier gagne : sous gitlab, publish précède promote.
+HOOKS="$(awk -F'\t' '!vu[$1]++' <<<"$HOOKS")"
 
 if [ "$MODE" = print ]; then
   echo "MODE=print"; echo "HOST=$GIT_HOST"; echo "KIND=$FORGE_KIND"; echo "REPO=$REPO_FULL"
   if [ "$HOOK" = 1 ]; then
-    while IFS=$'\t' read -r H_URL _; do echo "HOOK=$H_URL"; done <<<"$HOOKS"
+    # ssl_verify n'est annoncé que sous le visage qui l'ENVOIE réellement (champ
+    # de hook GitLab) : l'afficher sous gitea promettrait un champ inexistant.
+    case "$FORGE_KIND" in gitlab) SSL_SHOW=" (ssl_verify=$WEBHOOK_SSL_VERIFY)";; *) SSL_SHOW="";; esac
+    while IFS=$'\t' read -r H_URL _; do echo "HOOK=$H_URL$SSL_SHOW"; done <<<"$HOOKS"
   else
     echo "HOOK=(non posé)"
   fi
@@ -123,16 +143,18 @@ enc(){ python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1],
 #   clé=valeur   → chaîne, valeur prise TELLE QUELLE dans l'argv (URL, nom…) ;
 #   clé:=json    → JSON brut (booléen/nombre/tableau/objet imbriqué, ex. un
 #                  jbody NICHÉ dans jbody) ;
-#   clé^=VAR_ENV → chaîne lue dans la variable d'ENVIRONNEMENT nommée VAR_ENV,
-#                  JAMAIS dans l'argv — réservé au token/secret de hook : le
-#                  détecteur ne voit ici que le NOM "VAR_ENV" (littéral en dur
-#                  dans le code, jamais une valeur), la valeur elle-même ne
-#                  transite donc jamais par l'argv d'aucun process, même
-#                  python3, même pour les quelques ms où `ps` pourrait le voir
-#                  (discipline scripts/lib/forge-identity.sh : « le secret
-#                  voyage par fichier ou par variable, jamais par argv »).
-#                  L'appelant exporte cette variable pour la durée du SEUL
-#                  appel (`H_TOK="$H_TOK" jbody …`), jamais globalement.
+#   clé^=VAR_ENV → chaîne lue dans la variable d'ENVIRONNEMENT nommée VAR_ENV :
+#                  l'argv de python3 ne porte ici que le NOM "VAR_ENV" (littéral
+#                  en dur dans le code, jamais une valeur). L'appelant exporte la
+#                  variable pour la durée du SEUL appel (`H_TOK="$H_TOK" jbody …`),
+#                  jamais globalement.
+# CE QUE `jbody` NE SUFFIT PAS À GARANTIR — corrigé le 2026-09-12 (revue finale
+# L5 phase 2), l'en-tête d'avant affirmait le contraire : `^=` protège l'argv de
+# PYTHON, pas celui de CURL. Le corps RENDU sur la sortie standard revenait dans
+# `-d "$(jbody …)"`, donc dans l'argv de curl — secret compris, visible d'un
+# `ps -Aww` — et sous gitea l'objet `config` rendu repassait en plus dans l'argv
+# du python3 suivant (`config:=$CFG`). RÈGLE : un corps qui porte un secret
+# passe par `jbody_file` (fichier 0600 + `-d @fichier`), jamais par `jbody`.
 # La détection est sans ambiguïté quel que soit le contenu de la VALEUR : les
 # clés sont des littéraux choisis ICI (jamais dynamiques), donc le premier
 # « = » de la chaîne suit TOUJOURS la clé, et le caractère qui le précède (« : »,
@@ -152,6 +174,38 @@ for a in sys.argv[1:]:
     else:
         d[prefix] = val
 print(json.dumps(d, ensure_ascii=False))
+PY
+}
+# jbody_file <fichier> clé=valeur… — MÊME grammaire que jbody (=, :=, ^=), mais
+# le corps est ÉCRIT dans <fichier> au lieu d'être rendu sur la sortie standard,
+# et une clé POINTÉE niche : `config.secret^=H_TOK` produit {"config":{"secret":…}}.
+# Les deux propriétés servent la même fin : UN SEUL appel python construit
+# l'objet ENTIER, imbrication comprise, et rien de ce qu'il produit ne repasse
+# par un argv — ni celui de curl (`-d @fichier`), ni celui d'un python suivant.
+# Le fichier naît sous `umask 077` dans $TMP (lui-même 0700), donc 0600.
+# Les clés sont des littéraux choisis ICI : aucune ne contient de point, la
+# nidification est donc sans ambiguïté, comme le choix du mode.
+jbody_file(){ # <fichier> clé=valeur…
+  python3 - "$@" <<'PY'
+import json, os, sys
+dest = sys.argv[1]
+d = {}
+for a in sys.argv[2:]:
+    i = a.index("=")
+    prefix, val = a[:i], a[i+1:]
+    if prefix.endswith(":"):
+        key, val = prefix[:-1], json.loads(val)
+    elif prefix.endswith("^"):
+        key, val = prefix[:-1], os.environ.get(val, "")
+    else:
+        key = prefix
+    parts = key.split(".")
+    node = d
+    for p in parts[:-1]:
+        node = node.setdefault(p, {})
+    node[parts[-1]] = val
+with open(dest, "w") as f:
+    json.dump(d, f, ensure_ascii=False)
 PY
 }
 # default_branch_of <fichier-json> — lit la branche par défaut ANNONCÉE par la
@@ -196,9 +250,13 @@ case "$FORGE_KIND" in
       while IFS=$'\t' read -r H_URL H_TOK; do
         if grep -qF "\"url\":\"$H_URL\"" <<<"$EXISTING"; then echo "hook $H_URL : déjà posé"
         else
-          SECRET_ARG=""; [ -n "$H_TOK" ] && SECRET_ARG="secret^=H_TOK"
-          CFG=$(H_TOK="$H_TOK" jbody url="$H_URL" content_type=json ${SECRET_ARG:+"$SECRET_ARG"})
-          hc=$(api -X POST -d "$(jbody type=gitea active:=true events:='["pull_request"]' "config:=$CFG")" -o "$TMP/e" -w '%{http_code}' "$B/repos/$REPO_FULL/hooks")
+          # UN SEUL python construit le corps ENTIER, `config` imbriquée
+          # comprise, et l'ÉCRIT : plus de corps rendu qui repasserait en argv.
+          SECRET_ARG=""; [ -n "$H_TOK" ] && SECRET_ARG="config.secret^=H_TOK"
+          H_TOK="$H_TOK" jbody_file "$TMP/body.json" type=gitea active:=true events:='["pull_request"]' \
+            config.url="$H_URL" config.content_type=json ${SECRET_ARG:+"$SECRET_ARG"} \
+            || { echo "REFUS: HOOK_ECHEC : $H_URL (corps JSON inconstructible)" >&2; exit 2; }
+          hc=$(api -X POST -d @"$TMP/body.json" -o "$TMP/e" -w '%{http_code}' "$B/repos/$REPO_FULL/hooks")
           [ "$hc" = 201 ] && echo "hook $H_URL : posé" || { echo "REFUS: HOOK_ECHEC : $H_URL (HTTP $hc) $(head -c 200 "$TMP/e")" >&2; exit 2; }
         fi
       done <<<"$HOOKS"
@@ -235,7 +293,10 @@ case "$FORGE_KIND" in
       while IFS=$'\t' read -r H_URL H_TOK; do
         if grep -qF "\"url\":\"$H_URL\"" <<<"$EXISTING"; then echo "hook $H_URL : déjà posé"
         else
-          hc=$(api -X POST -d "$(H_TOK="$H_TOK" jbody url="$H_URL" merge_requests_events:=true push_events:=false enable_ssl_verification:=false token^=H_TOK)" -o "$TMP/e" -w '%{http_code}' "$B/projects/$P/hooks")
+          H_TOK="$H_TOK" jbody_file "$TMP/body.json" url="$H_URL" merge_requests_events:=true push_events:=false \
+            "enable_ssl_verification:=$WEBHOOK_SSL_VERIFY" token^=H_TOK \
+            || { echo "REFUS: HOOK_ECHEC : $H_URL (corps JSON inconstructible)" >&2; exit 2; }
+          hc=$(api -X POST -d @"$TMP/body.json" -o "$TMP/e" -w '%{http_code}' "$B/projects/$P/hooks")
           [ "$hc" = 201 ] && echo "hook $H_URL : posé (merge_requests_events)" || { echo "REFUS: HOOK_ECHEC : $H_URL (HTTP $hc) $(head -c 200 "$TMP/e")" >&2; exit 2; }
         fi
       done <<<"$HOOKS"
