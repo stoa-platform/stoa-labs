@@ -7,7 +7,7 @@ set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"; cd "$REPO" || exit 2
 T=scripts/setup-team-repos.sh
 PASS=0; FAIL=0; ok(){ PASS=$((PASS+1)); printf '  ✅ %s\n' "$*"; }; ko(){ FAIL=$((FAIL+1)); printf '  ❌ %s\n' "$*"; }
-EXPECTED_CHECKS=8
+EXPECTED_CHECKS=9
 [ -x "$T" ] && ok "1 l'outil existe et est exécutable" || ko "1 $T absent"
 shellcheck -x "$T" >/dev/null 2>&1 && ok "2 shellcheck propre" || ko "2 shellcheck"
 OUT=$(env -i PATH="$PATH" HOME="$HOME" FORGE_KIND=gitea GIT_HOST=http://127.0.0.1:1 FORGE_SECRET=x bash "$T" fbi/apis --print 2>&1); RC=$?
@@ -31,5 +31,7 @@ OUT=$(env -i PATH="$PATH" HOME="$HOME" FORGE_KIND=bitbucket GIT_HOST=http://127.
 [ "$RC" = 2 ] && grep -q 'FORGE_KIND_INCONNU' <<<"$OUT" && ok "7 visage inconnu ⇒ FORGE_KIND_INCONNU" || ko "7 rc $RC"
 OUT=$(env -i PATH="$PATH" HOME="$HOME" FORGE_KIND=gitea GIT_HOST=http://127.0.0.1:1 FORGE_SECRET=x bash "$T" fbi/apis 2>&1); RC=$?
 [ "$RC" != 0 ] && grep -qE 'injoignable|CREATION_ECHEC|REPO_GET' <<<"$OUT" && ok "8 hôte mort sans --print ⇒ refus nommé, jamais un vert" || ko "8 rc $RC : $(head -1 <<<"$OUT")"
+OUT=$(env -i PATH="$PATH" HOME="$HOME" FORGE_KIND=gitea GIT_HOST=http://127.0.0.1:1 FORGE_SECRET=x bash "$T" 'fbi/apis","auto_init":true' --print 2>&1); RC=$?
+[ "$RC" = 2 ] && grep -q REPO_INVALIDE <<<"$OUT" && ok "9 un nom de dépôt forgé est REFUSÉ avant tout réseau, même en --print (jamais interpolé dans un corps JSON)" || ko "9 rc $RC : $(head -1 <<<"$OUT")"
 TOTAL=$((PASS+FAIL)); [ "$TOTAL" -eq "$EXPECTED_CHECKS" ] && ok "total $EXPECTED_CHECKS" || ko "total $TOTAL ≠ $EXPECTED_CHECKS"
 printf 'RÉSULTAT : %d/%d\n' "$PASS" $((PASS+FAIL)); [ "$FAIL" -eq 0 ]
