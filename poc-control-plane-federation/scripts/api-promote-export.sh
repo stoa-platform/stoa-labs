@@ -101,21 +101,36 @@ GIT_HOST="${GIT_HOST:-http://gitea:3000}"
 GIT_WEB_HOST="${GIT_WEB_HOST:-$GIT_HOST}"   # défaut : même hôte, sauf reverse-proxy dédié à l'affichage
 GIT_REPO="${GIT_REPO:-ci/stoa-labs}"   # dépôt PLATEFORME — porte providers.<env>.yml
 
+# L5 phase 2 (2026-09-12) — LA FORGE SE PARLE PAR UNE SEULE AUTORITÉ : le
+# visage (FORGE_KIND=gitea|gitlab), la base d'API, l'en-tête d'auth et la garde
+# de réponse vivent dans scripts/lib/forge-api.sh (+ .py) — ce script ne
+# compose plus /api/v1 ni « Authorization: token » lui-même (mêmes verbes que
+# team-request.sh/api-request.sh/api-promote-request.sh). Sourcé APRÈS la
+# garde du secret (§haut) et APRÈS GIT_HOST/GIT_REPO/GIT_WEB_HOST ci-dessus :
+# forge_api_init ne fait AUCUN appel réseau, mais REFUSE si GIT_HOST ou
+# GIT_REPO est vide — GIT_REPO ici est le dépôt PLATEFORME (défaut posé juste
+# au-dessus) ; l'appel visant le dépôt de l'ÉQUIPE se préfixe lui-même
+# GIT_REPO="$REPO_FULL" plus bas (§PR d'épinglage) — l'autorité n'a pas besoin
+# de le savoir à l'init, seulement qu'UN dépôt est nommé.
+_APE_FORGE="$(dirname "${BASH_SOURCE[0]}")/lib/forge-api.sh"
+[ -f "$_APE_FORGE" ] || _APE_FORGE="scripts/lib/forge-api.sh"
+# shellcheck source=scripts/lib/forge-api.sh
+. "$_APE_FORGE" || { echo "ERREUR: $_APE_FORGE introuvable ou illisible" >&2; exit 1; }
+forge_api_init || exit 2
+
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT; umask 077
-forge_auth_write "$FORGE_SECRET" "$TMP/ghdr" || exit 2
-gapi() { curl -sS -H @"$TMP/ghdr" -H 'Content-Type: application/json' "$@"; }
 
 # ── team -> repo, lu sur la FORGE (jamais le worktree local) ────────────────
 # `/raw/<chemin>` SANS ref : la forge sert la branche par défaut du dépôt
 # plateforme — celle qu'elle déclare, quel que soit son nom.
-# REPRIS À L'IDENTIQUE de api-promote-request.sh (mêmes deux pièges mesurés :
-# le préfixe de sous-répertoire dans le chemin — un KNOB, jamais un littéral —
-# et `curl -s` qui rend 0 sur un 404, d'où --fail-with-body).
+# REPRIS À L'IDENTIQUE de api-promote-request.sh : le préfixe de
+# sous-répertoire dans le chemin reste un KNOB, jamais un littéral — et le
+# piège qu'était `curl -s` (rc 0 sur un 404) est fermé À LA SOURCE par la garde
+# de réponse de forge-api.py (rc 2 et rien sur stdout dès que le HTTP n'est pas
+# 2xx).
 PROV_REL="${SUB_PFX}ansible/providers.${AUTHORING_ENV}.yml"
-gapi --fail-with-body --max-time 20 \
-  "${GIT_HOST}/api/v1/repos/${GIT_REPO}/raw/${PROV_REL}" \
-  > "$TMP/providers.yml" \
-  || fail "LECTURE_PROVIDERS : ${PROV_REL} illisible sur la branche par défaut de ${GIT_REPO} (HTTP non-2xx, hote injoignable ou token refuse ; chemin RELATIF a la racine du depot, prefixe GIT_SUBDIR='${GIT_SUBDIR}')"
+forge raw "$PROV_REL" > "$TMP/providers.yml" \
+  || fail "LECTURE_PROVIDERS : ${PROV_REL} illisible sur la branche par défaut de ${GIT_REPO} (cause ci-dessus ; chemin RELATIF à la racine du dépôt, préfixe GIT_SUBDIR='${GIT_SUBDIR:-}')"
 REPO_FULL=$(TEAM="$TEAM" PROV="$TMP/providers.yml" python3 - <<'PY'
 import os, sys, yaml
 d = yaml.safe_load(open(os.environ["PROV"])) or {}
@@ -298,45 +313,23 @@ else
     git -C "$TMP/team" push -q -f "${GIT_HOST}/${REPO_FULL}.git" "$PIN_BRANCH" \
     || fail "PIN_PUSH_ECHEC : push de ${PIN_BRANCH} sur ${REPO_FULL}"
   unset AUTH_B64
-  PIN_PR=$(API="${GIT_HOST}/api/v1" REPO_FULL="$REPO_FULL" FORGE_SECRET="$FORGE_SECRET" \
-    BRANCH="$PIN_BRANCH" API_NAME="$API_NAME" GUID="$GUID" SHA="$SHA" VER="$PUB_VERSION" \
-    TEAM_BASE="$TEAM_BASE" \
-    python3 - <<'PY'
-import json, os, urllib.error, urllib.request
-api, repo, tok = os.environ["API"], os.environ["REPO_FULL"], os.environ["FORGE_SECRET"]
-head = os.environ["BRANCH"]
-hdrs = {"Authorization": f"token {tok}", "Content-Type": "application/json"}
-body = (
-    "Épinglage du manifeste de promotion (formulaire api-promote-export).\n\n"
-    f"- API : {os.environ['API_NAME']} v{os.environ['VER']}\n"
-    f"- guid (id-map, ADR-079) : {os.environ['GUID']}\n"
-    f"- archive_sha256 (registre, adressé par le contenu) : {os.environ['SHA']}\n\n"
-    "Merger cette PR épingle CE guid et CES octets pour la promotion. "
-    "Geste suivant : formulaire api-promote-request — ARCHIVE_SHA256 peut "
-    f"rester vide, il sera lu ici, sur {os.environ['TEAM_BASE']} (ADR-081 : la décision est le merge)."
-)
-req = urllib.request.Request(f"{api}/repos/{repo}/pulls", method="POST",
-    # La base de la PR est la branche du dépôt CIBLE (celui de l'équipe), celle
-    # que le clone a prise — jamais un littéral.
-    data=json.dumps({"base": os.environ["TEAM_BASE"], "head": head,
-        "title": f"promo({os.environ['API_NAME']}): épinglage guid/sha v{os.environ['VER']}",
-        "body": body}).encode(), headers=hdrs)
-try:
-    print(json.load(urllib.request.urlopen(req))["number"])
-except urllib.error.HTTPError as e:
-    if e.code != 409:
-        raise
-    # PR déjà ouverte pour cette branche : le push -f vient de la mettre à
-    # jour — on retrouve son numéro au lieu d'échouer.
-    with urllib.request.urlopen(urllib.request.Request(
-            f"{api}/repos/{repo}/pulls?state=open", headers=hdrs)) as r:
-        prs = json.load(r)
-    n = next((p["number"] for p in prs if p["head"]["ref"] == head), None)
-    if n is None:
-        raise SystemExit("PR 409 mais introuvable parmi les PRs ouvertes")
-    print(n)
-PY
-) || fail "PIN_PR_ECHEC : ouverture/retrouvaille de la PR d'épinglage"
-  echo "PR d'épinglage : ${GIT_WEB_HOST}/${REPO_FULL}/pulls/${PIN_PR}"
+  # Le rejeu est NOMINAL (le push -f vient de remplacer la branche d'épinglage) :
+  # on RETROUVE la PR ouverte de cette tête avant d'en ouvrir une — plus de 409 à lire.
+  if ! GIT_REPO="$REPO_FULL" forge_kv PIN pr_find_open "$PIN_BRANCH"; then
+    fail "PIN_PR_ECHEC : relecture des PR ouvertes de ${REPO_FULL} (cause ci-dessus)"
+  fi
+  if [ -n "${PIN_NUMBER:-}" ]; then
+    PIN_PR="$PIN_NUMBER"; echo "PR d'épinglage déjà ouverte : #${PIN_PR} (mise à jour par le push)"
+  else
+    {
+      printf "Épinglage du manifeste de promotion (formulaire api-promote-export).\n\n"
+      printf -- "- API : %s v%s\n- guid (id-map, ADR-079) : %s\n- archive_sha256 (registre, adressé par le contenu) : %s\n\n" "$API_NAME" "$PUB_VERSION" "$GUID" "$SHA"
+      printf "Merger cette PR épingle CE guid et CES octets pour la promotion. Geste suivant : formulaire api-promote-request — ARCHIVE_SHA256 peut rester vide, il sera lu ici, sur %s (ADR-081 : la décision est le merge).\n" "$TEAM_BASE"
+    } > "$TMP/pin-body.md"
+    GIT_REPO="$REPO_FULL" forge_kv PIN pr_open "$PIN_BRANCH" "$TEAM_BASE" "promo(${API_NAME}): épinglage guid/sha v${PUB_VERSION}" "$TMP/pin-body.md" \
+      || fail "PIN_PR_ECHEC : ouverture de la PR d'épinglage sur ${REPO_FULL} (cause ci-dessus)"
+    PIN_PR="$PIN_NUMBER"
+  fi
+  echo "PR d'épinglage : $(forge_web_url "$PIN_URL")"
   echo "geste suivant : MERGER cette PR, puis formulaire api-promote-request (ARCHIVE_SHA256 facultatif — lu sur ${TEAM_BASE})"
 fi

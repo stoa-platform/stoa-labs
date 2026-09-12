@@ -566,16 +566,19 @@ grep -q REPO_NON_DECLARE "$ROOT/scripts/api-promote-request.sh" \
 # le nom. Même discipline que team-publish.sh §3 : le seul énoncé qui fait
 # autorité sur « ce dépôt appartient à cette équipe » vit dans le dépôt
 # PLATEFORME, sur sa branche de base.
-# ⚠ Motif mis à jour DEUX FOIS. D'abord avec le préfixe de sous-répertoire (cf.
-# ⑱bis) ; puis, le 2026-09-09, avec le KNOB qui l'a remplacé : ce préfixe
+# ⚠ Motif mis à jour TROIS FOIS. D'abord avec le préfixe de sous-répertoire (cf.
+# ⑱bis) ; puis, le 2026-09-09, avec le KNOB qui l'a remplacé (ce préfixe
 # s'écrivait en dur au lab et faisait mourir la chaîne d'un client rangeant son
-# dépôt autrement. L'assertion porte donc sur la FORME (l'URL est composée avec
-# $PROV_REL), jamais sur la valeur d'un préfixe — sinon elle réinstallerait le
-# défaut qu'elle est censée interdire. Le préfixe lui-même est éprouvé, sous une
+# dépôt autrement) ; puis, le 2026-09-12 (L5 phase 2), avec le passage à
+# `forge raw` : ce script ne compose plus lui-même l'URL `/raw/<chemin>`, c'est
+# l'autorité (scripts/lib/forge-api.sh) qui la connaît. L'assertion porte donc
+# sur la FORME (l'appel se fait avec $PROV_REL, par le verbe de l'autorité),
+# jamais sur la valeur d'un préfixe — sinon elle réinstallerait le défaut
+# qu'elle est censée interdire. Le préfixe lui-même est éprouvé, sous une
 # valeur NON-défaut, par scripts/test-repo-layout-portabilite.sh (section P).
-grep -q 'repos/${GIT_REPO}/raw/${PROV_REL}' "$ROOT/scripts/api-promote-request.sh" \
-  && ok "providers lu sur la forge (branche par défaut du dépôt), pas sur le worktree local" \
-  || bad "providers lu localement — un worktree en retard déciderait de l'appartenance"
+grep -qE 'forge raw "\$\{?PROV_REL\}?"' "$ROOT/scripts/api-promote-request.sh" \
+  && ok "providers lu sur la forge par l'autorité (forge raw, branche par défaut du dépôt), pas sur le worktree local" \
+  || bad "providers lu localement ou par un curl Gitea — un worktree en retard déciderait de l'appartenance"
 
 echo "⑱bis un CHANGE_REF ne peut pas fabriquer une cle du marqueur"
 # ⚠ MÊME PIÈGE PIPEFAIL QUE ⑯, UN CRAN PLUS LOIN. Un `run_w ... | grep -q ...`
@@ -604,13 +607,22 @@ sed 's/[[:space:]]*#.*$//' "$ROOT/scripts/api-promote-request.sh" > "$WCODE"
 grep -q 'yaml.safe_dump' "$WCODE" \
   && ok "le marqueur est SERIALISE, pas formate — une valeur ne peut pas fabriquer de cle" \
   || bad "marqueur produit par %-formatage : une valeur peut ouvrir une nouvelle ligne YAML"
-grep -q -- '--fail-with-body' "$WCODE" \
-  && ok "curl echoue vraiment sur un HTTP non-2xx (sinon LECTURE_PROVIDERS est du code mort)" \
-  || bad "curl -s rend 0 sur un 404 : le refus emis serait un mensonge"
+# L5 phase 2 (2026-09-12) : la lecture providers ne compose plus son propre
+# curl (fini --fail-with-body) — elle passe par `forge raw`, dont la garde de
+# reponse (rc 2 et rien sur stdout sur un HTTP non-2xx) est celle de
+# l'autorite, eprouvee par test-forge-api.sh. La PROPRIETE que cette assertion
+# doit continuer a tenir n'est donc plus « curl echoue vraiment » (curl a
+# disparu d'ici) mais « ce script n'a pas RE-INVENTE un curl artisanal vers
+# /raw » — sinon on retombe exactement dans le piege mesure (curl -s, rc 0 sur
+# un 404, le refus devient un mensonge). Meme compte d'assertions (une seule,
+# adaptee — meme discipline que test-palier-retention.sh ⑨b, cf. son commentaire).
+grep -qE 'curl .*repos/\$\{GIT_REPO\}/raw' "$WCODE" \
+  && bad "la lecture des providers recompose un curl vers /raw en plus de (ou a la place de) forge raw — la garde du non-2xx doit venir de l'autorite, pas d'un --fail-with-body local" \
+  || ok "aucun curl artisanal vers /raw ici — la garde du HTTP non-2xx est celle de l'autorite (forge raw), pas un --fail-with-body local qui pourrait etre retire sans faire rougir personne"
 grep -q 'PROV_REL="${SUB_PFX}ansible/providers' "$WCODE" \
-  && grep -q 'raw/${PROV_REL}' "$WCODE" \
-  && ok "le chemin providers porte le prefixe du livrable, pris au KNOB (SUB_PFX) et non ecrit en dur" \
-  || bad "chemin providers sans prefixe (404 hors DRY_RUN) ou prefixe du lab en dur (404 chez le client)"
+  && grep -q 'forge raw "$PROV_REL"' "$WCODE" \
+  && ok "le chemin providers porte le prefixe du livrable, pris au KNOB (SUB_PFX) et non ecrit en dur — et c'est bien CE chemin (prefixe inclus) qui est passe a forge raw" \
+  || bad "chemin providers sans prefixe (404 hors DRY_RUN), prefixe du lab en dur (404 chez le client), ou PROV_REL n'atteint plus forge raw"
 
 # PV_REF passe par la meme garde que CHANGE_REF ; l'eprouver separement,
 # sinon la moitie du verrou de reference n'est tenue par rien. `homol` est le

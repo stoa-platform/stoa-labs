@@ -215,9 +215,22 @@ gbase(){ git_base_avec_basic "$(git_base_basic_login)" FORGE_SECRET "$@"; }
 ggit(){ git_base_avec_basic "$(git_base_basic_login)" FORGE_SECRET git "$@"; }
 GIT_HOST="${GIT_HOST:-http://gitea:3000}"
 GIT_REPO="${GIT_REPO:-ci/stoa-labs}"   # dépôt PLATEFORME — porte providers.<env>.yml
+# L5 phase 2 (2026-09-12) — LA FORGE SE PARLE PAR UNE SEULE AUTORITÉ : le
+# visage (FORGE_KIND=gitea|gitlab), la base d'API, l'en-tête d'auth et la garde
+# de réponse vivent dans scripts/lib/forge-api.sh (+ .py) — ce script ne
+# compose plus /api/v1 ni « Authorization: token » lui-même (mêmes verbes que
+# team-request.sh/api-request.sh). Sourcé APRÈS la garde du secret (§haut) et
+# APRÈS GIT_HOST/GIT_REPO ci-dessus : forge_api_init ne fait AUCUN appel
+# réseau, mais REFUSE si GIT_HOST ou GIT_REPO est vide — GIT_REPO ici est le
+# dépôt PLATEFORME (défaut posé juste au-dessus) ; l'appel visant le dépôt de
+# l'ÉQUIPE se préfixe lui-même GIT_REPO="$REPO_FULL" plus bas (§PR) —
+# l'autorité n'a pas besoin de le savoir à l'init, seulement qu'UN dépôt est nommé.
+_APR_FORGE="$(dirname "${BASH_SOURCE[0]}")/lib/forge-api.sh"
+[ -f "$_APR_FORGE" ] || _APR_FORGE="scripts/lib/forge-api.sh"
+# shellcheck source=scripts/lib/forge-api.sh
+. "$_APR_FORGE" || { echo "ERREUR: $_APR_FORGE introuvable ou illisible" >&2; exit 1; }
+forge_api_init || exit 2
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT; umask 077
-forge_auth_write "$FORGE_SECRET" "$TMP/ghdr" || exit 2
-gapi() { curl -sS -H @"$TMP/ghdr" -H 'Content-Type: application/json' "$@"; }
 
 # ── team -> repo, lu sur la FORGE (jamais le worktree local) ────────────────
 # `/raw/<chemin>` SANS ref : la forge sert la branche par défaut du dépôt
@@ -234,20 +247,18 @@ gapi() { curl -sS -H @"$TMP/ghdr" -H 'Content-Type: application/json' "$@"; }
 #     produit le MÊME 404 chez qui range son dépôt autrement (mesuré le
 #     2026-09-08). D'où SUB_PFX, seule autorité du préfixe (repo-layout.sh).
 #
-# (2) `curl -s` REND 0 SUR UN 404. Le `|| fail` ci-dessous ne se déclencherait
-#     donc jamais : le corps d'erreur JSON de Gitea atterrirait dans le
-#     fichier, `yaml.safe_load` le parserait sans broncher (JSON ⊂ YAML),
-#     `providers` vaudrait None — et l'opérateur lirait « équipe absente de
-#     providers » alors qu'elle y est. Un chemin cassé, un hôte injoignable,
-#     un token périmé et un dépôt privé se présenteraient TOUS comme un défaut
-#     de déclaration d'équipe. C'est la classe de panne que ce dépôt a déjà
-#     payée — une variable vide, une branche plausible, un verdict trompeur —
-#     ici en refus trompeur. `--fail-with-body` rend le statut HTTP au shell.
+# (2) UN 404 NE DOIT JAMAIS PASSER POUR UN FICHIER VIDE. C'était le piège de
+#     `curl -s` (rc 0 sur un 404, le corps d'erreur JSON atterrissant dans le
+#     fichier ; `providers` valait alors None et l'opérateur lisait « équipe
+#     absente » alors qu'elle y était) — la classe de panne que ce dépôt a déjà
+#     payée : une variable vide, une branche plausible, un verdict trompeur.
+#     `forge raw` (L5 phase 2) ferme ce piège À LA SOURCE : la garde de réponse
+#     de forge-api.py rend rc 2 et RIEN sur stdout dès que le HTTP n'est pas
+#     2xx (chemin cassé, hôte injoignable, token refusé, dépôt privé) — ce
+#     script n'a plus qu'à nommer la cause avec `|| fail`.
 PROV_REL="${SUB_PFX}ansible/providers.${AUTHORING_ENV}.yml"
-gapi --fail-with-body --max-time 20 \
-  "${GIT_HOST}/api/v1/repos/${GIT_REPO}/raw/${PROV_REL}" \
-  > "$TMP/providers.yml" \
-  || fail "LECTURE_PROVIDERS : ${PROV_REL} illisible sur la branche par défaut de ${GIT_REPO} (HTTP non-2xx, hote injoignable ou token refuse ; chemin RELATIF a la racine du depot, prefixe GIT_SUBDIR='${GIT_SUBDIR}')"
+forge raw "$PROV_REL" > "$TMP/providers.yml" \
+  || fail "LECTURE_PROVIDERS : ${PROV_REL} illisible sur la branche par défaut de ${GIT_REPO} (cause ci-dessus ; chemin RELATIF à la racine du dépôt, préfixe GIT_SUBDIR='${GIT_SUBDIR:-}')"
 REPO_FULL=$(TEAM="$TEAM" PROV="$TMP/providers.yml" python3 - <<'PY'
 import os, sys, yaml
 d = yaml.safe_load(open(os.environ["PROV"])) or {}
@@ -403,26 +414,18 @@ ITSM_LINE=""
 
 ⚠ La porte de \`${TO_ENV}\` déclare **itsmCheck** : au dispatch (post-merge), le change \`${CHANGE_REF}\` sera RE-vérifié \`approved\` auprès de l'ITSM — un change révoqué entre demande et merge refuse (\`ITSM_NOT_APPROVED\`, anti-TOCTOU A6)."
 
-PR_URL=$(API="${GIT_HOST}/api/v1" R="$REPO_FULL" B="$BRANCH" \
-  T="promote(${API_NAME}): ${FROM_ENV} → ${TO_ENV}" \
-  BODY="Marqueur \`${MARKER}\` — pin \`${PIN}\`, sha256 \`${ARCHIVE_SHA256:-<authoring>}\`.
+# Le corps de la PR est écrit dans un FICHIER (jamais en argv) ; la base est
+# TEAM_BASE, la HEAD découverte du dépôt d'équipe — jamais un littéral.
+cat > "$TMP/pr-body.md" <<PRBODY
+Marqueur \`${MARKER}\` — pin \`${PIN}\`, sha256 \`${ARCHIVE_SHA256:-<authoring>}\`.
 
 La DÉCISION est le merge de cette PR (ADR-081). Groupe d'approbation ATTENDU : \`${APPROVER_GROUP:-<aucun>}\` — attendu, **pas vérifié** : rien sur ce chemin ne contrôle qui approuve (jalon G4).
 
 ${DEPLOYER_GROUP_LINE}
 
-**Ce merge DÉCLENCHE l'apply de promotion** (webhook → job \`team-promote\`, G5/ADR-083) : une pause nominative demandera l'identité du MERGEUR, puis l'import d'archive (GUID stable, 0-coupure — ADR-079) tournera vers \`${TO_ENV}\` et son résultat sera commenté ICI — pin, digest, moteur, et les trois identités (demandeur / mergeur / porteur).${ITSM_LINE}" \
-  TEAM_BASE="$TEAM_BASE" HDR="$TMP/ghdr" python3 - <<'PY'
-import json, os, urllib.request
-h = dict(l.split(": ", 1) for l in open(os.environ["HDR"]).read().splitlines() if l)
-h["Content-Type"] = "application/json"
-req = urllib.request.Request(
-    f"{os.environ['API']}/repos/{os.environ['R']}/pulls", method="POST",
-    # La base de la PR = la branche du dépôt d'équipe, découverte, jamais un littéral.
-    data=json.dumps({"head": os.environ["B"], "base": os.environ["TEAM_BASE"],
-                     "title": os.environ["T"], "body": os.environ["BODY"]}).encode(),
-    headers=h)
-print(json.load(urllib.request.urlopen(req))["html_url"])
-PY
-) || fail "PR_ECHEC : ouverture de la PR sur $REPO_FULL"
+**Ce merge DÉCLENCHE l'apply de promotion** (webhook → job \`team-promote\`, G5/ADR-083) : une pause nominative demandera l'identité du MERGEUR, puis l'import d'archive (GUID stable, 0-coupure — ADR-079) tournera vers \`${TO_ENV}\` et son résultat sera commenté ICI — pin, digest, moteur, et les trois identités (demandeur / mergeur / porteur).${ITSM_LINE}
+PRBODY
+GIT_REPO="$REPO_FULL" forge_kv PR pr_open "$BRANCH" "$TEAM_BASE" "promote(${API_NAME}): ${FROM_ENV} → ${TO_ENV}" "$TMP/pr-body.md" \
+  || fail "PR_ECHEC : ouverture de la PR sur ${REPO_FULL} (cause ci-dessus)"
+PR_URL="$(forge_web_url "$PR_URL")"
 echo "PROMOTION_DEMANDEE : $PR_URL"
