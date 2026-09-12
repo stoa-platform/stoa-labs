@@ -789,6 +789,18 @@ else
   grep -q '^REPO=banking-demo/accounts-api$' "$TMP/srp2" \
     && bad "⑳quinquies la liste ne SUIT pas providers (dépôt d'équipe codé en dur ?)" \
     || ok "⑳quinquies la liste SUIT providers : repo retiré ⇒ dépôt hors de la pose"
+  # ⑳sexies/⑳septies (2026-09-12) : l'alias FORGE_SECRET et le refus de visage.
+  # Même idiome que ⑳ (env -i, GIT_HOST mort — aucun réseau ne doit être requis
+  # pour REFUSER) : sur un GIT_HOST injoignable, le refus de visage doit tomber
+  # AVANT la découverte de branche, sinon il se relirait BRANCHE_PAR_DEFAUT_INCONNUE.
+  OUT=$(env -i PATH="$PATH" HOME="$HOME" FORGE_KIND=gitlab GIT_HOST=http://127.0.0.1:1 FORGE_SECRET=x bash "$SRP" 2>&1); RC=$?
+  [ "$RC" = 2 ] && grep -q 'PROTECTION_GITEA_SEULEMENT' <<<"$OUT" \
+    && ok "⑳sexies FORGE_KIND=gitlab ⇒ PROTECTION_GITEA_SEULEMENT (la protection nominative est un prérequis de forge chez un client GitLab)" \
+    || bad "⑳sexies rc $RC : $(head -1 <<<"$OUT")"
+  OUT=$(env -i PATH="$PATH" HOME="$HOME" FORGE_SECRET=x GIT_HOST=http://127.0.0.1:1 bash "$SRP" 2>&1)
+  grep -q 'GITEA_TOKEN: FORGE_SECRET requis' <<<"$OUT" \
+    && bad "⑳septies l'alias FORGE_SECRET est mort (FORGE_SECRET seul ⇒ « GITEA_TOKEN: … requis »)" \
+    || ok "⑳septies FORGE_SECRET seul suffit (alias vivant)"
 fi
 
 echo "== ㉑ la voie consommateur valide l'env par la CHAÎNE (A7 : la demande admet la chaîne ENTIÈRE, terminus compris — les portes décident) =="

@@ -23,7 +23,16 @@
 #     bash scripts/seed-governance-chain.sh
 #
 # Usage :
-#   FORGE_SECRET=<token write:repository> bash scripts/seed-governance-chain.sh
+#   FORGE_KIND=gitea GIT_HOST=<base> GIT_REPO=<owner/repo> \
+#     FORGE_SECRET=<token write:repository> bash scripts/seed-governance-chain.sh
+#
+# Knobs REQUIS (aucun repli sur FORGE_KIND : le read-back §④ passe par
+# scripts/lib/forge-api.sh, qui refuse FORGE_KIND_INCONNU sur autre chose que
+# gitea|gitlab) :
+#   FORGE_KIND    gitea | gitlab — le visage de la forge du read-back.
+#   GIT_HOST      base de la forge (a un défaut de LAB ci-dessous, jamais chez le client).
+#   GIT_REPO      owner/repo du dépôt governance (idem, défaut de LAB).
+#   FORGE_SECRET  token write:repository — alias GITEA_TOKEN accepté.
 #
 # Frapper un token si besoin (le lab n'en garde pas : Vault est en dev-mode,
 # donc en MÉMOIRE — il perd ses secrets à chaque redémarrage) :
@@ -41,8 +50,11 @@ GIT_REPO="${GIT_REPO:-ci/governance}"
 # du texte à quoter, et une apostrophe française y ouvre une chaîne qui ne se
 # ferme jamais — le script entier devient un « unexpected EOF » signalé à la
 # DERNIÈRE ligne, très loin de la vraie faute (mesuré ici même le 2026-08-26).
+# L'ALIAS : un second `${GITEA_TOKEN:?…}` ici EFFACERAIT FORGE_SECRET (il
+# exigerait GITEA_TOKEN même quand FORGE_SECRET est posé) — même bug que
+# setup-repo-protections.sh, mesuré le 2026-09-12.
 FORGE_SECRET="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
-FORGE_SECRET="${GITEA_TOKEN:?FORGE_SECRET requis (write:repository) — voir l en-tete de ce script}"
+[ -n "$FORGE_SECRET" ] || { echo "REFUS: SECRET_FORGE_REQUIS : ni FORGE_SECRET ni son alias GITEA_TOKEN (write:repository) — voir l en-tete de ce script" >&2; exit 2; }
 
 PASS=0; FAIL=0
 ok()  { PASS=$((PASS+1)); printf '  \033[32mPASS\033[0m %s\n' "$*"; }
@@ -92,10 +104,16 @@ scripts/seed-governance-chain.sh, gate = scripts/test-env-chain.sh."
   fi
 fi
 
-# READ-BACK depuis Gitea, pas depuis le clone local : on vérifie ce que le CI
-# LIRA, pas ce qu'on croit avoir écrit.
-echo "④ read-back depuis Gitea (ce que le CI lira sur main)"
-RAW=$(curl -s -H "$AUTH" "$GIT_HOST/$GIT_REPO/raw/branch/main/environments.yaml")
+# READ-BACK depuis la forge, pas depuis le clone local : on vérifie ce que le
+# CI LIRA, pas ce qu'on croit avoir écrit. Par L'AUTORITÉ (scripts/lib/forge-
+# api.sh), pas par un `curl` Gitea composé ici : ce point du script tourne
+# dans $TMP/gov (le `cd` de §③, plus haut) — chemin ABSOLU vers la lib, comme
+# $ROOT/clients/_example/environments.yaml. `forge raw` sans `ref` lit la HEAD
+# du dépôt : plus de « main » en dur (ci/lint-branch-literals.sh).
+echo "④ read-back depuis la forge (ce que le CI lira sur sa branche de base)"
+# shellcheck source=scripts/lib/forge-api.sh
+. "$ROOT/scripts/lib/forge-api.sh" && forge_api_init || exit 2
+RAW=$(forge raw environments.yaml)
 GOT=$(printf '%s' "$RAW" | python3 -c "import sys,yaml
 d=yaml.safe_load(sys.stdin) or {}
 print(','.join(d.get('environments') or []))" 2>/dev/null)

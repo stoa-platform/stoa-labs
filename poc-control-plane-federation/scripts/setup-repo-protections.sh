@@ -63,6 +63,18 @@ case "${1:-}" in
   *)         echo "argument inconnu : $1" >&2; usage >&2; exit 2 ;;
 esac
 
+# LE VISAGE, EN PREMIER — avant tout réseau, --print compris. La découverte de
+# branche plus bas (mode pose sans PROTECT_BRANCH) parle DÉJÀ au réseau avant
+# la garde du secret ; un refus de visage posé après elle se relirait « dépôt
+# injoignable » sur n'importe quel GIT_HOST, joignable ou non, au lieu de dire
+# la vraie cause. Et --print n'a rien à montrer non plus sur un visage où cet
+# outil ne pose jamais rien : la protection NOMINATIVE de Gitea (push
+# whitelist, patterns — ADR-082 §3) n'existe pas sous cette forme ailleurs.
+case "${FORGE_KIND:-gitea}" in
+  gitea) ;;
+  *) echo "REFUS: PROTECTION_GITEA_SEULEMENT : cet outil pose la protection NOMINATIVE de Gitea (push whitelist, patterns — ADR-082 §3) ; sur ${FORGE_KIND}, la protection de branche est un prérequis de forge posé par scripts/setup-team-repos.sh (par RÔLE en CE — GitLab CE n'a pas la protection nominative), jamais par cet outil — voir ENVIRONNEMENTS.md § Prérequis côté client" >&2; exit 2 ;;
+esac
+
 GIT_HOST="${GIT_HOST:-http://localhost:13000}"
 WL="${PROTECT_PUSH_WHITELIST:-ci}"
 PATTERNS="${PROTECT_FILE_PATTERNS:-}"
@@ -140,8 +152,12 @@ if [ "$MODE" = print ]; then
   exit 0
 fi
 
+# L'ALIAS : FORGE_SECRET est le nom canonique partout ailleurs dans le repo ;
+# GITEA_TOKEN reste lu en repli pour qui l'a déjà en tête. Un `${GITEA_TOKEN:?…}`
+# ici EFFACERAIT l'alias (il exigerait GITEA_TOKEN même quand FORGE_SECRET est
+# posé) — bug mesuré le 2026-09-12 (⑳sexies/⑳septies plus loin).
 FORGE_SECRET="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
-FORGE_SECRET="${GITEA_TOKEN:?FORGE_SECRET requis (write:repository sur les dépôts visés) — ou --print pour voir ce qui serait posé}"
+[ -n "$FORGE_SECRET" ] || { echo "REFUS: SECRET_FORGE_REQUIS : ni FORGE_SECRET ni son alias GITEA_TOKEN (write:repository sur les dépôts visés) — ou --print pour voir ce qui serait posé" >&2; exit 2; }
 forge_auth_write "$FORGE_SECRET" "$TMPD/hdr" || exit 2
 
 RC=0
