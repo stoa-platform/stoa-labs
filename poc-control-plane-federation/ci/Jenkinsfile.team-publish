@@ -127,6 +127,18 @@ pipeline {
     // commentaires de PR (vue depuis un poste, pas depuis le conteneur).
     GIT_HOST              = "${env.GIT_HOST ?: 'http://gitea:3000'}"
     GIT_REPO              = "${env.GIT_REPO ?: 'ci/stoa-labs'}"
+    // LE VISAGE DE LA FORGE — SANS DÉFAUT DE SITE, délibérément (2026-09-12).
+    // `gitea` a été le défaut de ce knob, et c'était un faux filet : un client
+    // dont la globale n'est pas posée voyait la chaîne parler Gitea à GitLab
+    // (302 vers /users/sign_in, corps HTML, FORGE_ILLISIBLE — 2026-09-09), et le
+    // refus fail-closed de l'autorité (FORGE_KIND_REQUIS) ne pouvait JAMAIS se
+    // déclencher puisque c'est le pipeline qui fournissait la valeur. Repli VIDE
+    // ⇒ globale manquante = refus. Elle est donc REQUISE (setup-jenkins-globals.sh).
+    // FORGE_API_AUTH / FORGE_API_BASE : repli vide aussi — absents, la lib dérive
+    // l'en-tête d'auth du visage et la base d'API de GIT_HOST.
+    FORGE_KIND            = "${env.FORGE_KIND ?: ''}"
+    FORGE_API_AUTH        = "${env.FORGE_API_AUTH ?: ''}"
+    FORGE_API_BASE        = "${env.FORGE_API_BASE ?: ''}"
     GIT_WEB_HOST          = "${env.GIT_WEB_HOST ?: 'http://localhost:13000'}"
     // Cible in-cluster pour la RE-POSE des formulaires app-request/api-request
     // après publication (la nouvelle version doit apparaître dans les listes).

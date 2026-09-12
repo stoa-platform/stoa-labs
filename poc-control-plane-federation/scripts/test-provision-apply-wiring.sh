@@ -271,8 +271,8 @@ jf 'APPLY_ADMIN_VIA = "${env.APPLY_ADMIN_VIA ?: '"'"'proxy-oauth2'"'"'}"' \
 # 2026-09-09 : le VISAGE de la forge atteint le shell (scripts/lib/forge-api.sh
 # le lit) ; FORGE_API_AUTH / FORGE_API_BASE en repli VIDE — jamais un défaut de
 # site (un `token` écrit ici aurait envoyé « Authorization: token » à un GitLab).
-jf 'FORGE_KIND = "${env.FORGE_KIND ?: '"'"'gitea'"'"'}"' && jf 'FORGE_API_AUTH = "${env.FORGE_API_AUTH ?: '"'"''"'"'}"' && jf 'FORGE_API_BASE = "${env.FORGE_API_BASE ?: '"'"''"'"'}"' \
-  && ok "FORGE_KIND = gitea par défaut ; FORGE_API_AUTH / FORGE_API_BASE passent tels quels, repli vide (la lib forge-api dérive l'en-tête et la base du visage)" \
+jf 'FORGE_KIND = "${env.FORGE_KIND ?: '"''"'}"' && jf 'FORGE_API_AUTH = "${env.FORGE_API_AUTH ?: '"'"''"'"'}"' && jf 'FORGE_API_BASE = "${env.FORGE_API_BASE ?: '"'"''"'"'}"' \
+  && ok "FORGE_KIND SANS défaut (globale REQUISE, sinon FORGE_KIND_REQUIS) ; FORGE_API_AUTH / FORGE_API_BASE passent tels quels, repli vide (la lib forge-api dérive l'en-tête et la base du visage)" \
   || ko "FORGE_KIND / FORGE_API_AUTH / FORGE_API_BASE absents du bloc environment, ou portant un défaut de site"
 L_ENV=$(grep -n '^  environment {' "$TMP/jf.code" | head -1 | cut -d: -f1)
 L_STAGES=$(grep -n '^  stages {' "$TMP/jf.code" | head -1 | cut -d: -f1)

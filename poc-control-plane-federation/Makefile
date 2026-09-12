@@ -128,7 +128,7 @@ lint-ci:
 	  scripts/test-repo-layout-portabilite.sh scripts/lib/providers-teams.sh scripts/test-providers-teams.sh \
 	  scripts/lib/forge-api.sh scripts/test-forge-api.sh scripts/test-forge-api-live.sh scripts/setup-gitlab-lab.sh \
 	  scripts/lib/git-base.sh scripts/test-git-base.sh scripts/test-dbg-redaction.sh scripts/test-vault-login-offline.sh \
-	  ci/lint-forge-literals.sh ci/lint-branch-literals.sh scripts/test-app-request-gitlab-live.sh \
+	  ci/lint-forge-literals.sh ci/lint-forge-knobs.sh ci/lint-branch-literals.sh scripts/test-app-request-gitlab-live.sh \
 	  scripts/test-porte-clone-frais.sh \
 	  scripts/test-team-request-wiring.sh scripts/test-team-publish-wiring.sh \
 	  scripts/test-debug-knob-wiring.sh scripts/test-app-request-wiring.sh scripts/test-api-request-wiring.sh scripts/test-team-apply-wiring.sh \
@@ -179,6 +179,16 @@ lint-ci:
 	@# forge-identity.sh, aucun /api/v1, /api/v4, en-tete d'auth, json.load ni
 	@# urlopen dans les fichiers ROUTES. Interdire le litteral, jamais l'exiger.
 	@bash ci/lint-forge-literals.sh
+	@# ET LE VISAGE ARRIVE-T-IL AU SCRIPT ? (2026-09-12) Un script ROUTE sur
+	@# l'autorite ne vaut que si le Jenkinsfile qui l'INVOQUE lui transmet
+	@# FORGE_KIND / FORGE_API_AUTH / FORGE_API_BASE — sinon il parle au visage par
+	@# DEFAUT : invisible au lab (le defaut EST le bon visage) et faux chez le
+	@# client. Portee DERIVEE : cette porte LIT la liste ROUTES de la porte
+	@# ci-dessus, jamais une liste a la main — elle a trouve ainsi un douzieme
+	@# Jenkinsfile (provisioning-request, voie machine) que deux releves manuels
+	@# avaient manque. Elle exige aussi l'ABSENCE de defaut de site sur
+	@# FORGE_KIND : un repli 'gitea' rendrait FORGE_KIND_REQUIS inatteignable.
+	@bash ci/lint-forge-knobs.sh
 	@# AUCUNE BRANCHE ECRITE EN DUR (2026-09-10, L3). Le meme client GitLab :
 	@# 46 « main » executes et 155 messages, pour une branche par defaut `master`.
 	@# Cette porte interdit le litteral dans les fichiers LIVRES (shell, Jenkinsfile,

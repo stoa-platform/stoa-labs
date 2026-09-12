@@ -206,7 +206,11 @@ jfp "GIT_HOST             = \"\${env.GIT_HOST ?: 'http://gitea:3000'}\"" || MISS
 jfp "GIT_REPO             = \"\${env.GIT_REPO ?: 'ci/stoa-labs'}\"" || MISS="$MISS GIT_REPO"
 # 2026-09-09 : le VISAGE de la forge atteint le shell (forge-api.sh le lit) ;
 # FORGE_API_AUTH / FORGE_API_BASE en repli VIDE — jamais un défaut de site.
-jfp "FORGE_KIND           = \"\${env.FORGE_KIND ?: 'gitea'}\"" || MISS="$MISS FORGE_KIND"
+# FORGE_KIND SANS DÉFAUT depuis le 2026-09-12 : un repli 'gitea' ici rendait
+# le refus FORGE_KIND_REQUIS de l'autorité INATTEIGNABLE (le pipeline
+# fournissait toujours une valeur, copie client comprise). Porte dédiée, à
+# portée dérivée : ci/lint-forge-knobs.sh.
+jfp "FORGE_KIND           = \"\${env.FORGE_KIND ?: ''}\"" || MISS="$MISS FORGE_KIND"
 jfp "FORGE_API_AUTH       = \"\${env.FORGE_API_AUTH ?: ''}\"" || MISS="$MISS FORGE_API_AUTH"
 jfp "FORGE_API_BASE       = \"\${env.FORGE_API_BASE ?: ''}\"" || MISS="$MISS FORGE_API_BASE"
 [ -z "$MISS" ] && ok "points de config (défauts = ceux du Groovy : GIT_WEB_HOST localhost:13000, credential gitea-provision-token ; FORGE_KIND gitea, FORGE_API_AUTH/FORGE_API_BASE en repli vide)" || ko "points de config absents/divergents :$MISS"
@@ -445,7 +449,7 @@ L_WC=$(code_line "$TMP/jf-app.code" "withCredentials(forgeCreds())")
 # défaut `token` — un défaut de SITE qui aurait envoyé « Authorization: token »
 # à un GitLab (401) : repli VIDE, la lib forge-api dérive l'en-tête du visage.
 jfa "FORGE_CRED_KIND      = \"\${env.FORGE_CRED_KIND ?: 'secret-text'}\"" \
-  && jfa "FORGE_KIND           = \"\${env.FORGE_KIND ?: 'gitea'}\"" \
+  && jfa "FORGE_KIND           = \"\${env.FORGE_KIND ?: ''}\"" \
   && jfa "FORGE_API_AUTH       = \"\${env.FORGE_API_AUTH ?: ''}\"" \
   && jfa "FORGE_API_BASE       = \"\${env.FORGE_API_BASE ?: ''}\"" \
   && ok "le type de credential, le VISAGE de la forge et la forme de son API sont des knobs (defauts : secret-text, gitea ; FORGE_API_AUTH / FORGE_API_BASE en repli VIDE, jamais un defaut de site)" \

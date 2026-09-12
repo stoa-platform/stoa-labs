@@ -117,13 +117,19 @@
 # LE VISAGE DE LA FORGE (FORGE_KIND, FORGE_API_AUTH, FORGE_API_BASE)
 # La chaîne parlait l'API de Gitea en dur ; depuis le 2026-09-09 une seule
 # autorité, scripts/lib/forge-api.sh, décide des chemins, des en-têtes et des
-# noms de champs selon le visage. Trois knobs, tous OPTIONNELS :
+# noms de champs selon le visage. Trois knobs : le premier REQUIS, les deux
+# autres optionnels (la lib les dérive).
 #
-#   FORGE_KIND              gitea (défaut) | gitlab. Chez un client GitLab,
-#                           c'est LE knob à poser — sans lui, la chaîne compose
-#                           /api/v1 et « Authorization: token », et GitLab
-#                           répond par une redirection vers sa page de
-#                           connexion (refus FORGE_ILLISIBLE, cause nommée).
+#   FORGE_KIND              gitea | gitlab — REQUISE, SANS DÉFAUT (2026-09-12).
+#                           Elle a eu `gitea` pour défaut, et c'est ce défaut
+#                           qui a fait parler /api/v1 et « Authorization: token »
+#                           à un GitLab chez un client, qui répond par une
+#                           redirection vers sa page de connexion : le refus
+#                           sortait bien (FORGE_ILLISIBLE) mais accusait la
+#                           forge, là où il manquait une variable. Absente ou
+#                           vide, la chaîne REFUSE maintenant FORGE_KIND_REQUIS
+#                           — et les onze Jenkinsfile ont perdu leur repli, sans
+#                           quoi ce refus n'aurait jamais pu se déclencher.
 #   FORGE_API_AUTH          token | private-token | bearer | basic. ABSENTE, la
 #                           lib dérive l'en-tête du visage (token pour Gitea,
 #                           PRIVATE-TOKEN pour GitLab) : ne la poser que pour
@@ -270,9 +276,18 @@ GOVERNANCE_REPO GOVERNANCE_PATH
 # se posent et se relisent comme les autres (--from-env les prend) ; cette liste
 # ne sert qu'au rapport final, pour ne pas les annoncer manquantes au même titre
 # qu'une adresse sans laquelle le pipeline refuse — ce serait faux, et un
-# rapport qui crie au loup ne se lit plus. Le visage de la forge en fait
-# partie : absent, la chaîne parle Gitea (FORGE_KIND) et la lib forge-api
-# dérive l'en-tête et la base d'API du visage (FORGE_API_AUTH, FORGE_API_BASE).
+# rapport qui crie au loup ne se lit plus.
+#
+# ⚠ LE VISAGE DE LA FORGE N'EN FAIT PLUS PARTIE (2026-09-12). `FORGE_KIND` a été
+# optionnelle, et ce texte disait « absent, la chaîne parle Gitea » : c'était
+# vrai, et c'était le défaut. Un client GitLab qui ne la posait pas voyait la
+# chaîne parler l'API de Gitea à un GitLab (302 vers /users/sign_in, corps HTML,
+# FORGE_ILLISIBLE — incident du 2026-09-09), sans qu'aucune porte ne puisse le
+# dire : les portes ne lisent que les Jenkinsfile DU DÉPÔT, jamais la copie du
+# client. Elle est donc REQUISE, les onze Jenkinsfile ont perdu leur repli
+# `gitea`, et `forge_api_init` refuse FORGE_KIND_REQUIS quand elle est vide.
+# FORGE_API_AUTH et FORGE_API_BASE restent optionnelles : la lib les DÉRIVE du
+# visage et de GIT_HOST, et ce sont des dérivations, pas des valeurs de lab.
 # La branche par défaut en fait partie depuis L3 : absente (ou `auto`), la
 # chaîne la DÉCOUVRE sur la HEAD du dépôt — l'annoncer « manquante » ferait
 # poser un littéral, c'est-à-dire exactement le défaut qu'on vient de retirer.
@@ -281,7 +296,7 @@ GOVERNANCE_REPO GOVERNANCE_PATH
 # avant ce knob. Le mode debug en fait partie depuis L4 : absent, la chaîne se
 # tait — et un rapport qui annoncerait « STOA_DEBUG manquante » inviterait à
 # poser un plancher de debug permanent, c'est-à-dire l'inverse d'un opt-in.
-OPTIONNELLES="APIM_PREFLIGHT APIM_PREFLIGHT_URL APIM_PREFLIGHT_CODES APIM_PREFLIGHT_TRIES FORGE_CRED_KIND FORGE_KIND FORGE_API_AUTH FORGE_API_BASE GIT_BASE WEBHOOK_KIND STOA_DEBUG"
+OPTIONNELLES="APIM_PREFLIGHT APIM_PREFLIGHT_URL APIM_PREFLIGHT_CODES APIM_PREFLIGHT_TRIES FORGE_CRED_KIND FORGE_API_AUTH FORGE_API_BASE GIT_BASE WEBHOOK_KIND STOA_DEBUG"
 
 # ── le canal : console de script Jenkins, jeton par fichier ──────────────────
 CFG="$TMP/curl.cfg"

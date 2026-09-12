@@ -132,25 +132,28 @@ build, et le XML ne porte plus rien.**
 | `PAYLOAD_PERIME` | `team-apply-identity.sh`, après la relecture | la PR relue (`merged`, `merge_commit_sha`, `head.ref`) n'est pas celle qu'on s'apprête à appliquer |
 | `REQUESTER_UNKNOWN` | `assert-merge-identity.sh` | demandeur absent — le quatre-yeux ne se **saute** plus, il refuse |
 
-## Le récepteur n'est qu'une MOITIÉ (à ne pas mal lire)
+## Le récepteur n'est qu'une MOITIÉ (corrigé par mesure le 2026-09-12)
 
-Convertir le récepteur d'un job de la chaîne producteur le rend joignable par
-un webhook GitLab. Ça ne rend pas son CORPS forge-agnostique. `ci/lint-forge-literals.sh`
-le mesure et le nomme : les sept scripts de la chaîne producteur
-(`team-request`, `team-apply`, `team-publish`, `team-promote`, `api-request`,
-`api-promote-request`, `api-promote-export`) sont dans sa liste `EN_ROUTAGE` —
-rapportés comme dette, jamais rouges, « la liste doit être VIDE à la fin ». Ils
-composent encore `${GIT_HOST}/api/v1` en dur (sept sites pour `team-apply.sh`
-seul), là où la chaîne app passe par l'autorité unique `scripts/lib/forge-api.sh`.
+Écrit d'abord ainsi : convertir le récepteur ne rend pas le CORPS du job
+forge-agnostique, et les sept scripts de la chaîne producteur composaient encore
+`${GIT_HOST}/api/v1` en dur. **C'était vrai le matin, ce ne l'est plus.** Mesuré
+sur `main` après le sous-lot 2 de L5 phase 2 : la liste `EN_ROUTAGE` de
+`ci/lint-forge-literals.sh` est **VIDE**, et les seules occurrences de `/api/v1`
+restant dans ces sept scripts sont des commentaires qui disent que le script ne
+la compose plus. Les deux moitiés sont donc là.
 
-Conséquence à dire sans détour : sur un client GitLab, un merge de PR `onboard/*`
-déclenche désormais `team-apply`, la pause s'ouvre et les identités sont RELUES
-correctement — puis `scripts/team-apply.sh` parle à `/api/v1` et la chaîne
-s'arrête là. **Le récepteur (ce lot, L6) et le corps (L5 phase 2) sont deux
-moitiés, et il faut les deux.** Aucune des deux ne rend l'autre inutile, et
-aucune ne se prouve par l'autre : le vert de `test-team-apply-wiring.sh` dit
-que le job est joignable et que sa garde est juste, pas que l'onboarding
-aboutit sur GitLab.
+Ce qui reste, et qu'il ne faut pas confondre avec « ça marche » :
+- **l'aboutissement sur un GitLab réel n'est pas prouvé** — c'est la preuve live
+  de L5 phase 2 (Task 15), pas un vert de porte hors ligne ;
+- `scripts/lib/archive-store.sh` (seconde autorité ÉTROITE, transport binaire
+  des paquets) ne parle encore qu'un visage ;
+- les outils de poste **EXEMPTS nommément** (`setup-*`, `seed-governance-chain`)
+  restent Gitea-seulement, par décision, avec leur raison écrite dans la porte.
+
+La leçon de forme, elle, tient quoi qu'il arrive : **le vert d'une suite de
+câblage dit que le job est joignable et que sa garde est juste, jamais que la
+chaîne aboutit.** Et une affirmation de dette se relit par la mesure avant d'être
+répétée — celle-ci a vécu une demi-journée.
 
 ## Ce que la relecture adverse a trouvé (2026-09-12, avant tout build)
 

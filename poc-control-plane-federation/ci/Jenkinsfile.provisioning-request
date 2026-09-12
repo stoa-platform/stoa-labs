@@ -112,6 +112,16 @@ pipeline {
     GIT_SUBDIR           = "${env.GIT_SUBDIR ?: 'poc-control-plane-federation'}"
     GIT_HOST             = "${env.GIT_HOST ?: 'http://gitea:3000'}"
     GIT_REPO             = "${env.GIT_REPO ?: 'ci/stoa-labs'}"
+    // LE VISAGE DE LA FORGE — SANS DÉFAUT DE SITE, délibérément (2026-09-12).
+    // Ce Jenkinsfile invoque scripts/provision-request.sh, qui est ROUTÉ sur
+    // l'autorité de forge : sans ces trois knobs, il parlerait au visage par
+    // DÉFAUT — invisible au lab, faux chez un client GitLab. Défaut trouvé par
+    // ci/lint-forge-knobs.sh le jour où cette porte a été posée : la voie MACHINE
+    // (OIG/CLI2) avait été oubliée des deux relevés faits à la main.
+    // Repli VIDE ⇒ globale manquante = refus (FORGE_KIND_REQUIS). Elle est REQUISE.
+    FORGE_KIND           = "${env.FORGE_KIND ?: ''}"
+    FORGE_API_AUTH       = "${env.FORGE_API_AUTH ?: ''}"
+    FORGE_API_BASE       = "${env.FORGE_API_BASE ?: ''}"
     // Credential Jenkins (secret text) portant le token Gitea du CI (push +
     // PR). Était en dur dans le Groovy ('gitea-provision-token') ; même défaut.
     GITEA_CREDENTIALS_ID = "${env.GITEA_CREDENTIALS_ID ?: 'gitea-provision-token'}"
