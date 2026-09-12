@@ -255,13 +255,26 @@ prouve.
   `team-promote` ne construit plus jamais sur un merge `api/*`. À ne pas lire
   comme une divergence entre les deux visages.
 - **Dettes nommées le 2026-09-12, en fermant les deux défauts ci-dessus** :
-  1. *Le refus arrive après la pause.* `FORGE_IDENTITES_ILLISIBLES` et
-     `PAYLOAD_PERIME` tombent **après** que l'humain a été réveillé et a saisi
-     son mot de passe d'annuaire — la garde des quatre yeux a besoin de `V_USER`,
-     donc elle doit rester là, mais la **relecture** et les **confrontations**
-     pourraient précéder l'`input`, comme la réconciliation de `provision-apply`
-     (un stage `agent any` avant la pause, qui rend l'exécuteur avant elle : la
-     pause reste à zéro exécuteur). Geste connu, non fait dans ce lot.
+  1. *Le refus arrive après la pause* — **DEUX instances, ce qui change sa
+     priorité** (la seconde trouvée le 2026-09-12, en relisant l'effet d'un hook
+     latent sur un projet non déclaré).
+     - `team-apply` : `FORGE_IDENTITES_ILLISIBLES` et `PAYLOAD_PERIME` tombent
+       **après** que l'humain a été réveillé et a saisi son mot de passe
+       d'annuaire. La garde des quatre yeux a besoin de `V_USER`, donc elle doit
+       rester là — mais la **relecture** et les **confrontations** pourraient
+       précéder l'`input`.
+     - `team-publish` : une MR `api/*` fusionnée dans un dépôt que
+       `providers.<env>.yml` ne déclare PAS passe le `when`
+       (`ci/Jenkinsfile.team-publish:271-273`), **ouvre la pause nominative**
+       (`:281`), et n'est refusée `REPO_NON_DECLARE` qu'une fois le script
+       démarré (`:364`, `scripts/team-publish.sh:20`). Donc : on réveille
+       quelqu'un, on encaisse son mot de passe, on refuse ensuite.
+     Le geste est le même des deux côtés : un stage `agent any` de
+     réconciliation AVANT l'`input` (motif `provision-apply`), qui rend
+     l'exécuteur avant la pause — celle-ci reste donc à zéro exécuteur. Pour
+     `team-publish`, ce stage porterait la confrontation dépôt→équipe. Non fait :
+     il touche à la fois le récepteur (lot L6) et le corps (lot L5 phase 2), donc
+     il s'arbitre.
   2. *Le visage `gwt` n'a aucun discriminant de branche* (`^closed\|true\||merge_request:merge$`) :
      **toute** PR fusionnée du dépôt plateforme construit `team-apply`, l'étape
      étant sautée par le `when`. Le visage `gitlab`, lui, filtre
