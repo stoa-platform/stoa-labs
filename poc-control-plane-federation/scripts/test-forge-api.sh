@@ -432,7 +432,7 @@ mute web_url_as_html_url pr_get 41
 mute notes_as_comments comment_find 41 '<!-- plan:appa-rec -->'
 [ "$(rc)" = 2 ] && grep -q '404' "$TMP/err" && ok "M5 notes→comments ⇒ comment_find refuse (404 : il lit merge_requests/iid/notes, jamais « comments » sur GitLab)" || ko "M5 le mutant passe : rc $(rc) ID=$(val ID)"
 mute empty_repo_as_empty repo_get
-{ [ "$(rc)" != 0 ]; } && ok "M6 empty_repo→empty ⇒ repo_get refuse (il lit empty_repo sur GitLab, jamais « non vide » par défaut)" || ko "M6 le mutant passe : EMPTY=$(val EMPTY)"
+[ "$(rc)" = 2 ] && grep -q 'sans champ' "$TMP/err" && [ ! -s "$TMP/out" ] && ok "M6 empty_repo→empty ⇒ repo_get refuse « sans champ » (il lit empty_repo sur GitLab, jamais « non vide » par défaut)" || ko "M6 le mutant passe ou refuse pour une autre raison : rc $(rc) — $(cause)"
 mute 404_as_403 repo_get   # le CTL de mute() garde repo=plein : forcer l'état absent
 set_ctl "$(python3 -c 'import json,sys;d=json.loads(sys.argv[1]);d["mutation"]="404_as_403";d["repo"]="absent";print(json.dumps(d))' "$PRS")"; f gitlab "$GITLAB" repo_get
 [ "$(rc)" = 2 ] && grep -q '403' "$TMP/err" && ok "M7 404→403 ⇒ refus « REFUSE le secret » (un 403 n'est PAS « absent »)" || ko "M7 le mutant passe : $(tr '\n' ' ' < "$TMP/out")"
