@@ -45,7 +45,8 @@ scripts/api-promote-request.sh
 scripts/api-promote-export.sh
 scripts/team-apply.sh
 scripts/team-publish.sh
-scripts/team-promote.sh'
+scripts/team-promote.sh
+scripts/forge-merge-identity.sh'
 # Phase 2 (2026-09-12) : les fichiers de la chaîne producteur EN COURS de routage.
 # Rapportés (« dette »), jamais rouges : chaque tâche du plan L5 phase 2 retire
 # son fichier d'ici et l'ajoute à ROUTES — la liste doit être VIDE à la fin.
@@ -72,7 +73,17 @@ urlopen(
 
 motifs_dans(){ # <fichier> → les motifs présents dans le CODE (commentaires retirés), un par ligne
   local f="$1" code m
-  code="$(sed 's/[[:space:]]*#.*$//' "$f")"
+  # UN SEUL décommenteur pour toute cette porte, mutants compris (M1/M2 avaient
+  # leur propre copie inline : une règle en deux exemplaires diverge).
+  # Un `#` n'ouvre un commentaire qu'en DÉBUT DE LIGNE ou après un blanc — même
+  # règle que ci/lint-branch-literals.sh:83. La version d'avant coupait au
+  # PREMIER `#` : `${0##*/}`, `${#X}` et `$#` amputaient la ligne, et tout
+  # littéral de forge placé après devenait invisible (62 lignes de code des
+  # fichiers routés, mesuré le 2026-09-12 — M8 le prouve). La contrepartie est
+  # nommée : un `#` DANS une chaîne, précédé d'un blanc (`echo "n° #1"`), coupe
+  # encore — c'était déjà le cas, et la porte ne fait qu'y perdre en portée,
+  # jamais en justesse.
+  code="$(sed -E 's/(^|[[:space:]])#.*$//' "$f")"
   while IFS= read -r m; do printf '%s\n' "$code" | grep -qF -- "$m" && printf '%s\n' "$m"; done <<< "$MOTIFS"
   # json.load( n'est un motif de FORGE que sur une ligne qui parle à la forge (GIT_HOST,
   # FORGE_, urlopen, api/v) — pas une lecture de Vault, d'ITSM ou d'un payload local.
@@ -125,14 +136,13 @@ echo "═══ M. mutation : la porte attrape bien un littéral réintroduit �
 MT="$(mktemp -d)"; trap 'rm -rf "$MT"' EXIT
 # shellcheck disable=SC2016  # le mutant DOIT porter ${GIT_HOST} littéral : c'est le motif interdit
 printf '#!/usr/bin/env bash\nAPI="${GIT_HOST}/api/v1"\ncurl -H "Authorization: token $T" "$API/user"\n' > "$MT/mutant.sh"
-code="$(sed 's/[[:space:]]*#.*$//' "$MT/mutant.sh")"
-if printf '%s\n' "$code" | grep -qF -- '/api/v1' && printf '%s\n' "$code" | grep -qF -- 'Authorization: token'; then
+MM="$(motifs_dans "$MT/mutant.sh")"
+if printf '%s\n' "$MM" | grep -qF -- '/api/v1' && printf '%s\n' "$MM" | grep -qF -- 'Authorization: token'; then
   ok "M1 un script qui recompose /api/v1 et l'en-tête de Gitea EST signalé"
 else ko "M1 le prédicat ne voit pas un littéral évident"; fi
 # shellcheck disable=SC2016  # idem, en commentaire
 printf '#!/usr/bin/env bash\n# ancien : API="${GIT_HOST}/api/v1" (retiré le 2026-09-09)\nforge whoami\n' > "$MT/temoin.sh"
-code="$(sed 's/[[:space:]]*#.*$//' "$MT/temoin.sh")"
-if printf '%s\n' "$code" | grep -qF -- '/api/v1'; then
+if printf '%s\n' "$(motifs_dans "$MT/temoin.sh")" | grep -qF -- '/api/v1'; then
   ko "M2 un littéral qui ne vit qu'en COMMENTAIRE est signalé à tort (la porte rougirait sur sa propre prose)"
 else ok "M2 un littéral en commentaire n'est PAS signalé — la porte lit le code, pas la prose"; fi
 # shellcheck disable=SC2016  # le mutant DOIT porter ${GIT_HOST} littéral : c'est le motif des paquets
@@ -147,8 +157,20 @@ else ko "M4 le lien Gitea n'est pas vu"; fi
 printf '#!/usr/bin/env bash\nd=$(python3 -c "import json;print(json.load(open(\\"vault.json\\")))")\n' > "$MT/vault.sh"
 if [ -z "$(motifs_dans "$MT/vault.sh")" ]; then ok "M5 un json.load qui ne parle pas à la forge n'est PAS signalé (Vault, ITSM, payload local)"
 else ko "M5 faux positif json.load"; fi
+# M8 (revue finale, 2026-09-12) : LE DÉCOMMENTEUR LUI-MÊME. Il coupait au
+# PREMIER `#` de la ligne, donc `${0##*/}`, `${#X}` et `$#` amputaient tout ce
+# qui suivait — 62 lignes de code des fichiers routés étaient AVEUGLES. Le
+# TÉMOIN (la même ligne sans l'expansion) était, lui, déjà signalé : c'est ce
+# couple qui prouve que M8 mesure le décommenteur, et non le motif.
+# shellcheck disable=SC2016  # littéraux voulus : ${0##*/} ET le motif interdit sur LA MÊME ligne
+printf '#!/usr/bin/env bash\nlog "${0##*/}: demarrage"; curl -sS "$GIT_HOST/api/v1/repos/$R"\n' > "$MT/diese.sh"
+# shellcheck disable=SC2016
+printf '#!/usr/bin/env bash\nlog "demarrage"; curl -sS "$GIT_HOST/api/v1/repos/$R"\n' > "$MT/diese_temoin.sh"
+if [ -n "$(motifs_dans "$MT/diese.sh")" ] && [ -n "$(motifs_dans "$MT/diese_temoin.sh")" ]; then
+  ok "M8 un littéral placé APRÈS une expansion à dièse (\${0##*/}) sur la même ligne EST signalé — comme son témoin sans dièse"
+else ko "M8 le décommenteur ampute la ligne au premier # : le littéral qui suit est invisible (témoin : $(motifs_dans "$MT/diese_temoin.sh" | tr '\n' ' '))"; fi
 
-ATTENDU=10; TOTAL=$((PASS + FAIL))
+ATTENDU=11; TOTAL=$((PASS + FAIL))
 [ "$TOTAL" -ge "$ATTENDU" ] || { printf '  ❌ %d assertions jouées, au moins %d attendues\n' "$TOTAL" "$ATTENDU"; FAIL=$((FAIL+1)); }
 echo
 if [ "$FAIL" -eq 0 ]; then printf 'PORTE VERTE : une seule autorité de forge (%d/%d)\n' "$PASS" "$TOTAL"
