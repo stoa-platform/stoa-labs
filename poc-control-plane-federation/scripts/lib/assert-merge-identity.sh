@@ -42,6 +42,10 @@
 #           comportement.
 #
 # Codes d'échec (stables, greppables dans un log de build) :
+#   REQUESTER_UNKNOWN     : demandeur absent — les quatre yeux sont INVÉRIFIABLES
+#                           (fermé le 2026-09-12 : un champ vide faisait SAUTER
+#                           le contrôle, pas échouer). --allow-self-approval est
+#                           la seule façon de dire qu'ils ne sont pas exigés.
 #   MERGER_UNKNOWN        : merged_by absent — le webhook ne l'a pas fourni
 #   MERGER_MISMATCH       : le répondant n'est pas celui qui a mergé
 #   FOUR_EYES_VIOLATION   : le valideur est le demandeur (sauf --allow-self-approval)
@@ -123,7 +127,25 @@ fi
 # garde a été oubliée ».
 if [ "$ALLOW_SELF" = 1 ]; then
   echo "auto-approbation admise par la porte (selfApproval) — le contrôle quatre yeux n'est pas exigé pour ce palier ; l'identité du répondant, elle, reste vérifiée."
-elif [ -n "$N_REQ" ] && [ "$N_REQ" = "$N_MERGER" ]; then
+elif [ -z "$N_REQ" ]; then
+  # LE MÊME PIÈGE QUE FAIL-CLOSED n°1, UN CRAN PLUS LOIN (fermé le 2026-09-12).
+  # Ce test s'écrivait `[ -n "$N_REQ" ] && [ "$N_REQ" = "$N_MERGER" ]` : un
+  # demandeur VIDE ne faisait pas échouer le contrôle, il le faisait SAUTER — et
+  # la garde imprimait MERGE_IDENTITY_OK juste après. Latent tant qu'un seul
+  # visage de forge alimentait le champ (Gitea, `$.pull_request.user.login`) ;
+  # le GitLab Plugin, lui, n'expose AUCUN champ d'auteur, et brancher ce visage
+  # aurait donc permis de valider sa propre demande sans une ligne pour le dire.
+  # Un demandeur inconnu est un REFUS : on ne peut pas vérifier que deux paires
+  # d'yeux sont distinctes en n'en connaissant qu'une.
+  echo "REQUESTER_UNKNOWN : le demandeur de la PR n'a pas été fourni." >&2
+  echo "  Les quatre yeux ne peuvent PAS être vérifiés — refus. L'appelant doit" >&2
+  echo "  RELIRE la forge (forge_kv … pr_get → LOGIN), comme le fait la" >&2
+  echo "  réconciliation de provision-apply : le payload d'un webhook est une" >&2
+  echo "  affirmation, et le GitLab Plugin n'expose pas ce champ du tout." >&2
+  echo "  Si ce palier admet l'auto-approbation, c'est --allow-self-approval qui" >&2
+  echo "  le dit, jamais un champ vide." >&2
+  exit 1
+elif [ "$N_REQ" = "$N_MERGER" ]; then
   echo "FOUR_EYES_VIOLATION : '$MERGED_BY' a validé sa propre demande" >&2
   echo "  (demandeur '$REQUESTER'). À imposer aussi dans la protection de" >&2
   echo "  branche Gitea : une garde de pipeline se contourne." >&2

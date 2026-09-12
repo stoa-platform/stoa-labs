@@ -106,7 +106,8 @@ lint-ci:
 	@shellcheck -x ci/lib/*.sh scripts/lib/deploy-pin.sh scripts/lib/env-chain.sh scripts/lib/branch-ref.sh scripts/lib/vault-kv.sh \
 	  scripts/lib/repo-protection.sh scripts/lib/archive-store.sh \
 	  scripts/lib/promote-manifest.sh scripts/test-promote-sans-recopie.sh \
-	  scripts/lib/assert-merge-identity.sh scripts/lib/app-manifest.sh \
+	  scripts/lib/assert-merge-identity.sh scripts/test-merge-identity.sh scripts/lib/app-manifest.sh \
+	  scripts/team-apply-identity.sh \
 	  scripts/provision-apply-reconcile.sh scripts/provision-apply-comment.sh \
 	  scripts/setup-repo-protections.sh scripts/setup-deployer-groups.sh \
 	  scripts/setup-vault-paliers.sh scripts/setup-user-vault-jwt.sh \
@@ -247,6 +248,12 @@ lint-ci:
 	@# foi), rapport de PR, mutations ; puis le CÂBLAGE du job provision-apply
 	@# (Jenkinsfile déclaratif + coquille XML miroir + aval). La preuve par
 	@# builds réels (test-provision-apply-a2-live.sh) se rend à la main.
+	@# LA GARDE DES QUATRE YEUX, jouée ici (2026-09-12). Sa suite existait mais
+	@# n'était NI relue NI exécutée : c'est ainsi qu'un trou par vacuité a vécu
+	@# dans assert-merge-identity.sh (un demandeur VIDE faisait SAUTER le
+	@# contrôle au lieu de le faire échouer). Une suite hors porte dérive — ce
+	@# dépôt l'a déjà payé deux fois.
+	@bash scripts/test-merge-identity.sh
 	@echo "== [10/20] épreuves de la référence SHA mergé — lib, réconciliation, rapport, câblage (A2)"
 	@bash scripts/test-provision-apply-a2.sh
 	@# A0 (CD des applications) : plus un seul job.xml porteur de logique —

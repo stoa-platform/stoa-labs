@@ -54,50 +54,25 @@ pipeline {
   // gâcherait un slot pendant toute l'attente — c'est la raison pour laquelle
   // l'`input()` était déjà HORS du `node{}` dans la version Groovy.
   agent none
-  options { disableConcurrentBuilds() }   // un apply à la fois = régime bancaire
 
-  // Aucune charge utile n'est de confiance : ces clés ne servent qu'à NOMMER ce
-  // qu'il faut relire dans l'état MERGÉ (team-apply.sh checkoute MERGE_SHA puis
-  // relit providers.<env>.yml) et à confronter le répondant de la pause à
-  // l'auteur du merge.
+  // Ni `options {}` ni `triggers {}` DÉCLARATIFS (L6 phase 2, 2026-09-12) : un
+  // symbole de déclencheur nommé dans un bloc Declarative est résolu AU PARSE —
+  // sur un Jenkins sans le plugin qui le porte, ce job mourait avant son premier
+  // stage (« Invalid trigger type », mesuré scripts/spike-webhook-kind-m1.sh).
+  // Déclencheur et verrou « un apply à la fois » sont posés par un `properties()`
+  // SCRIPTÉ au premier stage, selon WEBHOOK_KIND ; le XML de ce job ne porte
+  // AUCUNE propriété (un XML porteur = doublon au build 1, PERTE au build 2 —
+  // fait 10, re-mesuré spike-webhook-kind-m2m4), et le poseur s'impose donc son
+  // amorçage en lisant ce XML.
   //
-  // ⚠ Ce bloc doit rester le MIROIR EXACT de celui de ci/jenkins/team-apply.job.xml,
-  // et c'est le XML qui gagne : Declarative ne remplace que les déclencheurs
-  // qu'il a lui-même posés (DeclarativeJobPropertyTrackerAction) — un
-  // déclencheur venu d'un config.xml est préservé indéfiniment, et une
-  // divergence entre les deux fichiers serait SILENCIEUSE (mesuré sur le lab,
-  // 2026-08-06). test-team-apply-wiring.sh §3 compare les deux. Ce bloc reste
-  // ici parce qu'il est le seul déclencheur quand le job est posé SANS XML
-  // (multibranch, organization folder, ou re-création depuis le seul dépôt).
-  // Volontairement PAS de bloc `parameters {}` : ces valeurs ne doivent venir
-  // QUE du webhook. Les exposer en paramètres de build permettrait à quiconque
-  // a le droit de lancer le job de saisir lui-même `PR_MERGED_BY` et de passer
-  // sa propre garde d'identité (auto-validation). Un build manuel n'a donc
-  // aucune de ces variables → `${VAR:?}` côté script → refus nommé.
-  triggers {
-    GenericTrigger(
-      token: 'stoa-team-apply',
-      genericVariables: [
-        [key: 'PR_BRANCH',    value: '$.pull_request.head.ref'],
-        [key: 'PR_NUMBER',    value: '$.pull_request.number'],
-        [key: 'PR_ACTION',    value: '$.action'],
-        [key: 'PR_MERGED',    value: '$.pull_request.merged'],
-        // Qui a validé, et qui avait demandé. SANS eux la garde d'identité ne
-        // peut RIEN vérifier et refuse (MERGER_UNKNOWN) : ces deux lignes ne
-        // sont pas décoratives, elles SONT la garde (mêmes clés que
-        // team-publish / provision-apply).
-        [key: 'PR_MERGED_BY', value: '$.pull_request.merged_by.login'],
-        [key: 'PR_REQUESTER', value: '$.pull_request.user.login'],
-        // ANTI-TOCTOU (team-apply.sh) : l'équipe est lue dans
-        // providers.<env>.yml TEL QUE MERGÉ, jamais dans la charge utile.
-        [key: 'MERGE_SHA',    value: '$.pull_request.merge_commit_sha'],
-      ],
-      // Ne déclenche que sur une PR RÉELLEMENT fusionnée (fermée sans merge = rien).
-      regexpFilterText: '$PR_ACTION|$PR_MERGED',
-      regexpFilterExpression: '^closed\\|true$',
-      printContributedVariables: true,
-      printPostContent: false)
-  }
+  // Volontairement PAS de bloc `parameters {}` : PR_BRANCH / PR_NUMBER /
+  // MERGE_SHA ne viennent QUE du webhook (les IDENTITÉS, elles, ne viennent
+  // plus du webhook du tout — elles sont RELUES sur la forge, cf. le stage).
+  // Un build manuel n'a aucun de ces trois faits : il sort VERT « hors
+  // onboard/* » sans exécuteur — c'est l'AMORÇAGE, sans effet de bord. « Sans
+  // exécuteur » vaut aussi pour le `post{}` depuis le 2026-09-12 : sa garde
+  // Groovy est AVANT le `node`, là où elle vivait dans le `sh` (donc après
+  // l'exécuteur, le clone et le credential).
 
   // ── POINTS DE CONFIG CLIENT ────────────────────────────────────────────────
   // Les `export VAR="${VAR:-défaut}"` qui vivaient DANS le bloc `sh` du job
@@ -147,6 +122,16 @@ pipeline {
     JENKINS_UI            = "${env.JENKINS_UI ?: 'http://jenkins:8080'}"
     // Credential Jenkins (secret text) portant le token Gitea du CI.
     GITEA_CREDENTIALS_ID  = "${env.GITEA_CREDENTIALS_ID ?: 'gitea-provision-token'}"
+    // Le VISAGE de la forge, lu par la seule autorité qui parle à son API
+    // (scripts/lib/forge-api.sh) : les scripts de la chaîne producteur le
+    // reçoivent par l'environnement, comme provision-plan.sh. FORGE_API_AUTH et
+    // FORGE_API_BASE passent TELS QUELS, repli VIDE — jamais un défaut de site :
+    // absents, la lib dérive l'en-tête d'auth du visage et la base d'API de GIT_HOST.
+    FORGE_KIND            = "${env.FORGE_KIND ?: 'gitea'}"
+    FORGE_API_AUTH        = "${env.FORGE_API_AUTH ?: ''}"
+    FORGE_API_BASE        = "${env.FORGE_API_BASE ?: ''}"
+    // Le RÉCEPTEUR de webhooks de CE Jenkins (L6) : gwt (défaut) | gitlab.
+    WEBHOOK_KIND          = "${env.WEBHOOK_KIND ?: 'gwt'}"
   }
 
   stages {
@@ -156,6 +141,83 @@ pipeline {
     stage('Contexte du webhook') {
       steps {
         script {
+          // ── LE RÉCEPTEUR (L6 phase 2) : posé ICI, sans agent, avant tout refus
+          // Deux visages, un seul posé ; le symbole de l'autre n'est jamais
+          // invoqué, donc son plugin n'est pas requis. Le corps GenericTrigger(…)
+          // est relu par scripts/lib/gwt-mirror.sh : quotes SIMPLES, maps nues.
+          def hook = env.WEBHOOK_KIND
+          if (hook == 'gwt') {
+            properties([disableConcurrentBuilds(), pipelineTriggers([GenericTrigger(
+              token: 'stoa-team-apply',
+              genericVariables: [
+                // ── visage Gitea (hook « pull_request ») ──
+                [key: 'PR_BRANCH',        value: '$.pull_request.head.ref'],
+                [key: 'PR_NUMBER',        value: '$.pull_request.number'],
+                [key: 'PR_ACTION',        value: '$.action'],
+                [key: 'PR_MERGED',        value: '$.pull_request.merged'],
+                // Qui a validé, et qui avait demandé. SANS eux la garde
+                // d'identité ne peut RIEN vérifier et refuse (MERGER_UNKNOWN) :
+                // ces deux lignes ne sont pas décoratives, elles SONT la garde.
+                [key: 'PR_MERGED_BY',     value: '$.pull_request.merged_by.login'],
+                [key: 'PR_REQUESTER',     value: '$.pull_request.user.login'],
+                // ANTI-TOCTOU (team-apply.sh) : l'équipe est lue dans
+                // providers.<env>.yml TEL QUE MERGÉ, jamais dans la charge utile.
+                [key: 'MERGE_SHA',        value: '$.pull_request.merge_commit_sha'],
+                // ── visage GitLab par le GWT (« Merge Request Hook ») ──
+                [key: 'GL_KIND',          value: '$.object_kind'],
+                [key: 'GL_IID',           value: '$.object_attributes.iid'],
+                [key: 'GL_SOURCE_BRANCH', value: '$.object_attributes.source_branch'],
+                [key: 'GL_ACTION',        value: '$.object_attributes.action'],
+                [key: 'GL_STATE',         value: '$.object_attributes.state'],
+                // `user` est l'ACTEUR de l'événement — le mergeur, pour
+                // action=merge. Journal seulement : la garde relit la forge.
+                [key: 'GL_USER',          value: '$.user.username'],
+                [key: 'GL_MERGE_SHA',     value: '$.object_attributes.merge_commit_sha'],
+              ],
+              // Ne déclenche que sur une PR RÉELLEMENT fusionnée (fermée sans
+              // merge = rien). Gitea : closed ET merged=true ; GitLab :
+              // action=merge. Le plugin joue find() : la moitié Gitea ancrée en
+              // tête, la moitié GitLab en queue, chacune sur SON segment.
+              regexpFilterText: '$PR_ACTION|$PR_MERGED|$GL_KIND:$GL_ACTION',
+              regexpFilterExpression: '^closed\\|true\\||merge_request:merge$',
+              printContributedVariables: true,
+              printPostContent: false)])])
+          } else if (hook == 'gitlab') {
+            // GitLab Plugin : la FUSION seulement. `never` ferme la règle
+            // « état inconnu × update » du plugin. Défauts TRUE figés à false —
+            // ciSkip en premier : une PR d'onboarding dont la description porte
+            // « [ci-skip] » n'aurait AUCUN apply, en silence.
+            properties([disableConcurrentBuilds(), pipelineTriggers([gitlab(
+              triggerOnMergeRequest: false, triggerOnAcceptedMergeRequest: true,
+              triggerOpenMergeRequestOnPush: 'never',
+              triggerOnPush: false, triggerOnNoteRequest: false, ciSkip: false,
+              setBuildDescription: false, skipWorkInProgressMergeRequest: false,
+              triggerOnClosedMergeRequest: false, triggerOnApprovedMergeRequest: false,
+              triggerOnPipelineEvent: false, triggerToBranchDeleteRequest: false,
+              cancelPendingBuildsOnUpdate: false, cancelRunningBuildsOnUpdate: false,
+              branchFilterType: 'RegexBasedFilter', sourceBranchRegex: 'onboard/.*',
+              targetBranchRegex: '.*',
+              secretToken: 'stoa-team-apply')])])
+          } else {
+            error("REFUS: WEBHOOK_KIND_INVALIDE : '${hook}' — attendu gwt|gitlab (globale Jenkins WEBHOOK_KIND, scripts/setup-jenkins-globals.sh). AUCUN déclencheur n'a été posé.")
+          }
+
+          // ── UN SEUL nom par fait, quel que soit le visage ─────────────────
+          // TROIS visages : Gitea (PR_*), GitLab par le GWT (GL_*), GitLab par
+          // son plugin (gitlab*). MESURÉ : le plugin n'expose PAS l'action
+          // (`gitlabActionType` vaut MERGE même sur une ouverture) et
+          // `gitlabMergeCommitSha` est NULLE hors fusion — seul l'ÉTAT est lisible.
+          env.PR_BRANCH = env.PR_BRANCH ?: (env.GL_SOURCE_BRANCH ?: (env.gitlabSourceBranch ?: ''))
+          env.PR_NUMBER = env.PR_NUMBER ?: (env.GL_IID ?: (env.gitlabMergeRequestIid ?: ''))
+          env.MERGE_SHA = env.MERGE_SHA ?: (env.GL_MERGE_SHA ?: (env.gitlabMergeCommitSha ?: ''))
+          // Le filtre du plugin vit dans ses cases, et un état hors de son
+          // énumération y devient un JOKER : l'état est donc RELU ici. Hors
+          // `merged`, il n'y a rien à appliquer — build VERT, stages sautés.
+          def glState = env.gitlabMergeRequestState ?: ''
+          if (glState && glState != 'merged') {
+            echo "hook GitLab hors evenement : state='${glState}' (attendu merged) — aucune demande a appliquer."
+            env.PR_BRANCH = ''
+          }
           // Même découpage que team-apply.sh (`REST=${PR_BRANCH#onboard/}` puis
           // `ENVN=${REST##*-}` / `TEAM=${REST%-*}`) — ces deux valeurs ne
           // servent QU'À nommer le build : l'équipe et l'env qui font foi sont
@@ -233,8 +295,35 @@ pipeline {
         // `input`. Ce qui comptait tient toujours : la chaîne `sh` est en
         // quotes SIMPLES, aucune valeur d'origine externe ne traverse une
         // interpolation Groovy pour atterrir dans du shell.
-        dir(env.GIT_SUBDIR) {
-          sh 'set +x; sh scripts/lib/assert-merge-identity.sh --merged-by "${PR_MERGED_BY:-}" --requester "${PR_REQUESTER:-}" --vault-user "${V_USER:-}"'
+        //
+        // ⚠ LES IDENTITÉS NE VIENNENT PLUS DU PAYLOAD (L6 phase 2, 2026-09-12).
+        // Elles en venaient — `--merged-by "${PR_MERGED_BY:-}"` — et le GitLab
+        // Plugin n'expose AUCUN des deux champs : sous ce visage la garde ne
+        // pouvait que refuser MERGER_UNKNOWN, l'onboarding ne démarrait jamais.
+        // Le palliatif « évident » (prendre `gitlabMergedByUser`) est FAUX :
+        // c'est l'ACTEUR de l'événement, et il ne dit rien du DEMANDEUR — donc
+        // un quatre-yeux invérifiable (la garde refuse maintenant
+        // REQUESTER_UNKNOWN, mais refuser n'est pas fonctionner).
+        // On RELIT donc la forge, comme la réconciliation de provision-apply :
+        // `forge pr_get` parle les deux visages (merged_by.login/user.login chez
+        // Gitea, merge_user.username/author.username chez GitLab) et le payload
+        // redevient ce qu'il est — une affirmation, gardée pour le journal.
+        withCredentials(forgeCreds()) {
+          dir(env.GIT_SUBDIR) {
+            // UN SEUL step `sh`, AUCUN Groovy — et surtout : `bash scripts/…`.
+            // La relecture ET la garde vivent dans le MÊME process, donc les
+            // identités relues ne traversent ni fichier ni environnement de
+            // pipeline. Elles ont d'abord été écrites INLINE ici, et c'était
+            // FAUX : un bloc `sh` est interprété par DASH sur nos agents
+            // (ci/lint-jenkinsfiles.sh:79), qui ne peut pas sourcer
+            // scripts/lib/forge-api.sh — du bash. Le step mourait sur deux
+            // messages de dash, sans nommer aucun refus, après avoir réveillé
+            // un humain. L'en-tête de scripts/team-apply-identity.sh porte la
+            // mesure ; ci/lint-jenkinsfiles.sh porte désormais la porte.
+            // C'est aussi la discipline d'A0 : le pipeline route, la substance
+            // est dans scripts/.
+            sh 'set +x; bash scripts/team-apply-identity.sh'
+          }
         }
 
         // ── 2. APPLY NOMINATIF ──────────────────────────────────────────────
@@ -297,12 +386,34 @@ pipeline {
   // `node` explicite + `checkout scm` : ce bloc n'hérite ni exécuteur ni workspace.
   post {
     always {
-      node("${env.POST_AGENT_LABEL ?: ''}") {
-        checkout scm
-        withCredentials(forgeCreds()) {
-          withEnv(["BUILD_RESULT=${currentBuild.currentResult}"]) {
-            dir(env.GIT_SUBDIR) {
-              sh '''
+      script {
+        // LA GARDE EST GROOVY, ET ELLE EST AVANT LE NŒUD (parité
+        // provision-apply, ci/Jenkinsfile.provision-apply:511-520). Elle
+        // était DANS le `sh`, c'est-à-dire après l'exécuteur, le clone et le
+        // binding du credential — et ce détail a changé de poids avec L6
+        // phase 2 : le XML de ce job ne porte plus aucune propriété, donc
+        // setup-provision-jobs.sh s'IMPOSE un build d'AMORÇAGE et en JUGE le
+        // verdict. Deux conséquences mesurables. (1) Sous le visage `gwt`, le
+        // filtre du déclencheur n'a aucun discriminant de branche : TOUTE PR
+        // fusionnée du dépôt plateforme (provision/* comprise) construit ce
+        // job ; l'étape est sautée par le `when`, mais le post prenait quand
+        // même un exécuteur et un clone. (2) Un amorçage qui expire ou
+        // rougit fait déclarer la POSE en échec sur un job dont le
+        // déclencheur EST posé — d'où le `timeout`, et le `catch` qui
+        // empêche un statut non posté de rougir le build.
+        def ref = env.PR_BRANCH ?: ''
+        def num = env.PR_NUMBER ?: ''
+        if (!ref.startsWith('onboard/') || !(num ==~ /[0-9]+/)) {
+          echo "(hors onboard/* ou PR_NUMBER non numerique — aucun statut a commenter, aucun executeur alloue)"
+        } else {
+          try {
+            timeout(time: 2, unit: 'MINUTES') {
+              node("${env.POST_AGENT_LABEL ?: ''}") {
+                checkout scm
+                withCredentials(forgeCreds()) {
+                  withEnv(["BUILD_RESULT=${currentBuild.currentResult}"]) {
+                    dir(env.GIT_SUBDIR) {
+                      sh '''
                 set +x
                 # La PR d'onboarding vit sur le dépôt PLATEFORME (GIT_REPO), pas
                 # sur un dépôt d'équipe : team-apply est déclenché par le merge
@@ -335,8 +446,14 @@ pipeline {
                   COMMENT_BODY_FILE="$BODYFILE" bash scripts/lib/gitea-pr-comment.sh \
                   || echo "AVERTISSEMENT: commentaire de statut (post) en echec"
                 rm -f "$BODYFILE"
-              '''
+                      '''
+                    }
+                  }
+                }
+              }
             }
+          } catch (e) {
+            echo "AVERTISSEMENT: statut de build non poste (${e})"
           }
         }
       }

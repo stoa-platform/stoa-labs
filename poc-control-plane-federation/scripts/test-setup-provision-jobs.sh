@@ -291,26 +291,39 @@ echo "== 14. BOOTSTRAP_JOBS (A0) : le build d'amorçage suit la pose — et seul
 # EFFACE les paramètres (mesuré 2026-09-02). Le poseur doit donc amorcer d'un
 # build les jobs qu'on lui nomme, APRÈS une pose réussie, jamais en dry-run,
 # jamais sans demande — et dire si Jenkins refuse (400 = déjà paramétré).
-RELU_XML="$(relu 1 0 1 stoa-provision-plan)" start "provision-apply,provision-plan" 200
+RELU_XML="$(relu 1 0 1 'stoa-__JOB__')" start "provision-apply,provision-plan" 200
 OUT=$(cd "$REPO" && JENKINS_UI="$JU" BOOTSTRAP_JOBS=provision-plan bash "$S" 2>&1); RC=$?
 [ $RC -eq 0 ] && ok "succès avec BOOTSTRAP_JOBS" || ko "échec (rc=$RC) : $OUT"
-[ "$(calls | grep -c 'POST build provision-plan')" = "1" ] && ok "UN build d'amorçage demandé pour le job nommé" || ko "amorçage absent ou répété : $(calls | grep -c 'POST build')"
-calls | grep -q 'POST build provision-apply' && ko "amorçage sur un job NON nommé" || ok "aucun amorçage sur le job non nommé"
+[ "$(calls | grep -c 'POST build provision-plan')" = "1" ] && ok "UN build d'amorçage demandé pour le job nommé" || ko "amorçage absent ou répété : $(calls | grep -c 'POST build provision-plan')"
+# ⚠ CONTRAT CHANGÉ par §18 (L6, 2026-09-12) : les deux XML de l'aval ne portent
+# plus AUCUNE propriété, donc leur amorçage n'est plus une option d'appelant —
+# provision-apply est amorcé même s'il n'est pas nommé, et la sortie le DIT.
+# Nommer un seul job ne suffit donc plus à faire taire l'autre ; c'est le XML
+# qui décide. Ce que §14 mesure encore : l'amorçage suit la POSE (jamais un job
+# non posé), il vient APRÈS elle, et il est annoncé.
+{ [ "$(calls | grep -c 'POST build provision-apply')" = "1" ] && grep -q "amorçage imposé par le XML : provision-apply" <<<"$OUT"; } \
+  && ok "le job NON nommé est amorcé QUAND MÊME parce que son XML l'exige — et la sortie le dit (sinon : job muet, webhook 404, personne pour le savoir)" \
+  || ko "amorçage imposé de provision-apply absent ou muet : $(calls | grep -c 'POST build provision-apply') build(s)"
 L_POSE=$(calls | grep -n 'POST update /job/provision-plan' | cut -d: -f1); L_BOOT=$(calls | grep -n 'POST build provision-plan' | cut -d: -f1)
 [ -n "$L_POSE" ] && [ -n "$L_BOOT" ] && [ "$L_POSE" -lt "$L_BOOT" ] && ok "l'amorçage vient APRÈS la pose (appels $L_POSE puis $L_BOOT)" || ko "ordre pose/amorçage cassé (pose=$L_POSE boot=$L_BOOT)"
 { grep -q "amorçage #7 : SUCCESS" <<<"$OUT" && grep -q 'relecture : 1 trigger' <<<"$OUT"; } \
   && ok "annoncé dans la sortie, et pas seulement « déclenché » : l'amorçage est ATTENDU puis RELU (L6)" \
   || ko "amorçage muet ou non relu : $(grep -E 'amorçage|relecture' <<<"$OUT" | tr '\n' ' ')"
-RELU_XML="$(relu 1 0 1 stoa-provision-plan)" start "provision-apply,provision-plan" 200
+RELU_XML="$(relu 1 0 1 'stoa-__JOB__')" start "provision-apply,provision-plan" 200
 OUT=$(cd "$REPO" && JENKINS_UI="$JU" bash "$S" 2>&1); RC=$?
 [ "$(calls | grep -c 'POST build')" = 2 ] \
   && ok "sans BOOTSTRAP_JOBS : les DEUX jobs posés sont amorcés (défaut L6 — un job posé sans amorçage est un job MUET : ses propriétés ne sont posées que par son premier build)" \
   || ko "défaut BOOTSTRAP_JOBS : $(calls | grep -c 'POST build') build(s) demandé(s), attendu 2"
 start "provision-apply,provision-plan" 200
 OUT=$(cd "$REPO" && JENKINS_UI="$JU" BOOTSTRAP_JOBS=none bash "$S" 2>&1); RC=$?
-calls | grep -q 'POST build' && ko "BOOTSTRAP_JOBS=none a tout de même amorcé" \
-  || ok "BOOTSTRAP_JOBS=none : aucun build demandé (le MOT, parce qu'une valeur VIDE n'atteint pas le shell depuis Jenkins)"
-RELU_XML="$(relu 1 0 1 stoa-provision-plan)" start "provision-apply,provision-plan" 200
+# `none` ne peut PLUS faire taire un job dont le XML exige l'amorçage (§18) :
+# il ne vaut que pour les jobs qui portent leurs propriétés. Ce qu'il garde de
+# sens — et ce que §18.4 prouve sur un XML porteur — c'est de ne pas amorcer
+# sans raison ; ici, les deux XML de l'aval en ont une.
+[ "$(calls | grep -c 'POST build')" = 2 ] && [ "$(grep -c 'amorçage imposé par le XML' <<<"$OUT")" = 2 ] \
+  && ok "BOOTSTRAP_JOBS=none sur DEUX XML sans propriété : les deux sont amorcés quand même, chacun en le disant — le mot ne peut pas rendre un job muet" \
+  || ko "none : $(calls | grep -c 'POST build') build(s), $(grep -c 'amorçage imposé' <<<"$OUT") annonce(s)"
+RELU_XML="$(relu 1 0 1 'stoa-__JOB__')" start "provision-apply,provision-plan" 200
 OUT=$(cd "$REPO" && JENKINS_UI="$JU" DRY_RUN=true BOOTSTRAP_JOBS=provision-plan bash "$S" 2>&1); RC=$?
 calls | grep -q 'POST build' && ko "DRY_RUN a amorcé un build !" || ok "DRY_RUN : aucun build demandé"
 grep -q "serait AMORCÉ" <<<"$OUT" && ok "DRY_RUN annonce l'amorçage qui serait fait" || ko "DRY_RUN muet sur l'amorçage"
@@ -381,6 +394,43 @@ unset BODYDIR
 
 echo
 echo "======================================================================"
+echo "== 18. UN XML SANS PROPRIÉTÉ EXIGE SON AMORÇAGE — la règle vient du XML, pas d'une liste =="
+# POURQUOI CETTE SECTION EXISTE. Depuis L6, un job dont le XML ne porte AUCUNE
+# propriété tient son déclencheur et son verrou de son PREMIER BUILD. Le besoin
+# d'amorçage est donc une propriété du XML POSÉ, pas un choix d'appelant — et
+# `BOOTSTRAP_JOBS` est un knob qu'un appelant ÉCRASE : setup-team-onboard-jobs.sh
+# passe `BOOTSTRAP_JOBS="app-request"` en dur, ce qui aurait posé team-apply SANS
+# l'amorcer dès que son XML est vidé (mesuré en préparant L6 phase 2 : job MUET,
+# webhook 404, et rien pour le dire). Le poseur amorce donc TOUT job dont le XML
+# posé est sans propriété, même si l'appelant ne l'a pas nommé.
+XMLVIDE="$TMP/vide"; mkdir -p "$XMLVIDE"
+python3 - "$REPO/ci/jenkins/provision-plan.job.xml" "$XMLVIDE/zz-sans-prop.job.xml" <<'PY'
+import sys, re
+s = open(sys.argv[1], encoding='utf-8').read()
+# la source est DÉJÀ sans propriété depuis L6 : on s'en sert telle quelle, en
+# changeant seulement le nom du job visé (scriptPath) pour ne rien présumer.
+open(sys.argv[2], 'w', encoding='utf-8').write(s)
+PY
+RELU_XML="$(relu 1 0 1 'stoa-__JOB__')" start "zz-sans-prop" 200
+OUT=$(cd "$REPO" && JENKINS_UI="$JU" JOBS=zz-sans-prop JOBS_SRC_DIR="$XMLVIDE" BOOTSTRAP_JOBS=none bash "$S" 2>&1); RC=$?
+if [ "$(calls | grep -c 'POST build zz-sans-prop')" = 1 ]; then
+  ok "18.1 XML SANS propriété + BOOTSTRAP_JOBS=none ⇒ amorcé QUAND MÊME (la règle vient du XML : sans build, ce job serait MUET et son webhook rendrait 404)"
+else ko "18.1 aucun amorçage malgré un XML sans propriété : $(calls | grep -c 'POST build') build(s)"; fi
+calls | grep -q 'GET config zz-sans-prop'   && ok "18.2 et RELU : un amorçage imposé par le XML est aussi vérifié (sinon on aurait déplacé le silence, pas supprimé)"   || ko "18.2 amorçage imposé mais NON relu"
+grep -qE "amorçage imposé par le XML|sans propriété" <<<"$OUT"   && ok "18.3 la sortie DIT pourquoi il a amorcé sans qu'on le lui demande (un geste non demandé qui se tait est un geste qu'on croit ne pas avoir fait)"   || ko "18.3 amorçage imposé mais MUET dans la sortie"
+# CONTRE-ÉPREUVE : un XML qui PORTE ses propriétés n'est pas amorcé sans demande.
+XMLPLEIN="$TMP/plein"; mkdir -p "$XMLPLEIN"
+python3 - "$XMLPLEIN/zz-avec-prop.job.xml" <<'PY'
+import sys
+open(sys.argv[1], 'w', encoding='utf-8').write("""<?xml version='1.1' encoding='UTF-8'?>
+<flow-definition plugin="workflow-job"><description>fixture</description><keepDependencies>false</keepDependencies>
+<properties><org.jenkinsci.plugins.workflow.job.properties.DisableConcurrentBuildsJobProperty/></properties>
+<definition class="org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition" plugin="workflow-cps"><scm class="hudson.plugins.git.GitSCM" plugin="git"><userRemoteConfigs><hudson.plugins.git.UserRemoteConfig><url>http://gitea:3000/ci/stoa-labs.git</url></hudson.plugins.git.UserRemoteConfig></userRemoteConfigs><branches><hudson.plugins.git.BranchSpec><name>*/__GIT_BASE__</name></hudson.plugins.git.BranchSpec></branches></scm><scriptPath>poc-control-plane-federation/ci/Jenkinsfile.zz</scriptPath><lightweight>false</lightweight></definition><disabled>false</disabled></flow-definition>""")
+PY
+start "zz-avec-prop" 200
+OUT=$(cd "$REPO" && JENKINS_UI="$JU" JOBS=zz-avec-prop JOBS_SRC_DIR="$XMLPLEIN" BOOTSTRAP_JOBS=none bash "$S" 2>&1); RC=$?
+calls | grep -q 'POST build'   && ko "18.4 un XML qui PORTE ses propriétés a été amorcé sans demande — la règle serait « toujours », pas « quand le XML l'exige »"   || ok "18.4 XML qui PORTE ses propriétés + BOOTSTRAP_JOBS=none ⇒ AUCUN amorçage : la règle discrimine, elle ne balaie pas"
+
 echo "== 17. le CREDENTIAL du <scm> (GIT_CREDENTIALS_ID) : sans lui, un dépôt PRIVÉ refuse le checkout du job =="
 # MESURÉ le 2026-09-11 : les treize job.xml ne portent AUCUN <credentialsId>, et
 # le checkout que JENKINS fait lui-même (« Pipeline script from SCM ») est donc

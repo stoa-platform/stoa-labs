@@ -32,6 +32,36 @@ run --merged-by "" --requester bob --vault-user alice
 grep -q "MERGER_UNKNOWN" <<<"$OUT" && ok "MERGER_UNKNOWN" || ko "code absent"
 
 echo
+echo "== 2bis. FAIL-CLOSED : le DEMANDEUR absent — le quatre-yeux ne se saute pas =="
+# LE TROU QUE CETTE SECTION FERME (trouvé le 2026-09-12). Le contrôle des quatre
+# yeux était écrit `elif [ -n "$N_REQ" ] && [ "$N_REQ" = "$N_MERGER" ]` : un
+# demandeur VIDE ne le faisait pas échouer, il le faisait SAUTER — et la garde
+# imprimait MERGE_IDENTITY_OK. C'était latent tant que le seul visage de forge
+# remplissait toujours le champ (Gitea : `$.pull_request.user.login`). Le GitLab
+# Plugin, lui, n'expose AUCUN champ d'auteur : brancher ce visage sans fermer ce
+# trou aurait permis à quelqu'un de valider sa propre demande d'onboarding, sans
+# une ligne pour le dire. Un demandeur inconnu est donc un REFUS
+# (REQUESTER_UNKNOWN — le même vocabulaire qu'A7), jamais un contrôle sauté.
+run --merged-by alice --requester "" --vault-user alice
+[ $RC -ne 0 ] && ok "demandeur vide ⇒ REFUSÉ (et non : quatre-yeux sauté en silence)" \
+  || ko "FAIL-OPEN : la garde a dit OK sans pouvoir vérifier les quatre yeux — c'est le trou du 2026-09-12"
+grep -q "REQUESTER_UNKNOWN" <<<"$OUT" && ok "REQUESTER_UNKNOWN : le code dit lequel des deux champs manque" \
+  || ko "refus non nommé : $(printf '%s' "$OUT" | head -1)"
+grep -q "MERGE_IDENTITY_OK" <<<"$OUT" && ko "la garde a AUSSI imprimé MERGE_IDENTITY_OK — un lecteur croirait le contrôle fait" \
+  || ok "aucun MERGE_IDENTITY_OK dans la sortie du refus"
+# … SAUF quand la porte du palier admet l'auto-approbation : là, les quatre yeux
+# ne sont pas exigés, donc l'identité du demandeur n'est pas nécessaire — et
+# l'identité du RÉPONDANT reste vérifiée, elle.
+run --merged-by alice --requester "" --vault-user alice --allow-self-approval
+[ $RC -eq 0 ] && grep -q "MERGE_IDENTITY_OK" <<<"$OUT" \
+  && ok "avec --allow-self-approval : demandeur vide ADMIS (le quatre-yeux n'est pas exigé pour ce palier), et le répondant reste vérifié" \
+  || ko "auto-approbation refusée à tort (rc=$RC) : $(printf '%s' "$OUT" | head -1)"
+run --merged-by alice --requester "" --vault-user carol --allow-self-approval
+[ $RC -ne 0 ] && grep -q "MERGER_MISMATCH" <<<"$OUT" \
+  && ok "et --allow-self-approval n'ouvre PAS la porte au reste : un répondant qui n'a pas validé est toujours refusé" \
+  || ko "auto-approbation a laissé passer un répondant étranger (rc=$RC)"
+
+echo
 echo "== 3. FAIL-CLOSED : les deux vides (le pire cas du même piège) =="
 run --merged-by "" --requester "" --vault-user ""
 [ $RC -ne 0 ] && grep -q "MERGER_UNKNOWN" <<<"$OUT" \
