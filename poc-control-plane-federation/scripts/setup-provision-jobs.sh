@@ -451,6 +451,21 @@ for J in $JOBS; do
   fi
 
   # ── build d'AMORÇAGE, seulement après une pose RÉUSSIE (cf. en-tête) ──────
+  # ── L'AMORÇAGE IMPOSÉ PAR LE XML (L6 phase 2, 2026-09-12) ──────────────────
+  # Un XML sans AUCUNE propriété tient son déclencheur et son verrou de son
+  # PREMIER BUILD : l'amorçage n'est alors pas une option d'appelant, c'est une
+  # condition pour que le job existe autrement que muet. Or BOOTSTRAP_JOBS est
+  # un knob qu'un appelant ÉCRASE — setup-team-onboard-jobs.sh passe
+  # « app-request » en dur. On lit donc le XML POSÉ (celui de la mise en scène,
+  # substitutions comprises) et on s'impose l'amorçage, en le DISANT.
+  if python3 -c "import sys,xml.etree.ElementTree as T; p=T.parse(sys.argv[1]).getroot().find('properties'); sys.exit(0 if p is not None and len(list(p))==0 else 1)" "$X" 2>/dev/null; then
+    case " $BOOTSTRAP_JOBS " in
+      *" $J "*) ;;
+      *) BOOTSTRAP_JOBS="$BOOTSTRAP_JOBS $J"
+         case " $BOOTSTRAP_AWAIT_JOBS " in *" $J "*) ;; *) BOOTSTRAP_AWAIT_JOBS="$BOOTSTRAP_AWAIT_JOBS $J" ;; esac
+         ok "amorçage imposé par le XML : $J.job.xml ne porte AUCUNE propriété — sans build, ce job serait MUET (déclencheur et verrou viennent du Jenkinsfile)" ;;
+    esac
+  fi
   case " $BOOTSTRAP_JOBS " in
     *" $J "*)
       if [ "$POSED" = true ]; then
