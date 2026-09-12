@@ -8,7 +8,8 @@
 #   VAULT_ADDR · VAULT_TOKEN_FILE · WM_GATEWAY_URL (le MOCK, jamais 5555) · GIT_REPO (ci/stoa-labs)
 # Preuves :
 #   0  prérequis : GitLab joignable, projet plateforme privé (info/refs anonyme ⇒ 401), merge_method=merge,
-#      ci/archives présent, et le tronc SOUS TEST semé sur la branche par défaut DÉCOUVERTE du projet
+#      ci/archives présent, AUCUN webhook sur le dépôt plateforme (Ruling 25 : sinon on refuse de jouer,
+#      avant toute écriture), et le tronc SOUS TEST semé sur la branche par défaut DÉCOUVERTE du projet
 #   1  team-request.sh en direct ⇒ MR sur le dépôt plateforme, commentée <!-- team-request-plan --> ✅
 #   2b contre-épreuve : team-apply.sh sur un dépôt NON créé ⇒ rc 2, DEPOT_ABSENT sur la MR, rien de poussé
 #   2  merge par l'API ⇒ team-apply.sh sur le SHA mergé, dépôt PRÉ-CRÉÉ vide ⇒ squelette poussé, ✅ <!-- team-apply -->
@@ -20,7 +21,8 @@
 #   7  discriminant : FORGE_KIND=gitea contre ce GitLab ⇒ refus nommé « REDIRIGE vers /users/sign_in »
 #   8  sondage ps -Aww pendant 1-6 : aucun secret en argv (contrôle positif : du trafic git observé)
 #   9  teardown symétrique : projets créés supprimés (404 exact), branches et paquets du run retirés,
-#      Vault nettoyé, branche par défaut de la plateforme rendue au tronc semé
+#      Vault nettoyé, branche par défaut de la plateforme rendue au tronc semé, et TOUJOURS aucun webhook
+#      sur le dépôt plateforme (la propriété de 0.4 tient sur toute la fenêtre)
 # Les preuves 4, 5 et 6 traversent la GATEWAY : sur le mock du lab elles sont SKIP,
 # à leur signature exacte et avec leur cause (écart 8 ci-dessous) — jamais vertes
 # par défaut, jamais rouges au nom d'un défaut qui n'est pas celui de la chaîne.
@@ -189,6 +191,15 @@ mr_notes(){ gl "$GITLAB_URL/api/v4/projects/$(enc "$1")/merge_requests/$2/notes?
   | python3 -c 'import json,sys
 d=json.load(sys.stdin)
 print("\n".join(n.get("body","") for n in d) if isinstance(d,list) else "")' 2>/dev/null; }
+# hooks_count <projet> → le NOMBRE de webhooks déclarés, ou 'ERR' si illisible.
+# Une réponse illisible n'est PAS zéro : la porte de la Ruling 25 est fail-closed.
+hooks_count(){ gl "$GITLAB_URL/api/v4/projects/$(enc "$1")/hooks?per_page=100" \
+  | python3 -c 'import json,sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print("ERR"); raise SystemExit(0)
+print(len(d) if isinstance(d, list) else "ERR")' 2>/dev/null; }
 # pkg_names → les noms de paquets du registre (un par ligne)
 pkg_names(){ gl "$GITLAB_URL/api/v4/projects/$(enc "$ARCHIVE_STORE_PROJECT")/packages?per_page=100" \
   | python3 -c 'import json,sys
@@ -302,6 +313,30 @@ if GIT_REPO="$ARCHIVE_STORE_PROJECT" forge_kv AR repo_get && [ "${AR_EXISTS:-0}"
 else
   bad "0.3 $ARCHIVE_STORE_PROJECT absent — jouer scripts/setup-gitlab-lab.sh ; les preuves 5 et 6 n'auraient nulle part où déposer"
 fi
+# ── 0.4 LA PORTE DE LA RULING 25 : AUCUN WEBHOOK SUR LE DÉPÔT PLATEFORME ────
+# Ce qui empêche le récepteur `team-apply` du Jenkins du lab de démarrer un
+# onboarding RÉEL sur l'équipe jetable de ce run, c'est l'ABSENCE d'un hook sur
+# ce projet — rien d'autre. Son `when` matche `startsWith('onboard/')`, et les
+# branches de ce run sont exactement `onboard/<équipe>-<palier>` (dérivées par
+# team-request.sh : on ne les renomme PAS, ce sont celles de la chaîne). Un hook
+# ici et le merge de la preuve 2b réveillerait un job qui appliquerait EN
+# PARALLÈLE des scripts joués en direct : deux applys sur la même MR, des
+# verdicts qui ne parleraient plus de ce que la suite croit mesurer.
+# La porte est donc STRUCTURELLE et fail-closed : hooks ≠ 0 (ou illisible) ⇒ on
+# refuse de jouer, AVANT le semis (un push --force réveillerait déjà le hook) et
+# donc avant la moindre écriture. Rien n'a encore été créé : le trap n'a rien à
+# défaire, il rend seulement la bascule Teams à sa valeur d'entrée.
+H_PLAT=$(hooks_count "$GIT_REPO")
+if [ "$H_PLAT" = 0 ]; then
+  ok "0.4 aucun webhook sur $GIT_REPO (hooks=0) — les récepteurs Jenkins du lab ne peuvent pas se réveiller sur les merges de ce run ; les scripts sont joués EN DIRECT, et eux seuls"
+else
+  bad "0.4 un hook existe sur le dépôt plateforme : un merge réveillerait un job Jenkins en parallèle des scripts — refuser de jouer (hooks=$H_PLAT, attendu 0)"
+  echo
+  echo "═══════════════════════════════════════════════════"
+  printf 'RÉSULTAT : %d/%d\n' "$PASS" $((PASS + FAIL))
+  exit 1
+fi
+
 # LA BRANCHE PAR DÉFAUT EST CELLE QUE LE PROJET ANNONCE, jamais celle que la
 # suite préfère (même motif que scripts/lib/git-base.sh, joué ici par le harnais
 # pour savoir OÙ semer).
@@ -310,11 +345,11 @@ BASE_DEFAUT="$(gauth ls-remote --symref "$CLONE_URL" HEAD 2>"$TMP/symref.err" | 
 TRONC="$(git -C "$RACINE" rev-parse HEAD)"
 REMOTE_TRONC="$(gauth ls-remote "$CLONE_URL" "refs/heads/$BASE_DEFAUT" 2>/dev/null | cut -f1)"
 if [ "$REMOTE_TRONC" = "$TRONC" ]; then
-  ok "0.4 $GIT_REPO porte déjà le tronc sous test ($(printf '%s' "$TRONC" | cut -c1-7)) sur sa branche par défaut DÉCOUVERTE '$BASE_DEFAUT'"
+  ok "0.5 $GIT_REPO porte déjà le tronc sous test ($(printf '%s' "$TRONC" | cut -c1-7)) sur sa branche par défaut DÉCOUVERTE '$BASE_DEFAUT'"
 elif gauth -C "$RACINE" push -q --force "$CLONE_URL" "${TRONC}:refs/heads/${BASE_DEFAUT}" 2>"$TMP/push0.err"; then
-  ok "0.4 tronc sous test ($(printf '%s' "$TRONC" | cut -c1-7)) semé sur '$BASE_DEFAUT' (l'ancien $(printf '%s' "${REMOTE_TRONC:-néant}" | cut -c1-7) n'était pas de cet arbre) — c'est CE code que l'apply post-merge exécutera"
+  ok "0.5 tronc sous test ($(printf '%s' "$TRONC" | cut -c1-7)) semé sur '$BASE_DEFAUT' (l'ancien $(printf '%s' "${REMOTE_TRONC:-néant}" | cut -c1-7) n'était pas de cet arbre) — c'est CE code que l'apply post-merge exécutera"
 else
-  bad "0.4 semis impossible vers $BASE_DEFAUT : $(head -c 200 "$TMP/push0.err")"
+  bad "0.5 semis impossible vers $BASE_DEFAUT : $(head -c 200 "$TMP/push0.err")"
 fi
 # L'arbre de travail n'est PAS ce que le clone exécutera : le dire plutôt que de
 # le taire (une correction non commitée resterait invisible à la preuve 2).
@@ -412,9 +447,16 @@ echo "== 2. dépôt pré-créé VIDE ⇒ team-apply pousse le squelette =="
 # GitLab team-publish/team-promote (lot voisin) : un hook ferait rejouer ces
 # jobs à chaque merge EN PLUS des scripts que cette suite joue en direct — deux
 # applys concurrents sur la même MR. La protection, elle, reste posée.
-WEBHOOK_KIND=gitlab bash scripts/setup-team-repos.sh "$TEAM_REPO" --no-hook > "$TMP/pre.log" 2>&1 \
-  && ok "2.1 setup-team-repos.sh : projet vide + protection, sans hook — Ruling 24" \
-  || bad "2.1 pré-création : $(tail -3 "$TMP/pre.log" | tr '\n' ' ' | cut -c1-260)"
+WEBHOOK_KIND=gitlab bash scripts/setup-team-repos.sh "$TEAM_REPO" --no-hook > "$TMP/pre.log" 2>&1; RPRE=$?
+# Le `--no-hook` est VÉRIFIÉ sur la forge, pas cru sur parole (Ruling 25) : c'est
+# la même propriété qu'en 0.4, sur le dépôt d'ÉQUIPE cette fois — les récepteurs
+# team-publish/team-promote du lab y matchent `api/*` et `promote/*`.
+H_TEAM=$(hooks_count "$TEAM_REPO")
+if [ "$RPRE" = 0 ] && [ "$H_TEAM" = 0 ]; then
+  ok "2.1 setup-team-repos.sh : projet vide + protection, sans hook — Ruling 24 (relu sur la forge : hooks=0)"
+else
+  bad "2.1 pré-création rc $RPRE, hooks=$H_TEAM (attendu 0) : $(tail -3 "$TMP/pre.log" | tr '\n' ' ' | cut -c1-240)"
+fi
 apply_team "$TMP/p2.log"; R2=$?
 D_EMPTY=""; GIT_REPO="$TEAM_REPO" forge_kv D repo_get
 if [ "$R2" = 0 ] && [ "${D_EMPTY:-1}" = 0 ] && grep -q 'squelette' "$TMP/p2.log"; then
@@ -678,6 +720,13 @@ if [ "$RC_TEAM" = 404 ] && [ "$RC_GOV" = 404 ] && [ "$RC_BR" = 404 ] && [ "$RC_B
   ok "9.1 teardown symétrique : projets créés ($TEAM_REPO, $GOV_REPO) en 404 EXACT, branches du run ($TR_BRANCH, $DISC_BRANCH) retirées, 0 paquet '$PKG_ATTENDU' au registre, KV et policy de l'équipe en 404, tokens Vault du run révoqués, enableTeamWork rendu à '$TEAMWORK_AT_ENTRY' ; $GIT_REPO et $ARCHIVE_STORE_PROJECT INTACTS (200), branche '$BASE_DEFAUT' rendue au tronc $(printf '%s' "$TRONC" | cut -c1-7) — le run suivant ne trouve aucun résidu. NON supprimés, et c'est DIT : les objets de gateway (le mock n'expose aucune route DELETE — 405 mesuré au palier 3)"
 else
   bad "9.1 team=$RC_TEAM gov=$RC_GOV branche=$RC_BR branche_disc=$RC_BRD paquets_restants=${PKG_RESTE:-?} kv=$RC_KV policy=$RC_POL | plateforme=$RC_PLAT registre=$RC_ARCH tronc=$(printf '%s' "${TRONC_APRES:-néant}" | cut -c1-7) (attendu $(printf '%s' "$TRONC" | cut -c1-7))"
+fi
+
+H_PLAT_FIN=$(hooks_count "$GIT_REPO")
+if [ "$H_PLAT_FIN" = 0 ]; then
+  ok "9.2 aucun hook n'est apparu pendant le run sur $GIT_REPO (hooks=0, relu APRÈS le teardown) — la propriété de la preuve 0.4 tient sur toute la fenêtre : aucun job Jenkins n'a pu être réveillé par les merges de ce run"
+else
+  bad "9.2 $GIT_REPO porte $H_PLAT_FIN hook(s) après le run (attendu 0) — un hook est apparu pendant la fenêtre : les verdicts 1 à 6 ont pu être doublés par un job"
 fi
 
 echo
