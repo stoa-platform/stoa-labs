@@ -729,6 +729,32 @@ else ko "H bis.2b dette PÉRIMÉE — ces gestes sont réparés (ou déplacés),
 if [ -z "$MANQUANTS" ]; then
   ok "H bis.2 COMPLÉTUDE : tout script qui CLONE ou POUSSE porte un mécanisme d'authentification — aucun geste anonyme, donc aucun CLONE_ECHEC réservé aux forges privées (la lecture anonyme du Gitea du lab masquait le trou : info/refs ⇒ 200 Gitea, 401 GitLab privé)"
 else ko "H bis.2 geste(s) git NU(S) HORS DETTE dans un script exécuté par un pipeline — casse sur forge PRIVÉE, invisible au lab :$MANQUANTS"; fi
+# ── H bis.4 : LE LOGIN NE SE COMPOSE PLUS À LA MAIN ─────────────────────────
+# H bis.2 mesure si le GESTE est enveloppé ; elle ne dit RIEN d'où vient le
+# login. Cinq sites composaient encore « x: » en dur avec le secret — geste
+# authentifié, login mort sur GitLab (401), et donc invisibles à H bis.2
+# (trouvés le 2026-09-12 par la cartographie de la chaîne producteur).
+# La règle : personne ne compose un Basic à la main hors de l'autorité.
+# Exemptés : la lib elle-même (elle EST l'autorité) et les harnais.
+COMPOSEURS=""
+for f in "$REPO"/scripts/*.sh "$REPO"/scripts/lib/*.sh; do
+  b="$(basename "$f")"
+  case "$b" in test-*|spike-*|git-base.sh) continue ;; esac
+  # une composition à la main : « <login>:<secret> » passé à base64
+  # Le défaut est PRÉCIS : une partie login LITTÉRALE (pas « %s », qui vient
+  # d'une variable) composée avec un secret de FORGE. Un `printf '%s:%s'` dont
+  # le login sort de l'autorité est correct ; un Basic de webMethods ou de
+  # Keycloak (WM_USER, GW_USER) n'a rien à voir avec une forge — les deux
+  # étaient des faux positifs de la première version de cette règle.
+  L=$(grep -nE "printf '[^'%]+:%s'" "$f" | grep -vE '^[0-9]+:[[:space:]]*#' |
+      grep -E 'FORGE_SECRET|GITEA_TOKEN|\$\(cat [^)]*g?t[^)]*\)' | cut -d: -f1 | tr '\n' ',')
+  [ -z "$L" ] && continue
+  COMPOSEURS="$COMPOSEURS ${b}:${L%,}"
+done
+if [ -z "$COMPOSEURS" ]; then
+  ok "H bis.4 aucun login de Basic composé à la main hors de l'autorité : « x » ne peut plus retomber en dur sur une forge qui le refuse (GitLab, Bitbucket ⇒ 401 — et le geste est pourtant AUTHENTIFIÉ, donc invisible à H bis.2)"
+else ko "H bis.4 login composé À LA MAIN (le geste est enveloppé, mais « x » y retombe ⇒ 401 sur GitLab) :$COMPOSEURS"; fi
+
 # DISCRIMINANT : la porte doit attraper le défaut réel du 2026-09-11. On rejoue
 # la mesure sur une COPIE de provision-plan.sh privée de son mécanisme.
 CP="$TMP/pp-sans-mecanisme.sh"

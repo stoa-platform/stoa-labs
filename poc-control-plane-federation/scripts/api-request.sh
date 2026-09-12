@@ -513,7 +513,11 @@ git -C "$WORK/team" -c user.name=ci -c user.email=ci@stoa.lab \
 # (jamais argv/URL — visible par ps -Aww sinon, sur le process git ET
 # git-remote-http, motif éprouvé de team-request.sh/team-apply.sh, repris à
 # l'identique).
-AUTH_B64=$(printf 'x:%s' "$FORGE_SECRET" | base64 | tr -d '\n')
+# Le LOGIN vient de l'autorité unique (2026-09-12) : « x » était composé EN DUR
+# ici, et un geste PARFAITEMENT authentifié retombait donc en 401 sur GitLab —
+# invisible à la porte H bis.2, qui mesure l'enveloppe du geste et non l'origine
+# du login (d'où H bis.4).
+AUTH_B64=$(printf '%s:%s' "$(git_base_basic_login)" "$FORGE_SECRET" | base64 | tr -d '\n')
 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader \
   GIT_CONFIG_VALUE_0="Authorization: Basic ${AUTH_B64}" \
   git -C "$WORK/team" push -q "${GIT_HOST}/${REPO_FULL}.git" "$BRANCH" 2>"$WORK/pusherr" \

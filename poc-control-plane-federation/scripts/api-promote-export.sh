@@ -288,7 +288,11 @@ else
   # push FORCÉ délibéré : la branche d'épinglage n'a qu'UN commit de tête et
   # appartient à l'export — un ré-export la REMPLACE (la PR ouverte suit),
   # jamais d'empilement (piège G5 « ré-export ⇒ PR neuve » fermé ici).
-  AUTH_B64=$(printf 'x:%s' "$FORGE_SECRET" | base64 | tr -d '\n')
+  # Le LOGIN vient de l'autorité unique (2026-09-12) : « x » était composé EN DUR
+  # ici, et un geste PARFAITEMENT authentifié retombait donc en 401 sur GitLab —
+  # invisible à la porte H bis.2, qui mesure l'enveloppe du geste et non l'origine
+  # du login (d'où H bis.4).
+  AUTH_B64=$(printf '%s:%s' "$(git_base_basic_login)" "$FORGE_SECRET" | base64 | tr -d '\n')
   GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader \
     GIT_CONFIG_VALUE_0="Authorization: Basic ${AUTH_B64}" \
     git -C "$TMP/team" push -q -f "${GIT_HOST}/${REPO_FULL}.git" "$PIN_BRANCH" \

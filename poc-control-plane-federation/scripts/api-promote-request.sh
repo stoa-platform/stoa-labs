@@ -261,7 +261,11 @@ case "$REPO_FULL" in REPO=*) REPO_FULL="${REPO_FULL#REPO=}";; *) fail "PARSE_PRO
 [ -n "$REPO_FULL" ] || fail "REPO_NON_DECLARE : équipe '$TEAM' sans dépôt dans providers.${AUTHORING_ENV}.yml"
 
 # ── clone du dépôt d'équipe (authentifié — un dépôt privé casserait sinon) ───
-AUTH_B64=$(printf 'x:%s' "$FORGE_SECRET" | base64 | tr -d '\n')
+# Le LOGIN vient de l'autorité unique (2026-09-12) : « x » était composé EN DUR
+# ici, et un geste PARFAITEMENT authentifié retombait donc en 401 sur GitLab —
+# invisible à la porte H bis.2, qui mesure l'enveloppe du geste et non l'origine
+# du login (d'où H bis.4).
+AUTH_B64=$(printf '%s:%s' "$(git_base_basic_login)" "$FORGE_SECRET" | base64 | tr -d '\n')
 export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader \
        GIT_CONFIG_VALUE_0="Authorization: Basic ${AUTH_B64}"
 unset AUTH_B64

@@ -345,11 +345,18 @@ git_base_clone_refus() {
 }
 
 # ── git_base_basic_login : QUEL login met-on dans l'enveloppe Basic ─────────
-# LA RÈGLE, EN UN SEUL EXEMPLAIRE (2026-09-11). Elle vivait en NEUF copies —
-# git_base_avec_basic (appelée avec « x » en dur par team-publish, team-promote,
-# api-promote-export), l'enveloppe en ligne de provision-plan-status,
-# api-request, api-promote-request, team-request, team-apply, et _gc_auth_b64 de
-# generate-choices — chacune décidant pour elle-même. Or la règle n'est pas un
+# LA RÈGLE, EN UN SEUL EXEMPLAIRE. Elle vivait en QUATORZE copies, et il a fallu
+# DEUX passes pour le voir — le compte annoncé le 2026-09-11 (« neuf ») était
+# faux, et ce commentaire l'a affirmé avant d'être vrai :
+#   - 9 trouvées le 2026-09-11 : git_base_avec_basic appelée avec « x » en dur
+#     (team-publish, team-promote, api-promote-export), l'enveloppe en ligne de
+#     provision-plan-status, api-request, api-promote-request, team-request,
+#     team-apply, et _gc_auth_b64 de generate-choices ;
+#   - 5 de plus le 2026-09-12, invisibles à la première passe parce que leur
+#     GESTE était parfaitement authentifié : elles composaient « x: » à la main
+#     pour un en-tête d'API (api-promote-export:291, api-request:516,
+#     api-promote-request:264, team-apply:271, team-request:234). La porte
+#     mesurait l'enveloppe du geste, pas l'ORIGINE du login — d'où H bis.4. Or la règle n'est pas un
 # goût : **Gitea accepte n'importe quel utilisateur du moment que le mot de passe
 # est un jeton ; GitLab et Bitbucket NON** (entête de ce fichier). Un « x » en
 # dur est donc une authentification MORTE sur ces deux forges — et le refus qui
