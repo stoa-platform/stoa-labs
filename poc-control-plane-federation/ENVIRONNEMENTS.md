@@ -1247,13 +1247,43 @@ garde de réponse, formes normalisées). La porte `ci/lint-forge-literals.sh`
 |------|---------|--------|------|
 | `GITEA_CREDENTIALS_ID` | identifiant de credential Jenkins | `gitea-provision-token` | le credential qui porte le secret de la forge — le secret lui-même reste dans le gestionnaire de credentials, jamais en globale |
 | `FORGE_CRED_KIND` | `secret-text` \| `username-password` | `secret-text` | le TYPE de ce credential, tel que Jenkins le lie : jeton (« Secret text ») ou couple (« Username with password », variante Vault comprise). **Fail-closed** depuis le 2026-09-10 : toute autre valeur ⇒ `REFUS: FORGE_CRED_KIND_INVALIDE` avant tout binding, et la console dit « credential de la forge : '<id>' lie en <type> ». Sans lui, un couple mourait par « is of type Vault Username-Password Credential where StringCredentials was expected », message qui accuse le credential et pas le knob |
-| `FORGE_KIND` | `gitea` \| `gitlab` | `gitea` | le VISAGE : chemins (`/api/v1/repos/o/r` vs `/api/v4/projects/o%2Fr`), formes (`number`/`iid`, `login`/`username`, `open`/`opened`, `head.ref`/`source_branch`, `comments`/`notes`) |
+| `FORGE_KIND` | `gitea` \| `gitlab` | **aucun repli** (2026-09-12) | le VISAGE : chemins (`/api/v1/repos/o/r` vs `/api/v4/projects/o%2Fr`), formes (`number`/`iid`, `login`/`username`, `open`/`opened`, `head.ref`/`source_branch`, `comments`/`notes`) |
 | `FORGE_API_AUTH` | `token` \| `private-token` \| `bearer` \| `basic` | dérivé du visage (`token` Gitea, `private-token` GitLab) | l'en-tête d'auth ; `basic` exige `FORGE_USER` |
 | `FORGE_API_BASE` | URL | vide | la base d'API **si** un reverse-proxy la déplace ; sinon dérivée de `GIT_HOST` |
 | `GIT_HOST` / `GIT_REPO` | URL / `groupe/projet` | **aucun repli** | `REFUS: GIT_HOST_REQUIS` / `GIT_REPO_REQUIS` plutôt qu'un `http://gitea:3000` de lab chez le client |
 | `FORGE_PREPARE_WAIT` | secondes | `30` | GitLab seulement : attente bornée de `prepared_at` avant de lire les fichiers d'une MR (voir ci-dessous) |
 
-Un GitLab sans `FORGE_KIND=gitlab` refuse encore, mais **en nommant la cause** :
+**`FORGE_KIND` n'a plus de défaut, et c'est une décision du 2026-09-12.** Elle
+valait `gitea`, et ce défaut vivait à DEUX endroits : dans `forge_api_init`
+(`${FORGE_KIND:-gitea}`) et dans le `?: 'gitea'` des Jenkinsfile. Conséquence
+mesurée : un client GitLab qui ne posait pas la globale voyait la chaîne parler
+l'API de Gitea à son GitLab — 302 vers `/users/sign_in`, corps HTML,
+`FORGE_ILLISIBLE` — et **aucune porte ne pouvait le dire**, parce qu'une porte
+ne lit que les Jenkinsfile du dépôt, jamais la copie éditée chez le client (la
+forme exacte de l'incident du 2026-09-10). Or la règle écrite de
+`ci/lint-config-knobs.sh` est : *un défaut est acceptable si et seulement si
+cette porte peut le vérifier sans sortir du dépôt*. Ce défaut-là la violait.
+
+Donc : **globale REQUISE**, les **douze** Jenkinsfile porteurs déclarent
+`FORGE_KIND = "${env.FORGE_KIND ?: ''}"`, et l'autorité refuse
+`FORGE_KIND_REQUIS` sur une valeur vide. Retirer le repli des Jenkinsfile
+n'était pas cosmétique : sans ça le refus était **inatteignable**, puisque le
+pipeline fournissait toujours une valeur.
+
+⚠ **L'ORDRE DE POSE COMPTE, une fois de plus** : poser la globale
+(`setup-jenkins-globals.sh`) AVANT de rejouer les jobs. Une globale absente ne
+fait plus « parler Gitea », elle fait **refuser** — c'est le but, et ça vaut
+aussi pour le lab.
+
+La porte qui tient la propriété est `ci/lint-forge-knobs.sh`, à **portée
+dérivée** : elle LIT la liste `ROUTES` de `ci/lint-forge-literals.sh` (les
+scripts routés sur l'autorité de forge), trouve les Jenkinsfile qui les
+invoquent, et exige les trois knobs dans leur `environment{}` — plus l'absence
+de défaut de site sur `FORGE_KIND`. Elle a trouvé, le jour de sa pose, un
+douzième Jenkinsfile que deux relevés faits à la main avaient manqué :
+`provisioning-request`, la voie MACHINE (OIG/CLI2).
+
+Un GitLab avec `FORGE_KIND=gitea` refuse en **nommant la cause** :
 « la forge REDIRIGE (302) vers …/users/sign_in — GIT_HOST doit être l'URL finale
 … ou cette forge ne parle pas ce visage ». Le secret ne passe **jamais** en argv
 ni en préfixe de commande (tracé sous `set -x`) : here-doc sur le descripteur 3,

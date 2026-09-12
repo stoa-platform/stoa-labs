@@ -192,13 +192,13 @@ case "$PREM" in *"pipelineTriggers([gitlab("*) ;; *) MISS="$MISS gitlab-premiere
   || ko "récepteur mal câblé —$MISS"
 # Les trois knobs de forge que les scripts de la chaîne producteur liront.
 MISSK=""
-for K in "FORGE_KIND = \"\${env.FORGE_KIND ?: 'gitea'}\"" \
+for K in "FORGE_KIND = \"\${env.FORGE_KIND ?: ''}\"" \
          "FORGE_API_AUTH = \"\${env.FORGE_API_AUTH ?: ''}\"" \
          "FORGE_API_BASE = \"\${env.FORGE_API_BASE ?: ''}\""; do
   grep -qF -- "$K" "$JF_C.norm" || MISSK="$MISSK [$K]"
 done
 [ -z "$MISSK" ] \
-  && ok "les trois knobs de forge sont dans environment{} (FORGE_KIND gitea par défaut, AUTH/BASE en repli VIDE) : les scripts de la chaîne producteur les lisent tels quels" \
+  && ok "les trois knobs de forge sont dans environment{} (FORGE_KIND SANS défaut, AUTH/BASE en repli VIDE) : les scripts de la chaîne producteur les lisent tels quels" \
   || ko "knobs de forge absents/divergents :$MISSK"
 
 echo
