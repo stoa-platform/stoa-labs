@@ -86,6 +86,20 @@ MERGE_SHA="${MERGE_SHA:?MERGE_SHA requis (merge_commit_sha du webhook)}"
 # d'identite rend un jeton OU un couple, et les deux occupent la meme place.
 FORGE_SECRET="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
 [ -n "$FORGE_SECRET" ] || { echo "REFUS: SECRET_FORGE_REQUIS : ni FORGE_SECRET ni son alias GITEA_TOKEN — le secret de la forge (jeton, ou mot de passe d'un couple avec FORGE_USER)" >&2; exit 2; }
+
+# ── L'ENVELOPPE D'AUTHENTIFICATION DES GESTES GIT (2026-09-11) ───────────────
+# Ces gestes étaient NUS : ils marchaient sur le Gitea du lab, qui sert
+# `info/refs` en lecture ANONYME (200), et cassaient sur toute forge PRIVÉE —
+# 401, puis un refus qui accuse autre chose (mesuré quatre fois d'affilée sur la
+# chaîne app-request, cf. ENVIRONNEMENTS.md « La forge privée »). Le login vient
+# de l'autorité unique `git_base_basic_login` (« x » convient à Gitea, JAMAIS à
+# GitLab ni Bitbucket) ; le secret ne passe NI en argv NI dans l'URL.
+# ⚠ La DÉCOUVERTE compte autant que le clone : `git_base_init` fait un
+# `ls-remote`, et un ls-remote nu meurt « could not read Username » sur un dépôt
+# privé — le refus accuse alors la branche, pas l'authentification.
+gclone(){ git_base_avec_basic "$(git_base_basic_login)" FORGE_SECRET git clone -q "$@"; }
+gbase(){ git_base_avec_basic "$(git_base_basic_login)" FORGE_SECRET "$@"; }
+ggit(){ git_base_avec_basic "$(git_base_basic_login)" FORGE_SECRET git "$@"; }
 VAULT_ADDR="${VAULT_ADDR:?VAULT_ADDR requis}"
 VAULT_TOKEN_FILE="${VAULT_TOKEN_FILE:?VAULT_TOKEN_FILE requis (jamais le token en env/argv)}"
 APIM_API_BASE="${APIM_API_BASE:?APIM_API_BASE requis — pas de défaut : dire sa cible est volontaire}"
@@ -131,9 +145,9 @@ TEAM="${BR_OUT% *}"; ENVN="${BR_OUT##* }"
 if [ -z "${GIT_CLONE_URL:-}" ]; then
   GIT_CLONE_URL="$(git remote get-url origin 2>/dev/null || true)"
 fi
-git_base_init "$GIT_CLONE_URL" \
+gbase git_base_init "$GIT_CLONE_URL" \
   || fail "BRANCHE_PAR_DEFAUT_INCONNUE : branche par défaut du dépôt plateforme indéterminable (cause ci-dessus) — rien n'est appliqué"
-git fetch -q origin "$GIT_BASE" && git checkout -q "$MERGE_SHA" \
+ggit fetch -q origin "$GIT_BASE" && git checkout -q "$MERGE_SHA" \
   || fail "checkout du SHA de merge $MERGE_SHA"
 PROV="ansible/providers.${ENVN}.yml"
 # Lu en YAML (voir provision-request.sh). L'ERE interpolait $TEAM ici aussi.

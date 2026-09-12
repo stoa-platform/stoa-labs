@@ -63,6 +63,20 @@ TEAM="${TEAM:?TEAM requis}"
 # d'identite rend un jeton OU un couple, et les deux occupent la meme place.
 FORGE_SECRET="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
 [ -n "$FORGE_SECRET" ] || { echo "REFUS: SECRET_FORGE_REQUIS : ni FORGE_SECRET ni son alias GITEA_TOKEN — le secret de la forge (jeton, ou mot de passe d'un couple avec FORGE_USER)" >&2; exit 2; }
+
+# ── L'ENVELOPPE D'AUTHENTIFICATION DES GESTES GIT (2026-09-11) ───────────────
+# Ces gestes étaient NUS : ils marchaient sur le Gitea du lab, qui sert
+# `info/refs` en lecture ANONYME (200), et cassaient sur toute forge PRIVÉE —
+# 401, puis un refus qui accuse autre chose (mesuré quatre fois d'affilée sur la
+# chaîne app-request, cf. ENVIRONNEMENTS.md « La forge privée »). Le login vient
+# de l'autorité unique `git_base_basic_login` (« x » convient à Gitea, JAMAIS à
+# GitLab ni Bitbucket) ; le secret ne passe NI en argv NI dans l'URL.
+# ⚠ La DÉCOUVERTE compte autant que le clone : `git_base_init` fait un
+# `ls-remote`, et un ls-remote nu meurt « could not read Username » sur un dépôt
+# privé — le refus accuse alors la branche, pas l'authentification.
+gclone(){ git_base_avec_basic "$(git_base_basic_login)" FORGE_SECRET git clone -q "$@"; }
+gbase(){ git_base_avec_basic "$(git_base_basic_login)" FORGE_SECRET "$@"; }
+ggit(){ git_base_avec_basic "$(git_base_basic_login)" FORGE_SECRET git "$@"; }
 DESCRIPTION="${DESCRIPTION:-}"
 APPROVERS="${APPROVERS:-}"
 REPO="${REPO:-${TEAM}/apis}"
@@ -159,11 +173,11 @@ BRANCH="onboard/${TEAM}-${REQ_ENV}"
 # script, et c'est aussi la base que la PR visera plus bas — les deux DOIVENT
 # être la même, sinon la MR s'ouvre vers une branche que le clone n'a pas prise.
 TR_URL="${GIT_HOST}/${GIT_REPO}.git"
-git_base_init "$TR_URL" || exit 2
+gbase git_base_init "$TR_URL" || exit 2
 echo "[1/4] clone ${GIT_REPO}@${GIT_BASE}"
 # Le diagnostic d'un `-b` refusé vit dans la lib (git_base_clone_refus) : rc 2
 # = branche absente d'un dépôt qui a RÉPONDU, rc 1 = dépôt injoignable.
-if ! git clone -q --depth 1 -b "$GIT_BASE" "$TR_URL" "$WORK/repo" 2>"$WORK/clone.err"; then
+if ! gclone --depth 1 -b "$GIT_BASE" "$TR_URL" "$WORK/repo" 2>"$WORK/clone.err"; then
   git_base_clone_refus "$TR_URL" "$GIT_BASE" "$WORK/clone.err" "$GIT_REPO" || exit $?
 fi
 PROV_REL="${SUB_PFX}ansible/providers.${REQ_ENV}.yml"

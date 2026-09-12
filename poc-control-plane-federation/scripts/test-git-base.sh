@@ -683,12 +683,18 @@ for n, ln in enumerate(brut, 1):
     logiques.append((depart, cur)); cur = ''
 if cur:
     logiques.append((depart, cur))
-GESTE = re.compile(r'(^|[;&|(]|\s)git (-C \S+ )?(clone|push|fetch|ls-remote)\b')
+# La DÉCOUVERTE compte comme un geste : git_base_init/of font un `ls-remote`, et
+# un ls-remote nu meurt « could not read Username » sur un dépôt privé — le refus
+# accuse alors la branche, pas l'authentification (angle mort de la première
+# version de cette porte, trouvé le 2026-09-11 sur team-apply.sh:134).
+GESTE = re.compile(r'(^|[;&|(]|\s)(git (-C \S+ )?(clone|push|fetch|ls-remote)|git_base_init|git_base_of)\b')
 # Les QUATRE formes en usage, enveloppe en ligne comprise (`http.extraheader`
 # posé en préfixe d'env — api-promote-export.sh et ses frères l'écrivent ainsi).
 ENVELOPPE = re.compile(r'git_base_avec_basic|gclone|gbase|gauth|GIT_ASKPASS|extraheader|_gc_auth_b64')
+DEFINITION = re.compile(r'^\s*(gclone|gbase|ggit|git_base_[a-z_]+)\s*\(\)')
 nus = [str(n) for n, l in logiques
-       if GESTE.search(l) and not ENVELOPPE.search(l) and not l.lstrip().startswith('#')]
+       if GESTE.search(l) and not ENVELOPPE.search(l)
+       and not l.lstrip().startswith('#') and not DEFINITION.search(l)]
 print(','.join(nus))
 PY
 )
@@ -702,7 +708,13 @@ done
 # CE N'EST PAS UNE LISTE DE PARDONS : c'est la dette. On n'y AJOUTE jamais une
 # ligne — un geste nu neuf fait rougir. Et une ligne qui ne correspond PLUS à un
 # geste nu fait rougir aussi : réparer oblige à la retirer. C'est le cliquet.
-DETTE="api-promote-request.sh:263,374 api-request.sh:287,339,420,448 team-apply.sh:136 team-request.sh:166"
+# La dette du 2026-09-11 (8 gestes de la chaîne API/producteur) a été SOLDÉE le
+# même jour : le cliquet a d'abord exigé leur réparation, puis la RETRAIT de
+# leurs lignes — et en chemin il a révélé quatre DÉCOUVERTES nues de plus
+# (git_base_init/of, que la première version de cette règle ne comptait pas
+# comme des gestes). La liste est vide, et c'est l'état normal : on n'y ajoute
+# jamais une ligne pour faire passer un geste neuf.
+DETTE=""
 RESTE=""; PERIMEES=""
 for e in $MANQUANTS; do
   case " $DETTE " in *" $e "*) ;; *) RESTE="$RESTE $e" ;; esac

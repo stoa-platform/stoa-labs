@@ -117,7 +117,9 @@ else
   # scripts/lib/generate-choices.sh (_gc_auth_b64). GIT_USER/FORGE_USER : Gitea
   # accepte n'importe quel utilisateur avec un jeton, GitLab et Bitbucket NON.
   case "$GIT_HOST" in http://*|https://*|file://*) SB="${GIT_HOST%/}";; *) SB="http://${GIT_HOST%/}";; esac
-  SB_AUTH="$(printf '%s:%s' "${FORGE_USER:-${GIT_USER:-x}}" "$FORGE_SECRET" | base64 | tr -d '\n')"
+  # Le LOGIN vient de l'autorité unique (2026-09-11) : il retombait sur « x »
+  # même hors Gitea, alors que le commentaire ci-dessus le savait mortel là-bas.
+  SB_AUTH="$(printf '%s:%s' "$(git_base_basic_login)" "$FORGE_SECRET" | base64 | tr -d '\n')"
   # ET IL REFUSE BRUYAMMENT. Un `exit 0` ici serait le defaut que les l. 48-50 de
   # ce fichier consignent comme corrige le 2026-09-04 : build vert, statut de
   # build jamais poste, personne ne sait pourquoi. rc 2, refus nomme, sur stderr.

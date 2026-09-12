@@ -129,15 +129,19 @@ fail(){ comment "$WEBHOOK_REPO" "❌ team-promote : $*"; echo "ERREUR: $*" >&2; 
 # L'ENVELOPPE ELLE-MÊME VIT DANS LA LIB (git_base_avec_basic) depuis la revue du
 # sous-lot 4b : elle était recopiée mot pour mot dans trois scripts. Le SECRET
 # n'est pas passé en argv — c'est le NOM de la variable qui l'est ; argv est
-# lisible par `ps -Aww`.
-gclone(){ git_base_avec_basic x FORGE_SECRET git clone -q "$@"; }
+# lisible par `ps -Aww`. Le LOGIN, lui, vient de l'autorité unique
+# `git_base_basic_login` (2026-09-11) : il valait « x » EN DUR ici, ce qui est
+# une authentification MORTE sur GitLab et Bitbucket — l'entête de la lib le
+# documentait déjà, et la règle vivait en neuf exemplaires qui décidaient
+# chacun pour soi.
+gclone(){ git_base_avec_basic "$(git_base_basic_login)" FORGE_SECRET git clone -q "$@"; }
 
 # LA DÉCOUVERTE DE BRANCHE SOUS LA MÊME ENVELOPPE QUE LE CLONE. La lib
 # git-base.sh ne porte aucun secret : elle HÉRITE de l'environnement de son
 # appelant. Un `git ls-remote` nu serait ANONYME et échouerait sur un dépôt
 # PRIVÉ — le cas normal chez un client — et la promotion refuserait pour une
 # raison qui n'a rien à voir. $1 = la fonction de la lib.
-gbase(){ git_base_avec_basic x FORGE_SECRET "$@"; }
+gbase(){ git_base_avec_basic "$(git_base_basic_login)" FORGE_SECRET "$@"; }
 
 # ── 0. VALIDATION DE FORME — AVANT tout argv git/curl ────────────────────────
 # WEBHOOK_REPO et MERGE_SHA viennent d'un WEBHOOK (un tiers) et sont interpolés

@@ -682,10 +682,14 @@ _gc_auth_b64(){
   # des scripts frères (provision-request.sh, team-apply.sh).
   [ -n "$token" ] || {
     echo "SECRET_FORGE_REQUIS : aucun secret pour la forge — ni FORGE_SECRET (jeton, ou mot de passe d'un couple) ni son alias GITEA_TOKEN ; avec un couple, poser aussi FORGE_USER" >&2; return 1; }
-  # GIT_USER : l'utilisateur du Basic. Gitea accepte n'importe lequel avec un
-  # PAT, d'où le « x » historique — GitLab et Bitbucket, NON (401). Knob, défaut
-  # inchangé.
-  user="${FORGE_USER:-${GIT_USER:-x}}"
+  # LE LOGIN VIENT DE L'AUTORITÉ UNIQUE (2026-09-11). Il était décidé ici, et
+  # retombait sur « x » même hors Gitea — ce que le commentaire savait déjà
+  # (« GitLab et Bitbucket, NON (401) ») sans en tirer la conséquence.
+  # git_base_basic_login rend FORGE_USER/GIT_USER s'il est posé, sinon
+  # « oauth2 » hors Gitea, sinon « x ». Repli sur l'ancienne forme si la lib
+  # n'est pas chargée : ce fichier est sourcé par des appelants variés.
+  if declare -F git_base_basic_login >/dev/null 2>&1; then user="$(git_base_basic_login)"
+  else user="${FORGE_USER:-${GIT_USER:-x}}"; fi
   printf '%s:%s' "$user" "$token" | base64 | tr -d '\n'
 }
 _gc_clone(){

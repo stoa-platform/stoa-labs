@@ -120,6 +120,19 @@ EXPOSURE="${EXPOSURE:-}"
 # d'identite rend un jeton OU un couple, et les deux occupent la meme place.
 FORGE_SECRET="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
 [ -n "$FORGE_SECRET" ] || { echo "REFUS: SECRET_FORGE_REQUIS : ni FORGE_SECRET ni son alias GITEA_TOKEN — le secret de la forge (jeton, ou mot de passe d'un couple avec FORGE_USER)" >&2; exit 2; }
+# ── L'ENVELOPPE D'AUTHENTIFICATION DES GESTES GIT (2026-09-11) ───────────────
+# Ces gestes étaient NUS : ils marchaient sur le Gitea du lab, qui sert
+# `info/refs` en lecture ANONYME (200), et cassaient sur toute forge PRIVÉE —
+# 401, puis un refus qui accuse autre chose (mesuré quatre fois d'affilée sur la
+# chaîne app-request, cf. ENVIRONNEMENTS.md « La forge privée »). Même motif que
+# team-publish.sh / team-promote.sh / api-promote-export.sh, au login près : il
+# vient de l'autorité unique `git_base_basic_login` (« x » convient à Gitea,
+# JAMAIS à GitLab ni Bitbucket). Le secret ne passe NI en argv NI dans l'URL :
+# c'est le NOM de la variable qui voyage (`ps -Aww` lit l'argv de la machine).
+gclone(){ git_base_avec_basic "$(git_base_basic_login)" FORGE_SECRET git clone -q "$@"; }
+gbase(){ git_base_avec_basic "$(git_base_basic_login)" FORGE_SECRET "$@"; }
+ggit(){ git_base_avec_basic "$(git_base_basic_login)" FORGE_SECRET git "$@"; }
+
 GIT_REPO="${GIT_REPO:-ci/stoa-labs}"
 GIT_HOST="${GIT_HOST:-http://gitea:3000}"
 GIT_WEB_HOST="${GIT_WEB_HOST:-$GIT_HOST}"
@@ -279,12 +292,12 @@ WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
 # (GIT_HOST + GIT_REPO), et c'est le premier `-b` du script. Knob GIT_BASE >
 # HEAD du dépôt > refus nommé (rc 2) — jamais « main » deviné.
 PLAT_URL="${GIT_HOST}/${GIT_REPO}.git"
-git_base_init "$PLAT_URL" || exit 2
+gbase git_base_init "$PLAT_URL" || exit 2
 echo "[1/5] clone ${GIT_REPO}@${GIT_BASE} (lecture team -> repo)"
 # Le diagnostic d'un `-b` refusé vit dans la lib (git_base_clone_refus) : rc 2
 # = branche absente d'un dépôt qui a RÉPONDU, rc 1 = dépôt injoignable, et la
 # distinction vient de `ls-remote --exit-code --heads`, jamais du texte de git.
-if ! git clone -q --depth 1 -b "$GIT_BASE" "$PLAT_URL" "$WORK/platform" 2>"$WORK/clone.err"; then
+if ! gclone --depth 1 -b "$GIT_BASE" "$PLAT_URL" "$WORK/platform" 2>"$WORK/clone.err"; then
   git_base_clone_refus "$PLAT_URL" "$GIT_BASE" "$WORK/clone.err" "${GIT_REPO} (résolution team -> repo)" || exit $?
 fi
 PROV_REL="${SUB_PFX}ansible/providers.${ENVN}.yml"
@@ -332,11 +345,11 @@ echo "  équipe '${TEAM}' -> dépôt ${REPO_FULL}"
 # appartient à une autre équipe, souvent créé un autre jour, sur une autre
 # convention. `git_base_of` la demande AU DÉPÔT et la mémoïse par URL.
 GOV_URL="${GIT_HOST}/${GOVERNANCE_REPO}.git"
-git_base_of "$GOV_URL" >/dev/null \
+gbase git_base_of "$GOV_URL" >/dev/null \
   || fail "REGISTRE_GOUVERNANCE_INACCESSIBLE : branche par défaut de '${GOVERNANCE_REPO}' indéterminable sur ${GIT_HOST} (cause ci-dessus) — la posture ne peut pas être arbitrée, et une posture non arbitrée est celle que la demande s'est donnée. Refus."
 GOV_BASE="$GIT_BASE_OF"
 echo "[1c/5] registre central ${GOVERNANCE_REPO}@${GOV_BASE} (${GOVERNANCE_PATH})"
-git clone -q --depth 1 -b "$GOV_BASE" "$GOV_URL" "$WORK/governance" \
+gclone --depth 1 -b "$GOV_BASE" "$GOV_URL" "$WORK/governance" \
   || fail "REGISTRE_GOUVERNANCE_INACCESSIBLE : '${GOVERNANCE_REPO}' injoignable sur ${GIT_HOST} — la posture ne peut pas être arbitrée, et une posture non arbitrée est celle que la demande s'est donnée. Refus."
 REGISTRY="$WORK/governance/${GOVERNANCE_PATH}"
 [ -f "$REGISTRY" ] \
@@ -417,7 +430,7 @@ for p in (d.get('providers') or []):
       # découverte ratée n'est pas « aucune collision » — c'est le même
       # non-balayage que le clone raté ci-dessous, et il se dit pareil.
       OTHER_URL="${GIT_HOST}/${OTHER_REPO}.git"
-      if git_base_of "$OTHER_URL" 2>"$OW.err" >/dev/null \
+      if gbase git_base_of "$OTHER_URL" 2>"$OW.err" >/dev/null \
          && git clone -q --depth 1 -b "$GIT_BASE_OF" "$OTHER_URL" "$OW" 2>"$OW.err"; then
         [ -f "$OW/apis/${API_NAME}.publish.yml" ] && COLLISION_OWNER="équipe '${OTHER_TEAM}' (${OTHER_REPO})"
       else
@@ -441,11 +454,11 @@ fi
 # elle que le clone prend ET que la PR vise plus bas : ouvrir une PR vers une
 # base que le clone n'a pas utilisée était exactement le défaut du 2026-09-09.
 TEAM_URL="${GIT_HOST}/${REPO_FULL}.git"
-git_base_of "$TEAM_URL" >/dev/null \
+gbase git_base_of "$TEAM_URL" >/dev/null \
   || fail "REPO_INACCESSIBLE : '${REPO_FULL}' déclaré pour '${TEAM}' mais sa branche par défaut est indéterminable sur ${GIT_HOST} (cause ci-dessus) — l'onboarding (team-apply) a-t-il bien créé le dépôt ?"
 TEAM_BASE="$GIT_BASE_OF"
 echo "[2/5] clone ${REPO_FULL}@${TEAM_BASE} (dépôt de l'équipe)"
-git clone -q --depth 1 -b "$TEAM_BASE" "$TEAM_URL" "$WORK/team" \
+gclone --depth 1 -b "$TEAM_BASE" "$TEAM_URL" "$WORK/team" \
   || fail "REPO_INACCESSIBLE : '${REPO_FULL}' déclaré pour '${TEAM}' mais introuvable/inaccessible sur ${GIT_HOST} — l'onboarding (team-apply) a-t-il bien créé le dépôt ?"
 
 PUB_REL="apis/${API_NAME}.publish.yml"

@@ -137,13 +137,17 @@ case "$REPO_FULL" in REPO=*) REPO_FULL="${REPO_FULL#REPO=}";; *) fail "PARSE_PRO
 # L'ENVELOPPE ELLE-MÊME VIT DANS LA LIB (git_base_avec_basic) depuis la revue du
 # sous-lot 4b : elle était recopiée mot pour mot dans trois scripts. Le SECRET
 # n'est pas passé en argv — c'est le NOM de la variable qui l'est ; argv est
-# lisible par `ps -Aww`.
-gclone(){ git_base_avec_basic x FORGE_SECRET git clone -q "$@"; }
+# lisible par `ps -Aww`. Le LOGIN, lui, vient de l'autorité unique
+# `git_base_basic_login` (2026-09-11) : il valait « x » EN DUR ici, ce qui est
+# une authentification MORTE sur GitLab et Bitbucket — l'entête de la lib le
+# documentait déjà, et la règle vivait en neuf exemplaires qui décidaient
+# chacun pour soi.
+gclone(){ git_base_avec_basic "$(git_base_basic_login)" FORGE_SECRET git clone -q "$@"; }
 # LA DÉCOUVERTE SOUS LA MÊME ENVELOPPE QUE LE CLONE : la lib n'embarque aucun
 # secret, elle hérite de l'environnement. Anonyme, son `git ls-remote`
 # échouerait sur le dépôt d'équipe PRIVÉ d'un client — l'export refuserait pour
 # une raison sans rapport.
-gbase(){ git_base_avec_basic x FORGE_SECRET "$@"; }
+gbase(){ git_base_avec_basic "$(git_base_basic_login)" FORGE_SECRET "$@"; }
 gbase git_base_of "${GIT_HOST}/${REPO_FULL}.git" >/dev/null \
   || fail "CLONE_ECHEC : branche par défaut de ${REPO_FULL} indéterminable (cause ci-dessus) — rien n'est exporté"
 TEAM_BASE="$GIT_BASE_OF"

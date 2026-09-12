@@ -200,6 +200,19 @@ echo "GARDES_OK : $FROM_ENV -> $TO_ENV, groupe d'approbation='${APPROVER_GROUP:-
 # d'identite rend un jeton OU un couple, et les deux occupent la meme place.
 FORGE_SECRET="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
 [ -n "$FORGE_SECRET" ] || { echo "REFUS: SECRET_FORGE_REQUIS : ni FORGE_SECRET ni son alias GITEA_TOKEN — le secret de la forge (jeton, ou mot de passe d'un couple avec FORGE_USER)" >&2; exit 2; }
+
+# ── L'ENVELOPPE D'AUTHENTIFICATION DES GESTES GIT (2026-09-11) ───────────────
+# Ces gestes étaient NUS : ils marchaient sur le Gitea du lab, qui sert
+# `info/refs` en lecture ANONYME (200), et cassaient sur toute forge PRIVÉE —
+# 401, puis un refus qui accuse autre chose (mesuré quatre fois d'affilée sur la
+# chaîne app-request, cf. ENVIRONNEMENTS.md « La forge privée »). Même motif que
+# team-publish.sh / team-promote.sh / api-promote-export.sh, au login près : il
+# vient de l'autorité unique `git_base_basic_login` (« x » convient à Gitea,
+# JAMAIS à GitLab ni Bitbucket). Le secret ne passe NI en argv NI dans l'URL :
+# c'est le NOM de la variable qui voyage (`ps -Aww` lit l'argv de la machine).
+gclone(){ git_base_avec_basic "$(git_base_basic_login)" FORGE_SECRET git clone -q "$@"; }
+gbase(){ git_base_avec_basic "$(git_base_basic_login)" FORGE_SECRET "$@"; }
+ggit(){ git_base_avec_basic "$(git_base_basic_login)" FORGE_SECRET git "$@"; }
 GIT_HOST="${GIT_HOST:-http://gitea:3000}"
 GIT_REPO="${GIT_REPO:-ci/stoa-labs}"   # dépôt PLATEFORME — porte providers.<env>.yml
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT; umask 077
@@ -257,10 +270,10 @@ unset AUTH_B64
 # elle n'en porte aucune de son côté. Le clone reste SANS `-b` (il prend la HEAD
 # du dépôt) ; la branche est découverte ici parce que la PR, plus bas, doit
 # viser CETTE base et pas un littéral.
-git_base_of "${GIT_HOST}/${REPO_FULL}.git" >/dev/null \
+gbase git_base_of "${GIT_HOST}/${REPO_FULL}.git" >/dev/null \
   || fail "CLONE_ECHEC : branche par défaut de ${REPO_FULL} indéterminable (cause ci-dessus) — la PR de promotion ne peut viser aucune base"
 TEAM_BASE="$GIT_BASE_OF"
-git clone -q "${GIT_HOST}/${REPO_FULL}.git" "$TMP/team" \
+gclone "${GIT_HOST}/${REPO_FULL}.git" "$TMP/team" \
   || fail "CLONE_ECHEC : ${REPO_FULL}"
 
 # ── Garde 4 : LE PALIER SOURCE PORTE-T-IL QUELQUE CHOSE ? ───────────────────
@@ -371,7 +384,7 @@ git -C "$TMP/team" add "$MARKER"
 git -C "$TMP/team" -c user.name=ci -c user.email=ci@stoa.lab \
   commit -qm "promote(${API_NAME}): ${FROM_ENV} -> ${TO_ENV} @ ${PIN}" \
   || fail "COMMIT_VIDE : le marqueur est déjà à cette valeur (rien à promouvoir)"
-git -C "$TMP/team" push -q origin "$BRANCH" || fail "PUSH_ECHEC : $BRANCH sur $REPO_FULL"
+ggit -C "$TMP/team" push -q origin "$BRANCH" || fail "PUSH_ECHEC : $BRANCH sur $REPO_FULL"
 
 # LES DEUX AXES, CÔTE À CÔTE DANS LA PR, PARCE QU'ILS N'ONT PAS LE MÊME STATUT :
 # l'approbateur est ATTENDU (personne ne le vérifie sur ce chemin), le déployeur
