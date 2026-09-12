@@ -1791,20 +1791,50 @@ déclenche, **attend** et **relit** (`AMORCAGE_INCOMPLET` sinon).
   GitLab, APRÈS le déclenchement — le webhook a l'air bon, la chaîne meurt plus
   loin. Un site GitLab pose un PAT GitLab (`api`, `read_user`,
   `write_repository`) ;
-- ⛔ **BLOQUANT sur une forge PRIVÉE, et ce n'est pas un défaut de ce lot** :
-  `scripts/provision-plan.sh:208` clone `${GIT_HOST}/${GIT_REPO}.git` **sans
-  aucune enveloppe d'authentification**, et c'est le SEUL de la chaîne à ignorer
-  `GIT_CLONE_URL` (ses frères `provision-request.sh:495`,
-  `app-rollback-request.sh:121` et `provision-apply-reconcile.sh:262`
-  l'honorent). Sur le Gitea du lab, la lecture anonyme masque le trou (mesuré :
-  `info/refs` ⇒ 200 sur Gitea, **401** sur un projet GitLab privé) ; sur une
-  forge privée le plan meurt `CLONE_ECHEC` et l'apply enchaîne sur
-  `MERGE_SHA_NON_ANCETRE` (il a cloné autre chose que la forge visée). **À
-  fermer avant tout client sur forge privée** : honorer `GIT_CLONE_URL` dans
-  `provision-plan.sh` et passer le clone par `git_base_avec_basic`
-  (`scripts/lib/git-base.sh`), qui existe déjà et ne met jamais le secret en
-  argv. Le lab GitLab a été mis en lecture anonyme (groupe `ci` et projet en
-  `public`) pour que la preuve du récepteur mesure le récepteur, et pas ce trou.
+- ⛔ **LA FORGE PRIVÉE : quatre gestes anonymes, tous fermés le 2026-09-11.** Ce
+  qui suit était le récit du bloquant ; il est désormais résolu, et la
+  description reste parce qu'elle dit *comment la panne se présentait* — chacun
+  des quatre accusait autre chose que sa vraie cause :
+  | # | Le geste | Comment la panne se présentait | Fermé par |
+  |---|---|---|---|
+  | 1 | `provision-plan.sh` clonait la plateforme **sans enveloppe** et ignorait `GIT_CLONE_URL` — seul de la chaîne | `CLONE_ECHEC`, puis l'apply sur `MERGE_SHA_NON_ANCETRE` (il avait lu un autre dépôt) | `ec6ebfd` |
+  | 2 | la **découverte** de la branche par défaut, même script | `BRANCHE_PAR_DEFAUT_INCONNUE` : « could not read Username … terminal prompts disabled » | `ec6ebfd` |
+  | 3 | la découverte **puis** le `git fetch` de `provision-apply-reconcile.sh` | `GITEA_RECONCILE_ECHEC` — et le défaut RECULAIT d'un cran à chaque correctif partiel | `eb95760`, `2d9a997` |
+  | 4 | le `<scm>` des treize `job.xml` ne porte **aucun** `credentialsId` : le checkout que **Jenkins** fait du Jenkinsfile est anonyme | `Authentication failed`, **avant** d'exécuter une ligne de pipeline | knob `GIT_CREDENTIALS_ID` du poseur (`eb95760`) |
+
+  **Pourquoi personne ne l'avait vu** : le Gitea du lab sert `info/refs` en
+  **lecture anonyme** (200) là où un projet GitLab privé rend **401**. Les quatre
+  gestes fonctionnaient par accident.
+
+  **Ce qu'un site sur forge privée doit poser** :
+  - `GIT_CREDENTIALS_ID` au poseur (`setup-provision-jobs.sh`), qui l'injecte
+    dans le `userRemoteConfig` des jobs — ⚠ **ce credential doit être un COUPLE
+    username/password** (ou une clé SSH) : le Git SCM de Jenkins ne sait pas se
+    servir d'un « Secret text », et le build meurt sans autre explication. Un
+    site pose donc **deux** credentials pour le même jeton — celui de la chaîne
+    (`GITEA_CREDENTIALS_ID`, les deux types via `FORGE_CRED_KIND`) et celui du
+    `<scm>` ;
+  - rien d'autre : le clone, les deux découvertes et le fetch s'authentifient
+    seuls à partir du secret de la chaîne.
+
+  **La porte** : `scripts/test-git-base.sh` « H bis » mesure, **geste par geste**
+  (pas fichier par fichier — un script avait sa découverte enveloppée et son
+  fetch nu), que tout `clone`/`push`/`fetch`/`ls-remote` d'un script **exécuté
+  par un pipeline** porte un mécanisme ; le périmètre est dérivé des Jenkinsfile,
+  les poseurs `setup-*` sont exemptés nommément (ils ne clonent jamais, et leur
+  refus nomme `GIT_BASE`). Le login vient d'une **autorité unique**,
+  `git_base_basic_login` : `FORGE_USER` s'il est posé, sinon `oauth2` hors Gitea,
+  sinon `x` — « x » convient à Gitea, **jamais** à GitLab ni Bitbucket.
+
+  **Dette datée du 2026-09-11, à cliquet** : huit gestes nus subsistent dans la
+  chaîne API/producteur (`api-request.sh` 287, 339, 420, 448 ;
+  `api-promote-request.sh` 263, 374 ; `team-apply.sh` 136 ; `team-request.sh`
+  166). La porte refuse tout geste nu **neuf**, et refuse aussi une ligne de
+  dette qui ne correspond plus — réparer **oblige** à la retirer.
+
+  **Preuve** : `scripts/test-webhook-kind-gitlab-live.sh` **28/28** contre un
+  GitLab **privé** (le dépôt doit rendre 401 en anonyme, sans quoi la suite
+  refuse de tourner : elle ne prouverait rien), `GIT_BASE` laissée absente.
 
 **Pas d'écart de comportement entre les deux visages** sur les événements d'une
 MR : le plugin reconstruit le plan sur un changement de titre comme sur un push,

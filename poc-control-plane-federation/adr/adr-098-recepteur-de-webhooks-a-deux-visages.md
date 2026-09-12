@@ -148,7 +148,20 @@ build, et le XML ne porte plus rien.**
 - **Un bon token sur un corps forgé fait 500** dans le handler du plugin (M9) :
   aucun build, mais une erreur serveur plutôt qu'un refus propre. Rien à
   corriger chez nous ; à savoir en lisant les journaux d'un client.
-- ⛔ **Trouvé en prouvant ce lot, et hors de son périmètre** :
+- ✅ **Trouvé en prouvant ce lot, et FERMÉ le 2026-09-11** (hors périmètre L6,
+  lot « forge privée » : `ec6ebfd`, `eb95760`, `2d9a997`) — la chaîne supposait
+  **partout** une forge en lecture anonyme, et quatre gestes le montraient l'un
+  après l'autre, chacun accusant autre chose : le clone du plan, la découverte du
+  plan, la découverte puis le `fetch` de la réconciliation, et le `<scm>` des
+  treize `job.xml` sans `credentialsId` (le checkout que Jenkins fait lui-même).
+  Preuve : `test-webhook-kind-gitlab-live.sh` **28/28** contre un GitLab privé,
+  `GIT_BASE` absente. Deux faits durables en sont sortis : le login de
+  l'enveloppe est une **autorité unique** (`git_base_basic_login` — « x »
+  convient à Gitea, jamais à GitLab), et une porte doit mesurer **chaque geste**,
+  pas la présence d'un mécanisme dans un fichier (le défaut reculait d'un cran à
+  chaque correctif partiel). Dette datée à cliquet : huit gestes nus dans la
+  chaîne API/producteur.
+- Ancienne rédaction, conservée pour la lignée du raisonnement :
   `scripts/provision-plan.sh:208` clone la plateforme **sans enveloppe
   d'authentification** et ignore `GIT_CLONE_URL` — seul de la chaîne à le faire.
   La lecture anonyme du Gitea du lab masquait ce trou ; sur une forge **privée**
