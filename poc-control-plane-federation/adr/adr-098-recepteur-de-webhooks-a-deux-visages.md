@@ -132,6 +132,26 @@ build, et le XML ne porte plus rien.**
 | `PAYLOAD_PERIME` | `team-apply-identity.sh`, après la relecture | la PR relue (`merged`, `merge_commit_sha`, `head.ref`) n'est pas celle qu'on s'apprête à appliquer |
 | `REQUESTER_UNKNOWN` | `assert-merge-identity.sh` | demandeur absent — le quatre-yeux ne se **saute** plus, il refuse |
 
+## Le récepteur n'est qu'une MOITIÉ (à ne pas mal lire)
+
+Convertir le récepteur d'un job de la chaîne producteur le rend joignable par
+un webhook GitLab. Ça ne rend pas son CORPS forge-agnostique. `ci/lint-forge-literals.sh`
+le mesure et le nomme : les sept scripts de la chaîne producteur
+(`team-request`, `team-apply`, `team-publish`, `team-promote`, `api-request`,
+`api-promote-request`, `api-promote-export`) sont dans sa liste `EN_ROUTAGE` —
+rapportés comme dette, jamais rouges, « la liste doit être VIDE à la fin ». Ils
+composent encore `${GIT_HOST}/api/v1` en dur (sept sites pour `team-apply.sh`
+seul), là où la chaîne app passe par l'autorité unique `scripts/lib/forge-api.sh`.
+
+Conséquence à dire sans détour : sur un client GitLab, un merge de PR `onboard/*`
+déclenche désormais `team-apply`, la pause s'ouvre et les identités sont RELUES
+correctement — puis `scripts/team-apply.sh` parle à `/api/v1` et la chaîne
+s'arrête là. **Le récepteur (ce lot, L6) et le corps (L5 phase 2) sont deux
+moitiés, et il faut les deux.** Aucune des deux ne rend l'autre inutile, et
+aucune ne se prouve par l'autre : le vert de `test-team-apply-wiring.sh` dit
+que le job est joignable et que sa garde est juste, pas que l'onboarding
+aboutit sur GitLab.
+
 ## Ce que la relecture adverse a trouvé (2026-09-12, avant tout build)
 
 Deux défauts **bloquants** dans la transformation de `team-apply`, tous deux
