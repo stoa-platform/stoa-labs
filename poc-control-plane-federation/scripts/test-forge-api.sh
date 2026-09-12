@@ -186,6 +186,7 @@ class H(BaseHTTPRequestHandler):
                     b = self.body(); open(POSTED, "a").write(json.dumps({"kind": "gitlab", "note_put": int(mn.group(1)), "body": b}) + "\n"); return self.js(200, {"id": int(mn.group(1))})
             mr = re.match(r"^repository/files/([^/]+)/raw$", rest)
             if mr:
+                if "ref" in q and q["ref"] == [""]: return self.js(400, {"error": "ref is empty"})
                 pth = unquote(mr.group(1)); files = c.get("raw", {})
                 return self.raw(200, "text/plain", files[pth].encode()) if pth in files else self.js(404, {"message": "404 File Not Found"})
             return self.js(404, {"message": "404 Not Found"})
@@ -327,6 +328,17 @@ for K in gitea gitlab; do
   [ "$(rc)" = 0 ] && grep -q 'team: fbi' "$TMP/out" && ok "$K H.1 raw ⇒ le contenu, brut ($(nom 'repository/files/<enc>/raw?ref=' 'raw/<chemin>'))" || ko "$K H.1 rc $(rc) : $(cause)"
   f "$K" "$H" raw poc/ansible/providers.rec.yml main
   [ "$(rc)" = 2 ] && grep -q '404' "$TMP/err" && ok "$K H.2 raw absent ⇒ rc 2, cause « 404 »" || ko "$K H.2 rc $(rc)"
+  # H.3 — raw SANS ref : la doc (forge-api.sh:18) le promettait, le registre exigeait 2 arguments.
+  f "$K" "$H" raw poc/ansible/providers.dev.yml
+  [ "$(rc)" = 0 ] && grep -q 'team: fbi' "$TMP/out" && ok "$K H.3 raw sans ref ⇒ la HEAD du projet, rc 0" || ko "$K H.3 rc $(rc) : $(cause)"
+  # H.4 — un argument SURNUMÉRAIRE est refusé, jamais tronqué (fn(*args[:nargs]) ignorait le reste).
+  f "$K" "$H" pr_get 41 de-trop
+  [ "$(rc)" = 2 ] && grep -q 'au plus 1 argument' "$TMP/err" && [ ! -s "$TMP/out" ] && ok "$K H.4 pr_get avec un argument de trop ⇒ rc 2 « attend au plus 1 argument(s) », rien sur stdout" || ko "$K H.4 rc $(rc) : $(cause)"
+  # H.5 — sur GitLab, une ref VIDE ne part jamais en query (le vrai GitLab rend 400 sur ref=) : le mock le rend aussi.
+  if [ "$K" = gitlab ]; then
+    : > "$LOG"; f "$K" "$H" raw poc/ansible/providers.dev.yml ""
+    [ "$(rc)" = 0 ] && ! grep -q 'ref=' "$LOG" && ok "$K H.5 ref vide ⇒ aucune query ref= (GitLab rendrait 400)" || ko "$K H.5 rc $(rc) log=$(grep raw "$LOG" | head -1)"
+  fi
   ( cd "$REPO" && env -i PATH="$PATH" HOME="$HOME" FORGE_KIND="$K" GIT_HOST="$H" GIT_REPO=ci/stoa-labs FORGE_SECRET=mauvais bash -c '. scripts/lib/forge-api.sh && forge_api_init && forge whoami' ) > "$TMP/out" 2> "$TMP/err"; echo $? > "$TMP/rc"
   [ "$(rc)" = 2 ] && grep -q '401' "$TMP/err" && grep -q 'REFUSE le secret' "$TMP/err" && ok "$K I.1 secret refusé ⇒ cause « 401 … REFUSE le secret »" || ko "$K I.1 rc $(rc) : $(cause)"
 done

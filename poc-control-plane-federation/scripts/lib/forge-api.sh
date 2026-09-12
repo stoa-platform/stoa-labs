@@ -15,7 +15,7 @@
 #   forge pr_files 42                    # un chemin par ligne
 #   forge comment_find 42 "<marqueur>"   # ID= (vide si aucun commentaire ne porte le marqueur ; rc 0, lecture seule)
 #   forge comment_upsert 42 "<marqueur>" <fichier>          # ID= ACTION=created|updated
-#   forge raw <chemin> [ref]             # le contenu, brut, sur stdout
+#   forge raw <chemin> [ref]             # le contenu, brut, sur stdout (sans ref : la HEAD du projet — GitLab ≥ 13.12)
 #   forge probe                          # KIND_DETECTED=gitea|gitlab|inconnu (sans secret)
 #
 # rc 0 = produit sur stdout · rc 2 = CAUSE en une ligne sur stderr, rien sur

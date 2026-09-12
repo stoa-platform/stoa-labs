@@ -611,7 +611,7 @@ def v_comment_upsert(n, marker, bodyfile):
     out(ID=_str(d, "id"), ACTION="created")
 
 
-def v_raw(path, ref):
+def v_raw(path, ref=""):
     if not path:
         raise ForgeError("raw exige un chemin")
     rp = repo_path()
@@ -623,11 +623,11 @@ def v_raw(path, ref):
     sys.stdout.buffer.write(content)
 
 
-VERBES = {
-    "probe": (v_probe, 0), "whoami": (v_whoami, 0), "pr_find_open": (v_pr_find_open, 1),
-    "pr_list_merged": (v_pr_list_merged, 1),
-    "pr_get": (v_pr_get, 1), "pr_open": (v_pr_open, 4), "pr_files": (v_pr_files, 1),
-    "comment_find": (v_comment_find, 2), "comment_upsert": (v_comment_upsert, 3), "raw": (v_raw, 2),
+VERBES = {  # nom: (fonction, min_args, max_args)
+    "probe": (v_probe, 0, 0), "whoami": (v_whoami, 0, 0), "pr_find_open": (v_pr_find_open, 1, 1),
+    "pr_list_merged": (v_pr_list_merged, 1, 1),
+    "pr_get": (v_pr_get, 1, 1), "pr_open": (v_pr_open, 4, 4), "pr_files": (v_pr_files, 1, 1),
+    "comment_find": (v_comment_find, 2, 2), "comment_upsert": (v_comment_upsert, 3, 3), "raw": (v_raw, 1, 2),
 }
 
 
@@ -635,15 +635,19 @@ def main(argv):
     if len(argv) < 1 or argv[0] not in VERBES:
         sys.stderr.write("verbe inconnu — attendu : %s\n" % ", ".join(sorted(VERBES)))
         return 2
-    fn, nargs = VERBES[argv[0]]
+    fn, mn, mx = VERBES[argv[0]]
     args = argv[1:]
-    if len(args) < nargs:
-        sys.stderr.write("%s attend %d argument(s)\n" % (argv[0], nargs))
+    if len(args) < mn:
+        sys.stderr.write("%s attend %d argument(s)\n" % (argv[0], mn))
+        return 2
+    if len(args) > mx:
+        # Refusé, jamais tronqué : un argument de trop est une erreur d'appelant, pas un détail.
+        sys.stderr.write("%s attend au plus %d argument(s) (%d reçus)\n" % (argv[0], mx, len(args)))
         return 2
     try:
         s = _secret()
         _secrets_connus(s)
-        fn(*args[:nargs])
+        fn(*args)
         return 0
     except ForgeError as e:
         sys.stderr.write("%s\n" % _mask(str(e)))
