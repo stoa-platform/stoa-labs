@@ -1240,7 +1240,73 @@ Sur GitLab un 404 vaut aussi « invisible pour ce jeton » — le refus le dit. 
 
 - [ ] **Step 5 : commit** — `git add ENVIRONNEMENTS.md adr/adr-099-la-chaine-ne-cree-rien-sur-la-forge.md docs/superpowers/plans/2026-09-09-forge-agnostique-debug-branche.md ci/lint-forge-literals.sh && git commit -m "docs(l5): phase 2 close — verbes, prérequis côté client unifiés, ADR-099, Task 8 du plan"`
 
+### Task 17 : `forge_api_init` refuse un `FORGE_KIND` absent — `FORGE_KIND_REQUIS` (fail-closed à l'exécution)
+
+> Décision de l'utilisateur du 2026-09-12 (relayée par la session L6, à confirmer par l'utilisateur
+> dans le compte rendu) : le défaut `gitea` de `forge_api_init` viole la règle du dépôt
+> (`ci/lint-config-knobs.sh` : un défaut n'est acceptable que si une porte peut le vérifier sans
+> sortir du dépôt) — or la COPIE CLIENT d'un Jenkinsfile (incident 2026-09-10) est hors de portée
+> de toute porte, pour toujours. Le refus est la seule chose qui protège la copie qu'on ne verra jamais.
+>
+> **CONTRAINTE D'ORDRE (impérative)** : le commit de la session L6 qui pose `FORGE_KIND`,
+> `FORGE_API_AUTH`, `FORGE_API_BASE` dans les SIX Jenkinsfile qui ne les portent pas
+> (`team-request`, `api-request`, `api-promote-request`, `api-promote-export`, `team-publish`,
+> `team-promote` — mesuré 2026-09-12 16:00, seul `team-apply` les a) doit être sur `main` AVANT
+> ce refus ; dans l'autre sens, six jobs refusent à l'exécution, au lab comme chez le client.
+> Après : poussée gitea + origin ENSEMBLE (livrer en bloc).
+
+**Files:**
+- Modify: `scripts/lib/forge-api.sh:58-63` (`forge_api_init` : premier test, avant `FORGE_KIND_INCONNU` et `GIT_HOST_REQUIS`)
+- Modify: `scripts/test-forge-api.sh` (nouvelle section K, 5 assertions, avant la ligne `RÉSULTAT`)
+- Modify: `ENVIRONNEMENTS.md` (tableau des knobs de forge : `FORGE_KIND` « requis, sans défaut — refus `FORGE_KIND_REQUIS` »)
+- Rayon mesuré (session L6) : 18 appelants de `forge_api_init` ; les suites nomment `FORGE_KIND` ; `provision-plan.sh` et `team-apply-identity.sh` le reçoivent de leur Jenkinsfile ; les outils EXEMPTS (`setup-team-repos.sh`, `setup-gitlab-lab.sh`, `repo-protection.sh`, `seed-governance-chain.sh`) n'appellent pas l'init — rien à faire pour eux. `test-team-apply-wiring.sh` §3quinquies désoude volontairement `FORGE_KIND` (`env -u`) et reste VERTE (son assertion porte sur `FORGE_IDENTITES_ILLISIBLES`) : ne pas la lire comme une régression.
+
+**Interfaces:**
+- Produces: refus `FORGE_KIND_REQUIS` (rc 2, stderr, avant tout réseau). Les défauts internes `${FORGE_KIND:-gitea}` situés APRÈS l'init (`forge_web_file_url`, `_forge_auth_mode`, `kind()` côté python) restent : ils ne sont plus jamais atteints sans visage, et les retirer élargirait le rayon sans rien protéger de plus.
+
+- [ ] **Step 1 : RED** — `scripts/test-forge-api.sh`, juste avant `printf 'RÉSULTAT …'` (même idiome que les sections M : `env -i`, `bash -c '. scripts/lib/forge-api.sh && forge_api_init …'`, copie de la lib pour le mutant comme `$TMP/lib3`) :
+
+```bash
+echo "== K. FORGE_KIND absent = REFUS à l'init — fail-closed : la copie client d'un Jenkinsfile est hors de portée de toute porte =="
+( cd "$REPO" && env -i PATH="$PATH" HOME="$HOME" GIT_HOST="$GITLAB" GIT_REPO=ci/stoa-labs FORGE_SECRET=t-svc bash -c '. scripts/lib/forge-api.sh && forge_api_init && forge whoami' ) > "$TMP/out" 2> "$TMP/err"; echo $? > "$TMP/rc"
+[ "$(cat "$TMP/rc")" = 2 ] && grep -q 'REFUS: FORGE_KIND_REQUIS' "$TMP/err" \
+  && ok "K.1 sans FORGE_KIND ⇒ rc 2 + FORGE_KIND_REQUIS (jamais le défaut gitea)" || ko "K.1 rc $(cat "$TMP/rc") : $(head -1 "$TMP/err")"
+[ ! -s "$TMP/out" ] && ! grep -q 'HTTP' "$TMP/err" \
+  && ok "K.2 aucun appel réseau tenté sans visage (stdout vide, aucune trace HTTP)" || ko "K.2 un appel est parti sans visage"
+( cd "$REPO" && env -i PATH="$PATH" HOME="$HOME" FORGE_KIND= GIT_HOST="$GITLAB" GIT_REPO=ci/stoa-labs FORGE_SECRET=t-svc bash -c '. scripts/lib/forge-api.sh && forge_api_init' ) 2> "$TMP/err"; echo $? > "$TMP/rc"
+[ "$(cat "$TMP/rc")" = 2 ] && grep -q 'FORGE_KIND_REQUIS' "$TMP/err" \
+  && ok "K.3 FORGE_KIND vide vaut absent (Jenkins retire une variable vide : même refus)" || ko "K.3 la chaîne vide passe l'init"
+( cd "$REPO" && env -i PATH="$PATH" HOME="$HOME" GIT_REPO=ci/stoa-labs FORGE_SECRET=t-svc bash -c '. scripts/lib/forge-api.sh && forge_api_init' ) 2> "$TMP/err"; echo $? > "$TMP/rc"
+head -1 "$TMP/err" | grep -q 'FORGE_KIND_REQUIS' \
+  && ok "K.4 sans visage NI hôte, c'est le visage qui est nommé en premier (l'ordre des refus est stable)" || ko "K.4 premier refus : $(head -1 "$TMP/err")"
+mkdir -p "$TMP/libk"; cp "$PY" "$TMP/libk/"; sed 's/^  \[ -n "\${FORGE_KIND:-}" \] || { echo "REFUS: FORGE_KIND_REQUIS.*$/  FORGE_KIND="${FORGE_KIND:-gitea}"/' "$LIB" > "$TMP/libk/forge-api.sh"
+grep -q 'FORGE_KIND_REQUIS' "$TMP/libk/forge-api.sh" && ko "K.5 le mutant n'a pas mordu (motif sed périmé)" || {
+  ( cd "$REPO" && env -i PATH="$PATH" HOME="$HOME" GIT_HOST="$GITLAB" GIT_REPO=ci/stoa-labs FORGE_SECRET=t-svc bash -c '. "$1" && forge_api_init' _ "$TMP/libk/forge-api.sh" ) 2>/dev/null; rc=$?
+  [ "$rc" = 0 ] && ok "K.5 mutant « défaut gitea réintroduit » : l'init passerait sans visage ⇒ K.1 rougirait (l'épreuve mord)" || ko "K.5 le mutant refuse aussi (rc $rc) : K.1 ne mesure pas le défaut"; }
+```
+
+Lancer `bash scripts/test-forge-api.sh` ⇒ K.1/K.3/K.4 ROUGES (l'init défaute sur gitea), K.5 rouge « motif périmé » (la ligne n'existe pas encore) ; toutes les sections antérieures restent vertes.
+
+- [ ] **Step 2 : GREEN** — `scripts/lib/forge-api.sh`, remplacer `FORGE_KIND="${FORGE_KIND:-gitea}"` (l.59) par :
+
+```bash
+  # Le visage n'a PAS de défaut. Un Jenkinsfile CLIENT qui ne le transmet pas
+  # parlerait /api/v1 à un GitLab (incident 2026-09-10) — et cette copie-là,
+  # aucune porte du dépôt ne la voit. Refus nommé, avant tout réseau ; l'ordre
+  # est stable : visage, puis hôte, puis dépôt (décision du 2026-09-12).
+  [ -n "${FORGE_KIND:-}" ] || { echo "REFUS: FORGE_KIND_REQUIS : visage de la forge (gitea|gitlab) — aucun défaut, le job doit le transmettre (environment{} du Jenkinsfile, globale Jenkins FORGE_KIND)" >&2; return 2; }
+```
+
+et mettre à jour le commentaire d'en-tête de `forge_api_init` (l.55-57) : « vérifie le minimum AVANT le premier appel réseau — le visage d'abord, sans défaut — et pose les défauts qui dépendent du visage ».
+
+- [ ] **Step 3 : ENVIRONNEMENTS.md** — dans le tableau des knobs de forge (§ « Le visage de la forge »), `FORGE_KIND` : « **requis, sans défaut** — absent ou vide ⇒ `FORGE_KIND_REQUIS` avant tout réseau. Pourquoi : la copie client d'un Jenkinsfile est hors de portée des portes du dépôt ; le lab le pose par la globale Jenkins `FORGE_KIND=gitea` (`setup-jenkins-globals.sh`) et chaque Jenkinsfile de script routé le transmet dans son `environment{}` (porte à portée dérivée de la session L6, `ci/lint-jenkinsfiles.sh`). »
+
+- [ ] **Step 4 : vérifier** — `bash scripts/test-forge-api.sh` (K.1-K.5 verts, total = ancien + 5) ; `bash scripts/test-a0-wiring.sh` (jfp/jfa : les Jenkinsfile transmettent le knob) ; `bash scripts/test-team-apply-wiring.sh` (§3quinquies verte par `FORGE_IDENTITES_ILLISIBLES`) ; `bash ci/lint-forge-literals.sh` ; `shellcheck -x scripts/lib/forge-api.sh scripts/test-forge-api.sh` ; puis, sur `main` après le commit L6 des six Jenkinsfile : `grep -c FORGE_KIND ci/Jenkinsfile.{team-request,api-request,api-promote-request,api-promote-export,team-publish,team-promote}` = 6 × ≥ 1 AVANT de merger cette tâche.
+
+- [ ] **Step 5 : commit** — `git add scripts/lib/forge-api.sh scripts/test-forge-api.sh ENVIRONNEMENTS.md && git commit -m "fix(forge-api): FORGE_KIND sans défaut — refus FORGE_KIND_REQUIS à l'init (la copie client d'un Jenkinsfile est hors de portée des portes)"`
+
 ---
+
 
 ## Auto-revue du plan (faite à l'écriture)
 

@@ -140,6 +140,27 @@ Les scripts n'écrivent plus `/pulls/N` : `pr_open` et `pr_get` rendent `URL=`.
 - Pas de verbe de commentaire sans marqueur : la doctrine « un commentaire par rôle »
   (`gitea-pr-comment.sh:19-22`) s'applique (§6).
 
+### 4.6 `FORGE_KIND` n'a pas de défaut (amendement du 2026-09-12)
+
+L5 phase 1 avait laissé `forge_api_init` défauter sur `gitea`. Le 2026-09-12, la relecture du
+câblage (session L6) a mesuré que **six des sept Jenkinsfile** des scripts routés par ce lot
+(`team-request`, `api-request`, `api-promote-request`, `api-promote-export`, `team-publish`,
+`team-promote`) ne transmettent aucun des trois knobs `FORGE_KIND` / `FORGE_API_AUTH` /
+`FORGE_API_BASE` : au lab le défaut coïncide avec le visage et rien ne rougit ; chez un client
+GitLab la chaîne parlerait `/api/v1` — l'incident du 2026-09-09, à l'identique.
+
+**Décision de l'utilisateur** : `FORGE_KIND` absent ou vide ⇒ refus nommé **`FORGE_KIND_REQUIS`**,
+premier test de `forge_api_init`, avant tout réseau (Task 17). Deux raisons : une porte à portée
+dérivée (session L6, `ci/lint-jenkinsfiles.sh` : chaque Jenkinsfile qui invoque un script de
+`ROUTES` doit porter les trois knobs) couvre les Jenkinsfile **du dépôt**, jamais la **copie
+client** (incident 2026-09-10) ; et la règle écrite de `ci/lint-config-knobs.sh` n'accepte un
+défaut que si une porte peut le vérifier sans sortir du dépôt — ce défaut-là la violait.
+
+**Ordre imposé** : le commit L6 qui pose les knobs dans les six Jenkinsfile atterrit sur `main`
+AVANT le refus ; puis poussée gitea + origin ensemble. Les défauts `${FORGE_KIND:-gitea}` situés
+APRÈS l'init (`forge_web_file_url`, `_forge_auth_mode`, `kind()` côté python) restent : ils ne
+sont plus atteignables sans visage.
+
 ## 5. `archive-store` à deux visages
 
 | | Gitea | GitLab |
