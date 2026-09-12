@@ -107,7 +107,7 @@ lint-ci:
 	  scripts/lib/repo-protection.sh scripts/lib/archive-store.sh \
 	  scripts/lib/promote-manifest.sh scripts/test-promote-sans-recopie.sh \
 	  scripts/lib/assert-merge-identity.sh scripts/test-merge-identity.sh scripts/lib/app-manifest.sh \
-	  scripts/team-apply-identity.sh \
+	  scripts/forge-merge-identity.sh \
 	  scripts/provision-apply-reconcile.sh scripts/provision-apply-comment.sh \
 	  scripts/setup-repo-protections.sh scripts/setup-deployer-groups.sh \
 	  scripts/setup-vault-paliers.sh scripts/setup-user-vault-jwt.sh \

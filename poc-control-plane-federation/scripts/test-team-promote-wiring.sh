@@ -166,25 +166,42 @@ echo "VOLET A — statique : l'ORDRE est lu dans le code, et les mutations le pr
 echo "======================================================================"
 
 echo
-echo "== ① le Jenkinsfile et le XML portent le MÊME déclencheur (token + genericVariables) =="
+echo "== ① le déclencheur vient du JENKINSFILE, le XML ne porte plus rien (L6 phase 2) =="
+# CE QUI A CHANGÉ LE 2026-09-12, et pourquoi cette section ne compare plus.
+# Elle exigeait que le XML soit le MIROIR du Jenkinsfile, « parce que c'est le
+# XML qui gagne ». C'était vrai d'un bloc `triggers {}` DÉCLARATIF (mesuré le
+# 2026-08-06 sur team-publish : token du XML volontairement différent, 4 builds,
+# le XML n'a jamais bougé) et FAUX d'un `properties()` SCRIPTÉ : celui-là AJOUTE
+# sa propriété sans dédoublonner (DOUBLON au build 1), puis retire les deux et
+# repose la sienne (build 2) — l'exemplaire du XML est PERDU. Ce n'était pas une
+# ceinture, c'était une avarie différée.
+# Et un `triggers {}` déclaratif exige AU PARSE le plugin qui porte son symbole :
+# sur un Jenkins sans generic-webhook-trigger, ce job mourait avant son premier
+# stage. D'où les deux visages posés par le Jenkinsfile selon WEBHOOK_KIND, et
+# un XML VIDE dont le poseur DÉDUIT l'amorçage à imposer.
+# On ne mesure donc plus un miroir, mais l'ÉTAT VOULU.
 JF_TOKEN=$(grep -oE "token: '[^']*'" "$JF_NC" | head -1 | sed "s/token: '//; s/'$//")
-XML_TOKEN=$(grep -oE '<token>[^<]*</token>' "$JOB" | head -1 | sed 's/<token>//; s|</token>||')
-[ -n "$JF_TOKEN" ] && [ "$JF_TOKEN" = "$XML_TOKEN" ] \
-  && ok "① token GWT identique dans les deux fichiers ('$JF_TOKEN') — c'est le XML qui gagne, une divergence serait SILENCIEUSE" \
-  || bad "① token divergent ou absent (Jenkinsfile='$JF_TOKEN', XML='$XML_TOKEN')"
 [ "$JF_TOKEN" = "stoa-team-publish" ] \
-  && ok "① le token est bien le PARTAGÉ stoa-team-publish (D1 : un seul webhook réveille team-publish ET team-promote)" \
+  && ok "① token GWT = le PARTAGÉ stoa-team-publish (D1 : sous ce visage, UN appel réveille team-publish ET team-promote, et chacun se trie dans son \`when\`)" \
   || bad "① token inattendu '$JF_TOKEN' — un token propre exigerait un geste sur CHAQUE dépôt d'équipe"
-grep -oE "\[key: '[A-Z_]+'" "$JF_NC" | sed "s/\[key: '//; s/'$//" | sort > "$TMP/keys.jf"
-grep -oE '<key>[A-Z_]+</key>' "$JOB" | sed 's/<key>//; s|</key>||' | sort > "$TMP/keys.xml"
-if cmp -s "$TMP/keys.jf" "$TMP/keys.xml"; then
-  ok "① les genericVariables sont IDENTIQUES des deux côtés ($(wc -l < "$TMP/keys.jf" | tr -d ' ') clés) — comparaison des deux listes extraites, pas un grep par clé"
-else
-  bad "① les listes de genericVariables divergent : JF=[$(tr '\n' ' ' < "$TMP/keys.jf")] XML=[$(tr '\n' ' ' < "$TMP/keys.xml")]"
-fi
-[ -s "$TMP/keys.jf" ] \
-  && ok "① la liste extraite du Jenkinsfile n'est pas vide (une extraction muette ferait passer deux fichiers vides pour identiques)" \
-  || bad "① aucune genericVariable extraite du Jenkinsfile — l'ancre d'extraction a bougé, la comparaison ① serait vacante"
+grep -qF "regexpFilterText: '\$PR_ACTION|\$PR_MERGED|\$GL_KIND:\$GL_ACTION'" "$JF_NC" \
+  && ok "① filterText = \$PR_ACTION|\$PR_MERGED|\$GL_KIND:\$GL_ACTION — les DEUX visages sur le même texte (une clé absente du payload arrive VIDE)" \
+  || bad "① filterText inattendu : le visage GitLab du GWT ne serait pas lu"
+grep -qF 'regexpFilterExpression: '"'"'^closed\\|true\\||merge_request:merge$'"'" "$JF_NC" \
+  && ok "① filterExpression = ^closed\\|true\\| … merge_request:merge\$ : fusion RÉELLE seulement, sur l'un OU l'autre visage" \
+  || bad "① filterExpression inattendue — une fermeture SANS merge passerait"
+python3 -c "import sys,xml.etree.ElementTree as T; p=T.parse(sys.argv[1]).getroot().find('properties'); sys.exit(0 if p is not None and len(list(p))==0 else 1)" "$JOB" 2>/dev/null \
+  && ok "① le XML ne porte AUCUNE propriété (<properties/>) : ni déclencheur, ni verrou — ils viennent du BUILD" \
+  || bad "① le XML porte une propriété : DOUBLON au build 1, PERTE au build 2 (spike-webhook-kind-m2m4)"
+grep -q '<key>' "$JOB" \
+  && bad "① le XML porte encore des genericVariables — le Jenkinsfile doit être le SEUL à déclarer" \
+  || ok "① aucune genericVariable dans le XML : le Jenkinsfile déclare seul"
+# Le côté PRÉSENT est compté : « vars=0 » passerait pour un miroir si on ne
+# comptait que la divergence (piège corrigé dans gwt-mirror.sh le 2026-09-11).
+N_KEYS=$(grep -oE "\[key: '[A-Z_]+'" "$JF_NC" | sort -u | grep -c '')
+[ "$N_KEYS" -eq 16 ] \
+  && ok "① 16 genericVariables déclarées par le Jenkinsfile (8 Gitea + 8 GitLab) — le côté présent est COMPTÉ, un « vars=0 » ne passerait pas pour un miroir" \
+  || bad "① $N_KEYS genericVariables au lieu de 16 — un visage est incomplet"
 
 echo
 echo "== ② AUCUN paramètre de build : PROMOTE_ENGINE/ADMIN_VIA sont des knobs de PIPELINE =="
@@ -1475,7 +1492,7 @@ refus_attendu "G7-g" "change_ref mergé portant '/'" REF_INVALIDE "$TMP/og7g" "$
 # +2 G7-g (REF_INVALIDE sur la valeur MERGÉE). Re-mesuré (157 != 146).
 # 157 → 159 le 2026-08-27 (G7, tableau de bord) : +2 G7-a (porteur nommé,
 # trois identités relues sur le commentaire POSTÉ). Re-mesuré (159 != 157).
-EXPECTED_ASSERTIONS=159
+EXPECTED_ASSERTIONS=161
 TOTAL_BEFORE_GUARD=$((PASS+FAIL))
 echo
 [ "$TOTAL_BEFORE_GUARD" -eq "$EXPECTED_ASSERTIONS" ] \

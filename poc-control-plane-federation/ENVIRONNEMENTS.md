@@ -259,8 +259,9 @@ protection ou des paramètres de job :
   refléter les listes (choices, triggers, paramètres) : pour un bloc
   **déclaratif**, le XML gagne sur le Jenkinsfile — un scellement présent dans le
   Jenkinsfile mais absent du config.xml posé ne prend pas effet. ⚠ Ce n'est PLUS
-  vrai de `provision-plan`, `provision-apply`, `selfservice-app-deploy` ni
-  `team-apply` : depuis L6 leur XML ne porte AUCUNE propriété et c'est leur
+  vrai de `provision-plan`, `provision-apply`, `selfservice-app-deploy`,
+  `team-apply`, `team-publish` ni `team-promote` : depuis L6 leur XML ne porte
+  AUCUNE propriété et c'est leur
   **premier build** qui pose déclencheur et verrou (voir « Le récepteur de
   webhooks »). `setup-provision-jobs.sh` le DÉDUIT du XML (`<properties/>` vide
   ⇒ amorçage imposé **et** attendu) : il n'y a pas de liste à tenir à jour.
@@ -1912,7 +1913,7 @@ messages de dash qui ne nomment **aucun** refus du dépôt, après avoir réveil
 un humain et encaissé son mot de passe d'annuaire — sur les deux visages, Gitea
 comprise. La règle, sans exception : **une lib `scripts/lib/*.sh` ne se source
 que depuis du bash**, et le Jenkinsfile appelle `bash scripts/<script>.sh` (un
-process à soi, son shebang). D'où `scripts/team-apply-identity.sh`. La porte est
+process à soi, son shebang). D'où `scripts/forge-merge-identity.sh`. La porte est
 dans `ci/lint-jenkinsfiles.sh`, portée **dérivée** : toute ligne de
 `ci/Jenkinsfile*` qui source une lib doit passer `dash -n`.
 
@@ -1921,9 +1922,47 @@ $PR_NUMBER` pour n'en prendre que les identités ne suffit pas : `PR_NUMBER` est
 un fait du payload, tandis que l'objet appliqué vient de `PR_BRANCH`/`MERGE_SHA`
 (`git checkout "$MERGE_SHA"`). Qui poste **son** merge avec le **numéro** d'une
 PR d'autrui fait valider les quatre yeux par une PR étrangère, en vert.
-`team-apply-identity.sh` confronte donc les trois faits que la forge rend —
+`forge-merge-identity.sh` confronte donc les trois faits que la forge rend —
 `merged`, `merge_commit_sha`, `head.ref` — et refuse `PAYLOAD_PERIME`, comme le
 fait déjà la réconciliation de `provision-apply`.
+
+**La chaîne PRODUCTEUR a ses deux visages (phase 2, 2026-09-12).** `team-apply`,
+`team-publish` et `team-promote` ont perdu leurs blocs déclaratifs, leurs XML
+sont à `<properties/>`, et leur `post{always}` est gardé AVANT le nœud — ce
+dernier point n'est pas cosmétique : l'amorçage leur étant désormais **imposé et
+jugé** par le poseur (qui le déduit du XML), un `post` sans `timeout` qui attend
+un exécuteur occupé fait déclarer la POSE en échec sur un job dont le déclencheur
+EST posé.
+
+**Sous le visage `gitlab`, chaque dépôt d'ÉQUIPE porte DEUX webhooks** —
+`/project/team-publish` et `/project/team-promote` — et c'est plus **serré** que
+le visage `gwt`, pas équivalent : sous `gwt`, ces deux jobs partagent un token,
+donc un seul appel réveille les DEUX et le tri se fait plus tard, dans le `when`
+de chacun ; sous le plugin, la clé de routage est l'URL et `sourceBranchRegex`
+trie **dans le récepteur** (`api/.*` / `promote/.*`). `team-promote` ne construit
+donc plus jamais sur une fusion `api/*`. À ne pas lire comme une divergence.
+
+**Le `Secret token` est posé PAR LE JOB**, pas par le hook : le hook doit envoyer
+la valeur que le job attend. Défauts : `stoa-team-publish` et `stoa-team-promote`,
+surchargeables par les globales `TEAM_PUBLISH_WEBHOOK_SECRET` et
+`TEAM_PROMOTE_WEBHOOK_SECRET` (promote retombe sur publish, puis sur son
+littéral) — un site qui pose UN seul secret sur ses deux hooks fonctionne donc
+sans knob supplémentaire. ⚠ Ce n'est pas encore un secret (littéral en Git,
+globale lisible dans l'UI) : dette nommée. Et **le mode de panne est muet côté
+Jenkins** : si les deux valeurs divergent, GitLab prend un 401 que seul
+l'historique de livraison du webhook montre — aucun build, aucun log. Même
+famille que le silence mesuré au spike M4 (`POST /project/<job>` sur un job sans
+déclencheur ⇒ 200, aucun build) : sous ce visage, l'absence de build ne se
+diagnostique jamais depuis Jenkins.
+
+**Les identités de `team-publish` ne viennent plus du payload** : comme
+`team-apply`, il relit la forge (`scripts/forge-merge-identity.sh`, préfixé
+`GIT_REPO="$WEBHOOK_REPO"` — la PR vit dans le dépôt de l'équipe). Dette nommée :
+`team-publish.sh` relit DÉJÀ la forge pour sa propre réconciliation, donc il y a
+deux relectures par build ; le geste qui les ramène à une seule est de déplacer
+la garde DANS le script, ce qui relève du CORPS du job (L5 phase 2). Refuser dans
+le pipeline garde en attendant un avantage réel : le refus tombe **avant** le
+login Vault nominatif, donc sans émettre de jeton.
 
 **Au lab** : `scripts/test-webhook-kind-gitlab-live.sh` (la chaîne entière par le
 GitLab Plugin : plan sur ouverture et sur push, apply sur la fusion avec

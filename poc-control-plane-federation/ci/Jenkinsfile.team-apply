@@ -322,11 +322,11 @@ pipeline {
             // (ci/lint-jenkinsfiles.sh:79), qui ne peut pas sourcer
             // scripts/lib/forge-api.sh — du bash. Le step mourait sur deux
             // messages de dash, sans nommer aucun refus, après avoir réveillé
-            // un humain. L'en-tête de scripts/team-apply-identity.sh porte la
+            // un humain. L'en-tête de scripts/forge-merge-identity.sh porte la
             // mesure ; ci/lint-jenkinsfiles.sh porte désormais la porte.
             // C'est aussi la discipline d'A0 : le pipeline route, la substance
             // est dans scripts/.
-            sh 'set +x; bash scripts/team-apply-identity.sh'
+            sh 'set +x; bash scripts/forge-merge-identity.sh'
           }
         }
 
