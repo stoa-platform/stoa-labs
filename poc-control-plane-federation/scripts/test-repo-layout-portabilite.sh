@@ -99,7 +99,7 @@ req(){
   # Un knob « master » ici aurait été un vert vacant : jusqu'au 2026-09-10, le
   # repli sans `-b` de provision-request.sh rattrapait le clone `-b master` sur
   # des fixtures construites en `main` — 17 paires de clones, aucune détection.
-  local -a envv=(GITEA_TOKEN=stub GIT_HOST=http://127.0.0.1:1 GIT_REPO=ci/appli
+  local -a envv=(GITEA_TOKEN=stub GIT_HOST=http://127.0.0.1:1 GIT_REPO=ci/appli FORGE_KIND=gitea
                  "GIT_CLONE_URL=file://$origin" "GIT_PUSH_URL=file://$origin"
                  MANIFEST_DIR=clients/provisioned/applications
                  "STOA_ENV_CHAIN_FILE=$TMP/chain.yaml" PROVISION_PLAN_INLINE=false
@@ -174,7 +174,7 @@ paths: {}'
 # run <script> <GIT_SUBDIR|__ABSENT__> [VAR=val…] — même contrat que req().
 run(){
   local sc="$1" sub="$2"; shift 2
-  local -a envv=(GITEA_TOKEN=stub "STOA_ENV_CHAIN_FILE=$TMP/chain.yaml")
+  local -a envv=(GITEA_TOKEN=stub FORGE_KIND=gitea "STOA_ENV_CHAIN_FILE=$TMP/chain.yaml")
   [ "$sub" = "__ABSENT__" ] || envv+=("GIT_SUBDIR=$sub")
   ( cd "$REPO" && env -i PATH="$PATH" HOME="$HOME" "${envv[@]}" "$@" bash "$sc" ) > "$TMP/req.out" 2>&1
   echo $? > "$TMP/req.rc"

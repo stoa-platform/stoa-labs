@@ -377,7 +377,7 @@ PY
 run_rec(){
   local out="$1" log="$2"; shift 2
   rm -f "$out" "$TMP/facts"
-  env -i PATH="$PATH" HOME="$HOME" GITEA_TOKEN="$STUB_TOKEN" GIT_HOST="$GH" GIT_REPO=ci/stoa-labs GIT_WORKTREE="$WORK" \
+  env -i PATH="$PATH" HOME="$HOME" GITEA_TOKEN="$STUB_TOKEN" GIT_HOST="$GH" GIT_REPO=ci/stoa-labs GIT_WORKTREE="$WORK" FORGE_KIND=gitea \
     PR_BRANCH="provision/appa-rec" PR_NUMBER=42 MERGE_SHA="$C1" PR_MERGED_BY=oscar PR_REQUESTER=eve \
     RECONCILE_OUT="$out" RECONCILE_FACTS="$TMP/facts" "$@" bash "$RECONCILE" >"$log" 2>&1
 }
@@ -603,7 +603,7 @@ echo "═══ Section C — le rapport de PR (provision-apply-comment.sh) : r�
 run_cmt(){ # $1=log ; reste = VAR=val
   local log="$1"; shift
   printf '[]' > "$STUB_COMMENTS"
-  env -i PATH="$PATH" HOME="$HOME" GITEA_TOKEN="$STUB_TOKEN" GIT_HOST="$GH" GIT_REPO=ci/stoa-labs PR_NUMBER=42 \
+  env -i PATH="$PATH" HOME="$HOME" GITEA_TOKEN="$STUB_TOKEN" GIT_HOST="$GH" GIT_REPO=ci/stoa-labs FORGE_KIND=gitea PR_NUMBER=42 \
     "$@" bash "$COMMENT" >"$log" 2>&1
 }
 run_cmt "$TMP/c1.log" APPLY_RESULT=SUCCESS APP_NAME=appa ENV_NAME=rec VALIDATOR=alice; RC=$?
@@ -661,7 +661,7 @@ mutate(){ # $1=motif sed à supprimer $2=copie
 }
 mut_run(){ # $1=copie $2=log [VAR=val…] ; scénario posé par set_pr avant
   local m="$1" log="$2"; shift 2
-  env -i PATH="$PATH" HOME="$HOME" GITEA_TOKEN="$STUB_TOKEN" GIT_HOST="$GH" GIT_REPO=ci/stoa-labs GIT_WORKTREE="$WORK" \
+  env -i PATH="$PATH" HOME="$HOME" GITEA_TOKEN="$STUB_TOKEN" GIT_HOST="$GH" GIT_REPO=ci/stoa-labs GIT_WORKTREE="$WORK" FORGE_KIND=gitea \
     PR_BRANCH="provision/appa-rec" PR_NUMBER=42 MERGE_SHA="$C1" RECONCILE_OUT="$TMP/mut.out" "$@" bash "$m" >"$log" 2>&1
 }
 python3 - "$STUB_CTL" <<'PY'
@@ -727,7 +727,7 @@ echo "═══ Section E — STOA_DEBUG=1 : la réconciliation parle, sans fuit
 run_dbg(){
   local script="$1" out="$2" so="$3" se="$4"; shift 4
   rm -f "$out" "$TMP/facts"
-  env -i PATH="$PATH" HOME="$HOME" GITEA_TOKEN="$STUB_TOKEN" GIT_HOST="$GH" GIT_REPO=ci/stoa-labs GIT_WORKTREE="$WORK" \
+  env -i PATH="$PATH" HOME="$HOME" GITEA_TOKEN="$STUB_TOKEN" GIT_HOST="$GH" GIT_REPO=ci/stoa-labs GIT_WORKTREE="$WORK" FORGE_KIND=gitea \
     PR_BRANCH="provision/appa-rec" PR_NUMBER=42 MERGE_SHA="$C1" PR_MERGED_BY=oscar PR_REQUESTER=eve \
     RECONCILE_OUT="$out" RECONCILE_FACTS="$TMP/facts" "$@" bash "$script" >"$so" 2>"$se"
 }

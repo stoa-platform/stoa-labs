@@ -543,7 +543,7 @@ CHO="$TMP/choicesE.env"; rm -f "$CHO"
 CHOICES_OUT="$CHO" STOA_ENV_CHAIN_FILE="$TMP/chain-sans-int.yaml" GIT_HOST="$GHE" GIT_REPO=ci/stoa-labs GITEA_TOKEN=dummy bash scripts/app-request-choices.sh >"$TMP/e.out" 2>"$TMP/e.err"; RC=$?
 [ "$RC" -eq 0 ] && grep -qx 'ENVS=dev rec homol prod' "$CHO" 2>/dev/null && ok "E.1 le FORMULAIRE dérive ENVS=dev rec homol prod — int retiré de la chaîne n'est plus proposé (A7 : le terminus l'est)" || bad "E.1 rc=$RC : $(cat "$CHO" 2>/dev/null | tr '\n' ' ') $(tail -2 "$TMP/e.err" | tr '\n' ' ')"
 : > "$TMP/git.log"
-( PATH="$TMP/bin:$PATH" GIT_LOG="$TMP/git.log" REAL_GIT="$REAL_GIT" STOA_ENV_CHAIN_FILE="$TMP/chain-sans-int.yaml" GIT_HOST=http://127.0.0.1:1 GITEA_TOKEN=dummy \
+( PATH="$TMP/bin:$PATH" GIT_LOG="$TMP/git.log" REAL_GIT="$REAL_GIT" STOA_ENV_CHAIN_FILE="$TMP/chain-sans-int.yaml" GIT_HOST=http://127.0.0.1:1 GITEA_TOKEN=dummy FORGE_KIND=gitea \
   REQ_APP=appe REQ_ENV=int REQ_API=demo-selfservice REQ_CLIENT_ID=appe-int REQ_CALLER=oig-provisioner bash scripts/provision-request.sh ) >"$TMP/e2.out" 2>"$TMP/e2.err"; RC=$?
 [ "$RC" -eq 2 ] && grep -q 'REFUS: ENV_INVALIDE' "$TMP/e2.err" && ok "E.2 la DEMANDE refuse REQ_ENV=int (rc 2, ENV_INVALIDE) sur la même source" || bad "E.2 rc=$RC : $(tail -2 "$TMP/e2.err" | tr '\n' ' ')"
 [ ! -s "$TMP/git.log" ] && ok "E.2b …AVANT tout geste Git (le shim git n'a rien vu)" || bad "E.2b git invoqué : $(head -3 "$TMP/git.log" | tr '\n' ' ')"

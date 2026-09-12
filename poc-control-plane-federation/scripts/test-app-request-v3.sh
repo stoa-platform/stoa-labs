@@ -62,7 +62,7 @@ echo "═══ Section A — gardes d'entrée v3 (HORS LIGNE, AVANT tout geste 
 # ci-dessous ne verraient plus « échec au clone » mais un rc 2 qu'elles lisent
 # comme « une garde v3 a refusé ». Le knob rend zéro geste réseau (git-base.sh
 # §1) et rend à cette section ce qu'elle mesure : les gardes d'entrée de v3.
-BASE_ENV=(GITEA_TOKEN=dummy GIT_HOST="http://127.0.0.1:1" GIT_BASE=master
+BASE_ENV=(GITEA_TOKEN=dummy GIT_HOST="http://127.0.0.1:1" GIT_BASE=master FORGE_KIND=gitea
           REQ_APP="probe" REQ_ENV="dev" REQ_API="accounts-read"
           REQ_CLIENT_ID="probe" REQ_CALLER="oig-provisioner")
 

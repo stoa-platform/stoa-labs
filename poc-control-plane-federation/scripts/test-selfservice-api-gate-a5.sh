@@ -295,7 +295,7 @@ bodies(){ python3 -c 'import json,sys;print("\n".join(c["body"] for c in json.lo
 report(){ # <REFUSAL> <REFUSAL_DETAIL> → $TMP/d.out
   printf '[]' > "$TMP/comments.json"
   ( cd "$REPO" && PR_NUMBER=7 APPLY_RESULT=FAILURE APP_NAME=a5app ENV_NAME=rec VALIDATOR=alice REFUSAL="$1" REFUSAL_DETAIL="$2" \
-      GIT_REPO=ci/stoa-labs GITEA_TOKEN=tok-ok GIT_HOST="$GH" bash scripts/provision-apply-comment.sh ) > "$TMP/d.out" 2>&1; echo $? > "$TMP/d.rc"
+      GIT_REPO=ci/stoa-labs GITEA_TOKEN=tok-ok GIT_HOST="$GH" FORGE_KIND=gitea bash scripts/provision-apply-comment.sh ) > "$TMP/d.out" 2>&1; echo $? > "$TMP/d.rc"
 }
 report API_NOT_PROMOTED "l'API 'demo-selfservice' n'est pas au palier 'rec' — promouvoir l'API vers rec (PR promote/demo-selfservice-rec, G5) puis rejouer l'apply ; rien n'a été écrit"
 bodies > "$TMP/d.body"

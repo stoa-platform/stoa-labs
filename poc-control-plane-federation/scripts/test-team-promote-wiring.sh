@@ -940,6 +940,7 @@ run_promote() {
       VAULT_TOKEN_FILE="$VAULT_TOKEN_FILE" \
       GIT_HOST="$GIT_HOST" \
       GIT_REPO="$PLAT_REPO" \
+      FORGE_KIND=gitea \
       VAULT_IDENTITY_USER=oscar \
       PROMOTE_ENGINE="$engine" \
       ADMIN_VIA=proxy-oauth2 \
