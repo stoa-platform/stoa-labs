@@ -1324,6 +1324,56 @@ et toute cause est expurgée des secrets connus.
   mesuré le 2026-09-09 sur un push de 11 Mio ; le même buffé passe). Même
   leçon qu'avec Gitea (mémoire « push gitea > 1 Mo exige http.postBuffer »).
 
+### Les verbes de forge
+
+`scripts/lib/forge-api.py` expose **onze** verbes, et rien d'autre. Le shell ne
+voit **jamais** un chemin, un en-tête ni un nom de champ de forge : il reçoit des
+lignes `CLÉ=VALEUR` normalisées, identiques sur les deux visages. `rc 0` = produit
+sur stdout ; `rc 2` = la CAUSE en **une** ligne sur stderr et **rien** sur stdout
+— c'est l'APPELANT qui nomme le tag (`FORGE_ILLISIBLE`, `FORGE_NON_CONFIRMEE`…),
+de sorte que les contrats de refus existants ne bougent pas.
+
+| Verbe | Arguments | Sortie | Gitea | GitLab |
+|---|---|---|---|---|
+| `probe` | — | `KIND_DETECTED=gitea\|gitlab\|inconnu` `PROBE=` | `/version` en `/api/v1` | `/version` en `/api/v4` (401 accepté) — **sans secret** |
+| `whoami` | — | `LOGIN=` | `user` → `login` | `user` → `username` |
+| `pr_find_open` | `<tête>` | `NUMBER= LOGIN= URL=` — **vides** si aucune, `rc 0` | `pulls?state=open`, filtre rejoué côté client | `merge_requests?state=opened&source_branch=` |
+| `pr_list_merged` | `<tête>` | **une ligne par PR** : `NUMBER= MERGE_SHA= BASE_REF= SAME_REPO= HEAD_REPO=` | `pulls?state=closed`, mergées seules | `merge_requests?state=merged&source_branch=` ; `HEAD_REPO=project:<id>` |
+| `pr_get` | `<n>` | `NUMBER= STATE= STATE_RAW= HEAD_REF= HEAD_SHA= BASE_REF= SAME_REPO= MERGED= MERGE_SHA= MERGED_BY= LOGIN= URL=` | `pulls/<n>` | `merge_requests/<iid>` |
+| `pr_open` | `<tête> <base> <titre> <fichier-corps>` | `NUMBER= URL=` | `POST pulls` (`head`/`base`/`body`) | `POST merge_requests` (`source_branch`/`target_branch`/`description`) |
+| `pr_files` | `<n>` | **un chemin par ligne** | `pulls/<n>/files` → `filename` | `merge_requests/<iid>/diffs` → `new_path`, après l'attente de `prepared_at` |
+| `comment_find` | `<n> <marqueur>` | `ID=` — **vide** si aucun commentaire ne porte le marqueur, `rc 0` | `issues/<n>/comments` | `merge_requests/<iid>/notes` |
+| `comment_upsert` | `<n> <marqueur> <fichier>` | `ID= ACTION=created\|updated` | idem, `PATCH` | idem, `PUT` |
+| `raw` | `<chemin> [ref]` | le contenu **brut** sur stdout | `raw/<chemin>` | `repository/files/<chemin encodé>/raw` (sans `ref` : la HEAD du projet, GitLab ≥ 13.12) |
+| `repo_get` | — | `EXISTS= EMPTY= DEFAULT_BRANCH= URL=` — **un 404 est une réponse** (`EXISTS=0`, `rc 0`) | champ `empty`, `html_url` | champ `empty_repo`, `web_url` |
+
+Trois helpers d'enveloppe, dans `scripts/lib/forge-api.sh` :
+
+- **`forge_kv <préfixe> <verbe> [args…]`** — joue le verbe et pose
+  `<préfixe>_<CLÉ>` pour chaque ligne rendue, **sans `eval`** : la valeur est
+  prise après le premier `=`, telle quelle. C'est la voie à prendre dès qu'une
+  valeur peut porter n'importe quoi (un titre de PR, une URL) ;
+- **`forge_web_url <url>`** — l'URL rendue par un verbe, vue **du poste** :
+  `GIT_WEB_HOST` remplace le préfixe `GIT_HOST` quand les deux diffèrent
+  (`http://gitea:3000` vu du conteneur, `localhost:13000` vu du poste). Une URL
+  qui ne commence pas par `GIT_HOST` est rendue telle quelle ;
+- **`forge_web_file_url <sha> <chemin>`** — le lien **humain** d'un fichier à un
+  commit, à la forme du visage (`src/commit` / `-/blob`). Plus aucun script ne
+  compose `/pulls/N` ni `/src/commit/` à la main : la porte
+  `ci/lint-forge-literals.sh` les interdit hors de l'autorité.
+
+Le contrat de `pr_get` est **figé** : ses clés sont consommées par
+`ci/Jenkinsfile.team-apply` et `scripts/forge-merge-identity.sh` (`MERGED_BY`,
+`LOGIN`) — toute évolution passe par une annonce croisée. Dans les scripts,
+`PR_*` est l'espace du **payload** du webhook ; la relecture de la forge vit
+sous `FPR_*` (`team-publish`, `team-promote`), pour que les deux ne se
+confondent jamais.
+
+⚠ **Un bloc `sh` de Jenkins est du `dash`** : ne **jamais** faire
+`. scripts/lib/forge-api.sh` dans un bloc `sh` (la lib est du bash :
+`${BASH_SOURCE[0]}`, `printf -v`, here-string). Toujours `bash scripts/<x>.sh`,
+un process à soi, son shebang. La porte est dans `ci/lint-jenkinsfiles.sh`.
+
 ### La branche par défaut (`GIT_BASE`) — L3, 2026-09-10
 
 La chaîne écrivait `main` en dur à 46 endroits exécutés et dans 155 messages.
@@ -1984,6 +2034,226 @@ producteur. (`team-apply` en est sorti le 2026-09-12 : plus de `triggers {}` ni
 d'`options {}`, XML à `<properties/>`, identités relues sur la forge.) ; un vrai secret par site pour le Secret Token (credential +
 `withCredentials` avant le `properties()`) ; `FORGE_CRED_KIND` classé optionnel
 mais refusé si vide par onze pipelines.
+
+## La chaîne producteur à deux visages (L5 phase 2 — 2026-09-12)
+
+L5 phase 1 avait routé la chaîne **app-request** sur l'autorité de forge. La
+chaîne **producteur** — celle qui onboarde une équipe, publie une API et la
+promeut de palier en palier — parlait encore Gitea en dur. Phase 2 la route
+entièrement, et tranche au passage une question qui n'était pas technique :
+**qui crée le dépôt d'équipe, son webhook et sa protection de branche ?**
+Réponse, décision utilisateur du 2026-09-12 (« D10 profond », ADR-099) : **le
+client**. La chaîne LIT la forge, ouvre des PR/MR et commente — elle ne crée ni
+organisation, ni dépôt, ni hook, ni protection, sur **aucun** visage.
+
+La liste `EN_ROUTAGE` de `ci/lint-forge-literals.sh` est désormais **VIDE** : la
+porte le dit en toutes lettres, « aucun fichier en routage : **la phase 2 est
+close** ».
+
+### Prérequis côté client — la liste unique, deux visages
+
+Trois blocs de prérequis existent, et il faut les lire dans cet ordre : l'accès
+à l'**API de la forge** (§ « Le visage de la forge » ci-dessus), le **récepteur**
+de webhooks de ce Jenkins (§ « Le récepteur de webhooks » ci-dessus), et
+ci-dessous ce qu'il faut **par dépôt d'équipe**. Ce dernier bloc est celui que
+D10 a déplacé de la chaîne vers le client.
+
+Pour **chaque** dépôt d'équipe, avant tout onboarding :
+
+1. **Le dépôt, créé VIDE par le client.**
+   - Gitea : l'organisation, puis le dépôt.
+   - GitLab : le projet du groupe, **privé**, **`merge_method=merge`**. En
+     fast-forward ou squash, `merge_commit_sha` est nul et l'apply post-merge
+     n'a aucun SHA à checkouter.
+2. **Le ou les webhooks vers les récepteurs.**
+   - `WEBHOOK_KIND=gwt` : **UN** hook, URL au token partagé.
+   - `WEBHOOK_KIND=gitlab` : **DEUX** hooks — `/project/team-publish` et
+     `/project/team-promote` —, événements **« Merge request » seulement**. Le
+     GitLab Plugin expose une URL **par job** : il faut donc un hook **par
+     récepteur**. C'est plus **SERRÉ** que le `gwt`, qui réveillait les deux
+     jobs sur toute PR fusionnée et triait plus tard — un gain, **pas** une
+     divergence entre visages.
+   - Le champ *Secret token* du hook doit porter **la valeur que le JOB attend**
+     — globales `TEAM_PUBLISH_WEBHOOK_SECRET` et `TEAM_PROMOTE_WEBHOOK_SECRET`,
+     défauts `stoa-team-publish` / `stoa-team-promote`, promote retombant
+     d'abord sur le knob publish puis sur son littéral. **Ne JAMAIS poser la
+     chaîne vide.** Ce n'est pas encore un secret (littéral en Git, globale
+     lisible dans l'UI) : dette ADR-098.
+   - ⚠ **Panne MUETTE.** Si la valeur du hook diverge de celle du job, GitLab
+     prend un **401** : aucun build, aucun log côté Jenkins. Diagnostic :
+     **lire l'historique de livraison du hook côté forge AVANT de suspecter le
+     job**. Et le token **authentifie l'appelant**, il n'atteste **pas** le
+     payload : l'intégrité reste la confrontation du dépôt réclamé à
+     `providers.<env>.yml` (`REPO_AMBIGU`).
+3. **La protection de la branche par défaut.**
+   - Gitea : **nominative** (push whitelist, patterns de fichiers — ADR-082 §3),
+     posée par `scripts/setup-repo-protections.sh`.
+   - GitLab **CE** : **par RÔLE** (`push_access_level` / `merge_access_level`
+     = 40) — la protection nominative est Premium. Corollaire :
+     **le porteur de `FORGE_SECRET` doit être Maintainer** sur le projet pour
+     pouvoir y pousser le squelette.
+   - Les quatre yeux d'ADR-081 restent portés par cette protection, sous la
+     forme que la forge du client sait tenir.
+
+### L'onboarding : la conduite de `team-apply`
+
+`team-apply` lit le dépôt d'équipe par l'autorité de forge (`forge repo_get`) et
+se conduit selon **trois états**, plus une garde. Il ne crée plus rien, et il
+n'y a plus de jeton `gitea-org-admin` dans Vault.
+
+| État lu | Conduite | Ce que la PR dit |
+|---|---|---|
+| `repo: ""` dans `providers.<env>.yml` | étape **sautée** — une équipe sans dépôt produit n'est pas un échec (cas réel `payments-team`) | « repo vide dans providers — étape sautée » |
+| dépôt **absent** (`EXISTS=0`) | **`REFUS: DEPOT_ABSENT`**, `rc 2`, **rien n'est poussé** | le refus nommé, avec le geste à faire |
+| dépôt **vide** (`EMPTY=1`) | squelette ADR-076 (`apis/`, `applications/`, `README.md`) poussé sur la **HEAD annoncée par la forge** (`DEFAULT_BRANCH`), à défaut `GIT_BASE` | ✅ « vide, squelette poussé sur `<branche>` » |
+| dépôt **non vide** | « déjà initialisé, étape sautée » — l'idempotence est **dite** | ✅, avec le lien du dépôt à la forme du visage |
+
+**Un seul commentaire par échec**, sous le marqueur `<!-- team-apply -->`
+(`comment_upsert`) : jamais une pile. Sur GitLab, un 404 vaut aussi
+« **invisible pour ce jeton** » — le refus le dit lui-même. Et `team-apply` ne
+**vérifie pas** la présence du webhook : lister les hooks d'un projet exige
+Maintainer, donc le hook est un prérequis **écrit**, pas **contrôlé**.
+
+### Les outils de poste (lab)
+
+Ce que la chaîne ne fait plus, le lab le pose avec des outils **hors chaîne**,
+exemptés nommément par `ci/lint-forge-literals.sh` (ils parlent aux API de
+création). Ces outils **gardent un défaut de visage `gitea`** et échouent
+**BRUYAMMENT** sur le mauvais visage : ils sont joués devant un terminal, pas
+par un pipeline.
+
+- **`scripts/setup-team-repos.sh <owner>/<repo> [--print] [--no-hook] [--no-protect]`**
+  — pré-crée le dépôt d'équipe VIDE, son ou ses webhooks et sa protection, sur
+  les **deux** visages, idempotent.
+  Knobs : `FORGE_KIND` `GIT_HOST` `FORGE_SECRET` `WEBHOOK_KIND` `GIT_BASE`
+  `TEAM_PUBLISH_WEBHOOK_URL` `TEAM_PROMOTE_WEBHOOK_URL`
+  `TEAM_PUBLISH_WEBHOOK_SECRET` `TEAM_PROMOTE_WEBHOOK_SECRET`
+  `PROTECT_PUSH_WHITELIST`. **`GIT_BASE` ABSENT** signifie « laisser la forge
+  attribuer sa propre branche par défaut au dépôt créé » — elle l'annonce dans
+  sa réponse, et c'est cette valeur-là qui est relue, jamais un littéral deviné.
+  Refus nommés : `REPO_REQUIS` `REPO_INVALIDE` `BRANCHE_INVALIDE`
+  `BRANCHE_PAR_DEFAUT_INDECIDABLE` `SECRET_FORGE_REQUIS` `FORGE_KIND_INCONNU`
+  `ARGUMENT_INCONNU` `CREATION_ECHEC` `REPO_GET` `HOOK_ECHEC`
+  `PROTECTION_ECHEC`. `REPO_INVALIDE` est validé **avant `--print` et avant tout
+  réseau** : le nom finit interpolé dans six corps JSON, et un nom forgé y
+  injecterait des clés arbitraires sans rien casser de visible. Les corps JSON
+  sont construits par `json.dumps`, convention du dépôt.
+  Le secret requis : Gitea `write:organization,write:repository` ; GitLab un PAT
+  `api`, **Owner du groupe** (le groupe lui-même est un prérequis, posé par
+  `setup-gitlab-lab.sh`).
+- **`scripts/setup-repo-protections.sh`** — la protection **nominative**, Gitea
+  **seulement**. Sur un autre visage il refuse `PROTECTION_GITEA_SEULEMENT` et
+  renvoie à `setup-team-repos.sh` : il ne pose jamais une protection dégradée
+  qui aurait l'air posée.
+- **`scripts/seed-governance-chain.sh`** — exige désormais `FORGE_KIND` : son
+  read-back passe par l'autorité de forge (`forge raw`), qui refuse tout autre
+  visage que `gitea|gitlab`.
+
+### Le registre des archives, à deux échelles
+
+Le registre générique de la forge — le transport des octets d'une archive de
+promotion, `scripts/lib/archive-store.sh` — n'a pas la même **échelle** selon le
+visage :
+
+| Visage | Échelle | Knob | Absent ⇒ |
+|---|---|---|---|
+| Gitea | par **PROPRIÉTAIRE** | `ARCHIVE_STORE_OWNER`, défaut `ci` | — |
+| GitLab | par **PROJET** | `ARCHIVE_STORE_PROJECT=<groupe>/<projet>` (au lab `ci/archives`) | **`REFUS: ARCHIVE_STORE_PROJECT_REQUIS`**, avant tout réseau |
+
+`GIT_HOST` y est **requis, sans repli**. `ARCHIVE_STORE_PROJECT` est connue du
+poseur (`setup-jenkins-globals.sh`, liste OPTIONNELLES) : absente sous Gitea
+c'est l'état normal, absente sous GitLab c'est un refus nommé — jamais un défaut
+silencieux. Cette lib porte son **propre** refus `FORGE_KIND_REQUIS` : elle ne
+source pas `forge-api.sh` (transport binaire, jamais l'init JSON), et sans ce
+refus son `case` aurait été le **dernier** défaut de visage silencieux de toute
+la chaîne.
+
+### Preuves
+
+| Preuve | Commande | Résultat |
+|---|---|---|
+| Les verbes, deux visages, mutations champ par champ | `bash scripts/test-forge-api.sh` | **134/134** |
+| Les mêmes verbes contre les forges RÉELLES du lab | `bash scripts/test-forge-api-live.sh` | **43/43** (GitLab CE **et** Gitea) |
+| Le registre à deux échelles | `bash scripts/test-archive-store.sh` | **29 PASS / 0** |
+| L'outil de poste, deux visages | `bash scripts/test-setup-team-repos.sh` | **11/11** |
+| La conduite D10 (⑭), les mutants, les knobs de site | `bash scripts/test-palier-retention.sh` | **141 PASS / 0** |
+| Le câblage de `team-apply` | `bash scripts/test-team-apply-wiring.sh` | **108/108** |
+| **La chaîne producteur EN DIRECT sur le GitLab CE du lab** | `bash scripts/test-producer-chain-gitlab.sh` | **18/18 sur deux runs consécutifs**, `rc 0`, **8 preuves SKIP** (version `6af963a` de la suite) |
+| Portes | `ci/lint-forge-literals.sh` · `ci/lint-branch-literals.sh` · `ci/lint-forge-knobs.sh` · `ci/lint-config-knobs.sh` | **10/10** · **11/11** · **5 contrôles** · verte |
+
+**Ce que la matrice GitLab prouve** : le dépôt plateforme est **privé**
+(`info/refs` anonyme ⇒ 401 — le vrai cas client) ; `team-request` ouvre une MR
+et y commente son plan ; `team-apply` refuse `DEPOT_ABSENT` sur un dépôt non
+créé, 404 exact derrière, **rien** de créé ; le même `team-apply` pousse le
+squelette dans un projet pré-créé **VIDE** ; `api-request` ouvre une MR sur le
+dépôt d'**équipe** et y commente ; le **discriminant** de visage
+(`FORGE_KIND=gitea` contre ce GitLab) refuse par nom sur **deux voies** — en
+lecture (« la forge REDIRIGE vers …/users/sign_in ») et en écriture (le chemin
+`/api/v1` cité) — et n'ouvre **aucune** MR ; un sondage `ps -Aww` sur toute la
+fenêtre ne voit **aucun** secret en argv, contrôle positif tenu ; le teardown
+est **symétrique**.
+
+⚠ **LA LIMITE, écrite en clair : c'est la moitié FORGE qui est prouvée en
+direct sur GitLab, pas la moitié GATEWAY.** Les **8 SKIP** sont la publication
+(2), l'export (3) et la promotion (3), et leur cause est une **limite du lab**,
+pas un défaut de la chaîne : le mock webMethods ne re-sérialise pas
+`apiDefinition` (`mocks/webmethods/store.go`, champ `Definition` en `json:"-"`),
+donc la relecture **fail-closed** du tag de posture (P3, ADR-093) lit `tags=[]`
+et refuse `TAG_UNCONFIRMED`. La publication s'arrête **avant** l'activation ;
+sans API active, l'export refuse `EXPORT_REFUSED` (piège `isActive`, ADR-079) et
+la promotion `DIGEST_ABSENT`. Ce qui est **quand même** établi : l'API **est**
+créée sur la gateway (n=1). La moitié gateway reste prouvée **hors ligne** et
+par l'historique du Gitea du lab. Le jour où le mock rend ce champ, les six
+preuves se jouent d'elles-mêmes, sans toucher au fichier.
+
+⚠ **Deuxième limite** : la preuve « **deux hooks + Secret Token + fusion réelle
+par builds Jenkins** sous le visage `gitlab` » n'est **pas** faite. La matrice
+joue les scripts en direct, sur des projets pré-créés avec `--no-hook` : rien
+ici ne dit que les récepteurs GitLab de `team-publish` et `team-promote` se
+déclenchent réellement. C'est le lot voisin (§ « Le récepteur de webhooks »).
+
+⚠ **Sérialisation** : `test-producer-chain-gitlab.sh` et
+`test-app-request-gitlab-live.sh` poussent toutes deux la branche par défaut du
+dépôt plateforme du lab. **Ne jamais les lancer en parallèle** — même règle que
+les suites `-live` du Gitea. La suite se protège elle-même d'un voisin d'un
+autre genre : elle **refuse de jouer** si le dépôt plateforme porte le moindre
+webhook (relu sur la forge, **avant** le semis donc avant toute écriture, et
+**relu après le teardown**) — sans quoi un merge du run réveillerait le job
+`team-apply` du Jenkins du lab en parallèle des scripts, et doublerait les
+verdicts.
+
+### Dettes datées du 2026-09-12
+
+- **`team-publish` relit la forge DEUX fois par build** : la garde
+  `forge-merge-identity.sh` dans le pipeline, plus la réconciliation §2 du
+  script. Geste connu : porter la garde **dans** le script, nourrie de
+  `FPR_MERGED_BY` / `FPR_LOGIN`.
+- **Le refus arrive APRÈS la pause nominative — deuxième instance.** Sur
+  `ci/Jenkinsfile.team-publish`, le `when` passe sur `api/*`, l'`input`
+  nominatif s'ouvre, l'humain saisit son mot de passe d'annuaire, et
+  `REPO_NON_DECLARE` (`scripts/team-publish.sh:285`) ne refuse **qu'ensuite** —
+  même dette que `team-apply`, déjà nommée dans **ADR-098 § Dettes**. Geste
+  connu, à arbitrer (il touche le récepteur ET le corps du job) : un stage
+  `agent any` de réconciliation dépôt → équipe **avant** l'`input`, motif de
+  `provision-apply`.
+- **29 knobs de site sont déclarés dans des `environment{}` que le poseur ne
+  connaît pas** (`setup-jenkins-globals.sh`) : arbitrage à rendre — les déclarer
+  ou les exempter nommément.
+- **`scripts/test-p2-posture-producteur.sh` reste hors `lint-ci`** (sa section G
+  est live) et porte 42 constats `shellcheck` non traités.
+- **`_forge_auth_mode` (`scripts/lib/forge-identity.sh`) garde
+  `${FORGE_KIND:-gitea}`** pour dériver l'en-tête d'authentification : dernier
+  défaut de visage du dépôt, **inatteignable depuis la chaîne routée**
+  (`forge_api_init` refuse `FORGE_KIND_REQUIS` d'abord), mais daté.
+- **`scripts/api-request.sh` initialise la forge AVANT ses `CHAMP_REQUIS`** :
+  un formulaire incomplet paie un aller-retour réseau avant de s'entendre dire
+  quel champ manque.
+- **`setup-team-repos.sh` peut afficher « HEAD annoncée : ? »** juste avant de
+  refuser `BRANCHE_PAR_DEFAUT_INDECIDABLE` — le message précède le refus, il ne
+  le contredit pas, mais il se lit mal.
+- **Le stub de `scripts/test-team-promote-wiring.sh` ne rend pas `html_url`** :
+  hors ligne, le lien du commentaire ✅ sort vide. Défaut de harnais, pas de
+  livrable.
 
 ## Résiduel
 

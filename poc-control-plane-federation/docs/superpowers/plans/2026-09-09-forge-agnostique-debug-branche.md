@@ -78,28 +78,30 @@ un problème de forge mais de **récepteur de webhooks** — d'où un lot à par
 
 ### Task 2 (L5) : `scripts/lib/forge-api.sh` — les verbes de forge, deux visages, une garde
 
+**LIVRÉES par `82f3c5d` (2026-09-09)** — Tasks 2 et 3 : l'autorité de forge (`scripts/lib/forge-api.sh` + `scripts/lib/forge-api.py`) et le routage de la chaîne app-request dessus, prouvés sur un GitLab CE réel.
+
 **Files:**
 - Create: `scripts/lib/forge-api.sh`, `scripts/lib/forge-api.py`
 - Create: `scripts/test-forge-api.sh`
 - Create: `scripts/setup-gitlab-lab.sh`, `scripts/test-forge-api-live.sh`
 
-- [ ] **Contrat** (stdout `CLÉ=VALEUR`, rc 0 ; rc 2 + `REFUS: <TAG> :` sur stderr) :
+- [x] **Contrat** (stdout `CLÉ=VALEUR`, rc 0 ; rc 2 + `REFUS: <TAG> :` sur stderr) :
   `forge whoami` → `LOGIN=` · `forge pr_open <head> <base> <titre> <fichier corps>` → `NUMBER= URL=` · `forge pr_find_open <head>` → `NUMBER= LOGIN=` ou `NUMBER=` vide · `forge pr_get <n>` → `STATE= HEAD_REF= HEAD_SHA= BASE_REF= SAME_REPO= MERGED= MERGE_SHA= MERGED_BY=` · `forge pr_files <n>` → un chemin par ligne · `forge comment_upsert <n> <marqueur> <fichier>` · `forge raw <chemin> <ref>` → contenu sur stdout.
-- [ ] **Normalisation GitLab** (API v4, `PRIVATE-TOKEN` ou `Authorization: Bearer`) : projet = `GIT_REPO` URL-encodé (`ci%2Fstoa-labs`) ; `merge_requests` ; `iid`↔`number` ; `author.username`↔`user.login` ; `opened`↔`open` ; `source_branch`/`target_branch`↔`head.ref`/`base.ref` ; `sha`↔`head.sha` ; `source_project_id==target_project_id`↔`head.repo.full_name==repo` ; `merge_user.username`↔`merged_by.login` ; `/diffs`→`new_path`↔`/files`→`filename` ; `/notes`(PUT)↔`/issues/N/comments`(PATCH) ; `per_page`↔`limit` ; `raw` = `/repository/files/<chemin urlencodé>/raw?ref=`.
-- [ ] **La garde** (une fonction, réutilisée par TOUS les verbes) : pas de suivi des 3xx ; refus si statut hors 2xx (avec corps expurgé), si `Content-Type` non JSON, si corps vide, si forme inattendue. Message auto-diagnostique, format de L1.
-- [ ] **RED** : `test-forge-api.sh` — mock à deux visages (`FORGE_KIND` du mock indépendant de celui du client, c'est le DISCRIMINANT : `FORGE_KIND=gitea` contre un mock gitlab ⇒ refus nommé « 302 vers /users/sign_in »), chaque verbe sur chaque visage, mutation champ par champ (`iid`→`number` dans le mock gitlab ⇒ rouge, etc.).
-- [ ] **GREEN**, puis **LIVE** : `setup-gitlab-lab.sh` (attend `/-/readiness`, crée le groupe `ci`, le projet, un PAT de service via `gitlab-rails runner` — le seul moyen sans UI —, autorise les webhooks locaux) ; `test-forge-api-live.sh` joue les mêmes assertions contre `localhost:13080` (gitlab) ET `localhost:13000` (gitea).
-- [ ] Commit.
+- [x] **Normalisation GitLab** (API v4, `PRIVATE-TOKEN` ou `Authorization: Bearer`) : projet = `GIT_REPO` URL-encodé (`ci%2Fstoa-labs`) ; `merge_requests` ; `iid`↔`number` ; `author.username`↔`user.login` ; `opened`↔`open` ; `source_branch`/`target_branch`↔`head.ref`/`base.ref` ; `sha`↔`head.sha` ; `source_project_id==target_project_id`↔`head.repo.full_name==repo` ; `merge_user.username`↔`merged_by.login` ; `/diffs`→`new_path`↔`/files`→`filename` ; `/notes`(PUT)↔`/issues/N/comments`(PATCH) ; `per_page`↔`limit` ; `raw` = `/repository/files/<chemin urlencodé>/raw?ref=`.
+- [x] **La garde** (une fonction, réutilisée par TOUS les verbes) : pas de suivi des 3xx ; refus si statut hors 2xx (avec corps expurgé), si `Content-Type` non JSON, si corps vide, si forme inattendue. Message auto-diagnostique, format de L1.
+- [x] **RED** : `test-forge-api.sh` — mock à deux visages (`FORGE_KIND` du mock indépendant de celui du client, c'est le DISCRIMINANT : `FORGE_KIND=gitea` contre un mock gitlab ⇒ refus nommé « 302 vers /users/sign_in »), chaque verbe sur chaque visage, mutation champ par champ (`iid`→`number` dans le mock gitlab ⇒ rouge, etc.).
+- [x] **GREEN**, puis **LIVE** : `setup-gitlab-lab.sh` (attend `/-/readiness`, crée le groupe `ci`, le projet, un PAT de service via `gitlab-rails runner` — le seul moyen sans UI —, autorise les webhooks locaux) ; `test-forge-api-live.sh` joue les mêmes assertions contre `localhost:13080` (gitlab) ET `localhost:13000` (gitea).
+- [x] Commit.
 
 ### Task 3 (L5) : router la chaîne app-request sur `forge-api.sh`
 
 **Files:** `provision-request.sh` (PY2 + PY → `forge pr_find_open` / `forge pr_open`), `gitea-pr-confirm.sh` (→ `forge pr_get`, retirer le repli `gitea:3000`), `gitea-pr-comment.sh` (→ `forge comment_upsert`), `provision-apply-reconcile.sh`, `app-rollback-request.sh`, `forge-identity.sh` (`forge_login` → `forge whoami`).
 
-- [ ] Un script à la fois, la suite de ce script verte après chaque routage (a7, a2, a4, a6, pr-comment).
-- [ ] Les deux paires webhook (`provision-plan`, `provision-apply`) : JSONPath par `FORGE_KIND` ; filtre GitLab `^(open|reopen|update)$` / `^merge$`.
-- [ ] Porte de lint : `"token "` et `/api/v1` INTERDITS hors des deux libs.
-- [ ] **Preuve de bout en bout sur le GitLab du lab** : une demande app-request ouvre une MR, le plan la commente, l'apply la relit. C'est LE livrable du client.
-- [ ] Commit.
+- [x] Un script à la fois, la suite de ce script verte après chaque routage (a7, a2, a4, a6, pr-comment).
+- [x] Les deux paires webhook (`provision-plan`, `provision-apply`) : JSONPath par `FORGE_KIND` ; filtre GitLab `^(open|reopen|update)$` / `^merge$`.
+- [x] Porte de lint : `"token "` et `/api/v1` INTERDITS hors des deux libs.
+- [x] **Preuve de bout en bout sur le GitLab du lab** : une demande app-request ouvre une MR, le plan la commente, l'apply la relit. C'est LE livrable du client.
+- [x] Commit.
 
 ### Task 4 (L3) : `scripts/lib/git-base.sh` — la branche par défaut, une autorité
 
@@ -180,3 +182,40 @@ Fichiers : `ci/Jenkinsfile.provision-plan`, `ci/Jenkinsfile.provision-apply`,
 `scripts/spike-webhook-kind-{m1,m5,m2m4,m6m9}.sh`.
 
 Ordre : après L5 et L3 (livrés), indépendant de L2 et L4.
+
+---
+
+### Task 8 (L5 phase 2) : la chaîne PRODUCTEUR sur l'autorité de forge, et « la chaîne ne crée rien »
+
+**LIVRÉE le 2026-09-12.** Spec, plan et ADR ont leur propre dossier :
+- spec : `docs/superpowers/specs/2026-09-12-l5-phase-2-chaine-producteur-forge-design.md`
+- plan : `docs/superpowers/plans/2026-09-12-l5-phase-2-chaine-producteur-forge.md`
+- ADR : `adr/adr-099-la-chaine-ne-cree-rien-sur-la-forge.md`
+
+Phase 1 avait routé la chaîne **app-request**. Phase 2 route la chaîne
+**producteur** (`team-request`, `team-apply`, `team-publish`, `team-promote`,
+`api-request`, `api-promote-export`, `api-promote-request`) et tranche la
+question que le routage a fait remonter : **qui crée le dépôt d'équipe, son
+webhook et sa protection ?** Décision utilisateur du 2026-09-12 (« D10
+profond ») : **le client**. La chaîne LIT la forge, ouvre des PR/MR et commente.
+
+- [x] Les sept scripts de la chaîne producteur routés sur `scripts/lib/forge-api.sh` — `d879968` (team-request), `5648df0` (api-request), `870fa11` (promote : `raw` + `pr_open` + rejeu par `pr_find_open`), `b182d60` (team-publish / team-promote : `pr_get`).
+- [x] **D10** — `team-apply` LIT le dépôt (`repo_get`) : `DEPOT_ABSENT`, squelette dans un dépôt vide, « déjà initialisé » sinon ; plus d'org, de hook, de protection, ni de jeton `gitea-org-admin` dans Vault — `c15b909`.
+- [x] L'outil de poste du lab `scripts/setup-team-repos.sh` (deux visages, idempotent) — `0b2f052`, durci en `f7126f9` (corps JSON par `json.dumps`, `REPO_INVALIDE`/`BRANCHE_INVALIDE`) et `acded4c` (plus de branche littérale : `GIT_BASE` optionnel, la forge annonce sa branche). Outils d'exploitant alignés : `beda263` (`PROTECTION_GITEA_SEULEMENT`, read-back du seed par `forge raw`).
+- [x] **`FORGE_KIND` sans défaut** (Task 17, décision du 2026-09-12) : refus `FORGE_KIND_REQUIS` à l'init, premier test avant tout réseau — `11c28bb` ; le visage arrive au script depuis **douze** Jenkinsfile et une porte à portée dérivée `ci/lint-forge-knobs.sh` — `92afbe8` ; les harnais hors ligne posent le knob eux-mêmes — `a7bf22d`, `9a1c167`, `49f60f0`.
+- [x] Le registre des archives à deux échelles : par PROJET sous GitLab (`ARCHIVE_STORE_PROJECT`, refus `ARCHIVE_STORE_PROJECT_REQUIS`), par PROPRIÉTAIRE sous Gitea — `df8418c`.
+- [x] L6 phase 2 sur la chaîne producteur (récepteur à deux visages, XML vidés, identités relues sur la forge) — `9c38a49`, `57fd686`, `c9d02ee` (l'amorçage décidé par le XML du job), doc ADR-098 `2c3a273` + `d7d0b05`.
+- [x] **Preuves hors ligne** : `test-forge-api.sh` **134/134** · `test-archive-store.sh` **29/0** · `test-setup-team-repos.sh` **11/11** · `test-palier-retention.sh` **141/0** · `test-team-apply-wiring.sh` **108/108**. Portes : `lint-forge-literals` **10/10** avec `EN_ROUTAGE` **VIDE** (« la phase 2 est close ») · `lint-branch-literals` **11/11** · `lint-forge-knobs` **5 contrôles** · `lint-config-knobs` verte.
+- [x] **Preuves en direct** : `test-forge-api-live.sh` **43/43** sur les deux forges du lab (`e2fe03a`) ; `scripts/test-producer-chain-gitlab.sh` **18/18 sur deux runs consécutifs, 8 preuves SKIP** (`6af963a`), puis la porte structurelle « aucun hook sur le dépôt plateforme » (`c88353d`, Ruling 25).
+- [x] Doc : `ENVIRONNEMENTS.md` (§ verbes, § chaîne producteur à deux visages) et `adr/adr-099-…`.
+
+**Ce que ce lot NE prouve PAS, et c'est écrit dans l'ADR** : la moitié
+**gateway** (publication → export → promotion) n'est pas jouée en direct sous
+GitLab — le mock webMethods ne re-sérialise pas `apiDefinition`, donc la
+relecture fail-closed du tag de posture refuse `TAG_UNCONFIRMED` et les six
+preuves suivantes tombent en cascade (8 SKIP nommés). Et la preuve « deux hooks
++ Secret Token + fusion réelle par builds Jenkins sous le visage `gitlab` »
+n'est pas faite : la matrice joue les scripts en direct, sur des projets
+pré-créés `--no-hook`.
+
+Ordre : après L5 phase 1, L3, L2, L4 et L6 phase 1 (tous livrés).

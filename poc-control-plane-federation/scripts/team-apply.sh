@@ -216,7 +216,8 @@ if [ -n "$REPO_FULL" ]; then
       && git -C "$SK" -c user.name=ci -c user.email=ci@stoa.lab commit -qm "squelette ADR-076 (team-apply, PR #${PR_NUMBER})"
     # Le push passe par l'enveloppe de l'autorité git (login du visage, secret de
     # forge ordinaire, jamais en argv) — c'est le porteur de FORGE_SECRET qui
-    # initialise le dépôt ; sur GitLab il doit être Developer sur le projet.
+    # initialise le dépôt ; sur GitLab il doit être Maintainer sur le projet
+    # (la protection de branche y est par RÔLE : push/merge access_level 40).
     ggit -C "$SK" push -q "${GIT_HOST}/${REPO_FULL}.git" "$SKEL_BRANCH" 2>"$TMP/pe" \
       || { cat "$TMP/pe" >&2; fail "push du squelette dans ${REPO_FULL} (dépôt vide : le porteur du secret de forge doit pouvoir y écrire)"; }
   fi
