@@ -5,13 +5,18 @@
 # des équipes JETABLES (probe-p2, probe-p2j), rejouable de bout en bout sans
 # jamais toucher aux tenants réels (banking-demo, payments-team) — sauf pour
 # PROUVER, en lecture seule, que le refus TEAM_ALREADY_DECLARED les protège
-# (preuve 2). 10 preuves + une contre-épreuve rouge (Step 2) :
+# (preuve 2). 11 preuves + une contre-épreuve rouge (Step 2) :
 #   1-2   gardes d'entrée de team-request.sh (chemin, newline, déjà déclarée)
 #   3     PR nominale + PLAN OK
 #   4     câblage du job team-apply.job.xml (statique) + garde d'identité
 #         (contre-épreuve directe rouge/vert)
-#   5-6   team-apply.sh EN DIRECT (motif Task 4) : création réelle puis
-#         convergence idempotente
+#   5bis  DEPOT_ABSENT (D10, ADR-099) : équipe JETABLE $TEAM-absent, jamais
+#         créée sur la forge — team-apply.sh EN DIRECT refuse (rc 2), rien de
+#         poussé, le dépôt reste 404. Jouée AVANT la pré-création de $TEAM/apis
+#         (setup-team-repos.sh) : elle prouve que la chaîne ne crée plus rien.
+#   5-6   team-apply.sh EN DIRECT sur $TEAM/apis, PRÉ-CRÉÉ VIDE par
+#         setup-team-repos.sh (motif Task 4 adapté à D10) : squelette poussé
+#         (vide→squelette) puis convergence idempotente (déjà initialisé)
 #   7     job app-request (REQ_MODE additif)
 #   8     sondage ps — aucun token en argv, AVEC contrôle positif (le trafic
 #         git ciblé a bien été vu, pas juste "ps a tourné")
@@ -450,6 +455,72 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 5bis. DEPOT_ABSENT (D10, ADR-099) — équipe JETABLE $TEAM-absent, JAMAIS créée
+# sur la forge : team-apply.sh EN DIRECT doit refuser, jamais pousser un
+# squelette dans le vide. Jouée AVANT la pré-création de $TEAM/apis (bloc
+# suivant) : elle prouve que la chaîne, désormais, ne crée plus rien elle-même.
+# ─────────────────────────────────────────────────────────────────────────────
+echo
+TEAM_ABSENT="${TEAM}-absent"
+echo "== 5bis. DEPOT_ABSENT — team-apply.sh EN DIRECT sur $TEAM_ABSENT/apis (jamais créé) =="
+TEAM="$TEAM_ABSENT" DESCRIPTION="equipe jetable ABSENTE de la forge (preuve 5bis, DEPOT_ABSENT)" REQ_ENV=dev \
+  GITEA_TOKEN="$GITEA_TOKEN" GIT_HOST="$GITEA_URL" GIT_WEB_HOST="$GITEA_URL" GIT_REPO="$GIT_REPO" \
+  bash scripts/team-request.sh >"$TMP/p5bis-req.log" 2>&1
+R5BIS_REQ=$?
+PR_ABSENT_NUM=$(grep -oE 'PR #[0-9]+ ouverte' "$TMP/p5bis-req.log" | grep -oE '[0-9]+' | head -1)
+
+MERGEABLE_ABS=false; DEADLINE_MA=$(( $(date +%s) + 15 ))
+while [ "$(date +%s)" -lt "$DEADLINE_MA" ]; do
+  MERGEABLE_ABS=$(gapi "$GITEA_URL/api/v1/repos/$GIT_REPO/pulls/${PR_ABSENT_NUM:-0}" \
+    | python3 -c "import json,sys; print(json.load(sys.stdin).get('mergeable') or False)" 2>/dev/null)
+  [ "$MERGEABLE_ABS" = True ] && break
+  sleep 0.5
+done
+MERGE_HC_ABS=$(gapi -X POST -H 'Content-Type: application/json' -d '{"Do":"merge"}' \
+  -o "$TMP/mergebody-abs" -w '%{http_code}' "$GITEA_URL/api/v1/repos/$GIT_REPO/pulls/${PR_ABSENT_NUM:-0}/merge")
+MERGE_SHA_ABS=$(gapi "$GITEA_URL/api/v1/repos/$GIT_REPO/pulls/${PR_ABSENT_NUM:-0}" \
+  | python3 -c "import json,sys; print(json.load(sys.stdin).get('merge_commit_sha') or '')" 2>/dev/null)
+git fetch -q "$GITEA_URL/$GIT_REPO.git" main \
+  || echo "  ATTENTION : pré-fetch du SHA de merge (preuve 5bis) en échec" >&2
+
+REPO_ABSENT_BEFORE=$(gapi -o /dev/null -w '%{http_code}' "$GITEA_URL/api/v1/repos/$TEAM_ABSENT/apis")
+PR_BRANCH="onboard/${TEAM_ABSENT}-dev" PR_NUMBER="${PR_ABSENT_NUM:-0}" MERGE_SHA="$MERGE_SHA_ABS" \
+  GITEA_TOKEN="$GITEA_TOKEN" VAULT_ADDR="$VAULT_ADDR" VAULT_TOKEN_FILE="$VAULT_TOKEN_FILE_ONBOARDER" \
+  APIM_API_BASE="${WM_GATEWAY_URL}/rest/apigateway" GIT_HOST="$GITEA_URL" GIT_REPO="$GIT_REPO" GIT_WEB_HOST="$GITEA_URL" \
+  bash scripts/team-apply.sh >"$TMP/p5bis-apply.log" 2>&1
+R5BIS=$?
+REPO_ABSENT_AFTER=$(gapi -o /dev/null -w '%{http_code}' "$GITEA_URL/api/v1/repos/$TEAM_ABSENT/apis")
+CBODY5BIS=$(gapi "$GITEA_URL/api/v1/repos/$GIT_REPO/issues/${PR_ABSENT_NUM:-0}/comments" \
+  | python3 -c "import json,sys; c=json.load(sys.stdin); print(c[-1]['body'] if c else '')" 2>/dev/null)
+
+if [ "$R5BIS_REQ" -eq 0 ] && [ -n "${PR_ABSENT_NUM:-}" ] && [ "$MERGE_HC_ABS" = 200 ] \
+   && [ "$R5BIS" -eq 2 ] && grep -q DEPOT_ABSENT "$TMP/p5bis-apply.log" \
+   && printf '%s' "$CBODY5BIS" | grep -q DEPOT_ABSENT \
+   && [ "$REPO_ABSENT_BEFORE" = 404 ] && [ "$REPO_ABSENT_AFTER" = 404 ]; then
+  ok "5bis. DEPOT_ABSENT : team-apply.sh EN DIRECT refuse rc=2 (jamais créé, jamais poussé), $TEAM_ABSENT/apis 404 inchangé, commentaire ❌ DEPOT_ABSENT sur la PR #$PR_ABSENT_NUM"
+else
+  bad "5bis. req_rc=$R5BIS_REQ pr=${PR_ABSENT_NUM:-absente} merge_hc=$MERGE_HC_ABS apply_rc=$R5BIS repo:${REPO_ABSENT_BEFORE:-?}->${REPO_ABSENT_AFTER:-?} commentaire=$(printf '%s' "$CBODY5BIS" | head -c150) — voir $TMP/p5bis-*.log"
+fi
+
+# teardown ciblé de la preuve 5bis (PR + branche onboard) — la restauration de
+# providers.dev.yml est déléguée à restore_main_providers() (preuve 9 / trap),
+# qui revient au baseline COMPLET, $TEAM_ABSENT compris ; $TEAM_ABSENT/apis n'a
+# jamais existé, rien à supprimer côté forge de ce côté-là.
+[ -n "${PR_ABSENT_NUM:-}" ] && gapi -X PATCH -H 'Content-Type: application/json' -d '{"state":"closed"}' \
+  "$GITEA_URL/api/v1/repos/$GIT_REPO/pulls/$PR_ABSENT_NUM" -o /dev/null
+gapi -X DELETE "$GITEA_URL/api/v1/repos/$GIT_REPO/branches/onboard/${TEAM_ABSENT}-dev" -o /dev/null
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PRÉ-REQUIS DE LA PREUVE 5 (D10, ADR-099) : le CLIENT crée le dépôt d'équipe
+# VIDE, son webhook et sa protection — team-apply.sh ne le crée plus (5bis
+# ci-dessus le montre à vide). setup-team-repos.sh est l'outil de POSTE qui
+# joue ce rôle ici ; --no-protect (la branche n'existe pas encore : la
+# protection réelle se pose après le squelette, hors périmètre de cette suite).
+# ─────────────────────────────────────────────────────────────────────────────
+FORGE_KIND=gitea GIT_HOST="$GITEA_URL" FORGE_SECRET="$GITEA_TOKEN" GIT_BASE=main \
+  bash scripts/setup-team-repos.sh "$TEAM/apis" --no-protect >"$TMP/pre5.log" 2>&1 || bad "pré-création $TEAM/apis"
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 5. merge réel de la PR + team-apply.sh EN DIRECT (env webhook simulé)
 # ─────────────────────────────────────────────────────────────────────────────
 echo
@@ -507,16 +578,17 @@ REPO_AFTER=$(gapi -o /dev/null -w '%{http_code}' "$GITEA_URL/api/v1/repos/$TEAM/
 CBODY5=$(gapi "$GITEA_URL/api/v1/repos/$GIT_REPO/issues/${PR_ONBOARD_NUM:-0}/comments" \
   | python3 -c "import json,sys; c=json.load(sys.stdin); print(c[-1]['body'] if c else '')" 2>/dev/null)
 
+REPO_EMPTY_AFTER5=$(gapi "$GITEA_URL/api/v1/repos/$TEAM/apis" | python3 -c 'import json,sys;print(json.load(sys.stdin)["empty"])' 2>/dev/null)
 if [ "$MERGE_HC" = 200 ] && [ "$R5" -eq 0 ] \
-   && [ "$REPO_BEFORE" != 200 ] && [ "$REPO_AFTER" = 200 ] \
+   && [ "$REPO_BEFORE" = 200 ] && [ "$REPO_EMPTY_AFTER5" = False ] \
    && [ -z "$UID_BEFORE" ] && [ -n "$UID_AFTER" ] \
    && [ -z "$GID_BEFORE" ] && [ -n "$GID_AFTER" ] \
    && [ -z "$PID_BEFORE" ] && [ -n "$PID_AFTER" ] \
    && [ "$KV_BEFORE" != 200 ] && [ "$KV_AFTER" = 200 ] \
    && printf '%s' "$CBODY5" | grep -q '✅' && printf '%s' "$CBODY5" | grep -q ONBOARD_OK; then
-  ok "5. merge HTTP $MERGE_HC (sha ${MERGE_SHA:0:8}), team-apply.sh direct : dépôt $TEAM/apis 404→200, objets gateway créés, KV 404→200, commentaire ✅ ONBOARD_OK"
+  ok "5. merge HTTP $MERGE_HC (sha ${MERGE_SHA:0:8}), team-apply.sh direct : dépôt $TEAM/apis vide→squelette, objets gateway créés, KV 404→200, commentaire ✅ ONBOARD_OK"
 else
-  bad "5. merge_hc=$MERGE_HC rc5=$R5 repo:${REPO_BEFORE}->${REPO_AFTER} uid:${UID_BEFORE:-vide}->${UID_AFTER:-vide} gid:${GID_BEFORE:-vide}->${GID_AFTER:-vide} pid:${PID_BEFORE:-vide}->${PID_AFTER:-vide} kv:${KV_BEFORE}->${KV_AFTER} — voir $TMP/p5.log"
+  bad "5. merge_hc=$MERGE_HC rc5=$R5 repo_before=$REPO_BEFORE(attendu 200, pré-créé) repo_after=$REPO_AFTER(attendu 200) repo_empty_after=${REPO_EMPTY_AFTER5:-?}(attendu False) uid:${UID_BEFORE:-vide}->${UID_AFTER:-vide} gid:${GID_BEFORE:-vide}->${GID_AFTER:-vide} pid:${PID_BEFORE:-vide}->${PID_AFTER:-vide} kv:${KV_BEFORE}->${KV_AFTER} — voir $TMP/p5.log"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -537,11 +609,12 @@ R6=$?
 kill "$SAMPLER_PID" 2>/dev/null; wait "$SAMPLER_PID" 2>/dev/null; unset SAMPLER_PID
 
 CH6=$(grep -o 'changed=[0-9]*' "$TMP/run6.anslog" 2>/dev/null | tail -1 | cut -d= -f2)
-if [ "$R6" -eq 0 ] && grep -q 'déjà existant' "$TMP/p6.log" && [ "${CH6:-1}" = 0 ] \
-   && [ "$REPO_BEFORE" != 200 ] && [ "$REPO_AFTER" = 200 ]; then
-  ok "6. re-run : \"déjà existant, étape sautée\" ; rôle changed=$CH6 — ET le run 5 avait réellement créé (dépôt 404→200 mesuré ci-dessus)"
+REPO_EMPTY_AFTER6=$(gapi "$GITEA_URL/api/v1/repos/$TEAM/apis" | python3 -c 'import json,sys;print(json.load(sys.stdin)["empty"])' 2>/dev/null)
+if [ "$R6" -eq 0 ] && grep -q 'déjà initialisé' "$TMP/p6.log" && [ "${CH6:-1}" = 0 ] \
+   && [ "$REPO_BEFORE" = 200 ] && [ "$REPO_EMPTY_AFTER6" = False ]; then
+  ok "6. re-run : \"déjà initialisé, étape sautée\" ; rôle changed=$CH6 — ET le run 5 avait réellement peuplé (dépôt vide→squelette mesuré ci-dessus, toujours non vide après re-run)"
 else
-  bad "6. rc=$R6 changed=${CH6:-?} (attendu 0) repo_before=$REPO_BEFORE(attendu≠200) repo_after=$REPO_AFTER(attendu 200) — voir $TMP/p6.log et $TMP/run6.anslog"
+  bad "6. rc=$R6 changed=${CH6:-?} (attendu 0) repo_before=$REPO_BEFORE(attendu 200, pré-créé) repo_empty_after6=${REPO_EMPTY_AFTER6:-?}(attendu False) — voir $TMP/p6.log et $TMP/run6.anslog"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────

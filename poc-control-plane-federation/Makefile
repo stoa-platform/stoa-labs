@@ -135,6 +135,7 @@ lint-ci:
 	  scripts/test-producer-chain.sh \
 	  scripts/team-publish.sh \
 	  scripts/test-setup-provision-jobs.sh scripts/test-generate-choices.sh \
+	  scripts/setup-team-repos.sh scripts/test-setup-team-repos.sh \
 	  scripts/test-app-request-v2.sh scripts/test-app-request-v3.sh \
 	  && echo "  ✓ ci/lib + livrables shell G2..G8 + A1 + A2 + A0 + A3 + A4 + A5 + A6 + A7 + P2 + P5 + P6 + P7 + L3 propres"
 	@# … et la MÊME étape doit passer sur un CLONE FRAIS. Le shellcheck
@@ -197,6 +198,10 @@ lint-ci:
 	@# Le poseur des treize jobs : placeholder substitue, refus nomme, knob qui
 	@# gagne sur la HEAD. Hors ligne (faux Jenkins + depot nu local), 7 s.
 	@bash scripts/test-setup-provision-jobs.sh
+	@# D10 : l'outil de poste qui pré-crée ce que la chaîne ne crée plus (dépôt
+	@# d'équipe VIDE, hook(s) team-publish/team-promote, protection de branche) —
+	@# deux visages Gitea/GitLab, --print sans réseau. Hors ligne, < 1 s.
+	@bash scripts/test-setup-team-repos.sh
 	@# Le generateur de listes : c'est lui qui clone la plateforme et les depots
 	@# d'equipe, donc lui qui joue git_base_init ET git_base_of. Hors ligne, 33 s.
 	@bash scripts/test-generate-choices.sh

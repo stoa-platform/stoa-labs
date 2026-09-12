@@ -689,13 +689,15 @@ GOLD=$(grep -c 'manifeste identique au golden' "$TMP/p0-machine.log")
 # Les deux sous-harnais finissent par `[ "$FAIL" -eq 0 ]` : leur code de retour
 # capte les ÉCHECS, jamais le PÉRIMÈTRE. Une future édition qui SUPPRIMERAIT
 # une preuve de la matrice du palier 2 (sans jamais appeler bad()) laisserait
-# cette preuve-ci VERTE en affichant « 10 PASS » au lieu de 11 — or le brief
+# cette preuve-ci VERTE en affichant « 11 PASS » au lieu de 12 — or le brief
 # exige la matrice EN ENTIER, pas un sous-ensemble. Les totaux sont donc écrits
 # EN DUR ici : s'ils évoluent légitimement (preuve ajoutée), ce rouge force à
 # le CONSTATER et à mettre à jour la constante, plutôt qu'à laisser un
 # rétrécissement passer inaperçu. Même intention que le compteur en dur de
 # test-team-publish-wiring.sh.
-P2_TOTAL_ATTENDU="11 PASS / 0 FAIL"
+# 12 (2026-09-12, Task 11, D10) : preuve 5bis (DEPOT_ABSENT) ajoutée à la
+# matrice du palier 2 — 11 -> 12 PASS, une preuve de plus, jamais une de moins.
+P2_TOTAL_ATTENDU="12 PASS / 0 FAIL"
 MACHINE_TOTAL_ATTENDU="18 OK / 0 KO"
 if [ "$R0A" -eq 0 ] && [ "$R0B" -eq 0 ] && [ "${GOLD:-0}" -eq 2 ] \
    && [ "$V0A" = "$P2_TOTAL_ATTENDU" ] && [ "$V0B" = "$MACHINE_TOTAL_ATTENDU" ]; then
@@ -723,6 +725,19 @@ SRC="$TMP/src/poc-control-plane-federation"
     bash scripts/team-request.sh ) >"$TMP/onb-req.log" 2>&1
 RONB=$?
 PR_ONB=$(grep -oE 'PR #[0-9]+ ouverte' "$TMP/onb-req.log" | grep -oE '[0-9]+' | head -1)
+
+# PRÉ-CRÉATION DU DÉPÔT D'ÉQUIPE (D10, ADR-099) : le CLIENT crée le dépôt VIDE,
+# son webhook team-publish et sa protection — team-apply.sh (plus bas) ne les
+# crée plus (repo_get, REFUS DEPOT_ABSENT sinon). setup-team-repos.sh est
+# l'outil de POSTE qui joue ce rôle ici, AVANT le merge de la PR d'onboarding.
+# --no-protect : la branche n'existe pas encore sur un dépôt vide, la
+# protection réelle attend le squelette (même écart que
+# test-team-onboarding-chain.sh) ; GIT_BASE=$PLAT_BASE (jamais un littéral
+# `main`) — la HEAD DÉCOUVERTE de la plateforme scratch, cf. SEED_BASE ci-dessus.
+FORGE_KIND=gitea GIT_HOST="$GITEA_URL" FORGE_SECRET="$GITEA_TOKEN" GIT_BASE="$PLAT_BASE" \
+  bash scripts/setup-team-repos.sh "$TEAM_REPO" --no-protect >"$TMP/pre-onb.log" 2>&1 \
+  || die "pré-création $TEAM_REPO (chaîne producteur) — voir $TMP/pre-onb.log"
+
 # ÉCART DÉCLARÉ, repris du palier 2 (sa preuve 5) : CE merge-ci est fait par
 # `ci` lui-même. L'identité qui merge n'est pas ce que ce pré-requis prouve —
 # les preuves 5 et 6, elles, mergent RÉELLEMENT par oscar, et c'est là que la
