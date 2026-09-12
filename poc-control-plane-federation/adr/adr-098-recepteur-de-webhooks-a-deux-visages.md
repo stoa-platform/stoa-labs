@@ -209,6 +209,25 @@ prouve.
   GitLab sur la chaîne producteur (`team-apply` en est sorti le 2026-09-12) ; le
   `secretToken` par credential ; `FORGE_CRED_KIND` classé optionnel mais refusé
   si vide par onze pipelines.
+- **Le `secretToken` est posé par le JOB, pas par le hook** — arbitré le
+  2026-09-12 avec la session qui écrit les hooks. C'est le `properties()` du
+  Jenkinsfile qui le fixe ; le hook doit envoyer une valeur ÉGALE à celle de CE
+  job. Forme retenue pour la chaîne producteur : deux valeurs **distinctes** par
+  défaut (`stoa-team-publish`, `stoa-team-promote`), chacune surchargeable par
+  une globale Jenkins, promote retombant sur publish puis sur son littéral — un
+  site qui pose UN seul secret sur ses deux hooks fonctionne donc sans knob
+  supplémentaire. Ce n'est pas encore un secret : littéral en Git, ou globale
+  lisible dans l'UI. Le token **authentifie l'appelant et ne dit rien du
+  payload** (M9 : bon token + corps forgé ⇒ 500 sans build) — l'autorité
+  d'intégrité reste la confrontation du dépôt réclamé à `providers.<env>.yml`.
+- **Sous `gwt`, `team-publish` et `team-promote` partagent UN token**
+  (`stoa-team-publish`) et portent des filtres IDENTIQUES : un seul appel
+  réveille les DEUX jobs sur toute PR fusionnée d'un dépôt d'équipe, et le tri
+  se fait plus tard, dans le `when` de chacun (`api/*` / `promote/*`). Sous le
+  plugin, l'option A (deux webhooks par dépôt) est donc plus SERRÉE que le gwt,
+  pas équivalente : `sourceBranchRegex` trie dans le récepteur, et
+  `team-promote` ne construit plus jamais sur un merge `api/*`. À ne pas lire
+  comme une divergence entre les deux visages.
 - **Dettes nommées le 2026-09-12, en fermant les deux défauts ci-dessus** :
   1. *Le refus arrive après la pause.* `FORGE_IDENTITES_ILLISIBLES` et
      `PAYLOAD_PERIME` tombent **après** que l'humain a été réveillé et a saisi
