@@ -140,6 +140,18 @@
 #                           déplace (ex. https://forge.client/gitlab/api/v4).
 #                           ABSENTE, la lib compose GIT_HOST + /api/v1 ou /api/v4.
 #
+# LE REGISTRE DES ARCHIVES (ARCHIVE_STORE_PROJECT) — Task 13, ADR-099 D10
+# scripts/lib/archive-store.sh transporte les octets des archives de promotion
+# vers le registre GÉNÉRIQUE de la forge. Ce registre n'a pas la même échelle
+# selon le visage :
+#
+#   ARCHIVE_STORE_PROJECT   GitLab seulement : le registre générique est PAR
+#                           PROJET (`<groupe>/<projet>`, au lab `ci/archives`) ;
+#                           Gitea l'ignore (registre par PROPRIÉTAIRE,
+#                           `ARCHIVE_STORE_OWNER`, défaut `ci`) ; sous gitlab,
+#                           absent ⇒ refus `ARCHIVE_STORE_PROJECT_REQUIS` avant
+#                           tout réseau.
+#
 # LA BRANCHE PAR DÉFAUT (GIT_BASE), et pourquoi elle est OPTIONNELLE
 # Un client dont la branche par défaut est `master` a perdu deux jours sur des
 # refus qui nommaient une branche inexistante chez lui : la chaîne écrivait
@@ -203,6 +215,19 @@
 #                           n'est atteint que par le `build job:` de
 #                           provision-apply.
 #
+#   TEAM_PUBLISH_WEBHOOK_SECRET
+#   TEAM_PROMOTE_WEBHOOK_SECRET
+#                           la valeur que le job ATTEND sur son *Secret token*
+#                           (visage gitlab) — le hook posé par
+#                           scripts/setup-team-repos.sh doit envoyer la même.
+#                           Absente = état NORMAL : le job retombe sur son
+#                           littéral (`stoa-team-publish` / `stoa-team-promote`),
+#                           et promote retombe d'abord sur le knob publish — un
+#                           site qui pose UN secret sur ses deux hooks n'a qu'un
+#                           knob à poser. Ce n'est pas encore un secret
+#                           (littéral en Git, globale lisible dans l'UI) : dette
+#                           ADR-098. Ne JAMAIS poser la chaîne vide.
+#
 # LE MODE DEBUG SANS FUITE (STOA_DEBUG) — L4, 2026-09-11
 #
 #   STOA_DEBUG              absente (défaut) | 1 | true — le PLANCHER du mode
@@ -262,7 +287,8 @@ die(){ printf '\nREFUS: %s\n' "$*" >&2; exit 2; }
 # n'a encore rien posé ira le lire.
 CONNUES="
 GIT_HOST GIT_WEB_HOST GIT_REPO GIT_BASE GIT_SUBDIR GITEA_CREDENTIALS_ID GITEA_SERVICE_LOGINS
-FORGE_KIND FORGE_CRED_KIND FORGE_API_AUTH FORGE_API_BASE FORGE_USER WEBHOOK_KIND STOA_DEBUG
+FORGE_KIND FORGE_CRED_KIND FORGE_API_AUTH FORGE_API_BASE FORGE_USER ARCHIVE_STORE_PROJECT
+WEBHOOK_KIND TEAM_PUBLISH_WEBHOOK_SECRET TEAM_PROMOTE_WEBHOOK_SECRET STOA_DEBUG
 VAULT_ADDR JENKINS_UI ITSM_URL
 APIM_API_BASE APIM_DATA_BASE APIM_PROXY_HOST APIM_PROXY_API APIM_PROXY_VER APIM_PROXY_PATH APIM_TERMINUS_BASE
 APIM_PREFLIGHT APIM_PREFLIGHT_URL APIM_PREFLIGHT_CODES APIM_PREFLIGHT_TRIES
@@ -293,10 +319,20 @@ GOVERNANCE_REPO GOVERNANCE_PATH
 # poser un littéral, c'est-à-dire exactement le défaut qu'on vient de retirer.
 # Le récepteur de webhooks en fait partie depuis L6 : absent, la chaîne pose le
 # generic-webhook-trigger (gwt), c'est-à-dire exactement ce qu'elle faisait
-# avant ce knob. Le mode debug en fait partie depuis L4 : absent, la chaîne se
-# tait — et un rapport qui annoncerait « STOA_DEBUG manquante » inviterait à
-# poser un plancher de debug permanent, c'est-à-dire l'inverse d'un opt-in.
-OPTIONNELLES="APIM_PREFLIGHT APIM_PREFLIGHT_URL APIM_PREFLIGHT_CODES APIM_PREFLIGHT_TRIES FORGE_CRED_KIND FORGE_API_AUTH FORGE_API_BASE GIT_BASE WEBHOOK_KIND STOA_DEBUG"
+# avant ce knob. Le registre des archives (ARCHIVE_STORE_PROJECT, Task 13) en
+# fait partie : absent sous Gitea, il est simplement IGNORÉ (registre par
+# propriétaire) ; absent sous GitLab, la chaîne REFUSE nommément
+# (ARCHIVE_STORE_PROJECT_REQUIS) — ce n'est donc jamais un défaut silencieux,
+# seulement une annonce « manquante » qui serait fausse sous Gitea. Les deux
+# secrets de webhook d'équipe (TEAM_PUBLISH_WEBHOOK_SECRET,
+# TEAM_PROMOTE_WEBHOOK_SECRET) en font partie depuis L6 : absents, chaque job
+# retombe sur son littéral (dette ADR-098, voir le bloc de doc plus haut) —
+# annoncer leur absence inviterait à poser un secret que le site n'a pas
+# forcément besoin de distinguer du littéral par défaut. Le mode debug en fait
+# partie depuis L4 : absent, la chaîne se tait — et un rapport qui annoncerait
+# « STOA_DEBUG manquante » inviterait à poser un plancher de debug permanent,
+# c'est-à-dire l'inverse d'un opt-in.
+OPTIONNELLES="APIM_PREFLIGHT APIM_PREFLIGHT_URL APIM_PREFLIGHT_CODES APIM_PREFLIGHT_TRIES FORGE_CRED_KIND FORGE_API_AUTH FORGE_API_BASE GIT_BASE WEBHOOK_KIND ARCHIVE_STORE_PROJECT TEAM_PUBLISH_WEBHOOK_SECRET TEAM_PROMOTE_WEBHOOK_SECRET STOA_DEBUG"
 
 # ── le canal : console de script Jenkins, jeton par fichier ──────────────────
 CFG="$TMP/curl.cfg"
@@ -402,6 +438,14 @@ for p in "${PAIRES[@]}"; do
     *PASSWORD*|*SECRET*|*TOKEN*|*_KEY|*CREDENTIALS)
       case "$k" in
         *CREDENTIALS_ID) : ;;   # un IDENTIFIANT de credential n'est pas un secret
+        # Les DEUX secrets de webhook d'équipe, NOMMÉS un par un — jamais un
+        # motif `*_WEBHOOK_SECRET`, qui exempterait d'avance tout knob futur
+        # portant ce suffixe, y compris un vrai secret partagé. Ce que ces deux
+        # knobs portent est la valeur ATTENDUE sur le *Secret token* d'un hook,
+        # pas un secret d'accès à la forge : c'est aujourd'hui un littéral en
+        # Git dans le Jenkinsfile (dette ADR-098, doc plus haut), et une globale
+        # lisible dans l'UI ne l'affaiblit pas davantage.
+        TEAM_PUBLISH_WEBHOOK_SECRET|TEAM_PROMOTE_WEBHOOK_SECRET) : ;;
         *) ko "$k : refusé — une variable globale est lisible par tout job ; identifiants dans les credentials Jenkins ou dans le coffre"; continue ;;
       esac ;;
   esac

@@ -14,7 +14,11 @@
 #      rien dire ;
 #   4. un groupe `ci` et un projet `stoa-labs` — le MÊME chemin que sur le Gitea
 #      du lab (GIT_REPO=ci/stoa-labs), pour que les suites se rejouent à
-#      l'identique en changeant seulement FORGE_KIND et GIT_HOST.
+#      l'identique en changeant seulement FORGE_KIND et GIT_HOST ;
+#   5. un projet `ci/archives` — sous GitLab le registre de paquets GÉNÉRIQUES
+#      n'existe qu'à l'échelle d'un projet (Gitea : par propriétaire), donc
+#      archive-store.sh exige ARCHIVE_STORE_PROJECT et il lui faut un projet
+#      conteneur ; sans lui, le PUT de l'archive rendrait un 404 sans rien dire.
 #
 # Le PAT est écrit dans un fichier 0600 (jamais sur stdout, jamais en argv) :
 #   .env.gitlab-lab   → GITLAB_LAB_TOKEN=<pat>   (hors Git, voir .gitignore .env.*)
@@ -151,5 +155,32 @@ case "$hc" in
   *)   fail "protected_branches/main HTTP $hc : $(head -c 200 "$TMP/prot.json")" ;;
 esac
 
+
+# ── 5. projet ci/archives — le second registre GÉNÉRIQUE (Task 13, ADR-099 D10)
+# Sous GitLab le registre de paquets génériques n'existe qu'à l'échelle d'un
+# PROJET (contrairement à Gitea, par PROPRIÉTAIRE) : archive-store.sh y pousse
+# les archives de promotion sous ARCHIVE_STORE_PROJECT=ci/archives. Pas de
+# contenu Git à y pousser (initialize_with_readme=false) : ce projet n'existe
+# que comme CONTENEUR du registre de paquets.
+GL_ARCHIVES_PROJECT="${GITLAB_LAB_ARCHIVES_PROJECT:-archives}"
+enc_a="$(python3 -c 'import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=""))' "$GL_GROUP/$GL_ARCHIVES_PROJECT")"
+hc=$(gl -o "$TMP/archives.json" -w '%{http_code}' "$GL_URL/api/v4/projects/$enc_a")
+if [ "$hc" != 200 ]; then
+  # Corps JSON par json.dumps, jamais interpolé en bash (convention du dépôt,
+  # revue Task 11) : un nom de projet portant un guillemet ne casserait pas le
+  # corps de la requête.
+  body="$(python3 -c 'import json,sys
+print(json.dumps({
+    "name": sys.argv[1], "path": sys.argv[1], "namespace_id": int(sys.argv[2]),
+    "visibility": "private", "initialize_with_readme": False,
+}))' "$GL_ARCHIVES_PROJECT" "$gid")"
+  hc=$(gl -o "$TMP/archives.json" -w '%{http_code}' -X POST "$GL_URL/api/v4/projects" -d "$body")
+  [ "$hc" = 201 ] || fail "création du projet $GL_GROUP/$GL_ARCHIVES_PROJECT HTTP $hc : $(head -c 200 "$TMP/archives.json")"
+  say "projet $GL_GROUP/$GL_ARCHIVES_PROJECT : créé"
+else
+  say "projet $GL_GROUP/$GL_ARCHIVES_PROJECT : existe"
+fi
+
 say "Terminé. GIT_HOST=$GL_URL GIT_REPO=$GL_GROUP/$GL_PROJECT (id $pid) FORGE_KIND=gitlab FORGE_API_AUTH=private-token"
+say "Registre des archives : ARCHIVE_STORE_PROJECT=$GL_GROUP/$GL_ARCHIVES_PROJECT"
 say "Vu du réseau compose : GIT_HOST=http://gitlab:80"

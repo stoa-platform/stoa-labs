@@ -42,7 +42,16 @@ STORE = {}
 
 class H(BaseHTTPRequestHandler):
     def _log(self, method):
-        auth = "1" if self.headers.get("Authorization") else "0"
+        # visage gitea : "Authorization" (1/0, forme conservée pour ne pas
+        # rompre les cas ①-⑪ qui grep "PUT <chemin> 1") ; visage gitlab :
+        # l'en-tête est PRIVATE-TOKEN, un nom DIFFERENT — sans ce troisieme
+        # cas le journal dirait "0" pour une requete pourtant authentifiee.
+        if self.headers.get("PRIVATE-TOKEN"):
+            auth = "PRIVATE-TOKEN"
+        elif self.headers.get("Authorization"):
+            auth = "1"
+        else:
+            auth = "0"
         with open(LOG, "a") as f:
             f.write("%s %s %s\n" % (method, self.path, auth))
 
@@ -107,6 +116,10 @@ echo "== stub HTTP : $GIT_HOST (pid $STUB_PID)"
 # path-only de l'URL canonique (miroir de _as_url, sans le host — pour grepper
 # le journal et pour pré-semer directement par curl, hors de la lib).
 url_path() { printf '/api/packages/%s/generic/promote--%s--%s/%s/archive.zip' "$OWNER" "$1" "$2" "$3"; }
+# miroir de _as_url sous le visage gitlab (registre PAR PROJET) : le chemin
+# encodé de ARCHIVE_STORE_PROJECT=ci/archives, en dur — la seule valeur que
+# les cas ⑫/⑫bis/⑬ posent.
+url_path_gl() { printf '/api/v4/projects/ci%%2Farchives/packages/generic/promote--%s--%s/%s/archive.zip' "$1" "$2" "$3"; }
 loglines() { wc -l < "$STUB_LOG" | tr -d ' '; }
 putcount() { grep -c -F "PUT $1 " "$STUB_LOG" 2>/dev/null || true; }
 
@@ -131,7 +144,7 @@ run() { # <outfile> <commande...> — capture stdout+stderr en FICHIER (jamais
 echo
 echo "== ⑧ team invalide (Team/../x) : refus AVANT tout réseau =="
 L0="$(loglines)"
-RC="$(run "$TMP/c8.out" env GITEA_TOKEN=x GIT_HOST="$GIT_HOST" bash -c \
+RC="$(run "$TMP/c8.out" env GITEA_TOKEN=x FORGE_KIND=gitea GIT_HOST="$GIT_HOST" bash -c \
   '. "$1"; archive_store_push "$2" "Team/../x" "probe"' _ "$LIB" "$PAYLOAD")"
 [ "$RC" -ne 0 ] && grep -q 'STORE_PARAM_INVALIDE' "$TMP/c8.out" \
   && ok "⑧ team invalide refusé (STORE_PARAM_INVALIDE)" \
@@ -143,7 +156,7 @@ RC="$(run "$TMP/c8.out" env GITEA_TOKEN=x GIT_HOST="$GIT_HOST" bash -c \
 echo
 echo "== ⑨ GITEA_TOKEN absent : refus sans appel réseau =="
 L0="$(loglines)"
-RC="$(run "$TMP/c9.out" env -u GITEA_TOKEN GIT_HOST="$GIT_HOST" bash -c \
+RC="$(run "$TMP/c9.out" env -u GITEA_TOKEN FORGE_KIND=gitea GIT_HOST="$GIT_HOST" bash -c \
   '. "$1"; archive_store_push "$2" "neuf" "probe"' _ "$LIB" "$PAYLOAD")"
 [ "$RC" -ne 0 ] && grep -q 'STORE_TOKEN_ABSENT' "$TMP/c9.out" \
   && ok "⑨ GITEA_TOKEN absent refusé (STORE_TOKEN_ABSENT)" \
@@ -155,7 +168,7 @@ RC="$(run "$TMP/c9.out" env -u GITEA_TOKEN GIT_HOST="$GIT_HOST" bash -c \
 echo
 echo "== ① push d'un zip : ARCHIVE_STORE_PUSHED, 1 PUT reçu =="
 P1="$(url_path uno alpha "$SHA")"
-RC="$(run "$TMP/c1.out" env GITEA_TOKEN=x GIT_HOST="$GIT_HOST" bash -c \
+RC="$(run "$TMP/c1.out" env GITEA_TOKEN=x FORGE_KIND=gitea GIT_HOST="$GIT_HOST" bash -c \
   '. "$1"; archive_store_push "$2" uno alpha' _ "$LIB" "$PAYLOAD")"
 [ "$RC" -eq 0 ] && grep -q "ARCHIVE_STORE_PUSHED sha256=$SHA" "$TMP/c1.out" \
   && ok "① ARCHIVE_STORE_PUSHED sha256=$SHA" \
@@ -166,7 +179,7 @@ RC="$(run "$TMP/c1.out" env GITEA_TOKEN=x GIT_HOST="$GIT_HOST" bash -c \
 
 echo
 echo "== ② re-push identique : ARCHIVE_STORE_PUSHED, PAS de 2e PUT =="
-RC="$(run "$TMP/c2.out" env GITEA_TOKEN=x GIT_HOST="$GIT_HOST" bash -c \
+RC="$(run "$TMP/c2.out" env GITEA_TOKEN=x FORGE_KIND=gitea GIT_HOST="$GIT_HOST" bash -c \
   '. "$1"; archive_store_push "$2" uno alpha' _ "$LIB" "$PAYLOAD")"
 [ "$RC" -eq 0 ] && grep -q "ARCHIVE_STORE_PUSHED sha256=$SHA" "$TMP/c2.out" \
   && ok "② re-push idempotent : ARCHIVE_STORE_PUSHED" \
@@ -178,7 +191,7 @@ RC="$(run "$TMP/c2.out" env GITEA_TOKEN=x GIT_HOST="$GIT_HOST" bash -c \
 echo
 echo "== ③ fetch par digest : ARCHIVE_STORE_FETCHED, octets identiques =="
 DEST3="$TMP/case3.dest"
-RC="$(run "$TMP/c3.out" env GITEA_TOKEN=x GIT_HOST="$GIT_HOST" bash -c \
+RC="$(run "$TMP/c3.out" env GITEA_TOKEN=x FORGE_KIND=gitea GIT_HOST="$GIT_HOST" bash -c \
   '. "$1"; archive_store_fetch uno alpha "$2" "$3"' _ "$LIB" "$SHA" "$DEST3")"
 [ "$RC" -eq 0 ] && grep -q "ARCHIVE_STORE_FETCHED sha256=$SHA" "$TMP/c3.out" \
   && ok "③ ARCHIVE_STORE_FETCHED sha256=$SHA" \
@@ -192,7 +205,7 @@ echo "== ④ fetch d'un digest jamais poussé : STORE_HTTP_404, dest ABSENT =="
 NEVER="0000000000000000000000000000000000000000000000000000000000000000"
 NEVER="${NEVER:0:64}"
 DEST4="$TMP/case4.dest"
-RC="$(run "$TMP/c4.out" env GITEA_TOKEN=x GIT_HOST="$GIT_HOST" bash -c \
+RC="$(run "$TMP/c4.out" env GITEA_TOKEN=x FORGE_KIND=gitea GIT_HOST="$GIT_HOST" bash -c \
   '. "$1"; archive_store_fetch quatre beta "$2" "$3"' _ "$LIB" "$NEVER" "$DEST4")"
 [ "$RC" -ne 0 ] && grep -q 'STORE_HTTP_404' "$TMP/c4.out" \
   && ok "④ STORE_HTTP_404 sur un digest jamais poussé" \
@@ -204,7 +217,7 @@ RC="$(run "$TMP/c4.out" env GITEA_TOKEN=x GIT_HOST="$GIT_HOST" bash -c \
 echo
 echo "== ⑤ contenu corrompu servi : STORE_DIGEST_MISMATCH, dest ABSENT =="
 DEST5="$TMP/case5.dest"
-RC="$(run "$TMP/c5.out" env GITEA_TOKEN=x GIT_HOST="$GIT_HOST" bash -c \
+RC="$(run "$TMP/c5.out" env GITEA_TOKEN=x FORGE_KIND=gitea GIT_HOST="$GIT_HOST" bash -c \
   '. "$1"; archive_store_fetch corrompu cinq "$2" "$3"' _ "$LIB" "$SHA" "$DEST5")"
 [ "$RC" -ne 0 ] && grep -q 'STORE_DIGEST_MISMATCH' "$TMP/c5.out" \
   && ok "⑤ STORE_DIGEST_MISMATCH sur un contenu corrompu" \
@@ -225,7 +238,7 @@ SEED_CODE="$(curl -sS -H @"$HDR6" -o /dev/null -w '%{http_code}' --upload-file "
 [ "$SEED_CODE" = 201 ] \
   && ok "⑥ pré-semage direct du chemin avec d'autres octets (201)" \
   || bad "⑥ le pré-semage direct a échoué (code=$SEED_CODE) — le cas ne peut pas être joué"
-RC="$(run "$TMP/c6.out" env GITEA_TOKEN=x GIT_HOST="$GIT_HOST" bash -c \
+RC="$(run "$TMP/c6.out" env GITEA_TOKEN=x FORGE_KIND=gitea GIT_HOST="$GIT_HOST" bash -c \
   '. "$1"; archive_store_push "$2" conflit probe' _ "$LIB" "$PAYLOAD")"
 [ "$RC" -ne 0 ] && grep -q 'STORE_CONFLIT_CONTENU' "$TMP/c6.out" \
   && ok "⑥bis STORE_CONFLIT_CONTENU — refus d'écraser" \
@@ -236,7 +249,7 @@ RC="$(run "$TMP/c6.out" env GITEA_TOKEN=x GIT_HOST="$GIT_HOST" bash -c \
 
 echo
 echo "== ⑦ 500 : STORE_HTTP_500 =="
-RC="$(run "$TMP/c7.out" env GITEA_TOKEN=x GIT_HOST="$GIT_HOST" bash -c \
+RC="$(run "$TMP/c7.out" env GITEA_TOKEN=x FORGE_KIND=gitea GIT_HOST="$GIT_HOST" bash -c \
   '. "$1"; archive_store_push "$2" erreur six' _ "$LIB" "$PAYLOAD")"
 [ "$RC" -ne 0 ] && grep -q 'STORE_HTTP_500' "$TMP/c7.out" \
   && ok "⑦ STORE_HTTP_500 propagé depuis la sonde" \
@@ -260,7 +273,7 @@ grep -q '^    \[ "\$got" = "\$sha" \] \\$' "$TMP/lib_mut10.sh" \
   && ok "⑩bis le contrôle de conflit du PUSH reste INTACT dans le mutant (ciblage précis)" \
   || bad "⑩bis le sed a aussi muté le contrôle de conflit du push — ciblage trop large"
 DEST10="$TMP/case10.dest"
-RC="$(run "$TMP/c10.out" env GITEA_TOKEN=x GIT_HOST="$GIT_HOST" bash -c \
+RC="$(run "$TMP/c10.out" env GITEA_TOKEN=x FORGE_KIND=gitea GIT_HOST="$GIT_HOST" bash -c \
   '. "$1"; archive_store_fetch corrompu cinq "$2" "$3"' _ "$TMP/lib_mut10.sh" "$SHA" "$DEST10")"
 [ "$RC" -eq 0 ] && grep -q 'ARCHIVE_STORE_FETCHED' "$TMP/c10.out" \
   && ok "⑩ter guard retirée ⇒ le fetch corrompu VERDIT (⑤ n'est pas une épreuve vacante)" \
@@ -285,13 +298,45 @@ grep -q -F "PUT $P1 1" "$STUB_LOG" \
   && ok "⑪ter le stub a bien REÇU l'en-tête Authorization sur une requête réelle de la lib" \
   || bad "⑪ter aucune requête journalisée par le stub ne porte l'en-tête Authorization"
 
+echo
+echo "== ⑫ visage gitlab : l'URL est adressée PAR PROJET (ARCHIVE_STORE_PROJECT), PUT 201 =="
+P12="$(url_path_gl deux beta "$SHA")"
+RC="$(run "$TMP/c12.out" env GITEA_TOKEN=x FORGE_KIND=gitlab ARCHIVE_STORE_PROJECT=ci/archives GIT_HOST="$GIT_HOST" bash -c '. "$1"; archive_store_push "$2" deux beta' _ "$LIB" "$PAYLOAD")"
+[ "$RC" -eq 0 ] && grep -q "ARCHIVE_STORE_PUSHED sha256=$SHA" "$TMP/c12.out" && [ "$(putcount "$P12")" = 1 ] \
+  && ok "⑫ gitlab : PUT sur /api/v4/projects/ci%2Farchives/packages/generic/… (1 PUT)" || bad "⑫ rc $RC put=$(putcount "$P12") : $(cat "$TMP/c12.out")"
+# Ancré sur LA requête de ⑫ (le PUT de $P12), jamais sur le journal entier :
+# un grep global verdirait sur n'importe quelle ligne — y compris celle d'un
+# cas futur — alors que la propriété mesurée est que CE PUT-là, celui du
+# visage gitlab, porte l'en-tête de GitLab.
+grep -q -F "PUT $P12 PRIVATE-TOKEN" "$STUB_LOG" \
+  && ok "⑫bis le PUT de ⑫ porte PRIVATE-TOKEN (en-tête dérivé du visage par forge_auth_write)" \
+  || bad "⑫bis l'en-tête du PUT gitlab n'est pas dérivé du visage : $(grep -F "$P12" "$STUB_LOG" | tr '\n' ' ')"
+
+echo
+echo "== ⑬ visage gitlab sans ARCHIVE_STORE_PROJECT : refus AVANT tout réseau =="
+L0="$(loglines)"
+RC="$(run "$TMP/c13.out" env GITEA_TOKEN=x FORGE_KIND=gitlab GIT_HOST="$GIT_HOST" bash -c '. "$1"; archive_store_push "$2" deux beta' _ "$LIB" "$PAYLOAD")"
+[ "$RC" -ne 0 ] && grep -q 'ARCHIVE_STORE_PROJECT_REQUIS' "$TMP/c13.out" && [ "$(loglines)" = "$L0" ] \
+  && ok "⑬ ARCHIVE_STORE_PROJECT_REQUIS, aucun appel réseau" || bad "⑬ rc $RC : $(cat "$TMP/c13.out")"
+
+echo
+echo "== ⑭ sans FORGE_KIND : refus FORGE_KIND_REQUIS AVANT tout réseau =="
+# Task 17 (addendum §1) : archive-store.sh ne source pas forge_api_init (transport
+# binaire), donc son propre _as_url serait le DERNIER défaut silencieux de la
+# chaîne si on lui laissait un repli — d'où ce cas, même idiome que ⑬.
+L0="$(loglines)"
+RC="$(run "$TMP/c14.out" env -u FORGE_KIND GITEA_TOKEN=x GIT_HOST="$GIT_HOST" bash -c '. "$1"; archive_store_push "$2" deux beta' _ "$LIB" "$PAYLOAD")"
+[ "$RC" -ne 0 ] && grep -q 'FORGE_KIND_REQUIS' "$TMP/c14.out" && [ "$(loglines)" = "$L0" ] \
+  && ok "⑭ FORGE_KIND_REQUIS, aucun appel réseau" || bad "⑭ rc $RC : $(cat "$TMP/c14.out")"
+
 # ── Garde-fou : verdicts rendus == cas attendus ─────────────────────────────
-# Les 24 assertions ci-dessus (⑧/⑨/①/②/③/④/⑤/⑥/⑦/⑩/⑪, sous-parties comprises)
-# sont le compte EXACT de ce que cette épreuve pose (mesuré par un run complet,
-# pas déduit de tête). Si une assertion tombe en silence (script tronqué, cas
-# sauté, échantillonnage), ce compte bouge et CE garde-fou rougit — un vert sur
-# un sous-ensemble ne peut plus se faire passer pour le vert complet.
-EXPECTED_ASSERTIONS=24
+# Les 28 assertions ci-dessus (⑧/⑨/①/②/③/④/⑤/⑥/⑦/⑩/⑪/⑫/⑬/⑭, sous-parties
+# comprises) sont le compte EXACT de ce que cette épreuve pose (mesuré par un
+# run complet, pas déduit de tête). Si une assertion tombe en silence (script
+# tronqué, cas sauté, échantillonnage), ce compte bouge et CE garde-fou
+# rougit — un vert sur un sous-ensemble ne peut plus se faire passer pour le
+# vert complet. (24 mesurées avant Task 13, +3 pour ⑫/⑫bis/⑬, +1 pour ⑭.)
+EXPECTED_ASSERTIONS=28
 TOTAL_BEFORE_GUARD=$((PASS+FAIL))
 [ "$TOTAL_BEFORE_GUARD" -eq "$EXPECTED_ASSERTIONS" ] \
   && ok "verdicts rendus ($TOTAL_BEFORE_GUARD) == cas attendus ($EXPECTED_ASSERTIONS)" \

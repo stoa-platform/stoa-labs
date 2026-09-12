@@ -90,11 +90,14 @@ for f in $ROUTES; do
   while IFS= read -r m; do [ -n "$m" ] && { ko "A.$f porte encore « $m » — une seconde autorité sur la forge"; n=$((n+1)); }; done <<< "$(motifs_dans "$f")"
 done
 [ "$n" -eq 0 ] && ok "A.1 $(printf '%s\n' "$ROUTES" | wc -l | tr -d ' ') fichiers routés : aucun littéral de forge (API, en-tête, urlopen, paquets, liens Gitea)"
-# archive-store : /api/packages et l'en-tête délégué lui sont permis ; le reste, non.
+# archive-store : /api/packages (gitea) ET api/v4 (gitlab, registre PAR PROJET
+# — Task 13, ADR-099 D10) lui sont permis, avec l'en-tête délégué ; le reste,
+# non. Un /api/v4 ailleurs dans la chaîne (hors de cette seule autorité) reste
+# un motif interdit : la section A n'exempte QUE les deux fichiers listés ici.
 for f in $AUTORITE_PAQUETS; do
   [ -f "$f" ] || { ko "A.2 $f absent de l'arbre — la seconde autorité des paquets a disparu (liste AUTORITE_PAQUETS fausse)"; continue; }
-  reste="$(motifs_dans "$f" | grep -vE '^/api/packages$' || true)"
-  if [ -z "$reste" ]; then ok "A.2 $f (seconde autorité, paquets) ne porte que /api/packages"
+  reste="$(motifs_dans "$f" | grep -vE '^/api/packages$|^api/v4$' || true)"
+  if [ -z "$reste" ]; then ok "A.2 $f (seconde autorité, paquets) ne porte que /api/packages et api/v4 (registre par projet GitLab)"
   else ko "A.2 $f porte : $(printf '%s' "$reste" | tr '\n' ' ')"; fi
 done
 

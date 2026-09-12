@@ -39,9 +39,27 @@ _as_curl() {       # $@ — curl authentifié, header-file éphémère (umask du
   return "$rc"
 }
 
-_as_url() {        # <team> <api> <sha> — l'URL canonique du contenu
-  printf '%s/api/packages/%s/generic/promote--%s--%s/%s/archive.zip' \
-    "${GIT_HOST:-http://gitea:3000}" "${ARCHIVE_STORE_OWNER:-ci}" "$1" "$2" "$3"
+_as_url() {        # <team> <api> <sha> — l'URL canonique du contenu, selon le VISAGE
+  # Gitea : registre GÉNÉRIQUE par PROPRIÉTAIRE (ARCHIVE_STORE_OWNER, défaut
+  # ci). GitLab : le registre générique n'existe qu'à l'échelle d'un PROJET —
+  # ARCHIVE_STORE_PROJECT (<groupe>/<projet>, au lab ci/archives), chemin
+  # URL-encodé (ADR-099 D10).
+  # Aucun défaut de visage ici (Task 17, addendum §1) : forge_api_init refuse
+  # déjà FORGE_KIND_REQUIS quand la variable manque, mais cette lib ne le
+  # source pas (transport binaire, jamais l'init JSON) — sans ce refus, son
+  # propre case serait le DERNIER défaut silencieux de toute la chaîne, une
+  # fois tous les autres retirés le 2026-09-12.
+  [ -n "${FORGE_KIND:-}" ] || { _as_fail "FORGE_KIND_REQUIS : visage de la forge (gitea|gitlab) — aucun défaut ; l'appelant (api-promote-export, team-promote) l'a reçu de son Jenkinsfile et exporté à l'init"; return 1; }
+  case "$FORGE_KIND" in
+    gitlab)
+      [ -n "${ARCHIVE_STORE_PROJECT:-}" ] || { _as_fail "ARCHIVE_STORE_PROJECT_REQUIS : sous GitLab le registre générique est PAR PROJET — poser ARCHIVE_STORE_PROJECT=<groupe>/<projet> (au lab : ci/archives)"; return 1; }
+      printf '%s/api/v4/projects/%s/packages/generic/promote--%s--%s/%s/archive.zip' \
+        "${GIT_HOST:?GIT_HOST requis}" "$(python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1],safe=""))' "$ARCHIVE_STORE_PROJECT")" "$1" "$2" "$3" ;;
+    gitea)
+      printf '%s/api/packages/%s/generic/promote--%s--%s/%s/archive.zip' \
+        "${GIT_HOST:?GIT_HOST requis}" "${ARCHIVE_STORE_OWNER:-ci}" "$1" "$2" "$3" ;;
+    *) _as_fail "FORGE_KIND_INCONNU : '$FORGE_KIND' — attendu gitea ou gitlab"; return 1 ;;
+  esac
 }
 
 archive_store_push() { # <zip_abs> <team> <api>
@@ -53,7 +71,7 @@ archive_store_push() { # <zip_abs> <team> <api>
   [ -f "$zip" ] || { _as_fail "STORE_PARAM_INVALIDE : archive introuvable '$zip'"; return 1; }
   sha="$(shasum -a 256 "$zip" | cut -d' ' -f1)"
   [ "${#sha}" -eq 64 ] || { _as_fail "STORE_DIGEST_INCALCULABLE : '$zip'"; return 1; }
-  url="$(_as_url "$team" "$api" "$sha")"
+  url="$(_as_url "$team" "$api" "$sha")" || return 1
   # Idempotence PAR LE CONTENU : si le chemin existe déjà, on re-hache ce qu'il
   # sert. Identique -> no-op nommé ; différent -> incident (l'adressage par
   # contenu vient d'être contredit), on n'écrase JAMAIS.
@@ -81,7 +99,7 @@ archive_store_fetch() { # <team> <api> <sha256> <dest_abs>
   case "$sha" in *[!0-9a-f]*|"") { _as_fail "STORE_PARAM_INVALIDE : sha256 '$sha'"; return 1; };; esac
   [ "${#sha}" -eq 64 ] || { _as_fail "STORE_PARAM_INVALIDE : sha256 long de ${#sha}"; return 1; }
   case "$dest" in /*) ;; *) { _as_fail "STORE_PARAM_INVALIDE : destination non absolue '$dest'"; return 1; };; esac
-  url="$(_as_url "$team" "$api" "$sha")"
+  url="$(_as_url "$team" "$api" "$sha")" || return 1
   tmp="$(mktemp)" || { _as_fail "STORE_TMP_INCREABLE"; return 1; }
   code="$(_as_curl -o "$tmp" -w '%{http_code}' --max-time 300 "$url")" || code=000
   [ "$code" = 200 ] || { rm -f "$tmp"; _as_fail "STORE_HTTP_$code : GET $url — l'archive pinnée n'est pas au registre (export jamais poussé ?)"; return 1; }
