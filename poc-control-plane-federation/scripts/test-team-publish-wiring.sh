@@ -54,7 +54,7 @@ ko(){ FAIL=$((FAIL+1)); printf '  ❌ %s\n' "$*"; }
 # section ajoutée/retirée DOIT mettre à jour ce nombre à la main — un oubli
 # fait virer le §26 au rouge, ce qui EST le comportement voulu (un rappel,
 # pas un bug).
-EXPECTED_CHECKS=123
+EXPECTED_CHECKS=127
 
 [ -f "$JOB" ] || { echo "job introuvable : $JOB"; exit 2; }
 [ -f "$JF" ]  || { echo "Jenkinsfile introuvable : $JF"; exit 2; }
@@ -234,6 +234,33 @@ else
 fi
 
 echo
+echo "== 5bis. le knob LABCTL_BIN n'est pas INERTE : il atteint le rôle =="
+# DETTE TROUVÉE PAR LA SESSION VOISINE (Task 15, 2026-09-12) et fermée ici.
+# Le Jenkinsfile expose `LABCTL_BIN`, et PERSONNE ne transmettait
+# `apim_pub_labctl_bin` au rôle : celui-ci restait sur son défaut (`labctl`
+# cherché dans le PATH) et refusait POSTURE_AUTORITE_ABSENTE s'il n'y était pas.
+# Un exploitant qui posait la globale ne voyait RIEN changer — un knob qui
+# promet ce qu'il ne délivre pas. Fail-closed, donc jamais dangereux ; mensonger
+# dans l'interface livrée, ce qui est pire pour qui la lit.
+# C'est la CLASSE « knob inerte », cousine de celle que mesure
+# ci/lint-forge-knobs.sh : ici l'ancre est spécifique, faute d'une porte dérivée
+# (elle est en arbitrage — 23 knobs de site sont dans le même cas).
+PUB_SH="$REPO/scripts/team-publish.sh"
+jf "LABCTL_BIN = \"\${env.LABCTL_BIN ?: ''}\"" \
+  && ok "5bis le Jenkinsfile déclare LABCTL_BIN en repli VIDE (le défaut vit dans le rôle, à UN seul endroit)" \
+  || ko "5bis LABCTL_BIN absent du bloc environment, ou porteur d'un défaut de site (il serait alors en double avec le rôle)"
+grep -qF 'PUB_ARGS+=(-e "apim_pub_labctl_bin=$LABCTL_BIN")' "$PUB_SH" \
+  && ok "5bis le script TRANSMET apim_pub_labctl_bin au rôle — le knob n'est plus inerte" \
+  || ko "5bis apim_pub_labctl_bin n'est pas transmis : le knob du Jenkinsfile ne délivre rien, le rôle reste sur son PATH"
+grep -qF '[ -z "${LABCTL_BIN:-}" ] || PUB_ARGS+=' "$PUB_SH" \
+  && ok "5bis transmis SEULEMENT si non vide : une globale absente laisse le défaut du rôle intact (le passer vide l'écraserait par « »)" \
+  || ko "5bis la transmission n'est pas conditionnelle — une globale absente écraserait le défaut du rôle par une valeur vide"
+# MUTATION : la transmission retirée doit rougir.
+MUT=$(sed '/apim_pub_labctl_bin/d' "$PUB_SH")
+printf '%s' "$MUT" | grep -qF 'apim_pub_labctl_bin' \
+  && ko "5bis mutation NON appliquée (la ligne de transmission n'a pas bougé)" \
+  || ok "5bis mutation « transmission retirée » ⇒ l'ancre ci-dessus rougirait : elle mesure le CODE, pas un commentaire"
+
 echo "== 6. team-publish.sh est bien invoqué =="
 grep -q 'bash scripts/team-publish\.sh' "$JF" \
   && ok "scripts/team-publish.sh invoqué" || ko "team-publish.sh non invoqué — job mort"

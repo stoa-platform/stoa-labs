@@ -454,12 +454,28 @@ GOV_REGISTRY="$TMP/governance/${GOVERNANCE_PATH}"
 # restent utilisés PLUS HAUT par les gardes (cohérence branche↔manifeste,
 # liste blanche du champ contract) : elles valident l'état mergé sur le
 # clone ; ce qui part au moteur est ce que le résolveur en a fait.
+# L'AUTORITÉ DE POSTURE (labctl) — knob RENDU VIVANT le 2026-09-12. Il était
+# INERTE : ci/Jenkinsfile.team-publish expose `LABCTL_BIN`, et PERSONNE ne
+# transmettait `apim_pub_labctl_bin` au rôle. Celui-ci restait donc sur son
+# défaut (`labctl`, apim_publish_api/defaults/main.yml:147), cherché dans le
+# PATH, et refusait POSTURE_AUTORITE_ABSENTE s'il n'y était pas
+# (apim_publish_api/tasks/posture.yml:113-122). Un exploitant qui posait la
+# globale ne voyait RIEN changer : un knob qui promet ce qu'il ne délivre pas.
+# Fail-closed, donc jamais dangereux — mais mensonger dans l'interface livrée.
+# TRANSMIS SEULEMENT S'IL EST NON VIDE, et c'est le point : passer une valeur
+# vide écraserait le défaut du rôle par « », donc casserait ce qui marche. Le
+# défaut reste à UN SEUL endroit, dans le rôle — le recopier ici serait
+# exactement le travers qu'on vient de retirer de FORGE_KIND.
+# Tableau d'arguments : idiome de la maison (cf. team-promote.sh ENGINE_AUTH_ARGS)
+# et il n'est JAMAIS vide, donc pas de piège `"${arr[@]}"` sous `set -u`.
+PUB_ARGS=(-e apim_pub_classification_source="$GOV_REGISTRY")
+[ -z "${LABCTL_BIN:-}" ] || PUB_ARGS+=(-e "apim_pub_labctl_bin=$LABCTL_BIN")
 ( ansible-playbook -i ansible/inventory.lab.ini ansible/publish-api.yml \
     -e stoa_debug="$(dbg_bool)" \
     -e apim_ss_manifest="$DEPLOY_PIN_PUBLISH" -e apim_ss_team="$TEAM" \
     -e apim_ss_api_base="$APIM_API_BASE" -e apim_ss_env="$ENVN" \
     -e apim_ss_contract_pin="$DEPLOY_PIN_CONTRACT" \
-    -e apim_pub_classification_source="$GOV_REGISTRY" \
+    "${PUB_ARGS[@]}" \
 ) >"$TMP/pub.log" 2>&1
 PUB_RC=$?
 
