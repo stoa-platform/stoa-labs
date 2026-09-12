@@ -65,6 +65,20 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         self._log("GET")
         path = self.path
+        # ROUTE « PRÉSIGNÉE » (registre sur object storage — GitLab
+        # proxy_download=false, défaut de GitLab.com et des installs HA) : le
+        # chemin du paquet rend 302 vers /blob/<chemin>, qui sert les octets.
+        # /blob D'ABORD : la cible porte le même segment "redir" que la source.
+        if path.startswith("/blob/"):
+            body = STORE.get(path[len("/blob"):])
+            self._reply(404 if body is None else 200, body or b"stub: chemin inconnu")
+            return
+        if "redir" in path:
+            self.send_response(302)
+            self.send_header("Location", "/blob" + path)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         if "erreur" in path:
             self._reply(500, b"stub: panne simulee")
             return
@@ -329,14 +343,47 @@ RC="$(run "$TMP/c14.out" env -u FORGE_KIND GITEA_TOKEN=x GIT_HOST="$GIT_HOST" ba
 [ "$RC" -ne 0 ] && grep -q 'FORGE_KIND_REQUIS' "$TMP/c14.out" && [ "$(loglines)" = "$L0" ] \
   && ok "⑭ FORGE_KIND_REQUIS, aucun appel réseau" || bad "⑭ rc $RC : $(cat "$TMP/c14.out")"
 
+echo
+echo "== ⑮ registre derrière un 302 : la Location présignée est relue SANS authentification =="
+# Le défaut mesuré : sur un registre servi par un object storage, le GET du
+# paquet rend 302 et la lib refusait « STORE_HTTP_302 : l'archive pinnée n'est
+# pas au registre (export jamais poussé ?) » — une panne dure AVEC un faux
+# diagnostic sur un registre parfaitement sain. Et `curl -L` nu n'était pas la
+# réponse : il aurait livré le jeton de forge à l'hôte de stockage.
+P15="$(url_path redir quinze "$SHA")"
+HDR15="$TMP/hdr15"; printf 'Authorization: token x\n' > "$HDR15"
+SEED15="$(curl -sS -H @"$HDR15" -o /dev/null -w '%{http_code}' --upload-file "$PAYLOAD" "$GIT_HOST$P15")"
+DEST15="$TMP/case15.dest"
+RC="$(run "$TMP/c15.out" env GITEA_TOKEN=x FORGE_KIND=gitea GIT_HOST="$GIT_HOST" bash -c \
+  '. "$1"; archive_store_fetch redir quinze "$2" "$3"' _ "$LIB" "$SHA" "$DEST15")"
+# L'en-tête du GET présigné : le journal du stub dit "0" quand la requête ne
+# portait NI Authorization NI PRIVATE-TOKEN. C'est LA propriété, pas un détail.
+BLOBAUTH="$(grep -F "GET /blob$P15 " "$STUB_LOG" | tail -1)"
+{ [ "$SEED15" = 201 ] && [ "$RC" -eq 0 ] && cmp -s "$DEST15" "$PAYLOAD" \
+  && [ "$BLOBAUTH" = "GET /blob$P15 0" ]; } \
+  && ok "⑮ 302 suivi UNE fois : octets identiques (cmp) et le GET de la Location présignée ne porte AUCUN en-tête d'authentification" \
+  || bad "⑮ semis=$SEED15 rc=$RC cmp=$(cmp -s "$DEST15" "$PAYLOAD" && echo ok || echo NON) blob='${BLOBAUTH:-aucune requête}' : $(cat "$TMP/c15.out")"
+
+echo
+echo "== ⑯ push derrière un 302 : contenu déjà présent ⇒ no-op idempotent, AUCUN PUT =="
+P16="$(url_path redir seize "$SHA")"
+SEED16="$(curl -sS -H @"$HDR15" -o /dev/null -w '%{http_code}' --upload-file "$PAYLOAD" "$GIT_HOST$P16")"
+RC="$(run "$TMP/c16.out" env GITEA_TOKEN=x FORGE_KIND=gitea GIT_HOST="$GIT_HOST" bash -c \
+  '. "$1"; archive_store_push "$2" redir seize' _ "$LIB" "$PAYLOAD")"
+{ [ "$SEED16" = 201 ] && [ "$RC" -eq 0 ] && grep -q "ARCHIVE_STORE_PUSHED sha256=$SHA" "$TMP/c16.out" \
+  && [ "$(putcount "$P16")" = 1 ]; } \
+  && ok "⑯ la sonde d'existence voit le 302 comme PRÉSENT et compare le digest par le même chemin : no-op (seul le semis compte pour 1 PUT)" \
+  || bad "⑯ semis=$SEED16 rc=$RC put=$(putcount "$P16") : $(cat "$TMP/c16.out")"
+
 # ── Garde-fou : verdicts rendus == cas attendus ─────────────────────────────
 # Les 28 assertions ci-dessus (⑧/⑨/①/②/③/④/⑤/⑥/⑦/⑩/⑪/⑫/⑬/⑭, sous-parties
 # comprises) sont le compte EXACT de ce que cette épreuve pose (mesuré par un
 # run complet, pas déduit de tête). Si une assertion tombe en silence (script
 # tronqué, cas sauté, échantillonnage), ce compte bouge et CE garde-fou
 # rougit — un vert sur un sous-ensemble ne peut plus se faire passer pour le
-# vert complet. (24 mesurées avant Task 13, +3 pour ⑫/⑫bis/⑬, +1 pour ⑭.)
-EXPECTED_ASSERTIONS=28
+# vert complet. (24 mesurées avant Task 13, +3 pour ⑫/⑫bis/⑬, +1 pour ⑭,
+# +2 pour ⑮/⑯ — la relecture de la Location présignée, revue finale 2026-09-12.)
+EXPECTED_ASSERTIONS=30
 TOTAL_BEFORE_GUARD=$((PASS+FAIL))
 [ "$TOTAL_BEFORE_GUARD" -eq "$EXPECTED_ASSERTIONS" ] \
   && ok "verdicts rendus ($TOTAL_BEFORE_GUARD) == cas attendus ($EXPECTED_ASSERTIONS)" \
