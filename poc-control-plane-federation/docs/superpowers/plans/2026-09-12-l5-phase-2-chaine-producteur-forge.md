@@ -520,11 +520,11 @@ Le secret : `forge` lit `FORGE_SECRET` (alias `GITEA_TOKEN`) par descripteur 3 �
 if ! forge_kv PR pr_open "$BRANCH" "$GIT_BASE" "onboard: équipe ${TEAM} (${REQ_ENV})" "$WORK/pr-body.md"; then
   fail "ouverture de la PR (cause ci-dessus) — si la branche '${BRANCH}' est déjà poussée sur ${GIT_HOST}/${GIT_REPO} sans PR, la nettoyer avec 'git push ${GIT_HOST}/${GIT_REPO} --delete ${BRANCH}' puis rejouer"
 fi
-PR_NUMBER="$PR_REPO_NUMBER"; PR_LINK="$(forge_web_url "$PR_URL")"
+PR_LINK="$(forge_web_url "$PR_URL")"
 echo "PR #${PR_NUMBER} ouverte : ${PR_LINK}"
 ```
 
-(`forge_kv PR …` pose `PR_NUMBER` et `PR_URL` ; garder le nom `PR_NUMBER` pour les lecteurs en aval.) Ajouter le gabarit de sourçage juste après le sourçage de `git-base.sh` (l.55).
+(`forge_kv PR …` pose directement `PR_NUMBER` et `PR_URL` — le nom `PR_NUMBER` reste celui que lisent les lecteurs en aval.) Ajouter le gabarit de sourçage juste après le sourçage de `git-base.sh` (l.55).
 
 - [ ] **Step 3 : router le commentaire** — remplacer le second heredoc python (l.284-295) et l'`echo` :
 
@@ -568,7 +568,7 @@ fi
 if ! GIT_REPO="$REPO_FULL" forge_kv PR pr_open "$BRANCH" "$TEAM_BASE" "api(${TEAM}): ${API_NAME} v${EFFECTIVE_VERSION} (${ACTION})" "$WORK/pr-body.md"; then
   fail "ouverture de la PR (cause ci-dessus) — si la branche '${BRANCH}' est déjà poussée sur ${GIT_HOST}/${REPO_FULL} sans PR, la nettoyer avec 'git push ${GIT_HOST}/${REPO_FULL} --delete ${BRANCH}' puis rejouer"
 fi
-PR_NUMBER="$PR_REPO_NUMBER"; PR_LINK="$(forge_web_url "$PR_URL")"
+PR_LINK="$(forge_web_url "$PR_URL")"     # forge_kv PR a posé PR_NUMBER et PR_URL
 ```
 
 et remplacer toute composition `${GIT_WEB_HOST}/${REPO_FULL}/pulls/${PR_NUMBER}` par `$PR_LINK`.
