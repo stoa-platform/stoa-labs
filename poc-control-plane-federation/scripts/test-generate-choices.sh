@@ -53,10 +53,27 @@ class H(BaseHTTPRequestHandler):
         if self.path.startswith("/crumbIssuer"):
             log("GET crumb")
             return self._send(200, b'{"crumbRequestField":"Jenkins-Crumb","crumb":"abc"}')
-        m = re.match(r"^/job/([^/]+)/api/json$", self.path)
+        m = re.match(r"^/job/([^/]+)/api/json", self.path)
         if m:
             log(f"GET exists {m.group(1)} -> 404")
-            return self._send(404)  # tout est "absent" -> toujours createItem
+            # nextBuildNumber sert AUSSI a un job absent : le poseur le releve
+            # AVANT de creer, pour savoir quel amorcage attendre (L6).
+            return self._send(404, b'{"nextBuildNumber": 3}')
+        m = re.match(r"^/job/([^/]+)/3/api/json", self.path)
+        if m:  # L6 : le build d'amorcage impose par un XML sans propriete
+            log(f"GET build {m.group(1)} 3")
+            return self._send(200, b'{"result": "SUCCESS"}')
+        m = re.match(r"^/job/([^/]+)/config\.xml$", self.path)
+        if m:  # L6 : la RELECTURE d'apres l'amorcage, au token du job
+            log(f"GET config {m.group(1)}")
+            tok = ("stoa-" + m.group(1)).encode()
+            return self._send(200, b"<flow-definition><properties>"
+                b"<org.jenkinsci.plugins.workflow.job.properties.DisableConcurrentBuildsJobProperty/>"
+                b"<org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty><triggers>"
+                b"<org.jenkinsci.plugins.gwt.GenericTrigger><token>" + tok + b"</token>"
+                b"</org.jenkinsci.plugins.gwt.GenericTrigger></triggers>"
+                b"</org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty>"
+                b"</properties></flow-definition>")
         self._send(404)
     def do_POST(self):
         n = int(self.headers.get("Content-Length", 0))
@@ -260,6 +277,11 @@ python3 -c "import xml.etree.ElementTree as T; T.parse('$TMP/frag.xml')" \
 
 echo
 echo "== 5. jobs SANS placeholder CHOICES -> posés tels quels, à la BRANCHE près =="
+# L6 phase 2 (2026-09-12) : team-apply.job.xml ne porte plus AUCUNE propriété,
+# donc le poseur s'IMPOSE son amorçage et le RELIT (test-setup-provision-jobs
+# §18). Le faux Jenkins de cette suite sert donc nextBuildNumber, le résultat du
+# build d'amorçage et un config.xml au token du job — sans quoi cette section
+# mesurerait un refus d'amorçage au lieu de la pose qu'elle prétend mesurer.
 # L3 (2026-09-10) : les XML ne nomment plus de branche, ils portent
 # __GIT_BASE__ que le délégué substitue. « Octet pour octet » se dit donc
 # désormais « la source, à cette seule substitution près » — et le knob

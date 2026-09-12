@@ -259,9 +259,11 @@ protection ou des paramètres de job :
   refléter les listes (choices, triggers, paramètres) : pour un bloc
   **déclaratif**, le XML gagne sur le Jenkinsfile — un scellement présent dans le
   Jenkinsfile mais absent du config.xml posé ne prend pas effet. ⚠ Ce n'est PLUS
-  vrai de `provision-plan`, `provision-apply` et `selfservice-app-deploy` : depuis
-  L6 leur XML ne porte AUCUNE propriété et c'est leur **premier build** qui pose
-  déclencheur et verrou (voir « Le récepteur de webhooks »).
+  vrai de `provision-plan`, `provision-apply`, `selfservice-app-deploy` ni
+  `team-apply` : depuis L6 leur XML ne porte AUCUNE propriété et c'est leur
+  **premier build** qui pose déclencheur et verrou (voir « Le récepteur de
+  webhooks »). `setup-provision-jobs.sh` le DÉDUIT du XML (`<properties/>` vide
+  ⇒ amorçage imposé **et** attendu) : il n'y a pas de liste à tenir à jour.
 
 ## Qui déploie un palier (G2 — ADR-084)
 
@@ -1849,6 +1851,50 @@ sous `make lint-ci` [11/20] et [1/20]. **Angle mort assumé** : aucune suite
 statique ne voit un `if` dont la condition ment — le miroir lit le premier
 symbole qu'il trouve. Seule la preuve live le couvre, et la porte le dit.
 
+**⚠ L'ORDRE DE POSE COMPTE : les globales AVANT les jobs** (mesuré le
+2026-09-12). L'amorçage d'un job dont le XML est vide n'est plus une option — le
+poseur s'impose et relit (`AMORCAGE_INCOMPLET` sinon). Or un build d'amorçage
+traverse le `post { always { … } }` du pipeline, qui prend un nœud et appelle
+`forgeCreds()` : sans la globale `FORGE_CRED_KIND`, ce dernier refuse
+(`FORGE_CRED_KIND_INVALIDE`), le build d'amorçage échoue, et la **pose entière**
+échoue. C'est fail-closed et le message nomme le knob manquant — mais un
+exploitant qui pose ses jobs avant ses globales verra un refus qui parle d'un
+credential là où il lui manque une variable. Poser les globales
+(`setup-jenkins-globals.sh`) d'abord, les jobs ensuite.
+
+**Les identités ne viennent pas du payload** (L6 phase 2). La garde des quatre
+yeux de `team-apply` était nourrie de `$.pull_request.merged_by.login` et
+`$.pull_request.user.login` : le GitLab Plugin n'expose **aucun** des deux, et le
+seul palliatif apparent (`gitlabMergedByUser`) est l'**acteur** de l'événement,
+muet sur le demandeur. Le job **relit donc la forge** (`forge pr_get`, qui parle
+les deux visages) et le payload redevient ce qu'il est — une affirmation, gardée
+pour le journal. Corollaire durci le même jour : un demandeur inconnu est un
+refus (`REQUESTER_UNKNOWN`), là où un champ vide faisait auparavant **sauter** le
+contrôle au lieu de le faire échouer. Seul `--allow-self-approval` dit que les
+quatre yeux ne sont pas exigés.
+
+**Un bloc `sh` de Jenkins est du DASH — donc ce qu'il source aussi.** La
+relecture ci-dessus a d'abord été écrite *inline* dans le `sh` du Jenkinsfile,
+et elle ne pouvait pas s'exécuter : `scripts/lib/forge-api.sh` est du **bash**
+(`${BASH_SOURCE[0]}`, `printf -v`, here-string), et `dash -n` la refuse
+(« 111: Syntax error: redirection unexpected »). Le step mourait sur deux
+messages de dash qui ne nomment **aucun** refus du dépôt, après avoir réveillé
+un humain et encaissé son mot de passe d'annuaire — sur les deux visages, Gitea
+comprise. La règle, sans exception : **une lib `scripts/lib/*.sh` ne se source
+que depuis du bash**, et le Jenkinsfile appelle `bash scripts/<script>.sh` (un
+process à soi, son shebang). D'où `scripts/team-apply-identity.sh`. La porte est
+dans `ci/lint-jenkinsfiles.sh`, portée **dérivée** : toute ligne de
+`ci/Jenkinsfile*` qui source une lib doit passer `dash -n`.
+
+**Le payload et l'objet appliqué doivent être LE MÊME.** Relire `pr_get
+$PR_NUMBER` pour n'en prendre que les identités ne suffit pas : `PR_NUMBER` est
+un fait du payload, tandis que l'objet appliqué vient de `PR_BRANCH`/`MERGE_SHA`
+(`git checkout "$MERGE_SHA"`). Qui poste **son** merge avec le **numéro** d'une
+PR d'autrui fait valider les quatre yeux par une PR étrangère, en vert.
+`team-apply-identity.sh` confronte donc les trois faits que la forge rend —
+`merged`, `merge_commit_sha`, `head.ref` — et refuse `PAYLOAD_PERIME`, comme le
+fait déjà la réconciliation de `provision-apply`.
+
 **Au lab** : `scripts/test-webhook-kind-gitlab-live.sh` (la chaîne entière par le
 GitLab Plugin : plan sur ouverture et sur push, apply sur la fusion avec
 `MERGE_SHA` égal à l'API, close muet, token exigé, retour à `gwt` vérifié) ;
@@ -1856,10 +1902,11 @@ non-régression `gwt` par `test-a6-live.sh` et `test-a7-live.sh` inchangés ;
 `gitlab-plugin` ajouté à `ci/jenkins/Dockerfile` pour qu'un lab reconstruit
 porte les deux récepteurs.
 
-**Dettes** : les cinq Jenkinsfile de la chaîne API (`team-apply`,
-`team-publish`, `team-promote`, `publish-api`, `provisioning-request`) portent
-encore un bloc déclaratif — même motif à rejouer avant tout client GitLab sur la
-chaîne producteur ; un vrai secret par site pour le Secret Token (credential +
+**Dettes** : les **quatre** Jenkinsfile de la chaîne API (`team-publish`,
+`team-promote`, `publish-api`, `provisioning-request`) portent encore un bloc
+déclaratif — même motif à rejouer avant tout client GitLab sur la chaîne
+producteur. (`team-apply` en est sorti le 2026-09-12 : plus de `triggers {}` ni
+d'`options {}`, XML à `<properties/>`, identités relues sur la forge.) ; un vrai secret par site pour le Secret Token (credential +
 `withCredentials` avant le `properties()`) ; `FORGE_CRED_KIND` classé optionnel
 mais refusé si vide par onze pipelines.
 

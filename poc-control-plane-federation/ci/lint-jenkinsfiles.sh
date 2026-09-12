@@ -66,6 +66,78 @@ println ko == 0 ? "PORTE VERTE : ${fichiers.size()} Jenkinsfile compilent."
 System.exit(ko == 0 ? 0 : 1)
 GROOVY
 
+# ─────────────────────────────────────────────────────────────────────────────
+# LE SHELL QUI INTERPRÈTE UN BLOC `sh` EST DASH — donc ce qu'il SOURCE aussi
+# ─────────────────────────────────────────────────────────────────────────────
+# Défaut réel, trouvé en relecture adverse le 2026-09-12, AVANT tout build :
+# ci/Jenkinsfile.team-apply sourçait `scripts/lib/forge-api.sh` dans un bloc
+# `sh` pour relire les identités sur la forge. Ça PARSE côté Groovy — la porte
+# ci-dessous était donc verte — et ça ne peut pas s'EXÉCUTER : cette lib est du
+# BASH (${BASH_SOURCE[0]}, printf -v, here-string), et un step `sh` de Jenkins
+# tourne en DASH. Mesuré : `dash -n scripts/lib/forge-api.sh` →
+# « 111: Syntax error: redirection unexpected », rc 2. Le step mourait sur deux
+# messages de dash qui ne nomment aucun refus du dépôt, APRÈS avoir réveillé un
+# humain et encaissé son mot de passe d'annuaire — sur les deux visages de
+# forge, Gitea comprise.
+#
+# La règle, que cette porte MESURE au lieu de l'écrire dans un commentaire :
+# une lib sourcée depuis un bloc `sh` doit être lisible par dash. Le geste
+# normal reste `bash scripts/<script>.sh` — un process à soi, son shebang, et
+# tout le bash qu'il veut (c'est ce que fait le reste de la chaîne).
+#
+# PORTÉE DÉRIVÉE, aucune liste à la main : toute ligne de ci/Jenkinsfile* qui
+# COMMENCE par `.` ou `source` suivi d'un chemin scripts/lib/… ou ci/lib/…
+# (une telle ligne ne peut venir que d'un bloc shell ; un commentaire Groovy
+# commence par `//`).
+echo "== Le shell des blocs \`sh\` : dash lit les libs qu'ils sourcent ($CI_DIR/)"
+if ! command -v dash >/dev/null 2>&1; then
+  echo "!! dash absent de cette machine — la porte ne peut pas mesurer." >&2
+  echo "   Le geste : \`brew install dash\` (macOS) ou \`apt-get install dash\` (Debian)." >&2
+  echo "   PAS de mode dégradé : sans dash, on ne saurait pas qu'un bloc \`sh\`" >&2
+  echo "   source une lib que l'agent Jenkins ne pourra pas lire." >&2
+  exit 2
+fi
+SOURCEES="$(grep -lE '^[[:space:]]*(\.|source)[[:space:]]+(scripts|ci)/lib/' "$CI_DIR"/Jenkinsfile* 2>/dev/null || true)"
+ko_dash=0
+n_dash=0
+for JF in $SOURCEES; do
+  # Délimiteur `@` et NON `|` : le motif porte une alternance `(\.|source)`, et
+  # le sed de BSD prend alors le premier `|` pour la fin du motif (« RE error:
+  # parentheses not balanced » — mesuré ici même, et la porte imprimait
+  # « 0 source mesurée » puis sortait VERTE : un vert vacant).
+  LIBS_JF="$(sed -nE 's@^[[:space:]]*(\.|source)[[:space:]]+((scripts|ci)/lib/[A-Za-z0-9_.@-]+\.sh).*@\2@p' "$JF" | sort -u)"
+  if [ -z "$LIBS_JF" ]; then
+    # grep a vu une ligne de source dans ce fichier, l'extraction n'en tire
+    # rien : c'est la porte qui ne sait plus lire, pas le dépôt qui est sain.
+    echo "  ❌ $JF porte une ligne de source de lib que cette porte NE SAIT PAS extraire"
+    grep -nE '^[[:space:]]*(\.|source)[[:space:]]+(scripts|ci)/lib/' "$JF" | sed 's/^/       /'
+    ko_dash=$((ko_dash + 1))
+    continue
+  fi
+  for LIB in $LIBS_JF; do
+    n_dash=$((n_dash + 1))
+    if [ ! -f "$LIB" ]; then
+      echo "  ❌ $JF source $LIB — INTROUVABLE depuis la racine du dépôt"
+      ko_dash=$((ko_dash + 1))
+    elif dash -n "$LIB" 2>/dev/null; then
+      echo "  ✅ $JF source $LIB — dash la lit"
+    else
+      echo "  ❌ $JF source $LIB dans un bloc \`sh\` (donc DASH), mais dash NE LA LIT PAS :"
+      dash -n "$LIB" 2>&1 | sed 's/^/       /'
+      echo "       Le geste : sortir ces lignes dans scripts/<script>.sh (shebang"
+      echo "       bash, mêmes refus nommés) et n'appeler que \`bash scripts/<script>.sh\`."
+      ko_dash=$((ko_dash + 1))
+    fi
+  done
+done
+if [ "$ko_dash" -ne 0 ]; then
+  echo ""
+  echo "PORTE ROUGE : $ko_dash lib(s) sourcée(s) sur $n_dash illisible(s) par dash."
+  exit 1
+fi
+echo "  ($n_dash source(s) de lib mesurée(s) dans les blocs \`sh\`)"
+echo ""
+
 echo "== Compilation des Jenkinsfile ($CI_DIR/)"
 if command -v groovy >/dev/null 2>&1; then
   groovy -Dlint.dir="$CI_DIR" "$PROBE"
