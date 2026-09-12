@@ -1,8 +1,8 @@
 ---
 title: "ADR-099 — La chaîne ne crée rien sur la forge : dépôt d'équipe, webhooks et protection de branche sont des PRÉREQUIS posés par le client. Elle lit, elle ouvre des PR/MR, elle commente — sur les deux visages."
 sidebar_label: "ADR-099 : la chaîne ne crée rien sur la forge (L5 phase 2)"
-status: "Acté le 2026-09-12 (décision utilisateur « D10 profond »), prouvé hors ligne et par une matrice en direct sur le GitLab CE du lab. `test-forge-api.sh` 134/134, `test-archive-store.sh` 29/0, `test-setup-team-repos.sh` 11/11, `test-palier-retention.sh` 141/0, `test-team-apply-wiring.sh` 108/108, `test-forge-api-live.sh` 43/43 (les deux forges du lab) ; `test-producer-chain-gitlab.sh` **18/18 sur deux runs consécutifs, avec 8 preuves SKIP** pour une limite de lab NOMMÉE (le mock wM ne re-sérialise pas `apiDefinition`) — chiffre mesuré sur la version `6af963a` de la suite, avant que `c88353d` (Ruling 25) n'y ajoute la porte structurelle « aucun hook sur le dépôt plateforme ». Portes : `lint-forge-literals` 10/10 (`EN_ROUTAGE` VIDE — la phase 2 est close), `lint-branch-literals` 11/11, `lint-forge-knobs` 5 contrôles, `lint-config-knobs` verte."
-maturite_technique: "✅ La moitié FORGE de la chaîne producteur est prouvée en direct sur un GitLab CE réel : MR ouverte par `team-request`, merge par l'API, apply sur le SHA mergé, `DEPOT_ABSENT` sur un dépôt non créé, squelette poussé dans un dépôt pré-créé VIDE, MR d'`api-request` sur le dépôt d'équipe, discriminant de visage à deux voies, sonde `ps -Aww` sans secret, teardown symétrique. ⚠ La moitié GATEWAY (publication → export → promotion) n'est PAS prouvée en direct sous GitLab dans ce lot — elle l'est hors ligne et par l'historique Gitea ; cause exacte au § Limites. ⚠ La preuve « deux hooks + Secret Token + fusion réelle par builds Jenkins sous le visage gitlab » n'est pas faite non plus : la matrice joue les scripts en direct sur des projets pré-créés `--no-hook`."
+status: "Acté le 2026-09-12 (décision utilisateur « D10 profond »), prouvé hors ligne et par une matrice en direct sur le GitLab CE du lab. `test-forge-api.sh` 134/134, `test-archive-store.sh` 29/0, `test-setup-team-repos.sh` 11/11, `test-palier-retention.sh` 141/0, `test-team-apply-wiring.sh` 108/108, `test-forge-api-live.sh` 43/43 (les deux forges du lab) ; `test-producer-chain-gitlab.sh` **20/20 sur deux runs consécutifs du fichier commité `c88353d`, avec 8 preuves SKIP** pour une limite de lab NOMMÉE (le mock wM ne re-sérialise pas `apiDefinition`) — les quatre constats de Ruling 25 (0.4, 0.5, 2.1, 9.2 : aucun hook sur le dépôt plateforme, avant le semis comme après le teardown) sont PASS dans ces deux runs. Portes : `lint-forge-literals` 10/10 (`EN_ROUTAGE` VIDE — la phase 2 est close), `lint-branch-literals` 11/11, `lint-forge-knobs` 5 contrôles, `lint-config-knobs` verte."
+maturite_technique: "✅ La moitié FORGE de la chaîne producteur est prouvée en direct sur un GitLab CE réel : MR ouverte par `team-request`, merge par l'API, apply sur le SHA mergé, `DEPOT_ABSENT` sur un dépôt non créé, squelette poussé dans un dépôt pré-créé VIDE, MR d'`api-request` sur le dépôt d'équipe, discriminant de visage à deux voies, sonde `ps -Aww` sans secret, porte « aucun hook sur le dépôt plateforme » tenue aux deux bouts de la fenêtre, teardown symétrique côté forge et Vault (les objets de gateway, eux, ne sont pas supprimables — le mock ne sert aucun DELETE). ⚠ La moitié GATEWAY (publication → export → promotion) n'est PAS prouvée en direct sous GitLab dans ce lot — elle l'est hors ligne et par l'historique Gitea ; cause exacte au § Limites. ⚠ La preuve « deux hooks + Secret Token + fusion réelle par builds Jenkins sous le visage gitlab » n'est pas faite non plus : la matrice joue les scripts en direct sur des projets pré-créés `--no-hook`."
 date: 2026-09-12
 adr_number: 99
 note: "Lot L5 phase 2 du chantier forge-agnostique (après L1, L5 phase 1, L3, L2, L4, L6). Reprend ADR-082 §3 (la protection nominative de Gitea) et ADR-081 corollaire 3 (la décision humaine vit dans le merge sous protection) sans les réécrire. Décision utilisateur du 2026-09-12 : chez un client, créer un dépôt, un hook ou une protection n'est pas le métier de la chaîne."
@@ -48,7 +48,7 @@ conduit selon **trois états**, plus une garde :
 |---|---|---|
 | `repo: ""` dans `providers.<env>.yml` | étape **sautée** — une équipe sans dépôt produit n'est pas un échec (cas réel `payments-team`) | « repo vide dans providers — étape sautée » |
 | dépôt **absent** (`EXISTS=0`) | **`REFUS: DEPOT_ABSENT`**, rc 2, **rien n'est poussé** | le refus, nommé, sous le marqueur `<!-- team-apply -->` |
-| dépôt **vide** (`EMPTY=1`) | squelette ADR-076 (`apis/`, `applications/`, `README.md`) poussé sur la **HEAD annoncée par la forge** (`DEFAULT_BRANCH`), à défaut `GIT_BASE` | ✅ « vide, squelette poussé sur `<branche>` » |
+| dépôt **vide** (`EMPTY=1`) | squelette ADR-076 poussé sur la **HEAD annoncée par la forge** (`DEFAULT_BRANCH`), à défaut `GIT_BASE` : `clients/_example/` copié tel quel (`apis/`, `applications/`, **`environments.yaml`** — que `seed-governance-chain.sh` relit) plus un `README.md` **généré** | ✅ « vide, squelette poussé sur `<branche>` » |
 | dépôt **non vide** | « déjà initialisé, étape sautée » — l'idempotence est **dite**, pas devinée | ✅, avec le lien du dépôt à la forme du visage |
 
 Un **seul** commentaire par échec (`comment_upsert` sous le marqueur), jamais
@@ -188,11 +188,12 @@ binaire des paquets), premier test avant tout réseau, sans défaut depuis le
 | Les verbes de forge, deux visages, mutations champ par champ | `bash scripts/test-forge-api.sh` | **134/134** (2026-09-12) |
 | Les mêmes verbes contre les forges RÉELLES du lab (`repo_get`, `raw` sans ref, URL absolue) | `bash scripts/test-forge-api-live.sh` | **43/43**, GitLab CE **et** Gitea |
 | Le registre des archives à deux échelles (par propriétaire / par projet), `ARCHIVE_STORE_PROJECT_REQUIS` | `bash scripts/test-archive-store.sh` | **29 PASS / 0** |
+| **Le registre générique GitLab, EN DIRECT** (au niveau de la lib) | `archive_store_push` / `archive_store_fetch` contre `ci/archives` (GitLab 17.11), Task 13 | push, rejeu **no-op nommé** (mêmes octets), `fetch` **octets identiques** (`cmp`), et les **deux** refus joués (`ARCHIVE_STORE_PROJECT_REQUIS`, `FORGE_KIND_REQUIS`) |
 | L'outil de poste : deux visages, refus nommés, aucune branche inventée | `bash scripts/test-setup-team-repos.sh` | **11/11** |
 | La conduite D10 de `team-apply` (⑭), les mutants, les knobs de site | `bash scripts/test-palier-retention.sh` | **141 PASS / 0** |
 | Le câblage de `team-apply` (XML vide, récepteur, chaîne d'identité) | `bash scripts/test-team-apply-wiring.sh` | **108/108** |
 | Le trois-états en direct sur Gitea | `bash scripts/test-team-onboarding-chain.sh` (5 / 5bis / 6) | dépôt pré-créé, `DEPOT_ABSENT`, squelette poussé |
-| **La chaîne PRODUCTEUR en direct sur le GitLab CE du lab** | `bash scripts/test-producer-chain-gitlab.sh` | **18/18 sur deux runs consécutifs**, `rc 0`, **8 preuves SKIP** avec leur cause (limite du lab, § Limites) — version `6af963a` de la suite ; `c88353d` y a ajouté depuis quatre constats de hooks (Ruling 25), non rejoués |
+| **La chaîne PRODUCTEUR en direct sur le GitLab CE du lab** | `bash scripts/test-producer-chain-gitlab.sh` | **20/20 sur deux runs consécutifs** du fichier commité `c88353d`, `rc 0`, **8 preuves SKIP** avec leur cause (limite du lab, § Limites) ; les quatre constats de hooks de Ruling 25 sont PASS |
 | Porte : une seule autorité de forge, `EN_ROUTAGE` VIDE | `bash ci/lint-forge-literals.sh` | **10/10** — « D.1 aucun fichier en routage : la phase 2 est close » |
 | Porte : aucune branche écrite en dur | `bash ci/lint-branch-literals.sh` | **11/11** |
 | Porte : tout Jenkinsfile qui invoque un script routé porte les trois knobs | `bash ci/lint-forge-knobs.sh` | **5 contrôles**, verte |
@@ -208,5 +209,24 @@ dépôt d'**équipe** et y commente ; le **discriminant** de visage
 lecture (« la forge REDIRIGE vers …/users/sign_in ») comme en écriture (le
 chemin `/api/v1` cité), et n'ouvre **aucune** MR ; un sondage `ps -Aww` sur
 toute la fenêtre ne voit **aucun** secret en argv, contrôle positif tenu
-(trafic git réellement observé) ; le teardown est **symétrique** (404 exacts,
-branches retirées, tokens Vault révoqués, bascule de gateway rendue).
+(trafic réellement observé) ; et le teardown est **symétrique côté forge et
+côté Vault** (404 exacts sur les projets du run, branches retirées, aucun
+paquet au registre, KV et policies de l'équipe en 404, tokens éphémères
+révoqués, bascule de gateway rendue).
+
+⚠ **La réserve du teardown, telle que la suite l'imprime** : les objets de
+**gateway** ne sont **PAS** supprimés. Le mock webMethods n'expose aucune route
+`DELETE` (**405**, mesuré au palier 3) et son état est en mémoire — **une API
+`demo-l5gl*` reste donc par run**. Le nettoyage est complet sur la forge et sur
+Vault, pas sur la gateway, et la preuve 9.1 le dit elle-même.
+
+Le **registre générique de GitLab** a, lui, une preuve **verte en direct** — mais
+**au niveau de la lib**, pas de la chaîne : `archive_store_push` /
+`archive_store_fetch` de l'arbre contre le vrai `ci/archives` (GitLab 17.11,
+Task 13). Le paquet est retrouvé dans le registre du projet, le rejeu du même
+contenu est un **no-op nommé**, le `fetch` rend des octets **identiques**
+(`cmp`), et les deux refus tombent (`ARCHIVE_STORE_PROJECT_REQUIS`,
+`FORGE_KIND_REQUIS`). Ce qui reste **SKIP** — la preuve 5.1 de la matrice — est
+le push d'archive **depuis la CHAÎNE** (`api-promote-export` sous GitLab), qui
+dépend de la publication, donc de la limite du mock ci-dessus. La lib est
+prouvée contre le vrai registre ; le maillon qui l'appelle ne l'est pas encore.

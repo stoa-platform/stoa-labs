@@ -27,7 +27,8 @@
 #   L'APPELANT nomme le tag (FORGE_ILLISIBLE, FORGE_NON_CONFIRMEE…) : les
 #   contrats de refus existants ne bougent pas, seule la cause s'enrichit.
 #
-# ENV : FORGE_KIND (gitea|gitlab, défaut gitea) · GIT_HOST (requis, aucun repli)
+# ENV : FORGE_KIND (gitea|gitlab, requis — FORGE_KIND_REQUIS à l'init de la lib
+#       shell, premier refus avant tout réseau) · GIT_HOST (requis, aucun repli)
 #       · FORGE_API_BASE (option : un reverse-proxy qui déplace /api) · GIT_REPO
 #       (owner/repo, requis) · FORGE_API_AUTH (token|private-token|bearer|basic ;
 #       défaut token pour gitea, private-token pour gitlab) · FORGE_USER (basic)

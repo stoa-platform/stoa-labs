@@ -7,7 +7,8 @@
 # trouver, lui passer le secret SANS argv, et rendre ses lignes CLÉ=VALEUR.
 #
 #   . scripts/lib/forge-api.sh
-#   forge_api_init                       # pose FORGE_KIND (défaut gitea), vérifie GIT_HOST/GIT_REPO
+#   forge_api_init                       # exige FORGE_KIND (gitea|gitlab) — REQUIS, aucun
+#                                        # défaut ; puis vérifie GIT_HOST/GIT_REPO
 #   eval "$(forge pr_find_open "$BRANCH")"   # NUMBER= LOGIN= URL=   (rc 0)
 #   forge pr_list_merged "$BRANCH"       # UNE ligne par PR mergée de cette tête : NUMBER= MERGE_SHA= BASE_REF= SAME_REPO= HEAD_REPO=
 #   forge pr_get 42                     # STATE= HEAD_REF= HEAD_SHA= BASE_REF= SAME_REPO= MERGED= MERGE_SHA= MERGED_BY= LOGIN= URL=

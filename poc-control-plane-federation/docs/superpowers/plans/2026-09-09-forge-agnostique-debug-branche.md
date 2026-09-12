@@ -149,7 +149,7 @@ un problème de forge mais de **récepteur de webhooks** — d'où un lot à par
 ## Dettes nommées, non traitées ici
 
 - GitLab CE n'a pas la protection de branche par utilisateurs/patterns (Premium) : ADR-081 « approbation = merge sous protection » à re-poser avec le client.
-- `team-apply.sh` org/repo/hook (7 appels) : évitable si le client crée ses dépôts (D10).
+- ~~`team-apply.sh` org/repo/hook (7 appels) : évitable si le client crée ses dépôts (D10).~~ **FERMÉE par Task 8** (`c15b909`, ADR-099) : la chaîne LIT le dépôt (`repo_get`) et ne crée plus rien ; le client — ou `scripts/setup-team-repos.sh` au lab — pose dépôt, hook(s) et protection.
 - `forge_open_pr` prévu par la spec `2026-09-07` §8.4 doit consommer `forge-api.sh`, pas le dupliquer.
 - ~60 `json.load` nus dans `setup-*/demo-*/phase3-*` : outils de lab joués devant un terminal, priorité nulle ; `assign-api-team.sh`, `repair-wm-dangling-policyaction.sh`, `seed-governance-chain.sh` sont des outils d'INCIDENT — à trancher (livrable ou « lab uniquement » en tête).
 
@@ -206,7 +206,7 @@ profond ») : **le client**. La chaîne LIT la forge, ouvre des PR/MR et comment
 - [x] Le registre des archives à deux échelles : par PROJET sous GitLab (`ARCHIVE_STORE_PROJECT`, refus `ARCHIVE_STORE_PROJECT_REQUIS`), par PROPRIÉTAIRE sous Gitea — `df8418c`.
 - [x] L6 phase 2 sur la chaîne producteur (récepteur à deux visages, XML vidés, identités relues sur la forge) — `9c38a49`, `57fd686`, `c9d02ee` (l'amorçage décidé par le XML du job), doc ADR-098 `2c3a273` + `d7d0b05`.
 - [x] **Preuves hors ligne** : `test-forge-api.sh` **134/134** · `test-archive-store.sh` **29/0** · `test-setup-team-repos.sh` **11/11** · `test-palier-retention.sh` **141/0** · `test-team-apply-wiring.sh` **108/108**. Portes : `lint-forge-literals` **10/10** avec `EN_ROUTAGE` **VIDE** (« la phase 2 est close ») · `lint-branch-literals` **11/11** · `lint-forge-knobs` **5 contrôles** · `lint-config-knobs` verte.
-- [x] **Preuves en direct** : `test-forge-api-live.sh` **43/43** sur les deux forges du lab (`e2fe03a`) ; `scripts/test-producer-chain-gitlab.sh` **18/18 sur deux runs consécutifs, 8 preuves SKIP** (`6af963a`), puis la porte structurelle « aucun hook sur le dépôt plateforme » (`c88353d`, Ruling 25).
+- [x] **Preuves en direct** : `test-forge-api-live.sh` **43/43** sur les deux forges du lab (`e2fe03a`) ; `scripts/test-producer-chain-gitlab.sh` **20/20 sur deux runs consécutifs du fichier commité `c88353d`, 8 preuves SKIP** — la porte structurelle « aucun hook sur le dépôt plateforme » (Ruling 25 : constats 0.4, 0.5, 2.1, 9.2) est PASS dans ces deux runs ; et le registre générique de GitLab est prouvé en direct **au niveau de la lib** contre le vrai `ci/archives` (Task 13), le push depuis la chaîne restant SKIP.
 - [x] Doc : `ENVIRONNEMENTS.md` (§ verbes, § chaîne producteur à deux visages) et `adr/adr-099-…`.
 
 **Ce que ce lot NE prouve PAS, et c'est écrit dans l'ADR** : la moitié

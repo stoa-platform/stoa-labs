@@ -1363,8 +1363,10 @@ Trois helpers d'enveloppe, dans `scripts/lib/forge-api.sh` :
   `ci/lint-forge-literals.sh` les interdit hors de l'autorité.
 
 Le contrat de `pr_get` est **figé** : ses clés sont consommées par
-`ci/Jenkinsfile.team-apply` et `scripts/forge-merge-identity.sh` (`MERGED_BY`,
-`LOGIN`) — toute évolution passe par une annonce croisée. Dans les scripts,
+`scripts/forge-merge-identity.sh` (`forge_kv PRG pr_get`, puis `PRG_MERGED_BY`
+et `PRG_LOGIN`), que **deux** Jenkinsfile invoquent — `ci/Jenkinsfile.team-apply`
+et `ci/Jenkinsfile.team-publish`, qui **délèguent** et ne lisent jamais les clés
+eux-mêmes. Toute évolution passe par une annonce croisée. Dans les scripts,
 `PR_*` est l'espace du **payload** du webhook ; la relecture de la forge vit
 sous `FPR_*` (`team-publish`, `team-promote`), pour que les deux ne se
 confondent jamais.
@@ -2105,7 +2107,7 @@ n'y a plus de jeton `gitea-org-admin` dans Vault.
 |---|---|---|
 | `repo: ""` dans `providers.<env>.yml` | étape **sautée** — une équipe sans dépôt produit n'est pas un échec (cas réel `payments-team`) | « repo vide dans providers — étape sautée » |
 | dépôt **absent** (`EXISTS=0`) | **`REFUS: DEPOT_ABSENT`**, `rc 2`, **rien n'est poussé** | le refus nommé, avec le geste à faire |
-| dépôt **vide** (`EMPTY=1`) | squelette ADR-076 (`apis/`, `applications/`, `README.md`) poussé sur la **HEAD annoncée par la forge** (`DEFAULT_BRANCH`), à défaut `GIT_BASE` | ✅ « vide, squelette poussé sur `<branche>` » |
+| dépôt **vide** (`EMPTY=1`) | squelette ADR-076 poussé sur la **HEAD annoncée par la forge** (`DEFAULT_BRANCH`), à défaut `GIT_BASE` : `clients/_example/` copié tel quel (`apis/`, `applications/`, **`environments.yaml`** — que `seed-governance-chain.sh` relit) plus un `README.md` **généré** | ✅ « vide, squelette poussé sur `<branche>` » |
 | dépôt **non vide** | « déjà initialisé, étape sautée » — l'idempotence est **dite** | ✅, avec le lien du dépôt à la forme du visage |
 
 **Un seul commentaire par échec**, sous le marqueur `<!-- team-apply -->`
@@ -2118,9 +2120,11 @@ Maintainer, donc le hook est un prérequis **écrit**, pas **contrôlé**.
 
 Ce que la chaîne ne fait plus, le lab le pose avec des outils **hors chaîne**,
 exemptés nommément par `ci/lint-forge-literals.sh` (ils parlent aux API de
-création). Ces outils **gardent un défaut de visage `gitea`** et échouent
+création). **Deux d'entre eux** — `setup-team-repos.sh` et
+`setup-repo-protections.sh` — gardent un défaut de visage `gitea` et échouent
 **BRUYAMMENT** sur le mauvais visage : ils sont joués devant un terminal, pas
-par un pipeline.
+par un pipeline. Le troisième, `seed-governance-chain.sh`, **n'en a pas** : son
+read-back passe par `forge_api_init`, donc `FORGE_KIND_REQUIS`.
 
 - **`scripts/setup-team-repos.sh <owner>/<repo> [--print] [--no-hook] [--no-protect]`**
   — pré-crée le dépôt d'équipe VIDE, son ou ses webhooks et sa protection, sur
@@ -2145,9 +2149,10 @@ par un pipeline.
   **seulement**. Sur un autre visage il refuse `PROTECTION_GITEA_SEULEMENT` et
   renvoie à `setup-team-repos.sh` : il ne pose jamais une protection dégradée
   qui aurait l'air posée.
-- **`scripts/seed-governance-chain.sh`** — exige désormais `FORGE_KIND` : son
-  read-back passe par l'autorité de forge (`forge raw`), qui refuse tout autre
-  visage que `gitea|gitlab`.
+- **`scripts/seed-governance-chain.sh`** — **exige** `FORGE_KIND`, sans défaut :
+  son read-back passe par l'autorité de forge (`forge_api_init` puis
+  `forge raw environments.yaml`), qui refuse `FORGE_KIND_REQUIS` sur une valeur
+  absente et `FORGE_KIND_INCONNU` sur autre chose que `gitea|gitlab`.
 
 ### Le registre des archives, à deux échelles
 
@@ -2175,10 +2180,11 @@ la chaîne.
 | Les verbes, deux visages, mutations champ par champ | `bash scripts/test-forge-api.sh` | **134/134** |
 | Les mêmes verbes contre les forges RÉELLES du lab | `bash scripts/test-forge-api-live.sh` | **43/43** (GitLab CE **et** Gitea) |
 | Le registre à deux échelles | `bash scripts/test-archive-store.sh` | **29 PASS / 0** |
+| **Le registre générique GitLab, EN DIRECT** (niveau lib, Task 13) | `archive_store_push` / `archive_store_fetch` contre `ci/archives` (GitLab 17.11) | push + rejeu **no-op nommé** + `fetch` aux **octets identiques**, les deux refus joués |
 | L'outil de poste, deux visages | `bash scripts/test-setup-team-repos.sh` | **11/11** |
 | La conduite D10 (⑭), les mutants, les knobs de site | `bash scripts/test-palier-retention.sh` | **141 PASS / 0** |
 | Le câblage de `team-apply` | `bash scripts/test-team-apply-wiring.sh` | **108/108** |
-| **La chaîne producteur EN DIRECT sur le GitLab CE du lab** | `bash scripts/test-producer-chain-gitlab.sh` | **18/18 sur deux runs consécutifs**, `rc 0`, **8 preuves SKIP** (version `6af963a` de la suite) |
+| **La chaîne producteur EN DIRECT sur le GitLab CE du lab** | `bash scripts/test-producer-chain-gitlab.sh` | **20/20 sur deux runs consécutifs** du fichier commité `c88353d`, `rc 0`, **8 preuves SKIP** avec leur cause |
 | Portes | `ci/lint-forge-literals.sh` · `ci/lint-branch-literals.sh` · `ci/lint-forge-knobs.sh` · `ci/lint-config-knobs.sh` | **10/10** · **11/11** · **5 contrôles** · verte |
 
 **Ce que la matrice GitLab prouve** : le dépôt plateforme est **privé**
@@ -2191,7 +2197,22 @@ dépôt d'**équipe** et y commente ; le **discriminant** de visage
 lecture (« la forge REDIRIGE vers …/users/sign_in ») et en écriture (le chemin
 `/api/v1` cité) — et n'ouvre **aucune** MR ; un sondage `ps -Aww` sur toute la
 fenêtre ne voit **aucun** secret en argv, contrôle positif tenu ; le teardown
-est **symétrique**.
+est **symétrique** côté forge et côté Vault (404 exacts sur les projets du run,
+branches retirées, aucun paquet au registre, KV et policies de l'équipe en 404,
+tokens éphémères révoqués, bascule de gateway rendue).
+⚠ **Une réserve, et la suite l'imprime** : les objets de **gateway** ne sont
+**PAS** supprimés — le mock webMethods n'expose aucune route `DELETE` (**405**,
+mesuré au palier 3) et son état est en mémoire, donc **une API `demo-l5gl*`
+reste par run**.
+
+Le registre générique de GitLab a donc **une preuve verte en direct**, mais **au
+niveau de la lib** : `archive_store_push`/`fetch` de l'arbre contre le vrai
+`ci/archives` (Task 13) — le paquet est retrouvé dans le registre du projet, le
+rejeu est un no-op nommé, le `fetch` rend des octets identiques, et les deux
+refus tombent. Ce qui reste **SKIP**, et c'est la preuve 5.1 de la matrice,
+c'est le push d'archive **depuis la CHAÎNE** (`api-promote-export` sous GitLab)
+— il dépend de la publication, donc de la limite du mock. La lib est prouvée
+contre le vrai registre ; le maillon qui l'appelle ne l'est pas encore.
 
 ⚠ **LA LIMITE, écrite en clair : c'est la moitié FORGE qui est prouvée en
 direct sur GitLab, pas la moitié GATEWAY.** Les **8 SKIP** sont la publication
