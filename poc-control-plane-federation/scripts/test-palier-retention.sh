@@ -730,7 +730,12 @@ grep -q 'TEAM_PUBLISH_WEBHOOK_URL' "$TMP/ta14_nc" \
 grep -qE '/orgs' "$TMP/ta14_nc" && bad "⑭quater création d'org encore présente" || ok "⑭quater aucune création d'org"
 grep -q 'gitea-org-admin' "$TMP/ta14_nc" && bad "⑭quinquies le jeton org-admin est encore lu dans Vault" || ok "⑭quinquies plus de jeton org-admin (le secret de forge ordinaire pousse le squelette)"
 grep -qE 'forge_kv DEPOT repo_get' "$TMP/ta14_nc" && ok "⑭sexies le dépôt est LU par repo_get" || bad "⑭sexies repo_get absent"
-grep -qF 'DEPOT_ABSENT' "$TMP/ta14_nc" && ok "⑭septies le refus DEPOT_ABSENT existe" || bad "⑭septies DEPOT_ABSENT absent"
+# ANCRE SUR LA FORME DU REFUS, pas sur le tag seul (revue finale, 2026-09-12) :
+# `grep DEPOT_ABSENT` se satisfaisait d'un `echo`, d'une variable ou même d'un
+# reste de prose — la propriété mesurée est que le chemin « dépôt absent »
+# REFUSE, ce que seul l'appel de `refus` établit. C'est aussi ce qui rend
+# ⑭decies discriminant : le mutant peut alors laisser le tag en place.
+grep -qF 'refus "DEPOT_ABSENT' "$TMP/ta14_nc" && ok "⑭septies le dépôt absent REFUSE (forme « refus \"DEPOT_ABSENT », pas le tag seul)" || bad "⑭septies aucun appel de refus sur DEPOT_ABSENT"
 L_GET=$(grep -n 'forge_kv DEPOT repo_get' "$TMP/ta14_nc" | head -1 | cut -d: -f1)
 L_PUSH=$(grep -nE 'git( -C [^ ]+)? push' "$TMP/ta14_nc" | head -1 | cut -d: -f1)
 { [ -n "$L_GET" ] && [ -n "$L_PUSH" ] && [ "$L_GET" -lt "$L_PUSH" ]; } \
@@ -739,8 +744,16 @@ L_PUSH=$(grep -nE 'git( -C [^ ]+)? push' "$TMP/ta14_nc" | head -1 | cut -d: -f1)
 # mutants : réintroduire la pose rougit ⑭bis ; retirer DEPOT_ABSENT rougit ⑭septies
 sed 's/^\(.*forge_kv DEPOT repo_get.*\)$/\1\npose_branch_protection "$GIT_HOST" "$TMP\/ghdr" "$REPO_FULL" "$TMP\/prot.json"/' scripts/team-apply.sh | nc_strict /dev/stdin > "$TMP/ta14_m1"
 grep -Eq '^[[:space:]]*pose_branch_protection |[^A-Za-z_]pose_branch_protection ' "$TMP/ta14_m1" && ok "⑭nonies mutant « pose réintroduite » ⇒ ⑭bis rougirait" || bad "⑭nonies le mutant n'est pas vu"
-sed '/DEPOT_ABSENT/d' scripts/team-apply.sh | nc_strict /dev/stdin > "$TMP/ta14_m2"
-grep -qF 'DEPOT_ABSENT' "$TMP/ta14_m2" && bad "⑭decies le mutant « refus retiré » passe" || ok "⑭decies mutant « DEPOT_ABSENT retiré » ⇒ ⑭septies rougirait"
+# MUTANT DISCRIMINANT (il ne l'était pas — revue finale, 2026-09-12) : l'ancien
+# `sed '/DEPOT_ABSENT/d'` retirait TOUTE ligne portant le tag, puis cherchait ce
+# même tag — une tautologie, verte quoi que fasse team-apply.sh. Celui-ci LAISSE
+# le tag et n'enlève que le refus : le chemin « dépôt absent » se contenterait
+# d'imprimer un mot et continuerait. C'est l'exacte régression que ⑭septies doit
+# attraper, et elle ne peut plus l'attraper par accident.
+sed 's/refus "DEPOT_ABSENT/echo "DEPOT_ABSENT/' scripts/team-apply.sh | nc_strict /dev/stdin > "$TMP/ta14_m2"
+{ grep -qF 'DEPOT_ABSENT' "$TMP/ta14_m2" && ! grep -qF 'refus "DEPOT_ABSENT' "$TMP/ta14_m2"; } \
+  && ok "⑭decies mutant « le tag reste, le refus disparaît » ⇒ ⑭septies rougirait (mutation non no-op : le tag est bien encore là)" \
+  || bad "⑭decies le mutant n'est pas vu (tag=$(grep -cF 'DEPOT_ABSENT' "$TMP/ta14_m2") refus=$(grep -cF 'refus "DEPOT_ABSENT' "$TMP/ta14_m2"))"
 
 # REVUE (D10, écart au brief de cette tâche) : la section ⑯ « mutations : les
 # trois façons de rendre ⑬/⑭ vacantes » qui suivait ICI est SUPPRIMÉE. Elle

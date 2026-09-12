@@ -150,6 +150,15 @@ JENKINS_UI="${JENKINS_UI:?JENKINS_UI requis (ex. http://localhost:18080) — vue
 GIT_HOST_INTERNAL="${GIT_HOST_INTERNAL:-http://gitea:3000}"
 ENVN="${ENVN:-dev}"
 
+# LE VISAGE DE LA FORGE, POSÉ PAR LA SUITE (Ruling 21) — un seul point pour tout
+# le harnais. Cette matrice monte une GITEA et n'invoque que des scripts routés
+# sur l'autorité de forge ; depuis que celle-ci refuse FORGE_KIND_REQUIS au lieu
+# de supposer `gitea`, chacune de ces invocations mourait sur ce refus. C'est le
+# HARNAIS qui connaît sa cible, jamais le script : l'export global suffit, les
+# préfixes `VAR=… bash scripts/…` de cette suite AJOUTENT à l'environnement
+# hérité (aucun `env -i` ici, vérifié).
+export FORGE_KIND=gitea
+
 # Objets JETABLES — aucun tenant réel, aucun dépôt de travail du palier.
 PLAT_ORG="p3t8lab"                  # dépôt plateforme de substitution (cf. écart du gate)
 PLAT_REPO="${PLAT_ORG}/stoa-labs"

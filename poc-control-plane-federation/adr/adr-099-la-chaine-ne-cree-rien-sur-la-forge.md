@@ -153,7 +153,7 @@ binaire des paquets), premier test avant tout réseau, sans défaut depuis le
   nommée et mesurée : le mock webMethods ne re-sérialise pas `apiDefinition`
   (`mocks/webmethods/store.go`, champ `Definition` en `json:"-"`), donc la
   relecture **fail-closed** du tag de posture (P3, ADR-093,
-  `roles/apim_publish_api/tasks/tag.yml`) lit `tags=[]` et refuse
+  `ansible/roles/apim_publish_api/tasks/tag.yml`) lit `tags=[]` et refuse
   `TAG_UNCONFIRMED`. La publication s'arrête **avant** l'activation ; sans API
   active, `api-promote-export` refuse `EXPORT_REFUSED` (piège `isActive`,
   ADR-079) et la promotion refuse `DIGEST_ABSENT`. Ce qui est **quand même**
@@ -167,11 +167,17 @@ binaire des paquets), premier test avant tout réseau, sans défaut depuis le
   direct**, sur des projets pré-créés avec `--no-hook` : rien dans ce lot ne
   démontre que les récepteurs GitLab de `team-publish` et `team-promote` se
   déclenchent réellement. C'est le lot voisin (ADR-098).
-- **Un défaut de visage résiduel subsiste** : `_forge_auth_mode`
-  (`scripts/lib/forge-identity.sh`) garde `${FORGE_KIND:-gitea}` pour dériver
-  l'en-tête d'authentification. Il est **inatteignable depuis la chaîne routée**
-  (`forge_api_init` refuse `FORGE_KIND_REQUIS` d'abord), mais il est le dernier
-  de son espèce et il est daté.
+- **Les défauts de visage qui subsistent sont tous APRÈS un `forge_api_init`
+  réussi, ou dans un outil de poste.** L'inventaire refait en revue finale
+  (2026-09-12) corrige la phrase d'origine, qui disait `_forge_auth_mode` « le
+  dernier » : il y en a trois, plus deux outils exemptés.
+  `_forge_auth_mode` (`scripts/lib/forge-identity.sh`, `${FORGE_KIND:-gitea}`
+  pour dériver l'en-tête), `forge_web_file_url` (`scripts/lib/forge-api.sh`) et
+  `kind()` de `scripts/lib/forge-api.py` (`or "gitea"`) — les deux derniers ne
+  sont atteints qu'**après** un init réussi, donc après que
+  `FORGE_KIND_REQUIS` aurait refusé. Les deux outils exempts (Ruling 22) gardent
+  le leur et échouent **bruyamment** devant un terminal. Aucun n'est atteignable
+  depuis la chaîne routée ; tous sont datés.
 - **Le refus arrive APRÈS la pause nominative, deuxième instance.** Sur
   `ci/Jenkinsfile.team-publish`, le `when` passe sur `api/*`, l'`input`
   nominatif s'ouvre, l'humain saisit son mot de passe d'annuaire — et

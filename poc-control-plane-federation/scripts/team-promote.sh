@@ -320,17 +320,17 @@ GITEA_REQUESTER="$FPR_LOGIN"
 # FAIL-CLOSED, ET REFUSÉ ICI PLUTÔT QU'AU §6bis. La bibliothèque d'identité
 # refuse déjà MERGER_UNKNOWN sur un mergeur vide — mais son message accuse le
 # CÂBLAGE du webhook (« ajouter le champ aux genericVariables »), alors que la
-# cause est ici tout autre : Gitea LUI-MÊME ne nomme aucun mergeur sur cette PR.
+# cause est ici tout autre : la FORGE ELLE-MÊME ne nomme aucun mergeur sur cette PR.
 # On le dit donc à l'endroit exact où on l'apprend, ce qui refuse en prime AVANT
 # les trois clones et le fetch d'archive qui séparent §2 de §6bis — un refus qui
 # ne peut pas ne pas arriver n'a aucune raison d'attendre.
 [ -n "$GITEA_MERGED_BY" ] \
-  || fail "MERGER_UNKNOWN : Gitea ne nomme aucun mergeur sur ${WEBHOOK_REPO}#${PR_NUMBER} (merged_by absent de la réponse) — la garde d'identité ne pourrait RIEN vérifier, refus"
+  || fail "MERGER_UNKNOWN : la forge ne nomme aucun mergeur sur ${WEBHOOK_REPO}#${PR_NUMBER} (merged_by absent de la réponse) — la garde d'identité ne pourrait RIEN vérifier, refus"
 # L'auteur de la PR n'alimente AUCUNE garde (cf. §6bis : le demandeur, c'est
 # `promoted_by` du marqueur) — il est journalisé comme diagnostic, et parce que
 # le voir valoir `ci` build après build est la façon la plus rapide de
 # comprendre pourquoi les quatre yeux ne mordent pas encore.
-echo "réconciliation Gitea OK : ${WEBHOOK_REPO}#${PR_NUMBER} merged, ${PR_BRANCH}->${TEAM_BASE}, mergeur '${GITEA_MERGED_BY}', PR ouverte par '${GITEA_REQUESTER}'"
+echo "réconciliation forge OK : ${WEBHOOK_REPO}#${PR_NUMBER} merged, ${PR_BRANCH}->${TEAM_BASE}, mergeur '${GITEA_MERGED_BY}', PR ouverte par '${GITEA_REQUESTER}'"
 
 # ── 3. AUTORITÉ PAR TOPOLOGIE : quelle équipe déclare CE dépôt ? ─────────────
 # Le webhook dit QUEL DÉPÔT a mergé (repository.full_name) — jamais quelle

@@ -297,7 +297,9 @@ else
 fi
 BODY="${VERDICT}
 
-Au merge, team-apply : crée le dépôt \`${REPO}\` (squelette ADR-076) puis pose
+Au merge, team-apply : INITIALISE le dépôt \`${REPO}\` avec le squelette ADR-076 —
+le dépôt est PRÉ-CRÉÉ VIDE par le client (D10) ; s'il est absent, le merge
+refuse \`DEPOT_ABSENT\`, nommé sur cette PR, et rien n'est poussé. Puis pose
 user/groupe/team gateway + KV/policy Vault (rôle apim_team_onboard, idempotent)."
 printf '%s\n' "$BODY" > "$WORK/plan-comment.md"
 # Un commentaire par RÔLE, sous marqueur : un rejeu remplace le verdict du plan,

@@ -2029,11 +2029,13 @@ non-régression `gwt` par `test-a6-live.sh` et `test-a7-live.sh` inchangés ;
 `gitlab-plugin` ajouté à `ci/jenkins/Dockerfile` pour qu'un lab reconstruit
 porte les deux récepteurs.
 
-**Dettes** : les **quatre** Jenkinsfile de la chaîne API (`team-publish`,
-`team-promote`, `publish-api`, `provisioning-request`) portent encore un bloc
-déclaratif — même motif à rejouer avant tout client GitLab sur la chaîne
-producteur. (`team-apply` en est sorti le 2026-09-12 : plus de `triggers {}` ni
-d'`options {}`, XML à `<properties/>`, identités relues sur la forge.) ; un vrai secret par site pour le Secret Token (credential +
+**Dettes** : **deux** Jenkinsfile de la chaîne API (`publish-api`,
+`provisioning-request`) portent encore un bloc déclaratif — même motif à rejouer
+avant tout client GitLab sur la chaîne producteur. (`team-apply` en est sorti le
+2026-09-12 : plus de `triggers {}` ni d'`options {}`, XML à `<properties/>`,
+identités relues sur la forge ; `team-publish` et `team-promote` en sont sortis
+de même — phase 2 + L6 phase 2 —, vérifié le 2026-09-12 : `triggers {}` et
+`options {}` absents des deux, tout passe par `properties()`.) ; un vrai secret par site pour le Secret Token (credential +
 `withCredentials` avant le `properties()`) ; `FORGE_CRED_KIND` classé optionnel
 mais refusé si vide par onze pipelines.
 
@@ -2129,19 +2131,33 @@ read-back passe par `forge_api_init`, donc `FORGE_KIND_REQUIS`.
 - **`scripts/setup-team-repos.sh <owner>/<repo> [--print] [--no-hook] [--no-protect]`**
   — pré-crée le dépôt d'équipe VIDE, son ou ses webhooks et sa protection, sur
   les **deux** visages, idempotent.
-  Knobs : `FORGE_KIND` `GIT_HOST` `FORGE_SECRET` `WEBHOOK_KIND` `GIT_BASE`
+  Knobs : `FORGE_KIND` `GIT_HOST` `FORGE_SECRET` `WEBHOOK_KIND`
+  `WEBHOOK_SSL_VERIFY` `GIT_BASE`
   `TEAM_PUBLISH_WEBHOOK_URL` `TEAM_PROMOTE_WEBHOOK_URL`
   `TEAM_PUBLISH_WEBHOOK_SECRET` `TEAM_PROMOTE_WEBHOOK_SECRET`
   `PROTECT_PUSH_WHITELIST`. **`GIT_BASE` ABSENT** signifie « laisser la forge
   attribuer sa propre branche par défaut au dépôt créé » — elle l'annonce dans
   sa réponse, et c'est cette valeur-là qui est relue, jamais un littéral deviné.
+  **`WEBHOOK_SSL_VERIFY`** (défaut `true`) porte l'`enable_ssl_verification` du
+  hook GitLab : il était **en dur à `false`**, donc désarmé chez tout client
+  sans que rien ne le dise (revue finale, 2026-09-12). `--print` l'affiche sur
+  la ligne du hook sous le visage `gitlab`.
   Refus nommés : `REPO_REQUIS` `REPO_INVALIDE` `BRANCHE_INVALIDE`
   `BRANCHE_PAR_DEFAUT_INDECIDABLE` `SECRET_FORGE_REQUIS` `FORGE_KIND_INCONNU`
+  `WEBHOOK_SSL_VERIFY_INVALIDE`
   `ARGUMENT_INCONNU` `CREATION_ECHEC` `REPO_GET` `HOOK_ECHEC`
   `PROTECTION_ECHEC`. `REPO_INVALIDE` est validé **avant `--print` et avant tout
   réseau** : le nom finit interpolé dans six corps JSON, et un nom forgé y
   injecterait des clés arbitraires sans rien casser de visible. Les corps JSON
-  sont construits par `json.dumps`, convention du dépôt.
+  sont construits par `json.dumps`, convention du dépôt — et **tout corps qui
+  porte un secret** (les hooks) est ÉCRIT dans un fichier 0600 puis passé par
+  `-d @fichier` : `-d "$(…)"` mettait le JSON fini, secret compris, dans l'argv
+  de `curl`, que `ps -Aww` lit (revue finale, 2026-09-12).
+  **Sur Gitea, un dépôt VIDE ne reçoit pas sa protection tout de suite** : la
+  branche par défaut n'existe pas encore, l'outil le DIT (« protection <base> :
+  différée (branche absente — dépôt vide) : repasser après le squelette ») et
+  **sort 0**. Repasser l'outil après que `team-apply` a poussé le squelette — le
+  `OK` final ne promet donc pas « protection posée » dans ce cas-là.
   Le secret requis : Gitea `write:organization,write:repository` ; GitLab un PAT
   `api`, **Owner du groupe** (le groupe lui-même est un prérequis, posé par
   `setup-gitlab-lab.sh`).
@@ -2173,15 +2189,29 @@ source pas `forge-api.sh` (transport binaire, jamais l'init JSON), et sans ce
 refus son `case` aurait été le **dernier** défaut de visage silencieux de toute
 la chaîne.
 
+**Registre servi par un object storage : géré, ce n'est plus une limite** (revue
+finale, 2026-09-12). Avec `proxy_download=false` — le défaut de GitLab.com et
+des installations HA — le `GET` du paquet rend **302** vers une URL **présignée**
+au lieu des octets. La lib refusait alors `STORE_HTTP_302 : l'archive pinnée
+n'est pas au registre (export jamais poussé ?)` : une panne dure **avec un faux
+diagnostic**, sur un registre parfaitement sain. Elle suit désormais **UNE**
+redirection et re-lit la `Location` **SANS l'en-tête d'authentification** —
+`curl -L` nu aurait livré le jeton de forge à l'hôte de stockage. La sonde
+d'existence du `push` emprunte le même chemin, donc « présent derrière un 302 »
+reste le no-op idempotent. Au-delà d'une redirection, ou sans `Location`, le
+code `3xx` ressort tel quel et le refus le **nomme**. Preuves ⑮/⑯ de
+`scripts/test-archive-store.sh`, la seconde requête étant mesurée **sans**
+`PRIVATE-TOKEN` ni `Authorization` dans le journal du stub.
+
 ### Preuves
 
 | Preuve | Commande | Résultat |
 |---|---|---|
 | Les verbes, deux visages, mutations champ par champ | `bash scripts/test-forge-api.sh` | **134/134** |
 | Les mêmes verbes contre les forges RÉELLES du lab | `bash scripts/test-forge-api-live.sh` | **43/43** (GitLab CE **et** Gitea) |
-| Le registre à deux échelles | `bash scripts/test-archive-store.sh` | **29 PASS / 0** |
+| Le registre à deux échelles, et la `Location` présignée relue sans auth (⑮/⑯) | `bash scripts/test-archive-store.sh` | **31 PASS / 0** |
 | **Le registre générique GitLab, EN DIRECT** (niveau lib, Task 13) | `archive_store_push` / `archive_store_fetch` contre `ci/archives` (GitLab 17.11) | push + rejeu **no-op nommé** + `fetch` aux **octets identiques**, les deux refus joués |
-| L'outil de poste, deux visages | `bash scripts/test-setup-team-repos.sh` | **11/11** |
+| L'outil de poste, deux visages, et **aucun secret de hook en argv** (faux `curl`) | `bash scripts/test-setup-team-repos.sh` | **14/14** |
 | La conduite D10 (⑭), les mutants, les knobs de site | `bash scripts/test-palier-retention.sh` | **141 PASS / 0** |
 | Le câblage de `team-apply` | `bash scripts/test-team-apply-wiring.sh` | **108/108** |
 | **La chaîne producteur EN DIRECT sur le GitLab CE du lab** | `bash scripts/test-producer-chain-gitlab.sh` | **20/20 sur deux runs consécutifs** du fichier commité `c88353d`, `rc 0`, **8 preuves SKIP** avec leur cause |
@@ -2261,14 +2291,43 @@ verdicts.
   connaît pas** (`setup-jenkins-globals.sh`) : arbitrage à rendre — les déclarer
   ou les exempter nommément.
 - **`scripts/test-p2-posture-producteur.sh` reste hors `lint-ci`** (sa section G
-  est live) et porte 42 constats `shellcheck` non traités.
-- **`_forge_auth_mode` (`scripts/lib/forge-identity.sh`) garde
-  `${FORGE_KIND:-gitea}`** pour dériver l'en-tête d'authentification : dernier
-  défaut de visage du dépôt, **inatteignable depuis la chaîne routée**
-  (`forge_api_init` refuse `FORGE_KIND_REQUIS` d'abord), mais daté.
+  est live) et porte **une quarantaine** de constats `shellcheck` non traités
+  (**42** mesurés le 2026-09-12, `shellcheck -x -f gcc`) — un chiffre qui dérive
+  à chaque édition, d'où la date.
+- **Les défauts de visage qui subsistent sont tous APRÈS un `forge_api_init`
+  réussi, ou dans un outil de poste** (inventaire refait le 2026-09-12 : dire
+  « `_forge_auth_mode` est le dernier » était faux). Ce sont
+  `_forge_auth_mode` (`scripts/lib/forge-identity.sh`), `forge_web_file_url`
+  (`scripts/lib/forge-api.sh`, atteinte après l'init) et `kind()` de
+  `scripts/lib/forge-api.py` (`or "gitea"`, atteinte après l'init) — plus les
+  deux outils exemptés nommément (Ruling 22). Aucun n'est atteignable **avant**
+  le refus `FORGE_KIND_REQUIS` de l'autorité ; tous restent datés.
 - **`scripts/api-request.sh` initialise la forge AVANT ses `CHAMP_REQUIS`** :
-  un formulaire incomplet paie un aller-retour réseau avant de s'entendre dire
-  quel champ manque.
+  l'ordre ne coûte **qu'un message** — `forge_api_init` ne fait **aucun** appel
+  réseau (rectifié le 2026-09-12 : « un aller-retour réseau » était faux). Sur
+  un job mal configuré, l'opérateur lit `FORGE_KIND_REQUIS` là où il attendait
+  `CHAMP_REQUIS`.
+- **`scripts/seed-governance-chain.sh:82` met le jeton de forge dans l'argv de
+  `git`** (`-c http.extraHeader="$AUTH"`), sous un commentaire qui affirme le
+  contraire, et ne refuse `FORGE_KIND` qu'**après** le clone et le push (§④).
+  Outil de poste **exempt**, et l'enveloppe L3 `git_base_avec_basic` existe déjà :
+  ticket séparé (revue finale, 2026-09-12).
+- **`scripts/setup-team-onboard-prereqs.sh:102` minte et stocke encore
+  `gitea-org-admin` dans Vault** (et accorde sa policy de lecture) alors que
+  ADR-099 dit que plus personne ne le lit. Outil de prérequis du lab, consommé
+  par des suites **live** non rejouables ce soir : à retirer **avec sa preuve**
+  (revue finale, 2026-09-12).
+- **`ci/lint-forge-knobs.sh:89` ne reconnaît que `bash scripts/x.sh` et
+  `sh scripts/x.sh`** : une invocation `./scripts/x.sh` ou
+  `"$WORKSPACE/scripts/x.sh"` compterait **zéro** couple, en silence. Signalé à
+  la session du lot voisin (L6), 2026-09-12.
+- **Deux oracles d'ABSENCE seuls** — B.7b de `scripts/test-app-request-a1.sh` et
+  la 15e assertion D de `scripts/test-p2-posture-producteur.sh` : verts « pour la
+  bonne raison » aujourd'hui, mais un oracle positif manque à chacun (revue
+  finale, 2026-09-12).
+- **Fragilité S.5 de `scripts/test-forge-api.sh`** : le tag est greppé sur le
+  fichier **entier**, commentaires compris — une mention en prose suffirait à le
+  verdir (revue finale, 2026-09-12).
 - **`setup-team-repos.sh` peut afficher « HEAD annoncée : ? »** juste avant de
   refuser `BRANCHE_PAR_DEFAUT_INDECIDABLE` — le message précède le refus, il ne
   le contredit pas, mais il se lit mal.

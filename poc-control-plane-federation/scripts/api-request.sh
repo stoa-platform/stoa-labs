@@ -471,11 +471,11 @@ fi
 # base que le clone n'a pas utilisée était exactement le défaut du 2026-09-09.
 TEAM_URL="${GIT_HOST}/${REPO_FULL}.git"
 gbase git_base_of "$TEAM_URL" >/dev/null \
-  || fail "REPO_INACCESSIBLE : '${REPO_FULL}' déclaré pour '${TEAM}' mais sa branche par défaut est indéterminable sur ${GIT_HOST} (cause ci-dessus) — l'onboarding (team-apply) a-t-il bien créé le dépôt ?"
+  || fail "REPO_INACCESSIBLE : '${REPO_FULL}' déclaré pour '${TEAM}' mais sa branche par défaut est indéterminable sur ${GIT_HOST} (cause ci-dessus) — le client a-t-il créé le dépôt (D10) et team-apply l'a-t-il initialisé ?"
 TEAM_BASE="$GIT_BASE_OF"
 echo "[2/5] clone ${REPO_FULL}@${TEAM_BASE} (dépôt de l'équipe)"
 gclone --depth 1 -b "$TEAM_BASE" "$TEAM_URL" "$WORK/team" \
-  || fail "REPO_INACCESSIBLE : '${REPO_FULL}' déclaré pour '${TEAM}' mais introuvable/inaccessible sur ${GIT_HOST} — l'onboarding (team-apply) a-t-il bien créé le dépôt ?"
+  || fail "REPO_INACCESSIBLE : '${REPO_FULL}' déclaré pour '${TEAM}' mais introuvable/inaccessible sur ${GIT_HOST} — le client a-t-il créé le dépôt (D10) et team-apply l'a-t-il initialisé ?"
 
 PUB_REL="apis/${API_NAME}.publish.yml"
 SPEC_REL="apis/${API_NAME}.openapi.yaml"

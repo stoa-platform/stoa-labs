@@ -173,7 +173,7 @@ case "$REPO_FULL" in
 esac
 
 # ── 2. le dépôt d'équipe : LU, jamais créé (D10 profond, ADR-099) ────────────
-# Le client crée le dépôt VIDE, son webhook vers team-publish et la protection de
+# Le client crée le dépôt VIDE, son ou ses webhooks vers les récepteurs et la protection de
 # sa branche par défaut (prérequis de forge, ENVIRONNEMENTS.md § Prérequis côté
 # client). Ici : repo_get par l'autorité de forge, sous le secret de forge
 # ORDINAIRE (le jeton org-admin lu dans Vault n'existe plus), puis trois états :
@@ -200,7 +200,7 @@ if [ -n "$REPO_FULL" ]; then
     || fail "lecture du dépôt d'équipe ${REPO_FULL} sur la forge (cause ci-dessus)"
   PUSH_SKELETON=0
   if [ "$DEPOT_EXISTS" != 1 ]; then
-    refus "DEPOT_ABSENT : le dépôt ${REPO_FULL} n'existe pas sur ${GIT_HOST} (ou n'est pas visible pour ce jeton) — le client le crée VIDE, avec son webhook vers team-publish et la protection de sa branche par défaut (prérequis D10, ENVIRONNEMENTS.md § Prérequis côté client), puis rejoue ce merge. Rien n'a été poussé."
+    refus "DEPOT_ABSENT : le dépôt ${REPO_FULL} n'existe pas sur ${GIT_HOST} (ou n'est pas visible pour ce jeton) — le client le crée VIDE, avec son ou ses webhooks vers les récepteurs (un seul sous gwt, deux sous gitlab : un par job) et la protection de sa branche par défaut (prérequis D10, ENVIRONNEMENTS.md § Prérequis côté client), puis rejoue ce merge. Rien n'a été poussé."
   elif [ "$DEPOT_EMPTY" = 1 ]; then
     PUSH_SKELETON=1
     SKEL_BRANCH="${DEPOT_DEFAULT_BRANCH:-$GIT_BASE}"

@@ -130,6 +130,16 @@ WM_GATEWAY_URL="${WM_GATEWAY_URL:?WM_GATEWAY_URL requis, SANS DÉFAUT. Le port 5
 JENKINS_UI="${JENKINS_UI:?JENKINS_UI requis (ex. http://localhost:18080) — preuve 7, job app-request}"
 
 GIT_REPO="${GIT_REPO:-ci/stoa-labs}"
+
+# LE VISAGE DE LA FORGE, POSÉ PAR LA SUITE (Ruling 21) — un seul point pour tout
+# le harnais. Cette matrice monte une GITEA et n'invoque que des scripts routés
+# sur l'autorité de forge ; depuis que celle-ci refuse FORGE_KIND_REQUIS au lieu
+# de supposer `gitea`, chacune de ces invocations mourait sur ce refus. C'est le
+# HARNAIS qui connaît sa cible, jamais le script : l'export global suffit, les
+# préfixes `VAR=… bash scripts/…` de cette suite AJOUTENT à l'environnement
+# hérité (aucun `env -i` ici, vérifié).
+export FORGE_KIND=gitea
+
 TEAM="probe-p2"
 APP7="p2t8appreq"
 # Déclarées ICI (avant la preuve 1) — pas dans le bloc de la preuve 10 — pour

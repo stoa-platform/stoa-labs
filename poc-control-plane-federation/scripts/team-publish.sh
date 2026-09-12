@@ -244,7 +244,7 @@ GIT_REPO="$WEBHOOK_REPO" forge_kv FPR pr_get "$PR_NUMBER" \
   || fail "GITEA_RECONCILE_ECHEC : la forge n'a pas confirmé la PR #${PR_NUMBER} de ${WEBHOOK_REPO} (cause ci-dessus)"
 [ "$FPR_MERGED" = 1 ] && [ "$FPR_MERGE_SHA" = "$MERGE_SHA" ] && [ "$FPR_HEAD_REF" = "$PR_BRANCH" ] && [ "$FPR_BASE_REF" = "$TEAM_BASE" ] \
   || fail "PAYLOAD_PERIME : la forge dit merged=${FPR_MERGED} merge_sha=${FPR_MERGE_SHA} head=${FPR_HEAD_REF} base=${FPR_BASE_REF} — le payload disait ${MERGE_SHA} ${PR_BRANCH} ${TEAM_BASE}"
-echo "réconciliation Gitea OK : ${WEBHOOK_REPO}#${PR_NUMBER} merged, ${PR_BRANCH}->${TEAM_BASE}"
+echo "réconciliation forge OK : ${WEBHOOK_REPO}#${PR_NUMBER} merged, ${PR_BRANCH}->${TEAM_BASE}"
 
 # ── 3. AUTORITÉ PAR TOPOLOGIE : quelle équipe déclare CE dépôt ? ─────────────
 # providers.<env>.yml est le dépôt PLATEFORME (GIT_REPO), lu FRAIS sur SA
