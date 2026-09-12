@@ -89,6 +89,7 @@ done
 [ "$n" -eq 0 ] && ok "A.1 $(printf '%s\n' "$ROUTES" | wc -l | tr -d ' ') fichiers routés : aucun littéral de forge (API, en-tête, urlopen, paquets, liens Gitea)"
 # archive-store : /api/packages et l'en-tête délégué lui sont permis ; le reste, non.
 for f in $AUTORITE_PAQUETS; do
+  [ -f "$f" ] || { ko "A.2 $f absent de l'arbre — la seconde autorité des paquets a disparu (liste AUTORITE_PAQUETS fausse)"; continue; }
   reste="$(motifs_dans "$f" | grep -vE '^/api/packages$' || true)"
   if [ -z "$reste" ]; then ok "A.2 $f (seconde autorité, paquets) ne porte que /api/packages"
   else ko "A.2 $f porte : $(printf '%s' "$reste" | tr '\n' ' ')"; fi
