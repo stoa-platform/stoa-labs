@@ -1270,6 +1270,12 @@ Donc : **globale REQUISE**, les **douze** Jenkinsfile porteurs déclarent
 n'était pas cosmétique : sans ça le refus était **inatteignable**, puisque le
 pipeline fournissait toujours une valeur.
 
+Le refus est **identique que `FORGE_KIND` soit absente ou vide** —
+`forge_api_init` teste `[ -n "${FORGE_KIND:-}" ]`, qui ne distingue pas les deux
+— et c'est le **premier** test de l'init, avant `FORGE_KIND_INCONNU`,
+`GIT_HOST_REQUIS`, `GIT_REPO_REQUIS`, et donc avant tout appel réseau : l'ordre
+des refus est stable (visage, puis hôte, puis dépôt).
+
 ⚠ **L'ORDRE DE POSE COMPTE, une fois de plus** : poser la globale
 (`setup-jenkins-globals.sh`) AVANT de rejouer les jobs. Une globale absente ne
 fait plus « parler Gitea », elle fait **refuser** — c'est le but, et ça vaut

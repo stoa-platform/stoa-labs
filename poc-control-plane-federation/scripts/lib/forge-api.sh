@@ -52,11 +52,16 @@ else
   return 1
 fi
 
-# forge_api_init — vérifie le minimum AVANT le premier appel réseau et pose les
-# défauts qui dépendent du visage (l'en-tête d'auth par défaut de GitLab est
-# PRIVATE-TOKEN, celui de Gitea « Authorization: token »).
+# forge_api_init — vérifie le minimum AVANT le premier appel réseau — le visage
+# d'abord, sans défaut — et pose les défauts qui dépendent du visage (l'en-tête
+# d'auth par défaut de GitLab est PRIVATE-TOKEN, celui de Gitea « Authorization:
+# token »).
 forge_api_init() {
-  FORGE_KIND="${FORGE_KIND:-gitea}"
+  # Le visage n'a PAS de défaut. Un Jenkinsfile CLIENT qui ne le transmet pas
+  # parlerait /api/v1 à un GitLab (incident 2026-09-10) — et cette copie-là,
+  # aucune porte du dépôt ne la voit. Refus nommé, avant tout réseau ; l'ordre
+  # est stable : visage, puis hôte, puis dépôt (décision du 2026-09-12).
+  [ -n "${FORGE_KIND:-}" ] || { echo "REFUS: FORGE_KIND_REQUIS : visage de la forge (gitea|gitlab) — aucun défaut, le job doit le transmettre (environment{} du Jenkinsfile, globale Jenkins FORGE_KIND)" >&2; return 2; }
   case "$FORGE_KIND" in
     gitea|gitlab) ;;
     *) echo "REFUS: FORGE_KIND_INCONNU : '$FORGE_KIND' — attendu gitea ou gitlab" >&2; return 2 ;;

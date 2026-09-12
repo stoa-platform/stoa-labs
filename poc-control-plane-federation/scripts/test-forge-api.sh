@@ -748,6 +748,27 @@ p11 - "$TMP/libP/forge-api.sh"
   || ko "P.11c le mutant passe : fragment=$(grep -cF -- "$FRAG" "$TMP/err") : $(grep -o 'début : .*' "$TMP/err" | head -1 | cut -c1-160)"
 set_ctl "$PRS"
 
+echo "═══ S. FORGE_KIND absent = REFUS à l'init — fail-closed : la copie client d'un Jenkinsfile est hors de portée de toute porte ═══"
+( cd "$REPO" && env -i PATH="$PATH" HOME="$HOME" GIT_HOST="$GITLAB" GIT_REPO=ci/stoa-labs FORGE_SECRET=t-svc bash -c '. scripts/lib/forge-api.sh && forge_api_init && forge whoami' ) > "$TMP/out" 2> "$TMP/err"; echo $? > "$TMP/rc"
+[ "$(rc)" = 2 ] && grep -q 'REFUS: FORGE_KIND_REQUIS' "$TMP/err" \
+  && ok "S.1 sans FORGE_KIND ⇒ rc 2 + FORGE_KIND_REQUIS (jamais le défaut gitea)" || ko "S.1 rc $(rc) : $(cause)"
+[ ! -s "$TMP/out" ] && ! grep -q 'HTTP' "$TMP/err" \
+  && ok "S.2 aucun appel réseau tenté sans visage (stdout vide, aucune trace HTTP)" || ko "S.2 un appel est parti sans visage"
+( cd "$REPO" && env -i PATH="$PATH" HOME="$HOME" FORGE_KIND= GIT_HOST="$GITLAB" GIT_REPO=ci/stoa-labs FORGE_SECRET=t-svc bash -c '. scripts/lib/forge-api.sh && forge_api_init' ) 2> "$TMP/err"; echo $? > "$TMP/rc"
+[ "$(rc)" = 2 ] && grep -q 'FORGE_KIND_REQUIS' "$TMP/err" \
+  && ok "S.3 FORGE_KIND vide vaut absent (Jenkins retire une variable vide : même refus)" || ko "S.3 la chaîne vide passe l'init"
+( cd "$REPO" && env -i PATH="$PATH" HOME="$HOME" GIT_REPO=ci/stoa-labs FORGE_SECRET=t-svc bash -c '. scripts/lib/forge-api.sh && forge_api_init' ) 2> "$TMP/err"; echo $? > "$TMP/rc"
+head -1 "$TMP/err" | grep -q 'FORGE_KIND_REQUIS' \
+  && ok "S.4 sans visage NI hôte, c'est le visage qui est nommé en premier (l'ordre des refus est stable)" || ko "S.4 premier refus : $(head -1 "$TMP/err")"
+mkdir -p "$TMP/libS"; cp "$PY" "$TMP/libS/"
+# shellcheck disable=SC2016  # motif sed cherché DANS la lib, jamais une expansion
+sed 's/^  \[ -n "\${FORGE_KIND:-}" \] || { echo "REFUS: FORGE_KIND_REQUIS.*$/  FORGE_KIND="${FORGE_KIND:-gitea}"/' "$LIB" > "$TMP/libS/forge-api.sh"
+grep -q 'FORGE_KIND_REQUIS' "$TMP/libS/forge-api.sh" && ko "S.5 le mutant n'a pas mordu (motif sed périmé)" || {
+  # shellcheck disable=SC2016  # le bash enfant reçoit $1, à dessein
+  ( cd "$REPO" && env -i PATH="$PATH" HOME="$HOME" GIT_HOST="$GITLAB" GIT_REPO=ci/stoa-labs FORGE_SECRET=t-svc bash -c '. "$1" && forge_api_init' _ "$TMP/libS/forge-api.sh" ) 2>/dev/null; rc=$?
+  [ "$rc" = 0 ] && ok "S.5 mutant « défaut gitea réintroduit » : l'init passerait sans visage ⇒ S.1 rougirait (l'épreuve mord)" || ko "S.5 le mutant refuse aussi (rc $rc) : S.1 ne mesure pas le défaut"
+}
+
 echo
 echo "═══════════════════════════════════════════════════"
 printf 'RÉSULTAT : %d/%d\n' "$PASS" $((PASS + FAIL))
