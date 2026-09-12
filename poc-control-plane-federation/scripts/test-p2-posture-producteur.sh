@@ -172,7 +172,7 @@ echo "═══ D — les GARDES d'api-request.sh (hors ligne, AVANT tout geste 
 guard(){ # $1=label $2=tag ; reste = env
   local label="$1" tag="$2"; shift 2
   local out rc
-  out=$(env -i PATH="$PATH" GIT_HOST="http://127.0.0.1:1" GITEA_TOKEN=dummy \
+  out=$(env -i PATH="$PATH" GIT_HOST="http://127.0.0.1:1" GITEA_TOKEN=dummy FORGE_KIND=gitea \
         GOVERNANCE_REPO="$GOVERNANCE_REPO" GOVERNANCE_PATH="$GOVERNANCE_PATH" \
         LABCTL_BIN="$LABCTL_BIN" ACTION=create TEAM=probe API_NAME=probe API_VERSION=1.0.0 \
         OPENAPI_SPEC='{"openapi":"3.0.0"}' INBOUND_MODE=jwt \
@@ -197,7 +197,7 @@ guard "autorité absente"             "POSTURE_AUTORITE_ABSENTE"      LABCTL_BIN
 # enregistrée (le cas normal d'un `create`) doit pouvoir ouvrir sa PR et y LIRE
 # pourquoi elle est refusée. Un LABCTL_CLASSIFICATION_SOURCE ambiant ne doit donc
 # rien changer à cette étape.
-OUT=$(env -i PATH="$PATH" GIT_HOST="http://127.0.0.1:1" GITEA_TOKEN=dummy \
+OUT=$(env -i PATH="$PATH" GIT_HOST="http://127.0.0.1:1" GITEA_TOKEN=dummy FORGE_KIND=gitea \
       GOVERNANCE_REPO="$GOVERNANCE_REPO" GOVERNANCE_PATH="$GOVERNANCE_PATH" \
       LABCTL_BIN="$LABCTL_BIN" LABCTL_CLASSIFICATION_SOURCE="$REG" LABCTL_PROJECT=accounts-team \
       ACTION=create TEAM=probe API_NAME=api-neuve API_VERSION=1.0.0 \
@@ -367,7 +367,7 @@ YML
     unset AUTH_B64
     sleep 3   # settle : Gitea indexe l'objet avant l'appel API (motif test-api-request.sh)
 
-    export GIT_HOST="$GH" GIT_REPO="${PLATORG}/stoa-labs" GIT_WEB_HOST="$GH" GITEA_TOKEN="$GITEA_TOKEN"
+    export GIT_HOST="$GH" GIT_REPO="${PLATORG}/stoa-labs" GIT_WEB_HOST="$GH" GITEA_TOKEN="$GITEA_TOKEN" FORGE_KIND=gitea
     export GOVERNANCE_REPO="${PLATORG}/governance" GOVERNANCE_PATH="governance/classifications.yaml"
     export LABCTL_BIN
     SPEC='openapi: "3.0.0"
@@ -465,7 +465,7 @@ PLAY="ansible-playbook -i ansible/inventory.lab.ini ansible/test-posture-guards.
 # variable, puis le grep — piège déjà payé ailleurs dans ce dépôt.
 temoin_champ_requis(){
   local out
-  out=$(env -i PATH="$PATH" GIT_HOST="http://127.0.0.1:1" GITEA_TOKEN=dummy \
+  out=$(env -i PATH="$PATH" GIT_HOST="http://127.0.0.1:1" GITEA_TOKEN=dummy FORGE_KIND=gitea \
     GOVERNANCE_REPO="$GOVERNANCE_REPO" GOVERNANCE_PATH="$GOVERNANCE_PATH" \
     LABCTL_BIN="$LABCTL_BIN" ACTION=create TEAM=probe API_NAME=probe API_VERSION=1.0.0 \
     OPENAPI_SPEC='{"openapi":"3.0.0"}' INBOUND_MODE=jwt CLASSIFICATION='' EXPOSURE=external \
