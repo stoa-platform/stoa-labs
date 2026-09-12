@@ -392,6 +392,15 @@ w gitea http://gitea:3000 http://localhost:13000 'forge_web_file_url 0123abc poc
 w gitlab http://gitlab "" 'forge_web_file_url 0123abc poc/ansible/providers.dev.yml'
 [ "$(cat "$TMP/out")" = http://gitlab/ci/stoa-labs/-/blob/0123abc/poc/ansible/providers.dev.yml ] && ok "W.5 gitlab : {web}/{repo}/-/blob/{sha}/{chemin}" || ko "W.5 $(cat "$TMP/out")"
 
+echo "═══ Q. forge_auth_write dérive l'en-tête du VISAGE quand FORGE_API_AUTH est absente ═══"
+# shellcheck disable=SC2016  # le bash enfant reçoit $1, à dessein
+q(){ ( cd "$REPO" && env -i PATH="$PATH" HOME="$HOME" FORGE_KIND="$1" FORGE_API_AUTH="${2:-}" FORGE_USER="${3:-}" bash -c '. scripts/lib/forge-identity.sh && forge_auth_write s3cret "$1" && cat "$1"' _ "$TMP/hdr" ) > "$TMP/out" 2> "$TMP/err"; echo $? > "$TMP/rc"; }
+q gitlab ""; [ "$(rc)" = 0 ] && [ "$(cat "$TMP/out")" = 'PRIVATE-TOKEN: s3cret' ] && ok "Q.1 FORGE_KIND=gitlab sans FORGE_API_AUTH ⇒ PRIVATE-TOKEN (dérivé, comme forge-api.py)" || ko "Q.1 rc $(rc) : $(cat "$TMP/out") $(cause)"
+q gitea "";  [ "$(cat "$TMP/out")" = 'Authorization: token s3cret' ] && ok "Q.2 FORGE_KIND=gitea sans FORGE_API_AUTH ⇒ Authorization: token" || ko "Q.2 $(cat "$TMP/out")"
+q gitlab bearer; [ "$(rc)" = 0 ] && [ "$(cat "$TMP/out")" = 'Authorization: Bearer s3cret' ] && ok "Q.3 FORGE_API_AUTH=bearer accepté (forge-api.py l'acceptait, la lib shell le refusait)" || ko "Q.3 rc $(rc) : $(cause)"
+q gitlab basic; [ "$(rc)" = 2 ] && grep -q FORGE_USER_REQUIS "$TMP/err" && ok "Q.4 basic sans FORGE_USER ⇒ FORGE_USER_REQUIS (inchangé)" || ko "Q.4 rc $(rc)"
+q gitlab oauth; [ "$(rc)" = 2 ] && grep -q 'token, private-token, bearer ou basic' "$TMP/err" && ok "Q.5 mode inconnu ⇒ la liste des modes nomme bearer" || ko "Q.5 $(cause)"
+
 echo "═══ J. le DISCRIMINANT : le visage n'est pas décoratif ═══"
 f gitea "$GITLAB" pr_find_open provision/appa-rec
 [ "$(rc)" = 2 ] && grep -q '302' "$TMP/err" && grep -q '/users/sign_in' "$TMP/err" && grep -qi 'redirige' "$TMP/err" && ! grep -q 'Traceback' "$TMP/err" \

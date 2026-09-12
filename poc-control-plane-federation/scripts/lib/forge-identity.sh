@@ -61,31 +61,46 @@ _forge_identity_forge() {
     || { echo "ERREUR: scripts/lib/forge-api.sh introuvable ou illisible (forge_login en dépend)" >&2; return 1; }
 }
 
+# Le MODE d'authentification : FORGE_API_AUTH si posée, sinon DÉRIVÉ du visage —
+# PRIVATE-TOKEN sous GitLab, « Authorization: token » sous Gitea — exactement ce
+# que forge-api.py:212 fait ; avant le 2026-09-12 cette lib supposait `token`
+# quel que soit le visage (setup-repo-protections, archive-store, api-promote-*
+# parlaient Gitea à un GitLab). `bearer` est accepté, comme dans forge-api.py.
+_forge_auth_mode() {
+  local m="${FORGE_API_AUTH:-}"
+  if [ -z "$m" ]; then case "${FORGE_KIND:-gitea}" in gitlab) m=private-token ;; *) m=token ;; esac; fi
+  printf '%s' "$m" | tr '[:upper:]' '[:lower:]'
+}
+
 forge_auth_write() {
-  local secret="$1" hf="$2" mode="${FORGE_API_AUTH:-token}" u b64
+  local secret="$1" hf="$2" mode u b64
+  mode="$(_forge_auth_mode)"
   case "$mode" in
     token)         printf 'Authorization: token %s\n' "$secret" > "$hf" ;;
     private-token) printf 'PRIVATE-TOKEN: %s\n' "$secret" > "$hf" ;;
+    bearer)        printf 'Authorization: Bearer %s\n' "$secret" > "$hf" ;;
     basic)
       u="${FORGE_USER:-}"
       [ -n "$u" ] || { echo "REFUS: FORGE_USER_REQUIS : FORGE_API_AUTH=basic exige FORGE_USER (l'utilisateur du couple)" >&2; return 2; }
       b64=$(printf '%s:%s' "$u" "$secret" | base64 | tr -d '\n') || return 1
       printf 'Authorization: Basic %s\n' "$b64" > "$hf" ;;
-    *) echo "REFUS: FORGE_API_AUTH_INCONNU : '$mode' — attendu token, private-token ou basic" >&2; return 2 ;;
+    *) echo "REFUS: FORGE_API_AUTH_INCONNU : '$mode' — attendu token, private-token, bearer ou basic" >&2; return 2 ;;
   esac
 }
 
 forge_auth_header() {
-  local sf="$1" hf="$2" mode="${FORGE_API_AUTH:-token}" u b64
+  local sf="$1" hf="$2" mode u b64
+  mode="$(_forge_auth_mode)"
   case "$mode" in
     token)         { printf 'Authorization: token '; tr -d '\r\n' < "$sf"; printf '\n'; } > "$hf" ;;
     private-token) { printf 'PRIVATE-TOKEN: ';       tr -d '\r\n' < "$sf"; printf '\n'; } > "$hf" ;;
+    bearer)        { printf 'Authorization: Bearer '; tr -d '\r\n' < "$sf"; printf '\n'; } > "$hf" ;;
     basic)
       u="${FORGE_USER:-}"
       [ -n "$u" ] || { echo "REFUS: FORGE_USER_REQUIS : FORGE_API_AUTH=basic exige FORGE_USER (l'utilisateur du couple)" >&2; return 2; }
       b64=$(printf '%s:%s' "$u" "$(tr -d '\r\n' < "$sf")" | base64 | tr -d '\n') || return 1
       printf 'Authorization: Basic %s\n' "$b64" > "$hf" ;;
-    *) echo "REFUS: FORGE_API_AUTH_INCONNU : '$mode' — attendu token, private-token ou basic" >&2; return 2 ;;
+    *) echo "REFUS: FORGE_API_AUTH_INCONNU : '$mode' — attendu token, private-token, bearer ou basic" >&2; return 2 ;;
   esac
 }
 
