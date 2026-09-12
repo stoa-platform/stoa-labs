@@ -31,6 +31,13 @@
 set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO" || exit 2
+# FORGE_KIND n'a plus de défaut dans forge_api_init (2026-09-12, FORGE_KIND_REQUIS) :
+# cette suite JOUE gitea-pr-confirm.sh/gitea-pr-comment.sh/provision-plan*.sh contre
+# un mock Gitea hors ligne, elle doit donc porter le visage ELLE-MÊME (un Jenkinsfile
+# le ferait dans son environment{}). Exportée UNE fois ici : tous les appels de ce
+# fichier sont des sous-shells/commandes préfixées, pas des `env -i`, donc ils
+# l'héritent tous.
+export FORGE_KIND=gitea
 TMP="$(mktemp -d /tmp/a0wiring.XXXXXX)"; STUB_PID=""; FAKE_PID=""
 trap '{ [ -n "$STUB_PID" ] && kill "$STUB_PID" && wait "$STUB_PID"; [ -n "$FAKE_PID" ] && kill "$FAKE_PID" && wait "$FAKE_PID"; } 2>/dev/null; rm -rf "$TMP"' EXIT
 PASS=0; FAIL=0

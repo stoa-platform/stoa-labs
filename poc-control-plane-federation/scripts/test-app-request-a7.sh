@@ -170,7 +170,7 @@ merge_branch(){ # <env> : « le merge humain » de provision/appa-<env> dans mas
 # sans être nommée ici). Les deux flux vont où l'appelant les envoie.
 _req_run(){
   local e="$1"; shift
-  ( cd "$REPO" && env -i PATH="$SHIM:$PATH" HOME="$HOME" GITEA_TOKEN=t-ci GIT_HOST="$GH" GIT_WEB_HOST="$GH" GIT_REPO=ci/stoa-labs \
+  ( cd "$REPO" && env -i PATH="$SHIM:$PATH" HOME="$HOME" FORGE_KIND=gitea GITEA_TOKEN=t-ci GIT_HOST="$GH" GIT_WEB_HOST="$GH" GIT_REPO=ci/stoa-labs \
       GIT_CLONE_URL="file://$ORIGIN" GIT_PUSH_URL="file://$ORIGIN" STOA_ENV_CHAIN_FILE="$TMP/chain.yaml" PROVISION_PLAN_INLINE=false \
       REQ_APP=appa REQ_ENV="$e" REQ_API=demo-selfservice REQ_API_VER=1.0.0 REQ_CLIENT_ID="appa-$e" REQ_CALLER=jenkins-form:x REQ_TEAM=banking-demo \
       "$@" bash "$S" )

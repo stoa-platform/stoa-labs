@@ -29,7 +29,9 @@
 #   GIT_REPO      owner/repo (ex. ci/stoa-labs)
 #   FORGE_SECRET  secret de la forge (alias historique GITEA_TOKEN) — lu par
 #                 forge-api.py dans l'ENVIRONNEMENT, JAMAIS en argv, jamais loggé
-#   FORGE_KIND    gitea (défaut) | gitlab — cf. scripts/lib/forge-api.sh
+#   FORGE_KIND    requis, reçu de l'appelant — aucun défaut depuis 2026-09-12 :
+#                 refus FORGE_KIND_REQUIS par forge_api_init sinon, avant tout
+#                 réseau (cf. scripts/lib/forge-api.sh)
 #   PR_NUMBER     numéro de la PR (iid sur GitLab)
 #   COMMENT_MARKER      marqueur HTML invisible (ex. '<!-- provision-apply -->')
 #   COMMENT_BODY_FILE   fichier contenant le corps SANS le marqueur

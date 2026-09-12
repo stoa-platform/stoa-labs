@@ -47,7 +47,8 @@
 # http://gitea:3000 d'avant 2026-09-09 remplaçait en silence une variable non
 # transmise chez un client, et la panne sortait plus loin sous un autre nom),
 # GIT_REPO (REQUIS, owner/repo), FORGE_SECRET (requis ; alias historique
-# GITEA_TOKEN), FORGE_KIND (gitea par défaut, ou gitlab).
+# GITEA_TOKEN), FORGE_KIND (requis, reçu de l'appelant — aucun défaut depuis
+# 2026-09-12 : refus FORGE_KIND_REQUIS sinon, avant tout réseau).
 # STOA_DEBUG (L2, 2026-09-11) : sous ce mode, UNE ligne de debug après la
 # relecture — « PR #n relue : state=… head=… sha=… base=… same_repo=… (attendu
 # head=… base=…) », sur stderr, rédigée par ci/lib/dbg.sh, sous le nom du

@@ -578,7 +578,7 @@ echo "== ⑱ chemin nominal : gardes de team-request traversées VERTES en DRY_R
 # contrat DRY_RUN sort AVANT tout appel réseau (motif run_w de
 # test-deploy-pin.sh:434-439, qui passe le même GITEA_TOKEN=x).
 tr_dry(){ ( cd "$ROOT" && env -i PATH="$PATH" HOME="$HOME" \
-    TEAM="$1" DESCRIPTION="$2" APPROVERS="A1,B2" \
+    TEAM="$1" DESCRIPTION="$2" APPROVERS="A1,B2" FORGE_KIND=gitea \
     GITEA_TOKEN=x DRY_RUN=1 bash scripts/team-request.sh ) >"$TMP/tr_dry" 2>&1; }
 tr_dry preuve-g4 "equipe de preuve"
 RC=$?
@@ -797,10 +797,21 @@ else
   [ "$RC" = 2 ] && grep -q 'PROTECTION_GITEA_SEULEMENT' <<<"$OUT" \
     && ok "⑳sexies FORGE_KIND=gitlab ⇒ PROTECTION_GITEA_SEULEMENT (la protection nominative est un prérequis de forge chez un client GitLab)" \
     || bad "⑳sexies rc $RC : $(head -1 <<<"$OUT")"
-  OUT=$(env -i PATH="$PATH" HOME="$HOME" FORGE_SECRET=x GIT_HOST=http://127.0.0.1:1 bash "$SRP" 2>&1)
-  grep -q 'GITEA_TOKEN: FORGE_SECRET requis' <<<"$OUT" \
-    && bad "⑳septies l'alias FORGE_SECRET est mort (FORGE_SECRET seul ⇒ « GITEA_TOKEN: … requis »)" \
-    || ok "⑳septies FORGE_SECRET seul suffit (alias vivant)"
+  # Ruling 19 (Task 12, fix) : SANS PROTECT_BRANCH, le mode pose part découvrir
+  # la branche par réseau (git_base_init sur GIT_HOST) et refuse
+  # BRANCHE_PAR_DEFAUT_INCONNUE AVANT d'atteindre la garde du secret — l'épreuve
+  # passait alors quelle que soit la forme de l'alias (mesuré : rc et message
+  # identiques, alias vivant ou mort). PROTECT_BRANCH=main fixe la branche sans
+  # réseau ; l'exécution atteint ALORS la garde du secret PUIS pose_branch_protection
+  # (forge injoignable, HTTP 000 mesuré) : rc 1, « PROTECTION_NON_POSEE » — jamais
+  # les trois refus précoces qui prouveraient un alias mort ou un court-circuit.
+  OUT=$(env -i PATH="$PATH" HOME="$HOME" PROTECT_BRANCH=main FORGE_SECRET=x GIT_HOST=http://127.0.0.1:1 bash "$SRP" 2>&1); RC=$?
+  { [ "$RC" = 1 ] && grep -q 'PROTECTION_NON_POSEE' <<<"$OUT" \
+      && ! grep -q 'GITEA_TOKEN: FORGE_SECRET requis' <<<"$OUT" \
+      && ! grep -q 'SECRET_FORGE_REQUIS' <<<"$OUT" \
+      && ! grep -q 'BRANCHE_PAR_DEFAUT_INCONNUE' <<<"$OUT"; } \
+    && ok "⑳septies FORGE_SECRET seul suffit (alias vivant) : rc 1, échec plus tard sur PROTECTION_NON_POSEE (forge injoignable), aucun des trois refus précoces" \
+    || bad "⑳septies rc $RC : $(head -1 <<<"$OUT")"
 fi
 
 echo "== ㉑ la voie consommateur valide l'env par la CHAÎNE (A7 : la demande admet la chaîne ENTIÈRE, terminus compris — les portes décident) =="
