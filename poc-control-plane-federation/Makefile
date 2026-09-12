@@ -132,7 +132,7 @@ lint-ci:
 	  scripts/test-porte-clone-frais.sh \
 	  scripts/test-team-request-wiring.sh scripts/test-team-publish-wiring.sh \
 	  scripts/test-debug-knob-wiring.sh scripts/test-app-request-wiring.sh scripts/test-api-request-wiring.sh scripts/test-team-apply-wiring.sh \
-	  scripts/test-producer-chain.sh \
+	  scripts/test-producer-chain.sh scripts/test-producer-chain-gitlab.sh \
 	  scripts/team-publish.sh \
 	  scripts/test-setup-provision-jobs.sh scripts/test-generate-choices.sh \
 	  scripts/setup-team-repos.sh scripts/test-setup-team-repos.sh \
