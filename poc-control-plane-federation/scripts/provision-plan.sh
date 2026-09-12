@@ -327,7 +327,8 @@ echo "[4/4] commentaire sur la PR #${PR_NUMBER} (verdict ${VERDICT})"
 # est LIBRE (rien à relayer) : sous STOA_DEBUG — exporté par dbg_init, hérité —
 # elle parle sous son propre nom (« [dbg gitea-pr-comment.sh] »).
 VERDICT="$VERDICT" MAN="$MAN" PLAN_LOG="$PLAN_LOG" GIT_REPO="$GIT_REPO" HEAD_SHA="$GITEA_HEAD_SHA" \
-GIT_WEB_HOST="$GIT_WEB_HOST" PR_BRANCH="$PR_BRANCH" BODY_OUT="$WORK/comment.md" python3 - <<'PY'
+GIT_WEB_HOST="$GIT_WEB_HOST" PR_BRANCH="$PR_BRANCH" BODY_OUT="$WORK/comment.md" \
+MAN_URL="$(forge_web_file_url "$GITEA_HEAD_SHA" "$MAN")" python3 - <<'PY'
 import os
 verdict = os.environ["VERDICT"]
 head = "✅ **Plan self-service OK**" if verdict == "ok" else "❌ **Plan self-service EN ÉCHEC**"
@@ -336,7 +337,7 @@ man  = os.environ["MAN"]; sha = os.environ["HEAD_SHA"]
 # Le verdict est LIÉ à un contenu (revue 2026-09-02) : le lien vise le COMMIT
 # jugé, pas la tête mouvante de la branche — un push ultérieur dont le plan
 # meurt avant le verdict ne fait pas passer l'ancien ✅ pour le sien.
-man_url = f"{os.environ['GIT_WEB_HOST']}/{os.environ['GIT_REPO']}/src/commit/{sha}/{man}"
+man_url = os.environ["MAN_URL"]
 body = (f"{head} — automatique.\n\n"
         f"- manifeste : [`{man}`]({man_url})\n"
         f"- tete relue sur la forge : `{sha}` (branche `{os.environ['PR_BRANCH']}`)\n"
