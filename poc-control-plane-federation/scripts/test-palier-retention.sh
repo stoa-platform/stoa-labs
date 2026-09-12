@@ -420,17 +420,17 @@ grep -q 'REQ_ENV="\${REQ_ENV:-' "$TMP/tr_nc" \
 grep -q 'ENV_NOT_OPEN' "$TMP/tr_nc" \
   && bad "⑨b ENV_NOT_OPEN subsiste dans team-request — le refus n'a plus d'objet une fois l'axe scellé" \
   || ok "⑨b ENV_NOT_OPEN a disparu de team-request (plus de choix à refuser)"
-# UNICITÉ, adaptée au compte RÉEL de ce fichier — 2, pas 1 comme en ⑨a : le
-# scellement, ET le passage de la valeur SCELLÉE à python3 pour le TITRE de la
-# PR (`REQ_ENV="$REQ_ENV" python3 -`). Cette seconde ligne ne réaffecte rien,
-# elle propage ; la nommer ici évite de la confondre avec un contournement.
+# UNICITÉ, adaptée au compte RÉEL de ce fichier — 1 depuis L5 phase 2
+# (2026-09-12) : le scellement seul — la valeur scellée passe désormais en
+# ARGUMENT de `forge_kv PR pr_open …` (titre de la PR), plus jamais en préfixe
+# d'environnement d'un python3.
 NTR=$(grep -c 'REQ_ENV=' "$TMP/tr_nc")
-[ "$NTR" -eq 2 ] \
-  && ok "⑨b team-request porte exactement 2 lignes REQ_ENV= (le scellement + la propagation au titre de PR)" \
-  || bad "⑨b team-request porte $NTR lignes REQ_ENV= (attendu 2) — une ligne de plus réaffecte l'env APRÈS le scellement"
-[ "$(grep -c 'REQ_ENV="\$REQ_ENV" python3' "$TMP/tr_nc")" -eq 1 ] \
-  && ok "⑨b la seconde ligne EST la propagation à python3 (donc les 2 lignes sont bien celles attendues)" \
-  || bad "⑨b la propagation à python3 n'est plus la seconde ligne REQ_ENV= — le compte de 2 couvre autre chose"
+[ "$NTR" -eq 1 ] \
+  && ok "⑨b team-request porte exactement 1 ligne REQ_ENV= (le scellement)" \
+  || bad "⑨b team-request porte $NTR lignes REQ_ENV= (attendu 1) — une ligne de plus réaffecte l'env APRÈS le scellement"
+grep -qE 'forge_kv PR pr_open .*\(\$\{REQ_ENV\}\)' "$TMP/tr_nc" \
+  && ok "⑨b la valeur scellée est propagée au titre de la PR par l'ARGUMENT de pr_open (jamais un préfixe d'env à python3)" \
+  || bad "⑨b REQ_ENV n'atteint plus le titre de la PR par pr_open — la propagation a changé de forme"
 
 echo "== ⑨bter mutations : les trois façons de rendre ⑨b vacante =="
 # (a) le défaut surchargeable REVIENT (miroir de ⑩ pour team-publish).
@@ -448,8 +448,8 @@ cp scripts/team-request.sh "$TMP/tr_dup"
 printf 'REQ_ENV="${REQ_ENV_OVERRIDE:-prod}"\n' >> "$TMP/tr_dup"
 nc_strict "$TMP/tr_dup" > "$TMP/tr_dup_nc"
 NDUP=$(grep -c 'REQ_ENV=' "$TMP/tr_dup_nc")
-[ "$NDUP" -eq 3 ] \
-  && ok "⑨bter(b) troisième affectation ⇒ compte 3 : le détecteur d'unicité la verrait" \
+[ "$NDUP" -eq 2 ] \
+  && ok "⑨bter(b) troisième affectation ⇒ compte 2 : le détecteur d'unicité la verrait" \
   || bad "⑨bter(b) le compte reste $NDUP — l'assertion d'unicité de ⑨b est vacante"
 # (c) le décommenteur NAÏF sur ce même fichier : contre-preuve du choix de
 # nc_strict — si un `#` d'expansion mangeait la ligne comptée, on le saurait.
