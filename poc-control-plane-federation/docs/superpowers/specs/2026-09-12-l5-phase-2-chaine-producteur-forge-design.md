@@ -210,7 +210,11 @@ faux avertissement serait pire qu'un prérequis écrit).
   d'admin (org + dépôt, comme `test-team-onboarding-chain.sh` le fait déjà en teardown
   inversé), GitLab par l'API avec le PAT de service (groupe existant `ci`, projet privé,
   `initialize_with_readme=false`, méthode de merge « merge commit ») —, puis y pose le hook
-  vers `team-publish` (forme du visage : GWT `?token=` ou hook de projet GitLab) et la
+  vers `team-publish` — et, sous le récepteur GitLab, un hook **par récepteur**
+  (`/project/team-publish` **et** `/project/team-promote` : le GitLab Plugin a une URL par
+  job et ne partage pas de token, alors que le GWT n'a qu'un hook au token partagé —
+  « un webhook par dépôt d'équipe » n'est pas transposable, c'est un prérequis
+  d'exploitant qui double ; relevé de la session voisine, 2026-09-12) — et la
   protection de la branche par défaut (Gitea : `repo-protection.sh` ; GitLab CE : par rôle).
   Idempotent, `--print`, refus nommés.
 - `test-team-onboarding-chain.sh` et `test-producer-chain.sh` pré-créent le dépôt jetable
@@ -290,7 +294,8 @@ push, gitea et origin poussés ensemble par ce lot.
 - ENVIRONNEMENTS.md : un bloc **« Prérequis côté client »** unifié (L5 : PAT, merge commit,
   webhooks locaux, `master` ; L6 : hooks de projet vers `provision-*` ; **D10** : dépôts
   d'équipe vides, leur hook vers `team-publish`, leur protection de branche ;
-  `ARCHIVE_STORE_PROJECT`), le tableau des verbes de l'adaptateur (existants + neufs), la
+  `ARCHIVE_STORE_PROJECT` ; sous le récepteur GitLab, **deux** hooks de projet par dépôt
+  d'équipe, un par job `team-publish`/`team-promote`), le tableau des verbes de l'adaptateur (existants + neufs), la
   conduite de `team-apply`, l'outil de poste du lab, la matrice GitLab.
 - **ADR-099 — « La chaîne ne crée rien sur la forge »** : décision (D10 profond), ce qu'elle
   déplace (la protection d'ADR-082 §3 et les quatre yeux d'ADR-081 corollaire 3 deviennent
