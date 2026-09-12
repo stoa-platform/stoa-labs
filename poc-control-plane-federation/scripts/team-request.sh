@@ -93,6 +93,21 @@ GIT_REPO="${GIT_REPO:-ci/stoa-labs}"
 GIT_HOST="${GIT_HOST:-http://gitea:3000}"
 GIT_WEB_HOST="${GIT_WEB_HOST:-$GIT_HOST}"
 
+# L5 phase 2 (2026-09-12) — LA FORGE SE PARLE PAR UNE SEULE AUTORITÉ : le
+# visage (FORGE_KIND=gitea|gitlab), la base d'API, l'en-tête d'auth et la garde
+# de réponse vivent dans scripts/lib/forge-api.sh (+ .py) — ce script ne
+# compose plus /api/v1 ni « Authorization: token » lui-même (mêmes verbes que
+# provision-request.sh / app-rollback-request.sh). Sourcé APRÈS la garde du
+# secret (ci-dessus) et APRÈS GIT_HOST/GIT_REPO/GIT_WEB_HOST : forge_api_init ne
+# fait AUCUN appel réseau, mais REFUSE si GIT_HOST ou GIT_REPO est vide — le
+# poser plus tôt ferait tomber la sonde hors ligne (test-team-request-wiring.sh
+# §6) sur GIT_REPO_REQUIS avant même SECRET_FORGE_REQUIS.
+_TR_FORGE="$(dirname "${BASH_SOURCE[0]}")/lib/forge-api.sh"
+[ -f "$_TR_FORGE" ] || _TR_FORGE="scripts/lib/forge-api.sh"
+# shellcheck source=scripts/lib/forge-api.sh
+. "$_TR_FORGE" || { echo "ERREUR: $_TR_FORGE introuvable ou illisible" >&2; exit 1; }
+forge_api_init || exit 2
+
 fail(){ echo "ERREUR: $*" >&2; exit 1; }
 
 # ── 1. gardes d'entrée — AVANT tout geste Git ────────────────────────────────
@@ -242,20 +257,16 @@ GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader \
   || { echo "ERREUR: push" >&2; cat "$WORK/pusherr" >&2; exit 1; }
 unset AUTH_B64
 
-PR_NUMBER=$(API="${GIT_HOST}/api/v1" GIT_REPO="$GIT_REPO" FORGE_SECRET="$FORGE_SECRET" \
-  BRANCH="$BRANCH" TEAM="$TEAM" GIT_BASE="$GIT_BASE" REQ_ENV="$REQ_ENV" python3 - <<'PY'
-import json, os, urllib.request
-api, repo, tok = os.environ["API"], os.environ["GIT_REPO"], os.environ["FORGE_SECRET"]
-# La base de la PR = la branche que le clone a prise, jamais un littéral.
-body = {"base": os.environ["GIT_BASE"], "head": os.environ["BRANCH"],
-        "title": f"onboard: équipe {os.environ['TEAM']} ({os.environ['REQ_ENV']})"}
-req = urllib.request.Request(f"{api}/repos/{repo}/pulls", method="POST",
-    data=json.dumps(body).encode(),
-    headers={"Authorization": f"token {tok}", "Content-Type": "application/json"})
-print(json.load(urllib.request.urlopen(req))["number"])
-PY
-) || fail "ouverture de la PR — la branche '${BRANCH}' est déjà poussée sur ${GIT_HOST}/${GIT_REPO} (elle n'a pas de PR) : nettoyer avec 'git push ${GIT_HOST}/${GIT_REPO}.git --delete ${BRANCH}' avant de relancer la demande"
-echo "PR #${PR_NUMBER} ouverte : ${GIT_WEB_HOST}/${GIT_REPO}/pulls/${PR_NUMBER}"
+# La forge parle par l'autorité (L5 phase 2) : visage, base d'API, en-tête et
+# garde de réponse vivent dans forge-api ; ici on ne connaît que NUMBER et URL.
+: > "$WORK/pr-body.md"    # corps vide, comme avant : le plan vient en commentaire
+if ! forge_kv PR pr_open "$BRANCH" "$GIT_BASE" "onboard: équipe ${TEAM} (${REQ_ENV})" "$WORK/pr-body.md"; then
+  fail "ouverture de la PR (cause ci-dessus) — si la branche '${BRANCH}' est déjà poussée sur ${GIT_HOST}/${GIT_REPO} sans PR, la nettoyer avec 'git push ${GIT_HOST}/${GIT_REPO} --delete ${BRANCH}' puis rejouer"
+fi
+# shellcheck disable=SC2153  # PR_URL est posée par forge_kv (printf -v <PFX>_<CLÉ>,
+# invisible à l'analyse statique) — pas une faute de frappe de TR_URL.
+PR_LINK="$(forge_web_url "$PR_URL")"
+echo "PR #${PR_NUMBER} ouverte : ${PR_LINK}"
 
 # ── 4. PLAN contre le fichier MODIFIÉ + commentaire ──────────────────────────
 # Le plan tourne dans le CLONE (la branche), pas dans le checkout du job : ce
@@ -288,14 +299,13 @@ BODY="${VERDICT}
 
 Au merge, team-apply : crée le dépôt \`${REPO}\` (squelette ADR-076) puis pose
 user/groupe/team gateway + KV/policy Vault (rôle apim_team_onboard, idempotent)."
-API="${GIT_HOST}/api/v1" GIT_REPO="$GIT_REPO" FORGE_SECRET="$FORGE_SECRET" \
-  PR="$PR_NUMBER" BODY="$BODY" python3 - <<'PY'
-import json, os, urllib.request
-api, repo, tok = os.environ["API"], os.environ["GIT_REPO"], os.environ["FORGE_SECRET"]
-req = urllib.request.Request(f"{api}/repos/{repo}/issues/{os.environ['PR']}/comments",
-    method="POST", data=json.dumps({"body": os.environ["BODY"]}).encode(),
-    headers={"Authorization": f"token {tok}", "Content-Type": "application/json"})
-urllib.request.urlopen(req)
-PY
-echo "plan ${VERDICT%% *} commenté sur la PR #${PR_NUMBER}"
+printf '%s\n' "$BODY" > "$WORK/plan-comment.md"
+# Un commentaire par RÔLE, sous marqueur : un rejeu remplace le verdict du plan,
+# il ne l'empile pas. Son échec est un AVERTISSEMENT nommé — la PR existe, le
+# verdict du plan (PLAN_RC) reste le verdict (dette HANDOFF-2026-08-05:121 fermée).
+if forge comment_upsert "$PR_NUMBER" '<!-- team-request-plan -->' "$WORK/plan-comment.md" >/dev/null; then
+  echo "plan ${VERDICT%% *} commenté sur la PR #${PR_NUMBER}"
+else
+  echo "AVERTISSEMENT: le verdict du plan n'a pas pu être posé sur la PR #${PR_NUMBER} (cause ci-dessus) — la PR existe, le valideur doit lire le build" >&2
+fi
 [ "$PLAN_RC" -eq 0 ]
