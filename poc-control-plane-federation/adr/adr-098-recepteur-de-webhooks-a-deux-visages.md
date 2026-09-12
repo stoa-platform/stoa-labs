@@ -2,7 +2,7 @@
 title: "ADR-098 — Un Jenkinsfile qui NOMME son déclencheur dans un bloc déclaratif exige le plugin qui le porte, avant son premier stage. Le récepteur de webhooks devient un knob, le déclencheur est posé par le build, et le XML ne porte plus rien."
 sidebar_label: "ADR-098 : le récepteur de webhooks (L6)"
 status: "Acté et prouvé le 2026-09-11 (phase 1), étendu à `team-apply` le 2026-09-12 (phase 2) — spike M1..M9 mesuré au lab (une prédiction RÉFUTÉE) ; `test-webhook-kind-gitlab-live.sh` (la chaîne entière par le GitLab Plugin) ; non-régression gwt : re-pose + amorçages relus, contre-épreuve WEBHOOK_KIND=foo ⇒ aucun déclencheur, webhook GWT réel, `test-a6-live.sh` **50/50**. Phase 2 : `test-team-apply-wiring.sh` **95/95**, deux défauts BLOQUANTS trouvés par relecture adverse AVANT tout build (lib bash sourcée dans un bloc `sh` = dash ; PR relue non reliée à l'objet appliqué) et fermés avec leurs portes."
-maturite_technique: "✅ `WEBHOOK_KIND` (gwt | gitlab) décide du récepteur ; les **quatre** Jenkinsfile convertis (`provision-plan`, `provision-apply`, `selfservice-app-deploy`, et `team-apply` depuis la phase 2 du 2026-09-12) posent déclencheur ET verrou par un `properties()` scripté, leurs XML ne portent AUCUNE propriété, et `setup-provision-jobs.sh` DÉDUIT du XML l'amorçage à imposer, l'attend et le relit. Les identités de `team-apply` sont RELUES sur la forge (`team-apply-identity.sh`, `PAYLOAD_PERIME` sur les trois faits de la PR) — jamais prises dans le payload. ⚠ Reste à convertir : `team-publish`, `team-promote`, `publish-api`, `provisioning-request`."
+maturite_technique: "✅ `WEBHOOK_KIND` (gwt | gitlab) décide du récepteur ; les **six** Jenkinsfile convertis (`provision-plan`, `provision-apply`, `selfservice-app-deploy` en phase 1, puis `team-apply`, `team-publish` et `team-promote` en phase 2 le 2026-09-12) posent déclencheur ET verrou par un `properties()` scripté, leurs XML ne portent AUCUNE propriété, et `setup-provision-jobs.sh` DÉDUIT du XML l'amorçage à imposer, l'attend et le relit. Les identités de `team-apply` sont RELUES sur la forge (`forge-merge-identity.sh`, `PAYLOAD_PERIME` sur les trois faits de la PR) — jamais prises dans le payload. ⚠ Reste à convertir (hors chaîne producteur) : `publish-api`, `provisioning-request`."
 date: 2026-09-11
 adr_number: 98
 note: "Lot L6 du chantier forge-agnostique (après L1, L5, L3). Déclenché par un client sur GitLab dont le Jenkins ne peut PAS recevoir le plugin generic-webhook-trigger : la chaîne app-request s'arrêtait à la MR, l'aval (provision-plan, provision-apply, selfservice-app-deploy) mourant avant son premier stage."
@@ -128,8 +128,8 @@ build, et le XML ne porte plus rien.**
 | `WEBHOOK_KIND_INVALIDE` | les trois Jenkinsfile, **avant** `properties()` | la globale ne vaut ni `gwt` ni `gitlab` — aucun déclencheur n'est posé, et le formulaire précédent de `selfservice` reste en place |
 | `AMORCAGE_INCOMPLET` | `setup-provision-jobs.sh`, après l'amorçage | build d'amorçage en échec, ou jamais fini dans `BOOTSTRAP_WAIT`, ou relecture ≠ 1 déclencheur de la classe attendue + 1 verrou (0 = job muet, 2 = le doublon, autre classe = le knob et le Jenkinsfile en désaccord) |
 | `MERGE_SHA_INVALIDE` | `provision-apply-reconcile.sh` (inchangé) | le SHA arrive vide — en fast-forward ou squash, GitLab ne remplit pas `merge_commit_sha` |
-| `FORGE_IDENTITES_ILLISIBLES` | `team-apply-identity.sh`, avant la garde | la forge ne répond pas : on ne se rabat **pas** sur le payload pour nourrir les quatre yeux |
-| `PAYLOAD_PERIME` | `team-apply-identity.sh`, après la relecture | la PR relue (`merged`, `merge_commit_sha`, `head.ref`) n'est pas celle qu'on s'apprête à appliquer |
+| `FORGE_IDENTITES_ILLISIBLES` | `forge-merge-identity.sh`, avant la garde | la forge ne répond pas : on ne se rabat **pas** sur le payload pour nourrir les quatre yeux |
+| `PAYLOAD_PERIME` | `forge-merge-identity.sh`, après la relecture | la PR relue (`merged`, `merge_commit_sha`, `head.ref`) n'est pas celle qu'on s'apprête à appliquer |
 | `REQUESTER_UNKNOWN` | `assert-merge-identity.sh` | demandeur absent — le quatre-yeux ne se **saute** plus, il refuse |
 
 ## Le récepteur n'est qu'une MOITIÉ (corrigé par mesure le 2026-09-12)
@@ -166,7 +166,7 @@ invisibles à une porte de littéraux — d'où deux portes de plus.
    (« 111: Syntax error: redirection unexpected »). Le step mourait sur deux
    messages de dash ne nommant aucun refus du dépôt, **après** avoir réveillé un
    humain et encaissé son mot de passe d'annuaire — sur les deux visages, Gitea
-   comprise, qui marchait avant ce lot. Remède : `scripts/team-apply-identity.sh`
+   comprise, qui marchait avant ce lot. Remède : `scripts/forge-merge-identity.sh`
    (bash, ses propres refus nommés), appelé `sh 'set +x; bash scripts/…'`. Porte :
    `ci/lint-jenkinsfiles.sh` joue `dash -n` sur **toute** lib sourcée dans un
    bloc `sh` de `ci/Jenkinsfile*` (portée dérivée), prouvée par deux mutations.
@@ -226,10 +226,13 @@ prouve.
   privé. Même famille : la découverte de la branche par défaut (L3) ne
   s'authentifie pas non plus (`BRANCHE_PAR_DEFAUT_INCONNUE`) — contournable en
   posant `GIT_BASE`, ce que le refus dit lui-même.
-- **Dettes nommées** : les **quatre** Jenkinsfile restants de la chaîne API
-  (`team-publish`, `team-promote`, `publish-api`, `provisioning-request`)
-  portent encore un bloc déclaratif — même motif à rejouer avant tout client
-  GitLab sur la chaîne producteur (`team-apply` en est sorti le 2026-09-12) ; le
+- **Dettes nommées** : les **deux** Jenkinsfile restants (`publish-api`,
+  `provisioning-request`) portent encore un bloc déclaratif — même motif à
+  rejouer si leur récepteur doit changer de visage. La chaîne producteur, elle,
+  est convertie : `team-apply`, `team-publish` et `team-promote` ont perdu leurs
+  blocs déclaratifs le 2026-09-12, leurs XML sont à `<properties/>`, et leur
+  `post{always}` est gardé AVANT le nœud (l'amorçage leur étant désormais imposé
+  ET jugé, un post sans `timeout` faisait déclarer la POSE en échec) ; le
   `secretToken` par credential ; `FORGE_CRED_KIND` classé optionnel mais refusé
   si vide par onze pipelines.
 - **Le `secretToken` est posé par le JOB, pas par le hook** — arbitré le
@@ -269,7 +272,7 @@ prouve.
      actuel (un build vide, désormais sans exécuteur au `post`).
   3. *`team-apply.sh` n'exige du `MERGE_SHA` que d'être non vide* — ni forme, ni
      `merge-base --is-ancestor`, contrairement à `provision-apply-reconcile.sh`.
-     La forme est désormais jugée en amont (`team-apply-identity.sh`) et le SHA
+     La forme est désormais jugée en amont (`forge-merge-identity.sh`) et le SHA
      confronté à la forge ; l'**ancestralité** reste non vérifiée.
 
 ## Preuves
@@ -283,6 +286,8 @@ prouve.
 | **Le visage gitlab, chaîne entière par builds réels** | `JENKINS_UI=… bash scripts/test-webhook-kind-gitlab-live.sh` | **26/26** (2026-09-11) : plan sur ouverture (#1404) et sur push (#1405), apply sur la FUSION (#274) jusqu'à la pause nominative, `MERGE_SHA` == `merge_commit_sha` de l'API, MR fermée sans fusion ⇒ aucun apply, `/project/` sans token ⇒ 401, retour à `gwt` complet et `/project/` redevenu muet |
 | Non-régression gwt — l'amorçage relu sur les VRAIS jobs | `GIT_HOST=… bash scripts/setup-provision-jobs.sh` | amorçages #236/#1353 SUCCESS, relecture 1 GenericTrigger + 1 verrou ; contre-épreuve `WEBHOOK_KIND=foo` ⇒ amorçage FAILURE, `WEBHOOK_KIND_INVALIDE` en console, **aucun** déclencheur posé, `AMORCAGE_INCOMPLET` |
 | Non-régression gwt — la chaîne d'apply complète | `bash scripts/test-a6-live.sh` | **50/50** (2026-09-11), identique au vert du 2026-09-03 |
+| **Phase 2 — `team-publish` : le câblage** | `bash scripts/test-team-publish-wiring.sh` | **124/124** (2026-09-12) : XML vide + miroir `xml=absent jenkinsfile=present token=stoa-team-publish vars=16`, frontière corps/post (try + timeout au post SEULEMENT), garde nourrie de la forge RELUE sur le dépôt d'ÉQUIPE. Deux ancres VACANTES corrigées au passage : `grep 'assert-merge-identity.sh'` était vert grâce à l'en-tête en prose, et la boucle `for a in --merged-by …` cherchait ces options n'importe où dans le fichier |
+| **Phase 2 — `team-promote` : le câblage** | `bash scripts/test-team-promote-wiring.sh` | **162 PASS / 0** (2026-09-12) : la section ① ne compare plus un miroir mais mesure l'ÉTAT VOULU ; les quatre yeux de ce job vivent DANS son script (conditionnés à la porte du palier), et son script relit déjà la forge — rien à rebrancher |
 | **Phase 2 — `team-apply` : le câblage** | `bash scripts/test-team-apply-wiring.sh` | **108/108** (2026-09-12) : XML vide + miroir `xml=absent jenkinsfile=present token=stoa-team-apply vars=14`, récepteur structurel, 5 mutations sur les deux visages, 7 mutations sur la chaîne d'identité |
 | **Phase 2 — le script d'identité S'EXÉCUTE** (§3quinquies) | idem | 5 refus de forme joués (`PR_NUMBER_INVALIDE`, `MERGE_SHA_INVALIDE`, `BRANCHE_REQUISE`, `FORGE_IDENTITES_ILLISIBLES`) + **le geste exact du Jenkinsfile joué par dash** + contre-épreuve : la lib sourcée sous dash meurt en « Syntax error » sans nommer aucun refus |
 | **Phase 2 — le chemin NOMINAL, joué contre une fausse forge** (§3sexies) | idem | `MERGE_IDENTITY_OK` sur la PR #41 (oscar a fusionné la demande d'alice) ; trois charges utiles forgées refusées `PAYLOAD_PERIME` (numéro d'autrui, MÊME branche avec un autre merge, PR non fusionnée) ; **mutation de comportement** : la confrontation du `merge_commit_sha` retirée ⇒ la charge forgée PASSE, donc c'est cette ligne seule qui ferme le trou |

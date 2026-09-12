@@ -259,19 +259,19 @@ echo "== 3quater. LES IDENTITÉS VIENNENT DE LA FORGE — et par un SCRIPT, pas 
 # quatre yeux par une PR étrangère, en vert. D'où les trois confrontations
 # (merged, merge_commit_sha, head.ref → PAYLOAD_PERIME), comme le fait déjà
 # scripts/provision-apply-reconcile.sh.
-IDS="$REPO/scripts/team-apply-identity.sh"
+IDS="$REPO/scripts/forge-merge-identity.sh"
 MISSI=""
-jf "sh 'set +x; bash scripts/team-apply-identity.sh'" || MISSI=" pas-d-appel-bash-du-script"
+jf "sh 'set +x; bash scripts/forge-merge-identity.sh'" || MISSI=" pas-d-appel-bash-du-script"
 grep -qE '^[[:space:]]*(\.|source)[[:space:]]+(scripts|ci)/lib/forge' "$JF" && MISSI="$MISSI lib-bash-sourcee-dans-un-bloc-sh"
 # Un seul `script {}` dans le CORPS (le post{} a le sien : cf. §15).
 _LP=$(grep -n '^  post {' "$JF_C" | head -1 | cut -d: -f1); _SB=$(awk "NR<${_LP:-999999}" "$JF_C" | grep -c 'script {')
 [ "$_SB" -eq 1 ] || MISSI="$MISSI script{}x$_SB"
 [ -z "$MISSI" ] \
-  && ok "3quater.1 le Jenkinsfile APPELLE \`bash scripts/team-apply-identity.sh\` (un seul step \`sh\`, quotes simples) et ne SOURCE aucune lib de forge dans un bloc \`sh\` — dash ne saurait pas la lire" \
+  && ok "3quater.1 le Jenkinsfile APPELLE \`bash scripts/forge-merge-identity.sh\` (un seul step \`sh\`, quotes simples) et ne SOURCE aucune lib de forge dans un bloc \`sh\` — dash ne saurait pas la lire" \
   || ko "3quater.1 relecture mal portée par le pipeline —$MISSI"
 { [ -f "$IDS" ] && head -1 "$IDS" | grep -qE '^#!.*bash' && bash -n "$IDS" 2>/dev/null; } \
-  && ok "3quater.2 scripts/team-apply-identity.sh existe, son shebang est bash (son propre process, son propre shell) et il parse" \
-  || ko "3quater.2 scripts/team-apply-identity.sh absent, sans shebang bash, ou ne parse pas"
+  && ok "3quater.2 scripts/forge-merge-identity.sh existe, son shebang est bash (son propre process, son propre shell) et il parse" \
+  || ko "3quater.2 scripts/forge-merge-identity.sh absent, sans shebang bash, ou ne parse pas"
 # LA RELECTURE, puis LES CONFRONTATIONS, puis LA GARDE — dans cet ordre.
 ids_invariants(){ # <fichier> → imprime les manques, rien si tout est là
   # Sur le CODE SEUL : l'en-tête du script NOMME PAYLOAD_PERIME et la garde
@@ -329,10 +329,10 @@ mut_ids "la confrontation head.ref retirée" '/{PRG_HEAD_REF:-}" = "\$PR_BRANCH"
 mut_ids "le refus PAYLOAD_PERIME retiré" '/PAYLOAD_PERIME/d'
 # …et sur le JENKINSFILE : le défaut exact du 2026-09-12 (la lib bash sourcée
 # dans le bloc `sh`) doit rougir, c'est la seule mutation qui prouve (b).
-sed "s@sh 'set +x; bash scripts/team-apply-identity.sh'@sh '''\n              . scripts/lib/forge-api.sh\n              forge_kv PRG pr_get \"\$PR_NUMBER\"\n            '''@" "$JF" > "$TMP/mj.jf"
+sed "s@sh 'set +x; bash scripts/forge-merge-identity.sh'@sh '''\n              . scripts/lib/forge-api.sh\n              forge_kv PRG pr_get \"\$PR_NUMBER\"\n            '''@" "$JF" > "$TMP/mj.jf"
 if cmp -s "$TMP/mj.jf" "$JF"; then ko "la relecture remise INLINE dans le bloc \`sh\` : mutation NON appliquée"; else
   MISSI=""
-  printf '%s\n' "$(tr -s ' ' < "$TMP/mj.jf")" | grep -qF "sh 'set +x; bash scripts/team-apply-identity.sh'" || MISSI=" pas-d-appel-bash-du-script"
+  printf '%s\n' "$(tr -s ' ' < "$TMP/mj.jf")" | grep -qF "sh 'set +x; bash scripts/forge-merge-identity.sh'" || MISSI=" pas-d-appel-bash-du-script"
   grep -qE '^[[:space:]]*(\.|source)[[:space:]]+(scripts|ci)/lib/forge' "$TMP/mj.jf" && MISSI="$MISSI lib-bash-sourcee-dans-un-bloc-sh"
   [ -n "$MISSI" ] && ok "la relecture remise INLINE dans le bloc \`sh\` (dash) ⇒ rouge" || ko "la relecture remise INLINE : mutation INVISIBLE à la porte"
 fi
@@ -369,10 +369,10 @@ ids_joue "forge non configurée"    "FORGE_IDENTITES_ILLISIBLES"  PR_NUMBER=41 P
 if command -v dash >/dev/null 2>&1; then
   D_OUT=$(env -u GIT_HOST -u GIT_REPO -u FORGE_KIND -u FORGE_SECRET -u GITEA_TOKEN \
           PR_NUMBER=41 PR_BRANCH=onboard/x-dev MERGE_SHA="$SHA40" \
-          dash -c 'set +x; bash scripts/team-apply-identity.sh' 2>&1)
+          dash -c 'set +x; bash scripts/forge-merge-identity.sh' 2>&1)
   { printf '%s' "$D_OUT" | grep -qF 'FORGE_IDENTITES_ILLISIBLES' \
     && ! printf '%s' "$D_OUT" | grep -qF 'Syntax error'; } \
-    && ok "3quinquies le geste exact du Jenkinsfile (\`dash -c 'set +x; bash scripts/team-apply-identity.sh'\`) rend le refus NOMMÉ du dépôt — pas un message de dash" \
+    && ok "3quinquies le geste exact du Jenkinsfile (\`dash -c 'set +x; bash scripts/forge-merge-identity.sh'\`) rend le refus NOMMÉ du dépôt — pas un message de dash" \
     || ko "3quinquies sous dash, le geste du Jenkinsfile ne rend pas le refus nommé : $(printf '%s' "$D_OUT" | head -2 | tr '\n' ' ' | cut -c1-120)"
   # CONTRE-ÉPREUVE : l'ANCIENNE forme (la lib bash sourcée dans le bloc) meurt
   # sans nommer aucun refus. Si un jour elle passait, c'est que la lib serait
@@ -515,7 +515,7 @@ echo "== 5. la garde d'identité est réellement appelée, AVANT team-apply.sh =
 # d'abord été écrite INLINE dans un bloc `sh` du Jenkinsfile, où elle ne
 # pouvait pas s'exécuter — dash ne sait pas sourcer scripts/lib/forge-api.sh
 # (cf. §3quater (b), et la porte de ci/lint-jenkinsfiles.sh). Elle vit
-# maintenant dans scripts/team-apply-identity.sh : le CÂBLAGE (quelle valeur
+# maintenant dans scripts/forge-merge-identity.sh : le CÂBLAGE (quelle valeur
 # alimente quel drapeau) se mesure donc DANS LE SCRIPT, et l'ORDRE (identité
 # avant apply) reste mesuré sur le Jenkinsfile.
 # Continuations RECOLLÉES : l'appel de la garde tient sur deux lignes, et une
@@ -525,7 +525,7 @@ sed -E 's@^[[:space:]]*#.*$@@' "$IDS" | sed -e :a -e '/\\$/N; s/\\\n[[:space:]]*
 GUARD_LINE=$(grep -n 'sh scripts/lib/assert-merge-identity\.sh' "$IDS_J" | head -1)
 L_GUARD=${GUARD_LINE%%:*}
 [ -n "$GUARD_LINE" ] \
-  && ok "assert-merge-identity.sh réellement invoquée par team-apply-identity.sh (ligne ${L_GUARD} du script, appel réel — pas une mention en commentaire)" \
+  && ok "assert-merge-identity.sh réellement invoquée par forge-merge-identity.sh (ligne ${L_GUARD} du script, appel réel — pas une mention en commentaire)" \
   || ko "aucun appel RÉEL à scripts/lib/assert-merge-identity.sh — la garde d'identité a disparu"
 # Les PAIRES option/variable, pas seulement les noms d'options : c'est le
 # CÂBLAGE qui doit survivre au déménagement. Les trois valeurs sont RELUES sur
@@ -536,7 +536,7 @@ printf '%s' "$GUARD_LINE" | grep -qF -- '--requester "${PRG_LOGIN:-}"' \
   && ok "--requester alimenté par PRG_LOGIN (la forge RELUE — sans lui, le quatre-yeux serait invérifiable)" || ko "--requester non alimenté par la forge relue"
 printf '%s' "$GUARD_LINE" | grep -qF -- '--vault-user "${V_USER:-}"' \
   && ok "--vault-user alimenté par V_USER (la saisie de la pause, traversant le step \`sh\` par l'environnement)" || ko "--vault-user non alimenté par V_USER"
-L_ID=$(grep -n 'bash scripts/team-apply-identity\.sh' "$JF" | head -1 | cut -d: -f1)
+L_ID=$(grep -n 'bash scripts/forge-merge-identity\.sh' "$JF" | head -1 | cut -d: -f1)
 L_APPLY=$(grep -n 'bash scripts/team-apply\.sh' "$JF" | head -1 | cut -d: -f1)
 if [ -n "$L_ID" ] && [ -n "$L_APPLY" ] && [ "$L_ID" -lt "$L_APPLY" ]; then
   ok "étape d'identité ligne $L_ID, apply ligne $L_APPLY — rien n'est appliqué avant que les identités relues n'aient été confrontées"

@@ -54,7 +54,7 @@ ko(){ FAIL=$((FAIL+1)); printf '  ❌ %s\n' "$*"; }
 # section ajoutée/retirée DOIT mettre à jour ce nombre à la main — un oubli
 # fait virer le §26 au rouge, ce qui EST le comportement voulu (un rappel,
 # pas un bug).
-EXPECTED_CHECKS=122
+EXPECTED_CHECKS=123
 
 [ -f "$JOB" ] || { echo "job introuvable : $JOB"; exit 2; }
 [ -f "$JF" ]  || { echo "Jenkinsfile introuvable : $JF"; exit 2; }
@@ -63,6 +63,13 @@ EXPECTED_CHECKS=122
 # `key:`/`=`) sont cosmétiques — un reformatage ne doit pas faire virer un
 # contrôle au rouge, alors que la disparition d'une clé le doit.
 JF_N="$(tr -s ' ' < "$JF")"
+# La lib du MIROIR est sourcée ICI, et non plus au §3ter : le §3 s'en sert
+# désormais (l'état VOULU « xml=absent jenkinsfile=present »), et une lib
+# sourcée APRÈS son premier appel donne « command not found » — mesuré.
+MIRROR_LIB_OK=0
+# shellcheck source=scripts/lib/gwt-mirror.sh
+. "$REPO/scripts/lib/gwt-mirror.sh" 2>/dev/null && MIRROR_LIB_OK=1
+
 jf(){ printf '%s\n' "$JF_N" | grep -qF "$1"; }
 
 echo "== 1. le XML reste bien formé, et le Jenkinsfile est bien un pipeline DÉCLARATIF =="
@@ -100,34 +107,49 @@ grep -qE '^  parameters \{' "$JF" \
   || ok "aucun bloc \`parameters {}\` : les clés du webhook ne viennent QUE du webhook (un build manuel échoue sur \${VAR:?})"
 
 echo
-echo "== 3. le filtre GWT est exact (fusion, pas juste fermeture) — et le XML est le MIROIR du Jenkinsfile =="
-jf "regexpFilterText: '\$PR_ACTION|\$PR_MERGED'" \
-  && ok "filterText = \$PR_ACTION|\$PR_MERGED (Jenkinsfile)" || ko "filterText inattendu dans le Jenkinsfile"
-jf "regexpFilterExpression: '^closed\\\\|true\$'" \
-  && ok "filterExpression = ^closed\\|true\$ (Jenkinsfile)" \
+echo "== 3. le filtre GWT est exact (fusion, pas juste fermeture) — et le XML ne porte PLUS rien =="
+# DEUX visages sur le même texte (L6 phase 2) : une clé absente du payload
+# arrive VIDE, donc un payload Gitea laisse GL_* vides et l'inverse. Le filtre
+# accepte l'un OU l'autre, et JAMAIS une fermeture sans fusion.
+jf "regexpFilterText: '\$PR_ACTION|\$PR_MERGED|\$GL_KIND:\$GL_ACTION'" \
+  && ok "filterText = \$PR_ACTION|\$PR_MERGED|\$GL_KIND:\$GL_ACTION (Jenkinsfile, deux visages)" \
+  || ko "filterText inattendu dans le Jenkinsfile — le visage GitLab du GWT ne serait pas lu"
+jf "regexpFilterExpression: '^closed\\\\|true\\\\||merge_request:merge\$'" \
+  && ok "filterExpression = ^closed\\|true\\| … merge_request:merge\$ : fusion RÉELLE seulement, sur l'un OU l'autre visage" \
   || ko "filterExpression inattendue dans le Jenkinsfile — laisserait passer une fermeture SANS merge"
 jf "token: 'stoa-team-publish'" \
-  && ok "token de déclenchement = stoa-team-publish (Jenkinsfile)" || ko "token de déclenchement absent/inattendu"
-# Le XML doit porter le MÊME déclencheur, et c'est LUI qui fait foi :
-# Declarative ne remplace que les déclencheurs qu'il a lui-même posés
-# (DeclarativeJobPropertyTrackerAction) — celui d'un config.xml est préservé
-# indéfiniment (mesuré sur le lab 2026-08-06 : 4 builds, token du XML jamais
-# écrasé ; le même XML privé de ses <triggers> a bien laissé le Jenkinsfile
-# poser le sien). Une divergence serait donc SILENCIEUSE : c'est ce que les
-# quatre contrôles suivants interdisent.
-grep -q '<regexpFilterText>\$PR_ACTION|\$PR_MERGED</regexpFilterText>' "$JOB" \
-  && ok "filterText identique dans le XML (déclencheur vivant dès la pose du job)" || ko "filterText du XML divergent"
-grep -q '<regexpFilterExpression>\^closed\\|true\$</regexpFilterExpression>' "$JOB" \
-  && ok "filterExpression identique dans le XML" || ko "filterExpression du XML divergente"
-grep -q '<token>stoa-team-publish</token>' "$JOB" \
-  && ok "token identique dans le XML" || ko "token du XML divergent"
-MIRROR_KO=""
-for K in WEBHOOK_REPO PR_BRANCH PR_NUMBER PR_ACTION PR_MERGED PR_MERGED_BY PR_REQUESTER MERGE_SHA; do
-  grep -q "<key>${K}</key>" "$JOB" || MIRROR_KO="${MIRROR_KO} ${K}"
-done
-[ -z "$MIRROR_KO" ] \
-  && ok "les 8 genericVariables du Jenkinsfile sont présentes à l'identique dans le XML" \
-  || ko "clés absentes du XML :${MIRROR_KO} — le webhook serait borgne jusqu'au premier build"
+  && ok "token de déclenchement = stoa-team-publish (Jenkinsfile ; PARTAGÉ avec team-promote sous ce visage — un appel réveille les deux, chacun se trie dans son \`when\`)" \
+  || ko "token de déclenchement absent/inattendu"
+# ── LE XML NE PORTE PLUS RIEN (L6 phase 2, 2026-09-12) ──────────────────────
+# Les quatre contrôles qui vivaient ici exigeaient que le XML soit le MIROIR du
+# Jenkinsfile, « parce que c'est LUI qui fait foi ». C'était vrai d'un bloc
+# `triggers {}` DÉCLARATIF — et la mesure du 2026-08-06 citée ici portait bien
+# sur CE job (token du XML volontairement différent, 4 builds, le XML n'a jamais
+# bougé). C'est FAUX d'un `properties()` SCRIPTÉ : celui-là AJOUTE sa propriété
+# sans dédoublonner (DOUBLON au build 1), puis retire les deux et repose la
+# sienne (build 2) — l'exemplaire du XML est PERDU (fait 10 du 2026-09-02,
+# re-mesuré scripts/spike-webhook-kind-m2m4.sh). Ce n'était pas une ceinture,
+# c'était une avarie différée.
+# Et un `triggers {}` déclaratif exige AU PARSE le plugin qui porte son symbole :
+# sur un Jenkins sans generic-webhook-trigger, ce job mourait avant son premier
+# stage — c'est tout le motif de L6.
+python3 -c "import sys,xml.etree.ElementTree as T; p=T.parse(sys.argv[1]).getroot().find('properties'); sys.exit(0 if p is not None and len(list(p))==0 else 1)" "$JOB" 2>/dev/null \
+  && ok "le XML ne porte AUCUNE propriété (<properties/>) : ni déclencheur, ni verrou — ils viennent du BUILD (l'amorçage, que le poseur s'impose en LISANT ce XML)" \
+  || ko "le XML porte une propriété : doublon au build 1, perte au build 2"
+grep -q '<key>' "$JOB" \
+  && ko "le XML porte encore des genericVariables — le Jenkinsfile doit être le SEUL à déclarer" \
+  || ok "aucune genericVariable dans le XML : le Jenkinsfile déclare seul"
+# Le côté PRÉSENT est COMPTÉ : sans ça, « vars=0 des deux côtés » passerait pour
+# un miroir (piège corrigé dans gwt-mirror.sh le 2026-09-11).
+N_KEYS=$(grep -oE "\[key: '[A-Z_]+'" "$JF" | sort -u | grep -c '')
+[ "$N_KEYS" -eq 16 ] \
+  && ok "16 genericVariables déclarées par le Jenkinsfile (8 Gitea + 8 GitLab) — le côté présent est COMPTÉ, un « vars=0 » ne passerait pas pour un miroir" \
+  || ko "$N_KEYS genericVariables au lieu de 16 — un visage est incomplet"
+OUT_M=""; RC_M=127
+[ "$MIRROR_LIB_OK" = 1 ] && { OUT_M=$(gwt_mirror_diff "$JOB" "$JF" 2>&1); RC_M=$?; }
+{ [ "$RC_M" -eq 2 ] && [ "$OUT_M" = "DIVERGENCE trigger xml=absent jenkinsfile=present token=stoa-team-publish vars=16" ]; } \
+  && ok "miroir : « xml=absent jenkinsfile=present token=stoa-team-publish vars=16 » — l'état VOULU, et le côté présent est COMPTÉ" \
+  || ko "miroir inattendu (rc=$RC_M) : $OUT_M"
 
 echo
 echo "== 3ter. le MIROIR, par la lib, étendu aux TROIS jobs de l'aval applicatif (porte A0) =="
@@ -135,8 +157,7 @@ echo "== 3ter. le MIROIR, par la lib, étendu aux TROIS jobs de l'aval applicati
 # une LIB (scripts/lib/gwt-mirror.sh, structurée champ à champ) ; la porte du
 # GOAL demande que CE test la joue sur provision-apply, provision-plan et
 # provisioning-request. test-a0-wiring.sh la joue aussi, avec les mutations.
-# shellcheck source=scripts/lib/gwt-mirror.sh
-if . "$REPO/scripts/lib/gwt-mirror.sh" 2>/dev/null; then
+if [ "$MIRROR_LIB_OK" = 1 ]; then
   # L6 (2026-09-11) : provision-plan et provision-apply posent SEULS leur
   # déclencheur (un bloc déclaratif meurt au parse sans le plugin qui porte le
   # symbole) et leurs XML ne portent AUCUNE propriété — « xml=absent
@@ -168,18 +189,48 @@ jf "beforeInput true" \
   || ko "\`beforeInput true\` absent — une PR hors api/* ouvrirait quand même une demande en attente (la directive \`input\` passe AVANT \`when\` par défaut)"
 
 echo
-echo "== 5. la garde d'identité est réellement appelée, AVANT team-publish.sh =="
-grep -q 'assert-merge-identity.sh' "$JF" \
-  && ok "assert-merge-identity.sh invoquée" || ko "garde non appelée"
-for a in --merged-by --requester --vault-user; do
-  grep -q -- "$a" "$JF" && ok "argument $a passé" || ko "argument $a manquant"
-done
-L_GUARD=$(grep -n 'assert-merge-identity.sh' "$JF" | head -1 | cut -d: -f1)
+echo "== 5. la garde d'identité est nourrie de la FORGE RELUE, et AVANT team-publish.sh =="
+# ⚠ RÉÉCRITE LE 2026-09-12, pour deux raisons.
+# (a) LA GARDE N'EST PLUS NOURRIE DU PAYLOAD. Elle recevait
+# `--merged-by "${PR_MERGED_BY:-}"`, et le GitLab Plugin n'expose AUCUN des deux
+# champs : sous le visage `gitlab` que ce lot vient d'ouvrir, elle ne pouvait que
+# refuser MERGER_UNKNOWN. Elle lit maintenant la forge RELUE
+# (scripts/forge-merge-identity.sh), préfixée du dépôt d'ÉQUIPE.
+# (b) LES ANCRES ÉTAIENT VACANTES. `grep -q 'assert-merge-identity.sh' "$JF"`
+# était vert grâce à l'EN-TÊTE du Jenkinsfile, qui nomme le script en prose
+# (ligne 13) — et la boucle `for a in --merged-by …` cherchait ces options
+# n'importe où dans le fichier. Deux assertions satisfaites par des
+# commentaires : c'est le piège que l'en-tête de CETTE suite interdit.
+IDS="$REPO/scripts/forge-merge-identity.sh"
+jf "sh 'set +x; GIT_REPO=\"\$WEBHOOK_REPO\" bash scripts/forge-merge-identity.sh'" \
+  && ok "le Jenkinsfile APPELLE \`bash scripts/forge-merge-identity.sh\` préfixé de GIT_REPO=\"\$WEBHOOK_REPO\" — la PR vit dans le dépôt de l'ÉQUIPE, pas dans le dépôt plateforme" \
+  || ko "appel de la relecture d'identité absent ou sans le préfixe du dépôt d'équipe — la forge serait interrogée sur le mauvais dépôt"
+grep -qE "^[[:space:]]*sh '.*assert-merge-identity" "$JF" \
+  && ko "le Jenkinsfile appelle ENCORE la garde directement — deux chemins pour une seule règle" \
+  || ok "le Jenkinsfile n'appelle plus la garde lui-même : un seul chemin, celui du script"
+{ [ -f "$IDS" ] && head -1 "$IDS" | grep -qE '^#!.*bash' && bash -n "$IDS" 2>/dev/null; } \
+  && ok "scripts/forge-merge-identity.sh existe, shebang bash (son propre process — un bloc \`sh\` de Jenkins est du DASH et ne saurait pas sourcer forge-api.sh) et il parse" \
+  || ko "scripts/forge-merge-identity.sh absent, sans shebang bash, ou ne parse pas"
+# Le CÂBLAGE se mesure DANS le script, continuations recollées : l'appel de la
+# garde tient sur deux lignes, et une paire option/valeur coupée par un `\`
+# serait invisible.
+# Sans fichier temporaire (cette suite n'en a pas) : le contenu recollé vit
+# dans une variable.
+IDS_J=$(sed -E 's@^[[:space:]]*#.*$@@' "$IDS" | sed -e :a -e '/\\$/N; s/\\\n[[:space:]]*/ /; ta')
+GUARD_LINE=$(printf '%s\n' "$IDS_J" | grep 'sh scripts/lib/assert-merge-identity\.sh' | head -1)
+MISSG=""
+printf '%s' "$GUARD_LINE" | grep -qF -- '--merged-by "${PRG_MERGED_BY:-}"' || MISSG="$MISSG --merged-by(forge)"
+printf '%s' "$GUARD_LINE" | grep -qF -- '--requester "${PRG_LOGIN:-}"'    || MISSG="$MISSG --requester(forge)"
+printf '%s' "$GUARD_LINE" | grep -qF -- '--vault-user "${V_USER:-}"'      || MISSG="$MISSG --vault-user(pause)"
+{ [ -n "$GUARD_LINE" ] && [ -z "$MISSG" ]; } \
+  && ok "le script invoque RÉELLEMENT la garde, nourrie des valeurs RELUES (PRG_MERGED_BY / PRG_LOGIN) et du login de la pause (V_USER) — plus jamais du payload" \
+  || ko "câblage de la garde incomplet dans le script :${MISSG:- appel introuvable}"
+L_ID=$(grep -n 'bash scripts/forge-merge-identity\.sh' "$JF" | head -1 | cut -d: -f1)
 L_APPLY=$(grep -n 'bash scripts/team-publish\.sh' "$JF" | head -1 | cut -d: -f1)
-if [ -n "$L_GUARD" ] && [ -n "$L_APPLY" ] && [ "$L_GUARD" -lt "$L_APPLY" ]; then
-  ok "garde ligne $L_GUARD, apply ligne $L_APPLY"
+if [ -n "$L_ID" ] && [ -n "$L_APPLY" ] && [ "$L_ID" -lt "$L_APPLY" ]; then
+  ok "identité ligne $L_ID, apply ligne $L_APPLY — et le refus tombe AVANT le login Vault nominatif, donc sans émettre de jeton"
 else
-  ko "garde APRÈS l'apply (ou introuvable) : garde=$L_GUARD apply=$L_APPLY"
+  ko "identité APRÈS l'apply (ou introuvable) : identité=${L_ID:-?} apply=${L_APPLY:-?}"
 fi
 
 echo
@@ -209,8 +260,13 @@ if grep -q 'sh """' "$JF"; then
 else
   ok "aucun bloc \`sh \"\"\"\` : impossible d'interpoler un secret dans une chaîne shell"
 fi
-grep 'assert-merge-identity.sh' "$JF" | grep -q "^ *sh '" \
-  && ok "chaîne sh de la garde en quotes simples" || ko "chaîne sh de la garde en quotes doubles (Groovy interpolerait)"
+# La garde vit dans un SCRIPT : plus aucune chaîne shell d'identité ne traverse
+# une interpolation Groovy. Ce qui reste à prouver, c'est que le STEP qui
+# l'appelle est à quotes SIMPLES — un `sh "…"` y interpolerait `${WEBHOOK_REPO}`
+# côté Groovy, et un dépôt d'équipe est une valeur d'origine EXTERNE.
+grep -E "^[[:space:]]*sh 'set \+x; GIT_REPO=" "$JF" | grep -q "bash scripts/forge-merge-identity.sh'" \
+  && ok "le step qui appelle la garde est à quotes SIMPLES : \$WEBHOOK_REPO est lu par le SHELL, pas interpolé par Groovy" \
+  || ko "le step d'identité n'est pas à quotes simples — Groovy interpolerait le nom du dépôt venu du webhook"
 grep -q "password(name: 'V_PASS'" "$JF" \
   && ok "le mot de passe de la pause est un paramètre \`password\` (masqué), pas un \`string\`" \
   || ko "V_PASS n'est pas déclaré en paramètre \`password\` — il s'afficherait en clair dans l'UI et les logs"
@@ -674,19 +730,32 @@ grep -qF '<lightweight>false</lightweight>' "$JOB" \
 # Le Jenkinsfile lui-même doit rester déclaratif : ni try/catch, ni pipeline
 # scripté déguisé. Le seul `node` toléré est celui du post (obligatoire sous
 # `agent none`), compté explicitement.
-if grep -qE '^\s*(try \{|\} catch)' "$JF"; then
-  ko "le Jenkinsfile contient un try/catch — la gestion d'erreur doit passer par \`post\`"
-else
-  ok "aucun try/catch : la gestion d'erreur est déléguée à \`post\`"
+# FRONTIÈRE corps/post (L6 phase 2) : le CORPS doit rester déclaratif, mais le
+# `post{}` EXIGE try + timeout + catch autour de son nœud — la garde Groovy doit
+# précéder l'exécuteur, sans quoi un amorçage imposé prend un clone et un
+# credential pour une PR qui ne concerne pas ce job, et peut expirer.
+L_POST=$(grep -n '^  post {' "$JF" | head -1 | cut -d: -f1)
+if [ -z "$L_POST" ]; then
+  ko "aucun bloc \`post\` de niveau pipeline — la frontière corps/post n'existe pas"
+  L_POST=999999
 fi
-NODE_COUNT=$(grep -cE '^\s*node\(' "$JF")
+if awk "NR<$L_POST" "$JF" | grep -qE '^[[:space:]]*(try \{|\} catch)'; then
+  ko "le CORPS du pipeline contient un try/catch — la gestion d'erreur doit y passer par \`post\`"
+else
+  ok "aucun try/catch dans le CORPS du pipeline (le post{} en a, et doit en avoir)"
+fi
+NODE_COUNT=$(grep -cE '^[[:space:]]*node\(' "$JF")
+POST_NODE=$(awk "NR>=$L_POST" "$JF" | grep -cE '^[[:space:]]*node\(')
 [ "$NODE_COUNT" -eq 1 ] \
   && ok "un seul \`node(...)\` dans tout le fichier, celui du post (obligatoire sous \`agent none\`)" \
   || ko "nombre de \`node(...)\` inattendu (${NODE_COUNT}, attendu 1) — le pipeline redevient scripté"
-SCRIPT_BLOCKS=$(grep -cE '^\s*script \{' "$JF")
+[ "$POST_NODE" -eq 1 ] \
+  && ok "ce \`node(...)\` est bien DANS le \`post{}\` — le corps du pipeline reste 100% déclaratif" \
+  || ko "le \`node(...)\` n'est pas dans le post ($POST_NODE trouvé au post) — sous \`agent none\` un post sans node lèverait MissingContextVariableException"
+SCRIPT_BLOCKS=$(awk "NR<$L_POST" "$JF" | grep -cE '^[[:space:]]*script \{')
 [ "$SCRIPT_BLOCKS" -le 1 ] \
-  && ok "au plus un bloc \`script {}\` (le nommage du build) — le reste est déclaratif" \
-  || ko "${SCRIPT_BLOCKS} blocs \`script {}\` — le Groovy revient par la fenêtre"
+  && ok "au plus un bloc \`script {}\` dans le CORPS (le récepteur + le nommage du build) — le reste est déclaratif" \
+  || ko "${SCRIPT_BLOCKS} blocs \`script {}\` dans le corps — le Groovy revient par la fenêtre"
 
 echo
 echo "== 27. le total de contrôles exécutés correspond au total ATTENDU, écrit en dur =="

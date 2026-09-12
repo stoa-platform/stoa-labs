@@ -6,59 +6,35 @@
   le declencheur qui doit exister DES LA POSE du job. Le pipeline lui-meme vit
   dans ci/Jenkinsfile.team-publish (declaratif, versionne, relisible par l'ops).
 
-  Le bloc <triggers> ci-dessous DOIT rester le miroir exact du bloc
-  `triggers { GenericTrigger(...) }` du Jenkinsfile. C'est CELUI-CI qui gagne,
-  et c'est contre-intuitif : Declarative ne remplace QUE les declencheurs
-  qu'il a lui-meme poses (DeclarativeJobPropertyTrackerAction) ; un
-  declencheur venu d'un config.xml est PRESERVE tel quel, indefiniment.
-  MESURE sur le lab (2026-08-06) : token du XML volontairement different de
-  celui du Jenkinsfile, 4 builds -> le XML n'a jamais bouge ; le meme XML
-  prive de son bloc <triggers> -> le Jenkinsfile a bien installe le sien.
+  IL NE PORTE PLUS AUCUNE PROPRIETE (L6 phase 2, 2026-09-12), et cet en-tete
+  disait le contraire jusque-la : « le bloc <triggers> ci-dessous DOIT rester le
+  miroir exact … c'est CELUI-CI qui gagne ». C'etait vrai d'un bloc DECLARATIF
+  (mesure du 2026-08-06 : token du XML volontairement different de celui du
+  Jenkinsfile, 4 builds, le XML n'a jamais bouge), et FAUX d'un `properties()`
+  SCRIPTE : celui-la AJOUTE sa propriete sans dedoublonner (DOUBLON au build 1),
+  puis retire les deux et repose la sienne (build 2) — l'exemplaire du XML est
+  PERDU (fait 10 du 2026-09-02, re-mesure scripts/spike-webhook-kind-m2m4.sh).
 
-  Consequence : une divergence entre les deux fichiers est SILENCIEUSE, et
-  c'est le XML qui fait foi. test-team-publish-wiring.sh §3 compare les deux
-  et vire au rouge a la premiere divergence.
+  Et un bloc `triggers {}` declaratif exige AU PARSE le plugin qui porte son
+  symbole : sur un Jenkins sans generic-webhook-trigger, ce job mourait avant
+  son premier stage. Le declencheur et le verrou « une publication a la fois » sont
+  donc poses par le Jenkinsfile, selon la globale WEBHOOK_KIND (gwt | gitlab), a
+  son PREMIER BUILD — l'amorcage, que setup-provision-jobs.sh s'IMPOSE en lisant
+  ce XML et RELIT.
+
+  Consequence pour la porte : la suite de cablage n'attend plus un miroir mais
+  l'ETAT VOULU — « xml=absent jenkinsfile=present token=… vars=… ».
 -->
 <flow-definition plugin="workflow-job">
   <description>Apply post-merge (publication d'API) : une PR api/&lt;name&gt;-&lt;version&gt; d'un DEPOT D'EQUIPE FUSIONNEE ouvre une DEMANDE EN ATTENTE dans Jenkins (input) ; sur validation + identite Vault -> apply nominatif via scripts/team-publish.sh (miroir de team-apply.job.xml, palier 2, pour le depot de l'equipe). L'equipe autorisee est derivee du DEPOT qui a declenche le webhook (topologie), croise avec providers.&lt;env&gt;.yml -- jamais du contenu du payload. PIPELINE FROM SCM : le pipeline est ci/Jenkinsfile.team-publish, charge depuis le depot plateforme (branche __GIT_BASE__) -- ce job ne contient AUCUN Groovy.</description>
   <keepDependencies>false</keepDependencies>
-  <properties>
-    <org.jenkinsci.plugins.workflow.job.properties.DisableConcurrentBuildsJobProperty/>
-    <org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty>
-      <triggers>
-        <org.jenkinsci.plugins.gwt.GenericTrigger plugin="generic-webhook-trigger@2.4.2">
-          <spec></spec>
-          <genericVariables>
-            <!-- AUTORITE PAR TOPOLOGIE : c'est CE champ, pas un champ "team" du
-                 payload, qui dit qui a le droit de publier : team-publish.sh le
-                 croise avec providers.<env>.yml (REPO_NON_DECLARE sinon). -->
-            <org.jenkinsci.plugins.gwt.GenericVariable><key>WEBHOOK_REPO</key><value>$.repository.full_name</value></org.jenkinsci.plugins.gwt.GenericVariable>
-            <org.jenkinsci.plugins.gwt.GenericVariable><key>PR_BRANCH</key><value>$.pull_request.head.ref</value></org.jenkinsci.plugins.gwt.GenericVariable>
-            <org.jenkinsci.plugins.gwt.GenericVariable><key>PR_NUMBER</key><value>$.pull_request.number</value></org.jenkinsci.plugins.gwt.GenericVariable>
-            <org.jenkinsci.plugins.gwt.GenericVariable><key>PR_ACTION</key><value>$.action</value></org.jenkinsci.plugins.gwt.GenericVariable>
-            <org.jenkinsci.plugins.gwt.GenericVariable><key>PR_MERGED</key><value>$.pull_request.merged</value></org.jenkinsci.plugins.gwt.GenericVariable>
-            <!-- Qui a valide, et qui avait demande. SANS eux la garde d'identite
-                 ne peut RIEN verifier et refuse (MERGER_UNKNOWN) : memes cles que
-                 team-apply.job.xml / provision-apply.job.xml. -->
-            <org.jenkinsci.plugins.gwt.GenericVariable><key>PR_MERGED_BY</key><value>$.pull_request.merged_by.login</value></org.jenkinsci.plugins.gwt.GenericVariable>
-            <org.jenkinsci.plugins.gwt.GenericVariable><key>PR_REQUESTER</key><value>$.pull_request.user.login</value></org.jenkinsci.plugins.gwt.GenericVariable>
-            <!-- ANTI-TOCTOU (team-publish.sh) : le manifeste est lu dans le depot
-                 d'EQUIPE TEL QUE MERGE, jamais dans le payload du webhook. -->
-            <org.jenkinsci.plugins.gwt.GenericVariable><key>MERGE_SHA</key><value>$.pull_request.merge_commit_sha</value></org.jenkinsci.plugins.gwt.GenericVariable>
-          </genericVariables>
-          <printContributedVariables>true</printContributedVariables>
-          <printPostContent>false</printPostContent>
-          <token>stoa-team-publish</token>
-          <silentResponse>false</silentResponse>
-          <regexpFilterText>$PR_ACTION|$PR_MERGED</regexpFilterText>
-          <regexpFilterExpression>^closed\|true$</regexpFilterExpression>
-          <overrideQuietPeriod>false</overrideQuietPeriod>
-          <shouldNotFlattern>false</shouldNotFlattern>
-          <allowSeveralTriggersPerBuild>false</allowSeveralTriggersPerBuild>
-        </org.jenkinsci.plugins.gwt.GenericTrigger>
-      </triggers>
-    </org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty>
-  </properties>
+  <!-- L6 phase 2 (2026-09-12) : AUCUNE propriete ici. Le declencheur (selon la
+       globale WEBHOOK_KIND) et DisableConcurrentBuilds sont poses par le
+       Jenkinsfile, par un properties() SCRIPTE, a son PREMIER BUILD -
+       l'amorcage, que setup-provision-jobs.sh s'IMPOSE en lisant ce XML et
+       RELIT. Un XML porteur du meme declencheur donnerait un DOUBLON au build 1
+       puis la PERTE de son exemplaire au build 2 (spike-webhook-kind-m2m4). -->
+  <properties/>
   <definition class="org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition" plugin="workflow-cps">
     <scm class="hudson.plugins.git.GitSCM" plugin="git">
       <configVersion>2</configVersion>

@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
-# team-apply-identity.sh — les IDENTITÉS et le LIEN payload↔objet, RELUS SUR LA
+# forge-merge-identity.sh — les IDENTITÉS et le LIEN payload↔objet, RELUS SUR LA
 # FORGE, avant toute demande en attente qui aboutit et avant tout apply.
+#
+# DEUX APPELANTS (renommé de team-apply-identity.sh le 2026-09-12, quand le
+# second est arrivé) : ci/Jenkinsfile.team-apply, sur le dépôt PLATEFORME, et
+# ci/Jenkinsfile.team-publish, sur le dépôt d'une ÉQUIPE — d'où le préfixe
+# `GIT_REPO="$WEBHOOK_REPO"` côté publish : c'est le SEUL paramètre qui change,
+# parce que `forge-api.sh` lit le dépôt dans l'environnement. Rien dans ce
+# script ne nomme un job.
 #
 # POURQUOI UN SCRIPT, ET PAS SIX LIGNES DANS LE JENKINSFILE (mesuré 2026-09-12).
 # Ces six lignes ont existé, inline, dans un `sh '''…'''` de
@@ -39,8 +46,10 @@
 # fait déjà scripts/provision-apply-reconcile.sh (PAYLOAD_PERIME), UNE
 # comparaison par ligne : chacune porte sa propre épreuve de mutation.
 #
-# Invocation attendue, depuis ci/Jenkinsfile.team-apply :
-#   dir(env.GIT_SUBDIR) { sh 'set +x; bash scripts/team-apply-identity.sh' }
+# Invocation attendue, depuis le Jenkinsfile :
+#   dir(env.GIT_SUBDIR) { sh 'set +x; bash scripts/forge-merge-identity.sh' }
+# et, pour une PR qui vit dans un dépôt d'équipe :
+#   sh 'set +x; GIT_REPO="$WEBHOOK_REPO" bash scripts/forge-merge-identity.sh'
 # Les faits arrivent par l'ENVIRONNEMENT (PR_NUMBER, PR_BRANCH, MERGE_SHA
 # contribués par le déclencheur ; V_USER saisi dans la demande en attente) —
 # jamais par argv, que `ps -Aww` donne à tout le nœud.
