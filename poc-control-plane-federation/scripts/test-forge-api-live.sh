@@ -11,7 +11,11 @@
 # de sonde par `git` (agnostique), puis par l'adaptateur : whoami, pr_open,
 # pr_find_open, pr_get, pr_files, comment_upsert ×2 (created puis updated),
 # comment_find (le marqueur posé, puis un marqueur inconnu), pr_list_merged
-# (la sonde est ouverte, jamais mergée : zéro ligne), raw ;
+# (la sonde est ouverte, jamais mergée : zéro ligne), raw sur la branche de
+# sonde puis SANS ref (HEAD du dépôt) ; repo_get sur le dépôt de la sonde,
+# sur un dépôt VIDE du lab (posé par setup-team-repos.sh, jamais par cette
+# suite) et sur un dépôt inexistant ; l'URL rendue par pr_get, absolue (base
+# de forge_web_url) ;
 # et le DISCRIMINANT : FORGE_KIND=gitea contre le GitLab réel ⇒ la cause nomme
 # « 302 » et « /users/sign_in » (la panne du client, reproduite ici).
 # Elle NETTOIE derrière elle (ferme la MR/PR, supprime la branche) — mais un
@@ -54,8 +58,12 @@ fi
 if [ -z "${GITEA_LAB_TOKEN:-}" ] && [ -n "${GITEA_TOKEN_FILE:-}" ] && [ -r "$GITEA_TOKEN_FILE" ]; then GITEA_LAB_TOKEN="$(tr -d '\r\n' < "$GITEA_TOKEN_FILE")"; fi
 [ -r ./.env ] && [ -z "${GITEA_LAB_TOKEN:-}" ] && GITEA_LAB_TOKEN="$(sed -n 's/^GITEA_TOKEN=//p' ./.env | head -1)"
 
-# fx <verbe…> : joue le verbe sous l'environnement de la forge courante
-fx(){ ( env -i PATH="$PATH" HOME="$HOME" FORGE_KIND="$K" GIT_HOST="$H" GIT_REPO="$R" FORGE_SECRET="$S" FORGE_API_AUTH="$A" bash -c '. scripts/lib/forge-api.sh && forge_api_init && forge "$@"' _ "$@" ) > "$TMP/out" 2> "$TMP/err"; echo $? > "$TMP/rc"; }
+# fx <verbe…> : joue le verbe sous l'environnement de la forge courante.
+# GIT_REPO="autre" fx repo_get SURCHARGE le dépôt de $R pour cet appel SEUL —
+# la valeur déjà posée par l'appelant l'emporte, sinon repli sur $R (Task 14 :
+# repo_get doit pouvoir viser le dépôt vide du lab SANS toucher $R, qui sert
+# encore aux verbes suivants dans la même itération de forge).
+fx(){ ( env -i PATH="$PATH" HOME="$HOME" FORGE_KIND="$K" GIT_HOST="$H" GIT_REPO="${GIT_REPO:-$R}" FORGE_SECRET="$S" FORGE_API_AUTH="$A" bash -c '. scripts/lib/forge-api.sh && forge_api_init && forge "$@"' _ "$@" ) > "$TMP/out" 2> "$TMP/err"; echo $? > "$TMP/rc"; }
 rc(){ cat "$TMP/rc"; }
 val(){ sed -n "s/^$1=//p" "$TMP/out" | head -1; }
 cause(){ head -c 220 "$TMP/err" | tr '\n' ' '; }
@@ -65,9 +73,12 @@ cause(){ head -c 220 "$TMP/err" | tr '\n' ' '; }
 gitauth(){ GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=http.extraheader GIT_CONFIG_VALUE_0="Authorization: Basic $(printf '%s:%s' "$GIT_USER" "$S" | base64 | tr -d '\n')" GIT_CONFIG_KEY_1=http.postBuffer GIT_CONFIG_VALUE_1=524288000 git "$@"; }
 
 for K in $FORGES; do
+  # REPO_VIDE : un dépôt VIDE du lab, déjà posé par setup-team-repos.sh (D10 —
+  # cet outil de POSTE crée/protège les dépôts d'équipe ; cette suite n'en crée
+  # ni n'en supprime aucun, elle se contente de LIRE ceux qui existent déjà).
   case "$K" in
-    gitlab) H="$GITLAB_URL"; R="ci/stoa-labs"; S="${GITLAB_LAB_TOKEN:-}"; A=private-token; GIT_USER=oauth2 ;;
-    gitea)  H="$GITEA_URL";  R="ci/stoa-labs"; S="${GITEA_LAB_TOKEN:-}"; A=token; GIT_USER=x ;;
+    gitlab) H="$GITLAB_URL"; R="ci/stoa-labs"; S="${GITLAB_LAB_TOKEN:-}"; A=private-token; GIT_USER=oauth2; REPO_VIDE=ci/fbi-l5-apis ;;
+    gitea)  H="$GITEA_URL";  R="ci/stoa-labs"; S="${GITEA_LAB_TOKEN:-}"; A=token; GIT_USER=x; REPO_VIDE=fbi-l5/apis ;;
     *) echo "forge inconnue : $K"; exit 2 ;;
   esac
   echo "═══ $K — $H ═══"
@@ -132,6 +143,20 @@ for K in $FORGES; do
   [ "$(rc)" = 0 ] && grep -q "$SONDE" "$TMP/out" && ok "$K H.1 raw sur la branche de sonde ⇒ le contenu poussé" || ko "$K H.1 rc $(rc) : $(cause)"
   fx pr_get 999999
   [ "$(rc)" = 2 ] && grep -q '404' "$TMP/err" && ok "$K D.4 PR inconnue ⇒ rc 2, cause « 404 »" || ko "$K D.4 rc $(rc) : $(cause)"
+
+  # ── I. repo_get, raw sans ref, l'URL absolue (Task 14) ──
+  # Le dépôt non vide ($R), le dépôt VIDE du lab (REPO_VIDE, posé par
+  # setup-team-repos.sh — jamais créé/supprimé ici), un dépôt qui n'existe pas.
+  fx repo_get
+  [ "$(rc)" = 0 ] && [ "$(val EXISTS)" = 1 ] && [ "$(val EMPTY)" = 0 ] && [ -n "$(val DEFAULT_BRANCH)" ] && ok "$K I.1 repo_get $R ⇒ EXISTS=1 EMPTY=0 DEFAULT_BRANCH=$(val DEFAULT_BRANCH)" || ko "$K I.1 repo_get : $(cause)"
+  GIT_REPO="$REPO_VIDE" fx repo_get
+  [ "$(rc)" = 0 ] && [ "$(val EXISTS)" = 1 ] && [ "$(val EMPTY)" = 1 ] && ok "$K I.2 repo_get $REPO_VIDE (vide, posé par setup-team-repos.sh) ⇒ EXISTS=1 EMPTY=1" || ko "$K I.2 repo_get $REPO_VIDE : rc $(rc) $(tr '\n' ' ' < "$TMP/out") $(cause)"
+  GIT_REPO="ci/inexistant-$$" fx repo_get
+  [ "$(rc)" = 0 ] && [ "$(val EXISTS)" = 0 ] && ok "$K I.3 repo_get dépôt inexistant ⇒ EXISTS=0 rc 0" || ko "$K I.3 repo_get inexistant : rc $(rc) $(cause)"
+  fx raw poc-control-plane-federation/ENVIRONNEMENTS.md
+  [ "$(rc)" = 0 ] && [ -s "$TMP/out" ] && ok "$K H.2 raw sans ref ⇒ HEAD du dépôt (octets : $(wc -c < "$TMP/out"))" || ko "$K H.2 raw sans ref : $(cause)"
+  fx pr_get 1
+  [ "$(rc)" = 0 ] && case "$(val URL)" in http*) ok "$K D.5 pr_get 1 rend une URL absolue (base de forge_web_url) : $(val URL)" ;; *) ko "$K D.5 URL=$(val URL)" ;; esac
 
   # ── nettoyage : fermer et supprimer la branche ──
   if [ "$K" = gitlab ]; then
