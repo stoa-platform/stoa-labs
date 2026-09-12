@@ -5,8 +5,9 @@
 #   d'identité, cf. le job XML) → CE script :
 #     1. ANTI-TOCTOU : checkout de la branche de base AU SHA DU MERGE ; l'équipe est lue dans
 #        providers.<env>.yml TEL QUE MERGÉ — jamais dans le payload du webhook.
-#     2. dépôt Gitea depuis le squelette ADR-076 (token org-admin lu dans Vault,
-#        header-file). IDEMPOTENT : dépôt existant → sauté, dit dans le commentaire.
+#     2. dépôt d'équipe LU, jamais créé (D10, ADR-099) : repo_get par l'autorité
+#        de forge ; absent -> REFUS DEPOT_ABSENT ; vide -> squelette ADR-076
+#        poussé ; déjà initialisé -> sauté (idempotence, dit dans le commentaire).
 #        repo: "" dans providers → étape sautée (cas payments-team), PAS un échec.
 #     3. ansible/onboard-team.yml (rôle idempotent du palier 1).
 #     4. commentaire PR : le statut RÉEL, succès comme échec (ADR-081 coroll. 2).
@@ -39,32 +40,6 @@ _TA_LIB="$(dirname "${BASH_SOURCE[0]}")/lib/deploy-pin.sh"
 # shellcheck source=scripts/lib/deploy-pin.sh
 . "$_TA_LIB" || { echo "ERREUR: $_TA_LIB introuvable ou illisible" >&2; exit 1; }
 
-# G4 (ADR-082, M2/M3) : le poseur de protection de branche. Sourcé ICI, au même
-# endroit et sous la même garde que deploy-pin.sh ci-dessus, pour deux raisons
-# ORDINAIRES : la cohérence (un seul endroit où ce script prend ses libs) et le
-# fichier manquant (`set -e` n'est pas actif — sans le `|| { …; exit 1; }`,
-# bash continuerait jusqu'à un `command not found` au point de pose).
-#
-# CE QUE CE PLACEMENT NE FAIT PAS (revue round 1 — une version antérieure de ce
-# commentaire le prétendait, à tort) : il ne met PAS le poseur hors de portée du
-# demandeur. Le workspace du job est checkouté sur la branche de base de ci/stoa-labs
-# (team-apply.job.xml:73-77) et le webhook ne part qu'APRÈS le merge : l'arbre
-# d'AVANT le `git checkout "$MERGE_SHA"` porte DÉJÀ la PR du demandeur. Sourcer
-# tôt ou tard n'y change donc RIEN.
-#
-# La vraie mitigation du trou « le demandeur peut éditer le poseur » est la
-# protection de la branche de base de ci/stoa-labs que CETTE tâche livre
-# (setup-repo-protections.sh) : plus de push direct, tout passe par une PR
-# revue. C'est un contrôle de dépôt, pas un contrôle de ce script.
-#
-# Même frontière pour la CIBLE de la pose : $REPO_FULL est lu dans
-# providers.<env>.yml TEL QUE MERGÉ (§1 ci-dessous). Rien dans ce code
-# n'empêche une PR d'onboarding de pointer un dépôt qui n'est pas le sien —
-# c'est la revue de la PR qui le tient, pas le code (ADR-082).
-_TA_PROT="$(dirname "${BASH_SOURCE[0]}")/lib/repo-protection.sh"
-[ -f "$_TA_PROT" ] || _TA_PROT="scripts/lib/repo-protection.sh"
-# shellcheck source=scripts/lib/repo-protection.sh
-. "$_TA_PROT" || { echo "ERREUR: $_TA_PROT introuvable ou illisible" >&2; exit 1; }
 _TA_PROV="$(dirname "${BASH_SOURCE[0]}")/lib/providers-teams.sh"
 [ -f "$_TA_PROV" ] || _TA_PROV="scripts/lib/providers-teams.sh"
 # shellcheck source=scripts/lib/providers-teams.sh
@@ -107,18 +82,31 @@ GIT_HOST="${GIT_HOST:-http://gitea:3000}"
 GIT_REPO="${GIT_REPO:-ci/stoa-labs}"
 GIT_WEB_HOST="${GIT_WEB_HOST:-$GIT_HOST}"
 
+# L5 phase 2 (2026-09-12) — LA FORGE SE PARLE PAR UNE SEULE AUTORITÉ (D10) :
+# visage, base d'API, en-tête d'auth et garde de réponse vivent dans
+# scripts/lib/forge-api.sh (+ .py) — ce script ne compose plus /api/v1 ni
+# « Authorization: token » lui-même (mêmes verbes que team-request.sh,
+# d879968). Sourcé APRÈS GIT_HOST/GIT_REPO/GIT_WEB_HOST : forge_api_init ne
+# fait aucun appel réseau, mais REFUSE si l'un des deux est vide.
+_TA_FORGE="$(dirname "${BASH_SOURCE[0]}")/lib/forge-api.sh"
+[ -f "$_TA_FORGE" ] || _TA_FORGE="scripts/lib/forge-api.sh"
+# shellcheck source=scripts/lib/forge-api.sh
+. "$_TA_FORGE" || { echo "ERREUR: $_TA_FORGE introuvable ou illisible" >&2; exit 1; }
+forge_api_init || exit 2
+
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT; umask 077
-fail(){ comment "❌ team-apply : $*"; echo "ERREUR: $*" >&2; exit 1; }
-comment(){ API="${GIT_HOST}/api/v1" GIT_REPO="$GIT_REPO" FORGE_SECRET="$FORGE_SECRET" \
-  PR="$PR_NUMBER" BODY="$1" python3 - <<'PY'
-import json, os, urllib.request
-api, repo, tok = os.environ["API"], os.environ["GIT_REPO"], os.environ["FORGE_SECRET"]
-req = urllib.request.Request(f"{api}/repos/{repo}/issues/{os.environ['PR']}/comments",
-    method="POST", data=json.dumps({"body": os.environ["BODY"]}).encode(),
-    headers={"Authorization": f"token {tok}", "Content-Type": "application/json"})
-urllib.request.urlopen(req)
-PY
+# Un commentaire par RÔLE, sous marqueur : le statut de team-apply se REMPLACE à
+# chaque passage (idempotence, ADR-081 corollaire 1). fail() écrit UN SEUL ❌ (le
+# double commentaire d'antan — détaillé puis générique — est fermé, comme dans
+# team-publish.sh). L'échec du commentaire est un avertissement : le verdict de
+# l'apply ne dépend jamais de son rapport.
+comment(){
+  printf '%s\n' "$1" > "$TMP/comment.md"
+  forge comment_upsert "$PR_NUMBER" '<!-- team-apply -->' "$TMP/comment.md" >/dev/null \
+    || echo "AVERTISSEMENT: statut non posé sur la PR #${PR_NUMBER} (cause ci-dessus) — l'apply, lui, a rendu son verdict dans ce build" >&2
 }
+fail(){ comment "❌ team-apply ${TEAM:-?}/${ENVN:-?} — $*"; echo "ERREUR: $*" >&2; exit 1; }
+refus(){ comment "❌ team-apply ${TEAM:-?}/${ENVN:-?} — REFUS: $*"; echo "REFUS: $*" >&2; exit 2; }
 
 # ── 1. équipe et env depuis la branche ; anti-TOCTOU sur le contenu ──────────
 case "$PR_BRANCH" in onboard/*) ;; *) echo "hors onboard/* — rien à faire"; exit 0;; esac
@@ -184,243 +172,56 @@ case "$REPO_FULL" in
   *) fail "PARSE_PROVIDERS : sortie inattendue de l'extraction repo pour ${TEAM} (ni échec ni marqueur REPO=)";;
 esac
 
-# ── 2. dépôt Gitea (idempotent ; token org-admin lu dans Vault) ──────────────
+# ── 2. le dépôt d'équipe : LU, jamais créé (D10 profond, ADR-099) ────────────
+# Le client crée le dépôt VIDE, son webhook vers team-publish et la protection de
+# sa branche par défaut (prérequis de forge, ENVIRONNEMENTS.md § Prérequis côté
+# client). Ici : repo_get par l'autorité de forge, sous le secret de forge
+# ORDINAIRE (le jeton org-admin lu dans Vault n'existe plus), puis trois états :
+#   absent            -> REFUS DEPOT_ABSENT (nommé sur la PR, rien de poussé) ;
+#   existant ET vide   -> squelette ADR-076 poussé sur la HEAD que la forge annonce,
+#                        sinon la branche de base de la plateforme ;
+#   existant NON vide  -> déjà initialisé, étape sautée (idempotence : un re-run
+#                        après un échec d'onboarding ne doit jamais refuser ici).
+# Le parse est fail-closed dans l'autorité : un 200 sans champ « vide » lisible
+# est un refus, jamais « non vide » par défaut.
+#
+# ÉCART AU BRIEF (bug corrigé, constaté en relisant ansible/providers.dev.yml) :
+# le brief de cette tâche appelait repo_get INCONDITIONNELLEMENT. payments-team
+# porte délibérément `repo: ""` (providers.dev.yml:36 — tenant réel, « inconnu,
+# à renseigner au palier 2 ») : un repo_get sur un GIT_REPO vide n'a aucun sens,
+# et refuser ce cas en DEPOT_ABSENT casserait l'onboarding d'une équipe qui n'a
+# simplement pas encore de dépôt produit — c'est déjà l'invariant nommé dans
+# l'en-tête de ce fichier (« repo: "" → étape sautée, PAS un échec »). La garde
+# `[ -n "$REPO_FULL" ]` du code d'avant D10 est donc CONSERVÉE autour du bloc.
 REPO_NOTE="dépôt : (repo vide dans providers — étape sautée)"
+REPO_LINK=""
 if [ -n "$REPO_FULL" ]; then
-  # ÉCART AU BRIEF (bug corrigé, constaté en direct) : VAULT_TOKEN_FILE contient
-  # le token BRUT (ci/lib/vault-login.sh:135-147 — _vault_store_token écrit
-  # "token" nu ET "token.hdr" séparément ; seul le premier est exporté sous ce
-  # nom, celui que l'apim_common Ansible consomme via lookup('file', …)). Un
-  # `curl -H @"$VAULT_TOKEN_FILE"` direct (le texte du brief) n'a AUCUNE ligne
-  # "Nom: valeur" à envoyer — le token part sans header, Vault répond 403
-  # partout, reproduit en direct sur ce Vault. On construit ici notre PROPRE
-  # fichier d'en-tête (même motif que vhdr()/vcurl() ailleurs dans ce dépôt) à
-  # partir du contenu brut, sans jamais faire transiter le token par argv/env.
-  printf 'X-Vault-Token: %s\n' "$(cat "$VAULT_TOKEN_FILE")" > "$TMP/vthdr"
-  curl -s -H @"$TMP/vthdr" "$VAULT_ADDR/v1/secret/data/stoa/ci/gitea-org-admin" \
-    | python3 -c "import json,sys; print(json.load(sys.stdin)['data']['data']['token'])" > "$TMP/gt" \
-    || fail "lecture du token org-admin dans Vault (policy team-onboarder ?)"
-  forge_auth_write "$(cat "$TMP/gt")" "$TMP/ghdr" || exit 2
-  ORG="${REPO_FULL%%/*}"; RNAME="${REPO_FULL##*/}"
-  gapi(){ curl -s -H @"$TMP/ghdr" -H 'Content-Type: application/json' "$@"; }
-  # org : create-or-skip
-  RC=$(gapi -o /dev/null -w '%{http_code}' "${GIT_HOST}/api/v1/orgs/${ORG}")
-  if [ "$RC" != 200 ]; then
-    RC=$(gapi -X POST -d "{\"username\":\"${ORG}\"}" -o "$TMP/err" -w '%{http_code}' "${GIT_HOST}/api/v1/orgs")
-    { [ "$RC" = 201 ] || [ "$RC" = 200 ]; } || fail "création org ${ORG} (HTTP $RC)"
-  fi
-  # repo : trois états, pas deux (REVUE Important) — le test d'existence
-  # jetait le corps de la réponse (`-o /dev/null`), donc ne regardait jamais
-  # le champ `empty` de l'API Gitea. Un dépôt CRÉÉ (par un run précédent) dont
-  # le push du squelette avait échoué pour une raison résiduelle (réseau, panne
-  # Gitea, etc.) était alors déclaré « déjà existant, étape sautée » à chaque
-  # re-run et restait bloqué vide pour toujours — aucune réparation
-  # automatique, alors que le rôle Ansible (§3) est lui bien rejouable.
-  # Vérifié en direct (2026-08-05, curl+API Gitea réel) : un dépôt créé
-  # SANS jamais y pousser expose bien "empty": true dans la réponse GET.
-  # Trois états, donc trois notes distinctes :
-  #   absent            -> créer + pousser (cas normal)
-  #   existant ET vide   -> pousser SEULEMENT (réparation d'un run précédent)
-  #   existant NON vide  -> sauté (idempotence réelle)
-  RC=$(gapi -o "$TMP/repoinfo" -w '%{http_code}' "${GIT_HOST}/api/v1/repos/${REPO_FULL}")
+  GIT_REPO="$REPO_FULL" forge_kv DEPOT repo_get \
+    || fail "lecture du dépôt d'équipe ${REPO_FULL} sur la forge (cause ci-dessus)"
   PUSH_SKELETON=0
-  if [ "$RC" != 200 ]; then
-    # `default_branch` DIT à la forge la branche que le squelette va porter.
-    # Sans lui, la forge garde SON défaut de configuration (« main » chez la
-    # plupart) : le dépôt naîtrait en annonçant une HEAD que personne ne pousse,
-    # et api-request.sh, qui DEMANDE cette HEAD au dépôt (git_base_of), viserait
-    # une branche vide. Un dépôt neuf suit la branche de base de la plateforme.
-    RC=$(gapi -X POST -d "{\"name\":\"${RNAME}\",\"auto_init\":false,\"default_branch\":\"${GIT_BASE}\"}" -o "$TMP/err" -w '%{http_code}' "${GIT_HOST}/api/v1/orgs/${ORG}/repos")
-    [ "$RC" = 201 ] || fail "création dépôt ${REPO_FULL} (HTTP $RC)"
+  if [ "$DEPOT_EXISTS" != 1 ]; then
+    refus "DEPOT_ABSENT : le dépôt ${REPO_FULL} n'existe pas sur ${GIT_HOST} (ou n'est pas visible pour ce jeton) — le client le crée VIDE, avec son webhook vers team-publish et la protection de sa branche par défaut (prérequis D10, ENVIRONNEMENTS.md § Prérequis côté client), puis rejoue ce merge. Rien n'a été poussé."
+  elif [ "$DEPOT_EMPTY" = 1 ]; then
     PUSH_SKELETON=1
-    REPO_NOTE="dépôt ${REPO_FULL} : créé depuis le squelette ADR-076"
+    SKEL_BRANCH="${DEPOT_DEFAULT_BRANCH:-$GIT_BASE}"
+    REPO_NOTE="dépôt ${REPO_FULL} : vide, squelette ADR-076 poussé sur ${SKEL_BRANCH}"
   else
-    # Même discipline fail-closed que l'extraction REPO_FULL ci-dessus :
-    # HTTP 200 ne garantit pas un parse réussi — un JSON inattendu ou un champ
-    # `empty` absent doit refuser, pas être lu comme "non vide" par défaut
-    # (un défaut silencieux là laisserait un dépôt vide non réparé, exactement
-    # le bug que cette revue corrige).
-    IS_EMPTY=$(python3 -c "import json; print('1' if json.load(open('$TMP/repoinfo'))['empty'] else '0')" 2>"$TMP/perr") \
-      || fail "lecture du champ 'empty' du dépôt ${REPO_FULL} (HTTP 200, parse en échec) : $(cat "$TMP/perr")"
-    if [ "$IS_EMPTY" = 1 ]; then
-      PUSH_SKELETON=1
-      REPO_NOTE="dépôt ${REPO_FULL} : existant VIDE, squelette poussé — réparation d'un run précédent"
-    else
-      REPO_NOTE="dépôt ${REPO_FULL} : déjà existant, étape sautée (idempotence)"
-    fi
+    REPO_NOTE="dépôt ${REPO_FULL} : déjà initialisé, étape sautée (idempotence)"
   fi
   if [ "$PUSH_SKELETON" = 1 ]; then
     SK="$TMP/skel"; mkdir -p "$SK"
     cp -R clients/_example/. "$SK/"
-    printf '# %s\n\nDépôt d équipe (squelette ADR-076 : apis/, applications/).\nCréé par team-apply au merge de la PR #%s.\n' "$REPO_FULL" "$PR_NUMBER" > "$SK/README.md"
-    # Un dépôt NEUF n'a pas de HEAD à découvrir : il suit la branche de base de
-    # la plateforme (git_base_init ci-dessus, knob GIT_BASE prioritaire).
-    git -C "$SK" init -q -b "$GIT_BASE" && git -C "$SK" add -A \
+    printf '# %s\n\nDépôt d équipe (squelette ADR-076 : apis/, applications/).\nInitialisé par team-apply au merge de la PR #%s.\n' "$REPO_FULL" "$PR_NUMBER" > "$SK/README.md"
+    git -C "$SK" init -q -b "$SKEL_BRANCH" && git -C "$SK" add -A \
       && git -C "$SK" -c user.name=ci -c user.email=ci@stoa.lab commit -qm "squelette ADR-076 (team-apply, PR #${PR_NUMBER})"
-    # ÉCART AU BRIEF (bug corrigé, constaté en direct) : le brief (comme
-    # team-request.sh/provision-request.sh) met le token dans l'URL
-    # (http://x:$TOKEN@host/...) passée en argv à `git push`. Mesuré en
-    # direct (ps -Aww pendant un vrai run) : le token org-admin apparaît EN
-    # CLAIR dans l'argv du process `git push` ET de son enfant
-    # `git-remote-http` pendant toute la durée du push — exactement ce que la
-    # preuve 8 du palier (sondage ps -ww) est censée détecter. On passe donc
-    # le credential par un HEADER injecté via variables d'ENVIRONNEMENT
-    # (GIT_CONFIG_COUNT/KEY/VALUE — jamais argv, jamais visible par `ps -ww`,
-    # vérifié en direct par le même sondage) plutôt que dans l'URL ; l'URL
-    # elle-même ne porte plus aucun credential.
-    # Le LOGIN vient de l'autorité unique (2026-09-12) : « x » était composé EN DUR
-    # ici, et un geste PARFAITEMENT authentifié retombait donc en 401 sur GitLab —
-    # invisible à la porte H bis.2, qui mesure l'enveloppe du geste et non l'origine
-    # du login (d'où H bis.4).
-    AUTH_B64=$(printf '%s:%s' "$(git_base_basic_login)" "$(cat "$TMP/gt")" | base64 | tr -d '\n')
-    GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader \
-      GIT_CONFIG_VALUE_0="Authorization: Basic ${AUTH_B64}" \
-      git -C "$SK" push -q "${GIT_HOST}/${REPO_FULL}.git" "$GIT_BASE" 2>"$TMP/pe" \
-      || { cat "$TMP/pe" >&2; fail "push du squelette"; }
-    unset AUTH_B64
+    # Le push passe par l'enveloppe de l'autorité git (login du visage, secret de
+    # forge ordinaire, jamais en argv) — c'est le porteur de FORGE_SECRET qui
+    # initialise le dépôt ; sur GitLab il doit être Developer sur le projet.
+    ggit -C "$SK" push -q "${GIT_HOST}/${REPO_FULL}.git" "$SKEL_BRANCH" 2>"$TMP/pe" \
+      || { cat "$TMP/pe" >&2; fail "push du squelette dans ${REPO_FULL} (dépôt vide : le porteur du secret de forge doit pouvoir y écrire)"; }
   fi
-
-  # ── protection de branche du dépôt d'équipe (G4, ADR-082, M2/M3) ─────────
-  # APRÈS le push du squelette : protéger AVANT aurait bloqué CE premier push
-  # (la whitelist ne porte que `ci`, et le squelette part sous le token
-  # org-admin). AVANT le webhook, pour que l'ordre du fichier soit l'ordre du
-  # raisonnement. Posée que le dépôt vienne d'être créé OU qu'il existât déjà —
-  # même raison que le webhook : un dépôt onboardé avant G4 rattrape sa
-  # protection au run suivant, sans geste manuel.
-  #
-  # BEST-EFFORT NOMMÉ, jamais `fail` (motif du webhook ci-dessous) : l'onboarding
-  # lui-même (le rôle Ansible, §3) ne dépend pas de la protection, et l'annuler
-  # pour elle coûterait plus qu'elle ne protège. Mais la note est repliée dans
-  # REPO_NOTE — donc elle rejoint le commentaire ✅ COMME le ❌ — pour que
-  # l'exploitant sache qu'il doit repasser setup-repo-protections.sh.
-  #
-  # La whitelist reste `ci` par défaut et se surcharge par une variable
-  # d'EXPLOITANT, pas par un champ de la demande : un demandeur qui pourrait
-  # s'y ajouter retrouverait le droit d'écriture directe que G4 lui retire.
-  # `ci` n'est PAS arbitraire : c'est le GITEA_ADMIN_USER de
-  # setup-team-onboard-prereqs.sh (« au lab ce n'est pas admin mais ci »), donc
-  # le porteur du token org-admin — l'identité sous laquelle le squelette est
-  # poussé juste au-dessus. Les deux DOIVENT rester alignées : si un déploiement
-  # client change l'admin sans changer PROTECT_PUSH_WHITELIST, c'est le chemin
-  # de RÉPARATION (dépôt existant VIDE, :184-189) qui casse — la protection
-  # posée au run précédent refuserait le push de rattrapage.
-  # QUELLE branche protéger ? Celle que CE dépôt porte réellement. Squelette
-  # tout juste poussé : c'est $GIT_BASE. Dépôt qui EXISTAIT déjà (non vide) : sa
-  # HEAD est celle que la forge annonce, déjà lue dans $TMP/repoinfo — aucun
-  # appel supplémentaire, et surtout aucune supposition. Protéger une branche
-  # qui n'existe pas ne protège rien, en silence.
-  #
-  # Le repli sur $GIT_BASE quand la forge ne nomme aucune branche (réponse
-  # inattendue) ne MASQUE rien : si la branche est fausse, `pose_branch_protection`
-  # échoue et la note ⚠ ci-dessous le DIT sur la PR. C'est le seul endroit de ce
-  # script où une branche non confirmée est essayée, et elle ne l'est jamais en
-  # silence.
-  PROT_BRANCH="$GIT_BASE"
-  if [ "$PUSH_SKELETON" = 0 ]; then
-    PROT_BRANCH=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('default_branch') or '')" "$TMP/repoinfo" 2>/dev/null)
-    [ -n "$PROT_BRANCH" ] || PROT_BRANCH="$GIT_BASE"
-  fi
-  PROT_NOTE=""
-  if repo_protection_payload "$PROT_BRANCH" "${PROTECT_PUSH_WHITELIST:-ci}" > "$TMP/prot.json" \
-     && pose_branch_protection "$GIT_HOST" "$TMP/ghdr" "$REPO_FULL" "$TMP/prot.json"; then
-    PROT_NOTE=" ; protection ${PROT_BRANCH} posée (push whitelist: ${PROTECT_PUSH_WHITELIST:-ci})"
-  else
-    PROT_NOTE=" ; ⚠ protection ${PROT_BRANCH} NON posée — repasser setup-repo-protections.sh"
-    echo "AVERTISSEMENT: protection de branche non posée sur ${REPO_FULL} — refus nommé ci-dessus (PROTECTION_NON_POSEE)" >&2
-  fi
-  REPO_NOTE="${REPO_NOTE}${PROT_NOTE}"
-
-  # ── webhook pull_request -> team-publish (Task 7, extension a) ────────────
-  # IDEMPOTENT (GET puis POST si absent) : un hook existant portant la MÊME
-  # URL cible est sauté et dit — jamais un doublon (un dépôt déjà réparé, ou
-  # un re-run après incident, ne double pas le déclenchement). Posé qu'il
-  # s'agisse d'un dépôt fraîchement créé OU déjà existant (pas seulement
-  # PUSH_SKELETON=1) : un dépôt onboardé AVANT que cette extension n'existe
-  # doit pouvoir rattraper son webhook au run suivant.
-  #
-  # ÉCHEC NOMMÉ, PAS SILENCIEUX (brief) — à la différence de la re-pose plus
-  # bas (⚠, purement best-effort) : un dépôt SANS ce webhook ne déclenchera
-  # JAMAIS team-publish tant que personne ne le répare à la main, ce n'est pas
-  # une liste qui se rafraîchit toute seule au run suivant. Marqué ❌ dans le
-  # commentaire — mais n'appelle PAS fail() : l'onboarding lui-même (le rôle
-  # Ansible, §3) est indépendant du webhook, et le retarder d'un geste manuel
-  # reste possible sans reprendre tout l'onboarding.
-  # [Important, panel Fix round 1] SECRET HMAC à l'enregistrement — ce que ce
-  # secret ferme et ce qu'il NE ferme PAS, pour ne pas ajouter un vert vacant
-  # de plus (cf. §F du même panel, sur test-team-publish-wiring.sh) :
-  #   - Gitea (côté ÉMETTEUR) signe chaque livraison avec ce secret
-  #     (en-tête X-Gitea-Signature, HMAC-SHA256 du corps BRUT) dès qu'il est
-  #     non vide — ceci est réel, vérifiable côté Gitea (Settings > Webhooks).
-  #   - Generic Webhook Trigger 2.4.2 (côté RÉCEPTEUR, ce job Jenkins) n'offre
-  #     PAS de vérification fiable de cette signature : sa seule fonction
-  #     "HMAC" documentée sert un allow-list d'hôte, pas la signature Gitea ;
-  #     et la seule façon de faire lire le corps par un step JSONPath ($) le
-  #     REsérialise (ordre de clés / espaces potentiellement différents des
-  #     octets bruts que Gitea a signés) — un HMAC calculé sur ce texte
-  #     resérialisé ne recalculerait PAS forcément la même signature, un faux
-  #     négatif possible sur un payload pourtant légitime. Vertifier ce
-  #     recalcul aurait pu être un vert vacant : un contrôle qui semble
-  #     fermer une porte mais échoue au hasard ou ne ferme rien.
-  #   - La garde RÉELLE contre un payload forgé/rejoué N'EST DONC PAS ce
-  #     secret : c'est la réconciliation Gitea de team-publish.sh (§2 —
-  #     merged/merge_commit_sha/head.ref/base.ref RELUS via GET
-  #     /repos/.../pulls/$PR_NUMBER avec FORGE_SECRET, indépendamment de ce
-  #     que prétend le payload) + l'ancrage merge-base --is-ancestor (§4).
-  #     Le secret est enregistré ici en préparation d'une vérification future
-  #     (ex. step dédié captant l'en-tête ET le corps brut), vide par défaut
-  #     (comportement inchangé, mêmes dépôts existants non re-signés).
-  WEBHOOK_SECRET="${TEAM_PUBLISH_WEBHOOK_SECRET:-}"
-  WEBHOOK_URL="${TEAM_PUBLISH_WEBHOOK_URL:-http://jenkins:8080/generic-webhook-trigger/invoke?token=stoa-team-publish}"
-  RC=$(gapi -o "$TMP/hooks" -w '%{http_code}' "${GIT_HOST}/api/v1/repos/${REPO_FULL}/hooks")
-  if [ "$RC" = 200 ]; then
-    HOOK_STATE=$(WEBHOOK_URL="$WEBHOOK_URL" python3 -c "
-import json, os
-hooks = json.load(open('$TMP/hooks'))
-target = os.environ['WEBHOOK_URL']
-print('FOUND' if any((h.get('config') or {}).get('url') == target for h in hooks) else 'ABSENT')
-" 2>"$TMP/hookperr")
-    case "$HOOK_STATE" in
-      FOUND)
-        WEBHOOK_NOTE=" ; webhook team-publish : déjà enregistré (idempotence)"
-        ;;
-      ABSENT)
-        HOOK_BODY="$TMP/hookbody.json"
-        WEBHOOK_URL="$WEBHOOK_URL" WEBHOOK_SECRET="$WEBHOOK_SECRET" python3 -c "
-import json, os
-cfg = {'url': os.environ['WEBHOOK_URL'], 'content_type': 'json'}
-secret = os.environ.get('WEBHOOK_SECRET', '')
-if secret:
-    cfg['secret'] = secret
-print(json.dumps({'type': 'gitea', 'config': cfg, 'events': ['pull_request'], 'active': True}))
-" > "$HOOK_BODY"
-        RC2=$(gapi -X POST -d @"$HOOK_BODY" -o "$TMP/hookerr" -w '%{http_code}' "${GIT_HOST}/api/v1/repos/${REPO_FULL}/hooks")
-        if [ "$RC2" = 201 ]; then
-          WEBHOOK_NOTE=" ; webhook team-publish : enregistré"
-        else
-          WEBHOOK_NOTE=" ; ❌ webhook team-publish NON enregistré (HTTP ${RC2}) — team-publish ne se déclenchera pas sur ce dépôt tant qu'il n'est pas réparé manuellement"
-          echo "AVERTISSEMENT: enregistrement du webhook team-publish en échec (HTTP ${RC2}) : $(cat "$TMP/hookerr")" >&2
-        fi
-        ;;
-      *)
-        WEBHOOK_NOTE=" ; ❌ webhook team-publish : état indéterminé (liste des hooks illisible) — vérifier manuellement"
-        echo "AVERTISSEMENT: lecture des hooks existants du dépôt ${REPO_FULL} illisible : $(cat "$TMP/hookperr")" >&2
-        ;;
-    esac
-  else
-    WEBHOOK_NOTE=" ; ❌ webhook team-publish NON enregistré (liste des hooks illisible, HTTP ${RC}) — vérifier manuellement"
-    echo "AVERTISSEMENT: lecture des hooks existants du dépôt ${REPO_FULL} en échec (HTTP ${RC})" >&2
-  fi
-  REPO_NOTE="${REPO_NOTE}${WEBHOOK_NOTE}"
+  [ -n "${DEPOT_URL:-}" ] && REPO_LINK=" ([${REPO_FULL}]($(forge_web_url "$DEPOT_URL")))"
 fi
-
-# REVUE (point hérité du brief de cette tâche) : GIT_WEB_HOST était déclaré
-# mais jamais utilisé — l'intention était le lien humain dans le commentaire
-# ✅, même convention que provision-plan.sh:82-88 (URL construite depuis
-# GIT_WEB_HOST, pas GIT_HOST — le lien doit être cliquable pour un humain,
-# GIT_HOST peut être un nom interne au cluster non résolu hors des
-# conteneurs).
-REPO_LINK=""
-[ -n "$REPO_FULL" ] && REPO_LINK=" ([${REPO_FULL}](${GIT_WEB_HOST}/${REPO_FULL}))"
 
 # ── 3. onboarding (rôle du palier 1, idempotent) ─────────────────────────────
 ( ansible-playbook -i ansible/inventory.lab.ini ansible/onboard-team.yml \
@@ -503,7 +304,10 @@ else
   # team-request.sh §4).
   SUMMARY=$(grep -A6 'fatal:\|FAILED!' "$TMP/onb.log" | grep -oE '"msg":.*' | tail -1 | cut -c1-300)
   [ -n "$SUMMARY" ] || SUMMARY=$(tail -3 "$TMP/onb.log" | tr '\n' ' ')
-  comment "❌ team-apply ${TEAM}/${ENVN} — ${REPO_NOTE} ; onboarding EN ÉCHEC : ${SUMMARY:-voir le build}. Re-run possible : tout est idempotent."
-  fail "onboarding (voir log du build)"
+  # UN SEUL appel : fail() poste déjà son ❌ (comment(), ci-dessus) — le double
+  # commentaire d'antan (celui-ci en détail, PUIS le générique de fail()) ne
+  # laissait sur la PR QUE le second, sous le même marqueur (comment_upsert
+  # REMPLACE) : REPO_NOTE et le résumé Ansible disparaissaient en silence.
+  fail "onboarding EN ÉCHEC : ${SUMMARY:-voir le build}. Re-run possible : tout est idempotent (${REPO_NOTE})"
 fi
 echo "team-apply OK — ${REPO_NOTE}"

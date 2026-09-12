@@ -42,12 +42,12 @@ scripts/provision-plan-status.sh
 scripts/team-request.sh
 scripts/api-request.sh
 scripts/api-promote-request.sh
-scripts/api-promote-export.sh'
+scripts/api-promote-export.sh
+scripts/team-apply.sh'
 # Phase 2 (2026-09-12) : les fichiers de la chaîne producteur EN COURS de routage.
 # Rapportés (« dette »), jamais rouges : chaque tâche du plan L5 phase 2 retire
 # son fichier d'ici et l'ajoute à ROUTES — la liste doit être VIDE à la fin.
-EN_ROUTAGE='scripts/team-apply.sh
-scripts/team-publish.sh
+EN_ROUTAGE='scripts/team-publish.sh
 scripts/team-promote.sh'
 # Exemptés NOMMÉMENT, avec la raison — un outil hors chaîne n'est pas une seconde
 # autorité de la chaîne, mais on le dit plutôt que de le taire.
