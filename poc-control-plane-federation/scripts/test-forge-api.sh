@@ -134,6 +134,17 @@ class H(BaseHTTPRequestHandler):
                 d = {"id": 1, "username": USERS[tok], "name": USERS[tok]}
                 if mut("username_as_login"): d = {"id": 1, "login": USERS[tok]}
                 return self.js(200, d)
+            mp0 = re.match(r"^/api/v4/projects/([^/]+)$", path)
+            if mp0 and method == "GET":
+                if bm == "html": return self.raw(200, "text/html", HTML)
+                if unquote(mp0.group(1)) != "ci/stoa-labs":
+                    return self.js(403 if mut("404_as_403") else 404, {"message": "404 Project Not Found"})
+                etat = c.get("repo", "plein")            # absent | vide | plein
+                if etat == "absent": return self.js(403 if mut("404_as_403") else 404, {"message": "404 Project Not Found"})
+                d = {"id": 7, "path_with_namespace": "ci/stoa-labs", "empty_repo": etat == "vide",
+                     "default_branch": "" if etat == "vide" else "main", "web_url": "http://mock/ci/stoa-labs"}
+                if mut("empty_repo_as_empty"): d["empty"] = d.pop("empty_repo")
+                return self.js(200, d)
             m = re.match(r"^/api/v4/projects/([^/]+)/(.*)$", path)
             if not m: return self.js(404, {"message": "404 Not Found"})
             proj, rest = unquote(m.group(1)), m.group(2)
@@ -197,6 +208,13 @@ class H(BaseHTTPRequestHandler):
         if path == "/api/v1/version": return self.js(200, {"version": "1.22.6"})
         if tok not in USERS: return self.js(401, {"message": "token does not exist"})
         if path == "/api/v1/user": return self.js(200, {"id": 1, "login": USERS[tok]})
+        mr0 = re.match(r"^/api/v1/repos/([^/]+/[^/]+)$", path)
+        if mr0 and method == "GET":
+            if bm == "html": return self.raw(200, "text/html", HTML)
+            etat = c.get("repo", "plein")
+            if mr0.group(1) != "ci/stoa-labs" or etat == "absent": return self.js(404, {"message": "The target couldn't be found."})
+            return self.js(200, {"id": 7, "full_name": "ci/stoa-labs", "empty": etat == "vide",
+                                 "default_branch": "main", "html_url": "http://mock/ci/stoa-labs"})
         m = re.match(r"^/api/v1/repos/([^/]+/[^/]+)/(.*)$", path)
         if not m: return self.js(404, {"message": "route inconnue " + path})
         proj, rest = m.group(1), m.group(2)
@@ -344,6 +362,23 @@ for K in gitea gitlab; do
 done
 set_ctl "$PRS"
 
+echo "═══ R. repo_get : trois états, un 404 est une réponse ═══"
+for K in gitea gitlab; do
+  case "$K" in gitea) H="$GITEA";; *) H="$GITLAB";; esac
+  set_ctl "$PRS"; f "$K" "$H" repo_get
+  [ "$(rc)" = 0 ] && [ "$(val EXISTS)" = 1 ] && [ "$(val EMPTY)" = 0 ] && [ "$(val DEFAULT_BRANCH)" = main ] && [ -n "$(val URL)" ] \
+    && ok "$K R.1 dépôt plein ⇒ EXISTS=1 EMPTY=0 DEFAULT_BRANCH=main URL ($(nom empty_repo empty) lu)" || ko "$K R.1 rc $(rc) : $(tr '\n' ' ' < "$TMP/out") $(cause)"
+  set_ctl '{"repo":"vide"}'; f "$K" "$H" repo_get
+  [ "$(rc)" = 0 ] && [ "$(val EXISTS)" = 1 ] && [ "$(val EMPTY)" = 1 ] && ok "$K R.2 dépôt vide ⇒ EXISTS=1 EMPTY=1 (DEFAULT_BRANCH='$(val DEFAULT_BRANCH)')" || ko "$K R.2 rc $(rc) : $(tr '\n' ' ' < "$TMP/out")"
+  set_ctl '{"repo":"absent"}'; f "$K" "$H" repo_get
+  [ "$(rc)" = 0 ] && [ "$(val EXISTS)" = 0 ] && grep -qx 'EMPTY=' "$TMP/out" && ok "$K R.3 dépôt absent ⇒ EXISTS=0 EMPTY= rc 0 — l'absence est une réponse, pas une panne" || ko "$K R.3 rc $(rc) : $(tr '\n' ' ' < "$TMP/out") $(cause)"
+  set_ctl '{"repo":"absent"}'; f "$K" "$H" repo_get 2>/dev/null; grep -q 'invisible' "$TMP/err" && INV=1 || INV=0
+  if [ "$K" = gitlab ]; then [ "$INV" = 1 ] && ok "$K R.4 la cause informative dit qu'un 404 GitLab vaut aussi « invisible pour ce jeton »" || ko "$K R.4 pas de note « invisible » sur stderr"; fi
+  set_ctl '{"body_mode":"html","repo":"plein"}'; f "$K" "$H" repo_get
+  [ "$(rc)" = 2 ] && grep -q 'NON JSON' "$TMP/err" && ok "$K R.5 page HTML ⇒ refus (jamais « non vide » par défaut)" || ko "$K R.5 rc $(rc) : $(cause)"
+done
+set_ctl "$PRS"
+
 echo "═══ J. le DISCRIMINANT : le visage n'est pas décoratif ═══"
 f gitea "$GITLAB" pr_find_open provision/appa-rec
 [ "$(rc)" = 2 ] && grep -q '302' "$TMP/err" && grep -q '/users/sign_in' "$TMP/err" && grep -qi 'redirige' "$TMP/err" && ! grep -q 'Traceback' "$TMP/err" \
@@ -396,6 +431,11 @@ mute web_url_as_html_url pr_get 41
 [ "$(rc)" = 0 ] && [ -z "$(val URL)" ] && ok "M4 web_url→html_url ⇒ URL vide (il lit web_url)" || ko "M4 le mutant passe : URL=$(val URL)"
 mute notes_as_comments comment_find 41 '<!-- plan:appa-rec -->'
 [ "$(rc)" = 2 ] && grep -q '404' "$TMP/err" && ok "M5 notes→comments ⇒ comment_find refuse (404 : il lit merge_requests/iid/notes, jamais « comments » sur GitLab)" || ko "M5 le mutant passe : rc $(rc) ID=$(val ID)"
+mute empty_repo_as_empty repo_get
+{ [ "$(rc)" != 0 ]; } && ok "M6 empty_repo→empty ⇒ repo_get refuse (il lit empty_repo sur GitLab, jamais « non vide » par défaut)" || ko "M6 le mutant passe : EMPTY=$(val EMPTY)"
+mute 404_as_403 repo_get   # le CTL de mute() garde repo=plein : forcer l'état absent
+set_ctl "$(python3 -c 'import json,sys;d=json.loads(sys.argv[1]);d["mutation"]="404_as_403";d["repo"]="absent";print(json.dumps(d))' "$PRS")"; f gitlab "$GITLAB" repo_get
+[ "$(rc)" = 2 ] && grep -q '403' "$TMP/err" && ok "M7 404→403 ⇒ refus « REFUSE le secret » (un 403 n'est PAS « absent »)" || ko "M7 le mutant passe : $(tr '\n' ' ' < "$TMP/out")"
 set_ctl "$PRS"
 
 echo "═══ N. sous set -x, rien ne fuit ; les knobs atteignent python sans export ; la 41e page refuse ═══"

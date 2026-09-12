@@ -251,7 +251,7 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 _opener = urllib.request.build_opener(_NoRedirect)
 
 
-def call(method, path, data=None, want=None, query=None, raw=False):
+def call(method, path, data=None, want=None, query=None, raw=False, allow_404=False):
     """Appelle <base>/<path> et rend le JSON (de la forme `want`), ou les octets si raw.
     Toute réponse hors contrat lève ForgeError avec une cause auto-diagnostique."""
     url = api_base() + "/" + path.lstrip("/")
@@ -280,6 +280,10 @@ def call(method, path, data=None, want=None, query=None, raw=False):
         # 3xx compris : c'est la ligne que le client GitLab aurait vue (302 vers /users/sign_in).
         _dbg("%s %s -> HTTP %d (%d octets)" % (method, url, e.code, len(content)))
         diag = "%s %s → HTTP %d %s, %d octet(s), début : %r" % (method, u, e.code, ct, len(content), _debut(content))
+        if e.code == 404 and allow_404:
+            if kind() == "gitlab":
+                sys.stderr.write("(note : sur GitLab un 404 vaut aussi « invisible pour ce jeton » — %s)\n" % _mask(diag))
+            return None
         if 300 <= e.code < 400:
             loc = _mask(e.headers.get("Location") or "(sans Location)")
             raise ForgeError("la forge REDIRIGE vers %s — GIT_HOST doit être l'URL finale de la forge, et une forge qui redirige /api/%s vers une page de connexion n'est pas de ce visage (FORGE_KIND=%s) ; %s"
@@ -623,11 +627,26 @@ def v_raw(path, ref=""):
     sys.stdout.buffer.write(content)
 
 
+def v_repo_get():
+    """Le dépôt GIT_REPO existe-t-il, est-il vide, quelle HEAD annonce-t-il ? Un 404 est une réponse (EXISTS=0)."""
+    d = call("GET", repo_path(), want=dict, allow_404=True)
+    if d is None:
+        out(EXISTS="0", EMPTY="", DEFAULT_BRANCH="", URL="")
+        return
+    champ = "empty_repo" if kind() == "gitlab" else "empty"
+    if not isinstance(d.get(champ), bool):
+        raise ForgeError("la forge a rendu un dépôt sans champ « %s » lisible — jamais « non vide » par défaut" % champ)
+    out(EXISTS="1", EMPTY="1" if d[champ] else "0",
+        DEFAULT_BRANCH=_str(d, "default_branch"),
+        URL=_str(d, "web_url") if kind() == "gitlab" else _str(d, "html_url"))
+
+
 VERBES = {  # nom: (fonction, min_args, max_args)
     "probe": (v_probe, 0, 0), "whoami": (v_whoami, 0, 0), "pr_find_open": (v_pr_find_open, 1, 1),
     "pr_list_merged": (v_pr_list_merged, 1, 1),
     "pr_get": (v_pr_get, 1, 1), "pr_open": (v_pr_open, 4, 4), "pr_files": (v_pr_files, 1, 1),
     "comment_find": (v_comment_find, 2, 2), "comment_upsert": (v_comment_upsert, 3, 3), "raw": (v_raw, 1, 2),
+    "repo_get": (v_repo_get, 0, 0),
 }
 
 
