@@ -84,10 +84,32 @@ while IFS= read -r s; do
   base="${s#scripts/}"
   # Les Jenkinsfile qui l'invoquent RÉELLEMENT : `bash scripts/x.sh` ou
   # `sh scripts/x.sh`, dans du CODE (les commentaires sont retirés).
+  esc="${base//./\\.}"
+  # LES FORMES D'INVOCATION RECONNUES. Elle n'en connaissait que deux
+  # (`bash scripts/x.sh`, `sh scripts/x.sh`) — constat de la revue du 2026-09-12 :
+  # `./scripts/x.sh` ou `"$WORKSPACE/scripts/x.sh"` échappaient au couple, donc
+  # à l'exigence des knobs. Mesuré le même jour : AUCUNE de ces formes n'existe
+  # dans les 18 Jenkinsfile, le défaut était donc LATENT — et un défaut latent
+  # dans une porte est une porte qui mentira le jour où quelqu'un l'écrira.
+  #   1. par un interpréteur, avec un préfixe de chemin facultatif
+  #   2. en direct (./ ou $VAR/), en tête de commande
+  INV1="(bash|sh)[[:space:]]+([\"']?\\\$\\{?[A-Za-z_][A-Za-z0-9_]*\\}?/)?(\\./)?scripts/${esc}([^0-9A-Za-z_-]|\$)"
+  INV2="(^|[[:space:];&|(])([\"']?\\\$\\{?[A-Za-z_][A-Za-z0-9_]*\\}?/|\\./)scripts/${esc}([^0-9A-Za-z_-]|\$)"
   JFS=""
   for jf in ci/Jenkinsfile.*; do
-    sed -E 's@^[[:space:]]*//.*$@@' "$jf" | grep -qE "(bash|sh) scripts/${base//./\\.}([^0-9A-Za-z_-]|\$)" \
-      && JFS="$JFS $jf"
+    CODE=$(sed -E 's@^[[:space:]]*//.*$@@' "$jf")
+    if printf '%s\n' "$CODE" | grep -qE "$INV1|$INV2"; then
+      JFS="$JFS $jf"
+    elif printf '%s\n' "$CODE" | grep -qF "scripts/$base"; then
+      # ANTI-VACUITÉ, même principe que A.3 : la porte REFUSE de deviner. Une
+      # mention d'un script routé qu'elle ne sait pas classer est ROUGE, jamais
+      # muette — soit c'est une invocation d'une forme qu'elle ignore (et il
+      # faut l'ajouter ci-dessus), soit c'est une simple mention (et il faut
+      # l'exempter EN LE DISANT).
+      MANQUANTS="$MANQUANTS ${jf#ci/Jenkinsfile.}:MENTION_NON_CLASSEE(de $base)"
+      printf '  ❗ %s mentionne %s sous une forme que cette porte ne sait pas classer :\n' "${jf#ci/Jenkinsfile.}" "scripts/$base"
+      printf '%s\n' "$CODE" | grep -nF "scripts/$base" | sed 's/^/       /'
+    fi
   done
   if [ -z "$JFS" ]; then
     info "$s — routé, mais AUCUN Jenkinsfile ne l'invoque directement (appelé par un autre script, ou par la main) : rien à exiger ici"
@@ -105,7 +127,7 @@ done <<< "$ROUTES"
 if [ -z "$MANQUANTS" ]; then
   ok "B.1 $N_PAIRES couple(s) (script routé, Jenkinsfile qui l'invoque) : les trois knobs sont dans le bloc environment de chacun"
 else
-  ko "B.1 knobs ABSENTS —$MANQUANTS ; sans eux le script parle au visage par DÉFAUT, invisible au lab et faux chez le client"
+  ko "B.1 —$MANQUANTS ; un knob absent fait parler le script au visage par DÉFAUT (invisible au lab, faux chez le client) ; une MENTION_NON_CLASSEE veut dire que cette porte ne sait pas dire si c'est une invocation — elle refuse de deviner (cf. le ❗ ci-dessus)"
 fi
 if [ "$N_PAIRES" -ge 3 ]; then
   ok "B.2 la portée n'est pas vide : $N_PAIRES couples mesurés ($N_LIBS libs rapportées)"
