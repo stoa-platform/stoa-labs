@@ -18,7 +18,9 @@
 #                               défaut gitlab : http://jenkins:8080/project/team-promote — le GitLab
 #                               Plugin expose UNE URL PAR JOB, il faut un hook PAR récepteur (Ruling 6).
 #   WEBHOOK_KIND                gwt (défaut) | gitlab — forme du/des hook(s) posé(s).
-#   GIT_BASE                    branche à protéger, défaut main.
+#   GIT_BASE                    branche à protéger ; ABSENT ⇒ la forge attribue sa branche
+#                               par défaut au dépôt créé, relue dans sa réponse (jamais un
+#                               littéral deviné ici — Ruling 18, porte ci/lint-branch-literals.sh).
 #   TEAM_PUBLISH_WEBHOOK_SECRET la valeur que le job team-publish ATTEND (PAS « le secret ») :
 #                               Gitea, secret HMAC optionnel, SANS DÉFAUT ; GitLab, valeur
 #                               X-Gitlab-Token du hook publish, défaut stoa-team-publish —
@@ -44,7 +46,7 @@
 #
 # Refus nommés (rc 2) : REPO_REQUIS, REPO_INVALIDE, BRANCHE_INVALIDE,
 # SECRET_FORGE_REQUIS, FORGE_KIND_INCONNU, CREATION_ECHEC, REPO_GET,
-# HOOK_ECHEC, PROTECTION_ECHEC, ARGUMENT_INCONNU.
+# BRANCHE_PAR_DEFAUT_INDECIDABLE, HOOK_ECHEC, PROTECTION_ECHEC, ARGUMENT_INCONNU.
 # `A && ok || bad` (SC2015) est l'idiome des poseurs du repo (cf. setup-terminus-apps.sh).
 # shellcheck disable=SC2015
 set -uo pipefail
@@ -67,11 +69,17 @@ case "$FORGE_KIND" in gitea|gitlab) ;; *) echo "REFUS: FORGE_KIND_INCONNU : '$FO
 GIT_HOST="${GIT_HOST:?GIT_HOST requis (base de la forge)}"
 FORGE_SECRET="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
 [ -n "$FORGE_SECRET" ] || { echo "REFUS: SECRET_FORGE_REQUIS : FORGE_SECRET (Gitea : write:organization,write:repository ; GitLab : PAT api, Owner du groupe)" >&2; exit 2; }
-WEBHOOK_KIND="${WEBHOOK_KIND:-gwt}"; GIT_BASE="${GIT_BASE:-main}"
-# Même porte pour GIT_BASE : sa valeur peut venir d'une DÉCOUVERTE de forge
-# (git_base_of / ls-remote --symref, jamais seulement d'un knob tapé à la
-# main) et s'interpole elle aussi dans les six corps JSON.
-printf '%s' "$GIT_BASE" | grep -Eq '^[A-Za-z0-9._/-]+$' \
+WEBHOOK_KIND="${WEBHOOK_KIND:-gwt}"; GIT_BASE="${GIT_BASE:-}"
+# JAMAIS de littéral de repli ici (Ruling 18, porte ci/lint-branch-literals.sh,
+# même règle que scripts/lib/git-base.sh depuis L3) : GIT_BASE ABSENT signifie
+# « laisser la forge attribuer sa propre branche par défaut au dépôt créé » —
+# elle l'annonce dans sa réponse (default_branch), relue plus bas dans
+# BASE_EFF. Quand GIT_BASE EST fourni (knob explicite, ou une DÉCOUVERTE de
+# forge en amont — git_base_of / ls-remote --symref, jamais un « main » deviné
+# ici), il s'interpole aussi dans les six corps JSON : même porte de forme que
+# REPO_INVALIDE, mais SEULEMENT si non vide (vide = « pas fourni », pas une
+# valeur invalide).
+[ -z "$GIT_BASE" ] || printf '%s' "$GIT_BASE" | grep -Eq '^[A-Za-z0-9._/-]+$' \
   || { echo "REFUS: BRANCHE_INVALIDE : GIT_BASE en caractères [A-Za-z0-9._/-] attendu" >&2; exit 2; }
 OWNER="${REPO_FULL%%/*}"; NAME="${REPO_FULL#*/}"
 
@@ -96,7 +104,10 @@ if [ "$MODE" = print ]; then
   else
     echo "HOOK=(non posé)"
   fi
-  if [ "$PROTECT" = 1 ]; then case "$FORGE_KIND" in gitlab) echo "PROTECT=$GIT_BASE (access_level 40, allow_force_push false)";; *) echo "PROTECT=$GIT_BASE (push whitelist: ${PROTECT_PUSH_WHITELIST:-ci})";; esac; else echo "PROTECT=(non posée)"; fi
+  if [ "$PROTECT" = 1 ]; then
+    B_SHOW="${GIT_BASE:-(branche par défaut de la forge)}"
+    case "$FORGE_KIND" in gitlab) echo "PROTECT=$B_SHOW (access_level 40, allow_force_push false)";; *) echo "PROTECT=$B_SHOW (push whitelist: ${PROTECT_PUSH_WHITELIST:-ci})";; esac
+  else echo "PROTECT=(non posée)"; fi
   exit 0
 fi
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT; umask 077
@@ -143,6 +154,22 @@ for a in sys.argv[1:]:
 print(json.dumps(d, ensure_ascii=False))
 PY
 }
+# default_branch_of <fichier-json> — lit la branche par défaut ANNONCÉE par la
+# forge dans un objet dépôt (Gitea) ou projet (GitLab) : les DEUX portent le
+# même champ "default_branch" (mesuré). Utilisé UNIQUEMENT quand GIT_BASE est
+# ABSENT (Ruling 18) : c'est la forge qui a choisi, jamais ce script — sur le
+# corps de la création (le `POST` la renvoie déjà) ou sur celui du `GET`
+# quand le dépôt existait déjà.
+default_branch_of(){ # <fichier-json>
+  python3 -c '
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    d = {}
+print(d.get("default_branch") or "")
+' "$1"
+}
 case "$FORGE_KIND" in
   gitea)
     B="${GIT_HOST%/}/api/v1"
@@ -153,11 +180,17 @@ case "$FORGE_KIND" in
     fi
     hc=$(api -o "$TMP/r" -w '%{http_code}' "$B/repos/$REPO_FULL")
     if [ "$hc" = 404 ]; then
-      hc=$(api -X POST -d "$(jbody name="$NAME" auto_init:=false default_branch="$GIT_BASE")" -o "$TMP/e" -w '%{http_code}' "$B/orgs/$OWNER/repos")
+      REPO_CREATE_ARGS=(name="$NAME" auto_init:=false)
+      [ -z "$GIT_BASE" ] || REPO_CREATE_ARGS+=(default_branch="$GIT_BASE")
+      hc=$(api -X POST -d "$(jbody "${REPO_CREATE_ARGS[@]}")" -o "$TMP/e" -w '%{http_code}' "$B/orgs/$OWNER/repos")
       [ "$hc" = 201 ] || { echo "REFUS: CREATION_ECHEC : dépôt $REPO_FULL (HTTP $hc) $(head -c 200 "$TMP/e")" >&2; exit 2; }
-      echo "dépôt $REPO_FULL : créé VIDE (HEAD annoncée : $GIT_BASE)"
-    elif [ "$hc" = 200 ]; then echo "dépôt $REPO_FULL : existe (idempotence)"
+      BASE_EFF="${GIT_BASE:-$(default_branch_of "$TMP/e")}"
+      echo "dépôt $REPO_FULL : créé VIDE (HEAD annoncée : ${BASE_EFF:-?})"
+    elif [ "$hc" = 200 ]; then
+      BASE_EFF="${GIT_BASE:-$(default_branch_of "$TMP/r")}"
+      echo "dépôt $REPO_FULL : existe (idempotence)"
     else echo "REFUS: REPO_GET : $REPO_FULL (HTTP $hc)" >&2; exit 2; fi
+    [ -n "$BASE_EFF" ] || { echo "REFUS: BRANCHE_PAR_DEFAUT_INDECIDABLE : $REPO_FULL — la forge n'a annoncé aucun default_branch (HTTP $hc) et GIT_BASE n'est pas posé : poser GIT_BASE explicitement" >&2; exit 2; }
     if [ "$HOOK" = 1 ]; then
       EXISTING=$(api "$B/repos/$REPO_FULL/hooks")
       while IFS=$'\t' read -r H_URL H_TOK; do
@@ -173,11 +206,11 @@ case "$FORGE_KIND" in
     if [ "$PROTECT" = 1 ]; then
       # shellcheck source=scripts/lib/repo-protection.sh
       . scripts/lib/repo-protection.sh || exit 1
-      repo_protection_payload "$GIT_BASE" "${PROTECT_PUSH_WHITELIST:-ci}" > "$TMP/prot.json" || { echo "REFUS: PROTECTION_ECHEC : payload" >&2; exit 2; }
+      repo_protection_payload "$BASE_EFF" "${PROTECT_PUSH_WHITELIST:-ci}" > "$TMP/prot.json" || { echo "REFUS: PROTECTION_ECHEC : payload" >&2; exit 2; }
       # la protection ne se pose que sur une branche qui EXISTE : sur un dépôt vide, elle attend le squelette
-      if api "$B/repos/$REPO_FULL/branches/$GIT_BASE" -o /dev/null -w '%{http_code}' | grep -q 200; then
-        pose_branch_protection "$GIT_HOST" "$TMP/hdr" "$REPO_FULL" "$TMP/prot.json" && echo "protection $GIT_BASE : posée" || { echo "REFUS: PROTECTION_ECHEC" >&2; exit 2; }
-      else echo "protection $GIT_BASE : différée (branche absente — dépôt vide) : repasser après le squelette"; fi
+      if api "$B/repos/$REPO_FULL/branches/$BASE_EFF" -o /dev/null -w '%{http_code}' | grep -q 200; then
+        pose_branch_protection "$GIT_HOST" "$TMP/hdr" "$REPO_FULL" "$TMP/prot.json" && echo "protection $BASE_EFF : posée" || { echo "REFUS: PROTECTION_ECHEC" >&2; exit 2; }
+      else echo "protection $BASE_EFF : différée (branche absente — dépôt vide) : repasser après le squelette"; fi
     fi ;;
   gitlab)
     B="${GIT_HOST%/}/api/v4"; P=$(enc "$REPO_FULL")
@@ -186,11 +219,17 @@ case "$FORGE_KIND" in
     GID=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["id"])' "$TMP/g")
     hc=$(api -o "$TMP/r" -w '%{http_code}' "$B/projects/$P")
     if [ "$hc" = 404 ]; then
-      hc=$(api -X POST -d "$(jbody name="$NAME" path="$NAME" namespace_id:="$GID" visibility=private initialize_with_readme:=false merge_method=merge default_branch="$GIT_BASE")" -o "$TMP/e" -w '%{http_code}' "$B/projects")
+      PROJ_CREATE_ARGS=(name="$NAME" path="$NAME" namespace_id:="$GID" visibility=private initialize_with_readme:=false merge_method=merge)
+      [ -z "$GIT_BASE" ] || PROJ_CREATE_ARGS+=(default_branch="$GIT_BASE")
+      hc=$(api -X POST -d "$(jbody "${PROJ_CREATE_ARGS[@]}")" -o "$TMP/e" -w '%{http_code}' "$B/projects")
       [ "$hc" = 201 ] || { echo "REFUS: CREATION_ECHEC : projet $REPO_FULL (HTTP $hc) $(head -c 200 "$TMP/e")" >&2; exit 2; }
-      echo "projet $REPO_FULL : créé VIDE, privé, merge_method=merge"
-    elif [ "$hc" = 200 ]; then echo "projet $REPO_FULL : existe (idempotence)"
+      BASE_EFF="${GIT_BASE:-$(default_branch_of "$TMP/e")}"
+      echo "projet $REPO_FULL : créé VIDE, privé, merge_method=merge (HEAD annoncée : ${BASE_EFF:-?})"
+    elif [ "$hc" = 200 ]; then
+      BASE_EFF="${GIT_BASE:-$(default_branch_of "$TMP/r")}"
+      echo "projet $REPO_FULL : existe (idempotence)"
     else echo "REFUS: REPO_GET : $REPO_FULL (HTTP $hc)" >&2; exit 2; fi
+    [ -n "$BASE_EFF" ] || { echo "REFUS: BRANCHE_PAR_DEFAUT_INDECIDABLE : $REPO_FULL — la forge n'a annoncé aucun default_branch (HTTP $hc) et GIT_BASE n'est pas posé : poser GIT_BASE explicitement" >&2; exit 2; }
     if [ "$HOOK" = 1 ]; then
       EXISTING=$(api "$B/projects/$P/hooks")
       while IFS=$'\t' read -r H_URL H_TOK; do
@@ -202,11 +241,11 @@ case "$FORGE_KIND" in
       done <<<"$HOOKS"
     fi
     if [ "$PROTECT" = 1 ]; then
-      hc=$(api -o /dev/null -w '%{http_code}' "$B/projects/$P/protected_branches/$(enc "$GIT_BASE")")
-      if [ "$hc" = 200 ]; then echo "protection $GIT_BASE : déjà posée"
+      hc=$(api -o /dev/null -w '%{http_code}' "$B/projects/$P/protected_branches/$(enc "$BASE_EFF")")
+      if [ "$hc" = 200 ]; then echo "protection $BASE_EFF : déjà posée"
       else
-        hc=$(api -X POST -d "$(jbody name="$GIT_BASE" push_access_level:=40 merge_access_level:=40 allow_force_push:=false)" -o "$TMP/e" -w '%{http_code}' "$B/projects/$P/protected_branches")
-        [ "$hc" = 201 ] && echo "protection $GIT_BASE : posée (par RÔLE — GitLab CE n'a pas la protection nominative)" || { echo "REFUS: PROTECTION_ECHEC : (HTTP $hc) $(head -c 200 "$TMP/e")" >&2; exit 2; }
+        hc=$(api -X POST -d "$(jbody name="$BASE_EFF" push_access_level:=40 merge_access_level:=40 allow_force_push:=false)" -o "$TMP/e" -w '%{http_code}' "$B/projects/$P/protected_branches")
+        [ "$hc" = 201 ] && echo "protection $BASE_EFF : posée (par RÔLE — GitLab CE n'a pas la protection nominative)" || { echo "REFUS: PROTECTION_ECHEC : (HTTP $hc) $(head -c 200 "$TMP/e")" >&2; exit 2; }
       fi
     fi ;;
 esac

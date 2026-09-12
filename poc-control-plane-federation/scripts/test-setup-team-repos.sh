@@ -7,14 +7,14 @@ set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"; cd "$REPO" || exit 2
 T=scripts/setup-team-repos.sh
 PASS=0; FAIL=0; ok(){ PASS=$((PASS+1)); printf '  ✅ %s\n' "$*"; }; ko(){ FAIL=$((FAIL+1)); printf '  ❌ %s\n' "$*"; }
-EXPECTED_CHECKS=9
+EXPECTED_CHECKS=10
 [ -x "$T" ] && ok "1 l'outil existe et est exécutable" || ko "1 $T absent"
 shellcheck -x "$T" >/dev/null 2>&1 && ok "2 shellcheck propre" || ko "2 shellcheck"
-OUT=$(env -i PATH="$PATH" HOME="$HOME" FORGE_KIND=gitea GIT_HOST=http://127.0.0.1:1 FORGE_SECRET=x bash "$T" fbi/apis --print 2>&1); RC=$?
+OUT=$(env -i PATH="$PATH" HOME="$HOME" FORGE_KIND=gitea GIT_HOST=http://127.0.0.1:1 FORGE_SECRET=x GIT_BASE=main bash "$T" fbi/apis --print 2>&1); RC=$?
 [ "$RC" = 0 ] && grep -q '^KIND=gitea$' <<<"$OUT" && grep -q '^REPO=fbi/apis$' <<<"$OUT" && grep -q '^HOOK=http://jenkins:8080/generic-webhook-trigger/invoke?token=stoa-team-publish$' <<<"$OUT" \
   && [ "$(grep -c '^HOOK=' <<<"$OUT")" = 1 ] \
   && ok "3 --print gitea : KIND/REPO/HOOK (un seul hook sous gwt), sans réseau (hôte mort)" || ko "3 rc $RC : $(head -3 <<<"$OUT" | tr '\n' ' ')"
-OUT=$(env -i PATH="$PATH" HOME="$HOME" FORGE_KIND=gitlab WEBHOOK_KIND=gitlab GIT_HOST=http://127.0.0.1:1 FORGE_SECRET=x bash "$T" ci/fbi-apis --print 2>&1); RC=$?
+OUT=$(env -i PATH="$PATH" HOME="$HOME" FORGE_KIND=gitlab WEBHOOK_KIND=gitlab GIT_HOST=http://127.0.0.1:1 FORGE_SECRET=x GIT_BASE=main bash "$T" ci/fbi-apis --print 2>&1); RC=$?
 [ "$RC" = 0 ] && grep -q '^KIND=gitlab$' <<<"$OUT" \
   && grep -q '^HOOK=http://jenkins:8080/project/team-publish$' <<<"$OUT" \
   && grep -q '^HOOK=http://jenkins:8080/project/team-promote$' <<<"$OUT" \
@@ -33,5 +33,8 @@ OUT=$(env -i PATH="$PATH" HOME="$HOME" FORGE_KIND=gitea GIT_HOST=http://127.0.0.
 [ "$RC" != 0 ] && grep -qE 'injoignable|CREATION_ECHEC|REPO_GET' <<<"$OUT" && ok "8 hôte mort sans --print ⇒ refus nommé, jamais un vert" || ko "8 rc $RC : $(head -1 <<<"$OUT")"
 OUT=$(env -i PATH="$PATH" HOME="$HOME" FORGE_KIND=gitea GIT_HOST=http://127.0.0.1:1 FORGE_SECRET=x bash "$T" 'fbi/apis","auto_init":true' --print 2>&1); RC=$?
 [ "$RC" = 2 ] && grep -q REPO_INVALIDE <<<"$OUT" && ok "9 un nom de dépôt forgé est REFUSÉ avant tout réseau, même en --print (jamais interpolé dans un corps JSON)" || ko "9 rc $RC : $(head -1 <<<"$OUT")"
+OUT=$(env -i PATH="$PATH" HOME="$HOME" FORGE_KIND=gitea GIT_HOST=http://127.0.0.1:1 FORGE_SECRET=x bash "$T" fbi/apis --print 2>&1); RC=$?
+[ "$RC" = 0 ] && grep -q '^PROTECT=(branche par défaut de la forge) (push whitelist: ci)$' <<<"$OUT" && ! grep -q 'main' <<<"$OUT" \
+  && ok "10 --print sans GIT_BASE ⇒ aucune branche inventée, la forge décide (Ruling 18)" || ko "10 rc $RC : $(tr '\n' ' ' <<<"$OUT")"
 TOTAL=$((PASS+FAIL)); [ "$TOTAL" -eq "$EXPECTED_CHECKS" ] && ok "total $EXPECTED_CHECKS" || ko "total $TOTAL ≠ $EXPECTED_CHECKS"
 printf 'RÉSULTAT : %d/%d\n' "$PASS" $((PASS+FAIL)); [ "$FAIL" -eq 0 ]
