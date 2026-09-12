@@ -136,6 +136,22 @@ ggit(){ git_base_avec_basic "$(git_base_basic_login)" FORGE_SECRET git "$@"; }
 GIT_REPO="${GIT_REPO:-ci/stoa-labs}"
 GIT_HOST="${GIT_HOST:-http://gitea:3000}"
 GIT_WEB_HOST="${GIT_WEB_HOST:-$GIT_HOST}"
+# L5 phase 2 (2026-09-12) — LA FORGE SE PARLE PAR UNE SEULE AUTORITÉ : le
+# visage (FORGE_KIND=gitea|gitlab), la base d'API, l'en-tête d'auth et la garde
+# de réponse vivent dans scripts/lib/forge-api.sh (+ .py) — ce script ne
+# compose plus /api/v1 ni « Authorization: token » lui-même (mêmes verbes que
+# team-request.sh/provision-request.sh). Sourcé APRÈS la garde du secret
+# (FORGE_SECRET, §haut) et APRÈS GIT_HOST/GIT_REPO/GIT_WEB_HOST ci-dessus :
+# forge_api_init ne fait AUCUN appel réseau, mais REFUSE si GIT_HOST ou
+# GIT_REPO est vide — GIT_REPO ici est le dépôt PLATEFORME (défaut posé juste
+# au-dessus) ; chaque appel visant le dépôt de l'ÉQUIPE se préfixe lui-même
+# GIT_REPO="$REPO_FULL" (§3, §5b) — l'autorité n'a pas besoin de le savoir à
+# l'init, seulement qu'UN dépôt est nommé.
+_AR_FORGE="$(dirname "${BASH_SOURCE[0]}")/lib/forge-api.sh"
+[ -f "$_AR_FORGE" ] || _AR_FORGE="scripts/lib/forge-api.sh"
+# shellcheck source=scripts/lib/forge-api.sh
+. "$_AR_FORGE" || { echo "ERREUR: $_AR_FORGE introuvable ou illisible" >&2; exit 1; }
+forge_api_init || exit 2
 # AUCUN DÉFAUT, et c'est la porte ci/lint-config-knobs.sh qui l'exige : une
 # valeur de lab installée en repli n'est jamais signalée chez un client, elle est
 # substituée en silence et la panne sort plus loin sous un autre nom. Ces deux-là
@@ -524,41 +540,20 @@ GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader \
   || { echo "ERREUR: push" >&2; cat "$WORK/pusherr" >&2; exit 1; }
 unset AUTH_B64
 
-PR_NUMBER=$(API="${GIT_HOST}/api/v1" REPO_FULL="$REPO_FULL" FORGE_SECRET="$FORGE_SECRET" \
-  BRANCH="$BRANCH" API_NAME="$API_NAME" ACTION="$ACTION" EFFECTIVE_VERSION="$EFFECTIVE_VERSION" \
-  TEAM="$TEAM" INBOUND_MODE="$INBOUND_MODE" BASE_VERSION="${BASE_VERSION:-}" \
-  CLASSIFICATION="$CLASSIFICATION" EXPOSURE="$EXPOSURE" TEAM_BASE="$TEAM_BASE" \
-  python3 - <<'PY'
-import json, os, urllib.request
-api, repo, tok = os.environ["API"], os.environ["REPO_FULL"], os.environ["FORGE_SECRET"]
-action = os.environ["ACTION"]
-base_line = f"\n- version de base : {os.environ['BASE_VERSION']}" if action == "new-version" and os.environ.get("BASE_VERSION") else ""
-body = (
-    f"Demande de publication d'API (formulaire api-request).\n\n"
-    f"- action : {action}\n- équipe : {os.environ['TEAM']}\n"
-    f"- API : {os.environ['API_NAME']} v{os.environ['EFFECTIVE_VERSION']}\n"
-    f"- inbound.mode : {os.environ['INBOUND_MODE']}{base_line}\n"
-    f"- posture DÉCLARÉE : classification={os.environ['CLASSIFICATION']} "
-    f"exposure={os.environ['EXPOSURE']} — déclaration, pas décision : la posture "
-    "retenue vient du registre central de gouvernance (commentaire de plan "
-    "ci-dessous).\n\n"
-    "Plan hors ligne (posture centrale + manifest-guard + team-name + syntax-check) à suivre en "
-    "commentaire. Validation humaine requise avant merge (ADR-081) : le "
-    "merge n'importe rien lui-même — la publication réelle vit dans le "
-    "pipeline post-merge."
-)
-# La base de la PR est la branche du dépôt CIBLE (celui de l'équipe), telle
-# que le clone l'a utilisée — jamais un littéral, jamais celle de la plateforme.
-req_body = {"base": os.environ["TEAM_BASE"], "head": os.environ["BRANCH"],
-            "title": f"api({os.environ['TEAM']}): {os.environ['API_NAME']} v{os.environ['EFFECTIVE_VERSION']} ({action})",
-            "body": body}
-req = urllib.request.Request(f"{api}/repos/{repo}/pulls", method="POST",
-    data=json.dumps(req_body).encode(),
-    headers={"Authorization": f"token {tok}", "Content-Type": "application/json"})
-print(json.load(urllib.request.urlopen(req))["number"])
-PY
-) || fail "ouverture de la PR — la branche '${BRANCH}' est déjà poussée sur ${GIT_HOST}/${REPO_FULL} (elle n'a pas de PR) : nettoyer avec 'git push ${GIT_HOST}/${REPO_FULL}.git --delete ${BRANCH}' avant de relancer la demande"
-echo "PR #${PR_NUMBER} ouverte : ${GIT_WEB_HOST}/${REPO_FULL}/pulls/${PR_NUMBER}"
+# Le corps de la PR est écrit dans un FICHIER (jamais en argv) ; la base est
+# TEAM_BASE, la HEAD découverte du dépôt d'équipe — jamais un littéral.
+{
+  printf "Demande de publication d'API (formulaire api-request).\n\n"
+  printf -- "- action : %s\n- équipe : %s\n- API : %s v%s\n- inbound.mode : %s\n" "$ACTION" "$TEAM" "$API_NAME" "$EFFECTIVE_VERSION" "$INBOUND_MODE"
+  [ "$ACTION" = new-version ] && [ -n "${BASE_VERSION:-}" ] && printf -- "- version de base : %s\n" "$BASE_VERSION"
+  printf -- "- posture DÉCLARÉE : classification=%s exposure=%s — déclaration, pas décision : la posture retenue vient du registre central de gouvernance (commentaire de plan ci-dessous).\n\n" "$CLASSIFICATION" "$EXPOSURE"
+  printf "Plan hors ligne (posture centrale + manifest-guard + team-name + syntax-check) à suivre en commentaire. Validation humaine requise avant merge (ADR-081) : le merge n'importe rien lui-même — la publication réelle vit dans le pipeline post-merge.\n"
+} > "$WORK/pr-body.md"
+if ! GIT_REPO="$REPO_FULL" forge_kv PR pr_open "$BRANCH" "$TEAM_BASE" "api(${TEAM}): ${API_NAME} v${EFFECTIVE_VERSION} (${ACTION})" "$WORK/pr-body.md"; then
+  fail "ouverture de la PR (cause ci-dessus) — si la branche '${BRANCH}' est déjà poussée sur ${GIT_HOST}/${REPO_FULL} sans PR, la nettoyer avec 'git push ${GIT_HOST}/${REPO_FULL} --delete ${BRANCH}' puis rejouer"
+fi
+PR_LINK="$(forge_web_url "$PR_URL")"     # forge_kv PR a posé PR_NUMBER et PR_URL
+echo "PR #${PR_NUMBER} ouverte : ${PR_LINK}"
 
 # ── 5. PLAN — gardes hors ligne de apim_publish_api ──────────────────────────
 # Exécuté depuis LE CHECKOUT DE CE SCRIPT (poc-control-plane-federation/,
@@ -668,17 +663,10 @@ la gateway : ce plan est un avis précoce, pas une autorisation."
 # inaperçu. Ici : vérifié, et un échec est VISIBLE (avertissement bruyant,
 # PAS un exit silencieux) — mais la PR EXISTE déjà et reste valide : la
 # non-publication d'UN commentaire n'annule pas une PR déjà ouverte.
-COMMENT_ERR=$(API="${GIT_HOST}/api/v1" REPO_FULL="$REPO_FULL" FORGE_SECRET="$FORGE_SECRET" \
-  PR="$PR_NUMBER" BODY="$BODY" python3 - <<'PY' 2>&1
-import json, os, urllib.request
-api, repo, tok = os.environ["API"], os.environ["REPO_FULL"], os.environ["FORGE_SECRET"]
-req = urllib.request.Request(f"{api}/repos/{repo}/issues/{os.environ['PR']}/comments",
-    method="POST", data=json.dumps({"body": os.environ["BODY"]}).encode(),
-    headers={"Authorization": f"token {tok}", "Content-Type": "application/json"})
-urllib.request.urlopen(req)
-PY
-)
-COMMENT_RC=$?
+printf '%s\n' "$BODY" > "$WORK/plan-comment.md"
+COMMENT_RC=0
+GIT_REPO="$REPO_FULL" forge comment_upsert "$PR_NUMBER" '<!-- api-request -->' "$WORK/plan-comment.md" >/dev/null 2>"$WORK/comment.err" || COMMENT_RC=$?
+COMMENT_ERR="$(cat "$WORK/comment.err")"
 if [ "$COMMENT_RC" -ne 0 ]; then
   echo "AVERTISSEMENT: échec de la publication du commentaire PLAN sur la PR #${PR_NUMBER} (${COMMENT_ERR}) — la PR reste ouverte et valide ; verdict local : ${VERDICT}" >&2
 else
