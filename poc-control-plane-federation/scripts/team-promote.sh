@@ -80,6 +80,22 @@ VAULT_TOKEN_FILE="${VAULT_TOKEN_FILE:?VAULT_TOKEN_FILE requis (jamais le token e
 GIT_HOST="${GIT_HOST:-http://gitea:3000}"
 GIT_REPO="${GIT_REPO:-ci/stoa-labs}"        # dépôt PLATEFORME — porte providers.<env>.yml
 GIT_WEB_HOST="${GIT_WEB_HOST:-$GIT_HOST}"
+
+# L5 phase 2 (2026-09-12) — LA FORGE SE PARLE PAR UNE SEULE AUTORITÉ : le
+# visage (FORGE_KIND=gitea|gitlab), la base d'API, l'en-tête d'auth et la garde
+# de réponse vivent dans scripts/lib/forge-api.sh (+ .py) — ce script ne
+# compose plus /api/v1 ni « Authorization: token » lui-même (mêmes verbes que
+# team-publish.sh/team-request.sh). Sourcé APRÈS la garde du secret (§haut) et
+# APRÈS GIT_HOST/GIT_REPO/GIT_WEB_HOST : forge_api_init ne fait AUCUN appel
+# réseau, mais REFUSE si GIT_HOST ou GIT_REPO est vide — GIT_REPO ici est le
+# dépôt PLATEFORME (défaut posé juste au-dessus) ; l'appel visant le dépôt de
+# l'ÉQUIPE (§2, réconciliation) se préfixe lui-même GIT_REPO="$WEBHOOK_REPO" —
+# l'autorité n'a pas besoin de le savoir à l'init, seulement qu'UN dépôt est nommé.
+_TPRO_FORGE="$(dirname "${BASH_SOURCE[0]}")/lib/forge-api.sh"
+[ -f "$_TPRO_FORGE" ] || _TPRO_FORGE="scripts/lib/forge-api.sh"
+# shellcheck source=scripts/lib/forge-api.sh
+. "$_TPRO_FORGE" || { echo "ERREUR: $_TPRO_FORGE introuvable ou illisible" >&2; exit 1; }
+forge_api_init || exit 2
 # L'identité PROUVÉE (le login Vault de la pause nominative), posée par le
 # Jenkinsfile depuis V_USER. Repli VIDE ici, refus NOMMÉ au §0bis : un `:?` posé
 # dans les arguments de la garde d'identité tuerait bash sur place, sans passer
@@ -272,54 +288,35 @@ TEAM_BASE="$GIT_BASE_OF"
 # jalon, et sa cible est la prod. Le motif hérité reste à corriger ailleurs —
 # c'est un périmètre, pas un oubli.
 #
-# Les deux logins remontent EMPAQUETÉS PAR LIGNES et sont donc, eux aussi,
-# forgeables par un saut de ligne (même classe que le §6 et que
-# deploy-pin.sh:117-125) : on REFUSE le délimiteur dans la valeur plutôt que
-# d'espérer qu'il n'y soit pas.
-PR_STATE=$(GIT_HOST="$GIT_HOST" WEBHOOK_REPO="$WEBHOOK_REPO" PR_NUMBER="$PR_NUMBER" \
-  FORGE_SECRET="$FORGE_SECRET" PR_BRANCH="$PR_BRANCH" MERGE_SHA="$MERGE_SHA" TEAM_BASE="$TEAM_BASE" python3 - <<'PY'
-import os, json, urllib.request, urllib.error
-api = os.environ["GIT_HOST"] + "/api/v1"
-repo = os.environ["WEBHOOK_REPO"]
-pr = os.environ["PR_NUMBER"]
-req = urllib.request.Request(f"{api}/repos/{repo}/pulls/{pr}",
-    headers={"Authorization": "token " + os.environ["FORGE_SECRET"]})
-try:
-    d = json.load(urllib.request.urlopen(req))
-except (urllib.error.URLError, ValueError) as e:
-    print("ERR=" + type(e).__name__)
-    raise SystemExit
-ok = (
-    d.get("merged") is True
-    and d.get("merge_commit_sha") == os.environ["MERGE_SHA"]
-    and (d.get("head") or {}).get("ref") == os.environ["PR_BRANCH"]
-    # La base ATTENDUE est celle que la forge déclare pour CE dépôt (§1bis),
-    # jamais un littéral.
-    and (d.get("base") or {}).get("ref") == os.environ["TEAM_BASE"]
-)
-mb = str((d.get("merged_by") or {}).get("login") or "")
-rq = str((d.get("user") or {}).get("login") or "")
-for name, val in (("merged_by.login", mb), ("user.login", rq)):
-    if "\n" in val or "\r" in val:
-        print("FORGE=" + name)
-        raise SystemExit
-print("OK" if ok else "MISMATCH")
-print("MB=" + mb)
-print("RQ=" + rq)
-PY
-) || fail "GITEA_RECONCILE_ECHEC : lecture de ${WEBHOOK_REPO}#${PR_NUMBER} sur Gitea en échec"
-PR_VERDICT=$(printf '%s\n' "$PR_STATE" | sed -n '1p')
+# L5 phase 2 (2026-09-12) : plus d'appel urllib composé ici — `pr_get` est un
+# verbe de l'autorité (scripts/lib/forge-api.sh), qui parle indifféremment
+# Gitea ou GitLab. Préfixe FPR (jamais PR) : PR_MERGED_BY/PR_REQUESTER
+# nommeraient le PAYLOAD non authentifié (cf. le paragraphe ci-dessus) — FPR_*
+# est TOUJOURS la réponse de la forge. GIT_REPO se préfixe sur ce SEUL appel :
+# c'est le dépôt de l'ÉQUIPE (WEBHOOK_REPO), pas le dépôt plateforme dont
+# GIT_REPO porte le défaut plus haut.
+#
+# Les deux logins remontent par les lignes CLÉ=VALEUR de l'autorité : `out()`
+# (scripts/lib/forge-api.py) refuse déjà tout retour-ligne dans une valeur
+# AVANT de l'émettre (ForgeError, rc 2, rien sur stdout) — `pr_get` ne peut
+# donc pas rendre un FPR_MERGED_BY/FPR_LOGIN portant un saut de ligne. La garde
+# ci-dessous reste (même classe que le §6 et que deploy-pin.sh:117-125) : elle
+# documente désormais la propriété au lieu de la fabriquer — elle ne peut plus
+# être franchie, defense in depth plutôt qu'espérer qu'elle ne serve jamais.
+GIT_REPO="$WEBHOOK_REPO" forge_kv FPR pr_get "$PR_NUMBER" \
+  || fail "GITEA_RECONCILE_ECHEC : la forge n'a pas confirmé la PR #${PR_NUMBER} de ${WEBHOOK_REPO} (cause ci-dessus)"
+[ "$FPR_MERGED" = 1 ] && [ "$FPR_MERGE_SHA" = "$MERGE_SHA" ] && [ "$FPR_HEAD_REF" = "$PR_BRANCH" ] && [ "$FPR_BASE_REF" = "$TEAM_BASE" ] \
+  || fail "PAYLOAD_PERIME : la forge dit merged=${FPR_MERGED} merge_sha=${FPR_MERGE_SHA} head=${FPR_HEAD_REF} base=${FPR_BASE_REF} — le payload disait ${MERGE_SHA} ${PR_BRANCH} ${TEAM_BASE}"
+case "$FPR_MERGED_BY" in
+  *$'\n'*) fail "GITEA_RECONCILE_ECHEC : le mergeur (merged_by) de ${WEBHOOK_REPO}#${PR_NUMBER} contient un saut de ligne — une identité ne fabrique pas de champ, refus" ;;
+esac
+case "$FPR_LOGIN" in
+  *$'\n'*) fail "GITEA_RECONCILE_ECHEC : l'auteur (user) de ${WEBHOOK_REPO}#${PR_NUMBER} contient un saut de ligne — une identité ne fabrique pas de champ, refus" ;;
+esac
 # Les identités RÉCONCILIÉES — ce sont ELLES, et jamais $PR_MERGED_BY /
 # $PR_REQUESTER du webhook, qui alimentent la garde d'identité (§6bis).
-GITEA_MERGED_BY=$(printf '%s\n' "$PR_STATE" | sed -n 's/^MB=//p')
-GITEA_REQUESTER=$(printf '%s\n' "$PR_STATE" | sed -n 's/^RQ=//p')
-case "$PR_VERDICT" in
-  OK) ;;
-  ERR=*) fail "GITEA_RECONCILE_ECHEC : appel Gitea en échec (${PR_VERDICT#ERR=}) pour ${WEBHOOK_REPO}#${PR_NUMBER}" ;;
-  FORGE=*) fail "GITEA_RECONCILE_ECHEC : le champ ${PR_VERDICT#FORGE=} de ${WEBHOOK_REPO}#${PR_NUMBER} contient un saut de ligne — une identité ne fabrique pas de champ, refus" ;;
-  MISMATCH) fail "PAYLOAD_PERIME : ${WEBHOOK_REPO}#${PR_NUMBER} sur Gitea (merged/merge_commit_sha/head.ref/base.ref) ne correspond pas au webhook — le payload ne fait pas foi, refus" ;;
-  *) fail "GITEA_RECONCILE_ECHEC : réponse inattendue de la réconciliation ('${PR_VERDICT}')" ;;
-esac
+GITEA_MERGED_BY="$FPR_MERGED_BY"
+GITEA_REQUESTER="$FPR_LOGIN"
 # FAIL-CLOSED, ET REFUSÉ ICI PLUTÔT QU'AU §6bis. La bibliothèque d'identité
 # refuse déjà MERGER_UNKNOWN sur un mergeur vide — mais son message accuse le
 # CÂBLAGE du webhook (« ajouter le champ aux genericVariables »), alors que la
@@ -802,7 +799,7 @@ if [ "$PROMO_RC" -eq 0 ]; then
   # se déduire du code. C'est la trace d'audit que le lecteur de la PR doit
   # pouvoir relire sans ouvrir le log Jenkins — et voir « demandée par ci » y
   # est un signal, pas un détail (cf. §6bis).
-  comment "$WEBHOOK_REPO" "✅ team-promote ${TEAM}/${API_NAME} → ${TO_ENV} ([PR #${PR_NUMBER}](${GIT_WEB_HOST}/${WEBHOOK_REPO}/pulls/${PR_NUMBER})) — pin \`${DEPLOY_PIN_COMMIT}\`, v${DEPLOY_PIN_VERSION}, sha256 \`${DEPLOY_PIN_SHA256}\` (moteur ${PROMOTE_ENGINE}) — demandée par \`${MK_PROMOTED_BY:-<non nommé>}\`, mergée par \`${GITEA_MERGED_BY}\`, portée par \`${VAULT_IDENTITY_USER}\` — ${SUMMARY:-PROMOTE_CONFIRMED}"
+  comment "$WEBHOOK_REPO" "✅ team-promote ${TEAM}/${API_NAME} → ${TO_ENV} ([PR #${PR_NUMBER}]($(forge_web_url "$FPR_URL"))) — pin \`${DEPLOY_PIN_COMMIT}\`, v${DEPLOY_PIN_VERSION}, sha256 \`${DEPLOY_PIN_SHA256}\` (moteur ${PROMOTE_ENGINE}) — demandée par \`${MK_PROMOTED_BY:-<non nommé>}\`, mergée par \`${GITEA_MERGED_BY}\`, portée par \`${VAULT_IDENTITY_USER}\` — ${SUMMARY:-PROMOTE_CONFIRMED}"
 else
   # Hiérarchie fatal > msg > tail-3 (leçon du palier 2, cf. team-apply.sh §4 /
   # team-publish.sh §6) : le dernier tag OK vu AVANT un échec réel situé

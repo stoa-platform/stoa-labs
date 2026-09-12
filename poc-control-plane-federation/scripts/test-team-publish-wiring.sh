@@ -400,25 +400,32 @@ else
 fi
 
 echo
-echo "== 15. la réconciliation Gitea est réellement câblée — le payload webhook n'est jamais la vérité seule =="
+echo "== 15. la réconciliation passe par l'AUTORITÉ de forge (pr_get) — le payload webhook n'est jamais la vérité seule =="
 grep -qF 'fail "GITEA_RECONCILE_ECHEC :' "$REPO/scripts/team-publish.sh" \
-  && ok "GITEA_RECONCILE_ECHEC présent (échec de lecture Gitea = refus, jamais un continue silencieux)" \
-  || ko "GITEA_RECONCILE_ECHEC absent — un échec de lecture Gitea ne serait pas nommé"
+  && ok "GITEA_RECONCILE_ECHEC présent (échec de lecture de la forge = refus, jamais un continue silencieux)" \
+  || ko "GITEA_RECONCILE_ECHEC absent — un échec de lecture de la forge ne serait pas nommé"
 grep -qF 'fail "PAYLOAD_PERIME :' "$REPO/scripts/team-publish.sh" \
-  && ok "PAYLOAD_PERIME présent (divergence webhook/Gitea = refus)" \
+  && ok "PAYLOAD_PERIME présent (divergence webhook/forge = refus)" \
   || ko "PAYLOAD_PERIME absent — un payload rejoué/périmé ne serait pas détecté"
-grep -qF 'd.get("merged") is True' "$REPO/scripts/team-publish.sh" \
-  && ok "merged relu chez Gitea (pas déduit du payload)" || ko "merged non revérifié chez Gitea"
-grep -qF 'd.get("merge_commit_sha") == os.environ["MERGE_SHA"]' "$REPO/scripts/team-publish.sh" \
-  && ok "merge_commit_sha comparé au MERGE_SHA du webhook" || ko "merge_commit_sha non comparé"
-grep -qF '.get("ref") == os.environ["PR_BRANCH"]' "$REPO/scripts/team-publish.sh" \
-  && ok "head.ref comparé à PR_BRANCH du webhook" || ko "head.ref non comparé"
+# L5 phase 2 (2026-09-12) : la réconciliation ne compose plus d'appel urllib —
+# elle passe par forge_kv (préfixe FPR, jamais PR : ce dernier nom appartient
+# au PAYLOAD non authentifié ailleurs dans la chaîne). Une seule assertion
+# couvre les DEUX propriétés (appel à l'autorité ET merged relu par elle) —
+# même nombre d'assertions que l'ancienne §15 (7).
+grep -qE 'GIT_REPO="\$WEBHOOK_REPO" forge_kv FPR pr_get "\$PR_NUMBER"' "$REPO/scripts/team-publish.sh" \
+  && grep -qF '"$FPR_MERGED" = 1' "$REPO/scripts/team-publish.sh" \
+  && ok "la PR est relue chez la FORGE par l'autorité (pr_get, préfixe FPR), merged (FPR_MERGED) vérifié — jamais déduit du payload" \
+  || ko "pr_get absent ou FPR_MERGED non vérifié — la réconciliation ne passe pas par l'autorité"
+grep -qF '"$FPR_MERGE_SHA" = "$MERGE_SHA"' "$REPO/scripts/team-publish.sh" \
+  && ok "merge_commit_sha (FPR_MERGE_SHA) comparé au MERGE_SHA du webhook" || ko "FPR_MERGE_SHA non comparé"
+grep -qF '"$FPR_HEAD_REF" = "$PR_BRANCH"' "$REPO/scripts/team-publish.sh" \
+  && ok "head (FPR_HEAD_REF) comparé à PR_BRANCH du webhook" || ko "FPR_HEAD_REF non comparé"
 # L3 (2026-09-10) : la base ATTENDUE n'est plus un littéral — c'est la HEAD que
 # la forge déclare pour CE dépôt d'équipe (git_base_of, §1bis). Un littéral
 # « main » refusait TOUTE PR chez un client dont la branche est `master`, en
 # accusant le payload. L'assertion suit : elle exige la comparaison ET sa source.
-grep -qF '.get("ref") == os.environ["TEAM_BASE"]' "$REPO/scripts/team-publish.sh" \
-  && ok "base.ref comparé à la branche de base DÉCOUVERTE du dépôt d'équipe (jamais un littéral)" || ko "base.ref non comparé à TEAM_BASE"
+grep -qF '"$FPR_BASE_REF" = "$TEAM_BASE"' "$REPO/scripts/team-publish.sh" \
+  && ok "base (FPR_BASE_REF) comparée à la branche de base DÉCOUVERTE du dépôt d'équipe (jamais un littéral)" || ko "FPR_BASE_REF non comparé à TEAM_BASE"
 grep -qE '^gbase git_base_of "\$\{GIT_HOST\}/\$\{WEBHOOK_REPO\}\.git"' "$REPO/scripts/team-publish.sh" \
   && ok "TEAM_BASE vient d'une DÉCOUVERTE sur le dépôt d'équipe, sous l'enveloppe d'authentification (gbase)" || ko "TEAM_BASE n'est pas découvert sous enveloppe — une valeur devinée, ou un ls-remote anonyme"
 
@@ -527,10 +534,10 @@ grep -qF 'JOBS="app-request api-request"' "$REPO/scripts/team-publish.sh" \
   || ko "JOBS ne couvre pas api-request — sa liste API_BASE resterait périmée après chaque publication"
 
 echo
-echo "== 20. le secret HMAC est proposé à l'enregistrement du hook (limite documentée : non vérifiable côté GWT 2.4.2) =="
-grep -qF "cfg['secret'] = secret" "$REPO/scripts/team-apply.sh" \
-  && ok "le hook Gitea peut porter un secret HMAC (TEAM_PUBLISH_WEBHOOK_SECRET, si fourni) — Gitea signe alors ses envois" \
-  || ko "aucun mécanisme de secret dans l'enregistrement du hook"
+echo "== 20. le hook team-publish (et son secret HMAC) ne sont plus posés par team-apply — prérequis de forge (D10) =="
+grep -qE 'TEAM_PUBLISH_WEBHOOK_(URL|SECRET)' "$REPO/scripts/team-apply.sh" \
+  && ko "team-apply pose encore le webhook team-publish (ou son secret) — D10 : le hook est un prérequis de forge, posé par l'outil de poste" \
+  || ok "D10 : ni le webhook team-publish ni son secret HMAC ne sont posés par team-apply (prérequis de forge, setup-team-repos.sh)"
 
 echo
 echo "== 21. TOUS les clones sont authentifiés, pas seulement les push =="

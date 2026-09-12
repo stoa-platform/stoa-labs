@@ -92,6 +92,22 @@ APIM_API_BASE="${APIM_API_BASE:?APIM_API_BASE requis — pas de défaut : dire s
 GIT_HOST="${GIT_HOST:-http://gitea:3000}"
 GIT_REPO="${GIT_REPO:-ci/stoa-labs}"        # dépôt PLATEFORME — porte providers.<env>.yml
 GIT_WEB_HOST="${GIT_WEB_HOST:-$GIT_HOST}"
+
+# L5 phase 2 (2026-09-12) — LA FORGE SE PARLE PAR UNE SEULE AUTORITÉ : le
+# visage (FORGE_KIND=gitea|gitlab), la base d'API, l'en-tête d'auth et la garde
+# de réponse vivent dans scripts/lib/forge-api.sh (+ .py) — ce script ne
+# compose plus /api/v1 ni « Authorization: token » lui-même (mêmes verbes que
+# team-request.sh/api-request.sh). Sourcé APRÈS la garde du secret (§haut) et
+# APRÈS GIT_HOST/GIT_REPO/GIT_WEB_HOST : forge_api_init ne fait AUCUN appel
+# réseau, mais REFUSE si GIT_HOST ou GIT_REPO est vide — GIT_REPO ici est le
+# dépôt PLATEFORME (défaut posé juste au-dessus) ; l'appel visant le dépôt de
+# l'ÉQUIPE (§2, réconciliation) se préfixe lui-même GIT_REPO="$WEBHOOK_REPO" —
+# l'autorité n'a pas besoin de le savoir à l'init, seulement qu'UN dépôt est nommé.
+_TPUB_FORGE="$(dirname "${BASH_SOURCE[0]}")/lib/forge-api.sh"
+[ -f "$_TPUB_FORGE" ] || _TPUB_FORGE="scripts/lib/forge-api.sh"
+# shellcheck source=scripts/lib/forge-api.sh
+. "$_TPUB_FORGE" || { echo "ERREUR: $_TPUB_FORGE introuvable ou illisible" >&2; exit 1; }
+forge_api_init || exit 2
 # P2 (ADR-092) : dépôt du REGISTRE CENTRAL de classification. SÉPARÉ du dépôt
 # plateforme comme du dépôt d'équipe, parce qu'il appartient à la gouvernance de
 # la donnée — le même couple de knobs qu'api-request.sh, pour que la demande et
@@ -204,48 +220,30 @@ gbase git_base_of "${GIT_HOST}/${WEBHOOK_REPO}.git" >/dev/null \
   || fail "BRANCHE_PAR_DEFAUT_INCONNUE : branche par défaut de ${WEBHOOK_REPO} indéterminable (cause ci-dessus) — sans elle, ni la base de la PR ni l'ancêtreté du merge ne peuvent être vérifiées ; rien n'est publié"
 TEAM_BASE="$GIT_BASE_OF"
 
-# ── 2. RÉCONCILIATION AVEC GITEA — le payload n'est pas la vérité ────────────
+# ── 2. RÉCONCILIATION AVEC LA FORGE — le payload n'est pas la vérité ─────────
 # Le webhook n'a ni secret HMAC vérifié en aval (limite du plugin Generic
 # Webhook Trigger avec ce montage — cf. rapport) ni garantie de fraîcheur : un
 # tir manuel avec le token GWT partagé peut prétendre N'IMPORTE QUEL
 # merge_commit_sha/branche pour ce PR_NUMBER. La garde d'atteignabilité
 # (§4, plus bas) confirme que MERGE_SHA est UN ancêtre de la branche de base —
-# pas
-# forcément CELUI de CETTE PR. On redemande donc l'état à GITEA LUI-MÊME
-# (authentifié par FORGE_SECRET, donc pas falsifiable par le contenu d'un
-# payload) : la PR est-elle RÉELLEMENT fusionnée, avec CE SHA, CETTE branche,
-# sur la base ? Un payload rejoué (SHA périmé, branche différente, PR pas encore
-# mergée) ne peut pas fabriquer une réponse Gitea qui concorde.
-PR_STATE=$(GIT_HOST="$GIT_HOST" WEBHOOK_REPO="$WEBHOOK_REPO" PR_NUMBER="$PR_NUMBER" \
-  FORGE_SECRET="$FORGE_SECRET" PR_BRANCH="$PR_BRANCH" MERGE_SHA="$MERGE_SHA" TEAM_BASE="$TEAM_BASE" python3 - <<'PY'
-import os, json, urllib.request, urllib.error
-api = os.environ["GIT_HOST"] + "/api/v1"
-repo = os.environ["WEBHOOK_REPO"]
-pr = os.environ["PR_NUMBER"]
-req = urllib.request.Request(f"{api}/repos/{repo}/pulls/{pr}",
-    headers={"Authorization": "token " + os.environ["FORGE_SECRET"]})
-try:
-    d = json.load(urllib.request.urlopen(req))
-except (urllib.error.URLError, ValueError) as e:
-    print("ERR=" + type(e).__name__)
-    raise SystemExit
-ok = (
-    d.get("merged") is True
-    and d.get("merge_commit_sha") == os.environ["MERGE_SHA"]
-    and (d.get("head") or {}).get("ref") == os.environ["PR_BRANCH"]
-    # La base ATTENDUE est celle que la forge déclare pour CE dépôt, pas un
-    # littéral : un dépôt d'équipe sur `master` refusait tout, en accusant le payload.
-    and (d.get("base") or {}).get("ref") == os.environ["TEAM_BASE"]
-)
-print("OK" if ok else "MISMATCH")
-PY
-) || fail "GITEA_RECONCILE_ECHEC : lecture de ${WEBHOOK_REPO}#${PR_NUMBER} sur Gitea en échec"
-case "$PR_STATE" in
-  OK) ;;
-  ERR=*) fail "GITEA_RECONCILE_ECHEC : appel Gitea en échec (${PR_STATE#ERR=}) pour ${WEBHOOK_REPO}#${PR_NUMBER}" ;;
-  MISMATCH) fail "PAYLOAD_PERIME : ${WEBHOOK_REPO}#${PR_NUMBER} sur Gitea (merged/merge_commit_sha/head.ref/base.ref) ne correspond pas au webhook — le payload ne fait pas foi, refus" ;;
-  *) fail "GITEA_RECONCILE_ECHEC : réponse inattendue de la réconciliation ('${PR_STATE}')" ;;
-esac
+# pas forcément CELUI de CETTE PR. On redemande donc l'état à LA FORGE
+# ELLE-MÊME (authentifiée par FORGE_SECRET, donc pas falsifiable par le
+# contenu d'un payload) : la PR est-elle RÉELLEMENT fusionnée, avec CE SHA,
+# CETTE branche, sur la base ? Un payload rejoué (SHA périmé, branche
+# différente, PR pas encore mergée) ne peut pas fabriquer une réponse de
+# l'autorité qui concorde.
+#
+# L5 phase 2 (2026-09-12) : plus d'appel urllib composé ici — `pr_get` est un
+# verbe de l'autorité (scripts/lib/forge-api.sh), qui parle indifféremment
+# Gitea ou GitLab. Préfixe FPR (jamais PR) : PR_* est le namespace du PAYLOAD
+# du webhook ailleurs sur cette chaîne (team-promote.sh) — FPR_* est TOUJOURS
+# la réponse de la forge, jamais une affirmation. GIT_REPO se préfixe sur ce
+# SEUL appel : c'est le dépôt de l'ÉQUIPE (WEBHOOK_REPO), pas le dépôt
+# plateforme dont GIT_REPO porte le défaut plus haut.
+GIT_REPO="$WEBHOOK_REPO" forge_kv FPR pr_get "$PR_NUMBER" \
+  || fail "GITEA_RECONCILE_ECHEC : la forge n'a pas confirmé la PR #${PR_NUMBER} de ${WEBHOOK_REPO} (cause ci-dessus)"
+[ "$FPR_MERGED" = 1 ] && [ "$FPR_MERGE_SHA" = "$MERGE_SHA" ] && [ "$FPR_HEAD_REF" = "$PR_BRANCH" ] && [ "$FPR_BASE_REF" = "$TEAM_BASE" ] \
+  || fail "PAYLOAD_PERIME : la forge dit merged=${FPR_MERGED} merge_sha=${FPR_MERGE_SHA} head=${FPR_HEAD_REF} base=${FPR_BASE_REF} — le payload disait ${MERGE_SHA} ${PR_BRANCH} ${TEAM_BASE}"
 echo "réconciliation Gitea OK : ${WEBHOOK_REPO}#${PR_NUMBER} merged, ${PR_BRANCH}->${TEAM_BASE}"
 
 # ── 3. AUTORITÉ PAR TOPOLOGIE : quelle équipe déclare CE dépôt ? ─────────────
@@ -535,7 +533,7 @@ if [ "$PUB_RC" -eq 0 ]; then
     tail -20 "$TMP/refresh.log" >&2
   fi
 
-  comment "$WEBHOOK_REPO" "✅ team-publish ${TEAM}/${API_NAME}@${API_VERSION} ([PR #${PR_NUMBER}](${GIT_WEB_HOST}/${WEBHOOK_REPO}/pulls/${PR_NUMBER})) — ${SUMMARY:-VERSION_CREATED}${REFRESH_NOTE}${POSTURE_MSG:+
+  comment "$WEBHOOK_REPO" "✅ team-publish ${TEAM}/${API_NAME}@${API_VERSION} ([PR #${PR_NUMBER}]($(forge_web_url "$FPR_URL"))) — ${SUMMARY:-VERSION_CREATED}${REFRESH_NOTE}${POSTURE_MSG:+
 
 \`${POSTURE_MSG}\`}${COVERAGE_MSG:+
 
