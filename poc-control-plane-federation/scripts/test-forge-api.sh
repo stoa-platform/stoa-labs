@@ -379,6 +379,19 @@ for K in gitea gitlab; do
 done
 set_ctl "$PRS"
 
+echo "═══ W. les liens humains viennent de l'autorité, jamais composés à la forme Gitea ═══"
+w(){ ( cd "$REPO" && env -i PATH="$PATH" HOME="$HOME" FORGE_KIND="$1" GIT_HOST="$2" GIT_WEB_HOST="${3:-}" GIT_REPO=ci/stoa-labs bash -c '. scripts/lib/forge-api.sh && '"$4" ) > "$TMP/out" 2> "$TMP/err"; echo $? > "$TMP/rc"; }
+w gitea http://gitea:3000 "" 'forge_web_url http://gitea:3000/ci/stoa-labs/pulls/41'
+[ "$(rc)" = 0 ] && [ "$(cat "$TMP/out")" = http://gitea:3000/ci/stoa-labs/pulls/41 ] && ok "W.1 sans GIT_WEB_HOST, l'URL rendue par la forge est rendue telle quelle" || ko "W.1 $(cat "$TMP/out")"
+w gitea http://gitea:3000 http://localhost:13000 'forge_web_url http://gitea:3000/ci/stoa-labs/pulls/41'
+[ "$(cat "$TMP/out")" = http://localhost:13000/ci/stoa-labs/pulls/41 ] && ok "W.2 GIT_WEB_HOST posée ⇒ le préfixe GIT_HOST est réécrit (vue poste contre vue conteneur)" || ko "W.2 $(cat "$TMP/out")"
+w gitlab http://gitlab http://localhost:13080 'forge_web_url https://ailleurs.example/x'
+[ "$(cat "$TMP/out")" = https://ailleurs.example/x ] && ok "W.3 une URL qui ne commence pas par GIT_HOST n'est pas touchée" || ko "W.3 $(cat "$TMP/out")"
+w gitea http://gitea:3000 http://localhost:13000 'forge_web_file_url 0123abc poc/ansible/providers.dev.yml'
+[ "$(cat "$TMP/out")" = http://localhost:13000/ci/stoa-labs/src/commit/0123abc/poc/ansible/providers.dev.yml ] && ok "W.4 gitea : {web}/{repo}/src/commit/{sha}/{chemin}" || ko "W.4 $(cat "$TMP/out")"
+w gitlab http://gitlab "" 'forge_web_file_url 0123abc poc/ansible/providers.dev.yml'
+[ "$(cat "$TMP/out")" = http://gitlab/ci/stoa-labs/-/blob/0123abc/poc/ansible/providers.dev.yml ] && ok "W.5 gitlab : {web}/{repo}/-/blob/{sha}/{chemin}" || ko "W.5 $(cat "$TMP/out")"
+
 echo "═══ J. le DISCRIMINANT : le visage n'est pas décoratif ═══"
 f gitea "$GITLAB" pr_find_open provision/appa-rec
 [ "$(rc)" = 2 ] && grep -q '302' "$TMP/err" && grep -q '/users/sign_in' "$TMP/err" && grep -qi 'redirige' "$TMP/err" && ! grep -q 'Traceback' "$TMP/err" \

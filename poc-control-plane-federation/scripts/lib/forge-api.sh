@@ -110,3 +110,28 @@ forge_kv() {
     esac
   done <<< "$out"
 }
+
+# forge_web_url <url> — l'URL RENDUE PAR UN VERBE (URL= de pr_open/pr_get/repo_get),
+# vue du poste : si GIT_WEB_HOST est posée et diffère de GIT_HOST, le préfixe
+# GIT_HOST (vue conteneur, ex. http://gitea:3000) est remplacé par GIT_WEB_HOST.
+# Une URL qui ne commence pas par GIT_HOST est rendue telle quelle. Les scripts
+# ne composent plus jamais « /pulls/N » : la forme est celle du visage.
+forge_web_url() {
+  local u="$1" h="${GIT_HOST%/}" w="${GIT_WEB_HOST:-}"
+  w="${w%/}"
+  if [ -n "$w" ] && [ "$w" != "$h" ]; then
+    case "$u" in "$h"/*) printf '%s\n' "${w}${u#"$h"}"; return 0 ;; esac
+  fi
+  printf '%s\n' "$u"
+}
+
+# forge_web_file_url <sha> <chemin> — le lien HUMAIN d'un fichier À UN COMMIT,
+# selon le visage (gitea : src/commit ; gitlab : -/blob), base GIT_WEB_HOST sinon GIT_HOST.
+forge_web_file_url() {
+  local web="${GIT_WEB_HOST:-${GIT_HOST:-}}"
+  web="${web%/}"
+  case "${FORGE_KIND:-gitea}" in
+    gitlab) printf '%s/%s/-/blob/%s/%s\n' "$web" "${GIT_REPO:-}" "$1" "$2" ;;
+    *)      printf '%s/%s/src/commit/%s/%s\n' "$web" "${GIT_REPO:-}" "$1" "$2" ;;
+  esac
+}
