@@ -50,7 +50,20 @@ import (
 // LIST to decide whether a version lineage belongs to the requesting team
 // (VERSION_BASE_FOREIGN) without paying an extra call per sibling.
 func apiEnvelope(rec *apiRecord) map[string]any {
-	return map[string]any{"api": rec, "responseStatus": "SUCCESS", "teams": teamRefs(rec.Teams)}
+	return map[string]any{"api": apiWire{rec, rec.Definition}, "responseStatus": "SUCCESS", "teams": teamRefs(rec.Teams)}
+}
+
+// apiWire est l'objet `api` tel que l'admin surface le REND : le record, PLUS
+// `apiDefinition`. Le produit réel (10.15) rend la définition importée sur
+// GET /apis/{id}, et c'est le SEUL porteur du tag de posture (P3/ADR-093 :
+// `apiDefinition.tags`, relu FAIL-CLOSED par apim_publish_api/tasks/tag.yml).
+// Le record garde `json:"-"` sur Definition pour ses autres sérialisations ;
+// ici le champ promu le masque avec la clé du produit. Sans lui, la publication
+// mourait `TAG_UNCONFIRMED` sur le mock et jamais sur le produit — l'infidélité
+// qui a coûté huit preuves SKIP à la matrice GitLab du 2026-09-12.
+type apiWire struct {
+	*apiRecord
+	APIDefinition map[string]any `json:"apiDefinition,omitempty"`
 }
 
 // teamRefs inflates team NAMES into the product's {id,name,source} refs. System
