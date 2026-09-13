@@ -505,20 +505,28 @@ WEBHOOK_REPO="$TEAM_REPO" PR_BRANCH="$API_BRANCH" PR_NUMBER="${MR3:-0}" MERGE_SH
 NB_API=$(wmapi apis | API="$API_NAME" python3 -c 'import json,os,sys
 d=json.load(sys.stdin)
 print(sum(1 for a in d.get("apiResponse",[]) if a.get("api",{}).get("apiName")==os.environ["API"]))' 2>/dev/null)
-# LA LIMITE DU LAB, RECONNUE À SA SIGNATURE — jamais supposée. Le mock ne
-# re-sérialise PAS `apiDefinition` (mocks/webmethods/store.go : le champ
-# `Definition` porte `json:"-"`, et le record relu n'a que id/apiName/
-# apiVersion/isActive/type/policies — MESURÉ le 2026-09-12). Or le tag de
-# posture (P3, ADR-093) vit dans `apiDefinition.tags` et sa RELECTURE est
-# fail-closed : elle lit donc toujours `tags=[]`, et la publication s'arrête
-# AVANT l'activation. Ce n'est ni un défaut de la chaîne ni du visage GitLab —
-# c'est la fidélité du mock, et le tag a été prouvé au jalon P3 contre la 10.15
-# RÉELLE (port 5555), que cette tâche a interdiction de viser. La preuve n'est
-# donc pas « verte quand même » : elle est SKIP, avec sa cause, et redeviendra
-# rouge ou verte d'elle-même le jour où le mock rendra ce champ.
+# LA LIMITE DU LAB, RECONNUE À SA SIGNATURE — jamais supposée. Deux signatures,
+# chacune datée, chacune exacte ; toute AUTRE cause d'échec reste un FAIL :
+#   (a) HISTORIQUE — jusqu'au 2026-09-13 le mock ne re-sérialisait PAS
+#       `apiDefinition` (store.go : `Definition json:"-"`) ; le tag de posture
+#       (P3, ADR-093) vit dans `apiDefinition.tags` et sa relecture est
+#       fail-closed : `TAG_UNCONFIRMED … porte tags=[]`. Corrigé (7d31ba7 :
+#       apiWire) — la signature reste, pour qu'un mock ancien soit reconnu.
+#   (b) VIVANTE — le mock ne sert PAS la surface admin des postures P4-P7 :
+#       `GET /rest/apigateway/policies` (global-policy.yml, P4) rend 404, et
+#       derrière viennent /apis/{id}/globalPolicies, les actions IAM et la page
+#       IS des ports. Ces jalons ont été prouvés contre la 10.15 RÉELLE (port
+#       5555), que cette tâche a interdiction de viser. L'API EST créée et
+#       taguée avant ce mur.
+# Dans les deux cas la preuve n'est pas « verte quand même » : elle est SKIP,
+# avec sa cause, et redeviendra rouge ou verte d'elle-même le jour où le mock
+# servira ces routes.
 MOCK_TAG_LIMITE=0
 if [ "$R4" = 0 ] && [ "${NB_API:-0}" -ge 1 ]; then
   ok "4.1 team-publish rc 0 sur le SHA mergé — l'API '$API_NAME' est VUE sur la gateway (${NB_API} exemplaire)"
+elif grep -q 'Status code was 404' "$TMP/p4.log" && grep -q '/rest/apigateway/policies"' "$TMP/p4.log" && [ "${NB_API:-0}" -ge 1 ]; then
+  MOCK_TAG_LIMITE=1
+  skip "4.1 LIMITE DU LAB (pas un défaut de la chaîne) : l'API '$API_NAME' EST créée sur la gateway (n=${NB_API:-0}) et son tag de posture relu (mock 7d31ba7) — mais le mock ne sert pas GET /rest/apigateway/policies (P4 global-policy.yml ⇒ 404) : la surface admin P4-P7 n'existe que sur la 10.15 réelle (5555), interdite ici. Mesuré le 2026-09-13."
 elif grep -q 'TAG_UNCONFIRMED' "$TMP/p4.log" && grep -q 'porte tags=\[\]' "$TMP/p4.log"; then
   MOCK_TAG_LIMITE=1
   skip "4.1 LIMITE DU LAB (pas un défaut de la chaîne) : l'API '$API_NAME' EST créée sur la gateway (n=${NB_API:-0}) — tout ce qui précède a fonctionné — mais la RELECTURE fail-closed du tag de posture (P3/ADR-093, roles/apim_publish_api/tasks/tag.yml) lit tags=[] : le mock ne re-sérialise pas apiDefinition (mocks/webmethods/store.go, champ Definition en json:\"-\"), donc aucun tag ne peut être relu. Publication arrêtée avant l'activation. Le tag est prouvé au jalon P3 contre la 10.15 RÉELLE (port 5555), interdite ici. Remède (lab, hors périmètre L5) : sérialiser apiDefinition dans le mock, puis RECRÉER le conteneur (un restart relance l'ancienne image)."
