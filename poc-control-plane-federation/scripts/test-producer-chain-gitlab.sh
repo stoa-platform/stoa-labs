@@ -533,6 +533,32 @@ elif grep -q 'TAG_UNCONFIRMED' "$TMP/p4.log" && grep -q 'porte tags=\[\]' "$TMP/
 else
   bad "4.1 rc $R4, apis '$API_NAME' sur la gateway = ${NB_API:-?} : $(tail -3 "$TMP/p4.log" | tr '\n' ' ' | cut -c1-260)"
 fi
+# GESTE DE HARNAIS, ÉTIQUETÉ COMME TEL — jamais la chaîne. Quand la publication
+# bute sur une limite du lab reconnue (ci-dessus), l'API existe sur la gateway
+# mais reste INACTIVE, et l'export refuse (EXPORT_REFUSED, piège isActive
+# d'ADR-079). Or ce qui DÉPEND du visage de la forge dans les preuves 5-6 n'est
+# pas la gateway : c'est le REGISTRE par projet (ARCHIVE_STORE_PROJECT,
+# /api/v4/projects/…/packages/generic, PRIVATE-TOKEN) et les MR d'épinglage et
+# de promotion. Le harnais active donc l'API par l'admin de la gateway — un
+# geste de lab que le mock accepte (PUT /apis/{id}/activate) — et laisse 5-6 se
+# jouer POUR DE VRAI contre GitLab. 4.2 reste SKIP : la publication n'a PAS
+# abouti, et personne ne l'écrit sur la MR à sa place.
+HARNAIS_ACTIVE=0
+if [ "$MOCK_TAG_LIMITE" = 1 ] && [ "${NB_API:-0}" -ge 1 ]; then
+  API_ID=$(wmapi apis | API="$API_NAME" python3 -c 'import json,os,sys
+d=json.load(sys.stdin)
+ids=[a.get("api",{}).get("id","") for a in d.get("apiResponse",[]) if a.get("api",{}).get("apiName")==os.environ["API"]]
+print(ids[0] if ids else "")' 2>/dev/null)
+  if [ -n "$API_ID" ]; then
+    HC=$(curl -s --max-time 30 -o /dev/null -w '%{http_code}' -u Administrator:manage -X PUT "$WM_GATEWAY_URL/rest/apigateway/apis/$API_ID/activate")
+    if [ "$HC" = 200 ]; then
+      HARNAIS_ACTIVE=1
+      echo "  ℹ GESTE DE LAB (pas la chaîne) : API '$API_NAME' ($API_ID) activée par l'admin du mock (PUT /apis/{id}/activate) pour franchir la limitation P4 — la PUBLICATION par la chaîne n'est PAS prouvée ici ; 4.2 reste SKIP ; 5-6 éprouvent le registre GitLab par projet et les MR de promotion pour un artefact dont l'activation n'est pas venue de la chaîne"
+    else
+      echo "  (HARNAIS) activation de '$API_NAME' refusée par la gateway (HTTP $HC) — 5-6 restent NON JOUÉES"
+    fi
+  fi
+fi
 N4=$(mr_notes "$TEAM_REPO" "${MR3:-0}")
 if case "$N4" in *team-publish*'/-/merge_requests/'*|*'/-/merge_requests/'*team-publish*) true;; *) false;; esac; then
   ok "4.2 statut ✅ commenté sous <!-- team-publish -->, avec le lien GitLab de la MR (/-/merge_requests/) — jamais un /pulls/N composé à la main"
@@ -543,7 +569,7 @@ else
 fi
 
 echo
-if [ "$MOCK_TAG_LIMITE" = 1 ]; then
+if [ "$MOCK_TAG_LIMITE" = 1 ] && [ "$HARNAIS_ACTIVE" != 1 ]; then
   echo "== 5. api-promote-export.sh / == 6. promotion — NON JOUÉES =="
   # Une API que la publication n'a pas pu activer n'a pas d'archive à exporter
   # (EXPORT_REFUSED : « … est INACTIVE — son archive désactiverait l'API à chaque
@@ -557,6 +583,7 @@ if [ "$MOCK_TAG_LIMITE" = 1 ]; then
   skip "6.3 team-promote / ARCHIVE_STORE_FETCHED — dépend de 6.1"
 else
   echo "== 5. api-promote-export.sh ⇒ archive au registre + MR d'épinglage =="
+  [ "$HARNAIS_ACTIVE" = 1 ] && echo "   ℹ GESTE DE LAB : l'API a été activée par le harnais (limitation P4) — ces preuves portent sur le registre GitLab par projet et les MR, pour un artefact dont l'activation n'est pas venue de la chaîne ; la publication n'est pas prouvée ici"
   export_api(){ TEAM="$TEAM" API_NAME="$API_NAME" \
     VAULT_ADDR="$VAULT_ADDR" VAULT_TOKEN_FILE="$VTOK_ONB_FILE" \
     APIM_API_BASE="${WM_GATEWAY_URL}/rest/apigateway" \
@@ -630,10 +657,28 @@ else
           APIM_DIRECT_BASE_TPL="${WM_GATEWAY_URL}/rest/apigateway" \
           GIT_HOST="$GITLAB_URL" GIT_WEB_HOST="$GITLAB_URL" GIT_REPO="$GIT_REPO" LABCTL_BIN="$LABCTL_BIN" \
           bash scripts/team-promote.sh > "$TMP/p6apply.log" 2>&1; R6A=$?
-        if [ "$R6A" = 0 ] && grep -q 'ARCHIVE_STORE_FETCHED' "$TMP/p6apply.log"; then
-          ok "6.3 team-promote rc 0 : archive RAPATRIÉE du registre PAR SON DIGEST (ARCHIVE_STORE_FETCHED) puis importée sur $TO_ENV"
+        # 6.3 se lit en DEUX faits, parce qu'ils ne dépendent pas de la même chose :
+        #   (a) le rapatriement PAR DIGEST depuis le registre — c'est lui qui dépend
+        #       du VISAGE (registre par projet, PRIVATE-TOKEN, 302 présigné) ;
+        #   (b) l'import sur le palier d'arrivée — c'est la TOPOLOGIE du lab : la voie
+        #       directe (ADMIN_VIA=direct) vise ici le mock de WM_GATEWAY_URL, qui ne
+        #       valide qu'UNE identité d'admin (la sienne, ADMIN_USER), alors que
+        #       l'identité du palier (Vault envs/<palier>/wm-admin) est celle du mock
+        #       DE CE PALIER, sur le réseau interne, injoignable du poste ; le proxy
+        #       wm-admin-<palier> vit sur la 10.15 réelle, interdite ici. Un 401 qui
+        #       porte EXACTEMENT cette signature est une limite du lab, nommée ; tout
+        #       autre échec reste un FAIL.
+        if grep -q 'ARCHIVE_STORE_FETCHED' "$TMP/p6apply.log"; then
+          ok "6.3a archive RAPATRIÉE du registre $ARCHIVE_STORE_PROJECT PAR SON DIGEST (ARCHIVE_STORE_FETCHED) — la partie qui dépend du visage GitLab"
         else
-          bad "6.3 rc $R6A, ARCHIVE_STORE_FETCHED $(grep -q 'ARCHIVE_STORE_FETCHED' "$TMP/p6apply.log" && echo vu || echo ABSENT) : $(tail -4 "$TMP/p6apply.log" | tr '\n' ' ' | cut -c1-320)"
+          bad "6.3a ARCHIVE_STORE_FETCHED ABSENT : $(tail -4 "$TMP/p6apply.log" | tr '\n' ' ' | cut -c1-320)"
+        fi
+        if [ "$R6A" = 0 ]; then
+          ok "6.3b team-promote rc 0 : archive importée sur $TO_ENV"
+        elif grep -q 'Status code was 401' "$TMP/p6apply.log" && grep -qF "\"url\": \"${WM_GATEWAY_URL}/" "$TMP/p6apply.log" && grep -q "palier ouvert : envs/${TO_ENV}/wm-admin" "$TMP/p6apply.log"; then
+          skip "6.3b LIMITE DU LAB (topologie, pas la chaîne ni le visage) : l'import sur '$TO_ENV' vise le mock de WM_GATEWAY_URL avec l'identité du palier (envs/$TO_ENV/wm-admin) — ce mock ne valide que SON admin ; le mock de '$TO_ENV' est sur le réseau interne et son proxy wm-admin-$TO_ENV sur la 10.15 réelle, interdits ici (401 exact, mesuré le 2026-09-13)"
+        else
+          bad "6.3b rc $R6A : $(tail -4 "$TMP/p6apply.log" | tr '\n' ' ' | cut -c1-320)"
         fi
       fi
     fi
