@@ -112,20 +112,30 @@ grep -q '/apisix/admin' "$TLSLOG" \
   && ok "binaire livré : LABCTL_CA_FILE=<pem> -> handshake TLS accepté, l'appel admin passe" \
   || bad "binaire livré : LABCTL_CA_FILE ignoré (rien reçu côté serveur TLS)"
 
-PROV=(observability/opensearch/provision/provision.sh
-      observability/opensearch/provision/provision-banking-demo-txn.sh
-      observability/opensearch/provision/onboarding/provision-onboarding-audit.sh)
+# PORTÉE DÉRIVÉE (2026-09-13) : cette liste était écrite À LA MAIN et annonçait
+# « 3 scripts ». Un QUATRIÈME existait — provision/apply/provision-apply-audit.sh —
+# avec un `-k` câblé EN DUR, et il n'y figurait pas : la porte disait donc « plus
+# aucun -k en dur (3 scripts) » en en laissant un dehors. On dérive désormais la
+# liste de l'arborescence, pour qu'un cinquième script soit couvert le jour où
+# quelqu'un l'écrit, sans que personne ait à penser à cette liste.
+IFS=$'\n' read -r -d '' -a PROV < <(cd "$ROOT" && find observability/opensearch/provision -name 'provision*.sh' | sort && printf '\0')
+NPROV=${#PROV[@]}
 HARDK=0; KNOB=0; SYNTAX=0
 for p in "${PROV[@]}"; do
-  grep -Eq 'curl -s(-| )*-k| -k -u' "$ROOT/$p" && HARDK=$((HARDK+1))
+  # UN `-k` GARDÉ N'EST PAS UN `-k` NU (2026-09-13). La détection d'origine
+  # signalait toute occurrence, donc aussi la branche `CURL+=(-k)` d'un `case`
+  # sur OPENSEARCH_INSECURE — c'est-à-dire l'affaiblissement EXPLICITE, qui est
+  # précisément ce qu'on veut. On ne compte donc que le `-k` posé À LA
+  # CONSTRUCTION de la commande, celui qu'aucune globale ne retire.
+  grep -Eq '^[^#]*(CURL|OSD_CURL)=\(.*[[:space:]]-k([[:space:]]|\))' "$ROOT/$p" && HARDK=$((HARDK+1))
   grep -q 'OPENSEARCH_CA_FILE' "$ROOT/$p" && KNOB=$((KNOB+1))
   bash -n "$ROOT/$p" || SYNTAX=$((SYNTAX+1))
 done
-[ "$HARDK" = 0 ] && ok "provision OpenSearch : plus aucun -k câblé en dur (3 scripts)" \
-                 || bad "provision OpenSearch : $HARDK script(s) gardent un -k en dur"
-[ "$KNOB" = 3 ] && ok "provision OpenSearch : knob OPENSEARCH_CA_FILE/OPENSEARCH_INSECURE présent (3/3)" \
-                || bad "provision OpenSearch : knob absent ($KNOB/3)"
-[ "$SYNTAX" = 0 ] && ok "provision OpenSearch : bash -n OK (3/3)" \
+[ "$HARDK" = 0 ] && ok "provision OpenSearch : plus aucun -k câblé en dur ($NPROV scripts, liste DÉRIVÉE de l'arborescence)" \
+                 || bad "provision OpenSearch : $HARDK script(s) sur $NPROV gardent un -k que nulle globale ne retire"
+[ "$KNOB" = "$NPROV" ] && ok "provision OpenSearch : knob OPENSEARCH_CA_FILE/OPENSEARCH_INSECURE présent ($KNOB/$NPROV)" \
+                || bad "provision OpenSearch : knob absent ($KNOB/$NPROV)"
+[ "$SYNTAX" = 0 ] && ok "provision OpenSearch : bash -n OK ($NPROV/$NPROV)" \
                   || bad "provision OpenSearch : erreur de syntaxe"
 
 echo "=== É0.3 — auth Git (GOVERNANCE_GIT_URL + GIT_CREDENTIALS_ID, 4 Jenkinsfiles) ==="

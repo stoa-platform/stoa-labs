@@ -32,7 +32,14 @@ OSD_CURL=(/usr/bin/curl -s -u "$OSD_AUTH" -H 'osd-xsrf: true' -H "securitytenant
 if [ -n "${OPENSEARCH_CA_FILE:-}" ]; then
   CURL+=(--cacert "$OPENSEARCH_CA_FILE"); OSD_CURL+=(--cacert "$OPENSEARCH_CA_FILE")
 else
-  case "${OPENSEARCH_INSECURE:-true}" in 1|true|yes|on) CURL+=(-k); OSD_CURL+=(-k) ;; esac
+  # DÉFAUT SÛR (2026-09-13). Il valait `true` — donc `curl -k`, vérification du
+  # certificat DÉSACTIVÉE, sans que personne ne l'ait demandé. Chez un client dont
+  # OpenSearch porte un vrai certificat, ça ne se voyait pas ; chez un client dont
+  # il n'en porte pas, ça passait quand même. Un défaut PERMISSIF ne se pose pas
+  # tout seul : il se demande. Le chemin sûr existe et a la priorité ci-dessus
+  # (OPENSEARCH_CA_FILE) ; le lab, lui, pose OPENSEARCH_INSECURE=true parce que
+  # son OpenSearch est auto-signé — explicitement, donc lisiblement.
+  case "${OPENSEARCH_INSECURE:-false}" in 1|true|yes|on) CURL+=(-k); OSD_CURL+=(-k) ;; esac
 fi
 
 echo "[1/7] index template stoa-txn (data_stream enabled)"

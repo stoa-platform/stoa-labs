@@ -31,7 +31,7 @@ type applyAuditor struct {
 func newApplyAuditor(repoDir string, prin principal, logw io.Writer) *applyAuditor {
 	osURL := envOr("OPENSEARCH_URL", "") // empty → stdout-only sink (no network)
 	rec := audit.NewRecorder(osURL, envOr("OPENSEARCH_USER", "admin"), os.Getenv("OPENSEARCH_PASSWORD"),
-		boolEnvDefault("OPENSEARCH_INSECURE", true), log.New(logw, "", 0))
+		boolEnvDefault("OPENSEARCH_INSECURE", false), log.New(logw, "", 0))
 	rec.IndexPrefix = "audit-apply"
 	rec.OTLPEndpoint = envOr("OTEL_EXPORTER_OTLP_ENDPOINT", "") // real Tempo span per mutation
 	return &applyAuditor{sink: rec, repoDir: repoDir, principal: prin, fallback: envOr("LABCTL_ACTOR", "")}

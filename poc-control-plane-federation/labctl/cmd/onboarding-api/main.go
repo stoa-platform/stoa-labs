@@ -82,7 +82,7 @@ func main() {
 			}
 		}
 	}
-	osInsecure := boolEnv("OPENSEARCH_INSECURE", true)
+	osInsecure := boolEnv("OPENSEARCH_INSECURE", false)
 	recorder := audit.NewRecorder(osURL, osUser, osPass, osInsecure, log.Default())
 	// OTLP/HTTP span export (optional): turns the trace_id into a real Tempo span.
 	recorder.OTLPEndpoint = os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")

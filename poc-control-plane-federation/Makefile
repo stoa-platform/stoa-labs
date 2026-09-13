@@ -128,7 +128,7 @@ lint-ci:
 	  scripts/test-repo-layout-portabilite.sh scripts/lib/providers-teams.sh scripts/test-providers-teams.sh \
 	  scripts/lib/forge-api.sh scripts/test-forge-api.sh scripts/test-forge-api-live.sh scripts/setup-gitlab-lab.sh \
 	  scripts/lib/git-base.sh scripts/test-git-base.sh scripts/test-dbg-redaction.sh scripts/test-vault-login-offline.sh \
-	  ci/lint-forge-literals.sh ci/lint-forge-knobs.sh ci/lint-branch-literals.sh scripts/test-app-request-gitlab-live.sh \
+	  ci/lint-forge-literals.sh ci/lint-forge-knobs.sh ci/lint-permissive-defaults.sh ci/lint-branch-literals.sh scripts/test-app-request-gitlab-live.sh \
 	  scripts/test-porte-clone-frais.sh \
 	  scripts/test-team-request-wiring.sh scripts/test-team-publish-wiring.sh \
 	  scripts/test-debug-knob-wiring.sh scripts/test-app-request-wiring.sh scripts/test-api-request-wiring.sh scripts/test-team-apply-wiring.sh \
@@ -190,6 +190,13 @@ lint-ci:
 	@# avaient manque. Elle exige aussi l'ABSENCE de defaut de site sur
 	@# FORGE_KIND : un repli 'gitea' rendrait FORGE_KIND_REQUIS inatteignable.
 	@bash ci/lint-forge-knobs.sh
+	@# UN DEFAUT PERMISSIF NE SE POSE PAS TOUT SEUL (2026-09-13). OPENSEARCH_INSECURE
+	@# valait « ne verifie pas le certificat » PAR DEFAUT a TROIS couches (2 binaires
+	@# Go, 3 scripts de provision, 3 Jenkinsfile dont `prod`) — et un QUATRIEME script
+	@# portait un `-k` cable EN DUR. Regle GENERALE : un knob dont le NOM annonce un
+	@# affaiblissement ne peut pas avoir un defaut permissif (B), et l'EFFET est
+	@# mesure aussi (D) parce qu'un nom peut etre renomme, pas un `-k`.
+	@bash ci/lint-permissive-defaults.sh
 	@# AUCUNE BRANCHE ECRITE EN DUR (2026-09-10, L3). Le meme client GitLab :
 	@# 46 « main » executes et 155 messages, pour une branche par defaut `master`.
 	@# Cette porte interdit le litteral dans les fichiers LIVRES (shell, Jenkinsfile,

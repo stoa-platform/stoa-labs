@@ -44,7 +44,13 @@ pipeline {
     LABCTL_AUDIENCE             = "${env.LABCTL_AUDIENCE ?: 'onboarding-api'}"
     OPENSEARCH_URL              = "${env.OPENSEARCH_URL ?: 'https://opensearch:9200'}"
     OPENSEARCH_USER             = "${env.OPENSEARCH_USER ?: 'admin'}"
-    OPENSEARCH_INSECURE         = "${env.OPENSEARCH_INSECURE ?: 'true'}"
+    // AUCUN défaut ICI (2026-09-13) : un repli `'true'` dans le pipeline
+    // désactivait la vérification TLS de la remontée d'audit sans que
+    // personne ne l'ait demandé — et rendait INATTEIGNABLE le défaut SÛR de
+    // la couche qui consomme (labctl, provision OpenSearch). Repli vide ⇒
+    // c'est elle qui décide, et elle décide `false`. Le lab pose la globale
+    // OPENSEARCH_INSECURE=true (OpenSearch auto-signé), explicitement.
+    OPENSEARCH_INSECURE         = "${env.OPENSEARCH_INSECURE ?: ''}"
     OTEL_EXPORTER_OTLP_ENDPOINT = "${env.OTEL_EXPORTER_OTLP_ENDPOINT ?: 'http://otel-lgtm:4318'}"
     APPLY_TENANT                = "${env.APPLY_TENANT ?: 'banking-demo'}"
     // Le re-apply prod passe par apply-uac : la couche dispatch-gate (A6) relit

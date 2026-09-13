@@ -1230,6 +1230,46 @@ protection de `ci/stoa-labs@main` (`setup-repo-protections.sh`) ; un
 arrière — applications (A6) » ci-dessous), c'est un rejeu hors chaîne borné par
 l'identité nominative et Vault comme aujourd'hui.
 
+## La vérification TLS d'OpenSearch (2026-09-13)
+
+**Le défaut était PERMISSIF, à trois couches.** `OPENSEARCH_INSECURE` valait
+« ne vérifie pas le certificat » par défaut dans les deux binaires Go
+(`boolEnvDefault(…, true)`), dans les scripts de provision
+(`${OPENSEARCH_INSECURE:-true}` ⇒ `curl -k`) et dans un repli `?: 'true'` de
+**trois** Jenkinsfile, dont celui qui s'appelle `prod`. La chaîne remontait donc
+sa trace d'audit sans vérifier à qui elle parlait, sans que personne ne l'ait
+demandé — et chez un client dont OpenSearch porte un vrai certificat, ça ne se
+voyait même pas. Un **quatrième** script de provision faisait pire : un `-k`
+câblé EN DUR, qu'aucune globale ne pouvait retirer.
+
+**Ce n'était pas dans la dette déclarée**, et la raison est instructive :
+`ci/lint-config-knobs.sh` traque les valeurs de LAB (adresses, chemins,
+identifiants) — un booléen n'a pas cette forme. Le défaut échappait par sa
+FORME, pas par oubli.
+
+**Depuis** : le défaut est `false` partout, les Jenkinsfile ne posent plus aucun
+repli (c'est la couche qui consomme qui décide), et les deux knobs sont connus
+du poseur de globales :
+
+| Knob | Rôle |
+|------|------|
+| `OPENSEARCH_CA_FILE` | chemin d'un bundle PEM — **prioritaire** : les racines système sont ÉTENDUES, pas remplacées. C'est le geste d'entreprise. |
+| `OPENSEARCH_INSECURE` | `true` pour NE PAS vérifier. À poser **explicitement**, et seulement sur un lab à certificat auto-signé. |
+
+⚠ **L'ORDRE DE POSE COMPTE, encore** : le lab a un OpenSearch auto-signé, donc
+`OPENSEARCH_INSECURE=true` doit y être posée (`setup-jenkins-globals.sh`) AVANT
+que les jobs `prod`, `rollback` et `carto` ne rejouent leur remontée d'audit —
+sans quoi ils échoueront sur la vérification du certificat. C'est le
+comportement VOULU : un affaiblissement se demande.
+
+La porte est `ci/lint-permissive-defaults.sh`, et elle mesure la règle
+**générale** plutôt que ce knob : un nom qui annonce un affaiblissement
+(`INSECURE`, `SKIP_VERIFY`, `NO_VERIFY`, `DISABLE_VERIF`…) ne peut pas avoir un
+défaut permissif (§B) ; le chemin sûr doit exister là où l'affaiblissement est
+proposé (§C) ; et l'**EFFET** est mesuré aussi (§D) — `-k`, `--insecure`,
+`InsecureSkipVerify` littéral — parce qu'un knob peut être renommé, pas un `-k`.
+C'est §D qui a trouvé le quatrième script.
+
 ## Le visage de la forge (L5 — 2026-09-09)
 
 Le 2026-09-09, chez un client sur **GitLab**, `ci-app-request` mourait

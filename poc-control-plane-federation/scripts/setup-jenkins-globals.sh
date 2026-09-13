@@ -114,6 +114,25 @@
 #                           StringCredentials was expected » — un message qui
 #                           accuse le credential, jamais le knob absent.
 #
+# LA VERIFICATION TLS D'OPENSEARCH (OPENSEARCH_INSECURE, OPENSEARCH_CA_FILE)
+# La remontee d'audit (labctl) et la provision OpenSearch parlent en HTTPS. Le
+# defaut etait PERMISSIF jusqu'au 2026-09-13 : `true` a TROIS couches (les deux
+# binaires Go, les trois scripts de provision, et un repli `'true'` dans trois
+# Jenkinsfile) — donc la verification du certificat etait desactivee sans que
+# personne ne l'ait demandee, y compris dans le job nomme `prod`. Elle est
+# maintenant SURE par defaut, et le pipeline ne pose plus de repli : c'est la
+# couche qui consomme qui decide, et elle decide `false`.
+#
+#   OPENSEARCH_CA_FILE      chemin d'un bundle PEM. PRIORITAIRE : pose, il fait
+#                           verifier contre CETTE autorite (les racines systeme
+#                           sont etendues, pas remplacees). C'est le geste
+#                           d'entreprise — un OpenSearch derriere une CA interne.
+#   OPENSEARCH_INSECURE     true pour NE PAS verifier. A n'utiliser que sur un
+#                           lab a certificat auto-signe, et a poser
+#                           EXPLICITEMENT — c'est tout l'objet du changement :
+#                           un defaut permissif ne se pose pas tout seul, il se
+#                           demande. Le lab de ce depot la pose.
+#
 # LE VISAGE DE LA FORGE (FORGE_KIND, FORGE_API_AUTH, FORGE_API_BASE)
 # La chaîne parlait l'API de Gitea en dur ; depuis le 2026-09-09 une seule
 # autorité, scripts/lib/forge-api.sh, décide des chemins, des en-têtes et des
@@ -289,7 +308,7 @@ CONNUES="
 GIT_HOST GIT_WEB_HOST GIT_REPO GIT_BASE GIT_SUBDIR GITEA_CREDENTIALS_ID GITEA_SERVICE_LOGINS
 FORGE_KIND FORGE_CRED_KIND FORGE_API_AUTH FORGE_API_BASE FORGE_USER ARCHIVE_STORE_PROJECT
 WEBHOOK_KIND TEAM_PUBLISH_WEBHOOK_SECRET TEAM_PROMOTE_WEBHOOK_SECRET STOA_DEBUG
-VAULT_ADDR JENKINS_UI ITSM_URL
+VAULT_ADDR JENKINS_UI ITSM_URL OPENSEARCH_INSECURE OPENSEARCH_CA_FILE
 APIM_API_BASE APIM_DATA_BASE APIM_PROXY_HOST APIM_PROXY_API APIM_PROXY_VER APIM_PROXY_PATH APIM_TERMINUS_BASE
 APIM_PREFLIGHT APIM_PREFLIGHT_URL APIM_PREFLIGHT_CODES APIM_PREFLIGHT_TRIES
 APPLY_TENANT APPLY_JOB APPLY_ADMIN_VIA VAULT_USER_AUTH_MOUNT MANIFEST_DIR INVENTORY STOA_ENV_CHAIN_FILE
@@ -332,7 +351,7 @@ GOVERNANCE_REPO GOVERNANCE_PATH
 # partie depuis L4 : absent, la chaîne se tait — et un rapport qui annoncerait
 # « STOA_DEBUG manquante » inviterait à poser un plancher de debug permanent,
 # c'est-à-dire l'inverse d'un opt-in.
-OPTIONNELLES="APIM_PREFLIGHT APIM_PREFLIGHT_URL APIM_PREFLIGHT_CODES APIM_PREFLIGHT_TRIES FORGE_CRED_KIND FORGE_API_AUTH FORGE_API_BASE GIT_BASE WEBHOOK_KIND ARCHIVE_STORE_PROJECT TEAM_PUBLISH_WEBHOOK_SECRET TEAM_PROMOTE_WEBHOOK_SECRET STOA_DEBUG"
+OPTIONNELLES="APIM_PREFLIGHT APIM_PREFLIGHT_URL APIM_PREFLIGHT_CODES APIM_PREFLIGHT_TRIES FORGE_CRED_KIND FORGE_API_AUTH FORGE_API_BASE GIT_BASE WEBHOOK_KIND ARCHIVE_STORE_PROJECT TEAM_PUBLISH_WEBHOOK_SECRET TEAM_PROMOTE_WEBHOOK_SECRET STOA_DEBUG OPENSEARCH_INSECURE OPENSEARCH_CA_FILE"
 
 # ── le canal : console de script Jenkins, jeton par fichier ──────────────────
 CFG="$TMP/curl.cfg"
