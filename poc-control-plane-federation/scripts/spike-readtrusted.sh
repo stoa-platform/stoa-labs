@@ -52,7 +52,18 @@
 #   JENKINS_UI=http://localhost:18080 GIT_HOST=http://localhost:13000 \
 #   GIT_HOST_AGENT=http://gitea:3000 GIT_REPO=ci/stoa-labs \
 #     bash scripts/spike-readtrusted.sh
-# NETTOYAGE : le job ET la branche sont supprimés en sortie, même en échec.
+# NETTOYAGE : le job ET la branche sont supprimés en sortie, même en échec — et
+# une passe SÉPARÉE SONDE ensuite chaque objet (404 sur le job, ls-remote sur la
+# branche) au lieu de croire le code de retour des suppressions. Un trap ne peut
+# pas être son propre témoin.
+# `A && ok || ko` (SC2015) est l'idiome des scripts de PREUVE de ce dépôt — même
+# directive que scripts/test-team-apply-wiring.sh, et pour la même raison : ici
+# `ok`/`ko`/`note` ne peuvent pas échouer, la branche C n'est donc jamais prise
+# à tort. Directive de FICHIER, posée sciemment, pour que ce script tienne le
+# jour où quelqu'un l'ajoute à la liste du Makefile (qui joue l'outil SANS `-S`,
+# donc au niveau info). ⚠ Une ligne de commentaire qui COMMENCE par le nom de
+# l'outil est prise pour une DIRECTIVE (SC1072/SC1073) — mesuré ici même.
+# shellcheck disable=SC2015
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 # L'ENVELOPPE D'AUTHENTIFICATION DES GESTES GIT — l'autorité unique du dépôt.
@@ -124,6 +135,30 @@ nettoyage(){
     fi
   else
     note "nettoyage : aucune branche à supprimer (le clone ou le secret manquent)"
+  fi
+  # ── UN TRAP NE PEUT PAS ÊTRE SON PROPRE TÉMOIN (leçon du 2026-09-16) ──
+  # Ci-dessus, le nettoyage juge son propre travail sur le code de retour de la
+  # SUPPRESSION. Ça ne suffit pas : la session voisine a perdu un job ET un
+  # credential sur le Jenkins partagé avec un trap qui imprimait « nettoyage
+  # tenté » alors que ses suppressions partaient sans session (son bocal à
+  # cookies était effacé AVANT les appels qui s'en servaient — un nettoyage qui
+  # détruit ses moyens d'agir avant d'agir). Le code de retour disait oui.
+  # D'où une passe SÉPARÉE qui SONDE chaque objet, après coup, sans rien
+  # supposer de ce qui précède.
+  local hcj brest
+  hcj=$(curl -s -o /dev/null -w '%{http_code}' "$JENKINS_UI/job/$JOB/api/json" 2>/dev/null || echo 000)
+  case "$hcj" in
+    404) note "témoin : le job $JOB est bien ABSENT (HTTP 404 sur son API)" ;;
+    *)   ko "TÉMOIN NÉGATIF : le job $JOB RÉPOND ENCORE (HTTP $hcj) — il SURVIT sur un Jenkins partagé : $JENKINS_UI/job/$JOB/" ;;
+  esac
+  if [ -n "${FORGE_SECRET:-}" ]; then
+    brest=$(gitauth git ls-remote --heads "$GIT_HOST/$GIT_REPO.git" "refs/heads/$SPIKE_BRANCH" 2>/dev/null | grep -c . || true)
+    case "$brest" in
+      0) note "témoin : la branche $SPIKE_BRANCH est bien ABSENTE (ls-remote ne la voit plus)" ;;
+      *) ko "TÉMOIN NÉGATIF : la branche $SPIKE_BRANCH EXISTE ENCORE sur $GIT_REPO — à supprimer à la main" ;;
+    esac
+  else
+    ko "TÉMOIN IMPOSSIBLE : sans FORGE_SECRET, la présence de la branche $SPIKE_BRANCH n'a PAS été sondée — ne pas croire ce spike jetable"
   fi
   rm -rf "$TMP"
   [ -n "${hb:-}" ] && printf '  ⚠ le spike n'"'"'est PAS jetable tant que cette branche reste : %s\n' "$SPIKE_BRANCH"
