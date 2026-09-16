@@ -115,6 +115,16 @@ BOOTSTRAP_WAIT="${BOOTSTRAP_WAIT:-360}"
 # Désormais : l'environnement de l'appelant l'emporte s'il est POSÉ (intention
 # explicite d'un CI) ; sinon on LIT la globale ; et si elle est illisible on ne
 # devine pas — la classe n'est pas confrontée, et on le DIT.
+#
+# ⚠ LA RELECTURE COMPLÈTE EXIGE `Overall/RunScripts`. La globale est lue par la
+# console de script (/scriptText) : sans ce droit, Jenkins rend 403 et ce script
+# NE DEVINE PAS — il annonce une relecture PARTIELLE (« la CLASSE n'a pas été
+# confrontée »), rc 0, parce que LA POSE EST BONNE. Ce n'est PAS une panne, et
+# c'est écrit ici parce qu'un exploitant qui n'a pas le droit de poser des
+# propriétés globales ne l'aura pas davantage : il verra donc TOUJOURS ce
+# message. Pour obtenir la relecture complète sans ce droit : exporter
+# WEBHOOK_KIND dans l'environnement de ce script (l'intention explicite de
+# l'appelant l'emporte sur la globale).
 WEBHOOK_KIND="${WEBHOOK_KIND:-}"
 WEBHOOK_KIND_SRC=""
 [ -n "$WEBHOOK_KIND" ] && WEBHOOK_KIND_SRC="environnement de l'appelant"

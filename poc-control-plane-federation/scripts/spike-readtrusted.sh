@@ -1,0 +1,230 @@
+#!/usr/bin/env bash
+# scripts/spike-readtrusted.sh — JETABLE. UNE question, trois issues nommées.
+#
+# LA QUESTION : `readTrusted('<chemin>')` fonctionne-t-il dans un job
+# **CpsScmFlowDefinition** (« Pipeline script from SCM », notre cas), ou est-il
+# réservé aux projets multibranch ?
+#
+# POURQUOI ELLE DÉCIDE UN LOT. Un client peut créer des credentials mais PAS
+# poser de propriétés globales (rapporté le 2026-09-16). Or `WEBHOOK_KIND` est lu
+# par le stage RÉCEPTEUR de cinq Jenkinsfile qui tournent en `agent none` —
+# délibérément, pour ne pas prendre d'exécuteur sur un build qui n'a rien à
+# faire. Sans globale, ce knob vaut son défaut `gwt`, le `properties()` scripté
+# invoque `GenericTrigger`, et sur un Jenkins sans ce plugin le job meurt
+# « No such DSL method » : exactement le blocage que L6 existait pour lever.
+# Un fichier de site VERSIONNÉ le résoudrait — mais il faut pouvoir le lire SANS
+# workspace. D'où cette mesure, et rien d'autre.
+#
+# LES TROIS ISSUES, NOMMÉES AVANT DE LANCER (sans quoi le résultat serait une
+# interprétation) :
+#   A. INDISPONIBLE — le pas n'existe pas pour ce type de définition, et l'erreur
+#      le dit (« only available when the Pipeline is defined in SCM », ou
+#      « No such DSL method 'readTrusted' »). ⇒ le fichier de site ne peut pas
+#      servir au stage `agent none` ; il faut mesurer les replis.
+#   B. MÉCANISME PROUVÉ — le pas répond ET rend le contenu attendu. ⇒ le fichier
+#      de site est lisible sans workspace, le lot peut être dessiné.
+#   C. CHEMIN SEULEMENT — le pas répond mais le fichier manque
+#      (« FileNotFoundException »). ⇒ ça ne prouve QUE la résolution du chemin,
+#      pas le mécanisme. C'est pourquoi l'épreuve porte sur un fichier qui
+#      EXISTE DÉJÀ sur la branche par défaut, et s'assure de son CONTENU.
+#
+# DEUX PIÈGES, signalés par la session voisine et intégrés ici :
+#   1. LES CHEMINS SONT RELATIFS À LA RACINE DU DÉPÔT, pas au livrable : le
+#      `<scriptPath>` d'un job du lab est `poc-control-plane-federation/ci/…`.
+#      On éprouve donc `poc-control-plane-federation/ci/lint-eol.sh`, jamais
+#      `ci/lint-eol.sh` — qui n'existe pas et n'existera jamais.
+#   2. ON N'ÉPROUVE PAS CONTRE UN FICHIER ABSENT : un échec confondrait A et C.
+#      Le fichier de contrôle est choisi parce qu'il EST sur la branche, et on
+#      assure sur une chaîne connue de son contenu.
+#
+# CE QU'IL FAUT POUR LE JOUER, et pourquoi ce script ne le fait pas tout seul :
+# le job doit être un CpsScmFlowDefinition, donc son pipeline doit vivre DANS le
+# dépôt que lit le lab (gitea). Il faut donc y POUSSER une branche jetable
+# portant ce Jenkinsfile — ce qui exige un jeton d'écriture sur la forge du lab.
+#   SPIKE_BRANCH   nom de la branche jetable (défaut spike/readtrusted)
+#   GIT_HOST       vu du POSTE (http://localhost:13000), pour le push
+#   GIT_HOST_AGENT vu de l'AGENT (http://gitea:3000), pour le <scm> du job
+#   FORGE_SECRET   jeton d'écriture sur ci/stoa-labs
+#   JENKINS_UI     le Jenkins à sonder
+# La ligne À COPIER pour le lab de ce dépôt (aucune de ces valeurs n'est un
+# défaut du script : il refuse si l'une manque) :
+#   FORGE_SECRET="<jeton ci>" SPIKE_BRANCH=spike/readtrusted \
+#   JENKINS_UI=http://localhost:18080 GIT_HOST=http://localhost:13000 \
+#   GIT_HOST_AGENT=http://gitea:3000 GIT_REPO=ci/stoa-labs \
+#     bash scripts/spike-readtrusted.sh
+# NETTOYAGE : le job ET la branche sont supprimés en sortie, même en échec.
+set -uo pipefail
+cd "$(dirname "$0")/.." || exit 1
+# L'ENVELOPPE D'AUTHENTIFICATION DES GESTES GIT — l'autorité unique du dépôt.
+# La première écriture de ce spike poussait par une URL contenant le secret :
+#   git push "http://x:$FORGE_SECRET@host/repo.git"
+# donc le jeton dans l'ARGV de git, lisible par `ps -Aww` pendant toute la
+# poussée. Troisième instance du même défaut en deux jours (le jeton de hook
+# dans l'argv de curl, le `-c http.extraHeader` de seed-governance-chain), et
+# le dépôt porte déjà le refus qui l'interdit : git_base_avec_basic « exige le
+# NOM de la variable qui porte le secret, jamais le secret lui-même : argv est
+# lisible par tous ». Signalé par la session voisine en relisant ce script.
+# shellcheck source=scripts/lib/git-base.sh
+. scripts/lib/git-base.sh || { echo "ERREUR: scripts/lib/git-base.sh introuvable" >&2; exit 1; }
+gitauth(){ git_base_avec_basic "$(git_base_basic_login)" FORGE_SECRET "$@"; }
+JOB=spike-readtrusted
+# AUCUN DÉFAUT DE SITE — ce script REFUSE quand une valeur manque, et c'est la
+# porte ci/lint-config-knobs.sh qui l'a exigé en rougissant sur cinq d'entre
+# elles. Elle avait raison : un spike qui vise silencieusement le mauvais
+# Jenkins ou le mauvais dépôt est pire qu'un spike qui ne part pas. Les valeurs
+# du lab sont dans l'USAGE ci-dessus (un commentaire n'est pas du code) — on les
+# copie sciemment, on ne les hérite pas.
+# ⚠ Les spikes existants (spike-webhook-kind-*.sh) portent ce défaut sans être
+# signalés : ils assignent à une variable RENOMMÉE (`J="${JENKINS_UI:-…}"`), que
+# le motif de la porte ne voit pas. C'est la même limite que celle mesurée le
+# 2026-09-13 sur les noms — une règle de forme se contourne en renommant. Dette
+# nommée ici, non traitée dans ce spike.
+# UN REFUS NOMMÉ, PAS UN `${VAR:?}` DE BASH. La règle du dépôt visait les champs
+# de FORMULAIRE (un `${VAR:?}` y rend un numéro de ligne de shell et un nom de
+# variable INTERNE, là où le demandeur a rempli un champ qui porte un autre nom).
+# Ici l'exploitant passe bien ces noms — mais l'esprit vaut quand même : un refus
+# se NOMME et dit le remède, avec rc 2. Une ligne par garde : une ligne se mute
+# par sed dans une suite.
+requis(){ [ -n "$2" ] || { printf 'REFUS: CONFIG_REQUISE : %s est vide — %s. Rien n a ete tente.\n' "$1" "$3" >&2; exit 2; }; }
+requis SPIKE_BRANCH   "${SPIKE_BRANCH:-}"   "nom de la branche JETABLE poussee puis supprimee (lab : spike/readtrusted)"
+requis JENKINS_UI     "${JENKINS_UI:-}"     "le Jenkins a sonder (lab : http://localhost:18080)"
+requis GIT_HOST       "${GIT_HOST:-}"       "la forge vue du POSTE, pour le clone et la poussee (lab : http://localhost:13000)"
+requis GIT_HOST_AGENT "${GIT_HOST_AGENT:-}" "la forge vue de l AGENT, pour le <scm> du job (lab : http://gitea:3000)"
+requis GIT_REPO       "${GIT_REPO:-}"       "owner/repo du depot plateforme (lab : ci/stoa-labs)"
+TEMOIN="poc-control-plane-federation/ci/lint-eol.sh"
+TEMOIN_MOT="PORTE"   # chaîne connue du contenu du témoin
+ok(){ printf '  ✅ %s\n' "$*"; }
+ko(){ printf '  ❌ %s\n' "$*"; }
+note(){ printf '  ℹ %s\n' "$*"; }
+
+[ -n "${FORGE_SECRET:-}" ] || { echo "REFUS: FORGE_SECRET requis — ce spike POUSSE une branche jetable sur ${GIT_REPO}" >&2; exit 2; }
+grep -q "$TEMOIN_MOT" "$TEMOIN" \
+  || { echo "REFUS: le fichier témoin $TEMOIN ne porte pas '$TEMOIN_MOT' — l'épreuve B serait vacante" >&2; exit 2; }
+
+TMP="$(mktemp -d /tmp/spike-rt.XXXXXX)"
+# LE NETTOYAGE DIT CE QU'IL A FAIT, et ne l'affirme jamais sans l'avoir mesuré.
+# Première écriture : un `push --delete` sur un `origin` cloné ANONYMEMENT, avec
+# `2>/dev/null || true`. Sur une forge qui refuse l'écriture anonyme, la
+# suppression échouait EN SILENCE et la branche jetable SURVIVAIT — contre ce que
+# l'en-tête promet. C'est « annoncer un vert qu'on n'a pas mesuré », appliqué au
+# nettoyage, et c'est le pire endroit pour ça : personne ne relit un trap.
+nettoyage(){
+  local hj hb
+  hj=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$JENKINS_UI/job/$JOB/doDelete" 2>/dev/null || true)
+  case "$hj" in
+    200|302|404) note "nettoyage : job $JOB supprimé (HTTP $hj)" ;;
+    *)           ko "NETTOYAGE INCOMPLET : job $JOB PEUT-ÊTRE encore présent (HTTP $hj) — à supprimer à la main : $JENKINS_UI/job/$JOB/" ;;
+  esac
+  if [ -d "$TMP/clone/.git" ] && [ -n "${FORGE_SECRET:-}" ]; then
+    if gitauth git -C "$TMP/clone" push -q origin --delete "$SPIKE_BRANCH" 2>"$TMP/del.err"; then
+      note "nettoyage : branche $SPIKE_BRANCH supprimée (sous enveloppe authentifiée)"
+    else
+      ko "NETTOYAGE INCOMPLET : la branche $SPIKE_BRANCH SURVIT sur $GIT_REPO — à supprimer à la main. Cause : $(head -1 "$TMP/del.err" 2>/dev/null)"
+      hb=1
+    fi
+  else
+    note "nettoyage : aucune branche à supprimer (le clone ou le secret manquent)"
+  fi
+  rm -rf "$TMP"
+  [ -n "${hb:-}" ] && printf '  ⚠ le spike n'"'"'est PAS jetable tant que cette branche reste : %s\n' "$SPIKE_BRANCH"
+  return 0
+}
+trap nettoyage EXIT
+
+echo "═══ 0. la branche jetable qui porte le pipeline du spike ═══"
+gitauth git clone -q --depth 1 "$GIT_HOST/$GIT_REPO.git" "$TMP/clone" 2>/dev/null \
+  || { ko "clone de $GIT_REPO impossible depuis le poste"; exit 1; }
+cat > "$TMP/clone/Jenkinsfile.spike-readtrusted" <<'JF'
+pipeline {
+  agent none
+  stages {
+    stage('readTrusted sans workspace') {
+      steps {
+        script {
+          // ⚠ `catch (Throwable e)` ET NON `catch (e)` : en Groovy, `catch (e)`
+          // ne rattrape que les `Exception`. Un STEP INEXISTANT lève une
+          // `Error` (NoSuchMethodError), qui passe au travers — le build
+          // tomberait en FAILURE et le `echo` de diagnostic n'imprimerait
+          // JAMAIS. C'est-à-dire que l'issue A, la plus probable, serait la
+          // seule à ne rendre AUCUNE information. Signalé par la session
+          // voisine, qui l'a payé d'une passe en sondant configFileProvider.
+          // ISSUE A : le pas n'existe pas, ou pas pour ce type de définition.
+          // ISSUE B : il rend le contenu (on assure sur une chaîne connue).
+          // ISSUE C : il répond mais le fichier manque.
+          try {
+            def c = readTrusted 'poc-control-plane-federation/ci/lint-eol.sh'
+            echo "SPIKE_VERDICT=B_MECANISME_PROUVE longueur=${c.length()} contient_PORTE=${c.contains('PORTE')}"
+          } catch (Throwable e) {
+            echo "SPIKE_VERDICT=?? classe=${e.getClass().getName()} message=${e.getMessage()}"
+          }
+          // Le contraste : un fichier ABSENT, pour distinguer A de C.
+          try {
+            readTrusted 'poc-control-plane-federation/ci/site.env'
+            echo "SPIKE_ABSENT=LU_QUAND_MEME (inattendu)"
+          } catch (Throwable e) {
+            echo "SPIKE_ABSENT=${e.getClass().getName()}: ${e.getMessage()}"
+          }
+        }
+      }
+    }
+  }
+}
+JF
+( cd "$TMP/clone" && git checkout -q -b "$SPIKE_BRANCH" \
+  && git -c user.email=spike@lab -c user.name=spike add Jenkinsfile.spike-readtrusted \
+  && git -c user.email=spike@lab -c user.name=spike commit -q -m "spike: readTrusted (jetable)" \
+  ) && gitauth git -C "$TMP/clone" push -q origin "$SPIKE_BRANCH" \
+  || { ko "push de la branche jetable impossible"; exit 1; }
+ok "branche $SPIKE_BRANCH poussée, portant Jenkinsfile.spike-readtrusted"
+
+echo "═══ 1. le job JETABLE, en CpsScmFlowDefinition (le type de NOTRE cas) ═══"
+cat > "$TMP/job.xml" <<XML
+<?xml version='1.1' encoding='UTF-8'?>
+<flow-definition plugin="workflow-job">
+  <description>SPIKE JETABLE readTrusted — supprime en sortie</description>
+  <keepDependencies>false</keepDependencies>
+  <properties/>
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition" plugin="workflow-cps">
+    <scm class="hudson.plugins.git.GitSCM" plugin="git">
+      <configVersion>2</configVersion>
+      <userRemoteConfigs><hudson.plugins.git.UserRemoteConfig>
+        <url>$GIT_HOST_AGENT/$GIT_REPO.git</url>
+      </hudson.plugins.git.UserRemoteConfig></userRemoteConfigs>
+      <branches><hudson.plugins.git.BranchSpec><name>*/$SPIKE_BRANCH</name></hudson.plugins.git.BranchSpec></branches>
+      <doGenerateSubmoduleConfigurations>false</doGenerateSubmoduleConfigurations>
+      <submoduleCfg class="empty-list"/>
+      <extensions/>
+    </scm>
+    <scriptPath>Jenkinsfile.spike-readtrusted</scriptPath>
+    <lightweight>false</lightweight>
+  </definition>
+  <disabled>false</disabled>
+</flow-definition>
+XML
+HC=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$JENKINS_UI/createItem?name=$JOB" \
+     -H 'Content-Type: application/xml; charset=utf-8' --data-binary "@$TMP/job.xml")
+[ "$HC" = 200 ] && ok "job $JOB créé (HTTP 200)" || { ko "création du job refusée (HTTP $HC)"; exit 1; }
+
+echo "═══ 2. un build, et le VERDICT lu dans sa console ═══"
+NB=$(curl -s "$JENKINS_UI/job/$JOB/api/json?tree=nextBuildNumber" | python3 -c 'import sys,json;print(json.load(sys.stdin)["nextBuildNumber"])')
+curl -s -o /dev/null -X POST "$JENKINS_UI/job/$JOB/build"
+for _ in $(seq 1 60); do
+  R=$(curl -s "$JENKINS_UI/job/$JOB/$NB/api/json?tree=result" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("result") or "")' 2>/dev/null || true)
+  [ -n "$R" ] && break; sleep 2
+done
+CONSOLE=$(curl -s "$JENKINS_UI/job/$JOB/$NB/consoleText")
+printf '%s\n' "$CONSOLE" | grep -E 'SPIKE_VERDICT|SPIKE_ABSENT' | sed 's/^/     /'
+V=$(printf '%s\n' "$CONSOLE" | grep -oE 'SPIKE_VERDICT=[A-Z_]+' | head -1 | cut -d= -f2)
+A=$(printf '%s\n' "$CONSOLE" | grep -oE 'SPIKE_ABSENT=[^ ]+' | head -1)
+echo
+case "$V" in
+  B_MECANISME_PROUVE)
+    printf '%s\n' "$CONSOLE" | grep -q 'contient_PORTE=true' \
+      && ok "ISSUE B — readTrusted FONCTIONNE en CpsScmFlowDefinition et rend le CONTENU (témoin assuré). Le fichier de site est lisible SANS workspace." \
+      || ko "readTrusted répond mais le contenu ne porte pas '$TEMOIN_MOT' — ne pas conclure B" ;;
+  "")
+    ko "ISSUE A — readTrusted a levé une exception sur un fichier PRÉSENT : le pas n'est pas disponible pour ce type de définition. Classe/message ci-dessus ; le contraste fichier-absent dit : $A" ;;
+  *)
+    ko "verdict inattendu '$V' — lire la console ci-dessus, ne rien conclure" ;;
+esac
+echo "  (build #$NB : $R — console : $JENKINS_UI/job/$JOB/$NB/console)"

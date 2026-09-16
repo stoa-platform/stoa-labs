@@ -2024,6 +2024,18 @@ PR d'autrui fait valider les quatre yeux par une PR étrangère, en vert.
 `merged`, `merge_commit_sha`, `head.ref` — et refuse `PAYLOAD_PERIME`, comme le
 fait déjà la réconciliation de `provision-apply`.
 
+**La relecture de l'amorçage exige `Overall/RunScripts` — sinon elle est
+PARTIELLE, et ce n'est pas une panne.** `setup-provision-jobs.sh` lit la globale
+`WEBHOOK_KIND` par la console de script, parce que c'est elle l'autorité (le
+Jenkinsfile la lit, pas le shell du poseur). Sans ce droit, Jenkins rend 403 : le
+poseur annonce alors « la CLASSE n'a pas été confrontée », **rc 0**, parce que la
+pose est bonne — il relit ce qu'il peut (un déclencheur, un verrou) et nomme ce
+qu'il n'a pas pu vérifier. Un exploitant qui n'a pas le droit de poser des
+propriétés globales ne l'aura pas davantage : il verra donc toujours ce message,
+et il ne doit pas le lire comme un échec. Pour la relecture complète sans ce
+droit : exporter `WEBHOOK_KIND` dans l'environnement du poseur — l'intention
+explicite de l'appelant l'emporte sur la globale.
+
 **La chaîne PRODUCTEUR a ses deux visages (phase 2, 2026-09-12).** `team-apply`,
 `team-publish` et `team-promote` ont perdu leurs blocs déclaratifs, leurs XML
 sont à `<properties/>`, et leur `post{always}` est gardé AVANT le nœud — ce
