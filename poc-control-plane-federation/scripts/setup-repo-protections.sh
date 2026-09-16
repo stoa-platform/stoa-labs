@@ -75,7 +75,21 @@ case "${FORGE_KIND:-gitea}" in
   *) echo "REFUS: PROTECTION_GITEA_SEULEMENT : cet outil pose la protection NOMINATIVE de Gitea (push whitelist, patterns — ADR-082 §3) ; sur ${FORGE_KIND}, la protection de branche est un prérequis de forge posé par scripts/setup-team-repos.sh (par RÔLE en CE — GitLab CE n'a pas la protection nominative), jamais par cet outil — voir ENVIRONNEMENTS.md § Prérequis côté client" >&2; exit 2 ;;
 esac
 
-GIT_HOST="${GIT_HOST:-http://localhost:13000}"
+# GIT_HOST n'a plus de défaut (2026-09-16), et le refus n'est PAS ici : `--print`
+# est le seul chemin hors ligne de ce script (test-palier-retention ⑳ l'y tient,
+# sous `env -i`), et il ne compose aucune URL — il ANNONCE ce qui serait posé.
+# Refuser à la lecture du knob cassait donc précisément ce que cette porte
+# existe pour prouver. Le refus vit aux deux POINTS D'USAGE, plus bas.
+# ⚠ LIER SANS DÉFAUTER. Retirer l'affectation entière supprimait aussi la
+# LIAISON : sous `set -u` (et `env -i`, l'idiome de la porte ⑳), `$GIT_HOST`
+# devenait « unbound variable » et `--print` mourait à sa ligne « HOST= », avant
+# d'imprimer ses dépôts. Un défaut retiré n'est pas une variable supprimée.
+GIT_HOST="${GIT_HOST:-}"
+_srp_exige_host(){
+  [ -n "${GIT_HOST:-}" ] && return 0
+  echo "REFUS: GIT_HOST_REQUIS : base de la forge vue DEPUIS LE POSTE — aucun repli (au lab http://localhost:13000 ; ce n'est PAS l'adresse vue par l'agent Jenkins, cf. ENVIRONNEMENTS.md). Rien n'a été posé. « --print » reste disponible hors ligne." >&2
+  exit 2
+}
 WL="${PROTECT_PUSH_WHITELIST:-ci}"
 PATTERNS="${PROTECT_FILE_PATTERNS:-}"
 # LA BRANCHE PROTÉGÉE (L3, 2026-09-10). « main » y était écrit en dur : chez un
@@ -118,11 +132,14 @@ PY
 # ne part jamais sans branche : c'est un refus nommé, pas un « main » deviné.
 if [ -z "$BRANCH" ]; then
   if [ "$MODE" = pose ] || { [ -n "${GIT_BASE:-}" ] && [ "$GIT_BASE" != auto ]; }; then
-    # PAS de garde « knobs indécidables » ici, et c'est MESURÉ (revue 4c) :
-    # `GIT_HOST="${GIT_HOST:-…}"` et `REPOS="${PROTECT_PLATFORM_REPOS:-…}"`
-    # redonnent leur défaut même à un knob explicitement vidé — l'URL composée
-    # n'est jamais vide, et le refus de la lib (dépôt injoignable, « poser
-    # GIT_BASE ») est le bon. Une garde ici serait du code mort.
+    # PREMIER POINT D'USAGE. La revue 4c concluait « une garde ici serait du
+    # code mort », et elle avait raison SOUS SA PRÉMISSE : `GIT_HOST` portait
+    # alors un défaut (`${GIT_HOST:-http://localhost:13000}`), donc l'URL
+    # composée n'était jamais vide. Cette prémisse est TOMBÉE le 2026-09-16 avec
+    # le retrait du défaut : sans garde, on composerait « /ci/stoa-labs.git »,
+    # un chemin LOCAL, et la lib rendrait « dépôt injoignable » — un diagnostic
+    # qui accuse la forge là où il manque une variable.
+    _srp_exige_host
     git_base_init "${GIT_HOST%/}/${REPOS%% *}.git" || exit 2
     BRANCH="$GIT_BASE"
   fi
@@ -159,6 +176,12 @@ fi
 FORGE_SECRET="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
 [ -n "$FORGE_SECRET" ] || { echo "REFUS: SECRET_FORGE_REQUIS : ni FORGE_SECRET ni son alias GITEA_TOKEN (write:repository sur les dépôts visés) — ou --print pour voir ce qui serait posé" >&2; exit 2; }
 forge_auth_write "$FORGE_SECRET" "$TMPD/hdr" || exit 2
+
+# SECOND POINT D'USAGE : la pose elle-même. Une branche fournie par PROTECT_BRANCH
+# ou GIT_BASE court-circuite la découverte ci-dessus, donc ce chemin peut être
+# atteint sans être passé par la première garde — et `pose_branch_protection`
+# reçoit GIT_HOST en premier argument.
+_srp_exige_host
 
 RC=0
 for repo in $REPOS $TEAM_REPOS; do

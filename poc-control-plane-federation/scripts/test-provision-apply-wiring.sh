@@ -260,7 +260,7 @@ grep -qE '^\s*(curl|ansible-playbook) ' "$TMP/jf.code" && ko "le Jenkinsfile app
 echo
 echo "== 7. points de config : présence ET valeur littérale, environment avant stages =="
 grep -qE '^  environment \{' "$TMP/jf.code" && ok "bloc \`environment\` de niveau pipeline" || ko "aucun bloc environment"
-jf 'GIT_HOST = "${env.GIT_HOST ?: '"'"'http://gitea:3000'"'"'}"' && ok "GIT_HOST = http://gitea:3000" || ko "GIT_HOST inattendu"
+jf 'GIT_HOST = "${env.GIT_HOST ?: '"'"''"'"'}"' && ok "GIT_HOST SANS défaut de site (repli VIDE)" || ko "GIT_HOST inattendu"
 jf 'GIT_REPO = "${env.GIT_REPO ?: '"'"'ci/stoa-labs'"'"'}"' && ok "GIT_REPO = ci/stoa-labs" || ko "GIT_REPO inattendu"
 jf 'GIT_WEB_HOST = "${env.GIT_WEB_HOST ?: '"'"'http://localhost:13000'"'"'}"' && ok "GIT_WEB_HOST = http://localhost:13000 (lien cliquable du commentaire)" || ko "GIT_WEB_HOST inattendu"
 jf 'GITEA_CREDENTIALS_ID = "${env.GITEA_CREDENTIALS_ID ?: '"'"'gitea-provision-token'"'"'}"' && ok "GITEA_CREDENTIALS_ID = gitea-provision-token" || ko "GITEA_CREDENTIALS_ID inattendu"

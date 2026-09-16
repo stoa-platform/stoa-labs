@@ -2211,26 +2211,45 @@ sont deux points de vue sur le même dépôt, **pas une divergence à corriger**
 Avec `gitea:3000` au poste, le clone échoue en `GIT_UNREACHABLE` et rien n'est
 posté à Jenkins (mesuré le 2026-09-16).
 
-Le registre des dettes le dit d'ailleurs lui-même : `ci/lint-config-knobs.exempt`
-recense `GIT_HOST` avec **deux** valeurs selon le point de vue —
-`http://gitea:3000` pour les douze Jenkinsfile et l'aval qu'ils appellent,
-`http://localhost:13000` pour les deux outils de poste (`seed-governance-chain`,
-`setup-repo-protections`). C'est la même dualité, déclarée et verte, pas un
-oubli. À retenir quand on lit « où vivent les valeurs de site » : contrairement
-aux trois knobs de forge, dont le repli est VIDE et qui refusent donc s'ils ne
-sont pas posés, **l'adresse de la forge porte encore un défaut de lab dans tout
-l'aval** — un client qui oublie `GIT_HOST` ne reçoit **aucun** refus, il part
-silencieusement sur `gitea:3000`, qui ne résout pas chez lui, et la panne sortira
-bien plus loin sous un autre nom en accusant autre chose.
+**`GIT_HOST` N'A PLUS DE DÉFAUT NON PLUS — FERMÉ LE 2026-09-16.** L'adresse de la
+forge a porté `http://gitea:3000` dans les douze Jenkinsfile porteurs et dans dix
+scripts, et c'était la même maladie que le visage, en plus discrète : un client
+qui ne posait pas la globale ne recevait **aucun** refus. La chaîne partait sur
+une adresse de laboratoire qui ne résout pas chez lui, et la panne sortait bien
+plus loin, sous un autre nom (clone impossible, hôte injoignable), en accusant le
+réseau. Le repli est désormais VIDE, et l'absence fait REFUSER :
 
-C'est la troisième instance d'un même motif dans cette chaîne, et la seule encore
-ouverte : `FORGE_KIND` avait un défaut qui faisait parler l'API de Gitea à un
-GitLab, il a été retiré le 2026-09-12 et la globale est devenue REQUISE ;
-`WEBHOOK_KIND` retombe encore sur `gwt` sans rien dire ; `GIT_HOST` retombe sur
-une adresse de lab. Le remède connu est le même à chaque fois : retirer le
-défaut, rendre la globale requise, retirer les lignes correspondantes du
-registre — et poser la globale AVANT de rejouer les jobs, sans quoi l'absence ne
-fait plus dériver, elle fait refuser.
+- `GIT_HOST_REQUIS` rendu par l'autorité `scripts/lib/forge-api.sh`
+  (`forge_api_init`, garde voisine de `FORGE_KIND_REQUIS`), avant tout appel
+  réseau. Les sept scripts de la chaîne producteur ne portent donc AUCUN refus
+  en propre : ils l'appellent en `forge_api_init || exit 2`, toujours avant leur
+  première construction d'URL. Poser le refus dans chacun aurait recréé la même
+  règle en sept exemplaires.
+- une garde LOCALE dans les trois seuls endroits qui composent une URL sans
+  passer par l'autorité : `seed-governance-chain.sh` (il clone au §② bien avant
+  son `forge_api_init` du §④ — le refus de la lib y serait arrivé trop tard),
+  `setup-repo-protections.sh`, et `_gc_clone` dans `lib/generate-choices.sh`.
+- ⚠ dans `generate-choices`, le refus est au CLONE et non à l'entrée : avec
+  `GC_PLATFORM_DIR` posé, la lib pose un lien symbolique et ne contacte jamais la
+  forge, donc l'adresse n'y sert à rien. La refuser en tête rejetait onze
+  scénarios légitimes, dont « répertoire fourni + zéro dépôt d'équipe ⇒ rc 0 ».
+
+Les 22 lignes `GIT_HOST` du registre `ci/lint-config-knobs.exempt` ont été
+retirées — c'est le sens de ce fichier, on n'y ajoute jamais une ligne, on en
+retire. Et `ci/lint-forge-knobs.sh` exige désormais la PRÉSENCE de `GIT_HOST` et
+`GIT_REPO` dans les blocs `environment{}`, en plus des trois knobs de visage :
+sans cela la porte des défauts empêchait de REPOSER un défaut, mais rien
+n'empêchait de RETIRER la déclaration — vert aux deux portes, refus à l'exécution
+chez le client.
+
+**ORDRE DE POSE, le même que pour `FORGE_KIND` :** poser la globale AVANT de
+rejouer les jobs. Une globale absente ne fait plus dériver vers `gitea:3000`,
+elle fait REFUSER — au lab comme chez le client.
+
+Restent deux instances du même motif, non traitées : `WEBHOOK_KIND`, qui retombe
+sur `gwt` sans rien dire, et `GOVERNANCE_GIT_URL`, qui porte encore
+`http://gitea:3000/ci/governance.git` dans `ci/Jenkinsfile`, `Jenkinsfile.prod`
+et `Jenkinsfile.rollback`.
 
 **Dettes** : **deux** Jenkinsfile de la chaîne API (`publish-api`,
 `provisioning-request`) portent encore un bloc déclaratif — même motif à rejouer

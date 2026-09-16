@@ -382,8 +382,8 @@ jf 'JENKINS_UI = "${env.JENKINS_UI ?: '"'"'http://jenkins:8080'"'"'}"' \
 jf 'VAULT_ADDR = "${env.VAULT_ADDR ?: '"'"'http://vault:8200'"'"'}"' \
   && ok "valeur littérale de VAULT_ADDR = http://vault:8200 (alias in-cluster)" \
   || ko "VAULT_ADDR : valeur par défaut inattendue ou absente"
-jf 'GIT_HOST = "${env.GIT_HOST ?: '"'"'http://gitea:3000'"'"'}"' \
-  && ok "valeur littérale de GIT_HOST = http://gitea:3000 (alias in-cluster)" \
+jf 'GIT_HOST = "${env.GIT_HOST ?: '"'"''"'"'}"' \
+  && ok "GIT_HOST SANS défaut de site (repli VIDE — une globale manquante devient GIT_HOST_REQUIS, pas une adresse de lab supposée) (alias in-cluster)" \
   || ko "GIT_HOST : valeur par défaut inattendue ou absente"
 # L'ordre compte : le bloc `environment` doit précéder les `stages` pour que
 # les valeurs soient dans l'environnement de TOUS les steps, pause comprise.

@@ -90,7 +90,7 @@ REPO="${REPO:-${TEAM}/apis}"
 # D0/D2, jamais d'ici.
 REQ_ENV="$DEPLOY_PIN_AUTHORING_ENV"
 GIT_REPO="${GIT_REPO:-ci/stoa-labs}"
-GIT_HOST="${GIT_HOST:-http://gitea:3000}"
+GIT_HOST="${GIT_HOST:-}"
 GIT_WEB_HOST="${GIT_WEB_HOST:-$GIT_HOST}"
 
 # L5 phase 2 (2026-09-12) — LA FORGE SE PARLE PAR UNE SEULE AUTORITÉ : le

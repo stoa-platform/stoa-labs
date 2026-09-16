@@ -94,7 +94,16 @@ pipeline {
     // nomme. « . » = le livrable EST la racine (une valeur VIDE ne traverse pas
     // Jenkins : elle arrive absente et reprendrait ce défaut).
     GIT_SUBDIR           = "${env.GIT_SUBDIR ?: 'poc-control-plane-federation'}"
-    GIT_HOST             = "${env.GIT_HOST ?: 'http://gitea:3000'}"
+    // L'ADRESSE DE LA FORGE — SANS DÉFAUT DE SITE, délibérément (2026-09-16).
+    // `http://gitea:3000` a été le défaut de ce knob, et c'était le dernier
+    // filet de la même famille que FORGE_KIND : un client qui ne posait pas la
+    // globale ne recevait AUCUN refus — la chaîne partait sur une adresse de
+    // lab qui ne résout pas chez lui, et la panne sortait bien plus loin sous
+    // un autre nom (clone impossible, hôte injoignable), en accusant le réseau.
+    // Repli VIDE ⇒ globale manquante = refus NOMMÉ GIT_HOST_REQUIS, rendu par
+    // l'autorité scripts/lib/forge-api.sh (forge_api_init), AVANT toute
+    // construction d'URL. Elle est donc REQUISE (setup-jenkins-globals.sh).
+    GIT_HOST             = "${env.GIT_HOST ?: ''}"
     GIT_REPO             = "${env.GIT_REPO ?: 'ci/stoa-labs'}"
     // Credential Jenkins (secret text) portant le token Gitea du CI : push + PR,
     // ET la lecture des dépôts d'équipe pour la liste API.

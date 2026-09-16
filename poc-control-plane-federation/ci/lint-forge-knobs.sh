@@ -42,7 +42,15 @@ ko(){ FAIL=$((FAIL+1)); printf '  ❌ %s\n' "$*"; }
 info(){ printf '  ℹ %s\n' "$*"; }
 
 SOURCE_ROUTES="ci/lint-forge-literals.sh"
-KNOBS="FORGE_KIND FORGE_API_AUTH FORGE_API_BASE"
+# GIT_HOST et GIT_REPO sont là pour la même raison que le visage, et depuis le
+# 2026-09-16 : `forge_api_init` les refuse par la MÊME garde (GIT_HOST_REQUIS,
+# GIT_REPO_REQUIS, lignes 70-71 de scripts/lib/forge-api.sh), avec le même
+# `exit 2` chez tous les appelants. Sans eux ici, ci/lint-config-knobs.sh
+# empêcherait bien de REPOSER un défaut de site, mais rien n'empêcherait de
+# RETIRER la déclaration : le Jenkinsfile serait vert aux deux portes et
+# refuserait à l'exécution, chez le client, sans que personne l'ait vu venir.
+# C'est la moitié « présence » du motif — l'autre moitié est le défaut.
+KNOBS="FORGE_KIND FORGE_API_AUTH FORGE_API_BASE GIT_HOST GIT_REPO"
 
 echo "═══ A. la source de portée est LISIBLE (sinon la porte ne mesure rien) ═══"
 [ -f "$SOURCE_ROUTES" ] \
@@ -125,7 +133,7 @@ while IFS= read -r s; do
   done
 done <<< "$ROUTES"
 if [ -z "$MANQUANTS" ]; then
-  ok "B.1 $N_PAIRES couple(s) (script routé, Jenkinsfile qui l'invoque) : les trois knobs sont dans le bloc environment de chacun"
+  ok "B.1 $N_PAIRES couple(s) (script routé, Jenkinsfile qui l'invoque) : les cinq knobs sont dans le bloc environment de chacun"
 else
   ko "B.1 —$MANQUANTS ; un knob absent fait parler le script au visage par DÉFAUT (invisible au lab, faux chez le client) ; une MENTION_NON_CLASSEE veut dire que cette porte ne sait pas dire si c'est une invocation — elle refuse de deviner (cf. le ❗ ci-dessus)"
 fi

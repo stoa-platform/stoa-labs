@@ -20,26 +20,21 @@ ci/Jenkinsfile:VAULT_ROLE_ID    # T2 : fa09b310-79a7-8845-609b-9b6090bcd53b
 
 # ── ci/Jenkinsfile.api-promote-export
 ci/Jenkinsfile.api-promote-export:APIM_API_BASE    # T1 : http://webmethods-mock:8080/rest/apigateway
-ci/Jenkinsfile.api-promote-export:GIT_HOST    # T1 : http://gitea:3000
 ci/Jenkinsfile.api-promote-export:GIT_REPO    # T2 : ci/stoa-labs
 ci/Jenkinsfile.api-promote-export:VAULT_ADDR    # T1 : http://vault:8200
 ci/Jenkinsfile.api-promote-export:VAULT_USER_AUTH_MOUNT    # T2 : userpass
 
 # ── ci/Jenkinsfile.api-promote-request
-ci/Jenkinsfile.api-promote-request:GIT_HOST    # T1 : http://gitea:3000
 ci/Jenkinsfile.api-promote-request:GIT_REPO    # T2 : ci/stoa-labs
 
 # ── ci/Jenkinsfile.api-request
-ci/Jenkinsfile.api-request:GIT_HOST    # T1 : http://gitea:3000
 ci/Jenkinsfile.api-request:GIT_REPO    # T2 : ci/stoa-labs
 ci/Jenkinsfile.api-request:GIT_WEB_HOST    # T1 : http://localhost:13000
 
 # ── ci/Jenkinsfile.app-request
-ci/Jenkinsfile.app-request:GIT_HOST    # T1 : http://gitea:3000
 ci/Jenkinsfile.app-request:GIT_REPO    # T2 : ci/stoa-labs
 
 # ── ci/Jenkinsfile.app-rollback
-ci/Jenkinsfile.app-rollback:GIT_HOST    # T1 : http://gitea:3000
 ci/Jenkinsfile.app-rollback:GIT_REPO    # T2 : ci/stoa-labs
 
 # ── ci/Jenkinsfile.prod
@@ -49,18 +44,15 @@ ci/Jenkinsfile.prod:VAULT_ROLE_ID    # T2 : fa09b310-79a7-8845-609b-9b6090bcd53b
 # ── ci/Jenkinsfile.provision-apply
 ci/Jenkinsfile.provision-apply:APPLY_JOB    # T2 : selfservice-app-deploy
 ci/Jenkinsfile.provision-apply:GITEA_SERVICE_LOGINS    # T2 : ci
-ci/Jenkinsfile.provision-apply:GIT_HOST    # T1 : http://gitea:3000
 ci/Jenkinsfile.provision-apply:GIT_REPO    # T2 : ci/stoa-labs
 ci/Jenkinsfile.provision-apply:GIT_WEB_HOST    # T1 : http://localhost:13000
 ci/Jenkinsfile.provision-apply:ITSM_URL    # T1 : http://itsm-mock:8788
 
 # ── ci/Jenkinsfile.provision-plan
-ci/Jenkinsfile.provision-plan:GIT_HOST    # T1 : http://gitea:3000
 ci/Jenkinsfile.provision-plan:GIT_REPO    # T2 : ci/stoa-labs
 ci/Jenkinsfile.provision-plan:GIT_WEB_HOST    # T1 : http://localhost:13000
 
 # ── ci/Jenkinsfile.provisioning-request
-ci/Jenkinsfile.provisioning-request:GIT_HOST    # T1 : http://gitea:3000
 ci/Jenkinsfile.provisioning-request:GIT_REPO    # T2 : ci/stoa-labs
 
 # ── ci/Jenkinsfile.publish-api
@@ -89,7 +81,6 @@ ci/Jenkinsfile.selfservice:VAULT_USER_AUTH_MOUNT    # T2 : ldap
 
 # ── ci/Jenkinsfile.team-apply
 ci/Jenkinsfile.team-apply:APIM_API_BASE    # T1 : http://webmethods-mock:8080/rest/apigateway
-ci/Jenkinsfile.team-apply:GIT_HOST    # T1 : http://gitea:3000
 ci/Jenkinsfile.team-apply:GIT_REPO    # T2 : ci/stoa-labs
 ci/Jenkinsfile.team-apply:GIT_WEB_HOST    # T1 : http://localhost:13000
 ci/Jenkinsfile.team-apply:JENKINS_UI    # T1 : http://jenkins:8080
@@ -99,7 +90,6 @@ ci/Jenkinsfile.team-apply:VAULT_USER_AUTH_MOUNT    # T2 : userpass
 # ── ci/Jenkinsfile.team-promote
 ci/Jenkinsfile.team-promote:APIM_API_BASE_TPL    # T1 : http://webmethods-real:5555/gateway/wm-admin-__ENV__…
 ci/Jenkinsfile.team-promote:APIM_DIRECT_BASE_TPL    # T1 : http://webmethods-real:5555/rest/apigateway
-ci/Jenkinsfile.team-promote:GIT_HOST    # T1 : http://gitea:3000
 ci/Jenkinsfile.team-promote:GIT_REPO    # T2 : ci/stoa-labs
 ci/Jenkinsfile.team-promote:GIT_WEB_HOST    # T1 : http://localhost:13000
 ci/Jenkinsfile.team-promote:ITSM_URL    # T1 : http://itsm-mock:8788
@@ -109,7 +99,6 @@ ci/Jenkinsfile.team-promote:VAULT_USER_AUTH_MOUNT    # T2 : userpass
 
 # ── ci/Jenkinsfile.team-publish
 ci/Jenkinsfile.team-publish:APIM_API_BASE    # T1 : http://webmethods-mock:8080/rest/apigateway
-ci/Jenkinsfile.team-publish:GIT_HOST    # T1 : http://gitea:3000
 ci/Jenkinsfile.team-publish:GIT_REPO    # T2 : ci/stoa-labs
 ci/Jenkinsfile.team-publish:GIT_WEB_HOST    # T1 : http://localhost:13000
 ci/Jenkinsfile.team-publish:JENKINS_UI    # T1 : http://jenkins:8080
@@ -117,20 +106,16 @@ ci/Jenkinsfile.team-publish:VAULT_ADDR    # T1 : http://vault:8200
 ci/Jenkinsfile.team-publish:VAULT_USER_AUTH_MOUNT    # T2 : userpass
 
 # ── ci/Jenkinsfile.team-request
-ci/Jenkinsfile.team-request:GIT_HOST    # T1 : http://gitea:3000
 ci/Jenkinsfile.team-request:GIT_REPO    # T2 : ci/stoa-labs
 ci/Jenkinsfile.team-request:GIT_WEB_HOST    # T1 : http://localhost:13000
 
 # ── scripts/api-promote-export.sh
-scripts/api-promote-export.sh:GIT_HOST    # T1 : http://gitea:3000
 scripts/api-promote-export.sh:GIT_REPO    # T2 : ci/stoa-labs
 
 # ── scripts/api-promote-request.sh
-scripts/api-promote-request.sh:GIT_HOST    # T1 : http://gitea:3000
 scripts/api-promote-request.sh:GIT_REPO    # T2 : ci/stoa-labs
 
 # ── scripts/api-request.sh
-scripts/api-request.sh:GIT_HOST    # T1 : http://gitea:3000
 scripts/api-request.sh:GIT_REPO    # T2 : ci/stoa-labs
 
 # ── scripts/app-rollback-request.sh
@@ -157,7 +142,6 @@ scripts/pair-devportal.sh:PORTAL_TENANT    # T2 : default
 scripts/pair-devportal.sh:PORTAL_URL    # T1 : http://poc-devportal:8080
 
 # ── scripts/provision-apply-comment.sh
-scripts/provision-apply-comment.sh:GIT_HOST    # T1 : http://gitea:3000
 scripts/provision-apply-comment.sh:GIT_REPO    # T2 : ci/stoa-labs
 
 # ── scripts/provision-apply-gate.sh
@@ -176,7 +160,6 @@ scripts/provision-request.sh:GITEA_SERVICE_LOGINS    # T2 : ci
 scripts/provision-request.sh:GIT_REPO    # T2 : ci/stoa-labs
 
 # ── scripts/seed-governance-chain.sh
-scripts/seed-governance-chain.sh:GIT_HOST    # T1 : http://localhost:13000
 scripts/seed-governance-chain.sh:GIT_REPO    # T2 : ci/governance
 
 # ── scripts/seed-ldap-cluster.sh
@@ -220,7 +203,6 @@ scripts/setup-provisioning-api.sh:WM    # T1 : http://localhost:5555
 scripts/setup-release-team.sh:KC    # T1 : http://localhost:8480
 
 # ── scripts/setup-repo-protections.sh
-scripts/setup-repo-protections.sh:GIT_HOST    # T1 : http://localhost:13000
 
 # ── scripts/setup-selfservice-job.sh
 scripts/setup-selfservice-job.sh:GIT_URL    # T1 : http://gitea:3000/ci/stoa-labs.git
@@ -280,21 +262,17 @@ scripts/setup-wm-palier-admins.sh:VAULT_ADDR    # T1 : http://localhost:8200
 scripts/spike-claim-runtime.sh:KC_ADMIN_USER    # T2 : admin
 
 # ── scripts/team-apply.sh
-scripts/team-apply.sh:GIT_HOST    # T1 : http://gitea:3000
 scripts/team-apply.sh:GIT_REPO    # T2 : ci/stoa-labs
 scripts/team-apply.sh:JENKINS_UI    # T1 : http://jenkins:8080
 
 # ── scripts/team-promote.sh
-scripts/team-promote.sh:GIT_HOST    # T1 : http://gitea:3000
 scripts/team-promote.sh:GIT_REPO    # T2 : ci/stoa-labs
 
 # ── scripts/team-publish.sh
-scripts/team-publish.sh:GIT_HOST    # T1 : http://gitea:3000
 scripts/team-publish.sh:GIT_REPO    # T2 : ci/stoa-labs
 scripts/team-publish.sh:JENKINS_UI    # T1 : http://jenkins:8080
 
 # ── scripts/team-request.sh
-scripts/team-request.sh:GIT_HOST    # T1 : http://gitea:3000
 scripts/team-request.sh:GIT_REPO    # T2 : ci/stoa-labs
 
 

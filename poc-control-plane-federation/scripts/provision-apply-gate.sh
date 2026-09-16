@@ -67,7 +67,14 @@ ITSM_URL="${ITSM_URL:-}"; ITSM_CACERT="${ITSM_CACERT:-}"
 APIM_TERMINUS_BASE="${APIM_TERMINUS_BASE:-}"
 GITEA_SERVICE_LOGINS="${GITEA_SERVICE_LOGINS:-ci}"
 GIT_WORKTREE="${GIT_WORKTREE:-.}"; MANIFEST_DIR="${MANIFEST_DIR:-clients/provisioned/applications}"
-GIT_REPO="${GIT_REPO:-ci/stoa-labs}"; GIT_HOST="${GIT_HOST:-http://gitea:3000}"; GIT_WEB_HOST="${GIT_WEB_HOST:-$GIT_HOST}"
+# UNE AFFECTATION PAR LIGNE, délibérément (2026-09-16) : ci/lint-config-knobs.sh
+# ne retient que le PREMIER défaut de chaque ligne (`rx.search` puis `break`), si
+# bien que GIT_REPO masquait GIT_HOST ici — le défaut de site `http://gitea:3000`
+# y était INVISIBLE à la porte, et c'était la seule adresse hors dépôt de tout le
+# dépôt à l'être. Ne pas les recoller.
+GIT_REPO="${GIT_REPO:-ci/stoa-labs}"
+GIT_HOST="${GIT_HOST:-}"
+GIT_WEB_HOST="${GIT_WEB_HOST:-$GIT_HOST}"
 case "$GATE_STAGE" in pre|dispatch) ;; *) GATE_STAGE=pre ;; esac
 
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT; umask 077

@@ -87,7 +87,8 @@ _as_url() {        # <team> <api> <sha> — l'URL canonique du contenu, selon le
   # Le `/` final de GIT_HOST est retiré ICI, comme dans setup-team-repos.sh : sans
   # cela un GIT_HOST posé avec sa barre produit `…//api/…`, que certains
   # reverse-proxies refusent, et qui n'est de toute façon pas l'URL canonique.
-  local host="${GIT_HOST:?GIT_HOST requis}"; host="${host%/}"
+  [ -n "${GIT_HOST:-}" ] || { _as_fail "GIT_HOST_REQUIS : base de la forge (ex. https://forge.client) — aucun repli ; l'appelant (api-promote-export, team-promote) l'a reçue de son Jenkinsfile et exportée à l'init"; return 1; }
+  local host="${GIT_HOST%/}"
   case "$FORGE_KIND" in
     gitlab)
       [ -n "${ARCHIVE_STORE_PROJECT:-}" ] || { _as_fail "ARCHIVE_STORE_PROJECT_REQUIS : sous GitLab le registre générique est PAR PROJET — poser ARCHIVE_STORE_PROJECT=<groupe>/<projet> (au lab : ci/archives)"; return 1; }

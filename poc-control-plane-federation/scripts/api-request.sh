@@ -134,7 +134,7 @@ gbase(){ git_base_avec_basic "$(git_base_basic_login)" FORGE_SECRET "$@"; }
 ggit(){ git_base_avec_basic "$(git_base_basic_login)" FORGE_SECRET git "$@"; }
 
 GIT_REPO="${GIT_REPO:-ci/stoa-labs}"
-GIT_HOST="${GIT_HOST:-http://gitea:3000}"
+GIT_HOST="${GIT_HOST:-}"
 GIT_WEB_HOST="${GIT_WEB_HOST:-$GIT_HOST}"
 # L5 phase 2 (2026-09-12) — LA FORGE SE PARLE PAR UNE SEULE AUTORITÉ : le
 # visage (FORGE_KIND=gitea|gitlab), la base d'API, l'en-tête d'auth et la garde

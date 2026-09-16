@@ -667,8 +667,8 @@ jf 'VAULT_ADDR = "${env.VAULT_ADDR ?: '"'"'http://vault:8200'"'"'}"' \
 jf 'GIT_WEB_HOST = "${env.GIT_WEB_HOST ?: '"'"'http://localhost:13000'"'"'}"' \
   && ok "valeur littérale de GIT_WEB_HOST = http://localhost:13000 (lien CLIQUABLE du commentaire de PR, vu d'un poste — pas l'alias interne)" \
   || ko "GIT_WEB_HOST : valeur par défaut inattendue ou absente — le lien du commentaire retomberait sur GIT_HOST, non résolu hors des conteneurs"
-jf 'GIT_HOST = "${env.GIT_HOST ?: '"'"'http://gitea:3000'"'"'}"' \
-  && ok "valeur littérale de GIT_HOST = http://gitea:3000 (alias in-cluster)" \
+jf 'GIT_HOST = "${env.GIT_HOST ?: '"'"''"'"'}"' \
+  && ok "GIT_HOST SANS défaut de site (repli VIDE — une globale manquante devient GIT_HOST_REQUIS, pas une adresse de lab supposée) (alias in-cluster)" \
   || ko "GIT_HOST : valeur par défaut inattendue ou absente"
 jf 'GITEA_CREDENTIALS_ID = "${env.GITEA_CREDENTIALS_ID ?: '"'"'gitea-provision-token'"'"'}"' \
   && ok "valeur littérale de GITEA_CREDENTIALS_ID = gitea-provision-token (point de config client, plus en dur dans le pipeline)" \

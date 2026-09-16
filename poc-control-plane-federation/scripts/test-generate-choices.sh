@@ -226,7 +226,14 @@ grep -q "GIT_UNREACHABLE" <<<"$OUT" && ok "cause explicite (GIT_UNREACHABLE)" ||
 # toujours un JETON — Jenkins rend souvent un COUPLE (usernamePassword). Pour
 # git, les deux valent : le clone ne fait qu'un Basic. Le refus reclamait un
 # jeton que le client n'aura jamais, et ne nommait pas l'alternative.
-OUTS=$(env -u GITEA_TOKEN -u FORGE_SECRET bash -c ". '$LIB'; generate_choices_teams_raw dev" 2>&1); RCS=$?
+# GIT_HOST est POSÉ ici depuis le 2026-09-16 : ce scénario était le seul de sa
+# section à ne rien poser, et il atteignait la garde du secret grâce au défaut de
+# lab `http://gitea:3000` de `_gc_host`. Ce défaut retiré, le refus GIT_HOST_REQUIS
+# tombait d'abord et cette épreuve ne mesurait plus le SECRET. Ses deux voisines
+# posaient déjà le knob (`/nonexistent/nope` au-dessus, `$GH` en dessous) : une
+# valeur qui arrive par accident n'est pas une valeur, c'est un vert vacant.
+OUTS=$(env -u GITEA_TOKEN -u FORGE_SECRET GIT_HOST="$GH" GIT_REPO=ci/stoa-labs \
+  bash -c ". '$LIB'; generate_choices_teams_raw dev" 2>&1); RCS=$?
 [ "$RCS" -ne 0 ] && grep -q 'SECRET_FORGE_REQUIS' <<<"$OUTS" && grep -q 'FORGE_SECRET' <<<"$OUTS" && grep -q 'FORGE_USER' <<<"$OUTS" \
   && ok "sans secret : SECRET_FORGE_REQUIS nomme FORGE_SECRET, son alias et FORGE_USER (le couple est une voie, pas un contournement)" \
   || ko "refus de secret : rc=$RCS — $(head -1 <<<"$OUTS")"
@@ -1734,6 +1741,21 @@ OUT25=$(GIT_HOST="$GH" GIT_REPO=ci/stoa-labs GITEA_TOKEN=dummy \
   && ! grep -qE '^GIT_HOST_PORTE_IDENTIFIANTS(_TOLERE)? : ' "$TMP/d25f.err" \
   && ok "GIT_HOST = chemin local (la forme de TOUS les harnais de ce dépôt) : 2 fragments, rc 0, ni refus ni avertissement" \
   || ko "la porte casse le harnais : rc=$RC out='$OUT25'"
+
+echo "-- 25h. CONTRE-ÉPREUVE : sans GIT_HOST, le clone REFUSE, et il le NOMME --"
+# Ajoutée le 2026-09-16, le jour où GIT_HOST a perdu son défaut de lab
+# (`http://gitea:3000`). Sans elle, retirer la garde de `_gc_clone` ne ferait
+# rougir RIEN : cette suite pose désormais le knob dans tous ses scénarios, donc
+# l'ABSENCE n'est plus exercée nulle part — un vert vacant créé par le correctif
+# lui-même. Les deux faces vont par paire : 25g prouve que la garde ne refuse
+# PAS un chemin local (la forme de tous les harnais d'ici), 25h qu'elle refuse
+# le VIDE et qu'elle le NOMME, au lieu de laisser composer « /owner/repo.git »
+# et de rendre un « dépôt injoignable » qui accuserait la forge.
+OUT25H=$(env -u GIT_HOST GIT_REPO=ci/stoa-labs GITEA_TOKEN=dummy \
+  bash -c ". '$LIB'; generate_choices_teams_raw dev" 2>"$TMP/d25h.err"); RC25H=$?
+[ "$RC25H" -ne 0 ] && [ -z "$OUT25H" ] && grep -q 'GIT_HOST_REQUIS' "$TMP/d25h.err" \
+  && ok "sans GIT_HOST : refus NOMMÉ GIT_HOST_REQUIS, rc≠0, stdout vide — un knob manquant se DIT, il ne se devine pas" \
+  || ko "sans GIT_HOST : refus non nommé ou liste servie (rc=$RC25H, out='$OUT25H') — $(head -1 "$TMP/d25h.err" | cut -c1-90)"
 echo
 echo "======================================================================"
 printf 'RÉSULTAT : %d/%d\n' "$PASS" "$((PASS+FAIL))"

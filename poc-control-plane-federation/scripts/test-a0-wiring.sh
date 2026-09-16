@@ -209,7 +209,7 @@ L_DIR=$(code_line "$TMP/jf-plan.code" "dir(env.GIT_SUBDIR)")
 MISS=""
 jfp "GIT_WEB_HOST         = \"\${env.GIT_WEB_HOST ?: 'http://localhost:13000'}\"" || MISS="$MISS GIT_WEB_HOST"
 jfp "GITEA_CREDENTIALS_ID = \"\${env.GITEA_CREDENTIALS_ID ?: 'gitea-provision-token'}\"" || MISS="$MISS GITEA_CREDENTIALS_ID"
-jfp "GIT_HOST             = \"\${env.GIT_HOST ?: 'http://gitea:3000'}\"" || MISS="$MISS GIT_HOST"
+jfp "GIT_HOST             = \"\${env.GIT_HOST ?: ''}\"" || MISS="$MISS GIT_HOST"
 jfp "GIT_REPO             = \"\${env.GIT_REPO ?: 'ci/stoa-labs'}\"" || MISS="$MISS GIT_REPO"
 # 2026-09-09 : le VISAGE de la forge atteint le shell (forge-api.sh le lit) ;
 # FORGE_API_AUTH / FORGE_API_BASE en repli VIDE — jamais un défaut de site.
@@ -337,7 +337,7 @@ grep -q 'sh """' "$TMP/jf-req.code" && BAD="$BAD sh-triple-double"; grep -qE '^\
 [ -z "$BAD" ] && ok "aucun git url:, parameters{}, sh \"\"\", try/catch" || ko "présent(s) :$BAD"
 MISS=""
 jfr "GITEA_CREDENTIALS_ID = \"\${env.GITEA_CREDENTIALS_ID ?: 'gitea-provision-token'}\"" || MISS="$MISS GITEA_CREDENTIALS_ID"
-jfr "GIT_HOST             = \"\${env.GIT_HOST ?: 'http://gitea:3000'}\"" || MISS="$MISS GIT_HOST"
+jfr "GIT_HOST             = \"\${env.GIT_HOST ?: ''}\"" || MISS="$MISS GIT_HOST"
 jfr "GIT_REPO             = \"\${env.GIT_REPO ?: 'ci/stoa-labs'}\"" || MISS="$MISS GIT_REPO"
 [ -z "$MISS" ] && ok "points de config (défauts = ceux du script)" || ko "points de config absents/divergents :$MISS"
 jfr 'currentBuild.displayName = "demande ${env.REQ_APP' && ok "le build est nommé « demande <app>/<env> (<caller>) »" || ko "displayName absent/divergent"

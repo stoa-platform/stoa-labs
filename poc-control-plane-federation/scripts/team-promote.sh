@@ -77,7 +77,7 @@ FORGE_SECRET="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
 [ -n "$FORGE_SECRET" ] || { echo "REFUS: SECRET_FORGE_REQUIS : ni FORGE_SECRET ni son alias GITEA_TOKEN — le secret de la forge (jeton, ou mot de passe d'un couple avec FORGE_USER)" >&2; exit 2; }
 VAULT_ADDR="${VAULT_ADDR:?VAULT_ADDR requis}"
 VAULT_TOKEN_FILE="${VAULT_TOKEN_FILE:?VAULT_TOKEN_FILE requis (jamais le token en env/argv)}"
-GIT_HOST="${GIT_HOST:-http://gitea:3000}"
+GIT_HOST="${GIT_HOST:-}"
 GIT_REPO="${GIT_REPO:-ci/stoa-labs}"        # dépôt PLATEFORME — porte providers.<env>.yml
 GIT_WEB_HOST="${GIT_WEB_HOST:-$GIT_HOST}"
 

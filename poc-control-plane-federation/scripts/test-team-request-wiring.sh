@@ -222,8 +222,8 @@ grep -qE '^  environment \{' "$JF" \
 # GIT_HOST/GIT_REPO : mêmes défauts que ceux que team-request.sh s'applique à
 # lui-même (donc aucun changement de comportement), mais rendus VISIBLES et
 # surchargeables, et alignés sur l'URL du <scm> du job.
-jf 'GIT_HOST = "${env.GIT_HOST ?: '"'"'http://gitea:3000'"'"'}"' \
-  && ok "valeur littérale de GIT_HOST = http://gitea:3000 (alias in-cluster ; « localhost » depuis le conteneur ne désigne PAS Gitea)" \
+jf 'GIT_HOST = "${env.GIT_HOST ?: '"'"''"'"'}"' \
+  && ok "GIT_HOST SANS défaut de site (repli VIDE — une globale manquante devient GIT_HOST_REQUIS, pas une adresse de lab supposée) (alias in-cluster ; « localhost » depuis le conteneur ne désigne PAS Gitea)" \
   || ko "GIT_HOST : valeur par défaut inattendue ou absente"
 jf 'GIT_REPO = "${env.GIT_REPO ?: '"'"'ci/stoa-labs'"'"'}"' \
   && ok "valeur littérale de GIT_REPO = ci/stoa-labs (dépôt plateforme, celui qui porte providers.<env>.yml)" \

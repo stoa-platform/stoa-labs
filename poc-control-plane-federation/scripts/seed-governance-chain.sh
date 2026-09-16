@@ -30,7 +30,9 @@
 # scripts/lib/forge-api.sh, qui refuse FORGE_KIND_INCONNU sur autre chose que
 # gitea|gitlab) :
 #   FORGE_KIND    gitea | gitlab — le visage de la forge du read-back.
-#   GIT_HOST      base de la forge (a un défaut de LAB ci-dessous, jamais chez le client).
+#   GIT_HOST      base de la forge — REQUISE, sans défaut depuis le 2026-09-16
+#                 (refus GIT_HOST_REQUIS posé ici même, pas dans l'autorité :
+#                 le clone du §② précède le forge_api_init du §④).
 #   GIT_REPO      owner/repo du dépôt governance (idem, défaut de LAB).
 #   FORGE_SECRET  token write:repository — alias GITEA_TOKEN accepté.
 #
@@ -44,7 +46,19 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC="$ROOT/clients/_example/environments.yaml"
-GIT_HOST="${GIT_HOST:-http://localhost:13000}"
+# GIT_HOST n'a plus de défaut (2026-09-16). Le refus ne peut PAS être délégué à
+# l'autorité comme ailleurs : ce script clone avec sa propre commande git au §②
+# (l. ~82), soit trente-trois lignes AVANT le `forge_api_init` du §④ — le refus
+# nommé de la lib arriverait donc après une tentative de clone sur une URL
+# tronquée. Il est posé ICI, à la lecture du knob. (Pas de `${VAR:?…}` : voir
+# l'avertissement sur les apostrophes juste en dessous.)
+[ -n "${GIT_HOST:-}" ] || { echo "REFUS: GIT_HOST_REQUIS : base de la forge — aucun repli (au lab http://localhost:13000, chez le client son adresse a lui)" >&2; exit 2; }
+# ⚠ LIER SANS DÉFAUTER : retirer l'affectation supprimait aussi la LIAISON, et
+# sous `set -u` un usage nu (l. ~90, le clone) serait « unbound variable » — un
+# message de shell au lieu d'un refus nommé. Un défaut retiré n'est pas une
+# variable supprimée. La garde ci-dessus refuse déjà le vide ; ceci garantit que
+# tout chemin ultérieur voit une variable LIÉE.
+GIT_HOST="${GIT_HOST:-}"
 GIT_REPO="${GIT_REPO:-ci/governance}"
 # ⚠ PAS d'apostrophe dans ce message : bash lit le corps de ${VAR:?...} comme
 # du texte à quoter, et une apostrophe française y ouvre une chaîne qui ne se

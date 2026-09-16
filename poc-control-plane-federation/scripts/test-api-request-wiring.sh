@@ -233,8 +233,8 @@ grep -qE '^  environment \{' "$JF" \
 jf "GIT_WEB_HOST = \"\${env.GIT_WEB_HOST ?: 'http://localhost:13000'}\"" \
   && ok "valeur littérale de GIT_WEB_HOST = http://localhost:13000 (lien de PR cliquable par un HUMAIN, hors conteneurs)" \
   || ko "GIT_WEB_HOST : valeur par défaut inattendue ou absente — le lien de la PR retomberait sur un nom interne au cluster"
-jf "GIT_HOST = \"\${env.GIT_HOST ?: 'http://gitea:3000'}\"" \
-  && ok "valeur littérale de GIT_HOST = http://gitea:3000 (alias in-cluster ; 'localhost' ne désigne PAS Gitea depuis l'agent)" \
+jf "GIT_HOST = \"\${env.GIT_HOST ?: ''}\"" \
+  && ok "GIT_HOST SANS défaut de site (repli VIDE — une globale manquante devient GIT_HOST_REQUIS, pas une adresse de lab supposée) (alias in-cluster ; 'localhost' ne désigne PAS Gitea depuis l'agent)" \
   || ko "GIT_HOST : valeur par défaut inattendue ou absente"
 jf "GIT_REPO = \"\${env.GIT_REPO ?: 'ci/stoa-labs'}\"" \
   && ok "valeur littérale de GIT_REPO = ci/stoa-labs (dépôt plateforme : providers.<env>.yml + gardes du plan)" \

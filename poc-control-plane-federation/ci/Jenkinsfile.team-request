@@ -114,8 +114,11 @@ pipeline {
   // le lab et le client, sans fork.
   //
   // ⚠ Les hôtes sont ceux vus DEPUIS le conteneur de l'agent (réseau docker
-  // `poc`) : « localhost » n'y désigne PAS Gitea — d'où GIT_HOST=gitea:3000 et,
-  // symétriquement, GIT_WEB_HOST=localhost:13000 pour ce qu'un HUMAIN clique.
+  // `poc`) : « localhost » n'y désigne PAS Gitea. Le SITE pose donc GIT_HOST du
+  // point de vue de l'AGENT et, symétriquement, GIT_WEB_HOST du point de vue de
+  // l'HUMAIN qui clique. GIT_HOST n'a plus de défaut depuis le 2026-09-16 : au
+  // lab la globale vaut `http://gitea:3000`, mais c'est une valeur POSÉE, plus
+  // un repli du fichier.
   environment {
     // Préfixe du livrable DANS le dépôt (2026-09-03) : le seul endroit qui le
     // nomme. « . » = le livrable EST la racine (une valeur VIDE ne traverse pas
@@ -126,7 +129,16 @@ pipeline {
     // s'applique déjà à lui-même — les poser ici ne change donc rien au
     // comportement ; ça rend le point de config VISIBLE et surchargeable, et ça
     // garde l'URL du <scm> du job alignée avec celle que le script clone.
-    GIT_HOST             = "${env.GIT_HOST ?: 'http://gitea:3000'}"
+    // L'ADRESSE DE LA FORGE — SANS DÉFAUT DE SITE, délibérément (2026-09-16).
+    // `http://gitea:3000` a été le défaut de ce knob, et c'était le dernier
+    // filet de la même famille que FORGE_KIND : un client qui ne posait pas la
+    // globale ne recevait AUCUN refus — la chaîne partait sur une adresse de
+    // lab qui ne résout pas chez lui, et la panne sortait bien plus loin sous
+    // un autre nom (clone impossible, hôte injoignable), en accusant le réseau.
+    // Repli VIDE ⇒ globale manquante = refus NOMMÉ GIT_HOST_REQUIS, rendu par
+    // l'autorité scripts/lib/forge-api.sh (forge_api_init), AVANT toute
+    // construction d'URL. Elle est donc REQUISE (setup-jenkins-globals.sh).
+    GIT_HOST             = "${env.GIT_HOST ?: ''}"
     GIT_REPO             = "${env.GIT_REPO ?: 'ci/stoa-labs'}"
     // LE VISAGE DE LA FORGE — SANS DÉFAUT DE SITE, délibérément (2026-09-12).
     // `gitea` a été le défaut de ce knob, et c'était un faux filet : un client
@@ -142,7 +154,7 @@ pipeline {
     FORGE_API_BASE       = "${env.FORGE_API_BASE ?: ''}"
     // URL Gitea vue par l'HUMAIN : elle fabrique le lien cliquable annoncé sur
     // la PR (« PR #N ouverte : … »). SANS elle, team-request.sh retombe sur
-    // GIT_HOST — http://gitea:3000, nom interne au réseau docker, non résolu
+    // GIT_HOST — l'adresse vue depuis l'AGENT, non résolue
     // depuis un poste — et le lien posté est mort. C'était déjà une valeur en
     // dur dans le withEnv du job Groovy (même valeur que team-apply.job.xml et
     // provision-plan.job.xml) ; elle devient ici un knob.

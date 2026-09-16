@@ -133,6 +133,31 @@
 #                           un defaut permissif ne se pose pas tout seul, il se
 #                           demande. Le lab de ce depot la pose.
 #
+# L'ADRESSE DE LA FORGE (GIT_HOST) — REQUISE, SANS DÉFAUT (2026-09-16)
+#
+#   GIT_HOST                base de la forge vue DEPUIS L'AGENT (ex.
+#                           https://forge.client ; au lab http://gitea:3000).
+#                           Elle a eu `http://gitea:3000` pour défaut dans les
+#                           douze Jenkinsfile porteurs et dans dix scripts, et
+#                           c'était la même maladie que le visage, en plus
+#                           discret : un site qui ne la posait pas ne recevait
+#                           AUCUN refus. La chaîne partait sur une adresse de
+#                           laboratoire qui ne résout pas chez un client, et la
+#                           panne sortait bien plus loin, sous un autre nom
+#                           (clone impossible, hôte injoignable), en accusant le
+#                           réseau. Absente ou vide, la chaîne REFUSE désormais
+#                           GIT_HOST_REQUIS — refus rendu par l'autorité
+#                           scripts/lib/forge-api.sh avant tout appel réseau, et
+#                           par une garde LOCALE dans les trois outils qui
+#                           composent une URL sans passer par elle
+#                           (seed-governance-chain, setup-repo-protections,
+#                           lib/generate-choices).
+#   GIT_WEB_HOST            la même forge vue DEPUIS UN POSTE, pour les liens
+#                           qu'un HUMAIN clique dans les commentaires de PR.
+#                           Elle GARDE son défaut : absente, la chaîne retombe
+#                           sur GIT_HOST, ce qui dégrade un lien sans jamais
+#                           faire parler la chaîne à la mauvaise forge.
+#
 # LE VISAGE DE LA FORGE (FORGE_KIND, FORGE_API_AUTH, FORGE_API_BASE)
 # La chaîne parlait l'API de Gitea en dur ; depuis le 2026-09-09 une seule
 # autorité, scripts/lib/forge-api.sh, décide des chemins, des en-têtes et des

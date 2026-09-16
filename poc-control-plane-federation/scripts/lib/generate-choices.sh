@@ -577,7 +577,7 @@ _gc_redact(){
 # message qui les recopiait pouvait mentir : l'avertissement d'un dépôt d'équipe
 # écrivait « sur main » en dur alors que le clone demandait le knob GIT_BASE,
 # et servait donc un diagnostic FAUX à un client dont la base est master.
-_gc_host(){ printf '%s' "${GIT_HOST:-http://gitea:3000}"; }
+_gc_host(){ printf '%s' "${GIT_HOST:-}"; }
 _gc_platform_url(){ printf '%s/%s.git' "$(_gc_host)" "${GIT_REPO:-ci/stoa-labs}"; }
 
 # _gc_base_knob — le knob GIT_BASE s'il est POSÉ (vide sinon). Un knob vaut pour
@@ -713,6 +713,18 @@ _gc_clone(){
   # (_GC_CLONE_ERR, _GC_BASE_ERR), et un sous-shell l'emporterait avec lui —
   # l'avertissement du corps de boucle retomberait sur « aucune sortie de git ».
   host="$(_gc_host)"
+  # GIT_HOST VIDE — le refus est ICI, et pas à l'entrée publique (2026-09-16,
+  # jour où ce knob a perdu son défaut de lab `http://gitea:3000`). MESURÉ :
+  # avec GC_PLATFORM_DIR posé, `_gc_fetch_main` pose un lien symbolique et ne
+  # clone RIEN — l'adresse de la forge n'y sert à rien, et la refuser en tête
+  # rejetait onze scénarios légitimes, dont « GC_PLATFORM_DIR + zéro dépôt
+  # d'équipe ⇒ rc 0 et la liste sort ». Le besoin naît au CLONE, et ce helper
+  # en est le SEUL passage (plateforme comme dépôts d'équipe). Le refus y prend
+  # donc la forme de son voisin SECRET_FORGE_REQUIS : cause NOMMÉE dans
+  # _GC_CLONE_ERR, relayée telle quelle par l'avertissement du corps de boucle.
+  if [ -z "$host" ]; then
+    _GC_CLONE_ERR="GIT_HOST_REQUIS : base de la forge — aucun repli (aucun clone tenté)"; return 1
+  fi
   if ! auth_b64="$(_gc_auth_b64)"; then
     _GC_CLONE_ERR="SECRET_FORGE_REQUIS : ni FORGE_SECRET ni son alias GITEA_TOKEN (aucun clone tenté)"; return 1
   fi

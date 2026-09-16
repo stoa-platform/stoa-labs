@@ -97,7 +97,7 @@ FORGE_SECRET="${FORGE_SECRET:-${GITEA_TOKEN:-}}"
 VAULT_ADDR="${VAULT_ADDR:?VAULT_ADDR requis}"
 VAULT_TOKEN_FILE="${VAULT_TOKEN_FILE:?VAULT_TOKEN_FILE requis (jamais le token en env/argv)}"
 APIM_API_BASE="${APIM_API_BASE:?APIM_API_BASE requis — pas de défaut : dire sa cible est volontaire}"
-GIT_HOST="${GIT_HOST:-http://gitea:3000}"
+GIT_HOST="${GIT_HOST:-}"
 GIT_WEB_HOST="${GIT_WEB_HOST:-$GIT_HOST}"   # défaut : même hôte, sauf reverse-proxy dédié à l'affichage
 GIT_REPO="${GIT_REPO:-ci/stoa-labs}"   # dépôt PLATEFORME — porte providers.<env>.yml
 

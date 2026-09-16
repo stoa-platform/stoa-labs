@@ -577,9 +577,15 @@ echo "== ⑱ chemin nominal : gardes de team-request traversées VERTES en DRY_R
 # lui le script refuserait pour une raison sans rapport. Valeur factice — le
 # contrat DRY_RUN sort AVANT tout appel réseau (motif run_w de
 # test-deploy-pin.sh:434-439, qui passe le même GITEA_TOKEN=x).
+# GIT_HOST est POSÉ depuis le 2026-09-16, pour la MÊME raison que FORGE_KIND
+# juste à côté : `forge_api_init` refuse GIT_HOST_REQUIS comme il refusait déjà
+# le visage, et ce knob a perdu son défaut de lab (`http://gitea:3000`). Sous
+# `env -i` rien n'arrive tout seul — c'est le propos de cet idiome. Valeur
+# factice et LOCALE : le contrat DRY_RUN sort avant tout geste réseau, et ⑱bis
+# vérifie justement qu'aucun clone n'est tenté.
 tr_dry(){ ( cd "$ROOT" && env -i PATH="$PATH" HOME="$HOME" \
     TEAM="$1" DESCRIPTION="$2" APPROVERS="A1,B2" FORGE_KIND=gitea \
-    GITEA_TOKEN=x DRY_RUN=1 bash scripts/team-request.sh ) >"$TMP/tr_dry" 2>&1; }
+    GIT_HOST=/nonexistent/forge-dry GITEA_TOKEN=x DRY_RUN=1 bash scripts/team-request.sh ) >"$TMP/tr_dry" 2>&1; }
 tr_dry preuve-g4 "equipe de preuve"
 RC=$?
 grep -q 'GARDES_OK' "$TMP/tr_dry" && [ "$RC" -eq 0 ] \

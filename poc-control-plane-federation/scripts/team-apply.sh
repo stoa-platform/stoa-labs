@@ -78,7 +78,7 @@ ggit(){ git_base_avec_basic "$(git_base_basic_login)" FORGE_SECRET git "$@"; }
 VAULT_ADDR="${VAULT_ADDR:?VAULT_ADDR requis}"
 VAULT_TOKEN_FILE="${VAULT_TOKEN_FILE:?VAULT_TOKEN_FILE requis (jamais le token en env/argv)}"
 APIM_API_BASE="${APIM_API_BASE:?APIM_API_BASE requis — pas de défaut : dire sa cible est volontaire}"
-GIT_HOST="${GIT_HOST:-http://gitea:3000}"
+GIT_HOST="${GIT_HOST:-}"
 GIT_REPO="${GIT_REPO:-ci/stoa-labs}"
 GIT_WEB_HOST="${GIT_WEB_HOST:-$GIT_HOST}"
 
