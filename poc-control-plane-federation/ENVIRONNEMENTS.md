@@ -2081,6 +2081,157 @@ non-régression `gwt` par `test-a6-live.sh` et `test-a7-live.sh` inchangés ;
 `gitlab-plugin` ajouté à `ci/jenkins/Dockerfile` pour qu'un lab reconstruit
 porte les deux récepteurs.
 
+**OÙ VIVENT LES VALEURS DE SITE.** L'endroit est *Manage Jenkins → System →
+Global properties → Environment variables* ; c'est là, et nulle part ailleurs,
+que `scripts/setup-jenkins-globals.sh` écrit — il est idempotent et il RELIT ce
+qu'il pose. Un credential n'est pas une variable d'environnement : il n'est
+atteignable que par un champ qui prend un `credentialsId` (le `<scm>` d'un job)
+ou par un `withCredentials` dans le pipeline. La doctrine tient en une phrase,
+celle de l'en-tête du poseur : **les adresses et les noms dans les globales, les
+secrets dans les credentials**. Un mot de passe posé en globale serait lisible
+par tout job ; une adresse mise en credential détruit les journaux, et le
+paragraphe suivant dit à quel point.
+
+**LE PRIX D'UN CREDENTIAL, MESURÉ : LE MASQUAGE FRAPPE EN SOUS-CHAÎNE.** Avec un
+`Secret text` jetable valant `gitlab`, lu par `withCredentials` dans un stage
+sans agent, la console du lab rend ceci le 2026-09-16 :
+
+```
+AVANT : le visage gitlab hors withCredentials
+DEDANS-VAR : ****
+DEDANS-LITTERAL : on clone http://****.example/ci/stoa-labs et on parle de ****
+APRES : le visage gitlab hors withCredentials
+```
+
+Deux faits, et ce sont eux qui commandent la recommandation. D'abord le
+masquage ne vise pas la variable mais **la valeur, partout où sa suite de
+caractères apparaît** — jusque dans un nom d'hôte, `gitlab.example` devenant
+`****.example`. Un credential dont la valeur est un mot courant caviarde donc ce
+mot dans des lignes qui n'ont aucun rapport avec lui. Ensuite, et c'est la bonne
+nouvelle, **le masquage est borné au bloc** : les lignes AVANT et APRÈS sortent
+intactes. Le coût est donc proportionnel à la largeur du bloc, et se maîtrise.
+
+**CE QU'UN CLIENT SANS PROPRIÉTÉS GLOBALES PEUT FAIRE.** Le cas est réel
+(rapporté le 2026-09-16) : un client peut créer des credentials mais **pas**
+poser de propriétés globales. Ce qui décide alors n'est pas la DÉCLARATION —
+douze des dix-huit Jenkinsfile déclarent leurs knobs dans `environment{}` — mais
+la **CONSOMMATION**, c'est-à-dire l'existence ou non d'un espace de travail à
+l'instant de la lecture :
+
+| Knobs | Qui les consomme | Espace de travail |
+|---|---|---|
+| `FORGE_KIND`, `FORGE_API_AUTH`, `FORGE_API_BASE`, `GIT_HOST` (12 fichiers) | les **scripts**, par `sh` ; le Jenkinsfile ne fait que les FORWARDER — les seize occurrences de `FORGE_KIND` hors ligne de déclaration sont toutes des commentaires | **oui** |
+| `FORGE_CRED_KIND`, `GITEA_CREDENTIALS_ID` | `forgeCreds()`, appelée sous un agent (`Jenkinsfile.team-apply:315/339/417`, après l'`agent any` de la 286) | **oui** |
+| **`WEBHOOK_KIND`** (6 fichiers, repli `gwt`) | le stage récepteur des **cinq** pipelines en `agent none` (`team-apply:56`, `team-publish:55`, `team-promote:54`, `provision-plan:74`, `provision-apply:70`) ; `selfservice` est en `agent any` et échappe au problème | **non** |
+
+Pour tout ce qui a un espace de travail, un fichier de site versionné suffit et
+ne demande aucun droit Jenkins. La recette par console de script donnée plus haut
+dans ce document (pose d'`APPLY_ADMIN_VIA` en Groovy) n'est PAS une voie de
+contournement pour ce client : elle écrit dans les MÊMES propriétés globales et
+exige `Overall/RunScripts`, droit qu'il n'a pas davantage. Pour `WEBHOOK_KIND`,
+les trois voies ont été éprouvées le 2026-09-16 et elles ne se valent pas :
+
+- **credential : OUVERT**, mesuré. Un job `agent none` dont le stage n'a pas
+  d'agent exécute `withCredentials` sans broncher — build SUCCESS, la variable
+  arrive avec ses six caractères. `withCredentials` n'exige PAS de nœud.
+- **`readFile` : FERMÉ**, mesuré, et le mécanisme est net :
+  `MissingContextVariableException : Required context class hudson.FilePath is
+  missing`.
+- **fichier managé : NON TRANCHÉ.** Le plugin Config File Provider n'est pas
+  installé sur le Jenkins du lab, et la tentative rend `NoSuchMethodError : No
+  such DSL method 'configFile' found` — ce qui mesure l'ABSENCE DU PLUGIN, pas un
+  besoin de nœud. Les deux se ressemblent en console et ne disent pas la même
+  chose. Comme `configFileProvider` matérialise un fichier sur le disque de
+  l'exécuteur, il demande très probablement le même contexte `FilePath` que
+  `readFile` ; ce qui le trancherait est d'installer le plugin et de rejouer le
+  job de trois lignes.
+
+**La recommandation est donc « enveloppe étroitement », pas « c'est
+impossible ».** C'est d'ailleurs le geste que la dette du Secret Token décrit
+déjà plus haut — « credential + `withCredentials` avant le `properties()` » — et
+la mesure du jour confirme que le mécanisme tient sans agent. Chez un client sans
+propriétés globales, `WEBHOOK_KIND` peut donc venir d'un credential, à condition
+d'entourer le `properties()` SEUL — en
+`Jenkinsfile.team-apply:154` pour la branche générique et `:194` pour la branche
+gitlab, mêmes deux branches dans les cinq récepteurs — et de laisser dehors
+toute trace destinée à l'exploitant. La ligne qui NOMME le récepteur posé doit
+en particulier rester hors du bloc : avec un credential valant `gitlab`, un
+« récepteur posé : gitlab » imprimé dedans sortirait « récepteur posé : **** »,
+et l'exploitant perdrait précisément la trace qui lui dit ce qui a été posé. Le
+jour où quelqu'un élargit le bloc « pour simplifier », il perd la lisibilité de
+sa console sans comprendre pourquoi : c'est un PRIX, pas un détail.
+
+**Ce choix déclenche la relecture PARTIELLE décrite plus haut, par une SECONDE
+cause.** Le paragraphe sur `Overall/RunScripts` l'explique pour un droit
+manquant ; un knob porté par un credential donne exactement le même résultat pour
+une autre raison : `webhook_kind_resolu` (`scripts/setup-provision-jobs.sh:365`)
+lit la **globale**, où la valeur n'est pas. Même message, même `rc 0`, même
+remède — exporter `WEBHOOK_KIND` dans l'environnement du poseur. Un exploitant
+qui lit « la CLASSE n'a pas été confrontée » chez ce client doit donc penser à
+**deux** causes possibles, pas une.
+
+**LE DÉCLENCHEUR VIENT DU *DERNIER BUILD*, PAS DU XML — corollaire
+d'exploitation du fait 10.** Pour un job Pipeline, le déclencheur ne vit pas dans
+une coquille : il est dans `<properties><PipelineTriggersJobProperty>`, écrit par
+le `properties()` du pipeline **au dernier build**. Conséquence qu'on ne devine
+pas : **un job qui n'a pas rebuildé depuis une conversion garde son ancien
+déclencheur indéfiniment**. Mesuré le 2026-09-16 : `team-publish` portait encore
+un `GenericTrigger` du 2026-09-06 (plugin 2.4.2) ne déclarant que les clés Gitea,
+sans les variables `GL_*` que son Jenkinsfile pose depuis — six jours de
+divergence muette, et comme la globale `WEBHOOK_KIND` n'était pas posée, tout
+restait générique **sans la moindre erreur**. D'où l'ordre de bascule sur un
+Jenkins déjà en service, vérifié en direct le 2026-09-16 :
+
+1. poser la globale (`setup-jenkins-globals.sh WEBHOOK_KIND=gitlab`) puis la
+   **relire** ;
+2. re-poser ET amorcer chaque job (`setup-team-onboard-jobs.sh`,
+   `setup-provision-jobs.sh`, `setup-selfservice-job.sh`) — le poseur relit le
+   `config.xml` après l'amorçage ;
+3. constater la classe attendue. Après bascule, les cinq récepteurs portent un
+   `GitLabPushTrigger` avec leur filtre : `onboard/*`, `api/*`, `promote/*`, et
+   `provision/*` pour les deux jobs de provision. `selfservice-app-deploy` n'en
+   porte **aucun**, et c'est voulu : sous `gitlab` sa liste de hooks est vide, il
+   est appelé par `provision-apply`.
+
+**UN PIÈGE DE MÉTHODE POUR QUI SONDE JENKINS.** `catch (err)` en Groovy ne
+rattrape que les `Exception`. Un step inexistant lève une `Error`, qui passe au
+travers : le build tombe en FAILURE et le `echo` de diagnostic n'imprime jamais —
+si bien que l'hypothèse la plus probable est justement la seule à ne rendre
+aucune information, et qu'on la conclut par défaut, c'est-à-dire par déduction.
+Pour sonder l'existence d'un step, c'est `catch (Throwable err)` : la sonde de
+`configFileProvider` ci-dessus n'a rien imprimé du tout à son premier essai, pour
+cette raison exacte.
+
+**UN PIÈGE DU POSEUR D'ÉQUIPE : DEUX POINTS DE VUE SUR LE MÊME DÉPÔT.**
+`setup-team-onboard-jobs.sh` **clone le dépôt plateforme depuis LE POSTE** pour
+dériver ses listes : son `GIT_HOST` doit donc être joignable de là
+(`http://localhost:13000` au lab), alors que le `<scm>` du job garde l'URL vue de
+l'**agent** (`http://gitea:3000`). Le poseur ne réécrit PAS l'URL du `<scm>` : ce
+sont deux points de vue sur le même dépôt, **pas une divergence à corriger**.
+Avec `gitea:3000` au poste, le clone échoue en `GIT_UNREACHABLE` et rien n'est
+posté à Jenkins (mesuré le 2026-09-16).
+
+Le registre des dettes le dit d'ailleurs lui-même : `ci/lint-config-knobs.exempt`
+recense `GIT_HOST` avec **deux** valeurs selon le point de vue —
+`http://gitea:3000` pour les douze Jenkinsfile et l'aval qu'ils appellent,
+`http://localhost:13000` pour les deux outils de poste (`seed-governance-chain`,
+`setup-repo-protections`). C'est la même dualité, déclarée et verte, pas un
+oubli. À retenir quand on lit « où vivent les valeurs de site » : contrairement
+aux trois knobs de forge, dont le repli est VIDE et qui refusent donc s'ils ne
+sont pas posés, **l'adresse de la forge porte encore un défaut de lab dans tout
+l'aval** — un client qui oublie `GIT_HOST` ne reçoit **aucun** refus, il part
+silencieusement sur `gitea:3000`, qui ne résout pas chez lui, et la panne sortira
+bien plus loin sous un autre nom en accusant autre chose.
+
+C'est la troisième instance d'un même motif dans cette chaîne, et la seule encore
+ouverte : `FORGE_KIND` avait un défaut qui faisait parler l'API de Gitea à un
+GitLab, il a été retiré le 2026-09-12 et la globale est devenue REQUISE ;
+`WEBHOOK_KIND` retombe encore sur `gwt` sans rien dire ; `GIT_HOST` retombe sur
+une adresse de lab. Le remède connu est le même à chaque fois : retirer le
+défaut, rendre la globale requise, retirer les lignes correspondantes du
+registre — et poser la globale AVANT de rejouer les jobs, sans quoi l'absence ne
+fait plus dériver, elle fait refuser.
+
 **Dettes** : **deux** Jenkinsfile de la chaîne API (`publish-api`,
 `provisioning-request`) portent encore un bloc déclaratif — même motif à rejouer
 avant tout client GitLab sur la chaîne producteur. (`team-apply` en est sorti le
