@@ -91,6 +91,14 @@
 #     découvre sur GIT_HOST/GIT_REPO. Sans l'un ni l'autre : refus nommé
 #     BRANCHE_PAR_DEFAUT_INDECIDABLE, aucun job posé. Cela vaut AUSSI pour les
 #     jobs sans placeholder CHOICES (team-request, team-apply) — mesuré.
+#     ⚠ GIT_HOST EST VU DEPUIS LE POSTE, PAS DEPUIS L'AGENT (mesuré le
+#     2026-09-16). Ce script CLONE le dépôt plateforme lui-même, depuis la
+#     machine qui l'exécute : `http://gitea:3000` — le nom que voit un agent
+#     Docker — n'y résout pas, et la pose échoue sur la découverte de branche.
+#     Depuis un poste, c'est `http://localhost:13000`. Le `<scm>` des jobs,
+#     lui, n'est PAS réécrit : il garde l'URL vue de l'AGENT, et c'est voulu —
+#     ce sont deux points de vue différents sur le même dépôt, pas une
+#     divergence à corriger.
 #   FORGE_SECRET : requis SEULEMENT si un job posé ce run
 #     porte un placeholder (cf. scripts/lib/generate-choices.sh).
 set -uo pipefail

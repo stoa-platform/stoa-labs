@@ -92,6 +92,22 @@ class H(BaseHTTPRequestHandler):
         if not self._authok(): return self._send(401)
         n = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(n) if n else b""
+        # LA CONSOLE DE SCRIPT (L6, 2026-09-16) : le poseur y LIT la globale
+        # WEBHOOK_KIND, parce que l'autorite est Jenkins et non son propre
+        # shell. FAKE_GLOBAL_KIND pilote la reponse : une valeur, ou vide pour
+        # jouer « globale absente », ou "refuse" pour jouer une console fermee.
+        if self.path.startswith("/scriptText"):
+            # Lu dans un FICHIER, pas dans l'environnement : ce serveur demarre
+            # UNE fois, donc une variable y serait figee pour toute la suite.
+            # Le fichier, lui, se change entre deux cas.
+            gf = os.environ.get("GLOBALKIND_FILE", "")
+            g = ""
+            if gf and os.path.exists(gf):
+                g = open(gf).read().strip()
+            if g == "refuse":
+                log("POST scriptText REFUSE"); return self._send(403)
+            log("POST scriptText -> " + (g or "<vide>"))
+            return self._send(200, (g + "\n").encode())
         if re.match(r"^/job/[^/]+/config\.xml$", self.path):
             # Le VRAI Jenkins parse le corps en ISO-8859-1 quand le charset n'est
             # pas declare, et rend 500 des le premier caractere accentue. On
@@ -121,10 +137,17 @@ class H(BaseHTTPRequestHandler):
 HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
 PY
 
+# La globale WEBHOOK_KIND que sert le faux Jenkins : le poseur l'y LIT, parce
+# que l'autorité est Jenkins et non son propre shell (faux négatif du
+# 2026-09-16). `gwt` par défaut, pour que les cas écrits avant gardent leur
+# sens ; le §16 la fait varier, console de script refusée comprise.
+printf 'gwt\n' > "$TMP/global_kind"
+
 start(){ # $1=jobs existants (csv) $2=code MAJ $3=auth(0/1) $4=code crumb $5=CF requis(0/1)
   [ -n "$PID" ] && kill "$PID" 2>/dev/null
   : > "$TMP/calls.log"
   CALLLOG="$TMP/calls.log" EXISTING_JOBS="$1" UPDATE_CODE="$2" NEED_AUTH="${3:-0}" BODYDIR="${BODYDIR:-}" \
+  GLOBALKIND_FILE="$TMP/global_kind" \
   CRUMB_CODE="${4:-200}" NEED_CF="${5:-0}" BUILD_CODE="${BUILD_CODE:-201}" \
   BUILD_RESULT="${BUILD_RESULT-SUCCESS}" RELU_XML="${RELU_XML:-}" \
     python3 "$TMP/fakejenkins.py" "$PORT" >/dev/null 2>&1 &
@@ -472,11 +495,46 @@ echo "== 16. l'amorçage est ATTENDU puis RELU (L6) : un trigger de la classe de
 # rend 404, et le POST /project/<job> du GitLab Plugin rend 200 EN SILENCE. Le
 # poseur ne peut donc pas rendre la main sur un « build lancé » : il attend, il
 # relit, et il nomme ce qui manque.
+# ⚠ L'AUTORITÉ EST LA GLOBALE JENKINS, PAS LE SHELL DU POSEUR (2026-09-16).
+# Ce cas tournait SANS WEBHOOK_KIND et comptait sur le défaut `gwt` du poseur.
+# Ce défaut a coûté un FAUX NÉGATIF en vrai : la session voisine a basculé le
+# lab en `gitlab` (globale posée, jobs re-posés, pose PARFAITE) puis relancé le
+# poseur sans exporter la variable — et a lu « AMORCAGE_INCOMPLET : relu 0
+# GenericTrigger sur 1 déclencheur(s) ». Un refus fail-closed qui crie au loup
+# ne se lit plus. Le poseur LIT donc la globale, et ce cas l'éprouve.
+printf 'gwt\n' > "$TMP/global_kind"
 RELU_XML="$(relu 1 0 1 stoa-provision-plan)" start "provision-plan" 200
 OUT=$(cd "$REPO" && JENKINS_UI="$JU" JOBS=provision-plan bash "$S" 2>&1); RC=$?
 [ $RC -eq 0 ] && grep -q "amorçage #7 : SUCCESS" <<<"$OUT" && grep -q "1 trigger GenericTrigger (stoa-provision-plan)" <<<"$OUT" \
-  && ok "gwt nominal : build #7 ATTENDU, config.xml RELU, 1 GenericTrigger + 1 DisableConcurrentBuilds ⇒ succès nommé" \
-  || ko "gwt nominal : rc=$RC — $(grep -E 'amorçage|relecture|AMORCAGE' <<<"$OUT" | tr '\n' ' ')"
+  && grep -q "intention lue : globale Jenkins" <<<"$OUT" \
+  && ok "gwt nominal : la classe attendue vient de la GLOBALE Jenkins (pas du shell du poseur), build #7 ATTENDU, config.xml RELU ⇒ succès nommé" \
+  || ko "gwt nominal : rc=$RC — $(grep -E 'amorçage|relecture|AMORCAGE|intention' <<<"$OUT" | tr '\n' ' ')"
+# LE FAUX NÉGATIF, REPRODUIT PUIS FERMÉ : globale `gitlab`, shell MUET. Le
+# poseur doit attendre un GitLabPushTrigger — et surtout PAS crier AMORCAGE_INCOMPLET.
+printf 'gitlab\n' > "$TMP/global_kind"
+RELU_XML="$(relu 0 1 1 x)" start "provision-plan" 200
+OUT=$(cd "$REPO" && JENKINS_UI="$JU" JOBS=provision-plan bash "$S" 2>&1); RC=$?
+[ $RC -eq 0 ] && grep -q "1 trigger GitLabPushTrigger" <<<"$OUT" && ! grep -q 'AMORCAGE_INCOMPLET' <<<"$OUT" \
+  && ok "lab basculé en gitlab, poseur relancé SANS la variable : la globale fait foi, aucun AMORCAGE_INCOMPLET — le faux négatif du 2026-09-16 est fermé" \
+  || ko "faux négatif REPRODUIT : rc=$RC — $(grep -E 'relecture|AMORCAGE' <<<"$OUT" | tr '\n' ' ')"
+# LA CONSOLE REFUSÉE : ni défaut deviné, ni cri au loup — une relecture PARTIELLE
+# qui NOMME ce qu'elle n'a pas pu confronter, et un rc 0 (la pose est bonne).
+printf 'refuse\n' > "$TMP/global_kind"
+RELU_XML="$(relu 1 0 1 stoa-provision-plan)" start "provision-plan" 200
+OUT=$(cd "$REPO" && JENKINS_UI="$JU" JOBS=provision-plan bash "$S" 2>&1); RC=$?
+[ $RC -eq 0 ] && grep -q "relecture PARTIELLE" <<<"$OUT" && grep -q "ILLISIBLE" <<<"$OUT" && ! grep -q 'AMORCAGE_INCOMPLET' <<<"$OUT" \
+  && ok "console de script refusée : relecture PARTIELLE nommée (classe non confrontée), rc 0 — on ne devine pas, et on ne crie pas" \
+  || ko "console refusée mal traitée : rc=$RC — $(grep -E 'relecture|AMORCAGE' <<<"$OUT" | tr '\n' ' ')"
+# L'INTENTION EXPLICITE DE L'APPELANT L'EMPORTE sur la globale (cas d'un CI).
+printf 'gitlab\n' > "$TMP/global_kind"
+RELU_XML="$(relu 1 0 1 stoa-provision-plan)" start "provision-plan" 200
+OUT=$(cd "$REPO" && JENKINS_UI="$JU" JOBS=provision-plan WEBHOOK_KIND=gwt bash "$S" 2>&1); RC=$?
+[ $RC -eq 0 ] && grep -q "intention lue : environnement de l'appelant" <<<"$OUT" \
+  && ok "WEBHOOK_KIND posé par l'appelant l'emporte sur la globale — l'intention explicite d'un CI n'est pas écrasée" \
+  || ko "l'intention de l'appelant ne l'emporte pas : rc=$RC — $(grep -E 'intention|relecture' <<<"$OUT" | tr '\n' ' ')"
+printf 'gwt\n' > "$TMP/global_kind"
+RELU_XML="$(relu 1 0 1 stoa-provision-plan)" start "provision-plan" 200
+OUT=$(cd "$REPO" && JENKINS_UI="$JU" JOBS=provision-plan bash "$S" 2>&1); RC=$?
 L_B=$(calls | grep -n 'POST build provision-plan' | head -1 | cut -d: -f1); L_R=$(calls | grep -n 'GET config provision-plan' | head -1 | cut -d: -f1)
 [ -n "$L_B" ] && [ -n "$L_R" ] && [ "$L_B" -lt "$L_R" ] \
   && ok "la relecture (appel $L_R) vient APRÈS l'amorçage (appel $L_B)" || ko "ordre amorçage/relecture cassé (build=$L_B config=$L_R)"

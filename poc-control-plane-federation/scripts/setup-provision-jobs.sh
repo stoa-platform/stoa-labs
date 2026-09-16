@@ -102,7 +102,22 @@ BOOTSTRAP_AWAIT_JOBS="${BOOTSTRAP_AWAIT_JOBS:-provision-apply provision-plan}"
 BOOTSTRAP_WAIT="${BOOTSTRAP_WAIT:-360}"
 # Le RÉCEPTEUR que le Jenkinsfile va poser : décide de la CLASSE attendue à la
 # relecture (GenericTrigger sous gwt, GitLabPushTrigger sous gitlab).
-WEBHOOK_KIND="${WEBHOOK_KIND:-gwt}"
+#
+# ⚠ L'AUTORITÉ EST LA GLOBALE JENKINS, PAS CE SHELL (corrigé le 2026-09-16).
+# Ce script lisait `${WEBHOOK_KIND:-gwt}` dans SON environnement — or c'est le
+# Jenkinsfile qui pose le déclencheur, et lui lit la GLOBALE. Un exploitant qui
+# bascule le lab en `gitlab` (globale posée, jobs re-posés, pose PARFAITE) puis
+# relance ce poseur sans exporter la variable voyait donc :
+#     AMORCAGE_INCOMPLET : relu 0 GenericTrigger sur 1 déclencheur(s)
+# — un FAUX NÉGATIF dans un refus fail-closed, c'est-à-dire le pire genre : il
+# fait croire à un échec là où tout est juste, et un rapport qui crie au loup ne
+# se lit plus. Mesuré par la session voisine en basculant le lab.
+# Désormais : l'environnement de l'appelant l'emporte s'il est POSÉ (intention
+# explicite d'un CI) ; sinon on LIT la globale ; et si elle est illisible on ne
+# devine pas — la classe n'est pas confrontée, et on le DIT.
+WEBHOOK_KIND="${WEBHOOK_KIND:-}"
+WEBHOOK_KIND_SRC=""
+[ -n "$WEBHOOK_KIND" ] && WEBHOOK_KIND_SRC="environnement de l'appelant"
 # LE CREDENTIAL DU <scm> (2026-09-11). Les job.xml ne portent AUCUN
 # <credentialsId> : le checkout que JENKINS fait lui-même (« Pipeline script
 # from SCM ») est donc ANONYME. Le Gitea du lab le sert (lecture anonyme) ; un
@@ -331,13 +346,40 @@ RC=0
 # BOOTSTRAP_WAIT), puis RELIT le config.xml. Fail-closed, et JAMAIS de re-pose —
 # elle effacerait ce que le build vient de poser (fait 10). rc 0 = amorçage
 # SUCCESS et relecture conforme.
+# webhook_kind_resolu — POSE WEBHOOK_KIND (gwt|gitlab|inconnu) et
+# WEBHOOK_KIND_SRC, UNE fois. Elle n'IMPRIME rien, et c'est délibéré : appelée
+# en `$(…)` elle tournerait dans un SOUS-SHELL et ses affectations seraient
+# perdues — mesuré ici même, le message annonçait « WEBHOOK_KIND  » vide.
+# La globale Jenkins est lue par la console de script, comme le fait
+# setup-jenkins-globals.sh --print : c'est la MÊME autorité, pas une seconde.
+webhook_kind_resolu(){
+  [ -n "$WEBHOOK_KIND" ] && return 0
+  local out args=(-b "$CK" -X POST --data-urlencode \
+    "script=import jenkins.model.Jenkins; import hudson.slaves.EnvironmentVariablesNodeProperty
+def p = Jenkins.instance.globalNodeProperties.get(EnvironmentVariablesNodeProperty)
+println(p == null ? '' : (p.envVars['WEBHOOK_KIND'] ?: ''))
+null" "$JENKINS_UI/scriptText")
+  [ -n "${F:-}" ] && args=(-H "$F: $C" "${args[@]}")
+  out=$(jcurl -s "${args[@]}" 2>/dev/null | tr -d '\r' | sed '/^$/d; /^Result: /d' | head -1)
+  case "$out" in
+    gwt|gitlab) WEBHOOK_KIND="$out"; WEBHOOK_KIND_SRC="globale Jenkins" ;;
+    *)          WEBHOOK_KIND="inconnu"; WEBHOOK_KIND_SRC="ILLISIBLE (console de script refusée, ou globale absente)" ;;
+  esac
+}
+
 amorcage_relu(){
   local j="$1" n="$2" r="" want nt no ntok tok hcr counts rest
   [ -n "$n" ] || { warn "AMORCAGE_INCOMPLET : nextBuildNumber illisible pour $j — le build est lancé mais rien ne l'attend"; return 1; }
+  webhook_kind_resolu
   case "$WEBHOOK_KIND" in
     gwt)    want=GenericTrigger ;;
     gitlab) want=GitLabPushTrigger ;;
-    *)      warn "AMORCAGE_INCOMPLET : WEBHOOK_KIND='$WEBHOOK_KIND' inconnu (attendu gwt|gitlab) — rien n'est relu"; return 1 ;;
+    # NI UN REFUS, NI UN DEFAUT : on relit ce qu'on PEUT (exactement un
+    # déclencheur, exactement un verrou) et on NOMME ce qu'on n'a pas pu
+    # confronter — la CLASSE. `Trigger` matche toute classe de déclencheur,
+    # donc le compte 1/1/1 garde tout son sens ; seul l'accord avec
+    # l'intention n'est pas vérifié, et le message le dit.
+    *)      want=Trigger ;;
   esac
   for _ in $(seq 1 "$((BOOTSTRAP_WAIT / 2))"); do
     r=$(jcurl -s -b "$CK" "$JENKINS_UI/job/$j/$n/api/json?tree=result" |
@@ -374,12 +416,16 @@ print(sum(1 for e in trig if e.tag.endswith(w)),
   fi
   ok "amorçage #$n : SUCCESS"
   if [ "$nt" = 1 ] && [ "$ntok" = 1 ] && [ "$no" = 1 ]; then
+    if [ "$want" = Trigger ]; then
+      warn "relecture PARTIELLE de $j : 1 déclencheur + 1 DisableConcurrentBuilds posés par le build — mais la CLASSE n'a pas été confrontée (WEBHOOK_KIND $WEBHOOK_KIND_SRC). Ce n'est PAS un échec : poser WEBHOOK_KIND, ou rendre la console de script lisible, pour que l'accord avec l'intention soit vérifié."
+      return 0
+    fi
     if [ "$want" = GenericTrigger ]; then
       tok=$(python3 -c "import sys,xml.etree.ElementTree as T; r=T.parse(sys.argv[1]).getroot(); print(','.join(t.findtext('token') or '' for t in r.iter() if t.tag.endswith('GenericTrigger')))" "$RELU_DIR/$j.relu.xml")
       [ "$tok" = "stoa-$j" ] || { warn "AMORCAGE_INCOMPLET : token relu '$tok' ≠ 'stoa-$j' — le hook de la forge appelle un mot que ce job ne porte pas"; return 1; }
-      ok "relecture : 1 trigger GenericTrigger ($tok) + 1 DisableConcurrentBuilds, posés par le build (fait 10) ; webhook : $JENKINS_UI/generic-webhook-trigger/invoke?token=$tok"
+      ok "relecture : 1 trigger GenericTrigger ($tok) + 1 DisableConcurrentBuilds, posés par le build (fait 10) [intention lue : $WEBHOOK_KIND_SRC] ; webhook : $JENKINS_UI/generic-webhook-trigger/invoke?token=$tok"
     else
-      ok "relecture : 1 trigger GitLabPushTrigger + 1 DisableConcurrentBuilds, posés par le build (fait 10) ; webhook GitLab : $JENKINS_UI/project/$j (événements « Merge request » seulement, Secret Token = stoa-$j)"
+      ok "relecture : 1 trigger GitLabPushTrigger + 1 DisableConcurrentBuilds, posés par le build (fait 10) [intention lue : $WEBHOOK_KIND_SRC] ; webhook GitLab : $JENKINS_UI/project/$j (événements « Merge request » seulement, Secret Token = stoa-$j)"
     fi
     return 0
   fi
