@@ -452,6 +452,66 @@ PY
   return "$rc"
 }
 
+# vault_wrap_read <chemin-v1> <ttl-secondes> — REMISE À USAGE UNIQUE.
+#
+# Lit le chemin SANS jamais voir la valeur : Vault renvoie un jeton
+# d'ENVELOPPEMENT (`wrap_info.token`), le secret restant dans Vault. Le porteur
+# du jeton le déplie UNE fois (`/v1/sys/wrapping/unwrap`, ou la page « Unwrap »
+# de l'interface) ; tout rejeu est refusé, et le TTL le borne aussi dans le
+# temps. Mesuré sur le Vault du lab (1.17.6) le 2026-09-17 : 1er désenveloppement
+# rend le secret, le 2e rend « wrapping token is not valid or does not exist ».
+#
+# POURQUOI CE VERBE PLUTÔT QU'UN LIEN MAISON. Un service qui stockerait le
+# secret pour le servir une fois serait un composant privilégié de plus entre le
+# secret et son destinataire, à écrire, à exploiter et à auditer. Vault le fait
+# nativement, et c'est LUI qui garde la trace de l'accès.
+#
+# ⚠ LE CAS DANGEREUX EST L'ABSENCE DE wrap_info. Sans l'en-tête (proxy qui la
+# retire, version trop ancienne, chemin servi par un moteur qui ne l'honore pas),
+# Vault répond 200 avec le SECRET EN CLAIR dans le corps. Se rabattre sur ce
+# corps serait livrer en clair ce que l'appelant croit enveloppé : on REFUSE, et
+# on efface le fichier. Un refus est lisible, une fuite silencieuse ne l'est pas.
+#
+# Le jeton sort sur STDOUT et NULLE PART AILLEURS : il est lui-même un porteur.
+# L'appelant le relaie par FICHIER (commentaire de PR), jamais par un `echo` de
+# console — un log Jenkins est archivé. S'il traverse malgré tout le mode debug,
+# la forme `hvs.`/`hvb.` est déjà masquée par ci/lib/dbg.sh.
+#
+# rc 1 : pas de login, lecture refusée, ou enveloppement absent. rc 0 : le jeton
+# est sur stdout, et le secret n'a JAMAIS transité par ce shell.
+vault_wrap_read() {
+  local path="$1" ttl="$2" resp code
+  if [ -z "$_VAULT_TMPDIR" ] || [ ! -f "$_VAULT_TMPDIR/token.hdr" ]; then
+    echo "  ✗ vault_wrap_read appelé sans login préalable" >&2
+    return 1
+  fi
+  # UNE SEULE LIGNE, délibérément : vide, non entier et zéro sont le même refus,
+  # et une garde répartie sur deux lignes avec deux messages ne se MUTE pas d'une
+  # expression — or une garde qu'aucun mutant ne peut retirer n'est pas éprouvable
+  # (O.5/M9). Le `0` littéral est dans le motif : une durée nulle n'enveloppe rien.
+  case "$ttl" in ''|*[!0-9]*|0) echo "  ✗ TTL_ENVELOPPE_INVALIDE : durée de vie '$ttl' — attendu un entier de secondes > 0 ; rien n'a été lu" >&2; return 1 ;; esac
+  resp="$_VAULT_TMPDIR/wrap.json"
+  dbg "remise enveloppée: GET v1/$path (ttl ${ttl}s)"
+  code="$(_vault_curl "$resp" GET "$VAULT_ADDR/v1/$path" \
+            -H "@$_VAULT_TMPDIR/token.hdr" -H "X-Vault-Wrap-TTL: $ttl" || true)"
+  if [ "$code" != "200" ]; then
+    echo "  ✗ remise enveloppée de $path REFUSÉE (HTTP $code) — la policy du token couvre-t-elle ce chemin ?" >&2
+    dbg "  ↳ 403 = policy sans read sur '$path' ; 404 = chemin absent"
+    rm -f "$resp"
+    return 1
+  fi
+  # wrap_info ABSENT ⇒ le corps porte le secret EN CLAIR : refus, sans le lire.
+  if ! python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if (d.get("wrap_info") or {}).get("token") else 1)' "$resp" 2>/dev/null; then
+    rm -f "$resp"
+    echo "  ✗ ENVELOPPEMENT_ABSENT : Vault a répondu 200 SANS wrap_info — le corps porterait le secret EN CLAIR, il est effacé sans être lu. Un proxy retire-t-il l'en-tête X-Vault-Wrap-TTL ?" >&2
+    return 1
+  fi
+  python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["wrap_info"]["token"])' "$resp"
+  local rc=$?
+  rm -f "$resp"
+  return "$rc"
+}
+
 # vault_token_ttl — imprime le TTL RESTANT (secondes, entier) du token de la lib,
 # relu par lookup-self. A3 (GOAL cd-applications) : le préflight de joignabilité
 # de l'apply peut durer plus que le TTL d'un token LDAP (600 s sur ce lab, tune

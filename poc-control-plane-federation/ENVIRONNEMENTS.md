@@ -2557,6 +2557,61 @@ verdicts.
   hors ligne, le lien du commentaire ✅ sort vide. Défaut de harnais, pas de
   livrable.
 
+## La remise d'un secret à usage unique (2026-09-17)
+
+**LE VERBE, ET POURQUOI IL N'Y A PAS DE SERVICE MAISON.** `vault_wrap_read
+<chemin-v1> <ttl>` (`ci/lib/vault-login.sh`, à côté de `vault_read`) lit un
+secret SANS jamais en voir la valeur : Vault rend un **jeton d'enveloppement**,
+et le secret reste chez lui. Le porteur le déplie UNE fois, par
+`/v1/sys/wrapping/unwrap` ou par la page « Unwrap » de l'interface. Écrire un
+service qui stockerait le secret pour le servir une fois aurait ajouté un
+composant privilégié de plus entre le secret et son destinataire, à exploiter et
+à auditer ; Vault le fait nativement, et c'est LUI qui garde la trace de l'accès.
+
+**MESURÉ sur le Vault du lab (1.17.6), le 2026-09-17**, sur une lecture
+enveloppée : le premier désenveloppement rend `client_id` et `client_secret`, le
+second est refusé — « wrapping token is not valid or does not exist ». Le TTL le
+borne aussi dans le temps. L'interface répond, et sa page d'outillage aussi.
+
+**LE CAS DANGEREUX, ET C'EST LUI QUI COMMANDE LE CODE.** Si l'en-tête
+`X-Vault-Wrap-TTL` n'est pas honorée — un proxy qui la retire, un moteur qui
+l'ignore —, Vault répond **200 avec le secret EN CLAIR dans le corps**. Se
+rabattre sur ce corps livrerait en clair ce que l'appelant croit enveloppé : le
+verbe REFUSE (`ENVELOPPEMENT_ABSENT`) et efface le fichier sans le lire. Un refus
+se voit, une fuite silencieuse ne se voit pas. La garde de TTL, elle, est AVANT
+tout appel réseau. Les deux sont éprouvées par mutation
+(`scripts/test-vault-login-offline.sh`, O.7/O.7b/O.7c et mutants M8/M9/M10, dans
+dash, sh et bash) : sans la garde `wrap_info`, la valeur SORT — c'est ce que le
+mutant démontre, et c'est la seule façon de prouver qu'une garde empêche une
+fuite plutôt qu'un simple message.
+
+**LE JETON EST LUI-MÊME UN PORTEUR.** Il sort sur stdout et nulle part ailleurs.
+L'appelant le relaie par FICHIER (commentaire de PR), jamais par un `echo` de
+console : un journal Jenkins est archivé. S'il traverse malgré tout le mode
+debug, la forme `hvs.`/`hvb.` est déjà masquée par `ci/lib/dbg.sh`.
+
+**DEUX FORMES DE REMISE, ET UN ARBITRAGE CONTRE-INTUITIF.** Soit le demandeur
+déplie lui-même — on lui transmet le jeton, il le colle dans la page prévue,
+rien de nouveau à construire. Soit une page déplie pour lui, ce qui donne un lien
+cliquable : c'est possible, un appelant authentifié pouvant désenvelopper en
+passant le jeton dans le corps de la requête, mais cette page a besoin de sa
+propre identité Vault, donc réintroduit le composant privilégié qu'on voulait
+éviter. ⚠ **Mettre le jeton dans une URL ÉLARGIT la surface** au lieu de la
+réduire : une URL atterrit dans les journaux de messagerie, l'historique du
+navigateur et les proxys traversés. Le jeton seul, l'adresse de la page
+transmise séparément, laisse moins de traces.
+
+**CE QUI N'EXISTE PAS ENCORE, dit plutôt que supposé.** Ce verbe n'a **aucun
+appelant** : aucun flux de la chaîne ne remet aujourd'hui un `client_id`/secret à
+un demandeur, et le job self-service l'affiche lui-même en fin de course (« zéro
+credential stocké côté CI »). Trois prérequis restent ouverts, mesurés le
+2026-09-17 : aucun SMTP n'est configuré sur le Jenkins du lab
+(`hudson.tasks.Mailer.xml` absent, aucun service de messagerie dans le socle) ;
+la chaîne ne connaît **aucune adresse** de demandeur (elle l'identifie par son
+login de forge, et `whoami` valide ce login contre un motif qui rejetterait une
+adresse) ; et le destinataire doit pouvoir joindre Vault pour déplier, ce qui se
+vérifie s'il est hors du réseau interne.
+
 ## Résiduel
 
 - **Le lien entre le Jenkins local et celui du labs n'est pas établi.** Ce sont

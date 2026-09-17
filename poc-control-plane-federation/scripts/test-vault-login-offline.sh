@@ -26,6 +26,14 @@
 #       sur le parcours (le 403 de la preuve de mort), et aucun mot que SEUL
 #       un corps 2xx porte (relecture 2026-09-10, F2 : l'absence du token était
 #       portée par les FORMES de dbg.sh, pas par la lib) ;
+#   O.7 la REMISE À USAGE UNIQUE (vault_wrap_read, 2026-09-17) : le verbe rend
+#       le JETON D'ENVELOPPEMENT et JAMAIS la valeur — c'est sa raison d'être,
+#       le secret restant dans Vault. O.7b est son DISCRIMINANT et vise le cas
+#       dangereux : quand l'en-tête X-Vault-Wrap-TTL n'est pas honorée (proxy
+#       qui la retire, moteur qui l'ignore), Vault répond 200 avec le secret EN
+#       CLAIR — le verbe doit REFUSER (ENVELOPPEMENT_ABSENT) et n'en rien
+#       servir, jamais se rabattre sur ce corps. O.7c : la garde de TTL est
+#       AVANT le réseau (aucune lecture KV dans le journal du stub) ;
 #   O.3 STOA_DEBUG vide ⇒ silence ; VAULT_DEBUG=1 seul ⇒ silence aussi
 #       (ruling L2 : STOA_DEBUG est la SEULE autorité, VAULT_DEBUG a disparu) ;
 #   O.4 sans python3 sur le PATH, le corps d'erreur ne sort PAS en clair :
@@ -142,6 +150,10 @@ fi
 CTL="$TMP/ctl"; LOG="$TMP/stub.log"
 TOKEN="hvs.STUBtoken${$}0123456789abcdefghij"   # ≥ 8 après « hvs. » : la forme le voit aussi
 KV_PASS="kv-valeur-secrete-${$}-Q7"
+# Le jeton d'ENVELOPPEMENT rendu par le stub (O.7). Forme `hvs.` comme un vrai,
+# et DISTINCT de KV_PASS : c'est ce qui permet d'affirmer que le verbe rend le
+# jeton ET PAS la valeur — deux constantes confondues rendraient l'épreuve vaine.
+WRAP="hvs.STUBwrap${$}9876543210zyxwvutsrq"
 # La COUPE de la lib (`cut -c1-400` de _vault_curl) et le corps qui la met à
 # l'épreuve : TETE + NPAD × « F » + « ", » puis le mot de passe entre quotes,
 # calé pour que ses AVANT premiers caractères précèdent la frontière — la coupe
@@ -157,6 +169,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import quote
 CTL, LOG = os.environ["STUB_CTL"], os.environ["STUB_LOG"]
 TOKEN, KV_PASS = os.environ["STUB_TOKEN"], os.environ["STUB_KV"]
+WRAP = os.environ["STUB_WRAP"]
 TETE, NPAD = os.environ["STUB_TETE"], int(os.environ["STUB_NPAD"])
 etat = {"revoque": False}
 class H(BaseHTTPRequestHandler):
@@ -205,6 +218,17 @@ class H(BaseHTTPRequestHandler):
             etat["revoque"] = True
             return self.js(204, brut=b"")
         if p.startswith("/v1/secret/data/") and method == "GET":
+            # REMISE ENVELOPPÉE (O.7). Un Vault réel, quand la requête porte
+            # X-Vault-Wrap-TTL, ne renvoie PAS la valeur : il renvoie un jeton
+            # dépliable une fois, et le secret reste chez lui. Le stub fait de
+            # même — sinon l'épreuve ne mesurerait pas la propriété qui compte.
+            ttl = self.headers.get("X-Vault-Wrap-TTL")
+            if ttl and self.mode() != "wrap_ignore":
+                return self.js(200, {"wrap_info": {"token": WRAP, "ttl": int(ttl),
+                                                   "creation_path": p.lstrip("/").replace("v1/", "", 1)}})
+            # mode `wrap_ignore` : 200 AVEC la valeur en clair MALGRÉ l'en-tête —
+            # le cas dangereux (proxy qui retire l'en-tête, moteur qui ne
+            # l'honore pas). Le verbe doit REFUSER, jamais servir ce corps.
             return self.js(200, {"data": {"data": {"username": "svc-stub", "password": KV_PASS}}})
         return self.js(404, {"errors": ["route inconnue " + p]})
     def do_GET(self): self.route("GET")
@@ -213,7 +237,7 @@ srv = ThreadingHTTPServer(("127.0.0.1", 0), H); print(srv.server_address[1], flu
 PY
 start_stub(){ # → imprime l'URL
   local port
-  STUB_CTL="$CTL" STUB_LOG="$LOG" STUB_TOKEN="$TOKEN" STUB_KV="$KV_PASS" STUB_TETE="$TETE" STUB_NPAD="$NPAD" \
+  STUB_CTL="$CTL" STUB_LOG="$LOG" STUB_TOKEN="$TOKEN" STUB_KV="$KV_PASS" STUB_WRAP="$WRAP" STUB_TETE="$TETE" STUB_NPAD="$NPAD" \
     python3 "$TMP/stub.py" > "$TMP/port" 2>"$TMP/stub.err" &
   PIDS="$PIDS $!"
   for _ in $(seq 1 60); do [ -s "$TMP/port" ] && break; sleep 0.1; done
@@ -248,6 +272,18 @@ vault_login_nominative || exit 3
 cat "$VAULT_TOKEN_FILE" > "$3"
 vault_read secret/data/stoa/demo password
 vault_revoke_proof'
+# O.7 (2026-09-17) : la REMISE À USAGE UNIQUE. `vault_wrap_read` doit rendre le
+# JETON D'ENVELOPPEMENT sur stdout et JAMAIS la valeur — c'est toute la raison
+# d'être du verbe : le secret reste dans Vault, seul un jeton dépliable une fois
+# circule. Le scénario réutilise le login nominatif, puis demande la remise.
+P_WRAP="$PRELUDE"'
+vault_login_nominative || exit 3
+vault_wrap_read secret/data/stoa/demo 120'
+# O.7c : un TTL non entier doit refuser AVANT tout appel réseau (rien à déplier,
+# donc rien à lire) — la garde est en tête du verbe.
+P_WRAP_TTL="$PRELUDE"'
+vault_login_nominative || exit 3
+vault_wrap_read secret/data/stoa/demo pas-un-nombre'
 # O.4 : _vault_curl SEUL, PATH réduit à $4 (le corps est préparé par le harnais).
 P_CURL='. "$1" || exit 99; set -u
 export VAULT_USER_PASSWORD="$S_O"
@@ -334,6 +370,7 @@ for shell in $SHELLS; do
      && grep -q 'mort PROUVÉE (lookup-self -> 403)' "$OUT"; then
     ok "O.2c [$shell] révocation + preuve de mort tracées (204 puis 403) ; le corps 403 « permission denied » est dit — un corps d'erreur SANS secret reste lisible"
   else ko "O.2c [$shell] $(grep 'revoke\|403' "$ERR" "$OUT" | tr '\n' '|' | cut -c1-240)"; fi
+
   # O.2d — le DISCRIMINANT de « un corps 2xx n'est JAMAIS imprimé » (relecture
   # 2026-09-10, F2 ; mutant M5). Sur ce parcours (login 200, lookup-self 200,
   # KV 200, revoke 204, lookup-self 403), la SEULE ligne « ↳ erreur » est celle
@@ -347,6 +384,41 @@ for shell in $SHELLS; do
      && ! grep -qF 'display_name' "$ERR" && ! grep -qF 'svc-stub' "$ERR"; then
     ok "O.2d [$shell] une SEULE ligne « ↳ erreur » (le 403 de la preuve de mort) ; ni lease_duration, ni display_name, ni svc-stub sur stderr : les corps 2xx (login, lookup-self, KV) ne passent PAS par dbg"
   else ko "O.2d [$shell] $(grep -c '↳ erreur:' "$ERR") lignes « ↳ erreur » — $(grep 'lease_duration\|display_name\|svc-stub' "$ERR" | head -1 | cut -c1-160)"; fi
+
+  echo "═══ O.7 [$shell] REMISE À USAGE UNIQUE : le JETON sort, la VALEUR jamais ═══"
+  # LA propriété du verbe, et la seule qui justifie son existence : `vault_wrap_read`
+  # rend un jeton dépliable UNE fois, et le secret ne transite PAS par ce shell.
+  # C'est pour ça que WRAP et KV_PASS sont deux constantes distinctes : si le
+  # verbe servait la valeur, l'épreuve le verrait ici même.
+  set_mode ok
+  S_O="$(sentinelle O7)"
+  S_O="$S_O" joue "$shell" "$P_WRAP"
+  if [ "$(rrc)" = 0 ] && grep -qx -- "$WRAP" "$OUT" && absent "$KV_PASS"; then
+    ok "O.7 [$shell] le JETON d'enveloppement est le produit (stdout, seul) ; la VALEUR du secret n'apparaît ni sur stdout ni sur stderr — elle est restée dans Vault"
+  else ko "O.7 [$shell] rc $(rrc) stdout='$(tr '\n' '|' < "$OUT" | cut -c1-120)' — valeur présente ? $(grep -c -F -- "$KV_PASS" "$OUT" "$ERR" | tr '\n' ' ')"; fi
+
+  # O.7b — LE CAS DANGEREUX, et le discriminant de tout le verbe. Si l'en-tête
+  # d'enveloppement n'est pas honorée (proxy qui la retire, moteur qui l'ignore),
+  # Vault répond 200 avec le SECRET EN CLAIR. Servir ce corps livrerait en clair
+  # ce que l'appelant croit enveloppé : on exige un REFUS NOMMÉ, et surtout que
+  # la valeur ne sorte pas.
+  set_mode wrap_ignore
+  S_O="$(sentinelle O7b)"
+  S_O="$S_O" joue "$shell" "$P_WRAP"
+  if [ "$(rrc)" != 0 ] && grep -q 'ENVELOPPEMENT_ABSENT' "$ERR" && ! grep -qF -- "$KV_PASS" "$OUT"; then
+    ok "O.7b [$shell] 200 SANS wrap_info ⇒ refus nommé ENVELOPPEMENT_ABSENT et la valeur en clair n'est PAS servie — le corps est effacé sans être lu"
+  else ko "O.7b [$shell] rc $(rrc) — refus '$(grep -o 'ENVELOPPEMENT_ABSENT' "$ERR" | head -1)' — valeur sur stdout ? $(grep -c -F -- "$KV_PASS" "$OUT")"; fi
+
+  # O.7c — la garde de TTL est AVANT le réseau : un TTL non entier ne doit
+  # déclencher aucune lecture. Sans cette épreuve, on pourrait la déplacer après
+  # l'appel sans que rien ne rougisse.
+  set_mode ok
+  S_O="$(sentinelle O7c)"
+  S_O="$S_O" joue "$shell" "$P_WRAP_TTL"
+  if [ "$(rrc)" != 0 ] && grep -q 'TTL_ENVELOPPE_INVALIDE' "$ERR" \
+     && ! grep -q 'GET /v1/secret/data/' "$LOG"; then
+    ok "O.7c [$shell] TTL non entier ⇒ refus TTL_ENVELOPPE_INVALIDE AVANT tout appel : aucune lecture KV dans le journal du stub"
+  else ko "O.7c [$shell] rc $(rrc) — $(grep -o 'TTL_ENVELOPPE_INVALIDE' "$ERR" | head -1) — appels KV : $(grep -c 'GET /v1/secret/data/' "$LOG")"; fi
 
   echo "═══ O.3 [$shell] STOA_DEBUG vide ⇒ silence ; VAULT_DEBUG=1 seul ⇒ silence (STOA_DEBUG est la seule autorité) ═══"
   set_mode echo_pwd
@@ -476,6 +548,44 @@ if mute M7 's/hexdigest()\[:2\]/hexdigest()[:16]/'; then
     if ligne_err 'sha256=[0-9a-f]\{16\}' && present_err "] POST $VADDR/v1/auth/userpass/login/alice -> HTTP 400"; then
       ok "M7 [$shell] empreinte remise à 16 hex ⇒ « $(grep -o 'sha256=[0-9a-f]*' "$ERR" | head -1) » : 64 bits vérifiables hors ligne (O.1e rougit)"
     else ko "M7 [$shell] le mutant passe encore : $(grep 'empreinte' "$ERR" | head -1 | cut -c1-160)"; fi
+  done
+fi
+
+# M8 — LE MUTANT QUI COMPTE. La garde « wrap_info absent » neutralisée : le verbe
+# ne voit plus que l'enveloppement n'a pas eu lieu, et sert le corps — c'est-à-dire
+# le SECRET EN CLAIR. O.7b doit rougir, et la valeur doit SORTIR : c'est la seule
+# façon de prouver que la garde empêche une fuite, et pas seulement un message.
+if mute M8 's/sys.exit(0 if (d.get("wrap_info") or {}).get("token") else 1)/sys.exit(0)/'; then
+  for shell in $SHELLS; do
+    set_mode wrap_ignore; S_O="$(sentinelle M8)"
+    S_O="$S_O" JLIB="$TMP/mut-M8.sh" joue "$shell" "$P_WRAP"
+    if ! grep -q 'ENVELOPPEMENT_ABSENT' "$ERR"; then
+      ok "M8 [$shell] garde wrap_info neutralisée ⇒ plus de refus ENVELOPPEMENT_ABSENT (O.7b rougit : c'est bien elle qui refuse)"
+    else ko "M8 [$shell] le mutant refuse encore : $(grep -o 'ENVELOPPEMENT_ABSENT' "$ERR" | head -1)"; fi
+  done
+fi
+# M9 — la garde de TTL retirée : un TTL non entier atteint le réseau. O.7c rougit
+# sur l'APPEL, pas seulement sur le message — sans quoi on pourrait la déplacer
+# après la lecture sans que rien ne le dise.
+if mute M9 '/TTL_ENVELOPPE_INVALIDE/d'; then
+  for shell in $SHELLS; do
+    set_mode ok; S_O="$(sentinelle M9)"
+    S_O="$S_O" JLIB="$TMP/mut-M9.sh" joue "$shell" "$P_WRAP_TTL"
+    if grep -q 'GET /v1/secret/data/' "$LOG" && ! grep -q 'TTL_ENVELOPPE_INVALIDE' "$ERR"; then
+      ok "M9 [$shell] garde de TTL retirée ⇒ la lecture KV PART malgré un TTL non entier (O.7c rougit sur l'absence d'appel)"
+    else ko "M9 [$shell] appels KV $(grep -c 'GET /v1/secret/data/' "$LOG"), refus '$(grep -o 'TTL_ENVELOPPE_INVALIDE' "$ERR" | head -1)'"; fi
+  done
+fi
+# M10 — le verbe rend le champ VOISIN (creation_path) au lieu du jeton : rc 0,
+# une sortie plausible, et pourtant le produit est faux. O.7 rougit sur la
+# LIGNE EXACTE — une assertion « stdout non vide » ne l'aurait pas vu.
+if mute M10 's/\["wrap_info"\]\["token"\]/["wrap_info"]["creation_path"]/'; then
+  for shell in $SHELLS; do
+    set_mode ok; S_O="$(sentinelle M10)"
+    S_O="$S_O" JLIB="$TMP/mut-M10.sh" joue "$shell" "$P_WRAP"
+    if ! grep -qx -- "$WRAP" "$OUT"; then
+      ok "M10 [$shell] le verbe rend creation_path au lieu du jeton ⇒ O.7 rougit (elle attend la LIGNE EXACTE, pas « quelque chose »)"
+    else ko "M10 [$shell] le jeton sort encore : $(head -1 "$OUT" | cut -c1-60)"; fi
   done
 fi
 
