@@ -44,6 +44,79 @@ def forgeCreds() {
   error("REFUS: FORGE_CRED_KIND_INVALIDE — FORGE_CRED_KIND='${kind}' : attendu secret-text (jeton) ou username-password (couple). Rien n a ete lie. Poser la globale Jenkins FORGE_CRED_KIND (setup-jenkins-globals.sh).")
 }
 
+// ── LA VOIE SANS ADMIN, POUR UN STAGE SANS AGENT (2026-09-17) ──────────────
+// Ce pipeline pose son déclencheur dans un stage `agent none` : pas d'espace de
+// travail, donc aucun bloc `sh`, donc la lib ci/lib/site-env.sh ne l'atteint
+// pas. `readTrusted` lit depuis le SCM SANS nœud — mesuré le 2026-09-17
+// (scripts/spike-readtrusted.sh) : lecture au NIVEAU SCRIPT réussie, et la
+// valeur atteint bien le bloc environment{}.
+//
+// ⚠ LE FICHIER EST LU SUR LA BRANCHE DE BASE, JAMAIS SUR LA TÊTE DE LA PR : le
+// <scm> des 13 jobs porte `*/__GIT_BASE__`, substitué par le POSEUR. Une PR ne
+// peut donc PAS forger les valeurs de site. C'est cette invariante qui rend un
+// fichier de site versionné acceptable ; le jour où un <scm> suivrait la branche
+// de la charge utile, elle tomberait, et rien ici ne le dirait.
+//
+// Extraction volontairement MINIMALE (un seul nom) : partager du Groovy entre
+// Jenkinsfile exigerait une shared library globale, donc le droit d'admin que
+// cette voie existe pour contourner. Le FORMAT n'a qu'une autorité :
+// ci/lib/site-env.sh. Fichier absent ⇒ hudson.AbortException, rattrapée : un
+// site qui a un admin ne doit pas être cassé par cette voie.
+def SITE_WEBHOOK_KIND = ''
+def SITE_WEBHOOK_KIND_N = 0
+try {
+  readTrusted('poc-control-plane-federation/config/site.ini').split('\n').each { l ->
+    def t = l.trim()
+    if (t.startsWith('WEBHOOK_KIND=')) {
+      SITE_WEBHOOK_KIND_N = SITE_WEBHOOK_KIND_N + 1
+      SITE_WEBHOOK_KIND = t.substring('WEBHOOK_KIND='.length()).trim()
+    }
+  }
+} catch (Exception e) {
+  // ⚠ DEUX COUCHES, ET CHACUNE ACHÈTE AUTRE CHOSE. Ne pas en retirer une en
+  // croyant que l'autre la couvre — c'est la simplification qui rouvrirait le
+  // défaut :
+  //   • `Exception` et JAMAIS `Throwable`. Un pas de pipeline INEXISTANT ne passe
+  //     pas par le methodMissing de Groovy mais par le DSL.invokeMethod de
+  //     Jenkins, qui lève `NoSuchMethodError` (« No such DSL method ») — un
+  //     Error, PAS une Exception. C'est CE niveau, et lui seul, qui rend bruyant
+  //     le MÉCANISME absent : avec `Throwable` l'Error était avalée, l'echo
+  //     passait, et WEBHOOK_KIND retombait EN SILENCE sur 'gwt' — la mort
+  //     silencieuse que L6 existe pour lever, réintroduite par le chemin censé la
+  //     contourner.
+  //   • le test sur le NOM de classe. Il relance tout le RESTE : IOException,
+  //     RejectedAccessException du bac à sable, FlowInterruptedException d'un
+  //     build ABANDONNÉ — sans lui, un abandon serait avalé et le build repartirait
+  //     sur 'gwt'. Il ne protège PAS du mécanisme absent ; c'est la couche du
+  //     dessus qui le fait.
+  // Le nom est comparé EXACTEMENT : une sous-classe d'AbortException serait donc
+  // RELANCÉE là où un `catch` typé l'attraperait. Plus strict que la forme typée,
+  // et assumé — ce n'est pas un comportement « identique ».
+  // MESURÉ le 2026-09-17 sur le Jenkins du lab (scripts/spike-readtrusted.sh) :
+  // un fichier absent lève `hudson.AbortException`. Le nom est comparé en CHAÎNE
+  // pour n'exiger aucune résolution de classe — et pour que ce bloc reste jouable
+  // hors Jenkins, ce dont le test-miroir (scripts/test-site-env.sh S.11) dépend.
+  // ⚠ DEUX SILENCES, UN SEUL LÉGITIME. Fichier PRÉSENT mais clé absente ⇒
+  // SITE_WEBHOOK_KIND vide ⇒ repli sur 'gwt' : c'est le cas NOMINAL d'un site qui
+  // ne surcharge rien, et il doit rester muet. Fichier illisible parce que le
+  // MÉCANISME manque (pas `readTrusted`, plugin absent) : celui-là doit rougir.
+  // Réélargir ce catch « pour simplifier » rendrait les deux indiscernables — et
+  // c'est exactement l'état d'où l'on vient.
+  if (e.getClass().getName() != 'hudson.AbortException') { throw e }
+  echo "site-env: config/site.ini absent (${e.getClass().getName()}) — WEBHOOK_KIND viendra de l environnement seul"
+}
+// UNE CLÉ RÉPÉTÉE EST INCLASSABLE, DONC ROUGE — même verdict que ci/lib/site-env.sh
+// (SITE_CLE_EN_DOUBLE). Sans cette garde, `each` gardait la DERNIÈRE valeur ici et
+// la lib shell la PREMIÈRE : le même fichier rendait deux valeurs selon qu'on le
+// lisait depuis `environment{}` ou depuis un bloc `sh`, en silence.
+// ⚠ LE REFUS EST HORS DU try/catch, ET C'EST DÉLIBÉRÉ : `error()` lève, et le
+// `catch (Throwable e)` ci-dessus — qui n'est là que pour tolérer un fichier
+// ABSENT — l'avalerait. Un catch trop large rend muette la branche qu'on veut
+// entendre ; le déplacer d'une ligne suffirait à désarmer cette garde.
+if (SITE_WEBHOOK_KIND_N > 1) {
+  error("REFUS: SITE_CLE_EN_DOUBLE : config/site.ini definit WEBHOOK_KIND ${SITE_WEBHOOK_KIND_N} fois — lequel gagne n est pas une question que ce canal tranche. Ne gardez qu une seule ligne")
+}
+
 pipeline {
 
   // `agent none` — DÉLIBÉRÉ, cf. team-publish : la demande en attente est
@@ -122,7 +195,7 @@ pipeline {
     // Le RÉCEPTEUR de webhooks de CE Jenkins (L6) : gwt (défaut) | gitlab.
     // Ce n'est PAS le visage de la forge (FORGE_KIND) : un même GitLab peut
     // être reçu par le generic-webhook-trigger OU par le GitLab Plugin.
-    WEBHOOK_KIND          = "${env.WEBHOOK_KIND ?: 'gwt'}"
+    WEBHOOK_KIND          = "${env.WEBHOOK_KIND ?: SITE_WEBHOOK_KIND ?: 'gwt'}"
     // Credential Jenkins (secret text) portant le token Gitea du CI.
     GITEA_CREDENTIALS_ID  = "${env.GITEA_CREDENTIALS_ID ?: 'gitea-provision-token'}"
     // APIM_API_BASE / JENKINS_UI de team-publish n'ont pas de sens ici : la
@@ -316,6 +389,13 @@ pipeline {
           dir(env.GIT_SUBDIR) {
             sh '''
               set +x
+              # LA VOIE SANS ADMIN (2026-09-17) : les valeurs de site viennent d'un
+              # fichier VERSIONNÉ quand l'exploitant n'a pas le droit de poser une
+              # propriété globale. EN TÊTE, avant dbg.sh : STOA_DEBUG est lui-même une
+              # valeur de site. L'environnement déjà posé l'emporte toujours.
+              # shellcheck source=ci/lib/site-env.sh
+              . ci/lib/site-env.sh || { echo "REFUS: SITE_LIB_INTROUVABLE : ci/lib/site-env.sh" >&2; exit 2; }
+              site_env_load || exit 2
 
               # ── BUILD labctl, SI ET SEULEMENT SI le moteur l'exige ──────────
               # ⚠ CHOIX DÉLIBÉRÉ (revue round 1) : PAS de stage `Build labctl`
@@ -449,6 +529,13 @@ pipeline {
                     dir(env.GIT_SUBDIR) {
                       sh '''
                 set +x
+                # LA VOIE SANS ADMIN (2026-09-17) : les valeurs de site viennent d'un
+                # fichier VERSIONNÉ quand l'exploitant n'a pas le droit de poser une
+                # propriété globale. EN TÊTE, avant dbg.sh : STOA_DEBUG est lui-même une
+                # valeur de site. L'environnement déjà posé l'emporte toujours.
+                # shellcheck source=ci/lib/site-env.sh
+                . ci/lib/site-env.sh || { echo "REFUS: SITE_LIB_INTROUVABLE : ci/lib/site-env.sh" >&2; exit 2; }
+                site_env_load || exit 2
                 if [ -z "${WEBHOOK_REPO:-}" ] || [ -z "${PR_NUMBER:-}" ]; then
                   echo "commentaire de statut impossible (WEBHOOK_REPO/PR_NUMBER absents)"
                   exit 0

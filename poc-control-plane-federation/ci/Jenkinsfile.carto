@@ -556,6 +556,13 @@ podTemplate(containers: [
             sh '''
               set -eu
               set +x
+              # LA VOIE SANS ADMIN (2026-09-17) : les valeurs de site viennent d'un
+              # fichier VERSIONNÉ quand l'exploitant n'a pas le droit de poser une
+              # propriété globale. EN TÊTE, avant dbg.sh : STOA_DEBUG est lui-même une
+              # valeur de site. L'environnement déjà posé l'emporte toujours.
+              # shellcheck source=ci/lib/site-env.sh
+              . ${SUB_PFX}ci/lib/site-env.sh || { echo "REFUS: SITE_LIB_INTROUVABLE : ${SUB_PFX}ci/lib/site-env.sh" >&2; exit 2; }
+              site_env_load || exit 2
               . "${SUB_PFX}ci/lib/carto-secrets.sh"
               carto_secrets_resolve || exit 1
               set -x
@@ -669,6 +676,13 @@ PY
             sh '''
               set -eu
               set +x
+              # LA VOIE SANS ADMIN (2026-09-17) : les valeurs de site viennent d'un
+              # fichier VERSIONNÉ quand l'exploitant n'a pas le droit de poser une
+              # propriété globale. EN TÊTE, avant dbg.sh : STOA_DEBUG est lui-même une
+              # valeur de site. L'environnement déjà posé l'emporte toujours.
+              # shellcheck source=ci/lib/site-env.sh
+              . ${SUB_PFX}ci/lib/site-env.sh || { echo "REFUS: SITE_LIB_INTROUVABLE : ${SUB_PFX}ci/lib/site-env.sh" >&2; exit 2; }
+              site_env_load || exit 2
               . "${SUB_PFX}ci/lib/carto-secrets.sh"
               carto_secrets_resolve || exit 1
               set -x
@@ -870,6 +884,13 @@ PY
               sh '''
                 set -eu
               set +x
+                # LA VOIE SANS ADMIN (2026-09-17) : les valeurs de site viennent d'un
+                # fichier VERSIONNÉ quand l'exploitant n'a pas le droit de poser une
+                # propriété globale. EN TÊTE, avant dbg.sh : STOA_DEBUG est lui-même une
+                # valeur de site. L'environnement déjà posé l'emporte toujours.
+                # shellcheck source=ci/lib/site-env.sh
+                . ${SUB_PFX}ci/lib/site-env.sh || { echo "REFUS: SITE_LIB_INTROUVABLE : ${SUB_PFX}ci/lib/site-env.sh" >&2; exit 2; }
+                site_env_load || exit 2
               . "${SUB_PFX}ci/lib/carto-secrets.sh"
               carto_secrets_resolve || exit 1
               set -x
@@ -906,6 +927,13 @@ PY
                 sh '''
                   set -eu
               set +x
+                  # LA VOIE SANS ADMIN (2026-09-17) : les valeurs de site viennent d'un
+                  # fichier VERSIONNÉ quand l'exploitant n'a pas le droit de poser une
+                  # propriété globale. EN TÊTE, avant dbg.sh : STOA_DEBUG est lui-même une
+                  # valeur de site. L'environnement déjà posé l'emporte toujours.
+                  # shellcheck source=ci/lib/site-env.sh
+                  . ${SUB_PFX}ci/lib/site-env.sh || { echo "REFUS: SITE_LIB_INTROUVABLE : ${SUB_PFX}ci/lib/site-env.sh" >&2; exit 2; }
+                  site_env_load || exit 2
               . "${SUB_PFX}ci/lib/carto-secrets.sh"
               carto_secrets_resolve || exit 1
               set -x

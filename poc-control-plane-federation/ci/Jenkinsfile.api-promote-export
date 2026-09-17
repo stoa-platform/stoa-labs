@@ -114,6 +114,13 @@ pipeline {
               // second ne le consomme (même piège que team-publish.sh).
               sh '''
                 set +x
+                # LA VOIE SANS ADMIN (2026-09-17) : les valeurs de site viennent d'un
+                # fichier VERSIONNÉ quand l'exploitant n'a pas le droit de poser une
+                # propriété globale. EN TÊTE, avant dbg.sh : STOA_DEBUG est lui-même une
+                # valeur de site. L'environnement déjà posé l'emporte toujours.
+                # shellcheck source=ci/lib/site-env.sh
+                . ci/lib/site-env.sh || { echo "REFUS: SITE_LIB_INTROUVABLE : ci/lib/site-env.sh" >&2; exit 2; }
+                site_env_load || exit 2
                 if [ "${DEBUG:-false}" = "true" ]; then export STOA_DEBUG=1; fi
                 export VAULT_USER_PASSWORD="${V_PASS:-}"
                 # V_PASS ne doit PAS survivre au-delà de cette ligne : une

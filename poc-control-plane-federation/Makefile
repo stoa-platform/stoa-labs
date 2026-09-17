@@ -128,6 +128,7 @@ lint-ci:
 	  scripts/test-repo-layout-portabilite.sh scripts/lib/providers-teams.sh scripts/test-providers-teams.sh \
 	  scripts/lib/forge-api.sh scripts/test-forge-api.sh scripts/test-forge-api-live.sh scripts/setup-gitlab-lab.sh \
 	  scripts/lib/git-base.sh scripts/test-git-base.sh scripts/test-dbg-redaction.sh scripts/test-vault-login-offline.sh \
+	  scripts/test-site-env.sh \
 	  ci/lint-forge-literals.sh ci/lint-forge-knobs.sh ci/lint-permissive-defaults.sh ci/lint-branch-literals.sh scripts/test-app-request-gitlab-live.sh \
 	  scripts/test-porte-clone-frais.sh \
 	  scripts/test-team-request-wiring.sh scripts/test-team-publish-wiring.sh \
@@ -176,6 +177,12 @@ lint-ci:
 	@# d'erreur EN CLAIR sans python3. Stub Vault sur port libre, dash/sh/bash,
 	@# mutations sur copie. Hors ligne, ~5 s. Sous l'etape 2, sans rang.
 	@bash scripts/test-vault-login-offline.sh
+	@# LA VOIE SANS ADMIN (2026-09-17) : ci/lib/site-env.sh charge les valeurs de
+	@# site depuis un fichier VERSIONNE, pour un client sans Overall/RunScripts.
+	@# Trois proprietes le rendent acceptable et chacune a son mutant : un SECRET
+	@# y est refuse, l'ENVIRONNEMENT pose l'emporte, l'INCLASSABLE est rouge.
+	@# dash/sh/bash. Hors ligne, ~2 s. Sous l'etape 2, sans rang.
+	@bash scripts/test-site-env.sh
 	@# UNE SEULE AUTORITE DE FORGE (2026-09-09) : hors de forge-api.py/.sh et de
 	@# forge-identity.sh, aucun /api/v1, /api/v4, en-tete d'auth, json.load ni
 	@# urlopen dans les fichiers ROUTES. Interdire le litteral, jamais l'exiger.

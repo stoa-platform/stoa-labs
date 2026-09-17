@@ -2612,6 +2612,64 @@ login de forge, et `whoami` valide ce login contre un motif qui rejetterait une
 adresse) ; et le destinataire doit pouvoir joindre Vault pour déplier, ce qui se
 vérifie s'il est hors du réseau interne.
 
+## La voie sans admin (2026-09-17)
+
+**LE PROBLÈME, ET IL EST BLOQUANT.** Poser une propriété globale exige
+`Overall/RunScripts` (Manage Jenkins → System). Un client qui ne l'a pas n'avait
+aucune voie pour donner ses valeurs de site à la chaîne — et depuis `9892876`,
+`GIT_HOST` n'a plus de repli : son absence ne fait plus dériver vers une adresse
+de laboratoire, elle fait REFUSER (`GIT_HOST_REQUIS`). Chez ce client, la chaîne
+producteur ne démarrait donc pas du tout. ⚠ Le mode `--print` de
+`setup-jenkins-globals.sh` ne contourne rien : sa lecture passe par la console de
+script, donc par le même droit, et son `curl` sans `-f` fait qu'un refus 403 s'y
+affiche « aucune variable globale posée », indiscernable d'un Jenkins vierge.
+
+**LA VOIE : un fichier versionné, chargé par une autorité unique.** Le site pose
+ses valeurs dans `config/site.ini`, dans SON dépôt, que le job checkoute.
+`ci/lib/site-env.sh` le charge en tête des **21 blocs `sh` consommateurs** des
+pipelines, et exporte vers l'environnement : **aucun script de la chaîne n'est
+modifié**, ils héritent. Le format est celui de `setup-jenkins-globals.sh --file`
+à l'octet près — une épreuve-miroir exige que les deux voies rendent le même
+verdict sur les mêmes noms, sinon la frontière des secrets dépendrait de la porte
+par laquelle on entre.
+
+**PRÉCÉDENCE : l'environnement POSÉ l'emporte toujours sur le fichier.** Une
+globale Jenkins arrive dans l'environnement du step : elle gagne, et la voie
+admin reste intacte. Les deux coexistent, celle du fichier ne casse jamais
+l'autre. Un fichier absent n'est pas une panne : ligne nommée, `rc 0`.
+
+**⛔ AUCUN SECRET DANS CE FICHIER**, et ce n'est pas une consigne mais un REFUS :
+tout nom contenant `PASSWORD`, `SECRET`, `TOKEN`, `_KEY` ou `CREDENTIALS` est
+rejeté au chargement (`SITE_SECRET_INTERDIT`), avec les mêmes trois exemptions
+nommées que le poseur. Le fichier est versionné, donc lisible par quiconque lit
+le dépôt. La copie livrée dans CE dépôt ne porte d'ailleurs **aucune ligne
+active** : c'est un catalogue commenté de 41 noms. Une valeur de lab y serait un
+défaut de site qu'aucune porte ne voit — `ci/lint-config-knobs.sh` n'inspecte que
+les Jenkinsfile et les scripts, jamais un fichier de données.
+
+**LE STAGE SANS AGENT, ET CE QUI A CHANGÉ.** Les cinq récepteurs posent leur
+déclencheur dans un stage `agent none` : pas d'espace de travail, donc pas de
+bloc `sh`, donc la lib ne les atteint pas. La conclusion du 2026-09-16 était
+qu'il fallait un credential pour `WEBHOOK_KIND`, avec son masquage en
+sous-chaîne pour prix. **C'est réfuté** : `readTrusted` n'est pas `readFile`, il
+lit depuis le SCM SANS nœud. Mesuré le 2026-09-17 (`scripts/spike-readtrusted.sh`,
+jamais joué jusque-là) : lecture réussie au NIVEAU SCRIPT, et la valeur atteint
+le bloc `environment{}`. Les cinq récepteurs lisent donc le même fichier que tout
+le reste. **Un seul mécanisme, et plus aucun credential pour une valeur qui n'est
+pas un secret.** Fichier absent ⇒ `hudson.AbortException`, rattrapée.
+
+**⚠ L'INVARIANTE QUI REND CE FICHIER ACCEPTABLE, à ne jamais casser.** Le `<scm>`
+des **13** jobs porte `*/__GIT_BASE__`, un placeholder substitué par le POSEUR :
+`readTrusted` lit donc `config/site.ini` **sur la branche de base, jamais sur la
+tête de la PR**. Une demande ne peut pas forger les valeurs de site. Le jour où
+un `<scm>` de récepteur suivrait la branche de la charge utile, le fichier
+deviendrait contrôlé par le demandeur — et rien dans le chargeur ne le dirait.
+
+**Preuves** : `scripts/test-site-env.sh` (dash, sh, bash) — secret refusé,
+précédence, inclassable rouge, atomicité, CRLF retiré, pointeur explicite
+illisible refusé, miroir des deux voies ; trois mutants prouvent que chaque garde
+porte quelque chose (garde de secret neutralisée ⇒ le secret SORT).
+
 ## Résiduel
 
 - **Le lien entre le Jenkins local et celui du labs n'est pas établi.** Ce sont

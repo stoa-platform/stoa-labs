@@ -102,6 +102,48 @@ requis JENKINS_UI     "${JENKINS_UI:-}"     "le Jenkins a sonder (lab : http://l
 requis GIT_HOST       "${GIT_HOST:-}"       "la forge vue du POSTE, pour le clone et la poussee (lab : http://localhost:13000)"
 requis GIT_HOST_AGENT "${GIT_HOST_AGENT:-}" "la forge vue de l AGENT, pour le <scm> du job (lab : http://gitea:3000)"
 requis GIT_REPO       "${GIT_REPO:-}"       "owner/repo du depot plateforme (lab : ci/stoa-labs)"
+
+# ── LES POST VERS JENKINS EXIGENT UN CRUMB *ET* SON COOKIE (2026-09-17) ──────
+# Mesuré : un `curl -X POST .../createItem` nu rend 403, et la sonde s'arretait
+# la sans jamais poser sa question. Jenkins veut le jeton anti-CSRF ET la
+# session qui l'a emis : le crumb seul ne suffit pas, le cookie seul non plus.
+# UN seul helper, pas trois copies aux trois sites de POST (creation, build,
+# suppression) : trois copies auraient diverge a la premiere correction.
+# ⚠ JAR est calcule A L'APPEL, pas ici : `$TMP` n'existe qu'une cinquantaine de
+# lignes plus bas, et sous `set -u` une assignation ici tuerait la sonde sur une
+# « unbound variable ». Le piege est sournois : le refus de CONFIG plus haut
+# coupe avant, donc un essai a knobs manquants passe au vert sans jamais
+# atteindre la ligne fautive. On supprime la dependance d'ordre plutot que de la
+# deplacer — un jour quelqu'un reordonnera ce fichier.
+#
+# PLACEMENT (revue de la session voisine, 2026-09-17) : ce bloc est DESSOUS le
+# dernier `requis`, et pas au milieu. L'en-tete de ce fichier promet « rien n'a
+# ete tente avant le refus de config » : un lecteur ne doit pas traverser un
+# helper pour verifier que la liste des refus est complete.
+JAR=""
+CRUMB=""
+jenkins_crumb(){
+  [ -n "$CRUMB" ] && return 0
+  # ⚠ PAS `JAR="${JAR:-$TMP/…}"`, malgré l'evidence : ci/lint-config-knobs.sh lit
+  # cette forme comme un DEFAUT DE SITE, classe sa valeur en chemin (T3), et la
+  # refuse parce qu'elle ne resout pas depuis la racine — mesure, porte rouge.
+  # Un test explicite garde la meme paresse sans rien donner a classer.
+  [ -n "$JAR" ] || JAR="$TMP/jenkins.cookies"
+  CRUMB=$(curl -s -c "$JAR" "$JENKINS_UI/crumbIssuer/api/json" 2>/dev/null \
+          | python3 -c 'import json,sys
+try:
+    d = json.load(sys.stdin); print(d["crumbRequestField"] + ":" + d["crumb"])
+except Exception:
+    pass' 2>/dev/null)
+  [ -n "$CRUMB" ]
+}
+# jpost <url> [args curl…] — imprime le code HTTP. Sans crumb joignable on NE
+# suppose pas que ca passera : on rend 000, et l'appelant refuse en le nommant.
+jpost(){
+  local url="$1"; shift
+  jenkins_crumb || { printf '000'; return 1; }
+  curl -s -o /dev/null -w '%{http_code}' -b "$JAR" -H "$CRUMB" -X POST "$url" "$@"
+}
 TEMOIN="poc-control-plane-federation/ci/lint-eol.sh"
 TEMOIN_MOT="PORTE"   # chaîne connue du contenu du témoin
 ok(){ printf '  ✅ %s\n' "$*"; }
@@ -109,7 +151,18 @@ ko(){ printf '  ❌ %s\n' "$*"; }
 note(){ printf '  ℹ %s\n' "$*"; }
 
 [ -n "${FORGE_SECRET:-}" ] || { echo "REFUS: FORGE_SECRET requis — ce spike POUSSE une branche jetable sur ${GIT_REPO}" >&2; exit 2; }
-grep -q "$TEMOIN_MOT" "$TEMOIN" \
+# DEUX POINTS DE VUE SUR LE MÊME FICHIER (corrigé le 2026-09-17). `$TEMOIN` est
+# le chemin vu par JENKINS après checkout — c'est celui que `readTrusted` reçoit
+# plus bas, et l'en-tête (§ ci-dessus) explique pourquoi il porte le préfixe du
+# livrable. Mais ce contrôle-ci est LOCAL, et la ligne `cd "$(dirname "$0")/.."`
+# nous a placés DANS `poc-control-plane-federation/` : le même chemin n'y résout
+# pas, et la sonde refusait « le témoin ne porte pas PORTE » sur un fichier qui
+# le porte quatre fois. Le chemin local est DÉRIVÉ du chemin Jenkins, jamais
+# écrit une seconde fois : deux littéraux finiraient par diverger.
+TEMOIN_LOCAL="../$TEMOIN"
+[ -f "$TEMOIN_LOCAL" ] \
+  || { echo "REFUS: le fichier témoin est introuvable depuis le poste ($TEMOIN_LOCAL, soit '$TEMOIN' vu de la racine du dépôt) — l'épreuve B serait vacante" >&2; exit 2; }
+grep -q "$TEMOIN_MOT" "$TEMOIN_LOCAL" \
   || { echo "REFUS: le fichier témoin $TEMOIN ne porte pas '$TEMOIN_MOT' — l'épreuve B serait vacante" >&2; exit 2; }
 
 TMP="$(mktemp -d /tmp/spike-rt.XXXXXX)"
@@ -121,7 +174,7 @@ TMP="$(mktemp -d /tmp/spike-rt.XXXXXX)"
 # nettoyage, et c'est le pire endroit pour ça : personne ne relit un trap.
 nettoyage(){
   local hj hb
-  hj=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$JENKINS_UI/job/$JOB/doDelete" 2>/dev/null || true)
+  hj=$(jpost "$JENKINS_UI/job/$JOB/doDelete" 2>/dev/null || true)
   case "$hj" in
     200|302|404) note "nettoyage : job $JOB supprimé (HTTP $hj)" ;;
     *)           ko "NETTOYAGE INCOMPLET : job $JOB PEUT-ÊTRE encore présent (HTTP $hj) — à supprimer à la main : $JENKINS_UI/job/$JOB/" ;;
@@ -170,12 +223,44 @@ echo "═══ 0. la branche jetable qui porte le pipeline du spike ═══"
 gitauth git clone -q --depth 1 "$GIT_HOST/$GIT_REPO.git" "$TMP/clone" 2>/dev/null \
   || { ko "clone de $GIT_REPO impossible depuis le poste"; exit 1; }
 cat > "$TMP/clone/Jenkinsfile.spike-readtrusted" <<'JF'
+// ── LECTURE AU NIVEAU SCRIPT (ajout 2026-09-17) ─────────────────────────────
+// La 1re passe a prouvé readTrusted DANS un stage. Ce n'est PAS le contexte qui
+// décide le gros du lot : les ~40 knobs vivent dans `environment{}`, évalué AU
+// PARSE, avant tout stage. On mesure donc ICI, hors du bloc pipeline, et on fait
+// CONSOMMER la valeur par un environment{} — un `echo` prouverait la lecture,
+// pas son arrivée là où les knobs sont déclarés.
+// `catch (Throwable)` et non `catch (e)` : un pas indisponible lève une Error.
+def PARSE_LEN = 'NON_TENTE'
+def PARSE_ABS = 'NON_TENTE'
+try {
+  PARSE_LEN = 'OK:' + readTrusted('poc-control-plane-federation/ci/lint-eol.sh').length()
+} catch (Throwable e) {
+  PARSE_LEN = 'ECHEC:' + e.getClass().getName() + ':' + e.getMessage()
+}
+try {
+  readTrusted('poc-control-plane-federation/ci/site.env')
+  PARSE_ABS = 'LU_ALORS_QU_ABSENT'
+} catch (Throwable e) {
+  PARSE_ABS = e.getClass().getName()
+}
+
 pipeline {
   agent none
+  environment {
+    // LE point : une valeur lue au parse atteint-elle le bloc des knobs ?
+    SITE_AU_PARSE = "${PARSE_LEN}"
+  }
   stages {
     stage('readTrusted sans workspace') {
       steps {
         script {
+          // LE VERDICT DE LA LECTURE AU PARSE (ajout 2026-09-17) — imprimé AVANT
+          // les épreuves de stage : c'est le contexte qui décide le gros du lot,
+          // puisque les ~40 knobs vivent dans `environment{}`, évalué au parse.
+          // SPIKE_ENV prouve l'ARRIVÉE de la valeur là où les knobs sont déclarés ;
+          // SPIKE_PARSE dit la lecture elle-même et le contraste du fichier absent.
+          echo "SPIKE_PARSE=${PARSE_LEN} absent=${PARSE_ABS}"
+          echo "SPIKE_ENV=${env.SITE_AU_PARSE}"
           // ⚠ `catch (Throwable e)` ET NON `catch (e)` : en Groovy, `catch (e)`
           // ne rattrape que les `Exception`. Un STEP INEXISTANT lève une
           // `Error` (NoSuchMethodError), qui passe au travers — le build
@@ -236,19 +321,19 @@ cat > "$TMP/job.xml" <<XML
   <disabled>false</disabled>
 </flow-definition>
 XML
-HC=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$JENKINS_UI/createItem?name=$JOB" \
+HC=$(jpost "$JENKINS_UI/createItem?name=$JOB" \
      -H 'Content-Type: application/xml; charset=utf-8' --data-binary "@$TMP/job.xml")
 [ "$HC" = 200 ] && ok "job $JOB créé (HTTP 200)" || { ko "création du job refusée (HTTP $HC)"; exit 1; }
 
 echo "═══ 2. un build, et le VERDICT lu dans sa console ═══"
 NB=$(curl -s "$JENKINS_UI/job/$JOB/api/json?tree=nextBuildNumber" | python3 -c 'import sys,json;print(json.load(sys.stdin)["nextBuildNumber"])')
-curl -s -o /dev/null -X POST "$JENKINS_UI/job/$JOB/build"
+jpost "$JENKINS_UI/job/$JOB/build" >/dev/null
 for _ in $(seq 1 60); do
   R=$(curl -s "$JENKINS_UI/job/$JOB/$NB/api/json?tree=result" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("result") or "")' 2>/dev/null || true)
   [ -n "$R" ] && break; sleep 2
 done
 CONSOLE=$(curl -s "$JENKINS_UI/job/$JOB/$NB/consoleText")
-printf '%s\n' "$CONSOLE" | grep -E 'SPIKE_VERDICT|SPIKE_ABSENT' | sed 's/^/     /'
+printf '%s\n' "$CONSOLE" | grep -E 'SPIKE_VERDICT|SPIKE_ABSENT|SPIKE_PARSE|SPIKE_ENV' | sed 's/^/     /'
 V=$(printf '%s\n' "$CONSOLE" | grep -oE 'SPIKE_VERDICT=[A-Z_]+' | head -1 | cut -d= -f2)
 A=$(printf '%s\n' "$CONSOLE" | grep -oE 'SPIKE_ABSENT=[^ ]+' | head -1)
 echo

@@ -226,7 +226,24 @@ jfp 'git url:' && BAD="$BAD git-url"; grep -qE '^\s*parameters \{' "$TMP/jf-plan
 grep -q 'sh """' "$TMP/jf-plan.code" && BAD="$BAD sh-triple-double"; grep -qE '\binput\b' "$TMP/jf-plan.code" && BAD="$BAD input"
 # try/catch : autorisé UNIQUEMENT dans le post{} de pipeline (statut de build, A0 dettes — §9e) ; jamais dans les stages.
 L_POST3=$(grep -n '^  post {' "$TMP/jf-plan.code" | head -1 | cut -d: -f1)
-awk "NR<${L_POST3:-999999}" "$TMP/jf-plan.code" | grep -qE '^\s*(try \{|\} catch)' && BAD="$BAD try/catch-hors-post"
+# FRONTIÈRE HAUTE (2026-09-17, voie sans admin) : la fenêtre partait de la ligne 1.
+# Elle attrapait donc le PRÉAMBULE qui lit config/site.ini, lequel vit AU-DESSUS de
+# `pipeline {` — hors du pipeline, donc hors des stages que cette règle protège, et
+# son try/catch est VOULU (fichier absent ⇒ un site qui a un admin n'est pas cassé).
+# Le corps scanné devient [pipeline{ , post{) : les stages restent fermés, et un
+# try/catch glissé dans le pipeline reste ROUGE. Sans ancre `pipeline {`, la fenêtre
+# serait le fichier entier et l'assertion deviendrait VACANTE : on la rend rouge.
+L_PIPE3=$(grep -n '^pipeline {' "$TMP/jf-plan.code" | head -1 | cut -d: -f1)
+[ -n "$L_PIPE3" ] || BAD="$BAD sans-pipeline{"
+# ⚠ PAS de `| grep -q` ICI, et ce n'est pas un détail de style : sous `set -o
+# pipefail` (ligne 31), `grep -q` sort dès la PREMIÈRE correspondance et ferme le
+# tuyau ; si awk écrit encore, il prend un SIGPIPE et rend 141, le pipeline devient
+# non nul, et la détection s'INVERSE — l'assertion passe au vert précisément quand
+# le défaut est là. Le piège dépend de la TAILLE (tant que la sortie tient dans le
+# tampon du tuyau, awk a fini et rien ne paraît), donc il dort jusqu'au jour où le
+# fichier grossit. `grep -c` lit TOUTE son entrée : awk finit, pipefail est content.
+N_TC=$(awk "NR>${L_PIPE3:-0} && NR<${L_POST3:-999999}" "$TMP/jf-plan.code" | grep -cE '^\s*(try \{|\} catch)')
+[ "${N_TC:-0}" -gt 0 ] && BAD="$BAD try/catch-hors-post"
 [ -z "$BAD" ] && ok "aucun git url:, parameters{}, sh \"\"\", input ; try/catch seulement dans le post" || ko "présent(s) :$BAD"
 jfp 'currentBuild.displayName = "plan ${app}/${envn} (PR #' && ok "le build est nommé « plan <app>/<env> (PR #n) »" || ko "displayName absent/divergent"
 [ -x scripts/provision-plan.sh ] && bash -n scripts/provision-plan.sh 2>/dev/null && ok "scripts/provision-plan.sh existe, exécutable, parsable" || ko "scripts/provision-plan.sh absent ou cassé"
@@ -243,7 +260,10 @@ recepteur_check(){
   local c="$1" j="$2" miss="" l_if l_prop l_gl l_err l_fact l_first prem
   tr -s ' ' < "$c" > "$c.norm"
   grep -qE '^  (options|triggers) \{' "$c" && miss="$miss bloc-declaratif-present"
-  grep -qF "WEBHOOK_KIND = \"\${env.WEBHOOK_KIND ?: 'gwt'}\"" "$c.norm" || miss="$miss env-WEBHOOK_KIND"
+  # 2026-09-17 : `SITE_WEBHOOK_KIND ?:` s'intercale — les cinq récepteurs lisent
+  # config/site.ini AU PARSE (readTrusted, sans nœud) pour la VOIE SANS ADMIN.
+  # L'ordre reste : environnement, puis fichier de site, puis repli `gwt`.
+  grep -qF "WEBHOOK_KIND = \"\${env.WEBHOOK_KIND ?: SITE_WEBHOOK_KIND ?: 'gwt'}\"" "$c.norm" || miss="$miss env-WEBHOOK_KIND"
   l_if=$(code_line "$c" "if (hook == 'gwt') {")
   l_prop=$(code_line "$c" 'properties([disableConcurrentBuilds(), pipelineTriggers([')
   l_gl=$(code_line "$c" "} else if (hook == 'gitlab') {")
@@ -1388,7 +1408,11 @@ mut "plan : la branche else error() retirée (un knob inconnu passerait en silen
 mut "apply : if (hook == 'gwt') → if (false) (le visage gwt ne serait JAMAIS posé)" apply "s/if (hook == 'gwt') {/if (false) {/"
 mut "plan : le visage gitlab commenté" plan "s#pipelineTriggers(\[gitlab(#pipelineTriggers([/* gitlab( */ cron(#"
 mut "apply : secretToken altéré (la sonnette ne répondrait plus au mot)" apply "s/secretToken: 'stoa-provision-apply'/secretToken: 'autre-mot'/"
-mut "plan : WEBHOOK_KIND sans défaut gwt (le site historique deviendrait muet)" plan "s/WEBHOOK_KIND         = \"\${env.WEBHOOK_KIND ?: 'gwt'}\"/WEBHOOK_KIND         = \"\${env.WEBHOOK_KIND ?: ''}\"/"
+# ⚠ ANCRE MISE À JOUR le 2026-09-17, et le SENS du mutant est préservé : il retire
+# le repli `gwt` en gardant SITE_WEBHOOK_KIND, donc il éprouve toujours « le site
+# historique deviendrait muet ». Une ancre laissée sur l'ancien littéral n'aurait
+# plus rien à muter — no-op refusé par `mut`, ou pire, épreuve vacante.
+mut "plan : WEBHOOK_KIND sans défaut gwt (le site historique deviendrait muet)" plan "s/WEBHOOK_KIND         = \"\${env.WEBHOOK_KIND ?: SITE_WEBHOOK_KIND ?: 'gwt'}\"/WEBHOOK_KIND         = \"\${env.WEBHOOK_KIND ?: SITE_WEBHOOK_KIND ?: ''}\"/"
 mut "apply : l'ÉTAT n'est plus relu (un état hors énumération = joker du plugin)" apply "s/!= 'merged'/!= 'MERGED_JAMAIS'/"
 
 echo
