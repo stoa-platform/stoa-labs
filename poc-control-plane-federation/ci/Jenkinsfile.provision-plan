@@ -83,10 +83,15 @@ def forgeCreds() {
 // site qui a un admin ne doit pas être cassé par cette voie.
 def SITE_WEBHOOK_KIND = ''
 def SITE_WEBHOOK_KIND_N = 0
-// Les clés d'agent (voir « L'AGENT DES `node` EXPLICITES » plus bas) : variables
-// de BINDING, sans `def`, pour que les méthodes agentSpec/agentNode les lisent.
-SITE_AGENT = [:]
-SITE_AGENT_N = [:]
+// Les clés d'agent (voir « L'AGENT DES `node` EXPLICITES » plus bas) : des CHAMPS
+// du script (@Field), pour que les méthodes agentSpec/agentNode les lisent. Pas des
+// variables de binding : Jenkins les signale à chaque build (« Did you forget the
+// `def` keyword? … memory leaks ») — mesuré le 2026-09-18 sur un Jenkins K8s.
+@groovy.transform.Field Map SITE_AGENT = [:]
+@groovy.transform.Field Map SITE_AGENT_N = [:]
+// Rempli par putAll plus bas, JAMAIS par l'initialiseur : un initialiseur de champ
+// tourne hors du contexte CPS, où readTrusted/echo/error n'existent pas.
+@groovy.transform.Field Map AGENT_SPEC = [:]
 try {
   readTrusted('poc-control-plane-federation/config/site.ini').split('\n').each { l ->
     def t = l.trim()
@@ -217,7 +222,7 @@ def agentSpec() {
   }
   return [yaml: y, file: f, container: c, label: l]
 }
-AGENT_SPEC = agentSpec()
+AGENT_SPEC.putAll(agentSpec())
 
 def agentNode(Closure body) {
   if (AGENT_SPEC.yaml) {

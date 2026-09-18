@@ -2743,9 +2743,21 @@ d'agent des deux côtés. **Sous le vrai sandbox CPS** (spike jetable, Jenkins d
 lab, 2026-09-18) : le préambule livré, suivi d'un `agentNode` dans un stage et dans un `post`,
 passe sur le chemin « rien » (SUCCESS, les deux `sh` sur `built-in`) et sur le
 chemin « label » (`POST_AGENT_LABEL=built-in`, idem). Un pod sans conteneur
-meurt au parse (`REFUS: AGENT_CONTAINER_REQUIS`, aucun stage exécuté). **Non
-prouvé** : le chemin `podTemplate` sur un vrai Jenkins Kubernetes. Le lab n'a pas
-ce plugin, et le premier build client en fera la preuve.
+meurt au parse (`REFUS: AGENT_CONTAINER_REQUIS`, aucun stage exécuté).
+
+**Sur un vrai Kubernetes** (le même jour, Kubernetes de Docker Desktop). Le spike
+monte un Jenkins jetable avec le plugin `kubernetes`, dans son propre namespace,
+supprimé ensuite. Il lance un job depuis SCM : le préambule livré, un vrai
+`config/site.ini` (`AGENT_POD_YAML_FILE=ci/agent-pod.yaml`, `AGENT_CONTAINER=ansible`)
+et un pod dont le conteneur `ansible` est `python:3.12-alpine`. Résultat : SUCCESS.
+`readTrusted` lit les deux fichiers. `agentNode` crée un pod dans le stage, puis un
+autre dans le `post`, et python3 s'exécute dans les deux. Le **témoin** reproduit
+la panne du client : le même pod SANS `container()` rend `TEMOIN_PAS_DE_PYTHON`.
+Le même essai a aussi montré que des variables de BINDING déclenchent à chaque
+build l'avertissement « Did you forget the `def` keyword? … memory leaks ». D'où
+les `@groovy.transform.Field` et le `putAll`, avec lesquels on compte zéro
+avertissement. Hors de ce spike : `checkout scm` dans le pod. Le dépôt du spike
+était local au contrôleur, et chez le client le clone passe déjà dans ses pods.
 
 ## Résiduel
 
