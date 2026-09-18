@@ -53,6 +53,13 @@
 # Les faits arrivent par l'ENVIRONNEMENT (PR_NUMBER, PR_BRANCH, MERGE_SHA
 # contribués par le déclencheur ; V_USER saisi dans la demande en attente) —
 # jamais par argv, que `ps -Aww` donne à tout le nœud.
+# ⚠ LES GARDES TIENNENT SUR UNE LIGNE, ET C'EST DÉLIBÉRÉ. Une garde répartie
+# sur deux lignes par un `\` n'est pas MUTABLE : aucun `sed` d'une seule
+# expression ne la retire sans casser la syntaxe, donc le mutant rougit pour la
+# MAUVAISE raison — le fichier cassé, pas la propriété mesurée — et l'épreuve ne
+# mesure plus rien tout en paraissant verte. Mesuré ici le 2026-09-17 : la
+# mutation « la relecture retirée » produisait un mutant qui ne parsait plus.
+# Règle du dépôt, déjà écrite pour `requis()` : une ligne = mutable par sed.
 set -uo pipefail
 set +x   # jamais de trace : le secret de la forge est dans l'environnement
 cd "$(dirname "$0")/.." || exit 1
@@ -74,10 +81,8 @@ printf '%s' "$MERGE_SHA" | grep -Eq '^[0-9a-f]{40}$' \
 # ── 2. LA RELECTURE, seule autorité sur les identités ────────────────────────
 # shellcheck source=scripts/lib/forge-api.sh
 . scripts/lib/forge-api.sh || refus "FORGE_IDENTITES_ILLISIBLES : scripts/lib/forge-api.sh introuvable ou illisible — sans elle aucune identité ne peut être RELUE, et nourrir la garde du payload serait faire confiance à un tiers"
-forge_api_init \
-  || refus "FORGE_IDENTITES_ILLISIBLES : la lib de forge ne s'initialise pas (cause ci-dessus) — sans elle aucune identité ne peut être RELUE, et nourrir la garde du payload serait faire confiance à un tiers"
-forge_kv PRG pr_get "$PR_NUMBER" \
-  || refus "FORGE_IDENTITES_ILLISIBLES : GET de la PR #${PR_NUMBER} sur la forge en échec (cause ci-dessus) — la garde d'identité ne sera PAS nourrie du payload"
+forge_api_init || refus "FORGE_IDENTITES_ILLISIBLES : la lib de forge ne s'initialise pas (cause ci-dessus) — sans elle aucune identité ne peut être RELUE, et nourrir la garde du payload serait faire confiance à un tiers"
+forge_kv PRG pr_get "$PR_NUMBER" || refus "FORGE_IDENTITES_ILLISIBLES : GET de la PR #${PR_NUMBER} sur la forge en échec (cause ci-dessus) — la garde d'identité ne sera PAS nourrie du payload"
 
 # ── 3. LE LIEN : la PR RELUE est-elle CELLE qu'on applique ? ─────────────────
 # UNE comparaison par ligne (motif provision-apply-reconcile.sh §A2). La base
@@ -87,10 +92,8 @@ POURQUOI=""
 [ "${PRG_MERGED:-}" = 1 ]                  || POURQUOI="$POURQUOI merged=$(shown "${PRG_MERGED:-}")"
 [ "${PRG_MERGE_SHA:-}" = "$MERGE_SHA" ]    || POURQUOI="$POURQUOI merge_commit_sha=$(shown "${PRG_MERGE_SHA:-}")"
 [ "${PRG_HEAD_REF:-}" = "$PR_BRANCH" ]     || POURQUOI="$POURQUOI head.ref=$(shown "${PRG_HEAD_REF:-}")"
-[ -z "$POURQUOI" ] \
-  || refus "PAYLOAD_PERIME : la PR #${PR_NUMBER} relue sur la forge ne correspond pas au webhook (${POURQUOI# }) — les identités relues ne seraient pas celles de la demande appliquée (branche '${PR_BRANCH}', sha ${MERGE_SHA}) ; CE webhook n'a rien appliqué"
+[ -z "$POURQUOI" ] || refus "PAYLOAD_PERIME : la PR #${PR_NUMBER} relue sur la forge ne correspond pas au webhook (${POURQUOI# }) — les identités relues ne seraient pas celles de la demande appliquée (branche '${PR_BRANCH}', sha ${MERGE_SHA}) ; CE webhook n'a rien appliqué"
 
 # ── 4. LA GARDE, nourrie des identités RELUES ────────────────────────────────
 echo "identites RELUES sur la forge : PR #${PR_NUMBER} (${PRG_HEAD_REF}) validee par '${PRG_MERGED_BY:-}', demandee par '${PRG_LOGIN:-}'"
-exec sh scripts/lib/assert-merge-identity.sh \
-  --merged-by "${PRG_MERGED_BY:-}" --requester "${PRG_LOGIN:-}" --vault-user "${V_USER:-}"
+exec sh scripts/lib/assert-merge-identity.sh --merged-by "${PRG_MERGED_BY:-}" --requester "${PRG_LOGIN:-}" --vault-user "${V_USER:-}"

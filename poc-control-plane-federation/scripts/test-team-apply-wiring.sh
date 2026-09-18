@@ -57,7 +57,7 @@ ko(){ FAIL=$((FAIL+1)); printf '  ❌ %s\n' "$*"; }
 # NB : ce total compte les contrôles exécutés AVANT le §16 lui-même (le sien
 # n'est pas encore compté quand la comparaison a lieu) — le `RÉSULTAT` final
 # affiche donc EXPECTED_CHECKS+1. Même convention que test-team-publish-wiring.sh.
-EXPECTED_CHECKS=107
+EXPECTED_CHECKS=111
 
 [ -f "$JOB" ] || { echo "job introuvable : $JOB"; exit 2; }
 [ -f "$JF" ]  || { echo "Jenkinsfile introuvable : $JF"; exit 2; }
@@ -153,7 +153,7 @@ sed -E 's@^[[:space:]]*//.*$@@' "$JF" > "$JF_C"
 tr -s ' ' < "$JF_C" > "$JF_C.norm"
 MISS=""
 grep -qE '^  (options|triggers) \{' "$JF_C" && MISS="$MISS bloc-declaratif-present"
-grep -qF "WEBHOOK_KIND = \"\${env.WEBHOOK_KIND ?: 'gwt'}\"" "$JF_C.norm" || MISS="$MISS env-WEBHOOK_KIND"
+grep -qF "WEBHOOK_KIND = \"\${env.WEBHOOK_KIND ?: SITE_WEBHOOK_KIND ?: 'gwt'}\"" "$JF_C.norm" || MISS="$MISS env-WEBHOOK_KIND"
 L_IF=$(grep -nF "if (hook == 'gwt') {" "$JF_C" | head -1 | cut -d: -f1)
 L_PR=$(grep -nF 'properties([disableConcurrentBuilds(), pipelineTriggers([' "$JF_C" | head -1 | cut -d: -f1)
 L_GL=$(grep -nF "} else if (hook == 'gitlab') {" "$JF_C" | head -1 | cut -d: -f1)
@@ -318,6 +318,16 @@ grep -qF 'assert-merge-identity.sh' "$JF_C" \
 mut_ids(){ # <libellé> <sed>
   sed "$2" "$IDS" > "$TMP/mi.sh"
   if cmp -s "$TMP/mi.sh" "$IDS"; then ko "$1 : mutation NON appliquée"; return; fi
+  # LE MUTANT DOIT ENCORE PARSER, et ce garde-fou vient d'un défaut mesuré ici le
+  # 2026-09-17 : la mutation « la relecture retirée » supprimait la première
+  # ligne d'une garde continuée par `\`, laissant une continuation orpheline.
+  # Le mutant ne parsait plus — donc l'invariant échouait à cause de la SYNTAXE
+  # et non de la propriété, et la mutation était annoncée « ⇒ rouge » pour la
+  # MAUVAISE raison. Une mutation qui casse le fichier ne mesure rien.
+  if ! bash -n "$TMP/mi.sh" 2>/dev/null; then
+    ko "$1 : mutation INVALIDE — le mutant ne parse plus, l'épreuve ne mesurerait que la syntaxe cassée (ramener la garde visée sur UNE ligne)"
+    return
+  fi
   [ -n "$(ids_invariants "$TMP/mi.sh")" ] && ok "$1 ⇒ rouge" || ko "$1 : mutation INVISIBLE à la porte"
 }
 mut_ids "la garde renourrie du payload (PR_MERGED_BY)" 's/--merged-by "${PRG_MERGED_BY:-}" --requester "${PRG_LOGIN:-}"/--merged-by "${PR_MERGED_BY:-}" --requester "${PR_REQUESTER:-}"/'
@@ -767,8 +777,35 @@ grep -qF '<lightweight>false</lightweight>' "$JOB" \
 # parité provision-apply ci/Jenkinsfile.provision-apply:511-520) — d'où la
 # frontière L_POST. L'interdiction portait sur le FICHIER ENTIER, et le
 # commentaire disait « ce job n'a pas de bloc post » : faux depuis §15b.
-if awk "NR<$L_POST" "$JF" | grep -qE '^[[:space:]]*(try \{|\} catch)'; then
-  ko "le CORPS du pipeline contient un try/catch — la gestion d'erreur doit y passer par les codes de retour et \`post\`"
+# ⚠ LA FENÊTRE COMMENCE À `pipeline {`, ET C'EST UN ARBITRAGE (2026-09-18).
+# Elle disait « tout ce qui précède post{ », donc le PRÉAMBULE de tête compris,
+# alors que la règle ne parle que du CORPS. Tant que le préambule n'avait pas de
+# try/catch, l'écart entre l'intention et la fenêtre ne se voyait pas ; la voie
+# sans admin (readTrusted, 2f9421b) l'a rendu visible. Resserrer ne fabrique PAS
+# un vert vacant : mesuré sur TÉMOIN GELÉ, la fenêtre bornée discrimine AUTANT
+# que l'ancienne (sain 0 / mutant 2 des deux côtés). Et le préambule n'est pas
+# exempté pour autant — il reçoit SA règle en §15c, parce que c'est là qu'un
+# `catch` arbitre désormais entre repli muet et échec bruyant. On ne fait pas
+# taire une porte pour laisser passer du code : on nomme la zone qui n'avait pas
+# de règle, et on écrit la sienne.
+# Ancre absente ⇒ `${L_PIPE:-0}`, donc la fenêtre REDEVIENT le fichier entier :
+# un Jenkinsfile sans `pipeline {` est jugé PLUS sévèrement, jamais moins.
+# ⚠ `grep -c` ET NON `grep -q`, et ce n'est pas un détail de style (mesuré le
+# 2026-09-17 par la session voisine, sur CETTE ligne). Sous `set -o pipefail`,
+# `awk … | grep -q` INVERSE le verdict : grep sort à la PREMIÈRE correspondance
+# et ferme le tuyau, awk prend un SIGPIPE et rend 141, le pipeline vaut donc 141,
+# le `if` est FAUX — et la branche `ok` s'imprime PRÉCISÉMENT quand le défaut est
+# présent. Pire, le piège DORT : tant que la sortie d'awk tient dans le tampon du
+# tuyau, awk a fini d'écrire avant que grep ne parte, il n'y a pas de SIGPIPE et
+# le contrôle marche. Mesuré ici : fenêtre de 100 lignes (6 Ko) détecte, 435
+# lignes (28 Ko) AVEUGLE. Un contrôle juste aujourd'hui devient aveugle le jour
+# où le Jenkinsfile grossit, sans qu'une ligne de cette suite ait changé.
+# `grep -c` lit TOUTE son entrée : awk finit, pipefail est content, et le verdict
+# se lit sur un COMPTE, jamais sur le statut d'un tuyau.
+L_PIPE=$(grep -nE '^pipeline \{' "$JF" | head -1 | cut -d: -f1)
+N_TRYCATCH=$(awk -v a="${L_PIPE:-0}" -v b="$L_POST" 'NR>a && NR<b' "$JF" | grep -cE '^[[:space:]]*(try \{|\} catch)')
+if [ "${N_TRYCATCH:-0}" -gt 0 ]; then
+  ko "le CORPS du pipeline contient un try/catch ($N_TRYCATCH ligne(s) entre pipeline{ et post{) — la gestion d'erreur doit y passer par les codes de retour et \`post\`"
 else
   ok "aucun try/catch dans le CORPS du pipeline (le post{} en a, et doit en avoir : §15b)"
 fi
@@ -844,6 +881,70 @@ MN_POST=$(awk "NR>=${MN_LP:-999999}" "$TMP/mn.jf" | grep -cE '^[[:space:]]*node\
   || ko "mutation « node() hors post » INVISIBLE (total=$MN_TOTAL post=$MN_POST) — le contrôle du §15 mesure-t-il encore quelque chose ?"
 
 echo
+echo
+echo "== 15c. le PRÉAMBULE (hors pipeline{}) : la zone où un \`catch\` arbitre entre repli muet et échec bruyant =="
+# POURQUOI CETTE SECTION EXISTE (2026-09-18). §15 vient d'être bornée au CORPS ;
+# le préambule de tête n'est donc plus couvert par elle. Il n'est pas pour autant
+# sans règle : depuis la voie sans admin (2f9421b) c'est LUI qui décide, quand le
+# fichier de site est illisible, entre un repli muet sur `gwt` et un échec
+# bruyant. Deux couches, et ce que CHACUNE achète — l'ordre compte, on a
+# commencé par se tromper de couche :
+#   • `catch (Exception e)` et JAMAIS `Throwable`. Un pas de pipeline inexistant
+#     ne passe pas par le `methodMissing` de Groovy mais par le
+#     `DSL.invokeMethod` de Jenkins, qui lève `NoSuchMethodError` — un `Error`,
+#     PAS une `Exception` (mesuré : scripts/spike-readtrusted.sh, en-tête). C'est
+#     CE niveau, et lui seul, qui rend bruyant le MÉCANISME absent. Avec
+#     `Throwable`, l'Error serait avalée et WEBHOOK_KIND retomberait EN SILENCE
+#     sur `gwt` : la mort silencieuse que L6 existe pour lever, réintroduite par
+#     le chemin même qui la contourne.
+#   • la RELANCE de toute classe non mesurée (`throw e`). Elle ne protège PAS du
+#     mécanisme absent (voir ci-dessus) : elle rend sa voix au reste —
+#     IOException, RejectedAccessException du bac à sable, et surtout
+#     FlowInterruptedException d'un build ABANDONNÉ, qui sans elle serait avalé
+#     et repartirait sur `gwt`.
+# Le commentaire du Jenkinsfile dit déjà tout cela. Cette section le MESURE :
+# un commentaire demande, une porte constate.
+# ⚠ ON JUGE LE CODE, PAS LE TEXTE — et ce garde-fou vient d'un faux positif
+# mesuré en posant cette section : le Jenkinsfile porte un COMMENTAIRE qui cite
+# « catch (Throwable e) » pour expliquer pourquoi le refus est hors du try. La
+# première version de ce contrôle l'a compté et a rougi sur une ligne qui ne
+# s'exécute jamais. `$JF_C` est la vue CODE (les `//` pleine ligne blanchis,
+# numéros de ligne PRÉSERVÉS, donc L_PIPE y vaut toujours) — c'est la même
+# convention que §3bis, et la règle du dépôt : juger l'effet, jamais le contenu.
+PREAMB="$TMP/preambule.groovy"
+awk -v b="${L_PIPE:-0}" 'NR<b' "$JF_C" > "$PREAMB"
+N_THROWABLE=$(grep -cE 'catch[[:space:]]*\([[:space:]]*Throwable' "$PREAMB")
+[ "${N_THROWABLE:-0}" -eq 0 ] \
+  && ok "préambule : aucun \`catch (Throwable…)\` — un mécanisme ABSENT (pas de readTrusted sur ce Jenkins) lève un \`Error\`, remonte, et rougit le build au lieu d'être avalé" \
+  || ko "préambule : $N_THROWABLE \`catch (Throwable…)\` — l'\`Error\` d'un mécanisme ABSENT serait avalée et WEBHOOK_KIND retomberait EN SILENCE sur gwt"
+N_CATCH_P=$(grep -cE '^[[:space:]]*\}[[:space:]]*catch[[:space:]]*\(' "$PREAMB")
+N_THROW_P=$(grep -cE 'throw e' "$PREAMB")
+if [ "${N_CATCH_P:-0}" -eq 0 ]; then
+  ok "préambule : aucun catch du tout — il n'y a rien à relancer"
+elif [ "${N_THROW_P:-0}" -ge "${N_CATCH_P:-0}" ]; then
+  ok "préambule : les $N_CATCH_P \`catch\` relancent ce qu'ils n'ont pas mesuré ($N_THROW_P \`throw e\`) — un build ABANDONNÉ n'est plus avalé"
+else
+  ko "préambule : $N_CATCH_P \`catch\` pour seulement $N_THROW_P \`throw e\` — une classe non mesurée serait avalée, et un abandon de build repartirait sur gwt"
+fi
+# CONTRE-ÉPREUVE : les deux couches, mutées séparément, doivent rougir SÉPARÉMENT.
+# Sans ça la section ne prouverait que sa propre présence.
+mut_pre(){ # <libellé> <sed>
+  sed "$2" "$JF" > "$TMP/mp.jf"
+  if cmp -s "$TMP/mp.jf" "$JF"; then ko "$1 : mutation NON appliquée"; return; fi
+  local lp bad="" nt nc nw
+  lp=$(grep -nE '^pipeline \{' "$TMP/mp.jf" | head -1 | cut -d: -f1)
+  sed -E 's@^[[:space:]]*//.*$@@' "$TMP/mp.jf" > "$TMP/mp.code"
+  awk -v b="${lp:-0}" 'NR<b' "$TMP/mp.code" > "$TMP/mp.pre"
+  nt=$(grep -cE 'catch[[:space:]]*\([[:space:]]*Throwable' "$TMP/mp.pre")
+  nc=$(grep -cE '^[[:space:]]*\}[[:space:]]*catch[[:space:]]*\(' "$TMP/mp.pre")
+  nw=$(grep -cE 'throw e' "$TMP/mp.pre")
+  [ "${nt:-0}" -eq 0 ] || bad=1
+  { [ "${nc:-0}" -eq 0 ] || [ "${nw:-0}" -ge "${nc:-0}" ]; } || bad=1
+  [ -n "$bad" ] && ok "$1 ⇒ rouge" || ko "$1 : mutation INVISIBLE à la porte"
+}
+mut_pre "le catch du préambule réélargi en Throwable (le mécanisme absent redeviendrait muet)" "s/catch (Exception e)/catch (Throwable e)/"
+mut_pre "la relance retirée (un build ABANDONNÉ serait avalé et repartirait sur gwt)" "/throw e/d"
+
 echo "== 16. le total de contrôles exécutés correspond au total ATTENDU, écrit en dur =="
 # Le `RÉSULTAT : %d/%d` final ci-dessous imprime PASS/(PASS+FAIL) — une
 # formule auto-référentielle qui devient vraie par construction. CE contrôle
