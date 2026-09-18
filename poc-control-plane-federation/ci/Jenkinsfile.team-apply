@@ -111,7 +111,7 @@ try {
 // la lib shell la PREMIÈRE : le même fichier rendait deux valeurs selon qu'on le
 // lisait depuis `environment{}` ou depuis un bloc `sh`, en silence.
 // ⚠ LE REFUS EST HORS DU try/catch, ET C'EST DÉLIBÉRÉ : `error()` lève, et le
-// `catch (Throwable e)` ci-dessus — qui n'est là que pour tolérer un fichier
+// `catch (Exception e)` ci-dessus — qui n'est là que pour tolérer un fichier
 // ABSENT — l'avalerait. Un catch trop large rend muette la branche qu'on veut
 // entendre ; le déplacer d'une ligne suffirait à désarmer cette garde.
 if (SITE_WEBHOOK_KIND_N > 1) {
