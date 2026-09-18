@@ -408,7 +408,7 @@ L_DISP=$(code_line "$TMP/jf.code" "GATE_STAGE=dispatch GATE_OUT=")
   && ok "B.2 pré-pause (ligne $L_PRE) : après la réconciliation ($L_REC) et le chargement des six clés ($L_DIG), AVANT la pause ($L_INPUT)" || bad "B.2 ordre pré-pause : rec=$L_REC dig=$L_DIG pre=$L_PRE input=$L_INPUT"
 [ -n "$L_DISP" ] && [ -n "$L_GUARD" ] && [ "$L_INPUT" -lt "$L_DISP" ] && [ "$L_DISP" -lt "$L_GUARD" ] && [ "$L_GUARD" -lt "$L_BUILD" ] \
   && ok "B.3 dispatch (ligne $L_DISP) : après la pause ($L_INPUT), AVANT la garde d'identité ($L_GUARD) et le build ($L_BUILD)" || bad "B.3 ordre dispatch : input=$L_INPUT disp=$L_DISP guard=$L_GUARD build=$L_BUILD"
-L_NODE=$(awk "NR>${L_INPUT:-0} && NR<${L_DISP:-0} && /node\(\"\\\$\{env.POST_AGENT_LABEL/ {n=NR} END {print n}" "$TMP/jf.code")
+L_NODE=$(awk "NR>${L_INPUT:-0} && NR<${L_DISP:-0} && /agentNode [{]/ {n=NR} END {print n}" "$TMP/jf.code")
 [ -n "$L_NODE" ] && ok "B.3b le passage au dispatch tourne sous le node( post-pause (ligne $L_NODE)" || bad "B.3b aucun node( entre la pause et le dispatch"
 for L in "$L_PRE" "$L_DISP"; do
   LINE=$(sed -n "${L:-0}p" "$TMP/jf.code")

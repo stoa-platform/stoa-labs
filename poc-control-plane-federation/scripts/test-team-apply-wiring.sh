@@ -821,14 +821,19 @@ if [ "${N_TRYCATCH:-0}" -gt 0 ]; then
 else
   ok "aucun try/catch dans le CORPS du pipeline (le post{} en a, et doit en avoir : §15b)"
 fi
-NODE_COUNT=$(grep -cE '^\s*node\(' "$JF")
+# 2026-09-18 : le nœud du post s'alloue par `agentNode {` (le helper du préambule,
+# qui choisit pod / label / n'importe quel agent). On compte donc les ALLOCATIONS
+# `node(` OU `agentNode {` à partir de `pipeline {` : les trois `node(` internes du
+# helper vivent au-dessus. Qu'aucun `node(` n'existe HORS du helper, partout, est
+# la mesure A.2 de scripts/test-agent-node.sh.
+NODE_COUNT=$(awk "NR>${L_PIPE:-0}" "$JF" | grep -cE '^\s*(node\(|agentNode \{)')
 # Exactement 1 `node(...)` attendu : celui du `post{always}` (parité team-publish).
 # Avec `agent none`, le post n'a ni exécuteur ni workspace → un `node` explicite y
 # est OBLIGATOIRE (pas du pipeline scripté qui revient). Ailleurs qu'au post = 0.
 [ "$NODE_COUNT" -eq 1 ] \
   && ok "exactement un \`node(...)\` — celui du \`post{always}\` (agent none l'exige), pas du Groovy scripté ailleurs" \
   || ko "nombre de \`node(...)\` inattendu (${NODE_COUNT}, attendu 1 = celui du post) — le pipeline redevient scripté OU le post a perdu son node"
-POST_NODE=$(awk "NR>=$L_POST" "$JF" | grep -cE '^\s*node\(')
+POST_NODE=$(awk "NR>=$L_POST" "$JF" | grep -cE '^\s*(node\(|agentNode \{)')
 [ "$POST_NODE" -eq 1 ] \
   && ok "le seul \`node(...)\` est bien DANS le \`post{}\` — le corps du pipeline reste 100% déclaratif" \
   || ko "le \`node(...)\` n'est pas dans le post (${POST_NODE} trouvé au post) — Groovy scripté hors post"
@@ -868,7 +873,7 @@ grep -qF 'COMMENT_MARKER="<!-- team-apply-build -->"' "$JF" \
 # motif prouvé est celui de provision-apply (test-a0-wiring.sh §9 (f)).
 POSTV="$TMP/jf-ta.post"; awk "NR>=$L_POST" "$JF" > "$POSTV"
 L_G=$(grep -nF "if (!ref.startsWith('onboard/') || !(num ==~ /[0-9]+/))" "$POSTV" | head -1 | cut -d: -f1)
-L_ND=$(grep -nE '^[[:space:]]*node\(' "$POSTV" | head -1 | cut -d: -f1)
+L_ND=$(grep -nE '^[[:space:]]*(node\(|agentNode \{)' "$POSTV" | head -1 | cut -d: -f1)
 L_TRY=$(grep -nE '^[[:space:]]*try \{' "$POSTV" | head -1 | cut -d: -f1)
 L_TO=$(grep -nF "timeout(time: 2, unit: 'MINUTES')" "$POSTV" | head -1 | cut -d: -f1)
 L_CATCH=$(grep -nF 'catch (e)' "$POSTV" | head -1 | cut -d: -f1)
@@ -885,9 +890,9 @@ L_CATCH=$(grep -nF 'catch (e)' "$POSTV" | head -1 | cut -d: -f1)
 # `agent none` un post sans `node` lèverait MissingContextVariableException.
 awk -v lp="$L_POST" -v nd="$L_ND" 'NR==lp+nd-1 { next }
   NR==lp-1 { print "    node(\"deplace-hors-post\") { }" } { print }' "$JF" > "$TMP/mn.jf"
-MN_TOTAL=$(grep -cE '^[[:space:]]*node\(' "$TMP/mn.jf")
+MN_TOTAL=$(awk '/^pipeline \{/{p=1} p' "$TMP/mn.jf" | grep -cE '^[[:space:]]*(node\(|agentNode \{)')
 MN_LP=$(grep -n '^  post {' "$TMP/mn.jf" | head -1 | cut -d: -f1)
-MN_POST=$(awk "NR>=${MN_LP:-999999}" "$TMP/mn.jf" | grep -cE '^[[:space:]]*node\(')
+MN_POST=$(awk "NR>=${MN_LP:-999999}" "$TMP/mn.jf" | grep -cE '^[[:space:]]*(node\(|agentNode \{)')
 { [ "$MN_TOTAL" -eq 1 ] && [ "$MN_POST" -ne 1 ]; } \
   && ok "mutation « le node() remonte du post vers le corps » ⇒ rouge (total encore 1, mais 0 au post) : le contrôle n'est plus vacant" \
   || ko "mutation « node() hors post » INVISIBLE (total=$MN_TOTAL post=$MN_POST) — le contrôle du §15 mesure-t-il encore quelque chose ?"

@@ -65,12 +65,22 @@ def forgeCreds() {
 // site qui a un admin ne doit pas être cassé par cette voie.
 def SITE_WEBHOOK_KIND = ''
 def SITE_WEBHOOK_KIND_N = 0
+// Les clés d'agent (voir « L'AGENT DES `node` EXPLICITES » plus bas) : variables
+// de BINDING, sans `def`, pour que les méthodes agentSpec/agentNode les lisent.
+SITE_AGENT = [:]
+SITE_AGENT_N = [:]
 try {
   readTrusted('poc-control-plane-federation/config/site.ini').split('\n').each { l ->
     def t = l.trim()
     if (t.startsWith('WEBHOOK_KIND=')) {
       SITE_WEBHOOK_KIND_N = SITE_WEBHOOK_KIND_N + 1
       SITE_WEBHOOK_KIND = t.substring('WEBHOOK_KIND='.length()).trim()
+    }
+    for (String k : ['AGENT_POD_YAML_FILE', 'AGENT_CONTAINER', 'POST_AGENT_LABEL']) {
+      if (t.startsWith(k + '=')) {
+        SITE_AGENT_N[k] = (SITE_AGENT_N[k] ?: 0) + 1
+        SITE_AGENT[k] = t.substring(k.length() + 1).trim()
+      }
     }
   }
 } catch (Exception e) {
@@ -116,6 +126,95 @@ try {
 // entendre ; le déplacer d'une ligne suffirait à désarmer cette garde.
 if (SITE_WEBHOOK_KIND_N > 1) {
   error("REFUS: SITE_CLE_EN_DOUBLE : config/site.ini definit WEBHOOK_KIND ${SITE_WEBHOOK_KIND_N} fois — lequel gagne n est pas une question que ce canal tranche. Ne gardez qu une seule ligne")
+}
+
+// ── L'AGENT DES `node` EXPLICITES (2026-09-18) ──────────────────────────────
+// Ce pipeline est en `agent none` : ce qu'il fait HORS d'un stage à agent — le
+// statut de build de son post{always}, et chez provision-apply la porte, la
+// garde d'identité et le rapport APRÈS la pause — prend un nœud EXPLICITE.
+// C'était `node("${env.POST_AGENT_LABEL ?: ''}")`, globale sans défaut ni
+// catalogue : vide ⇒ N'IMPORTE QUEL agent. MESURÉ chez un client Kubernetes le
+// 2026-09-18 (provision-plan #40) : son runner python+ansible est un pod DÉCLARÉ
+// DANS LE JENKINSFILE, dont le label est généré à chaque build — aucun
+// `node(label)` ne le retrouve — et le post est tombé sur le pod `default` : ni
+// python3 ni ansible, statut jamais posté, build VERT (le try/catch l'avale).
+//
+// agentNode { … } décide ainsi, sans repli d'un cas sur l'autre :
+//   AGENT_POD_YAML_FILE posé ⇒ podTemplate(yaml) → node(POD_LABEL) → container(AGENT_CONTAINER)
+//   POST_AGENT_LABEL posé    ⇒ node(label), sous container(AGENT_CONTAINER) s'il est posé
+//   ni l'un ni l'autre       ⇒ node('') — le comportement historique (le lab)
+// Chaque valeur vient de l'environnement (globale), sinon de config/site.ini (la
+// voie sans admin) ; l'environnement l'emporte. RÉSOLUES ET VÉRIFIÉES AU PARSE :
+// un câblage faux rougit le build avant tout geste — jamais après la pause, une
+// fois que l'humain a donné son mot de passe.
+//
+// ⚠ AGENT_CONTAINER est EXIGÉ avec un pod : sans `container()`, les `sh`
+// tournent dans le conteneur `jnlp` du pod, c'est-à-dire exactement la panne
+// ci-dessus déplacée d'un cran. Un site dont le jnlp porte les outils écrit `jnlp`.
+// ⚠ Le YAML est lu par readTrusted, chemin DEPUIS LA RACINE DU DÉPÔT, sur la
+// branche de BASE (même invariante que config/site.ini, voir plus haut) : une
+// PR ne peut pas changer l'image qui reçoit les credentials.
+// ⚠ Un site sans le plugin Kubernetes qui pose AGENT_POD_YAML_FILE meurt sur
+// « No such DSL method 'podTemplate' » : un Error, que le catch (e) des post ne
+// rattrape pas — bruyant, voulu.
+for (String k : SITE_AGENT_N.keySet()) {
+  if (SITE_AGENT_N[k] > 1) {
+    error("REFUS: SITE_CLE_EN_DOUBLE : config/site.ini definit ${k} ${SITE_AGENT_N[k]} fois — lequel gagne n est pas une question que ce canal tranche. Ne gardez qu une seule ligne")
+  }
+}
+
+def agentSpec() {
+  def f = "${env.AGENT_POD_YAML_FILE ?: SITE_AGENT.AGENT_POD_YAML_FILE ?: ''}".trim()
+  def c = "${env.AGENT_CONTAINER ?: SITE_AGENT.AGENT_CONTAINER ?: ''}".trim()
+  def l = "${env.POST_AGENT_LABEL ?: SITE_AGENT.POST_AGENT_LABEL ?: ''}".trim()
+  if (f && (!(f ==~ /[A-Za-z0-9_.\/-]+/) || f.startsWith('/') || f ==~ /(.*\/)?\.\.(\/.*)?/)) {
+    error("REFUS: AGENT_POD_YAML_FILE_INVALIDE : '${f}' — chemin RELATIF a la racine du depot attendu (lettres, chiffres, . _ - /), sans .. ni / initial")
+  }
+  if (c && !(c ==~ /[a-z0-9]([-a-z0-9]*[a-z0-9])?/)) {
+    error("REFUS: AGENT_CONTAINER_INVALIDE : '${c}' — nom de conteneur Kubernetes attendu (minuscules, chiffres, tirets)")
+  }
+  if (l && !(l ==~ /[A-Za-z0-9_.:&|!() -]+/)) {
+    error("REFUS: POST_AGENT_LABEL_INVALIDE : '${l}' — label ou expression de labels Jenkins attendu")
+  }
+  if (f && l) {
+    error("REFUS: AGENT_AMBIGU : AGENT_POD_YAML_FILE ('${f}') et POST_AGENT_LABEL ('${l}') sont poses tous les deux — un pod declare dans le depot ne se designe pas par label. N en garder qu un")
+  }
+  if (f && !c) {
+    error("REFUS: AGENT_CONTAINER_REQUIS : AGENT_POD_YAML_FILE ('${f}') est pose sans AGENT_CONTAINER — les sh tourneraient dans le conteneur jnlp du pod, sans les outils. Nommer le conteneur qui les porte (jnlp si c est lui)")
+  }
+  def y = ''
+  if (f) {
+    try {
+      y = readTrusted(f)
+    } catch (Exception e) {
+      if (e.getClass().getName() != 'hudson.AbortException') { throw e }
+      error("REFUS: AGENT_POD_YAML_ILLISIBLE : ${f} introuvable sur la branche de base du depot (chemin depuis la RACINE du depot, pas depuis le livrable)")
+    }
+    if (!y.trim()) { error("REFUS: AGENT_POD_YAML_VIDE : ${f} est vide") }
+    echo "agent des node explicites : pod Kubernetes de ${f}, conteneur '${c}'"
+  } else if (l) {
+    echo "agent des node explicites : label '${l}'" + (c ? ", conteneur '${c}'" : '')
+  } else {
+    echo "agent des node explicites : n importe quel agent (ni AGENT_POD_YAML_FILE ni POST_AGENT_LABEL)" + (c ? ", conteneur '${c}'" : '')
+  }
+  return [yaml: y, file: f, container: c, label: l]
+}
+AGENT_SPEC = agentSpec()
+
+def agentNode(Closure body) {
+  if (AGENT_SPEC.yaml) {
+    podTemplate(yaml: AGENT_SPEC.yaml) {
+      node(POD_LABEL) {
+        container(AGENT_SPEC.container) { body() }
+      }
+    }
+  } else if (AGENT_SPEC.container) {
+    node(AGENT_SPEC.label) {
+      container(AGENT_SPEC.container) { body() }
+    }
+  } else {
+    node(AGENT_SPEC.label) { body() }
+  }
 }
 
 pipeline {
@@ -501,7 +600,7 @@ pipeline {
         } else {
           try {
             timeout(time: 2, unit: 'MINUTES') {
-              node("${env.POST_AGENT_LABEL ?: ''}") {
+              agentNode {
                 checkout scm
                 withCredentials(forgeCreds()) {
                   withEnv(["BUILD_RESULT=${currentBuild.currentResult}"]) {

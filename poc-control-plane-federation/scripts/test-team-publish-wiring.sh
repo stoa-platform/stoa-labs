@@ -430,7 +430,7 @@ printf '%s\n' "$POST_CODE" | pipe_q 'bash scripts/lib/gitea-pr-comment\.sh' \
 printf '%s\n' "$POST_CODE" | pipe_q 'checkout scm' \
   && ok "le post fait son propre \`checkout scm\` (aucune hypothèse de workspace hérité)" \
   || ko "le post ne checkoute pas — il supposerait un workspace hérité, faux avec \`agent none\`"
-printf '%s\n' "$POST_CODE" | pipe_q -E 'node\(' \
+printf '%s\n' "$POST_CODE" | pipe_q -E '(node\(|agentNode \{)' \
   && ok "le post alloue explicitement un \`node\` (obligatoire sous \`agent none\`)" \
   || ko "le post n'alloue aucun \`node\` — ses steps échoueraient faute de workspace"
 # Marqueur : comparaison LITTÉRALE, et DISTINCTION du marqueur du script
@@ -793,8 +793,13 @@ if awk "NR>${L_PIPE:-0} && NR<$L_POST" "$JF" | pipe_q -E '^[[:space:]]*(try \{|\
 else
   ok "aucun try/catch dans le CORPS du pipeline (le post{} en a, et doit en avoir)"
 fi
-NODE_COUNT=$(grep -cE '^[[:space:]]*node\(' "$JF")
-POST_NODE=$(awk "NR>=$L_POST" "$JF" | grep -cE '^[[:space:]]*node\(')
+# 2026-09-18 : le nœud du post s'alloue par `agentNode {` (le helper du préambule,
+# qui choisit pod / label / n'importe quel agent). On compte donc les ALLOCATIONS
+# `node(` OU `agentNode {` à partir de `pipeline {` : les trois `node(` internes du
+# helper vivent au-dessus. Qu'aucun `node(` n'existe HORS du helper, partout, est
+# la mesure A.2 de scripts/test-agent-node.sh.
+NODE_COUNT=$(awk "NR>${L_PIPE:-0}" "$JF" | grep -cE '^[[:space:]]*(node\(|agentNode \{)')
+POST_NODE=$(awk "NR>=$L_POST" "$JF" | grep -cE '^[[:space:]]*(node\(|agentNode \{)')
 [ "$NODE_COUNT" -eq 1 ] \
   && ok "un seul \`node(...)\` dans tout le fichier, celui du post (obligatoire sous \`agent none\`)" \
   || ko "nombre de \`node(...)\` inattendu (${NODE_COUNT}, attendu 1) — le pipeline redevient scripté"

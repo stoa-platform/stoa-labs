@@ -1238,7 +1238,7 @@ L_POST=$(grep -n '^  post {' "$TMP/jf-plan2.code" | head -1 | cut -d: -f1)
   && ok "post de STAGE (ligne $L_RF, après le sh, avant le post de pipeline ligne $L_POST) charge GITEA_HEAD_REF / PLAN_VERDICT / PLAN_PR_NUMBER dans env" || ko "post de stage absent ou mal placé (sh=$L_SHP rf=$L_RF envh=$L_ENVH post=$L_POST)"
 POSTV="$TMP/jf-plan2.post"; awk "NR>=${L_POST:-1}" "$TMP/jf-plan2.code" > "$POSTV"
 L_G=$(code_line "$POSTV" "if (!ref.startsWith('provision/') || !(num ==~ /[0-9]+/))")
-L_TRY=$(code_line "$POSTV" 'try {'); L_TO=$(code_line "$POSTV" "timeout(time: 2, unit: 'MINUTES')"); L_ND=$(code_line "$POSTV" 'node("${env.POST_AGENT_LABEL ?: '"''"'}")')
+L_TRY=$(code_line "$POSTV" 'try {'); L_TO=$(code_line "$POSTV" "timeout(time: 2, unit: 'MINUTES')"); L_ND=$(code_line "$POSTV" 'agentNode {')
 L_ST=$(code_line "$POSTV" "sh 'set +x; bash scripts/provision-plan-status.sh || echo")
 L_CATCH=$(code_line "$POSTV" 'catch (e)')
 [ -n "$L_G" ] && [ -n "$L_ND" ] && [ "$L_G" -lt "$L_ND" ] && ok "post de pipeline : garde Groovy provision/* + PR_NUMBER numérique (ligne +$L_G) AVANT node( (ligne +$L_ND) — aucun exécuteur pour une PR étrangère" || ko "garde absente ou après node (g=$L_G node=$L_ND)"
@@ -1253,7 +1253,7 @@ echo
 echo "== 9. (f) ci/Jenkinsfile.provision-apply : la même garde AVANT le nœud du post =="
 code_view ci/Jenkinsfile.provision-apply > "$TMP/jf-apply2.code"
 L_POSTA=$(grep -n '^  post {' "$TMP/jf-apply2.code" | head -1 | cut -d: -f1); POSTA="$TMP/jf-apply2.post"; awk "NR>=${L_POSTA:-1}" "$TMP/jf-apply2.code" > "$POSTA"
-L_GA=$(code_line "$POSTA" "if (!ref.startsWith('provision/') || !(num ==~ /[0-9]+/))"); L_NDA=$(code_line "$POSTA" 'node("${env.POST_AGENT_LABEL ?: '"''"'}")')
+L_GA=$(code_line "$POSTA" "if (!ref.startsWith('provision/') || !(num ==~ /[0-9]+/))"); L_NDA=$(code_line "$POSTA" 'agentNode {')
 [ -n "$L_GA" ] && [ -n "$L_NDA" ] && [ "$L_GA" -lt "$L_NDA" ] && ok "provision-apply : garde Groovy (+$L_GA) AVANT node( (+$L_NDA)" || ko "provision-apply : garde absente ou après node (g=$L_GA node=$L_NDA)"
 code_line "$POSTA" 'try {' >/dev/null && [ -n "$(code_line "$POSTA" "timeout(time: 2, unit: 'MINUTES')")" ] && grep -q 'GITEA_HEAD_REF:-' "$POSTA" \
   && ok "provision-apply : try + timeout autour du nœud, et le gate de FORGE (GITEA_HEAD_REF) reste dans le sh" || ko "provision-apply : try/timeout absents ou gate forge disparu"

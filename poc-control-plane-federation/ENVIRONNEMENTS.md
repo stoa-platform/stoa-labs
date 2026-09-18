@@ -2670,6 +2670,83 @@ précédence, inclassable rouge, atomicité, CRLF retiré, pointeur explicite
 illisible refusé, miroir des deux voies ; trois mutants prouvent que chaque garde
 porte quelque chose (garde de secret neutralisée ⇒ le secret SORT).
 
+## L'agent des nœuds explicites (2026-09-18)
+
+**LE DÉFAUT, MESURÉ CHEZ UN CLIENT KUBERNETES.** `provision-plan`,
+`provision-apply`, `team-apply`, `team-promote` et `team-publish` sont en
+`agent none`. Ce qu'ils font hors d'un stage à agent prend un nœud EXPLICITE :
+le statut de build de leur `post{always}`, et chez `provision-apply` la porte,
+la garde d'identité et le rapport **après la pause** — sept sites en tout.
+C'était `node("${env.POST_AGENT_LABEL ?: ''}")` : une globale absente de tout
+catalogue, vide ⇒ **n'importe quel agent**. Le client déclare son runner
+python+ansible dans le Jenkinsfile (`agent { kubernetes { yaml … } }`) : le label
+de ce pod est généré à CHAQUE build (`<job>_<n°>-xxxxx`), aucun `node(label)` ne
+le retrouve. `provision-plan` #40 a donc posé son `post` sur le pod `default` —
+ni python3 ni ansible —, le statut n'a jamais été posté, et le build est resté
+VERT parce que le `try/catch` du `post` l'avale. Chez `provision-apply`, les
+mêmes sept lignes auraient fait tomber la porte et la garde d'identité sur ce
+pod, une fois le mot de passe donné.
+
+**LE CORRECTIF : `agentNode { … }`**, un helper recopié à l'octet dans les cinq
+préambules (une shared library exigerait le droit d'admin que la voie sans
+admin contourne). Il décide ainsi, sans repli d'un cas sur l'autre :
+
+| Posé | Allocation |
+|------|------------|
+| `AGENT_POD_YAML_FILE` + `AGENT_CONTAINER` | `podTemplate(yaml)` → `node(POD_LABEL)` → `container(AGENT_CONTAINER)` |
+| `POST_AGENT_LABEL` (+ `AGENT_CONTAINER` éventuel) | `node(label)` (→ `container(…)`) |
+| rien | `node('')` — le comportement historique, **inchangé au lab** |
+
+Chaque valeur vient d'une globale, sinon de `config/site.ini` ; **la globale
+l'emporte**. Les trois sont **résolues et vérifiées AU PARSE**, avant tout geste :
+un câblage faux rougit le build avant la pause, jamais après que l'humain a
+répondu. Refus nommés : `AGENT_CONTAINER_REQUIS` (un pod sans conteneur ferait
+tourner les `sh` dans le `jnlp`, sans les outils, c'est-à-dire la panne mesurée
+déplacée d'un cran), `AGENT_AMBIGU` (pod ET label), `AGENT_POD_YAML_ILLISIBLE`,
+`AGENT_POD_YAML_VIDE`, `AGENT_POD_YAML_FILE_INVALIDE` (`..` ou `/` initial),
+`AGENT_CONTAINER_INVALIDE`, `POST_AGENT_LABEL_INVALIDE`, `SITE_CLE_EN_DOUBLE`.
+
+**CÔTÉ CLIENT, sans admin** :
+
+```ini
+# 1. Le YAML du runner, le même que celui de l'agent { kubernetes { yaml … } }
+#    de vos stages, dans un fichier du dépôt — ex. ci/agent-pod.yaml.
+# 2. Dans config/site.ini :
+AGENT_POD_YAML_FILE=ci/agent-pod.yaml
+AGENT_CONTAINER=ansible
+```
+
+- Le chemin part de la **RACINE DU DÉPÔT** (ce que lit `readTrusted`), pas du
+  livrable. Il est lu sur la **branche de base**, même invariante que
+  `site.ini` : une PR ne peut pas changer l'image qui reçoit les credentials.
+- ⚠ `config/site.ini` est lui-même lu à `poc-control-plane-federation/config/site.ini`,
+  préfixe **en dur** dans les cinq préambules. Si votre livrable n'est pas sous
+  ce préfixe, le fichier est déclaré « absent » en silence : passez alors par
+  les globales, ou alignez le préfixe.
+- Sans le plugin Kubernetes, poser `AGENT_POD_YAML_FILE` fait mourir le build
+  sur « No such DSL method 'podTemplate' » : bruyant, voulu.
+
+**CE QUE CE LOT NE COUVRE PAS : les stages à `agent any`.** Les stages de travail
+de ces pipelines, comme `app-request` et les pipelines en `agent any`,
+déclarent leur agent en DÉCLARATIF. Un `agent { kubernetes { … } }` ne peut pas
+vivre dans le Jenkinsfile commun, parce qu'un Jenkins sans le plugin refuse ce type
+d'agent à la compilation (comportement connu de Declarative, non re-mesuré ici).
+Le client garde donc son édition de ces lignes. Le YAML qu'il y met doit être le
+MÊME que celui d'`AGENT_POD_YAML_FILE`, et rien ne le vérifie.
+
+**Preuves** : `scripts/test-agent-node.sh` (27) exécute le bloc LIVRÉ sous
+`groovy:4-jdk17`. Les pas Jenkins y sont remplacés par des bouchons qui enregistrent
+leurs appels. La suite couvre les six décisions, les neuf refus, la précédence, les
+cinq copies identiques, l'absence de `node(` hors du helper dans les 18 Jenkinsfile,
+et quatre mutants. Le miroir S.11 de `test-site-env.sh` juge aussi un doublon de clé
+d'agent des deux côtés. **Sous le vrai sandbox CPS** (spike jetable, Jenkins du
+lab, 2026-09-18) : le préambule livré, suivi d'un `agentNode` dans un stage et dans un `post`,
+passe sur le chemin « rien » (SUCCESS, les deux `sh` sur `built-in`) et sur le
+chemin « label » (`POST_AGENT_LABEL=built-in`, idem). Un pod sans conteneur
+meurt au parse (`REFUS: AGENT_CONTAINER_REQUIS`, aucun stage exécuté). **Non
+prouvé** : le chemin `podTemplate` sur un vrai Jenkins Kubernetes. Le lab n'a pas
+ce plugin, et le premier build client en fera la preuve.
+
 ## Résiduel
 
 - **Le lien entre le Jenkins local et celui du labs n'est pas établi.** Ce sont

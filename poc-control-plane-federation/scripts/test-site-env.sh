@@ -201,7 +201,9 @@ echo "═══ S.11 MIROIR EXÉCUTÉ : le même fichier dans les DEUX analyseur
 #
 # ⚠ ON N'ÉCRIT PAS ICI UNE SEPTIÈME COPIE. Le bloc Groovy est EXTRAIT du
 # Jenkinsfile réellement livré et EXÉCUTÉ ; seuls `readTrusted`, `echo` et `error`
-# sont bouchonnés. Retaper l'extraction rendrait ce miroir vert le jour même où
+# sont bouchonnés, plus un `env` VIDE : depuis le 2026-09-18 le bloc résout aussi
+# l'agent des `node` explicites (agentSpec, qui lit env) — sa mesure propre est
+# scripts/test-agent-node.sh, ce miroir n'y juge que le doublon. Retaper l'extraction rendrait ce miroir vert le jour même où
 # les récepteurs divergeraient — c'est le défaut qu'il existe pour attraper.
 GROOVY_IMG="${SITE_MIRROR_IMG:-groovy:4-jdk17}"
 if ! command -v docker >/dev/null 2>&1; then
@@ -215,7 +217,8 @@ else
     | sed '$d' > "$TMP/mir/bloc.groovy"
   { printf '%s\n' 'def readTrusted(String p) { return new File(System.getenv("SITE_FILE")).text }' \
                   'def echo(String m) { }' \
-                  'def error(String m) { println m; System.exit(2) }'
+                  'def error(String m) { println m; System.exit(2) }' \
+                  'env = [:]'
     cat "$TMP/mir/bloc.groovy"
     printf '%s\n' 'println "VALEUR:" + SITE_WEBHOOK_KIND'
   } > "$TMP/mir/mirror.groovy"
@@ -224,7 +227,8 @@ else
   MIR_KO=""; MIR_N=0
   for cas in 'nominal|WEBHOOK_KIND=gitlab|ACCORD:gitlab' \
              'doublon|WEBHOOK_KIND=gwt\nWEBHOOK_KIND=gitlab|REFUS_DES_DEUX' \
-             'guillemets|WEBHOOK_KIND="gitlab"|SHELL_REFUSE_GROOVY_INVALIDE'; do
+             'guillemets|WEBHOOK_KIND="gitlab"|SHELL_REFUSE_GROOVY_INVALIDE' \
+             'doublon-agent|AGENT_CONTAINER=ansible\nAGENT_CONTAINER=python|REFUS_DES_DEUX'; do
     et="${cas%%|*}"; reste="${cas#*|}"; contenu="${reste%|*}"; attendu="${reste##*|}"
     printf '%b\n' "$contenu" > "$TMP/mir/site.ini"
     # verdict SHELL

@@ -199,7 +199,7 @@ else
   ko "la garde précède la pause : elle n'aurait rien à comparer"
 fi
 # La garde tourne SOUS un node ouvert entre la pause et elle, et sous withEnv(['V_PASS=']).
-L_NODE1=$(awk "NR>${L_INPUT:-0} && NR<${L_GUARD:-0} && /node\(\"\\\$\{env.POST_AGENT_LABEL/ {n=NR} END {print n}" "$TMP/jf.code")
+L_NODE1=$(awk "NR>${L_INPUT:-0} && NR<${L_GUARD:-0} && /agentNode [{]/ {n=NR} END {print n}" "$TMP/jf.code")
 [ -n "$L_NODE1" ] && ok "la garde tourne sous un \`node(\` ouvert après la pause (ligne $L_NODE1)" || ko "aucun node( entre la pause et la garde — le sh de la garde n'aurait pas de workspace"
 L_WE1=$(awk "NR>${L_INPUT:-0} && NR<${L_GUARD:-0} && /withEnv\(\[\"V_USER=/ {n=NR} END {print n}" "$TMP/jf.code")
 [ -n "$L_WE1" ] && ok "…et sous withEnv([\"V_USER=…\"]) (ligne $L_WE1) : seul le LOGIN entre dans l'environnement du shell" || ko "la garde ne reçoit pas V_USER par withEnv"
@@ -251,7 +251,7 @@ printf '%s' "$CMT_LINE" | pipe_q '|| true' && ok "|| true : une forge en panne n
 printf '%s' "$CMT_LINE" | pipe_q 'VALIDATOR="${V_USER:-}"' && ok "VALIDATOR lu par le shell depuis V_USER (pas d'interpolation Groovy)" || ko "VALIDATOR non alimenté depuis V_USER par le shell"
 printf '%s' "$CMT_LINE" | pipe_q 'EXPECTED_SHA="${MERGE_SHA:-}"' && ok "EXPECTED_SHA = MERGE_SHA transmis au rapport (la référence DEMANDÉE est écrite à côté de celle projetée)" || ko "EXPECTED_SHA non transmis"
 L_WE2=$(awk "NR>${L_BUILD:-0} && NR<${L_CMT:-0} && /withEnv\(\[\"V_USER=/ {n=NR} END {print n}" "$TMP/jf.code")
-L_NODE2=$(awk "NR>${L_BUILD:-0} && NR<${L_CMT:-0} && /node\(\"\\\$\{env.POST_AGENT_LABEL/ {n=NR} END {print n}" "$TMP/jf.code")
+L_NODE2=$(awk "NR>${L_BUILD:-0} && NR<${L_CMT:-0} && /agentNode [{]/ {n=NR} END {print n}" "$TMP/jf.code")
 [ -n "$L_WE2" ] && [ -n "$L_NODE2" ] && ok "le rapport tourne sous withEnv([\"V_USER=…\"]) (ligne $L_WE2) et un node( (ligne $L_NODE2)" || ko "le rapport ne tourne pas sous withEnv(V_USER) + node("
 L_ERR=$(code_line "$TMP/jf.code" 'error("Apply nominatif en échec')
 if [ -n "$L_CMT" ] && [ -n "$L_ERR" ] && [ "$L_CMT" -lt "$L_ERR" ]; then
@@ -296,7 +296,7 @@ L_POST=$(grep -n '^  post {' "$TMP/jf.code" | head -1 | cut -d: -f1)
 [ -n "$L_POST" ] && ok "bloc post de niveau pipeline (ligne $L_POST)" || ko "aucun bloc post de niveau pipeline"
 awk "NR>${L_POST:-0}" "$TMP/jf.code" > "$TMP/post.code"
 grep -q 'always {' "$TMP/post.code" && ok "post { always }" || ko "post sans always"
-grep -q 'node("${env.POST_AGENT_LABEL ?: '"'"''"'"'}")' "$TMP/post.code" && ok "node explicite dans le post (agent none au niveau pipeline)" || ko "pas de node dans le post"
+grep -q 'agentNode {' "$TMP/post.code" && ok "node explicite (agentNode) dans le post (agent none au niveau pipeline)" || ko "pas de node dans le post"
 grep -q 'checkout scm' "$TMP/post.code" && ok "checkout scm dans le post (le workspace n'est pas hérité)" || ko "pas de checkout scm dans le post"
 grep -q 'COMMENT_MARKER="<!-- provision-apply-build -->"' "$TMP/post.code" && ok "marqueur distinct provision-apply-build (ne remplace ni le rapport ni le refus)" || ko "marqueur du post absent ou identique"
 grep -q 'bash scripts/lib/gitea-pr-comment.sh' "$TMP/post.code" && ok "gitea-pr-comment.sh (upsert idempotent) utilisé dans le post" || ko "le post ne passe pas par gitea-pr-comment.sh"
