@@ -25,6 +25,18 @@
 # `A && ok || bad` (SC2015) est l'idiome des scripts de preuve du repo.
 # shellcheck disable=SC2015
 set -uo pipefail
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 cd "$(dirname "$0")/.." || exit 1
 ROOT="$(pwd)"
 
@@ -185,7 +197,7 @@ grep -q '^palier ouvert : envs/rec/wm-admin' "$TMP/g.out" && grep -q '^PALIER_CR
   && ok "A.1i journal : 1 lookup-self, 1 capabilities-self, 1 GET du ticket — rien d'autre ($(grep -c . "$STUB_LOG") appels)" || bad "A.1i journal inattendu : $(cat "$STUB_LOG")"
 [ "$(jcaps_paths | wc -l | tr -d ' ')" = 1 ] && [ "$(jcaps_paths)" = secret/data/stoa/envs/rec/wm-admin ] && ok "A.1j capabilities-self sonde UN chemin (le ticket) en mode idp" || bad "A.1j chemins sondés : $(jcaps_paths | tr '\n' ' ')"
 [ "$(grep -c . "$STUB_LOG")" -ge 3 ] && [ "$(grep -c '"tok": "stub-token-abc"' "$STUB_LOG")" = "$(grep -c . "$STUB_LOG")" ] && ok "A.1k le token arrive par l'EN-TÊTE sur chaque appel (contenu du fichier), jamais ailleurs" || bad "A.1k un appel sans le token en en-tête"
-grep -rl 'SECRET-BODY-DO-NOT-STORE' "$TMP" 2>/dev/null | grep -v 'http.log\|stub.py' | grep -q . \
+grep -rl 'SECRET-BODY-DO-NOT-STORE' "$TMP" 2>/dev/null | grep -v 'http.log\|stub.py' | pipe_q . \
   && bad "A.1l le CORPS du ticket (le credential d'admin) a été écrit quelque part : $(grep -rl 'SECRET-BODY-DO-NOT-STORE' "$TMP" | grep -v 'http.log\|stub.py' | tr '\n' ' ')" \
   || ok "A.1l le corps du ticket n'a atterri dans aucun fichier"
 grep -q 'SECRET-BODY-DO-NOT-STORE' "$TMP/g.out" && bad "A.1m le corps du ticket est sur stdout" || ok "A.1m aucun secret sur stdout"
@@ -314,7 +326,7 @@ refus VIA_INCONNU && ok "A.24bis ADMIN_VIA vide ⇒ VIA_INCONNU (plus de bascule
 # un composant vide du gabarit proxy compose « …/gateway//1.0/… » : une URL BIEN
 # FORMÉE, donc invisible pour le contrôle de forme. Elle est refusée nommément.
 run_gate rec ADMIN_VIA=proxy-oauth2 APIM_PROXY_API=
-refus APIM_BASE_INVALIDE && gout | grep -q 'APIM_PROXY_API est vide' && ok "A.24ter gabarit proxy à composant vide ⇒ APIM_BASE_INVALIDE qui NOMME la variable" || bad "A.24ter rc $(grc) : $(gout | tail -1)"
+refus APIM_BASE_INVALIDE && gout | pipe_q 'APIM_PROXY_API est vide' && ok "A.24ter gabarit proxy à composant vide ⇒ APIM_BASE_INVALIDE qui NOMME la variable" || bad "A.24ter rc $(grc) : $(gout | tail -1)"
 
 echo "── A.28/A.29 team et vault_sub hors charset : refus nommés, AVANT tout appel Vault ──"
 set_ctl "$CTL_OK"
@@ -388,7 +400,7 @@ if mutant 's@if t \& \{"create", "update", "delete", "patch"\}: print\("TICKET_I
   run_mut m_inscr rec; [ "$(grc)" = 0 ] && ok "A.27iii contrôle d'inscriptibilité retiré ⇒ le ticket auto-fabriqué PASSE sur le mutant" || bad "A.27iii le mutant refuse encore : $(gout | tail -1)"
   run_gate rec; refus TICKET_INSCRIPTIBLE && ok "A.27iii' l'original refuse toujours" || bad "A.27iii' l'original a dérivé"
 fi
-if mutant 's@^ *printf .%s\\n. "\$S" \| grep -qx -- "\$TEAM" \\$@true \\@' m_team; then
+if mutant 's@^ *printf .%s\\n. "\$S" \| pipe_q -x -- "\$TEAM" \\$@true \\@' m_team; then
   set_ctl "$CTL_OK"
   run_mut m_team rec "MANIFEST=$TMP/man-pt.yml"; [ "$(grc)" = 0 ] && ok "A.27iv TEAM ∈ S retiré ⇒ le manifeste d'une autre équipe PASSE sur le mutant" || bad "A.27iv le mutant refuse encore : $(gout | tail -1)"
   run_gate rec "MANIFEST=$TMP/man-pt.yml"; refus TEAM_NON_PORTEE && ok "A.27iv' l'original refuse toujours" || bad "A.27iv' l'original a dérivé"
@@ -607,7 +619,7 @@ grep -q '\*\[!A-Za-z0-9_./:@+-\]\*' "$TMP/jf.code" && grep -q 'REFUS: SORTIE_INV
 grep -Eq '(^|[^A-Za-z_])eval([^A-Za-z_]|$)' "$TMP/jf.code" && bad "B.9b eval présent dans le Jenkinsfile" || ok "B.9b aucun eval"
 L_CPL=$(line_after "${L_LOGIN:-0}" 'PALIER_OUT incomplet' "$TMP/jf.code")
 CPL_LINE=$(awk -v s="$L_CPL" 'NR==s-1' "$TMP/jf.code")
-MISS=""; for v in PALIER_ENV PALIER_VIA PALIER_TEAM APIM_API_BASE APIM_AUTH_MODE APIM_WM_CREDS_SUB APIM_OAUTH_SUB; do printf '%s' "$CPL_LINE" | grep -qF "[ -n \"\$$v\" ]" || MISS="$MISS $v"; done
+MISS=""; for v in PALIER_ENV PALIER_VIA PALIER_TEAM APIM_API_BASE APIM_AUTH_MODE APIM_WM_CREDS_SUB APIM_OAUTH_SUB; do printf '%s' "$CPL_LINE" | pipe_q -F "[ -n \"\$$v\" ]" || MISS="$MISS $v"; done
 [ -n "$L_CPL" ] && [ -z "$MISS" ] && ok "B.9d complétude : les 7 clés consommées sont exigées non vides avant usage (PALIER_OUT incomplet sinon)" || bad "B.9d complétude incomplète (ligne $L_CPL) — clés non exigées :${MISS:- (ligne introuvable)}"
 grep -Eq '(^|[[:space:]])(\.|source) +"?\$PALIER_OUT' "$TMP/jf.code" && bad "B.9c PALIER_OUT est sourcé" || ok "B.9c PALIER_OUT n'est jamais sourcé"
 for kv in 'apim_ss_team="$PALIER_TEAM"' 'apim_ss_api_base="$APIM_API_BASE"' 'apim_ss_auth_mode="$APIM_AUTH_MODE"' 'apim_ss_vault_wm_creds_sub="$APIM_WM_CREDS_SUB"' 'apim_ss_vault_oauth_sub="$APIM_OAUTH_SUB"'; do
@@ -622,7 +634,7 @@ L_W1=$(awk "NR>${L_REF:-0} && /withEnv\(\[/ {print NR; exit}" "$TMP/jf.code"); L
 [ "$(wenv_names "$L_W1")" = "MANIFEST MERGE_SHA ENVIRONMENT" ] && [ "$(wenv_names "$L_W2")" = "MANIFEST MERGE_SHA ENVIRONMENT" ] && [ "$(wenv_names "$L_W3")" = "MANIFEST MERGE_SHA ENVIRONMENT ADMIN_VIA DEBUG VAULT_USER USER_VAULT_JWT" ] \
   && ok "B.12 les listes withEnv des trois stages sont INCHANGÉES (A0 dettes)" || bad "B.12 withEnv : Référence=[$(wenv_names "$L_W1")] Plan=[$(wenv_names "$L_W2")] Apply=[$(wenv_names "$L_W3")]"
 grep -q 'rm -f "$PALIER_OUT"' "$TMP/jf.code" && ok "B.13 PALIER_OUT purgé avant l'appel" || bad "B.13 pas de purge de PALIER_OUT"
-grep -nE '^[[:space:]]*sh "' "$TMP/jf.code" | grep -q 'PALIER_' && bad "B.14 une valeur PALIER_* est interpolée par Groovy dans un sh" || ok "B.14 les PALIER_* sont lues par le shell, jamais interpolées par Groovy"
+grep -nE '^[[:space:]]*sh "' "$TMP/jf.code" | pipe_q 'PALIER_' && bad "B.14 une valeur PALIER_* est interpolée par Groovy dans un sh" || ok "B.14 les PALIER_* sont lues par le shell, jamais interpolées par Groovy"
 grep -Eq 'bash +scripts/selfservice-palier-gate.sh' "$TMP/jf.code" && bad "B.15 la garde est appelée depuis l'arbre pinné (scripts/… relatif)" || ok "B.15 la garde n'est jamais appelée depuis l'arbre pinné"
 # B.16 mutation d'ordre : le bloc de garde déplacé APRÈS le préflight (ancre d'instruction, awk)
 if [ -n "$L_GATE" ] && [ -n "$L_PF" ]; then
@@ -644,8 +656,8 @@ else
 fi
 echo "── B.21–B.25 (A4) : REFUS_OUT relayé, chaîne épinglée, purges ABSOLUES, post{always} du stage Apply ──"
 GATE_LINE=$(sed -n "${L_GATE:-0}p" "$TMP/jf.code")
-printf '%s' "$GATE_LINE" | grep -qF 'REFUS_OUT="$WORKSPACE/.a3-refus"' && ok "B.21 la ligne d'appel de la garde porte REFUS_OUT=\$WORKSPACE/.a3-refus" || bad "B.21 REFUS_OUT absent de la ligne d'appel : $GATE_LINE"
-printf '%s' "$GATE_LINE" | grep -qF 'STOA_ENV_CHAIN_FILE="$GATE_DIR/clients/_example/environments.yaml"' && ok "B.22 la chaîne est ÉPINGLÉE sur l'extraction de la lignée (une globale ne gagne pas)" || bad "B.22 STOA_ENV_CHAIN_FILE non épinglé : $GATE_LINE"
+printf '%s' "$GATE_LINE" | pipe_q -F 'REFUS_OUT="$WORKSPACE/.a3-refus"' && ok "B.21 la ligne d'appel de la garde porte REFUS_OUT=\$WORKSPACE/.a3-refus" || bad "B.21 REFUS_OUT absent de la ligne d'appel : $GATE_LINE"
+printf '%s' "$GATE_LINE" | pipe_q -F 'STOA_ENV_CHAIN_FILE="$GATE_DIR/clients/_example/environments.yaml"' && ok "B.22 la chaîne est ÉPINGLÉE sur l'extraction de la lignée (une globale ne gagne pas)" || bad "B.22 STOA_ENV_CHAIN_FILE non épinglé : $GATE_LINE"
 L_RMA=$(line_after "${L_LOGIN:-0}" 'rm -f "$WORKSPACE/.a3-refus"' "$TMP/jf.code")
 [ -n "$L_RMA" ] && [ "$L_RMA" -lt "${L_GATE:-0}" ] && ok "B.23 purge ABSOLUE de \$WORKSPACE/.a3-refus avant l'appel (ligne $L_RMA)" || bad "B.23 pas de purge absolue avant l'appel (rm=$L_RMA gate=$L_GATE)"
 L_RMR=$(awk "NR>${L_REF:-0} && NR<${L_PLAN:-0} && index(\$0, \"rm -f \\\"\$WORKSPACE/.a3-refus\\\"\") { print NR; exit }" "$TMP/jf.code")

@@ -39,6 +39,18 @@
 # entrant sous `make lint-ci` : la suite est désormais shellcheckée comme les autres.
 # shellcheck disable=SC2015,SC2016
 set -uo pipefail
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 JOB="$REPO/ci/jenkins/api-request.job.xml"
 JF="$REPO/ci/Jenkinsfile.api-request"
@@ -62,11 +74,11 @@ TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 # `=`) sont cosmétiques — un reformatage ne doit pas faire virer un contrôle au
 # rouge, alors que la disparition d'une clé le doit.
 JF_N="$(tr -s ' ' < "$JF")"
-jf(){ printf '%s\n' "$JF_N" | grep -qF "$1"; }
+jf(){ printf '%s\n' "$JF_N" | pipe_q -F "$1"; }
 # Le Jenkinsfile PRIVÉ DE SES COMMENTAIRES : toute vérification « ceci est
 # réellement appelé » passe par lui, jamais par le fichier brut.
 JF_CODE="$(grep -vE '^[[:space:]]*//' "$JF")"
-jfc(){ printf '%s\n' "$JF_CODE" | grep -qF "$1"; }
+jfc(){ printf '%s\n' "$JF_CODE" | pipe_q -F "$1"; }
 
 echo "== 1. le XML reste bien formé, et le Jenkinsfile est un pipeline DÉCLARATIF =="
 python3 -c "import xml.etree.ElementTree as T; T.parse('$JOB')" 2>/dev/null \
@@ -200,12 +212,12 @@ echo "== 4. le checkout : implicite, et jamais désactivé =="
 # checkout est fait par Declarative depuis le <scm> du XML. Deux façons de
 # casser ça en silence : réintroduire un `git url:` (deux checkouts divergents)
 # ou poser skipDefaultCheckout (workspace VIDE, tous les `bash scripts/…` morts).
-if printf '%s\n' "$JF_CODE" | grep -q 'git url:'; then
+if printf '%s\n' "$JF_CODE" | pipe_q 'git url:'; then
   ko "un \`git url:\` explicite subsiste — il doublerait (et pourrait contredire) le checkout implicite piloté par le XML"
 else
   ok "aucun \`git url:\` explicite : le checkout vient du <scm> de la coquille, source unique"
 fi
-if printf '%s\n' "$JF_CODE" | grep -q 'skipDefaultCheckout'; then
+if printf '%s\n' "$JF_CODE" | pipe_q 'skipDefaultCheckout'; then
   ko "skipDefaultCheckout présent — le workspace serait VIDE et chaque \`bash scripts/…\` mourrait"
 else
   ok "pas de skipDefaultCheckout : le dépôt est bien reposé dans le workspace"
@@ -271,14 +283,14 @@ echo "== 7. pas d'injection : la saisie humaine ne traverse AUCUNE interpolation
 # demandeur, committé tel quel dans apis/<name>.openapi.yaml) serait réécrit en
 # silence, et coller `${JENKINS_HOME}` deviendrait une primitive de lecture de
 # l'environnement du contrôleur vers un dépôt d'équipe.
-if printf '%s\n' "$JF_CODE" | grep -q 'withEnv(\["ACTION=\${params\.ACTION}'; then
+if printf '%s\n' "$JF_CODE" | pipe_q 'withEnv(\["ACTION=\${params\.ACTION}'; then
   ok "ré-injection des valeurs BRUTES via withEnv([...params...]) présente — les \${…} d'une saisie ne sont pas expansés par Jenkins"
 else
   ko "le withEnv([...params...]) de ré-injection a disparu — Jenkins résoudrait les \${…} de OPENAPI_SPEC/API_NAME avant le script (corruption silencieuse + lecture de l'env du contrôleur)"
 fi
 MISSING_RAW=""
 for P in ACTION TEAM API_NAME API_VERSION API_BASE NEW_VERSION OPENAPI_SPEC INBOUND_MODE; do
-  printf '%s\n' "$JF_CODE" | grep -q "${P}=\${params\.${P}" || MISSING_RAW="${MISSING_RAW} ${P}"
+  printf '%s\n' "$JF_CODE" | pipe_q "${P}=\${params\.${P}" || MISSING_RAW="${MISSING_RAW} ${P}"
 done
 [ -z "$MISSING_RAW" ] \
   && ok "les 8 paramètres du formulaire sont ré-injectés en valeur brute" \
@@ -288,7 +300,7 @@ done
 # L4 (2026-09-11) : le pont DEBUG ⇒ STOA_DEBUG porte un `${DEBUG:-false}` — du
 # SHELL (quotes simples, Groovy n'y touche pas). On le retire AVANT de chercher
 # une interpolation : c'est la seule forme admise, à l'octet, rien d'autre.
-if printf '%s\n' "$JF_CODE" | grep -E "^[[:space:]]*sh '" | sed 's/\${DEBUG:-false}//g' | grep -q 'params\.\|\${'; then
+if printf '%s\n' "$JF_CODE" | grep -E "^[[:space:]]*sh '" | sed 's/\${DEBUG:-false}//g' | pipe_q 'params\.\|\${'; then
   ko "la chaîne sh porte une interpolation Groovy (params. ou \${…}) — la saisie la traverserait"
 else
   ok "la chaîne sh ne porte aucune interpolation Groovy hors le pont DEBUG (\${DEBUG:-false}, du shell) : c'est le shell qui lit l'environnement posé par withEnv"
@@ -298,7 +310,7 @@ if grep -q 'sh """' "$JF"; then
 else
   ok "aucun bloc \`sh \"\"\"\` : impossible d'interpoler une valeur externe dans une chaîne shell"
 fi
-if printf '%s\n' "$JF_CODE" | grep -qE '^\s*sh "'; then
+if printf '%s\n' "$JF_CODE" | pipe_q -E '^\s*sh "'; then
   ko "une chaîne \`sh \"…\"\` (quotes doubles) existe — même risque d'interpolation"
 else
   ok "aucune chaîne \`sh \"…\"\` : tout ce qui va au shell est en quotes simples"
@@ -309,7 +321,7 @@ jfc "sh 'set +x; if [ \"\${DEBUG:-false}\" = \"true\" ]; then export STOA_DEBUG=
 
 echo
 echo "== 8. le pipeline reste MINCE : il route, le moteur ne bouge pas =="
-if printf '%s\n' "$JF_CODE" | grep -qE '^\s*(curl|ansible-playbook) '; then
+if printf '%s\n' "$JF_CODE" | pipe_q -E '^\s*(curl|ansible-playbook) '; then
   ko "le Jenkinsfile appelle directement curl/ansible-playbook — la substance doit rester dans scripts/ et ansible/"
 else
   ok "aucun curl/ansible-playbook direct : le pipeline route, le moteur reste dans scripts/ et ansible/"
@@ -339,7 +351,7 @@ if grep -qE '^  agent none$' "$JF"; then
 else
   ok "pas d'\`agent none\` : inutile ici, il n'y a aucune demande en attente à couvrir"
 fi
-if printf '%s\n' "$JF_CODE" | grep -qE '^\s*input[ (\{]'; then
+if printf '%s\n' "$JF_CODE" | pipe_q -E '^\s*input[ (\{]'; then
   ko "une directive/step \`input\` a été introduite — le job d'origine ne demandait AUCUNE validation : ce serait un changement de comportement, pas une conversion"
 else
   ok "aucun \`input\` : la décision reste le MERGE de la PR (ADR-081), jamais une pause dans ce job"

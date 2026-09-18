@@ -39,6 +39,18 @@
 # la suite est désormais shellcheckée comme les autres livrables.
 # shellcheck disable=SC2015,SC2016
 set -uo pipefail
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 JOB="$REPO/ci/jenkins/team-publish.job.xml"
 JF="$REPO/ci/Jenkinsfile.team-publish"
@@ -70,7 +82,7 @@ MIRROR_LIB_OK=0
 # shellcheck source=scripts/lib/gwt-mirror.sh
 . "$REPO/scripts/lib/gwt-mirror.sh" 2>/dev/null && MIRROR_LIB_OK=1
 
-jf(){ printf '%s\n' "$JF_N" | grep -qF "$1"; }
+jf(){ printf '%s\n' "$JF_N" | pipe_q -F "$1"; }
 
 echo "== 1. le XML reste bien formé, et le Jenkinsfile est bien un pipeline DÉCLARATIF =="
 python3 -c "import xml.etree.ElementTree as T; T.parse('$JOB')" 2>/dev/null \
@@ -167,10 +179,10 @@ if [ "$MIRROR_LIB_OK" = 1 ]; then
     OUT3=$(gwt_mirror_diff "$REPO/ci/jenkins/$J3.job.xml" "$REPO/ci/Jenkinsfile.$J3" 2>&1); RC3=$?
     case "$J3" in
       provisioning-request)
-        { [ "$RC3" -eq 0 ] && printf '%s' "$OUT3" | grep -q '^MIROIR_OK'; } \
+        { [ "$RC3" -eq 0 ] && printf '%s' "$OUT3" | pipe_q '^MIROIR_OK'; } \
           && ok "$J3 : $OUT3" || ko "$J3 : miroir NON exact (rc=$RC3) — $(printf '%s' "$OUT3" | tr '\n' ' ')" ;;
       *)
-        { [ "$RC3" -eq 2 ] && printf '%s' "$OUT3" | grep -q "^DIVERGENCE trigger xml=absent jenkinsfile=present token=stoa-$J3 vars="; } \
+        { [ "$RC3" -eq 2 ] && printf '%s' "$OUT3" | pipe_q "^DIVERGENCE trigger xml=absent jenkinsfile=present token=stoa-$J3 vars="; } \
           && ok "$J3 : $OUT3 (L6 : XML sans propriété, le Jenkinsfile déclare seul)" \
           || ko "$J3 : attendu « xml=absent jenkinsfile=present token=stoa-$J3 vars=… » (rc=$RC3) — $(printf '%s' "$OUT3" | tr '\n' ' ')" ;;
     esac
@@ -208,7 +220,7 @@ jf "sh 'set +x; GIT_REPO=\"\$WEBHOOK_REPO\" bash scripts/forge-merge-identity.sh
 grep -qE "^[[:space:]]*sh '.*assert-merge-identity" "$JF" \
   && ko "le Jenkinsfile appelle ENCORE la garde directement — deux chemins pour une seule règle" \
   || ok "le Jenkinsfile n'appelle plus la garde lui-même : un seul chemin, celui du script"
-{ [ -f "$IDS" ] && head -1 "$IDS" | grep -qE '^#!.*bash' && bash -n "$IDS" 2>/dev/null; } \
+{ [ -f "$IDS" ] && head -1 "$IDS" | pipe_q -E '^#!.*bash' && bash -n "$IDS" 2>/dev/null; } \
   && ok "scripts/forge-merge-identity.sh existe, shebang bash (son propre process — un bloc \`sh\` de Jenkins est du DASH et ne saurait pas sourcer forge-api.sh) et il parse" \
   || ko "scripts/forge-merge-identity.sh absent, sans shebang bash, ou ne parse pas"
 # Le CÂBLAGE se mesure DANS le script, continuations recollées : l'appel de la
@@ -219,9 +231,9 @@ grep -qE "^[[:space:]]*sh '.*assert-merge-identity" "$JF" \
 IDS_J=$(sed -E 's@^[[:space:]]*#.*$@@' "$IDS" | sed -e :a -e '/\\$/N; s/\\\n[[:space:]]*/ /; ta')
 GUARD_LINE=$(printf '%s\n' "$IDS_J" | grep 'sh scripts/lib/assert-merge-identity\.sh' | head -1)
 MISSG=""
-printf '%s' "$GUARD_LINE" | grep -qF -- '--merged-by "${PRG_MERGED_BY:-}"' || MISSG="$MISSG --merged-by(forge)"
-printf '%s' "$GUARD_LINE" | grep -qF -- '--requester "${PRG_LOGIN:-}"'    || MISSG="$MISSG --requester(forge)"
-printf '%s' "$GUARD_LINE" | grep -qF -- '--vault-user "${V_USER:-}"'      || MISSG="$MISSG --vault-user(pause)"
+printf '%s' "$GUARD_LINE" | pipe_q -F -- '--merged-by "${PRG_MERGED_BY:-}"' || MISSG="$MISSG --merged-by(forge)"
+printf '%s' "$GUARD_LINE" | pipe_q -F -- '--requester "${PRG_LOGIN:-}"'    || MISSG="$MISSG --requester(forge)"
+printf '%s' "$GUARD_LINE" | pipe_q -F -- '--vault-user "${V_USER:-}"'      || MISSG="$MISSG --vault-user(pause)"
 { [ -n "$GUARD_LINE" ] && [ -z "$MISSG" ]; } \
   && ok "le script invoque RÉELLEMENT la garde, nourrie des valeurs RELUES (PRG_MERGED_BY / PRG_LOGIN) et du login de la pause (V_USER) — plus jamais du payload" \
   || ko "câblage de la garde incomplet dans le script :${MISSG:- appel introuvable}"
@@ -257,7 +269,7 @@ grep -qF '[ -z "${LABCTL_BIN:-}" ] || PUB_ARGS+=' "$PUB_SH" \
   || ko "5bis la transmission n'est pas conditionnelle — une globale absente écraserait le défaut du rôle par une valeur vide"
 # MUTATION : la transmission retirée doit rougir.
 MUT=$(sed '/apim_pub_labctl_bin/d' "$PUB_SH")
-printf '%s' "$MUT" | grep -qF 'apim_pub_labctl_bin' \
+printf '%s' "$MUT" | pipe_q -F 'apim_pub_labctl_bin' \
   && ko "5bis mutation NON appliquée (la ligne de transmission n'a pas bougé)" \
   || ok "5bis mutation « transmission retirée » ⇒ l'ancre ci-dessus rougirait : elle mesure le CODE, pas un commentaire"
 
@@ -291,7 +303,7 @@ fi
 # une interpolation Groovy. Ce qui reste à prouver, c'est que le STEP qui
 # l'appelle est à quotes SIMPLES — un `sh "…"` y interpolerait `${WEBHOOK_REPO}`
 # côté Groovy, et un dépôt d'équipe est une valeur d'origine EXTERNE.
-grep -E "^[[:space:]]*sh 'set \+x; GIT_REPO=" "$JF" | grep -q "bash scripts/forge-merge-identity.sh'" \
+grep -E "^[[:space:]]*sh 'set \+x; GIT_REPO=" "$JF" | pipe_q "bash scripts/forge-merge-identity.sh'" \
   && ok "le step qui appelle la garde est à quotes SIMPLES : \$WEBHOOK_REPO est lu par le SHELL, pas interpolé par Groovy" \
   || ko "le step d'identité n'est pas à quotes simples — Groovy interpolerait le nom du dépôt venu du webhook"
 grep -q "password(name: 'V_PASS'" "$JF" \
@@ -322,7 +334,7 @@ echo "== 9. login et l'appel à team-publish.sh se suivent TEXTUELLEMENT (login 
 # (`. ci/lib/vault-login.sh`, `bash scripts/team-publish.sh`), pas une mention
 # en prose, pour ne pas matcher un simple commentaire qui NOMME l'un ou l'autre
 # sans jamais les appeler.
-if awk '/\. ci\/lib\/vault-login\.sh/{f=1} f&&/bash scripts\/team-publish\.sh/{print "same"; exit}' "$JF" | grep -q same; then
+if awk '/\. ci\/lib\/vault-login\.sh/{f=1} f&&/bash scripts\/team-publish\.sh/{print "same"; exit}' "$JF" | pipe_q same; then
   ok "vault-login.sh (source réelle) précède textuellement l'appel réel à team-publish.sh"
 else
   ko "vault-login.sh et l'appel réel à team-publish.sh ne se suivent pas dans cet ordre — le trap de révocation pourrait tuer le token avant l'apply"
@@ -407,18 +419,18 @@ L_POST=$(grep -n '^  post {' "$JF" | head -1 | cut -d: -f1)
   && ok "bloc \`post\` de niveau PIPELINE présent (ligne $L_POST) — couvre succès, échec, abandon ET refus de garde" \
   || ko "aucun \`post\` de niveau pipeline — un refus de garde ou une pause abandonnée resterait muet sur la PR (dette I3 reproduite)"
 POST_CODE=$(awk '/^  post \{/{f=1} f{print}' "$JF" | grep -vE '^[[:space:]]*(//|#)')
-printf '%s\n' "$POST_CODE" | grep -q 'always {' \
+printf '%s\n' "$POST_CODE" | pipe_q 'always {' \
   && ok "\`always\` : le bloc tourne sur SUCCÈS COMME SUR ÉCHEC (un run vert derrière un run rouge remplace le ⚠ au lieu de le laisser à côté d'un ✅)" \
   || ko "le \`post\` n'est pas en \`always\` — un verdict contradictoire pourrait subsister sur la PR"
-printf '%s\n' "$POST_CODE" | grep -q 'bash scripts/lib/gitea-pr-comment\.sh' \
+printf '%s\n' "$POST_CODE" | pipe_q 'bash scripts/lib/gitea-pr-comment\.sh' \
   && ok "le post poste bien un commentaire sur la PR (appel RÉEL à gitea-pr-comment.sh, commentaires exclus)" \
   || ko "le post ne contient aucun appel RÉEL à gitea-pr-comment.sh (une mention en commentaire ne suffit pas)"
 # Checkout PROPRE : `agent none` ⇒ le post n'a ni exécuteur ni workspace, et
 # peut tourner sur un AUTRE exécuteur que l'étape d'apply. Rien n'est hérité.
-printf '%s\n' "$POST_CODE" | grep -q 'checkout scm' \
+printf '%s\n' "$POST_CODE" | pipe_q 'checkout scm' \
   && ok "le post fait son propre \`checkout scm\` (aucune hypothèse de workspace hérité)" \
   || ko "le post ne checkoute pas — il supposerait un workspace hérité, faux avec \`agent none\`"
-printf '%s\n' "$POST_CODE" | grep -qE 'node\(' \
+printf '%s\n' "$POST_CODE" | pipe_q -E 'node\(' \
   && ok "le post alloue explicitement un \`node\` (obligatoire sous \`agent none\`)" \
   || ko "le post n'alloue aucun \`node\` — ses steps échoueraient faute de workspace"
 # Marqueur : comparaison LITTÉRALE, et DISTINCTION du marqueur du script
@@ -439,13 +451,13 @@ else
 fi
 # Le commentaire de statut doit cibler WEBHOOK_REPO (le dépôt de l'ÉQUIPE),
 # jamais GIT_REPO (le dépôt plateforme, sans rapport avec CETTE PR).
-printf '%s\n' "$POST_CODE" | grep -q 'GIT_REPO="\$WEBHOOK_REPO"' \
+printf '%s\n' "$POST_CODE" | pipe_q 'GIT_REPO="\$WEBHOOK_REPO"' \
   && ok "le commentaire de statut cible WEBHOOK_REPO (le dépôt de l'équipe, pas la plateforme)" \
   || ko "le commentaire de statut ne cible pas WEBHOOK_REPO — risque de commenter le mauvais dépôt"
 # Une PR hors api/* n'a RIEN déclenché (étape sautée) : la commenter serait un
 # faux signal. Le job Groovy sortait par `return` avant le try ; ici l'étape est
 # sautée mais le `post` tourne quand même — d'où cette garde explicite.
-printf '%s\n' "$POST_CODE" | grep -q 'api/\*)' \
+printf '%s\n' "$POST_CODE" | pipe_q 'api/\*)' \
   && ok "le post se tait sur une PR hors api/* (étape SAUTÉE, rien publié — pas de faux signal)" \
   || ko "le post commenterait une PR hors api/* alors que l'étape a été sautée"
 
@@ -639,7 +651,7 @@ NONCOMMENT_GITCLONE=$(grep -vE '^\s*#' "$REPO/scripts/team-publish.sh" | grep -c
   || ko "${NONCOMMENT_GITCLONE} \`git clone\` bruts : au moins un clone échappe à gclone() et part donc ANONYME"
 # … et celui qui reste est bien DANS gclone(), pas ailleurs : sans ce contrôle,
 # un script qui aurait sorti le clone de la fonction passerait encore à 1.
-awk '/^gclone\(\)/{f=1} f&&/git clone/{print NR; exit}' "$REPO/scripts/team-publish.sh" | grep -q . \
+awk '/^gclone\(\)/{f=1} f&&/git clone/{print NR; exit}' "$REPO/scripts/team-publish.sh" | pipe_q . \
   && ok "ce \`git clone\` vit bien dans le corps de gclone() (l'unicité ne suffit pas : il faut qu'il soit AU BON ENDROIT)" \
   || ko "le \`git clone\` restant n'est pas dans gclone() — l'authentification ne l'enveloppe pas"
 # Les trois dépôts, NOMMÉMENT. Le registre de gouvernance est le plus important
@@ -712,23 +724,23 @@ echo "== 25. le statut de build ne laisse plus un ⚠ contredire un ✅, et NOMM
 # côté du ✅ du script. En déclaratif, `post { always }` tourne toujours, et le
 # message est choisi par un `case` à TROIS branches (l'abandon de la pause,
 # noyé dans « échec » auparavant, est désormais nommé).
-printf '%s\n' "$POST_CODE" | grep -qF 'case "${BUILD_RESULT:-FAILURE}" in' \
+printf '%s\n' "$POST_CODE" | pipe_q -F 'case "${BUILD_RESULT:-FAILURE}" in' \
   && ok "le bloc sh du post branche réellement sur BUILD_RESULT" \
   || ko "aucun branchement réel sur BUILD_RESULT dans le bloc sh"
 # Alimenté par currentBuild.currentResult (succès/échec/ABANDON réels) et
 # passé par l'ENVIRONNEMENT — jamais interpolé dans la chaîne shell, qui est
 # en quotes simples (§7) et où un `${…}` Groovy ne serait de toute façon pas
 # évalué : le passer autrement que par withEnv le rendrait simplement vide.
-printf '%s\n' "$POST_CODE" | grep -qF 'withEnv(["BUILD_RESULT=${currentBuild.currentResult}"])' \
+printf '%s\n' "$POST_CODE" | pipe_q -F 'withEnv(["BUILD_RESULT=${currentBuild.currentResult}"])' \
   && ok "BUILD_RESULT alimenté par currentBuild.currentResult et passé par withEnv (environnement), pas par interpolation dans le sh" \
   || ko "BUILD_RESULT non passé par withEnv depuis currentBuild.currentResult — le post ne pourrait pas distinguer succès/échec/abandon"
-printf '%s\n' "$POST_CODE" | grep -qF 'team-publish (statut build) : build termine sans erreur' \
+printf '%s\n' "$POST_CODE" | pipe_q -F 'team-publish (statut build) : build termine sans erreur' \
   && ok "message NEUTRE posé sur le chemin succès (efface un ⚠ précédent au lieu de le laisser trainer)" \
   || ko "aucun message de succès trouvé — un ⚠ antérieur resterait affiché à côté d'un ✅"
-printf '%s\n' "$POST_CODE" | grep -qF 'team-publish (statut build) : le build a echoue avant ou pendant' \
+printf '%s\n' "$POST_CODE" | pipe_q -F 'team-publish (statut build) : le build a echoue avant ou pendant' \
   && ok "message d'échec toujours présent (branche par défaut conservée)" \
   || ko "message d'échec introuvable — régression du comportement d'origine"
-printf '%s\n' "$POST_CODE" | grep -qF 'ABANDONNEE' \
+printf '%s\n' "$POST_CODE" | pipe_q -F 'ABANDONNEE' \
   && ok "l'abandon/expiration de la pause a son propre message (RIEN publié, dit explicitement)" \
   || ko "aucun message dédié à l'abandon de la pause — il serait rapporté comme un échec de publication"
 
@@ -766,7 +778,17 @@ if [ -z "$L_POST" ]; then
   ko "aucun bloc \`post\` de niveau pipeline — la frontière corps/post n'existe pas"
   L_POST=999999
 fi
-if awk "NR<$L_POST" "$JF" | grep -qE '^[[:space:]]*(try \{|\} catch)'; then
+# FRONTIÈRE HAUTE (2026-09-18). Cette assertion était VACANTE : son `| grep -q`
+# s'inversait sous `pipefail` (l'écrivain prend un SIGPIPE et rend 141), donc elle
+# imprimait son ✅ PRÉCISÉMENT quand un try/catch était présent. La conversion vers
+# `pipe_q` l'a RÉVEILLÉE, et elle a aussitôt signalé le préambule qui lit
+# config/site.ini — lequel vit AU-DESSUS de `pipeline {`, donc hors des stages que
+# cette règle protège. La fenêtre partait de la ligne 1 : elle a toujours été plus
+# large que son intention, et rien ne le montrait tant qu'elle ne mesurait rien.
+# Corps scanné = [pipeline{ , post{). Ancre absente ⇒ fenêtre = fichier entier :
+# jugé plus sévèrement, jamais moins.
+L_PIPE=$(grep -n '^pipeline {' "$JF" | head -1 | cut -d: -f1)
+if awk "NR>${L_PIPE:-0} && NR<$L_POST" "$JF" | pipe_q -E '^[[:space:]]*(try \{|\} catch)'; then
   ko "le CORPS du pipeline contient un try/catch — la gestion d'erreur doit y passer par \`post\`"
 else
   ok "aucun try/catch dans le CORPS du pipeline (le post{} en a, et doit en avoir)"

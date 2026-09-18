@@ -30,6 +30,18 @@
 #
 #   ./scripts/test-provision-apply-wiring.sh
 set -uo pipefail
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 JOB="$REPO/ci/jenkins/provision-apply.job.xml"
 JF="$REPO/ci/Jenkinsfile.provision-apply"
@@ -128,12 +140,12 @@ else
   ko "réconciliation APRÈS la pause (ou introuvable) : rec=$L_REC input=$L_INPUT"
 fi
 REC_LINE=$(sed -n "${L_REC:-0}p" "$TMP/jf.code")
-printf '%s' "$REC_LINE" | grep -q "^ *sh '" \
+printf '%s' "$REC_LINE" | pipe_q "^ *sh '" \
   && ok "chaîne sh de la réconciliation en quotes SIMPLES (PR_BRANCH/PR_NUMBER/MERGE_SHA lus par le shell)" \
   || ko "chaîne sh de la réconciliation en quotes doubles — Groovy interpolerait des valeurs du webhook"
-printf '%s' "$REC_LINE" | grep -q 'RECONCILE_OUT="$WORKSPACE/.a2-reconcile.env"' \
+printf '%s' "$REC_LINE" | pipe_q 'RECONCILE_OUT="$WORKSPACE/.a2-reconcile.env"' \
   && ok "RECONCILE_OUT posé vers \$WORKSPACE/.a2-reconcile.env" || ko "RECONCILE_OUT absent ou autre chemin"
-printf '%s' "$REC_LINE" | grep -q 'RECONCILE_FACTS="$WORKSPACE/.a2-reconcile.facts"' \
+printf '%s' "$REC_LINE" | pipe_q 'RECONCILE_FACTS="$WORKSPACE/.a2-reconcile.facts"' \
   && ok "RECONCILE_FACTS posé (les faits relus sur la forge, écrits succès comme échec)" || ko "RECONCILE_FACTS absent — le post{always} n'aurait que le payload"
 jf 'readFile("${env.WORKSPACE}/.a2-reconcile.env")' \
   && ok "le fichier réconcilié est RELU (readFile ; pas de readProperties, plugin absent du lab)" || ko "le fichier réconcilié n'est pas relu"
@@ -162,18 +174,18 @@ echo "== 4. la garde d'identité : sous node, sans V_PASS, AVANT l'apply, nourri
 L_GUARD=$(code_line "$TMP/jf.code" 'sh scripts/lib/assert-merge-identity.sh')
 GUARD_LINE=$(sed -n "${L_GUARD:-0}p" "$TMP/jf.code")
 [ -n "$L_GUARD" ] && ok "assert-merge-identity.sh réellement invoquée (ligne $L_GUARD)" || ko "garde d'identité non appelée"
-printf '%s' "$GUARD_LINE" | grep -qF -- '--merged-by "${GITEA_MERGED_BY:-}"' \
+printf '%s' "$GUARD_LINE" | pipe_q -F -- '--merged-by "${GITEA_MERGED_BY:-}"' \
   && ok "--merged-by alimenté par GITEA_MERGED_BY (relu sur la forge)" || ko "--merged-by non alimenté par GITEA_MERGED_BY"
-printf '%s' "$GUARD_LINE" | grep -qF -- '--requester "${GITEA_REQUESTER:-}"' \
+printf '%s' "$GUARD_LINE" | pipe_q -F -- '--requester "${GITEA_REQUESTER:-}"' \
   && ok "--requester alimenté par GITEA_REQUESTER (relu sur la forge)" || ko "--requester non alimenté par GITEA_REQUESTER"
-printf '%s' "$GUARD_LINE" | grep -qF -- '--vault-user "${V_USER:-}"' \
+printf '%s' "$GUARD_LINE" | pipe_q -F -- '--vault-user "${V_USER:-}"' \
   && ok "--vault-user alimenté par V_USER (la saisie de la pause)" || ko "--vault-user non alimenté par V_USER"
-if printf '%s' "$GUARD_LINE" | grep -qE 'PR_MERGED_BY|PR_REQUESTER'; then
+if printf '%s' "$GUARD_LINE" | pipe_q -E 'PR_MERGED_BY|PR_REQUESTER'; then
   ko "la garde lit encore PR_MERGED_BY/PR_REQUESTER du PAYLOAD — un porteur du token GWT se déclarerait mergeur"
 else
   ok "la garde ne lit PAS les identités du payload (PR_MERGED_BY/PR_REQUESTER)"
 fi
-printf '%s' "$GUARD_LINE" | grep -q "sh '" && ok "chaîne sh de la garde en quotes simples" || ko "chaîne sh de la garde en quotes doubles"
+printf '%s' "$GUARD_LINE" | pipe_q "sh '" && ok "chaîne sh de la garde en quotes simples" || ko "chaîne sh de la garde en quotes doubles"
 L_BUILD=$(code_line "$TMP/jf.code" 'def b = build(job: env.APPLY_JOB')
 [ -n "$L_BUILD" ] && ok "build(job: env.APPLY_JOB…) présent (ligne $L_BUILD)" || ko "aucun build de l'aval"
 if [ -n "$L_GUARD" ] && [ -n "$L_BUILD" ] && [ "$L_GUARD" -lt "$L_BUILD" ]; then
@@ -191,7 +203,7 @@ L_NODE1=$(awk "NR>${L_INPUT:-0} && NR<${L_GUARD:-0} && /node\(\"\\\$\{env.POST_A
 [ -n "$L_NODE1" ] && ok "la garde tourne sous un \`node(\` ouvert après la pause (ligne $L_NODE1)" || ko "aucun node( entre la pause et la garde — le sh de la garde n'aurait pas de workspace"
 L_WE1=$(awk "NR>${L_INPUT:-0} && NR<${L_GUARD:-0} && /withEnv\(\[\"V_USER=/ {n=NR} END {print n}" "$TMP/jf.code")
 [ -n "$L_WE1" ] && ok "…et sous withEnv([\"V_USER=…\"]) (ligne $L_WE1) : seul le LOGIN entre dans l'environnement du shell" || ko "la garde ne reçoit pas V_USER par withEnv"
-if grep -E 'withEnv|^\s*sh ' "$TMP/jf.code" | grep -q 'V_PASS'; then
+if grep -E 'withEnv|^\s*sh ' "$TMP/jf.code" | pipe_q 'V_PASS'; then
   ko "V_PASS apparaît dans un withEnv ou un sh — le mot de passe entrerait dans l'environnement d'un process shell"
 else
   ok "V_PASS n'apparaît dans AUCUN withEnv ni sh : le Secret ne traverse que Groovy, de input() au build aval"
@@ -205,7 +217,7 @@ grep -q 'Secret.fromString' "$TMP/jf.code" \
 echo
 echo "== 5. l'apply : HORS nœud, passe MERGE_SHA, CONFRONTE mode+SHA, rapporte puis rend le verdict =="
 L_ST_APPLY=$(code_line "$TMP/jf.code" "stage('Appliquer au SHA mergé")
-if awk "NR>${L_ST_APPLY:-0} && NR<${L_BUILD:-0}" "$TMP/jf.code" | grep -qE '^ *agent (any|\{|none)'; then
+if awk "NR>${L_ST_APPLY:-0} && NR<${L_BUILD:-0}" "$TMP/jf.code" | pipe_q -E '^ *agent (any|\{|none)'; then
   ko "le stage d'apply déclare un \`agent\` — un exécuteur serait tenu pendant TOUT l'apply aval (le lab en a deux)"
 else
   ok "le stage d'apply n'a PAS d'agent : ni la pause ni l'apply aval ne tiennent un exécuteur"
@@ -235,9 +247,9 @@ jf "env.APPLY_RESULT = 'FAILURE'" && ok "un aval vert non confirmé devient FAIL
 L_CMT=$(code_line "$TMP/jf.code" 'bash scripts/provision-apply-comment.sh')
 CMT_LINE=$(sed -n "${L_CMT:-0}p" "$TMP/jf.code")
 [ -n "$L_CMT" ] && ok "provision-apply-comment.sh appelé (ligne $L_CMT)" || ko "rapport de PR non câblé"
-printf '%s' "$CMT_LINE" | grep -q '|| true' && ok "|| true : une forge en panne ne rougit pas un apply vert" || ko "le rapport peut faire échouer un apply réussi"
-printf '%s' "$CMT_LINE" | grep -q 'VALIDATOR="${V_USER:-}"' && ok "VALIDATOR lu par le shell depuis V_USER (pas d'interpolation Groovy)" || ko "VALIDATOR non alimenté depuis V_USER par le shell"
-printf '%s' "$CMT_LINE" | grep -q 'EXPECTED_SHA="${MERGE_SHA:-}"' && ok "EXPECTED_SHA = MERGE_SHA transmis au rapport (la référence DEMANDÉE est écrite à côté de celle projetée)" || ko "EXPECTED_SHA non transmis"
+printf '%s' "$CMT_LINE" | pipe_q '|| true' && ok "|| true : une forge en panne ne rougit pas un apply vert" || ko "le rapport peut faire échouer un apply réussi"
+printf '%s' "$CMT_LINE" | pipe_q 'VALIDATOR="${V_USER:-}"' && ok "VALIDATOR lu par le shell depuis V_USER (pas d'interpolation Groovy)" || ko "VALIDATOR non alimenté depuis V_USER par le shell"
+printf '%s' "$CMT_LINE" | pipe_q 'EXPECTED_SHA="${MERGE_SHA:-}"' && ok "EXPECTED_SHA = MERGE_SHA transmis au rapport (la référence DEMANDÉE est écrite à côté de celle projetée)" || ko "EXPECTED_SHA non transmis"
 L_WE2=$(awk "NR>${L_BUILD:-0} && NR<${L_CMT:-0} && /withEnv\(\[\"V_USER=/ {n=NR} END {print n}" "$TMP/jf.code")
 L_NODE2=$(awk "NR>${L_BUILD:-0} && NR<${L_CMT:-0} && /node\(\"\\\$\{env.POST_AGENT_LABEL/ {n=NR} END {print n}" "$TMP/jf.code")
 [ -n "$L_WE2" ] && [ -n "$L_NODE2" ] && ok "le rapport tourne sous withEnv([\"V_USER=…\"]) (ligne $L_WE2) et un node( (ligne $L_NODE2)" || ko "le rapport ne tourne pas sous withEnv(V_USER) + node("
@@ -254,7 +266,7 @@ echo
 echo "== 6. pas d'injection : aucun bloc sh en triple quotes DOUBLES, valeurs externes lues par le shell =="
 grep -q 'sh """' "$TMP/jf.code" && ko "un bloc \`sh \"\"\"\` existe — Groovy y interpolerait des champs du webhook" || ok "aucun bloc \`sh \"\"\"\`"
 grep -q "sh '''" "$TMP/jf.code" && ok "le bloc de statut (post) est en triple quotes SIMPLES" || ko "aucun bloc sh ''' — vérifier le post"
-grep -E "^\s*sh " "$TMP/jf.code" | grep -q '\${env\.' && ko "une commande sh interpole \${env.…} en Groovy" || ok "aucune commande sh n'interpole \${env.…}"
+grep -E "^\s*sh " "$TMP/jf.code" | pipe_q '\${env\.' && ko "une commande sh interpole \${env.…} en Groovy" || ok "aucune commande sh n'interpole \${env.…}"
 grep -qE '^\s*(curl|ansible-playbook) ' "$TMP/jf.code" && ko "le Jenkinsfile appelle curl/ansible-playbook directement" || ok "aucun curl/ansible-playbook direct : le pipeline route"
 
 echo
@@ -305,7 +317,12 @@ jfd "!currentBuild.upstreamBuilds.isEmpty() && !((params.MERGE_SHA ?: '').trim()
 L_BASE=$(code_line "$TMP/jfd.code" 'BASE=$(git ls-remote --symref origin HEAD')
 L_FETCH=$(code_line "$TMP/jfd.code" 'git fetch -q origin "$BASE"')
 L_ANC=$(code_line "$TMP/jfd.code" 'git merge-base --is-ancestor "$REF" "origin/$BASE"')
-L_FP=$(code_line "$TMP/jfd.code" 'git rev-list --first-parent "origin/$BASE" | grep -qx "$REF"')
+# ⚠ CE LITTÉRAL DÉCRIT DU CODE D'UN AUTRE FICHIER, et il ne suit donc PAS la
+# conversion vers `pipe_q` : le site décrit vit dans un bloc `sh '''` du
+# Jenkinsfile, c'est-à-dire un shell ENFANT où aucune fonction n'est héritée —
+# `pipe_q` y serait introuvable (127) et le test s'inverserait. Le site garde donc
+# `grep -c … >/dev/null`, et l'épinglage doit garder la MÊME orthographe que lui.
+L_FP=$(code_line "$TMP/jfd.code" 'git rev-list --first-parent "origin/$BASE" | grep -cx "$REF" >/dev/null')
 L_CO=$(code_line "$TMP/jfd.code" 'git checkout -q "$REF"')
 L_RP=$(code_line "$TMP/jfd.code" 'REF="$(git rev-parse HEAD)"')
 L_PLAN=$(code_line "$TMP/jfd.code" "stage('Plan")
@@ -338,7 +355,7 @@ jfd "MODE=pinned" && ok "mode \`pinned\` posé seulement quand MERGE_SHA a été
 jfd "if (fileExists('.a2-applied-sha')) {" && jfd "env.APPLIED_SHA = readFile('.a2-applied-sha').trim()" && jfd "env.APPLIED_MODE = readFile('.a2-applied-mode').trim()" \
   && ok "APPLIED_SHA/APPLIED_MODE/APPLIED_DIGEST chargés dans env. seulement si le fichier existe" || ko "chargement des APPLIED_* absent ou inconditionnel"
 jfd "rm -f .a2-applied-sha .a2-applied-digest .a2-applied-mode" && ok "les APPLIED_* d'un build précédent sont purgés au stage Référence (pas de fichier périmé)" || ko "pas de purge des fichiers .a2-applied-* périmés"
-grep -n 'MERGE_SHA' "$TMP/jfd.code" | grep -q 'sh "' && ko "MERGE_SHA interpolé par Groovy dans une chaîne sh de l'aval" || ok "MERGE_SHA lu par le shell dans l'aval (jamais interpolé par Groovy)"
+grep -n 'MERGE_SHA' "$TMP/jfd.code" | pipe_q 'sh "' && ko "MERGE_SHA interpolé par Groovy dans une chaîne sh de l'aval" || ok "MERGE_SHA lu par le shell dans l'aval (jamais interpolé par Groovy)"
 grep -q 'MERGE_SHA' "$REPO/scripts/setup-selfservice-job.sh" \
   && ok "setup-selfservice-job.sh déclare MERGE_SHA (une pose fraîche du job le porte dès le premier build)" \
   || ko "setup-selfservice-job.sh ne déclare pas MERGE_SHA — un build job: amont le retirerait en silence"

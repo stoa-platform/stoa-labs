@@ -30,6 +30,18 @@
 #            immédiate et non ambiguë (même régime que test-*-live.sh).
 # shellcheck disable=SC2181
 set -uo pipefail
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 S="$REPO/scripts/provision-request.sh"
 TS="$(date +%s)"
@@ -72,18 +84,18 @@ run_guard(){
   local label="$1" tag="$2" cite="$3"; shift 3
   local out rc
   out=$(env -i PATH="$PATH" "${BASE_ENV[@]}" "$@" bash "$S" 2>&1); rc=$?
-  if [ "$rc" -ne 2 ] || ! printf '%s' "$out" | grep -q "$tag"; then
+  if [ "$rc" -ne 2 ] || ! printf '%s' "$out" | pipe_q "$tag"; then
     ko "$label : attendu exit=2 + '$tag', obtenu rc=$rc out=$(printf '%s' "$out" | tail -1)"
     return
   fi
-  if printf '%s' "$out" | grep -q '\[1/5\]'; then
+  if printf '%s' "$out" | pipe_q '\[1/5\]'; then
     ko "$label : refusé mais APRÈS le clone (réseau touché) — pas 'AVANT tout geste Git'"
     return
   fi
   # Le message doit NOMMER l'entrée fautive : sur cinq lignes collées, un refus
   # qui ne dit pas LAQUELLE est inactionnable. C'est le comportement neuf de v3
   # (avant, la garde citait la saisie entière — qui ne pouvait qu'être unique).
-  if [ -n "$cite" ] && ! printf '%s' "$out" | grep -qF "$cite"; then
+  if [ -n "$cite" ] && ! printf '%s' "$out" | pipe_q -F "$cite"; then
     ko "$label : refusé ($tag) mais le message ne cite pas l'entrée fautive '$cite' — out=$(printf '%s' "$out" | tail -1)"
     return
   fi
@@ -111,7 +123,7 @@ run_pass(){
   out=$(env -i PATH="$PATH" "${BASE_ENV[@]}" "$@" bash "$S" 2>&1); rc=$?
   head_after=$(git -C "$REPO" rev-parse HEAD)
   dirty_after=$(git -C "$REPO" status --porcelain | md5 2>/dev/null || git -C "$REPO" status --porcelain | md5sum)
-  if [ "$rc" -eq 2 ] || printf '%s' "$out" | grep -qE 'IP_CIDR_REFUSE|IP_ALLOWLIST_INVALID|BACKEND_KEY_'; then
+  if [ "$rc" -eq 2 ] || printf '%s' "$out" | pipe_q -E 'IP_CIDR_REFUSE|IP_ALLOWLIST_INVALID|BACKEND_KEY_'; then
     ko "$label : refusé À TORT — rc=$rc out=$(printf '%s' "$out" | tail -1)"
   elif [ "$head_before" != "$head_after" ] || [ "$dirty_before" != "$dirty_after" ]; then
     ko "$label : LE DÉPÔT DE TRAVAIL A ÉTÉ MODIFIÉ — clone en échec non fatal, le script a écrit dans le cwd"
@@ -187,13 +199,13 @@ for pd in root.iter():
 # (properties([parameters([…])])), plus par le XML — la classe se lit donc dans
 # le pas scripté : text(...) = zone multiligne, string(...) = une ligne.
 JF_CODE_V3="$(grep -vE '^[[:space:]]*//' "$JF")"
-if printf '%s\n' "$JF_CODE_V3" | grep -qF "text(name: 'IP_ALLOWLIST'"; then
+if printf '%s\n' "$JF_CODE_V3" | pipe_q -F "text(name: 'IP_ALLOWLIST'"; then
   ok "IP_ALLOWLIST est posé en text(...) par le Jenkinsfile (zone multiligne)"
 else
   ko "IP_ALLOWLIST n'est pas un text(...) dans le Jenkinsfile — l'IHM n'accepterait qu'une ligne"
 fi
 for p in BACKEND_KEY_REF BACKEND_KEY_FIELD; do
-  if printf '%s\n' "$JF_CODE_V3" | grep -qF "string(name: '$p'"; then
+  if printf '%s\n' "$JF_CODE_V3" | pipe_q -F "string(name: '$p'"; then
     ok "$p posé en string(...) par le Jenkinsfile"
   else
     ko "$p absent du formulaire posé par le Jenkinsfile"
@@ -422,7 +434,7 @@ for pr in d:
     REQ_IP_ALLOWLIST="10.77.5.1-10.77.5.9" PROVISION_PLAN_INLINE=false bash "$S" 2>&1)
   if [ $? -ne 0 ]; then
     ko "mono-IP : run en échec — $(printf '%s' "$OUTM" | tail -3)"
-  elif raw_manifest "$MB" "$MONO" | grep -qF 'ip_allowlist: ["10.77.5.1-10.77.5.9"]'; then
+  elif raw_manifest "$MB" "$MONO" | pipe_q -F 'ip_allowlist: ["10.77.5.1-10.77.5.9"]'; then
     ok "mono-IP : rendu OCTET POUR OCTET identique à la forme mono-valeur d'avant v3"
   else
     ko "mono-IP : la forme a changé — $(raw_manifest "$MB" "$MONO" | grep ip_allowlist)"
@@ -443,27 +455,27 @@ for pr in d:
   else
     MANI=$(raw_manifest "$BR" "$APP")
     CHECK=1
-    printf '%s' "$MANI" | grep -qF 'ip_allowlist: ["10.60.30.1-10.60.30.30", "192.168.65.1", "10.0.0.7"]' \
+    printf '%s' "$MANI" | pipe_q -F 'ip_allowlist: ["10.60.30.1-10.60.30.30", "192.168.65.1", "10.0.0.7"]' \
       || { ko "nominal v3 : liste IP fausse (dédoublonnage/ordre/format) — $(printf '%s' "$MANI" | grep ip_allowlist)"; CHECK=0; }
-    printf '%s' "$MANI" | grep -qF "backend_key_ref: \"$KREF\"" \
+    printf '%s' "$MANI" | pipe_q -F "backend_key_ref: \"$KREF\"" \
       || { ko "nominal v3 : backend_key_ref absent du manifeste"; CHECK=0; }
-    printf '%s' "$MANI" | grep -qF 'backend_key_field: "api_key"' \
+    printf '%s' "$MANI" | pipe_q -F 'backend_key_field: "api_key"' \
       || { ko "nominal v3 : backend_key_field absent du manifeste"; CHECK=0; }
     # La VALEUR d'une clé ne doit JAMAIS pouvoir arriver en Git : le formulaire
     # ne prend qu'un chemin, et le manifeste ne porte que ce chemin.
-    printf '%s' "$MANI" | grep -q 'backend_key:' \
+    printf '%s' "$MANI" | pipe_q 'backend_key:' \
       && { ko "nominal v3 : le manifeste porte un champ de VALEUR de clé — Git ne doit porter que le chemin"; CHECK=0; }
-    printf '%s' "$MANI" | grep -q '  enforce: \[\]' \
+    printf '%s' "$MANI" | pipe_q '  enforce: \[\]' \
       || { ko "nominal v3 : enforce n'est plus [] — dérivation réintroduite"; CHECK=0; }
     [ "$CHECK" = 1 ] && ok "nominal v3 : 3 IP dédoublonnées dans l'ordre + backend_key_ref/field, enforce=[] intouché, aucune valeur de clé en Git"
 
     BODY=$(pr_body "$BR")
     BCHECK=1
-    printf '%s' "$BODY" | grep -qF "10.60.30.1-10.60.30.30, 192.168.65.1, 10.0.0.7" \
+    printf '%s' "$BODY" | pipe_q -F "10.60.30.1-10.60.30.30, 192.168.65.1, 10.0.0.7" \
       || { ko "PR : les 3 IP ne sont pas listées pour le valideur"; BCHECK=0; }
-    printf '%s' "$BODY" | grep -qF "$KREF" \
+    printf '%s' "$BODY" | pipe_q -F "$KREF" \
       || { ko "PR : le chemin de la clé backend n'est pas visible du valideur"; BCHECK=0; }
-    printf '%s' "$BODY" | grep -q "identifier token" \
+    printf '%s' "$BODY" | pipe_q "identifier token" \
       || { ko "PR : la ligne clé backend ne dit pas qu'il s'agit de l'identifier token"; BCHECK=0; }
     [ "$BCHECK" = 1 ] && ok "PR : corps portant les 3 IP et le chemin de la clé backend (sortante)"
   fi
@@ -481,8 +493,8 @@ for pr in d:
     ko "clé backend seule : run en échec — $(printf '%s' "$OUTK" | tail -5)"
   else
     KBODY=$(pr_body "$KB")
-    if printf '%s' "$KBODY" | grep -q "cle backend" \
-       && ! printf '%s' "$KBODY" | grep -q "ENFORCE NON MODIFIE"; then
+    if printf '%s' "$KBODY" | pipe_q "cle backend" \
+       && ! printf '%s' "$KBODY" | pipe_q "ENFORCE NON MODIFIE"; then
       ok "clé backend SEULE : ligne présente, et AUCUN avertissement enforce (elle n'est pas une identité entrante)"
     else
       ko "clé backend SEULE : la clé sortante déclenche l'avertissement enforce (contresens) ou la ligne manque"

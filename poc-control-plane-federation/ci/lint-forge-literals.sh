@@ -19,6 +19,18 @@
 #
 #   bash ci/lint-forge-literals.sh
 set -uo pipefail
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 RACINE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$RACINE" || exit 1
 PASS=0; FAIL=0
@@ -84,10 +96,10 @@ motifs_dans(){ # <fichier> → les motifs présents dans le CODE (commentaires r
   # encore — c'était déjà le cas, et la porte ne fait qu'y perdre en portée,
   # jamais en justesse.
   code="$(sed -E 's/(^|[[:space:]])#.*$//' "$f")"
-  while IFS= read -r m; do printf '%s\n' "$code" | grep -qF -- "$m" && printf '%s\n' "$m"; done <<< "$MOTIFS"
+  while IFS= read -r m; do printf '%s\n' "$code" | pipe_q -F -- "$m" && printf '%s\n' "$m"; done <<< "$MOTIFS"
   # json.load( n'est un motif de FORGE que sur une ligne qui parle à la forge (GIT_HOST,
   # FORGE_, urlopen, api/v) — pas une lecture de Vault, d'ITSM ou d'un payload local.
-  printf '%s\n' "$code" | grep -F 'json.load(' | grep -qE 'GIT_HOST|FORGE_|urlopen|api/v' && printf '%s\n' 'json.load( (sur une ligne de forge)'
+  printf '%s\n' "$code" | grep -F 'json.load(' | pipe_q -E 'GIT_HOST|FORGE_|urlopen|api/v' && printf '%s\n' 'json.load( (sur une ligne de forge)'
   return 0
 }
 
@@ -137,12 +149,12 @@ MT="$(mktemp -d)"; trap 'rm -rf "$MT"' EXIT
 # shellcheck disable=SC2016  # le mutant DOIT porter ${GIT_HOST} littéral : c'est le motif interdit
 printf '#!/usr/bin/env bash\nAPI="${GIT_HOST}/api/v1"\ncurl -H "Authorization: token $T" "$API/user"\n' > "$MT/mutant.sh"
 MM="$(motifs_dans "$MT/mutant.sh")"
-if printf '%s\n' "$MM" | grep -qF -- '/api/v1' && printf '%s\n' "$MM" | grep -qF -- 'Authorization: token'; then
+if printf '%s\n' "$MM" | pipe_q -F -- '/api/v1' && printf '%s\n' "$MM" | pipe_q -F -- 'Authorization: token'; then
   ok "M1 un script qui recompose /api/v1 et l'en-tête de Gitea EST signalé"
 else ko "M1 le prédicat ne voit pas un littéral évident"; fi
 # shellcheck disable=SC2016  # idem, en commentaire
 printf '#!/usr/bin/env bash\n# ancien : API="${GIT_HOST}/api/v1" (retiré le 2026-09-09)\nforge whoami\n' > "$MT/temoin.sh"
-if printf '%s\n' "$(motifs_dans "$MT/temoin.sh")" | grep -qF -- '/api/v1'; then
+if printf '%s\n' "$(motifs_dans "$MT/temoin.sh")" | pipe_q -F -- '/api/v1'; then
   ko "M2 un littéral qui ne vit qu'en COMMENTAIRE est signalé à tort (la porte rougirait sur sa propre prose)"
 else ok "M2 un littéral en commentaire n'est PAS signalé — la porte lit le code, pas la prose"; fi
 # shellcheck disable=SC2016  # le mutant DOIT porter ${GIT_HOST} littéral : c'est le motif des paquets

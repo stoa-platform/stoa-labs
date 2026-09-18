@@ -8,6 +8,18 @@
 # `A && ok || ko` (SC2015) est l'idiome des scripts de preuve du repo.
 # shellcheck disable=SC2015,SC2034,SC2016
 set -uo pipefail
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 TMP="$(mktemp -d)"; umask 077
 PIDS=""
@@ -232,7 +244,7 @@ RB=$(remote_branch); [ "$RB" != absente ] && [ "$(git -C "$ORIGIN" show "$RB:$MA
 [ "$(git -C "$ORIGIN" diff -U0 "$MAIN0" "$RB" -- "$MAN" | grep -cE '^[-+][^-+]')" = 2 ] && ok "A.7 le diff du manifeste touche UNE ligne (racine et dev à l'octet)" || ko "A.7 diff manifeste : $(git -C "$ORIGIN" diff -U0 "$MAIN0" "$RB" -- "$MAN" | grep -E '^[-+][^-+]' | tr '\n' ' ')"
 git -C "$ORIGIN" show "$RB:$MAN" > "$TMP/rb.yml"; [ "$(app_manifest_digest_env "$TMP/rb.yml" rec)" = "$D_B" ] && ok "A.8 digest(branche, rec) == digest(#11, rec) recalculé par la lib" || ko "A.8 digest divergent"
 MSG=$(git -C "$ORIGIN" log -1 --format=%B "$RB")
-printf '%s' "$MSG" | grep -q "^Repli-De: $SHA_D (PR #13)" && printf '%s' "$MSG" | grep -q "^Repli-Vers: $SHA_B (PR #11)" && printf '%s' "$MSG" | grep -q "^Repli-Par: jenkins-form:alice" && printf '%s' "$MSG" | grep -q "^Repli-Digest: $D_B" \
+printf '%s' "$MSG" | pipe_q "^Repli-De: $SHA_D (PR #13)" && printf '%s' "$MSG" | pipe_q "^Repli-Vers: $SHA_B (PR #11)" && printf '%s' "$MSG" | pipe_q "^Repli-Par: jenkins-form:alice" && printf '%s' "$MSG" | pipe_q "^Repli-Digest: $D_B" \
   && ok "A.9 trailers Repli-De/Vers/Par/Digest" || ko "A.9 message : $(printf '%s' "$MSG" | tr '\n' '|')"
 grep -q "<!-- app-rollback: de $SHA_D vers $SHA_B -->" "$STUB_POSTED" && grep -q '#13' "$STUB_POSTED" && grep -q '#11' "$STUB_POSTED" && grep -q "$D_B" "$STUB_POSTED" \
   && ok "A.10 corps de PR : marqueur, #N, #N-1, digest" || ko "A.10 corps : $(head -c 300 "$STUB_POSTED")"
@@ -447,7 +459,7 @@ M3=$(mutate M3 'import sys; s=sys.stdin.read(); assert "RESTAURATION_INFIDELE" i
 # M4 : remplacement de change_ref retiré ⇒ A'.2 garde CHG-0001
 M4=$(mutate M4 'import sys; s=sys.stdin.read(); assert "REQ_CHANGE_REF" in s; print(s.replace("CANDIDATE_REF=\"$REQ_CHANGE_REF\"", "CANDIDATE_REF=\"\""), end="")') && {
   set_ctl "$(ctl_json)"; reset_origin; run_mut "$M4" "$TMP/m4.out" STOA_ENV_CHAIN_FILE="$CHAIN_REC_GATED" REQ_CHANGE_REF=CHG-0009; RB=$(remote_branch)
-  [ "$(rrc)" = 0 ] && git -C "$ORIGIN" show "$RB:$MAN" | grep -q 'change_ref: "CHG-0001"' && ok "C.M4 sans remplacement, CHG-0001 reste — A'.2 l'attrape" || ko "C.M4 rc $(rrc)"; }
+  [ "$(rrc)" = 0 ] && git -C "$ORIGIN" show "$RB:$MAN" | pipe_q 'change_ref: "CHG-0001"' && ok "C.M4 sans remplacement, CHG-0001 reste — A'.2 l'attrape" || ko "C.M4 rc $(rrc)"; }
 # M5 : borne BIRTH retirée ⇒ le scénario « manifeste recréé » ouvre une PR vers une vie antérieure
 M5=$(mutate M5 'import sys; s=sys.stdin.read(); assert "is-ancestor \"$BIRTH\"" in s; print(s.replace("is-ancestor \"$BIRTH\"", "is-ancestor \"$BIRTH\" \"$BIRTH\" || true; true"), end="")') && {
   gw rm -q "$MAN"; gw commit -qm "retrait"; gw push -q origin master; SHA_R2=$(pr_merge 20 rec '    rec: { auth: { claim: { value: "appa-rec" } }, ip_allowlist: ["10.42.0.20"] }' "CERT-R") || { echo "!! fixture : pr_merge" >&2; exit 2; }; CLOSED=$(closed_add); gw push -q origin master
@@ -669,7 +681,7 @@ git_octets(){ echo $(( $(git_line | wc -c) )); }
   && grep -qE '^REFUS: PUSH_ECHEC : .*fatal: unable to access \(simulé\) — askpass a rendu <secret masqué> x+$' "$ERR" \
   && ok "F.3e stderr de push de 402 octets, secret à cheval sur l'octet 400 : la ligne « git: » porte « <secret masqué> » puis le rembourrage et fait EXACTEMENT 400 octets (masquée en entier, PUIS coupée) ; le refus porte le masque puis le rembourrage (présence — son ordre, c'est F.3h)" \
   || ko "F.3e rc $(rrc) octets=$(git_octets) : …$(git_line | tail -c 40) / refus : $(grep -oE 'REFUS: PUSH_ECHEC : .{0,60}' "$ERR" | head -1)"
-! grep -oE 'askpass a rendu [^ ]*' "$OUT" "$ERR" | grep -vqE 'askpass a rendu (<secret|$)' && ! grep -qF -- "$FRAG" "$OUT" "$ERR" && toutes_absentes t-alice && toutes_absentes "$STUB_TOKEN" \
+! grep -oE 'askpass a rendu [^ ]*' "$OUT" "$ERR" | pipe_q -vE 'askpass a rendu (<secret|$)' && ! grep -qF -- "$FRAG" "$OUT" "$ERR" && toutes_absentes t-alice && toutes_absentes "$STUB_TOKEN" \
   && ok "F.3f après « askpass a rendu », rien d'autre que le masque (entier, ou coupé par les 400 octets) : ni « $FRAG » ni aucune forme de t-alice / $STUB_TOKEN — aucun MORCEAU du secret n'a survécu à la coupe" \
   || ko "F.3f morceau du secret : $(grep -noE 'askpass a rendu [^ ]*' "$OUT" "$ERR" | grep -vE '<secret' | head -1)"
 # ── F.3h l'ORDRE du REFUS PUSH_ECHEC : masqué EN ENTIER, PUIS coupé à 200 octets ──
@@ -801,7 +813,7 @@ run_mut2(){ SCRIPT="$1" run_rb2 "$2" "$3" "${@:4}"; }   # flux séparés (les mu
 # ligne [dbg, et nulle part ailleurs — c'est ce que l'assertion cible (F.3d rougit).
 M6=$(mutate M6 'import re,sys; s=sys.stdin.read(); assert re.search(r"^DBG_SECRET_FILES=", s, re.M); print(re.sub(r"^DBG_SECRET_FILES=.*\n", "", s, count=1, flags=re.M), end="")') && {
   set_ctl "$(ctl_json)"; reset_origin; run_mut2 "$M6" "$OUT" "$ERR" FORGE_TOKEN=t-alice SHIM_PUSH_FAIL=1 STOA_DEBUG=1
-  grep '^\[dbg' "$ERR" | grep -q 't-alice' \
+  grep '^\[dbg' "$ERR" | pipe_q 't-alice' \
     && ok "F'.M6 DBG_SECRET_FILES retirée ⇒ le token HUMAIN fuit dans la ligne de debug du push raté (F.3d rougit : redact ne le connaît que par son fichier)" \
     || ko "F'.M6 rc $(rrc) : le mutant ne fuit pas dans une ligne [dbg — $(grep -c 't-alice' "$ERR") occurrence(s) de t-alice sur stderr, toutes hors [dbg"; }
 # M7 (§4 de la grammaire) : le détail du push passe par `redact "$PUSH_TF" < push.err`
@@ -810,7 +822,7 @@ M6=$(mutate M6 'import re,sys; s=sys.stdin.read(); assert re.search(r"^DBG_SECRE
 # viserait serait un no-op (compté ko par mutate).
 M7=$(mutate M7 'import sys; s=sys.stdin.read(); assert "redact \"$PUSH_TF\" < \"$WORK/push.err\"" in s; print(s.replace("redact \"$PUSH_TF\" < \"$WORK/push.err\"", "cat \"$WORK/push.err\""), end="")') && {
   set_ctl "$(ctl_json)"; reset_origin; run_mut2 "$M7" "$OUT" "$ERR" FORGE_TOKEN=t-alice SHIM_PUSH_FAIL=1
-  [ "$(rrc)" = 2 ] && grep -E '^REFUS: PUSH_ECHEC' "$ERR" | grep -q 't-alice' \
+  [ "$(rrc)" = 2 ] && grep -E '^REFUS: PUSH_ECHEC' "$ERR" | pipe_q 't-alice' \
     && ok "F'.M7 redact du push remplacé par cat ⇒ le refus PUSH_ECHEC porte le token humain (F.3a/F.3d rougissent — et sans STOA_DEBUG : c'est le refus lui-même qui fuit)" \
     || ko "F'.M7 rc $(rrc) : le mutant ne fuit pas dans le refus"; }
 # M8 : une ligne de debug qui se tromperait de flux. `dbg_kv MAN_PATH` devient un
@@ -829,7 +841,7 @@ M8=$(mutate M8 'import sys; s=sys.stdin.read(); assert "dbg_kv MAN_PATH \"$MAN_P
 # (le masque fait 9 octets de plus que t-alice) en font 409, la forme livrée 400.
 M9=$(mutate M9 'import sys; s=sys.stdin.read(); assert "m=\"$(redact < \"$1\" | tr" in s; print(s.replace("m=\"$(redact < \"$1\" | tr", "m=\"$(head -c 400 < \"$1\" | tr"), end="")') && {
   set_ctl "$(ctl_json)"; reset_origin; run_mut2 "$M9" "$OUT" "$ERR" FORGE_TOKEN=t-alice SHIM_PUSH_FAIL=1 "SHIM_SECRET_AT=$SECRET_AT" STOA_DEBUG=1
-  grep '^\[dbg' "$ERR" | grep -qF -- "askpass a rendu $FRAG" \
+  grep '^\[dbg' "$ERR" | pipe_q -F -- "askpass a rendu $FRAG" \
     && ok "F'.M9 dbg_git_err coupe PUIS masque ⇒ « askpass a rendu $FRAG » : cinq octets du token humain fuient dans la ligne « git: », qui fait $(git_octets) octets au lieu de 400 (F.3e ET F.3f rougissent)" \
     || ko "F'.M9 rc $(rrc) : le mutant ne laisse pas de morceau — …$(git_line | tail -c 40)"; }
 # M10 : le RELAIS de merged.err retiré — sur succès, la ligne HTTP de pr_list_merged
@@ -853,7 +865,7 @@ M11=$(mutate M11 'import sys; s=sys.stdin.read(); l="dbg \"git clone --single-br
 # SANS debug : c'est le refus CLONE_ECHEC lui-même qui fuit le token humain.
 M12=$(mutate M12 'import sys; s=sys.stdin.read(); assert "redact \"$PUSH_TF\" < \"$WORK/clone.err\"" in s; print(s.replace("redact \"$PUSH_TF\" < \"$WORK/clone.err\"", "cat \"$WORK/clone.err\""), end="")') && {
   set_ctl "$(ctl_json)"; reset_origin; run_mut2 "$M12" "$OUT" "$ERR" FORGE_TOKEN=t-alice SHIM_CLONE_FAIL=1
-  [ "$(rrc)" = 2 ] && grep -E '^REFUS: CLONE_ECHEC' "$ERR" | grep -q 't-alice' \
+  [ "$(rrc)" = 2 ] && grep -E '^REFUS: CLONE_ECHEC' "$ERR" | pipe_q 't-alice' \
     && ok "F'.M12 redact du clone remplacé par cat ⇒ le refus CLONE_ECHEC porte le token humain (F.6c rougit — sans STOA_DEBUG : c'est le refus lui-même qui fuit)" \
     || ko "F'.M12 rc $(rrc) : le mutant ne fuit pas dans le refus — $(grep -E '^REFUS' "$ERR" | head -1 | head -c 120)"; }
 # M13 (relecture B4, I-2) : l'ORDRE du refus PUSH_ECHEC — COUPER puis masquer,
@@ -863,13 +875,13 @@ M12=$(mutate M12 'import sys; s=sys.stdin.read(); assert "redact \"$PUSH_TF\" < 
 # cinq octets du token humain DANS LE REFUS, 209 octets au lieu de 200.
 M13=$(mutate M13 'import sys; s=sys.stdin.read(); a="$(redact \"$PUSH_TF\" < \"$WORK/push.err\" | head -c 200 | tr \x27\\n\x27 \x27 \x27)"; assert a in s; print(s.replace(a, "$(head -c 200 < \"$WORK/push.err\" | redact \"$PUSH_TF\" | tr -d \x27\\n\x27)"), end="")') && {
   set_ctl "$(ctl_json)"; reset_origin; run_mut2 "$M13" "$OUT" "$ERR" FORGE_TOKEN=t-alice SHIM_PUSH_FAIL=1 "SHIM_SECRET_AT=$SECRET_AT_REFUS"
-  [ "$(rrc)" = 2 ] && grep -E '^REFUS: PUSH_ECHEC' "$ERR" | grep -qF -- "askpass a rendu $FRAG_REFUS" \
+  [ "$(rrc)" = 2 ] && grep -E '^REFUS: PUSH_ECHEC' "$ERR" | pipe_q -F -- "askpass a rendu $FRAG_REFUS" \
     && ok "F'.M13 refus PUSH_ECHEC coupé PUIS masqué ⇒ « askpass a rendu $FRAG_REFUS » : cinq octets du token humain dans le REFUS, détail de $(refus_octets PUSH_ECHEC "$PD") octets au lieu de 200 (F.3h rougit)" \
     || ko "F'.M13 rc $(rrc) : le mutant ne laisse pas de morceau — …$(refus_detail PUSH_ECHEC "$PD" | tail -c 40)"; }
 # M14 : le même mutant sur le refus CLONE_ECHEC (même forme, ligne du clone) — F.6d rougit.
 M14=$(mutate M14 'import sys; s=sys.stdin.read(); a="$(redact \"$PUSH_TF\" < \"$WORK/clone.err\" | head -c 200 | tr \x27\\n\x27 \x27 \x27)"; assert a in s; print(s.replace(a, "$(head -c 200 < \"$WORK/clone.err\" | redact \"$PUSH_TF\" | tr -d \x27\\n\x27)"), end="")') && {
   set_ctl "$(ctl_json)"; reset_origin; run_mut2 "$M14" "$OUT" "$ERR" FORGE_TOKEN=t-alice SHIM_CLONE_FAIL=1 "SHIM_SECRET_AT=$SECRET_AT_REFUS"
-  [ "$(rrc)" = 2 ] && grep -E '^REFUS: CLONE_ECHEC' "$ERR" | grep -qF -- "askpass a rendu $FRAG_REFUS" \
+  [ "$(rrc)" = 2 ] && grep -E '^REFUS: CLONE_ECHEC' "$ERR" | pipe_q -F -- "askpass a rendu $FRAG_REFUS" \
     && ok "F'.M14 refus CLONE_ECHEC coupé PUIS masqué ⇒ « askpass a rendu $FRAG_REFUS » dans le REFUS, $(refus_octets CLONE_ECHEC "$CD") octets au lieu de 200 (F.6d rougit)" \
     || ko "F'.M14 rc $(rrc) : le mutant ne laisse pas de morceau — …$(refus_detail CLONE_ECHEC "$CD" | tail -c 40)"; }
 reset_origin

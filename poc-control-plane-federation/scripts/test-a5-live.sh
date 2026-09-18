@@ -47,6 +47,18 @@
 # shellcheck disable=SC2015,SC2016
 set -uo pipefail
 set +x
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO" || exit 1
 
@@ -344,17 +356,17 @@ elif docker inspect "$GITEA_CONTAINER" >/dev/null 2>&1; then
 fi
 [ -n "$CI_TOKEN" ] || die "LAB_ABSENT : aucun token Gitea ci"
 printf 'Authorization: token %s\n' "$CI_TOKEN" > "$TMP/ci.hdr"
-gapi -o /dev/null -w '%{http_code}' "$API/repos/$GIT_REPO" | grep -q '^200$' || die "LAB_ABSENT : $GIT_REPO illisible"
+gapi -o /dev/null -w '%{http_code}' "$API/repos/$GIT_REPO" | pipe_q '^200$' || die "LAB_ABSENT : $GIT_REPO illisible"
 ok "0.2 token ci opérationnel"
-curl -sf "$JENKINS_UI/job/provision-apply/config.xml" | grep -q 'ci/Jenkinsfile.provision-apply' || die "PREREQUIS : provision-apply n'est pas from SCM"
+curl -sf "$JENKINS_UI/job/provision-apply/config.xml" | pipe_q 'ci/Jenkinsfile.provision-apply' || die "PREREQUIS : provision-apply n'est pas from SCM"
 for f in scripts/provision-apply-gate.sh scripts/selfservice-palier-gate.sh ansible/roles/apim_common/tasks/refus.yml; do
-  gapi -o /dev/null -w '%{http_code}' "$API/repos/$GIT_REPO/raw/main/$SUBDIR/$f" | grep -q '^200$' || die "PREREQUIS : $f absent de gitea main — git push gitea HEAD:main"
+  gapi -o /dev/null -w '%{http_code}' "$API/repos/$GIT_REPO/raw/main/$SUBDIR/$f" | pipe_q '^200$' || die "PREREQUIS : $f absent de gitea main — git push gitea HEAD:main"
 done
-raw_at main "$SUBDIR/ansible/roles/apim_selfservice_app/tasks/main.yml" | grep -q 'API_INACTIVE' || die "PREREQUIS : le rôle sur gitea main n'a pas la porte A5"
-raw_at main "$SUBDIR/ansible/roles/apim_selfservice_app/tasks/verify.yml" | grep -q 'SUBSCRIPTION_CONFIRMED' || die "PREREQUIS : verify sur gitea main n'a pas la relecture A5"
-raw_at main "$SUBDIR/ci/Jenkinsfile.selfservice" | grep -q 'apim_ss_refus_detail_out' || die "PREREQUIS : Jenkinsfile.selfservice sur gitea main n'est pas la version A5"
-raw_at main "$SUBDIR/ci/Jenkinsfile.provision-apply" | grep -q 'APPLIED_REFUSAL_DETAIL' || die "PREREQUIS : Jenkinsfile.provision-apply sur gitea main n'est pas la version A5"
-raw_at main "$SUBDIR/scripts/selfservice-palier-gate.sh" | grep -q 'REFUS_DETAIL_OUT' || die "PREREQUIS : la garde A3 sur gitea main n'a pas REFUS_DETAIL_OUT"
+raw_at main "$SUBDIR/ansible/roles/apim_selfservice_app/tasks/main.yml" | pipe_q 'API_INACTIVE' || die "PREREQUIS : le rôle sur gitea main n'a pas la porte A5"
+raw_at main "$SUBDIR/ansible/roles/apim_selfservice_app/tasks/verify.yml" | pipe_q 'SUBSCRIPTION_CONFIRMED' || die "PREREQUIS : verify sur gitea main n'a pas la relecture A5"
+raw_at main "$SUBDIR/ci/Jenkinsfile.selfservice" | pipe_q 'apim_ss_refus_detail_out' || die "PREREQUIS : Jenkinsfile.selfservice sur gitea main n'est pas la version A5"
+raw_at main "$SUBDIR/ci/Jenkinsfile.provision-apply" | pipe_q 'APPLIED_REFUSAL_DETAIL' || die "PREREQUIS : Jenkinsfile.provision-apply sur gitea main n'est pas la version A5"
+raw_at main "$SUBDIR/scripts/selfservice-palier-gate.sh" | pipe_q 'REFUS_DETAIL_OUT' || die "PREREQUIS : la garde A3 sur gitea main n'a pas REFUS_DETAIL_OUT"
 ok "0.3 A5 est sur gitea main (rôle, verify, lib de refus, garde, deux Jenkinsfile)"
 raw_at main "$SUBDIR/clients/_example/environments.yaml" > "$TMP/chain.yaml"; [ "$(raw_hc)" = 200 ] || die "PREREQUIS : environments.yaml illisible sur gitea main"
 # shellcheck source=scripts/lib/env-chain.sh
@@ -406,7 +418,7 @@ console_order "$TMP/ss.$S_NUM.console" 'palier ouvert : envs/rec/wm-admin' 'pré
 grep -qF "relayé à l'amont : API_INACTIVE — " "$TMP/ss.$S_NUM.console" && ok "1.6 post{always} de l'aval : tag ET phrase relayés" || ko "1.6 relais : $(grep -F 'relayé' "$TMP/ss.$S_NUM.console" | head -1 | cut -c1-200)"
 grep -q "verdict amont : FAILURE (API_INACTIVE)" "$TMP/pa.$N_PA.console" && ok "1.6b amont : verdict FAILURE (API_INACTIVE) — le tag a traversé buildVariables" || ko "1.6b amont : $(grep 'verdict amont' "$TMP/pa.$N_PA.console" | head -1 | cut -c1-200)"
 CM=$(pr_comments "$PR1")
-printf '%s' "$CM" | grep -q 'API_INACTIVE' && printf '%s' "$CM" | grep -q "$REQ_API" && printf '%s' "$CM" | grep -q "L'ordre app/API" && printf '%s' "$CM" | grep -q "aval selfservice-app-deploy #$S_NUM" \
+printf '%s' "$CM" | pipe_q 'API_INACTIVE' && printf '%s' "$CM" | pipe_q "$REQ_API" && printf '%s' "$CM" | pipe_q "L'ordre app/API" && printf '%s' "$CM" | pipe_q "aval selfservice-app-deploy #$S_NUM" \
   && ok "1.7 PR #$PR1 : ❌ API_INACTIVE, la phrase nomme $REQ_API, paragraphe « L'ordre app/API », aval #$S_NUM cité" || ko "1.7 commentaire : $(printf '%s' "$CM" | grep -i 'refus' | head -2 | tr '\n' ' ' | cut -c1-300)"
 
 echo
@@ -419,16 +431,16 @@ grep -q "API_AT_PALIER : '$REQ_API' v$REQ_API_VER active au palier 'rec' (id=$GU
 grep -q "API_AT_PALIER_CONFIRMED" "$TMP/ss.$S_NUM.console" && grep -q "SUBSCRIPTION_CONFIRMED.*id=$GUID_REF" "$TMP/ss.$S_NUM.console" \
   && ok "2.3 verify : API_AT_PALIER_CONFIRMED + SUBSCRIPTION_CONFIRMED au GUID $GUID_REF" || ko "2.3 verify : $(grep -E 'CONFIRMED|REFUS' "$TMP/ss.$S_NUM.console" | tr '\n' ' ' | cut -c1-300)"
 APPJ=$(gw_app "$APP1")
-printf '%s' "$APPJ" | grep -q "$GUID_REF" && [ "$(gw_app_claims "$APPJ")" = "${APP1}-rec" ] \
+printf '%s' "$APPJ" | pipe_q "$GUID_REF" && [ "$(gw_app_claims "$APPJ")" = "${APP1}-rec" ] \
   && ok "2.4 gateway : $APP1 présente, consumingAPIs ∋ $GUID_REF (le GUID promu, le même), claim ${APP1}-rec" || ko "2.4 gateway : $(printf '%s' "$APPJ" | cut -c1-200)"
-CM=$(pr_comments "$PR1"); printf '%s' "$CM" | grep -q 'Apply nominatif RÉUSSI' && ok "2.5 PR #$PR1 : ✅ (le rejeu a remplacé le refus)" || ko "2.5 commentaire : $(printf '%s' "$CM" | tail -c 200)"
+CM=$(pr_comments "$PR1"); printf '%s' "$CM" | pipe_q 'Apply nominatif RÉUSSI' && ok "2.5 PR #$PR1 : ✅ (le rejeu a remplacé le refus)" || ko "2.5 commentaire : $(printf '%s' "$CM" | tail -c 200)"
 
 echo
 echo "═══ 3. API JAMAIS promue (nom absent) ⇒ API_NOT_PROMOTED, la PR nomme promote/<api>-rec ═══"
 chain_rec "$APP3" "$NOPE" 1.0.0 10.42.0.3; PR3="$PR_N"
 [ "$RES" = FAILURE ] && [ -n "$S_NUM" ] && grep -qF 'REFUS: API_NOT_PROMOTED' "$TMP/ss.$S_NUM.console" && ok "3.1 aval #$S_NUM : REFUS: API_NOT_PROMOTED" || ko "3.1 $RES : $(grep -E 'REFUS|fatal' "$TMP/ss.${S_NUM:-0}.console" 2>/dev/null | head -2 | tr '\n' ' ' | cut -c1-300)"
 [ -z "$(gw_app "$APP3")" ] && ok "3.2 gateway : $APP3 absente — rien écrit" || ko "3.2 $APP3 existe"
-CM=$(pr_comments "$PR3"); printf '%s' "$CM" | grep -q 'API_NOT_PROMOTED' && printf '%s' "$CM" | grep -q "promote/$NOPE-rec" && ok "3.3 PR #$PR3 : ❌ API_NOT_PROMOTED nommant promote/$NOPE-rec" || ko "3.3 : $(printf '%s' "$CM" | grep -i refus | head -1 | cut -c1-300)"
+CM=$(pr_comments "$PR3"); printf '%s' "$CM" | pipe_q 'API_NOT_PROMOTED' && printf '%s' "$CM" | pipe_q "promote/$NOPE-rec" && ok "3.3 PR #$PR3 : ❌ API_NOT_PROMOTED nommant promote/$NOPE-rec" || ko "3.3 : $(printf '%s' "$CM" | grep -i refus | head -1 | cut -c1-300)"
 
 echo
 echo "═══ 4. version ABSENTE ($REQ_API 9.9.9) ⇒ API_VERSION_MISMATCH citant $REQ_API_VER ═══"
@@ -436,7 +448,7 @@ chain_rec "$APP4" "$REQ_API" 9.9.9 10.42.0.4; PR4="$PR_N"
 [ "$RES" = FAILURE ] && [ -n "$S_NUM" ] && grep -qF 'REFUS: API_VERSION_MISMATCH' "$TMP/ss.$S_NUM.console" && grep -q "version(s) .*$REQ_API_VER" "$TMP/ss.$S_NUM.console" \
   && ok "4.1 aval #$S_NUM : REFUS: API_VERSION_MISMATCH citant $REQ_API_VER" || ko "4.1 $RES : $(grep -E 'REFUS|fatal' "$TMP/ss.${S_NUM:-0}.console" 2>/dev/null | head -2 | tr '\n' ' ' | cut -c1-300)"
 [ -z "$(gw_app "$APP4")" ] && ok "4.2 gateway : $APP4 absente — rien écrit" || ko "4.2 $APP4 existe"
-CM=$(pr_comments "$PR4"); printf '%s' "$CM" | grep -q 'API_VERSION_MISMATCH' && ok "4.3 PR #$PR4 : ❌ API_VERSION_MISMATCH" || ko "4.3 : $(printf '%s' "$CM" | tail -c 200)"
+CM=$(pr_comments "$PR4"); printf '%s' "$CM" | pipe_q 'API_VERSION_MISMATCH' && ok "4.3 PR #$PR4 : ❌ API_VERSION_MISMATCH" || ko "4.3 : $(printf '%s' "$CM" | tail -c 200)"
 
 echo
 echo "═══════════════════════════════════════════════════"

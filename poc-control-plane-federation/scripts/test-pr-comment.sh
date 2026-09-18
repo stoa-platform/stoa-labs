@@ -12,6 +12,18 @@
 #
 #   ./scripts/test-pr-comment.sh
 set -uo pipefail
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 TMP="$(mktemp -d /tmp/prcmt.XXXXXX)"
 PORT="${GITEA_PORT:-18300}"
@@ -103,7 +115,7 @@ OUT=$(GIT_REPO=ci/stoa-labs GITEA_TOKEN=tok-ok PR_NUMBER=7 GIT_HOST="$GH" \
       COMMENT_MARKER='<!-- provision-plan -->' COMMENT_BODY_FILE="$TMP/b2.md" bash "$LIB" 2>&1); RC=$?
 [ $RC -eq 0 ] && grep -q "COMMENT_UPDATED" <<<"$OUT" && ok "mis à jour" || ko "PATCH non effectué : $OUT"
 [ "$(count)" = "1" ] && ok "toujours 1 commentaire (pas de doublon)" || ko "$(count) commentaires — empilement"
-bodies | grep -q "corps mis a jour" && ok "corps réellement remplacé" || ko "ancien corps conservé"
+bodies | pipe_q "corps mis a jour" && ok "corps réellement remplacé" || ko "ancien corps conservé"
 
 echo
 echo "== 3. marqueur DIFFÉRENT : plan et apply cohabitent =="
@@ -141,11 +153,11 @@ startgitea tok-ok
 OUT=$(PR_NUMBER=7 APPLY_RESULT=REFUSED REFUSAL=PAYLOAD_PERIME APP_NAME=credit-scoring ENV_NAME=dev \
       GITEA_REQUESTER=carol GITEA_MERGED_BY=bob GIT_REPO=ci/stoa-labs GITEA_TOKEN=tok-ok GIT_HOST="$GH" \
       bash "$REPO/scripts/provision-apply-comment.sh" 2>&1); RC=$?
-[ $RC -eq 0 ] && ! bodies | grep -qF 'identités :' && bodies | grep -q 'aucune consommée' && ok "A7 : sur REFUSED, aucune ligne d'identités (aucune identité consommée)" || ko "A7 : REFUSED porte une ligne d'identités (rc=$RC)"
+[ $RC -eq 0 ] && ! bodies | pipe_q -F 'identités :' && bodies | pipe_q 'aucune consommée' && ok "A7 : sur REFUSED, aucune ligne d'identités (aucune identité consommée)" || ko "A7 : REFUSED porte une ligne d'identités (rc=$RC)"
 startgitea tok-ok
 OUT=$(PR_NUMBER=7 APPLY_RESULT=FAILURE APP_NAME=credit-scoring ENV_NAME=dev VALIDATOR=alice \
       GIT_REPO=ci/stoa-labs GITEA_TOKEN=tok-ok GIT_HOST="$GH" bash "$REPO/scripts/provision-apply-comment.sh" 2>&1); RC=$?
-bodies | grep -qF -- '- identités : demandée par `(inconnu)` · mergée par `(inconnu)` · portée par `alice`' && ok "A7 : identités absentes de l'env ⇒ (inconnu), jamais une ligne vide" || ko "A7 : (inconnu) attendu : $(bodies | grep -F 'identités')"
+bodies | pipe_q -F -- '- identités : demandée par `(inconnu)` · mergée par `(inconnu)` · portée par `alice`' && ok "A7 : identités absentes de l'env ⇒ (inconnu), jamais une ligne vide" || ko "A7 : (inconnu) attendu : $(bodies | grep -F 'identités')"
 
 echo
 echo "== 6. rapport d'apply EN ÉCHEC : dit que RIEN n'est déployé =="
@@ -154,8 +166,8 @@ OUT=$(PR_NUMBER=7 APPLY_RESULT=FAILURE APP_NAME=credit-scoring ENV_NAME=prod VAL
       GIT_REPO=ci/stoa-labs GITEA_TOKEN=tok-ok GIT_HOST="$GH" \
       bash "$REPO/scripts/provision-apply-comment.sh" 2>&1); RC=$?
 [ $RC -eq 0 ] && ok "commentaire posté malgré l'échec de l'apply" || ko "pas de rapport sur échec"
-bodies | grep -q "EN ÉCHEC" && ok "verdict d'échec" || ko "échec non signalé"
-bodies | grep -q "n'est PAS déployée" && ok "conséquence explicite (pas seulement un ❌)" || ko "conséquence implicite"
+bodies | pipe_q "EN ÉCHEC" && ok "verdict d'échec" || ko "échec non signalé"
+bodies | pipe_q "n'est PAS déployée" && ok "conséquence explicite (pas seulement un ❌)" || ko "conséquence implicite"
 
 echo
 echo "== 7. CÂBLAGE corollaire 1 : la demande enchaîne le plan =="
@@ -177,9 +189,9 @@ JF="$REPO/ci/Jenkinsfile.provision-apply"
 python3 -c "import xml.etree.ElementTree as T; T.parse('$JOB')" 2>/dev/null \
   && ok "XML bien formé" || ko "XML cassé"
 grep -q '<script>' "$JOB" && ko "le XML porte du Groovy inline (contrainte du GOAL)" || ok "XML sans Groovy (coquille from SCM)"
-grep -F 'bash scripts/provision-apply-comment.sh' "$JF" | grep -qv '^\s*//' && ok "script appelé (Jenkinsfile)" || ko "rapport non câblé"
+grep -F 'bash scripts/provision-apply-comment.sh' "$JF" | pipe_q -v '^\s*//' && ok "script appelé (Jenkinsfile)" || ko "rapport non câblé"
 grep -q 'propagate: false' "$JF" && ok "propagate: false (l'échec de l'aval est VU, pas levé — le rapport part aussi sur échec)" || ko "pas de propagate: false — un échec aval sauterait le rapport"
-grep -F 'bash scripts/provision-apply-comment.sh' "$JF" | grep -q '|| true' \
+grep -F 'bash scripts/provision-apply-comment.sh' "$JF" | pipe_q '|| true' \
   && ok "|| true : une forge en panne ne rougit pas un apply vert" || ko "le rapport peut faire échouer un apply réussi"
 grep -q 'error("Apply nominatif en échec' "$JF" && ok "l'échec réel est réaffirmé (error) après le rapport" || ko "un apply en échec finirait vert"
 grep -q 'always {' "$JF" && ok "post { always } : statut build dans tous les cas" || ko "pas de post always"
@@ -236,7 +248,7 @@ printf 'statut rouge perime\n' > "$TMP/b11r"
 GIT_REPO=ci/stoa-labs GITEA_TOKEN=tok-ok PR_NUMBER=7 GIT_HOST="$GH" COMMENT_MARKER='<!-- provision-plan-build -->' COMMENT_BODY_FILE="$TMP/b11r" bash "$LIB" >/dev/null 2>&1
 OUT=$(GIT_REPO=ci/stoa-labs GITEA_TOKEN=tok-ok PR_NUMBER=7 GIT_HOST="$GH" COMMENT_MARKER='<!-- provision-plan-build -->' \
       COMMENT_BODY_FILE="$TMP/b11" COMMENT_ONLY_IF_EXISTS=1 bash "$LIB" 2>&1); RC=$?
-[ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -q '^COMMENT_UPDATED' && [ "$(count)" = 1 ] && bodies | grep -q 'statut vert' \
+[ "$RC" -eq 0 ] && printf '%s' "$OUT" | pipe_q '^COMMENT_UPDATED' && [ "$(count)" = 1 ] && bodies | pipe_q 'statut vert' \
   && ok "marqueur présent ⇒ COMMENT_UPDATED (le rouge périmé est effacé), toujours UN seul commentaire" || ko "ONLY_IF_EXISTS n'a pas mis à jour (rc=$RC : $OUT, n=$(count))"
 
 echo
@@ -256,7 +268,7 @@ OUT=$(GIT_REPO=ci/stoa-labs GITEA_TOKEN=tok-ok PR_NUMBER=7 GIT_HOST="$GH" COMMEN
 # Routage forge-agnostique (2026-09-09) : la lib ne fait plus d'appel réseau elle-même,
 # elle passe par forge-api.sh (comment_find puis comment_upsert) ; le timeout réseau
 # (FORGE_TIMEOUT, 30 s par défaut) vit dans forge-api.py, l'unique autorité.
-grep -q 'forge_kv CU comment_upsert' "$LIB" && ! grep -vE '^\s*#' "$LIB" | grep -qE 'urllib|/api/v[14]|Authorization|python3' \
+grep -q 'forge_kv CU comment_upsert' "$LIB" && ! grep -vE '^\s*#' "$LIB" | pipe_q -E 'urllib|/api/v[14]|Authorization|python3' \
   && grep -q 'FORGE_TIMEOUT' "$REPO/scripts/lib/forge-api.py" && grep -q 'timeout=timeout' "$REPO/scripts/lib/forge-api.py" \
   && ok "forge_kv comment_upsert derrière forge-api.py (FORGE_TIMEOUT 30 s, sans urllib ni /api/v1 dans la lib) : un post{always} ne tient plus l'exécuteur indéfiniment sur une forge muette" \
   || ko "la lib compose encore un appel réseau en ligne, ou forge-api.py n'a plus de timeout"

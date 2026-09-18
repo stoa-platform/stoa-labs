@@ -101,6 +101,18 @@
 set -uo pipefail
 set +x   # jamais de trace : le token ne doit pas fuiter
 
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
+
 # G4 (D6) : la liste d'environnements valides suit LA chaîne, jamais une liste
 # en dur. Aucun `cd` n'a encore eu lieu ici (le clone/cd n'arrive qu'au [1/4],
 # bien plus bas) : la source relative résout depuis le cwd d'appel, qui est
@@ -410,7 +422,7 @@ if [ -n "$REQ_BACKEND_KEY_FIELD" ]; then
 fi
 # On ne commite JAMAIS une clé privée — même collée par accident.
 case "$REQ_CERT_PEM" in *"PRIVATE KEY"*) fail "CERT_PRIVATE_KEY_REFUSE";; esac
-[ -n "$REQ_CERT_PEM" ] && { printf '%s' "$REQ_CERT_PEM" | grep -q -- '-----BEGIN CERTIFICATE-----' || fail "CERT_SANS_BLOC : PEM public X.509 attendu"; }
+[ -n "$REQ_CERT_PEM" ] && { printf '%s' "$REQ_CERT_PEM" | pipe_q -- '-----BEGIN CERTIFICATE-----' || fail "CERT_SANS_BLOC : PEM public X.509 attendu"; }
 case "${REQ_CERT_ROTATION:-replace}" in replace|overlap) ;; *) fail "CERT_ROTATION_INVALIDE : replace|overlap";; esac
 
 # REQ_TEAM : format identique à team-request.sh (^[a-z0-9][a-z0-9-]{1,30}$).
@@ -420,7 +432,7 @@ case "${REQ_CERT_ROTATION:-replace}" in replace|overlap) ;; *) fail "CERT_ROTATI
 # (défaut actuel, voie machine intacte).
 if [ -n "$REQ_TEAM" ]; then
   case "$REQ_TEAM" in *[!a-z0-9-]*) fail "TEAM_NAME_INVALID : '$REQ_TEAM' — ^[a-z0-9][a-z0-9-]{1,30}\$ requis";; esac
-  printf '%s' "$REQ_TEAM" | grep -Eq '^[a-z0-9][a-z0-9-]{1,30}$' \
+  printf '%s' "$REQ_TEAM" | pipe_q -E '^[a-z0-9][a-z0-9-]{1,30}$' \
     || fail "TEAM_NAME_INVALID : '$REQ_TEAM' — ^[a-z0-9][a-z0-9-]{1,30}\$ requis"
 fi
 
@@ -429,7 +441,7 @@ fi
 # ^[A-Za-z0-9][A-Za-z0-9._-]*$, jamais `.`, `..` ni un segment commençant par `.`.
 # Si la porte du palier les exige (requireChangeRef|itsmCheck, requirePVRef) et
 # qu'ils manquent : GATE_REFS_REQUIRED au plus tôt — aucune PR ouverte (motif A6).
-ref_ok(){ [ -z "$1" ] && return 0; printf '%s' "$1" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]*$' && ! printf '%s' "$1" | grep -Eq '(^|/)\.'; }
+ref_ok(){ [ -z "$1" ] && return 0; printf '%s' "$1" | pipe_q -E '^[A-Za-z0-9][A-Za-z0-9._-]*$' && ! printf '%s' "$1" | pipe_q -E '(^|/)\.'; }
 ref_ok "$REQ_CHANGE_REF" || fail "REF_INVALIDE : change_ref '$REQ_CHANGE_REF' hors de ^[A-Za-z0-9][A-Za-z0-9._-]*\$ (il deviendrait un segment d'URL ITSM)"
 ref_ok "$REQ_PV_REF"     || fail "REF_INVALIDE : pv_ref '$REQ_PV_REF' hors de ^[A-Za-z0-9][A-Za-z0-9._-]*\$"
 GATE="$(env_chain_gate "$REQ_ENV")" || fail "CHAINE_INVALIDE : porte de '$REQ_ENV' illisible"
@@ -836,7 +848,7 @@ FORGE_SECRET_FILE="$CI_TF" forge_kv OPEN pr_find_open "$BRANCH" \
 OPEN_NUM="$OPEN_NUMBER"
 dbg_kv OPEN_NUM "$OPEN_NUM"       # vide ⇒ « <vide> » : aucune PR ouverte sur la branche
 dbg_kv OPEN_LOGIN "$OPEN_LOGIN"
-if [ -n "$REMOTE_TIP" ] && git log -1 --format=%B "$REMOTE_TIP" 2>/dev/null | grep -q '^Repli-Vers: '; then
+if [ -n "$REMOTE_TIP" ] && git log -1 --format=%B "$REMOTE_TIP" 2>/dev/null | pipe_q '^Repli-Vers: '; then
   # Le trailer EST la preuve ; la forge ne fait que nommer la PR (A6 D1bis).
   [ -z "$OPEN_NUM" ] || fail "REPLI_EN_COURS : la PR #${OPEN_NUM} (${OPEN_LOGIN:-auteur inconnu}) est un repli ouvert sur ${BRANCH} — la merger ou la fermer avant une nouvelle demande"
 fi

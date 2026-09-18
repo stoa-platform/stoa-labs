@@ -37,6 +37,18 @@
 #   (défaut : mint un token jetable via `docker exec -u git poc-gitea ...`
 #   si GITEA_TOKEN_FILE est absent ET que le conteneur poc-gitea existe.)
 set -uo pipefail
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 S="$REPO/scripts/api-request.sh"
 TS="$(date +%s)"
@@ -90,8 +102,8 @@ run_guard(){
         ACTION=create TEAM=probe API_NAME=probe API_VERSION=1.0.0 \
         OPENAPI_SPEC='{"openapi":"3.0.0"}' INBOUND_MODE=jwt "$@" bash "$S" 2>&1)
   rc=$?
-  if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q "$tag"; then
-    if printf '%s' "$out" | grep -q '\[1/5\]'; then
+  if [ "$rc" -eq 1 ] && printf '%s' "$out" | pipe_q "$tag"; then
+    if printf '%s' "$out" | pipe_q '\[1/5\]'; then
       ko "$label : refusé mais APRÈS le clone (réseau touché) — pas 'AVANT tout geste Git'"
     else
       ok "$label : refusé ($tag), AVANT tout appel réseau"
@@ -177,7 +189,7 @@ run_local(){ # $1=label $2=expected_tag $3=GH $4=GIT_REPO $5=team-bare-path-ou-v
   rc=$?
   after=$(git ls-remote "$gh/$gitrepo.git" 2>&1)
   [ -n "$teambare" ] && tafter=$(git ls-remote "$teambare" 2>&1)
-  if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q "$tag" && [ "$before" = "$after" ] \
+  if [ "$rc" -eq 1 ] && printf '%s' "$out" | pipe_q "$tag" && [ "$before" = "$after" ] \
      && { [ -z "$teambare" ] || [ "$tbefore" = "$tafter" ]; }; then
     if [ -n "$teambare" ]; then
       ok "$label : refusé ($tag), dépôt d'ÉQUIPE intact (ls-remote inchangé — la seule cible d'écriture réelle)"
@@ -254,8 +266,8 @@ OUT_COL=$(env -i PATH="$PATH" GIT_HOST="$GH5" GIT_REPO="ci/stoa-labs" GITEA_TOKE
 RC_COL=$?
 AFTER_X=$(git ls-remote "$GH5/teamx/apis.git" 2>&1)
 AFTER_Y=$(git ls-remote "$GH5/teamy/apis.git" 2>&1)
-if [ "$RC_COL" -eq 1 ] && printf '%s' "$OUT_COL" | grep -q "API_NAME_COLLISION" \
-   && printf '%s' "$OUT_COL" | grep -q "teamx" \
+if [ "$RC_COL" -eq 1 ] && printf '%s' "$OUT_COL" | pipe_q "API_NAME_COLLISION" \
+   && printf '%s' "$OUT_COL" | pipe_q "teamx" \
    && [ "$BEFORE_X" = "$AFTER_X" ] && [ "$BEFORE_Y" = "$AFTER_Y" ]; then
   ok "API_NAME_COLLISION : refusé (propriétaire 'teamx' nommé dans le message), NI teamx NI teamy touchés"
 else
@@ -272,7 +284,7 @@ OUT_COL2=$(env -i PATH="$PATH" GIT_HOST="$GH5" GIT_REPO="ci/stoa-labs" GITEA_TOK
   ACTION=create TEAM=teamy API_NAME=quux API_VERSION=1.0.0 \
   OPENAPI_SPEC='{"openapi":"3.0.0"}' INBOUND_MODE=jwt bash "$S" 2>&1)
 AFTER2_Y=$(git ls-remote "$GH5/teamy/apis.git" 2>&1)
-if ! printf '%s' "$OUT_COL2" | grep -q "API_NAME_COLLISION" && [ "$AFTER2_Y" != "$BEFORE_Y" ]; then
+if ! printf '%s' "$OUT_COL2" | pipe_q "API_NAME_COLLISION" && [ "$AFTER2_Y" != "$BEFORE_Y" ]; then
   ok "contre-témoin : nom neuf ('quux') NON bloqué par la collision — branche poussée sur teamy/apis"
 else
   ko "contre-témoin : nom neuf bloqué à tort, ou branche jamais poussée — $(printf '%s' "$OUT_COL2" | tail -3)"
@@ -292,7 +304,7 @@ PLAN_LOG="$TMP/plan.log"
   echo "GUARD_RC=$?"
 } ) >"$PLAN_LOG" 2>&1
 MSG=$(grep -A6 -E 'fatal:|FAILED!|^ERROR!' "$PLAN_LOG" | grep -oE '"msg":.*|^ERROR!.*' | tail -1 | cut -c1-300)
-if printf '%s' "$MSG" | grep -q "TEAM_FORBIDDEN"; then
+if printf '%s' "$MSG" | pipe_q "TEAM_FORBIDDEN"; then
   ok "extraction PLAN : TEAM_FORBIDDEN remonté par la hiérarchie fatal>msg (pas un tail-3 générique)"
 else
   ko "extraction PLAN : TEAM_FORBIDDEN absent du message extrait — $MSG"
@@ -407,9 +419,9 @@ paths: {}'
       OPENAPI_SPEC="$SPEC1" INBOUND_MODE=jwt bash "$S" 2>&1)
     RC=$?
     MANI1=$(gapi "$GH/api/v1/repos/$TEAMORG/apis/raw/api/scratch-api-1.0.0/apis/scratch-api.publish.yml")
-    if [ "$RC" -eq 0 ] && printf '%s' "$MANI1" | grep -q 'name: "scratch-api"' \
-       && printf '%s' "$MANI1" | grep -q 'version: "1.0.0"' \
-       && printf '%s' "$MANI1" | grep -q 'mode: "jwt"'; then
+    if [ "$RC" -eq 0 ] && printf '%s' "$MANI1" | pipe_q 'name: "scratch-api"' \
+       && printf '%s' "$MANI1" | pipe_q 'version: "1.0.0"' \
+       && printf '%s' "$MANI1" | pipe_q 'mode: "jwt"'; then
       ok "D1 : PR create ouverte, manifeste name/version/mode corrects"
     else
       ko "D1 : run en échec ou manifeste incorrect — $(printf '%s' "$OUT1" | tail -5)"
@@ -421,7 +433,7 @@ paths: {}'
     PLANCMT=""
     [ -n "$PRNUM1" ] && PLANCMT=$(gapi "$GH/api/v1/repos/$TEAMORG/apis/issues/$PRNUM1/comments" \
       | python3 -c "import json,sys; c=json.load(sys.stdin); print(c[0]['body'] if c else '')" 2>/dev/null)
-    printf '%s' "$PLANCMT" | grep -q '✅ PLAN OK — MANIFEST_KEYS_OK' && printf '%s' "$PLANCMT" | grep -q 'TEAM_REQUESTED' \
+    printf '%s' "$PLANCMT" | pipe_q '✅ PLAN OK — MANIFEST_KEYS_OK' && printf '%s' "$PLANCMT" | pipe_q 'TEAM_REQUESTED' \
       && ok "D1 : PLAN OK commenté sur la PR (MANIFEST_KEYS_OK + TEAM_REQUESTED)" \
       || ko "D1 : verdict PLAN attendu absent du commentaire — ${PLANCMT:-<vide>}"
 
@@ -453,8 +465,8 @@ paths: {}'
       OPENAPI_SPEC="$SPEC2" INBOUND_MODE=jwt bash "$S" 2>&1)
     RC2=$?
     MANI2=$(gapi "$GH/api/v1/repos/$TEAMORG/apis/raw/api/scratch-api-2.0.0/apis/scratch-api.publish.yml")
-    if [ "$RC2" -eq 0 ] && printf '%s' "$MANI2" | grep -q 'version: "2.0.0"' \
-       && printf '%s' "$MANI2" | grep -q 'mode: "jwt"'; then
+    if [ "$RC2" -eq 0 ] && printf '%s' "$MANI2" | pipe_q 'version: "2.0.0"' \
+       && printf '%s' "$MANI2" | pipe_q 'mode: "jwt"'; then
       ok "D3 : PR new-version ouverte, manifeste bumpé en 2.0.0"
     else
       ko "D3 : run en échec ou manifeste incorrect — $(printf '%s' "$OUT2" | tail -5)"

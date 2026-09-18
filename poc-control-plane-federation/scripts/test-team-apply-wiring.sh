@@ -40,6 +40,18 @@
 # entrant sous `make lint-ci` : la suite est désormais shellcheckée comme les autres.
 # shellcheck disable=SC2015,SC2016
 set -uo pipefail
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 JOB="$REPO/ci/jenkins/team-apply.job.xml"
 JF="$REPO/ci/Jenkinsfile.team-apply"
@@ -73,7 +85,7 @@ TMP="$(mktemp -d /tmp/ta-wiring.XXXXXX)"
 trap 'rm -rf "$TMP"; [ -n "${FF_PID:-}" ] && kill "$FF_PID" 2>/dev/null; :' EXIT
 # shellcheck source=scripts/lib/gwt-mirror.sh
 . "$REPO/scripts/lib/gwt-mirror.sh" || { echo "lib gwt-mirror.sh introuvable"; exit 2; }
-jf(){ printf '%s\n' "$JF_N" | grep -qF "$1"; }
+jf(){ printf '%s\n' "$JF_N" | pipe_q -F "$1"; }
 
 echo "== 1. le XML reste bien formé, et le Jenkinsfile est bien un pipeline DÉCLARATIF =="
 python3 -c "import xml.etree.ElementTree as T; T.parse('$JOB')" 2>/dev/null \
@@ -269,7 +281,7 @@ _LP=$(grep -n '^  post {' "$JF_C" | head -1 | cut -d: -f1); _SB=$(awk "NR<${_LP:
 [ -z "$MISSI" ] \
   && ok "3quater.1 le Jenkinsfile APPELLE \`bash scripts/forge-merge-identity.sh\` (un seul step \`sh\`, quotes simples) et ne SOURCE aucune lib de forge dans un bloc \`sh\` — dash ne saurait pas la lire" \
   || ko "3quater.1 relecture mal portée par le pipeline —$MISSI"
-{ [ -f "$IDS" ] && head -1 "$IDS" | grep -qE '^#!.*bash' && bash -n "$IDS" 2>/dev/null; } \
+{ [ -f "$IDS" ] && head -1 "$IDS" | pipe_q -E '^#!.*bash' && bash -n "$IDS" 2>/dev/null; } \
   && ok "3quater.2 scripts/forge-merge-identity.sh existe, son shebang est bash (son propre process, son propre shell) et il parse" \
   || ko "3quater.2 scripts/forge-merge-identity.sh absent, sans shebang bash, ou ne parse pas"
 # LA RELECTURE, puis LES CONFRONTATIONS, puis LA GARDE — dans cet ordre.
@@ -342,7 +354,7 @@ mut_ids "le refus PAYLOAD_PERIME retiré" '/PAYLOAD_PERIME/d'
 sed "s@sh 'set +x; bash scripts/forge-merge-identity.sh'@sh '''\n              . scripts/lib/forge-api.sh\n              forge_kv PRG pr_get \"\$PR_NUMBER\"\n            '''@" "$JF" > "$TMP/mj.jf"
 if cmp -s "$TMP/mj.jf" "$JF"; then ko "la relecture remise INLINE dans le bloc \`sh\` : mutation NON appliquée"; else
   MISSI=""
-  printf '%s\n' "$(tr -s ' ' < "$TMP/mj.jf")" | grep -qF "sh 'set +x; bash scripts/forge-merge-identity.sh'" || MISSI=" pas-d-appel-bash-du-script"
+  printf '%s\n' "$(tr -s ' ' < "$TMP/mj.jf")" | pipe_q -F "sh 'set +x; bash scripts/forge-merge-identity.sh'" || MISSI=" pas-d-appel-bash-du-script"
   grep -qE '^[[:space:]]*(\.|source)[[:space:]]+(scripts|ci)/lib/forge' "$TMP/mj.jf" && MISSI="$MISSI lib-bash-sourcee-dans-un-bloc-sh"
   [ -n "$MISSI" ] && ok "la relecture remise INLINE dans le bloc \`sh\` (dash) ⇒ rouge" || ko "la relecture remise INLINE : mutation INVISIBLE à la porte"
 fi
@@ -363,7 +375,7 @@ ids_joue(){ # <libellé> <attendu> <var=val…>
   local out rc
   out=$(env -u GIT_HOST -u GIT_REPO -u FORGE_KIND -u FORGE_SECRET -u GITEA_TOKEN -u FORGE_API_BASE \
         "$@" bash "$IDS" 2>&1); rc=$?
-  if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -qF "$att"; then
+  if [ "$rc" -ne 0 ] && printf '%s' "$out" | pipe_q -F "$att"; then
     ok "3quinquies $lib ⇒ rc $rc et « $att »"
   else
     ko "3quinquies $lib ⇒ rc $rc, attendu « $att » — obtenu : $(printf '%s' "$out" | head -1 | cut -c1-90)"
@@ -380,8 +392,8 @@ if command -v dash >/dev/null 2>&1; then
   D_OUT=$(env -u GIT_HOST -u GIT_REPO -u FORGE_KIND -u FORGE_SECRET -u GITEA_TOKEN \
           PR_NUMBER=41 PR_BRANCH=onboard/x-dev MERGE_SHA="$SHA40" \
           dash -c 'set +x; bash scripts/forge-merge-identity.sh' 2>&1)
-  { printf '%s' "$D_OUT" | grep -qF 'FORGE_IDENTITES_ILLISIBLES' \
-    && ! printf '%s' "$D_OUT" | grep -qF 'Syntax error'; } \
+  { printf '%s' "$D_OUT" | pipe_q -F 'FORGE_IDENTITES_ILLISIBLES' \
+    && ! printf '%s' "$D_OUT" | pipe_q -F 'Syntax error'; } \
     && ok "3quinquies le geste exact du Jenkinsfile (\`dash -c 'set +x; bash scripts/forge-merge-identity.sh'\`) rend le refus NOMMÉ du dépôt — pas un message de dash" \
     || ko "3quinquies sous dash, le geste du Jenkinsfile ne rend pas le refus nommé : $(printf '%s' "$D_OUT" | head -2 | tr '\n' ' ' | cut -c1-120)"
   # CONTRE-ÉPREUVE : l'ANCIENNE forme (la lib bash sourcée dans le bloc) meurt
@@ -390,8 +402,8 @@ if command -v dash >/dev/null 2>&1; then
   A_OUT=$(dash -c '. scripts/lib/forge-api.sh
 forge_api_init || { echo "REFUS: FORGE_IDENTITES_ILLISIBLES"; exit 1; }
 echo "ARRIVE A LA GARDE"' 2>&1)
-  { printf '%s' "$A_OUT" | grep -qF 'Syntax error' \
-    && ! printf '%s' "$A_OUT" | grep -qF 'ARRIVE A LA GARDE'; } \
+  { printf '%s' "$A_OUT" | pipe_q -F 'Syntax error' \
+    && ! printf '%s' "$A_OUT" | pipe_q -F 'ARRIVE A LA GARDE'; } \
     && ok "3quinquies contre-épreuve : la lib SOURCÉE sous dash meurt en « Syntax error » sans jamais nommer de refus ni atteindre la garde — le défaut du 2026-09-12, reproduit à la demande" \
     || ko "3quinquies contre-épreuve MUETTE : dash source désormais la lib ($(printf '%s' "$A_OUT" | head -1 | cut -c1-80)) — si la lib est devenue POSIX, retirer cette épreuve EN LE DISANT"
 else
@@ -467,7 +479,7 @@ else
           FORGE_KIND=gitea FORGE_SECRET=faux-jeton-de-suite "$@" bash "$IDS" 2>&1); rc=$?
     local okrc=1
     if [ "$wrc" = 0 ]; then [ "$rc" -eq 0 ] && okrc=0; else [ "$rc" -ne 0 ] && okrc=0; fi
-    if [ "$okrc" -eq 0 ] && printf '%s' "$out" | grep -qF "$att"; then
+    if [ "$okrc" -eq 0 ] && printf '%s' "$out" | pipe_q -F "$att"; then
       ok "3sexies $lib ⇒ rc $rc et « $att »"
     else
       ko "3sexies $lib ⇒ rc $rc, attendu « $att » — obtenu : $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-110)"
@@ -504,7 +516,7 @@ else
            FORGE_KIND=gitea FORGE_SECRET=faux-jeton-de-suite \
            PR_NUMBER=44 PR_BRANCH=onboard/equipe-dev MERGE_SHA="$SHA_B" V_USER=alice \
            bash "$TMP/mids.sh" 2>&1) || true
-    printf '%s' "$MOUT" | grep -qF 'MERGE_IDENTITY_OK' \
+    printf '%s' "$MOUT" | pipe_q -F 'MERGE_IDENTITY_OK' \
       && ok "3sexies mutation « confrontation du merge_commit_sha retirée » ⇒ la charge utile FORGÉE passe (MERGE_IDENTITY_OK au nom de la PR #44 alors qu'on applique le merge de la #41, MÊME branche) : le trou est réel, et c'est cette ligne SEULE qui le ferme" \
       || ko "3sexies mutation INVISIBLE : sans la confrontation du sha, la charge forgée (même branche) est refusée quand même ($(printf '%s' "$MOUT" | tr '\n' ' ' | cut -c1-100)) — que mesure la ligne, alors ?"
   fi
@@ -540,11 +552,11 @@ L_GUARD=${GUARD_LINE%%:*}
 # Les PAIRES option/variable, pas seulement les noms d'options : c'est le
 # CÂBLAGE qui doit survivre au déménagement. Les trois valeurs sont RELUES sur
 # la forge (PRG_*) ou saisies dans la pause (V_USER) — jamais le payload.
-printf '%s' "$GUARD_LINE" | grep -qF -- '--merged-by "${PRG_MERGED_BY:-}"' \
+printf '%s' "$GUARD_LINE" | pipe_q -F -- '--merged-by "${PRG_MERGED_BY:-}"' \
   && ok "--merged-by alimenté par PRG_MERGED_BY (la forge RELUE, pas le payload)" || ko "--merged-by non alimenté par la forge relue"
-printf '%s' "$GUARD_LINE" | grep -qF -- '--requester "${PRG_LOGIN:-}"' \
+printf '%s' "$GUARD_LINE" | pipe_q -F -- '--requester "${PRG_LOGIN:-}"' \
   && ok "--requester alimenté par PRG_LOGIN (la forge RELUE — sans lui, le quatre-yeux serait invérifiable)" || ko "--requester non alimenté par la forge relue"
-printf '%s' "$GUARD_LINE" | grep -qF -- '--vault-user "${V_USER:-}"' \
+printf '%s' "$GUARD_LINE" | pipe_q -F -- '--vault-user "${V_USER:-}"' \
   && ok "--vault-user alimenté par V_USER (la saisie de la pause, traversant le step \`sh\` par l'environnement)" || ko "--vault-user non alimenté par V_USER"
 L_ID=$(grep -n 'bash scripts/forge-merge-identity\.sh' "$JF" | head -1 | cut -d: -f1)
 L_APPLY=$(grep -n 'bash scripts/team-apply\.sh' "$JF" | head -1 | cut -d: -f1)
@@ -616,7 +628,7 @@ grep -q 'trap vault_trap_revoke EXIT' "$JF" \
 
 echo
 echo "== 9. login et l'appel à team-apply.sh se suivent TEXTUELLEMENT (login précède l'appel) =="
-if awk '/\. ci\/lib\/vault-login\.sh/{f=1} f&&/bash scripts\/team-apply\.sh/{print "same"; exit}' "$JF" | grep -q same; then
+if awk '/\. ci\/lib\/vault-login\.sh/{f=1} f&&/bash scripts\/team-apply\.sh/{print "same"; exit}' "$JF" | pipe_q same; then
   ok "vault-login.sh (source réelle) précède textuellement l'appel réel à team-apply.sh"
 else
   ko "vault-login.sh et l'appel réel à team-apply.sh ne se suivent pas dans cet ordre — le trap de révocation pourrait tuer le token avant l'apply"
@@ -792,7 +804,7 @@ grep -qF '<lightweight>false</lightweight>' "$JOB" \
 # un Jenkinsfile sans `pipeline {` est jugé PLUS sévèrement, jamais moins.
 # ⚠ `grep -c` ET NON `grep -q`, et ce n'est pas un détail de style (mesuré le
 # 2026-09-17 par la session voisine, sur CETTE ligne). Sous `set -o pipefail`,
-# `awk … | grep -q` INVERSE le verdict : grep sort à la PREMIÈRE correspondance
+# `awk … | pipe_q` INVERSE le verdict : grep sort à la PREMIÈRE correspondance
 # et ferme le tuyau, awk prend un SIGPIPE et rend 141, le pipeline vaut donc 141,
 # le `if` est FAUX — et la branche `ok` s'imprime PRÉCISÉMENT quand le défaut est
 # présent. Pire, le piège DORT : tant que la sortie d'awk tient dans le tampon du
@@ -841,8 +853,8 @@ echo "== 15b. post{always} de STATUT BUILD sur la PR (parité team-publish, dett
 grep -qF 'COMMENT_MARKER="<!-- team-apply-build -->"' "$JF" \
   && ok "marqueur DISTINCT \`team-apply-build\` — le statut build ne peut pas écraser le commentaire détaillé de team-apply.sh (chacun idempotent sous son marqueur)" \
   || ko "marqueur de statut build absent ou non distinct — risque d'écrasement du commentaire de team-apply.sh"
-{ awk "NR>=$L_POST" "$JF" | grep -q 'gitea-pr-comment.sh' \
-  && awk "NR>=$L_POST" "$JF" | grep -q 'onboard/\*)'; } \
+{ awk "NR>=$L_POST" "$JF" | pipe_q 'gitea-pr-comment.sh' \
+  && awk "NR>=$L_POST" "$JF" | pipe_q 'onboard/\*)'; } \
   && ok "le post{} filtre \`onboard/*\` ET commente via gitea-pr-comment.sh (idempotent, une PR hors onboard/* n'est pas commentée)" \
   || ko "le post{} ne filtre pas onboard/* ou n'appelle pas gitea-pr-comment.sh"
 # ── L'ORDRE DANS LE post{} : la garde AVANT le nœud ─────────────────────────

@@ -14,6 +14,18 @@
 # entrant sous `make lint-ci` : la suite est désormais shellcheckée comme les autres.
 # shellcheck disable=SC2015,SC2016
 set -uo pipefail
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 JOB="$REPO/ci/jenkins/app-request.job.xml"
 JF="$REPO/ci/Jenkinsfile.app-request"
@@ -32,7 +44,7 @@ EXPECTED_CHECKS=35
 # Le CODE seul (commentaires Groovy retirés) : une garde NOMMÉE dans un
 # commentaire mais jamais appelée ne doit pas faire passer un contrôle au vert.
 JF_CODE="$(grep -vE '^[[:space:]]*//' "$JF")"
-jfc(){ printf '%s\n' "$JF_CODE" | grep -qF "$1"; }
+jfc(){ printf '%s\n' "$JF_CODE" | pipe_q -F "$1"; }
 
 echo "== 1. le XML est bien formé, et le Jenkinsfile est un pipeline DÉCLARATIF =="
 python3 -c "import xml.etree.ElementTree as T; T.parse('$JOB')" 2>/dev/null \
@@ -160,7 +172,7 @@ else
   ok "aucun bloc \`sh \"\"\"\` : impossible d'interpoler une saisie dans une chaîne shell"
 fi
 SH_BODY="$(awk "/sh '''/{f=1;next} f&&/'''/{exit} f" "$JF")"
-if [ -n "$SH_BODY" ] && printf '%s\n' "$SH_BODY" | grep -q 'params\.'; then
+if [ -n "$SH_BODY" ] && printf '%s\n' "$SH_BODY" | pipe_q 'params\.'; then
   ko "un \`params.\` apparaît DANS la chaîne sh — la saisie traverserait une interpolation Groovy"
 else
   ok "aucun \`params.\` dans la chaîne sh"

@@ -27,6 +27,18 @@
 #   (défaut : mint un token jetable via `docker exec -u git poc-gitea ...`
 #   si GITEA_TOKEN_FILE est absent ET que le conteneur poc-gitea existe.)
 set -uo pipefail
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 S="$REPO/scripts/provision-request.sh"
 TS="$(date +%s)"
@@ -61,8 +73,8 @@ run_guard(){
         REQ_APP="probe" REQ_ENV="dev" REQ_API="accounts-read" REQ_CLIENT_ID="probe" \
         REQ_CALLER="oig-provisioner" "$@" bash "$S" 2>&1)
   rc=$?
-  if [ "$rc" -eq 2 ] && printf '%s' "$out" | grep -q "$tag"; then
-    if printf '%s' "$out" | grep -q '\[1/5\]'; then
+  if [ "$rc" -eq 2 ] && printf '%s' "$out" | pipe_q "$tag"; then
+    if printf '%s' "$out" | pipe_q '\[1/5\]'; then
       ko "$label : refusé mais APRÈS le clone (réseau touché) — pas 'AVANT tout geste Git'"
     else
       ok "$label : refusé ($tag), AVANT tout appel réseau"
@@ -337,15 +349,15 @@ for pr in d:
   else
     MANI=$(raw_manifest "$BR" "$APP")
     CHECK=1
-    printf '%s' "$MANI" | grep -q 'team: "banking-demo"'                          || { ko "nominal : team absent du manifeste"; CHECK=0; }
+    printf '%s' "$MANI" | pipe_q 'team: "banking-demo"'                          || { ko "nominal : team absent du manifeste"; CHECK=0; }
     # Fix round 1 (revue, Critical) : enforce reste [] MÊME avec IP+cert fournis
     # — dériver enforce arme un piège cross-consommateur (README §enforce),
     # la décision d'opposer revient au MERGE, pas au formulaire. Contre-épreuve
     # DIRECTE : enforce=[] est le signal attendu ICI, pas une régression.
-    printf '%s' "$MANI" | grep -q '  enforce: \[\]'                               || { ko "nominal : enforce n'est plus []  — dérivation réintroduite (régression du fix round 1)"; CHECK=0; }
-    printf '%s' "$MANI" | grep -q 'cert_rotation: "overlap"'                       || { ko "nominal : cert_rotation absent/faux"; CHECK=0; }
-    printf '%s' "$MANI" | grep -q 'ip_allowlist: \["10.77.5.1-10.77.5.9"\]'        || { ko "nominal : ip_allowlist absent"; CHECK=0; }
-    printf '%s' "$MANI" | grep -q "public_cert_ref: \"clients/provisioned/certs/${APP}-dev.crt\"" || { ko "nominal : public_cert_ref absent/faux"; CHECK=0; }
+    printf '%s' "$MANI" | pipe_q '  enforce: \[\]'                               || { ko "nominal : enforce n'est plus []  — dérivation réintroduite (régression du fix round 1)"; CHECK=0; }
+    printf '%s' "$MANI" | pipe_q 'cert_rotation: "overlap"'                       || { ko "nominal : cert_rotation absent/faux"; CHECK=0; }
+    printf '%s' "$MANI" | pipe_q 'ip_allowlist: \["10.77.5.1-10.77.5.9"\]'        || { ko "nominal : ip_allowlist absent"; CHECK=0; }
+    printf '%s' "$MANI" | pipe_q "public_cert_ref: \"clients/provisioned/certs/${APP}-dev.crt\"" || { ko "nominal : public_cert_ref absent/faux"; CHECK=0; }
     [ "$CHECK" = 1 ] && ok "nominal enrichi : manifeste porte team/cert_rotation/ip_allowlist/public_cert_ref, enforce=[] intouché"
 
     CERTFILE=$(raw_cert "$BR" "${APP}-dev")
@@ -356,14 +368,14 @@ for pr in d:
     fi
 
     BODY=$(pr_body "$BR")
-    if printf '%s' "$BODY" | grep -q "banking-demo" && printf '%s' "$BODY" | grep -q "10.77.5.1-10.77.5.9"; then
+    if printf '%s' "$BODY" | pipe_q "banking-demo" && printf '%s' "$BODY" | pipe_q "10.77.5.1-10.77.5.9"; then
       ok "nominal enrichi : la PR mentionne team/IP pour le valideur"
     else
       ko "nominal enrichi : la PR ne mentionne pas les champs d'identité entrante"
     fi
     # Fix round 1 : l'avertissement des DEUX pièges doit être visible dans le
     # corps de la PR dès qu'IP ou cert est fourni (ici les deux le sont).
-    if printf '%s' "$BODY" | grep -qi "enforce" && printf '%s' "$BODY" | grep -qi "merge"; then
+    if printf '%s' "$BODY" | pipe_q -i "enforce" && printf '%s' "$BODY" | pipe_q -i "merge"; then
       ok "nominal enrichi : la PR porte l'avertissement enforce (identifiers posés, non opposés, décision au merge)"
     else
       ko "nominal enrichi : l'avertissement enforce est absent du corps de la PR"
@@ -377,7 +389,7 @@ for pr in d:
     PROVISION_PLAN_INLINE=false bash "$S" 2>&1)
   RCE=$?
   BADSHA=$(branch_sha "$BADBR")
-  if [ "$RCE" -eq 2 ] && printf '%s' "$OUTE" | grep -q "TEAM_NOT_DECLARED" && [ -z "$BADSHA" ]; then
+  if [ "$RCE" -eq 2 ] && printf '%s' "$OUTE" | pipe_q "TEAM_NOT_DECLARED" && [ -z "$BADSHA" ]; then
     ok "garde REQ_TEAM : équipe non déclarée refusée (TEAM_NOT_DECLARED), branche jamais créée sur Gitea"
   else
     ko "garde REQ_TEAM : attendu refus + branche absente — rc=$RCE sha='$BADSHA'"

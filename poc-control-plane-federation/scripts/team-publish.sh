@@ -56,6 +56,18 @@
 # ci-dessous NE BOUGE PAS le cwd ("scripts/.." s'annule).
 set -uo pipefail
 set +x   # jamais de trace : le token ne doit pas fuiter
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 cd "$(dirname "$0")/.." || exit 1
 # shellcheck source=scripts/lib/deploy-pin.sh
 # `set -e` n'est pas actif dans ce script : sans ce garde-fou explicite, un
@@ -175,17 +187,17 @@ gbase(){ git_base_avec_basic "$(git_base_basic_login)" FORGE_SECRET "$@"; }
 # d'atteignabilité, plus bas, décideraient de cette même valeur si elle était
 # bien formée.
 case "$WEBHOOK_REPO" in *[!A-Za-z0-9_./-]*) fail "WEBHOOK_REPO_INVALIDE : '${WEBHOOK_REPO}' — caractère hors classe [A-Za-z0-9_./-]";; esac
-printf '%s' "$WEBHOOK_REPO" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' \
+printf '%s' "$WEBHOOK_REPO" | pipe_q -E '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' \
   || fail "WEBHOOK_REPO_INVALIDE : '${WEBHOOK_REPO}' — attendu owner/repo"
 
 case "$MERGE_SHA" in *[!0-9a-f]*) fail "MERGE_SHA_INVALIDE : '${MERGE_SHA}' — caractère hors classe hexadécimale";; esac
-printf '%s' "$MERGE_SHA" | grep -Eq '^[0-9a-f]{40}$' \
+printf '%s' "$MERGE_SHA" | pipe_q -E '^[0-9a-f]{40}$' \
   || fail "MERGE_SHA_INVALIDE : '${MERGE_SHA}' — attendu 40 caractères hexadécimaux (SHA-1 git)"
 
 # Manqué au round précédent (revue) : PR_NUMBER sert de segment d'URL API
 # Gitea (réconciliation ci-dessous, commentaires) — même discipline.
 case "$PR_NUMBER" in *[!0-9]*) fail "PR_NUMBER_INVALIDE : '${PR_NUMBER}' — caractère hors classe numérique";; esac
-printf '%s' "$PR_NUMBER" | grep -Eq '^[1-9][0-9]*$' \
+printf '%s' "$PR_NUMBER" | pipe_q -E '^[1-9][0-9]*$' \
   || fail "PR_NUMBER_INVALIDE : '${PR_NUMBER}' — attendu un entier positif"
 
 # ── 1. branche gardée à api/*, sinon rien à faire ────────────────────────────
@@ -203,10 +215,10 @@ API_NAME="${REST%-*}"
 # (apis/<name>.publish.yml, plus bas) : un nom hors classe y serait une
 # évasion de chemin, pas une coquetterie de validation.
 case "$API_NAME" in *[!a-z0-9-]*) fail "API_NAME_INVALIDE : '${API_NAME}' (branche '${PR_BRANCH}') — attendu ^[a-z0-9][a-z0-9-]{1,30}\$";; esac
-printf '%s' "$API_NAME" | grep -Eq '^[a-z0-9][a-z0-9-]{1,30}$' \
+printf '%s' "$API_NAME" | pipe_q -E '^[a-z0-9][a-z0-9-]{1,30}$' \
   || fail "API_NAME_INVALIDE : '${API_NAME}' (branche '${PR_BRANCH}') — attendu ^[a-z0-9][a-z0-9-]{1,30}\$"
 case "$API_VERSION" in *[!0-9.]*) fail "API_VERSION_INVALIDE : '${API_VERSION}' (branche '${PR_BRANCH}') — attendu X.Y ou X.Y.Z";; esac
-printf '%s' "$API_VERSION" | grep -Eq '^[0-9]+\.[0-9]+(\.[0-9]+)?$' \
+printf '%s' "$API_VERSION" | pipe_q -E '^[0-9]+\.[0-9]+(\.[0-9]+)?$' \
   || fail "API_VERSION_INVALIDE : '${API_VERSION}' (branche '${PR_BRANCH}') — attendu X.Y ou X.Y.Z"
 
 # ── 1bis. LA BRANCHE DE BASE DU DÉPÔT D'ÉQUIPE (L3, 2026-09-10) ─────────────

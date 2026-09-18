@@ -35,6 +35,18 @@
 #   ./scripts/test-debug-knob-wiring.sh
 # shellcheck disable=SC2015,SC2016
 set -uo pipefail
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO" || exit 2
 PASS=0; FAIL=0
@@ -218,7 +230,7 @@ form_verdict(){ probe form "$1"; }
 decl_verdict(){
   local n; n=$(printf '%s\n' "$1" | grep -c '^DEBUG|')
   [ "$n" = 1 ] || { echo "KO: DEBUG déclaré ×$n"; return 0; }
-  printf '%s\n' "$1" | grep -qE '^DEBUG\|(booleanParam|Boolean)\|[^|]*\|false$' && echo "OK" || echo "KO: DEBUG n'est pas un booléen à défaut false ($(printf '%s\n' "$1" | grep '^DEBUG|'))"
+  printf '%s\n' "$1" | pipe_q -E '^DEBUG\|(booleanParam|Boolean)\|[^|]*\|false$' && echo "OK" || echo "KO: DEBUG n'est pas un booléen à défaut false ($(printf '%s\n' "$1" | grep '^DEBUG|'))"
 }
 
 echo "== 1. les huit formulaires : case, libellé, rang, miroir, pont, forme =="
@@ -265,8 +277,8 @@ CONNUES=$(awk '/^CONNUES="/{f=1;next} f&&/^"/{exit} f' "$GLOBALS" | tr '\n' ' ')
 case " $CONNUES " in *" STOA_DEBUG "*) ok "STOA_DEBUG dans CONNUES (--from-env la prend)";; *) ko "STOA_DEBUG absente de CONNUES";; esac
 OPT=$(grep -E '^OPTIONNELLES=' "$GLOBALS" | sed 's/^OPTIONNELLES="//;s/"$//')
 case " $OPT " in *" STOA_DEBUG "*) ok "STOA_DEBUG dans OPTIONNELLES (absente = état normal, la chaîne se tait)";; *) ko "STOA_DEBUG absente d'OPTIONNELLES";; esac
-awk '/^set -euo pipefail/{exit} {print}' "$GLOBALS" | grep -q 'STOA_DEBUG' && ok "l'en-tête documente STOA_DEBUG (comme GIT_BASE et WEBHOOK_KIND)" || ko "l'en-tête ne documente pas STOA_DEBUG"
-bash "$GLOBALS" --help 2>&1 | grep -q 'STOA_DEBUG' && ok "--help nomme STOA_DEBUG (le seul endroit qu'un intégrateur lit avant de poser)" || ko "--help ne nomme pas STOA_DEBUG"
+awk '/^set -euo pipefail/{exit} {print}' "$GLOBALS" | pipe_q 'STOA_DEBUG' && ok "l'en-tête documente STOA_DEBUG (comme GIT_BASE et WEBHOOK_KIND)" || ko "l'en-tête ne documente pas STOA_DEBUG"
+bash "$GLOBALS" --help 2>&1 | pipe_q 'STOA_DEBUG' && ok "--help nomme STOA_DEBUG (le seul endroit qu'un intégrateur lit avant de poser)" || ko "--help ne nomme pas STOA_DEBUG"
 
 echo
 echo "== 4. le moteur relaie -e stoa_debug depuis dbg_bool =="

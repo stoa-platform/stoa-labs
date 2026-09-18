@@ -38,6 +38,18 @@
 #   JENKINS_UI=http://localhost:18080 GITEA_URL=http://localhost:13000 bash scripts/test-a0-live.sh
 set -uo pipefail
 set +x
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO" || exit 1
 JENKINS_UI="${JENKINS_UI:?JENKINS_UI requis (ex. http://localhost:18080)}"
@@ -90,7 +102,7 @@ for b in d['builds']:
     [ -n "$n" ] && { printf '%s' "$n"; return 0; }; sleep 3; done; return 1
 }
 wait_comment(){ # $1=pr $2=motif $3=secondes
-  local i; for i in $(seq 1 "$(( $3 / 3 ))"); do pr_comments "$1" 2>/dev/null | grep -qF -- "$2" && return 0; sleep 3; done; return 1
+  local i; for i in $(seq 1 "$(( $3 / 3 ))"); do pr_comments "$1" 2>/dev/null | pipe_q -F -- "$2" && return 0; sleep 3; done; return 1
 }
 
 echo "== 0. préflights (fail-closed) =="
@@ -102,7 +114,7 @@ for F in ci/Jenkinsfile.provision-plan ci/Jenkinsfile.provisioning-request scrip
 done
 NPX=$(gapi "$GITEA_URL/api/v1/repos/$GIT_REPO/raw/main/$PFX/ci/jenkins/app-request.job.xml" | python3 -c "import sys,xml.etree.ElementTree as T; r=T.fromstring(sys.stdin.read()); print(sum(1 for e in r.iter() if e.tag.endswith('ParameterDefinition')))")
 [ "$NPX" = 0 ] || die "PREREQUIS : app-request.job.xml sur gitea main porte encore $NPX paramètre(s) — A0 non poussé"
-gapi "$GITEA_URL/api/v1/repos/$GIT_REPO/hooks" | jq_ 'print(any("stoa-provision-plan" in h["config"].get("url","") and h["active"] for h in d))' | grep -q True || die "PREREQUIS : hook Gitea stoa-provision-plan absent/inactif sur $GIT_REPO"
+gapi "$GITEA_URL/api/v1/repos/$GIT_REPO/hooks" | jq_ 'print(any("stoa-provision-plan" in h["config"].get("url","") and h["active"] for h in d))' | pipe_q True || die "PREREQUIS : hook Gitea stoa-provision-plan absent/inactif sur $GIT_REPO"
 # shellcheck source=scripts/lib/env-chain.sh
 . scripts/lib/env-chain.sh || die "PREREQUIS : env-chain.sh"
 CHAIN_NONPROD="$(env_chain_nonprod)" || die "PREREQUIS : env_chain_nonprod"

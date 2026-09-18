@@ -5,6 +5,18 @@
 #
 # shellcheck disable=SC2015
 set -uo pipefail
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 cd "$(dirname "$0")/.." || exit 1
 PASS=0; FAIL=0
 ok(){ PASS=$((PASS+1)); printf '  ✅ %s\n' "$*"; }
@@ -39,7 +51,7 @@ PY
   # dans son en-tête (AUTHORING LÉGITIME, étape 1) — un grep plein-texte les
   # y trouverait sans qu'aucune clé ne soit réellement posée.
   for cle in backend_alias cred_alias scope_mapping per_env; do
-    grep -vE '^\s*#' "$M" | grep -q "$cle" && ko "clé interdite présente : $cle (champ vide ≠ absence, T10)" || :
+    grep -vE '^\s*#' "$M" | pipe_q "$cle" && ko "clé interdite présente : $cle (champ vide ≠ absence, T10)" || :
   done
   ok "aucune clé optionnelle posée vide"
 else
@@ -50,7 +62,7 @@ echo "== 2. publish.yml absent ⇒ refus nommé =="
 mkdir -p "$TMP/vide/apis"
 OUT=$(render_promote_manifest "$TMP/vide" fantome gateways/templates/promote.yml.tmpl 2>&1) \
   && ko "rendu accepté sans publish.yml" \
-  || { echo "$OUT" | grep -q PUBLISH_MANIFEST_ABSENT && ok "PUBLISH_MANIFEST_ABSENT" || ko "refus sans nom ($OUT)"; }
+  || { echo "$OUT" | pipe_q PUBLISH_MANIFEST_ABSENT && ok "PUBLISH_MANIFEST_ABSENT" || ko "refus sans nom ($OUT)"; }
 
 echo "== 3. épinglage guid+sha : chirurgical, commentaires préservés =="
 M="$TMP/team/apis/demo-api.promote.yml"
@@ -107,7 +119,7 @@ PY
 OUT=$(pin_promote_manifest "$HF" "14c2529e-0000-4000-8000-00000000aaaa" \
   "4444444444444444444444444444444444444444444444444444444444444444" "2.4.0" 2>&1) \
   && ko "pin accepté malgré l'archive hors-forme (silencieux — le bug de la revue)" \
-  || { echo "$OUT" | grep -q REALIGNEMENT_NON_APPLIQUE && ok "REALIGNEMENT_NON_APPLIQUE" || ko "refus sans nom ($OUT)"; }
+  || { echo "$OUT" | pipe_q REALIGNEMENT_NON_APPLIQUE && ok "REALIGNEMENT_NON_APPLIQUE" || ko "refus sans nom ($OUT)"; }
 
 echo "== 7. manifest_pinned_digest : présent / absent / illisible =="
 [ "$(manifest_pinned_digest "$M")" = "$(printf '3%.0s' $(seq 64))" ] \
@@ -133,7 +145,7 @@ echo "== 10. request DRY_RUN : ARCHIVE_SHA256 vide ne bloque plus les gardes amo
 OUT=$(TEAM=banking-demo API_NAME=demo-api FROM_ENV=dev TO_ENV=rec \
       MESSAGE="épreuve 10" ARCHIVE_SHA256='' DRY_RUN=1 \
       bash scripts/api-promote-request.sh 2>&1)
-echo "$OUT" | grep -q "GARDES_OK" && echo "$OUT" | grep -q "DIGEST_DIFFERE" \
+echo "$OUT" | pipe_q "GARDES_OK" && echo "$OUT" | pipe_q "DIGEST_DIFFERE" \
   && ok "champ vide ⇒ DIGEST_DIFFERE + gardes vertes" \
   || ko "champ vide encore refusé en amont : $OUT"
 
@@ -149,7 +161,7 @@ OUT=$(TEAM=banking-demo API_NAME=demo-api FROM_ENV=dev TO_ENV=rec \
       MESSAGE="épreuve 11" ARCHIVE_SHA256=zz DRY_RUN=1 \
       bash scripts/api-promote-request.sh 2>&1) \
   && ko "sha 'zz' accepté" \
-  || { echo "$OUT" | grep -q DIGEST_MALFORMED && ok "DIGEST_MALFORMED" || ko "refus sans nom : $OUT"; }
+  || { echo "$OUT" | pipe_q DIGEST_MALFORMED && ok "DIGEST_MALFORMED" || ko "refus sans nom : $OUT"; }
 
 echo "== 12. export : les briques rendu→pin s'enchaînent sur fixture (sans réseau) =="
 mkdir -p "$TMP/team3/apis"
@@ -177,7 +189,7 @@ if [ -f "$XML" ]; then
   grep -q '<scriptPath>poc-control-plane-federation/ci/Jenkinsfile.api-promote-request</scriptPath>' "$XML" \
     && ok "scriptPath pointe le bon Jenkinsfile" || ko "scriptPath faux"
   grep -q "api-promote-request" scripts/setup-team-onboard-jobs.sh \
-    && grep -E '^JOBS=' scripts/setup-team-onboard-jobs.sh | grep -q api-promote-request \
+    && grep -E '^JOBS=' scripts/setup-team-onboard-jobs.sh | pipe_q api-promote-request \
     && ok "posé par setup-team-onboard-jobs.sh (liste JOBS)" || ko "absent de la liste JOBS"
 else
   ko "$XML absent — le job n'est toujours pas posable"

@@ -20,6 +20,18 @@
 #            Jenkins, dernière ligne d'un refus) : c'est le texte qui est le sujet.
 # shellcheck disable=SC2015,SC2115,SC2143
 set -uo pipefail
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 LIB="$REPO/scripts/lib/generate-choices.sh"
 SETUP="$REPO/scripts/setup-team-onboard-jobs.sh"
@@ -192,8 +204,8 @@ OUT=$(GIT_HOST="$GH" GIT_REPO=ci/stoa-labs GITEA_TOKEN=dummy \
   bash -c ". '$LIB'; generate_choices_teams dev") ; RC=$?
 [ "$RC" -eq 0 ] && ok "succès" || ko "échec (rc=$RC)"
 [ "$(printf '%s\n' "$OUT" | grep -c '<string>')" = "2" ] && ok "2 fragments <string>" || ko "nombre de fragments inattendu : $OUT"
-printf '%s\n' "$OUT" | grep -q '<string>banking-demo</string>' && ok "banking-demo présent" || ko "banking-demo absent"
-printf '%s\n' "$OUT" | grep -q '<string>payments-team</string>' && ok "payments-team présent" || ko "payments-team absent"
+printf '%s\n' "$OUT" | pipe_q '<string>banking-demo</string>' && ok "banking-demo présent" || ko "banking-demo absent"
+printf '%s\n' "$OUT" | pipe_q '<string>payments-team</string>' && ok "payments-team présent" || ko "payments-team absent"
 
 echo
 echo "== 2. gitea injoignable -> échec AVANT tout POST (au niveau pose complète) =="
@@ -600,7 +612,7 @@ grep -qF "dépôt d'équipe ibafraud/accounts-api illisible ($GH15/ibafraud/acco
 grep -qF "dépôt d'équipe fbi/accounts-api illisible ($GH15/fbi/accounts-api.git)" "$E15A" \
   && ok "idem pour le second dépôt (chaque dépôt a SA cause, pas seulement le dernier)" \
   || ko "URL absente pour fbi : $(grep -m1 'fbi' "$E15A")"
-grep -c 'BRANCHE_PAR_DEFAUT_INCONNUE' "$E15A" | grep -qx 2 \
+grep -c 'BRANCHE_PAR_DEFAUT_INCONNUE' "$E15A" | pipe_q -x 2 \
   && ok "et la cause NOMMÉE est la bonne : le dépôt n'annonce pas sa branche par défaut (jamais « main » deviné)" \
   || ko "cause de branche absente : $(grep -m1 'ibafraud' "$E15A")"
 CAUSES=$(grep -c "ignoré pour cette liste — .\{10,\}" "$E15A")

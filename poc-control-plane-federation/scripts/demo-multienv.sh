@@ -15,6 +15,18 @@
 #   scripts/setup-wm-admin-proxy.sh        (pose + prouve les 3 proxies)
 #   console-light/scripts/setup-identity.sh (alice/bob/dave + rôles governance)
 set -uo pipefail
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
@@ -118,13 +130,13 @@ PCID=$(curl -s "${AH[@]}" "$API/clients?clientId=stoa-portal" | python3 -c 'impo
 if [ -n "$PCID" ]; then
   HAVE=$(curl -s "${AH[@]}" "$API/clients/$PCID/protocol-mappers/models" | python3 -c 'import sys,json
 print(" ".join(m["name"] for m in json.load(sys.stdin)))')
-  echo "$HAVE" | grep -q 'demo-tenant-attr' || curl -s "${AH[@]}" -H 'Content-Type: application/json' \
+  echo "$HAVE" | pipe_q 'demo-tenant-attr' || curl -s "${AH[@]}" -H 'Content-Type: application/json' \
     -X POST "$API/clients/$PCID/protocol-mappers/models" -d '{
       "name":"demo-tenant-attr","protocol":"openid-connect",
       "protocolMapper":"oidc-usermodel-attribute-mapper",
       "config":{"user.attribute":"tenant","claim.name":"tenant","jsonType.label":"String",
                 "access.token.claim":"true","id.token.claim":"true"}}' -o /dev/null
-  echo "$HAVE" | grep -q 'demo-groups' || curl -s "${AH[@]}" -H 'Content-Type: application/json' \
+  echo "$HAVE" | pipe_q 'demo-groups' || curl -s "${AH[@]}" -H 'Content-Type: application/json' \
     -X POST "$API/clients/$PCID/protocol-mappers/models" -d '{
       "name":"demo-groups","protocol":"openid-connect",
       "protocolMapper":"oidc-group-membership-mapper",
@@ -158,7 +170,7 @@ echo "   est celui de ci/README.md ; le pipeline exécute EXACTEMENT cette boucl
 applyenv dev && ok "① dev convergé (via proxy wm-admin-dev)" || bad "① apply dev KO"
 applyenv rec && ok "① rec convergé (via proxy wm-admin-rec)" || bad "① apply rec KO"
 OUT="$(applyenv int 2>&1)"; echo "$OUT" | sed 's/^/    /'
-if echo "$OUT" | grep -qi "skip\|no enabled deploy"; then
+if echo "$OUT" | pipe_q -i "skip\|no enabled deploy"; then
   ok "① int SKIPPÉ (pas de deploy.int.yaml mergé — narration, pas d'erreur)"
 else bad "① int aurait dû être skippé (gate Git)"; fi
 
@@ -182,7 +194,7 @@ PRODID="$(echo "$B" | pid)"
 gov POST "/tenants/$TENANT/promotions/$PRODID/approve" "$TOK_BOB" '{}' >/dev/null
 B="$(cat /tmp/dm.json)"
 [ "$CODE" = 200 ] && ok "③ approuvée par bob ≠ alice (4-yeux) — ITSM vérifié approved" || bad "③ approve prod KO (HTTP $CODE): $B"
-if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^poc-jenkins$'; then
+if docker ps --format '{{.Names}}' 2>/dev/null | pipe_q '^poc-jenkins$'; then
   echo "  → en réel : job ci/Jenkinsfile.prod (Build with Parameters, PROMOTION_ID=$PRODID)"
   echo "    qui REJOUE ce gate depuis Git + labctl dispatch-gate avant tout dispatch."
 fi
@@ -194,12 +206,12 @@ curl -s -X PUT "$ITSM/changes/CHG-0001/status" -H 'Content-Type: application/jso
   -d '{"status":"cancelled"}' >/dev/null
 OUT="$(applyenv prod 2>&1)"; RC=$?
 echo "$OUT" | grep -i itsm | sed 's/^/    /'
-if [ "$RC" -ne 0 ] && echo "$OUT" | grep -q 'ITSM_NOT_APPROVED'; then
+if [ "$RC" -ne 0 ] && echo "$OUT" | pipe_q 'ITSM_NOT_APPROVED'; then
   ok "③b change révoqué au dispatch → apply prod BLOQUÉ (409 ITSM_NOT_APPROVED rejoué)"
 else bad "③b apply prod aurait dû être bloqué au dispatch (rc=$RC)"; fi
 # Sabotage-test du fail-closed : ITSM injoignable au dispatch → refus 503 (pas un pass muet)
 OUT="$(DISPATCH_ITSM=http://127.0.0.1:1 applyenv prod 2>&1)"; RC=$?
-if [ "$RC" -ne 0 ] && echo "$OUT" | grep -q 'ITSM_UNAVAILABLE'; then
+if [ "$RC" -ne 0 ] && echo "$OUT" | pipe_q 'ITSM_UNAVAILABLE'; then
   ok "③b ITSM injoignable au dispatch → 503 ITSM_UNAVAILABLE (fail-closed, pas de pass muet)"
 else bad "③b ITSM injoignable aurait dû refuser 503 (rc=$RC)"; fi
 # Ré-approbation → le dispatch repasse (preuve que le gate n'est pas juste 'toujours non').
@@ -246,7 +258,7 @@ B="$(cat /tmp/dm.json)"
 if [ "$CODE" = 200 ] || [ "$CODE" = 201 ]; then
   RV="$(python3 -c "import yaml,sys;print(yaml.safe_load(open('$REPO/tenants/$TENANT/apis/$SLUG/deploy.prod.yaml'))['version'])" 2>/dev/null \
      || grep -o 'version: *[0-9.]*' "$REPO/tenants/$TENANT/apis/$SLUG/deploy.prod.yaml" | head -1)"
-  echo "$RV" | grep -q '1\.0\.0' && ok "④ rollback accepté → deploy.prod.yaml restauré v1.0.0 (revert commité, audité)" \
+  echo "$RV" | pipe_q '1\.0\.0' && ok "④ rollback accepté → deploy.prod.yaml restauré v1.0.0 (revert commité, audité)" \
     || bad "④ rollback accepté mais version restaurée inattendue: $RV"
 else bad "④ rollback KO (HTTP $CODE): $B"; fi
 applyenv prod && ok "④ prod re-convergée sur l'état Git reverté" || bad "④ re-apply prod KO"
@@ -269,7 +281,7 @@ gov POST "/tenants/$TENANT/promotions/${SAID:-pr_missing}/approve" "$TOK_DAVE" '
 B="$(cat /tmp/dm.json)"
 [ "$CODE" = 403 ] && ok "self-approval prod → 403 SELF_APPROVAL_BLOCKED" || bad "self-approval → HTTP $CODE (attendu 403): $B"
 # 3. Jenkins ne résout JAMAIS un mock d'env bas (réseau nonprod interne)
-if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^poc-jenkins$'; then
+if docker ps --format '{{.Names}}' 2>/dev/null | pipe_q '^poc-jenkins$'; then
   if docker exec poc-jenkins getent hosts wm-mock-dev >/dev/null 2>&1; then
     bad "poc-jenkins résout wm-mock-dev (le cloisonnement réseau ne tient pas)"
   else

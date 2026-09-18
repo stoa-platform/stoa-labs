@@ -42,6 +42,18 @@
 # shellcheck disable=SC2016  # le python et l'askpass sont en quotes simples à dessein
 set -uo pipefail
 set +x
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 cd "$(dirname "$0")/.." || exit 1
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=scripts/lib/env-chain.sh
@@ -158,17 +170,17 @@ shown(){ printf '%q' "$(printf '%s' "${1:-}" | head -c 80)"; }
 
 # ── 1. FORME, avant tout réseau ──────────────────────────────────────────────
 etape forme
-printf '%s' "$REQ_APP" | grep -Eq '^[a-z0-9][a-z0-9-]*$' \
+printf '%s' "$REQ_APP" | pipe_q -E '^[a-z0-9][a-z0-9-]*$' \
   || refus APP_INVALIDE "REQ_APP hors de ^[a-z0-9][a-z0-9-]*\$ (valeur : $(shown "$REQ_APP"))"
-printf '%s' "$REQ_ENV" | grep -Eq '^[a-z0-9]+$' \
+printf '%s' "$REQ_ENV" | pipe_q -E '^[a-z0-9]+$' \
   || refus ENV_INVALIDE "REQ_ENV hors de ^[a-z0-9]+\$ (valeur : $(shown "$REQ_ENV"))"
 REQ_REASON="$REQ_REASON" python3 -c 'import os,re,sys; r=os.environ["REQ_REASON"]; sys.exit(0 if 1 <= len(r) <= 300 and not re.search(r"[\r\n`<>#@\[\]\\]", r) else 1)' \
   || refus MOTIF_INVALIDE "REQ_REASON : 1 à 300 caractères, sans retour-ligne ni \` < > # @ [ ] \\ (il entre dans un commit et dans le corps markdown de la PR)"
 if [ -n "$REQ_CHANGE_REF" ]; then
-  printf '%s' "$REQ_CHANGE_REF" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]*$' \
+  printf '%s' "$REQ_CHANGE_REF" | pipe_q -E '^[A-Za-z0-9][A-Za-z0-9._-]*$' \
     || refus REF_INVALIDE "REQ_CHANGE_REF hors de ^[A-Za-z0-9][A-Za-z0-9._-]*\$ (valeur : $(shown "$REQ_CHANGE_REF")) — il entre dans un flow mapping YAML"
 fi
-printf '%s' "$REQ_CALLER" | grep -Eq '^[A-Za-z0-9._:@-]+$' \
+printf '%s' "$REQ_CALLER" | pipe_q -E '^[A-Za-z0-9._:@-]+$' \
   || refus CALLER_INVALIDE "REQ_CALLER hors de ^[A-Za-z0-9._:@-]+\$ (valeur : $(shown "$REQ_CALLER"))"
 # Les chemins tels que CE script les compose (préfixe compris) et la branche :
 # c'est l'écart entre ce qu'il lit et ce que la forge tient qu'on diagnostique.
@@ -517,7 +529,7 @@ REPLI_DU_REPLI=0
 # Le `2>/dev/null` reste : ${SHA_N}^2 est une ref FACULTATIVE (absente d'un
 # squash), son absence est le cas normal — le repli sur ${SHA_N} est la décision.
 N_MSG=$(g log -1 --format=%B "${SHA_N}^2" 2>/dev/null || g log -1 --format=%B "${SHA_N}")
-printf '%s' "$N_MSG" | grep -q '^Repli-Vers: ' && REPLI_DU_REPLI=1
+printf '%s' "$N_MSG" | pipe_q '^Repli-Vers: ' && REPLI_DU_REPLI=1
 [ "$REPLI_DU_REPLI" = 0 ] || echo "REPLI_DU_REPLI : restaure #${NUM_N1}, l'état d'avant le repli #${NUM_N} ; si l'apply de #${NUM_N} a été REFUSÉ, le remède est le rejeu du webhook de #${NUM_N} (A2), pas ce repli"
 {
   printf 'provision(%s): repli de %s vers l'"'"'état de la PR #%s (%s)\n\n%s\n\n' "$REQ_ENV" "$REQ_APP" "$NUM_N1" "$(printf '%s' "$SHA_N1" | cut -c1-7)" "$REQ_REASON"

@@ -51,6 +51,18 @@
 #     bash scripts/test-provision-apply-a2-live.sh
 set -uo pipefail
 set +x
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO" || exit 1
 
@@ -174,15 +186,15 @@ elif docker inspect "$GITEA_CONTAINER" >/dev/null 2>&1; then
 fi
 [ -n "$CI_TOKEN" ] || die "LAB_ABSENT : aucun token Gitea ci (GITEA_TOKEN_FILE ou conteneur $GITEA_CONTAINER)"
 printf 'Authorization: token %s\n' "$CI_TOKEN" > "$TMP/ci.hdr"; chmod 600 "$TMP/ci.hdr"
-gapi -o /dev/null -w '%{http_code}' "$API/repos/$GIT_REPO" | grep -q '^200$' || die "LAB_ABSENT : $GIT_REPO illisible avec le token ci"
+gapi -o /dev/null -w '%{http_code}' "$API/repos/$GIT_REPO" | pipe_q '^200$' || die "LAB_ABSENT : $GIT_REPO illisible avec le token ci"
 ok "0.2 token ci opérationnel sur $GIT_REPO"
 
 # les jobs, tels que posés
 CFG=$(curl -sf "$JENKINS_UI/job/provision-apply/config.xml") || die "LAB_ABSENT : job provision-apply absent"
-printf '%s' "$CFG" | grep -q 'CpsScmFlowDefinition' && printf '%s' "$CFG" | grep -q 'ci/Jenkinsfile.provision-apply' \
+printf '%s' "$CFG" | pipe_q 'CpsScmFlowDefinition' && printf '%s' "$CFG" | pipe_q 'ci/Jenkinsfile.provision-apply' \
   && ok "0.3 provision-apply est posé from SCM sur ci/Jenkinsfile.provision-apply" \
   || die "PREREQUIS : provision-apply n'est pas la coquille from SCM d'A2 — jouer JOBS=provision-apply scripts/setup-provision-jobs.sh"
-printf '%s' "$CFG" | grep -q '<key>MERGE_SHA</key>' && ok "0.3b son déclencheur capte MERGE_SHA" || die "PREREQUIS : MERGE_SHA absent du déclencheur posé"
+printf '%s' "$CFG" | pipe_q '<key>MERGE_SHA</key>' && ok "0.3b son déclencheur capte MERGE_SHA" || die "PREREQUIS : MERGE_SHA absent du déclencheur posé"
 PARAMS=$(curl -sf "$JENKINS_UI/job/selfservice-app-deploy/api/json?tree=property%5BparameterDefinitions%5Bname%5D%5D" | python3 -c 'import json,sys
 d=json.load(sys.stdin); print(" ".join(p["name"] for pr in d.get("property",[]) for p in (pr.get("parameterDefinitions") or [])))')
 for p in MERGE_SHA ADMIN_VIA ENVIRONMENT MANIFEST VAULT_USER VAULT_USER_PASSWORD; do
@@ -283,7 +295,7 @@ while [ "$(date +%s)" -lt "$DL" ]; do MERGEABLE=$(pr_field "$PR_P" ".get('mergea
 HC=$(aapi -X POST -d '{"Do":"merge"}' -o "$TMP/merge.out" -w '%{http_code}' "$API/repos/$GIT_REPO/pulls/$PR_P/merge")
 [ "$HC" = 200 ] || die "PREREQUIS : merge par alice refusé (HTTP $HC) : $(head -c 300 "$TMP/merge.out")"
 MERGE_SHA=$(pr_field "$PR_P" "['merge_commit_sha']"); MERGED_BY=$(pr_field "$PR_P" "['merged_by']['login']")
-[ "$MERGED_BY" = alice ] && printf '%s' "$MERGE_SHA" | grep -Eq '^[0-9a-f]{40}$' \
+[ "$MERGED_BY" = alice ] && printf '%s' "$MERGE_SHA" | pipe_q -E '^[0-9a-f]{40}$' \
   && ok "1.2 PR #$PR_P mergée par alice — MERGE_SHA=$MERGE_SHA" || die "PREREQUIS : merge incohérent (merged_by=$MERGED_BY sha=$MERGE_SHA)"
 
 ST=$(wait_until 240 provision-apply "$N_PA" PAUSED_PENDING_INPUT); RCW=$?
@@ -342,19 +354,19 @@ if [ -n "$S_NUM" ]; then
 fi
 # ── la PR comme tableau de bord ──
 CMTS=$(pr_comments "$PR_P")
-printf '%s' "$CMTS" | grep -q 'Apply nominatif RÉUSSI' && ok "1.11 PR #$PR_P : « Apply nominatif RÉUSSI »" || ko "1.11 verdict absent du commentaire"
-printf '%s' "$CMTS" | grep -q "référence appliquée (SHA de merge) : \`$MERGE_SHA\`" && ok "1.11b la PR porte le SHA appliqué = MERGE_SHA" || ko "1.11b SHA absent ou divergent dans la PR"
-printf '%s' "$CMTS" | grep -q "digest du manifeste effectif \`per_env.rec\` à ce SHA : \`$D_MERGED\`" && ok "1.11c la PR porte le digest du manifeste effectif MERGÉ" || ko "1.11c digest absent ou divergent"
-printf '%s' "$CMTS" | grep -q "$D_HEAD" && ko "1.11d le digest de HEAD apparaît dans la PR (l'apply a projeté HEAD ?)" || ok "1.11d le digest de HEAD n'apparaît nulle part dans la PR"
-printf '%s' "$CMTS" | grep -q 'appliqué sous l'"'"'identité de : \*\*alice\*\*' && ok "1.11e identité nominative alice sur la PR" || ko "1.11e identité absente"
-printf '%s' "$CMTS" | grep -q 'provision-apply (statut build) : build termine sans erreur' && ok "1.11f statut build (post) posé sous son marqueur distinct" || ko "1.11f statut build absent"
+printf '%s' "$CMTS" | pipe_q 'Apply nominatif RÉUSSI' && ok "1.11 PR #$PR_P : « Apply nominatif RÉUSSI »" || ko "1.11 verdict absent du commentaire"
+printf '%s' "$CMTS" | pipe_q "référence appliquée (SHA de merge) : \`$MERGE_SHA\`" && ok "1.11b la PR porte le SHA appliqué = MERGE_SHA" || ko "1.11b SHA absent ou divergent dans la PR"
+printf '%s' "$CMTS" | pipe_q "digest du manifeste effectif \`per_env.rec\` à ce SHA : \`$D_MERGED\`" && ok "1.11c la PR porte le digest du manifeste effectif MERGÉ" || ko "1.11c digest absent ou divergent"
+printf '%s' "$CMTS" | pipe_q "$D_HEAD" && ko "1.11d le digest de HEAD apparaît dans la PR (l'apply a projeté HEAD ?)" || ok "1.11d le digest de HEAD n'apparaît nulle part dans la PR"
+printf '%s' "$CMTS" | pipe_q 'appliqué sous l'"'"'identité de : \*\*alice\*\*' && ok "1.11e identité nominative alice sur la PR" || ko "1.11e identité absente"
+printf '%s' "$CMTS" | pipe_q 'provision-apply (statut build) : build termine sans erreur' && ok "1.11f statut build (post) posé sous son marqueur distinct" || ko "1.11f statut build absent"
 # ── L'ÉTAT DE LA GATEWAY : ce qui tourne en rec ──
 APPJ=$(gw_app "$APP_P")
 APP_P_ID=$(printf '%s' "$APPJ" | jq_ "print(d.get('id',''))" 2>/dev/null || true)
 [ -n "$APP_P_ID" ] && ok "1.12 application ${APP_P} présente sur la gateway (id $APP_P_ID)" || ko "1.12 application ${APP_P} absente de la gateway"
 IPS=$(gw_app_ip "$APPJ")
 [ "$IPS" = "10.42.0.1-10.42.0.1" ] && ok "1.13 PORTE A2 : identifier ipAddressRange = 10.42.0.1-10.42.0.1 — l'IP du SHA MERGÉ, pas celle de HEAD (10.42.0.2)" || ko "1.13 identifier IP inattendu : '$IPS' (attendu 10.42.0.1-10.42.0.1)"
-printf '%s' "$APPJ" | grep -q "${APP_P}-rec" && ok "1.13b claim azp = ${APP_P}-rec (identité du palier rec)" || ko "1.13b claim du palier absente"
+printf '%s' "$APPJ" | pipe_q "${APP_P}-rec" && ok "1.13b claim azp = ${APP_P}-rec (identité du palier rec)" || ko "1.13b claim du palier absente"
 
 echo
 echo "═══ 2. CONTRE-ÉPREUVE — webhook forgé sur une PR JAMAIS mergée ⇒ PAYLOAD_PERIME, gateway inchangée ═══"
@@ -406,10 +418,10 @@ grep -q 'aval selfservice-app-deploy #' "$TMP/pa2.console" && ko "2.6 un build a
 [ "$(jnext selfservice-app-deploy)" = "$N_SS2" ] && ok "2.7 nextBuildNumber de selfservice-app-deploy inchangé ($N_SS2) : le moteur n'a JAMAIS été invoqué" || ko "2.7 selfservice-app-deploy a tourné (next $N_SS2 → $(jnext selfservice-app-deploy))"
 [ -z "$(gw_app "$APP_Q")" ] && ok "2.8 aucune application ${APP_Q} sur la gateway (gateway inchangée)" || ko "2.8 application ${APP_Q} PRÉSENTE sur la gateway"
 CMTS=$(pr_comments "$PR_Q")
-printf '%s' "$CMTS" | grep -q 'Apply REFUSÉ avant la pause\*\* — `PAYLOAD_PERIME`' && ok "2.9 PR #$PR_Q commentée « REFUSÉ avant la pause — PAYLOAD_PERIME »" || ko "2.9 commentaire de refus absent"
-printf '%s' "$CMTS" | grep -q "CE webhook n'a rien appliqué" && ok "2.9b « CE webhook n'a rien appliqué »" || ko "2.9b conséquence absente"
-printf '%s' "$CMTS" | grep -q '<!-- provision-apply-refus -->' && ok "2.9c le refus est sous le marqueur provision-apply-refus" || ko "2.9c marqueur du refus absent"
-printf '%s' "$CMTS" | grep -q 'provision-apply (statut build) : le build a echoue' && ok "2.9d statut build (post) : échec, sous son marqueur (la forge a confirmé une PR provision/*)" || ko "2.9d statut build absent"
+printf '%s' "$CMTS" | pipe_q 'Apply REFUSÉ avant la pause\*\* — `PAYLOAD_PERIME`' && ok "2.9 PR #$PR_Q commentée « REFUSÉ avant la pause — PAYLOAD_PERIME »" || ko "2.9 commentaire de refus absent"
+printf '%s' "$CMTS" | pipe_q "CE webhook n'a rien appliqué" && ok "2.9b « CE webhook n'a rien appliqué »" || ko "2.9b conséquence absente"
+printf '%s' "$CMTS" | pipe_q '<!-- provision-apply-refus -->' && ok "2.9c le refus est sous le marqueur provision-apply-refus" || ko "2.9c marqueur du refus absent"
+printf '%s' "$CMTS" | pipe_q 'provision-apply (statut build) : le build a echoue' && ok "2.9d statut build (post) : échec, sous son marqueur (la forge a confirmé une PR provision/*)" || ko "2.9d statut build absent"
 
 echo
 echo "═══ 3. CONTRE-ÉPREUVE 2 — rejeu du webhook RÉEL de la porte : main a dépassé ce palier ⇒ PALIER_SUPPLANTE ═══"
@@ -435,8 +447,8 @@ grep -q 'REFUS: PALIER_SUPPLANTE' "$TMP/pa3.console" && ok "3.3 REFUS: PALIER_SU
 [ "$(jnext selfservice-app-deploy)" = "$N_SS3" ] && ok "3.4 aucun build aval : le moteur n'a pas été invoqué" || ko "3.4 selfservice-app-deploy a tourné"
 APPJ3=$(gw_app "$APP_P"); [ "$(gw_app_ip "$APPJ3")" = "10.42.0.1-10.42.0.1" ] && ok "3.5 gateway inchangée : ${APP_P} porte toujours 10.42.0.1 (le rejeu n'a rien re-projeté)" || ko "3.5 état gateway modifié : $(gw_app_ip "$APPJ3")"
 CMTS=$(pr_comments "$PR_P")
-printf '%s' "$CMTS" | grep -q 'Apply REFUSÉ avant la pause\*\* — `PALIER_SUPPLANTE`' && ok "3.6 PR #$PR_P : refus PALIER_SUPPLANTE commenté (marqueur refus)" || ko "3.6 commentaire PALIER_SUPPLANTE absent"
-printf '%s' "$CMTS" | grep -q "référence appliquée (SHA de merge) : \`$MERGE_SHA\`" && printf '%s' "$CMTS" | grep -q 'Apply nominatif RÉUSSI' \
+printf '%s' "$CMTS" | pipe_q 'Apply REFUSÉ avant la pause\*\* — `PALIER_SUPPLANTE`' && ok "3.6 PR #$PR_P : refus PALIER_SUPPLANTE commenté (marqueur refus)" || ko "3.6 commentaire PALIER_SUPPLANTE absent"
+printf '%s' "$CMTS" | pipe_q "référence appliquée (SHA de merge) : \`$MERGE_SHA\`" && printf '%s' "$CMTS" | pipe_q 'Apply nominatif RÉUSSI' \
   && ok "3.7 le tableau de bord de l'apply RÉEL (✅ SHA + digest) est INTACT : le refus est un commentaire distinct" || ko "3.7 le ✅ de l'apply réel a été altéré par le rejeu"
 
 echo

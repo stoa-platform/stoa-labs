@@ -7,6 +7,18 @@
 # 06-sso-oidc-dashboards.DEFERRED.md).
 set -euo pipefail
 
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
+
 OS_URL="${OS_URL:-https://localhost:9201}"
 # OS_AUTH dérive de OPENSEARCH_PASSWORD — variable canonique unique (voir
 # .env.example) : un seul endroit à renseigner, aucune divergence possible
@@ -49,7 +61,7 @@ echo "[1/7] index template stoa-txn (data_stream enabled)"
 
 echo "[2/7] ISM policy stoa-txn-retention (create-or-update)"
 EXISTING="$("${CURL[@]}" "$OS_URL/_plugins/_ism/policies/stoa-txn-retention")"
-if echo "$EXISTING" | grep -q '"_seq_no"'; then
+if echo "$EXISTING" | pipe_q '"_seq_no"'; then
   SEQ="$(echo "$EXISTING" | python3 -c 'import sys,json;print(json.load(sys.stdin)["_seq_no"])')"
   TERM="$(echo "$EXISTING" | python3 -c 'import sys,json;print(json.load(sys.stdin)["_primary_term"])')"
   "${CURL[@]}" -X PUT "$OS_URL/_plugins/_ism/policies/stoa-txn-retention?if_seq_no=$SEQ&if_primary_term=$TERM" \

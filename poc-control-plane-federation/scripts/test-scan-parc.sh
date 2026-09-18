@@ -2,6 +2,18 @@
 # test-scan-parc.sh — preuve X/X du scan de parc. TOUT EN LOCAL : le « wM » est
 # un faux serveur HTTP python qui sert les ENVELOPPES réelles de la 10.15.
 set -uo pipefail
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 TMP="$(mktemp -d /tmp/scanparc.XXXXXX)"
 PORT="${FAKE_WM_PORT:-18620}"
@@ -219,7 +231,7 @@ APIM_BASE="$BASE" bash -c '. "'"$LIBC"'" && wm_preflight' >/dev/null 2>"$TMP/pf.
 # 1d. le préflight ne vise PAS /health (WM_PREFLIGHT_URL n'est posée QUE par
 # wm_preflight — il faut donc l'appeler avant de la lire, sinon elle est vide)
 APIM_BASE="$BASE" bash -c '. "'"$LIBC"'" && wm_preflight >/dev/null 2>&1; printf "%s\n" "$WM_PREFLIGHT_URL"' 2>/dev/null \
-  | grep -q '/apis$' && ok "la sonde par défaut est <BASE>/apis, jamais /health" \
+  | pipe_q '/apis$' && ok "la sonde par défaut est <BASE>/apis, jamais /health" \
   || ko "la sonde par défaut n'est pas <BASE>/apis"
 
 # 1e. APIM_PREFLIGHT=off désactive
@@ -250,7 +262,7 @@ grep -q 'HTTP 000 (attendus' "$TMP/pf3.err" \
 
 # 1f. les deux causes d'un 401 sont distinguées
 printf '{"error":"User is not a member of any administrator group"}' > "$TMP/401.json"
-bash -c '. "'"$LIBC"'" && wm_diag_401 "'"$TMP"'/401.json"' 2>&1 | grep -qi "droits de lecture" \
+bash -c '. "'"$LIBC"'" && wm_diag_401 "'"$TMP"'/401.json"' 2>&1 | pipe_q -i "droits de lecture" \
   && ok "401 d'AUTORISATION : le diagnostic demande les droits de lecture, pas un mot de passe" \
   || ko "le diagnostic ne distingue pas les deux causes d'un 401"
 

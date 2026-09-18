@@ -29,6 +29,18 @@
 # compteur, il n'échoue pas — le `ko` ne peut pas courir derrière un `ok`.
 # shellcheck disable=SC2015
 set -uo pipefail
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO" || exit 1
 LIB="$REPO/scripts/lib/app-manifest.sh"
@@ -98,7 +110,7 @@ type app_manifest_digest_env >/dev/null 2>&1 \
 write_idp "$TMP/a1.yml" appa '    dev: { auth: { claim: { value: "appa-dev" } }, ip_allowlist: ["10.0.0.1"] }
     rec: { auth: { claim: { value: "appa-rec" } }, ip_allowlist: ["10.42.0.1"] }'
 D_REC=$(app_manifest_digest_env "$TMP/a1.yml" rec 2>"$TMP/a1.err"); RC=$?
-if [ "$RC" -eq 0 ] && printf '%s' "$D_REC" | grep -qE '^sha256:[0-9a-f]{64}$'; then
+if [ "$RC" -eq 0 ] && printf '%s' "$D_REC" | pipe_q -E '^sha256:[0-9a-f]{64}$'; then
   ok "A.1 digest de per_env.rec = sha256:<64 hex> (rc 0)"
 else
   ko "A.1 digest rec : rc=$RC out='$D_REC' err=$(cat "$TMP/a1.err")"
@@ -178,23 +190,23 @@ D_REC5C=$(app_manifest_digest_env "$TMP/a5c.yml" rec 2>/dev/null)
 
 # Refus nommés.
 OUT=$(app_manifest_digest_env "$TMP/a1.yml" int 2>&1); RC=$?
-[ "$RC" -eq 2 ] && printf '%s' "$OUT" | grep -q 'PALIER_ABSENT' \
+[ "$RC" -eq 2 ] && printf '%s' "$OUT" | pipe_q 'PALIER_ABSENT' \
   && ok "A.6 palier non déclaré (int) ⇒ rc 2 + PALIER_ABSENT" \
   || ko "A.6 palier absent : rc=$RC — $OUT"
-printf '%s' "$OUT" | grep -q 'dev, rec' \
+printf '%s' "$OUT" | pipe_q 'dev, rec' \
   && ok "A.6b le refus nomme les paliers déclarés (dev, rec)" \
   || ko "A.6b le refus ne dit pas quels paliers existent : $OUT"
 write_idp "$TMP/a7.yml" appa ''
 OUT=$(app_manifest_digest_env "$TMP/a7.yml" rec 2>&1); RC=$?
-[ "$RC" -eq 2 ] && printf '%s' "$OUT" | grep -q 'PALIER_ABSENT' \
+[ "$RC" -eq 2 ] && printf '%s' "$OUT" | pipe_q 'PALIER_ABSENT' \
   && ok "A.7 per_env vide ⇒ PALIER_ABSENT" \
   || ko "A.7 per_env vide : rc=$RC — $OUT"
 OUT=$(app_manifest_digest_env "$TMP/a1.yml" 'rec;rm' 2>&1); RC=$?
-[ "$RC" -eq 2 ] && printf '%s' "$OUT" | grep -q 'PALIER_INVALIDE' \
+[ "$RC" -eq 2 ] && printf '%s' "$OUT" | pipe_q 'PALIER_INVALIDE' \
   && ok "A.8 clé de palier hors classe ⇒ PALIER_INVALIDE (avant toute lecture)" \
   || ko "A.8 palier hors classe : rc=$RC — $OUT"
 OUT=$(app_manifest_digest_env "$TMP/absent.yml" rec 2>&1); RC=$?
-[ "$RC" -eq 2 ] && printf '%s' "$OUT" | grep -q 'MANIFESTE_INVALIDE' \
+[ "$RC" -eq 2 ] && printf '%s' "$OUT" | pipe_q 'MANIFESTE_INVALIDE' \
   && ok "A.9 fichier absent ⇒ MANIFESTE_INVALIDE" \
   || ko "A.9 fichier absent : rc=$RC — $OUT"
 # Forme d'avant A1 : la lecture refuse déjà (MANIFESTE_LEGACY) — le digest ne
@@ -213,13 +225,13 @@ apim_ss_app:
     dev: { ip_allowlist: ["10.0.0.1"] }
 YAML
 OUT=$(app_manifest_digest_env "$TMP/a10.yml" dev 2>&1); RC=$?
-[ "$RC" -eq 2 ] && printf '%s' "$OUT" | grep -q 'MANIFESTE_LEGACY' \
+[ "$RC" -eq 2 ] && printf '%s' "$OUT" | pipe_q 'MANIFESTE_LEGACY' \
   && ok "A.10 manifeste d'avant A1 ⇒ MANIFESTE_LEGACY (même lecture que le reste de la lib)" \
   || ko "A.10 legacy : rc=$RC — $OUT"
 write_internal "$TMP/a11.yml" appi '    dev: { auth: { vault_sub: "deploy/banking-demo/apps/appi/dev/oauth-client" } }
     rec: { auth: { vault_sub: "deploy/banking-demo/apps/appi/rec/oauth-client" }, ip_allowlist: ["10.42.0.1"] }'
 D_I=$(app_manifest_digest_env "$TMP/a11.yml" rec 2>"$TMP/a11.err"); RC=$?
-[ "$RC" -eq 0 ] && printf '%s' "$D_I" | grep -qE '^sha256:[0-9a-f]{64}$' \
+[ "$RC" -eq 0 ] && printf '%s' "$D_I" | pipe_q -E '^sha256:[0-9a-f]{64}$' \
   && ok "A.11 mode internal : digest rendu (rc 0)" \
   || ko "A.11 internal : rc=$RC err=$(cat "$TMP/a11.err")"
 # Le digest ne doit rien écrire sur stdout d'autre que lui-même (l'appelant le
@@ -392,7 +404,7 @@ refus_attendu(){
   if [ "$rc" -ne 0 ] && grep -q "REFUS: $tag" "$log"; then ok "$n $label — refus $tag (rc=$rc)"; else ko "$n $label — refus $tag attendu, rc=$rc : $(tail -3 "$log" | tr '\n' ' ')"; fi
   [ ! -e "$out" ] && ok "${n}′ aucun fichier de sortie écrit (le pipeline n'a rien à charger)" || ko "${n}′ fichier de sortie écrit malgré le refus"
   case "$cm" in
-    oui) if [ "$(comments_n)" = 1 ] && last_comment | grep -q "$tag" && last_comment | grep -q '<!-- provision-apply-refus -->'; then ok "${n}″ refus COMMENTÉ sur la PR sous le marqueur provision-apply-refus (tag $tag)"; else ko "${n}″ commentaire de refus absent, sans le tag ou sous le mauvais marqueur ($(comments_n) commentaire(s))"; fi ;;
+    oui) if [ "$(comments_n)" = 1 ] && last_comment | pipe_q "$tag" && last_comment | pipe_q '<!-- provision-apply-refus -->'; then ok "${n}″ refus COMMENTÉ sur la PR sous le marqueur provision-apply-refus (tag $tag)"; else ko "${n}″ commentaire de refus absent, sans le tag ou sous le mauvais marqueur ($(comments_n) commentaire(s))"; fi ;;
     non) [ "$(comments_n)" = 0 ] && ok "${n}″ AUCUN commentaire (la forge n'a pas confirmé une PR provision/*)" || ko "${n}″ un commentaire est parti alors que la forge n'a rien confirmé : $(last_comment | head -2 | tr '\n' ' ')" ;;
   esac
 }
@@ -419,7 +431,7 @@ echo "-- B.2 PR NON mergée côté Gitea (payload prétend merged:true) --"
 set_pr false "$C1" provision/appa-rec master NULL ci
 run_rec "$TMP/b2.out" "$TMP/b2.log"; RC=$?
 refus_attendu "B.2" "PR non mergée" PAYLOAD_PERIME "$TMP/b2.log" "$RC" "$TMP/b2.out" oui
-last_comment | grep -q "CE webhook n'a rien appliqué" && ok "B.2‴ le corps dit « CE webhook n'a rien appliqué » (pas « PAS déployée » : un apply antérieur peut exister)" || ko "B.2‴ corps du refus inattendu"
+last_comment | pipe_q "CE webhook n'a rien appliqué" && ok "B.2‴ le corps dit « CE webhook n'a rien appliqué » (pas « PAS déployée » : un apply antérieur peut exister)" || ko "B.2‴ corps du refus inattendu"
 grep -qx 'GITEA_HEAD_REF=provision/appa-rec' "$TMP/facts" && ok "B.2⁗ faits écrits MÊME sur refus (le post{always} saura que c'est une PR provision/*)" || ko "B.2⁗ faits absents sur refus"
 
 echo "-- B.3 SHA divergent (la PR est mergée, mais pas à ce SHA) --"
@@ -582,7 +594,7 @@ set_files "poc-control-plane-federation/clients/provisioned/applications/appd.an
 run_rec "$TMP/b13c.out" "$TMP/b13c.log" PR_BRANCH=provision/appd-rec MERGE_SHA="$C1B"; RC=$?
 refus_attendu "B.13c" "le manifeste au SHA mergé ne déclare pas le palier rec (appd : dev seul)" PALIER_ABSENT "$TMP/b13c.log" "$RC" "$TMP/b13c.out" oui
 # le clone n'avait PAS c2/c2b/c2c localement : c'est le fetch du script qui les a vus
-git -C "$WORK" log --oneline master | grep -q 'c2:' && ko "B.13d le clone local a été avancé par le harnais (le script n'a pas eu à fetcher)" \
+git -C "$WORK" log --oneline master | pipe_q 'c2:' && ko "B.13d le clone local a été avancé par le harnais (le script n'a pas eu à fetcher)" \
   || ok "B.13d master du clone local inchangé : les états c2/c2b/c2c n'étaient visibles que par « git fetch origin master » — le script fetche bien"
 
 echo "-- B.14 un refus ne PATCHe jamais le tableau de bord d'un apply réel (marqueurs distincts) --"
@@ -593,10 +605,10 @@ json.dump([{"id": 1, "body": "<!-- provision-apply -->\n✅ **Apply nominatif R�
 PY
 run_rec "$TMP/b14.out" "$TMP/b14.log"; RC=$?
 [ "$RC" -ne 0 ] && grep -q 'REFUS: PAYLOAD_PERIME' "$TMP/b14.log" && ok "B.14 webhook forgé (SHA divergent) sur une PR déjà appliquée ⇒ PAYLOAD_PERIME" || ko "B.14 rc=$RC"
-[ "$(comments_n)" = 2 ] && first_comment | grep -q 'Apply nominatif RÉUSSI' && first_comment | grep -q '`aaaa`' \
+[ "$(comments_n)" = 2 ] && first_comment | pipe_q 'Apply nominatif RÉUSSI' && first_comment | pipe_q '`aaaa`' \
   && ok "B.14b le ✅ existant (marqueur provision-apply) est INTACT : le refus est un commentaire DISTINCT (2 commentaires)" \
   || ko "B.14b le tableau de bord a été altéré : $(comments_n) commentaire(s), premier = $(first_comment | head -2 | tr '\n' ' ')"
-last_comment | grep -q '<!-- provision-apply-refus -->' && ok "B.14c le refus porte le marqueur provision-apply-refus" || ko "B.14c marqueur du refus : $(last_comment | head -1)"
+last_comment | pipe_q '<!-- provision-apply-refus -->' && ok "B.14c le refus porte le marqueur provision-apply-refus" || ko "B.14c marqueur du refus : $(last_comment | head -1)"
 
 echo
 echo "═══ Section C — le rapport de PR (provision-apply-comment.sh) : référence, digest, refus, assainissement ═══"
@@ -608,43 +620,43 @@ run_cmt(){ # $1=log ; reste = VAR=val
 }
 run_cmt "$TMP/c1.log" APPLY_RESULT=SUCCESS APP_NAME=appa ENV_NAME=rec VALIDATOR=alice; RC=$?
 B=$(last_comment)
-[ "$RC" -eq 0 ] && printf '%s' "$B" | grep -q 'Apply nominatif RÉUSSI' && printf '%s' "$B" | grep -q 'alice' \
+[ "$RC" -eq 0 ] && printf '%s' "$B" | pipe_q 'Apply nominatif RÉUSSI' && printf '%s' "$B" | pipe_q 'alice' \
   && ok "C.1 appelant d'AVANT A2 (sans SHA/digest) : corps d'aujourd'hui, verdict + identité" || ko "C.1 rc=$RC : $B"
-printf '%s' "$B" | grep -q 'référence appliquée' && ko "C.1b une ligne de référence apparaît sans APPLIED_SHA" || ok "C.1b aucune ligne de référence quand APPLIED_SHA est absent (rétro-compatible)"
-printf '%s' "$B" | grep -q '<!-- provision-apply -->' && ok "C.1c marqueur du RÉSULTAT : provision-apply" || ko "C.1c marqueur absent"
+printf '%s' "$B" | pipe_q 'référence appliquée' && ko "C.1b une ligne de référence apparaît sans APPLIED_SHA" || ok "C.1b aucune ligne de référence quand APPLIED_SHA est absent (rétro-compatible)"
+printf '%s' "$B" | pipe_q '<!-- provision-apply -->' && ok "C.1c marqueur du RÉSULTAT : provision-apply" || ko "C.1c marqueur absent"
 run_cmt "$TMP/c2.log" APPLY_RESULT=SUCCESS APP_NAME=appa ENV_NAME=rec VALIDATOR=alice \
   APPLIED_SHA="$C1" APPLIED_DIGEST="$D_REC" GIT_WEB_HOST=http://localhost:13000; RC=$?
 B=$(last_comment)
-printf '%s' "$B" | grep -q "référence appliquée (SHA de merge) : \`$C1\`" && ok "C.2 la ligne « référence appliquée » porte le SHA" || ko "C.2 SHA absent : $B"
-printf '%s' "$B" | grep -q "http://localhost:13000/ci/stoa-labs/commit/$C1" && ok "C.2b lien humain-cliquable vers le commit (GIT_WEB_HOST)" || ko "C.2b lien absent"
-printf '%s' "$B" | grep -q "digest du manifeste effectif \`per_env.rec\` à ce SHA : \`$D_REC\`" && ok "C.2c la ligne digest nomme le palier et porte le digest" || ko "C.2c digest absent : $B"
-printf '%s' "$B" | grep -q 'résultat, référence' && ok "C.2d la phrase finale dit que la PR porte la référence" || ko "C.2d phrase finale inchangée"
+printf '%s' "$B" | pipe_q "référence appliquée (SHA de merge) : \`$C1\`" && ok "C.2 la ligne « référence appliquée » porte le SHA" || ko "C.2 SHA absent : $B"
+printf '%s' "$B" | pipe_q "http://localhost:13000/ci/stoa-labs/commit/$C1" && ok "C.2b lien humain-cliquable vers le commit (GIT_WEB_HOST)" || ko "C.2b lien absent"
+printf '%s' "$B" | pipe_q "digest du manifeste effectif \`per_env.rec\` à ce SHA : \`$D_REC\`" && ok "C.2c la ligne digest nomme le palier et porte le digest" || ko "C.2c digest absent : $B"
+printf '%s' "$B" | pipe_q 'résultat, référence' && ok "C.2d la phrase finale dit que la PR porte la référence" || ko "C.2d phrase finale inchangée"
 run_cmt "$TMP/c3.log" APPLY_RESULT=REFUSED REFUSAL=PAYLOAD_PERIME REFUSAL_DETAIL='merged=False' APP_NAME=appa ENV_NAME=rec; RC=$?
 B=$(last_comment)
 [ "$RC" -eq 0 ] && ok "C.3 REFUSED sans VALIDATOR accepté (refus avant la pause : aucune identité consommée)" || ko "C.3 rc=$RC : $(cat "$TMP/c3.log")"
-printf '%s' "$B" | grep -q 'Apply REFUSÉ avant la pause\*\* — `PAYLOAD_PERIME`' && ok "C.3b en-tête « REFUSÉ avant la pause — PAYLOAD_PERIME »" || ko "C.3b en-tête : $(printf '%s' "$B" | head -2)"
-printf '%s' "$B" | grep -q "CE webhook n'a rien appliqué" && printf '%s' "$B" | grep -q 'merged=False' && ok "C.3c « CE webhook n'a rien appliqué » + détail Gitea (licite) en code span" || ko "C.3c conséquence/détail absents"
-printf '%s' "$B" | grep -q "n'est PAS déployée" && ko "C.3d un refus avant la pause prétend « PAS déployée » (faux si un apply antérieur existe)" || ok "C.3d un refus avant la pause ne prétend rien sur l'état déployé"
-printf '%s' "$B" | grep -q 'aucune consommée' && ok "C.3e dit qu'aucune identité n'a été consommée" || ko "C.3e ligne identité absente"
-printf '%s' "$B" | grep -q '<!-- provision-apply-refus -->' && ok "C.3f marqueur des REFUS : provision-apply-refus (jamais celui du résultat)" || ko "C.3f marqueur : $(printf '%s' "$B" | head -1)"
+printf '%s' "$B" | pipe_q 'Apply REFUSÉ avant la pause\*\* — `PAYLOAD_PERIME`' && ok "C.3b en-tête « REFUSÉ avant la pause — PAYLOAD_PERIME »" || ko "C.3b en-tête : $(printf '%s' "$B" | head -2)"
+printf '%s' "$B" | pipe_q "CE webhook n'a rien appliqué" && printf '%s' "$B" | pipe_q 'merged=False' && ok "C.3c « CE webhook n'a rien appliqué » + détail Gitea (licite) en code span" || ko "C.3c conséquence/détail absents"
+printf '%s' "$B" | pipe_q "n'est PAS déployée" && ko "C.3d un refus avant la pause prétend « PAS déployée » (faux si un apply antérieur existe)" || ok "C.3d un refus avant la pause ne prétend rien sur l'état déployé"
+printf '%s' "$B" | pipe_q 'aucune consommée' && ok "C.3e dit qu'aucune identité n'a été consommée" || ko "C.3e ligne identité absente"
+printf '%s' "$B" | pipe_q '<!-- provision-apply-refus -->' && ok "C.3f marqueur des REFUS : provision-apply-refus (jamais celui du résultat)" || ko "C.3f marqueur : $(printf '%s' "$B" | head -1)"
 run_cmt "$TMP/c4.log" APPLY_RESULT=FAILURE REFUSAL=SHA_NON_CONFIRME APP_NAME=appa ENV_NAME=rec VALIDATOR=alice APPLIED_SHA="$SHA_AUTRE" EXPECTED_SHA="$C1"; RC=$?
 B=$(last_comment)
-printf '%s' "$B" | grep -q 'EN ÉCHEC\*\* — `SHA_NON_CONFIRME`' && ok "C.4 FAILURE + SHA_NON_CONFIRME : tag dans l'en-tête" || ko "C.4 : $(printf '%s' "$B" | head -3)"
-printf '%s' "$B" | grep -q "L'aval a projeté \`$SHA_AUTRE\`, PAS la référence demandée \`$C1\`" && ok "C.4b dit la vérité : l'aval a projeté X, pas la référence Y (état gateway à vérifier, repli A6)" || ko "C.4b phrase SHA_NON_CONFIRME : $(printf '%s' "$B" | tail -2)"
-printf '%s' "$B" | grep -q "n'est PAS déployée" && ko "C.4c SHA_NON_CONFIRME prétend « PAS déployée » alors que l'aval a écrit" || ok "C.4c ne prétend pas « PAS déployée » (l'aval a écrit à un autre SHA)"
-printf '%s' "$B" | grep -q "référence DEMANDÉE (SHA de merge de la PR) : \`$C1\`" && ok "C.4d la référence demandée est écrite à côté de celle projetée" || ko "C.4d référence demandée absente"
+printf '%s' "$B" | pipe_q 'EN ÉCHEC\*\* — `SHA_NON_CONFIRME`' && ok "C.4 FAILURE + SHA_NON_CONFIRME : tag dans l'en-tête" || ko "C.4 : $(printf '%s' "$B" | head -3)"
+printf '%s' "$B" | pipe_q "L'aval a projeté \`$SHA_AUTRE\`, PAS la référence demandée \`$C1\`" && ok "C.4b dit la vérité : l'aval a projeté X, pas la référence Y (état gateway à vérifier, repli A6)" || ko "C.4b phrase SHA_NON_CONFIRME : $(printf '%s' "$B" | tail -2)"
+printf '%s' "$B" | pipe_q "n'est PAS déployée" && ko "C.4c SHA_NON_CONFIRME prétend « PAS déployée » alors que l'aval a écrit" || ok "C.4c ne prétend pas « PAS déployée » (l'aval a écrit à un autre SHA)"
+printf '%s' "$B" | pipe_q "référence DEMANDÉE (SHA de merge de la PR) : \`$C1\`" && ok "C.4d la référence demandée est écrite à côté de celle projetée" || ko "C.4d référence demandée absente"
 run_cmt "$TMP/c5.log" APPLY_RESULT=SUCCESS APP_NAME=appa ENV_NAME=rec; RC=$?
 [ "$RC" -ne 0 ] && ok "C.5 SUCCESS sans VALIDATOR ⇒ refus (un apply réel sans identité nommée n'est pas rapportable)" || ko "C.5 accepté sans identité"
 run_cmt "$TMP/c6.log" APPLY_RESULT=REFUSED REFUSAL='PAYLOAD_PERIME' REFUSAL_DETAIL=$'ligne1 [cliquez](http://evil) *gras* `code`\nligne2 <img src=x>' APP_NAME='appa' ENV_NAME=rec; RC=$?
 B=$(last_comment)
-printf '%s' "$B" | grep -q '](http://' && ko "C.6 lien markdown injecté dans le commentaire" || ok "C.6 assainissement : aucun lien markdown actif ne survit dans le détail"
-printf '%s' "$B" | grep -q '<img' && ko "C.6b balise HTML injectée" || ok "C.6b aucune balise HTML dans le détail"
-[ "$(printf '%s' "$B" | grep -c 'ligne2')" = 1 ] && printf '%s' "$B" | grep -q 'ligne1 cliquez http://evil gras code ligne2' \
+printf '%s' "$B" | pipe_q '](http://' && ko "C.6 lien markdown injecté dans le commentaire" || ok "C.6 assainissement : aucun lien markdown actif ne survit dans le détail"
+printf '%s' "$B" | pipe_q '<img' && ko "C.6b balise HTML injectée" || ok "C.6b aucune balise HTML dans le détail"
+[ "$(printf '%s' "$B" | grep -c 'ligne2')" = 1 ] && printf '%s' "$B" | pipe_q 'ligne1 cliquez http://evil gras code ligne2' \
   && ok "C.6c sauts de ligne supprimés, syntaxe neutralisée, détail sur UNE ligne en code span" || ko "C.6c détail : $(printf '%s' "$B" | grep ligne1)"
 run_cmt "$TMP/c7.log" APPLY_RESULT=REFUSED REFUSAL='pas un tag' APP_NAME=appa ENV_NAME=rec; RC=$?
-last_comment | grep -q 'REFUSÉ avant la pause\*\*$' && ok "C.7 un REFUSAL hors classe [A-Z0-9_] est ignoré (pas d'injection par le tag)" || ko "C.7 tag hors classe recopié : $(last_comment | head -1)"
+last_comment | pipe_q 'REFUSÉ avant la pause\*\*$' && ok "C.7 un REFUSAL hors classe [A-Z0-9_] est ignoré (pas d'injection par le tag)" || ko "C.7 tag hors classe recopié : $(last_comment | head -1)"
 run_cmt "$TMP/c8.log" APPLY_RESULT=SUCCESS APP_NAME=appa ENV_NAME=rec VALIDATOR=alice APPLIED_SHA='deadbeef' APPLIED_DIGEST='sha256:zz'; RC=$?
-last_comment | grep -q 'référence appliquée' && ko "C.8 un SHA hors forme est recopié" || ok "C.8 SHA et digest hors forme sont IGNORÉS (jamais recopiés)"
+last_comment | pipe_q 'référence appliquée' && ko "C.8 un SHA hors forme est recopié" || ok "C.8 SHA et digest hors forme sont IGNORÉS (jamais recopiés)"
 
 echo
 echo "═══ Section D — MUTATIONS : chaque comparaison de la réconciliation porte une épreuve ═══"
@@ -1043,8 +1055,8 @@ if ! cmp -s "$RECONCILE" "$MUTD/mut12.sh"; then
   set_pr true "$C1" provision/appa-rec master alice ci
   run_dbg "$MUTD/mut12.sh" "$TMP/mut12.out" "$TMP/mut12.so" "$TMP/mut12.se" STOA_DEBUG=1 GIT_WORKTREE="$WBAD" GIT_CLONE_URL="$ORIGIN" GIT_TRACE=1; RC=$?
   [ "$RC" -ne 0 ] && grep -q 'REFUS: GITEA_RECONCILE_ECHEC : git fetch origin master en échec' "$TMP/mut12.se" \
-    && grep -E "$(dbgp_re "$MUTD/mut12.sh")  git: " "$TMP/mut12.se" | grep -qF -- '<secret masqué>@127.0.0.1:1/x.git' \
-    && grep -v '^\[dbg ' "$TMP/mut12.se" | grep -qF -- "$MDP_FRAG" \
+    && grep -E "$(dbgp_re "$MUTD/mut12.sh")  git: " "$TMP/mut12.se" | pipe_q -F -- '<secret masqué>@127.0.0.1:1/x.git' \
+    && grep -v '^\[dbg ' "$TMP/mut12.se" | pipe_q -F -- "$MDP_FRAG" \
     && ok "E.7f fetch.err BRUT restauré dans le refus (sur copie) : même refus (rc=$RC), la ligne « [dbg mut12.sh]   git: » reste masquée, mais le REFUS porte le fragment « $MDP_FRAG » — E.4e tient à la ligne du refus, pas au helper" \
     || ko "E.7f (rc=$RC) : fragment hors [dbg : $(grep -v '^\[dbg ' "$TMP/mut12.se" | grep -cF -- "$MDP_FRAG") ; ligne git: masquée : $(grep -E "$(dbgp_re "$MUTD/mut12.sh")  git: " "$TMP/mut12.se" | grep -cF -- '<secret masqué>@')"
 else ko "E.7f mutation impossible (motif introuvable) — mutant no-op"; fi
@@ -1085,7 +1097,7 @@ run_dbg "$RECONCILE" "$TMP/e8d.out" "$TMP/e8d.so" "$TMP/e8d.se" STOA_DEBUG=1 MER
 [ "$RC" -eq 0 ] && cmp -s "$TMP/e8.out" "$TMP/e8d.out" && cmp -s "$TMP/e8.facts" "$TMP/facts" \
   && ok "E.8a sous debug : rc 0, RECONCILE_OUT et RECONCILE_FACTS identiques octet pour octet au run sans debug" \
   || ko "E.8a rc=$RC : $(cmp "$TMP/e8.out" "$TMP/e8d.out" 2>&1 | head -1) $(grep -E 'REFUS|ERREUR' "$TMP/e8d.se" | head -1 | cut -c1-160)"
-[ "$(wc -l < "$TMP/e8d.so" | tr -d ' ')" = 2 ] && sed -n 1p "$TMP/e8d.so" | grep -q "^REPLI_OK : la PR est un repli (Repli-De $C1)" && sed -n 2p "$TMP/e8d.so" | grep -q "^RECONCILE_OK : ci/stoa-labs#42 mergée ($CREPLI)" && ! grep -q '\[dbg' "$TMP/e8d.so" \
+[ "$(wc -l < "$TMP/e8d.so" | tr -d ' ')" = 2 ] && sed -n 1p "$TMP/e8d.so" | pipe_q "^REPLI_OK : la PR est un repli (Repli-De $C1)" && sed -n 2p "$TMP/e8d.so" | pipe_q "^RECONCILE_OK : ci/stoa-labs#42 mergée ($CREPLI)" && ! grep -q '\[dbg' "$TMP/e8d.so" \
   && ok "E.8b stdout = exactement DEUX lignes, REPLI_OK puis RECONCILE_OK, aucune « [dbg » (le produit du repli n'est pas pollué)" \
   || ko "E.8b stdout : $(wc -l < "$TMP/e8d.so" | tr -d ' ') ligne(s) : $(head -3 "$TMP/e8d.so" | cut -c1-80 | tr '\n' '|')"
 ligne_exacte E.8c "$TMP/e8d.se" "REPLI_DE=$C1"

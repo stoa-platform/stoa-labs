@@ -28,6 +28,18 @@
 # `A && ok || ko` (SC2015) et les `$…` en quotes simples (SC2016) sont l'idiome des suites du repo.
 # shellcheck disable=SC2015,SC2016
 set -uo pipefail
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 S="$REPO/scripts/provision-request.sh"
 LIB="$REPO/scripts/lib/forge-identity.sh"
@@ -257,7 +269,7 @@ fi_hdr FORGE_API_AUTH=oauth; RCB=$?
 LG=$(fi_run FORGE_USER=jdupont -- forge_login "http://forge.invalid/api/v1" "$FT/s" 2>/dev/null)
 [ "$LG" = jdupont ] && ok "E0.15 FORGE_USER posé ⇒ le login est CONNU, aucun appel à la forge (hôte injoignable, rc 0)" || ko "E0.15 login='$LG'"
 LG=$(fi_run FORGE_USER="jean dupont" -- forge_login "http://forge.invalid/api/v1" "$FT/s" 2>&1)
-printf '%s' "$LG" | grep -q FORGE_LOGIN_INVALIDE && ok "E0.16 FORGE_USER hors charset ⇒ FORGE_LOGIN_INVALIDE (même contrôle que le login de la forge)" || ko "E0.16 $LG"
+printf '%s' "$LG" | pipe_q FORGE_LOGIN_INVALIDE && ok "E0.16 FORGE_USER hors charset ⇒ FORGE_LOGIN_INVALIDE (même contrôle que le login de la forge)" || ko "E0.16 $LG"
 
 echo "═══ E1. rec + refs sous ci : la ligne per_env porte change_ref/pv_ref, rien d'autre ne bouge ═══"
 set_ctl '{"open":[]}'; reset_origin
@@ -271,7 +283,7 @@ req rec REQ_CHANGE_REF=CHG-0001 REQ_PV_REF=PV-A7
 [ "$(line_at rec)" = '    rec: { auth: { claim: { value: "appa-rec" } }, change_ref: "CHG-0001", pv_ref: "PV-A7" }' ] && ok "E1.2 ligne rec : claim, puis change_ref, puis pv_ref (quotés)" || ko "E1.2 ligne : $(line_at rec)"
 git -C "$ORIGIN" show "provision/appa-rec:$MAN" > "$TMP/man.rec.yml" 2>/dev/null
 [ "$(diff "$TMP/man.dev.yml" "$TMP/man.rec.yml" | grep -c '^[<>]')" = 1 ] && ok "E1.3 diff dev→rec = UNE ligne ajoutée (aucun autre octet)" || ko "E1.3 diff : $(diff "$TMP/man.dev.yml" "$TMP/man.rec.yml" | head -4 | tr '\n' ' ')"
-post_body | grep -q 'ouverte par : compte de service' && post_body | grep -q -- '- change_ref : CHG-0001' && post_body | grep -q -- '- pv_ref : PV-A7' && ok "E1.4 corps de PR : « ouverte par : compte de service », change_ref, pv_ref" || ko "E1.4 corps : $(post_body | grep -E 'ouverte|change_ref|pv_ref' | tr '\n' ' ')"
+post_body | pipe_q 'ouverte par : compte de service' && post_body | pipe_q -- '- change_ref : CHG-0001' && post_body | pipe_q -- '- pv_ref : PV-A7' && ok "E1.4 corps de PR : « ouverte par : compte de service », change_ref, pv_ref" || ko "E1.4 corps : $(post_body | grep -E 'ouverte|change_ref|pv_ref' | tr '\n' ' ')"
 [ "$(trailer_at rec)" = ci ] && ok "E1.5 trailer Demande-Par: ci sur la tête de branche" || ko "E1.5 trailer : '$(trailer_at rec)'"
 set_ctl '{"open":[]}'; git -C "$ORIGIN" update-ref -d refs/heads/provision/appa-rec
 req rec
@@ -297,7 +309,7 @@ set_ctl '{"open":[]}'
 req int FORGE_TOKEN=t-alice PROVISION_PLAN_INLINE=true "PROVISION_PLAN_BIN=$PLAN_STUB"
 [ "$(rrc)" = 0 ] && [ "$(posts)" = 1 ] && ok "E4.1 rc 0, une PR postée" || ko "E4.1 rc $(rrc) posts=$(posts) : $(grep -E 'REFUS|ERREUR' "$TMP/req.out" | head -2 | tr '\n' ' ')"
 [ "$(post_auth)" = "token t-alice" ] && ok "E4.2 POST /pulls sous le token d'ALICE (l'auteur est l'humain)" || ko "E4.2 Authorization du POST : '$(post_auth)'"
-post_body | grep -q 'ouverte par : alice (identite de forge' && ok "E4.3 corps : « ouverte par : alice (identite de forge …) »" || ko "E4.3 corps : $(post_body | grep -E 'ouverte' | tr '\n' ' ')"
+post_body | pipe_q 'ouverte par : alice (identite de forge' && ok "E4.3 corps : « ouverte par : alice (identite de forge …) »" || ko "E4.3 corps : $(post_body | grep -E 'ouverte' | tr '\n' ' ')"
 [ "$(trailer_at int)" = alice ] && ok "E4.4 trailer Demande-Par: alice" || ko "E4.4 trailer : '$(trailer_at int)'"
 ! grep -q 't-alice' "$SHIM_LOG" && ok "E4.5 le token n'apparaît dans AUCUN argv git" || ko "E4.5 token en argv : $(grep -n 't-alice' "$SHIM_LOG" | head -1)"
 ! grep -qE 'ENV FORGE_TOKEN=[^ ]+' "$SHIM_LOG" && ! grep -qE 'PUSH_TOKEN=[^ ]+ ' "$SHIM_LOG" && ok "E4.6 aucun processus git n'hérite FORGE_TOKEN/PUSH_TOKEN (unset avant tout enfant)" || ko "E4.6 env hérité : $(grep -E 'ENV ' "$SHIM_LOG" | grep -vE 'FORGE_TOKEN= PUSH_TOKEN= ' | head -1)"
@@ -419,8 +431,8 @@ set_ctl '{"open":[]}'; reset_origin
 req dev
 CLONES_B="$(grep '^ARGV clone' "$SHIM_LOG" | tr '\n' ' ')"
 { [ "$(rrc)" = 0 ] && [ "$(post_base)" = master ] \
-  && printf '%s' "$CLONES_B" | grep -q -- '-b master' \
-  && ! printf '%s' "$CLONES_B" | grep -q -- '-b main'; } \
+  && printf '%s' "$CLONES_B" | pipe_q -- '-b master' \
+  && ! printf '%s' "$CLONES_B" | pipe_q -- '-b main'; } \
   && ok "E11.1 HEAD du dépôt = master, aucun GIT_BASE ⇒ clone « -b master » et PR ouverte vers master (rien n'a deviné « main »)" \
   || ko "E11.1 rc $(rrc) base postée '$(post_base)' clone: ${CLONES_B}"
 # LE KNOB GAGNE, et il gagne SANS consulter la HEAD (git-base.sh §1) : `develop`
@@ -430,8 +442,8 @@ set_ctl '{"open":[]}'; git -C "$ORIGIN" update-ref -d refs/heads/provision/appa-
 req int FORGE_TOKEN=t-alice GIT_BASE=develop
 CLONES_D="$(grep '^ARGV clone' "$SHIM_LOG" | tr '\n' ' ')"
 { [ "$(rrc)" = 0 ] && [ "$(post_base)" = develop ] \
-  && printf '%s' "$CLONES_D" | grep -q -- '-b develop' \
-  && ! printf '%s' "$CLONES_D" | grep -q -- '-b master'; } \
+  && printf '%s' "$CLONES_D" | pipe_q -- '-b develop' \
+  && ! printf '%s' "$CLONES_D" | pipe_q -- '-b master'; } \
   && ok "E11.2 GIT_BASE=develop (knob explicite) sur un dépôt dont la HEAD est master ⇒ le clone vise develop, la PR aussi" \
   || ko "E11.2 rc $(rrc) base postée '$(post_base)' clone: ${CLONES_D}"
 git -C "$ORIGIN" update-ref -d refs/heads/develop 2>/dev/null || true
@@ -593,7 +605,7 @@ git_octets(){ echo $(( $(git_line | wc -c) )); }
   && grep -qE '^fatal: unable to access \(simulé\) — askpass a rendu <secret masqué> x+ askpass a rendu <secret masqué>$' "$ERR" \
   && ok "E12.3e stderr de push de 402 octets, secret à cheval sur l'octet 400 : la ligne « git: » porte « <secret masqué> » puis le rembourrage et fait EXACTEMENT 400 octets (masquée en entier, PUIS coupée) ; le détail du refus, non coupé, masque les DEUX occurrences" \
   || ko "E12.3e rc $(rrc) octets=$(git_octets) : …$(git_line | tail -c 40) / $(grep -c 'askpass a rendu <secret masqué>' "$ERR") ligne(s) masquée(s)"
-! grep -oE 'askpass a rendu [^ ]*' "$OUT" "$ERR" | grep -vqE 'askpass a rendu (<secret|$)' && ! grep -qF -- "$FRAG" "$OUT" "$ERR" && toutes_absentes t-alice && toutes_absentes t-ci \
+! grep -oE 'askpass a rendu [^ ]*' "$OUT" "$ERR" | pipe_q -vE 'askpass a rendu (<secret|$)' && ! grep -qF -- "$FRAG" "$OUT" "$ERR" && toutes_absentes t-alice && toutes_absentes t-ci \
   && ok "E12.3f après « askpass a rendu », rien d'autre que le masque (entier, ou coupé par les 400 octets) : ni « $FRAG » ni aucune forme de t-alice / t-ci — aucun MORCEAU du secret n'a survécu à la coupe" \
   || ko "E12.3f morceau du secret : $(grep -noE 'askpass a rendu [^ ]*' "$OUT" "$ERR" | grep -vE '<secret' | head -1)"
 # ── E12.4 le silence : STOA_DEBUG=0 ⇒ zéro [dbg, produit OCTET POUR OCTET celui d'E12.1 ──
@@ -652,7 +664,7 @@ if [ -n "$M1" ]; then set_ctl '{"open":[]}'; reqm "$M1" int FORGE_TOKEN=t-svc "G
 M2=$(mutant m2 's#PR_TOKEN_FILE="\$PUSH_TF"#PR_TOKEN_FILE="$CI_TF"#')
 if [ -n "$M2" ]; then set_ctl '{"open":[]}'; git -C "$ORIGIN" update-ref -d refs/heads/provision/appa-int 2>/dev/null; reqm "$M2" int FORGE_TOKEN=t-alice; [ "$(post_auth)" = "token t-ci" ] && ok "M2 POST /pulls forcé sur le token ci ⇒ l'auteur redevient ci (E4.2 rougit)" || ko "M2 auth='$(post_auth)' rc $(rrc)"; else ko "M2 mutant no-op/incompilable"; fi
 M3=$(mutant m3 's#^    extra\.append\("- ouverte par .*$#    pass#')
-if [ -n "$M3" ]; then set_ctl '{"open":[]}'; git -C "$ORIGIN" update-ref -d refs/heads/provision/appa-int 2>/dev/null; reqm "$M3" int FORGE_TOKEN=t-alice; [ "$(rrc)" = 0 ] && ! post_body | grep -q 'ouverte par' && ok "M3 ligne « ouverte par » retirée ⇒ corps sans identité (E4.3 rougit)" || ko "M3 rc $(rrc)"; else ko "M3 mutant no-op/incompilable"; fi
+if [ -n "$M3" ]; then set_ctl '{"open":[]}'; git -C "$ORIGIN" update-ref -d refs/heads/provision/appa-int 2>/dev/null; reqm "$M3" int FORGE_TOKEN=t-alice; [ "$(rrc)" = 0 ] && ! post_body | pipe_q 'ouverte par' && ok "M3 ligne « ouverte par » retirée ⇒ corps sans identité (E4.3 rougit)" || ko "M3 rc $(rrc)"; else ko "M3 mutant no-op/incompilable"; fi
 M4=$(mutant m4 '/^unset FORGE_TOKEN FORGE_TOKEN_FILE$/d')
 if [ -n "$M4" ]; then set_ctl '{"open":[]}'; git -C "$ORIGIN" update-ref -d refs/heads/provision/appa-int 2>/dev/null; reqm "$M4" int FORGE_TOKEN=t-alice; grep -qE 'ENV FORGE_TOKEN=t-alice' "$SHIM_LOG" && ok "M4 unset retiré ⇒ git hérite le token (E4.6 rougit)" || ko "M4 rc $(rrc) : $(grep -c 'ENV FORGE_TOKEN=t-alice' "$SHIM_LOG") héritages"; else ko "M4 mutant no-op/incompilable"; fi
 M5=$(mutant m5 '/PR_D_AUTRUI : la PR/d')
@@ -693,7 +705,7 @@ M9=$(mutant m9 '/^DBG_SECRET_FILES=/d')
 if [ -n "$M9" ]; then
   set_ctl '{"open":[]}'; git -C "$ORIGIN" update-ref -d refs/heads/provision/appa-rec 2>/dev/null
   reqm2 "$M9" rec FORGE_TOKEN=t-alice SHIM_PUSH_FAIL=1 STOA_DEBUG=1
-  grep '^\[dbg' "$ERR" | grep -q 't-alice' \
+  grep '^\[dbg' "$ERR" | pipe_q 't-alice' \
     && ok "M9 DBG_SECRET_FILES retirée ⇒ le token HUMAIN fuit dans la ligne de debug du push raté (E12.3d rougit : redact ne le connaît que par son fichier)" \
     || ko "M9 rc $(rrc) : le mutant ne fuit pas dans une ligne [dbg — $(grep -c 't-alice' "$ERR") occurrence(s) de t-alice sur stderr, toutes hors [dbg"
 else ko "M9 mutant no-op/incompilable"; fi
@@ -719,7 +731,7 @@ M11=$(mutant m11 's#^(    m=")\$\(redact < "\$1" [|] tr#\1$(head -c 400 < "$1" |
 if [ -n "$M11" ]; then
   set_ctl '{"open":[]}'; git -C "$ORIGIN" update-ref -d refs/heads/provision/appa-rec 2>/dev/null
   reqm2 "$M11" rec FORGE_TOKEN=t-alice SHIM_PUSH_FAIL=1 "SHIM_PUSH_SECRET_AT=$SECRET_AT" STOA_DEBUG=1
-  grep '^\[dbg' "$ERR" | grep -qF -- "askpass a rendu $FRAG" \
+  grep '^\[dbg' "$ERR" | pipe_q -F -- "askpass a rendu $FRAG" \
     && ok "M11 dbg_git_err coupe PUIS masque ⇒ « askpass a rendu $FRAG » : cinq octets du token humain fuient dans la ligne « git: », qui fait $(git_octets) octets au lieu de 400 (E12.3e ET E12.3f rougissent)" \
     || ko "M11 rc $(rrc) : le mutant ne laisse pas de morceau — …$(git_line | tail -c 40)"
 else ko "M11 mutant no-op/incompilable"; fi

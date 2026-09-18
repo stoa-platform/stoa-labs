@@ -64,6 +64,18 @@
 # qu'un.
 set -eu
 
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
+
 ICI="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"   # .../poc-control-plane-federation/ci
 POC="$(dirname "$ICI")"                                 # .../poc-control-plane-federation
 RACINE="$(dirname "$POC")"                              # racine du depot
@@ -87,9 +99,9 @@ contient(){ grep -qF -- "$2" "$3" && ok "$1" || ko "$1" "present dans $3" "absen
 # restaient VERTS. D'ou ce predicat — la ligne doit exister ET ne pas etre un
 # commentaire, ni de shell (`#`, le bloc `sh` de Jenkins tourne en dash) ni de
 # Groovy (`//`, hors du bloc `sh`).
-# `grep -F | grep -qvE` : si la premiere ne trouve rien, la seconde lit du vide
+# `grep -F | pipe_q -vE` : si la premiere ne trouve rien, la seconde lit du vide
 # et rend 1 — donc absent ET commente-seulement rendent tous deux faux.
-actif_dans(){ grep -F -- "$1" "$2" 2>/dev/null | grep -qvE '^[[:space:]]*(#|//)'; }
+actif_dans(){ grep -F -- "$1" "$2" 2>/dev/null | pipe_q -vE '^[[:space:]]*(#|//)'; }
 contient_actif(){ actif_dans "$2" "$3" && ok "$1" \
   || ko "$1" "present sur une ligne NON COMMENTEE de $3" "absent de $3, ou present SEULEMENT en commentaire"; }
 # Vrai si le motif $2 apparait a une ligne strictement avant le motif $3 dans
@@ -324,8 +336,8 @@ pilote(){
 }
 pf_val(){  printf '%s\n' "$2" | sed -n "s/^$1=//p" | head -1; }
 pf_urls(){ printf '%s\n' "$1" | sed -n 's/^URL=//p' | tr '\n' ' ' | sed 's/ *$//'; }
-pf_dit(){ printf '%s\n' "$3" | grep -qF -- "$2" && ok "$1" || ko "$1" "la trace dit [$2]" "elle ne le dit pas"; }
-pf_tait(){ printf '%s\n' "$3" | grep -qF -- "$2" && ko "$1" "la trace NE dit PAS [$2]" "elle le dit" || ok "$1"; }
+pf_dit(){ printf '%s\n' "$3" | pipe_q -F -- "$2" && ok "$1" || ko "$1" "la trace dit [$2]" "elle ne le dit pas"; }
+pf_tait(){ printf '%s\n' "$3" | pipe_q -F -- "$2" && ko "$1" "la trace NE dit PAS [$2]" "elle le dit" || ok "$1"; }
 
 echo "== la LIB REELLE, PILOTEE : APIM_PREFLIGHT_URL est un GABARIT par palier =="
 # LE DEFAUT FERME ICI. `APIM_PREFLIGHT_URL` est une valeur de SITE : posee en
@@ -494,7 +506,7 @@ else ok "M3 controle du sleep retire => l'epreuve « arret au 1er echec » rougi
 awk '/codes attendus/{gsub(/PF_MAX\*10/, "PF_MAX*5")} {print}' "$LIB" > "$TMPD/m4.sh"
 mordu "$TMPD/m4.sh" "duree annoncee *10"
 O_M4="$(pilote "$TMPD/m4.sh" "http://gw/rest/apigateway" dev APIM_PREFLIGHT_TRIES=60 PF_SLEEP_FAILS=1)"
-if printf '%s\n' "$O_M4" | grep -qF -- "max 60 essais — jusqu'à ~600s"; then
+if printf '%s\n' "$O_M4" | pipe_q -F -- "max 60 essais — jusqu'à ~600s"; then
   ko "M4 duree remise a *5 => l'epreuve « ~600s » rougit" "elle rougit" "elle passe encore (mutant vert)"
 else ok "M4 duree remise a *5 => l'epreuve « ~600s » rougit (le mutant annonce ~300s)"; fi
 
@@ -502,7 +514,7 @@ else ok "M4 duree remise a *5 => l'epreuve « ~600s » rougit (le mutant annonce
 sed 's/préflight de joignabilité : DÉSACTIVÉ/préflight désactivé/' "$LIB" > "$TMPD/m5.sh"
 mordu "$TMPD/m5.sh" "marqueur du chemin desactive"
 O_M5="$(pilote "$TMPD/m5.sh" "http://gw/rest/apigateway" dev APIM_PREFLIGHT=off APIM_PREFLIGHT_TRIES=1)"
-if printf '%s\n' "$O_M5" | grep -qF -- "préflight de joignabilité :"; then
+if printf '%s\n' "$O_M5" | pipe_q -F -- "préflight de joignabilité :"; then
   ko "M5 marqueur retire => l'epreuve « off garde le marqueur » rougit" "elle rougit" "elle passe encore (mutant vert)"
 else ok "M5 marqueur retire => l'epreuve « off garde le marqueur » rougit"; fi
 
@@ -536,7 +548,7 @@ awk '/^[[:space:]]*PF_POURQUOI="c.est la base d.admin/ {
      { print }' "$LIB" > "$TMPD/m7.sh"
 mordu "$TMPD/m7.sh" "message de refus propre a la base"
 O_M7="$(pilote "$TMPD/m7.sh" 'https://apim-__ENV__.corp/rest/apigateway' "" APIM_PREFLIGHT_TRIES=1)"
-if printf '%s\n' "$O_M7" | grep -qF -- "base d'admin reçue de l'appelant"; then
+if printf '%s\n' "$O_M7" | pipe_q -F -- "base d'admin reçue de l'appelant"; then
   ko "M7 message unique restaure => l'epreuve « le refus nomme LA BASE » rougit" \
      "elle rougit" "elle passe encore (mutant vert)"
 else ok "M7 message unique restaure => l'epreuve « le refus nomme LA BASE » rougit (le mutant accuse le knob absent)"; fi
@@ -807,7 +819,7 @@ if cmp -s "$GLOBALS" "$TMPD/m9.sh"; then
   fatal "mutation sans effet (aide par compte de lignes) : l'ancre ne mord plus — le test ne peut rien affirmer"
 fi
 M9="$(env -u JENKINS_UI bash "$TMPD/m9.sh" --help 2>&1 || true)"
-if printf '%s\n' "$M9" | grep -qF -- "APIM_PREFLIGHT_URL"; then
+if printf '%s\n' "$M9" | pipe_q -F -- "APIM_PREFLIGHT_URL"; then
   ko "M9 aide remise a \`sed -n '1,50p'\` => l'epreuve « --help nomme les knobs » rougit" \
      "elle rougit" "elle passe encore (mutant vert)"
 else
@@ -879,7 +891,7 @@ if [ -z "$BASE_REF" ]; then
   while read -r C; do
     if git -C "$RACINE" show "$C:$JF_REF" 2>/dev/null \
        | sed -n "s/^[[:space:]]*APIM_PROXY_BASE[[:space:]]*=.*?:[[:space:]]*'\([^']\{1,\}\)'.*/\1/p" \
-       | grep -q .; then BASE_REF="$C"; break; fi
+       | pipe_q .; then BASE_REF="$C"; break; fi
   done < "$TMPD/hist"
 fi
 [ -n "$BASE_REF" ] || fatal "point de comparaison introuvable : aucun commit de l'historique de HEAD sur $JF_REF ne porte encore un defaut APIM_PROXY_BASE non vide (clone superficiel ? historique purge sans etat pre-refonte restant ?) — poser STOA_BASE_REF=<sha-ou-ref> explicitement pour rejouer le test."

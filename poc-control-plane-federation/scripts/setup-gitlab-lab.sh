@@ -27,6 +27,18 @@
 #   bash scripts/setup-gitlab-lab.sh
 #   . ./.env.gitlab-lab ; curl -sS -H "PRIVATE-TOKEN: $GITLAB_LAB_TOKEN" localhost:13080/api/v4/user
 set -uo pipefail
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 cd "$(dirname "$0")/.." || exit 1
 
 GL_URL="${GITLAB_LAB_URL:-http://localhost:13080}"
@@ -43,7 +55,7 @@ umask 077
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 
 # ── 1. attendre que la forge soit prête ─────────────────────────────────────
-docker ps --format '{{.Names}}' | grep -qx "$GL_CONTAINER" \
+docker ps --format '{{.Names}}' | pipe_q -x "$GL_CONTAINER" \
   || fail "conteneur $GL_CONTAINER absent — docker compose -f docker-compose.gitlab.yml up -d gitlab"
 # ⚠ PAS /-/readiness : GitLab ne le sert qu'à sa liste blanche (127.0.0.0/8, vu
 # de l'INTÉRIEUR du conteneur) ; depuis l'hôte on arrive par la passerelle Docker

@@ -72,6 +72,18 @@
 #    par per_env au moment de l'apply réel.)
 set -uo pipefail
 set +x   # jamais de trace : le token ne doit pas fuiter
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 cd "$(dirname "$0")/.." || exit 1
 REPO_ROOT="$(pwd)"
 
@@ -181,11 +193,11 @@ esac
 # caractère hors classe D'ABORD (\n compris — bash/grep matchent par LIGNE,
 # leçon \Z du palier 1), PUIS la forme.
 case "$TEAM" in *[!a-z0-9-]*) fail "TEAM_NAME_INVALID : '$TEAM' — ^[a-z0-9][a-z0-9-]{1,30}\$ requis";; esac
-printf '%s' "$TEAM" | grep -Eq '^[a-z0-9][a-z0-9-]{1,30}$' \
+printf '%s' "$TEAM" | pipe_q -E '^[a-z0-9][a-z0-9-]{1,30}$' \
   || fail "TEAM_NAME_INVALID : '$TEAM' — ^[a-z0-9][a-z0-9-]{1,30}\$ requis"
 
 case "$API_NAME" in *[!a-z0-9-]*) fail "API_NAME_INVALID : '$API_NAME' — ^[a-z0-9][a-z0-9-]{1,30}\$ requis";; esac
-printf '%s' "$API_NAME" | grep -Eq '^[a-z0-9][a-z0-9-]{1,30}$' \
+printf '%s' "$API_NAME" | pipe_q -E '^[a-z0-9][a-z0-9-]{1,30}$' \
   || fail "API_NAME_INVALID : '$API_NAME' — ^[a-z0-9][a-z0-9-]{1,30}\$ requis"
 
 # oauth2 REFUSÉ ICI, pas une simple valeur non encore branchée (fix round 1,
@@ -252,7 +264,7 @@ VERSION_RE='^[0-9]+\.[0-9]+(\.[0-9]+)?$'
 
 if [ "$ACTION" = "create" ]; then
   [ -n "$API_VERSION" ] || fail "API_VERSION_REQUIS : ACTION=create exige API_VERSION"
-  printf '%s' "$API_VERSION" | grep -Eq "$VERSION_RE" \
+  printf '%s' "$API_VERSION" | pipe_q -E "$VERSION_RE" \
     || fail "API_VERSION_INVALIDE : '$API_VERSION' — attendu X.Y ou X.Y.Z"
   EFFECTIVE_VERSION="$API_VERSION"
   BASE_NAME=""; BASE_VERSION=""
@@ -271,7 +283,7 @@ else
   [ "$API_NAME" = "$BASE_NAME" ] \
     || fail "API_NAME_MISMATCH : API_NAME='$API_NAME' ne concorde pas avec le nom de API_BASE='$API_BASE' (attendu '$BASE_NAME')"
   [ -n "$NEW_VERSION" ] || fail "NEW_VERSION_REQUIS : ACTION=new-version exige NEW_VERSION"
-  printf '%s' "$NEW_VERSION" | grep -Eq "$VERSION_RE" \
+  printf '%s' "$NEW_VERSION" | pipe_q -E "$VERSION_RE" \
     || fail "NEW_VERSION_INVALIDE : '$NEW_VERSION' — attendu X.Y ou X.Y.Z"
   [ "$NEW_VERSION" != "$BASE_VERSION" ] \
     || fail "NEW_VERSION_IDENTIQUE : NEW_VERSION='$NEW_VERSION' égale la version de base — rien à publier"

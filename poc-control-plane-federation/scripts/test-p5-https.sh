@@ -33,6 +33,18 @@
 set -u
 set -o pipefail
 
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
+
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO" || exit 1
 TMP="$(mktemp -d /tmp/p5tls.XXXXXX)"
@@ -128,7 +140,7 @@ done; done
 TXT=$(LABCTL_CLASSIFICATION_SOURCE='' LABCTL_PROJECT='' "$LABCTL_BIN" posture \
         --api comptes-lecture --project banking-demo --declared-classification VH \
         --declared-exposure internet --classification-source "$REG" 2>&1)
-printf '%s' "$TXT" | grep -q '^entry_protocol: https$' \
+printf '%s' "$TXT" | pipe_q '^entry_protocol: https$' \
   && ok "A4 la sortie humaine porte le protocole (le journal du build le montre)" \
   || ko "A4 'entry_protocol:' absent de la sortie texte"
 
@@ -180,7 +192,7 @@ grep -Eq 'method: (POST|DELETE)' "$EPFILE" \
 # B6 — aucune recopie de vocabulaire. La valeur vient de l'autorité, pas d'un
 # littéral : sinon P1 aurait supprimé quatre recopies pour en laisser naître une
 # cinquième, sur l'axe que P4 venait de trancher.
-grep -vE '^\s*#' "$EPFILE" | grep -q "values': \['https'\]\|values: \[.https.\]" \
+grep -vE '^\s*#' "$EPFILE" | pipe_q "values': \['https'\]\|values: \[.https.\]" \
   && ko "B6 le rôle écrit 'https' en dur — le protocole doit venir de labctl posture" \
   || ok "B6 le protocole écrit vient de pub_posture.entry_protocol, jamais d'un littéral"
 grep -q 'pub_posture.entry_protocol' "$EPFILE" \
@@ -395,7 +407,7 @@ mes "appel en CLAIR : HTTP $CLEAR"
 [ "$CLEAR" != "200" ] \
   && ok "C2 LA PORTE (a) : l'appel en CLAIR est REFUSÉ (HTTP $CLEAR)" \
   || ko "C2 l'appel en clair PASSE — l'API gouvernée sert en clair"
-printf '%s' "$BODY" | grep -q 'Transport protocol not supported' \
+printf '%s' "$BODY" | pipe_q 'Transport protocol not supported' \
   && ok "C2 …et le refus est bien celui du PROTOCOLE (message du produit)" \
   || ko "C2 le refus n'est pas celui du protocole : $(printf '%s' "$BODY" | head -c 120)"
 

@@ -29,6 +29,18 @@
 #
 #   ./scripts/test-a0-wiring.sh
 set -uo pipefail
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO" || exit 2
 # FORGE_KIND n'a plus de défaut dans forge_api_init (2026-09-12, FORGE_KIND_REQUIS) :
@@ -96,12 +108,12 @@ shellcheck -x scripts/lib/gwt-mirror.sh >/dev/null 2>&1 \
 mirror_expect(){ # $1=job $2=nb de clés attendu
   local out rc
   out=$(gwt_mirror_diff "ci/jenkins/$1.job.xml" "ci/Jenkinsfile.$1" 2>&1); rc=$?
-  if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q '^MIROIR_OK'; then
+  if [ "$rc" -eq 0 ] && printf '%s' "$out" | pipe_q '^MIROIR_OK'; then
     ok "$1 : $out"
   else
     ko "$1 : miroir NON exact (rc=$rc) — $(printf '%s' "$out" | tr '\n' ' ')"
   fi
-  printf '%s' "$out" | grep -q "vars=$2\$" \
+  printf '%s' "$out" | pipe_q "vars=$2\$" \
     && ok "$1 : $2 genericVariables, à l'identique des deux côtés" \
     || ko "$1 : nombre de genericVariables inattendu (attendu $2) — $(printf '%s' "$out" | tr '\n' ' ')"
 }
@@ -235,7 +247,7 @@ L_POST3=$(grep -n '^  post {' "$TMP/jf-plan.code" | head -1 | cut -d: -f1)
 # serait le fichier entier et l'assertion deviendrait VACANTE : on la rend rouge.
 L_PIPE3=$(grep -n '^pipeline {' "$TMP/jf-plan.code" | head -1 | cut -d: -f1)
 [ -n "$L_PIPE3" ] || BAD="$BAD sans-pipeline{"
-# ⚠ PAS de `| grep -q` ICI, et ce n'est pas un détail de style : sous `set -o
+# ⚠ PAS de `| pipe_q` ICI, et ce n'est pas un détail de style : sous `set -o
 # pipefail` (ligne 31), `grep -q` sort dès la PREMIÈRE correspondance et ferme le
 # tuyau ; si awk écrit encore, il prend un SIGPIPE et rend 141, le pipeline devient
 # non nul, et la détection s'INVERSE — l'assertion passe au vert précisément quand
@@ -465,7 +477,7 @@ N_PFX=$(grep -c 'poc-control-plane-federation' "$TMP/jf-app.code")
 [ "$N_PFX" = 1 ] && grep -q "GIT_SUBDIR           = \"\${env.GIT_SUBDIR ?: 'poc-control-plane-federation'}\"" "$TMP/jf-app.code" \
   && ok "le préfixe du livrable n'apparaît QU'UNE fois dans le code d'app-request : le défaut du knob GIT_SUBDIR (aucun chemin en dur)" \
   || ko "préfixe du lab écrit en dur dans app-request : $N_PFX occurrence(s) dans la vue CODE"
-grep -v '^\s*//' ci/Jenkinsfile.provisioning-request | grep -qE "^\s*FORGE_TOKEN\s*=\s*''" && ok "A7 : la voie machine VIDE FORGE_TOKEN dans son bloc environment (une globale du nœud ne lui prête aucune identité de forge)" || ko "A7 : Jenkinsfile.provisioning-request ne vide pas FORGE_TOKEN"
+grep -v '^\s*//' ci/Jenkinsfile.provisioning-request | pipe_q -E "^\s*FORGE_TOKEN\s*=\s*''" && ok "A7 : la voie machine VIDE FORGE_TOKEN dans son bloc environment (une globale du nœud ne lui prête aucune identité de forge)" || ko "A7 : Jenkinsfile.provisioning-request ne vide pas FORGE_TOKEN"
 L_SH=$(code_line "$TMP/jf-app.code" "sh 'set +x; if [ \"\${DEBUG:-false}\" = \"true\" ]; then export STOA_DEBUG=1; fi; GC_PLATFORM_DIR=\"\$WORKSPACE\" STOA_ENV_CHAIN_FILE=\"\$WORKSPACE/\$GIT_SUBDIR/clients/_example/environments.yaml\" CHOICES_OUT=\"\$WORKSPACE/.a0-choices.env\" bash scripts/app-request-choices.sh'")
 L_WC=$(code_line "$TMP/jf-app.code" "withCredentials(forgeCreds())")
 # 2026-09-04 : le TYPE de credential est un knob du SITE. forgeCreds() rend un
@@ -500,9 +512,9 @@ for _jf in ci/Jenkinsfile.*; do
   grep -q '^def forgeCreds()' "$_jf" || continue
   N_FC=$((N_FC+1))
   _fc="$(code_view "$_jf" | awk '/^def forgeCreds\(\)/,/^}/')"
-  if printf '%s\n' "$_fc" | grep -q "== 'secret-text'" \
-     && printf '%s\n' "$_fc" | grep -q "== 'username-password'" \
-     && printf '%s\n' "$_fc" | grep -q "error(.REFUS: FORGE_CRED_KIND_INVALIDE" \
+  if printf '%s\n' "$_fc" | pipe_q "== 'secret-text'" \
+     && printf '%s\n' "$_fc" | pipe_q "== 'username-password'" \
+     && printf '%s\n' "$_fc" | pipe_q "error(.REFUS: FORGE_CRED_KIND_INVALIDE" \
      && [ "$(printf '%s\n' "$_fc" | grep -c 'echo "credential de la forge : ')" = 2 ] \
      && [ "$(printf '%s\n' "$_fc" | grep -v '^[[:space:]]*$' | tail -2 | head -1 | sed -E 's/^[[:space:]]+//' | cut -c1-6)" = 'error(' ]; then
     N_FCOK=$((N_FCOK+1))
@@ -539,16 +551,16 @@ code_sh(){ grep -vE '^\s*#' "$1"; }
 # L6 (2026-09-11) : le défaut de BOOTSTRAP_JOBS n'est plus vide — un job posé
 # sans amorçage est MUET (ses propriétés ne sont posées que par son premier
 # build) — et l'amorçage des deux jobs de l'aval est ATTENDU puis RELU.
-{ code_sh "$SPJ" | grep -q 'BOOTSTRAP_JOBS="${BOOTSTRAP_JOBS:-provision-apply provision-plan}"' \
-  && code_sh "$SPJ" | grep -qF '"$JENKINS_UI/job/$J/build"' \
-  && code_sh "$SPJ" | grep -q 'BOOTSTRAP_AWAIT_JOBS="${BOOTSTRAP_AWAIT_JOBS:-provision-apply provision-plan}"' \
-  && code_sh "$SPJ" | grep -qF 'amorcage_relu "$J" "$NB"' \
-  && code_sh "$SPJ" | grep -q 'AMORCAGE_INCOMPLET'; } \
+{ code_sh "$SPJ" | pipe_q 'BOOTSTRAP_JOBS="${BOOTSTRAP_JOBS:-provision-apply provision-plan}"' \
+  && code_sh "$SPJ" | pipe_q -F '"$JENKINS_UI/job/$J/build"' \
+  && code_sh "$SPJ" | pipe_q 'BOOTSTRAP_AWAIT_JOBS="${BOOTSTRAP_AWAIT_JOBS:-provision-apply provision-plan}"' \
+  && code_sh "$SPJ" | pipe_q -F 'amorcage_relu "$J" "$NB"' \
+  && code_sh "$SPJ" | pipe_q 'AMORCAGE_INCOMPLET'; } \
   && ok "setup-provision-jobs.sh : les deux jobs de l'aval sont amorcés PAR DÉFAUT (POST /job/<j>/build), leur amorçage est ATTENDU et RELU, et ce qui manque est nommé (AMORCAGE_INCOMPLET)" \
   || ko "setup-provision-jobs.sh : défaut BOOTSTRAP_JOBS, BOOTSTRAP_AWAIT_JOBS, amorcage_relu ou AMORCAGE_INCOMPLET absents"
-code_sh "$SPJ" | grep -q '400) warn "amorçage refusé' && code_sh "$SPJ" | grep -q 'if \[ "$POSED" = true \]; then' \
+code_sh "$SPJ" | pipe_q '400) warn "amorçage refusé' && code_sh "$SPJ" | pipe_q 'if \[ "$POSED" = true \]; then' \
   && ok "amorçage gaté sur une pose RÉUSSIE, 400 (déjà paramétré) nommé et rc≠0" || ko "amorçage non gaté sur la pose, ou 400 avalé"
-code_sh "$STO" | grep -q 'case " $JOBS " in \*" app-request "\*) BOOTSTRAP="app-request";; esac' && code_sh "$STO" | grep -q 'BOOTSTRAP_JOBS="$BOOTSTRAP"' \
+code_sh "$STO" | pipe_q 'case " $JOBS " in \*" app-request "\*) BOOTSTRAP="app-request";; esac' && code_sh "$STO" | pipe_q 'BOOTSTRAP_JOBS="$BOOTSTRAP"' \
   && ok "setup-team-onboard-jobs.sh : BOOTSTRAP_JOBS=app-request dérivé de JOBS et transmis au délégué" || ko "setup-team-onboard-jobs.sh ne demande pas l'amorçage d'app-request"
 grep -Eq '<!--CHOICES:(TEAMS|APIS)-->' ci/jenkins/app-request.job.xml && ko "app-request.job.xml porte encore un marqueur : la substitution serait tentée" \
   || ok "app-request.job.xml sans marqueur : la recherche statique de setup-team-onboard-jobs.sh ne le passe jamais à sed (NO-OP)"
@@ -637,7 +649,7 @@ grep -qF '__GIT_BASE__' "$POSTE1" \
 [ "$RC3" -eq 0 ] && grep -qF '<name>*/develop</name>' "$POSTE3" \
   && ok "GIT_BASE=develop (knob explicite) GAGNE sur la HEAD master du dépôt" \
   || ko "le knob GIT_BASE ne gagne pas : rc=$RC3, $(grep -o '<name>[^<]*</name>' "$POSTE3" | head -2 | tr '\n' ' ')"
-[ "$RC4" -ne 0 ] && printf '%s' "$OUT4" | grep -q 'BRANCHE_PAR_DEFAUT_INDECIDABLE' && [ ! -s "$BODYDIR/app-request.posted.xml" ] \
+[ "$RC4" -ne 0 ] && printf '%s' "$OUT4" | pipe_q 'BRANCHE_PAR_DEFAUT_INDECIDABLE' && [ ! -s "$BODYDIR/app-request.posted.xml" ] \
   && ok "ni knob ni dépôt à interroger ⇒ refus BRANCHE_PAR_DEFAUT_INDECIDABLE, rc≠0, AUCUN XML posté (jamais un « main » de repli)" \
   || ko "sans branche décidable : rc=$RC4, posté=$(wc -c < "$BODYDIR/app-request.posted.xml" | tr -d ' ') octets — $(printf '%s' "$OUT4" | tail -2 | tr '\n' ' ')"
 [ -f "$BODYDIR/app-request.build" ] && ok "le build d'amorçage a été demandé juste après la pose (POST /job/app-request/build)" || ko "aucun build d'amorçage demandé"
@@ -778,7 +790,7 @@ set_pr open provision/appa-dev master
 # forge — elle demande pr_get à forge-api.sh, qui passe le secret par l'ENV de
 # forge-api.py (jamais en argv) et porte le timeout réseau (FORGE_TIMEOUT, 30 s).
 # shellcheck disable=SC2016  # motifs cherchés DANS la lib, jamais des expansions
-grep -vE '^\s*#' scripts/lib/gitea-pr-confirm.sh | grep -q 'forge_kv PC pr_get "$n"' && ! grep -vE '^\s*#' scripts/lib/gitea-pr-confirm.sh | grep -qE 'curl |urllib|/api/v[14]|Authorization|python3' \
+grep -vE '^\s*#' scripts/lib/gitea-pr-confirm.sh | pipe_q 'forge_kv PC pr_get "$n"' && ! grep -vE '^\s*#' scripts/lib/gitea-pr-confirm.sh | pipe_q -E 'curl |urllib|/api/v[14]|Authorization|python3' \
   && ok "la forge est relue par forge-api (forge_kv pr_get) : ni curl, ni urllib, ni /api/v1 dans la lib — le secret passe par l'ENVIRONNEMENT de forge-api.py (jamais en argv)" || ko "la lib compose encore un appel de forge en ligne (curl/urllib//api/v1) ou n'appelle pas forge_kv pr_get"
 grep -q 'FORGE_TIMEOUT' scripts/lib/forge-api.py && grep -q 'timeout=timeout' scripts/lib/forge-api.py && ok "timeout réseau porté par forge-api.py (FORGE_TIMEOUT, 30 s par défaut)" || ko "aucun timeout réseau dans forge-api.py"
 
@@ -831,12 +843,12 @@ L_PULL=$(grep -n 'GET /api/v1/repos/ci/stoa-labs/pulls/12' "$STUB_LOG" | head -1
   && ok "forge confirmée puis clone impossible (le stub n'est pas un dépôt git) ⇒ CLONE_ECHEC rc 1, faits : refus + tête CONFIRMÉE (le statut pourra parler)" || ko "clone impossible : rc=$RC verdict=$(fact PLAN_VERDICT) head=$(fact GITEA_HEAD_REF)"
 [ -n "$L_PULL" ] && [ -n "$L_CLONE" ] && [ "$L_PULL" -lt "$L_CLONE" ] && ok "ordre sur le journal HTTP : GET /pulls/12 (ligne $L_PULL) AVANT la tentative de clone (ligne $L_CLONE)" || ko "ordre forge/clone non prouvé (pull=$L_PULL clone=$L_CLONE)"
 [ "$(nreq POST)" = 0 ] && ok "… et toujours aucun commentaire" || ko "… un commentaire est parti sur un refus"
-grep -vE '^\s*#' scripts/provision-plan.sh | grep -q 'git checkout -q --detach "$GITEA_HEAD_SHA"' && ok "le checkout vise le SHA de tête RELU (--detach : un commit, jamais un chemin ni une option), jamais le nom de branche du payload" || ko "le checkout n'utilise pas --detach GITEA_HEAD_SHA"
-grep -vE '^\s*#' scripts/provision-plan.sh | grep -q '|| refus BRANCHE_INTROUVABLE' && ok "checkout raté ⇒ BRANCHE_INTROUVABLE (plus jamais vert par IGNORE)" || ko "checkout non gardé"
+grep -vE '^\s*#' scripts/provision-plan.sh | pipe_q 'git checkout -q --detach "$GITEA_HEAD_SHA"' && ok "le checkout vise le SHA de tête RELU (--detach : un commit, jamais un chemin ni une option), jamais le nom de branche du payload" || ko "le checkout n'utilise pas --detach GITEA_HEAD_SHA"
+grep -vE '^\s*#' scripts/provision-plan.sh | pipe_q '|| refus BRANCHE_INTROUVABLE' && ok "checkout raté ⇒ BRANCHE_INTROUVABLE (plus jamais vert par IGNORE)" || ko "checkout non gardé"
 grep -q '^PLAN_PR_NUMBER=12$' "$TMP/plan.facts" && ok "les faits portent PLAN_PR_NUMBER (jamais les faits d'une autre PR relus comme les siens)" || ko "PLAN_PR_NUMBER absent des faits"
 
-grep -vE '^\s*#' scripts/provision-plan.sh | grep -q 'facts refus "SCRIPT_INTERROMPU' && ok "faits INITIAUX (refus SCRIPT_INTERROMPU, tête vide) écrits dès le prologue : une mort inattendue laisse un fichier honnête" || ko "pas de faits initiaux"
-grep -vE '^\s*#' scripts/provision-plan.sh | grep -qE '^\($' && grep -vE '^\s*#' scripts/provision-plan.sh | grep -q '^) >"$PLAN_LOG" 2>&1 || VERDICT="fail"' && ok "le bloc de plan est un SOUS-SHELL ( … ) : un exit 1 y rend VERDICT=fail au lieu de tuer le script" || ko "le bloc de plan n'est pas un sous-shell"
+grep -vE '^\s*#' scripts/provision-plan.sh | pipe_q 'facts refus "SCRIPT_INTERROMPU' && ok "faits INITIAUX (refus SCRIPT_INTERROMPU, tête vide) écrits dès le prologue : une mort inattendue laisse un fichier honnête" || ko "pas de faits initiaux"
+grep -vE '^\s*#' scripts/provision-plan.sh | pipe_q -E '^\($' && grep -vE '^\s*#' scripts/provision-plan.sh | pipe_q '^) >"$PLAN_LOG" 2>&1 || VERDICT="fail"' && ok "le bloc de plan est un SOUS-SHELL ( … ) : un exit 1 y rend VERDICT=fail au lieu de tuer le script" || ko "le bloc de plan n'est pas un sous-shell"
 
 echo
 echo "== 9. (c bis) APRÈS le clone (dépôt git servi en dumb-http par le stub) : un manifeste SUPPRIMÉ rend un ❌ commenté + faits fail — plus jamais un rc 1 muet =="
@@ -858,8 +870,8 @@ plan 12 provision/appa-dev; RC=$?
 [ -n "${PLAN_DEBUG:-}" ] && { echo "----- plan.out (PLAN_DEBUG)"; cat "$TMP/plan.out"; echo "----- http.log"; cat "$STUB_LOG"; echo "-----"; }
 [ "$RC" -eq 1 ] && ok "plan sur une PR qui supprime le manifeste : rc 1 (verdict négatif), le script n'est PAS mort en silence" || ko "plan sur manifeste supprimé : rc=$RC — $(tail -3 "$TMP/plan.out" | tr '\n' ' ')"
 [ "$(fact PLAN_VERDICT)" = fail ] && [ "$(fact GITEA_HEAD_SHA)" = "$SHA_BR" ] && ok "faits : PLAN_VERDICT=fail, tête = SHA relu ($SHA_BR)" || ko "faits : verdict=$(fact PLAN_VERDICT) sha=$(fact GITEA_HEAD_SHA)"
-last_body | grep -q '❌' && last_body | grep -q '<!-- provision-plan -->' && ok "le verdict ❌ EST posé sur la PR (marqueur provision-plan)" || ko "aucun verdict posé : $(last_body | head -c 120)"
-last_body | grep -q "src/commit/$SHA_BR/" && last_body | grep -q "tete relue sur la forge : \`$SHA_BR\`" && ok "le verdict est LIÉ au contenu : lien src/commit/<sha relu>, tête citée" || ko "verdict non lié au SHA relu"
+last_body | pipe_q '❌' && last_body | pipe_q '<!-- provision-plan -->' && ok "le verdict ❌ EST posé sur la PR (marqueur provision-plan)" || ko "aucun verdict posé : $(last_body | head -c 120)"
+last_body | pipe_q "src/commit/$SHA_BR/" && last_body | pipe_q "tete relue sur la forge : \`$SHA_BR\`" && ok "le verdict est LIÉ au contenu : lien src/commit/<sha relu>, tête citée" || ko "verdict non lié au SHA relu"
 grep -q 'manifeste introuvable' "$TMP/plan.out" && ok "la sortie du plan nomme la cause (manifeste introuvable)" || ko "cause absente de la sortie"
 # L3 — LE MÊME SCÉNARIO, SANS KNOB : le dépôt est servi ici, sa HEAD dit `master`,
 # et provision-plan.sh la DÉCOUVRE (scripts/lib/git-base.sh) avant de relire la PR
@@ -974,7 +986,7 @@ precede "$TMP/pd.se" '^\[dbg forge-api\.py\] GET [^ ]*/pulls/12 -> HTTP 200 ' '^
 # Le refus RECOPIE le stderr de la confirmation (la cause de forge-api, puis la
 # ligne FORGE_NON_CONFIRMEE) et PLAN_REASON en hérite : les lignes de debug
 # doivent en être SÉPARÉES — relayées avant, jamais dans le refus ni les faits.
-! grep '^REFUS: ' "$TMP/pd.se" | grep -q '\[dbg' && ! grep -q '\[dbg' "$TMP/plan.facts" \
+! grep '^REFUS: ' "$TMP/pd.se" | pipe_q '\[dbg' && ! grep -q '\[dbg' "$TMP/plan.facts" \
   && grep -q "^PLAN_REASON=FORGE_NON_CONFIRMEE : FORGE_NON_CONFIRMEE : tete de la PR #12 = 'provision/appb-dev', le payload nommait 'provision/appa-dev' — aucun commentaire, aucun clone$" "$TMP/plan.facts" \
   && ok "(c ter).2b le refus et PLAN_REASON portent la CAUSE (« tete de la PR #12 = … »), sans aucune ligne « [dbg » : le debug relayé est SÉPARÉ de la cause que le refus recopie" \
   || ko "(c ter).2b : $(grep -E '^PLAN_REASON=' "$TMP/plan.facts" | cut -c1-200)"
@@ -1101,7 +1113,7 @@ else ko "(c ter).7b mutation impossible — mutant no-op"; fi
 M3=$(plan_mutant plan-mut3 's#^(    m=")\$\(redact < "\$1" [|] tr#\1$(head -c 400 < "$1" | tr#')
 if [ -n "$M3" ]; then
   PD_SCRIPT="$M3" plan_dbg 12 provision/appa-dev STOA_DEBUG=1 PATH="$SHIMPL:$PATH" "SHIM_CLONE_SECRET_AT=$SECRET_AT"; RC=$?
-  [ "$RC" -eq 1 ] && grep '^\[dbg' "$TMP/pd.se" | grep -qF -- "jeton $FRAG" && ! grep -qF -- "$STUB_TOKEN" "$TMP/pd.se" \
+  [ "$RC" -eq 1 ] && grep '^\[dbg' "$TMP/pd.se" | pipe_q -F -- "jeton $FRAG" && ! grep -qF -- "$STUB_TOKEN" "$TMP/pd.se" \
     && ok "(c ter).7c dbg_git_err coupe PUIS masque ⇒ « jeton $FRAG » : cinq octets du token dans la ligne « git: » ($(git_octets "$TMP/pd.se") octets au lieu de 400) — (c ter).6b et .6d tiennent à l'ordre masque→coupe, pas au redact de dbg" \
     || ko "(c ter).7c rc=$RC : le mutant ne laisse pas de morceau — …$(git_line "$TMP/pd.se" | tail -c 60)"
 else ko "(c ter).7c mutation impossible — mutant no-op"; fi
@@ -1124,31 +1136,31 @@ shellcheck -x scripts/provision-plan-status.sh >/dev/null 2>&1 && ok "provision-
 printf '[]' > "$STUB_COMMENTS"; status SUCCESS "$F_OK" 12 provision/appa-dev; RC=$?
 [ "$RC" -eq 0 ] && grep -q COMMENT_SKIPPED "$TMP/st.out" && [ "$(ncomments)" = 0 ] && ok "SUCCESS + verdict ok, aucun statut préexistant ⇒ COMMENT_SKIPPED : pas de troisième commentaire redondant" || ko "SUCCESS+ok : rc=$RC $(cat "$TMP/st.out") n=$(ncomments)"
 printf '[{"id":1,"body":"<!-- provision-plan-build -->\\nrouge perime"}]' > "$STUB_COMMENTS"; status SUCCESS "$F_OK" 12 provision/appa-dev; RC=$?
-[ "$RC" -eq 0 ] && grep -q 'COMMENT_UPDATED 1' "$TMP/st.out" && last_body | grep -q 'termine sans erreur' && ok "SUCCESS + ok avec un statut rouge périmé ⇒ mis à jour (le rouge est effacé)" || ko "SUCCESS+ok avec statut existant : $(cat "$TMP/st.out")"
+[ "$RC" -eq 0 ] && grep -q 'COMMENT_UPDATED 1' "$TMP/st.out" && last_body | pipe_q 'termine sans erreur' && ok "SUCCESS + ok avec un statut rouge périmé ⇒ mis à jour (le rouge est effacé)" || ko "SUCCESS+ok avec statut existant : $(cat "$TMP/st.out")"
 printf '[]' > "$STUB_COMMENTS"; status SUCCESS "$F_IGN" 12 provision/appa-dev; RC=$?
-[ "$RC" -eq 0 ] && [ "$(ncomments)" = 1 ] && last_body | grep -q 'IGNOREE' && last_body | grep -q 'aucun manifeste ajoute' && last_body | grep -q '<!-- provision-plan-build -->' \
+[ "$RC" -eq 0 ] && [ "$(ncomments)" = 1 ] && last_body | pipe_q 'IGNOREE' && last_body | pipe_q 'aucun manifeste ajoute' && last_body | pipe_q '<!-- provision-plan-build -->' \
   && ok "SUCCESS + ignore ⇒ statut posé « demande IGNOREE (raison) : aucun verdict », marqueur provision-plan-build" || ko "SUCCESS+ignore : $(cat "$TMP/st.out") body=$(last_body | head -c 120)"
 printf '[]' > "$STUB_COMMENTS"; status ABORTED "" 12 provision/appa-dev; RC=$?
 set_pr open provision/appa-dev master
-[ "$RC" -eq 0 ] && [ "$(ncomments)" = 1 ] && last_body | grep -q 'ABANDONNE' && last_body | grep -q 'provision-plan #77' \
+[ "$RC" -eq 0 ] && [ "$(ncomments)" = 1 ] && last_body | pipe_q 'ABANDONNE' && last_body | pipe_q 'provision-plan #77' \
   && ok "ABORTED sans faits ⇒ forge relue, statut « ABANDONNE, aucun verdict », repli textuel provision-plan #77 (BUILD_URL vide)" || ko "ABORTED : rc=$RC $(cat "$TMP/st.out") body=$(last_body | head -c 120)"
 printf '[]' > "$STUB_COMMENTS"; status FAILURE "$F_FAIL" 12 provision/appa-dev; RC=$?
-[ "$RC" -eq 0 ] && last_body | grep -q 'NEGATIF' && ok "FAILURE + fail ⇒ « verdict NEGATIF, voir provision-plan »" || ko "FAILURE+fail : $(last_body | head -c 120)"
+[ "$RC" -eq 0 ] && last_body | pipe_q 'NEGATIF' && ok "FAILURE + fail ⇒ « verdict NEGATIF, voir provision-plan »" || ko "FAILURE+fail : $(last_body | head -c 120)"
 printf '[]' > "$STUB_COMMENTS"; status FAILURE "$F_REFUS" 12 provision/appa-dev; RC=$?
-[ "$RC" -eq 0 ] && last_body | grep -q 'REFUS avant le verdict' && last_body | grep -q 'CLONE_ECHEC' && ok "FAILURE + refus (forge confirmée, clone refusé) ⇒ « REFUS avant le verdict : CLONE_ECHEC »" || ko "FAILURE+refus : $(last_body | head -c 120)"
+[ "$RC" -eq 0 ] && last_body | pipe_q 'REFUS avant le verdict' && last_body | pipe_q 'CLONE_ECHEC' && ok "FAILURE + refus (forge confirmée, clone refusé) ⇒ « REFUS avant le verdict : CLONE_ECHEC »" || ko "FAILURE+refus : $(last_body | head -c 120)"
 printf '[]' > "$STUB_COMMENTS"; status FAILURE "$F_NC" 12 provision/appa-dev; RC=$?
 [ "$RC" -eq 0 ] && [ "$(ncomments)" = 0 ] && grep -q "n'a pas obtenu la confirmation" "$TMP/st.out" && ok "faits « refus, tête vide » (FORGE_NON_CONFIRMEE) ⇒ AUCUN commentaire : la PR nommée par le payload n'est pas la nôtre" || ko "faits non confirmés : n=$(ncomments) $(cat "$TMP/st.out")"
 printf '[]' > "$STUB_COMMENTS"; status FAILURE "" 12 provision/appa-dev; RC=$?
-[ "$RC" -eq 0 ] && [ "$(ncomments)" = 1 ] && last_body | grep -q 'ECHOUE (FAILURE) avant le plan' && grep -q 'GET /api/v1/repos/ci/stoa-labs/pulls/12' "$STUB_LOG" \
+[ "$RC" -eq 0 ] && [ "$(ncomments)" = 1 ] && last_body | pipe_q 'ECHOUE (FAILURE) avant le plan' && grep -q 'GET /api/v1/repos/ci/stoa-labs/pulls/12' "$STUB_LOG" \
   && ok "FAILURE sans faits ⇒ forge relue par la lib, statut « ECHOUE (FAILURE) avant le plan »" || ko "FAILURE sans faits : n=$(ncomments) $(cat "$TMP/st.out")"
 set_pr open provision/appb-dev master; printf '[]' > "$STUB_COMMENTS"; status FAILURE "" 12 provision/appa-dev; RC=$?
 [ "$RC" -eq 0 ] && [ "$(ncomments)" = 0 ] && grep -q 'forge non confirmee' "$TMP/st.out" && ok "FAILURE sans faits, forge divergente ⇒ AUCUN commentaire (rc 0)" || ko "forge divergente : n=$(ncomments) $(cat "$TMP/st.out")"
 : > "$STUB_LOG"; status FAILURE "" 'x' provision/appa-dev; RC=$?
 [ "$RC" -eq 0 ] && [ "$(nreq GET)" = 0 ] && ok "PR_NUMBER non numérique ⇒ rc 0, aucun appel" || ko "PR_NUMBER non numérique : rc=$RC GET=$(nreq GET)"
 set_pr open provision/appa-dev master; printf '[]' > "$STUB_COMMENTS"; ST_BUILD_URL=http://j/job/provision-plan/78/ status ABORTED "" 12 provision/appa-dev
-last_body | grep -q 'http://j/job/provision-plan/78/' && ok "BUILD_URL posé ⇒ le lien est dans le corps" || ko "BUILD_URL ignoré"
+last_body | pipe_q 'http://j/job/provision-plan/78/' && ok "BUILD_URL posé ⇒ le lien est dans le corps" || ko "BUILD_URL ignoré"
 printf '[]' > "$STUB_COMMENTS"; status ABORTED "$F_OK" 12 provision/appa-dev; RC=$?
-[ "$RC" -eq 0 ] && last_body | grep -q 'verdict a ete RENDU' && ! last_body | grep -q 'AUCUN verdict' && ok "ABORTED + verdict ok ⇒ « verdict RENDU, build termine ABORTED apres coup » (jamais « AUCUN verdict » à côté d'un ✅)" || ko "ABORTED+ok : $(last_body | head -c 140)"
+[ "$RC" -eq 0 ] && last_body | pipe_q 'verdict a ete RENDU' && ! last_body | pipe_q 'AUCUN verdict' && ok "ABORTED + verdict ok ⇒ « verdict RENDU, build termine ABORTED apres coup » (jamais « AUCUN verdict » à côté d'un ✅)" || ko "ABORTED+ok : $(last_body | head -c 140)"
 
 # ── L3 (revue 2026-09-10) : la DÉCOUVERTE joue aussi pour le statut de build ──
 # Les cas ci-dessus posent le knob GIT_BASE : ils éprouvent la relecture de la
@@ -1160,7 +1172,7 @@ git clone -q --bare "$SRC" "$STUB_GITDIR" && ( cd "$STUB_GITDIR" && git update-s
   && git -C "$STUB_GITDIR" symbolic-ref HEAD refs/heads/master
 set_pr open provision/appa-dev master; printf '[]' > "$STUB_COMMENTS"
 ST_BASE="" status FAILURE "" 12 provision/appa-dev; RC=$?
-[ "$RC" -eq 0 ] && [ "$(ncomments)" = 1 ] && last_body | grep -q 'ECHOUE (FAILURE) avant le plan' \
+[ "$RC" -eq 0 ] && [ "$(ncomments)" = 1 ] && last_body | pipe_q 'ECHOUE (FAILURE) avant le plan' \
   && ok "sans GIT_BASE, la base est DÉCOUVERTE sur le dépôt servi (HEAD=master) et le statut de build est posté" \
   || ko "découverte pour le statut : rc=$RC n=$(ncomments) $(cat "$TMP/st.out")"
 # L'ENVELOPPE EST MESURÉE, pas affirmée. Ce script ne clone jamais : il n'a
@@ -1186,10 +1198,10 @@ printf '[]' > "$STUB_COMMENTS"; ST_BASE="" status FAILURE "" 12 provision/appa-d
   && ok "dépôt injoignable pour la découverte ⇒ REFUS NOMMÉ rc≠0 (jamais un exit 0 muet qui effacerait le statut de build)" \
   || ko "découverte ratée non refusée : rc=$RC n=$(ncomments) $(cat "$TMP/st.out")"
 printf '[]' > "$STUB_COMMENTS"; status UNSTABLE "$F_OK" 12 provision/appa-dev; RC=$?
-[ "$RC" -eq 0 ] && last_body | grep -q 'verdict a ete RENDU' && ! last_body | grep -q 'injoignable' && ok "UNSTABLE + verdict ok ⇒ verdict RENDU (jamais « agent injoignable »)" || ko "UNSTABLE+ok : $(last_body | head -c 140)"
+[ "$RC" -eq 0 ] && last_body | pipe_q 'verdict a ete RENDU' && ! last_body | pipe_q 'injoignable' && ok "UNSTABLE + verdict ok ⇒ verdict RENDU (jamais « agent injoignable »)" || ko "UNSTABLE+ok : $(last_body | head -c 140)"
 F_CE='GITEA_HEAD_REF=provision/appa-dev\nGITEA_HEAD_SHA=cccc\nPLAN_VERDICT=refus\nPLAN_REASON=COMMENTAIRE_ECHEC : plan ok sur x mais le commentaire de verdict n a pas pu etre pose\n'
 printf '[]' > "$STUB_COMMENTS"; status FAILURE "$F_CE" 12 provision/appa-dev; RC=$?
-[ "$RC" -eq 0 ] && last_body | grep -q 'REFUS avant le verdict' && last_body | grep -q 'COMMENTAIRE_ECHEC' && ok "verdict rendu mais commentaire en échec ⇒ « REFUS avant le verdict : COMMENTAIRE_ECHEC » (vrai), pas « agent injoignable »" || ko "COMMENTAIRE_ECHEC : $(last_body | head -c 140)"
+[ "$RC" -eq 0 ] && last_body | pipe_q 'REFUS avant le verdict' && last_body | pipe_q 'COMMENTAIRE_ECHEC' && ok "verdict rendu mais commentaire en échec ⇒ « REFUS avant le verdict : COMMENTAIRE_ECHEC » (vrai), pas « agent injoignable »" || ko "COMMENTAIRE_ECHEC : $(last_body | head -c 140)"
 F_AUTRE='PLAN_PR_NUMBER=99\nGITEA_HEAD_REF=provision/appa-dev\nGITEA_HEAD_SHA=cccc\nPLAN_VERDICT=ok\nPLAN_REASON=x\n'
 printf '[]' > "$STUB_COMMENTS"; status FAILURE "$F_AUTRE" 12 provision/appa-dev; RC=$?
 [ "$RC" -eq 0 ] && [ "$(ncomments)" = 0 ] && grep -q 'autre PR' "$TMP/st.out" && ok "faits d'une AUTRE PR (#99, workspace persistant) ⇒ périmés, aucun statut" || ko "faits d'une autre PR relus : n=$(ncomments) $(cat "$TMP/st.out")"
@@ -1198,7 +1210,7 @@ BUILD_RESULT=FAILURE PLAN_FACTS="$TMP/st.facts" GITEA_HEAD_REF=provision/appa-de
 [ "$(ncomments)" = 0 ] && grep -q 'autre PR' "$TMP/st.out" && ok "faits en env d'une autre PR ⇒ aucun statut" || ko "faits env d'une autre PR relus"
 grep -q 'à' "$TMP/st.out" && ko "accents dans la sortie du statut" || true
 for W in 'IGNOREE' 'ABANDONNE' 'NEGATIF' 'ECHOUE'; do grep -q "$W" scripts/provision-plan-status.sh || ko "corps '$W' absent"; done
-grep -vE '^\s*#' scripts/provision-plan-status.sh | grep -qE "[àâéèêîôûç]" && ko "corps de statut avec accents (traversent agent/JSON/Gitea)" || ok "corps de statut sans accents (vue code)"
+grep -vE '^\s*#' scripts/provision-plan-status.sh | pipe_q -E "[àâéèêîôûç]" && ko "corps de statut avec accents (traversent agent/JSON/Gitea)" || ok "corps de statut sans accents (vue code)"
 
 echo
 echo "== 9. (d bis) statut : les faits peuvent venir de l'ENVIRONNEMENT (post de stage) =="
@@ -1206,7 +1218,7 @@ printf '[]' > "$STUB_COMMENTS"; rm -f "$TMP/st.facts"; : > "$STUB_LOG"
 BUILD_RESULT=SUCCESS PLAN_FACTS="$TMP/st.facts" GITEA_HEAD_REF=provision/appa-dev PLAN_VERDICT=ignore PLAN_REASON='aucun manifeste ajoute' \
   PR_NUMBER=12 PR_BRANCH=provision/appa-dev GITEA_TOKEN="$STUB_TOKEN" GIT_HOST="$GH9" GIT_REPO=ci/stoa-labs JOB_NAME=provision-plan BUILD_NUMBER=79 \
   bash scripts/provision-plan-status.sh >"$TMP/st.out" 2>&1; RC=$?
-[ "$RC" -eq 0 ] && [ "$(ncomments)" = 1 ] && last_body | grep -q 'IGNOREE' && ! grep -q 'GET /api/v1/repos/ci/stoa-labs/pulls' "$STUB_LOG" \
+[ "$RC" -eq 0 ] && [ "$(ncomments)" = 1 ] && last_body | pipe_q 'IGNOREE' && ! grep -q 'GET /api/v1/repos/ci/stoa-labs/pulls' "$STUB_LOG" \
   && ok "faits en env (sans fichier) ⇒ statut IGNOREE posé SANS relire la forge (le nœud du post n'a pas besoin du workspace du stage)" || ko "faits en env : rc=$RC n=$(ncomments) $(cat "$TMP/st.out")"
 printf '[]' > "$STUB_COMMENTS"; rm -f "$TMP/st.facts"
 BUILD_RESULT=FAILURE PLAN_FACTS="$TMP/st.facts" GITEA_HEAD_REF= PLAN_VERDICT=refus PLAN_REASON='FORGE_NON_CONFIRMEE : tete divergente' \
@@ -1255,7 +1267,7 @@ PRS=scripts/provision-request.sh
 L_4=$(grep -n 'echo "\[4/5\] ouverture de la Pull Request' "$PRS" | cut -d: -f1); L_5=$(grep -n 'echo "\[5/5\] plan enchaîné sur la PR' "$PRS" | cut -d: -f1)
 [ -n "$L_4" ] && [ -n "$L_5" ] && [ "$L_4" -lt "$L_5" ] && ok "la PR naît en [4/5] (ligne $L_4), le plan enchaîné suit en [5/5] (ligne $L_5)" || ko "numérotation/ordre [4/5]<[5/5] cassés (4=$L_4 5=$L_5)"
 L_PF=$(grep -n 'PLAN_INLINE=fail' "$PRS" | cut -d: -f1)
-[ -n "$L_PF" ] && ! sed -n "$((L_PF)),$((L_PF+2))p" "$PRS" | grep -qE 'exit [1-9]' && ok "PLAN_INLINE=fail (ligne $L_PF) n'est suivi d'aucun exit non nul : le plan enchaîné n'est pas fatal" || ko "le plan enchaîné est devenu fatal"
+[ -n "$L_PF" ] && ! sed -n "$((L_PF)),$((L_PF+2))p" "$PRS" | pipe_q -E 'exit [1-9]' && ok "PLAN_INLINE=fail (ligne $L_PF) n'est suivi d'aucun exit non nul : le plan enchaîné n'est pas fatal" || ko "le plan enchaîné est devenu fatal"
 # L5 : la PR déjà ouverte est OPEN_NUMBER de pr_find_open (relue AVANT le push), réutilisée sans POST ni exit.
 grep -q 'PR_NUM="$OPEN_NUM"; PR_URL_FORGE="$OPEN_URL"' "$PRS" && grep -q 'echo "  PR déjà ouverte: #${PR_NUM}"' "$PRS" \
   && ok "une PR déjà ouverte (OPEN_NUMBER relu avant le push) est réutilisée : succès, aucun POST" || ko "EXIST n'est plus traité comme succès"
@@ -1342,7 +1354,7 @@ r = T.fromstring(sys.stdin.read())
 for p in r.iter():
     if p.tag.endswith('ChoiceParameterDefinition') and p.findtext('name') == 'ENVIRONMENT': print(' '.join(s.text or '' for s in p.iter('string')))")
 [ "$ENVM" = "alpha beta gamma delta eps" ] && ok "mutation env_chain→env_chain_nonprod dans le poseur ⇒ le TERMINUS disparaît (zeta) : la dérivation est bien ce qui l'inclut (A7)" || ko "mutation du poseur sans effet : [$ENVM]"
-grep -vE '^\s*#' "$SSJ" | grep -q 'BUILD_EP="build"' && grep -vE '^\s*#' "$SSJ" | grep -q "ParametersDefinitionProperty'))" && grep -q 'BOOTSTRAP_WAIT="${BOOTSTRAP_WAIT:-360}"' "$SSJ" && grep -vE '^\s*#' "$SSJ" | grep -q 'attendu trigger=\[$WANT_TRIG\]' \
+grep -vE '^\s*#' "$SSJ" | pipe_q 'BUILD_EP="build"' && grep -vE '^\s*#' "$SSJ" | pipe_q "ParametersDefinitionProperty'))" && grep -q 'BOOTSTRAP_WAIT="${BOOTSTRAP_WAIT:-360}"' "$SSJ" && grep -vE '^\s*#' "$SSJ" | pipe_q 'attendu trigger=\[$WANT_TRIG\]' \
   && ok "poseur : amorçage POST /build en mode no, relecture « UNE propriété + trigger + option posés par le build » (faits 6/10), BOOTSTRAP_WAIT 360 s" || ko "poseur : amorçage/relecture/attente non câblés"
 printf 'environments: [alpha, Beta, gamma]\n' > "$TMP/chain10b.yaml"
 OUTB=$(STOA_ENV_CHAIN_FILE="$TMP/chain10b.yaml" JOB=publish-api-deploy SCRIPT_PATH=poc-control-plane-federation/ci/Jenkinsfile.publish-api GIT_BASE=master bash "$SSJ" --print 2>"$TMP/ss.err"); RC=$?
@@ -1377,7 +1389,7 @@ OUT=$(gwt_mirror_diff ci/jenkins/provision-apply.job.xml "$TMP/jf-token" 2>&1); 
 sed "s#\[key: 'MERGE_SHA',        value: '\$.pull_request.merge_commit_sha'\]#[key: 'MERGE_SHA',        value: '\$.pull_request.head.sha']#" ci/Jenkinsfile.provision-apply > "$TMP/jf-val"
 OUT=$(gwt_mirror_diff ci/jenkins/provision-apply.job.xml "$TMP/jf-val" 2>&1)
 if ! grep -q "head.sha" "$TMP/jf-val"; then ko "mutation (c) non appliquée"
-elif printf '%s' "$OUT" | grep -q 'vars=14' && ! tr -s ' ' < "$TMP/jf-val" | grep -qF "[key: 'MERGE_SHA', value: '\$.pull_request.merge_commit_sha']"; then
+elif printf '%s' "$OUT" | pipe_q 'vars=14' && ! tr -s ' ' < "$TMP/jf-val" | pipe_q -F "[key: 'MERGE_SHA', value: '\$.pull_request.merge_commit_sha']"; then
   ok "valeur de MERGE_SHA altérée (head.sha) : le COMPTE de clés ne la voit pas (vars=14), le grep exact de test-provision-apply-wiring §2 la voit — dit ici, pas supposé"
 else ko "mutation (c) : $OUT"; fi
 # (d) le filtre altéré côté Jenkinsfile (fermeture sans merge) ⇒ le filtre JOUÉ accepte ce qu'il refusait.

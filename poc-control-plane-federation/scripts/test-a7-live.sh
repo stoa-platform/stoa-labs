@@ -43,6 +43,18 @@
 # shellcheck disable=SC2015,SC2016,SC2034,SC2086
 set -uo pipefail
 set +x
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 # ── copie-exec : ne JAMAIS être coupé par une édition du script en cours (A6 passage 1) ──
 if [ -z "${A7_COPY:-}" ]; then
   _C="$(mktemp -d /tmp/a7live.XXXXXX)"; cp "$0" "$_C/run.sh"; A7_COPY="$_C" exec bash "$_C/run.sh" "$@"
@@ -454,10 +466,10 @@ ok "0.4 providers.{rec,int,homol,prod}.yml sur gitea main déclarent $TEAM (onbo
 ldap_run ldapsearch -LLL -b "$BASE_DN" -s base dn >/dev/null 2>&1 || die "LAB_ABSENT : annuaire injoignable ou bind refusé"
 in_group bob apim-apply-int && in_group carol apim-apply-homol && in_group oscar apim-operator-prod && ok "0.5 LDAP : bob ∈ apim-apply-int, carol ∈ apim-apply-homol, oscar ∈ apim-operator-prod" || die "PREREQUIS : groupes LDAP (setup-vault-ldap.sh / setup-deployer-groups.sh)"
 for u in alice:deploy-banking-demo bob:apply-int carol:apply-homol oscar:operator-deploy; do
-  P=$(vault_ldap_policies "${u%%:*}" "$(pass_of "${u%%:*}")"); printf '%s\n' "$P" | grep -qx -- "${u#*:}" || die "PREREQUIS : login LDAP→Vault de ${u%%:*} sans la policy ${u#*:} (policies : $(printf '%s' "$P" | tr '\n' ' '))"
+  P=$(vault_ldap_policies "${u%%:*}" "$(pass_of "${u%%:*}")"); printf '%s\n' "$P" | pipe_q -x -- "${u#*:}" || die "PREREQUIS : login LDAP→Vault de ${u%%:*} sans la policy ${u#*:} (policies : $(printf '%s' "$P" | tr '\n' ' '))"
 done
 ok "0.6 Vault (mount ldap) : alice deploy-banking-demo, bob apply-int, carol apply-homol, oscar operator-deploy"
-printf '%s\n' "$(vault_ldap_policies bob "$LAB_BOB_PASS")" | grep -qx deploy-banking-demo && die "PREREQUIS : bob porte deploy-banking-demo — il ne serait plus le déployeur NON-tenant de la preuve" || ok "0.6b bob ne porte PAS deploy-banking-demo (déployeur non-tenant : c'est la propriété que D2 mesure)"
+printf '%s\n' "$(vault_ldap_policies bob "$LAB_BOB_PASS")" | pipe_q -x deploy-banking-demo && die "PREREQUIS : bob porte deploy-banking-demo — il ne serait plus le déployeur NON-tenant de la preuve" || ok "0.6b bob ne porte PAS deploy-banking-demo (déployeur non-tenant : c'est la propriété que D2 mesure)"
 RU=$(vcurl "$VAULT_ADDR_LAB/v1/secret/data/stoa/envs/prod/wm-admin" | jq_ "print(d['data']['data'].get('username',''))" 2>/dev/null)
 [ "$RU" = "$TERMINUS_WM_USER" ] && ok "0.7 ticket envs/prod/wm-admin = l'admin du terminus ($TERMINUS_WM_USER)" || die "PREREQUIS : envs/prod/wm-admin porte '$RU' — jouer setup-terminus-apps.sh"
 tcall GET /applications; [ "$(tcode)" = 200 ] && ok "0.8 terminus joignable et login prouvé (GET /applications ⇒ 200)" || die "PREREQUIS : terminus $TERMINUS_ADMIN ⇒ HTTP $(tcode)"
@@ -492,7 +504,7 @@ RES_10=$(gw "$GW_ADMIN/applications" | jq_ "print(' '.join(a.get('name','') for 
 tcall GET /applications; RES_T=$(jq_ "print(' '.join(a.get('name','') for a in d.get('applications',[]) if a.get('name','').startswith('a7p')))" < "$TMP/t.body")
 [ -z "$RES_T" ] && ok "0.13b aucune application résiduelle a7p* sur le terminus" || die "PREREQUIS : résidus sur le terminus : $RES_T"
 T_COUNT0=$(t_app_count)
-curl -s -m 5 "$ITSM_URL_LOCAL/changes/CHG-0001" | grep -q '"approved"' && curl -s -m 5 "$ITSM_URL_LOCAL/changes/CHG-0002" | grep -q '"draft"' && ok "0.14 ITSM : CHG-0001 approved, CHG-0002 draft" || die "PREREQUIS : itsm-mock (CHG-0001 approved / CHG-0002 draft)"
+curl -s -m 5 "$ITSM_URL_LOCAL/changes/CHG-0001" | pipe_q '"approved"' && curl -s -m 5 "$ITSM_URL_LOCAL/changes/CHG-0002" | pipe_q '"draft"' && ok "0.14 ITSM : CHG-0001 approved, CHG-0002 draft" || die "PREREQUIS : itsm-mock (CHG-0001 approved / CHG-0002 draft)"
 [ -z "$(gscript_get GITEA_SERVICE_LOGINS)" ] && ok "0.15 aucune globale GITEA_SERVICE_LOGINS" || die "PREREQUIS : globale GITEA_SERVICE_LOGINS posée"
 [ "$(gscript_get APPLY_ADMIN_VIA)" = direct ] && ok "0.15b APPLY_ADMIN_VIA global = direct" || die "PREREQUIS : APPLY_ADMIN_VIA global ≠ direct"
 GLOBAL_BEFORE="$(gscript_get APIM_TERMINUS_BASE)"
@@ -509,8 +521,8 @@ print("FT=%s CR=%s PV=%s ENV=%s API=%s" % (out.get("FORGE_TOKEN",("",))[0], out.
 case "$PD" in *"FT=PasswordParameterDefinition CR=StringParameterDefinition PV=StringParameterDefinition"*) ok "0.18 app-request : FORGE_TOKEN (password), CHANGE_REF, PV_REF posés";; *) die "HYPOTHESE_AMORCAGE : formulaire app-request non amorcé ($PD) — un build d'amorçage après le push";; esac
 case "$PD" in *"'prod'"*) ok "0.18b app-request : REQ_ENV liste le terminus";; *) die "PREREQUIS : REQ_ENV sans prod ($PD)";; esac
 FORM_API=$(printf '%s' "$PD" | sed -n 's/.*API=//p'); [ -n "$FORM_API" ] || die "PREREQUIS : aucune API dans la liste du formulaire"
-curl -sg "$JENKINS_UI/job/app-rollback/api/json?tree=property[parameterDefinitions[name,type]]" | grep -q '"name":"FORGE_TOKEN","type":"PasswordParameterDefinition"' && ok "0.18c app-rollback : FORGE_TOKEN (password) posé" || die "HYPOTHESE_AMORCAGE : app-rollback non amorcé"
-curl -sg "$JENKINS_UI/job/selfservice-app-deploy/api/json?tree=property[parameterDefinitions[name,choices]]" | grep -q '"prod"' && ok "0.18d selfservice-app-deploy : ENVIRONMENT liste le terminus (build job: valide les choice — mesuré)" || die "HYPOTHESE_5 : la liste de l'aval ne porte pas le terminus — le dispatch de prod mourrait après la pause (amorcer l'aval)"
+curl -sg "$JENKINS_UI/job/app-rollback/api/json?tree=property[parameterDefinitions[name,type]]" | pipe_q '"name":"FORGE_TOKEN","type":"PasswordParameterDefinition"' && ok "0.18c app-rollback : FORGE_TOKEN (password) posé" || die "HYPOTHESE_AMORCAGE : app-rollback non amorcé"
+curl -sg "$JENKINS_UI/job/selfservice-app-deploy/api/json?tree=property[parameterDefinitions[name,choices]]" | pipe_q '"prod"' && ok "0.18d selfservice-app-deploy : ENVIRONMENT liste le terminus (build job: valide les choice — mesuré)" || die "HYPOTHESE_5 : la liste de l'aval ne porte pas le terminus — le dispatch de prod mourrait après la pause (amorcer l'aval)"
 for u in alice bob carol oscar; do ensure_human "$u"; done; ok "0.19 alice/bob/carol/oscar : humains de forge, collaborateurs, tokens read:user+write:repository (GET /user ⇒ chacun)"
 UP=$(gw "$GW_ADMIN/health" | jq_ "print((d.get('status') or {}).get('uptime','') if isinstance(d.get('status'),dict) else d.get('status',''))" 2>/dev/null || true); echo "  (10.15 : health $UP — keepalive ~20 min : un aval coupé en plein play est rejoué, annoncé)"
 : > "$TMP/req.all.out"
@@ -518,16 +530,16 @@ UP=$(gw "$GW_ADMIN/health" | jq_ "print((d.get('status') or {}).get('uptime','')
 echo "═══ 1. dev — alice demande (PR sous SON identité), alice merge, alice porte ═══"
 palier dev 10.42.0.11 alice
 [ "$(pr_field "$PR_N" "['user']['login']")" = alice ] && ok "1.1 PR #$PR_N ouverte SOUS alice (user.login), mergée par alice — $MS_N" || ko "1.1 auteur : $(pr_field "$PR_N" "['user']['login']")"
-pr_body "$PR_N" | grep -q 'ouverte par : alice (identite de forge' && ok "1.2 corps : « ouverte par : alice (identite de forge …) »" || ko "1.2 corps sans identité de forge"
+pr_body "$PR_N" | pipe_q 'ouverte par : alice (identite de forge' && ok "1.2 corps : « ouverte par : alice (identite de forge …) »" || ko "1.2 corps sans identité de forge"
 [ "$RES" = SUCCESS ] && ok "1.3 provision-apply #$N_PA SUCCESS (aval #$S_NUM)" || ko "1.3 provision-apply #$N_PA = $RES : $(grep -E 'REFUS' "$TMP/pa.$N_PA.console" "$TMP/ss.${S_NUM:-0}.console" 2>/dev/null | head -2 | tr '\n' ' ')"
 console_order "$TMP/pa.$N_PA.console" 'RECONCILE_OK' 'PORTE_OK(pre)' 'Input requested' 'PORTE_OK(dispatch)' && ok "1.4 amont : RECONCILE_OK < PORTE_OK(pre) < pause < PORTE_OK(dispatch)" || ko "1.4 ordre de l'amont"
 grep -q 'décidée par le token' "$TMP/ss.$S_NUM.console" && ! grep -q 'celle du manifeste mergé' "$TMP/ss.$S_NUM.console" && ok "1.5 aval dev : équipe décidée par le token (palier autonome — contrôle positif)" || ko "1.5 aval dev : $(grep -E 'équipe|décidée' "$TMP/ss.$S_NUM.console" | head -2 | tr '\n' ' ')"
 G_APP=$(gw_app_id "$APP"); [ -n "$G_APP" ] || die "PREREQUIS : application $APP absente de la 10.15 après dev"
 O1=$(gw_app_obj "$G_APP"); KEY1=$(obj_field "$O1" KEY); KEY_RAW=$(gw_key_raw "$G_APP")
 case "$KEY_RAW" in *"*"*) die "PREREQUIS : clé MASQUÉE (${#KEY_RAW} car.) même lue en propriétaire '$(obj_field "$O1" OWNER)' — « clé jamais transportée » serait vacant";; esac
-printf '%s' "$KEY_RAW" | grep -qE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' && ok "1.6 la clé de l'application est une UUID EN CLAIR, lue en PROPRIÉTAIRE ('$(obj_field "$O1" OWNER)' — jamais imprimée)" || die "PREREQUIS : la 10.15 ne rend pas d'apiAccessKey UUID sur l'objet (${#KEY_RAW} car.) — « clé jamais transportée » serait vacant"
+printf '%s' "$KEY_RAW" | pipe_q -E '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' && ok "1.6 la clé de l'application est une UUID EN CLAIR, lue en PROPRIÉTAIRE ('$(obj_field "$O1" OWNER)' — jamais imprimée)" || die "PREREQUIS : la 10.15 ne rend pas d'apiAccessKey UUID sur l'objet (${#KEY_RAW} car.) — « clé jamais transportée » serait vacant"
 KA=$(gw "$GW_ADMIN/applications/$G_APP" | jq_ "a=(d.get('applications') or [d])[0]; print(((a.get('accessTokens') or {}).get('apiAccessKey_credentials') or {}).get('apiAccessKey') or '')")
-printf '%s' "$KA" | grep -qE '^\*{8,}$' && ok "1.6b lue en Administrator (non propriétaire), la 10.15 MASQUE la clé (${#KA} astérisques) — la clé suit le propriétaire, pas le privilège" || ko "1.6b Administrator lit : $(printf '%s' "$KA" | sed -E 's/[0-9a-f]/h/g' | cut -c1-40)"
+printf '%s' "$KA" | pipe_q -E '^\*{8,}$' && ok "1.6b lue en Administrator (non propriétaire), la 10.15 MASQUE la clé (${#KA} astérisques) — la clé suit le propriétaire, pas le privilège" || ko "1.6b Administrator lit : $(printf '%s' "$KA" | sed -E 's/[0-9a-f]/h/g' | cut -c1-40)"
 read_step dev 10.42.0.11 1.7
 pr_dashboard "$PR_N" 1.8 alice alice alice
 PR_DEV="$PR_N"
@@ -598,7 +610,7 @@ answer_pause "$N_PA" oscar "$LAB_OSCAR_PASS"; finish_amont "$N_PA"
 console_order "$TMP/ss.$S_NUM.console" "déclaration déployeur : 'oscar' porte 'operator-deploy'" "équipe : '$TEAM' — celle du manifeste mergé (la porte vers prod nomme le déployeur 'apim-operator-prod') ; tenants du porteur : aucun" "palier ouvert : envs/prod/wm-admin" "PALIER_BASE=$TERMINUS_ADMIN" "PALIER_VIA=direct" "préflight de joignabilité : $TERMINUS_ADMIN/health" \
   && ok "5.5 garde du terminus : oscar porte operator-deploy (prouvé) < équipe de Git (tenants : aucun) < ticket envs/prod/wm-admin < voie directe sur le terminus < préflight" || ko "5.5 garde : $(grep -E 'équipe|déclaration|PALIER_VIA|PALIER_BASE|palier ouvert|préflight' "$TMP/ss.$S_NUM.console" | head -6 | tr '\n' ' ')"
 gw "$GW_ADMIN/apis" | A="$G_API" jq_ "import os
-print('ACTIVE' if any((i.get('api',i).get('id')==os.environ['A'] and i.get('api',i).get('isActive') is True) for i in d.get('apiResponse',[])) else 'NON')" | grep -q ACTIVE && [ "$(t_app_count)" = "$T_COUNT0" ] && [ -z "$(t_app_id "$APP")" ] \
+print('ACTIVE' if any((i.get('api',i).get('id')==os.environ['A'] and i.get('api',i).get('isActive') is True) for i in d.get('apiResponse',[])) else 'NON')" | pipe_q ACTIVE && [ "$(t_app_count)" = "$T_COUNT0" ] && [ -z "$(t_app_id "$APP")" ] \
   && ok "5.6 à cet instant : G_API active sur la 10.15, ABSENTE du terminus — rien écrit sur le terminus (compte $T_COUNT0, pas de $APP)" || ko "5.6 terminus : $(t_app_count) applications, $APP=$(t_app_id "$APP")"
 pr_comments "$PR5" > "$TMP/c5"; grep -q 'API_NOT_PROMOTED' "$TMP/c5" && grep -q "L'ordre app/API" "$TMP/c5" && grep -q "promote/${REQ_API}-prod" "$TMP/c5" && ok "5.7 PR #$PR5 : ❌ API_NOT_PROMOTED, « L'ordre app/API », remède promote/${REQ_API}-prod nommé" || ko "5.7 commentaires : $(grep -E 'API_NOT|ordre|promote' "$TMP/c5" | head -2 | tr '\n' ' ')"
 # (d) le geste PRODUCTEUR : promouvoir l'API au terminus par ARCHIVE (export 10.15 → import terminus, même GUID)
@@ -621,7 +633,7 @@ replay_pr "$PR5" "$BR5" "$MS5" oscar alice; wait_amont "$N_PA" PAUSE
 console_order "$TMP/pa.$N_PA.console" 'RECONCILE_OK' "itsm : change 'CHG-0001' approved" 'PORTE_OK(pre)' 'Input requested' 2>/dev/null || jconsole provision-apply "$N_PA" > "$TMP/pa.$N_PA.console"
 grep -q "$MS5" "$TMP/pa.$N_PA.console" && console_order "$TMP/pa.$N_PA.console" 'RECONCILE_OK' "itsm : change 'CHG-0001' approved" 'PORTE_OK(pre)' 'Input requested' && ok "5.10 rejeu #$N_PA : même MERGE_SHA ($MS5), ITSM re-vérifié, PORTE_OK(pre), pause" || ko "5.10 rejeu : $(grep -E 'REFUS|PORTE|itsm' "$TMP/pa.$N_PA.console" | head -2 | tr '\n' ' ')"
 answer_pause "$N_PA" oscar "$LAB_OSCAR_PASS"; finish_amont "$N_PA"
-[ "$RES" = SUCCESS ] && console_order "$TMP/ss.$S_NUM.console" "API_AT_PALIER : '$REQ_API'" "TEAM_CONFIRMED : '$APP'" "SUBSCRIPTION_CONFIRMED : '$APP' souscrite" && grep -F "SUBSCRIPTION_CONFIRMED : '$APP' souscrite" "$TMP/ss.$S_NUM.console" | grep -qF "(id=$G_API)" \
+[ "$RES" = SUCCESS ] && console_order "$TMP/ss.$S_NUM.console" "API_AT_PALIER : '$REQ_API'" "TEAM_CONFIRMED : '$APP'" "SUBSCRIPTION_CONFIRMED : '$APP' souscrite" && grep -F "SUBSCRIPTION_CONFIRMED : '$APP' souscrite" "$TMP/ss.$S_NUM.console" | pipe_q -F "(id=$G_API)" \
   && ok "5.11 aval #$S_NUM SUCCESS : API_AT_PALIER < TEAM_CONFIRMED < SUBSCRIPTION_CONFIRMED (id=$G_API) — l'application est au terminus" || ko "5.11 aval #${S_NUM:-?} : $RES — $(grep -E 'REFUS|CONFIRMED' "$TMP/ss.${S_NUM:-0}.console" 2>/dev/null | head -3 | tr '\n' ' ')"
 G_APP_T=$(t_app_id "$APP"); [ -n "$G_APP_T" ] || die "PREREQUIS : $APP absente du terminus après SUCCESS"
 OT=$(t_app_obj "$G_APP_T")
@@ -652,10 +664,10 @@ echo "═══ 7. Le formulaire app-request : rec sous alice avec refs ; int sa
 printf 'APP=%s\nREQ_ENV=rec\nTEAM=%s\nAPI=%s\nMODE=idp\nCLIENT_ID=%s-rec\nIP_ALLOWLIST=10.42.0.21\nFORGE_TOKEN=%s\nCHANGE_REF=CHG-0001\nPV_REF=PV-A7\n' "$APPF" "$TEAM" "$FORM_API" "$APPF" "$(cat "$TMP/alice.tok")" | form_file "$TMP/f7a.form"
 form_build app-request "$TMP/f7a.form"
 PRF=$(grep -oE 'PR_URL=[^ ]*/pulls/[0-9]+' "$TMP/fb.app-request.$FB_NUM.console" | grep -oE '[0-9]+$' | tail -1); [ -n "$PRF" ] && PRS="$PRS $PRF"
-[ "$FB_RES" = SUCCESS ] && [ -n "$PRF" ] && [ "$(pr_field "$PRF" "['user']['login']")" = alice ] && raw_at "provision/$APPF-rec" "$MAN_DIR/$APPF.ansible.yml" | grep -E '^    rec: ' | grep -q 'change_ref: "CHG-0001", pv_ref: "PV-A7"' \
+[ "$FB_RES" = SUCCESS ] && [ -n "$PRF" ] && [ "$(pr_field "$PRF" "['user']['login']")" = alice ] && raw_at "provision/$APPF-rec" "$MAN_DIR/$APPF.ansible.yml" | grep -E '^    rec: ' | pipe_q 'change_ref: "CHG-0001", pv_ref: "PV-A7"' \
   && ok "7.1 app-request #$FB_NUM (rec, FORGE_TOKEN d'alice, CHANGE_REF, PV_REF) ⇒ SUCCESS, PR #$PRF SOUS alice, ligne rec avec les deux refs" || ko "7.1 app-request #$FB_NUM = $FB_RES PR=${PRF:-aucune} : $(grep -E 'REFUS|ERROR' "$TMP/fb.app-request.$FB_NUM.console" | head -2 | tr '\n' ' ')"
 ! grep -q "$(cat "$TMP/alice.tok")" "$TMP/fb.app-request.$FB_NUM.console" && ok "7.1b la console du build ne porte pas le token" || ko "7.1b le token apparaît dans la console"
-[ -n "$PRF" ] && { pr_comments "$PRF" | grep -q 'provision-plan' && ok "7.1c PR #$PRF : plan enchaîné commenté (sous le compte de service)" || ko "7.1c plan absent"; close_pr "$PRF" >/dev/null; }
+[ -n "$PRF" ] && { pr_comments "$PRF" | pipe_q 'provision-plan' && ok "7.1c PR #$PRF : plan enchaîné commenté (sous le compte de service)" || ko "7.1c plan absent"; close_pr "$PRF" >/dev/null; }
 printf 'APP=%s\nREQ_ENV=homol\nTEAM=%s\nAPI=%s\nMODE=idp\nCLIENT_ID=%s-homol\nFORGE_TOKEN=%s\n' "$APPF" "$TEAM" "$FORM_API" "$APPF" "$(cat "$TMP/alice.tok")" | form_file "$TMP/f7c.form"
 form_build app-request "$TMP/f7c.form"
 [ "$FB_RES" = FAILURE ] && grep -q 'REFUS: GATE_REFS_REQUIRED' "$TMP/fb.app-request.$FB_NUM.console" && ! grep -q '\[1/5\]' "$TMP/fb.app-request.$FB_NUM.console" && ok "7.2 app-request #$FB_NUM (homol, token, sans PV_REF) ⇒ FAILURE GATE_REFS_REQUIRED avant tout clone" || ko "7.2 #$FB_NUM = $FB_RES : $(grep -E 'REFUS|ERROR' "$TMP/fb.app-request.$FB_NUM.console" | head -1)"

@@ -65,6 +65,18 @@
 # l'outil est prise pour une DIRECTIVE (SC1072/SC1073) — mesuré ici même.
 # shellcheck disable=SC2015
 set -uo pipefail
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 cd "$(dirname "$0")/.." || exit 1
 # L'ENVELOPPE D'AUTHENTIFICATION DES GESTES GIT — l'autorité unique du dépôt.
 # La première écriture de ce spike poussait par une URL contenant le secret :
@@ -339,7 +351,7 @@ A=$(printf '%s\n' "$CONSOLE" | grep -oE 'SPIKE_ABSENT=[^ ]+' | head -1)
 echo
 case "$V" in
   B_MECANISME_PROUVE)
-    printf '%s\n' "$CONSOLE" | grep -q 'contient_PORTE=true' \
+    printf '%s\n' "$CONSOLE" | pipe_q 'contient_PORTE=true' \
       && ok "ISSUE B — readTrusted FONCTIONNE en CpsScmFlowDefinition et rend le CONTENU (témoin assuré). Le fichier de site est lisible SANS workspace." \
       || ko "readTrusted répond mais le contenu ne porte pas '$TEMOIN_MOT' — ne pas conclure B" ;;
   "")

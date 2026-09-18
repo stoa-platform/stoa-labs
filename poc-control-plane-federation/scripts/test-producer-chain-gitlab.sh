@@ -106,6 +106,18 @@
 #   WM_GATEWAY_URL=http://localhost:8090 bash scripts/test-producer-chain-gitlab.sh
 # shellcheck disable=SC2015,SC2016
 set -uo pipefail
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 RACINE="$(cd "$(dirname "$0")/.." && pwd)"; cd "$RACINE" || exit 2
 : "${GITLAB_URL:?GITLAB_URL requis (ex. http://localhost:13080)}" "${GITLAB_TOKEN_FILE:?GITLAB_TOKEN_FILE requis (fichier 0600)}"
 : "${VAULT_ADDR:?VAULT_ADDR requis}" "${VAULT_TOKEN_FILE:?VAULT_TOKEN_FILE requis (fichier 0600)}" "${WM_GATEWAY_URL:?le MOCK webMethods, jamais 5555}"
@@ -183,7 +195,7 @@ merge_mr(){
   done
   [ "$st" = mergeable ] || { echo "merge_mr: MR !$2 de $1 jamais mergeable (detailed_merge_status='$st')" >&2; return 1; }
   gl -X PUT "$GITLAB_URL/api/v4/projects/$p/merge_requests/$2/merge" -o "$TMP/merge.json" -w '%{http_code}' \
-    | grep -q '^200$' || { echo "merge_mr: PUT /merge refusé sur !$2 de $1 : $(head -c 200 "$TMP/merge.json")" >&2; return 1; }
+    | pipe_q '^200$' || { echo "merge_mr: PUT /merge refusé sur !$2 de $1 : $(head -c 200 "$TMP/merge.json")" >&2; return 1; }
   python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("merge_commit_sha") or "")' "$TMP/merge.json"
 }
 # mr_notes <projet> <iid> → le corps de TOUTES les notes, concaténé
@@ -591,10 +603,10 @@ else
     bash scripts/api-promote-export.sh > "$1" 2>&1; }
   export_api "$TMP/p5.log"; R5=$?
   ARCH_SHA=$(grep -oE 'EXPORT_CONFIRMED_SUMMARY .*sha256=[0-9a-f]{64}' "$TMP/p5.log" | grep -oE '[0-9a-f]{64}' | head -1)
-  if [ "$R5" = 0 ] && [ -n "$ARCH_SHA" ] && pkg_names | grep -qxF "$PKG_ATTENDU"; then
+  if [ "$R5" = 0 ] && [ -n "$ARCH_SHA" ] && pkg_names | pipe_q -xF "$PKG_ATTENDU"; then
     ok "5.1 export rc 0 : archive poussée au registre $ARCHIVE_STORE_PROJECT sous '$PKG_ATTENDU', version = son sha256 ($(printf '%s' "$ARCH_SHA" | cut -c1-12)…)"
   else
-    bad "5.1 rc $R5 sha=${ARCH_SHA:-absent} paquet '$PKG_ATTENDU' $(pkg_names | grep -qxF "$PKG_ATTENDU" && echo présent || echo ABSENT) : $(grep -oE '"msg": "[^"]{0,200}"' "$TMP/p5.log" | tail -1) $(tail -2 "$TMP/p5.log" | tr '\n' ' ' | cut -c1-200)"
+    bad "5.1 rc $R5 sha=${ARCH_SHA:-absent} paquet '$PKG_ATTENDU' $(pkg_names | pipe_q -xF "$PKG_ATTENDU" && echo présent || echo ABSENT) : $(grep -oE '"msg": "[^"]{0,200}"' "$TMP/p5.log" | tail -1) $(tail -2 "$TMP/p5.log" | tr '\n' ' ' | cut -c1-200)"
   fi
   PIN_BRANCH="chore/promote-manifest-${API_NAME}"
   MR_PIN=$(GIT_REPO="$TEAM_REPO" forge pr_find_open "$PIN_BRANCH" 2>/dev/null | sed -n 's/^NUMBER=//p')

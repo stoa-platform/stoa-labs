@@ -55,6 +55,18 @@
 # `A && ok || bad` (SC2015) est l'idiome des poseurs du repo (cf. setup-terminus-apps.sh).
 # shellcheck disable=SC2015
 set -uo pipefail
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 cd "$(dirname "$0")/.." || exit 1
 # shellcheck source=scripts/lib/forge-identity.sh
 . scripts/lib/forge-identity.sh || { echo "ERREUR: forge-identity.sh introuvable" >&2; exit 1; }
@@ -67,7 +79,7 @@ for a in "$@"; do case "$a" in --print) MODE=print;; --no-hook) HOOK=0;; --no-pr
 # reste valide) et INJECTE des clés arbitraires dans l'appel de création —
 # silencieux, pas une erreur bruyante (revue Task 11, fix round 1). Un seul
 # `/` exigé (owner/repo), charset restreint aux formes réelles de Gitea/GitLab.
-printf '%s' "$REPO_FULL" | grep -Eq '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$' \
+printf '%s' "$REPO_FULL" | pipe_q -E '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$' \
   || { echo "REFUS: REPO_INVALIDE : <owner>/<repo> en caractères [A-Za-z0-9._-] attendu" >&2; exit 2; }
 FORGE_KIND="${FORGE_KIND:-gitea}"
 case "$FORGE_KIND" in gitea|gitlab) ;; *) echo "REFUS: FORGE_KIND_INCONNU : '$FORGE_KIND' — attendu gitea ou gitlab" >&2; exit 2;; esac
@@ -91,7 +103,7 @@ case "$WEBHOOK_SSL_VERIFY" in true|false) ;; *) echo "REFUS: WEBHOOK_SSL_VERIFY_
 # ici), il s'interpole aussi dans les six corps JSON : même porte de forme que
 # REPO_INVALIDE, mais SEULEMENT si non vide (vide = « pas fourni », pas une
 # valeur invalide).
-[ -z "$GIT_BASE" ] || printf '%s' "$GIT_BASE" | grep -Eq '^[A-Za-z0-9._/-]+$' \
+[ -z "$GIT_BASE" ] || printf '%s' "$GIT_BASE" | pipe_q -E '^[A-Za-z0-9._/-]+$' \
   || { echo "REFUS: BRANCHE_INVALIDE : GIT_BASE en caractères [A-Za-z0-9._/-] attendu" >&2; exit 2; }
 OWNER="${REPO_FULL%%/*}"; NAME="${REPO_FULL#*/}"
 
@@ -266,7 +278,7 @@ case "$FORGE_KIND" in
       . scripts/lib/repo-protection.sh || exit 1
       repo_protection_payload "$BASE_EFF" "${PROTECT_PUSH_WHITELIST:-ci}" > "$TMP/prot.json" || { echo "REFUS: PROTECTION_ECHEC : payload" >&2; exit 2; }
       # la protection ne se pose que sur une branche qui EXISTE : sur un dépôt vide, elle attend le squelette
-      if api "$B/repos/$REPO_FULL/branches/$BASE_EFF" -o /dev/null -w '%{http_code}' | grep -q 200; then
+      if api "$B/repos/$REPO_FULL/branches/$BASE_EFF" -o /dev/null -w '%{http_code}' | pipe_q 200; then
         pose_branch_protection "$GIT_HOST" "$TMP/hdr" "$REPO_FULL" "$TMP/prot.json" && echo "protection $BASE_EFF : posée" || { echo "REFUS: PROTECTION_ECHEC" >&2; exit 2; }
       else echo "protection $BASE_EFF : différée (branche absente — dépôt vide) : repasser après le squelette"; fi
     fi ;;

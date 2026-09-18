@@ -27,6 +27,18 @@
 set -u
 set -o pipefail
 
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
+
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO" || exit 1
 TMP="$(mktemp -d /tmp/p4gp.XXXXXX)"
@@ -98,13 +110,13 @@ PY
 # A2 — l'arbitrage P4/P5 que le GOAL laissait ouvert, rendu VISIBLE ici :
 # https-only est MESURÉE portable en global policy (spike S5) et reste per-API,
 # parce que P1 la vérifie déjà sur le transportProtocol de l'API elle-même.
-printf '%s' "$PERAPI" | tr ',' '\n' | grep -qx 'https-only' \
+printf '%s' "$PERAPI" | tr ',' '\n' | pipe_q -x 'https-only' \
   && ok "https-only reste PER-API (arbitrage P4/P5 assumé : P5 possède l'axe HTTPS)" \
   || ko "https-only est passée dans le bouquet COMMUN sans que la vérification suive"
 
 # A3 — threat-protection : le stage existe côté produit mais /policies le REFUSE
 # (400 NullPointerException, deux filtres, deux portées — spike S4).
-printf '%s' "$PERAPI" | tr ',' '\n' | grep -qx 'threat-protection' \
+printf '%s' "$PERAPI" | tr ',' '\n' | pipe_q -x 'threat-protection' \
   && ok "threat-protection reste PER-API (stage refusé par /policies — écart #1 d'ADR-091 précisé)" \
   || ko "threat-protection est annoncée COMMUNE alors qu'aucune policy ne peut la porter"
 
@@ -416,7 +428,7 @@ NEW=$(cells_of "$API_A" | tr '\n' ' ' | xargs)
 MISSING=""
 for C in $(printf '%s' "$CELLS" | python3 -c 'import json,sys
 for c in json.load(sys.stdin)["cells"]: print(c["global_policy"])'); do
-  printf '%s' "$(members "$C")" | grep -q -- "$SENT" || MISSING="$MISSING $C"
+  printf '%s' "$(members "$C")" | pipe_q -- "$SENT" || MISSING="$MISSING $C"
 done
 [ -z "$MISSING" ] && ok "la sentinelle survit dans les 10 cellules (aucune liste ne peut devenir vide)" \
                   || ko "sentinelle absente de :$MISSING — ces cellules frapperaient TOUTES les APIs si elles se vidaient"

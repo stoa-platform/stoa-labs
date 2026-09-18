@@ -6,6 +6,18 @@
 #   3. subscribe : 1 Keycloak client -> a consumer on each gateway
 #   4. data-plane probe on each gateway's invocation URL
 set -uo pipefail
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 cd "$(dirname "$0")/.."
 [[ -f .env ]] && set -a && . ./.env && set +a
 
@@ -17,7 +29,7 @@ echo "→ seeding the synthetic backend: importing the contract into Microcks"
 # Idempotent: re-uploading updates the service. The gateways proxy to
 # http://microcks:8080/rest/Accounts+Read+API/1.0.0 (see targets.yaml backendUrl).
 if curl -s --max-time 15 -F "file=@apis/accounts-read.openapi.yaml" \
-     "http://localhost:${PORT_MICROCKS:-8585}/api/artifact/upload" | grep -q "Accounts Read API"; then
+     "http://localhost:${PORT_MICROCKS:-8585}/api/artifact/upload" | pipe_q "Accounts Read API"; then
   echo "  ✓ accounts-read imported into Microcks"
 else
   echo "  ⚠ Microcks import failed — data-plane calls may 404 (is Microcks up?)"

@@ -14,6 +14,18 @@
 #   JENKINS_UI=http://localhost:18080 GITEA_URL=http://localhost:13000 bash scripts/test-selfservice-form-live.sh
 set -uo pipefail
 set +x
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 REPO="$(cd "$(dirname "$0")/.." && pwd)"; cd "$REPO" || exit 1
 JENKINS_UI="${JENKINS_UI:?JENKINS_UI requis}"; GITEA_URL="${GITEA_URL:?GITEA_URL requis}"
 GIT_REPO="${GIT_REPO:-ci/stoa-labs}"; PFX="poc-control-plane-federation"; JOB=selfservice-app-deploy
@@ -38,7 +50,7 @@ wait_build(){ local i r; for i in $(seq 1 "$(( $2 / 3 ))"); do r=$(jresult "$1")
 
 echo "== 0. préflights =="
 curl -sf "$JENKINS_UI/crumbIssuer/api/json" >/dev/null || die "LAB_ABSENT : Jenkins"
-curl -s "$GITEA_URL/api/v1/repos/$GIT_REPO/raw/main/$PFX/ci/Jenkinsfile.selfservice" | grep -q 'properties(\[parameters(\[' || die "PREREQUIS : Jenkinsfile.selfservice sur gitea main sans properties() — git push gitea HEAD:main"
+curl -s "$GITEA_URL/api/v1/repos/$GIT_REPO/raw/main/$PFX/ci/Jenkinsfile.selfservice" | pipe_q 'properties(\[parameters(\[' || die "PREREQUIS : Jenkinsfile.selfservice sur gitea main sans properties() — git push gitea HEAD:main"
 CHAIN_MAIN=$(curl -s "$GITEA_URL/api/v1/repos/$GIT_REPO/raw/main/$PFX/clients/_example/environments.yaml" | python3 -c "import sys,yaml; e=(yaml.safe_load(sys.stdin) or {}).get('environments') or []; print(' '.join(e[:-1]))")
 [ -n "$CHAIN_MAIN" ] || die "PREREQUIS : chaîne illisible sur gitea main"
 ok "lab joignable, Jenkinsfile.selfservice A0 sur gitea main, chaîne hors terminus (gitea main) = [$CHAIN_MAIN]"
@@ -68,8 +80,8 @@ N_WH=$(curl -sfg "$JENKINS_UI/job/$JOB/api/json?tree=nextBuildNumber" | jq_ 'pri
 HC=$(curl -s -X POST -H 'Content-Type: application/json' -d '{"manifest":"clients/_example/applications/demo-consumer.ansible.yml"}' "$JENKINS_UI/generic-webhook-trigger/invoke?token=stoa-selfservice-plan" -o "$TMP/wh.out" -w '%{http_code}')
 [ "$HC" = 200 ] && grep -q '"triggered":true' "$TMP/wh.out" && ok "webhook PLAN accepté (HTTP 200, triggered)" || ko "webhook PLAN : HTTP $HC $(head -c 200 "$TMP/wh.out")"
 R=$(wait_build "$N_WH" 420); [ "$R" = SUCCESS ] && ok "build PLAN par webhook #$N_WH : SUCCESS" || ko "build PLAN #$N_WH : ${R:-jamais terminé}"
-curl -s "$JENKINS_UI/job/$JOB/$N_WH/consoleText" | grep -q 'formulaire posé : paliers' && ok "console : le stage Formulaire a reposé le formulaire (listes du clone)" || ko "console sans stage Formulaire"
-curl -s "$JENKINS_UI/job/$JOB/$N_WH/consoleText" | grep -q "PLAN : manifeste clients/_example/applications/demo-consumer.ansible.yml" && ok "MANIFEST du webhook bien lu par le PLAN (withEnv([params…]) : params.MANIFEST porte la valeur GWT)" || ko "MANIFEST du webhook non lu par le PLAN"
+curl -s "$JENKINS_UI/job/$JOB/$N_WH/consoleText" | pipe_q 'formulaire posé : paliers' && ok "console : le stage Formulaire a reposé le formulaire (listes du clone)" || ko "console sans stage Formulaire"
+curl -s "$JENKINS_UI/job/$JOB/$N_WH/consoleText" | pipe_q "PLAN : manifeste clients/_example/applications/demo-consumer.ansible.yml" && ok "MANIFEST du webhook bien lu par le PLAN (withEnv([params…]) : params.MANIFEST porte la valeur GWT)" || ko "MANIFEST du webhook non lu par le PLAN"
 cfg > "$TMP/after2"; cmp -s "$TMP/after1" "$TMP/after2" && ok "config IDENTIQUE après le deuxième build (une propriété, trigger, option, 8 paramètres)" || ko "config a changé entre les deux builds : $(diff "$TMP/after1" "$TMP/after2" | tr '\n' ' ')"
 
 echo; echo "======================================================================"; printf 'RÉSULTAT : %d/%d\n' "$PASS" "$((PASS+FAIL))"

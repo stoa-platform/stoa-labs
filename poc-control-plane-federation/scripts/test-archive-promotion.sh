@@ -9,6 +9,18 @@
 #   GW_DATA=http://localhost:5555/gateway \
 #   WM_USER=Administrator WM_PASS=manage ./scripts/test-archive-promotion.sh
 set -u
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 GW="${GW_ADMIN:-http://localhost:5555/rest/apigateway}"
 DP="${GW_DATA:-http://localhost:5555/gateway}"
 AUTH="${WM_USER:-Administrator}:${WM_PASS:-manage}"
@@ -158,7 +170,7 @@ check "$V" "http://poc-token-echo:8080/backend/prod" "T6 valeur d'alias LOCALE p
 # ---------- T7 : l'export embarque l'Alias -> scoped overwrite le skippe -----
 say "T7 : export d'une API routée \${alias} — l'Alias embarqué est skippé (pas clobbé)"
 adm "$GW/archive?apis=$API_ID" -o "$WORK/a2.zip"
-unzip -l "$WORK/a2.zip" | grep -q "Alias/" && ok "T7 l'export EMBARQUE l'Alias (fait)" \
+unzip -l "$WORK/a2.zip" | pipe_q "Alias/" && ok "T7 l'export EMBARQUE l'Alias (fait)" \
   || ko "T7 Alias absent de l'export (inattendu)"
 ROWS=$(adm -F "file=@$WORK/a2.zip;type=application/zip" "$GW/archive?overwrite=apis,policies,policyactions")
 AS=$(printf '%s' "$ROWS" | jq -r '[.ArchiveResult[]|to_entries[]|select(.key=="Alias")][0].value.overwritten')

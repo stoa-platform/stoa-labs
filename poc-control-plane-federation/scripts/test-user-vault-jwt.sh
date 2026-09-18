@@ -18,6 +18,18 @@
 #   ./scripts/setup-user-vault-jwt.sh et ./scripts/setup-user-deploy-job.sh joués ;
 #   users fédérés seedés (console-light/scripts/setup-identity.sh).
 set -uo pipefail
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 KC="${KC_BASE:-http://localhost:8480}/realms/${REALM:-stoa-lab}"
@@ -161,7 +173,7 @@ else
 fi
 
 # CE4 — l'audit Vault est NOMINATIF, sur les lignes de CE run uniquement.
-# NB: pas de `docker exec | grep -q` — SIGPIPE 141 sous pipefail dès que la
+# NB: pas de `docker exec | pipe_q` — SIGPIPE 141 sous pipefail dès que la
 # sortie dépasse le buffer de pipe. Variable + here-string.
 AUDLOG=$(docker exec poc-vault sh -c "tail -n +$((AUD0+1)) /tmp/vault-audit.log 2>/dev/null" | grep 'auth/jwt/login' || true)
 grep -q '"display_name":"jwt-alice@bc.example"' <<<"$AUDLOG" \

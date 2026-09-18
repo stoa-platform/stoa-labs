@@ -130,6 +130,18 @@
 # d'entrée (mesurée, pas supposée).
 set -uo pipefail
 set +x   # jamais de trace : des tokens transitent par ce script
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 cd "$(dirname "$0")/.." || exit 1
 REPO_ROOT="$(pwd)"
 
@@ -202,7 +214,7 @@ WITNESS_APP="t8consumer${RUN_TAG}"  # application témoin des souscriptions (pre
 # plus). Sans ce contrôle, un futur changement de format de RUN_TAG ferait
 # échouer la preuve 2 sur un refus de la porte — un rouge qui accuserait la
 # chaîne pour un défaut du harnais.
-printf '%s' "$API_NAME" | grep -Eq '^[a-z0-9][a-z0-9-]{1,30}$' \
+printf '%s' "$API_NAME" | pipe_q -E '^[a-z0-9][a-z0-9-]{1,30}$' \
   || { echo "API_NAME dérivé de RUN_TAG ('$API_NAME', ${#API_NAME} caractères) ne satisfait PAS la regex de la porte producteur ^[a-z0-9][a-z0-9-]{1,30}\$ — corriger le format de RUN_TAG" >&2; exit 2; }
 JOB="team-publish"
 # P2 (ADR-092) : le REGISTRE CENTRAL de classification. Dépôt SCRATCH, SÉPARÉ du
@@ -313,7 +325,7 @@ is_mine() { case " $MY_BUILDS " in *" $1 "*) return 0;; *) return 1;; esac; }
 claim_build() {
   local job="$1" n="$2" motif="$3"
   [ -n "$n" ] || return 1
-  curl -s "$JENKINS_UI/job/$job/$n/consoleText" 2>/dev/null | grep -qF -- "$motif" || return 1
+  curl -s "$JENKINS_UI/job/$job/$n/consoleText" 2>/dev/null | pipe_q -F -- "$motif" || return 1
   is_mine "$n" || MY_BUILDS="${MY_BUILDS:+$MY_BUILDS }$n"
   return 0
 }
@@ -557,7 +569,7 @@ MOCK_FRESH=$(curl -s -u Administrator:manage -X POST -H 'Content-Type: applicati
   || die "second compte Gitea 'oscar' absent — sans lui, aucun merge par un SECOND humain, donc aucune garde d'identité à discriminer (preuves 5/6)"
 OSCAR_POL=$(curl -s -H @"$(vhdr "$VROOT")" "$VAULT_ADDR/v1/auth/userpass/users/oscar" \
   | python3 -c "import json,sys; print(','.join(json.load(sys.stdin).get('data',{}).get('token_policies',[])))" 2>/dev/null)
-printf '%s' ",$OSCAR_POL," | grep -qF ',team-onboarder,' \
+printf '%s' ",$OSCAR_POL," | pipe_q -F ',team-onboarder,' \
   || die "oscar (Vault userpass) ne porte pas la policy 'team-onboarder' (policies: ${OSCAR_POL:-aucune}) — l'apply lirait 403 sur le token org-admin. Remède : scripts/setup-team-onboard-prereqs.sh (ATTACHE, ne remplace pas)"
 
 command -v ansible-playbook >/dev/null 2>&1 || die "ansible-playbook absent du PATH (plan d'api-request, apply du rôle)"
@@ -893,7 +905,7 @@ guard_case() {
   out=$(env GITEA_TOKEN="$GITEA_TOKEN" GIT_HOST="$GITEA_URL" GIT_WEB_HOST="$GITEA_URL" \
         GIT_REPO="$PLAT_REPO" ENVN="$ENVN" "$@" bash scripts/api-request.sh 2>&1)
   rc=$?
-  if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q "$tag"; then
+  if [ "$rc" -ne 0 ] && printf '%s' "$out" | pipe_q "$tag"; then
     G_TAGS="${G_TAGS:+$G_TAGS }$tag"
   else
     G_FAILED="${G_FAILED:+$G_FAILED; }$label(rc=$rc, attendu $tag, obtenu: $(printf '%s' "$out" | tail -1 | cut -c1-90))"
@@ -948,9 +960,9 @@ print(','.join(sorted(f['filename'] for f in d)) if isinstance(d,list) else '')"
 CB2=$(pr_comment_last "$TEAM_REPO" "${PR_V1:-0}")
 if [ "$R2" -eq 0 ] && [ -n "${PR_V1:-}" ] \
    && [ "$FILES2" = "apis/${API_NAME}.openapi.yaml,apis/${API_NAME}.publish.yml" ] \
-   && printf '%s' "$CB2" | grep -q 'PLAN OK' \
-   && printf '%s' "$CB2" | grep -q 'MANIFEST_KEYS_OK' \
-   && printf '%s' "$CB2" | grep -q "TEAM_REQUESTED"; then
+   && printf '%s' "$CB2" | pipe_q 'PLAN OK' \
+   && printf '%s' "$CB2" | pipe_q 'MANIFEST_KEYS_OK' \
+   && printf '%s' "$CB2" | pipe_q "TEAM_REQUESTED"; then
   ok "2. PR #$PR_V1 sur $TEAM_REPO (branche $BR_V1) AJOUTE exactement [$FILES2], commentaire ✅ PLAN OK avec la hiérarchie de diagnostic (MANIFEST_KEYS_OK + TEAM_REQUESTED)"
 else
   bad "2. rc=$R2 PR=${PR_V1:-absente} fichiers=[${FILES2:-aucun}] commentaire=$(printf '%s' "$CB2" | head -c 160) — voir $TMP/p2.log"
@@ -1025,7 +1037,7 @@ APIS3=$(wmapi apis | python3 -c "
 import json,sys
 print(sum(1 for a in json.load(sys.stdin).get('apiResponse',[]) if a['api']['apiName']=='orphan'))" 2>/dev/null)
 if [ "$R3" -ne 0 ] && [ "$M3HC" = 200 ] && grep -q REPO_NON_DECLARE "$TMP/p3.log" \
-   && printf '%s' "$CB3" | grep -q '❌' && printf '%s' "$CB3" | grep -q REPO_NON_DECLARE \
+   && printf '%s' "$CB3" | pipe_q '❌' && printf '%s' "$CB3" | pipe_q REPO_NON_DECLARE \
    && [ "${APIS3:-1}" = 0 ]; then
   ok "3. $ORPH_REPO (PR #$PR_ORPH réellement mergée) refusé REPO_NON_DECLARE, rc=$R3, PR commentée ❌ avec la cause NOMMÉE, 0 API 'orphan' sur la gateway"
 else
@@ -1089,7 +1101,7 @@ if [ "$MERGE5" = 200 ] && [ "$MERGED_BY5" = oscar ] && [ "$ST5" = PAUSED_PENDING
    && [ "$SUB5" = 200 ] && [ "$ST5B" = SUCCESS ] \
    && grep -q MERGE_IDENTITY_OK "$TMP/build5.log" \
    && [ "${LEAK5:-1}" = 0 ] && [ -n "$API_V1" ] \
-   && printf '%s' "$CB5" | grep -q '✅' && printf '%s' "$CB5" | grep -q "$API_NAME@1.0.0"; then
+   && printf '%s' "$CB5" | pipe_q '✅' && printf '%s' "$CB5" | pipe_q "$API_NAME@1.0.0"; then
   ok "5. merge par oscar (HTTP $MERGE5) -> webhook Gitea -> build #$N5 en pause -> réponse API ($SUB5) -> MERGE_IDENTITY_OK -> $ST5B ; API $API_NAME@1.0.0 sur la gateway (id $API_V1), PR commentée ✅, mot de passe jamais loggé (0 occurrence)"
 else
   bad "5. merge=$MERGE5 par='${MERGED_BY5:-?}' pause=$ST5 build_prouvé_nôtre=$OWN5 submit=$SUB5 fin=$ST5B api_id=${API_V1:-absente} fuite_mdp=${LEAK5:-?}$([ "$DRAIN5" = 1 ] && echo ' — CAUSE PROBABLE : une pause ÉTRANGÈRE bloque la file de ce job (laissée intacte à dessein, cf. le message ci-dessus)') — voir $JENKINS_UI/job/$JOB/${N5:-?}/console"
@@ -1154,9 +1166,9 @@ DISJOINT=no
 if [ "$R6REQ" -eq 0 ] && [ "$MERGE6" = 200 ] && [ "$ST6B" = SUCCESS ] && [ -n "$API_V2" ] \
    && [ "$DISJOINT" = oui ] \
    && [ -n "$SUBS_V1_BEFORE" ] && [ "$SUBS_V2_AFTER" = "$SUBS_V1_BEFORE" ] && [ "$SUBS_V1_AFTER" = "$SUBS_V1_BEFORE" ] \
-   && printf '%s' "$CB6" | grep -q VERSION_CREATED \
-   && printf '%s' "$CB6" | grep -q VERSION_CLONE_OK \
-   && printf '%s' "$CB6" | grep -q VERSION_SUBS_RETAINED; then
+   && printf '%s' "$CB6" | pipe_q VERSION_CREATED \
+   && printf '%s' "$CB6" | pipe_q VERSION_CLONE_OK \
+   && printf '%s' "$CB6" | pipe_q VERSION_SUBS_RETAINED; then
   ok "6. v2 minée (id $API_V2) : policies [$POL_V2] DISJOINTES de la base [$POL_V1] (M2) ; souscriptions relues AVANT [$SUBS_V1_BEFORE] -> APRÈS v2 [$SUBS_V2_AFTER] et base [$SUBS_V1_AFTER] (M3, base jamais désabonnée) ; PR ✅ VERSION_CREATED + VERSION_CLONE_OK + VERSION_SUBS_RETAINED"
 else
   bad "6. req=$R6REQ merge=$MERGE6 pause=$ST6 build_prouvé_nôtre=$OWN6 submit=$SUB6 fin=$ST6B v2=${API_V2:-absente} policies_disjointes=$DISJOINT subs_avant=[${SUBS_V1_BEFORE:-vide}] subs_v2=[${SUBS_V2_AFTER:-vide}] subs_base=[${SUBS_V1_AFTER:-vide}] commentaire=$(printf '%s' "$CB6" | head -c 160)$([ "$DRAIN6" = 1 ] && echo ' — CAUSE PROBABLE : une pause ÉTRANGÈRE bloque la file de ce job (laissée intacte à dessein)') — voir $JENKINS_UI/job/$JOB/${N6:-?}/console"
@@ -1182,9 +1194,9 @@ T7_API_TEAM=$(choices_of api-request TEAM)
 T7_APP_TEAM=$(choices_of app-request TEAM)
 T7_API_BASE=$(choices_of api-request API_BASE)
 T7_APP_API=$(choices_of app-request API)
-T7A=no; printf '%s' ",$CFG_TEAM_AFTER_ONB," | grep -qF ",$TEAM," && T7A=oui
-T7B=no; printf '%s' ",$T7_API_TEAM," | grep -qF ",$TEAM," && printf '%s' ",$T7_APP_TEAM," | grep -qF ",$TEAM," && T7B=oui
-T7C=no; printf '%s' ",$T7_API_BASE," | grep -qF ",${API_NAME}@2.0.0," && printf '%s' ",$T7_APP_API," | grep -qF ",${API_NAME}@2.0.0," && T7C=oui
+T7A=no; printf '%s' ",$CFG_TEAM_AFTER_ONB," | pipe_q -F ",$TEAM," && T7A=oui
+T7B=no; printf '%s' ",$T7_API_TEAM," | pipe_q -F ",$TEAM," && printf '%s' ",$T7_APP_TEAM," | pipe_q -F ",$TEAM," && T7B=oui
+T7C=no; printf '%s' ",$T7_API_BASE," | pipe_q -F ",${API_NAME}@2.0.0," && printf '%s' ",$T7_APP_API," | pipe_q -F ",${API_NAME}@2.0.0," && T7C=oui
 if [ "$T7A" = oui ] && [ "$T7B" = oui ] && [ "$T7C" = oui ]; then
   ok "7. après l'onboarding les formulaires portaient déjà '$TEAM' (api-request TEAM=[$CFG_TEAM_AFTER_ONB]) ; après publication les DEUX formulaires portent '$TEAM' ET '${API_NAME}@2.0.0' (api-request API_BASE=[$T7_API_BASE], app-request API=[$T7_APP_API])"
 else
@@ -1253,7 +1265,7 @@ if [ "$RESTORED" != oui ]; then
   exit 1
 fi
 RED_OK=non
-{ [ "$RED_RC" -ne 0 ] && ! printf '%s' "$RED_OUT" | grep -q 'API_NAME_INVALID'; } && RED_OK=oui
+{ [ "$RED_RC" -ne 0 ] && ! printf '%s' "$RED_OUT" | pipe_q 'API_NAME_INVALID'; } && RED_OK=oui
 
 teardown
 sleep 1   # laisser Gitea/Vault/Jenkins digérer les suppressions avant relecture

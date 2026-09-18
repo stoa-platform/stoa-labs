@@ -59,6 +59,18 @@
 # et non ambiguë.
 # shellcheck disable=SC2015,SC2181
 set -uo pipefail
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 cd "$(dirname "$0")/.." || exit 1
 
 PASS=0; FAIL=0
@@ -162,7 +174,7 @@ for b in curl python3 docker sed; do
 done
 curl -s -m 5 -o /dev/null "$VAULT_ADDR/v1/sys/health" \
   || lab_absent "Vault ne répond pas à $VAULT_ADDR"
-docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$LDAP_CONTAINER" \
+docker ps --format '{{.Names}}' 2>/dev/null | pipe_q -x "$LDAP_CONTAINER" \
   || lab_absent "conteneur d'annuaire '$LDAP_CONTAINER' absent — docker compose -f docker-compose.poc.yml -f docker-compose.ldap.yml up -d openldap"
 # Bind + lecture réels, sur la racine et non sur un groupe nommé : la porte ne
 # doit pas dépendre de l'existence d'un objet qu'elle n'a pas posé.
@@ -344,7 +356,7 @@ if [ "$LOOKUP_OK" -ne 1 ]; then
   bad "②ter mesure impossible — le login/lookup a échoué (voir ②/②bis) ; ni la pose ni le mapping Vault ne sont mis en cause sur cette base"
 elif has_policy "$POL_DEP" "$TARGET_POLICY"; then
   ok "②ter le token de $TARGET_USER PORTE '$TARGET_POLICY' — annuaire → mapping → policy, la chaîne complète tient"
-elif group_members "$TARGET_GROUP" | grep -qx "$TARGET_USER"; then
+elif group_members "$TARGET_GROUP" | pipe_q -x "$TARGET_USER"; then
   # L'annuaire dit membre, Vault ne projette rien : ce n'est pas la pose qui a
   # raté, c'est la MOITIÉ VAULT du grant qui manque. On le nomme au lieu de
   # laisser accuser le poseur qu'on vient de jouer vert.
@@ -487,7 +499,7 @@ FOUND_IN=""
 for e in $ALL_ENVS; do
   g="$(env_chain_gate_deployer_group "$e")"
   [ -n "$g" ] || continue
-  group_members "$g" | grep -qx "$LAB_ALICE_USER" && FOUND_IN="$FOUND_IN $g"
+  group_members "$g" | pipe_q -x "$LAB_ALICE_USER" && FOUND_IN="$FOUND_IN $g"
 done
 [ -z "$FOUND_IN" ] \
   && ok "⑥ $LAB_ALICE_USER n'est membre d'AUCUN groupe déployeur de la chaîne après le rejeu" \

@@ -17,6 +17,18 @@
 #     TOKEN=$(scripts/setup-ci-applier.sh --mint)
 #   In prod: one ci-applier client PER tenant, secret issued from Vault, rotated.
 set -euo pipefail
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 KC_BASE="${KC_BASE:-http://localhost:8480}"
 REALM="${REALM:-stoa-lab}"
 ADMIN_USER="${ADMIN_USER:-admin}"; ADMIN_PASS="${ADMIN_PASS:-admin}"
@@ -58,7 +70,7 @@ else echo "  exists ($CID)"; fi
 echo "[2/4] mappers (audience -> $AUD ; user attribute tenant -> claim tenant)"
 add_mapper() { # add_mapper <name> <json-config>
   local name="$1" cfg="$2"
-  if "${CURL[@]}" "${AUTH[@]}" "$API/clients/$CID/protocol-mappers/models" | grep -q "\"name\":\"$name\""; then echo "  mapper $name exists"; return; fi
+  if "${CURL[@]}" "${AUTH[@]}" "$API/clients/$CID/protocol-mappers/models" | pipe_q "\"name\":\"$name\""; then echo "  mapper $name exists"; return; fi
   "${CURL[@]}" "${AUTH[@]}" "${JSON[@]}" -X POST "$API/clients/$CID/protocol-mappers/models" -d "$cfg" && echo "  mapper $name created"
 }
 add_mapper aud-onboarding '{"name":"aud-onboarding","protocol":"openid-connect","protocolMapper":"oidc-audience-mapper","config":{"included.client.audience":"'"$AUD"'","id.token.claim":"false","access.token.claim":"true"}}'
@@ -71,7 +83,7 @@ echo "  service-account-$CLIENT tenant=$TENANT ($SAID)"
 
 echo "[4/4] assign realm role cp-applier to the service account"
 ROLE_REP="$("${CURL[@]}" "${AUTH[@]}" "$API/roles/cp-applier")"
-echo "$ROLE_REP" | grep -q '"name"' || { echo "  ERROR: role cp-applier missing — run setup-onboarding-rbac.sh first"; exit 1; }
+echo "$ROLE_REP" | pipe_q '"name"' || { echo "  ERROR: role cp-applier missing — run setup-onboarding-rbac.sh first"; exit 1; }
 "${CURL[@]}" "${AUTH[@]}" "${JSON[@]}" -X POST "$API/users/$SAID/role-mappings/realm" -d "[$ROLE_REP]" >/dev/null 2>&1 || true
 echo "  cp-applier assigned"
 

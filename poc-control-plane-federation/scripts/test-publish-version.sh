@@ -19,6 +19,18 @@
 #
 #   ./scripts/test-publish-version.sh
 set -uo pipefail
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 # Port LIBRE demandé au noyau plutôt qu'un numéro en dur : le scratchpad est
 # partagé entre agents et un 18790 figé a déjà provoqué des collisions. Tout le
@@ -265,7 +277,7 @@ fi
 # skippé. On sonde une tâche INTERNE au bloc : Ansible n'imprime jamais de
 # bannière TASK pour un `block:` lui-même, seulement pour ses tâches.
 if awk '/une seule base candidate/{f=1;next} f&&NF{print;exit}' \
-     "$TMP/a-head.log" | grep -q '^skipping'; then
+     "$TMP/a-head.log" | pipe_q '^skipping'; then
   ok "A3 nom inconnu : le bloc create-or-version est SKIPPÉ (zéro appel supplémentaire)"
 else
   ko "A3 le bloc create-or-version n'est pas skippé sur un import initial"
@@ -373,7 +385,7 @@ run_role "$INJ_DIR" "$TMP/v2.yml" >"$TMP/d1.log" 2>&1; RC=$?
 # bel et bien MINÉ la version (elle est là, relue) — elle a juste laissé les
 # abonnés derrière, sans le moindre code d'erreur.
 V2BAD="$(api_id 2.0)"
-if [ -n "$V2BAD" ] && ! app_subs "$APPID" | grep -q "$V2BAD"; then
+if [ -n "$V2BAD" ] && ! app_subs "$APPID" | pipe_q "$V2BAD"; then
   ok "D1b … la v2 EXISTE pourtant sur la gateway, sans ses abonnés : l'échec est SILENCIEUX côté produit"
 else
   ko "D1b contre-témoin manquant : v2='$V2BAD', souscriptions='$(app_subs "$APPID")'"
@@ -540,7 +552,7 @@ if [ -f "$ROUND1_ANSIBLE/publish-api.yml" ]; then
   TEAM="payments-team"
   run_role "$ROUND1_ANSIBLE" "$TMP/v2.yml" >"$TMP/g0.log" 2>&1; RC=$?
   V2X="$(api_id 2.0)"
-  if [ "$RC" -eq 0 ] && [ -n "$V2X" ] && app_subs "$APP_OTHER" | grep -q "$V2X"; then
+  if [ "$RC" -eq 0 ] && [ -n "$V2X" ] && app_subs "$APP_OTHER" | pipe_q "$V2X"; then
     ok "G0 témoin AVANT ($ROUND1_COMMIT) : version minée dans la lignée d'other-team, ses abonnés TRANSPORTÉS"
   else
     ko "G0 la capture ne se reproduit pas avec $ROUND1_COMMIT (rc=$RC) — la garde G1 ne prouverait rien"
@@ -657,7 +669,7 @@ if [ -f "$R1_ANSIBLE/publish-api.yml" ]; then
   TEAM="Administrators"
   run_role "$R1_ANSIBLE" "$TMP/v2.yml" >"$TMP/j0.log" 2>&1; RC=$?
   V2X="$(api_id 2.0)"
-  if [ "$RC" -eq 0 ] && [ -n "$V2X" ] && app_subs "$APP_OTHER" | grep -q "$V2X"; then
+  if [ "$RC" -eq 0 ] && [ -n "$V2X" ] && app_subs "$APP_OTHER" | pipe_q "$V2X"; then
     ok "J0 témoin AVANT ($ROUND1V2_COMMIT) : TEAM=Administrators mine dans la lignée d'other-team, abonnés transportés"
   else
     ko "J0 l'ouverture par profil système ne se reproduit pas (rc=$RC)"
@@ -734,7 +746,7 @@ if [ -f "$K0_ANSIBLE/publish-api.yml" ]; then
   seed_platform_api
   TEAM="payments-team"
   run_role "$K0_ANSIBLE" "$TMP/plat.yml" >"$TMP/k0.log" 2>&1; RC=$?
-  if [ "$RC" -eq 0 ] && plat_teams | grep -q "payments-team"; then
+  if [ "$RC" -eq 0 ] && plat_teams | pipe_q "payments-team"; then
     ok "K0 témoin AVANT ($ROUND2_COMMIT) : payments-team CAPTURE l'API plateforme (teams=$(plat_teams))"
   else
     ko "K0 la capture ne se reproduit pas avec $ROUND2_COMMIT (rc=$RC, teams=$(plat_teams))"

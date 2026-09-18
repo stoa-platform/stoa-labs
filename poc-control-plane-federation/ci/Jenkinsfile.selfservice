@@ -297,7 +297,9 @@ pipeline {
               REF="${MERGE_SHA:-}"
               MODE=head
               if [ -n "$REF" ]; then
-                printf '%s' "$REF" | grep -Eq '^[0-9a-f]{40}$' \
+                # `grep -c … >/dev/null` et NON `pipe_q` : bloc `sh` = shell ENFANT
+                # (dash), aucune fonction héritée ⇒ `pipe_q` introuvable (127).
+                printf '%s' "$REF" | grep -cE '^[0-9a-f]{40}$' >/dev/null \
                   || { echo "REFUS: MERGE_SHA_INVALIDE : MERGE_SHA hors de ^[0-9a-f]{40}$ — rien n'est appliqué"; exit 1; }
                 # LA BRANCHE DE BASE, RÉSOLUE ICI — et le motif est DUPLIQUÉ À DESSEIN
                 # (une ligne, le MÊME sed que scripts/lib/git-base.sh). Ce stage lit la
@@ -315,7 +317,7 @@ pipeline {
                 git fetch -q origin "$BASE"
                 git merge-base --is-ancestor "$REF" "origin/$BASE" \
                   || { echo "REFUS: MERGE_SHA_NON_ANCETRE : $REF n'est pas un ancêtre de $BASE — le SHA ne correspond pas à un commit fusionné sur la branche protégée, refus de projeter un état non revu"; exit 1; }
-                git rev-list --first-parent "origin/$BASE" | grep -qx "$REF" \
+                git rev-list --first-parent "origin/$BASE" | grep -cx "$REF" >/dev/null \
                   || { echo "REFUS: MERGE_SHA_HORS_LIGNEE : $REF est un ancêtre de $BASE mais pas sur sa lignée first-parent (commit intérieur à une branche, pas un état atterri sur $BASE) — refus"; exit 1; }
                 git checkout -q "$REF"
                 MODE=pinned

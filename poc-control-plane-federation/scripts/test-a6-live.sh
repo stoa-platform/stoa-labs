@@ -40,6 +40,18 @@
 # shellcheck disable=SC2015,SC2016,SC2034
 set -uo pipefail
 set +x
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO" || exit 1
 
@@ -432,13 +444,13 @@ elif docker inspect "$GITEA_CONTAINER" >/dev/null 2>&1; then
 fi
 [ -n "$CI_TOKEN" ] || die "LAB_ABSENT : aucun token Gitea ci"
 printf 'Authorization: token %s\n' "$CI_TOKEN" > "$TMP/ci.hdr"
-gapi -o /dev/null -w '%{http_code}' "$API/repos/$GIT_REPO" | grep -q '^200$' || die "LAB_ABSENT : $GIT_REPO illisible"
+gapi -o /dev/null -w '%{http_code}' "$API/repos/$GIT_REPO" | pipe_q '^200$' || die "LAB_ABSENT : $GIT_REPO illisible"
 ok "0.2 token ci opérationnel"
 for f in scripts/app-rollback-request.sh ci/Jenkinsfile.app-rollback ci/jenkins/app-rollback.job.xml; do
   raw_at main "$SUBDIR/$f" > /dev/null; [ "$(raw_hc)" = 200 ] || die "PREREQUIS : $f absent de gitea main (HTTP $(raw_hc)) — git push gitea HEAD:main"
 done
-raw_at main "$SUBDIR/scripts/provision-request.sh" | grep -q 'REPLI_EN_COURS' || die "PREREQUIS : provision-request.sh sur gitea main ne porte pas REPLI_EN_COURS"
-raw_at main "$SUBDIR/scripts/provision-apply-reconcile.sh" | grep -q 'REPLI_PERIME' || die "PREREQUIS : provision-apply-reconcile.sh sur gitea main ne porte pas REPLI_PERIME"
+raw_at main "$SUBDIR/scripts/provision-request.sh" | pipe_q 'REPLI_EN_COURS' || die "PREREQUIS : provision-request.sh sur gitea main ne porte pas REPLI_EN_COURS"
+raw_at main "$SUBDIR/scripts/provision-apply-reconcile.sh" | pipe_q 'REPLI_PERIME' || die "PREREQUIS : provision-apply-reconcile.sh sur gitea main ne porte pas REPLI_PERIME"
 ok "0.3 gitea main porte A6 (script, Jenkinsfile, coquille, gardes de fenêtre)"
 curl -sf "$JENKINS_UI/job/app-rollback/config.xml" > "$TMP/rb.xml" || die "PREREQUIS : job app-rollback absent — JOBS=app-rollback BOOTSTRAP_JOBS=app-rollback scripts/setup-provision-jobs.sh"
 grep -q 'ci/Jenkinsfile.app-rollback' "$TMP/rb.xml" || die "PREREQUIS : app-rollback n'est pas from SCM"
@@ -493,7 +505,7 @@ R1="$RB_PR"
 grep -q "^REPLI_DE=$MS2 REPLI_VERS=$MS1 REPLI_DIGEST=$D1" "$TMP/rb.$RB_NUM.console" && ok "4.2 console : REPLI_DE=#$PR2 REPLI_VERS=#$PR1, digest annoncé == digest(#$PR1) recalculé par la lib" || ko "4.2 REPLI_* : $(grep '^REPLI_DE=' "$TMP/rb.$RB_NUM.console")"
 grep -q '^Repli-Par: jenkins-form:anonymous' <(git -C "$TMP" --no-pager log -0 2>/dev/null; gapi "$API/repos/$GIT_REPO/git/commits/$(branch_sha)" | jq_ "print((d.get('commit') or {}).get('message',''))") && ok "4.3 trailer Repli-Par: jenkins-form:anonymous (déclenchement anonyme du harnais)" || ko "4.3 trailer Repli-Par : $(gapi "$API/repos/$GIT_REPO/git/commits/$(branch_sha)" | jq_ "print((d.get('commit') or {}).get('message',''))" | grep Repli-Par)"
 BODY=$(pr_field "$R1" ".get('body','')")
-printf '%s' "$BODY" | grep -q "app-rollback: de $MS2 vers $MS1" && printf '%s' "$BODY" | grep -q "#$PR1" && printf '%s' "$BODY" | grep -q "#$PR2" && printf '%s' "$BODY" | grep -q "$D1" && printf '%s' "$BODY" | grep -q 'cert : restauré' \
+printf '%s' "$BODY" | pipe_q "app-rollback: de $MS2 vers $MS1" && printf '%s' "$BODY" | pipe_q "#$PR1" && printf '%s' "$BODY" | pipe_q "#$PR2" && printf '%s' "$BODY" | pipe_q "$D1" && printf '%s' "$BODY" | pipe_q 'cert : restauré' \
   && ok "4.4 corps de la PR : marqueur de→vers, #N, #N-1, digest, « cert : restauré »" || ko "4.4 corps : $(printf '%s' "$BODY" | head -c 200)"
 [ "$(rec_line_at "$(branch_sha)")" = "$LINE1" ] && [ "$(raw_at "$(branch_sha)" "$CERT_DIR/$APP-rec.crt" | der_of /dev/stdin)" = "$DER1" ] && ok "4.5 la branche de repli porte la ligne rec de #$PR1 et le cert C1 à l'octet" || ko "4.5 branche : $(rec_line_at "$(branch_sha)" | head -c 120)"
 merge_pause_apply "$R1"; MSR1="$MS_N"; N_PAR1="$N_PA"; S_R1="$S_NUM"
@@ -515,7 +527,7 @@ echo "═══ 5. Le repli du repli restaure N (profondeur 1, nommé REPLI_DU_R
 rollback_build "$APP" rec "repli du repli a6"
 [ "$RB_RES" = SUCCESS ] && [ -n "$RB_PR" ] && grep -q '^REPLI_DU_REPLI : restaure' "$TMP/rb.$RB_NUM.console" && grep -q "^REPLI_DE=$MSR1 REPLI_VERS=$MS2 " "$TMP/rb.$RB_NUM.console" \
   && ok "5.1 app-rollback #$RB_NUM → PR #$RB_PR, REPLI_DU_REPLI, restaure #$PR2 (N), remplace le repli #$R1" || die "PORTE : repli du repli #$RB_NUM $RB_RES : $(grep -E 'REFUS|REPLI' "$TMP/rb.$RB_NUM.console" | tail -2 | tr '\n' ' ')"
-R2="$RB_PR"; pr_field "$R2" ".get('body','')" | grep -q 'REPLI_DU_REPLI' && ok "5.2 le corps de la PR #$R2 le dit" || ko "5.2 corps sans REPLI_DU_REPLI"
+R2="$RB_PR"; pr_field "$R2" ".get('body','')" | pipe_q 'REPLI_DU_REPLI' && ok "5.2 le corps de la PR #$R2 le dit" || ko "5.2 corps sans REPLI_DU_REPLI"
 merge_pause_apply "$R2"; S_R2="$S_NUM"
 [ "$RES" = SUCCESS ] && ok "5.3 apply du repli du repli SUCCESS (aval #$S_R2)" || die "PORTE : $RES"
 O4=$(gw_app_obj "$APP_ID")

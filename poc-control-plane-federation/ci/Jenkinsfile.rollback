@@ -176,7 +176,10 @@ print(" ".join(e))
 PYCHAIN
             ) || { echo "chaine d environnements illisible (governance/environments.yaml)"; exit 1; }
             FIRST=${CHAIN%% *}; LAST=${CHAIN##* }
-            echo "$CHAIN" | tr ' ' '\\n' | grep -qx "$RENV" \
+            # `grep -c … >/dev/null` et NON le helper `pipe_q` : ce bloc `sh` est un
+            # shell ENFANT (dash) qui n'hérite d'aucune fonction — `pipe_q` y serait
+            # introuvable (127), donc le test s'inverserait. Même statut, lit tout.
+            echo "$CHAIN" | tr ' ' '\\n' | grep -cx "$RENV" >/dev/null \
               || { echo "ROLLBACK_ENV_INCONNU: $RENV hors chaine ($CHAIN)"; exit 1; }
             # Défense en profondeur : structurellement aucune promotion n'a
             # To == premier palier (NextOf ne rend jamais chain[0]).

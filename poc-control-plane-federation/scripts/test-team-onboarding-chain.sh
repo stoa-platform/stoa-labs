@@ -120,6 +120,18 @@
 #      dessein (arbitrage du lead).
 set -uo pipefail
 set +x   # jamais de trace : des tokens transitent par ce script
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 cd "$(dirname "$0")/.." || exit 1
 
 GITEA_URL="${GITEA_URL:?GITEA_URL requis (ex. http://localhost:13000) — aucun défaut, jamais deviner la forge}"
@@ -435,11 +447,11 @@ CBODY3=""
   | python3 -c "import json,sys; c=json.load(sys.stdin); print(c[-1]['body'] if c else '')" 2>/dev/null)
 
 if [ "$R3" -eq 0 ] && [ -n "${PR_ONBOARD_NUM:-}" ] \
-   && printf '%s' "$CBODY3" | grep -q 'PLAN OK' \
-   && printf '%s' "$CBODY3" | grep -q "user=svc-$TEAM" \
-   && printf '%s' "$CBODY3" | grep -q "groupe=$TEAM-devs" \
-   && printf '%s' "$CBODY3" | grep -q "kv=deploy/$TEAM/wm-admin" \
-   && printf '%s' "$CBODY3" | grep -q "policy=deploy-$TEAM"; then
+   && printf '%s' "$CBODY3" | pipe_q 'PLAN OK' \
+   && printf '%s' "$CBODY3" | pipe_q "user=svc-$TEAM" \
+   && printf '%s' "$CBODY3" | pipe_q "groupe=$TEAM-devs" \
+   && printf '%s' "$CBODY3" | pipe_q "kv=deploy/$TEAM/wm-admin" \
+   && printf '%s' "$CBODY3" | pipe_q "policy=deploy-$TEAM"; then
   ok "3. PR #$PR_ONBOARD_NUM ouverte, commentaire PLAN OK avec les 4 dérivations (svc-$TEAM, $TEAM-devs, deploy/$TEAM/wm-admin, deploy-$TEAM)"
 else
   bad "3. rc=$R3 PR=${PR_ONBOARD_NUM:-absente} commentaire=$(printf '%s' "$CBODY3" | head -c200) — voir $TMP/p3.log"
@@ -505,7 +517,7 @@ CBODY5BIS=$(gapi "$GITEA_URL/api/v1/repos/$GIT_REPO/issues/${PR_ABSENT_NUM:-0}/c
 
 if [ "$R5BIS_REQ" -eq 0 ] && [ -n "${PR_ABSENT_NUM:-}" ] && [ "$MERGE_HC_ABS" = 200 ] \
    && [ "$R5BIS" -eq 2 ] && grep -q DEPOT_ABSENT "$TMP/p5bis-apply.log" \
-   && printf '%s' "$CBODY5BIS" | grep -q DEPOT_ABSENT \
+   && printf '%s' "$CBODY5BIS" | pipe_q DEPOT_ABSENT \
    && [ "$REPO_ABSENT_BEFORE" = 404 ] && [ "$REPO_ABSENT_AFTER" = 404 ]; then
   ok "5bis. DEPOT_ABSENT : team-apply.sh EN DIRECT refuse rc=2 (jamais créé, jamais poussé), $TEAM_ABSENT/apis 404 inchangé, commentaire ❌ DEPOT_ABSENT sur la PR #$PR_ABSENT_NUM"
 else
@@ -595,7 +607,7 @@ if [ "$MERGE_HC" = 200 ] && [ "$R5" -eq 0 ] \
    && [ -z "$GID_BEFORE" ] && [ -n "$GID_AFTER" ] \
    && [ -z "$PID_BEFORE" ] && [ -n "$PID_AFTER" ] \
    && [ "$KV_BEFORE" != 200 ] && [ "$KV_AFTER" = 200 ] \
-   && printf '%s' "$CBODY5" | grep -q '✅' && printf '%s' "$CBODY5" | grep -q ONBOARD_OK; then
+   && printf '%s' "$CBODY5" | pipe_q '✅' && printf '%s' "$CBODY5" | pipe_q ONBOARD_OK; then
   ok "5. merge HTTP $MERGE_HC (sha ${MERGE_SHA:0:8}), team-apply.sh direct : dépôt $TEAM/apis vide→squelette, objets gateway créés, KV 404→200, commentaire ✅ ONBOARD_OK"
 else
   bad "5. merge_hc=$MERGE_HC rc5=$R5 repo_before=$REPO_BEFORE(attendu 200, pré-créé) repo_after=$REPO_AFTER(attendu 200) repo_empty_after=${REPO_EMPTY_AFTER5:-?}(attendu False) uid:${UID_BEFORE:-vide}->${UID_AFTER:-vide} gid:${GID_BEFORE:-vide}->${GID_AFTER:-vide} pid:${PID_BEFORE:-vide}->${PID_AFTER:-vide} kv:${KV_BEFORE}->${KV_AFTER} — voir $TMP/p5.log"

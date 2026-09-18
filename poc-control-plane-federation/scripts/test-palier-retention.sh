@@ -11,6 +11,18 @@
 # sous-shell qui le produit (SC2181), lecture immédiate et non ambiguë ici.
 # shellcheck disable=SC2015,SC2016,SC2181
 set -uo pipefail
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 cd "$(dirname "$0")/.." || exit 1
 # shellcheck disable=SC2034  # documente la racine résolue (convention test-env-chain.sh) ; non consommée par les épreuves ci-dessous.
 ROOT="$(pwd)"
@@ -1010,12 +1022,12 @@ else
   echo "== ㉑septies-bis mutation STRUCTURELLE : la dérivation perd le terminus (env_chain → env_chain_nonprod) ⇒ ㉑sexies-bis/ter rougissent (A7) =="
   sed 's/env_chain_validate && env_chain" > "$WORKSPACE\/.a0-envs"/env_chain_validate \&\& env_chain_nonprod" > "$WORKSPACE\/.a0-envs"/' "$JSF" > "$TMP/jsf21_mut2"
   cmp -s "$JSF" "$TMP/jsf21_mut2" && bad "㉑septies-bis(0) mutant Jenkinsfile identique — l'ancre de dérivation a bougé" || ok "㉑septies-bis(0) le mutant Jenkinsfile diffère"
-  sed -E 's@^[[:space:]]*(//|#).*$@@' "$TMP/jsf21_mut2" | grep -q 'env_chain_validate && env_chain"' \
+  sed -E 's@^[[:space:]]*(//|#).*$@@' "$TMP/jsf21_mut2" | pipe_q 'env_chain_validate && env_chain"' \
     && bad "㉑septies-bis env_chain→env_chain_nonprod dans le Jenkinsfile passe inaperçu" \
     || ok "㉑septies-bis env_chain→env_chain_nonprod dans le Jenkinsfile ⇒ le détecteur de ㉑sexies-bis le VOIT (le terminus quitterait la liste, et le dispatch de prod mourrait après la pause — mesuré A7)"
   sed 's/ENVS="$(env_chain)"/ENVS="$(env_chain_nonprod)"/' "$SSJ" > "$TMP/ssj21_mut2"
   cmp -s "$SSJ" "$TMP/ssj21_mut2" && bad "㉑septies-ter(0) mutant poseur identique" || ok "㉑septies-ter(0) le mutant poseur diffère"
-  nc_strict "$TMP/ssj21_mut2" | grep -q 'ENVS="$(env_chain)"' \
+  nc_strict "$TMP/ssj21_mut2" | pipe_q 'ENVS="$(env_chain)"' \
     && bad "㉑septies-ter la dérivation mutée du poseur passe inaperçue" \
     || ok "㉑septies-ter env_chain→env_chain_nonprod dans le poseur ⇒ le détecteur de ㉑sexies-ter le VOIT"
 
@@ -1049,10 +1061,10 @@ print(sum(1 for p in r.iter() if p.tag.endswith('ChoiceParameterDefinition') and
   [ "$N21" = "0" ] \
     && ok "㉑octies le XML ne porte plus AUCUNE liste REQ_ENV (A0 : posée par le Jenkinsfile, jamais en dur)" \
     || bad "㉑octies une liste REQ_ENV subsiste dans le XML — elle GAGNERAIT sur le Jenkinsfile"
-  grep -vE '^\s*#' "$ARC" | grep -q 'ENVS="$(env_chain)"' \
+  grep -vE '^\s*#' "$ARC" | pipe_q 'ENVS="$(env_chain)"' \
     && ok "㉑octies app-request-choices.sh dérive ENVS d'env_chain (A7 : la chaîne ENTIÈRE, le terminus gardé par ses portes)" \
     || bad "㉑octies app-request-choices.sh ne dérive pas ENVS d'env_chain"
-  if grep -vE '^\s*//' "$ARF" | grep -qE "'homol'|'$TERMINUS_REAL'|\['dev'"; then
+  if grep -vE '^\s*//' "$ARF" | pipe_q -E "'homol'|'$TERMINUS_REAL'|\['dev'"; then
     bad "㉑octies une liste de paliers LITTÉRALE subsiste dans ci/Jenkinsfile.app-request"
   else
     ok "㉑octies ci/Jenkinsfile.app-request ne porte aucune liste de paliers littérale (choices: envs)"

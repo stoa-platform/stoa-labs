@@ -29,6 +29,18 @@
 # `A && ok || bad` (SC2015) est l'idiome des scripts de preuve du repo.
 # shellcheck disable=SC2015
 set -uo pipefail
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 cd "$(dirname "$0")/.." || exit 1
 ROOT="$(pwd)"
 
@@ -400,10 +412,10 @@ L_NODE=$(awk "NR>${L_INPUT:-0} && NR<${L_DISP:-0} && /node\(\"\\\$\{env.POST_AGE
 [ -n "$L_NODE" ] && ok "B.3b le passage au dispatch tourne sous le node( post-pause (ligne $L_NODE)" || bad "B.3b aucun node( entre la pause et le dispatch"
 for L in "$L_PRE" "$L_DISP"; do
   LINE=$(sed -n "${L:-0}p" "$TMP/jf.code")
-  printf '%s' "$LINE" | grep -qF 'STOA_ENV_CHAIN_FILE="$PWD/clients/_example/environments.yaml"' \
+  printf '%s' "$LINE" | pipe_q -F 'STOA_ENV_CHAIN_FILE="$PWD/clients/_example/environments.yaml"' \
     && ok "B.4 ligne $L : STOA_ENV_CHAIN_FILE épinglé sur le clone (une globale Jenkins ne gagne pas)" || bad "B.4 ligne $L sans STOA_ENV_CHAIN_FILE épinglé : $LINE"
-  printf '%s' "$LINE" | grep -q "^ *sh '" && ok "B.4b ligne $L en quotes SIMPLES" || bad "B.4b ligne $L en quotes doubles"
-  printf '%s' "$LINE" | grep -qF 'GATE_OUT="$WORKSPACE/.a4-gate.env"' && ok "B.4c ligne $L : GATE_OUT=\$WORKSPACE/.a4-gate.env" || bad "B.4c ligne $L : GATE_OUT absent"
+  printf '%s' "$LINE" | pipe_q "^ *sh '" && ok "B.4b ligne $L en quotes SIMPLES" || bad "B.4b ligne $L en quotes doubles"
+  printf '%s' "$LINE" | pipe_q -F 'GATE_OUT="$WORKSPACE/.a4-gate.env"' && ok "B.4c ligne $L : GATE_OUT=\$WORKSPACE/.a4-gate.env" || bad "B.4c ligne $L : GATE_OUT absent"
 done
 # 2026-09-04 : le TYPE de credential est un knob du site (forgeCreds()) — la
 # PROPRIÉTÉ mesurée reste « le dispatch tient un secret de forge », pas sa forme.
@@ -416,11 +428,11 @@ MISS=""; for K in GATE_ENV GATE_STAGE GATE_ALLOW_SELF GATE_FOUR_EYES GATE_APPROV
 jf 'PORTE_ILLISIBLE' && jf '==~ /[A-Za-z0-9_.@:+-]*/' && ok "B.5c classe re-vérifiée à la lecture (==~), sinon PORTE_ILLISIBLE" || bad "B.5c pas de contrôle de classe à la lecture"
 grep -q 'env\."\$' "$TMP/jf.code" && bad "B.5d assignation dynamique env.\"\$k\" présente" || ok "B.5d aucune assignation dynamique d'env"
 GUARD_LINE=$(sed -n "${L_GUARD:-0}p" "$TMP/jf.code")
-printf '%s' "$GUARD_LINE" | grep -qF -- '$AMI' && printf '%s' "$GUARD_LINE" | grep -qF -- '${GATE_ALLOW_SELF:-0}' \
+printf '%s' "$GUARD_LINE" | pipe_q -F -- '$AMI' && printf '%s' "$GUARD_LINE" | pipe_q -F -- '${GATE_ALLOW_SELF:-0}' \
   && ok "B.6 la ligne de garde porte \$AMI dérivé de GATE_ALLOW_SELF (défaut 0 = quatre yeux exigés)" || bad "B.6 ligne de garde sans \$AMI/GATE_ALLOW_SELF"
-printf '%s' "$GUARD_LINE" | grep -qF 'PORTE_INCOHERENTE' && printf '%s' "$GUARD_LINE" | grep -qF -- '${GATE_ENV:-}' \
+printf '%s' "$GUARD_LINE" | pipe_q -F 'PORTE_INCOHERENTE' && printf '%s' "$GUARD_LINE" | pipe_q -F -- '${GATE_ENV:-}' \
   && ok "B.6b la ligne de garde exige GATE_ENV == ENV_NAME (PORTE_INCOHERENTE sinon)" || bad "B.6b PORTE_INCOHERENTE absent de la ligne de garde"
-printf '%s' "$GUARD_LINE" | grep -qF -- '--merged-by "${GITEA_MERGED_BY:-}" --requester "${GITEA_REQUESTER:-}" --vault-user "${V_USER:-}"' \
+printf '%s' "$GUARD_LINE" | pipe_q -F -- '--merged-by "${GITEA_MERGED_BY:-}" --requester "${GITEA_REQUESTER:-}" --vault-user "${V_USER:-}"' \
   && ok "B.6c les trois arguments de la garde sont intacts (ancres de test-provision-apply-wiring §4)" || bad "B.6c arguments de la garde altérés"
 # LE FRAGMENT EST EXÉCUTÉ : la chaîne sh '…' de la ligne de garde, jouée sous sh
 # contre un stub de la garde qui journalise argv (critique preuve n°5).
@@ -445,7 +457,7 @@ jf "env.REFUSAL = env.APPLIED_REFUSAL" && ok "B.9b le refus de l'aval devient le
 L_ARF=$(code_line "$TMP/jf.norm" 'env.REFUSAL = env.APPLIED_REFUSAL'); L_SNC=$(code_line "$TMP/jf.norm" "env.REFUSAL = 'SHA_NON_CONFIRME'")
 [ -n "$L_ARF" ] && [ -n "$L_SNC" ] && [ "$L_SNC" -lt "$L_ARF" ] && ok "B.9c SHA_NON_CONFIRME (ligne $L_SNC) prime sur le refus relayé (ligne $L_ARF)" || bad "B.9c ordre des verdicts : snc=$L_SNC arf=$L_ARF"
 grep -q 'porte du palier' "$JF" && ok "B.10 le message FAILURE du post nomme la porte du palier" || bad "B.10 post{always} muet sur la porte"
-grep -E "^\s*sh " "$TMP/jf.code" | grep -q '\${env\.' && bad "B.11 une commande sh interpole \${env.…}" || ok "B.11 aucune commande sh n'interpole \${env.…} (les deux nouveaux sh lisent l'environnement)"
+grep -E "^\s*sh " "$TMP/jf.code" | pipe_q '\${env\.' && bad "B.11 une commande sh interpole \${env.…}" || ok "B.11 aucune commande sh n'interpole \${env.…} (les deux nouveaux sh lisent l'environnement)"
 grep -q 'sh """' "$TMP/jf.code" && bad "B.11b un bloc sh \"\"\" existe" || ok "B.11b aucun bloc sh \"\"\""
 # mutations d'ordre / de contenu
 mut_jf(){ # <nom> <awk-or-sed program via python> — produit $TMP/jf-<nom> ; rc 1 si no-op
@@ -473,7 +485,7 @@ fi
 sed 's#STOA_ENV_CHAIN_FILE="$PWD/clients/_example/environments.yaml" GATE_STAGE=dispatch#GATE_STAGE=dispatch#' "$JF" > "$TMP/jf-nopin"
 if mut_jf nopin; then
   code_view "$TMP/jf-nopin" > "$TMP/jfm.code"; M_D=$(code_line "$TMP/jfm.code" "GATE_STAGE=dispatch GATE_OUT=")
-  sed -n "${M_D:-0}p" "$TMP/jfm.code" | grep -qF 'STOA_ENV_CHAIN_FILE=' && bad "B.M3 mutation inopérante" || ok "B.M3 STOA_ENV_CHAIN_FILE retiré de la ligne dispatch ⇒ B.4 verrait rouge (une globale rédirigerait la porte)"
+  sed -n "${M_D:-0}p" "$TMP/jfm.code" | pipe_q -F 'STOA_ENV_CHAIN_FILE=' && bad "B.M3 mutation inopérante" || ok "B.M3 STOA_ENV_CHAIN_FILE retiré de la ligne dispatch ⇒ B.4 verrait rouge (une globale rédirigerait la porte)"
 fi
 sed 's/ \$AMI'"'"'$/'"'"'/' "$JF" > "$TMP/jf-noami"
 if mut_jf noami; then
@@ -495,8 +507,8 @@ JFS="ci/Jenkinsfile.selfservice"; code_view "$JFS" > "$TMP/jfs.code"
 L_SL=$(code_line "$TMP/jfs.code" 'RC=0; vault_login_nominative || RC=$?')
 L_SG=$(line_after "${L_SL:-0}" 'bash "$GATE_DIR/scripts/selfservice-palier-gate.sh"' "$TMP/jfs.code")
 SG_LINE=$(sed -n "${L_SG:-0}p" "$TMP/jfs.code")
-printf '%s' "$SG_LINE" | grep -qF 'REFUS_OUT="$WORKSPACE/.a3-refus"' && ok "C.1 REFUS_OUT=\$WORKSPACE/.a3-refus sur la ligne d'appel de la garde" || bad "C.1 REFUS_OUT absent : $SG_LINE"
-printf '%s' "$SG_LINE" | grep -qF 'STOA_ENV_CHAIN_FILE="$GATE_DIR/clients/_example/environments.yaml"' && ok "C.2 STOA_ENV_CHAIN_FILE épinglé sur l'extraction de la lignée (origin/\$BASE)" || bad "C.2 chaîne non épinglée : $SG_LINE"
+printf '%s' "$SG_LINE" | pipe_q -F 'REFUS_OUT="$WORKSPACE/.a3-refus"' && ok "C.1 REFUS_OUT=\$WORKSPACE/.a3-refus sur la ligne d'appel de la garde" || bad "C.1 REFUS_OUT absent : $SG_LINE"
+printf '%s' "$SG_LINE" | pipe_q -F 'STOA_ENV_CHAIN_FILE="$GATE_DIR/clients/_example/environments.yaml"' && ok "C.2 STOA_ENV_CHAIN_FILE épinglé sur l'extraction de la lignée (origin/\$BASE)" || bad "C.2 chaîne non épinglée : $SG_LINE"
 [ "$(grep -c 'rm -f "$WORKSPACE/.a3-refus"' "$TMP/jfs.code")" -ge 2 ] && ok "C.3 deux purges ABSOLUES de .a3-refus (Référence + avant l'appel)" || bad "C.3 purges absolues : $(grep -c 'rm -f "$WORKSPACE/.a3-refus"' "$TMP/jfs.code")"
 grep -q 'fileExists("${env.WORKSPACE}/.a3-refus")' "$TMP/jfs.code" && grep -q 'env.APPLIED_REFUSAL = ' "$TMP/jfs.code" && ok "C.4 post{always} du stage Apply relit .a3-refus dans env.APPLIED_REFUSAL" || bad "C.4 relais APPLIED_REFUSAL absent"
 grep -q '==~ /\[A-Z\]\[A-Z0-9_\]{2,40}/' "$TMP/jfs.code" && ok "C.5 le tag relayé est contrôlé contre [A-Z][A-Z0-9_]{2,40}" || bad "C.5 pas de classe sur le tag relayé"

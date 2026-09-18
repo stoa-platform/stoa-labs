@@ -62,6 +62,18 @@
 # Règle du dépôt, déjà écrite pour `requis()` : une ligne = mutable par sed.
 set -uo pipefail
 set +x   # jamais de trace : le secret de la forge est dans l'environnement
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 cd "$(dirname "$0")/.." || exit 1
 
 refus(){ echo "REFUS: $*" >&2; exit 1; }
@@ -73,7 +85,7 @@ PR_NUMBER="${PR_NUMBER:-}"; PR_BRANCH="${PR_BRANCH:-}"; MERGE_SHA="${MERGE_SHA:-
 case "$PR_NUMBER" in
   ''|*[!0-9]*) refus "PR_NUMBER_INVALIDE : PR_NUMBER n'est pas un entier (valeur : $(shown "$PR_NUMBER")) — aucune identité ne peut être relue" ;;
 esac
-printf '%s' "$MERGE_SHA" | grep -Eq '^[0-9a-f]{40}$' \
+printf '%s' "$MERGE_SHA" | pipe_q -E '^[0-9a-f]{40}$' \
   || refus "MERGE_SHA_INVALIDE : MERGE_SHA hors de ^[0-9a-f]{40}\$ (valeur : $(shown "$MERGE_SHA")) — déclencheur mal câblé, fusion sans commit de merge (fast-forward / squash), ou payload forgé"
 [ -n "$PR_BRANCH" ] \
   || refus "BRANCHE_REQUISE : PR_BRANCH vide — sans elle le lien entre la PR relue et l'objet appliqué ne peut pas être vérifié"

@@ -37,6 +37,18 @@
 # la suite est désormais shellcheckée comme les autres livrables.
 # shellcheck disable=SC2015,SC2016
 set -uo pipefail
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 JOB="$REPO/ci/jenkins/team-request.job.xml"
 JF="$REPO/ci/Jenkinsfile.team-request"
@@ -60,7 +72,7 @@ EXPECTED_CHECKS=67
 # sont cosmétiques — un reformatage ne doit pas faire virer un contrôle au
 # rouge, alors que la disparition d'une clé le doit.
 JF_N="$(tr -s ' ' < "$JF")"
-jf(){ printf '%s\n' "$JF_N" | grep -qF "$1"; }
+jf(){ printf '%s\n' "$JF_N" | pipe_q -F "$1"; }
 # Corps du bloc `sh '''…'''` UNIQUEMENT (entre les deux délimiteurs) : sert aux
 # contrôles qui doivent porter sur le shell RÉELLEMENT exécuté, pas sur le
 # Groovy qui l'entoure ni sur les commentaires du fichier.
@@ -146,7 +158,7 @@ echo "== 3. les TYPES concordent, et l'axe env a disparu des deux côtés =="
 # saisie libre là où le XML impose une liste fermée.
 TYPE_KO=""
 for P in TEAM DESCRIPTION APPROVERS REPO; do
-  grep -A1 '<hudson.model.StringParameterDefinition>' "$JOB" | grep -q "<name>${P}</name>" \
+  grep -A1 '<hudson.model.StringParameterDefinition>' "$JOB" | pipe_q "<name>${P}</name>" \
     || TYPE_KO="${TYPE_KO} XML:${P}(pas string)"
   jf "string(name: '${P}'" || TYPE_KO="${TYPE_KO} JF:${P}(pas string)"
 done
@@ -170,7 +182,7 @@ PY
 [ "$XML_PARAMS" = "TEAM,DESCRIPTION,APPROVERS,REPO,DEBUG" ] \
   && ok "le formulaire XML est exactement TEAM,DESCRIPTION,APPROVERS,REPO,DEBUG — aucun axe env, la case DEBUG en dernier (L4 ; et c'est le XML qui GAGNE)" \
   || ko "formulaire XML inattendu : '${XML_PARAMS}' (attendu TEAM,DESCRIPTION,APPROVERS,REPO,DEBUG)"
-if printf '%s\n' "$JF_CODE" | grep -q 'choice(name:'; then
+if printf '%s\n' "$JF_CODE" | pipe_q 'choice(name:'; then
   ko "un \`choice(name: …)\` subsiste dans le CODE du Jenkinsfile — le seul qu'ait eu ce formulaire était l'axe env"
 else
   ok "aucun \`choice(name: …)\` dans le code du Jenkinsfile : le formulaire versionné a perdu le même champ que le XML"
@@ -179,10 +191,10 @@ fi
 # constante d'authoring — sans quoi le retrait ne ferait que déplacer la décision
 # vers une variable d'environnement du nœud (les paramètres d'un build Jenkins
 # atterrissent dans l'environnement du process : fait mesuré, 2026-08-06).
-printf '%s\n' "$SCRIPT_CODE" | grep -q 'REQ_ENV="\$DEPLOY_PIN_AUTHORING_ENV"' \
+printf '%s\n' "$SCRIPT_CODE" | pipe_q 'REQ_ENV="\$DEPLOY_PIN_AUTHORING_ENV"' \
   && ok "team-request.sh scelle REQ_ENV sur la constante d'authoring (affectation sèche, pas un défaut)" \
   || ko "team-request.sh ne scelle pas REQ_ENV sur DEPLOY_PIN_AUTHORING_ENV — le retrait du champ ne garantirait rien"
-if printf '%s\n' "$SCRIPT_CODE" | grep -q 'REQ_ENV="\${REQ_ENV:-'; then
+if printf '%s\n' "$SCRIPT_CODE" | pipe_q 'REQ_ENV="\${REQ_ENV:-'; then
   ko "team-request.sh garde un défaut surchargeable \`REQ_ENV:-\` — une variable de nœud rouvrirait l'axe que le formulaire vient de perdre"
 else
   ok "aucun défaut surchargeable \`REQ_ENV:-\` : l'axe ne peut pas rentrer par l'environnement"
@@ -193,7 +205,7 @@ fi
 # aucune saisie ne pouvant plus la déclencher. L'équivalent côté APPLY, lui,
 # reste nécessaire et s'appelle désormais ENV_MISMATCH : la branche
 # onboard/<team>-<env> traverse Git, où un suffixe peut être FORGÉ.
-if printf '%s\n' "$SCRIPT_CODE" | grep -q 'ENV_NOT_OPEN'; then
+if printf '%s\n' "$SCRIPT_CODE" | pipe_q 'ENV_NOT_OPEN'; then
   ko "ENV_NOT_OPEN subsiste dans le CODE de team-request.sh — un refus sans objet depuis que l'axe est scellé (G4 D5)"
 else
   ok "ENV_NOT_OPEN a disparu du code de team-request.sh : plus de choix d'env, donc plus de choix à refuser"
@@ -255,7 +267,7 @@ jf 'GITEA_CREDENTIALS_ID = "${env.GITEA_CREDENTIALS_ID ?: '"'"'gitea-provision-t
 jf "withCredentials(forgeCreds())" \
   && ok "withCredentials lie le credential au knob (pas un identifiant en dur au milieu du pipeline)" \
   || ko "withCredentials absent ou n'utilise pas env.GITEA_CREDENTIALS_ID"
-if printf '%s\n' "$SH_BODY" | grep -q 'GITEA_TOKEN'; then
+if printf '%s\n' "$SH_BODY" | pipe_q 'GITEA_TOKEN'; then
   ko "le corps du \`sh\` mentionne GITEA_TOKEN — le token doit rester dans l'ENVIRONNEMENT (lu par le script), jamais écrit dans la ligne de commande"
 else
   ok "le corps du \`sh\` ne touche jamais GITEA_TOKEN : il est hérité par l'environnement et lu par team-request.sh (\${GITEA_TOKEN:?})"
@@ -282,10 +294,10 @@ _tr_run(){ ( cd "$REPO" && env -i PATH="$PATH" HOME="$HOME" \
     GIT_HOST=http://127.0.0.1:1 TEAM=equipe-sonde "$@" bash scripts/team-request.sh ) 2>&1; }
 _TR_SANS=$(_tr_run)
 _TR_AVEC=$(_tr_run FORGE_SECRET=stub)
-printf '%s' "$_TR_SANS" | grep -q 'REFUS: SECRET_FORGE_REQUIS' \
+printf '%s' "$_TR_SANS" | pipe_q 'REFUS: SECRET_FORGE_REQUIS' \
   && ok "sans secret, team-request.sh REFUSE en nommant SECRET_FORGE_REQUIS (mesuré, pas lu — survit au renommage de la variable interne)" \
   || ko "sans secret, team-request.sh ne refuse pas en le nommant : $(printf '%s' "$_TR_SANS" | head -1)"
-printf '%s' "$_TR_AVEC" | grep -q 'SECRET_FORGE_REQUIS' \
+printf '%s' "$_TR_AVEC" | pipe_q 'SECRET_FORGE_REQUIS' \
   && ko "DISCRIMINANT : le refus tombe MÊME AVEC un secret — l'assertion précédente ne prouve rien" \
   || ok "DISCRIMINANT : avec un secret, ce refus ne tombe pas (l'assertion ci-dessus dépend bien du secret)"
 grep -qF 'SECRET_FORGE_REQUIS' "$SCRIPT" \
@@ -316,19 +328,19 @@ fi
 # ÉCRITS dans providers.<env>.yml puis committés : sans ré-injection, l'entrée
 # déclarée ne serait plus celle demandée, et `${JENKINS_HOME}` saisi dans une
 # description deviendrait une lecture de l'env du contrôleur vers un dépôt Git.
-if printf '%s\n' "$JF_CODE" | grep -q 'withEnv(\["TEAM=\${params\.TEAM}'; then
+if printf '%s\n' "$JF_CODE" | pipe_q 'withEnv(\["TEAM=\${params\.TEAM}'; then
   ok "ré-injection des valeurs BRUTES via withEnv([...params...]) présente — les \${…} d'une saisie ne sont pas expansés par Jenkins"
 else
   ko "le withEnv([...params...]) de ré-injection a disparu — Jenkins résoudrait les \${…} de DESCRIPTION/APPROVERS avant le script (corruption silencieuse + lecture de l'env du contrôleur)"
 fi
 MISSING_RAW=""
 for P in TEAM DESCRIPTION APPROVERS REPO; do
-  printf '%s\n' "$JF_CODE" | grep -q "${P}=\${params\.${P}" || MISSING_RAW="${MISSING_RAW} ${P}"
+  printf '%s\n' "$JF_CODE" | pipe_q "${P}=\${params\.${P}" || MISSING_RAW="${MISSING_RAW} ${P}"
 done
 [ -z "$MISSING_RAW" ] \
   && ok "les 4 champs du formulaire sont ré-injectés en valeur brute" \
   || ko "champs NON ré-injectés en brut :${MISSING_RAW} — ceux-là subiraient EnvVars.resolve()"
-if [ -n "$SH_BODY" ] && printf '%s\n' "$SH_BODY" | grep -q 'params\.'; then
+if [ -n "$SH_BODY" ] && printf '%s\n' "$SH_BODY" | pipe_q 'params\.'; then
   ko "un \`params.\` apparaît DANS la chaîne sh — la saisie traverserait une interpolation Groovy"
 else
   ok "aucun \`params.\` dans la chaîne sh : la saisie n'y traverse aucune interpolation Groovy"
@@ -344,7 +356,7 @@ echo "== 8. les ceintures du shell survivent (REPO vide, dry-run désarmé), et 
 # mais l'unset rend l'intention explicite et resterait correct même si le script
 # passait à `\${REPO-…}` (sans deux-points), qui ne traite PAS la chaîne vide
 # comme une absence.
-printf '%s\n' "$SH_BODY" | grep -qF 'if [ -z "$REPO" ]; then unset REPO; fi' \
+printf '%s\n' "$SH_BODY" | pipe_q -F 'if [ -z "$REPO" ]; then unset REPO; fi' \
   && ok "la garde \`unset REPO\` est présente dans le shell (pas seulement citée en commentaire)" \
   || ko "garde \`unset REPO\` absente du corps du \`sh\` — REPO vide pourrait être pris pour un choix explicite"
 grep -qF 'REPO="${REPO:-${TEAM}/apis}"' "$SCRIPT" \
@@ -366,19 +378,19 @@ fi
 # scellement de l'axe env ferme par ailleurs. Présence ET position : un `unset`
 # placé après l'appel ne désarmerait plus rien.
 L_DRY=$(grep -n 'unset DRY_RUN' "$JF" | head -1 | cut -d: -f1)
-if printf '%s\n' "$SH_CODE" | grep -qF 'unset DRY_RUN' \
+if printf '%s\n' "$SH_CODE" | pipe_q -F 'unset DRY_RUN' \
    && [ -n "$L_DRY" ] && [ -n "$L_RUN" ] && [ "$L_DRY" -lt "$L_RUN" ]; then
   ok "\`unset DRY_RUN\` dans le code du shell (ligne $L_DRY), avant l'appel (ligne $L_RUN) : une variable de nœud ne peut pas rendre le formulaire muet"
 else
   ko "\`unset DRY_RUN\` absent du code du \`sh\` (ou placé après l'appel : dry=$L_DRY appel=$L_RUN) — DRY_RUN=1 sur le nœud donnerait un build VERT sans aucune PR"
 fi
-printf '%s\n' "$SH_BODY" | grep -qE '^ *set \+x' \
+printf '%s\n' "$SH_BODY" | pipe_q -E '^ *set \+x' \
   && ok "\`set +x\` en tête du bloc shell : aucune trace d'exécution (le token du credential ne doit jamais être tracé)" \
   || ko "\`set +x\` absent du bloc shell"
 
 echo
 echo "== 9. team-request.sh est invoqué, depuis le bon dossier, et le pipeline reste MINCE =="
-printf '%s\n' "$SH_BODY" | grep -qF 'bash scripts/team-request.sh' \
+printf '%s\n' "$SH_BODY" | pipe_q -F 'bash scripts/team-request.sh' \
   && ok "scripts/team-request.sh réellement invoqué (dans le corps du \`sh\`, pas en commentaire)" \
   || ko "team-request.sh non invoqué — job mort"
 jf "dir(env.GIT_SUBDIR)" \
@@ -392,12 +404,12 @@ else
 fi
 # Le pipeline ROUTE, il ne réimplémente pas : aucun appel direct à Git, à
 # Ansible ou à l'API Gitea ne doit apparaître ici.
-if printf '%s\n' "$JF_CODE" | grep -qE '^\s*(curl|ansible-playbook|git) '; then
+if printf '%s\n' "$JF_CODE" | pipe_q -E '^\s*(curl|ansible-playbook|git) '; then
   ko "le Jenkinsfile appelle directement curl/ansible-playbook/git — la substance doit rester dans scripts/ et ansible/roles/"
 else
   ok "aucun curl/ansible-playbook/git direct : le pipeline route, le moteur reste dans scripts/ et ansible/roles/"
 fi
-if printf '%s\n' "$SH_BODY" | grep -qE '^ *(curl|git|python3|ansible-playbook) '; then
+if printf '%s\n' "$SH_BODY" | pipe_q -E '^ *(curl|git|python3|ansible-playbook) '; then
   ko "le corps du \`sh\` fait autre chose que router vers le script (curl/git/python3/ansible-playbook)"
 else
   ok "le corps du \`sh\` ne fait QUE préparer l'environnement et appeler le script"
@@ -464,7 +476,7 @@ grep -qF '<url>http://gitea:3000/ci/stoa-labs.git</url>' "$JOB" \
 grep -qF '<name>*/__GIT_BASE__</name>' "$JOB" \
   && ok "branche du <scm> = placeholder __GIT_BASE__, substitué à la pose — la source ne nomme aucune branche" \
   || ko "branche du <scm> absente ou divergente"
-if printf '%s\n' "$JF_CODE" | grep -q 'git url:'; then
+if printf '%s\n' "$JF_CODE" | pipe_q 'git url:'; then
   ko "un \`git url:\` explicite subsiste dans le Jenkinsfile — le checkout doit rester celui, implicite, de Declarative"
 else
   ok "aucun \`git url:\` explicite : le checkout est celui, implicite, de Declarative (piloté par <scm>)"

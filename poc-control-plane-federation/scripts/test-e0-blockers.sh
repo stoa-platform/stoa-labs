@@ -11,6 +11,18 @@
 # Preuves aux DEUX niveaux : tests Go (transport) ET binaire livré (bout-en-bout).
 # Ne requiert AUCUN service du compose — s'exécute hors zone, comme la release.
 set -uo pipefail
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PASS=0; FAIL=0
 ok(){  PASS=$((PASS+1)); printf '  \033[32mPASS\033[0m %s\n' "$*"; }
@@ -104,7 +116,7 @@ EOF
 # -o json : la sortie table TRONQUE l'erreur par colonne ; le document JSON
 # porte le message x509 complet (stdout), stderr ne dit que « 1/1 failed ».
 ERRNOCA="$("$BIN" get apis -o json -f "$TMP/targets-ca.yaml" 2>/dev/null)" || true
-[ ! -s "$TLSLOG" ] && echo "$ERRNOCA" | grep -Eqi 'certificate|x509' \
+[ ! -s "$TLSLOG" ] && echo "$ERRNOCA" | pipe_q -Ei 'certificate|x509' \
   && ok "binaire livré : SANS knob, CA inconnue -> échec x509 (contrôle)" \
   || bad "binaire livré : le contrôle sans CA aurait dû échouer en x509"
 LABCTL_CA_FILE="$TMP/cert.pem" VAULT_ADDR= "$BIN" get apis -f "$TMP/targets-ca.yaml" >/dev/null 2>&1 || true
@@ -171,7 +183,7 @@ NBIN="$(find "$DIST" -name '*_linux_*' -o -name '*_darwin_*' 2>/dev/null | wc -l
 [ "$NBIN" = 9 ] && [ -f "$DIST/SHA256SUMS" ] && ls "$DIST"/*.spdx.json >/dev/null 2>&1 \
   && ok "artefacts : 9 binaires (3 outils × 3 archs) + SHA256SUMS + SBOM" \
   || bad "artefacts incomplets dans $DIST ($NBIN binaires)"
-file "$DIST/labctl_${VERSION}_linux_amd64" 2>/dev/null | grep -q 'ELF 64-bit.*x86-64' \
+file "$DIST/labctl_${VERSION}_linux_amd64" 2>/dev/null | pipe_q 'ELF 64-bit.*x86-64' \
   && ok "labctl linux/amd64 est bien un ELF x86-64 (cross-compilé, agent client sans Go)" \
   || bad "labctl linux/amd64 n'est pas un ELF x86-64"
 ( cd "$DIST" && { command -v sha256sum >/dev/null && sha256sum -c SHA256SUMS || shasum -a 256 -c SHA256SUMS ; } >/dev/null 2>&1 ) \

@@ -211,6 +211,22 @@ lint-ci:
 	@# nu dans un message, qui est ce qui a coute deux jours. Exemptes NOMMES dans le
 	@# fichier (harnais, outils de lab, l'autorite git-base.sh). Sous l'etape 2, sans rang.
 	@bash ci/lint-branch-literals.sh
+	@# « | grep -q » SOUS `pipefail` INVERSE SON VERDICT (2026-09-18). grep -q sort a
+	@# la premiere correspondance et ferme le tuyau ; l'ecrivain prend un SIGPIPE,
+	@# rend 141, et le pipeline devient non nul PRECISEMENT quand le motif est la.
+	@# Le piege depend de la TAILLE du flux, donc il DORT : mesure sur un fichier
+	@# reel, fenetre de 6 Ko -> detecte, 28 Ko -> AVEUGLE. Deux assertions de
+	@# cablage etaient ainsi VERTES A TORT depuis des mois ; la conversion les a
+	@# reveillees et toutes deux signalaient un vrai defaut.
+	@# La porte refuse la FORME, uniformement — predire quel tampon sauve quelle
+	@# occurrence est exactement la partie qui dort. Portee DERIVEE de git ls-files.
+	@# Sous l'etape 2, sans rang a elle — le compte [20/20] ne bouge pas.
+	@bash ci/lint-pipe-grepq.sh
+	@# … et la porte lit la FORME, elle ne prouve pas le COMPORTEMENT : l'epreuve
+	@# ci-dessous mesure le discriminant (grep -q rend 141 la ou pipe_q rend 0) et
+	@# l'equivalence de statut, puis fait ROUGIR la porte par mutation sur chacun de
+	@# ses invariants. Hors ligne, quelques secondes.
+	@bash scripts/test-pipe-q.sh
 	@# … et la porte interdit le LITTERAL, elle ne verifie pas le COMPORTEMENT.
 	@# Les trois suites qui suivent gardent ce que L3 a reellement change : la
 	@# substitution de __GIT_BASE__ a la pose, le refus BRANCHE_PAR_DEFAUT_INDECIDABLE

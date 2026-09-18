@@ -25,6 +25,13 @@
 # SC1091 : .env.gitlab-lab est hors Git (secret), shellcheck ne peut pas le lire.
 # shellcheck disable=SC2329,SC2034,SC2015,SC1091
 set -uo pipefail
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+pipe_q() { grep -c "$@" >/dev/null; }
 REPO="$(cd "$(dirname "$0")/.." && pwd)"; cd "$REPO" || exit 1
 J="${JENKINS_UI:-http://localhost:18080}"
 JIN="${JENKINS_INCLUSTER:-http://jenkins:8080}"      # Jenkins vu DEPUIS GitLab
@@ -153,13 +160,13 @@ IID=""   # mergée : plus rien à fermer
 NA=$(( $(jnext spike-apply) - 1 ))
 say "── merge_commit_sha de l'API : [$SHA_API]"
 case "${#SHA_API}" in 40) say "   ✅ M6 merge_commit_sha = 40 hex (méthode merge commit)";; *) say "   ❌ M6 merge_commit_sha de longueur ${#SHA_API}"; RC=1;; esac
-jconsole spike-apply "$NA" | grep -q "sha=\[$SHA_API\]" && say "   ✅ M6 gitlabMergeCommitSha du build == merge_commit_sha de l'API (la référence A2 tient)" || { say "   ❌ M6 gitlabMergeCommitSha ≠ API : $(jconsole spike-apply "$NA" | grep -m1 '^APPLY ')"; RC=1; }
+jconsole spike-apply "$NA" | pipe_q "sha=\[$SHA_API\]" && say "   ✅ M6 gitlabMergeCommitSha du build == merge_commit_sha de l'API (la référence A2 tient)" || { say "   ❌ M6 gitlabMergeCommitSha ≠ API : $(jconsole spike-apply "$NA" | grep -m1 '^APPLY ')"; RC=1; }
 
 say "═══ M8 : les variables gitlab* réellement posées (dernier build du plan) ═══"
 NP=$(( $(jnext spike-plan) - 1 ))
 jpost "$J/job/spike-plan/build" -o /dev/null >/dev/null 2>&1 || true   # (non utilisé : on lit le dernier build du webhook)
 jconsole spike-plan "$NP" | grep -m1 '^PLAN ' | sed 's/^/   /'
-jconsole spike-plan "$NP" | grep -q 'action=\[MERGE\]' && say "   ✅ M8 gitlabActionType vaut MERGE même sur un hook d'OUVERTURE : le plugin n'expose PAS l'action ⇒ le pipeline doit relire l'ÉTAT" || say "   ℹ M8 gitlabActionType : $(jconsole spike-plan "$NP" | grep -m1 -o 'action=\[[^]]*\]')"
+jconsole spike-plan "$NP" | pipe_q 'action=\[MERGE\]' && say "   ✅ M8 gitlabActionType vaut MERGE même sur un hook d'OUVERTURE : le plugin n'expose PAS l'action ⇒ le pipeline doit relire l'ÉTAT" || say "   ℹ M8 gitlabActionType : $(jconsole spike-plan "$NP" | grep -m1 -o 'action=\[[^]]*\]')"
 
 say "═══ M9 : X-Gitlab-Token ═══"
 for t in "" "faux" "spike-apply"; do

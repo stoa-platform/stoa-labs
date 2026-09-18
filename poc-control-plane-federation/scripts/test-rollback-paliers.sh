@@ -25,6 +25,18 @@
 # que quatorze fois à la ligne.
 # shellcheck disable=SC2015
 set -uo pipefail
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT" || exit 1
 
@@ -137,13 +149,13 @@ PCID=$(curl -s "${AH[@]}" "$API/clients?clientId=stoa-portal" | python3 -c 'impo
 if [ -n "$PCID" ]; then
   HAVE=$(curl -s "${AH[@]}" "$API/clients/$PCID/protocol-mappers/models" | python3 -c 'import sys,json
 print(" ".join(m["name"] for m in json.load(sys.stdin)))')
-  echo "$HAVE" | grep -q 'demo-tenant-attr' || curl -s "${AH[@]}" -H 'Content-Type: application/json' \
+  echo "$HAVE" | pipe_q 'demo-tenant-attr' || curl -s "${AH[@]}" -H 'Content-Type: application/json' \
     -X POST "$API/clients/$PCID/protocol-mappers/models" -d '{
       "name":"demo-tenant-attr","protocol":"openid-connect",
       "protocolMapper":"oidc-usermodel-attribute-mapper",
       "config":{"user.attribute":"tenant","claim.name":"tenant","jsonType.label":"String",
                 "access.token.claim":"true","id.token.claim":"true"}}' -o /dev/null
-  echo "$HAVE" | grep -q 'demo-groups' || curl -s "${AH[@]}" -H 'Content-Type: application/json' \
+  echo "$HAVE" | pipe_q 'demo-groups' || curl -s "${AH[@]}" -H 'Content-Type: application/json' \
     -X POST "$API/clients/$PCID/protocol-mappers/models" -d '{
       "name":"demo-groups","protocol":"openid-connect",
       "protocolMapper":"oidc-group-membership-mapper",
@@ -194,7 +206,7 @@ applyenv homol >/dev/null 2>&1 && ok "① homol convergé v1.0.0 (wm-admin-homol
 DEPLOY_PATH="tenants/$TENANT/apis/$SLUG/deploy.homol.yaml"
 N1RAW="$(git -C "$REPO" show "main:$DEPLOY_PATH")"
 N1SHA="$(git -C "$REPO" log -1 --format=%H -- "$DEPLOY_PATH")"
-echo "$N1RAW" | grep -q 'commit:' && ok "① l'état N-1 porte son pin (commit: présent)" || bad "① deploy.homol.yaml N-1 sans pin"
+echo "$N1RAW" | pipe_q 'commit:' && ok "① l'état N-1 porte son pin (commit: présent)" || bad "① deploy.homol.yaml N-1 sans pin"
 
 say "② v1.0.1 atteint homol (l'état N que le repli va quitter)"
 python3 - "$REPO/tenants/$TENANT/apis/$SLUG/api.yaml" <<'EOF'
@@ -226,7 +238,7 @@ if [ "$CODE" = 200 ]; then
   [ -n "$PINN1" ] && [ "$RESTCOMMIT" = "$PINN1" ] && ok "③ le pin restauré est CELUI du N-1 ($PINN1)" \
     || bad "③ pin restauré ($RESTCOMMIT) ≠ pin N-1 ($PINN1)"
   MSG="$(git -C "$REPO" log -1 --format=%B)"
-  if echo "$MSG" | grep -q "rollback $SLUG (homol)" && echo "$MSG" | grep -q "Evidence:"; then
+  if echo "$MSG" | pipe_q "rollback $SLUG (homol)" && echo "$MSG" | pipe_q "Evidence:"; then
     ok "③ trace Git de l'acte : commit 'rollback $SLUG (homol)' + trailer Evidence"
   else bad "③ commit de rollback sans sujet/trailers attendus: $MSG"; fi
   EVP="$(jget evidence)"
@@ -263,7 +275,7 @@ promote homol prod ',"change_ref":"CHG-0001","pv_ref":"PV-2026-103"' && ok "④b
 PRODID="$PRID"
 gov POST "/tenants/$TENANT/promotions/$PRODID/rollback" "$TOK_BOB" '{"reason":"test refus"}' >/dev/null
 B="$(cat /tmp/trp.json)"
-if [ "$CODE" = 400 ] && echo "$B" | grep -q GATE_REFS_REQUIRED; then
+if [ "$CODE" = 400 ] && echo "$B" | pipe_q GATE_REFS_REQUIRED; then
   ok "④b rollback prod SANS change_ref → 400 GATE_REFS_REQUIRED (contre-épreuve GOAL)"
 else bad "④b rollback sans change_ref → HTTP $CODE (attendu 400 GATE_REFS_REQUIRED): $B"; fi
 # c. …et la garde des refs est bien ANTÉRIEURE à l'historique : avec le
@@ -271,12 +283,12 @@ else bad "④b rollback sans change_ref → HTTP $CODE (attendu 400 GATE_REFS_RE
 gov POST "/tenants/$TENANT/promotions/$PRODID/rollback" "$TOK_BOB" \
   '{"reason":"test premier état","change_ref":"CHG-0003"}' >/dev/null
 B="$(cat /tmp/trp.json)"
-if [ "$CODE" = 409 ] && echo "$B" | grep -q NO_PREVIOUS_STATE; then
+if [ "$CODE" = 409 ] && echo "$B" | pipe_q NO_PREVIOUS_STATE; then
   ok "④c avec change_ref → 409 NO_PREVIOUS_STATE (fail at the earliest prouvé : refs AVANT historique)"
 else bad "④c rollback 1er état → HTTP $CODE (attendu 409 NO_PREVIOUS_STATE): $B"; fi
 
 say "⑤ Remise à l'identique du lab (mocks int+homol touchés → restart, catalogues re-vérifiés)"
-if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^poc-wm-mock-homol$'; then
+if docker ps --format '{{.Names}}' 2>/dev/null | pipe_q '^poc-wm-mock-homol$'; then
   docker restart poc-wm-mock-int poc-wm-mock-homol >/dev/null 2>&1
   sleep 2
   for E in int homol; do

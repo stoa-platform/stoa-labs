@@ -32,6 +32,18 @@
 #
 #   bash ci/lint-permissive-defaults.sh
 set -uo pipefail
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 RACINE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$RACINE" || exit 1
 PASS=0; FAIL=0
@@ -67,9 +79,9 @@ ok "A.1 $N déclaration(s) de knob d'affaiblissement lues dans le CODE (Jenkinsf
 echo
 echo "═══ B. aucune d'elles n'a un défaut PERMISSIF ═══"
 BAD=""
-printf '%s\n' "$J" | grep -qE "\?:[[:space:]]*'(true|True|TRUE|1|yes|on)'" && BAD="$BAD [Jenkinsfile]$(printf '%s\n' "$J" | grep -E "\?:[[:space:]]*'(true|True|TRUE|1|yes|on)'" | tr '\n' ' ')"
-printf '%s\n' "$S" | grep -qE ":-(true|True|TRUE|1|yes|on)\}" && BAD="$BAD [shell]$(printf '%s\n' "$S" | grep -E ":-(true|True|TRUE|1|yes|on)\}" | tr '\n' ' ')"
-printf '%s\n' "$G" | grep -qE ",[[:space:]]*true\)" && BAD="$BAD [Go]$(printf '%s\n' "$G" | grep -E ",[[:space:]]*true\)" | tr '\n' ' ')"
+printf '%s\n' "$J" | pipe_q -E "\?:[[:space:]]*'(true|True|TRUE|1|yes|on)'" && BAD="$BAD [Jenkinsfile]$(printf '%s\n' "$J" | grep -E "\?:[[:space:]]*'(true|True|TRUE|1|yes|on)'" | tr '\n' ' ')"
+printf '%s\n' "$S" | pipe_q -E ":-(true|True|TRUE|1|yes|on)\}" && BAD="$BAD [shell]$(printf '%s\n' "$S" | grep -E ":-(true|True|TRUE|1|yes|on)\}" | tr '\n' ' ')"
+printf '%s\n' "$G" | pipe_q -E ",[[:space:]]*true\)" && BAD="$BAD [Go]$(printf '%s\n' "$G" | grep -E ",[[:space:]]*true\)" | tr '\n' ' ')"
 if [ -z "$BAD" ]; then
   ok "B.1 aucun défaut permissif : un affaiblissement se pose EXPLICITEMENT, ou ne s'applique pas"
 else
@@ -112,11 +124,11 @@ for f in $(find ci observability scripts -name '*.sh' 2>/dev/null | sort); do
   # juge ici, c'est ce que le script FAIT.
   sed -E 's@^[[:space:]]*#.*$@@' "$f" \
     | grep -vE '^[[:space:]]*(echo|printf)[[:space:]]' \
-    | grep -qE "curl[^|]*[[:space:]]-k([[:space:]]|\")|--insecure([[:space:]]|\")" \
+    | pipe_q -E "curl[^|]*[[:space:]]-k([[:space:]]|\")|--insecure([[:space:]]|\")" \
     && EFFET="$EFFET $f"
 done
 for f in $(find labctl -name '*.go' 2>/dev/null | grep -v '_test\.go' | sort); do
-  sed -E 's@^[[:space:]]*//.*$@@' "$f" | grep -qE 'InsecureSkipVerify:[[:space:]]*true' \
+  sed -E 's@^[[:space:]]*//.*$@@' "$f" | pipe_q -E 'InsecureSkipVerify:[[:space:]]*true' \
     && EFFET="$EFFET $f"
 done
 if [ -z "$EFFET" ]; then

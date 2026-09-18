@@ -25,6 +25,18 @@
 #   ./scripts/test-p2-posture-producteur.sh
 #   GITEA_TOKEN_FILE=<fichier 0600> ./scripts/test-p2-posture-producteur.sh
 set -uo pipefail
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO" || exit 1
 TS="$(date +%s)"
@@ -75,7 +87,7 @@ posture_case(){
   if [ "$want" = "OK" ]; then
     [ "$rc" -eq 0 ] && ok "$label" || ko "$label : attendu rc=0, obtenu rc=$rc — $(printf '%s' "$out" | tail -1)"
   else
-    if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q "\[$want\]"; then
+    if [ "$rc" -ne 0 ] && printf '%s' "$out" | pipe_q "\[$want\]"; then
       ok "$label : refusé [$want]"
     else
       ko "$label : attendu [$want], obtenu rc=$rc — $(printf '%s' "$out" | tail -1)"
@@ -103,8 +115,8 @@ posture_case "valeur hors vocabulaire (exposure=dmz)"         INTEGRITY_INCONSIS
 # sur-déclaration : acceptée, corrigée, ET signalée
 OUT=$(LABCTL_CLASSIFICATION_SOURCE='' LABCTL_PROJECT='' "$LABCTL_BIN" posture --project payments-team --api payments-read \
       --declared-classification VH --declared-exposure internal --classification-source "$REG" 2>&1)
-if printf '%s' "$OUT" | grep -q 'classification=H ' && printf '%s' "$OUT" | grep -q 'declared: classification=VH' \
-   && printf '%s' "$OUT" | grep -q 'sur-provisionné'; then
+if printf '%s' "$OUT" | pipe_q 'classification=H ' && printf '%s' "$OUT" | pipe_q 'declared: classification=VH' \
+   && printf '%s' "$OUT" | pipe_q 'sur-provisionné'; then
   ok "sur-déclaration : le CENTRAL (H) gagne, la demande (VH) reste visible, l'écart est signalé"
 else
   ko "sur-déclaration mal rendue : $OUT"
@@ -113,7 +125,7 @@ fi
 # la même commande SANS registre : elle répond, et le DIT — c'est ce label qui
 # empêche un appelant distrait de croire qu'il a obtenu un avis gouverné.
 OUT=$(LABCTL_CLASSIFICATION_SOURCE='' LABCTL_PROJECT='' "$LABCTL_BIN" posture --api x --declared-classification M --declared-exposure internal -o json 2>&1)
-printf '%s' "$OUT" | grep -q '"source": "demande"' \
+printf '%s' "$OUT" | pipe_q '"source": "demande"' \
   && ok "sans registre : réponse rendue depuis la DEMANDE, et étiquetée comme telle" \
   || ko "sans registre : la provenance n'est pas annoncée — $OUT"
 
@@ -121,7 +133,7 @@ printf '%s' "$OUT" | grep -q '"source": "demande"' \
 printf 'classifications: [ {owner: a}\n' > "$TMP/broken.yaml"
 OUT=$(LABCTL_CLASSIFICATION_SOURCE='' LABCTL_PROJECT='' "$LABCTL_BIN" posture --project accounts-team --api accounts-read \
       --declared-classification M --declared-exposure internal --classification-source "$TMP/broken.yaml" 2>&1); RC=$?
-[ "$RC" -ne 0 ] && printf '%s' "$OUT" | grep -q 'CLASSIFICATION_UNGOVERNED' \
+[ "$RC" -ne 0 ] && printf '%s' "$OUT" | pipe_q 'CLASSIFICATION_UNGOVERNED' \
   && ok "registre illisible : refus [CLASSIFICATION_UNGOVERNED], aucun repli sur la demande" \
   || ko "registre illisible : attendu un refus, obtenu rc=$RC — $OUT"
 
@@ -177,8 +189,8 @@ guard(){ # $1=label $2=tag ; reste = env
         LABCTL_BIN="$LABCTL_BIN" ACTION=create TEAM=probe API_NAME=probe API_VERSION=1.0.0 \
         OPENAPI_SPEC='{"openapi":"3.0.0"}' INBOUND_MODE=jwt \
         CLASSIFICATION=VH EXPOSURE=external "$@" bash scripts/api-request.sh 2>&1); rc=$?
-  if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q "$tag"; then
-    if printf '%s' "$out" | grep -q '\[1/5\]'; then
+  if [ "$rc" -eq 1 ] && printf '%s' "$out" | pipe_q "$tag"; then
+    if printf '%s' "$out" | pipe_q '\[1/5\]'; then
       ko "$label : refusé APRÈS le premier clone — pas 'avant tout geste Git'"
     else ok "$label : refusé ($tag), avant tout appel réseau"; fi
   else
@@ -203,7 +215,7 @@ OUT=$(env -i PATH="$PATH" GIT_HOST="http://127.0.0.1:1" GITEA_TOKEN=dummy FORGE_
       ACTION=create TEAM=probe API_NAME=api-neuve API_VERSION=1.0.0 \
       OPENAPI_SPEC='{"openapi":"3.0.0"}' INBOUND_MODE=jwt CLASSIFICATION=VH EXPOSURE=external \
       bash scripts/api-request.sh 2>&1)
-printf '%s' "$OUT" | grep -q 'CLASSIFICATION_UNGOVERNED' \
+printf '%s' "$OUT" | pipe_q 'CLASSIFICATION_UNGOVERNED' \
   && ko "la garde d'entrée a consulté le registre ambiant — une API neuve serait refusée AVANT toute PR" \
   || ok "un LABCTL_CLASSIFICATION_SOURCE ambiant ne détourne PAS la garde d'entrée (l'arbitrage reste au plan)"
 
@@ -231,7 +243,7 @@ role_case(){ # $1=label $2=attendu(OK|MOTIF) $3=manifeste $4=team ; reste = extr
   if [ "$want" = "OK" ]; then
     [ "$rc" -eq 0 ] && ok "$label" || ko "$label : attendu succès, obtenu rc=$rc — $(grep -m1 '"msg"' <<<"$out" | cut -c1-160)"
   else
-    if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q "$want"; then ok "$label : refusé ($want)"
+    if [ "$rc" -ne 0 ] && printf '%s' "$out" | pipe_q "$want"; then ok "$label : refusé ($want)"
     else ko "$label : attendu '$want', obtenu rc=$rc — $(grep -m1 'fatal' -A3 <<<"$out" | tr '\n' ' ' | cut -c1-200)"; fi
   fi
 }
@@ -273,7 +285,7 @@ grep -q 'sur-provisionné' "$TMP/last-role.out" \
 OUT=$(ansible-playbook -i ansible/inventory.lab.ini ansible/test-posture-guards.yml \
       -e apim_ss_manifest="$TMP/m-down.yml" -e apim_ss_team=accounts-team \
       -e apim_pub_labctl_bin="$LABCTL_BIN" 2>&1); RC=$?
-if [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -q 'POSTURE_NON_ARBITREE'; then
+if [ "$RC" -eq 0 ] && printf '%s' "$OUT" | pipe_q 'POSTURE_NON_ARBITREE'; then
   ok "sans registre : le rôle passe, mais ANNONCE que rien n'a été arbitré"
 else
   ko "sans registre : attendu un succès bruyant (POSTURE_NON_ARBITREE), obtenu rc=$RC"
@@ -334,7 +346,7 @@ else
   R+=("$(gapi -X POST -d '{"name":"apis","auto_init":false}' -o /dev/null -w '%{http_code}' "$GH/api/v1/orgs/$TEAMORG/repos")")
   CLEANUP_URLS+=("$GH/api/v1/repos/$PLATORG/stoa-labs" "$GH/api/v1/repos/$PLATORG/governance" \
                  "$GH/api/v1/repos/$TEAMORG/apis" "$GH/api/v1/orgs/$PLATORG" "$GH/api/v1/orgs/$TEAMORG")
-  if printf '%s\n' "${R[@]}" | grep -qv '^201$'; then
+  if printf '%s\n' "${R[@]}" | pipe_q -v '^201$'; then
     ko "préparation scratch en échec (HTTP ${R[*]}) — section G avortée"
   else
     WD="$TMP/g"; mkdir -p "$WD/plat/poc-control-plane-federation/ansible" "$WD/team/apis" "$WD/gov/governance"
@@ -380,17 +392,17 @@ paths: {}'
           OPENAPI_SPEC="$SPEC" INBOUND_MODE=jwt CLASSIFICATION=VH EXPOSURE=external \
           bash scripts/api-request.sh 2>&1); RC=$?
     PR1=$(grep -oE 'PR #[0-9]+ ouverte' <<<"$OUT" | grep -oE '[0-9]+' | head -1)
-    if [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -q 'posture compte-api .*source=central'; then
+    if [ "$RC" -eq 0 ] && printf '%s' "$OUT" | pipe_q 'posture compte-api .*source=central'; then
       ok "G1 : la posture retenue apparaît dans le JOURNAL DU BUILD, source=central"
     else
       ko "G1 : aucune ligne de posture centrale dans le journal (rc=$RC) — $(tail -2 <<<"$OUT")"
     fi
     MANI=$(gapi "$GH/api/v1/repos/$TEAMORG/apis/raw/api/compte-api-1.0.0/apis/compte-api.publish.yml")
-    printf '%s' "$MANI" | grep -q 'classification: "VH"' && printf '%s' "$MANI" | grep -q 'exposure: "external"' \
+    printf '%s' "$MANI" | pipe_q 'classification: "VH"' && printf '%s' "$MANI" | pipe_q 'exposure: "external"' \
       && ok "G1 : le manifeste committé PORTE la posture déclarée" \
       || ko "G1 : le manifeste ne porte pas la posture — $(printf '%s' "$MANI" | head -3)"
     C1=$(pr_comment "${PR1:-0}")
-    printf '%s' "$C1" | grep -q 'PLAN OK' && printf '%s' "$C1" | grep -q 'bundle=vh-external' \
+    printf '%s' "$C1" | pipe_q 'PLAN OK' && printf '%s' "$C1" | pipe_q 'bundle=vh-external' \
       && ok "G1 : la PR porte ✅ et la posture retenue (bundle nommé), lisible par le demandeur" \
       || ko "G1 : la PR ne porte pas la posture retenue — $(printf '%s' "$C1" | head -c 200)"
 
@@ -403,7 +415,7 @@ paths: {}'
     # 'compte-faible' n'est PAS au registre : le refus attendu est UNGOVERNED —
     # et c'est le bon message, car une API inconnue de la gouvernance ne peut pas
     # davantage être publiée qu'une API déclassée.
-    if [ "$RC" -ne 0 ] && printf '%s' "$C2" | grep -q 'CLASSIFICATION_UNGOVERNED'; then
+    if [ "$RC" -ne 0 ] && printf '%s' "$C2" | pipe_q 'CLASSIFICATION_UNGOVERNED'; then
       ok "G2a : API absente du registre -> PR ouverte, ❌ nommé [CLASSIFICATION_UNGOVERNED] SUR LA PR"
     else
       ko "G2a : attendu un refus nommé relayé à la PR (rc=$RC) — $(printf '%s' "$C2" | head -c 200)"
@@ -415,12 +427,12 @@ paths: {}'
           bash scripts/api-request.sh 2>&1); RC=$?
     PR3=$(grep -oE 'PR #[0-9]+ ouverte' <<<"$OUT" | grep -oE '[0-9]+' | head -1)
     C3=$(pr_comment "${PR3:-0}")
-    if [ "$RC" -ne 0 ] && printf '%s' "$C3" | grep -q 'CLASSIFICATION_SPOOFED'; then
+    if [ "$RC" -ne 0 ] && printf '%s' "$C3" | pipe_q 'CLASSIFICATION_SPOOFED'; then
       ok "G2b : downgrade VH/external -> M/internal REFUSÉ, [CLASSIFICATION_SPOOFED] relayé jusqu'à la PR"
     else
       ko "G2b : le downgrade n'a pas été relayé nommément à la PR (rc=$RC) — $(printf '%s' "$C3" | head -c 200)"
     fi
-    printf '%s' "$C3" | grep -q 'NE PAS MERGER' \
+    printf '%s' "$C3" | pipe_q 'NE PAS MERGER' \
       && ok "G2b : le commentaire dit explicitement de ne pas merger" \
       || ko "G2b : le refus n'interdit pas le merge en toutes lettres"
   fi
@@ -459,7 +471,7 @@ PLAY="ansible-playbook -i ansible/inventory.lab.ini ansible/test-posture-guards.
 # commande imbriquée dans un `eval` finit toujours par se casser sur ses propres
 # guillemets, et un témoin cassé rend la mutation muette (constaté ici même).
 # `set -o pipefail` est actif dans ce fichier, et ces deux témoins observent des
-# commandes qui REFUSENT (donc rendent non-zéro). Un `cmd | grep -q` y rendrait
+# commandes qui REFUSENT (donc rendent non-zéro). Un `cmd | pipe_q` y rendrait
 # le code de la commande, pas celui du grep : le témoin serait rouge quoi qu'il
 # arrive, et la mutation qui suit ne mesurerait plus rien. D'où la capture en
 # variable, puis le grep — piège déjà payé ailleurs dans ce dépôt.
@@ -470,7 +482,7 @@ temoin_champ_requis(){
     LABCTL_BIN="$LABCTL_BIN" ACTION=create TEAM=probe API_NAME=probe API_VERSION=1.0.0 \
     OPENAPI_SPEC='{"openapi":"3.0.0"}' INBOUND_MODE=jwt CLASSIFICATION='' EXPOSURE=external \
     bash scripts/api-request.sh 2>&1)
-  printf '%s' "$out" | grep -q 'CHAMP_REQUIS : CLASSIFICATION'
+  printf '%s' "$out" | pipe_q 'CHAMP_REQUIS : CLASSIFICATION'
 }
 # La garde POSTURE_MANQUANTE n'est pas le SEUL rempart — labctl refuse aussi une
 # classification vide. Ce qu'elle apporte, c'est le NOM : le témoin porte donc
@@ -480,7 +492,7 @@ temoin_posture_manquante(){
   local out
   out=$($PLAY -e apim_ss_manifest="$TMP/m-empty.yml" -e apim_ss_team=accounts-team \
         -e apim_pub_classification_source="$REG" 2>&1)
-  printf '%s' "$out" | grep -q 'POSTURE_MANQUANTE'
+  printf '%s' "$out" | pipe_q 'POSTURE_MANQUANTE'
 }
 
 # 1. Le rôle n'envoie plus le registre à l'autorité. labctl répondrait alors

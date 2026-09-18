@@ -62,6 +62,18 @@
 #
 #   bash scripts/test-git-base.sh
 set -uo pipefail
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO" || exit 1
 LIB="$REPO/scripts/lib/git-base.sh"
@@ -1126,7 +1138,7 @@ else ko "J.3 rc $(rrc) : ls-remote ligne '${L_LSR:-absente}', refus ligne '${L_R
 # deux disent la même chose, jamais « S3cret-jx ».
 U_SECRET='http://u:S3cret-jx@127.0.0.1:1/x.git'
 joue "$LIB" "$TMP/c-init.sh" "$U_SECRET" - STOA_DEBUG=1
-if [ "$(rrc)" = 2 ] && refus && corps_dbg | grep -qE '^git ls-remote --symref http://<(secret )?masqué>@127\.0\.0\.1:1/x\.git HEAD -> rc [1-9][0-9]* \(0 octets\)$'; then
+if [ "$(rrc)" = 2 ] && refus && corps_dbg | pipe_q -E '^git ls-remote --symref http://<(secret )?masqué>@127\.0\.0\.1:1/x\.git HEAD -> rc [1-9][0-9]* \(0 octets\)$'; then
   ok "J.4a URL avec userinfo, forge injoignable ⇒ la ligne ls-remote est LÀ avec son rc ($(corps_dbg | grep -o 'rc [0-9]*' | head -1)) et l'userinfo masquée (contrôle positif)"
 else ko "J.4a rc $(rrc) : $(corps_dbg | grep ls-remote | head -1 | cut -c1-160)"; fi
 if ! fuite S3cret-jx && grep -q '://<masqué>@127.0.0.1:1/x.git' "$TMP/err"; then
@@ -1150,7 +1162,7 @@ else ko "J.4b FUITE ou refus sans URL expurgée : $(grep -n 'S3cret-jx' "$TMP/ou
 # (absence). §J.6d prouve que ces longueurs mordent sur le chemin RÉEL de la
 # lib (shim compris) : l'ancien ordre y fait ressortir le fragment.
 # `return 0` : git rend 128 (forge injoignable) et la suite est sous pipefail —
-# sans lui, le `if … | grep -q` aval hériterait de ce 128 et ne verrait AUCUNE
+# sans lui, le `if … | pipe_q` aval hériterait de ce 128 et ne verrait AUCUNE
 # longueur, même trouvée (mesuré : 0/141, puis 25-28 une fois le rc rendu).
 trace_brute(){   # <url> → le stderr de git sous GIT_TRACE=1, mis sur une ligne
   env -i PATH="$PATH" HOME="$TMP/home" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TRACE=1 GIT_TERMINAL_PROMPT=0 \
@@ -1257,7 +1269,7 @@ else
   # C'est pourquoi la mutation ne peut faire fuir que le refus : la ligne de
   # debug est sous DEUX masques, celui de la lib (prouvé ici par le refus, qui
   # n'a que lui) et celui de dbg.sh.
-  if corps_dbg | grep -q '^git ls-remote --symref http://<secret masqué>@127.0.0.1:1/x.git HEAD -> rc ' && ! grep -q '^\[dbg .*S3cret-jx' "$TMP/err"; then
+  if corps_dbg | pipe_q '^git ls-remote --symref http://<secret masqué>@127.0.0.1:1/x.git HEAD -> rc ' && ! grep -q '^\[dbg .*S3cret-jx' "$TMP/err"; then
     ok "J.6c … et sous ce mutant la ligne [dbg reste masquée « ://<secret masqué>@ » : redact est le second filet, sur le chemin, éprouvé"
   else ko "J.6c la ligne [dbg du mutant : $(corps_dbg | grep ls-remote | head -1 | cut -c1-160)"; fi
 fi

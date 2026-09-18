@@ -24,6 +24,18 @@
 #     ./scripts/test-debug-knob-live.sh
 # shellcheck disable=SC2015,SC2016
 set -uo pipefail
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 REPO="$(cd "$(dirname "$0")/.." && pwd)"; cd "$REPO" || exit 2
 JENKINS_UI="${JENKINS_UI:-http://localhost:18080}"
 GITEA_URL="${GITEA_URL:-http://localhost:13000}"
@@ -70,7 +82,7 @@ lancer_data(){ umask 077; printf '%s' "$SENTINEL" > "$TMP/vpass"; }
 
 echo "== 0. prérequis : Jenkins, gitea main porte L4, les huit formulaires réels =="
 curl -sf "$JENKINS_UI/api/json" >/dev/null || die "Jenkins injoignable : $JENKINS_UI"
-raw_at main "$SUBDIR/ci/Jenkinsfile.$JOB" | grep -q 'then export STOA_DEBUG=1; fi' || die "gitea main ne porte pas L4 (Jenkinsfile.$JOB sans pont) — pousser gitea d'abord : le CI LIT gitea"
+raw_at main "$SUBDIR/ci/Jenkinsfile.$JOB" | pipe_q 'then export STOA_DEBUG=1; fi' || die "gitea main ne porte pas L4 (Jenkinsfile.$JOB sans pont) — pousser gitea d'abord : le CI LIT gitea"
 ok "0.1 Jenkins joignable et gitea main porte le pont DEBUG ⇒ STOA_DEBUG"
 # la table = celle de test-debug-knob-wiring.sh (job local | job Jenkins | rang attendu)
 FORMS="api-promote-export|api-promote-export|TEAM API_NAME DEBUG VAULT_USER V_PASS

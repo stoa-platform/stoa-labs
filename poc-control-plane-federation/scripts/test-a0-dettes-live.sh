@@ -22,6 +22,18 @@
 #   JENKINS_UI=http://localhost:18080 GITEA_URL=http://localhost:13000 bash scripts/test-a0-dettes-live.sh
 set -uo pipefail
 set +x
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 REPO="$(cd "$(dirname "$0")/.." && pwd)"; cd "$REPO" || exit 1
 JENKINS_UI="${JENKINS_UI:?JENKINS_UI requis}"; GITEA_URL="${GITEA_URL:?GITEA_URL requis}"
 GIT_REPO="${GIT_REPO:-ci/stoa-labs}"; GITEA_CONTAINER="${GITEA_CONTAINER:-poc-gitea}"; PFX="poc-control-plane-federation"
@@ -54,7 +66,7 @@ wait_plan(){ local i n; for i in $(seq 1 "$(( $4 / 3 ))"); do
 for b in d['builds']:
     if b['number'] >= $3 and b.get('displayName') == 'plan $1/dev (PR #$2)': print(b['number']); break")
     [ -n "$n" ] && { printf '%s' "$n"; return 0; }; sleep 3; done; return 1; }
-wait_comment(){ local i; for i in $(seq 1 "$(( $3 / 3 ))"); do comments "$1" 2>/dev/null | grep -qF -- "$2" && return 0; sleep 3; done; return 1; }
+wait_comment(){ local i; for i in $(seq 1 "$(( $3 / 3 ))"); do comments "$1" 2>/dev/null | pipe_q -F -- "$2" && return 0; sleep 3; done; return 1; }
 machine_request(){ # $1=app → PR number (attend la PR)
   local n hc pr; n=$(jnext provisioning-request)
   printf '{"app":"%s","env":"dev","clientId":"%s-dev","api":"%s","apiVersion":"%s","audience":"%s","caller":"oig-provisioner"}' "$1" "$1" "$API_NAME" "$API_VER" "$API_NAME" > "$TMP/wh-$1.json"
@@ -77,7 +89,7 @@ curl -sf "$JENKINS_UI/crumbIssuer/api/json" >/dev/null || die "LAB_ABSENT : Jenk
 for F in scripts/lib/gitea-pr-confirm.sh scripts/provision-plan-status.sh; do
   [ "$(gapi "$GITEA_URL/api/v1/repos/$GIT_REPO/contents/$PFX/$F?ref=main" -o /dev/null -w '%{http_code}')" = 200 ] || die "PREREQUIS : $F absent de gitea main — git push gitea HEAD:main"
 done
-gapi "$GITEA_URL/api/v1/repos/$GIT_REPO/raw/main/$PFX/ci/Jenkinsfile.provision-plan" | grep -q 'provision-plan-status.sh' || die "PREREQUIS : Jenkinsfile.provision-plan sur gitea main sans statut de build"
+gapi "$GITEA_URL/api/v1/repos/$GIT_REPO/raw/main/$PFX/ci/Jenkinsfile.provision-plan" | pipe_q 'provision-plan-status.sh' || die "PREREQUIS : Jenkinsfile.provision-plan sur gitea main sans statut de build"
 API_CHOICE=$(curl -sg "$JENKINS_UI/job/app-request/api/json?tree=property[parameterDefinitions[name,choices]]" | jq_ '
 c=[p.get("choices") for pr in d.get("property",[]) for p in pr.get("parameterDefinitions",[]) if p["name"]=="API"]
 print(c[0][0] if c and c[0] else "")')
@@ -94,7 +106,7 @@ curl -s "$JENKINS_UI/job/provision-plan/$NP_A/consoleText" > "$TMP/planA.log"
 grep -q '\[0/4\] relecture de la PR' "$TMP/planA.log" && grep -q "forge : PR #$PR_A ouverte, tete provision/$APP_A-dev @" "$TMP/planA.log" && ok "console : la forge a été relue AVANT le clone (tête et SHA nommés)" || ko "console sans relecture de la forge"
 grep -q 'faits du plan : tete=' "$TMP/planA.log" && grep -q "verdict='ok'" "$TMP/planA.log" && ok "post de stage : faits chargés dans env (verdict=ok)" || ko "faits du plan non chargés"
 wait_comment "$PR_A" '<!-- provision-plan -->' 60 && ok "PR A : verdict posé (marqueur provision-plan)" || ko "PR A sans verdict"
-comments "$PR_A" | grep -q '<!-- provision-plan-build -->' && ko "PR A : un STATUT a été posé en SUCCESS+ok (troisième commentaire redondant)" || ok "PR A : AUCUN statut en SUCCESS+ok (COMMENT_SKIPPED — le verdict suffit)"
+comments "$PR_A" | pipe_q '<!-- provision-plan-build -->' && ko "PR A : un STATUT a été posé en SUCCESS+ok (troisième commentaire redondant)" || ok "PR A : AUCUN statut en SUCCESS+ok (COMMENT_SKIPPED — le verdict suffit)"
 grep -q 'COMMENT_SKIPPED' "$TMP/planA.log" && ok "console : COMMENT_SKIPPED (le statut a bien tourné, et s'est tu)" || ko "console sans COMMENT_SKIPPED"
 NA0=$(ncomments "$PR_A")
 
@@ -124,7 +136,7 @@ echo "== 4. CONTRE-ÉPREUVE 2 : branche INEXISTANTE + numéro de A =="
 N2=$(forge_plan "provision/inexistante$TS-dev" "$PR_A") || ko "webhook forgé non accepté"
 R=$(jresult provision-plan "$N2")
 [ "$R" = FAILURE ] && ok "provision-plan #$N2 : FAILURE (avant A0 dettes : vert par IGNORE, diff vide)" || ko "provision-plan #$N2 : ${R:-?}"
-curl -s "$JENKINS_UI/job/provision-plan/$N2/consoleText" | grep -q 'REFUS: FORGE_NON_CONFIRMEE' && ok "console : FORGE_NON_CONFIRMEE (la PR #$PR_A n'a pas cette tête)" || ko "refus non nommé"
+curl -s "$JENKINS_UI/job/provision-plan/$N2/consoleText" | pipe_q 'REFUS: FORGE_NON_CONFIRMEE' && ok "console : FORGE_NON_CONFIRMEE (la PR #$PR_A n'a pas cette tête)" || ko "refus non nommé"
 [ "$(ncomments "$PR_A")" = "$NA0" ] && ok "PR A : inchangée ($NA0)" || ko "PR A a reçu un commentaire"
 
 echo

@@ -60,6 +60,18 @@
 # shellcheck disable=SC2015,SC2016
 set -uo pipefail
 set +x
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO" || exit 1
 
@@ -322,7 +334,7 @@ ldap_run(){ # <ldapadd|ldapmodify|ldapsearch> [args…] < LDIF — verbatim test
            "$t" -x -D "$d" -y "$f" "$@"; rc=$?
            rm -f "$f"; exit $rc' sh "$tool" "$BIND_DN" "$@"
 }
-# CAPTURÉ dans un fichier avant grep : sous pipefail, `… | grep -q` ferme le tube
+# CAPTURÉ dans un fichier avant grep : sous pipefail, `… | pipe_q` ferme le tube
 # au premier match, docker exec meurt en SIGPIPE et le pipeline rend FAUX alors
 # qu'alice EST membre — mesuré au passage 2 (le trap l'a laissée dans le groupe).
 alice_in_int(){ ldap_run ldapsearch -LLL -o ldif-wrap=no -b "cn=apim-apply-int,ou=Groups,$BASE_DN" -s base member > "$TMP/ldap.members" 2>/dev/null; grep -q "uid=alice,ou=People" "$TMP/ldap.members"; }
@@ -371,7 +383,7 @@ curl -sf -o /dev/null "$JENKINS_UI/api/json" || die "LAB_ABSENT : Jenkins injoig
 curl -sf -o /dev/null "$GITEA_URL/api/v1/version" || die "LAB_ABSENT : Gitea injoignable ($GITEA_URL)"
 HC=$(gw -o /dev/null -w '%{http_code}' "$GW_ADMIN/applications"); [ "$HC" = 200 ] || die "LAB_ABSENT : gateway injoignable ou refus ($GW_ADMIN/applications -> $HC)"
 [ "$(vcurl -o /dev/null -w '%{http_code}' "$VAULT_ADDR_LAB/v1/sys/policies/acl?list=true")" = 200 ] || die "LAB_ABSENT : le VAULT_TOKEN ne liste pas les policies (root de lab attendu)"
-docker ps --format '{{.Names}}' | grep -qx "$LDAP_CONTAINER" || die "LAB_ABSENT : conteneur d'annuaire $LDAP_CONTAINER absent"
+docker ps --format '{{.Names}}' | pipe_q -x "$LDAP_CONTAINER" || die "LAB_ABSENT : conteneur d'annuaire $LDAP_CONTAINER absent"
 ldap_run ldapsearch -LLL -b "$BASE_DN" -s base dn >/dev/null 2>&1 || die "LAB_ABSENT : annuaire injoignable ou bind refusé (LDAP_ADMIN_PASSWORD ?)"
 ok "0.1 Jenkins, Gitea, la gateway, Vault et l'annuaire répondent"
 if [ -n "${GITEA_TOKEN_FILE:-}" ] && [ -r "$GITEA_TOKEN_FILE" ]; then CI_TOKEN="$(cat "$GITEA_TOKEN_FILE")"
@@ -380,14 +392,14 @@ elif docker inspect "$GITEA_CONTAINER" >/dev/null 2>&1; then
 fi
 [ -n "$CI_TOKEN" ] || die "LAB_ABSENT : aucun token Gitea ci"
 printf 'Authorization: token %s\n' "$CI_TOKEN" > "$TMP/ci.hdr"
-gapi -o /dev/null -w '%{http_code}' "$API/repos/$GIT_REPO" | grep -q '^200$' || die "LAB_ABSENT : $GIT_REPO illisible"
+gapi -o /dev/null -w '%{http_code}' "$API/repos/$GIT_REPO" | pipe_q '^200$' || die "LAB_ABSENT : $GIT_REPO illisible"
 ok "0.2 token ci opérationnel"
-curl -sf "$JENKINS_UI/job/provision-apply/config.xml" | grep -q 'ci/Jenkinsfile.provision-apply' || die "PREREQUIS : provision-apply n'est pas from SCM"
+curl -sf "$JENKINS_UI/job/provision-apply/config.xml" | pipe_q 'ci/Jenkinsfile.provision-apply' || die "PREREQUIS : provision-apply n'est pas from SCM"
 for f in scripts/provision-apply-gate.sh scripts/selfservice-palier-gate.sh; do
-  gapi -o /dev/null -w '%{http_code}' "$API/repos/$GIT_REPO/raw/main/$SUBDIR/$f" | grep -q '^200$' || die "PREREQUIS : $f absent de gitea main — git push gitea HEAD:main"
+  gapi -o /dev/null -w '%{http_code}' "$API/repos/$GIT_REPO/raw/main/$SUBDIR/$f" | pipe_q '^200$' || die "PREREQUIS : $f absent de gitea main — git push gitea HEAD:main"
 done
-raw_at main "$SUBDIR/ci/Jenkinsfile.provision-apply" | grep -q 'GATE_STAGE=dispatch' || die "PREREQUIS : Jenkinsfile.provision-apply sur gitea main n'est pas la version A4"
-raw_at main "$SUBDIR/scripts/selfservice-palier-gate.sh" | grep -q 'DEPLOYER_GROUP_REQUIRED' || die "PREREQUIS : la garde A3 sur gitea main n'a pas la §2bis"
+raw_at main "$SUBDIR/ci/Jenkinsfile.provision-apply" | pipe_q 'GATE_STAGE=dispatch' || die "PREREQUIS : Jenkinsfile.provision-apply sur gitea main n'est pas la version A4"
+raw_at main "$SUBDIR/scripts/selfservice-palier-gate.sh" | pipe_q 'DEPLOYER_GROUP_REQUIRED' || die "PREREQUIS : la garde A3 sur gitea main n'a pas la §2bis"
 ok "0.3 les portes A4 sont sur gitea main (amont from SCM, aval extrait de origin/main)"
 raw_at main "$SUBDIR/clients/_example/environments.yaml" > "$TMP/chain.yaml"; [ "$(raw_hc)" = 200 ] || die "PREREQUIS : environments.yaml illisible sur gitea main"
 # shellcheck source=scripts/lib/env-chain.sh
@@ -434,7 +446,7 @@ fd=os.open(sys.argv[1], os.O_WRONLY|os.O_CREAT|os.O_TRUNC, 0o600)
 with os.fdopen(fd,"w") as f: f.write("user = \"%s:%s\"\n" % (e(d["username"]), e(d["password"])))' "$TMP/int.cfg" 2>/dev/null
 HC=$(curl -s -K "$TMP/int.cfg" -H 'Accept: application/json' -o /dev/null -w '%{http_code}' "$GW_ADMIN/applications"); rm -f "$TMP/int.cfg"
 [ "$HC" = 200 ] && ok "0.10 envs/int/wm-admin s'authentifie sur la gateway (200)" || die "PREREQUIS : envs/int/wm-admin refusé par la gateway ($HC) — jouer scripts/setup-wm-palier-admins.sh"
-docker exec "$JENKINS_CONTAINER" curl -s -m 5 http://itsm-mock:8788/changes/CHG-0001 2>/dev/null | grep -q '"approved"' && docker exec "$JENKINS_CONTAINER" curl -s -m 5 http://itsm-mock:8788/changes/CHG-0002 2>/dev/null | grep -q '"draft"' \
+docker exec "$JENKINS_CONTAINER" curl -s -m 5 http://itsm-mock:8788/changes/CHG-0001 2>/dev/null | pipe_q '"approved"' && docker exec "$JENKINS_CONTAINER" curl -s -m 5 http://itsm-mock:8788/changes/CHG-0002 2>/dev/null | pipe_q '"draft"' \
   && ok "0.11 itsm-mock vu DEPUIS Jenkins : CHG-0001 approved, CHG-0002 draft" || die "PREREQUIS : itsm-mock injoignable depuis $JENKINS_CONTAINER ou seed inattendu"
 POSED=$(curl -sf "$JENKINS_UI/job/selfservice-app-deploy/api/json?tree=property%5BparameterDefinitions%5Bname,choices%5D%5D" | python3 -c 'import json,sys
 d=json.load(sys.stdin)
@@ -471,7 +483,7 @@ console_order "$TMP/pa.$N_PA.console" 'PORTE_OK(pre)' 'Input requested' 'PORTE_O
 grep -q '^palier ouvert : envs/rec/wm-admin' "$TMP/ss.$S_NUM.console" && ! grep -q 'déclaration déployeur' "$TMP/ss.$S_NUM.console" && ok "1.7b aval : ticket rec, AUCUNE déclaration déployeur (rec n'en déclare pas)" || ko "1.7b aval : $(grep -E 'palier ouvert|déclaration' "$TMP/ss.$S_NUM.console" | tr '\n' ' ')"
 ST=$(gw_state); [ "$ST" = "${APP}-rec|10.42.0.1-10.42.0.1" ] && ok "1.8 gateway : application $APP, claim ${APP}-rec, IP 10.42.0.1" || ko "1.8 gateway : $ST"
 CM=$(pr_comments "$PR1")
-printf '%s' "$CM" | grep -q 'Apply nominatif RÉUSSI' && printf '%s' "$CM" | grep -q 'porte du palier `rec`' && printf '%s' "$CM" | grep -q 'quatre yeux : non' \
+printf '%s' "$CM" | pipe_q 'Apply nominatif RÉUSSI' && printf '%s' "$CM" | pipe_q 'porte du palier `rec`' && printf '%s' "$CM" | pipe_q 'quatre yeux : non' \
   && ok "1.9 PR #$PR1 : ✅ + « porte du palier \`rec\` (relue au dispatch) : quatre yeux : non … »" || ko "1.9 commentaire : $(printf '%s' "$CM" | grep -i 'porte du palier' | head -1)"
 
 echo
@@ -488,7 +500,7 @@ wait_amont "$N_PA" NOPAUSE
 ST_A=$(jstage provision-apply "$N_PA" 'Appliquer')
 [ "$(jstage provision-apply "$N_PA" 'Réconciliation')" = FAILED ] && { [ "$ST_A" = NOT_EXECUTED ] || [ "$ST_A" = FAILED ]; } && ! grep -q 'Input requested' "$TMP/pa.$N_PA.console" \
   && ok "2.4 SANS PAUSE : stage Réconciliation FAILED, stage Appliquer $ST_A (sauté), aucun « Input requested »" || ko "2.4 stages : rec=$(jstage provision-apply "$N_PA" 'Réconciliation') apply=$ST_A"
-CM=$(pr_comments "$PR2"); printf '%s' "$CM" | grep -q 'REQUESTER_UNKNOWN' && printf '%s' "$CM" | grep -q 'porte du palier' && ok "2.5 PR #$PR2 : refus commenté (REQUESTER_UNKNOWN, la phrase de la porte)" || ko "2.5 commentaire : $(printf '%s' "$CM" | tail -c 300)"
+CM=$(pr_comments "$PR2"); printf '%s' "$CM" | pipe_q 'REQUESTER_UNKNOWN' && printf '%s' "$CM" | pipe_q 'porte du palier' && ok "2.5 PR #$PR2 : refus commenté (REQUESTER_UNKNOWN, la phrase de la porte)" || ko "2.5 commentaire : $(printf '%s' "$CM" | tail -c 300)"
 ST=$(gw_state); [ "$ST" = "${APP}-rec|10.42.0.1-10.42.0.1" ] && ok "2.6 gateway inchangée (claim ${APP}-rec, IP .1)" || ko "2.6 gateway : $ST"
 
 echo
@@ -500,7 +512,7 @@ wait_amont "$N_PA" NOPAUSE
 [ "$(jresult provision-apply "$N_PA")" = FAILURE ] && grep -q '^REFUS: FOUR_EYES_VIOLATION' "$TMP/pa.$N_PA.console" && ok "3.3 provision-apply #$N_PA : FAILURE FOUR_EYES_VIOLATION — « le demandeur qui approuve sa propre demande rec→int »" || ko "3.3 #$N_PA : $(jresult provision-apply "$N_PA") — $(grep -E 'REFUS|PORTE' "$TMP/pa.$N_PA.console" | head -2 | tr '\n' ' ')"
 ST_A=$(jstage provision-apply "$N_PA" 'Appliquer')
 { [ "$ST_A" = NOT_EXECUTED ] || [ "$ST_A" = FAILED ]; } && ! grep -q 'Input requested' "$TMP/pa.$N_PA.console" && ok "3.4 SANS PAUSE (personne réveillé ; stage Appliquer $ST_A)" || ko "3.4 une pause a existé (stage Appliquer $ST_A)"
-CM=$(pr_comments "$PR3"); printf '%s' "$CM" | grep -q 'FOUR_EYES_VIOLATION' && ok "3.5 PR #$PR3 : refus commenté FOUR_EYES_VIOLATION" || ko "3.5 commentaire : $(printf '%s' "$CM" | tail -c 200)"
+CM=$(pr_comments "$PR3"); printf '%s' "$CM" | pipe_q 'FOUR_EYES_VIOLATION' && ok "3.5 PR #$PR3 : refus commenté FOUR_EYES_VIOLATION" || ko "3.5 commentaire : $(printf '%s' "$CM" | tail -c 200)"
 ST=$(gw_state); [ "$ST" = "${APP}-rec|10.42.0.1-10.42.0.1" ] && ok "3.6 gateway inchangée" || ko "3.6 gateway : $ST"
 
 echo
@@ -519,7 +531,7 @@ grep -q 'PORTE_OK(dispatch) : palier int — fourEyes=oui approverGroup=int-team
   && ok "4.7 aval : AUCUN ticket, AUCUN préflight, AUCUN play — rien écrit" || ko "4.7 l'aval est allé plus loin que la déclaration"
 grep -q 'token Vault révoqué — mort PROUVÉE' "$TMP/ss.$S_NUM.console" && ok "4.8 token nominatif révoqué, mort prouvée (trap)" || ko "4.8 révocation absente"
 grep -q 'refus de la garde du palier relayé à l.amont : DEPLOYER_GROUP_REQUIRED' "$TMP/ss.$S_NUM.console" && ok "4.9 aval : le tag est relayé (post{always}, fait 11)" || ko "4.9 relais absent de la console aval"
-CM=$(pr_comments "$PR4"); printf '%s' "$CM" | grep -q 'Refus `DEPLOYER_GROUP_REQUIRED`' && printf '%s' "$CM" | grep -q 'porteur attendu `apim-apply-int`' \
+CM=$(pr_comments "$PR4"); printf '%s' "$CM" | pipe_q 'Refus `DEPLOYER_GROUP_REQUIRED`' && printf '%s' "$CM" | pipe_q 'porteur attendu `apim-apply-int`' \
   && ok "4.10 PR #$PR4 : ❌ Refus \`DEPLOYER_GROUP_REQUIRED\` + « porteur attendu \`apim-apply-int\` → \`apply-int\` »" || ko "4.10 commentaire : $(printf '%s' "$CM" | grep -iE 'refus|porteur' | head -2 | tr '\n' ' ')"
 ST=$(gw_state); [ "$ST" = "${APP}-rec|10.42.0.1-10.42.0.1" ] && ok "4.11 gateway inchangée (claim ${APP}-rec, IP .1) — « refus nommé au dispatch, rien écrit »" || ko "4.11 gateway : $ST"
 
@@ -537,7 +549,7 @@ console_order "$TMP/ss.$S_NUM.console" 'déclaration déployeur' 'palier ouvert 
   && ok "5.6 ORDRE aval : déclaration < ticket int < préflight < converge < verify" || ko "5.6 ordre aval inattendu"
 [ "$(grep -c 'failed=0' "$TMP/ss.$S_NUM.console")" -ge 2 ] && ok "5.6b converge + verify : failed=0 ×2" || ko "5.6b failed=0 : $(grep -c 'failed=0' "$TMP/ss.$S_NUM.console")"
 ST=$(gw_state); [ "$ST" = "${APP}-int|10.42.0.6-10.42.0.6" ] && ok "5.7 gateway : l'application $APP porte désormais claim ${APP}-int, IP .6 — l'état rec est ÉCRASÉ (mono-gateway : un objet par nom, mesuré)" || ko "5.7 gateway : $ST"
-CM=$(pr_comments "$PR5"); printf '%s' "$CM" | grep -q 'Apply nominatif RÉUSSI' && printf '%s' "$CM" | grep -q 'porteur attendu `apim-apply-int` → `apply-int` (vérifié au dispatch sur le token)' \
+CM=$(pr_comments "$PR5"); printf '%s' "$CM" | pipe_q 'Apply nominatif RÉUSSI' && printf '%s' "$CM" | pipe_q 'porteur attendu `apim-apply-int` → `apply-int` (vérifié au dispatch sur le token)' \
   && ok "5.8 PR #$PR5 : ✅ + « porteur attendu \`apim-apply-int\` → \`apply-int\` (vérifié au dispatch sur le token) »" || ko "5.8 commentaire : $(printf '%s' "$CM" | grep -i 'porteur' | head -1)"
 ldap_alice_int delete; ! alice_in_int && ok "5.9 alice RETIRÉE d'apim-apply-int" || die "PREREQUIS : retrait LDAP d'alice en échec"
 MUTATED=0
@@ -577,7 +589,7 @@ N_PA=$(jnext provision-apply); MS6=$(merge_as_alice "$PR6"); ok "6.1 PR #$PR6 (c
 wait_amont "$N_PA" NOPAUSE
 [ "$(jresult provision-apply "$N_PA")" = FAILURE ] && grep -q '^REFUS: GATE_REFS_REQUIRED' "$TMP/pa.$N_PA.console" && grep -q 'pv_ref' "$TMP/pa.$N_PA.console" && ! grep -q 'Input requested' "$TMP/pa.$N_PA.console" \
   && ok "6.2 provision-apply #$N_PA : FAILURE GATE_REFS_REQUIRED (pv_ref), sans pause" || ko "6.2 #$N_PA : $(jresult provision-apply "$N_PA") — $(grep -E 'REFUS|PORTE' "$TMP/pa.$N_PA.console" | head -2 | tr '\n' ' ')"
-CM=$(pr_comments "$PR6"); printf '%s' "$CM" | grep -q 'GATE_REFS_REQUIRED' && ok "6.3 PR #$PR6 : refus commenté GATE_REFS_REQUIRED" || ko "6.3 commentaire : $(printf '%s' "$CM" | tail -c 200)"
+CM=$(pr_comments "$PR6"); printf '%s' "$CM" | pipe_q 'GATE_REFS_REQUIRED' && ok "6.3 PR #$PR6 : refus commenté GATE_REFS_REQUIRED" || ko "6.3 commentaire : $(printf '%s' "$CM" | tail -c 200)"
 ST=$(gw_state); [ "$ST" = "${APP}-int|10.42.0.6-10.42.0.6" ] && ok "6.4 gateway inchangée" || ko "6.4 gateway : $ST"
 
 echo
@@ -605,14 +617,14 @@ PR7=$(prod_pr CHG-0002 0); N_PA=$(jnext provision-apply); MS7=$(merge_as_alice "
 wait_amont "$N_PA" NOPAUSE
 [ "$(jresult provision-apply "$N_PA")" = FAILURE ] && grep -q '^REFUS: ITSM_NOT_APPROVED' "$TMP/pa.$N_PA.console" && grep -q "'draft'" "$TMP/pa.$N_PA.console" && ! grep -q 'Input requested' "$TMP/pa.$N_PA.console" \
   && ok "7.2 provision-apply #$N_PA : FAILURE ITSM_NOT_APPROVED (CHG-0002 est draft), sans pause" || ko "7.2 #$N_PA : $(jresult provision-apply "$N_PA") — $(grep -E 'REFUS|PORTE|itsm' "$TMP/pa.$N_PA.console" | head -2 | tr '\n' ' ')"
-CM=$(pr_comments "$PR7"); printf '%s' "$CM" | grep -q 'ITSM_NOT_APPROVED' && ok "7.3 PR #$PR7 : refus commenté ITSM_NOT_APPROVED" || ko "7.3 commentaire : $(printf '%s' "$CM" | tail -c 200)"
+CM=$(pr_comments "$PR7"); printf '%s' "$CM" | pipe_q 'ITSM_NOT_APPROVED' && ok "7.3 PR #$PR7 : refus commenté ITSM_NOT_APPROVED" || ko "7.3 commentaire : $(printf '%s' "$CM" | tail -c 200)"
 PR8=$(prod_pr CHG-0001 1); N_PA=$(jnext provision-apply); MS8=$(merge_as_alice "$PR8"); ok "7.4 PR #$PR8 (carol, $TERM, change_ref CHG-0001 approved) mergée par alice — $MS8"
 wait_amont "$N_PA" NOPAUSE
 grep -q "^itsm : change 'CHG-0001' approved" "$TMP/pa.$N_PA.console" && ok "7.5 console : « itsm : change 'CHG-0001' approved au moment du dispatch » — l'ITSM est re-vérifié AU TERMINUS" || ko "7.5 ligne itsm absente : $(grep -E 'itsm|REFUS' "$TMP/pa.$N_PA.console" | head -2 | tr '\n' ' ')"
 [ "$(jresult provision-apply "$N_PA")" = FAILURE ] && grep -q '^REFUS: TERMINUS_SANS_VOIE' "$TMP/pa.$N_PA.console" && ! grep -q 'Input requested' "$TMP/pa.$N_PA.console" \
   && ok "7.6 puis FAILURE TERMINUS_SANS_VOIE, sans pause — personne réveillé, aucun mot de passe consommé, aucun token minté" || ko "7.6 #$N_PA : $(jresult provision-apply "$N_PA") — $(grep -E 'REFUS|Input' "$TMP/pa.$N_PA.console" | head -2 | tr '\n' ' ')"
 console_order "$TMP/pa.$N_PA.console" "itsm : change 'CHG-0001' approved" 'REFUS: TERMINUS_SANS_VOIE' && ok "7.6b ORDRE : ITSM approved AVANT le refus de voie" || ko "7.6b ordre itsm/terminus inattendu"
-CM=$(pr_comments "$PR8"); printf '%s' "$CM" | grep -q 'TERMINUS_SANS_VOIE' && ok "7.7 PR #$PR8 : refus commenté TERMINUS_SANS_VOIE" || ko "7.7 commentaire : $(printf '%s' "$CM" | tail -c 200)"
+CM=$(pr_comments "$PR8"); printf '%s' "$CM" | pipe_q 'TERMINUS_SANS_VOIE' && ok "7.7 PR #$PR8 : refus commenté TERMINUS_SANS_VOIE" || ko "7.7 commentaire : $(printf '%s' "$CM" | tail -c 200)"
 ST=$(gw_state); [ "$ST" = "${APP}-int|10.42.0.6-10.42.0.6" ] && ok "7.8 gateway inchangée (aucune claim -$TERM)" || ko "7.8 gateway : $ST"
 
 echo

@@ -27,6 +27,18 @@
 set -u
 set -o pipefail
 
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
+
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO" || exit 1
 TMP="$(mktemp -d /tmp/p3tag.XXXXXX)"
@@ -85,7 +97,7 @@ T=$(printf '%s' "$OUT" | jget tag)
 # Un refus de gouvernance ne doit produire AUCUN tag : pas de tag « par défaut »
 # qui laisserait croire l'API gouvernée.
 OUT=$(posture_json banking-demo comptes-lecture M external); RC=$?
-if [ "$RC" -ne 0 ] && ! printf '%s' "$OUT" | grep -q '"tag"'; then
+if [ "$RC" -ne 0 ] && ! printf '%s' "$OUT" | pipe_q '"tag"'; then
   ok "downgrade refusé : aucune valeur de tag n'est rendue"
 else
   ko "un downgrade a produit une sortie exploitable comme tag (rc=$RC)"
@@ -95,7 +107,7 @@ fi
 echo "═══ B — le RÔLE hors ligne : sans gouvernance, la plateforme ne pose RIEN ═══"
 if command -v ansible-playbook >/dev/null 2>&1; then
   OUT=$(ansible-playbook -i ansible/inventory.lab.ini ansible/test-tag-guards.yml 2>&1); RC=$?
-  if [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -q 'TAG_NON_ARBITRE'; then
+  if [ "$RC" -eq 0 ] && printf '%s' "$OUT" | pipe_q 'TAG_NON_ARBITRE'; then
     ok "sans posture arbitrée : aucun tag posé, et le journal le DIT (TAG_NON_ARBITRE)"
   else
     ko "mode non arbitré : rc=$RC, TAG_NON_ARBITRE absent du journal"
@@ -105,7 +117,7 @@ if command -v ansible-playbook >/dev/null 2>&1; then
   # quoi qu'il arrive (piège payé ici même). Ce qui distingue « sautée » de
   # « jouée », c'est le récapitulatif — l'id d'API du play est bidon, la
   # moindre écriture réellement tentée y laisserait un changed ou un failed.
-  if printf '%s' "$OUT" | grep -qE 'changed=0 +unreachable=0 +failed=0'; then
+  if printf '%s' "$OUT" | pipe_q -E 'changed=0 +unreachable=0 +failed=0'; then
     ok "aucune écriture tentée sans gouvernance (récapitulatif : changed=0 failed=0)"
   else
     ko "une écriture a été tentée alors qu'aucune posture n'était arbitrée"
@@ -231,16 +243,16 @@ if [ -z "$AID" ]; then
   ko "l'API n'existe pas sur la gateway — le reste de la section C est sans objet"
 else
   TAGS=$(api_tags "$AID")
-  printf '%s\n' "$TAGS" | grep -qx 'posture:h-external' \
+  printf '%s\n' "$TAGS" | pipe_q -x 'posture:h-external' \
     && ok "LA PORTE : l'API porte le tag de la posture GOUVERNÉE (posture:h-external)" \
     || ko "tag de posture absent — relu : $(printf '%s' "$TAGS" | tr '\n' ' ')"
-  printf '%s\n' "$TAGS" | grep -qx 'posture:m-internal' \
+  printf '%s\n' "$TAGS" | pipe_q -x 'posture:m-internal' \
     && ko "CONTRE-ÉPREUVE ÉCHOUÉE : le tag FORGÉ par le contrat a survécu" \
     || ok "contre-épreuve : le tag de posture FORGÉ par le contrat a été écrasé"
   [ "$(printf '%s\n' "$TAGS" | grep -c '^posture:')" = "1" ] \
     && ok "un SEUL tag dans l'espace de noms de la plateforme" \
     || ko "plusieurs tags réservés coexistent : $(printf '%s' "$TAGS" | tr '\n' ' ')"
-  printf '%s\n' "$TAGS" | grep -qx 'comptes' \
+  printf '%s\n' "$TAGS" | pipe_q -x 'comptes' \
     && ok "le tag MÉTIER du producteur est préservé (opération OpenAPI non orpheline)" \
     || ko "le tag métier 'comptes' a été détruit — régression fonctionnelle"
 
@@ -273,10 +285,10 @@ else
   [ "$RC" -eq 0 ] && ok "mise à jour du contrat : publication complète (rc=0)" \
                   || ko "mise à jour en échec (rc=$RC) — $(grep -m1 -A2 '^fatal' "$W/run3.log" | tr '\n' ' ')"
   TAGS=$(api_tags "$AID")
-  printf '%s\n' "$TAGS" | grep -qx 'posture:h-external' \
+  printf '%s\n' "$TAGS" | pipe_q -x 'posture:h-external' \
     && ok "CONTRE-ÉPREUVE : le tag SURVIT à un ré-import de définition" \
     || ko "le ré-import a laissé l'API sans son tag : $(printf '%s' "$TAGS" | tr '\n' ' ')"
-  printf '%s\n' "$TAGS" | grep -qx 'posture:m-internal' \
+  printf '%s\n' "$TAGS" | pipe_q -x 'posture:m-internal' \
     && ko "le tag forgé est revenu par le ré-import et a survécu" \
     || ok "le tag forgé revenu par le ré-import a de nouveau été écrasé"
   grep -q 'TAG_CONFIRMED (relecture finale)' "$W/run3.log" \
@@ -327,9 +339,9 @@ witness_live(){
   publish "$W/mut.log" || return 1
   local aid; aid=$(api_id "$API"); [ -n "$aid" ] || return 1
   local t; t=$(api_tags "$aid")
-  printf '%s\n' "$t" | grep -qx 'posture:h-external' || return 1
+  printf '%s\n' "$t" | pipe_q -x 'posture:h-external' || return 1
   [ "$(printf '%s\n' "$t" | grep -c '^posture:')" = "1" ] || return 1
-  printf '%s\n' "$t" | grep -qx 'comptes' || return 1
+  printf '%s\n' "$t" | pipe_q -x 'comptes' || return 1
   return 0
 }
 
@@ -403,7 +415,7 @@ else
   drop_api "$API" >/dev/null 2>&1
   publish "$W/mut4a.log"; RC=$?
   AID2=$(api_id "$API")
-  if [ "$RC" -eq 0 ] && [ -n "$AID2" ] && api_tags "$AID2" | grep -qx 'posture:h-external' \
+  if [ "$RC" -eq 0 ] && [ -n "$AID2" ] && api_tags "$AID2" | pipe_q -x 'posture:h-external' \
      && grep -q 'TAG_CONFIRMED (relecture finale)' "$W/mut4a.log"; then
     ok "effacement POSTÉRIEUR à la pose : la relecture finale RE-CONVERGE et le prouve"
   else
@@ -425,7 +437,7 @@ PYEOF
   drop_api "$API" >/dev/null 2>&1
   publish "$W/mut4b.log"; RC=$?
   AID2=$(api_id "$API")
-  if [ "$RC" -eq 0 ] && [ -n "$AID2" ] && api_tags "$AID2" | grep -qx 'posture:m-internal'; then
+  if [ "$RC" -eq 0 ] && [ -n "$AID2" ] && api_tags "$AID2" | pipe_q -x 'posture:m-internal'; then
     ok "sans la relecture finale : le rôle passe VERT en laissant le tag du PRODUCTEUR"
   else
     ko "mutation « relecture finale retirée » non concluante (rc=$RC, tags=$(api_tags "$AID2" | tr '\n' ' '))"

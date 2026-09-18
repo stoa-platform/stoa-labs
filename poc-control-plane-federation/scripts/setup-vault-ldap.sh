@@ -28,6 +28,18 @@
 #   bash scripts/setup-vault-ldap.sh
 #   ./scripts/test-vault-user-login.sh       # les tests [ldap] cessent d'être sautés
 set -uo pipefail
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 VADDR="${VAULT_ADDR:-http://localhost:8200}"; VTOK="${VAULT_TOKEN:?Variable VAULT_TOKEN absente — définissez-la (voir poc-control-plane-federation/.env.example)}"
@@ -52,7 +64,7 @@ TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 printf 'X-Vault-Token: %s\n' "$VTOK" > "$TMP/hdr"
 vcurl() { curl -s -H @"$TMP/hdr" "$@"; }
 
-docker ps --format '{{.Names}}' | grep -qx "$LDAP_CONTAINER" \
+docker ps --format '{{.Names}}' | pipe_q -x "$LDAP_CONTAINER" \
   || fail "conteneur $LDAP_CONTAINER absent — docker compose -f docker-compose.poc.yml -f docker-compose.ldap.yml up -d openldap"
 curl -s -o /dev/null "$VADDR/v1/sys/health" || fail "Vault injoignable sur $VADDR"
 
@@ -227,7 +239,7 @@ case "$RC" in 200|204) say "groupe 'apim-operator-prod' -> policy operator-deplo
 vcurl -o /dev/null -w '' -X POST "$VADDR/v1/auth/$MOUNT/groups/apim-readonly" -d '{"policies":""}'
 say "groupe 'apim-readonly' -> aucune policy (authentifié ≠ autorisé)"
 
-vcurl "$VADDR/v1/sys/policies/acl/deploy-$LAB_TENANT_ALICE" | grep -q '"policy"' \
+vcurl "$VADDR/v1/sys/policies/acl/deploy-$LAB_TENANT_ALICE" | pipe_q '"policy"' \
   || warn "policy deploy-$LAB_TENANT_ALICE absente — onboarder d'abord ce tenant : ansible-playbook -i ansible/inventory.lab.ini ansible/onboard-team.yml -e apim_onb_team=$LAB_TENANT_ALICE"
 
 # Le mount ldap, ses policies de groupe et son TTL sont configurés dans TOUS les

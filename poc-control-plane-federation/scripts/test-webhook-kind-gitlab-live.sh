@@ -45,6 +45,18 @@
 # .env.gitlab-lab est hors Git.
 # shellcheck disable=SC2329,SC2034,SC2015,SC1091
 set -uo pipefail
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO" || exit 1
 J="${JENKINS_UI:?JENKINS_UI requis (ex. http://localhost:18080)}"
@@ -120,7 +132,7 @@ attendre(){ # <job> <n> [secondes] → résultat ('' si l'échéance passe)
 attendre_pause(){ # <job> <n> [secondes] → rc 0 si la pause nominative est ouverte
   local dl=$(( $(date +%s) + ${3:-300} ))
   while [ "$(date +%s)" -lt "$dl" ]; do
-    jget "$J/job/$1/$2/wfapi/pendingInputActions" | grep -q '"id"' && return 0
+    jget "$J/job/$1/$2/wfapi/pendingInputActions" | pipe_q '"id"' && return 0
     case "$(jresult "$1" "$2")" in ''|BUILDING) ;; *) return 1 ;; esac
     sleep 3
   done
@@ -302,7 +314,7 @@ N1=$(jname provision-plan "$NP")
 # jet, 2026-09-11). Ce qui se mesure, c'est le FAIT UNIFIÉ qu'elles ont produit :
 # `action=merge_request:opened` ne peut venir que de gitlabMergeRequestState —
 # le GWT aurait écrit `merge_request:open` (l'ACTION, que ce plugin n'expose pas).
-jconsole provision-plan "$NP" | grep -q "Demande OUVERTE — application=$APP env=$ENVN action=merge_request:opened" \
+jconsole provision-plan "$NP" | pipe_q "Demande OUVERTE — application=$APP env=$ENVN action=merge_request:opened" \
   && ok "2.4 le fait unifié vient de l'ÉTAT relu (« action=merge_request:opened ») : c'est la signature du troisième visage, le GWT aurait dit « merge_request:open »" \
   || ko "2.4 fait unifié absent/divergent : $(jconsole provision-plan "$NP" | grep -m1 'Demande OUVERTE' | cut -c1-160)"
 sleep 5
@@ -335,10 +347,10 @@ if attendre_pause provision-apply "$NA" 420; then
 else
   ko "4.2 apply #$NA : $(jresult provision-apply "$NA") — $(jconsole provision-apply "$NA" | grep -m1 'REFUS' | cut -c1-200)"
 fi
-jconsole provision-apply "$NA" | grep -q "merge_sha=$SHA" \
+jconsole provision-apply "$NA" | pipe_q "merge_sha=$SHA" \
   && ok "4.3 MERGE_SHA du build == merge_commit_sha de l'API : la référence A2 survit au changement de récepteur" \
   || ko "4.3 MERGE_SHA divergent : $(jconsole provision-apply "$NA" | grep -m1 'merge_sha=' | cut -c1-160)"
-jconsole provision-apply "$NA" | grep -qE 'RECONCILE|[Rr]éconcili|provision-apply-reconcile|forge a CONFIRM' \
+jconsole provision-apply "$NA" | pipe_q -E 'RECONCILE|[Rr]éconcili|provision-apply-reconcile|forge a CONFIRM' \
   && ok "4.4 la réconciliation a relu la forge : le payload du plugin ne fait pas foi non plus" \
   || ko "4.4 aucune trace de réconciliation dans la console"
 AB=$(jget "$J/job/provision-apply/$NA/wfapi/pendingInputActions" | jq_ "print(d[0]['abortUrl'] if d else '')")

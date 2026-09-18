@@ -8,6 +8,18 @@
 # tap (WSO2_OTLP_TARGET=wso2-otel-tap:4317 ./scripts/setup-wso2-otel.sh) + restart.
 set -uo pipefail
 
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
+
 KC=http://localhost:8480
 WSO2=https://localhost:8243
 OS=https://localhost:9201
@@ -20,7 +32,7 @@ bad() { FAIL=$((FAIL+1)); printf '  \033[31mFAIL\033[0m %s\n' "$*"; }
 osq() { curl -sk -u "admin:$OS_PASS" "$@"; }
 
 echo "=== 0. Prérequis ==="
-docker ps --filter name=poc-wso2-otel-tap --format '{{.Names}}' | grep -q poc-wso2-otel-tap && ok "wso2-otel-tap up" || { bad "wso2-otel-tap absent — up l'overlay analytics"; exit 2; }
+docker ps --filter name=poc-wso2-otel-tap --format '{{.Names}}' | pipe_q poc-wso2-otel-tap && ok "wso2-otel-tap up" || { bad "wso2-otel-tap absent — up l'overlay analytics"; exit 2; }
 docker exec poc-wso2am sh -c "grep -q 'wso2-otel-tap:4317' /home/wso2carbon/wso2am-4.5.0/repository/conf/deployment.toml" && ok "WSO2 pointe le tap" || bad "WSO2 ne pointe pas le tap (rejouer setup-wso2-otel.sh WSO2_OTLP_TARGET=wso2-otel-tap:4317 + restart)"
 
 echo "=== 1. Token client_credentials (secret via KC admin) ==="
@@ -95,7 +107,7 @@ b=json.load(sys.stdin)['aggregations']['gw']['buckets']
 print(','.join(sorted(x['key'] for x in b)))" 2>/dev/null)
 echo "   gateways avec docs txn: $GW"
 for g in apisix webmethods wso2; do
-  echo "$GW" | grep -q "$g" && ok "tranche $g présente" || bad "tranche $g absente"
+  echo "$GW" | pipe_q "$g" && ok "tranche $g présente" || bad "tranche $g absente"
 done
 
 echo ""

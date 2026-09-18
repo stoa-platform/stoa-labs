@@ -54,6 +54,18 @@
 #   GATE_PV_REF GATE_ITSM — classe [A-Za-z0-9_.@:+-], vides admis sauf les trois premières.
 set -uo pipefail
 set +x
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SELF_DIR/.." || exit 1
 # shellcheck source=scripts/lib/env-chain.sh
@@ -99,14 +111,14 @@ refus(){
 }
 
 # ── 0. FORME, puis LA CHAÎNE — avant tout appel réseau ───────────────────────
-printf '%s' "$MERGE_SHA" | grep -Eq '^[0-9a-f]{40}$' \
+printf '%s' "$MERGE_SHA" | pipe_q -E '^[0-9a-f]{40}$' \
   || refus MERGE_SHA_INVALIDE "MERGE_SHA hors de ^[0-9a-f]{40}\$ (valeur : $(shown "$MERGE_SHA"))" "référence de merge invalide"
 case "$MANIFEST" in
   "${MANIFEST_DIR}/"*.ansible.yml) ;;
   *) refus MANIFESTE_INVALIDE "MANIFEST hors de ${MANIFEST_DIR}/<app>.ansible.yml (valeur : $(shown "$MANIFEST"))" "chemin de manifeste hors du dossier attendu" ;;
 esac
 MAN_BASE="${MANIFEST#"${MANIFEST_DIR}/"}"; MAN_BASE="${MAN_BASE%.ansible.yml}"
-printf '%s' "$MAN_BASE" | grep -Eq '^[a-z0-9][a-z0-9-]*$' \
+printf '%s' "$MAN_BASE" | pipe_q -E '^[a-z0-9][a-z0-9-]*$' \
   || refus MANIFESTE_INVALIDE "nom d'application hors de ^[a-z0-9][a-z0-9-]*\$ dans MANIFEST (valeur : $(shown "$MAN_BASE"))" "nom d'application invalide"
 [ -n "$ENV_NAME" ] || refus ENV_INVALIDE "ENV_NAME vide — une porte se lit pour un palier" "palier vide"
 case "$ENV_NAME" in *[!a-z0-9]*) refus ENV_INVALIDE "ENV_NAME hors de ^[a-z0-9]+\$ (valeur : $(shown "$ENV_NAME"))" "palier hors forme" ;; esac
@@ -188,7 +200,7 @@ esac
 MK_CHANGE=$(printf '%s\n' "$REFS" | sed -n 's/^CR=//p'); MK_PV=$(printf '%s\n' "$REFS" | sed -n 's/^PV=//p')
 # Classe ^[A-Za-z0-9][A-Za-z0-9._-]*$ : jamais `.`, `..` ni `.x` — un segment
 # d'URL ITSM ; curl --path-as-is en plus, ceinture et bretelles.
-ref_ok(){ [ -z "$1" ] && return 0; printf '%s' "$1" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]*$'; }
+ref_ok(){ [ -z "$1" ] && return 0; printf '%s' "$1" | pipe_q -E '^[A-Za-z0-9][A-Za-z0-9._-]*$'; }
 ref_ok "$MK_CHANGE" || refus REF_INVALIDE "change_ref du manifeste MERGÉ hors de ^[A-Za-z0-9][A-Za-z0-9._-]*\$ (valeur : $(shown "$MK_CHANGE")) — il deviendrait un segment d'URL ITSM, refus" "change_ref invalide dans per_env.${ENV_NAME}"
 ref_ok "$MK_PV" || refus REF_INVALIDE "pv_ref du manifeste MERGÉ hors de ^[A-Za-z0-9][A-Za-z0-9._-]*\$ (valeur : $(shown "$MK_PV"))" "pv_ref invalide dans per_env.${ENV_NAME}"
 [ "$NEED_CHANGE" = 0 ] || [ -n "$MK_CHANGE" ] \

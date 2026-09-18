@@ -35,6 +35,18 @@
 #   bash scripts/test-team-promote-wiring.sh
 set -uo pipefail
 
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SC="$ROOT/scripts/team-promote.sh"
 JF="$ROOT/ci/Jenkinsfile.team-promote"
@@ -155,7 +167,7 @@ params_verdict() {
   [ "$names" = "V_PASS V_USER " ] \
     || { echo "KO: paramètres de pause = '${names}' (attendu 'V_PASS V_USER ')"; return 0; }
   for k in PROMOTE_ENGINE ADMIN_VIA; do
-    grep -oE "[A-Za-z]+\(name: '$k'" "$f" | grep -q . \
+    grep -oE "[A-Za-z]+\(name: '$k'" "$f" | pipe_q . \
       && { echo "KO: $k est exposé en paramètre — le knob de pipeline devient saisissable"; return 0; }
   done
   echo "OK"
@@ -274,7 +286,7 @@ grep -q -F 'beforeInput true' "$JF_NC" \
   && ok "③ site 2bis : \`beforeInput true\` — une PR hors promote/* ne réveille PERSONNE" \
   || bad "③ \`beforeInput true\` absent — la pause s'ouvrirait avant l'évaluation du \`when\`"
 POST_CODE=$(awk '/^  post \{/{f=1} f{print}' "$JF_NC")
-printf '%s\n' "$POST_CODE" | grep -q -F 'promote/*) ;;' \
+printf '%s\n' "$POST_CODE" | pipe_q -F 'promote/*) ;;' \
   && ok "③ site 3 (\`post\`) : le statut de build se tait sur une PR hors promote/* (étape SAUTÉE, pas exécutée)" \
   || bad "③ site 3 absent — le post commenterait une PR qui n'a rien déclenché"
 

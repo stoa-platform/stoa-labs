@@ -60,6 +60,18 @@
 set -u
 set -o pipefail
 
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
+
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO" || exit 1
 TMP="$(mktemp -d /tmp/p7e2e.XXXXXX)"
@@ -294,7 +306,7 @@ find_publish_build(){
     for n in $(curl -s -m 30 "$JENKINS_UI/job/team-publish/api/json?tree=builds%5Bnumber%5D" \
                | python3 -c 'import json,sys
 for b in json.load(sys.stdin).get("builds",[])[:8]: print(b["number"])' 2>/dev/null); do
-      jlog team-publish "$n" | grep -qF -- "$motif" && { echo "$n"; return 0; }
+      jlog team-publish "$n" | pipe_q -F -- "$motif" && { echo "$n"; return 0; }
     done
     sleep 4
   done
@@ -775,13 +787,13 @@ measure(){
   # ── le TAG (P3) : un seul dans l'espace réservé, et les tags métier vivants
   tags=$(api_tags "$id")
   nres=$(printf '%s\n' "$tags" | grep -c '^posture:')
-  printf '%s\n' "$tags" | grep -qx "posture:$bundle" \
+  printf '%s\n' "$tags" | pipe_q -x "posture:$bundle" \
     && ok "  tag — l'API porte la posture GOUVERNÉE (posture:$bundle)" \
     || ko "  tag — attendu posture:$bundle, relu : $(printf '%s' "$tags" | tr '\n' ' ')"
   [ "$nres" = "1" ] \
     && ok "  tag — un SEUL tag dans l'espace de noms de la plateforme" \
     || ko "  tag — $nres tags réservés coexistent"
-  printf '%s\n' "$tags" | grep -qx 'metier-p7' \
+  printf '%s\n' "$tags" | pipe_q -x 'metier-p7' \
     && ok "  tag — le tag MÉTIER du producteur est préservé" \
     || ko "  tag — le tag métier du contrat a été détruit"
 
@@ -817,13 +829,13 @@ run_case(){  # <api> <cls déclarée> <exp déclarée> <bundle attendu> <iam att
     && ok "$api : le build team-publish #$CHAIN_BUILD est VERT" \
     || { ko "$api : build team-publish #$CHAIN_BUILD = ${CHAIN_RESULT:-?}"; \
          grep -E '"msg": "[A-Z_]+' "$TMP/pub-$api.log" | tail -3 | sed 's/^/       /'; }
-  printf '%s' "$CHAIN_COMMENT" | grep -q '✅ team-publish' \
+  printf '%s' "$CHAIN_COMMENT" | pipe_q '✅ team-publish' \
     && ok "$api : le ✅ de publication est sur la PR #$CHAIN_PR" \
     || ko "$api : aucun ✅ team-publish sur la PR #$CHAIN_PR"
-  printf '%s' "$CHAIN_COMMENT" | grep -q "POSTURE_RETENUE.*bundle=$4" \
+  printf '%s' "$CHAIN_COMMENT" | pipe_q "POSTURE_RETENUE.*bundle=$4" \
     && ok "$api : la PR porte la posture RETENUE du registre (bundle=$4)" \
     || ko "$api : POSTURE_RETENUE absente ou d'un autre bouquet sur la PR — le demandeur ne sait pas ce qui a été appliqué"
-  printf '%s' "$CHAIN_COMMENT" | grep -q 'POSTURE_COUVERTURE' \
+  printf '%s' "$CHAIN_COMMENT" | pipe_q 'POSTURE_COUVERTURE' \
     && ok "$api : la PR dit ce que la chaîne a VRAIMENT opposé du bouquet" \
     || ko "$api : POSTURE_COUVERTURE absente de la PR — la couverture reste tacite"
   measure "$api" "$4" "$5"
@@ -912,7 +924,7 @@ mes "$API_MI en CLAIR : HTTP $C_CLEAR"
 [ "$C_CLEAR" != "200" ] \
   && ok "B'3 l'appel en CLAIR d'une API publiée PAR LA CHAÎNE est refusé (HTTP $C_CLEAR) là où le témoin passe" \
   || ko "B'3 l'appel en clair PASSE — l'API gouvernée sert en clair"
-printf '%s' "$B_CLEAR" | grep -q 'Transport protocol not supported' \
+printf '%s' "$B_CLEAR" | pipe_q 'Transport protocol not supported' \
   && ok "B'4 …et le refus est celui du PROTOCOLE, pas du réseau (message du produit)" \
   || ko "B'4 le refus n'est pas celui du protocole : $(printf '%s' "$B_CLEAR" | head -c 100)"
 
@@ -1005,7 +1017,7 @@ fi
 #    raison ci-dessus — et l'affirmer quand même serait un vert vacant.
 IAM_MI=$(iam_of "$ID_MI"); IAM_HE=$(iam_of "$ID_HE")
 mes "règles relues : internal=[$IAM_MI] external=[$IAM_HE]"
-{ printf '%s' "$IAM_HE" | grep -q 'ipAddressRange' && ! printf '%s' "$IAM_MI" | grep -q 'ipAddressRange'; } \
+{ printf '%s' "$IAM_HE" | pipe_q 'ipAddressRange' && ! printf '%s' "$IAM_MI" | pipe_q 'ipAddressRange'; } \
   && ok "B'9 LE DIFFÉRENTIEL — la cellule 'external' EXIGE la dimension réseau, 'internal' ne l'exige pas : c'est la posture gouvernée qui compose la règle" \
   || ko "B'9 les deux cellules composent la même règle — la posture ne décide de rien"
 
@@ -1020,7 +1032,7 @@ FP_OV="$FINGERPRINT"
 [ -n "$FP_MI" ] && [ "$FP_MI" = "$FP_OV" ] \
   && ok "C1 LA CONTRE-ÉPREUVE — déclarée VH/internal, l'API reçoit EXACTEMENT la posture de la ligne M/internal ($FP_OV)" \
   || ko "C1 empreintes divergentes : honnête='$FP_MI' sur-déclarée='$FP_OV'"
-printf '%s' "$CHAIN_COMMENT" | grep -qE 'sur-provision|déclarait VH' \
+printf '%s' "$CHAIN_COMMENT" | pipe_q -E 'sur-provision|déclarait VH' \
   && ok "C1b …et la PR DIT que la demande déclarait autre chose" \
   || ko "C1b la PR ne signale pas l'écart entre la déclaration et la posture retenue"
 
@@ -1034,7 +1046,7 @@ echo "── $API_SP : registre H/external, formulaire M/internal ──"
 chain "$API_SP" M internal
 if [ -n "$CHAIN_PR" ]; then
   CB=$(pr_comment "$TEAM_REPO" "$CHAIN_PR" '<!-- api-request -->')
-  printf '%s%s' "$CB" "$CHAIN_COMMENT" | grep -q 'CLASSIFICATION_SPOOFED' \
+  printf '%s%s' "$CB" "$CHAIN_COMMENT" | pipe_q 'CLASSIFICATION_SPOOFED' \
     && ok "C2 LA CONTRE-ÉPREUVE — la déclaration plus faible est refusée, NOMMÉE (CLASSIFICATION_SPOOFED)" \
     || ko "C2 aucun CLASSIFICATION_SPOOFED relayé : $(printf '%s%s' "$CB" "$CHAIN_COMMENT" | tr '\n' ' ' | head -c 160)"
   [ -z "$(api_id "$API_SP")" ] \
@@ -1056,7 +1068,7 @@ echo
 echo "── $API_NX : registre VH/internet — mtls et threat-protection non déclinables ──"
 chain "$API_NX" VH internet
 if [ -n "$CHAIN_PR" ]; then
-  printf '%s' "$CHAIN_COMMENT" | grep -q 'POSTURE_NON_DECLINABLE' \
+  printf '%s' "$CHAIN_COMMENT" | pipe_q 'POSTURE_NON_DECLINABLE' \
     && ok "D1 la cellule VH/internet est REFUSÉE, nommée, sur la PR (POSTURE_NON_DECLINABLE)" \
     || ko "D1 aucun POSTURE_NON_DECLINABLE sur la PR : $(printf '%s' "$CHAIN_COMMENT" | tr '\n' ' ' | head -c 160)"
   [ -z "$(api_id "$API_NX")" ] \
@@ -1089,15 +1101,15 @@ covrun(){ ansible-playbook -i ansible/inventory.lab.ini ansible/test-coverage-gu
   -e "apim_pub_labctl_bin=$LABCTL_BIN" -e "apim_pub_providers_file=$covdir/providers.yml" 2>&1; }
 if command -v ansible-playbook >/dev/null 2>&1; then
   covman cov-ok   M  internal 1; OUT=$(covrun cov-ok); RC=$?
-  { [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -q "POSTURE_COUVERTURE.*opposées=\['audit-log', 'https-only', 'rate-limit'\].*dégradées=\['oauth2'\]"; } \
+  { [ "$RC" -eq 0 ] && printf '%s' "$OUT" | pipe_q "POSTURE_COUVERTURE.*opposées=\['audit-log', 'https-only', 'rate-limit'\].*dégradées=\['oauth2'\]"; } \
     && ok "D2 hors ligne — M/internal passe, en NOMMANT ce qu'elle oppose et ce qu'elle dégrade" \
     || ko "D2 M/internal : rc=$RC, couverture=$(printf '%s' "$OUT" | grep -oE 'POSTURE_COUVERTURE[^"]{0,110}' | head -1)"
   covman cov-mtls VH internal 1; OUT=$(covrun cov-mtls); RC=$?
-  { [ "$RC" -ne 0 ] && printf '%s' "$OUT" | grep -q "POSTURE_NON_DECLINABLE.*\['mtls'\]"; } \
+  { [ "$RC" -ne 0 ] && printf '%s' "$OUT" | pipe_q "POSTURE_NON_DECLINABLE.*\['mtls'\]"; } \
     && ok "D2b hors ligne — VH/internal REFUSÉE : mtls n'est déclinable par aucune API sur ce produit" \
     || ko "D2b VH/internal : rc=$RC (attendu un refus nommant mtls)"
   covman cov-ok   M  internal 0; OUT=$(covrun cov-ok); RC=$?
-  { [ "$RC" -ne 0 ] && printf '%s' "$OUT" | grep -q 'POSTURE_AUTHN_ABSENTE'; } \
+  { [ "$RC" -ne 0 ] && printf '%s' "$OUT" | pipe_q 'POSTURE_AUTHN_ABSENTE'; } \
     && ok "D2c hors ligne — dégrader l'authentification suppose qu'il en reste une (POSTURE_AUTHN_ABSENTE)" \
     || ko "D2c manifeste sans inbound sur une cellule qui exige oauth2 : rc=$RC (attendu un refus)"
 else
@@ -1113,11 +1125,11 @@ DEFFILE="ansible/roles/apim_publish_api/defaults/main.yml"
 PUBFILE="scripts/team-publish.sh"
 sedi(){ sed -i '' "$1" "$2" 2>/dev/null || sed -i "$1" "$2"; }
 
-# ⚠ `set -o pipefail` + `covrun … | grep -q` sur un play qui REFUSE rend le code
+# ⚠ `set -o pipefail` + `covrun … | pipe_q` sur un play qui REFUSE rend le code
 # du PLAY, jamais celui de grep : le témoin serait rouge en permanence, donc
 # muet (piège payé en P2 puis en A4). On CAPTURE, puis on greppe.
 probe_refuse(){  # <manifeste> <code attendu> → 0 si le refus NOMMÉ est bien là
-  local o; o=$(covrun "$1"); printf '%s' "$o" | grep -q "$2"
+  local o; o=$(covrun "$1"); printf '%s' "$o" | pipe_q "$2"
 }
 probe_passe(){   # <manifeste> → 0 si la publication est autorisée par la garde
   covrun "$1" >/dev/null 2>&1

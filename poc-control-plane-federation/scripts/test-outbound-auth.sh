@@ -31,6 +31,18 @@
 # Aucune dépendance Vault (creds littéraux PoC).
 set -uo pipefail
 
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WM="${WM_ADMIN_URL:-http://localhost:5555}"
 WMU="${WM_ADMIN_USER:-Administrator}"
@@ -288,7 +300,7 @@ print(json.dumps(a))' "$BACKEND_B" "$EP_ID" > "$WS/ep.json"
 wm -X PUT -H 'Content-Type: application/json' --data @"$WS/ep.json" "$WM/rest/apigateway/alias/$EP_ID" >/dev/null
 sleep 1
 curl -s --max-time 10 "$DP/accounts" >/dev/null   # déclenche l'appel backend B
-if $DOCKER logs poc-token-echo --tail 8 2>&1 | grep -q '/backend/outbound-proof-B/accounts'; then
+if $DOCKER logs poc-token-echo --tail 8 2>&1 | pipe_q '/backend/outbound-proof-B/accounts'; then
   ok "backend B atteint immédiatement (changement d'endpoint alias suivi per-request)"
 else
   bad "le backend B n'a pas été atteint après le changement d'alias"
@@ -350,7 +362,7 @@ if [ -n "$DUP_ID" ] && [ -n "$POL" ]; then
   IDS="$(outbound_action_ids "$CREATED_API_ID")"; N=$(echo $IDS | wc -w | tr -d ' ')
   if [ "$N" = "2" ]; then
     OUT="$(apply)"; RC=$?
-    if [ "$RC" -ne 0 ] && echo "$OUT" | grep -qi 'ambiguous'; then
+    if [ "$RC" -ne 0 ] && echo "$OUT" | pipe_q -i 'ambiguous'; then
       ok "apply REFUSÉ sur 2 actions outbound (garde anti first-match, classe A1)"
     else
       bad "apply aurait dû être refusé [ambiguous] (rc=$RC)"; echo "$OUT" | grep -i outbound | sed 's/^/    /'

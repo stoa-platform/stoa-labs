@@ -44,6 +44,18 @@
 # shellcheck disable=SC2015
 set -uo pipefail
 set +x
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO" || exit 1
 
@@ -215,9 +227,9 @@ elif docker inspect "$GITEA_CONTAINER" >/dev/null 2>&1; then
 fi
 [ -n "$CI_TOKEN" ] || die "LAB_ABSENT : aucun token Gitea ci"
 printf 'Authorization: token %s\n' "$CI_TOKEN" > "$TMP/ci.hdr"
-gapi -o /dev/null -w '%{http_code}' "$API/repos/$GIT_REPO" | grep -q '^200$' || die "LAB_ABSENT : $GIT_REPO illisible"
+gapi -o /dev/null -w '%{http_code}' "$API/repos/$GIT_REPO" | pipe_q '^200$' || die "LAB_ABSENT : $GIT_REPO illisible"
 ok "0.2 token ci opérationnel"
-curl -sf "$JENKINS_UI/job/provision-apply/config.xml" | grep -q 'ci/Jenkinsfile.provision-apply' || die "PREREQUIS : provision-apply n'est pas from SCM"
+curl -sf "$JENKINS_UI/job/provision-apply/config.xml" | pipe_q 'ci/Jenkinsfile.provision-apply' || die "PREREQUIS : provision-apply n'est pas from SCM"
 PARAMS=$(curl -sf "$JENKINS_UI/job/selfservice-app-deploy/api/json?tree=property%5BparameterDefinitions%5Bname%5D%5D" | python3 -c 'import json,sys
 d=json.load(sys.stdin); print(" ".join(p["name"] for pr in d.get("property",[]) for p in (pr.get("parameterDefinitions") or [])))')
 for p in MERGE_SHA ADMIN_VIA ENVIRONMENT MANIFEST VAULT_USER VAULT_USER_PASSWORD; do case " $PARAMS " in *" $p "*) ;; *) die "PREREQUIS : selfservice-app-deploy ne déclare pas $p";; esac; done
@@ -235,7 +247,7 @@ d=json.load(sys.stdin)
 ok=any((i.get('api',i).get('apiName')==os.environ['A'] and i.get('api',i).get('apiVersion')==os.environ['V'] and i.get('api',i).get('isActive') is True) for i in d.get('apiResponse',[]))
 sys.exit(0 if ok else 1)" && ok "0.6 API $REQ_API@$REQ_API_VER active" || die "PREREQUIS : $REQ_API@$REQ_API_VER absente/inactive"
 # la garde telle que le CI l'extraira : sur gitea main
-gapi -o /dev/null -w '%{http_code}' "$API/repos/$GIT_REPO/raw/main/poc-control-plane-federation/scripts/selfservice-palier-gate.sh" | grep -q '^200$' \
+gapi -o /dev/null -w '%{http_code}' "$API/repos/$GIT_REPO/raw/main/poc-control-plane-federation/scripts/selfservice-palier-gate.sh" | pipe_q '^200$' \
   && ok "0.7 scripts/selfservice-palier-gate.sh est sur gitea main (la lignée que l'aval extrait)" || die "PREREQUIS : la garde n'est pas sur gitea main — git push gitea HEAD:main"
 # alice : Gitea
 HC=$(gapi -o /dev/null -w '%{http_code}' "$API/users/alice")
@@ -291,7 +303,7 @@ while [ "$(date +%s)" -lt "$DL" ]; do MERGEABLE=$(pr_field "$PR_P" ".get('mergea
 HC=$(aapi -X POST -d '{"Do":"merge"}' -o "$TMP/merge.out" -w '%{http_code}' "$API/repos/$GIT_REPO/pulls/$PR_P/merge")
 [ "$HC" = 200 ] || die "PREREQUIS : merge par alice refusé (HTTP $HC)"
 MERGE_SHA=$(pr_field "$PR_P" "['merge_commit_sha']")
-printf '%s' "$MERGE_SHA" | grep -Eq '^[0-9a-f]{40}$' && ok "1.2 PR #$PR_P mergée par alice — MERGE_SHA=$MERGE_SHA" || die "PREREQUIS : merge incohérent"
+printf '%s' "$MERGE_SHA" | pipe_q -E '^[0-9a-f]{40}$' && ok "1.2 PR #$PR_P mergée par alice — MERGE_SHA=$MERGE_SHA" || die "PREREQUIS : merge incohérent"
 ST=$(wait_until 240 provision-apply "$N_PA" PAUSED_PENDING_INPUT); RCW=$?
 [ "$RCW" -eq 0 ] && ok "1.3 provision-apply #$N_PA en PAUSE" || die "PREREQUIS : #$N_PA n'atteint pas la pause ($ST) — $(jconsole provision-apply "$N_PA" | grep -E 'REFUS|error' | tail -2 | tr '\n' ' ')"
 IID=$(jinput_id provision-apply "$N_PA"); [ -n "$IID" ] || die "PREREQUIS : aucune pause sur #$N_PA"
@@ -326,7 +338,7 @@ APPJ=$(gw_app "$APP_P"); APP_P_ID=$(printf '%s' "$APPJ" | jq_ "print(d.get('id',
 [ "$(gw_app_ip "$APPJ")" = "10.42.0.1-10.42.0.1" ] && ok "1.9b ipAddressRange = 10.42.0.1-10.42.0.1 (le bloc mergé)" || ko "1.9b IP : $(gw_app_ip "$APPJ")"
 [ "$(gw_app_claims "$APPJ")" = "${APP_P}-rec" ] && ok "1.9c claim = ${APP_P}-rec (l'identité du palier rec, et elle seule)" || ko "1.9c claims : $(gw_app_claims "$APPJ")"
 CMTS=$(pr_comments "$PR_P")
-printf '%s' "$CMTS" | grep -q 'Apply nominatif RÉUSSI' && printf '%s' "$CMTS" | grep -q "$MERGE_SHA" && ok "1.10 PR #$PR_P : ✅ apply nominatif + SHA" || ko "1.10 commentaire d'apply absent"
+printf '%s' "$CMTS" | pipe_q 'Apply nominatif RÉUSSI' && printf '%s' "$CMTS" | pipe_q "$MERGE_SHA" && ok "1.10 PR #$PR_P : ✅ apply nominatif + SHA" || ko "1.10 commentaire d'apply absent"
 
 echo
 echo "═══ 2. MATRICE PAR BUILD — main déclare per_env.int, build DIRECT int sous alice ⇒ PALIER_FERME ═══"

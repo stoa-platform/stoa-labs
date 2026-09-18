@@ -27,6 +27,18 @@
 #   si GITEA_TOKEN_FILE est absent ET que le conteneur poc-gitea existe.)
 #   A1_OFFLINE=1 ./scripts/test-app-request-a1.sh   — sections A et B seules.
 set -uo pipefail
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 # Le script sous test source ses libs RELATIVEMENT au cwd (`. scripts/lib/…`,
 # comme le job Jenkins qui fait dir(env.GIT_SUBDIR)) : la suite
@@ -92,12 +104,12 @@ else
   F="$TMP/read.yml"; write_idp "$F" "appa" '    dev: { auth: { claim: { value: "appa-dev" } } }'
   OUT=$(app_manifest_read "$F" 2>"$TMP/err"); RC=$?
   if [ "$RC" -eq 0 ] \
-     && printf '%s\n' "$OUT" | grep -qx 'MAN_API=accounts-read' \
-     && printf '%s\n' "$OUT" | grep -qx 'MAN_API_VER=1.0.0' \
-     && printf '%s\n' "$OUT" | grep -qx 'MAN_AUDIENCE=accounts-read' \
-     && printf '%s\n' "$OUT" | grep -qx 'MAN_MODE=idp' \
-     && printf '%s\n' "$OUT" | grep -qx 'MAN_TEAM=' \
-     && printf '%s\n' "$OUT" | grep -qx 'MAN_ENVS=dev'; then
+     && printf '%s\n' "$OUT" | pipe_q -x 'MAN_API=accounts-read' \
+     && printf '%s\n' "$OUT" | pipe_q -x 'MAN_API_VER=1.0.0' \
+     && printf '%s\n' "$OUT" | pipe_q -x 'MAN_AUDIENCE=accounts-read' \
+     && printf '%s\n' "$OUT" | pipe_q -x 'MAN_MODE=idp' \
+     && printf '%s\n' "$OUT" | pipe_q -x 'MAN_TEAM=' \
+     && printf '%s\n' "$OUT" | pipe_q -x 'MAN_ENVS=dev'; then
     ok "A.1 lecture : api/api_version/audience/mode/team(vide)/envs rendus en KEY=VALUE"
   else
     ko "A.1 lecture : rc=$RC out=$(printf '%s' "$OUT" | tr '\n' ' ') err=$(cat "$TMP/err")"
@@ -111,8 +123,8 @@ import sys; p=sys.argv[1]; t=open(p).read().replace('  enforce: []\n','  team: "
 PY
   }
   OUT=$(app_manifest_read "$F" 2>/dev/null); RC=$?
-  if [ "$RC" -eq 0 ] && printf '%s\n' "$OUT" | grep -qx 'MAN_TEAM=payments-team' \
-     && printf '%s\n' "$OUT" | grep -qx 'MAN_ENVS=rec dev'; then
+  if [ "$RC" -eq 0 ] && printf '%s\n' "$OUT" | pipe_q -x 'MAN_TEAM=payments-team' \
+     && printf '%s\n' "$OUT" | pipe_q -x 'MAN_ENVS=rec dev'; then
     ok "A.1b lecture : team lue, paliers déclarés dans l'ordre du fichier (rec dev)"
   else
     ko "A.1b lecture : rc=$RC out=$(printf '%s' "$OUT" | tr '\n' ' ')"
@@ -136,7 +148,7 @@ apim_ss_app:
     claim: { name: "azp", value: "old-dev" }
 YAML
   ERR=$(app_manifest_read "$F" 2>&1 >/dev/null); RC=$?
-  if [ "$RC" -eq 2 ] && printf '%s' "$ERR" | grep -q 'MANIFESTE_LEGACY' && printf '%s' "$ERR" | grep -q 'per_env'; then
+  if [ "$RC" -eq 2 ] && printf '%s' "$ERR" | pipe_q 'MANIFESTE_LEGACY' && printf '%s' "$ERR" | pipe_q 'per_env'; then
     ok "A.2 forme ancienne (claim.value racine, sans per_env) : MANIFESTE_LEGACY, message nommant la migration"
   else
     ko "A.2 forme ancienne : rc=$RC err=$ERR"
@@ -145,11 +157,11 @@ YAML
   # ── A.3 fichier illisible / sans apim_ss_app ──
   printf 'pas: du: yaml: [\n' > "$TMP/bad1.yml"
   ERR=$(app_manifest_read "$TMP/bad1.yml" 2>&1 >/dev/null); RC=$?
-  [ "$RC" -eq 2 ] && printf '%s' "$ERR" | grep -q 'MANIFESTE_INVALIDE' \
+  [ "$RC" -eq 2 ] && printf '%s' "$ERR" | pipe_q 'MANIFESTE_INVALIDE' \
     && ok "A.3a YAML cassé : MANIFESTE_INVALIDE (rc 2)" || ko "A.3a YAML cassé : rc=$RC err=$ERR"
   printf -- '---\nautre_cle:\n  name: x\n' > "$TMP/bad2.yml"
   ERR=$(app_manifest_read "$TMP/bad2.yml" 2>&1 >/dev/null); RC=$?
-  [ "$RC" -eq 2 ] && printf '%s' "$ERR" | grep -q 'MANIFESTE_INVALIDE' \
+  [ "$RC" -eq 2 ] && printf '%s' "$ERR" | pipe_q 'MANIFESTE_INVALIDE' \
     && ok "A.3b sans apim_ss_app : MANIFESTE_INVALIDE (rc 2)" || ko "A.3b sans apim_ss_app : rc=$RC err=$ERR"
 
   # ── A.4 contrat identique ──
@@ -166,14 +178,14 @@ YAML
   grep -qx '  api_version: 1.10' "$F" || ko "A.4b (prérequis) la version non quotée n'a pas été posée"
   OUT=$(app_manifest_read "$F" 2>/dev/null)
   ERR=$(app_manifest_check_contract "$F" appd accounts-read 1.10 accounts-read idp "" 2>&1); RC=$?
-  [ "$RC" -eq 0 ] && printf '%s\n' "$OUT" | grep -qx 'MAN_API_VER=1.10' \
+  [ "$RC" -eq 0 ] && printf '%s\n' "$OUT" | pipe_q -x 'MAN_API_VER=1.10' \
     && ok "A.4b api_version: 1.10 NON quoté ⇒ lu '1.10' (pas 1.1), contrat 1.10 accepté (aucun typage implicite)" \
     || ko "A.4b scalaire non quoté : rc=$RC lu=$(printf '%s' "$OUT" | grep MAN_API_VER) err=$ERR"
 
   # ── A.5 une divergence : api ──
   ERR=$(app_manifest_check_contract "$F" appc payments 1.0.0 accounts-read idp "" 2>&1); RC=$?
-  if [ "$RC" -eq 2 ] && printf '%s' "$ERR" | grep -q 'CONTRAT_DIVERGENT' \
-     && printf '%s' "$ERR" | grep -q "api : manifeste='accounts-read' demande='payments'"; then
+  if [ "$RC" -eq 2 ] && printf '%s' "$ERR" | pipe_q 'CONTRAT_DIVERGENT' \
+     && printf '%s' "$ERR" | pipe_q "api : manifeste='accounts-read' demande='payments'"; then
     ok "A.5 api différente : CONTRAT_DIVERGENT nommant le champ et les deux valeurs"
   else
     ko "A.5 api différente : rc=$RC err=$ERR"
@@ -181,8 +193,8 @@ YAML
 
   # ── A.6 trois divergences, TOUTES listées ──
   ERR=$(app_manifest_check_contract "$F" appc payments 2.0.0 accounts-read internal "" 2>&1); RC=$?
-  if [ "$RC" -eq 2 ] && printf '%s' "$ERR" | grep -q "api : " && printf '%s' "$ERR" | grep -q "api_version : " \
-     && printf '%s' "$ERR" | grep -q "mode : manifeste='idp' demande='internal'"; then
+  if [ "$RC" -eq 2 ] && printf '%s' "$ERR" | pipe_q "api : " && printf '%s' "$ERR" | pipe_q "api_version : " \
+     && printf '%s' "$ERR" | pipe_q "mode : manifeste='idp' demande='internal'"; then
     ok "A.6 trois divergences (api, api_version, mode) : les TROIS sont nommées dans le même refus"
   else
     ko "A.6 divergences multiples : rc=$RC err=$ERR"
@@ -192,15 +204,15 @@ YAML
   ERR=$(app_manifest_check_contract "$TMP/read2.yml" appb accounts-read 1.0.0 accounts-read idp payments-team 2>&1); RC=$?
   [ "$RC" -eq 0 ] && ok "A.7a team identique (payments-team) : accepté" || ko "A.7a team identique refusé : $ERR"
   ERR=$(app_manifest_check_contract "$TMP/read2.yml" appb accounts-read 1.0.0 accounts-read idp "" 2>&1); RC=$?
-  [ "$RC" -eq 2 ] && printf '%s' "$ERR" | grep -q "team : manifeste='payments-team' demande=''" \
+  [ "$RC" -eq 2 ] && printf '%s' "$ERR" | pipe_q "team : manifeste='payments-team' demande=''" \
     && ok "A.7b team figée vs demande sans team : CONTRAT_DIVERGENT (l'héritage est l'affaire du script, pas de la lib)" \
     || ko "A.7b team figée vs vide : rc=$RC err=$ERR"
   ERR=$(app_manifest_check_contract "$TMP/ctr.yml" appc accounts-read 1.0.0 accounts-read idp other-team 2>&1); RC=$?
-  [ "$RC" -eq 2 ] && printf '%s' "$ERR" | grep -q "team : manifeste='' demande='other-team'" \
+  [ "$RC" -eq 2 ] && printf '%s' "$ERR" | pipe_q "team : manifeste='' demande='other-team'" \
     && ok "A.7c manifeste sans team vs demande avec team : CONTRAT_DIVERGENT" \
     || ko "A.7c sans team vs team : rc=$RC err=$ERR"
   ERR=$(app_manifest_check_contract "$TMP/ctr.yml" autre-nom accounts-read 1.0.0 accounts-read idp "" 2>&1); RC=$?
-  [ "$RC" -eq 2 ] && printf '%s' "$ERR" | grep -q "name : manifeste='appc' demande='autre-nom'" \
+  [ "$RC" -eq 2 ] && printf '%s' "$ERR" | pipe_q "name : manifeste='appc' demande='autre-nom'" \
     && ok "A.7d name divergent (fichier réutilisé pour une autre app) : CONTRAT_DIVERGENT" \
     || ko "A.7d name divergent : rc=$RC err=$ERR"
 
@@ -210,7 +222,7 @@ YAML
   ERR=$(app_manifest_merge_env "$F" rec '{ auth: { claim: { value: "m-rec" } } }' 2>&1); RC=$?
   ADDED=$(diff "$TMP/m1.base" "$F" | grep -c '^>'); REMOVED=$(diff "$TMP/m1.base" "$F" | grep -c '^<')
   if [ "$RC" -eq 0 ] && [ "$ADDED" = 1 ] && [ "$REMOVED" = 0 ] \
-     && dif "$TMP/m1.base" "$F" | grep -qF '>     rec: { auth: { claim: { value: "m-rec" } } }'; then
+     && dif "$TMP/m1.base" "$F" | pipe_q -F '>     rec: { auth: { claim: { value: "m-rec" } } }'; then
     ok "A.8 insertion rec : diff = UNE ligne ajoutée (\`    rec: {…}\`), zéro ligne retirée — aucun octet hors per_env.rec"
   else
     ko "A.8 insertion rec : rc=$RC added=$ADDED removed=$REMOVED err=$ERR"; diff "$TMP/m1.base" "$F"
@@ -231,8 +243,8 @@ PY
   ERR=$(app_manifest_merge_env "$F" dev '{ auth: { claim: { value: "m-dev" } }, ip_allowlist: ["10.0.0.1", "10.0.0.2"] }' 2>&1); RC=$?
   ADDED=$(diff "$TMP/m2.base" "$F" | grep -c '^>'); REMOVED=$(diff "$TMP/m2.base" "$F" | grep -c '^<')
   if [ "$RC" -eq 0 ] && [ "$ADDED" = 1 ] && [ "$REMOVED" = 1 ] \
-     && sed -n '/^  per_env:/,$p' "$F" | sed -n 2p | grep -q '^    dev: ' \
-     && sed -n '/^  per_env:/,$p' "$F" | sed -n 3p | grep -q '^    rec: '; then
+     && sed -n '/^  per_env:/,$p' "$F" | sed -n 2p | pipe_q '^    dev: ' \
+     && sed -n '/^  per_env:/,$p' "$F" | sed -n 3p | pipe_q '^    rec: '; then
     ok "A.9 remplacement dev : UNE ligne changée, ordre des paliers préservé (dev puis rec)"
   else
     ko "A.9 remplacement dev : rc=$RC added=$ADDED removed=$REMOVED err=$ERR"; diff "$TMP/m2.base" "$F"
@@ -292,11 +304,11 @@ assert d['per_env'] == {'dev': {'auth': {'claim': {'value': 'q-dev'}}}}, d.get('
   F="$TMP/m7.yml"; write_idp "$F" "apps" '    dev: { auth: { claim: { value: "s-dev" } } }'
   cp "$F" "$TMP/m7.base"
   ERR=$(app_manifest_merge_env "$F" rec '[ pas, un, mapping ]' 2>&1); RC=$?
-  [ "$RC" -eq 2 ] && printf '%s' "$ERR" | grep -q 'MANIFESTE_INVALIDE' && cmp -s "$TMP/m7.base" "$F" \
+  [ "$RC" -eq 2 ] && printf '%s' "$ERR" | pipe_q 'MANIFESTE_INVALIDE' && cmp -s "$TMP/m7.base" "$F" \
     && ok "A.14a contenu inline qui n'est pas un mapping : MANIFESTE_INVALIDE, fichier INTACT" \
     || ko "A.14a inline non-mapping : rc=$RC err=$ERR (fichier modifié : $(cmp -s "$TMP/m7.base" "$F" && echo non || echo OUI))"
   ERR=$(app_manifest_merge_env "$F" rec '{ auth: { claim: { value: "x" } ' 2>&1); RC=$?
-  [ "$RC" -eq 2 ] && printf '%s' "$ERR" | grep -q 'MANIFESTE_INVALIDE' && cmp -s "$TMP/m7.base" "$F" \
+  [ "$RC" -eq 2 ] && printf '%s' "$ERR" | pipe_q 'MANIFESTE_INVALIDE' && cmp -s "$TMP/m7.base" "$F" \
     && ok "A.14b mapping inline mal fermé : MANIFESTE_INVALIDE, fichier INTACT" \
     || ko "A.14b inline cassé : rc=$RC err=$ERR"
 
@@ -304,7 +316,7 @@ assert d['per_env'] == {'dev': {'auth': {'claim': {'value': 'q-dev'}}}}, d.get('
   F="$TMP/m8.yml"; write_idp "$F" "appt" $'    dev:\n      auth:\n        claim:\n          value: "t-dev"'
   cp "$F" "$TMP/m8.base"
   ERR=$(app_manifest_merge_env "$F" dev '{ auth: { claim: { value: "t-dev2" } } }' 2>&1); RC=$?
-  [ "$RC" -eq 2 ] && printf '%s' "$ERR" | grep -q 'MANIFESTE_INVALIDE' && cmp -s "$TMP/m8.base" "$F" \
+  [ "$RC" -eq 2 ] && printf '%s' "$ERR" | pipe_q 'MANIFESTE_INVALIDE' && cmp -s "$TMP/m8.base" "$F" \
     && ok "A.15 palier en style block (édité à la main) : MANIFESTE_INVALIDE plutôt qu'un YAML faux, fichier INTACT" \
     || ko "A.15 style block : rc=$RC err=$ERR (fichier modifié : $(cmp -s "$TMP/m8.base" "$F" && echo non || echo OUI))"
 
@@ -318,7 +330,7 @@ assert d['per_env'] == {'dev': {'auth': {'claim': {'value': 'q-dev'}}}}, d.get('
 
   # ── A.17 lecture après fusion : MAN_ENVS reflète les deux paliers ──
   OUT=$(app_manifest_read "$TMP/m1.yml" 2>/dev/null)
-  printf '%s\n' "$OUT" | grep -qx 'MAN_ENVS=dev rec' \
+  printf '%s\n' "$OUT" | pipe_q -x 'MAN_ENVS=dev rec' \
     && ok "A.17 lecture après fusion : MAN_ENVS='dev rec'" || ko "A.17 MAN_ENVS après fusion : $(printf '%s' "$OUT" | grep MAN_ENVS)"
 
   # ── A.18 mode internal : vault_sub par palier (forme existante), fusion identique ──
@@ -343,7 +355,7 @@ YAML
   app_manifest_merge_env "$F" rec '{ auth: { vault_sub: "deploy/banking-demo/apps/appv/rec/oauth-client" } }' 2>/dev/null; RC=$?
   OUT=$(app_manifest_read "$F" 2>/dev/null)
   if [ "$RC" -eq 0 ] && [ "$(diff "$TMP/m10.base" "$F" | grep -c '^>')" = 1 ] \
-     && printf '%s\n' "$OUT" | grep -qx 'MAN_MODE=internal' && printf '%s\n' "$OUT" | grep -qx 'MAN_ENVS=dev rec'; then
+     && printf '%s\n' "$OUT" | pipe_q -x 'MAN_MODE=internal' && printf '%s\n' "$OUT" | pipe_q -x 'MAN_ENVS=dev rec'; then
     ok "A.18 mode internal : rec insérée (vault_sub …/rec/…), dev intact, lecture mode=internal envs='dev rec'"
   else
     ko "A.18 mode internal : rc=$RC"; diff "$TMP/m10.base" "$F"
@@ -357,18 +369,18 @@ YAML
 import sys; p=sys.argv[1]; t=open(p).read().replace('  enforce: []\n','  team: ".*"\n  enforce: []\n'); open(p,'w').write(t)
 PY
   ERR=$(app_manifest_read "$F" 2>&1 >/dev/null); RC=$?
-  [ "$RC" -eq 2 ] && printf '%s' "$ERR" | grep -q 'MANIFESTE_INVALIDE' && printf '%s' "$ERR" | grep -q "team=" \
+  [ "$RC" -eq 2 ] && printf '%s' "$ERR" | pipe_q 'MANIFESTE_INVALIDE' && printf '%s' "$ERR" | pipe_q "team=" \
     && ok "A.19a team: \".*\" (hors ^[a-z0-9][a-z0-9-]{1,30}\$) : MANIFESTE_INVALIDE — jamais héritée, jamais interpolée" \
     || ko "A.19a team hors format : rc=$RC err=$ERR"
   F="$TMP/b2.yml"; write_idp "$F" "appx" '    dev: { auth: { claim: { value: "x-dev" } } }'
   sed -i.bak 's/^  api_version: "1.0.0"$/  api_version: "1.0;x"/' "$F"; rm -f "$F.bak"
   ERR=$(app_manifest_read "$F" 2>&1 >/dev/null); RC=$?
-  [ "$RC" -eq 2 ] && printf '%s' "$ERR" | grep -q 'MANIFESTE_INVALIDE' \
+  [ "$RC" -eq 2 ] && printf '%s' "$ERR" | pipe_q 'MANIFESTE_INVALIDE' \
     && ok "A.19b api_version hors classe [A-Za-z0-9._-] : MANIFESTE_INVALIDE" || ko "A.19b api_version hors classe : rc=$RC err=$ERR"
   F="$TMP/b3.yml"; write_idp "$F" "appy" '    dev: { auth: { claim: { value: "y-dev" } } }'
   sed -i.bak 's/^    mode: "idp"$/    mode: "autre"/' "$F"; rm -f "$F.bak"
   ERR=$(app_manifest_read "$F" 2>&1 >/dev/null); RC=$?
-  [ "$RC" -eq 2 ] && printf '%s' "$ERR" | grep -q 'MANIFESTE_INVALIDE' \
+  [ "$RC" -eq 2 ] && printf '%s' "$ERR" | pipe_q 'MANIFESTE_INVALIDE' \
     && ok "A.19c mode hors idp|internal : MANIFESTE_INVALIDE" || ko "A.19c mode invalide : rc=$RC err=$ERR"
 
   # ── A.20 l'identité du palier est OBLIGATOIRE dans sa clé ──
@@ -376,7 +388,7 @@ PY
   # AVANT son propre fail-closed — consumer-auth.yml:352 puis :461)
   F="$TMP/b4.yml"; write_idp "$F" "appz" $'    dev: { auth: { claim: { value: "z-dev" } } }\n    rec: { ip_allowlist: ["10.0.0.1"] }'
   ERR=$(app_manifest_read "$F" 2>&1 >/dev/null); RC=$?
-  [ "$RC" -eq 2 ] && printf '%s' "$ERR" | grep -q 'per_env.rec.auth.claim.value' \
+  [ "$RC" -eq 2 ] && printf '%s' "$ERR" | pipe_q 'per_env.rec.auth.claim.value' \
     && ok "A.20a idp : per_env.rec sans auth.claim.value ⇒ MANIFESTE_INVALIDE nommant la clé" \
     || ko "A.20a per_env sans claim.value : rc=$RC err=$ERR"
   cp "$TMP/m10.base" "$TMP/b5.yml"
@@ -384,7 +396,7 @@ PY
 import sys; p=sys.argv[1]; t=open(p).read().replace('    dev: { auth: { vault_sub: "deploy/banking-demo/apps/appv/dev/oauth-client" } }','    dev: { ip_allowlist: ["10.0.0.1"] }'); open(p,'w').write(t)
 PY
   ERR=$(app_manifest_read "$TMP/b5.yml" 2>&1 >/dev/null); RC=$?
-  [ "$RC" -eq 2 ] && printf '%s' "$ERR" | grep -q 'per_env.dev.auth.vault_sub' \
+  [ "$RC" -eq 2 ] && printf '%s' "$ERR" | pipe_q 'per_env.dev.auth.vault_sub' \
     && ok "A.20b internal : per_env.dev sans auth.vault_sub ⇒ MANIFESTE_INVALIDE nommant la clé" \
     || ko "A.20b internal sans vault_sub : rc=$RC err=$ERR"
 
@@ -413,7 +425,7 @@ import sys; p=sys.argv[1]; t=open(p).read().replace('  per_env:\n\n','  per_env:
 PY
   cp "$F" "$TMP/b8.base"
   ERR=$(app_manifest_merge_env "$F" rec '{ auth: { claim: { value: "ac-rec" } } }' 2>&1); RC=$?
-  [ "$RC" -eq 2 ] && printf '%s' "$ERR" | grep -q 'MANIFESTE_INVALIDE' && printf '%s' "$ERR" | grep -q 'flow non vide' && cmp -s "$TMP/b8.base" "$F" \
+  [ "$RC" -eq 2 ] && printf '%s' "$ERR" | pipe_q 'MANIFESTE_INVALIDE' && printf '%s' "$ERR" | pipe_q 'flow non vide' && cmp -s "$TMP/b8.base" "$F" \
     && ok "A.21c \`per_env: { dev: … }\` (flow non vide, une ligne) : refus NOMMÉ, jamais une clé dupliquée, fichier intact" \
     || ko "A.21c per_env flow non vide : rc=$RC err=$ERR"
 
@@ -428,7 +440,7 @@ import sys, yaml
 d = yaml.load(open('$F'), Loader=yaml.BaseLoader)
 assert d['apim_ss_app']['per_env'] == {'dev': {'auth': {'claim': {'value': 'ad-dev'}}}}, d['apim_ss_app'].get('per_env')
 assert d['autre_racine'] == {'x': '1'}, d.get('autre_racine')
-" 2>/dev/null && sed -n '/^  per_env:/,+1p' "$F" | sed -n 2p | grep -q '^    dev: ' && grep -n '^autre_racine:' "$F" | grep -q "^$(( $(grep -n '^    dev: ' "$F" | cut -d: -f1) + 1 )):"; then
+" 2>/dev/null && sed -n '/^  per_env:/,+1p' "$F" | sed -n 2p | pipe_q '^    dev: ' && grep -n '^autre_racine:' "$F" | pipe_q "^$(( $(grep -n '^    dev: ' "$F" | cut -d: -f1) + 1 )):"; then
     ok "A.22 bloc absent avec une clé racine après apim_ss_app : per_env inséré EN FIN DU MAPPING apim_ss_app (avant autre_racine)"
   else
     ko "A.22 insertion en fin de mapping : rc=$RC err=$(cat "$TMP/err")"; cat "$F"
@@ -441,15 +453,15 @@ assert d['autre_racine'] == {'x': '1'}, d.get('autre_racine')
   F="$TMP/c1.yml"; write_idp "$F" "appae" '    dev: { auth: { claim: { value: "ae-dev" } } }'
   cp "$F" "$TMP/c1.base"
   ERR=$(app_manifest_merge_env "$F" rec '{ auth: { claim: { value: "ae-rec" } }, api: "payments-initiation", team: "autre-team" }' 2>&1); RC=$?
-  [ "$RC" -eq 2 ] && printf '%s' "$ERR" | grep -q 'trans-palier' && printf '%s' "$ERR" | grep -q 'api, team' && cmp -s "$TMP/c1.base" "$F" \
+  [ "$RC" -eq 2 ] && printf '%s' "$ERR" | pipe_q 'trans-palier' && printf '%s' "$ERR" | pipe_q 'api, team' && cmp -s "$TMP/c1.base" "$F" \
     && ok "A.23a fusion : mapping portant api/team ⇒ MANIFESTE_INVALIDE nommant les champs, fichier INTACT" \
     || ko "A.23a surcharge par la fusion : rc=$RC err=$ERR"
   ERR=$(app_manifest_merge_env "$F" rec '{ auth: { claim: { value: "ae-rec" }, audience: "autre" } }' 2>&1); RC=$?
-  [ "$RC" -eq 2 ] && printf '%s' "$ERR" | grep -q 'auth.audience' \
+  [ "$RC" -eq 2 ] && printf '%s' "$ERR" | pipe_q 'auth.audience' \
     && ok "A.23b fusion : auth.audience dans la ligne de palier ⇒ MANIFESTE_INVALIDE" || ko "A.23b auth.audience par palier : rc=$RC err=$ERR"
   F="$TMP/c2.yml"; write_idp "$F" "appaf" $'    dev: { auth: { claim: { value: "af-dev" } } }\n    rec: { auth: { claim: { value: "af-rec" } }, api_version: "9.9.9" }'
   ERR=$(app_manifest_read "$F" 2>&1 >/dev/null); RC=$?
-  [ "$RC" -eq 2 ] && printf '%s' "$ERR" | grep -q 'per_env.rec surcharge' \
+  [ "$RC" -eq 2 ] && printf '%s' "$ERR" | pipe_q 'per_env.rec surcharge' \
     && ok "A.23c lecture : per_env.rec portant api_version (édité à la main) ⇒ MANIFESTE_INVALIDE — le contrat ne peut pas être contourné par un palier" \
     || ko "A.23c lecture d'une surcharge par palier : rc=$RC err=$ERR"
 
@@ -462,7 +474,7 @@ assert d['autre_racine'] == {'x': '1'}, d.get('autre_racine')
   F="$TMP/c4.yml"; write_idp "$F" "appah" $'    dev: { auth: { claim: { value: "ah-1" } } }\n    dev: { auth: { claim: { value: "ah-2" } } }'
   cp "$F" "$TMP/c4.base"
   ERR=$(app_manifest_merge_env "$F" rec '{ auth: { claim: { value: "ah-rec" } } }' 2>&1); RC=$?
-  [ "$RC" -eq 2 ] && printf '%s' "$ERR" | grep -q 'dupliquée' && cmp -s "$TMP/c4.base" "$F" \
+  [ "$RC" -eq 2 ] && printf '%s' "$ERR" | pipe_q 'dupliquée' && cmp -s "$TMP/c4.base" "$F" \
     && ok "A.24b bloc portant DEUX lignes dev (édité à la main) : refus nommé même pour insérer rec, fichier INTACT" \
     || ko "A.24b clé dupliquée : rc=$RC err=$ERR"
 fi
@@ -479,23 +491,23 @@ grep -q 'app-manifest.sh' "$S" && ok "B.4 le script source la lib app-manifest.s
 # refus d'entrée existants sortent toujours avant [1/4] (patron v2/v3).
 OUT=$(env -i PATH="$PATH" GITEA_TOKEN=dummy GIT_HOST="http://127.0.0.1:1" FORGE_KIND=gitea REQ_APP=probe REQ_ENV=dev \
       REQ_API=accounts-read REQ_CLIENT_ID=probe REQ_CALLER=oig-provisioner REQ_AUDIENCE='bad"aud' bash "$S" 2>&1); RC=$?
-[ "$RC" -eq 2 ] && printf '%s' "$OUT" | grep -q 'AUDIENCE_INVALID' && ! printf '%s' "$OUT" | grep -q '\[1/5\]' \
+[ "$RC" -eq 2 ] && printf '%s' "$OUT" | pipe_q 'AUDIENCE_INVALID' && ! printf '%s' "$OUT" | pipe_q '\[1/5\]' \
   && ok "B.5 REQ_AUDIENCE avec guillemet : AUDIENCE_INVALID, AVANT tout appel réseau (le champ est figé et interpolé en YAML)" \
   || ko "B.5 audience invalide : rc=$RC out=$(printf '%s' "$OUT" | tail -1)"
 OUT=$(env -i PATH="$PATH" GITEA_TOKEN=dummy GIT_HOST="http://127.0.0.1:1" FORGE_KIND=gitea REQ_APP=probe REQ_ENV=dev \
       REQ_API=accounts-read REQ_CLIENT_ID=probe REQ_CALLER=oig-provisioner REQ_API_VER='1.0;x' bash "$S" 2>&1); RC=$?
-[ "$RC" -eq 2 ] && printf '%s' "$OUT" | grep -q 'API_VERSION_INVALID' && ! printf '%s' "$OUT" | grep -q '\[1/5\]' \
+[ "$RC" -eq 2 ] && printf '%s' "$OUT" | pipe_q 'API_VERSION_INVALID' && ! printf '%s' "$OUT" | pipe_q '\[1/5\]' \
   && ok "B.6 REQ_API_VER hors classe : API_VERSION_INVALID, AVANT tout appel réseau" \
   || ko "B.6 version invalide : rc=$RC out=$(printf '%s' "$OUT" | tail -1)"
 
 OUT=$(env -i PATH="$PATH" GITEA_TOKEN=dummy GIT_HOST="http://127.0.0.1:1" FORGE_KIND=gitea REQ_APP=probe REQ_ENV=dev \
       REQ_API=accounts-read REQ_CLIENT_ID=probe REQ_CALLER=$'oig"\n  api: evil' bash "$S" 2>&1); RC=$?
-[ "$RC" -eq 2 ] && printf '%s' "$OUT" | grep -q 'CALLER_INVALID' && ! printf '%s' "$OUT" | grep -q '\[1/5\]' \
+[ "$RC" -eq 2 ] && printf '%s' "$OUT" | pipe_q 'CALLER_INVALID' && ! printf '%s' "$OUT" | pipe_q '\[1/5\]' \
   && ok "B.7 REQ_CALLER avec guillemet + retour-ligne (injection de clé racine via l'en-tête/description) : CALLER_INVALID, AVANT tout appel réseau" \
   || ko "B.7 caller invalide : rc=$RC out=$(printf '%s' "$OUT" | tail -1)"
 OUT=$(env -i PATH="$PATH" GITEA_TOKEN=dummy GIT_HOST="http://127.0.0.1:1" FORGE_KIND=gitea REQ_APP=probe REQ_ENV=dev \
       REQ_API=accounts-read REQ_CLIENT_ID=probe REQ_CALLER='jenkins-form:oscar@bank.example' bash "$S" 2>&1); RC=$?
-printf '%s' "$OUT" | grep -q 'CALLER_INVALID' && ko "B.7b REQ_CALLER=jenkins-form:oscar@bank.example (voie humaine) refusé à tort" \
+printf '%s' "$OUT" | pipe_q 'CALLER_INVALID' && ko "B.7b REQ_CALLER=jenkins-form:oscar@bank.example (voie humaine) refusé à tort" \
   || ok "B.7b REQ_CALLER=jenkins-form:oscar@bank.example accepté (':' et '@' admis — la voie humaine reste servie)"
 
 echo "═══ Section C — contre le Gitea RÉEL du lab (poc-gitea:13000), base JETABLE ═══"
@@ -579,14 +591,14 @@ except Exception: print("")' 2>/dev/null; }
     OUT=$(env "${COMMON[@]}" REQ_APP="$APP" REQ_ENV=dev REQ_API=accounts-read REQ_API_VER=2.0.0 \
           REQ_CALLER=oig-provisioner REQ_CLIENT_ID="${APP}-dev" REQ_IP_ALLOWLIST="10.0.0.1" bash "$S" 2>&1); RC=$?
     MD=$(raw_manifest "$BD" "$APP")
-    if [ "$RC" -eq 0 ] && printf '%s' "$MD" | grep -qxF '    claim: { name: "azp" }' \
-       && printf '%s' "$MD" | grep -qxF "    dev: { auth: { claim: { value: \"${APP}-dev\" } }, ip_allowlist: [\"10.0.0.1\"] }" \
-       && ! printf '%s' "$MD" | grep -q 'demande dev'; then
+    if [ "$RC" -eq 0 ] && printf '%s' "$MD" | pipe_q -xF '    claim: { name: "azp" }' \
+       && printf '%s' "$MD" | pipe_q -xF "    dev: { auth: { claim: { value: \"${APP}-dev\" } }, ip_allowlist: [\"10.0.0.1\"] }" \
+       && ! printf '%s' "$MD" | pipe_q 'demande dev'; then
       ok "C.1 demande dev (idp) : manifeste créé forme A1 — claim { name } à la racine, valeur sous per_env.dev, description sans palier"
     else
       ko "C.1 demande dev : rc=$RC — $(printf '%s' "$OUT" | tail -3)"; printf '%s\n' "$MD"
     fi
-    printf '%s' "$(pr_body "$OUT")" | grep -q 'manifeste : première demande' \
+    printf '%s' "$(pr_body "$OUT")" | pipe_q 'manifeste : première demande' \
       && ok "C.1b corps de PR #$(pr_num "$OUT") : « première demande (créé) »" || ko "C.1b corps de PR sans la ligne manifeste : $(pr_body "$OUT" | grep -i manifeste)"
 
     # ── C.2 merge simulé : le manifeste dev est posé sur la base ──
@@ -601,7 +613,7 @@ except Exception: print("")' 2>/dev/null; }
     printf '%s\n' "$MR" > "$TMP/rec.yml"
     ADDED=$(diff "$TMP/dev.yml" "$TMP/rec.yml" | grep -c '^>'); REMOVED=$(diff "$TMP/dev.yml" "$TMP/rec.yml" | grep -c '^<')
     if [ "$RC" -eq 0 ] && [ "$ADDED" = 1 ] && [ "$REMOVED" = 0 ] \
-       && dif "$TMP/dev.yml" "$TMP/rec.yml" | grep -qxF ">     rec: { auth: { claim: { value: \"${APP}-rec\" } } }"; then
+       && dif "$TMP/dev.yml" "$TMP/rec.yml" | pipe_q -xF ">     rec: { auth: { claim: { value: \"${APP}-rec\" } } }"; then
       ok "C.3 PORTE A1 : demande rec ⇒ per_env.dev ET per_env.rec, client_id distincts (${APP}-dev / ${APP}-rec)"
       ok "C.3b CONTRE-ÉPREUVE 1 : diff base→rec = exactement UNE ligne ajoutée — aucun octet hors per_env.rec"
     else
@@ -611,7 +623,7 @@ except Exception: print("")' 2>/dev/null; }
       && ok "C.3c REQ_API_VER absente sur rec ⇒ héritée du manifeste (2.0.0), pas de divergence mensongère" \
       || ko "C.3c api_version après rec : $(printf '%s' "$MR" | grep api_version)"
     PRB=$(pr_body "$OUT")
-    printf '%s' "$PRB" | grep -q 'per_env.rec fusionné' && printf '%s' "$PRB" | grep -q 'paliers déjà déclarés : dev' \
+    printf '%s' "$PRB" | pipe_q 'per_env.rec fusionné' && printf '%s' "$PRB" | pipe_q 'paliers déjà déclarés : dev' \
       && ok "C.3d corps de PR rec #$(pr_num "$OUT") : « per_env.rec fusionné — paliers déjà déclarés : dev »" \
       || ko "C.3d corps de PR rec : $(printf '%s' "$PRB" | grep -i manifeste)"
 
@@ -620,7 +632,7 @@ except Exception: print("")' 2>/dev/null; }
     OUT=$(env "${COMMON[@]}" REQ_APP="$APP" REQ_ENV=rec REQ_API=accounts-read \
           REQ_CALLER=oig-provisioner REQ_CLIENT_ID="${APP}-rec" bash "$S" 2>&1); RC=$?
     SHA2=$(branch_sha "$BR")
-    [ "$RC" -eq 0 ] && [ -n "$SHA1" ] && [ "$SHA1" = "$SHA2" ] && printf '%s' "$OUT" | grep -q 'aucun changement' \
+    [ "$RC" -eq 0 ] && [ -n "$SHA1" ] && [ "$SHA1" = "$SHA2" ] && printf '%s' "$OUT" | pipe_q 'aucun changement' \
       && ok "C.4 demande rec rejouée : « aucun changement », même SHA ($SHA1)" \
       || ko "C.4 idempotence rec : rc=$RC sha1=$SHA1 sha2=$SHA2"
 
@@ -635,7 +647,7 @@ except Exception: print("")' 2>/dev/null; }
     put_file "$BASE" "$MAN_DIR/${APP2}.ansible.yml" "$TMP/m2rec.yml" "merge simulé : provision(rec) $APP2" >/dev/null
     curl -s -o /dev/null -X DELETE "${auth[@]}" "$API/branches/${B2R}"   # « supprimer la branche après merge »
     OUT=$(env "${COMMON[@]}" REQ_APP="$APP2" REQ_ENV=rec REQ_API=accounts-read REQ_CALLER=oig-provisioner REQ_CLIENT_ID="${APP2}-rec" bash "$S" 2>&1); RC=$?
-    [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -q "déjà mergée sur $BASE" && ! printf '%s' "$OUT" | grep -q '\[4/4\]' && ! branch_exists "$B2R" \
+    [ "$RC" -eq 0 ] && printf '%s' "$OUT" | pipe_q "déjà mergée sur $BASE" && ! printf '%s' "$OUT" | pipe_q '\[4/4\]' && ! branch_exists "$B2R" \
       && ok "C.4b rejeu APRÈS merge (base porte per_env.rec, tête supprimée) : exit 0 « déjà mergée », aucune PR ouverte, aucune branche recréée" \
       || ko "C.4b rejeu après merge : rc=$RC branche=$(branch_exists "$B2R" && echo EXISTE || echo absente) — $(printf '%s' "$OUT" | tail -3)"
 
@@ -643,8 +655,8 @@ except Exception: print("")' 2>/dev/null; }
     BI="provision/${APP}-int"; CLEAN_BRANCHES+=("$BI")
     OUT=$(env "${COMMON[@]}" "${LIBRE[@]}" REQ_APP="$APP" REQ_ENV=int REQ_API=payments-initiation \
           REQ_CALLER=oig-provisioner REQ_CLIENT_ID="${APP}-int" bash "$S" 2>&1); RC=$?
-    if [ "$RC" -eq 2 ] && printf '%s' "$OUT" | grep -q 'CONTRAT_DIVERGENT' \
-       && printf '%s' "$OUT" | grep -q "api : manifeste='accounts-read' demande='payments-initiation'" \
+    if [ "$RC" -eq 2 ] && printf '%s' "$OUT" | pipe_q 'CONTRAT_DIVERGENT' \
+       && printf '%s' "$OUT" | pipe_q "api : manifeste='accounts-read' demande='payments-initiation'" \
        && ! branch_exists "$BI"; then
       ok "C.5 CONTRE-ÉPREUVE 2 : demande int avec une autre api ⇒ CONTRAT_DIVERGENT (rc 2), branche $BI JAMAIS créée"
     else
@@ -652,12 +664,12 @@ except Exception: print("")' 2>/dev/null; }
     fi
     OUT=$(env "${COMMON[@]}" "${LIBRE[@]}" REQ_APP="$APP" REQ_ENV=int REQ_API=accounts-read REQ_API_VER=1.0.0 \
           REQ_CALLER=oig-provisioner REQ_CLIENT_ID="${APP}-int" bash "$S" 2>&1); RC=$?
-    [ "$RC" -eq 2 ] && printf '%s' "$OUT" | grep -q "api_version : manifeste='2.0.0' demande='1.0.0'" && ! branch_exists "$BI" \
+    [ "$RC" -eq 2 ] && printf '%s' "$OUT" | pipe_q "api_version : manifeste='2.0.0' demande='1.0.0'" && ! branch_exists "$BI" \
       && ok "C.5b version FOURNIE différente (1.0.0 vs 2.0.0) : CONTRAT_DIVERGENT, aucune branche" \
       || ko "C.5b version divergente : rc=$RC — $(printf '%s' "$OUT" | tail -2)"
     OUT=$(env "${COMMON[@]}" "${LIBRE[@]}" REQ_APP="$APP" REQ_ENV=int REQ_API=accounts-read \
           REQ_CALLER=cli2-provisioner bash "$S" 2>&1); RC=$?
-    [ "$RC" -eq 2 ] && printf '%s' "$OUT" | grep -q "mode : manifeste='idp' demande='internal'" && ! branch_exists "$BI" \
+    [ "$RC" -eq 2 ] && printf '%s' "$OUT" | pipe_q "mode : manifeste='idp' demande='internal'" && ! branch_exists "$BI" \
       && ok "C.5c appelant cli2 (mode internal) sur une app idp : CONTRAT_DIVERGENT sur le mode (anti-spoof conservé)" \
       || ko "C.5c mode divergent : rc=$RC — $(printf '%s' "$OUT" | tail -2)"
 
@@ -669,8 +681,8 @@ except Exception: print("")' 2>/dev/null; }
     OUT2=$(env "${COMMON[@]}" REQ_APP="$APPI" REQ_ENV=rec REQ_API=accounts-read REQ_CALLER=cli2-provisioner bash "$S" 2>&1); RC2=$?
     MIR=$(raw_manifest "$BIR" "$APPI")
     if [ "$RC" -eq 0 ] && [ "$RC2" -eq 0 ] \
-       && printf '%s' "$MIR" | grep -qxF "    dev: { auth: { vault_sub: \"deploy/banking-demo/apps/${APPI}/dev/oauth-client\" } }" \
-       && printf '%s' "$MIR" | grep -qxF "    rec: { auth: { vault_sub: \"deploy/banking-demo/apps/${APPI}/rec/oauth-client\" } }"; then
+       && printf '%s' "$MIR" | pipe_q -xF "    dev: { auth: { vault_sub: \"deploy/banking-demo/apps/${APPI}/dev/oauth-client\" } }" \
+       && printf '%s' "$MIR" | pipe_q -xF "    rec: { auth: { vault_sub: \"deploy/banking-demo/apps/${APPI}/rec/oauth-client\" } }"; then
       ok "C.6 mode internal : dev puis rec ⇒ vault_sub distincts (…/dev/… et …/rec/…)"
     else
       ko "C.6 mode internal : rc=$RC/$RC2 — $(printf '%s' "$OUT2" | tail -2)"; printf '%s\n' "$MIR"
@@ -690,11 +702,11 @@ except Exception: print("")' 2>/dev/null; }
           REQ_CLIENT_ID="${APPC}-rec" REQ_CERT_PEM="$PEM_B" bash "$S" 2>&1); RC2=$?
     MCR=$(raw_manifest "$BCR" "$APPC")
     if [ "$RC" -eq 0 ] && [ "$RC2" -eq 0 ] \
-       && printf '%s' "$MCD" | grep -q "    dev: { auth: { claim: { value: \"${APPC}-dev\" } }, public_cert_ref: \"clients/provisioned/certs/${APPC}-dev.crt\", cert_rotation: \"overlap\" }" \
-       && printf '%s' "$MCR" | grep -q "    rec: { auth: { claim: { value: \"${APPC}-rec\" } }, public_cert_ref: \"clients/provisioned/certs/${APPC}-rec.crt\", cert_rotation: \"replace\" }" \
+       && printf '%s' "$MCD" | pipe_q "    dev: { auth: { claim: { value: \"${APPC}-dev\" } }, public_cert_ref: \"clients/provisioned/certs/${APPC}-dev.crt\", cert_rotation: \"overlap\" }" \
+       && printf '%s' "$MCR" | pipe_q "    rec: { auth: { claim: { value: \"${APPC}-rec\" } }, public_cert_ref: \"clients/provisioned/certs/${APPC}-rec.crt\", cert_rotation: \"replace\" }" \
        && [ "$(raw "$BCR" "$CERT_DIR/${APPC}-dev.crt")" = "$(cat "$TMP/cdev.crt")" ] \
        && [ "$(raw "$BCR" "$CERT_DIR/${APPC}-rec.crt")" = "$(printf '%s' "$PEM_B")" ] \
-       && ! printf '%s' "$MCR" | grep -q '^  cert_rotation:'; then
+       && ! printf '%s' "$MCR" | pipe_q '^  cert_rotation:'; then
       ok "C.7 certificat par palier : ${APPC}-dev.crt intact sur la branche rec, ${APPC}-rec.crt ajouté, cert_rotation sous per_env (overlap/replace)"
     else
       ko "C.7 certificat par palier : rc=$RC/$RC2 — $(printf '%s' "$OUT2" | tail -2)"; printf '%s\n' "$MCR" | tail -4
@@ -720,7 +732,7 @@ YAML
     put_file "$BASE" "$MAN_DIR/${APPL}.ansible.yml" "$TMP/old.yml" "forme ancienne (avant A1) $APPL" >/dev/null
     OUT=$(env "${COMMON[@]}" REQ_APP="$APPL" REQ_ENV=rec REQ_API=accounts-read REQ_CALLER=oig-provisioner \
           REQ_CLIENT_ID="${APPL}-rec" bash "$S" 2>&1); RC=$?
-    [ "$RC" -eq 2 ] && printf '%s' "$OUT" | grep -q 'MANIFESTE_LEGACY' && ! branch_exists "$BLR" \
+    [ "$RC" -eq 2 ] && printf '%s' "$OUT" | pipe_q 'MANIFESTE_LEGACY' && ! branch_exists "$BLR" \
       && ok "C.8 manifeste d'avant A1 (claim.value racine) : MANIFESTE_LEGACY (rc 2), aucune branche — pas de migration devinée" \
       || ko "C.8 forme ancienne : rc=$RC branche=$(branch_exists "$BLR" && echo EXISTE || echo absente) — $(printf '%s' "$OUT" | tail -2)"
 
@@ -731,7 +743,7 @@ YAML
     printf '  per_env:\n    dev: { auth: { claim: { value: "%s-dev" } } }\n' "$APPA" >> "$TMP/noaud.yml"
     put_file "$BASE" "$MAN_DIR/${APPA}.ansible.yml" "$TMP/noaud.yml" "manifeste sans audience $APPA" >/dev/null
     OUT=$(env "${COMMON[@]}" REQ_APP="$APPA" REQ_ENV=rec REQ_API=accounts-read REQ_CALLER=oig-provisioner REQ_CLIENT_ID="${APPA}-rec" bash "$S" 2>&1); RC=$?
-    [ "$RC" -eq 0 ] && raw_manifest "$BAR" "$APPA" | grep -q "    rec: " && ! raw_manifest "$BAR" "$APPA" | grep -q '^    audience:' \
+    [ "$RC" -eq 0 ] && raw_manifest "$BAR" "$APPA" | pipe_q "    rec: " && ! raw_manifest "$BAR" "$APPA" | pipe_q '^    audience:' \
       && ok "C.8b manifeste SANS audience + demande rec sans REQ_AUDIENCE ⇒ héritée vide, contrat accepté, ligne rec posée (aucune audience fabriquée)" \
       || ko "C.8b audience absente héritée : rc=$RC — $(printf '%s' "$OUT" | grep -E 'REFUS|ERREUR' | tail -1)"
 
@@ -756,15 +768,15 @@ YAML
       OUT2=$(env "${COMMON[@]}" REQ_APP="$APPT" REQ_ENV=rec REQ_API=accounts-read REQ_CALLER=oig-provisioner \
              REQ_CLIENT_ID="${APPT}-rec" bash "$S" 2>&1); RC2=$?
       MTR=$(raw_manifest "$BTR" "$APPT")
-      if [ "$RC" -eq 0 ] && [ "$RC2" -eq 0 ] && printf '%s' "$MTR" | grep -qxF "  team: \"$TEAM\"" \
-         && printf '%s' "$MTR" | grep -q "    rec: " && printf '%s' "$OUT2" | grep -q "team héritée du manifeste : $TEAM"; then
+      if [ "$RC" -eq 0 ] && [ "$RC2" -eq 0 ] && printf '%s' "$MTR" | pipe_q -xF "  team: \"$TEAM\"" \
+         && printf '%s' "$MTR" | pipe_q "    rec: " && printf '%s' "$OUT2" | pipe_q "team héritée du manifeste : $TEAM"; then
         ok "C.9a team absente de la demande rec ⇒ héritée ($TEAM), garde providers.rec.yml (base) passée, ligne rec posée"
       else
         ko "C.9a team héritée : rc=$RC/$RC2 — $(printf '%s' "$OUT2" | tail -2)"
       fi
       OUT3=$(env "${COMMON[@]}" REQ_APP="$APPT" REQ_ENV=rec REQ_API=accounts-read REQ_CALLER=oig-provisioner \
              REQ_CLIENT_ID="${APPT}-rec" REQ_TEAM="autre-team" bash "$S" 2>&1); RC3=$?
-      [ "$RC3" -eq 2 ] && printf '%s' "$OUT3" | grep -q "CONTRAT_DIVERGENT" && printf '%s' "$OUT3" | grep -q "team : manifeste='$TEAM' demande='autre-team'" \
+      [ "$RC3" -eq 2 ] && printf '%s' "$OUT3" | pipe_q "CONTRAT_DIVERGENT" && printf '%s' "$OUT3" | pipe_q "team : manifeste='$TEAM' demande='autre-team'" \
         && ok "C.9b team FOURNIE différente ⇒ CONTRAT_DIVERGENT (le contrat prime sur TEAM_NOT_DECLARED)" \
         || ko "C.9b team divergente : rc=$RC3 — $(printf '%s' "$OUT3" | tail -2)"
       APPTI="p3a1teami$TS"; BTID="provision/${APPTI}-dev"; BTIR="provision/${APPTI}-rec"; CLEAN_BRANCHES+=("$BTID" "$BTIR")
@@ -774,19 +786,19 @@ YAML
       OUT6=$(env "${COMMON[@]}" REQ_APP="$APPTI" REQ_ENV=rec REQ_API=accounts-read REQ_CALLER=cli2-provisioner bash "$S" 2>&1); RC6=$?
       MTIR=$(raw_manifest "$BTIR" "$APPTI")
       [ "$RC5" -eq 0 ] && [ "$RC6" -eq 0 ] \
-        && printf '%s' "$MTIR" | grep -qxF "    rec: { auth: { vault_sub: \"deploy/${TEAM}/apps/${APPTI}/rec/oauth-client\" } }" \
+        && printf '%s' "$MTIR" | pipe_q -xF "    rec: { auth: { vault_sub: \"deploy/${TEAM}/apps/${APPTI}/rec/oauth-client\" } }" \
         && ok "C.9d internal + team héritée : le TENANT du vault_sub rec suit la team (deploy/${TEAM}/…), pas le défaut banking-demo" \
         || ko "C.9d tenant hérité : rc=$RC5/$RC6 — $(printf '%s' "$MTIR" | grep '    rec:')"
       PRB=$(pr_body "$OUT2")
-      printf '%s' "$PRB" | grep -q "equipe (cloisonnement) : $TEAM (heritee du manifeste" \
+      printf '%s' "$PRB" | pipe_q "equipe (cloisonnement) : $TEAM (heritee du manifeste" \
         && ok "C.9e corps de PR rec : la team héritée est NOMMÉE au valideur (« heritee du manifeste »)" \
         || ko "C.9e corps de PR rec sans mention de la team héritée : $(printf '%s' "$PRB" | grep -i equipe)"
       OUT4=$(env "${COMMON[@]}" "${LIBRE[@]}" REQ_APP="$APPT" REQ_ENV=int REQ_API=accounts-read REQ_CALLER=oig-provisioner \
              REQ_CLIENT_ID="${APPT}-int" bash "$S" 2>&1); RC4=$?
       # A7 : providers.int.yml existe désormais (banking-demo seule) ⇒ la team héritée
       # payments-team y est ABSENTE : TEAM_NOT_DECLARED ; sur une base d'avant A7 : PROVIDERS_MISSING.
-      [ "$RC4" -eq 2 ] && printf '%s' "$OUT4" | grep -q "team héritée du manifeste : $TEAM" \
-        && printf '%s' "$OUT4" | grep -qE "PROVIDERS_MISSING|TEAM_NOT_DECLARED" && ! branch_exists "$BTI" \
+      [ "$RC4" -eq 2 ] && printf '%s' "$OUT4" | pipe_q "team héritée du manifeste : $TEAM" \
+        && printf '%s' "$OUT4" | pipe_q -E "PROVIDERS_MISSING|TEAM_NOT_DECLARED" && ! branch_exists "$BTI" \
         && ok "C.9c team héritée (payments-team) sur int ⇒ la garde du palier VISÉ s'applique (TEAM_NOT_DECLARED — providers.int.yml ne la déclare pas ; PROVIDERS_MISSING sur une base d'avant A7), aucune branche" \
         || ko "C.9c garde du palier visé sur team héritée : rc=$RC4 branche=$(branch_exists "$BTI" && echo EXISTE || echo absente) — $(printf '%s' "$OUT4" | tail -2)"
     fi

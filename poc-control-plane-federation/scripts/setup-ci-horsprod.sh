@@ -19,6 +19,18 @@
 #     TOKEN=$(scripts/setup-ci-horsprod.sh --mint)
 #   In prod: secret émis depuis Vault (ciHorsprodSecret), roté.
 set -euo pipefail
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 KC_BASE="${KC_BASE:-http://localhost:8480}"
 REALM="${REALM:-stoa-lab}"
 ADMIN_USER="${ADMIN_USER:-admin}"; ADMIN_PASS="${ADMIN_PASS:-admin}"
@@ -66,7 +78,7 @@ else echo "  exists ($CID)"; fi
 echo "[2/3] audience mapper (aud=$AUD — custom audience, fail-open sur le trial, cf. ADR-075)"
 add_mapper() { # add_mapper <name> <json-config>
   local name="$1" cfg="$2"
-  if "${CURL[@]}" "${AUTH[@]}" "$API/clients/$CID/protocol-mappers/models" | grep -q "\"name\":\"$name\""; then echo "  mapper $name exists"; return; fi
+  if "${CURL[@]}" "${AUTH[@]}" "$API/clients/$CID/protocol-mappers/models" | pipe_q "\"name\":\"$name\""; then echo "  mapper $name exists"; return; fi
   "${CURL[@]}" "${AUTH[@]}" "${JSON[@]}" -X POST "$API/clients/$CID/protocol-mappers/models" -d "$cfg" && echo "  mapper $name created"
 }
 add_mapper aud-wm-admin '{"name":"aud-wm-admin","protocol":"openid-connect","protocolMapper":"oidc-audience-mapper","config":{"included.custom.audience":"'"$AUD"'","id.token.claim":"false","access.token.claim":"true"}}'

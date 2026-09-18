@@ -34,6 +34,18 @@
 #
 #   bash ci/lint-forge-knobs.sh
 set -uo pipefail
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 RACINE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$RACINE" || exit 1
 PASS=0; FAIL=0
@@ -106,9 +118,9 @@ while IFS= read -r s; do
   JFS=""
   for jf in ci/Jenkinsfile.*; do
     CODE=$(sed -E 's@^[[:space:]]*//.*$@@' "$jf")
-    if printf '%s\n' "$CODE" | grep -qE "$INV1|$INV2"; then
+    if printf '%s\n' "$CODE" | pipe_q -E "$INV1|$INV2"; then
       JFS="$JFS $jf"
-    elif printf '%s\n' "$CODE" | grep -qF "scripts/$base"; then
+    elif printf '%s\n' "$CODE" | pipe_q -F "scripts/$base"; then
       # ANTI-VACUITÉ, même principe que A.3 : la porte REFUSE de deviner. Une
       # mention d'un script routé qu'elle ne sait pas classer est ROUGE, jamais
       # muette — soit c'est une invocation d'une forme qu'elle ignore (et il
@@ -127,7 +139,7 @@ while IFS= read -r s; do
     N_PAIRES=$((N_PAIRES+1))
     ENVBLOC=$(awk '/^  environment \{/,/^  \}/' "$jf")
     for k in $KNOBS; do
-      printf '%s\n' "$ENVBLOC" | grep -qE "^[[:space:]]*${k}[[:space:]]*=" \
+      printf '%s\n' "$ENVBLOC" | pipe_q -E "^[[:space:]]*${k}[[:space:]]*=" \
         || MANQUANTS="$MANQUANTS ${jf#ci/Jenkinsfile.}:$k(pour $base)"
     done
   done
@@ -154,7 +166,7 @@ for jf in ci/Jenkinsfile.*; do
   L=$(sed -E 's@^[[:space:]]*//.*$@@' "$jf" | grep -E "^[[:space:]]*FORGE_KIND[[:space:]]*=" || true)
   [ -n "$L" ] || continue
   N_KIND=$((N_KIND+1))
-  printf '%s\n' "$L" | grep -qF "?: ''" || DEFAUTS="$DEFAUTS ${jf#ci/Jenkinsfile.}"
+  printf '%s\n' "$L" | pipe_q -F "?: ''" || DEFAUTS="$DEFAUTS ${jf#ci/Jenkinsfile.}"
 done
 if [ "$N_KIND" -lt 3 ]; then
   ko "C.0 seulement $N_KIND Jenkinsfile portent FORGE_KIND — l'extraction est cassée"

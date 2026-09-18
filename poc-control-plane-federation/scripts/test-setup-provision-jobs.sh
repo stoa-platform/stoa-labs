@@ -16,6 +16,18 @@
 #            du faux Jenkins : c'est ce journal qui est le sujet de l'assertion.
 # shellcheck disable=SC2015,SC2143
 set -uo pipefail
+
+# pipe_q — `grep -q` sous `set -o pipefail` INVERSE son verdict : il sort à la
+# première correspondance, ferme le tuyau, l'écrivain prend un SIGPIPE et rend
+# 141, donc le pipeline est non nul PRÉCISÉMENT quand le motif est présent. Le
+# piège dépend de la taille du flux, donc il dort. `grep -c` a le MÊME statut de
+# sortie (0 si ≥1 ligne, 1 sinon) et lit TOUTE son entrée : aucun SIGPIPE.
+# shellcheck disable=SC2329  # MESURÉ : shellcheck 0.11.0 ne voit pas l'invocation
+# en PIPELINE de cette fonction dans ces fichiers (0 signalement à HEAD, donc le
+# défaut vient bien d'ici), alors qu'il l'accepte sur un script minimal. On perd
+# ce signal — et on le REMPLACE : ci/lint-pipe-grepq.sh exige que tout fichier qui
+# DÉFINIT pipe_q l'INVOQUE, ce que SC2329 prétend vérifier et fait ici à tort.
+pipe_q() { grep -c "$@" >/dev/null; }
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 S="$REPO/scripts/setup-provision-jobs.sh"
 TMP="$(mktemp -d /tmp/setupjobs.XXXXXX)"
@@ -196,31 +208,31 @@ start "provision-apply,provision-plan" 200
 OUT=$(cd "$REPO" && JENKINS_UI="$JU" bash "$S" 2>&1); RC=$?
 [ $RC -eq 0 ] && ok "succès" || ko "échec (rc=$RC) : $OUT"
 [ "$(calls | grep -c 'POST update')" = "2" ] && ok "2 mises à jour en place" || ko "mises à jour manquantes"
-calls | grep -q 'POST DELETE' && ko "UN JOB A ÉTÉ SUPPRIMÉ — historique d'audit perdu" || ok "aucune suppression"
-calls | grep -q 'POST create' && ko "création alors que le job existait" || ok "aucune création superflue"
+calls | pipe_q 'POST DELETE' && ko "UN JOB A ÉTÉ SUPPRIMÉ — historique d'audit perdu" || ok "aucune suppression"
+calls | pipe_q 'POST create' && ko "création alors que le job existait" || ok "aucune création superflue"
 
 echo
 echo "== 2. job ABSENT : créé =="
 start "" 200
 OUT=$(cd "$REPO" && JENKINS_UI="$JU" JOBS=provision-apply bash "$S" 2>&1); RC=$?
 [ $RC -eq 0 ] && ok "succès" || ko "échec (rc=$RC)"
-calls | grep -q 'POST create' && ok "createItem appelé" || ko "job non créé"
-calls | grep -q 'POST DELETE' && ko "suppression sur un job absent" || ok "aucune suppression"
+calls | pipe_q 'POST create' && ok "createItem appelé" || ko "job non créé"
+calls | pipe_q 'POST DELETE' && ko "suppression sur un job absent" || ok "aucune suppression"
 
 echo
 echo "== 3. mise à jour REFUSÉE : le job reste INCHANGÉ (pas de repli destructeur) =="
 start "provision-apply" 500
 OUT=$(cd "$REPO" && JENKINS_UI="$JU" JOBS=provision-apply bash "$S" 2>&1); RC=$?
 [ $RC -ne 0 ] && ok "écart signalé (rc=$RC)" || ko "échec masqué"
-calls | grep -q 'POST DELETE' && ko "delete+create SILENCIEUX — irréversible et non demandé" || ok "aucune suppression sans demande"
+calls | pipe_q 'POST DELETE' && ko "delete+create SILENCIEUX — irréversible et non demandé" || ok "aucune suppression sans demande"
 grep -q "ALLOW_RECREATE=true" <<<"$OUT" && ok "la sortie dit comment forcer, et ce que ça coûte" || ko "aucune issue proposée"
 
 echo
 echo "== 4. ALLOW_RECREATE=true : le repli devient possible, et il est ANNONCÉ =="
 start "provision-apply" 500
 OUT=$(cd "$REPO" && JENKINS_UI="$JU" JOBS=provision-apply ALLOW_RECREATE=true bash "$S" 2>&1); RC=$?
-calls | grep -q 'POST DELETE' && ok "suppression effectuée (explicitement demandée)" || ko "repli non effectué"
-calls | grep -q 'POST create' && ok "job recréé" || ko "recréation absente"
+calls | pipe_q 'POST DELETE' && ok "suppression effectuée (explicitement demandée)" || ko "repli non effectué"
+calls | pipe_q 'POST create' && ok "job recréé" || ko "recréation absente"
 grep -q "historique sera PERDU" <<<"$OUT" && ok "le coût est annoncé avant" || ko "destruction silencieuse"
 
 echo
@@ -228,7 +240,7 @@ echo "== 5. DRY_RUN : aucune écriture =="
 start "provision-apply,provision-plan" 200
 OUT=$(cd "$REPO" && JENKINS_UI="$JU" DRY_RUN=true bash "$S" 2>&1); RC=$?
 [ $RC -eq 0 ] && ok "succès" || ko "échec (rc=$RC)"
-if calls | grep -qE 'POST (update|create|DELETE)'; then ko "DRY_RUN a écrit !"; else ok "aucune écriture"; fi
+if calls | pipe_q -E 'POST (update|create|DELETE)'; then ko "DRY_RUN a écrit !"; else ok "aucune écriture"; fi
 grep -q "serait MIS À JOUR" <<<"$OUT" && ok "annonce ce qui serait fait" || ko "dry-run muet"
 
 echo
@@ -286,8 +298,8 @@ echo "== 11. le charset UTF-8 est déclaré (sinon Jenkins casse sur les accents
 start "provision-apply" 200
 OUT=$(cd "$REPO" && JENKINS_UI="$JU" JOBS=provision-apply bash "$S" 2>&1); RC=$?
 [ $RC -eq 0 ] && ok "accepté par une cible exigeant le charset" || ko "charset absent — 500 sur le 1er accent (rc=$RC)"
-calls | grep -q 'NO-CHARSET' && ko "un POST est parti sans charset" || ok "aucun POST sans charset"
-grep -c 'charset=utf-8' "$S" | grep -qvE '^[01]$' && ok "déclaré sur TOUS les envois de config" || ko "déclaré partiellement"
+calls | pipe_q 'NO-CHARSET' && ko "un POST est parti sans charset" || ok "aucun POST sans charset"
+grep -c 'charset=utf-8' "$S" | pipe_q -vE '^[01]$' && ok "déclaré sur TOUS les envois de config" || ko "déclaré partiellement"
 
 echo
 echo "== 12. setup-provision-request-job.sh ne DÉTRUIT plus son job =="
@@ -348,11 +360,11 @@ OUT=$(cd "$REPO" && JENKINS_UI="$JU" BOOTSTRAP_JOBS=none bash "$S" 2>&1); RC=$?
   || ko "none : $(calls | grep -c 'POST build') build(s), $(grep -c 'amorçage imposé' <<<"$OUT") annonce(s)"
 RELU_XML="$(relu 1 0 1 'stoa-__JOB__')" start "provision-apply,provision-plan" 200
 OUT=$(cd "$REPO" && JENKINS_UI="$JU" DRY_RUN=true BOOTSTRAP_JOBS=provision-plan bash "$S" 2>&1); RC=$?
-calls | grep -q 'POST build' && ko "DRY_RUN a amorcé un build !" || ok "DRY_RUN : aucun build demandé"
+calls | pipe_q 'POST build' && ko "DRY_RUN a amorcé un build !" || ok "DRY_RUN : aucun build demandé"
 grep -q "serait AMORCÉ" <<<"$OUT" && ok "DRY_RUN annonce l'amorçage qui serait fait" || ko "DRY_RUN muet sur l'amorçage"
 start "provision-plan" 500
 OUT=$(cd "$REPO" && JENKINS_UI="$JU" JOBS=provision-plan BOOTSTRAP_JOBS=provision-plan bash "$S" 2>&1); RC=$?
-calls | grep -q 'POST build' && ko "amorçage tenté alors que la POSE a échoué" || ok "pose refusée ⇒ amorçage NON tenté (et dit)"
+calls | pipe_q 'POST build' && ko "amorçage tenté alors que la POSE a échoué" || ok "pose refusée ⇒ amorçage NON tenté (et dit)"
 grep -q "amorçage NON tenté" <<<"$OUT" && ok "le refus d'amorçage est nommé" || ko "refus d'amorçage muet"
 BUILD_CODE=400 RELU_XML="$(relu 1 0 1 stoa-provision-plan)" start "provision-plan" 200
 OUT=$(cd "$REPO" && JENKINS_UI="$JU" JOBS=provision-plan BOOTSTRAP_JOBS=provision-plan bash "$S" 2>&1); RC=$?
@@ -439,7 +451,7 @@ OUT=$(cd "$REPO" && JENKINS_UI="$JU" JOBS=zz-sans-prop JOBS_SRC_DIR="$XMLVIDE" B
 if [ "$(calls | grep -c 'POST build zz-sans-prop')" = 1 ]; then
   ok "18.1 XML SANS propriété + BOOTSTRAP_JOBS=none ⇒ amorcé QUAND MÊME (la règle vient du XML : sans build, ce job serait MUET et son webhook rendrait 404)"
 else ko "18.1 aucun amorçage malgré un XML sans propriété : $(calls | grep -c 'POST build') build(s)"; fi
-calls | grep -q 'GET config zz-sans-prop'   && ok "18.2 et RELU : un amorçage imposé par le XML est aussi vérifié (sinon on aurait déplacé le silence, pas supprimé)"   || ko "18.2 amorçage imposé mais NON relu"
+calls | pipe_q 'GET config zz-sans-prop'   && ok "18.2 et RELU : un amorçage imposé par le XML est aussi vérifié (sinon on aurait déplacé le silence, pas supprimé)"   || ko "18.2 amorçage imposé mais NON relu"
 grep -qE "amorçage imposé par le XML|sans propriété" <<<"$OUT"   && ok "18.3 la sortie DIT pourquoi il a amorcé sans qu'on le lui demande (un geste non demandé qui se tait est un geste qu'on croit ne pas avoir fait)"   || ko "18.3 amorçage imposé mais MUET dans la sortie"
 # CONTRE-ÉPREUVE : un XML qui PORTE ses propriétés n'est pas amorcé sans demande.
 XMLPLEIN="$TMP/plein"; mkdir -p "$XMLPLEIN"
@@ -452,7 +464,7 @@ open(sys.argv[1], 'w', encoding='utf-8').write("""<?xml version='1.1' encoding='
 PY
 start "zz-avec-prop" 200
 OUT=$(cd "$REPO" && JENKINS_UI="$JU" JOBS=zz-avec-prop JOBS_SRC_DIR="$XMLPLEIN" BOOTSTRAP_JOBS=none bash "$S" 2>&1); RC=$?
-calls | grep -q 'POST build'   && ko "18.4 un XML qui PORTE ses propriétés a été amorcé sans demande — la règle serait « toujours », pas « quand le XML l'exige »"   || ok "18.4 XML qui PORTE ses propriétés + BOOTSTRAP_JOBS=none ⇒ AUCUN amorçage : la règle discrimine, elle ne balaie pas"
+calls | pipe_q 'POST build'   && ko "18.4 un XML qui PORTE ses propriétés a été amorcé sans demande — la règle serait « toujours », pas « quand le XML l'exige »"   || ok "18.4 XML qui PORTE ses propriétés + BOOTSTRAP_JOBS=none ⇒ AUCUN amorçage : la règle discrimine, elle ne balaie pas"
 
 echo "== 17. le CREDENTIAL du <scm> (GIT_CREDENTIALS_ID) : sans lui, un dépôt PRIVÉ refuse le checkout du job =="
 # MESURÉ le 2026-09-11 : les treize job.xml ne portent AUCUN <credentialsId>, et
@@ -570,7 +582,7 @@ OUT=$(cd "$REPO" && JENKINS_UI="$JU" JOBS=provision-plan bash "$S" 2>&1); RC=$?
   || ko "FAILURE d'amorçage avalé (rc=$RC)"
 start "provision-plan" 200
 OUT=$(cd "$REPO" && JENKINS_UI="$JU" JOBS=provision-plan BOOTSTRAP_AWAIT_JOBS=none bash "$S" 2>&1); RC=$?
-[ $RC -eq 0 ] && ! calls | grep -q 'GET config' && grep -q "non attendu" <<<"$OUT" \
+[ $RC -eq 0 ] && ! calls | pipe_q 'GET config' && grep -q "non attendu" <<<"$OUT" \
   && ok "BOOTSTRAP_AWAIT_JOBS=none : amorçage déclenché, ni attendu ni relu (le geste d'A0, conservé et DIT)" \
   || ko "await=none : rc=$RC relectures=$(calls | grep -c 'GET config')"
 
