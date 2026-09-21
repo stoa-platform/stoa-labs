@@ -58,7 +58,7 @@ ko(){ FAIL=$((FAIL+1)); printf '  ❌ %s\n' "$*"; }
 
 # Total ATTENDU, ÉCRIT EN DUR — indépendant de PASS+FAIL. Toute section
 # ajoutée/retirée DOIT le mettre à jour : un oubli fait rougir le dernier §.
-EXPECTED_CHECKS=256   # 200 + 12 (L6, récepteur WEBHOOK_KIND) + 44 (§9 (c ter), STOA_DEBUG — plan L2)
+EXPECTED_CHECKS=257   # 200 + 12 (L6, récepteur WEBHOOK_KIND) + 44 (§9 (c ter), STOA_DEBUG — plan L2) + 1 (plan enchaîné exécuté depuis un cwd étranger, 2026-09-21)
 
 # shellcheck source=scripts/lib/gwt-mirror.sh
 . scripts/lib/gwt-mirror.sh || { echo "lib gwt-mirror.sh introuvable"; exit 2; }
@@ -1268,6 +1268,21 @@ L_4=$(grep -n 'echo "\[4/5\] ouverture de la Pull Request' "$PRS" | cut -d: -f1)
 [ -n "$L_4" ] && [ -n "$L_5" ] && [ "$L_4" -lt "$L_5" ] && ok "la PR naît en [4/5] (ligne $L_4), le plan enchaîné suit en [5/5] (ligne $L_5)" || ko "numérotation/ordre [4/5]<[5/5] cassés (4=$L_4 5=$L_5)"
 L_PF=$(grep -n 'PLAN_INLINE=fail' "$PRS" | cut -d: -f1)
 [ -n "$L_PF" ] && ! sed -n "$((L_PF)),$((L_PF+2))p" "$PRS" | pipe_q -E 'exit [1-9]' && ok "PLAN_INLINE=fail (ligne $L_PF) n'est suivi d'aucun exit non nul : le plan enchaîné n'est pas fatal" || ko "le plan enchaîné est devenu fatal"
+# 2026-09-21 : LE PLAN ENCHAÎNÉ EST EXÉCUTÉ, PAS GREPPÉ. provision-request.sh
+# appelle provision-plan.sh en [5/5] APRÈS son `cd "$WORK/repo"` (la racine du
+# clone, pas le livrable) ; or le plan sourçait `ci/lib/dbg.sh` depuis le cwd
+# (L2, 5222377) là où ses frères (app-rollback-request, provision-apply-reconcile)
+# résolvent `$SELF_DIR/../ci/lib/dbg.sh`. Depuis L2, CHAQUE demande par
+# formulaire finissait « PLAN_INLINE=fail … ci/lib/dbg.sh introuvable » — build
+# vert (le plan enchaîné n'est pas fatal), et aucune suite ne le voyait : toutes
+# passent PROVISION_PLAN_INLINE=false. Mesuré sur app-request #86 (lab GitLab).
+# L'épreuve : le plan lancé depuis un cwd ÉTRANGER doit passer sa lib et mourir
+# PLUS LOIN, sur un refus nommé, jamais sur « dbg.sh introuvable ».
+( cd "$TMP" && env -i PATH="$PATH" HOME="$HOME" GIT_HOST=http://127.0.0.1:9 FORGE_SECRET=x FORGE_KIND=gitea PR_BRANCH=provision/x-dev PR_NUMBER=1 \
+    bash "$REPO/scripts/provision-plan.sh" ) > "$TMP/plan-cwd.out" 2>&1; RC=$?
+! grep -qE 'introuvable ou illisible|No such file' "$TMP/plan-cwd.out" && [ "$RC" -ne 0 ] && grep -qE 'REFUS: [A-Z_]+' "$TMP/plan-cwd.out" \
+  && ok "provision-plan.sh lancé depuis un cwd étranger (celui du plan enchaîné, après le cd de la demande) source ses libs (ci/lib/dbg.sh, scripts/lib/*.sh) par \$SELF_DIR et meurt PLUS LOIN sur un refus nommé (rc $RC : $(grep -oE 'REFUS: [A-Z_]+' "$TMP/plan-cwd.out" | head -1))" \
+  || ko "provision-plan.sh depuis un cwd étranger : rc=$RC — $(grep -m1 -E 'dbg.sh|REFUS|ERREUR' "$TMP/plan-cwd.out" | cut -c1-160) (le plan enchaîné de CHAQUE demande par formulaire meurt ici)"
 # L5 : la PR déjà ouverte est OPEN_NUMBER de pr_find_open (relue AVANT le push), réutilisée sans POST ni exit.
 grep -q 'PR_NUM="$OPEN_NUM"; PR_URL_FORGE="$OPEN_URL"' "$PRS" && grep -q 'echo "  PR déjà ouverte: #${PR_NUM}"' "$PRS" \
   && ok "une PR déjà ouverte (OPEN_NUMBER relu avant le push) est réutilisée : succès, aucun POST" || ko "EXIST n'est plus traité comme succès"

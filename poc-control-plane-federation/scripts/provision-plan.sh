@@ -73,15 +73,26 @@ GIT_REPO="${GIT_REPO:-ci/stoa-labs}"
 GIT_HOST="${GIT_HOST:?GIT_HOST requis (base de la forge, ex. https://forge.client) — aucun repli}"
 # L2 : le MODE DEBUG SANS FUITE. dbg/dbg_kv/redact de ci/lib/dbg.sh sont les
 # seules voies de sortie du debug (stderr seulement, rédigé, `$?` préservé) —
-# jamais `set -x` (le `set +x` en tête : un log Jenkins est archivé). Même base
-# de résolution que les libs ci-dessous : le cwd d'appel, AVANT le cd de [1/4].
+# jamais `set -x` (le `set +x` en tête : un log Jenkins est archivé). Résolue
+# par rapport à CE SCRIPT ($SELF_DIR, comme ses libs plus bas et comme
+# app-rollback-request.sh / provision-apply-reconcile.sh), JAMAIS par rapport au
+# cwd : provision-request.sh appelle ce plan en [5/5] APRÈS son `cd "$WORK/repo"`
+# — la racine du clone, où ni `ci/lib/dbg.sh` ni `scripts/lib/*.sh` n'existent.
+# Sourcées depuis le cwd (556fbb0 pour repo-layout, d6c9515 pour git-base,
+# 5222377 pour dbg), ces libs manquaient à CHAQUE demande par formulaire et le plan enchaîné
+# mourait « PLAN_INLINE=fail » en silence (build vert ; les suites passent
+# PROVISION_PLAN_INLINE=false) — mesuré le 2026-09-21, app-request #86 ;
+# épreuve : test-a0-wiring.sh § plan enchaîné depuis un cwd étranger.
 # dbg_init normalise et EXPORTE STOA_DEBUG pour que les enfants (forge-api.py,
 # gitea-pr-comment.sh) parlent avec la même valeur. Pas de DBG_NAME : le préfixe
 # est le nom de CE script, c'est lui qu'on veut lire dans un log Jenkins. Pas de
 # DBG_SECRET_FILES : le plan ne tient que FORGE_SECRET, que dbg.sh relit dans
 # l'environnement à chaque appel — aucun token humain ici.
+# Chemin du script résolu AVANT tout `cd` (le [1/4] plus bas se déplace dans le
+# clone de la PR) ; défini ICI, avant la première lib qui en dépend.
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=ci/lib/dbg.sh
-. "ci/lib/dbg.sh" || { echo "ERREUR: ci/lib/dbg.sh introuvable ou illisible" >&2; exit 1; }
+. "$SELF_DIR/../ci/lib/dbg.sh" || { echo "ERREUR: ci/lib/dbg.sh introuvable ou illisible" >&2; exit 1; }
 dbg_init
 # dbg_git_err <fichier> — le stderr d'un geste git, relayé en mode debug sur
 # UNE ligne « git: … » : rédigé EN ENTIER, puis mis sur une ligne, puis tronqué
@@ -104,11 +115,11 @@ dbg_git_err(){
   return "$_rc"
 }
 # shellcheck source=scripts/lib/repo-layout.sh
-. "scripts/lib/repo-layout.sh" || { echo "ERREUR: scripts/lib/repo-layout.sh introuvable ou illisible" >&2; exit 1; }
+. "$SELF_DIR/lib/repo-layout.sh" || { echo "ERREUR: $SELF_DIR/lib/repo-layout.sh introuvable ou illisible" >&2; exit 1; }
 repo_layout_init || exit 2
 dbg_kv SUB_PFX "$SUB_PFX"   # vide ⇒ « <vide> » : le livrable EST la racine — c'est le diagnostic d'un IGNORE chez un client dont la forge préfixe
 # shellcheck source=scripts/lib/git-base.sh
-. "scripts/lib/git-base.sh" || { echo "ERREUR: scripts/lib/git-base.sh introuvable ou illisible" >&2; exit 1; }
+. "$SELF_DIR/lib/git-base.sh" || { echo "ERREUR: $SELF_DIR/lib/git-base.sh introuvable ou illisible" >&2; exit 1; }
 # RELATIF au livrable (2026-09-03) ; le préfixe du dépôt vit dans GIT_SUBDIR.
 MANIFEST_DIR="${MANIFEST_DIR:-clients/provisioned/applications}"
 MANIFEST_PATH="${SUB_PFX}${MANIFEST_DIR}"   # vu de la racine du clone : c'est ce que git connaît
@@ -119,9 +130,7 @@ INVENTORY="${INVENTORY:-ansible/inventory.lab.ini}"
 # split-horizon (jenkins→gitea:3000, navigateur→localhost:13000).
 GIT_WEB_HOST="${GIT_WEB_HOST:-$GIT_HOST}"
 
-# Chemin du script résolu AVANT tout `cd` : ce script se déplace dans le clone de
-# la PR ($WORK/repo) en [1/4], et un `dirname "$0"` relatif n'y résoudrait plus.
-SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+# SELF_DIR est défini plus haut, avant ci/lib/dbg.sh (une seule définition).
 PLAN_FACTS="${PLAN_FACTS:-}"
 dbg_kv PLAN_FACTS "$PLAN_FACTS"   # vide ⇒ « <vide> » : aucun fait écrit, le statut de build relira la forge
 GITEA_HEAD_REF=""; GITEA_HEAD_SHA=""
