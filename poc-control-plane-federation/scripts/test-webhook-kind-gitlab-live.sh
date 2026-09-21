@@ -193,8 +193,12 @@ restaurer(){
   fi
   rm -rf "$TMP"
 }
-trap restaurer EXIT INT TERM
-
+# ⚠ LE TRAP N'EST ARMÉ QU'APRÈS LA GARDE 0.5 (revue adverse du 2026-09-21). Armé
+# ici, un refus 0.5 (« le lab est DÉJÀ sous gitlab ») déclenchait `restaurer`,
+# qui re-posait provision-plan/apply sous gwt et gitea:3000 SANS credential —
+# c'est-à-dire cassait précisément le lab durablement basculé sous GitLab
+# qu'il venait de refuser de toucher. Avant 0.5, rien n'a été posé : il n'y a
+# rien à restaurer, et un refus doit laisser le lab EXACTEMENT tel qu'il l'a trouvé.
 say "═══ 0. préconditions : les deux récepteurs, la méthode de merge, notre tronc ═══"
 P=$(jget "$J/pluginManager/api/json?tree=plugins[shortName]" | jq_ "s={x['shortName'] for x in d['plugins']}; print('oui' if {'gitlab-plugin','generic-webhook-trigger'} <= s else 'non')")
 [ "$P" = oui ] && ok "0.1 le Jenkins porte les DEUX récepteurs (gitlab-plugin et generic-webhook-trigger)" \
@@ -215,9 +219,15 @@ LOCAL=$(git -C "$REPO/.." rev-parse HEAD 2>/dev/null || git -C "$REPO" rev-parse
 REMOTE=$(gauth ls-remote "$CLONE" "refs/heads/$BASE" 2>/dev/null | cut -f1)
 if [ "$REMOTE" = "$LOCAL" ]; then ok "0.4 $GL_REPO est à notre tronc sur $BASE ($(printf '%s' "$LOCAL" | cut -c1-7))"
 else
-  gauth -C "$REPO/.." push -q --force "$CLONE" "${LOCAL}:refs/heads/${BASE}" 2>"$TMP/push0.err" \
-    && ok "0.4 notre tronc ($(printf '%s' "$LOCAL" | cut -c1-7)) poussé sur $BASE" \
-    || { ko "0.4 push impossible : $(head -c 200 "$TMP/push0.err")"; say "RÉSULTAT : $PASS/$((PASS+FAIL))"; exit 1; }
+  # JAMAIS `--force` (revue adverse du 2026-09-21) : sur un lab durablement sous
+  # GitLab, main porte les fusions des demandes réelles ; les écraser par le tronc
+  # du poste effaçait des merges (allow_force_push=true côté projet). Un push
+  # fast-forward suffit quand la forge est en retard ; quand elle est en AVANCE,
+  # c'est le poste qui doit se rebaser sur la lignée de la forge (premier parent,
+  # mémoire « réconciliation ») — le refus le dit, la suite ne le fait pas.
+  gauth -C "$REPO/.." push -q "$CLONE" "${LOCAL}:refs/heads/${BASE}" 2>"$TMP/push0.err" \
+    && ok "0.4 notre tronc ($(printf '%s' "$LOCAL" | cut -c1-7)) poussé sur $BASE (fast-forward, jamais forcé)" \
+    || { ko "0.4 TRONC_DIVERGENT : $BASE de la forge ($(printf '%s' "$REMOTE" | cut -c1-7)) n'est pas un ancêtre du poste ($(printf '%s' "$LOCAL" | cut -c1-7)) et ce harnais ne FORCE jamais — rebaser le poste sur $BASE de la forge (git fetch <forge> $BASE && git rebase FETCH_HEAD), puis relancer : $(head -c 160 "$TMP/push0.err")"; say "RÉSULTAT : $PASS/$((PASS+FAIL))"; exit 1; }
 fi
 SAVE_WK=$(globale_lire WEBHOOK_KIND); SAVE_FK=$(globale_lire FORGE_KIND)
 SAVE_GH=$(globale_lire GIT_HOST);     SAVE_GR=$(globale_lire GIT_REPO)
@@ -234,6 +244,8 @@ if [ "$SAVE_WK" = gitlab ] || [ "$SAVE_GH" = "$GLIN" ]; then
   HOOKS=""; say "RÉSULTAT : $PASS/$((PASS+FAIL))"; exit 1
 fi
 ok "0.5 globales relevées pour restauration (WEBHOOK_KIND='$SAVE_WK' FORGE_KIND='$SAVE_FK' GIT_HOST='$SAVE_GH' GITEA_CREDENTIALS_ID='$SAVE_CID')"
+# À partir d'ici seulement, ce harnais POSE des choses : le trap qui les défait est armé maintenant.
+trap restaurer EXIT INT TERM
 # Le credential de la forge est un JETON DE FORGE : celui du lab porte un jeton
 # GITEA, que l'API de GitLab refuse en 401 — la réconciliation A2 meurt alors,
 # après le déclenchement (mesuré le 2026-09-11). Le visage gitlab a donc besoin
