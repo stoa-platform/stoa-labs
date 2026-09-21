@@ -276,6 +276,24 @@ pipeline {
               error("REFUS: MERGE_SHA_REQUIS — appelé par un job amont sans référence (paramètre MERGE_SHA non matérialisé sur ce job ? appelant d'avant A2 ?) ; rien n'est appliqué")
             }
           }
+          // LA FORGE PRIVÉE (2026-09-21, bascule du lab sous GitLab). Les
+          // `git ls-remote` et `git fetch` du bloc ci-dessous sont des gestes git
+          // NUS : le git plugin ne laisse AUCUN credential dans le workspace après
+          // son checkout. Sur un projet GitLab privé — le cas client —, ils meurent
+          // « could not read Username » et le refus qui suit accuse la BRANCHE
+          // (BRANCHE_PAR_DEFAUT_INCONNUE), jamais l'authentification ; poser
+          // GIT_BASE n'y change rien, le fetch reste nu (mesuré :
+          // selfservice-app-deploy #181). L'enveloppe est LA MÊME que celle du
+          // <scm> de ce job : son credential (un COUPLE user/mot de passe, knob
+          // GIT_CREDENTIALS_ID des poseurs), lié ICI et composé en en-tête Basic
+          // par GIT_CONFIG_* dans le shell — jamais dans l'URL, jamais en argv,
+          // jamais une lib de l'arbre épinglé (la règle A6 de ce stage). Sans
+          // credential sur le <scm> (forge en lecture anonyme : le Gitea du lab),
+          // rien ne change. Pas de try/catch : un accès refusé par le bac à sable
+          // doit ROUGIR, pas retomber en silence sur le geste nu.
+          script {
+            def scmCid = "${scm.userRemoteConfigs?.getAt(0)?.credentialsId ?: ''}".trim()
+            def reference = {
           dir(env.GIT_SUBDIR) {
             // Deux gardes d'ancrage, dans cet ordre : `merge-base --is-ancestor`
             // (l'objet est-il sur la base ? refus rapide) puis la LIGNÉE first-parent
@@ -308,6 +326,20 @@ pipeline {
                 # (le levier A6, fermé par A3/A4). La globale Jenkins GIT_BASE gagne quand
                 # elle est posée ; vide ou « auto » = la HEAD que l'origine annonce ;
                 # rien = refus nommé. « main » n'est jamais deviné.
+                # L'enveloppe d'authentification (forge privée, voir plus haut) :
+                # le couple du <scm>, en en-tête Basic, HORS TRACE — `set -x`
+                # imprime la VALEUR d'une affectation, et un base64 de user:jeton
+                # se décode d'un geste. Absente ⇒ gestes nus, comme avant.
+                # `${SCM_GIT_PASS+x}` et non `-n "$SCM_GIT_PASS"` : sous -x, le
+                # test imprimerait la VALEUR (Jenkins la masque, dash non).
+                if [ -n "${SCM_GIT_PASS+x}" ]; then
+                  _trace=0; case "$-" in *x*) _trace=1 ;; esac; set +x
+                  GIT_CONFIG_VALUE_0="Authorization: Basic $(printf '%s:%s' "${SCM_GIT_USER:-oauth2}" "$SCM_GIT_PASS" | base64 | tr -d '\\n')"
+                  [ "$_trace" = 0 ] || set -x
+                  GIT_CONFIG_COUNT=1; GIT_CONFIG_KEY_0=http.extraheader
+                  export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
+                  echo "  référence : git parle à l'origine sous le credential du <scm> (en-tête, jamais l'URL)"
+                fi
                 BASE="${GIT_BASE:-}"
                 case "$BASE" in ''|auto)
                   BASE=$(git ls-remote --symref origin HEAD | sed -n 's#^ref: refs/heads/\\(.*\\)\\tHEAD$#\\1#p' | head -n1) ;;
@@ -348,6 +380,14 @@ pipeline {
               echo "REFERENCE_MODE=$MODE"
               echo "REFERENCE_DIGEST=${DIGEST:-(aucun : manifeste sans per_env, ou ENVIRONMENT vide)}"
             '''
+          }
+            }
+            if (scmCid) {
+              echo "référence : gestes git sous le credential du <scm> du job ('${scmCid}') — forge privée"
+              withCredentials([usernamePassword(credentialsId: scmCid, usernameVariable: 'SCM_GIT_USER', passwordVariable: 'SCM_GIT_PASS')]) { reference() }
+            } else {
+              reference()
+            }
           }
         }
       }

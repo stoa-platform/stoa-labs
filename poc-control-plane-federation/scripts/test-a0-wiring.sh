@@ -58,7 +58,7 @@ ko(){ FAIL=$((FAIL+1)); printf '  ❌ %s\n' "$*"; }
 
 # Total ATTENDU, ÉCRIT EN DUR — indépendant de PASS+FAIL. Toute section
 # ajoutée/retirée DOIT le mettre à jour : un oubli fait rougir le dernier §.
-EXPECTED_CHECKS=257   # 200 + 12 (L6, récepteur WEBHOOK_KIND) + 44 (§9 (c ter), STOA_DEBUG — plan L2) + 1 (plan enchaîné exécuté depuis un cwd étranger, 2026-09-21)
+EXPECTED_CHECKS=261   # 200 + 12 (L6, récepteur WEBHOOK_KIND) + 44 (§9 (c ter), STOA_DEBUG — plan L2) + 1 (plan enchaîné exécuté depuis un cwd étranger, 2026-09-21) + 4 (forge privée : credential du <scm> du poseur selfservice ×2, Référence de selfservice sous ce credential ×2, 2026-09-21)
 
 # shellcheck source=scripts/lib/gwt-mirror.sh
 . scripts/lib/gwt-mirror.sh || { echo "lib gwt-mirror.sh introuvable"; exit 2; }
@@ -1333,6 +1333,24 @@ L_GARDE=$(code_line "$TMP/jsf.code" "MOT_DE_PASSE_ALTERE"); L_BRUT=$(code_line "
 jss '"DEBUG=${params.DEBUG ?: false}"' && ok "DEBUG=\${params.DEBUG ?: false} (jamais la chaîne « null » sur un job non matérialisé)" || ko "DEBUG sans repli"
 jss '"MANIFEST=${params.MANIFEST ?: (env.MANIFEST ?: '"''"')}"' && ok "MANIFEST retombe sur env.MANIFEST (valeur GWT) quand le paramètre n'est pas matérialisé : un PLAN par webhook ne tourne jamais sur le manifeste par défaut" || ko "MANIFEST sans repli env.MANIFEST"
 if grep -qE '^  (options|triggers) \{' "$TMP/jsf.code"; then ko "options{}/triggers{} déclaratifs présents — fait 10 : PERDUS au premier build d'un job re-posé"; else ok "aucun options{}/triggers{} déclaratif (fait 10)"; fi
+# ── la forge privée : le stage Référence sous le credential du <scm> (2026-09-21) ──
+# `git ls-remote` et `git fetch` de ce stage étaient NUS : le git plugin ne laisse
+# aucun credential dans le workspace, et sur un GitLab privé le refus accusait la
+# branche (BRANCHE_PAR_DEFAUT_INCONNUE) — mesuré, selfservice-app-deploy #181.
+# L'enveloppe est celle du <scm> du job (lue sur `scm`, jamais un knob de plus),
+# liée par withCredentials autour du stage, composée en en-tête Basic HORS TRACE.
+L_CID=$(code_line "$TMP/jsf.code" 'def scmCid = "${scm.userRemoteConfigs?.getAt(0)?.credentialsId ?: '"''"'}".trim()')
+L_WC=$(code_line "$TMP/jsf.code" "withCredentials([usernamePassword(credentialsId: scmCid, usernameVariable: 'SCM_GIT_USER', passwordVariable: 'SCM_GIT_PASS')]) { reference() }")
+[ -n "$L_CID" ] && [ -n "$L_WC" ] && [ "$L_REF" -lt "$L_CID" ] && [ "$L_CID" -lt "$L_WC" ] && [ "$L_WC" -lt "$L_PLAN" ] && ! grep -q 'catch' <(sed -n "${L_REF},${L_PLAN}p" "$TMP/jsf.code") \
+  && ok "Référence : le credential du <scm> du job (scm.userRemoteConfigs[0].credentialsId, ligne $L_CID) est lié par withCredentials autour du stage (ligne $L_WC), sans try/catch (un refus du bac à sable ROUGIT, ne retombe pas sur le geste nu)" \
+  || ko "Référence : enveloppe du <scm> absente/mal placée (ref=$L_REF cid=$L_CID wc=$L_WC plan=$L_PLAN) ou un catch la rend muette"
+L_SETX=$(awk "NR>${L_REF:-0} && /_trace=0; case \"\\\$-\" in \*x\*\) _trace=1 ;; esac; set \+x/ {print NR; exit}" "$TMP/jsf.code")
+L_B64=$(awk "NR>${L_REF:-0} && /GIT_CONFIG_VALUE_0=\"Authorization: Basic \\\$\(printf/ {print NR; exit}" "$TMP/jsf.code")
+L_EXP=$(awk "NR>${L_REF:-0} && /export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0/ {print NR; exit}" "$TMP/jsf.code")
+L_LSR=$(awk "NR>${L_REF:-0} && /git ls-remote --symref origin HEAD/ {print NR; exit}" "$TMP/jsf.code")
+[ -n "$L_SETX" ] && [ -n "$L_B64" ] && [ -n "$L_EXP" ] && [ -n "$L_LSR" ] && [ "$L_SETX" -lt "$L_B64" ] && [ "$L_B64" -lt "$L_EXP" ] && [ "$L_EXP" -lt "$L_LSR" ] && grep -q 'if \[ -n "${SCM_GIT_PASS+x}" \]; then' "$TMP/jsf.code" \
+  && ok "Référence : l'en-tête Basic est composé HORS TRACE (set +x ligne $L_SETX < base64 $L_B64 < export $L_EXP < ls-remote $L_LSR), et la présence du secret est testée par \${VAR+x} (jamais sa valeur sous -x)" \
+  || ko "Référence : ordre set +x/base64/export/ls-remote cassé (setx=$L_SETX b64=$L_B64 exp=$L_EXP lsr=$L_LSR) ou test -n sur la valeur du secret"
 # L6 (2026-09-11) : ce hook DIRECT n'est pas un hook de forge — la gateway wM le
 # sonne (setup-provisioning-api.sh) et provision-apply atteint ce job par
 # `build job:`. Mais il dépend du MÊME plugin : sur un site sans lui, ce
@@ -1354,6 +1372,24 @@ NP=$(python3 -c "import sys,xml.etree.ElementTree as T; r=T.parse(sys.argv[1]).g
 [ "$RC" -eq 0 ] && [ "$NP" = "0 0 0 0" ] && grep -q '<scriptPath>poc-control-plane-federation/ci/Jenkinsfile.selfservice</scriptPath>' "$TMP/ss-no.xml" \
   && ok "setup-selfservice-job.sh --print (auto ⇒ XML_PARAMS=no) : AUCUNE propriété — ni paramètre, ni trigger, ni option (faits 6 et 10 : ni doublon, ni perte)" || ko "--print mode no : rc=$RC params/prop/trig/dis=$NP $(tail -2 "$TMP/ss.err")"
 OUT=$(gwt_mirror_diff "$TMP/ss-no.xml" "$JSF" 2>&1); RC=$?; [ "$RC" -eq 2 ] && [ "$OUT" = "DIVERGENCE trigger xml=absent jenkinsfile=present token=stoa-selfservice-plan vars=1" ] && ok "miroir : le trigger PLAN n'est QUE dans le Jenkinsfile (xml=absent jenkinsfile=present) — l'état voulu pour ce job (fait 10), pas une divergence" || ko "miroir XML rendu / Jenkinsfile.selfservice : $OUT (rc=$RC)"
+# ── le credential du <scm> (2026-09-21, bascule du lab sous GitLab) ──────────
+# Sur une forge PRIVÉE, le checkout que JENKINS fait lui-même du Jenkinsfile est
+# anonyme sans credentialsId dans le userRemoteConfig, et le build meurt
+# « Authentication failed » AVANT la première ligne du pipeline. Les treize
+# job.xml ont leur knob (GIT_CREDENTIALS_ID, setup-provision-jobs.sh, eb95760) ;
+# ce poseur-ci GÉNÈRE son XML et n'en avait aucun — selfservice-app-deploy,
+# l'aval de provision-apply, était donc le seul job de la chaîne à ne pas
+# pouvoir lire un dépôt privé. Même nom de knob, même place (DANS le
+# userRemoteConfig, ailleurs Jenkins l'ignore en silence), absent ⇒ aucun.
+cred_scm(){ python3 -c "
+import sys, xml.etree.ElementTree as T
+r = T.parse(sys.argv[1]).getroot()
+print(' '.join((u.findtext('credentialsId') or '(vide)') for u in r.iter() if u.tag.endswith('UserRemoteConfig') and u.find('credentialsId') is not None) or '(aucun)')" "$1" 2>/dev/null; }
+[ "$(cred_scm "$TMP/ss-no.xml")" = "(aucun)" ] && ok "sans GIT_CREDENTIALS_ID, le <scm> rendu ne porte AUCUN credentialsId (le XML part tel quel)" || ko "credentialsId inattendu sans knob : $(cred_scm "$TMP/ss-no.xml")"
+STOA_ENV_CHAIN_FILE="$TMP/chain10.yaml" GIT_BASE=master GIT_CREDENTIALS_ID=forge-scm bash "$SSJ" --print > "$TMP/ss-cred.xml" 2>"$TMP/ss.err"; RC=$?
+[ "$RC" -eq 0 ] && [ "$(cred_scm "$TMP/ss-cred.xml")" = "forge-scm" ] \
+  && ok "GIT_CREDENTIALS_ID=forge-scm ⇒ exactement UN credentialsId, DANS le userRemoteConfig du <scm> (même knob que setup-provision-jobs.sh : sur une forge privée, sans lui le checkout de Jenkins meurt « Authentication failed » avant le Jenkinsfile)" \
+  || ko "GIT_CREDENTIALS_ID non honoré par setup-selfservice-job.sh : rc=$RC credentialsId=[$(cred_scm "$TMP/ss-cred.xml")] $(tail -1 "$TMP/ss.err")"
 STOA_ENV_CHAIN_FILE="$TMP/chain10.yaml" JOB=publish-api-deploy TRIGGER_TOKEN=stoa-publish-api-plan SCRIPT_PATH=poc-control-plane-federation/ci/Jenkinsfile.publish-api GIT_BASE=master bash "$SSJ" --print > "$TMP/ss-yes.xml" 2>"$TMP/ss.err"; RC=$?
 ENVX=$(python3 -c "
 import sys, xml.etree.ElementTree as T

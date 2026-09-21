@@ -53,6 +53,8 @@
 #   GIT_URL             : le dépôt vu DEPUIS L'AGENT — c'est lui qui part dans
 #                         le <url> du XML, quoi qu'il arrive.
 #   BRANCH / GIT_BASE   : la branche, NOMMÉE — rien n'est alors découvert.
+#   GIT_CREDENTIALS_ID  : credential (COUPLE user/mot de passe) du <scm> du job —
+#                         REQUIS sur une forge privée ; absent : aucun.
 #   BOOTSTRAP_WAIT : attente de l'amorçage (défaut 360 s — le préflight gateway
 #                   de l'aval peut durer 300 s pendant un recyclage keepalive) ;
 #                   « encore en cours » est distingué d'un échec : NE PAS re-poser.
@@ -81,6 +83,22 @@ JENKINS="${JENKINS:-http://localhost:18080}"
 JOB="${JOB:-selfservice-app-deploy}"
 TRIGGER_TOKEN="${TRIGGER_TOKEN:-stoa-selfservice-plan}"
 GIT_URL="${GIT_URL:-http://gitea:3000/ci/stoa-labs.git}"   # le <url> du XML : vu DEPUIS l'agent (réseau docker)
+# LE CREDENTIAL DU <scm> (2026-09-21, bascule du lab sous GitLab). Le checkout
+# que JENKINS fait lui-même du Jenkinsfile est anonyme : sur une forge PRIVÉE
+# (un projet GitLab, le cas client), le build meurt « Authentication failed »
+# AVANT la première ligne du pipeline — et ce job est l'AVAL de provision-apply,
+# le seul de la chaîne qui n'avait aucun moyen de porter ce credential (les
+# treize job.xml ont le knob de setup-provision-jobs.sh, eb95760). Même nom,
+# même place : DANS le userRemoteConfig, ailleurs Jenkins l'ignore en silence.
+# ⚠ Un COUPLE username/password (ou une clé SSH) : le Git SCM de Jenkins ne sait
+# pas se servir d'un « Secret text ». Absent ⇒ aucun credentialsId, XML tel quel.
+GIT_CREDENTIALS_ID="${GIT_CREDENTIALS_ID:-}"
+case "$GIT_CREDENTIALS_ID" in
+  *[!A-Za-z0-9_.-]*) echo "REFUS: GIT_CREDENTIALS_ID_INVALIDE : '${GIT_CREDENTIALS_ID}' — identifiant de credential Jenkins attendu (lettres, chiffres, . _ -), il s'écrit dans un XML" >&2; exit 2 ;;
+esac
+SCM_CRED_XML=""
+[ -z "$GIT_CREDENTIALS_ID" ] || SCM_CRED_XML="
+          <credentialsId>${GIT_CREDENTIALS_ID}</credentialsId>"
 # G4 (M2) : le job doit rider la branche de BASE du dépôt — un pipeline resté
 # sur une branche de feature après merge est éditable HORS revue (quiconque
 # pousse sur cette branche change le pipeline sans passer par une PR).
@@ -284,7 +302,7 @@ ${PROPS_XML}
       <configVersion>2</configVersion>
       <userRemoteConfigs>
         <hudson.plugins.git.UserRemoteConfig>
-          <url>${GIT_URL}</url>
+          <url>${GIT_URL}</url>${SCM_CRED_XML}
         </hudson.plugins.git.UserRemoteConfig>
       </userRemoteConfigs>
       <branches>
