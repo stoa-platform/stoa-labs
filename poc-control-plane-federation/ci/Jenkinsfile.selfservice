@@ -284,8 +284,10 @@ pipeline {
           // (BRANCHE_PAR_DEFAUT_INCONNUE), jamais l'authentification ; poser
           // GIT_BASE n'y change rien, le fetch reste nu (mesuré :
           // selfservice-app-deploy #181). L'enveloppe est LA MÊME que celle du
-          // <scm> de ce job : son credential (un COUPLE user/mot de passe, knob
-          // GIT_CREDENTIALS_ID des poseurs), lié ICI et composé en en-tête Basic
+          // <scm> de ce job : son credential (un COUPLE user/mot de passe EXCLUSIVEMENT
+          // — usernamePassword ; une clé SSH ou un Secret text meurt ici sur
+          // l'exception nommée de Jenkins « is of type … where usernamePassword was
+          // expected » —, knob GIT_CREDENTIALS_ID des poseurs), lié ICI et composé en en-tête Basic
           // par GIT_CONFIG_* dans le shell — jamais dans l'URL, jamais en argv,
           // jamais une lib de l'arbre épinglé (la règle A6 de ce stage). Sans
           // credential sur le <scm> (forge en lecture anonyme : le Gitea du lab),
@@ -335,21 +337,42 @@ pipeline {
                 # se décode d'un geste. Absente ⇒ gestes nus, comme avant.
                 # `${SCM_GIT_PASS+x}` et non `-n "$SCM_GIT_PASS"` : sous -x, le
                 # test imprimerait la VALEUR (Jenkins la masque, dash non).
+                # LA PORTÉE DU SECRET EST LE GESTE (revue adverse du 2026-09-21) :
+                # l'en-tête vit dans une variable de shell NON exportée — aucun
+                # enfant (bash -c sur l'arbre épinglé, ansible-playbook) ne le voit —,
+                # posée en PRÉFIXE de chaque geste git qui parle à la forge (git_scm),
+                # comme git_base_avec_basic : le préfixe ne persiste pas après le
+                # retour ; et le couple lié par withCredentials est RETIRÉ de
+                # l'environnement dès l'en-tête composé. `base64` absent ou muet
+                # ⇒ refus nommé, jamais un en-tête vide qui ferait accuser la branche.
+                SCM_HDR=""
                 if [ -n "${SCM_GIT_PASS+x}" ]; then
+                  command -v base64 >/dev/null 2>&1 \
+                    || { echo "REFUS: BASE64_ABSENT : l'agent n'a pas base64, l'en-tête d'authentification du <scm> ne peut pas être composé ; rien n'est appliqué"; exit 1; }
                   _trace=0; case "$-" in *x*) _trace=1 ;; esac; set +x
-                  GIT_CONFIG_VALUE_0="Authorization: Basic $(printf '%s:%s' "${SCM_GIT_USER:-oauth2}" "$SCM_GIT_PASS" | base64 | tr -d '\\n')"
+                  _b64="$(printf '%s:%s' "${SCM_GIT_USER:-oauth2}" "$SCM_GIT_PASS" | base64 | tr -d '\\n')"
+                  unset SCM_GIT_PASS SCM_GIT_USER
+                  [ -n "$_b64" ] || { echo "REFUS: ENVELOPPE_VIDE : base64 n'a rien rendu, l'en-tête d'authentification du <scm> serait vide ; rien n'est appliqué"; exit 1; }
+                  SCM_HDR="Authorization: Basic $_b64"; unset _b64
                   [ "$_trace" = 0 ] || set -x
-                  GIT_CONFIG_COUNT=1; GIT_CONFIG_KEY_0=http.extraheader
-                  export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
                   echo "  référence : git parle à l'origine sous le credential du <scm> (en-tête, jamais l'URL)"
                 fi
+                git_scm() {
+                  # `${#SCM_HDR}` et non `-n "$SCM_HDR"` : sous -x, ce test tracerait l'en-tête.
+                  [ "${#SCM_HDR}" -gt 0 ] || { git "$@"; return; }
+                  _t=0; case "$-" in *x*) _t=1 ;; esac; set +x
+                  GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader GIT_CONFIG_VALUE_0="$SCM_HDR" git "$@"; _rc=$?
+                  [ "$_t" = 0 ] || set -x
+                  return "$_rc"
+                }
                 BASE="${GIT_BASE:-}"
                 case "$BASE" in ''|auto)
-                  BASE=$(git ls-remote --symref origin HEAD | sed -n 's#^ref: refs/heads/\\(.*\\)\\tHEAD$#\\1#p' | head -n1) ;;
+                  BASE=$(git_scm ls-remote --symref origin HEAD | sed -n 's#^ref: refs/heads/\\(.*\\)\\tHEAD$#\\1#p' | head -n1) ;;
                 esac
                 [ -n "$BASE" ] \
                   || { echo "REFUS: BRANCHE_PAR_DEFAUT_INCONNUE : l'origine n'annonce aucune HEAD symbolique et la globale GIT_BASE n'est pas posée — sans branche de base, l'ancêtreté du SHA mergé ne peut pas être vérifiée ; rien n'est appliqué"; exit 1; }
-                git fetch -q origin "$BASE"
+                git_scm fetch -q origin "$BASE"
+                SCM_HDR=""   # le dernier geste vers la forge est passé : l'en-tête ne sert plus
                 git merge-base --is-ancestor "$REF" "origin/$BASE" \
                   || { echo "REFUS: MERGE_SHA_NON_ANCETRE : $REF n'est pas un ancêtre de $BASE — le SHA ne correspond pas à un commit fusionné sur la branche protégée, refus de projeter un état non revu"; exit 1; }
                 git rev-list --first-parent "origin/$BASE" | grep -cx "$REF" >/dev/null \
@@ -552,23 +575,38 @@ pipeline {
               # MÊME résolution qu'au stage Référence, et pour la MÊME raison : la garde
               # vient de la lignée, donc rien ici ne peut être sourcé de l'arbre pinné.
               # Le motif est dupliqué à dessein (une ligne, le même sed que la lib).
-              # L'enveloppe d'authentification aussi (forge privée) — ce bloc est
-              # déjà sous `set +x`, la trace n'est pas rendue.
+              # L'enveloppe d'authentification aussi (forge privée), même forme
+              # qu'au stage Référence : variable NON exportée, préfixe par geste
+              # (git_scm), couple retiré de l'environnement, refus si base64 manque.
+              # Ce bloc est déjà sous `set +x`, la trace n'est pas rendue.
+              SCM_HDR=""
               if [ -n "${SCM_GIT_PASS+x}" ]; then
+                command -v base64 >/dev/null 2>&1 \
+                  || { echo "REFUS: BASE64_ABSENT : l'agent n'a pas base64, l'en-tête d'authentification du <scm> ne peut pas être composé ; rien n'est appliqué"; exit 1; }
                 _trace=0; case "$-" in *x*) _trace=1 ;; esac; set +x
-                GIT_CONFIG_VALUE_0="Authorization: Basic $(printf '%s:%s' "${SCM_GIT_USER:-oauth2}" "$SCM_GIT_PASS" | base64 | tr -d '\\n')"
+                _b64="$(printf '%s:%s' "${SCM_GIT_USER:-oauth2}" "$SCM_GIT_PASS" | base64 | tr -d '\\n')"
+                unset SCM_GIT_PASS SCM_GIT_USER
+                [ -n "$_b64" ] || { echo "REFUS: ENVELOPPE_VIDE : base64 n'a rien rendu, l'en-tête d'authentification du <scm> serait vide ; rien n'est appliqué"; exit 1; }
+                SCM_HDR="Authorization: Basic $_b64"; unset _b64
                 [ "$_trace" = 0 ] || set -x
-                GIT_CONFIG_COUNT=1; GIT_CONFIG_KEY_0=http.extraheader
-                export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
                 echo "  garde A3 : git parle à l'origine sous le credential du <scm> (en-tête, jamais l'URL)"
               fi
+              git_scm() {
+                # `${#SCM_HDR}` et non `-n "$SCM_HDR"` : sous -x, ce test tracerait l'en-tête.
+                [ "${#SCM_HDR}" -gt 0 ] || { git "$@"; return; }
+                _t=0; case "$-" in *x*) _t=1 ;; esac; set +x
+                GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader GIT_CONFIG_VALUE_0="$SCM_HDR" git "$@"; _rc=$?
+                [ "$_t" = 0 ] || set -x
+                return "$_rc"
+              }
               BASE="${GIT_BASE:-}"
               case "$BASE" in ''|auto)
-                BASE=$(git ls-remote --symref origin HEAD | sed -n 's#^ref: refs/heads/\\(.*\\)\\tHEAD$#\\1#p' | head -n1) ;;
+                BASE=$(git_scm ls-remote --symref origin HEAD | sed -n 's#^ref: refs/heads/\\(.*\\)\\tHEAD$#\\1#p' | head -n1) ;;
               esac
               [ -n "$BASE" ] \
                 || { echo "REFUS: BRANCHE_PAR_DEFAUT_INCONNUE : l'origine n'annonce aucune HEAD symbolique et la globale GIT_BASE n'est pas posée — la garde du palier ne peut être extraite d'aucune lignée ; rien n'est appliqué"; exit 1; }
-              git fetch -q origin "$BASE"
+              git_scm fetch -q origin "$BASE"
+              SCM_HDR=""   # le dernier geste vers la forge est passé : l'en-tête ne sert plus
               # Cette liste doit couvrir TOUTE lib que la garde source (`. "$SELF_DIR/lib/…"`) — B.7bis de test-selfservice-palier-a3.sh l'impose (mesuré le 2026-09-10 : quatre jours d'apply rouges LIB_ABSENTE, apim-base.sh sourcée depuis e57db13 et jamais extraite).
               for f in scripts/selfservice-palier-gate.sh scripts/lib/env-chain.sh scripts/lib/vault-kv.sh scripts/lib/apim-base.sh clients/_example/environments.yaml; do
                 mkdir -p "$GATE_DIR/$(dirname "$f")"

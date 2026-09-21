@@ -90,8 +90,12 @@ GIT_URL="${GIT_URL:-http://gitea:3000/ci/stoa-labs.git}"   # le <url> du XML : v
 # le seul de la chaîne qui n'avait aucun moyen de porter ce credential (les
 # treize job.xml ont le knob de setup-provision-jobs.sh, eb95760). Même nom,
 # même place : DANS le userRemoteConfig, ailleurs Jenkins l'ignore en silence.
-# ⚠ Un COUPLE username/password (ou une clé SSH) : le Git SCM de Jenkins ne sait
-# pas se servir d'un « Secret text ». Absent ⇒ aucun credentialsId, XML tel quel.
+# ⚠ Un COUPLE username/password EXCLUSIVEMENT : le Git SCM de Jenkins ne sait
+# pas se servir d'un « Secret text », et les stages Référence et Apply de
+# Jenkinsfile.selfservice lient CE credential par usernamePassword pour leurs
+# gestes git — une clé SSH passerait le checkout puis mourrait à chaque build
+# sur l'exception nommée de Jenkins (« is of type 'SSH Username with private
+# key' where 'usernamePassword' was expected »). Absent ⇒ aucun credentialsId.
 GIT_CREDENTIALS_ID="${GIT_CREDENTIALS_ID:-}"
 case "$GIT_CREDENTIALS_ID" in
   *[!A-Za-z0-9_.-]*) echo "REFUS: GIT_CREDENTIALS_ID_INVALIDE : '${GIT_CREDENTIALS_ID}' — identifiant de credential Jenkins attendu (lettres, chiffres, . _ -), il s'écrit dans un XML" >&2; exit 2 ;;

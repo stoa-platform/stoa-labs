@@ -1977,7 +1977,7 @@ déclenche, **attend** et **relit** (`AMORCAGE_INCOMPLET` sinon).
   | # | Le geste | Comment la panne se présentait | Fermé par |
   |---|---|---|---|
   | 5 | `setup-selfservice-job.sh` **génère** son XML et n'avait aucun knob de credential — seul job hors du `GIT_CREDENTIALS_ID` des treize `job.xml` | le checkout de Jenkins serait anonyme : « Authentication failed » avant le Jenkinsfile | knob `GIT_CREDENTIALS_ID` du poseur (même nom, même place) |
-  | 6 | le stage **Référence** de `Jenkinsfile.selfservice` : `git ls-remote --symref` puis `git fetch`, nus | « could not read Username » puis `BRANCHE_PAR_DEFAUT_INCONNUE` — un refus juste sur la forme, faux sur la cause ; poser `GIT_BASE` n'aurait rien changé au fetch (#181) | le credential du `<scm>` du job lui-même (`scm.userRemoteConfigs[0].credentialsId`), lié par `withCredentials` autour du stage, en-tête Basic composé **hors trace** |
+  | 6 | le stage **Référence** de `Jenkinsfile.selfservice` : `git ls-remote --symref` puis `git fetch`, nus | « could not read Username » puis `BRANCHE_PAR_DEFAUT_INCONNUE` — un refus juste sur la forme, faux sur la cause ; poser `GIT_BASE` n'aurait rien changé au fetch (#181) | le credential du `<scm>` du job lui-même (`scm.userRemoteConfigs[0].credentialsId`, **un couple exclusivement** : une clé SSH meurt sur l'exception nommée de Jenkins), lié par `withCredentials` autour du stage, en-tête Basic composé **hors trace**, dans une variable **non exportée** posée en **préfixe** de chaque geste (`git_scm`) — aucun enfant ne l'hérite ; `base64` absent ou muet ⇒ `BASE64_ABSENT` / `ENVELOPPE_VIDE` |
   | 7 | le stage **Apply**, la garde A3 qui extrait sa lignée : les **mêmes** deux gestes, dupliqués comme le `sed` qu'ils accompagnent | la même panne, **après** le login Vault nominatif (#182) | la même enveloppe, identifiant publié une fois (`env.SCM_CRED_ID`) |
 
   Et un défaut **hors forge**, révélé parce que la chaîne a enfin été jouée
@@ -2008,7 +2008,25 @@ déclenche, **attend** et **relit** (`AMORCAGE_INCOMPLET` sinon).
   **Preuve** : `provision-apply #306` SUCCESS, `selfservice-app-deploy #183`
   SUCCESS, `APPLIED_MODE=pinned` au `merge_commit_sha` de la MR !65 fusionnée
   par `alice` ; 0 occurrence du jeton, de son base64 ou du mot de passe dans
-  la console. `test-a0-wiring.sh` 263/263.
+  la console. `test-a0-wiring.sh` 264/264.
+
+  **Rejoué par un test de bout en bout multi-agents (workflow, 18 agents)** :
+  chaîne nominale `glabwf1` (app-request #90 → MR !66 → plan #1455 → fusion
+  par alice → apply #307 → aval #184, `APPLIED_SHA` = `merge_commit_sha`) ;
+  contre-épreuves — MR fermée sans fusion ⇒ aucun apply (!68) ; fusion par
+  `root` puis pause répondue `alice` ⇒ `MERGER_MISMATCH`, aucun aval (!67) ;
+  sonnette sans token ou token faux ⇒ 401, bon token sur corps forgé ⇒ 500
+  sans build, MR hors `provision/*` ⇒ hooks livrés 200 et **aucun build**
+  (!69) ; audit des fuites sur 42 builds, 227 fichiers persistés et 10 MR ⇒ 0.
+  La revue adverse des commits a confirmé, et fait corriger le jour même :
+  l'enveloppe **exportée** (héritée par l'arbre épinglé et Ansible) devenue
+  préfixe non exporté ; `base64` absent ⇒ en-tête vide en silence, devenu refus
+  ; « ou une clé SSH » dans le poseur alors que le stage exige un couple ; une
+  épreuve de câblage globale au fichier (vert vacant, mutant mesuré) bornée par
+  stage ; et la suite `test-webhook-kind-gitlab-live.sh` qui **force-poussait**
+  `main` et re-posait les jobs sous `gwt` même quand sa garde 0.5 refusait —
+  ce qui aurait détruit l'état durable du lab (garde jouée avant le trap, push
+  sans force, refus `TRONC_DIVERGENT`).
 
 **Pas d'écart de comportement entre les deux visages** sur les événements d'une
 MR : le plugin reconstruit le plan sur un changement de titre comme sur un push,

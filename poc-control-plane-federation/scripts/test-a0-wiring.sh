@@ -58,7 +58,7 @@ ko(){ FAIL=$((FAIL+1)); printf '  ❌ %s\n' "$*"; }
 
 # Total ATTENDU, ÉCRIT EN DUR — indépendant de PASS+FAIL. Toute section
 # ajoutée/retirée DOIT le mettre à jour : un oubli fait rougir le dernier §.
-EXPECTED_CHECKS=262   # 200 + 12 (L6, récepteur WEBHOOK_KIND) + 44 (§9 (c ter), STOA_DEBUG — plan L2) + 1 (plan enchaîné exécuté depuis un cwd étranger, 2026-09-21) + 4 (forge privée : credential du <scm> du poseur selfservice ×2, Référence de selfservice sous ce credential ×2, 2026-09-21)
+EXPECTED_CHECKS=263   # 200 + 12 (L6, récepteur WEBHOOK_KIND) + 44 (§9 (c ter), STOA_DEBUG — plan L2) + 1 (plan enchaîné exécuté depuis un cwd étranger, 2026-09-21) + 6 (forge privée, 2026-09-21 : credential du <scm> du poseur selfservice ×2, enveloppe par stage Référence ×2 + Apply ×1, même credential pour l'Apply ×1)
 
 # shellcheck source=scripts/lib/gwt-mirror.sh
 . scripts/lib/gwt-mirror.sh || { echo "lib gwt-mirror.sh introuvable"; exit 2; }
@@ -1344,24 +1344,46 @@ L_WC=$(code_line "$TMP/jsf.code" "withCredentials([usernamePassword(credentialsI
 [ -n "$L_CID" ] && [ -n "$L_WC" ] && [ "$L_REF" -lt "$L_CID" ] && [ "$L_CID" -lt "$L_WC" ] && [ "$L_WC" -lt "$L_PLAN" ] && ! grep -q 'catch' <(sed -n "${L_REF},${L_PLAN}p" "$TMP/jsf.code") \
   && ok "Référence : le credential du <scm> du job (scm.userRemoteConfigs[0].credentialsId, ligne $L_CID) est lié par withCredentials autour du stage (ligne $L_WC), sans try/catch (un refus du bac à sable ROUGIT, ne retombe pas sur le geste nu)" \
   || ko "Référence : enveloppe du <scm> absente/mal placée (ref=$L_REF cid=$L_CID wc=$L_WC plan=$L_PLAN) ou un catch la rend muette"
-L_SETX=$(awk "NR>${L_REF:-0} && /_trace=0; case \"\\\$-\" in \*x\*\) _trace=1 ;; esac; set \+x/ {print NR; exit}" "$TMP/jsf.code")
-L_B64=$(awk "NR>${L_REF:-0} && /GIT_CONFIG_VALUE_0=\"Authorization: Basic \\\$\(printf/ {print NR; exit}" "$TMP/jsf.code")
-L_EXP=$(awk "NR>${L_REF:-0} && /export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0/ {print NR; exit}" "$TMP/jsf.code")
-L_LSR=$(awk "NR>${L_REF:-0} && /git ls-remote --symref origin HEAD/ {print NR; exit}" "$TMP/jsf.code")
-[ -n "$L_SETX" ] && [ -n "$L_B64" ] && [ -n "$L_EXP" ] && [ -n "$L_LSR" ] && [ "$L_SETX" -lt "$L_B64" ] && [ "$L_B64" -lt "$L_EXP" ] && [ "$L_EXP" -lt "$L_LSR" ] && grep -q 'if \[ -n "${SCM_GIT_PASS+x}" \]; then' "$TMP/jsf.code" \
-  && ok "Référence : l'en-tête Basic est composé HORS TRACE (set +x ligne $L_SETX < base64 $L_B64 < export $L_EXP < ls-remote $L_LSR), et la présence du secret est testée par \${VAR+x} (jamais sa valeur sous -x)" \
-  || ko "Référence : ordre set +x/base64/export/ls-remote cassé (setx=$L_SETX b64=$L_B64 exp=$L_EXP lsr=$L_LSR) ou test -n sur la valeur du secret"
+# L'enveloppe, PAR STAGE (revue adverse du 2026-09-21 : un grep global sur le
+# fichier était vert par la copie de l'AUTRE stage — vert vacant, mutant mesuré).
+# Pour chaque stage, dans sa plage de lignes : set +x < base64 < unset du couple
+# < SCM_HDR= < git_scm ls-remote < git_scm fetch < SCM_HDR="" ; le test de
+# présence du secret est \${VAR+x} ; la fonction git_scm teste \${#SCM_HDR}
+# (jamais -n "$SCM_HDR", tracé sous -x) ; refus BASE64_ABSENT et ENVELOPPE_VIDE
+# nommés ; et AUCUN `export GIT_CONFIG` : l'en-tête est un préfixe, pas un héritage.
+enveloppe_stage(){ # <nom> <ligne début> <ligne fin>
+  local nom="$1" a="$2" b="$3" z
+  z="$TMP/env.$nom"; sed -n "${a},${b}p" "$TMP/jsf.code" > "$z"
+  local l_plus l_setx l_b64 l_unset l_hdr l_len l_lsr l_fetch l_fin n_exp n_b64abs n_vide
+  l_plus=$(grep -n 'if \[ -n "${SCM_GIT_PASS+x}" \]; then' "$z" | head -1 | cut -d: -f1)
+  l_setx=$(grep -n '_trace=0; case "\$-" in \*x\*) _trace=1 ;; esac; set +x' "$z" | head -1 | cut -d: -f1)
+  l_b64=$(grep -n '_b64="$(printf' "$z" | head -1 | cut -d: -f1)
+  l_unset=$(grep -n '^ *unset SCM_GIT_PASS SCM_GIT_USER$' "$z" | head -1 | cut -d: -f1)
+  l_hdr=$(grep -n 'SCM_HDR="Authorization: Basic $_b64"; unset _b64' "$z" | head -1 | cut -d: -f1)
+  l_len=$(grep -n '\[ "${#SCM_HDR}" -gt 0 \] || { git "$@"; return; }' "$z" | head -1 | cut -d: -f1)
+  l_lsr=$(grep -n 'BASE=$(git_scm ls-remote --symref origin HEAD' "$z" | head -1 | cut -d: -f1)
+  l_fetch=$(grep -n '^ *git_scm fetch -q origin "$BASE"$' "$z" | head -1 | cut -d: -f1)
+  l_fin=$(grep -n '^ *SCM_HDR=""   # le dernier geste' "$z" | head -1 | cut -d: -f1)
+  n_exp=$(grep -c 'export GIT_CONFIG' "$z"); n_b64abs=$(grep -c 'REFUS: BASE64_ABSENT' "$z"); n_vide=$(grep -c 'REFUS: ENVELOPPE_VIDE' "$z")
+  [ -n "$l_plus" ] && [ -n "$l_setx" ] && [ -n "$l_b64" ] && [ -n "$l_unset" ] && [ -n "$l_hdr" ] && [ -n "$l_len" ] && [ -n "$l_lsr" ] && [ -n "$l_fetch" ] && [ -n "$l_fin" ] \
+    && [ "$l_plus" -lt "$l_setx" ] && [ "$l_setx" -lt "$l_b64" ] && [ "$l_b64" -lt "$l_unset" ] && [ "$l_unset" -lt "$l_hdr" ] && [ "$l_hdr" -lt "$l_len" ] && [ "$l_len" -lt "$l_lsr" ] && [ "$l_lsr" -lt "$l_fetch" ] && [ "$l_fetch" -lt "$l_fin" ] \
+    && [ "$n_exp" = 0 ] && [ "$n_b64abs" = 1 ] && [ "$n_vide" = 1 ] && ! grep -q 'git ls-remote --symref origin HEAD' <(grep -v 'git_scm ls-remote' "$z") && ! grep -qE '^ *git fetch -q origin' "$z" \
+    && ok "$nom (lignes $a-$b) : présence par \${VAR+x} ($((a+l_plus-1))) < set +x < base64 < unset du couple < SCM_HDR < git_scm (test \${#SCM_HDR}) < ls-remote ($((a+l_lsr-1))) < fetch < SCM_HDR=\"\" ; 0 export GIT_CONFIG ; refus BASE64_ABSENT et ENVELOPPE_VIDE nommés ; aucun geste git nu vers la forge" \
+    || ko "$nom (lignes $a-$b) : enveloppe cassée — +x=$l_plus setx=$l_setx b64=$l_b64 unset=$l_unset hdr=$l_hdr len=$l_len lsr=$l_lsr fetch=$l_fetch fin=$l_fin export=$n_exp b64abs=$n_b64abs vide=$n_vide"
+}
+enveloppe_stage "Référence" "$L_REF" "$L_PLAN"
+L_FINF=$(grep -nE '^  post \{' "$TMP/jsf.code" | head -1 | cut -d: -f1); [ -n "$L_FINF" ] || L_FINF=$(wc -l < "$TMP/jsf.code")
+enveloppe_stage "Apply" "$L_APPLY" "$L_FINF"
 # Le stage Apply a les MÊMES gestes nus (la garde A3 extrait sa lignée) : même
 # enveloppe, identifiant publié par Référence (env.SCM_CRED_ID). Deux détecteurs
 # de même méthode partagent leur angle mort — mesuré : #181 (Référence) puis #182
 # (Apply, APRÈS le login Vault nominatif).
 L_PUB=$(code_line "$TMP/jsf.code" 'env.SCM_CRED_ID = scmCid')
 L_WCA=$(code_line "$TMP/jsf.code" "withCredentials([usernamePassword(credentialsId: env.SCM_CRED_ID, usernameVariable: 'SCM_GIT_USER', passwordVariable: 'SCM_GIT_PASS')]) { apply() }")
-L_LSR2=$(awk "NR>${L_APPLY:-0} && /git ls-remote --symref origin HEAD/ {print NR; exit}" "$TMP/jsf.code")
-L_ENV2=$(awk "NR>${L_APPLY:-0} && /export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0/ {print NR; exit}" "$TMP/jsf.code")
-[ -n "$L_PUB" ] && [ -n "$L_WCA" ] && [ -n "$L_LSR2" ] && [ -n "$L_ENV2" ] && [ "$L_CID" -lt "$L_PUB" ] && [ "$L_PUB" -lt "$L_APPLY" ] && [ "$L_APPLY" -lt "$L_ENV2" ] && [ "$L_ENV2" -lt "$L_LSR2" ] && [ "$L_LSR2" -lt "$L_WCA" ] \
-  && ok "Apply : le même credential (env.SCM_CRED_ID publié ligne $L_PUB) enveloppe le stage (withCredentials ligne $L_WCA), et l'en-tête est exporté ($L_ENV2) AVANT le ls-remote de la garde A3 ($L_LSR2)" \
-  || ko "Apply : enveloppe du <scm> absente/mal placée (pub=$L_PUB apply=$L_APPLY env=$L_ENV2 lsr=$L_LSR2 wc=$L_WCA)"
+L_LSR2=$(awk "NR>${L_APPLY:-0} && /git_scm ls-remote --symref origin HEAD/ {print NR; exit}" "$TMP/jsf.code")
+[ -n "$L_PUB" ] && [ -n "$L_WCA" ] && [ -n "$L_LSR2" ] && [ "$L_CID" -lt "$L_PUB" ] && [ "$L_PUB" -lt "$L_APPLY" ] && [ "$L_APPLY" -lt "$L_LSR2" ] && [ "$L_LSR2" -lt "$L_WCA" ] \
+  && ok "Apply : le même credential (env.SCM_CRED_ID publié ligne $L_PUB) enveloppe le stage (withCredentials ligne $L_WCA), autour du ls-remote de la garde A3 ($L_LSR2)" \
+  || ko "Apply : enveloppe du <scm> absente/mal placée (pub=$L_PUB apply=$L_APPLY lsr=$L_LSR2 wc=$L_WCA)"
 # L6 (2026-09-11) : ce hook DIRECT n'est pas un hook de forge — la gateway wM le
 # sonne (setup-provisioning-api.sh) et provision-apply atteint ce job par
 # `build job:`. Mais il dépend du MÊME plugin : sur un site sans lui, ce
