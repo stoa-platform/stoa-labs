@@ -1967,6 +1967,49 @@ déclenche, **attend** et **relit** (`AMORCAGE_INCOMPLET` sinon).
   GitLab **privé** (le dépôt doit rendre 401 en anonyme, sans quoi la suite
   refuse de tourner : elle ne prouverait rien), `GIT_BASE` laissée absente.
 
+  **⛔ LA FORGE PRIVÉE ATTEIGNAIT L'AVAL — trois gestes de plus, fermés le
+  2026-09-21.** Le lab a été basculé **durablement** sous le visage `gitlab`
+  (globales, trois hooks sur `ci/stoa-labs`, huit jobs re-posés sur
+  `http://gitlab:80/...`) et la chaîne jouée par les **vrais jobs** : formulaire
+  `app-request` → MR → plan par le plugin → fusion → `provision-apply` → pause
+  nominative → `selfservice-app-deploy`. La suite 28/28 s'arrête à la pause ;
+  ce qui suit était derrière elle :
+  | # | Le geste | Comment la panne se présentait | Fermé par |
+  |---|---|---|---|
+  | 5 | `setup-selfservice-job.sh` **génère** son XML et n'avait aucun knob de credential — seul job hors du `GIT_CREDENTIALS_ID` des treize `job.xml` | le checkout de Jenkins serait anonyme : « Authentication failed » avant le Jenkinsfile | knob `GIT_CREDENTIALS_ID` du poseur (même nom, même place) |
+  | 6 | le stage **Référence** de `Jenkinsfile.selfservice` : `git ls-remote --symref` puis `git fetch`, nus | « could not read Username » puis `BRANCHE_PAR_DEFAUT_INCONNUE` — un refus juste sur la forme, faux sur la cause ; poser `GIT_BASE` n'aurait rien changé au fetch (#181) | le credential du `<scm>` du job lui-même (`scm.userRemoteConfigs[0].credentialsId`), lié par `withCredentials` autour du stage, en-tête Basic composé **hors trace** |
+  | 7 | le stage **Apply**, la garde A3 qui extrait sa lignée : les **mêmes** deux gestes, dupliqués comme le `sed` qu'ils accompagnent | la même panne, **après** le login Vault nominatif (#182) | la même enveloppe, identifiant publié une fois (`env.SCM_CRED_ID`) |
+
+  Et un défaut **hors forge**, révélé parce que la chaîne a enfin été jouée
+  par le formulaire : depuis le 2026-09-03, le **plan enchaîné** de chaque
+  demande (`[5/5]`) mourait « `ci/lib/dbg.sh` introuvable » sur un build vert
+  (`PLAN_INLINE=fail` n'est pas fatal, par contrat) — `provision-plan.sh`
+  résolvait trois libs depuis le cwd alors que la demande a fait `cd` dans son
+  clone ; aucune suite ne le voyait, toutes passent `PROVISION_PLAN_INLINE=false`.
+  Corrigé par `$SELF_DIR`, épreuve exécutée depuis un cwd étranger.
+
+  **Ce que le passage a aussi appris** :
+  - la garde d'identité de l'apply exige que le **répondant de la pause soit
+    le mergeur** (`MERGER_MISMATCH`) : une MR fusionnée par le PAT de service
+    (`root`) ne peut pas être appliquée sous `alice`. Le lab GitLab porte donc
+    `alice` (id 4, Maintainer sur `ci/stoa-labs`, PAT dans le scratch de la
+    session — **à recréer**, 7 jours) ; le client, lui, a ses vrais comptes ;
+  - la chaîne **API/producteur n'est pas migrée** sur le GitLab du lab : le
+    dépôt d'équipe `banking-demo/accounts-api` n'y existe pas (avertissement
+    non fatal du formulaire, aucun hook `team-publish`/`team-promote`) ;
+  - `setup-provision-jobs.sh` crie `AMORCAGE_INCOMPLET` sur `app-rollback`
+    (XML à `<properties/>` ⇒ amorçage imposé et relu, mais ce job n'a **pas**
+    de déclencheur : c'est un formulaire). Faux négatif du poseur, job posé
+    et formulaire présent — à nommer, non traité ;
+  - le formulaire soumis par `buildWithParameters` avec un fichier qui porte
+    un **saut de ligne final** rend `Illegal choice for parameter MODE: idp`
+    (HTTP 500) : `MODE=idp\n` n'est pas un choix. Écrire le corps sans `\n`.
+
+  **Preuve** : `provision-apply #306` SUCCESS, `selfservice-app-deploy #183`
+  SUCCESS, `APPLIED_MODE=pinned` au `merge_commit_sha` de la MR !65 fusionnée
+  par `alice` ; 0 occurrence du jeton, de son base64 ou du mot de passe dans
+  la console. `test-a0-wiring.sh` 263/263.
+
 **Pas d'écart de comportement entre les deux visages** sur les événements d'une
 MR : le plugin reconstruit le plan sur un changement de titre comme sur un push,
 exactement comme le generic-webhook-trigger. La « garde déjà construit » que ses
