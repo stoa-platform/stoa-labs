@@ -293,6 +293,9 @@ pipeline {
           // doit ROUGIR, pas retomber en silence sur le geste nu.
           script {
             def scmCid = "${scm.userRemoteConfigs?.getAt(0)?.credentialsId ?: ''}".trim()
+            // Publié pour le stage Apply, qui a les MÊMES gestes nus (la garde A3
+            // extrait sa lignée par ls-remote + fetch) : un identifiant, pas un secret.
+            env.SCM_CRED_ID = scmCid
             def reference = {
           dir(env.GIT_SUBDIR) {
             // Deux gardes d'ancrage, dans cet ordre : `merge-base --is-ancestor`
@@ -476,6 +479,14 @@ pipeline {
         withEnv(["MANIFEST=${params.MANIFEST ?: (env.MANIFEST ?: '')}", "MERGE_SHA=${params.MERGE_SHA ?: ''}", "ENVIRONMENT=${params.ENVIRONMENT ?: ''}",
                  "ADMIN_VIA=${params.ADMIN_VIA ?: ''}", "DEBUG=${params.DEBUG ?: false}",
                  "VAULT_USER=${params.VAULT_USER ?: ''}", "USER_VAULT_JWT=${params.USER_VAULT_JWT ?: ''}"]) {
+          // LA FORGE PRIVÉE, seconde fois (2026-09-21) : la garde A3 ci-dessous
+          // extrait sa lignée par `git ls-remote` + `git fetch`, nus comme au stage
+          // Référence — et pour la même panne (selfservice-app-deploy #182 :
+          // « could not read Username » APRÈS le login Vault nominatif, le refus
+          // accusant la branche). Même enveloppe : le credential du <scm> du job,
+          // dont l'identifiant vient du stage Référence (env.SCM_CRED_ID).
+          script {
+            def apply = {
           dir(env.GIT_SUBDIR) {
             sh '''
               # LA VOIE SANS ADMIN (2026-09-17) : les valeurs de site viennent d'un
@@ -541,6 +552,16 @@ pipeline {
               # MÊME résolution qu'au stage Référence, et pour la MÊME raison : la garde
               # vient de la lignée, donc rien ici ne peut être sourcé de l'arbre pinné.
               # Le motif est dupliqué à dessein (une ligne, le même sed que la lib).
+              # L'enveloppe d'authentification aussi (forge privée) — ce bloc est
+              # déjà sous `set +x`, la trace n'est pas rendue.
+              if [ -n "${SCM_GIT_PASS+x}" ]; then
+                _trace=0; case "$-" in *x*) _trace=1 ;; esac; set +x
+                GIT_CONFIG_VALUE_0="Authorization: Basic $(printf '%s:%s' "${SCM_GIT_USER:-oauth2}" "$SCM_GIT_PASS" | base64 | tr -d '\\n')"
+                [ "$_trace" = 0 ] || set -x
+                GIT_CONFIG_COUNT=1; GIT_CONFIG_KEY_0=http.extraheader
+                export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
+                echo "  garde A3 : git parle à l'origine sous le credential du <scm> (en-tête, jamais l'URL)"
+              fi
               BASE="${GIT_BASE:-}"
               case "$BASE" in ''|auto)
                 BASE=$(git ls-remote --symref origin HEAD | sed -n 's#^ref: refs/heads/\\(.*\\)\\tHEAD$#\\1#p' | head -n1) ;;
@@ -678,6 +699,13 @@ pipeline {
                 env.APPLIED_MODE   = readFile('.a2-applied-mode').trim()
                 env.APPLIED_DIGEST = readFile('.a2-applied-digest').trim()
               }
+            }
+          }
+            }
+            if (env.SCM_CRED_ID) {
+              withCredentials([usernamePassword(credentialsId: env.SCM_CRED_ID, usernameVariable: 'SCM_GIT_USER', passwordVariable: 'SCM_GIT_PASS')]) { apply() }
+            } else {
+              apply()
             }
           }
         }

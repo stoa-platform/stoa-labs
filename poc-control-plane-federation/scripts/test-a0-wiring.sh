@@ -58,7 +58,7 @@ ko(){ FAIL=$((FAIL+1)); printf '  ❌ %s\n' "$*"; }
 
 # Total ATTENDU, ÉCRIT EN DUR — indépendant de PASS+FAIL. Toute section
 # ajoutée/retirée DOIT le mettre à jour : un oubli fait rougir le dernier §.
-EXPECTED_CHECKS=261   # 200 + 12 (L6, récepteur WEBHOOK_KIND) + 44 (§9 (c ter), STOA_DEBUG — plan L2) + 1 (plan enchaîné exécuté depuis un cwd étranger, 2026-09-21) + 4 (forge privée : credential du <scm> du poseur selfservice ×2, Référence de selfservice sous ce credential ×2, 2026-09-21)
+EXPECTED_CHECKS=262   # 200 + 12 (L6, récepteur WEBHOOK_KIND) + 44 (§9 (c ter), STOA_DEBUG — plan L2) + 1 (plan enchaîné exécuté depuis un cwd étranger, 2026-09-21) + 4 (forge privée : credential du <scm> du poseur selfservice ×2, Référence de selfservice sous ce credential ×2, 2026-09-21)
 
 # shellcheck source=scripts/lib/gwt-mirror.sh
 . scripts/lib/gwt-mirror.sh || { echo "lib gwt-mirror.sh introuvable"; exit 2; }
@@ -1351,6 +1351,17 @@ L_LSR=$(awk "NR>${L_REF:-0} && /git ls-remote --symref origin HEAD/ {print NR; e
 [ -n "$L_SETX" ] && [ -n "$L_B64" ] && [ -n "$L_EXP" ] && [ -n "$L_LSR" ] && [ "$L_SETX" -lt "$L_B64" ] && [ "$L_B64" -lt "$L_EXP" ] && [ "$L_EXP" -lt "$L_LSR" ] && grep -q 'if \[ -n "${SCM_GIT_PASS+x}" \]; then' "$TMP/jsf.code" \
   && ok "Référence : l'en-tête Basic est composé HORS TRACE (set +x ligne $L_SETX < base64 $L_B64 < export $L_EXP < ls-remote $L_LSR), et la présence du secret est testée par \${VAR+x} (jamais sa valeur sous -x)" \
   || ko "Référence : ordre set +x/base64/export/ls-remote cassé (setx=$L_SETX b64=$L_B64 exp=$L_EXP lsr=$L_LSR) ou test -n sur la valeur du secret"
+# Le stage Apply a les MÊMES gestes nus (la garde A3 extrait sa lignée) : même
+# enveloppe, identifiant publié par Référence (env.SCM_CRED_ID). Deux détecteurs
+# de même méthode partagent leur angle mort — mesuré : #181 (Référence) puis #182
+# (Apply, APRÈS le login Vault nominatif).
+L_PUB=$(code_line "$TMP/jsf.code" 'env.SCM_CRED_ID = scmCid')
+L_WCA=$(code_line "$TMP/jsf.code" "withCredentials([usernamePassword(credentialsId: env.SCM_CRED_ID, usernameVariable: 'SCM_GIT_USER', passwordVariable: 'SCM_GIT_PASS')]) { apply() }")
+L_LSR2=$(awk "NR>${L_APPLY:-0} && /git ls-remote --symref origin HEAD/ {print NR; exit}" "$TMP/jsf.code")
+L_ENV2=$(awk "NR>${L_APPLY:-0} && /export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0/ {print NR; exit}" "$TMP/jsf.code")
+[ -n "$L_PUB" ] && [ -n "$L_WCA" ] && [ -n "$L_LSR2" ] && [ -n "$L_ENV2" ] && [ "$L_CID" -lt "$L_PUB" ] && [ "$L_PUB" -lt "$L_APPLY" ] && [ "$L_APPLY" -lt "$L_ENV2" ] && [ "$L_ENV2" -lt "$L_LSR2" ] && [ "$L_LSR2" -lt "$L_WCA" ] \
+  && ok "Apply : le même credential (env.SCM_CRED_ID publié ligne $L_PUB) enveloppe le stage (withCredentials ligne $L_WCA), et l'en-tête est exporté ($L_ENV2) AVANT le ls-remote de la garde A3 ($L_LSR2)" \
+  || ko "Apply : enveloppe du <scm> absente/mal placée (pub=$L_PUB apply=$L_APPLY env=$L_ENV2 lsr=$L_LSR2 wc=$L_WCA)"
 # L6 (2026-09-11) : ce hook DIRECT n'est pas un hook de forge — la gateway wM le
 # sonne (setup-provisioning-api.sh) et provision-apply atteint ce job par
 # `build job:`. Mais il dépend du MÊME plugin : sur un site sans lui, ce
